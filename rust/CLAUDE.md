@@ -62,8 +62,9 @@ cite the source, don't re-argue them.
    coverage.** It counts 1:1 `EbSvtAv1EncConfiguration`-field mirroring, which the port
    deliberately does NOT do (it exposes `RcConfig`/`HdrForkConfig`/`EncodePipeline` builders).
    `tested: 0` ≠ "0 features". Use README / STATUS.md / issue #7 for capability status.
-5. **SGR loop-restoration "absent" is in-envelope-faithful FOR M0..M13 — but the old wording
-   of this guard was WRONG about ENC_MR.** CORRECTED 2026-08-03, re-derived from source by
+5. **SGR loop-restoration "absent" is in-envelope-faithful FOR ALL-INTRA M0..M13 — the
+   "all-intra" qualifier is load-bearing (added 2026-08-31, see 5c), and the pre-2026-08-03
+   wording was WRONG about ENC_MR.** CORRECTED 2026-08-03, re-derived from source by
    six independent audits: `svt_aom_get_sg_filter_level_allintra` (`enc_mode_config.c:1431`)
    returns **1 for `enc_mode <= ENC_MR`**, so at MR all-intra C DOES enable a full SGR sweep
    and `RESTORE_SWITCHABLE`/`RESTORE_SGRPROJ` become emittable. The correct statement is:
@@ -75,6 +76,21 @@ cite the source, don't re-argue them.
    searches SGR"; cite it as "the port cannot express the only preset where C does."
    The same shape applies to CDEF search level 1 (16+48 candidates,
    `enc_mode_config.c:904-947`), which is likewise MR-only.
+
+5c. **Guard #5 covers the ALL-INTRA arm ONLY. In VIDEO mode SGR is LIVE at presets 0-3.**
+   Added 2026-08-31 by the wp-entropy lane, re-derived from source (not from #5's wording):
+   `pd_process.c:4935-4939` dispatches on `scs->allintra` —
+   `svt_aom_sig_deriv_multi_processes_allintra` (`enc_mode_config.c:2337`) calls
+   `svt_aom_get_sg_filter_level_allintra` at `:2462`, which is the function #5 is about;
+   the VIDEO arm `svt_aom_sig_deriv_multi_processes_default` (`:1973`) calls
+   `svt_aom_get_sg_filter_level_default` at `:2134` instead, and THAT one returns
+   **`sg_filter_lvl = 3` for `enc_mode <= ENC_M3`** (`:1402-1410`), not 0. So the moment
+   this campaign runs `SVT_AVIF=0` at presets 0..3, `RESTORE_SGRPROJ` and
+   `RESTORE_SWITCHABLE` become emittable and `write_sgrproj_filter` is on the live path.
+   Do NOT cite #5 as "SGR is dead in this port"; it is dead only where the encode is
+   all-intra. (The port's `write_sgrproj_filter` is at
+   `svtav1_encoder::port_entropy_inter::gm`; the `RESTORE_SWITCHABLE` frame-level plumbing
+   that would reach it is not wired yet.)
 
 5b. **All-intra clamps M10..M13 to M9 in C, and the port does NOT replicate that at
    `EncodePipeline::new`.** `Globals/enc_handle.c:4415-4419` remaps any all-intra
