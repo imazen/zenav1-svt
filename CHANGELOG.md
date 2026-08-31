@@ -56,6 +56,33 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Rate control: the `rc_process.c` group is ported, mostly tier 1 (lane
+  `wp-ratecontrol`).** New `svtav1-encoder/src/port_rc_process.rs` +
+  `port_rc_lambda_tables.rs`, `port_rc_vbr_cbr.rs` + `port_rc_vbr_tables.rs`,
+  `port_rc_rtc_cbr.rs`, `port_pass2_strategy.rs`, and
+  `svtav1-cref/src/rate_control.rs` + `shims/rc_shims.c`.
+  **TIER 1** against the real exported symbols: `svt_av1_rc_bits_per_mb`,
+  `svt_av1_compute_qdelta_by_rate` (the inter unblocker — `rc_crf_cqp.c:170-178`
+  calls it on every non-intra frame and its delta moves `base_q_idx`),
+  `svt_aom_compute_rd_mult_based_on_qindex` over all seven update types (the
+  port previously hardcoded only the KF arm at five sites in `pd0.rs`),
+  `svt_aom_compute_rd_mult`, `svt_aom_compute_fast_lambda`,
+  `svt_aom_lambda_assign`, `svt_aom_set_rc_param`, `svt_av1_rc_init`,
+  `svt_av1_new_framerate`, `svt_av1_get_cqp_kf_boost_from_r0`,
+  `svt_av1_get_gfu_boost_from_r0_lap`, `svt_av1_calculate_boost_bits`, the
+  seven `rc_process.c` const tables (exported data symbols), the three
+  `av1_lambda_mode_decision*_bit_sad` tables and the eighteen `rc_tables.h`
+  minq tables (5,376 entries, all read out of the real C arrays through
+  shims). **TIER 4** (`static` in C, no exported symbol, hand-derived vectors):
+  the three ref-frame percentage helpers, `rc_init_frame_stats`, `get_ref_obj`,
+  `update_rc_counts`, `clamp_qp`/`clamp_qindex`, `generate_sb_qindex`'s control
+  flow, and the `rc_vbr_cbr.c` / `rc_rtc_cbr.c` / `pass2_strategy.c` scalar
+  cores. Two rows the inventory reported as ported were doc-comment substring
+  hits with no implementation — `svt_av1_rc_init` and `generate_sb_qindex` —
+  and both now exist. (cb6fa82, 1dc29e4, 1920b89, 7f9cfac, 62167c8, a9db88f,
+  7434410, 0ed920f)
+
+
 - **`transforms.c`'s reduced-coefficient-shape family is ported, tier 1 —
   76 of 76 `_N2` / `_N4` / `ONLY_DC` functions plus the entry points above
   them.** New `svtav1-dsp/src/fwd_txfm_pf.rs`: the 26 pruned 1-D kernels

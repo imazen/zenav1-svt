@@ -124,6 +124,10 @@ the identity harness (every range-coder call compared, including coder state).
 | `cdef` | `enc_cdef.c` |
 | `restoration` | `restoration_pick.c`, `restoration.c` |
 | `rate_control`, `multipass` | `rc_process.c`, `firstpass.c`, `pass2_strategy.c` |
+| `port_rc_process` | `rc_process.c` (rate model, qdelta-by-rate, the MD lambda chain, `svt_av1_rc_init`, the ref-frame percentages) + `svt_aom_set_rc_param` / `svt_av1_new_framerate` from `pass2_strategy.c` |
+| `port_rc_vbr_cbr`, `port_rc_vbr_tables` | `rc_vbr_cbr.c` scalar core + `rc_tables.h` (11 of ~54 functions; the module header names the other 43) |
+| `port_rc_rtc_cbr` | `rc_rtc_cbr.c` scalar helpers (3 of 24; header names the other 21) |
+| `port_pass2_strategy` | `pass2_strategy.c` scalar core (8 of 29; header names the other 18) |
 | `sb_qindex`, `var_boost` | `rc_aq.c` |
 | `chroma_q` | `rc_crf_cqp.c` |
 | `palette` | `palette.c`, `k_means_template.h` |
