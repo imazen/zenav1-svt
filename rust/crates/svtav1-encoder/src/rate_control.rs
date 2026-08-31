@@ -443,8 +443,19 @@ pub fn q_index_from_qstep_ratio(leaf_qindex: i32, qstep_ratio: f64, bit_depth: u
     qindex
 }
 
-/// C `SVT_QP_SCALE_WEIGHT` (definitions.h:249) for the mainline build:
-/// `1.000 + qp_scale_compress_strength * 0.125`.
+/// C `SVT_QP_SCALE_WEIGHT`. There are TWO definitions and this doc originally
+/// cited the wrong one: definitions.h:249 is the **fork** (`SVT_HDR_MODE`)
+/// form, `1.000 + qp_scale_compress_strength * 0.125`; **mainline** is :252,
+/// a table lookup `svt_av1_qp_scale_compress_weight[strength]` with the table
+/// `{1, 1.125, 1.25, 1.375}` (rc_process.c:48).
+///
+/// They agree exactly on the whole domain the CLI can produce — the table is
+/// `1 + i * 0.125` for i in 0..=3 — so this function is correct for both
+/// builds. The citation is corrected anyway, because "it happens to agree" and
+/// "it is the same rule" are different claims and only the first one is true.
+///
+/// NOT YET CONFIRMED as the weight this path actually applies: see the
+/// measured open question on [`cqp_qindex_calc`].
 #[must_use]
 pub fn qp_scale_weight(qp_scale_compress_strength: f64) -> f64 {
     1.0 + qp_scale_compress_strength * 0.125
@@ -460,6 +471,41 @@ pub fn qp_scale_weight(qp_scale_compress_strength: f64) -> f64 {
 /// VIDEO-mode encode reaches the qstep-ratio scaling below. Measured on
 /// `gradient 64x64 q40 p6`: 290 bytes still vs 930 bytes video, same pixels
 /// (docs/INTER-ENCODE-PLAN.md §1b).
+///
+/// **MEASURED OPEN QUESTION (2026-08-31): this function's output does NOT
+/// match the base_q_idx C actually writes on the video-mode key frame, and
+/// the discrepancy is not yet explained.** Recorded rather than papered over,
+/// with what was ruled out, so the next session starts from the data:
+///
+/// | cell (64x64 gradient, video mode) | C base_q_idx | this fn |
+/// |---|--:|--:|
+/// | qp40, hierarchical_levels 0..4 | 67 | 74 |
+/// | qp40, hierarchical_levels 5 | 70 | 64 |
+/// | qp20, hier 0 | 14 | — |
+/// | qp55, hier 0 | 143 | — |
+///
+/// The hier 4/5 boundary reproduces C's `qratio_grad = hier <= 4 ? 0.3 : 0.2`
+/// split exactly, so the right function is being read — but the implied ratio
+/// moves the WRONG WAY: back-solving C's numbers through the (C-verified)
+/// `q_index_from_qstep_ratio` gives ratios that RISE with qindex
+/// (~0.26 at qindex 80, ~0.285 at 160, ~0.335 at 220) while
+/// `0.2 + (1 - q/255) * grad` falls.
+///
+/// RULED OUT by measurement, not by reading:
+/// * The TPL dispatch. `svt_av1_rc_calc_qindex_crf_cqp` picks
+///   `crf_qindex_calc` when `tpl_ctrls.enable`, but `get_tpl`
+///   (enc_handle.c:3657) returns 0 when `aq_mode == 0`, which the harness
+///   sets — so this IS the function that runs.
+/// * The qp-scale weight. Mainline's table and the fork's formula agree on
+///   0..=3 (see [`qp_scale_weight`]), and the harness leaves the strength 0.
+/// * `q_index_from_qstep_ratio` itself, which is tier-1 verified against the
+///   exported C symbol over the full ladder at both bit depths.
+///
+/// Still to check: whether `active_worst_quality` is `scs_qindex` on this
+/// path (`is_startup_gop` + `startup_qp_offset`, rc_crf_cqp.c:469), and
+/// whether `ppcs->hierarchical_levels` equals the config value for frame 0.
+/// Resolving it wants an instrumented C build on a `--wrap`-capable host;
+/// this host is macOS, where the op-trace interposers do not link.
 ///
 /// `is_ref` / `temporal_layer_index` / `hierarchical_levels` come from the GOP;
 /// `cqp_base_q` is C's `scs->cqp_base_q`, written by the temporal-layer-0 arm

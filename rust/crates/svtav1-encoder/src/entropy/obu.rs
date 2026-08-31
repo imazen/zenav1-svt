@@ -1291,7 +1291,15 @@ fn key_frame_header_bits_lr(
         wb.write_bits(0, ORDER_HINT_BITS); // order_hint = 0
         // primary_ref_frame: NOT signaled for KEY_FRAME with error_resilient=1
         //   (implicit PRIMARY_REF_NONE)
-        wb.write_bits(0xFF, 8); // refresh_frame_flags = 0xFF
+        //
+        // refresh_frame_flags: NOT signaled either. Spec 5.9.2 and C
+        // (entropy_coding.c:3404-3407, `if (!show_frame)`) leave it IMPLICIT
+        // at allFrames for a SWITCH frame or a SHOWN key frame — and this
+        // writer only emits shown key frames. Writing the 8 bits put an
+        // illegal field in the stream and shifted every following one, which
+        // is the third of the four defects the inter refusal in pipeline.rs
+        // names. MEASURED: it was the first divergence in the video-mode
+        // frame OBU, at bit 14, immediately after order_hint.
     }
 
     // ---- frame_size() ----
@@ -1312,6 +1320,28 @@ fn key_frame_header_bits_lr(
     // pre-upscale grid.
     if sc.allow_screen_content_tools && sc.superres.denom.is_none() {
         wb.write_bit(sc.allow_intrabc);
+    }
+
+    // ---- disable_frame_end_update_cdf (spec 5.9.2) ----
+    // C's `might_bwd_adapt` (entropy_coding.c:3553-3559):
+    //     !reduced_still_picture_header && !disable_cdf_update
+    // and only then is the bit written, as
+    // `refresh_frame_context == REFRESH_FRAME_CONTEXT_DISABLED`. The picture
+    // manager assigns REFRESH_FRAME_CONTEXT_BACKWARD to coded pictures
+    // (pic_manager_process.c:868,875), so the bit is 0 on this path.
+    //
+    // In the reduced (still) header the field is IMPLICIT 1 and no bit is
+    // written, which is why every still cell was already byte-identical
+    // without it. Omitting it from the video header shifted tile_info() and
+    // every following field by one bit — the fourth of the four defects the
+    // inter refusal in pipeline.rs names.
+    //
+    // `disable_cdf_update` is written as 0 above, so the guard reduces to
+    // `!reduced_sh` today; it is spelled out anyway so that making
+    // disable_cdf_update dynamic cannot silently desync the header.
+    let disable_cdf_update = false;
+    if !reduced_sh && !disable_cdf_update {
+        wb.write_bit(false); // refresh_frame_context != DISABLED
     }
 
     // ---- tile_info() ----
