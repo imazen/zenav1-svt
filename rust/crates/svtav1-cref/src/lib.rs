@@ -13,6 +13,7 @@ pub mod inter_mvp;
 pub mod inter_pred;
 pub mod picstruct;
 pub mod md_subpel;
+pub mod rate_control;
 
 use std::ffi::c_void;
 

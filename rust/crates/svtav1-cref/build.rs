@@ -89,6 +89,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/picstruct_shims.c");
     println!("cargo:rerun-if-changed=shims/md_subpel_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_pred_shims.c");
+    println!("cargo:rerun-if-changed=shims/rc_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -160,6 +161,8 @@ fn main() {
         .file(manifest.join("shims/picstruct_shims.c"))
         // Inter prediction / MC oracle (wholesale inter_prediction.c lane).
         .file(manifest.join("shims/inter_pred_shims.c"))
+        // Rate control oracle (lane wp-ratecontrol) — own TU, same reason.
+        .file(manifest.join("shims/rc_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))
