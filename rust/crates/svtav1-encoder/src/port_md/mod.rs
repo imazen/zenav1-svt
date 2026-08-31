@@ -20,6 +20,7 @@
 //! | [`pme`] | the MD motion-search cost model + the PME SAD kernel |
 //! | [`nics`] | the per-stage candidate counts (`svt_aom_set_nics`) |
 //! | [`drl`] | DRL selection for NEWMV candidates |
+//! | [`coding_loop`] | the per-block helpers of `product_coding_loop.c` |
 //!
 //! # Reachability
 //!
@@ -28,6 +29,7 @@
 //! translation with no caller stays translated and states its
 //! reachability rather than carrying `#[allow(dead_code)]`.
 
+pub mod coding_loop;
 pub mod drl;
 pub mod nics;
 pub mod pme;
