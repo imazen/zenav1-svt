@@ -127,6 +127,7 @@ the identity harness (every range-coder call compared, including coder state).
 | `chroma_q` | `rc_crf_cqp.c` |
 | `palette` | `palette.c`, `k_means_template.h` |
 | `motion_est`, `intrabc` | `motion_estimation.c`, `av1me.c`, `mcomp.c` |
+| `intrabc_mvp` (INTRA_FRAME), `inter_mvp` (inter — `docs/inter-mvp-port-map.md`) | `adaptive_mv_pred.c`, `inter_prediction.{c,h}`, `md_config_process.c` (motion field) |
 | `sc_detect` | `pic_analysis_process.c` |
 | `speed_config` | `enc_mode_config.c` |
 | `temporal_filter` | `temporal_filtering.c` |
