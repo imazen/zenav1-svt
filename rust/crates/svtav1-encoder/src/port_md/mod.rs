@@ -17,6 +17,7 @@
 //! | module | C region |
 //! |---|---|
 //! | [`predicates`] | the pure gates and tables of `mode_decision.c` |
+//! | [`pme`] | the MD motion-search cost model + the PME SAD kernel |
 //!
 //! # Reachability
 //!
@@ -25,4 +26,5 @@
 //! translation with no caller stays translated and states its
 //! reachability rather than carrying `#[allow(dead_code)]`.
 
+pub mod pme;
 pub mod predicates;

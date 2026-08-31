@@ -179,3 +179,108 @@ int32_t ref_md_obmc_motion_mode_allowed(int32_t trans_face_off, int32_t obmc_ena
     free(pcs);
     return out;
 }
+
+/* ------------------------------------------------------------------ *
+ * PME SAD kernel + the MD motion-search cost model.
+ *
+ *   svt_pme_sad_loop_kernel_c   product_coding_loop.c:1775 (EXPORTED)
+ *   svt_aom_fp_mv_err_cost      mcomp.c:775                (EXPORTED)
+ *   svt_aom_get_sad_per_bit     mode_decision.c:2048       (EXPORTED)
+ *   svt_av1_init_me_luts        mode_decision.c:2063       (EXPORTED)
+ *
+ * The `_c` suffix is deliberate: it is the reference scalar kernel, which
+ * is what the port transcribes. Driving the RTCD pointer instead would
+ * compare against whichever SIMD variant this host dispatches to.
+ * ------------------------------------------------------------------ */
+#include "mcomp.h"
+
+void svt_pme_sad_loop_kernel_c(const svt_mv_cost_param* mv_cost_params, uint8_t* src, uint32_t src_stride,
+                               uint8_t* ref, uint32_t ref_stride, uint32_t block_height, uint32_t block_width,
+                               uint32_t* best_cost, int16_t* best_mvx, int16_t* best_mvy,
+                               int16_t search_position_start_x, int16_t search_position_start_y,
+                               int16_t search_area_width, int16_t search_area_height, int16_t search_step,
+                               int16_t mvx, int16_t mvy);
+int  svt_aom_fp_mv_err_cost(const Mv* mv, const svt_mv_cost_param* mv_cost_params);
+int  svt_aom_get_sad_per_bit(int qidx, EbBitDepth is_hbd);
+void svt_av1_init_me_luts(void);
+
+/* `mvj` is the 4-entry joint cost table; `mvc0`/`mvc1` are the two
+ * per-component tables, each indexed by (value + MV_MAX) exactly as C
+ * does through `mvcost[i] + ...`. Passing NULL for mvj selects C's
+ * `if (mvcost)` NULL arm. */
+int32_t ref_md_fp_mv_err_cost(int32_t mv_x, int32_t mv_y, int32_t ref_x, int32_t ref_y, int32_t mv_cost_type,
+                              int32_t error_per_bit, const int* mvj, const int* mvc0, const int* mvc1,
+                              int32_t use_tables) {
+    Mv               ref_mv;
+    svt_mv_cost_param p;
+    memset(&p, 0, sizeof(p));
+    ref_mv.x        = (int16_t)ref_x;
+    ref_mv.y        = (int16_t)ref_y;
+    p.ref_mv        = &ref_mv;
+    p.mv_cost_type  = (MV_COST_TYPE)mv_cost_type;
+    p.error_per_bit = error_per_bit;
+    if (use_tables) {
+        p.mvjcost   = mvj;
+        p.mvcost[0] = mvc0;
+        p.mvcost[1] = mvc1;
+    } else {
+        p.mvjcost   = NULL;
+        p.mvcost[0] = NULL;
+        p.mvcost[1] = NULL;
+    }
+    Mv mv;
+    mv.x = (int16_t)mv_x;
+    mv.y = (int16_t)mv_y;
+    return svt_aom_fp_mv_err_cost(&mv, &p);
+}
+
+/* NOTE: the second parameter is DECLARED `EbBitDepth` but USED as a
+ * boolean (`is_hbd ? lut_10 : lut_8`, mode_decision.c:2049), and
+ * EB_EIGHT_BIT is 8 — truthy. Every C call site passes a 0/1 flag
+ * (mode_decision.c:2109 passes a literal 0; product_coding_loop.c:1908
+ * passes `hbd_md`, a uint8_t), so 0/1 is what the shim forwards.
+ * Passing the enum would silently select the TEN-bit table for 8-bit. */
+int32_t ref_md_get_sad_per_bit(int32_t qidx, int32_t is_hbd) {
+    svt_av1_init_me_luts();
+    return svt_aom_get_sad_per_bit(qidx, (EbBitDepth)(is_hbd ? 1 : 0));
+}
+
+void ref_md_pme_sad_loop_kernel(int32_t ref_x, int32_t ref_y, int32_t mv_cost_type, int32_t error_per_bit,
+                                const int* mvj, const int* mvc0, const int* mvc1, int32_t use_tables,
+                                const uint8_t* src, int32_t src_stride, const uint8_t* refbuf, int32_t ref_stride,
+                                int32_t block_height, int32_t block_width, uint32_t* best_cost, int16_t* best_mvx,
+                                int16_t* best_mvy, int32_t search_position_start_x, int32_t search_position_start_y,
+                                int32_t search_area_width, int32_t search_area_height, int32_t search_step,
+                                int32_t mvx, int32_t mvy) {
+    Mv                ref_mv;
+    svt_mv_cost_param p;
+    memset(&p, 0, sizeof(p));
+    ref_mv.x        = (int16_t)ref_x;
+    ref_mv.y        = (int16_t)ref_y;
+    p.ref_mv        = &ref_mv;
+    p.full_ref_mv   = get_fullmv_from_mv(&ref_mv);
+    p.mv_cost_type  = (MV_COST_TYPE)mv_cost_type;
+    p.error_per_bit = error_per_bit;
+    if (use_tables) {
+        p.mvjcost   = mvj;
+        p.mvcost[0] = mvc0;
+        p.mvcost[1] = mvc1;
+    }
+    svt_pme_sad_loop_kernel_c(&p,
+                              (uint8_t*)src,
+                              (uint32_t)src_stride,
+                              (uint8_t*)refbuf,
+                              (uint32_t)ref_stride,
+                              (uint32_t)block_height,
+                              (uint32_t)block_width,
+                              best_cost,
+                              best_mvx,
+                              best_mvy,
+                              (int16_t)search_position_start_x,
+                              (int16_t)search_position_start_y,
+                              (int16_t)search_area_width,
+                              (int16_t)search_area_height,
+                              (int16_t)search_step,
+                              (int16_t)mvx,
+                              (int16_t)mvy);
+}

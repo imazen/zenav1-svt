@@ -223,3 +223,174 @@ pub fn obmc_motion_mode_allowed(i: &ObmcAllowedInput) -> i32 {
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// PME SAD kernel + the MD motion-search cost model.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_md_fp_mv_err_cost(
+        mv_x: i32,
+        mv_y: i32,
+        ref_x: i32,
+        ref_y: i32,
+        mv_cost_type: i32,
+        error_per_bit: i32,
+        mvj: *const i32,
+        mvc0: *const i32,
+        mvc1: *const i32,
+        use_tables: i32,
+    ) -> i32;
+    fn ref_md_get_sad_per_bit(qidx: i32, is_hbd: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_md_pme_sad_loop_kernel(
+        ref_x: i32,
+        ref_y: i32,
+        mv_cost_type: i32,
+        error_per_bit: i32,
+        mvj: *const i32,
+        mvc0: *const i32,
+        mvc1: *const i32,
+        use_tables: i32,
+        src: *const u8,
+        src_stride: i32,
+        refbuf: *const u8,
+        ref_stride: i32,
+        block_height: i32,
+        block_width: i32,
+        best_cost: *mut u32,
+        best_mvx: *mut i16,
+        best_mvy: *mut i16,
+        search_position_start_x: i32,
+        search_position_start_y: i32,
+        search_area_width: i32,
+        search_area_height: i32,
+        search_step: i32,
+        mvx: i32,
+        mvy: i32,
+    );
+}
+
+/// C's `mvjcost` + `mvcost[2]` triple. The two component tables are
+/// `MV_VALS`-long and the C pointer is offset by `MV_MAX`, so the slices
+/// here are the WHOLE tables and the shim re-applies the offset.
+pub struct MvCostTablesRef<'a> {
+    pub joint: &'a [i32; 4],
+    /// Indexed `MV_MAX + value` (2 * MV_MAX + 1 entries).
+    pub comp0: &'a [i32],
+    pub comp1: &'a [i32],
+}
+
+/// C `svt_aom_fp_mv_err_cost` (mcomp.c:775, EXPORTED). `tables` is `None`
+/// for C's NULL-`mvcost` arm.
+pub fn fp_mv_err_cost(
+    mv: (i16, i16),
+    ref_mv: (i16, i16),
+    mv_cost_type: i32,
+    error_per_bit: i32,
+    tables: Option<&MvCostTablesRef<'_>>,
+) -> i32 {
+    // C's `mvcost[i]` points at &nmv_costs[i][MV_MAX].
+    const MV_MAX: usize = (1 << 14) - 1;
+    let (mvj, c0, c1, used) = match tables {
+        Some(t) => (
+            t.joint.as_ptr(),
+            t.comp0[MV_MAX..].as_ptr(),
+            t.comp1[MV_MAX..].as_ptr(),
+            1,
+        ),
+        None => (std::ptr::null(), std::ptr::null(), std::ptr::null(), 0),
+    };
+    unsafe {
+        ref_md_fp_mv_err_cost(
+            i32::from(mv.0),
+            i32::from(mv.1),
+            i32::from(ref_mv.0),
+            i32::from(ref_mv.1),
+            mv_cost_type,
+            error_per_bit,
+            mvj,
+            c0,
+            c1,
+            used,
+        )
+    }
+}
+
+/// C `svt_aom_get_sad_per_bit` (mode_decision.c:2048, EXPORTED). The shim
+/// calls `svt_av1_init_me_luts` first, which is idempotent.
+pub fn get_sad_per_bit(qidx: i32, is_hbd: bool) -> i32 {
+    unsafe { ref_md_get_sad_per_bit(qidx, i32::from(is_hbd)) }
+}
+
+/// The kernel's three out-params.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PmeBest {
+    pub cost: u32,
+    pub mvx: i16,
+    pub mvy: i16,
+}
+
+/// C `svt_pme_sad_loop_kernel_c` (product_coding_loop.c:1775, EXPORTED).
+#[allow(clippy::too_many_arguments)]
+pub fn pme_sad_loop_kernel(
+    ref_mv: (i16, i16),
+    mv_cost_type: i32,
+    error_per_bit: i32,
+    tables: Option<&MvCostTablesRef<'_>>,
+    src: &[u8],
+    src_stride: usize,
+    ref_buf: &[u8],
+    ref_offset: usize,
+    ref_stride: usize,
+    block_height: usize,
+    block_width: usize,
+    best: &mut PmeBest,
+    search_position_start_x: i16,
+    search_position_start_y: i16,
+    search_area_width: i16,
+    search_area_height: i16,
+    search_step: i16,
+    mvx: i16,
+    mvy: i16,
+) {
+    const MV_MAX: usize = (1 << 14) - 1;
+    let (mvj, c0, c1, used) = match tables {
+        Some(t) => (
+            t.joint.as_ptr(),
+            t.comp0[MV_MAX..].as_ptr(),
+            t.comp1[MV_MAX..].as_ptr(),
+            1,
+        ),
+        None => (std::ptr::null(), std::ptr::null(), std::ptr::null(), 0),
+    };
+    unsafe {
+        ref_md_pme_sad_loop_kernel(
+            i32::from(ref_mv.0),
+            i32::from(ref_mv.1),
+            mv_cost_type,
+            error_per_bit,
+            mvj,
+            c0,
+            c1,
+            used,
+            src.as_ptr(),
+            src_stride as i32,
+            ref_buf.as_ptr().add(ref_offset),
+            ref_stride as i32,
+            block_height as i32,
+            block_width as i32,
+            &mut best.cost,
+            &mut best.mvx,
+            &mut best.mvy,
+            i32::from(search_position_start_x),
+            i32::from(search_position_start_y),
+            i32::from(search_area_width),
+            i32::from(search_area_height),
+            i32::from(search_step),
+            i32::from(mvx),
+            i32::from(mvy),
+        );
+    }
+}
