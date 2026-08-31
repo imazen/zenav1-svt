@@ -346,6 +346,23 @@ pub fn comp_reference_type_context(nb: &Neighbors) -> usize {
 // the only consumer, and `tests/c_parity_entropy_inter.rs` gates the pair
 // against the flat row index C's pointer resolves to.
 
+/// C `svt_aom_get_reference_mode_cdf` (entropy_coding.c:1636): the CDF is
+/// `comp_inter_cdf[ctx]`, so the selector reduces to the context — the table
+/// is fixed and there is no slot. Kept as a named function because C has one
+/// and `write_ref_frames` dispatches through it.
+#[inline]
+pub fn pred_cdf_reference_mode(nb: &Neighbors) -> usize {
+    reference_mode_context(nb)
+}
+
+/// C `svt_aom_get_comp_reference_type_cdf` (entropy_coding.c:1650): the CDF is
+/// `comp_ref_type_cdf[ctx]` — same shape as
+/// [`pred_cdf_reference_mode`], one row per context, no slot.
+#[inline]
+pub fn pred_cdf_comp_reference_type(nb: &Neighbors) -> usize {
+    comp_reference_type_context(nb)
+}
+
 /// C `svt_aom_get_pred_cdf_single_ref_p{n}` (:2041..:2061): the CDF is
 /// `single_ref_cdf[ctx(n)][n - 1]`.
 pub fn pred_cdf_single_ref(counts: &[u8; TOTAL_REFS_PER_FRAME], n: usize) -> (usize, usize) {
@@ -448,7 +465,7 @@ pub fn write_ref_frames(
     // C's `else` arm is an assert only: SINGLE_REFERENCE / COMPOUND_REFERENCE
     // code no flag at all.
     if reference_mode == ReferenceMode::Select && is_comp_ref_allowed(blk.bsize) {
-        let ctx = reference_mode_context(nb);
+        let ctx = pred_cdf_reference_mode(nb);
         w.write_symbol(usize::from(is_compound), &mut fc.comp_inter_cdf[ctx], 2);
     }
 
@@ -458,7 +475,7 @@ pub fn write_ref_frames(
         } else {
             CompReferenceType::Bidir
         };
-        let ctx = comp_reference_type_context(nb);
+        let ctx = pred_cdf_comp_reference_type(nb);
         w.write_symbol(comp_ref_type as usize, &mut ic.comp_ref_type_cdf[ctx], 2);
 
         if comp_ref_type == CompReferenceType::Unidir {

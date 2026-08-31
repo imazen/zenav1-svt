@@ -260,8 +260,11 @@ fn cdf_selector_rows_match_c() {
             uc(0),
             uc(1),
             uc(2),
-            p::refframe::reference_mode_context(&nb) as i32,
-            p::refframe::comp_reference_type_context(&nb) as i32,
+            // The two selectors whose table has one row per context and no
+            // slot — C's `svt_aom_get_reference_mode_cdf` /
+            // `_comp_reference_type_cdf` (:1636 / :1650).
+            p::refframe::pred_cdf_reference_mode(&nb) as i32,
+            p::refframe::pred_cdf_comp_reference_type(&nb) as i32,
         ];
         assert_eq!(
             got, want,
