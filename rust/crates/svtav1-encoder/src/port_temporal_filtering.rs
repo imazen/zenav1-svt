@@ -930,3 +930,251 @@ pub fn apply_temporal_filter_planewise_medium_hbd(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Noise estimation, block-split derivation, and the post-TF re-pad/re-decimate
+// ---------------------------------------------------------------------------
+
+/// `EDGE_THRESHOLD` / `SMOOTH_THRESHOLD` / `SQRT_PI_BY_2_FP16`
+/// (temporal_filtering.h).
+pub const EDGE_THRESHOLD: i32 = 50;
+pub const SMOOTH_THRESHOLD: i64 = 16;
+pub const SQRT_PI_BY_2_FP16: i64 = 82137;
+
+/// `svt_estimate_noise_highbd_fp16_c` (temporal_filtering.c:3603).
+/// EXPORTED — TIER 1.
+///
+/// The bd10 counterpart of `svt_estimate_noise_fp16_c` (already in
+/// `temporal_filter.rs`). Feeds `noise_levels_log1p_fp16`, which drives
+/// `tf_chroma` and the reference-count modulation, so a 10-bit RANDOM_ACCESS
+/// GOP picks a different TF window without it.
+///
+/// Differs from the 8-bit version in exactly two places, both
+/// `ROUND_POWER_OF_TWO(x, bd - 8)`: the gradient magnitude is rounded down to
+/// 8-bit scale BEFORE the `EDGE_THRESHOLD` test, and each Laplacian magnitude
+/// is rounded before it is accumulated (not the sum afterwards — rounding the
+/// total instead changes the result).
+pub fn estimate_noise_highbd_fp16(
+    src: &[u16],
+    width: usize,
+    height: usize,
+    stride: usize,
+    bd: u32,
+) -> i32 {
+    if width < 3 || height < 3 {
+        return -65536;
+    }
+    let shift = bd - 8;
+    // ROUND_POWER_OF_TWO(x, n) == (x + (1 << (n - 1))) >> n, and is the
+    // identity for n == 0.
+    let rpot = |x: i32| -> i32 {
+        if shift == 0 {
+            x
+        } else {
+            (x + (1 << (shift - 1))) >> shift
+        }
+    };
+
+    let mut sum: i64 = 0;
+    let mut num: i64 = 0;
+    for i in 1..height - 1 {
+        for j in 1..width - 1 {
+            let k = i * stride + j;
+            let at = |o: isize| -> i32 { i32::from(src[(k as isize + o) as usize]) };
+            let s = stride as isize;
+            let g_x = (at(-s - 1) - at(-s + 1)) + (at(s - 1) - at(s + 1)) + 2 * (at(-1) - at(1));
+            let g_y = (at(-s - 1) - at(s - 1)) + (at(-s + 1) - at(s + 1)) + 2 * (at(-s) - at(s));
+            let ga = rpot(g_x.abs() + g_y.abs());
+            if ga < EDGE_THRESHOLD {
+                let v = 4 * at(0) - 2 * (at(-1) + at(1) + at(-s) + at(s))
+                    + (at(-s - 1) + at(-s + 1) + at(s - 1) + at(s + 1));
+                sum += i64::from(rpot(v.abs()));
+                num += 1;
+            }
+        }
+    }
+    if num < SMOOTH_THRESHOLD {
+        return -65536;
+    }
+    ((sum * SQRT_PI_BY_2_FP16) / (6 * num)) as i32
+}
+
+/// The `MeContext` fields `derive_tf_32x32_block_split_flag` reads and writes.
+#[derive(Debug, Clone)]
+pub struct TfSplitCtx {
+    pub idx_32x32: usize,
+    pub enable_8x8_pred: bool,
+    pub tf_32x32_block_error: [u64; 4],
+    pub tf_16x16_block_error: [u64; 16],
+    pub tf_8x8_block_error: [u64; 64],
+    pub tf_32x32_block_split_flag: [i32; 4],
+    /// `[idx_32x32][i]`.
+    pub tf_16x16_block_split_flag: [[i32; 4]; 4],
+}
+
+impl Default for TfSplitCtx {
+    fn default() -> Self {
+        Self {
+            idx_32x32: 0,
+            enable_8x8_pred: false,
+            tf_32x32_block_error: [0; 4],
+            tf_16x16_block_error: [0; 16],
+            tf_8x8_block_error: [0; 64],
+            tf_32x32_block_split_flag: [0; 4],
+            tf_16x16_block_split_flag: [[0; 4]; 4],
+        }
+    }
+}
+
+/// `derive_tf_32x32_block_split_flag` (temporal_filtering.c:152). `static` in
+/// C — gated at TIER 1 through a facade shim.
+///
+/// Decides 64x64-vs-4x32x32 per block, and (when `enable_8x8_pred` is on)
+/// 16x16-vs-4x8x8 per sub-block. Three faithfulness details:
+/// * the early-out compares the 32x32 error against `INT_MAX` after a cast to
+///   `int`, which is how the "not yet motion-searched" sentinel is spelled;
+/// * the 8x8 branch OVERWRITES `tf_16x16_block_error` with the summed 8x8
+///   error when it splits, so the value the filter later weights on changes;
+/// * the split test is `block_error * 14 < sum_subblock_error * 16` (and
+///   `subblock_errors[i] * 8 < error_8x8 * 16` for the 16x16 level) — the
+///   thresholds are not the same ratio at the two levels.
+///
+/// `enable_8x8_pred` is 0 at `tf_level 5` (presets 3..7), so the 8x8 branch is
+/// live only at tf_level 1/2 (presets 0..2).
+pub fn derive_tf_32x32_block_split_flag(ctx: &mut TfSplitCtx) {
+    let idx_32x32 = ctx.idx_32x32;
+    let block_error = ctx.tf_32x32_block_error[idx_32x32] as u32 as i32;
+
+    // `block_error` is initialised as INT_MAX and overwritten after motion
+    // search with a reference frame, so INT_MAX can only be reached by the
+    // to-filter frame itself.
+    if block_error == i32::MAX {
+        ctx.tf_32x32_block_split_flag[idx_32x32] = 0;
+        ctx.tf_16x16_block_split_flag[idx_32x32] = [0; 4];
+        return;
+    }
+
+    let mut subblock_errors = [0i32; 4];
+    let mut sum_subblock_error = 0i32;
+    for i in 0..4 {
+        subblock_errors[i] = ctx.tf_16x16_block_error[idx_32x32 * 4 + i] as u32 as i32;
+
+        if ctx.enable_8x8_pred {
+            let mut error_8x8 = 0i32;
+            for idx_8x8 in 0..4 {
+                error_8x8 = error_8x8.wrapping_add(
+                    ctx.tf_8x8_block_error[idx_32x32 * 16 + 4 * i + idx_8x8] as u32 as i32,
+                );
+            }
+            if subblock_errors[i].wrapping_mul(8) < error_8x8.wrapping_mul(16) {
+                ctx.tf_16x16_block_split_flag[idx_32x32][i] = 0;
+            } else {
+                ctx.tf_16x16_block_split_flag[idx_32x32][i] = 1;
+                ctx.tf_16x16_block_error[idx_32x32 * 4 + i] = error_8x8 as u64;
+                subblock_errors[i] = error_8x8;
+            }
+        } else {
+            ctx.tf_16x16_block_split_flag[idx_32x32][i] = 0;
+        }
+
+        sum_subblock_error = sum_subblock_error.wrapping_add(subblock_errors[i]);
+    }
+    ctx.tf_32x32_block_split_flag[idx_32x32] =
+        i32::from(block_error.wrapping_mul(14) >= sum_subblock_error.wrapping_mul(16));
+}
+
+/// The MV/split half of `convert_64x64_info_to_32x32_info`
+/// (temporal_filtering.c:2509). `static` in C — gated at TIER 1 through a
+/// facade shim.
+///
+/// Propagates the 64x64 MV into all four 32x32 slots and clears every split
+/// flag, so an unsplit 64x64 block hands the filter the right MV. A mis-mapped
+/// index gives the wrong MV to the filter.
+///
+/// The SECOND half of the C function — re-measuring each 32x32's distortion
+/// through `svt_aom_mefn_ptr[BLOCK_32X32].vf` (or `BLOCK_32X16` when
+/// `tf_ctrls.sub_sampling_shift` is set) — is NOT ported here: it is a call
+/// into the variance kernels the port already owns in `svtav1-dsp`, and wiring
+/// it needs the pred/src block pointers that only the TF driver holds. It is
+/// listed as outstanding rather than silently folded in.
+pub fn convert_64x64_info_to_32x32_info_mvs(
+    tf_64x64_mv_x: i16,
+    tf_64x64_mv_y: i16,
+    tf_32x32_mv_x: &mut [i16; 4],
+    tf_32x32_mv_y: &mut [i16; 4],
+    tf_32x32_block_split_flag: &mut [i32; 4],
+    tf_16x16_block_split_flag: &mut [[i32; 4]; 4],
+) {
+    *tf_32x32_mv_x = [tf_64x64_mv_x; 4];
+    *tf_32x32_mv_y = [tf_64x64_mv_y; 4];
+    *tf_32x32_block_split_flag = [0; 4];
+    // C memsets `sizeof(flag[0][0]) * 4 * 4` bytes, i.e. the whole 4x4 array.
+    *tf_16x16_block_split_flag = [[0; 4]; 4];
+}
+
+/// `pad_and_decimate_filtered_pic` (temporal_filtering.c:3749).
+/// EXPORTED — TIER 1.
+///
+/// Re-pads and re-decimates the picture AFTER temporal filtering overwrote it,
+/// so the 1/4 and 1/16 planes the later ME reads are derived from the FILTERED
+/// source. Skipping it leaves ME searching pre-TF downsamples — a divergence
+/// that presents as an ME bug.
+///
+/// The min-block re-pad is CONDITIONAL: it runs only when
+/// `(width - pad_right) % 8 != 0` or `(height - pad_bottom) % 8 != 0`. The
+/// chroma border pad is gated on `tf_ctrls.chroma_lvl`, which is a DIFFERENT
+/// flag from the `tf_chroma` the kernels read.
+#[allow(clippy::too_many_arguments)]
+pub fn pad_and_decimate_filtered_pic<'p>(
+    subsampling_x: usize,
+    subsampling_y: usize,
+    pad_right: usize,
+    pad_bottom: usize,
+    color_format: u32,
+    chroma_lvl: bool,
+    hme: &crate::port_preanalysis::HmeEnables,
+    input_pic: &mut crate::port_preanalysis::Plane<'_>,
+    u: Option<&mut crate::port_preanalysis::Plane<'p>>,
+    v: Option<&mut crate::port_preanalysis::Plane<'p>>,
+    quarter: &mut crate::port_preanalysis::Plane<'_>,
+    sixteenth: &mut crate::port_preanalysis::Plane<'_>,
+) {
+    use crate::port_preanalysis as pre;
+
+    let mut u = u;
+    let mut v = v;
+
+    // Refine the non-8 padding.
+    if (input_pic.width - pad_right) % 8 != 0 || (input_pic.height - pad_bottom) % 8 != 0 {
+        pre::pad_picture_to_multiple_of_min_blk_size_dimensions(
+            color_format,
+            pad_right,
+            pad_bottom,
+            input_pic,
+            u.as_deref_mut(),
+            v.as_deref_mut(),
+        );
+    }
+
+    pre::generate_padding(
+        input_pic.buf,
+        input_pic.origin,
+        input_pic.stride,
+        input_pic.width,
+        input_pic.height,
+        input_pic.border,
+        input_pic.border,
+    );
+
+    if chroma_lvl {
+        let cw = input_pic.width >> subsampling_x;
+        let ch = input_pic.height >> subsampling_y;
+        let cbx = input_pic.border >> subsampling_x;
+        let cby = input_pic.border >> subsampling_y;
+        for plane in [u, v].into_iter().flatten() {
+            pre::generate_padding(plane.buf, plane.origin, plane.stride, cw, ch, cbx, cby);
+        }
+    }
+
+    pre::downsample_filtering_input_picture(hme, input_pic, quarter, sixteenth);
+}

@@ -445,3 +445,125 @@ pub fn apply_planewise_medium_hbd(
         );
     }
 }
+
+unsafe extern "C" {
+    fn ref_tf_estimate_noise_highbd_fp16(
+        src: *const u16,
+        width: i32,
+        height: i32,
+        stride: i32,
+        bd: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_tf_pad_and_decimate_filtered_pic(
+        subsampling_x: u32,
+        subsampling_y: u32,
+        pad_right: u32,
+        pad_bottom: u32,
+        color_format: u32,
+        chroma_lvl: i32,
+        enable_hme: i32,
+        tf_enable_hme: i32,
+        enable_hme_l0: i32,
+        tf_enable_hme_l0: i32,
+        enable_hme_l1: i32,
+        tf_enable_hme_l1: i32,
+        y_buf: *mut u8,
+        y_origin: u32,
+        y_stride: u32,
+        width: u32,
+        height: u32,
+        border: u32,
+        u_buf: *mut u8,
+        u_origin: u32,
+        u_stride: u32,
+        v_buf: *mut u8,
+        v_origin: u32,
+        v_stride: u32,
+        q_buf: *mut u8,
+        q_origin: u32,
+        q_stride: u32,
+        q_w: u32,
+        q_h: u32,
+        q_border: u32,
+        s_buf: *mut u8,
+        s_origin: u32,
+        s_stride: u32,
+        s_w: u32,
+        s_h: u32,
+        s_border: u32,
+    );
+}
+
+/// `svt_estimate_noise_highbd_fp16_c`.
+pub fn estimate_noise_highbd_fp16(
+    src: &[u16],
+    width: i32,
+    height: i32,
+    stride: i32,
+    bd: i32,
+) -> i32 {
+    unsafe { ref_tf_estimate_noise_highbd_fp16(src.as_ptr(), width, height, stride, bd) }
+}
+
+/// `pad_and_decimate_filtered_pic`, driven through a facade PCS holding a real
+/// `EbPaReferenceObject` with the quarter/sixteenth descriptors.
+#[allow(clippy::too_many_arguments)]
+pub fn pad_and_decimate_filtered_pic(
+    subsampling: (u32, u32),
+    pad: (u32, u32),
+    color_format: u32,
+    chroma_lvl: bool,
+    hme_enables: [bool; 6],
+    y: &mut [u8],
+    y_geom: super::preanalysis::PlaneGeom,
+    u: &mut [u8],
+    u_geom: super::preanalysis::PlaneGeom,
+    v: &mut [u8],
+    v_geom: super::preanalysis::PlaneGeom,
+    quarter: &mut [u8],
+    q_geom: super::preanalysis::PlaneGeom,
+    sixteenth: &mut [u8],
+    s_geom: super::preanalysis::PlaneGeom,
+) {
+    unsafe {
+        ref_tf_pad_and_decimate_filtered_pic(
+            subsampling.0,
+            subsampling.1,
+            pad.0,
+            pad.1,
+            color_format,
+            i32::from(chroma_lvl),
+            i32::from(hme_enables[0]),
+            i32::from(hme_enables[1]),
+            i32::from(hme_enables[2]),
+            i32::from(hme_enables[3]),
+            i32::from(hme_enables[4]),
+            i32::from(hme_enables[5]),
+            y.as_mut_ptr(),
+            y_geom.origin,
+            y_geom.stride,
+            y_geom.width,
+            y_geom.height,
+            y_geom.border,
+            u.as_mut_ptr(),
+            u_geom.origin,
+            u_geom.stride,
+            v.as_mut_ptr(),
+            v_geom.origin,
+            v_geom.stride,
+            quarter.as_mut_ptr(),
+            q_geom.origin,
+            q_geom.stride,
+            q_geom.width,
+            q_geom.height,
+            q_geom.border,
+            sixteenth.as_mut_ptr(),
+            s_geom.origin,
+            s_geom.stride,
+            s_geom.width,
+            s_geom.height,
+            s_geom.border,
+        );
+    }
+}

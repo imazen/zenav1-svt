@@ -628,3 +628,245 @@ fn apply_planewise_medium_hbd_matches_c() {
     }
     assert_eq!(cells, 2 * 4 * 2 * 4);
 }
+
+#[test]
+fn estimate_noise_highbd_fp16_matches_c() {
+    let mut cells = 0usize;
+    let mut saw_estimate = 0usize;
+    let mut saw_unreliable = 0usize;
+    for &bd in &[8i32, 10, 12] {
+        let mask: u16 = ((1u32 << bd) - 1) as u16;
+        for &(w, h) in &[(64i32, 64i32), (33, 21), (5, 5), (3, 3)] {
+            let stride = w + 5;
+            for regime in 0..3u32 {
+                let n = (stride * h) as usize;
+                let src: Vec<u16> = match regime {
+                    // Flat: every pixel a smooth pel, Laplacian zero.
+                    0 => vec![mask / 2; n],
+                    // Noise: mixed smooth and edge pels.
+                    1 => fill16(u64::from(bd as u32) * 71 + w as u64, n, mask),
+                    // Hard vertical edges: almost every pel is an edge pel, so
+                    // `num` falls under SMOOTH_THRESHOLD and C returns -65536.
+                    _ => (0..n)
+                        .map(|i| {
+                            if (i % stride as usize) % 2 == 0 {
+                                0
+                            } else {
+                                mask
+                            }
+                        })
+                        .collect(),
+                };
+
+                let c = cref::estimate_noise_highbd_fp16(&src, w, h, stride, bd);
+                let r = port::estimate_noise_highbd_fp16(
+                    &src,
+                    w as usize,
+                    h as usize,
+                    stride as usize,
+                    bd as u32,
+                );
+                assert_eq!(
+                    r, c,
+                    "estimate_noise_highbd mismatch bd {bd} {w}x{h} regime {regime}"
+                );
+                if c == -65536 {
+                    saw_unreliable += 1;
+                } else {
+                    saw_estimate += 1;
+                }
+                cells += 1;
+            }
+        }
+    }
+    assert_eq!(cells, 3 * 4 * 3);
+    // Anti-vacuity: a function that always returned the sentinel would pass a
+    // one-sided gate.
+    assert!(saw_estimate > 0, "no cell produced a real estimate");
+    assert!(
+        saw_unreliable > 0,
+        "no cell hit the SMOOTH_THRESHOLD sentinel"
+    );
+}
+
+#[test]
+fn pad_and_decimate_filtered_pic_matches_c() {
+    use svtav1_cref::preanalysis::PlaneGeom;
+    let mut cells = 0usize;
+    let mut ran_min_blk_repad = 0usize;
+    // (width, height, pad_right, pad_bottom): the first row has
+    // (width - pad_right) % 8 != 0, which is what arms the conditional min-blk
+    // re-pad inside the C function; the others do not.
+    for &(w, h, pr, pb) in &[(72u32, 40u32, 3u32, 0u32), (64, 64, 0, 0), (128, 96, 0, 8)] {
+        for &chroma_lvl in &[true, false] {
+            let border = 68u32;
+            let stride = w + 2 * border;
+            let origin = border * stride + border;
+            let alloc = (stride * (h + 2 * border)) as usize;
+
+            let cb = border / 2;
+            let cstride = w / 2 + 2 * cb + 4;
+            let corigin = cb * cstride + cb;
+            let calloc = (cstride * (h / 2 + 2 * cb)) as usize;
+
+            let (qw, qh, qb) = (w / 2, h / 2, 34u32);
+            let qstride = qw + 2 * qb;
+            let qorigin = qb * qstride + qb;
+            let qalloc = (qstride * (qh + 2 * qb)) as usize;
+
+            let (sw, sh, sb) = (w / 4, h / 4, 17u32);
+            let sstride = sw + 2 * sb;
+            let sorigin = sb * sstride + sb;
+            let salloc = (sstride * (sh + 2 * sb)) as usize;
+
+            let y_base = fill(u64::from(w) * 17 + u64::from(h), alloc);
+            let u_base = fill(u64::from(w) * 19 + 3, calloc);
+            let v_base = fill(u64::from(w) * 23 + 7, calloc);
+            let q_base = fill(u64::from(h) * 29 + 1, qalloc);
+            let s_base = fill(u64::from(h) * 31 + 2, salloc);
+
+            let y_geom = PlaneGeom {
+                origin,
+                stride,
+                width: w,
+                height: h,
+                border,
+            };
+            let c_geom = PlaneGeom {
+                origin: corigin,
+                stride: cstride,
+                width: w / 2,
+                height: h / 2,
+                border: cb,
+            };
+            let q_geom = PlaneGeom {
+                origin: qorigin,
+                stride: qstride,
+                width: qw,
+                height: qh,
+                border: qb,
+            };
+            let s_geom = PlaneGeom {
+                origin: sorigin,
+                stride: sstride,
+                width: sw,
+                height: sh,
+                border: sb,
+            };
+            // The live encoder configuration (enc_mode_config.c:1987-1999).
+            let hme = [true, false, true, false, true, false];
+
+            let (mut cy, mut cu, mut cv) = (y_base.clone(), u_base.clone(), v_base.clone());
+            let (mut cq, mut cs) = (q_base.clone(), s_base.clone());
+            cref::pad_and_decimate_filtered_pic(
+                (1, 1),
+                (pr, pb),
+                1,
+                chroma_lvl,
+                hme,
+                &mut cy,
+                y_geom,
+                &mut cu,
+                c_geom,
+                &mut cv,
+                c_geom,
+                &mut cq,
+                q_geom,
+                &mut cs,
+                s_geom,
+            );
+
+            let (mut ry, mut ru, mut rv) = (y_base.clone(), u_base.clone(), v_base.clone());
+            let (mut rq, mut rs) = (q_base.clone(), s_base.clone());
+            {
+                use svtav1_encoder::port_preanalysis as pre;
+                let mut yp = pre::Plane {
+                    buf: &mut ry,
+                    origin: origin as usize,
+                    stride: stride as usize,
+                    width: w as usize,
+                    height: h as usize,
+                    border: border as usize,
+                };
+                let mut up = pre::Plane {
+                    buf: &mut ru,
+                    origin: corigin as usize,
+                    stride: cstride as usize,
+                    width: (w / 2) as usize,
+                    height: (h / 2) as usize,
+                    border: cb as usize,
+                };
+                let mut vp = pre::Plane {
+                    buf: &mut rv,
+                    origin: corigin as usize,
+                    stride: cstride as usize,
+                    width: (w / 2) as usize,
+                    height: (h / 2) as usize,
+                    border: cb as usize,
+                };
+                let mut qp = pre::Plane {
+                    buf: &mut rq,
+                    origin: qorigin as usize,
+                    stride: qstride as usize,
+                    width: qw as usize,
+                    height: qh as usize,
+                    border: qb as usize,
+                };
+                let mut sp = pre::Plane {
+                    buf: &mut rs,
+                    origin: sorigin as usize,
+                    stride: sstride as usize,
+                    width: sw as usize,
+                    height: sh as usize,
+                    border: sb as usize,
+                };
+                let flags = pre::HmeEnables {
+                    enable_hme: hme[0],
+                    tf_enable_hme: hme[1],
+                    enable_hme_level0: hme[2],
+                    tf_enable_hme_level0: hme[3],
+                    enable_hme_level1: hme[4],
+                    tf_enable_hme_level1: hme[5],
+                };
+                port::pad_and_decimate_filtered_pic(
+                    1,
+                    1,
+                    pr as usize,
+                    pb as usize,
+                    1,
+                    chroma_lvl,
+                    &flags,
+                    &mut yp,
+                    Some(&mut up),
+                    Some(&mut vp),
+                    &mut qp,
+                    &mut sp,
+                );
+            }
+
+            assert_eq!(
+                ry, cy,
+                "Y mismatch {w}x{h} pad {pr}/{pb} chroma_lvl {chroma_lvl}"
+            );
+            assert_eq!(
+                ru, cu,
+                "U mismatch {w}x{h} pad {pr}/{pb} chroma_lvl {chroma_lvl}"
+            );
+            assert_eq!(
+                rv, cv,
+                "V mismatch {w}x{h} pad {pr}/{pb} chroma_lvl {chroma_lvl}"
+            );
+            assert_eq!(rq, cq, "quarter mismatch {w}x{h}");
+            assert_eq!(rs, cs, "sixteenth mismatch {w}x{h}");
+            if (w - pr) % 8 != 0 || (h - pb) % 8 != 0 {
+                ran_min_blk_repad += 1;
+            }
+            cells += 1;
+        }
+    }
+    assert_eq!(cells, 6);
+    assert!(
+        ran_min_blk_repad > 0,
+        "the conditional min-blk re-pad never armed"
+    );
+}
