@@ -865,3 +865,130 @@ fn c_parity_has_top_right_vert_a_uses_mutated_bs() {
          (weights per partition: {weights:?})"
     );
 }
+
+/// `svt_aom_mode_context_analyzer` (inter_prediction.c:2565, EXPORTED) —
+/// the compound collapse of the packed mode context. Swept over every
+/// context `setup_ref_mv_list` can produce (its NEWMV field is 0..5 and
+/// its REFMV field 0..5) crossed with single and compound `rf` pairs.
+#[test]
+fn c_parity_mode_context_analyzer() {
+    let mut checked = 0u64;
+    let mut distinct = std::collections::BTreeSet::new();
+    let mut collapsed = 0u64;
+    for newmv in 0i16..6 {
+        for refmv in 0i16..6 {
+            for globalmv in 0i16..2 {
+                let mode_context = newmv | (globalmv << 3) | (refmv << 4);
+                for &rf in &[
+                    [1i8, -1],
+                    [7, -1],
+                    [1, 5], // LAST + BWDREF (a real compound pair)
+                    [4, 7], // GOLDEN + ALTREF
+                    [1, 2], // LAST + LAST2 (unidir)
+                    [6, 7], // ALTREF2 + ALTREF (unidir)
+                ] {
+                    let rs = rmvp::mode_context_analyzer(mode_context, rf);
+                    let c = cinter::mode_context_analyzer(mode_context, rf);
+                    assert_eq!(
+                        rs, c,
+                        "mode_context_analyzer diverges: ctx={mode_context} rf={rf:?}"
+                    );
+                    checked += 1;
+                    distinct.insert(c);
+                    if rf[1] > 0 {
+                        collapsed += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 400, "too few analyzer cases: {checked}");
+    assert!(collapsed > 250, "compound arm barely swept: {collapsed}");
+    assert!(
+        distinct.len() >= 8,
+        "analyzer output degenerate: {distinct:?}"
+    );
+}
+
+/// `svt_av1_count_overlappable_neighbors` (adaptive_mv_pred.c:1893,
+/// EXPORTED) — the OBMC neighbour count, including the `mi_step == 1`
+/// chroma-pair rewind that mutates the loop variable.
+#[test]
+fn c_parity_count_overlappable_neighbors() {
+    let mut rng = Rng(0x0BC_0C2_0041);
+    let mut checked = 0u64;
+    let mut nonzero = 0u64;
+    let mut zeroed_by_bsize = 0u64;
+    let mut counts = std::collections::BTreeSet::new();
+    for grid_iter in 0..4 {
+        // A high 4xN population is what drives the mi_step == 1 rewind.
+        let grid = random_grid(&mut rng, [20u64, 45, 65][grid_iter % 3], 30);
+        let c_cells = to_c_cells(&grid);
+        for &(trs, tre, tcs, tce) in &[(0i32, 48i32, 0i32, 48i32), (16, 48, 8, 40)] {
+            let tile = TileMiBounds {
+                mi_row_start: trs,
+                mi_row_end: tre,
+                mi_col_start: tcs,
+                mi_col_end: tce,
+            };
+            for &(bsize, w_mi, h_mi) in &SIZES {
+                for _ in 0..4 {
+                    let span_r = ((tre - trs - h_mi) / h_mi).max(0) as u64 + 1;
+                    let span_c = ((tce - tcs - w_mi) / w_mi).max(0) as u64 + 1;
+                    let mi_row = trs + (rng.below(span_r) as i32) * h_mi;
+                    let mi_col = tcs + (rng.below(span_c) as i32) * w_mi;
+                    if mi_row + h_mi > tre || mi_col + w_mi > tce {
+                        continue;
+                    }
+                    let ctx = derive_block_ctx(
+                        mi_row,
+                        mi_col,
+                        usize::from(bsize),
+                        MI_ROWS,
+                        MI_COLS,
+                        tile,
+                        16,
+                    );
+                    let gview = MvpGrid {
+                        entries: &grid,
+                        stride: GRID_COLS as i32,
+                        base: mi_row * GRID_COLS as i32 + mi_col,
+                    };
+                    let rs = rmvp::count_overlappable_neighbors(&gview, &ctx, usize::from(bsize));
+                    let c = cinter::count_overlappable_neighbors(
+                        &c_cells,
+                        GRID_ROWS,
+                        GRID_COLS,
+                        (mi_row, mi_col),
+                        usize::from(bsize),
+                        (MI_ROWS, MI_COLS),
+                        (trs, tre, tcs, tce),
+                    );
+                    assert_eq!(
+                        rs, c,
+                        "overlappable_neighbors diverges: bsize={bsize} \
+                         mi=({mi_row},{mi_col}) tile=({trs},{tre},{tcs},{tce}) grid={grid_iter}"
+                    );
+                    checked += 1;
+                    counts.insert(c);
+                    if c > 0 {
+                        nonzero += 1;
+                    }
+                    // 4xN / Nx4 are below the motion-variation threshold and
+                    // must count ZERO regardless of the neighbourhood.
+                    if bsize <= 2 {
+                        assert_eq!(c, 0, "a sub-8px block must not be overlappable");
+                        zeroed_by_bsize += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 300, "too few OBMC-count cases: {checked}");
+    assert!(nonzero > 100, "counts mostly zero: {nonzero}");
+    assert!(
+        zeroed_by_bsize > 50,
+        "the is_motion_variation_allowed_bsize early return was never taken: {zeroed_by_bsize}"
+    );
+    assert!(counts.len() >= 5, "counts degenerate: {counts:?}");
+}

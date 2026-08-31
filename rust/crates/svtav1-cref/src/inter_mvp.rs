@@ -336,3 +336,77 @@ pub fn get_av1_mv_pred_drl(
         );
     }
 }
+
+unsafe extern "C" {
+    fn ref_mode_context_analyzer(mode_context: i32, rf0: i32, rf1: i32) -> i32;
+    fn ref_count_overlappable_neighbors(
+        cells: *const i32,
+        grid_rows: i32,
+        grid_cols: i32,
+        mi_row: i32,
+        mi_col: i32,
+        bsize_cur: i32,
+        mi_rows: i32,
+        mi_cols: i32,
+        tile_row_start: i32,
+        tile_row_end: i32,
+        tile_col_start: i32,
+        tile_col_end: i32,
+    ) -> i32;
+}
+
+/// Reference `svt_aom_mode_context_analyzer` (inter_prediction.c:2565,
+/// EXPORTED).
+pub fn mode_context_analyzer(mode_context: i16, rf: [i8; 2]) -> i16 {
+    unsafe {
+        ref_mode_context_analyzer(i32::from(mode_context), i32::from(rf[0]), i32::from(rf[1]))
+            as i16
+    }
+}
+
+/// Reference `svt_av1_count_overlappable_neighbors` (adaptive_mv_pred.c:1893,
+/// EXPORTED). Returns `blk_ptr->overlappable_neighbors`.
+#[allow(clippy::too_many_arguments)]
+pub fn count_overlappable_neighbors(
+    cells: &[InterMvpCell],
+    grid_rows: usize,
+    grid_cols: usize,
+    mi_pos: (i32, i32),
+    bsize_cur: usize,
+    mi_dims: (i32, i32),
+    tile: (i32, i32, i32, i32),
+) -> u32 {
+    assert_eq!(cells.len(), grid_rows * grid_cols);
+    let packed: Vec<i32> = cells
+        .iter()
+        .flat_map(|&(bsize, mode, ibc, r0, r1, mv0, mv1, part)| {
+            [
+                i32::from(bsize),
+                i32::from(mode),
+                i32::from(ibc),
+                i32::from(r0),
+                i32::from(r1),
+                mv0 as i32,
+                mv1 as i32,
+                i32::from(part),
+            ]
+        })
+        .collect();
+    let out = unsafe {
+        ref_count_overlappable_neighbors(
+            packed.as_ptr(),
+            grid_rows as i32,
+            grid_cols as i32,
+            mi_pos.0,
+            mi_pos.1,
+            bsize_cur as i32,
+            mi_dims.0,
+            mi_dims.1,
+            tile.0,
+            tile.1,
+            tile.2,
+            tile.3,
+        )
+    };
+    out as u32
+}

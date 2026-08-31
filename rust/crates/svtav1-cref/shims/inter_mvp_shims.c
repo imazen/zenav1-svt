@@ -182,7 +182,14 @@ int32_t ref_setup_ref_mv_list_inter(
     xd.mi        = grid + (size_t)mi_row * grid_cols + mi_col;
 
     /* generate_av1_mvp_table's per-ref preamble (:1366-1394). */
-    static CandidateMv stack2d[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+    /* NOT static: cargo runs the tests in one binary on several threads and
+       two of them drive this shim concurrently, so a shared buffer is a data
+       race that shows up as an intermittent count/weight mismatch. 2.8 KB on
+       the stack. (Measured 2026-08-31: with `static` here,
+       c_parity_intrabc_mvp failed at partition=0 with count 1 vs 2 under
+       --test-threads=3 and passed under --test-threads=1.) */
+    CandidateMv stack2d[MODE_CTX_REF_FRAMES][MAX_REF_MV_STACK_SIZE];
+    memset(stack2d, 0, sizeof(stack2d));
     memset(stack2d[ref_frame], 0, sizeof(CandidateMv) * MAX_REF_MV_STACK_SIZE);
     xd.ref_mv_count[ref_frame] = 0;
 
@@ -417,4 +424,80 @@ void ref_get_av1_mv_pred_drl(const int32_t* stack_in /*8 x {this,comp,weight}*/,
     free(xd);
     free(blk);
     free(ctx);
+}
+
+/* svt_aom_mode_context_analyzer (inter_prediction.c:2565, EXPORTED). */
+int16_t svt_aom_mode_context_analyzer(int16_t mode_context, const MvReferenceFrame* const rf);
+
+int32_t ref_mode_context_analyzer(int32_t mode_context, int32_t rf0, int32_t rf1) {
+    MvReferenceFrame rf[2] = {(MvReferenceFrame)rf0, (MvReferenceFrame)rf1};
+    return (int32_t)svt_aom_mode_context_analyzer((int16_t)mode_context, rf);
+}
+
+/* svt_av1_count_overlappable_neighbors (adaptive_mv_pred.c:1893, EXPORTED).
+ * Same packed grid as ref_setup_ref_mv_list_inter. */
+void svt_av1_count_overlappable_neighbors(const PictureControlSet* pcs, BlkStruct* blk_ptr,
+                                          const BlockSize bsize, int32_t mi_row, int32_t mi_col);
+
+int32_t ref_count_overlappable_neighbors(const int32_t* cells, int32_t grid_rows,
+                                         int32_t grid_cols, int32_t mi_row, int32_t mi_col,
+                                         int32_t bsize_cur, int32_t mi_rows, int32_t mi_cols,
+                                         int32_t tile_row_start, int32_t tile_row_end,
+                                         int32_t tile_col_start, int32_t tile_col_end) {
+    inter_mvp_ensure_init();
+    const int32_t n_cells = grid_rows * grid_cols;
+    MbModeInfo*   mbmi    = (MbModeInfo*)calloc((size_t)n_cells, sizeof(MbModeInfo));
+    MbModeInfo**  grid    = (MbModeInfo**)calloc((size_t)n_cells, sizeof(MbModeInfo*));
+    for (int32_t i = 0; i < n_cells; i++) {
+        const int32_t* c              = cells + (size_t)i * 8;
+        mbmi[i].bsize                 = (BlockSize)c[0];
+        mbmi[i].block_mi.mode         = (PredictionMode)c[1];
+        mbmi[i].block_mi.use_intrabc  = (uint8_t)c[2];
+        mbmi[i].block_mi.ref_frame[0] = (MvReferenceFrame)c[3];
+        mbmi[i].block_mi.ref_frame[1] = (MvReferenceFrame)c[4];
+        mbmi[i].block_mi.mv[0].as_int = (uint32_t)c[5];
+        mbmi[i].block_mi.mv[1].as_int = (uint32_t)c[6];
+        mbmi[i].partition             = (PartitionType)c[7];
+        grid[i]                       = &mbmi[i];
+    }
+
+    Av1Common* cm = (Av1Common*)calloc(1, sizeof(Av1Common));
+    cm->mi_rows   = mi_rows;
+    cm->mi_cols   = mi_cols;
+    cm->mi_stride = grid_cols;
+
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    BlkStruct*               blk  = (BlkStruct*)calloc(1, sizeof(*blk));
+    MacroBlockD*             xd   = (MacroBlockD*)calloc(1, sizeof(*xd));
+    pcs->ppcs                     = ppcs;
+    ppcs->av1_cm                  = cm;
+    blk->av1xd                    = xd;
+
+    const int32_t bw = mi_size_wide[bsize_cur];
+    const int32_t bh = mi_size_high[bsize_cur];
+    xd->n4_w = xd->n8_w = (uint8_t)bw;
+    xd->n4_h = xd->n8_h = (uint8_t)bh;
+    xd->mi_row            = mi_row;
+    xd->mi_col            = mi_col;
+    xd->tile.mi_row_start = tile_row_start;
+    xd->tile.mi_row_end   = tile_row_end;
+    xd->tile.mi_col_start = tile_col_start;
+    xd->tile.mi_col_end   = tile_col_end;
+    xd->up_available      = (int8_t)(mi_row > tile_row_start);
+    xd->left_available    = (int8_t)(mi_col > tile_col_start);
+    xd->mi_stride         = grid_cols;
+    xd->mi                = grid + (size_t)mi_row * grid_cols + mi_col;
+
+    svt_av1_count_overlappable_neighbors(pcs, blk, (BlockSize)bsize_cur, mi_row, mi_col);
+    const int32_t out = (int32_t)blk->overlappable_neighbors;
+
+    free(xd);
+    free(blk);
+    free(pcs);
+    free(ppcs);
+    free(cm);
+    free(grid);
+    free(mbmi);
+    return out;
 }

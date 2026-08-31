@@ -2411,3 +2411,120 @@ pub fn setup_motion_field(
 
     ref_frame_side
 }
+
+// ---------------------------------------------------------------------------
+// Compound mode-context collapse (inter_prediction.c:2565-2581)
+// ---------------------------------------------------------------------------
+
+/// C `COMP_NEWMV_CTXS` (definitions.h:1352).
+const COMP_NEWMV_CTXS: usize = 5;
+/// C `NEWMV_CTX_MASK` = `(1 << GLOBALMV_OFFSET) - 1` = 7 (definitions.h:1348).
+const NEWMV_CTX_MASK: i16 = (1 << GLOBALMV_OFFSET) - 1;
+/// C `REFMV_CTX_MASK` = `(1 << (8 - REFMV_OFFSET)) - 1` = 15 (definitions.h:1350).
+const REFMV_CTX_MASK: i16 = (1 << (8 - REFMV_OFFSET)) - 1;
+
+/// C `svt_aom_compound_mode_ctx_map` (inter_prediction.c:2566-2570).
+const COMPOUND_MODE_CTX_MAP: [[i16; COMP_NEWMV_CTXS]; 3] =
+    [[0, 1, 1, 1, 1], [1, 2, 3, 4, 4], [4, 4, 5, 6, 7]];
+
+/// C `svt_aom_mode_context_analyzer` (inter_prediction.c:2565-2581,
+/// EXPORTED): collapse [`setup_ref_mv_list`]'s packed mode context into
+/// the single compound context. A single-ref pair passes through
+/// untouched.
+///
+/// C asserts `(refmv_ctx >> 1) < 3` (`:2578`). That DOES hold for every
+/// context `setup_ref_mv_list` produces — its REFMV field is 0..5, so
+/// `refmv_ctx >> 1` is 0..2 — but the function is `int16_t`-typed and will
+/// index out of range on a hand-built context with a REFMV field >= 6.
+/// This port keeps the assert as a `debug_assert!` rather than clamping,
+/// because clamping would silently disagree with C on exactly the inputs
+/// C would fault on.
+pub fn mode_context_analyzer(mode_context: i16, rf: [i8; 2]) -> i16 {
+    if rf[1] <= INTRA_FRAME {
+        return mode_context;
+    }
+    let newmv_ctx = mode_context & NEWMV_CTX_MASK;
+    let refmv_ctx = (mode_context >> REFMV_OFFSET) & REFMV_CTX_MASK;
+    debug_assert!((refmv_ctx >> 1) < 3);
+    COMPOUND_MODE_CTX_MAP[(refmv_ctx >> 1) as usize]
+        [(newmv_ctx.min(COMP_NEWMV_CTXS as i16 - 1)) as usize]
+}
+
+// ---------------------------------------------------------------------------
+// Overlappable-neighbour counts (adaptive_mv_pred.c:1830-1906)
+// ---------------------------------------------------------------------------
+
+/// C `is_neighbor_overlappable` (inter_prediction.h:271-273).
+#[inline]
+fn is_neighbor_overlappable(e: &MvpMiEntry) -> bool {
+    e.ref_frame[0] > INTRA_FRAME
+}
+
+/// C `count_overlappable_nb_above` (adaptive_mv_pred.c:1830-1861).
+///
+/// The `mi_step == 1` arm rewinds the LOOP VARIABLE (`above_mi_col &= ~1`)
+/// and then reads the cell one to its right — a 4-wide block is treated as
+/// half of a chroma pair — so the rewind is observable in the iteration
+/// order, not just in which cell is read.
+fn count_overlappable_nb_above(grid: &MvpGrid, ctx: &MvpBlockCtx, nb_max: u32) -> u32 {
+    let mut nb_count = 0u32;
+    if !ctx.up_available {
+        return nb_count;
+    }
+    let end_col = (ctx.mi_col + ctx.n8_w).min(ctx.mi_cols);
+    let mut above_mi_col = ctx.mi_col;
+    while above_mi_col < end_col && nb_count < nb_max {
+        // prev_row_mi + above_mi_col == xd->mi[-mi_stride + (col - mi_col)]
+        let mut off = -grid.stride + (above_mi_col - ctx.mi_col);
+        let mut mi_step =
+            i32::from(NUM_4X4_BLOCKS_WIDE[usize::from(cell_at(grid, off).bsize)]).min(16);
+        if mi_step == 1 {
+            above_mi_col &= !1;
+            off = -grid.stride + (above_mi_col - ctx.mi_col) + 1;
+            mi_step = 2;
+        }
+        if is_neighbor_overlappable(cell_at(grid, off)) {
+            nb_count += 1;
+        }
+        above_mi_col += mi_step;
+    }
+    nb_count
+}
+
+/// C `count_overlappable_nb_left` (adaptive_mv_pred.c:1864-1891).
+fn count_overlappable_nb_left(grid: &MvpGrid, ctx: &MvpBlockCtx, nb_max: u32) -> u32 {
+    let mut nb_count = 0u32;
+    if !ctx.left_available {
+        return nb_count;
+    }
+    let end_row = (ctx.mi_row + ctx.n8_h).min(ctx.mi_rows);
+    let mut left_mi_row = ctx.mi_row;
+    while left_mi_row < end_row && nb_count < nb_max {
+        // prev_col_mi + left_mi_row * mi_stride
+        //   == xd->mi[(row - mi_row) * mi_stride - 1]
+        let mut off = (left_mi_row - ctx.mi_row) * grid.stride - 1;
+        let mut mi_step =
+            i32::from(NUM_4X4_BLOCKS_HIGH[usize::from(cell_at(grid, off).bsize)]).min(16);
+        if mi_step == 1 {
+            left_mi_row &= !1;
+            off = (left_mi_row + 1 - ctx.mi_row) * grid.stride - 1;
+            mi_step = 2;
+        }
+        if is_neighbor_overlappable(cell_at(grid, off)) {
+            nb_count += 1;
+        }
+        left_mi_row += mi_step;
+    }
+    nb_count
+}
+
+/// C `svt_av1_count_overlappable_neighbors` (adaptive_mv_pred.c:1893-1906,
+/// EXPORTED): `blk_ptr->overlappable_neighbors`, the OBMC gate. Zero for
+/// any block narrower or shorter than 8 px.
+pub fn count_overlappable_neighbors(grid: &MvpGrid, ctx: &MvpBlockCtx, bsize: usize) -> u32 {
+    if !is_motion_variation_allowed_bsize(bsize) {
+        return 0;
+    }
+    count_overlappable_nb_above(grid, ctx, u32::MAX)
+        + count_overlappable_nb_left(grid, ctx, u32::MAX)
+}
