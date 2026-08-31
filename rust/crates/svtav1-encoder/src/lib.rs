@@ -31,6 +31,7 @@ pub mod intrabc;
 pub mod intrabc_hash;
 pub mod intrabc_mvp;
 pub mod intrabc_pred;
+pub mod inter_me;
 pub mod leaf_funnel;
 pub mod mode_decision;
 pub mod motion_est;

@@ -8,6 +8,8 @@
 //! `publish = false`, used only as a dev-dependency, and never part of a
 //! shipped artifact.
 
+pub mod inter_me;
+
 use std::ffi::c_void;
 
 unsafe extern "C" {
