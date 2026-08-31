@@ -20,7 +20,9 @@
 //! hand-traced".
 
 use svtav1_cref::inter_me as cref;
-use svtav1_encoder::inter_me::context::{MeContext, MeSrcBufs, Plane, FULL_SAD_SEARCH, SUB_SAD_SEARCH};
+use svtav1_encoder::inter_me::context::{
+    FULL_SAD_SEARCH, MeContext, MeSrcBufs, Plane, SUB_SAD_SEARCH,
+};
 use svtav1_encoder::inter_me::{hme, sad};
 
 struct Rng(u64);
@@ -132,7 +134,10 @@ fn sad_loop_kernel_rtcd_agrees_with_c() {
         let rtcd = cref::sad_loop_kernel_rtcd(
             &src, src_stride, &rf, 0, ref_stride, bh, bw, ref_stride, 0, sa_w, sa_h,
         );
-        assert_eq!(c, rtcd, "RTCD vs _c sad_loop_kernel {bw}x{bh} sa {sa_w}x{sa_h}");
+        assert_eq!(
+            c, rtcd,
+            "RTCD vs _c sad_loop_kernel {bw}x{bh} sa {sa_w}x{sa_h}"
+        );
     }
 }
 
@@ -152,7 +157,11 @@ fn ext_sad_calculation_8x8_16x16_matches_c() {
         // Seed the "best so far" arrays with a mix of MAX and plausible SADs so
         // both the improving and the non-improving branch are exercised.
         let seed_sad: [u32; 85] = core::array::from_fn(|_| {
-            if rng.below(2) == 0 { u32::MAX } else { rng.below(6000) as u32 }
+            if rng.below(2) == 0 {
+                u32::MAX
+            } else {
+                rng.below(6000) as u32
+            }
         });
         let seed_mv: [u32; 85] = core::array::from_fn(|_| rng.next() as u32);
 
@@ -161,8 +170,20 @@ fn ext_sad_calculation_8x8_16x16_matches_c() {
         let mut r_s16 = [0u32; 16];
         let mut r_s8 = [0u32; 64];
         sad::ext_sad_calculation_8x8_16x16(
-            &src, ss, &rf, rs, &mut r_sad, &mut r_mv, off8, off16, mv, &mut r_s16, case % 16, &mut r_s8,
-            4 * (case % 16), sub_sad,
+            &src,
+            ss,
+            &rf,
+            rs,
+            &mut r_sad,
+            &mut r_mv,
+            off8,
+            off16,
+            mv,
+            &mut r_s16,
+            case % 16,
+            &mut r_s8,
+            4 * (case % 16),
+            sub_sad,
         );
 
         let mut c_sad = seed_sad;
@@ -170,8 +191,20 @@ fn ext_sad_calculation_8x8_16x16_matches_c() {
         let mut c_s16 = [0u32; 16];
         let mut c_s8 = [0u32; 64];
         cref::ext_sad_calculation_8x8_16x16(
-            &src, ss, &rf, rs, &mut c_sad, &mut c_mv, off8, off16, mv, &mut c_s16, case % 16, &mut c_s8,
-            4 * (case % 16), sub_sad,
+            &src,
+            ss,
+            &rf,
+            rs,
+            &mut c_sad,
+            &mut c_mv,
+            off8,
+            off16,
+            mv,
+            &mut c_s16,
+            case % 16,
+            &mut c_s8,
+            4 * (case % 16),
+            sub_sad,
         );
 
         assert_eq!(r_sad, c_sad, "best_sad, sub_sad={sub_sad}");
@@ -188,7 +221,11 @@ fn ext_sad_calculation_32x32_64x64_matches_c() {
         let p16: [u32; 16] = core::array::from_fn(|_| rng.below(40000) as u32);
         let mv = rng.next() as u32;
         let seed_sad: [u32; 85] = core::array::from_fn(|_| {
-            if rng.below(2) == 0 { u32::MAX } else { rng.below(200_000) as u32 }
+            if rng.below(2) == 0 {
+                u32::MAX
+            } else {
+                rng.below(200_000) as u32
+            }
         });
         let seed_mv: [u32; 85] = core::array::from_fn(|_| rng.next() as u32);
 
@@ -220,7 +257,11 @@ fn ext_all_sad_calculation_8x8_16x16_matches_c() {
         let mv = ((rng.below(64) as u32) << 16) | rng.below(64) as u32;
 
         let seed_sad: [u32; 85] = core::array::from_fn(|_| {
-            if rng.below(3) == 0 { u32::MAX } else { rng.below(60000) as u32 }
+            if rng.below(3) == 0 {
+                u32::MAX
+            } else {
+                rng.below(60000) as u32
+            }
         });
         let seed_mv: [u32; 85] = core::array::from_fn(|_| rng.next() as u32);
 
@@ -248,22 +289,31 @@ fn ext_all_sad_calculation_8x8_16x16_matches_c() {
 fn ext_eight_sad_calculation_32x32_64x64_matches_c() {
     let mut rng = Rng(0xC4_0008);
     for _ in 0..128 {
-        let p16: [[u32; 8]; 16] = core::array::from_fn(|_| core::array::from_fn(|_| rng.below(40000) as u32));
+        let p16: [[u32; 8]; 16] =
+            core::array::from_fn(|_| core::array::from_fn(|_| rng.below(40000) as u32));
         let mv = ((rng.below(64) as u32) << 16) | rng.below(64) as u32;
         let seed_sad: [u32; 85] = core::array::from_fn(|_| {
-            if rng.below(3) == 0 { u32::MAX } else { rng.below(400_000) as u32 }
+            if rng.below(3) == 0 {
+                u32::MAX
+            } else {
+                rng.below(400_000) as u32
+            }
         });
         let seed_mv: [u32; 85] = core::array::from_fn(|_| rng.next() as u32);
 
         let mut r_sad = seed_sad;
         let mut r_mv = seed_mv;
         let mut r_s32 = [[0u32; 8]; 4];
-        sad::ext_eight_sad_calculation_32x32_64x64(&p16, &mut r_sad, &mut r_mv, 1, 0, mv, &mut r_s32);
+        sad::ext_eight_sad_calculation_32x32_64x64(
+            &p16, &mut r_sad, &mut r_mv, 1, 0, mv, &mut r_s32,
+        );
 
         let mut c_sad = seed_sad;
         let mut c_mv = seed_mv;
         let mut c_s32 = [[0u32; 8]; 4];
-        cref::ext_eight_sad_calculation_32x32_64x64(&p16, &mut c_sad, &mut c_mv, 1, 0, mv, &mut c_s32);
+        cref::ext_eight_sad_calculation_32x32_64x64(
+            &p16, &mut c_sad, &mut c_mv, 1, 0, mv, &mut c_s32,
+        );
 
         assert_eq!(r_sad, c_sad);
         assert_eq!(r_mv, c_mv);
@@ -341,7 +391,11 @@ fn hme_level_2_matches_c() {
         let sa_h = 1 + rng.below(12) as i16;
         let l1x = rng.below(33) as i16 - 16;
         let l1y = rng.below(33) as i16 - 16;
-        let method = if case % 2 == 0 { FULL_SAD_SEARCH } else { SUB_SAD_SEARCH };
+        let method = if case % 2 == 0 {
+            FULL_SAD_SEARCH
+        } else {
+            SUB_SAD_SEARCH
+        };
 
         let mut ctx = MeContext::default();
         ctx.hme_search_method = method;
@@ -408,7 +462,11 @@ fn check_00_center_matches_c() {
         let org_y = (rng.below((height / 64).max(1) as u64) as u32) * 64;
         let x_sc = rng.below(129) as i16 - 64;
         let y_sc = rng.below(129) as i16 - 64;
-        let early = if case % 3 == 0 { 1 + rng.below(10000) as u32 } else { 0 };
+        let early = if case % 3 == 0 {
+            1 + rng.below(10000) as u32
+        } else {
+            0
+        };
         let zz = rng.below(50000) as u32;
 
         let mut ctx = MeContext::default();

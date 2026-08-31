@@ -243,7 +243,10 @@ pub fn ext_sad_calculation_32x32_64x64(
 ) {
     let mut sad32 = [0u32; 4];
     for q in 0..4 {
-        sad32[q] = p_sad16x16[4 * q] + p_sad16x16[4 * q + 1] + p_sad16x16[4 * q + 2] + p_sad16x16[4 * q + 3];
+        sad32[q] = p_sad16x16[4 * q]
+            + p_sad16x16[4 * q + 1]
+            + p_sad16x16[4 * q + 2]
+            + p_sad16x16[4 * q + 3];
         p_sad32x32[q] = sad32[q];
         if sad32[q] < best_sad[off32 + q] {
             best_sad[off32 + q] = sad32[q];
@@ -303,7 +306,8 @@ pub fn ext_eight_sad_calculation_8x8_16x16(
             ) << 1;
         } else {
             sad[0] = compute8x8_sad_kernel(src, src_stride, &rf[search_index..], ref_stride);
-            sad[1] = compute8x8_sad_kernel(&src[8..], src_stride, &rf[8 + search_index..], ref_stride);
+            sad[1] =
+                compute8x8_sad_kernel(&src[8..], src_stride, &rf[8 + search_index..], ref_stride);
             sad[2] = compute8x8_sad_kernel(
                 &src[src_stride << 3..],
                 src_stride,

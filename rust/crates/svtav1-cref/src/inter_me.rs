@@ -14,7 +14,8 @@
 //! shares an editable file with the concurrent C0/C2/C3 lanes.
 
 unsafe extern "C" {
-    fn ref_me_compute8x4_sad(src: *const u8, src_stride: u32, r: *const u8, ref_stride: u32) -> u32;
+    fn ref_me_compute8x4_sad(src: *const u8, src_stride: u32, r: *const u8, ref_stride: u32)
+    -> u32;
     #[allow(clippy::too_many_arguments)]
     fn ref_me_ext_sad_8x8_16x16(
         src: *const u8,
@@ -277,7 +278,14 @@ pub fn ext_eight_sad_calculation_32x32_64x64(
 }
 
 /// C `svt_nxm_sad_kernel_helper_c` (C_DEFAULT/compute_sad_c.c:21).
-pub fn nxm_sad(src: &[u8], src_stride: usize, r: &[u8], ref_stride: usize, height: usize, width: usize) -> u32 {
+pub fn nxm_sad(
+    src: &[u8],
+    src_stride: usize,
+    r: &[u8],
+    ref_stride: usize,
+    height: usize,
+    width: usize,
+) -> u32 {
     assert!(src.len() >= (height - 1) * src_stride + width);
     assert!(r.len() >= (height - 1) * ref_stride + width);
     unsafe {

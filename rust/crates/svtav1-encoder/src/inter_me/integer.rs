@@ -11,11 +11,11 @@
 //! | [`me_prune_ref`] | `me_prune_ref` (:1415) | no |
 
 use super::context::*;
-use super::sad::{
-    ext_all_sad_calculation_8x8_16x16, ext_eight_sad_calculation_32x32_64x64, ext_sad_calculation_32x32_64x64,
-    ext_sad_calculation_8x8_16x16,
-};
 use super::hme::{check_00_center, get_me_reference_dist, get_scaled_picture_distance};
+use super::sad::{
+    ext_all_sad_calculation_8x8_16x16, ext_eight_sad_calculation_32x32_64x64,
+    ext_sad_calculation_8x8_16x16, ext_sad_calculation_32x32_64x64,
+};
 use super::tables::TAB8X8;
 
 /// The 16x16 visit order C hard-codes in
@@ -116,9 +116,8 @@ pub fn get_search_point_results_block(
         for x in 0..4usize {
             let idx16 = Z16[4 * y + x];
             let block_index = y * src_next_16x16_offset + 16 * x;
-            let search_position_index = search_region_index
-                + (y * ref_next_16x16_offset) as i64
-                + (16 * x) as i64;
+            let search_position_index =
+                search_region_index + (y * ref_next_16x16_offset) as i64 + (16 * x) as i64;
             ext_sad_calculation_8x8_16x16(
                 &src.b64[block_index..],
                 src_stride,
@@ -276,19 +275,22 @@ pub fn integer_search_b64(
                 && (!me_ctx.mv_based_sa_adj.nearest_ref_only || ref_pic_index == 0)
             {
                 if i32::from(x_search_center).abs() > i32::from(me_ctx.mv_based_sa_adj.mv_size_th) {
-                    search_area_width =
-                        (i32::from(search_area_width) * i32::from(me_ctx.mv_based_sa_adj.sa_multiplier)) as i16;
+                    search_area_width = (i32::from(search_area_width)
+                        * i32::from(me_ctx.mv_based_sa_adj.sa_multiplier))
+                        as i16;
                 }
                 if i32::from(y_search_center).abs() > i32::from(me_ctx.mv_based_sa_adj.mv_size_th) {
-                    search_area_height =
-                        (i32::from(search_area_height) * i32::from(me_ctx.mv_based_sa_adj.sa_multiplier)) as i16;
+                    search_area_height = (i32::from(search_area_height)
+                        * i32::from(me_ctx.mv_based_sa_adj.sa_multiplier))
+                        as i16;
                 }
             }
 
             if me_ctx.sc_class_me_boost != 0
                 && (pic.ahd_error == u32::MAX
                     || u64::from(pic.ahd_error)
-                        < (((20 * u64::from(pic.enhanced_width) * u64::from(pic.enhanced_height)) / 128)
+                        < (((20 * u64::from(pic.enhanced_width) * u64::from(pic.enhanced_height))
+                            / 128)
                             * u64::from(INPUT_SIZE_COUNT - u32::from(pic.input_resolution))))
             {
                 let hme_sad = me_ctx.search_results[list_index][ref_pic_index].hme_sad;
@@ -303,7 +305,8 @@ pub fn integer_search_b64(
             // C divides an int16_t by a uint32_t here, so the arithmetic is
             // performed in uint32_t and only then truncated back to int16_t.
             let div = me_ctx.reduce_me_sr_divisor[list_index][ref_pic_index];
-            search_area_width = ((u32::max(1, (search_area_width as u32) / div) + 7) & !0x07) as i16;
+            search_area_width =
+                ((u32::max(1, (search_area_width as u32) / div) + 7) & !0x07) as i16;
             search_area_height = u32::max(3, (search_area_height as u32) / div) as i16;
             let search_area_height_before_sr_reduction = search_area_height;
             let mut best_hme_sad = u64::MAX;
@@ -361,10 +364,13 @@ pub fn integer_search_b64(
             {
                 x_search_area_origin = x_search_center;
                 y_search_area_origin = y_search_center;
-                let x_tl = i32::from(b64_origin_x as i16) - (ME_FILTER_TAP >> 1) + i32::from(x_search_area_origin);
-                let y_tl = i32::from(b64_origin_y as i16) - (ME_FILTER_TAP >> 1) + i32::from(y_search_area_origin);
+                let x_tl = i32::from(b64_origin_x as i16) - (ME_FILTER_TAP >> 1)
+                    + i32::from(x_search_area_origin);
+                let y_tl = i32::from(b64_origin_y as i16) - (ME_FILTER_TAP >> 1)
+                    + i32::from(y_search_area_origin);
                 let search_region_index = i64::from(x_tl) + i64::from(y_tl) * ref_pic.stride as i64;
-                me_ctx.integer_buffer_off[list_index][ref_pic_index] = ref_pic.abs(search_region_index);
+                me_ctx.integer_buffer_off[list_index][ref_pic_index] =
+                    ref_pic.abs(search_region_index);
                 me_ctx.interpolated_full_stride[list_index][ref_pic_index] = ref_pic.stride;
 
                 fullpel_search_sblock(
@@ -389,11 +395,13 @@ pub fn integer_search_b64(
                 let me_8x8_cost_var = sum_ofsq_dist_8x8 / 64;
 
                 if me_8x8_cost_var > me_ctx.me_8x8_var_ctrls.me_sr_mult2_th {
-                    search_area_width = ((i32::max(1, i32::from(search_area_width) * 3 / 2) + 7) & !0x7) as i16;
+                    search_area_width =
+                        ((i32::max(1, i32::from(search_area_width) * 3 / 2) + 7) & !0x7) as i16;
                     search_area_height = i32::max(1, i32::from(search_area_height) * 3 / 2) as i16;
                 }
                 if me_8x8_cost_var < me_ctx.me_8x8_var_ctrls.me_sr_div4_th {
-                    search_area_width = ((i32::max(1, i32::from(search_area_width) >> 2) + 7) & !0x7) as i16;
+                    search_area_width =
+                        ((i32::max(1, i32::from(search_area_width) >> 2) + 7) & !0x7) as i16;
                     search_area_height = i32::max(1, i32::from(search_area_height) >> 2) as i16;
                     search_area_height = i32::max(3, i32::from(search_area_height)) as i16;
                 } else if me_8x8_cost_var < me_ctx.me_8x8_var_ctrls.me_sr_div2_th {
@@ -402,14 +410,18 @@ pub fn integer_search_b64(
                         i32::from(search_area_width) >> 1,
                     ) + 7)
                         & !0x7) as i16;
-                    search_area_height =
-                        i32::min(i32::from(search_area_height), i32::from(search_area_height) >> 1) as i16;
+                    search_area_height = i32::min(
+                        i32::from(search_area_height),
+                        i32::from(search_area_height) >> 1,
+                    ) as i16;
                     search_area_height = i32::max(3, i32::from(search_area_height)) as i16;
                 }
             }
 
-            x_search_area_origin = (i32::from(x_search_center) - (i32::from(search_area_width) >> 1)) as i16;
-            y_search_area_origin = (i32::from(y_search_center) - (i32::from(search_area_height) >> 1)) as i16;
+            x_search_area_origin =
+                (i32::from(x_search_center) - (i32::from(search_area_width) >> 1)) as i16;
+            y_search_area_origin =
+                (i32::from(y_search_center) - (i32::from(search_area_height) >> 1)) as i16;
 
             let ox = i32::from(org_x);
             let oy = i32::from(org_y);
@@ -427,21 +439,31 @@ pub fn integer_search_b64(
             };
             x_search_area_origin = corrected_x;
             x_search_area_origin = if ox + i32::from(x_search_area_origin) > picture_width - 1 {
-                (i32::from(x_search_area_origin) - ((ox + i32::from(x_search_area_origin)) - (picture_width - 1))) as i16
+                (i32::from(x_search_area_origin)
+                    - ((ox + i32::from(x_search_area_origin)) - (picture_width - 1)))
+                    as i16
             } else {
                 x_search_area_origin
             };
-            search_area_width =
-                if ox + i32::from(x_search_area_origin) + i32::from(search_area_width) > picture_width {
-                    i32::max(
-                        1,
-                        i32::from(search_area_width)
-                            - ((ox + i32::from(x_search_area_origin) + i32::from(search_area_width)) - picture_width),
-                    ) as i16
-                } else {
-                    search_area_width
-                };
-            search_area_width = if search_area_width < 8 { search_area_width } else { search_area_width & !0x07 };
+            search_area_width = if ox
+                + i32::from(x_search_area_origin)
+                + i32::from(search_area_width)
+                > picture_width
+            {
+                i32::max(
+                    1,
+                    i32::from(search_area_width)
+                        - ((ox + i32::from(x_search_area_origin) + i32::from(search_area_width))
+                            - picture_width),
+                ) as i16
+            } else {
+                search_area_width
+            };
+            search_area_width = if search_area_width < 8 {
+                search_area_width
+            } else {
+                search_area_width & !0x07
+            };
 
             let corrected_y = if oy + i32::from(y_search_area_origin) < -pad_height {
                 (-pad_height - oy) as i16
@@ -449,30 +471,38 @@ pub fn integer_search_b64(
                 y_search_area_origin
             };
             search_area_height = if oy + i32::from(corrected_y) < -pad_height {
-                (i32::from(search_area_height) - (-pad_height - (oy + i32::from(corrected_y)))) as i16
+                (i32::from(search_area_height) - (-pad_height - (oy + i32::from(corrected_y))))
+                    as i16
             } else {
                 search_area_height
             };
             y_search_area_origin = corrected_y;
             y_search_area_origin = if oy + i32::from(y_search_area_origin) > picture_height - 1 {
-                (i32::from(y_search_area_origin) - ((oy + i32::from(y_search_area_origin)) - (picture_height - 1)))
+                (i32::from(y_search_area_origin)
+                    - ((oy + i32::from(y_search_area_origin)) - (picture_height - 1)))
                     as i16
             } else {
                 y_search_area_origin
             };
-            search_area_height =
-                if oy + i32::from(y_search_area_origin) + i32::from(search_area_height) > picture_height {
-                    i32::max(
-                        1,
-                        i32::from(search_area_height)
-                            - ((oy + i32::from(y_search_area_origin) + i32::from(search_area_height)) - picture_height),
-                    ) as i16
-                } else {
-                    search_area_height
-                };
+            search_area_height = if oy
+                + i32::from(y_search_area_origin)
+                + i32::from(search_area_height)
+                > picture_height
+            {
+                i32::max(
+                    1,
+                    i32::from(search_area_height)
+                        - ((oy + i32::from(y_search_area_origin) + i32::from(search_area_height))
+                            - picture_height),
+                ) as i16
+            } else {
+                search_area_height
+            };
 
-            let x_tl = i32::from(b64_origin_x as i16) - (ME_FILTER_TAP >> 1) + i32::from(x_search_area_origin);
-            let y_tl = i32::from(b64_origin_y as i16) - (ME_FILTER_TAP >> 1) + i32::from(y_search_area_origin);
+            let x_tl = i32::from(b64_origin_x as i16) - (ME_FILTER_TAP >> 1)
+                + i32::from(x_search_area_origin);
+            let y_tl = i32::from(b64_origin_y as i16) - (ME_FILTER_TAP >> 1)
+                + i32::from(y_search_area_origin);
             let search_region_index = i64::from(x_tl) + i64::from(y_tl) * ref_pic.stride as i64;
             me_ctx.integer_buffer_off[list_index][ref_pic_index] = ref_pic.abs(search_region_index);
             me_ctx.interpolated_full_stride[list_index][ref_pic_index] = ref_pic.stride;
@@ -499,7 +529,8 @@ pub fn me_prune_ref(me_ctx: &mut MeContext) {
         for ref_pic_index in 0..num_refs {
             me_ctx.search_results[list_index][ref_pic_index].hme_sad = 0;
             if me_ctx.search_results[list_index][ref_pic_index].do_ref == 0 {
-                me_ctx.search_results[list_index][ref_pic_index].hme_sad = u64::from(MAX_SAD_VALUE) * 64;
+                me_ctx.search_results[list_index][ref_pic_index].hme_sad =
+                    u64::from(MAX_SAD_VALUE) * 64;
                 continue;
             }
             let mut acc = 0u64;
@@ -511,7 +542,9 @@ pub fn me_prune_ref(me_ctx: &mut MeContext) {
         }
     }
 
-    let prune_ref_th = me_ctx.me_hme_prune_ctrls.prune_ref_if_me_sad_dev_bigger_than_th;
+    let prune_ref_th = me_ctx
+        .me_hme_prune_ctrls
+        .prune_ref_if_me_sad_dev_bigger_than_th;
     if me_ctx.me_hme_prune_ctrls.enable_me_hme_ref_pruning && prune_ref_th != u16::MAX {
         let mut best = u64::MAX;
         for i in 0..MAX_NUM_OF_REF_PIC_LIST {
@@ -523,7 +556,10 @@ pub fn me_prune_ref(me_ctx: &mut MeContext) {
         }
         for li in 0..MAX_NUM_OF_REF_PIC_LIST {
             for ri in 1..REF_LIST_MAX_DEPTH {
-                if me_ctx.search_results[li][ri].hme_sad.wrapping_sub(best).wrapping_mul(100)
+                if me_ctx.search_results[li][ri]
+                    .hme_sad
+                    .wrapping_sub(best)
+                    .wrapping_mul(100)
                     > u64::from(prune_ref_th).wrapping_mul(best)
                 {
                     me_ctx.search_results[li][ri].do_ref = 0;

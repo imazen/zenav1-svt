@@ -25,11 +25,12 @@ use svtav1_encoder::inter_me::candidates::{
 };
 use svtav1_encoder::inter_me::context::*;
 use svtav1_encoder::inter_me::hme::{
-    get_worst_quadrant, get_zz_sad, hme_level_0, hme_level_1, hme_prune_ref_and_adjust_sr, prehme_core,
-    set_final_search_centre_sb,
+    get_worst_quadrant, get_zz_sad, hme_level_0, hme_level_1, hme_prune_ref_and_adjust_sr,
+    prehme_core, set_final_search_centre_sb,
 };
 use svtav1_encoder::inter_me::integer::{
-    apply_me_sa_boost, get_eight_search_point_results_block, get_search_point_results_block, me_prune_ref,
+    apply_me_sa_boost, get_eight_search_point_results_block, get_search_point_results_block,
+    me_prune_ref,
 };
 use svtav1_encoder::inter_me::sad::pack_mv;
 use svtav1_encoder::inter_me::{b64, motion_estimation_b64};
@@ -124,7 +125,11 @@ fn hme_level_0_equals_c_hme_level_2_in_the_shared_domain() {
         let org_y = (rng.below(((height as u32 / bh).max(1)) as u64) as i16) * bh as i16;
         let sa_w = 1 + rng.below(24) as i16;
         let sa_h = 1 + rng.below(12) as i16;
-        let method = if case % 2 == 0 { FULL_SAD_SEARCH } else { SUB_SAD_SEARCH };
+        let method = if case % 2 == 0 {
+            FULL_SAD_SEARCH
+        } else {
+            SUB_SAD_SEARCH
+        };
 
         let mut ctx = MeContext::default();
         ctx.hme_search_method = method;
@@ -132,7 +137,19 @@ fn hme_level_0_equals_c_hme_level_2_in_the_shared_domain() {
         ctx.num_hme_sa_h = 1;
         let src = one_buf(&src_buf, src_stride);
 
-        let (sad, scx, scy) = hme_level_0(&ctx, &src, org_x, org_y, bw, bh, sa_w, sa_h, &plane.view(), 0, 0);
+        let (sad, scx, scy) = hme_level_0(
+            &ctx,
+            &src,
+            org_x,
+            org_y,
+            bw,
+            bh,
+            sa_w,
+            sa_h,
+            &plane.view(),
+            0,
+            0,
+        );
         let (c_sad, c_x, c_y) = cref::hme_level_2(
             &src_buf,
             src_stride,
@@ -152,8 +169,16 @@ fn hme_level_0_equals_c_hme_level_2_in_the_shared_domain() {
             0,
         );
         assert_eq!(sad, c_sad, "case {case}: level-0 SAD");
-        assert_eq!(scx, c_x.wrapping_mul(4), "case {case}: level-0 x (x4 of C level-2)");
-        assert_eq!(scy, c_y.wrapping_mul(4), "case {case}: level-0 y (x4 of C level-2)");
+        assert_eq!(
+            scx,
+            c_x.wrapping_mul(4),
+            "case {case}: level-0 x (x4 of C level-2)"
+        );
+        assert_eq!(
+            scy,
+            c_y.wrapping_mul(4),
+            "case {case}: level-0 y (x4 of C level-2)"
+        );
     }
 }
 
@@ -177,13 +202,29 @@ fn hme_level_1_equals_c_hme_level_2_in_the_shared_domain() {
         let sa_h = 1 + rng.below(12) as i16;
         let l0x = rng.below(33) as i16 - 16;
         let l0y = rng.below(33) as i16 - 16;
-        let method = if case % 2 == 0 { FULL_SAD_SEARCH } else { SUB_SAD_SEARCH };
+        let method = if case % 2 == 0 {
+            FULL_SAD_SEARCH
+        } else {
+            SUB_SAD_SEARCH
+        };
 
         let mut ctx = MeContext::default();
         ctx.hme_search_method = method;
         let src = one_buf(&src_buf, src_stride);
 
-        let (sad, scx, scy) = hme_level_1(&ctx, &src, org_x, org_y, bw, bh, &plane.view(), sa_w, sa_h, l0x, l0y);
+        let (sad, scx, scy) = hme_level_1(
+            &ctx,
+            &src,
+            org_x,
+            org_y,
+            bw,
+            bh,
+            &plane.view(),
+            sa_w,
+            sa_h,
+            l0x,
+            l0y,
+        );
         let (c_sad, c_x, c_y) = cref::hme_level_2(
             &src_buf,
             src_stride,
@@ -203,8 +244,16 @@ fn hme_level_1_equals_c_hme_level_2_in_the_shared_domain() {
             l0y,
         );
         assert_eq!(sad, c_sad, "case {case}: level-1 SAD");
-        assert_eq!(scx, c_x.wrapping_mul(2), "case {case}: level-1 x (x2 of C level-2)");
-        assert_eq!(scy, c_y.wrapping_mul(2), "case {case}: level-1 y (x2 of C level-2)");
+        assert_eq!(
+            scx,
+            c_x.wrapping_mul(2),
+            "case {case}: level-1 x (x2 of C level-2)"
+        );
+        assert_eq!(
+            scy,
+            c_y.wrapping_mul(2),
+            "case {case}: level-1 y (x2 of C level-2)"
+        );
     }
 }
 
@@ -236,12 +285,19 @@ fn prehme_core_equals_c_hme_level_2_in_the_shared_domain() {
         let org_y = 64 + 16 * (rng.below(7) as i16);
         let sa_w = 8 * (1 + rng.below(4) as u16);
         let sa_h = 1 + rng.below(12) as u16;
-        let method = if case % 2 == 0 { FULL_SAD_SEARCH } else { SUB_SAD_SEARCH };
+        let method = if case % 2 == 0 {
+            FULL_SAD_SEARCH
+        } else {
+            SUB_SAD_SEARCH
+        };
 
         let mut ctx = MeContext::default();
         ctx.hme_search_method = method;
         ctx.prehme_ctrl.skip_search_line = 0;
-        ctx.prehme_data[0][0][0].sa = SearchArea { width: sa_w, height: sa_h };
+        ctx.prehme_data[0][0][0].sa = SearchArea {
+            width: sa_w,
+            height: sa_h,
+        };
         let src = one_buf(&src_buf, src_stride);
 
         prehme_core(&mut ctx, &src, org_x, org_y, bw, bh, &plane.view(), 0, 0, 0);
@@ -287,7 +343,14 @@ fn get_zz_sad_matches_the_c_kernel_it_wraps() {
 
         let got = get_zz_sad(&plane.view(), &src, ox, oy, 64, 64);
         let base = plane.org + oy as usize * plane.stride + ox as usize;
-        let want = cref::nxm_sad(&src_buf, src_stride * 2, &plane.data[base..], plane.stride * 2, 32, 64) << 1;
+        let want = cref::nxm_sad(
+            &src_buf,
+            src_stride * 2,
+            &plane.data[base..],
+            plane.stride * 2,
+            32,
+            64,
+        ) << 1;
         assert_eq!(got, want);
     }
 }
@@ -321,7 +384,16 @@ fn eight_point_block_equals_eight_single_point_blocks() {
         };
 
         let mut eight = mk();
-        get_eight_search_point_results_block(&mut eight, &src, &plane.view(), 0, 0, 0, base_x, base_y);
+        get_eight_search_point_results_block(
+            &mut eight,
+            &src,
+            &plane.view(),
+            0,
+            0,
+            0,
+            base_x,
+            base_y,
+        );
 
         let mut singles = mk();
         for i in 0..8i64 {
@@ -355,17 +427,17 @@ fn eight_point_block_equals_eight_single_point_blocks() {
 fn apply_me_sa_boost_matches_the_c_table() {
     // (hme_sad, boost) -> (width, height) for a 100x50 input.
     let cases: &[(u64, u8, i16, i16)] = &[
-        (0, 1, 100, 50),                 // index 0 -> 1.0
-        (2 * 64 * 64, 1, 100, 50),       // not > 2*4096 -> index 0
-        (2 * 64 * 64 + 1, 1, 300, 150),  // index 2 -> 3.0
-        (3 * 64 * 64 + 1, 1, 400, 200),  // index 3 -> 4.0
-        (4 * 64 * 64 + 1, 1, 500, 250),  // index 4 -> 5.0
-        (2 * 64 * 64 + 1, 2, 250, 125),  // boost 2, index 2 -> 2.5
-        (3 * 64 * 64 + 1, 2, 350, 175),  // boost 2, index 3 -> 3.5
-        (4 * 64 * 64 + 1, 2, 450, 225),  // boost 2, index 4 -> 4.5
-        (2 * 64 * 64 + 1, 3, 200, 100),  // boost 3, index 2 -> 2.0
-        (3 * 64 * 64 + 1, 3, 250, 125),  // boost 3, index 3 -> 2.5
-        (4 * 64 * 64 + 1, 3, 350, 175),  // boost 3, index 4 -> 3.5
+        (0, 1, 100, 50),                // index 0 -> 1.0
+        (2 * 64 * 64, 1, 100, 50),      // not > 2*4096 -> index 0
+        (2 * 64 * 64 + 1, 1, 300, 150), // index 2 -> 3.0
+        (3 * 64 * 64 + 1, 1, 400, 200), // index 3 -> 4.0
+        (4 * 64 * 64 + 1, 1, 500, 250), // index 4 -> 5.0
+        (2 * 64 * 64 + 1, 2, 250, 125), // boost 2, index 2 -> 2.5
+        (3 * 64 * 64 + 1, 2, 350, 175), // boost 2, index 3 -> 3.5
+        (4 * 64 * 64 + 1, 2, 450, 225), // boost 2, index 4 -> 4.5
+        (2 * 64 * 64 + 1, 3, 200, 100), // boost 3, index 2 -> 2.0
+        (3 * 64 * 64 + 1, 3, 250, 125), // boost 3, index 3 -> 2.5
+        (4 * 64 * 64 + 1, 3, 350, 175), // boost 3, index 4 -> 3.5
     ];
     for &(sad, boost, ew, eh) in cases {
         let mut w = 100i16;
@@ -393,7 +465,11 @@ fn get_worst_quadrant_picks_the_largest_sad() {
     // Nothing is > 0, so C leaves best_w/best_h at their seed of (0, 0).
     assert_eq!(get_worst_quadrant(&ctx, 0, 0), Some((0, 0)));
     ctx.num_hme_sa_w = 1;
-    assert_eq!(get_worst_quadrant(&ctx, 0, 0), None, "non-2x2 grid: C asserts and returns");
+    assert_eq!(
+        get_worst_quadrant(&ctx, 0, 0),
+        None,
+        "non-2x2 grid: C asserts and returns"
+    );
 }
 
 /// **Tier 4** (`set_final_search_centre_sb`, motion_estimation.c:2026). Two
@@ -442,7 +518,8 @@ fn me_prune_ref_sums_8x8_and_prunes_on_deviation() {
     ctx.num_of_ref_pic_to_search = [2, 0];
     ctx.me_hme_prune_ctrls.enable_me_hme_ref_pruning = true;
     // 50 % deviation allowed.
-    ctx.me_hme_prune_ctrls.prune_ref_if_me_sad_dev_bigger_than_th = 50;
+    ctx.me_hme_prune_ctrls
+        .prune_ref_if_me_sad_dev_bigger_than_th = 50;
     for i in 0..64 {
         ctx.p_sb_best_sad[0][0][PU_8X8_0 + i] = 10;
         ctx.p_sb_best_sad[0][1][PU_8X8_0 + i] = 16; // 60 % worse
@@ -456,15 +533,24 @@ fn me_prune_ref_sums_8x8_and_prunes_on_deviation() {
     me_prune_ref(&mut ctx);
     assert_eq!(ctx.search_results[0][0].hme_sad, 640);
     assert_eq!(ctx.search_results[0][1].hme_sad, 1024);
-    assert_eq!(ctx.search_results[0][0].do_ref, 1, "the best ref is never pruned");
-    assert_eq!(ctx.search_results[0][1].do_ref, 0, "(1024-640)*100 > 50*640");
+    assert_eq!(
+        ctx.search_results[0][0].do_ref, 1,
+        "the best ref is never pruned"
+    );
+    assert_eq!(
+        ctx.search_results[0][1].do_ref, 0,
+        "(1024-640)*100 > 50*640"
+    );
     // A ref that was already off gets the sentinel, not a sum.
     let mut ctx2 = MeContext::default();
     ctx2.num_of_list_to_search = 1;
     ctx2.num_of_ref_pic_to_search = [1, 0];
     ctx2.search_results[0][0].do_ref = 0;
     me_prune_ref(&mut ctx2);
-    assert_eq!(ctx2.search_results[0][0].hme_sad, u64::from(MAX_SAD_VALUE) * 64);
+    assert_eq!(
+        ctx2.search_results[0][0].hme_sad,
+        u64::from(MAX_SAD_VALUE) * 64
+    );
 }
 
 /// **Tier 4** (`hme_prune_ref_and_adjust_sr`, motion_estimation.c:2290). The
@@ -474,10 +560,12 @@ fn me_prune_ref_sums_8x8_and_prunes_on_deviation() {
 fn hme_prune_ref_and_adjust_sr_sets_the_divisors() {
     let mut ctx = MeContext::default();
     ctx.me_sr_adjustment_ctrls.enable_me_sr_adjustment = 1;
-    ctx.me_sr_adjustment_ctrls.reduce_me_sr_based_on_mv_length_th = 4;
+    ctx.me_sr_adjustment_ctrls
+        .reduce_me_sr_based_on_mv_length_th = 4;
     ctx.me_sr_adjustment_ctrls.stationary_hme_sad_abs_th = 1000;
     ctx.me_sr_adjustment_ctrls.stationary_me_sr_divisor = 8;
-    ctx.me_sr_adjustment_ctrls.reduce_me_sr_based_on_hme_sad_abs_th = 5000;
+    ctx.me_sr_adjustment_ctrls
+        .reduce_me_sr_based_on_hme_sad_abs_th = 5000;
     ctx.me_sr_adjustment_ctrls.me_sr_divisor_for_low_hme_sad = 2;
     for li in 0..2 {
         for ri in 0..4 {
@@ -495,7 +583,10 @@ fn hme_prune_ref_and_adjust_sr_sets_the_divisors() {
     hme_prune_ref_and_adjust_sr(&mut ctx);
     assert_eq!(ctx.reduce_me_sr_divisor[0][0], 8);
     assert_eq!(ctx.reduce_me_sr_divisor[0][1], 2);
-    assert_eq!(ctx.reduce_me_sr_divisor[0][2], 1, "untouched refs keep the divisor of 1");
+    assert_eq!(
+        ctx.reduce_me_sr_divisor[0][2], 1,
+        "untouched refs keep the divisor of 1"
+    );
 }
 
 /// **Tier 4** (`init_me_hme_data`, motion_estimation.c:2788). The R2R guard:
@@ -628,7 +719,16 @@ fn single_ref_candidate_array_matches_the_traced_shape() {
 
     assert_eq!(out.total_me_candidate_index[0], 1);
     let c = out.me_candidate_array[0];
-    assert_eq!((c.direction, c.ref_idx_l0, c.ref_idx_l1, c.ref0_list, c.ref1_list), (0, 0, 0, 0, 0));
+    assert_eq!(
+        (
+            c.direction,
+            c.ref_idx_l0,
+            c.ref_idx_l1,
+            c.ref0_list,
+            c.ref1_list
+        ),
+        (0, 0, 0, 0, 0)
+    );
     assert_eq!(out.me_mv_array[0].x, -3);
     assert_eq!(out.me_mv_array[0].y, 5);
     // me_distortion is written in z-order via z_to_raster.
@@ -701,7 +801,11 @@ fn general_candidate_array_emits_the_three_bipred_sets() {
     pic.only_l_bwd = true;
     let mut out2 = MeB64Output::new(pic.max_cand, pic.max_refs);
     construct_me_candidate_array(&pic, &mut ctx, 2, &mut out2);
-    assert_eq!(out2.total_me_candidate_index[0], 5 + 1, "only_l_bwd keeps one bi-pred pair");
+    assert_eq!(
+        out2.total_me_candidate_index[0],
+        5 + 1,
+        "only_l_bwd keeps one bi-pred pair"
+    );
 }
 
 /// **Tier 4** (`compute_distortion`, motion_estimation.c:2739). The four
@@ -725,7 +829,10 @@ fn compute_distortion_sums_and_normalises() {
     }
     let mut out = MeB64Output::new(pic.max_cand, pic.max_refs);
     compute_distortion(&pic, &ctx, &mut out);
-    assert_eq!(out.me_8x8_cost_variance, 0, "a flat 8x8 field has zero variance");
+    assert_eq!(
+        out.me_8x8_cost_variance, 0,
+        "a flat 8x8 field has zero variance"
+    );
     assert_eq!(out.rc_me_distortion, 6400, "<= 480p reports the 8x8 sum");
     assert_eq!(out.me_64x64_distortion, 6400 * 4096 / 2048);
     assert_eq!(out.me_32x32_distortion, 6400 * 4096 / 2048);
@@ -777,9 +884,8 @@ fn motion_estimation_b64_recovers_a_pure_translation() {
             for x in 0..64usize {
                 let sx = (x as i32 + dx) as usize;
                 let sy = (y as i32 + dy) as usize;
-                src_buf[y * 64 + x] = plane.data[(plane.org as i64
-                    + sy as i64 * plane.stride as i64
-                    + sx as i64) as usize];
+                src_buf[y * 64 + x] = plane.data
+                    [(plane.org as i64 + sy as i64 * plane.stride as i64 + sx as i64) as usize];
             }
         }
         let src = one_buf(&src_buf, 64);
@@ -805,18 +911,34 @@ fn motion_estimation_b64_recovers_a_pure_translation() {
         ctx.num_of_list_to_search = 1;
         ctx.num_of_ref_pic_to_search = [1, 0];
         ctx.me_sa = SearchAreaMinMax {
-            sa_min: SearchArea { width: 32, height: 32 },
-            sa_max: SearchArea { width: 32, height: 32 },
+            sa_min: SearchArea {
+                width: 32,
+                height: 32,
+            },
+            sa_max: SearchArea {
+                width: 32,
+                height: 32,
+            },
         };
         ctx.me_search_method = FULL_SAD_SEARCH;
         let mut out = MeB64Output::new(pic.max_cand, pic.max_refs);
         motion_estimation_b64(&pic, 0, 0, &mut ctx, &src, &refs, &mut out);
 
         let want = pack_mv(dx as i16, dy as i16);
-        assert_eq!(ctx.p_sb_best_sad[0][0][PU_64X64], 0, "exact match => zero SAD, d=({dx},{dy})");
-        assert_eq!(ctx.p_sb_best_mv[0][0][PU_64X64], want, "64x64 MV, d=({dx},{dy})");
+        assert_eq!(
+            ctx.p_sb_best_sad[0][0][PU_64X64], 0,
+            "exact match => zero SAD, d=({dx},{dy})"
+        );
+        assert_eq!(
+            ctx.p_sb_best_mv[0][0][PU_64X64], want,
+            "64x64 MV, d=({dx},{dy})"
+        );
         for i in 0..64 {
-            assert_eq!(ctx.p_sb_best_sad[0][0][PU_8X8_0 + i], 0, "8x8[{i}] SAD, d=({dx},{dy})");
+            assert_eq!(
+                ctx.p_sb_best_sad[0][0][PU_8X8_0 + i],
+                0,
+                "8x8[{i}] SAD, d=({dx},{dy})"
+            );
         }
         assert_eq!(out.me_mv_array[0].x, dx as i16);
         assert_eq!(out.me_mv_array[0].y, dy as i16);

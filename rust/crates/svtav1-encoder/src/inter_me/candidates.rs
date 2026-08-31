@@ -55,7 +55,11 @@ pub fn construct_me_candidate_array_mrp_off(
 
     let mut blk_do_ref_org = [0u8; MAX_NUM_OF_REF_PIC_LIST];
     blk_do_ref_org[0] = me_ctx.search_results[0][0].do_ref;
-    blk_do_ref_org[1] = if num_of_list_to_search == 1 { 0 } else { me_ctx.search_results[1][0].do_ref };
+    blk_do_ref_org[1] = if num_of_list_to_search == 1 {
+        0
+    } else {
+        me_ctx.search_results[1][0].do_ref
+    };
 
     let mut num_of_list_to_search = num_of_list_to_search;
     if num_of_list_to_search < 2 || me_ctx.search_results[1][0].do_ref == 0 {
@@ -91,7 +95,8 @@ pub fn construct_me_candidate_array_mrp_off(
         let mut min_dist_list: i8 = -1;
         if me_ctx.use_best_unipred_cand_only != 0 && blk_do_ref[0] != 0 && blk_do_ref[1] != 0 {
             min_dist_list = i8::from(
-                me_ctx.p_sb_best_sad[0][ref_pic_idx][n_idx] >= me_ctx.p_sb_best_sad[1][ref_pic_idx][n_idx],
+                me_ctx.p_sb_best_sad[0][ref_pic_idx][n_idx]
+                    >= me_ctx.p_sb_best_sad[1][ref_pic_idx][n_idx],
             );
         }
 
@@ -113,7 +118,9 @@ pub fn construct_me_candidate_array_mrp_off(
             }
             if min_dist_list != -1 && min_dist_list != list_index as i8 {
                 if upu {
-                    let slot = pu_index * pic.max_refs + if list_index != 0 { pic.max_l0 } else { 0 } + ref_pic_idx;
+                    let slot = pu_index * pic.max_refs
+                        + if list_index != 0 { pic.max_l0 } else { 0 }
+                        + ref_pic_idx;
                     out.me_mv_array[slot] =
                         Mv::from_int(me_ctx.p_sb_best_mv[list_index][ref_pic_idx][n_idx]);
                 }
@@ -126,11 +133,22 @@ pub fn construct_me_candidate_array_mrp_off(
                     list_index as u8,
                     ref_pic_idx as u8,
                     ref_pic_idx as u8,
-                    if list_index == 0 { list_index as u8 } else { 24 },
-                    if list_index == 1 { list_index as u8 } else { 24 },
+                    if list_index == 0 {
+                        list_index as u8
+                    } else {
+                        24
+                    },
+                    if list_index == 1 {
+                        list_index as u8
+                    } else {
+                        24
+                    },
                 );
-                let slot = pu_index * pic.max_refs + if list_index != 0 { pic.max_l0 } else { 0 } + ref_pic_idx;
-                out.me_mv_array[slot] = Mv::from_int(me_ctx.p_sb_best_mv[list_index][ref_pic_idx][n_idx]);
+                let slot = pu_index * pic.max_refs
+                    + if list_index != 0 { pic.max_l0 } else { 0 }
+                    + ref_pic_idx;
+                out.me_mv_array[slot] =
+                    Mv::from_int(me_ctx.p_sb_best_mv[list_index][ref_pic_idx][n_idx]);
             }
             me_cand_offset += 1;
             list_index += 1;
@@ -190,7 +208,11 @@ pub fn construct_me_candidate_array(
     out: &mut MeB64Output,
 ) {
     for n_idx in 0..pic.max_number_of_pus_per_sb as usize {
-        let pu_index = if n_idx > 4 { Z_TO_RASTER[n_idx] as usize } else { n_idx };
+        let pu_index = if n_idx > 4 {
+            Z_TO_RASTER[n_idx] as usize
+        } else {
+            n_idx
+        };
         let mut me_cand_offset = 0usize;
         let upu = use_me_pu(pic, n_idx);
 
@@ -238,12 +260,22 @@ pub fn construct_me_candidate_array(
                         list_index as u8,
                         ref_pic_index as u8,
                         ref_pic_index as u8,
-                        if list_index == 0 { list_index as u8 } else { 24 },
-                        if list_index == 1 { list_index as u8 } else { 24 },
+                        if list_index == 0 {
+                            list_index as u8
+                        } else {
+                            24
+                        },
+                        if list_index == 1 {
+                            list_index as u8
+                        } else {
+                            24
+                        },
                     );
-                    let slot =
-                        pu_index * pic.max_refs + if list_index != 0 { pic.max_l0 } else { 0 } + ref_pic_index;
-                    out.me_mv_array[slot] = Mv::from_int(me_ctx.p_sb_best_mv[list_index][ref_pic_index][n_idx]);
+                    let slot = pu_index * pic.max_refs
+                        + if list_index != 0 { pic.max_l0 } else { 0 }
+                        + ref_pic_index;
+                    out.me_mv_array[slot] =
+                        Mv::from_int(me_ctx.p_sb_best_mv[list_index][ref_pic_index][n_idx]);
                 }
                 me_cand_offset += 1;
                 ref_pic_index += 1;
@@ -259,7 +291,8 @@ pub fn construct_me_candidate_array(
                         continue;
                     }
                     if blk_do_ref[0][f] != 0 && blk_do_ref[1][s] != 0 {
-                        let c = &mut out.me_candidate_array[pu_index * pic.max_cand + me_cand_offset];
+                        let c =
+                            &mut out.me_candidate_array[pu_index * pic.max_cand + me_cand_offset];
                         c.set(BI_PRED, f as u8, s as u8, 0, 1);
                         me_cand_offset += 1;
                     }
@@ -269,13 +302,17 @@ pub fn construct_me_candidate_array(
                 // 2nd set: (L0[0], L0[i]) for i >= 1.
                 for f in 1..me_ctx.num_of_ref_pic_to_search[0] as usize {
                     if blk_do_ref[0][0] != 0 && blk_do_ref[0][f] != 0 {
-                        let c = &mut out.me_candidate_array[pu_index * pic.max_cand + me_cand_offset];
+                        let c =
+                            &mut out.me_candidate_array[pu_index * pic.max_cand + me_cand_offset];
                         c.set(BI_PRED, 0, f as u8, 0, 0);
                         me_cand_offset += 1;
                     }
                 }
                 // 3rd set: (L1[0], L1[2]).
-                if me_ctx.num_of_ref_pic_to_search[1] == 3 && blk_do_ref[1][0] != 0 && blk_do_ref[1][2] != 0 {
+                if me_ctx.num_of_ref_pic_to_search[1] == 3
+                    && blk_do_ref[1][0] != 0
+                    && blk_do_ref[1][2] != 0
+                {
                     let c = &mut out.me_candidate_array[pu_index * pic.max_cand + me_cand_offset];
                     c.set(BI_PRED, 0, 2, 1, 1);
                     me_cand_offset += 1;
@@ -311,7 +348,8 @@ pub fn perform_gm_detection(pic: &MePicParams, me_ctx: &MeContext, out: &mut MeB
                     n_idx = ME_IDX_85_8X8_TO_16X16[n_idx as usize - MAX_SB64_PU_COUNT_NO_8X8];
                 }
                 if !pic.enable_me_16x16 && n_idx as usize >= MAX_SB64_PU_COUNT_WO_16X16 {
-                    n_idx = ME_IDX_16X16_TO_PARENT_32X32[n_idx as usize - MAX_SB64_PU_COUNT_WO_16X16];
+                    n_idx =
+                        ME_IDX_16X16_TO_PARENT_32X32[n_idx as usize - MAX_SB64_PU_COUNT_WO_16X16];
                 }
             }
         } else if !pic.enable_me_16x16 && n_idx as usize >= MAX_SB64_PU_COUNT_WO_16X16 {
@@ -392,7 +430,11 @@ pub fn compute_distortion(pic: &MePicParams, me_ctx: &MeContext, out: &mut MeB64
     }
 
     out.me_8x8_cost_variance = (sum_ofsq_dist_8x8 / 64) as u32;
-    out.rc_me_distortion = if pic.input_resolution <= INPUT_SIZE_480P_RANGE { dist_8x8 } else { dist_16x16 };
+    out.rc_me_distortion = if pic.input_resolution <= INPUT_SIZE_480P_RANGE {
+        dist_8x8
+    } else {
+        dist_16x16
+    };
     let pix_num = u64::from(pic.b64_geom_width * pic.b64_geom_height);
     out.me_64x64_distortion = ((u64::from(dist_64x64) * b64_size) / pix_num) as u32;
     out.me_32x32_distortion = ((u64::from(dist_32x32) * b64_size) / pix_num) as u32;

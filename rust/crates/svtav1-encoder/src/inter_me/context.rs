@@ -228,7 +228,14 @@ pub struct MeCandidate {
 
 impl MeCandidate {
     /// Store all five bitfields with C's truncation.
-    pub fn set(&mut self, direction: u8, ref_idx_l0: u8, ref_idx_l1: u8, ref0_list: u8, ref1_list: u8) {
+    pub fn set(
+        &mut self,
+        direction: u8,
+        ref_idx_l0: u8,
+        ref_idx_l1: u8,
+        ref0_list: u8,
+        ref1_list: u8,
+    ) {
         self.direction = direction & 0x3;
         self.ref_idx_l0 = ref_idx_l0 & 0x3;
         self.ref_idx_l1 = ref_idx_l1 & 0x3;
@@ -395,23 +402,32 @@ pub struct MeContext {
     /// C `prehme_ctrl`.
     pub prehme_ctrl: PreHmeCtrls,
     /// C `x_hme_level0_search_center`.
-    pub x_hme_level0_search_center: [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub x_hme_level0_search_center:
+        [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `y_hme_level0_search_center`.
-    pub y_hme_level0_search_center: [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub y_hme_level0_search_center:
+        [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `hme_level0_sad`.
-    pub hme_level0_sad: [[[[u64; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub hme_level0_sad:
+        [[[[u64; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `x_hme_level1_search_center`.
-    pub x_hme_level1_search_center: [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub x_hme_level1_search_center:
+        [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `y_hme_level1_search_center`.
-    pub y_hme_level1_search_center: [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub y_hme_level1_search_center:
+        [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `hme_level1_sad`.
-    pub hme_level1_sad: [[[[u64; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub hme_level1_sad:
+        [[[[u64; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `x_hme_level2_search_center`.
-    pub x_hme_level2_search_center: [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub x_hme_level2_search_center:
+        [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `y_hme_level2_search_center`.
-    pub y_hme_level2_search_center: [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub y_hme_level2_search_center:
+        [[[[i16; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `hme_level2_sad`.
-    pub hme_level2_sad: [[[[u64; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+    pub hme_level2_sad:
+        [[[[u64; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
     /// C `me_type`.
     pub me_type: MeType,
     /// C `num_of_list_to_search`.
@@ -489,19 +505,30 @@ impl Default for MeContext {
             hme_l0_sa: SearchAreaMinMax::default(),
             hme_l1_sa: SearchArea::default(),
             hme_l2_sa: SearchArea::default(),
-            search_results: [[SearchResults::default(); REF_LIST_MAX_DEPTH]; MAX_NUM_OF_REF_PIC_LIST],
+            search_results: [[SearchResults::default(); REF_LIST_MAX_DEPTH];
+                MAX_NUM_OF_REF_PIC_LIST],
             reduce_me_sr_divisor: [[1; REF_LIST_MAX_DEPTH]; MAX_NUM_OF_REF_PIC_LIST],
-            prehme_data: [[[SearchInfo::default(); SEARCH_REGION_COUNT]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+            prehme_data: [[[SearchInfo::default(); SEARCH_REGION_COUNT]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
             prehme_ctrl: PreHmeCtrls::default(),
-            x_hme_level0_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            y_hme_level0_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            hme_level0_sad: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            x_hme_level1_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            y_hme_level1_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            hme_level1_sad: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            x_hme_level2_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            y_hme_level2_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
-            hme_level2_sad: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX]; MAX_NUM_OF_REF_PIC_LIST],
+            x_hme_level0_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            y_hme_level0_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            hme_level0_sad: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            x_hme_level1_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            y_hme_level1_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            hme_level1_sad: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            x_hme_level2_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            y_hme_level2_search_center: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
+            hme_level2_sad: [[[[0; HME_SA_ROW_MAX]; HME_SA_COL_MAX]; MAX_REF_IDX];
+                MAX_NUM_OF_REF_PIC_LIST],
             me_type: MeType::OpenLoop,
             num_of_list_to_search: 1,
             num_of_ref_pic_to_search: [1, 0],

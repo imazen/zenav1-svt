@@ -73,12 +73,15 @@ pub fn me_static_b64_bypass(
         me_ctx.b64_height,
     );
     if u64::from(l0r0_raw) * 64 * 64
-        >= u64::from(me_ctx.me_static_b64_th) * u64::from(me_ctx.b64_width) * u64::from(me_ctx.b64_height)
+        >= u64::from(me_ctx.me_static_b64_th)
+            * u64::from(me_ctx.b64_width)
+            * u64::from(me_ctx.b64_height)
     {
         return false;
     }
 
-    let zz_sad = (u64::from(l0r0_raw) * 64 * 64 / u64::from(me_ctx.b64_width * me_ctx.b64_height)) as u32;
+    let zz_sad =
+        (u64::from(l0r0_raw) * 64 * 64 / u64::from(me_ctx.b64_width * me_ctx.b64_height)) as u32;
     me_ctx.zz_sad[0][0] = zz_sad;
     me_ctx.search_results[0][0].do_ref = 1;
     me_ctx.p_sb_best_sad[0][0][PU_64X64] = zz_sad;
@@ -158,7 +161,8 @@ pub fn motion_estimation_b64(
     if me_ctx.me_type != MeType::Mctf {
         if me_ctx.num_of_ref_pic_to_search[0] == 1 && me_ctx.num_of_ref_pic_to_search[1] == 0 {
             construct_me_candidate_array_single_ref(pic, me_ctx, num_of_list_to_search, out);
-        } else if me_ctx.num_of_ref_pic_to_search[0] == 1 && me_ctx.num_of_ref_pic_to_search[1] == 1 {
+        } else if me_ctx.num_of_ref_pic_to_search[0] == 1 && me_ctx.num_of_ref_pic_to_search[1] == 1
+        {
             construct_me_candidate_array_mrp_off(pic, me_ctx, num_of_list_to_search, out);
         } else {
             construct_me_candidate_array(pic, me_ctx, num_of_list_to_search, out);
