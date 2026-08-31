@@ -3378,3 +3378,101 @@ void ref_apply_selfguided_restoration_hbd(const uint16_t* dat16, int32_t origin,
                                        1);
     free(tmpbuf);
 }
+
+/* ---- restoration_pick.c: the SGR search kernels ----
+ *
+ * svt_av1_lowbd_pixel_proj_error_c, svt_av1_highbd_pixel_proj_error_c and
+ * svt_get_proj_subspace_c are EXPORTED. The rest of the SGR search
+ * (finer_search_pixel_proj_error, encode_xq, apply_sgr, count_sgrproj_bits,
+ * search_selfguided_restoration, search_sgrproj_seg/_finish,
+ * search_switchable) is `static`/`static INLINE` with no exported symbol and
+ * no driver reachable without a built RestSearchCtxt + Av1Common + PCS, so the
+ * port labels those tier 4.
+ *
+ * Same CONVERT_TO_SHORTPTR convention as the restoration.c oracles above. */
+
+int64_t svt_av1_lowbd_pixel_proj_error_c(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                         const uint8_t* dat8, int32_t dat_stride, int32_t* flt0, int32_t flt0_stride,
+                                         int32_t* flt1, int32_t flt1_stride, const int32_t xq[2],
+                                         const SgrParamsType* params);
+int64_t svt_av1_highbd_pixel_proj_error_c(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                                          const uint8_t* dat8, int32_t dat_stride, int32_t* flt0, int32_t flt0_stride,
+                                          int32_t* flt1, int32_t flt1_stride, const int32_t xq[2],
+                                          const SgrParamsType* params);
+void svt_get_proj_subspace_c(const uint8_t* src8, int32_t width, int32_t height, int32_t src_stride,
+                             const uint8_t* dat8, int32_t dat_stride, int32_t use_highbitdepth, int32_t* flt0,
+                             int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride, int32_t* xq,
+                             const SgrParamsType* params);
+
+int64_t ref_lowbd_pixel_proj_error(const uint8_t* src8, int32_t src_origin, int32_t width, int32_t height,
+                                   int32_t src_stride, const uint8_t* dat8, int32_t dat_origin, int32_t dat_stride,
+                                   int32_t* flt0, int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride,
+                                   const int32_t* xq, int32_t ep) {
+    return svt_av1_lowbd_pixel_proj_error_c(src8 + src_origin,
+                                            width,
+                                            height,
+                                            src_stride,
+                                            dat8 + dat_origin,
+                                            dat_stride,
+                                            flt0,
+                                            flt0_stride,
+                                            flt1,
+                                            flt1_stride,
+                                            xq,
+                                            &svt_aom_eb_sgr_params[ep]);
+}
+
+int64_t ref_highbd_pixel_proj_error(const uint16_t* src16, int32_t src_origin, int32_t width, int32_t height,
+                                    int32_t src_stride, const uint16_t* dat16, int32_t dat_origin, int32_t dat_stride,
+                                    int32_t* flt0, int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride,
+                                    const int32_t* xq, int32_t ep) {
+    return svt_av1_highbd_pixel_proj_error_c(REF_HBD_IN(src16 + src_origin),
+                                             width,
+                                             height,
+                                             src_stride,
+                                             REF_HBD_IN(dat16 + dat_origin),
+                                             dat_stride,
+                                             flt0,
+                                             flt0_stride,
+                                             flt1,
+                                             flt1_stride,
+                                             xq,
+                                             &svt_aom_eb_sgr_params[ep]);
+}
+
+void ref_get_proj_subspace(const uint8_t* src8, int32_t src_origin, int32_t width, int32_t height, int32_t src_stride,
+                           const uint8_t* dat8, int32_t dat_origin, int32_t dat_stride, int32_t* flt0,
+                           int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride, int32_t ep, int32_t* xq_out2) {
+    svt_get_proj_subspace_c(src8 + src_origin,
+                            width,
+                            height,
+                            src_stride,
+                            dat8 + dat_origin,
+                            dat_stride,
+                            0,
+                            flt0,
+                            flt0_stride,
+                            flt1,
+                            flt1_stride,
+                            xq_out2,
+                            &svt_aom_eb_sgr_params[ep]);
+}
+
+void ref_get_proj_subspace_hbd(const uint16_t* src16, int32_t src_origin, int32_t width, int32_t height,
+                               int32_t src_stride, const uint16_t* dat16, int32_t dat_origin, int32_t dat_stride,
+                               int32_t* flt0, int32_t flt0_stride, int32_t* flt1, int32_t flt1_stride, int32_t ep,
+                               int32_t* xq_out2) {
+    svt_get_proj_subspace_c(REF_HBD_IN(src16 + src_origin),
+                            width,
+                            height,
+                            src_stride,
+                            REF_HBD_IN(dat16 + dat_origin),
+                            dat_stride,
+                            1,
+                            flt0,
+                            flt0_stride,
+                            flt1,
+                            flt1_stride,
+                            xq_out2,
+                            &svt_aom_eb_sgr_params[ep]);
+}

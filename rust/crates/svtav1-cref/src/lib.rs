@@ -5516,3 +5516,231 @@ pub fn apply_selfguided_restoration_hbd(
         );
     }
 }
+
+// --- restoration_pick.c: the SGR search kernels ---
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_lowbd_pixel_proj_error(
+        src8: *const u8,
+        src_origin: i32,
+        width: i32,
+        height: i32,
+        src_stride: i32,
+        dat8: *const u8,
+        dat_origin: i32,
+        dat_stride: i32,
+        flt0: *mut i32,
+        flt0_stride: i32,
+        flt1: *mut i32,
+        flt1_stride: i32,
+        xq: *const i32,
+        ep: i32,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_highbd_pixel_proj_error(
+        src16: *const u16,
+        src_origin: i32,
+        width: i32,
+        height: i32,
+        src_stride: i32,
+        dat16: *const u16,
+        dat_origin: i32,
+        dat_stride: i32,
+        flt0: *mut i32,
+        flt0_stride: i32,
+        flt1: *mut i32,
+        flt1_stride: i32,
+        xq: *const i32,
+        ep: i32,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_get_proj_subspace(
+        src8: *const u8,
+        src_origin: i32,
+        width: i32,
+        height: i32,
+        src_stride: i32,
+        dat8: *const u8,
+        dat_origin: i32,
+        dat_stride: i32,
+        flt0: *mut i32,
+        flt0_stride: i32,
+        flt1: *mut i32,
+        flt1_stride: i32,
+        ep: i32,
+        xq_out2: *mut i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_get_proj_subspace_hbd(
+        src16: *const u16,
+        src_origin: i32,
+        width: i32,
+        height: i32,
+        src_stride: i32,
+        dat16: *const u16,
+        dat_origin: i32,
+        dat_stride: i32,
+        flt0: *mut i32,
+        flt0_stride: i32,
+        flt1: *mut i32,
+        flt1_stride: i32,
+        ep: i32,
+        xq_out2: *mut i32,
+    );
+}
+
+/// Reference `svt_av1_lowbd_pixel_proj_error_c` (restoration_pick.c:161).
+/// `xq` is the DECODED weight pair, not the signalled `xqd`.
+#[allow(clippy::too_many_arguments)]
+pub fn lowbd_pixel_proj_error(
+    src: &[u8],
+    src_origin: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u8],
+    dat_origin: usize,
+    dat_stride: usize,
+    flt0: &mut [i32],
+    flt0_stride: usize,
+    flt1: &mut [i32],
+    flt1_stride: usize,
+    xq: &[i32; 2],
+    ep: i32,
+) -> i64 {
+    unsafe {
+        ref_lowbd_pixel_proj_error(
+            src.as_ptr(),
+            src_origin as i32,
+            width as i32,
+            height as i32,
+            src_stride as i32,
+            dat.as_ptr(),
+            dat_origin as i32,
+            dat_stride as i32,
+            flt0.as_mut_ptr(),
+            flt0_stride as i32,
+            flt1.as_mut_ptr(),
+            flt1_stride as i32,
+            xq.as_ptr(),
+            ep,
+        )
+    }
+}
+
+/// Reference `svt_av1_highbd_pixel_proj_error_c` (restoration_pick.c:228).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_pixel_proj_error(
+    src: &[u16],
+    src_origin: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_origin: usize,
+    dat_stride: usize,
+    flt0: &mut [i32],
+    flt0_stride: usize,
+    flt1: &mut [i32],
+    flt1_stride: usize,
+    xq: &[i32; 2],
+    ep: i32,
+) -> i64 {
+    unsafe {
+        ref_highbd_pixel_proj_error(
+            src.as_ptr(),
+            src_origin as i32,
+            width as i32,
+            height as i32,
+            src_stride as i32,
+            dat.as_ptr(),
+            dat_origin as i32,
+            dat_stride as i32,
+            flt0.as_mut_ptr(),
+            flt0_stride as i32,
+            flt1.as_mut_ptr(),
+            flt1_stride as i32,
+            xq.as_ptr(),
+            ep,
+        )
+    }
+}
+
+/// Reference `svt_get_proj_subspace_c` (restoration_pick.c:422), 8-bit.
+#[allow(clippy::too_many_arguments)]
+pub fn get_proj_subspace(
+    src: &[u8],
+    src_origin: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u8],
+    dat_origin: usize,
+    dat_stride: usize,
+    flt0: &mut [i32],
+    flt0_stride: usize,
+    flt1: &mut [i32],
+    flt1_stride: usize,
+    ep: i32,
+) -> [i32; 2] {
+    let mut out = [0i32; 2];
+    unsafe {
+        ref_get_proj_subspace(
+            src.as_ptr(),
+            src_origin as i32,
+            width as i32,
+            height as i32,
+            src_stride as i32,
+            dat.as_ptr(),
+            dat_origin as i32,
+            dat_stride as i32,
+            flt0.as_mut_ptr(),
+            flt0_stride as i32,
+            flt1.as_mut_ptr(),
+            flt1_stride as i32,
+            ep,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// Reference `svt_get_proj_subspace_c`, high bit depth.
+#[allow(clippy::too_many_arguments)]
+pub fn get_proj_subspace_hbd(
+    src: &[u16],
+    src_origin: usize,
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    dat: &[u16],
+    dat_origin: usize,
+    dat_stride: usize,
+    flt0: &mut [i32],
+    flt0_stride: usize,
+    flt1: &mut [i32],
+    flt1_stride: usize,
+    ep: i32,
+) -> [i32; 2] {
+    let mut out = [0i32; 2];
+    unsafe {
+        ref_get_proj_subspace_hbd(
+            src.as_ptr(),
+            src_origin as i32,
+            width as i32,
+            height as i32,
+            src_stride as i32,
+            dat.as_ptr(),
+            dat_origin as i32,
+            dat_stride as i32,
+            flt0.as_mut_ptr(),
+            flt0_stride as i32,
+            flt1.as_mut_ptr(),
+            flt1_stride as i32,
+            ep,
+            out.as_mut_ptr(),
+        );
+    }
+    out
+}
