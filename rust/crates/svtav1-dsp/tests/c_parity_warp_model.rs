@@ -348,9 +348,20 @@ fn select_samples_matches_c_including_the_compaction() {
 // 5. svt_av1_warp_affine_c — the kernel itself
 // ---------------------------------------------------------------------------
 
+/// Trailing slack on every reference plane. `warp_plane` / `av1_warp_plane`
+/// go through the RTCD `svt_av1_warp_affine`, i.e. the NEON kernel on this
+/// host, which vector-loads a whole row before applying the `warp_pad_*`
+/// edge replication and therefore reads past the last row of an
+/// exactly-sized plane (measured 2026-08-31 as an intermittent SIGBUS in
+/// `c_parity_global_motion`). A real reference frame always has borders; the
+/// addressable `width` x `height` rectangle is unchanged.
+const PLANE_SLACK: usize = 4096;
+
 fn make_ref(w: usize, h: usize, seed: u64) -> Vec<u8> {
     let mut rng = Rng::new(seed);
-    (0..w * h).map(|_| rng.range(0, 255) as u8).collect()
+    let mut v: Vec<u8> = (0..w * h).map(|_| rng.range(0, 255) as u8).collect();
+    v.resize(w * h + PLANE_SLACK, 0);
+    v
 }
 
 /// A model that both C and the port agree is warp-legal, derived by asking C

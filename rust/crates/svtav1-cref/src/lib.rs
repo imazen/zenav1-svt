@@ -5744,3 +5744,158 @@ pub fn get_proj_subspace_hbd(
     }
     out
 }
+
+// --- global_motion.c + enc_warped_motion.c: the GM model chain ---
+
+unsafe extern "C" {
+    fn ref_convert_model_to_params(params6: *const f64, out7: *mut i32);
+    fn ref_is_enough_erroradvantage(
+        best_erroradvantage: f64,
+        params_cost: i32,
+        erroradv_type: i32,
+    ) -> i32;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_warp_error(
+        wm_io: *mut i32,
+        r: *const u8,
+        width: i32,
+        height: i32,
+        stride: i32,
+        dst: *const u8,
+        dst_origin: i32,
+        p_col: i32,
+        p_row: i32,
+        p_width: i32,
+        p_height: i32,
+        p_stride: i32,
+        subsampling_x: i32,
+        subsampling_y: i32,
+        chess_refn: i32,
+        best_error: i64,
+    ) -> i64;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_refine_integerized_param(
+        rfn_early_exit: i32,
+        wm_io: *mut i32,
+        wmtype: i32,
+        r: *const u8,
+        r_width: i32,
+        r_height: i32,
+        r_stride: i32,
+        dst: *const u8,
+        d_width: i32,
+        d_height: i32,
+        d_stride: i32,
+        n_refinements: i32,
+        chess_refn: i32,
+        best_frame_error: i64,
+        pic_sad: u32,
+        params_cost: i32,
+    ) -> i64;
+}
+
+/// Reference `svt_av1_convert_model_to_params` (global_motion.c:63). Returns
+/// `(wmtype, wmmat)`.
+pub fn convert_model_to_params(params: &[f64; 6]) -> (i32, [i32; 6]) {
+    let mut out = [0i32; 7];
+    unsafe { ref_convert_model_to_params(params.as_ptr(), out.as_mut_ptr()) };
+    (out[0], [out[1], out[2], out[3], out[4], out[5], out[6]])
+}
+
+/// Reference `svt_av1_is_enough_erroradvantage` (global_motion.c:30).
+pub fn is_enough_erroradvantage(
+    best_erroradvantage: f64,
+    params_cost: i32,
+    erroradv_type: i32,
+) -> bool {
+    unsafe { ref_is_enough_erroradvantage(best_erroradvantage, params_cost, erroradv_type) != 0 }
+}
+
+/// Reference `svt_av1_warp_error` (enc_warped_motion.c:77). `wm_io` is
+/// `[wmtype, mat0..mat5, alpha, beta, gamma, delta]`, written back so the
+/// shear derivation the function performs is observable.
+#[allow(clippy::too_many_arguments)]
+pub fn warp_error(
+    wm_io: &mut [i32; 11],
+    r: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    dst: &[u8],
+    dst_origin: usize,
+    p_col: i32,
+    p_row: i32,
+    p_width: i32,
+    p_height: i32,
+    p_stride: usize,
+    subsampling_x: i32,
+    subsampling_y: i32,
+    chess_refn: bool,
+    best_error: i64,
+) -> i64 {
+    assert!(r.len() >= height * stride);
+    unsafe {
+        ref_warp_error(
+            wm_io.as_mut_ptr(),
+            r.as_ptr(),
+            width as i32,
+            height as i32,
+            stride as i32,
+            dst.as_ptr(),
+            dst_origin as i32,
+            p_col,
+            p_row,
+            p_width,
+            p_height,
+            p_stride as i32,
+            subsampling_x,
+            subsampling_y,
+            i32::from(chess_refn),
+            best_error,
+        )
+    }
+}
+
+/// Reference `svt_av1_refine_integerized_param` (global_motion.c:117).
+/// `wm_io` is refined in place, same layout as [`warp_error`].
+#[allow(clippy::too_many_arguments)]
+pub fn refine_integerized_param(
+    rfn_early_exit: bool,
+    wm_io: &mut [i32; 11],
+    wmtype: i32,
+    r: &[u8],
+    r_width: usize,
+    r_height: usize,
+    r_stride: usize,
+    dst: &[u8],
+    d_width: i32,
+    d_height: i32,
+    d_stride: usize,
+    n_refinements: i32,
+    chess_refn: bool,
+    best_frame_error: i64,
+    pic_sad: u32,
+    params_cost: i32,
+) -> i64 {
+    assert!(r.len() >= r_height * r_stride);
+    unsafe {
+        ref_refine_integerized_param(
+            i32::from(rfn_early_exit),
+            wm_io.as_mut_ptr(),
+            wmtype,
+            r.as_ptr(),
+            r_width as i32,
+            r_height as i32,
+            r_stride as i32,
+            dst.as_ptr(),
+            d_width,
+            d_height,
+            d_stride as i32,
+            n_refinements,
+            i32::from(chess_refn),
+            best_frame_error,
+            pic_sad,
+            params_cost,
+        )
+    }
+}

@@ -3476,3 +3476,134 @@ void ref_get_proj_subspace_hbd(const uint16_t* src16, int32_t src_origin, int32_
                             xq_out2,
                             &svt_aom_eb_sgr_params[ep]);
 }
+
+/* ---- global_motion.c + enc_warped_motion.c: the GM model chain ----
+ *
+ * svt_av1_convert_model_to_params, svt_av1_is_enough_erroradvantage,
+ * svt_av1_warp_error and svt_av1_refine_integerized_param are all EXPORTED,
+ * and the last of those DRIVES the file's statics (convert_to_params via the
+ * first, get_wmtype, force_wmtype, add_param_offset, and warp_error) -- so
+ * these four oracles cover the whole ported chain at tier 1.
+ *
+ * svt_av1_refine_integerized_param and svt_av1_warp_error both reach
+ * svt_warp_plane -> svt_av1_warp_affine (an RTCD pointer) and
+ * svt_nxm_sad_kernel (another), so RTCD is initialised first. */
+#include "global_motion.h"
+#include "enc_warped_motion.h"
+
+void    svt_av1_convert_model_to_params(const double* params, WarpedMotionParams* model);
+int     svt_av1_is_enough_erroradvantage(double best_erroradvantage, int params_cost, int erroradv_type);
+int64_t svt_av1_warp_error(WarpedMotionParams* wm, const uint8_t* ref, int width, int height, int stride, uint8_t* dst,
+                           int p_col, int p_row, int p_width, int p_height, int p_stride, int subsampling_x,
+                           int subsampling_y, uint8_t chess_refn, int64_t best_error);
+int64_t svt_av1_refine_integerized_param(GmControls* gm_ctrls, WarpedMotionParams* wm, TransformationType wmtype,
+                                         uint8_t* ref, int r_width, int r_height, int r_stride, uint8_t* dst,
+                                         int d_width, int d_height, int d_stride, int n_refinements,
+                                         uint8_t chess_refn, int64_t best_frame_error, uint32_t pic_sad,
+                                         int params_cost);
+
+/* out7 = [wmtype, mat0..mat5]. */
+void ref_convert_model_to_params(const double* params6, int32_t* out7) {
+    WarpedMotionParams m;
+    memset(&m, 0, sizeof(m));
+    svt_av1_convert_model_to_params(params6, &m);
+    out7[0] = (int32_t)m.wmtype;
+    for (int i = 0; i < 6; ++i) {
+        out7[1 + i] = m.wmmat[i];
+    }
+}
+
+int32_t ref_is_enough_erroradvantage(double best_erroradvantage, int32_t params_cost, int32_t erroradv_type) {
+    return svt_av1_is_enough_erroradvantage(best_erroradvantage, params_cost, erroradv_type);
+}
+
+/* wm_io = [wmtype, mat0..mat5, alpha, beta, gamma, delta], written back so the
+   shear derivation svt_av1_warp_error performs is observable. */
+int64_t ref_warp_error(int32_t* wm_io, const uint8_t* ref, int32_t width, int32_t height, int32_t stride,
+                       const uint8_t* dst, int32_t dst_origin, int32_t p_col, int32_t p_row, int32_t p_width,
+                       int32_t p_height, int32_t p_stride, int32_t subsampling_x, int32_t subsampling_y,
+                       int32_t chess_refn, int64_t best_error) {
+    ref_rtcd_once();
+    WarpedMotionParams wm;
+    memset(&wm, 0, sizeof(wm));
+    wm.wmtype = (TransformationType)wm_io[0];
+    for (int i = 0; i < 6; ++i) {
+        wm.wmmat[i] = wm_io[1 + i];
+    }
+    wm.alpha            = (int16_t)wm_io[7];
+    wm.beta             = (int16_t)wm_io[8];
+    wm.gamma            = (int16_t)wm_io[9];
+    wm.delta            = (int16_t)wm_io[10];
+    const int64_t e     = svt_av1_warp_error(&wm,
+                                         ref,
+                                         width,
+                                         height,
+                                         stride,
+                                         (uint8_t*)(dst + dst_origin),
+                                         p_col,
+                                         p_row,
+                                         p_width,
+                                         p_height,
+                                         p_stride,
+                                         subsampling_x,
+                                         subsampling_y,
+                                         (uint8_t)chess_refn,
+                                         best_error);
+    wm_io[0] = (int32_t)wm.wmtype;
+    for (int i = 0; i < 6; ++i) {
+        wm_io[1 + i] = wm.wmmat[i];
+    }
+    wm_io[7]  = wm.alpha;
+    wm_io[8]  = wm.beta;
+    wm_io[9]  = wm.gamma;
+    wm_io[10] = wm.delta;
+    return e;
+}
+
+/* The GmControls shell is calloc'd per call (this file's no-static rule);
+   svt_av1_refine_integerized_param reads only rfn_early_exit from it. */
+int64_t ref_refine_integerized_param(int32_t rfn_early_exit, int32_t* wm_io, int32_t wmtype, const uint8_t* ref,
+                                     int32_t r_width, int32_t r_height, int32_t r_stride, const uint8_t* dst,
+                                     int32_t d_width, int32_t d_height, int32_t d_stride, int32_t n_refinements,
+                                     int32_t chess_refn, int64_t best_frame_error, uint32_t pic_sad,
+                                     int32_t params_cost) {
+    ref_rtcd_once();
+    GmControls* gm = (GmControls*)calloc(1, sizeof(*gm));
+    gm->rfn_early_exit = (uint8_t)rfn_early_exit;
+    WarpedMotionParams wm;
+    memset(&wm, 0, sizeof(wm));
+    wm.wmtype = (TransformationType)wm_io[0];
+    for (int i = 0; i < 6; ++i) {
+        wm.wmmat[i] = wm_io[1 + i];
+    }
+    wm.alpha        = (int16_t)wm_io[7];
+    wm.beta         = (int16_t)wm_io[8];
+    wm.gamma        = (int16_t)wm_io[9];
+    wm.delta        = (int16_t)wm_io[10];
+    const int64_t e = svt_av1_refine_integerized_param(gm,
+                                                       &wm,
+                                                       (TransformationType)wmtype,
+                                                       (uint8_t*)ref,
+                                                       r_width,
+                                                       r_height,
+                                                       r_stride,
+                                                       (uint8_t*)dst,
+                                                       d_width,
+                                                       d_height,
+                                                       d_stride,
+                                                       n_refinements,
+                                                       (uint8_t)chess_refn,
+                                                       best_frame_error,
+                                                       pic_sad,
+                                                       params_cost);
+    wm_io[0] = (int32_t)wm.wmtype;
+    for (int i = 0; i < 6; ++i) {
+        wm_io[1 + i] = wm.wmmat[i];
+    }
+    wm_io[7]  = wm.alpha;
+    wm_io[8]  = wm.beta;
+    wm_io[9]  = wm.gamma;
+    wm_io[10] = wm.delta;
+    free(gm);
+    return e;
+}
