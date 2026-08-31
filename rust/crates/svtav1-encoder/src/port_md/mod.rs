@@ -21,6 +21,7 @@
 //! | [`nics`] | the per-stage candidate counts (`svt_aom_set_nics`) |
 //! | [`drl`] | DRL selection for NEWMV candidates |
 //! | [`coding_loop`] | the per-block helpers of `product_coding_loop.c` |
+//! | [`inject`] | inter-candidate injection (PD1 and PD0) |
 //!
 //! # Reachability
 //!
@@ -31,6 +32,7 @@
 
 pub mod coding_loop;
 pub mod drl;
+pub mod inject;
 pub mod nics;
 pub mod pme;
 pub mod predicates;
