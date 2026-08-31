@@ -44,7 +44,7 @@
 //!   (`enc_handle.c:3339-3343`, `3657-3668`, `4294-4300`), so the low-delay
 //!   arms below are the whole story for the campaign's first cell.
 
-use crate::inter_mvp::{OrderHintInfo, av1_ref_frame_type, get_relative_dist};
+use crate::inter_mvp::{MODE_CTX_REF_FRAMES, OrderHintInfo, av1_ref_frame_type, get_relative_dist};
 
 /// `REF_FRAME_MINUS1` (`Codec/pred_structure.h:63`) — index into
 /// [`Av1RpsNode::ref_dpb_index`] / [`Av1RpsNode::ref_poc_array`].
@@ -344,7 +344,7 @@ pub struct PicParams {
     /// C `pcs->av1_cm->ref_frame_sign_bias[8]`.
     pub ref_frame_sign_bias: [i32; REF_FRAMES],
     /// C `pcs->ref_frame_type_arr` (`MvReferenceFrame`, `MODE_CTX_REF_FRAMES` long).
-    pub ref_frame_type_arr: [i8; 31],
+    pub ref_frame_type_arr: [i8; MODE_CTX_REF_FRAMES],
     /// C `pcs->tot_ref_frame_types`.
     pub tot_ref_frame_types: u8,
     /// C `pcs->transition_present`.
@@ -353,6 +353,10 @@ pub struct PicParams {
     pub mi_cols: u32,
     /// C `pcs->av1_cm->mi_rows`.
     pub mi_rows: u32,
+    /// C `pcs->aligned_width`.
+    pub aligned_width: u32,
+    /// C `pcs->aligned_height`.
+    pub aligned_height: u32,
 }
 
 impl Default for PicParams {
@@ -385,11 +389,13 @@ impl Default for PicParams {
             allow_comp_inter_inter: false,
             skip_mode: SkipModeInfo::default(),
             ref_frame_sign_bias: [0; REF_FRAMES],
-            ref_frame_type_arr: [0; 31],
+            ref_frame_type_arr: [0; MODE_CTX_REF_FRAMES],
             tot_ref_frame_types: 0,
             transition_present: 0,
             mi_cols: 0,
             mi_rows: 0,
+            aligned_width: 0,
+            aligned_height: 0,
         }
     }
 }
@@ -832,8 +838,8 @@ pub fn get_ref_frame_type(list: u8, ref_idx: u8) -> i8 {
 /// outside this port's envelope. [`set_all_ref_frame_type`] therefore matches C
 /// exactly whenever no S-frame is pending, which is every configuration the
 /// port encodes today.
-pub fn set_all_ref_frame_type(pic: &PicParams) -> ([i8; 31], u8) {
-    let mut arr = [0i8; 31];
+pub fn set_all_ref_frame_type(pic: &PicParams) -> ([i8; MODE_CTX_REF_FRAMES], u8) {
+    let mut arr = [0i8; MODE_CTX_REF_FRAMES];
     let mut tot: usize = 0;
 
     // single ref - list 0
@@ -980,4 +986,616 @@ pub fn set_frame_update_type(pic: &mut PicParams) {
 pub fn set_gf_group_param(pic: &mut PicParams) {
     set_frame_update_type(pic);
     set_layer_depth(pic);
+}
+
+// ---------------------------------------------------------------------------
+// av1_generate_rps_info (pd_process.c:1911-3506) — static, tier 4
+// ---------------------------------------------------------------------------
+
+/// A prediction-structure branch of `av1_generate_rps_info` this port has not
+/// translated yet.
+///
+/// Returned instead of a guess, per `docs/WORKING-ON-THIS.md` §6: a
+/// plausible-but-wrong reference structure is indistinguishable from a correct
+/// one at the integration seam and would produce a decodable stream that
+/// predicts from the wrong pictures. Refusing is the correct behaviour until
+/// the arm is transcribed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpsBranchUnsupported {
+    /// `pcs->hierarchical_levels` of the refused picture.
+    pub hierarchical_levels: u8,
+    /// `pcs->temporal_layer_index` of the refused picture.
+    pub temporal_layer: u8,
+}
+
+/// C `av1_generate_rps_info` (`pd_process.c:1911-3506`) — static, tier 4.
+///
+/// THE reference-structure derivation: fills `ref_dpb_index[7]`,
+/// `ref_poc_array[7]`, `refresh_frame_mask` and `is_ref`. Without it a port
+/// has no DPB slot mapping and no refresh mask, so `ref_frame_idx[]` and
+/// `refresh_frame_flags` in every inter frame header are invented.
+///
+/// **Coverage — 4 of the 8 top-level branches are translated here.**
+/// Translated: the RTC flat branch (`rtc && hierarchical_levels == 0`), the
+/// low-delay CQP/CRF branch, the low-delay CBR branch (hierarchical levels 1
+/// and 2, the only two LD CBR supports), and the random-access flat branch
+/// (`hierarchical_levels == 0`). NOT translated, and refused rather than
+/// guessed: the random-access hierarchical branches at `hierarchical_levels`
+/// 1, 2, 3, 4 and 5 (`pd_process.c:2270-3483`, ~1200 lines of per-layer
+/// per-position tables). Those are needed for random access, not for the
+/// campaign's first cell (low-delay P, flat, CQP).
+///
+/// Not translated at all, in any branch, because they are outside the port's
+/// envelope: the S-frame paths (`set_sframe_type`, `set_sframe_rps`,
+/// `decide_sframe_mg`) and the app-driven reference-management events
+/// (`apply_ref_mgmt_events`, which can mask `refresh_frame_mask` bits held by
+/// a STORE). Both are no-ops when no S-frame and no STORE/CLEAR/USE event is
+/// pending, which is every configuration this port encodes.
+///
+/// # Errors
+///
+/// Returns [`RpsBranchUnsupported`] for a random-access hierarchical branch.
+pub fn generate_rps_info(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    ctx: &mut PicDecisionCtx,
+    pic_idx: u32,
+    mg_idx: usize,
+) -> Result<(), RpsBranchUnsupported> {
+    let hier = pic.hierarchical_levels;
+    let temporal_layer = pic.temporal_layer_index;
+
+    pic.is_ref = if seq.allintra {
+        false
+    } else {
+        is_pic_used_as_ref(
+            u32::from(hier),
+            u32::from(temporal_layer),
+            pic_idx,
+            u32::from(seq.mrp_ctrls.referencing_scheme),
+            pic.is_overlay,
+        )
+    };
+
+    // Set frame type
+    if pic.slice_type == SliceType::I {
+        pic.rps.refresh_frame_mask = 0xFF;
+        if pic.is_key_frame {
+            set_key_frame_rps(pic, ctx);
+            set_ref_list_counts(pic, seq, ctx);
+            return Ok(());
+        }
+    }
+
+    if seq.rtc && hier == 0 {
+        rps_rtc_flat(pic, seq, ctx, mg_idx);
+    } else if seq.pred_structure == PredStructure::LowDelay
+        && seq.rate_control_mode == RcMode::CqpOrCrf
+    {
+        rps_low_delay_cqp(pic, seq, ctx, pic_idx, mg_idx);
+    } else if seq.pred_structure == PredStructure::LowDelay && seq.rate_control_mode == RcMode::Cbr
+    {
+        rps_low_delay_cbr(pic, seq, ctx, pic_idx, mg_idx)?;
+    } else if hier == 0 {
+        rps_random_access_flat(pic, seq, ctx, mg_idx);
+    } else {
+        return Err(RpsBranchUnsupported {
+            hierarchical_levels: hier,
+            temporal_layer,
+        });
+    }
+
+    // C's tail: S-frame RPS and the app ref-mgmt events (both out of envelope,
+    // see the module doc), then the overlay reset.
+    if pic.is_overlay {
+        pic.rps.refresh_frame_mask = 0;
+    }
+    Ok(())
+}
+
+/// C `av1_generate_rps_info`'s `scs->static_config.rtc && hierarchical_levels == 0`
+/// branch (`pd_process.c:1954-1986`).
+///
+/// Up to `flat_max_refs` consecutive previous frames as list-0 references;
+/// list 1 mirrors LAST. The refresh mask deliberately also sets the bits of
+/// the slots this configuration never uses (`0xf0` plus every bit at or above
+/// `max_refs`) so old pictures are dropped and their buffers freed.
+fn rps_rtc_flat(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicDecisionCtx, mg_idx: usize) {
+    let max_refs = seq.mrp_ctrls.flat_max_refs;
+    let pic0_idx = ctx.lay0_toggle; // newest pic
+    let pic1_idx = circ_dec(pic0_idx, 0, max_refs - 1);
+    let pic2_idx = circ_dec(pic1_idx, 0, max_refs - 1);
+    let pic3_idx = circ_dec(pic2_idx, 0, max_refs - 1);
+
+    pic.rps.ref_dpb_index[LAST] = pic0_idx;
+    pic.rps.ref_dpb_index[LAST2] = pic1_idx;
+    pic.rps.ref_dpb_index[LAST3] = pic2_idx;
+    pic.rps.ref_dpb_index[GOLD] = pic3_idx;
+    pic.rps.ref_dpb_index[BWD] = pic.rps.ref_dpb_index[LAST];
+    pic.rps.ref_dpb_index[ALT2] = pic.rps.ref_dpb_index[LAST];
+    pic.rps.ref_dpb_index[ALT] = pic.rps.ref_dpb_index[LAST];
+
+    // Layer0 toggle 0->1->2->3
+    ctx.lay0_toggle = circ_inc(ctx.lay0_toggle, 0, max_refs - 1);
+    pic.rps.refresh_frame_mask = (1u8 << ctx.lay0_toggle) | 0xf0;
+    let mut i = 3i32;
+    while i >= i32::from(max_refs) {
+        pic.rps.refresh_frame_mask |= 1u8 << i;
+        i -= 1;
+    }
+
+    update_ref_poc_array(&mut pic.rps, &ctx.dpb);
+    set_ref_list_counts(pic, seq, ctx);
+    prune_refs(
+        &mut pic.rps,
+        u32::from(pic.ref_list0_count),
+        u32::from(pic.ref_list1_count),
+    );
+    set_frame_display_params(pic, ctx, mg_idx);
+}
+
+/// C `av1_generate_rps_info`'s low-delay CQP/CRF branch
+/// (`pd_process.c:1987-2064`) — the campaign's first cell.
+///
+/// The structure is the previous 3 non-base frames + the previous 3 base
+/// frames + one long-term reference in slot 7, refreshed every 128 pictures.
+///
+/// Trap: `lay1_pic_idx` is `(1 << (hierarchical_levels - 1)) - 1` and is
+/// special-cased to 0 at `hierarchical_levels == 0` — the shift would be
+/// `1 << -1` otherwise. It selects whether a non-base picture past the layer-1
+/// picture takes the layer-1 picture as LAST instead of the previous base.
+fn rps_low_delay_cqp(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    ctx: &mut PicDecisionCtx,
+    pic_idx: u32,
+    mg_idx: usize,
+) {
+    let mrp = &seq.mrp_ctrls;
+    let hier = pic.hierarchical_levels;
+    let temporal_layer = pic.temporal_layer_index;
+
+    let base2_idx = ctx.lay0_toggle; // newest L0 in the DPB
+    let base1_idx = circ_dec(base2_idx, 0, 2); // middle L0
+    let base0_idx = circ_dec(base1_idx, 0, 2); // oldest L0
+
+    let lay1_offset = if mrp.ld_reduce_ref_buffs == 0 {
+        LAY1_OFF
+    } else {
+        1
+    };
+    let lay1_2_idx = if mrp.ld_reduce_ref_buffs == 2 {
+        1
+    } else {
+        lay1_offset + ctx.lay1_toggle
+    };
+    let lay1_1_idx = circ_dec(lay1_2_idx, lay1_offset, lay1_offset + 2);
+    let lay1_0_idx = circ_dec(lay1_1_idx, lay1_offset, lay1_offset + 2);
+    const LONG_BASE_IDX: u8 = 7;
+    const LONG_BASE_PIC: u64 = 128;
+
+    let is_base = temporal_layer == 0;
+    let ref_list1_count = if is_base {
+        mrp.base_ref_list1_count
+    } else {
+        mrp.non_base_ref_list1_count
+    };
+
+    let lay1_pic_idx: u32 = if hier == 0 {
+        0
+    } else {
+        (1u32 << (hier - 1)) - 1
+    };
+    // When list1 is unused, pictures after the layer-1 picture take the
+    // layer-1 picture as LAST instead of the previous base.
+    pic.rps.ref_dpb_index[LAST] = if pic_idx > lay1_pic_idx && !is_base && ref_list1_count == 0 {
+        lay1_2_idx
+    } else {
+        base2_idx
+    };
+    pic.rps.ref_dpb_index[LAST2] = lay1_1_idx;
+    pic.rps.ref_dpb_index[LAST3] = LONG_BASE_IDX;
+    pic.rps.ref_dpb_index[GOLD] = base0_idx;
+    pic.rps.ref_dpb_index[BWD] = lay1_2_idx;
+    pic.rps.ref_dpb_index[ALT2] = lay1_0_idx;
+    pic.rps.ref_dpb_index[ALT] = base1_idx;
+
+    if temporal_layer == 0 {
+        if mrp.ld_reduce_ref_buffs == 2 {
+            // Only 2 DPB entries used; refresh the rest to free ref buffers.
+            pic.rps.refresh_frame_mask = (1u8 << ctx.lay0_toggle) | 0xfc;
+        } else if mrp.ld_reduce_ref_buffs == 1 {
+            pic.rps.refresh_frame_mask = (1u8 << ctx.lay0_toggle) | 0xf0;
+        } else {
+            // Layer0 toggle 0->1->2
+            ctx.lay0_toggle = circ_inc(ctx.lay0_toggle, 0, 2);
+            pic.rps.refresh_frame_mask = 1u8 << ctx.lay0_toggle;
+        }
+    } else if pic.is_ref {
+        if mrp.ld_reduce_ref_buffs == 2 {
+            pic.rps.refresh_frame_mask = 1u8 << 1;
+        } else {
+            // Layer1 toggle 0->1->2
+            ctx.lay1_toggle = circ_inc(ctx.lay1_toggle, 0, 2);
+            pic.rps.refresh_frame_mask = 1u8 << (lay1_offset + ctx.lay1_toggle);
+        }
+    } else {
+        pic.rps.refresh_frame_mask = 0;
+    }
+
+    update_ref_poc_array(&mut pic.rps, &ctx.dpb);
+    set_ref_list_counts(pic, seq, ctx);
+    // Keep the long-term base reference in the base layer.
+    if pic.picture_number - ctx.last_long_base_pic >= LONG_BASE_PIC && pic.temporal_layer_index == 0
+    {
+        pic.rps.refresh_frame_mask |= 1u8 << LONG_BASE_IDX;
+        ctx.last_long_base_pic = pic.picture_number;
+    }
+    prune_refs(
+        &mut pic.rps,
+        u32::from(pic.ref_list0_count),
+        u32::from(pic.ref_list1_count),
+    );
+    set_frame_display_params(pic, ctx, mg_idx);
+}
+
+/// C `av1_generate_rps_info`'s low-delay CBR branch (`pd_process.c:2065-2237`).
+///
+/// LD CBR supports only `hierarchical_levels` 1 and 2 (C asserts it); anything
+/// else is refused here rather than falling into the wrong table.
+///
+/// # Errors
+///
+/// Returns [`RpsBranchUnsupported`] for a hierarchical level or temporal layer
+/// C itself logs as unexpected.
+fn rps_low_delay_cbr(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    ctx: &mut PicDecisionCtx,
+    pic_idx: u32,
+    mg_idx: usize,
+) -> Result<(), RpsBranchUnsupported> {
+    let mrp = &seq.mrp_ctrls;
+    let hier = pic.hierarchical_levels;
+    let temporal_layer = pic.temporal_layer_index;
+    let lay0_toggle = ctx.lay0_toggle;
+    let lay1_toggle = ctx.lay1_toggle;
+
+    let base2_idx = lay0_toggle;
+    let base1_idx = circ_dec(base2_idx, 0, 2);
+    let base0_idx = circ_dec(base1_idx, 0, 2);
+
+    // Index trap: at ld_reduce_ref_buffs == 2 C writes `!lay0_toggle`, the
+    // LOGICAL negation of the toggle (0 -> 1, anything else -> 0), NOT a
+    // bitwise complement and not `LAY1_OFF + something`.
+    let lay1_1_idx = if mrp.ld_reduce_ref_buffs == 2 {
+        u8::from(lay0_toggle == 0)
+    } else if mrp.ld_reduce_ref_buffs == 1 {
+        LAY1_OFF
+    } else {
+        LAY1_OFF + lay1_toggle
+    };
+    let lay1_0_idx = circ_dec(lay1_1_idx, LAY1_OFF, LAY1_OFF + 1);
+    let lay2_idx = LAY2_OFF;
+    const LONG_BASE_IDX: u8 = 7;
+    const LONG_BASE_PIC: u64 = 128;
+
+    let idx = &mut pic.rps.ref_dpb_index;
+    if hier == 1 {
+        match temporal_layer {
+            0 => {
+                idx[LAST] = base2_idx;
+                idx[LAST2] = base1_idx;
+                idx[LAST3] = LONG_BASE_IDX;
+                idx[GOLD] = base0_idx;
+                idx[BWD] = idx[LAST];
+                idx[ALT2] = idx[LAST];
+                idx[ALT] = idx[LAST];
+
+                if mrp.ld_reduce_ref_buffs == 2 {
+                    pic.rps.refresh_frame_mask = (1u8 << ctx.lay0_toggle) | 0xfc;
+                } else if mrp.ld_reduce_ref_buffs == 1 {
+                    ctx.lay0_toggle = circ_inc(ctx.lay0_toggle, 0, 2);
+                    pic.rps.refresh_frame_mask = (1u8 << ctx.lay0_toggle) | 0xf0;
+                } else {
+                    ctx.lay0_toggle = circ_inc(ctx.lay0_toggle, 0, 2);
+                    pic.rps.refresh_frame_mask = 1u8 << ctx.lay0_toggle;
+                }
+            }
+            1 => {
+                idx[LAST] = base2_idx;
+                idx[LAST2] = if mrp.referencing_scheme == 0 {
+                    base1_idx
+                } else {
+                    lay1_1_idx
+                };
+                idx[LAST3] = base1_idx;
+                idx[GOLD] = idx[LAST];
+                idx[BWD] = idx[LAST];
+                idx[ALT2] = idx[LAST];
+                idx[ALT] = idx[LAST];
+
+                pic.rps.refresh_frame_mask = 0;
+                if pic.is_ref {
+                    if mrp.ld_reduce_ref_buffs == 2 {
+                        pic.rps.refresh_frame_mask = (1u8 << u8::from(ctx.lay0_toggle == 0)) | 0xfc;
+                    } else if mrp.ld_reduce_ref_buffs == 1 {
+                        pic.rps.refresh_frame_mask = (1u8 << LAY1_OFF) | 0xf0;
+                    } else {
+                        // Layer1 toggle 0->1
+                        ctx.lay1_toggle = 1 - ctx.lay1_toggle;
+                        pic.rps.refresh_frame_mask = 1u8 << (LAY1_OFF + ctx.lay1_toggle);
+                    }
+                }
+            }
+            _ => {
+                return Err(RpsBranchUnsupported {
+                    hierarchical_levels: hier,
+                    temporal_layer,
+                });
+            }
+        }
+    } else if hier == 2 {
+        match temporal_layer {
+            0 => {
+                idx[LAST] = base2_idx;
+                idx[LAST2] = base0_idx;
+                idx[LAST3] = LONG_BASE_IDX;
+                idx[GOLD] = idx[LAST];
+                idx[BWD] = idx[LAST];
+                idx[ALT2] = idx[LAST];
+                idx[ALT] = idx[LAST];
+
+                if mrp.ld_reduce_ref_buffs == 2 {
+                    pic.rps.refresh_frame_mask = (1u8 << ctx.lay0_toggle) | 0xfc;
+                } else if mrp.ld_reduce_ref_buffs == 1 {
+                    ctx.lay0_toggle = circ_inc(ctx.lay0_toggle, 0, 2);
+                    pic.rps.refresh_frame_mask = (1u8 << ctx.lay0_toggle) | 0xf0;
+                } else {
+                    ctx.lay0_toggle = circ_inc(ctx.lay0_toggle, 0, 2);
+                    pic.rps.refresh_frame_mask = 1u8 << ctx.lay0_toggle;
+                }
+            }
+            1 => {
+                idx[LAST] = base2_idx;
+                idx[LAST2] = lay1_1_idx;
+                idx[LAST3] = base1_idx;
+                idx[GOLD] = idx[LAST];
+                idx[BWD] = idx[LAST];
+                idx[ALT2] = idx[LAST];
+                idx[ALT] = idx[LAST];
+
+                if mrp.ld_reduce_ref_buffs == 2 {
+                    pic.rps.refresh_frame_mask = (1u8 << u8::from(ctx.lay0_toggle == 0)) | 0xfc;
+                } else if mrp.ld_reduce_ref_buffs == 1 {
+                    pic.rps.refresh_frame_mask = (1u8 << LAY1_OFF) | 0xf0;
+                } else {
+                    ctx.lay1_toggle = 1 - ctx.lay1_toggle;
+                    pic.rps.refresh_frame_mask = 1u8 << (LAY1_OFF + ctx.lay1_toggle);
+                }
+            }
+            2 => {
+                if pic_idx == 0 {
+                    idx[LAST] = base2_idx;
+                    idx[LAST2] = lay1_1_idx;
+                    idx[LAST3] = base1_idx;
+                } else if pic_idx == 2 {
+                    idx[LAST] = lay1_1_idx;
+                    idx[LAST2] = base2_idx;
+                    idx[LAST3] = lay1_0_idx;
+                } else {
+                    // C logs "Error in MG indexing - LD CBR HL2" and leaves the
+                    // indices at whatever they were. Refuse instead.
+                    return Err(RpsBranchUnsupported {
+                        hierarchical_levels: hier,
+                        temporal_layer,
+                    });
+                }
+                idx[GOLD] = idx[LAST];
+                idx[BWD] = idx[LAST];
+                idx[ALT2] = idx[LAST];
+                idx[ALT] = idx[LAST];
+
+                pic.rps.refresh_frame_mask = if pic.is_ref { 1u8 << lay2_idx } else { 0 };
+                // Redundant in C, kept to avoid a hang on a bad setting.
+                if mrp.ld_reduce_ref_buffs != 0 {
+                    pic.rps.refresh_frame_mask = 0;
+                }
+            }
+            _ => {
+                return Err(RpsBranchUnsupported {
+                    hierarchical_levels: hier,
+                    temporal_layer,
+                });
+            }
+        }
+    } else {
+        // C asserts hierarchical_levels == 2 here.
+        return Err(RpsBranchUnsupported {
+            hierarchical_levels: hier,
+            temporal_layer,
+        });
+    }
+
+    update_ref_poc_array(&mut pic.rps, &ctx.dpb);
+    set_ref_list_counts(pic, seq, ctx);
+    if seq.pred_structure == PredStructure::LowDelay
+        && pic.picture_number - ctx.last_long_base_pic >= LONG_BASE_PIC
+        && pic.temporal_layer_index == 0
+    {
+        pic.rps.refresh_frame_mask |= 1u8 << LONG_BASE_IDX;
+        ctx.last_long_base_pic = pic.picture_number;
+    }
+    prune_refs(
+        &mut pic.rps,
+        u32::from(pic.ref_list0_count),
+        u32::from(pic.ref_list1_count),
+    );
+    set_frame_display_params(pic, ctx, mg_idx);
+    Ok(())
+}
+
+/// C `av1_generate_rps_info`'s `hierarchical_levels == 0` branch
+/// (`pd_process.c:2238-2269`) — random access, flat.
+///
+/// Walks all 8 DPB slots: list 0 takes the 1st/3rd/5th/8th newest base
+/// pictures and list 1 the 2nd/4th/6th, matching the `{1,3,5,7}` /
+/// `{2,4,6,0}` GOP tables in the C comment.
+///
+/// Note the ORDER: the toggle advances AFTER `prune_refs`, unlike the
+/// low-delay branches where it advances before `update_ref_poc_array`. A port
+/// that hoists the toggle to the top of the branch reads the wrong slot for
+/// LAST on every frame.
+fn rps_random_access_flat(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    ctx: &mut PicDecisionCtx,
+    mg_idx: usize,
+) {
+    let base0_idx = ctx.lay0_toggle;
+    let base1_idx = circ_dec(base0_idx, 0, 7);
+    let base2_idx = circ_dec(base1_idx, 0, 7);
+    let base3_idx = circ_dec(base2_idx, 0, 7);
+    let base4_idx = circ_dec(base3_idx, 0, 7);
+    let base5_idx = circ_dec(base4_idx, 0, 7);
+    let base7_idx = circ_dec(base5_idx, 0, 7);
+
+    pic.rps.ref_dpb_index[LAST] = base0_idx;
+    pic.rps.ref_dpb_index[LAST2] = base2_idx;
+    pic.rps.ref_dpb_index[LAST3] = base4_idx;
+    pic.rps.ref_dpb_index[GOLD] = base7_idx;
+    pic.rps.ref_dpb_index[BWD] = base1_idx;
+    pic.rps.ref_dpb_index[ALT2] = base3_idx;
+    pic.rps.ref_dpb_index[ALT] = base5_idx;
+
+    update_ref_poc_array(&mut pic.rps, &ctx.dpb);
+    set_ref_list_counts(pic, seq, ctx);
+    prune_refs(
+        &mut pic.rps,
+        u32::from(pic.ref_list0_count),
+        u32::from(pic.ref_list1_count),
+    );
+
+    ctx.lay0_toggle = circ_inc(ctx.lay0_toggle, 0, 7);
+    pic.rps.refresh_frame_mask = 1u8 << ctx.lay0_toggle;
+
+    // Flat mode outputs every frame; C calls set_frame_display_params and then
+    // unconditionally overrides both fields.
+    set_frame_display_params(pic, ctx, mg_idx);
+    pic.show_frame = true;
+    pic.has_show_existing = false;
+}
+
+// ---------------------------------------------------------------------------
+// init_pic_settings + the per-picture call sequence
+// ---------------------------------------------------------------------------
+
+/// C `init_pic_settings` (`pd_process.c:4910-4965`) — static, tier 4.
+///
+/// The single per-picture inter-settings funnel: `reference_mode`,
+/// `mi_cols`/`mi_rows`, `ref_order_hint[]`/`cur_order_hint`, sign bias, the
+/// try counts, the skip-mode params and `ref_frame_type_arr`. Every one is
+/// either a written header field or an MD gate.
+///
+/// **Two C calls in this body are deliberately NOT made here** because they
+/// belong to other modules and other lanes own them:
+/// * `copy_tf_params(scs, pcs, ctx)` — the temporal-filter control mapping.
+///   Measured: in `LOW_DELAY` `tf_level` is forced to 0 before any preset
+///   logic (`enc_handle.c:3339-3343`), so this is a no-op for the campaign's
+///   first cell; it is live in random access.
+/// * `svt_aom_sig_deriv_multi_processes_{allintra,rtc,default}` — the
+///   per-preset feature-level derivation (a different file group entirely).
+///
+/// Everything else in the C body is reproduced, in C's order.
+///
+/// Index trap: `ref_order_hint[i]` is `ref_poc_array[i] % (1 << order_hint_bits)`
+/// — the array is indexed by `REF_FRAME_MINUS1` (0..6), while
+/// [`set_ref_frame_sign_bias`] indexes the SAME data by `MvReferenceFrame`
+/// (1..7). Getting the two off by one silently mis-signs every temporal MV.
+pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicDecisionCtx) {
+    pic.allow_comp_inter_inter = pic.slice_type != SliceType::I;
+    pic.reference_mode = if pic.slice_type == SliceType::I {
+        ReferenceMode::IntraSentinel
+    } else if is_incomp_mg_frame(pic, seq) {
+        ReferenceMode::Single
+    } else {
+        ReferenceMode::Select
+    };
+
+    // mi_cols/mi_rows come from the ALIGNED dimensions, not the display ones.
+    pic.mi_cols = pic.aligned_width >> MI_SIZE_LOG2;
+    pic.mi_rows = pic.aligned_height >> MI_SIZE_LOG2;
+
+    // Initialize the order hints.
+    let bits = seq.order_hint_info.order_hint_bits;
+    let modulus = 1u64 << bits;
+    for i in 0..INTER_REFS_PER_FRAME {
+        pic.ref_order_hint[i] = (pic.rps.ref_poc_array[i] % modulus) as u32;
+    }
+    pic.cur_order_hint = (pic.picture_number % modulus) as u32;
+
+    set_ref_frame_sign_bias(pic, seq);
+
+    // copy_tf_params + sig_deriv_multi_processes: see the doc comment.
+
+    update_count_try(pic, seq);
+
+    if ctx.transition_detected == 1 && pic.temporal_layer_index == 0 {
+        pic.transition_present = 1;
+        ctx.transition_detected = 0;
+    }
+
+    if ctx.list0_only && pic.slice_type == SliceType::B && pic.temporal_layer_index == 0 {
+        pic.ref_list1_count_try = 0;
+    }
+    debug_assert!(pic.ref_list0_count_try <= pic.ref_list0_count);
+    debug_assert!(pic.ref_list1_count_try <= pic.ref_list1_count);
+
+    // Skip mode syntax, spec 5.9.22.
+    setup_skip_mode_allowed(pic, seq);
+    pic.skip_mode.skip_mode_flag = pic.skip_mode.skip_mode_allowed;
+
+    let (arr, tot) = set_all_ref_frame_type(pic);
+    pic.ref_frame_type_arr = arr;
+    pic.tot_ref_frame_types = tot;
+}
+
+/// C `MI_SIZE_LOG2`.
+pub const MI_SIZE_LOG2: u32 = 2;
+
+/// The per-picture call sequence from `svt_aom_picture_decision_kernel_iter`
+/// (`pd_process.c:5672-5692`), transcribed.
+///
+/// **The order is load-bearing and is NOT what a reading of the file suggests.**
+/// Measured in the C source at the call site rather than inferred:
+///
+/// ```text
+/// frm_hdr.frame_type = ...     (5674-5679)
+/// set_gf_group_param(pcs)      (5680)   <-- BEFORE the RPS, not after
+/// av1_generate_rps_info(...)   (5681)
+/// update_dpb(pcs, ctx)         (5688)
+/// init_pic_settings(...)       (5691)
+/// ```
+///
+/// `set_gf_group_param` running FIRST is what makes `frame_is_boosted` — and
+/// therefore the base-vs-non-base MRP caps inside
+/// [`set_ref_list_counts`], which `av1_generate_rps_info` calls — read THIS
+/// picture's `update_type` rather than a stale one. A port that ran the RPS
+/// first would silently cap both lists with the wrong row of [`MrpCtrls`].
+///
+/// # Errors
+///
+/// Propagates [`RpsBranchUnsupported`] from [`generate_rps_info`].
+pub fn picture_decision_per_picture(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    ctx: &mut PicDecisionCtx,
+    pic_idx: u32,
+    mg_idx: usize,
+) -> Result<(), RpsBranchUnsupported> {
+    set_gf_group_param(pic);
+    generate_rps_info(pic, seq, ctx, pic_idx, mg_idx)?;
+    update_dpb(pic, ctx);
+    init_pic_settings(pic, seq, ctx);
+    Ok(())
 }
