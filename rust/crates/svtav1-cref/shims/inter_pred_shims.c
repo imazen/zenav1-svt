@@ -492,3 +492,62 @@ void ref_get_contiguous_soft_mask(int wedge_index, int wedge_sign, int bsize, ui
     const uint8_t* m = svt_aom_get_contiguous_soft_mask(wedge_index, wedge_sign, (BlockSize)bsize);
     for (int i = 0; i < n; ++i) out[i] = m[i];
 }
+
+/* ---- inter-intra ------------------------------------------------------ */
+
+void init_ii_masks(void);
+void svt_aom_combine_interintra(InterIntraMode mode, int8_t use_wedge_interintra, int wedge_index, int wedge_sign,
+                                BlockSize bsize, BlockSize plane_bsize, uint8_t* comppred, int compstride,
+                                const uint8_t* interpred, int interstride, const uint8_t* intrapred, int intrastride);
+void svt_aom_combine_interintra_highbd(InterIntraMode mode, uint8_t use_wedge_interintra, uint8_t wedge_index,
+                                       uint8_t wedge_sign, BlockSize bsize, BlockSize plane_bsize, uint8_t* comppred8,
+                                       int compstride, const uint8_t* interpred8, int interstride,
+                                       const uint8_t* intrapred8, int intrastride, int bd);
+
+/* init_ii_masks and svt_av1_init_wedge_masks both fill file-scope tables from
+   const inputs; the blend itself dispatches through RTCD pointers, so all
+   three are set up once. */
+static pthread_once_t g_ii_once = PTHREAD_ONCE_INIT;
+static void           init_ii(void) {
+    ensure_inter_pred_rtcd();
+    svt_av1_init_wedge_masks();
+    init_ii_masks();
+}
+static void ensure_ii(void) { pthread_once(&g_ii_once, init_ii); }
+
+void ref_combine_interintra(int mode, int use_wedge, int wedge_index, int wedge_sign, int bsize, int plane_bsize,
+                            uint8_t* comppred, int compstride, const uint8_t* interpred, int interstride,
+                            const uint8_t* intrapred, int intrastride) {
+    ensure_ii();
+    svt_aom_combine_interintra((InterIntraMode)mode,
+                               (int8_t)use_wedge,
+                               wedge_index,
+                               wedge_sign,
+                               (BlockSize)bsize,
+                               (BlockSize)plane_bsize,
+                               comppred,
+                               compstride,
+                               interpred,
+                               interstride,
+                               intrapred,
+                               intrastride);
+}
+
+void ref_combine_interintra_highbd(int mode, int use_wedge, int wedge_index, int wedge_sign, int bsize,
+                                   int plane_bsize, uint16_t* comppred, int compstride, const uint16_t* interpred,
+                                   int interstride, const uint16_t* intrapred, int intrastride, int bd) {
+    ensure_ii();
+    svt_aom_combine_interintra_highbd((InterIntraMode)mode,
+                                      (uint8_t)use_wedge,
+                                      (uint8_t)wedge_index,
+                                      (uint8_t)wedge_sign,
+                                      (BlockSize)bsize,
+                                      (BlockSize)plane_bsize,
+                                      (uint8_t*)comppred,
+                                      compstride,
+                                      (const uint8_t*)interpred,
+                                      interstride,
+                                      (const uint8_t*)intrapred,
+                                      intrastride,
+                                      bd);
+}

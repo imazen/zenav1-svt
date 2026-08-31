@@ -1728,3 +1728,116 @@ pub fn get_contiguous_soft_mask(
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// Inter-intra.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_combine_interintra(
+        mode: c_int,
+        use_wedge: c_int,
+        wedge_index: c_int,
+        wedge_sign: c_int,
+        bsize: c_int,
+        plane_bsize: c_int,
+        comppred: *mut u8,
+        compstride: c_int,
+        interpred: *const u8,
+        interstride: c_int,
+        intrapred: *const u8,
+        intrastride: c_int,
+    );
+    fn ref_combine_interintra_highbd(
+        mode: c_int,
+        use_wedge: c_int,
+        wedge_index: c_int,
+        wedge_sign: c_int,
+        bsize: c_int,
+        plane_bsize: c_int,
+        comppred: *mut u16,
+        compstride: c_int,
+        interpred: *const u16,
+        interstride: c_int,
+        intrapred: *const u16,
+        intrastride: c_int,
+        bd: c_int,
+    );
+}
+
+/// The wedge selection shared by both `combine_interintra` bindings.
+#[derive(Clone, Copy, Debug)]
+pub struct IiWedge {
+    /// `use_wedge_interintra`.
+    pub use_wedge: bool,
+    /// `wedge_index`.
+    pub index: i32,
+    /// `wedge_sign`.
+    pub sign: i32,
+}
+
+/// Reference `svt_aom_combine_interintra` (inter_prediction.c:2468).
+#[allow(clippy::too_many_arguments)]
+pub fn combine_interintra(
+    mode: i32,
+    wedge: IiWedge,
+    bsize: i32,
+    plane_bsize: i32,
+    comppred: &mut [u8],
+    compstride: usize,
+    interpred: &[u8],
+    interstride: usize,
+    intrapred: &[u8],
+    intrastride: usize,
+) {
+    unsafe {
+        ref_combine_interintra(
+            mode,
+            i32::from(wedge.use_wedge),
+            wedge.index,
+            wedge.sign,
+            bsize,
+            plane_bsize,
+            comppred.as_mut_ptr(),
+            compstride as i32,
+            interpred.as_ptr(),
+            interstride as i32,
+            intrapred.as_ptr(),
+            intrastride as i32,
+        );
+    }
+}
+
+/// Reference `svt_aom_combine_interintra_highbd` (inter_prediction.c:2298).
+#[allow(clippy::too_many_arguments)]
+pub fn combine_interintra_highbd(
+    mode: i32,
+    wedge: IiWedge,
+    bsize: i32,
+    plane_bsize: i32,
+    comppred: &mut [u16],
+    compstride: usize,
+    interpred: &[u16],
+    interstride: usize,
+    intrapred: &[u16],
+    intrastride: usize,
+    bd: i32,
+) {
+    unsafe {
+        ref_combine_interintra_highbd(
+            mode,
+            i32::from(wedge.use_wedge),
+            wedge.index,
+            wedge.sign,
+            bsize,
+            plane_bsize,
+            comppred.as_mut_ptr(),
+            compstride as i32,
+            interpred.as_ptr(),
+            interstride as i32,
+            intrapred.as_ptr(),
+            intrastride as i32,
+            bd,
+        );
+    }
+}
