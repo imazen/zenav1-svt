@@ -686,3 +686,66 @@ void ref_highbd_convolve_2d_scale_full(const uint16_t* src, int src_stride, uint
                                        &cp,
                                        bd);
 }
+
+/* ---- subpel-param derivation via tf_inter_predictor -------------------- */
+
+#include "sequence_control_set.h"
+
+void tf_inter_predictor(SequenceControlSet* scs, uint8_t* src_ptr, uint8_t* dst_ptr, int16_t pre_y, int16_t pre_x,
+                        Mv mv, const struct ScaleFactors* const sf, ConvolveParams* conv_params,
+                        InterpFilters interp_filters, uint16_t frame_width, uint16_t frame_height, uint8_t blk_width,
+                        uint8_t blk_height, MacroBlockD* av1xd, int32_t src_stride, int32_t dst_stride,
+                        uint8_t bit_depth, uint8_t subsamling_shift);
+
+/* `tf_inter_predictor` is the only EXPORTED caller of the `static`
+   `compute_subpel_params` that a shim can synthesise the arguments for: it
+   reads exactly `scs->super_block_size` off the SequenceControlSet and the
+   four `mb_to_*_edge` fields off the MacroBlockD. The SCS is calloc/free per
+   call (it is large, and per ref_shims.c's rule "large" is a reason for
+   calloc, never for a `static`). */
+void ref_tf_inter_predictor(uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride, int pre_y, int pre_x,
+                            int mv_x, int mv_y, int other_w, int other_h, int this_w, int this_h, int super_block_size,
+                            int frame_width, int frame_height, int blk_width, int blk_height, int mb_to_left,
+                            int mb_to_right, int mb_to_top, int mb_to_bottom, uint32_t interp_filters, int bit_depth,
+                            int subsampling_shift) {
+    ensure_inter_pred_rtcd();
+    SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    scs->super_block_size   = (uint16_t)super_block_size;
+
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.mb_to_left_edge   = mb_to_left;
+    xd.mb_to_right_edge  = mb_to_right;
+    xd.mb_to_top_edge    = mb_to_top;
+    xd.mb_to_bottom_edge = mb_to_bottom;
+
+    ScaleFactors sf;
+    memset(&sf, 0, sizeof(sf));
+    svt_av1_setup_scale_factors_for_frame(&sf, other_w, other_h, this_w, this_h);
+
+    Mv mv;
+    mv.x = (int16_t)mv_x;
+    mv.y = (int16_t)mv_y;
+
+    ConvolveParams cp = get_conv_params_no_round(0, NULL, 0, 0, bit_depth);
+
+    tf_inter_predictor(scs,
+                       src,
+                       dst,
+                       (int16_t)pre_y,
+                       (int16_t)pre_x,
+                       mv,
+                       &sf,
+                       &cp,
+                       interp_filters,
+                       (uint16_t)frame_width,
+                       (uint16_t)frame_height,
+                       (uint8_t)blk_width,
+                       (uint8_t)blk_height,
+                       &xd,
+                       src_stride,
+                       dst_stride,
+                       (uint8_t)bit_depth,
+                       (uint8_t)subsampling_shift);
+    free(scs);
+}

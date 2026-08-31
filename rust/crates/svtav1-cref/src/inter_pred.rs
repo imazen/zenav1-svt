@@ -2178,3 +2178,107 @@ pub fn highbd_convolve_2d_scale_full(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Subpel-param derivation, via the exported tf_inter_predictor.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_tf_inter_predictor(
+        src: *mut u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        pre_y: c_int,
+        pre_x: c_int,
+        mv_x: c_int,
+        mv_y: c_int,
+        other_w: c_int,
+        other_h: c_int,
+        this_w: c_int,
+        this_h: c_int,
+        super_block_size: c_int,
+        frame_width: c_int,
+        frame_height: c_int,
+        blk_width: c_int,
+        blk_height: c_int,
+        mb_to_left: c_int,
+        mb_to_right: c_int,
+        mb_to_top: c_int,
+        mb_to_bottom: c_int,
+        interp_filters: u32,
+        bit_depth: c_int,
+        subsampling_shift: c_int,
+    );
+}
+
+/// The `MacroBlockD` edge distances the subpel derivation reads.
+#[derive(Clone, Copy, Debug)]
+pub struct RefMbEdges {
+    /// `mb_to_left_edge`.
+    pub to_left: i32,
+    /// `mb_to_right_edge`.
+    pub to_right: i32,
+    /// `mb_to_top_edge`.
+    pub to_top: i32,
+    /// `mb_to_bottom_edge`.
+    pub to_bottom: i32,
+}
+
+/// Reference `tf_inter_predictor` (enc_inter_prediction.c:2452).
+///
+/// This is the only EXPORTED caller of the `static` `compute_subpel_params`
+/// whose arguments a shim can synthesise: it reads exactly
+/// `scs->super_block_size` off the `SequenceControlSet` and the four
+/// `mb_to_*_edge` fields off the `MacroBlockD`. Its output pixels therefore
+/// pin both `compute_subpel_params` and `clamp_mv_to_umv_border_sb`.
+///
+/// `src` must be the base of the reference plane (the function offsets it by
+/// the derived `pos_x`/`pos_y` itself), with enough margin around the block.
+#[allow(clippy::too_many_arguments)]
+pub fn tf_inter_predictor(
+    src: &mut [u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    pre: (i32, i32),
+    mv: (i32, i32),
+    frame_sizes: (i32, i32, i32, i32),
+    super_block_size: i32,
+    frame_dims: (i32, i32),
+    blk: (i32, i32),
+    edges: RefMbEdges,
+    interp_filters: u32,
+    bit_depth: i32,
+    subsampling_shift: i32,
+) {
+    unsafe {
+        ref_tf_inter_predictor(
+            src.as_mut_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            pre.0,
+            pre.1,
+            mv.0,
+            mv.1,
+            frame_sizes.0,
+            frame_sizes.1,
+            frame_sizes.2,
+            frame_sizes.3,
+            super_block_size,
+            frame_dims.0,
+            frame_dims.1,
+            blk.0,
+            blk.1,
+            edges.to_left,
+            edges.to_right,
+            edges.to_top,
+            edges.to_bottom,
+            interp_filters,
+            bit_depth,
+            subsampling_shift,
+        );
+    }
+}
