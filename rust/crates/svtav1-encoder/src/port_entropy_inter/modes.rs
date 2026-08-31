@@ -51,6 +51,16 @@ pub const NEW_NEWMV: u8 = 24;
 pub const INTER_COMPOUND_MODES: usize = 8;
 /// C `MOTION_MODES` (definitions.h:1254).
 pub const MOTION_MODES: usize = 3;
+/// C `NEWMV_MODE_CONTEXTS` (definitions.h:1340) — note it is SMALLER than
+/// what `NEWMV_CTX_MASK` admits.
+pub const NEWMV_MODE_CONTEXTS: usize = 6;
+/// C `GLOBALMV_MODE_CONTEXTS` (definitions.h:1341).
+pub const GLOBALMV_MODE_CONTEXTS: usize = 2;
+/// C `REFMV_MODE_CONTEXTS` (definitions.h:1342) — likewise smaller than
+/// `REFMV_CTX_MASK` admits.
+pub const REFMV_MODE_CONTEXTS: usize = 6;
+/// C `DRL_MODE_CONTEXTS` (definitions.h:1343).
+pub const DRL_MODE_CONTEXTS: usize = 3;
 /// C `NEWMV_CTX_MASK` (definitions.h:1348).
 pub const NEWMV_CTX_MASK: i16 = (1 << 3) - 1;
 /// C `GLOBALMV_OFFSET` (definitions.h:1345).
@@ -213,6 +223,10 @@ pub fn encode_skip_mode(
 /// `svt_aom_mode_context_analyzer`; the masks and shifts here are C's.
 pub fn write_inter_mode(w: &mut AomWriter, ic: &mut InterCdfs, mode: u8, mode_ctx: i16) {
     let newmv_ctx = (mode_ctx & NEWMV_CTX_MASK) as usize;
+    // C's own assert (entropy_coding.c:1387): the MASK is wider than the
+    // table (7 vs NEWMV_MODE_CONTEXTS = 6), so an out-of-range `mode_ctx`
+    // indexes past `newmv_cdf` in C too.
+    debug_assert!(newmv_ctx < NEWMV_MODE_CONTEXTS);
     w.write_symbol(usize::from(mode != NEWMV), &mut ic.newmv_cdf[newmv_ctx], 2);
 
     if mode != NEWMV {
@@ -225,6 +239,9 @@ pub fn write_inter_mode(w: &mut AomWriter, ic: &mut InterCdfs, mode: u8, mode_ct
 
         if mode != GLOBALMV {
             let refmv_ctx = ((mode_ctx >> REFMV_OFFSET) & REFMV_CTX_MASK) as usize;
+            // C's assert at entropy_coding.c:1397, same shape: the mask is 15
+            // but REFMV_MODE_CONTEXTS is 6.
+            debug_assert!(refmv_ctx < REFMV_MODE_CONTEXTS);
             w.write_symbol(
                 usize::from(mode != NEARESTMV),
                 &mut ic.refmv_cdf[refmv_ctx],
