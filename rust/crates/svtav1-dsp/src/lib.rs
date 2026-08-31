@@ -29,6 +29,7 @@ pub mod loop_filter;
 pub mod obmc;
 pub mod port_convolve;
 pub mod port_convolve_hbd;
+pub mod port_convolve_scale;
 pub mod port_inter_predictor;
 pub mod port_interintra;
 pub mod port_masked_compound;

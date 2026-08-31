@@ -2010,3 +2010,171 @@ pub fn get_obmc_mask(overlap: usize) -> Vec<u8> {
     unsafe { ref_get_obmc_mask(overlap as i32, out.as_mut_ptr()) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// Scaled-reference kernels.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_convolve_2d_scale_full(
+        src: *const u8,
+        src_stride: c_int,
+        dst8: *mut u8,
+        dst8_stride: c_int,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        w: c_int,
+        h: c_int,
+        filt_x: c_int,
+        fx_size: c_int,
+        filt_y: c_int,
+        fy_size: c_int,
+        subpel_x_qn: c_int,
+        x_step_qn: c_int,
+        subpel_y_qn: c_int,
+        y_step_qn: c_int,
+        bd: c_int,
+        is_compound: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+    );
+    fn ref_highbd_convolve_2d_scale_full(
+        src: *const u16,
+        src_stride: c_int,
+        dst: *mut u16,
+        dst_stride: c_int,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        w: c_int,
+        h: c_int,
+        filt_x: c_int,
+        fx_size: c_int,
+        filt_y: c_int,
+        fy_size: c_int,
+        subpel_x_qn: c_int,
+        x_step_qn: c_int,
+        subpel_y_qn: c_int,
+        y_step_qn: c_int,
+        bd: c_int,
+        is_compound: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+    );
+}
+
+/// The `(subpel, step)` phase pair each axis of a scaled convolve takes, in
+/// the `SCALE_SUBPEL_BITS = 10` domain.
+#[derive(Clone, Copy, Debug)]
+pub struct ScalePhases {
+    /// `subpel_x_qn`.
+    pub subpel_x_qn: i32,
+    /// `x_step_qn`.
+    pub x_step_qn: i32,
+    /// `subpel_y_qn`.
+    pub subpel_y_qn: i32,
+    /// `y_step_qn`.
+    pub y_step_qn: i32,
+}
+
+/// Reference `svt_av1_convolve_2d_scale_c` (inter_prediction.c:448), with the
+/// full ConvolveParams surface (compound and distance weights included).
+///
+/// The older [`crate::convolve_2d_scale`] binding pins EIGHTTAP_REGULAR and
+/// single prediction only; this one is the general form.
+#[allow(clippy::too_many_arguments)]
+pub fn convolve_2d_scale_full(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    filt_x: i32,
+    fx_size: i32,
+    filt_y: i32,
+    fy_size: i32,
+    phases: ScalePhases,
+    comp: RefCompound,
+) {
+    unsafe {
+        ref_convolve_2d_scale_full(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            w as i32,
+            h as i32,
+            filt_x,
+            fx_size,
+            filt_y,
+            fy_size,
+            phases.subpel_x_qn,
+            phases.x_step_qn,
+            phases.subpel_y_qn,
+            phases.y_step_qn,
+            8,
+            i32::from(comp.is_compound),
+            i32::from(comp.do_average),
+            i32::from(comp.use_jnt),
+            comp.fwd,
+            comp.bck,
+        );
+    }
+}
+
+/// Reference `svt_av1_highbd_convolve_2d_scale_c` (inter_prediction.c:828).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_convolve_2d_scale_full(
+    src: &[u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    w: usize,
+    h: usize,
+    filt_x: i32,
+    fx_size: i32,
+    filt_y: i32,
+    fy_size: i32,
+    phases: ScalePhases,
+    comp: RefCompound,
+    bd: i32,
+) {
+    unsafe {
+        ref_highbd_convolve_2d_scale_full(
+            src.as_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            conv_buf.as_mut_ptr(),
+            conv_stride as i32,
+            w as i32,
+            h as i32,
+            filt_x,
+            fx_size,
+            filt_y,
+            fy_size,
+            phases.subpel_x_qn,
+            phases.x_step_qn,
+            phases.subpel_y_qn,
+            phases.y_step_qn,
+            bd,
+            i32::from(comp.is_compound),
+            i32::from(comp.do_average),
+            i32::from(comp.use_jnt),
+            comp.fwd,
+            comp.bck,
+        );
+    }
+}

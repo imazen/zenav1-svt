@@ -622,3 +622,67 @@ void           ref_get_obmc_mask(int overlap, uint8_t* out) {
     const uint8_t* m = svt_av1_get_obmc_mask(overlap);
     for (int i = 0; i < overlap; ++i) out[i] = m[i];
 }
+
+/* ---- scaled-reference kernels ----------------------------------------- */
+
+void svt_av1_convolve_2d_scale_c(const uint8_t* src, int src_stride, uint8_t* dst8, int dst8_stride, int w, int h,
+                                 const InterpFilterParams* fx, const InterpFilterParams* fy, int subpel_x_qn,
+                                 int x_step_qn, int subpel_y_qn, int y_step_qn, ConvolveParams* conv_params);
+void svt_av1_highbd_convolve_2d_scale_c(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride, int w,
+                                        int h, const InterpFilterParams* fx, const InterpFilterParams* fy,
+                                        int subpel_x_qn, int x_step_qn, int subpel_y_qn, int y_step_qn,
+                                        ConvolveParams* conv_params, int bd);
+
+void ref_convolve_2d_scale_full(const uint8_t* src, int src_stride, uint8_t* dst8, int dst8_stride, uint16_t* conv_buf,
+                                int conv_stride, int w, int h, int filt_x, int fx_size, int filt_y, int fy_size,
+                                int subpel_x_qn, int x_step_qn, int subpel_y_qn, int y_step_qn, int bd,
+                                int is_compound, int do_average, int use_jnt, int fwd, int bck) {
+    const InterpFilterParams fx = pick_params(filt_x, fx_size);
+    const InterpFilterParams fy = pick_params(filt_y, fy_size);
+    ConvolveParams           cp = get_conv_params_no_round(do_average, conv_buf, conv_stride, is_compound, bd);
+    cp.use_jnt_comp_avg         = use_jnt;
+    cp.use_dist_wtd_comp_avg    = use_jnt;
+    cp.fwd_offset               = fwd;
+    cp.bck_offset               = bck;
+    svt_av1_convolve_2d_scale_c(src,
+                                src_stride,
+                                dst8,
+                                dst8_stride,
+                                w,
+                                h,
+                                &fx,
+                                &fy,
+                                subpel_x_qn,
+                                x_step_qn,
+                                subpel_y_qn,
+                                y_step_qn,
+                                &cp);
+}
+
+void ref_highbd_convolve_2d_scale_full(const uint16_t* src, int src_stride, uint16_t* dst, int dst_stride,
+                                       uint16_t* conv_buf, int conv_stride, int w, int h, int filt_x, int fx_size,
+                                       int filt_y, int fy_size, int subpel_x_qn, int x_step_qn, int subpel_y_qn,
+                                       int y_step_qn, int bd, int is_compound, int do_average, int use_jnt, int fwd,
+                                       int bck) {
+    const InterpFilterParams fx = pick_params(filt_x, fx_size);
+    const InterpFilterParams fy = pick_params(filt_y, fy_size);
+    ConvolveParams           cp = get_conv_params_no_round(do_average, conv_buf, conv_stride, is_compound, bd);
+    cp.use_jnt_comp_avg         = use_jnt;
+    cp.use_dist_wtd_comp_avg    = use_jnt;
+    cp.fwd_offset               = fwd;
+    cp.bck_offset               = bck;
+    svt_av1_highbd_convolve_2d_scale_c(src,
+                                       src_stride,
+                                       dst,
+                                       dst_stride,
+                                       w,
+                                       h,
+                                       &fx,
+                                       &fy,
+                                       subpel_x_qn,
+                                       x_step_qn,
+                                       subpel_y_qn,
+                                       y_step_qn,
+                                       &cp,
+                                       bd);
+}

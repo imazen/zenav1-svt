@@ -16,11 +16,13 @@
 //! — a strictly stronger comparison than the `_c`-only cells in
 //! `c_parity_port_convolve.rs`.
 //!
+//! The `is_scaled` arm of every dispatcher IS covered
+//! (`scaled_arm_matches_c`), now that `svt_av1_convolve_2d_scale_c` and its
+//! highbd twin are ported. That cell replaced an earlier one which only pinned
+//! the port's REFUSAL of scaled references — real parity is strictly stronger
+//! evidence than a refusal.
+//!
 //! NOT COVERED, and named rather than implied:
-//! * the `is_scaled` arm of every dispatcher — it calls
-//!   `svt_av1_convolve_2d_scale`, which is not ported. The port REFUSES with
-//!   `McError::ScaledReferenceNotPorted` (`WORKING-ON-THIS.md` §6) and
-//!   `refuses_scaled_reference` pins that.
 //! * `svt_inter_predictor_light_pd1`'s `bd > 8` arm, which packs `src` +
 //!   `src_2b` through `svt_aom_pack_block`. This port carries plain u16 planes
 //!   by design, so that representation has no counterpart.
@@ -29,7 +31,7 @@ use svtav1_cref::inter_pred as cref;
 use svtav1_dsp::port_convolve::{ConvolveParams, InterpFilterKind, SrcView};
 use svtav1_dsp::port_convolve_hbd::SrcView16;
 use svtav1_dsp::port_inter_predictor::{
-    McError, broadcast_interp_filter, convolve_2d_for_intrabc, extract_interp_filter,
+    broadcast_interp_filter, convolve_2d_for_intrabc, extract_interp_filter,
     get_convolve_filter_params, highbd_convolve_2d_for_intrabc, highbd_inter_predictor,
     inter_predictor, inter_predictor_light_pd1_8bit, inter_predictor_pd0, make_interp_filters,
 };
@@ -236,8 +238,7 @@ fn inter_predictor_pd0_matches_c() {
                         continue;
                     }
                     cp.do_average = avg;
-                    inter_predictor_pd0(f.view(), &mut r_dst, w, &mut r_cb, w, h, &sp, &cp)
-                        .unwrap();
+                    inter_predictor_pd0(f.view(), &mut r_dst, w, &mut r_cb, w, h, &sp, &cp);
                     cref::inter_predictor_pd0(
                         &f.src,
                         f.origin,
@@ -321,8 +322,7 @@ fn inter_predictor_matches_c() {
                                     &cp,
                                     filters,
                                     false,
-                                )
-                                .unwrap();
+                                );
                                 cref::inter_predictor(
                                     &f.src,
                                     f.origin,
@@ -406,8 +406,7 @@ fn intrabc_arm_matches_c() {
                 &cp,
                 broadcast_interp_filter(InterpFilterKind::EightTapRegular),
                 true,
-            )
-            .unwrap();
+            );
             cref::inter_predictor(
                 &f.src,
                 f.origin,
@@ -481,8 +480,7 @@ fn highbd_inter_predictor_matches_c() {
                                     filters,
                                     false,
                                     bd,
-                                )
-                                .unwrap();
+                                );
                                 cref::highbd_inter_predictor(
                                     &f.src,
                                     f.origin,
@@ -585,8 +583,7 @@ fn inter_predictor_light_pd1_8bit_matches_c() {
                                 filters,
                                 &sp,
                                 &cp,
-                            )
-                            .unwrap();
+                            );
                             let mut csrc = f.src.clone();
                             cref::inter_predictor_light_pd1_8bit(
                                 &mut csrc,
@@ -626,36 +623,215 @@ fn inter_predictor_light_pd1_8bit_matches_c() {
     assert!(cells >= 700, "anti-vacuity: only {cells} cells ran");
 }
 
-/// The scaled arm is refused, not approximated, in all four entry points.
+/// The scaled arm of all four dispatchers, against C.
+///
+/// A scaled reference makes `has_scale(xs, ys)` true, which routes every entry
+/// point into `svt_av1_convolve_2d_scale` / its highbd twin. The phases below
+/// are in the SCALE_SUBPEL (10-bit) domain, and deliberately include the 1:1
+/// step (1024) — which is still the SCALED path when the other axis differs.
 #[test]
-fn refuses_scaled_reference() {
-    let f = Fix8::new(8, 8, 1);
-    let g = Fix16::new(8, 8, 1, 10);
-    let mut d8 = vec![0u8; 64];
-    let mut d16 = vec![0u16; 64];
-    let mut cb = vec![0u16; 64];
-    let cp = ConvolveParams::single(false, 8);
-    // xs != SCALE_SUBPEL_SHIFTS is exactly `has_scale`.
-    let sp = SubpelParams {
-        xs: SCALE_SUBPEL_SHIFTS + 4,
-        ys: SCALE_SUBPEL_SHIFTS,
-        subpel_x: 0,
-        subpel_y: 0,
-    };
-    assert_eq!(
-        inter_predictor_pd0(f.view(), &mut d8, 8, &mut cb, 8, 8, &sp, &cp),
-        Err(McError::ScaledReferenceNotPorted)
-    );
-    assert_eq!(
-        inter_predictor(f.view(), &mut d8, 8, &mut cb, &sp, 8, 8, &cp, 0, false),
-        Err(McError::ScaledReferenceNotPorted)
-    );
-    assert_eq!(
-        inter_predictor_light_pd1_8bit(f.view(), &mut d8, 8, &mut cb, 8, 8, 0, &sp, &cp),
-        Err(McError::ScaledReferenceNotPorted)
-    );
-    assert_eq!(
-        highbd_inter_predictor(g.view(), &mut d16, 8, &mut cb, &sp, 8, 8, &cp, 0, false, 10),
-        Err(McError::ScaledReferenceNotPorted)
-    );
+fn scaled_arm_matches_c() {
+    let mut cells = 0usize;
+    for (w, h) in SIZES {
+        for (spx, stx, spy, sty) in [
+            (0i32, 2048i32, 0i32, 1024i32),
+            (512, 1536, 300, 1536),
+            (64, 683, 900, 683),
+            (0, 1024, 0, 2048),
+        ] {
+            for is_compound in [false, true] {
+                let cb_stride = w + 2;
+                let sp = SubpelParams {
+                    xs: stx,
+                    ys: sty,
+                    subpel_x: spx,
+                    subpel_y: spy,
+                };
+                let csp = cref::RefSubpel {
+                    xs: sp.xs,
+                    ys: sp.ys,
+                    subpel_x: sp.subpel_x,
+                    subpel_y: sp.subpel_y,
+                };
+                assert!(
+                    svtav1_dsp::port_scale_factors::has_scale(sp.xs, sp.ys),
+                    "the cell must actually take the scaled arm"
+                );
+                // A generously padded source: the scaled reach is driven by the
+                // step, not the block size.
+                let f = Fix8::new(w * 3 + 64, h * 3 + 64, 0xACE0 ^ (w as u32) ^ spx as u32);
+                let g = Fix16::new(w * 3 + 64, h * 3 + 64, 0xBDF1 ^ (h as u32) ^ spy as u32, 10);
+
+                for (cs, filters) in [
+                    (
+                        0usize,
+                        broadcast_interp_filter(InterpFilterKind::EightTapRegular),
+                    ),
+                    (
+                        1,
+                        make_interp_filters(
+                            InterpFilterKind::EightTapSmooth,
+                            InterpFilterKind::MultiTapSharp,
+                        ),
+                    ),
+                ] {
+                    let _ = cs;
+                    let mut cp = ConvolveParams::no_round(false, cb_stride, is_compound, 8);
+
+                    // pd0
+                    let mut r = vec![0u8; w * h];
+                    let mut c = vec![0u8; w * h];
+                    let mut rcb = vec![0u16; cb_stride * h];
+                    let mut ccb = vec![0u16; cb_stride * h];
+                    inter_predictor_pd0(f.view(), &mut r, w, &mut rcb, w, h, &sp, &cp);
+                    cref::inter_predictor_pd0(
+                        &f.src,
+                        f.origin,
+                        f.stride,
+                        &mut c,
+                        w,
+                        &mut ccb,
+                        cb_stride,
+                        w,
+                        h,
+                        csp,
+                        is_compound,
+                        false,
+                    );
+                    assert_eq!(rcb, ccb, "pd0 scaled CONV_BUF {w}x{h}");
+                    assert_eq!(r, c, "pd0 scaled dst {w}x{h}");
+
+                    // svt_inter_predictor
+                    let mut r = vec![0u8; w * h];
+                    let mut c = vec![0u8; w * h];
+                    let mut rcb = vec![0u16; cb_stride * h];
+                    let mut ccb = vec![0u16; cb_stride * h];
+                    inter_predictor(
+                        f.view(),
+                        &mut r,
+                        w,
+                        &mut rcb,
+                        &sp,
+                        w,
+                        h,
+                        &cp,
+                        filters,
+                        false,
+                    );
+                    cref::inter_predictor(
+                        &f.src,
+                        f.origin,
+                        f.stride,
+                        &mut c,
+                        w,
+                        &mut ccb,
+                        cb_stride,
+                        csp,
+                        (64, 64, 64, 64),
+                        w,
+                        h,
+                        cref::RefCompound {
+                            is_compound,
+                            do_average: false,
+                            use_jnt: false,
+                            fwd: 0,
+                            bck: 0,
+                        },
+                        filters,
+                        false,
+                    );
+                    assert_eq!(rcb, ccb, "inter_predictor scaled CONV_BUF {w}x{h}");
+                    assert_eq!(r, c, "inter_predictor scaled dst {w}x{h}");
+
+                    // light pd1
+                    let mut r = vec![0u8; w * h];
+                    let mut c = vec![0u8; w * h];
+                    let mut rcb = vec![0u16; cb_stride * h];
+                    let mut ccb = vec![0u16; cb_stride * h];
+                    inter_predictor_light_pd1_8bit(
+                        f.view(),
+                        &mut r,
+                        w,
+                        &mut rcb,
+                        w,
+                        h,
+                        filters,
+                        &sp,
+                        &cp,
+                    );
+                    let mut csrc = f.src.clone();
+                    cref::inter_predictor_light_pd1_8bit(
+                        &mut csrc,
+                        f.origin,
+                        f.stride,
+                        &mut c,
+                        w,
+                        &mut ccb,
+                        cb_stride,
+                        w,
+                        h,
+                        filters,
+                        csp,
+                        cref::RefCompound {
+                            is_compound,
+                            do_average: false,
+                            use_jnt: false,
+                            fwd: 0,
+                            bck: 0,
+                        },
+                    );
+                    assert_eq!(rcb, ccb, "light_pd1 scaled CONV_BUF {w}x{h}");
+                    assert_eq!(r, c, "light_pd1 scaled dst {w}x{h}");
+
+                    // highbd
+                    cp = ConvolveParams::no_round(false, cb_stride, is_compound, 10);
+                    let mut r = vec![0u16; w * h];
+                    let mut c = vec![0u16; w * h];
+                    let mut rcb = vec![0u16; cb_stride * h];
+                    let mut ccb = vec![0u16; cb_stride * h];
+                    highbd_inter_predictor(
+                        g.view(),
+                        &mut r,
+                        w,
+                        &mut rcb,
+                        &sp,
+                        w,
+                        h,
+                        &cp,
+                        filters,
+                        false,
+                        10,
+                    );
+                    cref::highbd_inter_predictor(
+                        &g.src,
+                        g.origin,
+                        g.stride,
+                        &mut c,
+                        w,
+                        &mut ccb,
+                        cb_stride,
+                        csp,
+                        (64, 64, 64, 64),
+                        w,
+                        h,
+                        cref::RefCompound {
+                            is_compound,
+                            do_average: false,
+                            use_jnt: false,
+                            fwd: 0,
+                            bck: 0,
+                        },
+                        filters,
+                        false,
+                        10,
+                    );
+                    assert_eq!(rcb, ccb, "highbd scaled CONV_BUF {w}x{h}");
+                    assert_eq!(r, c, "highbd scaled dst {w}x{h}");
+
+                    cells += 1;
+                }
+            }
+        }
+    }
+    assert!(cells >= 80, "anti-vacuity: only {cells} cells ran");
 }

@@ -19,16 +19,19 @@
 //! on every block whose axes differ — which the switchable-filter path picks
 //! constantly. [`filters_match_c`-style gating lives in the parity test.]
 //!
-//! # Scaled references are REFUSED, not approximated
+//! # Scaled references
 //!
 //! Both `is_scaled` arms call `svt_av1_convolve_2d_scale` /
-//! `svt_av1_highbd_convolve_2d_scale`, which are NOT ported — `scale.rs` is a
-//! homegrown Q14 approximation and `tests/c_parity_scale.rs` pins its
-//! divergence with an `assert_ne!`. Emitting the unscaled kernel's output for
-//! a scaled reference would be a plausible-but-wrong prediction, so these
-//! entry points return [`McError::ScaledReferenceNotPorted`] instead
-//! (`WORKING-ON-THIS.md` §6). When the scale kernel lands, wire it here and
-//! the refusal disappears.
+//! `svt_av1_highbd_convolve_2d_scale`. Those landed in
+//! [`crate::port_convolve_scale`] (C-gated at tier 1), so these entry points
+//! now take the scaled path rather than refusing it. They previously returned
+//! `McError::ScaledReferenceNotPorted` — a refusal rather than a
+//! plausible-but-wrong prediction (`WORKING-ON-THIS.md` §6) — and the
+//! refusal-pinning cell has been replaced by a real scaled-parity cell, which
+//! is strictly stronger evidence.
+//!
+//! `svtav1-dsp/src/scale.rs` is untouched: it is a different, homegrown
+//! approximation, and `tests/c_parity_scale.rs` still pins its divergence.
 
 use crate::port_convolve::{
     ConvolveParams, FilterParams, InterpFilterKind, SrcView, convolve_2d_copy_sr, convolve_2d_sr,
@@ -40,18 +43,8 @@ use crate::port_convolve_hbd::{
     highbd_convolve_y_sr, highbd_jnt_convolve_2d, highbd_jnt_convolve_2d_copy,
     highbd_jnt_convolve_x, highbd_jnt_convolve_y,
 };
+use crate::port_convolve_scale::{convolve_2d_scale, highbd_convolve_2d_scale};
 use crate::port_scale_factors::{SubpelParams, has_scale, revert_scale_extra_bits};
-
-/// Why an MC entry point declined to produce pixels.
-///
-/// A refusal is not a crash and not a fallback — see `WORKING-ON-THIS.md` §6.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McError {
-    /// `has_scale(xs, ys)` was true and the scaled kernels
-    /// (`svt_av1_convolve_2d_scale_c` / `svt_av1_highbd_convolve_2d_scale_c`)
-    /// are not ported yet.
-    ScaledReferenceNotPorted,
-}
 
 /// C's packed `InterpFilters` word: Y filter in the low 16 bits, X in the high.
 pub type InterpFilters = u32;
@@ -325,16 +318,38 @@ pub fn inter_predictor_pd0(
     h: usize,
     subpel_params: &SubpelParams,
     conv_params: &ConvolveParams,
-) -> Result<(), McError> {
+) {
     if has_scale(subpel_params.xs, subpel_params.ys) {
-        return Err(McError::ScaledReferenceNotPorted);
+        // C builds the filters from
+        // `av1_make_interp_filters(EIGHTTAP_REGULAR, EIGHTTAP_REGULAR)` here —
+        // PD0 pins the filter pair regardless of the block's own choice.
+        let (fx, fy) = get_convolve_filter_params(
+            broadcast_interp_filter(InterpFilterKind::EightTapRegular),
+            w as i32,
+            h as i32,
+        );
+        convolve_2d_scale(
+            src,
+            dst,
+            dst_stride,
+            conv_buf,
+            w,
+            h,
+            &fx,
+            &fy,
+            subpel_params.subpel_x,
+            subpel_params.xs,
+            subpel_params.subpel_y,
+            subpel_params.ys,
+            conv_params,
+        );
+        return;
     }
     if conv_params.is_compound {
         jnt_convolve_2d_copy(src, dst, dst_stride, conv_buf, w, h, conv_params);
     } else {
         convolve_2d_copy_sr(src, dst, dst_stride, w, h);
     }
-    Ok(())
 }
 
 /// `svt_inter_predictor` (inter_prediction.c:1386) — the 8-bit full-PD1 MC
@@ -354,13 +369,41 @@ pub fn inter_predictor(
     conv_params: &ConvolveParams,
     interp_filters: InterpFilters,
     is_intrabc: bool,
-) -> Result<(), McError> {
+) {
     let (fx, fy) = get_convolve_filter_params(interp_filters, w as i32, h as i32);
     if has_scale(subpel_params.xs, subpel_params.ys) {
         // C asserts IMPLIES(is_intrabc, !is_scaled), so the intrabc arm inside
-        // the scaled branch is unreachable in a well-formed call; the whole
-        // branch needs the unported scale kernel either way.
-        return Err(McError::ScaledReferenceNotPorted);
+        // the scaled branch is unreachable in a well-formed call; it is kept
+        // because C keeps it.
+        if is_intrabc && (subpel_params.subpel_x != 0 || subpel_params.subpel_y != 0) {
+            convolve_2d_for_intrabc(
+                src,
+                dst,
+                dst_stride,
+                w,
+                h,
+                subpel_params.subpel_x,
+                subpel_params.subpel_y,
+                conv_params,
+            );
+            return;
+        }
+        convolve_2d_scale(
+            src,
+            dst,
+            dst_stride,
+            conv_buf,
+            w,
+            h,
+            &fx,
+            &fy,
+            subpel_params.subpel_x,
+            subpel_params.xs,
+            subpel_params.subpel_y,
+            subpel_params.ys,
+            conv_params,
+        );
+        return;
     }
     let mut sp = *subpel_params;
     revert_scale_extra_bits(&mut sp);
@@ -375,7 +418,7 @@ pub fn inter_predictor(
             sp.subpel_y,
             conv_params,
         );
-        return Ok(());
+        return;
     }
     dispatch_convolve_8(
         src,
@@ -390,7 +433,6 @@ pub fn inter_predictor(
         sp.subpel_y,
         conv_params,
     );
-    Ok(())
 }
 
 /// `svt_highbd_inter_predictor` (inter_prediction.c:1444).
@@ -407,10 +449,40 @@ pub fn highbd_inter_predictor(
     interp_filters: InterpFilters,
     is_intrabc: bool,
     bd: i32,
-) -> Result<(), McError> {
+) {
     let (fx, fy) = get_convolve_filter_params(interp_filters, w as i32, h as i32);
     if has_scale(subpel_params.xs, subpel_params.ys) {
-        return Err(McError::ScaledReferenceNotPorted);
+        if is_intrabc && (subpel_params.subpel_x != 0 || subpel_params.subpel_y != 0) {
+            highbd_convolve_2d_for_intrabc(
+                src,
+                dst,
+                dst_stride,
+                w,
+                h,
+                subpel_params.subpel_x,
+                subpel_params.subpel_y,
+                conv_params,
+                bd,
+            );
+            return;
+        }
+        highbd_convolve_2d_scale(
+            src,
+            dst,
+            dst_stride,
+            conv_buf,
+            w,
+            h,
+            &fx,
+            &fy,
+            subpel_params.subpel_x,
+            subpel_params.xs,
+            subpel_params.subpel_y,
+            subpel_params.ys,
+            conv_params,
+            bd,
+        );
+        return;
     }
     let mut sp = *subpel_params;
     revert_scale_extra_bits(&mut sp);
@@ -426,7 +498,7 @@ pub fn highbd_inter_predictor(
             conv_params,
             bd,
         );
-        return Ok(());
+        return;
     }
     dispatch_convolve_hbd(
         src,
@@ -442,7 +514,6 @@ pub fn highbd_inter_predictor(
         conv_params,
         bd,
     );
-    Ok(())
 }
 
 /// `svt_inter_predictor_light_pd1` (inter_prediction.c:1283), **8-bit arm
@@ -468,10 +539,25 @@ pub fn inter_predictor_light_pd1_8bit(
     interp_filters: InterpFilters,
     subpel_params: &SubpelParams,
     conv_params: &ConvolveParams,
-) -> Result<(), McError> {
+) {
     let (fx, fy) = get_convolve_filter_params(interp_filters, w as i32, h as i32);
     if has_scale(subpel_params.xs, subpel_params.ys) {
-        return Err(McError::ScaledReferenceNotPorted);
+        convolve_2d_scale(
+            src,
+            dst,
+            dst_stride,
+            conv_buf,
+            w,
+            h,
+            &fx,
+            &fy,
+            subpel_params.subpel_x,
+            subpel_params.xs,
+            subpel_params.subpel_y,
+            subpel_params.ys,
+            conv_params,
+        );
+        return;
     }
     let mut sp = *subpel_params;
     revert_scale_extra_bits(&mut sp);
@@ -488,7 +574,6 @@ pub fn inter_predictor_light_pd1_8bit(
         sp.subpel_y,
         conv_params,
     );
-    Ok(())
 }
 
 #[cfg(test)]
@@ -517,28 +602,14 @@ mod tests {
         assert_eq!(extract_interp_filter(b, false), InterpFilterKind::Bilinear);
     }
 
-    /// A scaled reference is refused, never approximated.
+    /// The scaled arm now runs the scaled kernel instead of refusing; that
+    /// path is C-gated in `c_parity_port_inter_predictor.rs`. What stays
+    /// checkable here is that `has_scale` is what selects it.
     #[test]
-    fn scaled_reference_is_refused() {
-        let src = [0u8; 64 * 64];
-        let mut dst = [0u8; 8 * 8];
-        let mut cb = [0u16; 8 * 8];
-        let cp = ConvolveParams::single(false, 8);
-        // xs != SCALE_SUBPEL_SHIFTS => has_scale.
-        let sp = SubpelParams {
-            xs: 2048,
-            ys: 1024,
-            subpel_x: 0,
-            subpel_y: 0,
-        };
-        let v = SrcView::new(&src, 16 * 64 + 16, 64);
-        assert_eq!(
-            inter_predictor_pd0(v, &mut dst, 8, &mut cb, 8, 8, &sp, &cp),
-            Err(McError::ScaledReferenceNotPorted)
-        );
-        assert_eq!(
-            inter_predictor(v, &mut dst, 8, &mut cb, &sp, 8, 8, &cp, 0, false),
-            Err(McError::ScaledReferenceNotPorted)
-        );
+    fn has_scale_selects_the_scaled_arm() {
+        use crate::port_scale_factors::{SCALE_SUBPEL_SHIFTS, has_scale};
+        assert!(!has_scale(SCALE_SUBPEL_SHIFTS, SCALE_SUBPEL_SHIFTS));
+        assert!(has_scale(SCALE_SUBPEL_SHIFTS + 1, SCALE_SUBPEL_SHIFTS));
+        assert!(has_scale(SCALE_SUBPEL_SHIFTS, SCALE_SUBPEL_SHIFTS - 1));
     }
 }

@@ -80,7 +80,7 @@ impl<'a> SrcView16<'a> {
     }
 
     #[inline]
-    fn at(&self, y: i32, x: i32) -> i32 {
+    pub(crate) fn at(&self, y: i32, x: i32) -> i32 {
         let idx = self.origin as isize + y as isize * self.stride as isize + x as isize;
         self.data[idx as usize] as i32
     }
