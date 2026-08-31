@@ -38,6 +38,7 @@
 #include "md_process.h"
 #include "aom_dsp_rtcd.h"
 
+void       init_fn_ptr(void);
 void       svt_aom_setup_common_rtcd_internal(uint64_t flags);
 void       svt_aom_setup_rtcd_internal(EbCpuFlags flags);
 EbCpuFlags svt_aom_get_cpu_flags_to_use(void);
@@ -49,6 +50,9 @@ static void md_subpel_ensure_rtcd(void) {
     if (!md_subpel_rtcd_done) {
         svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
         svt_aom_setup_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        /* Populates svt_aom_mefn_ptr from the RTCD pointers; without it the
+         * `use_rtcd` control reads a table of NULLs. */
+        init_fn_ptr();
         md_subpel_rtcd_done = 1;
     }
 }
@@ -214,6 +218,9 @@ unsigned int ref_md_subpel_tree(const RefSubpelArgs* a) {
     AomVarianceFnPtr vfp;
     if (a->use_rtcd) {
         vfp = svt_aom_mefn_ptr[a->bsize];
+        if (!vfp.vf || !vfp.svf) {
+            return UINT32_MAX;
+        }
     } else {
         memset(&vfp, 0, sizeof(vfp));
         vfp.vf  = md_subpel_pick_vf(a->w, a->h);
