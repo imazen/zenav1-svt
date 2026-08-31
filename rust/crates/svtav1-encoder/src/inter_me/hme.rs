@@ -77,10 +77,10 @@ pub fn hme_level_0(
 
     let x_search_region_distance = (i32::from(sa_width) * sr_w as i32) as i16;
     let y_search_region_distance = (i32::from(sa_height) * sr_h as i32) as i16;
-    let mut sa_origin_x =
-        (-((i32::from(sa_width) * i32::from(me_ctx.num_hme_sa_w)) >> 1) + i32::from(x_search_region_distance)) as i16;
-    let mut sa_origin_y =
-        (-((i32::from(sa_height) * i32::from(me_ctx.num_hme_sa_h)) >> 1) + i32::from(y_search_region_distance)) as i16;
+    let mut sa_origin_x = (-((i32::from(sa_width) * i32::from(me_ctx.num_hme_sa_w)) >> 1)
+        + i32::from(x_search_region_distance)) as i16;
+    let mut sa_origin_y = (-((i32::from(sa_height) * i32::from(me_ctx.num_hme_sa_h)) >> 1)
+        + i32::from(y_search_region_distance)) as i16;
 
     let ox = i32::from(org_x);
     let oy = i32::from(org_y);
@@ -89,30 +89,39 @@ pub fn hme_level_0(
         sa_width = (i32::from(sa_width) - (-pad_width - (ox + i32::from(sa_origin_x)))) as i16;
     }
     if ox + i32::from(sa_origin_x) > i32::from(sixteenth_ref.width) - 1 {
-        sa_origin_x =
-            (i32::from(sa_origin_x) - ((ox + i32::from(sa_origin_x)) - (i32::from(sixteenth_ref.width) - 1))) as i16;
+        sa_origin_x = (i32::from(sa_origin_x)
+            - ((ox + i32::from(sa_origin_x)) - (i32::from(sixteenth_ref.width) - 1)))
+            as i16;
     }
     if ox + i32::from(sa_origin_x) + i32::from(sa_width) > i32::from(sixteenth_ref.width) {
         sa_width = i32::max(
             1,
-            i32::from(sa_width) - ((ox + i32::from(sa_origin_x) + i32::from(sa_width)) - i32::from(sixteenth_ref.width)),
+            i32::from(sa_width)
+                - ((ox + i32::from(sa_origin_x) + i32::from(sa_width))
+                    - i32::from(sixteenth_ref.width)),
         ) as i16;
     }
-    sa_width = if sa_width < 8 { sa_width } else { sa_width & !0x07 };
+    sa_width = if sa_width < 8 {
+        sa_width
+    } else {
+        sa_width & !0x07
+    };
 
     if oy + i32::from(sa_origin_y) < -pad_height {
         sa_origin_y = (-pad_height - oy) as i16;
         sa_height = (i32::from(sa_height) - (-pad_height - (oy + i32::from(sa_origin_y)))) as i16;
     }
     if oy + i32::from(sa_origin_y) > i32::from(sixteenth_ref.height) - 1 {
-        sa_origin_y =
-            (i32::from(sa_origin_y) - ((oy + i32::from(sa_origin_y)) - (i32::from(sixteenth_ref.height) - 1))) as i16;
+        sa_origin_y = (i32::from(sa_origin_y)
+            - ((oy + i32::from(sa_origin_y)) - (i32::from(sixteenth_ref.height) - 1)))
+            as i16;
     }
     if oy + i32::from(sa_origin_y) + i32::from(sa_height) > i32::from(sixteenth_ref.height) {
         sa_height = i32::max(
             1,
             i32::from(sa_height)
-                - ((oy + i32::from(sa_origin_y) + i32::from(sa_height)) - i32::from(sixteenth_ref.height)),
+                - ((oy + i32::from(sa_origin_y) + i32::from(sa_height))
+                    - i32::from(sixteenth_ref.height)),
         ) as i16;
     }
 
@@ -123,11 +132,23 @@ pub fn hme_level_0(
     let full = me_ctx.hme_search_method == FULL_SAD_SEARCH;
     let r = sad_loop_kernel(
         src.sixteenth,
-        if full { src.sixteenth_stride } else { src.sixteenth_stride * 2 },
+        if full {
+            src.sixteenth_stride
+        } else {
+            src.sixteenth_stride * 2
+        },
         sixteenth_ref.data,
         sixteenth_ref.abs(search_region_index),
-        if full { sixteenth_ref.stride } else { sixteenth_ref.stride * 2 },
-        if full { block_height as usize } else { (block_height >> 1) as usize },
+        if full {
+            sixteenth_ref.stride
+        } else {
+            sixteenth_ref.stride * 2
+        },
+        if full {
+            block_height as usize
+        } else {
+            (block_height >> 1) as usize
+        },
         block_width as usize,
         sixteenth_ref.stride,
         0,
@@ -171,29 +192,39 @@ pub fn hme_level_1(
         sa_width = (i32::from(sa_width) - (-pad_width - (ox + i32::from(sa_origin_x)))) as i16;
     }
     if ox + i32::from(sa_origin_x) > i32::from(quarter_ref.width) - 1 {
-        sa_origin_x =
-            (i32::from(sa_origin_x) - ((ox + i32::from(sa_origin_x)) - (i32::from(quarter_ref.width) - 1))) as i16;
+        sa_origin_x = (i32::from(sa_origin_x)
+            - ((ox + i32::from(sa_origin_x)) - (i32::from(quarter_ref.width) - 1)))
+            as i16;
     }
     if ox + i32::from(sa_origin_x) + i32::from(sa_width) > i32::from(quarter_ref.width) {
         sa_width = i32::max(
             1,
-            i32::from(sa_width) - ((ox + i32::from(sa_origin_x) + i32::from(sa_width)) - i32::from(quarter_ref.width)),
+            i32::from(sa_width)
+                - ((ox + i32::from(sa_origin_x) + i32::from(sa_width))
+                    - i32::from(quarter_ref.width)),
         ) as i16;
     }
-    sa_width = if sa_width < 8 { sa_width } else { sa_width & !0x07 };
+    sa_width = if sa_width < 8 {
+        sa_width
+    } else {
+        sa_width & !0x07
+    };
 
     if oy + i32::from(sa_origin_y) < -pad_height {
         sa_origin_y = (-pad_height - oy) as i16;
         sa_height = (i32::from(sa_height) - (-pad_height - (oy + i32::from(sa_origin_y)))) as i16;
     }
     if oy + i32::from(sa_origin_y) > i32::from(quarter_ref.height) - 1 {
-        sa_origin_y =
-            (i32::from(sa_origin_y) - ((oy + i32::from(sa_origin_y)) - (i32::from(quarter_ref.height) - 1))) as i16;
+        sa_origin_y = (i32::from(sa_origin_y)
+            - ((oy + i32::from(sa_origin_y)) - (i32::from(quarter_ref.height) - 1)))
+            as i16;
     }
     if oy + i32::from(sa_origin_y) + i32::from(sa_height) > i32::from(quarter_ref.height) {
         sa_height = i32::max(
             1,
-            i32::from(sa_height) - ((oy + i32::from(sa_origin_y) + i32::from(sa_height)) - i32::from(quarter_ref.height)),
+            i32::from(sa_height)
+                - ((oy + i32::from(sa_origin_y) + i32::from(sa_height))
+                    - i32::from(quarter_ref.height)),
         ) as i16;
     }
 
@@ -204,11 +235,23 @@ pub fn hme_level_1(
     let full = me_ctx.hme_search_method == FULL_SAD_SEARCH;
     let r = sad_loop_kernel(
         src.quarter,
-        if full { src.quarter_stride } else { src.quarter_stride * 2 },
+        if full {
+            src.quarter_stride
+        } else {
+            src.quarter_stride * 2
+        },
         quarter_ref.data,
         quarter_ref.abs(search_region_index),
-        if full { quarter_ref.stride } else { quarter_ref.stride * 2 },
-        if full { block_height as usize } else { (block_height >> 1) as usize },
+        if full {
+            quarter_ref.stride
+        } else {
+            quarter_ref.stride * 2
+        },
+        if full {
+            block_height as usize
+        } else {
+            (block_height >> 1) as usize
+        },
         block_width as usize,
         quarter_ref.stride,
         0,
@@ -256,28 +299,38 @@ pub fn hme_level_2(
         sa_width = (i32::from(sa_width) - (-pad_width - (ox + i32::from(sa_origin_x)))) as i16;
     }
     if ox + i32::from(sa_origin_x) > i32::from(ref_pic.width) - 1 {
-        sa_origin_x = (i32::from(sa_origin_x) - ((ox + i32::from(sa_origin_x)) - (i32::from(ref_pic.width) - 1))) as i16;
+        sa_origin_x = (i32::from(sa_origin_x)
+            - ((ox + i32::from(sa_origin_x)) - (i32::from(ref_pic.width) - 1)))
+            as i16;
     }
     if ox + i32::from(sa_origin_x) + i32::from(sa_width) > i32::from(ref_pic.width) {
         sa_width = i32::max(
             1,
-            i32::from(sa_width) - ((ox + i32::from(sa_origin_x) + i32::from(sa_width)) - i32::from(ref_pic.width)),
+            i32::from(sa_width)
+                - ((ox + i32::from(sa_origin_x) + i32::from(sa_width)) - i32::from(ref_pic.width)),
         ) as i16;
     }
-    sa_width = if sa_width < 8 { sa_width } else { sa_width & !0x07 };
+    sa_width = if sa_width < 8 {
+        sa_width
+    } else {
+        sa_width & !0x07
+    };
 
     if oy + i32::from(sa_origin_y) < -pad_height {
         sa_origin_y = (-pad_height - oy) as i16;
         sa_height = (i32::from(sa_height) - (-pad_height - (oy + i32::from(sa_origin_y)))) as i16;
     }
     if oy + i32::from(sa_origin_y) > i32::from(ref_pic.height) - 1 {
-        sa_origin_y =
-            (i32::from(sa_origin_y) - ((oy + i32::from(sa_origin_y)) - (i32::from(ref_pic.height) - 1))) as i16;
+        sa_origin_y = (i32::from(sa_origin_y)
+            - ((oy + i32::from(sa_origin_y)) - (i32::from(ref_pic.height) - 1)))
+            as i16;
     }
     if oy + i32::from(sa_origin_y) + i32::from(sa_height) > i32::from(ref_pic.height) {
         sa_height = i32::max(
             1,
-            i32::from(sa_height) - ((oy + i32::from(sa_origin_y) + i32::from(sa_height)) - i32::from(ref_pic.height)),
+            i32::from(sa_height)
+                - ((oy + i32::from(sa_origin_y) + i32::from(sa_height))
+                    - i32::from(ref_pic.height)),
         ) as i16;
     }
 
@@ -288,11 +341,23 @@ pub fn hme_level_2(
     let full = me_ctx.hme_search_method == FULL_SAD_SEARCH;
     let r = sad_loop_kernel(
         src.b64,
-        if full { src.b64_stride } else { src.b64_stride * 2 },
+        if full {
+            src.b64_stride
+        } else {
+            src.b64_stride * 2
+        },
         ref_pic.data,
         ref_pic.abs(search_region_index),
-        if full { ref_pic.stride } else { ref_pic.stride * 2 },
-        if full { block_height as usize } else { (block_height >> 1) as usize },
+        if full {
+            ref_pic.stride
+        } else {
+            ref_pic.stride * 2
+        },
+        if full {
+            block_height as usize
+        } else {
+            (block_height >> 1) as usize
+        },
         block_width as usize,
         ref_pic.stride,
         0,
@@ -353,14 +418,16 @@ pub fn check_00_center(
     }
     if ox + i32::from(*x_search_center) > i32::from(ref_pic.width) - 1 {
         *x_search_center = (i32::from(*x_search_center)
-            - ((ox + i32::from(*x_search_center)) - (i32::from(ref_pic.width) - 1))) as i16;
+            - ((ox + i32::from(*x_search_center)) - (i32::from(ref_pic.width) - 1)))
+            as i16;
     }
     if oy + i32::from(*y_search_center) < -pad_height {
         *y_search_center = (-pad_height - oy) as i16;
     }
     if oy + i32::from(*y_search_center) > i32::from(ref_pic.height) - 1 {
         *y_search_center = (i32::from(*y_search_center)
-            - ((oy + i32::from(*y_search_center)) - (i32::from(ref_pic.height) - 1))) as i16;
+            - ((oy + i32::from(*y_search_center)) - (i32::from(ref_pic.height) - 1)))
+            as i16;
     }
 
     let zero_mv_cost = zero_mv_sad << COST_PRECISION;
@@ -412,6 +479,13 @@ pub fn get_zz_sad(
 
 /// C `prehme_core` (motion_estimation.c:1458). Writes `sad` / `best_mv` /
 /// `valid` back into `me_ctx.prehme_data[list][ref][sr]`.
+///
+/// MEASURED difference from `hme_level_*`, found by the parity test rather
+/// than by reading: pre-HME does **not** round the search width up to a
+/// multiple of 8 on the way in, and does **not** apply the `& ~7` round-DOWN
+/// after the right-edge crop. So an odd `sa.width`, or a block near the right
+/// edge, searches a different number of columns than the HME levels would.
+/// Faithful; do not "harmonise" it.
 #[allow(clippy::too_many_arguments)]
 pub fn prehme_core(
     me_ctx: &mut MeContext,
@@ -439,7 +513,11 @@ pub fn prehme_core(
     // NOTE: C uses the ternary form here, so — unlike hme_level_*, which uses
     // sequential assignment — the width term re-reads the ALREADY-updated
     // origin and therefore also evaluates to zero. Same outcome, same code.
-    let new_x = if ox + i32::from(x_origin) < -pad_width { (-pad_width - ox) as i16 } else { x_origin };
+    let new_x = if ox + i32::from(x_origin) < -pad_width {
+        (-pad_width - ox) as i16
+    } else {
+        x_origin
+    };
     search_area_width = if ox + i32::from(new_x) < -pad_width {
         (i32::from(search_area_width) - (-pad_width - (ox + i32::from(new_x)))) as i16
     } else {
@@ -447,21 +525,29 @@ pub fn prehme_core(
     };
     x_origin = new_x;
     x_origin = if ox + i32::from(x_origin) > i32::from(sixteenth_ref.width) - 1 {
-        (i32::from(x_origin) - ((ox + i32::from(x_origin)) - (i32::from(sixteenth_ref.width) - 1))) as i16
+        (i32::from(x_origin) - ((ox + i32::from(x_origin)) - (i32::from(sixteenth_ref.width) - 1)))
+            as i16
     } else {
         x_origin
     };
-    search_area_width = if ox + i32::from(x_origin) + i32::from(search_area_width) > i32::from(sixteenth_ref.width) {
+    search_area_width = if ox + i32::from(x_origin) + i32::from(search_area_width)
+        > i32::from(sixteenth_ref.width)
+    {
         i32::max(
             1,
             i32::from(search_area_width)
-                - ((ox + i32::from(x_origin) + i32::from(search_area_width)) - i32::from(sixteenth_ref.width)),
+                - ((ox + i32::from(x_origin) + i32::from(search_area_width))
+                    - i32::from(sixteenth_ref.width)),
         ) as i16
     } else {
         search_area_width
     };
 
-    let new_y = if oy + i32::from(y_origin) < -pad_height { (-pad_height - oy) as i16 } else { y_origin };
+    let new_y = if oy + i32::from(y_origin) < -pad_height {
+        (-pad_height - oy) as i16
+    } else {
+        y_origin
+    };
     search_area_height = if oy + i32::from(new_y) < -pad_height {
         (i32::from(search_area_height) - (-pad_height - (oy + i32::from(new_y)))) as i16
     } else {
@@ -469,15 +555,19 @@ pub fn prehme_core(
     };
     y_origin = new_y;
     y_origin = if oy + i32::from(y_origin) > i32::from(sixteenth_ref.height) - 1 {
-        (i32::from(y_origin) - ((oy + i32::from(y_origin)) - (i32::from(sixteenth_ref.height) - 1))) as i16
+        (i32::from(y_origin) - ((oy + i32::from(y_origin)) - (i32::from(sixteenth_ref.height) - 1)))
+            as i16
     } else {
         y_origin
     };
-    search_area_height = if oy + i32::from(y_origin) + i32::from(search_area_height) > i32::from(sixteenth_ref.height) {
+    search_area_height = if oy + i32::from(y_origin) + i32::from(search_area_height)
+        > i32::from(sixteenth_ref.height)
+    {
         i32::max(
             1,
             i32::from(search_area_height)
-                - ((oy + i32::from(y_origin) + i32::from(search_area_height)) - i32::from(sixteenth_ref.height)),
+                - ((oy + i32::from(y_origin) + i32::from(search_area_height))
+                    - i32::from(sixteenth_ref.height)),
         ) as i16
     } else {
         search_area_height
@@ -490,11 +580,23 @@ pub fn prehme_core(
     let full = me_ctx.hme_search_method == FULL_SAD_SEARCH;
     let r = sad_loop_kernel(
         src.sixteenth,
-        if full { src.sixteenth_stride } else { src.sixteenth_stride * 2 },
+        if full {
+            src.sixteenth_stride
+        } else {
+            src.sixteenth_stride * 2
+        },
         sixteenth_ref.data,
         sixteenth_ref.abs(search_region_index),
-        if full { sixteenth_ref.stride } else { sixteenth_ref.stride * 2 },
-        if full { sb_height as usize } else { (sb_height >> 1) as usize },
+        if full {
+            sixteenth_ref.stride
+        } else {
+            sixteenth_ref.stride * 2
+        },
+        if full {
+            sb_height as usize
+        } else {
+            (sb_height >> 1) as usize
+        },
         sb_width as usize,
         sixteenth_ref.stride,
         me_ctx.prehme_ctrl.skip_search_line,
@@ -510,7 +612,12 @@ pub fn prehme_core(
 }
 
 /// C `check_prehme_early_exit` (motion_estimation.c:1567).
-pub fn check_prehme_early_exit(me_ctx: &mut MeContext, list_i: usize, ref_i: usize, sr_i: usize) -> bool {
+pub fn check_prehme_early_exit(
+    me_ctx: &mut MeContext,
+    list_i: usize,
+    ref_i: usize,
+    sr_i: usize,
+) -> bool {
     if me_ctx.me_early_exit_th != 0 && me_ctx.zz_sad[list_i][ref_i] < me_ctx.me_early_exit_th {
         let d = &mut me_ctx.prehme_data[list_i][ref_i][sr_i];
         d.best_mv = svtav1_types::motion::Mv::ZERO;
@@ -574,7 +681,8 @@ pub fn prehme_b64(
                     me_ctx.prehme_data[list_i][ref_i][sr_i].sa.height = u32::min(
                         u32::from(cfg.sa_min.height) * hme_sr_factor,
                         u32::from(cfg.sa_max.height),
-                    ) as u16;
+                    )
+                        as u16;
                     prehme_core(
                         me_ctx,
                         src,
@@ -620,7 +728,9 @@ pub fn prehme_b64(
                 // C computes this in uint32_t; the subtraction wraps when the
                 // ref's SAD is below `best_sad` (it cannot be, since best_sad
                 // is the min over the same set) — kept in u32 regardless.
-                let lhs = (prehme_sad as u32).wrapping_sub(best_sad as u32).wrapping_mul(100);
+                let lhs = (prehme_sad as u32)
+                    .wrapping_sub(best_sad as u32)
+                    .wrapping_mul(100);
                 if u64::from(lhs) > prhme_th * best_sad {
                     me_ctx.search_results[list_i][ref_i].do_ref = 0;
                 }
@@ -643,7 +753,9 @@ pub fn get_hme_l0_search_area(
         let mut is_hor = true;
         let mut is_ver = true;
         let mut is_still = false;
-        if me_ctx.reduce_hme_l0_sr_th_min != 0 && me_ctx.reduce_hme_l0_sr_th_max != 0 && (list_index != 0 || ref_pic_index != 0)
+        if me_ctx.reduce_hme_l0_sr_th_min != 0
+            && me_ctx.reduce_hme_l0_sr_th_max != 0
+            && (list_index != 0 || ref_pic_index != 0)
         {
             let l0_mvx = i32::from(me_ctx.x_hme_level0_search_center[0][0][0][0]);
             let l0_mvy = i32::from(me_ctx.y_hme_level0_search_center[0][0][0][0]);
@@ -667,10 +779,14 @@ pub fn get_hme_l0_search_area(
             y_offset = 4;
         }
         let rp = ref_pic_index as u32;
-        me_ctx.hme_l0_sa.sa_min.width = (u32::from(me_ctx.hme_l0_sa.sa_min.width) / (x_offset + rp)) as u16;
-        me_ctx.hme_l0_sa.sa_min.height = (u32::from(me_ctx.hme_l0_sa.sa_min.height) / (y_offset + rp)) as u16;
-        me_ctx.hme_l0_sa.sa_max.width = (u32::from(me_ctx.hme_l0_sa.sa_max.width) / (x_offset + rp)) as u16;
-        me_ctx.hme_l0_sa.sa_max.height = (u32::from(me_ctx.hme_l0_sa.sa_max.height) / (y_offset + rp)) as u16;
+        me_ctx.hme_l0_sa.sa_min.width =
+            (u32::from(me_ctx.hme_l0_sa.sa_min.width) / (x_offset + rp)) as u16;
+        me_ctx.hme_l0_sa.sa_min.height =
+            (u32::from(me_ctx.hme_l0_sa.sa_min.height) / (y_offset + rp)) as u16;
+        me_ctx.hme_l0_sa.sa_max.width =
+            (u32::from(me_ctx.hme_l0_sa.sa_max.width) / (x_offset + rp)) as u16;
+        me_ctx.hme_l0_sa.sa_max.height =
+            (u32::from(me_ctx.hme_l0_sa.sa_max.height) / (y_offset + rp)) as u16;
     }
 
     let hme_sr_factor = i32::from(get_scaled_picture_distance(dist));
@@ -683,7 +799,10 @@ pub fn get_hme_l0_search_area(
         ((i32::from(me_ctx.hme_l0_sa.sa_max.width) / nw) + 15) & !0x0F,
     ) as i16;
     let sa_h0 = i32::from(me_ctx.hme_l0_sa.sa_min.height) / nh;
-    let sa_height = i32::min(sa_h0 * hme_sr_factor, i32::from(me_ctx.hme_l0_sa.sa_max.height) / nh) as i16;
+    let sa_height = i32::min(
+        sa_h0 * hme_sr_factor,
+        i32::from(me_ctx.hme_l0_sa.sa_max.height) / nh,
+    ) as i16;
 
     (sa_width, sa_height)
 }
@@ -693,7 +812,11 @@ pub fn get_hme_l0_search_area(
 /// C asserts `num_hme_sa_{w,h} == 2` and returns without writing when that
 /// fails; the port returns `None` so the caller can reproduce C's "leave the
 /// caller's uninitialised `best_w`/`best_h`" only where C actually does.
-pub fn get_worst_quadrant(me_ctx: &MeContext, list_index: usize, ref_pic_index: usize) -> Option<(usize, usize)> {
+pub fn get_worst_quadrant(
+    me_ctx: &MeContext,
+    list_index: usize,
+    ref_pic_index: usize,
+) -> Option<(usize, usize)> {
     if me_ctx.num_hme_sa_w != 2 || me_ctx.num_hme_sa_h != 2 {
         return None;
     }
@@ -740,8 +863,10 @@ pub fn hme_level0_b64(
             {
                 for sr_y in 0..me_ctx.num_hme_sa_h as usize {
                     for sr_x in 0..me_ctx.num_hme_sa_w as usize {
-                        me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
-                        me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
+                        me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] =
+                            0;
+                        me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] =
+                            0;
                         me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_x][sr_y] = 0;
                     }
                 }
@@ -759,8 +884,10 @@ pub fn hme_level0_b64(
                     let d = me_ctx.prehme_data[list_index][ref_pic_index][sr_i];
                     for sr_y in 0..me_ctx.num_hme_sa_h as usize {
                         for sr_x in 0..me_ctx.num_hme_sa_w as usize {
-                            me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] = d.best_mv.x;
-                            me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] = d.best_mv.y;
+                            me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_x]
+                                [sr_y] = d.best_mv.x;
+                            me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_x]
+                                [sr_y] = d.best_mv.y;
                             me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_x][sr_y] = d.sad;
                         }
                     }
@@ -771,9 +898,12 @@ pub fn hme_level0_b64(
             if me_ctx.search_results[list_index][ref_pic_index].do_ref == 0 {
                 for sr_y in 0..me_ctx.num_hme_sa_h as usize {
                     for sr_x in 0..me_ctx.num_hme_sa_w as usize {
-                        me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
-                        me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
-                        me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_x][sr_y] = u64::from(u32::MAX);
+                        me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] =
+                            0;
+                        me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_x][sr_y] =
+                            0;
+                        me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_x][sr_y] =
+                            u64::from(u32::MAX);
                     }
                 }
                 continue;
@@ -783,7 +913,8 @@ pub fn hme_level0_b64(
             let dist = get_me_reference_dist(pic.picture_number, r.picture_number);
 
             if me_ctx.temporal_layer_index > 0 || list_index == 0 {
-                let (sa_width, sa_height) = get_hme_l0_search_area(me_ctx, list_index, ref_pic_index, dist);
+                let (sa_width, sa_height) =
+                    get_hme_l0_search_area(me_ctx, list_index, ref_pic_index, dist);
                 for sr_h in 0..me_ctx.num_hme_sa_h as usize {
                     for sr_w in 0..me_ctx.num_hme_sa_w as usize {
                         let (sad, scx, scy) = hme_level_0(
@@ -800,8 +931,10 @@ pub fn hme_level0_b64(
                             sr_h as u32,
                         );
                         me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_w][sr_h] = sad;
-                        me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] = scx;
-                        me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] = scy;
+                        me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] =
+                            scx;
+                        me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] =
+                            scy;
                     }
                 }
 
@@ -813,7 +946,8 @@ pub fn hme_level0_b64(
                 }
 
                 if me_ctx.prehme_ctrl.enable != 0
-                    && let Some((sr_w_max, sr_h_max)) = get_worst_quadrant(me_ctx, list_index, ref_pic_index)
+                    && let Some((sr_w_max, sr_h_max)) =
+                        get_worst_quadrant(me_ctx, list_index, ref_pic_index)
                 {
                     {
                         let sr_i = usize::from(
@@ -821,12 +955,15 @@ pub fn hme_level0_b64(
                                 > me_ctx.prehme_data[list_index][ref_pic_index][1].sad,
                         );
                         let d = me_ctx.prehme_data[list_index][ref_pic_index][sr_i];
-                        if d.sad < me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_w_max][sr_h_max] {
-                            me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_w_max][sr_h_max] = d.sad;
-                            me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_w_max][sr_h_max] =
-                                d.best_mv.x;
-                            me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_w_max][sr_h_max] =
-                                d.best_mv.y;
+                        if d.sad
+                            < me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_w_max][sr_h_max]
+                        {
+                            me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_w_max][sr_h_max] =
+                                d.sad;
+                            me_ctx.x_hme_level0_search_center[list_index][ref_pic_index]
+                                [sr_w_max][sr_h_max] = d.best_mv.x;
+                            me_ctx.y_hme_level0_search_center[list_index][ref_pic_index]
+                                [sr_w_max][sr_h_max] = d.best_mv.y;
                         }
                     }
                 }
@@ -859,8 +996,10 @@ pub fn hme_level1_b64(
                 {
                     for sr_y in 0..me_ctx.num_hme_sa_h as usize {
                         for sr_x in 0..me_ctx.num_hme_sa_w as usize {
-                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
-                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
+                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_x]
+                                [sr_y] = 0;
+                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_x]
+                                [sr_y] = 0;
                             me_ctx.hme_level1_sad[list_index][ref_pic_index][sr_x][sr_y] = 0;
                         }
                     }
@@ -869,9 +1008,12 @@ pub fn hme_level1_b64(
                 if me_ctx.search_results[list_index][ref_pic_index].do_ref == 0 {
                     for sr_y in 0..me_ctx.num_hme_sa_h as usize {
                         for sr_x in 0..me_ctx.num_hme_sa_w as usize {
-                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
-                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_x][sr_y] = 0;
-                            me_ctx.hme_level1_sad[list_index][ref_pic_index][sr_x][sr_y] = u64::from(u32::MAX);
+                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_x]
+                                [sr_y] = 0;
+                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_x]
+                                [sr_y] = 0;
+                            me_ctx.hme_level1_sad[list_index][ref_pic_index][sr_x][sr_y] =
+                                u64::from(u32::MAX);
                         }
                     }
                     continue;
@@ -882,10 +1024,12 @@ pub fn hme_level1_b64(
                             && me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_w][sr_h]
                                 < u64::from(me_ctx.prev_me_stage_based_exit_th >> 5)
                         {
-                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h] =
-                                me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h];
-                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h] =
-                                me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h];
+                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h] = me_ctx.x_hme_level0_search_center[list_index]
+                                [ref_pic_index][sr_w][sr_h];
+                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h] = me_ctx.y_hme_level0_search_center[list_index]
+                                [ref_pic_index][sr_w][sr_h];
                             me_ctx.hme_level1_sad[list_index][ref_pic_index][sr_w][sr_h] =
                                 me_ctx.hme_level0_sad[list_index][ref_pic_index][sr_w][sr_h];
                             continue;
@@ -900,12 +1044,18 @@ pub fn hme_level1_b64(
                             &r.quarter,
                             me_ctx.hme_l1_sa.width as i16,
                             me_ctx.hme_l1_sa.height as i16,
-                            me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] >> 1,
-                            me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_w][sr_h] >> 1,
+                            me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h]
+                                >> 1,
+                            me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h]
+                                >> 1,
                         );
                         me_ctx.hme_level1_sad[list_index][ref_pic_index][sr_w][sr_h] = sad;
-                        me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h] = scx;
-                        me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h] = scy;
+                        me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h] =
+                            scx;
+                        me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h] =
+                            scy;
                     }
                 }
             }
@@ -938,10 +1088,12 @@ pub fn hme_level2_b64(
                             && me_ctx.hme_level1_sad[list_index][ref_pic_index][sr_w][sr_h]
                                 < u64::from(me_ctx.prev_me_stage_based_exit_th >> 2)
                         {
-                            me_ctx.x_hme_level2_search_center[list_index][ref_pic_index][sr_w][sr_h] =
-                                me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h];
-                            me_ctx.y_hme_level2_search_center[list_index][ref_pic_index][sr_w][sr_h] =
-                                me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h];
+                            me_ctx.x_hme_level2_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h] = me_ctx.x_hme_level1_search_center[list_index]
+                                [ref_pic_index][sr_w][sr_h];
+                            me_ctx.y_hme_level2_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h] = me_ctx.y_hme_level1_search_center[list_index]
+                                [ref_pic_index][sr_w][sr_h];
                             me_ctx.hme_level2_sad[list_index][ref_pic_index][sr_w][sr_h] =
                                 me_ctx.hme_level1_sad[list_index][ref_pic_index][sr_w][sr_h];
                             continue;
@@ -956,12 +1108,16 @@ pub fn hme_level2_b64(
                             &r.picture,
                             me_ctx.hme_l2_sa.width as i16,
                             me_ctx.hme_l2_sa.height as i16,
-                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h],
-                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_w][sr_h],
+                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h],
+                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][sr_w]
+                                [sr_h],
                         );
                         me_ctx.hme_level2_sad[list_index][ref_pic_index][sr_w][sr_h] = sad;
-                        me_ctx.x_hme_level2_search_center[list_index][ref_pic_index][sr_w][sr_h] = scx;
-                        me_ctx.y_hme_level2_search_center[list_index][ref_pic_index][sr_w][sr_h] = scy;
+                        me_ctx.x_hme_level2_search_center[list_index][ref_pic_index][sr_w][sr_h] =
+                            scx;
+                        me_ctx.y_hme_level2_search_center[list_index][ref_pic_index][sr_w][sr_h] =
+                            scy;
                     }
                 }
             }
@@ -1003,17 +1159,24 @@ pub fn set_final_search_centre_sb(me_ctx: &mut MeContext) {
             if me_ctx.temporal_layer_index > 0 || list_index == 0 {
                 if me_ctx.enable_hme_flag {
                     if e0 && !e1 && !e2 {
-                        hme_sc_x = me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][0][0];
-                        hme_sc_y = me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][0][0];
+                        hme_sc_x =
+                            me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][0][0];
+                        hme_sc_y =
+                            me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][0][0];
                         hme_mv_sad = me_ctx.hme_level0_sad[list_index][ref_pic_index][0][0];
                         let mut w = 1usize;
                         let mut h = 0usize;
                         while h < nh {
                             while w < nw {
-                                if me_ctx.hme_level0_sad[list_index][ref_pic_index][w][h] < hme_mv_sad {
-                                    hme_sc_x = me_ctx.x_hme_level0_search_center[list_index][ref_pic_index][w][h];
-                                    hme_sc_y = me_ctx.y_hme_level0_search_center[list_index][ref_pic_index][w][h];
-                                    hme_mv_sad = me_ctx.hme_level0_sad[list_index][ref_pic_index][w][h];
+                                if me_ctx.hme_level0_sad[list_index][ref_pic_index][w][h]
+                                    < hme_mv_sad
+                                {
+                                    hme_sc_x = me_ctx.x_hme_level0_search_center[list_index]
+                                        [ref_pic_index][w][h];
+                                    hme_sc_y = me_ctx.y_hme_level0_search_center[list_index]
+                                        [ref_pic_index][w][h];
+                                    hme_mv_sad =
+                                        me_ctx.hme_level0_sad[list_index][ref_pic_index][w][h];
                                 }
                                 w += 1;
                             }
@@ -1022,17 +1185,24 @@ pub fn set_final_search_centre_sb(me_ctx: &mut MeContext) {
                         }
                     }
                     if e1 && !e2 {
-                        hme_sc_x = me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][0][0];
-                        hme_sc_y = me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][0][0];
+                        hme_sc_x =
+                            me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][0][0];
+                        hme_sc_y =
+                            me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][0][0];
                         hme_mv_sad = me_ctx.hme_level1_sad[list_index][ref_pic_index][0][0];
                         let mut w = 1usize;
                         let mut h = 0usize;
                         while h < nh {
                             while w < nw {
-                                if me_ctx.hme_level1_sad[list_index][ref_pic_index][w][h] < hme_mv_sad {
-                                    hme_sc_x = me_ctx.x_hme_level1_search_center[list_index][ref_pic_index][w][h];
-                                    hme_sc_y = me_ctx.y_hme_level1_search_center[list_index][ref_pic_index][w][h];
-                                    hme_mv_sad = me_ctx.hme_level1_sad[list_index][ref_pic_index][w][h];
+                                if me_ctx.hme_level1_sad[list_index][ref_pic_index][w][h]
+                                    < hme_mv_sad
+                                {
+                                    hme_sc_x = me_ctx.x_hme_level1_search_center[list_index]
+                                        [ref_pic_index][w][h];
+                                    hme_sc_y = me_ctx.y_hme_level1_search_center[list_index]
+                                        [ref_pic_index][w][h];
+                                    hme_mv_sad =
+                                        me_ctx.hme_level1_sad[list_index][ref_pic_index][w][h];
                                 }
                                 w += 1;
                             }
@@ -1041,17 +1211,24 @@ pub fn set_final_search_centre_sb(me_ctx: &mut MeContext) {
                         }
                     }
                     if e2 {
-                        hme_sc_x = me_ctx.x_hme_level2_search_center[list_index][ref_pic_index][0][0];
-                        hme_sc_y = me_ctx.y_hme_level2_search_center[list_index][ref_pic_index][0][0];
+                        hme_sc_x =
+                            me_ctx.x_hme_level2_search_center[list_index][ref_pic_index][0][0];
+                        hme_sc_y =
+                            me_ctx.y_hme_level2_search_center[list_index][ref_pic_index][0][0];
                         hme_mv_sad = me_ctx.hme_level2_sad[list_index][ref_pic_index][0][0];
                         let mut w = 1usize;
                         let mut h = 0usize;
                         while h < nh {
                             while w < nw {
-                                if me_ctx.hme_level2_sad[list_index][ref_pic_index][w][h] < hme_mv_sad {
-                                    hme_sc_x = me_ctx.x_hme_level2_search_center[list_index][ref_pic_index][w][h];
-                                    hme_sc_y = me_ctx.y_hme_level2_search_center[list_index][ref_pic_index][w][h];
-                                    hme_mv_sad = me_ctx.hme_level2_sad[list_index][ref_pic_index][w][h];
+                                if me_ctx.hme_level2_sad[list_index][ref_pic_index][w][h]
+                                    < hme_mv_sad
+                                {
+                                    hme_sc_x = me_ctx.x_hme_level2_search_center[list_index]
+                                        [ref_pic_index][w][h];
+                                    hme_sc_y = me_ctx.y_hme_level2_search_center[list_index]
+                                        [ref_pic_index][w][h];
+                                    hme_mv_sad =
+                                        me_ctx.hme_level2_sad[list_index][ref_pic_index][w][h];
                                 }
                                 w += 1;
                             }
@@ -1112,7 +1289,9 @@ pub fn init_zz_sad(
                     continue;
                 }
                 let pct = me_ctx.me_hme_prune_ctrls.zz_sad_pct;
-                let lhs = me_ctx.zz_sad[list_i][ref_i].wrapping_sub(best_zz_sad).wrapping_mul(100);
+                let lhs = me_ctx.zz_sad[list_i][ref_i]
+                    .wrapping_sub(best_zz_sad)
+                    .wrapping_mul(100);
                 if u64::from(lhs) > u64::from(pct) * u64::from(best_zz_sad) {
                     me_ctx.search_results[list_i][ref_i].do_ref = 0;
                 }
@@ -1182,7 +1361,9 @@ pub fn hme_b64(
 /// searched, whose `hme_sad` is `MAX_U32` from `init_me_hme_data`. Transcribed
 /// as written.
 pub fn hme_prune_ref_and_adjust_sr(me_ctx: &mut MeContext) {
-    let prune_ref_th = me_ctx.me_hme_prune_ctrls.prune_ref_if_hme_sad_dev_bigger_than_th;
+    let prune_ref_th = me_ctx
+        .me_hme_prune_ctrls
+        .prune_ref_if_hme_sad_dev_bigger_than_th;
     if me_ctx.me_hme_prune_ctrls.enable_me_hme_ref_pruning && prune_ref_th != u16::MAX {
         let mut best = u64::MAX;
         for i in 0..MAX_NUM_OF_REF_PIC_LIST {
@@ -1194,7 +1375,10 @@ pub fn hme_prune_ref_and_adjust_sr(me_ctx: &mut MeContext) {
         }
         for li in 0..MAX_NUM_OF_REF_PIC_LIST {
             for ri in 1..REF_LIST_MAX_DEPTH {
-                if me_ctx.search_results[li][ri].hme_sad.wrapping_sub(best).wrapping_mul(100)
+                if me_ctx.search_results[li][ri]
+                    .hme_sad
+                    .wrapping_sub(best)
+                    .wrapping_mul(100)
                     > u64::from(prune_ref_th).wrapping_mul(best)
                 {
                     me_ctx.search_results[li][ri].do_ref = 0;
@@ -1203,9 +1387,18 @@ pub fn hme_prune_ref_and_adjust_sr(me_ctx: &mut MeContext) {
         }
     }
     if me_ctx.me_sr_adjustment_ctrls.enable_me_sr_adjustment != 0 {
-        let mv_length_th = i32::from(me_ctx.me_sr_adjustment_ctrls.reduce_me_sr_based_on_mv_length_th);
-        let stationary_hme_sad_abs_th = u64::from(me_ctx.me_sr_adjustment_ctrls.stationary_hme_sad_abs_th);
-        let reduce_th = u64::from(me_ctx.me_sr_adjustment_ctrls.reduce_me_sr_based_on_hme_sad_abs_th);
+        let mv_length_th = i32::from(
+            me_ctx
+                .me_sr_adjustment_ctrls
+                .reduce_me_sr_based_on_mv_length_th,
+        );
+        let stationary_hme_sad_abs_th =
+            u64::from(me_ctx.me_sr_adjustment_ctrls.stationary_hme_sad_abs_th);
+        let reduce_th = u64::from(
+            me_ctx
+                .me_sr_adjustment_ctrls
+                .reduce_me_sr_based_on_hme_sad_abs_th,
+        );
         for li in 0..MAX_NUM_OF_REF_PIC_LIST {
             for ri in 0..REF_LIST_MAX_DEPTH {
                 let sr = me_ctx.search_results[li][ri];
