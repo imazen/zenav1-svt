@@ -13,6 +13,7 @@ pub mod inter_mvp;
 pub mod inter_pred;
 pub mod picstruct;
 pub mod md_subpel;
+pub mod mode_decision;
 pub mod rate_control;
 pub mod txfm_pf;
 pub mod sig_deriv;

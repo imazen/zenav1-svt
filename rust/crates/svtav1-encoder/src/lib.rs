@@ -47,6 +47,7 @@ pub mod picture;
 pub mod port_enc_mode_config;
 pub mod pipeline;
 pub mod port_frame_update;
+pub mod port_md;
 pub mod port_picstruct;
 pub mod port_preanalysis;
 pub mod port_rc_process;
