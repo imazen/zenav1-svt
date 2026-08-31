@@ -442,6 +442,20 @@ are wired correctly per size, which is what makes this read as a copy-paste
 slip rather than a deliberate fallback. The x86 table (`:348-369`, `SET_SSE41`)
 is correct.
 
+**MEASURED on BOTH ISAs, 2026-08-31**, by counting `obmc_osvf_dispatch_control`'s
+own classification over all 10 sizes x 64 offsets (640 cells):
+
+| host | faithful | 4x8-aliased | sizes with a valid `osvf` oracle |
+|---|---|---|---|
+| aarch64-darwin | 128 | 512 | 4x4, 4x8 only |
+| x86_64-linux   | 640 |   0 | all ten |
+
+So the alias is exactly the NEON table and nothing else, and
+`obmc_sub_pixel_tree_up_uas0_matches_c_where_the_dispatch_is_faithful` compares
+**5x more sizes on x86 than on aarch64**. CI (`ubuntu-latest`) is the host that
+covers that branch; a green run on the aarch64 dev box has proven it for two
+sizes, not ten. Do not read an aarch64 green as coverage of that test's domain.
+
 **MEASURED, 2026-08-31, macOS aarch64.** For `BLOCK_8X16` on random in-contract
 input (`mask` in `[0, 4096]`, `wsrc` in `[0, 255*4096]`), across all 64
 sub-pixel offsets, the RTCD kernel returns **exactly** what the `_c` **4x8**

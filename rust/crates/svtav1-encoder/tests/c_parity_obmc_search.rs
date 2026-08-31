@@ -674,3 +674,119 @@ fn obmc_sub_pixel_tree_up_uas0_matches_c_where_the_dispatch_is_faithful() {
         "no size on this host has a faithful osvf dispatch — the oracle is gone, not the test"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Two controls on the ORACLE itself, both added after a cross-ISA run on
+// 2026-08-31 showed this file green on aarch64-darwin and broken on
+// x86_64-linux for reasons that had nothing to do with either implementation.
+// ---------------------------------------------------------------------------
+
+/// 256-byte-aligned scratch so a tap array can be placed at a chosen residue.
+#[repr(align(256))]
+struct AlignedTaps([i16; 256]);
+
+/// The C convolve entries take no phase index: they recover both the 16-phase
+/// table and the phase from the **address** of the filter pointer
+/// (`convolve.c:54` `get_filter_base`, `ptr & ~0xFF`, with the comment "this
+/// assumes that the filter table is 256-byte aligned"). Every real call site
+/// satisfies that; a differential shim that forwards a Rust `&[i16; 8]`
+/// straight through does not, and the taps C actually applies become the ones
+/// at `addr - (addr % 16)`.
+///
+/// That is not a theoretical hazard. **MEASURED 2026-08-31:** the Rust
+/// `SUB_PEL_FILTERS_8` static landed at `%16 == 0` in the aarch64-darwin build
+/// of this very test binary — so `convolve8_matches_c` passed — and at
+/// `%16 == 8` in the x86_64-linux one, where C silently applied the taps 8
+/// bytes earlier and the test failed with a whole-block value mismatch. A
+/// coin-flip of static layout, not an ISA property.
+///
+/// So this control feeds the SAME taps to the oracle from every 2-byte residue
+/// in a 256-byte window and asserts the oracle is invariant and equal to the
+/// port. It fails the moment the shim goes back to forwarding the caller's
+/// pointer — on either ISA, whichever way that binary's statics land.
+#[test]
+fn convolve8_oracle_is_alignment_invariant() {
+    let mut rng = Rng(0xC4_2010);
+    let filters = obmc::av1_get_filter(obmc::USE_8_TAPS);
+
+    for &(w, h) in &[(4usize, 4usize), (8, 8), (16, 8), (32, 32)] {
+        let stride = w + 32;
+        let src = noise(&mut rng, stride * (h + 32));
+        let base = (16 * stride + 16) as i64;
+
+        for phase in 0..16usize {
+            let taps = filters[phase];
+
+            let mut want_h = vec![0u8; w * h];
+            let mut want_v = vec![0u8; w * h];
+            obmc::convolve8_horiz(&src, base, stride, &mut want_h, w, &taps, w, h);
+            obmc::convolve8_vert(&src, base, stride, &mut want_v, w, &taps, w, h);
+
+            // Every 2-byte residue in a 256-byte window, i.e. every `% 16`
+            // class the linker can hand us, including the 15 that break a
+            // raw-pointer shim.
+            for slot in 0..124usize {
+                let mut buf = AlignedTaps([0i16; 256]);
+                buf.0[slot..slot + 8].copy_from_slice(&taps);
+                let k: &[i16; 8] = buf.0[slot..slot + 8].try_into().unwrap();
+                let addr = k.as_ptr() as usize;
+
+                let mut got = vec![0u8; w * h];
+                cme::convolve8_horiz(&src, base, stride, &mut got, w, k, w, h);
+                assert_eq!(
+                    got,
+                    want_h,
+                    "convolve8_horiz {w}x{h} phase {phase} taps at %256={} %16={}: \
+                     the C oracle read a different kernel than it was handed",
+                    addr % 256,
+                    addr % 16
+                );
+
+                let mut got = vec![0u8; w * h];
+                cme::convolve8_vert(&src, base, stride, &mut got, w, k, w, h);
+                assert_eq!(
+                    got,
+                    want_v,
+                    "convolve8_vert {w}x{h} phase {phase} taps at %256={} %16={}: \
+                     the C oracle read a different kernel than it was handed",
+                    addr % 256,
+                    addr % 16
+                );
+            }
+        }
+    }
+}
+
+/// Minimal reproducer for the second half of that cross-ISA run: the shim's
+/// `ref_upsampled_pred` did not initialize RTCD, and `svt_aom_upsampled_pred_c`
+/// reaches bare `svt_memcpy` on its `subpel == (0, 0)` arm. `svt_memcpy` is an
+/// RTCD function pointer in `.bss` (`common_dsp_rtcd.h:1083`), NULL until
+/// `svt_aom_setup_common_rtcd_internal` runs; the header even offers a
+/// null-safe `SVT_MEMCPY` that variance.c:92 does not use. On aarch64 NEON
+/// devirtualization rewrites `svt_memcpy` to the concrete `svt_memcpy_neon`
+/// (`common_dsp_rtcd_neon_devirt.h:266`), so the pointer never exists and the
+/// bug cannot fire; on x86-64 the call lands at `rip = 0x0`.
+///
+/// **Observed failure before the fix (x86_64-linux, 2026-08-31):**
+/// `SIGSEGV`, `#0 0x0 in ?? ()`, `#1 svt_aom_upsampled_pred_c`,
+/// `#2 ref_upsampled_pred (… ref_base=736, ref_stride=36, subpel_search=1)`.
+///
+/// This test exists as its own cell so the reproducer is the FIRST C call in
+/// its process — `cargo nextest` gives every test its own process, so a later
+/// reordering of `upsampled_pred_matches_c`'s loops cannot quietly warm RTCD up
+/// first and hide the regression. It can only fail on x86-64 (CI's
+/// `ubuntu-latest` is x86-64); on aarch64 it is a passing no-op by construction.
+#[test]
+fn upsampled_pred_cold_rtcd_zero_subpel() {
+    let mut rng = Rng(0xC4_2011);
+    let (w, h) = (4usize, 4usize);
+    let stride = w + 32;
+    let src = noise(&mut rng, stride * (h + 40));
+    let base = (20 * stride + 16) as i64;
+
+    let mut got = vec![0u8; w * h];
+    let mut want = vec![0u8; w * h];
+    obmc::upsampled_pred(&mut got, w, h, 0, 0, &src, base, stride, obmc::USE_2_TAPS);
+    cme::upsampled_pred(&mut want, w, h, 0, 0, &src, base, stride, obmc::USE_2_TAPS);
+    assert_eq!(got, want, "upsampled_pred {w}x{h} at subpel (0, 0)");
+}

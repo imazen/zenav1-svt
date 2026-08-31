@@ -327,21 +327,55 @@ unsigned int ref_obmc_kernel(int which, int width, int height, const uint8_t* pr
 }
 #undef OBMC_CASE
 
+/* `obmc_ensure_init` is MANDATORY here, not defensive: on its
+ * `!subpel_x_q3 && !subpel_y_q3` arm `svt_aom_upsampled_pred_c` (variance.c:92)
+ * calls bare `svt_memcpy`, which is an RTCD FUNCTION POINTER living in .bss
+ * (common_dsp_rtcd.h:1083) and is NULL until `svt_aom_setup_common_rtcd_internal`
+ * runs. The header offers a null-safe `SVT_MEMCPY` for exactly this, and that
+ * call site does not use it. On aarch64 the hazard is invisible: NEON
+ * devirtualization rewrites `svt_memcpy` to the concrete `svt_memcpy_neon`
+ * (common_dsp_rtcd_neon_devirt.h:266), so the pointer never exists. On x86-64
+ * an uninitialized call lands at rip=0x0. MEASURED 2026-08-31: without this
+ * line `upsampled_pred_matches_c` SIGSEGVs on x86_64-linux at its very first
+ * cell (4x4, USE_2_TAPS, offset (0,0)) and passes on aarch64-darwin. */
 void ref_upsampled_pred(uint8_t* comp_pred, int width, int height, int subpel_x_q3, int subpel_y_q3,
                         const uint8_t* ref_alloc, int ref_base, int ref_stride, int subpel_search) {
+    obmc_ensure_init();
     Mv mv = {{0, 0}};
     svt_aom_upsampled_pred_c(NULL, NULL, 0, 0, &mv, comp_pred, width, height, subpel_x_q3, subpel_y_q3,
                              ref_alloc + ref_base, ref_stride, subpel_search);
 }
 
+/* `svt_aom_convolve8_{horiz,vert}_c` do NOT take a phase index: they recover
+ * the 16-phase InterpKernel table and the phase from the ADDRESS of the filter
+ * pointer -- `get_filter_base` masks it with `~0xFF` and `get_filter_offset`
+ * subtracts (convolve.c:54-61, "NOTE: This assumes that the filter table is
+ * 256-byte aligned"). Every real call site satisfies that with
+ * `DECLARE_ALIGNED(256, const InterpKernel, sub_pel_filters_8[16])`
+ * (inter_prediction.c:238). Forwarding the caller's raw pointer instead makes
+ * the applied taps a function of where the linker happened to put the caller's
+ * table: with `x_step_q4 == 16` the source stepping is unaffected but the taps
+ * become those at `kernel_addr - (kernel_addr % 16)`, i.e. the CALLER'S TAPS
+ * only when the caller's array is 16-byte aligned. MEASURED 2026-08-31: the
+ * Rust `SUB_PEL_FILTERS_8` static landed at `%16 == 0` in the aarch64-darwin
+ * test binary (oracle correct, by luck) and at `%16 == 8` in the x86_64-linux
+ * one (oracle silently applied the wrong 8 taps).
+ *
+ * So stage the caller's taps into a 256-byte-aligned table, replicated into
+ * every phase row: whichever offset the kernel derives, the taps it applies
+ * are the caller's. Same treatment as `ref_convolve8_horiz` in ref_shims.c. */
 void ref_me_convolve8_horiz(const uint8_t* src_alloc, int src_base, int src_stride, uint8_t* dst, int dst_stride,
                          const int16_t* kernel, int w, int h) {
-    svt_aom_convolve8_horiz_c(src_alloc + src_base, src_stride, dst, dst_stride, kernel, 16, NULL, -1, w, h);
+    _Alignas(256) int16_t table[16][8];
+    for (int p = 0; p < 16; ++p) memcpy(table[p], kernel, 8 * sizeof(int16_t));
+    svt_aom_convolve8_horiz_c(src_alloc + src_base, src_stride, dst, dst_stride, table[0], 16, NULL, -1, w, h);
 }
 
 void ref_me_convolve8_vert(const uint8_t* src_alloc, int src_base, int src_stride, uint8_t* dst, int dst_stride,
                         const int16_t* kernel, int w, int h) {
-    svt_aom_convolve8_vert_c(src_alloc + src_base, src_stride, dst, dst_stride, NULL, -1, kernel, 16, w, h);
+    _Alignas(256) int16_t table[16][8];
+    for (int p = 0; p < 16; ++p) memcpy(table[p], kernel, 8 * sizeof(int16_t));
+    svt_aom_convolve8_vert_c(src_alloc + src_base, src_stride, dst, dst_stride, NULL, -1, table[0], 16, w, h);
 }
 
 /* Shared IntraBcContext + ModeDecisionContext assembly for the two OBMC

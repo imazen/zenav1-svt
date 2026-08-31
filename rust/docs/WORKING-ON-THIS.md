@@ -154,6 +154,44 @@ own planes and therefore skips the check. When a harness refuses an input,
 write down what that makes untestable — the refusal is not the same as the
 input being impossible.
 
+**A `c_parity_*` oracle can be correct by LINKER LUCK. Two of them were.**
+Both halves of this were found on 2026-08-31 by running the suite on
+x86_64-linux for the first time; both had been green on aarch64-darwin all day.
+
+- **Some C entries derive an argument from a POINTER'S ADDRESS.**
+  `svt_aom_convolve8_{horiz,vert}_c` take no phase index: they recover the
+  16-phase table and the phase from the filter pointer itself
+  (`convolve.c:54-61`, `get_filter_base` = `ptr & ~0xFF`, commented "this
+  assumes that the filter table is 256-byte aligned"). Real call sites satisfy
+  it with `DECLARE_ALIGNED(256, …)`; a shim that forwards a Rust
+  `&[i16; 8]` straight through does not, and C then applies the taps at
+  `addr - (addr % 16)`. The Rust `SUB_PEL_FILTERS_8` static landed at
+  `%16 == 0` in the aarch64 test binary (oracle right, by accident) and
+  `%16 == 8` in the x86 one (oracle silently wrong, whole-block value
+  mismatch) — and the residue moves between binaries on ONE host too: three
+  builds on the Mac gave `%16` of 8, 8 and 0. **Stage caller-supplied filter
+  taps into `_Alignas(256) int16_t table[16][8]`, replicated into every row**
+  (`ref_shims.c:1124` had this right; `inter_me_shims.c` regressed it).
+  Pinned by `convolve8_oracle_is_alignment_invariant`, which feeds the same
+  taps from every 2-byte residue in a 256-byte window.
+- **An RTCD function pointer is NULL on x86 and does not exist on arm.**
+  `svt_memcpy` is a pointer in `.bss` (`common_dsp_rtcd.h:1083`) until
+  `svt_aom_setup_common_rtcd_internal` runs; the header even provides a
+  null-safe `SVT_MEMCPY` for call sites that might run early, and
+  `C_DEFAULT/variance.c:92` does not use it. Under NEON devirtualization
+  `svt_memcpy` is `#define`d to the concrete `svt_memcpy_neon`
+  (`common_dsp_rtcd_neon_devirt.h:266`), so on aarch64 there is no pointer to
+  be NULL. A shim entry that skips RTCD setup therefore works on the Mac and
+  lands at `rip = 0x0` on x86. **Every shim entry point calls its
+  `*_ensure_rtcd()` first**, even when the function it wraps is a `_c` spelling
+  — the `_c` body can still reach an RTCD pointer.
+
+The general rule: **a differential passes on the host you ran it on. Nothing
+more.** Before a `c_parity_*` file is quoted as tier-1 evidence, run it on the
+other ISA — `ssh r7900x` is the x86 box — because the ways an oracle can be
+accidentally right (static layout, per-ISA dispatch tables, devirtualized
+symbols) are all invisible from inside one host.
+
 **On macOS there is no arithmetic-coder op trace IN-PROCESS — run the C side in
 a Linux container instead.** `capture_c_trace` needs `-Wl,--wrap`, which
 Apple's `ld64` lacks, so `build.sh` falls back to a byte-only driver and

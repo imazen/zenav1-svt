@@ -553,6 +553,31 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Two `c_parity_obmc_search` oracles were unsound; both were green on
+  aarch64 by accident and broke on x86_64.** Found by the first cross-ISA run
+  of the suite (2026-08-31): `convolve8_matches_c` failed with a whole-block
+  value mismatch and `upsampled_pred_matches_c` SIGSEGV'd, on x86_64-linux
+  only. Neither was a port defect — the port's `convolve8_horiz` is
+  ISA-invariant scalar integer code and produced the right answer on both
+  hosts. (a) `svt_aom_convolve8_{horiz,vert}_c` derive the filter phase from
+  the filter POINTER'S ADDRESS (`convolve.c:54`, `get_filter_base` =
+  `ptr & ~0xFF`, documented as assuming a 256-byte-aligned table), so
+  forwarding a Rust `&[i16; 8]` made the oracle apply the taps at
+  `addr - (addr % 16)` — correct only when the Rust static happened to land
+  16-byte aligned, which it did on aarch64 and did not on x86.
+  `ref_me_convolve8_{horiz,vert}` now stage the taps into an
+  `_Alignas(256) int16_t[16][8]`, matching `ref_shims.c`'s existing
+  `ref_convolve8_horiz`. (b) `ref_upsampled_pred` did not initialize RTCD, and
+  `svt_aom_upsampled_pred_c` reaches bare `svt_memcpy` — a `.bss` function
+  pointer that is NULL before setup on x86 and a devirtualized concrete symbol
+  on aarch64 — so the call landed at `rip = 0x0`; it now calls
+  `obmc_ensure_init()` first. Pinned by two new controls:
+  `convolve8_oracle_is_alignment_invariant` (feeds the same taps from every
+  2-byte residue in a 256-byte window; fails pre-fix on aarch64 too, so it is
+  ISA-independent) and `upsampled_pred_cold_rtcd_zero_subpel` (the minimal
+  reproducer, first C call in its own process). Verified 1275/1275 on
+  x86_64-linux and 1268/1268 on aarch64-darwin.
+
 - **`has_top_right`'s `PARTITION_VERT_A` check now reads the MUTATED `bs` in
   `intrabc_mvp.rs` too.** The same defect fixed in `inter_mvp.rs` was present
   in the IntraBC copy of the function, where the randomized `c_parity` sweep
