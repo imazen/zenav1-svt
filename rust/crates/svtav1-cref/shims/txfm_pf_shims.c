@@ -376,3 +376,21 @@ int32_t ref_estimate_transform(int16_t* residual_buffer, uint32_t residual_strid
     free(pcs);
     return (int32_t)rc;
 }
+
+/* ---- svt_av1_gen_inv_stage_range ---- */
+
+void svt_av1_gen_inv_stage_range(int8_t* stage_range_col, int8_t* stage_range_row, const Txfm2dFlipCfg* cfg,
+                                 TxSize tx_size, int32_t bd);
+
+void ref_gen_inv_stage_range(int32_t tx_type, int32_t tx_size, int32_t bd, int8_t* col, int8_t* row) {
+    Txfm2dFlipCfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    svt_av1_get_inv_txfm_cfg((TxType)tx_type, (TxSize)tx_size, &cfg);
+    int8_t c[MAX_TXFM_STAGE_NUM];
+    int8_t r[MAX_TXFM_STAGE_NUM];
+    memset(c, 0, sizeof(c));
+    memset(r, 0, sizeof(r));
+    svt_av1_gen_inv_stage_range(c, r, &cfg, (TxSize)tx_size, bd);
+    memcpy(col, c, sizeof(c));
+    memcpy(row, r, sizeof(r));
+}

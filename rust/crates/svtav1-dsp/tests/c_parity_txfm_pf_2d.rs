@@ -168,6 +168,42 @@ fn get_inv_txfm_cfg_parity_all() {
     }
 }
 
+/// `svt_av1_gen_inv_stage_range` over the same grid, at all three bit depths
+/// C branches on.
+///
+/// The inverse twin does NOT derive its ranges from `cfg->stage_range_*` the
+/// way the forward one does — it computes them, `(void)`s the result, and
+/// writes a bit-depth constant into every stage. The 16 x 19 x 3 sweep is
+/// what turns that reading into evidence.
+#[test]
+fn gen_inv_stage_range_parity_all() {
+    for &tx_size in &ALL_TX_SIZES {
+        for &tx_type in &ALL_TX_TYPES {
+            let cfg = port::get_inv_txfm_cfg(tx_type, tx_size);
+            if cfg.txfm_type_col == port::TxfmType::Invalid
+                || cfg.txfm_type_row == port::TxfmType::Invalid
+            {
+                // The 64-point ADST hole: C's stage_num is an out-of-bounds
+                // read there, so its loop bound is not defined behaviour to
+                // reproduce.
+                continue;
+            }
+            for bd in [8, 10, 12] {
+                let (wc, wr) = cref::gen_inv_stage_range(tx_type as usize, tx_size as usize, bd);
+                let (gc, gr) = port::gen_inv_stage_range(&cfg, bd);
+                assert_eq!(
+                    wc, gc,
+                    "inv {tx_type:?}/{tx_size:?} bd{bd}: stage_range_col"
+                );
+                assert_eq!(
+                    wr, gr,
+                    "inv {tx_type:?}/{tx_size:?} bd{bd}: stage_range_row"
+                );
+            }
+        }
+    }
+}
+
 /// `svt_av1_gen_fwd_stage_range` over the same grid, at both shipping depths.
 #[test]
 fn gen_fwd_stage_range_parity_all() {

@@ -4306,3 +4306,46 @@ pub fn estimate_transform(
     }
     true
 }
+
+/// Port of C `svt_av1_gen_inv_stage_range` (inv_transforms.c:43).
+///
+/// The inverse twin of [`gen_fwd_stage_range`], and it does something quite
+/// different: it does NOT derive the range from `cfg->stage_range_*`. It
+/// computes `real_range_row/col` from them, `(void)`s the result, and then
+/// writes the same bit-depth-derived constant into EVERY stage — the derived
+/// value only ever feeds an `assert`. So the output is `opt_range_row` /
+/// `opt_range_col` repeated `stage_num_row` / `stage_num_col` times, and the
+/// `TXFM_TYPE_ADST4 && i == 1` special case (the comment says adst4 may use
+/// one extra bit at stage 1) writes exactly the same value as its `else`
+/// branch — it exists only to skip the assert.
+///
+/// `tx_size` is a separate parameter in C even though `cfg` carries one; it
+/// is used only for `inv_start_range[tx_size]`, which is likewise
+/// assert-only. This port takes `cfg` alone.
+pub fn gen_inv_stage_range(
+    cfg: &Txfm2dFlipCfg,
+    bd: i32,
+) -> ([i8; MAX_TXFM_STAGE_NUM], [i8; MAX_TXFM_STAGE_NUM]) {
+    let (opt_range_row, opt_range_col) = match bd {
+        8 => (16i8, 16i8),
+        10 => (18, 16),
+        // C asserts bd == 12 here; in a release build the assert is gone and
+        // any other depth takes this arm.
+        _ => (20, 18),
+    };
+    let mut col = [0i8; MAX_TXFM_STAGE_NUM];
+    let mut row = [0i8; MAX_TXFM_STAGE_NUM];
+    for v in row
+        .iter_mut()
+        .take((cfg.stage_num_row as usize).min(MAX_TXFM_STAGE_NUM))
+    {
+        *v = opt_range_row;
+    }
+    for v in col
+        .iter_mut()
+        .take((cfg.stage_num_col as usize).min(MAX_TXFM_STAGE_NUM))
+    {
+        *v = opt_range_col;
+    }
+    (col, row)
+}

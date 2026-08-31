@@ -353,3 +353,28 @@ pub fn estimate_transform(
         )
     }
 }
+
+unsafe extern "C" {
+    fn ref_gen_inv_stage_range(tx_type: i32, tx_size: i32, bd: i32, col: *mut i8, row: *mut i8);
+}
+
+/// Reference `svt_av1_gen_inv_stage_range` for the inverse config of
+/// `(tx_type, tx_size)` at bit depth `bd`.
+pub fn gen_inv_stage_range(
+    tx_type: usize,
+    tx_size: usize,
+    bd: i32,
+) -> ([i8; MAX_TXFM_STAGE_NUM], [i8; MAX_TXFM_STAGE_NUM]) {
+    let mut col = [0i8; MAX_TXFM_STAGE_NUM];
+    let mut row = [0i8; MAX_TXFM_STAGE_NUM];
+    unsafe {
+        ref_gen_inv_stage_range(
+            tx_type as i32,
+            tx_size as i32,
+            bd,
+            col.as_mut_ptr(),
+            row.as_mut_ptr(),
+        )
+    };
+    (col, row)
+}
