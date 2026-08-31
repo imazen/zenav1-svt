@@ -973,3 +973,357 @@ pub fn lambda_assign(
     fast_lambda = ((i64::from(fast_lambda) * scale_factor) >> 7) as u32;
     (fast_lambda, full_lambda)
 }
+
+// ---------------------------------------------------------------------------
+// The reference-frame percentages and the per-frame RC entry
+// (rc_process.c:61-142, :604-632)
+// ---------------------------------------------------------------------------
+//
+// EVIDENCE TIER 4 FOR THIS SECTION, and it is stated once here rather than
+// implied: `get_ref_obj`, `get_ref_intra_percentage`, `get_ref_skip_percentage`,
+// `get_ref_hp_percentage` and `rc_init_frame_stats` are ALL `static` in
+// `rc_process.c` with NO exported symbol (checked with `nm -g` on
+// `Bin/Release/libSvtAv1Enc.a`, whose positive controls
+// `svt_av1_rc_bits_per_mb` / `svt_aom_compute_rd_mult` are present, so a
+// "not exported" verdict there is trustworthy). They also cannot be reached
+// through any exported wrapper without standing up the whole rate-control
+// thread and its fifos. So they are pinned by HAND-DERIVED VECTORS TRACED
+// AGAINST THE C SOURCE — the weakest tier in `WORKING-ON-THIS.md` §4 — and
+// the tests spell out the arithmetic per vector rather than re-running the
+// port's own algorithm.
+//
+// These are inter-only (each returns a constant on an I_SLICE), so they are
+// invisible to the still envelope and silently wrong the moment inter frames
+// exist. Their consumers: `ref_intra_percentage` at md_process.c:738,
+// rc_crf_cqp.c:332, enc_dec_process.c:2466, enc_mode_config.c:6653/9027;
+// `ref_skip_percentage` at eight sites in enc_mode_config.c and
+// md_config_process.c:972 (preset-level TOOL GATING — a wrong value changes
+// the tool set and therefore the bitstream); `ref_hp_percentage` at
+// enc_mode_config.c:8962 and :9580 against HIGH_PRECISION_REF_PERC_TH, which
+// decides `allow_high_precision_mv` — a frame-header bit AND an MV-coding
+// change.
+
+/// C `SliceType` (definitions.h:1890). **`B_SLICE` is 0 and `I_SLICE` is 1** —
+/// the opposite of the ordering most people assume, and every helper below
+/// branches on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SliceType {
+    B = 0,
+    I = 1,
+}
+
+/// The `EbReferenceObject` fields the three percentage helpers read
+/// (reference_object.h:31-33). All three coded-area fields are **`uint8_t`**
+/// in C; that matters below.
+#[derive(Clone, Copy, Debug)]
+pub struct RefObjStats {
+    pub slice_type: SliceType,
+    pub intra_coded_area: u8,
+    pub skip_coded_area: u8,
+    pub hp_coded_area: u8,
+}
+
+/// C `get_ref_obj` (rc_process.c:61): `pcs->ref_pic_ptr_array[list][idx]->object_ptr`.
+///
+/// A one-line DPB accessor that #7-#9 are built on. Each RC file has its own
+/// `static` copy of it in C; the port needs exactly one. Returns `None` when
+/// the slot is empty, which C cannot express — C would dereference a null
+/// `object_ptr`, so `None` is the port refusing rather than reproducing UB.
+#[must_use]
+pub fn get_ref_obj(
+    ref_pic_array: &[[Option<RefObjStats>; 2]],
+    ref_list: usize,
+    idx: usize,
+) -> Option<&RefObjStats> {
+    ref_pic_array.get(idx)?[ref_list].as_ref()
+}
+
+/// C `get_ref_intra_percentage` (rc_process.c:66). **`static` — tier 4.**
+///
+/// Sets `pcs->ref_intra_percentage`: the mean intra-coded area of the two
+/// nearest reference frames, skipping any that is itself an I_SLICE.
+///
+/// THE OVERFLOW IS REAL AND IS REPRODUCED: `iperc` is `uint8_t` in C, so
+/// `iperc += ref_obj_l1->intra_coded_area` WRAPS at 256 before the divide.
+/// Two references at 200% each (which the field's 0-100 contract forbids but
+/// its type permits) give C `(200 + 200) mod 256 = 144`, then `144 / 2 = 72`.
+/// `wrapping_add` is the faithful spelling; a `u16` accumulator would be a
+/// "fix" that diverges.
+#[must_use]
+pub fn get_ref_intra_percentage(
+    slice_type: SliceType,
+    ref_list1_count_try: u8,
+    ref_l0: Option<&RefObjStats>,
+    ref_l1: Option<&RefObjStats>,
+) -> u8 {
+    if slice_type == SliceType::I {
+        return 100;
+    }
+    let mut iperc: u8 = 0;
+    let mut ref_cnt: u8 = 0;
+    if let Some(l0) = ref_l0
+        && l0.slice_type != SliceType::I
+    {
+        iperc = l0.intra_coded_area;
+        ref_cnt += 1;
+    }
+    // C's guard is `pcs->slice_type == B_SLICE && pcs->ppcs->ref_list1_count_try`.
+    if slice_type == SliceType::B
+        && ref_list1_count_try != 0
+        && let Some(l1) = ref_l1
+        && l1.slice_type != SliceType::I
+    {
+        iperc = iperc.wrapping_add(l1.intra_coded_area);
+        ref_cnt += 1;
+    }
+    // C: `if (ref_cnt) { *intra_perc = iperc / ref_cnt; } else { *intra_perc = 0; }`
+    iperc.checked_div(ref_cnt).unwrap_or(0)
+}
+
+/// C `get_ref_skip_percentage` (rc_process.c:96). **`static` — tier 4.**
+///
+/// ASYMMETRY WITH THE INTRA TWIN, which is exactly the sort of thing an
+/// "obviously the same shape" reading gets wrong: this function has NO
+/// `ref_cnt`. On the two-reference branch it adds `0` for an I_SLICE L1 and
+/// then **halves unconditionally**, so an inter frame whose L1 reference is
+/// intra reports HALF the L0 skip area, not the L0 skip area. And `skip_perc`
+/// is `uint8_t`, so the add wraps before the shift.
+#[must_use]
+pub fn get_ref_skip_percentage(
+    slice_type: SliceType,
+    ref_list1_count_try: u8,
+    ref_l0: Option<&RefObjStats>,
+    ref_l1: Option<&RefObjStats>,
+) -> u8 {
+    if slice_type == SliceType::I {
+        return 0;
+    }
+    let mut skip_perc: u8 = 0;
+    if let Some(l0) = ref_l0 {
+        skip_perc = skip_perc.wrapping_add(if l0.slice_type == SliceType::I {
+            0
+        } else {
+            l0.skip_coded_area
+        });
+    }
+    if slice_type == SliceType::B && ref_list1_count_try != 0 {
+        if let Some(l1) = ref_l1 {
+            skip_perc = skip_perc.wrapping_add(if l1.slice_type == SliceType::I {
+                0
+            } else {
+                l1.skip_coded_area
+            });
+        }
+        // Unconditional in this branch — see the doc comment. (The `if let`
+        // above cannot be merged into the outer `if`: C's `>>= 1` is OUTSIDE
+        // it, and merging would skip the halve whenever L1 is absent.)
+        skip_perc >>= 1;
+    }
+    skip_perc
+}
+
+/// C `get_ref_hp_percentage` (rc_process.c:118). **`static` — tier 4.**
+///
+/// Sets `pcs->ref_hp_percentage`, read at enc_mode_config.c:8962 and :9580
+/// against `HIGH_PRECISION_REF_PERC_TH` to decide `allow_high_precision_mv` —
+/// a frame-header bit and an MV-coding change, so this one is directly on the
+/// MV-entropy critical path.
+///
+/// TWO SIGN TRAPS:
+/// 1. `hp_coded_area` is **`uint8_t`** in `EbReferenceObject` but C assigns it
+///    to an **`int8_t`** local. A stored value of 200 therefore becomes -56 —
+///    negative, but NOT the -1 sentinel — and flows into the average as -56.
+///    The port reproduces the narrowing with `as i8`.
+/// 2. `-1` is the "no usable reference" sentinel AND a legal `int8_t` value,
+///    so a reference whose `hp_coded_area` is 255 is indistinguishable from
+///    an absent one. Reproduced, not disambiguated.
+///
+/// `(hp_perc_l0 + hp_perc_l1) >> 1` is an arithmetic shift on the `int`
+/// promotion, i.e. floor division: `(-3 + 0) >> 1 == -2`, not -1.
+#[must_use]
+pub fn get_ref_hp_percentage(
+    slice_type: SliceType,
+    ref_list1_count_try: u8,
+    ref_l0: Option<&RefObjStats>,
+    ref_l1: Option<&RefObjStats>,
+) -> i16 {
+    if slice_type == SliceType::I {
+        return -1;
+    }
+    let hp_perc_l0: i8 = match ref_l0 {
+        Some(l0) if l0.slice_type != SliceType::I => l0.hp_coded_area as i8,
+        _ => -1,
+    };
+    let mut hp_perc_l1: i8 = -1;
+    if slice_type == SliceType::B
+        && ref_list1_count_try != 0
+        && let Some(l1) = ref_l1
+    {
+        hp_perc_l1 = if l1.slice_type == SliceType::I {
+            -1
+        } else {
+            l1.hp_coded_area as i8
+        };
+    }
+    if hp_perc_l0 == -1 && hp_perc_l1 == -1 {
+        -1
+    } else if hp_perc_l1 == -1 {
+        i16::from(hp_perc_l0)
+    } else if hp_perc_l0 == -1 {
+        i16::from(hp_perc_l1)
+    } else {
+        ((i32::from(hp_perc_l0) + i32::from(hp_perc_l1)) >> 1) as i16
+    }
+}
+
+/// C `MAX_RATE_AVG_PERIOD` (rc_process.h:50) ==
+/// `CODED_FRAMES_STAT_QUEUE_MAX_DEPTH >> 1` == `2000 >> 1`.
+pub const MAX_RATE_AVG_PERIOD: u64 = 1000;
+
+/// The inputs `rc_init_frame_stats` reads.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameStatsInput<'a> {
+    pub slice_type: SliceType,
+    pub ref_list1_count_try: u8,
+    pub ref_l0: Option<&'a RefObjStats>,
+    pub ref_l1: Option<&'a RefObjStats>,
+    /// `scs->passes`.
+    pub passes: u32,
+    /// `scs->static_config.max_bit_rate`.
+    pub max_bit_rate: u64,
+    /// `scs->twopass.stats_buf_ctx->total_stats->count`, read only when
+    /// `passes > 1 && max_bit_rate != 0`.
+    pub total_stats_count: u64,
+    /// `ppcs->me_64x64_distortion[0..b64_total_count]`.
+    pub me_64x64_distortion: &'a [u32],
+}
+
+/// What `rc_init_frame_stats` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameStatsOutput {
+    pub ref_intra_percentage: u8,
+    pub ref_skip_percentage: u8,
+    pub ref_hp_percentage: i16,
+    pub rate_average_periodin_frames: u64,
+    /// `None` on an I_SLICE, where C leaves both ME-distortion fields alone.
+    pub avg_base_me_dist: Option<u32>,
+}
+
+/// C `rc_init_frame_stats` (rc_process.c:604). **`static` — tier 4.**
+///
+/// The unconditional per-frame RC entry (called at rc_process.c:836, which
+/// runs for AOM_Q too). Without it none of the three percentages above are
+/// ever populated.
+///
+/// NOT COVERED HERE, named rather than omitted: the `svt_aom_generate_r0beta`
+/// call on the `ppcs->r0_gen` arm (src_ops_process.c:1592) and the cyclic
+/// refresh init. Those belong to other files' surfaces; this function returns
+/// everything `rc_process.c` itself computes.
+///
+/// THE ME-DISTORTION ARM IS I_SLICE-GUARDED: on an I_SLICE C does not touch
+/// `cur_avg_base_me_dist` OR `prev_avg_base_me_dist`, so the previous frame's
+/// values persist — hence `Option` rather than a 0. And the average is
+/// `uint64 sum / b64_total_count` truncated into a `uint32`; a zero
+/// `b64_total_count` would divide by zero in C, so the port returns `None`
+/// for an empty slice rather than reproducing UB.
+#[must_use]
+pub fn rc_init_frame_stats(input: &FrameStatsInput<'_>) -> FrameStatsOutput {
+    let ref_intra_percentage = get_ref_intra_percentage(
+        input.slice_type,
+        input.ref_list1_count_try,
+        input.ref_l0,
+        input.ref_l1,
+    );
+    let ref_skip_percentage = get_ref_skip_percentage(
+        input.slice_type,
+        input.ref_list1_count_try,
+        input.ref_l0,
+        input.ref_l1,
+    );
+    let ref_hp_percentage = get_ref_hp_percentage(
+        input.slice_type,
+        input.ref_list1_count_try,
+        input.ref_l0,
+        input.ref_l1,
+    );
+
+    let mut rate_average_periodin_frames = if input.passes > 1 && input.max_bit_rate != 0 {
+        input.total_stats_count
+    } else {
+        60
+    };
+    rate_average_periodin_frames = rate_average_periodin_frames.min(MAX_RATE_AVG_PERIOD);
+
+    let avg_base_me_dist = if input.slice_type != SliceType::I {
+        let n = input.me_64x64_distortion.len() as u64;
+        let sum: u64 = input
+            .me_64x64_distortion
+            .iter()
+            .fold(0u64, |a, &d| a.wrapping_add(u64::from(d)));
+        // C divides by `ppcs->b64_total_count` unguarded; `checked_div`
+        // returns None for an empty slice instead of reproducing that UB.
+        sum.checked_div(n).map(|avg| avg as u32)
+    } else {
+        None
+    };
+
+    FrameStatsOutput {
+        ref_intra_percentage,
+        ref_skip_percentage,
+        ref_hp_percentage,
+        rate_average_periodin_frames,
+        avg_base_me_dist,
+    }
+}
+
+/// C `svt_aom_frame_is_kf_gf_arf` (rc_process.c:56), EXPORTED but taking a
+/// `PictureParentControlSet*`; ported here from its two-line body because its
+/// only inputs are `frame_is_intra_only(ppcs)` and `ppcs->update_type`.
+///
+/// Tier 4 as written (no differential — the exported symbol needs a synthetic
+/// PPCS this lane did not build one for), and its logic is a two-term
+/// disjunction over an enum, which is why that is acceptable here and would
+/// not be for anything with arithmetic in it.
+#[must_use]
+pub fn frame_is_kf_gf_arf(is_intra_only: bool, update_type: FrameUpdateType) -> bool {
+    is_intra_only
+        || update_type == FrameUpdateType::ArfUpdate
+        || update_type == FrameUpdateType::GfUpdate
+}
+
+/// C `svt_aom_update_rc_counts` (rc_process.c:564), EXPORTED but taking a
+/// `PictureParentControlSet*` and MUTATING the shared `RATE_CONTROL`.
+///
+/// **THIS IS TRANSLATED AND MUST NOT BE CALLED IN CQP/CRF**
+/// (`WORKING-ON-THIS.md` §7: dead-looking C stays translated, with its
+/// reachability written down). Both C call sites were checked:
+/// rc_process.c:791 is inside the non-AOM_Q arm, and
+/// packetization_process.c:602 is under
+/// `if (scs->static_config.rate_control_mode)` where `CQP_OR_CRF == 0`.
+/// So in the port's envelope it never runs, `frames_since_key` stays at
+/// [`rc_init`]'s seed of 8 and `frames_since_cdf_update` stays 0 forever —
+/// see [`rc_init`] for why that makes `disable_cdf_update` permanently 0.
+///
+/// Returns the updated `(frames_since_key, frames_to_key, frames_since_cdf_update)`.
+#[must_use]
+pub fn update_rc_counts(
+    showable_frame: bool,
+    disable_cdf_update: bool,
+    frames_since_key: i32,
+    frames_to_key: i32,
+    frames_since_cdf_update: i32,
+) -> (i32, i32, i32) {
+    if !showable_frame {
+        return (frames_since_key, frames_to_key, frames_since_cdf_update);
+    }
+    let frames_since_key = frames_since_key + 1;
+    let frames_to_key = frames_to_key - 1;
+    // "Reset whenever the CDF is updated for the current frame" — C's comment.
+    let frames_since_cdf_update = if !disable_cdf_update {
+        0
+    } else {
+        frames_since_cdf_update + 1
+    };
+    (frames_since_key, frames_to_key, frames_since_cdf_update)
+}
