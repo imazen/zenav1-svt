@@ -653,3 +653,284 @@ fn rc_init_c_side_output_is_populated_not_zeroed() {
     assert_eq!(out.rate_correction_factors[0], 0.7);
     assert_eq!(out.baseline_gf_interval, 16);
 }
+
+// ---------------------------------------------------------------------------
+// The MD lambda chain: `svt_aom_compute_rd_mult`, `svt_aom_compute_fast_lambda`
+// and `svt_aom_lambda_assign` (all EXPORTED), plus the `static const` SAD
+// lambda tables they read.
+// ---------------------------------------------------------------------------
+
+/// All 768 entries of the three `av1_lambda_mode_decision*_bit_sad` tables,
+/// against the REAL C arrays. They are `static const` in a header, so there is
+/// no symbol to bind; `ref_rc_lambda_md_sad` indexes the C-side array.
+#[test]
+fn lambda_sad_tables_match_c() {
+    use svtav1_encoder::port_rc_process::lambda_tables as t;
+    for q in 0..256usize {
+        assert_eq!(
+            t::LAMBDA_MODE_DECISION_8BIT_SAD[q],
+            cref_rc::lambda_md_sad(8, q as i32),
+            "av1_lambda_mode_decision8_bit_sad[{q}]"
+        );
+        assert_eq!(
+            t::LAMBDA_MODE_DECISION_10BIT_SAD[q],
+            cref_rc::lambda_md_sad(10, q as i32),
+            "av1lambda_mode_decision10_bit_sad[{q}]"
+        );
+        assert_eq!(
+            t::LAMBDA_MODE_DECISION_12BIT_SAD[q],
+            cref_rc::lambda_md_sad(12, q as i32),
+            "av1lambda_mode_decision12_bit_sad[{q}]"
+        );
+    }
+    // Anti-vacuity: the shim must be reading a real table, not returning 0.
+    assert_eq!(
+        cref_rc::lambda_md_sad(8, 0),
+        86,
+        "C's av1_lambda_mode_decision8_bit_sad[0] read as {} — the shim is not \
+         indexing the real table",
+        cref_rc::lambda_md_sad(8, 0)
+    );
+    assert_ne!(
+        cref_rc::lambda_md_sad(8, 255),
+        cref_rc::lambda_md_sad(10, 255)
+    );
+}
+
+/// Build the port-side and C-side context pair from one description, so the
+/// sweeps below cannot drift apart.
+fn lambda_ctx(
+    frame_type: i32,
+    tl: u8,
+    hier: u8,
+    ut: rc::FrameUpdateType,
+    alt: bool,
+    rtc: bool,
+    stats: bool,
+    base_q: i32,
+    dq: bool,
+    r0dq: bool,
+    scale: [i32; 7],
+) -> (
+    svtav1_encoder::port_rc_process::LambdaContext,
+    svtav1_cref::rate_control::LambdaCtx,
+) {
+    let p = svtav1_encoder::port_rc_process::LambdaContext {
+        frame_type,
+        temporal_layer_index: tl,
+        hierarchical_levels: hier,
+        update_type: ut,
+        alt_lambda_factors: alt,
+        rtc,
+        stats_based_sb_lambda_modulation: stats,
+        base_q_idx: base_q,
+        delta_q_present: dq,
+        r0_delta_qp_md: r0dq,
+        lambda_scale_factors: scale,
+    };
+    let c = svtav1_cref::rate_control::LambdaCtx {
+        frame_type,
+        temporal_layer_index: i32::from(tl),
+        hierarchical_levels: i32::from(hier),
+        update_type: ut as i32,
+        alt_lambda_factors: i32::from(alt),
+        rtc: i32::from(rtc),
+        stats_based_sb_lambda_modulation: i32::from(stats),
+        base_q_idx: base_q,
+        delta_q_present: i32::from(dq),
+        r0_delta_qp_md: i32::from(r0dq),
+        lambda_scale_factors: scale,
+    };
+    (p, c)
+}
+
+const UPDATE_TYPES: [rc::FrameUpdateType; 7] = [
+    rc::FrameUpdateType::KfUpdate,
+    rc::FrameUpdateType::LfUpdate,
+    rc::FrameUpdateType::GfUpdate,
+    rc::FrameUpdateType::ArfUpdate,
+    rc::FrameUpdateType::OverlayUpdate,
+    rc::FrameUpdateType::IntnlOverlayUpdate,
+    rc::FrameUpdateType::IntnlArfUpdate,
+];
+
+/// `svt_aom_compute_rd_mult` + `svt_aom_compute_fast_lambda`, swept over
+/// every input `update_lambda` reads. `update_lambda` is `static` in C, so
+/// this pair IS its oracle — and the sweep covers all four branches of its
+/// stats-based block plus both `rd_frame_type_factor` rows and the alt table.
+#[test]
+fn compute_rd_mult_and_fast_lambda_match_c() {
+    let mut rng = Rng(0x1357_9bdf_0246_8ace);
+    let mut cells = 0usize;
+    // Cover both `frame_type` values, every temporal layer vs hierarchical
+    // level relation (which is what selects update_lambda's gf_update_type),
+    // and every flag combination.
+    for &bd in &[8u8, 10] {
+        for &frame_type in &[rc::KEY_FRAME, rc::INTER_FRAME] {
+            for hier in 0..=5u8 {
+                for tl in 0..=5u8 {
+                    for &alt in &[false, true] {
+                        for &rtc_flag in &[false, true] {
+                            for &stats in &[false, true] {
+                                for &dq in &[false, true] {
+                                    for &r0dq in &[false, true] {
+                                        let ut = UPDATE_TYPES[(rng.below(7)) as usize];
+                                        let base_q = rng.below(256) as i32;
+                                        let (p, c) = lambda_ctx(
+                                            frame_type, tl, hier, ut, alt, rtc_flag, stats, base_q,
+                                            dq, r0dq, [128; 7],
+                                        );
+                                        // Walk q_index around base_q so every
+                                        // qdiff threshold (-8, -4, 0, +4, +8)
+                                        // is straddled.
+                                        for delta in
+                                            [-20i32, -9, -8, -5, -4, -1, 0, 1, 4, 5, 8, 9, 20]
+                                        {
+                                            let q = (base_q + delta).clamp(0, 255) as u8;
+                                            for &me_q in &[q, base_q.clamp(0, 255) as u8] {
+                                                let got_full =
+                                                    svtav1_encoder::port_rc_process::compute_rd_mult(
+                                                        &p, q, me_q, bd,
+                                                    );
+                                                let want_full =
+                                                    svtav1_cref::rate_control::compute_rd_mult(
+                                                        &c,
+                                                        i32::from(q),
+                                                        i32::from(me_q),
+                                                        i32::from(bd),
+                                                    );
+                                                assert_eq!(
+                                                    got_full, want_full,
+                                                    "compute_rd_mult bd={bd} q={q} me_q={me_q} {p:?}"
+                                                );
+                                                let got_fast =
+                                                    svtav1_encoder::port_rc_process::compute_fast_lambda(
+                                                        &p, q, me_q, bd,
+                                                    );
+                                                let want_fast =
+                                                    svtav1_cref::rate_control::compute_fast_lambda(
+                                                        &c,
+                                                        i32::from(q),
+                                                        i32::from(me_q),
+                                                        i32::from(bd),
+                                                    );
+                                                assert_eq!(
+                                                    got_fast, want_fast,
+                                                    "compute_fast_lambda bd={bd} q={q} me_q={me_q} {p:?}"
+                                                );
+                                                cells += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(cells > 100_000, "sweep collapsed to {cells} cells");
+}
+
+/// `svt_aom_lambda_assign` across all three bit depths, both
+/// `multiply_lambda` values, and non-identity `lambda_scale_factors`.
+#[test]
+fn lambda_assign_matches_c() {
+    let mut rng = Rng(0x2468_ace0_1357_9bdf);
+    let mut cells = 0usize;
+    // 8 and 10 only: the port's 12-bit `full_lambda` needs a 12-bit DC
+    // quantizer table it does not have, and says so by panicking rather than
+    // returning a plausible number. See `lambda_assign`'s docs.
+    for &bd in &[8u8, 10] {
+        for &mul in &[false, true] {
+            for &ut in &UPDATE_TYPES {
+                for &frame_type in &[rc::KEY_FRAME, rc::INTER_FRAME] {
+                    for &stats in &[false, true] {
+                        // 128 is the identity; the other values prove the
+                        // `>> 7` scale is really applied and indexed by
+                        // `update_type` (not by gf_update_type).
+                        for &sf in &[128i32, 96, 160, 255] {
+                            let mut scale = [128i32; 7];
+                            scale[ut as usize] = sf;
+                            let hier = rng.below(6) as u8;
+                            let tl = rng.below(6) as u8;
+                            let base_q = rng.below(256) as i32;
+                            let (p, c) = lambda_ctx(
+                                frame_type,
+                                tl,
+                                hier,
+                                ut,
+                                false,
+                                false,
+                                stats,
+                                base_q,
+                                rng.below(2) == 1,
+                                rng.below(2) == 1,
+                                scale,
+                            );
+                            for qp in (0..=255i32).step_by(7) {
+                                let got = svtav1_encoder::port_rc_process::lambda_assign(
+                                    &p, bd, qp as u8, mul,
+                                );
+                                let want = svtav1_cref::rate_control::lambda_assign(
+                                    &c,
+                                    i32::from(bd),
+                                    qp,
+                                    mul,
+                                );
+                                assert_eq!(
+                                    got, want,
+                                    "lambda_assign bd={bd} qp={qp} mul={mul} sf={sf} {p:?}"
+                                );
+                                cells += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(cells > 5_000, "sweep collapsed to {cells} cells");
+}
+
+/// Anti-vacuity for the lambda sweeps: `update_lambda`'s `gf_update_type` is
+/// DERIVED from frame_type/temporal layer and is NOT `ppcs->update_type`.
+/// Prove C really behaves that way, by holding `update_type` fixed and moving
+/// only the temporal layer — if C used `update_type` the results would be
+/// identical and a port that confused the two would pass the sweep above.
+#[test]
+fn update_lambda_gf_type_is_derived_not_the_ppcs_update_type() {
+    // update_type fixed at LF_UPDATE; only temporal_layer_index moves.
+    let mk = |tl: u8| {
+        lambda_ctx(
+            rc::INTER_FRAME,
+            tl,
+            /* hierarchical_levels */ 4,
+            rc::FrameUpdateType::LfUpdate,
+            false,
+            false,
+            false,
+            128,
+            false,
+            false,
+            [128; 7],
+        )
+        .1
+    };
+    let at_tl0 = svtav1_cref::rate_control::compute_rd_mult(&mk(0), 128, 128, 8);
+    let at_tl2 = svtav1_cref::rate_control::compute_rd_mult(&mk(2), 128, 128, 8);
+    let at_tl4 = svtav1_cref::rate_control::compute_rd_mult(&mk(4), 128, 128, 8);
+    assert_ne!(
+        at_tl0, at_tl4,
+        "C gave the same rdmult ({at_tl0}) at temporal_layer 0 and 4 with \
+         update_type held at LF_UPDATE — then gf_update_type is NOT derived and \
+         the port's comment is wrong"
+    );
+    // tl=0 -> ARF_UPDATE (factor 150), tl=2 < 4 -> INTNL_ARF (150),
+    // tl=4 == max -> LF_UPDATE (180). So 0 and 2 agree, 4 differs.
+    assert_eq!(
+        at_tl0, at_tl2,
+        "tl 0 and 2 must land on the same factor (150)"
+    );
+}

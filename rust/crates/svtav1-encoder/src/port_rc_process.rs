@@ -48,9 +48,10 @@ pub enum RateFactorLevel {
 }
 
 /// C `SvtAv1FrameUpdateType` (EbSvtAv1Enc.h:183).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(i32)]
 pub enum FrameUpdateType {
+    #[default]
     KfUpdate = 0,
     LfUpdate = 1,
     GfUpdate = 2,
@@ -745,4 +746,230 @@ pub fn rc_init(input: &RcInitInput) -> RcInitOutput {
         prev_avg_base_me_dist: 0,
         avg_frame_low_motion: 0,
     }
+}
+
+// ---------------------------------------------------------------------------
+// The MD lambda chain (rc_process.c:398-489)
+// ---------------------------------------------------------------------------
+//
+// `av1_lambda_assign_md` (md_process.c:724-728) sets `fast_lambda_md[0]`/`[1]`
+// from `svt_aom_compute_fast_lambda` on EVERY frame, and MDS0 candidate
+// pruning uses `fast_lambda_md[1]` — so a wrong frame-type factor changes the
+// candidate set, not just a cost. The port had only the KF arm, inline, at
+// five sites in `pd0.rs`; this is the general chain.
+
+/// C's `av1_lambda_mode_decision{8,10,12}_bit_sad` tables — see the module
+/// docs there for why they are extracted rather than bound.
+pub mod lambda_tables {
+    include!("port_rc_lambda_tables.rs");
+}
+
+/// C `rd_frame_type_factor[2][SVT_AV1_FRAME_UPDATE_TYPES]` (rc_process.c:398).
+///
+/// **THE FIRST INDEX IS A BOOLEAN** — `bit_depth != EB_EIGHT_BIT` — not a
+/// bit-depth ordinal. Row 0 is 8-bit; row 1 is 10- AND 12-bit. Reading it as
+/// `[bit_depth]` would index out of range or silently pick row 1 for 8-bit.
+pub const RD_FRAME_TYPE_FACTOR: [[i32; 7]; 2] = [
+    [150, 180, 150, 150, 180, 180, 150],
+    [128, 144, 128, 128, 144, 144, 128],
+];
+
+/// C `rd_frame_type_factor_alt[SVT_AV1_FRAME_UPDATE_TYPES]`
+/// (rc_process.c:400) — used when `static_config.alt_lambda_factors` is set,
+/// and NOT bit-depth-indexed at all.
+pub const RD_FRAME_TYPE_FACTOR_ALT: [i32; 7] = [140, 180, 128, 140, 164, 164, 140];
+
+/// C `RTC_KF_LAMBDA_BOOST` (rc_process.c:401).
+pub const RTC_KF_LAMBDA_BOOST: i64 = 100;
+
+/// The PCS/PPCS/SCS fields C's `update_lambda` (rc_process.c:404) reads.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LambdaContext {
+    /// `ppcs->frm_hdr.frame_type`; [`KEY_FRAME`] == 0.
+    pub frame_type: i32,
+    pub temporal_layer_index: u8,
+    /// `ppcs->hierarchical_levels`, used as the MAX temporal layer.
+    pub hierarchical_levels: u8,
+    /// `ppcs->update_type`, read by [`compute_rd_mult`] (not by
+    /// `update_lambda`, which derives its OWN `gf_update_type`).
+    pub update_type: FrameUpdateType,
+    pub alt_lambda_factors: bool,
+    pub rtc: bool,
+    pub stats_based_sb_lambda_modulation: bool,
+    pub base_q_idx: i32,
+    pub delta_q_present: bool,
+    pub r0_delta_qp_md: bool,
+    /// `scs->static_config.lambda_scale_factors`, indexed by
+    /// [`FrameUpdateType`]. 128 is the identity.
+    pub lambda_scale_factors: [i32; 7],
+}
+
+/// C `update_lambda` (rc_process.c:404). **`static` in C** — no exported
+/// symbol — but every one of its inputs is on [`LambdaContext`], and the two
+/// EXPORTED functions that wrap it ([`compute_rd_mult`] and
+/// [`compute_fast_lambda`]) are pinned at tier 1 over a sweep of all of them,
+/// which drives all four branches of the `stats_based` block.
+///
+/// THE TRAP HERE, spelled out because it is precisely the "assume the index is
+/// what it looks like" failure: `gf_update_type` is **derived inside this
+/// function** from `frame_type` and the temporal layer — it is NOT
+/// `ppcs->update_type`, which the caller also has and which
+/// [`compute_rd_mult`] uses for a DIFFERENT lookup. The two disagree (an
+/// INTNL_ARF frame's `update_type` and its `gf_update_type` can differ), so
+/// substituting one for the other is a silent lambda error.
+///
+/// And `rd_frame_type_factor`'s first index is the BOOLEAN
+/// `bit_depth != EB_EIGHT_BIT`. See [`RD_FRAME_TYPE_FACTOR`].
+#[must_use]
+pub fn update_lambda(
+    ctx: &LambdaContext,
+    q_index: u8,
+    me_q_index: u8,
+    bit_depth: u8,
+    mut rdmult: i64,
+) -> u32 {
+    let temporal_layer_index = ctx.temporal_layer_index;
+    let max_temporal_layer = ctx.hierarchical_levels;
+
+    // Update rdmult based on the frame's position in the miniGOP.
+    let gf_update_type = if ctx.frame_type == KEY_FRAME {
+        FrameUpdateType::KfUpdate
+    } else if temporal_layer_index == 0 {
+        FrameUpdateType::ArfUpdate
+    } else if temporal_layer_index < max_temporal_layer {
+        FrameUpdateType::IntnlArfUpdate
+    } else {
+        FrameUpdateType::LfUpdate
+    };
+
+    if ctx.alt_lambda_factors {
+        rdmult = (rdmult * i64::from(RD_FRAME_TYPE_FACTOR_ALT[gf_update_type as usize])) >> 7;
+    } else {
+        // First index: the BOOLEAN `bit_depth != EB_EIGHT_BIT`.
+        let hbd = usize::from(bit_depth != 8);
+        rdmult = (rdmult * i64::from(RD_FRAME_TYPE_FACTOR[hbd][gf_update_type as usize])) >> 7;
+    }
+
+    if ctx.rtc && ctx.frame_type == KEY_FRAME {
+        rdmult = (rdmult * RTC_KF_LAMBDA_BOOST) >> 7;
+    }
+
+    if ctx.stats_based_sb_lambda_modulation {
+        let mut factor: i64 = 128;
+        if ctx.rtc {
+            let qdiff = i32::from(me_q_index) - ctx.base_q_idx;
+            if qdiff < 0 {
+                factor = if qdiff <= -4 { 100 } else { 115 };
+            }
+        } else if ctx.delta_q_present || ctx.r0_delta_qp_md {
+            // NOTE this arm uses `q_index`, the other two use `me_q_index`.
+            let qdiff = i32::from(q_index) - ctx.base_q_idx;
+            if qdiff < 0 {
+                factor = if qdiff <= -8 { 90 } else { 115 };
+            } else if qdiff > 0 {
+                factor = if qdiff <= 8 { 135 } else { 150 };
+            }
+        } else {
+            let qdiff = i32::from(me_q_index) - ctx.base_q_idx;
+            if qdiff < 0 {
+                factor = if qdiff <= -4 { 100 } else { 115 };
+            } else if qdiff > 0 {
+                factor = if qdiff <= 4 { 135 } else { 150 };
+            }
+        }
+        rdmult = (rdmult * factor) >> 7;
+    }
+    // C's `return (uint32_t)rdmult` — a C truncating conversion, which for a
+    // negative or >2^32 value wraps. `as u32` in Rust is the same wrapping
+    // conversion for `i64`, so this is the faithful spelling.
+    rdmult as u32
+}
+
+/// C `svt_aom_compute_rd_mult` (rc_process.c:456), EXPORTED.
+///
+/// Note C's comment and code: the initial rdmult base uses `q_index`, NEVER
+/// `me_q_index`; `me_q_index` only reaches [`update_lambda`]'s stats-based
+/// factor.
+#[must_use]
+pub fn compute_rd_mult(ctx: &LambdaContext, q_index: u8, me_q_index: u8, bit_depth: u8) -> u32 {
+    let rdmult = i64::from(compute_rd_mult_based_on_qindex(
+        bit_depth,
+        ctx.update_type,
+        i32::from(q_index),
+    ));
+    update_lambda(ctx, q_index, me_q_index, bit_depth, rdmult)
+}
+
+/// C `svt_aom_compute_fast_lambda` (rc_process.c:461), EXPORTED — queue
+/// item #6.
+///
+/// `av1_lambda_assign_md` (md_process.c:724-728) sets `fast_lambda_md[0]` and
+/// `[1]` from this on every frame; MDS0 candidate pruning reads
+/// `fast_lambda_md[1]`, so the frame-type factor changes the CANDIDATE SET.
+///
+/// C's ternary is `bit_depth == EB_EIGHT_BIT ? 8bit_sad : 10bit_sad` — the
+/// **12-bit table is not reachable from this function**, so a 12-bit call
+/// takes the 10-bit table. Transcribed as written; it looks like an upstream
+/// slip but a C bug is still the oracle (`docs/SUSPECTED-C-BUGS.md` is where
+/// that belongs, not a "fix" here).
+#[must_use]
+pub fn compute_fast_lambda(ctx: &LambdaContext, q_index: u8, me_q_index: u8, bit_depth: u8) -> u32 {
+    let rdmult: i64 = if bit_depth == 8 {
+        i64::from(lambda_tables::LAMBDA_MODE_DECISION_8BIT_SAD[q_index as usize])
+    } else {
+        i64::from(lambda_tables::LAMBDA_MODE_DECISION_10BIT_SAD[q_index as usize])
+    };
+    update_lambda(ctx, q_index, me_q_index, bit_depth, rdmult)
+}
+
+/// C `svt_aom_lambda_assign` (rc_process.c:469), EXPORTED. Returns
+/// `(fast_lambda, full_lambda)`.
+///
+/// `multiply_lambda` is 10-bit-ONLY in C: the `*= 16` / `*= 4` pair sits
+/// inside the `EB_TEN_BIT` arm, so passing `true` at 8- or 12-bit does
+/// nothing. And `fast_lambda` here is the RAW table entry — it does NOT go
+/// through [`update_lambda`], unlike [`compute_fast_lambda`]'s result. Those
+/// are two different "fast lambdas" and conflating them is easy.
+///
+/// **12-BIT IS INCOMPLETE, and says so by panicking rather than by returning
+/// a plausible number** (`WORKING-ON-THIS.md` §6). The 12-bit `fast_lambda`
+/// is available — [`lambda_tables::LAMBDA_MODE_DECISION_12BIT_SAD`] is
+/// pinned entry-for-entry — but `full_lambda` needs
+/// `svt_aom_dc_quant_qtx(_, _, EB_TWELVE_BIT)`, and the port has no 12-bit DC
+/// quantizer table (the same reason `rate_control::convert_qindex_to_q`
+/// panics at 12). So the differential sweeps 8 and 10 only; 12-bit
+/// `lambda_assign` is NOT ported and is listed as missing.
+#[must_use]
+pub fn lambda_assign(
+    ctx: &LambdaContext,
+    bit_depth: u8,
+    qp_index: u8,
+    multiply_lambda: bool,
+) -> (u32, u32) {
+    let q = qp_index as usize;
+    let (mut fast_lambda, mut full_lambda) = match bit_depth {
+        8 => (
+            lambda_tables::LAMBDA_MODE_DECISION_8BIT_SAD[q],
+            compute_rd_mult(ctx, qp_index, qp_index, bit_depth),
+        ),
+        10 => {
+            let full = compute_rd_mult(ctx, qp_index, qp_index, bit_depth);
+            let fast = lambda_tables::LAMBDA_MODE_DECISION_10BIT_SAD[q];
+            if multiply_lambda {
+                (fast.wrapping_mul(4), full.wrapping_mul(16))
+            } else {
+                (fast, full)
+            }
+        }
+        12 => (
+            lambda_tables::LAMBDA_MODE_DECISION_12BIT_SAD[q],
+            compute_rd_mult(ctx, qp_index, qp_index, bit_depth),
+        ),
+        other => panic!("lambda_assign: unsupported bit depth {other}"),
+    };
+    // NM: To be done: tune lambda based on the picture type and layer.
+    let scale_factor = i64::from(ctx.lambda_scale_factors[ctx.update_type as usize]);
+    full_lambda = ((i64::from(full_lambda) * scale_factor) >> 7) as u32;
+    fast_lambda = ((i64::from(fast_lambda) * scale_factor) >> 7) as u32;
+    (fast_lambda, full_lambda)
 }

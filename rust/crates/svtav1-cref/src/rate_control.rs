@@ -315,3 +315,101 @@ pub fn rc_init(input: &RcInitIn) -> RcInitOut {
     unsafe { ref_rc_init(input, &mut out) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// The MD lambda chain: `svt_aom_compute_rd_mult` (rc_process.c:456),
+// `svt_aom_compute_fast_lambda` (:461) and `svt_aom_lambda_assign` (:469).
+// All three EXPORTED, all three taking a `PictureControlSet*`; the shim
+// `calloc`s a real PCS/PPCS/SCS per call and drives them. `update_lambda`
+// (:404) is `static`, but every input it reads is exposed on [`LambdaCtx`],
+// so sweeping those drives all four of its branches.
+// ---------------------------------------------------------------------------
+
+/// Everything `update_lambda` and its callers read off the PCS/PPCS/SCS.
+/// Field order MUST match `RefLambdaCtx` in `shims/rc_shims.c`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LambdaCtx {
+    /// `FrameHeader.frame_type`: 0 == `KEY_FRAME`.
+    pub frame_type: i32,
+    pub temporal_layer_index: i32,
+    pub hierarchical_levels: i32,
+    /// `SvtAv1FrameUpdateType`.
+    pub update_type: i32,
+    pub alt_lambda_factors: i32,
+    pub rtc: i32,
+    pub stats_based_sb_lambda_modulation: i32,
+    pub base_q_idx: i32,
+    pub delta_q_present: i32,
+    pub r0_delta_qp_md: i32,
+    pub lambda_scale_factors: [i32; 7],
+}
+
+unsafe extern "C" {
+    fn ref_rc_lambda_md_sad(bit_depth: c_int, qindex: c_int) -> u32;
+    fn ref_rc_compute_rd_mult(
+        ctx: *const LambdaCtx,
+        q_index: c_int,
+        me_q_index: c_int,
+        bit_depth: c_int,
+    ) -> u32;
+    fn ref_rc_compute_fast_lambda(
+        ctx: *const LambdaCtx,
+        q_index: c_int,
+        me_q_index: c_int,
+        bit_depth: c_int,
+    ) -> u32;
+    fn ref_rc_lambda_assign(
+        ctx: *const LambdaCtx,
+        bit_depth: c_int,
+        qp_index: c_int,
+        multiply_lambda: c_int,
+        fast_lambda: *mut u32,
+        full_lambda: *mut u32,
+    );
+}
+
+/// The REAL `av1_lambda_mode_decision{8,10,12}_bit_sad[qindex]`
+/// (lambda_rate_tables.h). Those tables are `static const` in a header, so
+/// there is no symbol to bind; this indexes the C-side array itself.
+/// Returns `u32::MAX` for an out-of-range argument.
+#[must_use]
+pub fn lambda_md_sad(bit_depth: i32, qindex: i32) -> u32 {
+    unsafe { ref_rc_lambda_md_sad(bit_depth, qindex) }
+}
+
+/// Reference `svt_aom_compute_rd_mult` (rc_process.c:456).
+#[must_use]
+pub fn compute_rd_mult(ctx: &LambdaCtx, q_index: i32, me_q_index: i32, bit_depth: i32) -> u32 {
+    unsafe { ref_rc_compute_rd_mult(ctx, q_index, me_q_index, bit_depth) }
+}
+
+/// Reference `svt_aom_compute_fast_lambda` (rc_process.c:461).
+#[must_use]
+pub fn compute_fast_lambda(ctx: &LambdaCtx, q_index: i32, me_q_index: i32, bit_depth: i32) -> u32 {
+    unsafe { ref_rc_compute_fast_lambda(ctx, q_index, me_q_index, bit_depth) }
+}
+
+/// Reference `svt_aom_lambda_assign` (rc_process.c:469). Returns
+/// `(fast_lambda, full_lambda)`.
+#[must_use]
+pub fn lambda_assign(
+    ctx: &LambdaCtx,
+    bit_depth: i32,
+    qp_index: i32,
+    multiply_lambda: bool,
+) -> (u32, u32) {
+    let mut fast = 0u32;
+    let mut full = 0u32;
+    unsafe {
+        ref_rc_lambda_assign(
+            ctx,
+            bit_depth,
+            qp_index,
+            i32::from(multiply_lambda),
+            &mut fast,
+            &mut full,
+        );
+    }
+    (fast, full)
+}

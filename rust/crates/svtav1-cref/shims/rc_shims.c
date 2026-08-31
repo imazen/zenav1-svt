@@ -240,3 +240,111 @@ void ref_rc_init(const RefRcInitIn* in, RefRcInitOut* out) {
     free(enc_ctx);
     free(scs);
 }
+
+
+/* ------------------------------------------------------------------------
+ * The MD lambda chain: `svt_aom_compute_rd_mult`, `svt_aom_compute_fast_lambda`
+ * and `svt_aom_lambda_assign` (rc_process.c:456, :461, :469) — all EXPORTED,
+ * all taking a `PictureControlSet*`.
+ *
+ * The shim `calloc`s a PictureControlSet + PictureParentControlSet +
+ * SequenceControlSet PER CALL (never `static`), wires pcs->ppcs / pcs->scs /
+ * ppcs->scs, sets the fields `update_lambda` reads, and calls the real symbol.
+ * `update_lambda` itself is `static` in C, but every one of its inputs is
+ * exposed here, so a sweep over them drives all four of its branches.
+ * ---------------------------------------------------------------------- */
+#include "pcs.h"
+#include "lambda_rate_tables.h"
+
+/* The `static const` SAD lambda tables live in a header, so they have no
+   exported symbol; this indexes the REAL table. */
+uint32_t ref_rc_lambda_md_sad(int32_t bit_depth, int32_t qindex) {
+    if (qindex < 0 || qindex > 255) {
+        return 0xFFFFFFFFu;
+    }
+    switch (bit_depth) {
+    case 8: return av1_lambda_mode_decision8_bit_sad[qindex];
+    case 10: return av1lambda_mode_decision10_bit_sad[qindex];
+    case 12: return av1lambda_mode_decision12_bit_sad[qindex];
+    default: return 0xFFFFFFFFu;
+    }
+}
+
+/* Everything `update_lambda` + its two callers read off the PCS/PPCS/SCS. */
+typedef struct {
+    int32_t frame_type; /* FrameHeader.frame_type */
+    int32_t temporal_layer_index;
+    int32_t hierarchical_levels;
+    int32_t update_type; /* SvtAv1FrameUpdateType */
+    int32_t alt_lambda_factors;
+    int32_t rtc;
+    int32_t stats_based_sb_lambda_modulation;
+    int32_t base_q_idx;
+    int32_t delta_q_present;
+    int32_t r0_delta_qp_md;
+    int32_t lambda_scale_factors[SVT_AV1_FRAME_UPDATE_TYPES];
+} RefLambdaCtx;
+
+static void ref_lambda_fill(const RefLambdaCtx* c, PictureControlSet** out_pcs, PictureParentControlSet** out_ppcs,
+                            SequenceControlSet** out_scs) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    pcs->ppcs                     = ppcs;
+    pcs->scs                      = scs;
+    ppcs->scs                     = scs;
+
+    ppcs->frm_hdr.frame_type                            = (FrameType)c->frame_type;
+    ppcs->temporal_layer_index                          = (uint8_t)c->temporal_layer_index;
+    ppcs->hierarchical_levels                           = (uint8_t)c->hierarchical_levels;
+    ppcs->update_type                                   = (SvtAv1FrameUpdateType)c->update_type;
+    ppcs->frm_hdr.quantization_params.base_q_idx        = c->base_q_idx;
+    ppcs->frm_hdr.delta_q_params.delta_q_present        = (uint8_t)c->delta_q_present;
+    ppcs->r0_delta_qp_md                                = (bool)c->r0_delta_qp_md;
+    scs->static_config.alt_lambda_factors               = (bool)c->alt_lambda_factors;
+    scs->static_config.rtc                              = (bool)c->rtc;
+    scs->stats_based_sb_lambda_modulation               = (bool)c->stats_based_sb_lambda_modulation;
+    for (int i = 0; i < SVT_AV1_FRAME_UPDATE_TYPES; ++i) {
+        scs->static_config.lambda_scale_factors[i] = c->lambda_scale_factors[i];
+    }
+    *out_pcs  = pcs;
+    *out_ppcs = ppcs;
+    *out_scs  = scs;
+}
+
+static void ref_lambda_free(PictureControlSet* pcs, PictureParentControlSet* ppcs, SequenceControlSet* scs) {
+    free(pcs);
+    free(ppcs);
+    free(scs);
+}
+
+uint32_t ref_rc_compute_rd_mult(const RefLambdaCtx* c, int32_t q_index, int32_t me_q_index, int32_t bit_depth) {
+    PictureControlSet*       pcs;
+    PictureParentControlSet* ppcs;
+    SequenceControlSet*      scs;
+    ref_lambda_fill(c, &pcs, &ppcs, &scs);
+    uint32_t r = svt_aom_compute_rd_mult(pcs, (uint8_t)q_index, (uint8_t)me_q_index, (EbBitDepth)bit_depth);
+    ref_lambda_free(pcs, ppcs, scs);
+    return r;
+}
+
+uint32_t ref_rc_compute_fast_lambda(const RefLambdaCtx* c, int32_t q_index, int32_t me_q_index, int32_t bit_depth) {
+    PictureControlSet*       pcs;
+    PictureParentControlSet* ppcs;
+    SequenceControlSet*      scs;
+    ref_lambda_fill(c, &pcs, &ppcs, &scs);
+    uint32_t r = svt_aom_compute_fast_lambda(pcs, (uint8_t)q_index, (uint8_t)me_q_index, (EbBitDepth)bit_depth);
+    ref_lambda_free(pcs, ppcs, scs);
+    return r;
+}
+
+void ref_rc_lambda_assign(const RefLambdaCtx* c, int32_t bit_depth, int32_t qp_index, int32_t multiply_lambda,
+                          uint32_t* fast_lambda, uint32_t* full_lambda) {
+    PictureControlSet*       pcs;
+    PictureParentControlSet* ppcs;
+    SequenceControlSet*      scs;
+    ref_lambda_fill(c, &pcs, &ppcs, &scs);
+    svt_aom_lambda_assign(
+        pcs, fast_lambda, full_lambda, (EbBitDepth)bit_depth, (uint8_t)qp_index, (bool)multiply_lambda);
+    ref_lambda_free(pcs, ppcs, scs);
+}
