@@ -298,6 +298,234 @@ pub fn is_input_luma_dominant(
             || neutral_cnt * 100 >= sample_cnt * FRAME_LUMA_DOMINANT_MIN_NEUTRAL_PCT)
 }
 
+// ---------------------------------------------------------------------------
+// The picture drivers: pic_analysis_process.c:1499 / :1550 / :746
+// ---------------------------------------------------------------------------
+
+/// One luma/chroma plane as C sees it: an allocation with the active picture
+/// at `origin` and `border` pixels of slack on every side.
+///
+/// This mirrors the `EbPictureBufferDesc` fields the pre-analysis functions
+/// actually read — nothing more. `origin` is the byte offset of C's
+/// `*_buffer` pointer within `buf`.
+pub struct Plane<'a> {
+    pub buf: &'a mut [u8],
+    pub origin: usize,
+    pub stride: usize,
+    pub width: usize,
+    pub height: usize,
+    pub border: usize,
+}
+
+/// The six HME enables `svt_aom_downsample_filtering_input_picture` reads off
+/// the `PictureParentControlSet`.
+///
+/// MEASURED (enc_mode_config.c:1987-1999): the encoder sets
+/// `enable_hme_flag = enable_hme_level0_flag = enable_hme_level1_flag = 1`
+/// unconditionally, so the LIVE route is 2x-then-2x — the sixteenth plane is
+/// built from the QUARTER plane, never by the direct 4x arm. The two routes
+/// give different sixteenth pixels; porting only the direct-4x arm would
+/// produce plausible-looking planes and wrong MVs everywhere.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HmeEnables {
+    pub enable_hme: bool,
+    pub tf_enable_hme: bool,
+    pub enable_hme_level0: bool,
+    pub tf_enable_hme_level0: bool,
+    pub enable_hme_level1: bool,
+    pub tf_enable_hme_level1: bool,
+}
+
+/// `svt_aom_downsample_filtering_input_picture` (pic_analysis_process.c:1499).
+///
+/// Fills the 1/4 and 1/16 luma planes HME level 1 / level 0 search, padding
+/// each to its own border afterwards. Called only when `!scs->allintra`, i.e.
+/// it is newly live exactly in video mode.
+///
+/// Note the level-1 gate gets checked TWICE: once to decide whether to build
+/// the quarter plane at all, and again inside the level-0 branch to decide
+/// which source the sixteenth plane comes from.
+pub fn downsample_filtering_input_picture(
+    flags: &HmeEnables,
+    input_padded: &Plane<'_>,
+    quarter: &mut Plane<'_>,
+    sixteenth: &mut Plane<'_>,
+) {
+    if !(flags.enable_hme || flags.tf_enable_hme) {
+        return;
+    }
+    let level1 = flags.enable_hme_level1 || flags.tf_enable_hme_level1;
+
+    if level1 {
+        downsample_2d(
+            &input_padded.buf[input_padded.origin..],
+            input_padded.stride,
+            input_padded.width,
+            input_padded.height,
+            &mut quarter.buf[quarter.origin..],
+            quarter.stride,
+            2,
+        );
+        generate_padding(
+            quarter.buf,
+            quarter.origin,
+            quarter.stride,
+            quarter.width,
+            quarter.height,
+            quarter.border,
+            quarter.border,
+        );
+    }
+
+    if flags.enable_hme_level0 || flags.tf_enable_hme_level0 {
+        if level1 {
+            // The LIVE route: 2x of the already-decimated quarter plane.
+            let q_origin = quarter.origin;
+            let q_stride = quarter.stride;
+            let q_w = quarter.width;
+            let q_h = quarter.height;
+            downsample_2d(
+                &quarter.buf[q_origin..],
+                q_stride,
+                q_w,
+                q_h,
+                &mut sixteenth.buf[sixteenth.origin..],
+                sixteenth.stride,
+                2,
+            );
+        } else {
+            downsample_2d(
+                &input_padded.buf[input_padded.origin..],
+                input_padded.stride,
+                input_padded.width,
+                input_padded.height,
+                &mut sixteenth.buf[sixteenth.origin..],
+                sixteenth.stride,
+                4,
+            );
+        }
+        generate_padding(
+            sixteenth.buf,
+            sixteenth.origin,
+            sixteenth.stride,
+            sixteenth.width,
+            sixteenth.height,
+            sixteenth.border,
+            sixteenth.border,
+        );
+    }
+}
+
+/// `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions`
+/// (pic_analysis_process.c:746), 8-bit planes only.
+///
+/// Right/bottom edge-replicate so a non-8-aligned input (the C comment's
+/// example is 426x240 -> 432x240) reaches a multiple of the minimum block
+/// size. `pad_right` / `pad_bottom` come from the SequenceControlSet.
+///
+/// Faithfulness trap: the chroma subsampling here is derived from
+/// `input_pic->color_format`, NOT from `scs->subsampling_x/y` — the sibling
+/// `pad_input_pictures` below uses the scs fields for the same purpose. The
+/// two agree for 4:2:0 but the source of truth differs, so transcribe each
+/// from its own site.
+///
+/// The chroma active dimensions round UP:
+/// `(width + subsampling_x - pad_right) >> subsampling_x`.
+pub fn pad_picture_to_multiple_of_min_blk_size_dimensions<'p>(
+    color_format: u32,
+    pad_right: usize,
+    pad_bottom: usize,
+    y: &mut Plane<'_>,
+    u: Option<&mut Plane<'p>>,
+    v: Option<&mut Plane<'p>>,
+) {
+    // EB_YUV444 == 3, EB_YUV422 == 2.
+    let subsampling_x = usize::from(color_format != 3);
+    let subsampling_y = usize::from(color_format < 2);
+
+    // C reads `input_pic->width` / `->height` for BOTH luma and chroma: those
+    // fields hold the LUMA dimensions, and the chroma sizes are derived from
+    // them by the shift below. A chroma plane's own width/height is never
+    // consulted — using it here is a silent wrong-size pad.
+    let luma_w = y.width;
+    let luma_h = y.height;
+    let y_origin = y.origin;
+    let y_stride = y.stride;
+    pad_input_picture(
+        &mut y.buf[y_origin..],
+        y_stride,
+        luma_w - pad_right,
+        luma_h - pad_bottom,
+        pad_right,
+        pad_bottom,
+    );
+
+    for plane in [u, v].into_iter().flatten() {
+        let origin = plane.origin;
+        let stride = plane.stride;
+        let w = (luma_w + subsampling_x - pad_right) >> subsampling_x;
+        let h = (luma_h + subsampling_y - pad_bottom) >> subsampling_y;
+        pad_input_picture(
+            &mut plane.buf[origin..],
+            stride,
+            w,
+            h,
+            pad_right >> subsampling_x,
+            pad_bottom >> subsampling_y,
+        );
+    }
+}
+
+/// `svt_aom_pad_input_pictures` (pic_analysis_process.c:1550), 8-bit path.
+///
+/// Min-block padding first, then the full border edge-replicate (68 px for
+/// luma) across Y/U/V. The border is what ME/HME reads when a search window
+/// leaves the frame — the port's `frame_geom::pad_input_plane` reproduces only
+/// the SB-extent replicate, which is a strict subset sized for the still-path
+/// variance walk.
+///
+/// The chroma planes are padded with `scs->subsampling_x/y`, applied to
+/// `input_pic->width/height` (the LUMA dimensions) and to `input_pic->border`.
+/// The C comment records why this is safe: the picture is already 8px aligned
+/// by the call above, so `>> 1` cannot lose a pixel.
+///
+/// 10-bit `*_bit_inc` compressed-plane padding is NOT ported here; it is the
+/// `svt_aom_generate_padding_compressed_10bit` path and belongs with the
+/// bd10 chunk.
+pub fn pad_input_pictures<'p>(
+    subsampling_x: usize,
+    subsampling_y: usize,
+    pad_right: usize,
+    pad_bottom: usize,
+    color_format: u32,
+    y: &mut Plane<'_>,
+    mut u: Option<&mut Plane<'p>>,
+    mut v: Option<&mut Plane<'p>>,
+) {
+    pad_picture_to_multiple_of_min_blk_size_dimensions(
+        color_format,
+        pad_right,
+        pad_bottom,
+        y,
+        u.as_deref_mut(),
+        v.as_deref_mut(),
+    );
+
+    generate_padding(
+        y.buf, y.origin, y.stride, y.width, y.height, y.border, y.border,
+    );
+
+    // Chroma uses the LUMA width/height/border shifted down — not the chroma
+    // plane's own `width`/`height` fields.
+    let cw = y.width >> subsampling_x;
+    let ch = y.height >> subsampling_y;
+    let cbx = y.border >> subsampling_x;
+    let cby = y.border >> subsampling_y;
+    for plane in [u, v].into_iter().flatten() {
+        generate_padding(plane.buf, plane.origin, plane.stride, cw, ch, cbx, cby);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

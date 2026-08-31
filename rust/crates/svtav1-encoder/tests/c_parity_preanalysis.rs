@@ -259,3 +259,259 @@ fn is_input_luma_dominant_matches_c() {
     assert!(saw_true > 0, "no cell was luma-dominant");
     assert!(saw_false > 0, "no cell was rejected");
 }
+
+#[test]
+fn downsample_filtering_input_picture_matches_c() {
+    use svtav1_cref::preanalysis::PlaneGeom;
+    let mut cells = 0usize;
+    // The live encoder configuration is all three enables set
+    // (enc_mode_config.c:1987-1999). The other rows exercise the arms that
+    // are reachable only through the tf_* flags or with level 1 off — the
+    // direct-4x sixteenth route, which produces DIFFERENT pixels.
+    let rows: [[bool; 6]; 5] = [
+        [true, false, true, false, true, false],    // the live route
+        [true, false, true, false, false, false],   // direct 4x sixteenth
+        [false, true, false, true, false, true],    // tf_* mirror of the live route
+        [true, false, false, false, true, false],   // quarter only
+        [false, false, false, false, false, false], // fully gated off
+    ];
+    for &(w, h) in &[(64u32, 64u32), (128, 96)] {
+        let border = 68u32;
+        let stride = w + 2 * border;
+        let origin = border * stride + border;
+        let alloc = (stride * (h + 2 * border)) as usize;
+
+        let qw = w / 2;
+        let qh = h / 2;
+        let qb = 34u32;
+        let qstride = qw + 2 * qb;
+        let qorigin = qb * qstride + qb;
+        let qalloc = (qstride * (qh + 2 * qb)) as usize;
+
+        let sw = w / 4;
+        let sh = h / 4;
+        let sb = 17u32;
+        let sstride = sw + 2 * sb;
+        let sorigin = sb * sstride + sb;
+        let salloc = (sstride * (sh + 2 * sb)) as usize;
+
+        let input = fill(u64::from(w) * 4241 + u64::from(h), alloc);
+        let q_base = fill(999 + u64::from(w), qalloc);
+        let s_base = fill(31337 + u64::from(h), salloc);
+
+        let in_geom = PlaneGeom {
+            origin,
+            stride,
+            width: w,
+            height: h,
+            border,
+        };
+        let q_geom = PlaneGeom {
+            origin: qorigin,
+            stride: qstride,
+            width: qw,
+            height: qh,
+            border: qb,
+        };
+        let s_geom = PlaneGeom {
+            origin: sorigin,
+            stride: sstride,
+            width: sw,
+            height: sh,
+            border: sb,
+        };
+
+        for row in rows {
+            let mut cq = q_base.clone();
+            let mut cs = s_base.clone();
+            cref::downsample_filtering_input_picture(
+                row, &input, in_geom, &mut cq, q_geom, &mut cs, s_geom,
+            );
+
+            let mut rq = q_base.clone();
+            let mut rs = s_base.clone();
+            {
+                let mut input_owned = input.clone();
+                let ip = port::Plane {
+                    buf: &mut input_owned,
+                    origin: origin as usize,
+                    stride: stride as usize,
+                    width: w as usize,
+                    height: h as usize,
+                    border: border as usize,
+                };
+                let mut qp = port::Plane {
+                    buf: &mut rq,
+                    origin: qorigin as usize,
+                    stride: qstride as usize,
+                    width: qw as usize,
+                    height: qh as usize,
+                    border: qb as usize,
+                };
+                let mut sp = port::Plane {
+                    buf: &mut rs,
+                    origin: sorigin as usize,
+                    stride: sstride as usize,
+                    width: sw as usize,
+                    height: sh as usize,
+                    border: sb as usize,
+                };
+                let flags = port::HmeEnables {
+                    enable_hme: row[0],
+                    tf_enable_hme: row[1],
+                    enable_hme_level0: row[2],
+                    tf_enable_hme_level0: row[3],
+                    enable_hme_level1: row[4],
+                    tf_enable_hme_level1: row[5],
+                };
+                port::downsample_filtering_input_picture(&flags, &ip, &mut qp, &mut sp);
+            }
+
+            assert_eq!(rq, cq, "quarter plane mismatch {w}x{h} enables {row:?}");
+            assert_eq!(rs, cs, "sixteenth plane mismatch {w}x{h} enables {row:?}");
+            cells += 1;
+        }
+
+        // Anti-vacuity for the route split: the two sixteenth routes must
+        // actually produce DIFFERENT bytes, or this test would pass with the
+        // wrong arm ported.
+        let mut a_q = q_base.clone();
+        let mut a_s = s_base.clone();
+        cref::downsample_filtering_input_picture(
+            rows[0], &input, in_geom, &mut a_q, q_geom, &mut a_s, s_geom,
+        );
+        let mut b_q = q_base.clone();
+        let mut b_s = s_base.clone();
+        cref::downsample_filtering_input_picture(
+            rows[1], &input, in_geom, &mut b_q, q_geom, &mut b_s, s_geom,
+        );
+        assert_ne!(
+            a_s, b_s,
+            "2x-then-2x and direct-4x sixteenth routes must differ (they did not at {w}x{h})"
+        );
+    }
+    assert_eq!(cells, 10);
+}
+
+#[test]
+fn pad_input_pictures_matches_c() {
+    use svtav1_cref::preanalysis::PlaneGeom;
+    let mut cells = 0usize;
+    // (luma width, luma height, pad_right, pad_bottom). 426x240 -> 432x240 is
+    // the case the C comment names; the 8-aligned rows exercise pad == 0.
+    for &(w, h, pr, pb) in &[(432u32, 240u32, 6u32, 0u32), (64, 64, 0, 0), (72, 40, 4, 8)] {
+        for &border in &[8u32, 68] {
+            for &min_blk_only in &[true, false] {
+                let stride = w + 2 * border + 3;
+                let origin = border * stride + border;
+                let alloc = (stride * (h + 2 * border)) as usize;
+
+                let cb = border / 2;
+                let cstride = w / 2 + 2 * cb + 5;
+                let corigin = cb * cstride + cb;
+                let calloc = (cstride * (h / 2 + 2 * cb)) as usize;
+
+                let y_base = fill(u64::from(w) * 61 + u64::from(border) + u64::from(pb), alloc);
+                let u_base = fill(u64::from(h) * 97 + u64::from(border), calloc);
+                let v_base = fill(u64::from(h) * 197 + u64::from(border), calloc);
+
+                let y_geom = PlaneGeom {
+                    origin,
+                    stride,
+                    width: w,
+                    height: h,
+                    border,
+                };
+                let c_geom = PlaneGeom {
+                    origin: corigin,
+                    stride: cstride,
+                    width: w / 2,
+                    height: h / 2,
+                    border: cb,
+                };
+
+                let (mut cy, mut cu, mut cv) = (y_base.clone(), u_base.clone(), v_base.clone());
+                // EB_EIGHT_BIT == 8, EB_YUV420 == 1
+                cref::pad_input_pictures(
+                    min_blk_only,
+                    8,
+                    1,
+                    1,
+                    1,
+                    pr,
+                    pb,
+                    &mut cy,
+                    y_geom,
+                    &mut cu,
+                    c_geom,
+                    &mut cv,
+                    c_geom,
+                );
+
+                let (mut ry, mut ru, mut rv) = (y_base.clone(), u_base.clone(), v_base.clone());
+                {
+                    let mut yp = port::Plane {
+                        buf: &mut ry,
+                        origin: origin as usize,
+                        stride: stride as usize,
+                        width: w as usize,
+                        height: h as usize,
+                        border: border as usize,
+                    };
+                    let mut up = port::Plane {
+                        buf: &mut ru,
+                        origin: corigin as usize,
+                        stride: cstride as usize,
+                        width: (w / 2) as usize,
+                        height: (h / 2) as usize,
+                        border: cb as usize,
+                    };
+                    let mut vp = port::Plane {
+                        buf: &mut rv,
+                        origin: corigin as usize,
+                        stride: cstride as usize,
+                        width: (w / 2) as usize,
+                        height: (h / 2) as usize,
+                        border: cb as usize,
+                    };
+                    if min_blk_only {
+                        port::pad_picture_to_multiple_of_min_blk_size_dimensions(
+                            1,
+                            pr as usize,
+                            pb as usize,
+                            &mut yp,
+                            Some(&mut up),
+                            Some(&mut vp),
+                        );
+                    } else {
+                        port::pad_input_pictures(
+                            1,
+                            1,
+                            pr as usize,
+                            pb as usize,
+                            1,
+                            &mut yp,
+                            Some(&mut up),
+                            Some(&mut vp),
+                        );
+                    }
+                }
+
+                assert_eq!(
+                    ry, cy,
+                    "Y mismatch {w}x{h} pad {pr}/{pb} border {border} minblk {min_blk_only}"
+                );
+                assert_eq!(
+                    ru, cu,
+                    "U mismatch {w}x{h} pad {pr}/{pb} border {border} minblk {min_blk_only}"
+                );
+                assert_eq!(
+                    rv, cv,
+                    "V mismatch {w}x{h} pad {pr}/{pb} border {border} minblk {min_blk_only}"
+                );
+                cells += 1;
+            }
+        }
+    }
+    assert_eq!(cells, 12);
+}

@@ -183,3 +183,150 @@ pub fn is_input_luma_dominant(
     };
     r != 0
 }
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_pre_downsample_filtering_input_picture(
+        enable_hme: i32,
+        tf_enable_hme: i32,
+        enable_hme_l0: i32,
+        tf_enable_hme_l0: i32,
+        enable_hme_l1: i32,
+        tf_enable_hme_l1: i32,
+        in_buf: *mut u8,
+        in_origin: u32,
+        in_stride: u32,
+        in_w: u32,
+        in_h: u32,
+        q_buf: *mut u8,
+        q_origin: u32,
+        q_stride: u32,
+        q_w: u32,
+        q_h: u32,
+        q_border: u32,
+        s_buf: *mut u8,
+        s_origin: u32,
+        s_stride: u32,
+        s_w: u32,
+        s_h: u32,
+        s_border: u32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_pre_pad_input_pictures(
+        min_blk_only: i32,
+        bit_depth: u32,
+        color_format: u32,
+        subsampling_x: u32,
+        subsampling_y: u32,
+        pad_right: u32,
+        pad_bottom: u32,
+        y_buf: *mut u8,
+        y_origin: u32,
+        y_stride: u32,
+        width: u32,
+        height: u32,
+        border: u32,
+        u_buf: *mut u8,
+        u_origin: u32,
+        u_stride: u32,
+        v_buf: *mut u8,
+        v_origin: u32,
+        v_stride: u32,
+    );
+}
+
+/// Geometry of one plane as `EbPictureBufferDesc` describes it.
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneGeom {
+    pub origin: u32,
+    pub stride: u32,
+    pub width: u32,
+    pub height: u32,
+    pub border: u32,
+}
+
+/// `svt_aom_downsample_filtering_input_picture` — fills the 1/4 and 1/16
+/// luma planes from the padded input and pads each to its own border.
+#[allow(clippy::too_many_arguments)]
+pub fn downsample_filtering_input_picture(
+    enables: [bool; 6],
+    input: &[u8],
+    input_geom: PlaneGeom,
+    quarter: &mut [u8],
+    quarter_geom: PlaneGeom,
+    sixteenth: &mut [u8],
+    sixteenth_geom: PlaneGeom,
+) {
+    let mut src = input.to_vec();
+    unsafe {
+        ref_pre_downsample_filtering_input_picture(
+            i32::from(enables[0]),
+            i32::from(enables[1]),
+            i32::from(enables[2]),
+            i32::from(enables[3]),
+            i32::from(enables[4]),
+            i32::from(enables[5]),
+            src.as_mut_ptr(),
+            input_geom.origin,
+            input_geom.stride,
+            input_geom.width,
+            input_geom.height,
+            quarter.as_mut_ptr(),
+            quarter_geom.origin,
+            quarter_geom.stride,
+            quarter_geom.width,
+            quarter_geom.height,
+            quarter_geom.border,
+            sixteenth.as_mut_ptr(),
+            sixteenth_geom.origin,
+            sixteenth_geom.stride,
+            sixteenth_geom.width,
+            sixteenth_geom.height,
+            sixteenth_geom.border,
+        );
+    }
+}
+
+/// `svt_aom_pad_input_pictures` (`min_blk_only == false`) or just
+/// `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions`
+/// (`min_blk_only == true`).
+#[allow(clippy::too_many_arguments)]
+pub fn pad_input_pictures(
+    min_blk_only: bool,
+    bit_depth: u32,
+    color_format: u32,
+    subsampling_x: u32,
+    subsampling_y: u32,
+    pad_right: u32,
+    pad_bottom: u32,
+    y: &mut [u8],
+    y_geom: PlaneGeom,
+    u: &mut [u8],
+    u_geom: PlaneGeom,
+    v: &mut [u8],
+    v_geom: PlaneGeom,
+) {
+    unsafe {
+        ref_pre_pad_input_pictures(
+            i32::from(min_blk_only),
+            bit_depth,
+            color_format,
+            subsampling_x,
+            subsampling_y,
+            pad_right,
+            pad_bottom,
+            y.as_mut_ptr(),
+            y_geom.origin,
+            y_geom.stride,
+            y_geom.width,
+            y_geom.height,
+            y_geom.border,
+            u.as_mut_ptr(),
+            u_geom.origin,
+            u_geom.stride,
+            v.as_mut_ptr(),
+            v_geom.origin,
+            v_geom.stride,
+        );
+    }
+}
