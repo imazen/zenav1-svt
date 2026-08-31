@@ -2491,6 +2491,65 @@ unsafe extern "C" {
     );
 }
 
+unsafe extern "C" {
+    fn ref_highbd_blend_a64_d16_mask_rtcd(
+        dst: *mut u16,
+        dst_stride: c_int,
+        src0: *const u16,
+        src0_stride: c_int,
+        src1: *const u16,
+        src1_stride: c_int,
+        mask: *const u8,
+        mask_stride: c_int,
+        w: c_int,
+        h: c_int,
+        subw: c_int,
+        subh: c_int,
+        bd: c_int,
+    );
+}
+
+/// The RTCD-DISPATCHED `svt_aom_highbd_blend_a64_d16_mask`.
+///
+/// Paired with [`highbd_blend_a64_d16_mask_c`] it attributes a mismatch to C's
+/// own SIMD tier, and MEASURES which bit depths this host's dispatch is
+/// faithful on — the aarch64 kernel has no 12-bit arm
+/// (`docs/SUSPECTED-C-BUGS.md` #20).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_blend_a64_d16_mask_rtcd(
+    dst: &mut [u16],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    bd: i32,
+) {
+    unsafe {
+        ref_highbd_blend_a64_d16_mask_rtcd(
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            w as i32,
+            h as i32,
+            i32::from(subw),
+            i32::from(subh),
+            bd,
+        );
+    }
+}
+
 /// The RTCD-DISPATCHED `svt_aom_lowbd_blend_a64_d16_mask` — the kernel
 /// `svt_aom_build_masked_compound_no_round` actually calls on this host.
 /// Paired with [`lowbd_blend_a64_d16_mask_c`] it attributes a mismatch to C's

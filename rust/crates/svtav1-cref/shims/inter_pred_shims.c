@@ -842,6 +842,25 @@ void ref_lowbd_blend_a64_d16_mask_rtcd(uint8_t* dst, int dst_stride, const uint1
         dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, mask_stride, w, h, subw, subh, &cp);
 }
 
+/* Same for the HIGHBD d16 mask blend. MEASURED 2026-08-31: the aarch64 kernel
+   has no 12-bit arm (highbd_blend_a64_mask_neon.c:453-459 branches
+   `bd == 10 ? 10-bit : 8-bit`), so a C-vs-C control is the only way to say
+   which depths this host's dispatch is faithful on. See
+   docs/SUSPECTED-C-BUGS.md #20. */
+extern void (*svt_aom_highbd_blend_a64_d16_mask)(uint8_t* dst_8, uint32_t dst_stride, const CONV_BUF_TYPE* src0,
+                                                 uint32_t src0_stride, const CONV_BUF_TYPE* src1, uint32_t src1_stride,
+                                                 const uint8_t* mask, uint32_t mask_stride, int w, int h, int subw,
+                                                 int subh, ConvolveParams* conv_params, const int bd);
+
+void ref_highbd_blend_a64_d16_mask_rtcd(uint16_t* dst, int dst_stride, const uint16_t* src0, int src0_stride,
+                                        const uint16_t* src1, int src1_stride, const uint8_t* mask, int mask_stride,
+                                        int w, int h, int subw, int subh, int bd) {
+    ensure_inter_pred_rtcd();
+    ConvolveParams cp = get_conv_params_no_round(0, NULL, 0, 1, bd);
+    svt_aom_highbd_blend_a64_d16_mask(
+        (uint8_t*)dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, mask_stride, w, h, subw, subh, &cp, bd);
+}
+
 /* The CompoundType enum's numeric values, so the port's discriminants are
    checked against the header instead of assumed. */
 int ref_compound_type_value(int which) {

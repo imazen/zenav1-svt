@@ -745,6 +745,98 @@ list with no leading hole. The caller must reproduce C's `actual_past_pics ==
 num_past_pics` and therefore never invoke it; the translation is kept per
 `docs/WORKING-ON-THIS.md` §7.
 
+## 19. The `blend_a64_d16_mask` kernels have ISA-DEPENDENT numeric domains
+
+**Status: IN-CONTRACT (not a defect) — but it makes the C binary a non-oracle
+above the contract, and the two ISAs disagree about where that is.**
+
+C's lowbd d16 mask blend takes its two sources as `CONV_BUF_TYPE` = `uint16_t`.
+The `_c` kernel reads them unsigned (`(int32_t)src0[...]`, blend_a64_mask.c:56).
+The x86 kernels do not:
+
+```c
+/* ASM_SSE4_1/blend_sse4.h:188, reached from svt_aom_lowbd_blend_a64_d16_mask_avx2 */
+const __m128i res_a = _mm_madd_epi16(s0_s1, m_max_minus_m);
+```
+
+`_mm_madd_epi16` is a SIGNED 16-bit multiply-add, so an entry at or above 32768
+is multiplied as a negative number. aarch64's kernel is unsigned end to end
+(`vmull_u16` / `vmlal_u16` / `vqsubq_u16` / `vqrshrn_n_u16`,
+blend_a64_mask_neon.c:208-225) and matches `_c` over the whole `uint16` domain.
+
+**MEASURED 2026-08-31, both hosts, all-lanes-equal probe over `0..=65535`:**
+
+| | first value where dispatched != `_c` | full block grid (308 cells) |
+|---|---|---|
+| aarch64 (NEON) | none in `u16` | 308/308 faithful at `< 40000` |
+| x86-64 (AVX2 + SSE4.1) | **exactly 32768** | 0/308 at `< 40000`, **308/308 at `< 16384`** |
+
+**Nothing in the encoder can reach it.** `svt_av1_jnt_convolve_2d_c` asserts
+`0 <= sum && sum < (1 << (offset_bits + 2))` (inter_prediction.c:564) and stores
+`ROUND_POWER_OF_TWO(sum, round_1)`, so an 8-bit compound CONV_BUF entry is
+`< 1 << 14` = 16384 — half the signed limit. Driving C's own convolve over every
+filter x subpel phase measures `[2919, 12159]` (the checkerboard source in
+`compound_conv_buf_stays_inside_the_blend_domain`); the analytic tap-sign
+extremum over the same grid is `[1012, 15356]`. Both are inside 16384.
+
+**What this cost, and what the port does.** A differential generator that drew
+CONV_BUF values `% 40000` put ~18% of them above 32767. The file's own C-vs-C
+control then reported "C's dispatched d16 blend disagrees with its own `_c`
+kernel on 20 of 20 cells" — **on x86 only**, while aarch64 stayed green, which
+reads exactly like a C dispatch defect and is not one. The generator now draws
+inside `conv_domain(bd)` (`c_parity_port_masked_blend.rs`), and
+`c_lowbd_d16_blend_domain_covers_the_conv_buf_contract` MEASURES the first
+divergence per host and asserts only that it clears the contract bound — so it
+fires if either kernel's usable domain ever narrows below what the encoder can
+feed it, and it records the host's number instead of leaving it to be
+re-derived. The port's own kernel transcribes `_c` and is unsigned-correct over
+all of `u16`; `d16_blend_matches_pure_c` sweeps it there.
+
+**The general shape, worth carrying:** a scalar `_c` kernel is usually
+DOMAIN-WIDER than the SIMD kernel the RTCD installs, and by different amounts on
+different ISAs. A differential whose generator leaves the domain the encoder can
+produce is testing nothing real, and the failure it reports is misattributed to
+C. Bound the generator by what the producer can produce, and prove that bound by
+driving the producer.
+
+---
+
+## 20. Every NEON `highbd_blend_a64_d16_mask` bit depth except 10 is the 8-bit kernel
+
+**Status: UNREACHABLE (C rejects 12-bit) — and it makes the aarch64 C BINARY a
+non-oracle for one branch, exactly like #11.**
+
+```c
+/* ASM_NEON/highbd_blend_a64_mask_neon.c:453-459 */
+if (bd == 10) {
+    highbd_10_blend_a64_d16_mask_neon(...);
+} else {
+    highbd_8_blend_a64_d16_mask_neon(...);
+}
+```
+
+There is no 12-bit arm, so `bd == 12` silently blends and saturates at 8-bit
+precision. The `_c` kernel has a real `switch (bd)` and saturates at 4095, and
+the x86 AVX2/SSE4.1 kernel is faithful at 12.
+
+**MEASURED 2026-08-31, both hosts:** the all-lanes-equal probe puts the aarch64
+first divergence at conv value 6152 (8x8 and 16x8) / 8654 (4x4), and the full
+308-cell grid at full-`u16` magnitudes is **0/308 faithful on aarch64 and
+308/308 on x86-64**. bd 8 and bd 10 are 308/308 on both.
+
+**Reachable:** no. `svt_av1_verify_settings` (enc_settings.c:460) rejects any
+bit depth other than 8/10, so no configuration this port or C accepts reaches
+the 12-bit arm.
+
+**What the port does:** `port_masked_blend::highbd_blend_a64_d16_mask`
+transcribes the `_c` `switch`, including its fall-through-to-255 default. The
+dispatched differential (`build_masked_compound_no_round_hbd_matches_c`) sweeps
+bd 8 and 10 only and says why; bd 12 coverage lives in the `_c`-driven cell,
+which is green on both hosts. A note in that test previously attributed the
+saturation to "the dispatched kernel" without an ISA — corrected in place.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

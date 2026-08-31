@@ -222,6 +222,25 @@ pattern `ref_shims.c` had already solved and commented. **Before you write a
 new shim, grep `ref_shims.c` for the entry closest to yours** — the caller
 contract you need is very likely already written down there.
 
+**A differential's GENERATOR has a contract, and the `_c` kernel is usually
+domain-wider than the SIMD one — by different amounts per ISA.** The masked
+d16 blend's C-vs-C control reported "C's dispatched blend disagrees with its own
+`_c` kernel on 20 of 20 cells" **on x86 and nowhere else**, which reads as an
+RTCD defect and is not one: the generator drew CONV_BUF values `% 40000`, and
+C's x86 kernels multiply through `_mm_madd_epi16` (SIGNED int16), so they leave
+`_c` at exactly 32768 while aarch64's unsigned NEON kernel never does. The
+encoder cannot produce such a value — `svt_av1_jnt_convolve_2d_c`'s own assert
+bounds an 8-bit compound entry to `< 16384`, and driving that convolve measures
+`[2919, 12159]`. **Bound a generator by what the PRODUCER can produce, and prove
+the bound by driving the producer**, not by a comment about the range. Full
+measurement in `docs/SUSPECTED-C-BUGS.md` #19 (and #20, the aarch64 highbd
+kernel that takes the 8-bit arm for every bit depth except 10).
+
+Corollary for cross-ISA work: **a green on the wider ISA is not evidence about
+the narrower one.** The aarch64 pass here was structural — NEON is unsigned end
+to end — and told you nothing about x86, exactly as #11's aarch64 obmc alias
+tells you nothing about the x86 table.
+
 **On macOS there is no arithmetic-coder op trace IN-PROCESS — run the C side in
 a Linux container instead.** `capture_c_trace` needs `-Wl,--wrap`, which
 Apple's `ld64` lacks, so `build.sh` falls back to a byte-only driver and
