@@ -639,3 +639,181 @@ unsafe extern "C" {
 pub fn tf_max_ref_per_struct(hierarchical_levels: u32, ty: u8, direction: bool) -> u8 {
     unsafe { ref_tf_max_ref_per_struct(hierarchical_levels, ty, i32::from(direction)) }
 }
+
+/// One synthetic TPL-group member, mirroring `RefTplPic` in the shim.
+///
+/// Field order and types must match `shims/picstruct_shims.c`'s `RefTplPic`
+/// exactly; it is `#[repr(C)]` for that reason.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TplPicDesc {
+    /// C `pcs->picture_number`.
+    pub picture_number: u64,
+    /// C `pcs->ext_mg_id`.
+    pub ext_mg_id: i64,
+    /// C `pcs->slice_type` (0 = B, 1 = I).
+    pub slice_type: u8,
+    /// C `pcs->temporal_layer_index`.
+    pub temporal_layer_index: u8,
+    /// C `pcs->hierarchical_levels`.
+    pub hierarchical_levels: u8,
+    /// C `pcs->idr_flag`.
+    pub idr_flag: u8,
+    /// C `pcs->cra_flag`.
+    pub cra_flag: u8,
+    /// C `pcs->pred_structure`.
+    pub pred_structure: u8,
+    /// C `pcs->end_of_sequence_flag`.
+    pub end_of_sequence_flag: u8,
+    /// C `pcs->is_ref`.
+    pub is_ref: u8,
+    /// C `pcs->first_frame_in_minigop`.
+    pub first_frame_in_minigop: u8,
+    /// C `pcs->tpl_params_ready`.
+    pub tpl_params_ready: u8,
+    /// C `pcs->pre_assignment_buffer_count`.
+    pub pre_assignment_buffer_count: u32,
+    /// C `pcs->pred_struct_ptr->pred_struct_entry_count`.
+    pub pred_struct_entry_count: u32,
+    /// C `scs->static_config.intra_period_length`.
+    pub intra_period_length: i32,
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_validate_pic_for_tpl(
+        pocs: *const u64,
+        layers: *const u8,
+        is_ref: *const u8,
+        n: u32,
+        pic_index: u32,
+        reduced_tpl_group: i8,
+        rc_stat_gen_pass_mode: u8,
+        first_frame_in_minigop: u8,
+        out_valid: *mut u8,
+        out_used_delta: *mut u8,
+    );
+
+    #[allow(clippy::too_many_arguments)]
+    fn ref_store_extended_group(
+        members: *const TplPicDesc,
+        n: u32,
+        centre_slice_type: u8,
+        centre_hierarchical_levels: u8,
+        tpl_lad_mg: u8,
+        startup_mg_size: u8,
+        config_hierarchical_levels: u8,
+        centre_picture_number: u64,
+        last_idr_picture: u64,
+        reduced_tpl_group: i8,
+        enc_mode: i8,
+        rc_stat_gen_pass_mode: u8,
+        end_mg: i64,
+        out_group_pocs: *mut u64,
+        out_group_size: *mut u32,
+        out_valid: *mut u8,
+        out_used: *mut u8,
+        out_ext_group_size: *mut u32,
+    );
+}
+
+/// C `validate_pic_for_tpl` (`initial_rc_process.c:171-189`).
+///
+/// Returns `(tpl_valid_pic[pic_index], used_tpl_frame_num)`.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn validate_pic_for_tpl(
+    pocs: &[u64],
+    layers: &[u8],
+    is_ref: &[u8],
+    pic_index: u32,
+    reduced_tpl_group: i8,
+    rc_stat_gen_pass_mode: u8,
+    first_frame_in_minigop: u8,
+) -> (u8, u8) {
+    assert_eq!(pocs.len(), layers.len());
+    assert_eq!(pocs.len(), is_ref.len());
+    let (mut v, mut u) = (0u8, 0u8);
+    unsafe {
+        ref_validate_pic_for_tpl(
+            pocs.as_ptr(),
+            layers.as_ptr(),
+            is_ref.as_ptr(),
+            pocs.len() as u32,
+            pic_index,
+            reduced_tpl_group,
+            rc_stat_gen_pass_mode,
+            first_frame_in_minigop,
+            &mut v,
+            &mut u,
+        );
+    }
+    (v, u)
+}
+
+/// What `store_extended_group` selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendedGroupOut {
+    /// The POCs of `pcs->tpl_group[0..tpl_group_size]`, in order.
+    pub group_pocs: Vec<u64>,
+    /// C `pcs->tpl_valid_pic[]`, one entry per extended-group member.
+    pub valid: Vec<u8>,
+    /// C `pcs->used_tpl_frame_num`.
+    pub used_tpl_frame_num: u8,
+    /// C `pcs->ext_group_size`.
+    pub ext_group_size: u32,
+}
+
+/// C `store_extended_group` (`initial_rc_process.c:406-518`).
+///
+/// The shim builds the lookahead queue so the callee's own `ext_group` walk
+/// runs, then reports the selected TPL group.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn store_extended_group(
+    members: &[TplPicDesc],
+    centre_slice_type: u8,
+    centre_hierarchical_levels: u8,
+    tpl_lad_mg: u8,
+    startup_mg_size: u8,
+    config_hierarchical_levels: u8,
+    centre_picture_number: u64,
+    last_idr_picture: u64,
+    reduced_tpl_group: i8,
+    enc_mode: i8,
+    rc_stat_gen_pass_mode: u8,
+    end_mg: i64,
+) -> ExtendedGroupOut {
+    let mut group_pocs = vec![0u64; 512];
+    let mut valid = vec![0u8; members.len().max(1)];
+    let (mut group_size, mut used, mut ext_group_size) = (0u32, 0u8, 0u32);
+    unsafe {
+        ref_store_extended_group(
+            members.as_ptr(),
+            members.len() as u32,
+            centre_slice_type,
+            centre_hierarchical_levels,
+            tpl_lad_mg,
+            startup_mg_size,
+            config_hierarchical_levels,
+            centre_picture_number,
+            last_idr_picture,
+            reduced_tpl_group,
+            enc_mode,
+            rc_stat_gen_pass_mode,
+            end_mg,
+            group_pocs.as_mut_ptr(),
+            &mut group_size,
+            valid.as_mut_ptr(),
+            &mut used,
+            &mut ext_group_size,
+        );
+    }
+    group_pocs.truncate(group_size as usize);
+    ExtendedGroupOut {
+        group_pocs,
+        valid,
+        used_tpl_frame_num: used,
+        ext_group_size,
+    }
+}

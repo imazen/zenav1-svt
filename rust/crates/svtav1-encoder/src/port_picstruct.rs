@@ -4537,3 +4537,103 @@ pub fn tf_motion_direction(tf_tot_horz_blks: u32, tf_tot_vert_blks: u32) -> i8 {
         -1
     }
 }
+
+/// One step of C `mctf_frame_st` (`pd_process.c:4175-4193`) — static.
+///
+/// The single-threaded temporal-filter dispatch. It is small, but it is where
+/// the TF call sits in the per-frame sequence, and the ORDER is the content:
+/// every step reads state a previous one wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MctfStStep {
+    /// `me_ctx->me_type = ME_MCTF` — must precede the signal derivation, which
+    /// branches on it.
+    SetMeTypeMctf,
+    /// `svt_aom_sig_deriv_me_tf(pcs, me_ctx)`.
+    SigDerivMeTf,
+    /// `svt_aom_gm_pre_processor(pcs, pcs->temp_filt_pcs_list)` — CONDITIONAL
+    /// on `pcs->gm_ctrls.pp_enabled && pcs->gm_pp_enabled`.
+    GmPreProcessor,
+    /// `svt_av1_init_temporal_filtering(...)` once per segment, in index order.
+    InitTemporalFilteringSegment(u16),
+    /// Consume the semaphore the last segment posted.
+    ConsumeDoneSemaphore,
+}
+
+/// C `mctf_frame_st` (`pd_process.c:4175-4193`) — static.
+///
+/// Returns the exact step sequence for `tf_segments_total_count` segments.
+/// The callees themselves live in other modules (ME signal derivation, global
+/// motion, temporal filtering), so what this port owns is the ORDER — which is
+/// the part a reimplementation gets wrong, because `me_type` must be set
+/// before the signal derivation reads it and the global-motion pre-pass must
+/// run before the first segment.
+#[must_use]
+pub fn mctf_frame_st_sequence(
+    tf_segments_total_count: u16,
+    gm_pp_enabled: bool,
+) -> alloc::vec::Vec<MctfStStep> {
+    let mut steps = alloc::vec::Vec::new();
+    steps.push(MctfStStep::SetMeTypeMctf);
+    steps.push(MctfStStep::SigDerivMeTf);
+    if gm_pp_enabled {
+        steps.push(MctfStStep::GmPreProcessor);
+    }
+    for seg in 0..tf_segments_total_count {
+        steps.push(MctfStStep::InitTemporalFilteringSegment(seg));
+    }
+    steps.push(MctfStStep::ConsumeDoneSemaphore);
+    steps
+}
+
+/// The low-delay temporal-filter picture ring
+/// (`ctx->tf_pic_array` + `ctx->tf_pic_arr_cnt`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LowDelayTfRing {
+    /// Picture identifiers in store order; C holds PPCS pointers.
+    pub pics: alloc::vec::Vec<u64>,
+}
+
+/// C `low_delay_store_tf_pictures`' ring append
+/// (`pd_process.c:4127-4147`) — static.
+///
+/// Appends only when [`low_delay_should_store_tf_picture`] says so. C also
+/// increments the live count of five wrappers here (`p_pcs_wrapper_ptr`,
+/// `input_pic_wrapper`, `pa_ref_pic_wrapper`, `scs_wrapper` and, when present,
+/// `y8b_wrapper`) so the resources survive until TF consumes them; that is
+/// buffer plumbing this port replaces, and it is named rather than dropped.
+pub fn low_delay_store_tf_picture(
+    ring: &mut LowDelayTfRing,
+    picture_number: u64,
+    temporal_layer_index: u8,
+    pic_idx_in_mg: u32,
+    max_num_past_pics: u8,
+    hierarchical_levels: u32,
+) {
+    if low_delay_should_store_tf_picture(
+        temporal_layer_index,
+        pic_idx_in_mg,
+        max_num_past_pics,
+        hierarchical_levels,
+    ) {
+        ring.pics.push(picture_number);
+    }
+}
+
+/// C `low_delay_release_tf_pictures` (`pd_process.c:4151-4174`) — static.
+///
+/// Drains the ring: C releases each stored picture's wrappers and then
+/// `memset`s the array and zeroes the count.
+///
+/// The RELEASE ORDER is load-bearing in C and is recorded here even though
+/// this port has no wrappers to release: `input_pic_wrapper`, then
+/// `y8b_wrapper` if present, then `pa_ref_pic_wrapper`, then `scs_wrapper`,
+/// and the PPCS **last** — the comment says so explicitly, because the PPCS
+/// owns the handles the earlier releases read.
+///
+/// Note also that C `memset`s only `tf_pic_arr_cnt` entries, not the whole
+/// array, so entries past the count keep stale pointers. Harmless because the
+/// count gates every read, and reproduced here by clearing the whole vector
+/// (which cannot expose a stale entry at all).
+pub fn low_delay_release_tf_pictures(ring: &mut LowDelayTfRing) {
+    ring.pics.clear();
+}

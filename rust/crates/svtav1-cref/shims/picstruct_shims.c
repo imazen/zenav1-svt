@@ -572,3 +572,186 @@ uint8_t svt_aom_tf_max_ref_per_struct(uint32_t hierarchical_levels, uint8_t type
 uint8_t ref_tf_max_ref_per_struct(uint32_t hierarchical_levels, uint8_t type, int32_t direction) {
     return svt_aom_tf_max_ref_per_struct(hierarchical_levels, type, direction != 0);
 }
+
+/* ---- validate_pic_for_tpl / store_extended_group
+       (initial_rc_process.c:171-189, 406-518) ----
+ *
+ * Both are EXPORTED, so these are evidence tier 1.
+ *
+ * `LadQueue`, `LadQueueEntry` and `InitialRateControlContext` are defined in
+ * initial_rc_process.c (lines 31-55), NOT in a header, so they are re-declared
+ * here to match. Keep them in sync with that file: a layout drift would make
+ * store_extended_group walk garbage. The shapes are deliberately trivial (a
+ * dctor plus a pointer; a buffer plus three counters) so the risk is small and
+ * visible.
+ *
+ * The synthetic pictures are built from flat arrays so a Rust test can state a
+ * whole extended group inline. */
+
+typedef struct RefLadQueueEntry {
+    EbDctor                  dctor;
+    PictureParentControlSet* pcs;
+} RefLadQueueEntry;
+
+typedef struct RefLadQueue {
+    RefLadQueueEntry** cir_buf;
+    uint32_t           cir_buf_size;
+    uint32_t           head;
+    uint32_t           tail;
+} RefLadQueue;
+
+typedef struct RefInitialRateControlContext {
+    EbFifo*      motion_estimation_results_input_fifo_ptr;
+    EbFifo*      initialrate_control_results_output_fifo_ptr;
+    RefLadQueue* lad_queue;
+} RefInitialRateControlContext;
+
+void validate_pic_for_tpl(PictureParentControlSet* pcs, uint32_t pic_index);
+void store_extended_group(PictureParentControlSet* pcs, void* ctx, uint32_t start_idx, int64_t end_mg);
+
+/* One synthetic group member. Mirrors the fields the two callees read. */
+typedef struct RefTplPic {
+    uint64_t picture_number;
+    int64_t  ext_mg_id;
+    uint8_t  slice_type;
+    uint8_t  temporal_layer_index;
+    uint8_t  hierarchical_levels;
+    uint8_t  idr_flag;
+    uint8_t  cra_flag;
+    uint8_t  pred_structure;
+    uint8_t  end_of_sequence_flag;
+    uint8_t  is_ref;
+    uint8_t  first_frame_in_minigop;
+    uint8_t  tpl_params_ready;
+    uint32_t pre_assignment_buffer_count;
+    uint32_t pred_struct_entry_count;
+    int32_t  intra_period_length;
+} RefTplPic;
+
+static PictureParentControlSet* ref_make_tpl_pic(const RefTplPic* d, uint8_t rc_stat_gen_pass_mode,
+                                                 SequenceControlSet** out_scs, PredictionStructure** out_ps) {
+    PictureParentControlSet* p  = (PictureParentControlSet*)calloc(1, sizeof(*p));
+    SequenceControlSet*      s  = (SequenceControlSet*)calloc(1, sizeof(*s));
+    PredictionStructure*     ps = (PredictionStructure*)calloc(1, sizeof(*ps));
+    p->picture_number                      = d->picture_number;
+    p->ext_mg_id                           = d->ext_mg_id;
+    p->slice_type                          = (SliceType)d->slice_type;
+    p->temporal_layer_index                = d->temporal_layer_index;
+    p->hierarchical_levels                 = d->hierarchical_levels;
+    p->idr_flag                            = d->idr_flag != 0;
+    p->cra_flag                            = d->cra_flag != 0;
+    p->pred_structure                      = (PredStructure)d->pred_structure;
+    p->end_of_sequence_flag                = d->end_of_sequence_flag != 0;
+    p->is_ref                              = d->is_ref != 0;
+    p->first_frame_in_minigop              = d->first_frame_in_minigop;
+    p->tpl_params_ready                    = d->tpl_params_ready;
+    p->pre_assignment_buffer_count         = d->pre_assignment_buffer_count;
+    ps->pred_struct_entry_count            = d->pred_struct_entry_count;
+    p->pred_struct_ptr                     = ps;
+    s->static_config.intra_period_length   = d->intra_period_length;
+    s->rc_stat_gen_pass_mode               = rc_stat_gen_pass_mode;
+    p->scs                                 = s;
+    *out_scs = s;
+    *out_ps  = ps;
+    return p;
+}
+
+/* validate_pic_for_tpl: the caller supplies the tpl_group POCs and layers and
+ * the index under test; the shim reports tpl_valid_pic[idx] and the
+ * used_tpl_frame_num delta. */
+void ref_validate_pic_for_tpl(const uint64_t* pocs, const uint8_t* layers, const uint8_t* is_ref,
+                              uint32_t n, uint32_t pic_index, int8_t reduced_tpl_group,
+                              uint8_t rc_stat_gen_pass_mode, uint8_t first_frame_in_minigop,
+                              uint8_t* out_valid, uint8_t* out_used_delta) {
+    PictureParentControlSet* host = (PictureParentControlSet*)calloc(1, sizeof(*host));
+    host->tpl_ctrls.reduced_tpl_group = reduced_tpl_group;
+
+    SequenceControlSet** scss = (SequenceControlSet**)calloc(n ? n : 1, sizeof(*scss));
+    PredictionStructure** pss = (PredictionStructure**)calloc(n ? n : 1, sizeof(*pss));
+    for (uint32_t i = 0; i < n; ++i) {
+        RefTplPic d = {0};
+        d.picture_number         = pocs[i];
+        d.temporal_layer_index   = layers[i];
+        d.is_ref                 = is_ref[i];
+        d.first_frame_in_minigop = first_frame_in_minigop;
+        host->tpl_group[i] = ref_make_tpl_pic(&d, rc_stat_gen_pass_mode, &scss[i], &pss[i]);
+    }
+
+    validate_pic_for_tpl(host, pic_index);
+    *out_valid      = host->tpl_valid_pic[pic_index];
+    *out_used_delta = host->used_tpl_frame_num;
+
+    for (uint32_t i = 0; i < n; ++i) {
+        free(pss[i]);
+        free(scss[i]);
+        free(host->tpl_group[i]);
+    }
+    free(pss);
+    free(scss);
+    free(host);
+}
+
+/* store_extended_group: the shim builds the lookahead queue so the callee's
+ * own ext_group walk runs, then reports the selected group. */
+void ref_store_extended_group(const RefTplPic* members, uint32_t n, uint8_t centre_slice_type,
+                              uint8_t centre_hierarchical_levels, uint8_t tpl_lad_mg, uint8_t startup_mg_size,
+                              uint8_t config_hierarchical_levels, uint64_t centre_picture_number,
+                              uint64_t last_idr_picture, int8_t reduced_tpl_group, int8_t enc_mode,
+                              uint8_t rc_stat_gen_pass_mode, int64_t end_mg, uint64_t* out_group_pocs,
+                              uint32_t* out_group_size, uint8_t* out_valid, uint8_t* out_used,
+                              uint32_t* out_ext_group_size) {
+    const uint32_t cap = n + 1; /* one NULL entry terminates the walk */
+
+    PictureParentControlSet* centre = (PictureParentControlSet*)calloc(1, sizeof(*centre));
+    SequenceControlSet*      cscs   = (SequenceControlSet*)calloc(1, sizeof(*cscs));
+    centre->slice_type                        = (SliceType)centre_slice_type;
+    centre->hierarchical_levels               = centre_hierarchical_levels;
+    centre->picture_number                    = centre_picture_number;
+    centre->last_idr_picture                  = last_idr_picture;
+    centre->enc_mode                          = (EncMode)enc_mode;
+    centre->tpl_ctrls.reduced_tpl_group       = reduced_tpl_group;
+    cscs->tpl_lad_mg                          = tpl_lad_mg;
+    cscs->static_config.startup_mg_size       = startup_mg_size;
+    cscs->static_config.hierarchical_levels   = config_hierarchical_levels;
+    cscs->rc_stat_gen_pass_mode               = rc_stat_gen_pass_mode;
+    centre->scs                               = cscs;
+
+    SequenceControlSet**  scss = (SequenceControlSet**)calloc(cap, sizeof(*scss));
+    PredictionStructure** pss  = (PredictionStructure**)calloc(cap, sizeof(*pss));
+    RefLadQueueEntry**    buf  = (RefLadQueueEntry**)calloc(cap, sizeof(*buf));
+    RefLadQueueEntry*     ents = (RefLadQueueEntry*)calloc(cap, sizeof(*ents));
+    for (uint32_t i = 0; i < cap; ++i) {
+        buf[i] = &ents[i];
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        ents[i].pcs = ref_make_tpl_pic(&members[i], rc_stat_gen_pass_mode, &scss[i], &pss[i]);
+    }
+    ents[n].pcs = NULL; /* terminator */
+
+    RefLadQueue                  q   = {buf, cap, 0, 0};
+    RefInitialRateControlContext ctx = {NULL, NULL, &q};
+
+    store_extended_group(centre, &ctx, 0, end_mg);
+
+    *out_ext_group_size = centre->ext_group_size;
+    *out_group_size     = centre->tpl_group_size;
+    for (uint32_t i = 0; i < centre->tpl_group_size; ++i) {
+        out_group_pocs[i] = centre->tpl_group[i]->picture_number;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        out_valid[i] = centre->tpl_valid_pic[i];
+    }
+    *out_used = centre->used_tpl_frame_num;
+
+    for (uint32_t i = 0; i < n; ++i) {
+        free(pss[i]);
+        free(scss[i]);
+        free(ents[i].pcs);
+    }
+    free(ents);
+    free(buf);
+    free(pss);
+    free(scss);
+    free(cscs);
+    free(centre);
+}

@@ -2671,3 +2671,73 @@ fn traced_tf_max_ref_per_struct_shape() {
         );
     }
 }
+
+/// `mctf_frame_st`'s step ORDER (`pd_process.c:4175-4193`).
+///
+/// The callees live in other modules; what this port owns is the order, and
+/// the order is the content: `me_type = ME_MCTF` must precede
+/// `svt_aom_sig_deriv_me_tf` (which branches on it) and the global-motion
+/// pre-pass must precede the first segment.
+#[test]
+fn traced_mctf_frame_st_sequence() {
+    use pp::MctfStStep::{
+        ConsumeDoneSemaphore, GmPreProcessor, InitTemporalFilteringSegment, SetMeTypeMctf,
+        SigDerivMeTf,
+    };
+    assert_eq!(
+        pp::mctf_frame_st_sequence(3, true),
+        vec![
+            SetMeTypeMctf,
+            SigDerivMeTf,
+            GmPreProcessor,
+            InitTemporalFilteringSegment(0),
+            InitTemporalFilteringSegment(1),
+            InitTemporalFilteringSegment(2),
+            ConsumeDoneSemaphore,
+        ]
+    );
+    // The global-motion pre-pass is conditional; nothing else is.
+    assert_eq!(
+        pp::mctf_frame_st_sequence(1, false),
+        vec![
+            SetMeTypeMctf,
+            SigDerivMeTf,
+            InitTemporalFilteringSegment(0),
+            ConsumeDoneSemaphore,
+        ]
+    );
+    // Zero segments still posts and consumes nothing but the framing steps.
+    assert_eq!(
+        pp::mctf_frame_st_sequence(0, false),
+        vec![SetMeTypeMctf, SigDerivMeTf, ConsumeDoneSemaphore]
+    );
+}
+
+/// The low-delay temporal-filter ring: store predicate + drain
+/// (`pd_process.c:4127-4174`).
+#[test]
+fn traced_low_delay_tf_ring() {
+    let mut ring = pp::LowDelayTfRing::default();
+    // hierarchical_levels 3 -> mg_size 8; with 1 past picture only indices 6
+    // and 7 qualify, and BASE pictures never do.
+    for (poc, layer, idx) in [
+        (10u64, 1u8, 5u32),
+        (11, 1, 6),
+        (12, 1, 7),
+        (13, 0, 7),
+        (14, 1, 0),
+    ] {
+        pp::low_delay_store_tf_picture(&mut ring, poc, layer, idx, 1, 3);
+    }
+    assert_eq!(
+        ring.pics,
+        vec![11, 12],
+        "only the last two non-base pictures"
+    );
+
+    pp::low_delay_release_tf_pictures(&mut ring);
+    assert!(ring.pics.is_empty(), "the drain resets the ring");
+    // Draining an empty ring is a no-op, not a panic.
+    pp::low_delay_release_tf_pictures(&mut ring);
+    assert!(ring.pics.is_empty());
+}
