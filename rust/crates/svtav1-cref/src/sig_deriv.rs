@@ -1180,3 +1180,142 @@ pub fn sig_deriv_enc_dec_common(input: &[i32; cm_in::COUNT]) -> [i64; cm_out::CO
     unsafe { ref_sig_deriv_enc_dec_common(input.as_ptr(), out.as_mut_ptr()) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// svt_aom_sig_deriv_enc_dec_light_pd1_default
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_sig_deriv_light_pd1_default(input: *const i32, out: *mut i64);
+    fn ref_light_pd1_in_slots() -> i32;
+    fn ref_light_pd1_out_slots() -> i32;
+}
+
+/// Input slot indices for [`sig_deriv_light_pd1_default`], mirroring `LP_I_*`.
+pub mod lp_in {
+    /// `ctx->lpd1_ctrls.pd1_level`
+    pub const LPD1_LEVEL: usize = 0;
+    /// `pcs->enc_mode`
+    pub const ENC_MODE: usize = 1;
+    /// `ppcs->input_resolution`
+    pub const INPUT_RES: usize = 2;
+    /// `pcs->slice_type == B_SLICE`
+    pub const IS_B_SLICE: usize = 3;
+    /// `ppcs->picture_qp`
+    pub const PICTURE_QP: usize = 4;
+    /// Whether L0's reference picture exists (drives `is_ref_same_size`).
+    pub const REF_L0_AVAIL: usize = 5;
+    /// Whether L1's reference picture exists.
+    pub const REF_L1_AVAIL: usize = 6;
+    /// `ppcs->ref_list1_count_try`
+    pub const REF_L1_TRY: usize = 7;
+    /// `ppcs->me_8x8_cost_variance[sb_index]`
+    pub const ME8_VAR: usize = 8;
+    /// `ppcs->me_64x64_distortion[sb_index]`
+    pub const ME64_DIST: usize = 9;
+    /// L0's `sb_skip[sb_index]`
+    pub const L0_SKIP: usize = 10;
+    /// L1's `sb_skip[sb_index]`
+    pub const L1_SKIP: usize = 11;
+    /// L0's `sb_64x64_mvp[sb_index]`
+    pub const L0_MVP: usize = 12;
+    /// L1's `sb_64x64_mvp[sb_index]`
+    pub const L1_MVP: usize = 13;
+    /// `pcs->ref_skip_percentage`
+    pub const REF_SKIP_PERC: usize = 14;
+    /// `pcs->cand_reduction_level`
+    pub const CAND_RED: usize = 15;
+    /// `pcs->rdoq_level`
+    pub const RDOQ: usize = 16;
+    /// `pcs->coeff_shaving_level`
+    pub const COEFF_SHAVE: usize = 17;
+    /// `pcs->me_subpel_level`
+    pub const ME_SUBPEL: usize = 18;
+    /// `pcs->rate_est_level`
+    pub const RATE_EST: usize = 19;
+    /// `pcs->approx_inter_rate`
+    pub const APPROX_RATE: usize = 20;
+    /// `pcs->intra_level`
+    pub const INTRA: usize = 21;
+    /// `ppcs->ref_list0_count_try`
+    pub const REF_L0_TRY: usize = 22;
+    /// `ppcs->use_best_me_unipred_cand_only`
+    pub const BEST_UNIPRED: usize = 23;
+    /// `scs->static_config.rtc`
+    pub const RTC: usize = 24;
+    /// `ppcs->hierarchical_levels`
+    pub const HIER_LEVELS: usize = 25;
+    /// `ppcs->update_type` (1 == leaf)
+    pub const UPDATE_TYPE: usize = 26;
+    /// Number of input slots.
+    pub const COUNT: usize = 27;
+}
+
+/// Output slot indices for [`sig_deriv_light_pd1_default`], mirroring `LP_O_*`.
+pub mod lp_out {
+    /// `ctx->lpd1_globalmv_bypass_th`
+    pub const GLOBALMV_TH: usize = 0;
+    /// First of the eleven `cand_reduction_ctrls` slots.
+    pub const CAND_RED: usize = 1;
+    /// First of the four `coeff_shaving_ctrls` slots.
+    pub const COEFF_SHAVE: usize = 12;
+    /// First of the thirteen `md_subpel_me_ctrls` slots.
+    pub const SUBPEL_ME: usize = 16;
+    /// First of the three `lpd1_tx_skip_decision_ctrls` slots.
+    pub const TX_SKIP: usize = 29;
+    /// First of the four `lpd1_tx_ctrls` slots.
+    pub const LPD1_TX: usize = 32;
+    /// `ctx->lpd1_blk_skip_luma_rd_pct`
+    pub const BLK_SKIP_LUMA_PCT: usize = 36;
+    /// `ctx->lpd1_chroma_skip_energy_th`
+    pub const CHROMA_SKIP_ENERGY: usize = 37;
+    /// First of the five `rate_est_ctrls` slots.
+    pub const RATE_EST: usize = 38;
+    /// `ctx->approx_inter_rate`
+    pub const APPROX_RATE: usize = 43;
+    /// `ctx->pf_ctrls.pf_shape`
+    pub const PF_SHAPE: usize = 44;
+    /// `ctx->shut_fast_rate`
+    pub const SHUT_FAST_RATE: usize = 45;
+    /// `ctx->uv_ctrls.enabled`
+    pub const UV_EN: usize = 46;
+    /// `ctx->uv_ctrls.uv_mode`
+    pub const UV_MODE: usize = 47;
+    /// `ctx->md_disallow_nsq_search`
+    pub const NSQ_OFF: usize = 48;
+    /// `ctx->new_nearest_injection`
+    pub const NN_INJ: usize = 49;
+    /// `ctx->blk_skip_decision`
+    pub const BLK_SKIP_DEC: usize = 50;
+    /// `ctx->subres_ctrls.odd_to_even_deviation_th`
+    pub const SUBRES_DEV: usize = 51;
+    /// First of the four `inter_intra_comp_ctrls` slots.
+    pub const INTER_INTRA: usize = 52;
+    /// First of the eight `intra_ctrls` slots.
+    pub const INTRA_CTRLS: usize = 56;
+    /// Number of output slots.
+    pub const COUNT: usize = 64;
+}
+
+/// C `svt_aom_sig_deriv_enc_dec_light_pd1_default` driven on a synthetic
+/// SCS/PCS/ctx.
+///
+/// # Panics
+/// If the C shim's slot counts disagree with [`lp_in::COUNT`] /
+/// [`lp_out::COUNT`].
+#[must_use]
+pub fn sig_deriv_light_pd1_default(input: &[i32; lp_in::COUNT]) -> [i64; lp_out::COUNT] {
+    assert_eq!(
+        unsafe { ref_light_pd1_in_slots() } as usize,
+        lp_in::COUNT,
+        "C shim light-pd1 input slot count drifted"
+    );
+    assert_eq!(
+        unsafe { ref_light_pd1_out_slots() } as usize,
+        lp_out::COUNT,
+        "C shim light-pd1 output slot count drifted"
+    );
+    let mut out = [0i64; lp_out::COUNT];
+    unsafe { ref_sig_deriv_light_pd1_default(input.as_ptr(), out.as_mut_ptr()) };
+    out
+}

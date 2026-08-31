@@ -1095,3 +1095,199 @@ void ref_sig_deriv_enc_dec_common(const int32_t* in, int64_t* out) {
 
 int32_t ref_common_in_slots(void) { return CM_I_COUNT; }
 int32_t ref_common_out_slots(void) { return CM_O_COUNT; }
+
+/* ===========================================================================
+ * svt_aom_sig_deriv_enc_dec_light_pd1_default (enc_mode_config.c:7378).
+ *
+ * Deref safety, from the C body: the reference wrappers must be non-NULL
+ * whenever svt_aom_is_ref_same_size returns true, and ppcs->is_not_scaled
+ * makes it return true unconditionally -- so both are always populated and
+ * "unavailable" is modelled with is_not_scaled = 0 plus a non-B slice, the
+ * other way C reaches false.
+ * ======================================================================== */
+
+enum {
+    LP_I_LPD1_LEVEL = 0, LP_I_ENC_MODE, LP_I_INPUT_RES, LP_I_IS_B_SLICE,
+    LP_I_PICTURE_QP, LP_I_REF_L0_AVAIL, LP_I_REF_L1_AVAIL, LP_I_REF_L1_TRY,
+    LP_I_ME8_VAR, LP_I_ME64_DIST, LP_I_L0_SKIP, LP_I_L1_SKIP,
+    LP_I_L0_MVP, LP_I_L1_MVP, LP_I_REF_SKIP_PERC, LP_I_CAND_RED,
+    LP_I_RDOQ, LP_I_COEFF_SHAVE, LP_I_ME_SUBPEL, LP_I_RATE_EST,
+    LP_I_APPROX_RATE, LP_I_INTRA, LP_I_REF_L0_TRY, LP_I_BEST_UNIPRED,
+    LP_I_RTC, LP_I_HIER_LEVELS, LP_I_UPDATE_TYPE,
+    LP_I_COUNT
+};
+
+enum {
+    LP_O_GLOBALMV_TH = 0,
+    LP_O_CR_RED_SCORE, LP_O_CR_RED_MAG, LP_O_CR_NEAR_EN, LP_O_CR_NEAR_CNT,
+    LP_O_CR_NEARNEAR_CNT, LP_O_CR_LPD1_MVP, LP_O_CR_USE_NEIGH,
+    LP_O_CR_ELIM_EN, LP_O_CR_ELIM_DC_TH, LP_O_CR_ELIM_SKIP_TH, LP_O_CR_REDUCE_UNI,
+    LP_O_SHAVE_EN, LP_O_SHAVE_LVL, LP_O_SHAVE_GAP, LP_O_SHAVE_RD,
+    LP_O_SPME_EN, LP_O_SPME_TYPE, LP_O_SPME_PREC, LP_O_SPME_METHOD,
+    LP_O_SPME_ITERS, LP_O_SPME_VAR_TH, LP_O_SPME_ABS_MULT, LP_O_SPME_ROUND_DEV,
+    LP_O_SPME_DIAG, LP_O_SPME_MINBLK, LP_O_SPME_MVP_TH, LP_O_SPME_HP_TH, LP_O_SPME_BIAS,
+    LP_O_TXSKIP_SCORE, LP_O_TXSKIP_ENERGY, LP_O_TXSKIP_RD,
+    LP_O_LPD1TX_ZERO_Y, LP_O_LPD1TX_CHROMA, LP_O_LPD1TX_UV_SHORT, LP_O_LPD1TX_MDS3,
+    LP_O_BLK_SKIP_LUMA_PCT, LP_O_CHROMA_SKIP_ENERGY,
+    LP_O_RE_SKIPCTX, LP_O_RE_SKIPCOEFF, LP_O_RE_COEFF_LVL, LP_O_RE_QP_OFFSET,
+    LP_O_RE_FAST_EST,
+    LP_O_APPROX_RATE, LP_O_PF_SHAPE,
+    LP_O_SHUT_FAST_RATE, LP_O_UV_EN, LP_O_UV_MODE, LP_O_NSQ_OFF,
+    LP_O_NN_INJ, LP_O_BLK_SKIP_DEC, LP_O_SUBRES_DEV,
+    LP_O_II_EN, LP_O_II_RD, LP_O_II_WSQ, LP_O_II_WNSQ,
+    /* intra_ctrls -- from the unported set_intra_ctrls; the Rust side
+       cross-checks its derived intra_level through set_intra_ctrls_at_level. */
+    LP_O_IC_EN, LP_O_IC_MODE_END, LP_O_IC_ANG, LP_O_IC_PRUNE_BEST,
+    LP_O_IC_PRUNE_EDGE, LP_O_IC_D1, LP_O_IC_D2, LP_O_IC_D3,
+    LP_O_COUNT
+};
+
+void ref_sig_deriv_light_pd1_default(const int32_t* in, int64_t* out) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    uint32_t* mv   = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* d64  = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* d8   = (uint32_t*)calloc(1, sizeof(uint32_t));
+    EbObjectWrapper*   w0 = (EbObjectWrapper*)calloc(1, sizeof(*w0));
+    EbObjectWrapper*   w1 = (EbObjectWrapper*)calloc(1, sizeof(*w1));
+    EbReferenceObject* r0 = (EbReferenceObject*)calloc(1, sizeof(*r0));
+    EbReferenceObject* r1 = (EbReferenceObject*)calloc(1, sizeof(*r1));
+    uint8_t* s0 = (uint8_t*)calloc(1, sizeof(uint8_t));
+    uint8_t* s1 = (uint8_t*)calloc(1, sizeof(uint8_t));
+    uint8_t* m0 = (uint8_t*)calloc(1, sizeof(uint8_t));
+    uint8_t* m1 = (uint8_t*)calloc(1, sizeof(uint8_t));
+    EbPictureBufferDesc* p0 = (EbPictureBufferDesc*)calloc(1, sizeof(*p0));
+    EbPictureBufferDesc* p1 = (EbPictureBufferDesc*)calloc(1, sizeof(*p1));
+
+    scs->super_block_size  = 64;
+    scs->static_config.rtc = (bool)in[LP_I_RTC];
+
+    mv[0]  = (uint32_t)in[LP_I_ME8_VAR];
+    d64[0] = (uint32_t)in[LP_I_ME64_DIST];
+    s0[0]  = (uint8_t)in[LP_I_L0_SKIP];
+    s1[0]  = (uint8_t)in[LP_I_L1_SKIP];
+    m0[0]  = (uint8_t)in[LP_I_L0_MVP];
+    m1[0]  = (uint8_t)in[LP_I_L1_MVP];
+
+    ppcs->scs                  = scs;
+    ppcs->input_resolution     = (ResolutionRange)in[LP_I_INPUT_RES];
+    ppcs->picture_qp           = (uint8_t)in[LP_I_PICTURE_QP];
+    ppcs->me_8x8_cost_variance = mv;
+    ppcs->me_64x64_distortion  = d64;
+    ppcs->me_8x8_distortion    = d8;
+    ppcs->ref_list0_count_try  = (uint8_t)in[LP_I_REF_L0_TRY];
+    ppcs->ref_list1_count_try  = (uint8_t)in[LP_I_REF_L1_TRY];
+    ppcs->use_best_me_unipred_cand_only = (uint8_t)in[LP_I_BEST_UNIPRED];
+    ppcs->hierarchical_levels  = (uint8_t)in[LP_I_HIER_LEVELS];
+    ppcs->update_type          = (SvtAv1FrameUpdateType)in[LP_I_UPDATE_TYPE];
+    ppcs->frame_width          = 64;
+    ppcs->frame_height         = 64;
+    /* svt_aom_is_ref_same_size short-circuits on is_not_scaled; with it 0 the
+       full predicate runs and the per-list availability inputs take effect. */
+    ppcs->is_not_scaled = 0;
+
+    p0->width = p1->width = 64;
+    p0->height = p1->height = 64;
+    r0->reference_picture = in[LP_I_REF_L0_AVAIL] ? p0 : NULL;
+    r1->reference_picture = in[LP_I_REF_L1_AVAIL] ? p1 : NULL;
+    r0->sb_skip = s0; r0->sb_64x64_mvp = m0;
+    r1->sb_skip = s1; r1->sb_64x64_mvp = m1;
+    w0->object_ptr = r0;
+    w1->object_ptr = r1;
+
+    pcs->ppcs       = ppcs;
+    pcs->scs        = scs;
+    pcs->enc_mode   = (EncMode)in[LP_I_ENC_MODE];
+    /* is_ref_same_size needs B_SLICE for anything but the short-circuit. */
+    pcs->slice_type = in[LP_I_IS_B_SLICE] ? B_SLICE : I_SLICE;
+    pcs->ref_pic_ptr_array[REF_LIST_0][0] = w0;
+    pcs->ref_pic_ptr_array[REF_LIST_1][0] = w1;
+    pcs->ref_skip_percentage  = (uint8_t)in[LP_I_REF_SKIP_PERC];
+    pcs->cand_reduction_level = (uint8_t)in[LP_I_CAND_RED];
+    pcs->rdoq_level           = (uint8_t)in[LP_I_RDOQ];
+    pcs->coeff_shaving_level  = (uint8_t)in[LP_I_COEFF_SHAVE];
+    pcs->me_subpel_level      = (uint8_t)in[LP_I_ME_SUBPEL];
+    pcs->rate_est_level       = (uint8_t)in[LP_I_RATE_EST];
+    pcs->approx_inter_rate    = (uint8_t)in[LP_I_APPROX_RATE];
+    pcs->intra_level          = (uint8_t)in[LP_I_INTRA];
+
+    ctx->lpd1_ctrls.pd1_level = (Pd1Level)in[LP_I_LPD1_LEVEL];
+
+    svt_aom_sig_deriv_enc_dec_light_pd1_default(pcs, ctx);
+
+    out[LP_O_GLOBALMV_TH] = ctx->lpd1_globalmv_bypass_th;
+    out[LP_O_CR_RED_SCORE]    = ctx->cand_reduction_ctrls.redundant_cand_ctrls.score_th;
+    out[LP_O_CR_RED_MAG]      = ctx->cand_reduction_ctrls.redundant_cand_ctrls.mag_th;
+    out[LP_O_CR_NEAR_EN]      = ctx->cand_reduction_ctrls.near_count_ctrls.enabled;
+    out[LP_O_CR_NEAR_CNT]     = ctx->cand_reduction_ctrls.near_count_ctrls.near_count;
+    out[LP_O_CR_NEARNEAR_CNT] = ctx->cand_reduction_ctrls.near_count_ctrls.near_near_count;
+    out[LP_O_CR_LPD1_MVP]     = ctx->cand_reduction_ctrls.lpd1_mvp_best_me_list;
+    out[LP_O_CR_USE_NEIGH]    = ctx->cand_reduction_ctrls.use_neighbouring_mode_ctrls.enabled;
+    out[LP_O_CR_ELIM_EN]      = ctx->cand_reduction_ctrls.cand_elimination_ctrls.enabled;
+    out[LP_O_CR_ELIM_DC_TH]   = ctx->cand_reduction_ctrls.cand_elimination_ctrls.dc_only_th;
+    out[LP_O_CR_ELIM_SKIP_TH] = ctx->cand_reduction_ctrls.cand_elimination_ctrls.skip_dc_th;
+    out[LP_O_CR_REDUCE_UNI]   = ctx->cand_reduction_ctrls.reduce_unipred_candidates;
+    out[LP_O_SHAVE_EN]  = ctx->coeff_shaving_ctrls.enabled;
+    out[LP_O_SHAVE_LVL] = ctx->coeff_shaving_ctrls.level_threshold;
+    out[LP_O_SHAVE_GAP] = ctx->coeff_shaving_ctrls.zero_gap_threshold;
+    out[LP_O_SHAVE_RD]  = ctx->coeff_shaving_ctrls.rd_zero_strength;
+    out[LP_O_SPME_EN]         = ctx->md_subpel_me_ctrls.enabled;
+    out[LP_O_SPME_TYPE]       = ctx->md_subpel_me_ctrls.subpel_search_type;
+    out[LP_O_SPME_PREC]       = ctx->md_subpel_me_ctrls.max_precision;
+    out[LP_O_SPME_METHOD]     = ctx->md_subpel_me_ctrls.subpel_search_method;
+    out[LP_O_SPME_ITERS]      = ctx->md_subpel_me_ctrls.subpel_iters_per_step;
+    out[LP_O_SPME_VAR_TH]     = ctx->md_subpel_me_ctrls.pred_variance_th;
+    out[LP_O_SPME_ABS_MULT]   = ctx->md_subpel_me_ctrls.abs_th_mult;
+    out[LP_O_SPME_ROUND_DEV]  = ctx->md_subpel_me_ctrls.round_dev_th;
+    out[LP_O_SPME_DIAG]       = ctx->md_subpel_me_ctrls.skip_diag_refinement;
+    out[LP_O_SPME_MINBLK]     = ctx->md_subpel_me_ctrls.min_blk_sz;
+    out[LP_O_SPME_MVP_TH]     = ctx->md_subpel_me_ctrls.mvp_th;
+    out[LP_O_SPME_HP_TH]      = ctx->md_subpel_me_ctrls.hp_mv_th;
+    out[LP_O_SPME_BIAS]       = ctx->md_subpel_me_ctrls.bias_fp;
+    out[LP_O_TXSKIP_SCORE]  = ctx->lpd1_tx_skip_decision_ctrls.skip_tx_score_th;
+    out[LP_O_TXSKIP_ENERGY] = ctx->lpd1_tx_skip_decision_ctrls.dist_energy_th;
+    out[LP_O_TXSKIP_RD]     = ctx->lpd1_tx_skip_decision_ctrls.rd_skip_th;
+    out[LP_O_LPD1TX_ZERO_Y]   = ctx->lpd1_tx_ctrls.zero_y_coeff_exit;
+    out[LP_O_LPD1TX_CHROMA]   = ctx->lpd1_tx_ctrls.chroma_detector_level;
+    out[LP_O_LPD1TX_UV_SHORT] = ctx->lpd1_tx_ctrls.use_uv_shortcuts_on_y_coeffs;
+    out[LP_O_LPD1TX_MDS3]     = ctx->lpd1_tx_ctrls.use_mds3_shortcuts_th;
+    out[LP_O_BLK_SKIP_LUMA_PCT]  = ctx->lpd1_blk_skip_luma_rd_pct;
+    out[LP_O_CHROMA_SKIP_ENERGY] = ctx->lpd1_chroma_skip_energy_th;
+    out[LP_O_RE_SKIPCTX]   = ctx->rate_est_ctrls.update_skip_ctx_dc_sign_ctx;
+    out[LP_O_RE_SKIPCOEFF] = ctx->rate_est_ctrls.update_skip_coeff_ctx;
+    out[LP_O_RE_COEFF_LVL] = ctx->rate_est_ctrls.coeff_rate_est_lvl;
+    out[LP_O_RE_QP_OFFSET] = ctx->rate_est_ctrls.lpd0_qp_offset;
+    out[LP_O_RE_FAST_EST]  = ctx->rate_est_ctrls.pd0_fast_coeff_est_level;
+    out[LP_O_APPROX_RATE]  = ctx->approx_inter_rate;
+    out[LP_O_PF_SHAPE]     = ctx->pf_ctrls.pf_shape;
+    out[LP_O_SHUT_FAST_RATE] = ctx->shut_fast_rate;
+    out[LP_O_UV_EN]        = ctx->uv_ctrls.enabled;
+    out[LP_O_UV_MODE]      = ctx->uv_ctrls.uv_mode;
+    out[LP_O_NSQ_OFF]      = ctx->md_disallow_nsq_search;
+    out[LP_O_NN_INJ]       = ctx->new_nearest_injection;
+    out[LP_O_BLK_SKIP_DEC] = ctx->blk_skip_decision;
+    out[LP_O_SUBRES_DEV]   = ctx->subres_ctrls.odd_to_even_deviation_th;
+    out[LP_O_II_EN]   = ctx->inter_intra_comp_ctrls.enabled;
+    out[LP_O_II_RD]   = ctx->inter_intra_comp_ctrls.use_rd_model;
+    out[LP_O_II_WSQ]  = ctx->inter_intra_comp_ctrls.wedge_mode_sq;
+    out[LP_O_II_WNSQ] = ctx->inter_intra_comp_ctrls.wedge_mode_nsq;
+    out[LP_O_IC_EN]         = ctx->intra_ctrls.enable_intra;
+    out[LP_O_IC_MODE_END]   = ctx->intra_ctrls.intra_mode_end;
+    out[LP_O_IC_ANG]        = ctx->intra_ctrls.angular_pred_level;
+    out[LP_O_IC_PRUNE_BEST] = ctx->intra_ctrls.prune_using_best_mode;
+    out[LP_O_IC_PRUNE_EDGE] = ctx->intra_ctrls.prune_using_edge_info;
+    out[LP_O_IC_D1]         = ctx->intra_ctrls.skip_angular_delta1_th;
+    out[LP_O_IC_D2]         = ctx->intra_ctrls.skip_angular_delta2_th;
+    out[LP_O_IC_D3]         = ctx->intra_ctrls.skip_angular_delta3_th;
+
+    free(p1); free(p0);
+    free(m1); free(m0); free(s1); free(s0);
+    free(r1); free(r0); free(w1); free(w0);
+    free(d8); free(d64); free(mv);
+    free(ctx); free(pcs); free(ppcs); free(scs);
+}
+
+int32_t ref_light_pd1_in_slots(void) { return LP_I_COUNT; }
+int32_t ref_light_pd1_out_slots(void) { return LP_O_COUNT; }

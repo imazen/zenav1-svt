@@ -38,6 +38,7 @@ pub mod common;
 pub mod ctrls;
 pub mod encdec;
 pub mod leaf;
+pub mod light_pd1;
 pub mod me;
 pub mod pd0;
 pub mod tail;
