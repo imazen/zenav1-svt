@@ -111,3 +111,72 @@ fn qp_scale_weight_matches_the_c_macro() {
         assert!((qp_scale_weight(strength) - (1.0 + strength * 0.125)).abs() < 1e-12);
     }
 }
+
+/// `FrameContext` must carry C's REAL inter CDFs, not uniform placeholders.
+///
+/// Seven of these fields were `[CDF_PROB_TOP / 2, 0, 0]` — a uniform table,
+/// which codes every symbol at even odds — and twelve more had no field at
+/// all. Byte-inert while inter frames are refused at the pipeline entry
+/// point, and a tile desync the moment one is coded.
+///
+/// The comparison is against `port_entropy_inter::cdfs`, whose tables were
+/// EXTRACTED from the real `svt_aom_init_mode_probs` rather than transcribed
+/// (tier 1, `c_parity_entropy_inter.rs`), so this asserts that `FrameContext`
+/// and that tier-1-gated source cannot drift apart.
+#[test]
+fn frame_context_carries_the_real_inter_cdfs() {
+    use svtav1_encoder::entropy::context::FrameContext;
+    use svtav1_encoder::port_entropy_inter::cdfs;
+
+    let fc = FrameContext::new_default();
+
+    assert_eq!(fc.skip_mode_cdf, cdfs::SKIP_MODE_CDF, "skip_mode");
+    assert_eq!(fc.newmv_cdf, cdfs::NEWMV_CDF, "newmv");
+    assert_eq!(fc.globalmv_cdf, cdfs::ZEROMV_CDF, "globalmv/zeromv");
+    assert_eq!(fc.refmv_cdf, cdfs::REFMV_CDF, "refmv");
+    assert_eq!(fc.drl_cdf, cdfs::DRL_CDF, "drl");
+    assert_eq!(
+        fc.inter_compound_mode_cdf, cdfs::INTER_COMPOUND_MODE_CDF,
+        "inter_compound_mode"
+    );
+    assert_eq!(
+        fc.interp_filter_cdf, cdfs::SWITCHABLE_INTERP_CDF,
+        "interp_filter/switchable_interp"
+    );
+
+    // The twelve that had no field at all now live on the carrier.
+    let inter = &fc.inter;
+    assert_eq!(inter.comp_ref_type_cdf, cdfs::COMP_REF_TYPE_CDF);
+    assert_eq!(inter.uni_comp_ref_cdf, cdfs::UNI_COMP_REF_CDF);
+    assert_eq!(inter.comp_bwdref_cdf, cdfs::COMP_BWDREF_CDF);
+    assert_eq!(inter.motion_mode_cdf, cdfs::MOTION_MODE_CDF);
+    assert_eq!(inter.obmc_cdf, cdfs::OBMC_CDF);
+    assert_eq!(inter.compound_index_cdf, cdfs::COMPOUND_INDEX_CDF);
+    assert_eq!(inter.comp_group_idx_cdf, cdfs::COMP_GROUP_IDX_CDF);
+    assert_eq!(inter.interintra_cdf, cdfs::INTERINTRA_CDF);
+    assert_eq!(inter.interintra_mode_cdf, cdfs::INTERINTRA_MODE_CDF);
+    assert_eq!(inter.wedge_interintra_cdf, cdfs::WEDGE_INTERINTRA_CDF);
+    assert_eq!(inter.wedge_idx_cdf, cdfs::WEDGE_IDX_CDF);
+    assert_eq!(inter.compound_type_cdf, cdfs::COMPOUND_TYPE_CDF);
+}
+
+/// Anti-vacuity for the test above: a uniform table would PASS it if the
+/// source tables were themselves uniform. They are not — assert that each
+/// seeded table actually varies across its rows, which is exactly the
+/// property the placeholders lacked.
+#[test]
+fn the_seeded_inter_cdfs_are_not_uniform() {
+    use svtav1_encoder::entropy::context::FrameContext;
+    let fc = FrameContext::new_default();
+
+    // A uniform 3-wide CDF is [16384, 0, 0] at every row; a real one varies.
+    let rows_vary = |rows: &[[u16; 3]]| rows.iter().any(|r| r[0] != rows[0][0]);
+    assert!(rows_vary(&fc.newmv_cdf), "newmv rows must differ");
+    assert!(rows_vary(&fc.refmv_cdf), "refmv rows must differ");
+    assert!(rows_vary(&fc.drl_cdf), "drl rows must differ");
+    assert!(rows_vary(&fc.skip_mode_cdf), "skip_mode rows must differ");
+    assert!(
+        fc.inter_compound_mode_cdf[0][3] != 0,
+        "the 9-wide compound table must use entries past the old 5-wide bound"
+    );
+}

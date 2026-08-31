@@ -201,7 +201,16 @@ pub struct FrameContext {
 
     // --- Inter prediction ---
     /// Inter compound mode CDFs [INTER_MODE_CONTEXTS][4+1]
-    pub inter_compound_mode_cdf: [[AomCdfProb; 5]; INTER_MODE_CONTEXTS],
+    /// C `inter_compound_mode_cdf[INTER_MODE_CONTEXTS][CDF_SIZE(INTER_COMPOUND_MODES)]`
+    /// (cabac_context_model.h:298).
+    ///
+    /// **Was declared 5 wide and that was wrong.** AV1 has EIGHT compound
+    /// modes — `NEAREST_NEARESTMV`..`NEW_NEWMV` (definitions.h:1207-1214) —
+    /// so `CDF_SIZE(8)` is 9. A 5-wide table can represent four symbols, so
+    /// coding any compound mode above the fourth would have read past the row.
+    /// Latent rather than live: inter frames are refused at the entry point,
+    /// so nothing reachable wrote it.
+    pub inter_compound_mode_cdf: [[AomCdfProb; 9]; INTER_MODE_CONTEXTS],
 
     /// New MV flag CDFs [NEWMV_MODE_CONTEXTS][2+1]
     pub newmv_cdf: [[AomCdfProb; 3]; NEWMV_MODE_CONTEXTS],
@@ -271,6 +280,26 @@ pub struct FrameContext {
     /// context an inter pack must thread, and without it a per-block fresh
     /// context is not decodable.
     pub nmvc: crate::entropy::mv_coding::NmvContext,
+
+    /// The nineteen INTER CDF tables, at C's real defaults
+    /// ([`crate::port_entropy_inter::InterCdfs`], extracted from the real
+    /// `svt_aom_init_mode_probs` rather than transcribed).
+    ///
+    /// **Why this exists as a carrier rather than nineteen more fields.**
+    /// Twelve of the nineteen had NO field here at all (`comp_ref_type`,
+    /// `uni_comp_ref`, `comp_bwdref`, `obmc`, `motion_mode`, `comp_group_idx`,
+    /// `compound_index`, `compound_type`, `interintra`, `interintra_mode`,
+    /// `wedge_interintra`, `wedge_idx`), and the seven that did were UNIFORM
+    /// PLACEHOLDERS — `[CDF_PROB_TOP / 2, 0, 0]` — not C's tables. Those seven
+    /// are now seeded from the same source below, so the two can never drift
+    /// apart; the carrier holds the twelve that have nowhere else to live.
+    ///
+    /// Byte-inert today: inter frames are refused at the pipeline entry point,
+    /// so nothing on a reachable path reads any of these. It stops being inert
+    /// the moment an inter block is coded, and coding one against a uniform
+    /// table desyncs the tile — which is why the placeholders were a latent
+    /// defect and not a harmless stub.
+    pub inter: crate::port_entropy_inter::InterCdfs,
 
     /// DV (displacement vector) entropy context — C FRAME_CONTEXT.ndvc.
     /// Seeded from the EXACT same `default_nmv_context` as `nmvc`
@@ -526,7 +555,9 @@ impl FrameContext {
         Self {
             partition_cdf: DEFAULT_PARTITION_CDF,
             skip_cdf: DEFAULT_SKIP_CDF,
-            skip_mode_cdf: [[CDF_PROB_TOP / 2, 0, 0]; SKIP_MODE_CONTEXTS],
+            // Was [CDF_PROB_TOP / 2, 0, 0] — a uniform placeholder, not C's
+            // table. Seeded from the tier-1-gated defaults so the two cannot drift.
+            skip_mode_cdf: crate::port_entropy_inter::cdfs::SKIP_MODE_CDF,
             intra_inter_cdf: DEFAULT_INTRA_INTER_CDF,
             kf_y_mode_cdf: DEFAULT_KF_Y_MODE_CDF,
             y_mode_cdf: DEFAULT_Y_MODE_CDF,
@@ -556,17 +587,11 @@ impl FrameContext {
             // matches the C trace fingerprint `BOOL f=21198` on the
             // wiener_restore flag.
             wiener_restore_cdf: [CDF_PROB_TOP - 11570, 0, 0],
-            inter_compound_mode_cdf: [[
-                CDF_PROB_TOP / 4 * 3,
-                CDF_PROB_TOP / 4 * 2,
-                CDF_PROB_TOP / 4,
-                0,
-                0,
-            ]; INTER_MODE_CONTEXTS],
-            newmv_cdf: [[CDF_PROB_TOP / 2, 0, 0]; NEWMV_MODE_CONTEXTS],
-            globalmv_cdf: [[CDF_PROB_TOP / 2, 0, 0]; GLOBALMV_MODE_CONTEXTS],
-            refmv_cdf: [[CDF_PROB_TOP / 2, 0, 0]; REFMV_MODE_CONTEXTS],
-            drl_cdf: [[CDF_PROB_TOP / 2, 0, 0]; DRL_MODE_CONTEXTS],
+            inter_compound_mode_cdf: crate::port_entropy_inter::cdfs::INTER_COMPOUND_MODE_CDF,
+            newmv_cdf: crate::port_entropy_inter::cdfs::NEWMV_CDF,
+            globalmv_cdf: crate::port_entropy_inter::cdfs::ZEROMV_CDF,
+            refmv_cdf: crate::port_entropy_inter::cdfs::REFMV_CDF,
+            drl_cdf: crate::port_entropy_inter::cdfs::DRL_CDF,
             // Real AV1 defaults (generated from the C reference and
             // drift-tested vs FcTable::TxSize) — the decoder initializes
             // tx_size_cdf with these; wrong values desync the stream on
@@ -575,8 +600,7 @@ impl FrameContext {
             txb_skip_cdf: [[CDF_PROB_TOP / 2, 0, 0]; TXB_SKIP_CONTEXTS],
             dc_sign_cdf: [[[CDF_PROB_TOP / 2, 0, 0]; DC_SIGN_CONTEXTS]; PLANE_TYPES],
             eob_flag_cdf: [[[0; EOB_MAX_SYMS + 1]; 2]; PLANE_TYPES],
-            interp_filter_cdf: [[CDF_PROB_TOP / 3 * 2, CDF_PROB_TOP / 3, 0, 0];
-                INTERP_FILTER_CONTEXTS],
+            interp_filter_cdf: crate::port_entropy_inter::cdfs::SWITCHABLE_INTERP_CDF,
             single_ref_cdf: DEFAULT_SINGLE_REF_CDF,
             comp_ref_cdf: DEFAULT_COMP_REF_CDF,
             comp_inter_cdf: DEFAULT_COMP_INTER_CDF,
@@ -593,6 +617,7 @@ impl FrameContext {
             // C seeds BOTH nmvc and ndvc from default_nmv_context
             // (cabac_context_model.c:794-795).
             nmvc: crate::entropy::mv_coding::NmvContext::default(),
+            inter: crate::port_entropy_inter::InterCdfs::new_default(),
             ndvc: crate::entropy::mv_coding::NmvContext::default(),
             txfm_partition_cdf: crate::entropy::default_cdfs::TXFM_PARTITION_CDF,
             // Segmentation defaults (cabac_context_model.c:652-664, installed
