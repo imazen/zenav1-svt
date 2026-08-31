@@ -566,6 +566,26 @@ mod tests {
         );
     }
 
+    /// The 10-bit normalisation in `model_rd_for_sb` is a 4-bit shift, and
+    /// the identity at 8 bits.
+    #[test]
+    fn model_rd_for_sb_normalises_by_bit_depth() {
+        let bs = [BlockSize::Block16x16; 3];
+        let sse = [1_000_000u64; 3];
+        let (_, d8) = model_rd_for_sb(&bs, &sse, 0, 0, 512, 8);
+        let (_, d10) = model_rd_for_sb(&bs, &sse, 0, 0, 512, 10);
+        // The 10-bit path models 1/16 of the distortion energy.
+        assert!(
+            d10 < d8,
+            "10-bit distortion {d10} should be below 8-bit {d8}"
+        );
+        // And summing three planes is three times one plane's contribution.
+        let (r1, dd1) = model_rd_for_sb(&bs, &sse, 0, 0, 512, 8);
+        let (r3, dd3) = model_rd_for_sb(&bs, &sse, 0, 2, 512, 8);
+        assert_eq!(r3, r1 * 3);
+        assert_eq!(dd3, dd1 * 3);
+    }
+
     /// The three q10 tables must be the same length — C says so in a comment
     /// and then indexes `xq + 1` without a bound.
     #[test]
@@ -581,4 +601,129 @@ mod tests {
             "xq {xq} would read past the table"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The two per-superblock RD-model drivers.
+// ---------------------------------------------------------------------------
+
+/// Per-plane outputs `model_rd_for_sb_with_curvfit` optionally fills.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlaneRd {
+    /// `plane_rate[plane]`.
+    pub rate: i32,
+    /// `plane_sse[plane]`.
+    pub sse: i64,
+    /// `plane_dist[plane]`.
+    pub dist: i64,
+}
+
+/// `model_rd_for_sb_with_curvfit` (enc_inter_prediction.c:626).
+///
+/// Evidence: TIER 4 — it takes a `PictureControlSet` and a
+/// `ModeDecisionContext` (for `hbd_md`, the lambda and, through
+/// `model_rd_with_curvfit`, the dequant table), which a shim cannot
+/// synthesise. Both things it calls are gated: `svt_aom_sse` /
+/// `svt_aom_highbd_sse` at tier 1 (`c_parity_port_masked_compound.rs`) and
+/// `model_rd_with_curvfit` at tier 4 in this module.
+///
+/// QUIRK, reproduced rather than tidied: the per-plane loop uses the SAME
+/// `src_buf`, `pred_buf`, `bw` and `bh` for every plane — it never offsets to
+/// the chroma planes or halves the dimensions. Only `plane_bsize` changes
+/// (through `get_plane_block_size`), and that only picks the curve-fit
+/// category. So calling it with `plane_from < plane_to` measures the LUMA
+/// block several times under different categories. That is what C does; a
+/// port that "fixed" it would produce different candidate rankings.
+#[allow(clippy::too_many_arguments)]
+pub fn model_rd_for_sb_with_curvfit(
+    bsize: BlockSize,
+    bw: usize,
+    bh: usize,
+    src: &[u8],
+    src_stride: usize,
+    src_hbd: &[u16],
+    pred: &[u8],
+    pred_stride: usize,
+    pred_hbd: &[u16],
+    plane_from: usize,
+    plane_to: usize,
+    hbd: bool,
+    quantizer: i16,
+    full_lambda: u32,
+    planes_out: Option<&mut [PlaneRd]>,
+) -> (i32, i64) {
+    let mut rate_sum = 0i64;
+    let mut dist_sum = 0i64;
+    let mut out = planes_out;
+
+    for plane in plane_from..=plane_to {
+        let subsampling = usize::from(plane != 0);
+        let plane_bsize =
+            crate::port_obmc_data::get_plane_block_size(bsize, subsampling, subsampling)
+                .expect("get_plane_block_size returned BLOCK_INVALID for a modelled plane");
+        // `bd_round` is 0 in C, so the ROUND_POWER_OF_TWO is the identity.
+        let sse = if hbd {
+            crate::port_masked_compound::highbd_sse(
+                src_hbd,
+                src_stride,
+                pred_hbd,
+                pred_stride,
+                bw,
+                bh,
+            )
+        } else {
+            crate::port_masked_compound::sse(src, src_stride, pred, pred_stride, bw, bh)
+        };
+        let (rate, dist) =
+            model_rd_with_curvfit(plane_bsize, sse, (bw * bh) as i32, quantizer, full_lambda);
+        rate_sum += rate as i64;
+        dist_sum += dist;
+        if let Some(p) = out.as_deref_mut() {
+            p[plane] = PlaneRd { rate, sse, dist };
+        }
+    }
+    (rate_sum as i32, dist_sum)
+}
+
+/// `model_rd_for_sb` (enc_inter_prediction.c:1977) — the NON-curvfit arm,
+/// which `interpolation_filter_search` takes at :2156.
+///
+/// Evidence: TIER 4 — it reaches `pcs->ppcs->enhanced_pic` (or
+/// `input_frame16bit`), the spatial-full-distortion kernel and the dequant
+/// tables. `model_rd_from_sse` (which it calls with
+/// `simple_model_rd_from_var = 0`, i.e. the Laplacian arm) IS tier-1 gated in
+/// this module.
+///
+/// `sse` per plane arrives from the caller because C measures it with
+/// `svt_spatial_full_distortion_kernel` / `svt_full_distortion_kernel16_bits`,
+/// which belong to a different module group, plus an optional
+/// `get_svt_psy_full_dist` term gated on `effective_ac_bias`.
+///
+/// TRAP: the `sse` handed to `model_rd_from_sse` is
+/// `ROUND_POWER_OF_TWO(sse, 2 * (bit_depth - 8))` — a bit-depth normalisation
+/// that is the identity at 8 bits and a 4-bit shift at 10. Dropping it
+/// over-weights distortion by 16x on the 10-bit path.
+pub fn model_rd_for_sb(
+    bsize_per_plane: &[BlockSize],
+    sse_per_plane: &[u64],
+    plane_from: usize,
+    plane_to: usize,
+    quantizer: i16,
+    bit_depth: u8,
+) -> (i32, u64) {
+    let mut rate_sum = 0u64;
+    let mut dist_sum = 0u64;
+    let shift = 2 * (bit_depth as u32 - 8);
+    for plane in plane_from..=plane_to {
+        let sse = if shift == 0 {
+            sse_per_plane[plane]
+        } else {
+            (sse_per_plane[plane] + (1u64 << (shift - 1))) >> shift
+        };
+        let (rate, dist) =
+            model_rd_from_sse(bsize_per_plane[plane], quantizer, bit_depth, sse, false);
+        rate_sum += rate as u64;
+        dist_sum += dist;
+    }
+    (rate_sum as i32, dist_sum)
 }

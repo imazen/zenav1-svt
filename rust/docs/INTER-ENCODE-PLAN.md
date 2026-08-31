@@ -48,6 +48,20 @@ Likewise `svtav1-dsp/src/scale.rs` is a homegrown Q14 divide, not a port of
 `svt_av1_setup_scale_factors_for_frame`; `tests/c_parity_scale.rs` pins that
 with an `assert_ne!`.
 
+**STATE AS OF 2026-08-31, end of the wp-interpred lane.** The whole MC KERNEL
+surface is now ported and C-gated: the four 8-bit `*_sr_c` kernels, the four
+8-bit `jnt_*` compound kernels, all eight of their 10/12-bit twins, and both
+scaled kernels — plus the four dispatchers (`svt_inter_predictor_pd0`,
+`svt_inter_predictor`, `svt_inter_predictor_light_pd1` 8-bit arm,
+`svt_highbd_inter_predictor`), the reference scale factors, the MV ->
+`SubpelParams` derivation, the wedge mask tables, inter-intra blending, the
+masked-compound blend and search, the OBMC `wsrc`/`mask` producer and blend,
+and the fast RD models. See `crates/svtav1-dsp/src/port_*.rs` and the matching
+`tests/c_parity_port_*.rs`; each commit states its evidence tier per function.
+
+So the campaign's remaining inter gap really is encoder-side — but it was NOT
+before this lane, and the table above said otherwise.
+
 **CORRECTION, 2026-08-31 (wp-filters lane).** The warped-motion row above
 originally read "warped motion | `svtav1-dsp` | `c_parity_warp.rs`" and was
 WRONG — it listed the gap as already closed. `svtav1-dsp/src/warp.rs` is a
