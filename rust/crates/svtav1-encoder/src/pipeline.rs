@@ -1746,6 +1746,36 @@ impl EncodePipeline {
             tpl_adjusted_qp,
             self.rc_config.extended_crf_qindex_offset,
         );
+        // VIDEO-MODE QP SCALING (inter campaign C1a). C's `cqp_qindex_calc`
+        // (rc_crf_cqp.c:393, the mainline `#else` arm) returns the qindex
+        // untouched when `scs->allintra` — the early return the entire still
+        // envelope takes — and scales it otherwise. `allintra` here is the
+        // still predicate the rest of this function already uses.
+        //
+        // MEASURED, gradient 64x64 in video mode (SVT_AVIF=0): C writes
+        // base_q_idx 67 at cli qp40 where the still path writes 160, because a
+        // video key frame is coded far finer than a still — later frames
+        // reference it. The derivation is tier-1 verified against C's exported
+        // `svt_av1_convert_qindex_to_q` and `svt_av1_compute_qdelta`, and
+        // against the base_q_idx C actually writes on four cells.
+        //
+        // `is_ref`/`idr_flag` are true for the key frame this reaches today;
+        // the non-base temporal-layer arm needs a DPB the port does not have,
+        // and `cqp_qindex_calc` documents that it must not be used there yet.
+        let allintra = self.gop.intra_period <= 1;
+        if !allintra {
+            base_qindex = crate::rate_control::cqp_qindex_calc(
+                i32::from(base_qindex),
+                allintra,
+                /*slice_is_intra=*/ is_key,
+                /*is_ref=*/ true,
+                /*idr_flag=*/ is_key,
+                temporal_layer,
+                self.gop.hierarchical_levels,
+                self.bit_depth,
+            )
+            .clamp(0, 255) as u8;
+        }
         let mut picture_qp = crate::rate_control::picture_qp_from_qindex(base_qindex);
         // C's EXTENDED-CRF lambda bump (enc_mode_config.c:10109-10114): for
         // CRF 63.25..70 only — `static_config.qp == MAX_QP_VALUE (63)` with a
