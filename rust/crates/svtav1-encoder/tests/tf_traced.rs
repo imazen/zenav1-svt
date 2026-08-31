@@ -480,3 +480,150 @@ fn tier4_filt_unfilt_dist_tiling_and_division() {
     // unfilt offset = 64 * 300 + 128 = 19328.
     assert_eq!(offsets.into_inner()[5], (12928, 19328));
 }
+
+// ---------------------------------------------------------------------------
+// Motion-compensated prediction dispatch and source-buffer saves — TIER 4
+// ---------------------------------------------------------------------------
+//
+// `tf_64x64_inter_prediction`, `tf_32x32_inter_prediction`,
+// `save_src_pic_buffers` and `save_y_src_pic_buffers` are `static` in
+// temporal_filtering.c. The first two end in `svt_aom_inter_prediction` (the
+// MC), the last two in `svt_picture_buffer_desc_ctor` + `svt_av1_copy_wxh_8bit`
+// (allocation + copy). The port carries the DECISIONS — which block sizes get
+// predicted at which MVs and origins, and which planes get saved at which
+// dimensions — and leaves the MC and the allocation to their owners.
+
+#[test]
+fn tier4_mb_edges_signs_and_scale() {
+    // MI_SIZE_LOG2 == 2, MI_SIZE == 4. pu (64, 32) in a 40x30 MI frame,
+    // 64x64 block (mi_size 16):
+    //   mirow = 32 >> 2 = 8, micol = 64 >> 2 = 16
+    //   top    = -((8 * 4) * 8)                = -256
+    //   bottom = ((30 - 16 - 8) * 4) * 8       = 192
+    //   left   = -((16 * 4) * 8)               = -512
+    //   right  = ((40 - 16 - 16) * 4) * 8      = 256
+    let e = port::mb_edges(64, 32, 16, 16, 40, 30);
+    assert_eq!(
+        e,
+        port::MbEdges {
+            top: -256,
+            bottom: 192,
+            left: -512,
+            right: 256
+        }
+    );
+    // Top/left are NEGATED; a sign flip silently disables the MC edge clamp.
+    assert!(e.top <= 0 && e.left <= 0);
+    // Past the right/bottom edge the values go negative, which is how the MC
+    // learns the block overhangs.
+    let e = port::mb_edges(160, 120, 16, 16, 40, 30);
+    assert!(e.right < 0 && e.bottom < 0);
+}
+
+#[test]
+fn tier4_tf_64x64_inter_prediction_request() {
+    let r = port::tf_64x64_inter_prediction_request(128, 64, -7, 13);
+    assert_eq!(
+        r,
+        port::TfPredictionRequest {
+            bsize: 64,
+            pu_origin_x: 128,
+            pu_origin_y: 64,
+            local_origin_x: 0,
+            local_origin_y: 0,
+            mv_x: -7,
+            mv_y: 13,
+            mi_size: 16,
+        }
+    );
+}
+
+#[test]
+fn tier4_tf_32x32_inter_prediction_descends_by_split_flags() {
+    let mut ctx = port::TfKernelCtx::default();
+    for i in 0..4 {
+        ctx.tf_32x32_mv_x[i] = 100 + i as i16;
+        ctx.tf_32x32_mv_y[i] = 200 + i as i16;
+    }
+    for i in 0..16 {
+        ctx.tf_16x16_mv_x[i] = 300 + i as i16;
+        ctx.tf_16x16_mv_y[i] = 400 + i as i16;
+    }
+    let mut mv8x = [0i16; 64];
+    let mut mv8y = [0i16; 64];
+    for i in 0..64 {
+        mv8x[i] = 500 + i as i16;
+        mv8y[i] = 600 + i as i16;
+    }
+
+    // Not split: ONE 32x32 at the quadrant's own MV and origin.
+    let split16 = [[0i32; 4]; 4];
+    let reqs = port::tf_32x32_inter_prediction_requests(&ctx, &split16, &mv8x, &mv8y, 3, 0, 0);
+    assert_eq!(reqs.len(), 1);
+    // idx 3 -> idx_x = 1, idx_y = 1 -> local origin (32, 32).
+    assert_eq!(reqs[0].bsize, 32);
+    assert_eq!((reqs[0].local_origin_x, reqs[0].local_origin_y), (32, 32));
+    assert_eq!((reqs[0].mv_x, reqs[0].mv_y), (103, 203));
+    assert_eq!(reqs[0].mi_size, 8);
+
+    // Split at 32x32 only: FOUR 16x16, each at its own tf_16x16 MV slot
+    // (idx_32x32 * 4 + idx_16x16).
+    ctx.tf_32x32_block_split_flag[1] = 1;
+    let reqs = port::tf_32x32_inter_prediction_requests(&ctx, &split16, &mv8x, &mv8y, 1, 64, 0);
+    assert_eq!(reqs.len(), 4);
+    assert!(reqs.iter().all(|r| r.bsize == 16 && r.mi_size == 4));
+    assert_eq!((reqs[0].mv_x, reqs[0].mv_y), (304, 404)); // slot 1*4 + 0
+    assert_eq!((reqs[3].mv_x, reqs[3].mv_y), (307, 407)); // slot 1*4 + 3
+    // idx_32x32 == 1 -> pu indices {2, 3, 6, 7} -> (row,col) (0,2)(0,3)(1,2)(1,3)
+    // -> (idx_x, idx_y) (2,0)(3,0)(2,1)(3,1) -> local origins at bsize 16.
+    assert_eq!((reqs[0].local_origin_x, reqs[0].local_origin_y), (32, 0));
+    assert_eq!((reqs[3].local_origin_x, reqs[3].local_origin_y), (48, 16));
+    // sb_origin_x is added on top.
+    assert_eq!(reqs[0].pu_origin_x, 64 + 32);
+
+    // Split at 32x32 AND at one 16x16: that 16x16 becomes four 8x8, the other
+    // three stay 16x16 -> 3 + 4 = 7 requests.
+    let mut split16 = [[0i32; 4]; 4];
+    split16[1][2] = 1;
+    let reqs = port::tf_32x32_inter_prediction_requests(&ctx, &split16, &mv8x, &mv8y, 1, 0, 0);
+    assert_eq!(reqs.len(), 7);
+    assert_eq!(reqs.iter().filter(|r| r.bsize == 8).count(), 4);
+    assert_eq!(reqs.iter().filter(|r| r.bsize == 16).count(), 3);
+    // The 8x8 MVs come from tf_8x8_mv_*[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8]
+    // = 1*16 + 4*2 + {0..3} = 24..27.
+    let eights: Vec<i16> = reqs
+        .iter()
+        .filter(|r| r.bsize == 8)
+        .map(|r| r.mv_x)
+        .collect();
+    assert_eq!(eights, vec![524, 525, 526, 527]);
+}
+
+#[test]
+fn tier4_plan_saved_src_pic() {
+    // 4:2:0 (EB_YUV420 == 1), 8-bit, luma only — the default configuration's
+    // branch at temporal_filtering.c:4018.
+    let p = port::plan_saved_src_pic(false, 640, 480, 1, 8);
+    assert_eq!(
+        p,
+        port::SavedSrcPicPlan {
+            copy_luma: true,
+            copy_chroma: false,
+            width_y: 640,
+            height_y: 480,
+            width_uv: 320,
+            height_uv: 240,
+            dest_border: 0,
+            dest_split_mode: false,
+        }
+    );
+    // All planes, 10-bit: split_mode flips.
+    let p = port::plan_saved_src_pic(true, 640, 480, 1, 10);
+    assert!(p.copy_chroma && p.dest_split_mode);
+    // 4:4:4 (EB_YUV444 == 3): ss_x and ss_y are both 0.
+    let p = port::plan_saved_src_pic(true, 640, 480, 3, 8);
+    assert_eq!((p.width_uv, p.height_uv), (640, 480));
+    // 4:2:2 (EB_YUV422 == 2): ss_x 1, ss_y 0.
+    let p = port::plan_saved_src_pic(true, 640, 480, 2, 8);
+    assert_eq!((p.width_uv, p.height_uv), (320, 480));
+}

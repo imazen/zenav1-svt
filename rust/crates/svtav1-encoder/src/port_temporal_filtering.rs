@@ -1597,3 +1597,220 @@ where
     }
     dist / (pic_width_in_b64 * pic_height_in_b64)
 }
+
+// ---------------------------------------------------------------------------
+// Motion-compensated prediction dispatch and the source-buffer saves
+// ---------------------------------------------------------------------------
+
+/// One motion-compensated prediction the TF driver asks for: which block size,
+/// where, and at what MV.
+///
+/// `tf_64x64_inter_prediction` / `tf_32x32_inter_prediction`
+/// (temporal_filtering.c:2102 / :2199) each end in a call to
+/// `svt_aom_inter_prediction` with a `BlockModeInfo` whose only varying fields
+/// are `mv[0]` and the block size — everything else is fixed
+/// (`ref_frame[0] = LAST_FRAME`, `ref_frame[1] = NONE_FRAME`,
+/// `is_interintra_used = 0`, `motion_mode = SIMPLE_TRANSLATION`,
+/// `mode = NEWMV`, `use_intrabc = 0`) and the interp filters are
+/// `MULTITAP_SHARP` on both axes — NOT the `EIGHTTAP_REGULAR`/`BILINEAR` pair
+/// the SUB-PEL SEARCH uses. Using the search's filters for the final pass
+/// gives a different, plausible-looking prediction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TfPredictionRequest {
+    /// 64, 32, 16 or 8.
+    pub bsize: u32,
+    pub pu_origin_x: u16,
+    pub pu_origin_y: u16,
+    pub local_origin_x: u16,
+    pub local_origin_y: u16,
+    pub mv_x: i16,
+    pub mv_y: i16,
+    /// `mi_size_high[block_size]` / `mi_size_wide[block_size]` for the edge
+    /// clamps, in MI units (`bsize / MI_SIZE`, `MI_SIZE == 4`).
+    pub mi_size: i32,
+}
+
+/// The four `mb_to_*_edge` values C writes into `blk_ptr.av1xd` before each
+/// prediction, in eighth-pel units.
+///
+/// `MI_SIZE_LOG2` is 2 and `MI_SIZE` is 4, so `mirow = pu_origin_y >> 2` and
+/// the edges are `(mi * 4) * 8`. Getting the sign wrong on the top/left pair
+/// (they are NEGATED) silently disables the MC's edge clamping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MbEdges {
+    pub top: i32,
+    pub bottom: i32,
+    pub left: i32,
+    pub right: i32,
+}
+
+/// `MI_SIZE` / `MI_SIZE_LOG2`.
+pub const MI_SIZE: i32 = 4;
+pub const MI_SIZE_LOG2: u32 = 2;
+
+/// The `blk_ptr.av1xd->mb_to_*_edge` derivation shared by every TF prediction
+/// and sub-pel search site (temporal_filtering.c:1720-1726 and friends).
+pub fn mb_edges(
+    pu_origin_x: u16,
+    pu_origin_y: u16,
+    mi_size_wide: i32,
+    mi_size_high: i32,
+    mi_cols: i32,
+    mi_rows: i32,
+) -> MbEdges {
+    let mirow = i32::from(pu_origin_y >> MI_SIZE_LOG2);
+    let micol = i32::from(pu_origin_x >> MI_SIZE_LOG2);
+    MbEdges {
+        top: -((mirow * MI_SIZE) * 8),
+        bottom: ((mi_rows - mi_size_high - mirow) * MI_SIZE) * 8,
+        left: -((micol * MI_SIZE) * 8),
+        right: ((mi_cols - mi_size_wide - micol) * MI_SIZE) * 8,
+    }
+}
+
+/// `tf_64x64_inter_prediction` (temporal_filtering.c:2102), request half.
+/// `static` in C — TIER 4.
+///
+/// One unconditional 64x64 prediction at `tf_64x64_mv_*`.
+pub fn tf_64x64_inter_prediction_request(
+    sb_origin_x: u32,
+    sb_origin_y: u32,
+    tf_64x64_mv_x: i16,
+    tf_64x64_mv_y: i16,
+) -> TfPredictionRequest {
+    TfPredictionRequest {
+        bsize: 64,
+        pu_origin_x: sb_origin_x as u16,
+        pu_origin_y: sb_origin_y as u16,
+        local_origin_x: 0,
+        local_origin_y: 0,
+        mv_x: tf_64x64_mv_x,
+        mv_y: tf_64x64_mv_y,
+        mi_size: 64 / MI_SIZE,
+    }
+}
+
+/// `tf_32x32_inter_prediction` (temporal_filtering.c:2199), request half.
+/// `static` in C — TIER 4.
+///
+/// Despite the name this descends: when `tf_32x32_block_split_flag[idx]` is
+/// set it emits four 16x16 predictions, or four 8x8 ones for each 16x16 whose
+/// `tf_16x16_block_split_flag` is also set; otherwise ONE 32x32. So the
+/// returned list has 1, 4, or between 4 and 16 entries.
+///
+/// Each level takes its MV from its own array: `tf_32x32_mv_*[idx_32x32]`,
+/// `tf_16x16_mv_*[idx_32x32 * 4 + idx_16x16]`, or
+/// `tf_8x8_mv_*[idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8]`.
+pub fn tf_32x32_inter_prediction_requests(
+    ctx: &TfKernelCtx,
+    tf_16x16_block_split_flag: &[[i32; 4]; 4],
+    tf_8x8_mv_x: &[i16; 64],
+    tf_8x8_mv_y: &[i16; 64],
+    idx_32x32: usize,
+    sb_origin_x: u32,
+    sb_origin_y: u32,
+) -> Vec<TfPredictionRequest> {
+    let mut out = Vec::new();
+    let mk = |bsize: u32, idx_x: u32, idx_y: u32, mv_x: i16, mv_y: i16| {
+        let local_origin_x = (idx_x * bsize) as u16;
+        let local_origin_y = (idx_y * bsize) as u16;
+        TfPredictionRequest {
+            bsize,
+            pu_origin_x: sb_origin_x as u16 + local_origin_x,
+            pu_origin_y: sb_origin_y as u16 + local_origin_y,
+            local_origin_x,
+            local_origin_y,
+            mv_x,
+            mv_y,
+            mi_size: (bsize as i32) / MI_SIZE,
+        }
+    };
+
+    if ctx.tf_32x32_block_split_flag[idx_32x32] != 0 {
+        for idx_16x16 in 0..4usize {
+            if tf_16x16_block_split_flag[idx_32x32][idx_16x16] != 0 {
+                for idx_8x8 in 0..4usize {
+                    let (idx_x, idx_y) = subpel_idx_8x8(idx_32x32, idx_16x16, idx_8x8);
+                    let k = idx_32x32 * 16 + 4 * idx_16x16 + idx_8x8;
+                    out.push(mk(8, idx_x, idx_y, tf_8x8_mv_x[k], tf_8x8_mv_y[k]));
+                }
+            } else {
+                let (idx_x, idx_y) = subpel_idx_16x16(idx_32x32, idx_16x16);
+                let k = idx_32x32 * 4 + idx_16x16;
+                out.push(mk(
+                    16,
+                    idx_x,
+                    idx_y,
+                    ctx.tf_16x16_mv_x[k],
+                    ctx.tf_16x16_mv_y[k],
+                ));
+            }
+        }
+    } else {
+        let (idx_x, idx_y) = subpel_idx_32x32(idx_32x32 as u32);
+        out.push(mk(
+            32,
+            idx_x,
+            idx_y,
+            ctx.tf_32x32_mv_x[idx_32x32],
+            ctx.tf_32x32_mv_y[idx_32x32],
+        ));
+    }
+    out
+}
+
+/// Which planes a source-buffer save copies, and at what dimensions.
+///
+/// `save_src_pic_buffers` (temporal_filtering.c:3790) copies Y, U and V
+/// (`PICTURE_BUFFER_DESC_FULL_MASK`); `save_y_src_pic_buffers`
+/// (temporal_filtering.c:3874) copies Y only
+/// (`PICTURE_BUFFER_DESC_LUMA_MASK`). Both allocate the destination with
+/// `border = 0` and `split_mode = (bit_depth > 8)`.
+///
+/// Which one runs is decided at temporal_filtering.c:4018: the ALL-PLANES
+/// variant needs `compute_psnr`/`compute_ssim` or superres recode; the default
+/// configuration takes the LUMA-ONLY else-branch. Picking the wrong branch
+/// still produces a saved buffer, so nothing fails loudly — it just changes
+/// what `filt_unfilt_dist` differences against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SavedSrcPicPlan {
+    pub copy_luma: bool,
+    pub copy_chroma: bool,
+    pub width_y: u32,
+    pub height_y: u32,
+    pub width_uv: u32,
+    pub height_uv: u32,
+    pub dest_border: u32,
+    pub dest_split_mode: bool,
+}
+
+/// `save_src_pic_buffers` / `save_y_src_pic_buffers` (temporal_filtering.c:3790
+/// / :3874), planning half. `static` in C — TIER 4.
+///
+/// `all_planes` selects between them. The chroma subsampling comes from
+/// `config->encoder_color_format` (`EB_YUV444 == 3` for ss_x,
+/// `>= EB_YUV422 == 2` for ss_y), NOT from the SequenceControlSet's
+/// `subsampling_*` — a different source of truth from
+/// `svt_aom_pad_input_pictures`, which reads the scs fields for the same
+/// quantity.
+pub fn plan_saved_src_pic(
+    all_planes: bool,
+    width: u32,
+    height: u32,
+    color_format: u32,
+    encoder_bit_depth: u32,
+) -> SavedSrcPicPlan {
+    let ss_x = u32::from(color_format != 3);
+    let ss_y = u32::from(color_format < 2);
+    let is_16bit = encoder_bit_depth > 8;
+    SavedSrcPicPlan {
+        copy_luma: true,
+        copy_chroma: all_planes,
+        width_y: width,
+        height_y: height,
+        width_uv: width >> ss_x,
+        height_uv: height >> ss_y,
+        dest_border: 0,
+        dest_split_mode: is_16bit,
+    }
+}
