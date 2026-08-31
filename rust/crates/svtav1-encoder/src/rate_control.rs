@@ -461,57 +461,125 @@ pub fn qp_scale_weight(qp_scale_compress_strength: f64) -> f64 {
     1.0 + qp_scale_compress_strength * 0.125
 }
 
-/// C `cqp_qindex_calc` (rc_crf_cqp.c:393) — the `TUNE_CQP_CHROMA_SSIM = 1`
-/// branch, which is the one v4.2.0 compiles (`EbDebugMacros.h:68`).
+/// C `svt_av1_convert_qindex_to_q` (rc_process.c:186): the AC quantizer step
+/// scaled down to the "old Q" domain — /4 at 8-bit, /16 at 10-bit.
+#[must_use]
+pub fn convert_qindex_to_q(qindex: i32, bit_depth: u8) -> f64 {
+    let i = qindex.clamp(0, 255) as usize;
+    match bit_depth {
+        8 => f64::from(svtav1_dsp::quant_tables::AC_QLOOKUP_8[i]) / 4.0,
+        10 => f64::from(crate::bd10::AC_QLOOKUP_10[i]) / 16.0,
+        other => panic!("convert_qindex_to_q: unsupported bit depth {other}"),
+    }
+}
+
+/// C `svt_av1_compute_qdelta` (rc_process.c:201): map two q values back to
+/// qindices by walking the ladder from MINQ and return their difference.
 ///
-/// **This is the still-vs-video fork in the encode, and it is why a video-mode
-/// key frame is not the still key frame this port already emits byte-
-/// identically.** C returns `qindex` untouched when `scs->allintra` — the
-/// entire existing 280/280 still envelope takes that early return — and only a
-/// VIDEO-mode encode reaches the qstep-ratio scaling below. Measured on
-/// `gradient 64x64 q40 p6`: 290 bytes still vs 930 bytes video, same pixels
-/// (docs/INTER-ENCODE-PLAN.md §1b).
+/// The linear walk and the `>= ` comparison are C's; both loops stop at
+/// `MAXQ - 1` and leave the index at the last value tried, which is why a
+/// qstart above the top of the table yields 254 rather than 255.
+#[must_use]
+pub fn compute_qdelta(qstart: f64, qtarget: f64, bit_depth: u8) -> i32 {
+    const MINQ: i32 = 0;
+    const MAXQ: i32 = 255;
+    let mut start_index = MAXQ;
+    let mut target_index = MAXQ;
+    for i in MINQ..MAXQ {
+        start_index = i;
+        if convert_qindex_to_q(i, bit_depth) >= qstart {
+            break;
+        }
+    }
+    for i in MINQ..MAXQ {
+        target_index = i;
+        if convert_qindex_to_q(i, bit_depth) >= qtarget {
+            break;
+        }
+    }
+    target_index - start_index
+}
+
+/// C `percents[2][FIXED_QP_OFFSET_COUNT]` (md_process.c:25), the libaom
+/// offsets. **The first index is the BOOLEAN `hierarchical_levels <= 4`**, so
+/// row 1 is the shallow-GOP row — easy to invert, and inverting it moves a
+/// key frame's qindex by 3.
+const QP_OFFSET_PERCENTS: [[i32; 6]; 2] = [[75, 70, 60, 20, 15, 0], [76, 60, 30, 15, 8, 4]];
+
+/// C `cqp_qindex_calc` (rc_crf_cqp.c:393) — the **mainline** arm.
 ///
-/// **MEASURED OPEN QUESTION (2026-08-31): this function's output does NOT
-/// match the base_q_idx C actually writes on the video-mode key frame, and
-/// the discrepancy is not yet explained.** Recorded rather than papered over,
-/// with what was ruled out, so the next session starts from the data:
+/// WHICH ARM, and why it is easy to get wrong: the function has
+/// `#if TUNE_CQP_CHROMA_SSIM` / `#else` halves, and `TUNE_CQP_CHROMA_SSIM` is
+/// 1 **only under `SVT_HDR_MODE`** (`EbDebugMacros.h:64-71`). Mainline v4.2.0
+/// compiles the `#else`, which is what this port implements. Reading the `#if`
+/// block and assuming it is live produces a function that is internally
+/// consistent, passes a differential against the exported ladder primitive,
+/// and still returns the wrong qindex — which is exactly what happened here
+/// before the macro was checked.
 ///
-/// | cell (64x64 gradient, video mode) | C base_q_idx | this fn |
+/// VERIFIED against the real C encoder's written `base_q_idx`, 64x64 gradient
+/// in video mode (`SVT_AVIF=0`), all four cells exact:
+///
+/// | cell | C | this fn |
 /// |---|--:|--:|
-/// | qp40, hierarchical_levels 0..4 | 67 | 74 |
-/// | qp40, hierarchical_levels 5 | 70 | 64 |
-/// | qp20, hier 0 | 14 | — |
-/// | qp55, hier 0 | 143 | — |
+/// | qp20 (qindex 80), hierarchical_levels 0 | 14 | 14 |
+/// | qp40 (qindex 160), hier 0 | 67 | 67 |
+/// | qp40 (qindex 160), hier 5 | 70 | 70 |
+/// | qp55 (qindex 220), hier 0 | 143 | 143 |
 ///
-/// The hier 4/5 boundary reproduces C's `qratio_grad = hier <= 4 ? 0.3 : 0.2`
-/// split exactly, so the right function is being read — but the implied ratio
-/// moves the WRONG WAY: back-solving C's numbers through the (C-verified)
-/// `q_index_from_qstep_ratio` gives ratios that RISE with qindex
-/// (~0.26 at qindex 80, ~0.285 at 160, ~0.335 at 220) while
-/// `0.2 + (1 - q/255) * grad` falls.
+/// The still path is unaffected: C returns `qindex` untouched when
+/// `scs->allintra`, which is the early return the entire 280/280 still
+/// envelope takes.
 ///
-/// RULED OUT by measurement, not by reading:
-/// * The TPL dispatch. `svt_av1_rc_calc_qindex_crf_cqp` picks
-///   `crf_qindex_calc` when `tpl_ctrls.enable`, but `get_tpl`
-///   (enc_handle.c:3657) returns 0 when `aq_mode == 0`, which the harness
-///   sets — so this IS the function that runs.
-/// * The qp-scale weight. Mainline's table and the fork's formula agree on
-///   0..=3 (see [`qp_scale_weight`]), and the harness leaves the strength 0.
-/// * `q_index_from_qstep_ratio` itself, which is tier-1 verified against the
-///   exported C symbol over the full ladder at both bit depths.
-///
-/// Still to check: whether `active_worst_quality` is `scs_qindex` on this
-/// path (`is_startup_gop` + `startup_qp_offset`, rc_crf_cqp.c:469), and
-/// whether `ppcs->hierarchical_levels` equals the config value for frame 0.
-/// Resolving it wants an instrumented C build on a `--wrap`-capable host;
-/// this host is macOS, where the op-trace interposers do not link.
-///
-/// `is_ref` / `temporal_layer_index` / `hierarchical_levels` come from the GOP;
-/// `cqp_base_q` is C's `scs->cqp_base_q`, written by the temporal-layer-0 arm
-/// and read by the arf arm, so the caller owns it across frames.
+/// `offset_idx` follows C: -1 when the picture is not a reference (target ==
+/// source, no scaling), 0 for an IDR, else `min(temporal_layer_index + 1, 5)`.
+/// The LOW_DELAY `non_base_boost` arm (rc_crf_cqp.c:371) applies only to
+/// non-base temporal layers and is NOT ported — it needs the reference
+/// picture's per-SB intra counts, which the port has no DPB for. A key frame
+/// never reaches it; anything that does must not use this function yet.
+#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn cqp_qindex_calc(
+    qindex: i32,
+    allintra: bool,
+    slice_is_intra: bool,
+    is_ref: bool,
+    idr_flag: bool,
+    temporal_layer_index: u8,
+    hierarchical_levels: u8,
+    bit_depth: u8,
+) -> i32 {
+    if allintra {
+        return qindex;
+    }
+    if hierarchical_levels == 0 && !slice_is_intra {
+        return qindex;
+    }
+    let q_val = convert_qindex_to_q(qindex, bit_depth);
+    let offset_idx: i32 = if !is_ref {
+        -1
+    } else if idr_flag {
+        0
+    } else {
+        i32::from(temporal_layer_index + 1).min(5)
+    };
+    let q_val_target = if offset_idx < 0 {
+        q_val
+    } else {
+        let p = QP_OFFSET_PERCENTS[usize::from(hierarchical_levels <= 4)][offset_idx as usize];
+        (q_val - (q_val * f64::from(p) / 100.0)).max(0.0)
+    };
+    qindex + compute_qdelta(q_val, q_val_target, bit_depth)
+}
+
+/// C `cqp_qindex_calc`'s **fork** (`SVT_HDR_MODE`) arm, kept because this repo
+/// gates both modes byte-for-byte. Not reachable from the mainline pipeline.
+///
+/// `cqp_base_q` is C's `scs->cqp_base_q`: written by the temporal-layer-0 arm
+/// and read by the arf-ladder arm, so the caller owns it across frames.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn cqp_qindex_calc_fork(
     qindex: i32,
     allintra: bool,
     slice_is_intra: bool,
@@ -538,8 +606,6 @@ pub fn cqp_qindex_calc(
         *cqp_base_q = q;
         q
     } else if is_ref && temporal_layer_index < hierarchical_levels {
-        // C walks the arf ladder from `scs->cqp_base_q` toward the worst
-        // quality once per temporal height.
         let mut this_height = i32::from(temporal_layer_index) + 1;
         let mut arf_q = *cqp_base_q;
         while this_height > 1 {

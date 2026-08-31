@@ -13,7 +13,9 @@
 //! pixels). Any inter work is downstream of getting this number right.
 
 use svtav1_cref as cref;
-use svtav1_encoder::rate_control::{cqp_qindex_calc, q_index_from_qstep_ratio, qp_scale_weight};
+use svtav1_encoder::rate_control::{
+    compute_qdelta, convert_qindex_to_q, cqp_qindex_calc, q_index_from_qstep_ratio, qp_scale_weight,
+};
 
 /// The full qindex ladder against C, at both shipped bit depths, across ratios
 /// on either side of 1.0 (the two branches of C's walk) and exactly at it.
@@ -36,28 +38,46 @@ fn q_index_from_qstep_ratio_matches_c_over_the_full_ladder() {
     }
 }
 
-/// The key-frame arm of `cqp_qindex_calc` recomputed end to end against C's
-/// own primitive: the port derives the ratio, C converts it to a qindex, and
-/// the two must land on the same integer.
+/// The MAINLINE `cqp_qindex_calc` key-frame arm, against the real
+/// `base_q_idx` the C encoder writes. These four cells were read out of C's
+/// own bitstream (64x64 gradient, video mode via `SVT_AVIF=0`) — the
+/// strongest oracle available for this function, since `cqp_qindex_calc` is
+/// C `static` and cannot be called directly.
 #[test]
-fn cqp_qindex_calc_key_frame_arm_matches_c() {
-    for &bd in &[8u8, 10u8] {
-        for &hier in &[0u8, 1, 3, 4, 5] {
-            for qindex in 0..=255i32 {
-                let qratio_grad = if hier <= 4 { 0.3 } else { 0.2 };
-                let qstep_ratio =
-                    (0.2 + (1.0 - f64::from(qindex) / 255.0) * qratio_grad) * qp_scale_weight(0.0);
-                let expected =
-                    cref::get_q_index_from_qstep_ratio(qindex, qstep_ratio, i32::from(bd));
+fn cqp_qindex_calc_matches_the_base_q_idx_c_writes() {
+    // (cli qp -> qindex, hierarchical_levels, C's written base_q_idx)
+    for &(qindex, hier, expected) in &[(80, 0u8, 14), (160, 0, 67), (160, 5, 70), (220, 0, 143)] {
+        let got = cqp_qindex_calc(
+            qindex, /*allintra=*/ false, /*slice_is_intra=*/ true, /*is_ref=*/ true,
+            /*idr_flag=*/ true, /*temporal_layer_index=*/ 0, hier, /*bit_depth=*/ 8,
+        );
+        assert_eq!(got, expected, "qindex {qindex} hier {hier}");
+    }
+}
 
-                let mut base_q = 0;
-                let got = cqp_qindex_calc(
-                    qindex, /*allintra=*/ false, /*slice_is_intra=*/ true, /*is_ref=*/ true,
-                    /*temporal_layer_index=*/ 0, hier, bd, /*qp_scale_compress_strength=*/ 0.0,
-                    &mut base_q,
-                );
-                assert_eq!(got, expected, "key-frame qindex at q={qindex} hier={hier} bd={bd}");
-                assert_eq!(base_q, got, "cqp_base_q must record the temporal-layer-0 result");
+/// `compute_qdelta` and `convert_qindex_to_q` against the exported C symbols —
+/// tier 1, over the full ladder at both shipped bit depths.
+#[test]
+fn qdelta_and_qindex_to_q_match_c() {
+    for &bd in &[8u8, 10u8] {
+        for qi in 0..=255i32 {
+            let c = cref::convert_qindex_to_q(qi, i32::from(bd));
+            let rust = convert_qindex_to_q(qi, bd);
+            assert!(
+                (c - rust).abs() < 1e-12,
+                "convert_qindex_to_q(qindex={qi}, bd={bd}): C {c} vs port {rust}"
+            );
+        }
+        // The deltas the qindex derivation actually asks for: a target that is
+        // a fixed percentage BELOW the start, for each row of C's percents
+        // table, plus the degenerate equal case.
+        for qi in 0..=255i32 {
+            let q_val = convert_qindex_to_q(qi, bd);
+            for &p in &[0, 4, 8, 15, 20, 30, 60, 70, 75, 76, 100] {
+                let target = (q_val - q_val * f64::from(p) / 100.0).max(0.0);
+                let c = cref::compute_qdelta(q_val, target, i32::from(bd));
+                let rust = compute_qdelta(q_val, target, bd);
+                assert_eq!(rust, c, "compute_qdelta(qindex={qi}, -{p}%, bd={bd})");
             }
         }
     }
@@ -69,14 +89,13 @@ fn cqp_qindex_calc_key_frame_arm_matches_c() {
 #[test]
 fn still_and_flat_gop_early_returns_are_identity() {
     for qindex in 0..=255i32 {
-        let mut base_q = 0;
         assert_eq!(
-            cqp_qindex_calc(qindex, true, true, true, 0, 0, 8, 0.0, &mut base_q),
+            cqp_qindex_calc(qindex, true, true, true, true, 0, 0, 8),
             qindex,
             "allintra must not scale the qindex (the still envelope depends on this)"
         );
         assert_eq!(
-            cqp_qindex_calc(qindex, false, false, true, 0, 0, 8, 0.0, &mut base_q),
+            cqp_qindex_calc(qindex, false, false, true, false, 0, 0, 8),
             qindex,
             "hierarchical_levels == 0 and a non-intra slice returns the qindex unchanged"
         );

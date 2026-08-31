@@ -876,6 +876,7 @@ pub fn convert_qindex_to_q_fp8(qindex: i32, bit_depth: i32) -> i32 {
 // here and a still frame's does not. Bound for the inter campaign's C1a.
 
 unsafe extern "C" {
+    fn svt_av1_compute_qdelta(qstart: f64, qtarget: f64, bit_depth: i32) -> i32;
     fn svt_av1_convert_qindex_to_q(qindex: i32, bit_depth: i32) -> f64;
     fn svt_av1_get_q_index_from_qstep_ratio(
         leaf_qindex: i32,
@@ -889,6 +890,12 @@ unsafe extern "C" {
 #[must_use]
 pub fn convert_qindex_to_q(qindex: i32, bit_depth: i32) -> f64 {
     unsafe { svt_av1_convert_qindex_to_q(qindex, bit_depth) }
+}
+
+/// C `svt_av1_compute_qdelta` (rc_process.c:201).
+#[must_use]
+pub fn compute_qdelta(qstart: f64, qtarget: f64, bit_depth: i32) -> i32 {
+    unsafe { svt_av1_compute_qdelta(qstart, qtarget, bit_depth) }
 }
 
 /// C `svt_av1_get_q_index_from_qstep_ratio` (rc_process.c:322).
