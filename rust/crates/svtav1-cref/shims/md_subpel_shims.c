@@ -310,3 +310,88 @@ unsigned int ref_md_subpel_tree(const RefSubpelArgs* a) {
     free(ctx);
     return r;
 }
+
+/* =========================================================================
+ * md_rate_estimation.c oracles (same lane, same TU).
+ * ========================================================================= */
+
+#include "pcs.h"
+#include "coding_unit.h"
+#include "md_rate_estimation.h"
+#include "entropy_coding.h"
+
+int     svt_aom_get_wedge_params_bits(BlockSize bsize);
+uint8_t svt_aom_get_me_qindex(PictureControlSet* pcs, SuperBlock* sb_ptr, uint8_t is_sb128);
+void    svt_aom_estimate_syntax_rate(MdRateEstimationContext* md_rate_est_ctx, bool is_i_slice,
+                                     uint8_t pic_filter_intra_level, uint8_t allow_screen_content_tools,
+                                     uint8_t enable_restoration, uint8_t allow_intrabc, FRAME_CONTEXT* fc);
+
+/* mcomp/md_rate_estimation item 19: get_interinter_wedge_bits is `static`, but
+ * its ONLY input, svt_aom_get_wedge_params_bits, is exported — so the table it
+ * reads (wedge_params_lookup[bsize].bits, inter_prediction.c:1990) is tier-1
+ * reachable one size at a time. */
+int ref_get_wedge_params_bits(int bsize) {
+    return svt_aom_get_wedge_params_bits((BlockSize)bsize);
+}
+
+/* And the row get_interinter_wedge_bits actually gates —
+ * md_rate_est_ctx->wedge_idx_fac_bits — is produced by the EXPORTED
+ * svt_aom_estimate_syntax_rate (md_rate_estimation.c:74). Driving that with a
+ * caller-supplied wedge_idx_cdf makes the whole gate tier 1: rows the gate
+ * rejects come back as the calloc's zeros, rows it accepts come back filled.
+ *
+ * `wedge_cdf` is BLOCK_SIZES_ALL rows of CDF_SIZE(16) = 17; `out` is
+ * BLOCK_SIZES_ALL rows of 16. is_i_slice must be false — the wedge loop lives
+ * inside `if (!is_i_slice)` at md_rate_estimation.c:257. */
+int ref_wedge_idx_fac_bits(const uint16_t* wedge_cdf, int32_t* out) {
+    MdRateEstimationContext* md = (MdRateEstimationContext*)calloc(1, sizeof(MdRateEstimationContext));
+    FRAME_CONTEXT*           fc = (FRAME_CONTEXT*)calloc(1, sizeof(FRAME_CONTEXT));
+    if (!md || !fc) {
+        free(md);
+        free(fc);
+        return 0;
+    }
+    for (int i = 0; i < BLOCK_SIZES_ALL; ++i) {
+        for (int j = 0; j < CDF_SIZE(16); ++j) {
+            fc->wedge_idx_cdf[i][j] = wedge_cdf[i * CDF_SIZE(16) + j];
+        }
+    }
+    svt_aom_estimate_syntax_rate(md, false, 0, 0, 0, 0, fc);
+    for (int i = 0; i < BLOCK_SIZES_ALL; ++i) {
+        for (int j = 0; j < 16; ++j) {
+            out[i * 16 + j] = md->wedge_idx_fac_bits[i][j];
+        }
+    }
+    free(md);
+    free(fc);
+    return 1;
+}
+
+/* md_rate_estimation.c:1084 svt_aom_get_me_qindex (EXPORTED). It reads only
+ * pcs->b64_me_qindex, pcs->ppcs->aligned_{width,height} and the SuperBlock's
+ * index/org_x/org_y, so zeroed shells with those fields set drive the real
+ * function. */
+uint8_t ref_get_me_qindex(const uint8_t* b64_me_qindex, int aligned_width, int aligned_height, int sb_index,
+                          int sb_org_x, int sb_org_y, int is_sb128) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    SuperBlock*              sb   = (SuperBlock*)calloc(1, sizeof(SuperBlock));
+    if (!pcs || !ppcs || !sb) {
+        free(pcs);
+        free(ppcs);
+        free(sb);
+        return 0;
+    }
+    pcs->ppcs                = ppcs;
+    pcs->b64_me_qindex       = (uint8_t*)b64_me_qindex;
+    ppcs->aligned_width      = (uint16_t)aligned_width;
+    ppcs->aligned_height     = (uint16_t)aligned_height;
+    sb->index                = (unsigned)sb_index;
+    sb->org_x                = (unsigned)sb_org_x;
+    sb->org_y                = (unsigned)sb_org_y;
+    uint8_t r                = svt_aom_get_me_qindex(pcs, sb, (uint8_t)is_sb128);
+    free(pcs);
+    free(ppcs);
+    free(sb);
+    return r;
+}

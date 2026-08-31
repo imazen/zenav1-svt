@@ -330,3 +330,68 @@ pub fn subpel_tree(
         fp_me_dist,
     }
 }
+
+// =============================================================================
+// md_rate_estimation.c oracles
+// =============================================================================
+
+/// C `BLOCK_SIZES_ALL`.
+pub const BLOCK_SIZES_ALL: usize = 22;
+/// C `CDF_SIZE(16)`.
+pub const WEDGE_CDF_SIZE: usize = 17;
+
+unsafe extern "C" {
+    fn ref_get_wedge_params_bits(bsize: c_int) -> c_int;
+    fn ref_wedge_idx_fac_bits(wedge_cdf: *const u16, out: *mut i32) -> c_int;
+    fn ref_get_me_qindex(
+        b64_me_qindex: *const u8,
+        aligned_width: c_int,
+        aligned_height: c_int,
+        sb_index: c_int,
+        sb_org_x: c_int,
+        sb_org_y: c_int,
+        is_sb128: c_int,
+    ) -> u8;
+}
+
+/// C `svt_aom_get_wedge_params_bits` (inter_prediction.c:2053, EXPORTED):
+/// `wedge_params_lookup[bsize].bits`.
+pub fn get_wedge_params_bits(bsize: usize) -> i32 {
+    unsafe { ref_get_wedge_params_bits(bsize as c_int) }
+}
+
+/// Drive the EXPORTED `svt_aom_estimate_syntax_rate` and return the
+/// `wedge_idx_fac_bits[BLOCK_SIZES_ALL][16]` table it produces — the rows
+/// `get_interinter_wedge_bits` gates.
+pub fn wedge_idx_fac_bits(cdf: &[[u16; WEDGE_CDF_SIZE]; BLOCK_SIZES_ALL]) -> [[i32; 16]; 22] {
+    let mut out = [[0i32; 16]; BLOCK_SIZES_ALL];
+    let ok = unsafe { ref_wedge_idx_fac_bits(cdf.as_ptr().cast(), out.as_mut_ptr().cast()) };
+    assert_eq!(
+        ok, 1,
+        "the C shim could not allocate its rate-estimation shells"
+    );
+    out
+}
+
+/// C `svt_aom_get_me_qindex` (md_rate_estimation.c:1084, EXPORTED).
+pub fn get_me_qindex(
+    b64_me_qindex: &[u8],
+    aligned_width: u16,
+    aligned_height: u16,
+    sb_index: u32,
+    sb_org_x: u32,
+    sb_org_y: u32,
+    is_sb128: bool,
+) -> u8 {
+    unsafe {
+        ref_get_me_qindex(
+            b64_me_qindex.as_ptr(),
+            c_int::from(aligned_width),
+            c_int::from(aligned_height),
+            sb_index as c_int,
+            sb_org_x as c_int,
+            sb_org_y as c_int,
+            c_int::from(is_sb128),
+        )
+    }
+}
