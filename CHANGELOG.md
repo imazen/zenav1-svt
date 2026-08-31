@@ -56,6 +56,42 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Inter-frame MVP (motion-vector-predictor) stack (`inter_mvp.rs`) —
+  inter-encode campaign chunk C2, evidence TIER 1.** The general
+  (`ref_frame > INTRA_FRAME`) branch of `adaptive_mv_pred.c` that
+  `intrabc_mvp.rs` could not reach: `add_ref_mv_candidate`'s compound arm and
+  its `is_global_mv_block` substitution, the temporal (MFMV) candidates
+  (`add_tpl_ref_mv` + `get_mv_projection` + `lower_mv_precision`, both the
+  single and compound projections and the `symteric_refs` LAST/BWD shortcut
+  with its `mv_ref0[64]` scratch threaded across the ref loop as C does),
+  `scan_row_col_light`'s compound arm and the `ref_frame_sign_bias` flips in
+  both arms, `setup_ref_mv_list`'s MFMV block including the `sb64_sq_no4xn_geom`
+  walk and the 3-position extension, `svt_aom_gm_get_motion_vector_enc`,
+  `svt_aom_generate_av1_mvp_table`'s inter `gm_mv` derivation,
+  `svt_aom_get_av1_mv_pred_drl`, `svt_aom_compute_inter_mode_ctx_light`, the
+  compound-aware `svt_av1_get_ref_mv_from_stack` /
+  `svt_av1_find_best_ref_mvs_from_stack`, and `av1_set_ref_frame` /
+  `av1_ref_frame_type` / `get_list_idx` / `get_ref_frame_idx`.
+  `tests/c_parity_inter_mvp.rs` drives the REAL exported C symbols through new
+  shims (`crates/svtav1-cref/shims/inter_mvp_shims.c`, its own translation unit
+  so concurrent lanes never share a shim file) over randomized inter mode-info
+  grids: 4,000+ cases across 14 ref-frame types (7 single + 7 compound), 11
+  block sizes, two tiles, both SB sizes, MFMV on/off, high-precision MVs on/off
+  and four global-motion model classes, comparing the full 8-slot stack
+  (`this_mv`, `comp_mv`, weight), the count, the mode context, nearest/near and
+  the `mv_ref0` scratch. The MFMV anti-vacuity check re-runs the C oracle with
+  the block disabled and requires the temporal candidates to CHANGE the output,
+  not merely to execute.
+- **Motion-field projection (`get_block_position`, `motion_field_projection`,
+  `setup_motion_field` in `inter_mvp.rs`) — chunk C2, evidence TIER 4.** All
+  three are `static` in `md_config_process.c` and export no symbol (verified
+  with `nm -gU Bin/Release/libSvtAv1Enc.a`), so
+  `tests/inter_mvp_motion_field.rs` pins them with hand-derived vectors traced
+  against the C source, each with its arithmetic written out beside it. Covers
+  the `is_lst_overlay` suppression, the KEY/INTRA_ONLY and resolution-mismatch
+  refusals, `ref_frame_side` ahead/coincident/behind, and the
+  `use_ref_frame_mvs == 0` early return that leaves `tpl_mvs` untouched.
+
 - **Inter MV entropy coding + MV rate (`inter_mv_code.rs`) — inter-encode
   campaign chunk C3, evidence TIER 1.** The layers between the already-gated
   MV symbol writer (`entropy/mv_coding.rs`) and the already-gated cost-table
@@ -405,6 +441,29 @@ Crates are not published to crates.io yet — depend by git.
   `EncodedAvif::{width, height}`. Arbitrary-dims MONOCHROME is a pipeline gap.
 
 ### Fixed
+
+- **`has_top_right`'s `PARTITION_VERT_A` check must read the MUTATED `bs`
+  (chunk C2).** C's `has_top_right` (adaptive_mv_pred.c:266-325) shifts `bs`
+  left inside its 4x4-group loop (`:303-313`) and the `PARTITION_VERT_A` test
+  at `:314-322` then reads that MUTATED value. Reading the ORIGINAL `bs` there
+  diverges: measured against the exported C symbol at `mi = (36, 10)`, an 8x8
+  block in a 64x64-mi superblock whose current cell has
+  `partition == PARTITION_VERT_A`, `bs` enters as 2 and the loop advances it to
+  4, after which `mask_row == 4` makes C drop the top-right candidate — the
+  port kept it, for `ref_mv_stack[0].weight = 672` against C's 668. Only
+  `partition == 6` diverged; the nine other partition types agreed, which is
+  what localizes it. Pinned by
+  `c_parity_has_top_right_vert_a_uses_mutated_bs` (failed before, passes
+  after). **`crates/svtav1-encoder/src/intrabc_mvp.rs` carries the same
+  original-`bs` reading and is therefore latently wrong on the same geometry**;
+  it is another chunk's file and was NOT edited here.
+- **`add_ref_mv_candidate`'s `assert(weight % 2 == 0)` does not hold (chunk
+  C2).** C asserts it (adaptive_mv_pred.c:63) but ships with `NDEBUG`, so it is
+  never checked. With `row_adj == 1` — an 8x4 block at an odd `mi_row` —
+  `max_row_offset` is -5 and `scan_row_mbmi`'s `inc` reaches 5 for a candidate
+  8 or 16 mi tall, giving `weight == 5`. Reproduced on the randomized grids in
+  `tests/c_parity_inter_mvp.rs`. The assert is deliberately NOT transcribed;
+  an odd weight is a legal input and changes nothing downstream.
 
 - **Mainline chroma delta-q desynced every decoder — `entropy::obu::ChromaQSignal`
   (2026-08-28).** Porting mainline's chroma-q derivation (below) made tune IQ
