@@ -56,6 +56,39 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Open-loop motion estimation — a wholesale port of `motion_estimation.c`
+  (`inter_me/`) — inter-encode campaign chunk C4, evidence TIER 1 where a C
+  symbol exists.** All 40 functions of SVT-AV1's 2,964-line
+  `Source/Lib/Codec/motion_estimation.c`, in a new module tree: the seven SAD
+  accumulators plus the two `compute_sad_c.c` loop kernels (`sad.rs`),
+  `MeContext` and the padded-plane view (`context.rs`), pre-HME + HME levels
+  0/1/2 + the search-area derivation + `check_00_center` +
+  `set_final_search_centre_sb` + the two reference-pruning ladders (`hme.rs`),
+  the one- and eight-point search-point blocks + `integer_search_b64` +
+  `me_prune_ref` (`integer.rs`), the three ME candidate-array constructors +
+  global-motion detection + `compute_distortion` (`candidates.rs`), and
+  `init_me_hme_data` / `me_static_b64_bypass` / `svt_aom_motion_estimation_b64`
+  (`b64.rs`). Deliberately NOT ported: `get_me_reference`'s `SVT_WARN` log line
+  (its `*dist` output IS ported) and the `tf_*` half of `MeContext` that belongs
+  to `temporal_filtering.c` — the five `tf_` fields `motion_estimation.c` reads
+  are carried. **Nothing calls it yet**: `motion_est.rs`'s homegrown searcher is
+  still what `partition.rs` and `pipeline.rs` use, and moving those call sites
+  is a separate chunk. Gated by `tests/c_parity_inter_me.rs` (11 tests, tier 1
+  against the real `libSvtAv1Enc.a` via the new `shims/inter_me_shims.c`:
+  `svt_aom_compute8x4_sad_kernel_c`, `svt_nxm_sad_kernel_helper_c`,
+  `svt_sad_loop_kernel_c`, the four `svt_ext_*sad_calculation*_c` accumulators,
+  `svt_aom_get_scaled_picture_distance` exhaustively over all 65,536 inputs,
+  `hme_level_2` and `check_00_center`) and `tests/inter_me_traced.rs` (18 tests:
+  `hme_level_0`/`hme_level_1`/`prehme_core` against the REAL C `hme_level_2` in
+  the domain where the C bodies coincide, an eight-point-vs-eight-singles
+  structural invariant, a pure-translation recovery test through
+  `motion_estimation_b64`, and hand-traced vectors for the remaining `static`
+  bookkeeping — labelled tier 4 in the file). MEASURED finding recorded at the
+  function: pre-HME does not round its search width up to a multiple of 8 and
+  does not apply the `& ~7` round-down after the right-edge crop, so it searches
+  a different column count than the HME levels near a right edge (1194e4b,
+  8224df7, 9f41610).
+
 - **Inter-frame MVP (motion-vector-predictor) stack (`inter_mvp.rs`) —
   inter-encode campaign chunk C2, evidence TIER 1.** The general
   (`ref_frame > INTRA_FRAME`) branch of `adaptive_mv_pred.c` that
