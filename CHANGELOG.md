@@ -606,6 +606,14 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **Duplicate `ref_get_wedge_params_bits` broke the whole workspace link on
+  x86_64-linux.** Byte-identical definitions in `inter_pred_shims.c:487` and
+  `md_subpel_shims.c:333`; Apple's `ld64` takes the archive's first definition
+  and links, `rust-lld` errors with `duplicate symbol` and nothing in the
+  workspace builds. Removed the newer copy; `svtav1_cref::md_subpel` calls the
+  existing one. All shims land in one archive, so `ref_*` names are
+  workspace-global.
+
 - **16 more x86_64-only shim SIGSEGVs, from two lanes that landed the same
   day.** Found by re-running the suite on x86 after the obmc fix below; all 16
   were green on aarch64-darwin. (a) `c_parity_entropy_inter` (7 tests):

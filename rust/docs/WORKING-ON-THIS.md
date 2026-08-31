@@ -197,6 +197,16 @@ x86_64-linux for the first time; both had been green on aarch64-darwin all day.
   `_Alignas(64)` scratch**, and copy the OUTPUT buffer in as well as out when
   the test prefills it and asserts C leaves untouched positions alone.
 
+- **Every shim is compiled into ONE archive, so a `ref_*` name is
+  workspace-global — and a duplicate definition is not a link error
+  everywhere.** Two byte-identical `ref_get_wedge_params_bits` (one in
+  `inter_pred_shims.c`, one added later in `md_subpel_shims.c`) linked fine
+  under Apple's `ld64`, which takes an archive's first definition, and were a
+  hard `rust-lld: error: duplicate symbol` on x86_64-linux that took the WHOLE
+  workspace down at link time. `grep -rn ref_<name> crates/svtav1-cref/shims/`
+  before you add a wrapper; if it exists, declare it in your Rust module and
+  call the one that is already there.
+
 The general rule: **a differential passes on the host you ran it on. Nothing
 more.** Before a `c_parity_*` file is quoted as tier-1 evidence, run it on the
 other ISA — `ssh r7900x` is the x86 box — because the ways an oracle can be
@@ -207,7 +217,7 @@ are all invisible from inside one host.
 **Measured on 2026-08-31**, the first day the suite was run on both: three
 separate lanes landed shims that were green on aarch64-darwin and broken on
 x86_64-linux the same day — 2 tests (obmc), 7 (entropy_inter), 9 (transforms),
-18 in total, one instance of each trap above. Every one of them re-broke a
+18 in total, plus a duplicate-symbol link break, one instance of each trap above. Every one of them re-broke a
 pattern `ref_shims.c` had already solved and commented. **Before you write a
 new shim, grep `ref_shims.c` for the entry closest to yours** — the caller
 contract you need is very likely already written down there.

@@ -320,7 +320,6 @@ unsigned int ref_md_subpel_tree(const RefSubpelArgs* a) {
 #include "md_rate_estimation.h"
 #include "entropy_coding.h"
 
-int     svt_aom_get_wedge_params_bits(BlockSize bsize);
 uint8_t svt_aom_get_me_qindex(PictureControlSet* pcs, SuperBlock* sb_ptr, uint8_t is_sb128);
 void    svt_aom_estimate_syntax_rate(MdRateEstimationContext* md_rate_est_ctx, bool is_i_slice,
                                      uint8_t pic_filter_intra_level, uint8_t allow_screen_content_tools,
@@ -329,10 +328,15 @@ void    svt_aom_estimate_syntax_rate(MdRateEstimationContext* md_rate_est_ctx, b
 /* mcomp/md_rate_estimation item 19: get_interinter_wedge_bits is `static`, but
  * its ONLY input, svt_aom_get_wedge_params_bits, is exported — so the table it
  * reads (wedge_params_lookup[bsize].bits, inter_prediction.c:1990) is tier-1
- * reachable one size at a time. */
-int ref_get_wedge_params_bits(int bsize) {
-    return svt_aom_get_wedge_params_bits((BlockSize)bsize);
-}
+ * reachable one size at a time.
+ *
+ * The wrapper for it already exists as `ref_get_wedge_params_bits` in
+ * inter_pred_shims.c:487; `svtav1_cref::md_subpel` declares and calls that one.
+ * Defining a byte-identical second copy here linked fine under Apple's ld64
+ * (which resolves an archive's first definition and moves on) and was a HARD
+ * `rust-lld: error: duplicate symbol` on x86_64-linux, taking the whole
+ * workspace down at link time — MEASURED 2026-08-31. Shims are compiled into
+ * ONE archive: a `ref_*` name is workspace-global. Grep before you add one. */
 
 /* And the row get_interinter_wedge_bits actually gates —
  * md_rate_est_ctx->wedge_idx_fac_bits — is produced by the EXPORTED
