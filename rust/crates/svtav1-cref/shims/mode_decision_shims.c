@@ -37,6 +37,8 @@
 #include "adaptive_mv_pred.h"
 #include "pcs.h"
 #include "me_sb_results.h"
+/* For EbCpuFlags + the RTCD setup entry points (see md_ensure_rtcd below). */
+#include "aom_dsp_rtcd.h"
 
 /* ------------------------------------------------------------------ *
  * Pure table / arithmetic helpers.
@@ -443,6 +445,41 @@ void ref_md_choose_best_av1_mv_pred(int32_t shut_fast_rate, int32_t approx_inter
 
 double   svt_aom_similarity(uint32_t sum_s, uint32_t sum_r, uint32_t sum_sq_s, uint32_t sum_sq_r,
                             uint32_t sum_sxr, int count, uint32_t bd);
+void       svt_aom_setup_common_rtcd_internal(uint64_t flags);
+void       svt_aom_setup_rtcd_internal(EbCpuFlags flags);
+EbCpuFlags svt_aom_get_cpu_flags_to_use(void);
+
+/* One-shot RTCD init, same shape as md_subpel_shims.c's.
+ *
+ * WHY IT IS NEEDED HERE, measured 2026-08-31 on x86_64-linux: the EXPORTED
+ * entry point `svt_spatial_full_distortion_ssim_kernel` is a real function
+ * (`nm`: `T`), but its hbd arm dereferences `svt_ssim_4x4_hbd` and
+ * `svt_ssim_8x8_hbd` — which are RTCD POINTERS (`nm`: `B`, i.e. .bss), NULL
+ * until setup. gdb on the failing test: `#0 0x0000000000000000 in ?? ()`
+ * called from `#1 svt_spatial_full_distortion_ssim_kernel`. A jump to zero.
+ *
+ * It passed on aarch64 because the NEON devirtualization header `#define`s
+ * those two names to direct calls, so no pointer exists to be NULL — the
+ * green there was structural, not evidence. Identical in shape to the
+ * `svt_memcpy` NULL that SIGSEGV'd `upsampled_pred` (SUSPECTED-C-BUGS #16),
+ * one level deeper: there the shim called the pointer, here the exported
+ * function it calls does.
+ *
+ * The `_c`-suffixed spellings just below are deliberately NOT affected —
+ * those are the scalar references the port transcribes, and they are real
+ * functions on both ISAs. Only the un-suffixed entry point needs this.
+ *
+ * The flag is written with the same value by every racing thread and guards
+ * only redundant work, never correctness. */
+static int md_rtcd_done = 0;
+static void md_ensure_rtcd(void) {
+    if (!md_rtcd_done) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        svt_aom_setup_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        md_rtcd_done = 1;
+    }
+}
+
 double   svt_ssim_4x4_hbd_c(const uint16_t* s, uint32_t sp, const uint16_t* r, uint32_t rp);
 double   svt_ssim_8x8_hbd_c(const uint16_t* s, uint32_t sp, const uint16_t* r, uint32_t rp);
 uint64_t svt_spatial_full_distortion_ssim_kernel(uint8_t* input, uint32_t input_offset,
@@ -473,6 +510,7 @@ uint64_t ref_md_spatial_full_distortion_ssim(const uint16_t* input, uint32_t inp
                                              int32_t recon_offset, uint32_t recon_stride,
                                              uint32_t area_width, uint32_t area_height,
                                              int32_t hbd, double ac_bias) {
+    md_ensure_rtcd();
     return svt_spatial_full_distortion_ssim_kernel((uint8_t*)input,
                                                    input_offset,
                                                    input_stride,
