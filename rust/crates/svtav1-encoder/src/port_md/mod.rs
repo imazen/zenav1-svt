@@ -26,6 +26,7 @@
 //! | [`md_search`] | the MD-level full-pel / sub-pel / PME searches |
 //! | [`motion_mode`] | motion-mode refinement, inter-intra, PD0 staging |
 //! | [`ref_frame_rate`] | the reference-signalling rate + its contexts |
+//! | [`mv_refine`] | the WM / OBMC motion-mode MV refinements |
 //!
 //! # Reachability
 //!
@@ -39,6 +40,7 @@ pub mod drl;
 pub mod inject;
 pub mod md_search;
 pub mod motion_mode;
+pub mod mv_refine;
 pub mod nics;
 pub mod pme;
 pub mod predicates;
