@@ -84,6 +84,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SVT_CREF_SKIP_HDR");
     println!("cargo:rerun-if-env-changed=SVT_CREF_JOBS");
     println!("cargo:rerun-if-changed=shims/ref_shims.c");
+    println!("cargo:rerun-if-changed=shims/inter_mvp_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_me_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
@@ -145,6 +146,9 @@ fn main() {
 
     cc::Build::new()
         .file(manifest.join("shims/ref_shims.c"))
+        // Inter MVP oracle (chunk C2) — its own TU so the C2 and C3 lanes
+        // never share a shim file in one working copy.
+        .file(manifest.join("shims/inter_mvp_shims.c"))
         .file(manifest.join("shims/inter_me_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))

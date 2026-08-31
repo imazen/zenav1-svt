@@ -9,6 +9,7 @@
 //! shipped artifact.
 
 pub mod inter_me;
+pub mod inter_mvp;
 
 use std::ffi::c_void;
 
