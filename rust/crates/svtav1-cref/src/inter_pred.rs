@@ -2547,3 +2547,44 @@ pub fn compound_type_value(which: i32) -> i32 {
 pub fn diffwtd_mask_type_value(which: i32) -> i32 {
     unsafe { ref_diffwtd_mask_type_value(which) }
 }
+
+// ---------------------------------------------------------------------------
+// Wedge search.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_pick_wedge_fixed_sign(
+        bsize: c_int,
+        residual1: *const i16,
+        diff10: *const i16,
+        wedge_sign: c_int,
+        best_wedge_index: *mut c_int,
+    ) -> i64;
+}
+
+/// Reference `pick_wedge_fixed_sign` (enc_inter_prediction.c:489) ->
+/// `(best_rd, best_wedge_index)`.
+///
+/// Bound only on the `inter_intra_comp_ctrls.use_rd_model = 0` arm: with that
+/// clear the function reads NOTHING else off the `ModeDecisionContext` and
+/// never touches the `PictureControlSet`, so a zeroed context is a complete
+/// stand-in. The rate-model arm needs `md_rate_est_ctx->wedge_idx_fac_bits`
+/// and a real PCS, and is not bound.
+pub fn pick_wedge_fixed_sign(
+    bsize: i32,
+    residual1: &[i16],
+    diff10: &[i16],
+    wedge_sign: i32,
+) -> (i64, i32) {
+    let mut best = -1i32;
+    let rd = unsafe {
+        ref_pick_wedge_fixed_sign(
+            bsize,
+            residual1.as_ptr(),
+            diff10.as_ptr(),
+            wedge_sign,
+            &mut best,
+        )
+    };
+    (rd, best)
+}

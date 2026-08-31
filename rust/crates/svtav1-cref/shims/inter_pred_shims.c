@@ -862,3 +862,31 @@ int ref_diffwtd_mask_type_value(int which) {
     default: return -1;
     }
 }
+
+/* ---- wedge search ------------------------------------------------------ */
+
+#include "md_process.h"
+
+int64_t pick_wedge_fixed_sign(PictureControlSet* pcs, struct ModeDecisionContext* ctx, const BlockSize bsize,
+                              const int16_t* const residual1, const int16_t* const diff10, const int8_t wedge_sign,
+                              int8_t* const best_wedge_index);
+
+/* `pick_wedge_fixed_sign` is exported but takes a ModeDecisionContext. With
+   `inter_intra_comp_ctrls.use_rd_model = 0` it reads NOTHING else off it (no
+   md_rate_est_ctx, no PictureControlSet), so a zeroed calloc'd context is a
+   complete stand-in for that arm. The `use_rd_model = 1` arm needs
+   md_rate_est_ctx->wedge_idx_fac_bits and a PCS, and is NOT bound.
+   calloc/free per call, per ref_shims.c's no-per-call-static rule. */
+int64_t ref_pick_wedge_fixed_sign(int bsize, const int16_t* residual1, const int16_t* diff10, int wedge_sign,
+                                  int* best_wedge_index) {
+    ensure_inter_pred_rtcd();
+    ensure_wedge();
+    ModeDecisionContext* ctx = (ModeDecisionContext*)calloc(1, sizeof(ModeDecisionContext));
+    ctx->hbd_md                                = 0;
+    ctx->inter_intra_comp_ctrls.use_rd_model   = 0;
+    int8_t  best = -1;
+    int64_t rd   = pick_wedge_fixed_sign(NULL, ctx, (BlockSize)bsize, residual1, diff10, (int8_t)wedge_sign, &best);
+    *best_wedge_index = best;
+    free(ctx);
+    return rd;
+}
