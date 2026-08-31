@@ -204,7 +204,15 @@ Crates are not published to crates.io yet — depend by git.
   stands), and averaging two equal contexts is the identity — pinned by
   `avg_nmv_matches_the_previous_inline_ndvc_enumeration` (replays the old
   inline code verbatim), `avg_cdf_with_actually_averages_nmvc` (anti-vacuity:
-  fails if the new call is dropped) and `nmvc_defaults_and_is_inert_under_avg`.
+  fails if the new call is dropped) and `nmvc_defaults_and_is_inert_under_avg`, and
+  MEASURED at the bitstream level in
+  `benchmarks/nmvc_avg_byte_neutrality_2026-08-31.md` — 32 / 32 cells
+  identical with the new averaging present vs removed, with `avg_cdf_with`
+  proven REACHED (an `eprintln` probe fires 2x/frame at presets 0/4/6 on a
+  3x3-SB frame, 0x at preset 8) and proven able to MOVE bytes (halving
+  `partition_cdf` in the same place changes 12 / 12 cells). That record also
+  documents the trap the run hit: a first, weaker control changed no byte and
+  read exactly like "never called".
   The module docs also record the nine-step emission order around the MV write
   (entropy_coding.c:5196-5300), which of those steps have no port, and the two
   traps in it — the DRL predicate being a different mode set from the MV
