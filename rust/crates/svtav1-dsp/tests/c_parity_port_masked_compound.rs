@@ -80,18 +80,42 @@ fn i16s(n: usize, seed: u32) -> Vec<i16> {
 
 const SIZES: [(usize, usize); 7] = [(4, 4), (4, 8), (8, 4), (8, 8), (16, 8), (32, 32), (64, 16)];
 
+/// The enum DISCRIMINANTS, checked against the header.
+///
+/// This cell exists because `is_masked_compound_type` alone CANNOT catch a
+/// transposition of WEDGE and DIFFWTD — the predicate is true for both. This
+/// port had them swapped (C's order is AVERAGE, DISTWTD, **WEDGE**, DIFFWTD)
+/// and it took `build_masked_compound_no_round_matches_c` to notice, because
+/// `av1_get_compound_type_mask` then served the wedge table where the
+/// segmentation mask belonged.
+#[test]
+fn compound_type_discriminants_match_c() {
+    assert_eq!(CompoundType::Average as i32, cref::compound_type_value(0));
+    assert_eq!(CompoundType::DistWtd as i32, cref::compound_type_value(1));
+    assert_eq!(CompoundType::Wedge as i32, cref::compound_type_value(2));
+    assert_eq!(CompoundType::DiffWtd as i32, cref::compound_type_value(3));
+    assert_eq!(
+        DiffwtdMaskType::D38 as i32,
+        cref::diffwtd_mask_type_value(0)
+    );
+    assert_eq!(
+        DiffwtdMaskType::D38Inv as i32,
+        cref::diffwtd_mask_type_value(1)
+    );
+}
+
 #[test]
 fn is_masked_compound_type_matches_c() {
-    for (t, kind) in [
-        (0, CompoundType::Average),
-        (1, CompoundType::DistWtd),
-        (2, CompoundType::DiffWtd),
-        (3, CompoundType::Wedge),
+    for kind in [
+        CompoundType::Average,
+        CompoundType::DistWtd,
+        CompoundType::Wedge,
+        CompoundType::DiffWtd,
     ] {
         assert_eq!(
             is_masked_compound_type(kind),
-            cref::is_masked_compound_type(t),
-            "compound type {t}"
+            cref::is_masked_compound_type(kind as i32),
+            "compound type {kind:?}"
         );
     }
 }

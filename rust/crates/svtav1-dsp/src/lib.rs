@@ -32,6 +32,7 @@ pub mod port_convolve_hbd;
 pub mod port_convolve_scale;
 pub mod port_inter_predictor;
 pub mod port_interintra;
+pub mod port_masked_blend;
 pub mod port_masked_compound;
 pub mod port_model_rd;
 pub mod port_obmc_data;

@@ -759,3 +759,106 @@ void ref_tf_inter_predictor(uint8_t* src, int32_t src_stride, uint8_t* dst, int3
                        (uint8_t)subsampling_shift);
     free(scs);
 }
+
+/* ---- masked-compound blend in the CONV_BUF domain ---------------------- */
+
+void svt_aom_build_masked_compound_no_round(uint8_t* dst, int dst_stride, const CONV_BUF_TYPE* src0, int src0_stride,
+                                            const CONV_BUF_TYPE* src1, int src1_stride,
+                                            const InterInterCompoundData* const comp_data, uint8_t* seg_mask,
+                                            BlockSize bsize, int h, int w, ConvolveParams* conv_params,
+                                            uint8_t bit_depth, bool is_16bit);
+
+/* The blend dispatches through svt_aom_{lowbd,highbd}_blend_a64_d16_mask, and
+   a WEDGE compound reads svt_aom_get_contiguous_soft_mask, so both RTCD and
+   the wedge tables must be up. */
+void ref_build_masked_compound_no_round(uint8_t* dst, int dst_stride, const uint16_t* src0, int src0_stride,
+                                        const uint16_t* src1, int src1_stride, int comp_type, int wedge_index,
+                                        int wedge_sign, int mask_type, uint8_t* seg_mask, int bsize, int h, int w,
+                                        int bd, int is_compound, int is_16bit) {
+    ensure_inter_pred_rtcd();
+    ensure_wedge();
+    InterInterCompoundData comp;
+    comp.type        = (CompoundType)comp_type;
+    comp.wedge_index = (uint8_t)wedge_index;
+    comp.wedge_sign  = (uint8_t)wedge_sign;
+    comp.mask_type   = (DIFFWTD_MASK_TYPE)mask_type;
+    ConvolveParams cp = get_conv_params_no_round(0, NULL, 0, is_compound, bd);
+    svt_aom_build_masked_compound_no_round(dst,
+                                           dst_stride,
+                                           src0,
+                                           src0_stride,
+                                           src1,
+                                           src1_stride,
+                                           &comp,
+                                           seg_mask,
+                                           (BlockSize)bsize,
+                                           h,
+                                           w,
+                                           &cp,
+                                           (uint8_t)bd,
+                                           is_16bit != 0);
+}
+
+/* Direct (non-RTCD) call to the pure-C d16 mask blends, so a differential can
+   say whether a mismatch is the port or C's dispatched SIMD tier. */
+void svt_aom_lowbd_blend_a64_d16_mask_c(uint8_t* dst, uint32_t dst_stride, const CONV_BUF_TYPE* src0,
+                                        uint32_t src0_stride, const CONV_BUF_TYPE* src1, uint32_t src1_stride,
+                                        const uint8_t* mask, uint32_t mask_stride, int w, int h, int subw, int subh,
+                                        ConvolveParams* conv_params);
+void svt_aom_highbd_blend_a64_d16_mask_c(uint8_t* dst_8, uint32_t dst_stride, const CONV_BUF_TYPE* src0,
+                                         uint32_t src0_stride, const CONV_BUF_TYPE* src1, uint32_t src1_stride,
+                                         const uint8_t* mask, uint32_t mask_stride, int w, int h, int subw, int subh,
+                                         ConvolveParams* conv_params, const int bd);
+
+void ref_lowbd_blend_a64_d16_mask_c(uint8_t* dst, int dst_stride, const uint16_t* src0, int src0_stride,
+                                    const uint16_t* src1, int src1_stride, const uint8_t* mask, int mask_stride, int w,
+                                    int h, int subw, int subh, int bd) {
+    ConvolveParams cp = get_conv_params_no_round(0, NULL, 0, 1, bd);
+    svt_aom_lowbd_blend_a64_d16_mask_c(
+        dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, mask_stride, w, h, subw, subh, &cp);
+}
+
+void ref_highbd_blend_a64_d16_mask_c(uint16_t* dst, int dst_stride, const uint16_t* src0, int src0_stride,
+                                     const uint16_t* src1, int src1_stride, const uint8_t* mask, int mask_stride,
+                                     int w, int h, int subw, int subh, int bd) {
+    ConvolveParams cp = get_conv_params_no_round(0, NULL, 0, 1, bd);
+    svt_aom_highbd_blend_a64_d16_mask_c(
+        (uint8_t*)dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, mask_stride, w, h, subw, subh, &cp, bd);
+}
+
+/* The RTCD-dispatched d16 mask blend, so a differential can compare C's own
+   dispatched tier against C's `_c` kernel on identical inputs. */
+extern void (*svt_aom_lowbd_blend_a64_d16_mask)(uint8_t* dst, uint32_t dst_stride, const CONV_BUF_TYPE* src0,
+                                                uint32_t src0_stride, const CONV_BUF_TYPE* src1, uint32_t src1_stride,
+                                                const uint8_t* mask, uint32_t mask_stride, int w, int h, int subw,
+                                                int subh, ConvolveParams* conv_params);
+
+void ref_lowbd_blend_a64_d16_mask_rtcd(uint8_t* dst, int dst_stride, const uint16_t* src0, int src0_stride,
+                                       const uint16_t* src1, int src1_stride, const uint8_t* mask, int mask_stride,
+                                       int w, int h, int subw, int subh, int bd) {
+    ensure_inter_pred_rtcd();
+    ConvolveParams cp = get_conv_params_no_round(0, NULL, 0, 1, bd);
+    svt_aom_lowbd_blend_a64_d16_mask(
+        dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, mask_stride, w, h, subw, subh, &cp);
+}
+
+/* The CompoundType enum's numeric values, so the port's discriminants are
+   checked against the header instead of assumed. */
+int ref_compound_type_value(int which) {
+    switch (which) {
+    case 0: return (int)COMPOUND_AVERAGE;
+    case 1: return (int)COMPOUND_DISTWTD;
+    case 2: return (int)COMPOUND_WEDGE;
+    case 3: return (int)COMPOUND_DIFFWTD;
+    default: return -1;
+    }
+}
+
+/* Same for DIFFWTD_MASK_TYPE. */
+int ref_diffwtd_mask_type_value(int which) {
+    switch (which) {
+    case 0: return (int)DIFFWTD_38;
+    case 1: return (int)DIFFWTD_38_INV;
+    default: return -1;
+    }
+}

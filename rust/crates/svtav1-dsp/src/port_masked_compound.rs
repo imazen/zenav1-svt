@@ -33,7 +33,16 @@ pub const DIFF_FACTOR_LOG2: i32 = 4;
 /// `DIFF_FACTOR` (definitions.h:1274) — 16.
 pub const DIFF_FACTOR: i32 = 1 << DIFF_FACTOR_LOG2;
 
-/// `CompoundType` (definitions.h:1258).
+/// `CompoundType` (definitions.h:1259-1265).
+///
+/// TRAP, measured the hard way: the order is AVERAGE, DISTWTD, **WEDGE**,
+/// **DIFFWTD** — wedge comes FIRST. The obvious reading (diffwtd before wedge,
+/// matching the order the two are usually discussed in) transposes the two
+/// masked types, and `av1_get_compound_type_mask` then serves the wedge table
+/// where the segmentation mask belongs and vice versa. This port had them
+/// swapped until `build_masked_compound_no_round_matches_c` failed; the
+/// `svt_aom_is_masked_compound_type` cell could NOT catch it, because that
+/// predicate is true for both values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CompoundType {
@@ -41,10 +50,10 @@ pub enum CompoundType {
     Average = 0,
     /// `COMPOUND_DISTWTD`
     DistWtd = 1,
-    /// `COMPOUND_DIFFWTD`
-    DiffWtd = 2,
     /// `COMPOUND_WEDGE`
-    Wedge = 3,
+    Wedge = 2,
+    /// `COMPOUND_DIFFWTD`
+    DiffWtd = 3,
 }
 
 /// `svt_aom_is_masked_compound_type` (inter_prediction.c:34).

@@ -2282,3 +2282,268 @@ pub fn tf_inter_predictor(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Masked-compound blend in the CONV_BUF domain.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_build_masked_compound_no_round(
+        dst: *mut u8,
+        dst_stride: c_int,
+        src0: *const u16,
+        src0_stride: c_int,
+        src1: *const u16,
+        src1_stride: c_int,
+        comp_type: c_int,
+        wedge_index: c_int,
+        wedge_sign: c_int,
+        mask_type: c_int,
+        seg_mask: *mut u8,
+        bsize: c_int,
+        h: c_int,
+        w: c_int,
+        bd: c_int,
+        is_compound: c_int,
+        is_16bit: c_int,
+    );
+}
+
+/// The `InterInterCompoundData` fields the blend reads.
+#[derive(Clone, Copy, Debug)]
+pub struct RefCompoundData {
+    /// `type` — 2 = COMPOUND_DIFFWTD, 3 = COMPOUND_WEDGE.
+    pub compound_type: i32,
+    /// `wedge_index`.
+    pub wedge_index: i32,
+    /// `wedge_sign`.
+    pub wedge_sign: i32,
+    /// `mask_type`.
+    pub mask_type: i32,
+}
+
+/// Reference `svt_aom_build_masked_compound_no_round` (inter_prediction.c:2347).
+///
+/// `dst` is bytes: an 8-bit plane when `is_16bit` is false, and the raw bytes
+/// of a `u16` plane when it is true (C takes a `uint8_t*` either way).
+#[allow(clippy::too_many_arguments)]
+pub fn build_masked_compound_no_round(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    comp: RefCompoundData,
+    seg_mask: &mut [u8],
+    bsize: i32,
+    h: usize,
+    w: usize,
+    bd: i32,
+    is_compound: bool,
+    is_16bit: bool,
+) {
+    unsafe {
+        ref_build_masked_compound_no_round(
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            comp.compound_type,
+            comp.wedge_index,
+            comp.wedge_sign,
+            comp.mask_type,
+            seg_mask.as_mut_ptr(),
+            bsize,
+            h as i32,
+            w as i32,
+            bd,
+            i32::from(is_compound),
+            i32::from(is_16bit),
+        );
+    }
+}
+
+unsafe extern "C" {
+    fn ref_lowbd_blend_a64_d16_mask_c(
+        dst: *mut u8,
+        dst_stride: c_int,
+        src0: *const u16,
+        src0_stride: c_int,
+        src1: *const u16,
+        src1_stride: c_int,
+        mask: *const u8,
+        mask_stride: c_int,
+        w: c_int,
+        h: c_int,
+        subw: c_int,
+        subh: c_int,
+        bd: c_int,
+    );
+    fn ref_highbd_blend_a64_d16_mask_c(
+        dst: *mut u16,
+        dst_stride: c_int,
+        src0: *const u16,
+        src0_stride: c_int,
+        src1: *const u16,
+        src1_stride: c_int,
+        mask: *const u8,
+        mask_stride: c_int,
+        w: c_int,
+        h: c_int,
+        subw: c_int,
+        subh: c_int,
+        bd: c_int,
+    );
+}
+
+/// Reference `svt_aom_lowbd_blend_a64_d16_mask_c` (blend_a64_mask.c) called
+/// DIRECTLY, bypassing the RTCD dispatch — so a differential can attribute a
+/// mismatch to the port or to C's dispatched SIMD tier.
+#[allow(clippy::too_many_arguments)]
+pub fn lowbd_blend_a64_d16_mask_c(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    bd: i32,
+) {
+    unsafe {
+        ref_lowbd_blend_a64_d16_mask_c(
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            w as i32,
+            h as i32,
+            i32::from(subw),
+            i32::from(subh),
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_aom_highbd_blend_a64_d16_mask_c`, called directly.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_blend_a64_d16_mask_c(
+    dst: &mut [u16],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    bd: i32,
+) {
+    unsafe {
+        ref_highbd_blend_a64_d16_mask_c(
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            w as i32,
+            h as i32,
+            i32::from(subw),
+            i32::from(subh),
+            bd,
+        );
+    }
+}
+
+unsafe extern "C" {
+    fn ref_lowbd_blend_a64_d16_mask_rtcd(
+        dst: *mut u8,
+        dst_stride: c_int,
+        src0: *const u16,
+        src0_stride: c_int,
+        src1: *const u16,
+        src1_stride: c_int,
+        mask: *const u8,
+        mask_stride: c_int,
+        w: c_int,
+        h: c_int,
+        subw: c_int,
+        subh: c_int,
+        bd: c_int,
+    );
+}
+
+/// The RTCD-DISPATCHED `svt_aom_lowbd_blend_a64_d16_mask` — the kernel
+/// `svt_aom_build_masked_compound_no_round` actually calls on this host.
+/// Paired with [`lowbd_blend_a64_d16_mask_c`] it attributes a mismatch to C's
+/// own SIMD tier rather than to the port.
+#[allow(clippy::too_many_arguments)]
+pub fn lowbd_blend_a64_d16_mask_rtcd(
+    dst: &mut [u8],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    mask_stride: usize,
+    w: usize,
+    h: usize,
+    subw: bool,
+    subh: bool,
+    bd: i32,
+) {
+    unsafe {
+        ref_lowbd_blend_a64_d16_mask_rtcd(
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            mask.as_ptr(),
+            mask_stride as i32,
+            w as i32,
+            h as i32,
+            i32::from(subw),
+            i32::from(subh),
+            bd,
+        );
+    }
+}
+
+unsafe extern "C" {
+    fn ref_compound_type_value(which: c_int) -> c_int;
+    fn ref_diffwtd_mask_type_value(which: c_int) -> c_int;
+}
+
+/// The numeric value of a `CompoundType` in the C header, by name index:
+/// 0 = COMPOUND_AVERAGE, 1 = COMPOUND_DISTWTD, 2 = COMPOUND_WEDGE,
+/// 3 = COMPOUND_DIFFWTD.
+pub fn compound_type_value(which: i32) -> i32 {
+    unsafe { ref_compound_type_value(which) }
+}
+
+/// The numeric value of a `DIFFWTD_MASK_TYPE`: 0 = DIFFWTD_38,
+/// 1 = DIFFWTD_38_INV.
+pub fn diffwtd_mask_type_value(which: i32) -> i32 {
+    unsafe { ref_diffwtd_mask_type_value(which) }
+}
