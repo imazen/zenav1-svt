@@ -337,3 +337,59 @@ pub fn set_tpl_group(
         returned,
     }
 }
+
+unsafe extern "C" {
+    fn ref_search_ref_in_ref_queue(
+        pocs: *const u64,
+        valid: *const i32,
+        n: u32,
+        ref_poc: u64,
+    ) -> i32;
+
+    fn ref_get_similar_ref_brightness(
+        slice_type: u8,
+        hierarchical_levels: u8,
+        ref_list1_count_try: u8,
+        ref0_avg_luma: u64,
+        ref1_avg_luma: u64,
+        cur_avg_luma: u64,
+    ) -> i32;
+}
+
+/// C `search_ref_in_ref_queue` (`pic_manager_process.c:178-188`).
+///
+/// Returns the matched index, or `None`.
+#[must_use]
+pub fn search_ref_in_ref_queue(pocs: &[u64], valid: &[i32], ref_poc: u64) -> Option<usize> {
+    assert_eq!(pocs.len(), valid.len());
+    let r = unsafe {
+        ref_search_ref_in_ref_queue(pocs.as_ptr(), valid.as_ptr(), pocs.len() as u32, ref_poc)
+    };
+    if r < 0 { None } else { Some(r as usize) }
+}
+
+/// C `get_similar_ref_brightness` (`pd_process.c:4251-4267`).
+///
+/// `avg_luma` is a `uint64_t` in C and `INVALID_LUMA` is compared against it
+/// after a cast to `int`, so the sentinel is passed here as its unsigned
+/// bit pattern.
+#[must_use]
+pub fn get_similar_ref_brightness(
+    slice_type: u8,
+    hierarchical_levels: u8,
+    ref_list1_count_try: u8,
+    ref0_avg_luma: u64,
+    ref1_avg_luma: u64,
+    cur_avg_luma: u64,
+) -> bool {
+    unsafe {
+        ref_get_similar_ref_brightness(
+            slice_type,
+            hierarchical_levels,
+            ref_list1_count_try,
+            ref0_avg_luma,
+            ref1_avg_luma,
+            cur_avg_luma,
+        ) != 0
+    }
+}

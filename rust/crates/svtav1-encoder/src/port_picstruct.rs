@@ -225,6 +225,8 @@ pub struct MrpCtrls {
     pub ld_reduce_ref_buffs: u8,
     /// Reference count for the flat RTC structure.
     pub flat_max_refs: u8,
+    /// HME L0 MRP detector threshold (percent). 0 disables the prune.
+    pub early_hme_l0_prune_th: u16,
 }
 
 impl Default for MrpCtrls {
@@ -242,6 +244,7 @@ impl Default for MrpCtrls {
             safe_limit_zz_th: 0,
             ld_reduce_ref_buffs: 0,
             flat_max_refs: 4,
+            early_hme_l0_prune_th: 0,
         }
     }
 }
@@ -2939,4 +2942,360 @@ pub fn store_extended_group(
         }
     }
     g
+}
+
+// ---------------------------------------------------------------------------
+// Reference binding + primary_ref_frame — Codec/pic_manager_process.c
+// ---------------------------------------------------------------------------
+
+/// C `PRIMARY_REF_NONE` (`definitions.h:1470`).
+pub const PRIMARY_REF_NONE: u8 = 7;
+/// C `REFRESH_FRAME_CONTEXT_BACKWARD`.
+pub const REFRESH_FRAME_CONTEXT_BACKWARD: u8 = 1;
+
+/// C `get_list_idx` (`inter_prediction.h:531-535`) via `ref_type_to_list_idx`.
+#[must_use]
+pub fn get_list_idx(ref_type: u8) -> u8 {
+    const REF_TYPE_TO_LIST_IDX: [u8; 8] = [0, 0, 0, 0, 0, 1, 1, 1];
+    REF_TYPE_TO_LIST_IDX[ref_type as usize]
+}
+
+/// C `get_ref_frame_idx` (`inter_prediction.h:537-541`) via `ref_type_to_ref_idx`.
+#[must_use]
+pub fn get_ref_frame_idx(ref_type: u8) -> u8 {
+    const REF_TYPE_TO_REF_IDX: [u8; 8] = [0, 0, 1, 2, 3, 0, 1, 2];
+    REF_TYPE_TO_REF_IDX[ref_type as usize]
+}
+
+/// One entry of C's `enc_ctx->ref_pic_list` — a reference the picture manager
+/// can bind to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RefQueueEntry {
+    /// C `ref_pic_entry->picture_number`.
+    pub picture_number: u64,
+    /// C `ref_pic_entry->is_valid`.
+    pub is_valid: bool,
+    /// C `ref_pic_entry->temporal_layer_index`.
+    pub temporal_layer_index: u8,
+    /// C `ref_obj->base_q_idx`.
+    pub base_q_idx: u8,
+    /// C `ref_obj->slice_type`.
+    pub slice_type: SliceType,
+    /// C `ref_obj->r0`.
+    pub r0: f64,
+}
+
+/// C `search_ref_in_ref_queue` (`pic_manager_process.c:178-188`) — EXPORTED.
+///
+/// Resolves a reference POC to its reference-queue entry, skipping invalid
+/// slots. Returns the index, or `None`.
+///
+/// Trap: the C loop assigns `ref_pic_entry` on every iteration and returns
+/// only on a match, so a caller that reads the variable after a miss sees the
+/// LAST scanned entry — but the function itself returns NULL, which is what
+/// this reproduces.
+#[must_use]
+pub fn search_ref_in_ref_queue(ref_pic_list: &[RefQueueEntry], ref_poc: u64) -> Option<usize> {
+    ref_pic_list
+        .iter()
+        .position(|e| e.is_valid && e.picture_number == ref_poc)
+}
+
+/// What the picture manager binds onto a child PCS for one picture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RefBinding {
+    /// C `child_pcs->ref_base_q_idx[list][idx]`.
+    pub ref_base_q_idx: [[u8; 4]; 2],
+    /// C `child_pcs->ref_slice_type[list][idx]`.
+    pub ref_slice_type: [[SliceType; 4]; 2],
+    /// C `child_pcs->ref_pic_r0[list][idx]`.
+    pub ref_pic_r0: [[f64; 4]; 2],
+    /// C `child_pcs->ppcs->frm_hdr.primary_ref_frame` — a written header field.
+    pub primary_ref_frame: u8,
+    /// C `child_pcs->ppcs->refresh_frame_context`.
+    pub refresh_frame_context: u8,
+    /// The queue index each reference resolved to, indexed by
+    /// [`LAST`]..=[`ALT`]; `None` where the reference was not in the queue.
+    pub resolved: [Option<usize>; INTER_REFS_PER_FRAME],
+}
+
+impl Default for RefBinding {
+    fn default() -> Self {
+        Self {
+            ref_base_q_idx: [[0; 4]; 2],
+            ref_slice_type: [[SliceType::B; 4]; 2],
+            ref_pic_r0: [[0.0; 4]; 2],
+            primary_ref_frame: PRIMARY_REF_NONE,
+            refresh_frame_context: REFRESH_FRAME_CONTEXT_BACKWARD,
+            resolved: [None; INTER_REFS_PER_FRAME],
+        }
+    }
+}
+
+/// C `svt_aom_picture_manager_kernel_iter`'s EB_PIC_INPUT reference-binding
+/// block (`pic_manager_process.c:798-874`) — this is inter campaign chunk
+/// C1b's deliverable.
+///
+/// Derives `frm_hdr.primary_ref_frame` and `refresh_frame_context`, and binds
+/// `ref_base_q_idx` / `ref_slice_type` / `ref_pic_r0` per reference. CDF
+/// continuation off the wrong primary ref desynchronises the entropy decoder,
+/// so this is a hard bitstream field, not a heuristic.
+///
+/// **EVIDENCE TIER 4, and the reason is worth stating.**
+/// `svt_aom_picture_manager_kernel_iter` IS an exported symbol (`nm -g` on
+/// `Bin/Release/libSvtAv1Enc.a` finds it) but is NOT callable in isolation:
+/// the first thing it does is `EB_GET_FULL_OBJECT` on a fifo, so a shim would
+/// block rather than return. "A symbol exists" and "tier 1 is reachable" are
+/// different facts here. The block is therefore gated by hand-derived vectors
+/// traced against the C source, and a byte-identity gate on the inter frame
+/// header (tier 2) is the upgrade path.
+///
+/// **The primary-ref rule, stated precisely because it is easy to get wrong:**
+/// walk LAST..ALT in order and keep the reference with the LARGEST
+/// `temporal_layer_index` that is still `<= this picture's` temporal layer.
+/// Ties keep the FIRST such reference (the comparison is strict `<`), so LAST
+/// wins over a later reference at the same layer. The result is stored as a
+/// `REF_FRAME_MINUS1` (0..6), NOT as an `MvReferenceFrame` — C asserts
+/// `ref_index == (int)ref` on exactly that point.
+///
+/// Not ported, and named rather than dropped: the `ref_global_motion[]` copy
+/// inside the same guard (it needs the reference object's warp params, which
+/// live in the global-motion module) and the `ref_pic_ptr_array` /
+/// live-count bookkeeping, which is buffer plumbing this port replaces.
+///
+/// # Panics
+///
+/// Panics if a B-slice reference POC is absent from the queue. C asserts and
+/// raises `EB_ENC_PM_ERROR10` there; a missing reference means the DPB model
+/// and the queue have already diverged, and continuing would bind a wrong
+/// picture.
+#[must_use]
+pub fn bind_refs_and_primary_ref_frame(
+    pic: &PicParams,
+    ref_pic_list: &[RefQueueEntry],
+    frame_end_cdf_update_mode: bool,
+    is_s_frame: bool,
+) -> RefBinding {
+    let mut b = RefBinding::default();
+    let mut ref_index: i8 = 0;
+
+    if pic.slice_type == SliceType::B {
+        let mut max_temporal_index: i8 = -1;
+        for r in LAST..=ALT {
+            // The overlay frame hardcodes its own POC as the reference.
+            let ref_poc = if pic.is_overlay {
+                pic.picture_number
+            } else {
+                pic.rps.ref_poc_array[r]
+            };
+            let ref_type = (r as u8) + 1;
+            let list_idx = get_list_idx(ref_type) as usize;
+            let ref_idx = get_ref_frame_idx(ref_type) as usize;
+
+            let found = search_ref_in_ref_queue(ref_pic_list, ref_poc).unwrap_or_else(|| {
+                panic!(
+                    "picture manager: reference POC {ref_poc} for ref {r} of picture \
+                     {} is not in the reference queue (C asserts + EB_ENC_PM_ERROR10)",
+                    pic.picture_number
+                )
+            });
+            b.resolved[r] = Some(found);
+            let e = ref_pic_list[found];
+
+            if frame_end_cdf_update_mode
+                && max_temporal_index < e.temporal_layer_index as i8
+                && e.temporal_layer_index <= pic.temporal_layer_index
+            {
+                max_temporal_index = e.temporal_layer_index as i8;
+                // Stored as REF_FRAME_MINUS1, not as an MvReferenceFrame.
+                ref_index = get_ref_frame_type(list_idx as u8, ref_idx as u8) - LAST_FRAME;
+                debug_assert_eq!(ref_index as usize, r);
+                // C also copies ref_global_motion[] here; see the doc comment.
+            }
+
+            b.ref_base_q_idx[list_idx][ref_idx] = e.base_q_idx;
+            b.ref_slice_type[list_idx][ref_idx] = e.slice_type;
+            b.ref_pic_r0[list_idx][ref_idx] = e.r0;
+        }
+    }
+
+    if frame_end_cdf_update_mode {
+        b.primary_ref_frame = if pic.slice_type != SliceType::I && !is_s_frame {
+            ref_index as u8
+        } else {
+            PRIMARY_REF_NONE
+        };
+    } else {
+        b.primary_ref_frame = PRIMARY_REF_NONE;
+    }
+    // C sets REFRESH_FRAME_CONTEXT_BACKWARD in BOTH arms; the comment there
+    // says it is never disabled so the feature can be on in higher layers
+    // while off in low ones.
+    b.refresh_frame_context = REFRESH_FRAME_CONTEXT_BACKWARD;
+    b
+}
+
+// ---------------------------------------------------------------------------
+// send_picture_out's reference-count adjustment + temporal-filter params
+// ---------------------------------------------------------------------------
+
+/// C `INVALID_LUMA` (`definitions.h:90`).
+///
+/// It is **256**, not -1 and not 0. `avg_luma` is a `uint64_t` holding an
+/// 8-bit mean, so 256 is the out-of-range sentinel; a port that guessed -1
+/// would treat a genuinely invalid reference as valid and compare against
+/// garbage. Read from the header, not inferred from the name.
+pub const INVALID_LUMA: u64 = 256;
+
+/// C `get_similar_ref_brightness` (`pd_process.c:4251-4267`) — EXPORTED.
+///
+/// Produces `pcs->similar_brightness_refs`, read by `motion_estimation.c:2231`
+/// to take the safe-limit ME path. `avg_luma` of `INVALID_LUMA` on EITHER
+/// reference disables the test entirely.
+///
+/// The luma means are `uint64_t` in C and the comparison casts BOTH sides to
+/// `int` before subtracting, which is reproduced here.
+#[must_use]
+pub fn get_similar_ref_brightness(
+    slice_type: SliceType,
+    hierarchical_levels: u8,
+    ref_list1_count_try: u8,
+    ref0_avg_luma: u64,
+    ref1_avg_luma: u64,
+    cur_avg_luma: u64,
+) -> bool {
+    if slice_type == SliceType::B
+        && hierarchical_levels > 0
+        && ref_list1_count_try > 0
+        && ref0_avg_luma != INVALID_LUMA
+        && ref1_avg_luma != INVALID_LUMA
+    {
+        const LUMA_TH: i32 = 5;
+        let cur = cur_avg_luma as i32;
+        return (ref0_avg_luma as i32 - cur).abs() < LUMA_TH
+            && (ref1_avg_luma as i32 - cur).abs() < LUMA_TH;
+    }
+    false
+}
+
+/// C `send_picture_out`'s reference-count adjustment block
+/// (`pd_process.c:4276-4313`) — static. Only this block is in scope; the fifo
+/// posting around it is buffer plumbing.
+///
+/// Two independent limiters, in C's order:
+/// 1. the RTC early-HME prune, which drops LAST2 (flat) or LAST3
+///    (hierarchical base) when it is at least `early_hme_l0_prune_th` percent
+///    worse than LAST — and then RE-RUNS `set_all_ref_frame_type`, because the
+///    candidate set is derived from the try counts;
+/// 2. `safe_limit_nref == 2`, which caps both lists at 1 when the references
+///    have similar brightness.
+///
+/// Trap, and C flags it itself with a TODO: limiter 2 lowers the try counts
+/// AFTER `set_all_ref_frame_type` has already run, so `ref_frame_type_arr`
+/// keeps candidates for references MD will not enumerate. That is reproduced,
+/// not fixed — byte-identity means reproducing it (`WORKING-ON-THIS.md` §7).
+///
+/// `hme_dist` returns `(last_dist, other_dist)` for the pair the current
+/// hierarchy compares; it is `None` when the prune does not apply.
+pub fn send_picture_out_ref_counts(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    hme_dist: Option<(u64, u64)>,
+    similar_brightness_refs: bool,
+) {
+    let mrp = &seq.mrp_ctrls;
+    if seq.rtc && mrp.early_hme_l0_prune_th != 0 && pic.ref_list0_count_try > 1 {
+        // `cap` is the count the prune drops to: 1 for the flat structure
+        // (LAST2 gone) and 2 for the hierarchical base (LAST3 gone).
+        let cap = if pic.hierarchical_levels == 0 {
+            Some(1u8)
+        } else if pic.temporal_layer_index == 0 && pic.ref_list0_count_try >= 3 {
+            Some(2u8)
+        } else {
+            None
+        };
+        if let (Some(cap), Some((last_dist, other_dist))) = (cap, hme_dist)
+            && other_dist * 100 >= last_dist * u64::from(mrp.early_hme_l0_prune_th)
+        {
+            pic.ref_list0_count_try = pic.ref_list0_count_try.min(cap);
+            let (arr, tot) = set_all_ref_frame_type(pic);
+            pic.ref_frame_type_arr = arr;
+            pic.tot_ref_frame_types = tot;
+        }
+    }
+
+    if mrp.safe_limit_nref == 2
+        && pic.slice_type == SliceType::B
+        && pic.hierarchical_levels > 0
+        && pic.temporal_layer_index >= pic.hierarchical_levels - 1
+        && similar_brightness_refs
+    {
+        // C's own TODO: these run AFTER set_all_ref_frame_type.
+        pic.ref_list0_count_try = pic.ref_list0_count_try.min(1);
+        pic.ref_list1_count_try = pic.ref_list1_count_try.min(1);
+    }
+}
+
+/// Which entry of `scs->tf_params_per_type[]` a picture takes, or `Disabled`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TfParamsChoice {
+    /// C `pcs->tf_ctrls.enabled = 0`.
+    Disabled,
+    /// C `scs->tf_params_per_type[0]` — the delayed-intra entry.
+    DelayedIntra,
+    /// C `scs->tf_params_per_type[1]` — BASE.
+    Base,
+    /// C `scs->tf_params_per_type[2]` — L1.
+    L1,
+}
+
+/// C `copy_tf_params` (`pd_process.c:4468-4497`) — static.
+///
+/// The gate that decides whether temporal filtering runs at all, and which
+/// parameter set it uses.
+///
+/// **MEASURED, and the negative result must be reproduced rather than
+/// assumed:** in `LOW_DELAY` `tf_level` is forced to 0 before any preset logic
+/// (`enc_handle.c:3339-3343`), so `tf_params_per_type[1]` is itself disabled
+/// and the correct port yields TF OFF for every low-delay picture — including
+/// the base-layer inter pictures this function nominally maps to entry 1.
+/// This function returns [`TfParamsChoice::Base`] for those pictures because
+/// that is what C selects; the disabling happens one level up, in the
+/// parameter table.
+///
+/// The `IS_SFRAME_FLEXIBLE_INSERT` guard that can force `enabled = 0` when
+/// `ctx->tf_pic_arr_cnt == 0` is not ported (S-frames are outside the
+/// envelope) and is named here rather than dropped.
+#[must_use]
+pub fn copy_tf_params(
+    seq_pred_structure: PredStructure,
+    slice_type: SliceType,
+    is_key_frame: bool,
+    temporal_layer_index: u8,
+    hierarchical_levels: u8,
+    is_overlay: bool,
+    enable_tf_key: bool,
+    is_delayed_intra: bool,
+) -> TfParamsChoice {
+    if seq_pred_structure == PredStructure::LowDelay {
+        return if slice_type != SliceType::I && temporal_layer_index == 0 {
+            TfParamsChoice::Base
+        } else {
+            TfParamsChoice::Disabled
+        };
+    }
+    // No TF for overlays, for a key frame with enable_tf_key off, or for the
+    // highest layer (which matters at 2L).
+    if (is_key_frame && !enable_tf_key) || is_overlay || temporal_layer_index == hierarchical_levels
+    {
+        TfParamsChoice::Disabled
+    } else if is_delayed_intra {
+        TfParamsChoice::DelayedIntra
+    } else if temporal_layer_index == 0 {
+        TfParamsChoice::Base
+    } else if temporal_layer_index == 1 {
+        TfParamsChoice::L1
+    } else {
+        TfParamsChoice::Disabled
+    }
 }

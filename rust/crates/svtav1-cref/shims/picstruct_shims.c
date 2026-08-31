@@ -254,3 +254,77 @@ uint8_t ref_set_tpl_group(int32_t pcs_present, uint8_t slice_type, uint8_t hiera
     free(ppcs);
     return blk;
 }
+
+/* ---- search_ref_in_ref_queue (pic_manager_process.c:178-188) ----
+ *
+ * enc_ctx->ref_pic_list is a ReferenceQueueEntry**; the shim builds the array
+ * and its entries per call (never a static -- see the header note). Returns
+ * the matched INDEX, or -1. */
+
+#include "encode_context.h"
+#include "pic_manager_queue.h"
+
+ReferenceQueueEntry* search_ref_in_ref_queue(EncodeContext* enc_ctx, uint64_t ref_poc);
+
+int32_t ref_search_ref_in_ref_queue(const uint64_t* pocs, const int32_t* valid, uint32_t n, uint64_t ref_poc) {
+    EncodeContext*        enc     = (EncodeContext*)calloc(1, sizeof(*enc));
+    ReferenceQueueEntry** list    = (ReferenceQueueEntry**)calloc(n ? n : 1, sizeof(*list));
+    ReferenceQueueEntry*  entries = (ReferenceQueueEntry*)calloc(n ? n : 1, sizeof(*entries));
+    for (uint32_t i = 0; i < n; ++i) {
+        entries[i].picture_number = pocs[i];
+        entries[i].is_valid       = valid[i] != 0;
+        list[i]                   = &entries[i];
+    }
+    enc->ref_pic_list        = list;
+    enc->ref_pic_list_length = n;
+
+    ReferenceQueueEntry* hit = search_ref_in_ref_queue(enc, ref_poc);
+    int32_t              idx = -1;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (hit == &entries[i]) {
+            idx = (int32_t)i;
+            break;
+        }
+    }
+    free(entries);
+    free(list);
+    free(enc);
+    return idx;
+}
+
+/* ---- get_similar_ref_brightness (pd_process.c:4251-4267) ----
+ *
+ * Reads pcs->ref_pa_pic_ptr_array[0][0] and [1][0], each an EbObjectWrapper
+ * whose object_ptr is an EbPaReferenceObject carrying avg_luma. */
+
+#include "reference_object.h"
+
+bool get_similar_ref_brightness(PictureParentControlSet* pcs);
+
+int32_t ref_get_similar_ref_brightness(uint8_t slice_type, uint8_t hierarchical_levels, uint8_t ref_list1_count_try,
+                                       uint64_t ref0_avg_luma, uint64_t ref1_avg_luma, uint64_t cur_avg_luma) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    EbObjectWrapper*         w0   = (EbObjectWrapper*)calloc(1, sizeof(*w0));
+    EbObjectWrapper*         w1   = (EbObjectWrapper*)calloc(1, sizeof(*w1));
+    EbPaReferenceObject*     o0   = (EbPaReferenceObject*)calloc(1, sizeof(*o0));
+    EbPaReferenceObject*     o1   = (EbPaReferenceObject*)calloc(1, sizeof(*o1));
+
+    o0->avg_luma                    = ref0_avg_luma;
+    o1->avg_luma                    = ref1_avg_luma;
+    w0->object_ptr                  = o0;
+    w1->object_ptr                  = o1;
+    ppcs->ref_pa_pic_ptr_array[0][0] = w0;
+    ppcs->ref_pa_pic_ptr_array[1][0] = w1;
+    ppcs->slice_type                 = (SliceType)slice_type;
+    ppcs->hierarchical_levels        = hierarchical_levels;
+    ppcs->ref_list1_count_try        = ref_list1_count_try;
+    ppcs->avg_luma                   = cur_avg_luma;
+
+    int32_t r = get_similar_ref_brightness(ppcs) ? 1 : 0;
+    free(o1);
+    free(o0);
+    free(w1);
+    free(w0);
+    free(ppcs);
+    return r;
+}

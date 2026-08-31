@@ -537,3 +537,127 @@ fn c_parity_set_tpl_group_grid() {
         "the grid never produced a non-zero r0_adjust_factor"
     );
 }
+
+/// `search_ref_in_ref_queue` — the `is_valid` filter is the point.
+///
+/// An entry whose POC matches but whose `is_valid` is false must be SKIPPED,
+/// and the scan must continue to a later valid match rather than returning the
+/// first POC hit.
+#[test]
+fn c_parity_search_ref_in_ref_queue() {
+    let cases: [(&[u64], &[i32]); 6] = [
+        (&[], &[]),
+        (&[10], &[1]),
+        (&[10], &[0]),
+        (&[10, 11, 10, 12], &[0, 1, 1, 1]),
+        (&[10, 10, 10], &[0, 0, 1]),
+        (&[5, 6, 7, 8, 9], &[1, 1, 0, 1, 1]),
+    ];
+    let mut saw_hit = false;
+    let mut saw_miss = false;
+    let mut saw_skipped_invalid = false;
+    for (pocs, valid) in cases {
+        let entries: Vec<pp::RefQueueEntry> = pocs
+            .iter()
+            .zip(valid.iter())
+            .map(|(&p, &v)| pp::RefQueueEntry {
+                picture_number: p,
+                is_valid: v != 0,
+                temporal_layer_index: 0,
+                base_q_idx: 0,
+                slice_type: pp::SliceType::B,
+                r0: 0.0,
+            })
+            .collect();
+        for probe in 4u64..14 {
+            let got = pp::search_ref_in_ref_queue(&entries, probe);
+            let want = cref::search_ref_in_ref_queue(pocs, valid, probe);
+            assert_eq!(
+                got, want,
+                "search_ref_in_ref_queue({pocs:?}, {valid:?}, {probe})"
+            );
+            if got.is_some() {
+                saw_hit = true;
+                if got != pocs.iter().position(|&p| p == probe) {
+                    saw_skipped_invalid = true;
+                }
+            } else {
+                saw_miss = true;
+            }
+        }
+    }
+    assert!(saw_hit && saw_miss);
+    assert!(
+        saw_skipped_invalid,
+        "the grid must exercise the is_valid skip"
+    );
+}
+
+/// `get_similar_ref_brightness` — including the `INVALID_LUMA` sentinel.
+///
+/// `INVALID_LUMA` is **256** (`definitions.h:90`), not -1: `avg_luma` is a
+/// `uint64_t` holding an 8-bit mean, so the sentinel sits just above the
+/// range. The sweep runs the sentinel on each reference independently so a
+/// port that guessed the wrong value fails.
+#[test]
+fn c_parity_get_similar_ref_brightness() {
+    let mut saw_true = false;
+    let mut saw_false = false;
+    let lumas: [u64; 7] = [0, 100, 103, 104, 105, 255, pp::INVALID_LUMA];
+    for slice_type in [0u8, 1] {
+        for hier in [0u8, 1, 4] {
+            for l1try in [0u8, 1, 3] {
+                for r0 in lumas {
+                    for r1 in lumas {
+                        for cur in [0u64, 100, 200] {
+                            let got = pp::get_similar_ref_brightness(
+                                if slice_type == 0 {
+                                    pp::SliceType::B
+                                } else {
+                                    pp::SliceType::I
+                                },
+                                hier,
+                                l1try,
+                                r0,
+                                r1,
+                                cur,
+                            );
+                            let want = cref::get_similar_ref_brightness(
+                                slice_type, hier, l1try, r0, r1, cur,
+                            );
+                            assert_eq!(
+                                got, want,
+                                "get_similar_ref_brightness(slice={slice_type}, hier={hier}, \
+                                 l1try={l1try}, r0={r0}, r1={r1}, cur={cur})"
+                            );
+                            if got {
+                                saw_true = true;
+                            } else {
+                                saw_false = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(saw_true && saw_false, "the grid must reach both verdicts");
+    // Positive control on the sentinel specifically: identical lumas that
+    // WOULD match are rejected when either reference is INVALID_LUMA.
+    assert!(pp::get_similar_ref_brightness(
+        pp::SliceType::B,
+        1,
+        1,
+        100,
+        100,
+        100
+    ));
+    assert!(!pp::get_similar_ref_brightness(
+        pp::SliceType::B,
+        1,
+        1,
+        pp::INVALID_LUMA,
+        100,
+        100
+    ));
+}
