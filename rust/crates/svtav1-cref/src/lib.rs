@@ -14,6 +14,7 @@ pub mod inter_pred;
 pub mod picstruct;
 pub mod md_subpel;
 pub mod rate_control;
+pub mod txfm_pf;
 
 use std::ffi::c_void;
 

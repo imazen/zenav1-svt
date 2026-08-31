@@ -12,6 +12,7 @@ pub mod bench;
 pub mod cdef;
 pub mod copy;
 pub mod fwd_txfm;
+pub mod fwd_txfm_pf;
 pub mod hadamard;
 pub mod hbd;
 pub mod inter_pred;
