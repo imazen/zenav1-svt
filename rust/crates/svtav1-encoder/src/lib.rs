@@ -46,6 +46,7 @@ pub mod perceptual;
 pub mod picture;
 pub mod pipeline;
 pub mod port_frame_update;
+pub mod port_picstruct;
 pub mod qm;
 pub mod qm_tables;
 pub mod quant;
