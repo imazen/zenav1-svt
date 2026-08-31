@@ -3062,3 +3062,26 @@ int32_t ref_update_cdf_level_rtc(int32_t enc_mode, int32_t is_islice) {
 int32_t ref_update_cdf_level_allintra(int32_t enc_mode) {
     return (int32_t)svt_aom_get_update_cdf_level_allintra((EncMode)enc_mode);
 }
+
+/* =========================================================================
+ * wp-filters lane: Codec/{resize,restoration,restoration_pick,warped_motion,
+ * global_motion}.c oracles.
+ * ========================================================================= */
+
+/* svt_aom_get_frame_update_type (resize.c:1246, EXPORTED). Classifies a frame
+ * as KF / ARF / INTNL_ARF / LF from (frame_type, hierarchical_levels,
+ * temporal_layer_index). It is the `update_type` argument to
+ * svt_aom_compute_rd_mult_based_on_qindex (the per-frame RD lambda) and it
+ * selects the temporal-filter strength arm (temporal_filtering.c:2739).
+ * Per this file's opening rule the synthetic PPCS is calloc'd PER CALL. */
+int32_t svt_aom_get_frame_update_type(PictureParentControlSet* pcs);
+
+int32_t ref_get_frame_update_type(int32_t frame_type, int32_t hierarchical_levels, int32_t temporal_layer_index) {
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    ppcs->frm_hdr.frame_type      = (FrameType)frame_type;
+    ppcs->hierarchical_levels     = (uint8_t)hierarchical_levels;
+    ppcs->temporal_layer_index    = (uint8_t)temporal_layer_index;
+    const int32_t ret             = svt_aom_get_frame_update_type(ppcs);
+    free(ppcs);
+    return ret;
+}

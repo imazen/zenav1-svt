@@ -4826,3 +4826,30 @@ pub fn update_cdf_level_rtc(enc_mode: i32, is_islice: bool) -> u8 {
 pub fn update_cdf_level_allintra(enc_mode: i32) -> u8 {
     unsafe { ref_update_cdf_level_allintra(enc_mode) as u8 }
 }
+
+// ---------------------------------------------------------------------------
+// wp-filters lane: Codec/{resize,restoration,restoration_pick,warped_motion,
+// global_motion}.c oracles.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_get_frame_update_type(
+        frame_type: i32,
+        hierarchical_levels: i32,
+        temporal_layer_index: i32,
+    ) -> i32;
+}
+
+/// Reference `svt_aom_get_frame_update_type` (resize.c:1246). Returns a
+/// `SvtAv1FrameUpdateType` discriminant: 0 = `KF_UPDATE`, 1 = `LF_UPDATE`,
+/// 3 = `ARF_UPDATE`, 6 = `INTNL_ARF_UPDATE` (EbSvtAv1Enc.h:183).
+///
+/// `frame_type` is the AV1 `FrameType` (0 = KEY_FRAME, 1 = INTER_FRAME,
+/// 2 = INTRA_ONLY_FRAME, 3 = S_FRAME).
+pub fn get_frame_update_type(
+    frame_type: i32,
+    hierarchical_levels: i32,
+    temporal_layer_index: i32,
+) -> i32 {
+    unsafe { ref_get_frame_update_type(frame_type, hierarchical_levels, temporal_layer_index) }
+}
