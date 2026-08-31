@@ -287,6 +287,38 @@ module tree. And the acceptance test is byte-identity, not a reading of the diff
 `tx_pipeline` / `rate_tables` / `predict` / `coeff_rate`. **Re-locate by symbol
 — every name is unchanged.** Do not chase the numbers.
 
+**A control that produces NO change is only evidence once you have separately
+shown the code is REACHED.** Measured 2026-08-31 while checking that a new line
+in `avg_cdf_with` was byte-neutral: the verdict was 32/32 cells identical, and
+the positive control — perturbing `skip_cdf[0][0]` by -2000 in the same
+function — ALSO changed no byte. That reads exactly like "the function is never
+called", which would have made the 32/32 vacuous, and it was one step from
+being recorded that way.
+
+It was reached. An `eprintln!` probe fired **twice per frame** at presets 0/4/6
+and **zero** times at preset 8 — and 2 is what the geometry predicts (64x64 SBs
+make 192x160 a 3x3 grid; the call site needs `left_avail && topright_avail`,
+i.e. `col == 1, row in {1,2}`). Zero at p8 matches `funnel_chain = use_funnel
+&& preset in 0..=6 && multi_sb` (pipeline.rs). A stronger control (halving
+`partition_cdf` at the same site) then moved 12/12 cells.
+
+So the weak control's silence meant *"this perturbation flipped no RD
+decision"*, not *"this code did not run"* — two readings a byte diff cannot
+tell apart. **Count the calls; do not infer reachability from a byte diff.**
+This bites hardest on preset- and geometry-gated paths: a grid that misses
+`multi_sb`, or sits at preset >= 7, exercises none of the funnel chain.
+Record: `benchmarks/nmvc_avg_byte_neutrality_2026-08-31.md`.
+
+**`cargo build -p <crate>` hides test-target breakage; build `--all-targets`.**
+On 2026-08-31 a field was added to `SeqTools` and a `#[cfg(test)]` literal in
+`entropy/obu.rs` was not updated. The lib built clean, so the author saw
+nothing; CI's `Workspace tests` step failed to COMPILE, and because that is
+step 12, steps 13-25 were **skipped** — decode conformance, bd10 identity, SIMD
+tier invariance, the spot-check and the 8-bit all-preset sweep never ran, for
+that commit or for the nine others from three lanes that inherited the same
+parent. A compile error in one lane silently erases every gate's evidence for
+everyone, so a skipped gate reads as "no result", never as "pass".
+
 ## 6. Refuse, never emit a plausible-but-wrong stream
 
 Out-of-envelope configs return a typed `Err` from `encode_frame_impl`. They do
