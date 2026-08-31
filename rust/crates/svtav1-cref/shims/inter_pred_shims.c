@@ -395,3 +395,73 @@ void ref_get_convolve_filter_params(uint32_t interp_filters, int w, int h, int o
 uint32_t ref_make_interp_filters(int y_filter, int x_filter) {
     return av1_make_interp_filters((InterpFilter)y_filter, (InterpFilter)x_filter);
 }
+
+/* ---- masked-compound / wedge-search primitives ------------------------ */
+
+int      svt_aom_is_masked_compound_type(COMPOUND_TYPE type);
+uint64_t svt_av1_wedge_sse_from_residuals_c(const int16_t* r1, const int16_t* d, const uint8_t* m, int N);
+int8_t   svt_av1_wedge_sign_from_residuals_c(const int16_t* ds, const uint8_t* m, int N, int64_t limit);
+void     svt_av1_wedge_compute_delta_squares_c(int16_t* d, const int16_t* a, const int16_t* b, int N);
+uint64_t svt_aom_sum_squares_i16_c(const int16_t* src, uint32_t n);
+int64_t  svt_aom_sse_c(const uint8_t* a, int a_stride, const uint8_t* b, int b_stride, int width, int height);
+int64_t  svt_aom_highbd_sse_c(const uint8_t* a8, int a_stride, const uint8_t* b8, int b_stride, int width, int height);
+
+int ref_is_masked_compound_type(int t) { return svt_aom_is_masked_compound_type((COMPOUND_TYPE)t); }
+
+void ref_subtract_block(int rows, int cols, int16_t* diff, int diff_stride, const uint8_t* src, int src_stride,
+                        const uint8_t* pred, int pred_stride) {
+    svt_aom_subtract_block_c(rows, cols, diff, diff_stride, src, src_stride, pred, pred_stride);
+}
+
+void ref_highbd_subtract_block(int rows, int cols, int16_t* diff, int diff_stride, const uint16_t* src, int src_stride,
+                               const uint16_t* pred, int pred_stride, int bd) {
+    svt_aom_highbd_subtract_block_c(
+        rows, cols, diff, diff_stride, (const uint8_t*)src, src_stride, (const uint8_t*)pred, pred_stride, bd);
+}
+
+uint64_t ref_sum_squares_i16(const int16_t* src, uint32_t n) { return svt_aom_sum_squares_i16_c(src, n); }
+
+int64_t ref_sse(const uint8_t* a, int a_stride, const uint8_t* b, int b_stride, int w, int h) {
+    return svt_aom_sse_c(a, a_stride, b, b_stride, w, h);
+}
+
+int64_t ref_highbd_sse(const uint16_t* a, int a_stride, const uint16_t* b, int b_stride, int w, int h) {
+    return svt_aom_highbd_sse_c((const uint8_t*)a, a_stride, (const uint8_t*)b, b_stride, w, h);
+}
+
+uint64_t ref_wedge_sse_from_residuals(const int16_t* r1, const int16_t* d, const uint8_t* m, int n) {
+    return svt_av1_wedge_sse_from_residuals_c(r1, d, m, n);
+}
+
+int ref_wedge_sign_from_residuals(const int16_t* ds, const uint8_t* m, int n, int64_t limit) {
+    return svt_av1_wedge_sign_from_residuals_c(ds, m, n, limit);
+}
+
+void ref_wedge_compute_delta_squares(int16_t* d, const int16_t* a, const int16_t* b, int n) {
+    svt_av1_wedge_compute_delta_squares_c(d, a, b, n);
+}
+
+void ref_build_compound_diffwtd_mask(uint8_t* mask, int mask_type, const uint8_t* src0, int src0_stride,
+                                     const uint8_t* src1, int src1_stride, int h, int w) {
+    svt_av1_build_compound_diffwtd_mask_c(
+        mask, (DIFFWTD_MASK_TYPE)mask_type, src0, src0_stride, src1, src1_stride, h, w);
+}
+
+void ref_build_compound_diffwtd_mask_highbd(uint8_t* mask, int mask_type, const uint16_t* src0, int src0_stride,
+                                            const uint16_t* src1, int src1_stride, int h, int w, int bd) {
+    svt_av1_build_compound_diffwtd_mask_highbd_c(mask,
+                                                 (DIFFWTD_MASK_TYPE)mask_type,
+                                                 (const uint8_t*)src0,
+                                                 src0_stride,
+                                                 (const uint8_t*)src1,
+                                                 src1_stride,
+                                                 h,
+                                                 w,
+                                                 bd);
+}
+
+void ref_highbd_blend_a64_hmask_16bit(uint16_t* dst, uint32_t dst_stride, const uint16_t* src0, uint32_t src0_stride,
+                                      const uint16_t* src1, uint32_t src1_stride, const uint8_t* mask, int w, int h,
+                                      int bd) {
+    svt_aom_highbd_blend_a64_hmask_16bit_c(dst, dst_stride, src0, src0_stride, src1, src1_stride, mask, w, h, bd);
+}

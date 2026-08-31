@@ -1390,3 +1390,294 @@ pub fn get_convolve_filter_params(interp_filters: u32, w: i32, h: i32) -> (i32, 
 pub fn make_interp_filters(y_filter: i32, x_filter: i32) -> u32 {
     unsafe { ref_make_interp_filters(y_filter, x_filter) }
 }
+
+// ---------------------------------------------------------------------------
+// Masked-compound / wedge-search primitives.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_is_masked_compound_type(t: c_int) -> c_int;
+    fn ref_subtract_block(
+        rows: c_int,
+        cols: c_int,
+        diff: *mut i16,
+        diff_stride: c_int,
+        src: *const u8,
+        src_stride: c_int,
+        pred: *const u8,
+        pred_stride: c_int,
+    );
+    fn ref_highbd_subtract_block(
+        rows: c_int,
+        cols: c_int,
+        diff: *mut i16,
+        diff_stride: c_int,
+        src: *const u16,
+        src_stride: c_int,
+        pred: *const u16,
+        pred_stride: c_int,
+        bd: c_int,
+    );
+    fn ref_sum_squares_i16(src: *const i16, n: u32) -> u64;
+    fn ref_sse(
+        a: *const u8,
+        a_stride: c_int,
+        b: *const u8,
+        b_stride: c_int,
+        w: c_int,
+        h: c_int,
+    ) -> i64;
+    fn ref_highbd_sse(
+        a: *const u16,
+        a_stride: c_int,
+        b: *const u16,
+        b_stride: c_int,
+        w: c_int,
+        h: c_int,
+    ) -> i64;
+    fn ref_wedge_sse_from_residuals(r1: *const i16, d: *const i16, m: *const u8, n: c_int) -> u64;
+    fn ref_wedge_sign_from_residuals(ds: *const i16, m: *const u8, n: c_int, limit: i64) -> c_int;
+    fn ref_wedge_compute_delta_squares(d: *mut i16, a: *const i16, b: *const i16, n: c_int);
+    fn ref_build_compound_diffwtd_mask(
+        mask: *mut u8,
+        mask_type: c_int,
+        src0: *const u8,
+        src0_stride: c_int,
+        src1: *const u8,
+        src1_stride: c_int,
+        h: c_int,
+        w: c_int,
+    );
+    fn ref_build_compound_diffwtd_mask_highbd(
+        mask: *mut u8,
+        mask_type: c_int,
+        src0: *const u16,
+        src0_stride: c_int,
+        src1: *const u16,
+        src1_stride: c_int,
+        h: c_int,
+        w: c_int,
+        bd: c_int,
+    );
+    fn ref_highbd_blend_a64_hmask_16bit(
+        dst: *mut u16,
+        dst_stride: u32,
+        src0: *const u16,
+        src0_stride: u32,
+        src1: *const u16,
+        src1_stride: u32,
+        mask: *const u8,
+        w: c_int,
+        h: c_int,
+        bd: c_int,
+    );
+}
+
+/// Reference `svt_aom_is_masked_compound_type` (inter_prediction.c:34).
+pub fn is_masked_compound_type(t: i32) -> bool {
+    unsafe { ref_is_masked_compound_type(t) != 0 }
+}
+
+/// Reference `svt_aom_subtract_block_c` (inter_prediction.c:55).
+#[allow(clippy::too_many_arguments)]
+pub fn subtract_block(
+    rows: usize,
+    cols: usize,
+    diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+) {
+    assert!(diff.len() >= (rows - 1) * diff_stride + cols);
+    unsafe {
+        ref_subtract_block(
+            rows as i32,
+            cols as i32,
+            diff.as_mut_ptr(),
+            diff_stride as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            pred.as_ptr(),
+            pred_stride as i32,
+        );
+    }
+}
+
+/// Reference `svt_aom_highbd_subtract_block_c` (inter_prediction.c:38).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_subtract_block(
+    rows: usize,
+    cols: usize,
+    diff: &mut [i16],
+    diff_stride: usize,
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    bd: i32,
+) {
+    assert!(diff.len() >= (rows - 1) * diff_stride + cols);
+    unsafe {
+        ref_highbd_subtract_block(
+            rows as i32,
+            cols as i32,
+            diff.as_mut_ptr(),
+            diff_stride as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            pred.as_ptr(),
+            pred_stride as i32,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_aom_sum_squares_i16_c` (inter_prediction.c:2522).
+pub fn sum_squares_i16(src: &[i16], n: usize) -> u64 {
+    assert!(n > 0 && src.len() >= n);
+    unsafe { ref_sum_squares_i16(src.as_ptr(), n as u32) }
+}
+
+/// Reference `svt_aom_sse_c` (enc_inter_prediction.c:612).
+pub fn sse(a: &[u8], a_stride: usize, b: &[u8], b_stride: usize, w: usize, h: usize) -> i64 {
+    assert!(a.len() >= (h - 1) * a_stride + w && b.len() >= (h - 1) * b_stride + w);
+    unsafe {
+        ref_sse(
+            a.as_ptr(),
+            a_stride as i32,
+            b.as_ptr(),
+            b_stride as i32,
+            w as i32,
+            h as i32,
+        )
+    }
+}
+
+/// Reference `svt_aom_highbd_sse_c` (enc_inter_prediction.c:597).
+pub fn highbd_sse(
+    a: &[u16],
+    a_stride: usize,
+    b: &[u16],
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> i64 {
+    assert!(a.len() >= (h - 1) * a_stride + w && b.len() >= (h - 1) * b_stride + w);
+    unsafe {
+        ref_highbd_sse(
+            a.as_ptr(),
+            a_stride as i32,
+            b.as_ptr(),
+            b_stride as i32,
+            w as i32,
+            h as i32,
+        )
+    }
+}
+
+/// Reference `svt_av1_wedge_sse_from_residuals_c` (inter_prediction.c:2457).
+pub fn wedge_sse_from_residuals(r1: &[i16], d: &[i16], m: &[u8], n: usize) -> u64 {
+    assert!(r1.len() >= n && d.len() >= n && m.len() >= n);
+    unsafe { ref_wedge_sse_from_residuals(r1.as_ptr(), d.as_ptr(), m.as_ptr(), n as i32) }
+}
+
+/// Reference `svt_av1_wedge_sign_from_residuals_c` (enc_inter_prediction.c:414).
+pub fn wedge_sign_from_residuals(ds: &[i16], m: &[u8], n: usize, limit: i64) -> bool {
+    assert!(n > 0 && ds.len() >= n && m.len() >= n);
+    unsafe { ref_wedge_sign_from_residuals(ds.as_ptr(), m.as_ptr(), n as i32, limit) != 0 }
+}
+
+/// Reference `svt_av1_wedge_compute_delta_squares_c` (enc_inter_prediction.c:375).
+pub fn wedge_compute_delta_squares(d: &mut [i16], a: &[i16], b: &[i16], n: usize) {
+    assert!(d.len() >= n && a.len() >= n && b.len() >= n);
+    unsafe { ref_wedge_compute_delta_squares(d.as_mut_ptr(), a.as_ptr(), b.as_ptr(), n as i32) };
+}
+
+/// Reference `svt_av1_build_compound_diffwtd_mask_c` (inter_prediction.c:154).
+#[allow(clippy::too_many_arguments)]
+pub fn build_compound_diffwtd_mask(
+    mask: &mut [u8],
+    mask_type: i32,
+    src0: &[u8],
+    src0_stride: usize,
+    src1: &[u8],
+    src1_stride: usize,
+    h: usize,
+    w: usize,
+) {
+    assert!(mask.len() >= h * w);
+    unsafe {
+        ref_build_compound_diffwtd_mask(
+            mask.as_mut_ptr(),
+            mask_type,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            h as i32,
+            w as i32,
+        );
+    }
+}
+
+/// Reference `svt_av1_build_compound_diffwtd_mask_highbd_c` (inter_prediction.c:139).
+#[allow(clippy::too_many_arguments)]
+pub fn build_compound_diffwtd_mask_highbd(
+    mask: &mut [u8],
+    mask_type: i32,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    h: usize,
+    w: usize,
+    bd: i32,
+) {
+    assert!(mask.len() >= h * w);
+    unsafe {
+        ref_build_compound_diffwtd_mask_highbd(
+            mask.as_mut_ptr(),
+            mask_type,
+            src0.as_ptr(),
+            src0_stride as i32,
+            src1.as_ptr(),
+            src1_stride as i32,
+            h as i32,
+            w as i32,
+            bd,
+        );
+    }
+}
+
+/// Reference `svt_aom_highbd_blend_a64_hmask_16bit_c` (inter_prediction.c:2500).
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_blend_a64_hmask_16bit(
+    dst: &mut [u16],
+    dst_stride: usize,
+    src0: &[u16],
+    src0_stride: usize,
+    src1: &[u16],
+    src1_stride: usize,
+    mask: &[u8],
+    w: usize,
+    h: usize,
+    bd: i32,
+) {
+    assert!(dst.len() >= (h - 1) * dst_stride + w && mask.len() >= w);
+    unsafe {
+        ref_highbd_blend_a64_hmask_16bit(
+            dst.as_mut_ptr(),
+            dst_stride as u32,
+            src0.as_ptr(),
+            src0_stride as u32,
+            src1.as_ptr(),
+            src1_stride as u32,
+            mask.as_ptr(),
+            w as i32,
+            h as i32,
+            bd,
+        );
+    }
+}
