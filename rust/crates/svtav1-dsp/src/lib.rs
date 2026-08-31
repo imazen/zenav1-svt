@@ -34,6 +34,7 @@ pub mod port_convolve_scale;
 pub mod port_ifs;
 pub mod port_inter_predictor;
 pub mod port_interintra;
+pub mod port_make_pred;
 pub mod port_masked_blend;
 pub mod port_masked_compound;
 pub mod port_model_rd;
