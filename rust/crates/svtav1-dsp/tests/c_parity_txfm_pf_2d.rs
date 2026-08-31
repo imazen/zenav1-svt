@@ -120,6 +120,54 @@ fn transform_config_parity_all() {
     }
 }
 
+/// `svt_av1_get_inv_txfm_cfg`: the whole 16 x 19 grid, every field.
+///
+/// Note the shape difference from the forward config, which is real: the
+/// inverse shift table has TWO entries per size (inv_transforms.c:37), the
+/// cos-bit tables are a constant `INV_COS_BIT` wherever the size pair is
+/// legal, and no `set_fwd_txfm_non_scale_range` runs — the only stage range
+/// written is `iadst4_range` over an ADST4 column or row.
+#[test]
+fn get_inv_txfm_cfg_parity_all() {
+    for &tx_size in &ALL_TX_SIZES {
+        for &tx_type in &ALL_TX_TYPES {
+            let want = cref::get_inv_txfm_cfg(tx_type as usize, tx_size as usize);
+            let got = port::get_inv_txfm_cfg(tx_type, tx_size);
+            let label = format!("inv {tx_type:?}/{tx_size:?}");
+            assert_eq!(want[0] != 0, got.ud_flip, "{label}: ud_flip");
+            assert_eq!(want[1] != 0, got.lr_flip, "{label}: lr_flip");
+            // Only two shifts exist on the inverse side.
+            assert_eq!(
+                [want[2] as i8, want[3] as i8],
+                [got.shift[0], got.shift[1]],
+                "{label}: shift"
+            );
+            assert_eq!(want[5] as i8, got.cos_bit_col, "{label}: cos_bit_col");
+            assert_eq!(want[6] as i8, got.cos_bit_row, "{label}: cos_bit_row");
+            assert_eq!(want[7], got.txfm_type_col as i32, "{label}: txfm_type_col");
+            assert_eq!(want[8], got.txfm_type_row as i32, "{label}: txfm_type_row");
+            if got.txfm_type_col != port::TxfmType::Invalid {
+                assert_eq!(want[9], got.stage_num_col, "{label}: stage_num_col");
+            }
+            if got.txfm_type_row != port::TxfmType::Invalid {
+                assert_eq!(want[10], got.stage_num_row, "{label}: stage_num_row");
+            }
+            for i in 0..port::MAX_TXFM_STAGE_NUM {
+                assert_eq!(
+                    want[11 + i],
+                    got.stage_range_col[i] as i32,
+                    "{label}: stage_range_col[{i}]"
+                );
+                assert_eq!(
+                    want[11 + port::MAX_TXFM_STAGE_NUM + i],
+                    got.stage_range_row[i] as i32,
+                    "{label}: stage_range_row[{i}]"
+                );
+            }
+        }
+    }
+}
+
 /// `svt_av1_gen_fwd_stage_range` over the same grid, at both shipping depths.
 #[test]
 fn gen_fwd_stage_range_parity_all() {

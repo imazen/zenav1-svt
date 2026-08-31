@@ -315,3 +315,64 @@ void ref_get_inv_txfm_cfg(int32_t tx_type, int32_t tx_size, int32_t* out) {
         out[11 + MAX_TXFM_STAGE_NUM + i] = cfg.stage_range_row[i];
     }
 }
+
+/* ---- svt_aom_estimate_transform ----
+ *
+ * The exported entry takes a PictureControlSet* and a ModeDecisionContext*,
+ * but reads NOTHING from either except through
+ * `svt_av1_is_lossless_segment(pcs, ctx->blk_ptr->segment_id)`
+ * (mode_decision.c:71 -> ppcs->frm_hdr.segmentation_params.segmentation_enabled
+ * and pcs->lossless[]). The shim therefore builds exactly that much state.
+ *
+ * calloc/free per call, never `static` — cargo runs a test binary's tests on
+ * several threads and the `lossless` flag is written per call.
+ */
+#include "pcs.h"
+#include "md_process.h"
+
+EbErrorType svt_aom_estimate_transform(PictureControlSet* pcs, ModeDecisionContext* ctx, int16_t* residual_buffer,
+                                       uint32_t residual_stride, int32_t* coeff_buffer, uint32_t coeff_stride,
+                                       TxSize transform_size, uint64_t* three_quad_energy, uint32_t bit_depth,
+                                       TxType transform_type, PlaneType component_type,
+                                       TxCoeffShape trans_coeff_shape);
+
+int32_t ref_estimate_transform(int16_t* residual_buffer, uint32_t residual_stride, int32_t* coeff_buffer,
+                               uint32_t coeff_stride, int32_t transform_size, uint64_t* three_quad_energy,
+                               uint32_t bit_depth, int32_t transform_type, int32_t component_type,
+                               int32_t trans_coeff_shape, int32_t lossless) {
+    txfm_pf_ensure_rtcd();
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(PictureControlSet));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(ModeDecisionContext));
+    BlkStruct*               blk  = (BlkStruct*)calloc(1, sizeof(BlkStruct));
+    if (!pcs || !ppcs || !ctx || !blk) {
+        free(pcs);
+        free(ppcs);
+        free(ctx);
+        free(blk);
+        return -1;
+    }
+    pcs->ppcs                                              = ppcs;
+    ppcs->frm_hdr.segmentation_params.segmentation_enabled = 0;
+    pcs->lossless[0]                                       = (uint8_t)lossless;
+    blk->segment_id                                        = 0;
+    ctx->blk_ptr                                           = blk;
+
+    EbErrorType rc = svt_aom_estimate_transform(pcs,
+                                                ctx,
+                                                residual_buffer,
+                                                residual_stride,
+                                                coeff_buffer,
+                                                coeff_stride,
+                                                (TxSize)transform_size,
+                                                three_quad_energy,
+                                                bit_depth,
+                                                (TxType)transform_type,
+                                                (PlaneType)component_type,
+                                                (TxCoeffShape)trans_coeff_shape);
+    free(blk);
+    free(ctx);
+    free(ppcs);
+    free(pcs);
+    return (int32_t)rc;
+}

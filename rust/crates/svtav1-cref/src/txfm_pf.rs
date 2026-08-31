@@ -299,3 +299,57 @@ pub fn fwd_txfm2d_default(
         )
     };
 }
+
+unsafe extern "C" {
+    fn ref_estimate_transform(
+        residual_buffer: *mut i16,
+        residual_stride: u32,
+        coeff_buffer: *mut i32,
+        coeff_stride: u32,
+        transform_size: i32,
+        three_quad_energy: *mut u64,
+        bit_depth: u32,
+        transform_type: i32,
+        component_type: i32,
+        trans_coeff_shape: i32,
+        lossless: i32,
+    ) -> i32;
+}
+
+/// Reference `svt_aom_estimate_transform` (MD's transform entry).
+///
+/// The C entry needs a `PictureControlSet` and a `ModeDecisionContext`, but
+/// only to reach `svt_av1_is_lossless_segment`; the shim builds exactly that
+/// much state per call (calloc/free, never `static`) and exposes the answer
+/// as the `lossless` flag. Returns C's `EbErrorType` as an `i32` (0 == none).
+#[allow(clippy::too_many_arguments)]
+pub fn estimate_transform(
+    residual: &[i16],
+    residual_stride: usize,
+    coeff: &mut [i32],
+    coeff_stride: usize,
+    tx_size: usize,
+    three_quad_energy: &mut u64,
+    bit_depth: u32,
+    tx_type: usize,
+    component_type: i32,
+    shape: i32,
+    lossless: bool,
+) -> i32 {
+    let mut res = residual.to_vec();
+    unsafe {
+        ref_estimate_transform(
+            res.as_mut_ptr(),
+            residual_stride as u32,
+            coeff.as_mut_ptr(),
+            coeff_stride as u32,
+            tx_size as i32,
+            three_quad_energy as *mut u64,
+            bit_depth,
+            tx_type as i32,
+            component_type,
+            shape,
+            i32::from(lossless),
+        )
+    }
+}

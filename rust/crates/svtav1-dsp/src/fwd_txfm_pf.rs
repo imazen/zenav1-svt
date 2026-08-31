@@ -4089,3 +4089,220 @@ pub fn handle_transform(which: HandleTransform, pf: bool, output: &mut [i32]) ->
     }
     energy
 }
+// =============================================================================
+// Inverse transform configuration — port of `svt_av1_get_inv_txfm_cfg`
+// (inv_transforms.c:2469).
+//
+// Same correctness-gap argument as `transform_config`: the port already has
+// this logic, inlined in `inv_txfm::{inv_txfm2d_core, inv_txfm_shift}` with
+// no binding to the real symbol. Both sides of the transform pair should be
+// gated the same way.
+// =============================================================================
+
+/// C `INV_COS_BIT` (inv_transforms.h).
+pub const INV_COS_BIT: i8 = 12;
+
+/// C `svt_aom_inv_txfm_shift_ls[TX_SIZES_ALL]` (inv_transforms.c:37), in
+/// `TxSize` order. Two entries per size, not three.
+const INV_TXFM_SHIFT_LS: [[i8; 2]; 19] = [
+    [0, -4],  // TX_4X4
+    [-1, -4], // TX_8X8
+    [-2, -4], // TX_16X16
+    [-2, -4], // TX_32X32
+    [-2, -4], // TX_64X64
+    [0, -4],  // TX_4X8
+    [0, -4],  // TX_8X4
+    [-1, -4], // TX_8X16
+    [-1, -4], // TX_16X8
+    [-1, -4], // TX_16X32
+    [-1, -4], // TX_32X16
+    [-1, -4], // TX_32X64
+    [-1, -4], // TX_64X32
+    [-1, -4], // TX_4X16
+    [-1, -4], // TX_16X4
+    [-2, -4], // TX_8X32
+    [-2, -4], // TX_32X8
+    [-2, -4], // TX_16X64
+    [-2, -4], // TX_64X16
+];
+
+/// C `inv_cos_bit_col` / `inv_cos_bit_row` (inv_transforms.h:32/:38). Both
+/// tables are `INV_COS_BIT` everywhere the (txw, txh) pair is legal and 0 in
+/// the four illegal corners, and they are identical to each other.
+const fn inv_cos_bit(txw_idx: usize, txh_idx: usize) -> i8 {
+    const T: [[i8; 5]; 5] = [
+        [INV_COS_BIT, INV_COS_BIT, INV_COS_BIT, 0, 0],
+        [INV_COS_BIT, INV_COS_BIT, INV_COS_BIT, INV_COS_BIT, 0],
+        [
+            INV_COS_BIT,
+            INV_COS_BIT,
+            INV_COS_BIT,
+            INV_COS_BIT,
+            INV_COS_BIT,
+        ],
+        [0, INV_COS_BIT, INV_COS_BIT, INV_COS_BIT, INV_COS_BIT],
+        [0, 0, INV_COS_BIT, INV_COS_BIT, INV_COS_BIT],
+    ];
+    T[txw_idx][txh_idx]
+}
+
+/// C `iadst4_range[7]` (inv_transforms.h:214) — the only stage range
+/// `svt_av1_get_inv_txfm_cfg` ever writes.
+const IADST4_RANGE: [i8; 7] = [0, 1, 0, 0, 0, 0, 0];
+
+/// Port of C `svt_av1_get_inv_txfm_cfg` (inv_transforms.c:2469).
+///
+/// The returned `shift` carries C's TWO inverse shifts in slots 0 and 1;
+/// slot 2 is unused and stays 0 (the forward table has three).
+///
+/// Unlike the forward config this one does NOT call
+/// `set_fwd_txfm_non_scale_range`: the stage ranges stay all-zero except for
+/// an ADST4 column or row, which gets `iadst4_range` memcpy'd over its first
+/// seven entries. (C calls `set_flip_cfg` twice, once before and once after
+/// zeroing the ranges — harmless, and reproduced here as a single call
+/// because `set_flip_cfg` touches only `ud_flip`/`lr_flip`.)
+pub fn get_inv_txfm_cfg(tx_type: TxType, tx_size: TxSize) -> Txfm2dFlipCfg {
+    let (ud_flip, lr_flip) = get_flip_cfg(tx_type);
+    let (w, h) = tx_size_dims(tx_size);
+    let txw_idx = w.trailing_zeros() as usize - 2;
+    let txh_idx = h.trailing_zeros() as usize - 2;
+    let inv_shift = INV_TXFM_SHIFT_LS[tx_size as usize];
+    let txfm_type_col = AV1_TXFM_TYPE_LS[txh_idx][VTX_TAB[tx_type as usize]];
+    let txfm_type_row = AV1_TXFM_TYPE_LS[txw_idx][HTX_TAB[tx_type as usize]];
+    let mut stage_range_col = [0i8; MAX_TXFM_STAGE_NUM];
+    let mut stage_range_row = [0i8; MAX_TXFM_STAGE_NUM];
+    if txfm_type_col == TxfmType::Adst4 {
+        stage_range_col[..IADST4_RANGE.len()].copy_from_slice(&IADST4_RANGE);
+    }
+    if txfm_type_row == TxfmType::Adst4 {
+        stage_range_row[..IADST4_RANGE.len()].copy_from_slice(&IADST4_RANGE);
+    }
+    let stage_num_of = |t: TxfmType| -> i32 {
+        if t == TxfmType::Invalid {
+            // C reads av1_txfm_stage_num_list out of bounds here (the
+            // 64-point ADST hole); nothing consumes the value.
+            0
+        } else {
+            AV1_TXFM_STAGE_NUM_LIST[t as usize] as i32
+        }
+    };
+    Txfm2dFlipCfg {
+        tx_size,
+        ud_flip,
+        lr_flip,
+        shift: [inv_shift[0], inv_shift[1], 0],
+        cos_bit_col: inv_cos_bit(txw_idx, txh_idx),
+        cos_bit_row: inv_cos_bit(txw_idx, txh_idx),
+        stage_range_col,
+        stage_range_row,
+        txfm_type_col,
+        txfm_type_row,
+        stage_num_col: stage_num_of(txfm_type_col),
+        stage_num_row: stage_num_of(txfm_type_row),
+    }
+}
+
+// =============================================================================
+// `svt_aom_estimate_transform` (transforms.c:3938) and the four static
+// shape dispatchers it fans out to — `av1_estimate_transform_default` (:3718),
+// `_N2` (:3379), `_N4` (:3536) and `_ONLY_DC` (:3693). This is MD's transform
+// entry, as `svt_av1_wht_fwd_txfm` is TPL's.
+// =============================================================================
+
+/// Which `svt_handle_transform*` a tx_size pulls in after the 2-D transform.
+/// Only the five 64-dimension sizes have one; every other size leaves the
+/// caller's `three_quad_energy` untouched.
+const fn handle_transform_for(tx_size: TxSize) -> Option<HandleTransform> {
+    match tx_size {
+        TxSize::Tx64x32 => Some(HandleTransform::T64x32),
+        TxSize::Tx32x64 => Some(HandleTransform::T32x64),
+        TxSize::Tx64x16 => Some(HandleTransform::T64x16),
+        TxSize::Tx16x64 => Some(HandleTransform::T16x64),
+        TxSize::Tx64x64 => Some(HandleTransform::T64x64),
+        _ => None,
+    }
+}
+
+/// Port of C `svt_aom_estimate_transform` (transforms.c:3938).
+///
+/// `three_quad_energy` is written ONLY for the five 64-dimension sizes, as in
+/// C — every other size leaves the caller's value alone, which is why it is a
+/// `&mut` rather than a return value.
+///
+/// Shape routing, from the four static dispatchers:
+///   * `Default` runs the unpruned 2-D entry and the FULL
+///     `svt_handle_transform*` (energy measured, rows repacked);
+///   * `N2` / `N4` run their pruned entry and the `_N2_N4` variant
+///     (energy 0, rows still repacked on the three 64-wide sizes);
+///   * `OnlyDc` runs the whole `N4` path and then zeroes every coefficient
+///     except index 0.
+///
+/// Two things this port deliberately does NOT reproduce, both byte-neutral:
+///   * C picks between the RTCD pointer and the `_c` implementation per
+///     (tx_size, tx_type) — `svt_av1_fwd_txfm2d_32x16_N4` for DCT_DCT/IDTX
+///     and `..._N4_c` otherwise, and so on for eight of the nineteen sizes.
+///     Both sides compute the same transform (SVT's SIMD kernels are
+///     bit-exact with their `_c` twins, and `tests/c_parity_txfm_pf_entry.rs`
+///     measures that on the RTCD-dispatched `svt_av1_highbd_fwd_txfm*` path),
+///     so the port always takes the single `_c`-faithful implementation.
+///   * `bit_depth`, which every `_c` 2-D entry consumes only through
+///     `svt_av1_gen_fwd_stage_range` and therefore only through asserts.
+pub fn estimate_transform(
+    residual: &[i16],
+    residual_stride: usize,
+    coeff: &mut [i32],
+    tx_size: TxSize,
+    tx_type: TxType,
+    shape: TxCoeffShape,
+    three_quad_energy: &mut u64,
+    lossless: bool,
+) -> bool {
+    // C's lossless guard is on TX_4X4 ONLY (transforms.c:3949, "so larger
+    // sizes fall through and fill the full coeff_buffer, avoiding an
+    // uninitialized read. Fixes gitlab#2373").
+    if lossless && tx_size == TxSize::Tx4x4 {
+        let mut dst = [0i32; 16];
+        crate::fwd_txfm::fwht4x4(residual, &mut dst, residual_stride);
+        // C transposes the kernel output into the caller's buffer; the port's
+        // `fwht4x4` deliberately leaves that to this dispatch layer.
+        for i in 0..4 {
+            for j in 0..4 {
+                coeff[(j << 2) + i] = dst[(i << 2) + j];
+            }
+        }
+        return true;
+    }
+
+    let inner_shape = match shape {
+        // ONLY_DC_SHAPE runs the N4 dispatcher and then prunes further.
+        TxCoeffShape::OnlyDc => TxCoeffShape::N4,
+        other => other,
+    };
+    if !fwd_txfm2d_pf(
+        residual,
+        coeff,
+        residual_stride,
+        tx_size,
+        tx_type,
+        inner_shape,
+    ) {
+        return false;
+    }
+    if let Some(which) = handle_transform_for(tx_size) {
+        *three_quad_energy = handle_transform(which, inner_shape != TxCoeffShape::Default, coeff);
+    }
+    if shape == TxCoeffShape::OnlyDc {
+        // C `av1_estimate_transform_ONLY_DC` (transforms.c:3707). Written as
+        // "zero where the index is inside the left quarter-columns OR the top
+        // quarter-rows", which — on a buffer the N4 pass has already zeroed
+        // outside the top-left quadrant — leaves ONLY coeff[0]. Transcribed
+        // literally rather than simplified.
+        let (w, h) = tx_size_dims(tx_size);
+        for i in 1..(w * h) {
+            if i % w < (w >> 2) || i / w < (h >> 2) {
+                coeff[i] = 0;
+            }
+        }
+    }
+    true
+}
