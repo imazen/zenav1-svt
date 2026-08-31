@@ -1103,6 +1103,7 @@ impl EncodePipeline {
         let tools = crate::speed_config::seq_tools_for_preset(
             self.speed_config.preset,
             self.gop.intra_period <= 1,
+            self.width as usize * self.height as usize,
         );
         if tools.enable_restoration
             && !crate::frame_geom::small_frame_disables_restoration(
@@ -2709,6 +2710,7 @@ impl EncodePipeline {
             let mut t = crate::speed_config::seq_tools_for_preset(
                 self.speed_config.preset,
                 is_single_frame,
+                self.width as usize * self.height as usize,
             );
             // Task #91: C derives `use_128x128_superblock` at SH-write time
             // from `sb_size == BLOCK_128X128` (entropy_coding.c:2800). The

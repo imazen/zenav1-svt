@@ -408,7 +408,21 @@ pub(crate) fn max_block_size_allintra(var64: u16, qp: u32) -> usize {
 /// synthetic identity matrix is unaffected; 512x512 (262144) is 360p -> 1.
 pub(crate) fn input_resolution_factor(pixels: usize) -> u64 {
     const FACTOR: [u64; 7] = [0, 1, 2, 3, 4, 4, 4];
-    let res = if pixels < 0x28500 {
+    FACTOR[input_resolution_class(pixels) as usize]
+}
+
+/// C `svt_aom_derive_input_resolution` (sequence_control_set.c:120) — the
+/// `ResolutionRange` class itself (definitions.h:1823-1832), keyed on the luma
+/// pixel count against the verbatim `INPUT_SIZE_*_TH` constants.
+///
+/// 0 = 240p .. 6 = 8K. Several C signal derivations consult the class rather
+/// than the factor above — `svt_aom_get_wn_filter_level_default` and
+/// `svt_aom_get_sg_filter_level_default` zero themselves at
+/// `>= INPUT_SIZE_8K_RANGE`, and the latter also at `> 360p` under
+/// `fast_decode` — so the class is the shared primitive and
+/// `input_resolution_factor` is one consumer of it.
+pub(crate) fn input_resolution_class(pixels: usize) -> u8 {
+    if pixels < 0x28500 {
         0 // 240p range
     } else if pixels < 0x4CE00 {
         1 // 360p range
@@ -422,8 +436,7 @@ pub(crate) fn input_resolution_factor(pixels: usize) -> u64 {
         5 // 4K range
     } else {
         6 // 8K range
-    };
-    FACTOR[res]
+    }
 }
 
 /// C `is_dc_only_safe` (mode_decision.c:845) — the variance half, verbatim.

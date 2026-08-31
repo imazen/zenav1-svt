@@ -40,6 +40,10 @@ fn p6_tools(enable_superres: bool) -> SeqTools {
         use_128x128_superblock: false,
         enable_superres,
         chroma_sample_position: 0,
+        // Inter tool bits + display delay: this literal drives a STILL
+        // (reduced) header, which writes none of them, so the defaults are
+        // inert here by construction.
+        ..SeqTools::default()
     }
 }
 

@@ -128,7 +128,7 @@ impl ColorDescription {
 /// The default is both off — matching every allintra preset >= M7 (M10/M13
 /// were byte-identical to C with these bits hardwired 0) and the mono
 /// convenience wrappers' historical behavior.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SeqTools {
     /// SH `separate_uv_delta_q` (spec 5.5.2 color_config): the svt-av1-hdr
     /// fork ALWAYS signals 1 (its chroma-qindex path writes distinct U/V
@@ -184,6 +184,30 @@ pub struct SeqTools {
     /// (entropy_coding.c:2743), default `EB_CSP_UNKNOWN` — every
     /// pre-existing caller writes the same 0 bits.
     pub chroma_sample_position: u8,
+    /// SH `enable_interintra_compound`, `enable_masked_compound`,
+    /// `enable_jnt_comp`, `enable_warped_motion`, `enable_ref_frame_mvs`,
+    /// `enable_order_hint`, `enable_dual_filter` (spec 5.5.1) — the INTER
+    /// tool bits. The reduced (still) header writes NONE of them, so their
+    /// value is inert on every still cell; the video header derives them in
+    /// `speed_config::seq_tools_video` from C's
+    /// `svt_aom_sig_deriv_pre_analysis_scs` (enc_mode_config.c:2780).
+    pub enable_interintra_compound: bool,
+    /// See [`Self::enable_interintra_compound`].
+    pub enable_masked_compound: bool,
+    /// See [`Self::enable_interintra_compound`].
+    pub enable_jnt_comp: bool,
+    /// See [`Self::enable_interintra_compound`].
+    pub enable_warped_motion: bool,
+    /// See [`Self::enable_interintra_compound`]. Gates the FH
+    /// `use_ref_frame_mvs` field, which spec 5.9.2 writes only for a
+    /// non-intra frame.
+    pub enable_ref_frame_mvs: bool,
+    /// See [`Self::enable_interintra_compound`]. When 0 the SH also omits
+    /// `enable_jnt_comp`, `enable_ref_frame_mvs` and
+    /// `order_hint_bits_minus_1`.
+    pub enable_order_hint: bool,
+    /// See [`Self::enable_interintra_compound`].
+    pub enable_dual_filter: bool,
     /// The config's `hierarchical_levels`, used ONLY to derive the
     /// non-reduced header's `initial_display_delay`
     /// (`min(hierarchical_levels + 1, 10)`, enc_handle.c:4975-4993). It has
@@ -191,6 +215,39 @@ pub struct SeqTools {
     /// written at all — so the default 0 keeps every existing cell
     /// byte-identical.
     pub hierarchical_levels: u8,
+}
+
+impl Default for SeqTools {
+    /// Every tool bit off, EXCEPT `enable_order_hint`.
+    ///
+    /// Order hints are the one inter field C never disables (it is 1 in every
+    /// non-reduced header SVT-AV1 writes), and the two convenience wrappers
+    /// that take this default — [`write_sequence_header`] (reduced, where no
+    /// inter bit is written at all) and [`write_sequence_header_full`] —
+    /// have always emitted `enable_order_hint = 1`. A `#[derive(Default)]`
+    /// would silently flip that to 0 and, with it, drop `enable_jnt_comp`,
+    /// `enable_ref_frame_mvs` and `order_hint_bits_minus_1` from the full
+    /// header — a header shape C never emits. Hence the manual impl.
+    fn default() -> Self {
+        Self {
+            separate_uv_delta_q: false,
+            film_grain_params_present: false,
+            enable_filter_intra: false,
+            enable_intra_edge_filter: false,
+            enable_restoration: false,
+            use_128x128_superblock: false,
+            enable_superres: false,
+            chroma_sample_position: 0,
+            enable_interintra_compound: false,
+            enable_masked_compound: false,
+            enable_jnt_comp: false,
+            enable_warped_motion: false,
+            enable_ref_frame_mvs: false,
+            enable_order_hint: true,
+            enable_dual_filter: false,
+            hierarchical_levels: 0,
+        }
+    }
 }
 
 /// FH `superres_params()` (spec 5.9.8) — the frame's superres state.
@@ -748,13 +805,17 @@ fn write_sequence_header_inner(
         // seq_force_integer_mv = SELECT (implicit).
         // NO bits written for these.
     } else {
-        wb.write_bit(false); // enable_interintra_compound = 0
-        wb.write_bit(false); // enable_masked_compound = 0
-        wb.write_bit(false); // enable_warped_motion = 0
-        wb.write_bit(false); // enable_dual_filter = 0
-        wb.write_bit(true); // enable_order_hint = 1
-        wb.write_bit(false); // enable_jnt_comp = 0
-        wb.write_bit(false); // enable_ref_frame_mvs = 0
+        wb.write_bit(tools.enable_interintra_compound);
+        wb.write_bit(tools.enable_masked_compound);
+        wb.write_bit(tools.enable_warped_motion);
+        wb.write_bit(tools.enable_dual_filter);
+        wb.write_bit(tools.enable_order_hint);
+        // Spec 5.5.1 and C (entropy_coding.c:2814-2817): these two are coded
+        // only when order hints are enabled.
+        if tools.enable_order_hint {
+            wb.write_bit(tools.enable_jnt_comp);
+            wb.write_bit(tools.enable_ref_frame_mvs);
+        }
 
         // seq_choose_screen_content_tools (1 bit, NOT 2!)
         wb.write_bit(true); // = 1 → seq_force_screen_content_tools = SELECT
@@ -770,7 +831,10 @@ fn write_sequence_header_inner(
         // seq_choose_* blocks). Writing it early put three bits in the wrong
         // place and shifted everything after — the second of the four defects
         // the inter refusal in pipeline.rs names.
-        wb.write_bits(ORDER_HINT_BITS - 1, 3); // order_hint_bits_minus_1
+        // Also conditioned on enable_order_hint (entropy_coding.c:2836).
+        if tools.enable_order_hint {
+            wb.write_bits(ORDER_HINT_BITS - 1, 3); // order_hint_bits_minus_1
+        }
     }
 
     // enable_superres (spec 5.5.1): false on every existing gate cell, so the
@@ -2477,11 +2541,38 @@ mod tests {
             write_key_frame_header(64, 64, 30),
             [0x11, 0xe0, 0x00, 0x00, 0x00, 0x20]
         );
+        // CHANGED 2026-08-31 (inter campaign C1a) — the FULL (video-mode)
+        // header only. The reduced/still goldens above are untouched.
+        //
+        // The previous bytes encoded a header C never emits: they omitted the
+        // five `initial_display_delay` bits (C sets the flag for every
+        // non-reduced header, enc_handle.c:4990) and placed
+        // `order_hint_bits_minus_1` BEFORE the seq_choose_* bits instead of
+        // after (entropy_coding.c:2836). Those are two of the four defects the
+        // inter refusal in pipeline.rs names, so the old golden was pinning
+        // the bug.
+        //
+        // The new bytes decode field-by-field (tools/sh_fields.py) as:
+        //   profile 0, still 0, reduced 0, timing 0,
+        //   initial_display_delay_present 1, op_cnt_minus_1 0, op_idc 0,
+        //   seq_level_idx 0, idd_present_for_op 1,
+        //   initial_display_delay_minus_1 0  (hierarchical_levels 0 -> delay 1),
+        //   frame_{width,height}_bits_minus_1 5/5, max dims 63/63,
+        //   frame_id_numbers_present 0, use_128x128 0, and every tool bit 0
+        //   except enable_order_hint 1 (SeqTools::default), then
+        //   seq_choose_screen_content_tools 1, seq_choose_integer_mv 1,
+        //   order_hint_bits_minus_1 6, superres 0, cdef 1, restoration 0,
+        //   high_bitdepth 0, mono_chrome 1, color_description_present 1.
+        //
+        // Stronger corroboration than this hand-golden: with the same fixes
+        // the PIPELINE's video-mode sequence header is byte-identical to the
+        // real C encoder's (13 bytes, 0a0b02000004157ffc6af98040) on the
+        // gradient 64x64 q40 p6 cell.
         assert_eq!(
             write_sequence_header_full(64, 64),
             [
-                0x0a, 0x0d, 0x00, 0x00, 0x00, 0x02, 0xaf, 0xff, 0x80, 0x4d, 0xa6, 0x02, 0x1a, 0x02,
-                0x40
+                0x0a, 0x0d, 0x02, 0x00, 0x00, 0x04, 0x15, 0x7f, 0xfc, 0x02, 0x79, 0x30, 0x10, 0xd0,
+                0x12
             ]
         );
     }
@@ -2540,6 +2631,10 @@ mod tests {
                 use_128x128_superblock: false,
                 enable_superres: false,
                 chroma_sample_position: 0,
+                // This is a STILL (reduced) header: none of the inter tool
+                // bits nor the display-delay fields are written, so the
+                // defaults are inert here by construction.
+                ..SeqTools::default()
             },
         );
         assert_eq!(ours[0], 0b0_0001_0_1_0); // SH OBU header

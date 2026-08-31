@@ -100,16 +100,24 @@ impl SpeedConfig {
 /// Both land ON for presets 0..=6 and OFF for 7..=13 — which is why
 /// M10/M13 were already byte-identical with the bits hardwired 0.
 ///
-/// allintra = false (multi-frame): both off. C's default/rtc derivations
-/// differ (`get_filter_intra_level_default` enables at <=M5,
-/// `svt_aom_get_enable_restoration_default` is resolution-dependent) and
-/// our inter FH/tile writers carry no restoration or filter-intra syntax
-/// yet — signaling a tool without its frame/block syntax desyncs every
-/// decoder, so the multi-frame path keeps the pre-threading behavior
-/// until those ports land.
-pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> crate::entropy::obu::SeqTools {
+/// allintra = false (multi-frame): C's own VIDEO-mode derivations — see
+/// [`seq_tools_video`], which replaced a blanket `SeqTools::default()` (every
+/// tool bit 0). The old comment here argued that "signaling a tool without its
+/// frame/block syntax desyncs every decoder"; that caution is right in general
+/// and wrong for four of the five bits it was suppressing, and the per-bit
+/// analysis now lives on [`seq_tools_video`].
+///
+/// `luma_pixels` is the padded encode area, read ONLY on the video path (C's
+/// Wiener/SGR level functions zero themselves at 8K and above). The allintra
+/// derivations take no resolution argument at all, so every still cell
+/// ignores it.
+pub fn seq_tools_for_preset(
+    preset: u8,
+    allintra: bool,
+    luma_pixels: usize,
+) -> crate::entropy::obu::SeqTools {
     if !allintra {
-        return crate::entropy::obu::SeqTools::default();
+        return seq_tools_video(preset, luma_pixels);
     }
     // get_filter_intra_level_allintra (enc_mode_config.c:12679).
     let filter_intra_level: u8 = if preset == 0 {
@@ -161,9 +169,107 @@ pub fn seq_tools_for_preset(preset: u8, allintra: bool) -> crate::entropy::obu::
         // Signalling-only config knob (issue #9 item 5); the pipeline
         // overwrites it from `EncodePipeline::chroma_sample_position`.
         chroma_sample_position: 0,
+        // The reduced (still) header writes NONE of the inter tool bits, so
+        // these are inert here whatever they hold.
+        enable_interintra_compound: false,
+        enable_masked_compound: false,
+        enable_jnt_comp: false,
+        enable_warped_motion: false,
+        enable_ref_frame_mvs: false,
+        enable_order_hint: true,
+        enable_dual_filter: false,
         // GOP shape, not a speed feature — the pipeline overwrites it from
         // its own `gop.hierarchical_levels`. Only the non-reduced (video)
         // sequence header reads it.
+        hierarchical_levels: 0,
+    }
+}
+
+/// C `svt_aom_sig_deriv_pre_analysis_scs` (enc_mode_config.c:2780) — the
+/// **non-allintra, non-rtc** arm with `enable_restoration_filtering = DEFAULT`
+/// (the library default). Every value below is that function's, cited.
+///
+/// Each bit was checked against what it actually obligates before being
+/// turned on, because signaling a tool whose frame/block syntax is unported
+/// really does desync a decoder:
+///
+/// * `enable_intra_edge_filter` — decoder-side prediction behaviour, no
+///   syntax at all (:2820).
+/// * `enable_interintra_compound`, `enable_warped_motion`,
+///   `enable_masked_compound`, `enable_jnt_comp` — gate per-block syntax in
+///   INTER blocks only. A KEY frame codes none, so they are inert on the
+///   frame this chunk targets.
+/// * `enable_ref_frame_mvs` — gates the FH `use_ref_frame_mvs`, which spec
+///   5.9.2 writes only for a non-intra frame.
+/// * `enable_restoration` — this one DOES obligate every frame header to
+///   carry `lr_params()`, key frames included. Safe because the port's FH
+///   writer already emits it: the allintra branch above sets the same bit for
+///   presets <= 6 and the still gates cover that path.
+///
+/// So a video-mode KEY frame can carry C's real tool bits today. The
+/// per-block INTER syntax those bits gate is still unported, which is why
+/// `pipeline.rs` continues to refuse an actual inter frame.
+#[must_use]
+pub fn seq_tools_video(preset: u8, luma_pixels: usize) -> crate::entropy::obu::SeqTools {
+    let res_class = crate::pd0::input_resolution_class(luma_pixels);
+    const RES_8K: u8 = 6; // INPUT_SIZE_8K_RANGE (definitions.h:1830)
+
+    // `svt_aom_get_inter_intra_level` (:8803) is evaluated for
+    // transition_present in {0, 1} and OR-ed (:2786-2791). At <= M1 it is 2
+    // regardless; at <= M8 it is 2 for transition_present = 1 — which the loop
+    // always reaches — so the OR is nonzero for every preset <= M8.
+    let enable_interintra_compound = preset <= 8;
+
+    // `get_filter_intra_level_default` (:8771): 1 at <= M1, 2 at <= M5, else
+    // 0. The SH bit is `level != 0` (:2798).
+    let filter_intra_level: u8 = if preset <= 1 {
+        1
+    } else if preset <= 5 {
+        2
+    } else {
+        0
+    };
+
+    // `get_inter_compound_level` (:8758): 3 at <= M0, 4 at <= M2, else 0.
+    // Both jnt_comp and masked_compound follow it (:2800-2806).
+    let inter_compound = preset <= 2;
+
+    // `svt_aom_get_wn_filter_level_default` (:1357) evaluated over
+    // is_not_last_layer in {0, 1}, breaking on the first nonzero
+    // (:2702-2707): the is_ref = 1 arm gives 4 at <= M3 and 5 at <= M8, so the
+    // level is nonzero for every preset <= M8. Zeroed at 8K and above.
+    let wn_nonzero = preset <= 8 && res_class < RES_8K;
+    // `svt_aom_get_sg_filter_level_default` (:1402): 1 at <= MR, 3 at <= M3,
+    // else 0; zeroed at 8K and above, and under `fast_decode` above 360p. The
+    // port carries no fast_decode config, so that clause cannot fire — when
+    // one is added it belongs in this expression.
+    let sg_nonzero = preset <= 3 && res_class < RES_8K;
+
+    crate::entropy::obu::SeqTools {
+        film_grain_params_present: false,
+        separate_uv_delta_q: false,
+        enable_filter_intra: filter_intra_level != 0,
+        // ":2820 — for non-still-image or non-all-intra configurations, keep
+        // edge filter always ON".
+        enable_intra_edge_filter: true,
+        // `svt_aom_get_enable_restoration_default` (:2695) = sg > 0 || wn > 0.
+        enable_restoration: wn_nonzero || sg_nonzero,
+        // Overwritten by the pipeline from its own `sb_size`, as on the
+        // allintra path.
+        use_128x128_superblock: false,
+        enable_superres: false,
+        chroma_sample_position: 0,
+        enable_interintra_compound,
+        enable_masked_compound: inter_compound,
+        enable_jnt_comp: inter_compound,
+        // ":2849 — unconditional, in BOTH modes. The still header simply
+        // never writes the bit."
+        enable_warped_motion: true,
+        // `sequence_control_set.c:103` sets it to 1 and nothing lowers it.
+        enable_ref_frame_mvs: true,
+        enable_order_hint: true,
+        enable_dual_filter: false,
+        // Overwritten by the pipeline from `gop.hierarchical_levels`.
         hierarchical_levels: 0,
     }
 }
@@ -222,16 +328,48 @@ mod tests {
     #[test]
     fn seq_tools_allintra_c_table() {
         for p in 0..=13u8 {
-            let t = seq_tools_for_preset(p, true);
+            let t = seq_tools_for_preset(p, true, 64 * 64);
             let expect_on = p <= 6;
             assert_eq!(t.enable_filter_intra, expect_on, "filter_intra M{p}");
             assert_eq!(t.enable_restoration, expect_on, "restoration M{p}");
         }
-        // Multi-frame (non-allintra): both off at every preset until the
-        // default-path derivations + inter syntax land.
+        // Multi-frame (non-allintra): C's DEFAULT-path derivations, which
+        // landed with the inter campaign's C1a. The comment this replaces said
+        // "both off at every preset until the default-path derivations + inter
+        // syntax land" — they have now landed, so the table below is C's, from
+        // `svt_aom_sig_deriv_pre_analysis_scs` (enc_mode_config.c:2780).
         for p in 0..=13u8 {
-            let t = seq_tools_for_preset(p, false);
-            assert!(!t.enable_filter_intra && !t.enable_restoration);
+            let t = seq_tools_for_preset(p, false, 64 * 64);
+            // `get_filter_intra_level_default` (:8771): nonzero at <= M5.
+            assert_eq!(t.enable_filter_intra, p <= 5, "video filter_intra M{p}");
+            // wn nonzero at <= M8 (:1357, is_ref arm) OR sg nonzero at <= M3
+            // (:1402); below 8K neither is clamped.
+            assert_eq!(t.enable_restoration, p <= 8, "video restoration M{p}");
+            // ":2820 — keep edge filter always ON" for non-allintra.
+            assert!(t.enable_intra_edge_filter, "video intra_edge_filter M{p}");
+            // `svt_aom_get_inter_intra_level` (:8803) is nonzero for
+            // transition_present = 1 at every preset <= M8.
+            assert_eq!(
+                t.enable_interintra_compound,
+                p <= 8,
+                "video interintra M{p}"
+            );
+            // `get_inter_compound_level` (:8758): nonzero at <= M2, and both
+            // masked_compound and jnt_comp follow it (:2800-2806).
+            assert_eq!(t.enable_masked_compound, p <= 2, "video masked M{p}");
+            assert_eq!(t.enable_jnt_comp, p <= 2, "video jnt_comp M{p}");
+            // ":2849" and sequence_control_set.c:103 — both unconditional.
+            assert!(t.enable_warped_motion, "video warped M{p}");
+            assert!(t.enable_ref_frame_mvs, "video ref_frame_mvs M{p}");
+            assert!(t.enable_order_hint, "video order_hint M{p}");
+            assert!(!t.enable_dual_filter, "video dual_filter M{p}");
         }
+        // The 8K clamp in both restoration level functions (:1368, :1413).
+        // 8K_TH is 0x5028000 pixels; one above it must zero both.
+        let t8k = seq_tools_for_preset(4, false, 0x5028000);
+        assert!(
+            !t8k.enable_restoration,
+            "wn and sg both zero at >= INPUT_SIZE_8K_RANGE"
+        );
     }
 }

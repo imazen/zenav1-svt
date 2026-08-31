@@ -74,7 +74,7 @@ fn port_frame_header(qindex: u8) -> Vec<u8> {
     let lf = pick_filter_levels_key_frame(qindex, 8);
     let cdef = pick_cdef_params_key_frame(qindex, 8, false);
     let cdef_signal: CdefSignal = svtav1_encoder::cdef::CdefPick::single(cdef).signal();
-    let tools = seq_tools_for_preset(7, true);
+    let tools = seq_tools_for_preset(7, true, 64 * 64);
     write_key_frame_header_full_lr_sb(
         64,
         64,
@@ -106,7 +106,7 @@ fn port_sequence_header() -> Vec<u8> {
         &ColorDescription::default(),
         false,
         30.0,
-        seq_tools_for_preset(7, true),
+        seq_tools_for_preset(7, true, 64 * 64),
     )
 }
 
