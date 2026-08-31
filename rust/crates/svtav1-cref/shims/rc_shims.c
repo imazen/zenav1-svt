@@ -386,3 +386,57 @@ void ref_rc_new_framerate(const RefNewFramerateIn* in, RefNewFramerateOut* out) 
     free(enc_ctx);
     free(scs);
 }
+
+/* ------------------------------------------------------------------------
+ * `rc_tables.h`'s eighteen minq tables. Like the SAD lambda tables they are
+ * `static const` IN A HEADER, so there is no exported symbol to bind; this
+ * indexes the REAL C arrays so the port's copies can be compared entry for
+ * entry rather than against a second transcription.
+ *
+ * `table` is an index into the same order as
+ * `port_rc_vbr_tables::ALL_MINQ_TABLES`; keep the two in step.
+ * ---------------------------------------------------------------------- */
+#include "rc_tables.h"
+
+int32_t ref_rc_minq_table(int32_t table, int32_t qindex) {
+    static const int* const tables[] = {
+        kf_low_motion_minq_cqp_8,
+        kf_low_motion_minq_cqp_10,
+        kf_low_motion_minq_cqp_12,
+        kf_high_motion_minq_8,
+        arfgf_low_motion_minq_8,
+        arfgf_high_motion_minq_8,
+        inter_minq_8,
+        rtc_minq_8,
+        kf_high_motion_minq_10,
+        arfgf_low_motion_minq_10,
+        arfgf_high_motion_minq_10,
+        inter_minq_10,
+        rtc_minq_10,
+        kf_high_motion_minq_12,
+        arfgf_low_motion_minq_12,
+        arfgf_high_motion_minq_12,
+        inter_minq_12,
+        rtc_minq_12,
+    };
+    /* `tables` is `static const` POINTERS TO const data, initialised from
+       compile-time constants — not per-call state, so the no-static rule at
+       the top of this file does not apply (same class as the file's other
+       `static const` tables). */
+    if (table < 0 || table >= (int32_t)(sizeof(tables) / sizeof(tables[0])) || qindex < 0 || qindex > 255) {
+        return INT32_MIN;
+    }
+    return tables[table][qindex];
+}
+
+/* The four BOOST thresholds `get_active_quality` is called with
+   (rc_process.h:59-62), read out of the C headers rather than retyped. */
+int32_t ref_rc_boost_threshold(int32_t which) {
+    switch (which) {
+    case 0: return BOOST_KF_LOW;
+    case 1: return BOOST_KF_HIGH;
+    case 2: return BOOST_GF_LOW_TPL_LA;
+    case 3: return BOOST_GF_HIGH_TPL_LA;
+    default: return INT32_MIN;
+    }
+}

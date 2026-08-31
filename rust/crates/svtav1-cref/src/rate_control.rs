@@ -449,3 +449,28 @@ pub fn new_framerate(input: &NewFramerateIn) -> NewFramerateOut {
     unsafe { ref_rc_new_framerate(input, &mut out) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// `rc_tables.h`'s minq tables and `rc_process.h`'s BOOST thresholds — both
+// `static const` / `#define` in headers, so both are read out of C through a
+// shim rather than bound.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_rc_minq_table(table: c_int, qindex: c_int) -> i32;
+    fn ref_rc_boost_threshold(which: c_int) -> i32;
+}
+
+/// One entry of one `rc_tables.h` minq table. `table` indexes the same order
+/// as the port's `ALL_MINQ_TABLES`. Returns `i32::MIN` out of range.
+#[must_use]
+pub fn minq_table(table: i32, qindex: i32) -> i32 {
+    unsafe { ref_rc_minq_table(table, qindex) }
+}
+
+/// `BOOST_KF_LOW` (0), `BOOST_KF_HIGH` (1), `BOOST_GF_LOW_TPL_LA` (2),
+/// `BOOST_GF_HIGH_TPL_LA` (3) from rc_process.h:59-62.
+#[must_use]
+pub fn boost_threshold(which: i32) -> i32 {
+    unsafe { ref_rc_boost_threshold(which) }
+}

@@ -590,6 +590,55 @@ conformant one (`types_for`). The full 16 x 19 sweep still runs — against the
 test's type set, the test binary dies with SIGSEGV and no assertion message,
 which reads like a harness failure rather than an out-of-envelope call.
 
+## 16. `get_kf_q_tpl` / `get_gfu_q_tpl` can loop without bound and read out of bounds
+
+`rc_vbr_cbr.c:1641` and `:1666`, the two reverse searches that map a target
+active quality back to a qindex:
+
+```c
+int q              = rc->active_worst_quality;
+int active_quality = get_active_quality(q, rc->kf_boost, ...);
+int prev_dif = abs(target_active_quality - active_quality);
+while (abs(target_active_quality - active_quality) > 4 &&
+       abs(target_active_quality - active_quality) <= prev_dif) {
+    if (active_quality > target_active_quality) { q--; } else { q++; }
+    active_quality = get_active_quality(q, rc->kf_boost, ...);
+}
+```
+
+`prev_dif` is computed ONCE, before the loop, and never updated inside it. So
+the second clause is not "we stopped improving" — it is "still no worse than
+the very first difference", which stays TRUE whenever the active quality stops
+changing. It stops changing as soon as `q` leaves the minq tables' 0..=255
+domain, because `get_active_quality` then keeps reading the same entry. `q` is
+never clamped, and `get_active_quality` indexes `low_motion_minq[q]` /
+`high_motion_minq[q]` directly. With a target the tables cannot reach
+(`|target - active| > 4` at both ends of the ladder) the loop therefore runs
+forever, indexing out of bounds on every iteration.
+
+MEASURED 2026-08-31: the Rust port's first *faithful* transcription of this
+loop — same conditions, same non-updating `prev_dif`, an index clamp instead of
+an out-of-bounds read — panicked on `get_kf_q_tpl(start_q = 200, boost = 1000,
+target = 100_000, bd 8)` with an integer overflow on `q` after ~4 s of walking.
+That is the runaway, observed rather than argued.
+
+**Reachability: none in our envelope, and not obviously reachable in C's.**
+Both functions are `static` in `rc_vbr_cbr.c` and are only called from the
+VBR/CBR qindex path (`svt_av1_rc_calc_qindex_rate_control`), which
+`rc_cfg.mode == AOM_Q` skips entirely — and AOM_Q is what CQP/CRF sets
+(`svt_aom_set_rc_param`, pass2_strategy.c:906). Inside C's own callers the
+target is derived from the same tables, so it is reachable; whether any real
+configuration produces an unreachable target has NOT been established here.
+
+**What the port does:** `port_rc_vbr_cbr.rs`'s `reverse_active_quality` keeps
+C's loop verbatim and adds exactly one exit — the walk stops at the edge of the
+qindex domain. Inside the domain the two are identical; outside it C's
+behaviour is an out-of-bounds read, so there is no defined value to reproduce.
+`tests/rc_vbr_cbr_tables_and_scalars.rs::
+reverse_search_stops_at_the_domain_edge_on_an_unreachable_target` pins the
+boundary result, so removing the guard turns a hanging CI job into a red test.
+
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is
