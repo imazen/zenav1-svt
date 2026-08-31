@@ -772,7 +772,9 @@ fn write_sequence_header_inner(
         }
         // entropy_coding.c:3749-3755, inside the operating-point loop.
         wb.write_bit(true); // initial_display_delay_present_for_this_op = 1
-        let display_delay = u32::from(tools.hierarchical_levels).saturating_add(1).min(10);
+        let display_delay = u32::from(tools.hierarchical_levels)
+            .saturating_add(1)
+            .min(10);
         wb.write_bits(display_delay - 1, 4); // initial_display_delay_minus_1
     }
 
