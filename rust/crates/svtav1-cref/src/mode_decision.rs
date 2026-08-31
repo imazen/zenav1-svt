@@ -394,3 +394,107 @@ pub fn pme_sad_loop_kernel(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Per-stage candidate counts.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_md_set_nics(
+        s1: i32,
+        s2: i32,
+        s3: i32,
+        pic_type: i32,
+        qp: i32,
+        nic_max_qp_based_th_scaling: i32,
+        mds1: *mut u32,
+        mds2: *mut u32,
+        mds3: *mut u32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_md_set_md_stage_counts(
+        s1: i32,
+        s2: i32,
+        s3: i32,
+        md_staging_mode: i32,
+        is_i_slice: i32,
+        is_highest_layer: i32,
+        qp: i32,
+        nic_max_qp_based_th_scaling: i32,
+        mds1: *mut u32,
+        mds2: *mut u32,
+        mds3: *mut u32,
+        bypass1: *mut i32,
+        bypass2: *mut i32,
+    );
+}
+
+/// C `CAND_CLASS_TOTAL` (definitions.h:793).
+pub const CAND_CLASS_TOTAL: usize = 5;
+
+/// The three per-class stage counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MdStageCounts {
+    pub mds1: [u32; CAND_CLASS_TOTAL],
+    pub mds2: [u32; CAND_CLASS_TOTAL],
+    pub mds3: [u32; CAND_CLASS_TOTAL],
+}
+
+/// C `svt_aom_set_nics` (product_coding_loop.c:1358, EXPORTED).
+pub fn set_nics(
+    scaling: (u8, u8, u8),
+    pic_type: u8,
+    qp: u32,
+    nic_max_qp_based_th_scaling: bool,
+) -> MdStageCounts {
+    let mut out = MdStageCounts::default();
+    unsafe {
+        ref_md_set_nics(
+            i32::from(scaling.0),
+            i32::from(scaling.1),
+            i32::from(scaling.2),
+            i32::from(pic_type),
+            qp as i32,
+            i32::from(nic_max_qp_based_th_scaling),
+            out.mds1.as_mut_ptr(),
+            out.mds2.as_mut_ptr(),
+            out.mds3.as_mut_ptr(),
+        );
+    }
+    out
+}
+
+/// C `set_md_stage_counts` (product_coding_loop.c:1394, EXPORTED — the
+/// name carries no `svt_aom_` prefix; `nm -g` is what establishes that).
+#[allow(clippy::too_many_arguments)]
+pub fn set_md_stage_counts(
+    scaling: (u8, u8, u8),
+    md_staging_mode: u8,
+    is_i_slice: bool,
+    is_highest_layer: bool,
+    qp: u32,
+    nic_max_qp_based_th_scaling: bool,
+) -> (MdStageCounts, bool, bool) {
+    let mut out = MdStageCounts::default();
+    let mut b1 = 0i32;
+    let mut b2 = 0i32;
+    unsafe {
+        ref_md_set_md_stage_counts(
+            i32::from(scaling.0),
+            i32::from(scaling.1),
+            i32::from(scaling.2),
+            i32::from(md_staging_mode),
+            i32::from(is_i_slice),
+            i32::from(is_highest_layer),
+            qp as i32,
+            i32::from(nic_max_qp_based_th_scaling),
+            out.mds1.as_mut_ptr(),
+            out.mds2.as_mut_ptr(),
+            out.mds3.as_mut_ptr(),
+            &mut b1,
+            &mut b2,
+        );
+    }
+    (out, b1 != 0, b2 != 0)
+}

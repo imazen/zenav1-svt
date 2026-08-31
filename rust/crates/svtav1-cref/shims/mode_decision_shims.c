@@ -284,3 +284,66 @@ void ref_md_pme_sad_loop_kernel(int32_t ref_x, int32_t ref_y, int32_t mv_cost_ty
                               (int16_t)mvx,
                               (int16_t)mvy);
 }
+
+/* ------------------------------------------------------------------ *
+ * Per-stage candidate counts.
+ *
+ *   svt_aom_set_nics      product_coding_loop.c:1358 (EXPORTED)
+ *   set_md_stage_counts   product_coding_loop.c:1394 (EXPORTED — and it
+ *                         carries NO svt_aom_ prefix; nm -g, not the
+ *                         name, is what says so)
+ * ------------------------------------------------------------------ */
+
+void svt_aom_set_nics(SequenceControlSet* scs, NicScalingCtrls* scaling_ctrls,
+                      uint32_t mds1_count[CAND_CLASS_TOTAL], uint32_t mds2_count[CAND_CLASS_TOTAL],
+                      uint32_t mds3_count[CAND_CLASS_TOTAL], uint8_t pic_type, uint32_t qp);
+void set_md_stage_counts(PictureControlSet* pcs, ModeDecisionContext* ctx);
+
+void ref_md_set_nics(int32_t s1, int32_t s2, int32_t s3, int32_t pic_type, int32_t qp,
+                     int32_t nic_max_qp_based_th_scaling, uint32_t* mds1, uint32_t* mds2,
+                     uint32_t* mds3) {
+    SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    NicScalingCtrls     sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.stage1_scaling_num = (uint8_t)s1;
+    sc.stage2_scaling_num = (uint8_t)s2;
+    sc.stage3_scaling_num = (uint8_t)s3;
+    scs->qp_based_th_scaling_ctrls.nic_max_qp_based_th_scaling = (bool)nic_max_qp_based_th_scaling;
+    svt_aom_set_nics(scs, &sc, mds1, mds2, mds3, (uint8_t)pic_type, (uint32_t)qp);
+    free(scs);
+}
+
+void ref_md_set_md_stage_counts(int32_t s1, int32_t s2, int32_t s3, int32_t md_staging_mode,
+                                int32_t is_i_slice, int32_t is_highest_layer, int32_t qp,
+                                int32_t nic_max_qp_based_th_scaling, uint32_t* mds1, uint32_t* mds2,
+                                uint32_t* mds3, int32_t* bypass1, int32_t* bypass2) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    pcs->ppcs                     = ppcs;
+    pcs->scs                      = scs;
+    ppcs->scs                     = scs;
+    pcs->slice_type               = is_i_slice ? I_SLICE : B_SLICE;
+    ppcs->is_highest_layer        = (bool)is_highest_layer;
+    scs->static_config.qp         = (uint32_t)qp;
+    scs->qp_based_th_scaling_ctrls.nic_max_qp_based_th_scaling = (bool)nic_max_qp_based_th_scaling;
+    ctx->nic_ctrls.scaling_ctrls.stage1_scaling_num            = (uint8_t)s1;
+    ctx->nic_ctrls.scaling_ctrls.stage2_scaling_num            = (uint8_t)s2;
+    ctx->nic_ctrls.scaling_ctrls.stage3_scaling_num            = (uint8_t)s3;
+    ctx->nic_ctrls.md_staging_mode                             = (uint8_t)md_staging_mode;
+
+    set_md_stage_counts(pcs, ctx);
+
+    for (int i = 0; i < CAND_CLASS_TOTAL; i++) {
+        mds1[i] = ctx->md_stage_1_count[i];
+        mds2[i] = ctx->md_stage_2_count[i];
+        mds3[i] = ctx->md_stage_3_count[i];
+    }
+    *bypass1 = ctx->bypass_md_stage_1 ? 1 : 0;
+    *bypass2 = ctx->bypass_md_stage_2 ? 1 : 0;
+    free(ctx);
+    free(pcs);
+    free(ppcs);
+    free(scs);
+}
