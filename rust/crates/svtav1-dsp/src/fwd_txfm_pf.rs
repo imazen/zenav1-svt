@@ -39,7 +39,11 @@
 //! stage-range-bounded column output. `tests/c_parity_txfm_pf.rs` sweeps
 //! +/- 2^14 for that reason, and the 2-D tests drive real residuals.
 
-use crate::fwd_txfm::{NEW_SQRT2, NEW_SQRT2_BITS, cospi_arr, half_btf, round_shift_i64, sinpi_arr};
+use crate::fwd_txfm::{
+    NEW_SQRT2, NEW_SQRT2_BITS, cospi_arr, half_btf, round_shift_array, round_shift_i64, sinpi_arr,
+};
+use alloc::vec;
+use svtav1_types::transform::{TxSize, TxType};
 
 // =============================================================================
 // Coefficient shape (C `TxCoeffShape`, definitions.h:2062)
@@ -3418,4 +3422,461 @@ pub fn fadst16_n4(input: &[i32], output: &mut [i32], cos_bit: i8) {
     output[1] = step[14];
     output[2] = step[3];
     output[3] = step[12];
+}
+
+// =============================================================================
+// Transform configuration — port of `svt_aom_transform_config`
+// (transforms.c:3074), `set_fwd_txfm_non_scale_range` (:3051) and
+// `svt_av1_gen_fwd_stage_range` (:733), with the tables they read.
+//
+// The port already carries this logic, but SPLIT and re-transcribed across
+// `txfm_dispatch::{flip_cfg, tx_type_to_1d, tx_size_dims}` and
+// `fwd_txfm::{fwd_txfm_shift, FWD_COS_BIT_COL, FWD_COS_BIT_ROW}` with no
+// binding to the real symbol. This is one struct that a single tier-1
+// differential covers over all 16 tx_types x 19 tx_sizes.
+// =============================================================================
+
+/// C `MAX_TXFM_STAGE_NUM` (inv_transforms.h:25).
+pub const MAX_TXFM_STAGE_NUM: usize = 12;
+
+/// C `TxfmType` (inv_transforms.h:84). `Invalid` is C's `TXFM_TYPE_INVALID`,
+/// which `av1_txfm_type_ls` yields for ADST at the 64-point row/column.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum TxfmType {
+    Dct4 = 0,
+    Dct8 = 1,
+    Dct16 = 2,
+    Dct32 = 3,
+    Dct64 = 4,
+    Adst4 = 5,
+    Adst8 = 6,
+    Adst16 = 7,
+    Adst32 = 8,
+    Identity4 = 9,
+    Identity8 = 10,
+    Identity16 = 11,
+    Identity32 = 12,
+    Identity64 = 13,
+    /// C `TXFM_TYPE_INVALID` (== `TXFM_TYPES + 1` == 15).
+    Invalid = 15,
+}
+
+/// C `av1_txfm_type_ls[5][TX_TYPES_1D]` (inv_transforms.h:191), indexed by
+/// `[txwh_idx][tx_type_1d]` with `tx_type_1d` in DCT/ADST/FLIPADST/IDTX order.
+const AV1_TXFM_TYPE_LS: [[TxfmType; 4]; 5] = [
+    [
+        TxfmType::Dct4,
+        TxfmType::Adst4,
+        TxfmType::Adst4,
+        TxfmType::Identity4,
+    ],
+    [
+        TxfmType::Dct8,
+        TxfmType::Adst8,
+        TxfmType::Adst8,
+        TxfmType::Identity8,
+    ],
+    [
+        TxfmType::Dct16,
+        TxfmType::Adst16,
+        TxfmType::Adst16,
+        TxfmType::Identity16,
+    ],
+    [
+        TxfmType::Dct32,
+        TxfmType::Adst32,
+        TxfmType::Adst32,
+        TxfmType::Identity32,
+    ],
+    [
+        TxfmType::Dct64,
+        TxfmType::Invalid,
+        TxfmType::Invalid,
+        TxfmType::Identity64,
+    ],
+];
+
+/// C `av1_txfm_stage_num_list[TXFM_TYPES]` (inv_transforms.h:197).
+const AV1_TXFM_STAGE_NUM_LIST: [i8; 14] = [4, 6, 8, 10, 12, 7, 8, 10, 12, 1, 1, 1, 1, 1];
+
+/// C `fwd_txfm_range_mult2_list[TXFM_TYPES]` (transforms.c:687), flattened
+/// into a fixed 12-entry row per type (only the first `stage_num` are read).
+const FWD_TXFM_RANGE_MULT2_LIST: [[i8; MAX_TXFM_STAGE_NUM]; 14] = [
+    [0, 2, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0],        // fdct4
+    [0, 2, 4, 5, 5, 5, 0, 0, 0, 0, 0, 0],        // fdct8
+    [0, 2, 4, 6, 7, 7, 7, 7, 0, 0, 0, 0],        // fdct16
+    [0, 2, 4, 6, 8, 9, 9, 9, 9, 9, 0, 0],        // fdct32
+    [0, 2, 4, 6, 8, 10, 11, 11, 11, 11, 11, 11], // fdct64
+    [0, 2, 4, 3, 3, 3, 3, 0, 0, 0, 0, 0],        // fadst4
+    [0, 0, 1, 3, 3, 5, 5, 5, 0, 0, 0, 0],        // fadst8
+    [0, 0, 1, 3, 3, 5, 5, 7, 7, 7, 0, 0],        // fadst16
+    [0, 0, 1, 3, 3, 5, 5, 7, 7, 9, 9, 9],        // fadst32
+    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],        // fidtx4
+    [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],        // fidtx8
+    [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],        // fidtx16
+    [4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],        // fidtx32
+    [5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],        // fidtx64
+];
+
+/// C `fwd_txfm_shift_ls[TX_SIZES_ALL]` (transforms.c:722), in `TxSize` order.
+const FWD_TXFM_SHIFT_LS: [[i8; 3]; 19] = [
+    [2, 0, 0],   // TX_4X4
+    [2, -1, 0],  // TX_8X8
+    [2, -2, 0],  // TX_16X16
+    [2, -4, 0],  // TX_32X32
+    [0, -2, -2], // TX_64X64
+    [2, -1, 0],  // TX_4X8
+    [2, -1, 0],  // TX_8X4
+    [2, -2, 0],  // TX_8X16
+    [2, -2, 0],  // TX_16X8
+    [2, -4, 0],  // TX_16X32
+    [2, -4, 0],  // TX_32X16
+    [0, -2, -2], // TX_32X64
+    [2, -4, -2], // TX_64X32
+    [2, -1, 0],  // TX_4X16
+    [2, -1, 0],  // TX_16X4
+    [2, -2, 0],  // TX_8X32
+    [2, -2, 0],  // TX_32X8
+    [0, -2, 0],  // TX_16X64
+    [2, -4, 0],  // TX_64X16
+];
+
+/// C `fwd_cos_bit_col[MAX_TXWH_IDX][MAX_TXWH_IDX]` (transforms.c:17).
+const FWD_COS_BIT_COL: [[i8; 5]; 5] = [
+    [13, 13, 13, 0, 0],
+    [13, 13, 13, 12, 0],
+    [13, 13, 13, 12, 13],
+    [0, 13, 13, 12, 13],
+    [0, 0, 13, 12, 13],
+];
+
+/// C `fwd_cos_bit_row[MAX_TXWH_IDX][MAX_TXWH_IDX]` (transforms.c:19).
+const FWD_COS_BIT_ROW: [[i8; 5]; 5] = [
+    [13, 13, 12, 0, 0],
+    [13, 13, 13, 12, 0],
+    [13, 13, 12, 13, 12],
+    [0, 12, 13, 12, 11],
+    [0, 0, 12, 11, 10],
+];
+
+/// C `vtx_tab[TX_TYPES]` (inv_transforms.h:45) — 0=DCT, 1=ADST, 2=FLIPADST,
+/// 3=IDTX.
+const VTX_TAB: [usize; 16] = [0, 1, 0, 1, 2, 0, 2, 1, 2, 3, 0, 3, 1, 3, 2, 3];
+/// C `htx_tab[TX_TYPES]` (inv_transforms.h:63).
+const HTX_TAB: [usize; 16] = [0, 0, 1, 1, 0, 2, 2, 2, 1, 3, 3, 0, 3, 1, 3, 2];
+
+/// (width, height) for a `TxSize` — C `tx_size_wide` / `tx_size_high`.
+pub const fn tx_size_dims(tx_size: TxSize) -> (usize, usize) {
+    match tx_size {
+        TxSize::Tx4x4 => (4, 4),
+        TxSize::Tx8x8 => (8, 8),
+        TxSize::Tx16x16 => (16, 16),
+        TxSize::Tx32x32 => (32, 32),
+        TxSize::Tx64x64 => (64, 64),
+        TxSize::Tx4x8 => (4, 8),
+        TxSize::Tx8x4 => (8, 4),
+        TxSize::Tx8x16 => (8, 16),
+        TxSize::Tx16x8 => (16, 8),
+        TxSize::Tx16x32 => (16, 32),
+        TxSize::Tx32x16 => (32, 16),
+        TxSize::Tx32x64 => (32, 64),
+        TxSize::Tx64x32 => (64, 32),
+        TxSize::Tx4x16 => (4, 16),
+        TxSize::Tx16x4 => (16, 4),
+        TxSize::Tx8x32 => (8, 32),
+        TxSize::Tx32x8 => (32, 8),
+        TxSize::Tx16x64 => (16, 64),
+        TxSize::Tx64x16 => (64, 16),
+    }
+}
+
+/// C `get_flip_cfg` (inv_transforms.h:139) → `(ud_flip, lr_flip)`.
+pub const fn get_flip_cfg(tx_type: TxType) -> (bool, bool) {
+    match tx_type {
+        TxType::FlipAdstDct | TxType::FlipAdstAdst | TxType::VFlipAdst => (true, false),
+        TxType::DctFlipAdst | TxType::AdstFlipAdst | TxType::HFlipAdst => (false, true),
+        TxType::FlipAdstFlipAdst => (true, true),
+        _ => (false, false),
+    }
+}
+
+/// C `Txfm2dFlipCfg` (inv_transforms.h:103).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Txfm2dFlipCfg {
+    pub tx_size: TxSize,
+    pub ud_flip: bool,
+    pub lr_flip: bool,
+    pub shift: [i8; 3],
+    pub cos_bit_col: i8,
+    pub cos_bit_row: i8,
+    pub stage_range_col: [i8; MAX_TXFM_STAGE_NUM],
+    pub stage_range_row: [i8; MAX_TXFM_STAGE_NUM],
+    pub txfm_type_col: TxfmType,
+    pub txfm_type_row: TxfmType,
+    pub stage_num_col: i32,
+    pub stage_num_row: i32,
+}
+
+/// Port of C `set_fwd_txfm_non_scale_range` (transforms.c:3051).
+///
+/// Note the index that a careless read gets wrong: the ROW loop's first term
+/// is `range_mult2_**col**[cfg->stage_num_col - 1]`, the COLUMN table's last
+/// live entry — not the row table's.
+fn set_fwd_txfm_non_scale_range(cfg: &mut Txfm2dFlipCfg) {
+    cfg.stage_range_col = [0; MAX_TXFM_STAGE_NUM];
+    cfg.stage_range_row = [0; MAX_TXFM_STAGE_NUM];
+    if cfg.txfm_type_col == TxfmType::Invalid {
+        return;
+    }
+    let range_mult2_col = &FWD_TXFM_RANGE_MULT2_LIST[cfg.txfm_type_col as usize];
+    let stage_num_col = (cfg.stage_num_col as usize).min(MAX_TXFM_STAGE_NUM);
+    for i in 0..stage_num_col {
+        cfg.stage_range_col[i] = (range_mult2_col[i] + 1) >> 1;
+    }
+    if cfg.txfm_type_row != TxfmType::Invalid {
+        let range_mult2_row = &FWD_TXFM_RANGE_MULT2_LIST[cfg.txfm_type_row as usize];
+        let stage_num_row = (cfg.stage_num_row as usize).min(MAX_TXFM_STAGE_NUM);
+        for i in 0..stage_num_row {
+            cfg.stage_range_row[i] =
+                (range_mult2_col[cfg.stage_num_col as usize - 1] + range_mult2_row[i] + 1) >> 1;
+        }
+    }
+}
+
+/// Port of C `svt_aom_transform_config` (transforms.c:3074).
+pub fn transform_config(tx_type: TxType, tx_size: TxSize) -> Txfm2dFlipCfg {
+    let (ud_flip, lr_flip) = get_flip_cfg(tx_type);
+    let (w, h) = tx_size_dims(tx_size);
+    let txw_idx = w.trailing_zeros() as usize - 2;
+    let txh_idx = h.trailing_zeros() as usize - 2;
+    let tx_type_1d_col = VTX_TAB[tx_type as usize];
+    let tx_type_1d_row = HTX_TAB[tx_type as usize];
+    let txfm_type_col = AV1_TXFM_TYPE_LS[txh_idx][tx_type_1d_col];
+    let txfm_type_row = AV1_TXFM_TYPE_LS[txw_idx][tx_type_1d_row];
+    let stage_num_of = |t: TxfmType| -> i32 {
+        if t == TxfmType::Invalid {
+            // C indexes `av1_txfm_stage_num_list[TXFM_TYPE_INVALID]` out of
+            // bounds here. Nothing reads the value in that case (the row loop
+            // in set_fwd_txfm_non_scale_range is skipped and the kernel
+            // lookup asserts), so this returns 0 rather than reproducing an
+            // out-of-bounds read.
+            0
+        } else {
+            AV1_TXFM_STAGE_NUM_LIST[t as usize] as i32
+        }
+    };
+    let mut cfg = Txfm2dFlipCfg {
+        tx_size,
+        ud_flip,
+        lr_flip,
+        shift: FWD_TXFM_SHIFT_LS[tx_size as usize],
+        cos_bit_col: FWD_COS_BIT_COL[txw_idx][txh_idx],
+        cos_bit_row: FWD_COS_BIT_ROW[txw_idx][txh_idx],
+        stage_range_col: [0; MAX_TXFM_STAGE_NUM],
+        stage_range_row: [0; MAX_TXFM_STAGE_NUM],
+        txfm_type_col,
+        txfm_type_row,
+        stage_num_col: stage_num_of(txfm_type_col),
+        stage_num_row: stage_num_of(txfm_type_row),
+    };
+    set_fwd_txfm_non_scale_range(&mut cfg);
+    cfg
+}
+
+/// Port of C `svt_av1_gen_fwd_stage_range` (transforms.c:733).
+pub fn gen_fwd_stage_range(
+    cfg: &Txfm2dFlipCfg,
+    bd: i32,
+) -> ([i8; MAX_TXFM_STAGE_NUM], [i8; MAX_TXFM_STAGE_NUM]) {
+    let mut col = [0i8; MAX_TXFM_STAGE_NUM];
+    let mut row = [0i8; MAX_TXFM_STAGE_NUM];
+    let shift = cfg.shift;
+    for i in 0..(cfg.stage_num_col as usize).min(MAX_TXFM_STAGE_NUM) {
+        col[i] = (cfg.stage_range_col[i] as i32 + shift[0] as i32 + bd + 1) as i8;
+    }
+    for i in 0..(cfg.stage_num_row as usize).min(MAX_TXFM_STAGE_NUM) {
+        row[i] = (cfg.stage_range_row[i] as i32 + shift[0] as i32 + shift[1] as i32 + bd + 1) as i8;
+    }
+    (col, row)
+}
+
+// =============================================================================
+// 2-D composition — ports of `av1_tranform_two_d_core_N2_c` (transforms.c:6135)
+// and `av1_tranform_two_d_core_N4_c` (:7732), plus their entry points.
+// =============================================================================
+
+/// 1-D kernel signature (C `TxfmFunc` minus the assert-only `stage_range`).
+type Kernel1D = fn(&[i32], &mut [i32], i8);
+
+/// Port of C `fwd_txfm_type_to_func_N2` (transforms.c:6099).
+///
+/// `TXFM_TYPE_ADST32` maps to the FULL `av1_fadst32_new` in C — there is no
+/// `_N2` variant of it — so this returns `None` for it and the caller must
+/// fall back to the unpruned kernel. (`av1_fadst32_new` is unreachable in
+/// practice: `av1_txfm_type_ls` only yields ADST32 for a 32-point ADST, and
+/// `get_fwd_txfm_func` in `fwd_txfm.rs` has the same hole.)
+pub fn fwd_txfm_type_to_func_n2(t: TxfmType) -> Option<Kernel1D> {
+    Some(match t {
+        TxfmType::Dct4 => fdct4_n2,
+        TxfmType::Dct8 => fdct8_n2,
+        TxfmType::Dct16 => fdct16_n2,
+        TxfmType::Dct32 => fdct32_n2,
+        TxfmType::Dct64 => fdct64_n2,
+        TxfmType::Adst4 => fadst4_n2,
+        TxfmType::Adst8 => fadst8_n2,
+        TxfmType::Adst16 => fadst16_n2,
+        TxfmType::Identity4 => fidentity4_n2,
+        TxfmType::Identity8 => fidentity8_n2,
+        TxfmType::Identity16 => fidentity16_n2,
+        TxfmType::Identity32 => fidentity32_n2,
+        TxfmType::Identity64 => fidentity64_n2,
+        // TXFM_TYPE_ADST32 -> av1_fadst32_new (unpruned) / TXFM_TYPE_INVALID
+        TxfmType::Adst32 | TxfmType::Invalid => return None,
+    })
+}
+
+/// Port of C `fwd_txfm_type_to_func_N4` (transforms.c:7696). Same ADST32
+/// hole as [`fwd_txfm_type_to_func_n2`].
+pub fn fwd_txfm_type_to_func_n4(t: TxfmType) -> Option<Kernel1D> {
+    Some(match t {
+        TxfmType::Dct4 => fdct4_n4,
+        TxfmType::Dct8 => fdct8_n4,
+        TxfmType::Dct16 => fdct16_n4,
+        TxfmType::Dct32 => fdct32_n4,
+        TxfmType::Dct64 => fdct64_n4,
+        TxfmType::Adst4 => fadst4_n4,
+        TxfmType::Adst8 => fadst8_n4,
+        TxfmType::Adst16 => fadst16_n4,
+        TxfmType::Identity4 => fidentity4_n4,
+        TxfmType::Identity8 => fidentity8_n4,
+        TxfmType::Identity16 => fidentity16_n4,
+        TxfmType::Identity32 => fidentity32_n4,
+        TxfmType::Identity64 => fidentity64_n4,
+        TxfmType::Adst32 | TxfmType::Invalid => return None,
+    })
+}
+
+/// Shared body of `av1_tranform_two_d_core_N2_c` / `_N4_c`, parameterised by
+/// the pruning divisor `div` (2 for N2, 4 for N4). The two C functions are
+/// character-identical apart from the three `/ 2` vs `/ 4` and the `>> 1` vs
+/// `>> 2` in the final zeroing loop.
+///
+/// One faithfulness note. C aliases `temp_in` / `temp_out` INTO the caller's
+/// `output` buffer, so the untouched tail of `temp_out` is caller garbage and
+/// is copied into `buf`. That garbage only ever lands in rows `>= row/div`,
+/// which the row pass never reads and the final loop zeroes, so a private
+/// zeroed scratch (used here) produces the identical result. The tier-1
+/// differential in `tests/c_parity_txfm_pf_2d.rs` pre-fills the output buffer
+/// with noise on both sides, which is what proves that rather than assumes it.
+#[allow(clippy::too_many_arguments)]
+fn transform_two_d_core_pf(
+    input: &[i16],
+    input_stride: usize,
+    output: &mut [i32],
+    cfg: &Txfm2dFlipCfg,
+    div: usize,
+    col_func: Kernel1D,
+    row_func: Kernel1D,
+) {
+    let (txfm_size_col, txfm_size_row) = tx_size_dims(cfg.tx_size);
+    let shift = cfg.shift;
+    // C `get_rect_tx_log_ratio(txfm_size_col, txfm_size_row)`.
+    let rect_type = txfm_size_col.trailing_zeros() as i32 - txfm_size_row.trailing_zeros() as i32;
+    let cos_bit_col = cfg.cos_bit_col;
+    let cos_bit_row = cfg.cos_bit_row;
+
+    let mut buf = vec![0i32; txfm_size_col * txfm_size_row];
+    let mut temp_in = vec![0i32; txfm_size_row];
+    let mut temp_out = vec![0i32; txfm_size_row];
+
+    // Columns
+    for c in 0..txfm_size_col {
+        if !cfg.ud_flip {
+            for r in 0..txfm_size_row {
+                temp_in[r] = input[r * input_stride + c] as i32;
+            }
+        } else {
+            for r in 0..txfm_size_row {
+                temp_in[r] = input[(txfm_size_row - r - 1) * input_stride + c] as i32;
+            }
+        }
+        round_shift_array(&mut temp_in, -(shift[0] as i32));
+        col_func(&temp_in, &mut temp_out, cos_bit_col);
+        // NOTE the length: only the first row/div entries are shifted.
+        round_shift_array(&mut temp_out[..txfm_size_row / div], -(shift[1] as i32));
+        if !cfg.lr_flip {
+            for r in 0..txfm_size_row {
+                buf[r * txfm_size_col + c] = temp_out[r];
+            }
+        } else {
+            for r in 0..txfm_size_row {
+                buf[r * txfm_size_col + (txfm_size_col - c - 1)] = temp_out[r];
+            }
+        }
+    }
+
+    // Rows — only the first row/div of them.
+    let mut row_out = vec![0i32; txfm_size_col];
+    for r in 0..txfm_size_row / div {
+        row_out.copy_from_slice(&output[r * txfm_size_col..(r + 1) * txfm_size_col]);
+        row_func(
+            &buf[r * txfm_size_col..(r + 1) * txfm_size_col],
+            &mut row_out,
+            cos_bit_row,
+        );
+        round_shift_array(&mut row_out[..txfm_size_col / div], -(shift[2] as i32));
+        if rect_type.abs() == 1 {
+            for v in row_out.iter_mut().take(txfm_size_col / div) {
+                *v = round_shift_i64(*v as i64 * NEW_SQRT2 as i64, NEW_SQRT2_BITS);
+            }
+        }
+        output[r * txfm_size_col..(r + 1) * txfm_size_col].copy_from_slice(&row_out);
+    }
+
+    // Zero everything outside the top-left (col/div) x (row/div) quadrant.
+    for i in 0..(txfm_size_col * txfm_size_row) {
+        if i % txfm_size_col >= (txfm_size_col / div) || i / txfm_size_col >= (txfm_size_row / div)
+        {
+            output[i] = 0;
+        }
+    }
+}
+
+/// Forward 2-D transform at a reduced coefficient shape.
+///
+/// `shape` selects the C entry family: `N2` is `svt_aom_transform_two_d_*_N2_c`
+/// / `svt_av1_fwd_txfm2d_*_N2_c`, `N4` the `_N4_c` twins. Returns `false` for
+/// the `(ADST, 32)` hole where C would dispatch the unpruned `av1_fadst32_new`
+/// (see [`fwd_txfm_type_to_func_n2`]); `Default` / `OnlyDc` are not this
+/// module's entries and also return `false`.
+///
+/// `input` is the int16 residual at `input_stride`; `output` is a full
+/// `w * h` coefficient block whose entries outside the kept quadrant are
+/// zeroed, exactly as C leaves them.
+pub fn fwd_txfm2d_pf(
+    input: &[i16],
+    output: &mut [i32],
+    input_stride: usize,
+    tx_size: TxSize,
+    tx_type: TxType,
+    shape: TxCoeffShape,
+) -> bool {
+    let div = match shape {
+        TxCoeffShape::N2 => 2,
+        TxCoeffShape::N4 => 4,
+        _ => return false,
+    };
+    let cfg = transform_config(tx_type, tx_size);
+    let lookup = if div == 2 {
+        fwd_txfm_type_to_func_n2
+    } else {
+        fwd_txfm_type_to_func_n4
+    };
+    let (Some(col_func), Some(row_func)) = (lookup(cfg.txfm_type_col), lookup(cfg.txfm_type_row))
+    else {
+        return false;
+    };
+    transform_two_d_core_pf(input, input_stride, output, &cfg, div, col_func, row_func);
+    true
 }

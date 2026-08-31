@@ -86,6 +86,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/ref_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_mvp_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_me_shims.c");
+    println!("cargo:rerun-if-changed=shims/txfm_pf_shims.c");
     println!("cargo:rerun-if-changed=shims/picstruct_shims.c");
     println!("cargo:rerun-if-changed=shims/md_subpel_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_pred_shims.c");
@@ -158,6 +159,8 @@ fn main() {
         // never share a shim file in one working copy.
         .file(manifest.join("shims/inter_mvp_shims.c"))
         .file(manifest.join("shims/inter_me_shims.c"))
+        // Reduced-coefficient-shape transforms (wp-transforms lane).
+        .file(manifest.join("shims/txfm_pf_shims.c"))
         // mcomp.c sub-pel tree oracle (lane wp-search) — its own TU for the
         // same per-lane-file-ownership reason as the two above.
         .file(manifest.join("shims/md_subpel_shims.c"))
