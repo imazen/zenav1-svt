@@ -93,6 +93,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/sigderiv_shims.c");
     println!("cargo:rerun-if-changed=shims/preanalysis_shims.c");
     println!("cargo:rerun-if-changed=shims/mode_decision_shims.c");
+    println!("cargo:rerun-if-changed=shims/entropy_inter_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -172,6 +173,9 @@ fn main() {
         .file(manifest.join("shims/preanalysis_shims.c"))
         // Mode-decision oracle (lane wp-modedecision) — likewise its own TU.
         .file(manifest.join("shims/mode_decision_shims.c"))
+        // Inter bitstream-syntax oracle (entropy_coding.c inter group) — its
+        // own TU for the same per-lane file-ownership reason.
+        .file(manifest.join("shims/entropy_inter_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))
