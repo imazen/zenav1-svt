@@ -56,6 +56,32 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`transforms.c`'s reduced-coefficient-shape family is ported, tier 1 —
+  76 of 76 `_N2` / `_N4` / `ONLY_DC` functions plus the entry points above
+  them.** New `svtav1-dsp/src/fwd_txfm_pf.rs`: the 26 pruned 1-D kernels
+  (`fdct{4,8,16,32,64}`, `fadst{4,8,16}`, `fidentity{4,8,16,32,64}` in both
+  shapes), `fwd_txfm_type_to_func_N2/_N4`, one 2-D core covering
+  `av1_tranform_two_d_core_{N2,N4}_c` **and** `av1_tranform_two_d_core_c`
+  (`div == 1` reduces to it exactly), all 57 exported 2-D entries, the 54
+  `highbd_fwd_txfm_WxH{,_n2,_n4}` wrappers as one table,
+  `svt_av1_highbd_fwd_txfm{,_n2,_n4}`, `svt_av1_wht_fwd_txfm` (TPL's only
+  transform entry), the ten `svt_handle_transform*{,_N2_N4}_c`,
+  `svt_aom_estimate_transform` + its four static shape dispatchers,
+  `svt_aom_transform_config`, `svt_av1_gen_fwd_stage_range`,
+  `set_fwd_txfm_non_scale_range` and `svt_av1_get_inv_txfm_cfg`.
+  Evidence tier 1 throughout (42 tests in `c_parity_txfm_pf{,_2d,_entry}.rs`
+  and `c_parity_estimate_transform.rs`, new shims in
+  `svtav1-cref/shims/txfm_pf_shims.c`); workspace 1418/1418. Byte-inert on
+  the existing envelope — nothing calls the new module yet; it is the
+  transform surface TPL needs for `ppcs->r0`, which the video-mode CRF
+  qindex derivation (campaign chunk C1a) is gated on.
+  (352cfa0f, 1f085b65, 348ab209, 103ab793)
+- Two upstream defects recorded in `rust/docs/SUSPECTED-C-BUGS.md` #12 and
+  #13, both found while gating the above: `highbd_fwd_txfm_4x16_n2/_n4` call
+  the UNPRUNED 4x16 transform (alone among 18 siblings), and
+  `svt_av1_fwd_txfm2d_*_neon` NULL-derefs at bd > 8 for any ADST-containing
+  tx_type on a 32-dimension block.
+
 - **`svt_aom_generate_av1_mvp_table`'s ref loop is now gated too — chunk C2,
   evidence TIER 1.** The per-ref sweep could not reach it: C keeps ONE
   `Mv mv_ref0[64]` across the whole `ref_frames` loop (adaptive_mv_pred.c:1336)

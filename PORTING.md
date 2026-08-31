@@ -75,6 +75,7 @@ the file header.
 |---|---|
 | `intra_pred` | `intra_prediction.c`, `enc_intra_prediction.c` |
 | `inv_txfm`, `fwd_txfm` | `inv_transforms.c`, `transforms.c` |
+| `fwd_txfm_pf` | `transforms.c` — the reduced-coefficient-shape (`_N2`/`_N4`/`ONLY_DC`) family, the transform config (`svt_aom_transform_config`, `svt_av1_get_inv_txfm_cfg`), and the two entry points above them: `svt_av1_wht_fwd_txfm` (TPL) and `svt_aom_estimate_transform` (MD) |
 | `loop_filter` | `deblocking_filter.c`, `deblocking_common.c`, `av1_loopfilter.c` |
 | `cdef` | `cdef.c`, `cdef_block.c` |
 | `restoration`, `superres` | `restoration.c`, `restoration_pick.c`, `convolve.c` |

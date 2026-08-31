@@ -521,6 +521,75 @@ the producer, or diff the raw bytes and locate the bit). The differ walks the
 header with its own model of the layout; when an earlier field's value moves a
 later field's meaning, the name it prints can point at the wrong one.
 
+## 12. `highbd_fwd_txfm_4x16_n2` / `_n4` call the UNPRUNED 4x16 transform
+
+**Status: REPRODUCED (`fwd_txfm_pf::highbd_entry_shape`), gated at tier 1.**
+
+`svt_av1_highbd_fwd_txfm_n2` / `_n4` fan out to 18 static per-size wrappers
+each. Seventeen of the eighteen call their `_N2` / `_N4` twin. TX_4X16 does
+not:
+
+```c
+static void highbd_fwd_txfm_4x16_n2(int16_t* src_diff, TranLow* coeff, int diff_stride, TxfmParam* txfm_param) {
+    int32_t* dst_coeff = (int32_t*)coeff;
+    svt_av1_fwd_txfm2d_4x16(src_diff, dst_coeff, diff_stride, txfm_param->tx_type, txfm_param->bd);
+}
+```
+
+`transforms.c:4331` (`_n2`) and `:4101` (`_n4`) — both call
+`svt_av1_fwd_txfm2d_4x16`, the FULL-shape entry, so a caller that asked for a
+half- or quarter-shape block gets a fully populated 4x16 coefficient block
+back. Every sibling, TX_16X4 included, calls `..._N2` / `..._N4`.
+
+Found by extracting the callee of all 54 wrappers mechanically, not by reading
+a few; a dispatch table written from the pattern gets it wrong.
+
+**Reachability.** TPL never asks for TX_4X16 (its tx sizes come from
+`src_ops_process.c:380-382`, min TX_16X4), so `svt_av1_wht_fwd_txfm` cannot
+reach it. MD's PF path can, once `apply_pf_on_coeffs` arms on a 4x16 block.
+
+**The port copies it**, in `highbd_entry_shape`
+(`svtav1-dsp/src/fwd_txfm_pf.rs`), and
+`tests/c_parity_txfm_pf_entry.rs::highbd_fwd_txfm_n2_parity` / `_n4_parity`
+drive the real exported symbol at TX_4X16, so the behaviour is pinned rather
+than described.
+
+## 13. `svt_av1_fwd_txfm2d_*_neon` NULL-derefs at bd > 8 for any ADST-containing tx_type on a 32-dimension block
+
+**Status: UNREACHABLE in a conformant stream — but it CRASHES the oracle, so
+any differential over the entry points has to know about it.**
+
+`ASM_NEON/highbd_fwd_txfm_neon.c:1851`:
+
+```c
+static const fwd_transform_1d_col_many_neon col_highbd_txfm32_xn_arr[TX_TYPES] = {
+    highbd_fdct32_col_many_neon, // DCT_DCT
+    NULL, // ADST_DCT
+    NULL, // DCT_ADST
+    ...
+```
+
+`svt_av1_fwd_txfm2d_16x32_neon` (`:2069`) takes the `bd == 8` early-out into
+the lbd kernel, and above it indexes that table by the whole 2-D `tx_type`.
+So DCT_ADST on TX_16X32 at bd 10 fetches NULL and calls it — even though the
+32-point dimension of DCT_ADST is a **DCT**; the table is keyed on the 2-D
+type, not on the 1-D type of the 32-point side.
+
+MEASURED 2026-08-31: calling `svt_av1_highbd_fwd_txfm(..., DCT_ADST, TX_16X32,
+bd 10)` segfaults `libSvtAv1Enc.a` (aarch64, the in-tree Bin/Release build).
+
+**Reachability: none.** No AV1 ext-tx set pairs an ADST with a 32 dimension —
+a block that size takes `EXT_TX_SET_DCT_IDTX` — so the encoder never forms the
+call. The `_c` implementations have no such hole and handle all 16 types.
+
+**Consequence for tests, and it is the reason this entry exists.**
+`tests/c_parity_txfm_pf_entry.rs` and `c_parity_estimate_transform.rs` drive
+C through its RTCD dispatch, so they restrict the tx_type set per size to the
+conformant one (`types_for`). The full 16 x 19 sweep still runs — against the
+`_c` entries, in `c_parity_txfm_pf_2d.rs`. If you widen either RTCD-driven
+test's type set, the test binary dies with SIGSEGV and no assertion message,
+which reads like a harness failure rather than an out-of-envelope call.
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is
