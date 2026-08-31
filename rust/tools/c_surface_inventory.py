@@ -9,9 +9,26 @@ a work queue, not a coverage claim.
 
   tools/c_surface_inventory.py [--tsv out.tsv]
 
-Counts every function DEFINITION in the C encoder tree (Source/Lib/Codec and
-Source/Lib/Globals, excluding the hand-written asm dirs), then looks for the
-name in the Rust tree under rust/crates + rust/svtav1.
+Counts every function DEFINITION in Source/Lib/{Codec, Globals, C_DEFAULT},
+then looks for the name in the Rust tree under rust/crates + rust/svtav1.
+
+SCOPE, and why:
+  Codec, Globals  — the encoder proper.
+  C_DEFAULT       — the SCALAR reference kernels. These are the semantics every
+                    SIMD variant must reproduce, so they are exactly what a
+                    byte-exact port has to match, and leaving them out
+                    understated the surface. (They were missing from this
+                    tool's first run on 2026-08-31: 46 functions, 25 unmatched,
+                    including obmc_variance, obmc_sad, the compound
+                    diffwtd-mask builders and the whole 10-bit pack/unpack
+                    family.)
+  ASM_*           — DELIBERATELY EXCLUDED. Those ~212 .c files are hand-written
+                    AVX2/AVX512/NEON/SVE/SSE implementations of kernels whose
+                    semantics live in C_DEFAULT. This port reaches the same
+                    semantics through archmage dispatch and Rust SIMD, so they
+                    are alternative implementations, not untranslated surface.
+                    Excluding them is a scope judgement, not an oversight — a
+                    PERF coverage map would be a different tool.
 """
 import os, re, subprocess, sys, json
 
@@ -27,7 +44,7 @@ DEF = re.compile(r'^(?:static\s+)?(?:const\s+)?[A-Za-z_][\w \*]*?\b([a-z_][a-z0-
 
 def c_functions():
     out = {}
-    for sub in ("Codec", "Globals"):
+    for sub in ("Codec", "Globals", "C_DEFAULT"):
         d = os.path.join(CSRC, sub)
         if not os.path.isdir(d):
             continue
