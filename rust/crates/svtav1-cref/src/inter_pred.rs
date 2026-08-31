@@ -1841,3 +1841,70 @@ pub fn combine_interintra_highbd(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fast RD models.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_model_rd_from_var_lapndz(
+        var: i64,
+        n_log2: u32,
+        qstep: u32,
+        rate: *mut i32,
+        dist: *mut i64,
+    );
+    fn ref_model_rd_from_sse(
+        bsize: c_int,
+        quantizer: c_int,
+        bit_depth: c_int,
+        sse: u64,
+        simple: c_int,
+        rate: *mut u32,
+        dist: *mut u64,
+    );
+    fn ref_log2f_safe(x: u32) -> c_int;
+    fn ref_get_msb(x: u32) -> c_int;
+}
+
+/// Reference `svt_av1_model_rd_from_var_lapndz` (enc_inter_prediction.c:1933).
+pub fn model_rd_from_var_lapndz(var: i64, n_log2: u32, qstep: u32) -> (i32, i64) {
+    let mut rate = 0i32;
+    let mut dist = 0i64;
+    unsafe { ref_model_rd_from_var_lapndz(var, n_log2, qstep, &mut rate, &mut dist) };
+    (rate, dist)
+}
+
+/// Reference `model_rd_from_sse` (enc_inter_prediction.c:1954).
+pub fn model_rd_from_sse(
+    bsize: i32,
+    quantizer: i32,
+    bit_depth: i32,
+    sse: u64,
+    simple_model_rd_from_var: bool,
+) -> (u32, u64) {
+    let mut rate = 0u32;
+    let mut dist = 0u64;
+    unsafe {
+        ref_model_rd_from_sse(
+            bsize,
+            quantizer,
+            bit_depth,
+            sse,
+            i32::from(simple_model_rd_from_var),
+            &mut rate,
+            &mut dist,
+        )
+    };
+    (rate, dist)
+}
+
+/// Reference `svt_log2f_safe` (definitions.h:612).
+pub fn log2f_safe(x: u32) -> i32 {
+    unsafe { ref_log2f_safe(x) }
+}
+
+/// Reference `get_msb` (definitions.h:617).
+pub fn get_msb(x: u32) -> i32 {
+    unsafe { ref_get_msb(x) }
+}

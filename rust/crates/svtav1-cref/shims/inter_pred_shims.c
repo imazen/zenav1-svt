@@ -551,3 +551,24 @@ void ref_combine_interintra_highbd(int mode, int use_wedge, int wedge_index, int
                                       intrastride,
                                       bd);
 }
+
+/* ---- fast RD models --------------------------------------------------- */
+
+void svt_av1_model_rd_from_var_lapndz(int64_t var, uint32_t n_log2, uint32_t qstep, int32_t* rate, int64_t* dist);
+void model_rd_from_sse(BlockSize bsize, int16_t quantizer, uint8_t bit_depth, uint64_t sse, uint32_t* rate,
+                       uint64_t* dist, uint8_t simple_model_rd_from_var);
+
+void ref_model_rd_from_var_lapndz(int64_t var, uint32_t n_log2, uint32_t qstep, int32_t* rate, int64_t* dist) {
+    svt_av1_model_rd_from_var_lapndz(var, n_log2, qstep, rate, dist);
+}
+
+void ref_model_rd_from_sse(int bsize, int quantizer, int bit_depth, uint64_t sse, int simple, uint32_t* rate,
+                           uint64_t* dist) {
+    model_rd_from_sse(
+        (BlockSize)bsize, (int16_t)quantizer, (uint8_t)bit_depth, sse, rate, dist, (uint8_t)simple);
+}
+
+/* `svt_log2f_safe` is `get_msb(x | 1)` -- an INTEGER msb, not log2f. Exposed so
+   the port's claim about it is checked against the header, not assumed. */
+int ref_log2f_safe(uint32_t x) { return svt_log2f_safe(x); }
+int ref_get_msb(uint32_t x) { return get_msb(x); }
