@@ -129,6 +129,45 @@ ratio() {
   fi
 }
 
+# byteVideoKey <label> <content> <w> <h> <qp> <preset>
+# Asserts the port's VIDEO-mode KEY frame is byte-identical to C's.
+#
+# Not the same cell as byte(): the still/AVIF path and the video path are two
+# different encodes of the same pixels, because almost every C signal
+# derivation forks on `scs->allintra` (see docs/INTER-ENCODE-PLAN.md §1b). A
+# still cell cannot witness a video-arm regression at all.
+#
+# Frame 0 ONLY. The port still REFUSES the inter frame (exit 3, "still/key
+# frames only"), and that refusal is correct behaviour, not a failure — §6.
+# The GOP shape matches identity_diff_inter.sh: low-delay P, flat, key frame 0.
+byteVideoKey() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  # Both sides write per-frame files; a stale one from the previous cell would
+  # be compared silently if this run failed to write (§5, "a silent harness and
+  # a genuine absence are indistinguishable").
+  rm -f "$W"/c.obu.pts* "$W"/rs.obu.f*
+  local rc=0
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+    fail=$((fail+1)); failed+=("$label [port failed to encode, rc=$rc]"); return
+  fi
+  if ! SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+       SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" "$w" "$h" "$qp" "$p" \
+       "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label [C oracle failed]"); return
+  fi
+  if [ ! -e "$W/c.obu.pts0" ] || [ ! -e "$W/rs.obu.f0" ]; then
+    fail=$((fail+1)); failed+=("$label [frame 0 missing on one side]"); return
+  fi
+  if cmp -s "$W/c.obu.pts0" "$W/rs.obu.f0"; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1))
+    failed+=("$label [C=$(wc -c <"$W/c.obu.pts0"|tr -d ' ')B port=$(wc -c <"$W/rs.obu.f0"|tr -d ' ')B]")
+  fi
+}
+
 need_file() { [ -f "$1" ] || { skip=$((skip+1)); skipped+=("$2 — $1 absent"); return 1; }; }
 
 echo "== regression spot-check: one cell per fixed bug =="
@@ -475,6 +514,34 @@ monoReconEq "mono-straddle-control-p6-96x80" "raw:$W/ramp_96x80.yuv" 96 80 10 6
 # longer type-checks.
 SVTAV1_TUNE=3 decodes "tuneiq-chromaq-fh-128"    gradient 128 128 40 6
 SVTAV1_TUNE=3 decodes "tuneiq-chromaq-fh-64-q20" gradient  64  64 20 6
+
+# ---------------------------------------------------------------------------
+# 2026-08-31 — the VIDEO-mode key frame took the ALLINTRA CDEF policy. C picks
+# the CDEF policy in two steps that both fork on `scs->allintra`: a
+# `cdef_search_level` ladder (allintra enc_mode_config.c:2396, video :2083)
+# and then `set_cdef_search_controls` (:891), whose `use_qp_strength` selects
+# the qp closed form over the RDO search. The port carried only the allintra
+# ladder's RESOLVED candidate sets, flattened per preset and gated on
+# `is_single_frame`, so a video key frame fell onto the qp fast path at EVERY
+# preset — where C searches at every preset (`is_base ? 5 : 6` at M6..M7,
+# 7 above).
+#
+# OBSERVED BEFORE the fix, `uniform 64x64 q40` frames=2 frame 0: DIFFERS at
+# presets 0/3/6/8 at IDENTICAL byte counts (28/28/28/30 B) — the divergence is
+# the signalled cdef_y/uv strength inside a same-length header, which is
+# exactly the shape a size-based gate cannot see. AFTER: identical at all four.
+# On `gradient 64x64 q40 p6` the same fix moved cdef_y_pri 1->0 and
+# cdef_y_sec 0->2, matching C, and the first diverging FH field to
+# cdef_uv_pri_strength[0].
+#
+# These are the first VIDEO-mode cells in this gate. They are cheap because
+# flat content is where the video arm is already byte-clean; the gradient
+# cells still differ in the tile payload for reasons upstream of CDEF, so they
+# deliberately are NOT here.
+byteVideoKey "video-key-cdef-p0"  uniform 64 64 40 0
+byteVideoKey "video-key-cdef-p3"  uniform 64 64 40 3
+byteVideoKey "video-key-cdef-p6"  uniform 64 64 40 6
+byteVideoKey "video-key-cdef-p8"  uniform 64 64 40 8
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))

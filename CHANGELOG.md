@@ -80,8 +80,10 @@ Crates are not published to crates.io yet — depend by git.
   Video-mode key frames on flat content become byte-identical end to end
   (`uniform 64x64 q40` frames=2 frame 0, presets 0/3/6/8 = 28/28/28/30 B).
   No still regression: identity_full_8bit 1100/1100, regression_spotcheck
-  35/35, workspace tests 2349/2349, and the six pinned still cells at their
-  expected sizes.
+  39/39, workspace tests 2373/2373, and the six pinned still cells at their
+  expected sizes. `regression_spotcheck.sh` gains its FIRST video-mode cells
+  (`byteVideoKey`, four presets) — they DIFFER at identical byte counts before
+  the fix, which is precisely the shape a size-based gate cannot see.
 
 - **Rate control: the `rc_process.c` group is ported, mostly tier 1 (lane
   `wp-ratecontrol`).** New `svtav1-encoder/src/port_rc_process.rs` +
