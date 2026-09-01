@@ -837,18 +837,25 @@ fn video_key_frame_arm_divergence_at_m6_is_exactly_this_set() {
         (MD_PME, 0, 4, "inter-only"),
         (ME_SUBPEL, 0, 4, "inter-only"),
         (PME_SUBPEL, 0, 2, "inter-only"),
-        (TXT, 8, 7, "OPEN: set_txt_controls case 7 unported"),
-        (CFL, 4, 2, "OPEN: set_cfl_ctrls case 2 unported"),
-        (NIC, 6, 8, "OPEN: nic_level 8 == the still path's M7 row"),
+        (TXT, 8, 7, "HELD on the wip/video-md-arms bookmark"),
+        (CFL, 4, 2, "HELD on the wip/video-md-arms bookmark"),
+        (NIC, 6, 8, "HELD on the wip/video-md-arms bookmark"),
+        (NSQ_SEARCH, 0, 15, "WIRED (part_arm + NsqCfg::for_arm)"),
         (
-            NSQ_SEARCH,
-            0,
-            15,
-            "OPEN: NSQ search is off on the still arm",
+            PD0_LVL,
+            1,
+            3,
+            "OPEN, and the LAST live one on a key frame: PD0_LVL_3 is unimplemented in pd0.rs",
         ),
-        (PD0_LVL, 1, 3, "OPEN: PD0_LVL_3 unimplemented in pd0.rs"),
-        (DEPTH_REMOVAL, 0, 5, "OPEN: depth removal unwired"),
-        (DEPTH_REFINE, 10, 6, "OPEN: depth_refine level 6"),
+        (
+            DEPTH_REMOVAL,
+            0,
+            5,
+            "INERT on a key frame: set_depth_removal_level_controls (enc_mode_config.c:2968) \
+             zeroes `enabled` for an I_SLICE before it ever reads the level, and the port \
+             models that (port_enc_mode_config::common)",
+        ),
+        (DEPTH_REFINE, 10, 6, "WIRED (DrCtrls::for_arm)"),
     ];
 
     let mut actual: Vec<usize> = (0..MD_OUT_SLOTS).filter(|&s| a[s] != d[s]).collect();

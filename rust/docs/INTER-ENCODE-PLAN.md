@@ -199,8 +199,8 @@ At M6, on a video-mode KEY frame:
 | `txt_level` | 8 | 7 | wired on `wip/video-md-arms`, HELD (see below) |
 | `cfl_level` | 4 | 2 | wired on `wip/video-md-arms`, HELD |
 | `nic_level` | 6 | 8 | wired on `wip/video-md-arms`, HELD |
-| `pic_pd0_lvl` | 1 | **3** | OPEN — `PD0_LVL_3` is unimplemented in `pd0.rs` |
-| `pic_depth_removal_level` | 0 | **5** | OPEN — depth removal is unwired in the search |
+| `pic_pd0_lvl` | 1 | **3** | OPEN, and the LAST live divergence at M6 on a key frame. `PD0_LVL_3` is unimplemented in `pd0.rs` |
+| `pic_depth_removal_level` | 0 | 5 | INERT on a key frame — `set_depth_removal_level_controls` (enc_mode_config.c:2968) zeroes `enabled` for an `I_SLICE` before it reads the level, and the port already models that (`port_enc_mode_config::common`). The LEVELS differ; the CONTROLS cannot. |
 | `allow_high_precision_mv`, `is_motion_mode_switchable`, `pic_obmc_level`, `interpolation_search_level`, `interpolation_filter`, `md_nsq_mv_search_level`, `md_pme_level`, `me_subpel_level`, `pme_subpel_level` | | | inter-only, cannot move a key frame's bytes |
 
 At other presets the same probe adds `txs_level` (allintra 0 vs video 4 at M9)
@@ -221,9 +221,8 @@ search.
 **The reference cell is still open**, and the shape of what is left is now
 clear. On `gradient` and `diag` the port UNDER-shoots C's byte count
 (gradient 64x64 q40 p6: port 952 B vs C 961; diag: 146 vs 238). Every video
-ladder wired so far WIDENS the search relative to the still path; the two that
-remain — `pic_pd0_lvl` and `pic_depth_removal_level` — are the PRUNES. Until
-one of them lands the port searches more than C does and finds better RD, which
+ladder wired so far WIDENS the search relative to the still path; the one that
+remains — `pic_pd0_lvl` — is the PRUNE. Until it lands the port searches more than C does and finds better RD, which
 is exactly what a smaller stream at the same qp looks like. Do not read a
 smaller number as "closer".
 
@@ -242,8 +241,9 @@ build:
 | `video-key-rate-arm-p9-72x88` | 1589 B | 1563 B (1.636%) | 1.0% |
 
 Re-deriving a limit is a threshold change and needs the owner's sign-off. The
-better fix is probably to land a PRUNE first (§1c) and re-measure: the drift is
-the search-widening/pruning imbalance above, not a defect in those three arms.
+better fix is probably to land `pic_pd0_lvl` first (§1c) and re-measure: the
+drift is the search-widening/pruning imbalance above, not a defect in those
+three arms.
 Bisected on all eight on/off combinations of (`funnel_arm`, `nic_arm`,
 `DrCtrls::for_arm`), the only configurations where all four cells pass are "all
 three off" and "depth-refinement only" — the latter is what is on `main`.
