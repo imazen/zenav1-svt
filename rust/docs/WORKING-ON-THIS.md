@@ -302,6 +302,9 @@ are unaffected; symbol-level localization needs a GNU-ld host, and
 ```bash
 # one cell, real content, full op-trace diff (crop:/file:/raw: all work)
 tools/ctrace-linux/diff_cell.sh 96 88 33 4 crop:/path/to/screenshot.png
+# the VIDEO-mode sibling (low-delay-P GOP on both sides, frame 0 diffed;
+# the port's inter refusal is expected, not a failure)
+tools/ctrace-linux/vdiff_cell.sh 64 64 40 11 diag
 # raw driver, drop-in for tools/capture_c_trace/capture_c_trace's argv
 SVT_TRACE_OUT=~/tmp/zenav1-ctrace/c.trace \
   tools/ctrace-linux/run.sh 96 88 33 4 in.yuv out.obu 8
@@ -344,6 +347,27 @@ the layout `CLAUDE.md` tells you to work in. A symlink resolves outside the
 `incontainer.sh` reported the submodule as uninitialised — a setup failure that
 reads like a missing `git submodule update --init`. `run.sh` now mounts the
 resolved directory over it when `pwd -P` lands outside the repo.
+
+**`identity_diff.py`'s OP INDEX is not reliable on a video cell; its BYTE
+verdict is.** Its alignment assumes one frame per trace and the still driver's
+prologue, so on a two-frame run it names an op that did not diverge. Use
+`tools/ctrace-linux/optrace_first_diff.py` (which `vdiff_cell.sh` runs for you)
+for the localization: it splits both traces on `W RESET` and compares C frame 0
+against the port's REAL PACK writer, because a run creates more writers than it
+packs frames — MEASURED on `gradient 72x88 q40 p4`, where C has 2 segments and
+the port has FIVE (the per-SB CDF-chain simulation and the tile re-walks each
+have their own). Concatenating the port's segments reports a divergence at op 3
+of a byte-IDENTICAL cell. It also normalizes C's `BOOL` / `BOOLEQ` spellings
+against the port's 2-symbol `CDF` writes; without that, a raw diff of the two
+traces disagrees on every literal bit. Its positive control is any
+byte-identical video cell ("op streams identical").
+
+When it names an op, grep the printed `icdf` value in
+`crates/svtav1-encoder/src/entropy/default_cdfs.rs` — that names the CDF table,
+and the table names the syntax element. That is how a `tx_size` symbol written
+under TX_MODE_LARGEST was found (`docs/INTER-ENCODE-PLAN.md` §1j) on a cell
+whose tree, every leaf field, every luma level and all three recon planes
+already equalled C's.
 
 **Verify the container oracle before trusting a trace from it.** Encode a cell
 that ALREADY agrees on the host and confirm the container's C bytes are

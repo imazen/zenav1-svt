@@ -56,6 +56,32 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`tools/ctrace-linux/vdiff_cell.sh` + `optrace_first_diff.py`** — op-trace
+  localization for a VIDEO-mode cell. `diff_cell.sh` is still-only (it cannot
+  express the low-delay-P GOP, and it treats the port's expected frame-1 inter
+  refusal as a failure), and `identity_diff.py`'s op INDEX is wrong on a
+  two-frame run even though its byte verdict is right. The normalizer splits
+  both traces on `W RESET` and compares C frame 0 against the port's REAL PACK
+  writer — a run creates more writers than it packs frames (measured: C 2
+  segments, port 5 on `gradient 72x88 q40 p4`) — and canonicalizes C's
+  `BOOL`/`BOOLEQ` against the port's 2-symbol `CDF` writes. Positive control:
+  any byte-identical video cell reports "op streams identical". It is what found
+  the `TX_SIZE_CDF` write in the Fixed entry below, and it localizes the one
+  still-open video-key cell (`gradient 72x88 q40 p9`) to a PARTITION symbol at
+  op 3269/10219 — C `PARTITION_NONE`, port `PARTITION_SPLIT`, which
+  `tree_diff.py` then resolves to a RIGHT-EDGE shape divergence (C codes
+  `BLOCK_8X16` on the 8-wide partial column where the port codes `BLOCK_8X8`
+  plus a split; 5 bsize flips, 7 port-only blocks). (edd83bf7)
+
+- `SVT_CCOEF_OUT` now dumps EVERY coded txb when `SVT_CCOEF_XY` is unset (it
+  was pinned-block-only, which cannot answer "which block diverges"), and
+  `SVT_QLEVELS_OUT` gained a pre-quant `co=[]` field so a levels dump can
+  separate "the residual differs" from "the quantizer decision differs". The
+  CCOEF dump is gated on `pcs->cdf_ctrl.update_coef`, which the video arm
+  clears above M8 — so at preset >= 9 an EMPTY file means the probe did not
+  run, not that C coded no coefficients; the comment beside it says so.
+  (edd83bf7)
+
 - **THREE byte-identical VIDEO-MODE KEY frames, and the held `wip/video-md-arms`
   bundle landed with them.** `gradient 72x88 q40` at presets 4 and 5 and
   `screenrep 72x88 q40 p7` are now byte-for-byte C's frame 0; before this they
@@ -883,6 +909,40 @@ Crates are not published to crates.io yet — depend by git.
   `EncodedAvif::{width, height}`. Arbitrary-dims MONOCHROME is a pipeline gap.
 
 ### Fixed
+
+- **The video-mode KEY frame's last two named residuals — both CLOSED, and one
+  was a conformance bug.** `gradient 64x64 q40 p6` (the campaign's reference
+  cell) and `diag 64x64 q40 p11` are now byte-identical to C, as is
+  `gradient 64x64 q40 p11`. Two defects, both an ALLINTRA constant running on
+  every frame:
+  (1) `svt_av1_optimize_b`'s RDOQ rate weight is
+  `plane_rd_mult[allintra || rtc][is_inter][plane_type]` (full_loop.c:994/1085)
+  and the port hardcoded the allintra row (17 luma / 13 chroma). A video frame
+  takes index 0, where CHROMA is **20** — luma is 17 on both arms, so the
+  divergence was chroma-only. Ported as `quant::PLANE_RD_MULT` +
+  `plane_rd_mult()`, selected by a new `allintra_rd_mult` flag on
+  `CodingQuantCfg` / `FunnelFrame` and threaded through `tx_unit_hbd` and the
+  bd10 re-encode. Reference cell 965 B -> 961 B, byte-identical.
+  (2) `encode_block_syntax` gated the per-block `tx_size_cdf` symbol on
+  `is_key` instead of on the frame header's own `tx_mode`, so at video preset
+  >= 10 — where the video arm signals TX_MODE_LARGEST — the port announced
+  LARGEST and coded a `tx_depth` symbol per block anyway: an **undecodable**
+  stream, not just a parity gap. `EntropyCtx` now carries `tx_mode_select`
+  from one helper shared with the header writer, the pack walk and the per-SB
+  CDF-chain simulation. `diag 64x64 q40 p11` 403 B -> 401 B and
+  `gradient 64x64 q40 p11` 1025 B -> 1024 B, both byte-identical.
+  Localized with the C `--wrap` interposers in `tools/ctrace-linux/`
+  (`SVT_CCOEF_OUT`, widened here so an unset `SVT_CCOEF_XY` dumps every coded
+  txb instead of one pinned block; `SVT_QLEVELS_OUT`, which gained a pre-quant
+  `co=[]` field; `SVT_RECON_BIN`) plus the op-trace differ, which put the first
+  divergence at `TX_SIZE_CDF[0][0]` in the first coded block. Spot-check:
+  `video-key-edge-filter-diag-p11` and `video-key-txs-arm-tx-mode-p11`
+  PROMOTED to `byteVideoKey`, new `video-key-rdoq-plane-rd-mult-p6-64x64`.
+  No still regression: `identity_full_8bit` 1100/1100, `regression_spotcheck`
+  50/50 (49 + the new cell), `cargo nextest --workspace` 2415/2415, and the six
+  reference identity cells at their pinned sizes (290 / 839 / 63 / 171 / 580 /
+  693 B). See `rust/docs/INTER-ENCODE-PLAN.md` §1j. (93958230)
+
 
 - **The PD0 -> PD1 subresolution leak does not exist — refuted at tier 1, and
   it was the inter campaign's named next chunk.** `md_stage_1` reads

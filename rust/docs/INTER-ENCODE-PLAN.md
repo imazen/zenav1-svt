@@ -750,10 +750,20 @@ closing the cells.
 **What is still open, said plainly.** `pd0_use_src_samples` is wired on the
 LVL_1 FAMILY only — the refinement path at CLI presets 0..=8. The fixed-tree
 path at preset >= 9 (`pd0_pick_sb_partition_video`, LVL_5 / LVL_6) still
-predicts from source on both arms, and C's video arm does not; that is why
-`diag p11` sits at 0.499 % rather than 0. The reference cell's residual 0.416 %
-is likewise NOT in PD0 — its 75 PD0 blocks are exact — it is downstream of the
-partition decision.
+predicts from source on both arms, and C's video arm does not. The reference
+cell's residual 0.416 % is NOT in PD0 — its 75 PD0 blocks are exact — it is
+downstream of the partition decision.
+
+**CORRECTED 2026-09-01 by §1j, and the correction is the useful part.** The
+sentence above attributed `diag p11`'s 0.499 % to that unwired
+`pd0_use_src_samples`. It was wrong, and the naive repair (wiring it at preset
+>= 9) had already been measured and rejected — no movement on p4/p5/p7, p9 worse
+(0.189 -> 0.378) — which should have retired the reading rather than leaving it
+in place. `diag p11`'s tree, every leaf field, every LUMA level and the
+pre-deblock recon of ALL THREE PLANES were byte-identical to C; the two bytes
+were a `tx_size` symbol the port wrote after its own frame header had signalled
+TX_MODE_LARGEST. `pd0_use_src_samples` at preset >= 9 remains genuinely unwired
+and is now a lead with NO cell attached to it.
 
 **A FOURTH defect, found while verifying the landing, and it is not in PD0.**
 The held bundle passed the five ratio cells but broke a spotcheck cell nobody
@@ -907,6 +917,240 @@ combinations of (edge filter, `txs_arm`, `funnel_arm`, `nic_arm`), the maximal
 all-green configuration is **edge + txs + funnel, nic off**. Edge alone and
 edge+txs both leave `video-key-rate-arm-p9-72x88` at 1.196% against its 1.0
 limit; adding `funnel_arm` brings it to 0.063%.
+
+### 1j. BOTH named residuals CLOSED (2026-09-01) — the RDOQ plane rate weight, and a tx_size symbol the header forbade
+
+`gradient 64x64 q40 p6` — the reference cell, open since the campaign began —
+and `diag 64x64 q40 p11` are **byte-identical video-mode KEY frames**. So are
+`gradient 64x64 q40 p11`, which was the weaker `fhVideoKey` cell. That is SIX
+byte-identical cells on non-degenerate content across five presets (4, 5, 6, 7,
+11), plus the three `screen` cells and `uniform`.
+
+Neither residual was where §1i pointed, and both were found the same way: build
+the observation, then read it.
+
+**Defect 1 — the RDOQ rate weight ran the ALLINTRA row on every frame.**
+`svt_av1_optimize_b` computes `rdmult = ((lambda *
+plane_rd_mult[allintra || rtc][is_inter][plane_type]) * rweight / 100 + 2) >>
+rshift` (full_loop.c:1085). The table (`:994`, the MAINLINE `#else` —
+`TUNE_CHROMA_SSIM` is 0 outside `SVT_HDR_MODE`) is
+
+| first index | intra {luma, chroma} | inter {luma, chroma} |
+|---|---|---|
+| 0 — neither allintra nor rtc (**video**) | {17, **20**} | {16, **20**} |
+| 1 — allintra or rtc | {17, 13} | {16, 10} |
+
+and `crate::quant::rdoq_rdmult_full` hardcoded `if plane_type == 0 { 17 } else
+{ 13 }` — index 1, at every preset, on every frame. **Luma is 17 on both arms**,
+which is why this presented as a chroma-only divergence: every luma-side probe
+this campaign has run would agree, and did. A larger multiplier weights RATE
+more, so C's video-arm RDOQ zeroes chroma coefficients the port keeps.
+
+*How it was localized.* On the reference cell the coded tree, every leaf mode,
+uv mode and angle delta already equalled C's (§1e), and `tools/fh_fields.py`
+reported **zero** differing frame-header fields, so the 4 B were in the tile
+payload. The C `svt_aom_txb_estimate_coeff_bits` `--wrap` interposer
+(`SVT_CCOEF_OUT`) was widened so an UNSET `SVT_CCOEF_XY` dumps EVERY coded txb
+instead of one pinned block — the pinned mode cannot answer "which block
+diverges" without already knowing — and joined against the port's
+`SVTAV1_PACKTREE_COEFF` `PCOEF` dump:
+
+| block | C | port |
+|---|---|---|
+| (0,0) 32x32 | `cbeob=0 creob=0` | `unz=[0:-1,1:-1,16:1]` |
+| (32,0) | `unz=[0:-1]` | `unz=[]` |
+| (0,32) | `unz=[0:-1]` | `unz=[0:-1,1:-1]` |
+| (32,32) | `unz=[0:-1]` | `unz=[16:1]` |
+
+Every LUMA level, `yeob` and `txt` matched to the entry on all four blocks; the
+`txtuv` C reports is exactly `intra_mode_to_tx_type` of the port's own uv modes.
+Prediction was ruled out before quantization was suspected: C's pre-deblock
+recon chroma (`SVT_RECON_BIN`, and block (0,0) has `cbeob = 0` so its recon IS
+its prediction) matches the port's wherever the port's residual is zero.
+
+The table is now `crate::quant::PLANE_RD_MULT` + `plane_rd_mult()`, selected by
+`allintra_rd_mult` = C's `scs->allintra || scs->static_config.rtc`, carried on
+`CodingQuantCfg` and `FunnelFrame` and threaded to `tx_unit_hbd` so the bd10
+re-encode cannot disagree with the 8-bit funnel. `is_inter` is a real axis of
+C's table and is ported, but every call site passes `false`: the pipeline
+refuses inter frames, so those rows are unreachable and say so.
+
+**One thing this deliberately does NOT do, recorded rather than half-done.**
+The fork has its own twin of the table (`full_loop.c:985`, the
+`#if TUNE_CHROMA_SSIM` arm, which `SVT_HDR_MODE` defines to 1) whose two arm
+rows are BOTH the allintra numbers — so in fork mode the arm index is inert and
+chroma stays at 13/10. `quant::PLANE_RD_MULT` is the MAINLINE table only, and
+the RDOQ path in the funnel (`FunnelFrame`) carries no `hdr_fork` flag today
+(only its derived `sharp_tx_active` / `noise_norm_strength` / `qm_levels`),
+where `CodingQuantCfg` does. So a FORK-mode VIDEO frame would take mainline's
+chroma 20. That combination has no gate and no cell in this repo; threading the
+flag through 14 `tx_unit_hbd` call sites to fix an unmeasured path is not worth
+doing blind, so it is written down here instead of guessed at. Whoever picks it
+up: `CodingQuantCfg::hdr_fork` is already the right input for the encode-pass
+site; only the funnel needs the new field.
+
+**Defect 2 — the walk wrote a `tx_size` symbol the frame header had forbidden,
+and that is a CONFORMANCE bug.** §2d's chunk fixed the HEADER half of
+`frm_hdr->tx_mode` (the video arm signals `TX_MODE_LARGEST` from preset 10 up,
+where the allintra arm signals `TX_MODE_SELECT` unconditionally). The WALK half
+was not fixed: `encode_block_syntax` gated the per-block `tx_size_cdf` symbol on
+`is_key` — the allintra rule again — so at video preset >= 10 the port announced
+TX_MODE_LARGEST and then coded one `tx_depth` symbol per block anyway. A decoder
+reading that stream is desynchronised from the first block.
+
+*How it was localized.* Everything decodable already agreed: `tree_diff.py` on
+`diag 64x64 q40 p11` reported **22 blocks joined, 0 field flips, 0 C-only / 0
+port-only geometry**; C's luma `SVT_QLEVELS_OUT` dump matched the port's `PCOEF`
+on `eob`, `txt` and every level for all 22; and the pre-deblock recon planes were
+BYTE-IDENTICAL on all three planes. That leaves only the entropy layer, so the
+op-trace differ was the right tool — and on macOS it only exists in
+`tools/ctrace-linux/` (`ld64` has no `--wrap`, §5). Its `vdiff_cell.sh` +
+`optrace_first_diff.py` (both landed with this chunk) put the first divergence
+at **op 7, inside the FIRST coded block**: the port emits
+`CDF nsyms=2 s=0 icdf=[12800]`, which is `TX_SIZE_CDF[0][0]`, and C emits
+nothing.
+
+`EntropyCtx` now carries `tx_mode_select` — the same bit the header writes, from
+one helper (`EncodePipeline::frame_tx_mode_select`) — beside `seq_filter_intra`
+and `allow_sct`, the two frame-level syntax gates it already held. The funnel
+walk and the per-SB CDF-chain simulation read it too, or the chain evolves
+different CDFs from the pack.
+
+**Per-cell, frame 0, % off C's byte count.** The "before" column is a real A/B
+on ONE build with both of this chunk's fixes forced back to `main`'s behaviour,
+not a value copied from an earlier section:
+
+| cell | before | after |
+|---|--:|--:|
+| `gradient 64x64 q40 p6` (the reference cell) | 0.416 | **0.000, BYTE-IDENTICAL** |
+| `diag 64x64 q40 p11` | 0.499 | **0.000, BYTE-IDENTICAL** |
+| `gradient 64x64 q40 p11` | 0.195 (1026 B vs C 1024) | **0.000, BYTE-IDENTICAL** |
+| `gradient 72x88 q40 p4` | 0.000 | 0.000, byte-identical |
+| `gradient 72x88 q40 p5` | 0.000 | 0.000, byte-identical |
+| `screenrep 72x88 q40 p7` | 0.000 | 0.000, byte-identical |
+| `screen 64x64 q20/q40/q55 p6` | 0.000 | 0.000, byte-identical |
+| `gradient 72x88 q40 p9` | 0.000 (SIZE only) | 0.189 (1586 B vs C 1589) |
+
+The p9 row is the honest one. §1i recorded that its `0.000 %` was a SIZE
+coincidence and not byte-identity (`C=1589B port=1589B`, different bytes); the
+chroma rate weight moves it to 1586 B, so the coincidence is gone and the ratio
+now reads 0.189 % against its 1.0 limit. It is the last open video-key cell in
+the scoreboard, and it is now LOCALIZED rather than merely open:
+
+```
+tools/ctrace-linux/vdiff_cell.sh 72 88 40 9 gradient
+```
+
+puts its first diverging op at index **3269 of 10219**, and it is a PARTITION
+symbol — `CDF n=10` on identical `icdf` and identical `rng`, C coding **s=0**
+(PARTITION_NONE) where the port codes **s=3** (SPLIT). Everything before it
+agrees to the op, so the first ~3200 ops of the frame are already exact.
+`SVTAV1_TRACEMARK=1` puts that op just after the leaf at `mi=(4,12)`.
+
+`tree_diff.py` on the same cell then says what the shape of the remaining work
+is, and it is a CHUNK rather than a one-liner: **44 blocks joined, 0 C-only / 7
+port-only geometry, 5 `bsize` flips, 7 mode and 7 uv flips.** Every `bsize` flip
+is C coding `BLOCK_8X16` where the port codes `BLOCK_8X8` plus a split, and all
+five sit at **`mi_col` 16 or 0 of the partial column** — x = 64 on a 72-wide
+frame, i.e. the RIGHT-EDGE superblock, whose width is 8:
+
+```
+FLIP mi=(0,16) bsize C=4 port=3        FLIP mi=(8,16)  bsize C=4 port=3
+FLIP mi=(8,0)  bsize C=6 port=3        FLIP mi=(12,16) bsize C=4 port=3
+                                        FLIP mi=(16,16) bsize C=4 port=3
+port-only mi: (2,16), (8,2), (10,0)
+```
+
+So p9 is an EDGE partition divergence on the fixed-tree PD0 path
+(`pd0_pick_sb_partition_video`, PD0_LVL_5 at this qp band per §1g), not a rate,
+metric or entropy defect. It is the natural next chunk and it has no cell
+attached to it beyond the existing `ratioVideoKey` limit of 1.0, which it is
+inside.
+
+Two steps of that chunk are already done, so the next session starts from a
+NAMED hypothesis rather than a search.
+
+*Ruled out.* `pd0.rs`'s `forced_split = both_false || (one_false &&
+!nsq_enabled)` is the C rule that makes a thin right edge descend to all-8x8
+when NSQ geometry is off, and the video arm never turns NSQ geometry off — the
+call site already passes `part_arm::nsq_geom_enabled(sc_arm, preset)`. So the
+node is NOT force-split; the edge path is reached.
+
+*The hypothesis.* Inside that path the edge SHAPE is priced only for the LVL_1
+family: `if one_false && self.is_lvl1_family()` picks the fitting
+`lvl1_block_cost_rect(half, sq_size)`, and the `else` costs the full SQUARE.
+Its own comment says why that matters — "The square block would over-cost
+(twice the pixels/coeffs) and wrongly lose to SPLIT" — and then says
+"LVL_5/6 boundary nodes keep the square cost". That restriction was safe on the
+ALLINTRA arm, where `nsq_geom_level` is 0 above M6 so an LVL_5/6 boundary node
+force-splits before it can be costed at all. On the VIDEO arm NSQ geometry is
+never off, so at p9 a one-false node reaches the `else` and is priced as a
+square that cannot fit — which is exactly "the port splits to 8x8 where C codes
+8x16". The same `is_lvl1_family()` guard sits on the boundary SPLIT rate a few
+lines below.
+
+C says the guard is wrong, and says it in two places that carry NO pd0-level
+condition:
+
+* `set_blocks_to_test` (enc_dec_process.c:1394) zeroes `tot_shapes` on an
+  incomplete node only when NSQ geom is DISABLED or the square is at/below
+  `MAX(min_nsq, min_nsq_block_size)`; otherwise its loop injects exactly the
+  fitting shape — `has_cols` keeps PART_H, `has_rows` keeps PART_V
+  (`:1420-1423`). `min_nsq` is 4 for `PD_PASS_0`.
+* `svt_aom_pick_partition_pd0` (product_coding_loop.c:10534-10544) re-checks
+  the same thing and then costs `get_blk_geom_mds(mds_idx +
+  ns_blk_offset_md[shape])` — the RECTANGLE, not the square.
+
+Neither reads `pd0_ctrls.pd0_level`. (`mode_decision_update_neighbor_arrays_pd0`
+at `:126` says the same in prose — "either PART_N or PART_H/PART_V for boundary
+blocks where PART_N is invalid" — but do not lean on its "LPD0" wording: that
+function runs at every level, so the word is not a level claim.)
+
+**Still not measured.** This is a reading of C plus a reading of the port's own
+comment, not an A/B, and neither C's LVL_5 boundary shape nor its cost has been
+dumped on the cell. Do that before changing the guard — the last three sessions
+each refuted a premise that read exactly this convincing.
+
+**Two tools landed with this chunk**, because both were built here and neither
+belongs in scratch: `tools/ctrace-linux/vdiff_cell.sh` (the VIDEO-mode sibling
+of `diff_cell.sh` — the still one cannot express the GOP, and the port's frame-1
+refusal is expected rather than a failure) and
+`tools/ctrace-linux/optrace_first_diff.py`. The second exists because
+`identity_diff.py`'s op INDEX is wrong on a video cell while its byte verdict is
+right; see `docs/WORKING-ON-THIS.md` §5 for the two normalizations it does and
+the positive control it passes.
+
+**Two cells PROMOTED, one added** (`tools/regression_spotcheck.sh`):
+`video-key-edge-filter-diag-p11` ratioVideoKey -> byteVideoKey,
+`video-key-txs-arm-tx-mode-p11` fhVideoKey -> byteVideoKey, and a new
+`video-key-rdoq-plane-rd-mult-p6-64x64` (gradient 64x64 q40 p6: 965 B -> 961 B,
+byte-identical). Each was measured BOTH ways on one build by forcing its fix off.
+
+**A method note worth more than either fix, and the next sweep it names.** Both
+defects are the same shape as `enable_intra_edge_filter` (§1c) and
+`mds0_use_hadamard_sb` (§1e): an ALLINTRA constant baked into a place that runs
+on every frame, OUTSIDE `sig_deriv_mode_decision_config` and therefore invisible
+to the 52-slot arm diff §1c is built on. That table is necessary and not
+sufficient, and this is the third time it has said so.
+
+The bounded list of places left to check is the DIRECT reads —
+`grep -rn 'scs->allintra\|static_config\.rtc' Source/Lib/Codec/` — 30-odd hits
+outside `enc_mode_config.c`, of which `full_loop.c:1045-1046` was one. Two were
+opened while writing this, and only one matters:
+
+* **`enc_cdef.c:913` is LIVE and writes the frame header directly.** Inside
+  `cdef_search_ctrls->use_qp_strength`, C picks the screen-content class as
+  `allintra ? sc_class5 : sc_class1` and feeds it to `svt_pick_cdef_from_qp`,
+  which sets `cdef_y_strength[0]` / `cdef_uv_strength[0]` and returns before any
+  search. Not reached on the cells above (their CDEF search runs), so it is a
+  LEAD, not a measurement.
+* `coding_loop.c:1603` is `tot_intra_coded_area` / `tot_hp_coded_area`
+  bookkeeping — byte-inert for a key frame's own bytes.
+
+The rest (`enc_dec_process.c:2951/3040-3047/3097`, `md_config_process.c:899/924`,
+`md_process.c:220`, `rest_process.c:76`, `pic_analysis_process.c:415`,
+`rc_crf_cqp.c:396`, `pcs.c:386`) are UNAUDITED. Read them before guessing at
+another ladder.
 
 ## 2. Chunks
 
