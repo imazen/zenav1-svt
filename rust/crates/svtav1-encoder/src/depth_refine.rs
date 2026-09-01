@@ -2678,6 +2678,7 @@ mod tests {
                 0,
                 None,
                 64,
+                None,
             );
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
@@ -2713,6 +2714,7 @@ mod tests {
             0,
             None,
             64,
+            None,
         );
         assert!(!eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 1527856, &tables);
@@ -2750,6 +2752,7 @@ mod tests {
             0,
             None,
             64,
+            None,
         );
         assert!(eval.split);
         let scan = build_refined_scan(&eval, &ctrls, 25650, &tables);

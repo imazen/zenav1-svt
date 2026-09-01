@@ -744,19 +744,84 @@ fn energy(coeff: &[i32], stride: usize, w: usize, h: usize) -> u64 {
 /// `qindex_off` (the caller applies `rate_est_ctrls.lpd0_qp_offset`),
 /// frequency-domain SSE + three_quad_energy, and the dist shift.
 ///
-/// Returns (eob, dist, packed qcoeff, packed C TxSize).
-fn tx_quant_core(
-    residual: &[i32],
-    sq_size: usize,
-    tx_h: usize,
-    qindex_off: u8,
-    qm_level: u8,
-    subres_step: u32,
-) -> (u16, u64, Vec<i32>, usize) {
-    use svtav1_types::transform::{TxSize, TxType};
-    // tx size after the subres remap (perform_tx_pd0): the residual is
-    // sq_size x tx_h with tx_h = sq_size >> subres_step.
-    let (tx_size, c_tx_size) = match (sq_size, tx_h) {
+/// C's PD0 RECON neighbour state for one superblock — the port's model of
+/// `ctx->recon_neigh_y` while `pd0_use_src_samples` is FALSE.
+///
+/// **Why it exists.** `svt_aom_sig_deriv_enc_dec_pd0` sets
+/// `ctx->pd0_use_src_samples = allintra || pcs->hbd_md`
+/// (enc_mode_config.c:7309), so on a VIDEO frame PD0 does NOT copy the source
+/// row/column into the recon-neighbour arrays. Instead every PD0 block
+/// predicts from the RECON that PD0 itself generates
+/// (`av1_perform_inverse_transform_recon`, product_coding_loop.c:8438) and
+/// writes back through `mode_decision_update_neighbor_arrays_pd0` (:121) at
+/// the points where a node's partition is DECIDED. MEASURED with the
+/// `SVT_PD0COST_OUT` interposer on `gradient 64x64 q40 p6` video: with the
+/// level and subres right but the prediction still from source, C and the port
+/// agree to the unit on every block that has NO neighbour and diverge on every
+/// block that has one.
+///
+/// **Why a pixel canvas and not the 1-D arrays.** C's neighbour array keeps,
+/// per column, the bottom row of the last block written there, and per row the
+/// right column. PD0's decided blocks TILE the superblock, so for every read
+/// the C array holds exactly the canvas pixel at `(x, y-1)` / `(x-1, y)` — the
+/// canvas is equivalent and it lets the existing
+/// [`crate::partition::extract_neighbors_tiled`] supply C's `n_top_px` /
+/// `n_left_px` clamp and edge replication unchanged.
+///
+/// The canvas covers rows `sb_y - 1 ..= sb_y + 64` at the frame's aligned
+/// stride, seeded from the MD recon of the already-coded superblocks — which
+/// is what C's arrays hold at SB entry, since `copy_neighbour_arrays_pd0`
+/// snapshots the live MD arrays (enc_dec_process.c:2980) rather than clearing
+/// them.
+struct Pd0ReconCanvas {
+    buf: alloc::vec::Vec<u8>,
+    stride: usize,
+    /// Frame row the canvas's row 0 corresponds to (`sb_y - 1`, or 0).
+    y0: usize,
+}
+
+/// The number of canvas rows: 1 above + 64 SB + 1 so a 64-tall block's left
+/// column read (`abs_y .. abs_y + 64` at canvas row `abs_y - y0`) stays in
+/// bounds instead of tripping `extract_neighbors_tiled`'s length guard.
+const PD0_CANVAS_ROWS: usize = 66;
+
+impl Pd0ReconCanvas {
+    /// Seed from the frame's MD recon plane at this SB's origin.
+    fn new(recon: &[u8], stride: usize, sb_y: usize) -> Self {
+        let y0 = sb_y.saturating_sub(1);
+        let mut buf = alloc::vec![128u8; stride * PD0_CANVAS_ROWS];
+        for r in 0..PD0_CANVAS_ROWS {
+            let src = (y0 + r) * stride;
+            if src + stride <= recon.len() {
+                buf[r * stride..r * stride + stride].copy_from_slice(&recon[src..src + stride]);
+            }
+        }
+        Self { buf, stride, y0 }
+    }
+
+    /// C `svt_aom_update_recon_neighbor_array` for one decided node: the
+    /// block's recon becomes the neighbour reference for everything below and
+    /// to the right of it. The straddle clip is `commit_leaf`'s — a block
+    /// reaching past the aligned stride must not wrap into the next row.
+    fn write(&mut self, abs_x: usize, abs_y: usize, bw: usize, bh: usize, recon: &[u8]) {
+        let wr = bw.min(self.stride.saturating_sub(abs_x));
+        for r in 0..bh {
+            let row = (abs_y + r).saturating_sub(self.y0);
+            if row >= PD0_CANVAS_ROWS || wr == 0 {
+                continue;
+            }
+            let dst = row * self.stride + abs_x;
+            self.buf[dst..dst + wr].copy_from_slice(&recon[r * bw..r * bw + wr]);
+        }
+    }
+}
+
+/// C `perform_tx_pd0`'s tx size after the subres remap
+/// (product_coding_loop.c:4318-4344): the residual is `bw x tx_h` with
+/// `tx_h = bh >> mds_subres_step`. Returns the port enum and C's TxSize index.
+fn pd0_tx_size(bw: usize, tx_h: usize) -> (svtav1_types::transform::TxSize, usize) {
+    use svtav1_types::transform::TxSize;
+    match (bw, tx_h) {
         (64, 64) => (TxSize::Tx64x64, 4usize),
         (64, 32) => (TxSize::Tx64x32, 12),
         (32, 32) => (TxSize::Tx32x32, 3),
@@ -772,8 +837,26 @@ fn tx_quant_core(
         (32, 64) => (TxSize::Tx32x64, 11),
         (16, 32) => (TxSize::Tx16x32, 9),
         (8, 16) => (TxSize::Tx8x16, 7),
-        _ => unreachable!("PD0 tx {}x{}", sq_size, tx_h),
-    };
+        _ => unreachable!("PD0 tx {bw}x{tx_h}"),
+    }
+}
+
+/// Returns (eob, dist, packed qcoeff, packed C TxSize, packed dqcoeff).
+///
+/// The DEQUANTIZED coefficients come back too because C's video PD0 needs
+/// them: with `pd0_use_src_samples = false` the block's RECON feeds the next
+/// block's intra prediction, and recon is `pred + inverse_transform(dqcoeff)`.
+/// The allintra paths ignore the extra value.
+fn tx_quant_core(
+    residual: &[i32],
+    sq_size: usize,
+    tx_h: usize,
+    qindex_off: u8,
+    qm_level: u8,
+    subres_step: u32,
+) -> (u16, u64, Vec<i32>, usize, Vec<i32>) {
+    use svtav1_types::transform::TxType;
+    let (tx_size, c_tx_size) = pd0_tx_size(sq_size, tx_h);
 
     let mut coeffs = vec![0i32; sq_size * tx_h];
     svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
@@ -858,7 +941,7 @@ fn tx_quant_core(
     };
     dist <<= subres_step;
 
-    (eob, dist, qcoeff, c_tx_size)
+    (eob, dist, qcoeff, c_tx_size, dqcoeff)
 }
 
 // ---------------------------------------------------------------------------
@@ -945,9 +1028,24 @@ impl TxTypeRatesDc {
     }
 }
 
+/// C `mds_fast_coeff_est_level` on the PD0 pass
+/// (`ctx->rate_est_ctrls.pd0_fast_coeff_est_level`, product_coding_loop.c:7026).
+/// `set_rate_est_ctrls` (enc_mode_config.c:6428) assigns 2 for every PD0
+/// `rate_est_level` this port reaches — 0, 2 and 4 — and 1 only at level 1,
+/// which `svt_aom_sig_deriv_enc_dec_pd0` never selects (it picks 0, 2 or 4 and
+/// then raises with `MAX`). MEASURED from C on the reference cell:
+/// `SVT_PD0CFG_OUT` reports `fastcoef=2` on both arms.
+const PD0_FAST_COEFF_EST_LEVEL: i32 = 2;
+
 /// C `av1_cost_coeffs_txb_loop_cost_eob` (rd_cost.c:255) for plane Y,
-/// DCT_DCT (TX_CLASS_2D), dc_sign_ctx 0, `mds_fast_coeff_est_level = 2`,
-/// `mds_subres_step = 0` — the PD0_LVL_1 configuration. `eob >= 1`.
+/// DCT_DCT (TX_CLASS_2D), dc_sign_ctx 0, `mds_fast_coeff_est_level = 2`.
+/// `eob >= 1`.
+///
+/// `subres_step` is C's `ctx->mds_subres_step`, and it is LOAD-BEARING in the
+/// middle loop: `c_start = MIN(eob - 2, eob / MAX(1, fast_coeff_est_level -
+/// mds_subres_step))` (rd_cost.c:329). At step 0 the divisor is 2 and half the
+/// scan is priced; at step 1 it is 1 and the WHOLE scan is priced. Dropping
+/// that term under-prices a sub-sampled PD0 block by up to 2x.
 #[allow(clippy::too_many_arguments)]
 fn loop_cost_eob_pd0(
     qcoeff: &[i32],
@@ -957,6 +1055,7 @@ fn loop_cost_eob_pd0(
     costs: &crate::quant::TxbCosts,
     levels_buf: &[u8],
     bwl: usize,
+    subres_step: u32,
 ) -> i32 {
     use crate::entropy::coeff_c as cc;
     const TX_CLASS: usize = cc::TX_CLASS_2D;
@@ -1034,10 +1133,11 @@ fn loop_cost_eob_pd0(
             }
         }
     }
-    // Optimized middle loop: only the first eob/(fast_coeff_est_level -
-    // subres_step) = eob/2 scan positions (excluding DC and eob-1) are
-    // priced; the rest contribute nothing.
-    let c_start = (eob as i32 - 2).min(eob as i32 / 2);
+    // Optimized middle loop (rd_cost.c:329): only the first
+    // `eob / MAX(1, fast_coeff_est_level - mds_subres_step)` scan positions
+    // (excluding DC and eob-1) are priced; the rest contribute nothing.
+    let denom = (PD0_FAST_COEFF_EST_LEVEL - subres_step as i32).max(1);
+    let c_start = (eob as i32 - 2).min(eob as i32 / denom);
     let mut cost_literal_cnt = 0u32;
     let mut c = c_start;
     while c >= 1 {
@@ -1073,6 +1173,7 @@ fn cost_coeffs_txb_pd0(
     c_tx_size: usize,
     tables: &crate::quant::CoeffCostTables,
     tx_rates: &TxTypeRatesDc,
+    subres_step: u32,
 ) -> i32 {
     use crate::entropy::coeff_c as cc;
     debug_assert!(eob > 0);
@@ -1103,15 +1204,22 @@ fn cost_coeffs_txb_pd0(
         cc::TX_CLASS_2D,
         &mut coeff_contexts,
     );
-    cost + loop_cost_eob_pd0(
-        qcoeff,
-        eob,
-        scan,
-        &coeff_contexts,
-        coeff_costs,
-        &levels_buf,
-        bwl,
-    )
+    let cost = cost
+        + loop_cost_eob_pd0(
+            qcoeff,
+            eob,
+            scan,
+            &coeff_contexts,
+            coeff_costs,
+            &levels_buf,
+            bwl,
+            subres_step,
+        );
+    // C `svt_aom_txb_estimate_coeff_bits_pd0` (rd_cost.c:1224):
+    // `*y_txb_coeff_bits <<= ctx->mds_subres_step` — the sub-sampled residual
+    // stands in for the full one, so its RATE is scaled the same way its
+    // DISTORTION is. Only the eob != 0 branch shifts; the skip cost does not.
+    cost << subres_step
 }
 
 /// C `av1_cost_skip_txb` (rd_cost.c:213) at context 0: the eob == 0 rate.
@@ -1584,6 +1692,22 @@ struct Pd0Ctx<'a> {
     /// 0 so eff-M9 / bd10 are provably untouched.
     tile_top: usize,
     tile_left: usize,
+    /// C `ctx->recon_neigh_y` while `pd0_use_src_samples` is FALSE — the
+    /// VIDEO arm at every PD0 level (`allintra || hbd_md`,
+    /// enc_mode_config.c:7309). `None` = the ALLINTRA behaviour this port has
+    /// always had: predict every PD0 block from the SOURCE row/column, which
+    /// is exactly what C's `md_encode_block_pd0` copies into the arrays when
+    /// the flag is set (product_coding_loop.c:8370).
+    ///
+    /// Wired on the LVL_1 FAMILY only. LVL_5 / LVL_6 (CLI preset >= 9) are
+    /// still source-predicted on both arms — a REAL remaining gap, recorded in
+    /// `docs/INTER-ENCODE-PLAN.md`, not a claim that C differs there.
+    recon_canvas: Option<Pd0ReconCanvas>,
+    /// The recon of the block [`Pd0Ctx::lvl1_block_cost_rect`] just costed,
+    /// held until [`Pd0Ctx::pick`] knows whether this node's partition was
+    /// DECIDED (C only writes the arrays at the decision points, never for a
+    /// block whose node ends up SPLIT).
+    pending_recon: Option<alloc::vec::Vec<u8>>,
 }
 
 /// C `svt_aom_partition_rate_cost` at PD0: neighbor partition contexts are
@@ -1704,7 +1828,7 @@ impl<'a> Pd0Ctx<'a> {
             }
         }
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
-        let (eob, dist, _qcoeff, _c_tx) =
+        let (eob, dist, _qcoeff, _c_tx, _dq) =
             tx_quant_core(&residual, sq_size, tx_h, qindex_off, self.qm_level, step);
         // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
@@ -1736,18 +1860,44 @@ impl<'a> Pd0Ctx<'a> {
     fn lvl1_block_cost_rect(&mut self, bw: usize, bh: usize, org_x: usize, org_y: usize) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
-        let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors_tiled(
-            self.src,
-            self.stride,
-            abs_x,
-            abs_y,
-            bw,
-            bh,
-            self.tile_top,
-            self.tile_left,
-            self.aligned_w,
-            self.aligned_h,
-        );
+        // C `md_encode_block_pd0` (product_coding_loop.c:8370): with
+        // `pd0_use_src_samples` the SOURCE row/column is copied into the recon
+        // neighbour arrays, so predicting straight off the source plane IS the
+        // allintra arm. Without it the arrays hold PD0's own recon, and the
+        // canvas is that state. The availability, `n_top_px`/`n_left_px` clamp
+        // and edge replication are the SAME function either way.
+        let (above, left, _tl, has_above, has_left) = match self.recon_canvas.as_ref() {
+            None => crate::partition::extract_neighbors_tiled(
+                self.src,
+                self.stride,
+                abs_x,
+                abs_y,
+                bw,
+                bh,
+                self.tile_top,
+                self.tile_left,
+                self.aligned_w,
+                self.aligned_h,
+            ),
+            Some(cv) => {
+                // Shift the row axis into the canvas's window. `tile_top` and
+                // `aligned_h` shift with it, so `abs_y > tile_top` and
+                // `aligned_h - abs_y` are unchanged; the column axis is not
+                // windowed at all.
+                crate::partition::extract_neighbors_tiled(
+                    &cv.buf,
+                    cv.stride,
+                    abs_x,
+                    abs_y - cv.y0,
+                    bw,
+                    bh,
+                    self.tile_top.saturating_sub(cv.y0),
+                    self.tile_left,
+                    self.aligned_w,
+                    self.aligned_h - cv.y0,
+                )
+            }
+        };
         let mut pred = vec![0u8; bw * bh];
         svtav1_dsp::intra_pred::predict_dc(
             &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
@@ -1787,7 +1937,7 @@ impl<'a> Pd0Ctx<'a> {
                 residual[r * bw + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
             }
         }
-        let (eob, dist, qcoeff, c_tx) =
+        let (eob, dist, qcoeff, c_tx, dqcoeff) =
             tx_quant_core(&residual, bw, tx_h, self.qindex, self.qm_level, step);
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
@@ -1803,10 +1953,77 @@ impl<'a> Pd0Ctx<'a> {
         } else if eob == 0 {
             cost_skip_txb_pd0(c_tx, &tables.coeff) as u64
         } else {
-            cost_coeffs_txb_pd0(&qcoeff, eob, c_tx, &tables.coeff, &tables.tx_rates) as u64
+            cost_coeffs_txb_pd0(&qcoeff, eob, c_tx, &tables.coeff, &tables.tx_rates, step) as u64
         };
         let rate = bits + tables.skip0_bits + tables.none_bits_ctx0;
-        rdcost(self.lambda, rate, dist)
+        let cost = rdcost(self.lambda, rate, dist);
+        // C `md_encode_block_pd0` (product_coding_loop.c:8429): on the VIDEO
+        // arm PD0 generates the block's RECON so the next block can predict
+        // from it. `av1_perform_inverse_transform_recon` (:752) inverts the
+        // SUB-SAMPLED transform into the recon's EVEN rows at a doubled stride
+        // and then copies each even row down onto the odd row below it (:859);
+        // with no coefficients it is a straight `svt_av1_picture_copy_y` of
+        // the prediction (:873).
+        if self.recon_canvas.is_some() {
+            let mut recon = alloc::vec![0u8; bw * bh];
+            if eob > 0 {
+                let packed_w = bw.min(32);
+                let packed_h = tx_h.min(32);
+                let mut full = alloc::vec![0i32; bw * tx_h];
+                for r in 0..packed_h {
+                    for c in 0..packed_w {
+                        full[r * bw + c] = dqcoeff[r * packed_w + c];
+                    }
+                }
+                let mut inv = alloc::vec![0i32; bw * tx_h];
+                let (tx_size, _) = pd0_tx_size(bw, tx_h);
+                svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                    &full,
+                    &mut inv,
+                    bw,
+                    tx_size,
+                    svtav1_types::transform::TxType::DctDct,
+                );
+                for r in 0..tx_h {
+                    let dst = (r << step) * bw;
+                    for c in 0..bw {
+                        recon[dst + c] =
+                            (i32::from(pred[dst + c]) + inv[r * bw + c]).clamp(0, 255) as u8;
+                    }
+                    if step > 0 && (r << step) + 1 < bh {
+                        let (a, b) = recon.split_at_mut(dst + bw);
+                        b[..bw].copy_from_slice(&a[dst..dst + bw]);
+                    }
+                }
+            } else {
+                recon.copy_from_slice(&pred[..bw * bh]);
+            }
+            self.pending_recon = Some(recon);
+        }
+        // `SVTAV1_PD0DBG`: the port-side twin of the C `SVT_PD0COST_OUT`
+        // interposer on `svt_aom_full_cost_pd0`. Same fields, same order, so
+        // the two dumps join block-for-block without a translation step.
+        #[cfg(feature = "std")]
+        if crate::dbgenv::pd0dbg() {
+            eprintln!(
+                "PD0BLK org=({},{}) {}x{} dist={} ybits={} cost={} lambda={} subres={} dc={} ha={} hl={} a0={:?} l0={:?}",
+                abs_x,
+                abs_y,
+                bw,
+                bh,
+                dist,
+                bits,
+                cost,
+                self.lambda,
+                step,
+                pred[0],
+                u8::from(has_above),
+                u8::from(has_left),
+                &above[..above.len().min(4)],
+                &left[..left.len().min(4)]
+            );
+        }
+        cost
     }
 
     /// The LVL_1 FAMILY — every level whose block cost is
@@ -1844,6 +2061,28 @@ impl<'a> Pd0Ctx<'a> {
     /// parent-first DFS returning (cost, eval record) for this square
     /// node; the picked tree is `eval.tree()`.
     fn pick(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> (u64, Pd0Eval) {
+        // The SB root is quadrant 0 of nothing: C's `mds->index` for the root
+        // is 0, which only matters for the `index < 3` leaf-update rule below.
+        let (cost, eval, _) = self.pick_q(sq_size, org_x, org_y, 0);
+        (cost, eval)
+    }
+
+    /// [`Pd0Ctx::pick`] with C's `mds->index` (this node's quadrant inside its
+    /// parent) and the recon hand-back the neighbour-array protocol needs.
+    ///
+    /// The third return is this node's OWN block recon when the caller still
+    /// has to write it — C's `test_split_partition_pd0` tail
+    /// (product_coding_loop.c:10500) updates the arrays for the LAST quadrant,
+    /// which `svt_aom_pick_partition_pd0`'s `mds->index < 3` guard
+    /// deliberately skips "to avoid redundant copies". `None` everywhere the
+    /// node either wrote itself or must not be written (it ended SPLIT).
+    fn pick_q(
+        &mut self,
+        sq_size: usize,
+        org_x: usize,
+        org_y: usize,
+        quad_idx: usize,
+    ) -> (u64, Pd0Eval, Option<(alloc::vec::Vec<u8>, usize, usize)>) {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
         // C `svt_aom_write_modes_sb` early return: a node whose top-left is
@@ -1851,7 +2090,7 @@ impl<'a> Pd0Ctx<'a> {
         // parent decision (parents of off-frame nodes are forced-split edge
         // nodes, which ignore cost), so 0 is inert.
         if abs_x >= self.aligned_w || abs_y >= self.aligned_h {
-            return (0, Pd0Eval::off(sq_size));
+            return (0, Pd0Eval::off(sq_size), None);
         }
         // spec 5.11.4 / `set_blocks_to_test` (enc_dec_process.c:1394) edge
         // predicate vs the ALIGNED grid. `half` = half the square's pixel
@@ -1887,12 +2126,32 @@ impl<'a> Pd0Ctx<'a> {
         if forced_split {
             let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
             let mut total = 0u64;
+            let mut last_recon: Option<(alloc::vec::Vec<u8>, usize, usize)> = None;
+            let mut last_quad_valid = true;
             for i in 0..4 {
                 let cx = org_x + (i & 1) * half;
                 let cy = org_y + (i >> 1) * half;
-                let (c_cost, c_eval) = self.pick(half, cx, cy);
+                if self.sb_x + cx >= self.aligned_w || self.sb_y + cy >= self.aligned_h {
+                    last_quad_valid = false;
+                }
+                let (c_cost, c_eval, c_recon) = self.pick_q(half, cx, cy, i);
                 total += c_cost;
+                if i == 3 {
+                    last_recon = c_recon;
+                }
                 children.push(c_eval);
+            }
+            // C `test_split_partition_pd0`'s tail with an INVALID parent
+            // (`tot_shapes == 0` -> `pc_tree->rdc.valid == 0`): split always
+            // wins, so the last quadrant is the array-update part.
+            if last_quad_valid && let Some((r, rw, rh)) = last_recon {
+                self.write_recon(
+                    self.sb_x + org_x + half,
+                    self.sb_y + org_y + half,
+                    rw,
+                    rh,
+                    Some(&r),
+                );
             }
             // SPLIT rate feeding a STRADDLING parent's decision (the failing
             // thin-edge cells are self-contained from the SB root, where this
@@ -1935,7 +2194,7 @@ impl<'a> Pd0Ctx<'a> {
                 off: false,
                 children: Some(Box::new(ch)),
             };
-            return (total, eval);
+            return (total, eval, None);
         }
         // A FITTING one-false node prices its EDGE SHAPE block, not the square
         // PART_N — C's LPD0 costs "PART_H/PART_V for boundary blocks"
@@ -1962,6 +2221,18 @@ impl<'a> Pd0Ctx<'a> {
         } else {
             None
         };
+        // The node's own block recon, taken before the children can overwrite
+        // `pending_recon`. Its DIMENSIONS are the shape that was costed.
+        let node_recon = self.pending_recon.take();
+        let (node_w, node_h) = if one_false && self.is_lvl1_family() {
+            if !has_rows {
+                (sq_size, half)
+            } else {
+                (half, sq_size)
+            }
+        } else {
+            (sq_size, sq_size)
+        };
         let mut eval = Pd0Eval {
             sq: sq_size,
             tested,
@@ -1979,7 +2250,14 @@ impl<'a> Pd0Ctx<'a> {
         let split_flag = sq_size > self.min_sq;
         if !split_flag {
             let cost = parent_cost.expect("leaf must be tested (min_sq <= size <= max_sq)");
-            return (cost, eval);
+            // C `svt_aom_pick_partition_pd0` (product_coding_loop.c:10568):
+            // a leaf updates the neighbour arrays itself for quadrants 0..2;
+            // quadrant 3 is left to the parent's tail.
+            if quad_idx < 3 {
+                self.write_recon(abs_x, abs_y, node_w, node_h, node_recon.as_deref());
+                return (cost, eval, None);
+            }
+            return (cost, eval, node_recon.map(|r| (r, node_w, node_h)));
         }
 
         // test_split_partition_pd0: split rate term (0 at LVL_6 allintra;
@@ -2017,9 +2295,32 @@ impl<'a> Pd0Ctx<'a> {
         let half = sq_size / 2;
         let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
         let mut split_valid = true;
+        let mut last_recon: Option<(alloc::vec::Vec<u8>, usize, usize)> = None;
+        let mut last_quad_valid = true;
+        let mut last_child_split = false;
         for i in 0..4 {
             let cx = org_x + (i & 1) * half;
             let cy = org_y + (i >> 1) * half;
+            // C `test_split_partition_pd0` (product_coding_loop.c:10456):
+            // a quadrant whose ORIGIN is outside the mi grid is `continue`d
+            // BEFORE the depth-early-exit test, not after it. The port used to
+            // run the test on those quadrants too, and because an out-of-bounds
+            // child contributes 0 to `split_cost` the extra test at i == 3 can
+            // fire on a running total that C has already finished accumulating
+            // — turning C's "split wins" into the port's "parent wins".
+            //
+            // MEASURED on `gradient 72x88 q40 p5` video, SB1's 16x16 node at
+            // (64,16): parent 4972162 vs split 4700296, so C splits; the port's
+            // i == 3 test (`4972162 * 900 <= 4700296 * 1000`) fired and kept the
+            // parent. Visible only once PD0 predicts from its own recon, because
+            // the wrong winner is also what gets written into the neighbour
+            // arrays — the block below then predicted off an 8x16's bottom row
+            // where C uses an 8x8's.
+            if self.sb_x + cx >= self.aligned_w || self.sb_y + cy >= self.aligned_h {
+                last_quad_valid = false;
+                children.push(Pd0Eval::off(half));
+                continue;
+            }
             // Early exits (disabled entirely for allintra LVL_6): th =
             // split_cost_th(50) for i == 0, else early_exit_th(0 -> 1000);
             // parent_cost_bias = 1000. Identical ths at LVL_5 and LVL_1
@@ -2033,8 +2334,12 @@ impl<'a> Pd0Ctx<'a> {
                     break;
                 }
             }
-            let (child_cost, child_eval) = self.pick(half, cx, cy);
+            let (child_cost, child_eval, child_recon) = self.pick_q(half, cx, cy, i);
             split_cost += child_cost;
+            if i == 3 {
+                last_recon = child_recon;
+                last_child_split = child_eval.split;
+            }
             children.push(child_eval);
         }
 
@@ -2051,17 +2356,65 @@ impl<'a> Pd0Ctx<'a> {
 
         if !split_valid {
             let cost = parent_cost.expect("early exit requires a valid parent");
-            return (cost, eval);
+            // C `svt_aom_pick_partition_pd0` (:10564): `if (!valid_part &&
+            // pc_tree->rdc.valid) mode_decision_update_neighbor_arrays_pd0`.
+            // The abandoned split's children may already have written; the
+            // node's own recon now supersedes them, exactly as in C.
+            self.write_recon(abs_x, abs_y, node_w, node_h, node_recon.as_deref());
+            return (cost, eval, None);
         }
 
         // parent_cost_bias = 1000 (allintra): parent wins on <=.
         if let Some(pc) = parent_cost
             && pc * 1000 <= split_cost * 1000
         {
-            return (pc, eval);
+            // C `test_split_partition_pd0` (:10490): the parent keeps its
+            // partition, so IT is the array-update part.
+            self.write_recon(abs_x, abs_y, node_w, node_h, node_recon.as_deref());
+            return (pc, eval, None);
         }
         eval.split = true;
-        (split_cost, eval)
+        // Split wins: the array-update part is the LAST quadrant, and only
+        // when it is in bounds and not itself split (:10496-10508).
+        if last_quad_valid
+            && !last_child_split
+            && let Some((r, rw, rh)) = last_recon
+        {
+            self.write_recon(
+                self.sb_x + org_x + half,
+                self.sb_y + org_y + half,
+                rw,
+                rh,
+                Some(&r),
+            );
+        }
+        (split_cost, eval, None)
+    }
+
+    /// C `mode_decision_update_neighbor_arrays_pd0` (product_coding_loop.c:121)
+    /// — a no-op on the ALLINTRA arm, where `pd0_use_src_samples` short-circuits
+    /// it and the port carries no canvas.
+    fn write_recon(
+        &mut self,
+        abs_x: usize,
+        abs_y: usize,
+        bw: usize,
+        bh: usize,
+        recon: Option<&[u8]>,
+    ) {
+        if let Some(cv) = self.recon_canvas.as_mut()
+            && let Some(r) = recon
+            && r.len() >= bw * bh
+        {
+            #[cfg(feature = "std")]
+            if crate::dbgenv::pd0dbg() {
+                eprintln!(
+                    "PD0WR org=({abs_x},{abs_y}) {bw}x{bh} lastrow={:?}",
+                    &r[(bh - 1) * bw..(bh - 1) * bw + bw.min(8)]
+                );
+            }
+            cv.write(abs_x, abs_y, bw, bh, r);
+        }
     }
 }
 
@@ -2158,6 +2511,8 @@ pub fn pd0_pick_sb_partition(
         nsq_enabled: false,
         tile_top: 0,
         tile_left: 0,
+        recon_canvas: None,
+        pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -2260,6 +2615,8 @@ pub fn pd0_pick_sb_partition_lvl0(
         nsq_enabled: false,
         tile_top: 0,
         tile_left: 0,
+        recon_canvas: None,
+        pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -2347,6 +2704,8 @@ pub fn pd0_pick_sb_partition_m6(
         nsq_enabled,
         tile_top: 0,
         tile_left: 0,
+        recon_canvas: None,
+        pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -2412,6 +2771,13 @@ pub fn pd0_pick_sb_partition_m6_eval(
     // (enc_dec_process.c:1494-1495), and the depth-refinement applies the same
     // cap (:1815). 64 = no cap = the pre-tune-IQ behaviour.
     max_tx_size: u8,
+    // C `ctx->pd0_use_src_samples == false` (enc_mode_config.c:7309): the
+    // VIDEO arm's PD0 predicts each block from the RECON it generates rather
+    // than from the source. `Some((md_recon_plane, stride))` is the frame's
+    // MD recon at this SB's origin — what C's neighbour arrays hold on entry,
+    // since `copy_neighbour_arrays_pd0` snapshots the live arrays rather than
+    // clearing them. `None` = the ALLINTRA arm, byte-identical to before.
+    video_recon: Option<(&[u8], usize)>,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -2471,6 +2837,8 @@ pub fn pd0_pick_sb_partition_m6_eval(
         nsq_enabled,
         tile_top,
         tile_left,
+        recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
+        pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval
@@ -2598,6 +2966,8 @@ pub fn pd0_pick_sb_partition_video(
         nsq_enabled,
         tile_top,
         tile_left,
+        recon_canvas: None,
+        pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -2717,6 +3087,8 @@ mod tests {
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
+            recon_canvas: None,
+            pending_recon: None,
         };
         assert_eq!(ctx.lambda, 25650);
         // (sq, org_x, org_y, C full_cost)
@@ -2836,6 +3208,8 @@ mod tests {
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
+            recon_canvas: None,
+            pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
             (32usize, 0usize, 0usize, 187677438u64),
@@ -2883,6 +3257,8 @@ mod tests {
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
+            recon_canvas: None,
+            pending_recon: None,
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
         assert_eq!(
@@ -3043,6 +3419,8 @@ mod tests {
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,
+            recon_canvas: None,
+            pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1791569177u64),
@@ -3086,6 +3464,8 @@ mod tests {
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,
+            recon_canvas: None,
+            pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1176293547u64),
@@ -3125,6 +3505,8 @@ mod tests {
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,
+            recon_canvas: None,
+            pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 903280295u64),

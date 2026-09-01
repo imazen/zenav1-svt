@@ -7921,6 +7921,14 @@ fn encode_tile_rows(
             u32::from(cli_qp),
             w * h,
         );
+        // C `ctx->pd0_use_src_samples = allintra || pcs->hbd_md`
+        // (enc_mode_config.c:7309). FALSE on every video frame, so the video
+        // arm's PD0 predicts from the recon it generates per block instead of
+        // from the source — see `crate::pd0::Pd0ReconCanvas`. bd10 sets
+        // `hbd_md`, which puts C back on the source samples, so the port keeps
+        // the source path there too.
+        let pd0_video_recon =
+            matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }) && bit_depth != 10;
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
         }
@@ -9042,6 +9050,8 @@ fn encode_tile_rows(
                                     sb_stale_vars,
                                     // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
                                     max_tx_size,
+                                    // C `pd0_use_src_samples` (video arm: recon).
+                                    pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                 );
                                 let cq = c_quant.as_ref().unwrap();
                                 // 8-BIT lambda even at bd10 — deliberate, not an
@@ -9115,6 +9125,9 @@ fn encode_tile_rows(
                                                 sb_stale_vars,
                                                 // C `static_config.max_tx_size`.
                                                 max_tx_size,
+                                                // C `pd0_use_src_samples` (video arm: recon).
+                                                pd0_video_recon
+                                                    .then_some((&tile_frame_recon[..], w)),
                                             )
                                             .max_min_picked(&mut mx, &mut mn);
                                         }
@@ -9325,6 +9338,8 @@ fn encode_tile_rows(
                                     sb_stale_vars,
                                     // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
                                     max_tx_size,
+                                    // C `pd0_use_src_samples` (video arm: recon).
+                                    pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                 );
                                 #[cfg(feature = "std")]
                                 if crate::dbgenv::pd0dbg()

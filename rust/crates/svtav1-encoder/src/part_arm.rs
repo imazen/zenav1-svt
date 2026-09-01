@@ -466,8 +466,10 @@ pub(crate) fn refined_pd0_model(
             // 0.641 vs 0.356). Until a C-side PD0 dump says WHY, this returns
             // the pre-existing ALLINTRA model on both arms rather than
             // shipping a partition search that is measurably further from C.
-            let _ = pic_pd0_lvl;
-            (crate::pd0::Pd0Mode::Lvl1, 1000)
+            match pic_pd0_lvl {
+                3 => (crate::pd0::Pd0Mode::Lvl3, 900),
+                _ => (crate::pd0::Pd0Mode::Lvl1, 1000),
+            }
         }
     }
 }
