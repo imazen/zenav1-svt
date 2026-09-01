@@ -591,6 +591,24 @@ pub struct RefRcUpdateState {
     pub out_projected_frame_size: i32,
     pub out_this_frame_target: i32,
     pub out_base_frame_target: i32,
+
+    // --- appended for svt_av1_twopass_postencode_update{,_gop_const} ---
+    pub vbr_bits_off_target: i64,
+    pub vbr_bits_off_target_fast: i64,
+    pub rate_error_estimate: i32,
+    pub active_best_quality: [i32; 7],
+    pub extend_minq: i32,
+    pub extend_maxq: i32,
+    pub extend_minq_fast: i32,
+    pub base_frame_target: i32,
+    pub layer_depth: i32,
+    pub is_short_clip: i32,
+    pub param_vbr_bits_off_target: i64,
+    pub param_vbr_bits_off_target_fast: i64,
+    pub param_rate_error_estimate: i32,
+    pub param_extend_minq: i32,
+    pub param_extend_maxq: i32,
+    pub param_extend_minq_fast: i32,
 }
 
 impl Default for RefRcUpdateState {
@@ -657,6 +675,22 @@ impl Default for RefRcUpdateState {
             out_projected_frame_size: 0,
             out_this_frame_target: 0,
             out_base_frame_target: 0,
+            vbr_bits_off_target: 0,
+            vbr_bits_off_target_fast: 0,
+            rate_error_estimate: 0,
+            active_best_quality: [0; 7],
+            extend_minq: 0,
+            extend_maxq: 0,
+            extend_minq_fast: 0,
+            base_frame_target: 0,
+            layer_depth: 0,
+            is_short_clip: 0,
+            param_vbr_bits_off_target: 0,
+            param_vbr_bits_off_target_fast: 0,
+            param_rate_error_estimate: 0,
+            param_extend_minq: 0,
+            param_extend_maxq: 0,
+            param_extend_minq_fast: 0,
         }
     }
 }
@@ -666,6 +700,8 @@ unsafe extern "C" {
     fn ref_rc_postencode_update_gop_const(st: *mut RefRcUpdateState);
     fn ref_rc_recode_loop_update_q(st: *mut RefRcUpdateState);
     fn ref_rc_dynamic_resize_decision(st: *mut RefRcUpdateState);
+    fn ref_twopass_postencode_update(st: *mut RefRcUpdateState);
+    fn ref_twopass_postencode_update_gop_const(st: *mut RefRcUpdateState);
 }
 
 /// Reference `svt_av1_rc_postencode_update` (rc_vbr_cbr.c:1562).
@@ -686,4 +722,15 @@ pub fn recode_loop_update_q(state: &mut RefRcUpdateState) {
 /// Reference `svt_aom_dynamic_resize_decision` (rc_vbr_cbr.c:497).
 pub fn dynamic_resize_decision(state: &mut RefRcUpdateState) {
     unsafe { ref_rc_dynamic_resize_decision(state) };
+}
+
+/// Reference `svt_av1_twopass_postencode_update` (pass2_strategy.c:1176).
+pub fn twopass_postencode_update(state: &mut RefRcUpdateState) {
+    unsafe { ref_twopass_postencode_update(state) };
+}
+
+/// Reference `svt_av1_twopass_postencode_update_gop_const`
+/// (pass2_strategy.c:1063).
+pub fn twopass_postencode_update_gop_const(state: &mut RefRcUpdateState) {
+    unsafe { ref_twopass_postencode_update_gop_const(state) };
 }

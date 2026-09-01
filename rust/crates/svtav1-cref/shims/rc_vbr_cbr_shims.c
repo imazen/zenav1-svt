@@ -40,6 +40,7 @@
 #include "encode_context.h"
 #include "rc_process.h"
 #include "svt_threads.h"
+#include "pass2_strategy.h"
 
 #if defined(SVTAV1_CREF_RC_VBR_STATICS)
 
@@ -680,6 +681,24 @@ typedef struct RefRcUpdateState {
     int32_t out_projected_frame_size;
     int32_t out_this_frame_target;
     int32_t out_base_frame_target;
+
+    /* --- appended for svt_av1_twopass_postencode_update{,_gop_const} --- */
+    int64_t vbr_bits_off_target;
+    int64_t vbr_bits_off_target_fast;
+    int32_t rate_error_estimate;
+    int32_t active_best_quality[MAX_ARF_LAYERS + 1];
+    int32_t extend_minq;
+    int32_t extend_maxq;
+    int32_t extend_minq_fast;
+    int32_t base_frame_target;
+    int32_t layer_depth;
+    int32_t is_short_clip;
+    int64_t param_vbr_bits_off_target;
+    int64_t param_vbr_bits_off_target_fast;
+    int32_t param_rate_error_estimate;
+    int32_t param_extend_minq;
+    int32_t param_extend_maxq;
+    int32_t param_extend_minq_fast;
 } RefRcUpdateState;
 
 static void update_harness_build(RcHarness* h, RateControlIntervalParamContext** param_out,
@@ -710,7 +729,19 @@ static void update_harness_build(RcHarness* h, RateControlIntervalParamContext**
     rc->resize_avg_qp           = st->resize_avg_qp;
     rc->resize_buffer_underflow = st->resize_buffer_underflow;
     rc->resize_count            = st->resize_count;
+    rc->vbr_bits_off_target      = st->vbr_bits_off_target;
+    rc->vbr_bits_off_target_fast = st->vbr_bits_off_target_fast;
+    rc->rate_error_estimate      = st->rate_error_estimate;
+    for (int i = 0; i <= MAX_ARF_LAYERS; ++i) {
+        rc->active_best_quality[i] = st->active_best_quality[i];
+    }
+    scs->twopass.extend_minq      = st->extend_minq;
+    scs->twopass.extend_maxq      = st->extend_maxq;
+    scs->twopass.extend_minq_fast = st->extend_minq_fast;
+    scs->is_short_clip            = (uint8_t)st->is_short_clip;
 
+    ppcs->base_frame_target     = st->base_frame_target;
+    ppcs->layer_depth           = st->layer_depth;
     ppcs->picture_number        = st->picture_number;
     ppcs->frame_offset          = st->frame_offset;
     ppcs->total_num_bits        = st->total_num_bits;
@@ -746,6 +777,12 @@ static void update_harness_build(RcHarness* h, RateControlIntervalParamContext**
     params->rolling_actual_bits = st->param_rolling_actual_bits;
     params->total_actual_bits   = st->param_total_actual_bits;
     params->total_target_bits   = st->param_total_target_bits;
+    params->vbr_bits_off_target      = st->param_vbr_bits_off_target;
+    params->vbr_bits_off_target_fast = st->param_vbr_bits_off_target_fast;
+    params->rate_error_estimate      = st->param_rate_error_estimate;
+    params->extend_minq              = st->param_extend_minq;
+    params->extend_maxq              = st->param_extend_maxq;
+    params->extend_minq_fast         = st->param_extend_minq_fast;
     ppcs->rate_control_param_ptr = params;
     *param_out                   = params;
 
@@ -791,6 +828,22 @@ static void update_harness_store(const RcHarness* h, const RateControlIntervalPa
     st->param_rolling_actual_bits = params->rolling_actual_bits;
     st->param_total_actual_bits   = params->total_actual_bits;
     st->param_total_target_bits   = params->total_target_bits;
+    st->param_vbr_bits_off_target      = params->vbr_bits_off_target;
+    st->param_vbr_bits_off_target_fast = params->vbr_bits_off_target_fast;
+    st->param_rate_error_estimate      = params->rate_error_estimate;
+    st->param_extend_minq              = params->extend_minq;
+    st->param_extend_maxq              = params->extend_maxq;
+    st->param_extend_minq_fast         = params->extend_minq_fast;
+    st->vbr_bits_off_target      = rc->vbr_bits_off_target;
+    st->vbr_bits_off_target_fast = rc->vbr_bits_off_target_fast;
+    st->rate_error_estimate      = rc->rate_error_estimate;
+    for (int i = 0; i <= MAX_ARF_LAYERS; ++i) {
+        st->active_best_quality[i] = rc->active_best_quality[i];
+    }
+    st->extend_minq      = h->scs->twopass.extend_minq;
+    st->extend_maxq      = h->scs->twopass.extend_maxq;
+    st->extend_minq_fast = h->scs->twopass.extend_minq_fast;
+    st->base_frame_target = h->ppcs->base_frame_target;
 
     st->out_projected_frame_size = h->ppcs->projected_frame_size;
     st->out_this_frame_target    = h->ppcs->this_frame_target;
@@ -868,6 +921,30 @@ void ref_rc_dynamic_resize_decision(RefRcUpdateState* st) {
     PictureControlSet*               child;
     update_harness_build(&h, &params, &child, st);
     svt_aom_dynamic_resize_decision(h.ppcs);
+    update_harness_store(&h, params, st);
+    update_harness_free(&h, params, child);
+}
+
+/* `svt_av1_twopass_postencode_update{,_gop_const}` (pass2_strategy.c:1176 and
+ * :1063) — both EXPORTED, and the pair that runs on every frame of a VBR
+ * encode. They reuse the same harness; the gop_const one keeps its drift state
+ * on `ppcs->rate_control_param_ptr` instead of on RATE_CONTROL/TWO_PASS. */
+void ref_twopass_postencode_update(RefRcUpdateState* st) {
+    RcHarness h;
+    RateControlIntervalParamContext* params;
+    PictureControlSet*               child;
+    update_harness_build(&h, &params, &child, st);
+    svt_av1_twopass_postencode_update(h.ppcs);
+    update_harness_store(&h, params, st);
+    update_harness_free(&h, params, child);
+}
+
+void ref_twopass_postencode_update_gop_const(RefRcUpdateState* st) {
+    RcHarness h;
+    RateControlIntervalParamContext* params;
+    PictureControlSet*               child;
+    update_harness_build(&h, &params, &child, st);
+    svt_av1_twopass_postencode_update_gop_const(h.ppcs);
     update_harness_store(&h, params, st);
     update_harness_free(&h, params, child);
 }

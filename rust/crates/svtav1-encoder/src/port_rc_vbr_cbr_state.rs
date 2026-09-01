@@ -289,6 +289,12 @@ pub struct RateControl {
     pub total_target_bits: i64,
     /// `rc->avg_frame_low_motion`.
     pub avg_frame_low_motion: i32,
+    /// `rc->rate_error_estimate` — the VBR drift, in percent, clamped to
+    /// `[-100, 100]`. Written by `pass2_strategy.c`'s two-pass post-encode
+    /// update and read by its `calculate_active_worst_quality`.
+    pub rate_error_estimate: i32,
+    /// `rc->gf_group_bits` — the bit budget for the current GF group.
+    pub gf_group_bits: i64,
     /// `rc->rc_1_frame` / `rc_2_frame`: -1 undershot, +1 overshoot, 0 unset.
     pub rc_1_frame: i32,
     /// See [`RateControl::rc_1_frame`].
