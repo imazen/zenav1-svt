@@ -98,6 +98,26 @@ unsafe extern "C" {
         ac_bias: f64,
         tx_bias: u8,
     ) -> u64;
+    #[allow(clippy::too_many_arguments)]
+    fn ref_picture_full_distortion32_bits_single_facade(
+        coeff: *const i32,
+        recon_coeff: *const i32,
+        stride: u32,
+        bwidth: u32,
+        bheight: u32,
+        area_width: u32,
+        area_height: u32,
+        cnt_nz_coeff: u32,
+        mode: i32,
+        uv_mode: i32,
+        is_interintra_used: u8,
+        compound_type: i32,
+        is_chroma: i32,
+        temporal_layer_index: u8,
+        ac_bias: f64,
+        tx_bias: u8,
+        out2: *mut u64,
+    );
     fn ref_update_sharpness(sharpness_lvl: i32, lvl: i32, out_lim: *mut u8, out_mblim: *mut u8);
     #[allow(clippy::too_many_arguments)]
     fn ref_get_filter_level_delta_lf(
@@ -442,6 +462,50 @@ pub fn spatial_full_distortion_kernel_facade(
             tx_bias,
         )
     }
+}
+
+/// The reference `svt_aom_picture_full_distortion32_bits_single_facade`.
+#[allow(clippy::too_many_arguments)]
+pub fn picture_full_distortion32_bits_single_facade(
+    coeff: &[i32],
+    recon_coeff: &[i32],
+    stride: usize,
+    bwidth: usize,
+    bheight: usize,
+    area_width: usize,
+    area_height: usize,
+    cnt_nz_coeff: u32,
+    mi: FacadeMode,
+    is_chroma: bool,
+    temporal_layer_index: u8,
+    ac_bias: f64,
+    tx_bias: u8,
+) -> (u64, u64) {
+    assert_covers(coeff.len(), stride, bwidth, bheight, "coeff");
+    assert_covers(recon_coeff.len(), stride, bwidth, bheight, "recon");
+    let mut out = [0u64; 2];
+    unsafe {
+        ref_picture_full_distortion32_bits_single_facade(
+            coeff.as_ptr(),
+            recon_coeff.as_ptr(),
+            stride as u32,
+            bwidth as u32,
+            bheight as u32,
+            area_width as u32,
+            area_height as u32,
+            cnt_nz_coeff,
+            mi.mode,
+            mi.uv_mode,
+            u8::from(mi.is_interintra_used),
+            mi.compound_type,
+            i32::from(is_chroma),
+            temporal_layer_index,
+            ac_bias,
+            tx_bias,
+            out.as_mut_ptr(),
+        );
+    }
+    (out[0], out[1])
 }
 
 /// The reference `svt_aom_update_sharpness`, reported for one level as

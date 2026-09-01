@@ -6,9 +6,18 @@
 //! The facade wraps a plain spatial SSE with multiplicative biases keyed on
 //! the candidate's prediction mode. This module ports the BIAS layer as a
 //! pure function of (sse, mode-kind, dims, flags) so the caller supplies
-//! whatever SSE kernel it already has; parity for the bias math is pinned
+//! whatever SSE kernel it already has.
+//!
+//! CORRECTION (2026-08-31): this doc used to say the bias math was "pinned
 //! against the exported C facade with a synthetic BlockModeInfo
-//! (`tests/c_parity_ac_bias.rs` companion in svtav1-encoder).
+//! (`tests/c_parity_ac_bias.rs`)". It was not. That file covers
+//! `psy_distortion`, `psy_adjust_rate_light` and `effective_ac_bias` and
+//! never calls either facade, so the bias layer had NO differential. The
+//! test the claim described now exists as
+//! `tests/c_parity_dist_facade.rs`, driving both exported facades through
+//! `crate::dist_facade`, which also supplies the mode CLASSIFICATION that
+//! decides which `BiasModeClass` applies — the half of the facade this
+//! module never had.
 //!
 //! Intra-only subset: the port's envelope is all-intra, so the
 //! inter-compound branches (interintra / COMPOUND_*) are represented but

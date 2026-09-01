@@ -896,6 +896,60 @@ then fail on the wrong host. The tier-1 bd-10 sweep is the reachable evidence.
 
 ---
 
+## 22. The two tx-bias distortion facades differ by ONE BRACE, so `tx_bias == 2` biases the spatial metric and not the frequency one
+
+**Status: REPRODUCED (the port copies the asymmetry).**
+
+`pic_operators.c` carries twin facades that wrap a distortion kernel in the
+same set of tx-bias multipliers:
+
+* `svt_aom_picture_full_distortion32_bits_single_facade` (`:163`) — the
+  frequency-domain `[DIST_CALC_RESIDUAL, DIST_CALC_PREDICTION]` pair.
+* `svt_spatial_full_distortion_kernel_facade` (`:252`) — the spatial SSE.
+
+They are line-for-line identical apart from brace placement of the closing
+`// Transform size related tweaks` block:
+
+```c
+/* 32-bit facade, :168-186 */                /* spatial facade, :265-393 */
+if (tx_bias == 1) {                          if (tx_bias == 1) {
+    if (is_intra_mode(mode)) { ... }             if (is_intra_mode(mode)) { ... }
+    else if (is_inter_compound_mode(...)) {}     else if (is_inter_compound_mode(...)) {}
+                                             }
+    // Transform size related tweaks         // Transform size related tweaks
+    if (tx_bias == 1 || tx_bias == 2) {      if (tx_bias == 1 || tx_bias == 2) {
+        if (is_intra_mode(mode)) { ... }         if (is_intra_mode(mode)) { ... }
+    }                                        }
+}
+```
+
+In the 32-bit facade the tx-size block is INSIDE `if (tx_bias == 1)`; in the
+spatial facade it is at function scope. Two consequences:
+
+1. At `tx_bias == 2` the spatial facade applies the 64x64 `*3/2` bias and the
+   32-bit facade applies **nothing at all** — the same block, the same
+   candidate, two different distortions.
+2. The 32-bit facade's own `if (tx_bias == 1 || tx_bias == 2)` is **dead**: it
+   can only be reached when `tx_bias == 1`, so the `|| tx_bias == 2` disjunct
+   never decides anything. Dead code that reads as live is the tell that the
+   brace, not the condition, is the mistake.
+
+**Reachable?** Yes wherever `tx_bias == 2` is signalled and both metrics are
+consulted for the same candidate — the two arms then disagree by a factor of
+3/2 on intra 64x64.
+
+**What the port does:** `svtav1_encoder::dist_facade::picture_full_distortion32_facade`
+returns the distortion unchanged for any `tx_bias != 1`, and
+`spatial_full_distortion_facade` applies the tx-size block at every
+`tx_bias` in `{1, 2}` — i.e. it reproduces both C functions exactly.
+`tests/c_parity_dist_facade.rs` pins both against the real exported symbols
+over every (mode, uv_mode) pair. The asymmetry was FOUND by that
+differential, not by reading: the port initially shared one bias helper
+between the two facades and diverged 3:2 on the first `tx_bias == 2`,
+64x64, intra cell.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

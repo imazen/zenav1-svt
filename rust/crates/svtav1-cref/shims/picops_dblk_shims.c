@@ -144,6 +144,39 @@ uint64_t ref_spatial_full_distortion_kernel_facade(uint8_t* input, uint32_t inpu
                                                      tx_bias);
 }
 
+/* The 32-bit twin of the facade above: same bias layer, applied to both
+ * DIST_CALC_RESIDUAL and DIST_CALC_PREDICTION. Dispatched (it calls
+ * svt_aom_picture_full_distortion32_bits_single underneath). */
+void ref_picture_full_distortion32_bits_single_facade(int32_t* coeff, int32_t* recon_coeff, uint32_t stride,
+                                                      uint32_t bwidth, uint32_t bheight, uint32_t area_width,
+                                                      uint32_t area_height, uint32_t cnt_nz_coeff, int32_t mode,
+                                                      int32_t uv_mode, uint8_t is_interintra_used,
+                                                      int32_t compound_type, int32_t is_chroma,
+                                                      uint8_t temporal_layer_index, double ac_bias, uint8_t tx_bias,
+                                                      uint64_t* out2) {
+    picops_ensure_init();
+    BlockModeInfo mi;
+    memset(&mi, 0, sizeof(mi));
+    mi.mode                 = (PredictionMode)mode;
+    mi.uv_mode              = (UvPredictionMode)uv_mode;
+    mi.is_interintra_used   = is_interintra_used;
+    mi.interinter_comp.type = (CompoundType)compound_type;
+    svt_aom_picture_full_distortion32_bits_single_facade(coeff,
+                                                        recon_coeff,
+                                                        stride,
+                                                        bwidth,
+                                                        bheight,
+                                                        area_width,
+                                                        area_height,
+                                                        out2,
+                                                        cnt_nz_coeff,
+                                                        &mi,
+                                                        is_chroma != 0,
+                                                        temporal_layer_index,
+                                                        ac_bias,
+                                                        tx_bias);
+}
+
 /* ------------- pic_operators.c: padding / plane copy / widen ------------- */
 
 void svt_aom_generate_padding16_bit(uint16_t* src_pic, uint32_t src_stride, uint32_t original_src_width,

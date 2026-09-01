@@ -20,6 +20,7 @@ pub mod chroma_q;
 mod dbgenv;
 pub mod deblock;
 pub mod depth_refine;
+pub mod dist_facade;
 pub mod encode_loop;
 pub mod entropy;
 pub mod film_grain;
