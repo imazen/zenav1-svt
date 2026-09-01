@@ -163,13 +163,13 @@ PYEOF
       [ "$c_ibc" != "NA" ] && c_ibc_total=$((c_ibc_total + c_ibc))
       if cmp -s "$d/rs.obu" "$d/c.obu"; then
         match=$((match+1))
-        line="$tag MATCH bytes=$(stat -c%s "$d/rs.obu") ibc=$c_ibc"
+        line="$tag MATCH bytes=$(wc -c < "$d/rs.obu" | tr -d " ") ibc=$c_ibc"
         map_lines+=("$line"); echo "OK   $line"
         if ! is_byte_exact "$tag"; then promotions+=("$tag"); fi
       else
         diff=$((diff+1))
         loc=$("$DD_BIN" "$d/c.obu" "$d/rs.obu" 128 2>/dev/null | head -2 | tr '\n' ' ')
-        line="$tag DIFF port=$(stat -c%s "$d/rs.obu")B c=$(stat -c%s "$d/c.obu")B c_ibc=$c_ibc rs_ibc=$rs_ibc ${loc}"
+        line="$tag DIFF port=$(wc -c < "$d/rs.obu" | tr -d " ")B c=$(wc -c < "$d/c.obu" | tr -d " ")B c_ibc=$c_ibc rs_ibc=$rs_ibc ${loc}"
         map_lines+=("$line"); echo "DIFF $line"
         if is_byte_exact "$tag"; then regressions+=("$tag"); fi
       fi

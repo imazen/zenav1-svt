@@ -305,7 +305,7 @@ for cell in "${SB128_CELLS[@]}"; do
       echo "  REGRESS  $tag"
     else
       pass=$((pass + 1))
-      cb=$(stat -c%s "$OUT/c.obu"); rb=$(stat -c%s "$OUT/rs.obu")
+      cb=$(wc -c < "$OUT/c.obu" | tr -d " "); rb=$(wc -c < "$OUT/rs.obu" | tr -d " ")
       echo "  pinned   $tag (C=${cb}B port=${rb}B — sb128 path unported)"
     fi
   fi

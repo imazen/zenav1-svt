@@ -82,10 +82,10 @@ for img in "${IMGS[@]}"; do
       palette_seen=$((palette_seen+1))
     fi
     if cmp -s "$d/rs.obu" "$d/c.obu"; then
-      pass=$((pass+1)); echo "  OK       $tag ($(stat -c%s "$d/rs.obu")B)"
+      pass=$((pass+1)); echo "  OK       $tag ($(wc -c < "$d/rs.obu" | tr -d " ")B)"
     else
       fdiff=$(cmp "$d/rs.obu" "$d/c.obu" 2>/dev/null | awk '{print $NF}')
-      fail=$((fail+1)); failed+=("$tag[DIFF@${fdiff} port=$(stat -c%s "$d/rs.obu")B C=$(stat -c%s "$d/c.obu")B]")
+      fail=$((fail+1)); failed+=("$tag[DIFF@${fdiff} port=$(wc -c < "$d/rs.obu" | tr -d " ")B C=$(wc -c < "$d/c.obu" | tr -d " ")B]")
       echo "  DIFF     $tag  @${fdiff}"
     fi
   done

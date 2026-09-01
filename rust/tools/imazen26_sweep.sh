@@ -60,10 +60,10 @@ if [[ "${1:-}" == "--cell" ]]; then
   verdict="rs-err"; decodable="-"; cb="-"; rb="-"; fdiff="-"
   if SVTAV1_BD="$bd" timeout "${IM26_CELL_TIMEOUT:-300}" "$RUN_BIN" \
         "crop:$path" "$W" "$H" "$qp" "$preset" "$d/rs" >/dev/null 2>"$d/rs.err"; then
-    rb=$(stat -c%s "$d/rs.obu" 2>/dev/null || echo -)
+    rb=$(wc -c < "$d/rs.obu" 2>/dev/null | tr -d " " || echo -)
     if timeout "${IM26_CELL_TIMEOUT:-300}" "$CTRACE_BIN" \
           "$W" "$H" "$qp" "$preset" "$d/rs.yuv" "$d/c.obu" "$bd" >/dev/null 2>&1; then
-      cb=$(stat -c%s "$d/c.obu" 2>/dev/null || echo -)
+      cb=$(wc -c < "$d/c.obu" 2>/dev/null | tr -d " " || echo -)
       if [ -n "$AOMDEC" ] && "$AOMDEC" --rawvideo -o /dev/null "$d/rs.obu" >/dev/null 2>&1; then
         decodable="yes"; else decodable="no"; fi
       if cmp -s "$d/rs.obu" "$d/c.obu"; then

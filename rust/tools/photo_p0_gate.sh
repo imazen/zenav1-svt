@@ -111,11 +111,11 @@ for cell in "${CELLS[@]}"; do
     fi
     if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
         pass=$((pass + 1))
-        echo "  OK       $tag (byte-exact, $(stat -c%s "$OUT/c.obu")B)"
+        echo "  OK       $tag (byte-exact, $(wc -c < "$OUT/c.obu" | tr -d " ")B)"
     else
         fail=$((fail + 1))
         failed+=("$tag")
-        echo "  FAIL     $tag (C=$(stat -c%s "$OUT/c.obu")B port=$(stat -c%s "$OUT/rs.obu")B)"
+        echo "  FAIL     $tag (C=$(wc -c < "$OUT/c.obu" | tr -d " ")B port=$(wc -c < "$OUT/rs.obu" | tr -d " ")B)"
     fi
 done
 

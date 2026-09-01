@@ -44,10 +44,10 @@ SVT_RECON_OUT="$D/c.sse" SVT_RECON_BIN="$D/c" SVT_TRACE_OUT="$D/c.trace" SVT_CTR
 
 # 3: byte compare.
 if cmp -s "$D/rs.obu" "$D/c.obu"; then
-    echo "IDENTICAL ($(stat -c%s "$D/rs.obu") bytes)"
+    echo "IDENTICAL ($(wc -c < "$D/rs.obu" | tr -d " ") bytes)"
     exit 0
 fi
-echo "DIFFERS: port=$(stat -c%s "$D/rs.obu")B C=$(stat -c%s "$D/c.obu")B first=$(cmp "$D/rs.obu" "$D/c.obu" 2>/dev/null | awk '{print $NF}' || true)"
+echo "DIFFERS: port=$(wc -c < "$D/rs.obu" | tr -d " ")B C=$(wc -c < "$D/c.obu" | tr -d " ")B first=$(cmp "$D/rs.obu" "$D/c.obu" 2>/dev/null | awk '{print $NF}' || true)"
 
 # 4: first divergent DECODED pixel -> SB root mi, via the aom-decoder-rs
 # oracle (tools/decode_diff). Decoding both OBUs is preset-independent

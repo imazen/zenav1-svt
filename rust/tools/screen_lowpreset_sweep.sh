@@ -60,10 +60,10 @@ for img in "${IMGS[@]}"; do
         err=$((err+1)); echo "ERR  $tag c-encode"; continue
       fi
       if cmp -s "$d/rs.obu" "$d/c.obu"; then
-        ok=$((ok+1)); echo "OK   $tag $(stat -c%s "$d/rs.obu")"
+        ok=$((ok+1)); echo "OK   $tag $(wc -c < "$d/rs.obu" | tr -d " ")"
       else
         fd=$(cmp "$d/rs.obu" "$d/c.obu" 2>/dev/null | awk '{print $5}' | tr -d ',')
-        diff=$((diff+1)); echo "DIFF $tag ${fd:-len} $(stat -c%s "$d/rs.obu") $(stat -c%s "$d/c.obu")"
+        diff=$((diff+1)); echo "DIFF $tag ${fd:-len} $(wc -c < "$d/rs.obu" | tr -d " ") $(wc -c < "$d/c.obu" | tr -d " ")"
       fi
     done
   done

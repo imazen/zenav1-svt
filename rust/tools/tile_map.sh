@@ -73,8 +73,8 @@ for sz in "${SIZES[@]}"; do
                  >"$OUT/c.log" 2>"$OUT/c.stderr"; then
             verdict=c-err
           else
-            rsb=$(stat -c%s "$OUT/rs.obu")
-            cb=$(stat -c%s "$OUT/c.obu")
+            rsb=$(wc -c < "$OUT/rs.obu" | tr -d " ")
+            cb=$(wc -c < "$OUT/c.obu" | tr -d " ")
             # Anti-vacuity reference: the SAME input at rows=cols=0.
             if SVT_TILE_ROWS=0 SVT_TILE_COLUMNS=0 SVT_TRACE_OUT=/dev/null \
                "$HERE/capture_c_trace/capture_c_trace" \
