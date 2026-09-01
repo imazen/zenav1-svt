@@ -101,7 +101,12 @@ for content in "${CONTENTS[@]}"; do
           fi
           # I420 at the FULL width: w*h + 2*((w+1)/2 * (h+1)/2).
           want=$(( sz * sz + 2 * (((sz + 1) / 2) * ((sz + 1) / 2)) ))
-          got=$(stat -c%s "$OUT/dec.yuv")
+          # `stat -c%s` is GNU-only: on darwin it errors, `got` comes back
+          # EMPTY, and `[ "" -ne N ]` fails as a bash SYNTAX error rather than
+          # as a comparison — so this assertion silently never fired on macOS
+          # (measured 2026-08-31; the gate still printed 512 / 512).
+          # `wc -c` is POSIX and works on both. See WORKING-ON-THIS.md §5.
+          got=$(wc -c < "$OUT/dec.yuv" | tr -d ' ')
           if [ "$got" -ne "$want" ]; then
             fail=$((fail + 1))
             failed+=("$cell[decoded ${got}B != upscaled ${want}B]")
