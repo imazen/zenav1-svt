@@ -870,3 +870,216 @@ fn pad_and_decimate_filtered_pic_matches_c() {
         "the conditional min-blk re-pad never armed"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The zero-motion ("zz") kernels
+// ---------------------------------------------------------------------------
+//
+// UNREACHABLE in v4.2.0 (`use_zz_based_filter` is set only by `tf_ld_controls`
+// levels 1/2, and `derive_tf_params` calls that function with a hard-coded
+// level 0). Gated anyway, at tier 1 against the real exported symbol, because
+// a translation nobody checks is worth nothing the day upstream re-arms it.
+//
+// The context sweep is shared with the `medium` tests: both split arms, four
+// `idx_32x32` positions, two decay factors and two error magnitudes, so the
+// `>> 2` / `>> 6` (8-bit) and `>> 4` / `>> 6` (10-bit) block-error shifts are
+// each exercised on both arms.
+
+#[test]
+fn apply_zz_planewise_medium_matches_c() {
+    let mut cells = 0usize;
+    let (mut wrote_luma, mut wrote_chroma) = (0usize, 0usize);
+    let (bw, bh) = (64usize, 64usize);
+    let (ss_x, ss_y) = (1i32, 1i32);
+    let y_stride = bw + 8;
+    let uv_stride = (bw >> 1) + 4;
+
+    let y_pre = fill(202, y_stride * (bh + 2));
+    let u_pre = fill(205, uv_stride * (bh / 2 + 2));
+    let v_pre = fill(206, uv_stride * (bh / 2 + 2));
+
+    for (mut cargs, pctx) in kernel_contexts() {
+        for &tf_chroma in &[true, false] {
+            cargs.tf_chroma = i32::from(tf_chroma);
+            let mut pctx = pctx.clone();
+            pctx.tf_chroma = tf_chroma;
+
+            let ny = y_stride * (bh + 2);
+            let nc = uv_stride * (bh / 2 + 2);
+            let base_acc = [vec![7u32; ny], vec![9u32; nc], vec![11u32; nc]];
+            let base_cnt = [vec![3u16; ny], vec![5u16; nc], vec![13u16; nc]];
+
+            let mut c_acc = base_acc.clone();
+            let mut c_cnt = base_cnt.clone();
+            cref::apply_zz_planewise_medium(
+                &cargs,
+                &y_pre,
+                y_stride as i32,
+                &u_pre,
+                &v_pre,
+                uv_stride as i32,
+                bw as u32,
+                bh as u32,
+                ss_x,
+                ss_y,
+                &mut c_acc,
+                &mut c_cnt,
+            );
+
+            let mut r_acc = base_acc.clone();
+            let mut r_cnt = base_cnt.clone();
+            {
+                let (a0, rest) = r_acc.split_at_mut(1);
+                let (a1, a2) = rest.split_at_mut(1);
+                let (c0, crest) = r_cnt.split_at_mut(1);
+                let (c1, c2) = crest.split_at_mut(1);
+                port::apply_zz_based_temporal_filter_planewise_medium(
+                    &pctx,
+                    &y_pre,
+                    y_stride,
+                    &u_pre,
+                    &v_pre,
+                    uv_stride,
+                    bw,
+                    bh,
+                    ss_x as u32,
+                    ss_y as u32,
+                    &mut a0[0],
+                    &mut c0[0],
+                    &mut a1[0],
+                    &mut c1[0],
+                    &mut a2[0],
+                    &mut c2[0],
+                );
+            }
+
+            assert_eq!(
+                r_acc, c_acc,
+                "zz accum mismatch ctx {cargs:?} chroma {tf_chroma}"
+            );
+            assert_eq!(
+                r_cnt, c_cnt,
+                "zz count mismatch ctx {cargs:?} chroma {tf_chroma}"
+            );
+            // `tf_chroma == 0` must leave U and V untouched — that is a real
+            // per-cell invariant, not an anti-vacuity probe.
+            if !tf_chroma {
+                assert_eq!(r_acc[1], base_acc[1], "zz wrote chroma with tf_chroma=0");
+                assert_eq!(r_acc[2], base_acc[2], "zz wrote chroma with tf_chroma=0");
+            }
+            if r_acc[0] != base_acc[0] {
+                wrote_luma += 1;
+            }
+            if tf_chroma && r_acc[1] != base_acc[1] {
+                wrote_chroma += 1;
+            }
+            cells += 1;
+        }
+    }
+    assert_eq!(cells, 2 * 4 * 2 * 4 * 2);
+    // Anti-vacuity: a comparison of two all-zero weights proves nothing. The
+    // weight IS legitimately 0 in the high-error cells (`scaled_diff16`
+    // saturates at 7*16, where `expf_tab_fp16[112] * 1000 >> 17 == 0`), so the
+    // probe is that SOME cell moved each plane, not that every cell did.
+    assert!(wrote_luma > 0, "zz never wrote luma in any cell");
+    assert!(wrote_chroma > 0, "zz never wrote chroma in any cell");
+}
+
+#[test]
+fn apply_zz_planewise_medium_hbd_matches_c() {
+    let mut cells = 0usize;
+    let (mut wrote_luma, mut wrote_chroma) = (0usize, 0usize);
+    let (bw, bh) = (64usize, 64usize);
+    let (ss_x, ss_y) = (1i32, 1i32);
+    let y_stride = bw + 8;
+    let uv_stride = (bw >> 1) + 4;
+    let bd = 10u32;
+    let mask = (1u16 << bd) - 1;
+
+    let y_pre = fill16(302, y_stride * (bh + 2), mask);
+    let u_pre = fill16(305, uv_stride * (bh / 2 + 2), mask);
+    let v_pre = fill16(306, uv_stride * (bh / 2 + 2), mask);
+
+    for (mut cargs, pctx) in kernel_contexts() {
+        for &tf_chroma in &[true, false] {
+            cargs.tf_chroma = i32::from(tf_chroma);
+            let mut pctx = pctx.clone();
+            pctx.tf_chroma = tf_chroma;
+
+            let ny = y_stride * (bh + 2);
+            let nc = uv_stride * (bh / 2 + 2);
+            let base_acc = [vec![7u32; ny], vec![9u32; nc], vec![11u32; nc]];
+            let base_cnt = [vec![3u16; ny], vec![5u16; nc], vec![13u16; nc]];
+
+            let mut c_acc = base_acc.clone();
+            let mut c_cnt = base_cnt.clone();
+            cref::apply_zz_planewise_medium_hbd(
+                &cargs,
+                &y_pre,
+                y_stride as i32,
+                &u_pre,
+                &v_pre,
+                uv_stride as i32,
+                bw as u32,
+                bh as u32,
+                ss_x,
+                ss_y,
+                &mut c_acc,
+                &mut c_cnt,
+                bd,
+            );
+
+            let mut r_acc = base_acc.clone();
+            let mut r_cnt = base_cnt.clone();
+            {
+                let (a0, rest) = r_acc.split_at_mut(1);
+                let (a1, a2) = rest.split_at_mut(1);
+                let (c0, crest) = r_cnt.split_at_mut(1);
+                let (c1, c2) = crest.split_at_mut(1);
+                port::apply_zz_based_temporal_filter_planewise_medium_hbd(
+                    &pctx,
+                    &y_pre,
+                    y_stride,
+                    &u_pre,
+                    &v_pre,
+                    uv_stride,
+                    bw,
+                    bh,
+                    ss_x as u32,
+                    ss_y as u32,
+                    &mut a0[0],
+                    &mut c0[0],
+                    &mut a1[0],
+                    &mut c1[0],
+                    &mut a2[0],
+                    &mut c2[0],
+                );
+            }
+
+            assert_eq!(
+                r_acc, c_acc,
+                "zz hbd accum mismatch ctx {cargs:?} chroma {tf_chroma}"
+            );
+            assert_eq!(
+                r_cnt, c_cnt,
+                "zz hbd count mismatch ctx {cargs:?} chroma {tf_chroma}"
+            );
+            if !tf_chroma {
+                assert_eq!(
+                    r_acc[1], base_acc[1],
+                    "zz hbd wrote chroma with tf_chroma=0"
+                );
+            }
+            if r_acc[0] != base_acc[0] {
+                wrote_luma += 1;
+            }
+            if tf_chroma && r_acc[1] != base_acc[1] {
+                wrote_chroma += 1;
+            }
+            cells += 1;
+        }
+    }
+    assert_eq!(cells, 2 * 4 * 2 * 4 * 2);
+    assert!(wrote_luma > 0, "zz hbd never wrote luma in any cell");
+    assert!(wrote_chroma > 0, "zz hbd never wrote chroma in any cell");
+}

@@ -376,3 +376,78 @@ void ref_tf_pad_and_decimate_filtered_pic(
     free(pcs);
     free(scs);
 }
+
+/*
+ * The zero-motion ("zz") filter kernels. Both are EXPORTED, so these shims are
+ * evidence tier 1: they build the flat MeContext facade and call the real
+ * `_c` symbols. The wrappers are what an RTCD dispatch would land on, and they
+ * are the only callers of the two `static` partials, so driving them gates the
+ * partial arithmetic too.
+ *
+ * The 8-bit wrapper takes no bit depth; the 10-bit one does and forwards it to
+ * a partial that `(void)`-casts it away (temporal_filtering.c:838). It is
+ * passed here anyway so the shim's call matches the encoder's, and the Rust
+ * side documents why it does not carry the parameter.
+ */
+void svt_av1_apply_zz_based_temporal_filter_planewise_medium_c(
+    MeContext* me_ctx, const uint8_t* y_pre, int y_pre_stride, const uint8_t* u_pre, const uint8_t* v_pre,
+    int uv_pre_stride, unsigned int block_width, unsigned int block_height, int ss_x, int ss_y, uint32_t* y_accum,
+    uint16_t* y_count, uint32_t* u_accum, uint16_t* u_count, uint32_t* v_accum, uint16_t* v_count);
+void svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c(
+    MeContext* me_ctx, const uint16_t* y_pre, int y_pre_stride, const uint16_t* u_pre, const uint16_t* v_pre,
+    int uv_pre_stride, unsigned int block_width, unsigned int block_height, int ss_x, int ss_y, uint32_t* y_accum,
+    uint16_t* y_count, uint32_t* u_accum, uint16_t* u_count, uint32_t* v_accum, uint16_t* v_count,
+    uint32_t encoder_bit_depth);
+
+void ref_tf_apply_zz_planewise_medium(const TfCtxArgs* a, const uint8_t* y_pre, int32_t y_pre_stride,
+                                      const uint8_t* u_pre, const uint8_t* v_pre, int32_t uv_pre_stride,
+                                      uint32_t block_width, uint32_t block_height, int32_t ss_x, int32_t ss_y,
+                                      uint32_t* y_accum, uint16_t* y_count, uint32_t* u_accum, uint16_t* u_count,
+                                      uint32_t* v_accum, uint16_t* v_count) {
+    tf_ensure_rtcd();
+    MeContext* c = tf_make_ctx(a);
+    svt_av1_apply_zz_based_temporal_filter_planewise_medium_c(c,
+                                                              y_pre,
+                                                              y_pre_stride,
+                                                              u_pre,
+                                                              v_pre,
+                                                              uv_pre_stride,
+                                                              block_width,
+                                                              block_height,
+                                                              ss_x,
+                                                              ss_y,
+                                                              y_accum,
+                                                              y_count,
+                                                              u_accum,
+                                                              u_count,
+                                                              v_accum,
+                                                              v_count);
+    free(c);
+}
+
+void ref_tf_apply_zz_planewise_medium_hbd(const TfCtxArgs* a, const uint16_t* y_pre, int32_t y_pre_stride,
+                                          const uint16_t* u_pre, const uint16_t* v_pre, int32_t uv_pre_stride,
+                                          uint32_t block_width, uint32_t block_height, int32_t ss_x, int32_t ss_y,
+                                          uint32_t* y_accum, uint16_t* y_count, uint32_t* u_accum, uint16_t* u_count,
+                                          uint32_t* v_accum, uint16_t* v_count, uint32_t encoder_bit_depth) {
+    tf_ensure_rtcd();
+    MeContext* c = tf_make_ctx(a);
+    svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c(c,
+                                                                  y_pre,
+                                                                  y_pre_stride,
+                                                                  u_pre,
+                                                                  v_pre,
+                                                                  uv_pre_stride,
+                                                                  block_width,
+                                                                  block_height,
+                                                                  ss_x,
+                                                                  ss_y,
+                                                                  y_accum,
+                                                                  y_count,
+                                                                  u_accum,
+                                                                  u_count,
+                                                                  v_accum,
+                                                                  v_count,
+                                                                  encoder_bit_depth);
+    free(c);
+}

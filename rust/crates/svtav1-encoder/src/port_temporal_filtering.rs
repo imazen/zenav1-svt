@@ -559,16 +559,13 @@ fn tf_quadrant_terms(
 ) -> ([u32; 4], [u32; 4]) {
     let distance_threshold_fp16 = ((ctx.tf_mv_dist_th << 16) / 10).max(1 << 16);
     let mut d_factor_fp8 = [0u32; 4];
-    let mut block_error_fp8 = [0u32; 4];
 
     if ctx.tf_32x32_block_split_flag[idx_32x32] != 0 {
-        for i in 0..4 {
+        for (i, d) in d_factor_fp8.iter_mut().enumerate() {
             let col = i32::from(ctx.tf_16x16_mv_x[idx_32x32 * 4 + i]);
             let row = i32::from(ctx.tf_16x16_mv_y[idx_32x32 * 4 + i]);
             let distance_fp4 = sqrt_fast(((col * col + row * row) as u32) << 8);
-            d_factor_fp8[i] = ((distance_fp4 << 12) / (distance_threshold_fp16 >> 8)).max(1 << 8);
-            let e = ctx.tf_16x16_block_error[idx_32x32 * 4 + i];
-            block_error_fp8[i] = if hbd { (e >> 4) as u32 } else { e as u32 };
+            *d = ((distance_fp4 << 12) / (distance_threshold_fp16 >> 8)).max(1 << 8);
         }
     } else {
         *tf_decay_factor_fp16 <<= 1;
@@ -577,15 +574,38 @@ fn tf_quadrant_terms(
         let distance_fp4 = sqrt_fast(((col * col + row * row) as u32) << 8);
         let d = ((distance_fp4 << 12) / (distance_threshold_fp16 >> 8)).max(1 << 8);
         d_factor_fp8 = [d; 4];
+    }
+    (d_factor_fp8, tf_block_errors_fp8(ctx, idx_32x32, hbd))
+}
+
+/// The four per-quadrant block errors, in the fp8 domain the weight math wants.
+///
+/// Shared verbatim by the `medium` and the `zz`-based partial kernels — both
+/// spell the same four shifts, and 8-bit vs 10-bit differ only in them:
+/// split uses `tf_16x16_block_error[i]` (`>> 4` at 10-bit), un-split uses
+/// `tf_32x32_block_error >> 2` (`>> 6` at 10-bit). The `>> 2` on the un-split
+/// arm is the 4:1 area ratio; the extra `>> 4` at 10-bit is the squared-error
+/// scale of two extra bits per sample.
+///
+/// The `u64 -> u32` narrowing is C's own `(uint32_t)` cast at each of the four
+/// sites, not a widening choice made here: the errors are accumulated as
+/// `uint64_t` and truncated here, so a block error above `2^32` wraps in C too.
+fn tf_block_errors_fp8(ctx: &TfKernelCtx, idx_32x32: usize, hbd: bool) -> [u32; 4] {
+    if ctx.tf_32x32_block_split_flag[idx_32x32] != 0 {
+        let mut out = [0u32; 4];
+        for (i, o) in out.iter_mut().enumerate() {
+            let e = ctx.tf_16x16_block_error[idx_32x32 * 4 + i];
+            *o = if hbd { (e >> 4) as u32 } else { e as u32 };
+        }
+        out
+    } else {
         let e = ctx.tf_32x32_block_error[idx_32x32];
-        let b = if hbd {
+        [if hbd {
             (e >> 6) as u32
         } else {
             (e >> 2) as u32
-        };
-        block_error_fp8 = [b; 4];
+        }; 4]
     }
-    (d_factor_fp8, block_error_fp8)
 }
 
 /// The accumulate step shared by both `partial` kernels: from the four
@@ -926,6 +946,248 @@ pub fn apply_temporal_filter_planewise_medium_hbd(
                 &mut luma_window_error_quad_fp8,
                 true,
                 encoder_bit_depth,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The zero-motion ("zz") filter kernels
+// ---------------------------------------------------------------------------
+//
+// REACHABILITY, re-derived here rather than inherited: `use_zz_based_filter`
+// is written 1 at exactly two sites, `tf_ld_controls` levels 1 and 2
+// (enc_handle.c:2555, :2585), and `derive_tf_params` (enc_handle.c:3338-3343)
+// calls `tf_ld_controls` with a hard-coded `tf_level = 0` and returns — every
+// other path goes to `tf_controls`, which zeroes the flag (:3268-3270). So in
+// v4.2.0 these kernels are UNREACHABLE and the `medium` kernels above are the
+// live ones. Translated anyway per `docs/WORKING-ON-THIS.md` §7: one upstream
+// edit to that `tf_level` re-arms them, and the analysis calling a path dead is
+// the thing that has been wrong before.
+//
+// Against `medium` the difference is not "the same filter with zero MVs". Four
+// terms drop out and one shift changes:
+//   * no source plane and no `calculate_squared_errors_sum` — the predictor is
+//     the co-located block, so there is no window error to measure;
+//   * no `d_factor` — with no MV there is no motion distance to penalise;
+//   * no `<<= 1` of the decay factor on the un-split arm;
+//   * the final weight is `>> 17`, not `>> 16` — a factor of two less weight,
+//     which is the whole of the zz kernel's extra caution.
+// Each is transcribed from temporal_filtering.c:738-830 (8-bit) and :832-916
+// (10-bit), not inferred from the medium kernel.
+
+/// The per-quadrant accumulate the two `zz` partial kernels share.
+///
+/// Generic over the predictor's pixel type because C's 8-bit and 10-bit
+/// partials are otherwise the same text: the only 10-bit difference is which
+/// shifts `tf_block_errors_fp8` applies, which is passed in. C's 10-bit partial
+/// takes `encoder_bit_depth` and immediately `(void)`-casts it away
+/// (temporal_filtering.c:838), so it is deliberately NOT a parameter here.
+fn zz_accumulate<P: Copy + Into<u32>>(
+    block_error_fp8: &[u32; 4],
+    tf_decay_factor_fp16: u32,
+    pre: &[P],
+    pre_stride: usize,
+    block_width: usize,
+    block_height: usize,
+    accum: &mut [u32],
+    count: &mut [u16],
+) {
+    for subblock_idx in 0..4usize {
+        // C computes `(block_error_fp8[i]) << 2` in uint32; bits above 32 are
+        // discarded there too (the FP_ASSERT guarding it is debug-only).
+        let avg_err_fp10 = block_error_fp8[subblock_idx] << 2;
+        let scaled_diff16 =
+            (avg_err_fp10 / (tf_decay_factor_fp16 >> 10).max(1)).min(7 * 16) as usize;
+        let adjusted_weight = ((EXPF_TAB_FP16[scaled_diff16] as u32) * TF_WEIGHT_SCALE) >> 17;
+
+        let x_offset = (subblock_idx % 2) * block_width / 2;
+        let y_offset = (subblock_idx / 2) * block_height / 2;
+
+        for i in 0..block_height / 2 {
+            for j in 0..block_width / 2 {
+                let k = (i + y_offset) * pre_stride + j + x_offset;
+                let pixel_value: u32 = pre[k].into();
+                count[k] = count[k].wrapping_add(adjusted_weight as u16);
+                accum[k] = accum[k].wrapping_add(adjusted_weight * pixel_value);
+            }
+        }
+    }
+}
+
+/// `svt_av1_apply_zz_based_temporal_filter_planewise_medium_partial_c`
+/// (temporal_filtering.c:738). `static` in C — reached at TIER 1 through the
+/// exported 8-bit wrapper below.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_zz_based_temporal_filter_planewise_medium_partial(
+    ctx: &TfKernelCtx,
+    pre: &[u8],
+    pre_stride: usize,
+    block_width: usize,
+    block_height: usize,
+    accum: &mut [u32],
+    count: &mut [u16],
+    tf_decay_factor_fp16: u32,
+) {
+    let idx_32x32 = (ctx.tf_block_col + ctx.tf_block_row * 2) as usize;
+    zz_accumulate(
+        &tf_block_errors_fp8(ctx, idx_32x32, false),
+        tf_decay_factor_fp16,
+        pre,
+        pre_stride,
+        block_width,
+        block_height,
+        accum,
+        count,
+    );
+}
+
+/// `svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_partial_c`
+/// (temporal_filtering.c:832). `static` in C — reached at TIER 1 through the
+/// exported 10-bit wrapper below.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_zz_based_temporal_filter_planewise_medium_hbd_partial(
+    ctx: &TfKernelCtx,
+    pre: &[u16],
+    pre_stride: usize,
+    block_width: usize,
+    block_height: usize,
+    accum: &mut [u32],
+    count: &mut [u16],
+    tf_decay_factor_fp16: u32,
+) {
+    let idx_32x32 = (ctx.tf_block_col + ctx.tf_block_row * 2) as usize;
+    zz_accumulate(
+        &tf_block_errors_fp8(ctx, idx_32x32, true),
+        tf_decay_factor_fp16,
+        pre,
+        pre_stride,
+        block_width,
+        block_height,
+        accum,
+        count,
+    );
+}
+
+/// `svt_av1_apply_zz_based_temporal_filter_planewise_medium_c`
+/// (temporal_filtering.c:783). EXPORTED and RTCD-dispatched — TIER 1.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_zz_based_temporal_filter_planewise_medium(
+    ctx: &TfKernelCtx,
+    y_pre: &[u8],
+    y_pre_stride: usize,
+    u_pre: &[u8],
+    v_pre: &[u8],
+    uv_pre_stride: usize,
+    block_width: usize,
+    block_height: usize,
+    ss_x: u32,
+    ss_y: u32,
+    y_accum: &mut [u32],
+    y_count: &mut [u16],
+    u_accum: &mut [u32],
+    u_count: &mut [u16],
+    v_accum: &mut [u32],
+    v_count: &mut [u16],
+) {
+    apply_zz_based_temporal_filter_planewise_medium_partial(
+        ctx,
+        y_pre,
+        y_pre_stride,
+        block_width,
+        block_height,
+        y_accum,
+        y_count,
+        ctx.tf_decay_factor_fp16[0],
+    );
+    if ctx.tf_chroma {
+        for (pre, accum, cnt, dec) in [
+            (
+                u_pre,
+                &mut *u_accum,
+                &mut *u_count,
+                ctx.tf_decay_factor_fp16[1],
+            ),
+            (
+                v_pre,
+                &mut *v_accum,
+                &mut *v_count,
+                ctx.tf_decay_factor_fp16[2],
+            ),
+        ] {
+            apply_zz_based_temporal_filter_planewise_medium_partial(
+                ctx,
+                pre,
+                uv_pre_stride,
+                block_width >> ss_x,
+                block_height >> ss_y,
+                accum,
+                cnt,
+                dec,
+            );
+        }
+    }
+}
+
+/// `svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c`
+/// (temporal_filtering.c:876). EXPORTED and RTCD-dispatched — TIER 1.
+///
+/// C's trailing `encoder_bit_depth` argument is forwarded to a partial that
+/// discards it, so it is dropped from this signature rather than carried as a
+/// parameter no branch reads.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_zz_based_temporal_filter_planewise_medium_hbd(
+    ctx: &TfKernelCtx,
+    y_pre: &[u16],
+    y_pre_stride: usize,
+    u_pre: &[u16],
+    v_pre: &[u16],
+    uv_pre_stride: usize,
+    block_width: usize,
+    block_height: usize,
+    ss_x: u32,
+    ss_y: u32,
+    y_accum: &mut [u32],
+    y_count: &mut [u16],
+    u_accum: &mut [u32],
+    u_count: &mut [u16],
+    v_accum: &mut [u32],
+    v_count: &mut [u16],
+) {
+    apply_zz_based_temporal_filter_planewise_medium_hbd_partial(
+        ctx,
+        y_pre,
+        y_pre_stride,
+        block_width,
+        block_height,
+        y_accum,
+        y_count,
+        ctx.tf_decay_factor_fp16[0],
+    );
+    if ctx.tf_chroma {
+        for (pre, accum, cnt, dec) in [
+            (
+                u_pre,
+                &mut *u_accum,
+                &mut *u_count,
+                ctx.tf_decay_factor_fp16[1],
+            ),
+            (
+                v_pre,
+                &mut *v_accum,
+                &mut *v_count,
+                ctx.tf_decay_factor_fp16[2],
+            ),
+        ] {
+            apply_zz_based_temporal_filter_planewise_medium_hbd_partial(
+                ctx,
+                pre,
+                uv_pre_stride,
+                block_width >> ss_x,
+                block_height >> ss_y,
+                accum,
+                cnt,
+                dec,
             );
         }
     }

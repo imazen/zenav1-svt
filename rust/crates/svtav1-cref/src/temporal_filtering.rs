@@ -167,6 +167,45 @@ unsafe extern "C" {
         v_count: *mut u16,
         encoder_bit_depth: u32,
     );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_tf_apply_zz_planewise_medium(
+        a: *const TfCtxArgs,
+        y_pre: *const u8,
+        y_pre_stride: i32,
+        u_pre: *const u8,
+        v_pre: *const u8,
+        uv_pre_stride: i32,
+        block_width: u32,
+        block_height: u32,
+        ss_x: i32,
+        ss_y: i32,
+        y_accum: *mut u32,
+        y_count: *mut u16,
+        u_accum: *mut u32,
+        u_count: *mut u16,
+        v_accum: *mut u32,
+        v_count: *mut u16,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_tf_apply_zz_planewise_medium_hbd(
+        a: *const TfCtxArgs,
+        y_pre: *const u16,
+        y_pre_stride: i32,
+        u_pre: *const u16,
+        v_pre: *const u16,
+        uv_pre_stride: i32,
+        block_width: u32,
+        block_height: u32,
+        ss_x: i32,
+        ss_y: i32,
+        y_accum: *mut u32,
+        y_count: *mut u16,
+        u_accum: *mut u32,
+        u_count: *mut u16,
+        v_accum: *mut u32,
+        v_count: *mut u16,
+        encoder_bit_depth: u32,
+    );
 }
 
 /// `svt_aom_noise_log1p_fp16`.
@@ -564,6 +603,92 @@ pub fn pad_and_decimate_filtered_pic(
             s_geom.width,
             s_geom.height,
             s_geom.border,
+        );
+    }
+}
+
+/// `svt_av1_apply_zz_based_temporal_filter_planewise_medium_c`.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_zz_planewise_medium(
+    args: &TfCtxArgs,
+    y_pre: &[u8],
+    y_pre_stride: i32,
+    u_pre: &[u8],
+    v_pre: &[u8],
+    uv_pre_stride: i32,
+    block_width: u32,
+    block_height: u32,
+    ss_x: i32,
+    ss_y: i32,
+    accum: &mut [Vec<u32>; 3],
+    count: &mut [Vec<u16>; 3],
+) {
+    let (a0, rest) = accum.split_at_mut(1);
+    let (a1, a2) = rest.split_at_mut(1);
+    let (c0, crest) = count.split_at_mut(1);
+    let (c1, c2) = crest.split_at_mut(1);
+    unsafe {
+        ref_tf_apply_zz_planewise_medium(
+            args,
+            y_pre.as_ptr(),
+            y_pre_stride,
+            u_pre.as_ptr(),
+            v_pre.as_ptr(),
+            uv_pre_stride,
+            block_width,
+            block_height,
+            ss_x,
+            ss_y,
+            a0[0].as_mut_ptr(),
+            c0[0].as_mut_ptr(),
+            a1[0].as_mut_ptr(),
+            c1[0].as_mut_ptr(),
+            a2[0].as_mut_ptr(),
+            c2[0].as_mut_ptr(),
+        );
+    }
+}
+
+/// `svt_av1_apply_zz_based_temporal_filter_planewise_medium_hbd_c`.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_zz_planewise_medium_hbd(
+    args: &TfCtxArgs,
+    y_pre: &[u16],
+    y_pre_stride: i32,
+    u_pre: &[u16],
+    v_pre: &[u16],
+    uv_pre_stride: i32,
+    block_width: u32,
+    block_height: u32,
+    ss_x: i32,
+    ss_y: i32,
+    accum: &mut [Vec<u32>; 3],
+    count: &mut [Vec<u16>; 3],
+    encoder_bit_depth: u32,
+) {
+    let (a0, rest) = accum.split_at_mut(1);
+    let (a1, a2) = rest.split_at_mut(1);
+    let (c0, crest) = count.split_at_mut(1);
+    let (c1, c2) = crest.split_at_mut(1);
+    unsafe {
+        ref_tf_apply_zz_planewise_medium_hbd(
+            args,
+            y_pre.as_ptr(),
+            y_pre_stride,
+            u_pre.as_ptr(),
+            v_pre.as_ptr(),
+            uv_pre_stride,
+            block_width,
+            block_height,
+            ss_x,
+            ss_y,
+            a0[0].as_mut_ptr(),
+            c0[0].as_mut_ptr(),
+            a1[0].as_mut_ptr(),
+            c1[0].as_mut_ptr(),
+            a2[0].as_mut_ptr(),
+            c2[0].as_mut_ptr(),
+            encoder_bit_depth,
         );
     }
 }
