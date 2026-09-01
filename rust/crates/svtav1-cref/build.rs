@@ -102,6 +102,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/picops_dblk_shims.c");
     println!("cargo:rerun-if-changed=shims/entropy_block_shims.c");
     println!("cargo:rerun-if-changed=shims/rc_vbr_cbr_shims.c");
+    println!("cargo:rerun-if-changed=shims/enc_dec_metrics_shims.c");
     println!("cargo:rerun-if-changed=shims/rd_cost_shims.c");
     println!("cargo:rerun-if-changed=shims/full_loop_md_shims.c");
     println!("cargo:rerun-if-changed=shims/md_winner_shims.c");
@@ -171,6 +172,8 @@ fn main() {
     let picstruct_statics = link_globalized_pd_statics(&repo_root, &out_dir_path());
     // Same mechanism for `rc_vbr_cbr.c`'s five surviving statics (lane wx-rc).
     let rc_vbr_statics = link_globalized_rc_vbr_statics(&repo_root, &out_dir_path());
+    // Same mechanism again for `enc_dec_process.c`'s two SSIM walkers.
+    let enc_dec_statics = link_globalized_enc_dec_statics(&repo_root, &out_dir_path());
 
     let mut shims = cc::Build::new();
     if picstruct_statics {
@@ -178,6 +181,9 @@ fn main() {
     }
     if rc_vbr_statics {
         shims.define("SVTAV1_CREF_RC_VBR_STATICS", "1");
+    }
+    if enc_dec_statics {
+        shims.define("SVTAV1_CREF_ENC_DEC_STATICS", "1");
     }
     shims
         .file(manifest.join("shims/ref_shims.c"))
@@ -222,6 +228,8 @@ fn main() {
         .file(manifest.join("shims/entropy_block_shims.c"))
         // rc_vbr_cbr.c VBR/CBR state machine oracle (lane wx-rc) — own TU.
         .file(manifest.join("shims/rc_vbr_cbr_shims.c"))
+        // enc_dec_process.c SSIM oracle (lane wx-rc) — own TU, same reason.
+        .file(manifest.join("shims/enc_dec_metrics_shims.c"))
         // rd_cost.c MD-cost oracle (lane wx-md) — its own TU for the same
         // per-lane file-ownership reason as the others above.
         .file(manifest.join("shims/rd_cost_shims.c"))
@@ -487,6 +495,115 @@ fn link_globalized_rc_vbr_statics(repo_root: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=rc_vbr_statics");
     println!("cargo:rustc-cfg=rc_vbr_statics");
+    true
+}
+
+/// Make `enc_dec_process.c`'s two SSIM walkers linkable.
+///
+/// Same mechanism and same caveats as [`link_globalized_rc_vbr_statics`];
+/// read that first.
+///
+/// **The prologue was disassembled before the name was listed** (`otool -tV
+/// enc_dec_process.c.o`, macOS arm64, 2026-08-31). `aom_ssim2` takes its six
+/// source arguments in x0/w1/x2/w3/w4/w5 and opens with `cmp w4,#9` /
+/// `cmp w5,#9` — the width/height guard, hoisted out of the loop bounds — so
+/// its ABI is the source one. It drags in `ssim_8x8`,
+/// `svt_aom_ssim_parms_8x8_c` and `svt_aom_similarity`, none of which has a
+/// symbol of its own, so this one promotion pins the whole 8-bit SSIM chain.
+///
+/// **THREE NAMES WERE REJECTED after disassembly. Do not re-add them without
+/// re-checking; each cost a debugging cycle.**
+///
+/// * `aom_highbd_ssim2` — has a `t` symbol, and its width/height ARE in
+///   w6/w7 as the signature implies, which is why it looks safe. But LLVM
+///   CONSTANT-FOLDED its last two arguments: its only call site
+///   (`svt_aom_ssim_calculations`, :863) passes a literal `shift = 0` (:861)
+///   and a fixed `bd`, and the compiled body materialises the bd-10 SSIM
+///   constants as immediates (`0x411a29c800000000` == 428658.0,
+///   `0x414d6f0280000000` == 3857925.0) instead of selecting on `bd`. A first
+///   draft bound it as declared; every 10-bit cell then came back as though
+///   `shift == 0`, which a hand-computation from the C source confirmed. The
+///   difference was in the SEVENTH significant digit — small enough to be
+///   mistaken for a float-reassociation issue and "fixed" with an epsilon.
+/// * `avg_cdf_symbol` / `avg_cdf_symbols` — same class. `avg_cdf_symbols`'
+///   compiled body overwrites w2/w3 (its own `wt_left`/`wt_tr`) before its
+///   first call to `avg_cdf_symbol` and never stages them anywhere, i.e. the
+///   weight parameters were propagated out of BOTH signatures.
+///
+/// The lesson, which `link_globalized_pd_statics` already states and this
+/// function pays for again: a matching REGISTER argument does not prove a
+/// matching ABI. Check the constants the body materialises too.
+#[must_use]
+fn link_globalized_enc_dec_statics(repo_root: &Path, out_dir: &Path) -> bool {
+    println!("cargo:rustc-check-cfg=cfg(enc_dec_statics)");
+    println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_ENC_DEC_STATICS");
+
+    const SYMS: [&str; 1] = ["aom_ssim2"];
+
+    let src =
+        repo_root.join("cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/enc_dec_process.c.o");
+    println!("cargo:rerun-if-changed={}", src.display());
+    if !src.exists() {
+        println!(
+            "cargo:warning=enc_dec_process tier-1 statics unavailable: {} not found. \
+             aom_ssim2 stays at evidence tier 4.",
+            src.display()
+        );
+        return false;
+    }
+
+    let Some(objcopy) = find_objcopy() else {
+        println!(
+            "cargo:warning=enc_dec_process tier-1 statics unavailable: no llvm-objcopy found. \
+             aom_ssim2 stays at evidence tier 4."
+        );
+        return false;
+    };
+
+    let dst = out_dir.join("enc_dec_process_globalized.o");
+    if fs::copy(&src, &dst).is_err() {
+        println!(
+            "cargo:warning=enc_dec_process tier-1 statics unavailable: could not copy the object"
+        );
+        return false;
+    }
+    let mut cmd = Command::new(&objcopy);
+    for s in SYMS {
+        cmd.arg(format!("--globalize-symbol={s}"));
+        cmd.arg(format!("--globalize-symbol=_{s}"));
+    }
+    cmd.arg(&dst);
+    match cmd.status() {
+        Ok(st) if st.success() => {}
+        other => {
+            println!(
+                "cargo:warning=enc_dec_process tier-1 statics unavailable: {} failed ({other:?})",
+                objcopy.display()
+            );
+            return false;
+        }
+    }
+
+    let archive = out_dir.join("libenc_dec_statics.a");
+    let _ = fs::remove_file(&archive);
+    match Command::new("ar")
+        .arg("crs")
+        .arg(&archive)
+        .arg(&dst)
+        .status()
+    {
+        Ok(st) if st.success() => {}
+        other => {
+            println!(
+                "cargo:warning=enc_dec_process tier-1 statics unavailable: `ar crs` failed \
+                 ({other:?})"
+            );
+            return false;
+        }
+    }
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=enc_dec_statics");
+    println!("cargo:rustc-cfg=enc_dec_statics");
     true
 }
 
