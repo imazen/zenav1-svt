@@ -692,3 +692,143 @@ pub fn apply_zz_planewise_medium_hbd(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The tune-VMAF leaf kernels (temporal_filtering.c:3636-3746)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_vmaf_compute_avg_mad(src: *const u8, width: i32, height: i32, stride: i32) -> u32;
+    fn ref_vmaf_apply_unsharp_row(
+        src: *const u8,
+        blur: *const u8,
+        dst: *mut u8,
+        width: i32,
+        amount: i32,
+        max_delta: i32,
+    );
+    fn ref_vmaf_vpass_row(
+        r0: *const i16,
+        r1: *const i16,
+        r2: *const i16,
+        r3: *const i16,
+        r4: *const i16,
+        blur_row: *mut u8,
+        width: i32,
+        steps_x: i32,
+    );
+    fn ref_vmaf_compute_gradient_coherence(
+        src: *const u8,
+        width: i32,
+        height: i32,
+        stride: i32,
+    ) -> f32;
+    fn ref_vmaf_count_detail_le(
+        src: *const u8,
+        blur: *const u8,
+        width: i32,
+        height: i32,
+        src_stride: i32,
+        thresh: i32,
+    ) -> u32;
+    fn ref_vmaf_hpass_row(src_row: *const u8, width: i32, h_row: *mut i16);
+}
+
+/// `svt_vmaf_compute_avg_mad_c`.
+pub fn vmaf_compute_avg_mad(src: &[u8], width: usize, height: usize, stride: usize) -> u32 {
+    assert!(src.len() >= (height - 1) * stride + width);
+    unsafe { ref_vmaf_compute_avg_mad(src.as_ptr(), width as i32, height as i32, stride as i32) }
+}
+
+/// `svt_vmaf_apply_unsharp_row_c`.
+pub fn vmaf_apply_unsharp_row(
+    src: &[u8],
+    blur: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    amount: i32,
+    max_delta: i32,
+) {
+    assert!(src.len() >= width && blur.len() >= width && dst.len() >= width);
+    unsafe {
+        ref_vmaf_apply_unsharp_row(
+            src.as_ptr(),
+            blur.as_ptr(),
+            dst.as_mut_ptr(),
+            width as i32,
+            amount,
+            max_delta,
+        );
+    }
+}
+
+/// `svt_vmaf_vpass_row_c`. Each ring row must hold `width + 2 * steps_x`
+/// entries, which is what `svt_vmaf_hpass_row_c` writes.
+pub fn vmaf_vpass_row(rows: [&[i16]; 5], blur_row: &mut [u8], width: usize, steps_x: usize) {
+    for r in rows {
+        assert!(r.len() >= width + 2 * steps_x);
+    }
+    assert!(blur_row.len() >= width);
+    unsafe {
+        ref_vmaf_vpass_row(
+            rows[0].as_ptr(),
+            rows[1].as_ptr(),
+            rows[2].as_ptr(),
+            rows[3].as_ptr(),
+            rows[4].as_ptr(),
+            blur_row.as_mut_ptr(),
+            width as i32,
+            steps_x as i32,
+        );
+    }
+}
+
+/// `svt_vmaf_compute_gradient_coherence_c`.
+pub fn vmaf_compute_gradient_coherence(
+    src: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+) -> f32 {
+    assert!(src.len() >= (height - 1) * stride + width);
+    unsafe {
+        ref_vmaf_compute_gradient_coherence(
+            src.as_ptr(),
+            width as i32,
+            height as i32,
+            stride as i32,
+        )
+    }
+}
+
+/// `svt_vmaf_count_detail_le_c`. `blur` is tightly packed at `width`; `src`
+/// uses the picture stride.
+pub fn vmaf_count_detail_le(
+    src: &[u8],
+    blur: &[u8],
+    width: usize,
+    height: usize,
+    src_stride: usize,
+    thresh: i32,
+) -> u32 {
+    assert!(src.len() >= (height - 1) * src_stride + width);
+    assert!(blur.len() >= width * height);
+    unsafe {
+        ref_vmaf_count_detail_le(
+            src.as_ptr(),
+            blur.as_ptr(),
+            width as i32,
+            height as i32,
+            src_stride as i32,
+            thresh,
+        )
+    }
+}
+
+/// `svt_vmaf_hpass_row_c`. `h_row` must hold `width + 2 * steps_x` entries
+/// (`steps_x` is hardcoded to 2 inside the kernel).
+pub fn vmaf_hpass_row(src_row: &[u8], width: usize, h_row: &mut [i16]) {
+    assert!(src_row.len() >= width.max(1));
+    assert!(h_row.len() >= width + 4);
+    unsafe { ref_vmaf_hpass_row(src_row.as_ptr(), width as i32, h_row.as_mut_ptr()) }
+}

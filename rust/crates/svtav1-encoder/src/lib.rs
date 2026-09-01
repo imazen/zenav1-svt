@@ -73,6 +73,7 @@ pub mod port_rc_vbr_cbr_qpick;
 pub mod port_rc_vbr_cbr_state;
 pub mod port_sgr_search;
 pub mod port_temporal_filtering;
+pub mod port_tune_vmaf;
 pub mod qm;
 pub mod qm_tables;
 pub mod quant;

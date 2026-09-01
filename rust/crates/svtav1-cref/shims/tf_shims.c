@@ -451,3 +451,59 @@ void ref_tf_apply_zz_planewise_medium_hbd(const TfCtxArgs* a, const uint16_t* y_
                                                                   encoder_bit_depth);
     free(c);
 }
+
+/* ------------------------------------------------------------------------
+ * The tune-VMAF leaf kernels (temporal_filtering.c:3636-3746).
+ *
+ * All six are RTCD-dispatched with an EXPORTED `_c` scalar reference. The `_c`
+ * symbols are called directly, so no RTCD init is needed for these — but
+ * `tf_ensure_rtcd()` is called anyway to keep every entry point in this file
+ * on the same footing, and because it is idempotent.
+ *
+ * Their nine `static` callers live in pic_analysis_process.c and are reached
+ * only through a PictureAnalysisContext + PCS, so they are covered by the
+ * port's assembled chain rather than shimmed here.
+ * ---------------------------------------------------------------------- */
+
+uint32_t svt_vmaf_compute_avg_mad_c(const uint8_t* src, int width, int height, int stride);
+void     svt_vmaf_apply_unsharp_row_c(const uint8_t* src, const uint8_t* blur, uint8_t* dst, int width, int amount,
+                                      int32_t max_delta);
+void     svt_vmaf_vpass_row_c(const int16_t* r0, const int16_t* r1, const int16_t* r2, const int16_t* r3,
+                              const int16_t* r4, uint8_t* blur_row, int width, int steps_x);
+float    svt_vmaf_compute_gradient_coherence_c(const uint8_t* src, int width, int height, int stride);
+uint32_t svt_vmaf_count_detail_le_c(const uint8_t* src, const uint8_t* blur, int width, int height, int src_stride,
+                                    int thresh);
+void     svt_vmaf_hpass_row_c(const uint8_t* src_row, int width, int16_t* h_row);
+
+uint32_t ref_vmaf_compute_avg_mad(const uint8_t* src, int32_t width, int32_t height, int32_t stride) {
+    tf_ensure_rtcd();
+    return svt_vmaf_compute_avg_mad_c(src, width, height, stride);
+}
+
+void ref_vmaf_apply_unsharp_row(const uint8_t* src, const uint8_t* blur, uint8_t* dst, int32_t width, int32_t amount,
+                                int32_t max_delta) {
+    tf_ensure_rtcd();
+    svt_vmaf_apply_unsharp_row_c(src, blur, dst, width, amount, max_delta);
+}
+
+void ref_vmaf_vpass_row(const int16_t* r0, const int16_t* r1, const int16_t* r2, const int16_t* r3, const int16_t* r4,
+                        uint8_t* blur_row, int32_t width, int32_t steps_x) {
+    tf_ensure_rtcd();
+    svt_vmaf_vpass_row_c(r0, r1, r2, r3, r4, blur_row, width, steps_x);
+}
+
+float ref_vmaf_compute_gradient_coherence(const uint8_t* src, int32_t width, int32_t height, int32_t stride) {
+    tf_ensure_rtcd();
+    return svt_vmaf_compute_gradient_coherence_c(src, width, height, stride);
+}
+
+uint32_t ref_vmaf_count_detail_le(const uint8_t* src, const uint8_t* blur, int32_t width, int32_t height,
+                                  int32_t src_stride, int32_t thresh) {
+    tf_ensure_rtcd();
+    return svt_vmaf_count_detail_le_c(src, blur, width, height, src_stride, thresh);
+}
+
+void ref_vmaf_hpass_row(const uint8_t* src_row, int32_t width, int16_t* h_row) {
+    tf_ensure_rtcd();
+    svt_vmaf_hpass_row_c(src_row, width, h_row);
+}
