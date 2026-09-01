@@ -1140,6 +1140,101 @@ Do not "fix" (b) without re-measuring.
 
 ---
 
+## 26. The AVX2 resize leaves emit a FIXED-WIDTH block, so they overrun the caller and disagree with their own `_c` twins below one block
+
+**Status: AVOIDED (the port ports the `_c` ladder; the cref shim pins C's
+resize dispatch to the `_c` tier so the differential compares like with like).
+The divergence itself is MEASURED and pinned by
+`c_parity_resize_avx2_divergence.rs`.**
+
+`ASM_AVX2/resize_avx2.c:822` `svt_av1_down2_symeven_avx2` opens with
+
+```c
+const int l1 = steps;              /* steps == 32, unconditionally */
+down2_symeven_w16_init_part_avx2(input, &optr, &filter_4x);
+i = l1;
+```
+
+`down2_symeven_w16_init_part_avx2` (`:501`) reads `input[-3 .. +36]` and stores
+16 bytes with `_mm_storeu_si128`, before anything has looked at `length`. Two
+consequences, both measured on x86-64 (Ryzen 9 7900X, glibc, gcc, against
+`Bin/Release/libSvtAv1Enc.a` at `42da724d`, 2026-08-31):
+
+1. **It writes 16 outputs for every even `length <= 32`**, so the caller's
+   buffer is overrun by `16 - length / 2` bytes. From length 34 upward it
+   writes exactly `length / 2`.
+2. **The values disagree with `svt_av1_down2_symeven_c`** for every even
+   `length` in 4..=32, because the fixed initial block never applies the
+   high-edge clamp (`AOMMIN(i + 1 + j, length - 1)`) that `_c`'s end part
+   applies. Length 2 happens to agree. From 34 upward they are identical.
+
+The highbd twin (`:1640`, `steps == 8`) has the same shape: a fixed 8 outputs
+and value divergence for every even `length <= 16`, correct from 18 up.
+`svt_av1_interpolate_core_avx2` (`:761`) is worse — for small `out_length` its
+`mid` term goes negative, `x` rewinds to 0, and the scalar tail then writes
+`out_length` more values at `output + 16`, i.e. `out_length + 16` bytes total.
+
+**Why this is not academic.** `svt_av1_resize_plane_c` is an EXPORTED symbol
+but it is *not* pure C on x86-64: `resize_multistep` reaches its leaves through
+the RTCD pointers, and `aom_dsp_rtcd.c:601-602` binds them to the AVX2
+kernels. Its column pass hands `svt_av1_down2_symeven` an `arrbuf2` of exactly
+`height2` bytes (`resize.c:435`, `:736` for the highbd twin), so any ladder step under 32 samples is a heap
+overrun. Measured: with the shim's `_c` pin removed, glibc aborts the highbd
+differential with `*** buffer overflow detected ***`.
+
+The whole-plane AVX2 rewrite is worse still. `svt_aom_resize_frame`
+(`resize.c:1011`) dispatches through the `svt_av1_resize_plane` POINTER, which
+is `svt_av1_resize_plane_avx2` (`:2792`) on x86-64 — a different algorithm, not
+a vectorisation of `_c`. Measured directly, outside Rust:
+
+| cell | `_c` vs `_avx2` |
+|---|---|
+| 64x48 -> 48x36 | identical (1728/1728) |
+| 64x48 -> 16x12 | **`_avx2` corrupts the heap**; `free()` faults in `arena_for_chunk` inside `svt_av1_resize_plane_avx2` |
+| 17x5 -> 9x3 (via `svt_aom_resize_frame`) | `_avx2` writes **nothing** — the destination comes back untouched |
+
+**aarch64 cannot reach any of it.** `aom_dsp_rtcd.c:1367-1374` is `SET_ONLY_C`
+for all six resize symbols — there is no Neon resize kernel — so
+`svt_av1_resize_plane_c` on aarch64 really is the pure-C ladder. That is why
+these tests were green there and red on x86-64. **Structural, not luck.**
+
+**Reachable in our envelope?** For the 2-D resize and `svt_aom_resize_frame`,
+no: the port's `resize_plane` / `resize_frame` are not wired into
+`encode_frame_impl` (only `resize_plane_horizontal` is, at
+`pipeline.rs:1021-1023`, for superres). For the horizontal path it is
+**reachable in principle** — `ref_resize_plane_horizontal` is deliberately left
+on native dispatch so a real divergence there cannot be hidden, and
+`c_parity_resize.rs` / `c_parity_resize_hbd.rs` are green on both hosts today,
+which means their cells stay above the thresholds. **If you add a superres cell
+whose ladder drops below 34 samples (or an interpolate below out_length 17),
+expect the port to match C-on-aarch64 and differ from C-on-x86-64.** That is
+this entry, not a port bug.
+
+**What the port does.** It ports the `_c` ladder, which is what aarch64's C
+runs and what x86-64's C runs above the thresholds.
+`shims/refmgmt_shims.c`'s `resize_rtcd_once` pins the six resize RTCD pointers
+to their `_c` twins after the native setup — the same thing `SVT_CPU_FLAGS=0`
+does globally, and the same thing aarch64 gets for free — so the tier-1
+differential drives one function on both hosts. The AVX2 behaviour is reached
+BY SYMBOL from `c_parity_resize_avx2_divergence.rs` and asserted exactly as
+measured, so the day upstream fixes the kernel that file goes red and this
+entry gets revisited. **It is a control, not a tolerance: do not widen it.**
+
+**Related, and fixed rather than documented:** `resize_multistep` and
+`highbd_resize_multistep` take a `svt_memcpy(output, input, ...)` fast path
+when `length == olength` (`resize.c:368`, `:673`), and `svt_memcpy` is an RTCD
+pointer owned by common_dsp_rtcd.c (`:1045`), a DIFFERENT table from the
+aom_dsp one that owns the resize leaves. A shim that sets up only the aom_dsp
+table leaves it NULL, and every identity cell jumps to address 0. That was a
+shim bug, not a C bug, and both resize shims now initialise both tables. It
+too is invisible on aarch64: that build compiles resize.c under
+`CONFIG_ARM_NEON_IS_GUARANTEED`, where `common_dsp_rtcd_neon_devirt.h` does
+`#define svt_memcpy svt_memcpy_neon`, so no pointer exists to be NULL
+(`nm -u cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/resize.c.o` shows
+`_svt_memcpy_neon` undefined and no reference to `_svt_memcpy`).
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

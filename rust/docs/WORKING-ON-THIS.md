@@ -269,6 +269,29 @@ the narrower one.** The aarch64 pass here was structural — NEON is unsigned en
 to end — and told you nothing about x86, exactly as #11's aarch64 obmc alias
 tells you nothing about the x86 table.
 
+**An exported `_c` symbol is NOT pure C, and one RTCD table is not both of
+them.** `svt_av1_resize_plane_c` is exported and looks like the scalar
+reference, but on x86-64 its leaves go through the RTCD pointers to the AVX2
+kernels — which write a fixed-width block regardless of the requested length
+and disagree with their own `_c` twins below it. On aarch64 the same source
+line resolves to `_c`, because `aom_dsp_rtcd.c`'s AARCH64 arm is `SET_ONLY_C`
+for every resize symbol. So an unpinned differential compares the port against
+a DIFFERENT function on each host: three tests were green on aarch64 and two
+SIGSEGV'd on x86-64 at the same commit. Separately, `resize_multistep`'s
+identity fast path calls `svt_memcpy`, an RTCD pointer owned by
+**common**_dsp_rtcd.c — a shim that inits only the aom_dsp table leaves it NULL
+and every identity cell jumps to address 0. When a shim drives C, hand it the
+contract the ENCODER hands it: **both** tables, and a deliberate decision about
+which dispatch tier the oracle is supposed to be. Two rules follow. (1) When a
+host passes, ask whether it passed structurally or by luck — here it was
+structural twice over (`SET_ONLY_C`, plus NEON devirtualization making
+`svt_memcpy` a direct call with no pointer to be NULL), which is checkable with
+`nm -u` on the object file, not by reading the source. (2) `rip = 0x0` in a
+backtrace is an uninitialised function pointer, not an overread — get the
+backtrace before you theorise about buffer sizes. Full measurement:
+`docs/SUSPECTED-C-BUGS.md` #26, pinned by
+`crates/svtav1-dsp/tests/c_parity_resize_avx2_divergence.rs`.
+
 **On macOS there is no arithmetic-coder op trace IN-PROCESS — run the C side in
 a Linux container instead.** `capture_c_trace` needs `-Wl,--wrap`, which
 Apple's `ld64` lacks, so `build.sh` falls back to a byte-only driver and
