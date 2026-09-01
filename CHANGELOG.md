@@ -56,6 +56,51 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Rate ladders: the video arm of `rdoq_level` + `rate_est_level` +
+  `update_cdf_level` wired (lane `wv-rdoq`).** New
+  `svtav1_encoder::rate_arm` resolves the three frame-level rate ladders per
+  `scs->allintra` from the `ScArm` the frame already carries, replacing the
+  inline allintra flattening `pipeline.rs` applied to every frame
+  (`preset.min(9)` for the preset clamp, `quant::rdoq_level_allintra` for
+  `enc_mode_config.c:9904`, `FunnelCfg::for_preset`'s baked
+  `(coeff_rate_est_lvl, real_coeff_ctx)` for `:9917` -> `set_rate_est_ctrls`,
+  and `matches!(preset, 0..=6)` as the per-SB CDF-chain gate for `:8534`). The
+  arms diverge from M6 up: the video arm is a flat rdoq 1 to M10 (2 above,
+  under its own `> M11 -> M11` preset clamp) and a flat `rate_est_level` 1,
+  and it keeps CDF adaptation ON at M7/M8 where the still arm switches it off
+  entirely. All three are wired together because `set_cdf_controls` couples
+  them (`update_coef = rate_est_level || rdoq_level`), so the chunk's brief —
+  which named only two — was extended by one. Still path byte-neutral by
+  construction: `rate_arm::allintra_flattening_matches_the_ladder` pins each
+  allintra arm against the inline expression it replaced, entry-for-entry over
+  presets 0..=13 x all four `coeff_lvl`s. Measured: the six still identity
+  cells IDENTICAL (290 / 839 / 63 / 171 / 580 / 693 B), `identity_full_8bit`
+  1100 / 1100, workspace 2390 / 2390. Video-mode key frame, gradient 72x88 q40
+  frame 0: p9 1630 -> 1587 B against C's 1589 (2.580% -> 0.126% off), p10 1630
+  -> 1587 (C 1599); p7 1511 -> 1499 (C 1539) and p11..13 1630 -> 1592
+  (C 1634) move FURTHER, because only 3 of the ~30 picture-level ladders are on
+  the video arm so far. Presets 0..=5 do not move at all — the arms agree
+  there. See `rust/docs/rate-arm-port-map.md`. (evidence tier 1 both arms)
+- **Tier-1 differential for the ALLINTRA rate ladders.** New
+  `ref_sig_deriv_md_config_allintra` shim in `sigderiv_shims.c` drives the
+  exported `svt_aom_sig_deriv_mode_decision_config_allintra` and reads back
+  `pcs->rdoq_level`, `pcs->rate_est_level` and `pcs->cdf_ctrl`. This upgrades
+  `quant::rdoq_level_allintra` from a hand-transcription with unit tests
+  (evidence tier 4) to tier 1, and pins `FunnelCfg::for_preset`'s baked
+  rate-estimation pair to the real ladder. Mutation-verified (flipping the
+  ladder's `<= M5` to `<= M4` fails the new
+  `allintra_rdoq_ladder_matches_c` at M5). No `build.rs` change — the shim
+  lives in the sigderiv lane's existing TU.
+- **`regression_spotcheck.sh`: `video-key-nsq-arm-p7-72x88` REPLACED, not
+  re-limited.** Wiring the rate arms made that cell vacuous — the port emits
+  1499 B both with the partition arms wired and with them forced back to
+  Allintra, so no limit could make it witness its own fix. Per the
+  anti-vacuity rule it is replaced by `video-key-nsq-arm-p7-screenrep-72x88`
+  (`screenrep 72x88 q40 p7`), which separates 2414 B (1.089% off C's 2388)
+  from 2386 B (0.084%), at a TIGHTER limit of 0.5%. The gradient p4 / p5 cells
+  still separate and are untouched. New cell
+  `video-key-rate-arm-p9-72x88` guards this chunk: 1630 B (2.580% off) before,
+  1587 B (0.126%) after, limit 1.0%. Spot-check 45 / 45.
 - **Partition search: the video arm of `max_block_size` + NSQ geometry / search
   wired (lane `c2blk`).** New `svtav1_encoder::part_arm` resolves the three
   partition-search ladders per `scs->allintra` from the `ScArm` the frame

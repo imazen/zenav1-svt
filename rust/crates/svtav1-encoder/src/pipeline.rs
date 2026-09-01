@@ -1680,8 +1680,7 @@ impl EncodePipeline {
         } else {
             crate::sc_detect::ScArm::Video { is_islice: is_key }
         };
-        let sc_derivation =
-            crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h);
+        let sc_derivation = crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h);
 
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
@@ -1949,14 +1948,23 @@ impl EncodePipeline {
                     w,
                     h,
                 );
-                // C clamps allintra presets above M9 to M9 (enc_handle.c:4634).
-                let eff_mode = self.speed_config.preset.min(9);
+                // C's per-arm preset clamp (enc_handle.c:4415-4436): allintra
+                // above M9 -> M9, video (non-RTC) above M11 -> M11. The still
+                // path's `preset.min(9)` is the allintra arm of the same rule
+                // (`rate_arm::allintra_flattening_matches_the_ladder` pins it).
+                let eff_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
                 // Coded-lossless: `perform_rdoq = !svt_av1_is_lossless_segment
                 // && ...` (full_loop.c:1756) — RDOQ never runs at qp 0.
+                //
+                // The VIDEO arm's ladder (`rdoq_level_default`, :8933) is a
+                // flat 1 up to M10 and ignores `coeff_lvl` entirely — which is
+                // why C can leave `pcs->coeff_lvl` at INVALID_LVL for a
+                // video-mode I-slice. The allintra arm (:9904) is the
+                // coeff-driven one, and is unchanged here.
                 let rdoq_level = if coded_lossless {
                     0
                 } else {
-                    crate::quant::rdoq_level_allintra(eff_mode, coeff_lvl)
+                    crate::rate_arm::rdoq_level(sc_arm, eff_mode, coeff_lvl)
                 };
                 let lambda = crate::pd0::kf_full_lambda_8bit_tuned(
                     base_qindex,
@@ -7770,11 +7778,14 @@ fn encode_tile_rows(
         // gap for the 128-cell decisions.
         // The C-exact leaf intra funnel covers still/420 allintra presets
         // 2, 3, 4, 5, 6, 7, 8, and eff-M9 (presets >= 9 clamp to M9).
-        // Presets 2/3 use update_cdf_level 1 and 4..=6 level 2 — for
-        // I-slices the two are identical (only update_mv differs, forced
-        // 0 on I-slices; set_cdf_controls, enc_mode_config.c:12047), so
-        // the per-SB CDF chain gate below is 2..=6. 7/8/9+ use
-        // update_cdf_level 0 (static default tables all frame).
+        // On the ALLINTRA arm presets 2/3 use update_cdf_level 1 and 4..=6
+        // level 2 — for I-slices the two are identical (only update_mv
+        // differs, forced 0 on I-slices; set_cdf_controls,
+        // enc_mode_config.c:8495) — and 7/8/9+ use update_cdf_level 0
+        // (static default tables all frame). The VIDEO arm keeps level 1 up
+        // to M8, so the chain gate is arm-dependent and is now derived by
+        // `rate_arm::update_cdf_level` rather than spelled as a preset range
+        // (see the `funnel_chain` binding below and docs/rate-arm-port-map.md).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
         let use_funnel =
             chroma_420 && chroma_src.is_some() && ref_frame_data.is_none() && c_quant.is_some();
@@ -7784,6 +7795,21 @@ fn encode_tile_rows(
         // screen-content frames.
         let tile_sc = crate::sc_detect::derive_sc(sc_arm, sc_preset, encode_input, w, w, h);
         let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
+        // `pcs->rate_est_level` -> `set_rate_est_ctrls` (enc_mode_config.c:6428),
+        // for THIS arm. `for_preset` bakes the allintra ladder (1 through M6,
+        // 4 at M7/M8, 0 above); the video arm assigns a flat 1 at every preset
+        // (:8942), so a video KEY frame at M7/M8 keeps the real neighbour
+        // contexts and the real luma coeff rate where the still arm switches
+        // to the fast approximation. Byte-neutral on the still path by
+        // construction — `rate_arm::allintra_flattening_matches_the_ladder`
+        // pins the pair against `for_preset`'s baked values at every preset.
+        let (rate_est_coeff_lvl, rate_est_real_ctx) =
+            crate::rate_arm::rate_est_ctrls(crate::rate_arm::rate_est_level(
+                sc_arm,
+                crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            ));
+        funnel_cfg.coeff_rate_est_lvl = rate_est_coeff_lvl;
+        funnel_cfg.real_coeff_ctx = rate_est_real_ctx;
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
         }
@@ -8003,7 +8029,25 @@ fn encode_tile_rows(
         // the static default rate tables for every SB, so they never chain.
         // Gated on use_funnel so it only fires for the chroma/420 funnel
         // path (chroma_src is Some) — mono never chains.
-        let funnel_chain = use_funnel && matches!(speed_config.preset, 0..=6) && multi_sb;
+        // `update_cdf_level != 0` for THIS arm — C `set_cdf_controls`'
+        // `cdf_ctrl.enabled`, which is what gates `rtime_alloc_ec_ctx_array`
+        // and therefore the per-SB context chain at all (enc_mode_config.c:8496,
+        // :8945/:9927). allintra: 1 at M0..M3, 2 at M4..M6, 0 above — the
+        // `0..=6` this line used to spell inline. video, I-slice: 1 at
+        // M0..M8, 0 above, so a video KEY frame CHAINS at presets 7 and 8
+        // where the still arm does not.
+        //
+        // `is_base` is `pcs->temporal_layer_index == 0`, true for every
+        // picture the port encodes on this arm today (a key frame). It only
+        // selects 1-vs-2 in the M1..M3 band and both are nonzero, so this
+        // gate does not depend on it.
+        let funnel_chain = use_funnel
+            && crate::rate_arm::update_cdf_level(
+                sc_arm,
+                crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+                /*is_base=*/ true,
+            ) != 0
+            && multi_sb;
         let mut chain_snaps: Vec<(
             crate::entropy::context::FrameContext,
             alloc::boxed::Box<crate::entropy::coeff_c::CoeffFc>,

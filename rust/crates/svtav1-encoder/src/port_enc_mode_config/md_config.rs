@@ -42,6 +42,29 @@ pub const TX_MODE_LARGEST: u8 = 1;
 /// C `TX_MODE_SELECT` (`definitions.h:1032`).
 pub const TX_MODE_SELECT: u8 = 2;
 
+/// `pcs->rdoq_level` on the VIDEO arm
+/// (`svt_aom_sig_deriv_mode_decision_config_default`, `enc_mode_config.c:8933`).
+///
+/// Extracted from the body below so the pipeline's arm dispatch
+/// ([`crate::rate_arm::rdoq_level`]) and the tier-1 differential drive the SAME
+/// function rather than two transcriptions of one ladder.
+///
+/// Unlike the allintra twin (`enc_mode_config.c:9904` — `quant::rdoq_level_allintra`)
+/// this arm never consults `pcs->coeff_lvl`, which C leaves at `INVALID_LVL`
+/// for a video-mode I-slice.
+#[must_use]
+pub fn rdoq_level_default(enc_mode: i8) -> u8 {
+    if enc_mode <= M10 { 1 } else { 2 }
+}
+
+/// `pcs->rate_est_level` on the VIDEO arm (`enc_mode_config.c:8942`) — a flat
+/// 1 at every preset, where the allintra twin (`:9917`) ladders 1 / 4 / 0.
+///
+/// A `const` rather than a fn because C's assignment is unconditional; naming
+/// it keeps the arm dispatch in [`crate::rate_arm::rate_est_level`] symmetric
+/// and cites the line.
+pub const RATE_EST_LEVEL_DEFAULT: u8 = 1;
+
 /// C `svt_aom_get_disallow_4x4_default` (`enc_mode_config.c:8169`). EXPORTED.
 #[must_use]
 pub fn get_disallow_4x4_default(enc_mode: i8) -> bool {
@@ -372,9 +395,9 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
         4
     };
 
-    let rdoq_level = if m <= M10 { 1 } else { 2 };
+    let rdoq_level = rdoq_level_default(m);
     let coeff_shaving_level = 0u8;
-    let rate_est_level = 1u8;
+    let rate_est_level = RATE_EST_LEVEL_DEFAULT;
     let update_cdf_level = get_update_cdf_level_default(m, i.is_islice, is_base);
     let cdf_ctrl = set_cdf_controls(update_cdf_level, i.is_islice, rate_est_level, rdoq_level)?;
 

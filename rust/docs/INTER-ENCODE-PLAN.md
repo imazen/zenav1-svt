@@ -269,6 +269,73 @@ is downstream of the remaining unwired video ladders (the palette level from
 2b, and whatever else `sig_deriv_mode_decision_config_default` sets that the
 port still takes from the allintra arm).
 
+## 2d. Landed after 2c — the video-arm RATE ladders (2026-09-01)
+
+Chunk `wv-rdoq`. Full record: `docs/rate-arm-port-map.md`.
+
+`pipeline.rs` ran the ALLINTRA arm of three ladders on every frame, flattened
+inline: the preset clamp (`preset.min(9)`), `rdoq_level`
+(`quant::rdoq_level_allintra`), the `set_rate_est_ctrls` row `FunnelCfg::
+for_preset` bakes, and the per-SB CDF-chain gate (`matches!(preset, 0..=6)`).
+New `svtav1_encoder::rate_arm` dispatches all of them on the `ScArm` chunk 2b
+already threads. The three are wired TOGETHER because `set_cdf_controls`
+couples them (`update_coef = rate_est_level || rdoq_level`, `:8479`) — the
+chunk brief named `rdoq_level` and `update_cdf_level` only, and wiring
+`update_cdf_level` without `rate_est_level` would run the per-SB chain at M7/M8
+under a controls row C never pairs it with.
+
+Where the arms bite: M6 up. Video is a flat rdoq 1 to M10 (2 above, under its
+own `> M11 -> M11` clamp — allintra's is `> M9 -> M9`), a flat `rate_est_level`
+1, and keeps CDF adaptation ON at M7/M8 where allintra turns it off entirely.
+M4..M6 carry different update_cdf LEVELS (2 vs 1) but identical controls,
+because `set_cdf_controls` forces `update_mv = 0` on an I_SLICE.
+
+**Evidence tier 1 on BOTH arms.** The video arm was already gated
+(`c_parity_sig_deriv_md_config.rs` drives the exported `_default` and reads
+`pcs->rdoq_level` / `rate_est_level` / `cdf_ctrl` back). The allintra arm is
+NEW: `svt_aom_sig_deriv_mode_decision_config_allintra` is exported too
+(`nm -g` GLOBAL on both hosts), so a new `ref_sig_deriv_md_config_allintra`
+shim drives it and reads the same six fields — upgrading
+`quant::rdoq_level_allintra` from tier 4 to tier 1, mutation-verified.
+
+**No still regression, measured:** `identity_full_8bit.sh` **1100/1100**, the
+six reference identity cells IDENTICAL at their pinned sizes (290 / 839 / 63 /
+171 / 580 / 693 B), `regression_spotcheck.sh` **45/45**,
+`cargo nextest run --workspace` 2390/2390.
+
+**One spot-check cell went vacuous and was replaced, not re-limited.**
+`video-key-nsq-arm-p7-72x88` (chunk 2c's) now emits 1499 B whether the
+partition arms are wired or forced to Allintra, so it can no longer witness its
+fix at any limit. Replaced by `screenrep 72x88 q40 p7` — 2414 B vs 2386 B
+against C's 2388 — at a tighter 0.5% limit.
+
+**Not uniformly closer, and that is the honest reading.** gradient 72x88 q40
+frame 0: p9 1630 -> 1587 B (C 1589, 2.580% -> 0.126% off) and p10 1630 -> 1587
+(C 1599); p7 1511 -> 1499 (C 1539) and p11..13 1630 -> 1592 (C 1634) move
+further. Presets 0..=5 do not move at all. Only 3 of the ~30 picture-level
+ladders `sig_deriv_mode_decision_config_*` assigns are on the video arm now, so
+a video frame is a hybrid and its size wanders; read the first-diverging
+frame-header field, not the byte count.
+
+**First diverging frame-header field, reference cell `gradient 64x64 q40 p6`:
+unchanged — `cdef_uv_pri_strength[0]` C=7 port=0**, now C 961 B vs port 947 B
+(was 971). It is a CDEF SEARCH output, downstream of the recon. What DID move:
+`gradient 64x64 q40 p8` advanced from `lr_type[0]` to `cdef_uv_pri_strength[0]`,
+and `screenrep 128x128 q35 p7` advanced past `cdef_y_pri_strength[0]` (which
+now matches C) to `cdef_uv_pri_strength[0]`, with its differing-field count
+going 3 -> 1.
+
+**Next.** The remaining ~16 unwired picture-level ladders, in the order they
+touch the recon: `txt_level` (allintra 10 at M7/M8 vs video 7 for a base
+I-slice), `nic_level`, `txs_level`, `intra_level` /
+`dist_based_ang_intra_level`, `chroma_level` / `cfl_level`,
+`spatial_sse_full_loop_level`, `pic_bypass_encdec`, `pic_disallow_4x4`,
+`pd0_cost_bias_weight`, `mds0_level`, `tx_shortcut_level`,
+`pic_depth_removal_level`, `pic_block_based_depth_refinement_level`,
+`lambda_weight`, `pic_pd0_lvl`. Every one has a tier-1-ported `_default` twin
+in `port_enc_mode_config::md_config` already — this is wiring, not porting, and
+`rate_arm` / `part_arm` are the pattern.
+
 ## 3. Standing rules for every chunk
 
 - `WORKING-ON-THIS.md` governs. State your evidence tier (§4) in the commit

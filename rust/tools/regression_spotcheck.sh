@@ -680,9 +680,37 @@ fhVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8
 #
 # ratioVideoKey and not byteVideoKey because the payload is still open on all
 # three (the closest, p5, is 1 byte away but not identical).
+#
+# THE PRESET-7 CELL MOVED CONTENT, 2026-09-01 (the rate-arm chunk). It was
+# `gradient 72 88 40 7`, limit 2.0. Wiring the video arm of rdoq_level /
+# rate_est_level / update_cdf_level made that cell VACUOUS: with the partition
+# arms forced back to Allintra the port emits 1499 B, and with them wired it
+# emits 1499 B — the SAME stream, so no limit can make the cell witness the
+# partition wiring any more (measured both ways on the same build; the gradient
+# p4/p5 cells above still separate 1492/1398 and 1499/1484 and are untouched).
+# Per the anti-vacuity rule in `rust/CLAUDE.md`, a gate that would pass without
+# the feature is a defect, so the cell is REPLACED — not re-limited — by one
+# that does separate, at a TIGHTER bound:
+#   screenrep 72x88 q40 p7, C 2388 B: partition arms Allintra 2414 B = 1.089%
+#   off; wired 2386 B = 0.084% off. Limit 0.5 sits between.
 ratioVideoKey "video-key-nsq-arm-p4-72x88" gradient 72 88 40 4 1.0
 ratioVideoKey "video-key-nsq-arm-p5-72x88" gradient 72 88 40 5 0.3
-ratioVideoKey "video-key-nsq-arm-p7-72x88" gradient 72 88 40 7 2.0
+ratioVideoKey "video-key-nsq-arm-p7-screenrep-72x88" screenrep 72 88 40 7 0.5
+
+# --- video-arm RATE ladders (rdoq_level + rate_est_level + update_cdf_level),
+# 2026-09-01. `pipeline.rs` ran the ALLINTRA arm of all three on every frame:
+#   `quant::rdoq_level_allintra(preset.min(9), coeff_lvl)`  for :9904
+#   `FunnelCfg::for_preset`'s baked (coeff_rate_est_lvl, real_coeff_ctx) for :9917
+#   `matches!(preset, 0..=6)` as the per-SB CDF-chain gate    for :8534
+# The video arm assigns a flat rdoq 1 (to M10), a flat rate_est 1, and keeps
+# CDF adaptation ON at M7/M8 where the still arm switches it off. See
+# `docs/rate-arm-port-map.md`.
+#
+# OBSERVED, gradient 72x88 q40 p9, frames=2 frame 0 (the video-mode key frame):
+#   before port 1630 B vs C 1589 B = 2.580% off; after 1587 B = 0.126%.
+# p9 is the cleanest witness because the eff-mode clamp does not move there
+# (allintra M9 == video M9), so the whole delta is the two rate ladders.
+ratioVideoKey "video-key-rate-arm-p9-72x88" gradient 72 88 40 9 1.0
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
