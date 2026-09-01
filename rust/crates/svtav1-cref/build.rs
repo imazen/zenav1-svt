@@ -96,6 +96,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/tf_shims.c");
     println!("cargo:rerun-if-changed=shims/mode_decision_shims.c");
     println!("cargo:rerun-if-changed=shims/entropy_inter_shims.c");
+    println!("cargo:rerun-if-changed=shims/interpred_gap_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -193,6 +194,10 @@ fn main() {
         // Inter bitstream-syntax oracle (entropy_coding.c inter group) — its
         // own TU for the same per-lane file-ownership reason.
         .file(manifest.join("shims/entropy_inter_shims.c"))
+        // The inter-prediction functions the wholesale-MC lane left unported
+        // (C_DEFAULT/inter_prediction_c.c, the 10-bit light-PD1 arm) — lane
+        // wx-interpred, own TU for the same file-ownership reason.
+        .file(manifest.join("shims/interpred_gap_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))
