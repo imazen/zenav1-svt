@@ -40,13 +40,20 @@
 //!
 //! # Evidence
 //!
-//! Tier 4 (hand-derived vectors traced against the C source) for the tables
-//! themselves — `av1_generate_rps_info` is `static` with no exported symbol.
-//! The tables are additionally checked against the **real C encoder's own
-//! output** by `tools/ra_rps_oracle.sh` +
-//! `tests/c_parity_picstruct_ra_rps.rs`, which reads `refresh_frame_flags`,
-//! `ref_frame_idx[]` and `show_existing_frame` straight out of the C
-//! bitstream's uncompressed frame headers; that check is tier 2.
+//! **Tier 2** — `tests/c_parity_picstruct_ra_rps.rs` reads
+//! `refresh_frame_flags`, `ref_frame_idx[]`, `show_frame` and
+//! `frame_to_show_map_idx` straight out of ten REAL C-encoder bitstreams
+//! (`hierarchical_levels` 1..=5 at presets 8 and 4, regenerate with
+//! `tools/gen_ra_rps_captures.sh`, inspect with `tools/ra_rps_oracle.py`).
+//! Every `pic_idx` of every table is exercised; of the 1,092 reference columns
+//! compared, 865 carry the table's own value and 227 carry `prune_refs`'s.
+//! Tier 1 is not reachable: `av1_generate_rps_info` is `static` with no
+//! exported symbol.
+//!
+//! **Tier 4** — `tests/port_picstruct_ra_traced.rs` covers what the bitstream
+//! cannot witness: the `is_ref` gating of each layer's refresh mask, the HL1
+//! overlay's skipped toggle, the HL2 low-delay long-term base, and the
+//! low-delay toggle adjustment.
 
 use crate::port_picstruct::{
     ALT, ALT2, BWD, GOLD, INTER_REFS_PER_FRAME, LAST, LAST2, LAST3, LAY1_OFF, LAY2_OFF, LAY3_OFF,

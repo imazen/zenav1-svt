@@ -10,9 +10,28 @@ vectors traced against the C source, and it is the weakest tier.
 
 ## MISSING — read this before the coverage table
 
+**UPDATED 2026-08-31 (lane `wx-picstruct`).** The row that used to head this
+table — `av1_generate_rps_info`'s random-access hierarchical branches,
+`hierarchical_levels` 1..5, `pd_process.c:2270-3482` — is **no longer
+missing**. They are translated in
+[`crate::port_picstruct_ra`](../crates/svtav1-encoder/src/port_picstruct_ra.rs)
+and gated at **tier 2** by `tests/c_parity_picstruct_ra_rps.rs`, which reads
+`refresh_frame_flags`, `ref_frame_idx[]`, `show_frame` and
+`frame_to_show_map_idx` out of ten real C-encoder bitstreams (HL1..HL5 x
+presets 8 and 4). Every `pic_idx` of every table is exercised; 865 of the
+1,092 compared reference columns carry the table's own value and 227 carry
+`prune_refs`'s (a folded column cannot witness the entry it overwrote). Still
+uncovered by those captures, and stated in the test: an INCOMPLETE trailing
+mini-GOP (the only shape that drives the LOW_DELAY-inside-RA toggle
+adjustment), overlay frames, and `referencing_scheme == 2`.
+
+`RpsBranchUnsupported` is now the payload of `RpsError::UnsupportedBranch` and
+means what C's own `exit(0)` arm means — `hierarchical_levels` outside 0..=5.
+`RpsError::MiniGopIndex` is new: where C logs `Error in MG indexing` and falls
+through with the PREVIOUS picture's slots, the port refuses.
+
 | what | where | why |
 |---|---|---|
-| `av1_generate_rps_info`'s random-access hierarchical branches, `hierarchical_levels` 1..5 | `pd_process.c:2270-3483` (~1200 lines) | Not translated. [`generate_rps_info`] REFUSES them with a typed `RpsBranchUnsupported` rather than guessing (`WORKING-ON-THIS.md` §6). Needed for random access; the campaign's first cell is low-delay flat. |
 | every S-frame path — `set_sframe_type`, `set_sframe_rps`, `decide_sframe_mg`, `prune_sframe_refs`, the `IS_SFRAME_FLEXIBLE_INSERT` override in `get_pic_idx_in_mg` | `pd_process.c` various | Outside the port's envelope. All are no-ops when no S-frame is pending, which is every configuration this port encodes. |
 | app-driven reference management — `apply_ref_mgmt_events`, `ref_mgmt_reset_state`, `apply_ref_use`, the STORE/CLEAR/USE masking of `refresh_frame_mask` | `pd_process.c:1400-1478` | Outside the envelope; no-op when no event is queued and no slot is STOREd. |
 | the noise-estimation half of `derive_tf_window_params` | `pd_process.c:3752-3846` | `svt_estimate_noise_fp16` / `svt_aom_noise_log1p_fp16` belong to the pre-analysis lane and are C-gated there. The counts derived FROM the noise level are ported here. |
