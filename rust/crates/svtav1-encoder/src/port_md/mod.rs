@@ -19,6 +19,7 @@
 //! | [`predicates`] | the pure gates and tables of `mode_decision.c` |
 //! | [`pme`] | the MD motion-search cost model + the PME SAD kernel |
 //! | [`nics`] | the per-stage candidate counts (`svt_aom_set_nics`) |
+//! | [`nic_prune`] | the per-stage candidate STAGING (sorts + NIC prunes) |
 //! | [`drl`] | DRL selection for NEWMV candidates |
 //! | [`coding_loop`] | the per-block helpers of `product_coding_loop.c` |
 //! | [`inject`] | inter-candidate injection (PD1 and PD0) |
@@ -41,6 +42,7 @@ pub mod inject;
 pub mod md_search;
 pub mod motion_mode;
 pub mod mv_refine;
+pub mod nic_prune;
 pub mod nics;
 pub mod pme;
 pub mod predicates;
