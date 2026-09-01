@@ -210,13 +210,45 @@ fn is_enough_erroradvantage_matches_c() {
 /// HARNESS supplying what the real caller supplies, not a relaxation: the
 /// addressable pixel rectangle (`width` x `height` at `stride`) is unchanged
 /// and the extra bytes are never read as pixels by either side.
+///
+/// CORRECTED 2026-08-31 (lane wx-preanalysis), by measurement: trailing slack
+/// alone was NOT enough. `refine_integerized_param_matches_c` still aborted on
+/// **44 of 200** consecutive runs of the built test binary, and the macOS crash
+/// report puts the fault inside `svt_av1_warp_affine_neon_i8mm` at
+/// `KERN_PROTECTION_FAILURE 0x7a27ffffd` — three bytes BELOW a page boundary,
+/// i.e. a read before the plane, not past it. The kernel's edge replication
+/// loads a full vector anchored at a negative `ix`/`iy` and fixes it up
+/// afterwards, so it touches memory on BOTH sides. With the same slack added in
+/// front as well, the same 200 runs abort **0** times.
+///
+/// [`Plane`] therefore carries the margin at both ends and hands out only the
+/// pixel rectangle, so no call site has to remember the offset.
 const PLANE_SLACK: usize = 4096;
 
-fn plane(w: usize, h: usize, seed: u64) -> Vec<u8> {
+/// A test plane with [`PLANE_SLACK`] bytes of margin on BOTH sides of the pixel
+/// rectangle, handing out only the rectangle.
+///
+/// The margin is what a real encoder's reference frame has as its border; the
+/// addressable pixel rectangle (`width` x `height` at `stride`) is unchanged
+/// and neither side ever reads the margin AS pixels. Deref means call sites
+/// keep passing `&plane` and get `&[u8]` over the rectangle alone.
+struct Plane {
+    buf: Vec<u8>,
+}
+
+impl core::ops::Deref for Plane {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.buf[PLANE_SLACK..self.buf.len() - PLANE_SLACK]
+    }
+}
+
+fn plane(w: usize, h: usize, seed: u64) -> Plane {
     let mut rng = Rng::new(seed);
-    let mut v: Vec<u8> = (0..w * h).map(|_| rng.range(0, 255) as u8).collect();
-    v.resize(w * h + PLANE_SLACK, 0);
-    v
+    let mut buf: Vec<u8> = vec![0u8; PLANE_SLACK];
+    buf.extend((0..w * h).map(|_| rng.range(0, 255) as u8));
+    buf.resize(PLANE_SLACK + w * h + PLANE_SLACK, 0);
+    Plane { buf }
 }
 
 /// Models C accepts as warp-legal, taken from C's own shear gate.
