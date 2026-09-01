@@ -765,6 +765,12 @@ were a `tx_size` symbol the port wrote after its own frame header had signalled
 TX_MODE_LARGEST. `pd0_use_src_samples` at preset >= 9 remains genuinely unwired
 and is now a lead with NO cell attached to it.
 
+**AND ITS REJECTION IS STALE — see §1k.** "Wiring it at preset >= 9 was measured
+and rejected (p9 0.189 -> 0.378)" was measured over the LIGHT-PD0 boundary-shape
+defect §1k fixes, the same way §1h's four variants were measured over the PD0
+coefficient-rate defect. Re-run it on the current head before believing either
+verdict.
+
 **A FOURTH defect, found while verifying the landing, and it is not in PD0.**
 The held bundle passed the five ratio cells but broke a spotcheck cell nobody
 had re-run against it: `video-key-txs-arm-tx-mode-p11` (`gradient 64x64 q40
@@ -1063,9 +1069,11 @@ port-only mi: (2,16), (8,2), (10,0)
 
 So p9 is an EDGE partition divergence on the fixed-tree PD0 path
 (`pd0_pick_sb_partition_video`, PD0_LVL_5 at this qp band per §1g), not a rate,
-metric or entropy defect. It is the natural next chunk and it has no cell
-attached to it beyond the existing `ratioVideoKey` limit of 1.0, which it is
-inside.
+metric or entropy defect.
+
+**§1k took that chunk and the hypothesis below held**: p9 is now 0.126 % (1587 B
+against C's 1589) with its coded tree at 9 field flips instead of 19. Read §1k
+for what remains.
 
 Two steps of that chunk are already done, so the next session starts from a
 NAMED hypothesis rather than a search.
@@ -1151,6 +1159,101 @@ The rest (`enc_dec_process.c:2951/3040-3047/3097`, `md_config_process.c:899/924`
 `md_process.c:220`, `rest_process.c:76`, `pic_analysis_process.c:415`,
 `rc_crf_cqp.c:396`, `pcs.c:386`) are UNAUDITED. Read them before guessing at
 another ladder.
+
+### 1k. The LIGHT-PD0 boundary SHAPE (2026-09-01) — and the p9 rejection that was measured over it
+
+`pd0.rs` priced a one-false BOUNDARY node — a square that hangs off the right or
+bottom edge — as its fitting `PART_H` / `PART_V` rectangle **only for the LVL_1
+family**. LVL_5, the light PD0 the fixed-tree path runs at preset >= 9, got the
+SQUARE cost: twice the pixels that actually fit, so it lost to SPLIT and the
+port coded `BLOCK_8X8` + a split where C codes `BLOCK_8X16`.
+
+It could not matter on the ALLINTRA arm, which is why it survived: there
+`nsq_geom_level` is 0 above M6, so an LVL_5/6 boundary node force-splits before
+it is costed at all. The video arm never turns NSQ geometry off.
+
+**C prices the rectangle — measured, not inferred.** `SVT_PD0COST_OUT` (the
+`svt_aom_full_cost_pd0` `--wrap`) on `gradient 72x88 q40 p9` video, the x = 64
+superblock of a 72-wide frame:
+
+```
+PD0COST org=(64,0)  32x64 dist=1414884 ybits=103700 cost=184867517
+PD0COST org=(64,0)  16x32 dist=52988   ybits=51000  cost=8640630
+PD0COST org=(64,0)  8x16  dist=17922   ybits=16500  cost=2905600
+PD0COST org=(64,0)  8x8   dist=10736   ybits=11000  cost=1787062
+PD0COST org=(64,8)  8x8   dist=10407   ybits=9300   cost=1683524
+```
+
+Every block C tests there is a RECTANGLE; there is no square in the column. And
+the 8x16's 2,905,600 beats the two 8x8s' 1,787,062 + 1,683,524 plus the split
+rate, which is exactly the leaf C codes. The two C functions that decide this
+carry no `pd0_level` term — `set_blocks_to_test` (enc_dec_process.c:1394,
+`:1420-1423`) injects the fitting shape whenever NSQ geom is on, and
+`svt_aom_pick_partition_pd0` (product_coding_loop.c:10534-10560) costs
+`get_blk_geom_mds(mds_idx + ns_blk_offset_md[shape])`.
+
+**What landed.** `lvl5_like_block_cost_rect` (the light-PD0 twin of the LVL_1
+family's `lvl1_block_cost_rect` — the DC predictor, residual gather,
+`tx_quant_core` and closed-form coeff rate were all dimension-general already),
+selected by a new `Pd0Ctx::prices_edge_shape()`, plus the BINARY
+split-vs-{H,V} rate at such a node (`svt_aom_partition_rate_cost`,
+rd_cost.c:1846-1863) which LVL_5 was paying at the full-alphabet rate.
+
+**Measured, both ways on one build.** Coded trees against C's `SVT_CTREE_OUT`
+via `tools/tree_diff.py`, 44 blocks joined on both cells:
+
+| cell | field flips OFF -> ON | port-only geometry OFF -> ON |
+|---|---|---|
+| `gradient 72x88 q40 p9` | 19 -> **9** | 7 -> **3** |
+| `gradient 72x88 q40 p11` | 9 -> **1** (one `bsize`) | 7 -> **3** |
+
+Every one of the four right-edge `bsize` flips at `mi_col` 16 is gone, and at
+p11 every comparable field except one `bsize` now equals C's.
+
+| cell | before | after |
+|---|--:|--:|
+| `screenrep 72x88 q40 p9` | 0.749 | **0.125** |
+| `screenrep 72x88 q40 p11` | 0.827 | **0.165** |
+| `gradient 72x88 q40 p9` | 0.189 | **0.126** |
+| `gradient 72x88 q40 p10` | 0.125 | **0.063** |
+| `gradient 72x88 q40 p11 / p12 / p13` | 1.040 / 1.102 / 1.102 | 1.285 / 1.346 / 1.346 |
+| `diag 72x88 q40 p9` and `p11` | byte-identical | byte-identical |
+
+The last two rows are the honest ones. p11..p13 move FURTHER from C in bytes
+while their tree moves from 9 flips / 7 port-only blocks to 1 / 3 — the §1f
+pattern exactly, a worse tree that landed nearer in size. The witness cell is
+therefore `screenrep 72x88 q40 p9` at a 0.5 limit (between 0.749 and 0.125), not
+p11. `diag 72x88 q40 p9` / `p11` are byte-identical BOTH ways and so witness
+nothing; they are recorded because a cell that cannot fail is worse than none.
+
+**A dump that did not exist.** `SVTAV1_PD0DBG` emitted `PD0BLK` lines only from
+the LVL_1 family, so the video arm's PD0 at preset >= 9 — the path the whole
+fixed-tree branch runs — had no port-side counterpart to C's `SVT_PD0COST_OUT`.
+It does now, same fields in the same order. The first join it makes possible is
+already interesting on `gradient 72x88 q40 p9`:
+
+* **135 blocks on each side, the SAME SET** — 0 C-only, 0 port-only. PD0 tests
+  exactly the blocks C tests, including every edge rectangle.
+* **101 of the 135 COSTS differ**, and in two distinguishable shapes: small
+  `dist` deltas on 8x8/16x16 blocks (e.g. C 3014 vs port 2858 at `(0,8)`), and
+  large ones at 32x32/64x64 where C's `ybits` is 5000 — the closed form's
+  eob-0 floor — against the port's 55,800-107,100.
+
+**The next chunk, and the correction that unblocks it.** §1i recorded that
+`pd0_use_src_samples` is unwired on the fixed-tree path at preset >= 9 (C's
+video PD0 predicts each block from the RECON it generates; the port predicts
+from SOURCE), and that wiring it there had been MEASURED AND REJECTED — no
+movement on p4/p5/p7 and p9 worse, 0.189 -> 0.378. **That rejection was
+measured over the square-cost defect this section fixes**, exactly as §1h's four
+variants were measured over the PD0 coefficient-rate defect. It has to be
+re-run, and the small per-block `dist` deltas above are what it predicts. Re-run
+it before believing either the old rejection or this paragraph.
+
+Not touched, with reasons rather than silence: **LVL_6** has no block cost to
+make rectangular (`compute_lpd0_cost_allintra` / `_inter` run no transform), and
+**LVL_0** is the bd10-forced path whose partial-SB cells are byte-identical
+today with nothing here having dumped C's bd10 boundary cost — widening it blind
+trades a green gate for a guess.
 
 ## 2. Chunks
 

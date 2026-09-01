@@ -910,6 +910,29 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The LIGHT-PD0 boundary SHAPE — a partial-SB edge node was priced as the
+  square that does not fit.** `pd0.rs` gave a one-false boundary node its
+  fitting `PART_H`/`PART_V` rectangle only for the LVL_1 family; LVL_5 (light
+  PD0, the fixed-tree path at preset >= 9) got the square cost, which prices
+  twice the pixels that fit and therefore loses to SPLIT — so the port coded
+  `BLOCK_8X8` + a split where C codes `BLOCK_8X16`. Invisible on the allintra
+  arm, where `nsq_geom_level` is 0 above M6 and such a node force-splits before
+  it is costed; the video arm never turns NSQ geometry off. C's own
+  `svt_aom_full_cost_pd0` dump prices only rectangles in the x=64 superblock of
+  a 72-wide frame (`32x64`, `16x32`, `8x16`), and the two C functions that
+  decide it carry no `pd0_level` term. Coded trees against C, measured both
+  ways: `gradient 72x88 q40 p9` 19 field flips / 7 port-only blocks -> **9 / 3**,
+  `p11` 9 / 7 -> **1 / 3**. Bytes: `screenrep 72x88 q40 p9` 0.749% -> 0.125%
+  (new spot-check cell at a 0.5 limit), `p11` 0.827% -> 0.165%, `gradient p9`
+  0.189% -> 0.126%, `p10` 0.125% -> 0.063%; `gradient p11..p13` move the other
+  way (1.04% -> 1.29%) with a strictly closer tree, the same
+  worse-tree-nearer-size cancellation §1f describes. `SVTAV1_PD0DBG` now also
+  fires on the light-PD0 path, which it never did — the first join it enables
+  shows C and the port testing the SAME 135 PD0 blocks with 101 of the costs
+  differing. No still regression: `identity_full_8bit` 1100/1100,
+  `regression_spotcheck` 51/51, `cargo nextest --workspace` 2415/2415. See
+  `rust/docs/INTER-ENCODE-PLAN.md` §1k.
+
 - **The video-mode KEY frame's last two named residuals — both CLOSED, and one
   was a conformance bug.** `gradient 64x64 q40 p6` (the campaign's reference
   cell) and `diag 64x64 q40 p11` are now byte-identical to C, as is
