@@ -22,6 +22,7 @@
 //! | [`dimension_is_ok`] | `dimension_is_ok` (1906) — static |
 //! | [`dimensions_are_ok`] | `dimensions_are_ok` (1910) — static |
 //! | [`validate_size_scales`] | `validate_size_scales` (1916) — static |
+//! | [`scaled_ref_cache_index`] | the decision half of `svt_aom_use_scaled_rec_refs_if_needed` (1801) and `svt_aom_use_scaled_source_refs_if_needed` (1820) — both EXPORTED |
 //!
 //! # How the decision works
 //!
@@ -718,4 +719,37 @@ pub fn validate_size_scales(
         return false;
     }
     dimensions_are_ok(owidth, rsz)
+}
+
+/// The decision half of `svt_aom_use_scaled_rec_refs_if_needed`
+/// (`resize.c:1801`) and `svt_aom_use_scaled_source_refs_if_needed`
+/// (`resize.c:1820`) — both **EXPORTED**.
+///
+/// When a reference picture's width differs from the frame being coded, the
+/// encoder must predict from a DOWNSCALED copy of it instead. Those copies
+/// live in a two-dimensional cache indexed by
+/// `(denom_idx(superres_denom), denom_idx(resize_denom))`, and this returns
+/// that index — or `None` when the widths already match and the reference is
+/// used as-is.
+///
+/// C's two functions differ only in WHICH cache they index (the reconstructed
+/// reference for mode decision, the padded source plus its quarter and
+/// sixteenth downsamples for the open-loop stage) and both then assert the
+/// selected picture's width matches. The pointer substitution and the assert
+/// are buffer plumbing; THIS is the decision, and it is identical in both.
+///
+/// Trap: the test is on the WIDTH only. Superres scales width alone, and frame
+/// resize scales both — so a resize-only mismatch in height with an unchanged
+/// width leaves C using the unscaled reference. Transcribed, not "fixed".
+#[must_use]
+pub fn scaled_ref_cache_index(
+    input_width: u16,
+    ref_width: u16,
+    superres_denom: u8,
+    resize_denom: u8,
+) -> Option<(u8, u8)> {
+    if ref_width == input_width {
+        return None;
+    }
+    Some((denom_idx(superres_denom), denom_idx(resize_denom)))
 }

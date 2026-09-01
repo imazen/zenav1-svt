@@ -17,13 +17,13 @@ as `compute_stats_hbd`). Treat its numbers as a work queue, never as coverage.
 |---|---|---|---|---|
 | `Codec/pd_process.c` | 44 | 29 | 15 | **0** |
 | `Codec/pcs.c` | 32 | 6 | 26 | **0** |
-| `Codec/resize.c` | 39 | 22 | 3 | **14** |
+| `Codec/resize.c` | 39 | 24 | 4 | **11** |
 | `Codec/restoration_pick.c` | 23 | 19 | 0 | **4** |
-| **total** | **138** | **76** | **44** | **18** |
+| **total** | **138** | **78** | **45** | **15** |
 
 ## MISSING — read this first
 
-### `Codec/resize.c` — frame resize's per-picture driver and reference cache (14)
+### `Codec/resize.c` — frame resize's per-picture driver and reference cache (11)
 
 The kernel layer AND the frame-level plane loop are complete as of 2026-08-31
 (`svtav1_dsp::resize::resize_plane` / `port_resize_hbd::highbd_resize_plane` /
@@ -35,8 +35,7 @@ The kernel layer AND the frame-level plane loop are complete as of 2026-08-31
 | `scale_pcs_params` | rewrites the frame-size fields after a rescale |
 | `svt_aom_reset_resized_picture` | restores the unscaled picture pointers |
 | `scale_input_references`, `scale_source_references`, `svt_aom_scale_rec_references` | build the scaled-reference cache |
-| `svt_aom_use_scaled_rec_refs_if_needed`, `svt_aom_use_scaled_source_refs_if_needed` | select from that cache |
-| `pack_highbd_pic_2d`, `svt_aom_unpack_highbd_pic_2d` | 10-bit pack/unpack for the cache |
+| `svt_aom_unpack_highbd_pic_2d` | 10-bit unpack for the cache — BLOCKED on `svt_aom_un_pack2d` (`pic_operators.c`, another lane's file); the pack direction's kernel IS ported (`svtav1_dsp::port_pack::pack2d_src`) |
 | `fill_col_to_arr`, `fill_arr_to_col`, `highbd_fill_col_to_arr`, `highbd_fill_arr_to_col` | **PORTED** — listed here only because the inventory tool cannot see them |
 
 Reachability: all of it is behind `--resize-mode`, which is off by default.
@@ -90,9 +89,19 @@ entry and per-picture driver — the driver's ORDER is ported in
 `create_neighbor_array_units`, and `alloc_sb_geoms` / `free_sb_geoms` (the
 `EB_MALLOC_ARRAY` / `EB_FREE_ARRAY` pair around an array a Rust caller owns).
 
-**`resize.c` (3).** `allocate_downscaled_reference_pics`,
+**`resize.c` (4).** `allocate_downscaled_reference_pics`,
 `allocate_downscaled_source_reference_pics`,
-`svt_aom_downscaled_source_buffer_desc_ctor` — buffer-descriptor allocation.
+`svt_aom_downscaled_source_buffer_desc_ctor` — buffer-descriptor allocation —
+and `pack_highbd_pic_2d`, whose kernel (`svt_aom_pack2d_src`) is ported as
+`svtav1_dsp::port_pack::pack2d_src` and whose remaining body is
+`EbPictureBufferDesc` border-offset arithmetic plus the chroma geometry that
+`svtav1_dsp::resize::plane_dims` already expresses.
+
+`svt_aom_use_scaled_rec_refs_if_needed` and
+`svt_aom_use_scaled_source_refs_if_needed` are counted PORTED: their decision
+— which cache slot to substitute — is
+`port_superres_decision::scaled_ref_cache_index`, and the pointer swap and the
+width assert around it are plumbing.
 
 ## Where the ported ones live
 

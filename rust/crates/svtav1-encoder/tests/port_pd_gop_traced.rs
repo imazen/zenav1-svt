@@ -449,3 +449,30 @@ fn traced_calculate_next_resize_scale() {
         None
     );
 }
+
+/// The scaled-reference cache index (`resize.c:1801` / `:1820`).
+///
+/// Derivation: a reference whose WIDTH matches the frame is used as-is; a
+/// mismatch selects the cached downscale at
+/// `(denom_idx(superres_denom), denom_idx(resize_denom))`, where
+/// `denom_idx(8) == 0` is the unscaled slot.
+///
+/// The surprise worth pinning is that the test is on WIDTH ONLY. Frame resize
+/// scales both dimensions, so a reference that differs from the frame in
+/// HEIGHT but not width is used unscaled — which is C's behaviour and is
+/// transcribed rather than "fixed".
+#[test]
+fn traced_scaled_ref_cache_index() {
+    // Widths match: no substitution, whatever the denominators say.
+    assert_eq!(sr::scaled_ref_cache_index(1920, 1920, 12, 10), None);
+    assert_eq!(sr::scaled_ref_cache_index(1920, 1920, 8, 8), None);
+
+    // Widths differ: index by both denominators.
+    assert_eq!(sr::scaled_ref_cache_index(1280, 1920, 8, 8), Some((0, 0)));
+    assert_eq!(sr::scaled_ref_cache_index(1280, 1920, 12, 10), Some((4, 2)));
+    assert_eq!(sr::scaled_ref_cache_index(1280, 1920, 16, 16), Some((8, 8)));
+
+    // The width-only test: a reference of the same width and a different
+    // height is used as-is.
+    assert_eq!(sr::scaled_ref_cache_index(1920, 1920, 16, 16), None);
+}
