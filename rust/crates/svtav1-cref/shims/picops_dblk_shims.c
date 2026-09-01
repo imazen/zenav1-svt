@@ -188,18 +188,21 @@ void svt_convert_8bit_to_16bit_c(uint8_t* src, uint32_t src_stride, uint16_t* ds
 
 void ref_generate_padding16_bit(uint16_t* buf, uint32_t origin, uint32_t src_stride, uint32_t original_src_width,
                                 uint32_t original_src_height, uint32_t padding_width, uint32_t padding_height) {
+    picops_ensure_init();
     svt_aom_generate_padding16_bit(
         buf + origin, src_stride, original_src_width, original_src_height, padding_width, padding_height);
 }
 
 void ref_pad_input_picture_16bit(uint16_t* src, uint32_t src_stride, uint32_t original_src_width,
                                  uint32_t original_src_height, uint32_t pad_right, uint32_t pad_bottom) {
+    picops_ensure_init();
     svt_aom_pad_input_picture_16bit(
         src, src_stride, original_src_width, original_src_height, pad_right, pad_bottom);
 }
 
 void ref_convert_8bit_to_16bit(uint8_t* src, uint32_t src_stride, uint16_t* dst, uint32_t dst_stride, uint32_t width,
                                uint32_t height) {
+    picops_ensure_init();
     svt_convert_8bit_to_16bit_c(src, src_stride, dst, dst_stride, width, height);
 }
 
@@ -248,6 +251,7 @@ static void picops_yv12_dispatch(int32_t plane, Yv12BufferConfig* s, Yv12BufferC
 
 void ref_yv12_copy_plane8(int32_t plane, uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
                           int32_t width, int32_t height) {
+    picops_ensure_init();
     Yv12BufferConfig s, d;
     memset(&s, 0, sizeof(s));
     memset(&d, 0, sizeof(d));
@@ -258,6 +262,7 @@ void ref_yv12_copy_plane8(int32_t plane, uint8_t* src, int32_t src_stride, uint8
 
 void ref_yv12_copy_plane16(int32_t plane, uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride,
                            int32_t width, int32_t height) {
+    picops_ensure_init();
     Yv12BufferConfig s, d;
     memset(&s, 0, sizeof(s));
     memset(&d, 0, sizeof(d));
