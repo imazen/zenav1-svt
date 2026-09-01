@@ -274,15 +274,47 @@ video at every ladder that forks.
   content. The port now runs both ladders through the ported
   `svt_aom_set_dlf_controls` table and lets `enabled` / `sb_based_dlf` /
   `early_exit_convergence` choose the picker.
-- **CDEF (next, same shape).** `svt_aom_sig_deriv_multi_processes_allintra`
+- **CDEF (this chunk, fixed).** `svt_aom_sig_deriv_multi_processes_allintra`
   (`:2337`) gives `cdef_search_level = 7` at M6; `_default` (`:1973`) gives
-  `is_base ? 5 : 6` = 5. The port's `is_single_frame &&
-  allintra_preset_uses_cdef_search(preset)` gate drops a video key frame onto
-  the qp fast path, exactly the deblock bug one filter later. Porting
-  `set_cdef_search_controls` + the `_default` level ladder and wiring the video
-  arm is the direct next chunk.
+  `is_base ? 5 : 6` = 5 on a key frame. The port's `is_single_frame &&
+  allintra_preset_uses_cdef_search(preset)` gate dropped a video key frame onto
+  the qp fast path, exactly the deblock bug one filter later. The port now runs
+  both ladders and maps the level through the ported `set_cdef_search_controls`
+  (`:891`), letting `enabled` / `use_qp_strength` choose the arm.
 
-**Evidence.** `crates/svtav1-encoder/tests/c_parity_dlf_ctrls.rs` is **tier 1**:
+  One correction to the line above, which said the `_default` level ladder
+  needed porting: it did NOT. It was already in
+  `port_enc_mode_config::multi_processes` at tier 1 — it was merely unreachable
+  from `pipeline.rs`. What was missing was `set_cdef_search_controls` (the port
+  carried only the ALLINTRA ladder's resolved candidate sets, flattened per
+  preset) and the allintra ladder as a function. Check what is ported before
+  scoping a chunk from this file.
+
+  MEASURED on the reference cell (`64 64 40 6 2 gradient`, frame 0): before,
+  `cdef_y_pri 1 / y_sec 0 / uv_pri 1` against C's `0 / 2 / 7`; after, the luma
+  pair matches and the first divergence is **`cdef_uv_pri_strength[0]`,
+  C = 7, port = 0**. The port picks C's level-5 luma candidate
+  `pf_gi[0] + 2 = 2`; C's chroma pick is `pf_gi[7] = 28` from the same set.
+  NOTE for whoever takes that field: on this cell the TILE payload already
+  differs (C 961 B, port 971 B, first differing tile byte at 0x1b), so the CDEF
+  search is scoring a different recon and the chroma gap is not yet
+  attributable to the chroma search itself — narrow the tile divergence first,
+  or find a cell where the tile agrees. Flat content is such a cell: video-mode
+  `uniform 64x64 q40` frame 0 is byte-identical at presets 0/3/6/8
+  (28/28/28/30 B).
+
+**Evidence (CDEF).** `crates/svtav1-encoder/tests/c_parity_cdef_search_ctrls.rs`
+is **tier 1** by the same route: `set_cdef_search_controls` is file-`static` and
+both ladders are inline in their callers, but the exported
+`svt_aom_sig_deriv_multi_processes_{default,allintra}` run all three and leave
+the answer in `pcs->cdef_level` + `pcs->cdef_search_ctrls`, which
+`shims/cdef_shims.c` reads back. The differential compares the level, the nine
+scalar control fields and **all 64 entries of all four candidate arrays**, over
+both arms, and its anti-vacuity test asserts the sweep reaches every level
+0..=10 and both `use_qp_strength` states. Verified live by mutation: flipping
+level 5's `subsampling_factor` from 1 to 2 reddens both arms.
+
+**Evidence (deblock).** `crates/svtav1-encoder/tests/c_parity_dlf_ctrls.rs` is **tier 1**:
 `get_dlf_level_{default,allintra}`, `dlf_level_modulation` and
 `svt_aom_set_dlf_controls` are all file-`static`, but the exported
 `svt_aom_sig_deriv_mode_decision_config_{default,allintra}` reach all four and

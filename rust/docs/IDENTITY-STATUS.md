@@ -2613,7 +2613,10 @@ to the Rust `cdef_search_still` (new env-gated `SVTAV1_CDEF_DBG` aid, `cdef.rs`)
 
 - **Config identical**: `fs=[0,60,2,62]`, `first_pass=2`, `second_pass=2`,
   `subsampling=4`, `zero_fs_cost_bias=0`, `uv_from_y=0`, `use_reference_cdef_fs=0`,
-  `use_qp_strength=0`, `lambda=211804`. (Confirms `cdef_search_cfg_for_preset`,
+  `use_qp_strength=0`, `lambda=211804`. (Confirms `cdef_search_cfg_for_preset`
+  — renamed to `cdef_search_cfg_from_ctrls` on 2026-08-31 when
+  `set_cdef_search_controls` was ported and the per-preset flattening was
+  replaced by the real level ladder —
   the `search_one_dual`/`joint_strength_search_dual` port, the `default_mse_uv*64`
   sentinel, and the M6=level-7 `set_cdef_search_controls` mapping are all correct.)
 - **Every fb whose post-deblock recon matches C produces byte-identical mse

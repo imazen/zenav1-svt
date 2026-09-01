@@ -108,6 +108,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/full_loop_md_shims.c");
     println!("cargo:rerun-if-changed=shims/md_winner_shims.c");
     println!("cargo:rerun-if-changed=shims/dlf_shims.c");
+    println!("cargo:rerun-if-changed=shims/cdef_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -246,6 +247,7 @@ fn main() {
         // Deblock signal-derivation oracle (lane dlfvideo) — own TU, same
         // reason: the sigderiv lane pins enable_dlf_flag = 0 in its shim.
         .file(manifest.join("shims/dlf_shims.c"))
+        .file(manifest.join("shims/cdef_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))

@@ -56,6 +56,33 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **CDEF search signal derivation: `set_cdef_search_controls` + both level
+  ladders, and the video arm wired (lane `cdefvideo`, chunk C1a).** New
+  `svtav1-encoder/src/port_enc_mode_config/cdef_search.rs`,
+  `svtav1-cref/src/cdef_search.rs` + `shims/cdef_shims.c`, and
+  `tests/c_parity_cdef_search_ctrls.rs`. **TIER 1**: `set_cdef_search_controls`
+  (`enc_mode_config.c:891`) is file-`static` and both `cdef_search_level`
+  ladders are inline in their callers, but the exported
+  `svt_aom_sig_deriv_multi_processes_{default,allintra}` run all three and
+  leave the answer in `pcs->cdef_level` + `pcs->cdef_search_ctrls`, which the
+  shim reads back — the level, the nine scalar control fields and all 64
+  entries of all four candidate arrays are compared on both arms, over an
+  anti-vacuity sweep that reaches every level 0..=10.
+  Coverage: 11 of 11 control levels; 2 of the 3 ladder arms (MISSING: `_rtc`,
+  `:2255`, the only source of levels 8/9 and outside this envelope).
+  `pipeline.rs` now derives the CDEF policy from the ladder that matches
+  `scs->allintra` and dispatches on `use_qp_strength`, instead of the
+  `is_single_frame && allintra_preset_uses_cdef_search(preset)` predicate that
+  dropped a VIDEO-mode key frame onto the qp fast path. On
+  `identity_diff_inter.sh 64 64 40 6 2 gradient` frame 0 the signalled
+  `cdef_y_pri`/`cdef_y_sec` go from `1`/`0` to C's `0`/`2`; the first diverging
+  frame-header field moves to `cdef_uv_pri_strength[0]` (C 7, port 0).
+  Video-mode key frames on flat content become byte-identical end to end
+  (`uniform 64x64 q40` frames=2 frame 0, presets 0/3/6/8 = 28/28/28/30 B).
+  No still regression: identity_full_8bit 1100/1100, regression_spotcheck
+  35/35, workspace tests 2349/2349, and the six pinned still cells at their
+  expected sizes.
+
 - **Rate control: the `rc_process.c` group is ported, mostly tier 1 (lane
   `wp-ratecontrol`).** New `svtav1-encoder/src/port_rc_process.rs` +
   `port_rc_lambda_tables.rs`, `port_rc_vbr_cbr.rs` + `port_rc_vbr_tables.rs`,

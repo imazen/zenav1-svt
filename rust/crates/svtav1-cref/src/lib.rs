@@ -8,9 +8,10 @@
 //! `publish = false`, used only as a dev-dependency, and never part of a
 //! shipped artifact.
 
+pub mod cdef_search;
 pub mod dlf;
-pub mod entropy_block;
 pub mod enc_dec_metrics;
+pub mod entropy_block;
 pub mod entropy_inter;
 pub mod inter_me;
 pub mod inter_mvp;
@@ -22,11 +23,11 @@ pub mod mode_decision;
 pub mod pcl;
 pub mod pic_operators;
 pub mod picstruct;
-pub mod ref_mgmt;
 pub mod preanalysis;
 pub mod rate_control;
 pub mod rc_vbr_cbr;
 pub mod rd_cost;
+pub mod ref_mgmt;
 pub mod sig_deriv;
 pub mod temporal_filtering;
 pub mod txfm_pf;

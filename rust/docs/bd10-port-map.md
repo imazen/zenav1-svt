@@ -1692,7 +1692,13 @@ Landed as three commits: the FFI pins (`302e02c81`), the CDEF search
 **Why only p6.** Both searches are preset-gated and p6 is the only preset in
 that gate that runs either: `cdef::allintra_preset_uses_cdef_search` is
 `preset <= 6`, and `restoration::wn_filter_ctrls_allintra` disables LR above
-preset 6. Presets 7-13 take closed-form qp derivations that were already
+preset 6. (2026-08-31: that CDEF statement is now an ALLINTRA/still statement
+only. `pipeline.rs` derives the level from
+`port_enc_mode_config::cdef_search::cdef_search_level_{allintra,default}` and
+dispatches on `use_qp_strength`; C's VIDEO ladder searches at every preset —
+level 7 above M7 — so a video-mode key frame at p7..p13 runs `cdef_search_still`
+and inherits this same 8-bit-search approximation at bd10. The still envelope is
+unchanged.) Presets 7-13 take closed-form qp derivations that were already
 bd10-aware — which is exactly why the 130-cell photo gate was green while p6
 was 0/9.
 
