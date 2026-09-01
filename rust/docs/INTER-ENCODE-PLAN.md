@@ -287,6 +287,58 @@ candidates for that, in order of cheapness to test:
    (and so the depth-refinement gates that read them) at EVERY video preset,
    independently of the level.
 
+### Where the reference cell's four blocks are actually decided (2026-09-01)
+
+Measured with the C-side interposers (`SVT_FASTCOST_OUT` / `SVT_FULLCOST_OUT`
+with `..._XY="0,0"`, Linux `--wrap` build) against the port's
+`SVTAV1_NSQDBG=1 SVTAV1_CANDDBG=1` dump, on `gradient 64x64 q40 p6` video mode,
+block (0,0) 32x32. This replaces guessing at the last OPEN row with a reading
+of both encoders' candidate lists.
+
+**MDS0 is NOT the divergence.** Both rank DC poorly. C's fast costs put
+`mode=10` first (2,763,652,131) and `mode=0` nineteenth (2,851,972,217); the
+port's `PFAST` likewise puts `mode=10` first and DC fourth. The two agree that
+DC is a bad MDS0 candidate.
+
+**The SURVIVOR SET is.** C's MDS1 (`CFULL st=1`) at that block is exactly
+`{10, 4/ang0, 4/ang+3, 6/ang-3, 6/ang0}` — five candidates, no DC — and its
+MDS3 (`st=3`) is `{4/ang0, 4/ang+3}`, two candidates, which is why C codes
+`mode=4 ady=3`. The port's MDS3 list is `{DC, mode1, mode4/ang0, mode10}` and
+DC wins it at 48,310,575 against mode10's 48,780,160. **The port's problem is
+that DC reaches MDS3 at all.**
+
+Two mechanisms feed C's tighter set, and NEITHER is in the port today:
+
+1. **`nic_level` 8 vs 6** — stage counts `{2,1,1}` of 16 instead of
+   `{6,6,6}`, and `mds1_cand_base_th_intra` 300 instead of 1200. That is
+   `nic_arm`, complete on `wip/video-md-arms` (below).
+
+2. **A subresolution LEAK from PD0 into PD1's MDS1, which is the real content
+   of the last OPEN row.** `set_subres_controls` has exactly ONE call site in
+   the whole tree — `svt_aom_sig_deriv_enc_dec_pd0` (`enc_mode_config.c:7357`)
+   — so `ctx->subres_ctrls` is derived from `pic_pd0_lvl` and then persists
+   into PD1 on the same context. `md_stage_1` reads it with NO `PD_PASS_1`
+   guard (`product_coding_loop.c:7027`, `ctx->mds_subres_step =
+   ctx->subres_ctrls.step`), while `md_stage_2` (`:7052`) and `md_stage_3`
+   (`:7156`) both zero it for PD1. So on the VIDEO arm, where `pic_pd0_lvl` is
+   3 and `sig_deriv_enc_dec_pd0` therefore derives `subres_level = 1` (an
+   I-slice at `pd0_level <= PD0_LVL_4`), **the MDS1 full loop that chooses the
+   survivors runs on half the rows** — residual at doubled stride, distortion
+   shifted back up — while MDS2/MDS3 run at full resolution. On the allintra
+   arm `pic_pd0_lvl` is 1, `subres_level` is 0, and nothing subsamples.
+
+   C's own dump confirms it rather than leaving it a reading: every 32x32
+   `CFAST` row on this cell carries `subres=1 lam=18500`, alongside a second
+   `subres=0 lam=241378` pass (PD0, its own lambda).
+
+**Consequence for scoping `pic_pd0_lvl`.** The subres half is separable from
+the rest of PD0_LVL_3 and is the part that reaches the leaf decision: it needs
+`subres_ctrls.step` derived per arm from the pd0 level and applied to the
+funnel's MDS0/MDS1 residual + distortion — NOT the recon-neighbour half
+(`pd0_use_src_samples`, which the video arm also flips) and NOT the
+depth-early-exit level. Do that first and re-measure before porting PD0_LVL_3
+whole.
+
 ### `wip/video-md-arms` — complete, verified, deliberately NOT on main
 
 `nic_level` (`nic_arm`) is done, tier 1 on both arms, and still-path
