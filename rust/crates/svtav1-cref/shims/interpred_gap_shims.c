@@ -179,10 +179,12 @@ void svt_av1_setup_scale_factors_for_frame(ScaleFactors* sf, int other_w, int ot
  * `1 << is16bit` only when there is no 2-bit plane), which is why the port
  * cannot fold them.
  *
- * `wm_params` is never passed: `is_wm` is hardwired to 0 here because the port
- * refuses the warp leaves (port_enc_make_pred's scope note). Binding them
- * would need `WarpedMotionParams` mirrored in Rust, which is the next chunk's
- * problem, not a silent omission. */
+ * `wm_io` is [wmtype, mat0..mat5, alpha, beta, gamma, delta] and is written
+ * back, so the ROTZOOM fix-up (which MUTATES wm, warped_motion.c:834-837) is
+ * observable. It is only read when `is_wm`. `svt_av1_warp_plane` reaches
+ * `svt_av1_warp_affine` / `svt_av1_highbd_warp_affine`, both RTCD FUNCTION
+ * POINTERS -- so this drives the kernel the encoder really runs, and the RTCD
+ * init above is load-bearing, not defensive. */
 void ref_enc_make_inter_predictor(void* src, void* src_2b, void* dst, int pre_y, int pre_x, int mv_x, int mv_y,
                                   int other_w, int other_h, int this_w, int this_h, int super_block_size,
                                   int frame_width, int frame_height, int blk_width, int blk_height, int bsize,
@@ -191,7 +193,7 @@ void ref_enc_make_inter_predictor(void* src, void* src_2b, void* dst, int pre_y,
                                   int conv_stride, int is_compound, int do_average, int use_jnt, int fwd, int bck,
                                   int plane, int ss_y, int ss_x, int bit_depth, int use_intrabc, int is16bit,
                                   int is_masked_compound, int comp_type, int wedge_index, int wedge_sign,
-                                  int mask_type, uint8_t* seg_mask) {
+                                  int mask_type, uint8_t* seg_mask, int is_wm, int32_t* wm_io) {
     ensure_gap_rtcd();
     ensure_gap_wedge();
     SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
@@ -225,6 +227,19 @@ void ref_enc_make_inter_predictor(void* src, void* src_2b, void* dst, int pre_y,
     comp.wedge_sign  = (uint8_t)wedge_sign;
     comp.mask_type   = (DIFFWTD_MASK_TYPE)mask_type;
 
+    WarpedMotionParams wm;
+    memset(&wm, 0, sizeof(wm));
+    if (is_wm) {
+        wm.wmtype = (TransformationType)wm_io[0];
+        for (int i = 0; i < 6; ++i) {
+            wm.wmmat[i] = wm_io[1 + i];
+        }
+        wm.alpha = (int16_t)wm_io[7];
+        wm.beta  = (int16_t)wm_io[8];
+        wm.gamma = (int16_t)wm_io[9];
+        wm.delta = (int16_t)wm_io[10];
+    }
+
     svt_aom_enc_make_inter_predictor(scs,
                                      (uint8_t*)src,
                                      (uint8_t*)src_2b,
@@ -252,7 +267,17 @@ void ref_enc_make_inter_predictor(void* src, void* src_2b, void* dst, int pre_y,
                                      (uint8_t)use_intrabc,
                                      (uint8_t)is_masked_compound,
                                      (uint8_t)is16bit,
-                                     /*is_wm=*/false,
-                                     NULL);
+                                     is_wm != 0,
+                                     is_wm ? &wm : NULL);
+    if (is_wm) {
+        wm_io[0] = (int32_t)wm.wmtype;
+        for (int i = 0; i < 6; ++i) {
+            wm_io[1 + i] = wm.wmmat[i];
+        }
+        wm_io[7]  = wm.alpha;
+        wm_io[8]  = wm.beta;
+        wm_io[9]  = wm.gamma;
+        wm_io[10] = wm.delta;
+    }
     free(scs);
 }

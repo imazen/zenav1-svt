@@ -713,20 +713,67 @@ pub fn warp_affine(
     }
 }
 
-/// Port of `svt_av1_highbd_warp_affine_c` (warped_motion.c:719) — the 10-bit
-/// normative warp prediction.
+/// The high-bit-depth warp kernel's reference, in either of the two
+/// representations `svt_av1_highbd_warp_affine_c` accepts.
 ///
-/// C takes the reference as an 8-bit plane plus an optional 2-bit companion
-/// plane (SVT's packed 8+2 layout). This port takes the already-unpacked
-/// `u16` reference, which is the same pixel values; the caller does the
-/// unpacking. `bd` is 10 or 12.
+/// C takes `ref8b` + `ref2b` with SEPARATE strides and combines them per
+/// sample as `(msb << 2) | ((lsb >> 6) & 3)` (warped_motion.c:774-775). An
+/// already-unpacked `u16` plane is the same samples with that combine already
+/// done, so both forms reach the IDENTICAL kernel — which is why this is a
+/// view over the one read, not a second kernel.
+///
+/// `highbd_warp_plane` passes ONE stride for both C planes; the two-stride
+/// form is kept because the kernel's own signature has it.
+#[derive(Debug, Clone, Copy)]
+pub enum HbdWarpRef<'a> {
+    /// One 10-bit plane.
+    Unpacked {
+        /// The samples.
+        plane: &'a [u16],
+        /// Row stride, in samples.
+        stride: usize,
+    },
+    /// SVT's split pair: eight MSBs, and two LSBs in each byte's top bits.
+    Split {
+        /// The eight most significant bits.
+        msb: &'a [u8],
+        /// The two least significant bits, in each byte's top two bits.
+        lsb: &'a [u8],
+        /// `stride8b`.
+        stride8b: usize,
+        /// `stride2b`.
+        stride2b: usize,
+    },
+}
+
+impl HbdWarpRef<'_> {
+    /// One reference sample, at 10 bits either way.
+    #[inline]
+    fn sample(&self, y: usize, x: usize) -> i32 {
+        match *self {
+            HbdWarpRef::Unpacked { plane, stride } => i32::from(plane[y * stride + x]),
+            HbdWarpRef::Split {
+                msb,
+                lsb,
+                stride8b,
+                stride2b,
+            } => (i32::from(msb[y * stride8b + x]) << 2) | i32::from(lsb[y * stride2b + x] >> 6),
+        }
+    }
+}
+
+/// Port of `svt_av1_highbd_warp_affine_c` (warped_motion.c:719) — the 10-bit
+/// normative warp prediction. `bd` is 10 or 12.
+///
+/// [`highbd_warp_affine`] is the same kernel over an already-unpacked plane,
+/// which is what every caller outside the warp leaf of
+/// `crate::port_enc_make_pred::enc_make_inter_predictor` holds.
 #[allow(clippy::too_many_arguments)]
-pub fn highbd_warp_affine(
+pub fn highbd_warp_affine_ref(
     mat: &[i32; 6],
-    reference: &[u16],
+    reference: HbdWarpRef<'_>,
     width: i32,
     height: i32,
-    stride: usize,
     pred: &mut [u16],
     dst: Option<&mut [u16]>,
     p_col: i32,
@@ -800,7 +847,7 @@ pub fn highbd_warp_affine(
                     let mut sum = 1i32 << offset_bits_horiz;
                     for m in 0..8i32 {
                         let sample_x = (ix + m).clamp(0, width - 1);
-                        sum += i32::from(reference[iy as usize * stride + sample_x as usize])
+                        sum += reference.sample(iy as usize, sample_x as usize)
                             * i32::from(coeffs[m as usize]);
                     }
                     sum = round_power_of_two(sum, reduce_bits_horiz);
@@ -923,8 +970,109 @@ pub fn warp_plane(
     );
 }
 
+/// Port of `svt_av1_highbd_warp_affine_c` over an already-unpacked 10-bit
+/// plane — the shape every existing caller uses.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_warp_affine(
+    mat: &[i32; 6],
+    reference: &[u16],
+    width: i32,
+    height: i32,
+    stride: usize,
+    pred: &mut [u16],
+    dst: Option<&mut [u16]>,
+    p_col: i32,
+    p_row: i32,
+    p_width: i32,
+    p_height: i32,
+    p_stride: usize,
+    subsampling_x: i32,
+    subsampling_y: i32,
+    bd: i32,
+    conv_params: &WarpConvolveParams,
+    alpha: i16,
+    beta: i16,
+    gamma: i16,
+    delta: i16,
+) {
+    highbd_warp_affine_ref(
+        mat,
+        HbdWarpRef::Unpacked {
+            plane: reference,
+            stride,
+        },
+        width,
+        height,
+        pred,
+        dst,
+        p_col,
+        p_row,
+        p_width,
+        p_height,
+        p_stride,
+        subsampling_x,
+        subsampling_y,
+        bd,
+        conv_params,
+        alpha,
+        beta,
+        gamma,
+        delta,
+    );
+}
+
 /// Port of `highbd_warp_plane` (warped_motion.c:829) — the 10-bit driver.
 /// Same ROTZOOM fix-up as the 8-bit path.
+///
+/// [`highbd_warp_plane`] is this over an already-unpacked plane.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_warp_plane_ref(
+    wm: &mut WarpedMotionParams,
+    reference: HbdWarpRef<'_>,
+    width: i32,
+    height: i32,
+    pred: &mut [u16],
+    dst: Option<&mut [u16]>,
+    p_col: i32,
+    p_row: i32,
+    p_width: i32,
+    p_height: i32,
+    p_stride: usize,
+    subsampling_x: i32,
+    subsampling_y: i32,
+    bd: i32,
+    conv_params: &WarpConvolveParams,
+) {
+    debug_assert!(wm.wm_type as u8 <= TransformationType::Affine as u8);
+    if wm.wm_type == TransformationType::RotZoom {
+        wm.wmmat[5] = wm.wmmat[2];
+        wm.wmmat[4] = -wm.wmmat[3];
+    }
+    let mat = wm.wmmat;
+    highbd_warp_affine_ref(
+        &mat,
+        reference,
+        width,
+        height,
+        pred,
+        dst,
+        p_col,
+        p_row,
+        p_width,
+        p_height,
+        p_stride,
+        subsampling_x,
+        subsampling_y,
+        bd,
+        conv_params,
+        wm.alpha,
+        wm.beta,
+        wm.gamma,
+        wm.delta,
+    );
+}
+
+/// Port of `highbd_warp_plane` over an already-unpacked 10-bit plane.
 #[allow(clippy::too_many_arguments)]
 pub fn highbd_warp_plane(
     wm: &mut WarpedMotionParams,
@@ -944,18 +1092,14 @@ pub fn highbd_warp_plane(
     bd: i32,
     conv_params: &WarpConvolveParams,
 ) {
-    debug_assert!(wm.wm_type as u8 <= TransformationType::Affine as u8);
-    if wm.wm_type == TransformationType::RotZoom {
-        wm.wmmat[5] = wm.wmmat[2];
-        wm.wmmat[4] = -wm.wmmat[3];
-    }
-    let mat = wm.wmmat;
-    highbd_warp_affine(
-        &mat,
-        reference,
+    highbd_warp_plane_ref(
+        wm,
+        HbdWarpRef::Unpacked {
+            plane: reference,
+            stride,
+        },
         width,
         height,
-        stride,
         pred,
         dst,
         p_col,
@@ -967,10 +1111,6 @@ pub fn highbd_warp_plane(
         subsampling_y,
         bd,
         conv_params,
-        wm.alpha,
-        wm.beta,
-        wm.gamma,
-        wm.delta,
     );
 }
 
@@ -987,8 +1127,26 @@ pub enum WarpPlaneIo<'a> {
     },
     /// High bit depth: unpacked `u16` reference plane and prediction output.
     Highbd {
+        /// The reference samples.
         reference: &'a [u16],
+        /// The prediction output.
         pred: &'a mut [u16],
+        /// 10 or 12.
+        bd: i32,
+    },
+    /// High bit depth over SVT's SPLIT reference — what C's `ref_2b != NULL`
+    /// arm takes (warped_motion.c:868 hands both planes to
+    /// `highbd_warp_plane`, which hands them to
+    /// `svt_av1_highbd_warp_affine_c`). Both planes are indexed at the single
+    /// `stride` argument, as C does.
+    HighbdSplit {
+        /// The eight most significant bits.
+        msb: &'a [u8],
+        /// The two least significant bits, in each byte's top two bits.
+        lsb: &'a [u8],
+        /// The prediction output.
+        pred: &'a mut [u16],
+        /// 10 or 12.
         bd: i32,
     },
 }
@@ -1027,6 +1185,28 @@ pub fn av1_warp_plane(
             p_stride,
             subsampling_x,
             subsampling_y,
+            conv_params,
+        ),
+        WarpPlaneIo::HighbdSplit { msb, lsb, pred, bd } => highbd_warp_plane_ref(
+            wm,
+            HbdWarpRef::Split {
+                msb,
+                lsb,
+                stride8b: stride,
+                stride2b: stride,
+            },
+            width,
+            height,
+            pred,
+            dst,
+            p_col,
+            p_row,
+            p_width,
+            p_height,
+            p_stride,
+            subsampling_x,
+            subsampling_y,
+            bd,
             conv_params,
         ),
         WarpPlaneIo::Highbd {

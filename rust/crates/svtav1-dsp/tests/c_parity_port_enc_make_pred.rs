@@ -8,13 +8,14 @@
 //!
 //! # Coverage, as a fraction
 //!
-//! **2 of C's 4 leaves.** The regular leaf and the masked-compound leaf run
-//! here across all three source representations
-//! (`Lbd` / `Split` / `Hbd`), both compound mask types (DIFFWTD and WEDGE),
-//! and both scaled and unscaled references. The two WARP leaves are NOT
-//! driven: the port returns `MakePredError::WarpNotWired` for them, and
-//! [`warp_is_refused_not_approximated`] pins that so the refusal cannot rot
-//! into a silent wrong prediction.
+//! **4 of C's 4 leaves.** Regular and masked-compound run across all three
+//! source representations (`Lbd` / `Split` / `Hbd`), both compound mask types
+//! (DIFFWTD and WEDGE), and both scaled and unscaled references. The two WARP
+//! leaves run in [`warp_leaf_matches_c`] and
+//! [`masked_warp_leaf_matches_c`], over four affine models, with the `wm_io`
+//! round-trip asserted so C's in-place ROTZOOM fix-up is compared rather than
+//! ignored — but only over the two representations C's warp path can take;
+//! see [`WARP_REPRS`].
 //!
 //! # The contract this hands C (§5 trap 4)
 //!
@@ -30,7 +31,7 @@
 //!   width IS `w`.
 
 use svtav1_cref::interpred_gap::{
-    EncMakePredArgs, RefDst, RefSrc, enc_make_inter_predictor as cref_emp,
+    EncMakePredArgs, RefDst, RefSrc, WarpIo, enc_make_inter_predictor as cref_emp,
 };
 use svtav1_dsp::port_convolve::{ConvolveParams, InterpFilterKind};
 use svtav1_dsp::port_enc_make_pred::{
@@ -42,6 +43,7 @@ use svtav1_dsp::port_masked_compound::{CompoundType, DiffwtdMaskType};
 use svtav1_dsp::port_scale_factors::ScaleFactors;
 use svtav1_dsp::port_subpel_params::{MbEdges, Mv, RefGeometry};
 use svtav1_dsp::port_wedge_masks::WedgeMasks;
+use svtav1_types::motion::{TransformationType, WARPEDMODEL_PREC_BITS, WarpedMotionParams};
 
 fn xs(s: &mut u32) -> u32 {
     *s ^= *s << 13;
@@ -125,6 +127,13 @@ struct Cell {
     filters: u32,
     scale: (i32, i32, i32, i32),
     masked: Option<(CompoundType, DiffwtdMaskType)>,
+    /// `Some(wmmat)` selects the WARP leaves; the model is completed by
+    /// `get_shear_params` before either side runs.
+    warp: Option<[i32; 6]>,
+    /// `plane`. Only the masked-warp leaf reads it for anything but the
+    /// DIFFWTD gate: it derives its OWN `ss_x` / `ss_y` from it (:1657)
+    /// instead of taking the caller's.
+    plane: usize,
     is_compound: bool,
     /// `conv_params->do_average`. On the MASKED leaf C clears it (:2593), so a
     /// cell with `do_average = true` AND a mask is the only thing that can see
@@ -183,6 +192,35 @@ fn run(cell: &Cell, seed: u32) {
         wedge_sign: 1,
     });
 
+    // The affine model, completed by `get_shear_params` on BOTH sides from
+    // the same `wmmat` — the shear terms are derived, not chosen, so handing
+    // C a hand-picked alpha/beta/gamma/delta would compare two different
+    // models.
+    let mut warp_port = cell.warp.map(|mat| {
+        let mut wm = WarpedMotionParams {
+            wm_type: TransformationType::Affine,
+            wmmat: mat,
+            ..WarpedMotionParams::default()
+        };
+        svtav1_dsp::port_warp::get_shear_params(&mut wm);
+        wm
+    });
+    let mut warp_c: Option<WarpIo> = warp_port.map(|wm| {
+        [
+            wm.wm_type as i32,
+            wm.wmmat[0],
+            wm.wmmat[1],
+            wm.wmmat[2],
+            wm.wmmat[3],
+            wm.wmmat[4],
+            wm.wmmat[5],
+            wm.alpha as i32,
+            wm.beta as i32,
+            wm.gamma as i32,
+            wm.delta as i32,
+        ]
+    });
+
     // ---- port ----
     let src = match cell.repr {
         Repr::Lbd => SrcPlanes::Lbd(&p.msb),
@@ -218,18 +256,19 @@ fn run(cell: &Cell, seed: u32) {
         &cp,
         cell.filters,
         masked,
+        warp_port.as_mut(),
         geom,
         w,
         h,
         &edges,
-        0,
+        cell.plane,
         0,
         0,
         bd,
         false,
-        false,
+        cell.warp.is_some(),
     )
-    .expect("non-warp leaf");
+    .expect("leaf ran");
 
     // ---- C ----
     let (mut c_msb, mut c_lsb, mut c_hbd) = (p.msb.clone(), p.lsb.clone(), p.hbd.clone());
@@ -252,6 +291,7 @@ fn run(cell: &Cell, seed: u32) {
         cdst,
         &mut c_cb,
         &mut c_seg,
+        warp_c.as_mut(),
         EncMakePredArgs {
             pre_y,
             pre_x,
@@ -266,7 +306,7 @@ fn run(cell: &Cell, seed: u32) {
             strides: (p.stride, w),
             conv_stride,
             compound: (cell.is_compound, cell.do_average, false, 0, 0),
-            plane: (0, 0, 0),
+            plane: (cell.plane, 0, 0),
             bit_depth: bd,
             use_intrabc: false,
             is16bit,
@@ -275,9 +315,31 @@ fn run(cell: &Cell, seed: u32) {
     );
 
     let what = format!(
-        "{:?} {w}x{h} bsize{bsize} mv{:?} masked{:?} comp{} avg{}",
-        cell.repr, cell.mv, cell.masked, cell.is_compound, cell.do_average
+        "{:?} {w}x{h} bsize{bsize} mv{:?} masked{:?} comp{} avg{} warp{}",
+        cell.repr,
+        cell.mv,
+        cell.masked,
+        cell.is_compound,
+        cell.do_average,
+        cell.warp.is_some()
     );
+    if let (Some(pw), Some(cw)) = (warp_port, warp_c) {
+        // C mutates `wm` in place for ROTZOOM (:834-837); the port does the
+        // same in `highbd_warp_plane_ref` / `warp_plane`. Compare it.
+        assert_eq!(
+            [
+                pw.wm_type as i32,
+                pw.wmmat[0],
+                pw.wmmat[1],
+                pw.wmmat[2],
+                pw.wmmat[3],
+                pw.wmmat[4],
+                pw.wmmat[5],
+            ],
+            [cw[0], cw[1], cw[2], cw[3], cw[4], cw[5], cw[6]],
+            "wm round-trip {what}"
+        );
+    }
     assert_eq!(r_cb, c_cb, "CONV_BUF {what}");
     assert_eq!(r_seg, c_seg, "seg_mask {what}");
     if is16bit {
@@ -310,6 +372,8 @@ fn regular_leaf_matches_c() {
                             filters,
                             scale: (256, 256, 256, 256),
                             masked: None,
+                            warp: None,
+                            plane: 0,
                             is_compound,
                             do_average,
                         },
@@ -350,6 +414,8 @@ fn masked_compound_leaf_matches_c() {
                             filters,
                             scale: (256, 256, 256, 256),
                             masked: Some(masked),
+                            warp: None,
+                            plane: 0,
                             is_compound: true,
                             do_average,
                         },
@@ -391,6 +457,8 @@ fn scaled_reference_matches_c() {
                             filters,
                             scale,
                             masked: None,
+                            warp: None,
+                            plane: 0,
                             is_compound: false,
                             do_average: false,
                         },
@@ -404,11 +472,115 @@ fn scaled_reference_matches_c() {
     assert!(cells >= 27, "anti-vacuity: only {cells} cells ran");
 }
 
-/// The two WARP leaves are REFUSED, not approximated (`WORKING-ON-THIS.md`
-/// §6). This pins the refusal so it cannot become a silent wrong prediction,
-/// and names the leaf so the gap is legible in a failure message.
+/// The two representations C's WARP path can actually take.
+///
+/// `Repr::Hbd` — `is16bit` with NO 2-bit plane — is EXCLUDED, and not for
+/// convenience: `svt_av1_highbd_warp_affine_c` dereferences `ref2b`
+/// unconditionally (warped_motion.c:774), and
+/// `svt_aom_enc_make_inter_predictor`'s warp leaf passes `src_ptr_2b`
+/// straight through (:2540). So that combination has no C BEHAVIOUR to
+/// compare against — it is a NULL dereference, not a different answer.
+/// MEASURED here: including it SIGSEGVs the test binary.
+///
+/// The port's `SrcPlanes::Hbd` warp arm is still correct arithmetic (it is the
+/// same kernel over samples that are already combined), but it has no oracle,
+/// so nothing here claims it does.
+const WARP_REPRS: [Repr; 2] = [Repr::Lbd, Repr::Split];
+
+/// The affine models both warp tests drive.
+///
+/// `wmmat[2]` / `wmmat[5]` are the diagonal at `1 << WARPEDMODEL_PREC_BITS`
+/// (identity scale); the perturbations are small because
+/// `is_affine_shear_allowed` rejects large ones and a rejected model is not a
+/// prediction, it is a different code path.
+fn warp_models() -> Vec<(&'static str, [i32; 6])> {
+    let one = 1i32 << WARPEDMODEL_PREC_BITS;
+    vec![
+        ("identity", [0, 0, one, 0, 0, one]),
+        ("translate", [1 << 12, -(1 << 11), one, 0, 0, one]),
+        ("rotzoom-ish", [0, 0, one + 900, 500, -500, one + 900]),
+        ("affine", [640, -320, one + 700, 400, -260, one - 500]),
+    ]
+}
+
 #[test]
-fn warp_is_refused_not_approximated() {
+fn warp_leaf_matches_c() {
+    let mut cells = 0usize;
+    for repr in WARP_REPRS {
+        for (name, mat) in warp_models() {
+            for &(bsize, w, h) in &CELLS[..4] {
+                for is_compound in [false, true] {
+                    run(
+                        &Cell {
+                            bsize,
+                            w,
+                            h,
+                            repr,
+                            mv: (0, 0),
+                            filters: make_interp_filters(
+                                InterpFilterKind::EightTapRegular,
+                                InterpFilterKind::EightTapRegular,
+                            ),
+                            scale: (256, 256, 256, 256),
+                            masked: None,
+                            warp: Some(mat),
+                            plane: 0,
+                            is_compound,
+                            do_average: false,
+                        },
+                        0xa5a5_0001 ^ (w as u32) << 8 ^ (name.len() as u32) << 16 ^ bsize as u32,
+                    );
+                    cells += 1;
+                }
+            }
+        }
+    }
+    assert!(cells >= 60, "anti-vacuity: only {cells} cells ran");
+}
+
+#[test]
+fn masked_warp_leaf_matches_c() {
+    let mut cells = 0usize;
+    for repr in WARP_REPRS {
+        for (name, mat) in warp_models() {
+            for &(bsize, w, h) in &CELLS[..3] {
+                for masked in [
+                    (CompoundType::DiffWtd, DiffwtdMaskType::D38),
+                    (CompoundType::DiffWtd, DiffwtdMaskType::D38Inv),
+                    (CompoundType::Wedge, DiffwtdMaskType::D38),
+                ] {
+                    run(
+                        &Cell {
+                            bsize,
+                            w,
+                            h,
+                            repr,
+                            mv: (0, 0),
+                            filters: make_interp_filters(
+                                InterpFilterKind::EightTapRegular,
+                                InterpFilterKind::EightTapRegular,
+                            ),
+                            scale: (256, 256, 256, 256),
+                            masked: Some(masked),
+                            warp: Some(mat),
+                            plane: 0,
+                            is_compound: true,
+                            do_average: false,
+                        },
+                        0xb6b6_0001 ^ (h as u32) << 8 ^ (name.len() as u32) << 16 ^ bsize as u32,
+                    );
+                    cells += 1;
+                }
+            }
+        }
+    }
+    assert!(cells >= 72, "anti-vacuity: only {cells} cells ran");
+}
+
+/// A WARP leaf with no model is REFUSED, not guessed — C would dereference a
+/// NULL `wm_params` there.
+#[test]
+fn warp_without_a_model_is_refused() {
     use svtav1_dsp::port_make_pred::MakePredLeaf;
     let p = Planes::new(64, 64, 0x1234_0001);
     let mut dst = vec![0u8; 64];
@@ -445,6 +617,7 @@ fn warp_is_refused_not_approximated() {
             &ConvolveParams::no_round(false, 8, false, 8),
             0,
             m,
+            None,
             RefGeometry {
                 super_block_size: 64,
                 frame_width: 64,
@@ -466,7 +639,49 @@ fn warp_is_refused_not_approximated() {
             true,
         )
         .unwrap_err();
-        assert_eq!(err, MakePredError::WarpNotWired(want));
+        assert_eq!(err, MakePredError::WarpParamsMissing(want));
     }
     assert_eq!(dst, vec![0u8; 64], "a refused call wrote pixels");
+}
+
+/// `av1_make_masked_warp_inter_predictor` derives its OWN subsampling
+/// (`plane == 0 ? 0 : 1`, :1657) rather than taking `enc_make_inter_predictor`'s
+/// `ss_x` / `ss_y`.
+///
+/// Every other cell here passes `plane = 0` with `ss = (0, 0)`, where the two
+/// AGREE — so a port that forwarded the caller's values would pass all of
+/// them. This cell passes `plane = 1` with `ss = (0, 0)`, which is the only
+/// configuration that separates them. (MEASURED: replacing the derivation
+/// with the caller's values leaves every other cell green.)
+#[test]
+fn masked_warp_derives_its_own_subsampling() {
+    let mut cells = 0usize;
+    for repr in WARP_REPRS {
+        for (name, mat) in warp_models() {
+            for &(bsize, w, h) in &CELLS[..3] {
+                run(
+                    &Cell {
+                        bsize,
+                        w,
+                        h,
+                        repr,
+                        mv: (0, 0),
+                        filters: make_interp_filters(
+                            InterpFilterKind::EightTapRegular,
+                            InterpFilterKind::EightTapRegular,
+                        ),
+                        scale: (256, 256, 256, 256),
+                        masked: Some((CompoundType::Wedge, DiffwtdMaskType::D38)),
+                        warp: Some(mat),
+                        plane: 1,
+                        is_compound: true,
+                        do_average: false,
+                    },
+                    0xc7c7_0001 ^ (w as u32) << 8 ^ (name.len() as u32) << 16 ^ bsize as u32,
+                );
+                cells += 1;
+            }
+        }
+    }
+    assert!(cells >= 24, "anti-vacuity: only {cells} cells ran");
 }

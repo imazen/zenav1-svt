@@ -1018,6 +1018,46 @@ changes nothing.
 
 ---
 
+## 24. `svt_av1_highbd_warp_affine_c` dereferences `ref2b` unconditionally
+
+**MEASURED 2026-08-31, aarch64-darwin** (lane wx-interpred, while gating
+`svt_aom_enc_make_inter_predictor`'s warp leaves).
+
+The 10-bit warp kernel reads BOTH reference planes on every sample, with no
+NULL check:
+
+```c
+/* warped_motion.c:773-775 */
+uint16_t ref = (ref8b[iy * stride8b + sample_x] << 2) |
+    ((ref2b[iy * stride2b + sample_x] >> 6) & 3);
+```
+
+`highbd_warp_plane` (:829) and `svt_av1_warp_plane` (:868) pass `ref_2b`
+straight through, and so does `svt_aom_enc_make_inter_predictor`'s warp leaf
+(:2540). So `is_wm && is16bit && src_ptr_2b == NULL` is not a different
+answer — it is a NULL dereference. **MEASURED: a differential cell in that
+configuration SIGSEGVs the test binary.**
+
+The 8-bit twin `svt_av1_warp_affine_c` has one plane and cannot have the
+problem, so this is specific to the high-bit-depth kernel.
+
+**Reachable:** no. The three `svt_aom_enc_make_inter_predictor` call sites
+that pass `NULL` for `src_ptr_2b` are `get_single_prediction_for_obmc_luma`
+(:988) and `get_single_prediction_for_obmc_chroma` (:1052, :1090), all of
+which pass `bit_depth = EB_EIGHT_BIT`, `is16bit = false` and `is_wm = false`.
+Every 10-bit site passes both planes.
+
+**What the port does:** `port_enc_make_pred`'s warp leaf accepts all three
+`SrcPlanes` forms; `SrcPlanes::Hbd` (an unpacked plane, no 2-bit companion) is
+a capability C does not have, so it has no oracle THROUGH THIS ENTRY. It is not
+unverified arithmetic: `port_warp::highbd_warp_affine` over an unpacked plane
+is tier-1 gated by `c_parity_warp_model.rs::highbd_warp_affine_matches_c`, and
+`HbdWarpRef` makes both forms reach that one kernel. The differential here
+therefore runs the two representations C can take (`Lbd`, `Split`) and says so
+in `WARP_REPRS` rather than quietly omitting the third.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

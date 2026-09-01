@@ -293,6 +293,11 @@ pub struct EncMakePredArgs {
     pub masked: Option<(i32, i32, i32, i32)>,
 }
 
+/// `WarpedMotionParams` marshalled as
+/// `[wmtype, mat0..mat5, alpha, beta, gamma, delta]`, written back so the
+/// ROTZOOM fix-up C performs in place (warped_motion.c:834-837) is observable.
+pub type WarpIo = [i32; 11];
+
 unsafe extern "C" {
     #[allow(clippy::too_many_arguments)]
     fn ref_enc_make_inter_predictor(
@@ -339,6 +344,8 @@ unsafe extern "C" {
         wedge_sign: c_int,
         mask_type: c_int,
         seg_mask: *mut u8,
+        is_wm: c_int,
+        wm_io: *mut i32,
     );
 }
 
@@ -366,8 +373,10 @@ pub enum RefDst<'a> {
     Hbd(&'a mut [u16]),
 }
 
-/// Reference `svt_aom_enc_make_inter_predictor` (enc_inter_prediction.c:2515),
-/// with `is_wm = 0` — the two non-warp leaves.
+/// Reference `svt_aom_enc_make_inter_predictor` (enc_inter_prediction.c:2515).
+///
+/// `warp` selects `is_wm`: `Some(wm_io)` drives the two WARP leaves, `None`
+/// the two non-warp ones.
 ///
 /// `src_origin` is where the reference plane's (0, 0) sits in the slice, in
 /// SAMPLES; the shim converts to whatever pointer C wants. C's own
@@ -380,6 +389,7 @@ pub fn enc_make_inter_predictor(
     dst: RefDst<'_>,
     conv_buf: &mut [u16],
     seg_mask: &mut [u8],
+    warp: Option<&mut WarpIo>,
     a: EncMakePredArgs,
 ) {
     let (src_p, src2_p) = match src {
@@ -446,6 +456,11 @@ pub fn enc_make_inter_predictor(
             wedge_sign,
             mask_type,
             seg_mask.as_mut_ptr(),
+            c_int::from(warp.is_some()),
+            match warp {
+                Some(w) => w.as_mut_ptr(),
+                None => core::ptr::null_mut(),
+            },
         );
     }
 }
