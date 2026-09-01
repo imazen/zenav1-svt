@@ -283,3 +283,95 @@ uint32_t ref_eb_wb_run(const int32_t* ops, int n_ops, uint8_t* buf, int cap, int
     *aligned = svt_aom_wb_is_byte_aligned(&wb);
     return svt_aom_wb_bytes_written(&wb);
 }
+
+/* ---------------------------------------------------------------------------
+ * svt_aom_get_txb_ctx (entropy_coding.c:248) — tier 1, EXPORTED.
+ *
+ * The txb_skip and dc_sign contexts of EVERY coded transform block, on both
+ * the intra and the inter path. It reads three things the shim has to supply
+ * as the ENCODER would (WORKING-ON-THIS §5 trap 4):
+ *
+ *  - a `NeighborArrayUnit` whose `top_array` / `left_array` it indexes at
+ *    `loc >> 2` (neighbor_arrays.h:194) — real arrays, so the shim's byte
+ *    vectors land where C reads them;
+ *  - `pcs->ppcs->aligned_{width,height}`, which CLIP the unit counts at the
+ *    frame edge. Those are read at the ARCHIVE's offsets, so both structs are
+ *    the real ones via calloc rather than stand-ins;
+ *  - `tx_size` and `plane_bsize` as C enum ordinals.
+ *
+ * The clip is the interesting part: the port pushes it to the caller by
+ * taking slices whose LENGTH is the unit count, so the test has to reproduce
+ * C's `MIN(tx_units, (aligned_dim >> plane_shift) - blk_org) >> 2` to size
+ * them — which pins that derivation as well as the context arithmetic.
+ * ------------------------------------------------------------------------ */
+
+#include "neighbor_arrays.h"
+
+void svt_aom_get_txb_ctx(PictureControlSet* pcs, const int32_t plane,
+                         NeighborArrayUnit* dc_sign_level_coeff_neighbor_array, uint32_t blk_org_x, uint32_t blk_org_y,
+                         const BlockSize plane_bsize, const TxSize tx_size, int16_t* const txb_skip_ctx,
+                         int16_t* const dc_sign_ctx);
+
+/* out[0] = txb_skip_ctx, out[1] = dc_sign_ctx, out[2] = txb_w_unit,
+ * out[3] = txb_h_unit (the last two recomputed here the way C does, so the
+ * test can assert the port's slice sizing against them). Returns 0 on
+ * success, -1 if the shim could not allocate. */
+int ref_eb_get_txb_ctx(int plane, int tx_size, int plane_bsize, int aligned_width, int aligned_height, int blk_org_x,
+                       int blk_org_y, const uint8_t* top, int top_len, const uint8_t* left, int left_len,
+                       int32_t out[4]) {
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    NeighborArrayUnit*       na   = (NeighborArrayUnit*)calloc(1, sizeof(*na));
+    /* The arrays are indexed at `blk_org >> 2`, so they must be that much
+       longer than the span C reads. */
+    const int top_cap  = (blk_org_x >> 2) + top_len + 64;
+    const int left_cap = (blk_org_y >> 2) + left_len + 64;
+    uint8_t*  top_arr  = (uint8_t*)calloc((size_t)top_cap, 1);
+    uint8_t*  left_arr = (uint8_t*)calloc((size_t)left_cap, 1);
+    if (!pcs || !ppcs || !na || !top_arr || !left_arr) {
+        free(pcs);
+        free(ppcs);
+        free(na);
+        free(top_arr);
+        free(left_arr);
+        return -1;
+    }
+    memcpy(top_arr + (blk_org_x >> 2), top, (size_t)top_len);
+    memcpy(left_arr + (blk_org_y >> 2), left, (size_t)left_len);
+
+    ppcs->aligned_width  = (uint16_t)aligned_width;
+    ppcs->aligned_height = (uint16_t)aligned_height;
+    pcs->ppcs            = ppcs;
+    na->top_array        = top_arr;
+    na->left_array       = left_arr;
+    na->unit_size        = 1;
+    na->granularity_log2 = 2;
+
+    int16_t skip_ctx = 0, sign_ctx = 0;
+    svt_aom_get_txb_ctx(pcs,
+                        plane,
+                        na,
+                        (uint32_t)blk_org_x,
+                        (uint32_t)blk_org_y,
+                        (BlockSize)plane_bsize,
+                        (TxSize)tx_size,
+                        &skip_ctx,
+                        &sign_ctx);
+
+    const int plane_shift = !!plane;
+    int       w_unit      = eb_tx_size_wide_unit[tx_size];
+    int       h_unit      = eb_tx_size_high_unit[tx_size];
+    int       w_clip      = (int)(((aligned_width >> plane_shift) - blk_org_x) >> 2);
+    int       h_clip      = (int)(((aligned_height >> plane_shift) - blk_org_y) >> 2);
+    out[0]                = skip_ctx;
+    out[1]                = sign_ctx;
+    out[2]                = w_unit < w_clip ? w_unit : w_clip;
+    out[3]                = h_unit < h_clip ? h_unit : h_clip;
+
+    free(left_arr);
+    free(top_arr);
+    free(na);
+    free(ppcs);
+    free(pcs);
+    return 0;
+}

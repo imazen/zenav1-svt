@@ -308,3 +308,85 @@ pub fn wb_run(ops: &[WbOp], cap: usize) -> (Vec<u8>, u32, bool) {
     buf.truncate(written as usize);
     (buf, written, aligned != 0)
 }
+
+// ---------------------------------------------------------------------------
+// svt_aom_get_txb_ctx — tier 1, exported.
+// ---------------------------------------------------------------------------
+
+/// What C `svt_aom_get_txb_ctx` produced, plus the unit counts it derived on
+/// the way (which the port's caller must reproduce as its slice lengths).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TxbCtx {
+    /// C `*txb_skip_ctx`.
+    pub txb_skip_ctx: i32,
+    /// C `*dc_sign_ctx`.
+    pub dc_sign_ctx: i32,
+    /// C `txb_w_unit` — `tx_size_wide_unit` clipped at the frame's right edge.
+    pub txb_w_unit: i32,
+    /// C `txb_h_unit`.
+    pub txb_h_unit: i32,
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_eb_get_txb_ctx(
+        plane: i32,
+        tx_size: i32,
+        plane_bsize: i32,
+        aligned_width: i32,
+        aligned_height: i32,
+        blk_org_x: i32,
+        blk_org_y: i32,
+        top: *const u8,
+        top_len: i32,
+        left: *const u8,
+        left_len: i32,
+        out: *mut i32,
+    ) -> i32;
+}
+
+/// C `svt_aom_get_txb_ctx` (entropy_coding.c:248). Tier 1 — exported.
+///
+/// `top` / `left` are the neighbour bytes AT the block origin; the shim
+/// places them where C's `na_top_ptr_pu(na, blk_org_x)` will find them.
+/// `None` only on an allocation failure inside the shim, which is an
+/// environment failure rather than a parity result.
+#[allow(clippy::too_many_arguments)]
+pub fn get_txb_ctx(
+    plane: i32,
+    tx_size: i32,
+    plane_bsize: i32,
+    aligned_width: i32,
+    aligned_height: i32,
+    blk_org_x: i32,
+    blk_org_y: i32,
+    top: &[u8],
+    left: &[u8],
+) -> Option<TxbCtx> {
+    let mut out = [0i32; 4];
+    let rc = unsafe {
+        ref_eb_get_txb_ctx(
+            plane,
+            tx_size,
+            plane_bsize,
+            aligned_width,
+            aligned_height,
+            blk_org_x,
+            blk_org_y,
+            top.as_ptr(),
+            top.len() as i32,
+            left.as_ptr(),
+            left.len() as i32,
+            out.as_mut_ptr(),
+        )
+    };
+    if rc != 0 {
+        return None;
+    }
+    Some(TxbCtx {
+        txb_skip_ctx: out[0],
+        dc_sign_ctx: out[1],
+        txb_w_unit: out[2],
+        txb_h_unit: out[3],
+    })
+}

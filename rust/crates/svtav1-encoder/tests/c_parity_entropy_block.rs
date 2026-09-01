@@ -410,3 +410,143 @@ fn c_parity_write_bit_buffer() {
         "the script never hit both alignment states — probe dead"
     );
 }
+
+// ===========================================================================
+// svt_aom_get_txb_ctx — TIER 1, and the highest-traffic context in the file:
+// every coded transform block on both the intra and the inter path derives
+// its txb_skip and dc_sign context here. It had no differential.
+// ===========================================================================
+
+/// C `eb_num_pels_log2_lookup` (common_utils.c:39), as
+/// `md_subpel::NUM_PELS_LOG2_LOOKUP`.
+fn num_pels_log2(bsize_ord: usize) -> u8 {
+    svtav1_encoder::md_subpel::NUM_PELS_LOG2_LOOKUP[bsize_ord]
+}
+
+/// C `txsize_to_bsize[tx]` as a BlockSize ORDINAL, via the port's
+/// dims -> ordinal map.
+fn tx_bsize_ord(tx: usize) -> usize {
+    let w = usize::from(svtav1_types::tables::transform::TX_SIZE_WIDE[tx]);
+    let h = usize::from(svtav1_types::tables::transform::TX_SIZE_HIGH[tx]);
+    svtav1_encoder::entropy::context::block_size_index(w, h)
+}
+
+#[test]
+fn c_parity_get_txb_ctx() {
+    use svtav1_encoder::entropy::coeff_c::get_txb_ctx;
+    use svtav1_types::tables::transform::{TX_SIZE_HIGH, TX_SIZE_WIDE};
+
+    // A deterministic neighbour-byte generator. Each byte is C's
+    // `(dc_sign << 6) | min(cul_level, 63)` with dc_sign in 0..=2, plus the
+    // 0xFF INVALID_NEIGHBOR_DATA sentinel, which is a DIFFERENT input from
+    // any real byte and gates both accumulation loops.
+    let mut seed = 0xC0FF_EE11u32;
+    let mut next = |m: u32| {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed >> 16) % m
+    };
+
+    let mut cases = 0usize;
+    let mut skip_seen = std::collections::BTreeSet::new();
+    let mut sign_seen = std::collections::BTreeSet::new();
+    let mut clipped = 0usize;
+
+    for tx in 0..19usize {
+        let txw = usize::from(TX_SIZE_WIDE[tx]);
+        let txh = usize::from(TX_SIZE_HIGH[tx]);
+        let tx_b = tx_bsize_ord(tx);
+        // plane_bsize candidates: the tx's own bsize (the luma fast path),
+        // and every larger square, which is what an encoder actually pairs
+        // a tx with.
+        let mut plane_bsizes = vec![tx_b];
+        for i in 0..22usize {
+            if num_pels_log2(i) > num_pels_log2(tx_b) {
+                plane_bsizes.push(i);
+            }
+        }
+        plane_bsizes.truncate(4);
+
+        for &pb in &plane_bsizes {
+            for plane in 0..2i32 {
+                // Two frame sizes: one big enough that nothing clips, one
+                // that forces C's MIN to bite at the right/bottom edge.
+                for &(aw, ah, ox, oy) in &[
+                    (4096i32, 4096i32, 0i32, 0i32),
+                    (128, 128, 96, 96),
+                    (64, 64, 32, 32),
+                ] {
+                    let shift = i32::from(plane != 0);
+                    let w_clip = ((aw >> shift) - ox) >> 2;
+                    let h_clip = ((ah >> shift) - oy) >> 2;
+                    if w_clip <= 0 || h_clip <= 0 {
+                        continue;
+                    }
+                    let w_unit = ((txw / 4) as i32).min(w_clip);
+                    let h_unit = ((txh / 4) as i32).min(h_clip);
+                    if w_unit <= 0 || h_unit <= 0 {
+                        continue;
+                    }
+                    if w_unit < (txw / 4) as i32 || h_unit < (txh / 4) as i32 {
+                        clipped += 1;
+                    }
+
+                    for invalid in [0u32, 1, 2, 3] {
+                        let mk = |n: usize, inv: bool, next: &mut dyn FnMut(u32) -> u32| {
+                            let mut v = Vec::with_capacity(n);
+                            for _ in 0..n {
+                                v.push(((next(3) << 6) | next(64)) as u8);
+                            }
+                            if inv && !v.is_empty() {
+                                v[0] = 0xFF;
+                            }
+                            v
+                        };
+                        let top = mk(w_unit as usize, invalid & 1 != 0, &mut next);
+                        let left = mk(h_unit as usize, invalid & 2 != 0, &mut next);
+
+                        let want = cref::get_txb_ctx(
+                            plane, tx as i32, pb as i32, aw, ah, ox, oy, &top, &left,
+                        )
+                        .expect("cref shim allocation failed — environment, not parity");
+
+                        // The port pushes C's unit-count clip to the caller
+                        // as the slice LENGTHS, so pin that derivation too.
+                        assert_eq!(want.txb_w_unit, w_unit, "txb_w_unit tx {tx} plane {plane}");
+                        assert_eq!(want.txb_h_unit, h_unit, "txb_h_unit tx {tx} plane {plane}");
+
+                        let (skip, sign) = get_txb_ctx(
+                            plane as usize,
+                            &top,
+                            &left,
+                            pb == tx_b,
+                            num_pels_log2(pb) > num_pels_log2(tx_b),
+                        );
+                        let ctx = format!(
+                            "tx {tx} plane_bsize {pb} plane {plane} frame {aw}x{ah} \
+                             at ({ox},{oy}) invalid {invalid}"
+                        );
+                        assert_eq!(skip as i32, want.txb_skip_ctx, "txb_skip_ctx: {ctx}");
+                        assert_eq!(sign as i32, want.dc_sign_ctx, "dc_sign_ctx: {ctx}");
+
+                        cases += 1;
+                        skip_seen.insert(want.txb_skip_ctx);
+                        sign_seen.insert(want.dc_sign_ctx);
+                    }
+                }
+            }
+        }
+    }
+
+    // Anti-vacuity. Without these a port returning (0, 0) everywhere would
+    // pass on every cell where C happens to agree.
+    assert!(cases > 500, "sweep too small to discriminate: {cases}");
+    assert!(
+        skip_seen.len() >= 6,
+        "txb_skip_ctx barely varies ({skip_seen:?}) — probe dead"
+    );
+    assert_eq!(sign_seen.len(), 3, "all three dc_sign contexts must appear");
+    assert!(
+        clipped > 0,
+        "no cell ever clipped at a frame edge — probe dead"
+    );
+}
