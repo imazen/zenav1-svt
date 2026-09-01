@@ -54,6 +54,44 @@ pub fn intrabc_enabled(ibc_level: u8) -> bool {
     ibc_level != 0
 }
 
+/// The `intrabc_level` ladder of C
+/// `svt_aom_sig_deriv_multi_processes_default` (`enc_mode_config.c:2033-2052`)
+/// — the arm EVERY video-mode picture takes, key frame included. Screen
+/// content (`sc_class5`) on an I-slice only.
+///
+/// It is a DIFFERENT ladder from its still twin
+/// ([`crate::intrabc::allintra_intrabc_level`], `enc_mode_config.c:2346-2369`),
+/// not a re-spelling of it: video runs 2/3/5/6 over M0..M9 and only switches
+/// off above M9, where allintra runs 1/3/4/5/6/7 over MR..M4 and is off from
+/// M5 up. That is exactly why a video-mode key frame at M6 sets
+/// `frm_hdr->allow_intrabc` (level 5) where a still one at M6 does not
+/// (level 0) — the first frame-header divergence this lane closed.
+///
+/// `enable_intrabc` is `scs->static_config.enable_intrabc`, whose CLI default
+/// is ON (`enc_settings.c:1065`) and which this port's config surface does not
+/// expose.
+#[must_use]
+pub fn intrabc_level_default(
+    enc_mode: i8,
+    sc_class5: bool,
+    is_islice: bool,
+    enable_intrabc: bool,
+) -> u8 {
+    if !enable_intrabc || !sc_class5 || !is_islice {
+        0
+    } else if enc_mode <= M3 {
+        2
+    } else if enc_mode <= M5 {
+        3
+    } else if enc_mode <= M8 {
+        5
+    } else if enc_mode <= M9 {
+        6
+    } else {
+        0
+    }
+}
+
 /// Inputs of C `svt_aom_sig_deriv_multi_processes_default`.
 #[derive(Debug, Clone, Copy)]
 pub struct MultiProcessesInputs {
@@ -181,20 +219,11 @@ pub fn sig_deriv_multi_processes_default(i: MultiProcessesInputs) -> Option<Mult
         _ => return None,
     };
 
-    // Intra-BC level. Screen content on an I-slice only.
-    let intrabc_level = if !i.enable_intrabc || !sc5 || !i.is_islice {
-        0
-    } else if enc_mode <= M3 {
-        2
-    } else if enc_mode <= M5 {
-        3
-    } else if enc_mode <= M8 {
-        5
-    } else if enc_mode <= M9 {
-        6
-    } else {
-        0
-    };
+    // Intra-BC level. Screen content on an I-slice only. The ladder lives in
+    // [`intrabc_level_default`] above so `sc_detect.rs` can wire the video
+    // arm to the SAME code this tier-1 entry point drives, instead of
+    // re-flattening the table at the call site.
+    let intrabc_level = intrabc_level_default(enc_mode, sc5, i.is_islice, i.enable_intrabc);
     let allow_intrabc = u8::from(intrabc_enabled(intrabc_level));
 
     // Palette level. Screen content on an I-slice only.

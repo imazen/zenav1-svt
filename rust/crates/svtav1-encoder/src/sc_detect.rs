@@ -425,9 +425,32 @@ pub fn pad_to_multiple_of_8(
     Some((out, pw, pw, ph))
 }
 
+/// Which arm of `enc_mode_config.c` a picture-level derivation is on.
+///
+/// C branches every one of these signals on `scs->allintra`
+/// (`= intra_period_length == 0 || avif || pred_structure == ALL_INTRA`,
+/// enc_handle.c:4406) and calls a DIFFERENT function per arm —
+/// `svt_aom_sig_deriv_multi_processes_allintra` vs `..._default`. The two
+/// disagree at nearly every preset, so a call site that silently takes the
+/// still arm on a video frame is a bitstream bug, not a speed choice. Naming
+/// the arm at the boundary is what makes that impossible to do by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScArm {
+    /// C `scs->allintra == true` — the still/AVIF envelope.
+    Allintra,
+    /// C `scs->allintra == false` — every video-mode picture, key frame
+    /// included. `is_islice` is C `pcs->slice_type == I_SLICE`, which the
+    /// video ladders gate on (the allintra ladders do not, because there
+    /// every picture is an I-slice).
+    Video { is_islice: bool },
+}
+
 /// `preset` is the still/allintra enc_mode. `y` is the SOURCE luma plane
 /// (8-bit; the detector never sees the 10-bit LSBs — C reads the MSB
 /// plane).
+///
+/// Kept as the still path's entry point with its exact previous behaviour;
+/// [`derive_sc`] is the arm-aware generalization.
 pub fn derive_allintra_sc(
     preset: u8,
     y: &[u8],
@@ -435,12 +458,47 @@ pub fn derive_allintra_sc(
     width: usize,
     height: usize,
 ) -> ScDerivation {
-    // scm mode (enc_handle.c:4514-4527): the CLI default (2) is overridden
-    // for allintra — <= M7 auto-detects with the AA-aware detector (3),
-    // M8+ forces detection off (0). (User-forced 0/1 and TUNE_IQ are not
-    // exposed by this encoder's config surface yet.)
-    let classes = if preset <= 7 {
-        let fast_detection = preset >= 3; // enc_handle.c:4257
+    derive_sc(ScArm::Allintra, preset, y, y_stride, width, height)
+}
+
+/// Screen-content derivation for either arm (C `scs->allintra`).
+///
+/// What actually differs between the arms, measured against
+/// `enc_mode_config.c` / `enc_handle.c` rather than assumed:
+///
+/// - **the scm gate** (enc_handle.c:4638-4670): allintra auto-detects at
+///   `<= M7` and forces detection OFF at M8+; video (non-rtc) auto-detects at
+///   `<= M8` and forces OFF at M9+. Both use the SAME AA-aware detector at
+///   the same `fast_detection = enc_mode >= M3` (enc_handle.c:4377), which is
+///   not arm-dependent.
+/// - **the intra-BC ladder**: `crate::intrabc::allintra_intrabc_level`
+///   (:2346-2369) vs
+///   [`crate::port_enc_mode_config::multi_processes::intrabc_level_default`]
+///   (:2033-2052). This is the one that moves `frm_hdr->allow_intrabc`.
+/// - **`palette_level`**: C has a second pair of ladders (:2374-2390 allintra
+///   vs :2054-2072 video) and the video one is ported at tier 1 inside
+///   `sig_deriv_multi_processes_default`. It is NOT wired here yet — see the
+///   PORT-NOTE at the `palette_level` binding below for exactly what that
+///   costs and what it provably does not cost.
+#[must_use]
+pub fn derive_sc(
+    arm: ScArm,
+    preset: u8,
+    y: &[u8],
+    y_stride: usize,
+    width: usize,
+    height: usize,
+) -> ScDerivation {
+    // scm mode (enc_handle.c:4638-4670): the CLI default (2) is overridden on
+    // both arms — allintra <= M7 / video <= M8 auto-detect with the AA-aware
+    // detector (3), above that detection is forced off (0). (User-forced 0/1
+    // and TUNE_IQ are not exposed by this encoder's config surface yet.)
+    let scm_auto = match arm {
+        ScArm::Allintra => preset <= 7,
+        ScArm::Video { .. } => preset <= 8,
+    };
+    let classes = if scm_auto {
+        let fast_detection = preset >= 3; // enc_handle.c:4377
         match pad_to_multiple_of_8(y, y_stride, width, height) {
             Some((padded, ps, pw, ph)) => {
                 is_screen_content_antialiasing_aware(&padded, ps, pw, ph, fast_detection)
@@ -453,6 +511,22 @@ pub fn derive_allintra_sc(
         ScClasses::default()
     };
 
+    // PORT-NOTE (video arm, DELIBERATE and MEASURED, not an oversight): this
+    // is C's ALLINTRA palette ladder (:2374-2390) on both arms. The video
+    // ladder (:2054-2072 — M0 -> 1, M1 -> 2, M2 -> 4, M3..M5 -> 5,
+    // M6..M9 -> 6, M10 -> 8) is already ported at tier 1 as part of
+    // `sig_deriv_multi_processes_default` and is the obvious next wiring; it
+    // is left out of THIS change so that one variable moved and the
+    // frame-header result stayed attributable.
+    //
+    // What that costs: on a video-mode screen-content frame the RD candidate
+    // set (and therefore the TILE bytes) is priced at the still palette level.
+    // What it provably does not cost: `allow_screen_content_tools`, the only
+    // frame-header bit palette_level feeds. Checked over the whole preset
+    // domain with the intra-BC ladder below wired — video sets
+    // `intrabc_level != 0` at every preset 0..=8, and at 9+ the scm gate
+    // above has already zeroed `sc_class5`, so the OR is 1 exactly where C's
+    // is regardless of which palette ladder produced the other operand.
     let palette_level = if classes.sc_class5 {
         match preset {
             0..=2 => 2,
@@ -465,23 +539,24 @@ pub fn derive_allintra_sc(
     } else {
         0
     };
-    let intrabc_level = if classes.sc_class5 {
-        match preset {
-            0 => 3,
-            1 => 4,
-            2 => 5,
-            3 => 6,
-            4 => 7,
-            _ => 0, // MR (=preset "-1") -> 1 is unreachable here
+    let intrabc_level = match arm {
+        // C `svt_aom_sig_deriv_multi_processes_allintra` (:2346-2369).
+        ScArm::Allintra => crate::intrabc::allintra_intrabc_level(preset, classes.sc_class5, true),
+        // C `svt_aom_sig_deriv_multi_processes_default` (:2033-2052).
+        ScArm::Video { is_islice } => {
+            crate::port_enc_mode_config::multi_processes::intrabc_level_default(
+                preset as i8,
+                classes.sc_class5,
+                is_islice,
+                true,
+            )
         }
-    } else {
-        0
     };
     // C: `set_intrabc_level(pcs, intrabc_level); frm_hdr->allow_intrabc =
-    // pcs->intrabc_ctrls.enabled;` (enc_mode_config.c:2370-2371). The CLI
-    // `enable_intrabc` toggle defaults ON (enc_settings.c:1065) and is not
-    // exposed by this port's surface, so the level table above already
-    // encodes the whole gate (sc_class5 && preset <= 4 => level != 0).
+    // pcs->intrabc_ctrls.enabled;` (enc_mode_config.c:2370-2371 allintra,
+    // :2053 video). The CLI `enable_intrabc` toggle defaults ON
+    // (enc_settings.c:1065) and is not exposed by this port's surface, so the
+    // level ladders above already encode the whole gate.
     let allow_intrabc = crate::intrabc::IbcCtrls::for_level(intrabc_level).enabled;
     ScDerivation {
         classes,
@@ -640,4 +715,146 @@ pub fn is_screen_content(y: &[u8], y_stride: usize, width: usize, height: usize)
     let blk_area8: i64 = 8 * 8;
     out.sc_class4 = counts_1 * blk_area8 * 18 > area && counts_2 * blk_area8 * 20 > area;
     out
+}
+
+#[cfg(test)]
+mod arm_tests {
+    use super::*;
+
+    /// The intra-BC level table `derive_allintra_sc` CARRIED INLINE before the
+    /// arm split — i.e. the one every byte of the 280/280 still envelope was
+    /// produced with. Kept verbatim as the regression oracle for
+    /// [`allintra_flattening_matches_the_ladder`]; deleting it would delete
+    /// the only independent statement of what the still path used to do.
+    fn allintra_intrabc_level_flattened(preset: u8, sc_class5: bool) -> u8 {
+        if sc_class5 {
+            match preset {
+                0 => 3,
+                1 => 4,
+                2 => 5,
+                3 => 6,
+                4 => 7,
+                _ => 0, // MR (=preset "-1") -> 1 is unreachable here
+            }
+        } else {
+            0
+        }
+    }
+
+    /// NO-STILL-REGRESSION, at the unit level: routing the still arm through
+    /// `intrabc::allintra_intrabc_level` reproduces the flattened inline table
+    /// entry for entry, over the WHOLE preset domain and both `sc_class5`
+    /// values. This is what makes the arm split byte-neutral for the still
+    /// path by construction; the byte gates then confirm it end to end.
+    #[test]
+    fn allintra_flattening_matches_the_ladder() {
+        for preset in 0..=13u8 {
+            for sc5 in [false, true] {
+                assert_eq!(
+                    crate::intrabc::allintra_intrabc_level(preset, sc5, true),
+                    allintra_intrabc_level_flattened(preset, sc5),
+                    "preset {preset} sc_class5 {sc5}"
+                );
+            }
+        }
+    }
+
+    /// The video ladder, entry for entry against `enc_mode_config.c:2033-2052`
+    /// read by hand — the table the wiring actually installs.
+    #[test]
+    fn video_intrabc_ladder_matches_c_table() {
+        use crate::port_enc_mode_config::multi_processes::intrabc_level_default;
+        let want: [u8; 14] = [
+            2, 2, 2, 2, // M0..M3
+            3, 3, // M4..M5
+            5, 5, 5, // M6..M8
+            6, // M9
+            0, 0, 0, 0, // M10..M13
+        ];
+        for (preset, &w) in want.iter().enumerate() {
+            assert_eq!(
+                intrabc_level_default(preset as i8, true, true, true),
+                w,
+                "preset {preset}"
+            );
+            // Not an I-slice, not screen content, or the CLI toggle off: 0.
+            assert_eq!(intrabc_level_default(preset as i8, true, false, true), 0);
+            assert_eq!(intrabc_level_default(preset as i8, false, true, true), 0);
+            assert_eq!(intrabc_level_default(preset as i8, true, true, false), 0);
+        }
+        // MR, translated but unreachable from the port's u8 preset surface.
+        assert_eq!(intrabc_level_default(-1, true, true, true), 2);
+    }
+
+    /// The arm split is exactly the divergence it was built to close: on the
+    /// SAME screen-content plane at M6, the video arm sets `allow_intrabc`
+    /// (level 5) and the still arm does not (level 0) — which is C=1 vs
+    /// port=0 on `screen 64x64 q40 p6`, the frame-header field this lane was
+    /// pointed at.
+    #[test]
+    fn video_arm_sets_allow_intrabc_at_m6_where_still_does_not() {
+        let (w, h) = (64usize, 64usize);
+        let mut screen = alloc::vec![0u8; w * h];
+        for r in 0..h {
+            for c in 0..w {
+                screen[r * w + c] = if ((r / 4) + (c / 4)) % 2 == 0 { 16 } else { 240 };
+            }
+        }
+        let still = derive_sc(ScArm::Allintra, 6, &screen, w, w, h);
+        let video = derive_sc(ScArm::Video { is_islice: true }, 6, &screen, w, w, h);
+        assert!(still.classes.sc_class5 && video.classes.sc_class5);
+        assert_eq!((still.intrabc_level, still.allow_intrabc), (0, false));
+        assert_eq!((video.intrabc_level, video.allow_intrabc), (5, true));
+        // The frame-header bit palette_level feeds is unaffected by the arm on
+        // this cell (both arms have a non-zero palette level at M6), so the
+        // un-wired video palette ladder cannot move it — see `derive_sc`'s
+        // PORT-NOTE.
+        assert!(still.allow_screen_content_tools && video.allow_screen_content_tools);
+    }
+
+    /// `allow_screen_content_tools` is arm-correct over the WHOLE preset
+    /// domain even with the video palette ladder still un-wired: the intra-BC
+    /// ladder alone carries the OR at every preset where the scm gate leaves
+    /// `sc_class5` set. This is the claim `derive_sc`'s PORT-NOTE makes, and
+    /// it is the reason wiring palette can be a separate chunk.
+    #[test]
+    fn video_allow_sct_is_arm_correct_without_the_palette_ladder() {
+        use crate::port_enc_mode_config::multi_processes::intrabc_level_default;
+        for preset in 0..=13u8 {
+            // The scm gate (enc_handle.c:4638-4670) zeroes every class above
+            // M8 on the video arm, so sc_class5 can only be set at 0..=8.
+            let sc5 = preset <= 8;
+            let ibc = intrabc_level_default(preset as i8, sc5, true, true);
+            let c_palette: u8 = if sc5 {
+                match preset {
+                    0 => 1,
+                    1 => 2,
+                    2 => 4,
+                    3..=5 => 5,
+                    6..=9 => 6,
+                    10 => 8,
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+            let port_palette: u8 = if sc5 {
+                match preset {
+                    0..=2 => 2,
+                    3 => 3,
+                    4..=5 => 4,
+                    6 => 5,
+                    7 => 7,
+                    _ => 0,
+                }
+            } else {
+                0
+            };
+            assert_eq!(
+                c_palette != 0 || ibc != 0,
+                port_palette != 0 || ibc != 0,
+                "preset {preset}: C palette {c_palette} port palette {port_palette} ibc {ibc}"
+            );
+        }
+    }
 }

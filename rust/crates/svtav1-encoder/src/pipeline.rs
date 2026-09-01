@@ -1661,7 +1661,27 @@ impl EncodePipeline {
             Some(3) => self.speed_config.preset.min(7),
             _ => self.speed_config.preset,
         };
-        let sc_derivation = crate::sc_detect::derive_allintra_sc(sc_preset, &encode_input, w, w, h);
+        // C picks a DIFFERENT derivation function per arm of `scs->allintra`
+        // (enc_handle.c:4406 — `intra_period_length == 0 || avif ||
+        // pred_structure == ALL_INTRA`); the port's proxy for it is the same
+        // `intra_period <= 1` predicate the video qindex derivation below
+        // uses. On the video arm the intra-BC ladder is
+        // `sig_deriv_multi_processes_default`'s (:2033-2052) instead of the
+        // allintra one (:2346-2369) — which is what makes a video-mode
+        // screen-content key frame set `frm_hdr->allow_intrabc` at M6, where
+        // the still arm leaves it clear.
+        //
+        // Every frame this reaches on the video arm today is the KEY frame
+        // (`encode_frame_impl` refuses non-key frames on the 4:2:0 path), so
+        // `is_islice` is `is_key`; passing it rather than `true` keeps the
+        // gate honest for when that refusal lifts.
+        let sc_arm = if self.gop.intra_period <= 1 {
+            crate::sc_detect::ScArm::Allintra
+        } else {
+            crate::sc_detect::ScArm::Video { is_islice: is_key }
+        };
+        let sc_derivation =
+            crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h);
 
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
@@ -2236,6 +2256,7 @@ impl EncodePipeline {
             // used, so the MD walk and the pack cannot disagree about screen
             // content (see the parameter's doc on `encode_tile_rows`).
             sc_preset,
+            sc_arm,
             self.hdr.is_fork() && self.hdr.alt_ssim_tuning,
             self.hdr.is_fork() && self.hdr.alt_lambda_factors,
             (self.hdr.tune == crate::tune::TUNE_IQ)
@@ -7635,6 +7656,11 @@ fn encode_tile_rows(
     // contexts drifted from the pack. Passing the resolved value makes the
     // tile-side comment below ("identical inputs -> identical result") true.
     sc_preset: u8,
+    // Which arm of `enc_mode_config.c` this frame's screen-content derivation
+    // is on (C `scs->allintra`), resolved by the CALLER for the same reason
+    // `sc_preset` is: the funnel's derivation must be bit-for-bit the frame
+    // header's, or the simulated CDF chains desync from the real pack.
+    sc_arm: crate::sc_detect::ScArm,
     hdr_alt_ssim: bool,
     hdr_alt_lambda: bool,
     hdr_iq_lambda_weight: Option<u32>,
@@ -7756,7 +7782,7 @@ fn encode_tile_rows(
         // result): the MD walk's rates + its per-SB CDF evolution must see
         // the same allow_sct as the real pack or the chains desync on
         // screen-content frames.
-        let tile_sc = crate::sc_detect::derive_allintra_sc(sc_preset, encode_input, w, w, h);
+        let tile_sc = crate::sc_detect::derive_sc(sc_arm, sc_preset, encode_input, w, w, h);
         let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();

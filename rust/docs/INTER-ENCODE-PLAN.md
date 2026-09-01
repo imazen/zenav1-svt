@@ -191,6 +191,35 @@ Ownership is per-file and strict — two chunks must never edit the same file.
 
 C1 depends on C0. C2/C3/C4/C5 are independent of both and of each other.
 
+## 2b. Landed after C1a — the video-arm tool ladders (2026-08-31)
+
+C1a closed the video qindex; the frame header then diverged at
+`allow_intrabc`, because `sc_detect.rs` had only the ALLINTRA arm of
+`enc_mode_config.c`'s picture-level tool derivations. `sc_detect::derive_sc`
+now takes an `ScArm` and the pipeline resolves it from the same
+`gop.intra_period <= 1` predicate C1a uses.
+
+**Wired:** the intra-BC ladder (`sig_deriv_multi_processes_default`,
+`enc_mode_config.c:2033-2052`, reached through the extracted
+`port_enc_mode_config::multi_processes::intrabc_level_default` so the wiring
+and the tier-1 parity test drive the same code) and the arm's scm gate
+(`enc_handle.c:4638-4670`, allintra `<= M7` vs video `<= M8`).
+
+**MEASURED** on `identity_diff_inter.sh 64 64 40 6 2 screen`, frame 0: the
+first diverging FH field was `allow_intrabc` (C=1, port=0); after wiring,
+**every frame-header field on that cell is identical** and the frame is
+92 B (C) vs 138 B (port) — the divergence is now in the TILE payload, which is
+the next chunk's target. Same on `... p8 ...`, where the first diverging field
+was `allow_screen_content_tools`. Non-screen cells (gradient/diag/screenrep
+p6) are byte-for-byte unchanged, and the still envelope is unmoved
+(`identity_full_8bit.sh` 1100/1100, `regression_spotcheck.sh` 39/39).
+
+**NOT wired:** the video **palette** ladder (`:2054-2072`) — ported at tier 1,
+still un-called; `derive_sc` uses the allintra palette table on both arms. It
+cannot move a frame-header bit (proved by unit test, see
+`docs/ibc-port-map.md`), only the RD candidate set. That is the cheapest
+remaining attributable step on the tile payload.
+
 ## 3. Standing rules for every chunk
 
 - `WORKING-ON-THIS.md` governs. State your evidence tier (§4) in the commit

@@ -884,6 +884,74 @@ C fn(s) it ports/verifies, the gate that proves it, byte-inertness surface, size
 
 ---
 
+## VIDEO-MODE ARM WIRED (2026-08-31, inter campaign)
+
+`frm_hdr->allow_intrabc` used to be derived from the ALLINTRA intra-BC ladder
+on every frame, because `sc_detect.rs::derive_allintra_sc` was the only
+derivation the pipeline had. C chooses per `scs->allintra`
+(`= intra_period_length == 0 || avif || pred_structure == ALL_INTRA`,
+`enc_handle.c:4406`) between two different functions, and their intra-BC
+ladders disagree at every preset:
+
+| arm | C site | ladder |
+|---|---|---|
+| allintra | `svt_aom_sig_deriv_multi_processes_allintra`, `enc_mode_config.c:2346-2369` | MR→1, M0→3, M1→4, M2→5, M3→6, M4→7, **M5+→0** |
+| video | `svt_aom_sig_deriv_multi_processes_default`, `enc_mode_config.c:2033-2052` | M0..M3→2, M4..M5→3, M6..M8→**5**, M9→6, M10+→0 |
+
+Both are gated on `sc_class5`; the video one is additionally gated on
+`pcs->slice_type == I_SLICE` (the allintra one is not, because there every
+picture is an I-slice).
+
+**Wiring** (this change): `sc_detect::derive_sc(ScArm, ...)` takes the arm;
+`derive_allintra_sc` now delegates to it with `ScArm::Allintra` and is
+byte-neutral by construction (`sc_detect.rs::arm_tests::
+allintra_flattening_matches_the_ladder` pins the ladder against the table
+`derive_allintra_sc` carried inline, entry for entry, over presets 0..=13 and
+both `sc_class5` values). The video ladder is the tier-1 one already ported
+inside `sig_deriv_multi_processes_default`, extracted as
+`port_enc_mode_config::multi_processes::intrabc_level_default` so the wired
+path and the C-parity entry point are the SAME code. `pipeline.rs` resolves
+the arm from `gop.intra_period <= 1` — the same predicate the video qindex
+derivation (chunk C1a) uses — and passes it to `encode_tile_rows` so the
+funnel's derivation cannot drift from the frame header's.
+
+The scm gate differs by arm too and is wired with it (`enc_handle.c:4638-4670`):
+allintra auto-detects at `<= M7`, video at `<= M8`; above that both force
+detection off. `fast_detection = enc_mode >= M3` (`enc_handle.c:4377`) is NOT
+arm-dependent.
+
+**MEASURED**, `tools/identity_diff_inter.sh 64 64 40 <p> 2 <content>`, frame 0
+(the video-mode key frame), before → after:
+
+| cell | before: first diverging FH field | after |
+|---|---|---|
+| screen 64x64 q40 p6 | `allow_intrabc` C=1 port=0 (rs 143 B) | **every FH field identical** (rs 138 B) |
+| screen 64x64 q40 p8 | `allow_screen_content_tools` C=1 port=0 (rs 697 B) | **every FH field identical** (rs 691 B) |
+| screen p2 / p4 / p9 | FH already identical | unchanged (124 / 109 / 805 B) |
+| gradient p6, diag p6, screenrep p6 | `cdef_uv_pri_strength[0]` / `loop_filter_level[0]` / `cdef_y_pri_strength[0]` | unchanged, byte-for-byte (971 / 336 / 1141 B) |
+
+C's frame 0 on the screen p6 cell is 92 B against the port's 138 B, so the
+divergence has moved OUT of the frame header and into the TILE payload. That
+is the next chunk's target on this cell.
+
+**NOT wired, named so it is not mistaken for done:** the video **palette**
+ladder (`enc_mode_config.c:2054-2072`: M0→1, M1→2, M2→4, M3..M5→5, M6..M9→6,
+M10→8). It is ported at tier 1 inside `sig_deriv_multi_processes_default`;
+`derive_sc` still uses the allintra palette table on BOTH arms, so a
+video-mode screen frame prices its RD candidate set at the still palette level.
+It is left out deliberately so this change moved one variable. It provably
+cannot move `allow_screen_content_tools` — with the intra-BC ladder above
+wired, video sets `intrabc_level != 0` at every preset 0..=8, and at 9+ the scm
+gate has already zeroed `sc_class5`, so the OR is 1 exactly where C's is
+regardless of which palette ladder produced the other operand
+(`arm_tests::video_allow_sct_is_arm_correct_without_the_palette_ladder`).
+
+Still envelope, re-measured after the change, not assumed: the six named cells
+byte-identical at 290 / 839 / 63 / 171 / 580 / 693 B, `regression_spotcheck.sh`
+39/39, `identity_full_8bit.sh` 1100/1100, `cargo nextest` 2379/2379.
+
+---
+
 _Branch `ibc/scoping` off `ca96121d7`; scoping pass 2026-07-22 (read-only vs C; the
 only artifact of that pass is this doc). Depth extracted via 3 parallel read-only
 agents (DV-search internals / writer+rate+coeff arm / aom-rs KB-15 catalog) + direct

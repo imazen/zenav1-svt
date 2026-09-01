@@ -56,6 +56,37 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Screen-content tool derivation: the video arm of the intra-BC ladder
+  wired (lane `ibcvid`).** `sc_detect.rs` grows `ScArm` +
+  `derive_sc(arm, ...)`; `derive_allintra_sc` delegates to it and is unchanged
+  in behaviour. C branches every picture-level tool level on `scs->allintra`
+  (`= intra_period_length == 0 || avif || pred_structure == ALL_INTRA`,
+  `enc_handle.c:4406`) and the two intra-BC ladders disagree at every preset —
+  allintra (`enc_mode_config.c:2346-2369`) is OFF from M5 up, video
+  (`:2033-2052`) gives level 5 at M6..M8 — so a video-mode key frame signalled
+  the wrong `frm_hdr->allow_intrabc`, which also suppresses the LF/CDEF/LR
+  parameter blocks and therefore changed the header's SHAPE, not just one bit.
+  **TIER 1**: the video ladder is the one already inside the exported
+  `svt_aom_sig_deriv_multi_processes_default`, extracted as
+  `port_enc_mode_config::multi_processes::intrabc_level_default` so the wiring
+  and `c_parity_sig_deriv_multi_processes.rs` drive the same code. The arm's
+  scm gate is wired with it (`enc_handle.c:4638-4670`: allintra auto-detects
+  at `<= M7`, video at `<= M8`). MEASURED on
+  `identity_diff_inter.sh 64 64 40 <p> 2 screen`, frame 0: the first diverging
+  frame-header field was `allow_intrabc` at p6 (C=1 port=0, 92 B vs 143 B) and
+  `allow_screen_content_tools` at p8 (114 B vs 697 B); after, EVERY
+  frame-header field is identical on both (port 138 B / 691 B) and the
+  divergence has moved into the tile payload. New spot-check cells
+  `video-key-ibc-arm-p6` / `-p8` (a new `fhVideoKey` helper, frame-header
+  fields only, labelled as the weaker assertion) fail before and pass after:
+  39/41 → 41/41. Still envelope unmoved and re-measured, not assumed:
+  gradient 64x64 q40 p6 290 B, q20 p3 839 B, q55 p0 63 B, 128x128 q55 p8
+  171 B, 64x64 q30 p13 580 B, screenrep 64x64 q35 p4 693 B — all identical;
+  `identity_full_8bit.sh` 1100/1100; `cargo nextest` 2379/2379. NOT wired: the
+  video **palette** ladder (`:2054-2072`), ported at tier 1 and still
+  un-called; it cannot move a frame-header bit (unit-proved) but does price
+  the RD candidate set at the still palette level.
+
 - **CDEF search signal derivation: `set_cdef_search_controls` + both level
   ladders, and the video arm wired (lane `cdefvideo`, chunk C1a).** New
   `svtav1-encoder/src/port_enc_mode_config/cdef_search.rs`,

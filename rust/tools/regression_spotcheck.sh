@@ -168,6 +168,55 @@ byteVideoKey() {
   fi
 }
 
+# fhVideoKey <label> <content> <w> <h> <qp> <preset>
+# Asserts every FRAME-HEADER field of the port's VIDEO-mode KEY frame equals
+# C's, via tools/fh_fields.py.
+#
+# WEAKER than byteVideoKey ON PURPOSE, and the label says so: it does NOT look
+# at the tile payload. It exists for the cells where the header is closed but
+# the payload is not yet, which is the whole shape of the inter campaign — a
+# header field that regresses there would otherwise be invisible until the
+# payload lands, which could be many chunks away. Promote a cell from here to
+# byteVideoKey the moment its payload closes; do not leave it here as the
+# weaker assertion once the stronger one can hold.
+#
+# fh_fields.py always exits 0 (it is a differ, not a gate), so the verdict is
+# read off its output. A walk that diverges prints "field counts differ" as
+# well as "DIFFERS", and BOTH are failures here.
+fhVideoKey() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  rm -f "$W"/c.obu.pts* "$W"/rs.obu.f*
+  local rc=0
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+    fail=$((fail+1)); failed+=("$label [port failed to encode, rc=$rc]"); return
+  fi
+  if ! SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+       SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" "$w" "$h" "$qp" "$p" \
+       "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label [C oracle failed]"); return
+  fi
+  if [ ! -e "$W/c.obu.pts0" ] || [ ! -e "$W/rs.obu.f0" ]; then
+    fail=$((fail+1)); failed+=("$label [frame 0 missing on one side]"); return
+  fi
+  local out
+  if ! out=$(python3 "$HERE/fh_fields.py" "$W/c.obu.pts0" "$W/rs.obu.f0" 2>&1); then
+    fail=$((fail+1)); failed+=("$label [fh_fields.py could not walk the header]"); return
+  fi
+  # Anti-vacuity: a walk that produced no field rows must never count as a pass
+  # (§5 — a silent harness and a genuine absence are indistinguishable).
+  if ! printf '%s\n' "$out" | grep -q '^show_existing_frame'; then
+    fail=$((fail+1)); failed+=("$label [fh_fields.py emitted no fields]"); return
+  fi
+  if printf '%s\n' "$out" | grep -qE 'DIFFERS|field counts differ'; then
+    fail=$((fail+1))
+    failed+=("$label [first diverging FH field: $(printf '%s\n' "$out" | grep -m1 'DIFFERS' | sed 's/  */ /g')]")
+  else
+    pass=$((pass+1))
+  fi
+}
+
 need_file() { [ -f "$1" ] || { skip=$((skip+1)); skipped+=("$2 — $1 absent"); return 1; }; }
 
 echo "== regression spot-check: one cell per fixed bug =="
@@ -542,6 +591,30 @@ byteVideoKey "video-key-cdef-p0"  uniform 64 64 40 0
 byteVideoKey "video-key-cdef-p3"  uniform 64 64 40 3
 byteVideoKey "video-key-cdef-p6"  uniform 64 64 40 6
 byteVideoKey "video-key-cdef-p8"  uniform 64 64 40 8
+
+# --- video-arm screen-content tool ladders (allow_intrabc), 2026-08-31 ------
+# `sc_detect.rs` derived the picture-level screen-content tool levels from C's
+# ALLINTRA ladders on EVERY frame; C picks per `scs->allintra` and the intra-BC
+# ladders disagree at every preset (docs/ibc-port-map.md, "VIDEO-MODE ARM
+# WIRED"). A video-mode key frame therefore signalled the wrong
+# `frm_hdr->allow_intrabc`, which also suppresses the LF/CDEF/LR parameter
+# blocks — so the header did not just carry a wrong bit, it carried a
+# different SHAPE.
+#
+# OBSERVED BEFORE the fix, frames=2 frame 0 (the video-mode key frame):
+#   screen 64x64 q40 p6: first diverging FH field `allow_intrabc` C=1 port=0
+#                        (C 92 B, port 143 B; fh walk A=28 B=39 fields)
+#   screen 64x64 q40 p8: first diverging FH field
+#                        `allow_screen_content_tools` C=1 port=0
+#                        (C 114 B, port 697 B)
+# AFTER: every frame-header field identical on both, port 138 B / 691 B.
+#
+# These are fhVideoKey and not byteVideoKey because the TILE payload on these
+# cells still differs (92 vs 138 B at p6) — the video palette ladder is ported
+# but not yet wired, and the payload is the next chunk's target. Promote both
+# to byteVideoKey when it closes.
+fhVideoKey "video-key-ibc-arm-p6" screen 64 64 40 6
+fhVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
