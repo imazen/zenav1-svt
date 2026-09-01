@@ -10,6 +10,14 @@ vectors traced against the C source, and it is the weakest tier.
 
 ## MISSING — read this before the coverage table
 
+**Per-function coverage for the whole lane lives in
+`docs/pd-pcs-resize-lr-coverage.md`** (added 2026-08-31): one row per C
+function across `pd_process.c`, `pcs.c`, `resize.c` and
+`restoration_pick.c`, splitting ported / out-of-scope / missing, with the
+evidence tier reached for each group. `pd_process.c` has **0 missing** there:
+the 15 remaining rows are thread kernels and object pools this port replaces
+by design, named individually.
+
 **UPDATED 2026-08-31 (lane `wx-picstruct`).** The row that used to head this
 table — `av1_generate_rps_info`'s random-access hierarchical branches,
 `hierarchical_levels` 1..5, `pd_process.c:2270-3482` — is **no longer

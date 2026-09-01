@@ -1,5 +1,14 @@
 # Superres (super-resolution) — port map
 
+**Per-function coverage for `resize.c` lives in
+`docs/pd-pcs-resize-lr-coverage.md`** (added 2026-08-31). Since this map was
+written, the DECISION half landed (`port_superres_decision`: the QTHRESH /
+AUTO / RANDOM denominator search, `analyze_hor_freq`, and the frame-resize
+reconciliation) and the KERNEL layer completed with the two-dimensional
+`resize_plane` / `highbd_resize_plane` (tier 1, both depths) that frame resize
+needs and superres did not. 15 rows remain, all of them the frame-resize
+driver and its scaled-reference cache.
+
 **Status: CHUNKS A + B.1 + B.2 + B.3 LANDED 2026-07-24** (5c69edcb2, f4a1b7516,
 2f4d24cba, f319ec298) — the normative upscale, the source downscale, and the header
 syntax, and the encoder wiring are all ported and byte-exact vs real C over
