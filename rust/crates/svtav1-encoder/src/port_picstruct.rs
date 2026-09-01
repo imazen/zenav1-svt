@@ -90,6 +90,9 @@ pub const LAY2_OFF: u8 = 5;
 /// C `LAY3_OFF` (`pd_process.c:47`).
 pub const LAY3_OFF: u8 = 6;
 
+/// C `LAY4_OFF` (`pd_process.c:48`) — the single layer-4 DPB slot.
+pub const LAY4_OFF: u8 = 7;
+
 /// C `CIRC_INC(val, start, end)` (`pd_process.c:167`).
 ///
 /// Note the C macro's `(int)(val + 1)` — the increment happens in the
@@ -338,6 +341,10 @@ pub struct PicParams {
     pub show_frame: bool,
     /// C `pcs->has_show_existing`.
     pub has_show_existing: bool,
+    /// C `pcs->frm_hdr.show_existing_frame` — the DPB slot a
+    /// `show_existing_frame` header re-displays. Only meaningful while
+    /// [`PicParams::has_show_existing`] is set.
+    pub show_existing_frame: u8,
     /// C `pcs->frm_hdr.reference_mode`.
     pub reference_mode: ReferenceMode,
     /// C `pcs->allow_comp_inter_inter`.
@@ -388,6 +395,7 @@ impl Default for PicParams {
             cur_order_hint: 0,
             show_frame: true,
             has_show_existing: false,
+            show_existing_frame: 0,
             reference_mode: ReferenceMode::Select,
             allow_comp_inter_inter: false,
             skip_mode: SkipModeInfo::default(),
@@ -1029,6 +1037,70 @@ pub struct RpsBranchUnsupported {
     pub temporal_layer: u8,
 }
 
+/// Why [`generate_rps_info`] declined to produce a reference structure.
+///
+/// Both variants are refusals in the sense of `docs/WORKING-ON-THIS.md` §6 —
+/// the alternative is a stream that decodes while predicting from the wrong
+/// pictures, which is indistinguishable from a correct one at the integration
+/// seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpsError {
+    /// A prediction-structure branch this port has not translated, or one C
+    /// itself rejects (`Unsupported MG structure!`, `pd_process.c:3484`).
+    UnsupportedBranch {
+        /// `pcs->hierarchical_levels` of the refused picture.
+        hierarchical_levels: u8,
+        /// `pcs->temporal_layer_index` of the refused picture.
+        temporal_layer: u8,
+    },
+    /// A `(temporal_layer, pic_idx)` pair the branch's table does not cover.
+    ///
+    /// C logs `Error in MG indexing - HL%d, temporal layer %d` here and then
+    /// **falls through with the previous picture's `ref_dpb_index`**, so it
+    /// emits an RPS built from stale slots. This port refuses instead.
+    MiniGopIndex {
+        /// `pcs->hierarchical_levels` of the refused picture.
+        hierarchical_levels: u8,
+        /// `pcs->temporal_layer_index` of the refused picture.
+        temporal_layer: u8,
+        /// `pic_idx` — the position inside the mini-GOP.
+        pic_idx: u32,
+    },
+}
+
+impl From<RpsBranchUnsupported> for RpsError {
+    fn from(e: RpsBranchUnsupported) -> Self {
+        Self::UnsupportedBranch {
+            hierarchical_levels: e.hierarchical_levels,
+            temporal_layer: e.temporal_layer,
+        }
+    }
+}
+
+impl core::fmt::Display for RpsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::UnsupportedBranch {
+                hierarchical_levels,
+                temporal_layer,
+            } => write!(
+                f,
+                "unsupported RPS branch: hierarchical_levels {hierarchical_levels}, temporal layer {temporal_layer}"
+            ),
+            Self::MiniGopIndex {
+                hierarchical_levels,
+                temporal_layer,
+                pic_idx,
+            } => write!(
+                f,
+                "mini-GOP index {pic_idx} is not a coded position at hierarchical_levels {hierarchical_levels}, temporal layer {temporal_layer}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RpsError {}
+
 /// C `av1_generate_rps_info` (`pd_process.c:1911-3506`) — static, tier 4.
 ///
 /// THE reference-structure derivation: fills `ref_dpb_index[7]`,
@@ -1055,14 +1127,15 @@ pub struct RpsBranchUnsupported {
 ///
 /// # Errors
 ///
-/// Returns [`RpsBranchUnsupported`] for a random-access hierarchical branch.
+/// Returns [`RpsError`] for a branch this port does not translate, or for a
+/// mini-GOP position the branch's table does not cover.
 pub fn generate_rps_info(
     pic: &mut PicParams,
     seq: &SeqPicParams,
     ctx: &mut PicDecisionCtx,
     pic_idx: u32,
     mg_idx: usize,
-) -> Result<(), RpsBranchUnsupported> {
+) -> Result<(), RpsError> {
     let hier = pic.hierarchical_levels;
     let temporal_layer = pic.temporal_layer_index;
 
@@ -1100,10 +1173,7 @@ pub fn generate_rps_info(
     } else if hier == 0 {
         rps_random_access_flat(pic, seq, ctx, mg_idx);
     } else {
-        return Err(RpsBranchUnsupported {
-            hierarchical_levels: hier,
-            temporal_layer,
-        });
+        crate::port_picstruct_ra::rps_random_access_hier(pic, seq, ctx, pic_idx, mg_idx)?;
     }
 
     // C's tail: S-frame RPS and the app ref-mgmt events (both out of envelope,
@@ -1606,14 +1676,14 @@ pub const MI_SIZE_LOG2: u32 = 2;
 ///
 /// # Errors
 ///
-/// Propagates [`RpsBranchUnsupported`] from [`generate_rps_info`].
+/// Propagates [`RpsError`] from [`generate_rps_info`].
 pub fn picture_decision_per_picture(
     pic: &mut PicParams,
     seq: &SeqPicParams,
     ctx: &mut PicDecisionCtx,
     pic_idx: u32,
     mg_idx: usize,
-) -> Result<(), RpsBranchUnsupported> {
+) -> Result<(), RpsError> {
     set_gf_group_param(pic);
     generate_rps_info(pic, seq, ctx, pic_idx, mg_idx)?;
     update_dpb(pic, ctx);

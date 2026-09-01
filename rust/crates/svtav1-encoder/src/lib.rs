@@ -59,6 +59,7 @@ pub mod port_md;
 pub mod port_md_rate_estimation;
 pub mod port_pass2_strategy;
 pub mod port_picstruct;
+pub mod port_picstruct_ra;
 pub mod port_preanalysis;
 pub mod port_ransac;
 pub mod port_rc_process;

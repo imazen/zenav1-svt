@@ -579,35 +579,71 @@ fn traced_random_access_flat_toggle_order() {
 ///
 /// `docs/WORKING-ON-THIS.md` §6: a plausible-but-wrong reference structure is
 /// indistinguishable from a correct one at the seam, so the port returns a
-/// typed error for `hierarchical_levels` 1..=5 under random access.
+/// typed error rather than guessing.
+///
+/// UPDATED 2026-08-31. This test used to assert that `hierarchical_levels`
+/// 1..=5 under random access all refuse; those five branches are now
+/// translated (`port_picstruct_ra`), so what is left to refuse is what C
+/// itself refuses or mis-handles:
+///
+/// * `hierarchical_levels` outside 0..=5 — C prints `Unsupported MG
+///   structure!` and calls `exit(0)` (`pd_process.c:3483-3485`);
+/// * a `(temporal_layer, pic_idx)` pair no branch table covers — C logs
+///   `Error in MG indexing` and then predicts from the PREVIOUS picture's
+///   slots.
 #[test]
-fn unported_random_access_hierarchies_refuse() {
+fn out_of_range_hierarchy_and_bad_mg_index_refuse() {
     let seq = pp::SeqPicParams {
         pred_structure: pp::PredStructure::RandomAccess,
         ..ld_flat_cqp_seq()
     };
-    for hier in 1u8..=5 {
+
+    // C's `else { SVT_ERROR("Unsupported MG structure!"); exit(0); }`.
+    for hier in [6u8, 7, 255] {
         let mut ctx = pp::PicDecisionCtx::default();
         let mut pic = inter_frame(1, 0);
         pic.pred_struct_type = pp::PredStructure::RandomAccess;
         pic.hierarchical_levels = hier;
         pic.temporal_layer_index = 0;
-        let r = pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 0, 0);
         assert_eq!(
-            r,
-            Err(pp::RpsBranchUnsupported {
+            pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 0, 0),
+            Err(pp::RpsError::UnsupportedBranch {
                 hierarchical_levels: hier,
                 temporal_layer: 0
             }),
-            "RA hierarchical level {hier} must refuse, not guess"
+            "hierarchical_levels {hier} is outside C's own range and must refuse"
         );
     }
-    // The four branches that ARE ported must not refuse -- a positive control
-    // so a blanket "always Err" cannot pass this test.
+
+    // HL3 codes layer-2 pictures at pic_idx 1 and 5 only; 3 is a layer-3
+    // position, so the layer-2 table has no row for it.
+    let mut ctx = pp::PicDecisionCtx::default();
+    let mut pic = inter_frame(1, 0);
+    pic.pred_struct_type = pp::PredStructure::RandomAccess;
+    pic.hierarchical_levels = 3;
+    pic.temporal_layer_index = 2;
+    assert_eq!(
+        pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 3, 0),
+        Err(pp::RpsError::MiniGopIndex {
+            hierarchical_levels: 3,
+            temporal_layer: 2,
+            pic_idx: 3
+        }),
+    );
+
+    // Positive control, so a blanket "always Err" cannot pass this test: the
+    // flat low-delay branch and a real HL3 layer-2 position both succeed.
     let ld = ld_flat_cqp_seq();
     let mut ctx = pp::PicDecisionCtx::default();
     let mut pic = inter_frame(1, 0);
     assert!(pp::picture_decision_per_picture(&mut pic, &ld, &mut ctx, 0, 0).is_ok());
+
+    let mut ctx = pp::PicDecisionCtx::default();
+    let mut pic = inter_frame(1, 0);
+    pic.pred_struct_type = pp::PredStructure::RandomAccess;
+    pic.hierarchical_levels = 3;
+    pic.temporal_layer_index = 2;
+    assert!(pp::picture_decision_per_picture(&mut pic, &seq, &mut ctx, 1, 0).is_ok());
 }
 
 /// The RTC flat branch (`pd_process.c:1954-1986`) — the refresh mask includes
