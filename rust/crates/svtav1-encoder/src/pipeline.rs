@@ -7810,6 +7810,27 @@ fn encode_tile_rows(
             ));
         funnel_cfg.coeff_rate_est_lvl = rate_est_coeff_lvl;
         funnel_cfg.real_coeff_ctx = rate_est_real_ctx;
+        // `pcs->pic_filter_intra_level` -> `set_filter_intra_ctrls` and
+        // `(intra_level, dist_based_ang_intra_level)` -> `set_intra_ctrls`,
+        // for THIS arm (`crate::intra_arm`). `for_preset` bakes the ALLINTRA
+        // rows; the video arm drops filter-intra entirely at M6+ and takes a
+        // lower intra_level (M6 video = intra_level 2 = the still path's M5
+        // candidate shape). Byte-neutral on the still path by construction —
+        // `intra_arm::allintra_flattening_matches_the_ladder` pins the six
+        // stamped fields against `for_preset`'s baked values at every preset.
+        //
+        // `is_base` is true unconditionally: every video picture this port
+        // encodes is a KEY frame at `temporal_layer_index == 0`, which is also
+        // what makes `dist_based_ang_intra_level` 0 on both arms (the ladder's
+        // non-zero rows are all `is_islice ? 0 :` / `is_base ? 0 :`).
+        crate::intra_arm::apply(
+            &mut funnel_cfg,
+            sc_arm,
+            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+                || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
+            true,
+        );
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
         }
