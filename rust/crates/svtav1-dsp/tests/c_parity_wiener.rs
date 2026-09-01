@@ -368,8 +368,12 @@ fn filter_unit_matches_c() {
         rst::loop_restoration_filter_unit(
             need_boundaries,
             &rlimits,
-            rtype,
-            &wi,
+            &rst::RestUnitParams {
+                rtype,
+                wiener: wi,
+                sgr_ep: 0,
+                sgr_xqd: rst::DEFAULT_SGRPROJ_XQD,
+            },
             &bnd,
             &rrect,
             0,

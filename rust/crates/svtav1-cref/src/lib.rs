@@ -1967,6 +1967,14 @@ unsafe extern "C" {
     );
     fn ref_write_refsubexpfin_bytes(n: u16, k: u16, r: u16, v: u16, out: *mut u8, cap: u32) -> u32;
     fn ref_count_refsubexpfin(n: u16, k: u16, r: u16, v: u16) -> i32;
+    fn ref_write_sgrproj_filter_bytes(
+        ep: i32,
+        xqd: *const i32,
+        ref_xqd: *const i32,
+        out: *mut u8,
+        cap: u32,
+    ) -> u32;
+    fn ref_default_sgrproj_xqd(out2: *mut i32);
 
     // ---- highbd arm (the is_16bit / 10-bit pipeline) ----
     fn ref_highbd_wiener_convolve_add_src(
@@ -2437,6 +2445,27 @@ pub fn write_refsubexpfin_bytes(n: u16, k: u16, r: u16, v: u16) -> Vec<u8> {
 /// Reference `svt_aom_count_primitive_refsubexpfin`.
 pub fn count_refsubexpfin(n: u16, k: u16, r: u16, v: u16) -> i32 {
     unsafe { ref_count_refsubexpfin(n, k, r, v) }
+}
+
+/// Reference bytes for one SGR restoration unit's filter payload — C's
+/// `write_sgrproj_filter` body composed from its own exported primitives (see
+/// the shim's comment for the evidence tier).
+#[must_use]
+pub fn write_sgrproj_filter_bytes(ep: i32, xqd: [i32; 2], ref_xqd: [i32; 2]) -> Vec<u8> {
+    let mut out = vec![0u8; 64];
+    let n = unsafe {
+        ref_write_sgrproj_filter_bytes(ep, xqd.as_ptr(), ref_xqd.as_ptr(), out.as_mut_ptr(), 64)
+    };
+    out.truncate(n as usize);
+    out
+}
+
+/// Reference `set_default_sgrproj` (restoration.h:243).
+#[must_use]
+pub fn default_sgrproj_xqd() -> [i32; 2] {
+    let mut out = [0i32; 2];
+    unsafe { ref_default_sgrproj_xqd(out.as_mut_ptr()) };
+    out
 }
 
 // ---------------------------------------------------------------------------

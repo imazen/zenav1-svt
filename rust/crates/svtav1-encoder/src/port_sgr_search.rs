@@ -65,6 +65,21 @@ pub struct SgrprojInfo {
     pub xqd: [i32; 2],
 }
 
+impl SgrprojInfo {
+    /// C `set_default_sgrproj` (restoration.h:243) — the reference BOTH the
+    /// search (`rsc_on_tile`) and the writer (`svt_av1_reset_loop_restoration`)
+    /// chain the first `refsubexpfin` delta against. NOT `Default::default()`,
+    /// which is the all-zero struct: the C default is the midpoint of each
+    /// range, so using the wrong one shifts every coded delta.
+    #[must_use]
+    pub fn c_default() -> Self {
+        SgrprojInfo {
+            ep: 0,
+            xqd: svtav1_dsp::restoration::DEFAULT_SGRPROJ_XQD,
+        }
+    }
+}
+
 /// `SgFilterCtrls`, re-exported shape from [`crate::port_lr_level`] so this
 /// module's signatures read like C's.
 pub use crate::port_lr_level::SgFilterCtrls;

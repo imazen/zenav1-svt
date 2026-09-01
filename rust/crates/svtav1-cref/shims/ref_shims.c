@@ -1042,6 +1042,74 @@ int32_t ref_count_refsubexpfin(uint16_t n, uint16_t k, uint16_t ref, uint16_t v)
     return svt_aom_count_primitive_refsubexpfin(n, k, ref, v);
 }
 
+/* ---- SGR restoration-unit filter writer -----------------------------------
+ *
+ * `write_sgrproj_filter` (entropy_coding.c:4126) is `static`, so this shim
+ * COMPOSES the exact primitives its body calls -- `aom_write_literal` and
+ * `svt_aom_write_primitive_refsubexpfin`, both exported -- over the REAL
+ * `svt_aom_eb_sgr_params` table, into one AomWriter. Every arithmetic step
+ * and the radius table are therefore C's; only the three-way radius dispatch
+ * and the call order are transcribed here (the same "tier-4 control flow over
+ * tier-1 pieces" shape `finer_search_pixel_proj_error`'s test uses).
+ *
+ * `xqd`/`ref_xqd` are the RAW signalled values (not range-offset); the shim
+ * applies C's `- SGRPROJ_PRJ_MIN*` exactly as the C body does.
+ */
+uint32_t ref_write_sgrproj_filter_bytes(int32_t ep, const int32_t* xqd, const int32_t* ref_xqd, uint8_t* out,
+                                        uint32_t cap) {
+    AomWriter w;
+    memset(&w, 0, sizeof(w));
+    w.allow_update_cdf = 1;
+    svt_od_ec_enc_init(&w.ec);
+    w.ec.buf = (unsigned char*)malloc(REF_EC_BUF_CAP);
+    svt_od_ec_enc_reset(&w.ec);
+
+    aom_write_literal(&w, ep, SGRPROJ_PARAMS_BITS);
+    const SgrParamsType* params = &svt_aom_eb_sgr_params[ep];
+    if (params->r[0] == 0) {
+        svt_aom_write_primitive_refsubexpfin(&w,
+                                             SGRPROJ_PRJ_MAX1 - SGRPROJ_PRJ_MIN1 + 1,
+                                             SGRPROJ_PRJ_SUBEXP_K,
+                                             (uint16_t)(ref_xqd[1] - SGRPROJ_PRJ_MIN1),
+                                             (uint16_t)(xqd[1] - SGRPROJ_PRJ_MIN1));
+    } else if (params->r[1] == 0) {
+        svt_aom_write_primitive_refsubexpfin(&w,
+                                             SGRPROJ_PRJ_MAX0 - SGRPROJ_PRJ_MIN0 + 1,
+                                             SGRPROJ_PRJ_SUBEXP_K,
+                                             (uint16_t)(ref_xqd[0] - SGRPROJ_PRJ_MIN0),
+                                             (uint16_t)(xqd[0] - SGRPROJ_PRJ_MIN0));
+    } else {
+        svt_aom_write_primitive_refsubexpfin(&w,
+                                             SGRPROJ_PRJ_MAX0 - SGRPROJ_PRJ_MIN0 + 1,
+                                             SGRPROJ_PRJ_SUBEXP_K,
+                                             (uint16_t)(ref_xqd[0] - SGRPROJ_PRJ_MIN0),
+                                             (uint16_t)(xqd[0] - SGRPROJ_PRJ_MIN0));
+        svt_aom_write_primitive_refsubexpfin(&w,
+                                             SGRPROJ_PRJ_MAX1 - SGRPROJ_PRJ_MIN1 + 1,
+                                             SGRPROJ_PRJ_SUBEXP_K,
+                                             (uint16_t)(ref_xqd[1] - SGRPROJ_PRJ_MIN1),
+                                             (uint16_t)(xqd[1] - SGRPROJ_PRJ_MIN1));
+    }
+
+    uint32_t       nbytes;
+    const uint8_t* p = svt_od_ec_enc_done(&w.ec, &nbytes);
+    if (nbytes > cap) {
+        nbytes = cap;
+    }
+    memcpy(out, p, nbytes);
+    free(w.ec.buf);
+    return nbytes;
+}
+
+/* C `set_default_sgrproj` (restoration.h:243) -- the reference both the search
+   and the writer chain the first delta against. */
+void ref_default_sgrproj_xqd(int32_t* out2) {
+    SgrprojInfo info;
+    set_default_sgrproj(&info);
+    out2[0] = info.xqd[0];
+    out2[1] = info.xqd[1];
+}
+
 /* ---- Intra edge filter (svt_memcpy is an rtcd pointer: init first) ---- */
 void svt_av1_filter_intra_edge_c(uint8_t* p, int32_t sz, int32_t strength);
 void ref_filter_intra_edge(uint8_t* p, int32_t sz, int32_t strength) {

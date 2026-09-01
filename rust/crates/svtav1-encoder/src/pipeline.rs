@@ -3797,7 +3797,8 @@ impl EncodePipeline {
         if is_key && seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless
         {
             let ctrls = crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset);
-            if ctrls.enabled {
+            let sg_ctrls = crate::port_lr_level::SgFilterCtrls::default();
+            if ctrls.enabled || sg_ctrls.enabled {
                 // C `x->rdmult` = `pic_full_lambda[bit_depth == EB_TEN_BIT ?
                 // EB_10_BIT_MD : EB_8_BIT_MD]` (enc_dec_process.c:3246-3247),
                 // i.e. `svt_aom_lambda_assign(.., multiply_lambda = true)` —
@@ -3914,6 +3915,7 @@ impl EncodePipeline {
                         };
                         crate::restoration::search_restoration_still_bd(
                             &ctrls,
+                            &sg_ctrls,
                             &lr_sy10,
                             &lr_su10,
                             &lr_sv10,
@@ -3927,8 +3929,9 @@ impl EncodePipeline {
                             self.bit_depth,
                         )?
                     }
-                    None => crate::restoration::search_restoration_still(
+                    None => crate::restoration::search_restoration_still_bd::<u8>(
                         &ctrls,
+                        &sg_ctrls,
                         &lr_src_y,
                         &lr_src_u,
                         &lr_src_v,
@@ -3939,6 +3942,7 @@ impl EncodePipeline {
                         lr_true_h,
                         chroma.is_some(),
                         rdmult,
+                        8,
                     )?,
                 };
                 #[cfg(feature = "std")]

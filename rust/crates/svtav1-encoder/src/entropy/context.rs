@@ -199,6 +199,19 @@ pub struct FrameContext {
     /// loop_restoration_read_sb_coeffs, libaom decodeframe.c:1702).
     pub wiener_restore_cdf: [AomCdfProb; 3],
 
+    /// Per-RU `sgrproj_restore` flag CDF — C FRAME_CONTEXT.sgrproj_restore_cdf
+    /// (default AOM_CDF2(16855), cabac_context_model.c:633), coded by
+    /// loop_restoration_write_sb_coeffs when the frame restoration type is
+    /// RESTORE_SGRPROJ (entropy_coding.c:4198).
+    pub sgrproj_restore_cdf: [AomCdfProb; 3],
+
+    /// Per-RU `switchable_restore` symbol CDF — C
+    /// FRAME_CONTEXT.switchable_restore_cdf (default AOM_CDF3(9413, 22581),
+    /// cabac_context_model.c:625), coded by loop_restoration_write_sb_coeffs
+    /// when the frame restoration type is RESTORE_SWITCHABLE
+    /// (entropy_coding.c:4167).
+    pub switchable_restore_cdf: [AomCdfProb; 4],
+
     // --- Inter prediction ---
     /// Inter compound mode CDFs [INTER_MODE_CONTEXTS][4+1]
     /// C `inter_compound_mode_cdf[INTER_MODE_CONTEXTS][CDF_SIZE(INTER_COMPOUND_MODES)]`
@@ -587,6 +600,9 @@ impl FrameContext {
             // matches the C trace fingerprint `BOOL f=21198` on the
             // wiener_restore flag.
             wiener_restore_cdf: [CDF_PROB_TOP - 11570, 0, 0],
+            // AOM_CDF2(16855) / AOM_CDF3(9413, 22581) in ICDF storage.
+            sgrproj_restore_cdf: [CDF_PROB_TOP - 16855, 0, 0],
+            switchable_restore_cdf: [CDF_PROB_TOP - 9413, CDF_PROB_TOP - 22581, 0, 0],
             inter_compound_mode_cdf: crate::port_entropy_inter::cdfs::INTER_COMPOUND_MODE_CDF,
             newmv_cdf: crate::port_entropy_inter::cdfs::NEWMV_CDF,
             globalmv_cdf: crate::port_entropy_inter::cdfs::ZEROMV_CDF,
@@ -678,6 +694,18 @@ impl FrameContext {
         avg(
             &mut self.wiener_restore_cdf,
             &tr.wiener_restore_cdf,
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            &mut self.sgrproj_restore_cdf,
+            &tr.sgrproj_restore_cdf,
+            wt_left,
+            wt_tr,
+        );
+        avg(
+            &mut self.switchable_restore_cdf,
+            &tr.switchable_restore_cdf,
             wt_left,
             wt_tr,
         );

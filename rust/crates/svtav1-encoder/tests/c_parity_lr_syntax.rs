@@ -193,3 +193,81 @@ fn write_wiener_filter_stream_and_ref_chain() {
     let bytes = w.done().to_vec();
     assert!(!bytes.is_empty());
 }
+
+/// The SGR unit writer, `write_sgrproj_filter` (entropy_coding.c:4126).
+///
+/// EVIDENCE: the C body is `static`, so `cref::write_sgrproj_filter_bytes`
+/// composes the exported primitives that body calls (`aom_write_literal` and
+/// `svt_aom_write_primitive_refsubexpfin`) over C's own
+/// `svt_aom_eb_sgr_params` table. Byte equality through a fresh od_ec coder
+/// therefore pins the `ep` literal width, the (n, k) alphabets, WHICH `xqd`
+/// components are signalled for each radius shape, and their order — the four
+/// ways this writer can be wrong — with only the radius dispatch itself
+/// transcribed on both sides.
+///
+/// Anti-vacuity: the three radius shapes are counted and all three must be
+/// exercised, so a table transcription that collapsed them would fail here
+/// rather than pass with one arm never taken.
+#[test]
+fn write_sgrproj_filter_matches_c() {
+    use svtav1_dsp::port_sgr::{
+        SGR_PARAMS, SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0, SGRPROJ_PRJ_MIN1,
+    };
+    use svtav1_encoder::port_sgr_search::SgrprojInfo;
+
+    // The reference every unit chains its first delta against.
+    assert_eq!(
+        SgrprojInfo::c_default().xqd,
+        cref::default_sgrproj_xqd(),
+        "set_default_sgrproj must match C — a wrong reference shifts every coded delta"
+    );
+
+    let mut shapes = [0usize; 3]; // r0==0 / r1==0 / both live
+    let mut cells = 0usize;
+    for ep in 0..SGR_PARAMS.len() {
+        let p = SGR_PARAMS[ep];
+        let shape = if p.r[0] == 0 {
+            0
+        } else if p.r[1] == 0 {
+            1
+        } else {
+            2
+        };
+        shapes[shape] += 1;
+        // A spread of values per component including both range ends, plus
+        // the C default reference and a non-default one (the chained case).
+        let v0 = [SGRPROJ_PRJ_MIN0, -32, 0, 17, SGRPROJ_PRJ_MAX0];
+        let v1 = [SGRPROJ_PRJ_MIN1, -3, 31, 60, SGRPROJ_PRJ_MAX1];
+        let refs = [
+            SgrprojInfo::c_default().xqd,
+            [-70, 80],
+            [SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MIN1],
+        ];
+        for &r in &refs {
+            for &a in &v0 {
+                for &b in &v1 {
+                    // C asserts xqd[0] == 0 when r[0] == 0; honour it.
+                    let xqd = if p.r[0] == 0 { [0, b] } else { [a, b] };
+                    let c_bytes = cref::write_sgrproj_filter_bytes(ep as i32, xqd, r);
+                    let mut w = AomWriter::new(64);
+                    let info = SgrprojInfo { ep: ep as i32, xqd };
+                    let mut refinfo = SgrprojInfo { ep: 0, xqd: r };
+                    lr::write_sgrproj_filter(&mut w, &info, &mut refinfo);
+                    assert_eq!(
+                        c_bytes,
+                        w.done().to_vec(),
+                        "sgrproj filter bytes diverge ep={ep} xqd={xqd:?} ref={r:?}"
+                    );
+                    // The writer must chain its reference to the value just
+                    // coded (C's trailing svt_memcpy).
+                    assert_eq!(refinfo, info, "ref chaining ep={ep}");
+                    cells += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        cells > 0 && shapes.iter().all(|&n| n > 0),
+        "shapes {shapes:?}"
+    );
+}

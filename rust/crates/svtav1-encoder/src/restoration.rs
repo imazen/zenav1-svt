@@ -36,13 +36,13 @@
 //! pinned in the unit tests below.
 
 use svtav1_dsp::restoration::{
-    PixelRect, RESTORATION_UNITSIZE_MAX, RESTORE_NONE, RESTORE_WIENER, StripeBoundaries,
-    StripeBoundariesT, TileLimits, WIENER_FILT_TAP0_MAXV, WIENER_FILT_TAP0_MINV,
-    WIENER_FILT_TAP1_MAXV, WIENER_FILT_TAP1_MINV, WIENER_FILT_TAP2_MAXV, WIENER_FILT_TAP2_MINV,
-    WIENER_WIN, WIENER_WIN_CHROMA, WienerInfo, alloc_stripe_boundaries_t, compute_score,
-    compute_stats, extend_frame, finalize_sym_filter, foreach_rest_unit_in_tile,
-    loop_restoration_filter_unit, loop_restoration_filter_unit_hbd, save_tile_row_boundary_lines,
-    sse_region, wiener_decompose_sep_sym,
+    PixelRect, RESTORATION_UNITSIZE_MAX, RESTORE_NONE, RESTORE_SGRPROJ, RESTORE_SWITCHABLE,
+    RESTORE_WIENER, RestUnitParams, StripeBoundaries, StripeBoundariesT, TileLimits,
+    WIENER_FILT_TAP0_MAXV, WIENER_FILT_TAP0_MINV, WIENER_FILT_TAP1_MAXV, WIENER_FILT_TAP1_MINV,
+    WIENER_FILT_TAP2_MAXV, WIENER_FILT_TAP2_MINV, WIENER_WIN, WIENER_WIN_CHROMA, WienerInfo,
+    alloc_stripe_boundaries_t, compute_score, compute_stats, extend_frame, finalize_sym_filter,
+    foreach_rest_unit_in_tile, loop_restoration_filter_unit, loop_restoration_filter_unit_hbd,
+    save_tile_row_boundary_lines, sse_region, wiener_decompose_sep_sym,
 };
 
 /// `SVTAV1_LR_DBG` per-unit/per-step search dump (mirrors the sibling-C
@@ -77,6 +77,29 @@ pub struct WnFilterCtrls {
     pub max_one_refinement_step: bool,
 }
 
+impl From<crate::port_lr_level::WnFilterCtrlsFull> for WnFilterCtrls {
+    /// The VIDEO arm's `svt_aom_set_wn_filter_ctrls` result, narrowed to the
+    /// five fields the search consumes.
+    ///
+    /// `use_prev_frame_coeffs` is dropped because it is set by LEVEL 6 alone,
+    /// and no level function this port can reach returns 6 (`_default` gives
+    /// 4 or 5, `_allintra` 3 or 4, `_rtc` 0) — the assert below is the
+    /// positive control for that claim rather than a comment asserting it.
+    fn from(full: crate::port_lr_level::WnFilterCtrlsFull) -> Self {
+        debug_assert!(
+            !full.use_prev_frame_coeffs,
+            "wn level 6 (use_prev_frame_coeffs) is unreachable from every ported ladder"
+        );
+        WnFilterCtrls {
+            enabled: full.enabled,
+            use_chroma: full.use_chroma,
+            filter_tap_lvl: full.filter_tap_lvl,
+            use_refinement: full.use_refinement,
+            max_one_refinement_step: full.max_one_refinement_step,
+        }
+    }
+}
+
 /// C `svt_aom_get_wn_filter_level_allintra` + `svt_aom_set_wn_filter_ctrls`
 /// (enc_mode_config.c:1928 / :1758): level 3 for presets <= 3, level 4 for
 /// 4..=6, disabled above.
@@ -108,11 +131,38 @@ pub fn wn_filter_ctrls_allintra(preset: u8) -> WnFilterCtrls {
     }
 }
 
-/// Per-restoration-unit outcome.
+/// Per-restoration-unit outcome (C `RestorationUnitInfo` + the search's
+/// per-unit choice).
 #[derive(Clone, Copy, Debug)]
 pub struct RestUnit {
     pub rtype: u8,
     pub wiener: WienerInfo,
+    /// The unit's SGR parameters. Meaningful only when `rtype ==
+    /// RESTORE_SGRPROJ`; C carries `wiener_info` and `sgrproj_info` in one
+    /// union-free struct the same way (`copy_unit_info`,
+    /// restoration_pick.c:1220, writes exactly one of them per unit).
+    pub sgrproj: crate::port_sgr_search::SgrprojInfo,
+}
+
+impl RestUnit {
+    /// A NONE unit with both payloads at the C defaults.
+    fn none() -> Self {
+        RestUnit {
+            rtype: RESTORE_NONE,
+            wiener: WienerInfo::default(),
+            sgrproj: crate::port_sgr_search::SgrprojInfo::c_default(),
+        }
+    }
+
+    /// This unit as the `RestorationUnitInfo` the DSP filter dispatches on.
+    fn params(&self) -> RestUnitParams {
+        RestUnitParams {
+            rtype: self.rtype,
+            wiener: self.wiener,
+            sgr_ep: self.sgrproj.ep as usize,
+            sgr_xqd: self.sgrproj.xqd,
+        }
+    }
 }
 
 /// Per-plane restoration info (C `RestorationInfo`).
@@ -132,10 +182,7 @@ impl PlaneRest {
             unit_size,
             hunits,
             vunits,
-            units: alloc::vec![
-                RestUnit { rtype: RESTORE_NONE, wiener: WienerInfo::default() };
-                (hunits * vunits) as usize
-            ],
+            units: alloc::vec![RestUnit::none(); (hunits * vunits) as usize],
         }
     }
 }
@@ -267,8 +314,7 @@ pub trait LrPixel: Copy + Default {
     #[allow(clippy::too_many_arguments)]
     fn filter_unit_search(
         limits: &TileLimits,
-        rtype: u8,
-        wiener: &WienerInfo,
+        rui: &RestUnitParams,
         rect: &PixelRect,
         ss: i32,
         data: &mut [Self],
@@ -288,8 +334,7 @@ pub trait LrPixel: Copy + Default {
     #[allow(clippy::too_many_arguments)]
     fn filter_unit_apply(
         limits: &TileLimits,
-        rtype: u8,
-        wiener: &WienerInfo,
+        rui: &RestUnitParams,
         rsb: &StripeBoundariesT<Self>,
         rect: &PixelRect,
         ss: i32,
@@ -301,6 +346,26 @@ pub trait LrPixel: Copy + Default {
         dst_stride: usize,
         bit_depth: u8,
     );
+
+    /// `search_sgrproj_seg`'s sweep half (restoration_pick.c:1237) — the
+    /// per-unit `(ep, xqd)` pick. The bit-depth split is the same one C makes
+    /// with `highbd`: it selects which `pixel_proj_error` kernel runs.
+    /// 4:2:0 is the port's only chroma format, so `subsampling_{x,y}` are
+    /// both 1 for a chroma plane.
+    #[allow(clippy::too_many_arguments)]
+    fn sgr_search_unit(
+        dgd: &[Self],
+        dgd_origin: usize,
+        width: i32,
+        height: i32,
+        dgd_stride: usize,
+        src: &[Self],
+        src_origin: usize,
+        src_stride: usize,
+        bit_depth: u8,
+        plane: usize,
+        ctrls: &crate::port_lr_level::SgFilterCtrls,
+    ) -> crate::port_sgr_search::SgrprojInfo;
 }
 
 impl LrPixel for u8 {
@@ -341,8 +406,7 @@ impl LrPixel for u8 {
 
     fn filter_unit_search(
         limits: &TileLimits,
-        rtype: u8,
-        wiener: &WienerInfo,
+        rui: &RestUnitParams,
         rect: &PixelRect,
         ss: i32,
         data: &mut [u8],
@@ -360,8 +424,7 @@ impl LrPixel for u8 {
         loop_restoration_filter_unit(
             false,
             limits,
-            rtype,
-            wiener,
+            rui,
             &empty_bounds,
             rect,
             0,
@@ -378,8 +441,7 @@ impl LrPixel for u8 {
 
     fn filter_unit_apply(
         limits: &TileLimits,
-        rtype: u8,
-        wiener: &WienerInfo,
+        rui: &RestUnitParams,
         rsb: &StripeBoundariesT<u8>,
         rect: &PixelRect,
         ss: i32,
@@ -394,8 +456,7 @@ impl LrPixel for u8 {
         loop_restoration_filter_unit(
             true,
             limits,
-            rtype,
-            wiener,
+            rui,
             rsb,
             rect,
             0, // tile_stripe0 (single tile row)
@@ -408,6 +469,36 @@ impl LrPixel for u8 {
             dst_origin,
             dst_stride,
         );
+    }
+
+    fn sgr_search_unit(
+        dgd: &[u8],
+        dgd_origin: usize,
+        width: i32,
+        height: i32,
+        dgd_stride: usize,
+        src: &[u8],
+        src_origin: usize,
+        src_stride: usize,
+        bit_depth: u8,
+        plane: usize,
+        ctrls: &crate::port_lr_level::SgFilterCtrls,
+    ) -> crate::port_sgr_search::SgrprojInfo {
+        crate::port_sgr_search::search_sgrproj_unit(
+            svtav1_dsp::port_sgr::SgrSrc::Lowbd(dgd),
+            dgd_origin,
+            width,
+            height,
+            dgd_stride,
+            &crate::port_sgr_search::ProjPlanes::Lowbd { src, dat: dgd },
+            src_origin,
+            src_stride,
+            i32::from(bit_depth),
+            plane,
+            true,
+            true,
+            ctrls,
+        )
     }
 }
 
@@ -451,8 +542,7 @@ impl LrPixel for u16 {
 
     fn filter_unit_search(
         limits: &TileLimits,
-        rtype: u8,
-        wiener: &WienerInfo,
+        rui: &RestUnitParams,
         rect: &PixelRect,
         ss: i32,
         data: &mut [u16],
@@ -465,8 +555,7 @@ impl LrPixel for u16 {
     ) {
         svtav1_dsp::restoration::loop_restoration_filter_unit_search_hbd(
             limits,
-            rtype,
-            wiener,
+            rui,
             rect,
             0,
             ss,
@@ -483,8 +572,7 @@ impl LrPixel for u16 {
 
     fn filter_unit_apply(
         limits: &TileLimits,
-        rtype: u8,
-        wiener: &WienerInfo,
+        rui: &RestUnitParams,
         rsb: &StripeBoundariesT<u16>,
         rect: &PixelRect,
         ss: i32,
@@ -499,8 +587,7 @@ impl LrPixel for u16 {
         loop_restoration_filter_unit_hbd(
             true,
             limits,
-            rtype,
-            wiener,
+            rui,
             rsb,
             rect,
             0, // tile_stripe0 (single tile row)
@@ -514,6 +601,36 @@ impl LrPixel for u16 {
             dst_stride,
             bit_depth as i32,
         );
+    }
+
+    fn sgr_search_unit(
+        dgd: &[u16],
+        dgd_origin: usize,
+        width: i32,
+        height: i32,
+        dgd_stride: usize,
+        src: &[u16],
+        src_origin: usize,
+        src_stride: usize,
+        bit_depth: u8,
+        plane: usize,
+        ctrls: &crate::port_lr_level::SgFilterCtrls,
+    ) -> crate::port_sgr_search::SgrprojInfo {
+        crate::port_sgr_search::search_sgrproj_unit(
+            svtav1_dsp::port_sgr::SgrSrc::Highbd(dgd),
+            dgd_origin,
+            width,
+            height,
+            dgd_stride,
+            &crate::port_sgr_search::ProjPlanes::Highbd { src, dat: dgd },
+            src_origin,
+            src_stride,
+            i32::from(bit_depth),
+            plane,
+            true,
+            true,
+            ctrls,
+        )
     }
 }
 
@@ -542,6 +659,34 @@ fn wiener_restore_cost() -> [i64; 2] {
     ]
 }
 
+/// `sgrproj_restore` flag costs from the default CDF (AOM_CDF2(16855)) —
+/// C `svt_aom_get_syntax_rate_from_cdf(sgrproj_restore_fac_bits,
+/// fc->sgrproj_restore_cdf, NULL)`, the SGR twin of
+/// [`wiener_restore_cost`].
+fn sgrproj_restore_cost() -> [i64; 2] {
+    let icdf0 = crate::entropy::context::FrameContext::new_default().sgrproj_restore_cdf[0] as u32;
+    [
+        crate::entropy::context::av1_cost_symbol(32768 - icdf0) as i64,
+        crate::entropy::context::av1_cost_symbol(icdf0) as i64,
+    ]
+}
+
+/// `switchable_restore` symbol costs from the default CDF
+/// (AOM_CDF3(9413, 22581)) — C `x->switchable_restore_cost[3]`.
+fn switchable_restore_cost() -> [i64; 3] {
+    let cdf = crate::entropy::context::FrameContext::new_default().switchable_restore_cdf;
+    // ICDF storage: cdf[i] = 32768 - CDF_i. p(sym i) = cdf[i-1] - cdf[i]
+    // with cdf[-1] = 32768.
+    let p0 = 32768 - cdf[0] as u32;
+    let p1 = (cdf[0] - cdf[1]) as u32;
+    let p2 = cdf[1] as u32;
+    [
+        crate::entropy::context::av1_cost_symbol(p0) as i64,
+        crate::entropy::context::av1_cost_symbol(p1) as i64,
+        crate::entropy::context::av1_cost_symbol(p2) as i64,
+    ]
+}
+
 /// C `RDCOST_DBL` (restoration.h:344): rate in 1/512-bit units (already
 /// `>> 4`-ed by the callers), double math.
 fn rdcost_dbl(rdmult: i64, rate: i64, dist: i64) -> f64 {
@@ -550,11 +695,21 @@ fn rdcost_dbl(rdmult: i64, rate: i64, dist: i64) -> f64 {
 
 /// One plane's per-unit search results (C `RestUnitSearchInfo` slice).
 struct UnitSearch {
-    sse_none: i64,
-    /// i64::MAX == the compute_score>0 revert (C INT64_MAX sentinel).
-    sse_wiener: i64,
+    /// C `rusi->sse[]`, indexed by `RESTORE_NONE`/`_WIENER`/`_SGRPROJ`.
+    /// `i64::MAX` in the WIENER slot is the `compute_score > 0` revert (C's
+    /// `INT64_MAX` sentinel); the SGRPROJ slot keeps `i64::MAX` when the SGR
+    /// walk did not run for this plane, and that unit is then never admitted
+    /// (the sgrproj/switchable frame walks are gated on the same predicate C
+    /// gates its `foreach_rest_unit_in_frame_seg` call on).
+    sse: [i64; 3],
     wiener: WienerInfo,
+    sgrproj: crate::port_sgr_search::SgrprojInfo,
 }
+
+/// C `AV1_PROB_COST_SHIFT` (md_rate_estimation.h:29).
+const AV1_PROB_COST_SHIFT: i32 = 9;
+/// C `RESTORE_TYPES` (definitions.h) — the four frame restoration types.
+const RESTORE_TYPES: u8 = 4;
 
 /// C `try_restoration_unit_seg` (restoration_pick.c:123) at
 /// `use_boundaries_in_rest_search = 0`: filter the unit (no stripe-boundary
@@ -569,13 +724,12 @@ fn try_restoration_unit<P: LrPixel>(
     limits: &TileLimits,
     rect: &PixelRect,
     ss: i32,
-    wiener: &WienerInfo,
+    rui: &RestUnitParams,
     bit_depth: u8,
 ) -> i64 {
     P::filter_unit_search(
         limits,
-        RESTORE_WIENER,
-        wiener,
+        rui,
         rect,
         ss,
         &mut dgd.data,
@@ -617,7 +771,15 @@ fn finer_tile_search_wiener<P: LrPixel>(
 ) -> i64 {
     let plane_off = (WIENER_WIN - wiener_win) >> 1;
     let mut err = try_restoration_unit(
-        dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
+        dgd,
+        trial,
+        src,
+        src_stride,
+        limits,
+        rect,
+        ss,
+        &RestUnitParams::wiener(*wiener),
+        bit_depth,
     );
     if !ctrls.use_refinement {
         return err;
@@ -654,7 +816,15 @@ fn finer_tile_search_wiener<P: LrPixel>(
                         f[WIENER_WIN - p - 1] -= s as i16;
                         f[halfwin] += 2 * s as i16;
                         let err2 = try_restoration_unit(
-                            dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
+                            dgd,
+                            trial,
+                            src,
+                            src_stride,
+                            limits,
+                            rect,
+                            ss,
+                            &RestUnitParams::wiener(*wiener),
+                            bit_depth,
                         );
                         lr_dbg!(
                             "LRSTEP f={} d=- p={p} s={s} err2={err2} err={err} acc={}",
@@ -695,7 +865,15 @@ fn finer_tile_search_wiener<P: LrPixel>(
                         f[WIENER_WIN - p - 1] += s as i16;
                         f[halfwin] -= 2 * s as i16;
                         let err2 = try_restoration_unit(
-                            dgd, trial, src, src_stride, limits, rect, ss, wiener, bit_depth,
+                            dgd,
+                            trial,
+                            src,
+                            src_stride,
+                            limits,
+                            rect,
+                            ss,
+                            &RestUnitParams::wiener(*wiener),
+                            bit_depth,
                         );
                         lr_dbg!(
                             "LRSTEP f={} d=+ p={p} s={s} err2={err2} err={err} acc={}",
@@ -747,7 +925,19 @@ pub fn search_restoration_still(
     rdmult: i64,
 ) -> crate::EncodeResult<FrameRestInfo> {
     search_restoration_still_bd(
-        ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma, rdmult, 8,
+        ctrls,
+        &crate::port_lr_level::SgFilterCtrls::default(),
+        src_y,
+        src_u,
+        src_v,
+        recon_y,
+        recon_u,
+        recon_v,
+        w,
+        h,
+        has_chroma,
+        rdmult,
+        8,
     )
 }
 
@@ -765,7 +955,8 @@ pub fn search_restoration_still(
 /// (`pd0::kf_full_lambda_bd10_pic` at bd10).
 #[allow(clippy::too_many_arguments)]
 pub fn search_restoration_still_bd<P: LrPixel>(
-    ctrls: &WnFilterCtrls,
+    wn_ctrls: &WnFilterCtrls,
+    sg_ctrls: &crate::port_lr_level::SgFilterCtrls,
     src_y: &[P],
     src_u: &[P],
     src_v: &[P],
@@ -778,18 +969,28 @@ pub fn search_restoration_still_bd<P: LrPixel>(
     rdmult: i64,
     bit_depth: u8,
 ) -> crate::EncodeResult<FrameRestInfo> {
-    debug_assert!(ctrls.enabled);
-    let wn_luma = if ctrls.filter_tap_lvl == 1 {
+    debug_assert!(wn_ctrls.enabled || sg_ctrls.enabled);
+    let wn_luma = if wn_ctrls.filter_tap_lvl == 1 {
         WIENER_WIN
     } else {
         WIENER_WIN_CHROMA
     };
-    let restore_cost = wiener_restore_cost();
+    let wiener_restore_cost = wiener_restore_cost();
+    let sgrproj_restore_cost = sgrproj_restore_cost();
+    let switchable_restore_cost = switchable_restore_cost();
 
     // set_restoration_unit_size (pcs.c:30): 256 for all planes (s = 0).
     let unit_size = RESTORATION_UNITSIZE_MAX;
 
-    let plane_end = if has_chroma && ctrls.use_chroma { 2 } else { 0 };
+    // C `plane_end` (restoration_pick.c:1573): PLANE_V iff EITHER filter is
+    // enabled with chroma. `has_chroma` is the port's monochrome guard.
+    let plane_end = if has_chroma
+        && ((wn_ctrls.enabled && wn_ctrls.use_chroma) || (sg_ctrls.enabled && sg_ctrls.use_chroma))
+    {
+        2
+    } else {
+        0
+    };
     let mut planes = alloc::vec::Vec::new();
 
     for plane in 0..3usize {
@@ -834,20 +1035,23 @@ pub fn search_restoration_still_bd<P: LrPixel>(
         extend_frame(&mut dgd.data, dgd.origin, pw, ph, dgd.stride, 4, 3);
         let mut trial = PaddedPlaneT::<P>::empty(pw, ph);
 
-        // ---- search phase (per-unit sse_none + wiener solve/SSE) ----
+        // ---- search phase (`restoration_seg_search`, restoration_pick.c:1474)
+        // Per unit: the unfiltered SSE, then the Wiener solve and the SGR
+        // sweep, each gated per plane exactly as C's three
+        // `foreach_rest_unit_in_frame_seg` calls are.
         let nunits = (hunits * vunits) as usize;
         let mut units: alloc::vec::Vec<UnitSearch> = svtav1_types::try_with_capacity![nunits]?;
         for _ in 0..nunits {
             units.push(UnitSearch {
-                sse_none: 0,
-                sse_wiener: i64::MAX,
+                sse: [0, i64::MAX, i64::MAX],
                 wiener: WienerInfo::default(),
+                sgrproj: crate::port_sgr_search::SgrprojInfo::c_default(),
             });
         }
 
         foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
             // search_norestore_seg: SSE of the unfiltered recon vs source.
-            units[unit_idx as usize].sse_none = P::sse_region(
+            units[unit_idx as usize].sse[RESTORE_NONE as usize] = P::sse_region(
                 src,
                 (limits.v_start as usize) * pw + limits.h_start as usize,
                 pw,
@@ -863,145 +1067,302 @@ pub fn search_restoration_still_bd<P: LrPixel>(
                 limits.h_end,
                 limits.v_start,
                 limits.v_end,
-                units[unit_idx as usize].sse_none
+                units[unit_idx as usize].sse[RESTORE_NONE as usize]
             );
         });
 
-        foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
-            // search_wiener_seg.
-            let win2 = wiener_win * wiener_win;
-            let mut m = [0i64; WIENER_WIN * WIENER_WIN];
-            let mut hh = alloc::vec![0i64; win2 * win2];
-            P::compute_stats(
-                wiener_win,
-                &dgd.data,
-                dgd.origin,
-                dgd.stride,
-                src,
-                0,
-                pw,
-                limits.h_start,
-                limits.h_end,
-                limits.v_start,
-                limits.v_end,
-                &mut m,
-                &mut hh,
-                bit_depth,
-            );
-            let mut vd = [0i32; WIENER_WIN];
-            let mut hd = [0i32; WIENER_WIN];
-            wiener_decompose_sep_sym(wiener_win, &m, &hh, &mut vd, &mut hd);
-            let mut wi = WienerInfo {
-                vfilter: [0; 8],
-                hfilter: [0; 8],
-            };
-            finalize_sym_filter(wiener_win, &vd, &mut wi.vfilter);
-            finalize_sym_filter(wiener_win, &hd, &mut wi.hfilter);
-
-            #[cfg(feature = "std")]
-            if lr_dbg_on() {
-                let msum = m.iter().fold(0u64, |a, &v| a.wrapping_add(v as u64));
-                let hsum = hh.iter().fold(0u64, |a, &v| a.wrapping_add(v as u64));
-                eprintln!(
-                    "LRWNSOLVE plane={plane} unit={unit_idx} win={wiener_win} lim=[{},{},{},{}] \
-                     M0={} M1={} Msum={msum} Hsum={hsum} vd={:?} hd={:?} v={:?} h={:?}",
+        // C: `if (cm->wn_filter_ctrls.enabled && (!plane || use_chroma))`.
+        if wn_ctrls.enabled && (plane == 0 || wn_ctrls.use_chroma) {
+            foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
+                // search_wiener_seg.
+                let win2 = wiener_win * wiener_win;
+                let mut m = [0i64; WIENER_WIN * WIENER_WIN];
+                let mut hh = alloc::vec![0i64; win2 * win2];
+                P::compute_stats(
+                    wiener_win,
+                    &dgd.data,
+                    dgd.origin,
+                    dgd.stride,
+                    src,
+                    0,
+                    pw,
                     limits.h_start,
                     limits.h_end,
                     limits.v_start,
                     limits.v_end,
-                    m[0],
-                    m[1],
-                    &vd[..],
-                    &hd[..],
+                    &mut m,
+                    &mut hh,
+                    bit_depth,
+                );
+                let mut vd = [0i32; WIENER_WIN];
+                let mut hd = [0i32; WIENER_WIN];
+                wiener_decompose_sep_sym(wiener_win, &m, &hh, &mut vd, &mut hd);
+                let mut wi = WienerInfo {
+                    vfilter: [0; 8],
+                    hfilter: [0; 8],
+                };
+                finalize_sym_filter(wiener_win, &vd, &mut wi.vfilter);
+                finalize_sym_filter(wiener_win, &hd, &mut wi.hfilter);
+
+                #[cfg(feature = "std")]
+                if lr_dbg_on() {
+                    let msum = m.iter().fold(0u64, |a, &v| a.wrapping_add(v as u64));
+                    let hsum = hh.iter().fold(0u64, |a, &v| a.wrapping_add(v as u64));
+                    eprintln!(
+                        "LRWNSOLVE plane={plane} unit={unit_idx} win={wiener_win} lim=[{},{},{},{}] \
+                         M0={} M1={} Msum={msum} Hsum={hsum} vd={:?} hd={:?} v={:?} h={:?}",
+                        limits.h_start,
+                        limits.h_end,
+                        limits.v_start,
+                        limits.v_end,
+                        m[0],
+                        m[1],
+                        &vd[..],
+                        &hd[..],
+                        &wi.vfilter[..7],
+                        &wi.hfilter[..7]
+                    );
+                }
+                let score = compute_score(wiener_win, &m, &hh, &wi.vfilter, &wi.hfilter);
+                lr_dbg!("LRWNSCORE plane={plane} unit={unit_idx} score={score}");
+                if score > 0 {
+                    units[unit_idx as usize].sse[RESTORE_WIENER as usize] = i64::MAX;
+                    return;
+                }
+                let sse = finer_tile_search_wiener(
+                    wn_ctrls, &mut dgd, &mut trial, src, pw, limits, &rect, ss, &mut wi,
+                    wiener_win, bit_depth,
+                );
+                lr_dbg!(
+                    "LRWNSEG plane={plane} unit={unit_idx} sse_wn={sse} v={:?} h={:?}",
                     &wi.vfilter[..7],
                     &wi.hfilter[..7]
                 );
-            }
-            let score = compute_score(wiener_win, &m, &hh, &wi.vfilter, &wi.hfilter);
-            lr_dbg!("LRWNSCORE plane={plane} unit={unit_idx} score={score}");
-            if score > 0 {
-                units[unit_idx as usize].sse_wiener = i64::MAX;
-                return;
-            }
-            let sse = finer_tile_search_wiener(
-                ctrls, &mut dgd, &mut trial, src, pw, limits, &rect, ss, &mut wi, wiener_win,
-                bit_depth,
-            );
-            lr_dbg!(
-                "LRWNSEG plane={plane} unit={unit_idx} sse_wn={sse} v={:?} h={:?}",
-                &wi.vfilter[..7],
-                &wi.hfilter[..7]
-            );
-            units[unit_idx as usize].sse_wiener = sse;
-            units[unit_idx as usize].wiener = wi;
-        });
-
-        // ---- finish phase: frame-level {NONE, WIENER} RD ----
-        // r = RESTORE_NONE walk: bits stay 0 (search_norestore_finish).
-        let mut sse_frame_none = 0i64;
-        for u in &units {
-            sse_frame_none += u.sse_none;
+                units[unit_idx as usize].sse[RESTORE_WIENER as usize] = sse;
+                units[unit_idx as usize].wiener = wi;
+            });
         }
-        let cost_none_frame = rdcost_dbl(rdmult, 0, sse_frame_none);
 
-        // r = RESTORE_WIENER walk (search_wiener_finish per unit, reference
-        // chaining from set_default_wiener).
-        let mut bits_frame = 0i64;
-        let mut sse_frame = 0i64;
-        let mut ref_wiener = WienerInfo::default();
-        let mut unit_picks = alloc::vec![RESTORE_NONE; nunits];
-        for (idx, u) in units.iter().enumerate() {
-            if u.sse_wiener == i64::MAX {
-                bits_frame += restore_cost[0];
-                sse_frame += u.sse_none;
-                continue;
-            }
-            let cnt = crate::entropy::lr::count_wiener_bits(
-                wiener_win,
-                &u.wiener.vfilter,
-                &u.wiener.hfilter,
-                &ref_wiener.vfilter,
-                &ref_wiener.hfilter,
-            ) as i64;
-            // AV1_PROB_COST_SHIFT = 9.
-            let bits_wiener = restore_cost[1] + (cnt << 9);
-            let bits_none = restore_cost[0];
-            let cost_none = rdcost_dbl(rdmult, bits_none >> 4, u.sse_none);
-            let cost_wiener = rdcost_dbl(rdmult, bits_wiener >> 4, u.sse_wiener);
-            if cost_wiener < cost_none {
-                unit_picks[idx] = RESTORE_WIENER;
-                bits_frame += bits_wiener;
-                sse_frame += u.sse_wiener;
-                ref_wiener = u.wiener;
-            } else {
-                unit_picks[idx] = RESTORE_NONE;
-                bits_frame += bits_none;
-                sse_frame += u.sse_none;
-            }
+        // C: `if (cm->sg_filter_ctrls.enabled && (!plane || use_chroma))` —
+        // `search_sgrproj_seg` (restoration_pick.c:1237). Unreachable on the
+        // all-intra arm (`sg_filter_lvl = 0` at every representable preset);
+        // live in VIDEO mode at presets 0..3.
+        if sg_ctrls.enabled && (plane == 0 || sg_ctrls.use_chroma) {
+            foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
+                let sgr = P::sgr_search_unit(
+                    &dgd.data,
+                    dgd.origin + limits.v_start as usize * dgd.stride + limits.h_start as usize,
+                    limits.h_end - limits.h_start,
+                    limits.v_end - limits.v_start,
+                    dgd.stride,
+                    src,
+                    limits.v_start as usize * pw + limits.h_start as usize,
+                    pw,
+                    bit_depth,
+                    plane,
+                    sg_ctrls,
+                );
+                let sse = try_restoration_unit(
+                    &mut dgd,
+                    &mut trial,
+                    src,
+                    pw,
+                    limits,
+                    &rect,
+                    ss,
+                    &RestUnitParams::sgrproj(sgr.ep as usize, sgr.xqd),
+                    bit_depth,
+                );
+                lr_dbg!(
+                    "LRSGSEG plane={plane} unit={unit_idx} ep={} xqd={:?} sse_sg={sse}",
+                    sgr.ep,
+                    sgr.xqd
+                );
+                units[unit_idx as usize].sse[RESTORE_SGRPROJ as usize] = sse;
+                units[unit_idx as usize].sgrproj = sgr;
+            });
         }
-        let cost_wiener_frame = rdcost_dbl(rdmult, bits_frame >> 4, sse_frame);
 
-        // rest_finish_search argmin: NONE first, strict <.
-        let frame_rtype = if cost_wiener_frame < cost_none_frame {
-            RESTORE_WIENER
+        // ---- finish phase (`rest_finish_search`, restoration_pick.c:1561) ----
+        //
+        // C runs `search_rest_type_finish` once per candidate frame type in
+        // ORDER (NONE, WIENER, SGRPROJ, SWITCHABLE) and takes the argmin with
+        // `r == 0 || cost < best_cost` — NONE first, ties to the earlier type.
+        // SWITCHABLE reads the per-unit verdicts the WIENER and SGRPROJ walks
+        // left behind, which is why the walks must run in that order and why
+        // a candidate whose own walk chose NONE is SKIPPED there rather than
+        // re-priced (`rusi->best_rtype[r-1] == RESTORE_NONE -> continue`).
+        //
+        // `force_restore_type_d` (restoration_pick.c:1565): with only one
+        // filter enabled, the argmin is restricted to {NONE, that filter}.
+        let force_restore_type = match (wn_ctrls.enabled, sg_ctrls.enabled) {
+            (true, true) => RESTORE_TYPES,
+            (true, false) => RESTORE_WIENER,
+            (false, true) => RESTORE_SGRPROJ,
+            (false, false) => RESTORE_NONE,
+        };
+        // `num_rtypes = (plane_ntiles > 1) ? RESTORE_TYPES : RESTORE_SWITCHABLE_TYPES`
+        // — a plane with a SINGLE restoration unit never considers
+        // RESTORE_SWITCHABLE (there is nothing to switch between).
+        let num_rtypes = if nunits > 1 {
+            RESTORE_TYPES
         } else {
-            RESTORE_NONE
+            RESTORE_SWITCHABLE
         };
 
+        // Per-unit verdict of each finish walk — C `rusi->best_rtype[r - 1]`,
+        // zero-initialised (= RESTORE_NONE) for a walk that never ran.
+        let mut best_rtype_wiener = alloc::vec![RESTORE_NONE; nunits];
+        let mut best_rtype_sgr = alloc::vec![RESTORE_NONE; nunits];
+
+        let mut best_cost = 0.0f64;
+        let mut best_rtype = RESTORE_NONE;
+        let mut best_picks = alloc::vec![RESTORE_NONE; nunits];
+
+        for r in 0..num_rtypes {
+            if force_restore_type != RESTORE_TYPES && r != RESTORE_NONE && r != force_restore_type {
+                continue;
+            }
+            if plane > 0
+                && ((r == RESTORE_WIENER && !wn_ctrls.use_chroma)
+                    || (r == RESTORE_SGRPROJ && !sg_ctrls.use_chroma))
+            {
+                continue;
+            }
+
+            // `reset_rsc` + `rsc_on_tile`: the accumulators and BOTH filter
+            // references restart at the C defaults for every walk.
+            let mut bits_frame = 0i64;
+            let mut sse_frame = 0i64;
+            let mut ref_wiener = WienerInfo::default();
+            let mut ref_sgr = crate::port_sgr_search::SgrprojInfo::c_default();
+            let mut picks = alloc::vec![RESTORE_NONE; nunits];
+
+            for (idx, u) in units.iter().enumerate() {
+                match r {
+                    RESTORE_NONE => {
+                        // search_norestore_finish: no bits at all.
+                        sse_frame += u.sse[RESTORE_NONE as usize];
+                    }
+                    RESTORE_WIENER => {
+                        if u.sse[RESTORE_WIENER as usize] == i64::MAX {
+                            bits_frame += wiener_restore_cost[0];
+                            sse_frame += u.sse[RESTORE_NONE as usize];
+                            best_rtype_wiener[idx] = RESTORE_NONE;
+                            continue;
+                        }
+                        let cnt = crate::entropy::lr::count_wiener_bits(
+                            wiener_win,
+                            &u.wiener.vfilter,
+                            &u.wiener.hfilter,
+                            &ref_wiener.vfilter,
+                            &ref_wiener.hfilter,
+                        ) as i64;
+                        let bits_wiener = wiener_restore_cost[1] + (cnt << AV1_PROB_COST_SHIFT);
+                        let bits_none = wiener_restore_cost[0];
+                        let cost_none =
+                            rdcost_dbl(rdmult, bits_none >> 4, u.sse[RESTORE_NONE as usize]);
+                        let cost_wiener =
+                            rdcost_dbl(rdmult, bits_wiener >> 4, u.sse[RESTORE_WIENER as usize]);
+                        if cost_wiener < cost_none {
+                            picks[idx] = RESTORE_WIENER;
+                            best_rtype_wiener[idx] = RESTORE_WIENER;
+                            bits_frame += bits_wiener;
+                            sse_frame += u.sse[RESTORE_WIENER as usize];
+                            ref_wiener = u.wiener;
+                        } else {
+                            best_rtype_wiener[idx] = RESTORE_NONE;
+                            bits_frame += bits_none;
+                            sse_frame += u.sse[RESTORE_NONE as usize];
+                        }
+                    }
+                    RESTORE_SGRPROJ => {
+                        let f = crate::port_sgr_search::sgrproj_finish_decision(
+                            rdmult,
+                            sgrproj_restore_cost,
+                            &u.sgrproj,
+                            &ref_sgr,
+                            u.sse[RESTORE_NONE as usize],
+                            u.sse[RESTORE_SGRPROJ as usize],
+                        );
+                        bits_frame += f.bits;
+                        sse_frame += f.sse;
+                        if f.chose_sgr {
+                            picks[idx] = RESTORE_SGRPROJ;
+                            best_rtype_sgr[idx] = RESTORE_SGRPROJ;
+                            ref_sgr = u.sgrproj;
+                        } else {
+                            best_rtype_sgr[idx] = RESTORE_NONE;
+                        }
+                    }
+                    _ => {
+                        // search_switchable. NOTE the wiener window here is
+                        // plane-based (7-tap luma) regardless of
+                        // `filter_tap_lvl` — C's own asymmetry with
+                        // search_wiener_finish (docs/SUSPECTED-C-BUGS.md #7).
+                        let sw_win = if plane == 0 {
+                            WIENER_WIN
+                        } else {
+                            WIENER_WIN_CHROMA
+                        };
+                        let coeff_pcost_wiener = crate::entropy::lr::count_wiener_bits(
+                            sw_win,
+                            &u.wiener.vfilter,
+                            &u.wiener.hfilter,
+                            &ref_wiener.vfilter,
+                            &ref_wiener.hfilter,
+                        );
+                        let coeff_pcost_sgr =
+                            crate::port_sgr_search::count_sgrproj_bits(&u.sgrproj, &ref_sgr);
+                        let choice = crate::port_sgr_search::switchable_decision(
+                            rdmult,
+                            switchable_restore_cost,
+                            [
+                                u.sse[RESTORE_NONE as usize],
+                                u.sse[RESTORE_WIENER as usize],
+                                u.sse[RESTORE_SGRPROJ as usize],
+                            ],
+                            best_rtype_wiener[idx] == RESTORE_WIENER,
+                            coeff_pcost_wiener,
+                            best_rtype_sgr[idx] == RESTORE_SGRPROJ,
+                            coeff_pcost_sgr,
+                        );
+                        picks[idx] = choice.best_rtype as u8;
+                        bits_frame += choice.bits;
+                        sse_frame += choice.sse;
+                        if choice.best_rtype == crate::port_sgr_search::RESTORE_WIENER {
+                            ref_wiener = u.wiener;
+                        }
+                        if choice.best_rtype == crate::port_sgr_search::RESTORE_SGRPROJ {
+                            ref_sgr = u.sgrproj;
+                        }
+                    }
+                }
+            }
+
+            let cost = rdcost_dbl(rdmult, bits_frame >> 4, sse_frame);
+            lr_dbg!("LRFINISH plane={plane} r={r} bits={bits_frame} sse={sse_frame} cost={cost}");
+            if r == RESTORE_NONE || cost < best_cost {
+                best_cost = cost;
+                best_rtype = r;
+                best_picks = picks;
+            }
+        }
+
+        let frame_rtype = best_rtype;
         let mut out_units: alloc::vec::Vec<RestUnit> = svtav1_types::try_with_capacity![nunits]?;
         for (idx, u) in units.iter().enumerate() {
-            if frame_rtype == RESTORE_WIENER {
-                // copy_unit_info: unit rtype = the per-unit pick.
-                out_units.push(RestUnit {
-                    rtype: unit_picks[idx],
-                    wiener: u.wiener,
-                });
-            } else {
-                out_units.push(RestUnit {
-                    rtype: RESTORE_NONE,
-                    wiener: u.wiener,
-                });
-            }
+            // copy_unit_info (restoration_pick.c:1220): only when the frame
+            // type is not NONE does the unit carry a per-unit type.
+            out_units.push(RestUnit {
+                rtype: if frame_rtype == RESTORE_NONE {
+                    RESTORE_NONE
+                } else {
+                    best_picks[idx]
+                },
+                wiener: u.wiener,
+                sgrproj: u.sgrproj,
+            });
         }
         planes.push(PlaneRest {
             frame_rtype,
@@ -1172,8 +1533,7 @@ pub fn apply_restoration_frame_bd<P: LrPixel>(
             let u = &pr.units[unit_idx as usize];
             P::filter_unit_apply(
                 limits,
-                u.rtype,
-                &u.wiener,
+                &u.params(),
                 &boundaries[plane],
                 &rect,
                 ss,
@@ -1247,9 +1607,24 @@ pub fn corners_in_sb(
 /// `EntropyCodingContext.wiener_info[3]`, reset to the default filter at
 /// the first SB of each tile (`svt_av1_reset_loop_restoration`,
 /// ec_process.c:199; decoder mirror `av1_reset_loop_restoration`).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct LrWalkRefs {
     pub wiener: [WienerInfo; 3],
+    /// The SGR twin — C `EntropyCodingContext.sgrproj_info[3]`, reset by the
+    /// same `svt_av1_reset_loop_restoration` call.
+    pub sgrproj: [crate::port_sgr_search::SgrprojInfo; 3],
+}
+
+impl Default for LrWalkRefs {
+    /// `svt_av1_reset_loop_restoration` (entropy_coding.c:4019): BOTH
+    /// references start at their C defaults, which for SGR is the range
+    /// midpoint, NOT zero.
+    fn default() -> Self {
+        LrWalkRefs {
+            wiener: [WienerInfo::default(); 3],
+            sgrproj: [crate::port_sgr_search::SgrprojInfo::c_default(); 3],
+        }
+    }
 }
 
 /// C `loop_restoration_write_sb_coeffs` over every RU cornered in this SB
@@ -1289,31 +1664,71 @@ pub fn write_lr_for_sb(
         ) else {
             continue;
         };
-        debug_assert_eq!(
-            pr.frame_rtype, RESTORE_WIENER,
-            "only WIENER frame types are searched/signaled (sg_filter_lvl = 0)"
-        );
         for rrow in rrow0..rrow1 {
             for rcol in rcol0..rcol1 {
                 let runit = (rcol + rrow * pr.hunits) as usize;
                 let u = &pr.units[runit];
-                let used = u.rtype != RESTORE_NONE;
-                w.write_symbol(usize::from(used), &mut fc.wiener_restore_cdf, 2);
-                if used {
-                    let win = if plane > 0 {
-                        WIENER_WIN_CHROMA
-                    } else {
-                        WIENER_WIN
-                    };
-                    let r = &mut refs.wiener[plane];
-                    crate::entropy::lr::write_wiener_filter(
-                        w,
-                        win,
-                        &u.wiener.vfilter,
-                        &u.wiener.hfilter,
-                        &mut r.vfilter,
-                        &mut r.hfilter,
-                    );
+                let win = if plane > 0 {
+                    WIENER_WIN_CHROMA
+                } else {
+                    WIENER_WIN
+                };
+                match pr.frame_rtype {
+                    RESTORE_WIENER => {
+                        let used = u.rtype != RESTORE_NONE;
+                        w.write_symbol(usize::from(used), &mut fc.wiener_restore_cdf, 2);
+                        if used {
+                            let r = &mut refs.wiener[plane];
+                            crate::entropy::lr::write_wiener_filter(
+                                w,
+                                win,
+                                &u.wiener.vfilter,
+                                &u.wiener.hfilter,
+                                &mut r.vfilter,
+                                &mut r.hfilter,
+                            );
+                        }
+                    }
+                    RESTORE_SGRPROJ => {
+                        let used = u.rtype != RESTORE_NONE;
+                        w.write_symbol(usize::from(used), &mut fc.sgrproj_restore_cdf, 2);
+                        if used {
+                            crate::entropy::lr::write_sgrproj_filter(
+                                w,
+                                &u.sgrproj,
+                                &mut refs.sgrproj[plane],
+                            );
+                        }
+                    }
+                    RESTORE_SWITCHABLE => {
+                        w.write_symbol(
+                            u.rtype as usize,
+                            &mut fc.switchable_restore_cdf,
+                            crate::port_sgr_search::RESTORE_SWITCHABLE_TYPES,
+                        );
+                        match u.rtype {
+                            RESTORE_WIENER => {
+                                let r = &mut refs.wiener[plane];
+                                crate::entropy::lr::write_wiener_filter(
+                                    w,
+                                    win,
+                                    &u.wiener.vfilter,
+                                    &u.wiener.hfilter,
+                                    &mut r.vfilter,
+                                    &mut r.hfilter,
+                                );
+                            }
+                            RESTORE_SGRPROJ => {
+                                crate::entropy::lr::write_sgrproj_filter(
+                                    w,
+                                    &u.sgrproj,
+                                    &mut refs.sgrproj[plane],
+                                );
+                            }
+                            _ => debug_assert_eq!(u.rtype, RESTORE_NONE),
+                        }
+                    }
+                    _ => debug_assert!(false, "frame_rtype {} has no writer", pr.frame_rtype),
                 }
             }
         }

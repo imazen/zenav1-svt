@@ -240,6 +240,55 @@ pub fn write_wiener_filter(
     *ref_hfilter = *hfilter;
 }
 
+/// C `write_sgrproj_filter` (entropy_coding.c:4126): the `ep` literal plus a
+/// `refsubexpfin` delta per LIVE `xqd` component, then the reference update.
+///
+/// Which components are signalled follows the SGR RADII, not the values:
+/// `r[0] == 0` signals only `xqd[1]`, `r[1] == 0` only `xqd[0]`, otherwise
+/// both — the same three-way split `count_sgrproj_bits` prices, so the search
+/// rate and the coded bits cannot drift.
+pub fn write_sgrproj_filter(
+    w: &mut AomWriter,
+    info: &crate::port_sgr_search::SgrprojInfo,
+    ref_info: &mut crate::port_sgr_search::SgrprojInfo,
+) {
+    use svtav1_dsp::port_sgr::{
+        SGR_PARAMS, SGRPROJ_PARAMS_BITS, SGRPROJ_PRJ_MAX0, SGRPROJ_PRJ_MAX1, SGRPROJ_PRJ_MIN0,
+        SGRPROJ_PRJ_MIN1, SGRPROJ_PRJ_SUBEXP_K,
+    };
+    w.write_literal(info.ep as u32, SGRPROJ_PARAMS_BITS as u32);
+    let params = &SGR_PARAMS[info.ep as usize];
+    let write0 = |w: &mut AomWriter| {
+        write_primitive_refsubexpfin(
+            w,
+            (SGRPROJ_PRJ_MAX0 - SGRPROJ_PRJ_MIN0 + 1) as u16,
+            SGRPROJ_PRJ_SUBEXP_K as u16,
+            (ref_info.xqd[0] - SGRPROJ_PRJ_MIN0) as u16,
+            (info.xqd[0] - SGRPROJ_PRJ_MIN0) as u16,
+        );
+    };
+    let write1 = |w: &mut AomWriter| {
+        write_primitive_refsubexpfin(
+            w,
+            (SGRPROJ_PRJ_MAX1 - SGRPROJ_PRJ_MIN1 + 1) as u16,
+            SGRPROJ_PRJ_SUBEXP_K as u16,
+            (ref_info.xqd[1] - SGRPROJ_PRJ_MIN1) as u16,
+            (info.xqd[1] - SGRPROJ_PRJ_MIN1) as u16,
+        );
+    };
+    if params.r[0] == 0 {
+        debug_assert_eq!(info.xqd[0], 0);
+        write1(w);
+    } else if params.r[1] == 0 {
+        write0(w);
+    } else {
+        write0(w);
+        write1(w);
+    }
+    // svt_memcpy(ref_sgrproj_info, sgrproj_info, ...) — ref chaining.
+    *ref_info = *info;
+}
+
 /// C `count_wiener_bits` (restoration_pick.c:1005) — the search's bit count
 /// for a candidate filter against the running reference (NO ref update; the
 /// search updates its reference only when WIENER wins the unit RD).

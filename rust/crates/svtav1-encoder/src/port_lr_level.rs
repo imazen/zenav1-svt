@@ -79,11 +79,19 @@ pub struct SgFilterCtrls {
     pub refine: [bool; 2],
 }
 
-/// `INPUT_SIZE_8K_RANGE` — the resolution class above which both restoration
-/// filters are force-disabled for memory reasons.
-pub const INPUT_SIZE_8K_RANGE: u8 = 5;
-/// `INPUT_SIZE_360p_RANGE`.
-pub const INPUT_SIZE_360P_RANGE: u8 = 0;
+/// `INPUT_SIZE_8K_RANGE` — the resolution class at and above which both
+/// restoration filters are force-disabled for memory reasons.
+///
+/// **CORRECTED 2026-09-01: this was 5 and 5 is `INPUT_SIZE_4K_RANGE`.** The C
+/// enum (`definitions.h:1824-1831`) is 240p 0 / 360p 1 / 480p 2 / 720p 3 /
+/// 1080p 4 / 4K 5 / 8K 6, which `port_enc_mode_config::ResolutionRange` and
+/// `port_picstruct::INPUT_SIZE_360P_RANGE` already carry correctly. The wrong
+/// pair was byte-inert only because this module was UNWIRED; at 4K it would
+/// have killed both filters C keeps on, and under `fast_decode` it would have
+/// killed SGR at 360p where C keeps it.
+pub const INPUT_SIZE_8K_RANGE: u8 = 6;
+/// `INPUT_SIZE_360p_RANGE` (`definitions.h:1825`). Was 0 — see above.
+pub const INPUT_SIZE_360P_RANGE: u8 = 1;
 
 /// Port of `svt_aom_get_wn_filter_level_default` (`enc_mode_config.c:1357`).
 ///
@@ -103,21 +111,24 @@ pub fn wn_filter_level_default(enc_mode: u8, input_resolution: u8, is_not_last_l
     lvl
 }
 
-/// Port of `svt_aom_get_wn_filter_level_allintra` — kept here beside the
-/// video-mode arm so the two can be compared at a glance. Values match
-/// `restoration.rs::wn_filter_ctrls_allintra`.
-pub fn wn_filter_level_allintra(enc_mode: u8, input_resolution: u8) -> u8 {
-    let mut lvl = if enc_mode <= 3 {
+/// Port of `svt_aom_get_wn_filter_level_allintra` (`enc_mode_config.c:1386`)
+/// — kept here beside the video-mode arm so the two can be compared at a
+/// glance. Values match `restoration.rs::wn_filter_ctrls_allintra`.
+///
+/// **CORRECTED 2026-09-01: this used to take an `input_resolution` and apply
+/// the 8K force-off.** C's all-intra variant takes `EncMode` ALONE and has no
+/// resolution clause — only the `_default` and `_rtc` variants do. Carrying
+/// the clause here would have disabled Wiener at 8K all-intra, where C keeps
+/// it on. Inert until now because nothing called this function.
+#[must_use]
+pub fn wn_filter_level_allintra(enc_mode: u8) -> u8 {
+    if enc_mode <= 3 {
         3
     } else if enc_mode <= 6 {
         4
     } else {
         0
-    };
-    if input_resolution >= INPUT_SIZE_8K_RANGE {
-        lvl = 0;
     }
-    lvl
 }
 
 /// Port of `svt_aom_get_sg_filter_level_default` (`enc_mode_config.c:1402`).
@@ -259,7 +270,7 @@ mod tests {
         // Preset 4..=6: allintra level 4 (chroma ON) vs default level 5
         // (chroma OFF) on a non-last layer.
         for preset in 4..=6u8 {
-            let ai = set_wn_filter_ctrls(wn_filter_level_allintra(preset, 1));
+            let ai = set_wn_filter_ctrls(wn_filter_level_allintra(preset));
             let vid = set_wn_filter_ctrls(wn_filter_level_default(preset, 1, true));
             assert!(ai.use_chroma, "allintra preset {preset} should use chroma");
             assert!(
@@ -270,7 +281,7 @@ mod tests {
         }
         // Presets 7..=8: allintra is OFF entirely, video mode is ON (level 5).
         for preset in 7..=8u8 {
-            assert_eq!(wn_filter_level_allintra(preset, 1), 0);
+            assert_eq!(wn_filter_level_allintra(preset), 0);
             assert_eq!(wn_filter_level_default(preset, 1, true), 5);
         }
         // Last temporal layer: video-mode Wiener is off at every preset.
@@ -313,7 +324,9 @@ mod tests {
             // fast_decode disables SGR at anything above 360p, but NOT at 360p
             // and below — C's condition is
             // `fast_decode && !(input_resolution <= INPUT_SIZE_360p_RANGE)`.
-            assert_eq!(sg_filter_level_default(preset, 1, true), 0);
+            // 2 is 480p; this assert used to pass 1 while 1 was miscoded as
+            // "above 360p", which is exactly the constant corrected above.
+            assert_eq!(sg_filter_level_default(preset, 2, true), 0);
         }
         for preset in 0..=3u8 {
             assert_eq!(

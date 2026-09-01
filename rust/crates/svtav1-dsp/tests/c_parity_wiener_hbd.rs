@@ -297,10 +297,14 @@ fn highbd_filter_unit_search_matches_c() {
                 v_start: limits.2,
                 v_end: limits.3,
             },
-            rtype,
-            &rst::WienerInfo {
-                vfilter: vf,
-                hfilter: hf,
+            &rst::RestUnitParams {
+                rtype,
+                wiener: rst::WienerInfo {
+                    vfilter: vf,
+                    hfilter: hf,
+                },
+                sgr_ep: 0,
+                sgr_xqd: rst::DEFAULT_SGRPROJ_XQD,
             },
             &rst::PixelRect {
                 left: tile_rect.0,
@@ -469,8 +473,12 @@ fn highbd_filter_unit_with_boundaries_matches_c() {
         rst::loop_restoration_filter_unit_hbd(
             need_boundaries,
             &rlimits,
-            rtype,
-            &wi,
+            &rst::RestUnitParams {
+                rtype,
+                wiener: wi,
+                sgr_ep: 0,
+                sgr_xqd: rst::DEFAULT_SGRPROJ_XQD,
+            },
             &bnd,
             &rrect,
             0,

@@ -97,6 +97,69 @@ pub struct WienerInfo {
     pub hfilter: [i16; 8],
 }
 
+/// C `RestorationUnitInfo` (restoration.h:206) — the per-unit filter choice
+/// the stripe walk dispatches on. C passes this one struct to
+/// `svt_av1_loop_restoration_filter_unit`; the port used to pass
+/// `(rtype, &WienerInfo)` because sgrproj was unreachable on the all-intra
+/// path (`sg_filter_lvl = 0` at every representable preset). It is reachable
+/// in VIDEO mode at presets 0..3 (`svt_aom_get_sg_filter_level_default`,
+/// enc_mode_config.c:1402), so the SGR arm now travels with the Wiener one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestUnitParams {
+    /// `RESTORE_NONE` / `RESTORE_WIENER` / `RESTORE_SGRPROJ`.
+    pub rtype: u8,
+    pub wiener: WienerInfo,
+    /// `SgrprojInfo::ep` — the `SGR_PARAMS` index.
+    pub sgr_ep: usize,
+    /// `SgrprojInfo::xqd`.
+    pub sgr_xqd: [i32; 2],
+}
+
+impl RestUnitParams {
+    /// A NONE unit (no filter); the two filter payloads are the C defaults.
+    #[must_use]
+    pub fn none() -> Self {
+        RestUnitParams {
+            rtype: RESTORE_NONE,
+            wiener: WienerInfo::default(),
+            sgr_ep: 0,
+            sgr_xqd: DEFAULT_SGRPROJ_XQD,
+        }
+    }
+
+    /// A Wiener unit with these taps.
+    #[must_use]
+    pub fn wiener(wiener: WienerInfo) -> Self {
+        RestUnitParams {
+            rtype: RESTORE_WIENER,
+            wiener,
+            sgr_ep: 0,
+            sgr_xqd: DEFAULT_SGRPROJ_XQD,
+        }
+    }
+
+    /// An SGR unit with this `(ep, xqd)`.
+    #[must_use]
+    pub fn sgrproj(ep: usize, xqd: [i32; 2]) -> Self {
+        RestUnitParams {
+            rtype: RESTORE_SGRPROJ,
+            wiener: WienerInfo::default(),
+            sgr_ep: ep,
+            sgr_xqd: xqd,
+        }
+    }
+}
+
+/// C `set_default_sgrproj` (restoration.h:243): the midpoint of each `xqd`
+/// range. This is the value both the SEARCH reference (`rsc_on_tile`,
+/// restoration_pick.c:89) and the WRITER reference
+/// (`svt_av1_reset_loop_restoration`, entropy_coding.c:4019) start from, so
+/// the first coded `refsubexpfin` delta is measured against it.
+pub const DEFAULT_SGRPROJ_XQD: [i32; 2] = [
+    (crate::port_sgr::SGRPROJ_PRJ_MIN0 + crate::port_sgr::SGRPROJ_PRJ_MAX0) / 2,
+    (crate::port_sgr::SGRPROJ_PRJ_MIN1 + crate::port_sgr::SGRPROJ_PRJ_MAX1) / 2,
+];
+
 impl Default for WienerInfo {
     /// C `set_default_wiener` (restoration.h:248): the mid taps.
     fn default() -> Self {
@@ -1315,6 +1378,26 @@ trait WienerStripePixel: Copy + Default {
         dst_stride: usize,
         bd: i32,
     );
+
+    /// `sgrproj_filter_stripe` / `sgrproj_filter_stripe_highbd`
+    /// (restoration.c:964 / :1010) — the second entry of C's
+    /// `stripe_filters[]` table, selected by
+    /// `2 * highbd + (unit_rtype == RESTORE_SGRPROJ)`.
+    #[allow(clippy::too_many_arguments)]
+    fn filter_stripe_sgr(
+        ep: usize,
+        xqd: &[i32; 2],
+        stripe_width: i32,
+        stripe_height: i32,
+        procunit_width: i32,
+        src: &[Self],
+        src_origin: usize,
+        src_stride: usize,
+        dst: &mut [Self],
+        dst_origin: usize,
+        dst_stride: usize,
+        bd: i32,
+    );
 }
 
 impl WienerStripePixel for u8 {
@@ -1333,6 +1416,35 @@ impl WienerStripePixel for u8 {
     ) {
         wiener_filter_stripe(
             wiener,
+            stripe_width,
+            stripe_height,
+            procunit_width,
+            src,
+            src_origin,
+            src_stride,
+            dst,
+            dst_origin,
+            dst_stride,
+        );
+    }
+
+    fn filter_stripe_sgr(
+        ep: usize,
+        xqd: &[i32; 2],
+        stripe_width: i32,
+        stripe_height: i32,
+        procunit_width: i32,
+        src: &[u8],
+        src_origin: usize,
+        src_stride: usize,
+        dst: &mut [u8],
+        dst_origin: usize,
+        dst_stride: usize,
+        _bd: i32,
+    ) {
+        crate::port_sgr::sgrproj_filter_stripe(
+            ep,
+            xqd,
             stripe_width,
             stripe_height,
             procunit_width,
@@ -1374,6 +1486,36 @@ impl WienerStripePixel for u16 {
             bd,
         );
     }
+
+    fn filter_stripe_sgr(
+        ep: usize,
+        xqd: &[i32; 2],
+        stripe_width: i32,
+        stripe_height: i32,
+        procunit_width: i32,
+        src: &[u16],
+        src_origin: usize,
+        src_stride: usize,
+        dst: &mut [u16],
+        dst_origin: usize,
+        dst_stride: usize,
+        bd: i32,
+    ) {
+        crate::port_sgr::sgrproj_filter_stripe_highbd(
+            ep,
+            xqd,
+            stripe_width,
+            stripe_height,
+            procunit_width,
+            src,
+            src_origin,
+            src_stride,
+            dst,
+            dst_origin,
+            dst_stride,
+            bd,
+        );
+    }
 }
 
 /// C `svt_av1_loop_restoration_filter_unit` (restoration.c:1040), 8-bit,
@@ -1388,8 +1530,7 @@ impl WienerStripePixel for u16 {
 pub fn loop_restoration_filter_unit(
     need_boundaries: bool,
     limits: &TileLimits,
-    rtype: u8,
-    wiener: &WienerInfo,
+    rui: &RestUnitParams,
     rsb: &StripeBoundaries,
     tile_rect: &PixelRect,
     tile_stripe0: i32,
@@ -1405,8 +1546,7 @@ pub fn loop_restoration_filter_unit(
     filter_unit_impl(
         need_boundaries,
         limits,
-        rtype,
-        wiener,
+        rui,
         rsb,
         tile_rect,
         tile_stripe0,
@@ -1435,8 +1575,7 @@ pub fn loop_restoration_filter_unit(
 pub fn loop_restoration_filter_unit_hbd(
     need_boundaries: bool,
     limits: &TileLimits,
-    rtype: u8,
-    wiener: &WienerInfo,
+    rui: &RestUnitParams,
     rsb: &StripeBoundariesT<u16>,
     tile_rect: &PixelRect,
     tile_stripe0: i32,
@@ -1453,8 +1592,7 @@ pub fn loop_restoration_filter_unit_hbd(
     filter_unit_impl(
         need_boundaries,
         limits,
-        rtype,
-        wiener,
+        rui,
         rsb,
         tile_rect,
         tile_stripe0,
@@ -1474,8 +1612,7 @@ pub fn loop_restoration_filter_unit_hbd(
 fn filter_unit_impl<T: WienerStripePixel>(
     need_boundaries: bool,
     limits: &TileLimits,
-    rtype: u8,
-    wiener: &WienerInfo,
+    rui: &RestUnitParams,
     rsb: &StripeBoundariesT<T>,
     tile_rect: &PixelRect,
     tile_stripe0: i32,
@@ -1494,7 +1631,7 @@ fn filter_unit_impl<T: WienerStripePixel>(
     let data_tl = data_origin + limits.v_start as usize * stride + limits.h_start as usize;
     let dst_tl = dst_origin + limits.v_start as usize * dst_stride + limits.h_start as usize;
 
-    if rtype == RESTORE_NONE {
+    if rui.rtype == RESTORE_NONE {
         for i in 0..unit_h as usize {
             let s = data_tl + i * stride;
             let d = dst_tl + i * dst_stride;
@@ -1503,7 +1640,10 @@ fn filter_unit_impl<T: WienerStripePixel>(
         }
         return;
     }
-    debug_assert_eq!(rtype, RESTORE_WIENER);
+    // C `filter_idx = 2 * highbd + (unit_rtype == RESTORE_SGRPROJ)` — the
+    // pixel type carries the `highbd` half, this flag the other.
+    debug_assert!(rui.rtype == RESTORE_WIENER || rui.rtype == RESTORE_SGRPROJ);
+    let is_sgr = rui.rtype == RESTORE_SGRPROJ;
 
     let procunit_width = RESTORATION_PROC_UNIT_SIZE >> ss_x;
     let mut rlbs = LineBuffers::<T>::new();
@@ -1539,19 +1679,36 @@ fn filter_unit_impl<T: WienerStripePixel>(
                 copy_below,
             );
         }
-        T::filter_stripe(
-            wiener,
-            unit_w,
-            h,
-            procunit_width,
-            data,
-            data_tl + i as usize * stride,
-            stride,
-            dst,
-            dst_tl + i as usize * dst_stride,
-            dst_stride,
-            bd,
-        );
+        if is_sgr {
+            T::filter_stripe_sgr(
+                rui.sgr_ep,
+                &rui.sgr_xqd,
+                unit_w,
+                h,
+                procunit_width,
+                data,
+                data_tl + i as usize * stride,
+                stride,
+                dst,
+                dst_tl + i as usize * dst_stride,
+                dst_stride,
+                bd,
+            );
+        } else {
+            T::filter_stripe(
+                &rui.wiener,
+                unit_w,
+                h,
+                procunit_width,
+                data,
+                data_tl + i as usize * stride,
+                stride,
+                dst,
+                dst_tl + i as usize * dst_stride,
+                dst_stride,
+                bd,
+            );
+        }
         if need_boundaries {
             restore_processing_stripe_boundary(
                 &remaining,
@@ -2123,8 +2280,7 @@ fn wiener_filter_stripe_hbd(
 #[allow(clippy::too_many_arguments)]
 pub fn loop_restoration_filter_unit_search_hbd(
     limits: &TileLimits,
-    rtype: u8,
-    wiener: &WienerInfo,
+    rui: &RestUnitParams,
     tile_rect: &PixelRect,
     tile_stripe0: i32,
     ss_x: i32,
@@ -2142,7 +2298,7 @@ pub fn loop_restoration_filter_unit_search_hbd(
     let data_tl = data_origin + limits.v_start as usize * stride + limits.h_start as usize;
     let dst_tl = dst_origin + limits.v_start as usize * dst_stride + limits.h_start as usize;
 
-    if rtype == RESTORE_NONE {
+    if rui.rtype == RESTORE_NONE {
         for i in 0..unit_h as usize {
             let s = data_tl + i * stride;
             let d = dst_tl + i * dst_stride;
@@ -2150,7 +2306,7 @@ pub fn loop_restoration_filter_unit_search_hbd(
         }
         return;
     }
-    debug_assert_eq!(rtype, RESTORE_WIENER);
+    debug_assert!(rui.rtype == RESTORE_WIENER || rui.rtype == RESTORE_SGRPROJ);
 
     let procunit_width = RESTORATION_PROC_UNIT_SIZE >> ss_x;
     let mut i = 0i32;
@@ -2164,19 +2320,36 @@ pub fn loop_restoration_filter_unit_search_hbd(
             full_stripe_height - if tile_stripe == 0 { runit_offset } else { 0 };
         let h = nominal_stripe_height.min(limits.v_end - v_start);
 
-        wiener_filter_stripe_hbd(
-            wiener,
-            unit_w,
-            h,
-            procunit_width,
-            data,
-            data_tl + i as usize * stride,
-            stride,
-            dst,
-            dst_tl + i as usize * dst_stride,
-            dst_stride,
-            bd,
-        );
+        if rui.rtype == RESTORE_SGRPROJ {
+            crate::port_sgr::sgrproj_filter_stripe_highbd(
+                rui.sgr_ep,
+                &rui.sgr_xqd,
+                unit_w,
+                h,
+                procunit_width,
+                data,
+                data_tl + i as usize * stride,
+                stride,
+                dst,
+                dst_tl + i as usize * dst_stride,
+                dst_stride,
+                bd,
+            );
+        } else {
+            wiener_filter_stripe_hbd(
+                &rui.wiener,
+                unit_w,
+                h,
+                procunit_width,
+                data,
+                data_tl + i as usize * stride,
+                stride,
+                dst,
+                dst_tl + i as usize * dst_stride,
+                dst_stride,
+                bd,
+            );
+        }
         i += h;
     }
 }
