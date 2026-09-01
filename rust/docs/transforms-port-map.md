@@ -131,6 +131,33 @@ build.** It has arms for DCT_DCT and IDTX and `assert(0)` for everything else;
 as it was. The port returns a typed `InvReconError` instead — those pairs are
 outside the ext-tx sets, so nothing reachable changes.
 
+**8. Cross-ISA, measured on `ssh r7900x` (x86-64 Linux) as well as this
+aarch64 host — two defects that aarch64 alone could not see.**
+
+  a. **The recon shim's buffers.** A first version handed C the Rust `Vec`
+     pointers at stride `w`. aarch64: 4/4 green. x86-64: SIGSEGV inside
+     `svt_dav1d_inv_txfm2d_add_8x8_avx2`, and ONLY through the hbd entry —
+     the 8-bit one stages the caller's pixels into its own
+     `DECLARE_ALIGNED(32, uint16_t, tmp[MAX_TX_SQUARE])` first
+     (`svt_av1_inv_txfm_add_c`, :3269), so C's SIMD never sees a caller
+     buffer there. Fixed by staging everything into 64-byte-aligned scratch
+     at `MAX_TX_SIZE` stride — the shape `full_loop.c:1915` actually passes.
+     Side benefit: the strides are no longer `w`, so a stride bug in the port
+     can no longer hide.
+
+  b. **bd12 has no single C answer.** With the crash gone, x86-64 reported
+     `recon bd12 4x4 DCT_DCT` = 1023 where aarch64 C and the port both say
+     1582 — `(1 << 10) - 1`, i.e. C's x86 arm clipped a 12-bit reconstruction
+     to 10 bits. Attributed with a control rather than guessed: against the
+     `_c` kernels (`ref_inv_txfm2d_add_c_bd`, which bypasses the RTCD
+     pointers) the port matches at bd10 AND bd12 on 310 cells, on both ISAs.
+     So the 1023 is C's SIMD. bd12 is outside C v4.2.0's shipping envelope
+     anyway (`svt_av1_verify_settings`, `Globals/enc_settings.c:460`), so the
+     dispatched-entry test runs bd10 and the scalar test carries bd12.
+
+  Everything in this lane is now green on BOTH ISAs: `c_parity_adst32` 3/3,
+  `c_parity_inv_recon` 6/6, `c_parity_txfm` 20/20, `c_parity_txfm_pf_2d` 8/8.
+
 ---
 
 ## Not done, and why
