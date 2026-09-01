@@ -507,6 +507,7 @@ disagree, the source wins and the doc gets fixed in the same change.
 | perf + memory | `docs/perf-status.md`, `benchmarks/mem_2026-08-16.meta` |
 | the working agreement + envelope guards | `CLAUDE.md` |
 | per-feature plans and open chunks | `docs/*-port-map.md` |
+| why a `product_coding_loop.c` row reads MISSING | `docs/pcl-md-port-map.md` |
 | committed measurements | `benchmarks/*.tsv` + the `.meta` beside each |
 
 ## 10. The habits that matter most
