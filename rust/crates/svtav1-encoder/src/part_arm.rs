@@ -76,6 +76,32 @@ pub(crate) fn max_block_cap_active(arm: ScArm, preset: u8, full_sb: bool) -> boo
     }
 }
 
+/// `ctx->disallow_4x4` for this arm — the ONE-preset fork at M3.
+///
+/// - **allintra** (`svt_aom_get_disallow_4x4_allintra`, `:8181`):
+///   `enc_mode > M3`.
+/// - **video** (`svt_aom_get_disallow_4x4_default`, `:8169`):
+///   `enc_mode > M2`.
+///
+/// So at CLI preset 3 — and ONLY there, since M0..M2 allow 4x4 on both arms
+/// and M4+ forbid it on both — a video-mode frame codes no 4x4 block where a
+/// still one does. The port ran the allintra rule (`preset >= 4`) on both
+/// arms, and at p3 that is the whole of `diag 72x88 q40`'s 22.257 %.
+///
+/// `preset` is clamped per [`crate::rate_arm::eff_enc_mode`] first, as C does
+/// once in `svt_av1_enc_set_parameter`. Both clamps land above M3, so the
+/// clamp cannot change this predicate today; it is applied because reading a
+/// ladder at an unclamped `enc_mode` is the defect §1n names, not because a
+/// cell needs it.
+#[must_use]
+pub(crate) fn disallow_4x4(arm: ScArm, preset: u8) -> bool {
+    let m = i8::try_from(crate::rate_arm::eff_enc_mode(arm, preset)).unwrap_or(i8::MAX);
+    match arm {
+        ScArm::Allintra => leaf::get_disallow_4x4_allintra(m),
+        ScArm::Video { .. } => leaf::get_disallow_4x4_default(m),
+    }
+}
+
 /// `pcs->nsq_geom_level` for this arm — the level itself, so callers that
 /// need `allow_HV4` / `min_nsq_block_size` (not just `enabled`) can ask.
 #[must_use]

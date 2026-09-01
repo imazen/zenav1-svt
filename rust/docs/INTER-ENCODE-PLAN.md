@@ -1497,6 +1497,93 @@ every `speed_config.preset` read in a ladder. Nothing else moved on the 60-cell
 matrix at 12/13, so no OTHER unclamped read is observable on synthetic content
 at those presets today — which is a bound on the audit, not a substitute for it.
 
+### 1o. `disallow_4x4` — a ONE-PRESET arm fork, and it is all of `diag p3`'s 22 %
+
+`diag 72x88 q40 p3` was **22.257 %** off (C 319 B against the port's 248 — the
+port UNDER-coded) and `gradient 72x88 q40 p3` 1.628 %. `diag p3` is
+byte-identical now and `gradient p3` is 0.212 %. p3 was the ONLY preset either
+content was off at, which is the shape of the answer.
+
+**Localized by joining the trees, not by reading ladders.** C's coded tree
+(`SVT_CTREE_OUT` through `tools/ctrace-linux/`, cut at the last `mi=(0,0)`
+line so the inter frame's blocks are dropped) against the port's
+`SVTAV1_PACKTREE`, via `tools/tree_diff.py`:
+
+```
+TREE: 53 blocks joined, 22 field flips, 7 skip flips,
+      geometry: 2 C-only / 10 port-only
+  flip counts: ady=6 bsize=4 mode=4 txd=7 uv=1
+  FLIP mi=(0, 0)  bsize: C=3 port=0      <- C codes BLOCK_8X8, the port BLOCK_4X4
+  FLIP mi=(0, 16) bsize: C=3 port=0
+  FLIP mi=(16, 0) bsize: C=3 port=0
+```
+
+Every `bsize` flip is C's 8x8 against the port's 4x4, and every port-only block
+is a 4x4 quadrant of one of them. That names `disallow_4x4` outright.
+
+**The ladders, and the fork is exactly one row wide:**
+
+| | `<= M2` | `M3` | `>= M4` |
+|---|---|---|---|
+| `svt_aom_get_disallow_4x4_allintra` (`:8181`) | false | **false** | true |
+| `svt_aom_get_disallow_4x4_default` (`:8169`) | false | **true** | true |
+
+M0..M2 allow 4x4 on both arms and M4+ forbid it on both, so preset 3 is the
+only cell in the whole preset domain where the two arms disagree. The port
+carried the allintra rule flattened as the literal `preset >= 4`, in THREE
+places — `DrCtrls::for_level`, and `pic_disallow_4x4` plus
+`IbcFrameState::disallow_4x4` in `pipeline.rs`.
+
+**What landed.** `leaf::get_disallow_4x4_{default,rtc,allintra}` (all three C
+rows), `part_arm::disallow_4x4(arm, preset)` selecting between them through
+`rate_arm::eff_enc_mode`, and the three literals replaced by calls to it. Both
+C symbols are EXPORTED, so `c_parity_sig_deriv_leaf.rs::disallow_4x4_matches_c`
+pins the pair at **tier 1** over the whole `ENC_MODES` sweep, with an
+anti-vacuity assert on the M3 row itself (the sweep would pass trivially if the
+arms ever agreed everywhere).
+
+**Measured, `72x88 q40` video frame 0, before -> after:**
+
+| cell | before | after |
+|---|--:|--:|
+| `diag p3` | 22.257 % (C 319 B, port 248) | **0.000, BYTE-IDENTICAL** |
+| `gradient p3` | 1.628 % (C 1413 B, port 1390) | 0.212 % (port 1410) |
+
+and the trees, on the same builds:
+
+| cell | field flips | port-only geometry |
+|---|---|---|
+| `diag p3` | 22 -> **0** | 10 -> **0** |
+| `gradient p3` | (not dumped before) | **0 flips, 0 port-only** after |
+
+**`gradient p3`'s residual 3 bytes are NOT in mode decision.** Its coded tree,
+every leaf mode, uv mode, angle delta, tx depth and skip flag equal C's — 116
+blocks joined, 0 field flips, 0 port-only geometry — so the divergence is
+downstream, the same shape as §1j's two residuals. `vdiff_cell.sh`'s op-trace
+alignment does not resolve it (it reports C segment 0 against port segment 4
+and a first-op mismatch that is an alignment artifact, not a symbol); that is
+the next probe to fix or replace, and the cell to fix it on.
+
+### The state of the 72x88 q40 video-key matrix after 1m + 1n + 1o
+
+One build each side, five content classes x twelve presets = 60 cells:
+**42 -> 55 byte-identical, thirteen closed, one improved (`gradient p3`
+1.628 % -> 0.212 %), nothing worse, every cell these three chunks cannot reach
+unchanged to the byte.** The full before/after is
+`benchmarks/video_key_matrix_72x88_2026-09-01.tsv`. What is still open:
+
+| preset | cells still off |
+|---|---|
+| 0 | `gradient` 0.447 %, `diag` 0.483 %, `screenrep` 0.043 % |
+| 3 | `gradient` 0.212 % (tree exact — entropy layer) |
+| 8 | `gradient` 1.673 % (C 1554 B, port 1528) |
+
+Nothing above 2 % survives. `gradient p8` is the largest and the only one whose
+tree has not been dumped; the p0 cluster is three content classes at once,
+which by §1n's own lesson is the shape of a single shared cause rather than
+three.
+
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

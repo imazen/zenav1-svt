@@ -159,7 +159,10 @@ impl DrCtrls {
                 _ => 10,
             }
         };
-        Self::for_level(level, preset)
+        Self::for_level(
+            level,
+            crate::part_arm::disallow_4x4(crate::sc_detect::ScArm::Allintra, preset),
+        )
     }
 
     /// Pre-fix entry: the !sc_class5 row (level 6 at M0-M4, 9 at M5, 10 at M6+).
@@ -236,7 +239,7 @@ impl DrCtrls {
                         _ => 10,
                     }
                 };
-                let mut c = Self::for_level(level, preset);
+                let mut c = Self::for_level(level, crate::part_arm::disallow_4x4(arm, preset));
                 // `q_weight` is 1 in every level the table enables, and 0 at
                 // level 0 (PD0_DEPTH_NO_RESTRICTION assigns nothing else) —
                 // where there is no deviation gate to scale anyway.
@@ -260,12 +263,10 @@ impl DrCtrls {
     }
 
     /// Build the ctrls for a `set_block_based_depth_refinement_controls` level
-    /// (enc_mode_config.c:6816). `disallow_4x4` is preset-based
-    /// (`svt_aom_get_disallow_4x4_allintra`, <= M3 -> false), independent of
-    /// the level. Only the levels reachable from the allintra derivation
-    /// (1, 5, 6, 9, 10) are materialised.
-    fn for_level(level: u8, preset: u8) -> Self {
-        let disallow_4x4 = preset >= 4;
+    /// (enc_mode_config.c:6816). `disallow_4x4` is preset-AND-ARM based
+    /// (`crate::part_arm::disallow_4x4`: allintra `> M3`, video `> M2`) and
+    /// independent of the level, so the caller resolves it and passes it in.
+    fn for_level(level: u8, disallow_4x4: bool) -> Self {
         match level {
             // case 1: sc_class5 M0/M1. s2/e2 = literal 0 (NOT the sentinel).
             1 => DrCtrls {

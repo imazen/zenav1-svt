@@ -1,0 +1,38 @@
+# VIDEO-mode KEY frame byte-identity matrix, 72x88 q40, five synthetic
+# content classes x twelve presets
+
+date: 2026-09-01
+host: mac (Apple aarch64), colima arm64 for the C-side --wrap dumps
+base: ea23b52ad (docs(inter): §1l), i.e. the "before" column
+after: the three chunks recorded in docs/INTER-ENCODE-PLAN.md §1m + §1n + §1o
+       (the video palette ladder, the per-arm preset clamp on the dlf
+        derivation, and the per-arm `disallow_4x4` fork)
+
+## How it was produced
+
+One build per column. Both sides encode the SAME 2-frame low-delay-P stream and
+compare FRAME 0 only (the port refuses frame 1 and exits 3, which is the
+expected state of the inter campaign, not a failure):
+
+  port:  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
+           identity_run <content> 72 88 40 <preset> <out>
+  C:     SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+           capture_c_trace 72 88 40 <preset> <port.yuv> <out.obu> 8
+
+`c_bytes` is `c.obu.pts0`; `port_*` is `rs.obu.f0`. `verdict` is `cmp`, NOT the
+percentage — a zero percentage is a SIZE claim, not a byte claim, and this
+campaign has had a cell read 0.000 % while differing (see §1i's note on
+`gradient 72x88 p9`). Read the verdict column.
+
+## Result
+
+42 -> 55 byte-identical of 60. Thirteen cells closed, one improved
+(`gradient p3` 1.628 % -> 0.212 %), NOTHING worse and every cell the three
+chunks cannot reach unchanged to the byte.
+
+Closed: `screen` p7 + p8; all five content classes at p12 AND p13; `diag` p3.
+
+Still open: `gradient`/`diag`/`screenrep` at p0 (<= 0.483 %), `gradient` p3
+(0.212 %, coded tree exact — the residual is in the entropy layer) and
+`gradient` p8 (1.673 %, C 1554 B port 1528 — the port UNDER-splits: 24 C-only
+blocks / 0 port-only, C coding 8x8 and 16x16 where the port codes 32x32).

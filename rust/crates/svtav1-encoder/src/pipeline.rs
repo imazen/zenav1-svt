@@ -8212,7 +8212,9 @@ fn encode_tile_rows(
                 h,
                 ctrls.max_block_size_hash,
                 ctrls.max_cand_per_bucket,
-                speed_config.preset >= 4, // pic_disallow_4x4 (depth_refine derivation)
+                // `pcs->pic_disallow_4x4` — arm-forked at M3
+                // (`part_arm::disallow_4x4`), not the flat `preset >= 4`.
+                crate::part_arm::disallow_4x4(sc_arm, speed_config.preset),
             );
             // svt_aom_get_sad_per_bit(base_q_idx, 0): init_me_luts_bd's
             // `(int)(0.0418*q + 2.4107)` with q = ac_qlookup/4.0
@@ -8241,7 +8243,7 @@ fn encode_tile_rows(
                 sb_mi_size: (sb_size / 4) as i32,
                 sb_size_log2_mi: (sb_size as u32 / 4).trailing_zeros(),
                 sb_size_px: sb_size as i32,
-                disallow_4x4: speed_config.preset >= 4,
+                disallow_4x4: crate::part_arm::disallow_4x4(sc_arm, speed_config.preset),
             }))
         } else {
             None

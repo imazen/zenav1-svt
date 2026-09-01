@@ -930,6 +930,23 @@ byteVideoKey "video-key-palette-arm-p8-screen-72x88" screen 72 88 40 8
 byteVideoKey "video-key-dlf-preset-clamp-p12-uniform" uniform 72 88 40 12
 byteVideoKey "video-key-dlf-preset-clamp-p13-gradient" gradient 72 88 40 13
 
+# --- `disallow_4x4` is ARM-FORKED at exactly M3, 2026-09-01.
+# `svt_aom_get_disallow_4x4_allintra` (`:8181`) keeps 4x4 through M3;
+# `svt_aom_get_disallow_4x4_default` (`:8169`) drops it from M3. M0..M2 allow
+# 4x4 on both arms and M4+ forbid it on both, so preset 3 is the ONLY cell in
+# the preset domain where the arms disagree — and the port carried the allintra
+# rule flattened as the literal `preset >= 4`, in three places.
+#
+# OBSERVED, 72x88 q40 video frame 0, before -> after:
+#   diag     p3: C 319 B, port 248 B (22.257%) -> BYTE-IDENTICAL
+#                coded tree 22 field flips / 10 port-only blocks -> 0 / 0,
+#                every bsize flip C's BLOCK_8X8 against the port's BLOCK_4X4
+#   gradient p3: C 1413 B, port 1390 B (1.628%) -> 0.212% (1410 B, tree exact)
+# `diag` is the cell to keep: it is the one the fork moves by 22%, and it is
+# byte-identical at every OTHER preset both before and after, so a regression
+# here can only be this fork.
+byteVideoKey "video-key-disallow-4x4-arm-p3-diag" diag 72 88 40 3
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

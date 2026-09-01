@@ -16,6 +16,9 @@ unsafe extern "C" {
     fn svt_aom_get_enable_me_16x16(enc_mode: i8) -> u8;
     fn svt_aom_get_gm_core_level(enc_mode: i8, super_res_off: bool) -> u8;
     fn svt_aom_get_max_can_count(enc_mode: i8, rtc: bool) -> u16;
+    fn svt_aom_get_disallow_4x4_default(enc_mode: i8) -> bool;
+    fn svt_aom_get_disallow_4x4_rtc() -> bool;
+    fn svt_aom_get_disallow_4x4_allintra(enc_mode: i8) -> bool;
     fn svt_aom_get_disallow_8x8_default() -> bool;
     fn svt_aom_get_disallow_8x8_rtc(enc_mode: i8, aligned_width: u16, aligned_height: u16) -> bool;
     fn svt_aom_get_disallow_8x8_allintra() -> bool;
@@ -122,6 +125,24 @@ pub fn derive_gm_level(enc_mode: i8, is_islice: bool, super_res_off: bool) -> u8
 #[must_use]
 pub fn get_max_can_count(enc_mode: i8, rtc: bool) -> u16 {
     unsafe { svt_aom_get_max_can_count(enc_mode, rtc) }
+}
+
+/// C `svt_aom_get_disallow_4x4_default`.
+#[must_use]
+pub fn get_disallow_4x4_default(enc_mode: i8) -> bool {
+    unsafe { svt_aom_get_disallow_4x4_default(enc_mode) }
+}
+
+/// C `svt_aom_get_disallow_4x4_rtc`.
+#[must_use]
+pub fn get_disallow_4x4_rtc() -> bool {
+    unsafe { svt_aom_get_disallow_4x4_rtc() }
+}
+
+/// C `svt_aom_get_disallow_4x4_allintra`.
+#[must_use]
+pub fn get_disallow_4x4_allintra(enc_mode: i8) -> bool {
+    unsafe { svt_aom_get_disallow_4x4_allintra(enc_mode) }
 }
 
 /// C `svt_aom_get_disallow_8x8_default`.

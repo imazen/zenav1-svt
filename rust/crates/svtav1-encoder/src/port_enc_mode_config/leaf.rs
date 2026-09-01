@@ -153,6 +153,27 @@ pub fn dimensions_require_8x8(aligned_width: u16, aligned_height: u16) -> bool {
     true
 }
 
+/// C `svt_aom_get_disallow_4x4_default` (`enc_mode_config.c:8169`). EXPORTED.
+///
+/// The video arm forbids 4x4 from M3 up; its allintra twin below keeps 4x4
+/// through M3. That ONE-preset gap is the whole of `diag 72x88 q40 p3`.
+#[must_use]
+pub fn get_disallow_4x4_default(enc_mode: i8) -> bool {
+    enc_mode > M2
+}
+
+/// C `svt_aom_get_disallow_4x4_rtc` (`enc_mode_config.c:8177`). EXPORTED.
+#[must_use]
+pub fn get_disallow_4x4_rtc() -> bool {
+    true
+}
+
+/// C `svt_aom_get_disallow_4x4_allintra` (`enc_mode_config.c:8181`). EXPORTED.
+#[must_use]
+pub fn get_disallow_4x4_allintra(enc_mode: i8) -> bool {
+    enc_mode > M3
+}
+
 /// C `svt_aom_get_disallow_8x8_default` (`enc_mode_config.c:8196`). EXPORTED.
 #[must_use]
 pub fn get_disallow_8x8_default() -> bool {

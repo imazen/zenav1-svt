@@ -94,6 +94,31 @@ fn max_can_count_matches_c() {
     }
 }
 
+/// The arms fork at exactly ONE preset — allintra keeps 4x4 through M3, video
+/// drops it from M3 — and that single row is `diag 72x88 q40 p3`'s 22.257 %
+/// (`docs/INTER-ENCODE-PLAN.md` §1o). Pinned against the real exported C
+/// symbols so the fork cannot be re-flattened.
+#[test]
+fn disallow_4x4_matches_c() {
+    for &m in &ENC_MODES {
+        assert_eq!(
+            leaf::get_disallow_4x4_default(m),
+            cref::get_disallow_4x4_default(m),
+            "enc_mode={m} (video)"
+        );
+        assert_eq!(
+            leaf::get_disallow_4x4_allintra(m),
+            cref::get_disallow_4x4_allintra(m),
+            "enc_mode={m} (allintra)"
+        );
+    }
+    assert_eq!(leaf::get_disallow_4x4_rtc(), cref::get_disallow_4x4_rtc());
+    // Anti-vacuity: the sweep above passes trivially if both arms agree
+    // everywhere. They do not — M3 is the row this whole chunk is about.
+    assert!(!leaf::get_disallow_4x4_allintra(3));
+    assert!(leaf::get_disallow_4x4_default(3));
+}
+
 #[test]
 fn disallow_8x8_matches_c() {
     assert_eq!(
