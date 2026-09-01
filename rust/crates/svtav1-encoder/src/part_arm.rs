@@ -446,9 +446,10 @@ pub(crate) fn video_pd0_params(enc_mode: u8, cli_qp: u32, luma_pixels: usize) ->
     (pic_pd0_lvl, coeff_rate_est_lvl, enc_mode <= 8)
 }
 
-/// The PD0 block-encode model and depth-early-exit threshold for the
-/// REFINEMENT path (`pd0_pick_sb_partition_m6_eval`, CLI presets 0..=8),
-/// as `(mode, depth_early_exit_th)`.
+/// The PD0 block-encode model, depth-early-exit threshold and PD0's OWN
+/// coefficient-rate level for the REFINEMENT path
+/// (`pd0_pick_sb_partition_m6_eval`, CLI presets 0..=8), as
+/// `(mode, depth_early_exit_th, pd0_coeff_rate_est_lvl)`.
 ///
 /// The fixed-tree path (preset >= 9) has its own entry point,
 /// [`crate::pd0::pd0_pick_sb_partition_video`], because there the level,
@@ -456,9 +457,26 @@ pub(crate) fn video_pd0_params(enc_mode: u8, cli_qp: u32, luma_pixels: usize) ->
 /// does — `max_block_cap_active` is already false for both arms on this
 /// path and `nsq_geom_enabled` is already arm-dispatched at the call sites.
 ///
-/// `pic_pred_depth_only` is FALSE on this path by construction — it is the
-/// predicate that routes an SB to the fixed tree instead — so the threshold
-/// is 1000 only when `pd0_level <= PD0_LVL_1` (enc_mode_config.c:7232).
+/// `pd0_coeff_rate_est_lvl` is `None` for the allintra arm, meaning "keep the
+/// frame-level `FunnelCfg::coeff_rate_est_lvl` the call site already passes".
+/// C derives PD0's rate level from `pd0_level` and NOT from the frame's
+/// (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7358-7366:
+/// `pd0_level <= PD0_LVL_3 -> 2`, `<= PD0_LVL_4 -> 4`, else 0, then
+/// `MAX(that, pcs->rate_est_level)`), and `set_rate_est_ctrls` maps
+/// `2 -> coeff_rate_est_lvl 1` and `4 -> 2`. On the allintra arm the two
+/// happen to agree at every preset this path serves, which is why the frame
+/// value was correct there and is left alone.
+///
+/// `pred_depth_only` is C's `ctx->pic_pred_depth_only`
+/// (`enc_mode_config.c:7095`: `depth_refinement_ctrls.mode ==
+/// PD0_DEPTH_PRED_PART_ONLY`, i.e. depth-refinement level 10). It is what
+/// picks `depth_early_exit_lvl` 1 over 2 (`:7229-7233`), so a level > LVL_1
+/// with pred-depth-only takes `early_exit_th` 0 — which `Pd0Ctx::pick` spells
+/// as `th = 1000` — rather than 900. MEASURED on the video arm at M8 through
+/// C's own `SVT_PD0CFG_OUT` dump: `gradient 72x88 q40 p8` reports
+/// `lvl=4 subres=1 exit_th=0 rate_lvl=2 pred_only=1`, and the sc_class5
+/// contents at the same preset take depth-refinement level 6, so THEY get
+/// `pred_only=0` and the 900 threshold.
 ///
 /// **Not fully ported, and it returns the pre-existing allintra model rather
 /// than a guess:** the video arm's `pic_pd0_lvl` is 0 at M0..M2 and 1 at M3
@@ -474,27 +492,27 @@ pub(crate) fn refined_pd0_model(
     enc_mode: u8,
     cli_qp: u32,
     luma_pixels: usize,
-) -> (crate::pd0::Pd0Mode, u128) {
+    pred_depth_only: bool,
+) -> (crate::pd0::Pd0Mode, u128, Option<u8>) {
     match arm {
-        ScArm::Allintra => (crate::pd0::Pd0Mode::Lvl1, 1000),
+        ScArm::Allintra => (crate::pd0::Pd0Mode::Lvl1, 1000, None),
         ScArm::Video { .. } => {
             let (pic_pd0_lvl, _, _) = video_pd0_params(enc_mode, cli_qp, luma_pixels);
-            // MEASURED, and NOT the C model — see `docs/INTER-ENCODE-PLAN.md`
-            // §1h. Returning `(Lvl3, 900)` for `pic_pd0_lvl == 3` is what C
-            // asks for, and on the campaign's cells it moves
-            // `gradient 72x88 p4` from 1.996 % to 0.641 % while pushing
-            // `gradient 72x88 p5` from 0.000 % to 1.953 % and the reference
-            // cell `gradient 64x64 p6` from 0.416 % to 5.619 % — undoing §1e's
-            // result that the reference cell's tree and every leaf mode
-            // already equal C's. The subres step is both the improvement and
-            // the regression; `is_complete_b64` is not the explanation (that
-            // row is byte-identical) and neither is the 900 threshold (p4
-            // 0.641 vs 0.356). Until a C-side PD0 dump says WHY, this returns
-            // the pre-existing ALLINTRA model on both arms rather than
-            // shipping a partition search that is measurably further from C.
+            // `set_depth_early_exit_ctrls` (enc_mode_config.c:7229-7233).
+            let th: u128 = if pic_pd0_lvl <= 1 || pred_depth_only {
+                1000
+            } else {
+                900
+            };
             match pic_pd0_lvl {
-                3 => (crate::pd0::Pd0Mode::Lvl3, 900),
-                _ => (crate::pd0::Pd0Mode::Lvl1, 1000),
+                3 => (crate::pd0::Pd0Mode::Lvl3, th, Some(1)),
+                4 => (crate::pd0::Pd0Mode::Lvl4, th, Some(2)),
+                // The unported levels (0..=2 here; 5/6 cannot reach the
+                // refinement path). `th` deliberately goes back to 1000, the
+                // pre-existing value, because the model returned with it is
+                // LVL_1's — pairing LVL_1's block cost with LVL_5's threshold
+                // would be a third thing that is neither arm.
+                _ => (crate::pd0::Pd0Mode::Lvl1, 1000, None),
             }
         }
     }

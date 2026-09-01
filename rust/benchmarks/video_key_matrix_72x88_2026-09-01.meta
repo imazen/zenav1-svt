@@ -4,9 +4,11 @@
 date: 2026-09-01
 host: mac (Apple aarch64), colima arm64 for the C-side --wrap dumps
 base: ea23b52ad (docs(inter): §1l), i.e. the "before" column
-after: the three chunks recorded in docs/INTER-ENCODE-PLAN.md §1m + §1n + §1o
-       (the video palette ladder, the per-arm preset clamp on the dlf
-        derivation, and the per-arm `disallow_4x4` fork)
+after: the four chunks recorded in docs/INTER-ENCODE-PLAN.md §1m..§1p
+       (the video palette ladder; the per-arm preset clamp on the dlf
+        derivation; the per-arm `disallow_4x4` fork; and PD0_LVL_4 on the
+        refinement path, with the subres transform-height fix to the PD0
+        coefficient-rate threshold that it exposed)
 
 ## How it was produced
 
@@ -26,13 +28,13 @@ campaign has had a cell read 0.000 % while differing (see §1i's note on
 
 ## Result
 
-42 -> 55 byte-identical of 60. Thirteen cells closed, one improved
-(`gradient p3` 1.628 % -> 0.212 %), NOTHING worse and every cell the three
+42 -> 56 byte-identical of 60. Fourteen cells closed, one improved
+(`gradient p3` 1.628 % -> 0.212 %), NOTHING worse and every cell the four
 chunks cannot reach unchanged to the byte.
 
-Closed: `screen` p7 + p8; all five content classes at p12 AND p13; `diag` p3.
+Closed: `screen` p7 + p8; all five content classes at p12 AND p13; `diag` p3;
+`gradient` p8.
 
-Still open: `gradient`/`diag`/`screenrep` at p0 (<= 0.483 %), `gradient` p3
-(0.212 %, coded tree exact — the residual is in the entropy layer) and
-`gradient` p8 (1.673 %, C 1554 B port 1528 — the port UNDER-splits: 24 C-only
-blocks / 0 port-only, C coding 8x8 and 16x16 where the port codes 32x32).
+Still open: `gradient`/`diag`/`screenrep` at p0 (<= 0.483 %) and `gradient` p3
+(0.212 %, coded tree exact — the residual is in the entropy layer). Nothing
+above 0.5 % survives.

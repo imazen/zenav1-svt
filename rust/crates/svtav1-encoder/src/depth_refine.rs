@@ -121,6 +121,13 @@ pub struct DrCtrls {
     /// enc_mode_config.c:11638: <= M3 -> false). Gates the e-depth caps
     /// (set_start_end_depth :1811) and the refined-scan child marking.
     pub disallow_4x4: bool,
+    /// C `ctx->pic_pred_depth_only` (`enc_mode_config.c:7095`):
+    /// `depth_refinement_ctrls.mode == PD0_DEPTH_PRED_PART_ONLY`, which ONLY
+    /// `set_block_based_depth_refinement_controls` case 10 (`:6986`) sets.
+    /// Read by `set_depth_early_exit_ctrls` (`:7229-7233`), where it forces
+    /// `depth_early_exit_lvl` 1 — `early_exit_th` 0 — even at a `pd0_level`
+    /// above PD0_LVL_1.
+    pub pred_depth_only: bool,
 }
 
 /// C `(uint8_t)~0` -> `MIN_SIGNED_VALUE` sentinel for the second-tier
@@ -267,6 +274,9 @@ impl DrCtrls {
     /// (`crate::part_arm::disallow_4x4`: allintra `> M3`, video `> M2`) and
     /// independent of the level, so the caller resolves it and passes it in.
     fn for_level(level: u8, disallow_4x4: bool) -> Self {
+        // C `set_block_based_depth_refinement_controls` case 10 (:6986) is the
+        // only row that sets `mode = PD0_DEPTH_PRED_PART_ONLY`.
+        let pred_depth_only = level == 10;
         match level {
             // case 1: sc_class5 M0/M1. s2/e2 = literal 0 (NOT the sentinel).
             1 => DrCtrls {
@@ -286,6 +296,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 2,
                 disallow_4x4,
+                pred_depth_only,
             },
             // case 5: sc_class5 M2. s2/e2 = sentinel (always passes).
             5 => DrCtrls {
@@ -305,6 +316,7 @@ impl DrCtrls {
                 limit_to_pd0: 2,
                 unavail_mode: 2,
                 disallow_4x4,
+                pred_depth_only,
             },
             // case 6: M0-M4 (!sc_class5) and sc_class5 M3/M4.
             6 => DrCtrls {
@@ -324,6 +336,7 @@ impl DrCtrls {
                 limit_to_pd0: 1,
                 unavail_mode: 2,
                 disallow_4x4,
+                pred_depth_only,
             },
             // case 9: M5.
             9 => DrCtrls {
@@ -343,6 +356,7 @@ impl DrCtrls {
                 limit_to_pd0: 1,
                 unavail_mode: 0,
                 disallow_4x4,
+                pred_depth_only,
             },
             // case 0: PD0_DEPTH_NO_RESTRICTION — every field but `mode` is
             // left at whatever the context held, and none of them is read
@@ -365,6 +379,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 2,
                 disallow_4x4,
+                pred_depth_only,
             },
             // case 2 / case 3 / case 4: video-only, identical to case 1 except
             // for the s1/e1 threshold and the two split thresholds.
@@ -393,6 +408,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 2,
                 disallow_4x4,
+                pred_depth_only,
             },
             // case 7 / case 8: video-only, the cost-band-modulated rows below
             // case 9. Case 8 additionally drops `pd0_unavail_mode_depth` to 0.
@@ -413,6 +429,7 @@ impl DrCtrls {
                 limit_to_pd0: 1,
                 unavail_mode: if level == 7 { 2 } else { 0 },
                 disallow_4x4,
+                pred_depth_only,
             },
             // case 10 (M6+): PRED_PART_ONLY — s = e = 0 everywhere.
             _ => DrCtrls {
@@ -432,6 +449,7 @@ impl DrCtrls {
                 limit_to_pd0: 0,
                 unavail_mode: 0,
                 disallow_4x4,
+                pred_depth_only,
             },
         }
     }

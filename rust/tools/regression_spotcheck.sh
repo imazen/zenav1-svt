@@ -652,8 +652,12 @@ byteVideoKey "video-key-cdef-p8"  uniform 64 64 40 8
 #
 # PROMOTED to byteVideoKey 2026-09-01 by the palette-arm chunk below, which
 # closed its payload. It was fhVideoKey while the tile still differed by a wide
-# margin — C 114 B against the port's 568 — with the note "promote it when the
-# payload closes". The payload closed: the port emits C's 114 B to the byte.
+# margin, with the note "promote it when the payload closes". MEASURED here
+# after: C 114 B and the port emits C's 114 B to the byte. (The BEFORE figure
+# is not this session's — the comment above this block recorded 697 B and
+# `docs/INTER-ENCODE-PLAN.md` §1l recorded 568 B at different points in the
+# campaign; either way the payload was ~5x. The 72x88 sibling's before/after
+# WAS measured here: 911 B against C's 179, now byte-identical.)
 byteVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8
 
 # --- the p6 payload CLOSED, 2026-09-01 (the depth-refinement arm chunk)
@@ -946,6 +950,53 @@ byteVideoKey "video-key-dlf-preset-clamp-p13-gradient" gradient 72 88 40 13
 # byte-identical at every OTHER preset both before and after, so a regression
 # here can only be this fork.
 byteVideoKey "video-key-disallow-4x4-arm-p3-diag" diag 72 88 40 3
+
+# --- PD0_LVL_4 on the REFINEMENT path, 2026-09-01. `set_pic_pd0_lvl_default`
+# gives the video arm `MIN(MAX_PD0_LVL, 3 + ldp0_lvl_offset[qp_band])` at M8
+# (`enc_mode_config.c:8631`) = level 4 at 240p / CLI qp 40, and PD0's OWN
+# `rate_est_level` is then 4 -> `coeff_rate_est_lvl` 2 (`:7358-7366` +
+# `set_rate_est_ctrls`). `refined_pd0_model` matched only level 3 and returned
+# the allintra PD0_LVL_1 model for everything else, and the call sites passed
+# the FRAME's `coeff_rate_est_lvl` rather than PD0's.
+#
+# CONFIRMED, not inferred, by C's own `SVT_PD0CFG_OUT` dump (the
+# `svt_aom_sig_deriv_enc_dec_pd0` --wrap) on `gradient 72x88 q40 p8` video:
+#   lvl=4 subres=1 exit_th=0 rate_lvl=2 qpoff=0 fastcoef=2 pred_only=1 d4=1
+#
+# A SECOND defect underneath it, which the first exposed: the `eob < th ?
+# 6000 + eob*500` shortcut's `th = (bwidth*bheight)>>5` takes the TRANSFORM's
+# height, and at `mds_subres_step == 1` C rewrites TX_NxN -> TX_NxN/2
+# (product_coding_loop.c:4332-4344) BEFORE `txbheight` is read. The port used
+# the block height, so an 8x8 under subres got `th = 2` instead of 1 and every
+# such block took the 6500 shortcut where C prices the real rate. It could not
+# matter before PD0_LVL_4 was wired — `th` is read only at
+# `coeff_rate_est_lvl >= 2`, which until now only the allintra M7/M8 rows set,
+# and those are PD0_LVL_1 with subres 0.
+#
+# OBSERVED, 72x88 q40 video frame 0:
+#   gradient p8: C 1554 B, port 1528 B (1.673%) -> BYTE-IDENTICAL.
+#                Coded tree before: 24 C-only blocks / 0 port-only, C coding
+#                8x8 and 16x16 where the port coded 32x32.
+#   screenrep p8: byte-identical before AND after, but 2401 B against C's 2390
+#                (0.460%) on the INTERMEDIATE build that wired PD0_LVL_4
+#                without the `th` fix — so it is the cell that witnesses the
+#                second defect specifically. Its PD0 block costs then differed
+#                on 83 of 130 blocks against C's `SVT_PD0COST_OUT`; with the
+#                fix all 130 agree on dist, ybits, cost and lambda.
+# A THIRD cell for the `pic_pred_depth_only` half specifically: the
+# depth-refinement ladder forks on `sc_class5` at exactly this preset (level 6
+# for screen content, level 10 otherwise), so C's early-exit threshold differs
+# between these three cells and a single hardcoded value is wrong on one group
+# whichever it takes. CONFIRMED per cell by `SVT_PD0CFG_OUT`:
+#   gradient  p8: pred_only=1 exit_th=0    (port th 1000)
+#   screenrep p8: pred_only=1 exit_th=0    (port th 1000)
+#   screen    p8: pred_only=0 exit_th=900  (port th 900)
+# `screen` is byte-identical on both sides of this chunk, so it witnesses the
+# fork only in company with the two above — it is here so a future change that
+# collapses the branch fails on the group it breaks.
+byteVideoKey "video-key-pd0-lvl4-arm-p8-gradient" gradient 72 88 40 8
+byteVideoKey "video-key-pd0-lvl4-subres-th-p8-screenrep" screenrep 72 88 40 8
+byteVideoKey "video-key-pd0-lvl4-predonly-fork-p8-screen" screen 72 88 40 8
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))

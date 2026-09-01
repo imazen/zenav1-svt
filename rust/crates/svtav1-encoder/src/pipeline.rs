@@ -8032,16 +8032,32 @@ fn encode_tile_rows(
         );
         // C `pcs->pic_pd0_lvl` -> `set_pd0_ctrls`, for THIS arm, as the
         // REFINEMENT path's PD0 model. The allintra arm is PD0_LVL_1 at every
-        // preset this path serves; the video arm is PD0_LVL_3 at M3..M7 (the
-        // same block cost plus subres step 1 and a 900 depth-early-exit
-        // threshold). `refined_pd0_model` documents the levels it does not
-        // carry and returns the pre-existing model for them.
-        let (pd0_refined_mode, pd0_refined_eexit_th) = crate::part_arm::refined_pd0_model(
-            sc_arm,
-            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
-            u32::from(cli_qp),
-            w * h,
-        );
+        // preset this path serves; the video arm is PD0_LVL_3 at M3..M7 and
+        // PD0_LVL_4 at M8 (both LVL_1's block cost plus subres step 1; LVL_4
+        // additionally prices coefficients with `coeff_rate_est_lvl` 2). The
+        // depth-early-exit threshold is 900 at those levels EXCEPT under
+        // `pic_pred_depth_only`, which is why the flag is passed.
+        // `refined_pd0_model` documents the levels it does not carry (0..=2)
+        // and returns the pre-existing allintra model for them.
+        let (pd0_refined_mode, pd0_refined_eexit_th, pd0_refined_rate_lvl) =
+            crate::part_arm::refined_pd0_model(
+                sc_arm,
+                crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+                u32::from(cli_qp),
+                w * h,
+                // C `ctx->pic_pred_depth_only` = `depth_refinement_ctrls.mode
+                // == PD0_DEPTH_PRED_PART_ONLY`, which only level 10 sets.
+                crate::depth_refine::DrCtrls::for_arm(
+                    sc_arm,
+                    speed_config.preset,
+                    tile_sc.classes.sc_class5,
+                    u32::from(cli_qp),
+                )
+                .pred_depth_only,
+            );
+        // PD0's own coefficient-rate level. `None` on the allintra arm keeps
+        // the frame-level `FunnelCfg` value the call sites already pass.
+        let pd0_refined_rate_lvl = pd0_refined_rate_lvl.unwrap_or(funnel_cfg.coeff_rate_est_lvl);
         // C `ctx->pd0_use_src_samples = allintra || pcs->hbd_md`
         // (enc_mode_config.c:7309). FALSE on every video frame, so the video
         // arm's PD0 predicts from the recon it generates per block instead of
@@ -9145,7 +9161,7 @@ fn encode_tile_rows(
                                     // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
                                     // (real PD0 coeff rate). M7/M8's level-2 PD0
                                     // approximation only fires when this is >= 2.
-                                    funnel_cfg.coeff_rate_est_lvl,
+                                    pd0_refined_rate_lvl,
                                     pd0_refined_mode,
                                     pd0_refined_eexit_th,
                                     // max-block variance cap. Allintra: M8+
@@ -9236,7 +9252,7 @@ fn encode_tile_rows(
                                                 ),
                                                 tables,
                                                 if dr.disallow_4x4 { 8 } else { 4 },
-                                                funnel_cfg.coeff_rate_est_lvl,
+                                                pd0_refined_rate_lvl,
                                                 pd0_refined_mode,
                                                 pd0_refined_eexit_th,
                                                 // Same cap predicate as the
@@ -9431,7 +9447,7 @@ fn encode_tile_rows(
                                     // perform_tx_pd0 `eob<th ? 6000+eob*500`
                                     // approximation that lowers the parent-NONE
                                     // cost and matches C's partition depth.
-                                    funnel_cfg.coeff_rate_est_lvl,
+                                    pd0_refined_rate_lvl,
                                     pd0_refined_mode,
                                     pd0_refined_eexit_th,
                                     // The max-block variance cap, per ARM.

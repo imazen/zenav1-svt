@@ -1365,7 +1365,9 @@ is an optimisation to make against a measurement, not while closing cells.
 ### 1m. The VIDEO arm's PALETTE ladder (2026-09-01) — `screen p8`, the campaign's worst cell, closes to the byte
 
 `screen 72x88 q40 p8` was **408.939 %** off (C 179 B against the port's 911) and
-its 64x64 sibling **398 %** (114 B against 568). Both are byte-identical now, and
+its 64x64 sibling about the same (C 114 B; §1l recorded the port at 568 and the
+spot-check cell's own comment at 697 — neither was re-measured here, only the
+AFTER). Both are byte-identical now, and
 so is `screen 72x88 q40 p7`, which §1l's table did not list at all — **a
 correction to that table: it recorded presets 0, 3, 8 and 12/13 as the open
 `72x88` rows and missed `screen p7` at 13.095 %.** The two failing cells were one
@@ -1430,7 +1432,7 @@ would witness it is still wanted.
 |---|--:|--:|
 | `screen 72x88 q40 p7` | 13.095 % (C 168 B, port 190) | **0.000, BYTE-IDENTICAL** |
 | `screen 72x88 q40 p8` | 408.939 % (C 179 B, port 911) | **0.000, BYTE-IDENTICAL** |
-| `screen 64x64 q40 p8` | 398 % (C 114 B, port 568) | **0.000, BYTE-IDENTICAL** |
+| `screen 64x64 q40 p8` | ~5x (C 114 B; §1l recorded port 568, the cell's own comment 697 — neither re-measured here) | **0.000, BYTE-IDENTICAL** |
 | `screen 72x88 q40 p0..p6, p9..p11` | byte-identical | byte-identical, same bytes |
 
 `video-key-ibc-arm-p8` is PROMOTED from `fhVideoKey` to `byteVideoKey`; it had
@@ -1556,33 +1558,249 @@ and the trees, on the same builds:
 | `diag p3` | 22 -> **0** | 10 -> **0** |
 | `gradient p3` | (not dumped before) | **0 flips, 0 port-only** after |
 
-**`gradient p3`'s residual 3 bytes are NOT in mode decision.** Its coded tree,
-every leaf mode, uv mode, angle delta, tx depth and skip flag equal C's — 116
-blocks joined, 0 field flips, 0 port-only geometry — so the divergence is
-downstream, the same shape as §1j's two residuals. `vdiff_cell.sh`'s op-trace
-alignment does not resolve it (it reports C segment 0 against port segment 4
-and a first-op mismatch that is an alignment artifact, not a symbol); that is
-the next probe to fix or replace, and the cell to fix it on.
+**`gradient p3`'s residual 3 bytes are NOT in mode decision — they are LOOP
+RESTORATION.** Its coded tree, every leaf mode, uv mode, angle delta, tx depth
+and skip flag equal C's (116 blocks joined, **0 field flips, 0 port-only
+geometry**), and the op trace localizes the rest exactly:
 
-### The state of the 72x88 q40 video-key matrix after 1m + 1n + 1o
+```
+C tile ops 9461, port 9439.  C ops 0..21 are a BOOL + 21 BOOLEQ prefix the
+port does not emit AT ALL; C op 22 == port op 0 and every op after lines up.
+  C  0: W BOOL   val=1 f=15913 rng=32768      port 0: W CDF nsyms=10 s=3 ...
+  C 22: W CDF nsyms=10 s=3 icdf=[12631,...]   port 0: the same symbol
+```
 
-One build each side, five content classes x twelve presets = 60 cells:
-**42 -> 55 byte-identical, thirteen closed, one improved (`gradient p3`
-1.628 % -> 0.212 %), nothing worse, every cell these three chunks cannot reach
-unchanged to the byte.** The full before/after is
-`benchmarks/video_key_matrix_72x88_2026-09-01.tsv`. What is still open:
+A one-bool-plus-literal-bits prefix at the head of a superblock's symbols is
+`read_lr` — the AV1 spec codes each superblock's loop-restoration unit
+parameters BEFORE its `decode_partition`, and a Wiener/SGR unit's coefficients
+are `decode_signed_subexp_with_ref` literals. `tools/fh_fields.py` confirms it
+in the header, where the same decision is signalled:
+
+| field | C | port |
+|---|--:|--:|
+| `lr_type[0]` (`gradient 72x88 q40 p3`) | **3** (RESTORE_SWITCHABLE) | **0** (RESTORE_NONE) |
+| `lr_type[0]` (`gradient 72x88 q40 p4`, byte-identical control) | 0 | 0 |
+
+So the next chunk on this cell is the VIDEO arm's RESTORATION ladder, and the
+fork is one row wide again. At 240p on a base key frame
+(`is_not_last_layer = true`):
+
+| preset | `wn_filter_level` allintra / video | `sg_filter_level` allintra / video |
+|---|---|---|
+| M0..M3 | 3 / **4** | **0 / 3** |
+| M4..M6 | 4 / 5 | 0 / 0 |
+| M7..M8 | 0 / 5 | 0 / 0 |
+
+(`svt_aom_get_wn_filter_level_{allintra,default}` `:1386` / `:1357`,
+`svt_aom_get_sg_filter_level_{allintra,default}` `:1431` / `:1402`.)
+
+**`sg_filter_level` is the one that matters at p3**: the allintra ladder is 0
+everywhere except `<= ENC_MR`, so self-guided restoration is UNREACHABLE on the
+still path, while the video arm asks for level 3 through M3. With Wiener alone
+the port's search picks RESTORE_NONE; with SGR in the set C picks
+RESTORE_SWITCHABLE. That is also why p4 is byte-identical either way — there
+both arms have `sg = 0`.
+
+The search is already ported and NOT wired: `crates/svtav1-encoder/src/
+port_sgr_search.rs` carries `apply_sgr`, `search_selfguided_restoration`,
+`count_sgrproj_bits` and the decision bodies of `search_sgrproj_finish` /
+`search_switchable`, and says in its own header that "the wiring is a separate
+change". `MultiProcessesSignals` models `wn_filter_level`, `sg_filter_level`
+and `enable_restoration` at tier 1, and `speed_config::seq_tools_for_preset`
+ALREADY takes the VIDEO ladders for the sequence-header bit
+(`enable_restoration = wn_nonzero || sg_nonzero`, i.e. preset <= 8). So the
+header side is done; the frame side is not.
+
+**Scope it honestly — this is NOT the wiring-only shape §1m..§1p had.**
+`restoration.rs`'s `search_restoration_still_bd` is a two-way
+{NONE, WIENER} frame RD and `RestUnit` carries a `WienerInfo` and nothing else;
+`entropy/lr.rs` has no SGRPROJ writer at all (`write_lr_for_sb` even
+`debug_assert`s `frame_rtype == RESTORE_WIENER`, with the comment "only WIENER
+frame types are searched/signaled (sg_filter_lvl = 0)"); and
+`apply_restoration_frame` applies Wiener only. Four new pieces, not one:
+a per-unit SGR sse, the SGRPROJ and SWITCHABLE frame walks feeding a four-way
+`rest_finish_search` argmin, the unit-param writer, and the apply.
+
+**And do not wire `wn_filter_level` on its own as a warm-up.** The video ladder
+is 5 at M4..M8 where the allintra one is 0 above M6, so it would turn the
+Wiener search ON at presets 7 and 8 — where `gradient` and `screenrep` are
+byte-identical TODAY with the search off, i.e. C's own level-5 search picks
+RESTORE_NONE there. Flipping that on cannot close p3 (whose gap is `sg`, not
+`wn`) and can only put two green cells at risk. Land the SGR arm and the wn
+arm together, or measure the wn arm on the full 60-cell matrix before
+believing it.
+
+**A CORRECTION to the sentence this replaces**, which said the residual was
+"downstream, the same shape as §1j's two residuals" and that
+`vdiff_cell.sh`'s alignment "does not resolve it". Both halves were wrong. The
+tool resolves it perfectly once you read its segments rather than its
+first-diff line: its positive control passes on `gradient p4`
+("op streams identical", 9400 ops a side), and on p3 the 22-op offset is the
+whole answer. Its `STAGE:`/`FIRST DIVERGING OP: 0` line is what misled — that
+comes from `identity_diff.py`, whose op index is documented as unreliable on a
+video cell. Read `optrace_first_diff.py`'s segment lengths, and when they
+differ by a constant, look for a PREFIX one side omits rather than a symbol
+both sides got wrong.
+
+### 1p. PD0_LVL_4 on the REFINEMENT path (2026-09-01) — `gradient p8`, and a latent `th` defect it exposed
+
+`gradient 72x88 q40 p8` was 1.673 % off (C 1554 B, the port 1528 — the port
+UNDER-split) and was the largest cell left after §1o. It is byte-identical now.
+
+**Localized by DUMPING C's PD0 configuration, not by reading the ladder.** The
+coded-tree join said the shape of the answer — `tools/tree_diff.py` on C's
+`SVT_CTREE_OUT` against the port's `SVTAV1_PACKTREE`: **24 C-only blocks, 0
+port-only**, with `bsize` C=BLOCK_8X8 / port=BLOCK_32X32 at `mi=(0,0)` and
+C=BLOCK_16X16 / port=BLOCK_32X32 at three more — i.e. the port stops splitting
+where C keeps going, which is a PD0 cost story. `SVT_PD0CFG_OUT` (the
+`svt_aom_sig_deriv_enc_dec_pd0` `--wrap`) then said exactly what C runs, on
+frame 0 SB0 of that cell:
+
+```
+lvl=4 subres=1 dev_th=5 split_th=50 exit_th=0 rate_lvl=2 qpoff=0
+fastcoef=2 srcsamp=0 pred_only=1 d4=1 d8=0 maxbs=64 cb64=1 nsq=1
+```
+
+Three facts in one line, none of which the port had:
+
+1. **`lvl=4`.** `set_pic_pd0_lvl_default`'s `enc_mode <= ENC_M8` arm is
+   `MIN(MAX_PD0_LVL, 3 + ldp0_lvl_offset[qp_band])` (`:8631`) — 4 at 240p and
+   CLI qp 40. `refined_pd0_model` matched only `3 => Lvl3` and returned the
+   ALLINTRA `Lvl1` model for everything else. **A doc correction falls out of
+   this**: `pd0_pick_sb_partition_video`'s comment said the level was
+   `4 + ldp0_lvl_offset` "for M8 up", i.e. 5 at M8. The implementation was
+   right — it is tier-1 gated — the comment was wrong, and is fixed in place.
+2. **`rate_lvl=2`** — PD0 derives its OWN `rate_est_level` from `pd0_level`
+   (`:7358-7366`: `<= PD0_LVL_3 -> 2`, `<= PD0_LVL_4 -> 4`, else 0), and
+   `set_rate_est_ctrls` maps 4 to `coeff_rate_est_lvl = 2`. The three
+   `pd0_pick_sb_partition_m6_eval` call sites passed the FRAME's
+   `FunnelCfg::coeff_rate_est_lvl` instead. On the allintra arm the two agree
+   at every preset that path serves, which is why it was right there.
+3. **`pred_only=1`** — `ctx->pic_pred_depth_only` is
+   `depth_refinement_ctrls.mode == PD0_DEPTH_PRED_PART_ONLY`, which only
+   depth-refinement level 10 sets, and the video arm's non-`sc_class5` ladder
+   takes level 10 from M8 up (`:9393`). That makes
+   `set_depth_early_exit_ctrls` pick level 1 — `early_exit_th` 0, which
+   `Pd0Ctx::pick` spells as `th = 1000` — even at a `pd0_level` above LVL_1.
+   `refined_pd0_model` had hardcoded 900 for its one non-allintra row and
+   documented `pic_pred_depth_only` as "FALSE on this path by construction";
+   at M8 it is not. `DrCtrls` now carries the flag and the caller passes it.
+
+   **BOTH branches of that flag are confirmed against C's own dump**, which
+   matters because the ladder forks on `sc_class5` at exactly this preset —
+   the `sc_class5` row is level 6 (`:9361`), the other level 10 (`:9393`):
+
+   | cell at `72x88 q40 p8` | C `pred_only` | C `exit_th` | port `th` |
+   |---|--:|--:|--:|
+   | `gradient` (not screen content) | 1 | 0 | 1000 |
+   | `screenrep` (not screen content) | 1 | 0 | 1000 |
+   | `screen` (`sc_class5`) | **0** | **900** | 900 |
+
+   A single hardcoded threshold would have been wrong on one of the two
+   groups whichever value it took.
+
+**A SECOND defect, latent until the first was fixed, and it caused a
+REGRESSION that the matrix caught.** Wiring PD0_LVL_4 closed `gradient p8` and
+simultaneously broke `screenrep 72x88 q40 p8`, which had been byte-identical:
+2401 B against C's 2390. The PD0 block-cost join named it in one read —
+C's `SVT_PD0COST_OUT` against the port's `SVTAV1_PD0DBG`, 130 blocks each side,
+**83 of 130 costs differing** and every 8x8 the same way:
+
+| block | C `ybits` | port `ybits` |
+|---|--:|--:|
+| `(0,0) 8x8` | 31528 | **6500** |
+| `(0,8) 8x8` | 33646 | **6500** |
+| `(8,8) 8x8` | 31598 | **6500** |
+
+6500 is `6000 + eob*500` at `eob = 1` — the port was taking the
+`coeff_rate_est_lvl >= 2 && eob < th` shortcut where C priced the real
+coefficient rate. The threshold is `th = (bwidth * bheight) >> 5`, and
+**`bheight` is the TRANSFORM's height, not the block's**: at
+`mds_subres_step == 1` C rewrites `tx_size` TX_NxN -> TX_NxN/2
+(`product_coding_loop.c:4332-4344`) before `txbheight` is read, so an 8x8 under
+subres has `th = (8*4)>>5 = 1` and `eob = 1` is NOT below it. The port computed
+`(8*8)>>5 = 2`.
+
+It could not have mattered earlier: `th` is read only at
+`coeff_rate_est_lvl >= 2`, and the only rows that set that before this chunk
+were the ALLINTRA M7/M8 ones — which are PD0_LVL_1, subres step 0, where the
+transform height IS the block height. A latent defect in a live function,
+switched on by the level that first reaches it.
+
+With `tx_h` instead of `bh`: **130 / 130 PD0 block costs identical** on
+`screenrep p8` — dist, ybits, RD cost and lambda — and the cell is
+byte-identical again.
+
+**Per-cell, 72x88 q40 video frame 0:**
+
+| cell | before | LVL_4 only | LVL_4 + the `th` fix |
+|---|--:|--:|--:|
+| `gradient p8` | 1.673 % (C 1554 B, port 1528) | **0.000, BYTE-IDENTICAL** | **BYTE-IDENTICAL** |
+| `screenrep p8` | byte-identical | 0.460 % (2401 B vs 2390) | **BYTE-IDENTICAL** |
+| every other cell | — | unchanged | unchanged |
+
+The intermediate column is why `screenrep p8` earns a spot-check cell it would
+not otherwise deserve: it is byte-identical on both sides of the chunk as a
+whole and fails loudly on the half of it.
+
+**Every video-key spot-check cell is now a `byteVideoKey`.** After §1m
+promoted `video-key-ibc-arm-p8`, `tools/regression_spotcheck.sh` invokes
+`byteVideoKey` 26 times and `ratioVideoKey` / `fhVideoKey` **zero** times —
+both helpers survive only as definitions. Every video-mode key-frame assertion
+in the registry is the strong one; there is no longer a cell whose payload is
+being watched by proxy. Keep it that way: a new cell goes in as
+`byteVideoKey` or with a written reason why its payload cannot close yet.
+
+### The state of the 72x88 q40 video-key matrix after 1m..1p
+
+**42 -> 56 byte-identical of 60**, fourteen cells closed, one improved
+(`gradient p3` 1.628 % -> 0.212 %), nothing worse.
+`benchmarks/video_key_matrix_72x88_2026-09-01.tsv` carries the full
+before/after. Everything still open:
 
 | preset | cells still off |
 |---|---|
 | 0 | `gradient` 0.447 %, `diag` 0.483 %, `screenrep` 0.043 % |
-| 3 | `gradient` 0.212 % (tree exact — entropy layer) |
-| 8 | `gradient` 1.673 % (C 1554 B, port 1528) |
+| 3 | `gradient` 0.212 % (coded tree EXACT — `lr_type[0]` C=3 port=0) |
 
-Nothing above 2 % survives. `gradient p8` is the largest and the only one whose
-tree has not been dumped; the p0 cluster is three content classes at once,
-which by §1n's own lesson is the shape of a single shared cause rather than
-three.
+Nothing above 0.5 % survives at `72x88 q40` in video mode.
 
+**But read the p0 cluster as a WARNING, not as "nearly closed" — measured,
+2026-09-01.** `gradient 72x88 q40 p0` is 0.447 % off in BYTES and its coded
+tree is not close: `tools/tree_diff.py` on C's `SVT_CTREE_OUT` against the
+port's `SVTAV1_PACKTREE` reports **214 field flips and 4 port-only blocks**
+over 128 joined keys, including `bsize` C=BLOCK_32X32 / port=BLOCK_4X16 at
+`mi=(0,0)` and four `C_skip=1` blocks where the port codes 22-40 luma
+coefficients. Port-only geometry is the tool's own alarm condition (C-only keys
+are expected — C re-stamps sub-keys), so those trees genuinely differ. This is
+§1f's cancellation pattern at its most extreme in the campaign so far: a
+completely different tree landing within half a percent of C's size. **A cell at
+0.447 % is not "six bytes from parity" here; it is a different encode that
+happens to cost the same.**
+
+What C runs there, from `SVT_PD0CFG_OUT` on that cell (frame 0, SB0):
+
+```
+lvl=0 subres=0 dev_th=0 split_th=50 exit_th=0 rate_lvl=1 qpoff=0
+fastcoef=2 srcsamp=0 pred_only=0 d4=0 d8=0 maxbs=64 cb64=1 intra=1/0/0 nsq=1
+```
+
+`lvl=0` is PD0_LVL_0, which `refined_pd0_model` explicitly does not carry — it
+returns the allintra PD0_LVL_1 model and says so. Note `intra=1/0/0`
+(`intra_mode_end = DC_PRED`, `angular_pred_level = 0`) against p8's `1/12/1`:
+`set_intra_ctrls` gives PD0_LVL_0 `MAX_INTRA_LEVEL - 1`, whose row is
+DC-only, where every other level on an I-slice takes `intra_level = 1` and
+tests through PAETH with angular prediction (`enc_mode_config.c:7241-7247`).
+`d4=0` also puts 4x4 blocks back in PD0's search at M0..M2 on both arms.
+
+That is the next chunk, and it is a bigger one than §1p: PD0_LVL_0's block cost
+is not a variant of LVL_1 the way LVL_3 and LVL_4 are.
+
+**A harness note for whoever takes it.** `SVTAV1_PACKTREE` emits each coded leaf
+TWICE per run at presets 3..13 and THREE times at preset 0 — the port packs the
+tile more than once — so a per-key count off that file is not a leaf count.
+`tree_diff.py` takes the last record per key and is unaffected; a hand-rolled
+`grep -c` is not.
 
 ## 2. Chunks
 

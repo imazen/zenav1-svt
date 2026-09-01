@@ -2047,12 +2047,28 @@ impl<'a> Pd0Ctx<'a> {
             tx_quant_core(&residual, bw, tx_h, self.qindex, self.qm_level, step);
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
-        // loop.c:4576): `th = (bw*bh)>>5`, dims capped at 32. coeff_rate_est_lvl
-        // 2 (M7/M8) prices `eob < th ? 6000 + eob*500 : real`; the eob==0 ->
-        // 6000 case folds into `eob < th`. Level 1 (M2..M6) keeps the real
+        // loop.c:4501-4508): `th = (bwidth*bheight)>>5` where `bwidth =
+        // txbwidth < 64 ? txbwidth : 32` and likewise for the height —
+        // `.min(32)` is the same map on every power-of-two size <= 64.
+        // coeff_rate_est_lvl 2 prices `eob < th ? 6000 + eob*500 : real`; the
+        // eob==0 -> 6000 case folds into `eob < th`. Level 1 keeps the real
         // cost / skip cost.
+        //
+        // The HEIGHT here is the TRANSFORM's, not the block's: at
+        // `mds_subres_step == 1` C rewrites `tx_size` TX_NxN -> TX_NxN/2
+        // (`:4332-4344`) before `txbheight` is read, so an 8x8 block under
+        // subres has `th = (8*4)>>5 = 1` and NOT 2. MEASURED on
+        // `screenrep 72x88 q40 p8` video against C's `SVT_PD0COST_OUT`: with
+        // `bh` the port priced every 8x8 at the 6500 shortcut where C priced
+        // the real rate (~31528), 83 of 130 PD0 block costs differing. With
+        // `tx_h` all 130 agree.
+        //
+        // It could not matter before PD0_LVL_4 was wired: `th` is read only
+        // when `coeff_rate_est_lvl >= 2`, and the only levels that set that
+        // are the allintra M7/M8 rows — which are PD0_LVL_1, subres step 0,
+        // where `tx_h == bh`.
         let cw = bw.min(32);
-        let ch = bh.min(32);
+        let ch = tx_h.min(32);
         let th = (cw * ch) >> 5;
         let bits = if self.coeff_rate_est_lvl >= 2 && (eob as usize) < th {
             6000 + eob as u64 * 500
@@ -3039,9 +3055,14 @@ fn video_pd0_mode(pic_pd0_lvl: u8) -> Pd0Mode {
 ///
 /// * **the LEVEL** comes from `set_pic_pd0_lvl_default` rather than the
 ///   allintra detector — at 240p and `seq_qp_mod = 2` that is a flat 3 for
-///   M3..M7 and `4 + ldp0_lvl_offset[qp_band]` for M8 up (5 at CLI qp 40,
-///   6 at qp 20, 4 at qp 55), so a video key frame runs PD0_LVL_3 / _4 / _5
-///   where the still path runs LVL_1 / LVL_5 / LVL_6;
+///   M3..M7, `3 + ldp0_lvl_offset[qp_band]` at M8 and
+///   `4 + ldp0_lvl_offset[qp_band]` from M9 up, so a video key frame runs
+///   PD0_LVL_3 / _4 / _5 where the still path runs LVL_1 / LVL_5 / LVL_6.
+///   (CORRECTED 2026-09-01: this said `4 + offset` "for M8 up", i.e. 5 at
+///   M8/qp40. C's own `SVT_PD0CFG_OUT` dump on `gradient 72x88 q40 p8` reports
+///   `lvl=4`, and `:8631` is `MIN(MAX_PD0_LVL, 3 + qp_offset)` for the whole
+///   `enc_mode <= ENC_M8` arm. The IMPLEMENTATION was right — it is
+///   tier-1 gated — only this comment was wrong.);
 /// * **`ctx->max_block_size` is uncapped** — `get_max_block_size_default`
 ///   returns `scs->super_block_size` outright, with no 64x64-variance cap;
 /// * **NSQ geometry is ON** at every preset (`nsq_geom_level` 2 or 3 against
