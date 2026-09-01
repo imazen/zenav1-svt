@@ -3221,7 +3221,18 @@ impl EncodePipeline {
         // `enable_dlf_flag` config — it is always 1 — so the adjustment is
         // translated but cannot fire; `EncMode` is `int8_t`-ranged with
         // `ENC_MR = -1`, hence the `i8`.
-        let dlf_enc_mode = self.speed_config.preset as i8;
+        //
+        // `pcs->enc_mode` is the ARM-CLAMPED preset: C rewrites
+        // `scs->static_config.enc_mode` once in `svt_av1_enc_set_parameter`
+        // (`enc_handle.c:4415-4436`) — allintra `> M9 -> M9`, video non-RTC
+        // `> M11 -> M11` — so every downstream ladder reads the clamped value.
+        // MEASURED: without the clamp, `get_dlf_level_default(12)` falls into
+        // the `else` arm and returns 0 (deblock OFF) where C, seeing M11,
+        // returns 6 on a base picture -> `sb_based_dlf` -> the by-q closed
+        // form -> `loop_filter_level = 3`. That one field is what made every
+        // video-mode key frame at preset 12/13 exactly ONE byte short of C's
+        // on all five synthetic content classes at once.
+        let dlf_enc_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset) as i8;
         // `scs->static_config.fast_decode`. The port has no fast-decode
         // config; C's default is 0. Both dlf ladders take their first arm on
         // `fast_decode <= 1`, so the resolution below is currently unread —

@@ -904,6 +904,32 @@ byteVideoKey "video-key-pd0-recon-pred-p11-screenrep" screenrep 72 88 40 11
 byteVideoKey "video-key-palette-arm-p7-screen-72x88" screen 72 88 40 7
 byteVideoKey "video-key-palette-arm-p8-screen-72x88" screen 72 88 40 8
 
+# --- C's per-arm PRESET CLAMP reaching the deblock ladder, 2026-09-01.
+# `svt_av1_enc_set_parameter` rewrites `scs->static_config.enc_mode` ONCE
+# (`enc_handle.c:4415-4436`): allintra `> M9 -> M9`, video non-RTC
+# `> M11 -> M11`. Every downstream ladder then reads the clamped value. The
+# port's dlf derivation read the RAW preset, so at 12/13 it fell into
+# `get_dlf_level_default`'s `else` arm (level 0, deblock OFF) where C — seeing
+# M11 — takes the `<= ENC_M11` arm and returns 6 on a base picture, i.e.
+# `sb_based_dlf` and the by-q closed form.
+#
+# `loop_filter_level[0]` C=3 port=0 was the FIRST diverging frame-header field
+# (`tools/fh_fields.py`), and because a zero level also elides
+# `loop_filter_level[2..3]` and `loop_filter_delta_enabled`, the port's frame
+# came out exactly ONE byte short — on FIVE content classes at two presets at
+# once, which is what said one shared cause rather than ten.
+#
+# OBSERVED, 72x88 q40 video frame 0, before -> after (all ten cells closed):
+#   uniform   p12/p13: C 30 B   port 29 B   -> BYTE-IDENTICAL
+#   gradient  p12/p13: C 1634 B port 1633 B -> BYTE-IDENTICAL
+#   diag      p12/p13: C 643 B  port 642 B  -> BYTE-IDENTICAL
+#   screen    p12/p13: C 1144 B port 1143 B -> BYTE-IDENTICAL
+#   screenrep p12/p13: C 2418 B port 2417 B -> BYTE-IDENTICAL
+# `uniform` is the cheapest witness (a 30-byte frame that is almost all header)
+# and `gradient` the one that also carries a real tile.
+byteVideoKey "video-key-dlf-preset-clamp-p12-uniform" uniform 72 88 40 12
+byteVideoKey "video-key-dlf-preset-clamp-p13-gradient" gradient 72 88 40 13
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

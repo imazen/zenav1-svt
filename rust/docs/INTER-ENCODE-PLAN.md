@@ -1439,6 +1439,64 @@ carried the note "promote it when the payload closes" since 2026-08-31.
 The other 48 cells of the 60-cell matrix (`72x88 q40`, five content classes x
 twelve presets) are byte-for-byte unchanged.
 
+### 1n. C's per-arm PRESET CLAMP, reaching the deblock ladder (2026-09-01) — the p12/p13 one-byte row, five content classes, one cause
+
+Ten cells — `gradient` / `diag` / `screen` / `screenrep` / `uniform` at 72x88
+q40, presets **12 and 13** — were each exactly ONE byte short of C. §1l guessed
+"a single shared cause is likely and none of it is partition". Both halves were
+right.
+
+**It is not a ladder row; it is which `enc_mode` the ladders are READ AT.**
+`svt_av1_enc_set_parameter` rewrites `scs->static_config.enc_mode` ONCE
+(`enc_handle.c:4415-4436`) — allintra `> ENC_M9 -> ENC_M9`, RTC
+`> ENC_M13 -> ENC_M13`, video non-RTC `> ENC_M11 -> ENC_M11` — so every
+downstream derivation sees the CLAMPED value and CLI presets 12 and 13 are
+M11 in video mode. `rate_arm::eff_enc_mode` models exactly this and its doc
+says "applied once ... so EVERY downstream ladder sees the clamped
+`enc_mode`" — but `pipeline.rs`'s `dlf_enc_mode` was bound from the RAW
+`speed_config.preset`.
+
+At 12/13 that drops `get_dlf_level_default` into its `else` arm — `dlf_level =
+0`, deblock disabled — where C, seeing M11, takes `<= ENC_M11` and returns 6 on
+a base picture: `sb_based_dlf = 1`, the by-q closed form, `filt_guess = 3` at
+qindex 67.
+
+**MEASURED** with `tools/fh_fields.py` on `uniform 72x88 q40 p12` (a 30-byte C
+frame, so almost pure header): the FIRST diverging field is
+`loop_filter_level[0]`, C **3** against the port's **0**, and the walk then
+desynchronises. A zero level also elides `loop_filter_level[2..3]` and
+`loop_filter_delta_enabled`, which is where the missing byte goes. Frame OBU
+payloads, C then port:
+
+```
+10 00 88 60 06 18 20 82 00 00 98 b0 40      (13 B)
+10 00 88 60 00 00 20 00 00 98 b0 40         (12 B)
+```
+
+**Per-cell, 72x88 q40 video frame 0, before -> after. All ten closed:**
+
+| content | C | port before | after |
+|---|--:|--:|---|
+| `uniform` p12 / p13 | 30 B | 29 B | **BYTE-IDENTICAL** |
+| `gradient` p12 / p13 | 1634 B | 1633 B | **BYTE-IDENTICAL** |
+| `diag` p12 / p13 | 643 B | 642 B | **BYTE-IDENTICAL** |
+| `screen` p12 / p13 | 1144 B | 1143 B | **BYTE-IDENTICAL** |
+| `screenrep` p12 / p13 | 2418 B | 2417 B | **BYTE-IDENTICAL** |
+
+**Byte-neutral on the still path by construction AND measured.** The allintra
+arm's clamp is `min(preset, 9)` and `get_dlf_level_allintra` returns 5 for
+every preset from M6 up, so 9, 10, 11, 12 and 13 all resolve to the same level;
+`identity_full_8bit` is 1100/1100 either way.
+
+**The generalisation, said rather than left implicit.** The clamp is a
+PROPERTY OF `pcs->enc_mode`, not of the dlf ladder — every other ladder the
+port reads at a raw preset above the arm's clamp is wrong in the same way, and
+this one was merely the first to become visible. `rate_arm::eff_enc_mode` is
+already the right helper; what is missing is an audit of its call sites against
+every `speed_config.preset` read in a ladder. Nothing else moved on the 60-cell
+matrix at 12/13, so no OTHER unclamped read is observable on synthetic content
+at those presets today — which is a bound on the audit, not a substitute for it.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
