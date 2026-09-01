@@ -311,3 +311,33 @@ pub fn recon_fields() -> usize {
 pub fn do_md_recon(fields: &[i32; RECON_FIELDS]) -> bool {
     unsafe { ref_fl_do_md_recon(fields.as_ptr()) != 0 }
 }
+
+// ---------------------------------------------------------------------------
+// mode_decision.c — the full-mode-decision oracle (shims/md_winner_shims.c)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_mdw_segments() -> i32;
+    fn ref_mdw_is_lossless_segment(
+        segmentation_enabled: i32,
+        lossless: *const i32,
+        segment_id: i32,
+    ) -> i32;
+}
+
+/// C `MAX_SEGMENTS`, as the shim sees it.
+pub fn max_segments() -> usize {
+    unsafe { ref_mdw_segments() as usize }
+}
+
+/// C `svt_av1_is_lossless_segment` (mode_decision.c:71).
+pub fn is_lossless_segment(segmentation_enabled: bool, lossless: &[i32], segment_id: i32) -> bool {
+    assert_eq!(lossless.len(), max_segments());
+    unsafe {
+        ref_mdw_is_lossless_segment(
+            i32::from(segmentation_enabled),
+            lossless.as_ptr(),
+            segment_id,
+        ) != 0
+    }
+}

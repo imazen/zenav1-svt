@@ -60,6 +60,7 @@ pub mod port_gm_correspondence;
 pub mod port_lr_level;
 pub mod port_md;
 pub mod port_md_rate_estimation;
+pub mod port_md_winner;
 pub mod port_rd_cost;
 pub mod port_pass2_strategy;
 pub mod port_picstruct;
