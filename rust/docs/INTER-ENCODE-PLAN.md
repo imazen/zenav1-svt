@@ -856,8 +856,11 @@ revision of this file:
 
 ### `wip/video-md-arms` — LANDED 2026-09-01 (kept below as the record)
 
-The bookmark's head `59458226` is on `main`, together with the PD0 and CDEF
-fixes §1i describes. The section below is the record of why it was held and
+The bookmark's content is on `main` as `43e38fdd`, together with the PD0 and
+CDEF fixes §1i describes. It is a REWRITE, not a fast-forward: `59458226` was
+rebased off the pre-landing `main`, so that hash is reachable only in the
+operation log and this file's earlier references to it name a commit that is
+no longer an ancestor of anything. The bookmark itself is deleted. The section below is the record of why it was held and
 what was measured while it was; read §1i for what closed it. Two claims in it
 are now wrong and are corrected there rather than edited away: "what holds the
 pair off main now is `gradient 72x88 p4`, `p9` and the `diag p11` edge-filter
