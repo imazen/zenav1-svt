@@ -173,3 +173,48 @@ pub fn inv_transform_recon(
     };
     recon
 }
+
+unsafe extern "C" {
+    fn ref_inv_txfm2d_add_c_bd(
+        coeff: *const i32,
+        pred: *const u16,
+        pred_stride: u32,
+        recon: *mut u16,
+        recon_stride: u32,
+        txsize: i32,
+        tx_type: i32,
+        bd: i32,
+    );
+}
+
+/// The pinned SCALAR high-bit-depth route: `svt_av1_inv_txfm2d_add_{size}_c`
+/// called directly, bypassing the `svt_av1_inv_txfm2d_add_*` RTCD pointers
+/// that [`inv_transform_recon`] reaches (`_avx2` on x86-64, `_neon` on
+/// aarch64). Use it to attribute a divergence to the port or to C's own
+/// per-ISA SIMD.
+#[allow(clippy::too_many_arguments)]
+pub fn inv_txfm2d_add_c_bd(
+    coeff: &[i32],
+    pred: &[u16],
+    pred_stride: usize,
+    w: usize,
+    h: usize,
+    txsize: usize,
+    tx_type: usize,
+    bd: i32,
+) -> Vec<u16> {
+    let mut recon = vec![0u16; w * h];
+    unsafe {
+        ref_inv_txfm2d_add_c_bd(
+            coeff.as_ptr(),
+            pred.as_ptr(),
+            pred_stride as u32,
+            recon.as_mut_ptr(),
+            w as u32,
+            txsize as i32,
+            tx_type as i32,
+            bd,
+        )
+    };
+    recon
+}

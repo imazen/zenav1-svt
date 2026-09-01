@@ -269,11 +269,23 @@ fn c_dispatched_and_scalar_recon_agree() {
     }
 }
 
-/// bd10 / bd12 through `svt_aom_inv_transform_recon`'s u16 pixel path.
+/// bd10 through `svt_aom_inv_transform_recon`'s u16 pixel path.
+///
+/// **bd10 only, and bd12's absence is a measurement, not an oversight.**
+/// C v4.2.0 ships 8- and 10-bit only — `svt_av1_verify_settings`
+/// (`Globals/enc_settings.c:460`) rejects every other depth — so bd12 is
+/// outside the envelope on BOTH sides. It is also not a single oracle there:
+/// this entry reaches its kernels through the `svt_av1_inv_txfm2d_add_*`
+/// RTCD pointers, and at bd12 the x86-64 arm
+/// (`svt_dav1d_inv_txfm2d_add_4x4_avx2`) clips the reconstruction to 10 bits
+/// while the aarch64 arm does not — measured 2026-08-31, `4x4 DCT_DCT`,
+/// x86-64 C returned 1023 where aarch64 C and the port both return 1582.
+/// `inv_txfm2d_add_hbd_scalar_matches_port` below covers bd12 against the
+/// `_c` kernels, which have no such per-ISA arm.
 #[test]
 fn inv_transform_recon_hbd_matches_c() {
     let mut rng = Rng(0x1EC0_2026_0831_0003);
-    for bd in [10u32, 12] {
+    for bd in [10u32] {
         let maxv = (1u32 << bd) - 1;
         for &(w, h, ts, c_ts) in &SIZES {
             for &(t, txt) in &TYPES {
@@ -397,4 +409,117 @@ fn lossless_wht_4x4_both_eob_branches_match_c() {
         dc_only_branch_taken, 128,
         "the eob <= 1 DC-only Walsh-Hadamard branch was never exercised"
     );
+}
+
+/// The port against C's PINNED SCALAR high-bit-depth kernels
+/// (`svt_av1_inv_txfm2d_add_{size}_c`), at bd10 AND bd12.
+///
+/// Two things this adds over `inv_transform_recon_hbd_matches_c`, which
+/// drives the RTCD-dispatched entry:
+///   * it is the same oracle on every ISA, so it can carry bd12 — where the
+///     dispatched x86-64 kernels clip to 10 bits (see above);
+///   * a divergence here is attributable to the port, whereas a divergence
+///     there could be either the port or C's own per-ISA SIMD.
+#[test]
+fn inv_txfm2d_add_hbd_scalar_matches_port() {
+    let mut rng = Rng(0x1EC0_2026_0831_0005);
+    let mut cells = 0usize;
+    for bd in [10u32, 12] {
+        let maxv = (1u32 << bd) - 1;
+        for &(w, h, ts, c_ts) in &SIZES {
+            for &(t, txt) in &TYPES {
+                if !ext_tx_legal(w, h, txt) {
+                    continue;
+                }
+                cells += 1;
+                for _ in 0..3 {
+                    let (coeff, pred8) = cell_inputs(&mut rng, w, h, txt);
+                    let pred: Vec<u16> = pred8
+                        .iter()
+                        .map(|&p| ((u32::from(p) * maxv) / 255) as u16)
+                        .collect();
+                    let want = cref::inv_recon::inv_txfm2d_add_c_bd(
+                        &coeff, &pred, w, w, h, c_ts, txt, bd as i32,
+                    );
+                    let mut got = vec![0u16; w * h];
+                    port::highbd_inv_txfm_add(
+                        &coeff,
+                        w.min(32),
+                        &pred,
+                        w,
+                        &mut got,
+                        w,
+                        ts,
+                        t,
+                        port::max_eob(ts),
+                        false,
+                        bd as u8,
+                    )
+                    .expect("port must reconstruct this pair");
+                    if got != want {
+                        let first = got
+                            .iter()
+                            .zip(want.iter())
+                            .position(|(a, b)| a != b)
+                            .unwrap();
+                        panic!(
+                            "scalar bd{bd} {w}x{h} {t:?}: first diff at {} (r{} c{}): ours={} c={}",
+                            first,
+                            first / w,
+                            first % w,
+                            got[first],
+                            want[first]
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        cells, 310,
+        "scalar hbd cell count (155 legal pairs x 2 depths)"
+    );
+}
+
+/// C-vs-C control at bd10: the RTCD-dispatched entry must agree with the
+/// pinned scalar kernels. Pins the ISA-dependence this file learned about, so
+/// a future divergence is attributable rather than ambiguous.
+#[test]
+fn c_hbd_dispatched_and_scalar_agree_at_bd10() {
+    let mut rng = Rng(0x1EC0_2026_0831_0006);
+    let bd = 10u32;
+    let maxv = (1u32 << bd) - 1;
+    for &(w, h, ts, c_ts) in &SIZES {
+        for &(t, txt) in &TYPES {
+            if !ext_tx_legal(w, h, txt) {
+                continue;
+            }
+            for _ in 0..2 {
+                let (coeff, pred8) = cell_inputs(&mut rng, w, h, txt);
+                let pred: Vec<u16> = pred8
+                    .iter()
+                    .map(|&p| ((u32::from(p) * maxv) / 255) as u16)
+                    .collect();
+                let dispatched = cref::inv_recon::inv_transform_recon(
+                    &coeff,
+                    &pred,
+                    w,
+                    w,
+                    h,
+                    c_ts,
+                    bd,
+                    txt,
+                    port::max_eob(ts),
+                    false,
+                );
+                let scalar = cref::inv_recon::inv_txfm2d_add_c_bd(
+                    &coeff, &pred, w, w, h, c_ts, txt, bd as i32,
+                );
+                assert_eq!(
+                    dispatched, scalar,
+                    "C SIMD vs C scalar bd10 at {w}x{h} {t:?}"
+                );
+            }
+        }
+    }
 }

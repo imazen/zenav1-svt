@@ -193,3 +193,67 @@ void ref_inv_transform_recon(const int32_t* coeff, const uint16_t* pred, uint32_
     for (int32_t r = 0; r < h; ++r)
         memcpy(recon + (size_t)r * recon_stride, dst + (size_t)r * SHIM_STRIDE, sizeof(uint16_t) * (size_t)w);
 }
+
+/* ---- The pinned SCALAR hbd route ----
+ *
+ * `svt_aom_inv_transform_recon` reaches its per-size kernels through the
+ * `svt_av1_inv_txfm2d_add_*` RTCD pointers, so on x86-64 it runs
+ * `svt_dav1d_inv_txfm2d_add_*_avx2` and on aarch64 `_neon`. Calling the `_c`
+ * symbols directly is the only way to ask "what does C's own SCALAR
+ * definition say", which is what separates a port defect from a per-ISA
+ * difference in C's SIMD. Added 2026-08-31 after bd12 diverged BETWEEN ISAs.
+ *
+ * The `_c` family has three signature shapes (common_dsp_rtcd.h): squares
+ * take `(tx_type, bd)`, the small rects add `tx_size`, the rest add `eob`
+ * too. `tx_size` and `eob` are UNUSED in the bodies. */
+#define DECL_INV_SQ(N) \
+    void svt_av1_inv_txfm2d_add_##N##x##N##_c(const int32_t*, uint16_t*, int32_t, uint16_t*, int32_t, TxType, int32_t);
+DECL_INV_SQ(4) DECL_INV_SQ(8) DECL_INV_SQ(16) DECL_INV_SQ(32) DECL_INV_SQ(64)
+#define DECL_INV_R(W, H) \
+    void svt_av1_inv_txfm2d_add_##W##x##H##_c(                                                        \
+        const int32_t*, uint16_t*, int32_t, uint16_t*, int32_t, TxType, TxSize, int32_t);
+DECL_INV_R(4, 8) DECL_INV_R(8, 4) DECL_INV_R(4, 16) DECL_INV_R(16, 4)
+#define DECL_INV_RE(W, H) \
+    void svt_av1_inv_txfm2d_add_##W##x##H##_c(                                                        \
+        const int32_t*, uint16_t*, int32_t, uint16_t*, int32_t, TxType, TxSize, int32_t, int32_t);
+DECL_INV_RE(8, 16) DECL_INV_RE(16, 8) DECL_INV_RE(16, 32) DECL_INV_RE(32, 16)
+DECL_INV_RE(32, 64) DECL_INV_RE(64, 32) DECL_INV_RE(8, 32) DECL_INV_RE(32, 8)
+DECL_INV_RE(16, 64) DECL_INV_RE(64, 16)
+
+/* Inverse transform + add through the `_c` kernel for `txsize`, at `bd`.
+ * Buffers are staged exactly as the dispatched entries above stage theirs. */
+void ref_inv_txfm2d_add_c_bd(const int32_t* coeff, const uint16_t* pred, uint32_t pred_stride, uint16_t* recon,
+                             uint32_t recon_stride, int32_t txsize, int32_t tx_type, int32_t bd) {
+    ensure_rtcd();
+    const TxSize  ts = (TxSize)txsize;
+    const TxType  tt = (TxType)tx_type;
+    const int32_t w = tx_size_wide[ts], h = tx_size_high[ts];
+    DECLARE_ALIGNED(64, int32_t, cc[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint16_t, sp[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint16_t, sd[MAX_TX_SQUARE]);
+    memset(sp, 0, sizeof(sp));
+    memset(sd, 0, sizeof(sd));
+    memcpy(cc, coeff, sizeof(int32_t) * coeff_count(ts));
+    for (int32_t r = 0; r < h; ++r)
+        memcpy(sp + (size_t)r * SHIM_STRIDE, pred + (size_t)r * pred_stride, sizeof(uint16_t) * (size_t)w);
+#define CALL_SQ(N) \
+    case TX_##N##X##N: svt_av1_inv_txfm2d_add_##N##x##N##_c(cc, sp, SHIM_STRIDE, sd, SHIM_STRIDE, tt, bd); break;
+#define CALL_R(W, H) \
+    case TX_##W##X##H: \
+        svt_av1_inv_txfm2d_add_##W##x##H##_c(cc, sp, SHIM_STRIDE, sd, SHIM_STRIDE, tt, ts, bd); \
+        break;
+#define CALL_RE(W, H) \
+    case TX_##W##X##H: \
+        svt_av1_inv_txfm2d_add_##W##x##H##_c(cc, sp, SHIM_STRIDE, sd, SHIM_STRIDE, tt, ts, 0, bd); \
+        break;
+    switch (ts) {
+        CALL_SQ(4) CALL_SQ(8) CALL_SQ(16) CALL_SQ(32) CALL_SQ(64)
+        CALL_R(4, 8) CALL_R(8, 4) CALL_R(4, 16) CALL_R(16, 4)
+        CALL_RE(8, 16) CALL_RE(16, 8) CALL_RE(16, 32) CALL_RE(32, 16)
+        CALL_RE(32, 64) CALL_RE(64, 32) CALL_RE(8, 32) CALL_RE(32, 8)
+        CALL_RE(16, 64) CALL_RE(64, 16)
+    default: break;
+    }
+    for (int32_t r = 0; r < h; ++r)
+        memcpy(recon + (size_t)r * recon_stride, sd + (size_t)r * SHIM_STRIDE, sizeof(uint16_t) * (size_t)w);
+}
