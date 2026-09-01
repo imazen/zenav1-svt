@@ -98,6 +98,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/entropy_inter_shims.c");
     println!("cargo:rerun-if-changed=shims/interpred_gap_shims.c");
     println!("cargo:rerun-if-changed=shims/pcl_shims.c");
+    println!("cargo:rerun-if-changed=shims/picops_dblk_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -201,6 +202,9 @@ fn main() {
         .file(manifest.join("shims/interpred_gap_shims.c"))
         // product_coding_loop.c candidate-staging oracle (lane wx-pcl) — own TU.
         .file(manifest.join("shims/pcl_shims.c"))
+        // pic_operators.c / deblocking_common.c / intra_prediction.c residual
+        // oracle (lane wx-intra-dblk) — own TU, same reason.
+        .file(manifest.join("shims/picops_dblk_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))

@@ -16,6 +16,7 @@ pub mod interpred_gap;
 pub mod md_subpel;
 pub mod mode_decision;
 pub mod pcl;
+pub mod pic_operators;
 pub mod picstruct;
 pub mod preanalysis;
 pub mod rate_control;
