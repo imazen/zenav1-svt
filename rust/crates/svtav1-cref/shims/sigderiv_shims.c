@@ -1738,3 +1738,113 @@ void ref_sig_deriv_md_config_allintra(const int32_t* in, int64_t* out) {
 }
 
 int32_t ref_md_config_allintra_out_slots(void) { return MD_O_COUNT; }
+
+/* ===========================================================================
+ * DOES PD0'S SUBRES LEVEL SURVIVE INTO PD1?  (a NEGATIVE result, pinned)
+ *
+ * `md_stage_1` reads `ctx->subres_ctrls.step` with NO `PD_PASS_1` guard
+ * (product_coding_loop.c:7027), where `md_stage_2` (:7052) and `md_stage_3`
+ * (:7156) both zero it for PD1. Read alone, that says PD0's subres level
+ * reaches the PD1 MDS1 full loop that chooses the MDS3 survivors -- which
+ * would make `pic_pd0_lvl`'s video-arm value (3, so `subres_level = 1` on an
+ * I-slice) a live MD divergence on a video-mode key frame.
+ *
+ * It does not. `set_subres_controls` has FOUR call sites, not one: the PD0
+ * derivation (enc_mode_config.c:7357) and each of the three REGULAR-PD1
+ * derivations, which call `set_subres_controls(ctx, 0)` unconditionally --
+ * `_default` :7919, `_rtc` :8035, `_allintra` :8151 -- and enc_dec_process.c
+ * runs one of those on the SAME ModeDecisionContext (:3046-3050) after PD0
+ * and before PD1's md loop. The unguarded read at :7027 is therefore reading
+ * a step that PD1's own signal derivation has already zeroed.
+ *
+ * The two LIGHT-PD1 derivations are the exception and this probe shows it:
+ * they set only `subres_ctrls.odd_to_even_deviation_th = 0` (:7574 / :7811)
+ * and leave `step` alone. Light PD1 never runs `md_stage_1` (its loop is
+ * `md_stage_0_light_pd1` + `md_stage_3_light_pd1`, the latter forcing
+ * `mds_subres_step = 0` at :7133), so the surviving step is not read -- but
+ * the asymmetry is real and is what makes the four-call-site fact worth
+ * pinning rather than re-deriving.
+ *
+ * `in` is the PD0_I_* vector (same layout as ref_sig_deriv_enc_dec_pd0).
+ * `pd1_arm`: 0 allintra, 1 default, 2 rtc, 3 light_pd1_default,
+ *            4 light_pd1_rtc.
+ * `out`: [0] step after PD0, [1] deviation_th after PD0,
+ *        [2] step after the PD1 arm, [3] deviation_th after the PD1 arm.
+ *
+ * Extra fields over the pd0 shim, all read by the PD1 arms and left at the
+ * calloc zero elsewhere (every `set_*_controls` table this reaches has a
+ * level-0 row -- the same in-domain argument
+ * `ref_set_intra_ctrls_via_enc_dec_default` records):
+ * ppcs->hierarchical_levels, ppcs->me_8x8_* (already allocated here).
+ * ======================================================================== */
+void ref_subres_pd0_then_pd1(const int32_t* in, int32_t pd1_arm, int64_t out[4]) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    ModeDecisionContext*     ctx  = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    uint32_t* me64 = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* me8v = (uint32_t*)calloc(1, sizeof(uint32_t));
+    uint32_t* me8d = (uint32_t*)calloc(1, sizeof(uint32_t));
+    B64Geom*  b64  = (B64Geom*)calloc(1, sizeof(B64Geom));
+
+    scs->allintra            = (bool)in[PD0_I_ALLINTRA];
+    scs->static_config.rtc   = (bool)in[PD0_I_RTC];
+    scs->super_block_size    = (uint32_t)in[PD0_I_SB_SIZE];
+    scs->seq_header.sb_size  = BLOCK_64X64; /* keep get_sb128_me_data unreachable */
+
+    me64[0] = (uint32_t)in[PD0_I_ME64_DIST];
+    me8v[0] = (uint32_t)in[PD0_I_ME8_VAR];
+    me8d[0] = (uint32_t)in[PD0_I_ME8_DIST];
+    b64->is_complete_b64 = (uint8_t)in[PD0_I_B64_COMPLETE];
+
+    ppcs->scs                   = scs;
+    ppcs->update_type           = (SvtAv1FrameUpdateType)in[PD0_I_UPDATE_TYPE];
+    ppcs->transition_present    = (int8_t)in[PD0_I_TRANSITION];
+    ppcs->hierarchical_levels   = 4;
+    ppcs->me_64x64_distortion   = me64;
+    ppcs->me_8x8_cost_variance  = me8v;
+    ppcs->me_8x8_distortion     = me8d;
+    ppcs->b64_geom              = b64;
+    ppcs->frm_hdr.quantization_params.base_q_idx = (int32_t)in[PD0_I_BASE_Q];
+
+    pcs->ppcs                 = ppcs;
+    pcs->scs                  = scs;
+    pcs->enc_mode             = (EncMode)in[PD0_I_ENC_MODE];
+    pcs->slice_type           = in[PD0_I_IS_ISLICE] ? I_SLICE : B_SLICE;
+    pcs->hbd_md               = (uint8_t)in[PD0_I_PCS_HBD];
+    pcs->pd0_cost_bias_weight = (uint32_t)in[PD0_I_BIAS_WEIGHT];
+    pcs->rate_est_level       = (uint8_t)in[PD0_I_RATE_EST];
+
+    ctx->pd0_ctrls.pd0_level   = (Pd0Level)in[PD0_I_LEVEL];
+    ctx->pic_pred_depth_only   = (bool)in[PD0_I_PRED_DEPTH_ONLY];
+    ctx->hbd_md                = (uint8_t)in[PD0_I_CTX_HBD];
+    ctx->fast_lambda_md[EB_8_BIT_MD]  = (uint32_t)in[PD0_I_LAMBDA8];
+    ctx->fast_lambda_md[EB_10_BIT_MD] = (uint32_t)in[PD0_I_LAMBDA10];
+    ctx->disallow_4x4          = (bool)in[PD0_I_DISALLOW_4X4];
+    ctx->disallow_8x8          = (bool)in[PD0_I_DISALLOW_8X8];
+    ctx->depth_removal_ctrls.enabled              = (uint8_t)in[PD0_I_DR_ENABLED];
+    ctx->depth_removal_ctrls.disallow_below_16x16 = (uint8_t)in[PD0_I_DR_B16];
+    ctx->depth_removal_ctrls.disallow_below_32x32 = (uint8_t)in[PD0_I_DR_B32];
+    ctx->depth_removal_ctrls.disallow_below_64x64 = (uint8_t)in[PD0_I_DR_B64];
+
+    ctx->pd_pass = PD_PASS_0;
+    svt_aom_sig_deriv_enc_dec_pd0(scs, pcs, ctx);
+    out[0] = ctx->subres_ctrls.step;
+    out[1] = ctx->subres_ctrls.odd_to_even_deviation_th;
+
+    /* enc_dec_process.c:3025 -- PD1 runs on the SAME context. */
+    ctx->pd_pass = PD_PASS_1;
+    switch (pd1_arm) {
+    case 0: svt_aom_sig_deriv_enc_dec_allintra(pcs, ctx); break;
+    case 1: svt_aom_sig_deriv_enc_dec_default(pcs, ctx); break;
+    case 2: svt_aom_sig_deriv_enc_dec_rtc(pcs, ctx); break;
+    case 3: svt_aom_sig_deriv_enc_dec_light_pd1_default(pcs, ctx); break;
+    case 4: svt_aom_sig_deriv_enc_dec_light_pd1_rtc(pcs, ctx); break;
+    default: break;
+    }
+    out[2] = ctx->subres_ctrls.step;
+    out[3] = ctx->subres_ctrls.odd_to_even_deviation_th;
+
+    free(b64); free(me8d); free(me8v); free(me64);
+    free(ctx); free(pcs); free(ppcs); free(scs);
+}

@@ -1656,3 +1656,69 @@ pub fn sig_deriv_md_config_allintra(input: &[i32; md_in::COUNT]) -> [i64; MD_OUT
     unsafe { ref_sig_deriv_md_config_allintra(input.as_ptr(), out.as_mut_ptr()) };
     out
 }
+
+// ---------------------------------------------------------------------------
+// PD0 -> PD1 subres carry-over
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_subres_pd0_then_pd1(input: *const i32, pd1_arm: i32, out: *mut i64);
+}
+
+/// Which PD1 signal derivation runs after PD0, matching
+/// `enc_dec_process.c:3038-3050`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pd1Arm {
+    /// `svt_aom_sig_deriv_enc_dec_allintra`
+    Allintra,
+    /// `svt_aom_sig_deriv_enc_dec_default`
+    Default,
+    /// `svt_aom_sig_deriv_enc_dec_rtc`
+    Rtc,
+    /// `svt_aom_sig_deriv_enc_dec_light_pd1_default`
+    LightDefault,
+    /// `svt_aom_sig_deriv_enc_dec_light_pd1_rtc`
+    LightRtc,
+}
+
+/// `ctx->subres_ctrls` before and after PD1's signal derivation, with PD0's
+/// derivation and PD1's run on ONE `ModeDecisionContext` exactly as
+/// `enc_dec_process.c` runs them.
+///
+/// Answers whether `pic_pd0_lvl`'s subres level can reach PD1's `md_stage_1`,
+/// which reads `ctx->subres_ctrls.step` with no `PD_PASS_1` guard
+/// (`product_coding_loop.c:7027`). See the shim's comment block for the
+/// measured answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubresCarry {
+    /// `ctx->subres_ctrls.step` after `svt_aom_sig_deriv_enc_dec_pd0`.
+    pub step_after_pd0: i64,
+    /// `ctx->subres_ctrls.odd_to_even_deviation_th` after PD0.
+    pub dev_th_after_pd0: i64,
+    /// `ctx->subres_ctrls.step` after the PD1 arm.
+    pub step_after_pd1: i64,
+    /// `ctx->subres_ctrls.odd_to_even_deviation_th` after the PD1 arm.
+    pub dev_th_after_pd1: i64,
+}
+
+/// Drive C's PD0 signal derivation and then one PD1 arm on the same context.
+///
+/// `input` is the same `PD0_I_*` vector [`sig_deriv_enc_dec_pd0`] takes.
+#[must_use]
+pub fn subres_pd0_then_pd1(input: &[i32; pd0_in::COUNT], arm: Pd1Arm) -> SubresCarry {
+    let sel = match arm {
+        Pd1Arm::Allintra => 0,
+        Pd1Arm::Default => 1,
+        Pd1Arm::Rtc => 2,
+        Pd1Arm::LightDefault => 3,
+        Pd1Arm::LightRtc => 4,
+    };
+    let mut out = [0i64; 4];
+    unsafe { ref_subres_pd0_then_pd1(input.as_ptr(), sel, out.as_mut_ptr()) };
+    SubresCarry {
+        step_after_pd0: out[0],
+        dev_th_after_pd0: out[1],
+        step_after_pd1: out[2],
+        dev_th_after_pd1: out[3],
+    }
+}

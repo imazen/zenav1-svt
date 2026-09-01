@@ -199,7 +199,7 @@ At M6, on a video-mode KEY frame:
 | `txt_level` | 8 | 7 | WIRED (`funnel_arm`) |
 | `cfl_level` | 4 | 2 | WIRED (`funnel_arm`) |
 | `nic_level` | 6 | 8 | HELD on `wip/video-md-arms` — complete and tier-1 verified, but it is the one arm that pushes `video-key-nsq-arm-p5-72x88` back outside its 0.3% limit (0.067% without it, 0.539% with) |
-| `pic_pd0_lvl` | 1 | **3** | OPEN, and the LAST live divergence at M6 on a key frame. `PD0_LVL_3` is unimplemented in `pd0.rs` |
+| `pic_pd0_lvl` | 1 | **3** | OPEN, the LAST live divergence at M6 on a key frame. `PD0_LVL_3` is unimplemented in `pd0.rs`. Its **subres** half cannot reach PD1 — refuted at tier 1 2026-09-01, see §1d item 2; what remains is the PD0 costs the depth gates read and `pd0_use_src_samples` |
 | `pic_depth_removal_level` | 0 | 5 | INERT on a key frame — `set_depth_removal_level_controls` (enc_mode_config.c:2968) zeroes `enabled` for an `I_SLICE` before it reads the level, and the port already models that (`port_enc_mode_config::common`). The LEVELS differ; the CONTROLS cannot. |
 | `allow_high_precision_mv`, `is_motion_mode_switchable`, `pic_obmc_level`, `interpolation_search_level`, `interpolation_filter`, `md_nsq_mv_search_level`, `md_pme_level`, `me_subpel_level`, `pme_subpel_level` | | | inter-only, cannot move a key frame's bytes |
 
@@ -313,31 +313,61 @@ Two mechanisms feed C's tighter set, and NEITHER is in the port today:
    `{6,6,6}`, and `mds1_cand_base_th_intra` 300 instead of 1200. That is
    `nic_arm`, complete on `wip/video-md-arms` (below).
 
-2. **A subresolution LEAK from PD0 into PD1's MDS1, which is the real content
-   of the last OPEN row.** `set_subres_controls` has exactly ONE call site in
-   the whole tree — `svt_aom_sig_deriv_enc_dec_pd0` (`enc_mode_config.c:7357`)
-   — so `ctx->subres_ctrls` is derived from `pic_pd0_lvl` and then persists
-   into PD1 on the same context. `md_stage_1` reads it with NO `PD_PASS_1`
-   guard (`product_coding_loop.c:7027`, `ctx->mds_subres_step =
-   ctx->subres_ctrls.step`), while `md_stage_2` (`:7052`) and `md_stage_3`
-   (`:7156`) both zero it for PD1. So on the VIDEO arm, where `pic_pd0_lvl` is
-   3 and `sig_deriv_enc_dec_pd0` therefore derives `subres_level = 1` (an
-   I-slice at `pd0_level <= PD0_LVL_4`), **the MDS1 full loop that chooses the
-   survivors runs on half the rows** — residual at doubled stride, distortion
-   shifted back up — while MDS2/MDS3 run at full resolution. On the allintra
-   arm `pic_pd0_lvl` is 1, `subres_level` is 0, and nothing subsamples.
+2. ~~**A subresolution LEAK from PD0 into PD1's MDS1, which is the real
+   content of the last OPEN row.**~~ **REFUTED 2026-09-01, at tier 1. There is
+   no leak, and this whole item was wrong.** It is kept in place rather than
+   deleted because the reading that produced it is one grep away and reads as
+   obviously true.
 
-   C's own dump confirms it rather than leaving it a reading: every 32x32
-   `CFAST` row on this cell carries `subres=1 lam=18500`, alongside a second
-   `subres=0 lam=241378` pass (PD0, its own lambda).
+   What it said: `set_subres_controls` has exactly ONE call site
+   (`svt_aom_sig_deriv_enc_dec_pd0`, `enc_mode_config.c:7357`), so
+   `ctx->subres_ctrls` is derived from `pic_pd0_lvl` and persists into PD1 on
+   the same context; `md_stage_1` reads it with NO `PD_PASS_1` guard
+   (`product_coding_loop.c:7027`) where `md_stage_2` (`:7052`) and `md_stage_3`
+   (`:7156`) both zero it; so the video arm's `pic_pd0_lvl = 3` would make the
+   MDS1 full loop that chooses the MDS3 survivors run on half the rows.
 
-**Consequence for scoping `pic_pd0_lvl`.** The subres half is separable from
-the rest of PD0_LVL_3 and is the part that reaches the leaf decision: it needs
-`subres_ctrls.step` derived per arm from the pd0 level and applied to the
-funnel's MDS0/MDS1 residual + distortion — NOT the recon-neighbour half
-(`pd0_use_src_samples`, which the video arm also flips) and NOT the
-depth-early-exit level. Do that first and re-measure before porting PD0_LVL_3
-whole.
+   Why it is wrong: **`set_subres_controls` has FOUR call sites, not one.** The
+   three REGULAR-PD1 derivations each call `set_subres_controls(ctx, 0)`
+   unconditionally — `svt_aom_sig_deriv_enc_dec_default` `:7919`,
+   `_rtc` `:8035`, `_allintra` `:8151`, none behind a branch and none after a
+   `return` — and `enc_dec_process.c:3038-3050` runs one of them on the SAME
+   `ModeDecisionContext` between PD0 and PD1's md loop. By the time `:7027`
+   runs, the step is 0 on every regular-PD1 arm. The unguarded read is
+   redundant with the guarded ones, not a divergence.
+
+   Pinned by `crates/svtav1-encoder/tests/c_parity_subres_carry.rs` (tier 1,
+   `crates/svtav1-cref/shims/sigderiv_shims.c::ref_subres_pd0_then_pd1` drives
+   PD0 and then one PD1 arm on ONE context, in C's order): on the reference
+   cell's video-arm population PD0 leaves `step = 1, dev_th = 5`, and every
+   regular arm leaves `0, 0` — at every `pd0_level` 0..=6.
+
+   The **light-PD1** arms are the exception, and they are the positive control
+   that the probe can see a surviving step at all: `_light_pd1_default`
+   (`:7574`) and `_light_pd1_rtc` (`:7811`) set only
+   `subres_ctrls.odd_to_even_deviation_th = 0` and leave `step` alone, so PD0's
+   1 does survive there. It is unread — light PD1's loop is
+   `md_stage_0_light_pd1` + `md_stage_3_light_pd1`, and the latter forces
+   `mds_subres_step = 0` (`:7133`); `md_stage_1` is never called on that path.
+
+   The C dump quoted as confirmation ("every 32x32 `CFAST` row carries
+   `subres=1 lam=18500`") does not survive this either: `CFAST` is the MDS0
+   fast-cost interposer, and `mds_subres_step` is read by `full_loop_core`, not
+   by the fast cost — so a `subres=` value on a `CFAST` row is whatever the
+   previous stage left in the field, and the two lambdas in that dump are PD0's
+   and PD1's. **A dumped field is evidence only where the code under test reads
+   it** (`WORKING-ON-THIS.md` §5, the shifted-out-of-relevance trap).
+
+**Consequence for scoping `pic_pd0_lvl`.** The subres half is NOT the part that
+reaches the PD1 leaf decision — it cannot reach it at all. `pic_pd0_lvl` moves
+PD1 only through what PD0 leaves behind: the partition tree, the PD0 costs the
+depth-refinement gates read, and `pd0_use_src_samples` (PD0 predicting from
+RECON on a video frame where the port always predicts from SOURCE). At the
+reference cell the tree already matches C (4 blocks joined, 0 port-only
+geometry), so the remaining `pic_pd0_lvl` surface there is the PD0-cost /
+`pd0_use_src_samples` half. Item 1 above — `nic_arm` — is what changes the MDS1
+survivor set, and the measurement below says it is the whole of the reference
+cell's remaining candidate-set gap.
 
 ### `wip/video-md-arms` — complete, verified, deliberately NOT on main
 
