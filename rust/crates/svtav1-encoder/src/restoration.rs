@@ -3,7 +3,7 @@
 //! C sources (SVT-AV1 v4.2.0-rc):
 //! - Controls: `svt_aom_get_wn_filter_level_allintra` (enc_mode_config.c:1928
 //!   — M0..M3 -> 3, M4..M6 -> 4, else 0) + `svt_aom_set_wn_filter_ctrls`
-//!   (:1758). `sg_filter_lvl = 0` for every representable allintra preset
+//!   (:1758). `sg_filter_lvl = 0` for every representable ALL-INTRA preset
 //!   (`svt_aom_get_sg_filter_level_allintra`, :2000 — level 1 requires
 //!   ENC_MR = -1), so sgrproj is NEVER searched and `rest_finish_search`
 //!   force-types WIENER-vs-NONE only (restoration_pick.c:1565).

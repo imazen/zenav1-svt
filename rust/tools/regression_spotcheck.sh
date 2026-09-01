@@ -998,6 +998,38 @@ byteVideoKey "video-key-pd0-lvl4-arm-p8-gradient" gradient 72 88 40 8
 byteVideoKey "video-key-pd0-lvl4-subres-th-p8-screenrep" screenrep 72 88 40 8
 byteVideoKey "video-key-pd0-lvl4-predonly-fork-p8-screen" screen 72 88 40 8
 
+# --- video-arm LOOP-RESTORATION ladders: SGR reachable at last, 2026-09-01 --
+#
+# `svt_aom_get_sg_filter_level_allintra` is 0 at every representable preset, so
+# self-guided restoration was unreachable on the still path and the port never
+# had it: a two-way {NONE, WIENER} frame RD, a RestUnit with only WienerInfo,
+# no SGRPROJ writer, and a `write_lr_for_sb` that debug_asserted WIENER-only.
+# The VIDEO ladder (`_default`, enc_mode_config.c:1402) asks for sg level 3
+# through M3, and C then picks RESTORE_SGRPROJ for the frame.
+#
+# OBSERVED BEFORE the fix, 72x88 q40 video frame 0:
+#   gradient p3: C 1413 B, port 1410 B (0.212%). The coded TREE was already
+#                exact (116 blocks joined, 0 field flips, 0 port-only
+#                geometry); the whole residual was a 22-op BOOL+BOOLEQ prefix
+#                C emits and the port did not, and `tools/fh_fields.py` named
+#                it in the header: `lr_type[0]` C=3 (= RESTORE_SGRPROJ under
+#                the spec's Remap_Lr_Type) against the port's 0.
+#   AFTER: byte-identical, `lr_type[0]` 3 on both sides.
+#
+# The Wiener half of the same ladder moved TOO and must move with it: the video
+# arm is level 4 at <= M3 (chroma ON) and level 5 at <= M8 (LUMA-ONLY), where
+# the all-intra arm is 3 / 4 / off-above-M6. Reachability positive control
+# (SVTAV1_LR_DBG unit counts, gradient 72x88 q40), which matches those rows:
+#   video p3: 3 SGR units, 3 Wiener units, 9 finish walks (3 planes x 3 types)
+#   video p4/p7/p8: 0 SGR, 1 Wiener (luma only), 2 finish walks
+#   still p3: 0 SGR, 3 Wiener   |   still p7: 0 SGR, 0 Wiener
+# p4..p8 are byte-identical on BOTH sides of this chunk even though the port
+# now runs a level-5 search there that it previously did not run at all — i.e.
+# C's own level-5 search picks RESTORE_NONE on this content, which is what
+# makes them unfit as cells here (they never failed) and why the existing
+# `video-key-pd0-lvl4-*-p8-*` trio is what guards that half.
+byteVideoKey "video-key-lr-sgr-arm-p3-gradient" gradient 72 88 40 3
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

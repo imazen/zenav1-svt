@@ -1578,8 +1578,19 @@ in the header, where the same decision is signalled:
 
 | field | C | port |
 |---|--:|--:|
-| `lr_type[0]` (`gradient 72x88 q40 p3`) | **3** (RESTORE_SWITCHABLE) | **0** (RESTORE_NONE) |
+| `lr_type[0]` (`gradient 72x88 q40 p3`) | **3** | **0** (RESTORE_NONE) |
 | `lr_type[0]` (`gradient 72x88 q40 p4`, byte-identical control) | 0 | 0 |
+
+**CORRECTION (2026-09-01): `lr_type` 3 is RESTORE_SGRPROJ, not
+RESTORE_SWITCHABLE.** `lr_type` is the CODED 2-bit field and the spec maps it
+through `Remap_Lr_Type = {NONE, SWITCHABLE, WIENER, SGRPROJ}` (5.9.20), which
+is a DIFFERENT order from SVT's internal `RestorationType` enum
+(`NONE, WIENER, SGRPROJ, SWITCHABLE`) — the two disagree on exactly the values
+1 and 3. That matters for scope, and independently: `rest_finish_search` sets
+`num_rtypes = (plane_ntiles > 1) ? RESTORE_TYPES : RESTORE_SWITCHABLE_TYPES`
+(`restoration_pick.c:1600`), so a plane with a SINGLE restoration unit — which
+72x88 is, at `unit_size` 256 — never even CONSIDERS switchable. C could not
+have picked it here.
 
 So the next chunk on this cell is the VIDEO arm's RESTORATION ladder, and the
 fork is one row wide again. At 240p on a base key frame
@@ -1629,6 +1640,78 @@ RESTORE_NONE there. Flipping that on cannot close p3 (whose gap is `sg`, not
 `wn`) and can only put two green cells at risk. Land the SGR arm and the wn
 arm together, or measure the wn arm on the full 60-cell matrix before
 believing it.
+
+### 1o'. The SGR arm LANDED (2026-09-01) — `gradient p3` closes, and the wn half was harmless
+
+Both arms landed together, as the paragraph above says to. **57 of 60**
+byte-identical, up from 56; `gradient p3` 0.212 % -> **byte-identical**;
+nothing else moved a byte in either direction.
+
+**Scope, corrected downward by two facts before any code was written.** §1o
+called this "four new pieces" against a SWITCHABLE reading of `lr_type` 3. It
+is still four pieces, but SWITCHABLE is not the one this cell needed — see the
+`Remap_Lr_Type` correction above — and the pieces were smaller than they read,
+because `port_sgr_search.rs` already carried every decision body:
+
+| piece | where it landed |
+|---|---|
+| per-unit SGR sse | `restoration.rs`: `search_sgrproj_seg`'s sweep through a new `LrPixel::sgr_search_unit`, then the EXISTING `try_restoration_unit` generalised from Wiener-only to C's `RestorationUnitInfo` |
+| the SGRPROJ + SWITCHABLE frame walks | `restoration.rs`: the finish phase is now C's `rest_finish_search` — one walk per candidate type in order, `force_restore_type_d`, the `plane_ntiles == 1` switchable exclusion, the per-unit `best_rtype[]` the switchable walk reads, the chroma skips |
+| the unit-param writer | `entropy/lr.rs::write_sgrproj_filter` + all three `frame_rtype` arms in `write_lr_for_sb`, with `LrWalkRefs` carrying the SGR reference |
+| the apply | `svtav1-dsp::restoration`: `filter_unit_impl` dispatches C's `filter_idx = 2 * highbd + (rtype == SGRPROJ)` into the already-ported `sgrproj_filter_stripe{,_highbd}` |
+
+**The wn half did NOT put p7/p8 at risk, measured on the full matrix.** The
+port now runs a level-5 (luma-only) Wiener search at video p4..p8 where it ran
+none above M6 before, and every one of those cells is byte-identical on BOTH
+sides of the chunk — i.e. C's own level-5 search picks RESTORE_NONE on this
+content and the port's reproduction of it picks RESTORE_NONE too. The warning
+was right to demand the measurement and wrong about the outcome.
+
+**Reachability positive control** (`SVTAV1_LR_DBG` unit counts, `gradient
+72x88 q40` — counting CALLS, not reading a zero, per `WORKING-ON-THIS.md` §5):
+
+| cell | SGR units | Wiener units | finish walks |
+|---|--:|--:|--:|
+| video p3 | **3** (Y+U+V) | 3 | 9 (3 planes x {NONE, WIENER, SGRPROJ}) |
+| video p4 / p7 / p8 | 0 | **1** (luma only) | 2 |
+| still p3 | 0 | 3 | 6 |
+| still p7 | 0 | 0 | 0 |
+
+Every row is what the ladder table above predicts, including the two the
+all-intra arm cannot produce (video p7/p8's single luma Wiener unit) and the
+one this chunk exists for (video p3's three SGR units).
+
+**Two transcription defects found in `port_lr_level.rs` while wiring it**, both
+latent because the module was unwired and both wrong the moment it is not:
+
+- `INPUT_SIZE_8K_RANGE` was **5**, which is `INPUT_SIZE_4K_RANGE`, and
+  `INPUT_SIZE_360P_RANGE` was **0**, which is 240p (`definitions.h:1824-1831`;
+  `port_enc_mode_config::ResolutionRange` and
+  `port_picstruct::INPUT_SIZE_360P_RANGE` already had them right). The first
+  would have killed BOTH filters at 4K where C keeps them; the second would
+  have killed SGR at 360p under `fast_decode` where C keeps it. The module's
+  own test asserted the wrong constant for its "above 360p" case and now
+  passes 480p, which is what it meant.
+- `wn_filter_level_allintra` applied an 8K force-off. C's all-intra variant
+  (`enc_mode_config.c:1386`) takes `EncMode` ALONE and has no resolution
+  clause — only `_default` and `_rtc` do.
+
+**Evidence.** The SGR writer is gated by
+`c_parity_lr_syntax::write_sgrproj_filter_matches_c` against a new
+`ref_write_sgrproj_filter_bytes` shim that composes C's own exported
+`aom_write_literal` + `svt_aom_write_primitive_refsubexpfin` over C's real
+`svt_aom_eb_sgr_params` table: coded BYTES over all 16 `ep` x 3 references x 25
+`xqd` pairs, with an anti-vacuity assert that all three radius shapes are
+exercised, plus `set_default_sgrproj` pinned against a second shim. Tier 1
+arithmetic, tier 4 radius dispatch, stated as such in the test rather than
+blurred. The frame walk itself is tier 4 (`rest_finish_search` needs a built
+`RestSearchCtxt`); the byte cell is the gate.
+
+**Gates.** `tools/video_key_matrix.sh` 57/60 (new tool, committed — §1m..§1p
+each rebuilt this loop by hand); six still cells at their pinned sizes
+(290 / 839 / 63 / 171 / 580 / 693 B); `regression_spotcheck.sh` 62/62 with the
+new `video-key-lr-sgr-arm-p3-gradient` cell; `cargo nextest run --workspace`
+2417/2417.
 
 **A CORRECTION to the sentence this replaces**, which said the residual was
 "downstream, the same shape as §1j's two residuals" and that
@@ -1764,6 +1847,11 @@ before/after. Everything still open:
 | 3 | `gradient` 0.212 % (coded tree EXACT — `lr_type[0]` C=3 port=0) |
 
 Nothing above 0.5 % survives at `72x88 q40` in video mode.
+
+**UPDATE 2026-09-01 (§1o'): 57 / 60.** The `gradient p3` row above is closed —
+it was the video arm's loop-restoration ladder, and `lr_type` 3 is
+RESTORE_SGRPROJ, not SWITCHABLE. Only the three p0 cells remain, and §1o' does
+not touch them. Reproduce the scoreboard with `tools/video_key_matrix.sh`.
 
 **But read the p0 cluster as a WARNING, not as "nearly closed" — measured,
 2026-09-01.** `gradient 72x88 q40 p0` is 0.447 % off in BYTES and its coded

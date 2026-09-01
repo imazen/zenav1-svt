@@ -2761,9 +2761,9 @@ impl EncodePipeline {
         // per-RU taps against the post-CDEF recon, and when any plane
         // signals RESTORE_WIENER the tile is re-walked with the per-SB LR
         // syntax and the output copy gets the decoder's stripe-boundary
-        // filter pass. sgrproj is never searched at the ported presets
-        // (sg_filter_lvl = 0 — C enc_mode_config.c:2000) and stays
-        // unported.
+        // filter pass. sgrproj is never searched on the ALL-INTRA arm
+        // (sg_filter_lvl = 0 — C enc_mode_config.c:2000); the VIDEO arm
+        // searches it at M0..M3 and the chain below carries it.
 
         // Step 6: Entropy coding — recursive partition tree encoding.
         // Walk each SB's partition tree in spec order (depth-first),
@@ -3796,8 +3796,60 @@ impl EncodePipeline {
         // derivation (docs/ibc-port-map.md §A.7).
         if is_key && seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless
         {
-            let ctrls = crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset);
-            let sg_ctrls = crate::port_lr_level::SgFilterCtrls::default();
+            // LOOP-RESTORATION LEVEL LADDERS — the `scs->allintra` fork
+            // (`pd_process.c:4935-4938`), the same selector `sc_detect`, the
+            // deblock ladder and the rate ladders already take.
+            //
+            // The all-intra arm is `wn_filter_level_allintra` (3 / 4 / off) with
+            // `sg_filter_level_allintra` == 0 at every representable preset,
+            // which is why the port has only ever run Wiener. The VIDEO arm is
+            // `_default`: Wiener 4 at <= M3 and 5 at <= M8 on a non-last layer
+            // (level 5 is LUMA-ONLY), and SGR level 3 at <= M3 — so a video-mode
+            // key frame at presets 0..3 can emit RESTORE_SGRPROJ and, on a plane
+            // with more than one restoration unit, RESTORE_SWITCHABLE.
+            //
+            // The two arms must move TOGETHER: the video Wiener ladder is
+            // nonzero at p7/p8 where the all-intra one is off, so wiring `sg`
+            // alone would leave the frame RD comparing an SGR candidate against
+            // a Wiener candidate C never searched, and wiring `wn` alone cannot
+            // close the p3 cell whose gap is `sg`.
+            let lr_enc_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
+            // `ppcs->input_resolution`, derived exactly as the deblock ladder
+            // above derives it.
+            let lr_resolution = crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+                self.true_width.next_multiple_of(8) * self.true_height.next_multiple_of(8),
+            )
+            .as_u8();
+            // `is_not_last_layer = !ppcs->is_highest_layer` — the same value the
+            // deblock ladder derived above, reused rather than re-derived so the
+            // two cannot drift.
+            let lr_is_not_last_layer = dlf_is_not_last_layer != 0;
+            let (ctrls, sg_ctrls) = match sc_arm {
+                crate::sc_detect::ScArm::Allintra => (
+                    crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset),
+                    crate::port_lr_level::SgFilterCtrls::default(),
+                ),
+                crate::sc_detect::ScArm::Video { .. } => {
+                    let wn = crate::port_lr_level::wn_filter_level_default(
+                        lr_enc_mode,
+                        lr_resolution,
+                        lr_is_not_last_layer,
+                    );
+                    // `scs->static_config.fast_decode` is 0 for every
+                    // configuration this port and the inter harness produce.
+                    let sg = crate::port_lr_level::sg_filter_level_default(
+                        lr_enc_mode,
+                        lr_resolution,
+                        false,
+                    );
+                    (
+                        crate::restoration::WnFilterCtrls::from(
+                            crate::port_lr_level::set_wn_filter_ctrls(wn),
+                        ),
+                        crate::port_lr_level::set_sg_filter_ctrls(sg),
+                    )
+                }
+            };
             if ctrls.enabled || sg_ctrls.enabled {
                 // C `x->rdmult` = `pic_full_lambda[bit_depth == EB_TEN_BIT ?
                 // EB_10_BIT_MD : EB_8_BIT_MD]` (enc_dec_process.c:3246-3247),

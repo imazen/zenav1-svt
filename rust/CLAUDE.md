@@ -74,6 +74,15 @@ cite the source, don't re-argue them.
    `ENC_MR` is **-1** (`EbSvtAv1Enc.h:45`, `MIN_ENC_PRESET ENC_MR` at `EbConfigMacros.h:41`),
    so MR/MRP/MRS are structurally unreachable here. Do not cite this guard as "C never
    searches SGR"; cite it as "the port cannot express the only preset where C does."
+   **AMENDED 2026-09-01 — this guard is ALL-INTRA-ONLY and the port is no longer
+   all-intra-only.** `pd_process.c:4937` selects `_allintra` only when
+   `scs->allintra` (`intra_period_length == 0 || avif`, `enc_handle.c:4406`); a
+   VIDEO-mode picture takes `svt_aom_get_sg_filter_level_default`
+   (`enc_mode_config.c:1402`), which is **3 at `<= ENC_M3`** — a real SGR sweep at
+   presets the port CAN express. SGR search, SGRPROJ/SWITCHABLE frame walks, the
+   unit-param writer and the apply are all wired as of `docs/INTER-ENCODE-PLAN.md`
+   §1o', and `gradient 72x88 q40 p3` video-mode is byte-identical WITH C picking
+   `RESTORE_SGRPROJ`. The still/AVIF envelope is unchanged and still Wiener-only.
    The same shape applies to CDEF search level 1 (16+48 candidates,
    `enc_mode_config.c:904-947`), which is likewise MR-only.
 5d. **CORRECTION 2026-08-31 (wp-filters lane) — guard 5 is ALL-INTRA-ONLY, and
@@ -896,8 +905,10 @@ v4.2.0-rc pin, so all gates carried over unchanged)
    Still open: inter-frame deblock/CDEF/LR (signaled 0, applied
    nothing), the C SSE-based filter-level search (we ship
    LPF_PICK_FROM_Q only), the CDEF RDO live-block search remainder
-   (2a), and sgrproj (out of scope — C never searches it at any
-   representable allintra preset).
+   (2a), and sgrproj (WIRED 2026-09-01 — out of scope for the ALL-INTRA
+   path only, where `sg_filter_lvl` is 0 at every representable preset;
+   the VIDEO arm searches it at M0..M3, see §1o' of
+   docs/INTER-ENCODE-PLAN.md).
 3. **Decision-layer parity** — CLOSED for still/420 presets 4-10
    (2026-07-13/14: leaf_funnel.rs MDS0/MDS1/MDS3 funnel for
    intra_level 1/2/6/7/8 + depth_refine.rs PD1 depth
@@ -1010,7 +1021,7 @@ All 26 1D transform kernels are bit-exact with C SVT-AV1. Verified by extracting
 Key finding: the C `svt_av1_fadst4_new` uses i32 arithmetic while our initial port used i64, producing different rounding. Fixed by matching the C decomposition exactly. Same issue with `fadst8` output permutation — C uses `[step[1], step[6], step[3], step[4], step[5], step[2], step[7], step[0]]` without negation, while our initial port had sign flips.
 
 ### Pipeline Architecture
-The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. The loop-filter chain runs after the entropy walk on the OUTPUT recon copy only (prediction sources stay unfiltered — the decoder's split), in decoder order: deblock -> CDEF -> Wiener loop restoration. The LR search needs the post-CDEF recon, so when it signals wiener the entropy walk is re-run with the per-SB lr syntax (the walk is a deterministic re-runnable pass). sgrproj is never searched (C sg_filter_lvl = 0 at every representable allintra preset) and stays unported.
+The pipeline processes superblocks in raster order (left-to-right, top-to-bottom) per spec 00. Each SB goes through partition_search which recursively tries all 10 partition types. At each leaf, encode_single_block evaluates 11 intra modes with mode-specific TX RDO, picking the lowest RD cost. The loop-filter chain runs after the entropy walk on the OUTPUT recon copy only (prediction sources stay unfiltered — the decoder's split), in decoder order: deblock -> CDEF -> Wiener loop restoration. The LR search needs the post-CDEF recon, so when it signals wiener the entropy walk is re-run with the per-SB lr syntax (the walk is a deterministic re-runnable pass). sgrproj was never searched on the ALL-INTRA path (C sg_filter_lvl = 0 at every representable allintra preset); it is PORTED AND WIRED as of 2026-09-01 for the VIDEO arm, where `svt_aom_get_sg_filter_level_default` returns 3 through M3 — search, the SGRPROJ/SWITCHABLE frame walks, the writer and the apply (docs/INTER-ENCODE-PLAN.md §1o').
 
 ### Inter/Motion DSP Audit vs v4.2 C (2026-07-14, wave2/entropy-c-parity)
 Differential-tested the 7 pre-v4.2-bump DSP modules that had inline tests but

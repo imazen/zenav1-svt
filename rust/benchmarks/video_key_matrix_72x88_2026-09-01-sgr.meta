@@ -1,0 +1,36 @@
+# VIDEO-mode KEY frame byte-identity matrix, 72x88 q40 — AFTER the video-arm
+# loop-restoration ladders (docs/INTER-ENCODE-PLAN.md §1o')
+
+date: 2026-09-01
+host: mac (Apple aarch64, M-series), release build
+base: a57b3ca24e8c (the byte-neutral SGR/SWITCHABLE plumbing)
+after: the video-arm wn + sg level ladders wired in pipeline.rs
+
+## How it was produced
+
+  tools/video_key_matrix.sh <outdir>
+
+which is the loop §1m..§1p each rebuilt by hand, now committed. Defaults:
+72x88 q40, five synthetic content classes x twelve presets, frames=2
+low-delay-P, FRAME 0 compared (the port refuses frame 1 and exits 3 — that is
+the expected state of the inter campaign, not a failure).
+
+## Result
+
+**57 / 60 byte-identical**, up from 56. One cell closed: `gradient p3`
+(C 1413 B; port 1410 -> 1413). NOTHING else moved a byte, in either direction
+— in particular the p4..p8 cells stayed identical even though the port now
+runs C's level-5 luma-only Wiener search there, which it previously did not
+run at all (the allintra ladder is 0 above M6). That is the measurement §1o
+asked for before believing the wn arm was safe.
+
+Still open, all three at preset 0 and untouched by this chunk:
+  gradient 0.447 %, diag 0.483 %, screenrep 0.043 %.
+Read those as a WARNING, not as "nearly closed" — §1o records 214 field flips
+and 4 port-only blocks on `gradient p0`'s coded tree. A cell at 0.447 % there
+is a different encode that happens to cost the same.
+
+## Read the verdict column, not the percentage
+
+A zero percentage is a SIZE claim, not a byte claim. This campaign has had a
+cell read 0.000 % while differing (§1i).

@@ -1518,9 +1518,10 @@ impl WienerStripePixel for u16 {
     }
 }
 
-/// C `svt_av1_loop_restoration_filter_unit` (restoration.c:1040), 8-bit,
-/// wiener/none only (sgrproj is never searched or signaled at the ported
-/// presets — sg_filter_lvl = 0).
+/// C `svt_av1_loop_restoration_filter_unit` (restoration.c:1040), 8-bit.
+/// Dispatches C's `filter_idx = 2 * highbd + (unit_rtype == RESTORE_SGRPROJ)`;
+/// the SGR arm is live on the VIDEO path at presets 0..3 (it is `sg_filter_lvl
+/// = 0`, hence unreachable, on the all-intra one).
 ///
 /// `data`/`dst` are padded planes; `*_origin` indexes plane (0,0). `data` is
 /// temporarily modified around stripe boundaries when `need_boundaries` is
