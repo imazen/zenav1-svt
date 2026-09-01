@@ -303,6 +303,56 @@ video at every ladder that forks.
   `uniform 64x64 q40` frame 0 is byte-identical at presets 0/3/6/8
   (28/28/28/30 B).
 
+### What the CDEF chunk measured about the REST of the chain (2026-08-31)
+
+Two facts, both measured, that shape every chunk after this one. Neither was
+known when this file was written.
+
+**1. The frame header is nearly done; the tile is untouched.** On the reference
+cell (`64 64 40 6 2 gradient`, frame 0) `tools/fh_fields.py` now reports exactly
+ONE differing frame-header field — `cdef_uv_pri_strength[0]` (C 7, port 0) —
+and every field after it equal. The uncompressed header ends at **bit 71** of
+the frame OBU payload (payload starts at file byte 0x12), so the header is file
+bytes 0x12..0x1a and the tile starts at **0x1b** — which is the first byte of
+tile data and it DIFFERS (C 0xc5, port 0xb5). The frame OBU payload is 943 B
+for C and 953 B for the port with a fixed-length, field-identical header, so
+all 10 bytes of the size difference are tile payload.
+
+So the video-mode tile diverges **at its first symbol**. The remaining CDEF
+chroma gap is downstream of that (the search scores a recon those symbols
+produced), which is why it should NOT be chased as a chroma-search bug until
+a cell exists where the tile agrees. Flat content is one: video-mode
+`uniform 64x64 q40` frame 0 is byte-identical at presets 0/3/6/8, and those
+four are now cells in `regression_spotcheck.sh` (`byteVideoKey`).
+
+**2. Only TWO of `port_enc_mode_config`'s ladders are wired into
+`pipeline.rs`.** Measured by grep on 2026-08-31: every
+`port_enc_mode_config::` reference in `pipeline.rs` / `pd0.rs` /
+`partition.rs` is DLF (`get_dlf_level_{allintra,default}` +
+`set_dlf_controls`) or CDEF (`cdef_search_level_{allintra,default}` +
+`set_cdef_search_controls`). The other ~7,400 lines of that module —
+`common`, `encdec`, `leaf`'s remaining ladders, `light_pd1`, `md_config`,
+`me`, `multi_processes`, `pd0`, `tail` — are ported at tier 1 and have **no
+pipeline caller at all**.
+
+The pipeline instead calls the ALLINTRA resolution directly and
+unconditionally at, among others:
+
+| site | call | video twin |
+|---|---|---|
+| `pipeline.rs:1939` | `quant::rdoq_level_allintra` | not ported |
+| `pipeline.rs:3692` | `restoration::wn_filter_ctrls_allintra` | `port_lr_level::wn_filter_level_default` — ported, unused |
+| `pd0.rs:2010`, `partition.rs:1736` | `pd0::pd0_detector_allintra_demotes` | `port_pd0_detector::pd0_detector` — ported, unused |
+| `pd0.rs:2009/2125/2313` | `pd0::max_block_size_allintra` | `port_enc_mode_config::{common,encdec}` — ported, unused |
+
+**This is the same bug the deblock and CDEF chunks each fixed once, and the
+tile-payload divergence is almost certainly a pile of it.** The work is
+mostly WIRING, not porting: for each site, derive the level from the arm that
+matches `scs->allintra` and route it through the already-ported controls
+table. Do not scope a chunk from this file without first grepping for the
+`_default` twin — the CDEF chunk's brief said the `_default` CDEF ladder was
+missing, and it had been ported (at tier 1) all along.
+
 **Evidence (CDEF).** `crates/svtav1-encoder/tests/c_parity_cdef_search_ctrls.rs`
 is **tier 1** by the same route: `set_cdef_search_controls` is file-`static` and
 both ladders are inline in their callers, but the exported
