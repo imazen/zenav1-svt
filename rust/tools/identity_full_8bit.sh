@@ -97,7 +97,18 @@ KNOWN_DIFF=(
 )
 is_known() {
   local n=$1 k
-  for k in "${KNOWN_DIFF[@]}"; do [[ "$k" == "$n" ]] && return 0; done
+  # The length guard is REQUIRED, not defensive: `set -u` + an EMPTY array +
+  # bash 3.2 (which is what `#!/usr/bin/env bash` finds on macOS, where
+  # /bin/bash precedes /opt/homebrew/bin/bash on the login PATH) makes
+  # "${KNOWN_DIFF[@]}" an unbound-variable ERROR, and `set -e` then aborts the
+  # whole sweep at the FIRST cell — before any verdict is printed. KNOWN_DIFF
+  # emptying out is the goal of this file, so the healthy state was the one
+  # that broke it. Measured 2026-09-01: the sweep died with
+  # "line 98: KNOWN_DIFF[@]: unbound variable" and rc=1 under bash 3.2 while
+  # running clean under bash 5.
+  if [ ${#KNOWN_DIFF[@]} -gt 0 ]; then
+    for k in "${KNOWN_DIFF[@]}"; do [[ "$k" == "$n" ]] && return 0; done
+  fi
   return 1
 }
 
