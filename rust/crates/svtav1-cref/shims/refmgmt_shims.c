@@ -163,16 +163,92 @@ uint8_t superres_denom_idx(uint8_t scale_denom) { return svt_aom_get_denom_idx(s
  * calls through NULL and segfaults — which it did, on the first run of this
  * shim. Same trap as `ref_resize_plane_horizontal` in ref_shims.c, which
  * documents it; the init is per-translation-unit here because that one's
- * helper is `static`. */
+ * helper is `static`.
+ *
+ * TWO tables, not one (MEASURED 2026-08-31 on x86-64 Linux). `resize_multistep`
+ * and `highbd_resize_multistep` take a `svt_memcpy(output, input, ...)` fast
+ * path when `length == olength` (`resize.c:368` and `:673`) — and `svt_memcpy`
+ * is an RTCD pointer owned by common_dsp_rtcd.c (`:1045`), NOT by the aom_dsp
+ * table `svt_aom_setup_rtcd_internal` fills. Initialising only the aom_dsp
+ * table left `svt_memcpy` NULL, so every identity cell (`w2 == w` or
+ * `h2 == h`) jumped to address 0: `rip = 0x0`, one frame below
+ * `svt_av1_highbd_resize_plane_c`, with `rdx = 0x80` (the 64-u16 row copy).
+ * That is what SIGSEGV'd `c_parity_highbd_resize_plane_2d` and
+ * `c_parity_resize_frame`.
+ *
+ * It could not happen on aarch64: that build compiles resize.c under
+ * `CONFIG_ARM_NEON_IS_GUARANTEED`, where common_dsp_rtcd_neon_devirt.h does
+ * `#define svt_memcpy svt_memcpy_neon`, so no pointer exists to be NULL
+ * (`nm -u cbuild-static/.../resize.c.o` shows `_svt_memcpy_neon` undefined and
+ * no reference to `_svt_memcpy`). Structural, not luck.
+ *
+ * PINNING C'S OWN RESIZE DISPATCH TO THE `_c` TIER — read before changing.
+ * `svt_av1_resize_plane_c` is an exported symbol but it is NOT pure C on
+ * x86-64: its leaves go through the same RTCD pointers, which resolve to the
+ * AVX2 kernels, and those genuinely disagree with their `_c` twins at small
+ * lengths (see docs/SUSPECTED-C-BUGS.md #20, measured). On aarch64 the same
+ * source line resolves to `_c` because aom_dsp_rtcd.c's AARCH64 arm is
+ * `SET_ONLY_C` for all six resize symbols — there is no Neon resize kernel.
+ * So an unpinned differential compares the port against a DIFFERENT function
+ * on each host. We pin the six resize pointers to their `_c` twins after the
+ * native setup, which is what `SVT_CPU_FLAGS=0` does globally and what aarch64
+ * gets for free, so the tier-1 oracle is the ladder the port actually ports on
+ * both hosts. The AVX2 behaviour is not swept under the rug: it is measured
+ * directly, by symbol, through `resize_avx2_*` below. */
 void       svt_aom_setup_rtcd_internal(EbCpuFlags flags);
+void       svt_aom_setup_common_rtcd_internal(EbCpuFlags flags);
 EbCpuFlags svt_aom_get_cpu_flags_to_use(void);
 static int g_resize_rtcd_ready = 0;
 static void resize_rtcd_once(void) {
     if (!g_resize_rtcd_ready) {
-        svt_aom_setup_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        const EbCpuFlags flags = svt_aom_get_cpu_flags_to_use();
+        svt_aom_setup_rtcd_internal(flags);
+        svt_aom_setup_common_rtcd_internal(flags);
+        svt_av1_down2_symeven           = svt_av1_down2_symeven_c;
+        svt_av1_interpolate_core        = svt_av1_interpolate_core_c;
+        svt_av1_resize_plane            = svt_av1_resize_plane_c;
+#if CONFIG_ENABLE_HIGH_BIT_DEPTH
+        svt_av1_highbd_down2_symeven    = svt_av1_highbd_down2_symeven_c;
+        svt_av1_highbd_interpolate_core = svt_av1_highbd_interpolate_core_c;
+        svt_av1_highbd_resize_plane     = svt_av1_highbd_resize_plane_c;
+#endif
         g_resize_rtcd_ready = 1;
     }
 }
+
+/* ---- The AVX2 leaves, reached BY SYMBOL so the pin above cannot hide them.
+ * These exist only to measure C's x86 divergence (SUSPECTED-C-BUGS.md #20);
+ * nothing in the port is compared against them. Callers MUST pad the input by
+ * at least 64 elements and the output by at least 32: both kernels write a
+ * fixed-width block regardless of the requested length, which is the defect. */
+#if defined(__x86_64__) || defined(_M_X64)
+void svt_av1_down2_symeven_avx2(const uint8_t* const input, int length, uint8_t* output);
+void svt_av1_interpolate_core_avx2(const uint8_t* const input, int in_length, uint8_t* output, int out_length,
+                                   const int16_t* interp_filters);
+
+int32_t resize_avx2_available(void) { return 1; }
+
+void resize_avx2_down2_symeven(const uint8_t* input, int32_t length, uint8_t* output) {
+    resize_rtcd_once();
+    svt_av1_down2_symeven_avx2(input, length, output);
+}
+
+void resize_c_down2_symeven(const uint8_t* input, int32_t length, uint8_t* output) {
+    resize_rtcd_once();
+    svt_av1_down2_symeven_c(input, length, output);
+}
+#else
+int32_t resize_avx2_available(void) { return 0; }
+void    resize_avx2_down2_symeven(const uint8_t* input, int32_t length, uint8_t* output) {
+    (void)input;
+    (void)length;
+    (void)output;
+}
+void resize_c_down2_symeven(const uint8_t* input, int32_t length, uint8_t* output) {
+    resize_rtcd_once();
+    svt_av1_down2_symeven_c(input, length, output);
+}
+#endif
 
 int32_t resize2d_plane(const uint8_t* input, int32_t height, int32_t width, int32_t in_stride, uint8_t* output,
                        int32_t height2, int32_t width2, int32_t out_stride) {

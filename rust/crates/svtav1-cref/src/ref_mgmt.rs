@@ -202,7 +202,63 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+unsafe extern "C" {
+    fn resize_avx2_available() -> i32;
+    fn resize_avx2_down2_symeven(input: *const u8, length: i32, output: *mut u8);
+    fn resize_c_down2_symeven(input: *const u8, length: i32, output: *mut u8);
+}
+
+/// Whether this build can reach C's AVX2 resize leaves by symbol (x86-64 only).
+#[must_use]
+pub fn resize_has_avx2_leaves() -> bool {
+    (unsafe { resize_avx2_available() }) != 0
+}
+
+/// C `svt_av1_down2_symeven_avx2` (`ASM_AVX2/resize_avx2.c:822`) reached BY
+/// SYMBOL, so the `_c` pin in the shim cannot hide it.
+///
+/// This exists only to MEASURE C's x86 divergence
+/// (`docs/SUSPECTED-C-BUGS.md` #20). Nothing in the port is compared against
+/// it. The kernel writes a FIXED 16 outputs whatever `length` is, so `output`
+/// must be at least 16 bytes and `input` padded by 64 — otherwise the call
+/// itself is the out-of-bounds access being documented.
+///
+/// # Panics
+/// If the buffers are smaller than the kernel's fixed-width access.
+pub fn avx2_down2_symeven(input: &[u8], length: usize, output: &mut [u8]) {
+    assert!(
+        input.len() >= length + 64,
+        "the AVX2 kernel reads a fixed block past `length`; pad the input"
+    );
+    assert!(
+        output.len() >= 32,
+        "the AVX2 kernel writes a fixed 16 outputs"
+    );
+    assert!(
+        resize_has_avx2_leaves(),
+        "no AVX2 resize leaves on this target"
+    );
+    unsafe { resize_avx2_down2_symeven(input.as_ptr(), length as i32, output.as_mut_ptr()) };
+}
+
+/// C `svt_av1_down2_symeven_c` (`resize.c:170`) reached BY SYMBOL — the twin
+/// [`avx2_down2_symeven`] is measured against.
+///
+/// # Panics
+/// If `output` is too small for `length / 2` samples.
+pub fn c_down2_symeven(input: &[u8], length: usize, output: &mut [u8]) {
+    assert!(input.len() >= length);
+    assert!(output.len() >= length / 2);
+    unsafe { resize_c_down2_symeven(input.as_ptr(), length as i32, output.as_mut_ptr()) };
+}
+
 /// C `svt_av1_resize_plane_c` (`resize.c:422`) — the 8-bit 2-D plane resize.
+///
+/// The shim pins C's own resize RTCD dispatch to the `_c` tier before calling
+/// (see `shims/refmgmt_shims.c`), because this exported symbol is NOT pure C
+/// on x86-64: its leaves go through the RTCD pointers and the AVX2 kernels
+/// disagree with their `_c` twins below length 34. aarch64 gets the same
+/// pinning for free (`SET_ONLY_C` for every resize symbol).
 #[allow(clippy::too_many_arguments)]
 pub fn resize_plane(
     input: &[u8],

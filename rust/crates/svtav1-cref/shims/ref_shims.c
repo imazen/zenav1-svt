@@ -2523,8 +2523,15 @@ void        svt_av1_interpolate_core_c(const uint8_t* const input, int in_length
 int32_t ref_resize_plane_horizontal(const uint8_t* input, int32_t height, int32_t width, int32_t in_stride,
                                     uint8_t* output, int32_t width2, int32_t out_stride) {
     /* `svt_av1_down2_symeven` / `svt_av1_interpolate_core` are RTCD POINTERS
-       from aom_dsp_rtcd.c (not common_dsp_rtcd.c) — without this setup the
-       multistep driver calls through NULL. */
+       from aom_dsp_rtcd.c — without this setup the multistep driver calls
+       through NULL. `svt_memcpy` is a pointer too, but it lives in the OTHER
+       table (common_dsp_rtcd.c:1045) and `resize_multistep` takes it on the
+       `width2 == width` identity path (resize.c:368), so BOTH are required.
+       Measured 2026-08-31: with only the aom_dsp table set up, an identity
+       cell jumps to address 0 on x86-64. aarch64 cannot reach it — the
+       NEON-devirt build compiles resize.c against `svt_memcpy_neon` directly,
+       so there is no pointer to be NULL. */
+    ref_rtcd_once();
     ref_dsp_rtcd_once();
     return (int32_t)svt_av1_resize_plane_horizontal(
         input, height, width, in_stride, output, height, width2, out_stride);
