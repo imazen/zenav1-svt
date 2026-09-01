@@ -823,6 +823,33 @@ byteVideoKey "video-key-txs-arm-tx-mode-p11" gradient 64 64 40 11
 # interposer (SVT_CCOEF_OUT) against the port's SVTAV1_PACKTREE_COEFF dump.
 byteVideoKey "video-key-rdoq-plane-rd-mult-p6-64x64" gradient 64 64 40 6
 
+# --- the LIGHT-PD0 boundary SHAPE, 2026-09-01. `pd0.rs` priced a one-false
+# boundary node as its fitting PART_H/PART_V rectangle only for the LVL_1
+# family; LVL_5 (light PD0, the fixed-tree path at preset >= 9) got the SQUARE
+# cost, which prices twice the pixels that fit and therefore loses to SPLIT.
+# That could not matter on the ALLINTRA arm — `nsq_geom_level` is 0 above M6,
+# so an LVL_5 boundary node force-splits before it is costed — and the VIDEO
+# arm never turns NSQ geometry off.
+#
+# C prices the RECTANGLE, measured directly rather than inferred: the
+# `svt_aom_full_cost_pd0` --wrap dump (SVT_PD0COST_OUT) on `gradient 72x88 q40
+# p9` video reports `32x64`, `16x32` and `8x16` blocks in the x=64 superblock of
+# that 72-wide frame and never a square.
+#
+# OBSERVED, frames=2 frame 0, before -> after on ONE build:
+#   screenrep 72x88 q40 p9:  port 2420 B vs C 2402 = 0.749% -> 2405 B = 0.125%
+#   screenrep 72x88 q40 p11: port 2438 B vs C 2418 = 0.827% -> 2422 B = 0.165%
+#   gradient  72x88 q40 p9:  0.189% -> 0.126%; p10 0.125% -> 0.063%
+# The limit 0.5 sits between 0.749 and 0.125.
+#
+# NOT uniformly closer in BYTES, and the trees say why: gradient 72x88 q40
+# p11..p13 move from ~1.04% to ~1.29% off — while that cell's coded tree goes
+# from 9 field flips / 7 port-only blocks to **1 flip / 3 port-only**
+# (tools/tree_diff.py against C's CTREE, measured both ways). It is the §1f
+# pattern — a worse tree that landed nearer in size — so the cells that witness
+# this fix are the ones above, not p11.
+ratioVideoKey "video-key-lpd0-edge-shape-p9-screenrep" screenrep 72 88 40 9 0.5
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

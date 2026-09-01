@@ -1775,6 +1775,32 @@ impl<'a> Pd0Ctx<'a> {
         org_y: usize,
         subres_step_cfg: u32,
     ) -> u64 {
+        self.lvl5_like_block_cost_rect(sq_size, sq_size, org_x, org_y, subres_step_cfg)
+    }
+
+    /// Non-square generalisation of [`Pd0Ctx::lvl5_like_block_cost`], the twin
+    /// of [`Pd0Ctx::lvl1_block_cost_rect`] for the LIGHT PD0 closed form.
+    ///
+    /// `bw == bh` is the square PART_N path (unchanged); `bw != bh` costs the
+    /// single in-frame PARTITION_HORZ / PARTITION_VERT block of a partial-SB
+    /// boundary node. Every step below is dimension-general already — the DC
+    /// predictor, the residual gather, `tx_quant_core` and the closed-form
+    /// coeff rate — so this is a widening, not a second implementation.
+    ///
+    /// MEASURED on the C side before it was written (`SVT_PD0COST_OUT`,
+    /// `gradient 72x88 q40 p9` video, the x = 64 superblock of a 72-wide
+    /// frame): C prices `32x64`, `16x32` and `8x16` there, never the square.
+    /// At `org=(64,0)` its `8x16` costs 2,905,600 against the two `8x8`s'
+    /// 1,787,062 + 1,683,524 + split rate, so C keeps the rectangle — which is
+    /// exactly the `BLOCK_8X16` the port was coding as `BLOCK_8X8` + a split.
+    fn lvl5_like_block_cost_rect(
+        &mut self,
+        bw: usize,
+        bh: usize,
+        org_x: usize,
+        org_y: usize,
+        subres_step_cfg: u32,
+    ) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
         // DC prediction from SOURCE neighbors (pd0_use_src_samples=1):
@@ -1784,14 +1810,14 @@ impl<'a> Pd0Ctx<'a> {
             self.stride,
             abs_x,
             abs_y,
-            sq_size,
-            sq_size,
+            bw,
+            bh,
             self.aligned_w,
             self.aligned_h,
         );
-        let mut pred = vec![0u8; sq_size * sq_size];
+        let mut pred = vec![0u8; bw * bh];
         svtav1_dsp::intra_pred::predict_dc(
-            &mut pred, sq_size, &above, &left, sq_size, sq_size, has_above, has_left,
+            &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
         );
 
         // Subres safety: determined once per SB by the first (and only)
@@ -1799,7 +1825,7 @@ impl<'a> Pd0Ctx<'a> {
         // step 0 (C forces mds_subres_step = 0 when is_subres_safe != 1).
         // When subres is off entirely (LVL_0, subres_step_cfg == 0), the
         // check never runs and every block keeps step 0.
-        if subres_step_cfg > 0 && sq_size == 64 && self.is_subres_safe == 255 {
+        if subres_step_cfg > 0 && bw == 64 && bh == 64 && self.is_subres_safe == 255 {
             self.is_subres_safe = u8::from(check_is_subres_safe(
                 self.src,
                 self.stride,
@@ -1808,8 +1834,9 @@ impl<'a> Pd0Ctx<'a> {
                 &pred,
             ));
         }
-        // subres_ctrls.step for this config; 8x8 caps at min(1, step).
-        let mut step = if sq_size >= 16 {
+        // subres_ctrls.step for this config; the 8-tall cap is on the SHORT
+        // side (C `mds_subres_step` halves rows), so it keys on `bh`.
+        let mut step = if bh >= 16 {
             subres_step_cfg
         } else {
             subres_step_cfg.min(1)
@@ -1818,18 +1845,18 @@ impl<'a> Pd0Ctx<'a> {
             step = 0;
         }
 
-        let tx_h = sq_size >> step;
-        let mut residual = vec![0i32; sq_size * tx_h];
+        let tx_h = bh >> step;
+        let mut residual = vec![0i32; bw * tx_h];
         for r in 0..tx_h {
             let srow = (abs_y + (r << step)) * self.stride + abs_x;
-            let prow = (r << step) * sq_size;
-            for c in 0..sq_size {
-                residual[r * sq_size + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
+            let prow = (r << step) * bw;
+            for c in 0..bw {
+                residual[r * bw + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
             }
         }
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
         let (eob, dist, _qcoeff, _c_tx, _dq) =
-            tx_quant_core(&residual, sq_size, tx_h, qindex_off, self.qm_level, step);
+            tx_quant_core(&residual, bw, tx_h, qindex_off, self.qm_level, step);
         // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
         // 100*eob. The resolution factor is a per-picture constant (0 for
@@ -1838,7 +1865,21 @@ impl<'a> Pd0Ctx<'a> {
         // svt_aom_full_cost_pd0: rate = coeff bits + skip(0) bits +
         // PARTITION_NONE bits at context 0.
         let rate = bits + skip0_bits() + partition_none_bits_ctx0();
-        rdcost(self.lambda, rate, dist)
+        let cost = rdcost(self.lambda, rate, dist);
+        // `SVTAV1_PD0DBG` on the LIGHT PD0 path too. The LVL_1 family has had
+        // this dump since task #95; LVL_5 had none, so the video arm's PD0 at
+        // preset >= 9 — the one the fixed-tree path runs — could not be joined
+        // against C's `SVT_PD0COST_OUT` (`svt_aom_full_cost_pd0`) block for
+        // block. Same first four fields in the same order as that dump, so the
+        // two files line up without a translation step.
+        #[cfg(feature = "std")]
+        if crate::dbgenv::pd0dbg() {
+            eprintln!(
+                "PD0BLK org=({abs_x},{abs_y}) {bw}x{bh} dist={dist} ybits={bits} cost={cost} lambda={} subres={step}",
+                self.lambda,
+            );
+        }
+        cost
     }
 
     /// PD0_LVL_1 block cost (md_encode_block_pd0 at allintra M2..M8):
@@ -2035,6 +2076,39 @@ impl<'a> Pd0Ctx<'a> {
         matches!(self.mode, Pd0Mode::Lvl1 | Pd0Mode::Lvl3 | Pd0Mode::Lvl4)
     }
 
+    /// Which PD0 modes price a one-false BOUNDARY node as its FITTING edge
+    /// shape rather than as the square that does not fit.
+    ///
+    /// C decides this with no reference to `pd0_ctrls.pd0_level`:
+    /// `set_blocks_to_test` (enc_dec_process.c:1394) injects exactly the
+    /// fitting PART_H / PART_V on an incomplete node whenever NSQ geometry is
+    /// enabled and the square is above `MAX(min_nsq, min_nsq_block_size)`
+    /// (`:1420-1423`), and `svt_aom_pick_partition_pd0`
+    /// (product_coding_loop.c:10534-10560) then costs
+    /// `get_blk_geom_mds(mds_idx + ns_blk_offset_md[shape])` — the RECTANGLE.
+    ///
+    /// So the level list here is about what this PORT has MEASURED, not about
+    /// what C does:
+    /// * LVL_1 family — the allintra fixed-tree presets, wired 2026-08 (task
+    ///   #95, the 96x80 milestone).
+    /// * LVL_5 — added 2026-09-01 for the VIDEO arm. It could not matter on
+    ///   the allintra arm, where `nsq_geom_level` is 0 above M6 so an LVL_5/6
+    ///   boundary node force-splits before it can be costed at all; the video
+    ///   arm never turns NSQ geometry off, so it reaches this and was pricing
+    ///   the square. MEASURED against C's own `svt_aom_full_cost_pd0` dump —
+    ///   see `lvl5_like_block_cost_rect`.
+    /// * LVL_6 is EXCLUDED because it runs no transform at all
+    ///   (`compute_lpd0_cost_allintra` / `compute_lpd0_cost_inter`), so there
+    ///   is no block cost to make rectangular.
+    /// * LVL_0 is EXCLUDED and that is a KNOWN GAP, not a claim about C: it is
+    ///   the bd10-forced path (`set_pd0_ctrls`, enc_mode_config.c:5416), whose
+    ///   partial-SB cells are byte-identical today, and nothing here has
+    ///   dumped C's bd10 boundary cost. Widening it blind would trade a green
+    ///   gate for a guess.
+    fn prices_edge_shape(&self) -> bool {
+        self.is_lvl1_family() || matches!(self.mode, Pd0Mode::Lvl5)
+    }
+
     /// C `ctx->subres_ctrls.step` for this level on an I-slice
     /// (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7337-7345).
     /// LVL_5's own step is passed explicitly by its caller instead.
@@ -2208,13 +2282,18 @@ impl<'a> Pd0Ctx<'a> {
 
         let tested = sq_size <= self.max_sq && sq_size >= self.min_sq;
         let parent_cost = if tested {
-            if one_false && self.is_lvl1_family() {
+            if one_false && self.prices_edge_shape() {
                 let (bw, bh) = if !has_rows {
                     (sq_size, half)
                 } else {
                     (half, sq_size)
                 };
-                Some(self.lvl1_block_cost_rect(bw, bh, org_x, org_y))
+                if self.is_lvl1_family() {
+                    Some(self.lvl1_block_cost_rect(bw, bh, org_x, org_y))
+                } else {
+                    // LVL_5's own closed form, with its subres step.
+                    Some(self.lvl5_like_block_cost_rect(bw, bh, org_x, org_y, 1))
+                }
             } else {
                 Some(self.block_cost(sq_size, org_x, org_y))
             }
@@ -2224,7 +2303,7 @@ impl<'a> Pd0Ctx<'a> {
         // The node's own block recon, taken before the children can overwrite
         // `pending_recon`. Its DIMENSIONS are the shape that was costed.
         let node_recon = self.pending_recon.take();
-        let (node_w, node_h) = if one_false && self.is_lvl1_family() {
+        let (node_w, node_h) = if one_false && self.prices_edge_shape() {
             if !has_rows {
                 (sq_size, half)
             } else {
@@ -2268,6 +2347,19 @@ impl<'a> Pd0Ctx<'a> {
             Pd0Mode::Lvl6 => 0,
             // LVL_0/LVL_5: `use_accurate_part_ctx = 0` -> SPLIT rate doubled,
             // priced from the DEFAULT partition CDF (ctx row 0).
+            //
+            // At a one-false BOUNDARY node the alphabet is BINARY
+            // (split-vs-{H,V}, `svt_aom_partition_rate_cost` rd_cost.c:1846-
+            // 1863), so the rate is the alike cost, not the full-alphabet
+            // SPLIT cost — the same distinction the LVL_1 branch below makes.
+            // It only matters where the node's non-split candidate exists,
+            // i.e. exactly where `prices_edge_shape()` is true, so LVL_0 keeps
+            // the full-alphabet rate along with the square cost.
+            Pd0Mode::Lvl5 if one_false && self.prices_edge_shape() => rdcost(
+                self.lambda,
+                2 * partition_alike_split_bits(sq_size, !has_rows),
+                0,
+            ),
             Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => {
                 rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0)
             }
