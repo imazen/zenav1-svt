@@ -597,3 +597,259 @@ fn gathering_picture_statistics_matches_c() {
     assert_eq!(cells, 36);
     assert_eq!(hist_ran, 18, "the calc_hist arm must actually run");
 }
+
+// ---------------------------------------------------------------------------
+// The remaining padding entry points
+// ---------------------------------------------------------------------------
+
+fn fill16(seed: u64, n: usize, mask: u16) -> Vec<u16> {
+    let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    (0..n)
+        .map(|_| {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) as u16) & mask
+        })
+        .collect()
+}
+
+/// `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions_16bit` — the
+/// 10-bit path, which the 8-bit sibling's differential cannot reach.
+#[test]
+fn pad_min_blk_16bit_matches_c() {
+    let mut cells = 0usize;
+    let mut moved = 0usize;
+    // 420 only (`EB_YUV420 == 1`) plus 422 and 444, which C's
+    // `verify_settings` rejects but this function does not — the shift
+    // arithmetic differs per format and porting only 420 would be untested at
+    // the two the code still spells.
+    for color_format in [1u32, 2, 3] {
+        for (w, h) in [(64usize, 48usize), (66, 50), (70, 34), (32, 32)] {
+            for (pad_right, pad_bottom) in [(0usize, 0usize), (2, 0), (0, 6), (6, 2), (7, 7)] {
+                let (y_stride, c_stride) = (w + 12, w / 2 + 12);
+                let y0 = fill16(0x51, y_stride * (h + 12), 0x3ff);
+                let u0 = fill16(0x52, c_stride * (h + 12), 0x3ff);
+                let v0 = fill16(0x53, c_stride * (h + 12), 0x3ff);
+
+                let (mut cy, mut cu, mut cv) = (y0.clone(), u0.clone(), v0.clone());
+                cref::pad_min_blk_16bit(
+                    color_format,
+                    pad_right,
+                    pad_bottom,
+                    w,
+                    h,
+                    (&mut cy, y_stride),
+                    (&mut cu, c_stride),
+                    (&mut cv, c_stride),
+                );
+
+                let (mut ry, mut ru, mut rv) = (y0.clone(), u0.clone(), v0.clone());
+                port::pad_picture_to_multiple_of_min_blk_size_dimensions_16bit(
+                    color_format,
+                    pad_right,
+                    pad_bottom,
+                    w,
+                    h,
+                    (&mut ry, y_stride),
+                    Some((&mut ru, c_stride)),
+                    Some((&mut rv, c_stride)),
+                );
+
+                assert_eq!(
+                    ry, cy,
+                    "16bit pad Y cf={color_format} {w}x{h} {pad_right}/{pad_bottom}"
+                );
+                assert_eq!(
+                    ru, cu,
+                    "16bit pad U cf={color_format} {w}x{h} {pad_right}/{pad_bottom}"
+                );
+                assert_eq!(
+                    rv, cv,
+                    "16bit pad V cf={color_format} {w}x{h} {pad_right}/{pad_bottom}"
+                );
+                if cy != y0 {
+                    moved += 1;
+                }
+                cells += 1;
+            }
+        }
+    }
+    assert_eq!(cells, 3 * 4 * 5);
+    assert!(moved > 0, "the 16-bit pad never changed a plane");
+}
+
+/// `svt_aom_pad_picture_to_multiple_of_sb_dimensions`.
+#[test]
+fn pad_to_sb_matches_c() {
+    let mut cells = 0usize;
+    let mut moved = 0usize;
+    for (w, h) in [(16usize, 16usize), (48, 32), (65, 33), (7, 5)] {
+        for border in [0usize, 1, 4, 16, 68] {
+            let stride = w + 2 * border + 6;
+            let n = stride * (h + 2 * border + 6);
+            let origin = border * stride + border;
+            let base = fill(0x77, n);
+
+            let mut c = base.clone();
+            cref::pad_to_sb(&mut c, origin, stride, w, h, border);
+
+            let mut r = base.clone();
+            let mut plane = port::Plane {
+                buf: &mut r,
+                origin,
+                stride,
+                width: w,
+                height: h,
+                border,
+            };
+            port::pad_picture_to_multiple_of_sb_dimensions(&mut plane);
+
+            assert_eq!(r, c, "pad_to_sb {w}x{h} border {border}");
+            if border > 0 && c != base {
+                moved += 1;
+            }
+            cells += 1;
+        }
+    }
+    assert_eq!(cells, 4 * 5);
+    assert!(moved > 0, "pad_to_sb never wrote a border");
+}
+
+/// `svt_aom_down_sample_chroma`. Dead in the shipping encoder (see the port's
+/// reachability note) but exported, so it is gated rather than trusted.
+#[test]
+fn down_sample_chroma_matches_c() {
+    let mut cells = 0usize;
+    let mut nonidentity = 0usize;
+    // Input 444 (3) and 422 (2) — the only formats whose call site is
+    // reachable in C's own source — down to 420 (1) and to themselves.
+    for in_cf in [2u32, 3] {
+        for out_cf in [1u32, 2, 3] {
+            for (ow, oh) in [(64usize, 48usize), (32, 16), (8, 8)] {
+                // A 444 or 422 input is point-sampled at `ii << 1` / `jj << 1`,
+                // so the SOURCE must span twice the output extent in whichever
+                // direction is not already subsampled. Sizing it to the output
+                // extent reads past the end (found by an index-out-of-bounds
+                // panic in the port, which is what the bounds are for).
+                let (si_u, si_v, so_u, so_v) = (2 * ow + 9, 2 * ow + 11, ow + 7, ow + 5);
+                let n_in = si_u.max(si_v) * (2 * oh + 4);
+                let mut u_in = fill(0x81, n_in);
+                let mut v_in = fill(0x82, n_in);
+                let n_out = so_u.max(so_v) * (oh + 4);
+                let base_u = fill(0x83, n_out);
+                let base_v = fill(0x84, n_out);
+
+                let (mut cu, mut cv) = (base_u.clone(), base_v.clone());
+                cref::down_sample_chroma(
+                    in_cf, out_cf, ow, oh, &mut u_in, si_u, &mut v_in, si_v, &mut cu, so_u,
+                    &mut cv, so_v,
+                );
+
+                let (mut ru, mut rv) = (base_u.clone(), base_v.clone());
+                port::down_sample_chroma(
+                    in_cf, out_cf, ow, oh, &u_in, &v_in, si_u, si_v, &mut ru, &mut rv, so_u, so_v,
+                );
+
+                assert_eq!(ru, cu, "down_sample U {in_cf}->{out_cf} {ow}x{oh}");
+                assert_eq!(rv, cv, "down_sample V {in_cf}->{out_cf} {ow}x{oh}");
+                if cu != base_u {
+                    nonidentity += 1;
+                }
+                cells += 1;
+            }
+        }
+    }
+    assert_eq!(cells, 2 * 3 * 3);
+    assert!(nonidentity > 0, "down_sample_chroma never wrote anything");
+}
+
+/// `pad_2b_compressed_input_picture` — `static` in C, reached at TIER 1
+/// through its only caller.
+///
+/// This is the test that gates the port's COLLAPSE of C's eight
+/// near-identical `pad_right == N` bodies into one rule plus the `== 4`
+/// special case. All eight values are swept, on every row count, so a
+/// mis-derived mask or shift shows up as a byte difference rather than as a
+/// plausible-looking plane.
+#[test]
+fn pad_2b_compressed_matches_c() {
+    let mut cells = 0usize;
+    let mut arms_seen = [false; 8];
+    // Every cell keeps `h - pad_bottom >= 1` and `w - pad_right >= 4`. C
+    // computes `(original_src_height - 1) * src_stride` in `uint32_t`, so a
+    // height of zero wraps and the bottom-pad memcpy SIGBUSes; the encoder
+    // never produces that, and the port refuses it (checked at the end).
+    for (w, h) in [(64usize, 8usize), (68, 5), (32, 16), (12, 6)] {
+        for pad_right in 0usize..=7 {
+            for pad_bottom in [0usize, 1, 3] {
+                // The main planes are the EIGHT-BIT high bytes of SVT's
+                // unpacked 10-bit layout; the compressed stride is `/ 4` of
+                // theirs, which C derives itself.
+                let y_stride = w + 16;
+                let c_stride = w / 2 + 16;
+                let inc_stride_y = y_stride / 4;
+                let inc_stride_c = c_stride / 4;
+                let y0 = fill(0x91, y_stride * (h + 8));
+                let u0 = fill(0x92, c_stride * (h + 8));
+                let v0 = fill(0x93, c_stride * (h + 8));
+                let yi0 = fill(0x94, inc_stride_y * (h + 8));
+                let ui0 = fill(0x95, inc_stride_c * (h + 8));
+                let vi0 = fill(0x96, inc_stride_c * (h + 8));
+
+                let (mut cy, mut cu, mut cv) = (y0.clone(), u0.clone(), v0.clone());
+                let (mut cyi, mut cui, mut cvi) = (yi0.clone(), ui0.clone(), vi0.clone());
+                cref::pad_2b_compressed(
+                    1,
+                    pad_right,
+                    pad_bottom,
+                    w,
+                    h,
+                    (&mut cy, y_stride),
+                    (&mut cu, c_stride),
+                    (&mut cv, c_stride),
+                    &mut cyi,
+                    &mut cui,
+                    &mut cvi,
+                );
+
+                let mut ryi = yi0.clone();
+                let ok = port::pad_2b_compressed_input_picture(
+                    &mut ryi,
+                    inc_stride_y,
+                    w - pad_right,
+                    h - pad_bottom,
+                    pad_right,
+                    pad_bottom,
+                );
+                assert!(ok, "pad_right {pad_right} was rejected");
+                assert_eq!(
+                    ryi, cyi,
+                    "2b compressed luma pad {w}x{h} right={pad_right} bottom={pad_bottom}"
+                );
+                if cyi != yi0 {
+                    arms_seen[pad_right] = true;
+                }
+                cells += 1;
+            }
+        }
+    }
+    assert_eq!(cells, 4 * 8 * 3);
+    // Every `pad_right` arm from 1 to 7 must have CHANGED the plane; if one
+    // did not, the collapse of C's eight bodies was compared against nothing.
+    for (n, seen) in arms_seen.iter().enumerate().skip(1) {
+        assert!(*seen, "pad_right == {n} never modified the plane");
+    }
+    // Out of range is C's `assert_err`; the port refuses instead.
+    let mut buf = vec![0u8; 64];
+    assert!(!port::pad_2b_compressed_input_picture(
+        &mut buf, 16, 16, 2, 8, 0
+    ));
+    // A zero height wraps `original_src_height - 1` in C's `uint32_t` and
+    // SIGBUSes; the port refuses. NOT driven through the oracle, on purpose —
+    // the differential would crash the test process, which is how this was
+    // found in the first place.
+    assert!(!port::pad_2b_compressed_input_picture(
+        &mut buf, 16, 16, 0, 4, 1
+    ));
+}

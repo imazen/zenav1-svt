@@ -650,3 +650,190 @@ pub fn sops_get_perceptual_perpixel_variance(
     assert!(buf.len() >= (rows - 1) * stride + 1);
     unsafe { ref_sops_get_perceptual_perpixel_variance(buf.as_ptr(), stride as u32, block_size) }
 }
+
+// ---------------------------------------------------------------------------
+// The remaining pic_analysis_process.c padding entry points
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_pre_pad_min_blk_16bit(
+        color_format: u32,
+        pad_right: u32,
+        pad_bottom: u32,
+        width: u32,
+        height: u32,
+        y_buf: *mut u16,
+        y_stride: u32,
+        u_buf: *mut u16,
+        u_stride: u32,
+        v_buf: *mut u16,
+        v_stride: u32,
+    );
+    fn ref_pre_pad_to_sb(
+        y_buf: *mut u8,
+        y_origin: u32,
+        y_stride: u32,
+        width: u32,
+        height: u32,
+        border: u32,
+    );
+    fn ref_pre_down_sample_chroma(
+        in_color_format: u32,
+        out_color_format: u32,
+        out_width: u32,
+        out_height: u32,
+        u_in: *mut u8,
+        u_in_stride: u32,
+        v_in: *mut u8,
+        v_in_stride: u32,
+        u_out: *mut u8,
+        u_out_stride: u32,
+        v_out: *mut u8,
+        v_out_stride: u32,
+    );
+    fn ref_pre_pad_2b_compressed(
+        color_format: u32,
+        pad_right: u32,
+        pad_bottom: u32,
+        width: u32,
+        height: u32,
+        y_buf: *mut u8,
+        y_stride: u32,
+        u_buf: *mut u8,
+        u_stride: u32,
+        v_buf: *mut u8,
+        v_stride: u32,
+        y_inc: *mut u8,
+        u_inc: *mut u8,
+        v_inc: *mut u8,
+    );
+}
+
+/// `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions_16bit`
+/// (pic_analysis_process.c:821). Pads in place.
+#[allow(clippy::too_many_arguments)]
+pub fn pad_min_blk_16bit(
+    color_format: u32,
+    pad_right: usize,
+    pad_bottom: usize,
+    width: usize,
+    height: usize,
+    y: (&mut [u16], usize),
+    u: (&mut [u16], usize),
+    v: (&mut [u16], usize),
+) {
+    unsafe {
+        ref_pre_pad_min_blk_16bit(
+            color_format,
+            pad_right as u32,
+            pad_bottom as u32,
+            width as u32,
+            height as u32,
+            y.0.as_mut_ptr(),
+            y.1 as u32,
+            u.0.as_mut_ptr(),
+            u.1 as u32,
+            v.0.as_mut_ptr(),
+            v.1 as u32,
+        );
+    }
+}
+
+/// `svt_aom_pad_picture_to_multiple_of_sb_dimensions`
+/// (pic_analysis_process.c:859). Pads in place, luma only.
+pub fn pad_to_sb(
+    y: &mut [u8],
+    y_origin: usize,
+    y_stride: usize,
+    width: usize,
+    height: usize,
+    border: usize,
+) {
+    unsafe {
+        ref_pre_pad_to_sb(
+            y.as_mut_ptr(),
+            y_origin as u32,
+            y_stride as u32,
+            width as u32,
+            height as u32,
+            border as u32,
+        );
+    }
+}
+
+/// `svt_aom_down_sample_chroma` (pic_analysis_process.c:77).
+#[allow(clippy::too_many_arguments)]
+pub fn down_sample_chroma(
+    in_color_format: u32,
+    out_color_format: u32,
+    out_width: usize,
+    out_height: usize,
+    u_in: &mut [u8],
+    u_in_stride: usize,
+    v_in: &mut [u8],
+    v_in_stride: usize,
+    u_out: &mut [u8],
+    u_out_stride: usize,
+    v_out: &mut [u8],
+    v_out_stride: usize,
+) {
+    unsafe {
+        ref_pre_down_sample_chroma(
+            in_color_format,
+            out_color_format,
+            out_width as u32,
+            out_height as u32,
+            u_in.as_mut_ptr(),
+            u_in_stride as u32,
+            v_in.as_mut_ptr(),
+            v_in_stride as u32,
+            u_out.as_mut_ptr(),
+            u_out_stride as u32,
+            v_out.as_mut_ptr(),
+            v_out_stride as u32,
+        );
+    }
+}
+
+/// `pad_2b_compressed_input_picture` (pic_analysis_process.c:649), reached
+/// through its only caller,
+/// `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions` — evidence
+/// tier 1 for a function that is `static` in C.
+///
+/// The main planes are the EIGHT-BIT high bytes of SVT's unpacked 10-bit
+/// layout, at a BYTE stride; the caller pads those too, and derives the
+/// compressed stride as `y_stride / 4` itself. They must be present and
+/// correctly sized even though only the `*_inc` planes are under test.
+#[allow(clippy::too_many_arguments)]
+pub fn pad_2b_compressed(
+    color_format: u32,
+    pad_right: usize,
+    pad_bottom: usize,
+    width: usize,
+    height: usize,
+    y: (&mut [u8], usize),
+    u: (&mut [u8], usize),
+    v: (&mut [u8], usize),
+    y_inc: &mut [u8],
+    u_inc: &mut [u8],
+    v_inc: &mut [u8],
+) {
+    unsafe {
+        ref_pre_pad_2b_compressed(
+            color_format,
+            pad_right as u32,
+            pad_bottom as u32,
+            width as u32,
+            height as u32,
+            y.0.as_mut_ptr(),
+            y.1 as u32,
+            u.0.as_mut_ptr(),
+            u.1 as u32,
+            v.0.as_mut_ptr(),
+            v.1 as u32,
+            y_inc.as_mut_ptr(),
+            u_inc.as_mut_ptr(),
+            v_inc.as_mut_ptr(),
+        );
+    }
+}

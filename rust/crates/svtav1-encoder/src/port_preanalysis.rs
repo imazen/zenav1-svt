@@ -476,6 +476,253 @@ pub fn pad_picture_to_multiple_of_min_blk_size_dimensions<'p>(
     }
 }
 
+/// `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions_16bit`
+/// (pic_analysis_process.c:821). EXPORTED — TIER 1.
+///
+/// The 10-bit sibling of the function above, over `u16` planes through
+/// `svt_aom_pad_input_picture_16bit`. C asserts the encoder bit depth is above
+/// 8 on entry; that is a caller contract, not a branch, so it is a debug
+/// assertion here rather than a runtime check.
+///
+/// The chroma dimension arithmetic is IDENTICAL to the 8-bit version's,
+/// including the round-up `(width + subsampling_x - pad_right) >> subsampling_x`
+/// and the fact that `input_pic->width`/`->height` are the LUMA dimensions in
+/// both the luma and the chroma calls. Transcribed from its own site rather
+/// than shared with the 8-bit path, because the two derive `subsampling_*`
+/// from different sources in C (this one from `input_pic->color_format`) and a
+/// shared helper would hide that if one ever changed.
+pub fn pad_picture_to_multiple_of_min_blk_size_dimensions_16bit(
+    color_format: u32,
+    pad_right: usize,
+    pad_bottom: usize,
+    luma_width: usize,
+    luma_height: usize,
+    y: (&mut [u16], usize),
+    u: Option<(&mut [u16], usize)>,
+    v: Option<(&mut [u16], usize)>,
+) {
+    // EB_YUV444 == 3, EB_YUV422 == 2.
+    let subsampling_x = usize::from(color_format != 3);
+    let subsampling_y = usize::from(color_format < 2);
+
+    let (y_buf, y_stride) = y;
+    svtav1_dsp::pic_operators::pad_input_picture_16bit(
+        y_buf,
+        y_stride,
+        luma_width - pad_right,
+        luma_height - pad_bottom,
+        pad_right,
+        pad_bottom,
+    );
+
+    for (buf, stride) in [u, v].into_iter().flatten() {
+        svtav1_dsp::pic_operators::pad_input_picture_16bit(
+            buf,
+            stride,
+            (luma_width + subsampling_x - pad_right) >> subsampling_x,
+            (luma_height + subsampling_y - pad_bottom) >> subsampling_y,
+            pad_right >> subsampling_x,
+            pad_bottom >> subsampling_y,
+        );
+    }
+}
+
+/// `svt_aom_pad_picture_to_multiple_of_sb_dimensions`
+/// (pic_analysis_process.c:859). EXPORTED — TIER 1.
+///
+/// One call to `svt_aom_generate_padding` with the plane's OWN `border` used
+/// for both the horizontal and the vertical amount, so the border SB is
+/// completed on every side. Luma only — C passes no chroma planes.
+pub fn pad_picture_to_multiple_of_sb_dimensions(y: &mut Plane<'_>) {
+    let (origin, stride, width, height, border) = (y.origin, y.stride, y.width, y.height, y.border);
+    generate_padding(y.buf, origin, stride, width, height, border, border);
+}
+
+/// `svt_aom_down_sample_chroma` (pic_analysis_process.c:77). EXPORTED —
+/// TIER 1.
+///
+/// Nearest-neighbour 4:4:4 / 4:2:2 chroma down to the output format's
+/// sampling, by point-sampling at `ii << (1 - input_subsampling_x)`.
+///
+/// REACHABILITY: dead in the shipping encoder. Its one call site
+/// (pic_analysis_process.c:1971) is guarded by
+/// `input_pic->color_format >= EB_YUV422`, and `svt_av1_verify_settings`
+/// (enc_settings.c:470) rejects every colour format except 420 with
+/// "Only support 420 now" — so no configuration C or this port accepts reaches
+/// it. Translated anyway per `docs/WORKING-ON-THIS.md` §7. Note that at 4:2:0
+/// input the shifts would be `1 - 1 == 0`, i.e. a plain copy; the function only
+/// does anything for the formats that cannot be selected.
+///
+/// The loop bounds come from the OUTPUT descriptor's width and height, and the
+/// output's own subsampling shifts them — the input's dimensions are never
+/// read. Passing the input's size here is a silent wrong-size copy, which is
+/// why both are named parameters rather than one "size".
+#[allow(clippy::too_many_arguments)]
+pub fn down_sample_chroma(
+    input_color_format: u32,
+    output_color_format: u32,
+    output_width: usize,
+    output_height: usize,
+    u_in: &[u8],
+    v_in: &[u8],
+    stride_in_u: usize,
+    stride_in_v: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    stride_out_u: usize,
+    stride_out_v: usize,
+) {
+    let in_ss_x = u32::from(input_color_format != 3);
+    let in_ss_y = u32::from(input_color_format < 2);
+    let out_ss_x = u32::from(output_color_format != 3);
+    let out_ss_y = u32::from(output_color_format < 2);
+
+    let rows = output_height >> out_ss_y;
+    let cols = output_width >> out_ss_x;
+    for (src, dst, stride_in, stride_out) in [
+        (u_in, &mut *u_out, stride_in_u, stride_out_u),
+        (v_in, &mut *v_out, stride_in_v, stride_out_v),
+    ] {
+        for jj in 0..rows {
+            for ii in 0..cols {
+                dst[ii + jj * stride_out] =
+                    src[(ii << (1 - in_ss_x)) + (jj << (1 - in_ss_y)) * stride_in];
+            }
+        }
+    }
+}
+
+/// `pad_2b_compressed_input_picture` (pic_analysis_process.c:649). `static`
+/// in C — TIER 4.
+///
+/// Right/bottom edge-replicate for the COMPRESSED 2-bit plane of SVT's
+/// "compressed 10-bit" input layout, where the low two bits of four
+/// consecutive samples share one byte, most-significant pair first.
+///
+/// C spells this as eight near-identical `if (pad_right == N)` bodies. They
+/// collapse to one rule, and the collapse is arithmetic, not a guess:
+/// * the last partially-filled byte is at column `(width / 4) * 4 / 4`, i.e.
+///   `width / 4` after the truncation C performs in two steps;
+/// * `pad_right % 4` decides how many pairs of that byte are already used
+///   (`4 - pad_right % 4`), which sets both the keep-mask and the shift the
+///   source pixel is read from;
+/// * `pad_right > 3` additionally writes ONE more whole byte of the replicated
+///   pixel.
+///
+/// The one case that does not fit is `pad_right == 4`, where C reads the
+/// source pixel from the byte BEFORE `last_col` (there is no partial byte to
+/// take it from) and writes only the new byte. That is kept as its own arm.
+///
+/// `pad_right == 0` does nothing and any value above 7 is C's
+/// `svt_aom_assert_err(0, "wrong pad value")`; this returns `false` instead of
+/// asserting, so a caller can refuse rather than continue with a half-padded
+/// plane.
+///
+/// A zero `original_src_height` is refused for the same reason, and it is not
+/// hypothetical: C computes `src_pic + (original_src_height - 1) * src_stride`
+/// in `uint32_t`, so a height of 0 wraps to `0xFFFFFFFF` and the bottom-pad
+/// memcpy walks off into unmapped memory — a SIGBUS, reproduced while writing
+/// this port's differential. The encoder never produces it (`pad_bottom` is
+/// derived from the padded height, so it is always less), which is exactly why
+/// nothing upstream caught it.
+pub fn pad_2b_compressed_input_picture(
+    src: &mut [u8],
+    src_stride: usize,
+    original_src_width: usize,
+    original_src_height: usize,
+    pad_right: usize,
+    pad_bottom: usize,
+) -> bool {
+    if pad_right > 7 || original_src_height == 0 {
+        return false;
+    }
+    let last_col = (original_src_width / 4 * 4) / 4;
+
+    if pad_right == 4 {
+        // The only arm that sources its pixel from the PREVIOUS byte.
+        for row in 0..original_src_height {
+            let last_pixel = src[last_col - 1 + row * src_stride] & 0x03;
+            src[last_col + row * src_stride] = replicate_2b(last_pixel);
+        }
+    } else if pad_right > 0 {
+        // `used` is how many of the four 2-bit lanes of `last_col` hold real
+        // samples: 1 for pad 7 and 3, 2 for pad 6 and 2, 3 for pad 5 and 1.
+        let used = 4 - (pad_right % 4);
+        let keep_mask = 0xffu8 << (8 - 2 * used);
+        let shift = 8 - 2 * used;
+        for row in 0..original_src_height {
+            let last_byte = src[last_col + row * src_stride] & keep_mask;
+            let last_pixel = (last_byte >> shift) & 0x03;
+            // Fill the unused lanes of this byte with the replicated pixel.
+            let mut new_byte = last_byte;
+            for lane in 0..(4 - used) {
+                new_byte |= last_pixel << (2 * lane);
+            }
+            src[last_col + row * src_stride] = new_byte;
+            // `pad_right > 4` and `pad_right > 3` are the same test HERE:
+            // 4 took the arm above, so this branch only ever sees 1, 2, 3, 5,
+            // 6, 7. (Mutation-confirmed: changing it to `> 3` is the one
+            // mutation of this module the differential does not catch, which
+            // is the measurement that it cannot matter.)
+            if pad_right > 4 {
+                src[last_col + 1 + row * src_stride] = replicate_2b(last_pixel);
+            }
+        }
+    }
+
+    if pad_bottom > 0 {
+        let last_row = (original_src_height - 1) * src_stride;
+        let len = (original_src_width + pad_right) / 4;
+        for row in 0..pad_bottom {
+            let dst = last_row + (row + 1) * src_stride;
+            src.copy_within(last_row..last_row + len, dst);
+        }
+    }
+    true
+}
+
+/// One 2-bit sample replicated into all four lanes of a byte.
+#[inline]
+fn replicate_2b(pixel: u8) -> u8 {
+    (pixel << 6) | (pixel << 4) | (pixel << 2) | pixel
+}
+
+/// `svt_aom_picture_pre_processing_operations` (pic_analysis_process.c:514).
+///
+/// A dispatcher, and in the port's envelope a no-op: under
+/// `CONFIG_ENABLE_FILM_GRAIN` it calls `apply_film_grain_table` when
+/// `fgs_table` is set, else `denoise_estimate_film_grain` when
+/// `film_grain_denoise_strength` is; with the macro off both arguments are
+/// `(void)`-cast and it returns.
+///
+/// Returns which arm C would take so a caller can dispatch, rather than
+/// pretending the decision does not exist. Neither arm is ported yet — they are
+/// the `noise_model.c` denoiser chain — so a caller that gets anything but
+/// [`PreProcessingArm::None`] is outside what this port implements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreProcessingArm {
+    /// `scs->static_config.fgs_table` — `apply_film_grain_table`.
+    FilmGrainTable,
+    /// `film_grain_denoise_strength != 0` — `denoise_estimate_film_grain`.
+    DenoiseEstimateFilmGrain,
+    /// Neither; the function returns without touching the picture.
+    None,
+}
+
+/// See [`PreProcessingArm`].
+pub fn picture_pre_processing_operations(
+    fgs_table: bool,
+    film_grain_denoise_strength: u32,
+) -> PreProcessingArm {
+    if fgs_table {
+        PreProcessingArm::FilmGrainTable
+    } else if film_grain_denoise_strength != 0 {
+        PreProcessingArm::DenoiseEstimateFilmGrain
+    } else {
+        PreProcessingArm::None
+    }
+}
+
 /// `svt_aom_pad_input_pictures` (pic_analysis_process.c:1550), 8-bit path.
 ///
 /// Min-block padding first, then the full border edge-replicate (68 px for

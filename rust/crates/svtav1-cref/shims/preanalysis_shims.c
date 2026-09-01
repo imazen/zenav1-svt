@@ -404,3 +404,126 @@ uint32_t ref_sops_get_perceptual_perpixel_variance(const uint8_t* buf, uint32_t 
     sc_ensure_fn_ptr();
     return svt_aom_get_perceptual_perpixel_variance(buf, stride, block_size);
 }
+
+/* ------------------------------------------------------------------------
+ * The remaining pic_analysis_process.c padding entry points.
+ *
+ * `pad_2b_compressed_input_picture` is `static`, but its ONLY caller is the
+ * exported `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions`, which
+ * reaches it when the bit depth is above 8 and the descriptor carries
+ * `*_buffer_bit_inc`. Driving it that way is tier 1; hand-derived vectors for
+ * its eight `pad_right` arms would have been tier 4.
+ * ---------------------------------------------------------------------- */
+
+void svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions_16bit(SequenceControlSet*  scs,
+                                                                      EbPictureBufferDesc* input_pic);
+void svt_aom_pad_picture_to_multiple_of_sb_dimensions(EbPictureBufferDesc* input_padded_pic);
+void svt_aom_down_sample_chroma(EbPictureBufferDesc* input_pic, EbPictureBufferDesc* output_pic);
+
+/* 10-bit min-block padding: the planes are uint16_t, so the strides and the
+ * origins below are in SAMPLES, and the shim converts once. */
+void ref_pre_pad_min_blk_16bit(uint32_t color_format, uint32_t pad_right, uint32_t pad_bottom, uint32_t width,
+                               uint32_t height, uint16_t* y_buf, uint32_t y_stride, uint16_t* u_buf, uint32_t u_stride,
+                               uint16_t* v_buf, uint32_t v_stride) {
+    pre_ensure_rtcd();
+    SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    EbPictureBufferDesc pic;
+    memset(&pic, 0, sizeof(pic));
+
+    scs->static_config.encoder_bit_depth = EB_TEN_BIT;
+    scs->pad_right                       = pad_right;
+    scs->pad_bottom                      = pad_bottom;
+
+    pic.color_format = color_format;
+    pic.y_buffer     = (EbByte)y_buf;
+    pic.y_stride     = y_stride;
+    pic.width        = width;
+    pic.height       = height;
+    pic.u_buffer     = (EbByte)u_buf;
+    pic.u_stride     = u_stride;
+    pic.v_buffer     = (EbByte)v_buf;
+    pic.v_stride     = v_stride;
+
+    svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions_16bit(scs, &pic);
+    free(scs);
+}
+
+void ref_pre_pad_to_sb(uint8_t* y_buf, uint32_t y_origin, uint32_t y_stride, uint32_t width, uint32_t height,
+                       uint32_t border) {
+    pre_ensure_rtcd();
+    EbPictureBufferDesc pic;
+    memset(&pic, 0, sizeof(pic));
+    pic.y_buffer = y_buf + y_origin;
+    pic.y_stride = y_stride;
+    pic.width    = width;
+    pic.height   = height;
+    pic.border   = border;
+    svt_aom_pad_picture_to_multiple_of_sb_dimensions(&pic);
+}
+
+void ref_pre_down_sample_chroma(uint32_t in_color_format, uint32_t out_color_format, uint32_t out_width,
+                                uint32_t out_height, uint8_t* u_in, uint32_t u_in_stride, uint8_t* v_in,
+                                uint32_t v_in_stride, uint8_t* u_out, uint32_t u_out_stride, uint8_t* v_out,
+                                uint32_t v_out_stride) {
+    pre_ensure_rtcd();
+    EbPictureBufferDesc in, out;
+    memset(&in, 0, sizeof(in));
+    memset(&out, 0, sizeof(out));
+    in.color_format = in_color_format;
+    in.u_buffer     = u_in;
+    in.u_stride     = u_in_stride;
+    in.v_buffer     = v_in;
+    in.v_stride     = v_in_stride;
+    out.color_format = out_color_format;
+    out.width        = out_width;
+    out.height       = out_height;
+    out.u_buffer     = u_out;
+    out.u_stride     = u_out_stride;
+    out.v_buffer     = v_out;
+    out.v_stride     = v_out_stride;
+    svt_aom_down_sample_chroma(&in, &out);
+}
+
+/*
+ * `pad_2b_compressed_input_picture`, reached through its exported caller
+ * `svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions`.
+ *
+ * The main planes here are EIGHT-BIT with a BYTE stride, not 16-bit: in SVT's
+ * unpacked 10-bit layout `y_buffer` holds the high 8 bits and
+ * `y_buffer_bit_inc` the packed low 2, four samples to a byte. The caller pads
+ * the main planes through the 8-bit `pad_input_picture` and derives the
+ * compressed stride itself as `y_stride / 4`, so only the byte stride is
+ * passed and the relation is left to C.
+ *
+ * (Handing it `uint16_t` planes instead — the shape the `_16bit` sibling
+ * takes — makes C walk them at a sample stride interpreted as bytes and
+ * SIGBUS. That was this shim's first draft.)
+ */
+void ref_pre_pad_2b_compressed(uint32_t color_format, uint32_t pad_right, uint32_t pad_bottom, uint32_t width,
+                               uint32_t height, uint8_t* y_buf, uint32_t y_stride, uint8_t* u_buf, uint32_t u_stride,
+                               uint8_t* v_buf, uint32_t v_stride, uint8_t* y_inc, uint8_t* u_inc, uint8_t* v_inc) {
+    pre_ensure_rtcd();
+    SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    EbPictureBufferDesc pic;
+    memset(&pic, 0, sizeof(pic));
+
+    scs->static_config.encoder_bit_depth = EB_TEN_BIT;
+    scs->pad_right                       = pad_right;
+    scs->pad_bottom                      = pad_bottom;
+
+    pic.color_format     = color_format;
+    pic.y_buffer         = y_buf;
+    pic.y_stride         = y_stride;
+    pic.width            = width;
+    pic.height           = height;
+    pic.u_buffer         = u_buf;
+    pic.u_stride         = u_stride;
+    pic.v_buffer         = v_buf;
+    pic.v_stride         = v_stride;
+    pic.y_buffer_bit_inc = y_inc;
+    pic.u_buffer_bit_inc = u_inc;
+    pic.v_buffer_bit_inc = v_inc;
+
+    svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions(scs, &pic);
+    free(scs);
+}
