@@ -56,6 +56,40 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The inter campaign's reference cell now matches C's MODE DECISION exactly
+  — and the arm that does it is HELD, not landed (`wip/video-md-arms`,
+  `ed560d39`).** `ctx->mds0_use_hadamard_sb` selects MDS0's luma distortion in
+  `fast_loop_core` (product_coding_loop.c:1259) — `hadamard_path` (a SATD,
+  `:1283`) vs the two-buffer VARIANCE `fn_ptr->vf` = `svt_aom_variance{W}x{H}`
+  (`:1296-1306`). It is a literal, not a ladder:
+  `svt_aom_sig_deriv_enc_dec_allintra` writes `true`
+  (enc_mode_config.c:8148), `_default` (`:7916`) and `_rtc` (`:8032`) write
+  `false`, and `fast_loop_core_light_pd1` (`:1040`) is variance
+  unconditionally. The port ran the allintra value on video frames. New
+  `svtav1_encoder::encdec_arm` wires it; `FunnelCfg::mds0_use_hadamard_sb`
+  defaults to the allintra `true`, so the still path is byte-neutral by
+  construction (six reference identity cells IDENTICAL at 290/839/63/171/580/
+  693 B). Variance is DC-invariant and SATD is not, so the two metrics rank a
+  flat-prediction candidate set completely differently — with `nic_arm`,
+  `tools/tree_diff.py` on `gradient 64x64 q40 p6` video frame 0 goes from 12
+  field flips and four wrong 32x32 leaf modes to **0 field flips** (947 -> 965
+  B against C's 961; the residual is residual coding). HELD because
+  `gradient 72x88 p4` (2.00% vs limit 1.0), `p9` (1.20% vs 1.0) and
+  `diag 64x64 p11` (16.96% vs 2.0) go outside their `ratioVideoKey` limits,
+  while `gradient 72x88 p5` closes to 0.000% and `screenrep 72x88 p7` becomes
+  BYTE-IDENTICAL. Full record + where to start on the blocker:
+  `rust/docs/INTER-ENCODE-PLAN.md` §1e.
+- **Tier-1 gate on `leaf_funnel::rate_tables::nic_counts`, the funnel's own
+  MDS stage-count derivation.** Its only test was six transcribed values;
+  `tests/c_parity_md_nics.rs` gates a DIFFERENT transcription
+  (`port_md::nics::set_nics`) that has no caller on the live path, over a
+  numerator grid that omits `(4,4,4)` and a qp list that omits 40 — i.e. the
+  exact configuration the held `nic_arm` work is blocked on sat in a hole in
+  both. Now swept against the real exported `svt_aom_set_nics` over every
+  `MD_STAGE_NICS_SCAL_NUM` row x every CLI qp 0..=63. The result is a NEGATIVE
+  and that is the point: `nic_counts` is correct everywhere, which retires
+  "the port's stage-count floor" as the suspect for that blocker.
+
 - **Rate ladders: the video arm of `rdoq_level` + `rate_est_level` +
   `update_cdf_level` wired (lane `wv-rdoq`).** New
   `svtav1_encoder::rate_arm` resolves the three frame-level rate ladders per
@@ -741,6 +775,38 @@ Crates are not published to crates.io yet — depend by git.
   `EncodedAvif::{width, height}`. Arbitrary-dims MONOCHROME is a pipeline gap.
 
 ### Fixed
+
+- **The PD0 -> PD1 subresolution leak does not exist — refuted at tier 1, and
+  it was the inter campaign's named next chunk.** `md_stage_1` reads
+  `ctx->subres_ctrls.step` with no `PD_PASS_1` guard
+  (product_coding_loop.c:7027) where `md_stage_2`/`md_stage_3` zero it, which
+  reads as "the video arm's `pic_pd0_lvl = 3` makes PD1's survivor-choosing
+  MDS1 run at half vertical resolution". But `set_subres_controls` has FOUR
+  call sites, not one: each regular-PD1 derivation calls
+  `set_subres_controls(ctx, 0)` unconditionally (`_default` :7919, `_rtc`
+  :8035, `_allintra` :8151) and `enc_dec_process.c:3038-3050` runs one of them
+  on the SAME context between PD0 and PD1's md loop. New shim
+  `ref_subres_pd0_then_pd1` drives PD0 then one PD1 arm on one context in C's
+  order; `tests/c_parity_subres_carry.rs` pins step 1 -> 0 on all three
+  regular arms at every `pd0_level` 0..=6, with the two light-PD1 arms (which
+  really do leave the step alone, and never call `md_stage_1`) as the positive
+  control.
+- **`tools/identity_full_8bit.sh` aborted at cell 0 under bash 3.2** once
+  `KNOWN_DIFF` emptied out: `"${KNOWN_DIFF[@]}"` on an empty array with
+  `set -u` is an unbound-variable error there, and `set -e` took the sweep
+  down before a single verdict printed. macOS finds bash 3.2 first on a login
+  PATH, so the failure was per-shell. Guarded; 1100/1100 after.
+- **`tools/ctrace-linux/run.sh` dropped every CONFIGURATION selector at the
+  container boundary** — `SVT_FRAMES`, `SVT_AVIF`, `SVT_INTRA_PERIOD`,
+  `SVT_HIER_LEVELS`, `SVT_PRED_STRUCT`, `SVT_CPU_FLAGS`, `SVT_TILE_*`,
+  `SVT_TUNE`, `SVT_MAX_TX_SIZE`, `SVT_CRF_OFFSET`, `SVT_CSP`,
+  `SVT_SUPERRES_KF_DENOM`. A caller asking for the inter campaign's VIDEO-mode
+  2-frame GOP got a container that encoded ONE STILL frame, with no error and
+  a valid op trace of a different encode. It also could not run at all from a
+  `jj workspace` sibling, where the C submodule is a symlink resolving outside
+  the `/repo:ro` mount. Both fixed; verified by encoding the reference cell in
+  the container and getting 961 + 22 B with frame 0 BYTE-IDENTICAL to the host
+  driver's.
 
 - **Three more x86_64-only NULL-RTCD SIGSEGVs, and the ISA-dependent C UB
   behind the fourth.** `init_wedge` (`inter_pred_shims.c`) ran

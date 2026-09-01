@@ -225,6 +225,16 @@ Anything the arms fork on OUTSIDE that function — the sequence-header
 derivation, `sig_deriv_enc_dec_*`, `set_qp_based_th_scaling_ctrls_*` — is
 invisible to it, and the edge-filter bug lived in the first of those.
 
+**The second one landed 2026-09-01 and it is bigger: `ctx->mds0_use_hadamard_sb`,
+which decides WHICH DISTORTION MDS0 SCORES WITH.** `svt_aom_sig_deriv_enc_dec_allintra`
+writes `true` (`enc_mode_config.c:8148`); `_default` (`:7916`) and `_rtc`
+(`:8032`) write `false` — literals, at every preset, on every frame type — and
+`fast_loop_core` then picks `hadamard_path` (a SATD, `product_coding_loop.c:1283`)
+or the two-buffer VARIANCE `fn_ptr->vf` = `svt_aom_variance{W}x{H}` (`:1296-1306`).
+`fast_loop_core_light_pd1` (`:1040`) uses `vf` unconditionally, so the video arm
+is variance everywhere in C. Full record in §1e; the wiring is on
+`wip/video-md-arms`.
+
 ## 1d. First byte-identical VIDEO-MODE key frames (2026-09-01)
 
 `screen` 64x64 preset 6, frames=2 frame 0, is byte-identical to C at q20, q40
@@ -369,7 +379,86 @@ geometry), so the remaining `pic_pd0_lvl` surface there is the PD0-cost /
 survivor set, and the measurement below says it is the whole of the reference
 cell's remaining candidate-set gap.
 
+### 1e. The reference cell's MODE DECISION is CLOSED (2026-09-01) — `mds0_use_hadamard_sb`
+
+`gradient 64x64 q40 p6` video, frame 0: with `encdec_arm` + `nic_arm` the
+port's coded partition tree and **every leaf mode, uv mode and angle delta
+equal C's** — `tools/tree_diff.py` reports **0 field flips** where main reports
+12 and four wrong leaf modes. C codes D135(+3) / SMOOTH_V / D135(+3) / H on the
+four 32x32 leaves and the port now codes exactly that. Bytes 947 -> 965 against
+C's 961; the residual 4 B are in the RESIDUAL CODING, not in mode decision.
+Both arms are required — encdec alone leaves 8 flips (948 B), nic alone 12
+(952 B).
+
+**What it was.** §1d's item 1 named `nic_level`, and it was half the answer.
+The other half is not in §1c's table at all: `ctx->mds0_use_hadamard_sb`
+selects MDS0's luma distortion, C's video arm sets it FALSE (variance) where
+its allintra arm sets it TRUE (Hadamard SATD), and the port ran the allintra
+value on video frames. **Variance is DC-invariant and SATD is not**, so every
+candidate whose prediction is FLAT scores identically under one and
+differently under the other. Measured at block (0,0) 32x32 of the reference
+cell — C's `SVT_FASTCOST_OUT` interposer against the port's `SVTAV1_CANDDBG`:
+
+| | flat group (DC, V/0, V/-3, H/0, H/+3, D45/\*, D203/\*, D67/\*) | D135/0 | D135/+3 | D157/-3 |
+|---|---|---|---|---|
+| C (`hadblk=0`, variance) | all exactly `1392540` | `1356698` | `1356851` | `1359225` |
+| port (SATD) | SPREAD: DC `53600`, V/0 `53472`, D45/0 `53472`, D67/0 `53472` | `53504` | `54064` | `53986` |
+
+So C's MDS1 survivor set was `{SMOOTH_V, D135/0, D135/+3, D157/-3, D157/0}`
+and the port's `{SMOOTH_V, V/0, D67/0, D45/0, D67/-3}` — one candidate in
+common, and its MDS1 full cost agreed to the BYTE (`48577658` on both sides),
+which is what says the divergence was the MDS0 METRIC and not the machinery
+around it.
+
+**Why it is on `wip/video-md-arms` and not on main**, per-cell (frame 0, %
+off C's byte count; the four `ratioVideoKey` scoreboard cells plus the
+reference cell):
+
+| cell | base | +encdec | +nic | +both | limit |
+|---|--:|--:|--:|--:|--:|
+| `gradient 72x88 q40 p4` | 0.57 | 0.86 | 0.93 | **2.00** | 1.0 |
+| `gradient 72x88 q40 p5` | 0.07 | 0.40 | 0.54 | **0.00** | 0.3 |
+| `screenrep 72x88 q40 p7` | 0.38 | 0.25 | 0.42 | **0.00 (byte-identical)** | 0.5 |
+| `gradient 72x88 q40 p9` | 0.06 | 2.39 | 0.31 | **1.20** | 1.0 |
+| `diag 64x64 q40 p11` | 0.75 | 16.96 | 0.75 | **16.96** | 2.0 |
+| `gradient 64x64 q40 p6` (reference) | 1.46 | 1.35 | 0.94 | **0.42** | — |
+
+The pair CLOSES the cell that held `nic_arm` back (`video-key-nsq-arm-p5-72x88`
+is now exactly C's byte count) and makes `video-key-nsq-arm-p7-screenrep-72x88`
+byte-identical; p4, p9 and the p11 edge-filter witness go outside their limits.
+Moving a limit is a threshold change, so the pair waits.
+
+**Where to start on the blocker.** `diag 64x64 q40 p11` is the cleanest: it is
+pure GEOMETRY (12 C-only / 6 port-only blocks, 0 mode flips — the port codes
+16x16 everywhere where C codes an 8x8/32x32 mix), and at p11 C is on LIGHT PD1,
+whose fast loop is `fn_ptr->vf` either way (`product_coding_loop.c:1040`). So
+the metric is right there and something downstream of it — the depth decision
+that reads the funnel's leaf costs — is not. `nic_arm` does not move that cell
+at all.
+
+**Two things this measurement RETIRES**, both recorded as leads in the previous
+revision of this file:
+
+* "the port's stage-count floor" as the `nic_arm` suspect.
+  `leaf_funnel::rate_tables::nic_counts` is now gated at tier 1 against the
+  real exported `svt_aom_set_nics` over every `MD_STAGE_NICS_SCAL_NUM` row and
+  every CLI qp 0..=63, and it is CORRECT everywhere — including
+  `(4,4,4)` at qp 40, which is the failing cell's own configuration and which
+  neither of the two pre-existing gates covered.
+* `enable_skipping_mds1` as that suspect. It is 1 only at `nic_level` 8..=11
+  (`enc_mode_config.c` `set_nic_controls` cases 8-11); the failing cell is
+  preset 5, where the video arm takes `nic_level` **7**, so the flag is 0 and
+  cannot explain it.
+
 ### `wip/video-md-arms` — complete, verified, deliberately NOT on main
+
+**Head is `ed560d39` as of 2026-09-01** — `nic_arm` VERBATIM from the previous
+head `9d9b92526` (diff empty) plus `encdec_arm`, rebased onto main. Read §1e
+first: with both arms the reference cell's mode decision matches C exactly, and
+the cell named below is CLOSED (0.539% -> 0.000%); what holds the pair off main
+now is `gradient 72x88 p4`, `p9` and the `diag p11` edge-filter witness.
+
+The rest of this section is the `nic_arm`-only record it was written as.
 
 `nic_level` (`nic_arm`) is done, tier 1 on both arms, and still-path
 byte-neutral (identity_full_8bit 1100/1100). It is on the bookmark
@@ -381,12 +470,18 @@ byte-neutral (identity_full_8bit 1100/1100). It is on the bookmark
 | `video-key-nsq-arm-p5-72x88` | 1485 B | 1493 B (0.539%) | 1486 B (0.067%) | 0.3% |
 
 Re-deriving a limit is a threshold change and needs the owner's sign-off, so
-the arm waits rather than the gate moving. **The lead:** at `nic_level` 8 the
-port prunes HARDER than C — the level's stage numerators are `{2, 1, 1}` of 16
-and its candidate thresholds 300 / 3 / 3 — so the suspect is the port's
-stage-count floor or the unmodelled `enable_skipping_mds1` (carried as a
-`PORT-NOTE(unverified)` on `nic_arm::nic_ctrls`), not the transcribed row,
-which is pinned against the baked allintra table at every preset.
+the arm waits rather than the gate moving. ~~**The lead:** at `nic_level` 8 the port prunes HARDER than C ... the suspect
+is the port's stage-count floor or the unmodelled `enable_skipping_mds1`.~~
+**BOTH REFUTED 2026-09-01 — see §1e.** The stage counts are now tier-1 gated
+against the real exported `svt_aom_set_nics` over every `MD_STAGE_NICS_SCAL_NUM`
+row and every CLI qp 0..=63 and are CORRECT — including the failing cell's own
+`(4, 4, 4)` at qp 40, which sat in a hole in BOTH pre-existing gates
+(`c_parity_md_nics.rs` covers a different transcription with no live caller,
+over a numerator grid that omits 4 and a qp list that omits 40). And
+`enable_skipping_mds1` is 1 only at `nic_level` 8..=11, while the failing cell
+is preset 5, where the video arm takes `nic_level` **7** — so the flag is 0
+there and cannot explain it. The real co-requisite was
+`mds0_use_hadamard_sb`; with it the cell below is at 0.000%.
 
 The bisect that chose what landed: on the four ratio cells, over the on/off
 combinations of (edge filter, `txs_arm`, `funnel_arm`, `nic_arm`), the maximal
