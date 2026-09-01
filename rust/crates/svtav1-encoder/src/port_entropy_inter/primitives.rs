@@ -173,8 +173,13 @@ mod tests {
         assert_eq!(write_uniform_cost(5, 2), cost_literal(2));
         assert_eq!(write_uniform_cost(5, 3), cost_literal(3));
         assert_eq!(write_uniform_cost(5, 4), cost_literal(3));
-        // n = 1 -> l = 1, m = 1: every v >= m, so one literal bit.
-        assert_eq!(write_uniform_cost(1, 0), cost_literal(1));
+        // n = 1 -> l = 1, m = (1 << 1) - 1 = 1, so v = 0 is BELOW m and
+        // takes the `l - 1` arm: cost_literal(0) = 0. An earlier revision
+        // of this line asserted cost_literal(1) on the reasoning that
+        // "every v >= m"; that reasoning is wrong (m is 1, not 0) and the
+        // tier-1 sweep in tests/c_parity_entropy_block.rs, which covers
+        // exactly this (n, v), agrees with C at 0.
+        assert_eq!(write_uniform_cost(1, 0), 0);
         // n = 0 -> l = 0: free.
         assert_eq!(write_uniform_cost(0, 0), 0);
     }
