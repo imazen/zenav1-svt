@@ -431,6 +431,7 @@ pub(super) fn tx_unit_inner(
                     frame.sharpness,
                     false,
                     frame.sharp_tx_active && plane_type == 0,
+                    frame.rdoq_allintra_rd_mult,
                 ),
                 sharpness_flag: frame.sharp_tx_active && plane_type == 0,
                 iwt: qm.map(|(_, iwt)| iwt),
@@ -912,6 +913,9 @@ pub(crate) fn tx_unit_hbd(
     rdoq_level: u8,
     lambda: u64,
     sharpness: i8,
+    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
     rates: &MdRates,
     do_rdoq: bool,
     bd: u8,
@@ -1031,6 +1035,7 @@ pub(crate) fn tx_unit_hbd(
                     sharpness,
                     false,
                     false,
+                    allintra_rd_mult,
                 ),
                 sharpness_flag: false,
                 // The trellis dequant must use the SAME matrix as the quantize

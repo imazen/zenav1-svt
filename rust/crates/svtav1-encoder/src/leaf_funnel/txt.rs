@@ -271,6 +271,7 @@ pub(super) fn txt_search(
                     frame.rdoq_level,
                     b.lambda,
                     frame.sharpness,
+                    frame.rdoq_allintra_rd_mult,
                     rates,
                     do_rdoq,
                     b.bd,

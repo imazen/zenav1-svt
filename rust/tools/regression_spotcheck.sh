@@ -775,7 +775,14 @@ ratioVideoKey "video-key-rate-arm-p9-72x88" gradient 72 88 40 9 1.0
 #                           port=1) -> 0; byte count 961 unchanged either way,
 #                           so this cell isolates the header bit.
 # The p11 ratio limit 2.0 sits between 49.377 and 0.748.
-ratioVideoKey "video-key-edge-filter-diag-p11" diag 64 64 40 11 2.0
+#
+# PROMOTED to byteVideoKey 2026-09-01 (the tx_mode-symbol chunk). The ratio form
+# was the weaker assertion while the payload was open; it is now byte-identical
+# (C 401 B, port 401 B), and the ratioVideoKey doc above says not to leave the
+# weaker one in place once the stronger holds. It still witnesses the original
+# bug by a mile: with the edge filter forced back to the allintra rule the port
+# emits 203 B against C's 401.
+byteVideoKey "video-key-edge-filter-diag-p11" diag 64 64 40 11
 #
 # THIS CELL EARNED ITS KEEP A SECOND TIME, 2026-09-01. The held
 # wip/video-md-arms bundle passed all five ratioVideoKey cells and broke THIS
@@ -786,7 +793,35 @@ ratioVideoKey "video-key-edge-filter-diag-p11" diag 64 64 40 11 2.0
 # what said the divergence is downstream of mode decision: C's
 # `cdef_recon_ctrls.zero_fs_cost_bias`, unported on BOTH arms. See
 # docs/INTER-ENCODE-PLAN.md §1i.
-fhVideoKey "video-key-txs-arm-tx-mode-p11" gradient 64 64 40 11
+#
+# PROMOTED to byteVideoKey 2026-09-01 (the tx_mode-symbol chunk). The header
+# half of `frm_hdr->tx_mode` was fixed on 2026-09-01 and the WALK half was not:
+# `encode_block_syntax` gated the per-block `tx_size_cdf` symbol on `is_key`
+# (the allintra arm's rule) rather than on the bit the header actually wrote, so
+# at video preset >= 10 the port announced TX_MODE_LARGEST and then coded one
+# tx_depth symbol per block anyway — a stream a decoder cannot parse.
+# OBSERVED on ONE build by forcing the gate back to `is_key` (the RDOQ fix
+# below left ON, so this isolates the tx_size symbol):
+#   gradient 64x64 q40 p11: port 1025 B vs C 1024 -> BYTE-IDENTICAL
+#   diag     64x64 q40 p11: port  403 B vs C  401 -> BYTE-IDENTICAL
+# With BOTH of the day's fixes forced off — i.e. `main` — the same two cells
+# are 1026 B and 403 B.
+byteVideoKey "video-key-txs-arm-tx-mode-p11" gradient 64 64 40 11
+
+# --- the RDOQ plane rate weight, 2026-09-01. `svt_av1_optimize_b`'s rdmult is
+# `plane_rd_mult[allintra || rtc][is_inter][plane_type]` (full_loop.c:1085), and
+# the port hardcoded the ALLINTRA row (17 luma / 13 chroma). A video-mode frame
+# takes index 0, where CHROMA is **20** — so C's RDOQ zeroes chroma coefficients
+# the port keeps. Luma (17) is the same on both arms, which is why this shows up
+# as a chroma-only divergence.
+#
+# OBSERVED, gradient 64x64 q40 p6 video, frames=2 frame 0, C 961 B: before
+# port 965 B (0.416%), after BYTE-IDENTICAL. The port's four coded 32x32 blocks
+# already had C's tree, modes, uv modes, angle deltas and LUMA levels; every
+# chroma txb differed (C kept at most one DC coefficient of -1, the port kept
+# DC + AC). Measured with the C `svt_aom_txb_estimate_coeff_bits` --wrap
+# interposer (SVT_CCOEF_OUT) against the port's SVTAV1_PACKTREE_COEFF dump.
+byteVideoKey "video-key-rdoq-plane-rd-mult-p6-64x64" gradient 64 64 40 6
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))

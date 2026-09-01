@@ -855,6 +855,27 @@ impl EncodePipeline {
     /// low bits) and by [`Self::bit_depth_config_error`] (which must not let a
     /// u8-input 10-bit encode emit 8-bit-quantized levels under a 10-bit
     /// sequence header).
+    /// FH `frm_hdr->tx_mode == TX_MODE_SELECT` for this frame.
+    ///
+    /// ONE source for the header writer and the pack walk: the signalled mode
+    /// and the coded symbols must agree or the stream does not decode (see
+    /// `EntropyCtx::tx_mode_select`). `crate::txs_arm::tx_mode_select` is the
+    /// ladder; the allintra arm is unconditional TX_MODE_SELECT, the video arm
+    /// signals it only while `pcs->txs_level != 0`.
+    fn frame_tx_mode_select(&self) -> bool {
+        let arm = if self.gop.intra_period <= 1 {
+            crate::sc_detect::ScArm::Allintra
+        } else {
+            crate::sc_detect::ScArm::Video { is_islice: true }
+        };
+        crate::txs_arm::tx_mode_select(
+            arm,
+            crate::rate_arm::eff_enc_mode(arm, self.speed_config.preset),
+            true,
+            u32::from(self.rc_config.qp),
+        )
+    }
+
     fn bd10_levels_native(&self, chroma_420: bool) -> bool {
         if self.bit_depth != 10 {
             return false;
@@ -1681,6 +1702,10 @@ impl EncodePipeline {
             crate::sc_detect::ScArm::Video { is_islice: is_key }
         };
         let sc_derivation = crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h);
+        // Hoisted out of the walk: `&self` is borrowed across the pack loop, and
+        // this is a frame-constant. One value for the header writer and the
+        // walk (see `EntropyCtx::tx_mode_select`).
+        let frame_tx_mode_select = self.frame_tx_mode_select();
 
         // Step 3c: Frame-level adaptive QP — OPT-IN via RcConfig.aq_mode.
         //
@@ -1981,11 +2006,19 @@ impl EncodePipeline {
                         lw_bump,
                     )),
                 );
-                Some(alloc::sync::Arc::new(crate::quant::CodingQuantCfg::new(
+                let mut cq = crate::quant::CodingQuantCfg::new(
                     rdoq_level,
                     lambda,
                     base_qindex,
-                )))
+                );
+                // C `svt_av1_optimize_b`'s `allintra || rtc` (full_loop.c:1046)
+                // — the first index of `PLANE_RD_MULT`. `scs->allintra` is set
+                // only for `intra_period_length == 0 || avif` (enc_handle.c:518),
+                // which is exactly `ScArm::Allintra` here; `rtc` is never set by
+                // this port. Video frames therefore weight CHROMA rate at 20,
+                // not 13.
+                cq.allintra_rd_mult = matches!(sc_arm, crate::sc_detect::ScArm::Allintra);
+                Some(alloc::sync::Arc::new(cq))
             } else {
                 None
             };
@@ -2271,6 +2304,7 @@ impl EncodePipeline {
                 .then(|| crate::tune::iq_lambda_weight(picture_qp as u32)),
             ssim_factors.as_ref(),
             base_qindex,
+            frame_tx_mode_select,
             tpl_adjusted_qp,
             picture_qp,
             lw_bump,
@@ -2635,6 +2669,7 @@ impl EncodePipeline {
                     base_qindex,
                     cq.rdoq_level,
                     lambda_bd10,
+                    cq.allintra_rd_mult,
                     bd10_edge_filter,
                     self.bit_depth,
                     qm_levels[0],
@@ -2696,6 +2731,7 @@ impl EncodePipeline {
                         qindex_v,
                         cq.rdoq_level,
                         lambda_bd10,
+                        cq.allintra_rd_mult,
                         bd10_edge_filter,
                         self.bit_depth,
                         [qm_levels[1], qm_levels[2]],
@@ -2919,6 +2955,9 @@ impl EncodePipeline {
                     w4,
                     h4,
                     seq_tools.enable_filter_intra,
+                    // The SAME bit the frame header writes — see
+                    // `EntropyCtx::tx_mode_select`.
+                    frame_tx_mode_select,
                     sc_derivation.allow_screen_content_tools,
                     self.bit_depth,
                 );
@@ -4175,23 +4214,7 @@ impl EncodePipeline {
                 // which is false from preset 10 up — where this used to emit
                 // a literal 1 and then code per-block tx_depth symbols that
                 // TX_MODE_LARGEST forbids.
-                crate::txs_arm::tx_mode_select(
-                    if self.gop.intra_period <= 1 {
-                        crate::sc_detect::ScArm::Allintra
-                    } else {
-                        crate::sc_detect::ScArm::Video { is_islice: true }
-                    },
-                    crate::rate_arm::eff_enc_mode(
-                        if self.gop.intra_period <= 1 {
-                            crate::sc_detect::ScArm::Allintra
-                        } else {
-                            crate::sc_detect::ScArm::Video { is_islice: true }
-                        },
-                        self.speed_config.preset,
-                    ),
-                    true,
-                    u32::from(self.rc_config.qp),
-                ),
+                frame_tx_mode_select,
             );
             // Diagnostic (SVTAV1_FHDUMP=<path>): dump the raw frame-header
             // bytes (the OBU_FRAME payload prefix before tile data — the FH
@@ -4472,6 +4495,20 @@ pub(crate) struct EntropyCtx {
     /// symbol. Sequence-level walk config, not per-block state — carried
     /// here because the walk already threads this context everywhere.
     seq_filter_intra: bool,
+    /// FH `tx_mode == TX_MODE_SELECT` (C `frm_hdr->tx_mode`, written by
+    /// `crate::txs_arm::tx_mode_select`). `av1_code_tx_size`
+    /// (entropy_coding.c:4650) codes the per-block `tx_depth` symbol ONLY at
+    /// TX_MODE_SELECT; at TX_MODE_LARGEST the decoder INFERS the largest tx
+    /// size and the symbol must not appear.
+    ///
+    /// This is frame-level walk config for the same reason `seq_filter_intra`
+    /// is. It was `is_key` until 2026-09-01 — a stale ALLINTRA premise (that
+    /// arm signals TX_MODE_SELECT unconditionally), so on a VIDEO-mode key
+    /// frame at preset >= 10, where `txs_level == 0` makes the video arm
+    /// signal TX_MODE_LARGEST, the header said LARGEST and the walk still
+    /// wrote a `tx_size_cdf` symbol per block. That is an undecodable stream,
+    /// not merely a parity gap.
+    tx_mode_select: bool,
     /// FH `allow_screen_content_tools` — gates the per-block no-palette
     /// flag coding (C write_palette_mode_info gate, entropy_coding.c:5026).
     allow_sct: bool,
@@ -4635,6 +4672,8 @@ impl EntropyCtx {
         width_4x4: usize,
         height_4x4: usize,
         seq_filter_intra: bool,
+        // FH `tx_mode == TX_MODE_SELECT` — see the field's doc.
+        tx_mode_select: bool,
         allow_sct: bool,
         bit_depth: u8,
     ) -> Self {
@@ -4687,6 +4726,7 @@ impl EntropyCtx {
                 height_4x4
             ],
             seq_filter_intra,
+            tx_mode_select,
             allow_sct,
             bit_depth,
             allow_intrabc: false,
@@ -5902,14 +5942,25 @@ fn encode_block_syntax(
 
     // tx_size syntax — C av1_code_tx_size (entropy_coding.c:4697) called
     // from write_modes_b right after the uv/palette/filter_intra syntax
-    // and before the residuals. Key frames signal TX_MODE_SELECT in the
-    // FH (like C always does), so every INTRA block with bsize > 4x4
-    // codes a tx_depth symbol (the ACTUAL `decision.tx_depth` from the
-    // funnel's TXS search — 0/1/2, NOT hardcoded to largest); skip only
-    // suppresses the symbol for inter blocks. The neighbor context update
-    // (set_txfm_ctxs) runs for EVERY block, signaling or not. Inter frames
-    // signal TX_MODE_LARGEST (no symbol), but keep their context arrays
-    // maintained exactly like C's else-branch.
+    // and before the residuals. The symbol exists ONLY at TX_MODE_SELECT
+    // (`ectx.tx_mode_select`, the bit `crate::txs_arm::tx_mode_select` put in
+    // the FH): then every INTRA block with bsize > 4x4 codes a tx_depth
+    // symbol (the ACTUAL `decision.tx_depth` from the funnel's TXS search —
+    // 0/1/2, NOT hardcoded to largest), and skip only suppresses it for inter
+    // blocks. At TX_MODE_LARGEST the decoder INFERS the size and NOTHING is
+    // coded. The neighbor context update (set_txfm_ctxs) runs for EVERY
+    // block, signaling or not.
+    //
+    // This gate read `is_key` until 2026-09-01. That was the allintra arm's
+    // rule (it signals TX_MODE_SELECT unconditionally) applied to every
+    // frame, so a VIDEO-mode key frame at preset >= 10 — where the video arm
+    // signals TX_MODE_LARGEST because `txs_level == 0` — declared LARGEST in
+    // the header and then wrote one `tx_size_cdf` symbol per block anyway.
+    // MEASURED on `diag 64x64 q40 p11` video, frame 0: the op-trace differ
+    // (tools/ctrace-linux + identity_diff.py) put the FIRST divergence at the
+    // first coded block, `CDF nsyms=2 icdf=[12800]` — TX_SIZE_CDF[0][0] —
+    // present in the port and absent in C, with every partition, mode, uv
+    // mode, luma tx type, luma eob and luma level already identical.
     {
         let w = decision.width as usize;
         let h = decision.height as usize;
@@ -5945,7 +5996,7 @@ fn encode_block_syntax(
             // (base_q_idx 0 on this port's mainline path) derives TxMode
             // ONLY_4X4 and codes no depth. The 4x4 grid is still recorded for
             // the neighbours' contexts.
-            if is_key && !(w == 4 && h == 4) && base_q_idx > 0 {
+            if ectx.tx_mode_select && !(w == 4 && h == 4) && base_q_idx > 0 {
                 let ctx = ectx.tx_size_ctx(block_x, block_y, w, h);
                 crate::entropy::context::write_tx_depth(
                     writer,
@@ -6824,6 +6875,9 @@ fn bd10_reencode_luma(
     base_qindex: u8,
     rdoq_level: u8,
     lambda_bd10: u64,
+    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
     edge_filter: bool,
     bd: u8,
     qm_level: u8,
@@ -6867,6 +6921,7 @@ fn bd10_reencode_luma(
             &qt,
             rdoq_level,
             lambda_bd10,
+            allintra_rd_mult,
             &rates,
             edge_filter,
             w,
@@ -6893,6 +6948,9 @@ fn bd10_reencode_node(
     qt: &crate::quant::QuantTable,
     rdoq_level: u8,
     lambda: u64,
+    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
     rates: &crate::leaf_funnel::MdRates,
     edge_filter: bool,
     frame_w: usize,
@@ -6980,6 +7038,7 @@ fn bd10_reencode_node(
                 rdoq_level,
                 lambda,
                 0, // sharpness
+                allintra_rd_mult,
                 rates,
                 rdoq_level != 0,
                 bd,
@@ -7061,6 +7120,7 @@ fn bd10_reencode_node(
                     qt,
                     rdoq_level,
                     lambda,
+                    allintra_rd_mult,
                     rates,
                     edge_filter,
                     frame_w,
@@ -7177,6 +7237,9 @@ fn bd10_reencode_chroma(
     qindex_v: u8,
     rdoq_level: u8,
     lambda: u64,
+    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
     edge_filter: bool,
     bd: u8,
     // [SVT_HDR_MODE] per-plane QM levels [U, V] (15 = off). C derives them
@@ -7226,6 +7289,7 @@ fn bd10_reencode_chroma(
             &qt_v,
             rdoq_level,
             lambda,
+            allintra_rd_mult,
             &rates,
             edge_filter,
             cframe_w,
@@ -7263,6 +7327,9 @@ fn bd10_reencode_chroma_plane(
     qt: &crate::quant::QuantTable,
     rdoq_level: u8,
     lambda: u64,
+    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
     rates: &crate::leaf_funnel::MdRates,
     bd: u8,
     qm_level: u8,
@@ -7311,6 +7378,7 @@ fn bd10_reencode_chroma_plane(
         rdoq_level,
         lambda,
         0, // sharpness
+        allintra_rd_mult,
         rates,
         rdoq_level != 0,
         bd,
@@ -7353,6 +7421,9 @@ fn bd10_reencode_chroma_node(
     qt_v: &crate::quant::QuantTable,
     rdoq_level: u8,
     lambda: u64,
+    // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
+    // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
+    allintra_rd_mult: bool,
     rates: &crate::leaf_funnel::MdRates,
     edge_filter: bool,
     cframe_w: usize,
@@ -7439,6 +7510,7 @@ fn bd10_reencode_chroma_node(
                 qt_u,
                 rdoq_level,
                 lambda,
+                allintra_rd_mult,
                 rates,
                 bd,
                 qm_uv[0],
@@ -7460,6 +7532,7 @@ fn bd10_reencode_chroma_node(
                 qt_v,
                 rdoq_level,
                 lambda,
+                allintra_rd_mult,
                 rates,
                 bd,
                 qm_uv[1],
@@ -7501,6 +7574,7 @@ fn bd10_reencode_chroma_node(
                     qt_v,
                     rdoq_level,
                     lambda,
+                    allintra_rd_mult,
                     rates,
                     edge_filter,
                     cframe_w,
@@ -7725,6 +7799,14 @@ fn encode_tile_rows(
     hdr_iq_lambda_weight: Option<u32>,
     ssim_factors: Option<&(alloc::vec::Vec<f64>, usize, usize)>,
     fh_base_qindex: u8,
+    // FH `tx_mode == TX_MODE_SELECT` — the value `frame_tx_mode_select()`
+    // computed for the header, PASSED IN rather than re-derived here. The
+    // funnel walk and the per-SB CDF-chain simulation must code exactly the
+    // symbols the header announced, and re-deriving would key the qp band on
+    // this function's `cli_qp` (== `tpl_adjusted_qp`) where the header keys it
+    // on `static_config.qp`: equal at `aq_mode == 0`, not guaranteed
+    // otherwise, and a disagreement there is an undecodable stream.
+    walk_tx_mode_select: bool,
     cli_qp: u8,
     // C `ppcs->picture_qp = clamp_qp((base_q_idx + 2) >> 2)` (rc_process.c:861)
     // — the qp the frame `lambda_weight` ladder is keyed on. Equal to `cli_qp`
@@ -8019,6 +8101,7 @@ fn encode_tile_rows(
                 w / 4,
                 h / 4,
                 true,
+                walk_tx_mode_select,
                 tile_sc.allow_screen_content_tools,
                 bit_depth,
             );
@@ -8067,6 +8150,10 @@ fn encode_tile_rows(
                 lambda: cq.lambda as u64,
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
+                // Same source as `cq.allintra_rd_mult` (set beside
+                // `CodingQuantCfg::new`) so the MD funnel and the bd10
+                // re-encode cannot disagree about the RDOQ rate-weight arm.
+                rdoq_allintra_rd_mult: cq.allintra_rd_mult,
                 base_qindex,
                 bit_depth,
                 qindex_u,
@@ -8207,6 +8294,7 @@ fn encode_tile_rows(
                 w / 4,
                 h / 4,
                 true,
+                walk_tx_mode_select,
                 tile_sc.allow_screen_content_tools,
                 bit_depth,
             );
@@ -9982,7 +10070,7 @@ mod tests {
     /// the 64 level and returned 10 symbols against the 64x64 CDF row.
     #[test]
     fn partition_ctx_alphabet_matches_c_rule_at_every_square_size() {
-        let ectx = EntropyCtx::new(64, 64, true, false, 8);
+        let ectx = EntropyCtx::new(64, 64, true, true, false, 8);
         for sq in [8usize, 16, 32, 64, 128] {
             let (ctx, nsymbs) = ectx.partition_ctx(0, 0, sq);
             assert_eq!(

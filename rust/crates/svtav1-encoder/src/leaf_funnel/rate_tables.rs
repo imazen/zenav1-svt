@@ -355,6 +355,11 @@ pub struct FunnelFrame {
     pub cli_qp: u32,
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
     pub rdoq_level: u8,
+    /// C `scs->allintra || scs->static_config.rtc` — the first index of
+    /// [`crate::quant::PLANE_RD_MULT`], the RDOQ rate weight per plane.
+    /// FALSE on a video-mode frame, where CHROMA weights rate at 20 instead
+    /// of the allintra arm's 13. Luma (17) is the same on both arms.
+    pub rdoq_allintra_rd_mult: bool,
     pub base_qindex: u8,
     /// Encode bit depth (8 or 10). At bd10 C forces `pd0_ctrls.pd0_level =
     /// PD0_LVL_0` (`set_pd0_ctrls`, enc_mode_config.c:5416) regardless of

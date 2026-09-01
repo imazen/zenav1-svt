@@ -845,6 +845,7 @@ pub(crate) fn evaluate_leaf(
                 frame.rdoq_level,
                 lambda_bd10_full,
                 0,
+                frame.rdoq_allintra_rd_mult,
                 rates,
                 frame.rdoq_level != 0,
                 frame.bit_depth,

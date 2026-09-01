@@ -170,6 +170,7 @@ pub(super) fn run_mds1(
                 frame.rdoq_level,
                 b.lambda,
                 frame.sharpness,
+                frame.rdoq_allintra_rd_mult,
                 rates,
                 false, // no RDOQ at MDS1 (mirrors the u8 call)
                 b.bd,

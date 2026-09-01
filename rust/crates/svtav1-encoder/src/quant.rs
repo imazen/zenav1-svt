@@ -901,10 +901,45 @@ pub struct OptimizeCtx<'a> {
     pub cut_off_denum: u32,
 }
 
+/// C `plane_rd_mult[allintra || rtc][is_inter][plane_type]` — full_loop.c:994,
+/// the MAINLINE table (the `#if TUNE_CHROMA_SSIM` twin at :985 is the fork's
+/// and is only compiled with `SVT_HDR_MODE`; mainline v4.2 defines
+/// `TUNE_CHROMA_SSIM 0`, EbDebugMacros.h:70).
+///
+/// The first index is the one this port ran as a constant `1` until
+/// 2026-09-01: `scs->allintra || scs->static_config.rtc`. A VIDEO-mode frame
+/// has BOTH false, so its CHROMA RDOQ weights rate at **20** where the
+/// allintra arm weights it at 13 (intra) / 10 (inter). Luma is 17/16 on both
+/// arms, which is why the divergence this fixed was chroma-only: on the
+/// reference cell `gradient 64x64 q40 p6` video, the four coded 32x32 blocks'
+/// LUMA levels were already byte-identical to C's while every chroma txb
+/// differed (C kept at most one DC coefficient, the port kept DC + AC).
+pub const PLANE_RD_MULT: [[[i64; 2]; 2]; 2] = [
+    // [0] = video: neither allintra nor rtc
+    [[17, 20], [16, 20]],
+    // [1] = allintra or rtc
+    [[17, 13], [16, 10]],
+];
+
+/// Look up [`PLANE_RD_MULT`]. `allintra_rd_mult` is C's `allintra || rtc`.
+///
+/// `is_inter` is a real axis of C's table and is threaded rather than folded
+/// away, but every call site in this port passes `false` today: the pipeline
+/// refuses inter frames at its entry guard (`pipeline.rs`), so no inter block
+/// is ever coded and the `is_inter = true` rows are unreachable. They are
+/// ported so the inter campaign inherits the right numbers instead of
+/// rediscovering them.
+pub fn plane_rd_mult(allintra_rd_mult: bool, is_inter: bool, plane_type: usize) -> i64 {
+    PLANE_RD_MULT[usize::from(allintra_rd_mult)][usize::from(is_inter)][plane_type & 1]
+}
+
 /// C rdmult derivation inside `svt_av1_optimize_b` (full_loop.c:1074) for
 /// the allintra/still path: sharpness 0 -> rweight 100, rshift 2;
-/// `plane_rd_mult[allintra=1][is_inter=0][plane_type]` = 17 luma, 13
-/// chroma (both `TUNE_CHROMA_SSIM` variants agree on that row).
+/// `plane_rd_mult[allintra=1][is_inter=0][plane_type]` = 17 luma, 13 chroma.
+///
+/// The `allintra = 1` is BAKED IN — this is the still-path convenience form.
+/// A video frame's CHROMA weight is 20, not 13 (see [`PLANE_RD_MULT`]); call
+/// [`rdoq_rdmult_full`] with the frame's own arm for anything on that path.
 pub fn rdoq_rdmult(lambda: u32, plane_type: usize) -> i64 {
     rdoq_rdmult_sharp(lambda, plane_type, 0, false)
 }
@@ -915,8 +950,10 @@ pub fn rdoq_rdmult(lambda: u32, plane_type: usize) -> i64 {
 /// The `(use_sharpness || sharp_tx) && delta_q_present && plane==0` block
 /// (rweight=0 + local sharpness=1 into update_coeff_general) is DORMANT in
 /// this port until per-SB delta-q lands — tracked in docs/HDR-ON-4.2.md.
+/// Same allintra baking as [`rdoq_rdmult`] — read its note before using this
+/// on a video frame.
 pub fn rdoq_rdmult_sharp(lambda: u32, plane_type: usize, sharpness: i8, light_rdoq: bool) -> i64 {
-    rdoq_rdmult_full(lambda, plane_type, sharpness, light_rdoq, false)
+    rdoq_rdmult_full(lambda, plane_type, sharpness, light_rdoq, false, true)
 }
 
 /// Full form incl. the sharp-tx `rweight = 0` path (C full_loop.c:1075).
@@ -926,6 +963,9 @@ pub fn rdoq_rdmult_full(
     sharpness: i8,
     light_rdoq: bool,
     sharp_tx_active: bool,
+    // C `scs->allintra || scs->static_config.rtc` — selects the first index
+    // of `PLANE_RD_MULT`. FALSE on a video-mode frame.
+    allintra_rd_mult: bool,
 ) -> i64 {
     let sharpness_val = i64::from(sharpness).clamp(0, 7);
     let rshift = sharpness_val.max(2) as u32;
@@ -936,7 +976,9 @@ pub fn rdoq_rdmult_full(
     } else {
         100
     };
-    let prm: i64 = if plane_type == 0 { 17 } else { 13 };
+    // `is_inter` is false at every reachable call site (the port codes no
+    // inter blocks — see `plane_rd_mult`'s doc).
+    let prm = plane_rd_mult(allintra_rd_mult, false, plane_type);
     ((lambda as i64 * prm * rweight) / 100 + 2) >> rshift
 }
 
@@ -1576,6 +1618,11 @@ pub struct CodingQuantCfg {
     pub sharp_tx_active: bool,
     /// [SVT_HDR_MODE] per-plane QM levels [Y, U, V] (15 = identity/off).
     pub qm_levels: [u8; 3],
+    /// C `scs->allintra || scs->static_config.rtc` — the first index of
+    /// [`PLANE_RD_MULT`]. TRUE on the still/allintra path this struct was
+    /// written for; FALSE on a video-mode frame, where chroma RDOQ weights
+    /// rate at 20 instead of 13.
+    pub allintra_rd_mult: bool,
     /// `full_lambda_md[EB_8_BIT_MD]` (the KF chain — pd0's
     /// `kf_full_lambda_8bit` at the frame qindex).
     pub lambda: u32,
@@ -1602,6 +1649,7 @@ impl CodingQuantCfg {
             noise_norm_strength: 0,
             sharp_tx_active: false,
             qm_levels: [15; 3],
+            allintra_rd_mult: true,
             lambda,
             costs: build_coeff_cost_tables(base_qindex),
         }
@@ -1708,6 +1756,7 @@ pub fn quantize_inv_quantize_still(
                 cfg.sharpness,
                 light_rdoq,
                 cfg.sharp_tx_active && plane_type == 0,
+                cfg.allintra_rd_mult,
             ),
             sharpness_flag: cfg.sharp_tx_active && plane_type == 0,
             iwt: qm.map(|(_, iwt)| iwt),
@@ -1821,6 +1870,39 @@ mod tests {
         assert_eq!(rdoq_rdmult(248207, 0), 1054880);
         assert_eq!(rdoq_rdmult(1527856, 0), 6493388);
         assert_eq!(rdoq_rdmult(25650, 0), 109013); // (25650*17+2)>>2 = 436052>>2
+    }
+
+    /// `plane_rd_mult[allintra || rtc][is_inter][plane_type]`, full_loop.c:994
+    /// (the MAINLINE `#else` table; `TUNE_CHROMA_SSIM` is 0 unless
+    /// `SVT_HDR_MODE`, EbDebugMacros.h:70).
+    ///
+    /// EVIDENCE TIER 4 (`docs/WORKING-ON-THIS.md` §4): the table is a
+    /// file-static const and `svt_av1_optimize_b` is `static`, so there is no
+    /// exported symbol to drive. The value that matters — the video arm's
+    /// chroma 20 — is separately pinned at tier 2 by the byte-identity cell
+    /// `video-key-rdoq-plane-rd-mult-p6-64x64` in `tools/regression_spotcheck.sh`.
+    #[test]
+    fn plane_rd_mult_matches_c() {
+        // video (neither allintra nor rtc): {{17, 20}, {16, 20}}
+        assert_eq!(plane_rd_mult(false, false, 0), 17);
+        assert_eq!(plane_rd_mult(false, false, 1), 20);
+        assert_eq!(plane_rd_mult(false, true, 0), 16);
+        assert_eq!(plane_rd_mult(false, true, 1), 20);
+        // allintra or rtc: {{17, 13}, {16, 10}}
+        assert_eq!(plane_rd_mult(true, false, 0), 17);
+        assert_eq!(plane_rd_mult(true, false, 1), 13);
+        assert_eq!(plane_rd_mult(true, true, 0), 16);
+        assert_eq!(plane_rd_mult(true, true, 1), 10);
+        // The rdmult formula reads the arm: same lambda, chroma, both arms.
+        // (248207 * 13 + 2) >> 2 = 806673; (248207 * 20 + 2) >> 2 = 1241035.
+        assert_eq!(rdoq_rdmult_full(248207, 1, 0, false, false, true), 806673);
+        assert_eq!(rdoq_rdmult_full(248207, 1, 0, false, false, false), 1241035);
+        // Luma is arm-invariant — the reason the video-arm defect showed up
+        // as a chroma-only divergence.
+        assert_eq!(
+            rdoq_rdmult_full(248207, 0, 0, false, false, true),
+            rdoq_rdmult_full(248207, 0, 0, false, false, false)
+        );
     }
 
     /// COEFFLVL captures: g64 pav=5425 -> HIGH/NORMAL/NORMAL at qp

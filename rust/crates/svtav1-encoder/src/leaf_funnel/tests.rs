@@ -601,6 +601,8 @@ fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFr
         lambda: 100_000,
         cli_qp: 32,
         rdoq_level: 0,
+        // These fixtures exercise the still/allintra funnel.
+        rdoq_allintra_rd_mult: true,
         base_qindex,
         bit_depth: 8,
         qindex_u: base_qindex,
