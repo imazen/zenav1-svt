@@ -27,3 +27,10 @@ cbuild-static-hdr-config.log
 
 # Agent worktrees created by the Workflow tool (never committed).
 .claude/
+
+# Python bytecode. `tools/fh_fields.py` etc. are imported as modules by ad-hoc
+# analysis snippets, which drops a 31 KB .pyc beside them — one byte under the
+# 30 KB "ask before committing a binary" line, and easy to `jj commit` by
+# accident with a path glob.
+__pycache__/
+*.pyc
