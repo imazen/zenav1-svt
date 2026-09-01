@@ -44,7 +44,10 @@ use crate::port_convolve_hbd::{
     highbd_jnt_convolve_x, highbd_jnt_convolve_y,
 };
 use crate::port_convolve_scale::{convolve_2d_scale, highbd_convolve_2d_scale};
-use crate::port_scale_factors::{SubpelParams, has_scale, revert_scale_extra_bits};
+use crate::port_pack::{INTERPOLATION_OFFSET, pack_block};
+use crate::port_scale_factors::{
+    SCALE_SUBPEL_SHIFTS, SubpelParams, has_scale, revert_scale_extra_bits,
+};
 
 /// C's packed `InterpFilters` word: Y filter in the low 16 bits, X in the high.
 pub type InterpFilters = u32;
@@ -516,15 +519,13 @@ pub fn highbd_inter_predictor(
     );
 }
 
-/// `svt_inter_predictor_light_pd1` (inter_prediction.c:1283), **8-bit arm
-/// only**.
+/// `svt_inter_predictor_light_pd1` (inter_prediction.c:1283), **8-bit arm**
+/// (`bd <= EB_EIGHT_BIT`).
 ///
-/// C's `bd > EB_EIGHT_BIT` arm packs `src` (8 MSB) and `src_2b` (2 LSB) into a
-/// 10-bit scratch with `svt_aom_pack_block` before convolving. This port
-/// carries plain `u16` planes by design (`bd10.rs`), so the packed-buffer
-/// representation has no counterpart here and the 10-bit light-PD1 path goes
-/// through [`highbd_inter_predictor`] instead. That arm is therefore NOT
-/// ported — it is not "done", it is out of scope, and it is named as missing.
+/// C's `bd > EB_EIGHT_BIT` arm is [`inter_predictor_light_pd1_hbd`]: the two
+/// share one C function and are split here because their SOURCE types differ
+/// (one 8-bit plane vs SVT's 8-bit + 2-bit pair), which in safe Rust is two
+/// signatures rather than one `uint8_t*` reinterpreted.
 ///
 /// Unlike [`inter_predictor_pd0`] the filters here are the caller's, so
 /// light-PD1 does reach every kernel in the table.
@@ -573,6 +574,134 @@ pub fn inter_predictor_light_pd1_8bit(
         sp.subpel_x,
         sp.subpel_y,
         conv_params,
+    );
+}
+
+/// `svt_inter_predictor_light_pd1` (inter_prediction.c:1283), **10-bit arm**
+/// (`bd > EB_EIGHT_BIT`).
+///
+/// The 8-bit arm is [`inter_predictor_light_pd1_8bit`]; C is one function and
+/// this is its `if (bd > EB_EIGHT_BIT)` branch.
+///
+/// # What makes this arm different from [`highbd_inter_predictor`]
+///
+/// It does not take a 10-bit plane. It takes SVT's SPLIT representation —
+/// `src8` (the eight MSBs) and `src_2b` (the two LSBs, in the top two bits of
+/// a whole byte) — **both at `src_stride`**, packs a bordered window of them
+/// into a `u16` scratch with `svt_aom_pack_block`, and convolves out of that.
+/// C passes `src_stride` for the n-bit plane's stride too (:1312), which is
+/// not a typo: the reference picture's two planes are allocated at the same
+/// stride.
+///
+/// # The scratch geometry, which is the part that is easy to get wrong
+///
+/// * The window starts `INTERPOLATION_OFFSET` (8) pixels ABOVE and LEFT of the
+///   block, so `src_origin` must sit at least 8 rows and 8 columns inside its
+///   buffer. C computes that as `src - offset - offset * src_stride`.
+/// * Its extent is `w * width_scale + 16` by `h * height_scale + 16`, where
+///   each scale is 2 only when the corresponding step is not
+///   `SCALE_SUBPEL_SHIFTS` — a SCALED reference can be up to 2x in each axis.
+/// * The scratch stride is that width rounded UP to a multiple of 8
+///   (`ALIGN_POWER_OF_TWO(x, 3)`), which C does for its SIMD stores; the port
+///   keeps it because the pack writes at that stride and the convolve reads at
+///   it, so it is observable in neither-side-rounds arithmetic only through
+///   the border pixels the kernels touch.
+/// * The convolve's origin is `offset + offset * src_stride16` INTO the
+///   scratch, i.e. the block's own (0, 0).
+///
+/// C's scratch is a stack `uint16_t src16[PACKED_BUFFER_SIZE * 4]` =
+/// `((MAX_SB_SIZE + 16)^2) * 4` = 25,600 entries, sized for the 4x scaled
+/// worst case. This allocates exactly what the extent needs instead.
+#[allow(clippy::too_many_arguments)]
+pub fn inter_predictor_light_pd1_hbd(
+    src8: &[u8],
+    src_2b: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    w: usize,
+    h: usize,
+    interp_filters: InterpFilters,
+    subpel_params: &SubpelParams,
+    conv_params: &ConvolveParams,
+    bd: i32,
+) {
+    let (fx, fy) = get_convolve_filter_params(interp_filters, w as i32, h as i32);
+    let is_scaled = has_scale(subpel_params.xs, subpel_params.ys);
+
+    let offset = INTERPOLATION_OFFSET;
+    let (width_scale, height_scale) = if is_scaled {
+        (
+            if subpel_params.xs != SCALE_SUBPEL_SHIFTS {
+                2
+            } else {
+                1
+            },
+            if subpel_params.ys != SCALE_SUBPEL_SHIFTS {
+                2
+            } else {
+                1
+            },
+        )
+    } else {
+        (1usize, 1usize)
+    };
+    let pack_w = w * width_scale + (offset << 1);
+    let pack_h = h * height_scale + (offset << 1);
+    // `if (src_stride16 % 8) src_stride16 = ALIGN_POWER_OF_TWO(src_stride16, 3)`
+    // — the guard is redundant with the round-up, so this is the same value.
+    let src_stride16 = pack_w.next_multiple_of(8);
+
+    let window_origin = src_origin - offset - offset * src_stride;
+    let mut src16 = alloc::vec![0u16; src_stride16 * pack_h];
+    pack_block(
+        &src8[window_origin..],
+        src_stride,
+        &src_2b[window_origin..],
+        src_stride,
+        &mut src16,
+        src_stride16,
+        pack_w,
+        pack_h,
+    );
+
+    let src10 = SrcView16::new(&src16, offset + offset * src_stride16, src_stride16);
+    if is_scaled {
+        highbd_convolve_2d_scale(
+            src10,
+            dst,
+            dst_stride,
+            conv_buf,
+            w,
+            h,
+            &fx,
+            &fy,
+            subpel_params.subpel_x,
+            subpel_params.xs,
+            subpel_params.subpel_y,
+            subpel_params.ys,
+            conv_params,
+            bd,
+        );
+        return;
+    }
+    let mut sp = *subpel_params;
+    revert_scale_extra_bits(&mut sp);
+    dispatch_convolve_hbd(
+        src10,
+        dst,
+        dst_stride,
+        conv_buf,
+        w,
+        h,
+        &fx,
+        &fy,
+        sp.subpel_x,
+        sp.subpel_y,
+        conv_params,
+        bd,
     );
 }
 

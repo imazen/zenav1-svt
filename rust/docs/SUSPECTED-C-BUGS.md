@@ -837,6 +837,65 @@ saturation to "the dispatched kernel" without an ISA — corrected in place.
 
 ---
 
+## 21. The NEON `highbd_jnt_convolve_*` kernels hardcode `ROUND0_BITS` and ignore `conv_params->round_0`
+
+**MEASURED 2026-08-31, aarch64-darwin** (lane wx-interpred, while gating
+`svt_inter_predictor_light_pd1`'s 10-bit arm).
+
+`get_conv_params_no_round` (convolve.h:41) does not always leave `round_0` at
+`ROUND0_BITS`. Its `intbufrange` correction fires at 12-bit
+(`12 + 7 - 3 + 2 = 18 > 16`) and bumps `round_0` to **5**:
+
+```c
+const int32_t intbufrange = bd + FILTER_BITS - conv_params->round_0 + 2;
+if (intbufrange > 16) {
+    conv_params->round_0 += intbufrange - 16;
+    if (!is_compound) conv_params->round_1 -= intbufrange - 16;
+}
+```
+
+The scalar kernels read the corrected values back out of `conv_params`. The
+NEON ones re-derive them from the compile-time macros instead:
+
+```c
+/* ASM_NEON/highbd_jnt_convolve_neon.c:1130-1137 */
+const int offset_bits  = bd + 2 * FILTER_BITS - ROUND0_BITS;
+const int round_offset = (1 << (offset_bits - COMPOUND_ROUND1_BITS)) +
+    (1 << (offset_bits - COMPOUND_ROUND1_BITS - 1));
+const int round_bits   = 2 * FILTER_BITS - ROUND0_BITS - COMPOUND_ROUND1_BITS;
+```
+
+At bd 12 that is `round_bits = 4` / `round_offset = 98304` where the `_c`
+kernel uses `bits = 2` / `round_offset = 24576`. Worked on the first diverging
+sample (packed value 884, `4x4`, `subpel (0,0)`, compound):
+
+| kernel | closed form | result |
+|---|---|--:|
+| `svt_av1_highbd_jnt_convolve_2d_copy_c` | `884 << 2 + 24576` | **28112** |
+| `..._2d_copy_neon` | `884 << 4 + 98304 = 112448`, stored to a `uint16_t` CONV_BUF | **46912** |
+
+So the NEON value also WRAPS — the CONV_BUF is `uint16_t` and 112448 does not
+fit.
+
+**Extent, measured not inferred:** driving `svt_inter_predictor_light_pd1` at
+bd 12 over `{4x4, 8x8, 16x8, 8x16, 32x32}` x four sub-pel corners x
+`{single, compound}` puts C's dispatch at odds with C's own scalar composition
+in **30 of 40 cells**. bd 10 is 240/240 in agreement, which is why nothing saw
+this before.
+
+**Reachable:** no. `svt_av1_verify_settings` (enc_settings.c:460) rejects any
+bit depth other than 8/10, so neither C nor this port can configure bd 12.
+Same reachability verdict, same shape, and the same ISA as #20.
+
+**What the port does:** `port_inter_predictor::inter_predictor_light_pd1_hbd`
+composes `port_pack::pack_block` with the `_c`-gated kernels, so it follows the
+SCALAR arm. `c_parity_port_light_pd1_hbd.rs` asserts exactly that at bd 12 and
+only REPORTS the dispatch divergence — it never asserts the divergence exists,
+because an x86 build may install a faithful kernel and an `assert_ne!` would
+then fail on the wrong host. The tier-1 bd-10 sweep is the reachable evidence.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is
