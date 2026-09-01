@@ -67,6 +67,7 @@ pub mod port_md_winner;
 pub mod port_rd_cost;
 pub mod port_pass2_gop;
 pub mod port_pass2_strategy;
+pub mod port_pd0_detector;
 pub mod port_picstruct;
 pub mod port_picstruct_ra;
 pub mod port_preanalysis;
