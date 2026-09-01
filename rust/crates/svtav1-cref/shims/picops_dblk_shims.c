@@ -39,6 +39,7 @@
 #include "common_dsp_rtcd.h"
 #include "aom_dsp_rtcd.h"
 #include "pic_operators.h"
+#include "pic_buffer_desc.h"
 #include "intra_prediction.h"
 
 void       svt_aom_setup_common_rtcd_internal(uint64_t flags);
@@ -141,6 +142,97 @@ uint64_t ref_spatial_full_distortion_kernel_facade(uint8_t* input, uint32_t inpu
                                                      temporal_layer_index,
                                                      ac_bias,
                                                      tx_bias);
+}
+
+/* ------------- pic_operators.c: padding / plane copy / widen ------------- */
+
+void svt_aom_generate_padding16_bit(uint16_t* src_pic, uint32_t src_stride, uint32_t original_src_width,
+                                    uint32_t original_src_height, uint32_t padding_width, uint32_t padding_height);
+void svt_aom_pad_input_picture_16bit(uint16_t* src_pic, uint32_t src_stride, uint32_t original_src_width,
+                                     uint32_t original_src_height, uint32_t pad_right, uint32_t pad_bottom);
+void svt_convert_8bit_to_16bit_c(uint8_t* src, uint32_t src_stride, uint16_t* dst, uint32_t dst_stride, uint32_t width,
+                                 uint32_t height);
+
+void ref_generate_padding16_bit(uint16_t* buf, uint32_t origin, uint32_t src_stride, uint32_t original_src_width,
+                                uint32_t original_src_height, uint32_t padding_width, uint32_t padding_height) {
+    svt_aom_generate_padding16_bit(
+        buf + origin, src_stride, original_src_width, original_src_height, padding_width, padding_height);
+}
+
+void ref_pad_input_picture_16bit(uint16_t* src, uint32_t src_stride, uint32_t original_src_width,
+                                 uint32_t original_src_height, uint32_t pad_right, uint32_t pad_bottom) {
+    svt_aom_pad_input_picture_16bit(
+        src, src_stride, original_src_width, original_src_height, pad_right, pad_bottom);
+}
+
+void ref_convert_8bit_to_16bit(uint8_t* src, uint32_t src_stride, uint16_t* dst, uint32_t dst_stride, uint32_t width,
+                               uint32_t height) {
+    svt_convert_8bit_to_16bit_c(src, src_stride, dst, dst_stride, width, height);
+}
+
+/* svt_aom_yv12_copy_{y,u,v}_c over a Yv12BufferConfig the shim builds. The
+ * three C functions differ only in which field pair they read, so the shim
+ * exposes one entry point per bit depth with a plane selector and the Rust
+ * side compares all three against one generic port function.
+ *
+ * WORKING-ON-THIS §5 trap 4 again, in its nastiest form: on the highbd arm
+ * C reads the plane through CONVERT_TO_SHORTPTR, which is aom's POINTER
+ * TAGGING — `((uint16_t*)(((uintptr_t)(x)) << 1))` (definitions.h:1019). A
+ * Yv12BufferConfig therefore stores a 16-bit plane as `ptr >> 1`, NOT as
+ * the pointer itself. Handing it a plain cast `(uint8_t*)u16_ptr` would
+ * make C read from `ptr << 1` — a wild address, and one that would look
+ * like a plausible garbage mismatch rather than a crash on a machine where
+ * it happens to be mapped. The shim applies CONVERT_TO_BYTEPTR, which is
+ * what the encoder's own buffer setup does. */
+static void picops_fill_yv12(Yv12BufferConfig* c, int32_t plane, uint8_t* buf, int32_t stride, int32_t width,
+                             int32_t height) {
+    if (plane == 0) {
+        c->y_buffer = buf;
+        c->y_stride = stride;
+        c->y_width  = width;
+        c->y_height = height;
+    } else {
+        c->uv_stride = stride;
+        c->uv_width  = width;
+        c->uv_height = height;
+        if (plane == 1) {
+            c->u_buffer = buf;
+        } else {
+            c->v_buffer = buf;
+        }
+    }
+}
+
+static void picops_yv12_dispatch(int32_t plane, Yv12BufferConfig* s, Yv12BufferConfig* d) {
+    if (plane == 0) {
+        svt_aom_yv12_copy_y_c(s, d);
+    } else if (plane == 1) {
+        svt_aom_yv12_copy_u_c(s, d);
+    } else {
+        svt_aom_yv12_copy_v_c(s, d);
+    }
+}
+
+void ref_yv12_copy_plane8(int32_t plane, uint8_t* src, int32_t src_stride, uint8_t* dst, int32_t dst_stride,
+                          int32_t width, int32_t height) {
+    Yv12BufferConfig s, d;
+    memset(&s, 0, sizeof(s));
+    memset(&d, 0, sizeof(d));
+    picops_fill_yv12(&s, plane, src, src_stride, width, height);
+    picops_fill_yv12(&d, plane, dst, dst_stride, width, height);
+    picops_yv12_dispatch(plane, &s, &d);
+}
+
+void ref_yv12_copy_plane16(int32_t plane, uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride,
+                           int32_t width, int32_t height) {
+    Yv12BufferConfig s, d;
+    memset(&s, 0, sizeof(s));
+    memset(&d, 0, sizeof(d));
+    s.flags = YV12_FLAG_HIGHBITDEPTH;
+    d.flags = YV12_FLAG_HIGHBITDEPTH;
+    picops_fill_yv12(&s, plane, CONVERT_TO_BYTEPTR(src), src_stride, width, height);
+    picops_fill_yv12(&d, plane, CONVERT_TO_BYTEPTR(dst), dst_stride, width, height);
+    picops_yv12_dispatch(plane, &s, &d);
 }
 
 /* -------------------- deblocking_common.c: LF levels -------------------- */

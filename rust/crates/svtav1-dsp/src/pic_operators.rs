@@ -222,6 +222,130 @@ pub fn spatial_full_distortion_kernel(
     spatial_distortion
 }
 
+/// C `svt_aom_generate_padding16_bit` (pic_operators.c:516) — the 16-bit
+/// twin of `svt_aom_generate_padding`, whose 8-bit form landed earlier as
+/// `svtav1_encoder::port_preanalysis::generate_padding`.
+///
+/// Horizontal edge-replicate over the active rows first, then a vertical
+/// replicate of the ALREADY horizontally padded top and bottom rows. Two
+/// details a "reasonable" implementation gets wrong, both faithful here:
+///
+/// * the vertical copy length is `src_stride` SAMPLES, not
+///   `width + 2 * padding_width` — so it carries whatever trails the right
+///   padding out to the end of the stride;
+/// * the vertical copy starts at `src_pic - padding_width`, i.e. it carries
+///   the left padding it just wrote.
+///
+/// `buf` is the whole allocation and `origin` is the index of C's `src_pic`
+/// pointer within it, in u16 elements.
+pub fn generate_padding_16bit(
+    buf: &mut [u16],
+    origin: usize,
+    src_stride: usize,
+    original_src_width: usize,
+    original_src_height: usize,
+    padding_width: usize,
+    padding_height: usize,
+) {
+    assert!(original_src_width > 0 && original_src_height > 0);
+
+    for y in 0..original_src_height {
+        let row = origin + y * src_stride;
+        let left_pixel = buf[row];
+        let right_pixel = buf[row + original_src_width - 1];
+        buf[row - padding_width..row].fill(left_pixel);
+        buf[row + original_src_width..row + original_src_width + padding_width].fill(right_pixel);
+    }
+
+    let top_src_row = origin - padding_width;
+    let bottom_src_row = top_src_row + (original_src_height - 1) * src_stride;
+    for y in 0..padding_height {
+        let top_dst_row = top_src_row - (y + 1) * src_stride;
+        let bottom_dst_row = bottom_src_row + (y + 1) * src_stride;
+        buf.copy_within(top_src_row..top_src_row + src_stride, top_dst_row);
+        buf.copy_within(bottom_src_row..bottom_src_row + src_stride, bottom_dst_row);
+    }
+}
+
+/// C `svt_aom_pad_input_picture_16bit` (pic_operators.c:609) — the 16-bit
+/// twin of `pad_input_picture`.
+///
+/// Right-then-bottom padding to reach a multiple of the minimum block size.
+/// Unlike [`generate_padding_16bit`] it only writes FORWARD of the origin,
+/// so it takes a slice that starts there. The bottom copy length is
+/// `original_src_width + pad_right` (the row as widened by the right pass),
+/// NOT the stride — the opposite of the function above.
+pub fn pad_input_picture_16bit(
+    src: &mut [u16],
+    src_stride: usize,
+    original_src_width: usize,
+    original_src_height: usize,
+    pad_right: usize,
+    pad_bottom: usize,
+) {
+    if pad_right > 0 {
+        for y in 0..original_src_height {
+            let row = y * src_stride;
+            let last = src[row + original_src_width - 1];
+            src[row + original_src_width..row + original_src_width + pad_right].fill(last);
+        }
+    }
+    if pad_bottom > 0 {
+        let last_row = (original_src_height - 1) * src_stride;
+        let len = original_src_width + pad_right;
+        for y in 0..pad_bottom {
+            let dst = last_row + (y + 1) * src_stride;
+            src.copy_within(last_row..last_row + len, dst);
+        }
+    }
+}
+
+/// C `svt_convert_8bit_to_16bit_c` (C_DEFAULT/pack_unpack_c.c:198) — the
+/// per-plane kernel `svt_aom_convert_pic_8bit_to_16bit` (pic_operators.c:678)
+/// runs over Y, then U and V at `width >> ss_x` / `height >> ss_y`.
+///
+/// A plain widening: C does NOT shift left by `bd - 8`. The 3-plane wrapper
+/// itself is `EbPictureBufferDesc` plumbing over this kernel plus two field
+/// copies, so only the kernel is translated.
+pub fn convert_8bit_to_16bit(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    for (r, s_row) in rows(src, src_stride, width, height).enumerate() {
+        let d_row = &mut dst[r * dst_stride..][..width];
+        for (d, &s) in d_row.iter_mut().zip(s_row) {
+            *d = u16::from(s);
+        }
+    }
+}
+
+/// The plane body of C `svt_aom_yv12_copy_y_c` / `_u_c` / `_v_c`
+/// (pic_operators.c:362/385/408): a per-row `svt_memcpy` of `width`
+/// samples from `src_stride` to `dst_stride`.
+///
+/// C reaches three near-identical functions because `Yv12BufferConfig`
+/// names its three planes with three field pairs and its `flags` carry the
+/// bit depth; with the plane and its dimensions passed in, one generic
+/// function covers all six arms (3 planes x 8/16-bit). The `y_width` /
+/// `uv_width` C reads are the UNPADDED dims, so the borders are NOT copied
+/// — the caller re-pads.
+pub fn yv12_copy_plane<T: Copy>(
+    src: &[T],
+    src_stride: usize,
+    dst: &mut [T],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    for (r, s_row) in rows(src, src_stride, width, height).enumerate() {
+        dst[r * dst_stride..][..width].copy_from_slice(s_row);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

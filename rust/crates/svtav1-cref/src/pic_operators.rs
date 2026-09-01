@@ -131,6 +131,51 @@ unsafe extern "C" {
         plane_end: i32,
         out_lvl: *mut u8,
     );
+    fn ref_generate_padding16_bit(
+        buf: *mut u16,
+        origin: u32,
+        src_stride: u32,
+        original_src_width: u32,
+        original_src_height: u32,
+        padding_width: u32,
+        padding_height: u32,
+    );
+    fn ref_pad_input_picture_16bit(
+        src: *mut u16,
+        src_stride: u32,
+        original_src_width: u32,
+        original_src_height: u32,
+        pad_right: u32,
+        pad_bottom: u32,
+    );
+    fn ref_convert_8bit_to_16bit(
+        src: *const u8,
+        src_stride: u32,
+        dst: *mut u16,
+        dst_stride: u32,
+        width: u32,
+        height: u32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_yv12_copy_plane8(
+        plane: i32,
+        src: *const u8,
+        src_stride: i32,
+        dst: *mut u8,
+        dst_stride: i32,
+        width: i32,
+        height: i32,
+    );
+    #[allow(clippy::too_many_arguments)]
+    fn ref_yv12_copy_plane16(
+        plane: i32,
+        src: *const u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        width: i32,
+        height: i32,
+    );
     fn ref_intra_is_smooth(mode: i32, uv_mode: i32, plane: i32) -> i32;
     fn ref_intra_is_smooth_inter(mode: i32, uv_mode: i32, plane: i32, ref_frame_0: i32) -> i32;
     #[allow(clippy::too_many_arguments)]
@@ -522,6 +567,130 @@ pub fn loop_filter_frame_init(
         );
     }
     out
+}
+
+/// The reference `svt_aom_generate_padding16_bit`, applied in place to
+/// `buf` with C's `src_pic` at `origin` (in u16 elements).
+pub fn generate_padding16_bit(
+    buf: &mut [u16],
+    origin: usize,
+    src_stride: usize,
+    original_src_width: usize,
+    original_src_height: usize,
+    padding_width: usize,
+    padding_height: usize,
+) {
+    unsafe {
+        ref_generate_padding16_bit(
+            buf.as_mut_ptr(),
+            origin as u32,
+            src_stride as u32,
+            original_src_width as u32,
+            original_src_height as u32,
+            padding_width as u32,
+            padding_height as u32,
+        );
+    }
+}
+
+/// The reference `svt_aom_pad_input_picture_16bit`, applied in place.
+pub fn pad_input_picture_16bit(
+    src: &mut [u16],
+    src_stride: usize,
+    original_src_width: usize,
+    original_src_height: usize,
+    pad_right: usize,
+    pad_bottom: usize,
+) {
+    unsafe {
+        ref_pad_input_picture_16bit(
+            src.as_mut_ptr(),
+            src_stride as u32,
+            original_src_width as u32,
+            original_src_height as u32,
+            pad_right as u32,
+            pad_bottom as u32,
+        );
+    }
+}
+
+/// The reference `svt_convert_8bit_to_16bit_c`.
+pub fn convert_8bit_to_16bit(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    assert_covers(src.len(), src_stride, width, height, "src");
+    assert_covers(dst.len(), dst_stride, width, height, "dst");
+    unsafe {
+        ref_convert_8bit_to_16bit(
+            src.as_ptr(),
+            src_stride as u32,
+            dst.as_mut_ptr(),
+            dst_stride as u32,
+            width as u32,
+            height as u32,
+        );
+    }
+}
+
+/// The reference `svt_aom_yv12_copy_y_c` (plane 0) / `_u_c` (1) / `_v_c` (2)
+/// on the 8-bit arm.
+pub fn yv12_copy_plane_8(
+    plane: usize,
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    assert_covers(src.len(), src_stride, width, height, "src");
+    assert_covers(dst.len(), dst_stride, width, height, "dst");
+    unsafe {
+        ref_yv12_copy_plane8(
+            plane as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            width as i32,
+            height as i32,
+        );
+    }
+}
+
+/// The 16-bit arm of the same three functions (C sets
+/// `YV12_FLAG_HIGHBITDEPTH` in `flags`). Strides and width are in u16
+/// elements, as C's `y_stride` / `y_width` are once it has taken the
+/// `CONVERT_TO_SHORTPTR` branch. The shim stores the plane pointer through
+/// `CONVERT_TO_BYTEPTR` — a `Yv12BufferConfig` holds a 16-bit plane as
+/// `ptr >> 1`, not as the pointer.
+pub fn yv12_copy_plane_16(
+    plane: usize,
+    src: &[u16],
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    width: usize,
+    height: usize,
+) {
+    assert_covers(src.len(), src_stride, width, height, "src");
+    assert_covers(dst.len(), dst_stride, width, height, "dst");
+    unsafe {
+        ref_yv12_copy_plane16(
+            plane as i32,
+            src.as_ptr(),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            width as i32,
+            height as i32,
+        );
+    }
 }
 
 /// The reference `svt_aom_is_smooth` for an INTRA block.
