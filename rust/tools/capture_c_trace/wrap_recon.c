@@ -1009,3 +1009,73 @@ EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionC
     }
     return ret;
 }
+
+/* ---- PD0 CONFIG interposer (video-arm PD0 localization, 2026-09-01) -------
+ * `svt_aom_sig_deriv_enc_dec_pd0` (enc_mode_config.c:7207) resolves, per SB and
+ * per PD0 pass, everything the PD0 partition search then runs with: the level
+ * the detector left in `pd0_ctrls`, the subres step, the depth early-exit
+ * thresholds, the rate-estimation level, and `pd0_use_src_samples`. §1h of
+ * `docs/INTER-ENCODE-PLAN.md` measured four GUESSES at that configuration on
+ * the video arm and none were good; this dumps what C actually resolved so the
+ * port's PD0 can be compared field for field instead.
+ *
+ * Env: SVT_PD0CFG_OUT (file). Pure pass-through when unset; the C tree stays
+ * pristine (link-time interposer, not a source edit).
+ *
+ * Output, one line per call (append across SBs and frames — cut at the frame
+ * boundary yourself, same as SVT_CTREE_OUT):
+ *   PD0CFG sb=<idx> org=(x,y) islice=<0|1> lvl=<Pd0Level> subres=<step>
+ *          dev_th=<odd_to_even_deviation_th> split_th=<..> exit_th=<..>
+ *          rate_lvl=<coeff_rate_est_lvl> qpoff=<lpd0_qp_offset>
+ *          fastcoef=<pd0_fast_coeff_est_level> srcsamp=<0|1>
+ *          pred_only=<pic_pred_depth_only> d4=<disallow_4x4> d8=<disallow_8x8>
+ *          maxbs=<max_block_size> cb64=<is_complete_b64> bias=<parent_cost_bias>
+ *          intra=<enable_intra>/<intra_mode_end>/<angular_pred_level>
+ *          nsq=<md_disallow_nsq_search> subsafe=<is_subres_safe>
+ */
+void __real_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx);
+
+void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx) {
+    __real_svt_aom_sig_deriv_enc_dec_pd0(scs, pcs, ctx);
+    const char* path = getenv("SVT_PD0CFG_OUT");
+    if (!path || !*path) {
+        return;
+    }
+    static FILE* f = NULL;
+    if (!f) {
+        f = fopen(path, "a");
+    }
+    if (!f) {
+        return;
+    }
+    const B64Geom* b64 = &pcs->ppcs->b64_geom[ctx->sb_index];
+    fprintf(f,
+            "PD0CFG sb=%u org=(%u,%u) islice=%d lvl=%d subres=%u dev_th=%u split_th=%u exit_th=%u "
+            "rate_lvl=%u qpoff=%d fastcoef=%u srcsamp=%d pred_only=%d d4=%d d8=%d maxbs=%u cb64=%d "
+            "bias=%u intra=%u/%u/%u nsq=%d subsafe=%u\n",
+            (unsigned)ctx->sb_index,
+            (unsigned)ctx->sb_origin_x,
+            (unsigned)ctx->sb_origin_y,
+            (int)(pcs->slice_type == I_SLICE),
+            (int)ctx->pd0_ctrls.pd0_level,
+            (unsigned)ctx->subres_ctrls.step,
+            (unsigned)ctx->subres_ctrls.odd_to_even_deviation_th,
+            (unsigned)ctx->depth_early_exit_ctrls.split_cost_th,
+            (unsigned)ctx->depth_early_exit_ctrls.early_exit_th,
+            (unsigned)ctx->rate_est_ctrls.coeff_rate_est_lvl,
+            (int)ctx->rate_est_ctrls.lpd0_qp_offset,
+            (unsigned)ctx->rate_est_ctrls.pd0_fast_coeff_est_level,
+            (int)ctx->pd0_use_src_samples,
+            (int)ctx->pic_pred_depth_only,
+            (int)ctx->disallow_4x4,
+            (int)ctx->disallow_8x8,
+            (unsigned)ctx->max_block_size,
+            (int)b64->is_complete_b64,
+            (unsigned)ctx->parent_cost_bias,
+            (unsigned)ctx->intra_ctrls.enable_intra,
+            (unsigned)ctx->intra_ctrls.intra_mode_end,
+            (unsigned)ctx->intra_ctrls.angular_pred_level,
+            (int)ctx->md_disallow_nsq_search,
+            (unsigned)ctx->is_subres_safe);
+    fflush(f);
+}
