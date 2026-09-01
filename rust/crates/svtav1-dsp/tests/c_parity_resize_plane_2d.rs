@@ -9,6 +9,19 @@
 //! this one differential covers the vertical arm those kernels had never been
 //! exercised on: the port previously had only the horizontal-only variant that
 //! superres needs.
+//!
+//! **The oracle is pinned to C's `_c` dispatch tier.** Those exported symbols
+//! are not pure C on x86-64: `resize_multistep` reaches its leaves through the
+//! RTCD pointers, and the AVX2 kernels emit a fixed-width block regardless of
+//! the requested length — so below length 34 they overrun the caller and
+//! disagree with their own `_c` twins (`docs/SUSPECTED-C-BUGS.md` #26,
+//! measured). `aom_dsp_rtcd.c`'s AARCH64 arm is `SET_ONLY_C` for every resize
+//! symbol, so aarch64 gets the `_c` ladder for free; `shims/refmgmt_shims.c`
+//! pins x86-64 to the same one, which is what `SVT_CPU_FLAGS=0` does globally.
+//! Without that pin these cells are host-dependent: `64x48 -> 16x12` differs
+//! in exactly its last column, and the highbd/frame cells abort in glibc's
+//! heap checker. The AVX2 behaviour is not hidden — it is asserted as measured
+//! in `c_parity_resize_avx2_divergence.rs`.
 
 use svtav1_cref::ref_mgmt as cref;
 
