@@ -461,7 +461,7 @@ revision of this file:
 
 ### `wip/video-md-arms` — complete, verified, deliberately NOT on main
 
-**Head is `ed560d39` as of 2026-09-01** — `nic_arm` VERBATIM from the previous
+**Head is `f898794f9` as of 2026-09-01** — `nic_arm` VERBATIM from the previous
 head `9d9b92526` (diff empty) plus `encdec_arm`, rebased onto main. Read §1e
 first: with both arms the reference cell's mode decision matches C exactly, and
 the cell named below is CLOSED (0.539% -> 0.000%); what holds the pair off main
