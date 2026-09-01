@@ -52,3 +52,4 @@ pub mod pme;
 pub mod predicates;
 pub mod ref_frame_rate;
 pub mod ssim_hbd;
+pub mod tx_gates;
