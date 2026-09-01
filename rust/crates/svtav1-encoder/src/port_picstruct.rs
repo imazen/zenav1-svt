@@ -271,6 +271,13 @@ pub struct SeqPicParams {
     pub mrp_ctrls: MrpCtrls,
     /// C `scs->seq_header.order_hint_info`.
     pub order_hint_info: OrderHintInfo,
+    /// C `scs->static_config.hierarchical_levels` — the SEQUENCE's pyramid
+    /// depth, which an incomplete mini-GOP's own
+    /// [`PicParams::hierarchical_levels`] may be lower than.
+    pub hierarchical_levels: u8,
+    /// C `scs->static_config.max_managed_refs` — how many long-term anchors
+    /// the application may hold at once (see [`crate::port_ref_mgmt`]).
+    pub max_managed_refs: u8,
 }
 
 impl Default for SeqPicParams {
@@ -285,6 +292,8 @@ impl Default for SeqPicParams {
                 enable_order_hint: true,
                 order_hint_bits: 7,
             },
+            hierarchical_levels: 0,
+            max_managed_refs: 0,
         }
     }
 }
@@ -367,6 +376,9 @@ pub struct PicParams {
     pub aligned_width: u32,
     /// C `pcs->aligned_height`.
     pub aligned_height: u32,
+    /// C `pcs->ref_mgmt` — the long-term-reference events the application
+    /// queued on this picture (see [`crate::port_ref_mgmt`]).
+    pub ref_mgmt: crate::port_ref_mgmt::RefMgmtEvents,
 }
 
 impl Default for PicParams {
@@ -407,6 +419,7 @@ impl Default for PicParams {
             mi_rows: 0,
             aligned_width: 0,
             aligned_height: 0,
+            ref_mgmt: crate::port_ref_mgmt::RefMgmtEvents::default(),
         }
     }
 }
@@ -469,6 +482,11 @@ pub struct PicDecisionCtx {
     pub mini_gop_end_index: [u32; 8],
     /// C `ctx->mg_size`.
     pub mg_size: u32,
+    /// C `ctx->pic_id_per_dpb_slot` — the application `pic_id` pinned into
+    /// each DPB slot, or `None` for a slot the short-term allocator owns.
+    /// C stores `0` for "no id"; [`core::num::NonZeroU32`] makes that
+    /// sentinel unrepresentable (see [`crate::port_ref_mgmt`]).
+    pub pic_id_per_dpb_slot: [Option<core::num::NonZeroU32>; REF_FRAMES],
 }
 
 impl PicDecisionCtx {
@@ -745,12 +763,13 @@ pub fn update_dpb(pic: &PicParams, ctx: &mut PicDecisionCtx) {
 /// after the first GOP.
 ///
 /// The C body also calls `ref_mgmt_reset_state`, which clears
-/// `ctx->pic_id_per_dpb_slot` — the app-driven STORE/CLEAR reference
-/// management this port does not expose. There is no state here to clear, and
-/// that is recorded rather than silently dropped.
+/// `ctx->pic_id_per_dpb_slot`: a key frame refreshes all eight DPB slots, so
+/// every long-term anchor the application was holding is destroyed and its id
+/// must stop resolving.
 pub fn set_key_frame_rps(pic: &mut PicParams, ctx: &mut PicDecisionCtx) {
     ctx.lay0_toggle = 0;
     ctx.lay1_toggle = 0;
+    crate::port_ref_mgmt::reset_state(ctx);
     pic.show_frame = true;
     pic.has_show_existing = false;
 }
@@ -1157,6 +1176,11 @@ pub fn generate_rps_info(
         if pic.is_key_frame {
             set_key_frame_rps(pic, ctx);
             set_ref_list_counts(pic, seq, ctx);
+            // C's key-frame early return still runs the ref-management
+            // dispatcher (`pd_process.c:1265-1268`): the key frame refreshes
+            // all eight slots, and if the application STOREd it, that must be
+            // recorded now.
+            crate::port_ref_mgmt::apply_events(pic, seq, ctx);
             return Ok(());
         }
     }
@@ -1176,8 +1200,12 @@ pub fn generate_rps_info(
         crate::port_picstruct_ra::rps_random_access_hier(pic, seq, ctx, pic_idx, mg_idx)?;
     }
 
-    // C's tail: S-frame RPS and the app ref-mgmt events (both out of envelope,
-    // see the module doc), then the overlay reset.
+    // C's tail (`pd_process.c:3487-3502`): the S-frame RPS (out of envelope,
+    // see the module doc), then the ref-management events, then the overlay
+    // reset. Phase 3 of the dispatcher runs unconditionally, so this is NOT
+    // skippable even when the application queued nothing — it is a no-op only
+    // while no slot is held.
+    crate::port_ref_mgmt::apply_events(pic, seq, ctx);
     if pic.is_overlay {
         pic.rps.refresh_frame_mask = 0;
     }

@@ -28,6 +28,8 @@ fn ra_seq() -> pp::SeqPicParams {
             enable_order_hint: true,
             order_hint_bits: 7,
         },
+        hierarchical_levels: 0,
+        max_managed_refs: 0,
     }
 }
 

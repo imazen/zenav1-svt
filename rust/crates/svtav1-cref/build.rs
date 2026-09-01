@@ -89,6 +89,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/txfm_pf_shims.c");
     println!("cargo:rerun-if-changed=shims/inv_recon_shims.c");
     println!("cargo:rerun-if-changed=shims/picstruct_shims.c");
+    println!("cargo:rerun-if-changed=shims/refmgmt_shims.c");
     println!("cargo:rerun-if-changed=shims/md_subpel_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_pred_shims.c");
     println!("cargo:rerun-if-changed=shims/rc_shims.c");
@@ -199,6 +200,9 @@ fn main() {
         .file(manifest.join("shims/md_subpel_shims.c"))
         // pd_process.c picture-decision oracle (lane wp-picstruct) — same.
         .file(manifest.join("shims/picstruct_shims.c"))
+        // Long-term reference management (`pd_process.c:1162-1478`) — its own
+        // translation unit so this lane never shares an editable file.
+        .file(manifest.join("shims/refmgmt_shims.c"))
         // Inter prediction / MC oracle (wholesale inter_prediction.c lane).
         .file(manifest.join("shims/inter_pred_shims.c"))
         // Rate control oracle (lane wp-ratecontrol) — own TU, same reason.

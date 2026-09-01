@@ -495,6 +495,8 @@ fn c_parity_ra_reference_structure() {
                 enable_order_hint: sh.enable_order_hint,
                 order_hint_bits: u32::try_from(sh.order_hint_bits).unwrap(),
             },
+            hierarchical_levels: hier,
+            max_managed_refs: 0,
         };
 
         let mut ctx = pp::PicDecisionCtx::new();
