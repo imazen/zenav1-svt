@@ -9,6 +9,14 @@
 #   SVT_TRACE_OUT   host path for the op trace (must live under $CTRACE_WORK)
 #   CTRACE_WORK     host scratch dir bind-mounted at /work (default ~/tmp/zenav1-ctrace)
 #   CTRACE_PLATFORM docker platform (default: linux/<host arch>)
+#   the driver's own selectors — SVT_FRAMES, SVT_AVIF, SVT_INTRA_PERIOD,
+#   SVT_HIER_LEVELS, SVT_PRED_STRUCT, SVT_CPU_FLAGS, SVT_TILE_ROWS,
+#   SVT_TILE_COLUMNS, SVT_TUNE, SVT_MAX_TX_SIZE, SVT_CRF_OFFSET, SVT_CSP,
+#   SVT_SUPERRES_KF_DENOM — are forwarded verbatim (see CONFIG_ENV below).
+#   A VIDEO-mode key frame therefore reads:
+#     SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+#       SVT_CTREE_OUT=$CTRACE_WORK/c.tree ./run.sh 64 64 40 6 in.yuv out.obu 8
+#   which writes out.obu.pts0 / .pts1 per frame, exactly like the host driver.
 #
 # The .yuv/.obu/.trace paths you pass are HOST paths and must be inside
 # $CTRACE_WORK; the container sees them under /work. This is enforced, not
@@ -107,6 +115,46 @@ for v in SVT_PICKPART_MIROW SVT_PICKPART_MICOL SVT_CCOEF_XY SVT_QLEVELS_XY \
     [[ -n "${!v:-}" ]] && DUMP_ENV+=(-e "$v=${!v}")
 done
 
+# The driver's own CONFIGURATION selectors, read by capture_c_trace.c's
+# getenv() calls. Keep this list in sync with them.
+#
+# These were MISSING until 2026-09-01, and the failure was silent in the worst
+# way: `run.sh` is documented as a drop-in for `capture_c_trace`'s argv, and it
+# is — but argv does not carry the configuration. A caller that exported
+# SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 (the
+# VIDEO-mode GOP every cell of the inter campaign uses, per
+# `tools/identity_diff_inter.sh`) got a container that saw none of them and
+# encoded ONE STILL frame instead. No error, a valid .obu, a valid op trace —
+# of a different encode than the one asked for. So the one op-trace oracle a
+# macOS host has (§5: Apple ld64 has no `-Wl,--wrap`) could not localize
+# anything in the campaign it was needed for, and would have answered
+# confidently if asked.
+#
+# `SVT_TRACE_OUT` is handled above (it is a path and must be remapped);
+# every var here is a plain selector and passes through verbatim.
+CONFIG_ENV=()
+for v in SVT_FRAMES SVT_AVIF SVT_INTRA_PERIOD SVT_HIER_LEVELS SVT_PRED_STRUCT \
+    SVT_CPU_FLAGS SVT_TILE_ROWS SVT_TILE_COLUMNS SVT_TUNE SVT_MAX_TX_SIZE \
+    SVT_CRF_OFFSET SVT_CSP SVT_SUPERRES_KF_DENOM; do
+    [[ -n "${!v:-}" ]] && CONFIG_ENV+=(-e "$v=${!v}")
+done
+
+# The C reference is a git SUBMODULE in the primary checkout and a SYMLINK to
+# it in every `jj workspace add` sibling — which this repo's working agreement
+# tells you to use. A symlink resolves to a path OUTSIDE the /repo mount, so
+# the container follows it into nothing and `incontainer.sh` reports the
+# submodule as uninitialised. Mount the real directory over the symlink when
+# that is what it is; `pwd -P` is what distinguishes the two cases (it resolves
+# every component), and a checkout with the submodule in place takes the
+# no-op branch.
+SRC_MOUNT=()
+if C_SRC=$(cd "$REPO/reference/svt-av1" 2>/dev/null && pwd -P); then
+    case "$C_SRC" in
+    "$(cd "$REPO" && pwd -P)"/*) ;; # already inside the /repo mount
+    *) SRC_MOUNT+=(-v "$C_SRC":/repo/reference/svt-av1:ro) ;;
+    esac
+fi
+
 docker build --platform "$PLATFORM" -t "$IMAGE" "$HERE" >"$WORK/docker-build.log" 2>&1 || {
     cat "$WORK/docker-build.log" >&2
     exit 1
@@ -114,10 +162,12 @@ docker build --platform "$PLATFORM" -t "$IMAGE" "$HERE" >"$WORK/docker-build.log
 
 exec docker run --rm --platform "$PLATFORM" \
     -v "$REPO":/repo:ro \
+    "${SRC_MOUNT[@]+"${SRC_MOUNT[@]}"}" \
     -v "$WORK":/work \
     -v zenav1-svt-ctrace-cbuild:/cbuild \
     -e SVT_TRACE_OUT="$TRACE_ARG" \
     -e SVT_BUILD_JOBS="${SVT_BUILD_JOBS:-6}" \
     "${DUMP_ENV[@]+"${DUMP_ENV[@]}"}" \
+    "${CONFIG_ENV[@]+"${CONFIG_ENV[@]}"}" \
     "$IMAGE" bash /repo/rust/tools/ctrace-linux/incontainer.sh \
     "$W" "$H" "$QP" "$PRESET" "$IN" "$OUT" "$BD"

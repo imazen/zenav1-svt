@@ -317,14 +317,39 @@ leave a Linux ELF where the macOS `capture_c_trace` wrapper would exec it). The
 `$CTRACE_WORK` (default `~/tmp/zenav1-ctrace`) — paths outside it are refused
 rather than silently written where the host cannot see them.
 
+**`run.sh` is a drop-in for `capture_c_trace`'s ARGV — and argv does not carry
+the CONFIGURATION.** Until 2026-09-01 it forwarded the dump-path vars and
+nothing else, so `SVT_FRAMES` / `SVT_AVIF` / `SVT_INTRA_PERIOD` /
+`SVT_HIER_LEVELS` / `SVT_PRED_STRUCT` / `SVT_CPU_FLAGS` / `SVT_TILE_*` /
+`SVT_TUNE` / `SVT_MAX_TX_SIZE` / `SVT_CRF_OFFSET` / `SVT_CSP` /
+`SVT_SUPERRES_KF_DENOM` were dropped at the container boundary. A caller
+asking for the inter campaign's VIDEO-mode 2-frame GOP got a container that
+encoded ONE STILL frame: no error, a valid `.obu`, a valid op trace — of a
+different encode than the one requested. So the only op-trace oracle a macOS
+host has could not localize anything in the campaign that needed it, and would
+have answered confidently if asked. They are forwarded now (`CONFIG_ENV` in
+`run.sh`); keep that list in sync with `capture_c_trace.c`'s `getenv` calls.
+
+**The C submodule is a SYMLINK in every `jj workspace add` sibling**, which is
+the layout `CLAUDE.md` tells you to work in. A symlink resolves outside the
+`/repo:ro` mount, so the container followed it into nothing and
+`incontainer.sh` reported the submodule as uninitialised — a setup failure that
+reads like a missing `git submodule update --init`. `run.sh` now mounts the
+resolved directory over it when `pwd -P` lands outside the repo.
+
 **Verify the container oracle before trusting a trace from it.** Encode a cell
 that ALREADY agrees on the host and confirm the container's C bytes are
 identical; only then read the trace. Done for issue #15 on Linux arm64 vs
 macOS arm64: identical on the diverging cell (`terminal` 96x88 p4 q33, 523 B)
 and on an aligned control (`terminal` 64x64 p4 q33, 297 B, where port == C ==
-container-C). Build the image for the SAME architecture as the host oracle
-(`run.sh` does) — C's kernels are runtime-dispatched, so an x86 container is a
-different oracle, not the same one.
+container-C). Re-done 2026-09-01 for the VIDEO-mode path the config
+passthrough opened up: `SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0
+SVT_PRED_STRUCT=1 ./run.sh 64 64 40 6 rs.yuv c.obu 8` gives 961 + 22 B, and
+its `c.obu.pts0` is BYTE-IDENTICAL to the host driver's — so `SVT_CTREE_OUT`
+from the container is a trace of the same encode the byte gate compares. Build
+the image for the SAME architecture as the host oracle (`run.sh` does) — C's
+kernels are runtime-dispatched, so an x86 container is a different oracle, not
+the same one.
 
 ## 5b. Drills you don't have to write
 
@@ -336,6 +361,20 @@ tools/drill_two_images.sh     # per-preset/per-qp verdicts for the two open imag
 tools/sc_tool_bisect.sh       # palette? IntraBC? neither? (SVTAV1_SC_TOOLS)
 tools/regression_spotcheck.sh # every fixed bug, ~90s
 python3 tools/coverage_matrix.py
+```
+
+The VIDEO-mode key frame's tree diff, which is the inter campaign's inner loop
+and now runs on macOS (the container gained the config passthrough on
+2026-09-01, §5 above):
+
+```bash
+W=~/tmp/zenav1-ctrace/refcell; mkdir -p $W
+SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
+  SVTAV1_PACKTREE=$W/rs.tree tools/identity_run gradient 64 64 40 6 $W/rs
+SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+  SVT_CTREE_OUT=$W/c.tree tools/ctrace-linux/run.sh 64 64 40 6 $W/rs.yuv $W/c.obu 8
+head -14 $W/c.tree > $W/c.f0.tree    # BOTH dumps append across frames (§5)
+python3 tools/tree_diff.py $W/c.f0.tree $W/rs.tree
 ```
 
 `SVTAV1_SC_TOOLS={nopalette,noibc,none}` forces a screen-content tool off at
