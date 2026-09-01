@@ -655,6 +655,14 @@ fn link_globalized_enc_dec_statics(repo_root: &Path, out_dir: &Path) -> bool {
             return false;
         }
     }
+    // objcopy exits 0 when it matches NOTHING — verify, do not infer.
+    // MEASURED for this site: `aom_ssim2` is `_aom_ssim2` under clang on
+    // macOS (promotable) and `aom_ssim2.part.0` under gcc on Linux (not),
+    // which is what took `main` red on x86 with `undefined symbol: aom_ssim2`.
+    if let Err(why) = globalized_symbols_present(&objcopy, &dst, &SYMS) {
+        println!("cargo:warning=enc_dec_process tier-1 statics unavailable: {why}");
+        return false;
+    }
 
     let archive = out_dir.join("libenc_dec_statics.a");
     let _ = fs::remove_file(&archive);

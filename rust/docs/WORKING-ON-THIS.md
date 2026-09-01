@@ -434,6 +434,43 @@ that commit or for the nine others from three lanes that inherited the same
 parent. A compile error in one lane silently erases every gate's evidence for
 everyone, so a skipped gate reads as "no result", never as "pass".
 
+**A shim may only reference a symbol `nm -g` shows in the archive — and
+`objcopy --globalize-symbol` exits 0 when it matches NOTHING.** Three lanes hit
+this on 2026-08-31 and it took `main` red on Linux twice, invisibly to every
+aarch64 developer.
+
+Several `static` C functions are promoted to linkable symbols by
+`crates/svtav1-cref/build.rs` (`llvm-objcopy --globalize-symbol` on a private
+copy of the object) so they can be reached at evidence tier 1. That mechanism
+is sound. What was not: success was read from objcopy's exit status.
+
+**GCC renames statics.** Its interprocedural passes emit `.isra.N`
+(scalar replacement), `.constprop.N`, `.part.N` and `.cold` clones, and may
+eliminate a function outright. Measured, same source, two hosts:
+
+| C symbol | clang / macOS | gcc / Linux |
+|---|---|---|
+| `clamp_qindex` | `_clamp_qindex` | `clamp_qindex.isra.0` |
+| `aom_ssim2` | `_aom_ssim2` | `aom_ssim2.part.0` |
+| `get_regulated_q_overshoot` | present | absent entirely |
+
+So `--globalize-symbol=clamp_qindex` matched nothing, exited 0, the cfg and the
+shim's `#ifdef` define both switched on, and the link failed with
+`undefined symbol`. On macOS the plain names survive, so it linked and the
+breakage was invisible on the host every lane develops on.
+
+Rules, if you add a promotion site:
+- Verify the RESULT, never the exit code — `globalized_symbols_present()` runs
+  `nm -g` on the promoted object and requires each name to be global, matching
+  the WHOLE name so `clamp_qindex.isra.0` does not satisfy `clamp_qindex`.
+- Guard the shim wrappers on the matching `SVTAV1_CREF_*` define, so a failed
+  promotion means the C side does not reference the symbol at all. Those
+  functions then fall back to tier 4, and `SVT_CREF_REQUIRE_*_STATICS=1` turns
+  that skip into a loud failure for a caller who requires it.
+- Before writing any shim at all, `nm -g` the archive **on both hosts**. A
+  symbol `nm` reports as `t`/`b` (local) is not linkable, and one that is `T`
+  on your host may be renamed on the other.
+
 ## 6. Refuse, never emit a plausible-but-wrong stream
 
 Out-of-envelope configs return a typed `Err` from `encode_frame_impl`. They do
