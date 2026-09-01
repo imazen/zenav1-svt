@@ -33,6 +33,7 @@ pub mod port_convolve;
 pub mod port_convolve_hbd;
 pub mod port_convolve_scale;
 pub mod port_diffwtd_d16;
+pub mod port_enc_make_pred;
 pub mod port_full_pd1_pred;
 pub mod port_ifs;
 pub mod port_inter_predictor;

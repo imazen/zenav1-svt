@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "convolve.h"
 #include "definitions.h"
@@ -50,6 +51,17 @@ static void           init_gap_rtcd(void) {
     svt_aom_asm_set_convolve_hbd_asm_table();
 }
 static void ensure_gap_rtcd(void) { pthread_once(&g_gap_rtcd_once, init_gap_rtcd); }
+
+/* A WEDGE masked compound reads `svt_aom_get_contiguous_soft_mask`, whose
+ * tables `svt_av1_init_wedge_masks` fills with bare `svt_memcpy` -- itself an
+ * RTCD pointer, NULL until setup on x86-64. So RTCD first, then the tables. */
+void                  svt_av1_init_wedge_masks(void);
+static pthread_once_t g_gap_wedge_once = PTHREAD_ONCE_INIT;
+static void           init_gap_wedge(void) {
+    ensure_gap_rtcd();
+    svt_av1_init_wedge_masks();
+}
+static void ensure_gap_wedge(void) { pthread_once(&g_gap_wedge_once, init_gap_wedge); }
 
 /* ---- svt_av1_build_compound_diffwtd_mask_d16 -------------------------- */
 
@@ -138,4 +150,109 @@ void ref_inter_predictor_light_pd1_hbd(uint8_t* src, uint8_t* src_2b, int32_t sr
     cp.bck_offset            = bck;
     svt_inter_predictor_light_pd1(
         src, src_2b, src_stride, (uint8_t*)dst, dst_stride, w, h, interp_filters, &sp, &cp, bd);
+}
+
+/* ---- svt_aom_enc_make_inter_predictor, the non-warp leaves -------------- */
+
+#include "sequence_control_set.h"
+
+void NOINLINE svt_aom_enc_make_inter_predictor(
+    SequenceControlSet* scs, uint8_t* src_ptr, uint8_t* src_ptr_2b, uint8_t* dst_ptr, int16_t pre_y, int16_t pre_x,
+    Mv mv, const struct ScaleFactors* const sf, ConvolveParams* conv_params, InterpFilters interp_filters,
+    const InterInterCompoundData* const interinter_comp, uint8_t* seg_mask, uint16_t frame_width, uint16_t frame_height,
+    uint8_t blk_width, uint8_t blk_height, BlockSize bsize, MacroBlockD* av1xd, int32_t src_stride, int32_t dst_stride,
+    uint8_t plane, const uint32_t ss_y, const uint32_t ss_x, uint8_t bit_depth, uint8_t use_intrabc,
+    uint8_t is_masked_compound, uint8_t is16bit, bool is_wm, WarpedMotionParams* wm_params);
+void svt_av1_setup_scale_factors_for_frame(ScaleFactors* sf, int other_w, int other_h, int this_w, int this_h);
+
+/* Like `ref_tf_inter_predictor` in inter_pred_shims.c, the only encoder state
+ * this entry reads that a shim cannot otherwise reach is
+ * `scs->super_block_size` (through the `static compute_subpel_params`) and the
+ * four `mb_to_*_edge` fields on the `MacroBlockD`. The SCS is calloc/free per
+ * call -- it is large, and per ref_shims.c's rule "large" is a reason for
+ * calloc, never for a `static`.
+ *
+ * `src` / `src_2b` / `dst` arrive as `void*` because the caller chooses the
+ * representation: `src` is `uint8_t*` when `is16bit == 0`, the MSB plane when
+ * `src_2b != NULL`, and a `uint16_t*` otherwise; `dst` follows `is16bit`. The
+ * OFFSET C applies to `src` differs between those cases (:2585 multiplies by
+ * `1 << is16bit` only when there is no 2-bit plane), which is why the port
+ * cannot fold them.
+ *
+ * `wm_params` is never passed: `is_wm` is hardwired to 0 here because the port
+ * refuses the warp leaves (port_enc_make_pred's scope note). Binding them
+ * would need `WarpedMotionParams` mirrored in Rust, which is the next chunk's
+ * problem, not a silent omission. */
+void ref_enc_make_inter_predictor(void* src, void* src_2b, void* dst, int pre_y, int pre_x, int mv_x, int mv_y,
+                                  int other_w, int other_h, int this_w, int this_h, int super_block_size,
+                                  int frame_width, int frame_height, int blk_width, int blk_height, int bsize,
+                                  int mb_to_left, int mb_to_right, int mb_to_top, int mb_to_bottom,
+                                  uint32_t interp_filters, int src_stride, int dst_stride, uint16_t* conv_buf,
+                                  int conv_stride, int is_compound, int do_average, int use_jnt, int fwd, int bck,
+                                  int plane, int ss_y, int ss_x, int bit_depth, int use_intrabc, int is16bit,
+                                  int is_masked_compound, int comp_type, int wedge_index, int wedge_sign,
+                                  int mask_type, uint8_t* seg_mask) {
+    ensure_gap_rtcd();
+    ensure_gap_wedge();
+    SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    scs->super_block_size   = (uint16_t)super_block_size;
+
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.mb_to_left_edge   = mb_to_left;
+    xd.mb_to_right_edge  = mb_to_right;
+    xd.mb_to_top_edge    = mb_to_top;
+    xd.mb_to_bottom_edge = mb_to_bottom;
+    xd.bsize             = (BlockSize)bsize;
+
+    ScaleFactors sf;
+    memset(&sf, 0, sizeof(sf));
+    svt_av1_setup_scale_factors_for_frame(&sf, other_w, other_h, this_w, this_h);
+
+    Mv mv;
+    mv.x = (int16_t)mv_x;
+    mv.y = (int16_t)mv_y;
+
+    ConvolveParams cp        = get_conv_params_no_round(do_average, conv_buf, conv_stride, is_compound, bit_depth);
+    cp.use_jnt_comp_avg      = use_jnt;
+    cp.use_dist_wtd_comp_avg = use_jnt;
+    cp.fwd_offset            = fwd;
+    cp.bck_offset            = bck;
+
+    InterInterCompoundData comp;
+    comp.type        = (CompoundType)comp_type;
+    comp.wedge_index = (uint8_t)wedge_index;
+    comp.wedge_sign  = (uint8_t)wedge_sign;
+    comp.mask_type   = (DIFFWTD_MASK_TYPE)mask_type;
+
+    svt_aom_enc_make_inter_predictor(scs,
+                                     (uint8_t*)src,
+                                     (uint8_t*)src_2b,
+                                     (uint8_t*)dst,
+                                     (int16_t)pre_y,
+                                     (int16_t)pre_x,
+                                     mv,
+                                     &sf,
+                                     &cp,
+                                     interp_filters,
+                                     is_masked_compound ? &comp : NULL,
+                                     seg_mask,
+                                     (uint16_t)frame_width,
+                                     (uint16_t)frame_height,
+                                     (uint8_t)blk_width,
+                                     (uint8_t)blk_height,
+                                     (BlockSize)bsize,
+                                     &xd,
+                                     src_stride,
+                                     dst_stride,
+                                     (uint8_t)plane,
+                                     (uint32_t)ss_y,
+                                     (uint32_t)ss_x,
+                                     (uint8_t)bit_depth,
+                                     (uint8_t)use_intrabc,
+                                     (uint8_t)is_masked_compound,
+                                     (uint8_t)is16bit,
+                                     /*is_wm=*/false,
+                                     NULL);
+    free(scs);
 }

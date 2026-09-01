@@ -247,3 +247,205 @@ pub fn inter_predictor_light_pd1_hbd(
         );
     }
 }
+
+/// Everything `ref_enc_make_inter_predictor` needs that is not a buffer.
+///
+/// Grouped rather than passed as 30 positional arguments: the C entry takes 32
+/// and mis-ordering two `int`s of the same type is a silent wrong answer.
+#[derive(Debug, Clone, Copy)]
+pub struct EncMakePredArgs {
+    /// `pre_y` / `pre_x` — the block's position in the reference plane.
+    pub pre_y: i32,
+    /// See [`Self::pre_y`].
+    pub pre_x: i32,
+    /// The motion vector, eighth-pel.
+    pub mv: (i32, i32),
+    /// `svt_av1_setup_scale_factors_for_frame(other_w, other_h, this_w, this_h)`.
+    pub scale: (i32, i32, i32, i32),
+    /// `scs->super_block_size`.
+    pub super_block_size: i32,
+    /// `frame_width` / `frame_height`.
+    pub frame: (i32, i32),
+    /// `blk_width` / `blk_height`.
+    pub blk: (usize, usize),
+    /// `bsize`, and `xd->bsize`.
+    pub bsize: i32,
+    /// `xd->mb_to_{left,right,top,bottom}_edge`.
+    pub edges: (i32, i32, i32, i32),
+    /// The packed `InterpFilters` word.
+    pub interp_filters: u32,
+    /// `src_stride` / `dst_stride`.
+    pub strides: (usize, usize),
+    /// `conv_params->dst_stride`.
+    pub conv_stride: usize,
+    /// `conv_params` flags: `(is_compound, do_average, use_jnt, fwd, bck)`.
+    pub compound: (bool, bool, bool, i32, i32),
+    /// `plane`, `ss_y`, `ss_x`.
+    pub plane: (usize, i32, i32),
+    /// `bit_depth`.
+    pub bit_depth: i32,
+    /// `use_intrabc`.
+    pub use_intrabc: bool,
+    /// `is16bit`.
+    pub is16bit: bool,
+    /// `is_masked_compound`, and the `InterInterCompoundData` it selects:
+    /// `(comp_type, wedge_index, wedge_sign, mask_type)`.
+    pub masked: Option<(i32, i32, i32, i32)>,
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_enc_make_inter_predictor(
+        src: *mut core::ffi::c_void,
+        src_2b: *mut core::ffi::c_void,
+        dst: *mut core::ffi::c_void,
+        pre_y: c_int,
+        pre_x: c_int,
+        mv_x: c_int,
+        mv_y: c_int,
+        other_w: c_int,
+        other_h: c_int,
+        this_w: c_int,
+        this_h: c_int,
+        super_block_size: c_int,
+        frame_width: c_int,
+        frame_height: c_int,
+        blk_width: c_int,
+        blk_height: c_int,
+        bsize: c_int,
+        mb_to_left: c_int,
+        mb_to_right: c_int,
+        mb_to_top: c_int,
+        mb_to_bottom: c_int,
+        interp_filters: u32,
+        src_stride: c_int,
+        dst_stride: c_int,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        is_compound: c_int,
+        do_average: c_int,
+        use_jnt: c_int,
+        fwd: c_int,
+        bck: c_int,
+        plane: c_int,
+        ss_y: c_int,
+        ss_x: c_int,
+        bit_depth: c_int,
+        use_intrabc: c_int,
+        is16bit: c_int,
+        is_masked_compound: c_int,
+        comp_type: c_int,
+        wedge_index: c_int,
+        wedge_sign: c_int,
+        mask_type: c_int,
+        seg_mask: *mut u8,
+    );
+}
+
+/// The reference planes, in whichever of C's three representations the caller
+/// holds — the same three-way split `SrcPlanes` makes in the port.
+pub enum RefSrc<'a> {
+    /// `!is16bit`.
+    Lbd(&'a mut [u8]),
+    /// `is16bit` with a 2-bit plane: MSBs and LSBs, both at `src_stride`.
+    Split {
+        /// The eight most significant bits.
+        msb: &'a mut [u8],
+        /// The two least significant bits, in each byte's top two bits.
+        lsb: &'a mut [u8],
+    },
+    /// `is16bit` with no 2-bit plane — an unpacked 10-bit plane.
+    Hbd(&'a mut [u16]),
+}
+
+/// The prediction destination.
+pub enum RefDst<'a> {
+    /// 8-bit.
+    Lbd(&'a mut [u8]),
+    /// 16-bit.
+    Hbd(&'a mut [u16]),
+}
+
+/// Reference `svt_aom_enc_make_inter_predictor` (enc_inter_prediction.c:2515),
+/// with `is_wm = 0` — the two non-warp leaves.
+///
+/// `src_origin` is where the reference plane's (0, 0) sits in the slice, in
+/// SAMPLES; the shim converts to whatever pointer C wants. C's own
+/// `src_ptr + (pos_x + pos_y * src_stride) * (1 << is16bit)` offset is applied
+/// INSIDE the C function, so it must not be pre-applied here.
+#[allow(clippy::too_many_arguments)]
+pub fn enc_make_inter_predictor(
+    src: RefSrc<'_>,
+    src_origin: usize,
+    dst: RefDst<'_>,
+    conv_buf: &mut [u16],
+    seg_mask: &mut [u8],
+    a: EncMakePredArgs,
+) {
+    let (src_p, src2_p) = match src {
+        RefSrc::Lbd(p) => (
+            p.as_mut_ptr().wrapping_add(src_origin).cast(),
+            core::ptr::null_mut(),
+        ),
+        RefSrc::Split { msb, lsb } => (
+            msb.as_mut_ptr().wrapping_add(src_origin).cast(),
+            lsb.as_mut_ptr().wrapping_add(src_origin).cast(),
+        ),
+        RefSrc::Hbd(p) => (
+            p.as_mut_ptr().wrapping_add(src_origin).cast(),
+            core::ptr::null_mut(),
+        ),
+    };
+    let dst_p: *mut core::ffi::c_void = match dst {
+        RefDst::Lbd(d) => d.as_mut_ptr().cast(),
+        RefDst::Hbd(d) => d.as_mut_ptr().cast(),
+    };
+    let (comp_type, wedge_index, wedge_sign, mask_type) = a.masked.unwrap_or((0, 0, 0, 0));
+    unsafe {
+        ref_enc_make_inter_predictor(
+            src_p,
+            src2_p,
+            dst_p,
+            a.pre_y,
+            a.pre_x,
+            a.mv.0,
+            a.mv.1,
+            a.scale.0,
+            a.scale.1,
+            a.scale.2,
+            a.scale.3,
+            a.super_block_size,
+            a.frame.0,
+            a.frame.1,
+            a.blk.0 as c_int,
+            a.blk.1 as c_int,
+            a.bsize,
+            a.edges.0,
+            a.edges.1,
+            a.edges.2,
+            a.edges.3,
+            a.interp_filters,
+            a.strides.0 as c_int,
+            a.strides.1 as c_int,
+            conv_buf.as_mut_ptr(),
+            a.conv_stride as c_int,
+            c_int::from(a.compound.0),
+            c_int::from(a.compound.1),
+            c_int::from(a.compound.2),
+            a.compound.3,
+            a.compound.4,
+            a.plane.0 as c_int,
+            a.plane.1,
+            a.plane.2,
+            a.bit_depth,
+            c_int::from(a.use_intrabc),
+            c_int::from(a.is16bit),
+            c_int::from(a.masked.is_some()),
+            comp_type,
+            wedge_index,
+            wedge_sign,
+            mask_type,
+            seg_mask.as_mut_ptr(),
+        );
+    }
+}
