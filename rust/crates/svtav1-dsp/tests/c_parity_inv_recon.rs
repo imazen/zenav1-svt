@@ -11,6 +11,23 @@
 //! `svt_av1_inv_txfm_add_c`, and the packed 64-dimension coefficient layout
 //! are all C's decisions rather than the test's.
 //!
+//! ## The shim stages every buffer — measured on a second ISA, not argued
+//!
+//! A first version handed C the Rust `Vec` pointers at stride `w`. It passed
+//! on macOS aarch64 and SIGSEGV'd on x86-64 Linux inside
+//! `svt_dav1d_inv_txfm2d_add_8x8_avx2`, and ONLY through the high-bit-depth
+//! entry: the 8-bit one stages the caller's pixels into its own
+//! `DECLARE_ALIGNED(32, uint16_t, tmp[MAX_TX_SQUARE])` before reaching a
+//! kernel (`svt_av1_inv_txfm_add_c`, inv_transforms.c:3269), so C's SIMD
+//! never sees a caller buffer there, while `svt_aom_inv_transform_recon`
+//! passes the caller's pointers straight down. `shims/inv_recon_shims.c` now
+//! stages coefficients, prediction and reconstruction into 64-byte-aligned
+//! scratch at `MAX_TX_SIZE` stride — the shape the encoder actually hands
+//! these entries (`full_loop.c:1915` passes a picture buffer and a picture
+//! stride, not a packed `w * h` block). Side benefit: `pred_stride` and
+//! `recon_stride` no longer equal `w`, so a stride bug in the port cannot
+//! hide.
+//!
 //! ## The cell set is bounded by what the PRODUCER can produce, and that
 //! bound is not cosmetic — it is what stops this test SEGFAULTING.
 //!

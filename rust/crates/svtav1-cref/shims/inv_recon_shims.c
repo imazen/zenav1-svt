@@ -23,6 +23,25 @@
  * `svt_aom_setup_common_rtcd_internal` runs. Both entry points below reach
  * those pointers one level down, so both call `ensure_rtcd()` first.
  *
+ * ALIGNMENT AND STRIDE ARE PART OF THE CONTRACT, and this cost a SIGSEGV.
+ * A first version handed C the Rust `Vec` pointers directly, at stride `w`.
+ * It passed on macOS aarch64 and CRASHED on x86-64 Linux inside
+ * `svt_dav1d_inv_txfm2d_add_8x8_avx2` (gdb: frame #0), reached from
+ * `svt_aom_inv_transform_recon` -> `highbd_inv_txfm_add`. Only the
+ * HIGH-BIT-DEPTH entry crashed, and that is the tell: the 8-bit entry goes
+ * through `svt_av1_inv_txfm_add`, which stages the caller's pixels into its
+ * own `DECLARE_ALIGNED(32, uint16_t, tmp[MAX_TX_SQUARE])` before touching a
+ * kernel, so it never hands C's SIMD a caller buffer at all. The hbd entry
+ * passes the caller's pointers straight down.
+ *
+ * So every buffer below is staged into `DECLARE_ALIGNED(64, ...)` scratch at
+ * stride `MAX_TX_SIZE`, which is the shape the ENCODER hands these entries:
+ * its recon planes are 64-aligned picture buffers with a picture stride, not
+ * tightly packed `w * h` blocks (full_loop.c:1915 passes
+ * `rec_buffer + rec_offset, rec_stride`). Staging also makes the strides
+ * differ from `w`, so a stride bug in the port can no longer hide behind
+ * `pred_stride == recon_stride == w`.
+ *
  * WHICH ORACLE THIS IS, per ISA. After setup, `svt_av1_inv_txfm_add` is
  * `svt_dav1d_inv_txfm_add_neon` on aarch64 (common_dsp_rtcd.c:1099) and
  * `svt_av1_inv_txfm_add_{ssse3,avx2}` on x86-64 (:540/:542) - a different
@@ -63,6 +82,10 @@ static size_t coeff_count(TxSize t) {
     return w * h;
 }
 
+/* Scratch stride for every staged buffer: C's own `svt_av1_inv_txfm_add_c`
+ * uses MAX_TX_SIZE for the same purpose (inv_transforms.c:3269). */
+#define SHIM_STRIDE MAX_TX_SIZE
+
 static int inv_recon_rtcd_done = 0;
 static void ensure_rtcd(void) {
     if (!inv_recon_rtcd_done) {
@@ -80,32 +103,27 @@ void ref_inv_transform_recon8bit(const int32_t* coeff, const uint8_t* pred, uint
                                  uint32_t recon_stride, int32_t txsize, int32_t tx_type, uint32_t eob,
                                  uint8_t lossless, int32_t alias_in_place) {
     ensure_rtcd();
-    /* The library takes a non-const coefficient pointer but does not write
-     * through it; copy anyway so the caller's buffer is provably untouched. */
-    int32_t coeff_copy[64 * 64];
-    memcpy(coeff_copy, coeff, sizeof(int32_t) * coeff_count((TxSize)txsize));
+    const TxSize  ts = (TxSize)txsize;
+    const int32_t w = tx_size_wide[ts], h = tx_size_high[ts];
+    DECLARE_ALIGNED(64, int32_t, coeff_copy[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint8_t, sp[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint8_t, sd[MAX_TX_SQUARE]);
+    memset(sp, 0, sizeof(sp));
+    memset(sd, 0, sizeof(sd));
+    memcpy(coeff_copy, coeff, sizeof(int32_t) * coeff_count(ts));
+    for (int32_t r = 0; r < h; ++r)
+        memcpy(sp + (size_t)r * SHIM_STRIDE, (alias_in_place ? recon : pred) + (size_t)r * (alias_in_place ? recon_stride : pred_stride),
+               (size_t)w);
     if (alias_in_place) {
-        svt_aom_inv_transform_recon8bit(coeff_copy,
-                                        recon,
-                                        recon_stride,
-                                        recon,
-                                        recon_stride,
-                                        (TxSize)txsize,
-                                        (TxType)tx_type,
-                                        PLANE_TYPE_Y,
-                                        eob,
-                                        lossless);
+        svt_aom_inv_transform_recon8bit(
+            coeff_copy, sp, SHIM_STRIDE, sp, SHIM_STRIDE, ts, (TxType)tx_type, PLANE_TYPE_Y, eob, lossless);
+        for (int32_t r = 0; r < h; ++r)
+            memcpy(recon + (size_t)r * recon_stride, sp + (size_t)r * SHIM_STRIDE, (size_t)w);
     } else {
-        svt_aom_inv_transform_recon8bit(coeff_copy,
-                                        (uint8_t*)pred,
-                                        pred_stride,
-                                        recon,
-                                        recon_stride,
-                                        (TxSize)txsize,
-                                        (TxType)tx_type,
-                                        PLANE_TYPE_Y,
-                                        eob,
-                                        lossless);
+        svt_aom_inv_transform_recon8bit(
+            coeff_copy, sp, SHIM_STRIDE, sd, SHIM_STRIDE, ts, (TxType)tx_type, PLANE_TYPE_Y, eob, lossless);
+        for (int32_t r = 0; r < h; ++r)
+            memcpy(recon + (size_t)r * recon_stride, sd + (size_t)r * SHIM_STRIDE, (size_t)w);
     }
 }
 
@@ -117,17 +135,27 @@ void ref_inv_transform_recon8bit(const int32_t* coeff, const uint8_t* pred, uint
 void ref_inv_txfm_add_c(const int32_t* coeff, const uint8_t* pred, uint32_t pred_stride, uint8_t* recon,
                         uint32_t recon_stride, int32_t txsize, int32_t tx_type, uint32_t eob, uint8_t lossless) {
     ensure_rtcd();
-    TxfmParam p;
+    const TxSize  ts = (TxSize)txsize;
+    const int32_t w = tx_size_wide[ts], h = tx_size_high[ts];
+    TxfmParam     p;
     memset(&p, 0, sizeof(p));
     p.tx_type  = (TxType)tx_type;
-    p.tx_size  = (TxSize)txsize;
+    p.tx_size  = ts;
     p.eob      = (int32_t)eob;
     p.lossless = lossless;
     p.bd       = 8;
     p.is_hbd   = 1;
-    int32_t coeff_copy[64 * 64];
-    memcpy(coeff_copy, coeff, sizeof(int32_t) * coeff_count((TxSize)txsize));
-    svt_av1_inv_txfm_add_c(coeff_copy, (uint8_t*)pred, pred_stride, recon, recon_stride, &p);
+    DECLARE_ALIGNED(64, int32_t, coeff_copy[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint8_t, sp[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint8_t, sd[MAX_TX_SQUARE]);
+    memset(sp, 0, sizeof(sp));
+    memset(sd, 0, sizeof(sd));
+    memcpy(coeff_copy, coeff, sizeof(int32_t) * coeff_count(ts));
+    for (int32_t r = 0; r < h; ++r)
+        memcpy(sp + (size_t)r * SHIM_STRIDE, pred + (size_t)r * pred_stride, (size_t)w);
+    svt_av1_inv_txfm_add_c(coeff_copy, sp, SHIM_STRIDE, sd, SHIM_STRIDE, &p);
+    for (int32_t r = 0; r < h; ++r)
+        memcpy(recon + (size_t)r * recon_stride, sd + (size_t)r * SHIM_STRIDE, (size_t)w);
 }
 
 /* High-bit-depth entry. C takes `uint8_t*` and CONVERT_TO_BYTEPTR()s a
@@ -138,19 +166,30 @@ void ref_inv_transform_recon(const int32_t* coeff, const uint16_t* pred, uint32_
                              uint32_t recon_stride, int32_t txsize, uint32_t bit_depth, int32_t tx_type, uint32_t eob,
                              uint8_t lossless, int32_t alias_in_place) {
     ensure_rtcd();
-    int32_t coeff_copy[64 * 64];
-    memcpy(coeff_copy, coeff, sizeof(int32_t) * coeff_count((TxSize)txsize));
-    uint8_t* r = CONVERT_TO_BYTEPTR(alias_in_place ? recon : (uint16_t*)pred);
-    uint8_t* w = CONVERT_TO_BYTEPTR(recon);
+    const TxSize  ts = (TxSize)txsize;
+    const int32_t w = tx_size_wide[ts], h = tx_size_high[ts];
+    DECLARE_ALIGNED(64, int32_t, coeff_copy[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint16_t, sp[MAX_TX_SQUARE]);
+    DECLARE_ALIGNED(64, uint16_t, sd[MAX_TX_SQUARE]);
+    memset(sp, 0, sizeof(sp));
+    memset(sd, 0, sizeof(sd));
+    memcpy(coeff_copy, coeff, sizeof(int32_t) * coeff_count(ts));
+    for (int32_t r = 0; r < h; ++r)
+        memcpy(sp + (size_t)r * SHIM_STRIDE,
+               (alias_in_place ? recon : pred) + (size_t)r * (alias_in_place ? recon_stride : pred_stride),
+               sizeof(uint16_t) * (size_t)w);
+    uint16_t* dst = alias_in_place ? sp : sd;
     svt_aom_inv_transform_recon(coeff_copy,
-                                r,
-                                alias_in_place ? recon_stride : pred_stride,
-                                w,
-                                recon_stride,
-                                (TxSize)txsize,
+                                CONVERT_TO_BYTEPTR(sp),
+                                SHIM_STRIDE,
+                                CONVERT_TO_BYTEPTR(dst),
+                                SHIM_STRIDE,
+                                ts,
                                 bit_depth,
                                 (TxType)tx_type,
                                 PLANE_TYPE_Y,
                                 eob,
                                 lossless);
+    for (int32_t r = 0; r < h; ++r)
+        memcpy(recon + (size_t)r * recon_stride, dst + (size_t)r * SHIM_STRIDE, sizeof(uint16_t) * (size_t)w);
 }
