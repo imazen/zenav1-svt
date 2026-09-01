@@ -5,7 +5,8 @@ Scope: `reference/svt-av1/Source/Lib/Codec/transforms.c` (7,960 lines) and
 lane after auditing every function definition in both files against the port.
 
 **Headline, as a fraction, missing first: 0 of 256 C function definitions are
-unported.** 80 match a Rust `fn` of the same name; 174 are covered by a
+unported.** 80 match a Rust `fn` of the same name once C's `_new` / `_c`
+suffixes are stripped as well as its `svt_*` prefixes; 174 are covered by a
 deliberate collapse (one Rust function per FAMILY of C wrappers, listed
 below); 2 have no Rust counterpart *by construction* and are named with their
 reason. Nothing in either file is a stub.
@@ -29,10 +30,18 @@ indistinguishable from an absence. The regex is fixed (`([A-Za-z_]\w*)`),
 which raises the tree-wide surface from 2,673 to 2,756 definitions.
 
 **With the regex fixed, these two files read as `181 total / 7 matched` and
-`75 / 30`.** That is the tool working as documented, not a coverage
-statement: it matches by NAME and the port collapses families, so a 54-entry
-family behind one Rust function reads as 54 misses. Use the table below, not
-that row.
+`75 / 13`** (measured, 2026-08-31). That is the tool working as documented,
+not a coverage statement, for TWO reasons that compound:
+
+  * it matches by NAME and the port collapses families, so a 54-entry family
+    behind one Rust function reads as 54 misses; and
+  * it strips only the `svt_aom_` / `svt_av1_` / `svt_` PREFIXES, not C's
+    `_new` / `_c` SUFFIXES, so `svt_av1_fdct4_new` does not match the port's
+    `fdct4` even though that is a direct 1:1 port. Stripping the suffixes too
+    raises the same two files to 50/181 and 30/75 — the 80 in the headline
+    above.
+
+Use the table below, not either row.
 
 ---
 
