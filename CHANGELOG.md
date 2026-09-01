@@ -78,7 +78,10 @@ Crates are not published to crates.io yet — depend by git.
   `diag 64x64 p11` (16.96% vs 2.0) go outside their `ratioVideoKey` limits,
   while `gradient 72x88 p5` closes to 0.000% and `screenrep 72x88 p7` becomes
   BYTE-IDENTICAL. Full record + where to start on the blocker:
-  `rust/docs/INTER-ENCODE-PLAN.md` §1e.
+  `rust/docs/INTER-ENCODE-PLAN.md` §1e. (`diag p11` is pure GEOMETRY with 0
+  mode flips; and C runs REGULAR PD1 on every key frame — `pic_lpd1_lvl` is
+  `is_base ? 0 : …` through M11, `is_islice ? 0 : …` above — so light PD1 is
+  not the explanation.)
 - **Tier-1 gate on `leaf_funnel::rate_tables::nic_counts`, the funnel's own
   MDS stage-count derivation.** Its only test was six transcribed values;
   `tests/c_parity_md_nics.rs` gates a DIFFERENT transcription

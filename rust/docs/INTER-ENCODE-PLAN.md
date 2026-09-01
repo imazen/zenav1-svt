@@ -429,12 +429,21 @@ byte-identical; p4, p9 and the p11 edge-filter witness go outside their limits.
 Moving a limit is a threshold change, so the pair waits.
 
 **Where to start on the blocker.** `diag 64x64 q40 p11` is the cleanest: it is
-pure GEOMETRY (12 C-only / 6 port-only blocks, 0 mode flips — the port codes
-16x16 everywhere where C codes an 8x8/32x32 mix), and at p11 C is on LIGHT PD1,
-whose fast loop is `fn_ptr->vf` either way (`product_coding_loop.c:1040`). So
-the metric is right there and something downstream of it — the depth decision
-that reads the funnel's leaf costs — is not. `nic_arm` does not move that cell
-at all.
+pure GEOMETRY — 0 mode flips, 12 C-only / 6 port-only blocks, the port coding
+16x16 everywhere where C codes an 8x8/32x32 mix — and `nic_arm` does not move
+it at all (0.75% with and without). So the suspect is the DEPTH decision that
+consumes the funnel's leaf costs, not the leaf decision itself.
+
+**A correction to my own first reading of that cell, recorded because it is the
+kind of premise that would send the next session sideways:** light PD1 is NOT
+what C runs there. `pic_lpd1_lvl` (`enc_mode_config.c:9408-9432`) is
+`is_base ? 0 : …` at every preset through M11 and `is_islice ? 0 : …` above it,
+so a KEY frame takes **`pic_lpd1_lvl = 0` = REGULAR PD1 at every preset** —
+`svt_aom_sig_deriv_enc_dec_default`, exactly the arm `encdec_arm` models. (That
+also makes the `fast_loop_core_light_pd1` variance note above true but
+irrelevant to these cells; it matters for inter frames.) So "the metric is
+right and light PD1 explains the rest" is wrong: the metric is right and
+something in the port's depth path is not.
 
 **Two things this measurement RETIRES**, both recorded as leads in the previous
 revision of this file:
