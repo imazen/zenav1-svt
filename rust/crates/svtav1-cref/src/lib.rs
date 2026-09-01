@@ -21,6 +21,7 @@ pub mod pic_operators;
 pub mod picstruct;
 pub mod preanalysis;
 pub mod rate_control;
+pub mod rc_vbr_cbr;
 pub mod sig_deriv;
 pub mod temporal_filtering;
 pub mod txfm_pf;

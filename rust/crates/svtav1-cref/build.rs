@@ -100,6 +100,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/pcl_shims.c");
     println!("cargo:rerun-if-changed=shims/picops_dblk_shims.c");
     println!("cargo:rerun-if-changed=shims/entropy_block_shims.c");
+    println!("cargo:rerun-if-changed=shims/rc_vbr_cbr_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -164,10 +165,15 @@ fn main() {
     // define this returns. See the function for the whole rationale and the
     // failure modes it deliberately tolerates.
     let picstruct_statics = link_globalized_pd_statics(&repo_root, &out_dir_path());
+    // Same mechanism for `rc_vbr_cbr.c`'s five surviving statics (lane wx-rc).
+    let rc_vbr_statics = link_globalized_rc_vbr_statics(&repo_root, &out_dir_path());
 
     let mut shims = cc::Build::new();
     if picstruct_statics {
         shims.define("SVTAV1_CREF_PICSTRUCT_STATICS", "1");
+    }
+    if rc_vbr_statics {
+        shims.define("SVTAV1_CREF_RC_VBR_STATICS", "1");
     }
     shims
         .file(manifest.join("shims/ref_shims.c"))
@@ -209,6 +215,8 @@ fn main() {
         // Per-block emission oracle (write_modes_b / write_modes_sb group) —
         // its own TU, same per-lane file-ownership reason.
         .file(manifest.join("shims/entropy_block_shims.c"))
+        // rc_vbr_cbr.c VBR/CBR state machine oracle (lane wx-rc) — own TU.
+        .file(manifest.join("shims/rc_vbr_cbr_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))
@@ -343,6 +351,129 @@ fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-cfg=picstruct_statics");
     // The shim TU compiles its tier-1 entry points only when the promotion
     // succeeded, so the crate still builds on a host without the object.
+    true
+}
+
+/// Make `rc_vbr_cbr.c`'s five surviving `static` functions linkable.
+///
+/// Identical mechanism to [`link_globalized_pd_statics`] (read its doc comment
+/// for the rationale, the archive-ordering argument and the failure modes):
+/// copy the CMake object, `--globalize-symbol` the names on the COPY, wrap it
+/// in an archive emitted BEFORE `libSvtAv1Enc.a` so the archive's own
+/// `rc_vbr_cbr.c.o` member is never pulled.
+///
+/// **Only these five names, and only because they survived AND kept their
+/// source ABI.** `nm` on
+/// `cbuild-static/.../rc_vbr_cbr.c.o` shows the file's other ~40 statics were
+/// inlined away by the Release build and have no symbol at any linkage, so
+/// they stay at evidence tier 4 and no amount of objcopy changes that. The
+/// signature each shim declares is transcribed from the C DEFINITION;
+/// globalizing makes a symbol linkable but does NOT check its signature, so
+/// every one of the five was read at its line number before being listed.
+///
+/// Best-effort for the same two reasons as the pd variant: the object exists
+/// only after a `<repo>/cbuild-static` build (not when `SVT_CREF_LIB_DIR`
+/// points at a prebuilt archive), and `llvm-objcopy` is not on every host.
+/// A miss emits a `cargo:warning`, leaves `rc_vbr_statics` off, and the tier-1
+/// tests do not compile — which per the project's no-silent-skip rule is a
+/// decision the CALLER makes: `SVT_CREF_REQUIRE_RC_VBR_STATICS=1` makes
+/// `rc_vbr_statics_oracle_is_available` fail loudly instead.
+#[must_use]
+fn link_globalized_rc_vbr_statics(repo_root: &Path, out_dir: &Path) -> bool {
+    println!("cargo:rustc-check-cfg=cfg(rc_vbr_statics)");
+    println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_RC_VBR_STATICS");
+
+    // Every name here had its PROLOGUE DISASSEMBLED against the source
+    // signature before being added (`otool -tV rc_vbr_cbr.c.o`, macOS arm64,
+    // 2026-08-31). Globalizing makes a symbol linkable; it does NOT make the
+    // declared signature right, and a wrong one corrupts the stack instead of
+    // failing to link.
+    //
+    // DELIBERATELY ABSENT, and this is the interesting entry:
+    // `calc_active_worst_quality_no_stats_cbr` HAS a surviving `t` symbol but
+    // LLVM SPECIALIZED ITS ABI. Its source signature is
+    // `(PictureParentControlSet*)`; the compiled prologue takes TWO arguments
+    // and `x0` is not a PPCS — it reads `[x0,#0x2480]`/`[x0,#0x2484]` for
+    // `avg_frame_qindex[0..1]` and branches on `cbz w1` for the
+    // `frame_type == KEY_FRAME` early return, i.e. the frame-type test was
+    // hoisted into a caller-supplied flag and the pointer was narrowed past
+    // the PPCS. Calling it as declared returned 0 for every input in a first
+    // draft of `c_parity_rc_vbr_cbr_state.rs`. Same failure class as
+    // `scene_transition_detector` in `link_globalized_pd_statics`. It is
+    // reached INDIRECTLY instead, through the exported
+    // `svt_av1_resize_reset_rc`, which calls it — see that test.
+    const SYMS: [&str; 5] = [
+        "av1_rc_regulate_q",
+        "av1_rc_update_rate_correction_factors",
+        "get_regulated_q_overshoot",
+        "get_regulated_q_undershoot",
+        // 2-arg `(SequenceControlSet*, int)`, ABI unchanged (verified).
+        "clamp_qindex",
+    ];
+
+    let src = repo_root.join("cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/rc_vbr_cbr.c.o");
+    println!("cargo:rerun-if-changed={}", src.display());
+    if !src.exists() {
+        println!(
+            "cargo:warning=rc_vbr_cbr tier-1 statics unavailable: {} not found (the C library \
+             has not been built into <repo>/cbuild-static on this host). av1_rc_regulate_q and \
+             friends stay at evidence tier 4.",
+            src.display()
+        );
+        return false;
+    }
+
+    let Some(objcopy) = find_objcopy() else {
+        println!(
+            "cargo:warning=rc_vbr_cbr tier-1 statics unavailable: no llvm-objcopy found. \
+             av1_rc_regulate_q and friends stay at evidence tier 4."
+        );
+        return false;
+    };
+
+    let dst = out_dir.join("rc_vbr_cbr_globalized.o");
+    if fs::copy(&src, &dst).is_err() {
+        println!("cargo:warning=rc_vbr_cbr tier-1 statics unavailable: could not copy the object");
+        return false;
+    }
+    // Mach-O prefixes C symbols with an underscore; ELF does not. Pass both
+    // spellings and let objcopy ignore the one that does not match.
+    let mut cmd = Command::new(&objcopy);
+    for s in SYMS {
+        cmd.arg(format!("--globalize-symbol={s}"));
+        cmd.arg(format!("--globalize-symbol=_{s}"));
+    }
+    cmd.arg(&dst);
+    match cmd.status() {
+        Ok(st) if st.success() => {}
+        other => {
+            println!(
+                "cargo:warning=rc_vbr_cbr tier-1 statics unavailable: {} failed ({other:?})",
+                objcopy.display()
+            );
+            return false;
+        }
+    }
+
+    let archive = out_dir.join("librc_vbr_statics.a");
+    let _ = fs::remove_file(&archive);
+    match Command::new("ar")
+        .arg("crs")
+        .arg(&archive)
+        .arg(&dst)
+        .status()
+    {
+        Ok(st) if st.success() => {}
+        other => {
+            println!(
+                "cargo:warning=rc_vbr_cbr tier-1 statics unavailable: `ar crs` failed ({other:?})"
+            );
+            return false;
+        }
+    }
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=rc_vbr_statics");
+    println!("cargo:rustc-cfg=rc_vbr_statics");
     true
 }
 
