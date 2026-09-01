@@ -62,6 +62,7 @@ pub mod gm;
 pub mod interp;
 pub mod modes;
 pub mod neighbors;
+pub mod primitives;
 pub mod refframe;
 
 use crate::entropy::cdf::AomCdfProb;

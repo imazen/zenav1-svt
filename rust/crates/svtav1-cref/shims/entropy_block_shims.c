@@ -40,6 +40,7 @@
 #include "inter_prediction.h"
 #include "coding_unit.h"
 #include "pcs.h"
+#include "entropy_coding.h"
 
 /* ---- the exported declarations this TU drives ---- */
 int     svt_aom_is_masked_compound_type(COMPOUND_TYPE type);
@@ -149,4 +150,136 @@ int ref_eb_set_mi_row_col(int mi_row, int bh, int mi_col, int bw, int mi_stride,
     free(xd);
     free(pcs);
     return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * The small EXPORTED helpers of entropy_coding.c — all tier 1.
+ *
+ * Three of them read `xd->above_mbmi` / `xd->left_mbmi` (the POINTERS) and
+ * `svt_aom_get_kf_y_mode_ctx` reads the mi GRID through `xd->mi`, so each
+ * builds the neighbour state the encoder would have built rather than a
+ * stand-in: real `MbModeInfo` values, and a real `xd->mi` pointing into a
+ * three-entry grid whose [-1] and [-mi_stride] slots are the neighbours.
+ * ------------------------------------------------------------------------ */
+
+int32_t  svt_aom_partition_cdf_length(BlockSize bsize);
+uint8_t  av1_get_skip_context(const MacroBlockD* xd);
+void     svt_aom_get_kf_y_mode_ctx(const MacroBlockD* xd, uint8_t* above_ctx, uint8_t* left_ctx);
+size_t   svt_aom_uleb_size_in_bytes(uint64_t value);
+int32_t  svt_aom_uleb_encode(uint64_t value, size_t available, uint8_t* coded_value, size_t* coded_size);
+int      svt_aom_allow_palette(int allow_screen_content_tools, BlockSize bsize);
+int      svt_aom_get_palette_bsize_ctx(BlockSize bsize);
+int      svt_aom_get_palette_mode_ctx(const MacroBlockD* xd);
+int      svt_aom_write_uniform_cost(int n, int v);
+int32_t  svt_aom_count_primitive_quniform(uint16_t n, uint16_t v);
+int32_t  svt_aom_count_primitive_subexpfin(uint16_t n, uint16_t k, uint16_t v);
+int32_t  svt_aom_wb_is_byte_aligned(const AomWriteBitBuffer* wb);
+uint32_t svt_aom_wb_bytes_written(const AomWriteBitBuffer* wb);
+void     svt_aom_wb_write_bit(AomWriteBitBuffer* wb, int32_t bit);
+void     svt_aom_wb_write_literal(AomWriteBitBuffer* wb, int32_t data, int32_t bits);
+void     svt_aom_wb_write_inv_signed_literal(AomWriteBitBuffer* wb, int32_t data, int32_t bits);
+
+int ref_eb_partition_cdf_length(int bsize) { return (int)svt_aom_partition_cdf_length((BlockSize)bsize); }
+
+int ref_eb_allow_palette(int allow_sc, int bsize) {
+    return svt_aom_allow_palette(allow_sc, (BlockSize)bsize);
+}
+
+int ref_eb_palette_bsize_ctx(int bsize) { return svt_aom_get_palette_bsize_ctx((BlockSize)bsize); }
+
+int ref_eb_write_uniform_cost(int n, int v) { return svt_aom_write_uniform_cost(n, v); }
+
+int ref_eb_count_primitive_quniform(int n, int v) {
+    return (int)svt_aom_count_primitive_quniform((uint16_t)n, (uint16_t)v);
+}
+
+int ref_eb_count_primitive_subexpfin(int n, int k, int v) {
+    return (int)svt_aom_count_primitive_subexpfin((uint16_t)n, (uint16_t)k, (uint16_t)v);
+}
+
+uint64_t ref_eb_uleb_size_in_bytes(uint64_t value) { return (uint64_t)svt_aom_uleb_size_in_bytes(value); }
+
+/* out must hold at least 16 bytes. Returns C's rc; *out_size gets the size. */
+int ref_eb_uleb_encode(uint64_t value, uint64_t available, uint8_t* out, uint64_t* out_size) {
+    size_t  sz = 0;
+    int32_t rc = svt_aom_uleb_encode(value, (size_t)available, out, &sz);
+    *out_size  = (uint64_t)sz;
+    return (int)rc;
+}
+
+/* A neighbour pair as the three xd-pointer readers see it. `*_valid == 0`
+ * means C's NULL pointer, which is a DIFFERENT input from a present
+ * neighbour whose field happens to be zero. */
+static void eb_fill_neighbors(MacroBlockD* xd, MbModeInfo* above, MbModeInfo* left, int above_valid,
+                              int left_valid) {
+    xd->above_mbmi = above_valid ? above : NULL;
+    xd->left_mbmi  = left_valid ? left : NULL;
+}
+
+int ref_eb_get_skip_context(int above_valid, int above_skip, int left_valid, int left_skip) {
+    MacroBlockD xd    = {0};
+    MbModeInfo  above = {0};
+    MbModeInfo  left  = {0};
+    above.block_mi.skip = (uint8_t)above_skip;
+    left.block_mi.skip  = (uint8_t)left_skip;
+    eb_fill_neighbors(&xd, &above, &left, above_valid, left_valid);
+    return (int)av1_get_skip_context(&xd);
+}
+
+int ref_eb_get_palette_mode_ctx(int above_valid, int above_pal, int left_valid, int left_pal) {
+    MacroBlockD xd    = {0};
+    MbModeInfo  above = {0};
+    MbModeInfo  left  = {0};
+    above.palette_mode_info.palette_size = (uint8_t)above_pal;
+    left.palette_mode_info.palette_size  = (uint8_t)left_pal;
+    eb_fill_neighbors(&xd, &above, &left, above_valid, left_valid);
+    return svt_aom_get_palette_mode_ctx(&xd);
+}
+
+/* svt_aom_get_kf_y_mode_ctx reads the mi GRID (xd->mi[-1], xd->mi[-stride]),
+ * NOT above_mbmi/left_mbmi, and gates on up_available / left_available. The
+ * grid here is [left, above-slot..., self] with mi_stride = 2 so that
+ * xd->mi[-1] is the left neighbour and xd->mi[-2] is the above one. */
+void ref_eb_get_kf_y_mode_ctx(int up_available, int up_mode, int left_available, int left_mode, int32_t out[2]) {
+    MacroBlockD  xd     = {0};
+    MbModeInfo   above  = {0};
+    MbModeInfo   left   = {0};
+    MbModeInfo*  grid[3];
+    above.block_mi.mode = (PredictionMode)up_mode;
+    left.block_mi.mode  = (PredictionMode)left_mode;
+    grid[0]             = &above; /* xd->mi[-2] */
+    grid[1]             = &left; /* xd->mi[-1] */
+    grid[2]             = &left; /* xd->mi[0]  (unread) */
+    xd.mi               = &grid[2];
+    xd.mi_stride        = 2;
+    xd.up_available     = (int8_t)up_available;
+    xd.left_available   = (int8_t)left_available;
+    uint8_t a = 0, l = 0;
+    svt_aom_get_kf_y_mode_ctx(&xd, &a, &l);
+    out[0] = a;
+    out[1] = l;
+}
+
+/* Drive the header bit-buffer primitives over a scripted op list.
+ * ops[i] = (kind, data, bits): 0 = write_bit(data), 1 = write_literal(data,
+ * bits), 2 = write_inv_signed_literal(data, bits). Returns bytes_written;
+ * `*aligned` gets svt_aom_wb_is_byte_aligned. `buf` must hold `cap` bytes and
+ * receives the produced bytes. */
+uint32_t ref_eb_wb_run(const int32_t* ops, int n_ops, uint8_t* buf, int cap, int32_t* aligned) {
+    AomWriteBitBuffer wb = {buf, 0};
+    memset(buf, 0, (size_t)cap);
+    for (int i = 0; i < n_ops; ++i) {
+        const int32_t kind = ops[3 * i];
+        const int32_t data = ops[3 * i + 1];
+        const int32_t bits = ops[3 * i + 2];
+        if (kind == 0) {
+            svt_aom_wb_write_bit(&wb, data);
+        } else if (kind == 1) {
+            svt_aom_wb_write_literal(&wb, data, bits);
+        } else {
+            svt_aom_wb_write_inv_signed_literal(&wb, data, bits);
+        }
+    }
+    *aligned = svt_aom_wb_is_byte_aligned(&wb);
+    return svt_aom_wb_bytes_written(&wb);
 }

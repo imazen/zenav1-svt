@@ -139,3 +139,172 @@ pub fn set_mi_row_col(
         mi_offset: out[11] as usize,
     })
 }
+
+// ---------------------------------------------------------------------------
+// The small EXPORTED helpers of entropy_coding.c — all tier 1.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_eb_partition_cdf_length(bsize: i32) -> i32;
+    fn ref_eb_allow_palette(allow_sc: i32, bsize: i32) -> i32;
+    fn ref_eb_palette_bsize_ctx(bsize: i32) -> i32;
+    fn ref_eb_write_uniform_cost(n: i32, v: i32) -> i32;
+    fn ref_eb_count_primitive_quniform(n: i32, v: i32) -> i32;
+    fn ref_eb_count_primitive_subexpfin(n: i32, k: i32, v: i32) -> i32;
+    fn ref_eb_uleb_size_in_bytes(value: u64) -> u64;
+    fn ref_eb_uleb_encode(value: u64, available: u64, out: *mut u8, out_size: *mut u64) -> i32;
+    fn ref_eb_get_skip_context(
+        above_valid: i32,
+        above_skip: i32,
+        left_valid: i32,
+        left_skip: i32,
+    ) -> i32;
+    fn ref_eb_get_palette_mode_ctx(
+        above_valid: i32,
+        above_pal: i32,
+        left_valid: i32,
+        left_pal: i32,
+    ) -> i32;
+    fn ref_eb_get_kf_y_mode_ctx(
+        up_available: i32,
+        up_mode: i32,
+        left_available: i32,
+        left_mode: i32,
+        out: *mut i32,
+    );
+    fn ref_eb_wb_run(ops: *const i32, n_ops: i32, buf: *mut u8, cap: i32, aligned: *mut i32)
+    -> u32;
+}
+
+/// C `svt_aom_partition_cdf_length` (entropy_coding.c:922). Tier 1.
+pub fn partition_cdf_length(bsize: i32) -> i32 {
+    unsafe { ref_eb_partition_cdf_length(bsize) }
+}
+
+/// C `svt_aom_allow_palette` (entropy_coding.c:4223). Tier 1.
+pub fn allow_palette(allow_screen_content_tools: bool, bsize: i32) -> bool {
+    unsafe { ref_eb_allow_palette(i32::from(allow_screen_content_tools), bsize) != 0 }
+}
+
+/// C `svt_aom_get_palette_bsize_ctx` (entropy_coding.c:4228). Tier 1.
+pub fn palette_bsize_ctx(bsize: i32) -> i32 {
+    unsafe { ref_eb_palette_bsize_ctx(bsize) }
+}
+
+/// C `svt_aom_write_uniform_cost` (entropy_coding.c:4308). Tier 1.
+pub fn write_uniform_cost(n: i32, v: i32) -> i32 {
+    unsafe { ref_eb_write_uniform_cost(n, v) }
+}
+
+/// C `svt_aom_count_primitive_quniform` (entropy_coding.c:2896). Tier 1.
+pub fn count_primitive_quniform(n: i32, v: i32) -> i32 {
+    unsafe { ref_eb_count_primitive_quniform(n, v) }
+}
+
+/// C `svt_aom_count_primitive_subexpfin` (entropy_coding.c:2952). Tier 1.
+pub fn count_primitive_subexpfin(n: i32, k: i32, v: i32) -> i32 {
+    unsafe { ref_eb_count_primitive_subexpfin(n, k, v) }
+}
+
+/// C `svt_aom_uleb_size_in_bytes` (entropy_coding.c:1310). Tier 1.
+pub fn uleb_size_in_bytes(value: u64) -> u64 {
+    unsafe { ref_eb_uleb_size_in_bytes(value) }
+}
+
+/// C `svt_aom_uleb_encode` (entropy_coding.c:1318). Tier 1.
+///
+/// Returns `Err(rc)` with C's negative return code when C refuses, else the
+/// coded bytes.
+pub fn uleb_encode(value: u64, available: u64) -> Result<Vec<u8>, i32> {
+    let mut buf = [0u8; 16];
+    let mut size: u64 = 0;
+    let rc = unsafe { ref_eb_uleb_encode(value, available, buf.as_mut_ptr(), &mut size) };
+    if rc != 0 {
+        return Err(rc);
+    }
+    Ok(buf[..size as usize].to_vec())
+}
+
+/// C `av1_get_skip_context` (entropy_coding.c:983). Tier 1.
+///
+/// `None` is C's NULL neighbour pointer.
+pub fn get_skip_context(above_skip: Option<bool>, left_skip: Option<bool>) -> i32 {
+    unsafe {
+        ref_eb_get_skip_context(
+            i32::from(above_skip.is_some()),
+            i32::from(above_skip.unwrap_or(false)),
+            i32::from(left_skip.is_some()),
+            i32::from(left_skip.unwrap_or(false)),
+        )
+    }
+}
+
+/// C `svt_aom_get_palette_mode_ctx` (entropy_coding.c:4240). Tier 1.
+pub fn get_palette_mode_ctx(above_pal: Option<u8>, left_pal: Option<u8>) -> i32 {
+    unsafe {
+        ref_eb_get_palette_mode_ctx(
+            i32::from(above_pal.is_some()),
+            i32::from(above_pal.unwrap_or(0)),
+            i32::from(left_pal.is_some()),
+            i32::from(left_pal.unwrap_or(0)),
+        )
+    }
+}
+
+/// C `svt_aom_get_kf_y_mode_ctx` (entropy_coding.c:1004). Tier 1.
+///
+/// Returns `(above_ctx, left_ctx)`. `None` is C's `!up_available` /
+/// `!left_available`.
+pub fn get_kf_y_mode_ctx(up_mode: Option<u8>, left_mode: Option<u8>) -> (u8, u8) {
+    let mut out = [0i32; 2];
+    unsafe {
+        ref_eb_get_kf_y_mode_ctx(
+            i32::from(up_mode.is_some()),
+            i32::from(up_mode.unwrap_or(0)),
+            i32::from(left_mode.is_some()),
+            i32::from(left_mode.unwrap_or(0)),
+            out.as_mut_ptr(),
+        );
+    }
+    (out[0] as u8, out[1] as u8)
+}
+
+/// One scripted op for [`wb_run`].
+#[derive(Clone, Copy, Debug)]
+pub enum WbOp {
+    /// C `svt_aom_wb_write_bit`.
+    Bit(bool),
+    /// C `svt_aom_wb_write_literal(data, bits)`.
+    Literal { data: i32, bits: i32 },
+    /// C `svt_aom_wb_write_inv_signed_literal(data, bits)`.
+    InvSigned { data: i32, bits: i32 },
+}
+
+/// Drive C's `AomWriteBitBuffer` over a scripted op list. Tier 1.
+///
+/// Returns `(bytes, bytes_written, is_byte_aligned)` — the produced buffer
+/// truncated to `svt_aom_wb_bytes_written`, that count, and
+/// `svt_aom_wb_is_byte_aligned`.
+pub fn wb_run(ops: &[WbOp], cap: usize) -> (Vec<u8>, u32, bool) {
+    let mut flat: Vec<i32> = Vec::with_capacity(ops.len() * 3);
+    for op in ops {
+        match *op {
+            WbOp::Bit(b) => flat.extend_from_slice(&[0, i32::from(b), 0]),
+            WbOp::Literal { data, bits } => flat.extend_from_slice(&[1, data, bits]),
+            WbOp::InvSigned { data, bits } => flat.extend_from_slice(&[2, data, bits]),
+        }
+    }
+    let mut buf = vec![0u8; cap];
+    let mut aligned = 0i32;
+    let written = unsafe {
+        ref_eb_wb_run(
+            flat.as_ptr(),
+            ops.len() as i32,
+            buf.as_mut_ptr(),
+            cap as i32,
+            &mut aligned,
+        )
+    };
+    buf.truncate(written as usize);
+    (buf, written, aligned != 0)
+}

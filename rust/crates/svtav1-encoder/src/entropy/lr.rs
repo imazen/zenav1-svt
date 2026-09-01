@@ -79,7 +79,10 @@ fn write_primitive_quniform(w: &mut AomWriter, n: u16, v: u16) {
 }
 
 /// C `svt_aom_count_primitive_quniform` (entropy_coding.c:2944).
-fn count_primitive_quniform(n: u16, v: u16) -> i32 {
+///
+/// `pub` so `tests/c_parity_entropy_block.rs` can gate it against the
+/// EXPORTED C symbol; it is otherwise an internal of the LR rate model.
+pub fn count_primitive_quniform(n: u16, v: u16) -> i32 {
     if n <= 1 {
         return 0;
     }
@@ -113,7 +116,10 @@ fn write_primitive_subexpfin(w: &mut AomWriter, n: u16, k: u16, v: u16) {
 }
 
 /// C `svt_aom_count_primitive_subexpfin` (entropy_coding.c:3000).
-fn count_primitive_subexpfin(n: u16, k: u16, v: u16) -> i32 {
+///
+/// `pub` for the same tier-1 gating reason as
+/// [`count_primitive_quniform`].
+pub fn count_primitive_subexpfin(n: u16, k: u16, v: u16) -> i32 {
     let mut count = 0i32;
     let mut i = 0i32;
     let mut mk = 0i32;
