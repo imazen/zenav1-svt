@@ -452,6 +452,12 @@ pub(super) fn inject_candidates(
     // the original funnel.
     let mut best_reg_cost = u64::MAX;
     let mut best_reg_mode: i32 = -1;
+    // C `ctx->mds0_best_cost` (product_coding_loop.c:8385 resets it to
+    // `(uint64_t)~0` per block; `:1717` keeps it as the running MINIMUM of
+    // every candidate's `*fast_cost`). It exists here only to feed the MDS0
+    // prune below, which is why it is `None` until the first candidate is
+    // scored — C's sentinel is checked explicitly at `:1326`.
+    let mut mds0_best_cost: Option<u64> = None;
     for &(mode, delta, fi) in &cand_modes {
         if cfg.prune_best_mode && fi == FI_NONE {
             // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
@@ -587,7 +593,7 @@ pub(super) fn inject_candidates(
         // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
         // It used to be dropped here because only MDS0 ran at bd10.
         let mut pred10: Vec<u16> = Vec::new();
-        let fast_cost = match fx.y_recon10.as_deref() {
+        let (fast_cost, distortion_cost) = match fx.y_recon10.as_deref() {
             Some(canvas10) => {
                 pred10 = vec![0u16; w * h];
                 predict_unit_hbd(
@@ -612,14 +618,43 @@ pub(super) fn inject_candidates(
                     dbg_satd10 = satd10;
                     dbg_pred0 = pred10[0];
                 }
-                rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4)
+                (
+                    rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4),
+                    rdcost(lambda_bd10_fast, 0, satd10 << 4),
+                )
             }
-            None => rdcost(
-                lambda,
-                flr + fcr,
-                if frame.mds0_ssd { satd } else { satd << 4 },
-            ),
+            None => {
+                let d = if frame.mds0_ssd { satd } else { satd << 4 };
+                (rdcost(lambda, flr + fcr, d), rdcost(lambda, 0, d))
+            }
         };
+        // C `fast_loop_core`'s MDS0 prune (product_coding_loop.c:1309-1334),
+        // PD1 only. `ctx->mds0_ctrls.pruning_method_th` selects the arm; level 2
+        // (the video arm above M10) sets it to `(uint8_t)~0`, which takes the
+        // GLOBAL arm at `:1325`:
+        //
+        //     distortion_cost = RDCOST(full_lambda, 0, luma_fast_dist);
+        //     if (100 * (distortion_cost - mds0_best_cost)) >
+        //         (mds0_best_cost * dist_to_cost_th)   ->  MAX_MODE_COST
+        //
+        // `luma_fast_dist` there is the SHIFTED local (`:1307`), i.e. the same
+        // `satd << 4` this funnel feeds `rdcost`, so `distortion_cost` is this
+        // candidate's fast cost with the rate term dropped. C then RETURNS
+        // before assembling the fast cost, so the candidate carries the
+        // sentinel into the pool, cannot lower `mds0_best_cost`, and cannot
+        // become `best_reg_intra_mode` (`:1727` stores the sentinel it now
+        // holds). `None` (allintra, and video through M10 on a key frame) is
+        // byte-identical to the pre-arm path by construction.
+        let fast_cost = match (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
+            (Some(th), Some(best))
+                if 100i128 * (i128::from(distortion_cost) - i128::from(best))
+                    > i128::from(best) * i128::from(th) =>
+            {
+                crate::port_md::lpd1_loop::MAX_MODE_COST
+            }
+            _ => fast_cost,
+        };
+        mds0_best_cost = Some(mds0_best_cost.map_or(fast_cost, |b| b.min(fast_cost)));
         #[cfg(feature = "std")]
         if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
             eprintln!(

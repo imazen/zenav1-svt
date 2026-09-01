@@ -630,6 +630,17 @@ pub struct FunnelCfg {
     /// predictions run the corner/edge filters + upsampling
     /// (enc_intra_prediction.c:181-215).
     pub edge_filter: bool,
+    /// C `ctx->mds0_ctrls.dist_to_cost_th` when MDS0 pruning is armed, or
+    /// `None` for C's `pruning_method_th == 0` (no MDS0 prune at all).
+    ///
+    /// `None` is the ALLINTRA value at every preset (`pcs->mds0_level` is a
+    /// literal 0 there, enc_mode_config.c:10042), so the still path is
+    /// byte-neutral by construction; the VIDEO arm assigns level 2 above M10
+    /// (`:9250`), which is `pruning_method_th = (uint8_t)~0` + `dist_to_cost_th
+    /// = 0` — the GLOBAL arm of `fast_loop_core`'s prune
+    /// (product_coding_loop.c:1325-1333). Stamped by [`crate::mds0_arm`],
+    /// which documents the rule and why level 1 cannot be reached here.
+    pub mds0_dist_to_cost_th: Option<u16>,
     /// `cfl_ctrls.enabled` (set_cfl_ctrls, enc_mode_config.c:8304). In the
     /// still/allintra path (OPT_NSC_STILL_IMAGE) cfl_level is 1 for M0, 4 for
     /// M1..M6, 0 for M7+. C `cfl_prediction` runs for EVERY MDS3 intra
@@ -715,6 +726,7 @@ impl FunnelCfg {
             ind_uv_last_mds1: false,
             fi_max: 0,
             edge_filter: false,
+            mds0_dist_to_cost_th: None,
             // M6 cfl_level 4: enabled, itr_th 1, cplx_th 10 (detector-gated
             // — see chroma path). Presets that spread m6_tail but do
             // independent chroma (M0..M5) are excluded by the uv-follows-luma

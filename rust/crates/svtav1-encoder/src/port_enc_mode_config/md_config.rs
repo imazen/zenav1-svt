@@ -132,6 +132,35 @@ pub fn cfl_level_default(enc_mode: i8, is_base: bool, is_islice: bool) -> u8 {
     }
 }
 
+/// `pcs->mds0_level` on the VIDEO arm (`enc_mode_config.c:9232-9251`), lifted
+/// out of [`sig_deriv_mode_decision_config_default`] for the same reason
+/// [`txt_level_default`] is — so `crate::mds0_arm` calls the code the tier-1
+/// differential already covers instead of re-transcribing the ladder.
+///
+/// The `#if SVT_HDR_MODE` `complex_hvs` arm above the ladder is not compiled
+/// in mainline, so the ladder below is the live one.
+#[must_use]
+pub fn mds0_level_default(enc_mode: i8, is_base: bool, is_islice: bool) -> u8 {
+    if enc_mode <= M2 {
+        0
+    } else if enc_mode <= M5 {
+        u8::from(!is_base)
+    } else if enc_mode <= M10 {
+        if is_islice { 0 } else { 2 }
+    } else {
+        2
+    }
+}
+
+/// `pcs->mds0_level` on the ALLINTRA arm (`enc_mode_config.c:10042`).
+///
+/// A literal 0 at every preset — there is no ladder. That is what makes the
+/// still path byte-neutral by construction when `crate::mds0_arm` is wired.
+#[must_use]
+pub fn mds0_level_allintra(_enc_mode: i8) -> u8 {
+    0
+}
+
 /// `pcs->cfl_level` on the ALLINTRA arm (`enc_mode_config.c:9986`).
 #[must_use]
 pub fn cfl_level_allintra(enc_mode: i8) -> u8 {
@@ -705,15 +734,7 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
     // NOTE the `#if SVT_HDR_MODE` arm above this ladder is NOT compiled in
     // mainline (Source/API/EbDebugMacros.h), so the ladder below is the live
     // one.
-    let mds0_level = if m <= M2 {
-        0
-    } else if m <= M5 {
-        u8::from(!is_base)
-    } else if m <= M10 {
-        if i.is_islice { 0 } else { 2 }
-    } else {
-        2
-    };
+    let mds0_level = mds0_level_default(m, is_base, i.is_islice);
 
     let pic_disallow_4x4 = get_disallow_4x4_default(m);
     let pic_bypass_encdec = if i.segmentation_enabled {
