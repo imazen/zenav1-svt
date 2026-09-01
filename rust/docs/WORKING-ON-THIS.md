@@ -145,6 +145,34 @@ take no env override, so `real_image_matrix.sh` and `screen_ibc_gate.sh` cannot
 build their pixel-classification oracle elsewhere. They now fail with a message
 that says exactly that. Treat it as a harness failure, never as a parity result.
 
+**A parameter can be SHIFTED OUT of relevance before the code under test sees
+it.** `svt_inter_predictor_light_pd1` calls `revert_scale_extra_bits`, which
+shifts the sub-pel phases right by `SCALE_EXTRA_BITS` (6). The landed
+`inter_predictor_light_pd1_8bit_matches_c` cell sweeps phases `(0,0)`, `(3,0)`,
+`(0,9)`, `(15,15)` as raw Q4 values — **all four become (0,0)** after the
+revert, so that sweep drives only the COPY corner of `svt_aom_convolve[][][]`
+and reports four-corner coverage. Nothing in a pass/fail comparison can see it.
+The fix is a positive control that asserts the phase SURVIVES the transform
+(`c_parity_port_light_pd1_hbd.rs::the_four_dispatch_corners_are_actually_
+reached`), and the same shape applies to any harness that feeds a value through
+a normalising step before the code under test.
+
+**A macro's name is not its arithmetic — check the definition before choosing
+test values.** `ROUND_UV(x)` is `((x) >> 3) << 3` (definitions.h:348): a
+multiple of **8**, not "an even chroma pair". A differential for the OBMC
+chroma predictions used origins 3, 5 and 7, which ALL round to 0, so every
+shift applied to them was inert and a `>> ss_x`-instead-of-`>> ss_y` mutation
+passed the whole suite. Pick inputs the transform cannot collapse, and assert
+that it does not collapse them.
+
+**A parameter that is genuinely inert should be SAID to be inert, not swept.**
+The OBMC single-prediction functions pass `is_compound = 0`, and the
+single-prediction kernels never read `conv_params->dst` — so their CONV_BUF
+stride cannot be observed through them at all (measured: changing it leaves
+every cell green). Sweeping it anyway would have looked like coverage. The port
+reproduces the value for faithfulness and its module doc says why no test can
+see it.
+
 **A harness PRECONDITION is a coverage hole.** `identity_run`'s `crop:` mode
 rejects odd dimensions ("I420 needs even dims"), so no gate cell could ever
 encode an odd-height frame of REAL content. That precondition hid a public-API

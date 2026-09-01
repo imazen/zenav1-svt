@@ -62,6 +62,43 @@ and the fast RD models. See `crates/svtav1-dsp/src/port_*.rs` and the matching
 So the campaign's remaining inter gap really is encoder-side — but it was NOT
 before this lane, and the table above said otherwise.
 
+**STATE AS OF 2026-08-31, end of the wx-interpred lane** (the second pass over
+the same two files). The line above was right that the KERNELS were done and
+wrong to imply the two files were. Seven groups were still absent, and the
+distinction that matters is between *ported* and *executable*: several
+functions had their DECISIONS ported as predicates
+(`port_make_pred`, `port_full_pd1_pred`, `port_obmc_build`, `port_ifs`) with
+nothing that ran them. Now landed, each C-gated:
+
+| what | where | evidence |
+|---|---|---|
+| `svt_av1_build_compound_diffwtd_mask_d16` + `diffwtd_mask_d16` — the CONV_BUF-domain mask, a DIFFERENT function from the pixel-domain pair already in `port_masked_compound` (rounding vs truncating shift) | `port_diffwtd_d16.rs` | tier 1, scalar + RTCD entries |
+| `svt_aom_pack_block` -> `svt_aom_pack2d_src` -> `svt_enc_msb_pack2_d` — SVT's 8+2 -> 10-bit pack | `port_pack.rs` | tier 1, both dispatch arms |
+| `svt_inter_predictor_light_pd1`'s 10-bit arm | `port_inter_predictor.rs` | tier 1, 240 cells at bd 10 |
+| `svt_aom_enc_make_inter_predictor` EXECUTABLE, all four leaves (regular, masked-compound, warp, masked-warp) + `av1_make_masked_{scaled,warp}_inter_predictor` | `port_enc_make_pred.rs` | tier 1 |
+| `tf_inter_predictor` + `svt_aom_simple_luma_unipred` EXECUTABLE | `port_tf_pred.rs` | tier 1 |
+| `get_single_prediction_for_obmc_{luma,chroma}` + `_hbd` EXECUTABLE | `port_obmc_single_pred.rs` | tier 1 for the call |
+| `build_prediction_by_{above,left}_pred` EXECUTABLE | `port_obmc_nb_pred.rs` | tier 1 for the leaves |
+
+`port_warp` gained `HbdWarpRef` on the way (its high-bit-depth kernel took an
+already-unpacked plane; C reads `ref8b` + `ref2b` per sample), byte-neutral for
+every existing caller.
+
+**What is still NOT executable in these two files, named:**
+`svt_aom_inter_prediction` (:3204), `inter_intra_prediction` (:2217, blocked on
+wiring `svt_av1_predict_intra_block`), `inter_chroma_4xn_pred` (:3023),
+`av1_inter_prediction_obmc` (:2925) + `svt_aom_precompute_obmc_data` (:1816),
+and the four MD entry points `svt_aom_inter_pu_prediction_av1{,_pd0,_light_pd1,_obmc}`.
+Each has its decisions ported and its leaves gated; what is missing is the
+`ModeDecisionContext` plumbing around them.
+
+**NOT translatable, with the reason, so they stop showing as gaps:**
+`svt_aom_asm_set_convolve_asm_table` / `_hbd_` copy RTCD function pointers into
+a 2x2x2 table that `port_inter_predictor`'s `dispatch_convolve_{8,hbd}` replaces
+with a `match` on the same three booleans; `svt_aom_get_recon_pic` and
+`svt_aom_get_ref_pic_buffer` select a buffer out of a `PictureControlSet` /
+reference-list object graph the port does not have by design.
+
 **CORRECTION, 2026-08-31 (wp-filters lane).** The warped-motion row above
 originally read "warped motion | `svtav1-dsp` | `c_parity_warp.rs`" and was
 WRONG — it listed the gap as already closed. `svtav1-dsp/src/warp.rs` is a
