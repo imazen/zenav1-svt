@@ -21,6 +21,7 @@
 //! | [`nics`] | the per-stage candidate counts (`svt_aom_set_nics`) |
 //! | [`nic_prune`] | the per-stage candidate STAGING (sorts + NIC prunes) |
 //! | [`lpd1`] | the light-PD1 gates + the chroma-complexity detectors |
+//! | [`nsq_skip`] | the NSQ-shape skip gates, inter modes and AB shapes live |
 //! | [`drl`] | DRL selection for NEWMV candidates |
 //! | [`coding_loop`] | the per-block helpers of `product_coding_loop.c` |
 //! | [`inject`] | inter-candidate injection (PD1 and PD0) |
@@ -46,6 +47,7 @@ pub mod motion_mode;
 pub mod mv_refine;
 pub mod nic_prune;
 pub mod nics;
+pub mod nsq_skip;
 pub mod pme;
 pub mod predicates;
 pub mod ref_frame_rate;
