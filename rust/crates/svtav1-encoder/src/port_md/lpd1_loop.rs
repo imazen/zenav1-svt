@@ -7,6 +7,25 @@
 //! | [`fast_loop_core_light_pd1`] | `:1009-1066` |
 //! | [`md_stage_0_light_pd1`] | `:1525-1555` |
 //! | [`Mds3LightSettings`] | `md_stage_3_light_pd1` `:7119-7135` |
+//! | [`plan_chroma`], [`luma_tx_skipped`], [`luma_skip_rd_applies`], [`second_chroma_detector_runs`], [`no_chroma_epilogue`] | `full_loop_core_light_pd1` `:6541-6694`, **decisions only** |
+//! | [`luma_eob_zero_takes_the_early_exit`], [`luma_tx_skipped`] | `perform_dct_dct_tx_light_pd1` `:5434-5560`, **decisions only** |
+//!
+//! # Coverage, stated as a fraction
+//!
+//! `fast_loop_core_light_pd1`, `md_stage_0_light_pd1` and
+//! `md_stage_3_light_pd1` are ported WHOLE (their non-arithmetic parts —
+//! the predictor call and the fast-cost function — are the caller's, and
+//! are parameters).
+//!
+//! `full_loop_core_light_pd1` and `perform_dct_dct_tx_light_pd1` are
+//! **PARTIAL**: every branch condition, threshold and piece of chroma
+//! bookkeeping is here, and NONE of the four operations they sequence is —
+//! the residual/transform/quantise chain, the chroma full loop, the full
+//! cost, and the LPD1 predictor. Those live in the DSP and transform layers
+//! this port structures differently, so they are not transcribed from this
+//! C file; what is missing from THIS module is their call ORDER, which is a
+//! caller concern. Do not read the list above as "the LPD1 full loop is
+//! ported".
 //!
 //! # Why this is separate from the regular loop
 //!
@@ -35,7 +54,7 @@
 //! Nothing calls this yet — the public entry point still refuses inter
 //! frames (`docs/WORKING-ON-THIS.md` §7).
 
-use super::lpd1::Plane;
+use super::lpd1::{ComponentType, Plane};
 
 /// C `MAX_MODE_COST` (coding_unit.h:37) — the "never pick this" sentinel a
 /// candidate's fast cost is set to when an early exit abandons it.
@@ -612,5 +631,379 @@ mod tests {
             assert_eq!(s.mds_fast_coeff_est_level, 1);
             assert_eq!(s.mds_subres_step, 0);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// full_loop_core_light_pd1 (:6541-6694) — the decision content
+// ---------------------------------------------------------------------------
+
+/// C's "the luma transform produced nothing" state, written in TWO places
+/// with the SAME constants: the `perform_tx == false` arm of
+/// `full_loop_core_light_pd1` (`:6569-6579`) and the `eob == 0` early
+/// return of `perform_dct_dct_tx_light_pd1` (`:5497-5507`).
+///
+/// The `6000` is not a distortion or a rate estimate — it is C's flat
+/// stand-in for the cost of signalling an all-zero luma block, the same
+/// literal as `INIT_BIT_EST` (`:46`) though C does not use the macro here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LumaTxSkipped {
+    /// `cand_bf->eob.y[0]`, `quant_dc.y[0]`, `y_has_coeff` — all cleared.
+    pub y_has_coeff: bool,
+    /// Both `y_full_distortion[DIST_SSD][..]` entries.
+    pub y_dist_residual: u64,
+    pub y_dist_prediction: u64,
+    /// `*y_coeff_bits`.
+    pub y_coeff_bits: u64,
+    /// `transform_type[0]` is forced to DCT_DCT, and on an INTER candidate
+    /// `transform_type_uv` follows luma.
+    pub force_uv_dct_dct: bool,
+}
+
+/// The state C installs when the luma transform is skipped or produced no
+/// coefficients (`:6569-6579` / `:5497-5507`).
+#[must_use]
+pub fn luma_tx_skipped(is_inter_mode: bool) -> LumaTxSkipped {
+    LumaTxSkipped {
+        y_has_coeff: false,
+        y_dist_residual: 0,
+        y_dist_prediction: 0,
+        y_coeff_bits: 6000,
+        force_uv_dct_dct: is_inter_mode,
+    }
+}
+
+/// C `:5495-5496` — the `eob == 0` early return inside
+/// `perform_dct_dct_tx_light_pd1` fires only at particular
+/// coefficient-rate-estimation levels.
+///
+/// The level test is `>= 2 || == 0`, i.e. every level EXCEPT 1. Reading it
+/// as "level >= 2" drops the `coeff_rate_est_lvl == 0` case, where C also
+/// takes the exit.
+#[must_use]
+pub fn luma_eob_zero_takes_the_early_exit(eob_y: u16, coeff_rate_est_lvl: u8) -> bool {
+    eob_y == 0 && (coeff_rate_est_lvl >= 2 || coeff_rate_est_lvl == 0)
+}
+
+/// C `:6588-6589` — the four preconditions on the luma-RD skip gate.
+///
+/// The gate itself is [`super::lpd1::blk_skip_luma_rd`]; this is the
+/// guard that decides whether to consult it at all. It is INTER-only, and
+/// it requires that the transform actually ran AND kept coefficients —
+/// there is nothing to skip otherwise.
+#[must_use]
+pub fn luma_skip_rd_applies(
+    blk_skip_luma_rd_pct: u64,
+    perform_tx: bool,
+    block_has_coeff: bool,
+    is_inter_mode: bool,
+) -> bool {
+    blk_skip_luma_rd_pct != 0 && perform_tx && block_has_coeff && is_inter_mode
+}
+
+/// The chroma bookkeeping `full_loop_core_light_pd1` performs between the
+/// luma transform and the chroma one (`:6583-6631`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChromaPlan {
+    /// C's local `perform_chroma`.
+    pub perform_chroma: bool,
+    /// C's local `chroma_component` — which planes the chroma transform
+    /// runs over.
+    pub chroma_component: ComponentType,
+    /// C `ctx->chroma_complexity`.
+    pub chroma_complexity: ComponentType,
+    /// C `ctx->lpd1_chroma_comp` — which planes the PREDICTOR must
+    /// produce, which is not the same set.
+    pub lpd1_chroma_comp: ComponentType,
+    /// Clear `u_has_coeff` / `eob.u[0]` / the Cb distortions and bits.
+    pub zero_cb: bool,
+    /// The Cr twin.
+    pub zero_cr: bool,
+}
+
+/// C `full_loop_core_light_pd1`'s chroma decisions (`:6583-6631`).
+///
+/// `detect` is C's `chroma_complexity_check`
+/// ([`super::lpd1::chroma_complexity_check`]); it is a closure because C
+/// only calls it on the path where chroma was about to be skipped, and it
+/// is expensive.
+///
+/// Four things a paraphrase loses:
+///
+/// * **`chroma_complexity` is only updated at detector levels 1..=3**
+///   (`:6602`). At level 4 the detector still decides `chroma_component`
+///   but `ctx->chroma_complexity` stays `COMPONENT_LUMA`, which changes
+///   what the LATER `chroma_complexity_check_pred` call sees.
+/// * **The zeroing rules are crossed.** `COMPONENT_CHROMA_CB` means "Cb is
+///   the interesting plane", so it zeroes **Cr** (`:6610`), and vice versa
+///   (`:6617`). Reading the constant as naming the plane to clear inverts
+///   both.
+/// * **`lpd1_chroma_comp` is not `chroma_component`.** It is what the
+///   PREDICTOR must produce: `COMPONENT_CHROMA` whenever a recon is needed
+///   (`:6625`), and also whenever chroma runs at a detector level <= 3
+///   (`:6631`), because the later `chroma_complexity_check_pred` reads
+///   prediction samples for both planes.
+/// * **`perform_chroma` starts true when the luma block coded anything**,
+///   and `zero_y_coeff_exit` is what makes an all-zero luma block skip
+///   chroma at all (`:6587`).
+#[must_use]
+pub fn plan_chroma(
+    luma_has_coeff: bool,
+    zero_y_coeff_exit: bool,
+    luma_skip_committed: bool,
+    chroma_detector_level: u8,
+    recon_needed: bool,
+    detect: impl FnOnce() -> ComponentType,
+) -> ChromaPlan {
+    let mut perform_chroma = luma_has_coeff || !zero_y_coeff_exit;
+    if luma_skip_committed {
+        perform_chroma = false;
+    }
+
+    let mut chroma_component = ComponentType::Chroma;
+    let mut chroma_complexity = ComponentType::Luma;
+    let (mut zero_cb, mut zero_cr) = (false, false);
+
+    if !perform_chroma {
+        if chroma_detector_level != 0 {
+            chroma_component = detect();
+            if chroma_detector_level <= 3 {
+                chroma_complexity = chroma_component;
+            }
+        } else {
+            chroma_component = ComponentType::Luma;
+        }
+        perform_chroma = chroma_component != ComponentType::Luma;
+        // C compares `chroma_component > COMPONENT_LUMA` on the raw enum,
+        // and LUMA is 0 while every other value is positive, so the
+        // inequality is exactly "not LUMA".
+        if matches!(chroma_component, ComponentType::Cb | ComponentType::Luma) {
+            zero_cr = true;
+        }
+        if matches!(chroma_component, ComponentType::Cr | ComponentType::Luma) {
+            zero_cb = true;
+        }
+    }
+
+    let mut lpd1_chroma_comp = if recon_needed {
+        ComponentType::Chroma
+    } else {
+        chroma_component
+    };
+    if perform_chroma && !recon_needed && chroma_detector_level <= 3 {
+        lpd1_chroma_comp = ComponentType::Chroma;
+    }
+
+    ChromaPlan {
+        perform_chroma,
+        chroma_component,
+        chroma_complexity,
+        lpd1_chroma_comp,
+        zero_cb,
+        zero_cr,
+    }
+}
+
+/// C `:6652-6656` — whether the SECOND chroma detector
+/// ([`super::lpd1::chroma_complexity_check_pred`], with `use_var = 0`)
+/// runs before the chroma transform.
+///
+/// It is skipped once `chroma_complexity` already says `COMPONENT_CHROMA`
+/// — there is nothing left to learn — and it needs one of the two
+/// shortcut signals to be armed, because its only consumer is the
+/// shortcut path.
+#[must_use]
+pub fn second_chroma_detector_runs(
+    chroma_component: ComponentType,
+    chroma_detector_level: u8,
+    chroma_complexity: ComponentType,
+    use_tx_shortcuts_mds3: bool,
+    use_uv_shortcuts_on_y_coeffs: bool,
+) -> bool {
+    chroma_component != ComponentType::Luma
+        && chroma_detector_level != 0
+        && chroma_detector_level <= 3
+        && chroma_complexity != ComponentType::Chroma
+        && (use_tx_shortcuts_mds3 || use_uv_shortcuts_on_y_coeffs)
+}
+
+/// C `:6684-6693` — what happens when chroma is skipped entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoChromaEpilogue {
+    /// Run the predictor anyway, purely to produce recon samples.
+    pub predict_chroma_for_recon: bool,
+    /// `u_has_coeff = v_has_coeff = 0`.
+    pub clear_chroma_coeff: bool,
+    /// `cand->block_mi.skip_mode = true` — only when the candidate allows
+    /// it.
+    pub set_skip_mode: bool,
+}
+
+/// C `full_loop_core_light_pd1`'s `else` branch (`:6684-6693`).
+///
+/// Note the predictor still runs when `lpd1_chroma_comp` is not
+/// `COMPONENT_LUMA`: the block is not coding chroma, but the RECON needs
+/// chroma samples, and [`plan_chroma`] has already set
+/// `lpd1_chroma_comp` to `COMPONENT_CHROMA` in exactly that case.
+#[must_use]
+pub fn no_chroma_epilogue(
+    lpd1_chroma_comp: ComponentType,
+    skip_mode_allowed: bool,
+) -> NoChromaEpilogue {
+    NoChromaEpilogue {
+        predict_chroma_for_recon: lpd1_chroma_comp != ComponentType::Luma,
+        clear_chroma_coeff: true,
+        set_skip_mode: skip_mode_allowed,
+    }
+}
+
+#[cfg(test)]
+mod full_loop_tests {
+    use super::*;
+
+    /// `:6569-6579` and `:5497-5507` install the same state.
+    #[test]
+    fn the_skipped_luma_state_is_the_same_in_both_places() {
+        let inter = luma_tx_skipped(true);
+        assert_eq!(inter.y_coeff_bits, 6000);
+        assert!(!inter.y_has_coeff);
+        assert!(inter.force_uv_dct_dct);
+        // Intra keeps its own chroma transform type.
+        assert!(!luma_tx_skipped(false).force_uv_dct_dct);
+    }
+
+    /// `:5496` — every level EXCEPT 1 takes the exit.
+    #[test]
+    fn the_eob_zero_exit_covers_level_zero_as_well_as_two_and_up() {
+        for lvl in [0u8, 2, 3, 4] {
+            assert!(luma_eob_zero_takes_the_early_exit(0, lvl), "lvl {lvl}");
+        }
+        assert!(!luma_eob_zero_takes_the_early_exit(0, 1));
+        // A nonzero eob never takes it.
+        assert!(!luma_eob_zero_takes_the_early_exit(1, 0));
+    }
+
+    /// `:6588-6589` — four preconditions, each necessary.
+    #[test]
+    fn the_luma_skip_rd_gate_needs_all_four_preconditions() {
+        assert!(luma_skip_rd_applies(50, true, true, true));
+        assert!(!luma_skip_rd_applies(0, true, true, true));
+        assert!(!luma_skip_rd_applies(50, false, true, true));
+        assert!(!luma_skip_rd_applies(50, true, false, true));
+        assert!(!luma_skip_rd_applies(50, true, true, false), "intra");
+    }
+
+    /// `:6587` — a luma block with coefficients always runs chroma, and
+    /// the detector is never consulted.
+    #[test]
+    fn a_coded_luma_block_runs_chroma_without_detection() {
+        let p = plan_chroma(true, true, false, 3, false, || {
+            unreachable!("the detector must not run")
+        });
+        assert!(p.perform_chroma);
+        assert_eq!(p.chroma_component, ComponentType::Chroma);
+        assert_eq!(p.chroma_complexity, ComponentType::Luma);
+        assert!(!p.zero_cb && !p.zero_cr);
+    }
+
+    /// `:6587` — with `zero_y_coeff_exit` off, an all-zero luma block
+    /// still runs chroma.
+    #[test]
+    fn zero_y_coeff_exit_is_what_makes_an_empty_luma_block_skip_chroma() {
+        let kept = plan_chroma(false, false, false, 3, false, || unreachable!());
+        assert!(kept.perform_chroma);
+        let skipped = plan_chroma(false, true, false, 0, false, || unreachable!());
+        assert!(!skipped.perform_chroma);
+        assert_eq!(skipped.chroma_component, ComponentType::Luma);
+        assert!(skipped.zero_cb && skipped.zero_cr);
+    }
+
+    /// `:6610-6623` — the zeroing is CROSSED: `Cb` means "keep Cb", so it
+    /// clears Cr.
+    #[test]
+    fn the_zeroing_clears_the_plane_the_component_does_not_name() {
+        let cb = plan_chroma(false, true, false, 1, false, || ComponentType::Cb);
+        assert!(cb.perform_chroma);
+        assert!(cb.zero_cr && !cb.zero_cb);
+        let cr = plan_chroma(false, true, false, 1, false, || ComponentType::Cr);
+        assert!(cr.zero_cb && !cr.zero_cr);
+        let both = plan_chroma(false, true, false, 1, false, || ComponentType::Chroma);
+        assert!(!both.zero_cb && !both.zero_cr);
+    }
+
+    /// `:6602` — `chroma_complexity` tracks the detector only at levels
+    /// 1..=3.
+    #[test]
+    fn chroma_complexity_is_recorded_only_below_level_four() {
+        for lvl in [1u8, 2, 3] {
+            let p = plan_chroma(false, true, false, lvl, false, || ComponentType::Cb);
+            assert_eq!(p.chroma_complexity, ComponentType::Cb, "lvl {lvl}");
+        }
+        let high = plan_chroma(false, true, false, 4, false, || ComponentType::Cb);
+        assert_eq!(high.chroma_component, ComponentType::Cb);
+        assert_eq!(
+            high.chroma_complexity,
+            ComponentType::Luma,
+            "level 4 decides but does not record"
+        );
+    }
+
+    /// `:6625` / `:6631` — the PREDICTOR's component set is not the
+    /// transform's.
+    #[test]
+    fn the_predictor_component_set_is_wider_than_the_transform_one() {
+        // Recon needed: always the full pair, whatever the transform does.
+        let recon = plan_chroma(false, true, false, 1, true, || ComponentType::Cb);
+        assert_eq!(recon.chroma_component, ComponentType::Cb);
+        assert_eq!(recon.lpd1_chroma_comp, ComponentType::Chroma);
+        // No recon, chroma runs, detector level <= 3: still the full pair,
+        // because the second detector reads both planes' predictions.
+        let widened = plan_chroma(false, true, false, 3, false, || ComponentType::Cb);
+        assert_eq!(widened.lpd1_chroma_comp, ComponentType::Chroma);
+        // No recon, chroma runs, level 4: the predictor follows the
+        // transform.
+        let narrow = plan_chroma(false, true, false, 4, false, || ComponentType::Cb);
+        assert_eq!(narrow.lpd1_chroma_comp, ComponentType::Cb);
+        // Chroma fully skipped and no recon: nothing to predict.
+        let none = plan_chroma(false, true, false, 0, false, || unreachable!());
+        assert_eq!(none.lpd1_chroma_comp, ComponentType::Luma);
+    }
+
+    /// `:6588-6592` — a committed luma skip overrides a coded luma block.
+    #[test]
+    fn a_committed_luma_skip_forces_the_chroma_decision_back_through_the_detector() {
+        let p = plan_chroma(true, true, true, 1, false, || ComponentType::Luma);
+        assert!(!p.perform_chroma);
+        assert!(p.zero_cb && p.zero_cr);
+    }
+
+    /// `:6652-6654` — five conditions on the second detector.
+    #[test]
+    fn the_second_detector_needs_every_condition() {
+        let ok = |comp, lvl, cplx, mds3, uv| second_chroma_detector_runs(comp, lvl, cplx, mds3, uv);
+        assert!(ok(ComponentType::Cb, 2, ComponentType::Luma, true, false));
+        assert!(ok(ComponentType::Cb, 2, ComponentType::Luma, false, true));
+        assert!(!ok(ComponentType::Luma, 2, ComponentType::Luma, true, true));
+        assert!(!ok(ComponentType::Cb, 0, ComponentType::Luma, true, true));
+        assert!(!ok(ComponentType::Cb, 4, ComponentType::Luma, true, true));
+        assert!(
+            !ok(ComponentType::Cb, 2, ComponentType::Chroma, true, true),
+            "already fully complex"
+        );
+        assert!(!ok(ComponentType::Cb, 2, ComponentType::Luma, false, false));
+    }
+
+    /// `:6684-6693` — chroma prediction still runs for the recon.
+    #[test]
+    fn the_no_chroma_epilogue_still_predicts_for_a_recon() {
+        let with_recon = no_chroma_epilogue(ComponentType::Chroma, true);
+        assert!(with_recon.predict_chroma_for_recon);
+        assert!(with_recon.clear_chroma_coeff && with_recon.set_skip_mode);
+        let without = no_chroma_epilogue(ComponentType::Luma, false);
+        assert!(!without.predict_chroma_for_recon);
+        assert!(
+            !without.set_skip_mode,
+            "skip_mode needs the candidate's consent"
+        );
     }
 }
