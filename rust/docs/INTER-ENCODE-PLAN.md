@@ -308,8 +308,9 @@ video at every ladder that forks.
 Two facts, both measured, that shape every chunk after this one. Neither was
 known when this file was written.
 
-**1. The frame header is nearly done; the tile is untouched.** On the reference
-cell (`64 64 40 6 2 gradient`, frame 0) `tools/fh_fields.py` now reports exactly
+**1. On the reference cell the frame header is nearly done and the tile is
+untouched — but that is ONE cell, see the correction below.** On
+`64 64 40 6 2 gradient` frame 0 `tools/fh_fields.py` now reports exactly
 ONE differing frame-header field — `cdef_uv_pri_strength[0]` (C 7, port 0) —
 and every field after it equal. The uncompressed header ends at **bit 71** of
 the frame OBU payload (payload starts at file byte 0x12), so the header is file
@@ -324,6 +325,39 @@ produced), which is why it should NOT be chased as a chroma-search bug until
 a cell exists where the tile agrees. Flat content is one: video-mode
 `uniform 64x64 q40` frame 0 is byte-identical at presets 0/3/6/8, and those
 four are now cells in `regression_spotcheck.sh` (`byteVideoKey`).
+
+**1b. CORRECTION to 1, measured before this file was committed: the reference
+cell is not representative.** A five-content probe of the video-mode key frame
+(`identity_diff_inter.sh W H 40 P 2 <content>`, frame 0, first diverging FH
+field per `fh_fields.py`):
+
+| cell | C / port bytes | first diverging FH field |
+|---|---|---|
+| `uniform 64x64 p0/p3/p6/p8` | 28/28, 28/28, 28/28, 30/30 | **none — byte-identical** |
+| `gradient 64x64 p6` | 961 / 971 | `cdef_uv_pri_strength[0]` 7 / 0 |
+| `diag 64x64 p3` | 185 / 120 | `loop_filter_level[0]` 12 / 0 |
+| `diag 64x64 p6` | 238 / 336 | `loop_filter_level[0]` 0 / 8 |
+| `screen 64x64 p6` | 92 / 143 | **`allow_intrabc` 1 / 0** |
+| `screenrep 64x64 p6` | 1144 / 1141 | `cdef_y_pri_strength[0]` 0 / 7 |
+
+Read that table by CLASS, not by field:
+
+* The `loop_filter_level` and `cdef_*_strength` rows are **searches reading a
+  recon that already differs** — both pickers are now on C's arm (deblock
+  chunk, CDEF chunk) and both sides are choosing from the same candidate set;
+  they land differently because the tile that produced the recon differs.
+  Chasing these before the tile agrees is chasing a symptom.
+* **`screen 64x64 p6` `allow_intrabc` C = 1, port = 0 is NOT recon-driven.**
+  It is a pure frame-level tool derivation, and it is the same unwired-arm bug
+  again: C's video ladder gives `intrabc_level = 5` for a screen-content
+  I-slice at `enc_mode <= ENC_M8` (`enc_mode_config.c:2034-2052`), while the
+  allintra ladder gives 0 above ENC_M4 (`:2347-2369`) and `pipeline.rs` calls
+  `sc_detect::derive_allintra_sc` unconditionally. The video ladder is ALREADY
+  ported, at tier 1, in `port_enc_mode_config::multi_processes`
+  (`intrabc_level` + `palette_level` + `allow_screen_content_tools`) — with no
+  pipeline caller, exactly like the table in 2 below. That makes it the
+  cheapest genuinely-attributable next chunk: a derivation divergence a gate
+  can pin without first fixing the tile.
 
 **2. Only TWO of `port_enc_mode_config`'s ladders are wired into
 `pipeline.rs`.** Measured by grep on 2026-08-31: every
