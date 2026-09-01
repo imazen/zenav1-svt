@@ -434,6 +434,118 @@ pure GEOMETRY — 0 mode flips, 12 C-only / 6 port-only blocks, the port coding
 it at all (0.75% with and without). So the suspect is the DEPTH decision that
 consumes the funnel's leaf costs, not the leaf decision itself.
 
+### 1f. CORRECTION to §1e's blocker reading — the arms did not break the geometry (2026-09-01)
+
+The paragraph above is right about WHAT the p11 cell looks like with the arms
+on and wrong about what that implies. **The 12-C-only / 6-port-only geometry
+gap is IDENTICAL without the arms.** Measured with C's own coded tree
+(`SVT_CTREE_OUT`, the `svt_aom_update_mi_map` `--wrap` dump, run in
+`tools/ctrace-linux/` because Apple `ld64` has no `--wrap`) joined against
+`SVTAV1_PACKTREE` by `tools/tree_diff.py`, on ONE build with only
+`mds0_use_hadamard_sb` forced back to the allintra `true`:
+
+| cell | geometry C-only / port-only, arms OFF | arms ON | field flips OFF -> ON |
+|---|---|---|---|
+| `gradient 72x88 p4` | 56 / 12 | 59 / 11 | 159 -> 164 |
+| `gradient 72x88 p9` | 12 / 7 | **12 / 7, same mi list** | 47 -> **26** |
+| `diag 64x64 p11` | 12 / 6 | **12 / 6, same mi list** | 18 -> **6, all `bsize`** |
+
+At p9 and p11 the arms leave the coded GEOMETRY bit-identical and cut the
+mode / uv flips by about two thirds; at p11 every comparable field except
+`bsize` then equals C, which is the same result §1e reports for the reference
+cell. The port codes 16 uniform 16x16 leaves there either way — 398 B without
+the arms, 469 B with — while C codes `4x 8x8 | 16x16 | 16x16 | 4x 8x8 | 32x32 |
+32x32 | (8x8/16x16 mix)` for 401 B.
+
+So the byte-count regression is **the removal of a COMPENSATING mode error**,
+not a new geometry error, and `main`'s 0.75 % on that cell is the wrong tree
+coded with the wrong modes landing near C's size by cancellation. That is
+exactly the trap §1d warns about from the other side ("a smaller stream at the
+same qp is what over-searching looks like"): here a stream INSIDE its limit was
+the wrong tree scored with the wrong metric. **The three cells cannot be closed
+by changing anything the two held arms touch.**
+
+**What they can be closed by, named at tier 1.** Running
+`c_parity_sig_deriv_md_config.rs`'s two exported entry points per preset on the
+reference cell's key-frame population (`is_islice`, `is_base`, R240p, qp 40)
+and diffing all 52 `MD_O_*` slots, the arm-divergent set at each failing preset
+contains exactly ONE row that is not inter-only, not INERT on an I-slice, and
+not already wired:
+
+| preset | `PD0_LVL` allintra / video | other unwired divergence |
+|---|---|---|
+| M4 | 1 / **3** | none |
+| M9 | 7 / **4** | none |
+| M11 | 7 / **4** | `MDS0` 0 / **2** — now WIRED, see below |
+
+(`DEPTH_REFINE` is 6/6 at M4 and 10/10 at M9 and M11 — the arms AGREE on it, so
+it is not the depth-refinement level. `DEPTH_REMOVAL` diverges but
+`set_depth_removal_level_controls` zeroes `enabled` on an I_SLICE before it
+reads the level, per §1c.)
+
+**`pic_pd0_lvl` changes three things, and the port models only the first.**
+
+1. **The PD0 LEVEL.** `pipeline.rs` hardcodes the ALLINTRA resolution at every
+   preset: `pd0::max_block_size_allintra` + `pd0_detector_allintra_demotes` +
+   `Pd0Mode::{Lvl6, Lvl5}` at preset >= 9, `Lvl1` below. C's video arm asks for
+   `PD0_LVL_3` at M3..M7 and `PD0_LVL_4` at M8..M13 (`set_pic_pd0_lvl_default`,
+   `enc_mode_config.c:8592`; `set_pd0_ctrls`, `:5413`). **Neither level exists
+   in `pd0.rs`** — it carries LVL_0, LVL_1, LVL_5 and LVL_6 only.
+2. **`svt_aom_sig_deriv_enc_dec_pd0`'s level-dependent knobs, none of which are
+   in §1c's table** (that table reads `sig_deriv_mode_decision_config`, and this
+   is the OTHER derivation — the same blind spot that hid
+   `mds0_use_hadamard_sb`):
+   * `depth_early_exit_lvl` is **2** (`split_cost_th` 50, `early_exit_th`
+     **900**) for `pd0_level > PD0_LVL_1`, where the allintra M2..M8 LVL_1 takes
+     1 (`early_exit_th` 0 — which `Pd0Ctx::pick` spells as `th = 1000`).
+     `:7230-7236`.
+   * PD0 `subres_level` is **1 on an I-slice** at LVL_3 and LVL_4 (`:7337-7341`,
+     gated on `disallow_4x4` and a complete b64), where `pd0_level <=
+     PD0_LVL_2` forces 0.
+   * `rate_est_level` is 2 at LVL_0..LVL_3 and **4** at LVL_4 (`:7355-7365`),
+     i.e. `coeff_rate_est_lvl` 2 — the fast coeff approximation — where LVL_5 /
+     LVL_6 use 0 (`lpd0_qp_offset` 8 + the `5000 + 100*eob` closed form).
+3. **`ctx->pd0_use_src_samples = allintra || pcs->hbd_md` (`:7309-7313`) —
+   FALSE on every video frame.** C's video PD0 predicts each block from the
+   RECON it generates per block (`product_coding_loop.c:8430`,
+   `mode_decision_update_neighbor_arrays_pd0` at `:123`); the allintra arm
+   instead copies the SOURCE row / column into the recon-neighbour arrays
+   (`:8370`) and generates no recon at all. **The port's PD0 always predicts
+   from source.** This is §1d item 2's surviving half, it is a per-BLOCK
+   behaviour change at EVERY video preset (not only where the level moved), and
+   it is the largest single piece of the chunk.
+
+Method notes for whoever takes it: `SVT_CTREE_OUT` APPENDS across frames just
+like `SVTAV1_PACKTREE` (§1d), and on a 2-frame run the inter frame's blocks are
+the tail — cut the file at the LAST `mi=(0,0)` line, not at a fixed line count,
+because the frame-0 block count varies with the preset. `tools/ctrace-linux/`
+runs fine under colima's native arm64 profile on this host; the `zenav1-svt-
+ctrace-cbuild` volume makes a second cell a ~20 s run.
+
+### `mds0_level` — WIRED 2026-09-01 (`crate::mds0_arm`), byte-inert and said so
+
+The second row of the M11 table above is closed. `pcs->mds0_level` is
+`is_islice ? 0 : 2` through M10 and **2 unconditionally above M10**
+(`enc_mode_config.c:9232-9251`) on the video arm, against a literal 0 at every
+preset on the allintra arm (`:10042`), so a video KEY frame diverges at
+M11..M13. Level 2 is `pruning_method_th = (uint8_t)~0` + `dist_to_cost_th = 0`,
+which selects `fast_loop_core`'s GLOBAL prune (`product_coding_loop.c:1325`):
+any candidate whose distortion ALONE already costs more than the best complete
+fast cost so far is abandoned with `MAX_MODE_COST`. `crate::mds0_arm` wires it
+off the same `ScArm` every other `*_arm` module uses, through the tier-1-gated
+`md_config::mds0_level_default`.
+
+**MEASURED byte-inert, and that is reported rather than hidden.** It fires
+heavily — at `diag 64x64 q40 p11` it abandons 6-9 of the ~12 candidates on
+every 16x16 leaf — and changes NO cell: all six `ratioVideoKey` /
+`fhVideoKey`-adjacent video cells and all six still identity cells are
+byte-for-byte what they were, with and without the held arms. It earns no
+`regression_spotcheck.sh` cell for exactly the reason §3 of
+`docs/WORKING-ON-THIS.md` gives, and it is kept for the reason
+`rust/CLAUDE.md`'s "DEAD-LOOKING C STAYS TRANSLATED" section gives: it is a
+faithful translation of a live C rule whose effect is masked by the PD0 gap
+above, and it will stop being inert the moment that gap closes.
+
 **A correction to my own first reading of that cell, recorded because it is the
 kind of premise that would send the next session sideways:** light PD1 is NOT
 what C runs there. `pic_lpd1_lvl` (`enc_mode_config.c:9408-9432`) is
@@ -653,9 +765,10 @@ touch the recon: `txt_level` (allintra 10 at M7/M8 vs video 7 for a base
 I-slice), `nic_level`, `txs_level`, `intra_level` /
 `dist_based_ang_intra_level`, `chroma_level` / `cfl_level`,
 `spatial_sse_full_loop_level`, `pic_bypass_encdec`, `pic_disallow_4x4`,
-`pd0_cost_bias_weight`, `mds0_level`, `tx_shortcut_level`,
-`pic_depth_removal_level`, `pic_block_based_depth_refinement_level`,
-`lambda_weight`, `pic_pd0_lvl`. Every one has a tier-1-ported `_default` twin
+`pd0_cost_bias_weight`, ~~`mds0_level`~~ (WIRED 2026-09-01, `mds0_arm` — see
+§1f), `tx_shortcut_level`, `pic_depth_removal_level`,
+`pic_block_based_depth_refinement_level`, `lambda_weight`, `pic_pd0_lvl` (the
+one §1f names as the blocker for all three held-arm cells). Every one has a tier-1-ported `_default` twin
 in `port_enc_mode_config::md_config` already — this is wiring, not porting, and
 `rate_arm` / `part_arm` are the pattern.
 

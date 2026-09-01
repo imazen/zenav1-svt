@@ -56,6 +56,39 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`pcs->mds0_level` wired to `scs->allintra` (`svtav1_encoder::mds0_arm`) —
+  faithful, measured byte-inert, and kept anyway.** The video arm assigns
+  level 2 above M10 (enc_mode_config.c:9250) where the allintra arm is a
+  literal 0 at every preset (`:10042`); level 2 is `pruning_method_th =
+  (uint8_t)~0` + `dist_to_cost_th = 0`, which selects `fast_loop_core`'s GLOBAL
+  MDS0 prune (product_coding_loop.c:1325) — abandon any candidate whose
+  distortion ALONE costs more than the best complete fast cost so far. Tier 1
+  on the ladder (`md_config::mds0_level_default`, driven by the exported
+  `svt_aom_sig_deriv_mode_decision_config_default` in
+  `c_parity_sig_deriv_md_config.rs`); the `set_mds0_controls` table is
+  transcribed and pinned against the allintra flattening. The prune FIRES
+  heavily (6-9 of ~12 candidates per 16x16 leaf on `diag 64x64 q40 p11`) and
+  moves NO cell — six still identity cells and six video key-frame cells
+  byte-for-byte unchanged, `regression_spotcheck.sh` 49/49,
+  `cargo nextest run --workspace` 2409/2409 — because the port's PD0 partition
+  tree at those presets is the ALLINTRA one and dominates the outcome. Kept
+  per `rust/CLAUDE.md`'s "dead-looking C stays translated"; no spot-check cell,
+  per §3's "a cell earns its place only if it failed before".
+
+- **CORRECTION recorded (`docs/INTER-ENCODE-PLAN.md` §1f): the two held arms on
+  `wip/video-md-arms` do NOT break the three blocking cells' geometry.**
+  Measured with C's own coded tree (`SVT_CTREE_OUT` via `tools/ctrace-linux/`)
+  against `SVTAV1_PACKTREE`: at `gradient 72x88 p9` and `diag 64x64 p11` the
+  C-only / port-only block sets are IDENTICAL with and without the arms (12/7
+  and 12/6, same mi lists) while the arms cut field flips 47 -> 26 and 18 -> 6.
+  The byte regression is the removal of a COMPENSATING mode error against a
+  partition tree that is already wrong on `main`. The remaining OPEN arm
+  divergence at all three failing presets is `pic_pd0_lvl` (M4 1/3, M9 and M11
+  7/4) — `PD0_LVL_3` and `PD0_LVL_4` are unimplemented in `pd0.rs`, and C's
+  video PD0 additionally predicts from RECON (`ctx->pd0_use_src_samples =
+  allintra || hbd_md`, enc_mode_config.c:7309) where the port always predicts
+  from source.
+
 - **The inter campaign's reference cell now matches C's MODE DECISION exactly
   — and the arm that does it is HELD, not landed (`wip/video-md-arms`,
   `f898794f9`).** `ctx->mds0_use_hadamard_sb` selects MDS0's luma distortion in
