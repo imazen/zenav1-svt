@@ -40,7 +40,17 @@ RSRC = [os.path.join(REPO, "crates"), os.path.join(REPO, "svtav1")]
 # A C function definition at column 0: <type...> name(args) {   — deliberately
 # conservative; it misses macro-generated and multi-line-signature functions,
 # which is why the totals are a LOWER BOUND on the surface.
-DEF = re.compile(r'^(?:static\s+)?(?:const\s+)?[A-Za-z_][\w \*]*?\b([a-z_][a-z0-9_]*)\s*\([^;]*?\)\s*\{', re.M)
+#
+# The name class is `[A-Za-z_]\w*`, NOT `[a-z_][a-z0-9_]*`. It was the latter
+# until 2026-08-31, which made every C function with an uppercase letter in
+# its name INVISIBLE to this tool — not unmatched, absent. In Codec/transforms.c
+# alone that hid 76 of 181 definitions: the 55 `_N2_c` / `_N4_c` 1-D kernels,
+# the 38 `_N2_c` / `_N4_c` 2-D wrappers and the 5
+# `svt_handle_transform*_N2_N4_c` entries, so the file reported a surface of
+# 105. Tree-wide the fix raises the count from 2,673 to 2,756. A probe that
+# silently sees nothing is indistinguishable from an absence
+# (docs/WORKING-ON-THIS.md §5), which is exactly what this was.
+DEF = re.compile(r'^(?:static\s+)?(?:const\s+)?[A-Za-z_][\w \*]*?\b([A-Za-z_]\w*)\s*\([^;]*?\)\s*\{', re.M)
 
 def c_functions():
     out = {}
@@ -87,6 +97,13 @@ def rust_defs():
     wp-transforms did for the 54 `highbd_fwd_txfm_WxH*` entries) reads as N
     misses. Such collapses are disclosed in the lanes' port maps; check there
     before treating a MISSING row as untouched.
+
+    Worked example of how big that effect is, so nobody reads a row as a
+    coverage number: `docs/transforms-port-map.md` audits
+    Codec/transforms.c + Codec/inv_transforms.c function by function and finds
+    0 of 256 definitions unported — while this tool reports 7/181 and 30/75
+    matched, because 174 of them sit behind nine deliberate family collapses
+    and 2 have no expressible Rust counterpart at all.
     """
     defs = set()
     fn_re = re.compile(r"\bfn\s+([a-z_][a-z0-9_]*)")
