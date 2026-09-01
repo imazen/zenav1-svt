@@ -475,11 +475,11 @@ pub fn derive_allintra_sc(
 ///   (:2346-2369) vs
 ///   [`crate::port_enc_mode_config::multi_processes::intrabc_level_default`]
 ///   (:2033-2052). This is the one that moves `frm_hdr->allow_intrabc`.
-/// - **`palette_level`**: C has a second pair of ladders (:2374-2390 allintra
-///   vs :2054-2072 video) and the video one is ported at tier 1 inside
-///   `sig_deriv_multi_processes_default`. It is NOT wired here yet — see the
-///   PORT-NOTE at the `palette_level` binding below for exactly what that
-///   costs and what it provably does not cost.
+/// - **the palette ladder**: `:2374-2390` allintra vs `:2056-2075` video,
+///   the latter through
+///   [`crate::port_enc_mode_config::multi_processes::palette_level_default`].
+///   This is the one that moves whether a video-mode screen frame codes
+///   palette blocks at all (video M8 asks for level 6; allintra M8 for 0).
 #[must_use]
 pub fn derive_sc(
     arm: ScArm,
@@ -511,33 +511,40 @@ pub fn derive_sc(
         ScClasses::default()
     };
 
-    // PORT-NOTE (video arm, DELIBERATE and MEASURED, not an oversight): this
-    // is C's ALLINTRA palette ladder (:2374-2390) on both arms. The video
-    // ladder (:2054-2072 — M0 -> 1, M1 -> 2, M2 -> 4, M3..M5 -> 5,
-    // M6..M9 -> 6, M10 -> 8) is already ported at tier 1 as part of
-    // `sig_deriv_multi_processes_default` and is the obvious next wiring; it
-    // is left out of THIS change so that one variable moved and the
-    // frame-header result stayed attributable.
+    // C has a PAIR of palette ladders and the two arms take different rows:
+    // allintra `:2374-2390` (2/3/4/5/7 over M0..M7, off from M8) against video
+    // `:2056-2075` (1/2/4/5/6/8 over M0..M10, off from M11). The video one
+    // lives in
+    // [`crate::port_enc_mode_config::multi_processes::palette_level_default`]
+    // so this call site and the tier-1 entry point drive the same code.
     //
-    // What that costs: on a video-mode screen-content frame the RD candidate
-    // set (and therefore the TILE bytes) is priced at the still palette level.
-    // What it provably does not cost: `allow_screen_content_tools`, the only
-    // frame-header bit palette_level feeds. Checked over the whole preset
-    // domain with the intra-BC ladder below wired — video sets
-    // `intrabc_level != 0` at every preset 0..=8, and at 9+ the scm gate
-    // above has already zeroed `sc_class5`, so the OR is 1 exactly where C's
-    // is regardless of which palette ladder produced the other operand.
-    let palette_level = if classes.sc_class5 {
-        match preset {
-            0..=2 => 2,
-            3 => 3,
-            4..=5 => 4,
-            6 => 5,
-            7 => 7,
-            _ => 0,
+    // MEASURED, `screen 72x88 q40` video-mode key frame, before -> after:
+    // p7 13.095 % -> 0.000 %, p8 408.939 % -> 0.000 %. p8 is the row that
+    // shows: video asks for level 6 where allintra asks for 0, so the port
+    // coded a screen frame with palette switched OFF entirely (911 B against
+    // C's 179 B).
+    let palette_level = match arm {
+        ScArm::Allintra => {
+            if classes.sc_class5 {
+                match preset {
+                    0..=2 => 2,
+                    3 => 3,
+                    4..=5 => 4,
+                    6 => 5,
+                    7 => 7,
+                    _ => 0,
+                }
+            } else {
+                0
+            }
         }
-    } else {
-        0
+        ScArm::Video { is_islice } => {
+            crate::port_enc_mode_config::multi_processes::palette_level_default(
+                preset as i8,
+                classes.sc_class5,
+                is_islice,
+            )
+        }
     };
     let intrabc_level = match arm {
         // C `svt_aom_sig_deriv_multi_processes_allintra` (:2346-2369).

@@ -92,6 +92,38 @@ pub fn intrabc_level_default(
     }
 }
 
+/// The `palette_level` ladder of C
+/// `svt_aom_sig_deriv_multi_processes_default` (`enc_mode_config.c:2056-2075`)
+/// — the arm EVERY video-mode picture takes, key frame included. Screen
+/// content (`sc_class5`) on an I-slice only.
+///
+/// It is a DIFFERENT ladder from its still twin (`:2374-2390`, transcribed in
+/// [`crate::sc_detect::derive_sc`]), not a re-spelling of it: video runs
+/// 1/2/4/5/6/8 over M0..M10 and only switches off above M10, where allintra
+/// runs 2/3/4/5/7 over M0..M7 and is off from M8 up. The M8 row is the one
+/// that shows: a video-mode key frame there has `palette_level = 6` and codes
+/// palette blocks, where a still one has 0 and codes none.
+#[must_use]
+pub fn palette_level_default(enc_mode: i8, sc_class5: bool, is_islice: bool) -> u8 {
+    if !sc_class5 || !is_islice {
+        0
+    } else if enc_mode <= M0 {
+        1
+    } else if enc_mode <= M1 {
+        2
+    } else if enc_mode <= M2 {
+        4
+    } else if enc_mode <= M5 {
+        5
+    } else if enc_mode <= M9 {
+        6
+    } else if enc_mode <= M10 {
+        8
+    } else {
+        0
+    }
+}
+
 /// Inputs of C `svt_aom_sig_deriv_multi_processes_default`.
 #[derive(Debug, Clone, Copy)]
 pub struct MultiProcessesInputs {
@@ -226,24 +258,10 @@ pub fn sig_deriv_multi_processes_default(i: MultiProcessesInputs) -> Option<Mult
     let intrabc_level = intrabc_level_default(enc_mode, sc5, i.is_islice, i.enable_intrabc);
     let allow_intrabc = u8::from(intrabc_enabled(intrabc_level));
 
-    // Palette level. Screen content on an I-slice only.
-    let palette_level = if !sc5 || !i.is_islice {
-        0
-    } else if enc_mode <= M0 {
-        1
-    } else if enc_mode <= M1 {
-        2
-    } else if enc_mode <= M2 {
-        4
-    } else if enc_mode <= M5 {
-        5
-    } else if enc_mode <= M9 {
-        6
-    } else if enc_mode <= M10 {
-        8
-    } else {
-        0
-    };
+    // Palette level. Screen content on an I-slice only. The ladder lives in
+    // [`palette_level_default`] above so `sc_detect.rs` can wire the video arm
+    // to the SAME code this tier-1 entry point drives.
+    let palette_level = palette_level_default(enc_mode, sc5, i.is_islice);
 
     let allow_screen_content_tools = u8::from(sc5 && (palette_level != 0 || allow_intrabc != 0));
 

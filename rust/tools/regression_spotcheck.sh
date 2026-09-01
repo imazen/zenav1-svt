@@ -650,12 +650,11 @@ byteVideoKey "video-key-cdef-p8"  uniform 64 64 40 8
 #                        (C 114 B, port 697 B)
 # AFTER: every frame-header field identical on both, port 138 B / 691 B.
 #
-# The p8 cell is fhVideoKey and not byteVideoKey because its TILE payload still
-# differs by a wide margin (114 vs 651 B) — a divergence that predates the video
-# arm work and is NOT caused by it (measured both ways on the depth-refinement
-# build: 650 B with the arm forced back to Allintra, 651 B with it wired).
-# Promote it when the payload closes.
-fhVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8
+# PROMOTED to byteVideoKey 2026-09-01 by the palette-arm chunk below, which
+# closed its payload. It was fhVideoKey while the tile still differed by a wide
+# margin — C 114 B against the port's 568 — with the note "promote it when the
+# payload closes". The payload closed: the port emits C's 114 B to the byte.
+byteVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8
 
 # --- the p6 payload CLOSED, 2026-09-01 (the depth-refinement arm chunk)
 # `video-key-ibc-arm-p6` was fhVideoKey with the note above ("Promote both to
@@ -881,6 +880,29 @@ byteVideoKey "video-key-lpd0-edge-shape-p9-screenrep" screenrep 72 88 40 9
 # together, and it fails loudly if either is reverted.
 byteVideoKey "video-key-pd0-recon-pred-p11-72x88" gradient 72 88 40 11
 byteVideoKey "video-key-pd0-recon-pred-p11-screenrep" screenrep 72 88 40 11
+
+# --- the VIDEO arm's PALETTE ladder, 2026-09-01. C has a PAIR of palette
+# ladders (`enc_mode_config.c:2056-2075` video vs `:2374-2390` allintra) and
+# `sc_detect::derive_sc` ran the ALLINTRA one on both arms, by a PORT-NOTE that
+# argued it could not move the frame header. That was true and beside the
+# point: it moves the TILE, because `palette_level` is what MD searches with.
+#
+# The M8 row is the cliff — video asks for level 6, allintra for 0 — so a
+# video-mode key frame of screen content coded palette blocks in C and NONE in
+# the port. A second defect compounded it: `PaletteCtrls::for_level` carried
+# only the allintra-reachable rows {0,2,3,4,5,7}, so even a correctly derived
+# level 6 fell through to `enabled: false`. All nine C rows are transcribed now,
+# and level 1's `cache_based_centroid_refinement` (palette.c:330) with them —
+# reached 74 times per frame at video preset 0, counted with a probe.
+#
+# OBSERVED, screen 72x88 q40 video frame 0, before -> after:
+#   p7: C 168 B, port 190 B (13.095%) -> BYTE-IDENTICAL
+#   p8: C 179 B, port 911 B (408.939%) -> BYTE-IDENTICAL
+# and screen 64x64 q40 p8, C 114 B port 568 B -> BYTE-IDENTICAL (the cell
+# promoted from fhVideoKey above). p8 was by a wide margin the worst video-key
+# cell in the campaign.
+byteVideoKey "video-key-palette-arm-p7-screen-72x88" screen 72 88 40 7
+byteVideoKey "video-key-palette-arm-p8-screen-72x88" screen 72 88 40 8
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))

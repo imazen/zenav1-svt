@@ -1362,6 +1362,83 @@ it is the cheaper of the two, but the same narrowing applies: seed only the row
 above and the column left, which is all `extract_neighbors_tiled` can read. That
 is an optimisation to make against a measurement, not while closing cells.
 
+### 1m. The VIDEO arm's PALETTE ladder (2026-09-01) — `screen p8`, the campaign's worst cell, closes to the byte
+
+`screen 72x88 q40 p8` was **408.939 %** off (C 179 B against the port's 911) and
+its 64x64 sibling **398 %** (114 B against 568). Both are byte-identical now, and
+so is `screen 72x88 q40 p7`, which §1l's table did not list at all — **a
+correction to that table: it recorded presets 0, 3, 8 and 12/13 as the open
+`72x88` rows and missed `screen p7` at 13.095 %.** The two failing cells were one
+cause, and p7 is the gentler witness of it.
+
+**What it was — the fourth instance of this campaign's one shape, found by
+reading the port's own PORT-NOTE rather than by tracing.** `sc_detect::derive_sc`
+ran C's ALLINTRA palette ladder (`enc_mode_config.c:2374-2390`) on BOTH arms. The
+note above the binding said so, deliberately, and argued the cost was bounded:
+"What it provably does not cost: `allow_screen_content_tools`, the only
+frame-header bit palette_level feeds." That argument is CORRECT and it is beside
+the point — `palette_level` is what MODE DECISION searches with, so it moves the
+TILE. The `fhVideoKey` cell on that very cell passed throughout, because the
+header bit was right; the payload was 5x.
+
+The two ladders and where they part:
+
+| preset | allintra `:2374-2390` | video `:2056-2075` |
+|---|--:|--:|
+| M0 | 2 | **1** |
+| M1 | 2 | 2 |
+| M2 | 2 | **4** |
+| M3 | 3 | **5** |
+| M4 / M5 | 4 | **5** |
+| M6 | 5 | **6** |
+| M7 | 7 | **6** |
+| M8 / M9 | **0** | **6** |
+| M10 | 0 | **8** |
+| M11+ | 0 | 0 |
+
+M8 is the cliff: the port coded a screen-content video key frame with palette
+switched OFF entirely. M7 is the same fault a rung lower — level 7 is level 6
+with `k_means_max_itr` 1 instead of 2 — which is why it showed as 13 % rather
+than 409 %.
+
+**A second defect underneath it, and it would have silently swallowed the fix.**
+`PaletteCtrls::for_level` carried only the ALLINTRA-reachable rows
+{0, 2, 3, 4, 5, 7} with `_ => PaletteCtrls::default()`, i.e. `enabled: false`.
+A correctly derived level 6 would have fallen through that arm and disabled
+palette anyway, and nothing would have said so. All nine `set_palette_level`
+rows are transcribed now, including the RTC-only 9.
+
+**Level 1 needed a function that did not exist.** Video M0 asks for level 1, the
+only row with `centroid_refinement = 1`, and `cache_based_centroid_refinement`
+(palette.c:330-386) was unported — reasonably, since no allintra level reaches
+it. It is ported literally, including that `baseline_sse` is computed once and
+never refreshed as earlier centroids move. **Positive control** rather than an
+inference from byte-identity: a probe counting entries reports **74 calls** on
+`screen 72x88 q40 p0` and **0** at p3 / p7 / p8, which is exactly what the
+ladder says (levels 5/6/7 carry `centroid_refinement = 0`).
+
+State it honestly: `screen p0` was byte-identical BEFORE this chunk under the
+wrong level (allintra 2, no refinement) and is byte-identical AFTER under the
+right one (video 1, 74 refinement calls). So the refinement is REACHED and
+byte-neutral on that cell; it is **not** independently validated against C, and
+it cannot be at tier 1 — the C function is `static`. Tier 4, and the cell that
+would witness it is still wanted.
+
+**Per-cell, `screen`, video frame 0, before -> after:**
+
+| cell | before | after |
+|---|--:|--:|
+| `screen 72x88 q40 p7` | 13.095 % (C 168 B, port 190) | **0.000, BYTE-IDENTICAL** |
+| `screen 72x88 q40 p8` | 408.939 % (C 179 B, port 911) | **0.000, BYTE-IDENTICAL** |
+| `screen 64x64 q40 p8` | 398 % (C 114 B, port 568) | **0.000, BYTE-IDENTICAL** |
+| `screen 72x88 q40 p0..p6, p9..p11` | byte-identical | byte-identical, same bytes |
+
+`video-key-ibc-arm-p8` is PROMOTED from `fhVideoKey` to `byteVideoKey`; it had
+carried the note "promote it when the payload closes" since 2026-08-31.
+
+The other 48 cells of the 60-cell matrix (`72x88 q40`, five content classes x
+twelve presets) are byte-for-byte unchanged.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

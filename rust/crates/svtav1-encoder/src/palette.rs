@@ -723,10 +723,13 @@ mod tests {
 // ============================================================================
 
 /// Per-level palette search knobs — C `set_palette_level`
-/// (enc_mode_config.c:1841-1915). Allintra-reachable levels are
-/// {0, 2, 3, 4, 5, 7} (sig_deriv_multi_processes_allintra :2374-2390);
-/// `centroid_refinement` is 0 for all of them, so
-/// `cache_based_centroid_refinement` is NOT ported (dead on this path).
+/// (enc_mode_config.c:1841-1915). The ALLINTRA ladder reaches
+/// {0, 2, 3, 4, 5, 7} (`:2374-2390`) and the VIDEO ladder
+/// {0, 1, 2, 4, 5, 6, 8} (`:2056-2075`), so every C row except the
+/// RTC-only 9 is reachable from this port. All nine are transcribed anyway —
+/// a level whose row is missing silently reads as `enabled: false`, which is
+/// the failure that kept `screen 72x88 q40 p8` at 409 % (the video arm asks
+/// for 6 and the table had no 6).
 /// 0xFF = arm disabled, mirroring C's `(uint8_t)~0` sentinel.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PaletteCtrls {
@@ -734,46 +737,81 @@ pub struct PaletteCtrls {
     pub dominant_color_step: u8,
     pub kmean_color_step: u8,
     pub k_means_max_itr: u32,
+    /// C `palette_ctrls->centroid_refinement` — level 1 only, i.e. video M0.
+    pub centroid_refinement: bool,
 }
 
 impl PaletteCtrls {
-    /// C `set_palette_level` rows for the allintra-reachable levels.
+    /// C `set_palette_level` rows, all nine.
     pub fn for_level(level: u8) -> Self {
         match level {
             0 => PaletteCtrls::default(),
+            1 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 1,
+                kmean_color_step: 1,
+                k_means_max_itr: 50,
+                centroid_refinement: true,
+            },
             2 => PaletteCtrls {
                 enabled: true,
                 dominant_color_step: 2,
                 kmean_color_step: 1,
                 k_means_max_itr: 2,
+                centroid_refinement: false,
             },
             3 => PaletteCtrls {
                 enabled: true,
                 dominant_color_step: 0xFF,
                 kmean_color_step: 1,
                 k_means_max_itr: 2,
+                centroid_refinement: false,
             },
             4 => PaletteCtrls {
                 enabled: true,
                 dominant_color_step: 0xFF,
                 kmean_color_step: 2,
                 k_means_max_itr: 2,
+                centroid_refinement: false,
             },
             5 => PaletteCtrls {
                 enabled: true,
                 dominant_color_step: 0xFF,
                 kmean_color_step: 3,
                 k_means_max_itr: 2,
+                centroid_refinement: false,
+            },
+            6 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 0xFF,
+                kmean_color_step: 5,
+                k_means_max_itr: 2,
+                centroid_refinement: false,
             },
             7 => PaletteCtrls {
                 enabled: true,
                 dominant_color_step: 0xFF,
                 kmean_color_step: 5,
                 k_means_max_itr: 1,
+                centroid_refinement: false,
             },
-            // PORT-NOTE(unverified): levels 1/6/8/9 exist in C but are
-            // unreachable from the allintra derivation; transcribe if a
-            // non-allintra mode ever needs them.
+            8 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 0xFF,
+                kmean_color_step: 6,
+                k_means_max_itr: 1,
+                centroid_refinement: false,
+            },
+            // RTC-only (`:2240-2246` never asks for it), transcribed for
+            // completeness so the fall-through cannot silently disable a
+            // level C enables.
+            9 => PaletteCtrls {
+                enabled: true,
+                dominant_color_step: 0xFF,
+                kmean_color_step: 50,
+                k_means_max_itr: 1,
+                centroid_refinement: false,
+            },
             _ => PaletteCtrls::default(),
         }
     }
@@ -785,6 +823,73 @@ impl PaletteCtrls {
 pub struct PaletteCand {
     pub colors: alloc::vec::Vec<u16>,
     pub idx_map: alloc::vec::Vec<u8>,
+}
+
+/// C `cache_based_centroid_refinement` (palette.c:330-386). Reached from
+/// palette level 1 ONLY — i.e. the VIDEO arm at preset 0
+/// (`enc_mode_config.c:2058`); no allintra level sets
+/// `centroid_refinement`, which is why this was previously left unported.
+///
+/// For each centroid in turn, try every distinct colour-cache entry in its
+/// place, re-assign every pixel to its nearest centroid and keep the
+/// substitution iff it lowers the total SSE. C mutates `color_idx_map` in
+/// place on an improvement and leaves it alone otherwise, so the map handed
+/// on to `palette_rd_y` is the best one found — reproduced literally,
+/// including that `baseline_sse` is computed ONCE and never refreshed as
+/// earlier centroids move.
+fn cache_based_centroid_refinement(
+    data: &[i32],
+    total: usize,
+    n: usize,
+    centroids: &mut [i32],
+    color_idx_map: &mut [u8],
+    color_cache: &[u16],
+) {
+    let sse_of = |centroids: &[i32], map: &[u8]| -> u64 {
+        let mut sse = 0u64;
+        for i in 0..total {
+            let diff = i64::from(data[i] - centroids[map[i] as usize]);
+            sse += (diff * diff) as u64;
+        }
+        sse
+    };
+    let baseline_sse = sse_of(centroids, color_idx_map);
+    let mut temp_map = alloc::vec![0u8; total];
+
+    for c in 0..n {
+        let original = centroids[c];
+        let mut best_val = original;
+        let mut best_sse = baseline_sse;
+
+        for &cached in color_cache {
+            let candidate = i32::from(cached);
+            if candidate == original {
+                continue;
+            }
+            centroids[c] = candidate;
+
+            for i in 0..total {
+                let mut best_idx = 0usize;
+                let mut best_dist = (data[i] - centroids[0]).abs();
+                for j in 1..n {
+                    let dist = (data[i] - centroids[j]).abs();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_idx = j;
+                    }
+                }
+                temp_map[i] = best_idx as u8;
+            }
+
+            let sse = sse_of(centroids, &temp_map);
+            if sse < best_sse {
+                best_sse = sse;
+                best_val = candidate;
+                color_idx_map[..total].copy_from_slice(&temp_map);
+            }
+        }
+        centroids[c] = best_val;
+    }
 }
 
 /// C `palette_rd_y` (palette.c:296-325) minus the ctx plumbing: refine +
@@ -1051,7 +1156,16 @@ fn search_palette_core(
                     ctrls.k_means_max_itr,
                 );
             }
-            // centroid_refinement: 0 at every allintra level — not ported.
+            if ctrls.centroid_refinement {
+                cache_based_centroid_refinement(
+                    &data,
+                    rows * cols,
+                    nn,
+                    &mut centroids,
+                    &mut indices,
+                    cache,
+                );
+            }
             if let Some(cand) = palette_rd_y(
                 &data,
                 &mut centroids[..nn],
