@@ -1,5 +1,6 @@
-//! Superres denominator SELECTION — a port of the decision half of
-//! `Codec/resize.c`.
+//! Coding-resolution DECISION — a port of the decision half of
+//! `Codec/resize.c`: which superres denominator to use, which resize
+//! denominator to use, and how the two are reconciled when they conflict.
 //!
 //! The scaling kernels themselves already exist
 //! (`svtav1_dsp::resize` / `svtav1_dsp::superres`, `docs/superres-port-map.md`
@@ -17,6 +18,10 @@
 //! | [`denom_for_qindex`] | `get_superres_denom_for_qindex` (1267) — static |
 //! | [`calc_superres_params`] | `calc_superres_params` (1311) — static |
 //! | [`denom_idx`] | `svt_aom_get_denom_idx` (1425) — **EXPORTED** |
+//! | [`calculate_next_resize_scale`] | `calculate_next_resize_scale` (1855) — static |
+//! | [`dimension_is_ok`] | `dimension_is_ok` (1906) — static |
+//! | [`dimensions_are_ok`] | `dimensions_are_ok` (1910) — static |
+//! | [`validate_size_scales`] | `validate_size_scales` (1916) — static |
 //!
 //! # How the decision works
 //!
@@ -482,4 +487,235 @@ pub fn calc_superres_params(
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Frame resize (distinct from superres) and the conformance reconciliation
+// ---------------------------------------------------------------------------
+
+/// C `RESIZE_MODE` (`API/EbSvtAv1Enc.h`).
+///
+/// Frame resize scales BOTH dimensions and is not undone by the decoder, in
+/// contrast to superres, which scales width only and is normatively upscaled.
+/// The two can be configured at once, which is what
+/// [`validate_size_scales`] exists to reconcile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeMode {
+    /// C `RESIZE_NONE = 0`.
+    None = 0,
+    /// C `RESIZE_FIXED = 1`.
+    Fixed = 1,
+    /// C `RESIZE_RANDOM = 2`.
+    Random = 2,
+    /// C `RESIZE_DYNAMIC = 3` — the denominator comes from the rate control's
+    /// pending-params block rather than from the configuration.
+    Dynamic = 3,
+    /// C `RESIZE_RANDOM_ACCESS = 4` — an application event carries its own
+    /// nested mode.
+    RandomAccess = 4,
+}
+
+/// C `superres_params_type` (`resize.h`) — the coded size and the superres
+/// denominator that produced it, mutated in place by
+/// [`validate_size_scales`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SuperresParams {
+    /// C `encoding_width` — the width the frame is actually coded at.
+    pub encoding_width: u16,
+    /// C `encoding_height`.
+    pub encoding_height: u16,
+    /// C `superres_denom`.
+    pub superres_denom: u8,
+}
+
+/// The `pcs->resize_evt` nested event of `RESIZE_RANDOM_ACCESS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResizeEvent {
+    /// C `resize_evt.scale_mode` — only NONE, FIXED and RANDOM are legal here.
+    pub scale_mode: ResizeMode,
+    /// C `resize_evt.scale_denom`.
+    pub scale_denom: u8,
+    /// C `resize_evt.scale_kf_denom`.
+    pub scale_kf_denom: u8,
+}
+
+/// The configuration [`calculate_next_resize_scale`] reads.
+#[derive(Debug, Clone, Copy)]
+pub struct ResizeConfig {
+    /// C `static_config.resize_mode`.
+    pub mode: ResizeMode,
+    /// C `static_config.resize_denom`.
+    pub denom: u8,
+    /// C `static_config.resize_kf_denom`.
+    pub kf_denom: u8,
+    /// C `scs->resize_pending_params.resize_denom` — the DYNAMIC input.
+    pub pending_denom: u8,
+    /// C `pcs->resize_evt` — the RANDOM_ACCESS input.
+    pub event: ResizeEvent,
+}
+
+/// C `calculate_next_resize_scale` (`resize.c:1855`) — static.
+///
+/// `None` where C calls `svt_aom_assert_err(0, ...)`: an unknown mode, or a
+/// `RESIZE_RANDOM_ACCESS` event carrying a nested mode other than NONE, FIXED
+/// or RANDOM. In a Release build that assert does not abort and C falls
+/// through returning `SCALE_NUMERATOR`, which silently disables resize; the
+/// port refuses rather than doing that quietly
+/// (`docs/WORKING-ON-THIS.md` §6).
+///
+/// As with `SUPERRES_RANDOM`, C's `static unsigned int seed = 56789` is
+/// hoisted to a caller-owned value. It is a SEPARATE seed from the superres
+/// one, which matters: the two generators do not interleave in C, and sharing
+/// one here would change both sequences.
+#[must_use]
+pub fn calculate_next_resize_scale(
+    cfg: &ResizeConfig,
+    is_key_frame: bool,
+    seed: &mut u32,
+) -> Option<u8> {
+    let unscaled = SCALE_NUMERATOR as u8;
+    Some(match cfg.mode {
+        ResizeMode::None => unscaled,
+        ResizeMode::Fixed => {
+            if is_key_frame {
+                cfg.kf_denom
+            } else {
+                cfg.denom
+            }
+        }
+        ResizeMode::Random => (lcg_rand16(seed) % 9 + 8) as u8,
+        ResizeMode::Dynamic => cfg.pending_denom,
+        ResizeMode::RandomAccess => match cfg.event.scale_mode {
+            ResizeMode::None => unscaled,
+            ResizeMode::Fixed => {
+                if is_key_frame {
+                    cfg.event.scale_kf_denom
+                } else {
+                    cfg.event.scale_denom
+                }
+            }
+            ResizeMode::Random => (lcg_rand16(seed) % 9 + 8) as u8,
+            _ => return None,
+        },
+    })
+}
+
+/// C `dimension_is_ok` (`resize.c:1906`) — static.
+///
+/// The AV1 conformance rule that a coded dimension may not be less than half
+/// the original after BOTH scalings: `resized * 8 >= orig * denom / 2`.
+///
+/// Integer note: C evaluates this in `int` with a truncating `/ 2` on the
+/// right-hand side, so the comparison is against `floor(orig * denom / 2)`,
+/// not against a rational half. Reproduced with `i32`.
+#[must_use]
+pub fn dimension_is_ok(orig_dim: i32, resized_dim: i32, denom: i32) -> bool {
+    resized_dim * SCALE_NUMERATOR as i32 >= orig_dim * denom / 2
+}
+
+/// C `dimensions_are_ok` (`resize.c:1910`) — static.
+///
+/// Only the WIDTH is checked, because superres scales horizontally only; C
+/// `(void)`-casts the height away and that is reproduced by not taking it.
+#[must_use]
+pub fn dimensions_are_ok(owidth: i32, rsz: &SuperresParams) -> bool {
+    dimension_is_ok(
+        owidth,
+        i32::from(rsz.encoding_width),
+        i32::from(rsz.superres_denom),
+    )
+}
+
+/// C `validate_size_scales` (`resize.c:1916`) — static.
+///
+/// When resize and superres are both on, their denominators multiply and can
+/// take the coded width below the conformance floor. This walks one or both
+/// back until the result is legal, and which one it is allowed to touch
+/// depends on which of the two was configured RANDOM — a fixed denominator the
+/// application asked for is never silently changed.
+///
+/// Returns `(ok, resize_denom)`, mutating `rsz` in place, exactly as C does
+/// through its `superres_params_type*` and `uint8_t*` out-parameters. The
+/// fourth arm — neither mode RANDOM — cannot alter anything and returns
+/// `false`, which is C's `return 0` and the caller's signal to give up on the
+/// combination.
+///
+/// The `RESIZE_RANDOM && SUPERRES_RANDOM` arm is a `do`/`while`, so it always
+/// decrements at least once even when the dimensions were already fine — but
+/// it is only entered after the early `dimensions_are_ok` return, so "already
+/// fine" cannot reach it.
+pub fn validate_size_scales(
+    resize_mode: ResizeMode,
+    superres_mode: SuperresMode,
+    owidth: i32,
+    oheight: i32,
+    rsz: &mut SuperresParams,
+    resize_denom: &mut u8,
+) -> bool {
+    let unscaled = SCALE_NUMERATOR as u8;
+    if dimensions_are_ok(owidth, rsz) {
+        return true; // Nothing to do.
+    }
+
+    // C `DIVIDE_AND_ROUND(x, y)` = `(x + y / 2) / y`.
+    let round_div = |x: i32, y: i32| (x + y / 2) / y;
+    *resize_denom = round_div(
+        owidth * SCALE_NUMERATOR as i32,
+        i32::from(rsz.encoding_width),
+    )
+    .max(round_div(
+        oheight * SCALE_NUMERATOR as i32,
+        i32::from(rsz.encoding_height),
+    ))
+    .clamp(0, 255) as u8;
+
+    let scale = |dim: &mut u16, denom: u8| *dim = svtav1_dsp::superres::scaled_size(*dim, denom);
+    let resize_random = resize_mode == ResizeMode::Random;
+    let superres_random = superres_mode == SuperresMode::Random;
+
+    if !resize_random && superres_random {
+        // Alter the superres scale to enforce conformity.
+        rsz.superres_denom =
+            ((2 * SCALE_NUMERATOR * SCALE_NUMERATOR) / u32::from(*resize_denom).max(1)) as u8;
+        if !dimensions_are_ok(owidth, rsz) && rsz.superres_denom > unscaled {
+            rsz.superres_denom -= 1;
+        }
+    } else if resize_random && !superres_random {
+        // Alter the resize scale instead.
+        *resize_denom =
+            ((2 * SCALE_NUMERATOR * SCALE_NUMERATOR) / u32::from(rsz.superres_denom).max(1)) as u8;
+        rsz.encoding_width = owidth as u16;
+        rsz.encoding_height = oheight as u16;
+        scale(&mut rsz.encoding_width, *resize_denom);
+        scale(&mut rsz.encoding_height, *resize_denom);
+        if !dimensions_are_ok(owidth, rsz) && *resize_denom > unscaled {
+            *resize_denom -= 1;
+            rsz.encoding_width = owidth as u16;
+            rsz.encoding_height = oheight as u16;
+            scale(&mut rsz.encoding_width, *resize_denom);
+            scale(&mut rsz.encoding_height, *resize_denom);
+        }
+    } else if resize_random && superres_random {
+        // Walk whichever is currently larger back, one step at a time.
+        loop {
+            if *resize_denom > rsz.superres_denom {
+                *resize_denom -= 1;
+            } else {
+                rsz.superres_denom -= 1;
+            }
+            rsz.encoding_width = owidth as u16;
+            rsz.encoding_height = oheight as u16;
+            scale(&mut rsz.encoding_width, *resize_denom);
+            scale(&mut rsz.encoding_height, *resize_denom);
+            if dimensions_are_ok(owidth, rsz)
+                || !(*resize_denom > unscaled || rsz.superres_denom > unscaled)
+            {
+                break;
+            }
+        }
+    } else {
+        // Neither may be altered.
+        return false;
+    }
+    dimensions_are_ok(owidth, rsz)
 }
