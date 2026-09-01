@@ -55,6 +55,7 @@
 //! calling the agreement tier 1 is exactly what §4 forbids.
 
 pub mod cdfs;
+pub mod compound;
 pub mod framesize;
 pub mod gm;
 pub mod interp;

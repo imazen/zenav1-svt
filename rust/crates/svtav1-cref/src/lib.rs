@@ -8,6 +8,7 @@
 //! `publish = false`, used only as a dev-dependency, and never part of a
 //! shipped artifact.
 
+pub mod entropy_block;
 pub mod entropy_inter;
 pub mod inter_me;
 pub mod inter_mvp;
