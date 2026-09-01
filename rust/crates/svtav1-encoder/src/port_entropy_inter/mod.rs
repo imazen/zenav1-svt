@@ -60,6 +60,7 @@ pub mod compound;
 pub mod framesize;
 pub mod gm;
 pub mod interp;
+pub mod metadata;
 pub mod modes;
 pub mod neighbors;
 pub mod primitives;
