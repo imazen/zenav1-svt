@@ -56,6 +56,25 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **FIX: `mds0_arm` was never called.** The commit that added it shipped the
+  module and the prune but lost its `pipeline.rs` call site, so every
+  "no cell moved" number in that commit message was vacuous. `cargo build
+  --all-targets` did not catch it because the build was grepped for
+  `^warning: unused` and a never-called function warns as
+  `warning: function ... is never used`. Wired and re-measured, now with a
+  POSITIVE CONTROL: the prune abandons 146 candidates across the 16 leaves of
+  `diag 64x64 q40 p11` in VIDEO mode and 0 in still mode, and every cell is
+  byte-identical — six video key-frame cells, `identity_full_8bit` 1100/1100,
+  `regression_spotcheck` 49/49, `cargo nextest run --workspace` 2409/2409.
+  Recorded in `docs/INTER-ENCODE-PLAN.md` rather than amended away.
+
+- **CORRECTION: the `pic_pd0_lvl` values in the previous entry were probed at
+  the wrong `seq_qp_mod`.** C sets `scs->seq_qp_mod = 2` unconditionally
+  (`Globals/enc_handle.c:3994`) and `set_pic_pd0_lvl_default`'s qp-offset term
+  is gated on `seq_qp_mod > 1`, so at CLI qp 40 the video arm's level at
+  M9..M13 / 240p is **5**, not the 4 a `Case::default()` probe (`seq_qp_mod =
+  0`) reports. Any ladder with a `seq_qp_mod` term must be probed at 2.
+
 - **`pcs->mds0_level` wired to `scs->allintra` (`svtav1_encoder::mds0_arm`) —
   faithful, measured byte-inert, and kept anyway.** The video arm assigns
   level 2 above M10 (enc_mode_config.c:9250) where the allintra arm is a

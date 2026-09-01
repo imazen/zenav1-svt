@@ -522,6 +522,102 @@ because the frame-0 block count varies with the preset. `tools/ctrace-linux/`
 runs fine under colima's native arm64 profile on this host; the `zenav1-svt-
 ctrace-cbuild` volume makes a second cell a ~20 s run.
 
+### 1g. `pic_pd0_lvl` WIRED at preset >= 9 — `diag p11`'s tree is now EXACTLY C's (2026-09-01)
+
+Held on `wip/video-md-arms` with the two MD arms, because the three only make
+sense together (below). What it does:
+`crate::pd0::pd0_pick_sb_partition_video` + `crate::part_arm::video_pd0_params`
+run the VIDEO arm's PD0 on the fixed-tree path — the level from
+`set_pic_pd0_lvl_default` instead of `pd0_detector_allintra`, `max_block_size`
+uncapped (`get_max_block_size_default` returns `super_block_size` outright),
+and NSQ geometry ON (`nsq_geom_level` 3 against the allintra arm's 0).
+
+**Result on `diag 64x64 q40 p11`: `tools/tree_diff.py` reports 22 blocks
+joined, 0 C-only / 0 port-only geometry** — every `bsize` equal, against
+`main`'s 12 / 6 and its 16 uniform 16x16 leaves. That tree was dumped with the
+two MD arms OFF, which is the point: the geometry is PD0's alone, and the arms
+then supply the MDS0 metric that fixes the 8 mode / 8 uv flips left on those 22
+blocks. Arms off the cell is 325 B against C's 401 (18.953 %, the right tree
+with the wrong modes); arms on it is 403 B (**0.499 %**).
+
+**A CORRECTION to §1f's own table, and it is the same class of error §1f was
+written to fix.** §1f says "M9 and M11 allintra 7 / video 4". That was measured
+with `c_parity_sig_deriv_md_config.rs`'s `Case::default()`, which sets
+`seq_qp_mod = 0`. **C sets `scs->seq_qp_mod = 2` unconditionally**
+(`Globals/enc_handle.c:3994`), and `set_pic_pd0_lvl_default`'s qp offset is
+`(seq_qp_mod <= 1) ? 0 : ldp0_lvl_offset[qp_band]`. At the cells' CLI qp 40
+(band 2, offset 1) the video arm's level at M9..M13 / 240p is therefore **5**,
+not 4 — PD0_LVL_5, which the port already models — and 6 at qp <= 27, 4 at
+qp >= 44. The M3..M7 row is unaffected (a flat 3 at 240p, no offset term).
+`part_arm::SEQ_QP_MOD` already carried the right value; the probe did not.
+**Any ladder with a `seq_qp_mod` term must be probed at 2.**
+
+**Per-cell, frame 0, % off C's byte count:**
+
+| cell | limit | main | + the two arms | + arms + video PD0 |
+|---|--:|--:|--:|--:|
+| `gradient 72x88 q40 p4` | 1.0 | 0.570 | 2.000 | **1.996** |
+| `gradient 72x88 q40 p5` | 0.3 | 0.067 | 0.000 | **0.000** |
+| `screenrep 72x88 q40 p7` | 0.5 | 0.377 | 0.000 | **0.000** |
+| `gradient 72x88 q40 p9` | 1.0 | 0.063 | 1.196 | **0.189** |
+| `diag 64x64 q40 p11` | 2.0 | 0.748 | 16.958 | **0.499** |
+| `gradient 64x64 q40 p6` (ref) | — | 1.457 | 0.416 | 0.416 |
+
+The video PD0 **alone**, with the arms off, is WORSE than main on both cells it
+moves — p9 1.825 %, p11 18.953 % — which is the same cancellation §1f
+describes, seen from the other side. So the three pieces are one landing, and
+that landing still leaves `video-key-nsq-arm-p4-72x88` at 1.996 % against its
+1.0 limit. Moving a limit is a threshold change; the bundle waits.
+
+### 1h. The M3..M8 half of `pic_pd0_lvl` — four variants MEASURED, none good
+
+`set_pic_pd0_lvl_default` gives the video arm **PD0_LVL_3** at M3..M7 (240p,
+flat, no qp term), where the allintra arm takes PD0_LVL_1. Per
+`svt_aom_sig_deriv_enc_dec_pd0` the two differ in exactly two things — subres
+step 1 on an I-slice (`:7345`, LVL_1 is forced 0 by `pd0_level <= PD0_LVL_2`)
+and `depth_early_exit_th` 900 instead of 1000 (`:7232`, since
+`pic_pred_depth_only` is FALSE on the refinement path) — because
+`rate_est_level` is 2 for every `pd0_level <= PD0_LVL_3`, i.e. LVL_1's own.
+
+Wiring that through `pd0_pick_sb_partition_m6_eval` (presets 0..=8), measured
+on the same cells:
+
+| refinement-path model | p4 (1.0) | p5 (0.3) | p7 (0.5) | p6 ref |
+|---|--:|--:|--:|--:|
+| allintra LVL_1, th 1000 (today) | 1.996 | **0.000** | **0.000** | 0.416 |
+| LVL_3 + subres, th 900 | **0.641** | 1.953 | 0.042 | 5.619 |
+| LVL_3 + subres, th 1000 | **0.356** | 1.953 | **0.000** | 5.619 |
+| LVL_1, th 900 | 2.067 | 0.875 | 0.042 | 0.416 |
+| LVL_3 + subres + C's `is_complete_b64` gate, th 900 | 0.641 | 1.953 | 0.042 | 5.619 |
+
+Read it as three findings, not one:
+
+* **The subres step is what moves p4** — every variant carrying it improves p4
+  by more than a factor of three — **and it is also what breaks p5 and the
+  reference cell.** The threshold is a second-order effect (p4 0.641 vs 0.356).
+* **The `is_complete_b64` gate is not the explanation.** C forces
+  `subres_level = 0` on an incomplete b64 (`:7337`) and the port now seeds its
+  `is_subres_safe` sentinel accordingly; the row is BYTE-IDENTICAL to the
+  ungated one, so on these cells the odd/even-deviation check was already
+  refusing subres on those SBs.
+* **The reference cell is the decisive witness.** `gradient 64x64 q40 p6` is a
+  single COMPLETE superblock, so every gate that could legitimately suppress
+  subres is open, and turning it on moves the cell from 0.416 % to 5.619 % —
+  undoing §1e's result that its coded tree and every leaf mode already equal
+  C's. Something in the LVL_3 subres block cost is wrong, or a C gate outside
+  `sig_deriv_enc_dec_pd0` closes it.
+
+**The next probe, and it should not be another guess:** dump C's own per-block
+PD0 costs and the resolved `subres_ctrls.step` for `gradient 64x64 q40 p6`
+video through the `--wrap` interposers in `tools/ctrace-linux/`
+(`SVT_PD0COST_OUT` / `SVT_PICKPART_OUT`) and compare against the port's, block
+for block. Two candidates it will separate: (a) the port's `is_subres_safe`
+scope — C determines it ONCE per SB (`enc_dec_process.c:2943` seeds it before
+PD0 runs) while `pd0_pick_sb_partition_m6_eval` re-seeds it on every call, and
+the refinement walk calls that function several times per SB; (b)
+`ctx->pd0_use_src_samples`, still `true` in the port where the video arm's C is
+`false` — §1f item 3, unported on both PD0 paths.
+
 ### `mds0_level` — WIRED 2026-09-01 (`crate::mds0_arm`), byte-inert and said so
 
 The second row of the M11 table above is closed. `pcs->mds0_level` is
@@ -535,9 +631,25 @@ fast cost so far is abandoned with `MAX_MODE_COST`. `crate::mds0_arm` wires it
 off the same `ScArm` every other `*_arm` module uses, through the tier-1-gated
 `md_config::mds0_level_default`.
 
-**MEASURED byte-inert, and that is reported rather than hidden.** It fires
-heavily — at `diag 64x64 q40 p11` it abandons 6-9 of the ~12 candidates on
-every 16x16 leaf — and changes NO cell: all six `ratioVideoKey` /
+**A VACUITY BUG in the first landing of this, fixed the same day and recorded
+rather than quietly amended.** The commit that introduced `mds0_arm`
+(`f3020ddb`) shipped the module, the `FunnelCfg` field and the prune — but its
+`pipeline.rs` call site was lost when the two held arms were reverted out of the
+working copy around it, so **nothing called `mds0_arm::apply` and every "no cell
+moved" measurement in that commit message was vacuous**. The build did not say
+so: `cargo build --all-targets` was grepped for `^error` and `^warning: unused`,
+and a never-called function warns as `warning: function ... is never used`,
+which that pattern does not match. Same shape as `WORKING-ON-THIS.md` §5's
+silent-harness rule, one level up: *a green build is not evidence that your code
+runs — grep the whole warning stream, or make the call site the thing you
+verify.* Wired and re-measured in the follow-up commit; the numbers below are
+the WIRED ones.
+
+**MEASURED byte-inert, with a POSITIVE CONTROL, and that is reported rather
+than hidden.** On `diag 64x64 q40 p11` the prune abandons **146** candidates
+across the frame's 16 leaves in VIDEO mode and **0** in still mode — the arm
+split itself, on one build, which is what says the probe can see the feature at
+all (`WORKING-ON-THIS.md` §5). And it changes NO cell: all six `ratioVideoKey` /
 `fhVideoKey`-adjacent video cells and all six still identity cells are
 byte-for-byte what they were, with and without the held arms. It earns no
 `regression_spotcheck.sh` cell for exactly the reason §3 of

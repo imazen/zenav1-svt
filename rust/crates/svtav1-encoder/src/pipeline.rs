@@ -7875,6 +7875,20 @@ fn encode_tile_rows(
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
             true,
         );
+        // `pcs->mds0_level` -> `set_mds0_controls`, for THIS arm
+        // (`crate::mds0_arm`). The arms agree on a key frame through M10 and
+        // diverge above it: the video arm takes level 2 (`fast_loop_core`'s
+        // global dist-to-cost prune, product_coding_loop.c:1325) where the
+        // allintra arm is a literal 0 at every preset. Byte-neutral on the
+        // still path by construction.
+        crate::mds0_arm::apply(
+            &mut funnel_cfg,
+            sc_arm,
+            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            true,
+            matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+                || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
+        );
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
         }
