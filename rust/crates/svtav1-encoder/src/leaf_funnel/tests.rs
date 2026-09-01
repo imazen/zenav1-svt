@@ -291,6 +291,85 @@ fn nic_counts_match_c() {
     assert_eq!(nic_counts(55, (0, 0, 0)), (1, 1, 1));
 }
 
+/// The same function against the REAL exported C, over EVERY row of
+/// `MD_STAGE_NICS_SCAL_NUM` and every CLI qp — **evidence tier 1**
+/// (`docs/WORKING-ON-THIS.md` §4), where `nic_counts_match_c` above is a
+/// handful of transcribed values.
+///
+/// This is the function the funnel actually runs.
+/// `crates/svtav1-encoder/tests/c_parity_md_nics.rs` gates a DIFFERENT
+/// transcription of the same C function — `port_md::nics::set_nics`, which has
+/// no caller on the live path — and its "exhaustive over the reachable grid"
+/// sweep draws the scaling numerators from `[0,1,2,4,8,12,16,20,32]` /
+/// `[0,1,8,16,32]` and the qp from nine points. Neither set contains
+/// `(4, 4, 4)`, which is `nic_scaling_level` 8, i.e. `nic_level` 7 — the level
+/// the VIDEO arm takes at presets 4 and 5 — and neither contains qp 40. So the
+/// cell the inter campaign is standing on (`gradient 72x88 q40 p5`) sat in a
+/// hole in both gates: one covered the wrong function, the other the wrong
+/// grid. Found 2026-09-01 while attributing that cell's byte delta.
+///
+/// `pic_type` is fixed at 0 here BECAUSE `nic_counts` hardcodes the I-slice
+/// row of `MD_STAGE_NICS` (64/32/16); the other two rows are pinned in
+/// `c_parity_md_nics.rs::all_three_pic_types_differ`, and the day this funnel
+/// codes a non-I frame, that hardcode is the thing to fix.
+///
+/// `nic_max_qp_based_th_scaling` is `true` on both arms at every preset the
+/// port can reach (`enc_handle.c:3785`/`:3837` — the only 0 is the `default`
+/// arm at `ENC_MR`, below preset 0), which is why `nic_counts` applies the qp
+/// scaling unconditionally. The `false` half is asserted DIFFERENT below so
+/// that unconditional application is a recorded decision, not an accident.
+#[test]
+fn nic_counts_match_the_real_c_over_every_scaling_row_and_qp() {
+    // C `MD_STAGE_NICS_SCAL_NUM` (definitions.h:819), stages 1..3 of each row.
+    const ROWS: [(u8, u8, u8); 16] = [
+        (20, 20, 20),
+        (18, 18, 18),
+        (16, 16, 16),
+        (12, 12, 12),
+        (10, 10, 10),
+        (8, 8, 8),
+        (6, 6, 6),
+        (4, 5, 5),
+        (4, 4, 4),
+        (3, 4, 4),
+        (3, 3, 3),
+        (3, 2, 2),
+        (3, 1, 1),
+        (2, 1, 1),
+        (2, 0, 0),
+        (0, 0, 0),
+    ];
+    let mut checked = 0usize;
+    for row in ROWS {
+        for qp in 0..=63u32 {
+            let c = svtav1_cref::mode_decision::set_nics(row, 0, qp, true);
+            let r = nic_counts(qp, (u64::from(row.0), u64::from(row.1), u64::from(row.2)));
+            assert_eq!(
+                (c.mds1[0], c.mds2[0], c.mds3[0]),
+                r,
+                "nic_counts row={row:?} qp={qp}"
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 16 * 64, "the sweep must actually have run");
+
+    // The exact cell the campaign stands on, spelled out so a regression names
+    // itself: video nic_level 7 (presets 4/5) and 8 (preset 6) at CLI qp 40.
+    assert_eq!(nic_counts(40, (4, 4, 4)), (10, 5, 3));
+    assert_eq!(nic_counts(40, (2, 1, 1)), (5, 2, 2));
+
+    // ANTI-VACUITY on the qp axis: without the qp scaling the counts differ,
+    // so a `nic_counts` that dropped it would fail the sweep above rather than
+    // pass it by symmetry.
+    let unscaled = svtav1_cref::mode_decision::set_nics((4, 4, 4), 0, 40, false);
+    assert_ne!(
+        (unscaled.mds1[0], unscaled.mds2[0], unscaled.mds3[0]),
+        nic_counts(40, (4, 4, 4)),
+        "qp scaling must be observable at this cell"
+    );
+}
+
 /// RDCOST identity from the captured g64 q55 MDS3 rows: the DC
 /// candidate's full cost decomposition
 /// (rate 547+273+176560+112+112+1280+26, dist 10963760).
