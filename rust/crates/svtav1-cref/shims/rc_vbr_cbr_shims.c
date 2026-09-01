@@ -589,3 +589,285 @@ int32_t ref_rc_calc_qindex_rate_control(RefRcQpickState* st) {
     rc_harness_free(&h.rc);
     return st->out_base_q_idx;
 }
+
+/* =========================================================================
+ * The post-encode / recode / resize group. Four EXPORTED entry points, so
+ * tier 1 with no promotion:
+ *   svt_av1_rc_postencode_update            (rc_vbr_cbr.c:1562)
+ *   svt_av1_rc_postencode_update_gop_const  (rc_vbr_cbr.c:1494)
+ *   recode_loop_update_q                    (rc_vbr_cbr.c:1793)
+ *   svt_aom_dynamic_resize_decision         (rc_vbr_cbr.c:497)
+ * Between them they drag in update_buffer_level,
+ * av1_rc_update_rate_correction_factors, av1_rc_compute_frame_size_bounds,
+ * recode_loop_test, av1_find_qindex, av1_get_compression_ratio,
+ * get_regulated_q_overshoot/_undershoot, dynamic_resize_one_pass_cbr,
+ * svt_av1_resize_reset_rc and set_gf_interval_update_onepass_rt.
+ * ====================================================================== */
+
+typedef struct RefRcUpdateState {
+    RefRcVbrState base;
+
+    /* extra RATE_CONTROL, in and out */
+    int32_t last_boosted_qindex;
+    int32_t last_q[2];
+    int32_t rolling_target_bits;
+    int32_t rolling_actual_bits;
+    int64_t total_actual_bits;
+    int64_t total_target_bits;
+    int32_t avg_frame_low_motion;
+    int32_t constrained_gf_group;
+    int32_t frames_since_cdf_update;
+    int32_t frames_to_key;
+    int32_t this_key_frame_forced;
+    int32_t active_worst_quality;
+    int32_t kf_boost;
+    int32_t gfu_boost;
+    int32_t baseline_gf_interval;
+    int32_t resize_state;
+    int32_t resize_avg_qp;
+    int32_t resize_buffer_underflow;
+    int32_t resize_count;
+
+    /* extra PPCS */
+    uint64_t picture_number;
+    uint64_t frame_offset;
+    uint64_t total_num_bits;
+    uint64_t pcs_total_rate;
+    uint64_t avg_cnt_zeromv;
+    int32_t  showable_frame;
+    int32_t  loop_count;
+    int32_t  max_frame_size;
+    int32_t  src_frame_width;
+    int32_t  src_frame_height;
+    int32_t  scene_change_flag;
+
+    /* SequenceControlSet / EncodeContext */
+    int32_t min_qp_allowed;
+    int32_t max_qp_allowed;
+    int32_t recode_loop;
+    int32_t recode_tolerance;
+    int32_t min_cr;
+    uint32_t max_bit_rate;
+    int32_t rtc;
+    int32_t max_input_luma_width;
+    int32_t max_input_luma_height;
+    int32_t intra_period_length;
+    int32_t seq_profile;
+    double  new_framerate;
+
+    /* RateControlIntervalParamContext, in and out */
+    int32_t param_rolling_target_bits;
+    int32_t param_rolling_actual_bits;
+    int64_t param_total_actual_bits;
+    int64_t param_total_target_bits;
+
+    /* recode-loop state, in and out */
+    int32_t recode_q;
+    int32_t recode_q_low;
+    int32_t recode_q_high;
+    int32_t recode_undershoot_seen;
+    int32_t recode_overshoot_seen;
+    int32_t recode_low_cr_seen;
+    int32_t recode_loop_again; /* out */
+    int32_t top_index;
+    int32_t bottom_index;
+
+    /* resize_pending_params, in and out */
+    int32_t pending_resize_state;
+    int32_t pending_resize_denom;
+
+    /* outputs */
+    int32_t out_projected_frame_size;
+    int32_t out_this_frame_target;
+    int32_t out_base_frame_target;
+} RefRcUpdateState;
+
+static void update_harness_build(RcHarness* h, RateControlIntervalParamContext** param_out,
+                                 PictureControlSet** child_out, RefRcUpdateState* st) {
+    rc_harness_build(h, &st->base);
+    PictureParentControlSet* ppcs    = h->ppcs;
+    SequenceControlSet*      scs     = h->scs;
+    EncodeContext*           enc_ctx = h->enc_ctx;
+    RATE_CONTROL*            rc      = &enc_ctx->rc;
+
+    rc->last_boosted_qindex     = st->last_boosted_qindex;
+    rc->last_q[0]               = st->last_q[0];
+    rc->last_q[1]               = st->last_q[1];
+    rc->rolling_target_bits     = st->rolling_target_bits;
+    rc->rolling_actual_bits     = st->rolling_actual_bits;
+    rc->total_actual_bits       = st->total_actual_bits;
+    rc->total_target_bits       = st->total_target_bits;
+    rc->avg_frame_low_motion    = st->avg_frame_low_motion;
+    rc->constrained_gf_group    = st->constrained_gf_group;
+    rc->frames_since_cdf_update = st->frames_since_cdf_update;
+    rc->frames_to_key           = st->frames_to_key;
+    rc->this_key_frame_forced   = st->this_key_frame_forced;
+    rc->active_worst_quality    = st->active_worst_quality;
+    rc->kf_boost                = st->kf_boost;
+    rc->gfu_boost               = st->gfu_boost;
+    rc->baseline_gf_interval    = st->baseline_gf_interval;
+    rc->resize_state            = (RESIZE_STATE)st->resize_state;
+    rc->resize_avg_qp           = st->resize_avg_qp;
+    rc->resize_buffer_underflow = st->resize_buffer_underflow;
+    rc->resize_count            = st->resize_count;
+
+    ppcs->picture_number        = st->picture_number;
+    ppcs->frame_offset          = st->frame_offset;
+    ppcs->total_num_bits        = st->total_num_bits;
+    ppcs->pcs_total_rate        = st->pcs_total_rate;
+    ppcs->frm_hdr.showable_frame = (uint8_t)st->showable_frame;
+    ppcs->loop_count            = st->loop_count;
+    ppcs->max_frame_size        = st->max_frame_size;
+    ppcs->frame_width           = (uint16_t)st->src_frame_width;
+    ppcs->frame_height          = (uint16_t)st->src_frame_height;
+    ppcs->scene_change_flag     = (bool)st->scene_change_flag;
+    ppcs->top_index             = st->top_index;
+    ppcs->bottom_index          = st->bottom_index;
+
+    scs->static_config.min_qp_allowed = (uint32_t)st->min_qp_allowed;
+    scs->static_config.max_qp_allowed = (uint32_t)st->max_qp_allowed;
+    scs->static_config.max_bit_rate   = st->max_bit_rate;
+    scs->static_config.rtc            = (bool)st->rtc;
+    scs->static_config.intra_period_length = st->intra_period_length;
+    scs->max_input_luma_width         = (uint16_t)st->max_input_luma_width;
+    scs->max_input_luma_height        = (uint16_t)st->max_input_luma_height;
+    scs->new_framerate                = st->new_framerate;
+    scs->seq_header.seq_profile       = (EbAv1SeqProfile)st->seq_profile;
+    scs->resize_pending_params.resize_state = (RESIZE_STATE)st->pending_resize_state;
+    scs->resize_pending_params.resize_denom = (uint8_t)st->pending_resize_denom;
+
+    enc_ctx->recode_loop      = (RecodeLoopType)st->recode_loop;
+    enc_ctx->recode_tolerance = st->recode_tolerance;
+    enc_ctx->rc_cfg.min_cr    = (unsigned int)st->min_cr;
+
+    RateControlIntervalParamContext* params =
+        (RateControlIntervalParamContext*)calloc(1, sizeof(*params));
+    params->rolling_target_bits = st->param_rolling_target_bits;
+    params->rolling_actual_bits = st->param_rolling_actual_bits;
+    params->total_actual_bits   = st->param_total_actual_bits;
+    params->total_target_bits   = st->param_total_target_bits;
+    ppcs->rate_control_param_ptr = params;
+    *param_out                   = params;
+
+    PictureControlSet* child = (PictureControlSet*)calloc(1, sizeof(*child));
+    child->ppcs             = ppcs;
+    child->avg_cnt_zeromv   = st->avg_cnt_zeromv;
+    ppcs->child_pcs         = child;
+    *child_out              = child;
+}
+
+static void update_harness_store(const RcHarness* h, const RateControlIntervalParamContext* params,
+                                 RefRcUpdateState* st) {
+    const RATE_CONTROL* rc = &h->enc_ctx->rc;
+    rc_harness_store(h, &st->base);
+    st->last_boosted_qindex     = rc->last_boosted_qindex;
+    st->last_q[0]               = rc->last_q[0];
+    st->last_q[1]               = rc->last_q[1];
+    st->rolling_target_bits     = rc->rolling_target_bits;
+    st->rolling_actual_bits     = rc->rolling_actual_bits;
+    st->total_actual_bits       = rc->total_actual_bits;
+    st->total_target_bits       = rc->total_target_bits;
+    st->avg_frame_low_motion    = rc->avg_frame_low_motion;
+    st->frames_since_cdf_update = rc->frames_since_cdf_update;
+    st->frames_to_key           = rc->frames_to_key;
+    st->this_key_frame_forced   = rc->this_key_frame_forced;
+    st->active_worst_quality    = rc->active_worst_quality;
+    st->kf_boost                = rc->kf_boost;
+    st->gfu_boost               = rc->gfu_boost;
+    st->baseline_gf_interval    = rc->baseline_gf_interval;
+    st->constrained_gf_group    = rc->constrained_gf_group;
+    st->resize_state            = (int32_t)rc->resize_state;
+    st->resize_avg_qp           = rc->resize_avg_qp;
+    st->resize_buffer_underflow = rc->resize_buffer_underflow;
+    st->resize_count            = rc->resize_count;
+    st->base.avg_frame_qindex[0] = rc->avg_frame_qindex[0];
+    st->base.avg_frame_qindex[1] = rc->avg_frame_qindex[1];
+    /* A key frame ZEROES this; without copying it back the differential
+       compared C's INPUT against the port's OUTPUT and reported a false
+       mismatch. */
+    st->base.frames_since_key    = rc->frames_since_key;
+
+    st->param_rolling_target_bits = params->rolling_target_bits;
+    st->param_rolling_actual_bits = params->rolling_actual_bits;
+    st->param_total_actual_bits   = params->total_actual_bits;
+    st->param_total_target_bits   = params->total_target_bits;
+
+    st->out_projected_frame_size = h->ppcs->projected_frame_size;
+    st->out_this_frame_target    = h->ppcs->this_frame_target;
+    st->out_base_frame_target    = h->ppcs->base_frame_target;
+    st->top_index                = h->ppcs->top_index;
+    st->bottom_index             = h->ppcs->bottom_index;
+    st->pending_resize_state     = (int32_t)h->scs->resize_pending_params.resize_state;
+    st->pending_resize_denom     = h->scs->resize_pending_params.resize_denom;
+}
+
+static void update_harness_free(RcHarness* h, RateControlIntervalParamContext* params,
+                                PictureControlSet* child) {
+    free(child);
+    free(params);
+    rc_harness_free(h);
+}
+
+void ref_rc_postencode_update(RefRcUpdateState* st) {
+    RcHarness h;
+    RateControlIntervalParamContext* params;
+    PictureControlSet*               child;
+    update_harness_build(&h, &params, &child, st);
+    svt_av1_rc_postencode_update(h.ppcs);
+    update_harness_store(&h, params, st);
+    update_harness_free(&h, params, child);
+}
+
+void ref_rc_postencode_update_gop_const(RefRcUpdateState* st) {
+    RcHarness h;
+    RateControlIntervalParamContext* params;
+    PictureControlSet*               child;
+    update_harness_build(&h, &params, &child, st);
+    svt_av1_rc_postencode_update_gop_const(h.ppcs);
+    update_harness_store(&h, params, st);
+    update_harness_free(&h, params, child);
+}
+
+void ref_rc_recode_loop_update_q(RefRcUpdateState* st) {
+    RcHarness h;
+    RateControlIntervalParamContext* params;
+    PictureControlSet*               child;
+    update_harness_build(&h, &params, &child, st);
+    bool loop            = false;
+    int  q               = st->recode_q;
+    int  q_low           = st->recode_q_low;
+    int  q_high          = st->recode_q_high;
+    int  undershoot_seen = st->recode_undershoot_seen;
+    int  overshoot_seen  = st->recode_overshoot_seen;
+    int  low_cr_seen     = st->recode_low_cr_seen;
+    recode_loop_update_q(h.ppcs,
+                         &loop,
+                         &q,
+                         &q_low,
+                         &q_high,
+                         st->top_index,
+                         st->bottom_index,
+                         &undershoot_seen,
+                         &overshoot_seen,
+                         &low_cr_seen,
+                         st->loop_count);
+    update_harness_store(&h, params, st);
+    st->recode_q               = q;
+    st->recode_q_low           = q_low;
+    st->recode_q_high          = q_high;
+    st->recode_undershoot_seen = undershoot_seen;
+    st->recode_overshoot_seen  = overshoot_seen;
+    st->recode_low_cr_seen     = low_cr_seen;
+    st->recode_loop_again      = loop ? 1 : 0;
+    update_harness_free(&h, params, child);
+}
+
+void ref_rc_dynamic_resize_decision(RefRcUpdateState* st) {
+    RcHarness h;
+    RateControlIntervalParamContext* params;
+    PictureControlSet*               child;
+    update_harness_build(&h, &params, &child, st);
+    svt_aom_dynamic_resize_decision(h.ppcs);
+    update_harness_store(&h, params, st);
+    update_harness_free(&h, params, child);
+}

@@ -496,3 +496,194 @@ unsafe extern "C" {
 pub fn calc_qindex_rate_control(state: &mut RefRcQpickState) -> i32 {
     unsafe { ref_rc_calc_qindex_rate_control(state) }
 }
+
+// ---------------------------------------------------------------------------
+// The post-encode / recode / resize group — four EXPORTED entry points
+// ---------------------------------------------------------------------------
+
+/// Everything `svt_av1_rc_postencode_update{,_gop_const}`,
+/// `recode_loop_update_q` and `svt_aom_dynamic_resize_decision` read or write.
+///
+/// Layout must match `RefRcUpdateState` in `shims/rc_vbr_cbr_shims.c`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RefRcUpdateState {
+    pub base: RefRcVbrState,
+
+    // --- extra RATE_CONTROL, in AND out ---
+    pub last_boosted_qindex: i32,
+    /// `rc->last_q[FRAME_TYPES]` — the Q VALUE, not the qindex.
+    pub last_q: [i32; 2],
+    pub rolling_target_bits: i32,
+    pub rolling_actual_bits: i32,
+    pub total_actual_bits: i64,
+    pub total_target_bits: i64,
+    pub avg_frame_low_motion: i32,
+    pub constrained_gf_group: i32,
+    pub frames_since_cdf_update: i32,
+    pub frames_to_key: i32,
+    pub this_key_frame_forced: i32,
+    pub active_worst_quality: i32,
+    pub kf_boost: i32,
+    pub gfu_boost: i32,
+    pub baseline_gf_interval: i32,
+    pub resize_state: i32,
+    pub resize_avg_qp: i32,
+    pub resize_buffer_underflow: i32,
+    pub resize_count: i32,
+
+    // --- extra PPCS ---
+    pub picture_number: u64,
+    pub frame_offset: u64,
+    /// `ppcs->total_num_bits` — the coded size of the frame, in bits.
+    pub total_num_bits: u64,
+    /// `ppcs->pcs_total_rate` — the entropy coder's running cost, in
+    /// 1/512-bit units, which `recode_loop_update_q` converts to bits.
+    pub pcs_total_rate: u64,
+    /// `ppcs->child_pcs->avg_cnt_zeromv`.
+    pub avg_cnt_zeromv: u64,
+    pub showable_frame: i32,
+    pub loop_count: i32,
+    pub max_frame_size: i32,
+    /// `ppcs->frame_width` — the SOURCE width, not `av1_cm->frm_size`.
+    pub src_frame_width: i32,
+    pub src_frame_height: i32,
+    pub scene_change_flag: i32,
+
+    // --- SequenceControlSet / EncodeContext ---
+    pub min_qp_allowed: i32,
+    pub max_qp_allowed: i32,
+    /// `enc_ctx->recode_loop` (`RecodeLoopType`).
+    pub recode_loop: i32,
+    pub recode_tolerance: i32,
+    pub min_cr: i32,
+    pub max_bit_rate: u32,
+    pub rtc: i32,
+    pub max_input_luma_width: i32,
+    pub max_input_luma_height: i32,
+    pub intra_period_length: i32,
+    pub seq_profile: i32,
+    pub new_framerate: f64,
+
+    // --- RateControlIntervalParamContext, in AND out ---
+    pub param_rolling_target_bits: i32,
+    pub param_rolling_actual_bits: i32,
+    pub param_total_actual_bits: i64,
+    pub param_total_target_bits: i64,
+
+    // --- recode-loop state, in AND out ---
+    pub recode_q: i32,
+    pub recode_q_low: i32,
+    pub recode_q_high: i32,
+    pub recode_undershoot_seen: i32,
+    pub recode_overshoot_seen: i32,
+    pub recode_low_cr_seen: i32,
+    /// OUT only.
+    pub recode_loop_again: i32,
+    pub top_index: i32,
+    pub bottom_index: i32,
+
+    // --- resize_pending_params, in AND out ---
+    pub pending_resize_state: i32,
+    pub pending_resize_denom: i32,
+
+    // --- outputs ---
+    pub out_projected_frame_size: i32,
+    pub out_this_frame_target: i32,
+    pub out_base_frame_target: i32,
+}
+
+impl Default for RefRcUpdateState {
+    fn default() -> Self {
+        Self {
+            base: RefRcVbrState::default(),
+            last_boosted_qindex: 0,
+            last_q: [0; 2],
+            rolling_target_bits: 0,
+            rolling_actual_bits: 0,
+            total_actual_bits: 0,
+            total_target_bits: 0,
+            avg_frame_low_motion: 0,
+            constrained_gf_group: 0,
+            frames_since_cdf_update: 0,
+            frames_to_key: 0,
+            this_key_frame_forced: 0,
+            active_worst_quality: 0,
+            kf_boost: 0,
+            gfu_boost: 0,
+            baseline_gf_interval: 0,
+            resize_state: 0,
+            resize_avg_qp: 0,
+            resize_buffer_underflow: 0,
+            resize_count: 0,
+            picture_number: 0,
+            frame_offset: 0,
+            total_num_bits: 0,
+            pcs_total_rate: 0,
+            avg_cnt_zeromv: 0,
+            showable_frame: 1,
+            loop_count: 0,
+            max_frame_size: 0,
+            src_frame_width: 0,
+            src_frame_height: 0,
+            scene_change_flag: 0,
+            min_qp_allowed: 1,
+            max_qp_allowed: 63,
+            recode_loop: 0,
+            recode_tolerance: 25,
+            min_cr: 0,
+            max_bit_rate: 0,
+            rtc: 0,
+            max_input_luma_width: 0,
+            max_input_luma_height: 0,
+            intra_period_length: -1,
+            seq_profile: 0,
+            new_framerate: 60.0,
+            param_rolling_target_bits: 0,
+            param_rolling_actual_bits: 0,
+            param_total_actual_bits: 0,
+            param_total_target_bits: 0,
+            recode_q: 0,
+            recode_q_low: 0,
+            recode_q_high: 255,
+            recode_undershoot_seen: 0,
+            recode_overshoot_seen: 0,
+            recode_low_cr_seen: 0,
+            recode_loop_again: 0,
+            top_index: 255,
+            bottom_index: 0,
+            pending_resize_state: 0,
+            pending_resize_denom: 8,
+            out_projected_frame_size: 0,
+            out_this_frame_target: 0,
+            out_base_frame_target: 0,
+        }
+    }
+}
+
+unsafe extern "C" {
+    fn ref_rc_postencode_update(st: *mut RefRcUpdateState);
+    fn ref_rc_postencode_update_gop_const(st: *mut RefRcUpdateState);
+    fn ref_rc_recode_loop_update_q(st: *mut RefRcUpdateState);
+    fn ref_rc_dynamic_resize_decision(st: *mut RefRcUpdateState);
+}
+
+/// Reference `svt_av1_rc_postencode_update` (rc_vbr_cbr.c:1562).
+pub fn postencode_update(state: &mut RefRcUpdateState) {
+    unsafe { ref_rc_postencode_update(state) };
+}
+
+/// Reference `svt_av1_rc_postencode_update_gop_const` (rc_vbr_cbr.c:1494).
+pub fn postencode_update_gop_const(state: &mut RefRcUpdateState) {
+    unsafe { ref_rc_postencode_update_gop_const(state) };
+}
+
+/// Reference `recode_loop_update_q` (rc_vbr_cbr.c:1793).
+pub fn recode_loop_update_q(state: &mut RefRcUpdateState) {
+    unsafe { ref_rc_recode_loop_update_q(state) };
+}
+
+/// Reference `svt_aom_dynamic_resize_decision` (rc_vbr_cbr.c:497).
+pub fn dynamic_resize_decision(state: &mut RefRcUpdateState) {
+    unsafe { ref_rc_dynamic_resize_decision(state) };
+}
