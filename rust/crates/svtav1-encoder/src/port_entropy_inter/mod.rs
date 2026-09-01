@@ -61,6 +61,7 @@ pub mod framesize;
 pub mod gm;
 pub mod interp;
 pub mod modes;
+pub mod neighbors;
 pub mod refframe;
 
 use crate::entropy::cdf::AomCdfProb;
