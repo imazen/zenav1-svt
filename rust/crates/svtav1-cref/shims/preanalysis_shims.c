@@ -373,3 +373,34 @@ void ref_pre_is_screen_content(uint8_t* y_buf, uint32_t y_origin, uint32_t y_str
                                int32_t* out) {
     sc_run_detector(0, 0, y_buf, y_origin, y_stride, width, height, out);
 }
+
+/* ------------------------------------------------------------------------
+ * src_ops_process.c per-block variance measures. All three are EXPORTED.
+ *
+ * `svt_aom_get_perpixel_variance` reaches `svt_aom_mefn_ptr[bs].vf`, so it
+ * needs the same two-stage init as the screen-content detectors above — RTCD
+ * first, then `init_fn_ptr()`. The other two are plain scalar loops with no
+ * dispatch, but they go through `sc_ensure_fn_ptr()` too because it is
+ * idempotent and one entry condition is easier to keep right than three.
+ * ---------------------------------------------------------------------- */
+
+unsigned int svt_aom_get_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size);
+void         svt_aom_get_mean_and_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size,
+                                                    uint32_t* perpixel_var, uint32_t* mean);
+unsigned int svt_aom_get_perceptual_perpixel_variance(const uint8_t* buf, uint32_t stride, const int block_size);
+
+uint32_t ref_sops_get_perpixel_variance(const uint8_t* buf, uint32_t stride, int32_t block_size) {
+    sc_ensure_fn_ptr();
+    return svt_aom_get_perpixel_variance(buf, stride, block_size);
+}
+
+void ref_sops_get_mean_and_perpixel_variance(const uint8_t* buf, uint32_t stride, int32_t block_size,
+                                             uint32_t* perpixel_var, uint32_t* mean) {
+    sc_ensure_fn_ptr();
+    svt_aom_get_mean_and_perpixel_variance(buf, stride, block_size, perpixel_var, mean);
+}
+
+uint32_t ref_sops_get_perceptual_perpixel_variance(const uint8_t* buf, uint32_t stride, int32_t block_size) {
+    sc_ensure_fn_ptr();
+    return svt_aom_get_perceptual_perpixel_variance(buf, stride, block_size);
+}

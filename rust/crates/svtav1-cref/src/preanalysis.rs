@@ -588,3 +588,65 @@ pub fn is_screen_content(y: &[u8], y_stride: usize, width: usize, height: usize)
     }
     ScClassBits::from_raw(raw)
 }
+
+// ---------------------------------------------------------------------------
+// src_ops_process.c per-block variance measures
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_sops_get_perpixel_variance(buf: *const u8, stride: u32, block_size: i32) -> u32;
+    fn ref_sops_get_mean_and_perpixel_variance(
+        buf: *const u8,
+        stride: u32,
+        block_size: i32,
+        perpixel_var: *mut u32,
+        mean: *mut u32,
+    );
+    fn ref_sops_get_perceptual_perpixel_variance(
+        buf: *const u8,
+        stride: u32,
+        block_size: i32,
+    ) -> u32;
+}
+
+/// `svt_aom_get_perpixel_variance` (src_ops_process.c:2129).
+///
+/// `block_size` is a `BlockSize` discriminant; the caller supplies it, since
+/// these take any block size rather than the two the screen-content detectors
+/// use.
+pub fn sops_get_perpixel_variance(buf: &[u8], stride: usize, block_size: i32, rows: usize) -> u32 {
+    assert!(buf.len() >= (rows - 1) * stride + 1);
+    unsafe { ref_sops_get_perpixel_variance(buf.as_ptr(), stride as u32, block_size) }
+}
+
+/// `svt_aom_get_mean_and_perpixel_variance`. Returns `(perpixel_var, mean)`.
+pub fn sops_get_mean_and_perpixel_variance(
+    buf: &[u8],
+    stride: usize,
+    block_size: i32,
+    rows: usize,
+) -> (u32, u32) {
+    assert!(buf.len() >= (rows - 1) * stride + 1);
+    let (mut var, mut mean) = (0u32, 0u32);
+    unsafe {
+        ref_sops_get_mean_and_perpixel_variance(
+            buf.as_ptr(),
+            stride as u32,
+            block_size,
+            &mut var,
+            &mut mean,
+        );
+    }
+    (var, mean)
+}
+
+/// `svt_aom_get_perceptual_perpixel_variance`.
+pub fn sops_get_perceptual_perpixel_variance(
+    buf: &[u8],
+    stride: usize,
+    block_size: i32,
+    rows: usize,
+) -> u32 {
+    assert!(buf.len() >= (rows - 1) * stride + 1);
+    unsafe { ref_sops_get_perceptual_perpixel_variance(buf.as_ptr(), stride as u32, block_size) }
+}
