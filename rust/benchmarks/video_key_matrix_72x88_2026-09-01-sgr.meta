@@ -34,3 +34,10 @@ is a different encode that happens to cost the same.
 
 A zero percentage is a SIZE claim, not a byte claim. This campaign has had a
 cell read 0.000 % while differing (§1i).
+
+## Cross-ISA
+
+Re-run on x86-64 (`r7900x`, Ryzen 9 7900X, Linux) at the same commit from a
+scratch clone: **57 / 60, cell for cell the same verdicts**, with
+`cargo nextest run --workspace` 2427/2427 and
+`tools/regression_spotcheck.sh` 62/62. The three open cells are the same three.

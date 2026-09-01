@@ -1725,6 +1725,77 @@ video cell. Read `optrace_first_diff.py`'s segment lengths, and when they
 differ by a constant, look for a PREFIX one side omits rather than a symbol
 both sides got wrong.
 
+### 1o''. The p0 cluster, LOCALIZED (2026-09-01) — and §1o's PD0_LVL_0 lead is REFUTED
+
+The three cells §1o hands forward (`gradient` / `diag` / `screenrep` at
+preset 0) are still open; this section is the localization, not a fix, and it
+moves the lead somewhere else entirely.
+
+**§1o said the lead was PD0_LVL_0's block cost. It is not, on two independent
+counts, both read out of the C source rather than argued.**
+
+1. **The cost row at video PD0_LVL_0 is exactly the LVL_1 family's.**
+   `svt_aom_sig_deriv_enc_dec_pd0` (`enc_mode_config.c:7357-7370`) computes
+   `rate_est_level` INSIDE `if (pcs->rate_est_level)`, and it is
+   `pd0_level <= PD0_LVL_3 -> 2`. On the video arm `pcs->rate_est_level` is 1
+   at every preset, so PD0_LVL_0 gets `MAX(2, 1) = 2`, and
+   `set_rate_est_ctrls` case 2 is `coeff_rate_est_lvl 1`, `lpd0_qp_offset 0`,
+   `pd0_fast_coeff_est_level 2` — the row `Pd0Mode::Lvl1` already implements.
+   The closed form `Pd0Mode::Lvl0` models (`coeff_rate_est_lvl 0`,
+   `qp_offset 8`) is reachable ONLY through the bd10 forcing, where
+   `pcs->rate_est_level` is 0 and the `if` never runs. C's own
+   `SVT_PD0CFG_OUT` on both cells says so directly:
+   `lvl=0 subres=0 dev_th=0 split_th=50 exit_th=0 rate_lvl=1 qpoff=0
+   fastcoef=2 srcsamp=0 pred_only=0 d4=0 d8=0 maxbs=64 bias=1000 intra=1/0/0
+   nsq=1` — every field of which the port's LVL_1 arm already matches.
+2. **`intra=1/0/0` changes nothing in PD0.** §1o read the DC-only intra row
+   (`set_intra_ctrls`'s `MAX_INTRA_LEVEL - 1`) as narrowing PD0's candidate
+   set against p8's `1/12/1`. PD0's injector is
+   `generate_md_stage_0_cand_pd0` -> `inject_intra_candidates_pd0`
+   (`mode_decision.c:3164`), which injects EXACTLY ONE candidate — `DC_PRED`,
+   `angle_delta 0`, `tx_depth 0`, `DCT_DCT` — and reads nothing from
+   `intra_ctrls` at all. The only field that gates it is `enable_intra`, which
+   is 1 in BOTH rows (`set_intra_ctrls` cases 1 and `MAX_INTRA_LEVEL - 1`).
+   `intra_mode_end` / `angular_pred_level` are consumed by PD1's
+   `inject_intra_candidates` and the md-stage pruning, neither of which PD0
+   runs.
+
+**What the trees actually say.** Container C oracle verified byte-equal to the
+host oracle on both cells first (`diag` 207 B, `gradient` 1341 B), then
+`SVT_CTREE_OUT` joined against `SVTAV1_PACKTREE` with `tools/tree_diff.py`:
+
+| cell | field flips | port-only geometry | where |
+|---|--:|--:|---|
+| `diag 72x88 q40 p0` | **10** | 1 | ALL of them at `mi_row` 16/18/20 — the bottom partial-SB row |
+| `gradient 72x88 q40 p0` | **180** | 4 | 127 above `mi_row` 16, from the FIRST superblock |
+
+So the two cells are NOT one bug. `diag`'s whole divergence is a partial-SB
+boundary shape on the REFINEMENT path — the same family as §1k's light-PD0
+boundary fix, one path over. `gradient`'s is a leaf-decision divergence in the
+first superblock, dominated by `mode` (48 flips) and `uv` (46) rather than by
+geometry.
+
+**The one thing both share, and the lead to take:** where the trees disagree on
+`bsize`, C is at a SMALLER, SQUARER block. Every `bsize` flip on `gradient p0`,
+tabulated `C -> port`: `4X4 -> 8X4` (5), `4X4 -> 16X4` (3), `4X4 -> 4X8` (3),
+`8X8 -> 8X4` (2), `8X8 -> 16X4` (2), `8X4 -> 16X4` (2), `8X4 -> 4X4` (2),
+`4X16 -> 4X8` (2), and singles. C reaches `BLOCK_4X4` where the port stops at a
+NSQ RECTANGLE. `diag p0`'s four are the same shape (`4X4 -> 4X16` twice,
+`8X4 -> 4X16`, `8X8 -> 16X8`). C's config has `d4=0` (4x4 ALLOWED) and `nsq=1`
+at M0..M2 on BOTH arms, so this is not the `disallow_4x4` fork §1o closed — it
+is the depth admission / NSQ preference one level down. Start at
+`depth_refine::build_refined_scan_at`'s minimum admitted depth and the NSQ
+shape ordering at M0, not at the PD0 block cost.
+
+**`SVT_CTREE_OUT` contains BOTH FRAMES and the cut matters enormously.** §1o
+says to cut "at the last `mi=(0,0)` line"; that is not a usable rule, because
+`mi=(0,0)` recurs dozens of times per frame through MD re-stamps. The reliable
+cut is the FIRST record with `mode >= 13`: an I-slice cannot code an inter
+mode, so that line is frame 1's first block. Uncut, `diag p0` reports 24 field
+flips and 24 C-only blocks; cut, it reports **10 and 24** — and the 14
+phantom flips are frame 1's `mode=16`/`skip=1` blocks landing on frame 0's
+keys. Read any tree number without the cut and it is inflated.
+
 ### 1p. PD0_LVL_4 on the REFINEMENT path (2026-09-01) — `gradient p8`, and a latent `th` defect it exposed
 
 `gradient 72x88 q40 p8` was 1.673 % off (C 1554 B, the port 1528 — the port
