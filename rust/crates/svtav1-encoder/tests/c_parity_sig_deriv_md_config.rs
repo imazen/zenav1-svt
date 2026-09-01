@@ -839,7 +839,7 @@ fn video_key_frame_arm_divergence_at_m6_is_exactly_this_set() {
         (PME_SUBPEL, 0, 2, "inter-only"),
         (TXT, 8, 7, "WIRED (funnel_arm)"),
         (CFL, 4, 2, "WIRED (funnel_arm)"),
-        (NIC, 6, 8, "HELD on the wip/video-md-arms bookmark"),
+        (NIC, 6, 8, "WIRED (nic_arm) — HELD on wip/video-md-arms"),
         (NSQ_SEARCH, 0, 15, "WIRED (part_arm + NsqCfg::for_arm)"),
         (
             PD0_LVL,

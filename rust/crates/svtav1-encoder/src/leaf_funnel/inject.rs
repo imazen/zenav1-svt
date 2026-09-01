@@ -440,7 +440,8 @@ pub(super) fn inject_candidates(
     // never take the variance arm on a block where C takes the Hadamard one.
     let palette_can_inject =
         crate::entropy::context::allow_palette(cfg.allow_sct, w, h) && cfg.palette_level > 0;
-    let mds0_use_hadamard = cand_modes.len() > 1 || palette_can_inject || cfg.allow_intrabc;
+    let mds0_use_hadamard = cfg.mds0_use_hadamard_sb
+        && (cand_modes.len() > 1 || palette_can_inject || cfg.allow_intrabc);
 
     let mut cands: Vec<Cand> = Vec::with_capacity(cand_modes.len());
     // MDS0 with `prune_using_best_mode` (product_coding_loop.c:1680-1737):

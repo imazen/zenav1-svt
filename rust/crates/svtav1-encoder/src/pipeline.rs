@@ -7875,6 +7875,26 @@ fn encode_tile_rows(
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
             true,
         );
+        // `pcs->nic_level` -> `svt_aom_set_nic_controls`, for THIS arm
+        // (`crate::nic_arm`). At M6 the video arm is level 8 against the still
+        // arm's 6: stage counts {2,1,1} instead of {6,6,6} and candidate
+        // thresholds 300/3/3 instead of 1200/15/15. Byte-neutral on the still
+        // path except for one baked-table correction the pin names
+        // (`nic_arm::allintra_flattening_matches_the_ladder`).
+        crate::nic_arm::apply(
+            &mut funnel_cfg,
+            sc_arm,
+            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            true,
+        );
+        // `ctx->mds0_use_hadamard_sb`, for THIS arm (`crate::encdec_arm`).
+        // Unlike every arm above it this one does NOT come from
+        // `sig_deriv_mode_decision_config` — it is a literal in each
+        // `svt_aom_sig_deriv_enc_dec_*` body, which is why §1c's field-for-field
+        // divergence table cannot see it. The video arm's `false` sends MDS0's
+        // luma distortion down C's two-buffer VARIANCE arm instead of the
+        // Hadamard SATD, and variance is DC-invariant where SATD is not.
+        crate::encdec_arm::apply(&mut funnel_cfg, sc_arm);
         // `pcs->mds0_level` -> `set_mds0_controls`, for THIS arm
         // (`crate::mds0_arm`). The arms agree on a key frame through M10 and
         // diverge above it: the video arm takes level 2 (`fast_loop_core`'s
@@ -7888,6 +7908,18 @@ fn encode_tile_rows(
             true,
             matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
+        );
+        // C `pcs->pic_pd0_lvl` -> `set_pd0_ctrls`, for THIS arm, as the
+        // REFINEMENT path's PD0 model. The allintra arm is PD0_LVL_1 at every
+        // preset this path serves; the video arm is PD0_LVL_3 at M3..M7 (the
+        // same block cost plus subres step 1 and a 900 depth-early-exit
+        // threshold). `refined_pd0_model` documents the levels it does not
+        // carry and returns the pre-existing model for them.
+        let (pd0_refined_mode, pd0_refined_eexit_th) = crate::part_arm::refined_pd0_model(
+            sc_arm,
+            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            u32::from(cli_qp),
+            w * h,
         );
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
@@ -8710,6 +8742,56 @@ fn encode_tile_rows(
                                     // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
                                     max_tx_size,
                                 )
+                            } else if matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }) {
+                                // The VIDEO arm's PD0, which is a different
+                                // LEVEL, an uncapped max block size and NSQ
+                                // geometry ON — see
+                                // `pd0::pd0_pick_sb_partition_video`. The
+                                // allintra arm below is untouched, so the still
+                                // envelope is byte-neutral by construction.
+                                let (pic_pd0_lvl, pd0_coeff_rate_est_lvl, accurate_part_ctx) =
+                                    crate::part_arm::video_pd0_params(
+                                        crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+                                        u32::from(cli_qp),
+                                        w * h,
+                                    );
+                                let tables = m6_pd0_tables.get_or_insert_with(|| {
+                                    crate::pd0::build_m6_pd0_tables(sb_qindex)
+                                });
+                                crate::pd0::pd0_pick_sb_partition_video(
+                                    sb_input,
+                                    in_stride,
+                                    x0,
+                                    y0,
+                                    u32::from(cli_qp),
+                                    sb_qindex,
+                                    crate::pd0::frame_lambda_weight(
+                                        u32::from(picture_qp),
+                                        tune_iq,
+                                        lw_bump,
+                                    ),
+                                    tables,
+                                    pic_pd0_lvl,
+                                    pd0_coeff_rate_est_lvl,
+                                    accurate_part_ctx,
+                                    crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset),
+                                    // This branch IS C's `pic_pred_depth_only`
+                                    // case: `depth_refinement_ctrls.mode ==
+                                    // PD0_DEPTH_PRED_PART_ONLY` is what makes
+                                    // the port code the PD0 tree directly
+                                    // instead of running the refinement walk,
+                                    // and it is the same flag
+                                    // `set_depth_early_exit_ctrls` reads
+                                    // (enc_mode_config.c:7232).
+                                    true,
+                                    crate::pd0::input_resolution_factor(w * h),
+                                    w,
+                                    h,
+                                    tile_sb_row_start * sb_size,
+                                    tile_sb_col_start * sb_size,
+                                    sb_stale_vars,
+                                    max_tx_size,
+                                )
                             } else {
                                 crate::pd0::pd0_pick_sb_partition(
                                     sb_input,
@@ -8924,6 +9006,8 @@ fn encode_tile_rows(
                                     // (real PD0 coeff rate). M7/M8's level-2 PD0
                                     // approximation only fires when this is >= 2.
                                     funnel_cfg.coeff_rate_est_lvl,
+                                    pd0_refined_mode,
+                                    pd0_refined_eexit_th,
                                     // max-block variance cap. Allintra: M8+
                                     // only (`get_max_block_size_allintra`'s
                                     // `base_var_th_cap` is `(uint16_t)~0`
@@ -9011,6 +9095,8 @@ fn encode_tile_rows(
                                                 tables,
                                                 if dr.disallow_4x4 { 8 } else { 4 },
                                                 funnel_cfg.coeff_rate_est_lvl,
+                                                pd0_refined_mode,
+                                                pd0_refined_eexit_th,
                                                 // Same cap predicate as the
                                                 // sibling call above; this
                                                 // SB128 unit loop skips
@@ -9201,6 +9287,8 @@ fn encode_tile_rows(
                                     // approximation that lowers the parent-NONE
                                     // cost and matches C's partition depth.
                                     funnel_cfg.coeff_rate_est_lvl,
+                                    pd0_refined_mode,
+                                    pd0_refined_eexit_th,
                                     // The max-block variance cap, per ARM.
                                     // Allintra (`get_max_block_size_allintra`,
                                     // enc_mode_config.c:7042): fires at M8+

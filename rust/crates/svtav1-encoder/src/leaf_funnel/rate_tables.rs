@@ -630,6 +630,24 @@ pub struct FunnelCfg {
     /// predictions run the corner/edge filters + upsampling
     /// (enc_intra_prediction.c:181-215).
     pub edge_filter: bool,
+    /// C `ctx->mds0_use_hadamard_sb` — which distortion MDS0 scores with.
+    ///
+    /// `true` (Hadamard SATD) is the ALLINTRA value
+    /// (`svt_aom_sig_deriv_enc_dec_allintra`, enc_mode_config.c:8148) and the
+    /// default here, so the still path is byte-neutral by construction; the
+    /// VIDEO and RTC arms hardcode `false` (`:7916` / `:8032`), which sends
+    /// `fast_loop_core` down the two-buffer VARIANCE arm
+    /// (`fn_ptr->vf`, product_coding_loop.c:1296-1306) instead of
+    /// `hadamard_path` (`:1283`). Stamped by [`crate::encdec_arm`].
+    ///
+    /// This is not a cosmetic swap: variance is DC-INVARIANT and SATD is not,
+    /// so every candidate whose prediction is FLAT scores identically under
+    /// variance and differently under SATD. On the campaign's reference cell
+    /// that is the whole MDS1 survivor set (see `encdec_arm`).
+    ///
+    /// `mds0_use_hadamard_blk = mds0_use_hadamard_sb && cand_count > 1`
+    /// (`:9473`) — the count term is modelled separately in `inject.rs`.
+    pub mds0_use_hadamard_sb: bool,
     /// C `ctx->mds0_ctrls.dist_to_cost_th` when MDS0 pruning is armed, or
     /// `None` for C's `pruning_method_th == 0` (no MDS0 prune at all).
     ///
@@ -726,6 +744,7 @@ impl FunnelCfg {
             ind_uv_last_mds1: false,
             fi_max: 0,
             edge_filter: false,
+            mds0_use_hadamard_sb: true,
             mds0_dist_to_cost_th: None,
             // M6 cfl_level 4: enabled, itr_th 1, cplx_th 10 (detector-gated
             // — see chroma path). Presets that spread m6_tail but do

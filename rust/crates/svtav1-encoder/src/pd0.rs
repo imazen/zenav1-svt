@@ -1315,7 +1315,7 @@ impl Pd0Eval {
 /// Which PD0 block-encode path prices a block (C `Pd0Level`, collapsed to
 /// the three configurations reachable from the allintra preset ladder).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pd0Mode {
+pub(crate) enum Pd0Mode {
     /// PD0_LVL_6 closed-form variance cost (eff-M9, undemoted).
     Lvl6,
     /// PD0_LVL_5 light encode: qindex+8, subres, 5000+100*eob rate
@@ -1344,6 +1344,35 @@ enum Pd0Mode {
     /// `svt_av1_cost_coeffs_txb` rate at zero contexts, undoubled split
     /// rate (`use_accurate_part_ctx = 1`).
     Lvl1,
+    /// PD0_LVL_3 — the VIDEO arm's level at M3..M8 (`set_pic_pd0_lvl_default`,
+    /// enc_mode_config.c:8592; `set_pd0_ctrls` case 3, `:5435`, arms no
+    /// detector at all).
+    ///
+    /// Block cost is [`Pd0Mode::Lvl1`]'s — `rate_est_level` is 2 for every
+    /// `pd0_level <= PD0_LVL_3` (`svt_aom_sig_deriv_enc_dec_pd0`,
+    /// enc_mode_config.c:7357), i.e. `lpd0_qp_offset = 0` +
+    /// `coeff_rate_est_lvl = 1`, exactly LVL_1's — with TWO differences, both
+    /// keyed on the level rather than the preset and neither of them visible
+    /// in `sig_deriv_mode_decision_config`'s slot table:
+    ///
+    /// * **subres step 1.** `pd0_level <= PD0_LVL_2` forces `subres_level = 0`
+    ///   (`:7337`); at LVL_3 an I-slice takes `subres_level = 1` outright
+    ///   (`:7345`), still gated on `disallow_4x4` and a complete b64. The
+    ///   per-SB `is_subres_safe` odd/even-deviation check then runs on the
+    ///   64x64 exactly as it does at LVL_5.
+    /// * **`depth_early_exit_lvl` 2** (`:7233`) — `early_exit_th` 900 instead
+    ///   of LVL_1's 0-which-reads-as-1000, for the i > 0 quadrants.
+    Lvl3,
+    /// PD0_LVL_4 — the VIDEO arm's level at M9..M13 on <= 360p content
+    /// (`set_pic_pd0_lvl_default`; `set_pd0_ctrls` case 4 arms a detector that
+    /// is INERT on an I-slice — every branch of `pd0_detector` below the
+    /// LVL_6 demote is `slice_type != I_SLICE`-gated, enc_dec_process.c:2473).
+    ///
+    /// Identical to [`Pd0Mode::Lvl3`] except that `rate_est_level` is **4**
+    /// (`:7359`), i.e. `coeff_rate_est_lvl = 2` — the `eob < th ? 6000 +
+    /// eob*500 : real` approximation `lvl1_block_cost_rect` already carries
+    /// for the allintra M7/M8 rows.
+    Lvl4,
 }
 
 /// The rate tables PD0_LVL_1 prices with. For single-SB frames these are
@@ -1521,6 +1550,27 @@ struct Pd0Ctx<'a> {
     /// shape (the `sq_size <= MAX(min_nsq=4, min_nsq_block_size<=8)` term never
     /// fires for edge nodes, which are always >= 16 wide on an 8-aligned frame).
     nsq_enabled: bool,
+    /// C `pcs->ppcs->use_accurate_part_ctx` (`enc_mode_config.c:8955` /
+    /// `:9937`): `enc_mode <= M8` on both arms. When FALSE, C doubles the
+    /// SPLIT rate to bias against splitting (`test_split_partition_pd0`,
+    /// product_coding_loop.c:10446). LVL_5 / LVL_0 hardcode the doubling
+    /// because they only exist above M8; the LVL_1 family spans both sides of
+    /// the boundary, so it reads this.
+    accurate_part_ctx: bool,
+    /// C `depth_early_exit_ctrls.early_exit_th` as `test_split_partition_pd0`
+    /// reads it for the i > 0 quadrants (product_coding_loop.c:10469 — a
+    /// stored 0 reads as 1000).
+    ///
+    /// `set_depth_early_exit_ctrls` (enc_mode_config.c:7182) is driven by
+    /// `depth_early_exit_lvl`, which is 1 (`early_exit_th` 0 -> 1000) when
+    /// `pd0_level <= PD0_LVL_1 || ctx->pic_pred_depth_only`, and 2
+    /// (`early_exit_th` **900**) otherwise (`:7232`).
+    /// `pic_pred_depth_only` is `depth_refinement_ctrls.mode ==
+    /// PD0_DEPTH_PRED_PART_ONLY` (`:7095`) — i.e. the same predicate that
+    /// makes the port take the FIXED-TREE path instead of the refinement
+    /// walk — so it is a caller fact, not a level fact, and lives here
+    /// rather than being derived from [`Pd0Mode`].
+    depth_early_exit_th: u128,
     /// Tile-row / tile-column pixel origin of this SB's tile (0 = single tile,
     /// i.e. byte-identical to the pre-fix frame-edge predicate). AV1 intra
     /// prediction never crosses a tile boundary, so a block at a tile's own
@@ -1703,16 +1753,42 @@ impl<'a> Pd0Ctx<'a> {
             &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
         );
 
-        let mut residual = vec![0i32; bw * bh];
-        for r in 0..bh {
-            let srow = (abs_y + r) * self.stride + abs_x;
-            let prow = r * bw;
+        // `subres_ctrls.step`, and the per-SB safety check that gates it —
+        // identical machinery to [`Pd0Ctx::lvl5_like_block_cost`], because it
+        // is the same `full_loop_core_pd0` code. LVL_1 / LVL_0 configure step
+        // 0 (`pd0_level <= PD0_LVL_2`, enc_mode_config.c:7337) so nothing here
+        // runs for them and the pre-existing allintra paths are unchanged by
+        // construction; LVL_3 / LVL_4 configure step 1.
+        let subres_step_cfg = self.subres_step_cfg();
+        if subres_step_cfg > 0 && bw == 64 && bh == 64 && self.is_subres_safe == 255 {
+            self.is_subres_safe = u8::from(check_is_subres_safe(
+                self.src,
+                self.stride,
+                abs_x,
+                abs_y,
+                &pred,
+            ));
+        }
+        let mut step = if bh >= 16 {
+            subres_step_cfg
+        } else {
+            subres_step_cfg.min(1)
+        };
+        if self.is_subres_safe != 1 {
+            step = 0;
+        }
+
+        let tx_h = bh >> step;
+        let mut residual = vec![0i32; bw * tx_h];
+        for r in 0..tx_h {
+            let srow = (abs_y + (r << step)) * self.stride + abs_x;
+            let prow = (r << step) * bw;
             for c in 0..bw {
                 residual[r * bw + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
             }
         }
         let (eob, dist, qcoeff, c_tx) =
-            tx_quant_core(&residual, bw, bh, self.qindex, self.qm_level, 0);
+            tx_quant_core(&residual, bw, tx_h, self.qindex, self.qm_level, step);
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
         // loop.c:4576): `th = (bw*bh)>>5`, dims capped at 32. coeff_rate_est_lvl
@@ -1733,9 +1809,31 @@ impl<'a> Pd0Ctx<'a> {
         rdcost(self.lambda, rate, dist)
     }
 
+    /// The LVL_1 FAMILY — every level whose block cost is
+    /// `md_encode_block_pd0` at `lpd0_qp_offset = 0` with a real (or
+    /// approximated) coefficient rate, as opposed to LVL_5/LVL_0's
+    /// `5000 + 100*eob` closed form or LVL_6's pure variance.
+    #[inline]
+    fn is_lvl1_family(&self) -> bool {
+        matches!(self.mode, Pd0Mode::Lvl1 | Pd0Mode::Lvl3 | Pd0Mode::Lvl4)
+    }
+
+    /// C `ctx->subres_ctrls.step` for this level on an I-slice
+    /// (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7337-7345).
+    /// LVL_5's own step is passed explicitly by its caller instead.
+    #[inline]
+    fn subres_step_cfg(&self) -> u32 {
+        match self.mode {
+            Pd0Mode::Lvl3 | Pd0Mode::Lvl4 => 1,
+            _ => 0,
+        }
+    }
+
     fn block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
         match self.mode {
-            Pd0Mode::Lvl1 => self.lvl1_block_cost(sq_size, org_x, org_y),
+            Pd0Mode::Lvl1 | Pd0Mode::Lvl3 | Pd0Mode::Lvl4 => {
+                self.lvl1_block_cost(sq_size, org_x, org_y)
+            }
             Pd0Mode::Lvl5 => self.lvl5_block_cost(sq_size, org_x, org_y),
             Pd0Mode::Lvl0 => self.lvl0_block_cost(sq_size, org_x, org_y),
             Pd0Mode::Lvl6 => lvl6_cost_allintra(&self.vars, sq_size, org_x, org_y, self.qp),
@@ -1816,11 +1914,12 @@ impl<'a> Pd0Ctx<'a> {
                         0,
                     ),
                     Pd0Mode::Lvl6 => 0,
-                    Pd0Mode::Lvl1 => {
-                        let tables = self.lvl1.expect("LVL_1 requires tables");
+                    Pd0Mode::Lvl1 | Pd0Mode::Lvl3 | Pd0Mode::Lvl4 => {
+                        let tables = self.lvl1.expect("LVL_1 family requires tables");
+                        let mult = if self.accurate_part_ctx { 1 } else { 2 };
                         rdcost(
                             self.lambda,
-                            tables.boundary_split_bits(sq_size, !has_rows),
+                            mult * tables.boundary_split_bits(sq_size, !has_rows),
                             0,
                         )
                     }
@@ -1850,7 +1949,7 @@ impl<'a> Pd0Ctx<'a> {
 
         let tested = sq_size <= self.max_sq && sq_size >= self.min_sq;
         let parent_cost = if tested {
-            if one_false && self.mode == Pd0Mode::Lvl1 {
+            if one_false && self.is_lvl1_family() {
                 let (bw, bh) = if !has_rows {
                     (sq_size, half)
                 } else {
@@ -1894,21 +1993,24 @@ impl<'a> Pd0Ctx<'a> {
             Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => {
                 rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0)
             }
-            Pd0Mode::Lvl1 => {
-                let tables = self.lvl1.expect("LVL_1 requires tables");
+            Pd0Mode::Lvl1 | Pd0Mode::Lvl3 | Pd0Mode::Lvl4 => {
+                let tables = self.lvl1.expect("LVL_1 family requires tables");
                 // C `svt_aom_partition_rate_cost` (rd_cost.c:1846-1863): at a
                 // one-false BOUNDARY node the SPLIT rate is the BINARY
                 // split-vs-{H,V} cost (`partition_{vert,horz}_alike_fac_bits`),
                 // not the full-alphabet `partition_fac_bits[ctx][SPLIT]`. Only
-                // the LVL_1 fixed-tree path prices the edge shape (parent_cost),
-                // so only it needs the matching boundary split rate; interior
-                // nodes and LVL_5/6 keep the full-alphabet `split_bits`.
+                // the LVL_1 family prices the edge shape (parent_cost), so only
+                // it needs the matching boundary split rate; interior nodes and
+                // LVL_5/6 keep the full-alphabet `split_bits`.
                 let sbits = if one_false {
                     tables.boundary_split_bits(sq_size, !has_rows)
                 } else {
                     tables.split_bits(sq_size)
                 };
-                rdcost(self.lambda, sbits, 0)
+                // `use_accurate_part_ctx = 0` (enc_mode > M8) doubles it, the
+                // same bias LVL_5 / LVL_0 hardcode.
+                let mult = if self.accurate_part_ctx { 1 } else { 2 };
+                rdcost(self.lambda, mult * sbits, 0)
             }
         };
 
@@ -1925,7 +2027,7 @@ impl<'a> Pd0Ctx<'a> {
             if self.mode != Pd0Mode::Lvl6
                 && let Some(pc) = parent_cost
             {
-                let th: u128 = if i == 0 { 50 } else { 1000 };
+                let th: u128 = if i == 0 { 50 } else { self.depth_early_exit_th };
                 if (pc as u128) * th * 1000 <= (split_cost as u128) * 1_000_000 {
                     split_valid = false;
                     break;
@@ -2051,6 +2153,8 @@ pub fn pd0_pick_sb_partition(
         coeff_rate_est_lvl: 0,
         // eff-M9 (preset >= 9) => enc_mode > M6 => nsq_geom_level 0 =>
         // NSQ disabled: every one-false boundary node force-splits.
+        accurate_part_ctx: true,
+        depth_early_exit_th: 1000,
         nsq_enabled: false,
         tile_top: 0,
         tile_left: 0,
@@ -2151,6 +2255,8 @@ pub fn pd0_pick_sb_partition_lvl0(
         coeff_rate_est_lvl: 0,
         // enc_mode > M6 => nsq_geom_level 0 => NSQ disabled: one-false
         // boundary nodes force-split (inert on 64-aligned frames).
+        accurate_part_ctx: true,
+        depth_early_exit_th: 1000,
         nsq_enabled: false,
         tile_top: 0,
         tile_left: 0,
@@ -2236,6 +2342,8 @@ pub fn pd0_pick_sb_partition_m6(
         is_subres_safe: 255,
         ires_factor: 0,
         coeff_rate_est_lvl,
+        accurate_part_ctx: true,
+        depth_early_exit_th: 1000,
         nsq_enabled,
         tile_top: 0,
         tile_left: 0,
@@ -2273,6 +2381,16 @@ pub fn pd0_pick_sb_partition_m6_eval(
     tables: &M6Pd0Tables,
     min_sq: usize,
     coeff_rate_est_lvl: u8,
+    // Which PD0 block-encode path prices a block. The ALLINTRA arm's level at
+    // every preset this entry point serves is PD0_LVL_1
+    // (`set_pic_pd0_lvl_allintra`); the VIDEO arm's is PD0_LVL_3 at M3..M7
+    // (`set_pic_pd0_lvl_default`), which is the same block cost plus subres
+    // step 1 — see [`Pd0Mode::Lvl3`].
+    mode: Pd0Mode,
+    // C `depth_early_exit_ctrls.early_exit_th` for the i > 0 quadrants, as
+    // `test_split_partition_pd0` reads it: 1000 when `pd0_level <= PD0_LVL_1
+    // || ctx->pic_pred_depth_only`, else 900 (enc_mode_config.c:7232).
+    depth_early_exit_th: u128,
     cap_max_block: bool,
     nsq_enabled: bool,
     aligned_w: usize,
@@ -2329,19 +2447,160 @@ pub fn pd0_pick_sb_partition_m6_eval(
         // bd8 fork LVL_5/LVL_6 path is left byte-inert per the fork-bd10 scope).
         qm_level: 15,
         lambda,
-        mode: Pd0Mode::Lvl1,
+        mode,
         lvl1: Some(tables),
         max_sq,
         min_sq,
-        is_subres_safe: 255,
+        // C forces PD0 `subres_level = 0` on an INCOMPLETE b64
+        // (`!b64_geom->is_complete_b64`, enc_mode_config.c:7337), so seed the
+        // "determined, not safe" sentinel (0) there and let a complete SB run
+        // the 64x64 odd/even-deviation check. Byte-inert on every level whose
+        // `subres_step_cfg()` is 0, which is every ALLINTRA level this entry
+        // point serves.
+        is_subres_safe: if sb_x + 64 <= aligned_w && sb_y + 64 <= aligned_h {
+            255
+        } else {
+            0
+        },
         ires_factor: 0,
         coeff_rate_est_lvl,
+        // Every preset this entry point serves is <= M8 on both arms, where
+        // `use_accurate_part_ctx` is true (enc_mode_config.c:8955 / :9937).
+        accurate_part_ctx: true,
+        depth_early_exit_th,
         nsq_enabled,
         tile_top,
         tile_left,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval
+}
+
+/// C `set_pd0_ctrls` (`enc_mode_config.c:5413`) reduced to the block-cost
+/// model each `pic_pd0_lvl` selects, for the VIDEO arm on a KEY frame.
+///
+/// The detector half of that table is INERT here and that is why this returns
+/// a mode rather than a `Pd0Ctrls`: `pd0_detector` (enc_dec_process.c:2406)
+/// demotes only through branches gated on `slice_type != I_SLICE`, except the
+/// LVL_6 demote — and the video ladder never assigns a level whose
+/// `pd0_level` is `PD0_LVL_6` at the presets this port encodes. C asserts the
+/// same invariant at `:2514` (`IMPLIES(I_SLICE, pd0_level < PD0_LVL_6)`).
+///
+/// # Panics
+/// On a level outside 0..=7 (C `assert(0)`s), and on levels 0..=2, whose
+/// `PD0_LVL_0..PD0_LVL_2` block cost this port carries only in the bd10
+/// [`pd0_pick_sb_partition_lvl0`] entry point.
+#[must_use]
+fn video_pd0_mode(pic_pd0_lvl: u8) -> Pd0Mode {
+    match pic_pd0_lvl {
+        3 => Pd0Mode::Lvl3,
+        4 => Pd0Mode::Lvl4,
+        // Cases 5 and 6 both set `pd0_level = PD0_LVL_5`; they differ only in
+        // the detector rows, which an I-slice never reads.
+        5 | 6 => Pd0Mode::Lvl5,
+        other => panic!(
+            "video pic_pd0_lvl {other} selects a PD0 level this port has no block cost for \
+             (0..=2 are PD0_LVL_0..2, 7 is PD0_LVL_6 which C forbids on an I-slice)"
+        ),
+    }
+}
+
+/// Decide the partition tree of one 64x64 superblock on the VIDEO arm.
+///
+/// The allintra twin is [`pd0_pick_sb_partition`] (preset >= 9, whose level
+/// comes from `pd0_detector_allintra` + `get_max_block_size_allintra`) and
+/// [`pd0_pick_sb_partition_m6_eval`] (below it). Three things differ, all of
+/// them arm facts rather than preset facts:
+///
+/// * **the LEVEL** comes from `set_pic_pd0_lvl_default` rather than the
+///   allintra detector — at 240p and `seq_qp_mod = 2` that is a flat 3 for
+///   M3..M7 and `4 + ldp0_lvl_offset[qp_band]` for M8 up (5 at CLI qp 40,
+///   6 at qp 20, 4 at qp 55), so a video key frame runs PD0_LVL_3 / _4 / _5
+///   where the still path runs LVL_1 / LVL_5 / LVL_6;
+/// * **`ctx->max_block_size` is uncapped** — `get_max_block_size_default`
+///   returns `scs->super_block_size` outright, with no 64x64-variance cap;
+/// * **NSQ geometry is ON** at every preset (`nsq_geom_level` 2 or 3 against
+///   the allintra arm's 0 above M6), so a one-false boundary node keeps its
+///   single injected edge shape instead of force-splitting.
+///
+/// KNOWN REMAINING DELTA, stated rather than hidden: C's video PD0 predicts
+/// each block from the RECON it generates per block, because
+/// `ctx->pd0_use_src_samples` is `allintra || hbd_md` (enc_mode_config.c:7309)
+/// and the recon-neighbour arrays are filled from the source ONLY on the
+/// allintra arm (product_coding_loop.c:8370). This function still predicts
+/// from source. See `docs/INTER-ENCODE-PLAN.md` §1f.
+#[allow(clippy::too_many_arguments)]
+pub fn pd0_pick_sb_partition_video(
+    src: &[u8],
+    stride: usize,
+    sb_x: usize,
+    sb_y: usize,
+    qp: u32,
+    qindex: u8,
+    lambda_weight: u32,
+    tables: &M6Pd0Tables,
+    // C `pcs->pic_pd0_lvl` from `set_pic_pd0_lvl_default`.
+    pic_pd0_lvl: u8,
+    // C `MAX(2, pcs->rate_est_level)` / `MAX(4, ..)` at PD0
+    // (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7355) mapped
+    // through `set_rate_est_ctrls` to `coeff_rate_est_lvl`. Read only by the
+    // LVL_1 family; LVL_5's closed form ignores it.
+    coeff_rate_est_lvl: u8,
+    // C `pcs->ppcs->use_accurate_part_ctx` (`enc_mode <= M8`).
+    accurate_part_ctx: bool,
+    // C `ctx->nsq_geom_ctrls.enabled`.
+    nsq_enabled: bool,
+    // C `pd0_level <= PD0_LVL_1 || ctx->pic_pred_depth_only`.
+    depth_early_exit_lvl1: bool,
+    // C `input_resolution_factor[..]` — the LVL_5 closed form's per-picture
+    // coeff-rate addend.
+    ires_factor: u64,
+    aligned_w: usize,
+    aligned_h: usize,
+    tile_top: usize,
+    tile_left: usize,
+    stale_vars: Option<&SbVariance>,
+    max_tx_size: u8,
+) -> Pd0Tree {
+    let vars = match stale_vars {
+        Some(v) => *v,
+        None => compute_b64_variance(src, stride, sb_x, sb_y),
+    };
+    let mode = video_pd0_mode(pic_pd0_lvl);
+    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
+    let mut ctx = Pd0Ctx {
+        src,
+        stride,
+        sb_x,
+        sb_y,
+        aligned_w,
+        aligned_h,
+        vars,
+        qp,
+        qindex,
+        qm_level: 15,
+        lambda,
+        mode,
+        lvl1: Some(tables),
+        // `get_max_block_size_default` = `scs->super_block_size`, uncapped.
+        max_sq: 64.min(max_tx_size as usize),
+        // `pic_disallow_4x4` is 1 on both arms at every preset this reaches.
+        min_sq: 8,
+        is_subres_safe: if sb_x + 64 <= aligned_w && sb_y + 64 <= aligned_h {
+            255
+        } else {
+            0
+        },
+        ires_factor,
+        coeff_rate_est_lvl,
+        accurate_part_ctx,
+        depth_early_exit_th: if depth_early_exit_lvl1 { 1000 } else { 900 },
+        nsq_enabled,
+        tile_top,
+        tile_left,
+    };
+    let (_cost, eval) = ctx.pick(64, 0, 0);
+    eval.tree()
 }
 
 #[cfg(test)]
@@ -2453,6 +2712,8 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 0, // subres off
             ires_factor: 0,
+            accurate_part_ctx: true,
+            depth_early_exit_th: 1000,
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
@@ -2570,6 +2831,8 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            accurate_part_ctx: true,
+            depth_early_exit_th: 1000,
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
@@ -2615,6 +2878,8 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            accurate_part_ctx: true,
+            depth_early_exit_th: 1000,
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
@@ -2773,6 +3038,8 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            accurate_part_ctx: true,
+            depth_early_exit_th: 1000,
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,
@@ -2814,6 +3081,8 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            accurate_part_ctx: true,
+            depth_early_exit_th: 1000,
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,
@@ -2851,6 +3120,8 @@ mod tests {
             min_sq: 8,
             is_subres_safe: 255,
             ires_factor: 0,
+            accurate_part_ctx: true,
+            depth_early_exit_th: 1000,
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,

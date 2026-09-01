@@ -356,3 +356,118 @@ mod tests {
         assert_eq!(nsq_search_level(v, 7, 44), 19);
     }
 }
+
+/// The VIDEO arm's PD0 configuration for a KEY frame, as
+/// `crate::pd0::pd0_pick_sb_partition_video` takes it:
+/// `(pic_pd0_lvl, coeff_rate_est_lvl, use_accurate_part_ctx)`.
+///
+/// * `pic_pd0_lvl` — `set_pic_pd0_lvl_default` (`enc_mode_config.c:8592`),
+///   already ported and tier-1 gated as
+///   [`crate::port_enc_mode_config::leaf::set_pic_pd0_lvl_default`]. At 240p
+///   with C's unconditional `seq_qp_mod = 2` it is a flat 3 for M3..M7 and
+///   `4 + ldp0_lvl_offset[qp_band]` from M8 up — 6 at CLI qp <= 27, 5 at
+///   28..=39 and 40..=43, 4 above. **`seq_qp_mod` is load-bearing here**: at
+///   the harness default of 0 the same call returns 4 at M9..M13, which is a
+///   different PD0 level, so a probe that leaves it 0 measures a
+///   configuration C never ships.
+/// * `coeff_rate_est_lvl` — PD0's own `rate_est_level`
+///   (`svt_aom_sig_deriv_enc_dec_pd0`, `:7355`) is 2 for `pd0_level <=
+///   PD0_LVL_3`, 4 at PD0_LVL_4 and 0 above, raised to `MAX(that,
+///   pcs->rate_est_level)` when non-zero — and `pcs->rate_est_level` is a flat
+///   1 on the video arm. `set_rate_est_ctrls` then maps 0 -> 0, 2 -> 1, 4 -> 2.
+/// * `use_accurate_part_ctx` — `enc_mode <= M8` (`:8955` / `:9937`).
+///
+/// `enc_mode` must already be [`crate::rate_arm::eff_enc_mode`]-clamped.
+#[must_use]
+pub(crate) fn video_pd0_params(enc_mode: u8, cli_qp: u32, luma_pixels: usize) -> (u8, u8, bool) {
+    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+    let pic_pd0_lvl = leaf::set_pic_pd0_lvl_default(
+        m,
+        // Every video picture this port encodes is a KEY frame at
+        // temporal_layer_index 0.
+        true,
+        true,
+        false,
+        VIDEO_ISLICE_COEFF_LVL,
+        crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+            u32::try_from(luma_pixels).unwrap_or(u32::MAX),
+        ),
+        cli_qp,
+        SEQ_QP_MOD,
+        64,
+    );
+    let pd0_rate_est_level = if pic_pd0_lvl <= 3 {
+        2
+    } else if pic_pd0_lvl == 4 {
+        4
+    } else {
+        0
+    };
+    // `pcs->rate_est_level` is 1 at every preset on the video arm
+    // (`crate::rate_arm::rate_est_level`), so the MAX only ever raises a 0,
+    // which the `if (rate_est_level)` guard already excludes.
+    let pd0_rate_est_level = if pd0_rate_est_level == 0 {
+        0
+    } else {
+        pd0_rate_est_level.max(1)
+    };
+    let coeff_rate_est_lvl = match pd0_rate_est_level {
+        0 => 0,
+        2 => 1,
+        4 => 2,
+        other => unreachable!("PD0 rate_est_level {other} outside set_rate_est_ctrls' PD0 rows"),
+    };
+    (pic_pd0_lvl, coeff_rate_est_lvl, enc_mode <= 8)
+}
+
+/// The PD0 block-encode model and depth-early-exit threshold for the
+/// REFINEMENT path (`pd0_pick_sb_partition_m6_eval`, CLI presets 0..=8),
+/// as `(mode, depth_early_exit_th)`.
+///
+/// The fixed-tree path (preset >= 9) has its own entry point,
+/// [`crate::pd0::pd0_pick_sb_partition_video`], because there the level,
+/// the max block size and the NSQ geometry ALL fork; here only the level
+/// does — `max_block_cap_active` is already false for both arms on this
+/// path and `nsq_geom_enabled` is already arm-dispatched at the call sites.
+///
+/// `pic_pred_depth_only` is FALSE on this path by construction — it is the
+/// predicate that routes an SB to the fixed tree instead — so the threshold
+/// is 1000 only when `pd0_level <= PD0_LVL_1` (enc_mode_config.c:7232).
+///
+/// **Not fully ported, and it returns the pre-existing allintra model rather
+/// than a guess:** the video arm's `pic_pd0_lvl` is 0 at M0..M2 and 1 at M3
+/// (`set_pic_pd0_lvl_default`), i.e. PD0_LVL_0 / PD0_LVL_1. PD0_LVL_1 IS the
+/// allintra model, so M3 is exact; PD0_LVL_0's block cost differs from
+/// `Pd0Mode::Lvl0` (which is the bd10 forcing, where `pcs->rate_est_level` is
+/// 0 and the closed form applies, while a video frame's is 1 and C would
+/// price the real coeff rate), so M0..M2 keep today's behaviour and are
+/// listed as open in `docs/INTER-ENCODE-PLAN.md` §1f.
+#[must_use]
+pub(crate) fn refined_pd0_model(
+    arm: ScArm,
+    enc_mode: u8,
+    cli_qp: u32,
+    luma_pixels: usize,
+) -> (crate::pd0::Pd0Mode, u128) {
+    match arm {
+        ScArm::Allintra => (crate::pd0::Pd0Mode::Lvl1, 1000),
+        ScArm::Video { .. } => {
+            let (pic_pd0_lvl, _, _) = video_pd0_params(enc_mode, cli_qp, luma_pixels);
+            // MEASURED, and NOT the C model — see `docs/INTER-ENCODE-PLAN.md`
+            // §1h. Returning `(Lvl3, 900)` for `pic_pd0_lvl == 3` is what C
+            // asks for, and on the campaign's cells it moves
+            // `gradient 72x88 p4` from 1.996 % to 0.641 % while pushing
+            // `gradient 72x88 p5` from 0.000 % to 1.953 % and the reference
+            // cell `gradient 64x64 p6` from 0.416 % to 5.619 % — undoing §1e's
+            // result that the reference cell's tree and every leaf mode
+            // already equal C's. The subres step is both the improvement and
+            // the regression; `is_complete_b64` is not the explanation (that
+            // row is byte-identical) and neither is the 900 threshold (p4
+            // 0.641 vs 0.356). Until a C-side PD0 dump says WHY, this returns
+            // the pre-existing ALLINTRA model on both arms rather than
+            // shipping a partition search that is measurably further from C.
+            let _ = pic_pd0_lvl;
+            (crate::pd0::Pd0Mode::Lvl1, 1000)
+        }
+    }
+}
