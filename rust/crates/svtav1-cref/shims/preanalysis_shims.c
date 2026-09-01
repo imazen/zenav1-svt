@@ -19,6 +19,8 @@
 
 #include "definitions.h"
 #include "pic_buffer_desc.h"
+#include "av1me.h"
+#include "pcs.h"
 
 void       svt_aom_setup_common_rtcd_internal(uint64_t flags);
 void       svt_aom_setup_rtcd_internal(EbCpuFlags flags);
@@ -283,4 +285,91 @@ int ref_pre_gathering_picture_statistics(int calc_hist, int calculate_variance, 
     free(pcs);
     free(scs);
     return 1;
+}
+
+/* ------------------------------------------------------------------------
+ * Screen-content detection (pic_analysis_process.c), all EXPORTED.
+ *
+ * TWO inits are needed here, not one. `svt_av1_get_sby_perpixel_variance`
+ * dereferences `fn_ptr->vf`, which lives in `svt_aom_mefn_ptr` — a plain
+ * global that `init_fn_ptr()` fills, NOT something the RTCD setup touches.
+ * And the value `init_fn_ptr` stores is itself the RTCD pointer
+ * `svt_aom_variance16x16`, which `nm` reports as a COMMON symbol (`C`) and
+ * which is NULL until `svt_aom_setup_common_rtcd_internal` runs. Calling only
+ * one of the two leaves a NULL two levels down from the function being
+ * called — the trap documented in WORKING-ON-THIS §5. So: RTCD first, then
+ * `init_fn_ptr`.
+ * ---------------------------------------------------------------------- */
+
+void         init_fn_ptr(void);
+unsigned int svt_av1_get_sby_perpixel_variance(const AomVarianceFnPtr* fn_ptr, const uint8_t* src, int stride,
+                                               BlockSize bs);
+void         svt_aom_is_screen_content_antialiasing_aware(PictureParentControlSet* pcs);
+void         svt_aom_is_screen_content(PictureParentControlSet* pcs);
+
+static int sc_fnptr_done = 0;
+static void sc_ensure_fn_ptr(void) {
+    pre_ensure_rtcd();
+    if (!sc_fnptr_done) {
+        init_fn_ptr();
+        sc_fnptr_done = 1;
+    }
+}
+
+/*
+ * `fn_bs` selects which `svt_aom_mefn_ptr[]` entry supplies `vf`; `norm_bs` is
+ * the BlockSize the callee normalises by. They are SEPARATE parameters on
+ * purpose: `svt_aom_is_screen_content` binds `fn_ptr` to BLOCK_16X16 once and
+ * never rebinds it, so its 8x8 pass calls this with fn_bs=BLOCK_16X16 and
+ * norm_bs=BLOCK_8X8. Exposing both lets that exact call be driven at tier 1
+ * instead of argued about.
+ */
+uint32_t ref_pre_sby_perpixel_variance(const uint8_t* src, int32_t stride, int32_t fn_bs, int32_t norm_bs) {
+    sc_ensure_fn_ptr();
+    return svt_av1_get_sby_perpixel_variance(&svt_aom_mefn_ptr[fn_bs], src, stride, (BlockSize)norm_bs);
+}
+
+/* Six sc_class bits, in order 0..5, written into `out`. */
+static void sc_run_detector(int32_t antialiasing_aware, int32_t fast_detection, uint8_t* y_buf, uint32_t y_origin,
+                            uint32_t y_stride, uint32_t width, uint32_t height, int32_t* out) {
+    sc_ensure_fn_ptr();
+    SequenceControlSet*      scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    PictureParentControlSet* pcs = (PictureParentControlSet*)calloc(1, sizeof(PictureParentControlSet));
+    EbPictureBufferDesc*     in  = (EbPictureBufferDesc*)calloc(1, sizeof(EbPictureBufferDesc));
+
+    in->y_buffer = y_buf + y_origin;
+    in->y_stride = y_stride;
+    in->width    = width;
+    in->height   = height;
+
+    scs->fast_aa_aware_screen_detection_mode = (uint8_t)(fast_detection != 0);
+    pcs->scs                                 = scs;
+    pcs->enhanced_pic                        = in;
+
+    if (antialiasing_aware) {
+        svt_aom_is_screen_content_antialiasing_aware(pcs);
+    } else {
+        svt_aom_is_screen_content(pcs);
+    }
+
+    out[0] = pcs->sc_class0;
+    out[1] = pcs->sc_class1;
+    out[2] = pcs->sc_class2;
+    out[3] = pcs->sc_class3;
+    out[4] = pcs->sc_class4;
+    out[5] = pcs->sc_class5;
+
+    free(in);
+    free(pcs);
+    free(scs);
+}
+
+void ref_pre_is_screen_content_aa(int32_t fast_detection, uint8_t* y_buf, uint32_t y_origin, uint32_t y_stride,
+                                  uint32_t width, uint32_t height, int32_t* out) {
+    sc_run_detector(1, fast_detection, y_buf, y_origin, y_stride, width, height, out);
+}
+
+void ref_pre_is_screen_content(uint8_t* y_buf, uint32_t y_origin, uint32_t y_stride, uint32_t width, uint32_t height,
+                               int32_t* out) {
+    sc_run_detector(0, 0, y_buf, y_origin, y_stride, width, height, out);
 }

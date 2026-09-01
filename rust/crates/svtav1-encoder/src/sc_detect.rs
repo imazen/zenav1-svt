@@ -130,18 +130,42 @@ pub fn dilate_block(
 /// C_DEFAULT/variance.c:141): `sse - (u32)((i64)sum*sum / (w*h))`, then
 /// `ROUND_POWER_OF_TWO(var, log2pels)` (8x8 -> 6, 16x16 -> 8).
 pub fn sby_perpixel_variance(src: &[u8], stride: usize, w: usize, h: usize) -> u32 {
-    debug_assert!((w == 8 && h == 8) || (w == 16 && h == 16));
+    debug_assert!(w == h, "only the square detector block sizes are used");
+    sby_perpixel_variance_normalized(src, stride, w, w)
+}
+
+/// The same C function with the variance WINDOW and the NORMALISING block
+/// size chosen independently.
+///
+/// C passes both through one `AomVarianceFnPtr*` and one `BlockSize`, and they
+/// are only the same when the caller keeps them in step — which
+/// `svt_aom_is_screen_content` does not (see [`is_screen_content`]). Splitting
+/// them here is what lets that call be expressed without a second copy of the
+/// variance loop.
+///
+/// `side` is the window; `norm_side` picks the shift,
+/// `eb_num_pels_log2_lookup[BLOCK_norm_side x norm_side]` (8 -> 6, 16 -> 8).
+pub fn sby_perpixel_variance_normalized(
+    src: &[u8],
+    stride: usize,
+    side: usize,
+    norm_side: usize,
+) -> u32 {
+    debug_assert!(side == 8 || side == 16);
+    debug_assert!(norm_side == 8 || norm_side == 16);
     let mut sum: i64 = 0;
     let mut sse: u32 = 0;
-    for r in 0..h {
-        for c in 0..w {
+    for r in 0..side {
+        for c in 0..side {
             let diff = src[r * stride + c] as i32 - 128;
             sum += diff as i64;
             sse = sse.wrapping_add((diff * diff) as u32);
         }
     }
-    let var = sse.wrapping_sub((sum * sum / (w as i64 * h as i64)) as u32);
-    let log2pels = if w == 8 { 6 } else { 8 };
+    // C's `variance_c`: `sse - (uint32_t)((int64_t)sum * sum / (w * h))`,
+    // divided by the WINDOW's pixel count, then rounded by the NORMALISER's.
+    let var = sse.wrapping_sub((sum * sum / (side as i64 * side as i64)) as u32);
+    let log2pels = if norm_side == 8 { 6 } else { 8 };
     (var + (1 << (log2pels - 1))) >> log2pels
 }
 
@@ -466,4 +490,154 @@ pub fn derive_allintra_sc(
         allow_intrabc,
         allow_screen_content_tools: palette_level != 0 || allow_intrabc,
     }
+}
+
+// ---------------------------------------------------------------------------
+// The `--scm 2` detector
+// ---------------------------------------------------------------------------
+//
+// REACHABILITY — measured, and the answer is "never", which is why it is
+// documented rather than assumed. `screen_content_mode` defaults to 2
+// (enc_settings.c:1064), but `enc_handle.c:4638-4674` REMAPS it before the
+// encoder ever reads it, on all three arms (allintra / rtc / else):
+//
+//     user <= 1                      -> passes through (0 or 1)
+//     user >= 2 and enc_mode <= M7/M8 -> 3
+//     otherwise                       -> 0
+//
+// The value 2 is never stored, so the `case 2:` arms in pd_process.c:4783 and
+// pic_analysis_process.c:2018 — the only two callers of
+// `svt_aom_is_screen_content` — are unreachable in v4.2.0 and the LIVE
+// detector is always the AA-aware one above. Translated anyway per
+// `docs/WORKING-ON-THIS.md` §7; one edit to that remap re-arms it, and it is
+// gated at tier 1 so it will not rot.
+//
+// It differs from the AA-aware detector in more than thresholds: it has no
+// dilation pass, no photo class, no per-region accounting, and it never writes
+// `sc_class5` (which is the bit the whole allintra screen-content vertical
+// hangs off, so a re-armed mode 2 would leave palette/IntraBC off).
+
+/// C `is_valid_palette_nb_colors` (pic_analysis_process.c:957).
+///
+/// True when the block has more than one colour and no more than
+/// `nb_colors_threshold` of them. Distinct from
+/// [`count_colors_with_threshold`], which reports "not over the threshold"
+/// and does not reject a single-colour block.
+pub fn is_valid_palette_nb_colors(
+    src: &[u8],
+    stride: usize,
+    rows: usize,
+    cols: usize,
+    nb_colors_threshold: i32,
+) -> bool {
+    let mut has_color = [false; 256];
+    let mut nb_colors: i32 = 0;
+    for r in 0..rows {
+        for c in 0..cols {
+            let v = src[r * stride + c] as usize;
+            if !has_color[v] {
+                has_color[v] = true;
+                nb_colors += 1;
+                if nb_colors > nb_colors_threshold {
+                    return false;
+                }
+            }
+        }
+    }
+    nb_colors > 1
+}
+
+/// One grid pass of [`is_screen_content`]: count the blocks that palettize,
+/// and of those, the ones whose per-pixel variance clears `var_thresh`.
+///
+/// `var_side` is the side of the VARIANCE window, which is not always `blk`:
+/// see the note on [`is_screen_content`] about C's un-rebound `fn_ptr`.
+#[allow(clippy::too_many_arguments)]
+fn scm2_counts(
+    y: &[u8],
+    y_stride: usize,
+    width: usize,
+    height: usize,
+    blk: usize,
+    var_side: usize,
+    color_thresh: i32,
+    var_thresh: u32,
+) -> (i64, i64) {
+    let (mut counts_1, mut counts_2) = (0i64, 0i64);
+    let mut r = 0;
+    while r + blk <= height {
+        let mut c = 0;
+        while c + blk <= width {
+            let src = &y[r * y_stride + c..];
+            if is_valid_palette_nb_colors(src, y_stride, blk, blk, color_thresh) {
+                counts_1 += 1;
+                if sby_perpixel_variance_normalized(src, y_stride, var_side, blk) > var_thresh {
+                    counts_2 += 1;
+                }
+            }
+            c += blk;
+        }
+        r += blk;
+    }
+    (counts_1, counts_2)
+}
+
+/// C `svt_aom_is_screen_content` (pic_analysis_process.c:1355) — the
+/// `--scm 2` detector. See the reachability note above: v4.2.0 never selects
+/// it.
+///
+/// `y` is the padded 8-bit luma plane and must carry EIGHT extra rows and
+/// columns past `width` x `height` — see the `fn_ptr` note below. `sc_class5`
+/// is left `false` because C never assigns it here.
+///
+/// ## Two upstream defects reproduced on purpose
+///
+/// 1. **The 8x8 pass measures a 16x16 variance.** C binds
+///    `const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[BLOCK_16X16]` at
+///    :1367 and never rebinds it, then passes that same `fn_ptr` to
+///    `svt_av1_get_sby_perpixel_variance(..., BLOCK_8X8)` at :1417. So the 8x8
+///    pass reads a 16x16 window through `variance16x16` and normalises the
+///    result by 64 instead of 256 — a per-pixel variance four times too large,
+///    over a window four times too big, straddling three neighbouring blocks.
+///    That is also where the 8-row/8-column read past the frame comes from.
+///    Confirmed at tier 1: `sby_perpixel_variance_mixed(.., Blk16x16, Blk8x8)`
+///    against the real C symbol reproduces it exactly, and the whole-detector
+///    differential agrees on every plane in the suite once it is reproduced.
+///    Found by the differential, not by reading — the port was written with
+///    matched block sizes first and disagreed with C on a mixed plane.
+/// 2. **Width and height are swapped** at both call sites:
+///    `is_valid_palette_nb_colors(src, stride, blk_w, blk_h, thresh)` against
+///    parameters `(.., rows, cols, ..)`. Both passes are square, so it is
+///    inert; it is spelled out because a future non-square pass would not be.
+///
+/// Per `docs/WORKING-ON-THIS.md` §7 a C bug is still the oracle. Recorded in
+/// `docs/SUSPECTED-C-BUGS.md`.
+pub fn is_screen_content(y: &[u8], y_stride: usize, width: usize, height: usize) -> ScClasses {
+    assert!(
+        width + 8 <= y_stride && y.len() >= (height + 7) * y_stride + width + 8,
+        "the scm-2 detector reads 8 rows/cols past {width}x{height}; supply the border"
+    );
+    let area = width as i64 * height as i64;
+
+    // 16x16 pass: colour threshold 4, variance threshold 0 (:1358-1362).
+    let (counts_1, counts_2) = scm2_counts(y, y_stride, width, height, 16, 16, 4, 0);
+    let blk_area16: i64 = 16 * 16;
+
+    let mut out = ScClasses {
+        sc_class0: counts_1 * blk_area16 * 10 > area,
+        ..Default::default()
+    };
+    // IntraBC forces the loop filters off, so it takes the stricter rule.
+    out.sc_class1 = out.sc_class0 && counts_2 * blk_area16 * 12 > area;
+    out.sc_class2 = out.sc_class1
+        || (counts_1 * blk_area16 * 10 > area * 4 && counts_2 * blk_area16 * 30 > area);
+    out.sc_class3 =
+        out.sc_class1 || (counts_1 * blk_area16 * 8 > area && counts_2 * blk_area16 * 50 > area);
+
+    // 8x8 pass: same colour threshold, variance threshold 16 (:1400-1408) —
+    // and the 16x16 variance window C's un-rebound `fn_ptr` forces.
+    let (counts_1, counts_2) = scm2_counts(y, y_stride, width, height, 8, 16, 4, 16);
+    let blk_area8: i64 = 8 * 8;
+    out.sc_class4 = counts_1 * blk_area8 * 18 > area && counts_2 * blk_area8 * 20 > area;
+    out
 }

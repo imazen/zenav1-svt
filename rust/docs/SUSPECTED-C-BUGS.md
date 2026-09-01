@@ -950,6 +950,74 @@ between the two facades and diverged 3:2 on the first `tx_bias == 2`,
 
 ---
 
+## 23. `svt_aom_is_screen_content`'s 8x8 pass measures a 16x16 variance
+
+**Status: REPRODUCED (and UNREACHABLE in v4.2.0 — see below).**
+
+`pic_analysis_process.c:1367` binds the variance kernel once:
+
+```c
+const AomVarianceFnPtr* fn_ptr = &svt_aom_mefn_ptr[BLOCK_16X16];
+```
+
+and never rebinds it. The function then runs two passes. The 16x16 pass is
+consistent:
+
+```c
+int var = svt_av1_get_sby_perpixel_variance(fn_ptr, src, input_pic->y_stride, BLOCK_16X16);
+```
+
+The 8x8 pass changes `blk_w`/`blk_h` to 8 and the threshold to 16, but reuses
+the same `fn_ptr`:
+
+```c
+blk_w = 8; blk_h = 8; var_thresh = 16;
+...
+int var = svt_av1_get_sby_perpixel_variance(fn_ptr, src, input_pic->y_stride, BLOCK_8X8);
+```
+
+`svt_av1_get_sby_perpixel_variance` calls `fn_ptr->vf` and then divides by
+`eb_num_pels_log2_lookup[bs]`. So the 8x8 pass reads a **16x16** window through
+`svt_aom_variance16x16` and normalises it by **64** instead of 256 — a
+per-pixel variance four times too large, measured over a window four times too
+big that straddles the block's right and lower neighbours. Two consequences:
+
+1. The variance test at the 8x8 grid is not a property of the 8x8 block.
+2. At the last 8x8 block of a row or column the read runs **8 rows and 8
+   columns past the frame**, into the picture border. In the encoder that
+   border exists, so it does not fault; it does mean the verdict depends on
+   padding content.
+
+The AA-aware detector (`svt_aom_is_screen_content_antialiasing_aware`) does NOT
+have this bug — it binds `fn_ptr_16` and `fn_ptr_8` separately (:1253-1254).
+
+**How it was found:** not by reading. The port was written first with matched
+block sizes, and the tier-1 whole-detector differential
+(`c_parity_sc_detect::is_screen_content_matches_c`) disagreed with C on
+`sc_class4` for one mixed plane. Confirmed at tier 1 in isolation by
+`sby_perpixel_variance_mixed_block_sizes_matches_c`, which drives the real
+exported `svt_av1_get_sby_perpixel_variance` with `fn_bs = BLOCK_16X16` and
+`norm_bs = BLOCK_8X8` and shows it differs from the well-formed 8x8 call.
+
+**Reachable:** no. `screen_content_mode == 2` is the only selector for this
+detector (pd_process.c:4783, pic_analysis_process.c:2018), and
+`enc_handle.c:4638-4674` remaps the configured value before the encoder reads
+it: `<= 1` passes through, anything else becomes **3** (at enc_mode <= M7/M8)
+or **0**. The value 2 is never stored, so the live detector is always the
+AA-aware one. The default of 2 in `enc_settings.c:1064` is remapped away.
+
+**What the port does:** `sc_detect::is_screen_content` reproduces both the
+16x16 window and the `>> 6` normalisation via
+`sby_perpixel_variance_normalized(src, stride, 16, 8)`, and REQUIRES the caller
+to supply the eight extra rows and columns C reads — it asserts on a
+tightly-sized plane rather than reading whatever follows the slice. The
+detector's second, inert quirk (`is_valid_palette_nb_colors(src, stride,
+blk_w, blk_h, ...)` against parameters `(.., rows, cols, ..)`, i.e. width and
+height swapped) is documented at the port site; both passes are square, so it
+changes nothing.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

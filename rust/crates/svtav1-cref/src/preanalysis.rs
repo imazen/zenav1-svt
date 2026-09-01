@@ -410,3 +410,181 @@ pub fn gathering_picture_statistics(
         pic_avg_variance,
     })
 }
+
+// ---------------------------------------------------------------------------
+// Screen-content detection
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_pre_sby_perpixel_variance(src: *const u8, stride: i32, fn_bs: i32, norm_bs: i32) -> u32;
+    fn ref_pre_is_screen_content_aa(
+        fast_detection: i32,
+        y_buf: *mut u8,
+        y_origin: u32,
+        y_stride: u32,
+        width: u32,
+        height: u32,
+        out: *mut i32,
+    );
+    fn ref_pre_is_screen_content(
+        y_buf: *mut u8,
+        y_origin: u32,
+        y_stride: u32,
+        width: u32,
+        height: u32,
+        out: *mut i32,
+    );
+}
+
+/// `BlockSize` values the screen-content detectors use. C's `BlockSize` enum
+/// is a plain `int` at the ABI, and only these two reach the detectors, so an
+/// enum here is both clearer than a bare integer and impossible to misuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScBlockSize {
+    /// `BLOCK_8X8`.
+    Blk8x8,
+    /// `BLOCK_16X16`.
+    Blk16x16,
+}
+
+impl ScBlockSize {
+    /// The `BlockSize` discriminant, from `block_structures.h`'s enum order.
+    fn as_c(self) -> i32 {
+        match self {
+            // BLOCK_4X4=0, 4X8=1, 8X4=2, 8X8=3, 8X16=4, 16X8=5, 16X16=6.
+            Self::Blk8x8 => 3,
+            Self::Blk16x16 => 6,
+        }
+    }
+
+    /// Side length in pixels.
+    pub fn side(self) -> usize {
+        match self {
+            Self::Blk8x8 => 8,
+            Self::Blk16x16 => 16,
+        }
+    }
+}
+
+/// `svt_av1_get_sby_perpixel_variance` (pic_analysis_process.c:945) with
+/// matched block sizes — the well-formed call.
+///
+/// Dereferences `svt_aom_mefn_ptr[bs].vf`, so the shim runs BOTH the RTCD
+/// setup and `init_fn_ptr()` before the call.
+pub fn sby_perpixel_variance(src: &[u8], stride: usize, bs: ScBlockSize) -> u32 {
+    sby_perpixel_variance_mixed(src, stride, bs, bs)
+}
+
+/// The same C function with the variance kernel and the normalising block
+/// size chosen INDEPENDENTLY.
+///
+/// `svt_aom_is_screen_content` needs this: it binds `fn_ptr` to
+/// `&svt_aom_mefn_ptr[BLOCK_16X16]` once (pic_analysis_process.c:1367) and
+/// never rebinds it, so its 8x8 pass is `fn_bs = Blk16x16`,
+/// `norm_bs = Blk8x8`. `src` must therefore be large enough for a
+/// `fn_bs`-sized read, not a `norm_bs`-sized one.
+pub fn sby_perpixel_variance_mixed(
+    src: &[u8],
+    stride: usize,
+    fn_bs: ScBlockSize,
+    norm_bs: ScBlockSize,
+) -> u32 {
+    let side = fn_bs.side();
+    assert!(
+        src.len() >= (side - 1) * stride + side,
+        "source too small for the {side}x{side} variance kernel at stride {stride}"
+    );
+    unsafe {
+        ref_pre_sby_perpixel_variance(src.as_ptr(), stride as i32, fn_bs.as_c(), norm_bs.as_c())
+    }
+}
+
+/// The six `pcs->sc_class{0..5}` bits the detectors write.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScClassBits {
+    pub sc_class0: bool,
+    pub sc_class1: bool,
+    pub sc_class2: bool,
+    pub sc_class3: bool,
+    pub sc_class4: bool,
+    pub sc_class5: bool,
+}
+
+impl ScClassBits {
+    fn from_raw(raw: [i32; 6]) -> Self {
+        Self {
+            sc_class0: raw[0] != 0,
+            sc_class1: raw[1] != 0,
+            sc_class2: raw[2] != 0,
+            sc_class3: raw[3] != 0,
+            sc_class4: raw[4] != 0,
+            sc_class5: raw[5] != 0,
+        }
+    }
+}
+
+fn check_plane(y: &[u8], y_stride: usize, width: usize, height: usize) {
+    assert!(width <= y_stride, "width {width} exceeds stride {y_stride}");
+    assert!(
+        y.len() >= (height - 1) * y_stride + width,
+        "plane too small for {width}x{height} at stride {y_stride}"
+    );
+}
+
+/// `svt_aom_is_screen_content_antialiasing_aware` (pic_analysis_process.c:1208)
+/// — the LIVE detector (`screen_content_mode == 3`).
+pub fn is_screen_content_antialiasing_aware(
+    y: &[u8],
+    y_stride: usize,
+    width: usize,
+    height: usize,
+    fast_detection: bool,
+) -> ScClassBits {
+    check_plane(y, y_stride, width, height);
+    let mut buf = y.to_vec();
+    let mut raw = [0i32; 6];
+    unsafe {
+        ref_pre_is_screen_content_aa(
+            i32::from(fast_detection),
+            buf.as_mut_ptr(),
+            0,
+            y_stride as u32,
+            width as u32,
+            height as u32,
+            raw.as_mut_ptr(),
+        );
+    }
+    ScClassBits::from_raw(raw)
+}
+
+/// `svt_aom_is_screen_content` (pic_analysis_process.c:1355) — the
+/// `screen_content_mode == 2` detector, which v4.2.0 never selects (see the
+/// port's reachability note). Never writes `sc_class5`, so it stays `false`.
+///
+/// `y` must carry EIGHT extra rows and columns beyond `width` x `height`.
+/// C's 8x8 pass calls the 16x16 variance kernel (its `fn_ptr` is bound once to
+/// `BLOCK_16X16` and never rebound), so at the last 8x8 block it reads to row
+/// `height + 7` and column `width + 7` — into the picture border the encoder
+/// always supplies. Without those rows the oracle reads whatever follows the
+/// buffer and the differential becomes nondeterministic, so this is checked
+/// rather than hoped for.
+pub fn is_screen_content(y: &[u8], y_stride: usize, width: usize, height: usize) -> ScClassBits {
+    check_plane(y, y_stride, width, height);
+    assert!(
+        width + 8 <= y_stride && y.len() >= (height + 7) * y_stride + width + 8,
+        "the scm-2 detector reads 8 rows/cols past {width}x{height}; supply the border"
+    );
+    let mut buf = y.to_vec();
+    let mut raw = [0i32; 6];
+    unsafe {
+        ref_pre_is_screen_content(
+            buf.as_mut_ptr(),
+            0,
+            y_stride as u32,
+            width as u32,
+            height as u32,
+            raw.as_mut_ptr(),
+        );
+    }
+    ScClassBits::from_raw(raw)
+}
