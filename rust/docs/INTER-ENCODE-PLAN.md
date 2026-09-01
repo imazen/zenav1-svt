@@ -175,6 +175,79 @@ The C driver gained `SVT_AVIF=0` precisely so this stays attributable: it
 separates "still vs video configuration" from "one frame vs many", two
 variables a naive multi-frame run changes at once.
 
+## 1c. The video-vs-still MD divergence, MEASURED — the campaign's work queue
+
+Written 2026-09-01. Before this, each chunk picked its next ladder by reading
+`enc_mode_config.c` and guessing which fork mattered. That is now unnecessary:
+`ref_sig_deriv_md_config_allintra` reads back the SAME 52-slot `MD_O_*` layout
+as `ref_sig_deriv_md_config_default`, so the two arms are diffed FIELD FOR
+FIELD from one input population through the real exported C symbols.
+`tests/c_parity_sig_deriv_md_config.rs::video_key_frame_arm_divergence_at_m6_is_exactly_this_set`
+asserts the COMPLETE set at the reference cell (gradient 64x64 q40 p6, R240p,
+I-slice, base), so every slot NOT listed is proven equal, and a chunk that
+wires one and forgets to move its row fails the test.
+
+At M6, on a video-mode KEY frame:
+
+| slot | allintra | video | state |
+|---|---|---|---|
+| `rdoq_level` | 3 | 1 | WIRED (`rate_arm`) |
+| `pic_filter_intra_level` | 2 | 0 | WIRED (`intra_arm`) |
+| `intra_level` | 6 | 2 | WIRED (`intra_arm`) |
+| `nsq_geom_level` / `nsq_search_level` | 0 | 15 | WIRED (`part_arm` + `NsqCfg::for_arm`) |
+| `pic_block_based_depth_refinement_level` | 10 | 6 | WIRED (`DrCtrls::for_arm`) |
+| `txt_level` | 8 | 7 | wired on `wip/video-md-arms`, HELD (see below) |
+| `cfl_level` | 4 | 2 | wired on `wip/video-md-arms`, HELD |
+| `nic_level` | 6 | 8 | wired on `wip/video-md-arms`, HELD |
+| `pic_pd0_lvl` | 1 | **3** | OPEN — `PD0_LVL_3` is unimplemented in `pd0.rs` |
+| `pic_depth_removal_level` | 0 | **5** | OPEN — depth removal is unwired in the search |
+| `allow_high_precision_mv`, `is_motion_mode_switchable`, `pic_obmc_level`, `interpolation_search_level`, `interpolation_filter`, `md_nsq_mv_search_level`, `md_pme_level`, `me_subpel_level`, `pme_subpel_level` | | | inter-only, cannot move a key frame's bytes |
+
+At other presets the same probe adds `txs_level` (allintra 0 vs video 4 at M9)
+and moves several rows; run it rather than extrapolating from the M6 column.
+
+## 1d. First byte-identical VIDEO-MODE key frames (2026-09-01)
+
+`screen` 64x64 preset 6, frames=2 frame 0, is byte-identical to C at q20, q40
+AND q55 (C 92 B; the port emitted 119 / 118 / 116 B before the
+depth-refinement arm chunk). The same scan finds `screen` 64x64 q40 identical
+at presets 0, 2, 4 and 5, and `uniform` identical through preset 9. Pinned by
+three `byteVideoKey` cells in `tools/regression_spotcheck.sh`.
+
+`uniform` had been identical since the CDEF arm chunk, but it codes 28 B and
+reaches almost nothing; `screen` is the first content that exercises the
+search.
+
+**The reference cell is still open**, and the shape of what is left is now
+clear. On `gradient` and `diag` the port UNDER-shoots C's byte count
+(gradient 64x64 q40 p6: port 952 B vs C 961; diag: 146 vs 238). Every video
+ladder wired so far WIDENS the search relative to the still path; the two that
+remain — `pic_pd0_lvl` and `pic_depth_removal_level` — are the PRUNES. Until
+one of them lands the port searches more than C does and finds better RD, which
+is exactly what a smaller stream at the same qp looks like. Do not read a
+smaller number as "closer".
+
+### `wip/video-md-arms` — complete, verified, deliberately NOT on main
+
+The `txt_level` / `cfl_level` / `nic_level` arms are done, tier 1 on both arms,
+and still-path byte-neutral (identity_full_8bit 1100/1100). They are on the
+bookmark `wip/video-md-arms`, not on `main`, because they move three
+`ratioVideoKey` scoreboard cells past limits that were derived on an earlier
+build:
+
+| cell | C | port | limit |
+|---|---|---|---|
+| `video-key-nsq-arm-p5-72x88` | 1485 B | 1493 B (0.539%) | 0.3% |
+| `video-key-nsq-arm-p7-screenrep-72x88` | 2388 B | 2374 B (0.586%) | 0.5% |
+| `video-key-rate-arm-p9-72x88` | 1589 B | 1563 B (1.636%) | 1.0% |
+
+Re-deriving a limit is a threshold change and needs the owner's sign-off. The
+better fix is probably to land a PRUNE first (§1c) and re-measure: the drift is
+the search-widening/pruning imbalance above, not a defect in those three arms.
+Bisected on all eight on/off combinations of (`funnel_arm`, `nic_arm`,
+`DrCtrls::for_arm`), the only configurations where all four cells pass are "all
+three off" and "depth-refinement only" — the latter is what is on `main`.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
