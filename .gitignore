@@ -28,9 +28,10 @@ cbuild-static-hdr-config.log
 # Agent worktrees created by the Workflow tool (never committed).
 .claude/
 
-# Python bytecode. `tools/fh_fields.py` etc. are imported as modules by ad-hoc
-# analysis snippets, which drops a 31 KB .pyc beside them — one byte under the
-# 30 KB "ask before committing a binary" line, and easy to `jj commit` by
-# accident with a path glob.
+# Python bytecode. Importing rust/tools/fh_fields.py (or any other tool) as a
+# module from an analysis snippet drops a ~31 KB .pyc in rust/tools/__pycache__
+# — over the 30 KB "ask before committing a binary" line, in a directory whose
+# sibling tests/data/*.bin fixtures are deliberately force-added, so a path
+# glob would take it along.
 __pycache__/
 *.pyc
