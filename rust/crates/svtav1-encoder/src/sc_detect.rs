@@ -797,7 +797,11 @@ mod arm_tests {
         let mut screen = alloc::vec![0u8; w * h];
         for r in 0..h {
             for c in 0..w {
-                screen[r * w + c] = if ((r / 4) + (c / 4)) % 2 == 0 { 16 } else { 240 };
+                screen[r * w + c] = if ((r / 4) + (c / 4)) % 2 == 0 {
+                    16
+                } else {
+                    240
+                };
             }
         }
         let still = derive_sc(ScArm::Allintra, 6, &screen, w, w, h);
