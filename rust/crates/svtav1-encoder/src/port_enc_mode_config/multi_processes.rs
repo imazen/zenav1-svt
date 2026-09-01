@@ -218,23 +218,17 @@ pub fn sig_deriv_multi_processes_default(i: MultiProcessesInputs) -> Option<Mult
 
     let allow_screen_content_tools = u8::from(sc5 && (palette_level != 0 || allow_intrabc != 0));
 
-    // CDEF search level.
-    let cdef_level = if i.seq_cdef_level == 0 || allow_intrabc != 0 {
-        0
-    } else if i.config_cdef_level != CONFIG_DEFAULT {
-        // C casts through int8_t.
-        i.config_cdef_level as i8 as u8
-    } else if enc_mode <= MR {
-        1
-    } else if enc_mode <= M2 {
-        2
-    } else if enc_mode <= M5 {
-        5
-    } else if enc_mode <= M7 {
-        if i.is_base { 5 } else { 6 }
-    } else {
-        7
-    };
+    // CDEF search level. The ladder itself lives in `super::cdef_search`
+    // beside `set_cdef_search_controls`, which is what consumes it — the
+    // still/allintra twin needs the same pair, and a video-mode key frame's
+    // CDEF strengths come from exactly this level (chunk C1a).
+    let cdef_level = super::cdef_search::cdef_search_level_default(
+        enc_mode,
+        i.is_base,
+        i.seq_cdef_level,
+        allow_intrabc != 0,
+        i.config_cdef_level,
+    );
 
     let cdef_recon_level =
         super::tail::cdef_recon_level_default(enc_mode, i.fast_decode, i.input_resolution);

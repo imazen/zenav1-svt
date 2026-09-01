@@ -759,13 +759,9 @@ pub enum CdefSearchPick {
 /// (`default_second_pass_fs_uv = -1`, cdef_process.c:494/569).
 const DEFAULT_MSE_UV: u64 = 1_040_400; // enc_cdef.c / cdef_process.c:240
 
-/// `pf_gi[16]` (enc_mode_config.c:16): first-pass strength ids = pri
-/// strength index * 4 (sec 0).
-const PF_GI: [i32; 16] = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60];
-
-/// One preset's CDEF search candidate set — the
-/// `set_cdef_search_controls` fields the still path consumes
-/// (enc_mode_config.c:1360-1700).
+/// One preset's CDEF search candidate set — the projection of C's
+/// `CdefSearchControls` (`set_cdef_search_controls`, enc_mode_config.c:891)
+/// that the RD search reads. Built by [`cdef_search_cfg_from_ctrls`].
 pub struct CdefSearchCfg {
     /// Candidate strengths in C slot order: `default_first_pass_fs[..n]`
     /// then `default_second_pass_fs[..m]` (gi domain: pri*4 + sec-code).
@@ -780,32 +776,39 @@ pub struct CdefSearchCfg {
     pub subsampling: usize,
 }
 
-/// C `set_cdef_search_controls` levels for the allintra preset split
-/// (`svt_aom_sig_deriv_multi_processes_allintra`, enc_mode_config.c:
-/// 3543-3600, fast_decode 0): M0 -> level 2, M1..M3 -> 3, M4..M5 -> 5,
-/// M6 -> 7. Second-pass sets: levels 2/3 append pf+1, pf+2, pf+3 per
-/// first-pass entry (nested order); levels 5/7 append pf+2 per entry.
-pub fn cdef_search_cfg_for_preset(preset: u8) -> CdefSearchCfg {
-    let (first, extra): (&[usize], &[i32]) = match preset {
-        0 => (&[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14], &[1, 2, 3]),
-        1..=3 => (&[0, 4, 8, 12, 15], &[1, 2, 3]),
-        4 | 5 => (&[0, 7, 15], &[2]),
-        _ => (&[0, 15], &[2]),
-    };
-    let mut fs: Vec<i32> = first.iter().map(|&i| PF_GI[i]).collect();
-    let first_pass_num = fs.len();
-    // C fills default_second_pass_fs[sf_idx++] looping first-pass entries
-    // outer, deltas inner (levels 1-4); levels 5-7 have one delta so the
-    // order is the same either way.
-    for &i in first {
-        for &d in extra {
-            fs.push(PF_GI[i] + d);
-        }
-    }
+/// The candidate set a `CdefSearchControls` (C `set_cdef_search_controls`,
+/// enc_mode_config.c:891) presents to the RD search, in C's slot order:
+/// `default_first_pass_fs[..first_pass_fs_num]` then
+/// `default_second_pass_fs[..default_second_pass_fs_num]`.
+///
+/// The controls also carry `use_reference_cdef_fs`, `search_best_ref_fs`,
+/// `skip_th` and `uv_from_y`. Every one of them is INERT on a key frame at
+/// every level a key frame can reach: levels 1..=6 leave `use_reference_cdef_fs`
+/// 0 and set `search_best_ref_fs` from `!is_not_highest_layer` (false for a
+/// KEY frame), level 7 sets both from the KEY-frame-true `is_base` /
+/// `is_not_highest_layer` and so also lands on 0, and `skip_th` is
+/// `is_base ? 0 : 80`. `uv_from_y` is set only by levels 8/9, which are
+/// exclusive to the RTC arm. So this projection is lossless HERE and will need
+/// widening when the inter arms land — not silently, because those fields are
+/// asserted inert by `key_frame_ref_fields_are_inert`.
+#[must_use]
+pub fn cdef_search_cfg_from_ctrls(
+    ctrls: &crate::port_enc_mode_config::cdef_search::CdefSearchControls,
+) -> CdefSearchCfg {
+    let first_pass_num = ctrls.first_pass_fs_num as usize;
+    let mut fs: Vec<i32> = ctrls.default_first_pass_fs[..first_pass_num]
+        .iter()
+        .map(|&v| i32::from(v))
+        .collect();
+    fs.extend(
+        ctrls.default_second_pass_fs[..ctrls.default_second_pass_fs_num as usize]
+            .iter()
+            .map(|&v| i32::from(v)),
+    );
     CdefSearchCfg {
         fs,
         first_pass_num,
-        subsampling: if preset >= 6 { 4 } else { 1 },
+        subsampling: ctrls.subsampling_factor as usize,
     }
 }
 
@@ -1570,6 +1573,104 @@ pub fn cdef_search_still_hbd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::port_enc_mode_config::ResolutionRange;
+    use crate::port_enc_mode_config::cdef_search::{
+        CONFIG_DEFAULT, PF_GI, cdef_search_level_allintra, set_cdef_search_controls,
+    };
+
+    /// The candidate table the port carried BEFORE `set_cdef_search_controls`
+    /// was ported: the allintra ladder's outcome flattened per preset, which
+    /// is what every byte of the 280/280 still envelope was produced with.
+    /// Kept as the regression oracle for
+    /// [`allintra_flattening_matches_the_ladder`] — deleting it would delete
+    /// the only independent statement of what the still path used to do.
+    fn allintra_cfg_for_preset_flattened(preset: u8) -> CdefSearchCfg {
+        let (first, extra): (&[usize], &[i32]) = match preset {
+            0 => (&[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14], &[1, 2, 3]),
+            1..=3 => (&[0, 4, 8, 12, 15], &[1, 2, 3]),
+            4 | 5 => (&[0, 7, 15], &[2]),
+            _ => (&[0, 15], &[2]),
+        };
+        let mut fs: Vec<i32> = first.iter().map(|&i| i32::from(PF_GI[i])).collect();
+        let first_pass_num = fs.len();
+        for &i in first {
+            for &d in extra {
+                fs.push(i32::from(PF_GI[i]) + d);
+            }
+        }
+        CdefSearchCfg {
+            fs,
+            first_pass_num,
+            subsampling: if preset >= 6 { 4 } else { 1 },
+        }
+    }
+
+    /// NO-STILL-REGRESSION, at the unit level: routing the still path through
+    /// the real C ladder + controls table reproduces the flattened per-preset
+    /// table entry for entry, at every preset the still search can reach
+    /// (0..=6 — 7+ is level 10, the qp fast path). This is what makes the
+    /// pipeline rewrite byte-neutral for `is_single_frame`; the byte gates
+    /// then confirm it end to end.
+    #[test]
+    fn allintra_flattening_matches_the_ladder() {
+        for preset in 0..=6u8 {
+            let level = cdef_search_level_allintra(
+                preset as i8,
+                0,
+                ResolutionRange::R240p,
+                1,
+                false,
+                CONFIG_DEFAULT,
+            );
+            let ctrls = set_cdef_search_controls(level, true, true).unwrap();
+            assert!(!ctrls.use_qp_strength, "preset {preset} level {level}");
+            let got = cdef_search_cfg_from_ctrls(&ctrls);
+            let want = allintra_cfg_for_preset_flattened(preset);
+            assert_eq!(
+                got.fs, want.fs,
+                "preset {preset} (level {level}) candidates"
+            );
+            assert_eq!(got.first_pass_num, want.first_pass_num, "preset {preset}");
+            assert_eq!(got.subsampling, want.subsampling, "preset {preset}");
+        }
+        // 7+ takes the qp fast path, which is the other half of the old
+        // `allintra_preset_uses_cdef_search` predicate.
+        for preset in 7..=13u8 {
+            let level = cdef_search_level_allintra(
+                preset as i8,
+                0,
+                ResolutionRange::R240p,
+                1,
+                false,
+                CONFIG_DEFAULT,
+            );
+            assert_eq!(level, 10, "preset {preset}");
+            assert!(
+                set_cdef_search_controls(level, true, true)
+                    .unwrap()
+                    .use_qp_strength
+            );
+            assert!(!allintra_preset_uses_cdef_search(preset));
+        }
+    }
+
+    /// [`cdef_search_cfg_from_ctrls`] drops four control fields. This pins
+    /// the claim that they are inert on a KEY frame at every level a key
+    /// frame reaches through either ladder, so the projection loses nothing
+    /// TODAY — and fails loudly if an inter arm ever routes a level here
+    /// where they are not.
+    #[test]
+    fn key_frame_ref_fields_are_inert() {
+        // Levels a KEY frame can reach: allintra 1/2/3/5/7/10, video
+        // 1/2/5/7. Levels 8/9 are RTC-only and are NOT asserted inert.
+        for level in [1u8, 2, 3, 5, 7, 10] {
+            let c = set_cdef_search_controls(level, true, true).unwrap();
+            assert_eq!(c.use_reference_cdef_fs, 0, "level {level}");
+            assert_eq!(c.search_best_ref_fs, 0, "level {level}");
+            assert_eq!(c.skip_th, 0, "level {level}");
+            assert!(!c.uv_from_y, "level {level}");
+        }
+    }
 
     /// C-verified anchors (values cross-checked bit-exact against the C
     /// float evaluation for ALL qindexes by

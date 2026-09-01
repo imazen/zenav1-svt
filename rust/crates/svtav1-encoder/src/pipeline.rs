@@ -3391,6 +3391,79 @@ impl EncodePipeline {
         // cdef_process re-zeroes cdef_params (cdef_process.c:692-697). The
         // all-zero-strength default makes apply_cdef_frame a structural
         // no-op and cdef_bits stays 0 (no per-SB syntax, no FH params).
+        //
+        // WHICH CDEF policy runs is the same two-step C derivation the deblock
+        // levels above take, forking on `scs->allintra`:
+        //
+        //   allintra -> svt_aom_sig_deriv_multi_processes_allintra
+        //               -> its cdef_search_level ladder (enc_mode_config.c:2396)
+        //   video    -> svt_aom_sig_deriv_multi_processes_default
+        //               -> its cdef_search_level ladder (:2083)
+        //
+        // and then maps that LEVEL through `set_cdef_search_controls` (:891).
+        // `use_qp_strength` is what selects the fast path: level 10 sets it,
+        // levels 1..=9 clear it and carry a candidate set to RD-search.
+        //
+        // Before the inter campaign the port encoded the ALLINTRA resolution of
+        // that chain inline (`preset <= 6` -> search, else the qp closed form,
+        // with the candidate set flattened per preset). That flattening is
+        // exactly right for the still envelope and is reproduced entry for
+        // entry by the ladder below (`cdef.rs`'s
+        // `allintra_flattening_matches_the_ladder`) — but it was gated on
+        // `is_single_frame`, so a VIDEO-mode key frame fell through to the qp
+        // fast path, which is not the arm C takes. C's video ladder gives
+        // `is_base ? 5 : 6` at M6..M7 and 7 above, i.e. a video key frame
+        // SEARCHES at every preset; at preset 6 / qindex 67 the port signalled
+        // y=(pri 1, sec 0) / uv=(pri 1, sec 0) where C signals y=(0, 2) /
+        // uv=(7, 0) — the level-5 candidate set {0, 28, 60} + {2, 30, 62}.
+        //
+        // `scs->seq_header.cdef_level` is 1 in this port (obu.rs writes
+        // `enable_cdef = 1` unconditionally) and there is no `--cdef-level`
+        // config, so both ladders take their derived arm.
+        const SEQ_CDEF_LEVEL: u8 = 1;
+        // `scs->static_config.fast_decode` — the port carries no fast-decode
+        // config and C's default is 0, the same constant the deblock ladder
+        // above passes.
+        const CDEF_FAST_DECODE: u8 = 0;
+        let cdef_level = if is_single_frame {
+            crate::port_enc_mode_config::cdef_search::cdef_search_level_allintra(
+                self.speed_config.preset as i8,
+                CDEF_FAST_DECODE,
+                dlf_resolution,
+                SEQ_CDEF_LEVEL,
+                sc_derivation.allow_intrabc,
+                crate::port_enc_mode_config::cdef_search::CONFIG_DEFAULT,
+            )
+        } else {
+            // The ladder's own `is_base` is `temporal_layer_index == 0`, which
+            // every KEY frame is — NOT the `frame_is_boosted` one the controls
+            // table below uses.
+            crate::port_enc_mode_config::cdef_search::cdef_search_level_default(
+                self.speed_config.preset as i8,
+                dlf_is_base,
+                SEQ_CDEF_LEVEL,
+                sc_derivation.allow_intrabc,
+                crate::port_enc_mode_config::cdef_search::CONFIG_DEFAULT,
+            )
+        };
+        // `set_cdef_search_controls`' `is_base` is `frame_is_boosted` =
+        // `frame_is_kf_gf_arf` = intra-only OR ARF OR GF update, and
+        // `is_not_highest_layer` is `!frame_is_leaf` = `update_type !=
+        // LF_UPDATE` (enc_mode_config.h:100-116). A KEY frame is intra-only
+        // and KF_UPDATE, so both are true; written out rather than folded to
+        // literals so the inter chunks inherit the rule.
+        let cdef_frame_is_boosted = is_key;
+        let cdef_is_not_highest_layer = is_key;
+        // C's `default:` arm is `assert(0)`; the port refuses rather than
+        // inventing a control set.
+        let cdef_ctrls = crate::port_enc_mode_config::cdef_search::set_cdef_search_controls(
+            cdef_level,
+            cdef_frame_is_boosted,
+            cdef_is_not_highest_layer,
+        )
+        .ok_or(EncodeError::UnsupportedConfig(
+            "cdef search level outside set_cdef_search_controls' 0..=10",
+        ))?;
         let cdef_params = if sc_derivation.allow_intrabc || coded_lossless {
             crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
         } else if is_key {
@@ -3406,9 +3479,7 @@ impl EncodePipeline {
             // path for now: still self-consistent (signal == apply),
             // but their signaled strengths diverge from C's searched
             // ones (gap 2a, narrowed to the non-all-skip case).
-            if is_single_frame
-                && crate::cdef::allintra_preset_uses_cdef_search(self.speed_config.preset)
-            {
+            if cdef_ctrls.enabled != 0 && !cdef_ctrls.use_qp_strength {
                 if deblock_geom.cdef_frame_all_skip() {
                     crate::cdef::CdefPick::single(crate::cdef::pick_cdef_params_all_skip_search(
                         base_qindex,
@@ -3423,7 +3494,7 @@ impl EncodePipeline {
                     // the tile writer lacks) falls back to the qp fast
                     // path — self-consistent, documented divergence.
                     let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                    let cfg = crate::cdef::cdef_search_cfg_for_preset(self.speed_config.preset);
+                    let cfg = crate::cdef::cdef_search_cfg_from_ctrls(&cdef_ctrls);
                     // bd10: search the TRUE 10-bit post-deblock recon against
                     // the true 10-bit source (C `cdef_seg_search` at
                     // is_16bit). The 10-bit source is `u8 << (bd - 8)` by
@@ -3490,7 +3561,7 @@ impl EncodePipeline {
                         ),
                     }
                 }
-            } else {
+            } else if cdef_ctrls.use_qp_strength {
                 // C's `use_qp_strength` fast path takes the screen-content
                 // arm of `svt_pick_cdef_from_qp` when
                 // `allintra ? ppcs->sc_class5 : ppcs->sc_class1` is set
@@ -3509,6 +3580,12 @@ impl EncodePipeline {
                     self.bit_depth,
                     sc_derivation.classes.sc_class5,
                 ))
+            } else {
+                // `cdef_search_level == 0`: CDEF is off for this frame, so
+                // neither arm runs and the header codes zero strengths. Only
+                // reachable through a level-0 ladder entry, since the
+                // IntraBC/lossless suppression is the outer branch above.
+                crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
             }
         } else {
             crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
