@@ -8781,7 +8781,24 @@ fn encode_tile_rows(
                             // C runs its PD1 refinement on every SB, complete or
                             // not, so a partial SB taking a DIFFERENT SEARCH could
                             // only match by coincidence.
-                            let refined = matches!(speed_config.preset, 0..=5) && use_funnel;
+                            // C `ctx->pred_depth_only` (enc_mode_config.c:7095)
+                            // is `mode == PD0_DEPTH_PRED_PART_ONLY`, i.e. the
+                            // refinement walk runs whenever the level is NOT 10.
+                            // This used to be `matches!(preset, 0..=5)`, which is
+                            // the same predicate ON THE ALLINTRA ARM (that ladder
+                            // returns 10 at M6 and above and an adaptive level
+                            // below) but NOT on the video arm, where M6/M7 are
+                            // levels 6/8 — adaptive. Deriving it from the ctrls
+                            // keeps the still path byte-identical by construction
+                            // and lets a video key frame take the refinement C
+                            // runs for it.
+                            let dr = crate::depth_refine::DrCtrls::for_arm(
+                                sc_arm,
+                                speed_config.preset,
+                                tile_sc.classes.sc_class5,
+                                cli_qp as u32,
+                            );
+                            let refined = dr.adaptive && use_funnel;
                             if refined {
                                 // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
                                 // PD1 re-decides depths around the PD0 tree —
@@ -8821,10 +8838,6 @@ fn encode_tile_rows(
                                 // 13/36. Search-off is not geometry-off.
                                 let nsq_geom_enabled =
                                     crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset);
-                                let dr = crate::depth_refine::DrCtrls::for_preset_sc(
-                                    speed_config.preset,
-                                    tile_sc.classes.sc_class5,
-                                );
                                 let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
                                     // SB-EXTENT padded plane, not the raw frame:
                                     // `compute_b64_variance` reads a full 64x64

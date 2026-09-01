@@ -69,6 +69,21 @@ pub struct DrCtrls {
     /// PD0_DEPTH_ADAPTIVE (M0..M5). false = PD0_DEPTH_PRED_PART_ONLY
     /// (M6+): s = e = 0 everywhere, the walk degenerates to the PD0 tree.
     pub adaptive: bool,
+    /// C `mode == PD0_DEPTH_NO_RESTRICTION` (level 0). C's mode is a
+    /// three-state (`md_process.h:227-229`) and this port carried only two,
+    /// because the ALLINTRA ladder never selects level 0. The VIDEO ladder
+    /// does — at M0 on non-screen content, and at M0..M3 on screen content.
+    ///
+    /// NO_RESTRICTION differs from ADAPTIVE in exactly one place
+    /// (`enc_dec_process.c:1826`): the narrowing block that re-derives
+    /// `add_parent_depth` / `add_sub_depth` from the deviation gates is
+    /// SKIPPED, so every admitted depth stays admitted. It shares
+    /// ADAPTIVE's `s = -2 / e = 2` seed and every clamp above that block
+    /// (4x4, `disallow_4x4`, depth removal, `max_block_size`).
+    ///
+    /// `adaptive` stays `true` alongside it so the PRED_PART_ONLY early
+    /// return keeps its meaning.
+    pub no_restriction: bool,
     /// `s1_parent_to_current_th` (M4: 15, M5: 10).
     pub s1_th: i64,
     /// `e1_sub_to_current_th` (M4: 15, M5: 10).
@@ -153,6 +168,97 @@ impl DrCtrls {
         Self::for_preset_sc(preset, false)
     }
 
+    /// The VIDEO arm of the depth-refinement ladder
+    /// (`enc_mode_config.c:9350-9396`), plus the `depths_qp_based_th_scaling`
+    /// pre-scale C applies to the CHILD thresholds.
+    ///
+    /// `coeff_lvl` is not a parameter: C leaves `pcs->coeff_lvl` at
+    /// `INVALID_LVL` on a video-mode I-slice (`md_config_process.c:898-902`
+    /// runs neither derivation there), and every branch of this ladder tests
+    /// it by EQUALITY against `VLOW/LOW` or `HIGH`, so `INVALID` behaves as
+    /// `NORMAL` — the same reasoning `part_arm::VIDEO_ISLICE_COEFF_LVL`
+    /// records for the NSQ ladders. Every video picture this port encodes is
+    /// an I-slice.
+    ///
+    /// The r0 modulation at `:9397-9405` is skipped for the same reason
+    /// `part_arm::nsq_search_level` skips it: `ppcs->r0_gen` follows
+    /// `tpl_ctrls.enable`, and `get_tpl` returns 0 for `LOW_DELAY`, the only
+    /// multi-frame shape this port produces.
+    ///
+    /// # The qp pre-scale, and the C asymmetry it exposes
+    ///
+    /// `set_qp_based_th_scaling_ctrls_default` (`enc_handle.c:3806`) sets
+    /// `depths_qp_based_th_scaling = 1` for every preset above `ENC_MR`,
+    /// where the allintra twin (`:3844`-`:3874`) leaves it 0 through M6 —
+    /// which is why the still path could use the thresholds RAW.
+    ///
+    /// C scales them in two places, and only ONE of the two keeps the result:
+    ///
+    /// - `is_child_to_current_deviation_small` (`enc_dec_process.c:1717-1735`)
+    ///   scales `e1`/`e2` into locals and then USES those locals.
+    /// - `is_parent_to_current_deviation_small` (`:1637-1659`) scales `s1`/`s2`
+    ///   into locals and then OVERWRITES both with
+    ///   `ctx->depth_refinement_ctrls.s1_parent_to_current_th + th_offset` —
+    ///   the UNSCALED control field. The scaled value survives only as the
+    ///   sentinel test. So the parent thresholds are effectively never scaled.
+    ///
+    /// That asymmetry is reproduced here rather than tidied: a C bug is still
+    /// the oracle. Only `e1_th` / `e2_th` are pre-scaled, and the `i64::MIN`
+    /// sentinel is preserved through the scale exactly as C's
+    /// `(uint8_t)~0 -> MIN_SIGNED_VALUE` mapping does.
+    pub fn for_arm(arm: crate::sc_detect::ScArm, preset: u8, sc_class5: bool, cli_qp: u32) -> Self {
+        match arm {
+            crate::sc_detect::ScArm::Allintra => Self::for_preset_sc(preset, sc_class5),
+            crate::sc_detect::ScArm::Video { is_islice } => {
+                let level: u8 = if sc_class5 {
+                    match preset {
+                        0..=2 => 0,
+                        3 => u8::from(!is_islice),
+                        4 => 1,
+                        5 => {
+                            if is_islice {
+                                1
+                            } else {
+                                4
+                            }
+                        }
+                        6 => 4,
+                        7 | 8 => 6,
+                        9 => 7,
+                        _ => 9,
+                    }
+                } else {
+                    match preset {
+                        0 => 0,
+                        1..=3 => 3,
+                        4..=6 => 6,
+                        7 => 8,
+                        _ => 10,
+                    }
+                };
+                let mut c = Self::for_level(level, preset);
+                // `q_weight` is 1 in every level the table enables, and 0 at
+                // level 0 (PD0_DEPTH_NO_RESTRICTION assigns nothing else) —
+                // where there is no deviation gate to scale anyway.
+                if level != 0 {
+                    let (qw, qwd) = crate::pd0::qp_th_scaling_factors(cli_qp);
+                    let scale = |th: i64| -> i64 {
+                        if th == S2E2_ALWAYS {
+                            th
+                        } else {
+                            // C DIVIDE_AND_ROUND(a, b) = (a + b/2) / b.
+                            let (qw, qwd) = (i64::from(qw), i64::from(qwd));
+                            (th * qw + qwd / 2) / qwd
+                        }
+                    };
+                    c.e1_th = scale(c.e1_th);
+                    c.e2_th = scale(c.e2_th);
+                }
+                c
+            }
+        }
+    }
+
     /// Build the ctrls for a `set_block_based_depth_refinement_controls` level
     /// (enc_mode_config.c:6816). `disallow_4x4` is preset-based
     /// (`svt_aom_get_disallow_4x4_allintra`, <= M3 -> false), independent of
@@ -164,6 +270,7 @@ impl DrCtrls {
             // case 1: sc_class5 M0/M1. s2/e2 = literal 0 (NOT the sentinel).
             1 => DrCtrls {
                 adaptive: true,
+                no_restriction: false,
                 s1_th: 200,
                 e1_th: 200,
                 s2_th: 0,
@@ -182,6 +289,7 @@ impl DrCtrls {
             // case 5: sc_class5 M2. s2/e2 = sentinel (always passes).
             5 => DrCtrls {
                 adaptive: true,
+                no_restriction: false,
                 s1_th: 30,
                 e1_th: 30,
                 s2_th: S2E2_ALWAYS,
@@ -200,6 +308,7 @@ impl DrCtrls {
             // case 6: M0-M4 (!sc_class5) and sc_class5 M3/M4.
             6 => DrCtrls {
                 adaptive: true,
+                no_restriction: false,
                 s1_th: 15,
                 e1_th: 15,
                 s2_th: S2E2_ALWAYS,
@@ -218,6 +327,7 @@ impl DrCtrls {
             // case 9: M5.
             9 => DrCtrls {
                 adaptive: true,
+                no_restriction: false,
                 s1_th: 10,
                 e1_th: 10,
                 s2_th: S2E2_ALWAYS,
@@ -233,9 +343,80 @@ impl DrCtrls {
                 unavail_mode: 0,
                 disallow_4x4,
             },
+            // case 0: PD0_DEPTH_NO_RESTRICTION — every field but `mode` is
+            // left at whatever the context held, and none of them is read
+            // because the narrowing block is skipped. The values below are
+            // therefore inert placeholders, not transcriptions.
+            0 => DrCtrls {
+                adaptive: true,
+                no_restriction: true,
+                s1_th: 0,
+                e1_th: 0,
+                s2_th: S2E2_ALWAYS,
+                e2_th: S2E2_ALWAYS,
+                parent_max_cost_mult: 0,
+                band_mod: false,
+                max_cost_multiplier: 0,
+                max_band_cnt: 1,
+                decrement_per_band: [0; 4],
+                lower_split_th: 0,
+                split_rate_th: 0,
+                limit_to_pd0: 0,
+                unavail_mode: 2,
+                disallow_4x4,
+            },
+            // case 2 / case 3 / case 4: video-only, identical to case 1 except
+            // for the s1/e1 threshold and the two split thresholds.
+            2 | 3 | 4 => DrCtrls {
+                adaptive: true,
+                no_restriction: false,
+                s1_th: match level {
+                    2 => 90,
+                    3 => 60,
+                    _ => 30,
+                },
+                e1_th: match level {
+                    2 => 90,
+                    3 => 60,
+                    _ => 30,
+                },
+                s2_th: 0,
+                e2_th: 0,
+                parent_max_cost_mult: 10,
+                band_mod: false,
+                max_cost_multiplier: 0,
+                max_band_cnt: 1,
+                decrement_per_band: [0; 4],
+                lower_split_th: 10,
+                split_rate_th: 10,
+                limit_to_pd0: 0,
+                unavail_mode: 2,
+                disallow_4x4,
+            },
+            // case 7 / case 8: video-only, the cost-band-modulated rows below
+            // case 9. Case 8 additionally drops `pd0_unavail_mode_depth` to 0.
+            7 | 8 => DrCtrls {
+                adaptive: true,
+                no_restriction: false,
+                s1_th: if level == 7 { 15 } else { 10 },
+                e1_th: if level == 7 { 15 } else { 10 },
+                s2_th: S2E2_ALWAYS,
+                e2_th: S2E2_ALWAYS,
+                parent_max_cost_mult: 0,
+                band_mod: true,
+                max_cost_multiplier: 400,
+                max_band_cnt: 4,
+                decrement_per_band: [i64::MAX, i64::MAX, 10, 5],
+                lower_split_th: if level == 7 { 20 } else { 25 },
+                split_rate_th: 5,
+                limit_to_pd0: 1,
+                unavail_mode: if level == 7 { 2 } else { 0 },
+                disallow_4x4,
+            },
             // case 10 (M6+): PRED_PART_ONLY — s = e = 0 everywhere.
             _ => DrCtrls {
                 adaptive: false,
+                no_restriction: false,
                 s1_th: 0,
                 e1_th: 0,
                 s2_th: S2E2_ALWAYS,
@@ -373,7 +554,10 @@ fn set_start_end_depth(
 
     let mut add_parent = true;
     let mut add_sub = true;
-    if s != 0 || e != 0 {
+    // C `mode == PD0_DEPTH_ADAPTIVE && (s_depth != 0 || e_depth != 0)`
+    // (enc_dec_process.c:1826). NO_RESTRICTION reaches here with the seeded
+    // -2/+2 (clamped above) and skips the whole narrowing.
+    if !ctrls.no_restriction && (s != 0 || e != 0) {
         add_parent = false;
         add_sub = false;
 

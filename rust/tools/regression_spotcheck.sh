@@ -650,12 +650,32 @@ byteVideoKey "video-key-cdef-p8"  uniform 64 64 40 8
 #                        (C 114 B, port 697 B)
 # AFTER: every frame-header field identical on both, port 138 B / 691 B.
 #
-# These are fhVideoKey and not byteVideoKey because the TILE payload on these
-# cells still differs (92 vs 138 B at p6) — the video palette ladder is ported
-# but not yet wired, and the payload is the next chunk's target. Promote both
-# to byteVideoKey when it closes.
-fhVideoKey "video-key-ibc-arm-p6" screen 64 64 40 6
+# The p8 cell is fhVideoKey and not byteVideoKey because its TILE payload still
+# differs by a wide margin (114 vs 651 B) — a divergence that predates the video
+# arm work and is NOT caused by it (measured both ways on the depth-refinement
+# build: 650 B with the arm forced back to Allintra, 651 B with it wired).
+# Promote it when the payload closes.
 fhVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8
+
+# --- the p6 payload CLOSED, 2026-09-01 (the depth-refinement arm chunk)
+# `video-key-ibc-arm-p6` was fhVideoKey with the note above ("Promote both to
+# byteVideoKey when it closes"). Wiring C's VIDEO arm of
+# `pic_block_based_depth_refinement_level` closed it, so it is promoted here
+# rather than left as the weaker assertion.
+#
+# OBSERVED, screen 64x64 frames=2 frame 0, C 92 B at all three qp:
+#   q20: before port 119 B — after BYTE-IDENTICAL
+#   q40: before port 118 B — after BYTE-IDENTICAL
+#   q55: before port 116 B — after BYTE-IDENTICAL
+# ("before" = the same build with `DrCtrls::for_arm` forced to its Allintra
+# branch, i.e. the pre-chunk `matches!(preset, 0..=5)` refinement gate.)
+#
+# These are the FIRST byte-identical video-mode key frames on non-degenerate
+# content — `uniform` has been identical since the CDEF arm chunk, but it codes
+# 28 B and reaches almost nothing.
+byteVideoKey "video-key-dr-arm-screen-p6-q20" screen 64 64 20 6
+byteVideoKey "video-key-dr-arm-screen-p6-q40" screen 64 64 40 6
+byteVideoKey "video-key-dr-arm-screen-p6-q55" screen 64 64 55 6
 
 # --- video-arm partition ladders (max_block_size + nsq geom/search), 2026-08-31
 # `pipeline.rs` flattened C's ALLINTRA arm of three partition ladders into
