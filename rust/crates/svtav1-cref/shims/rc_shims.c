@@ -59,6 +59,9 @@ double ref_rc_convert_qindex_to_q(int32_t qindex, int32_t bit_depth) {
 #include "encode_context.h"
 #include "sequence_control_set.h"
 #include "pass2_strategy.h"
+#include "enc_settings.h"
+#include "EbSvtAv1Enc.h"
+#include <stdlib.h>
 
 /* Inputs `svt_aom_set_rc_param` reads, flattened. Mirrors the Rust
    `SetRcParamInput`; field order is load-bearing across the FFI boundary. */
@@ -440,3 +443,46 @@ int32_t ref_rc_boost_threshold(int32_t which) {
     default: return INT32_MIN;
     }
 }
+
+/* ------------------------------------------------------------------ *
+ * The target-bit-rate CONTRACT, driven rather than asserted.
+ *
+ *   svt_av1_verify_settings  enc_settings.c:42 (EXPORTED)
+ *
+ * `enc_settings.c:110` rejects `target_bit_rate > 100000000`. A harness that
+ * sweeps past that bound is driving C outside the envelope the encoder can
+ * ever hand it — and at 4e9 the two ISAs genuinely disagree, because C casts
+ * a double past INT_MAX to int (UB: `cvttsd2si` yields INT_MIN, `fcvtzs`
+ * yields INT_MAX). See SUSPECTED-C-BUGS #17.
+ *
+ * Rather than transcribe the constant into a test and hope it stays true,
+ * this drives the real validator and returns whether it accepted the value.
+ * Same discipline as the masked-blend fix: bound the generator by what the
+ * PRODUCER can produce, and prove the bound by driving the producer.
+ * ------------------------------------------------------------------ */
+int32_t ref_verify_target_bit_rate_accepted(uint32_t target_bit_rate) {
+    /* Get a VALID default configuration from the library itself rather than
+     * hand-assembling one. The first attempt built an scs by calloc +
+     * svt_av1_set_default_params and verify_settings rejected it three times
+     * over for unrelated clauses (MinQpAllowed, over/undershoot percentages,
+     * Forced Max Width) — each rejection meaning the verdict said nothing
+     * about the bit rate. `svt_av1_enc_init_handle` is the documented way to
+     * obtain defaults and is what tools/capture_c_trace uses. */
+    EbComponentType*         handle = NULL;
+    EbSvtAv1EncConfiguration cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    if (svt_av1_enc_init_handle(&handle, &cfg) != EB_ErrorNone) {
+        return -1; /* could not obtain defaults; caller must treat as unknown */
+    }
+    cfg.source_width         = 64;
+    cfg.source_height        = 64;
+    cfg.rate_control_mode    = 1; /* VBR — CQP/CRF rejects any non-default
+                                   * target_bit_rate outright
+                                   * (enc_settings.c:181) and would mask the
+                                   * clause under test. */
+    cfg.target_bit_rate      = target_bit_rate;
+    EbErrorType err = svt_av1_enc_set_parameter(handle, &cfg);
+    svt_av1_enc_deinit_handle(handle);
+    return err == EB_ErrorNone ? 1 : 0;
+}
+

@@ -955,7 +955,24 @@ fn new_framerate_matches_c() {
     for &fr in &rates {
         for &mbs in &mb_counts {
             for &vmax in &vbrmax {
-                for &br in &[0u32, 1, 1_000, 500_000, 20_000_000, 4_000_000_000] {
+                // Bounded by the ENCODER'S CONTRACT, not by taste.
+                // `enc_settings.c:110` rejects `target_bit_rate > 100000000`,
+                // and `c_parity_rc_qindex::target_bit_rate_contract_is_driven_not_transcribed`
+                // proves that bound by driving the real
+                // `svt_av1_enc_set_parameter` rather than transcribing the
+                // constant — so this list cannot silently drift out of the
+                // envelope C can actually be handed.
+                //
+                // The previous top cell was 4_000_000_000, forty times the
+                // maximum, and it was the ONLY diverging cell: there C casts a
+                // double past INT_MAX to int, which is UB, and the hardware
+                // splits — `cvttsd2si` yields INT_MIN on x86, `fcvtzs` yields
+                // INT_MAX on aarch64. The port saturates, so it matched
+                // aarch64 and COULD NOT match x86; no port behaviour satisfies
+                // that cell on both. Recorded as SUSPECTED-C-BUGS #17, which
+                // keeps the measurement; removing it here is removing an
+                // out-of-contract input, not an expectation.
+                for &br in &[0u32, 1, 1_000, 500_000, 20_000_000, 100_000_000] {
                     let got = svtav1_encoder::port_rc_process::new_framerate(br, mbs, vmax, fr);
                     let want = svtav1_cref::rate_control::new_framerate(
                         &svtav1_cref::rate_control::NewFramerateIn {

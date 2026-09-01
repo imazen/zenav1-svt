@@ -180,3 +180,37 @@ fn the_seeded_inter_cdfs_are_not_uniform() {
         "the 9-wide compound table must use entries past the old 5-wide bound"
     );
 }
+
+
+/// The `target_bit_rate` CONTRACT, driven rather than transcribed.
+///
+/// `enc_settings.c:110` rejects `target_bit_rate > 100000000`, so a harness
+/// that sweeps past it is driving C outside the envelope the encoder can ever
+/// hand it. That matters concretely: at 4e9 the two ISAs genuinely disagree,
+/// because C casts a double past `INT_MAX` to `int` — UB, and the hardware
+/// splits (`cvttsd2si` gives `INT_MIN`, `fcvtzs` gives `INT_MAX`). See
+/// SUSPECTED-C-BUGS #17.
+///
+/// This asserts the bound by calling the real `svt_av1_verify_settings`, so a
+/// harness bounding itself at 100_000_000 is bounded by the PRODUCER rather
+/// than by a constant someone copied. Same discipline as the masked-blend
+/// domain fix.
+#[test]
+fn target_bit_rate_contract_is_driven_not_transcribed() {
+    use svtav1_cref::rate_control::verify_target_bit_rate_accepted;
+
+    assert!(
+        verify_target_bit_rate_accepted(100_000_000),
+        "100 Mbps is the documented maximum and must be accepted"
+    );
+    assert!(
+        !verify_target_bit_rate_accepted(100_000_001),
+        "one above the maximum must be rejected — if this fails the cap moved \
+         and every harness bounded by it needs re-checking"
+    );
+    assert!(
+        !verify_target_bit_rate_accepted(4_000_000_000),
+        "4e9 is 40x outside the contract; it is the value at which C's \
+         double->int cast is UB and the two ISAs disagree"
+    );
+}

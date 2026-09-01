@@ -474,3 +474,18 @@ pub fn minq_table(table: i32, qindex: i32) -> i32 {
 pub fn boost_threshold(which: i32) -> i32 {
     unsafe { ref_rc_boost_threshold(which) }
 }
+
+unsafe extern "C" {
+    fn ref_verify_target_bit_rate_accepted(target_bit_rate: u32) -> i32;
+}
+
+/// Drive C's real `svt_av1_verify_settings` (enc_settings.c:42) and report
+/// whether it ACCEPTS this `target_bit_rate`.
+///
+/// Exists so a harness can bound its sweep by the encoder's actual contract
+/// instead of transcribing `100000000` from `enc_settings.c:110` and hoping it
+/// stays true.
+#[must_use]
+pub fn verify_target_bit_rate_accepted(target_bit_rate: u32) -> bool {
+    unsafe { ref_verify_target_bit_rate_accepted(target_bit_rate) != 0 }
+}
