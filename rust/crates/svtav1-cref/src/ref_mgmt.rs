@@ -173,3 +173,91 @@ pub fn frame_update_type(is_key_frame: bool, hier: u8, temporal_layer: u8) -> i3
 pub fn denom_idx(scale_denom: u8) -> u8 {
     unsafe { superres_denom_idx(scale_denom) }
 }
+
+// ---------------------------------------------------------------------------
+// resize.c two-dimensional plane resize (`shims/refmgmt_shims.c`)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn resize2d_plane(
+        input: *const u8,
+        height: i32,
+        width: i32,
+        in_stride: i32,
+        output: *mut u8,
+        height2: i32,
+        width2: i32,
+        out_stride: i32,
+    ) -> i32;
+    fn resize2d_highbd_plane(
+        input: *const u16,
+        height: i32,
+        width: i32,
+        in_stride: i32,
+        output: *mut u16,
+        height2: i32,
+        width2: i32,
+        out_stride: i32,
+        bd: i32,
+    ) -> i32;
+}
+
+/// C `svt_av1_resize_plane_c` (`resize.c:422`) — the 8-bit 2-D plane resize.
+#[allow(clippy::too_many_arguments)]
+pub fn resize_plane(
+    input: &[u8],
+    height: usize,
+    width: usize,
+    in_stride: usize,
+    output: &mut [u8],
+    height2: usize,
+    width2: usize,
+    out_stride: usize,
+) {
+    assert!(input.len() >= (height - 1) * in_stride + width);
+    assert!(output.len() >= (height2 - 1) * out_stride + width2);
+    let rc = unsafe {
+        resize2d_plane(
+            input.as_ptr(),
+            height as i32,
+            width as i32,
+            in_stride as i32,
+            output.as_mut_ptr(),
+            height2 as i32,
+            width2 as i32,
+            out_stride as i32,
+        )
+    };
+    assert_eq!(rc, 0, "svt_av1_resize_plane_c failed (rc {rc})");
+}
+
+/// C `svt_av1_highbd_resize_plane_c` (`resize.c:725`) — the 10-bit variant.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_resize_plane(
+    input: &[u16],
+    height: usize,
+    width: usize,
+    in_stride: usize,
+    output: &mut [u16],
+    height2: usize,
+    width2: usize,
+    out_stride: usize,
+    bd: i32,
+) {
+    assert!(input.len() >= (height - 1) * in_stride + width);
+    assert!(output.len() >= (height2 - 1) * out_stride + width2);
+    let rc = unsafe {
+        resize2d_highbd_plane(
+            input.as_ptr(),
+            height as i32,
+            width as i32,
+            in_stride as i32,
+            output.as_mut_ptr(),
+            height2 as i32,
+            width2 as i32,
+            out_stride as i32,
+            bd,
+        )
+    };
+    assert_eq!(rc, 0, "svt_av1_highbd_resize_plane_c failed (rc {rc})");
+}

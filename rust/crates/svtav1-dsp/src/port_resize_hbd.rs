@@ -234,6 +234,68 @@ pub fn highbd_resize_plane_horizontal(
     }
 }
 
+/// C `highbd_fill_col_to_arr` (`resize.c:707`) — static.
+pub fn highbd_fill_col_to_arr(img: &[u16], stride: usize, len: usize, arr: &mut [u16]) {
+    for (i, dst) in arr.iter_mut().take(len).enumerate() {
+        *dst = img[i * stride];
+    }
+}
+
+/// C `highbd_fill_arr_to_col` (`resize.c:716`) — static.
+pub fn highbd_fill_arr_to_col(img: &mut [u16], stride: usize, len: usize, arr: &[u16]) {
+    for (i, src) in arr.iter().take(len).enumerate() {
+        img[i * stride] = *src;
+    }
+}
+
+/// C `svt_av1_highbd_resize_plane_c` (`resize.c:725`) — the 10-bit
+/// two-dimensional plane resize.
+///
+/// Identical in shape to the 8-bit
+/// [`crate::resize::resize_plane`]: rows first into a `width2`-stride
+/// intermediate, then each of the `width2` columns gathered, resized and
+/// scattered. `bd` reaches the clamp inside the polyphase interpolator, so it
+/// is threaded rather than fixed.
+///
+/// # Panics
+///
+/// If either buffer is too small for the strides and dimensions given.
+#[allow(clippy::too_many_arguments)]
+pub fn highbd_resize_plane(
+    input: &[u16],
+    height: usize,
+    width: usize,
+    in_stride: usize,
+    output: &mut [u16],
+    height2: usize,
+    width2: usize,
+    out_stride: usize,
+    bd: i32,
+) {
+    assert!(width > 0 && height > 0 && width2 > 0 && height2 > 0);
+    assert!(input.len() >= (height - 1) * in_stride + width);
+    assert!(output.len() >= (height2 - 1) * out_stride + width2);
+
+    let mut intbuf = alloc::vec![0u16; width2 * height];
+    let mut arrbuf = alloc::vec![0u16; height];
+    let mut arrbuf2 = alloc::vec![0u16; height2];
+
+    for r in 0..height {
+        highbd_resize_multistep(
+            &input[r * in_stride..],
+            width,
+            &mut intbuf[r * width2..],
+            width2,
+            bd,
+        );
+    }
+    for c in 0..width2 {
+        highbd_fill_col_to_arr(&intbuf[c..], width2, height, &mut arrbuf);
+        highbd_resize_multistep(&arrbuf, height, &mut arrbuf2, height2, bd);
+        highbd_fill_arr_to_col(&mut output[c..], out_stride, height2, &arrbuf2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

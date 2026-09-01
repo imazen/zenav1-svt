@@ -514,3 +514,78 @@ pub fn resize_plane_horizontal(
         );
     }
 }
+
+/// C `fill_col_to_arr` (`resize.c:413`) — static.
+///
+/// Gather one strided column into a contiguous scratch array, so the same
+/// 1-D `resize_multistep` that does rows can do columns.
+pub fn fill_col_to_arr(img: &[u8], stride: usize, len: usize, arr: &mut [u8]) {
+    for (i, dst) in arr.iter_mut().take(len).enumerate() {
+        *dst = img[i * stride];
+    }
+}
+
+/// C `fill_arr_to_col` (`resize.c:404`) — static. The inverse scatter.
+pub fn fill_arr_to_col(img: &mut [u8], stride: usize, len: usize, arr: &[u8]) {
+    for (i, src) in arr.iter().take(len).enumerate() {
+        img[i * stride] = *src;
+    }
+}
+
+/// C `svt_av1_resize_plane_c` (`resize.c:422`) — the TWO-dimensional plane
+/// resize.
+///
+/// Frame resize (`--resize-mode`) scales both dimensions, unlike superres,
+/// which is horizontal-only — which is why the port previously had
+/// [`resize_plane_horizontal`] and not this.
+///
+/// The shape is C's: every row is resized `width` -> `width2` into an
+/// intermediate of stride `width2`, and then every one of the `width2`
+/// columns is gathered into a scratch array, resized `height` -> `height2` by
+/// the SAME 1-D `resize_multistep`, and scattered back. Doing the horizontal
+/// pass first is not an optimisation — it is what makes the vertical pass read
+/// already-horizontally-filtered samples, and swapping the order changes the
+/// output.
+///
+/// C returns `EB_ErrorInsufficientResources` when any of its four scratch
+/// allocations fails; the equivalent here is that the caller supplies the
+/// output and this allocates its own scratch through `Vec`, so the only
+/// failure mode C has is one Rust does not express at this layer.
+///
+/// # Panics
+///
+/// If `output` is too small for `height2` rows at `out_stride`, or `input` too
+/// small for `height` rows at `in_stride`.
+#[allow(clippy::too_many_arguments)]
+pub fn resize_plane(
+    input: &[u8],
+    height: usize,
+    width: usize,
+    in_stride: usize,
+    output: &mut [u8],
+    height2: usize,
+    width2: usize,
+    out_stride: usize,
+) {
+    assert!(width > 0 && height > 0 && width2 > 0 && height2 > 0);
+    assert!(input.len() >= (height - 1) * in_stride + width);
+    assert!(output.len() >= (height2 - 1) * out_stride + width2);
+
+    let mut intbuf = alloc::vec![0u8; width2 * height];
+    let mut arrbuf = alloc::vec![0u8; height];
+    let mut arrbuf2 = alloc::vec![0u8; height2];
+
+    for r in 0..height {
+        resize_multistep(
+            &input[r * in_stride..],
+            width,
+            &mut intbuf[r * width2..],
+            width2,
+        );
+    }
+    for c in 0..width2 {
+        fill_col_to_arr(&intbuf[c..], width2, height, &mut arrbuf);
+        resize_multistep(&arrbuf, height, &mut arrbuf2, height2);
+        fill_arr_to_col(&mut output[c..], out_stride, height2, &arrbuf2);
+    }
+}

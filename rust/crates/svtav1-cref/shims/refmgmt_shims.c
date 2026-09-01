@@ -27,6 +27,7 @@
 #include "pcs.h"
 #include "pd_process.h"
 #include "sequence_control_set.h"
+#include "aom_dsp_rtcd.h"
 
 /* Neither geometry builder is declared in a public header. */
 EbErrorType b64_geom_init(SequenceControlSet* scs, uint16_t width, uint16_t height, B64Geom** b64_geoms);
@@ -36,6 +37,10 @@ void        svt_aom_get_max_allocated_me_refs(uint8_t ref_count_used_list0, uint
 uint32_t    svt_aom_get_out_buffer_size(uint32_t picture_width, uint32_t picture_height);
 int32_t     svt_aom_get_frame_update_type(PictureParentControlSet* pcs);
 uint8_t     svt_aom_get_denom_idx(uint8_t scale_denom);
+EbErrorType svt_av1_resize_plane_c(const uint8_t* const input, int height, int width, int in_stride,
+                                   uint8_t* output, int height2, int width2, int out_stride);
+EbErrorType svt_av1_highbd_resize_plane_c(const uint16_t* const input, int height, int width, int in_stride,
+                                          uint16_t* output, int height2, int width2, int out_stride, int bd);
 
 /* ---- svt_aom_ref_mgmt_storeable_slots_mask (pd_process.c:1259) ---- */
 
@@ -148,3 +153,35 @@ int32_t superres_frame_update_type(int32_t is_key_frame, uint8_t hierarchical_le
 }
 
 uint8_t superres_denom_idx(uint8_t scale_denom) { return svt_aom_get_denom_idx(scale_denom); }
+
+/* ---- resize.c: the TWO-dimensional plane resize (frame resize) ---- */
+
+/* `svt_av1_down2_symeven` / `svt_av1_interpolate_core` (and their highbd
+ * twins) are RTCD FUNCTION POINTERS from aom_dsp_rtcd.c, NOT plain functions.
+ * Without this setup the multistep driver inside `svt_av1_resize_plane_c`
+ * calls through NULL and segfaults — which it did, on the first run of this
+ * shim. Same trap as `ref_resize_plane_horizontal` in ref_shims.c, which
+ * documents it; the init is per-translation-unit here because that one's
+ * helper is `static`. */
+void       svt_aom_setup_rtcd_internal(EbCpuFlags flags);
+EbCpuFlags svt_aom_get_cpu_flags_to_use(void);
+static int g_resize_rtcd_ready = 0;
+static void resize_rtcd_once(void) {
+    if (!g_resize_rtcd_ready) {
+        svt_aom_setup_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_resize_rtcd_ready = 1;
+    }
+}
+
+int32_t resize2d_plane(const uint8_t* input, int32_t height, int32_t width, int32_t in_stride, uint8_t* output,
+                       int32_t height2, int32_t width2, int32_t out_stride) {
+    resize_rtcd_once();
+    return (int32_t)svt_av1_resize_plane_c(input, height, width, in_stride, output, height2, width2, out_stride);
+}
+
+int32_t resize2d_highbd_plane(const uint16_t* input, int32_t height, int32_t width, int32_t in_stride,
+                              uint16_t* output, int32_t height2, int32_t width2, int32_t out_stride, int32_t bd) {
+    resize_rtcd_once();
+    return (int32_t)svt_av1_highbd_resize_plane_c(
+        input, height, width, in_stride, output, height2, width2, out_stride, bd);
+}
