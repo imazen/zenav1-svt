@@ -196,15 +196,34 @@ At M6, on a video-mode KEY frame:
 | `intra_level` | 6 | 2 | WIRED (`intra_arm`) |
 | `nsq_geom_level` / `nsq_search_level` | 0 | 15 | WIRED (`part_arm` + `NsqCfg::for_arm`) |
 | `pic_block_based_depth_refinement_level` | 10 | 6 | WIRED (`DrCtrls::for_arm`) |
-| `txt_level` | 8 | 7 | wired on `wip/video-md-arms`, HELD (see below) |
-| `cfl_level` | 4 | 2 | wired on `wip/video-md-arms`, HELD |
-| `nic_level` | 6 | 8 | wired on `wip/video-md-arms`, HELD |
+| `txt_level` | 8 | 7 | WIRED (`funnel_arm`) |
+| `cfl_level` | 4 | 2 | WIRED (`funnel_arm`) |
+| `nic_level` | 6 | 8 | HELD on `wip/video-md-arms` — complete and tier-1 verified, but it is the one arm that pushes `video-key-nsq-arm-p5-72x88` back outside its 0.3% limit (0.067% without it, 0.539% with) |
 | `pic_pd0_lvl` | 1 | **3** | OPEN, and the LAST live divergence at M6 on a key frame. `PD0_LVL_3` is unimplemented in `pd0.rs` |
 | `pic_depth_removal_level` | 0 | 5 | INERT on a key frame — `set_depth_removal_level_controls` (enc_mode_config.c:2968) zeroes `enabled` for an `I_SLICE` before it reads the level, and the port already models that (`port_enc_mode_config::common`). The LEVELS differ; the CONTROLS cannot. |
 | `allow_high_precision_mv`, `is_motion_mode_switchable`, `pic_obmc_level`, `interpolation_search_level`, `interpolation_filter`, `md_nsq_mv_search_level`, `md_pme_level`, `me_subpel_level`, `pme_subpel_level` | | | inter-only, cannot move a key frame's bytes |
 
-At other presets the same probe adds `txs_level` (allintra 0 vs video 4 at M9)
-and moves several rows; run it rather than extrapolating from the M6 column.
+At other presets the same probe adds `txs_level` (allintra 0 vs video 4 at M9 —
+now WIRED, `txs_arm`) and moves several rows; run it rather than extrapolating
+from the M6 column.
+
+**Not in that table, because it is not an MD level at all:**
+`scs->seq_header.enable_intra_edge_filter`. The video arm signals it as 1 at
+EVERY preset (`enc_mode_config.c:2820`) where the allintra arm signals it only
+at preset 5 (`:2815`), and `FunnelCfg::for_preset` baked the allintra rule and
+ran it on every frame. That made the sequence header and the encoder's own
+prediction disagree on a video key frame — the header told the decoder to
+edge-filter and upsample directional predictions and the funnel predicted
+unfiltered. Fixed 2026-09-01; both now read
+`intra_arm::intra_edge_filter`. `frm_hdr->tx_mode` had the same shape (the
+writer emitted C's allintra unconditional TX_MODE_SELECT, where the video arm
+signals TX_MODE_LARGEST from preset 10 up) and is fixed with it.
+
+**Lesson for the rest of the campaign: the divergence table is necessary but
+not sufficient.** It enumerates what `sig_deriv_mode_decision_config` assigns.
+Anything the arms fork on OUTSIDE that function — the sequence-header
+derivation, `sig_deriv_enc_dec_*`, `set_qp_based_th_scaling_ctrls_*` — is
+invisible to it, and the edge-filter bug lived in the first of those.
 
 ## 1d. First byte-identical VIDEO-MODE key frames (2026-09-01)
 
@@ -218,35 +237,80 @@ three `byteVideoKey` cells in `tools/regression_spotcheck.sh`.
 reaches almost nothing; `screen` is the first content that exercises the
 search.
 
-**The reference cell is still open**, and the shape of what is left is now
-clear. On `gradient` and `diag` the port UNDER-shoots C's byte count
-(gradient 64x64 q40 p6: port 952 B vs C 961; diag: 146 vs 238). Every video
-ladder wired so far WIDENS the search relative to the still path; the one that
-remains — `pic_pd0_lvl` — is the PRUNE. Until it lands the port searches more than C does and finds better RD, which
-is exactly what a smaller stream at the same qp looks like. Do not read a
+### The reference cell: the PARTITION TREE already matches (measured 2026-09-01)
+
+Run on the Linux box, where `capture_c_trace` gets its `-Wl,--wrap` op-trace
+build (macOS `ld64` has no `--wrap`, `WORKING-ON-THIS.md` §5):
+
+```bash
+SVT_CTREE_OUT=~/tmp/c.tree SVTAV1_PACKTREE=~/tmp/rs.tree \
+  tools/identity_diff_inter.sh 64 64 40 6 2 gradient ~/tmp/cell
+head -14 ~/tmp/c.tree > ~/tmp/c.f0.tree     # SEE THE TRAP BELOW
+python3 tools/tree_diff.py ~/tmp/c.f0.tree ~/tmp/rs.tree
+```
+
+Result on `gradient 64x64 q40 p6`: **4 blocks joined, 0 port-only geometry** —
+both encoders code the SB as four 32x32 squares. Every divergence is the intra
+MODE: C codes D135(+3) / SMOOTH_V / D135(+3) / H, the port DC on all four. So
+the remaining gap at the reference cell is a LEAF decision, not a partition
+decision, and `pic_pd0_lvl` (the last OPEN row in §1c) is not obviously its
+cause.
+
+**Harness trap, and it produced a wrong answer first:** `SVT_CTREE_OUT`
+APPENDS across frames, exactly like `SVTAV1_PACKTREE` (§5). The last four lines
+of a 2-frame dump are the INTER frame — `mode` 13/16, `skip=1` — and joining on
+them invents mode and skip flips that do not exist on frame 0. Cut the file at
+frame 0 before diffing.
+
+**The reference cell is still open.** On `gradient` and `diag` the port
+UNDER-shoots C's byte count at 64x64 q40 p6 (947 B vs C 961; 163 vs 238), and
+that is worth reading carefully rather than as "nearly there": a smaller stream
+at the same qp is what over-searching looks like, and the port over-searches
+because the ladders wired so far are the search-WIDENING ones. Do not read a
 smaller number as "closer".
+
+The tree-diff above says where to look next, and it is NOT where §1c's last
+OPEN row points. The partition tree already agrees, so `pic_pd0_lvl` — a
+PARTITION-search level — is not obviously what decides these four blocks; the
+port's own MDS3 dump (`SVTAV1_NSQDBG=1 SVTAV1_CANDDBG=1`) shows it injecting
+the full intra_level-2 candidate set, evaluating D135 / SMOOTH_V / V at MDS3,
+and ranking DC best by about 1% where C picks the directional mode. Two
+candidates for that, in order of cheapness to test:
+
+1. the MDS0/MDS3 costs themselves — the port's `PFAST` fast costs rank
+   `mode=4 delta=+3` LAST of the D135 trio while C picks exactly that
+   candidate, which is a prediction- or SATD-domain difference, not a
+   candidate-set one;
+2. `pic_pd0_lvl` after all, through `pd0_use_src_samples`: `svt_aom_sig_deriv_enc_dec_pd0`
+   sets it `allintra || pcs_hbd_md`, so a VIDEO frame's PD0 predicts from
+   RECON where the port always predicts from SOURCE. That changes PD0 costs
+   (and so the depth-refinement gates that read them) at EVERY video preset,
+   independently of the level.
 
 ### `wip/video-md-arms` — complete, verified, deliberately NOT on main
 
-The `txt_level` / `cfl_level` / `nic_level` arms are done, tier 1 on both arms,
-and still-path byte-neutral (identity_full_8bit 1100/1100). They are on the
-bookmark `wip/video-md-arms`, not on `main`, because they move three
-`ratioVideoKey` scoreboard cells past limits that were derived on an earlier
-build:
+`nic_level` (`nic_arm`) is done, tier 1 on both arms, and still-path
+byte-neutral (identity_full_8bit 1100/1100). It is on the bookmark
+`wip/video-md-arms`, not on `main`, because it is the one arm that pushes a
+`ratioVideoKey` scoreboard cell back outside its limit:
 
-| cell | C | port | limit |
-|---|---|---|---|
-| `video-key-nsq-arm-p5-72x88` | 1485 B | 1493 B (0.539%) | 0.3% |
-| `video-key-nsq-arm-p7-screenrep-72x88` | 2388 B | 2374 B (0.586%) | 0.5% |
-| `video-key-rate-arm-p9-72x88` | 1589 B | 1563 B (1.636%) | 1.0% |
+| cell | C | with `nic_arm` | without | limit |
+|---|---|---|---|---|
+| `video-key-nsq-arm-p5-72x88` | 1485 B | 1493 B (0.539%) | 1486 B (0.067%) | 0.3% |
 
-Re-deriving a limit is a threshold change and needs the owner's sign-off. The
-better fix is probably to land `pic_pd0_lvl` first (§1c) and re-measure: the
-drift is the search-widening/pruning imbalance above, not a defect in those
-three arms.
-Bisected on all eight on/off combinations of (`funnel_arm`, `nic_arm`,
-`DrCtrls::for_arm`), the only configurations where all four cells pass are "all
-three off" and "depth-refinement only" — the latter is what is on `main`.
+Re-deriving a limit is a threshold change and needs the owner's sign-off, so
+the arm waits rather than the gate moving. **The lead:** at `nic_level` 8 the
+port prunes HARDER than C — the level's stage numerators are `{2, 1, 1}` of 16
+and its candidate thresholds 300 / 3 / 3 — so the suspect is the port's
+stage-count floor or the unmodelled `enable_skipping_mds1` (carried as a
+`PORT-NOTE(unverified)` on `nic_arm::nic_ctrls`), not the transcribed row,
+which is pinned against the baked allintra table at every preset.
+
+The bisect that chose what landed: on the four ratio cells, over the on/off
+combinations of (edge filter, `txs_arm`, `funnel_arm`, `nic_arm`), the maximal
+all-green configuration is **edge + txs + funnel, nic off**. Edge alone and
+edge+txs both leave `video-key-rate-arm-p9-72x88` at 1.196% against its 1.0
+limit; adding `funnel_arm` brings it to 0.063%.
 
 ## 2. Chunks
 
