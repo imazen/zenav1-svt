@@ -139,3 +139,82 @@ fn ssim2_matches_c() {
         "no cell exercised the too-small-region NaN return"
     );
 }
+
+/// Differential for `svt_aom_similarity` (enc_dec_process.c:645) — the last
+/// stage of both SSIM chains, and the only one that carries the bit depth.
+///
+/// **This one is EXPORTED, so it needs no symbol promotion and runs on every
+/// host.** That matters: `aom_ssim2`'s promotion FAILS under gcc, which
+/// renames the static to `aom_ssim2.part.0` (measured on x86_64-linux-gnu,
+/// 2026-08-31), so [`ssim2_matches_c`] silently narrows to a skip there. This
+/// test keeps the arithmetic that the 8x8 kernels feed pinned at tier 1 on
+/// BOTH ISAs, and it is the only tier-1 coverage the 10-bit and 12-bit
+/// constant sets get at all (the 10-bit walker is not bindable — see the
+/// module header).
+#[test]
+fn similarity_matches_c_across_bit_depths() {
+    use svtav1_cref::mode_decision as cref_md;
+
+    let mut rng = Rng(0x5EED_1234);
+    let mut cells = 0usize;
+    let mut distinct = std::collections::BTreeSet::new();
+    for &bd in &[8u32, 10, 12] {
+        // `count` is 64 at every real call site (an 8x8 window); 16 and 256
+        // are included so a `count`-dependent term cannot hide.
+        for &count in &[16i32, 64, 256] {
+            for trial in 0..400 {
+                // Bound the generator by what the 8x8 kernels can PRODUCE
+                // (docs/WORKING-ON-THIS.md §5): `sum_s` is 64 samples of at
+                // most `peak`, and the squares are 64 * peak^2. Drawing
+                // arbitrary u32s would sweep a domain no caller reaches and
+                // would exercise C's `double` conversions rather than its
+                // SSIM.
+                let peak: u32 = (1 << bd) - 1;
+                let n = count as u32;
+                let (s_hi, r_hi) = if trial % 4 == 0 {
+                    (peak, peak)
+                } else if trial % 4 == 1 {
+                    (peak / 2, peak / 2)
+                } else {
+                    (rng.next_u32() % (peak + 1), rng.next_u32() % (peak + 1))
+                };
+                let sum_s = n * s_hi;
+                let sum_r = n * r_hi;
+                let sum_sq_s = n * s_hi * s_hi;
+                let sum_sq_r = n * r_hi * r_hi;
+                let sum_sxr = n * s_hi * r_hi;
+
+                let want =
+                    cref_md::similarity(sum_s, sum_r, sum_sq_s, sum_sq_r, sum_sxr, count, bd);
+                let got = m::similarity(
+                    sum_s,
+                    sum_r,
+                    sum_sq_s,
+                    sum_sq_r,
+                    sum_sxr,
+                    i64::from(count),
+                    bd,
+                );
+                if want.is_nan() {
+                    assert!(got.is_nan(), "C NaN, port {got} at bd={bd} count={count}");
+                } else {
+                    assert_eq!(
+                        got.to_bits(),
+                        want.to_bits(),
+                        "similarity mismatch at bd={bd} count={count} \
+                         sums=({sum_s},{sum_r},{sum_sq_s},{sum_sq_r},{sum_sxr}): \
+                         got {got} want {want}"
+                    );
+                    distinct.insert(want.to_bits());
+                }
+                cells += 1;
+            }
+        }
+    }
+    assert!(cells >= 3000, "sweep collapsed to {cells} cells");
+    assert!(
+        distinct.len() > 100,
+        "the C oracle produced only {} distinct scores over {cells} cells",
+        distinct.len()
+    );
+}

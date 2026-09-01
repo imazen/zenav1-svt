@@ -685,6 +685,20 @@ pub fn get_kf_group_bits(
 /// The `max_frame_bandwidth` floor is the interesting part: it is the LARGER
 /// of a per-MB hardware-ish ceiling, a fixed 1080p number, and the user's
 /// `--vbr-max-section-pct`, so raising the vbr cap can only raise it.
+///
+/// **C's first line is UNDEFINED BEHAVIOUR at an out-of-envelope bitrate, and
+/// the two ISAs disagree.** `(int)(target_bit_rate / new_framerate)` casts a
+/// `double` that can exceed `INT_MAX`; x86-64's `cvttsd2si` yields `INT_MIN`
+/// and aarch64's `fcvtzs` saturates to `INT_MAX`. Rust's `as i32` saturates,
+/// so this function agrees with aarch64 and cannot agree with x86-64 — because
+/// C has no single answer to agree with. Reproducing either realization would
+/// make the PORT host-dependent, which is exactly what this project's
+/// cross-ISA gates exist to prevent. Full write-up, including the CI cell it
+/// currently reddens, in `docs/SUSPECTED-C-BUGS.md` #25.
+///
+/// The encoder's own configuration cannot reach it: `svt_av1_verify_settings`
+/// bounds the bitrate, and the quotient stays well inside `int` for every
+/// framerate the CLI accepts.
 pub fn rc_update_framerate(
     rc: &mut RateControl,
     cfg2: &TwoPassCfg,

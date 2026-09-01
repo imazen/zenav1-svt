@@ -1075,6 +1075,61 @@ in `WARP_REPRS` rather than quietly omitting the third.
 
 ---
 
+## 25. `av1_rc_update_framerate`'s `(int)` cast is UB at high bitrate, and x86-64 and aarch64 realize it DIFFERENTLY
+
+**Status: UNCONFIRMED as a shipping bug (out of the configurable envelope), but
+it is CURRENTLY RED IN CI on x86-64 and the reason is not a port defect.**
+
+`pass2_strategy.c:889`:
+
+```c
+rc->avg_frame_bandwidth = (int)(scs->static_config.target_bit_rate / scs->new_framerate);
+```
+
+`target_bit_rate` is `uint32_t` and `new_framerate` is `double`, so the quotient
+is a `double`. **Casting an out-of-`int`-range `double` to `int` is undefined
+behaviour in C** (C17 6.3.1.4p1), and the two ISAs this project builds on
+realize it differently:
+
+| ISA | instruction | result for an out-of-range positive value |
+|---|---|---|
+| x86-64 | `cvttsd2si` | the "integer indefinite" value, `INT_MIN` = -2147483648 |
+| aarch64 | `fcvtzs` | SATURATES to `INT_MAX` = 2147483647 |
+
+Rust's `as i32` saturates, so the port agrees with aarch64 and disagrees with
+x86-64. **No port can agree with both, because C does not have one answer.**
+
+**How it shows up.** `tests/c_parity_rc_process.rs`'s
+`new_framerate_matches_c` sweeps `target_bit_rate` up to 4 000 000 000 against
+framerates down to 0.1, i.e. a quotient of 4e10. On aarch64 every cell passes;
+on x86-64 the cell `(br=4000000000, mbs=0, vmax=0, fr=0.1)` fails with
+`left: 2147483647, right: -2147483648`. Measured on `r7900x`
+(x86_64-unknown-linux-gnu, gcc) at `main` = c8758e359, 2300/2301 tests passing
+with this the only failure; the same commit is 2290/2290 on aarch64/clang.
+It predates the wx-rc lane's first commit (the test is present at 8383168b).
+
+**Reachability.** Not reachable through the encoder's own configuration.
+`svt_av1_verify_settings` bounds `target_bit_rate`, and a framerate of 0.1 with
+a 4 Gbit/s target is not a configuration the CLI accepts — this is a property of
+the TEST GENERATOR, not of the encoder. That makes it an instance of the
+"bound a generator by what the PRODUCER can produce" rule in
+`docs/WORKING-ON-THIS.md` §5: the sweep draws an input the producer cannot
+make, and then attributes the resulting divergence to the port.
+
+**What the port does.** [`port_pass2_gop::rc_update_framerate`] saturates (Rust
+`as i32`) and says so at the site. It does NOT attempt to reproduce either ISA's
+realization of the UB — reproducing undefined behaviour per-host would make the
+port's own output host-dependent, which is the thing this project's cross-ISA
+gates exist to prevent.
+
+**The fix belongs in the test, and it is one line:** bound the sweep's
+`target_bit_rate` / `framerate` product so the quotient stays inside `int`, the
+way `verify_settings` bounds the encoder. Deliberately NOT applied here — the
+test belongs to another lane and this project does not edit another lane's
+expectations without saying so first. This entry is that saying-so.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is
