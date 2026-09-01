@@ -14,6 +14,7 @@ pub mod inter_me;
 pub mod inter_mvp;
 pub mod inter_pred;
 pub mod interpred_gap;
+pub mod inv_recon;
 pub mod md_subpel;
 pub mod mode_decision;
 pub mod pcl;
