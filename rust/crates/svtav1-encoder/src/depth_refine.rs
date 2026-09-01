@@ -837,42 +837,46 @@ impl NsqCfg {
         }
     }
 
-    /// `svt_aom_get_nsq_search_level_allintra` (enc_mode_config.c:11936):
-    /// base level M0 3 / M1 10 / M2 14 / M3 16, then the seq_qp_mod
-    /// offsets (mod 2|3: qp <= 39 +3, <= 45 +2, <= 48 +1; mod 1|2:
-    /// qp > 59 -1) — capture-verified (+3/+2/+0 at qp 20/40/55).
-    pub(crate) fn for_preset_qp(preset: u8, cli_qp: u32) -> Self {
-        let base: i32 = match preset {
-            0 => 3,
-            1 => 10,
-            2 => 14,
-            3 => 16,
-            _ => 0,
-        };
-        if base == 0 {
-            return Self::off();
-        }
-        let mut level = base;
-        if cli_qp <= 39 {
-            level = if level + 3 > 19 { 0 } else { level + 3 };
-        } else if cli_qp <= 45 {
-            level = if level + 2 > 19 { 0 } else { level + 2 };
-        } else if cli_qp <= 48 {
-            level = if level + 1 > 19 { 0 } else { level + 1 };
-        } else if cli_qp > 59 {
-            // seq_qp_mod = 2 unconditionally (enc_handle.c:4221) — the
-            // mod 1|2 arm applies.
-            level = (level - 1).max(1);
-        }
-        if level == 0 {
-            return Self::off();
-        }
+    /// `set_nsq_search_ctrls` (enc_mode_config.c:6496) driven by whichever
+    /// `pcs->nsq_search_level` ladder this frame's arm selects, and by
+    /// `svt_aom_set_nsq_geom_ctrls` (:8180) for the `(allow_HV4, min_nsq)`
+    /// pair that `shapes_for_size` consumes.
+    ///
+    /// `me_dist_mod` (:6497-6506) is 0 on an I-slice, so the `+1` ME-distortion
+    /// bump never applies to any frame this port encodes — key frames are the
+    /// only ones it emits.
+    pub(crate) fn for_arm(arm: crate::sc_detect::ScArm, preset: u8, cli_qp: u32) -> Self {
+        Self::for_levels(
+            crate::part_arm::nsq_search_level(arm, preset, cli_qp),
+            crate::part_arm::nsq_geom_level(arm, preset),
+            crate::part_arm::nsq_qp_based_th_scaling(arm, preset),
+            cli_qp,
+        )
+    }
 
-        // set_nsq_search_ctrls level rows (enc_mode_config.c:6496-6786),
-        // levels reachable from the allintra bases + offsets (2..=19).
-        // Level 2 is M0's base 3 minus the qp>59 offset (min 1, but 3-1=2).
+    /// The `nsq_search_level` -> controls row plus the `nsq_geom_level` ->
+    /// shape-gate pair. Split out of `for_arm` so the wiring and the
+    /// arm-parity tests drive the SAME function.
+    pub(crate) fn for_levels(
+        level: u8,
+        geom_level: u8,
+        nsq_qp_based_th_scaling: bool,
+        cli_qp: u32,
+    ) -> Self {
+        if level == 0 || geom_level == 0 {
+            return Self::off();
+        }
+        let level = i32::from(level);
+        let (allow_hv4, min_nsq) = crate::part_arm::nsq_geom_shape_ctrls(geom_level);
+
+        // set_nsq_search_ctrls level rows (enc_mode_config.c:6496-6786).
+        // The allintra arm reaches 2..=19 (M0's base 3 minus the qp>59 offset
+        // is the floor); the VIDEO arm also reaches 1, from M0's base 2 under
+        // the same offset — level 0 short-circuits above, so the `unreachable`
+        // below still means what it says.
         // (sq_w, max_dev, split_th, lower_th, hvv, nonhv, off16, psq, comp, hv_w)
         let row: (u64, u64, u64, u64, u64, u64, u64, u8, u64, u64) = match level {
+            1 => (105, 0, 0, 0, 0, 0, 0, 0, 0, 115),
             2 => (105, 0, 150, 3, 0, 0, 10, 0, 0, 115),
             3 => (105, 0, 100, 3, 0, 0, 10, 0, 0, 115),
             4 => (100, 0, 100, 3, 0, 0, 10, 0, 80, 115),
@@ -893,22 +897,38 @@ impl NsqCfg {
             19 => (90, 80, 35, 20, 85, 70, 15, 1, 5, 75),
             _ => unreachable!("nsq search level {level}"),
         };
-        // Tail (:6788-6801): qp-based scaling factors are 1/1 (the nsq
-        // flag is 0 for allintra <= M3), so only the -5 dev offset lands.
-        let dev = row.1.saturating_sub(5);
+        // Tail (:7110-7121). `scs->qp_based_th_scaling_ctrls.nsq_qp_based_th_scaling`
+        // is 0 on the allintra arm through M3 — the only allintra band that
+        // reaches here, since `get_nsq_search_level_allintra` is 0 from M4 up —
+        // so the still path keeps `q_weight/q_weight_denom = 1/1` and only the
+        // flat `-5` dev offset lands, exactly as before. The VIDEO arm sets the
+        // flag at every reachable preset (`set_qp_based_th_scaling_ctrls_default`,
+        // enc_handle.c:3806-3816, the `enc_mode > ENC_MR` arm), so there the
+        // three scaled terms are live.
+        let (qw, qwd) = crate::port_enc_mode_config::me::get_qp_based_th_scaling_factors(
+            nsq_qp_based_th_scaling,
+            cli_qp,
+        );
+        let scale = |v: u64| {
+            crate::port_enc_mode_config::me::divide_and_round(
+                u32::try_from(v * u64::from(qw)).unwrap_or(u32::MAX),
+                qwd,
+            ) as u64
+        };
+        let dev = row.1.saturating_sub(scale(5));
         NsqCfg {
             enabled: true,
-            min_nsq: 0,
-            allow_hv4: true,
+            min_nsq,
+            allow_hv4,
             sq_weight: row.0,
             max_part0_to_part1_dev: dev,
-            nsq_split_cost_th: row.2,
+            nsq_split_cost_th: scale(row.2),
             lower_depth_split_cost_th: row.3,
             h_vs_v_split_rate_th: row.4,
             non_hv_split_rate_th: row.5,
             rate_th_offset_lte16: row.6,
             psq_txs: row.7 != 0,
-            component_multiple_th: row.8,
+            component_multiple_th: scale(row.8),
             hv_weight: row.9,
         }
     }
@@ -2312,7 +2332,7 @@ mod tests {
     fn nsq_cfg_matches_instrumented_captures() {
         // NSQCFG rows (docs/captures/nsq_m2m3/): M3 levels 19/18/16 at
         // qp 20/40/55, M2 levels 17/16/14 — post-tail values (dev - 5).
-        let c = NsqCfg::for_preset_qp(3, 20);
+        let c = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 3, 20);
         assert!(c.enabled && c.allow_hv4 && c.psq_txs);
         assert_eq!(
             (c.sq_weight, c.hv_weight, c.max_part0_to_part1_dev),
@@ -2321,27 +2341,27 @@ mod tests {
         assert_eq!((c.nsq_split_cost_th, c.lower_depth_split_cost_th), (35, 20));
         assert_eq!((c.h_vs_v_split_rate_th, c.non_hv_split_rate_th), (85, 70));
         assert_eq!((c.rate_th_offset_lte16, c.component_multiple_th), (15, 5));
-        let c = NsqCfg::for_preset_qp(3, 40);
+        let c = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 3, 40);
         assert_eq!((c.max_part0_to_part1_dev, c.nsq_split_cost_th), (70, 40));
         assert_eq!((c.h_vs_v_split_rate_th, c.non_hv_split_rate_th), (80, 70));
         assert!(c.psq_txs);
-        let c = NsqCfg::for_preset_qp(3, 55);
+        let c = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 3, 55);
         assert_eq!(
             (c.max_part0_to_part1_dev, c.component_multiple_th),
             (45, 15)
         );
         assert!(!c.psq_txs); // level 16
-        let c = NsqCfg::for_preset_qp(2, 20);
+        let c = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 2, 20);
         assert!(c.psq_txs); // level 17
         assert_eq!((c.max_part0_to_part1_dev, c.rate_th_offset_lte16), (45, 15));
-        let c = NsqCfg::for_preset_qp(2, 40);
+        let c = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 2, 40);
         assert!(!c.psq_txs); // level 16
         assert_eq!(c.max_part0_to_part1_dev, 45);
-        let c = NsqCfg::for_preset_qp(2, 55);
+        let c = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 2, 55);
         assert_eq!((c.max_part0_to_part1_dev, c.component_multiple_th), (0, 20));
         assert_eq!((c.sq_weight, c.hv_weight), (95, 100));
         // Presets >= 4: search off.
-        assert!(!NsqCfg::for_preset_qp(4, 40).enabled);
+        assert!(!NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 4, 40).enabled);
     }
 
     #[test]
@@ -2682,7 +2702,7 @@ mod partial_sb_edge_tests {
     /// stays at 1036/1036 while the partial cells moved 72 -> 187 of 216.
     #[test]
     fn set_blocks_to_test_edge_rules() {
-        let nsq_on = NsqCfg::for_preset_qp(3, 20); // NSQ SEARCH on (preset <= 3)
+        let nsq_on = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, 3, 20); // NSQ SEARCH on (preset <= 3)
         let nsq_off = NsqCfg::off(); // presets 4/5: md_disallow_nsq_search
         // Interior node, NSQ search on: the full N/H/V/H4/V4 list.
         assert_eq!(shapes_at_edge(32, &nsq_on, true, true, true).len(), 5);

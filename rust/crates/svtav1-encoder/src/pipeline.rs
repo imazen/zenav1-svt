@@ -8754,7 +8754,8 @@ fn encode_tile_rows(
                                 // one-false node at p4/p5 and cost 29 cells --
                                 // partial-SB p4 28/36 -> 12/36 and p5 25/36 ->
                                 // 13/36. Search-off is not geometry-off.
-                                let nsq_geom_enabled = speed_config.preset <= 6;
+                                let nsq_geom_enabled =
+                                    crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset);
                                 let dr = crate::depth_refine::DrCtrls::for_preset_sc(
                                     speed_config.preset,
                                     tile_sc.classes.sc_class5,
@@ -8787,10 +8788,20 @@ fn encode_tile_rows(
                                     // (real PD0 coeff rate). M7/M8's level-2 PD0
                                     // approximation only fires when this is >= 2.
                                     funnel_cfg.coeff_rate_est_lvl,
-                                    // max-block variance cap: M8+ only
-                                    // (get_max_block_size_allintra base th ~0
-                                    // through M7) — never on this p<=5 branch.
-                                    false,
+                                    // max-block variance cap. Allintra: M8+
+                                    // only (`get_max_block_size_allintra`'s
+                                    // `base_var_th_cap` is `(uint16_t)~0`
+                                    // through M7). Video: never
+                                    // (`get_max_block_size_default` returns
+                                    // `super_block_size` outright). Either way
+                                    // false on this `refined` p<=5 branch —
+                                    // routed through the arm helper so the two
+                                    // PD0 call sites cannot drift apart.
+                                    crate::part_arm::max_block_cap_active(
+                                        sc_arm,
+                                        speed_config.preset,
+                                        true,
+                                    ),
                                     // NSQ geometry: a one-false node keeps its
                                     // edge shape when NSQ shapes exist, and
                                     // force-splits when they do not (p4/p5, where
@@ -8864,7 +8875,15 @@ fn encode_tile_rows(
                                                 tables,
                                                 if dr.disallow_4x4 { 8 } else { 4 },
                                                 funnel_cfg.coeff_rate_est_lvl,
-                                                false,
+                                                // Same cap predicate as the
+                                                // sibling call above; this
+                                                // SB128 unit loop skips
+                                                // incomplete units outright.
+                                                crate::part_arm::max_block_cap_active(
+                                                    sc_arm,
+                                                    speed_config.preset,
+                                                    true,
+                                                ),
                                                 nsq_geom_enabled,
                                                 w,
                                                 h,
@@ -8955,7 +8974,8 @@ fn encode_tile_rows(
                                     ibc_gate: Default::default(),
                                     full_rd10: bd10_full_rd,
                                 };
-                                let nsq = crate::depth_refine::NsqCfg::for_preset_qp(
+                                let nsq = crate::depth_refine::NsqCfg::for_arm(
+                                    sc_arm,
                                     speed_config.preset,
                                     cli_qp as u32,
                                 );
@@ -9045,17 +9065,29 @@ fn encode_tile_rows(
                                     // approximation that lowers the parent-NONE
                                     // cost and matches C's partition depth.
                                     funnel_cfg.coeff_rate_est_lvl,
-                                    // C get_max_block_size_allintra: the
-                                    // 64-variance cap fires at M8+ only, and
-                                    // stays at sb_size for incomplete edge SBs.
-                                    speed_config.preset >= 8 && x0 + 64 <= w && y0 + 64 <= h,
-                                    // NSQ geom enabled iff enc_mode <= M6
-                                    // (svt_aom_get_nsq_geom_level_allintra: presets
-                                    // 0..=6 → level 1/2/3 → enabled; presets 7/8 →
-                                    // level 0 → disabled). When disabled, a
-                                    // one-false boundary node force-splits (no edge
-                                    // shape) — the presets 7/8 partial-SB fix.
-                                    speed_config.preset <= 6,
+                                    // The max-block variance cap, per ARM.
+                                    // Allintra (`get_max_block_size_allintra`,
+                                    // enc_mode_config.c:7042): fires at M8+
+                                    // only, and stays at sb_size for
+                                    // incomplete edge SBs. VIDEO
+                                    // (`get_max_block_size_default`, :6991):
+                                    // no cap at any preset.
+                                    crate::part_arm::max_block_cap_active(
+                                        sc_arm,
+                                        speed_config.preset,
+                                        x0 + 64 <= w && y0 + 64 <= h,
+                                    ),
+                                    // NSQ geometry, per ARM. Allintra
+                                    // (`svt_aom_get_nsq_geom_level_allintra`,
+                                    // enc_mode_config.c:8240): presets 0..=6 →
+                                    // level 1/2/3 → enabled, presets 7+ → level 0
+                                    // → disabled; when disabled a one-false
+                                    // boundary node force-splits (no edge shape)
+                                    // — the presets 7/8 partial-SB fix. VIDEO
+                                    // (`svt_aom_get_nsq_geom_level_default`,
+                                    // :8216) never returns 0, so geometry stays
+                                    // on at every preset there.
+                                    crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset),
                                     // ALIGNED dims — the spec-5.11.4 edge grid.
                                     w,
                                     h,

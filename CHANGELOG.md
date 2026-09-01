@@ -56,6 +56,37 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Partition search: the video arm of `max_block_size` + NSQ geometry / search
+  wired (lane `c2blk`).** New `svtav1_encoder::part_arm` resolves the three
+  partition-search ladders per `scs->allintra` from the `ScArm` the frame
+  already carries, replacing the inline allintra flattening `pipeline.rs`
+  applied to every frame (`preset >= 8 && full_sb` for
+  `get_max_block_size_allintra`, `preset <= 6` for
+  `svt_aom_get_nsq_geom_level_allintra`, and `NsqCfg::for_preset_qp`'s base
+  table for `svt_aom_get_nsq_search_level_allintra`). The arms disagree
+  sharply: NSQ search is off from M4 up on the allintra arm and runs to M13 on
+  the video arm, NSQ geometry is off above M6 on the allintra arm and never off
+  on the video arm, and the video arm never applies the `max_block_size`
+  variance cap at all. `NsqCfg` gains `for_arm` / `for_levels`, takes
+  `(allow_HV4, min_nsq_block_size)` from `svt_aom_set_nsq_geom_ctrls`
+  (`:8180`) instead of a hardcoded `(true, 0)`, and applies the
+  `set_nsq_search_ctrls` qp-scaling tail (`:7110-7121`), which is inert on the
+  still path and live on the video one. **TIER 1**: nothing is re-transcribed —
+  all six ladders are the ones already gated against the exported C symbols by
+  `c_parity_sig_deriv_{leaf,common}.rs`, and two new tier-1 tests
+  (`nsq_levels_treat_invalid_coeff_lvl_as_normal` plus its positive control)
+  pin the `INVALID_LVL == NORMAL_LVL` premise the video-I-slice `coeff_lvl`
+  rests on. **Still path byte-neutral by construction and by measurement**:
+  `part_arm::tests::allintra_flattening_matches_the_ladder` pins the new
+  ladders against the old inline predicates entry-for-entry over presets
+  0..=13 x qp 0..=63, `identity_full_8bit.sh` is 1100/1100 and all six
+  reference identity cells hold their pinned byte counts. **MEASURED on the
+  video-mode key frame**, `gradient 72x88 q40` frame 0: p4 1492 -> 1398 B
+  against C's 1403, p5 1499 -> 1484 against 1485, p7 1502 -> 1511 against 1539.
+  `regression_spotcheck.sh` 44/44 (41/44 with the change reverted) via a new
+  `ratioVideoKey` helper + three cells. Full map, including the five things
+  deliberately NOT wired, in `docs/nsq-port-map.md`. (this commit)
+
 - **Screen-content tool derivation: the video arm of the intra-BC ladder
   wired (lane `ibcvid`).** `sc_detect.rs` grows `ScArm` +
   `derive_sc(arm, ...)`; `derive_allintra_sc` delegates to it and is unchanged

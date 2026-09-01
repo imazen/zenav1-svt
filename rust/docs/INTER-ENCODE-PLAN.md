@@ -220,6 +220,55 @@ cannot move a frame-header bit (proved by unit test, see
 `docs/ibc-port-map.md`), only the RD candidate set. That is the cheapest
 remaining attributable step on the tile payload.
 
+## 2c. Landed after 2b — the video-arm PARTITION ladders (2026-08-31)
+
+With the header's tool bits closed, the remaining divergence on every cell sits
+in the TILE payload, i.e. in the recon. Three more ladders were still being run
+from the ALLINTRA arm on every frame, flattened into inline predicates in
+`pipeline.rs`: `get_max_block_size_allintra` (`preset >= 8 && full_sb`),
+`svt_aom_get_nsq_geom_level_allintra` (`preset <= 6`) and
+`svt_aom_get_nsq_search_level_allintra` (`NsqCfg::for_preset_qp`'s base table).
+These decide the partition SEARCH, so taking the wrong arm moves the coded tree.
+
+**Wired** — `src/part_arm.rs` selects the arm from the `ScArm` chunk 2b already
+threads through `encode_tile_rows`, and calls the tier-1-gated ladders in
+`port_enc_mode_config::{common,leaf}` rather than a second transcription. Also
+wired, because the video arm makes them live: `svt_aom_set_nsq_geom_ctrls`'s
+`(allow_HV4, min_nsq_block_size)` pair (was hardcoded `(true, 0)`), and the
+`set_nsq_search_ctrls` tail's qp-based scaling (`nsq_qp_based_th_scaling` is 0
+through M3 on the allintra arm — the only band that reaches the tail there —
+and 1 at every reachable preset on the video arm).
+
+**MEASURED**, `identity_diff_inter.sh` frame 0, `gradient 72x88 q40` (the
+partial-SB cell, the only shape where the geometry ladder is observable):
+p4 1492 -> **1398** B against C's 1403; p5 1499 -> **1484** against 1485;
+p7 1502 -> **1511** against 1539. On the 64-aligned `gradient 64x64 q40` cell
+the geometry ladder cannot fire at all (no boundary node) and the sizes move
+only where the SEARCH ladder does: p2 953 -> 959, p3 948 -> 966, p4 948 -> 967
+against C's 974/975/951. Full table + the honest read of it in
+`docs/nsq-port-map.md` §3.
+
+**No still regression, measured:** `identity_full_8bit.sh` **1100/1100**, all
+six reference identity cells byte-identical at their pinned sizes,
+`regression_spotcheck.sh` **44/44** (41/44 with the three source files reverted
+— the three new `ratioVideoKey` cells are exactly the ones that fail),
+`cargo nextest run --workspace` 2387/2387.
+
+**NOT wired**, all named in `docs/nsq-port-map.md` §4: NSQ geom level 1's
+`allow_HVA_HVB` (reachable only at video preset 0; the funnel has no HVA/HVB
+candidate), `pcs->mimic_only_tx_4x4`'s forced level 0 on a coded-lossless
+frame, `nsq_search_ctrls.sub_depth_block_lvl`, the `PD_PASS_0` control-row
+override, and the whole rtc arm.
+
+**Next on the tile payload.** The first diverging frame-header field on the
+reference cell (`gradient 64x64 q40 p6`) is unchanged by this chunk —
+`cdef_uv_pri_strength[0]` C=7 port=0, C 961 B vs port 971 B — because at p6 on
+a 64-aligned frame all three of these ladders agree between the arms. That
+field is a CDEF SEARCH output, so it is downstream of the recon, and the recon
+is downstream of the remaining unwired video ladders (the palette level from
+2b, and whatever else `sig_deriv_mode_decision_config_default` sets that the
+port still takes from the allintra arm).
+
 ## 3. Standing rules for every chunk
 
 - `WORKING-ON-THIS.md` governs. State your evidence tier (§4) in the commit

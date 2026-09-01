@@ -501,3 +501,123 @@ fn is_ref_same_size_positive_control() {
     assert!(!cref::is_ref_same_size(false, true, true, 32, 64, 64, 64));
     assert!(!cref::is_ref_same_size(false, false, true, 64, 64, 64, 64));
 }
+
+/// The premise `part_arm::VIDEO_ISLICE_COEFF_LVL` rests on, pinned against the
+/// real C symbols rather than left as a reading of the source.
+///
+/// C leaves `pcs->coeff_lvl` at `INVALID_LVL` (`~0` = -1) for a video-mode
+/// I-slice: `md_config_process.c:898-902` runs `derive_intra_coeff_level` only
+/// under `scs->allintra`, and `derive_inter_coeff_level` only when
+/// `!rtc && slice_type != I_SLICE`. A video KEY frame — the only video picture
+/// this port encodes today — matches neither, so both `_default` ladders see
+/// `INVALID_LVL`.
+///
+/// Both ladders test `coeff_lvl` only by equality against `HIGH_LVL` or
+/// against `VLOW_LVL | LOW_LVL`, so `INVALID_LVL` must behave exactly as
+/// `NORMAL_LVL`. If upstream ever adds an ordering comparison, this test goes
+/// red and the port's `NORMAL` stand-in stops being sound.
+#[test]
+fn nsq_levels_treat_invalid_coeff_lvl_as_normal() {
+    let normal = InputCoeffLvl::Normal as u8;
+    for &m in &ENC_MODES {
+        let invalid = cref::get_nsq_geom_level_default_raw(m, cref::INVALID_COEFF_LVL);
+        assert_eq!(
+            invalid,
+            cref::get_nsq_geom_level_default(m, normal),
+            "geom enc_mode={m}: INVALID_LVL must equal NORMAL_LVL"
+        );
+        // ... and the port's own arm helper reproduces it.
+        assert_eq!(
+            invalid,
+            leaf::get_nsq_geom_level_default(m, InputCoeffLvl::Normal),
+            "geom enc_mode={m}: port vs C at INVALID_LVL"
+        );
+    }
+    for &m in &ENC_MODES {
+        for &qp in &QPS {
+            for &sqm in &[0u8, 1, 2, 3] {
+                for &isl in &[false, true] {
+                    let invalid = cref::get_nsq_search_level_default_raw(
+                        m,
+                        cref::INVALID_COEFF_LVL,
+                        qp,
+                        0,
+                        false,
+                        0.0,
+                        isl,
+                        0,
+                        sqm,
+                    );
+                    assert_eq!(
+                        invalid,
+                        cref::get_nsq_search_level_default(
+                            m, normal, qp, 0, false, 0.0, isl, 0, sqm
+                        ),
+                        "search enc_mode={m} qp={qp} sqm={sqm} isl={isl}: \
+                         INVALID_LVL must equal NORMAL_LVL"
+                    );
+                    assert_eq!(
+                        invalid,
+                        leaf::get_nsq_search_level_default(
+                            m,
+                            InputCoeffLvl::Normal,
+                            qp,
+                            0,
+                            false,
+                            0.0,
+                            isl,
+                            0,
+                            sqm,
+                        ),
+                        "search enc_mode={m} qp={qp} sqm={sqm} isl={isl}: port vs C at INVALID_LVL"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A positive control for the test above: `HIGH_LVL` must NOT agree with
+/// `NORMAL_LVL`, or the assertions would pass on a constant function and prove
+/// nothing (`docs/WORKING-ON-THIS.md` §5 — prove the probe fires).
+#[test]
+fn invalid_coeff_lvl_probe_has_a_positive_control() {
+    let mut geom_differs = false;
+    let mut search_differs = false;
+    for &m in &ENC_MODES {
+        if cref::get_nsq_geom_level_default(m, InputCoeffLvl::High as u8)
+            != cref::get_nsq_geom_level_default(m, InputCoeffLvl::Normal as u8)
+        {
+            geom_differs = true;
+        }
+        for &qp in &QPS {
+            let hi = cref::get_nsq_search_level_default(
+                m,
+                InputCoeffLvl::High as u8,
+                qp,
+                0,
+                false,
+                0.0,
+                true,
+                0,
+                2,
+            );
+            let no = cref::get_nsq_search_level_default(
+                m,
+                InputCoeffLvl::Normal as u8,
+                qp,
+                0,
+                false,
+                0.0,
+                true,
+                0,
+                2,
+            );
+            if hi != no {
+                search_differs = true;
+            }
+        }
+    }
+    assert!(geom_differs, "geom ladder ignores coeff_lvl entirely");
+    assert!(search_differs, "search ladder ignores coeff_lvl entirely");
+}

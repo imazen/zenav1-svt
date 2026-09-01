@@ -44,6 +44,7 @@ pub mod multipass;
 pub mod noise_gen;
 pub mod noise_norm;
 pub mod palette;
+pub(crate) mod part_arm;
 pub mod partition;
 pub mod pd0;
 pub mod perceptual;

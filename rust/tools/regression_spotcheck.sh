@@ -217,6 +217,47 @@ fhVideoKey() {
   fi
 }
 
+# ratioVideoKey <label> <content> <w> <h> <qp> <preset> <limit_pct>
+# The size counterpart of fhVideoKey: asserts the port's VIDEO-mode KEY frame
+# is within <limit_pct> of C's byte count.
+#
+# WEAKER than byteVideoKey on purpose, like ratio() is weaker than byte(): it
+# witnesses a PARTITION-SEARCH regression on a cell whose payload is not yet
+# byte-identical. A partition ladder taken from the wrong arm of
+# `scs->allintra` moves the coded tree and therefore the size, so the size is
+# the only handle available until the payload closes. Promote to byteVideoKey
+# the moment it does; do not leave the weaker assertion in place after that.
+#
+# Deterministic on both sides — the limits below are NOT noise bands, they are
+# chosen to sit between the measured before and after of one specific fix, and
+# each cell's comment states both numbers.
+ratioVideoKey() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6 lim=$7
+  rm -f "$W"/c.obu.pts* "$W"/rs.obu.f*
+  local rc=0
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+    fail=$((fail+1)); failed+=("$label [port failed to encode, rc=$rc]"); return
+  fi
+  if ! SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+       SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" "$w" "$h" "$qp" "$p" \
+       "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label [C oracle failed]"); return
+  fi
+  if [ ! -s "$W/c.obu.pts0" ] || [ ! -s "$W/rs.obu.f0" ]; then
+    fail=$((fail+1)); failed+=("$label [frame 0 missing or empty on one side]"); return
+  fi
+  local cb pb pct
+  cb=$(wc -c <"$W/c.obu.pts0"|tr -d ' '); pb=$(wc -c <"$W/rs.obu.f0"|tr -d ' ')
+  pct=$(python3 -c "print(abs(100.0*($pb-$cb)/$cb))")
+  if python3 -c "import sys; sys.exit(0 if $pct <= $lim else 1)"; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); failed+=("$label [C=${cb}B port=${pb}B, ${pct}% off, limit ${lim}%]")
+  fi
+}
+
 need_file() { [ -f "$1" ] || { skip=$((skip+1)); skipped+=("$2 — $1 absent"); return 1; }; }
 
 echo "== regression spot-check: one cell per fixed bug =="
@@ -615,6 +656,33 @@ byteVideoKey "video-key-cdef-p8"  uniform 64 64 40 8
 # to byteVideoKey when it closes.
 fhVideoKey "video-key-ibc-arm-p6" screen 64 64 40 6
 fhVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8
+
+# --- video-arm partition ladders (max_block_size + nsq geom/search), 2026-08-31
+# `pipeline.rs` flattened C's ALLINTRA arm of three partition ladders into
+# inline predicates and ran them on every frame:
+#   `preset >= 8 && full_sb`  for `get_max_block_size_allintra` (:7042)
+#   `preset <= 6`             for `svt_aom_get_nsq_geom_level_allintra` (:8240)
+#   NsqCfg's base table       for `svt_aom_get_nsq_search_level_allintra` (:8363)
+# A video-mode frame takes the `_default` twins instead, which disagree at
+# every preset — NSQ search is OFF from M4 up on the allintra arm and ON to
+# M13 on the video arm; NSQ geometry is OFF above M6 on the allintra arm and
+# never off on the video arm. See docs/nsq-port-map.md.
+#
+# The partial-SB cell is the witness: `nsq_geom_enabled` only changes what a
+# ONE-FALSE boundary node does, so a 64-aligned frame cannot see it at all
+# (MEASURED: gradient 64x64 q40 is byte-identical before and after at p6/p7/p8).
+#
+# OBSERVED, gradient 72x88 q40, frames=2 frame 0 (the video-mode key frame):
+#   preset 4:  before port 1492 B vs C 1403 B = 6.34% off; after 1398 B = 0.36%
+#   preset 5:  before port 1499 B vs C 1485 B = 0.94% off; after 1484 B = 0.07%
+#   preset 7:  before port 1502 B vs C 1539 B = 2.40% off; after 1511 B = 1.82%
+# Each limit sits between that cell's before and after.
+#
+# ratioVideoKey and not byteVideoKey because the payload is still open on all
+# three (the closest, p5, is 1 byte away but not identical).
+ratioVideoKey "video-key-nsq-arm-p4-72x88" gradient 72 88 40 4 1.0
+ratioVideoKey "video-key-nsq-arm-p5-72x88" gradient 72 88 40 5 0.3
+ratioVideoKey "video-key-nsq-arm-p7-72x88" gradient 72 88 40 7 2.0
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))

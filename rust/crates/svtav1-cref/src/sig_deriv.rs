@@ -148,6 +148,51 @@ pub fn get_nsq_geom_level_default(enc_mode: i8, coeff_lvl: u8) -> u8 {
     unsafe { svt_aom_get_nsq_geom_level_default(enc_mode, i32::from(coeff_lvl)) }
 }
 
+/// C `INVALID_LVL` (`Codec/definitions.h:288`) — `~0`, the value
+/// `pcs->coeff_lvl` keeps on a video-mode I-slice (`md_config_process.c:898`
+/// runs neither `derive_intra_coeff_level` nor `derive_inter_coeff_level`
+/// there). The enum carries a negative enumerator, so its underlying type is
+/// signed and the value is `-1` — which is why the `_raw` entry points below
+/// exist: the `u8` wrappers cannot express it.
+pub const INVALID_COEFF_LVL: i32 = -1;
+
+/// C `svt_aom_get_nsq_geom_level_default` with the raw `InputCoeffLvl` integer,
+/// so a caller can pass [`INVALID_COEFF_LVL`].
+#[must_use]
+pub fn get_nsq_geom_level_default_raw(enc_mode: i8, coeff_lvl: i32) -> u8 {
+    unsafe { svt_aom_get_nsq_geom_level_default(enc_mode, coeff_lvl) }
+}
+
+/// C `svt_aom_get_nsq_search_level_default` with the raw `InputCoeffLvl`
+/// integer, so a caller can pass [`INVALID_COEFF_LVL`].
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn get_nsq_search_level_default_raw(
+    enc_mode: i8,
+    coeff_lvl: i32,
+    qp: u32,
+    ppcs_temporal_layer_index: u8,
+    r0_gen: bool,
+    r0: f64,
+    is_islice: bool,
+    temporal_layer_index: u8,
+    seq_qp_mod: u8,
+) -> u8 {
+    unsafe {
+        ref_get_nsq_search_level_default(
+            enc_mode,
+            coeff_lvl,
+            qp,
+            ppcs_temporal_layer_index,
+            u8::from(r0_gen),
+            r0,
+            u8::from(is_islice),
+            temporal_layer_index,
+            seq_qp_mod,
+        )
+    }
+}
+
 /// C `svt_aom_get_nsq_geom_level_rtc`.
 #[must_use]
 pub fn get_nsq_geom_level_rtc() -> u8 {
