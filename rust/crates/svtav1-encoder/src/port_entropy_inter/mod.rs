@@ -54,6 +54,7 @@
 //! byte gate exists. Writing a shim that re-transcribes their bit trees and
 //! calling the agreement tier 1 is exactly what §4 forbids.
 
+pub mod block;
 pub mod cdfs;
 pub mod compound;
 pub mod framesize;
