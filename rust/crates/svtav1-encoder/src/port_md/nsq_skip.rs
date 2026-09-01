@@ -1116,3 +1116,87 @@ mod tests {
         assert!(!skip_by_shapes(&c, Part::N, Some(1), None, None));
     }
 }
+
+// ---------------------------------------------------------------------------
+// update_redundant, predicate half (:10267-10294)
+// ---------------------------------------------------------------------------
+
+/// C `update_redundant`'s shape-matching rule (`:10275-10294`).
+///
+/// Some NSQ shapes' FIRST sub-block is geometrically identical to a
+/// sub-block of a shape already tested, so its whole mode decision can be
+/// copied instead of re-derived. `Some((shape, nsi))` names the source.
+///
+/// The rest of `update_redundant` (`:10296-10349`) copies the block data,
+/// the recon and the coefficients — buffer plumbing this port structures
+/// differently, and not translated here.
+///
+/// **`PART_VA`'s source is `PART_HA`, not `PART_V`.** That looks like a
+/// typo and is not: `HA` splits the TOP half and `VA` splits the LEFT half,
+/// so both of their first sub-blocks are the same top-left quarter square.
+/// `HB`/`VB`, by contrast, take the full-width / full-height rect from
+/// `H`/`V`. Also note `PART_HA` itself has NO source — nothing tested
+/// earlier shares its first sub-block.
+///
+/// Squares are excluded even when they would match (`:10275`), and C says
+/// why: an SQ block carries per-quadrant recon statistics
+/// (`rec_dist_per_quadrant`) that are computed from samples, not copied, so
+/// reusing the record would leave later decisions reading data that was
+/// never produced.
+#[must_use]
+pub fn redundant_shape_source(
+    shape: Part,
+    nsi: usize,
+    tested: impl Fn(Part) -> bool,
+) -> Option<Part> {
+    if shape == Part::N || nsi != 0 {
+        return None;
+    }
+    let source = match shape {
+        Part::Hb => Part::H,
+        Part::Vb => Part::V,
+        Part::Va => Part::Ha,
+        _ => return None,
+    };
+    tested(source).then_some(source)
+}
+
+#[cfg(test)]
+mod redundant_tests {
+    use super::*;
+
+    /// `:10283-10289` — three shapes have a source, and VA's is HA.
+    #[test]
+    fn the_redundancy_map_pairs_va_with_ha() {
+        let all = |_: Part| true;
+        assert_eq!(redundant_shape_source(Part::Hb, 0, all), Some(Part::H));
+        assert_eq!(redundant_shape_source(Part::Vb, 0, all), Some(Part::V));
+        assert_eq!(
+            redundant_shape_source(Part::Va, 0, all),
+            Some(Part::Ha),
+            "VA's first sub-block is HA's, not V's"
+        );
+        for s in [Part::N, Part::H, Part::V, Part::H4, Part::V4, Part::Ha] {
+            assert_eq!(redundant_shape_source(s, 0, all), None, "{s:?}");
+        }
+    }
+
+    /// `:10283` — only the FIRST sub-block of a shape can be redundant.
+    #[test]
+    fn only_the_first_sub_block_is_redundant() {
+        let all = |_: Part| true;
+        assert_eq!(redundant_shape_source(Part::Hb, 1, all), None);
+    }
+
+    /// `:10283` — an untested source yields nothing.
+    #[test]
+    fn an_untested_source_is_not_a_source() {
+        assert_eq!(redundant_shape_source(Part::Hb, 0, |_| false), None);
+        // And the map is consulted by SOURCE, not by the shape under test.
+        assert_eq!(
+            redundant_shape_source(Part::Va, 0, |p| p == Part::V),
+            None,
+            "V being tested does not make VA redundant"
+        );
+    }
+}

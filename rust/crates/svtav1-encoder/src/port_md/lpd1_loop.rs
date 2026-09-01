@@ -9,6 +9,7 @@
 //! | [`Mds3LightSettings`] | `md_stage_3_light_pd1` `:7119-7135` |
 //! | [`plan_chroma`], [`luma_tx_skipped`], [`luma_skip_rd_applies`], [`second_chroma_detector_runs`], [`no_chroma_epilogue`] | `full_loop_core_light_pd1` `:6541-6694`, **decisions only** |
 //! | [`luma_eob_zero_takes_the_early_exit`], [`luma_tx_skipped`] | `perform_dct_dct_tx_light_pd1` `:5434-5560`, **decisions only** |
+//! | [`lpd1_me_mv_index`], [`lpd1_me_mv_to_eighth_pel`], [`lpd1_skip_subpel`], [`MdMeDist`] | `read_refine_me_mvs_light_pd1` `:2737-2811`, **decisions only** |
 //!
 //! # Coverage, stated as a fraction
 //!
@@ -55,6 +56,7 @@
 //! frames (`docs/WORKING-ON-THIS.md` §7).
 
 use super::lpd1::{ComponentType, Plane};
+use svtav1_types::motion::Mv;
 
 /// C `MAX_MODE_COST` (coding_unit.h:37) — the "never pick this" sentinel a
 /// candidate's fast cost is set to when an early exit abandons it.
@@ -1005,5 +1007,147 @@ mod full_loop_tests {
             !without.set_skip_mode,
             "skip_mode needs the candidate's consent"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// read_refine_me_mvs_light_pd1 (:2737-2811) — the decision content
+// ---------------------------------------------------------------------------
+
+/// C `read_refine_me_mvs_light_pd1`'s index into
+/// `me_results->me_mv_array` (`:2767-2769`).
+///
+/// The base is `me_block_offset * max_refs + ref_idx`, and the LIST is
+/// selected by adding `max_l0` for list 1 — the two lists are laid out
+/// consecutively per block, not interleaved. Reading this as
+/// `+ list * max_refs` (the obvious alternative) indexes another block's
+/// row entirely.
+#[must_use]
+pub fn lpd1_me_mv_index(
+    me_block_offset: usize,
+    max_refs: usize,
+    ref_idx: usize,
+    list_idx: usize,
+    max_l0: usize,
+) -> usize {
+    me_block_offset * max_refs + ref_idx + if list_idx != 0 { max_l0 } else { 0 }
+}
+
+/// C `:2770` — the ME array holds FULL-PEL motion vectors; MD works in
+/// eighth-pel.
+///
+/// C stores the product back into an `int16_t`, so a full-pel component
+/// beyond +-4095 truncates. That cannot happen for a real ME result
+/// (`MV_UPP` is 1 << 14 in eighth-pel, i.e. 2048 full-pel), and the
+/// wrapping multiply says "C's semantics" rather than permitting it.
+#[must_use]
+pub fn lpd1_me_mv_to_eighth_pel(full_pel: Mv) -> Mv {
+    Mv {
+        x: full_pel.x.wrapping_mul(8),
+        y: full_pel.y.wrapping_mul(8),
+    }
+}
+
+/// C `:2772-2774` — when the sub-pel refinement is skipped for this
+/// candidate even though sub-pel search is enabled.
+///
+/// Two independent reasons: the block sits inside an intra-predicted
+/// border and the neighbouring-mode reduction is on (C's comment notes
+/// this is only safe because that path codes DC only, so no candidate
+/// cost is needed), or the block is at or below the configured minimum
+/// sub-pel size.
+///
+/// Note the size test is `<=`, so `min_blk_sz` is the largest size that is
+/// SKIPPED, not the smallest that is searched.
+#[must_use]
+pub fn lpd1_skip_subpel(
+    is_intra_bordered: bool,
+    use_neighbouring_mode_enabled: bool,
+    sq_size: usize,
+    subpel_min_blk_sz: usize,
+) -> bool {
+    (is_intra_bordered && use_neighbouring_mode_enabled) || sq_size <= subpel_min_blk_sz
+}
+
+/// The running `ctx->md_me_dist` (`:2740`, `:2796-2798`) — the cheapest
+/// post-sub-pel ME cost over every reference this block examined.
+///
+/// C initialises it to `(uint32_t)~0` and only ever lowers it, and only
+/// from candidates that actually ran the sub-pel search. A block whose
+/// references all skipped sub-pel therefore leaves the sentinel in place,
+/// which downstream code tests for — so this is an [`Option`] rather than
+/// a `u32` pre-set to `MAX`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MdMeDist(Option<u32>);
+
+impl MdMeDist {
+    /// C `:2740`.
+    #[must_use]
+    pub fn new() -> Self {
+        MdMeDist(None)
+    }
+    /// C `:2796-2798`.
+    pub fn observe(&mut self, post_subpel_cost: u32) {
+        self.0 = Some(match self.0 {
+            Some(best) => best.min(post_subpel_cost),
+            None => post_subpel_cost,
+        });
+    }
+    /// The value C's `ctx->md_me_dist` holds, sentinel included.
+    #[must_use]
+    pub fn raw(self) -> u32 {
+        self.0.unwrap_or(u32::MAX)
+    }
+    /// `None` when no reference ran the sub-pel search.
+    #[must_use]
+    pub fn get(self) -> Option<u32> {
+        self.0
+    }
+}
+
+#[cfg(test)]
+mod lpd1_me_tests {
+    use super::*;
+
+    /// `:2767-2769` — list 1 is `+ max_l0`, not `+ list * max_refs`.
+    #[test]
+    fn the_list_offset_is_max_l0_not_a_stride() {
+        // block 3, max_refs 8, ref 2: base 26.
+        assert_eq!(lpd1_me_mv_index(3, 8, 2, 0, 4), 26);
+        assert_eq!(lpd1_me_mv_index(3, 8, 2, 1, 4), 30);
+        // The alternative reading would give 26 + 8 = 34, a different
+        // block's row.
+        assert_ne!(lpd1_me_mv_index(3, 8, 2, 1, 4), 34);
+    }
+
+    /// `:2770` — full-pel to eighth-pel.
+    #[test]
+    fn the_me_mv_is_scaled_to_eighth_pel() {
+        let got = lpd1_me_mv_to_eighth_pel(Mv { x: -3, y: 7 });
+        assert_eq!((got.x, got.y), (-24, 56));
+    }
+
+    /// `:2772-2774` — two independent reasons, and the size test is `<=`.
+    #[test]
+    fn subpel_is_skipped_for_either_reason() {
+        assert!(lpd1_skip_subpel(true, true, 64, 8));
+        assert!(!lpd1_skip_subpel(true, false, 64, 8), "needs both flags");
+        assert!(!lpd1_skip_subpel(false, true, 64, 8));
+        assert!(lpd1_skip_subpel(false, false, 8, 8), "<= is inclusive");
+        assert!(!lpd1_skip_subpel(false, false, 16, 8));
+    }
+
+    /// `:2740` / `:2796-2798` — the sentinel survives a block that never
+    /// ran the sub-pel search.
+    #[test]
+    fn md_me_dist_keeps_its_sentinel_until_a_subpel_search_runs() {
+        let mut d = MdMeDist::new();
+        assert_eq!(d.get(), None);
+        assert_eq!(d.raw(), u32::MAX);
+        d.observe(500);
+        d.observe(700);
+        d.observe(400);
+        assert_eq!(d.get(), Some(400));
+        assert_eq!(d.raw(), 400);
     }
 }
