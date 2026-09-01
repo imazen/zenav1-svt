@@ -781,3 +781,90 @@ fn cdf_ctrl_arms_diverge_at_m7_m8_and_coincide_below() {
         }
     }
 }
+
+/// The complete list of MD signals a video-mode KEY frame configures
+/// differently from the still path, at the inter campaign's reference cell
+/// (`gradient 64x64 q40 p6`, `docs/INTER-ENCODE-PLAN.md`).
+///
+/// This is the campaign's work queue, measured rather than guessed: both arms
+/// are driven from ONE input population through the real C entry points, and
+/// every slot that is not listed here is proven EQUAL. When a chunk wires one
+/// of these, its row moves out of `WIRED` — a chunk that forgets to update
+/// this test fails it, which is the point.
+///
+/// Rows marked inter-only cannot affect a key frame's bytes (there is no
+/// motion vector, no reference and no interpolation to select), and are listed
+/// so the remaining intra rows are not mistaken for the whole gap.
+#[test]
+fn video_key_frame_arm_divergence_at_m6_is_exactly_this_set() {
+    let c = Case {
+        enc_mode: 6,
+        is_islice: true,
+        frame_is_intra: true,
+        temporal_layer: 0,
+        pcs_temporal_layer: 0,
+        is_ref: true,
+        input_res: ResolutionRange::R240p,
+        scs_input_res: ResolutionRange::R240p,
+        hier_levels: 0,
+        sq_qp: 40,
+        picture_qp: 40,
+        base_q: 67,
+        error_resilient: true,
+        ref_hp_perc: 0,
+        ref_intra_perc: 0,
+        ref_skip_perc: 0,
+        ref_l0_try: 1,
+        ref_l1_try: 0,
+        r0_milli: 0,
+        coeff_lvl: InputCoeffLvl::Normal,
+        ..Case::default()
+    };
+    let a = cref::sig_deriv_md_config_allintra(&build_input(&c));
+    let d = cref::sig_deriv_md_config_default(&build_input(&c));
+
+    // (slot, allintra, video, note)
+    let expected: &[(usize, i64, i64, &str)] = &[
+        (RDOQ, 3, 1, "WIRED (rate_arm)"),
+        (FILTER_INTRA, 2, 0, "WIRED (intra_arm)"),
+        (INTRA_LEVEL, 6, 2, "WIRED (intra_arm)"),
+        (ALLOW_HP_MV, 0, 1, "inter-only"),
+        (MOTION_MODE_SWITCHABLE, 0, 1, "inter-only"),
+        (OBMC_LEVEL, 0, 6, "inter-only"),
+        (IFS_LEVEL, 0, 4, "inter-only"),
+        (INTERP_FILTER, 0, 4, "inter-only"),
+        (MD_NSQ_MV, 0, 2, "inter-only"),
+        (MD_PME, 0, 4, "inter-only"),
+        (ME_SUBPEL, 0, 4, "inter-only"),
+        (PME_SUBPEL, 0, 2, "inter-only"),
+        (TXT, 8, 7, "OPEN: set_txt_controls case 7 unported"),
+        (CFL, 4, 2, "OPEN: set_cfl_ctrls case 2 unported"),
+        (NIC, 6, 8, "OPEN: nic_level 8 == the still path's M7 row"),
+        (
+            NSQ_SEARCH,
+            0,
+            15,
+            "OPEN: NSQ search is off on the still arm",
+        ),
+        (PD0_LVL, 1, 3, "OPEN: PD0_LVL_3 unimplemented in pd0.rs"),
+        (DEPTH_REMOVAL, 0, 5, "OPEN: depth removal unwired"),
+        (DEPTH_REFINE, 10, 6, "OPEN: depth_refine level 6"),
+    ];
+
+    let mut actual: Vec<usize> = (0..MD_OUT_SLOTS).filter(|&s| a[s] != d[s]).collect();
+    actual.sort_unstable();
+    let mut want: Vec<usize> = expected.iter().map(|e| e.0).collect();
+    want.sort_unstable();
+    assert_eq!(
+        actual, want,
+        "the set of arm-divergent MD slots at M6 moved; update this table \
+         (and the inter campaign's queue) in the same change"
+    );
+    for &(slot, allintra, video, note) in expected {
+        assert_eq!(
+            (a[slot], d[slot]),
+            (allintra, video),
+            "slot {slot} ({note}): arm values moved"
+        );
+    }
+}

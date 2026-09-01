@@ -1605,28 +1605,34 @@ pub fn sig_deriv_md_config_default(input: &[i32; md_in::COUNT]) -> [i64; MD_OUT_
     out
 }
 
-/// Output slot indices for [`sig_deriv_md_config_allintra`], mirroring the C
-/// shim's `MDA_O_*` enum.
+/// Output slot indices for [`sig_deriv_md_config_allintra`].
+///
+/// Since 2026-09-01 the allintra shim dumps the SAME `MD_O_*` layout as
+/// [`sig_deriv_md_config_default`], so these are indices INTO that layout and
+/// the two arms can be diffed slot-for-slot. Only the names the rate-arm
+/// differential uses are given here; a caller that wants another field indexes
+/// the shared layout directly (the indices are listed in
+/// `tests/c_parity_sig_deriv_md_config.rs`).
 pub mod md_allintra_out {
-    /// `pcs->rdoq_level`
-    pub const RDOQ: usize = 0;
-    /// `pcs->rate_est_level`
-    pub const RATE_EST: usize = 1;
-    /// `pcs->cdf_ctrl.update_mv`
-    pub const CDF_MV: usize = 2;
-    /// `pcs->cdf_ctrl.update_se`
-    pub const CDF_SE: usize = 3;
-    /// `pcs->cdf_ctrl.update_coef`
-    pub const CDF_COEF: usize = 4;
-    /// `pcs->cdf_ctrl.enabled`
-    pub const CDF_EN: usize = 5;
-    /// Number of output slots.
-    pub const COUNT: usize = 6;
+    /// `pcs->rdoq_level` (`MD_O_RDOQ`)
+    pub const RDOQ: usize = 1;
+    /// `pcs->rate_est_level` (`MD_O_RATE_EST`)
+    pub const RATE_EST: usize = 3;
+    /// `pcs->cdf_ctrl.update_mv` (`MD_O_CDF_MV`)
+    pub const CDF_MV: usize = 4;
+    /// `pcs->cdf_ctrl.update_se` (`MD_O_CDF_SE`)
+    pub const CDF_SE: usize = 5;
+    /// `pcs->cdf_ctrl.update_coef` (`MD_O_CDF_COEF`)
+    pub const CDF_COEF: usize = 6;
+    /// `pcs->cdf_ctrl.enabled` (`MD_O_CDF_EN`)
+    pub const CDF_EN: usize = 7;
+    /// Number of output slots — the shared `MD_O_*` count.
+    pub const COUNT: usize = super::MD_OUT_SLOTS;
 }
 
 /// C `svt_aom_sig_deriv_mode_decision_config_allintra` on a synthetic PCS,
-/// reading back only the three RATE ladders (`rdoq_level`, `rate_est_level`,
-/// `cdf_ctrl`) that `svtav1_encoder::rate_arm` forks on.
+/// reading back the full `MD_O_*` slot set — the same layout
+/// [`sig_deriv_md_config_default`] returns, so the arms diff slot-for-slot.
 ///
 /// Takes the SAME input array as [`sig_deriv_md_config_default`] so the two
 /// arms are driven from one population.
@@ -1635,7 +1641,7 @@ pub mod md_allintra_out {
 /// If the C shim's slot counts disagree with [`md_in::COUNT`] /
 /// [`md_allintra_out::COUNT`].
 #[must_use]
-pub fn sig_deriv_md_config_allintra(input: &[i32; md_in::COUNT]) -> [i64; md_allintra_out::COUNT] {
+pub fn sig_deriv_md_config_allintra(input: &[i32; md_in::COUNT]) -> [i64; MD_OUT_SLOTS] {
     assert_eq!(
         unsafe { ref_md_config_in_slots() } as usize,
         md_in::COUNT,
@@ -1646,7 +1652,7 @@ pub fn sig_deriv_md_config_allintra(input: &[i32; md_in::COUNT]) -> [i64; md_all
         md_allintra_out::COUNT,
         "C shim md-config allintra output slot count drifted"
     );
-    let mut out = [0i64; md_allintra_out::COUNT];
+    let mut out = [0i64; MD_OUT_SLOTS];
     unsafe { ref_sig_deriv_md_config_allintra(input.as_ptr(), out.as_mut_ptr()) };
     out
 }

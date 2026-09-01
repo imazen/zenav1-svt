@@ -1586,11 +1586,17 @@ int32_t ref_md_config_out_slots(void) { return MD_O_COUNT; }
 
 /* ===========================================================================
  * svt_aom_sig_deriv_mode_decision_config_allintra (enc_mode_config.c:9895) --
- * the STILL twin of the function above. Only the three RATE ladders are read
- * back (`pcs->rdoq_level`, `pcs->rate_est_level`, `pcs->cdf_ctrl`), which is
- * what `svtav1_encoder::rate_arm` forks on; everything else the function
- * assigns already has its own differential elsewhere in this lane or in
- * dlf_shims.c.
+ * the STILL twin of the function above. It reads back the SAME MD_O_* slot
+ * set, so the two arms can be DIFFED field-for-field from one input
+ * population: that diff is the authoritative list of what a video-mode key
+ * frame configures differently from the still path, and it is how the
+ * inter campaign picks its next wiring chunk instead of guessing.
+ *
+ * (Until 2026-09-01 only six slots -- the three RATE ladders -- were read
+ * back. Widening it cost nothing: the C function assigns the whole PCS
+ * either way, the shim was already dumping those fields for the default arm,
+ * and a field the allintra arm never assigns simply reads back as the
+ * calloc zero, which is itself the honest answer.)
  *
  * WHY IT EXISTS: `quant::rdoq_level_allintra` was a hand-transcription with
  * unit tests only (evidence tier 4). The allintra entry point IS exported, so
@@ -1607,11 +1613,6 @@ int32_t ref_md_config_out_slots(void) { return MD_O_COUNT; }
  * with enable_dlf_flag pinned to 0 like the rest of this TU.
  * ======================================================================== */
 
-enum {
-    MDA_O_RDOQ = 0, MDA_O_RATE_EST, MDA_O_CDF_MV, MDA_O_CDF_SE,
-    MDA_O_CDF_COEF, MDA_O_CDF_EN,
-    MDA_O_COUNT
-};
 
 void ref_sig_deriv_md_config_allintra(const int32_t* in, int64_t* out) {
     SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
@@ -1678,16 +1679,62 @@ void ref_sig_deriv_md_config_allintra(const int32_t* in, int64_t* out) {
 
     svt_aom_sig_deriv_mode_decision_config_allintra(scs, pcs);
 
-    out[MDA_O_RDOQ]     = pcs->rdoq_level;
-    out[MDA_O_RATE_EST] = pcs->rate_est_level;
-    out[MDA_O_CDF_MV]   = pcs->cdf_ctrl.update_mv;
-    out[MDA_O_CDF_SE]   = pcs->cdf_ctrl.update_se;
-    out[MDA_O_CDF_COEF] = pcs->cdf_ctrl.update_coef;
-    out[MDA_O_CDF_EN]   = pcs->cdf_ctrl.enabled;
+    out[MD_O_MFMV_BIT]     = ppcs->frm_hdr.use_ref_frame_mvs;
+    out[MD_O_RDOQ]         = pcs->rdoq_level;
+    out[MD_O_COEFF_SHAVE]  = pcs->coeff_shaving_level;
+    out[MD_O_RATE_EST]     = pcs->rate_est_level;
+    out[MD_O_CDF_MV]       = pcs->cdf_ctrl.update_mv;
+    out[MD_O_CDF_SE]       = pcs->cdf_ctrl.update_se;
+    out[MD_O_CDF_COEF]     = pcs->cdf_ctrl.update_coef;
+    out[MD_O_CDF_EN]       = pcs->cdf_ctrl.enabled;
+    out[MD_O_FILTER_INTRA] = pcs->pic_filter_intra_level;
+    out[MD_O_ACCURATE_PART_CTX] = ppcs->use_accurate_part_ctx;
+    out[MD_O_ALLOW_HP_MV]  = ppcs->frm_hdr.allow_high_precision_mv;
+    out[MD_O_WM_LEVEL]     = pcs->wm_level;
+    out[MD_O_ALLOW_WM]     = ppcs->frm_hdr.allow_warped_motion;
+    out[MD_O_MOTION_MODE_SWITCHABLE] = ppcs->frm_hdr.is_motion_mode_switchable;
+    out[MD_O_OBMC_LEVEL]   = ppcs->pic_obmc_level;
+    out[MD_O_APPROX_RATE]  = pcs->approx_inter_rate;
+    out[MD_O_SKIP_INTRA]   = pcs->skip_intra;
+    out[MD_O_INTRA_LEVEL]  = pcs->intra_level;
+    out[MD_O_DIST_ANG_INTRA] = pcs->dist_based_ang_intra_level;
+    out[MD_O_CAND_RED]     = pcs->cand_reduction_level;
+    out[MD_O_TXT]          = pcs->txt_level;
+    out[MD_O_TX_SHORTCUT]  = pcs->tx_shortcut_level;
+    out[MD_O_PD0_BIAS_WEIGHT] = pcs->pd0_cost_bias_weight;
+    out[MD_O_IFS_LEVEL]    = pcs->interpolation_search_level;
+    out[MD_O_INTERP_FILTER] = ppcs->frm_hdr.interpolation_filter;
+    out[MD_O_CHROMA]       = pcs->chroma_level;
+    out[MD_O_CFL]          = pcs->cfl_level;
+    out[MD_O_NN_COMB]      = pcs->new_nearest_near_comb_injection;
+    out[MD_O_UNI3X3]       = pcs->unipred3x3_injection;
+    out[MD_O_BIPRED3X3]    = pcs->bipred3x3_injection;
+    out[MD_O_INTER_COMP]   = pcs->inter_compound_mode;
+    out[MD_O_REF_PRUNE]    = pcs->dist_based_ref_pruning;
+    out[MD_O_SPATIAL_SSE]  = pcs->spatial_sse_full_loop_level;
+    out[MD_O_NSQ_GEOM]     = pcs->nsq_geom_level;
+    out[MD_O_NSQ_SEARCH]   = pcs->nsq_search_level;
+    out[MD_O_INTER_INTRA]  = pcs->inter_intra_level;
+    out[MD_O_TXS]          = pcs->txs_level;
+    out[MD_O_TX_MODE]      = ppcs->frm_hdr.tx_mode;
+    out[MD_O_NIC]          = pcs->nic_level;
+    out[MD_O_MD_SQ_MV]     = pcs->md_sq_mv_search_level;
+    out[MD_O_MD_NSQ_MV]    = pcs->md_nsq_mv_search_level;
+    out[MD_O_MD_PME]       = pcs->md_pme_level;
+    out[MD_O_ME_SUBPEL]    = pcs->me_subpel_level;
+    out[MD_O_PME_SUBPEL]   = pcs->pme_subpel_level;
+    out[MD_O_MDS0]         = pcs->mds0_level;
+    out[MD_O_DISALLOW_4X4] = pcs->pic_disallow_4x4;
+    out[MD_O_BYPASS_ENCDEC] = pcs->pic_bypass_encdec;
+    out[MD_O_PD0_LVL]      = pcs->pic_pd0_lvl;
+    out[MD_O_DEPTH_REMOVAL] = pcs->pic_depth_removal_level;
+    out[MD_O_DEPTH_REFINE] = pcs->pic_block_based_depth_refinement_level;
+    out[MD_O_LPD1_LVL]     = pcs->pic_lpd1_lvl;
+    out[MD_O_LAMBDA_WEIGHT] = pcs->lambda_weight;
 
     free(pcs->ec_ctx_array);
     free(r1); free(r0); free(w1); free(w0);
     free(pcs); free(ppcs); free(scs);
 }
 
-int32_t ref_md_config_allintra_out_slots(void) { return MDA_O_COUNT; }
+int32_t ref_md_config_allintra_out_slots(void) { return MD_O_COUNT; }
