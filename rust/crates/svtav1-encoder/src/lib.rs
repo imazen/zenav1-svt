@@ -71,6 +71,7 @@ pub mod port_pd0_detector;
 pub mod port_picstruct;
 pub mod port_picstruct_ra;
 pub mod port_ref_mgmt;
+pub mod port_sframe;
 pub mod port_noise_model;
 pub mod port_preanalysis;
 pub mod port_ransac;

@@ -1090,6 +1090,56 @@ in `WARP_REPRS` rather than quietly omitting the third.
 
 ---
 
+## 25. `prune_sframe_refs` reads `ref_order_hint[-1]` on every single-reference candidate
+
+**Status: AVOIDED (the out-of-bounds half) + REPRODUCED (the in-bounds half).**
+Reachable whenever S-frames are configured and `mfmv_enabled` is set.
+
+`pd_process.c:1003-1040`:
+
+```c
+MvReferenceFrame rf[2];
+av1_set_ref_frame(rf, ref_frame_arr[ref_idx]);
+if ((rf[0] < BWDREF_FRAME && ppcs->ref_order_hint[rf[0]] == sframe_poc) ||
+    (rf[1] < BWDREF_FRAME && ppcs->ref_order_hint[rf[1]] == sframe_poc)) {
+```
+
+Two independent defects in that one condition.
+
+**(a) `rf[1]` is `NONE_FRAME` = -1 for every SINGLE reference.**
+`av1_set_ref_frame` (`inter_prediction.h:513-521`) writes
+`rf[1] = NONE_FRAME` for any `ref_frame_type < TOTAL_REFS_PER_FRAME`, and
+`NONE_FRAME` is **-1** (`definitions.h:1379`). `MvReferenceFrame` is signed,
+so `-1 < BWDREF_FRAME` is TRUE and C evaluates
+`ppcs->ref_order_hint[-1]` — a read one `uint32_t` BEFORE a 7-element array
+(`pcs.h:788`). `ref_frame_arr` always contains single references (they are the
+first entries `set_all_ref_frame_type` writes), so this happens on essentially
+every call. The value read is whatever `PictureParentControlSet` holds at that
+offset, which makes the pruning decision **non-deterministic**: the same
+stream can prune a different candidate set on a different build. C's own
+author left `// assert(ref_frame_type > NONE_FRAME); AMIR` commented out two
+lines above the assignment.
+
+**(b) The index is `rf`, not `rf - 1`.** Every other reader of
+`ref_order_hint` uses `ref_frame - 1` — `set_ref_frame_sign_bias`
+(`pd_process.c:4894`) is the clearest, and the port's
+`port_picstruct::set_ref_frame_sign_bias` doc comment calls the two index
+spaces out explicitly. Here `rf[0]` is 1..=4 for a list-0 reference, so the
+read stays in bounds; it just returns the NEIGHBOURING reference's order hint.
+
+**What the port does** (`port_sframe::prune_sframe_refs`):
+`#![forbid(unsafe_code)]` cannot reproduce (a), and there is nothing
+deterministic to reproduce — so `rf < 0` is treated as no-match, which is the
+only defined behaviour available. (b) IS reproduced literally, because it is
+in bounds and deterministic and the oracle does it.
+
+**Consequence for parity.** A byte-identity gate over a stream with S-frames
+and MFMV enabled may diverge here, and the divergence will not be stable on
+the C side either. If that ever shows up, it is this entry, not a port bug.
+Do not "fix" (b) without re-measuring.
+
+---
+
 ## Adding an entry
 
 State the C `file:line`, quote the code, say why it looks wrong, and — this is

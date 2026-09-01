@@ -379,6 +379,25 @@ pub struct PicParams {
     /// C `pcs->ref_mgmt` — the long-term-reference events the application
     /// queued on this picture (see [`crate::port_ref_mgmt`]).
     pub ref_mgmt: crate::port_ref_mgmt::RefMgmtEvents,
+    /// C `pcs->frm_hdr.frame_type == S_FRAME` (see [`crate::port_sframe`]).
+    /// Tracked as a flag rather than a full `frame_type` enum because
+    /// `is_key_frame` and `slice_type` already carry the other distinctions
+    /// this module needs.
+    pub is_switch_frame: bool,
+    /// C `pcs->frm_hdr.error_resilient_mode` — a written header bit, set by
+    /// [`crate::port_sframe::set_sframe_rps`].
+    pub error_resilient_mode: bool,
+    /// C `pcs->picture_qp`.
+    pub picture_qp: u8,
+    /// C `pcs->qp_on_the_fly`.
+    pub qp_on_the_fly: bool,
+    /// C `pcs->sframe_qp_offset`.
+    pub sframe_qp_offset: i8,
+    /// C `pcs->sframe_ref_pruned`.
+    pub sframe_ref_pruned: bool,
+    /// C `pcs->dpb_order_hint[REF_FRAMES]` — the per-slot order hints an
+    /// error-resilient frame writes in its header.
+    pub dpb_order_hint: [u32; REF_FRAMES],
 }
 
 impl Default for PicParams {
@@ -420,6 +439,13 @@ impl Default for PicParams {
             aligned_width: 0,
             aligned_height: 0,
             ref_mgmt: crate::port_ref_mgmt::RefMgmtEvents::default(),
+            is_switch_frame: false,
+            error_resilient_mode: false,
+            picture_qp: 0,
+            qp_on_the_fly: false,
+            sframe_qp_offset: 0,
+            sframe_ref_pruned: false,
+            dpb_order_hint: [0; REF_FRAMES],
         }
     }
 }
@@ -482,6 +508,25 @@ pub struct PicDecisionCtx {
     pub mini_gop_end_index: [u32; 8],
     /// C `ctx->mg_size`.
     pub mg_size: u32,
+    /// C `ctx->sframe_due` — an S-frame is owed at the next base-layer frame
+    /// (`SFRAME_NEAREST_BASE` in low delay only).
+    pub sframe_due: bool,
+    /// C `ctx->next_arf_is_s` — a decode-order insert deferred the switch to
+    /// the NEXT base-layer frame.
+    pub next_arf_is_s: bool,
+    /// C `ctx->sframe_hier_lvls` — the pyramid depth the next mini-GOP will
+    /// use, lowered so a scheduled S-frame lands on a base-layer picture.
+    ///
+    /// Trap (`pd_process.c:249` vs `:5407-5409`): the constructor's value is
+    /// DEAD — the kernel overwrites it at `picture_number == 0`.
+    pub sframe_hier_lvls: i32,
+    /// C `ctx->sframe_last_arf`.
+    pub sframe_last_arf: u64,
+    /// C `ctx->key_poc` — the POC of the last key frame.
+    pub key_poc: u64,
+    /// C `ctx->ref_order_hint[REF_FRAMES]` — the shadow DPB's per-slot order
+    /// hints, published into `PicParams::dpb_order_hint`.
+    pub ref_order_hint: [u32; REF_FRAMES],
     /// C `ctx->pic_id_per_dpb_slot` — the application `pic_id` pinned into
     /// each DPB slot, or `None` for a slot the short-term allocator owns.
     /// C stores `0` for "no id"; [`core::num::NonZeroU32`] makes that
@@ -1155,6 +1200,43 @@ pub fn generate_rps_info(
     pic_idx: u32,
     mg_idx: usize,
 ) -> Result<(), RpsError> {
+    generate_rps_info_sframe(pic, seq, ctx, pic_idx, mg_idx, None)
+}
+
+/// The S-frame hooks `av1_generate_rps_info` calls, bundled so they can be
+/// threaded through as one optional argument.
+///
+/// C reaches them through `enc_ctx->sf_cfg` and `scs->static_config`, both of
+/// which are always present; `None` here is the configuration where
+/// `sframe_dist == 0` and no position list was given, which is what makes
+/// every hook a no-op (`pd_process.c:2272`, `:2264`, `:3487`).
+pub struct SFrameHooks<'cfg, 'ctx> {
+    /// The application's S-frame configuration.
+    pub cfg: &'cfg crate::port_sframe::SFrameConfig<'cfg>,
+    /// C `enc_ctx` — [`crate::port_sframe::set_sframe_rps`] resets
+    /// `elapsed_non_cra_count` on it.
+    pub enc_ctx: &'ctx mut EncCtxPicParams,
+}
+
+/// [`generate_rps_info`] with C's three S-frame hooks wired in.
+///
+/// They are interleaved INSIDE the function rather than wrapped around it,
+/// because the order is load-bearing: `set_sframe_rps` forces
+/// `refresh_frame_mask` to `0xFF` and must run BEFORE
+/// [`crate::port_ref_mgmt::apply_events`], whose phase 3 then masks the
+/// long-term anchors back out of it.
+///
+/// # Errors
+///
+/// As [`generate_rps_info`].
+pub fn generate_rps_info_sframe(
+    pic: &mut PicParams,
+    seq: &SeqPicParams,
+    ctx: &mut PicDecisionCtx,
+    pic_idx: u32,
+    mg_idx: usize,
+    mut sframe: Option<SFrameHooks<'_, '_>>,
+) -> Result<(), RpsError> {
     let hier = pic.hierarchical_levels;
     let temporal_layer = pic.temporal_layer_index;
 
@@ -1176,12 +1258,25 @@ pub fn generate_rps_info(
         if pic.is_key_frame {
             set_key_frame_rps(pic, ctx);
             set_ref_list_counts(pic, seq, ctx);
+            // C `pd_process.c:2264-2266`: only the two flexible-insert modes
+            // reshape the first mini-GOP after a key frame.
+            if let Some(h) = sframe.as_ref()
+                && h.cfg.mode.is_flexible_insert()
+            {
+                crate::port_sframe::decide_sframe_mg(pic, h.cfg, ctx);
+            }
             // C's key-frame early return still runs the ref-management
             // dispatcher (`pd_process.c:1265-1268`): the key frame refreshes
             // all eight slots, and if the application STOREd it, that must be
             // recorded now.
             crate::port_ref_mgmt::apply_events(pic, seq, ctx);
             return Ok(());
+        }
+    } else if let Some(h) = sframe.as_ref() {
+        // C `pd_process.c:2271-2275`: a non-I slice is a candidate for the
+        // switch, but only when the application asked for S-frames at all.
+        if h.cfg.dist > 0 || h.cfg.positions.positions.is_some() {
+            crate::port_sframe::set_sframe_type(pic, h.cfg, ctx);
         }
     }
 
@@ -1200,11 +1295,17 @@ pub fn generate_rps_info(
         crate::port_picstruct_ra::rps_random_access_hier(pic, seq, ctx, pic_idx, mg_idx)?;
     }
 
-    // C's tail (`pd_process.c:3487-3502`): the S-frame RPS (out of envelope,
-    // see the module doc), then the ref-management events, then the overlay
-    // reset. Phase 3 of the dispatcher runs unconditionally, so this is NOT
-    // skippable even when the application queued nothing — it is a no-op only
-    // while no slot is held.
+    // C's tail (`pd_process.c:3487-3502`): the S-frame RPS, then the
+    // ref-management events, then the overlay reset. The order matters —
+    // `set_sframe_rps` forces the refresh mask to 0xFF and phase 3 of the
+    // dispatcher masks the held anchors back out of it. Phase 3 runs
+    // unconditionally, so the dispatcher is NOT skippable even when the
+    // application queued nothing; it is a no-op only while no slot is held.
+    if pic.is_switch_frame
+        && let Some(h) = sframe.as_mut()
+    {
+        crate::port_sframe::set_sframe_rps(pic, ctx, h.enc_ctx);
+    }
     crate::port_ref_mgmt::apply_events(pic, seq, ctx);
     if pic.is_overlay {
         pic.rps.refresh_frame_mask = 0;
