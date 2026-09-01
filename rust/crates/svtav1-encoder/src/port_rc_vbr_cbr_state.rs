@@ -381,6 +381,16 @@ pub struct SeqRc {
     pub seq_profile: u8,
     /// `enc_ctx->recode_tolerance`, asserted `<= 100` by C.
     pub recode_tolerance: i32,
+    /// `scs->input_resolution` (`ResolutionRange`), the key-frame boost's
+    /// resolution bucket.
+    pub input_resolution: i32,
+    /// `scs->static_config.qp_scale_compress_strength_unused` — the MAINLINE
+    /// spelling. The `SVT_HDR_MODE` fork replaces this `uint8_t` with a
+    /// `double qp_scale_compress_strength` and a different formula; see
+    /// `port_rc_vbr_cbr_qpick::qp_scale_weight_mainline`.
+    pub qp_scale_compress_strength: u8,
+    /// `scs->passes`.
+    pub passes: i32,
 }
 
 impl Default for SeqRc {
@@ -402,6 +412,9 @@ impl Default for SeqRc {
             sb_total_count: 0,
             seq_profile: 0,
             recode_tolerance: 25,
+            input_resolution: 0,
+            qp_scale_compress_strength: 0,
+            passes: 1,
         }
     }
 }

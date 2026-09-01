@@ -295,3 +295,297 @@ void ref_rc_resize_reset_rc(RefRcVbrState* st, int32_t resize_width, int32_t res
     st->this_frame_target = h.ppcs->this_frame_target;
     rc_harness_free(&h);
 }
+
+/* =========================================================================
+ * `svt_av1_rc_calc_qindex_rate_control` (rc_vbr_cbr.c:1281) — EXPORTED.
+ *
+ * This is the tier-1 route to the whole qindex DECISION chain, none of which
+ * has a symbol of its own: rc_pick_q_and_bounds{,_no_stats_cbr},
+ * calc_active_best_quality_no_stats_cbr, get_active_best_quality,
+ * adjust_active_best_and_worst_quality_org, av1_frame_type_qdelta_org, get_q,
+ * find_min_ref_base_q_idx and cyclic_refresh_init are ALL inlined into it.
+ *
+ * It needs a populated DPB, so this harness builds the full
+ * PCS -> EbObjectWrapper -> EbReferenceObject chain per reference slot, plus
+ * the ME-distortion arrays the VBR reference-floor arm sums and the
+ * `pa_me_data->me_results[i]->me_mv_array[0]` chain that
+ * `svt_aom_cyclic_refresh_setup` dereferences when cyclic refresh is on.
+ * Every one of those is a CONTRACT THE ENCODER HANDS C (docs/WORKING-ON-THIS.md
+ * §5 trap #4): a null there is a segfault, not a wrong number.
+ * ====================================================================== */
+
+/* `svt_aom_cyclic_refresh_setup` is declared in rc_process.h (already
+   included above); rc_aq.c has no header of its own. `EbReferenceObject` and
+   `EbObjectWrapper` are the DPB chain `get_ref_obj` walks. */
+#include "reference_object.h"
+#include "sys_resource_manager.h"
+
+#define REF_RC_MAX_REFS 4
+#define REF_RC_MAX_B64 64
+
+typedef struct RefRcQpickRef {
+    int32_t  present;
+    int32_t  tmp_layer_idx;
+    int32_t  slice_type; /* ref_obj->slice_type */
+    int32_t  pcs_slice_type; /* pcs->ref_slice_type[l][i] */
+    uint64_t ref_poc;
+    int32_t  base_q_idx; /* pcs->ref_base_q_idx[l][i] */
+    double   pcs_r0; /* pcs->ref_pic_r0[l][i] */
+    double   obj_r0; /* ref_obj->r0 */
+} RefRcQpickRef;
+
+typedef struct RefRcQpickState {
+    RefRcVbrState base; /* every field rc_harness_build already maps */
+
+    /* extra RATE_CONTROL */
+    int32_t active_worst_quality;
+    int32_t active_best_quality[MAX_ARF_LAYERS + 1];
+    int32_t last_boosted_qindex;
+    int32_t kf_boost;
+    int32_t gfu_boost;
+    int32_t arf_q; /* in AND out */
+    int32_t frames_to_key;
+    int32_t this_key_frame_forced;
+    int32_t avg_frame_low_motion;
+
+    /* extra PPCS / PCS */
+    uint64_t picture_number;
+    uint64_t frame_offset;
+    int32_t  slice_type;
+    int32_t  layer_depth;
+    int32_t  is_ref;
+    int32_t  transition_present;
+    double   r0;
+
+    /* SequenceControlSet */
+    int32_t intra_period_length;
+    int32_t gop_constraint_rc;
+    int32_t is_short_clip;
+    int32_t super_block_size;
+    int32_t sb_total_count;
+    int32_t passes;
+    int32_t qp_scale_compress_strength;
+    int32_t input_resolution;
+    int32_t min_qp_allowed;
+    int32_t max_qp_allowed;
+    /* `scs->static_config.hierarchical_levels`, which `cyclic_refresh_init`
+       reads — a DIFFERENT field from `ppcs->hierarchical_levels` that
+       `adjust_q_cbr` reads. Leaving it 0 silently shifted the refresh
+       threshold by 16x in a first draft. */
+    int32_t seq_hierarchical_levels;
+
+    /* TWO_PASS */
+    int32_t extend_minq;
+    int32_t extend_maxq;
+    int32_t extend_minq_fast;
+    int32_t kf_zeromotion_pct;
+
+    /* DPB */
+    int32_t       l0_count_try;
+    int32_t       l1_count_try;
+    RefRcQpickRef l0[REF_RC_MAX_REFS];
+    RefRcQpickRef l1[REF_RC_MAX_REFS];
+
+    /* ME distortion (b64_total_count entries used) */
+    int32_t  b64_total_count;
+    uint32_t me_cur_64x64[REF_RC_MAX_B64];
+    uint32_t me_cur_8x8[REF_RC_MAX_B64];
+    uint32_t me_ref_l0_64x64[REF_RC_MAX_B64];
+    int32_t  me_mv_x[REF_RC_MAX_B64];
+    int32_t  me_mv_y[REF_RC_MAX_B64];
+    uint64_t norm_me_dist;
+
+    /* cyclic refresh, in and out */
+    uint32_t cr_sb_end_ctx; /* enc_ctx->cr_sb_end */
+    int32_t  cr_apply;
+    int32_t  cr_percent_refresh;
+    uint32_t cr_sb_start;
+    uint32_t cr_sb_end;
+    int32_t  cr_max_qdelta_perc;
+    int32_t  cr_rate_boost_fac;
+    double   cr_rate_ratio_qdelta;
+    double   cr_rate_ratio_qdelta_seg2;
+    int32_t  cr_qindex_delta[3];
+    int32_t  cr_actual_num_seg1_sbs;
+    int32_t  cr_actual_num_seg2_sbs;
+
+    /* outputs */
+    int32_t out_base_q_idx;
+    int32_t out_top_index;
+    int32_t out_bottom_index;
+} RefRcQpickState;
+
+typedef struct QpickHarness {
+    RcHarness            rc;
+    PictureControlSet*   pcs;
+    EbObjectWrapper*     wrappers[2][REF_RC_MAX_REFS];
+    EbReferenceObject*   objs[2][REF_RC_MAX_REFS];
+    MotionEstimationData* me_data;
+    MeSbResults**        me_results;
+    MeSbResults*         me_sb;
+    Mv*                  me_mvs;
+    uint32_t*            me_64x64;
+    uint32_t*            me_8x8;
+    uint32_t*            ref_me_64x64;
+} QpickHarness;
+
+int32_t ref_rc_calc_qindex_rate_control(RefRcQpickState* st) {
+    QpickHarness h;
+    memset(&h, 0, sizeof(h));
+    rc_harness_build(&h.rc, &st->base);
+
+    PictureParentControlSet* ppcs    = h.rc.ppcs;
+    SequenceControlSet*      scs     = h.rc.scs;
+    EncodeContext*           enc_ctx = h.rc.enc_ctx;
+    RATE_CONTROL*            rc      = &enc_ctx->rc;
+
+    rc->active_worst_quality = st->active_worst_quality;
+    for (int i = 0; i <= MAX_ARF_LAYERS; ++i) {
+        rc->active_best_quality[i] = st->active_best_quality[i];
+    }
+    rc->last_boosted_qindex   = st->last_boosted_qindex;
+    rc->kf_boost              = st->kf_boost;
+    rc->gfu_boost             = st->gfu_boost;
+    rc->arf_q                 = st->arf_q;
+    rc->frames_to_key         = st->frames_to_key;
+    rc->this_key_frame_forced = st->this_key_frame_forced;
+    rc->avg_frame_low_motion  = st->avg_frame_low_motion;
+
+    ppcs->picture_number     = st->picture_number;
+    ppcs->frame_offset       = st->frame_offset;
+    ppcs->slice_type         = (SliceType)st->slice_type;
+    ppcs->layer_depth        = st->layer_depth;
+    ppcs->is_ref             = (bool)st->is_ref;
+    ppcs->transition_present = (int8_t)st->transition_present;
+    ppcs->r0                 = st->r0;
+    ppcs->ref_list0_count_try = (uint8_t)st->l0_count_try;
+    ppcs->ref_list1_count_try = (uint8_t)st->l1_count_try;
+    ppcs->b64_total_count     = (uint16_t)st->b64_total_count;
+    ppcs->norm_me_dist        = st->norm_me_dist;
+
+    scs->static_config.intra_period_length = st->intra_period_length;
+    scs->static_config.gop_constraint_rc   = (bool)st->gop_constraint_rc;
+    scs->static_config.min_qp_allowed      = (uint32_t)st->min_qp_allowed;
+    scs->static_config.max_qp_allowed      = (uint32_t)st->max_qp_allowed;
+    scs->is_short_clip                     = (uint8_t)st->is_short_clip;
+    scs->super_block_size                  = (uint32_t)st->super_block_size;
+    scs->sb_total_count                    = (uint16_t)st->sb_total_count;
+    scs->passes                            = st->passes;
+    scs->static_config.hierarchical_levels = (uint32_t)st->seq_hierarchical_levels;
+    scs->input_resolution                  = (ResolutionRange)st->input_resolution;
+#if !SVT_HDR_MODE
+    scs->static_config.qp_scale_compress_strength_unused = (uint8_t)st->qp_scale_compress_strength;
+#endif
+    scs->twopass.extend_minq       = st->extend_minq;
+    scs->twopass.extend_maxq       = st->extend_maxq;
+    scs->twopass.extend_minq_fast  = st->extend_minq_fast;
+    scs->twopass.kf_zeromotion_pct = st->kf_zeromotion_pct;
+
+    enc_ctx->cr_sb_end = st->cr_sb_end_ctx;
+
+    /* The DPB: PCS -> wrapper -> reference object, per slot. */
+    h.pcs = (PictureControlSet*)calloc(1, sizeof(*h.pcs));
+    h.pcs->ppcs                 = ppcs;
+    h.pcs->picture_number       = st->picture_number;
+    h.pcs->slice_type           = (SliceType)st->slice_type;
+    h.pcs->temporal_layer_index = (uint8_t)st->base.temporal_layer_index;
+    h.pcs->b64_total_count      = (uint16_t)st->b64_total_count;
+    ppcs->child_pcs             = h.pcs;
+
+    for (int l = 0; l < 2; ++l) {
+        const RefRcQpickRef* src = (l == 0) ? st->l0 : st->l1;
+        for (int i = 0; i < REF_RC_MAX_REFS; ++i) {
+            if (!src[i].present) {
+                continue;
+            }
+            h.objs[l][i]     = (EbReferenceObject*)calloc(1, sizeof(EbReferenceObject));
+            h.wrappers[l][i] = (EbObjectWrapper*)calloc(1, sizeof(EbObjectWrapper));
+            h.objs[l][i]->tmp_layer_idx = (uint8_t)src[i].tmp_layer_idx;
+            h.objs[l][i]->slice_type    = (SliceType)src[i].slice_type;
+            h.objs[l][i]->ref_poc       = src[i].ref_poc;
+            h.objs[l][i]->r0            = src[i].obj_r0;
+            h.wrappers[l][i]->object_ptr = h.objs[l][i];
+            h.pcs->ref_pic_ptr_array[l][i] = h.wrappers[l][i];
+            h.pcs->ref_base_q_idx[l][i]    = (uint8_t)src[i].base_q_idx;
+            h.pcs->ref_slice_type[l][i]    = (SliceType)src[i].pcs_slice_type;
+            h.pcs->ref_pic_r0[l][i]        = src[i].pcs_r0;
+        }
+    }
+
+    /* ME distortion arrays. `sb_me_64x64_dist` hangs off the L0[0] reference
+       object; `me_64x64_distortion` / `me_8x8_distortion` off the PPCS. */
+    h.me_64x64     = (uint32_t*)calloc(REF_RC_MAX_B64, sizeof(uint32_t));
+    h.me_8x8       = (uint32_t*)calloc(REF_RC_MAX_B64, sizeof(uint32_t));
+    h.ref_me_64x64 = (uint32_t*)calloc(REF_RC_MAX_B64, sizeof(uint32_t));
+    for (int i = 0; i < REF_RC_MAX_B64; ++i) {
+        h.me_64x64[i]     = st->me_cur_64x64[i];
+        h.me_8x8[i]       = st->me_cur_8x8[i];
+        h.ref_me_64x64[i] = st->me_ref_l0_64x64[i];
+    }
+    ppcs->me_64x64_distortion = h.me_64x64;
+    ppcs->me_8x8_distortion   = h.me_8x8;
+    if (h.objs[0][0]) {
+        h.objs[0][0]->sb_me_64x64_dist = h.ref_me_64x64;
+    }
+
+    /* `svt_aom_cyclic_refresh_setup` walks
+       `ppcs->pa_me_data->me_results[i]->me_mv_array[0]`. */
+    h.me_data    = (MotionEstimationData*)calloc(1, sizeof(MotionEstimationData));
+    h.me_results = (MeSbResults**)calloc(REF_RC_MAX_B64, sizeof(MeSbResults*));
+    h.me_sb      = (MeSbResults*)calloc(REF_RC_MAX_B64, sizeof(MeSbResults));
+    /* `me_mv_array` is a `Mv*`, NOT an inline array — a calloc'd MeSbResults
+       leaves it NULL and `is_cr_motion_static` dereferences it. One Mv per
+       b64 is all that function reads (index 0). */
+    h.me_mvs = (Mv*)calloc(REF_RC_MAX_B64, sizeof(Mv));
+    for (int i = 0; i < REF_RC_MAX_B64; ++i) {
+        h.me_mvs[i].x               = (int16_t)st->me_mv_x[i];
+        h.me_mvs[i].y               = (int16_t)st->me_mv_y[i];
+        h.me_sb[i].me_mv_array      = &h.me_mvs[i];
+        h.me_results[i]             = &h.me_sb[i];
+    }
+    h.me_data->me_results = h.me_results;
+    ppcs->pa_me_data      = h.me_data;
+
+    svt_av1_rc_calc_qindex_rate_control(h.pcs, scs);
+
+    /* Outputs. */
+    rc_harness_store(&h.rc, &st->base);
+    st->out_base_q_idx   = ppcs->frm_hdr.quantization_params.base_q_idx;
+    st->out_top_index    = ppcs->top_index;
+    st->out_bottom_index = ppcs->bottom_index;
+    st->arf_q            = rc->arf_q;
+    st->active_worst_quality = rc->active_worst_quality;
+    st->cr_sb_end_ctx    = enc_ctx->cr_sb_end;
+
+    const CyclicRefresh* cr        = &ppcs->cyclic_refresh;
+    st->cr_apply                   = cr->apply_cyclic_refresh;
+    st->cr_percent_refresh         = cr->percent_refresh;
+    st->cr_sb_start                = cr->sb_start;
+    st->cr_sb_end                  = cr->sb_end;
+    st->cr_max_qdelta_perc         = cr->max_qdelta_perc;
+    st->cr_rate_boost_fac          = cr->rate_boost_fac;
+    st->cr_rate_ratio_qdelta       = cr->rate_ratio_qdelta;
+    st->cr_rate_ratio_qdelta_seg2  = cr->rate_ratio_qdelta_seg2;
+    st->cr_qindex_delta[0]         = cr->qindex_delta[0];
+    st->cr_qindex_delta[1]         = cr->qindex_delta[1];
+    st->cr_qindex_delta[2]         = cr->qindex_delta[2];
+    st->cr_actual_num_seg1_sbs     = cr->actual_num_seg1_sbs;
+    st->cr_actual_num_seg2_sbs     = cr->actual_num_seg2_sbs;
+
+    free(h.me_mvs);
+    free(h.me_sb);
+    free(h.me_results);
+    free(h.me_data);
+    free(h.ref_me_64x64);
+    free(h.me_8x8);
+    free(h.me_64x64);
+    for (int l = 0; l < 2; ++l) {
+        for (int i = 0; i < REF_RC_MAX_REFS; ++i) {
+            free(h.wrappers[l][i]);
+            free(h.objs[l][i]);
+        }
+    }
+    free(h.pcs);
+    rc_harness_free(&h.rc);
+    return st->out_base_q_idx;
+}
