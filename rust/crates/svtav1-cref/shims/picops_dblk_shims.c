@@ -253,17 +253,60 @@ int ref_intra_is_smooth_inter(int32_t mode, int32_t uv_mode, int32_t plane, int3
     return svt_aom_is_smooth(&mi, plane);
 }
 
-void ref_dr_predictor(uint8_t* dst, int32_t stride, int32_t tx_size, const uint8_t* above, const uint8_t* left,
-                      int32_t upsample_above, int32_t upsample_left, int32_t angle) {
+/* Both entry points below stage their pixel buffers in ALIGNED locals and
+ * copy the result out. WORKING-ON-THIS §5 trap 4: the shim must hand C the
+ * contract the ENCODER hands it, and these reach svt_aom_eb_pred[][] /
+ * svt_aom_dc_pred[][][], whose x86 members are AVX2/AVX-512 kernels that
+ * store with vector instructions. A 1-byte-aligned Rust Vec would be a
+ * different contract from the encoder's own 64-aligned picture buffers, and
+ * the difference is invisible on aarch64. `above_data`/`left_data` mirror
+ * C's own layout (`above_row = above_data + 16`) so the [-1] corner sample
+ * every zone-2 predictor reads is valid. */
+#define PICOPS_EDGE_ORIGIN 16
+#define PICOPS_EDGE_LEN 160
+#define PICOPS_MAX_DIM 64
+
+void ref_dr_predictor(uint8_t* dst, int32_t stride, int32_t tx_size, const uint8_t* above_data,
+                      const uint8_t* left_data, int32_t upsample_above, int32_t upsample_left, int32_t angle,
+                      int32_t bw, int32_t bh) {
     picops_ensure_init();
-    svt_aom_dr_predictor(
-        dst, (ptrdiff_t)stride, (TxSize)tx_size, above, left, upsample_above, upsample_left, angle);
+    DECLARE_ALIGNED(64, uint8_t, a[PICOPS_EDGE_LEN]);
+    DECLARE_ALIGNED(64, uint8_t, l[PICOPS_EDGE_LEN]);
+    DECLARE_ALIGNED(64, uint8_t, d[PICOPS_MAX_DIM * PICOPS_MAX_DIM]);
+    memcpy(a, above_data, PICOPS_EDGE_LEN);
+    memcpy(l, left_data, PICOPS_EDGE_LEN);
+    memset(d, 0, sizeof(d));
+    svt_aom_dr_predictor(d,
+                         (ptrdiff_t)PICOPS_MAX_DIM,
+                         (TxSize)tx_size,
+                         a + PICOPS_EDGE_ORIGIN,
+                         l + PICOPS_EDGE_ORIGIN,
+                         upsample_above,
+                         upsample_left,
+                         angle);
+    for (int32_t r = 0; r < bh; ++r) memcpy(dst + (size_t)r * stride, d + (size_t)r * PICOPS_MAX_DIM, (size_t)bw);
 }
 
 int32_t ref_intra_prediction_open_loop_mb(int32_t p_angle, uint8_t ois_intra_mode, uint32_t src_origin_x,
-                                          uint32_t src_origin_y, int32_t tx_size, uint8_t* above_row, uint8_t* left_col,
-                                          uint8_t* dst, uint32_t dst_stride) {
+                                          uint32_t src_origin_y, int32_t tx_size, const uint8_t* above_data,
+                                          const uint8_t* left_data, uint8_t* dst, int32_t stride, int32_t bw,
+                                          int32_t bh) {
     picops_ensure_init();
-    return (int32_t)svt_aom_intra_prediction_open_loop_mb(
-        p_angle, ois_intra_mode, src_origin_x, src_origin_y, (TxSize)tx_size, above_row, left_col, dst, dst_stride);
+    DECLARE_ALIGNED(64, uint8_t, a[PICOPS_EDGE_LEN]);
+    DECLARE_ALIGNED(64, uint8_t, l[PICOPS_EDGE_LEN]);
+    DECLARE_ALIGNED(64, uint8_t, d[PICOPS_MAX_DIM * PICOPS_MAX_DIM]);
+    memcpy(a, above_data, PICOPS_EDGE_LEN);
+    memcpy(l, left_data, PICOPS_EDGE_LEN);
+    memset(d, 0, sizeof(d));
+    EbErrorType e = svt_aom_intra_prediction_open_loop_mb(p_angle,
+                                                          ois_intra_mode,
+                                                          src_origin_x,
+                                                          src_origin_y,
+                                                          (TxSize)tx_size,
+                                                          a + PICOPS_EDGE_ORIGIN,
+                                                          l + PICOPS_EDGE_ORIGIN,
+                                                          d,
+                                                          PICOPS_MAX_DIM);
+    for (int32_t r = 0; r < bh; ++r) memcpy(dst + (size_t)r * stride, d + (size_t)r * PICOPS_MAX_DIM, (size_t)bw);
+    return (int32_t)e;
 }

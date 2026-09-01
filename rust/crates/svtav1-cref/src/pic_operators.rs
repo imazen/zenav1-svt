@@ -133,15 +133,18 @@ unsafe extern "C" {
     );
     fn ref_intra_is_smooth(mode: i32, uv_mode: i32, plane: i32) -> i32;
     fn ref_intra_is_smooth_inter(mode: i32, uv_mode: i32, plane: i32, ref_frame_0: i32) -> i32;
+    #[allow(clippy::too_many_arguments)]
     fn ref_dr_predictor(
         dst: *mut u8,
         stride: i32,
         tx_size: i32,
-        above: *const u8,
-        left: *const u8,
+        above_data: *const u8,
+        left_data: *const u8,
         upsample_above: i32,
         upsample_left: i32,
         angle: i32,
+        bw: i32,
+        bh: i32,
     );
     #[allow(clippy::too_many_arguments)]
     fn ref_intra_prediction_open_loop_mb(
@@ -150,10 +153,12 @@ unsafe extern "C" {
         src_origin_x: u32,
         src_origin_y: u32,
         tx_size: i32,
-        above_row: *mut u8,
-        left_col: *mut u8,
+        above_data: *const u8,
+        left_data: *const u8,
         dst: *mut u8,
-        dst_stride: u32,
+        stride: i32,
+        bw: i32,
+        bh: i32,
     ) -> i32;
 }
 
@@ -530,36 +535,55 @@ pub fn intra_is_smooth_with_ref(mode: i32, uv_mode: i32, plane: i32, ref_frame_0
     unsafe { ref_intra_is_smooth_inter(mode, uv_mode, plane, ref_frame_0) != 0 }
 }
 
+/// Length of the edged above/left buffers the two entry points below take,
+/// matching C's own `above_data[…]` layout. The block origin is at
+/// [`EDGE_ORIGIN`], so index `EDGE_ORIGIN - 1` is the `above_row[-1]`
+/// corner sample every zone-2 predictor reads.
+pub const EDGE_BUF_LEN: usize = 160;
+/// Index of the block origin inside an [`EDGE_BUF_LEN`] buffer (C `+ 16`).
+pub const EDGE_ORIGIN: usize = 16;
+
 /// The reference `svt_aom_dr_predictor` — the DISPATCHED path (`angle == 90`
 /// and `angle == 180` go through `svt_aom_eb_pred[][]`).
+///
+/// `above_data` / `left_data` are full [`EDGE_BUF_LEN`] buffers; the shim
+/// re-stages them into 64-byte-aligned locals before calling C, so the SIMD
+/// kernels get the alignment the encoder's own buffers give them.
 #[allow(clippy::too_many_arguments)]
 pub fn dr_predictor(
     dst: &mut [u8],
     stride: usize,
     tx_size: i32,
-    above: &[u8],
-    left: &[u8],
+    above_data: &[u8; EDGE_BUF_LEN],
+    left_data: &[u8; EDGE_BUF_LEN],
     upsample_above: i32,
     upsample_left: i32,
     angle: i32,
+    bw: usize,
+    bh: usize,
 ) {
+    assert!(dst.len() >= (bh - 1) * stride + bw);
+    assert!(bw <= 64 && bh <= 64);
     unsafe {
         ref_dr_predictor(
             dst.as_mut_ptr(),
             stride as i32,
             tx_size,
-            above.as_ptr(),
-            left.as_ptr(),
+            above_data.as_ptr(),
+            left_data.as_ptr(),
             upsample_above,
             upsample_left,
             angle,
+            bw as i32,
+            bh as i32,
         );
     }
 }
 
-/// The reference `svt_aom_intra_prediction_open_loop_mb`. `above_row` and
-/// `left_col` must already point one past their `[-1]` corner sample, the
-/// same contract the C caller (`open_loop_intra_search`) uses.
+/// The reference `svt_aom_intra_prediction_open_loop_mb`.
+///
+/// `src_origin_x`/`src_origin_y` are only tested for `> 0` by C (they select
+/// the DC variant), so any positive value stands for "neighbours available".
 #[allow(clippy::too_many_arguments)]
 pub fn intra_prediction_open_loop_mb(
     p_angle: i32,
@@ -567,15 +591,15 @@ pub fn intra_prediction_open_loop_mb(
     src_origin_x: u32,
     src_origin_y: u32,
     tx_size: i32,
-    above_row: &mut [u8],
-    above_origin: usize,
-    left_col: &mut [u8],
-    left_origin: usize,
+    above_data: &[u8; EDGE_BUF_LEN],
+    left_data: &[u8; EDGE_BUF_LEN],
     dst: &mut [u8],
-    dst_stride: usize,
+    stride: usize,
+    bw: usize,
+    bh: usize,
 ) {
-    let above = above_row[above_origin..].as_mut_ptr();
-    let left = left_col[left_origin..].as_mut_ptr();
+    assert!(dst.len() >= (bh - 1) * stride + bw);
+    assert!(bw <= 64 && bh <= 64);
     unsafe {
         ref_intra_prediction_open_loop_mb(
             p_angle,
@@ -583,10 +607,12 @@ pub fn intra_prediction_open_loop_mb(
             src_origin_x,
             src_origin_y,
             tx_size,
-            above,
-            left,
+            above_data.as_ptr(),
+            left_data.as_ptr(),
             dst.as_mut_ptr(),
-            dst_stride as u32,
+            stride as i32,
+            bw as i32,
+            bh as i32,
         );
     }
 }

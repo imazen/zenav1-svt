@@ -29,6 +29,7 @@ pub mod inter_me;
 pub mod inter_mv_code;
 pub mod inter_mvp;
 pub mod intra_edge;
+pub mod intra_open_loop;
 pub mod intrabc;
 pub mod intrabc_hash;
 pub mod intrabc_mvp;
