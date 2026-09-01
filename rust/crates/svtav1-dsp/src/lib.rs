@@ -44,6 +44,7 @@ pub mod port_masked_compound;
 pub mod port_model_rd;
 pub mod port_obmc_build;
 pub mod port_obmc_data;
+pub mod port_obmc_nb_pred;
 pub mod port_obmc_pred;
 pub mod port_obmc_single_pred;
 pub mod port_pack;
