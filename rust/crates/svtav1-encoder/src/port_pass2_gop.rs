@@ -693,8 +693,9 @@ pub fn get_kf_group_bits(
 /// so this function agrees with aarch64 and cannot agree with x86-64 — because
 /// C has no single answer to agree with. Reproducing either realization would
 /// make the PORT host-dependent, which is exactly what this project's
-/// cross-ISA gates exist to prevent. Full write-up, including the CI cell it
-/// currently reddens, in `docs/SUSPECTED-C-BUGS.md` #25.
+/// cross-ISA gates exist to prevent. Full write-up, with the per-ISA
+/// instruction table and the second-ISA measurement, in
+/// `docs/SUSPECTED-C-BUGS.md` **#17**.
 ///
 /// The encoder's own configuration cannot reach it: `svt_av1_verify_settings`
 /// bounds the bitrate, and the quotient stays well inside `int` for every

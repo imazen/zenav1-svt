@@ -684,12 +684,27 @@ result, because reproducing one would break the other.
 
 **What a test must do:** compare against C only for inputs inside C's stated
 envelope (`target_bit_rate <= 100000000`). A cell above it is asserting the
-host's floating-point conversion behaviour, not the port's fidelity. As of
-2026-08-31 `c_parity_rc_process.rs:958` still sweeps `4_000_000_000` and
-therefore FAILS on x86-64 and passes on aarch64; the owning lane should move
-that cell to the boundary. Left as-is here rather than edited, because
-changing another lane's assertion is not this file's job — but a red x86 CI on
-that test is this entry, not a new defect.
+host's floating-point conversion behaviour, not the port's fidelity.
+
+**RESOLVED 2026-08-31 (`384e1cbd7`).** `c_parity_rc_process.rs` swept
+`4_000_000_000` and therefore failed on x86-64 while passing on aarch64. The
+sweep is now bounded at `100_000_000`, and — the part worth keeping — a
+companion test drives the real `svt_av1_enc_set_parameter` /
+`svt_av1_verify_settings` to PROVE the bound (1e8 accepted, 1e8+1 rejected,
+4e9 rejected) rather than transcribing the constant, so a future change to the
+cap fails loudly instead of silently widening every harness that trusts it.
+
+Second-ISA verification, x86_64-unknown-linux-gnu (gcc) on `r7900x`: the
+workspace was 2300/2301 at `c8758e359` with this the ONLY failure, and
+2303/2303 at `b4b4b3161` after the bound landed. aarch64-darwin was green at
+both. Recorded because "it is green now" without the before-number is not a
+measurement.
+
+**Two lanes reached this independently on the same day** — the rate-control
+port lane hit it on a second-ISA run and filed a duplicate as #25, since
+removed. That is the failure mode this file exists to prevent, and it only
+worked in one direction: the duplicate was caught because the entry was
+already here to collide with.
 
 ## 18. `derive_tf_window_params`' past-window compaction is unreachable dead code
 
@@ -1072,61 +1087,6 @@ is tier-1 gated by `c_parity_warp_model.rs::highbd_warp_affine_matches_c`, and
 `HbdWarpRef` makes both forms reach that one kernel. The differential here
 therefore runs the two representations C can take (`Lbd`, `Split`) and says so
 in `WARP_REPRS` rather than quietly omitting the third.
-
----
-
-## 25. `av1_rc_update_framerate`'s `(int)` cast is UB at high bitrate, and x86-64 and aarch64 realize it DIFFERENTLY
-
-**Status: UNCONFIRMED as a shipping bug (out of the configurable envelope), but
-it is CURRENTLY RED IN CI on x86-64 and the reason is not a port defect.**
-
-`pass2_strategy.c:889`:
-
-```c
-rc->avg_frame_bandwidth = (int)(scs->static_config.target_bit_rate / scs->new_framerate);
-```
-
-`target_bit_rate` is `uint32_t` and `new_framerate` is `double`, so the quotient
-is a `double`. **Casting an out-of-`int`-range `double` to `int` is undefined
-behaviour in C** (C17 6.3.1.4p1), and the two ISAs this project builds on
-realize it differently:
-
-| ISA | instruction | result for an out-of-range positive value |
-|---|---|---|
-| x86-64 | `cvttsd2si` | the "integer indefinite" value, `INT_MIN` = -2147483648 |
-| aarch64 | `fcvtzs` | SATURATES to `INT_MAX` = 2147483647 |
-
-Rust's `as i32` saturates, so the port agrees with aarch64 and disagrees with
-x86-64. **No port can agree with both, because C does not have one answer.**
-
-**How it shows up.** `tests/c_parity_rc_process.rs`'s
-`new_framerate_matches_c` sweeps `target_bit_rate` up to 4 000 000 000 against
-framerates down to 0.1, i.e. a quotient of 4e10. On aarch64 every cell passes;
-on x86-64 the cell `(br=4000000000, mbs=0, vmax=0, fr=0.1)` fails with
-`left: 2147483647, right: -2147483648`. Measured on `r7900x`
-(x86_64-unknown-linux-gnu, gcc) at `main` = c8758e359, 2300/2301 tests passing
-with this the only failure; the same commit is 2290/2290 on aarch64/clang.
-It predates the wx-rc lane's first commit (the test is present at 8383168b).
-
-**Reachability.** Not reachable through the encoder's own configuration.
-`svt_av1_verify_settings` bounds `target_bit_rate`, and a framerate of 0.1 with
-a 4 Gbit/s target is not a configuration the CLI accepts — this is a property of
-the TEST GENERATOR, not of the encoder. That makes it an instance of the
-"bound a generator by what the PRODUCER can produce" rule in
-`docs/WORKING-ON-THIS.md` §5: the sweep draws an input the producer cannot
-make, and then attributes the resulting divergence to the port.
-
-**What the port does.** [`port_pass2_gop::rc_update_framerate`] saturates (Rust
-`as i32`) and says so at the site. It does NOT attempt to reproduce either ISA's
-realization of the UB — reproducing undefined behaviour per-host would make the
-port's own output host-dependent, which is the thing this project's cross-ISA
-gates exist to prevent.
-
-**The fix belongs in the test, and it is one line:** bound the sweep's
-`target_bit_rate` / `framerate` product so the quotient stays inside `int`, the
-way `verify_settings` bounds the encoder. Deliberately NOT applied here — the
-test belongs to another lane and this project does not edit another lane's
-expectations without saying so first. This entry is that saying-so.
 
 ---
 
