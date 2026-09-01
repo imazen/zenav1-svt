@@ -16,8 +16,12 @@
 # SVT_CREF_LIB_DIR)
 Bin
 cbuild/
-cbuild-static/
-cbuild-static-hdr/
+# No trailing slash: the working agreement tells you to work in a
+# `jj workspace add` sibling and SYMLINK these from the primary checkout, and a
+# `dir/` pattern does not match a symlink — so every sibling workspace showed a
+# spurious `A cbuild-static` in `jj status`. `Bin` above already had it right.
+cbuild-static
+cbuild-static-hdr
 cbuild-config.log
 cbuild-static-config.log
 cbuild-static-hdr-config.log

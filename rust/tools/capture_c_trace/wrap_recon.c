@@ -244,10 +244,25 @@ EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
      * which LEVELS differ?" (the 1624307 class). One line per txb. */
     const char* cpath = getenv("SVT_CCOEF_OUT");
     const char* cxy   = getenv("SVT_CCOEF_XY");
-    if (cpath && *cpath && cxy && allow_update_cdf) {
+    if (cpath && *cpath && allow_update_cdf) {
+        /* SVT_CCOEF_XY pins ONE block; UNSET dumps EVERY coded txb of the
+         * frame in coding order, which is what a whole-frame join against the
+         * port's SVTAV1_PACKTREE_COEFF `PCOEF` dump needs. The pinned mode
+         * was the only one until 2026-09-01, and it cannot answer "which of
+         * the frame's blocks diverges" without knowing the answer first.
+         *
+         * BEFORE READING A ZERO HERE, GET A POSITIVE CONTROL. This dump's call
+         * site is `update_coeff_cdf` (coding_loop.c:1674), gated on
+         * `pcs->cdf_ctrl.update_coef`. On the VIDEO arm
+         * `svt_aom_get_update_cdf_level_default` returns 0 above M8
+         * (enc_mode_config.c:8517-8519) and `set_cdf_controls` case 0 clears
+         * `update_coef`, so at preset >= 9 the file comes out EMPTY — which is
+         * a silent probe, not "C coded no coefficients". Preset 6 (level 1,
+         * nonzero rdoq_level) is the control that shows it fires. */
         int px = -1, py = -1;
-        sscanf(cxy, "%d,%d", &px, &py);
-        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+        if (cxy && *cxy)
+            sscanf(cxy, "%d,%d", &px, &py);
+        if (!(cxy && *cxy) || ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py)) {
             static FILE* qf = NULL;
             if (!qf)
                 qf = fopen(cpath, "w");
@@ -407,6 +422,15 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
         for (int i = 0; i < n && emitted < 48; ++i)
             if (recon_coeff[i])
                 fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, recon_coeff[i]);
+        /* The PRE-quant transform coefficients. Without these a levels-only
+         * dump cannot separate "the residual/transform differs" from "the
+         * quantizer decision differs" — the exact split the chroma
+         * divergence on the video-mode reference cell turns on. */
+        fprintf(f, "] co=[");
+        emitted = 0;
+        for (int i = 0; i < n && emitted < 48; ++i)
+            if (coeff[i])
+                fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, coeff[i]);
         fprintf(f, "]\n");
         fflush(f);
     }
