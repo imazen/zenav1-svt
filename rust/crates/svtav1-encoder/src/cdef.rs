@@ -774,6 +774,20 @@ pub struct CdefSearchCfg {
     /// applied at use: BLOCK_8X8 -> min(.,4), BLOCK_4X4 -> min(.,1),
     /// cdef_process.c:467-486).
     pub subsampling: usize,
+    /// C `cdef_recon_ctrls.zero_fs_cost_bias` (`set_cdef_recon_controls`,
+    /// enc_mode_config.c:1200), applied by `finish_cdef_search`
+    /// (enc_cdef.c:986-1027) as an `x/64` scale-down of the ZERO-strength
+    /// candidate's mse — a deliberate bias toward switching CDEF off, since
+    /// "off" also saves the cost of applying it. 0 = no scaling.
+    ///
+    /// **A frame-level ARM ladder, not a constant.** `cdef_recon_level` is
+    /// `enc_mode <= M7 ? 0 : 1` on the allintra arm (`:2432`) and
+    /// `<= M8 ? 0 : <= M10 ? 1 : 2` on the video arm (`:2102`), both at
+    /// `fast_decode == 0`. The other two fields the controls carry
+    /// (`zero_filter_strength_lvl`, `prev_cdef_dist_th`) are read only by
+    /// `me_based_cdef_skip`, which returns false immediately on an I_SLICE
+    /// (md_config_process.c:781) — inert on every frame this port encodes.
+    pub zero_fs_cost_bias: u16,
 }
 
 /// The candidate set a `CdefSearchControls` (C `set_cdef_search_controls`,
@@ -794,6 +808,7 @@ pub struct CdefSearchCfg {
 #[must_use]
 pub fn cdef_search_cfg_from_ctrls(
     ctrls: &crate::port_enc_mode_config::cdef_search::CdefSearchControls,
+    zero_fs_cost_bias: u16,
 ) -> CdefSearchCfg {
     let first_pass_num = ctrls.first_pass_fs_num as usize;
     let mut fs: Vec<i32> = ctrls.default_first_pass_fs[..first_pass_num]
@@ -809,6 +824,7 @@ pub fn cdef_search_cfg_from_ctrls(
         fs,
         first_pass_num,
         subsampling: ctrls.subsampling_factor as usize,
+        zero_fs_cost_bias,
     }
 }
 
@@ -885,6 +901,46 @@ fn joint_strength_search_dual(
         best_tot = search_one_dual(best_lev0, best_lev1, nb_strengths - 1, mse, n_cand);
     }
     best_tot
+}
+
+/// C `finish_cdef_search`'s zero-strength cost bias (enc_cdef.c:986-1027):
+/// scale the ZERO-filter-strength slot's mse down by `factor/64`, per filter
+/// block and per plane, before the joint RD search. "Off" is cheaper than any
+/// non-zero strength because the encoder then skips applying CDEF at all, and
+/// this is how C prices that.
+///
+/// The 8-bit arm (the only one a `u8` mse row can be) nudges the factor UP for
+/// a noisy block: `+2` above 25000, `+1` above 10000, capped at 64. The 16-bit
+/// arm has a different, wider ladder; when a bd10 search needs it, port it
+/// beside this rather than folding the two.
+///
+/// `bias == 0` (`cdef_recon_level` 0 — allintra <= M7, video <= M8) is C's
+/// `if (cdef_recon_ctrls->zero_fs_cost_bias)` guard: no scaling at all.
+///
+/// **NOT called from [`cdef_search_still_hbd`], and that is a recorded gap,
+/// not an oversight.** C selects its ladder on
+/// `scs->static_config.encoder_bit_depth > EB_EIGHT_BIT`, so a bd10 encode
+/// takes the 16-bit arm — different thresholds (5000 / 10000 / 25000) and a
+/// factor that moves DOWN (`factor - 10` / `- 5`) as well as up. Wiring the
+/// 8-bit ladder there would be a guess; bd10 keeps the unscaled mse it has
+/// always used until the 16-bit arm is ported with its own evidence.
+fn apply_zero_fs_cost_bias(mse: &mut [MseRow], bias: u16) {
+    if bias == 0 {
+        return;
+    }
+    for row in mse.iter_mut() {
+        for plane in 0..2 {
+            let m = row[plane][0];
+            let factor = if m > 25000 {
+                u64::from(bias.saturating_add(2)).min(64)
+            } else if m > 10000 {
+                u64::from(bias.saturating_add(1)).min(64)
+            } else {
+                u64::from(bias)
+            };
+            row[plane][0] = (factor * m) >> 6;
+        }
+    }
 }
 
 /// The `finish_cdef_search` RD half (enc_cdef.c:1063-1127) over already
@@ -1295,6 +1351,7 @@ pub fn cdef_search_still(
     if mse.is_empty() {
         return Ok(CdefSearchPick::AllSkip);
     }
+    apply_zero_fs_cost_bias(&mut mse, cfg.zero_fs_cost_bias);
     let (bits, lev0, lev1) = finish_cdef_rd(&mse, n_cand, qindex);
     // Diagnostic aid (SVTAV1_CDEF_DBG): dump the per-fb candidate-slot mse
     // rows (luma + joint UV) + the aggregate sums + the RD pick, to diff
@@ -1601,6 +1658,9 @@ mod tests {
         CdefSearchCfg {
             fs,
             first_pass_num,
+            // This helper reproduces the SEARCH-candidate flattening only;
+            // the recon-controls bias is asserted separately.
+            zero_fs_cost_bias: 0,
             subsampling: if preset >= 6 { 4 } else { 1 },
         }
     }
@@ -1624,7 +1684,7 @@ mod tests {
             );
             let ctrls = set_cdef_search_controls(level, true, true).unwrap();
             assert!(!ctrls.use_qp_strength, "preset {preset} level {level}");
-            let got = cdef_search_cfg_from_ctrls(&ctrls);
+            let got = cdef_search_cfg_from_ctrls(&ctrls, 0);
             let want = allintra_cfg_for_preset_flattened(preset);
             assert_eq!(
                 got.fs, want.fs,

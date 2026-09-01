@@ -3485,6 +3485,31 @@ impl EncodePipeline {
         let cdef_is_not_highest_layer = is_key;
         // C's `default:` arm is `assert(0)`; the port refuses rather than
         // inventing a control set.
+        // C `cdef_recon_level` -> `set_cdef_recon_controls` (enc_mode_config.c
+        // :1200). ANOTHER arm ladder, and the port ran neither side of it: the
+        // allintra arm is `enc_mode <= M7 ? 0 : 1` (`:2432`) and the video arm
+        // `<= M8 ? 0 : <= M10 ? 1 : 2` (`:2102`), both at C's default
+        // `fast_decode == 0` (the `fast_decode` branches are unreachable here
+        // for the same reason the CDEF search ladder's are). Only
+        // `zero_fs_cost_bias` is live on a KEY frame — see `CdefSearchCfg`.
+        //
+        // The allintra M10..M13 -> M9 clamp does not move this: every preset
+        // from M8 up lands on level 1 either way.
+        let cdef_recon_level: u8 = if is_single_frame {
+            u8::from(self.speed_config.preset > 7)
+        } else if self.speed_config.preset <= 8 {
+            0
+        } else if self.speed_config.preset <= 10 {
+            1
+        } else {
+            2
+        };
+        let cdef_zero_fs_cost_bias =
+            crate::port_enc_mode_config::tail::set_cdef_recon_controls(cdef_recon_level)
+                .ok_or(EncodeError::UnsupportedConfig(
+                    "cdef recon level outside set_cdef_recon_controls' 0..=4",
+                ))?
+                .zero_fs_cost_bias;
         let cdef_ctrls = crate::port_enc_mode_config::cdef_search::set_cdef_search_controls(
             cdef_level,
             cdef_frame_is_boosted,
@@ -3523,7 +3548,10 @@ impl EncodePipeline {
                     // the tile writer lacks) falls back to the qp fast
                     // path — self-consistent, documented divergence.
                     let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                    let cfg = crate::cdef::cdef_search_cfg_from_ctrls(&cdef_ctrls);
+                    let cfg = crate::cdef::cdef_search_cfg_from_ctrls(
+                        &cdef_ctrls,
+                        cdef_zero_fs_cost_bias,
+                    );
                     // bd10: search the TRUE 10-bit post-deblock recon against
                     // the true 10-bit source (C `cdef_seg_search` at
                     // is_16bit). The 10-bit source is `u8 << (bd - 8)` by
