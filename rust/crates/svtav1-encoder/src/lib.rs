@@ -54,6 +54,7 @@ pub mod port_enc_mode_config;
 pub mod port_entropy_inter;
 pub mod port_frame_update;
 pub mod port_full_loop;
+pub mod port_full_loop_md;
 pub mod port_global_motion;
 pub mod port_gm_correspondence;
 pub mod port_lr_level;

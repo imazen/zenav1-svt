@@ -103,6 +103,7 @@ fn main() {
     println!("cargo:rerun-if-changed=shims/entropy_block_shims.c");
     println!("cargo:rerun-if-changed=shims/rc_vbr_cbr_shims.c");
     println!("cargo:rerun-if-changed=shims/rd_cost_shims.c");
+    println!("cargo:rerun-if-changed=shims/full_loop_md_shims.c");
     // The submodule's checked-out commit: when it moves, the oracle must be
     // rebuilt. (`reference/svt-av1/.git` is a gitdir pointer into the parent's
     // `.git/modules/…`; HEAD there is the file that changes on checkout.)
@@ -223,6 +224,9 @@ fn main() {
         // rd_cost.c MD-cost oracle (lane wx-md) — its own TU for the same
         // per-lane file-ownership reason as the others above.
         .file(manifest.join("shims/rd_cost_shims.c"))
+        // full_loop.c MD-side oracle (lane wx-md) — the same lane's second
+        // C file, kept in its own TU so the two never collide.
+        .file(manifest.join("shims/full_loop_md_shims.c"))
         .include(c_root.join("Source/Lib/Codec"))
         .include(c_root.join("Source/API"))
         .include(c_root.join("Source/Lib/Globals"))

@@ -289,3 +289,25 @@ pub fn full_cost_pd0(
         )
     }
 }
+
+// ---------------------------------------------------------------------------
+// full_loop.c — the MD-side oracle (shims/full_loop_md_shims.c)
+// ---------------------------------------------------------------------------
+
+/// Number of `i32`s in [`do_md_recon`]'s description.
+pub const RECON_FIELDS: usize = 13;
+
+unsafe extern "C" {
+    fn ref_fl_recon_fields() -> i32;
+    fn ref_fl_do_md_recon(i: *const i32) -> i32;
+}
+
+/// The shim's own field count, for the test to assert against.
+pub fn recon_fields() -> usize {
+    unsafe { ref_fl_recon_fields() as usize }
+}
+
+/// C `svt_aom_do_md_recon` (full_loop.c:2739).
+pub fn do_md_recon(fields: &[i32; RECON_FIELDS]) -> bool {
+    unsafe { ref_fl_do_md_recon(fields.as_ptr()) != 0 }
+}
