@@ -110,7 +110,7 @@ Crates are not published to crates.io yet — depend by git.
 
 - **The inter campaign's reference cell now matches C's MODE DECISION exactly
   — and the arm that does it is HELD, not landed (`wip/video-md-arms`,
-  `f898794f9`).** `ctx->mds0_use_hadamard_sb` selects MDS0's luma distortion in
+  `59458226`, which supersedes `f898794f9`).** `ctx->mds0_use_hadamard_sb` selects MDS0's luma distortion in
   `fast_loop_core` (product_coding_loop.c:1259) — `hadamard_path` (a SATD,
   `:1283`) vs the two-buffer VARIANCE `fn_ptr->vf` = `svt_aom_variance{W}x{H}`
   (`:1296-1306`). It is a literal, not a ladder:

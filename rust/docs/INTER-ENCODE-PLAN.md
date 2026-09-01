@@ -569,6 +569,12 @@ describes, seen from the other side. So the three pieces are one landing, and
 that landing still leaves `video-key-nsq-arm-p4-72x88` at 1.996 % against its
 1.0 limit. Moving a limit is a threshold change; the bundle waits.
 
+**No still regression on the held bundle, measured**: `identity_full_8bit`
+**1100 / 1100** byte-identical on the `wip/video-md-arms` head itself, not only
+on main. It is byte-neutral by construction — every piece is gated on
+`ScArm::Video` and `pd0_pick_sb_partition_video` has no allintra caller — but
+the sweep is what says so.
+
 ### 1h. The M3..M8 half of `pic_pd0_lvl` — four variants MEASURED, none good
 
 `set_pic_pd0_lvl_default` gives the video arm **PD0_LVL_3** at M3..M7 (240p,
@@ -685,7 +691,9 @@ revision of this file:
 
 ### `wip/video-md-arms` — complete, verified, deliberately NOT on main
 
-**Head is `f898794f9` as of 2026-09-01** — `nic_arm` VERBATIM from the previous
+**Head is `59458226` as of 2026-09-01** (it supersedes `f898794f9`, which is
+still reachable by hash; see §1g for what the new head adds and why the pair is
+still held) — `nic_arm` VERBATIM from the previous
 head `9d9b92526` (diff empty) plus `encdec_arm`, rebased onto main. Read §1e
 first: with both arms the reference cell's mode decision matches C exactly, and
 the cell named below is CLOSED (0.539% -> 0.000%); what holds the pair off main
