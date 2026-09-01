@@ -143,7 +143,7 @@ buys a differential.
 | `port_entropy_inter/neighbors.rs` | `set_mi_row_col` (:4681), `max_block_wide` / `_high` (:4431/:4442) | **tier 1** for `set_mi_row_col` — it is exported |
 | `port_entropy_inter/primitives.rs` | `svt_aom_{uleb_size_in_bytes, write_uniform_cost, get_palette_mode_ctx, get_kf_y_mode_ctx}` | tier 1 |
 | `port_entropy_inter/metadata.rs` | `write_obu_metadata` (:3683), `svt_aom_write_metadata_av1` (:3809), `add_trailing_bits` (:3673) | tier 4; every primitive under them is tier 1 |
-| 11 new tier-1 gates | the `AomWriteBitBuffer` primitives, `uleb_encode`, `count_primitive_quniform`/`_subexpfin`, the skip / palette / kf-y-mode contexts, `partition_cdf_length` | all previously UNGATED |
+| 12 new tier-1 gates | the `AomWriteBitBuffer` primitives, `uleb_encode`, `count_primitive_quniform`/`_subexpfin`, the skip / palette / kf-y-mode contexts, `partition_cdf_length`, and **`svt_aom_get_txb_ctx`** | all previously UNGATED |
 
 ## 4. Evidence tiers (`docs/WORKING-ON-THIS.md` §4)
 
@@ -154,6 +154,7 @@ buys a differential.
 | the `AomWriteBitBuffer` primitives, `uleb_encode`, `uleb_size_in_bytes` | 1 | `tests/c_parity_entropy_block.rs` |
 | `count_primitive_quniform` / `_subexpfin` | 1 | `tests/c_parity_entropy_block.rs` |
 | skip / palette / kf-y-mode contexts, `partition_cdf_length`, `write_uniform_cost` | 1 | `tests/c_parity_entropy_block.rs` |
+| `svt_aom_get_txb_ctx` — the txb_skip / dc_sign context of EVERY coded transform block, and the frame-edge unit clip the port pushes to its caller | 1 | `tests/c_parity_entropy_block.rs` |
 | the compound / interintra predicates | 1 (exported) and 1-header (`static INLINE`) | `tests/c_parity_entropy_compound.rs` |
 | the intra branch, end to end | 2 | the byte-identity matrix |
 | `write_modes_b`'s inter WALK, the interintra + compound-type WRITERS, `max_block_wide/high`, the metadata OBUs | 4 | module unit tests, hand-derived vectors traced against the C source |
