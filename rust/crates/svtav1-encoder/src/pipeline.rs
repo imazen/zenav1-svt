@@ -3145,6 +3145,42 @@ impl EncodePipeline {
             }
             _ => None,
         };
+        // ---- deblock signal derivation inputs (C enc_mode_config.c) -----
+        //
+        // `dlf_enc_mode`: C starts from `pcs->enc_mode` and, when
+        // `enable_dlf_flag == 2`, re-derives as if three presets lower
+        // (`AOMMAX(ENC_MR, enc_mode - 3)`). The port carries no
+        // `enable_dlf_flag` config — it is always 1 — so the adjustment is
+        // translated but cannot fire; `EncMode` is `int8_t`-ranged with
+        // `ENC_MR = -1`, hence the `i8`.
+        let dlf_enc_mode = self.speed_config.preset as i8;
+        // `scs->static_config.fast_decode`. The port has no fast-decode
+        // config; C's default is 0. Both dlf ladders take their first arm on
+        // `fast_decode <= 1`, so the resolution below is currently unread —
+        // it is passed faithfully so the fast-decode arm stays correct if that
+        // config ever lands.
+        const DLF_FAST_DECODE: u8 = 0;
+        // `ppcs->input_resolution` — `svt_aom_derive_input_resolution` over
+        // `scs->max_input_luma_width * scs->max_input_luma_height`, which is
+        // the source size padded up to MIN_BLOCK_SIZE (8) on each axis
+        // (`enc_handle.c:3918-3930`, then `:3992`).
+        let dlf_resolution = crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+            self.true_width.next_multiple_of(8) * self.true_height.next_multiple_of(8),
+        );
+        // `ppcs->temporal_layer_index` / `ppcs->is_highest_layer`. A KEY frame
+        // is always temporal layer 0, and C's
+        // `is_highest_layer = (temporal_layer_index == hierarchical_levels) &&
+        // hierarchical_levels != 0` (`pd_process.c:5560`) is therefore false
+        // for it at every hierarchy depth INCLUDING flat (the second clause
+        // exists precisely so a flat GOP does not mark every picture highest).
+        // Written out rather than folded to constants so the inter chunks
+        // inherit the rule instead of re-deriving it.
+        let dlf_temporal_layer_index: u8 = 0;
+        let dlf_is_base = dlf_temporal_layer_index == 0;
+        let dlf_is_highest_layer = dlf_temporal_layer_index == self.gop.hierarchical_levels
+            && self.gop.hierarchical_levels != 0;
+        let dlf_is_not_last_layer = u8::from(!dlf_is_highest_layer);
+
         // IBC (chunk 1): C kills the deblock filter at SIGNAL-DERIVATION on
         // IntraBC frames — `dlf_level` stays 0 unless `enable_dlf_flag &&
         // frm_hdr->allow_intrabc == 0` (enc_mode_config.c:10117-10127), so
@@ -3156,12 +3192,69 @@ impl EncodePipeline {
         // = 0` (md_config_process.c:1022-1035): no search, no application, and
         // the frame header carries none of the three (chunk 1). Same shape as
         // the IntraBC frame-level suppression this predicate already handles.
+        //
+        // WHICH picker runs is not a preset rule but a two-step C derivation
+        // that FORKS on `scs->allintra` (`md_config_process.c:924-930`):
+        //
+        //   allintra -> svt_aom_sig_deriv_mode_decision_config_allintra
+        //               -> get_dlf_level_allintra  (enc_mode_config.c:1540)
+        //   video    -> svt_aom_sig_deriv_mode_decision_config_default
+        //               -> get_dlf_level_default   (enc_mode_config.c:1466)
+        //
+        // and then maps that LEVEL through `svt_aom_set_dlf_controls` (:1561).
+        // `sb_based_dlf` is what selects the picker: set, `enc_dec_process.c
+        // :3132` runs LPF_PICK_FROM_Q (the closed form); clear,
+        // `dlf_process.c:97` runs LPF_PICK_FROM_FULL_IMAGE (the SSE search).
+        //
+        // Before the inter campaign the port encoded the ALLINTRA resolution of
+        // that chain inline (`preset <= 5` -> search, else closed form, with
+        // `early_exit_convergence` 0 below M4). That flattening is exactly
+        // right for the still envelope and is reproduced bit-for-bit by the
+        // table below — but it was gated on `is_single_frame`, so a VIDEO-mode
+        // key frame fell through to the closed form, which is not the arm C
+        // takes. At preset 6 / qindex 67 that signalled `loop_filter_level = 3`
+        // where C signals 0.
+        let dlf_level = if is_single_frame {
+            // `get_dlf_level_allintra(dlf_enc_mode, fast_decode, resolution)`.
+            crate::port_enc_mode_config::leaf::get_dlf_level_allintra(
+                dlf_enc_mode,
+                DLF_FAST_DECODE,
+                dlf_resolution,
+            )
+        } else {
+            // `get_dlf_level_default(pcs, dlf_enc_mode, is_not_last_layer,
+            //  fast_decode, resolution, is_base)`.
+            //
+            // `coeff_lvl` is read only in the M10..M11 arm, and there both
+            // branches yield 6 when `is_base` — which every KEY frame is
+            // (`temporal_layer_index == 0`) — so the value passed cannot
+            // change a key frame's level. `ref_skip_percentage` feeds
+            // `dlf_level_modulation`, which C runs only when `!is_base`.
+            crate::port_enc_mode_config::leaf::get_dlf_level_default(
+                dlf_enc_mode,
+                dlf_is_not_last_layer,
+                DLF_FAST_DECODE,
+                dlf_resolution,
+                dlf_is_base,
+                crate::port_enc_mode_config::InputCoeffLvl::Normal,
+                0,
+            )
+        };
+        // C's `default:` arm is `assert(0)`; the port refuses rather than
+        // inventing a control set.
+        let dlf_ctrls = crate::port_enc_mode_config::ctrls::set_dlf_controls(dlf_level).ok_or(
+            EncodeError::UnsupportedConfig("dlf level outside svt_aom_set_dlf_controls' 0..=7"),
+        )?;
         let lf_levels = if sc_derivation.allow_intrabc || coded_lossless {
             crate::deblock::LfLevels::default()
         } else if is_key {
-            if is_single_frame && self.speed_config.preset <= 5 {
+            if dlf_ctrls.enabled == 0 {
+                // `enable_dlf_flag == 0` or a level-0 ladder entry: C neither
+                // picks nor applies, and the header codes zeros.
+                crate::deblock::LfLevels::default()
+            } else if dlf_ctrls.sb_based_dlf == 0 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
-                let early_exit_convergence = if self.speed_config.preset <= 3 { 0 } else { 1 };
+                let early_exit_convergence = i32::from(dlf_ctrls.early_exit_convergence);
                 match recon10.as_ref() {
                     // bd10: search on the true 10-bit unfiltered recon
                     // against the true 10-bit source, with the highbd lpf
@@ -3222,6 +3315,7 @@ impl EncodePipeline {
                     }
                 }
             } else {
+                // `sb_based_dlf = 1` -> LPF_PICK_FROM_Q.
                 crate::deblock::pick_filter_levels_key_frame(base_qindex, self.bit_depth)
             }
         } else {

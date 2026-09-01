@@ -225,9 +225,12 @@ pub struct MdConfigInputs {
 /// The picture-level levels `svt_aom_sig_deriv_mode_decision_config_default`
 /// assigns.
 ///
-/// `dlf_level` is derived here but its controls table
-/// (`svt_aom_set_dlf_controls`) is NOT ported, so the level is exposed and the
-/// resulting `DlfCtrls` is not compared — see the test's header.
+/// `dlf_level` is NOT produced here. The deblock derivation is driven from the
+/// pipeline instead — [`super::leaf::get_dlf_level_default`] /
+/// [`super::leaf::get_dlf_level_allintra`] into
+/// [`super::ctrls::set_dlf_controls`] — and gated at tier 1 by
+/// `tests/c_parity_dlf_ctrls.rs`, which has its own shim TU because this
+/// struct's shim pins `enable_dlf_flag` at 0.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MdConfigSignals {
@@ -844,8 +847,11 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
         lambda_weight += i64::from(i.extended_crf_qindex_offset) * 28;
     }
 
-    // Deblocking level. `svt_aom_set_dlf_controls` is not ported, so only the
-    // LEVEL is produced here.
+    // Deblocking level. The shim behind this struct's differential pins
+    // `enable_dlf_flag = 0`, which is exactly the arm that forces the level to
+    // 0, so 0 is the FAITHFUL value for this surface — not a stub. The real
+    // ladder + controls table live in `leaf::get_dlf_level_*` /
+    // `ctrls::set_dlf_controls` and are gated by `c_parity_dlf_ctrls.rs`.
     let dlf_level = 0u8;
 
     Some(MdConfigSignals {

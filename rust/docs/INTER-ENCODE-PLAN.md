@@ -240,3 +240,59 @@ Two smaller notes from the same pass:
 - Guard #5 in `rust/CLAUDE.md` covered only the ALL-INTRA arm; SGR loop
   restoration is LIVE in video mode at presets 0..3. Corrected in place as
   guard 5c.
+
+## 4. C1a measured outcomes (append-only log — one entry per landed chunk)
+
+### C1a-dlf — video-mode key frame, deblock arm (2026-08-31)
+
+Reference cell `gradient 64x64 q40 p6 frames=2`
+(`tools/identity_diff_inter.sh`), frame 0 (`c.obu.pts0` vs `rs.obu.f0`):
+
+| | before | after |
+|---|--:|--:|
+| C frame 0 | 961 B | 961 B |
+| port frame 0 | 973 B | 971 B |
+| `loop_filter_level[0]` C / port | 0 / **3** | 0 / **0** |
+| first diverging FH field | `loop_filter_level[0]` | `cdef_y_pri_strength[0]` |
+
+Localized with the new `tools/fh_fields.py` (the frame-header sibling of
+`tools/sh_fields.py`; there was none before this chunk).
+
+**Root cause, and the shape the remaining C1a chunks share.** C dispatches the
+whole per-picture signal derivation on `scs->allintra`
+(`md_config_process.c:924-930`, `picture_decision`'s
+`svt_aom_sig_deriv_multi_processes_{allintra,rtc,default}`). The port had
+flattened the ALLINTRA resolution of several of those ladders into per-preset
+predicates gated on `is_single_frame`, so a VIDEO-mode key frame fell through
+to whichever arm the still path used. That is correct for still and wrong for
+video at every ladder that forks.
+
+- **Deblock (this chunk, fixed).** `get_dlf_level_allintra` (`:1540`) gives
+  level 5 at M6 -> `sb_based_dlf = 1` -> the by-q closed form (filt_guess 3 at
+  qindex 67). `get_dlf_level_default` (`:1466`) gives level 3 on a base picture
+  -> `sb_based_dlf = 0` -> the full-image SSE search, which picks 0 on this
+  content. The port now runs both ladders through the ported
+  `svt_aom_set_dlf_controls` table and lets `enabled` / `sb_based_dlf` /
+  `early_exit_convergence` choose the picker.
+- **CDEF (next, same shape).** `svt_aom_sig_deriv_multi_processes_allintra`
+  (`:2337`) gives `cdef_search_level = 7` at M6; `_default` (`:1973`) gives
+  `is_base ? 5 : 6` = 5. The port's `is_single_frame &&
+  allintra_preset_uses_cdef_search(preset)` gate drops a video key frame onto
+  the qp fast path, exactly the deblock bug one filter later. Porting
+  `set_cdef_search_controls` + the `_default` level ladder and wiring the video
+  arm is the direct next chunk.
+
+**Evidence.** `crates/svtav1-encoder/tests/c_parity_dlf_ctrls.rs` is **tier 1**:
+`get_dlf_level_{default,allintra}`, `dlf_level_modulation` and
+`svt_aom_set_dlf_controls` are all file-`static`, but the exported
+`svt_aom_sig_deriv_mode_decision_config_{default,allintra}` reach all four and
+leave the answer in `ppcs->dlf_ctrls`, which `shims/dlf_shims.c` reads back.
+The eight control fields are distinct for each of the eight levels, so the
+level is pinned even though C never stores it. This retires the tier-4 claim in
+`tests/sig_deriv_dlf_traced.rs`.
+
+**No still regression.** 6/6 identity cells byte-identical at their expected
+sizes (gradient 64x64 q40 p6 = 290 B, q20 p3 = 839 B, q55 p0 = 63 B,
+128x128 q55 p8 = 171 B, 64x64 q30 p13 = 580 B, screenrep 64x64 q35 p4 = 693 B);
+`tools/regression_spotcheck.sh` 35/35; `cargo nextest run --workspace`
+2085/2085.

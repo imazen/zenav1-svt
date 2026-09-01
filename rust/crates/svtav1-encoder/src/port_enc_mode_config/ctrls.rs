@@ -865,3 +865,144 @@ pub fn set_interpolation_search_level_ctrls(interpolation_search_level: u8) -> O
         _ => None,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Deblocking loop filter
+// ---------------------------------------------------------------------------
+
+/// C `DlfCtrls` (`Codec/pcs.h:603`).
+///
+/// The two fields that decide WHICH level-picker runs:
+/// * `enabled == 0` — no pick and no apply; the frame header codes
+///   `loop_filter_level[..] = 0`.
+/// * `sb_based_dlf != 0` — `enc_dec_process.c:3132` runs
+///   `svt_av1_pick_filter_level(.., LPF_PICK_FROM_Q)`, the closed form
+///   (`svt_av1_pick_filter_level_by_q`, `deblocking_filter.c:1055`).
+/// * `sb_based_dlf == 0` — `dlf_process.c:97` runs
+///   `svt_av1_pick_filter_level(.., LPF_PICK_FROM_FULL_IMAGE)`, the real
+///   per-level SSE search.
+///
+/// The remaining fields tune that search. On an I\_SLICE
+/// (`tot_ref_frame_types == 0`) `dlf_avg`, `use_ref_avg_y` and
+/// `use_ref_avg_uv` are all structurally inert — every branch that reads them
+/// is guarded on having reference frames (`deblocking_filter.c:1180`, `:1221`,
+/// `:1264`) — and `me_based_dlf_skip` returns immediately for an I\_SLICE
+/// (`:967`), which makes `zero_filter_strength_lvl` and `prev_dlf_dist_th`
+/// inert too. So on a key frame only `enabled`, `sb_based_dlf` and
+/// `early_exit_convergence` are read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DlfCtrls {
+    /// `enabled`
+    pub enabled: u8,
+    /// `sb_based_dlf`
+    pub sb_based_dlf: u8,
+    /// `dlf_avg` — start the search from the ref-average level instead of 0.
+    pub dlf_avg: bool,
+    /// `use_ref_avg_y`
+    pub use_ref_avg_y: bool,
+    /// `use_ref_avg_uv`
+    pub use_ref_avg_uv: bool,
+    /// `early_exit_convergence` — 0 = off, else exit on the Nth convergence.
+    pub early_exit_convergence: u8,
+    /// `zero_filter_strength_lvl`
+    pub zero_filter_strength_lvl: u8,
+    /// `prev_dlf_dist_th`
+    pub prev_dlf_dist_th: u16,
+}
+
+/// C `svt_aom_set_dlf_controls` (`enc_mode_config.c:1561`).
+///
+/// `static` despite the `svt_aom_` prefix, so this is **evidence tier 4**
+/// (hand-derived vectors traced against the C source) — there is no exported
+/// symbol to run a differential against.
+///
+/// C's `default:` arm is `assert(0)`, so an out-of-range level returns `None`
+/// rather than a silently plausible control set.
+#[must_use]
+pub fn set_dlf_controls(dlf_level: u8) -> Option<DlfCtrls> {
+    let mut c = DlfCtrls::default();
+    match dlf_level {
+        0 => {
+            c.enabled = 0;
+            c.sb_based_dlf = 0;
+            c.dlf_avg = false;
+            c.use_ref_avg_y = false;
+            c.use_ref_avg_uv = false;
+            c.early_exit_convergence = 0;
+            c.zero_filter_strength_lvl = 0;
+            c.prev_dlf_dist_th = 0;
+        }
+        1 => {
+            c.enabled = 1;
+            c.sb_based_dlf = 0;
+            c.dlf_avg = false;
+            c.use_ref_avg_y = false;
+            c.use_ref_avg_uv = false;
+            c.early_exit_convergence = 0;
+            c.zero_filter_strength_lvl = 0;
+            c.prev_dlf_dist_th = 0;
+        }
+        2 => {
+            c.enabled = 1;
+            c.sb_based_dlf = 0;
+            c.dlf_avg = true;
+            c.use_ref_avg_y = false;
+            c.use_ref_avg_uv = true;
+            c.early_exit_convergence = 1;
+            c.zero_filter_strength_lvl = 0;
+            c.prev_dlf_dist_th = 0;
+        }
+        3 => {
+            c.enabled = 1;
+            c.sb_based_dlf = 0;
+            c.dlf_avg = true;
+            c.use_ref_avg_y = true;
+            c.use_ref_avg_uv = true;
+            c.early_exit_convergence = 1;
+            c.zero_filter_strength_lvl = 0;
+            c.prev_dlf_dist_th = 0;
+        }
+        4 => {
+            c.enabled = 1;
+            c.sb_based_dlf = 0;
+            c.dlf_avg = true;
+            c.use_ref_avg_y = true;
+            c.use_ref_avg_uv = true;
+            c.early_exit_convergence = 1;
+            c.zero_filter_strength_lvl = 2;
+            c.prev_dlf_dist_th = 10;
+        }
+        5 => {
+            c.enabled = 1;
+            c.sb_based_dlf = 1;
+            c.dlf_avg = false;
+            c.use_ref_avg_y = false;
+            c.use_ref_avg_uv = false;
+            c.early_exit_convergence = 0;
+            c.zero_filter_strength_lvl = 1;
+            c.prev_dlf_dist_th = 0;
+        }
+        6 => {
+            c.enabled = 1;
+            c.sb_based_dlf = 1;
+            c.dlf_avg = false;
+            c.use_ref_avg_y = false;
+            c.use_ref_avg_uv = false;
+            c.early_exit_convergence = 0;
+            c.zero_filter_strength_lvl = 2;
+            c.prev_dlf_dist_th = 0;
+        }
+        7 => {
+            c.enabled = 1;
+            c.sb_based_dlf = 1;
+            c.dlf_avg = false;
+            c.use_ref_avg_y = false;
+            c.use_ref_avg_uv = false;
+            c.early_exit_convergence = 0;
+            c.zero_filter_strength_lvl = 3;
+            c.prev_dlf_dist_th = 0;
+        }
+        _ => return None,
+    }
+    Some(c)
+}

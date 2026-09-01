@@ -1,20 +1,20 @@
-//! **Evidence tier 4** (`docs/WORKING-ON-THIS.md` §4 — the WEAKEST tier):
-//! hand-derived vectors traced against `Source/Lib/Codec/enc_mode_config.c`
+//! Hand-derived vectors traced against `Source/Lib/Codec/enc_mode_config.c`
 //! for the deblocking-level ladder and its non-base modulation.
 //!
-//! Why tier 4 and not tier 1 like the rest of this lane: `get_dlf_level_*` and
-//! `dlf_level_modulation` are file-`static`, and the only exported entry point
-//! that reaches them —
-//! `svt_aom_sig_deriv_mode_decision_config_default` — consumes the result
-//! through `svt_aom_set_dlf_controls`, a table this lane has NOT ported, so
-//! the level itself is not observable in that shim's dump. (That shim
-//! deliberately holds `enable_dlf_flag` at 0 so the deblocking path stays
-//! constant rather than varying unchecked.) These move to tier 1 when
-//! `svt_aom_set_dlf_controls` is ported.
+//! **These were tier 4 when written and are now SUPERSEDED at tier 1** by
+//! `tests/c_parity_dlf_ctrls.rs`, which drives the real
+//! `svt_aom_sig_deriv_mode_decision_config_{default,allintra}` through
+//! `shims/dlf_shims.c` and compares `ppcs->dlf_ctrls`. The route the old
+//! header said was closed turned out to be open: the LEVEL is not observable
+//! (C never stores it), but `svt_aom_set_dlf_controls` maps each of the eight
+//! levels to a DISTINCT control set, so comparing the controls pins the level.
+//! What was actually missing was the ported controls table, not an exported
+//! symbol. (The sigderiv lane's own shim still holds `enable_dlf_flag` at 0 —
+//! that is why this lane has its own shim TU.)
 //!
-//! The deblocking level feeds the frame header's `loop_filter_level` directly,
-//! and the video ladder differs from the ported allintra one at nearly every
-//! preset — which is why it is worth pinning even at this tier.
+//! They are kept because a readable ladder table is worth having next to the
+//! exhaustive differential, and because the deblocking level feeds the frame
+//! header's `loop_filter_level` directly.
 
 use svtav1_encoder::port_enc_mode_config::leaf;
 use svtav1_encoder::port_enc_mode_config::{InputCoeffLvl, ResolutionRange};
