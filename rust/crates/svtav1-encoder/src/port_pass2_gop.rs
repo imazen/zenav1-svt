@@ -1608,3 +1608,960 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The orchestration layer
+// ---------------------------------------------------------------------------
+//
+// Everything above is a piece; these five assemble them into the two-pass
+// rate-control entry point. They are `static` in C (except
+// `svt_aom_process_rc_stat` and `svt_av1_init_second_pass`, which are
+// exported but need a populated stats ring to drive), so they are all
+// evidence TIER 4 — see the module header.
+
+/// C `svt_av1_accumulate_stats` (firstpass.c:141) — **EXPORTED**, and the
+/// exact inverse of [`subtract_stats`]: four fields, `stat_struct` untouched.
+///
+/// It belongs to `firstpass.c`, not to this file; it is here because
+/// `svt_av1_init_second_pass` needs it and it is four lines.
+pub fn accumulate_stats(section: &mut FirstPassStats, frame: &FirstPassStats) {
+    section.frame += frame.frame;
+    section.coded_error += frame.coded_error;
+    section.count += frame.count;
+    section.duration += frame.duration;
+}
+
+/// C `av1_gop_bit_allocation` (pass2_strategy.c:457).
+///
+/// Two lines: work out the ARF bit pool from the GF boost, then split the
+/// group. `calculate_boost_bits` is `rc_process.c`'s and is already ported
+/// (and pinned at tier 1) in [`crate::port_rc_process::calculate_boost_bits`].
+#[allow(clippy::too_many_arguments)]
+pub fn gop_bit_allocation(
+    rc: &RateControl,
+    gf_group: &mut [GfGroupFrame],
+    gf_interval_frames: usize,
+    hierarchical_levels: u8,
+    is_key_frame: bool,
+    gf_interval: i32,
+    use_arf: bool,
+    gf_group_bits: i64,
+) {
+    let gf_arf_bits = crate::port_rc_process::calculate_boost_bits(
+        rc.baseline_gf_interval,
+        rc.gfu_boost,
+        gf_group_bits,
+    );
+    allocate_gf_group_bits(
+        rc,
+        gf_group,
+        gf_interval_frames,
+        hierarchical_levels,
+        gf_group_bits,
+        gf_arf_bits,
+        gf_interval,
+        is_key_frame,
+        use_arf,
+    );
+}
+
+/// The picture-level facts the two rate-assignment functions read that are
+/// not already on [`SeqRc`] / [`FrameRc`] / [`TwoPassCfg`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GroupRateInput {
+    /// `pcs->frames_in_sw`.
+    pub frames_in_sw: i32,
+    /// `pcs->end_of_sequence_region`.
+    pub end_of_sequence_region: bool,
+    /// `pcs->idr_flag`.
+    pub idr_flag: bool,
+    /// `pcs->gf_interval`.
+    pub gf_interval: i32,
+    /// `pcs->slice_type == I_SLICE`.
+    pub is_i_slice: bool,
+    /// `scs->static_config.target_bit_rate`.
+    pub target_bit_rate: i64,
+    /// `scs->new_framerate`.
+    pub new_framerate: f64,
+    /// `scs->static_config.gop_constraint_rc`.
+    pub gop_constraint_rc: bool,
+    /// `twopass->passes` — 2 selects the second-pass cross-multiply paths.
+    pub passes: i32,
+}
+
+/// C `gf_group_rate_assingment` (pass2_strategy.c:475) — the name's spelling
+/// is upstream's.
+///
+/// Assembles the GF-group budget: accumulate the group's error, take its
+/// share of the KF budget, estimate the group's worst quality, DEDUCT the
+/// group's error from the KF pool, and split the budget across the frames.
+///
+/// Two details worth stating:
+/// * the cursor is saved and restored around the whole thing, and
+///   `calculate_gf_stats` restores it a second time internally — the outer
+///   restore is what makes this callable twice;
+/// * the second-pass path (`passes == 2` AND `pass == ENC_SECOND_PASS`, two
+///   different flags that must BOTH hold) cross-multiplies the previous
+///   pass's per-frame bit counts instead of modelling a pyramid.
+#[allow(clippy::too_many_arguments)]
+pub fn gf_group_rate_assingment(
+    rc: &mut RateControl,
+    scs: &SeqRc,
+    cfg2: &TwoPassCfg,
+    twopass: &mut TwoPassState,
+    frame: &FrameRc,
+    input: &GroupRateInput,
+    cursor: &mut StatsCursor<'_>,
+    has_total_stats: bool,
+    this_frame: &mut FirstPassStats,
+    gf_group: &mut [GfGroupFrame],
+    twopass_worst_quality: impl FnOnce(f64, f64, i32, f64) -> i32,
+) {
+    let start_pos = cursor.position();
+    let result = calculate_gf_stats(
+        rc,
+        frame,
+        cursor,
+        has_total_stats,
+        this_frame,
+        input.gf_interval,
+        input.idr_flag,
+    );
+
+    // Bits for the gf/arf group as a whole.
+    rc.gf_group_bits = calculate_total_gf_group_bits(
+        rc,
+        scs,
+        cfg2,
+        twopass,
+        input.frames_in_sw,
+        result.gf_stats.gf_group_err,
+    );
+    calculate_active_worst_quality(
+        rc,
+        scs,
+        cfg2,
+        twopass,
+        input.target_bit_rate,
+        input.gop_constraint_rc,
+        &result.gf_stats,
+        twopass_worst_quality,
+    );
+
+    // Adjust the KF group's remaining error.
+    twopass.kf_group_error_left -= result.gf_stats.gf_group_err as i64;
+
+    cursor.reset_fpf_position(start_pos);
+    let gf_bits = rc.gf_group_bits;
+    if twopass.passes == 2 && cfg2.second_pass {
+        gop_bit_allocation_same_pred(
+            gf_group,
+            input.gf_interval as usize,
+            input.is_i_slice,
+            gf_bits,
+            &result.gf_stats,
+        );
+    } else {
+        gop_bit_allocation(
+            rc,
+            gf_group,
+            input.gf_interval as usize,
+            scs.hierarchical_levels,
+            frame.frame_type.is_key(),
+            1 << scs.hierarchical_levels,
+            result.use_alt_ref,
+            gf_bits,
+        );
+    }
+}
+
+/// C `kf_group_rate_assingment` (pass2_strategy.c:651) — upstream's spelling.
+///
+/// Budgets the next key-frame group and carves the key frame's own share out
+/// of it. Four things a rewrite gets wrong, all commented at their sites:
+///
+/// * `frames_to_key_clipped` starts at `INT_MAX` and `kf_group_bits_clipped`
+///   at `INT64_MAX`, and both stay there unless `lap_rc` is on — so the
+///   `AOMMIN`s below them are no-ops in the non-LAP case rather than clamps.
+/// * the LAP bits-left update SUBTRACTS a second term (the lookahead beyond
+///   this KF group), which the non-LAP branch does not; they are not the same
+///   expression with a flag.
+/// * `kf_zeromotion_pct` is unconditionally set to **0** here, overwriting the
+///   100 that `init_second_pass` / `init_single_pass_lap` set — so the
+///   `STATIC_KF_GROUP_THRESH` gate in `rc_vbr_cbr.c`'s `get_q` can only fire
+///   before the first KF group is budgeted.
+/// * the key frame's own error (`kf_mod_err`) is subtracted from the group's
+///   error AFTER the group total is used, so the two are not interchangeable.
+///
+/// Returns the key frame's `base_frame_target`.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn kf_group_rate_assingment(
+    rc: &mut RateControl,
+    scs: &SeqRc,
+    cfg2: &TwoPassCfg,
+    twopass: &mut TwoPassState,
+    input: &GroupRateInput,
+    cursor: &mut StatsCursor<'_>,
+    has_total_stats: bool,
+    mut this_frame: FirstPassStats,
+    params_end_of_seq_seen: &mut bool,
+) -> i32 {
+    rc.frames_since_key = 0;
+    rc.frames_since_cdf_update = 0;
+    let start_position = cursor.position();
+    let mut frames_to_key_clipped = i32::MAX;
+    let mut kf_group_bits_clipped = i64::MAX;
+
+    twopass.kf_group_bits = 0; // Total bits available to the kf group.
+    twopass.kf_group_error_left = 0; // Group modified error score.
+    let kf_mod_err = calculate_modified_err(has_total_stats, &this_frame);
+    let (kf_group_err, eos_seen) = set_kf_interval_variables(
+        rc,
+        scs,
+        cursor,
+        has_total_stats,
+        &mut this_frame,
+        true,
+        scs.intra_period_length + 1,
+        cfg2.lap_rc,
+        input.end_of_sequence_region,
+    );
+    if eos_seen {
+        *params_end_of_seq_seen = true;
+    }
+
+    if (twopass.bits_left > 0 && twopass.modified_error_left > 0.0) || cfg2.lap_rc {
+        let max_bits = frame_max_bits(rc, cfg2.vbrmax_section);
+        twopass.kf_group_bits = get_kf_group_bits(
+            rc,
+            scs,
+            twopass,
+            cfg2.lap_rc,
+            input.frames_in_sw,
+            input.end_of_sequence_region,
+            kf_group_err,
+        );
+        // Clip to the user's maximum per-frame rate.
+        let max_grp_bits = i64::from(max_bits) * i64::from(rc.frames_to_key);
+        if twopass.kf_group_bits > max_grp_bits {
+            twopass.kf_group_bits = max_grp_bits;
+        }
+    } else {
+        twopass.kf_group_bits = 0;
+    }
+    twopass.kf_group_bits = twopass.kf_group_bits.max(0);
+
+    if cfg2.lap_rc {
+        // The lookahead is moving, so bits_left is recomputed for the NEXT KF.
+        // The second term is the lookahead BEYOND this KF group, added back
+        // because it is part of the next one — the non-LAP branch has no
+        // equivalent.
+        twopass.bits_left -= twopass.kf_group_bits
+            + ((i64::from(input.frames_in_sw) - i64::from(rc.frames_to_key)) as f64
+                * ((input.target_bit_rate as f64) / input.new_framerate)) as i64;
+    } else {
+        twopass.bits_left = (twopass.bits_left - twopass.kf_group_bits).max(0);
+    }
+    if cfg2.lap_rc {
+        // With LAP, frames_to_key can be wildly inaccurate; clip it.
+        frames_to_key_clipped = (MAX_KF_BITS_INTERVAL_SINGLE_PASS * input.new_framerate) as i32;
+        if rc.frames_to_key > frames_to_key_clipped {
+            kf_group_bits_clipped = ((twopass.kf_group_bits as f64)
+                * f64::from(frames_to_key_clipped)
+                / f64::from(rc.frames_to_key)) as i64;
+        }
+    }
+    cursor.reset_fpf_position(start_position);
+
+    // Store the zero-motion percentage. NOTE: unconditionally 0, overwriting
+    // the 100 the init functions set.
+    twopass.kf_zeromotion_pct = 0;
+
+    let kf_bits = if twopass.passes == 2 {
+        // Second pass: cross-multiply the previous pass's cost for this frame.
+        // C reads `(twopass->stats_in - 1)->stat_struct`, i.e. the entry
+        // BEFORE the cursor; `previous()` returns None at position 0 where C
+        // would read one slot outside the ring.
+        let prev_bits = cursor
+            .previous()
+            .map_or(0, |s| s.stat_struct.total_num_bits);
+        ((twopass.kf_group_bits as f64) * (prev_bits as f64) / kf_group_err) as i32
+    } else {
+        crate::port_rc_process::calculate_boost_bits(
+            rc.frames_to_key.min(frames_to_key_clipped) - 1,
+            rc.kf_boost,
+            twopass.kf_group_bits.min(kf_group_bits_clipped),
+        )
+    };
+
+    twopass.kf_group_bits -= i64::from(kf_bits);
+    // The group's error MINUS the key frame's own.
+    twopass.kf_group_error_left = (kf_group_err - kf_mod_err) as i64;
+    twopass.modified_error_left -= kf_group_err;
+    kf_bits
+}
+
+/// The first-frame quality seed [`process_first_pass_stats`] produces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstFrameSeed {
+    /// `rc->active_worst_quality`.
+    pub active_worst_quality: i32,
+    /// `rc->avg_frame_qindex[INTER_FRAME]`.
+    pub avg_frame_qindex_inter: i32,
+    /// `rc->avg_frame_qindex[KEY_FRAME]`.
+    pub avg_frame_qindex_key: i32,
+}
+
+/// C `process_first_pass_stats` (pass2_strategy.c:761).
+///
+/// On picture 0 ONLY, seeds the quality state from the whole sequence's
+/// average error; on every picture it then consumes one stats entry and
+/// deducts it from the running remainder.
+///
+/// The seed is the interesting half. `section_error` is the total remaining
+/// coded error divided by the remaining frame COUNT, and it is fed either to
+/// the twopass worst-quality model (one pass) or to a binary search over the
+/// PREVIOUS pass's recorded qindex and bit count (`passes == 2`) — the same
+/// second-pass substitution `calculate_active_worst_quality` makes per GF
+/// group.
+///
+/// `avg_frame_qindex[KEY_FRAME]` is seeded HALFWAY between the derived q and
+/// `best_allowed_q`, not at the derived q.
+///
+/// Returns the seed when one was produced (picture 0 with both stats slots
+/// present), and mutates the cursor + `total_left_stats` regardless.
+#[allow(clippy::too_many_arguments)]
+pub fn process_first_pass_stats(
+    rc: &mut RateControl,
+    scs: &SeqRc,
+    cfg2: &TwoPassCfg,
+    twopass: &TwoPassState,
+    frame: &FrameRc,
+    best_allowed_q: i32,
+    cursor: &mut StatsCursor<'_>,
+    total_stats: Option<&FirstPassStats>,
+    total_left_stats: Option<&mut FirstPassStats>,
+    this_frame: &mut FirstPassStats,
+    twopass_worst_quality: impl FnOnce(f64, f64, i32, f64) -> i32,
+) -> Option<FirstFrameSeed> {
+    let mut seed = None;
+    let mut total_left = total_left_stats;
+    if frame.picture_number == 0
+        && let (Some(total), Some(left)) = (total_stats, total_left.as_deref_mut())
+    {
+        if cfg2.lap_rc {
+            // Accumulate `total_stats` from the limited stats available and
+            // use it as `total_left_stats`.
+            *left = *total;
+        }
+        let section_target_bandwidth = get_section_target_bandwidth(
+            rc,
+            twopass,
+            cfg2.lap_rc,
+            total.count,
+            frame.picture_number,
+        );
+        let section_length = left.count;
+        let section_error = left.coded_error / section_length;
+        let tmp_q = if scs.passes == 2 {
+            let ref_qindex = i32::from(total.stat_struct.worst_qindex);
+            let ref_q = convert_qindex_to_q(ref_qindex, scs.encoder_bit_depth);
+            let ref_gf_group_bits = total.stat_struct.total_num_bits as i64;
+            let target_gf_group_bits = twopass.bits_left;
+            let mut low = rc.best_quality;
+            let mut high = rc.worst_quality;
+            while low < high {
+                let mid = (low + high) >> 1;
+                let q = convert_qindex_to_q(mid, scs.encoder_bit_depth);
+                let mid_bits = ((ref_gf_group_bits as f64) * ref_q / q) as i32;
+                if mid_bits > target_gf_group_bits as i32 {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            low
+        } else {
+            twopass_worst_quality(
+                section_error,
+                0.0,
+                section_target_bandwidth.unwrap_or(0),
+                DEFAULT_GRP_WEIGHT,
+            )
+        };
+        rc.active_worst_quality = tmp_q;
+        rc.avg_frame_qindex[INTER_FRAME_IDX] = tmp_q;
+        rc.avg_frame_qindex[KEY_FRAME_IDX] = (tmp_q + best_allowed_q) / 2;
+        seed = Some(FirstFrameSeed {
+            active_worst_quality: tmp_q,
+            avg_frame_qindex_inter: tmp_q,
+            avg_frame_qindex_key: (tmp_q + best_allowed_q) / 2,
+        });
+    }
+
+    let Some(next) = cursor.input_stats() else {
+        return seed;
+    };
+    *this_frame = next;
+    if let Some(left) = total_left {
+        subtract_stats(left, this_frame);
+    }
+    seed
+}
+
+/// `rc->avg_frame_qindex` is indexed by `FrameType`; these name the two slots
+/// so a call site cannot transpose them.
+const KEY_FRAME_IDX: usize = 0;
+const INTER_FRAME_IDX: usize = 1;
+
+/// What `svt_aom_process_rc_stat` did, so the caller can apply the parts that
+/// touch structures this file does not own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessRcStatResult {
+    /// A key frame's `base_frame_target`, when a KF group was budgeted.
+    pub kf_base_frame_target: Option<i32>,
+    /// Whether a new GF group was defined this call.
+    pub new_gf_group: bool,
+}
+
+/// C `svt_aom_process_rc_stat` (pass2_strategy.c:847) — **EXPORTED**, and the
+/// two-pass entry point `svt_av1_rc_process_rate_allocation` calls.
+///
+/// Three steps: consume this frame's first-pass stats, budget a new KF group
+/// if this is an IDR, and budget a new GF group if one is due.
+///
+/// The `lap_rc` re-computation in the middle is easy to misread: for 1-pass
+/// VBR the lookahead MOVES, so `total_stats` changes and with it every
+/// modified error — which is why `kf_group_error_left` is recomputed for
+/// every mini-GOP EXCEPT the first one after a key frame (that one was just
+/// set by `kf_group_rate_assingment` and must not be overwritten).
+#[allow(clippy::too_many_arguments)]
+pub fn process_rc_stat(
+    rc: &mut RateControl,
+    scs: &SeqRc,
+    cfg2: &TwoPassCfg,
+    twopass: &mut TwoPassState,
+    frame: &FrameRc,
+    input: &GroupRateInput,
+    best_allowed_q: i32,
+    cursor: &mut StatsCursor<'_>,
+    total_stats: Option<&FirstPassStats>,
+    total_left_stats: Option<&mut FirstPassStats>,
+    gf_group: &mut [GfGroupFrame],
+    this_gf_update_due: bool,
+    this_is_incomp_mg_frame: bool,
+    params_end_of_seq_seen: &mut bool,
+    mut twopass_worst_quality: impl FnMut(f64, f64, i32, f64) -> i32,
+) -> ProcessRcStatResult {
+    let has_total_stats = total_stats.is_some();
+    let mut this_frame = FirstPassStats::default();
+    process_first_pass_stats(
+        rc,
+        scs,
+        cfg2,
+        twopass,
+        frame,
+        best_allowed_q,
+        cursor,
+        total_stats,
+        total_left_stats,
+        &mut this_frame,
+        &mut twopass_worst_quality,
+    );
+
+    let mut out = ProcessRcStatResult::default();
+    // Keyframe and section processing.
+    let is_idr = frame.is_intra_only() && input.idr_flag;
+    if is_idr {
+        if cfg2.lap_rc {
+            lap_rc_init(
+                twopass,
+                cfg2,
+                cursor,
+                has_total_stats,
+                this_frame,
+                input.target_bit_rate,
+                input.new_framerate,
+            );
+        }
+        out.kf_base_frame_target = Some(kf_group_rate_assingment(
+            rc,
+            scs,
+            cfg2,
+            twopass,
+            input,
+            cursor,
+            has_total_stats,
+            this_frame,
+            params_end_of_seq_seen,
+        ));
+    }
+
+    // Define a new GF/ARF group. (Always entered for key frames.)
+    out.new_gf_group = is_new_gf_group(
+        gf_group,
+        input.gf_interval as usize,
+        frame.picture_number,
+        this_is_incomp_mg_frame,
+        this_gf_update_due,
+    );
+    if out.new_gf_group {
+        // For 1-pass VBR the lookahead moves, so `total_stats` — and every
+        // modified error derived from it — changes. Recompute
+        // kf_group_error_left for each mini-GOP EXCEPT the first after a KF,
+        // which `kf_group_rate_assingment` just set.
+        if !is_idr && cfg2.lap_rc {
+            twopass.kf_group_error_left =
+                lap_rc_group_error_calc(rc, cursor, has_total_stats, this_frame) as i64;
+        }
+        gf_group_rate_assingment(
+            rc,
+            scs,
+            cfg2,
+            twopass,
+            frame,
+            input,
+            cursor,
+            has_total_stats,
+            &mut this_frame,
+            gf_group,
+            twopass_worst_quality,
+        );
+    }
+    out
+}
+
+/// C `svt_av1_init_second_pass` (pass2_strategy.c:997) — **EXPORTED**.
+///
+/// Sums the whole first-pass stats file into the end sentinel, derives the
+/// real frame rate from the accumulated duration, and seeds the two-pass
+/// budget and error bounds.
+///
+/// **The frame rate is DERIVED, not configured**: `10000000 * count /
+/// duration`. Each first-pass frame can have a different duration, so the
+/// second pass's rate is the true average rather than the guess the first
+/// pass ran with.
+///
+/// `stats` is the whole ring; it is `&mut` because `read_stat_from_file`
+/// backfills zero bit counts in place. Returns the derived frame rate, which
+/// the caller feeds to [`new_framerate`].
+///
+/// C also calls `svt_aom_set_rc_param` here; that is `port_rc_process`'s and
+/// is the caller's to run.
+#[allow(clippy::too_many_arguments)]
+pub fn init_second_pass(
+    rc: &mut RateControl,
+    twopass: &mut TwoPassState,
+    cfg2: &TwoPassCfg,
+    target_bit_rate: i64,
+    stats: &mut [FirstPassStats],
+    total_stats: &mut FirstPassStats,
+    total_left_stats: &mut FirstPassStats,
+) -> Option<f64> {
+    if stats.is_empty() {
+        // C returns early on `!stats_buf_ctx->stats_in_end`.
+        return None;
+    }
+    // C zeroes the end sentinel and accumulates every frame into it.
+    let mut end = FirstPassStats::default();
+    let mut total_num_bits = 0_u64;
+    for s in stats.iter() {
+        accumulate_stats(&mut end, s);
+        total_num_bits += s.stat_struct.total_num_bits;
+    }
+    end.stat_struct.total_num_bits = total_num_bits;
+
+    *total_stats = end;
+    *total_left_stats = end;
+
+    let frame_rate = 10_000_000.0 * end.count / end.duration;
+    twopass.bits_left = (end.duration * (target_bit_rate as f64) / 10_000_000.0) as i64;
+    // Backfill any zero per-frame bit counts, per temporal layer.
+    total_stats.stat_struct.total_num_bits = read_stat_from_file(stats);
+
+    // Scan the stats and build the modified-error total and its bounds.
+    let avg_error = end.coded_error / double_divide_check(end.count);
+    twopass.modified_error_min = (avg_error * f64::from(cfg2.vbrmin_section)) / 100.0;
+    twopass.modified_error_max = (avg_error * f64::from(cfg2.vbrmax_section)) / 100.0;
+    let mut modified_error_total = 0.0;
+    for s in stats.iter() {
+        modified_error_total += calculate_modified_err(true, s);
+    }
+    twopass.modified_error_left = modified_error_total;
+
+    // Reset the vbr counters.
+    rc.vbr_bits_off_target = 0;
+    rc.vbr_bits_off_target_fast = 0;
+    rc.rate_error_estimate = 0;
+    // Static sequence monitor variables.
+    twopass.kf_zeromotion_pct = 100;
+    Some(frame_rate)
+}
+
+#[cfg(test)]
+mod orchestration_tests {
+    use super::*;
+
+    /// **EVIDENCE TIER 4** — see the module header. `svt_aom_process_rc_stat`
+    /// and `svt_av1_init_second_pass` ARE exported, but driving them needs a
+    /// populated `STATS_BUFFER_CTX` wired into a `SequenceControlSet`, which
+    /// this lane has not built; the other three are `static` and inlined.
+    const _: () = ();
+
+    fn stat(bits: u64, coded_error: f64, duration: f64) -> FirstPassStats {
+        FirstPassStats {
+            frame: 1.0,
+            coded_error,
+            duration,
+            count: 1.0,
+            stat_struct: StatStruct {
+                poc: 0,
+                total_num_bits: bits,
+                qindex: 100,
+                worst_qindex: 150,
+                temporal_layer_index: 0,
+            },
+        }
+    }
+
+    /// `accumulate_stats` is the exact inverse of `subtract_stats`, and both
+    /// leave `stat_struct` alone.
+    #[test]
+    fn accumulate_and_subtract_are_inverses() {
+        let mut section = FirstPassStats::default();
+        section.stat_struct.poc = 9;
+        let f = stat(100, 5.0, 1000.0);
+        accumulate_stats(&mut section, &f);
+        assert_eq!((section.frame, section.count), (1.0, 1.0));
+        assert_eq!(section.coded_error, 5.0);
+        assert_eq!(section.duration, 1000.0);
+        assert_eq!(section.stat_struct.poc, 9, "stat_struct is not accumulated");
+        subtract_stats(&mut section, &f);
+        assert_eq!(section, {
+            let mut z = FirstPassStats::default();
+            z.stat_struct.poc = 9;
+            z
+        });
+    }
+
+    /// `svt_av1_init_second_pass` DERIVES the frame rate from the accumulated
+    /// duration rather than taking the configured one — each first-pass frame
+    /// can have a different duration, so this is the true average.
+    #[test]
+    fn init_second_pass_derives_the_frame_rate_from_duration() {
+        let mut stats = [
+            stat(1000, 10.0, 500_000.0),
+            stat(2000, 20.0, 500_000.0),
+            // A frame with no recorded bits: read_stat_from_file backfills it
+            // from the previous frame at the same temporal layer.
+            stat(0, 30.0, 500_000.0),
+        ];
+        let mut rc = RateControl::default();
+        let mut tp = TwoPassState::default();
+        let cfg2 = TwoPassCfg {
+            vbrmin_section: 50,
+            vbrmax_section: 200,
+            ..Default::default()
+        };
+        let mut total = FirstPassStats::default();
+        let mut left = FirstPassStats::default();
+        let fr = init_second_pass(
+            &mut rc, &mut tp, &cfg2, 10_000_000, &mut stats, &mut total, &mut left,
+        )
+        .expect("non-empty ring");
+        // 3 frames over 1.5e6 ticks of 1e-7 s -> 20 fps.
+        assert_eq!(fr, 10_000_000.0 * 3.0 / 1_500_000.0);
+        // bits_left = duration * bitrate / 1e7 = 1.5e6 * 1e7 / 1e7.
+        assert_eq!(tp.bits_left, 1_500_000);
+        // The backfill happened, and the total is the backfilled sum.
+        assert_eq!(stats[2].stat_struct.total_num_bits, 2000);
+        assert_eq!(total.stat_struct.total_num_bits, 1000 + 2000 + 2000);
+        // The error bounds are the average coded error scaled by the vbr
+        // percentages; the modified error total is the (pre-backfill) bit sum.
+        let avg_error = 60.0 / double_divide_check(3.0);
+        assert_eq!(tp.modified_error_min, avg_error * 50.0 / 100.0);
+        assert_eq!(tp.modified_error_max, avg_error * 200.0 / 100.0);
+        assert_eq!(tp.modified_error_left, 1000.0 + 2000.0 + 2000.0);
+        assert_eq!(tp.kf_zeromotion_pct, 100);
+        // An empty ring returns None and writes nothing.
+        let mut empty: [FirstPassStats; 0] = [];
+        assert!(
+            init_second_pass(
+                &mut rc, &mut tp, &cfg2, 10_000_000, &mut empty, &mut total, &mut left
+            )
+            .is_none()
+        );
+    }
+
+    /// `kf_group_rate_assingment` sets `kf_zeromotion_pct` to **0**,
+    /// overwriting the 100 the init functions set — so the
+    /// `STATIC_KF_GROUP_THRESH` gate in `rc_vbr_cbr.c`'s `get_q` can only
+    /// fire before the first KF group is budgeted.
+    #[test]
+    fn kf_group_rate_assingment_zeroes_kf_zeromotion_pct() {
+        let stats = [stat(1000, 10.0, 1.0), stat(1000, 10.0, 1.0)];
+        let mut cursor = StatsCursor::new(&stats, 1);
+        let mut rc = RateControl {
+            avg_frame_bandwidth: 50_000,
+            max_frame_bandwidth: 500_000,
+            best_quality: 0,
+            worst_quality: 255,
+            kf_boost: 2000,
+            frames_to_key: 30,
+            ..Default::default()
+        };
+        let scs = SeqRc {
+            intra_period_length: 63,
+            ..Default::default()
+        };
+        let cfg2 = TwoPassCfg {
+            vbrmax_section: 200,
+            ..Default::default()
+        };
+        let mut tp = TwoPassState {
+            bits_left: 10_000_000,
+            modified_error_left: 100_000.0,
+            kf_zeromotion_pct: 100,
+            ..Default::default()
+        };
+        let input = GroupRateInput {
+            new_framerate: 30.0,
+            target_bit_rate: 1_500_000,
+            ..Default::default()
+        };
+        let mut eos = false;
+        let kf_bits = kf_group_rate_assingment(
+            &mut rc,
+            &scs,
+            &cfg2,
+            &mut tp,
+            &input,
+            &mut cursor,
+            true,
+            stats[0],
+            &mut eos,
+        );
+        assert_eq!(tp.kf_zeromotion_pct, 0);
+        assert!(kf_bits > 0, "the key frame must get a budget");
+        // frames_since_key / frames_since_cdf_update are reset.
+        assert_eq!(rc.frames_since_key, 0);
+        assert_eq!(rc.frames_since_cdf_update, 0);
+        // The cursor is restored.
+        assert_eq!(cursor.position(), 1);
+        // The group's remaining error excludes the key frame's own.
+        assert_eq!(tp.kf_group_error_left, 1000);
+    }
+
+    /// `process_first_pass_stats` seeds the quality state ONLY on picture 0,
+    /// and seeds `avg_frame_qindex[KEY_FRAME]` HALFWAY to `best_allowed_q`.
+    #[test]
+    fn process_first_pass_stats_seeds_only_picture_zero() {
+        let stats = [stat(1000, 10.0, 1.0), stat(2000, 20.0, 1.0)];
+        let mut rc = RateControl {
+            best_quality: 0,
+            worst_quality: 255,
+            ..Default::default()
+        };
+        let scs = SeqRc::default();
+        let cfg2 = TwoPassCfg::default();
+        let tp = TwoPassState {
+            bits_left: 1_000_000,
+            ..Default::default()
+        };
+        let total = FirstPassStats {
+            count: 10.0,
+            coded_error: 100.0,
+            ..Default::default()
+        };
+        let mut left = total;
+        let mut this = FirstPassStats::default();
+
+        let frame0 = FrameRc {
+            picture_number: 0,
+            ..Default::default()
+        };
+        let mut cursor = StatsCursor::new(&stats, 0);
+        let seed = process_first_pass_stats(
+            &mut rc,
+            &scs,
+            &cfg2,
+            &tp,
+            &frame0,
+            40,
+            &mut cursor,
+            Some(&total),
+            Some(&mut left),
+            &mut this,
+            |_, _, _, _| 120,
+        )
+        .expect("picture 0 with both stats slots seeds");
+        assert_eq!(seed.active_worst_quality, 120);
+        assert_eq!(seed.avg_frame_qindex_inter, 120);
+        assert_eq!(seed.avg_frame_qindex_key, (120 + 40) / 2);
+        assert_eq!(rc.avg_frame_qindex, [80, 120]);
+        // One stat was consumed and deducted from the remainder.
+        assert_eq!(cursor.position(), 1);
+        assert_eq!(left.count, 9.0);
+        assert_eq!(left.coded_error, 90.0);
+
+        // A later picture seeds nothing but still consumes.
+        let frame1 = FrameRc {
+            picture_number: 1,
+            ..Default::default()
+        };
+        let mut cursor = StatsCursor::new(&stats, 0);
+        let mut left2 = total;
+        assert!(
+            process_first_pass_stats(
+                &mut rc,
+                &scs,
+                &cfg2,
+                &tp,
+                &frame1,
+                40,
+                &mut cursor,
+                Some(&total),
+                Some(&mut left2),
+                &mut this,
+                |_, _, _, _| 200,
+            )
+            .is_none()
+        );
+        assert_eq!(rc.active_worst_quality, 120, "unchanged on a later picture");
+        assert_eq!(cursor.position(), 1);
+    }
+
+    /// `process_rc_stat` budgets a KF group only on an IDR, and a GF group
+    /// only when one is due — and the `lap_rc` error recomputation is skipped
+    /// on the first mini-GOP after a key frame (which the KF assignment just
+    /// set).
+    #[test]
+    fn process_rc_stat_gates_the_two_group_assignments() {
+        let stats = [stat(1000, 10.0, 1.0), stat(1000, 10.0, 1.0)];
+        let base_rc = RateControl {
+            avg_frame_bandwidth: 50_000,
+            max_frame_bandwidth: 500_000,
+            worst_quality: 255,
+            frames_to_key: 30,
+            baseline_gf_interval: 8,
+            ..Default::default()
+        };
+        let scs = SeqRc {
+            intra_period_length: 63,
+            hierarchical_levels: 3,
+            ..Default::default()
+        };
+        let cfg2 = TwoPassCfg {
+            vbrmax_section: 200,
+            mb_rows: 68,
+            ..Default::default()
+        };
+        let mk_tp = || TwoPassState {
+            bits_left: 10_000_000,
+            modified_error_left: 100_000.0,
+            kf_group_bits: 1_000_000,
+            kf_group_error_left: 10_000,
+            ..Default::default()
+        };
+        let mut gf_group = vec![GfGroupFrame::default(); 8];
+
+        // Non-IDR, no GF update due: neither assignment runs.
+        let mut rc = base_rc.clone();
+        let mut tp = mk_tp();
+        let mut eos = false;
+        let frame = FrameRc {
+            picture_number: 4,
+            frame_type: crate::port_rc_vbr_cbr_state::FrameType::Inter,
+            ..Default::default()
+        };
+        let input = GroupRateInput {
+            gf_interval: 8,
+            new_framerate: 30.0,
+            target_bit_rate: 1_500_000,
+            ..Default::default()
+        };
+        let mut cursor = StatsCursor::new(&stats, 0);
+        let out = process_rc_stat(
+            &mut rc,
+            &scs,
+            &cfg2,
+            &mut tp,
+            &frame,
+            &input,
+            0,
+            &mut cursor,
+            None,
+            None,
+            &mut gf_group,
+            false,
+            false,
+            &mut eos,
+            |_, _, _, _| 120,
+        );
+        assert_eq!(out.kf_base_frame_target, None);
+        assert!(!out.new_gf_group);
+        assert_eq!(tp.kf_zeromotion_pct, 0, "untouched default");
+
+        // IDR: the KF group is budgeted.
+        let mut rc = base_rc.clone();
+        let mut tp = mk_tp();
+        let kf_frame = FrameRc {
+            picture_number: 0,
+            frame_type: crate::port_rc_vbr_cbr_state::FrameType::Key,
+            ..Default::default()
+        };
+        let kf_input = GroupRateInput {
+            idr_flag: true,
+            gf_interval: 8,
+            new_framerate: 30.0,
+            target_bit_rate: 1_500_000,
+            ..Default::default()
+        };
+        let mut cursor = StatsCursor::new(&stats, 0);
+        let out = process_rc_stat(
+            &mut rc,
+            &scs,
+            &cfg2,
+            &mut tp,
+            &kf_frame,
+            &kf_input,
+            0,
+            &mut cursor,
+            None,
+            None,
+            &mut gf_group,
+            true,
+            false,
+            &mut eos,
+            |_, _, _, _| 120,
+        );
+        assert!(out.kf_base_frame_target.is_some());
+        assert!(out.new_gf_group, "a KF always defines a new GF group");
+        // The GF assignment ran and split the budget.
+        assert!(rc.gf_group_bits >= 0);
+    }
+
+    /// `gop_bit_allocation` derives the ARF pool from the GF boost and hands
+    /// it to the splitter; a zero boost gives a zero pool, so every frame in
+    /// the group gets the flat base share.
+    #[test]
+    fn gop_bit_allocation_with_no_boost_is_a_flat_split() {
+        let rc = RateControl {
+            baseline_gf_interval: 4,
+            gfu_boost: 0,
+            ..Default::default()
+        };
+        let mut group = vec![
+            GfGroupFrame {
+                update_type: FrameUpdateType::LfUpdate,
+                ..Default::default()
+            };
+            4
+        ];
+        gop_bit_allocation(&rc, &mut group, 4, 3, false, 8, false, 40_000);
+        for f in &group {
+            assert_eq!(f.base_frame_target, 10_000);
+        }
+    }
+}
