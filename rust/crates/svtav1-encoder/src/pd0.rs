@@ -1803,18 +1803,42 @@ impl<'a> Pd0Ctx<'a> {
     ) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
-        // DC prediction from SOURCE neighbors (pd0_use_src_samples=1):
-        // the same spec unavailable-edge fills as the recon path.
-        let (above, left, _tl, has_above, has_left) = crate::partition::extract_neighbors(
-            self.src,
-            self.stride,
-            abs_x,
-            abs_y,
-            bw,
-            bh,
-            self.aligned_w,
-            self.aligned_h,
-        );
+        // `pd0_use_src_samples` (enc_mode_config.c:7309) is `allintra ||
+        // hbd_md`. TRUE — no canvas — means C copies the SOURCE row/column into
+        // the recon-neighbour arrays (product_coding_loop.c:8370), so
+        // predicting straight off the source plane IS that arm, and this keeps
+        // the untiled extractor it has always used (byte-neutral). FALSE — a
+        // canvas — means the arrays hold PD0's own recon, and the canvas is
+        // that state; the availability, `n_top_px`/`n_left_px` clamp and edge
+        // replication are the same function either way.
+        let (above, left, _tl, has_above, has_left) = match self.recon_canvas.as_ref() {
+            None => crate::partition::extract_neighbors(
+                self.src,
+                self.stride,
+                abs_x,
+                abs_y,
+                bw,
+                bh,
+                self.aligned_w,
+                self.aligned_h,
+            ),
+            Some(cv) => {
+                // Row axis shifted into the canvas window, exactly as
+                // `lvl1_block_cost_rect` does it.
+                crate::partition::extract_neighbors_tiled(
+                    &cv.buf,
+                    cv.stride,
+                    abs_x,
+                    abs_y - cv.y0,
+                    bw,
+                    bh,
+                    self.tile_top.saturating_sub(cv.y0),
+                    self.tile_left,
+                    self.aligned_w,
+                    self.aligned_h - cv.y0,
+                )
+            }
+        };
         let mut pred = vec![0u8; bw * bh];
         svtav1_dsp::intra_pred::predict_dc(
             &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
@@ -1855,7 +1879,7 @@ impl<'a> Pd0Ctx<'a> {
             }
         }
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
-        let (eob, dist, _qcoeff, _c_tx, _dq) =
+        let (eob, dist, _qcoeff, _c_tx, dqcoeff) =
             tx_quant_core(&residual, bw, tx_h, qindex_off, self.qm_level, step);
         // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
@@ -1866,6 +1890,47 @@ impl<'a> Pd0Ctx<'a> {
         // PARTITION_NONE bits at context 0.
         let rate = bits + skip0_bits() + partition_none_bits_ctx0();
         let cost = rdcost(self.lambda, rate, dist);
+        // C `md_encode_block_pd0` (product_coding_loop.c:8429): with
+        // `pd0_use_src_samples` FALSE, PD0 generates the block's RECON so the
+        // next block can predict from it. Same inverse-transform +
+        // even/odd-row expansion as the LVL_1 family's twin — see
+        // `lvl1_block_cost_rect`, whose block this mirrors.
+        if self.recon_canvas.is_some() {
+            let mut recon = alloc::vec![0u8; bw * bh];
+            if eob > 0 {
+                let packed_w = bw.min(32);
+                let packed_h = tx_h.min(32);
+                let mut full = alloc::vec![0i32; bw * tx_h];
+                for r in 0..packed_h {
+                    for c in 0..packed_w {
+                        full[r * bw + c] = dqcoeff[r * packed_w + c];
+                    }
+                }
+                let mut inv = alloc::vec![0i32; bw * tx_h];
+                let (tx_size, _) = pd0_tx_size(bw, tx_h);
+                svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
+                    &full,
+                    &mut inv,
+                    bw,
+                    tx_size,
+                    svtav1_types::transform::TxType::DctDct,
+                );
+                for r in 0..tx_h {
+                    let dst = (r << step) * bw;
+                    for c in 0..bw {
+                        recon[dst + c] =
+                            (i32::from(pred[dst + c]) + inv[r * bw + c]).clamp(0, 255) as u8;
+                    }
+                    if step > 0 && (r << step) + 1 < bh {
+                        let (a, b) = recon.split_at_mut(dst + bw);
+                        b[..bw].copy_from_slice(&a[dst..dst + bw]);
+                    }
+                }
+            } else {
+                recon.copy_from_slice(&pred[..bw * bh]);
+            }
+            self.pending_recon = Some(recon);
+        }
         // `SVTAV1_PD0DBG` on the LIGHT PD0 path too. The LVL_1 family has had
         // this dump since task #95; LVL_5 had none, so the video arm's PD0 at
         // preset >= 9 — the one the fixed-tree path runs — could not be joined
@@ -3021,6 +3086,11 @@ pub fn pd0_pick_sb_partition_video(
     tile_left: usize,
     stale_vars: Option<&SbVariance>,
     max_tx_size: u8,
+    // C `ctx->pd0_use_src_samples == false` (enc_mode_config.c:7309) — the
+    // same parameter `pd0_pick_sb_partition_m6_eval` takes, and the same
+    // value from the same call site. `Some((md_recon_plane, stride))` is the
+    // frame's MD recon; `None` keeps the source prediction.
+    video_recon: Option<(&[u8], usize)>,
 ) -> Pd0Tree {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -3058,7 +3128,7 @@ pub fn pd0_pick_sb_partition_video(
         nsq_enabled,
         tile_top,
         tile_left,
-        recon_canvas: None,
+        recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
         pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);

@@ -8915,6 +8915,9 @@ fn encode_tile_rows(
                                     tile_sb_col_start * sb_size,
                                     sb_stale_vars,
                                     max_tx_size,
+                                    // C `pd0_use_src_samples` (video arm: recon)
+                                    // — the same value the refinement path gets.
+                                    pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                 )
                             } else {
                                 crate::pd0::pd0_pick_sb_partition(

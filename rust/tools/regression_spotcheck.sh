@@ -749,7 +749,13 @@ byteVideoKey "video-key-nsq-arm-p7-screenrep-72x88" screenrep 72 88 40 7
 # here where it passes on the three cells above. Same length, different bytes:
 # the ratio cell cannot see that, which is exactly why the promotion was tried.
 # Promote it when a byteVideoKey run passes, not when the percentage hits zero.
-ratioVideoKey "video-key-rate-arm-p9-72x88" gradient 72 88 40 9 1.0
+#
+# PROMOTED to byteVideoKey 2026-09-01 — a byteVideoKey run passes, which is the
+# bar this note set. Wiring C's `pd0_use_src_samples` on the fixed-tree path
+# (docs/INTER-ENCODE-PLAN.md §1l) took it 1587 B -> 1589 B, C's exact stream.
+# It still separates on its original fix: with the rate arm forced back to
+# Allintra the port emits 1630 B against C's 1589.
+byteVideoKey "video-key-rate-arm-p9-72x88" gradient 72 88 40 9
 
 # --- video-arm intra EDGE FILTER + the txs ladder, 2026-09-01.
 #
@@ -848,7 +854,33 @@ byteVideoKey "video-key-rdoq-plane-rd-mult-p6-64x64" gradient 64 64 40 6
 # (tools/tree_diff.py against C's CTREE, measured both ways). It is the §1f
 # pattern — a worse tree that landed nearer in size — so the cells that witness
 # this fix are the ones above, not p11.
-ratioVideoKey "video-key-lpd0-edge-shape-p9-screenrep" screenrep 72 88 40 9 0.5
+#
+# PROMOTED to byteVideoKey 2026-09-01 by the chunk below, which closed it. The
+# ratio form was the weaker assertion while the payload was open. It still
+# witnesses the boundary-shape fix by a wide margin: with `prices_edge_shape()`
+# forced back to `is_lvl1_family()` the port emits 2420 B against C's 2402.
+byteVideoKey "video-key-lpd0-edge-shape-p9-screenrep" screenrep 72 88 40 9
+
+# --- `pd0_use_src_samples` on the FIXED-TREE path, 2026-09-01. C's video PD0
+# predicts each block from the RECON it generates per block
+# (`ctx->pd0_use_src_samples = allintra || hbd_md`, enc_mode_config.c:7309;
+# product_coding_loop.c:8430); the port's LVL_5 predicted from the SOURCE.
+#
+# This experiment had been run and REJECTED once — over the light-PD0
+# boundary-shape defect fixed just above, which was still splitting every edge
+# node underneath it. Re-run over the fixed premise it closes six cells.
+#
+# OBSERVED, 72x88 q40 video frame 0, before -> after on ONE build each side
+# (a 45-cell matrix: 28 -> 34 byte-identical, nothing worse):
+#   gradient  p11: port 1613 B vs C 1634 = 1.285% -> BYTE-IDENTICAL
+#   screenrep p11: port 2422 B vs C 2418 = 0.165% -> BYTE-IDENTICAL
+#   gradient  p10: 0.063% -> BYTE-IDENTICAL; screenrep p10 0.125% -> ditto
+# p11 is the cell to keep: it is the one whose byte count moved AWAY from C when
+# the boundary shape was fixed (1.040% -> 1.285%) while its tree went from 9
+# field flips to 1 — so it is the cell that proves the two chunks belong
+# together, and it fails loudly if either is reverted.
+byteVideoKey "video-key-pd0-recon-pred-p11-72x88" gradient 72 88 40 11
+byteVideoKey "video-key-pd0-recon-pred-p11-screenrep" screenrep 72 88 40 11
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
