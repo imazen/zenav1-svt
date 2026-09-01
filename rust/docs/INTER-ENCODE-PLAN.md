@@ -1246,14 +1246,121 @@ from SOURCE), and that wiring it there had been MEASURED AND REJECTED — no
 movement on p4/p5/p7 and p9 worse, 0.189 -> 0.378. **That rejection was
 measured over the square-cost defect this section fixes**, exactly as §1h's four
 variants were measured over the PD0 coefficient-rate defect. It has to be
-re-run, and the small per-block `dist` deltas above are what it predicts. Re-run
-it before believing either the old rejection or this paragraph.
+re-run, and the small per-block `dist` deltas above are what it predicts.
+
+**§1l re-ran it. It closes six cells** — the rejection was an artifact of the
+premise, and the prediction above was right about which deltas it collapses.
 
 Not touched, with reasons rather than silence: **LVL_6** has no block cost to
 make rectangular (`compute_lpd0_cost_allintra` / `_inter` run no transform), and
 **LVL_0** is the bd10-forced path whose partial-SB cells are byte-identical
 today with nothing here having dumped C's bd10 boundary cost — widening it blind
 trades a green gate for a guess.
+
+### 1l. `pd0_use_src_samples` at preset >= 9 — a REJECTED experiment, re-run over a fixed premise, closes every open video-key scoreboard cell
+
+`gradient 72x88 q40` and `screenrep 72x88 q40` at presets **9, 10 and 11** — six
+cells that were all still off — are byte-identical video-mode KEY frames. Every
+`ratioVideoKey` video-key cell in the scoreboard is now a `byteVideoKey`,
+including `video-key-rate-arm-p9-72x88`, the last one.
+
+Measured as a 45-cell matrix (`72x88 q40`, five content classes x nine presets)
+on ONE build each side: **28 -> 34 byte-identical, six closed, nothing worse,
+and every cell this chunk cannot reach unchanged to the byte.**
+
+**ONE weaker video-key cell survives and it is not this chunk's**:
+`fhVideoKey "video-key-ibc-arm-p8" screen 64 64 40 8` asserts the frame HEADER
+only, and its tile payload is not close — MEASURED here, `screen 64x64 q40 p8`
+video is **114 B in C against the port's 568**, 398 % off. Its 72x88 sibling is
+409 %. Those two are by a wide margin the worst video-key cells left, they are
+the SAME content class (`screen`, the only one that arms the screen-content
+detector) at the SAME preset, and neither is touched by anything in §1j-§1l.
+`screenrep 64x64 q40 p8` is byte-identical, so it is not "screen content at p8"
+in general — it is this cell's tools.
+
+**This experiment had already been run and REJECTED.** §1i recorded it: wiring
+`ctx->pd0_use_src_samples = false` (the video arm's value — PD0 predicts each
+block from the RECON it generates, `product_coding_loop.c:8430`, not from the
+source) on the fixed-tree path at preset >= 9 moved nothing on p4/p5/p7 and made
+p9 WORSE, 0.189 % -> 0.378 %. That verdict was correct about what it measured
+and wrong about what it meant: it was measured over the LIGHT-PD0
+boundary-shape defect §1k fixes, so the recon prediction was being fed into a
+partition search that was still splitting every edge node. §1k said the
+rejection was stale and had to be re-run. Re-run, it closes six cells at once.
+
+That is the same lesson as §1h's four PD0 variants and §1i's three defects, for
+the third time: **a negative result is only as good as the premise underneath
+it.** When a chunk fixes something upstream, re-run the experiments that were
+rejected over it rather than treating the old verdict as settled.
+
+**What landed.** `lvl5_like_block_cost_rect` gained the two halves the LVL_1
+family has had since §1i:
+* neighbours come from `Pd0ReconCanvas` when there is one, through the same
+  `extract_neighbors_tiled` with the same window shift — and from the source
+  through the untiled extractor when there is not, which keeps the ALLINTRA arm
+  byte-identical by construction;
+* the block's recon is generated (inverse transform into the even rows at the
+  subres stride, each even row copied onto the odd row below, a straight copy of
+  the prediction when `eob == 0`) and handed to `pending_recon`, which
+  `pick_q`'s existing writes push into the canvas at C's decision points.
+
+`pd0_pick_sb_partition_video` now takes the canvas, from the SAME
+`pd0_video_recon.then_some((&tile_frame_recon[..], w))` the refinement path at
+preset <= 8 was already being given — three lines at the call site, because the
+plumbing existed and only this entry point was passing `None`.
+
+**Every cell that MOVED, frame 0, % off C's byte count.** The "before" column is
+this repo's state one commit earlier — §1k's boundary-shape fix already in — and
+both columns come from one build each, not from earlier sections:
+
+| cell | before (§1k) | after |
+|---|--:|--:|
+| `gradient 72x88 q40 p9` | 0.126 | **0.000, BYTE-IDENTICAL** |
+| `gradient 72x88 q40 p10` | 0.063 | **0.000, BYTE-IDENTICAL** |
+| `gradient 72x88 q40 p11` | 1.285 | **0.000, BYTE-IDENTICAL** |
+| `screenrep 72x88 q40 p9` | 0.125 | **0.000, BYTE-IDENTICAL** |
+| `screenrep 72x88 q40 p10` | 0.125 | **0.000, BYTE-IDENTICAL** |
+| `screenrep 72x88 q40 p11` | 0.165 | **0.000, BYTE-IDENTICAL** |
+| `gradient 72x88 q40 p12` / `p13` | 1.346 | 0.061 (ONE byte) |
+| `screenrep 72x88 q40 p12` / `p13` | 0.124 | 0.041 (ONE byte) |
+
+**The other 37 cells of the matrix are byte-for-byte unchanged**, including
+every preset 0..8 cell and every already-identical one. Nothing regressed.
+
+`gradient 72x88 p11` is the row to read twice: §1k moved it FURTHER from C in
+bytes (1.040 -> 1.285) while its tree went from 9 field flips to 1, and that
+reading — "a worse tree that landed nearer in size" — is what this chunk
+confirms. The remaining flip was the wrong prediction source.
+
+**Where the envelope ends now, from the same matrix.** Everything still open at
+`72x88 q40` in video mode:
+
+| preset | cells still off |
+|---|---|
+| 0 | `gradient` 0.447 %, `diag` 0.483 %, `screenrep` 0.043 % |
+| 3 | `gradient` 1.628 %, `diag` **22.257 %** |
+| 8 | `gradient` 1.673 %, `screen` **408.939 %** (179 B vs the port's 911) |
+| 12 / 13 | `gradient` / `diag` / `screen` / `screenrep` / `uniform`, ONE byte each |
+
+Presets 0..8 are the LVL_1-family REFINEMENT path, which this chunk does not
+touch, and they are the next frontier. Two of those cells are far louder than
+anything the campaign has been chasing — `diag p3` at 22 % and `screen p8` at
+409 %, both **pre-existing and unchanged by this chunk** (verified on both sides
+of the A/B, not assumed). `screen` is the content that arms the screen-content
+detector, so p8 is a palette/IntraBC-shaped lead, not a partition one.
+
+Presets 12/13 are a different and much smaller shape: FIVE content classes, all
+exactly one byte short. A single shared cause is likely and none of it is
+partition — the trees are not being compared there yet.
+
+**A cost this inherits, recorded rather than discovered later.** §1i's note on
+`Pd0ReconCanvas::new` — `stride * 66` bytes allocated and filled per PD0 entry
+call — now applies at preset >= 9 as well, on the VIDEO path only (the allintra
+arm still passes `None` and carries no canvas). The fixed-tree path calls that
+entry ONCE per superblock where the refinement path calls it several times, so
+it is the cheaper of the two, but the same narrowing applies: seed only the row
+above and the column left, which is all `extract_neighbors_tiled` can read. That
+is an optimisation to make against a measurement, not while closing cells.
 
 ## 2. Chunks
 

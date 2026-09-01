@@ -910,6 +910,32 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **`pd0_use_src_samples` on the fixed-tree PD0 path — a REJECTED experiment,
+  re-run over a fixed premise, closes every open video-key scoreboard cell.**
+  C's video PD0 predicts each block from the RECON it generates
+  (`ctx->pd0_use_src_samples = allintra || hbd_md`, enc_mode_config.c:7309;
+  product_coding_loop.c:8430); the port's LVL_5 predicted from the SOURCE. This
+  had been wired once and REJECTED — no movement on p4/p5/p7 and p9 worse
+  (0.189% -> 0.378%) — but that measurement was taken over the light-PD0
+  boundary-shape defect fixed in the entry below, which was still splitting
+  every edge node underneath it. Re-run over the fixed premise, a 45-cell
+  video-mode matrix (`72x88 q40`, 5 content classes x 9 presets, one build each
+  side) goes **28 -> 34 byte-identical with nothing worse**: `gradient` and
+  `screenrep` at presets 9, 10 and 11 all close (`gradient p11` 1.285% ->
+  byte-identical), p12/p13 fall to ONE byte across five content classes, and the
+  other 37 cells are unchanged to the byte. TWO spot-check cells PROMOTED to
+  `byteVideoKey` — `video-key-rate-arm-p9-72x88`, the LAST `ratioVideoKey`
+  video-key cell, and `video-key-lpd0-edge-shape-p9-screenrep` — and two added.
+  One weaker cell survives and is NOT this chunk's: `video-key-ibc-arm-p8`
+  (`screen 64x64 q40 p8`) is `fhVideoKey`, header-only, and its payload is
+  **398% off** (C 114 B vs the port's 568) with its 72x88 sibling at 409% —
+  same content class, same preset, untouched here. Still open at 72x88 q40 and
+  NOT touched by this chunk (the LVL_1 refinement path, verified unchanged on
+  both sides of the A/B): presets 0/3/8 — `diag p3` at 22.3% and `screen p8`
+  are the loudest cells in the campaign — and the one-byte p12/p13 row. No still regression: `identity_full_8bit` 1100/1100,
+  `regression_spotcheck` 53/53, `cargo nextest --workspace` 2415/2415. See
+  `rust/docs/INTER-ENCODE-PLAN.md` §1l.
+
 - **The LIGHT-PD0 boundary SHAPE — a partial-SB edge node was priced as the
   square that does not fit.** `pd0.rs` gave a one-false boundary node its
   fitting `PART_H`/`PART_V` rectangle only for the LVL_1 family; LVL_5 (light
