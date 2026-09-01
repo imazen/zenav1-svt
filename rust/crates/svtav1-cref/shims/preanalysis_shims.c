@@ -527,3 +527,68 @@ void ref_pre_pad_2b_compressed(uint32_t color_format, uint32_t pad_right, uint32
     svt_aom_pad_picture_to_multiple_of_min_blk_size_dimensions(scs, &pic);
     free(scs);
 }
+
+/* ------------------------------------------------------------------------
+ * noise_model.c leaves. All four are EXPORTED.
+ *
+ * The solver entry points take an `AomNoiseStrengthSolver`, whose equation
+ * system is three separate mallocs; the shim builds the facade from flat
+ * arrays the Rust side owns, drives C, and copies the result back. Nothing is
+ * transcribed here — `svt_aom_noise_strength_solver_add_measurement` and
+ * `_get_center` are the real C functions.
+ * ---------------------------------------------------------------------- */
+
+#include "noise_model.h"
+
+void svt_av1_pointwise_multiply_c(const float* a, float* b, float* c, double* b_d, double* c_d, int32_t n);
+void svt_av1_apply_window_function_to_plane_c(int32_t y_size, int32_t x_size, float* result_ptr,
+                                              uint32_t result_stride, float* block, float* plane,
+                                              const float* window_function);
+void   svt_aom_noise_strength_solver_add_measurement(AomNoiseStrengthSolver* solver, double block_mean,
+                                                     double noise_std);
+double svt_aom_noise_strength_solver_get_center(const AomNoiseStrengthSolver* solver, int32_t i);
+
+void ref_nm_pointwise_multiply(const float* a, float* b, float* c, double* b_d, double* c_d, int32_t n) {
+    pre_ensure_rtcd();
+    svt_av1_pointwise_multiply_c(a, b, c, b_d, c_d, n);
+}
+
+void ref_nm_apply_window_function_to_plane(int32_t y_size, int32_t x_size, float* result_ptr, uint32_t result_stride,
+                                           float* block, float* plane, const float* window_function) {
+    pre_ensure_rtcd();
+    svt_av1_apply_window_function_to_plane_c(y_size, x_size, result_ptr, result_stride, block, plane,
+                                             window_function);
+}
+
+/* `a` is num_bins x num_bins row-major, `b` is num_bins; both are IN/OUT. */
+void ref_nm_solver_add_measurement(int32_t num_bins, double min_intensity, double max_intensity, double* a,
+                                   double* b, int32_t* num_equations, double* total, double block_mean,
+                                   double noise_std) {
+    pre_ensure_rtcd();
+    AomNoiseStrengthSolver solver;
+    memset(&solver, 0, sizeof(solver));
+    solver.num_bins      = num_bins;
+    solver.min_intensity = min_intensity;
+    solver.max_intensity = max_intensity;
+    solver.num_equations = *num_equations;
+    solver.total         = *total;
+    solver.eqns.n        = num_bins;
+    solver.eqns.A        = a;
+    solver.eqns.b        = b;
+    solver.eqns.x        = NULL; /* add_measurement never reads x */
+
+    svt_aom_noise_strength_solver_add_measurement(&solver, block_mean, noise_std);
+
+    *num_equations = solver.num_equations;
+    *total         = solver.total;
+}
+
+double ref_nm_solver_get_center(int32_t num_bins, double min_intensity, double max_intensity, int32_t i) {
+    pre_ensure_rtcd();
+    AomNoiseStrengthSolver solver;
+    memset(&solver, 0, sizeof(solver));
+    solver.num_bins      = num_bins;
+    solver.min_intensity = min_intensity;
+    solver.max_intensity = max_intensity;
+    return svt_aom_noise_strength_solver_get_center(&solver, i);
+}

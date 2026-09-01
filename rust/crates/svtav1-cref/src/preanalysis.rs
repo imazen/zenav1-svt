@@ -837,3 +837,137 @@ pub fn pad_2b_compressed(
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// noise_model.c leaves
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn ref_nm_pointwise_multiply(
+        a: *const f32,
+        b: *mut f32,
+        c: *mut f32,
+        b_d: *mut f64,
+        c_d: *mut f64,
+        n: i32,
+    );
+    fn ref_nm_apply_window_function_to_plane(
+        y_size: i32,
+        x_size: i32,
+        result_ptr: *mut f32,
+        result_stride: u32,
+        block: *mut f32,
+        plane: *mut f32,
+        window_function: *const f32,
+    );
+    fn ref_nm_solver_add_measurement(
+        num_bins: i32,
+        min_intensity: f64,
+        max_intensity: f64,
+        a: *mut f64,
+        b: *mut f64,
+        num_equations: *mut i32,
+        total: *mut f64,
+        block_mean: f64,
+        noise_std: f64,
+    );
+    fn ref_nm_solver_get_center(
+        num_bins: i32,
+        min_intensity: f64,
+        max_intensity: f64,
+        i: i32,
+    ) -> f64;
+}
+
+/// `svt_av1_pointwise_multiply_c` (noise_model.c:1293).
+pub fn nm_pointwise_multiply(
+    a: &[f32],
+    b: &mut [f32],
+    c: &mut [f32],
+    b_d: &mut [f64],
+    c_d: &mut [f64],
+) {
+    let n = a
+        .len()
+        .min(b.len())
+        .min(c.len())
+        .min(b_d.len())
+        .min(c_d.len());
+    unsafe {
+        ref_nm_pointwise_multiply(
+            a.as_ptr(),
+            b.as_mut_ptr(),
+            c.as_mut_ptr(),
+            b_d.as_mut_ptr(),
+            c_d.as_mut_ptr(),
+            n as i32,
+        );
+    }
+}
+
+/// `svt_av1_apply_window_function_to_plane_c` (noise_model.c:2004).
+#[allow(clippy::too_many_arguments)]
+pub fn nm_apply_window_function_to_plane(
+    y_size: usize,
+    x_size: usize,
+    result: &mut [f32],
+    result_stride: usize,
+    block: &mut [f32],
+    plane: &mut [f32],
+    window_function: &[f32],
+) {
+    assert!(result.len() >= (y_size - 1) * result_stride + x_size);
+    for s in [&*block, &*plane, window_function] {
+        assert!(s.len() >= y_size * x_size);
+    }
+    unsafe {
+        ref_nm_apply_window_function_to_plane(
+            y_size as i32,
+            x_size as i32,
+            result.as_mut_ptr(),
+            result_stride as u32,
+            block.as_mut_ptr(),
+            plane.as_mut_ptr(),
+            window_function.as_ptr(),
+        );
+    }
+}
+
+/// `svt_aom_noise_strength_solver_add_measurement` (noise_model.c:250).
+/// `a` and `b` are in/out; returns the updated `(num_equations, total)`.
+#[allow(clippy::too_many_arguments)]
+pub fn nm_solver_add_measurement(
+    num_bins: i32,
+    min_intensity: f64,
+    max_intensity: f64,
+    a: &mut [f64],
+    b: &mut [f64],
+    num_equations: i32,
+    total: f64,
+    block_mean: f64,
+    noise_std: f64,
+) -> (i32, f64) {
+    assert!(a.len() >= (num_bins * num_bins) as usize);
+    assert!(b.len() >= num_bins as usize);
+    let mut eqs = num_equations;
+    let mut tot = total;
+    unsafe {
+        ref_nm_solver_add_measurement(
+            num_bins,
+            min_intensity,
+            max_intensity,
+            a.as_mut_ptr(),
+            b.as_mut_ptr(),
+            &mut eqs,
+            &mut tot,
+            block_mean,
+            noise_std,
+        );
+    }
+    (eqs, tot)
+}
+
+/// `svt_aom_noise_strength_solver_get_center` (noise_model.c:318).
+pub fn nm_solver_get_center(num_bins: i32, min_intensity: f64, max_intensity: f64, i: i32) -> f64 {
+    unsafe { ref_nm_solver_get_center(num_bins, min_intensity, max_intensity, i) }
+}
