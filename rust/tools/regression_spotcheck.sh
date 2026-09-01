@@ -713,9 +713,19 @@ byteVideoKey "video-key-dr-arm-screen-p6-q55" screen 64 64 55 6
 # that does separate, at a TIGHTER bound:
 #   screenrep 72x88 q40 p7, C 2388 B: partition arms Allintra 2414 B = 1.089%
 #   off; wired 2386 B = 0.084% off. Limit 0.5 sits between.
-ratioVideoKey "video-key-nsq-arm-p4-72x88" gradient 72 88 40 4 1.0
-ratioVideoKey "video-key-nsq-arm-p5-72x88" gradient 72 88 40 5 0.3
-ratioVideoKey "video-key-nsq-arm-p7-screenrep-72x88" screenrep 72 88 40 7 0.5
+#
+# PROMOTED to byteVideoKey 2026-09-01 — all three payloads CLOSED by the video
+# PD0 chunk (docs/INTER-ENCODE-PLAN.md §1i). The ratio form was the weaker
+# assertion while the payload was open; §"ratioVideoKey" above says not to
+# leave it in place once the stronger one holds, so it does not.
+#
+# They still separate the partition arms exactly as the ratio cells did — with
+# the arms forced back to Allintra the port emits 1492 / 1499 / 2414 B against
+# C's 1403 / 1485 / 2388, so a regression fails on the first byte rather than
+# on a percentage.
+byteVideoKey "video-key-nsq-arm-p4-72x88" gradient 72 88 40 4
+byteVideoKey "video-key-nsq-arm-p5-72x88" gradient 72 88 40 5
+byteVideoKey "video-key-nsq-arm-p7-screenrep-72x88" screenrep 72 88 40 7
 
 # --- video-arm RATE ladders (rdoq_level + rate_est_level + update_cdf_level),
 # 2026-09-01. `pipeline.rs` ran the ALLINTRA arm of all three on every frame:
@@ -730,6 +740,15 @@ ratioVideoKey "video-key-nsq-arm-p7-screenrep-72x88" screenrep 72 88 40 7 0.5
 #   before port 1630 B vs C 1589 B = 2.580% off; after 1587 B = 0.126%.
 # p9 is the cleanest witness because the eff-mode clamp does not move there
 # (allintra M9 == video M9), so the whole delta is the two rate ladders.
+#
+# STAYS ratioVideoKey, and the attempt to promote it is recorded because the
+# measurement is the interesting part. Wiring C's
+# `cdef_recon_ctrls.zero_fs_cost_bias` (video `cdef_recon_level` 1 at M9..M10,
+# unported on both arms) moved this cell from 1586 B to 1589 B — C's EXACT byte
+# COUNT — but the payload is still not byte-identical, so byteVideoKey fails
+# here where it passes on the three cells above. Same length, different bytes:
+# the ratio cell cannot see that, which is exactly why the promotion was tried.
+# Promote it when a byteVideoKey run passes, not when the percentage hits zero.
 ratioVideoKey "video-key-rate-arm-p9-72x88" gradient 72 88 40 9 1.0
 
 # --- video-arm intra EDGE FILTER + the txs ladder, 2026-09-01.
@@ -757,6 +776,16 @@ ratioVideoKey "video-key-rate-arm-p9-72x88" gradient 72 88 40 9 1.0
 #                           so this cell isolates the header bit.
 # The p11 ratio limit 2.0 sits between 49.377 and 0.748.
 ratioVideoKey "video-key-edge-filter-diag-p11" diag 64 64 40 11 2.0
+#
+# THIS CELL EARNED ITS KEEP A SECOND TIME, 2026-09-01. The held
+# wip/video-md-arms bundle passed all five ratioVideoKey cells and broke THIS
+# one, and nobody had re-run it against the bundle. OBSERVED on the bundle head
+# 59458226: first diverging FH field `cdef_uv_pri_strength[0]` C=0 port=15
+# (C 1024 B, port 1026 B) where main passes. Its coded tree is EXACT there
+# (tree_diff: 7 blocks joined, 0 field flips, 0 C-only / 0 port-only), which is
+# what said the divergence is downstream of mode decision: C's
+# `cdef_recon_ctrls.zero_fs_cost_bias`, unported on BOTH arms. See
+# docs/INTER-ENCODE-PLAN.md §1i.
 fhVideoKey "video-key-txs-arm-tx-mode-p11" gradient 64 64 40 11
 
 # ---------------------------------------------------------------------------

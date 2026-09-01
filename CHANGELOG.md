@@ -56,6 +56,59 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **THREE byte-identical VIDEO-MODE KEY frames, and the held `wip/video-md-arms`
+  bundle landed with them.** `gradient 72x88 q40` at presets 4 and 5 and
+  `screenrep 72x88 q40 p7` are now byte-for-byte C's frame 0; before this they
+  were 1.996 %, 0.067 % and 0.377 % off, and those three spot-check cells are
+  PROMOTED from `ratioVideoKey` to `byteVideoKey`. A fourth, `gradient 72x88
+  q40 p9`, reaches C's exact byte COUNT (1589 B) without being byte-identical —
+  measured by attempting the promotion and watching it fail, and left as a
+  ratio cell with that recorded. What landed is the two
+  held MD arms (`mds0_use_hadamard_sb`, `nic_arm`) plus the video PD0 at CLI
+  preset >= 9, and four defects the bundle was waiting on — three in PD0, one in
+  the CDEF search. Full trail in `docs/INTER-ENCODE-PLAN.md` §1i.
+
+- **The PD0 coefficient rate ignored `mds_subres_step` twice.**
+  `svt_aom_txb_estimate_coeff_bits_pd0` doubles the coefficient bits under
+  subres (`rd_cost.c:1224`) AND drops its fast-estimate divisor from 2 to 1
+  (`:329`), so the whole coefficient scan is priced instead of half. The port
+  did neither, under-pricing a sub-sampled PD0 block by up to 3x — measured on
+  the reference cell's 64x64 root as C 2355794 bits against the port's 777355,
+  with the distortion already agreeing to the unit. This is what made
+  `docs/INTER-ENCODE-PLAN.md` §1h's four LVL_3 experiments all look wrong.
+
+- **`ctx->pd0_use_src_samples` is now ported (`pd0::Pd0ReconCanvas`).** C's
+  video PD0 predicts each block from the RECON it generates per block, not from
+  the source (`enc_mode_config.c:7309`); the port always used the source. With
+  it, C's per-block PD0 costs and the port's agree 75/75 on
+  `gradient 64x64 q40 p6` and 138/138 on `gradient 72x88 q40 p5` — dist, coeff
+  bits, RD cost and the pruned block set. Wired on the LVL_1 family (CLI
+  presets 0..=8) only; the preset >= 9 fixed-tree path still predicts from
+  source, which is recorded as an open gap, not as parity.
+
+- **FIX: the PD0 depth early-exit ran on OUT-OF-BOUNDS quadrants**, on both
+  arms. `test_split_partition_pd0` (`product_coding_loop.c:10456`) `continue`s
+  such a quadrant BEFORE the early-exit test; the port tested it anyway, and an
+  out-of-bounds child contributes 0 to the running split cost, so the extra
+  test at quadrant 3 could turn C's "split wins" into the port's "parent wins".
+
+- **FIX: `cdef_recon_ctrls.zero_fs_cost_bias` was unported on both arms.**
+  `finish_cdef_search` scales the zero-filter-strength candidate's mse down by
+  `factor/64` before the joint RD search (`enc_cdef.c:986`); the level is
+  `enc_mode <= M7 ? 0 : 1` on the allintra arm and `<= M8 ? 0 : <= M10 ? 1 : 2`
+  on the video arm. Found by verifying the landing rather than by reading: the
+  held bundle broke `video-key-txs-arm-tx-mode-p11`, whose coded tree is EXACT
+  (0 field flips, 0 geometry difference) and whose only divergence was
+  `cdef_uv_pri_strength[0]` C=0 port=15. Not wired into the bd10 search, whose
+  C ladder is a different one.
+
+- **`SVT_PD0CFG_OUT`** (`tools/capture_c_trace/wrap_recon.c`) — a `--wrap`
+  interposer on `svt_aom_sig_deriv_enc_dec_pd0` that dumps C's RESOLVED PD0
+  configuration (level, subres step, early-exit thresholds, rate-estimation
+  level, `pd0_use_src_samples`), and `SVTAV1_PD0DBG`'s new `PD0BLK` line, the
+  port-side twin of `SVT_PD0COST_OUT`. The four wrong guesses §1h records were
+  only necessary because nothing observed that function.
+
 - **FIX: `mds0_arm` was never called.** The commit that added it shipped the
   module and the prune but lost its `pipeline.rs` call site, so every
   "no cell moved" number in that commit message was vacuous. `cargo build

@@ -577,6 +577,18 @@ the sweep is what says so.
 
 ### 1h. The M3..M8 half of `pic_pd0_lvl` — four variants MEASURED, none good
 
+**SUPERSEDED 2026-09-01 by §1i, and the reason is worth more than the table.**
+Every row below was measured over a PD0 whose coefficient rate ignored
+`mds_subres_step` twice — C doubles the coeff bits under subres AND prices the
+whole scan instead of half (rd_cost.c:1224 and :329), and the port did neither,
+so a sub-sampled block came out up to 3x too cheap. The level reading here is
+RIGHT (C's dump confirms PD0_LVL_3, subres 1, `early_exit_th` 900); what made
+LVL_3 look catastrophic was the port's own rate, plus two more defects §1i
+names. Read the table as "what a broken subres rate does", not as evidence
+about C. Kept rather than deleted because the conclusion it invited — "something
+in the LVL_3 subres block cost is wrong" — was correct, and because the next
+session should see what a measurement over an unverified premise looks like.
+
 `set_pic_pd0_lvl_default` gives the video arm **PD0_LVL_3** at M3..M7 (240p,
 flat, no qp term), where the allintra arm takes PD0_LVL_1. Per
 `svt_aom_sig_deriv_enc_dec_pd0` the two differ in exactly two things — subres
@@ -623,6 +635,159 @@ PD0 runs) while `pd0_pick_sb_partition_m6_eval` re-seeds it on every call, and
 the refinement walk calls that function several times per SB; (b)
 `ctx->pd0_use_src_samples`, still `true` in the port where the video arm's C is
 `false` — §1f item 3, unported on both PD0 paths.
+
+### 1i. The M3..M7 half CLOSED (2026-09-01) — three PD0 defects, and §1h's four variants were all measured over two of them
+
+`video-key-nsq-arm-p4-72x88` is at **0.000 %** — byte-identical — and so are
+`p5` and the `screenrep` p7 cell. The held bundle landed with it. What §1h was
+missing was not a C gate; it was three defects in the port's own PD0, found by
+DUMPING C's resolution instead of guessing at it a fifth time.
+
+**The dump.** `svt_aom_sig_deriv_enc_dec_pd0` is the function that decides
+everything PD0 runs with and nothing observed it, so §1h had to infer. A
+`--wrap` interposer on it (`SVT_PD0CFG_OUT`, `tools/capture_c_trace/
+wrap_recon.c`) now prints the resolved values. On `gradient 64x64 q40 p6`
+video, frame 0, SB0 — and identically on every SB of the p4 and p5 cells:
+
+```
+lvl=3 subres=1 dev_th=5 split_th=50 exit_th=900 rate_lvl=1 qpoff=0
+fastcoef=2 srcsamp=0 pred_only=0 d4=1 d8=0 maxbs=64 cb64=1 bias=1000
+intra=1/12/1 nsq=1
+```
+
+PD0_LVL_3 with subres step 1 and `early_exit_th` 900 is therefore CONFIRMED,
+not inferred — §1h's reading of the level was right. `subres=1` only on a
+COMPLETE b64: the three edge superblocks of the 72x88 cells all report
+`subres=0`, which is `!b64_geom->is_complete_b64` (`:7337`). The container
+oracle was verified on the cell first (961 B, identical to the host's) per
+`docs/WORKING-ON-THIS.md` §5.
+
+**Defect 1 — the PD0 coefficient rate ignored `mds_subres_step`, twice.**
+`svt_aom_txb_estimate_coeff_bits_pd0` (rd_cost.c:1224) ends with
+`*y_txb_coeff_bits <<= ctx->mds_subres_step`, and the middle loop it calls
+takes `c_start = MIN(eob - 2, eob / MAX(1, fast_coeff_est_level -
+mds_subres_step))` (rd_cost.c:329) — so at step 1 the divisor drops from 2 to 1
+and the WHOLE scan is priced, then the total is doubled. The port did neither.
+MEASURED on the reference cell's 64x64 root: C `ybits=2355794`, port
+`ybits=777355` — 3.03x low — while `dist` already agreed to the unit
+(`2009984` on both), which is what says the residual, transform and quantizer
+were right and only the rate was wrong. **Every row of §1h's table was measured
+over this**, which is why "LVL_3 + subres" looked catastrophic.
+
+**Defect 2 — `pd0_use_src_samples` (§1f item 3), now ported.** With the rate
+fixed, C and the port agree to the unit on every block that has NO neighbour
+and diverge on every block that has one. `crate::pd0::Pd0ReconCanvas` is the
+port's model of `ctx->recon_neigh_y`: PD0 generates each block's recon
+(`av1_perform_inverse_transform_recon` — inverse the sub-sampled transform into
+the even rows, copy each onto the odd row below) and writes it back at exactly
+C's decision points (`mode_decision_update_neighbor_arrays_pd0`: a leaf with
+`mds->index < 3` writes itself, an abandoned split writes the parent, a won
+parent writes itself, a won split writes quadrant 3). A pixel canvas rather
+than C's two 1-D arrays, because PD0's decided blocks tile the superblock, so
+the array value is always the canvas pixel at `(x, y-1)` / `(x-1, y)` — and
+that lets `extract_neighbors_tiled` supply C's `n_top_px` clamp and edge
+replication unchanged.
+
+**Defect 3 — the depth early-exit ran on OUT-OF-BOUNDS quadrants.**
+Pre-existing, on BOTH arms, and it is what kept the edge superblocks diverging
+after defects 1 and 2 were fixed. `test_split_partition_pd0`
+(product_coding_loop.c:10456) `continue`s a quadrant whose origin is outside
+the mi grid BEFORE the early-exit test; the port tested it anyway. Because an
+out-of-bounds child contributes 0 to `split_cost`, the extra test at `i == 3`
+fires on a total C has already finished accumulating. MEASURED on
+`gradient 72x88 q40 p5` SB1's 16x16 node at (64,16): parent `4972162` vs split
+`4700296`, so C splits — the port's `i == 3` test (`4972162 * 900 <=
+4700296 * 1000`) fired and kept the parent. It was invisible until PD0 started
+predicting from its own recon, because the wrong winner is also what goes into
+the neighbour arrays: the block below then predicted off an 8x16's bottom row
+where C uses an 8x8's.
+
+**Verification, and it is per-block, not per-byte.** `SVT_PD0COST_OUT` (C's
+`svt_aom_full_cost_pd0`) joined against the port's new `SVTAV1_PD0DBG`
+`PD0BLK` line — same fields, same order:
+
+| cell | PD0 blocks, frame 0 | port vs C |
+|---|--:|---|
+| `gradient 64x64 q40 p6` | 75 | **75 / 75 identical** (dist, coeff bits, RD cost, lambda) |
+| `gradient 72x88 q40 p5` | 138 | **138 / 138 identical** |
+
+The block COUNT matching is part of the result: it is the depth early exit
+pruning the same nodes.
+
+**Per-cell, frame 0, % off C's byte count:**
+
+| cell | limit | main before | held bundle | landed |
+|---|--:|--:|--:|--:|
+| `gradient 72x88 q40 p4` | 1.0 | 0.570 | 1.996 | **0.000** |
+| `gradient 72x88 q40 p5` | 0.3 | 0.067 | 0.000 | **0.000** |
+| `screenrep 72x88 q40 p7` | 0.5 | 0.377 | 0.000 | **0.000** |
+| `gradient 72x88 q40 p9` | 1.0 | 0.063 | 0.189 | 0.000 (SIZE only) |
+| `diag 64x64 q40 p11` | 2.0 | 0.748 | 0.499 | 0.499 |
+| `gradient 64x64 q40 p6` (ref) | — | 1.457 | 0.416 | 0.416 |
+
+THREE byte-identical VIDEO-MODE KEY frames on non-degenerate content at three
+different presets, where before there were none outside the 64-aligned
+`screen` cells.
+
+**p9 is 0.000 % and NOT byte-identical, and the distinction is the point.** The
+CDEF fix below moved it from 1586 B to 1589 B — C's exact byte COUNT — so its
+`ratioVideoKey` cell now reads zero while a `byteVideoKey` run on the same cell
+FAILS (`C=1589B port=1589B`). That was measured by trying the promotion, not
+assumed: a ratio cell cannot tell "same size" from "same bytes", so a zero
+percentage is not a parity claim. It stays `ratioVideoKey` with the attempt
+recorded beside it.
+
+**A cost this buys, recorded rather than discovered later.**
+`Pd0ReconCanvas::new` allocates and fills `stride * 66` bytes per PD0 entry
+call, and the refinement path calls that entry more than once per superblock.
+At 64x64 and 72x88 that is nothing; at 4K it is ~250 KB of memcpy per call, on
+the VIDEO path only (the allintra arm carries no canvas and is untouched). It
+is correctness-first and deliberately so — the obvious narrowing is to seed
+only the row above and the column left, which is all `extract_neighbors_tiled`
+can read, but that is an optimisation to make against a measurement, not while
+closing the cells.
+
+**What is still open, said plainly.** `pd0_use_src_samples` is wired on the
+LVL_1 FAMILY only — the refinement path at CLI presets 0..=8. The fixed-tree
+path at preset >= 9 (`pd0_pick_sb_partition_video`, LVL_5 / LVL_6) still
+predicts from source on both arms, and C's video arm does not; that is why
+`diag p11` sits at 0.499 % rather than 0. The reference cell's residual 0.416 %
+is likewise NOT in PD0 — its 75 PD0 blocks are exact — it is downstream of the
+partition decision.
+
+**A FOURTH defect, found while verifying the landing, and it is not in PD0.**
+The held bundle passed the five ratio cells but broke a spotcheck cell nobody
+had re-run against it: `video-key-txs-arm-tx-mode-p11` (`gradient 64x64 q40
+p11`, `fhVideoKey`). MEASURED on the bundle head `59458226` itself, before any
+of this chunk's changes: `cdef_uv_pri_strength[0]` C=0 port=15, C 1024 B vs
+port 1026 B — where `main` passes the cell. So "the bundle is one cell from
+landing" was half the story; it was two.
+
+The cell's coded tree is EXACT (`tools/tree_diff.py`: 22 -> here 7 blocks
+joined, **0 field flips, 0 C-only / 0 port-only geometry**), which is what
+says the divergence is downstream of mode decision. It is
+`cdef_recon_ctrls.zero_fs_cost_bias` (`set_cdef_recon_controls`,
+enc_mode_config.c:1200) — `finish_cdef_search` scales the ZERO-strength
+candidate's mse down by `factor/64` before the joint RD search, biasing toward
+switching CDEF off, and the port ran no side of that ladder. It is the same
+arm shape as everything else in this campaign:
+
+| arm | `cdef_recon_level` | bias |
+|---|---|--:|
+| allintra (`:2432`) | `enc_mode <= M7 ? 0 : 1` | 0 / 61 |
+| video (`:2102`) | `<= M8 ? 0 : <= M10 ? 1 : 2` | 0 / 61 / 61 |
+
+At video M11 the bias is 61, and the port's own mse rows make the arithmetic
+checkable by hand: luma `[32656, …]` -> `(63 * 32656) >> 6 = 32145` (the
+`> 25000` rung), which does not move the luma pick (slot 3 wins either way, and
+C signals the same 15/2); chroma `744` -> `(61 * 744) >> 6 = 709`, which drops
+BELOW slot 1's `734` and flips the chroma pick from 15/0 to **0/0 — C's**.
+The other two fields `set_cdef_recon_controls` carries are inert here:
+`zero_filter_strength_lvl` and `prev_cdef_dist_th` are read only by
+`me_based_cdef_skip`, which returns false immediately on an I_SLICE
+(md_config_process.c:781). The bd10 search deliberately does NOT get this — C
+selects a different, wider ladder on `encoder_bit_depth > 8` and porting the
+8-bit one there would be a guess.
 
 ### `mds0_level` — WIRED 2026-09-01 (`crate::mds0_arm`), byte-inert and said so
 
@@ -689,7 +854,17 @@ revision of this file:
   preset 5, where the video arm takes `nic_level` **7**, so the flag is 0 and
   cannot explain it.
 
-### `wip/video-md-arms` — complete, verified, deliberately NOT on main
+### `wip/video-md-arms` — LANDED 2026-09-01 (kept below as the record)
+
+The bookmark's head `59458226` is on `main`, together with the PD0 and CDEF
+fixes §1i describes. The section below is the record of why it was held and
+what was measured while it was; read §1i for what closed it. Two claims in it
+are now wrong and are corrected there rather than edited away: "what holds the
+pair off main now is `gradient 72x88 p4`, `p9` and the `diag p11` edge-filter
+witness" missed a FOURTH cell (`video-key-txs-arm-tx-mode-p11`, which the
+bundle broke and nobody had re-run against it), and the three named cells are
+now byte-identical rather than merely inside their limits.
+
 
 **Head is `59458226` as of 2026-09-01** (it supersedes `f898794f9`, which is
 still reachable by hash; see §1g for what the new head adds and why the pair is

@@ -313,7 +313,15 @@ leave a Linux ELF where the macOS `capture_c_trace` wrapper would exec it). The
 `wrap_recon.c` dump vars are forwarded and their paths mapped:
 `SVT_CTREE_OUT` (join against `SVTAV1_PACKTREE` with `tools/tree_diff.py`),
 `SVT_QLEVELS_OUT` (+ `_XY`/`_COMP`), `SVT_PICKPART_OUT`, `SVT_CCOEF_OUT`,
-`SVT_CCOST_OUT`, `SVT_PART_OUT`, `SVT_SEED_OUT`. Scratch must live under
+`SVT_CCOST_OUT`, `SVT_PART_OUT`, `SVT_SEED_OUT`, `SVT_PD0COST_OUT` (+ `_SBY`)
+and `SVT_PD0CFG_OUT`. The last two are the PD0 pair: `SVT_PD0CFG_OUT` prints
+what `svt_aom_sig_deriv_enc_dec_pd0` RESOLVED for each superblock (level,
+subres step, early-exit thresholds, rate-estimation level,
+`pd0_use_src_samples`) and `SVT_PD0COST_OUT` prints C's per-block PD0 RD, which
+joins field-for-field against the port's `SVTAV1_PD0DBG` `PD0BLK` line. Four
+guesses at C's video PD0 were recorded in `INTER-ENCODE-PLAN.md` §1h before
+anything observed that function; §1i is what one dump replaced them with.
+Scratch must live under
 `$CTRACE_WORK` (default `~/tmp/zenav1-ctrace`) — paths outside it are refused
 rather than silently written where the host cannot see them.
 
