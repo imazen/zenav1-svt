@@ -34,6 +34,8 @@ EbErrorType sb_geom_init(SequenceControlSet* scs, uint16_t width, uint16_t heigh
 void        svt_aom_get_max_allocated_me_refs(uint8_t ref_count_used_list0, uint8_t ref_count_used_list1,
                                              uint8_t* max_ref_to_alloc, uint8_t* max_cand_to_alloc);
 uint32_t    svt_aom_get_out_buffer_size(uint32_t picture_width, uint32_t picture_height);
+int32_t     svt_aom_get_frame_update_type(PictureParentControlSet* pcs);
+uint8_t     svt_aom_get_denom_idx(uint8_t scale_denom);
 
 /* ---- svt_aom_ref_mgmt_storeable_slots_mask (pd_process.c:1259) ---- */
 
@@ -132,3 +134,17 @@ uint32_t pcsgeom_sb_geom_init(uint16_t sb_size, uint16_t width, uint16_t height,
     free(scs);
     return n;
 }
+
+/* ---- resize.c: the two exported superres-decision symbols ---- */
+
+int32_t superres_frame_update_type(int32_t is_key_frame, uint8_t hierarchical_levels, uint8_t temporal_layer_index) {
+    PictureParentControlSet* pcs = (PictureParentControlSet*)calloc(1, sizeof(*pcs));
+    pcs->frm_hdr.frame_type      = is_key_frame ? KEY_FRAME : INTER_FRAME;
+    pcs->hierarchical_levels     = hierarchical_levels;
+    pcs->temporal_layer_index    = temporal_layer_index;
+    const int32_t t              = svt_aom_get_frame_update_type(pcs);
+    free(pcs);
+    return t;
+}
+
+uint8_t superres_denom_idx(uint8_t scale_denom) { return svt_aom_get_denom_idx(scale_denom); }

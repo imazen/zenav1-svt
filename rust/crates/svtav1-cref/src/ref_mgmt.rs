@@ -151,3 +151,25 @@ pub fn sb_geom_init(sb_size: u16, width: u16, height: u16) -> Vec<SbGeomRow> {
     } as usize;
     (0..n).map(|i| (x[i], y[i], w[i], h[i])).collect()
 }
+
+// ---------------------------------------------------------------------------
+// resize.c superres decision (`shims/refmgmt_shims.c`)
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn superres_frame_update_type(is_key_frame: i32, hier: u8, temporal_layer: u8) -> i32;
+    fn superres_denom_idx(scale_denom: u8) -> u8;
+}
+
+/// C `svt_aom_get_frame_update_type` (`resize.c:1246`) — the
+/// `SvtAv1FrameUpdateType` discriminant.
+#[must_use]
+pub fn frame_update_type(is_key_frame: bool, hier: u8, temporal_layer: u8) -> i32 {
+    unsafe { superres_frame_update_type(i32::from(is_key_frame), hier, temporal_layer) }
+}
+
+/// C `svt_aom_get_denom_idx` (`resize.c:1425`).
+#[must_use]
+pub fn denom_idx(scale_denom: u8) -> u8 {
+    unsafe { superres_denom_idx(scale_denom) }
+}
