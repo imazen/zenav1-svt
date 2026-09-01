@@ -28,6 +28,7 @@
 #include "pd_process.h"
 #include "sequence_control_set.h"
 #include "aom_dsp_rtcd.h"
+#include "pic_buffer_desc.h"
 
 /* Neither geometry builder is declared in a public header. */
 EbErrorType b64_geom_init(SequenceControlSet* scs, uint16_t width, uint16_t height, B64Geom** b64_geoms);
@@ -184,4 +185,37 @@ int32_t resize2d_highbd_plane(const uint16_t* input, int32_t height, int32_t wid
     resize_rtcd_once();
     return (int32_t)svt_av1_highbd_resize_plane_c(
         input, height, width, in_stride, output, height2, width2, out_stride, bd);
+}
+
+/* ---- svt_aom_resize_frame (resize.c:881) — the 8-bit plane loop ----
+ * Two synthetic EbPictureBufferDescs whose buffers point at caller memory.
+ * `border` is 0, so C's border-offset arithmetic (which only runs on the
+ * bd > 8 && !is_packed path) never applies and the buffer pointers ARE
+ * pixel (0, 0). `bd = 8` and `is_2bcompress = 0` keep it on the 8-bit arm. */
+EbErrorType svt_aom_resize_frame(const EbPictureBufferDesc* src, EbPictureBufferDesc* dst, int bd,
+                                 const int num_planes, const uint32_t ss_x, const uint32_t ss_y, uint8_t is_packed,
+                                 uint32_t buffer_enable_mask, uint8_t is_2bcompress);
+
+int32_t resize2d_frame(uint8_t* sy, uint8_t* su, uint8_t* sv, uint16_t sys, uint16_t sus, uint16_t svs,
+                       uint16_t src_w, uint16_t src_h, uint8_t* dy, uint8_t* du, uint8_t* dv, uint16_t dys,
+                       uint16_t dus, uint16_t dvs, uint16_t dst_w, uint16_t dst_h, int32_t num_planes,
+                       uint32_t ss_x, uint32_t ss_y) {
+    resize_rtcd_once();
+    EbPictureBufferDesc* src = (EbPictureBufferDesc*)calloc(1, sizeof(*src));
+    EbPictureBufferDesc* dst = (EbPictureBufferDesc*)calloc(1, sizeof(*dst));
+
+    src->y_buffer = sy;  src->u_buffer = su;  src->v_buffer = sv;
+    src->y_stride = sys; src->u_stride = sus; src->v_stride = svs;
+    src->width = src_w;  src->height = src_h; src->border = 0;
+
+    dst->y_buffer = dy;  dst->u_buffer = du;  dst->v_buffer = dv;
+    dst->y_stride = dys; dst->u_stride = dus; dst->v_stride = dvs;
+    dst->width = dst_w;  dst->height = dst_h; dst->border = 0;
+
+    const uint32_t mask = PICTURE_BUFFER_DESC_Y_FLAG | PICTURE_BUFFER_DESC_Cb_FLAG | PICTURE_BUFFER_DESC_Cr_FLAG;
+    const EbErrorType rc = svt_aom_resize_frame(src, dst, 8, num_planes, ss_x, ss_y, 0, mask, 0);
+
+    free(dst);
+    free(src);
+    return (int32_t)rc;
 }

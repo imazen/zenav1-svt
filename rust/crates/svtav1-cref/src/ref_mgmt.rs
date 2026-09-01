@@ -261,3 +261,97 @@ pub fn highbd_resize_plane(
     };
     assert_eq!(rc, 0, "svt_av1_highbd_resize_plane_c failed (rc {rc})");
 }
+
+/// One plane handed to [`resize_frame`]: `(src, src_stride, dst, dst_stride)`.
+pub struct CrefFramePlane<'a> {
+    /// The source plane.
+    pub src: &'a [u8],
+    /// Its stride.
+    pub src_stride: usize,
+    /// The destination plane.
+    pub dst: &'a mut [u8],
+    /// Its stride.
+    pub dst_stride: usize,
+}
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn resize2d_frame(
+        sy: *mut u8,
+        su: *mut u8,
+        sv: *mut u8,
+        sys: u16,
+        sus: u16,
+        svs: u16,
+        src_w: u16,
+        src_h: u16,
+        dy: *mut u8,
+        du: *mut u8,
+        dv: *mut u8,
+        dys: u16,
+        dus: u16,
+        dvs: u16,
+        dst_w: u16,
+        dst_h: u16,
+        num_planes: i32,
+        ss_x: u32,
+        ss_y: u32,
+    ) -> i32;
+}
+
+/// C `svt_aom_resize_frame` (`resize.c:881`) at `bd = 8`, three planes.
+///
+/// The shim builds two synthetic `EbPictureBufferDesc`s with `border = 0`, so
+/// the buffer pointers are pixel (0, 0) and C's border arithmetic — which only
+/// runs on the `bd > 8 && !is_packed` path — never applies.
+#[allow(clippy::too_many_arguments)]
+pub fn resize_frame(
+    planes: &mut [CrefFramePlane<'_>; 3],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    num_planes: i32,
+    ss_x: u32,
+    ss_y: u32,
+) {
+    let (s0, s1, s2) = (
+        planes[0].src_stride,
+        planes[1].src_stride,
+        planes[2].src_stride,
+    );
+    let (d0, d1, d2) = (
+        planes[0].dst_stride,
+        planes[1].dst_stride,
+        planes[2].dst_stride,
+    );
+    // C takes non-const `uint8_t*`, but never writes through the source.
+    let sy = planes[0].src.as_ptr().cast_mut();
+    let su = planes[1].src.as_ptr().cast_mut();
+    let sv = planes[2].src.as_ptr().cast_mut();
+    let [p0, p1, p2] = planes;
+    let rc = unsafe {
+        resize2d_frame(
+            sy,
+            su,
+            sv,
+            s0 as u16,
+            s1 as u16,
+            s2 as u16,
+            src_w as u16,
+            src_h as u16,
+            p0.dst.as_mut_ptr(),
+            p1.dst.as_mut_ptr(),
+            p2.dst.as_mut_ptr(),
+            d0 as u16,
+            d1 as u16,
+            d2 as u16,
+            dst_w as u16,
+            dst_h as u16,
+            num_planes,
+            ss_x,
+            ss_y,
+        )
+    };
+    assert_eq!(rc, 0, "svt_aom_resize_frame failed (rc {rc})");
+}

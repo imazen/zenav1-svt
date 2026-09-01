@@ -589,3 +589,111 @@ pub fn resize_plane(
         fill_arr_to_col(&mut output[c..], out_stride, height2, &arrbuf2);
     }
 }
+
+/// One plane of a frame being resized: the source it reads and the
+/// destination it writes, each with its own stride.
+///
+/// C reaches these through `EbPictureBufferDesc`'s `buffer[]` / `stride[]`
+/// unions and tests each pointer against NULL alongside a bit of
+/// `buffer_enable_mask`; here an absent plane is simply not in the slice.
+pub struct FramePlane<'a> {
+    /// The source plane, starting at pixel (0, 0).
+    pub src: &'a [u8],
+    /// C `src->{y,u,v}_stride`.
+    pub src_stride: usize,
+    /// The destination plane, starting at pixel (0, 0).
+    pub dst: &'a mut [u8],
+    /// C `dst->{y,u,v}_stride`.
+    pub dst_stride: usize,
+}
+
+/// C's per-plane dimensions inside `svt_aom_resize_frame`
+/// (`resize.c:976-1000`).
+///
+/// Plane 0 is the frame size; planes 1 and 2 are `(dim + ss) >> ss`, which
+/// rounds UP — an odd luma dimension gives the larger chroma plane, not the
+/// smaller.
+#[must_use]
+pub fn plane_dims(
+    plane: usize,
+    width: usize,
+    height: usize,
+    ss_x: u32,
+    ss_y: u32,
+) -> (usize, usize) {
+    if plane == 0 {
+        (width, height)
+    } else {
+        (
+            (width + ss_x as usize) >> ss_x,
+            (height + ss_y as usize) >> ss_y,
+        )
+    }
+}
+
+/// C's kernel selection inside `svt_aom_resize_frame` (`resize.c:1010`):
+/// `svt_av1_resize_plane_horizontal` when the frame HEIGHTS match, the
+/// two-dimensional `svt_av1_resize_plane` otherwise.
+///
+/// The test is on the FRAME heights, not the plane's — with 4:2:0 chroma an
+/// odd frame height can make the chroma heights differ while the luma heights
+/// do not, and C still takes the horizontal-only kernel for every plane. That
+/// is why this takes the decision as a flag rather than re-deriving it.
+#[allow(clippy::too_many_arguments)]
+pub fn resize_plane_auto(
+    horizontal_only: bool,
+    input: &[u8],
+    height: usize,
+    width: usize,
+    in_stride: usize,
+    output: &mut [u8],
+    height2: usize,
+    width2: usize,
+    out_stride: usize,
+) {
+    if horizontal_only {
+        resize_plane_horizontal(input, height, width, in_stride, output, width2, out_stride);
+    } else {
+        resize_plane(
+            input, height, width, in_stride, output, height2, width2, out_stride,
+        );
+    }
+}
+
+/// C `svt_aom_resize_frame` (`resize.c:881`) — the 8-bit plane loop.
+///
+/// Resizes up to three planes from `src_w x src_h` to `dst_w x dst_h`,
+/// deriving each plane's own dimensions with [`plane_dims`] and picking the
+/// kernel with [`resize_plane_auto`].
+///
+/// NOT ported here, and named rather than left implicit: C's 10-bit
+/// `pack_highbd_pic_2d` / `svt_aom_unpack_highbd_pic_2d` round trip, its
+/// border-offset pointer arithmetic into `EbPictureBufferDesc`, and the
+/// `#if DEBUG_SCALING` YUV dumps. The first is a separate missing item; the
+/// second is buffer plumbing the caller does here; the third is debug output.
+pub fn resize_frame(
+    planes: &mut [FramePlane<'_>],
+    src_w: usize,
+    src_h: usize,
+    dst_w: usize,
+    dst_h: usize,
+    ss_x: u32,
+    ss_y: u32,
+) {
+    let horizontal_only = src_h == dst_h;
+    for (i, p) in planes.iter_mut().enumerate() {
+        let (sw, sh) = plane_dims(i, src_w, src_h, ss_x, ss_y);
+        let (dw, dh) = plane_dims(i, dst_w, dst_h, ss_x, ss_y);
+        resize_plane_auto(
+            horizontal_only,
+            p.src,
+            sh,
+            sw,
+            p.src_stride,
+            p.dst,
+            dh,
+            dw,
+            p.dst_stride,
+        );
+    }
+}

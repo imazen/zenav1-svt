@@ -150,3 +150,145 @@ fn two_d_at_equal_height_matches_the_horizontal_only_path() {
         }
     }
 }
+
+/// TIER 1. `svt_aom_resize_frame` (`resize.c:881`) — the whole-frame plane
+/// loop, 4:2:0 and 4:4:4.
+///
+/// Two decisions live only here and nowhere below: the per-plane dimensions
+/// (`(dim + ss) >> ss`, which rounds UP, so an ODD luma dimension gives the
+/// LARGER chroma plane) and the kernel selection (horizontal-only iff the
+/// FRAME heights match — not the plane's, which can differ from it in 4:2:0
+/// at an odd height). Both are driven here, including the odd-dimension cells
+/// that separate them.
+#[test]
+fn c_parity_resize_frame() {
+    let cases: &[(usize, usize, usize, usize, u32, u32)] = &[
+        // 4:2:0, even dims, both dimensions scaled.
+        (64, 48, 48, 36, 1, 1),
+        (176, 144, 96, 80, 1, 1),
+        // 4:2:0 at ODD dims: chroma rounds UP, and an odd height makes the
+        // chroma heights differ where the luma heights would not.
+        (65, 33, 49, 25, 1, 1),
+        (17, 5, 9, 3, 1, 1),
+        // Height UNCHANGED: C takes the horizontal-only kernel for every
+        // plane, including chroma.
+        (64, 48, 48, 48, 1, 1),
+        (65, 33, 33, 33, 1, 1),
+        // 4:4:4 — chroma is full size, so the shifts are inert.
+        (64, 48, 32, 24, 0, 0),
+        (65, 33, 49, 25, 0, 0),
+        // Identity.
+        (64, 48, 64, 48, 1, 1),
+    ];
+
+    let mut compared = 0usize;
+    let mut saw_horizontal_only = false;
+    let mut saw_two_d = false;
+    let mut saw_chroma_round_up = false;
+
+    for &(sw, sh, dw, dh, ss_x, ss_y) in cases {
+        let strides = |w: usize, ss: u32| (w + 6, ((w + ss as usize) >> ss) + 4);
+        let (s_ys, s_cs) = strides(sw, ss_x);
+        let (d_ys, d_cs) = strides(dw, ss_x);
+        let (s_cw, s_ch) = svtav1_dsp::resize::plane_dims(1, sw, sh, ss_x, ss_y);
+        let (_d_cw, d_ch) = svtav1_dsp::resize::plane_dims(1, dw, dh, ss_x, ss_y);
+        saw_chroma_round_up |= sw % 2 == 1 && ss_x == 1 && s_cw * 2 > sw;
+        saw_horizontal_only |= sh == dh;
+        saw_two_d |= sh != dh;
+
+        let src_y: Vec<u8> = plane(sw, s_ys, sh, 0x0BAD_F00D, 255)
+            .iter()
+            .map(|&v| v as u8)
+            .collect();
+        let src_u: Vec<u8> = plane(s_cw, s_cs, s_ch, 0x1357_9BDF, 255)
+            .iter()
+            .map(|&v| v as u8)
+            .collect();
+        let src_v: Vec<u8> = plane(s_cw, s_cs, s_ch, 0x2468_ACE0, 255)
+            .iter()
+            .map(|&v| v as u8)
+            .collect();
+
+        let mut want = (
+            vec![0x77u8; dh * d_ys],
+            vec![0x77u8; d_ch * d_cs],
+            vec![0x77u8; d_ch * d_cs],
+        );
+        let mut got = want.clone();
+
+        cref::resize_frame(
+            &mut [
+                cref::CrefFramePlane {
+                    src: &src_y,
+                    src_stride: s_ys,
+                    dst: &mut want.0,
+                    dst_stride: d_ys,
+                },
+                cref::CrefFramePlane {
+                    src: &src_u,
+                    src_stride: s_cs,
+                    dst: &mut want.1,
+                    dst_stride: d_cs,
+                },
+                cref::CrefFramePlane {
+                    src: &src_v,
+                    src_stride: s_cs,
+                    dst: &mut want.2,
+                    dst_stride: d_cs,
+                },
+            ],
+            sw,
+            sh,
+            dw,
+            dh,
+            2,
+            ss_x,
+            ss_y,
+        );
+
+        svtav1_dsp::resize::resize_frame(
+            &mut [
+                svtav1_dsp::resize::FramePlane {
+                    src: &src_y,
+                    src_stride: s_ys,
+                    dst: &mut got.0,
+                    dst_stride: d_ys,
+                },
+                svtav1_dsp::resize::FramePlane {
+                    src: &src_u,
+                    src_stride: s_cs,
+                    dst: &mut got.1,
+                    dst_stride: d_cs,
+                },
+                svtav1_dsp::resize::FramePlane {
+                    src: &src_v,
+                    src_stride: s_cs,
+                    dst: &mut got.2,
+                    dst_stride: d_cs,
+                },
+            ],
+            sw,
+            sh,
+            dw,
+            dh,
+            ss_x,
+            ss_y,
+        );
+
+        assert_eq!(got.0, want.0, "{sw}x{sh} -> {dw}x{dh} ss({ss_x},{ss_y}): Y");
+        assert_eq!(got.1, want.1, "{sw}x{sh} -> {dw}x{dh} ss({ss_x},{ss_y}): U");
+        assert_eq!(got.2, want.2, "{sw}x{sh} -> {dw}x{dh} ss({ss_x},{ss_y}): V");
+        compared += 1;
+    }
+
+    assert_eq!(compared, cases.len());
+    assert!(
+        saw_horizontal_only,
+        "the height-unchanged kernel arm was never taken"
+    );
+    assert!(saw_two_d, "the two-dimensional kernel arm was never taken");
+    assert!(
+        saw_chroma_round_up,
+        "no odd-width 4:2:0 cell, so the chroma round-up was never checked"
+    );
+}

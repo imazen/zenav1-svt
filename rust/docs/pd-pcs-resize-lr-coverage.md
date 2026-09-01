@@ -17,21 +17,20 @@ as `compute_stats_hbd`). Treat its numbers as a work queue, never as coverage.
 |---|---|---|---|---|
 | `Codec/pd_process.c` | 44 | 29 | 15 | **0** |
 | `Codec/pcs.c` | 32 | 6 | 26 | **0** |
-| `Codec/resize.c` | 39 | 21 | 3 | **15** |
+| `Codec/resize.c` | 39 | 22 | 3 | **14** |
 | `Codec/restoration_pick.c` | 23 | 19 | 0 | **4** |
-| **total** | **138** | **75** | **44** | **19** |
+| **total** | **138** | **76** | **44** | **18** |
 
 ## MISSING — read this first
 
-### `Codec/resize.c` — frame resize's driver and reference cache (15)
+### `Codec/resize.c` — frame resize's per-picture driver and reference cache (14)
 
-The kernel layer is complete as of 2026-08-31 (`svtav1_dsp::resize::resize_plane`
-and `port_resize_hbd::highbd_resize_plane`, tier 1 both depths). What is left
-is everything above it:
+The kernel layer AND the frame-level plane loop are complete as of 2026-08-31
+(`svtav1_dsp::resize::resize_plane` / `port_resize_hbd::highbd_resize_plane` /
+`resize_frame`, all tier 1). What is left is everything above them:
 
 | function | what it is |
 |---|---|
-| `svt_aom_resize_frame` | the whole-frame driver over the three planes |
 | `svt_aom_init_resize_picture` | the per-picture driver: `calc_superres_params` + `validate_size_scales` + the scaler |
 | `scale_pcs_params` | rewrites the frame-size fields after a rescale |
 | `svt_aom_reset_resized_picture` | restores the unscaled picture pointers |
