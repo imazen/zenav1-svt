@@ -837,8 +837,8 @@ fn video_key_frame_arm_divergence_at_m6_is_exactly_this_set() {
         (MD_PME, 0, 4, "inter-only"),
         (ME_SUBPEL, 0, 4, "inter-only"),
         (PME_SUBPEL, 0, 2, "inter-only"),
-        (TXT, 8, 7, "HELD on the wip/video-md-arms bookmark"),
-        (CFL, 4, 2, "HELD on the wip/video-md-arms bookmark"),
+        (TXT, 8, 7, "WIRED (funnel_arm)"),
+        (CFL, 4, 2, "WIRED (funnel_arm)"),
         (NIC, 6, 8, "HELD on the wip/video-md-arms bookmark"),
         (NSQ_SEARCH, 0, 15, "WIRED (part_arm + NsqCfg::for_arm)"),
         (
@@ -873,5 +873,57 @@ fn video_key_frame_arm_divergence_at_m6_is_exactly_this_set() {
             (allintra, video),
             "slot {slot} ({note}): arm values moved"
         );
+    }
+}
+
+/// `pcs->txt_level` and `pcs->cfl_level` on BOTH arms, against the real C
+/// entry points, over the whole (preset x is_base x is_islice) grid.
+///
+/// The video arm's two ladders were already covered as fields of
+/// `md_config_matches_c_over_the_preset_and_layer_product`; this drives the
+/// standalone `md_config::{txt,cfl}_level_*` helpers that `funnel_arm` calls,
+/// and adds the ALLINTRA twins, which had no differential at all — the still
+/// path carried them flattened into `FunnelCfg::for_preset`'s baked rows.
+#[test]
+fn txt_and_cfl_ladders_match_c_on_both_arms() {
+    for enc_mode in -1i8..=13 {
+        for is_base in [false, true] {
+            for is_islice in [false, true] {
+                // A key frame is always base; an I-slice that is not base is
+                // not a shape SVT produces, and the ladders read the two
+                // independently, so the product is swept anyway.
+                let c = Case {
+                    enc_mode,
+                    is_islice,
+                    frame_is_intra: is_islice,
+                    temporal_layer: u8::from(!is_base),
+                    pcs_temporal_layer: u8::from(!is_base),
+                    is_highest_layer: false,
+                    ..Case::default()
+                };
+                let d = cref::sig_deriv_md_config_default(&build_input(&c));
+                let a = cref::sig_deriv_md_config_allintra(&build_input(&c));
+                assert_eq!(
+                    i64::from(md::txt_level_default(enc_mode, is_base)),
+                    d[TXT],
+                    "video txt_level M{enc_mode} base={is_base}"
+                );
+                assert_eq!(
+                    i64::from(md::cfl_level_default(enc_mode, is_base, is_islice)),
+                    d[CFL],
+                    "video cfl_level M{enc_mode} base={is_base} islice={is_islice}"
+                );
+                assert_eq!(
+                    i64::from(md::txt_level_allintra(enc_mode)),
+                    a[TXT],
+                    "allintra txt_level M{enc_mode}"
+                );
+                assert_eq!(
+                    i64::from(md::cfl_level_allintra(enc_mode)),
+                    a[CFL],
+                    "allintra cfl_level M{enc_mode}"
+                );
+            }
+        }
     }
 }

@@ -732,6 +732,33 @@ ratioVideoKey "video-key-nsq-arm-p7-screenrep-72x88" screenrep 72 88 40 7 0.5
 # (allintra M9 == video M9), so the whole delta is the two rate ladders.
 ratioVideoKey "video-key-rate-arm-p9-72x88" gradient 72 88 40 9 1.0
 
+# --- video-arm intra EDGE FILTER + the txs ladder, 2026-09-01.
+#
+# TWO defects, one root: `FunnelCfg::for_preset` baked `edge_filter = (preset
+# == 5)` — C's ALLINTRA derivation of `scs->seq_header.enable_intra_edge_filter`
+# (enc_mode_config.c:2815) — and ran it on every frame, while
+# `speed_config::seq_tools_video` correctly signalled the bit as 1 at EVERY
+# preset (C's `else` arm, :2820). So on a video-mode key frame the SEQUENCE
+# HEADER told the decoder to edge-filter and upsample directional predictions
+# and the encoder predicted UNFILTERED: an encoder/decoder mismatch, not just
+# a parity gap. Both now read one function, `intra_arm::intra_edge_filter`.
+#
+# The second is `frm_hdr->tx_mode`: the writer emitted a literal
+# tx_mode_select = 1 (C's allintra rule, "even when txs_level == 0", :10025),
+# where the video arm signals it only while `pcs->txs_level != 0` (:9194) —
+# false from preset 10 up, so the port declared TX_MODE_SELECT and then coded
+# per-block tx_depth symbols TX_MODE_LARGEST forbids.
+#
+# OBSERVED, frames=2 frame 0 (the video-mode key frame), before -> after,
+# measured on ONE build by forcing each fix off:
+#   diag 64x64 q40 p11:     port 203 B vs C 401 = 49.377% off -> 398 B = 0.748%
+#   gradient 64x64 q40 p11: FH walk 1 diverging field (tx_mode_select C=0
+#                           port=1) -> 0; byte count 961 unchanged either way,
+#                           so this cell isolates the header bit.
+# The p11 ratio limit 2.0 sits between 49.377 and 0.748.
+ratioVideoKey "video-key-edge-filter-diag-p11" diag 64 64 40 11 2.0
+fhVideoKey "video-key-txs-arm-tx-mode-p11" gradient 64 64 40 11
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

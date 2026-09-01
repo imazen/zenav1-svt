@@ -171,6 +171,42 @@ pub(crate) fn intra_ctrls(level: u8) -> (u8, u8, bool, bool) {
     )
 }
 
+/// C `scs->seq_header.enable_intra_edge_filter`
+/// (`svt_aom_sig_deriv_pre_analysis_scs`, `enc_mode_config.c:2807-2821`).
+///
+/// This is a SEQUENCE-header bit, so it is decoder-visible: with it set, a
+/// conforming decoder edge-filters and upsamples every directional prediction
+/// whose `p_angle != 90/180`. The encoder MUST predict the same way.
+///
+/// The two arms could hardly differ more:
+///
+/// - **video** (`:2820`): a literal 1, at every preset. C's own comment says
+///   "for non-still-image or non-all-intra configurations, keep edge filter
+///   always ON".
+/// - **allintra** (`:2815`): on only when the angular-refinement pruning is
+///   active — `dist_based_ang_intra_level >= 1 || angular_pred_level[
+///   intra_level] == 2 || == 3`. Walking
+///   `svt_aom_get_intra_mode_levels_allintra` through
+///   `angular_pred_level` (`:22`) lands in {2, 3} at intra_level 2 ONLY, which
+///   is preset 5 — the value `speed_config` previously hardcoded.
+///
+/// It is derived HERE, once, and both the sequence header and the leaf
+/// funnel's prediction read this one function, because the bug this fixes was
+/// exactly the two disagreeing.
+#[must_use]
+pub(crate) fn intra_edge_filter(arm: ScArm, enc_mode: u8) -> bool {
+    match arm {
+        ScArm::Video { .. } => true,
+        ScArm::Allintra => {
+            // On this arm the ladder ignores is_islice / is_base entirely.
+            let (intra_level, dist_ang) = intra_mode_levels(arm, enc_mode, true, true, false);
+            const ANGULAR_PRED_LEVEL: [u8; 10] = [0, 1, 2, 2, 3, 4, 4, 4, 4, 0];
+            let ang = ANGULAR_PRED_LEVEL[intra_level as usize];
+            dist_ang >= 1 || ang == 2 || ang == 3
+        }
+    }
+}
+
 /// Stamp both ladders' results onto a [`FunnelCfg`], replacing the values
 /// `FunnelCfg::for_preset` baked from the allintra arm.
 ///
@@ -191,6 +227,9 @@ pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_islice: bo
     cfg.angular_level = angular;
     cfg.prune_best_mode = prune_best;
     cfg.dc_only_gate = prune_edge;
+
+    // The SH bit the decoder reads, applied to the funnel's own prediction.
+    cfg.edge_filter = intra_edge_filter(arm, enc_mode);
 }
 
 #[cfg(test)]

@@ -107,6 +107,9 @@ fn fh_prefix(superres: SuperresParams, base_qindex: u8) -> Vec<u8> {
         0,
         0,
         64,
+        // tx_mode_select: this fixture is on the allintra arm, where C
+        // signals TX_MODE_SELECT unconditionally.
+        true,
     )
 }
 

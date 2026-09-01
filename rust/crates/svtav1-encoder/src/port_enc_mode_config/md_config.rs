@@ -77,6 +77,73 @@ pub fn get_disallow_4x4_allintra(enc_mode: i8) -> bool {
     enc_mode > M3
 }
 
+/// `pcs->txt_level` on the VIDEO arm (`enc_mode_config.c:9057`), lifted out of
+/// [`sig_deriv_mode_decision_config_default`] so the leaf funnel's arm
+/// dispatch (`crate::funnel_arm`) can call the SAME code the tier-1
+/// differential already covers, instead of re-transcribing the ladder.
+#[must_use]
+pub fn txt_level_default(enc_mode: i8, is_base: bool) -> u8 {
+    if enc_mode <= MR {
+        if is_base { 2 } else { 3 }
+    } else if enc_mode <= M2 {
+        if is_base { 2 } else { 5 }
+    } else if enc_mode <= M10 {
+        if is_base { 7 } else { 9 }
+    } else if enc_mode <= M11 {
+        10
+    } else {
+        0
+    }
+}
+
+/// `pcs->txt_level` on the ALLINTRA arm (`enc_mode_config.c:9961`).
+///
+/// The still path previously carried this flattened into
+/// `FunnelCfg::for_preset`'s baked rows; `crate::funnel_arm` calls it and pins
+/// the two against each other.
+#[must_use]
+pub fn txt_level_allintra(enc_mode: i8) -> u8 {
+    if enc_mode <= M3 {
+        2
+    } else if enc_mode <= M5 {
+        3
+    } else if enc_mode <= M6 {
+        8
+    } else if enc_mode <= M8 {
+        10
+    } else {
+        0
+    }
+}
+
+/// `pcs->cfl_level` on the VIDEO arm (`enc_mode_config.c:9103`), lifted out of
+/// [`sig_deriv_mode_decision_config_default`] for the same reason
+/// [`txt_level_default`] is.
+#[must_use]
+pub fn cfl_level_default(enc_mode: i8, is_base: bool, is_islice: bool) -> u8 {
+    if enc_mode <= M1 {
+        1
+    } else if enc_mode <= M9 {
+        if is_base { 2 } else { 0 }
+    } else if enc_mode <= M10 {
+        if is_islice { 2 } else { 0 }
+    } else {
+        0
+    }
+}
+
+/// `pcs->cfl_level` on the ALLINTRA arm (`enc_mode_config.c:9986`).
+#[must_use]
+pub fn cfl_level_allintra(enc_mode: i8) -> u8 {
+    if enc_mode <= M0 {
+        1
+    } else if enc_mode <= M6 {
+        4
+    } else {
+        0
+    }
+}
+
 /// C `get_filter_intra_level_default` (`enc_mode_config.c:8771`). EXPORTED.
 #[must_use]
 pub fn get_filter_intra_level_default(enc_mode: i8) -> u8 {
@@ -493,17 +560,7 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
         cand_reduction_level = 6;
     }
 
-    let txt_level = if m <= MR {
-        if is_base { 2 } else { 3 }
-    } else if m <= M2 {
-        if is_base { 2 } else { 5 }
-    } else if m <= M10 {
-        if is_base { 7 } else { 9 }
-    } else if m <= M11 {
-        10
-    } else {
-        0
-    };
+    let txt_level = txt_level_default(m, is_base);
 
     let tx_shortcut_level = if m <= M2 {
         0
@@ -539,15 +596,7 @@ pub fn sig_deriv_mode_decision_config_default(i: MdConfigInputs) -> Option<MdCon
 
     let chroma_level = get_chroma_level_default(m, i.is_islice);
 
-    let cfl_level = if m <= M1 {
-        1
-    } else if m <= M9 {
-        if is_base { 2 } else { 0 }
-    } else if m <= M10 {
-        if i.is_islice { 2 } else { 0 }
-    } else {
-        0
-    };
+    let cfl_level = cfl_level_default(m, is_base, i.is_islice);
 
     let new_nearest_near_comb_injection = if m <= MR {
         1

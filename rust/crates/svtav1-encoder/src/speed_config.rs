@@ -147,7 +147,15 @@ pub fn seq_tools_for_preset(
     // = {0,1,2,2,3,4,4,4,4,0} -> only intra_level 2 (= preset 5) lands in
     // {2,3}. Verified by the instrumented config dump (M5DBG CFG ang=2 at
     // enc_mode 5, ang=1 at <=4, ang=4 at >=6).
-    let enable_intra_edge_filter = preset == 5;
+    // ONE definition, shared with the leaf funnel's own prediction — see
+    // `crate::intra_arm::intra_edge_filter`. This used to be the literal
+    // `preset == 5` and the funnel carried its own copy in
+    // `FunnelCfg::for_preset`; the video arm signals the bit at EVERY preset,
+    // and the two copies disagreed there.
+    let enable_intra_edge_filter = crate::intra_arm::intra_edge_filter(
+        crate::sc_detect::ScArm::Allintra,
+        crate::rate_arm::eff_enc_mode(crate::sc_detect::ScArm::Allintra, preset),
+    );
     crate::entropy::obu::SeqTools {
         film_grain_params_present: false,
         separate_uv_delta_q: false, // mainline (fork wiring pending chroma-q quant threading)
@@ -250,8 +258,12 @@ pub fn seq_tools_video(preset: u8, luma_pixels: usize) -> crate::entropy::obu::S
         separate_uv_delta_q: false,
         enable_filter_intra: filter_intra_level != 0,
         // ":2820 — for non-still-image or non-all-intra configurations, keep
-        // edge filter always ON".
-        enable_intra_edge_filter: true,
+        // edge filter always ON". Routed through the shared derivation so the
+        // header bit and the funnel's prediction cannot drift apart.
+        enable_intra_edge_filter: crate::intra_arm::intra_edge_filter(
+            crate::sc_detect::ScArm::Video { is_islice: true },
+            preset,
+        ),
         // `svt_aom_get_enable_restoration_default` (:2695) = sg > 0 || wn > 0.
         enable_restoration: wn_nonzero || sg_nonzero,
         // Overwritten by the pipeline from its own `sb_size`, as on the

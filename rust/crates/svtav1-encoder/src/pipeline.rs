@@ -4141,6 +4141,29 @@ impl EncodePipeline {
                 // Task #91: must match the SH's use_128x128_superblock
                 // (the FH's tile_info() limits are SB-derived).
                 self.sb_size as u32,
+                // `frm_hdr->tx_mode`, for THIS arm (`crate::txs_arm`). The
+                // allintra arm signals TX_MODE_SELECT unconditionally; the
+                // video arm signals it only while `pcs->txs_level != 0`,
+                // which is false from preset 10 up — where this used to emit
+                // a literal 1 and then code per-block tx_depth symbols that
+                // TX_MODE_LARGEST forbids.
+                crate::txs_arm::tx_mode_select(
+                    if self.gop.intra_period <= 1 {
+                        crate::sc_detect::ScArm::Allintra
+                    } else {
+                        crate::sc_detect::ScArm::Video { is_islice: true }
+                    },
+                    crate::rate_arm::eff_enc_mode(
+                        if self.gop.intra_period <= 1 {
+                            crate::sc_detect::ScArm::Allintra
+                        } else {
+                            crate::sc_detect::ScArm::Video { is_islice: true }
+                        },
+                        self.speed_config.preset,
+                    ),
+                    true,
+                    u32::from(self.rc_config.qp),
+                ),
             );
             // Diagnostic (SVTAV1_FHDUMP=<path>): dump the raw frame-header
             // bytes (the OBU_FRAME payload prefix before tile data — the FH
@@ -7824,6 +7847,27 @@ fn encode_tile_rows(
         // what makes `dist_based_ang_intra_level` 0 on both arms (the ladder's
         // non-zero rows are all `is_islice ? 0 :` / `is_base ? 0 :`).
         crate::intra_arm::apply(
+            &mut funnel_cfg,
+            sc_arm,
+            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
+                || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
+            true,
+        );
+        // `pcs->txs_level` -> `set_txs_controls`, for THIS arm
+        // (`crate::txs_arm`). The arms agree at M4..M7 and diverge at M8/M9,
+        // where the video ladder keeps the tx-size search on (level 3 / 4)
+        // and the allintra one turns it off at the picture level.
+        crate::txs_arm::apply(
+            &mut funnel_cfg,
+            sc_arm,
+            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+            true,
+            u32::from(cli_qp),
+        );
+        // `pcs->txt_level` -> `svt_aom_set_txt_controls` and `pcs->cfl_level`
+        // -> `set_cfl_ctrls`, for THIS arm (`crate::funnel_arm`).
+        crate::funnel_arm::apply(
             &mut funnel_cfg,
             sc_arm,
             crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),

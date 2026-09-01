@@ -1117,6 +1117,8 @@ pub fn write_key_frame_header_full_lr_sb(
     // Superblock size in PIXELS (64 or 128); must match the SH's
     // `use_128x128_superblock`.
     sb_size: u32,
+    // `frm_hdr->tx_mode == TX_MODE_SELECT` — see `key_frame_header_bits_lr`.
+    tx_mode_select: bool,
 ) -> Vec<u8> {
     let mut wb = key_frame_header_bits_lr(
         width,
@@ -1137,6 +1139,7 @@ pub fn write_key_frame_header_full_lr_sb(
         tile_cols_log2,
         tile_size_bytes_minus_1,
         sb_size,
+        tx_mode_select,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -1188,6 +1191,9 @@ pub fn write_key_frame_header_full_lr(
         tile_cols_log2,
         tile_size_bytes_minus_1,
         64,
+        // The allintra arm's unconditional TX_MODE_SELECT; this wrapper is the
+        // pre-video signature and every caller of it is on that arm.
+        true,
     )
 }
 
@@ -1230,6 +1236,7 @@ fn key_frame_header_bits(
         0,    // tile_cols_log2: ditto
         0,    // tile_size_bytes_minus_1: unused when NumTiles == 1
         64,
+        true, // tx_mode_select: the allintra arm's unconditional TX_MODE_SELECT
     )
 }
 
@@ -1257,6 +1264,9 @@ fn key_frame_header_bits_lr(
     // SB-derived (spec 5.9.15), so this must match the SH's
     // `use_128x128_superblock`.
     sb_size: u32,
+    // `frm_hdr->tx_mode == TX_MODE_SELECT` (`crate::txs_arm::tx_mode_select`).
+    // ALWAYS true on the allintra arm, which is why this used to be a literal.
+    tx_mode_select: bool,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
@@ -1587,7 +1597,14 @@ fn key_frame_header_bits_lr(
     // tx_depth symbol for every bsize > 4x4 (always depth 0 = largest —
     // matching what the LARGEST mode implied, but now in C's syntax).
     if !coded_lossless {
-        wb.write_bit(true); // tx_mode_select = 1 → TX_MODE_SELECT
+        // The ALLINTRA arm sets TX_MODE_SELECT unconditionally ("Use
+        // TX_MODE_SELECT even when txs_level == 0, as the decision may change
+        // from OFF to Fastest at the SB level", enc_mode_config.c:10025). The
+        // VIDEO arm sets it only when `pcs->txs_level != 0` (`:9194`), i.e.
+        // TX_MODE_LARGEST at preset 10 and up — where this writer used to emit
+        // a literal 1 and then code per-block tx_depth symbols that
+        // TX_MODE_LARGEST forbids.
+        wb.write_bit(tx_mode_select);
     }
 
     // For intra frames: no reference_select, skip_mode, warped_motion, global_motion
