@@ -1754,6 +1754,431 @@ pub fn iadst16(input: &[TranLow], output: &mut [TranLow], range: i8) {
 }
 
 // =============================================================================
+// 32-point inverse ADST
+// =============================================================================
+
+/// Port of C `av1_iadst32_new` (inv_transforms.c:1131) — the inverse twin of
+/// [`crate::fwd_txfm::fadst32`], and the last 1-D inverse kernel in
+/// `inv_transforms.c` without a Rust counterpart.
+///
+/// `static` in C, reached only through `svt_aom_inv_txfm_type_to_func`
+/// (:2409). Same reachability story as the forward kernel: AV1's ext-tx sets
+/// never offer an ADST 1-D type at a 32-sample dimension, but C's dispatch
+/// table does, and the exported `svt_av1_inv_txfm2d_add_32x32_c` reaches it
+/// with one argument — where this port previously returned `false`.
+///
+/// **This kernel clamps differently from its siblings, and that is C, not a
+/// transcription choice.** `svt_av1_iadst16_new` (:926) clamps only the
+/// additive stages, inline, with `clamp_value`; `av1_iadst32_new` runs
+/// `clamp_buf` over the whole 32-entry buffer after EVERY stage — including
+/// the pure permutation at stage 1 and each `half_btf` stage. Both idioms
+/// live in the same file. Reproduced literally.
+pub fn iadst32(input: &[TranLow], output: &mut [TranLow], range: i8) {
+    let cospi = &COSPI;
+    let cos_bit = COS_BIT;
+    let mut step = [0i32; 32];
+    let out: &mut [TranLow; 32] = (&mut output[..32])
+        .try_into()
+        .expect("iadst32 output is 32 samples");
+
+    // stage 0. C is `clamp_buf((int32_t*)input, size, stage_range[0])`: it
+    // casts away `const` and clamps the CALLER's buffer in place. The clamp
+    // is reproduced here on a local copy so the OUTPUT matches C for any
+    // input; the side effect on the caller's buffer is not, and cannot be
+    // observed through this signature. It is a no-op inside the 2-D
+    // composition either way — `inv_txfm2d_core` has already clamped
+    // `temp_in` to the very same `range` before calling.
+    let mut inp = [0i32; 32];
+    inp.copy_from_slice(&input[..32]);
+    clamp_buf(&mut inp, range);
+
+    // stage 1
+    out[0] = inp[0];
+    out[1] = -inp[31];
+    out[2] = -inp[15];
+    out[3] = inp[16];
+    out[4] = -inp[7];
+    out[5] = inp[24];
+    out[6] = inp[8];
+    out[7] = -inp[23];
+    out[8] = -inp[3];
+    out[9] = inp[28];
+    out[10] = inp[12];
+    out[11] = -inp[19];
+    out[12] = inp[4];
+    out[13] = -inp[27];
+    out[14] = -inp[11];
+    out[15] = inp[20];
+    out[16] = -inp[1];
+    out[17] = inp[30];
+    out[18] = inp[14];
+    out[19] = -inp[17];
+    out[20] = inp[6];
+    out[21] = -inp[25];
+    out[22] = -inp[9];
+    out[23] = inp[22];
+    out[24] = inp[2];
+    out[25] = -inp[29];
+    out[26] = -inp[13];
+    out[27] = inp[18];
+    out[28] = -inp[5];
+    out[29] = inp[26];
+    out[30] = inp[10];
+    out[31] = -inp[21];
+    clamp_buf(&mut out[..32], range);
+
+    // stage 2
+    step[0] = out[0];
+    step[1] = out[1];
+    step[2] = half_btf(cospi[32], out[2], cospi[32], out[3], cos_bit);
+    step[3] = half_btf(cospi[32], out[2], -cospi[32], out[3], cos_bit);
+    step[4] = out[4];
+    step[5] = out[5];
+    step[6] = half_btf(cospi[32], out[6], cospi[32], out[7], cos_bit);
+    step[7] = half_btf(cospi[32], out[6], -cospi[32], out[7], cos_bit);
+    step[8] = out[8];
+    step[9] = out[9];
+    step[10] = half_btf(cospi[32], out[10], cospi[32], out[11], cos_bit);
+    step[11] = half_btf(cospi[32], out[10], -cospi[32], out[11], cos_bit);
+    step[12] = out[12];
+    step[13] = out[13];
+    step[14] = half_btf(cospi[32], out[14], cospi[32], out[15], cos_bit);
+    step[15] = half_btf(cospi[32], out[14], -cospi[32], out[15], cos_bit);
+    step[16] = out[16];
+    step[17] = out[17];
+    step[18] = half_btf(cospi[32], out[18], cospi[32], out[19], cos_bit);
+    step[19] = half_btf(cospi[32], out[18], -cospi[32], out[19], cos_bit);
+    step[20] = out[20];
+    step[21] = out[21];
+    step[22] = half_btf(cospi[32], out[22], cospi[32], out[23], cos_bit);
+    step[23] = half_btf(cospi[32], out[22], -cospi[32], out[23], cos_bit);
+    step[24] = out[24];
+    step[25] = out[25];
+    step[26] = half_btf(cospi[32], out[26], cospi[32], out[27], cos_bit);
+    step[27] = half_btf(cospi[32], out[26], -cospi[32], out[27], cos_bit);
+    step[28] = out[28];
+    step[29] = out[29];
+    step[30] = half_btf(cospi[32], out[30], cospi[32], out[31], cos_bit);
+    step[31] = half_btf(cospi[32], out[30], -cospi[32], out[31], cos_bit);
+    clamp_buf(&mut step, range);
+
+    // stage 3
+    out[0] = step[0] + step[2];
+    out[1] = step[1] + step[3];
+    out[2] = step[0] - step[2];
+    out[3] = step[1] - step[3];
+    out[4] = step[4] + step[6];
+    out[5] = step[5] + step[7];
+    out[6] = step[4] - step[6];
+    out[7] = step[5] - step[7];
+    out[8] = step[8] + step[10];
+    out[9] = step[9] + step[11];
+    out[10] = step[8] - step[10];
+    out[11] = step[9] - step[11];
+    out[12] = step[12] + step[14];
+    out[13] = step[13] + step[15];
+    out[14] = step[12] - step[14];
+    out[15] = step[13] - step[15];
+    out[16] = step[16] + step[18];
+    out[17] = step[17] + step[19];
+    out[18] = step[16] - step[18];
+    out[19] = step[17] - step[19];
+    out[20] = step[20] + step[22];
+    out[21] = step[21] + step[23];
+    out[22] = step[20] - step[22];
+    out[23] = step[21] - step[23];
+    out[24] = step[24] + step[26];
+    out[25] = step[25] + step[27];
+    out[26] = step[24] - step[26];
+    out[27] = step[25] - step[27];
+    out[28] = step[28] + step[30];
+    out[29] = step[29] + step[31];
+    out[30] = step[28] - step[30];
+    out[31] = step[29] - step[31];
+    clamp_buf(&mut out[..32], range);
+
+    // stage 4
+    step[0] = out[0];
+    step[1] = out[1];
+    step[2] = out[2];
+    step[3] = out[3];
+    step[4] = half_btf(cospi[16], out[4], cospi[48], out[5], cos_bit);
+    step[5] = half_btf(cospi[48], out[4], -cospi[16], out[5], cos_bit);
+    step[6] = half_btf(-cospi[48], out[6], cospi[16], out[7], cos_bit);
+    step[7] = half_btf(cospi[16], out[6], cospi[48], out[7], cos_bit);
+    step[8] = out[8];
+    step[9] = out[9];
+    step[10] = out[10];
+    step[11] = out[11];
+    step[12] = half_btf(cospi[16], out[12], cospi[48], out[13], cos_bit);
+    step[13] = half_btf(cospi[48], out[12], -cospi[16], out[13], cos_bit);
+    step[14] = half_btf(-cospi[48], out[14], cospi[16], out[15], cos_bit);
+    step[15] = half_btf(cospi[16], out[14], cospi[48], out[15], cos_bit);
+    step[16] = out[16];
+    step[17] = out[17];
+    step[18] = out[18];
+    step[19] = out[19];
+    step[20] = half_btf(cospi[16], out[20], cospi[48], out[21], cos_bit);
+    step[21] = half_btf(cospi[48], out[20], -cospi[16], out[21], cos_bit);
+    step[22] = half_btf(-cospi[48], out[22], cospi[16], out[23], cos_bit);
+    step[23] = half_btf(cospi[16], out[22], cospi[48], out[23], cos_bit);
+    step[24] = out[24];
+    step[25] = out[25];
+    step[26] = out[26];
+    step[27] = out[27];
+    step[28] = half_btf(cospi[16], out[28], cospi[48], out[29], cos_bit);
+    step[29] = half_btf(cospi[48], out[28], -cospi[16], out[29], cos_bit);
+    step[30] = half_btf(-cospi[48], out[30], cospi[16], out[31], cos_bit);
+    step[31] = half_btf(cospi[16], out[30], cospi[48], out[31], cos_bit);
+    clamp_buf(&mut step, range);
+
+    // stage 5
+    out[0] = step[0] + step[4];
+    out[1] = step[1] + step[5];
+    out[2] = step[2] + step[6];
+    out[3] = step[3] + step[7];
+    out[4] = step[0] - step[4];
+    out[5] = step[1] - step[5];
+    out[6] = step[2] - step[6];
+    out[7] = step[3] - step[7];
+    out[8] = step[8] + step[12];
+    out[9] = step[9] + step[13];
+    out[10] = step[10] + step[14];
+    out[11] = step[11] + step[15];
+    out[12] = step[8] - step[12];
+    out[13] = step[9] - step[13];
+    out[14] = step[10] - step[14];
+    out[15] = step[11] - step[15];
+    out[16] = step[16] + step[20];
+    out[17] = step[17] + step[21];
+    out[18] = step[18] + step[22];
+    out[19] = step[19] + step[23];
+    out[20] = step[16] - step[20];
+    out[21] = step[17] - step[21];
+    out[22] = step[18] - step[22];
+    out[23] = step[19] - step[23];
+    out[24] = step[24] + step[28];
+    out[25] = step[25] + step[29];
+    out[26] = step[26] + step[30];
+    out[27] = step[27] + step[31];
+    out[28] = step[24] - step[28];
+    out[29] = step[25] - step[29];
+    out[30] = step[26] - step[30];
+    out[31] = step[27] - step[31];
+    clamp_buf(&mut out[..32], range);
+
+    // stage 6
+    step[0] = out[0];
+    step[1] = out[1];
+    step[2] = out[2];
+    step[3] = out[3];
+    step[4] = out[4];
+    step[5] = out[5];
+    step[6] = out[6];
+    step[7] = out[7];
+    step[8] = half_btf(cospi[8], out[8], cospi[56], out[9], cos_bit);
+    step[9] = half_btf(cospi[56], out[8], -cospi[8], out[9], cos_bit);
+    step[10] = half_btf(cospi[40], out[10], cospi[24], out[11], cos_bit);
+    step[11] = half_btf(cospi[24], out[10], -cospi[40], out[11], cos_bit);
+    step[12] = half_btf(-cospi[56], out[12], cospi[8], out[13], cos_bit);
+    step[13] = half_btf(cospi[8], out[12], cospi[56], out[13], cos_bit);
+    step[14] = half_btf(-cospi[24], out[14], cospi[40], out[15], cos_bit);
+    step[15] = half_btf(cospi[40], out[14], cospi[24], out[15], cos_bit);
+    step[16] = out[16];
+    step[17] = out[17];
+    step[18] = out[18];
+    step[19] = out[19];
+    step[20] = out[20];
+    step[21] = out[21];
+    step[22] = out[22];
+    step[23] = out[23];
+    step[24] = half_btf(cospi[8], out[24], cospi[56], out[25], cos_bit);
+    step[25] = half_btf(cospi[56], out[24], -cospi[8], out[25], cos_bit);
+    step[26] = half_btf(cospi[40], out[26], cospi[24], out[27], cos_bit);
+    step[27] = half_btf(cospi[24], out[26], -cospi[40], out[27], cos_bit);
+    step[28] = half_btf(-cospi[56], out[28], cospi[8], out[29], cos_bit);
+    step[29] = half_btf(cospi[8], out[28], cospi[56], out[29], cos_bit);
+    step[30] = half_btf(-cospi[24], out[30], cospi[40], out[31], cos_bit);
+    step[31] = half_btf(cospi[40], out[30], cospi[24], out[31], cos_bit);
+    clamp_buf(&mut step, range);
+
+    // stage 7
+    out[0] = step[0] + step[8];
+    out[1] = step[1] + step[9];
+    out[2] = step[2] + step[10];
+    out[3] = step[3] + step[11];
+    out[4] = step[4] + step[12];
+    out[5] = step[5] + step[13];
+    out[6] = step[6] + step[14];
+    out[7] = step[7] + step[15];
+    out[8] = step[0] - step[8];
+    out[9] = step[1] - step[9];
+    out[10] = step[2] - step[10];
+    out[11] = step[3] - step[11];
+    out[12] = step[4] - step[12];
+    out[13] = step[5] - step[13];
+    out[14] = step[6] - step[14];
+    out[15] = step[7] - step[15];
+    out[16] = step[16] + step[24];
+    out[17] = step[17] + step[25];
+    out[18] = step[18] + step[26];
+    out[19] = step[19] + step[27];
+    out[20] = step[20] + step[28];
+    out[21] = step[21] + step[29];
+    out[22] = step[22] + step[30];
+    out[23] = step[23] + step[31];
+    out[24] = step[16] - step[24];
+    out[25] = step[17] - step[25];
+    out[26] = step[18] - step[26];
+    out[27] = step[19] - step[27];
+    out[28] = step[20] - step[28];
+    out[29] = step[21] - step[29];
+    out[30] = step[22] - step[30];
+    out[31] = step[23] - step[31];
+    clamp_buf(&mut out[..32], range);
+
+    // stage 8
+    step[0] = out[0];
+    step[1] = out[1];
+    step[2] = out[2];
+    step[3] = out[3];
+    step[4] = out[4];
+    step[5] = out[5];
+    step[6] = out[6];
+    step[7] = out[7];
+    step[8] = out[8];
+    step[9] = out[9];
+    step[10] = out[10];
+    step[11] = out[11];
+    step[12] = out[12];
+    step[13] = out[13];
+    step[14] = out[14];
+    step[15] = out[15];
+    step[16] = half_btf(cospi[4], out[16], cospi[60], out[17], cos_bit);
+    step[17] = half_btf(cospi[60], out[16], -cospi[4], out[17], cos_bit);
+    step[18] = half_btf(cospi[20], out[18], cospi[44], out[19], cos_bit);
+    step[19] = half_btf(cospi[44], out[18], -cospi[20], out[19], cos_bit);
+    step[20] = half_btf(cospi[36], out[20], cospi[28], out[21], cos_bit);
+    step[21] = half_btf(cospi[28], out[20], -cospi[36], out[21], cos_bit);
+    step[22] = half_btf(cospi[52], out[22], cospi[12], out[23], cos_bit);
+    step[23] = half_btf(cospi[12], out[22], -cospi[52], out[23], cos_bit);
+    step[24] = half_btf(-cospi[60], out[24], cospi[4], out[25], cos_bit);
+    step[25] = half_btf(cospi[4], out[24], cospi[60], out[25], cos_bit);
+    step[26] = half_btf(-cospi[44], out[26], cospi[20], out[27], cos_bit);
+    step[27] = half_btf(cospi[20], out[26], cospi[44], out[27], cos_bit);
+    step[28] = half_btf(-cospi[28], out[28], cospi[36], out[29], cos_bit);
+    step[29] = half_btf(cospi[36], out[28], cospi[28], out[29], cos_bit);
+    step[30] = half_btf(-cospi[12], out[30], cospi[52], out[31], cos_bit);
+    step[31] = half_btf(cospi[52], out[30], cospi[12], out[31], cos_bit);
+    clamp_buf(&mut step, range);
+
+    // stage 9
+    out[0] = step[0] + step[16];
+    out[1] = step[1] + step[17];
+    out[2] = step[2] + step[18];
+    out[3] = step[3] + step[19];
+    out[4] = step[4] + step[20];
+    out[5] = step[5] + step[21];
+    out[6] = step[6] + step[22];
+    out[7] = step[7] + step[23];
+    out[8] = step[8] + step[24];
+    out[9] = step[9] + step[25];
+    out[10] = step[10] + step[26];
+    out[11] = step[11] + step[27];
+    out[12] = step[12] + step[28];
+    out[13] = step[13] + step[29];
+    out[14] = step[14] + step[30];
+    out[15] = step[15] + step[31];
+    out[16] = step[0] - step[16];
+    out[17] = step[1] - step[17];
+    out[18] = step[2] - step[18];
+    out[19] = step[3] - step[19];
+    out[20] = step[4] - step[20];
+    out[21] = step[5] - step[21];
+    out[22] = step[6] - step[22];
+    out[23] = step[7] - step[23];
+    out[24] = step[8] - step[24];
+    out[25] = step[9] - step[25];
+    out[26] = step[10] - step[26];
+    out[27] = step[11] - step[27];
+    out[28] = step[12] - step[28];
+    out[29] = step[13] - step[29];
+    out[30] = step[14] - step[30];
+    out[31] = step[15] - step[31];
+    clamp_buf(&mut out[..32], range);
+
+    // stage 10
+    step[0] = half_btf(cospi[1], out[0], cospi[63], out[1], cos_bit);
+    step[1] = half_btf(cospi[63], out[0], -cospi[1], out[1], cos_bit);
+    step[2] = half_btf(cospi[5], out[2], cospi[59], out[3], cos_bit);
+    step[3] = half_btf(cospi[59], out[2], -cospi[5], out[3], cos_bit);
+    step[4] = half_btf(cospi[9], out[4], cospi[55], out[5], cos_bit);
+    step[5] = half_btf(cospi[55], out[4], -cospi[9], out[5], cos_bit);
+    step[6] = half_btf(cospi[13], out[6], cospi[51], out[7], cos_bit);
+    step[7] = half_btf(cospi[51], out[6], -cospi[13], out[7], cos_bit);
+    step[8] = half_btf(cospi[17], out[8], cospi[47], out[9], cos_bit);
+    step[9] = half_btf(cospi[47], out[8], -cospi[17], out[9], cos_bit);
+    step[10] = half_btf(cospi[21], out[10], cospi[43], out[11], cos_bit);
+    step[11] = half_btf(cospi[43], out[10], -cospi[21], out[11], cos_bit);
+    step[12] = half_btf(cospi[25], out[12], cospi[39], out[13], cos_bit);
+    step[13] = half_btf(cospi[39], out[12], -cospi[25], out[13], cos_bit);
+    step[14] = half_btf(cospi[29], out[14], cospi[35], out[15], cos_bit);
+    step[15] = half_btf(cospi[35], out[14], -cospi[29], out[15], cos_bit);
+    step[16] = half_btf(cospi[33], out[16], cospi[31], out[17], cos_bit);
+    step[17] = half_btf(cospi[31], out[16], -cospi[33], out[17], cos_bit);
+    step[18] = half_btf(cospi[37], out[18], cospi[27], out[19], cos_bit);
+    step[19] = half_btf(cospi[27], out[18], -cospi[37], out[19], cos_bit);
+    step[20] = half_btf(cospi[41], out[20], cospi[23], out[21], cos_bit);
+    step[21] = half_btf(cospi[23], out[20], -cospi[41], out[21], cos_bit);
+    step[22] = half_btf(cospi[45], out[22], cospi[19], out[23], cos_bit);
+    step[23] = half_btf(cospi[19], out[22], -cospi[45], out[23], cos_bit);
+    step[24] = half_btf(cospi[49], out[24], cospi[15], out[25], cos_bit);
+    step[25] = half_btf(cospi[15], out[24], -cospi[49], out[25], cos_bit);
+    step[26] = half_btf(cospi[53], out[26], cospi[11], out[27], cos_bit);
+    step[27] = half_btf(cospi[11], out[26], -cospi[53], out[27], cos_bit);
+    step[28] = half_btf(cospi[57], out[28], cospi[7], out[29], cos_bit);
+    step[29] = half_btf(cospi[7], out[28], -cospi[57], out[29], cos_bit);
+    step[30] = half_btf(cospi[61], out[30], cospi[3], out[31], cos_bit);
+    step[31] = half_btf(cospi[3], out[30], -cospi[61], out[31], cos_bit);
+    clamp_buf(&mut step, range);
+
+    // stage 11
+    out[0] = step[1];
+    out[1] = step[30];
+    out[2] = step[3];
+    out[3] = step[28];
+    out[4] = step[5];
+    out[5] = step[26];
+    out[6] = step[7];
+    out[7] = step[24];
+    out[8] = step[9];
+    out[9] = step[22];
+    out[10] = step[11];
+    out[11] = step[20];
+    out[12] = step[13];
+    out[13] = step[18];
+    out[14] = step[15];
+    out[15] = step[16];
+    out[16] = step[17];
+    out[17] = step[14];
+    out[18] = step[19];
+    out[19] = step[12];
+    out[20] = step[21];
+    out[21] = step[10];
+    out[22] = step[23];
+    out[23] = step[8];
+    out[24] = step[25];
+    out[25] = step[6];
+    out[26] = step[27];
+    out[27] = step[4];
+    out[28] = step[29];
+    out[29] = step[2];
+    out[30] = step[31];
+    out[31] = step[0];
+    clamp_buf(&mut out[..32], range);
+}
+
+// =============================================================================
 // 16-point inverse identity
 // =============================================================================
 
@@ -1782,9 +2207,13 @@ pub fn get_inv_txfm_func(tx_type_1d: u8, size: usize) -> Option<InvTxfmFunc> {
         (1, 4) => Some(iadst4),
         (1, 8) => Some(iadst8),
         (1, 16) => Some(iadst16),
+        // TXFM_TYPE_ADST32 — `svt_aom_inv_txfm_type_to_func`
+        // (inv_transforms.c:2409) answers `av1_iadst32_new`. See `iadst32`.
+        (1, 32) => Some(iadst32),
         (2, 4) => Some(iadst4), // FLIPADST inverse = ADST inverse (flip handled externally)
         (2, 8) => Some(iadst8),
         (2, 16) => Some(iadst16),
+        (2, 32) => Some(iadst32),
         (3, 4) => Some(iidentity4),
         (3, 8) => Some(iidentity8),
         (3, 16) => Some(iidentity16),

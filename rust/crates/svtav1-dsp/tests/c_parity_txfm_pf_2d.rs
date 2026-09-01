@@ -310,8 +310,13 @@ fn fwd_txfm2d_n4_parity_all() {
 }
 
 /// `svt_aom_fwd_txfm_type_to_func`: gate the port's `get_fwd_txfm_func`
-/// against what C's table actually dispatches to, including the deliberate
-/// ADST32 hole (C returns `av1_fadst32_new`; the port returns `None`).
+/// against what C's table actually dispatches to.
+///
+/// This used to record an ADST32 HOLE — C answered `av1_fadst32_new` where
+/// the port answered `None`, on the ground that no AV1 ext-tx set pairs an
+/// ADST with a 32-point dimension. The kernel is ported now
+/// (`fwd_txfm::fadst32`), so all 14 of C's entries are compared bit-exactly
+/// and a `None` is a failure rather than an expectation.
 #[test]
 fn fwd_txfm_type_to_func_parity() {
     // (C TxfmType id, 1-D length, port tx_type_1d: 0=DCT 1=ADST 3=IDTX)
@@ -331,7 +336,6 @@ fn fwd_txfm_type_to_func_parity() {
         (12, 32, 3),
         (13, 64, 3),
     ];
-    let mut adst32_hole_seen = false;
     for (c_id, n, tx_1d) in cases {
         let mut rng = Lcg(0x5EED ^ c_id as u64);
         let input: Vec<i32> = (0..n)
@@ -346,18 +350,12 @@ fn fwd_txfm_type_to_func_parity() {
                 f(&input, &mut got, 12);
                 assert_eq!(got, want, "TxfmType {c_id} ({tx_1d}, {n})");
             }
-            None => {
-                // The only hole the port has, and it is on purpose:
-                // TXFM_TYPE_ADST32 -> av1_fadst32_new. No AV1 ext-tx set
-                // pairs an ADST with a 32-point dimension, so C's entry is
-                // dead code. MEASURED here rather than assumed: C does
-                // return a callable kernel for it.
-                assert_eq!((c_id, tx_1d, n), (8, 1, 32), "unexpected port hole");
-                adst32_hole_seen = true;
-            }
+            None => panic!(
+                "port has no forward kernel for C TxfmType {c_id} ({tx_1d}, {n}); \
+                 C's table returns a callable one"
+            ),
         }
     }
-    assert!(adst32_hole_seen, "the ADST32 hole was not exercised");
 }
 
 /// `svt_aom_inv_txfm_type_to_func`, same shape as above against
@@ -390,7 +388,6 @@ fn inv_txfm_type_to_func_parity() {
         (12, 32, 3),
         (13, 64, 3),
     ];
-    let mut adst32_hole_seen = false;
     for (c_id, n, tx_1d) in cases {
         for range in [12i8, 18, 22] {
             let mut rng = Lcg(0xBEEF ^ c_id as u64 ^ ((range as u64) << 40));
@@ -409,15 +406,11 @@ fn inv_txfm_type_to_func_parity() {
                         "inv TxfmType {c_id} ({tx_1d}, {n}) range {range}"
                     );
                 }
-                None => {
-                    assert_eq!((c_id, tx_1d, n), (8, 1, 32), "unexpected inv port hole");
-                    adst32_hole_seen = true;
-                }
+                None => panic!(
+                    "port has no inverse kernel for C TxfmType {c_id} ({tx_1d}, {n}); \
+                     C's table returns a callable one"
+                ),
             }
         }
     }
-    assert!(
-        adst32_hole_seen,
-        "the inverse ADST32 hole was not exercised"
-    );
 }
