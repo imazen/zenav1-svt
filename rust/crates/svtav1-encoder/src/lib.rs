@@ -59,6 +59,7 @@ pub mod port_global_motion;
 pub mod port_gm_correspondence;
 pub mod port_lr_level;
 pub mod port_md;
+pub mod port_md_lambda;
 pub mod port_md_rate_estimation;
 pub mod port_md_winner;
 pub mod port_rd_cost;

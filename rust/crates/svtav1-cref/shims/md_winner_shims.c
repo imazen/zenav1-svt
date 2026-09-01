@@ -27,7 +27,9 @@
 #include "pcs.h"
 #include "sys_resource_manager.h"
 
-bool svt_av1_is_lossless_segment(PictureControlSet* pcs, int8_t segment_id);
+bool   svt_av1_is_lossless_segment(PictureControlSet* pcs, int8_t segment_id);
+int    svt_aom_filter_intra_allowed_bsize(BlockSize bs);
+TxType svt_aom_get_intra_uv_tx_type(UvPredictionMode pred_mode_uv, TxSize tx_size, int32_t reduced_tx_set);
 
 /* `lossless` is MAX_SEGMENTS bools. */
 int32_t ref_mdw_segments(void) { return MAX_SEGMENTS; }
@@ -45,4 +47,15 @@ int32_t ref_mdw_is_lossless_segment(int32_t segmentation_enabled, const int32_t*
     free(ppcs);
     free(pcs);
     return r;
+}
+
+/* ---- mode_decision.c intra tx-type helpers (both EXPORTED) ---- */
+
+int32_t ref_mdw_filter_intra_allowed_bsize(int32_t bsize) {
+    return svt_aom_filter_intra_allowed_bsize((BlockSize)bsize);
+}
+
+int32_t ref_mdw_get_intra_uv_tx_type(int32_t pred_mode_uv, int32_t tx_size, int32_t reduced_tx_set) {
+    return (int32_t)svt_aom_get_intra_uv_tx_type(
+        (UvPredictionMode)pred_mode_uv, (TxSize)tx_size, reduced_tx_set);
 }

@@ -311,7 +311,6 @@ pub fn recon_fields() -> usize {
 pub fn do_md_recon(fields: &[i32; RECON_FIELDS]) -> bool {
     unsafe { ref_fl_do_md_recon(fields.as_ptr()) != 0 }
 }
-
 // ---------------------------------------------------------------------------
 // mode_decision.c — the full-mode-decision oracle (shims/md_winner_shims.c)
 // ---------------------------------------------------------------------------
@@ -323,6 +322,8 @@ unsafe extern "C" {
         lossless: *const i32,
         segment_id: i32,
     ) -> i32;
+    fn ref_mdw_filter_intra_allowed_bsize(bsize: i32) -> i32;
+    fn ref_mdw_get_intra_uv_tx_type(pred_mode_uv: i32, tx_size: i32, reduced_tx_set: i32) -> i32;
 }
 
 /// C `MAX_SEGMENTS`, as the shim sees it.
@@ -340,4 +341,14 @@ pub fn is_lossless_segment(segmentation_enabled: bool, lossless: &[i32], segment
             segment_id,
         ) != 0
     }
+}
+
+/// C `svt_aom_filter_intra_allowed_bsize` (mode_decision.c:102).
+pub fn filter_intra_allowed_bsize(bsize: i32) -> bool {
+    unsafe { ref_mdw_filter_intra_allowed_bsize(bsize) != 0 }
+}
+
+/// C `svt_aom_get_intra_uv_tx_type` (mode_decision.c:2950).
+pub fn get_intra_uv_tx_type(pred_mode_uv: i32, tx_size: i32, reduced_tx_set: bool) -> i32 {
+    unsafe { ref_mdw_get_intra_uv_tx_type(pred_mode_uv, tx_size, i32::from(reduced_tx_set)) }
 }
