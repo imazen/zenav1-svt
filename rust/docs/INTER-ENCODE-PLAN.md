@@ -1769,23 +1769,77 @@ host oracle on both cells first (`diag` 207 B, `gradient` 1341 B), then
 | `diag 72x88 q40 p0` | **10** | 1 | ALL of them at `mi_row` 16/18/20 — the bottom partial-SB row |
 | `gradient 72x88 q40 p0` | **180** | 4 | 127 above `mi_row` 16, from the FIRST superblock |
 
-So the two cells are NOT one bug. `diag`'s whole divergence is a partial-SB
-boundary shape on the REFINEMENT path — the same family as §1k's light-PD0
-boundary fix, one path over. `gradient`'s is a leaf-decision divergence in the
-first superblock, dominated by `mode` (48 flips) and `uv` (46) rather than by
-geometry.
+`diag`'s ten flips are all in superblock 2 and 3 of a 2x2 grid; `gradient`'s
+reach superblock 0 as well. That reads as two different bugs and it is not —
+see the correction below, which was measured on a 64-ALIGNED cell after this
+table and supersedes the partial-SB framing.
 
-**The one thing both share, and the lead to take:** where the trees disagree on
-`bsize`, C is at a SMALLER, SQUARER block. Every `bsize` flip on `gradient p0`,
-tabulated `C -> port`: `4X4 -> 8X4` (5), `4X4 -> 16X4` (3), `4X4 -> 4X8` (3),
-`8X8 -> 8X4` (2), `8X8 -> 16X4` (2), `8X4 -> 16X4` (2), `8X4 -> 4X4` (2),
-`4X16 -> 4X8` (2), and singles. C reaches `BLOCK_4X4` where the port stops at a
-NSQ RECTANGLE. `diag p0`'s four are the same shape (`4X4 -> 4X16` twice,
-`8X4 -> 4X16`, `8X8 -> 16X8`). C's config has `d4=0` (4x4 ALLOWED) and `nsq=1`
-at M0..M2 on BOTH arms, so this is not the `disallow_4x4` fork §1o closed — it
-is the depth admission / NSQ preference one level down. Start at
-`depth_refine::build_refined_scan_at`'s minimum admitted depth and the NSQ
-shape ordering at M0, not at the PD0 block cost.
+**CORRECTION, same session, measured after the paragraph this replaces.** That
+paragraph read the `bsize` flips as the lead and pointed at
+`depth_refine::build_refined_scan_at`. A wider cell says the partition is
+almost right and the LEAF decision is not, so read the following instead.
+
+**The discriminator: a 64-ALIGNED cell isolates the same three presets with no
+partial-SB confound.** `gradient 128x128 q40`, four complete superblocks, one
+build per side:
+
+| preset | still (allintra) | video |
+|---|---|---|
+| 0 | IDENTICAL (543 B) | **diff** (C 2665, port 2714) |
+| 1 | IDENTICAL (763 B) | **diff** (C 3012, port 2961) |
+| 2 | IDENTICAL (695 B) | **diff** (C 3257, port 3264) |
+| 3 | IDENTICAL (679 B) | IDENTICAL (3223 B) |
+| 4 / 6 / 8 | IDENTICAL | IDENTICAL |
+
+So it is the VIDEO arm at M0..M2 exactly — the presets where
+`set_pic_pd0_lvl_default` gives PD0_LVL_0 — and it is not a partial-superblock
+effect at all. The 72x88 reading above, where every differing PD0 block had
+`x >= 64 or y >= 64`, is the SAME SET as "not superblock 0" on that geometry;
+the partial-SB framing was an artefact of a 2x2 SB grid whose only complete SB
+is the first one.
+
+**And it is not PD0.** `SVT_PD0COST_OUT` against the port's `SVTAV1_PD0DBG`
+on `gradient 128x128 q40 p0`, frame 0 (C's dump carries both frames; cut on the
+lambda change):
+
+* superblock 0 — **336 of 336 PD0 blocks agree exactly** on dist, ybits and
+  cost;
+* superblocks 1, 2 and 3 — every block differs, and the first one is SB 1's
+  64x64 ROOT with `dist` EQUAL (3462072) and `ybits` C 937463 / port 937361.
+
+A rate-only divergence on the first block of the second superblock, with the
+first superblock's PD0 exact, is the per-SB rate table chained from superblock
+0's coded CDFs — i.e. a CONSEQUENCE of superblock 0 coding differently, not a
+cause. On the 72x88 cell the same shape holds (339 interior blocks exact, all
+194 others differing, first divergence at the first block of the second SB).
+
+**Where it actually starts.** The coded tree of `gradient 128x128 q40 p0`
+(255 blocks joined) flips **287** fields, and they are LEAF fields:
+
+| field | flips |
+|---|--:|
+| `mode` | 81 |
+| `uv` | 76 |
+| `fi` (filter-intra) | 58 |
+| `ady` (angle delta) | 53 |
+| `txd` | 5 |
+| `bsize` | **2** |
+
+Two `bsize` flips in 255 blocks: the PARTITION is right and the MODE DECISION
+is not. 66 of those flips are inside superblock 0 — whose PD0 is exact — and
+the earliest is `mi=(4,12)` (y=16, x=48): `mode` C=DC / port=SMOOTH, `uv` C=6 /
+port=9, `fi` C=5 (off) / port=3, `txd` C=2 / port=1. The `fi` flips go BOTH
+ways (27 where C is off and the port picks one, 24 the other way), so it is not
+a filter-intra over-pick — it is the whole M0..M2 leaf funnel configuration on
+the video arm.
+
+**So the next chunk is the VIDEO arm's LEAF/PD1 ladder at M0..M2, and the cell
+to drive it on is `gradient 128x128 q40 p0`, not 72x88** — four complete
+superblocks, the same three presets, and no partial-SB geometry in the way.
+Start at the first in-SB0 flip, `mi=(4,12)`, with the port's `SVTAV1_CANDDBG`
+against C's `SVT_FASTCOST_OUT` / `SVT_FULLCOST_OUT`, which is the drill §1e and
+issue #16 both used to split a leaf decision into its rate and distortion
+terms.
 
 **`SVT_CTREE_OUT` contains BOTH FRAMES and the cut matters enormously.** §1o
 says to cut "at the last `mi=(0,0)` line"; that is not a usable rule, because
