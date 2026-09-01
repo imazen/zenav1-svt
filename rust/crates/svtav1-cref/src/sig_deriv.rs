@@ -1489,8 +1489,10 @@ pub fn sig_deriv_multi_processes_default(input: &[i32; mp_in::COUNT]) -> [i64; m
 
 unsafe extern "C" {
     fn ref_sig_deriv_md_config_default(input: *const i32, out: *mut i64);
+    fn ref_sig_deriv_md_config_allintra(input: *const i32, out: *mut i64);
     fn ref_md_config_in_slots() -> i32;
     fn ref_md_config_out_slots() -> i32;
+    fn ref_md_config_allintra_out_slots() -> i32;
 }
 
 /// Input slot indices for [`sig_deriv_md_config_default`], mirroring `MD_I_*`.
@@ -1600,5 +1602,51 @@ pub fn sig_deriv_md_config_default(input: &[i32; md_in::COUNT]) -> [i64; MD_OUT_
     );
     let mut out = [0i64; MD_OUT_SLOTS];
     unsafe { ref_sig_deriv_md_config_default(input.as_ptr(), out.as_mut_ptr()) };
+    out
+}
+
+/// Output slot indices for [`sig_deriv_md_config_allintra`], mirroring the C
+/// shim's `MDA_O_*` enum.
+pub mod md_allintra_out {
+    /// `pcs->rdoq_level`
+    pub const RDOQ: usize = 0;
+    /// `pcs->rate_est_level`
+    pub const RATE_EST: usize = 1;
+    /// `pcs->cdf_ctrl.update_mv`
+    pub const CDF_MV: usize = 2;
+    /// `pcs->cdf_ctrl.update_se`
+    pub const CDF_SE: usize = 3;
+    /// `pcs->cdf_ctrl.update_coef`
+    pub const CDF_COEF: usize = 4;
+    /// `pcs->cdf_ctrl.enabled`
+    pub const CDF_EN: usize = 5;
+    /// Number of output slots.
+    pub const COUNT: usize = 6;
+}
+
+/// C `svt_aom_sig_deriv_mode_decision_config_allintra` on a synthetic PCS,
+/// reading back only the three RATE ladders (`rdoq_level`, `rate_est_level`,
+/// `cdf_ctrl`) that `svtav1_encoder::rate_arm` forks on.
+///
+/// Takes the SAME input array as [`sig_deriv_md_config_default`] so the two
+/// arms are driven from one population.
+///
+/// # Panics
+/// If the C shim's slot counts disagree with [`md_in::COUNT`] /
+/// [`md_allintra_out::COUNT`].
+#[must_use]
+pub fn sig_deriv_md_config_allintra(input: &[i32; md_in::COUNT]) -> [i64; md_allintra_out::COUNT] {
+    assert_eq!(
+        unsafe { ref_md_config_in_slots() } as usize,
+        md_in::COUNT,
+        "C shim md-config input slot count drifted"
+    );
+    assert_eq!(
+        unsafe { ref_md_config_allintra_out_slots() } as usize,
+        md_allintra_out::COUNT,
+        "C shim md-config allintra output slot count drifted"
+    );
+    let mut out = [0i64; md_allintra_out::COUNT];
+    unsafe { ref_sig_deriv_md_config_allintra(input.as_ptr(), out.as_mut_ptr()) };
     out
 }

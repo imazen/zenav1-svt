@@ -654,3 +654,130 @@ fn wm_qp_banding_wraps_zero_to_max() {
         0
     );
 }
+
+// ---------------------------------------------------------------------------
+// The ALLINTRA arm's three RATE ladders — the still side of the fork
+// `svtav1_encoder::rate_arm` dispatches on.
+//
+// Evidence tier 1 for a set that was previously tier 4:
+// `quant::rdoq_level_allintra` and `FunnelCfg::for_preset`'s baked
+// (coeff_rate_est_lvl, real_coeff_ctx) pair were hand-transcriptions with
+// unit tests only. `svt_aom_sig_deriv_mode_decision_config_allintra` IS an
+// exported symbol (`nm -g` shows it GLOBAL in both the aarch64 and x86-64
+// archives), so the real C ladder is reachable and is what these drive.
+// ---------------------------------------------------------------------------
+
+use svtav1_cref::sig_deriv::md_allintra_out as ao;
+
+/// `pcs->rdoq_level` on the allintra arm, over the whole (preset x coeff_lvl)
+/// grid, against the real C function.
+#[test]
+fn allintra_rdoq_ladder_matches_c() {
+    for enc_mode in -1i8..=13 {
+        for lvl in [
+            InputCoeffLvl::VLow,
+            InputCoeffLvl::Low,
+            InputCoeffLvl::Normal,
+            InputCoeffLvl::High,
+        ] {
+            let c = Case {
+                enc_mode,
+                coeff_lvl: lvl,
+                is_islice: true,
+                frame_is_intra: true,
+                ..Case::default()
+            };
+            let t = cref::sig_deriv_md_config_allintra(&build_input(&c));
+            // The port's ladder takes a u8 enc_mode (SpeedConfig::preset);
+            // ENC_MR is structurally unreachable there, so only 0..=13 are
+            // compared against it — but C is still exercised at MR, which
+            // pins that the `<= ENC_M5` arm covers it.
+            if enc_mode >= 0 {
+                let port = svtav1_encoder::quant::rdoq_level_allintra(
+                    enc_mode as u8,
+                    match lvl {
+                        InputCoeffLvl::VLow => svtav1_encoder::quant::CoeffLvl::VLow,
+                        InputCoeffLvl::Low => svtav1_encoder::quant::CoeffLvl::Low,
+                        InputCoeffLvl::Normal => svtav1_encoder::quant::CoeffLvl::Normal,
+                        InputCoeffLvl::High => svtav1_encoder::quant::CoeffLvl::High,
+                    },
+                );
+                assert_eq!(
+                    i64::from(port),
+                    t[ao::RDOQ],
+                    "allintra rdoq_level M{enc_mode} {lvl:?}"
+                );
+            } else {
+                assert_eq!(t[ao::RDOQ], 1, "allintra rdoq_level at ENC_MR");
+            }
+        }
+    }
+}
+
+/// `pcs->rate_est_level` on the allintra arm — the ladder whose
+/// `set_rate_est_ctrls` row `FunnelCfg::for_preset` bakes.
+#[test]
+fn allintra_rate_est_ladder_matches_c() {
+    for enc_mode in 0i8..=13 {
+        let c = Case {
+            enc_mode,
+            is_islice: true,
+            frame_is_intra: true,
+            ..Case::default()
+        };
+        let t = cref::sig_deriv_md_config_allintra(&build_input(&c));
+        let want = if enc_mode <= 6 {
+            1
+        } else if enc_mode <= 8 {
+            4
+        } else {
+            0
+        };
+        assert_eq!(t[ao::RATE_EST], want, "allintra rate_est_level M{enc_mode}");
+    }
+}
+
+/// `pcs->cdf_ctrl` on BOTH arms, for a KEY frame — the fork the per-SB CDF
+/// chain gate reads. The point is `enabled`: the allintra arm switches CDF
+/// adaptation off at M7/M8 and the video arm keeps it on, while at M4..M6 the
+/// two arms carry DIFFERENT levels (2 vs 1) yet identical controls, because
+/// `set_cdf_controls` forces `update_mv = 0` on an I_SLICE.
+#[test]
+fn cdf_ctrl_arms_diverge_at_m7_m8_and_coincide_below() {
+    for enc_mode in 0i8..=13 {
+        let c = Case {
+            enc_mode,
+            is_islice: true,
+            frame_is_intra: true,
+            temporal_layer: 0,
+            pcs_temporal_layer: 0,
+            ..Case::default()
+        };
+        let a = cref::sig_deriv_md_config_allintra(&build_input(&c));
+        let d = cref::sig_deriv_md_config_default(&build_input(&c));
+        // update_mv is forced 0 on an I-slice on both arms.
+        assert_eq!(a[ao::CDF_MV], 0, "allintra update_mv M{enc_mode}");
+        assert_eq!(d[CDF_MV], 0, "video update_mv M{enc_mode}");
+        // The allintra arm's `enabled` is exactly `enc_mode <= M6`.
+        assert_eq!(
+            a[ao::CDF_EN],
+            i64::from(enc_mode <= 6),
+            "allintra cdf enabled M{enc_mode}"
+        );
+        // The video arm's is `enc_mode <= M8` for an I-slice.
+        assert_eq!(
+            d[CDF_EN],
+            i64::from(enc_mode <= 8),
+            "video cdf enabled M{enc_mode}"
+        );
+        // Below M7 the two arms produce the SAME controls despite different
+        // levels — which is why the still path is byte-neutral at M4..M6.
+        if enc_mode <= 6 {
+            assert_eq!(
+                (a[ao::CDF_MV], a[ao::CDF_SE], a[ao::CDF_COEF], a[ao::CDF_EN]),
+                (d[CDF_MV], d[CDF_SE], d[CDF_COEF], d[CDF_EN]),
+                "arms must agree on cdf_ctrl at M{enc_mode}"
+            );
+        }
+    }
+}

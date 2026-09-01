@@ -1583,3 +1583,111 @@ void ref_sig_deriv_md_config_default(const int32_t* in, int64_t* out) {
 
 int32_t ref_md_config_in_slots(void) { return MD_I_COUNT; }
 int32_t ref_md_config_out_slots(void) { return MD_O_COUNT; }
+
+/* ===========================================================================
+ * svt_aom_sig_deriv_mode_decision_config_allintra (enc_mode_config.c:9895) --
+ * the STILL twin of the function above. Only the three RATE ladders are read
+ * back (`pcs->rdoq_level`, `pcs->rate_est_level`, `pcs->cdf_ctrl`), which is
+ * what `svtav1_encoder::rate_arm` forks on; everything else the function
+ * assigns already has its own differential elsewhere in this lane or in
+ * dlf_shims.c.
+ *
+ * WHY IT EXISTS: `quant::rdoq_level_allintra` was a hand-transcription with
+ * unit tests only (evidence tier 4). The allintra entry point IS exported, so
+ * tier 1 was reachable all along -- confirmed GLOBAL by `nm -g` on the
+ * aarch64 (macOS) and x86-64 (Linux) archives before this was written.
+ *
+ * Inputs reuse MD_I_* verbatim so the two arms are driven from ONE population;
+ * a differential where the arms saw different inputs would prove nothing about
+ * the fork. Deref safety is identical to ref_sig_deriv_md_config_default (see
+ * its block comment): mfmv_controls runs at level 0, set_pic_pd0_lvl_allintra
+ * reads scs->super_block_size, svt_aom_get_nsq_search_level_allintra reads
+ * pcs->coeff_lvl, rtime_alloc_ec_ctx_array allocates a zero-element array
+ * because picture_sb_width/height are 0, and svt_aom_set_dlf_controls runs
+ * with enable_dlf_flag pinned to 0 like the rest of this TU.
+ * ======================================================================== */
+
+enum {
+    MDA_O_RDOQ = 0, MDA_O_RATE_EST, MDA_O_CDF_MV, MDA_O_CDF_SE,
+    MDA_O_CDF_COEF, MDA_O_CDF_EN,
+    MDA_O_COUNT
+};
+
+void ref_sig_deriv_md_config_allintra(const int32_t* in, int64_t* out) {
+    SequenceControlSet*      scs  = (SequenceControlSet*)calloc(1, sizeof(*scs));
+    PictureParentControlSet* ppcs = (PictureParentControlSet*)calloc(1, sizeof(*ppcs));
+    PictureControlSet*       pcs  = (PictureControlSet*)calloc(1, sizeof(*pcs));
+    EbObjectWrapper*   w0 = (EbObjectWrapper*)calloc(1, sizeof(*w0));
+    EbObjectWrapper*   w1 = (EbObjectWrapper*)calloc(1, sizeof(*w1));
+    EbReferenceObject* r0 = (EbReferenceObject*)calloc(1, sizeof(*r0));
+    EbReferenceObject* r1 = (EbReferenceObject*)calloc(1, sizeof(*r1));
+
+    scs->static_config.fast_decode = (uint8_t)in[MD_I_FAST_DECODE];
+    scs->static_config.qp          = (uint32_t)in[MD_I_SQ_QP];
+    scs->static_config.resize_mode = (uint8_t)in[MD_I_RESIZE_MODE];
+    scs->static_config.encoder_bit_depth = (uint32_t)in[MD_I_BIT_DEPTH];
+    scs->static_config.enable_dlf_flag   = 0; /* dlf ctrls are not compared */
+    scs->static_config.tune              = (uint8_t)in[MD_I_TUNE];
+    scs->static_config.extended_crf_qindex_offset = (uint8_t)in[MD_I_EXT_CRF_OFFSET];
+    scs->seq_qp_mod            = (uint8_t)in[MD_I_SEQ_QP_MOD];
+    scs->mfmv_enabled          = (uint8_t)in[MD_I_MFMV_ENABLED];
+    scs->rc_stat_gen_pass_mode = (uint8_t)in[MD_I_RC_STAT_GEN];
+    scs->input_resolution      = (ResolutionRange)in[MD_I_SCS_INPUT_RES];
+    scs->super_block_size      = (uint32_t)in[MD_I_SB_SIZE];
+    scs->seq_header.enable_interintra_compound = (uint8_t)in[MD_I_ENABLE_II];
+    scs->tpl                   = 0;
+
+    ppcs->scs                  = scs;
+    ppcs->is_ref               = (bool)in[MD_I_IS_REF];
+    ppcs->temporal_layer_index = (uint8_t)in[MD_I_TEMPORAL_LAYER];
+    ppcs->input_resolution     = (ResolutionRange)in[MD_I_INPUT_RES];
+    ppcs->sc_class5            = (uint8_t)in[MD_I_SC_CLASS5];
+    ppcs->hierarchical_levels  = (uint8_t)in[MD_I_HIER_LEVELS];
+    ppcs->transition_present   = (int8_t)in[MD_I_TRANSITION];
+    ppcs->is_highest_layer     = (bool)in[MD_I_IS_HIGHEST_LAYER];
+    ppcs->frame_superres_enabled = (bool)in[MD_I_SUPERRES];
+    ppcs->frame_resize_enabled   = (bool)in[MD_I_RESIZE_ENABLED];
+    ppcs->ref_list0_count_try  = (uint8_t)in[MD_I_REF_L0_TRY];
+    ppcs->ref_list1_count_try  = (uint8_t)in[MD_I_REF_L1_TRY];
+    ppcs->hbd_md               = (int8_t)in[MD_I_HBD_MD];
+    ppcs->r0_gen               = (bool)in[MD_I_R0_GEN];
+    ppcs->r0                   = (double)in[MD_I_R0_MILLI] / 1000.0;
+    ppcs->picture_qp           = (uint8_t)in[MD_I_PICTURE_QP];
+    ppcs->frm_hdr.error_resilient_mode = (uint8_t)in[MD_I_ERROR_RESILIENT];
+    ppcs->frm_hdr.quantization_params.base_q_idx = (int32_t)in[MD_I_BASE_Q];
+    ppcs->frm_hdr.frame_type = in[MD_I_FRAME_IS_INTRA] ? KEY_FRAME : INTER_FRAME;
+    ppcs->frm_hdr.segmentation_params.segmentation_enabled = (uint8_t)in[MD_I_SEGMENTATION];
+    ppcs->picture_sb_width  = 0;
+    ppcs->picture_sb_height = 0;
+
+    pcs->ppcs       = ppcs;
+    pcs->scs        = scs;
+    pcs->enc_mode   = (EncMode)in[MD_I_ENC_MODE];
+    pcs->slice_type = in[MD_I_IS_ISLICE] ? I_SLICE : B_SLICE;
+    pcs->ref_hp_percentage    = (int16_t)in[MD_I_REF_HP_PERC];
+    pcs->ref_intra_percentage = (uint8_t)in[MD_I_REF_INTRA_PERC];
+    pcs->ref_skip_percentage  = (uint8_t)in[MD_I_REF_SKIP_PERC];
+    pcs->coeff_lvl            = (InputCoeffLvl)in[MD_I_COEFF_LVL];
+    pcs->temporal_layer_index = (uint8_t)in[MD_I_PCS_TEMPORAL_LAYER];
+    r0->is_mfmv_used = 0;
+    r1->is_mfmv_used = 0;
+    w0->object_ptr = r0;
+    w1->object_ptr = r1;
+    pcs->ref_pic_ptr_array[REF_LIST_0][0] = w0;
+    pcs->ref_pic_ptr_array[REF_LIST_1][0] = w1;
+
+    svt_aom_sig_deriv_mode_decision_config_allintra(scs, pcs);
+
+    out[MDA_O_RDOQ]     = pcs->rdoq_level;
+    out[MDA_O_RATE_EST] = pcs->rate_est_level;
+    out[MDA_O_CDF_MV]   = pcs->cdf_ctrl.update_mv;
+    out[MDA_O_CDF_SE]   = pcs->cdf_ctrl.update_se;
+    out[MDA_O_CDF_COEF] = pcs->cdf_ctrl.update_coef;
+    out[MDA_O_CDF_EN]   = pcs->cdf_ctrl.enabled;
+
+    free(pcs->ec_ctx_array);
+    free(r1); free(r0); free(w1); free(w0);
+    free(pcs); free(ppcs); free(scs);
+}
+
+int32_t ref_md_config_allintra_out_slots(void) { return MDA_O_COUNT; }
