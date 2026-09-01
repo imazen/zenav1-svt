@@ -365,10 +365,10 @@ pub fn chroma_complexity_check(
             return found;
         }
     }
-    if !is_inter || detector_level <= 2 {
-        if let Some(found) = chroma_complexity_check_variance(detector_level, geom, input) {
-            return found;
-        }
+    if (!is_inter || detector_level <= 2)
+        && let Some(found) = chroma_complexity_check_variance(detector_level, geom, input)
+    {
+        return found;
     }
     ComponentType::Luma
 }

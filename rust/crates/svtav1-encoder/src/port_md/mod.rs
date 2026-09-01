@@ -19,6 +19,7 @@
 //! | [`predicates`] | the pure gates and tables of `mode_decision.c` |
 //! | [`pme`] | the MD motion-search cost model + the PME SAD kernel |
 //! | [`nics`] | the per-stage candidate counts (`svt_aom_set_nics`) |
+//! | [`md_stages`] | the MDS0..MDS3 class loop that drives `nic_prune` |
 //! | [`nic_prune`] | the per-stage candidate STAGING (sorts + NIC prunes) |
 //! | [`lpd1`] | the light-PD1 gates + the chroma-complexity detectors |
 //! | [`lpd1_loop`] | the light-PD1 MDS0 cost + candidate walk |
@@ -45,6 +46,7 @@ pub mod inject;
 pub mod lpd1;
 pub mod lpd1_loop;
 pub mod md_search;
+pub mod md_stages;
 pub mod motion_mode;
 pub mod mv_refine;
 pub mod nic_prune;

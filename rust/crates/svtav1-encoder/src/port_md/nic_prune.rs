@@ -336,6 +336,12 @@ pub struct Mds0Prune {
 /// C accumulates `md_stage_1_total_count` with `+=` onto a field the driver
 /// zeroed at `:9463`, and its two `continue`s skip an `+= 0`; the total
 /// returned here is therefore the same value.
+// The divisions below are guarded by a `class_best != 0` test that scopes a
+// whole block, not one expression, so `checked_div` cannot express them
+// without restructuring hot RD control flow — the same call
+// `leaf_funnel::nic` makes. `clippy::manual_checked_ops` post-dates the 1.89
+// MSRV floor's clippy, so the allow must tolerate being unknown there.
+#[allow(unknown_lints, clippy::manual_checked_ops)]
 pub fn post_mds0_nic_pruning(
     ctrls: &NicPruningCtrls,
     (q_weight, q_denom): (u32, u32),
@@ -521,6 +527,7 @@ pub fn post_mds1_nic_pruning(
 /// The one prune whose class threshold is LIVE on an intra frame: instead of
 /// being disabled, `:7978` re-floors it to
 /// `MAX(25, scaled * i_mds3_class_th_mult)`.
+#[allow(unknown_lints, clippy::manual_checked_ops)]
 pub fn post_mds2_nic_pruning(
     ctrls: &NicPruningCtrls,
     (q_weight, q_denom): (u32, u32),
@@ -532,10 +539,8 @@ pub fn post_mds2_nic_pruning(
 ) -> u32 {
     let cand_th = Threshold::scaled(ctrls.mds3_cand_base_th, q_weight, q_denom);
     let mut class_th = Threshold::scaled(ctrls.mds3_class_th, q_weight, q_denom);
-    if is_i_slice {
-        if let Threshold(Some(v)) = class_th {
-            class_th = Threshold(Some(25.max(v * u64::from(ctrls.i_mds3_class_th_mult))));
-        }
+    if is_i_slice && let Threshold(Some(v)) = class_th {
+        class_th = Threshold(Some(25.max(v * u64::from(ctrls.i_mds3_class_th_mult))));
     }
 
     let mut total = 0u32;
