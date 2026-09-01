@@ -837,7 +837,7 @@ saturation to "the dispatched kernel" without an ISA — corrected in place.
 
 ---
 
-## 21. The NEON `highbd_jnt_convolve_*` kernels hardcode `ROUND0_BITS` and ignore `conv_params->round_0`
+## 21. The NEON highbd convolve kernels hardcode `ROUND0_BITS` and ignore `conv_params->round_0`
 
 **MEASURED 2026-08-31, aarch64-darwin** (lane wx-interpred, while gating
 `svt_inter_predictor_light_pd1`'s 10-bit arm).
@@ -886,6 +886,23 @@ this before.
 **Reachable:** no. `svt_av1_verify_settings` (enc_settings.c:460) rejects any
 bit depth other than 8/10, so neither C nor this port can configure bd 12.
 Same reachability verdict, same shape, and the same ISA as #20.
+
+**SECOND MEASUREMENT, same day — it is not only the `jnt_*` family.** The
+SINGLE-prediction kernels do it too:
+
+```c
+/* ASM_NEON/highbd_convolve_neon.c:1003-1006, svt_av1_highbd_convolve_2d_sr_neon */
+const int y_offset_bits = bd + 2 * FILTER_BITS - ROUND0_BITS;
+const int y_offset      = (1 << (2 * FILTER_BITS - ROUND0_BITS - 1)) -
+    (1 << (y_offset_bits - 1));
+```
+
+Driven through `tf_inter_predictor` at bd 12, an 8x8 block at `mv (3, 5)` (the
+2-D kernel) comes back from C **all zeros** while the port produces real
+samples — the wrong offsets push every result below zero and it saturates.
+`mv (0, 0)` (the copy kernel, which reads no rounding at all) agrees at bd 12,
+which is what localizes it to the offset derivation rather than to the
+dispatch.
 
 **What the port does:** `port_inter_predictor::inter_predictor_light_pd1_hbd`
 composes `port_pack::pack_block` with the `_c`-gated kernels, so it follows the

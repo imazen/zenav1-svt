@@ -281,3 +281,72 @@ void ref_enc_make_inter_predictor(void* src, void* src_2b, void* dst, int pre_y,
     }
     free(scs);
 }
+
+/* ---- tf_inter_predictor, the 10-bit arm -------------------------------- */
+
+void tf_inter_predictor(SequenceControlSet* scs, uint8_t* src_ptr, uint8_t* dst_ptr, int16_t pre_y, int16_t pre_x,
+                        Mv mv, const struct ScaleFactors* const sf, ConvolveParams* conv_params,
+                        InterpFilters interp_filters, uint16_t frame_width, uint16_t frame_height, uint8_t blk_width,
+                        uint8_t blk_height, MacroBlockD* av1xd, int32_t src_stride, int32_t dst_stride,
+                        uint8_t bit_depth, uint8_t subsamling_shift);
+
+/* inter_pred_shims.c's `ref_tf_inter_predictor` binds this same C function,
+ * but through `uint8_t*` slices, so it can only express the 8-bit arm: for
+ * `bit_depth > 8` the function casts `src_ptr` to `uint16_t*` AND scales the
+ * position offset by `1 << is_highbd` (enc_inter_prediction.c:2478), so a
+ * u8-slice caller cannot state where the plane starts without assuming a byte
+ * order. This entry takes the two planes as `uint16_t*` and lets C do the
+ * cast, which is the same call with no endianness assumption.
+ *
+ * It also exposes `conv_buf` / `conv_stride`, which the other binding pins at
+ * NULL/0. That is inert for `is_compound == 0` (every sr kernel ignores
+ * `conv_params->dst`) and is exactly what `svt_aom_simple_luma_unipred` passes
+ * -- `tmp_dstY` at stride 128 -- so a differential can drive the real
+ * parameter set instead of an equivalent one. */
+void ref_tf_inter_predictor_hbd(uint16_t* src, int32_t src_stride, uint16_t* dst, int32_t dst_stride, int pre_y,
+                                int pre_x, int mv_x, int mv_y, int other_w, int other_h, int this_w, int this_h,
+                                int super_block_size, int frame_width, int frame_height, int blk_width, int blk_height,
+                                int mb_to_left, int mb_to_right, int mb_to_top, int mb_to_bottom,
+                                uint32_t interp_filters, uint16_t* conv_buf, int conv_stride, int bit_depth,
+                                int subsampling_shift) {
+    ensure_gap_rtcd();
+    SequenceControlSet* scs = (SequenceControlSet*)calloc(1, sizeof(SequenceControlSet));
+    scs->super_block_size   = (uint16_t)super_block_size;
+
+    MacroBlockD xd;
+    memset(&xd, 0, sizeof(xd));
+    xd.mb_to_left_edge   = mb_to_left;
+    xd.mb_to_right_edge  = mb_to_right;
+    xd.mb_to_top_edge    = mb_to_top;
+    xd.mb_to_bottom_edge = mb_to_bottom;
+
+    ScaleFactors sf;
+    memset(&sf, 0, sizeof(sf));
+    svt_av1_setup_scale_factors_for_frame(&sf, other_w, other_h, this_w, this_h);
+
+    Mv mv;
+    mv.x = (int16_t)mv_x;
+    mv.y = (int16_t)mv_y;
+
+    ConvolveParams cp = get_conv_params_no_round(0, conv_buf, conv_stride, 0, bit_depth);
+
+    tf_inter_predictor(scs,
+                       (uint8_t*)src,
+                       (uint8_t*)dst,
+                       (int16_t)pre_y,
+                       (int16_t)pre_x,
+                       mv,
+                       &sf,
+                       &cp,
+                       interp_filters,
+                       (uint16_t)frame_width,
+                       (uint16_t)frame_height,
+                       (uint8_t)blk_width,
+                       (uint8_t)blk_height,
+                       &xd,
+                       src_stride,
+                       dst_stride,
+                       (uint8_t)bit_depth,
+                       (uint8_t)subsampling_shift);
+    free(scs);
+}

@@ -51,6 +51,7 @@ pub mod port_resize_hbd;
 pub mod port_scale_factors;
 pub mod port_sgr;
 pub mod port_subpel_params;
+pub mod port_tf_pred;
 pub mod port_warp;
 pub mod port_wedge_masks;
 pub mod port_wedge_search;

@@ -464,3 +464,93 @@ pub fn enc_make_inter_predictor(
         );
     }
 }
+
+unsafe extern "C" {
+    #[allow(clippy::too_many_arguments)]
+    fn ref_tf_inter_predictor_hbd(
+        src: *mut u16,
+        src_stride: i32,
+        dst: *mut u16,
+        dst_stride: i32,
+        pre_y: c_int,
+        pre_x: c_int,
+        mv_x: c_int,
+        mv_y: c_int,
+        other_w: c_int,
+        other_h: c_int,
+        this_w: c_int,
+        this_h: c_int,
+        super_block_size: c_int,
+        frame_width: c_int,
+        frame_height: c_int,
+        blk_width: c_int,
+        blk_height: c_int,
+        mb_to_left: c_int,
+        mb_to_right: c_int,
+        mb_to_top: c_int,
+        mb_to_bottom: c_int,
+        interp_filters: u32,
+        conv_buf: *mut u16,
+        conv_stride: c_int,
+        bit_depth: c_int,
+        subsampling_shift: c_int,
+    );
+}
+
+/// Reference `tf_inter_predictor` (enc_inter_prediction.c:2452) on its
+/// `bit_depth > EB_EIGHT_BIT` arm.
+///
+/// `inter_pred::tf_inter_predictor` binds the same C function through `u8`
+/// slices and can therefore only express the 8-bit arm; see the shim's
+/// comment. `src_origin` is in SAMPLES.
+#[allow(clippy::too_many_arguments)]
+pub fn tf_inter_predictor_hbd(
+    src: &mut [u16],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u16],
+    dst_stride: usize,
+    conv_buf: &mut [u16],
+    conv_stride: usize,
+    pre: (i32, i32),
+    mv: (i32, i32),
+    scale: (i32, i32, i32, i32),
+    super_block_size: i32,
+    frame: (i32, i32),
+    blk: (i32, i32),
+    edges: (i32, i32, i32, i32),
+    interp_filters: u32,
+    bit_depth: i32,
+    subsampling_shift: i32,
+) {
+    unsafe {
+        ref_tf_inter_predictor_hbd(
+            src.as_mut_ptr().add(src_origin),
+            src_stride as i32,
+            dst.as_mut_ptr(),
+            dst_stride as i32,
+            pre.0,
+            pre.1,
+            mv.0,
+            mv.1,
+            scale.0,
+            scale.1,
+            scale.2,
+            scale.3,
+            super_block_size,
+            frame.0,
+            frame.1,
+            blk.0,
+            blk.1,
+            edges.0,
+            edges.1,
+            edges.2,
+            edges.3,
+            interp_filters,
+            conv_buf.as_mut_ptr(),
+            conv_stride as c_int,
+            bit_depth,
+            subsampling_shift,
+        );
+    }
+}
