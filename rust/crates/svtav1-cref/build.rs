@@ -284,6 +284,68 @@ fn out_dir_path() -> PathBuf {
 /// `SVT_CREF_REQUIRE_PICSTRUCT_STATICS=1` and
 /// `picstruct_statics_oracle_is_available` fails loudly instead. CI can turn
 /// that on once the object is known to be present on its image.
+
+/// Verify that `objcopy --globalize-symbol` ACTUALLY promoted each name.
+///
+/// **`objcopy` exits 0 when it matches nothing.** Reading its exit status as
+/// success is an absent signal treated as a positive one, and on 2026-08-31 it
+/// broke the Linux build of `main`: GCC's interprocedural passes RENAME static
+/// functions, so `Codec/rc_vbr_cbr.c.o` built by gcc contains
+/// `clamp_qindex.isra.0` — not `clamp_qindex` — and
+/// `--globalize-symbol=clamp_qindex` matched nothing, exited 0, the cfg and
+/// the shim define were switched on, and the link then failed with
+/// `undefined symbol: clamp_qindex`. On macOS/clang the plain name survives,
+/// so it linked there and the breakage was invisible until a second ISA ran.
+///
+/// The suffixes to expect from GCC are `.isra.N` (interprocedural scalar
+/// replacement), `.constprop.N`, `.part.N` and `.cold`; a function may also be
+/// eliminated outright. A promotion keyed on the plain name cannot see any of
+/// that, which is why this check reads the RESULT rather than the exit code.
+fn globalized_symbols_present(objcopy: &Path, obj: &Path, syms: &[&str]) -> Result<(), String> {
+    // llvm-objcopy ships beside llvm-nm; fall back to plain `nm`.
+    let nm = objcopy.parent().map_or_else(
+        || PathBuf::from("nm"),
+        |d| {
+            let c = d.join("llvm-nm");
+            if c.exists() { c } else { PathBuf::from("nm") }
+        },
+    );
+    let out = Command::new(&nm)
+        .arg("-g")
+        .arg(obj)
+        .output()
+        .map_err(|e| format!("{} could not run: {e}", nm.display()))?;
+    if !out.status.success() {
+        return Err(format!("{} failed on {}", nm.display(), obj.display()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut missing = Vec::new();
+    for s in syms {
+        // A global entry is `<addr> T <name>` (or D/B); accept the Mach-O
+        // leading underscore. Match the whole name so `clamp_qindex.isra.0`
+        // does NOT satisfy a request for `clamp_qindex` — that rename is
+        // exactly the failure this guards.
+        let found = text.lines().any(|l| {
+            l.rsplit_once(' ').is_some_and(|(_, n)| {
+                let n = n.trim();
+                n == *s || n.strip_prefix('_').is_some_and(|n| n == *s)
+            })
+        });
+        if !found {
+            missing.push(*s);
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "not global after promotion: {} (the compiler most likely renamed or eliminated \
+             them — GCC emits .isra.N / .constprop.N / .part.N clones for statics)",
+            missing.join(", ")
+        ))
+    }
+}
+
 #[must_use]
 fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-check-cfg=cfg(picstruct_statics)");
@@ -338,6 +400,11 @@ fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
             );
             return false;
         }
+    }
+    // objcopy exits 0 when it matches NOTHING — verify, do not infer.
+    if let Err(why) = globalized_symbols_present(&objcopy, &dst, &SYMS) {
+        println!("cargo:warning=picstruct tier-1 statics unavailable: {why}");
+        return false;
     }
 
     // Wrap the object in an archive rather than emitting `rustc-link-arg`:
@@ -474,6 +541,11 @@ fn link_globalized_rc_vbr_statics(repo_root: &Path, out_dir: &Path) -> bool {
             );
             return false;
         }
+    }
+    // objcopy exits 0 when it matches NOTHING — verify, do not infer.
+    if let Err(why) = globalized_symbols_present(&objcopy, &dst, &SYMS) {
+        println!("cargo:warning=rc_vbr_cbr tier-1 statics unavailable: {why}");
+        return false;
     }
 
     let archive = out_dir.join("librc_vbr_statics.a");
