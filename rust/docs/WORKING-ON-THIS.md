@@ -433,6 +433,14 @@ names exactly which syntax elements that frame's tile coded** — a symbol-level
 comparison with no `-Wl,--wrap` op trace, which means it works on macOS (§5).
 
 ```bash
+tools/fctx_gate.sh                      # the reference cell, both sides, diffed
+tools/fctx_gate.sh 72 88 40 4 2 diag    # any cell
+```
+
+It needs docker (the C side needs `-Wl,--wrap`) and **fails loudly** when there
+is none, rather than skipping. What it runs, if you need the pieces:
+
+```bash
 W=~/tmp/zenav1-ctrace/fctx; mkdir -p $W
 SVTAV1_FCTX_OUT=$W/rs.fctx SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 \
   SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 tools/identity_run gradient 64 64 40 6 $W/rs
