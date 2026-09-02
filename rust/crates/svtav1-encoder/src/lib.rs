@@ -32,6 +32,7 @@ pub mod inter_hdr_arm;
 pub mod inter_me;
 pub mod inter_mv_code;
 pub mod inter_mvp;
+pub mod inter_me_arm;
 pub mod inter_pred_arm;
 pub(crate) mod intra_arm;
 pub mod intra_edge;
