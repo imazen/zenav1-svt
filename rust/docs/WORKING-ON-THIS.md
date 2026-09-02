@@ -123,12 +123,38 @@ sweep mid-flight.
 
 **Never rebuild Rust while a sweep is using the binary.**
 
+**A `until ! pgrep -f <script>` waiter MATCHES ITSELF and never exits.** The
+waiter's own command line contains the pattern, so `pgrep -f` finds it,
+`! pgrep` is false forever, and the loop spins after the job it was watching has
+long finished — a hang that looks exactly like "the sweep is still running".
+MEASURED 2026-09-02: `identity_full_8bit.sh` printed `1100 / 1100` and the
+waiters kept reporting RUNNING for another twenty minutes. Match the SCRIPT PATH
+(`pgrep -f "tools/identity_full_8bit.sh"`), or watch the log's own completion
+line, or use a pid — never a bare name the waiter also carries.
+
 **A gate that cannot reach a feature cannot guard it.** The panic-freedom gate
 encoded `gradient` only — which never arms the screen-content detector — so
 palette and IntraBC were switched off in all 64 of its cells, and it sailed past
 two real out-of-bounds panics. Synthetic content also **never** codes an IntraBC
 block at any preset (measured), so IntraBC can only be tested on the real screen
 corpus. Ask what your test actually reaches, not what it nominally covers.
+
+**A gate hidden behind a FAILING gate accrues its own debt silently, and
+"nobody looked" is how five chunks land on a red `main`.** MEASURED 2026-09-02:
+`refusal inventory is current` had been the ONLY failing step of the only
+failing job since §1s landed — `docs/REFUSED-CONFIGS.md` was one CONTRACT entry
+stale — and every other gate in that run, including the x86-64 workspace suite,
+was green. Five consecutive chunks pushed onto that red without reading it. The
+FOUR steps after it were SKIPPED as collateral — `PORT-NOTE index is current`,
+`regression spot-check`, `8-bit identity — EVERY preset 0..13` and
+`screen-content palette identity` — so **CI had not run this repo's two biggest
+byte sweeps since §1s**, and the first of the four had gone stale too (44
+markers indexed against 45 in source). Both ledgers are generated files with
+`--check` CI gates, which is the right design; what failed is the
+habit `CLAUDE.md` already states — **check CI after pushing** — and the reading
+that a skipped step is a passing one. Run both `--check`s locally before a push
+if you have touched a refusal string or a `PORT-NOTE` marker; they take under a
+second.
 
 **Corpus gates look for their images in several roots, and say so when they
 miss.** Fourteen gates once hard-coded `/root/work/codec-corpus/...` — the path
@@ -731,7 +757,7 @@ differing frame 1, and 1 still differs on frame 0. `tools/inter_byte_matrix.sh`
 is that sweep and `tools/inter_byte_gate.sh` asserts the 36. The refusal stays
 because 36 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
-Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z⁹
+Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁰
 for the tile.
 
 Two things §1q proves that a reader will otherwise re-derive:

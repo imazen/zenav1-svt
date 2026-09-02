@@ -1103,6 +1103,32 @@ byteVideoKey "video-key-lr-sgr-arm-p3-gradient" gradient 72 88 40 3
 byteVideoKey "video-key-ssse-mds1-p0-diag"      diag     72  88 40 0
 byteVideoKey "video-key-ssse-mds1-p2-gradient"  gradient 128 128 40 2
 
+# --- fixed_partition's SECOND conjunct on the `preset >= 9` gate --------------
+# docs/INTER-ENCODE-PLAN.md §1z¹⁰. C `md_ctx->fixed_partition =
+# md_ctx->pred_depth_only && md_ctx->md_disallow_nsq_search`
+# (enc_dec_process.c:3054). §1z⁗ fixed the second conjunct on the `< 9` gate;
+# the `>= 9` gate still spelled it `preset >= 9`, which is only the first term.
+#
+# It is qp-keyed and that is why nothing witnessed it:
+# `get_nsq_search_level_default`'s M8+ base is 19 and the seq-QP offset
+# SATURATES TO ZERO (`level + n > 19 ? 0 : ...`), so the NSQ search is OFF at
+# qp <= 48 — where the whole existing video-key cell set lives, all at qp 40 —
+# and ON from 49 up. `video_key_matrix.sh`'s default is 72x88 q40, so it
+# reported p9..p13 IDENTICAL both before and after.
+#
+# OBSERVED BEFORE the fix, video-mode KEY frame at qp 55 (the whole 64x64
+# matrix, `VKM_QP=55 VKM_W=64 VKM_H=64 tools/video_key_matrix.sh`):
+#   gradient p9  C 289 B, port 412 B  (+42.6 %)
+#   diag     p9  C 168 B, port 171 B
+#   diag     p10 C 187 B, port 204 B
+#   diag     p11 C 219 B, port 234 B   (p12 and p13 identical to p11)
+# AFTER: all six byte-identical; that matrix goes 47/60 -> 53/60 with no cell
+# leaving IDENTICAL. Two cells here, one per content class, because the
+# gradient one is the large deviation and the diag one is the whole p10..p13
+# tail of the same cause.
+byteVideoKey "video-key-fixed-partition-p9-q55-gradient"  gradient 64 64 55 9
+byteVideoKey "video-key-fixed-partition-p11-q55-diag"     diag     64 64 55 11
+
 # The INTER FRAME HEADER (docs/INTER-ENCODE-PLAN.md §1q + §1r).
 #
 # BEFORE: `identity_run` exited 3 — the port REFUSED frame 1 at the

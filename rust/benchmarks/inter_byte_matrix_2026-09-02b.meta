@@ -1,0 +1,34 @@
+# tools/inter_byte_matrix.sh — the INTER campaign's 96-cell frontier
+#
+# grid    {uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55}
+#         x {p6,p8}, frames=2 low-delay P, SVTAV1_FRAME_SHIFT=3
+# host    Apple M4 Pro, aarch64-apple-darwin
+# date    2026-09-02
+# after   docs/INTER-ENCODE-PLAN.md §1z⁹ (PD0 inter compensation + the inter MD
+#         lambda's rdmult base) and §1z¹⁰ (PD0's rate tables from
+#         md_frame_context)
+#
+#   BOTH   31 -> 36      F1DIFF 64 -> 59      F0DIFF 1 -> 1
+#
+# CLOSED by §1z⁹, all five on the p8 arm where PD0 decides the whole tree:
+#   gradient 64x64  q20 p8      gradient 72x72 q20 p8
+#   diag     64x64  q20 p8      diag     64x64 q40 p8   (the reference cell)
+#   screen   16x16  q20 p8
+#
+# §1z¹⁰'s rate-table fix is VERDICT-NEUTRAL on this grid — it moved seven
+# F1DIFF cells' frame-1 byte counts (both up and down, none crossing) and
+# closed none. It landed because it makes the port's PD0 block cost join C's
+# `SVT_PD0COST_OUT` field for field on the reference cell (dist / ybits / cost
+# / lambda all equal), which is the oracle the next chunk reads.
+#
+# STILL OPEN, in the order the dumps rank them:
+#   1. `depth_removal_ctrls` is unwired in PD0. C resolves dr=1/0/1/1 on the
+#      reference cell (disallow_below_32x32 AND _16x16) where Pd0Ctx::min_sq is
+#      a flat 8. Inert on the five closed cells because the i == 0 early exit
+#      fires above it; it binds wherever the parent is not well enough
+#      predicted for that exit.
+#   2. `gradient 128x128 q20 p8` — the ONE F0DIFF cell, a video-KEY defect,
+#      7453 B against C's 7472. Every frame-1 reading on that cell is void.
+#
+# Reproduce: tools/inter_byte_matrix.sh
+# Assert:    tools/inter_byte_gate.sh (36 required cells + 3 named open)

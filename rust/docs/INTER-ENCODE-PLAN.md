@@ -4043,8 +4043,8 @@ Nothing regressed — every other cell's two byte counts are unchanged.
 
 #### What is measurably NEXT, in the order the dumps rank it
 
-1. **PD0's rate tables are the DEFAULTS on an inter frame; C's are the restored
-   `md_frame_context`.** The residual on the reference cell is exactly this:
+1. **LANDED in §1z¹⁰ (a).** **PD0's rate tables are the DEFAULTS on an inter
+   frame; C's are the restored `md_frame_context`.** The residual on the reference cell is exactly this:
    `ybits` 2423 against C's 1519, at the same `coeff_rate_est_lvl` and the same
    eob. `init_frame_rate_tables` (`md_config_process.c:299-310`) seeds
    `md_frame_context` from the primary reference's SAVED CDFs whenever the
@@ -4055,7 +4055,8 @@ Nothing regressed — every other cell's two byte counts are unchanged.
    `pd0::build_m6_pd0_tables_from_ctx` already takes exactly that pair, so this
    is a call-site change. It is inert on a key frame by construction
    (`primary_ref_frame == NONE` -> C uses the defaults too).
-2. **`depth_removal_ctrls` is unwired in PD0.** C's inter frame resolves
+2. **STILL OPEN — the next thing to build.** **`depth_removal_ctrls` is unwired
+   in PD0.** C's inter frame resolves
    `dr=1/0/1/1` on the reference cell — `disallow_below_32x32` and
    `disallow_below_16x16` both set — and the port's `Pd0Ctx::min_sq` is a flat
    8. It did not matter on the five cells that closed, because the `i == 0`
@@ -4066,6 +4067,149 @@ Nothing regressed — every other cell's two byte counts are unchanged.
    carries `me_{64x64,32x32,16x16,8x8}_distortion` + `me_8x8_cost_variance`.
    What is missing is `fast_lambda_md[EB_8_BIT_MD]` (C
    `svt_aom_compute_fast_lambda`) and the call site.
+
+### 1z¹⁰. PD0's rate tables, `fixed_partition`'s second conjunct at preset >= 9, and a refusal string that had gone false (2026-09-02)
+
+Three fixes with one thing in common: each was named by §1z⁹'s own dumps or by
+`REFUSED-CONFIGS.md`'s own preamble, and none of them needed a new oracle.
+
+#### (a) PD0 priced against the DEFAULT CDFs on an inter frame
+
+§1z⁹ closed the reference cell with a residual it named: C's PD0 reports
+`ybits=1519` for the 64x64 where the port reported `2423`, at the same
+`coeff_rate_est_lvl` and the same eob. The whole gap was the RATE TABLES.
+
+C's `init_frame_rate_tables` (`md_config_process.c:292-310`) seeds
+`md_frame_context` from the primary reference's SAVED end-of-frame CDFs
+whenever the frame header names a `primary_ref_frame`, and only otherwise from
+`svt_av1_default_coef_probs(base_q_idx)` + `svt_aom_init_mode_probs`. §1y wired
+that for the FUNNEL's rates (`fun_rates` reads `md_frame_cdfs`) and left PD0
+calling `pd0::build_m6_pd0_tables(sb_qindex)`, which is
+`FrameContext::new_default()` + `CoeffFc::default_for_qindex` — the
+`PRIMARY_REF_NONE` arm — on every frame.
+
+`build_m6_pd0_tables_from_ctx` already took exactly the pair C wants and
+`md_frame_cdfs` already carried it, so this is a call site, in three places
+plus the funnel chain's SEED (C's `ec_ctx_array` "neither neighbour" arm is
+`md_frame_context`, not the defaults, for the same reason).
+
+**The join is now exact.** On `diag 64x64 q40 p8 frames=2`, frame 1:
+
+```
+C     PD0COST org=(0,0) 64x64 dist=64712 ybits=1519 cost=9142574 lambda=241378
+port  PD0BLK  org=(0,0) 64x64 dist=64712 ybits=1519 cost=9142574 lambda=241378
+```
+
+every field, including the cost. Byte-inert on a KEY frame by construction
+(`md_frame_cdfs` is `None` there, which is the pair the still path has always
+built) and **verdict-neutral on the 96-cell grid** — still 36 BOTH / 59 F1DIFF
+/ 1 F0DIFF, with seven F1DIFF cells' frame-1 byte counts moving (both up and
+down, none crossing). Landed because C does it and because it removes the one
+named residual on the cell the campaign uses as its reference, not because it
+paid on the scoreboard.
+
+#### (b) `fixed_partition`'s second conjunct, on the OTHER gate
+
+§1z⁗ found that `fixed_partition = pred_depth_only && md_disallow_nsq_search`
+(`enc_dec_process.c:3054`) and that `pipeline.rs` had the first conjunct only.
+It fixed the `preset < 9` gate. The `preset >= 9` gate was still the literal
+`speed_config.preset >= 9`, which is *also* only `pred_depth_only`.
+
+Why it survived: it is **qp-keyed**, and every video-key cell in the repo is at
+qp 40. `get_nsq_search_level_default`'s base above M7 is 19 and the seq-QP
+offset saturates to zero (`level + n > 19 ? 0 : level + n`), so:
+
+| CLI qp | offset | `nsq_search_level` | C `fixed_partition` |
+|---|---|--:|---|
+| <= 39 | +3 | **0** | true — the port was right |
+| 40..=43 | +2 | **0** | true |
+| 44..=48 | +1 | **0** | true |
+| 49..=56 | none | **19** | **false — the port was wrong** |
+| 57..=63 | -1 | **18** | **false** |
+
+`video_key_matrix.sh` defaults to 72x88 **q40** and reports p9..p13 IDENTICAL
+both before and after this fix. The band it cannot see is qp >= 49.
+
+MEASURED at qp 55 (`VKM_QP=55 VKM_W=64 VKM_H=64 tools/video_key_matrix.sh`),
+before -> after:
+
+| cell | C | port before | port after |
+|---|--:|--:|--:|
+| `gradient p9` | 289 | **412** | **289** |
+| `diag p9` | 168 | 171 | **168** |
+| `diag p10` | 187 | 204 | **187** |
+| `diag p11/p12/p13` | 219 | 234 | **219** |
+
+47/60 -> **53/60**, and NO cell left IDENTICAL. Two cells that were already
+`diff` moved: `screen p11/p12/p13` go 394 -> 398 against C's 395, i.e. from one
+byte away to three. That is a different, still-open screen-content defect the
+NSQ search now exposes at p11+; it is recorded here rather than smoothed over,
+because "the number got slightly worse on a cell that never matched" is a
+finding, not a regression.
+
+Guarded by two new `regression_spotcheck.sh` cells
+(`video-key-fixed-partition-p9-q55-gradient`, `…-p11-q55-diag`), each of which
+fails before the fix with the byte counts above.
+
+**bd10 is a KNOWN GAP, stated at the gate.** C's `fixed_partition` does not read
+the bit depth, so a bd10 video frame at qp >= 49 would take the refinement walk
+too. The port keeps the fixed tree there, because its bd10 partition path is
+`pd0_pick_sb_partition_lvl0` (C forces `PD0_LVL_0` at `hbd_md`) and nothing has
+dumped C's bd10 video tree; widening it blind would trade a green gate for a
+guess.
+
+#### (c) The refusal string had gone FALSE, and the ledger was one entry stale
+
+`docs/REFUSED-CONFIGS.md` is generated from the refusal text in source, and its
+own preamble warns that a refusal makes a gap look handled. A refusal that
+describes an already-closed gap is worse: it also tells the next reader not to
+look. The inter one said
+
+> the TILE is not ported — no CDF continuation from the frame the header names
+> in primary_ref_frame, and no inter syntax in the tile walk — so the stream
+> does not decode
+
+and all three clauses were refuted by landed, gated work: CDF continuation in
+§1s (`fctx_gate.sh`, 96/96 shared fields), the inter mode-info syntax in the
+REAL pack walk in §1u, and `inter_decode_gate.sh` 5/5 decoding the port's own
+two-frame stream with `dav1d` in §1x. It now states the real reason — the
+ENVELOPE is 36 of 96 cells — with the number, so it ages visibly.
+
+Regenerating the ledger also surfaced that it was **one CONTRACT entry stale**:
+§1s's positive-control refusal ("the frame header names a primary_ref_frame,
+but the DPB slot it resolves to carries no saved CDF state") was never
+catalogued. That is not a gate that failed to fire — **`main` had been RED on
+exactly this since §1s landed**, and each subsequent chunk pushed onto a red
+build without reading it:
+
+```
+run 33637638211, differential + conformance gates (x86-64)
+  X refusal inventory is current (capability debt stays visible)
+    refusal_inventory: docs/REFUSED-CONFIGS.md is STALE.
+    > **18 CAPABILITY refusals** … and **26 CONTRACT refusals**
+    > | … | the frame header names a primary_ref_frame, but the DPB slot it
+    >       resolves to carries no saved CDF state …
+```
+
+Every other step of every job in that run passed, including the x86-64 workspace
+suite and all three pure-Rust tiers (i686, macOS Intel, windows-11-arm) — so
+this ONE step was the whole red. The FOUR steps after it were SKIPPED as
+collateral: `PORT-NOTE index is current`, `regression spot-check`, `8-bit
+identity — EVERY preset 0..13`, and `screen-content palette identity`. **CI has
+therefore not run this repo's two biggest byte sweeps since §1s landed**, which
+is the shape `docs/WORKING-ON-THIS.md` §5d records: a skipped gate reads as "no
+result", never as "pass". The lesson is the one `CLAUDE.md` already states and this
+campaign did not follow: **check CI after pushing.** Five consecutive chunks
+landed on a red `main` because the failure was in a step nobody expected to be
+able to fail.
+
+The skipped step was stale too. `tools/portnote_index.sh --check` — the
+verification-debt ledger in `rust/CLAUDE.md` — reported **44 markers where the
+source has 45**: `nic_arm.rs` had gained two and `palette.rs` had cleared one,
+and neither move reached the index because the gate that would have said so was
+never reached. Both ledgers are regenerated here and both `--check`s pass
+locally. **A gate hidden behind another failing gate accrues its own debt
+silently**, which is the second-order form of the same trap.
 
 ## 2. Chunks
 

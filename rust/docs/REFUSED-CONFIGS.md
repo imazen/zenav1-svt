@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**18 CAPABILITY refusals** (unimplemented — this is DEBT) and **25
+**18 CAPABILITY refusals** (unimplemented — this is DEBT) and **26
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -35,7 +35,7 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used, and global motion's parameter coding is unported (crate::inter_hdr_arm::InterHdrError) |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has no 12-bit kernels |
-| `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented: the frame HEADER is byte-identical to the C encoder's, but the TILE is not ported — no CDF continuation from the frame the header names in primary_ref_frame, and no inter syntax in the tile walk — so the stream does not decode. This encoder is still-image only: encode a single key frame |
+| `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented for the public API — not because the machinery is missing, but because its ENVELOPE is 36 of 96 cells. CDF continuation, the inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, inter_decode_gate.sh); on the campaign's frontier grid ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, frames=2 low-delay P) 36 cells are byte-identical to C on BOTH frames, 59 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be right on the closed cells and silently wrong elsewhere, which is exactly the outcome docs/WORKING-ON-THIS.md section 6 refuses. See docs/INTER-ENCODE-PLAN.md section 1z^9. This encoder is still-image only: encode a single key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode requires 8-aligned dims (arbitrary-dims padding is wired on the 4:2:0 path only) |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres is 8-bit only so far (the u16 source downscale is unported) |
@@ -65,6 +65,7 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit monochrome input needs the bd10 level re-encode post-pass: 64-aligned dims at preset >= 9 — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit source went unconsumed (the bd10 level re-encode was skipped for this frame's partition trees) — the encode would have silently truncated to 8 bits; see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres with loop restoration enabled (allintra preset <= 6) is not wired yet — C runs LR on the UPSCALED frame; use preset >= 7 |
+| `crates/svtav1-encoder/src/pipeline.rs` | the frame header names a primary_ref_frame, but the DPB slot it resolves to carries no saved CDF state — the referenced frame's entropy walk never ran (crate::port_frame_cdf) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires the pipeline to be built with with_chroma_420(true) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires with_bit_depth(10) (8-bit sources use encode_frame_420; 12-bit is outside C's shipping envelope) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd is the monochrome entry point; use try_encode_frame_420_hbd on a 4:2:0 pipeline |

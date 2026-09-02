@@ -1592,18 +1592,35 @@ impl EncodePipeline {
         // key frame keeps working: that stream is a valid still.
         //
         // `SVTAV1_INTER_EXPERIMENTAL` lifts the refusal for the differential
-        // harness ONLY (`crate::dbgenv::inter_experimental`). Under it the
-        // frame header is derived from the real reference structure and the
-        // real picture-level ladders, and the TILE is still the pre-campaign
-        // homegrown path — so the stream is measurable, not correct. It must
-        // never leave `tools/identity_diff_inter.sh`.
+        // harness ONLY (`crate::dbgenv::inter_experimental`). It must never
+        // leave the inter harness (`tools/identity_diff_inter.sh`,
+        // `inter_fh_gate.sh`, `inter_byte_gate.sh`, `inter_byte_matrix.sh`,
+        // `inter_decode_gate.sh`) and is to be DELETED once the tile is
+        // byte-identical broadly — never promoted to a feature flag.
+        //
+        // THE REFUSAL TEXT IS THE LEDGER ENTRY. `docs/REFUSED-CONFIGS.md` is
+        // generated from these strings and its own preamble warns that a
+        // refusal makes a gap look handled; a refusal that describes a gap
+        // which has since been closed is worse than that, because it also
+        // tells the next reader not to look. This one said "no CDF
+        // continuation … and no inter syntax in the tile walk — so the stream
+        // does not decode", and all three clauses were refuted by landed,
+        // gated work (§1s, §1u, §1x). Re-measure the number below whenever
+        // `tools/inter_byte_matrix.sh` moves, in the SAME change.
         if !is_key && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "inter frames are not implemented: the frame HEADER is byte-identical to the C \
-                 encoder's, but the TILE is not ported — no CDF continuation from the frame the \
-                 header names in primary_ref_frame, and no inter syntax in the tile walk — so \
-                 the stream does not decode. This encoder is still-image only: encode a single \
-                 key frame",
+                "inter frames are not implemented for the public API — not because the machinery \
+                 is missing, but because its ENVELOPE is 36 of 96 cells. CDF continuation, the \
+                 inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame \
+                 stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, \
+                 inter_decode_gate.sh); on the campaign's frontier grid \
+                 ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, \
+                 frames=2 low-delay P) 36 cells are byte-identical to C on BOTH frames, 59 \
+                 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be \
+                 right on the closed cells and silently wrong elsewhere, which is exactly the \
+                 outcome docs/WORKING-ON-THIS.md section 6 refuses. See \
+                 docs/INTER-ENCODE-PLAN.md section 1z^9. This encoder is still-image only: \
+                 encode a single key frame",
             )));
         }
         let temporal_layer = if is_key {
@@ -9386,6 +9403,27 @@ fn encode_tile_rows(
         // PD0_LVL_1 rate tables (presets 6..8), built once per tile on
         // first use — default CDFs at the frame qindex (C md_frame_context).
         let mut m6_pd0_tables: Option<crate::pd0::M6Pd0Tables> = None;
+        // C `init_frame_rate_tables` (md_config_process.c:292-310) seeds
+        // `md_frame_context` from the primary reference's SAVED end-of-frame
+        // CDFs whenever the header names a `primary_ref_frame`, and only
+        // otherwise from `svt_av1_default_coef_probs(base_q_idx)` +
+        // `svt_aom_init_mode_probs`. PD0 prices against the SAME
+        // `md_rate_est_ctx` the funnel does — `fun_rates` already reads
+        // `md_frame_cdfs` for exactly this reason (§1s item 8) — so PD0's
+        // tables come from the same place. On a KEY frame `md_frame_cdfs` is
+        // `None` (C's `PRIMARY_REF_NONE` arm), which is the default pair the
+        // still path has always built, so this is byte-inert there by
+        // construction.
+        //
+        // MEASURED before the change (`diag 64x64 q40 p8 frames=2`, frame 1):
+        // C's `SVT_PD0COST_OUT` reports `ybits=1519` for the 64x64 where the
+        // port's `SVTAV1_PD0DBG` reported 2423, at the same
+        // `coeff_rate_est_lvl` and the same eob — the whole gap was the
+        // tables.
+        let pd0_frame_tables = |qindex: u8| match md_frame_cdfs {
+            Some(prev) => crate::pd0::build_m6_pd0_tables_from_ctx(&prev.fc, &prev.coeff),
+            None => crate::pd0::build_m6_pd0_tables(qindex),
+        };
         // M6 leaf funnel state (preset 6, 4:2:0 still): decision-phase
         // chroma recon planes + neighbor-context state + rate tables.
         // Single-SB frames use the default contexts (C md_frame_context);
@@ -10375,8 +10413,48 @@ fn encode_tile_rows(
                     // longer needs it, but it is the canonical "is this unit
                     // complete?" predicate and the next edge-aware path will.
                     let _full_sb = cur_w == unit_size && cur_h == unit_size;
+                    // C `md_ctx->fixed_partition = md_ctx->pred_depth_only &&
+                    // md_ctx->md_disallow_nsq_search` (enc_dec_process.c:3054),
+                    // with `md_disallow_nsq_search = !nsq_geom_ctrls.enabled ||
+                    // !nsq_search_ctrls.enabled` (:7846). §1z⁗ fixed the SECOND
+                    // conjunct on the `< 9` gate below; this gate still spelled
+                    // it `preset >= 9`, which is only `pred_depth_only`.
+                    //
+                    // On the ALLINTRA arm the one-term form is right at every
+                    // preset: `svt_aom_get_nsq_geom_level_allintra` returns 0
+                    // from M7 up (enc_mode_config.c:8240), so
+                    // `md_disallow_nsq_search` is true and the conjunction adds
+                    // nothing — `NsqCfg::for_levels` short-circuits to `off()`
+                    // on a zero geometry level, which makes that byte-inert by
+                    // construction rather than by measurement alone.
+                    //
+                    // The VIDEO arm separates them. `..._default` never returns
+                    // a zero geometry level, and `get_nsq_search_level_default`
+                    // has base 19 above M7 with a seq-QP offset that SATURATES
+                    // TO ZERO: qp <= 48 gives 19 + 1 > 19 -> 0 (search off,
+                    // this gate right), qp >= 49 keeps 19 or 18 (search ON,
+                    // this gate wrong). That is why `video_key_matrix.sh` at
+                    // its default qp 40 reports IDENTICAL at p9..p13 and could
+                    // not witness this.
+                    //
+                    // KNOWN GAP, stated rather than hidden: bd10 keeps the
+                    // fixed tree unconditionally at preset >= 9. C's
+                    // `fixed_partition` does not read the bit depth, so a bd10
+                    // video frame at qp >= 49 would take the refinement walk
+                    // there too — but the port's bd10 partition path is
+                    // `pd0_pick_sb_partition_lvl0` (C forces PD0_LVL_0 at
+                    // `hbd_md`) and nothing has dumped C's bd10 video tree, so
+                    // widening it blind would trade a green gate for a guess.
+                    let p9_fixed_partition = speed_config.preset >= 9
+                        && (bit_depth == 10
+                            || !crate::depth_refine::NsqCfg::for_arm(
+                                sc_arm,
+                                speed_config.preset,
+                                u32::from(cli_qp),
+                            )
+                            .enabled);
                     let sb_result = if use_pd0 {
-                        if coded_lossless || speed_config.preset >= 9 {
+                        if coded_lossless || p9_fixed_partition {
                             let tree = if coded_lossless {
                                 // Issue #5: every square above 8x8 is forced
                                 // SPLIT and every 8x8 is a leaf
@@ -10437,9 +10515,8 @@ fn encode_tile_rows(
                                         w * h,
                                         video_pic,
                                     );
-                                let tables = m6_pd0_tables.get_or_insert_with(|| {
-                                    crate::pd0::build_m6_pd0_tables(sb_qindex)
-                                });
+                                let tables = m6_pd0_tables
+                                    .get_or_insert_with(|| pd0_frame_tables(sb_qindex));
                                 crate::pd0::pd0_pick_sb_partition_video(
                                     sb_input,
                                     in_stride,
@@ -10586,16 +10663,16 @@ fn encode_tile_rows(
                                     Some((fc, cfc)) => {
                                         crate::pd0::build_m6_pd0_tables_from_ctx(fc, cfc)
                                     }
-                                    None => crate::pd0::build_m6_pd0_tables(sb_qindex),
+                                    None => pd0_frame_tables(sb_qindex),
                                 })
                             } else {
                                 None
                             };
                             let tables = match &chained_tables {
                                 Some(t) => t,
-                                None => m6_pd0_tables.get_or_insert_with(|| {
-                                    crate::pd0::build_m6_pd0_tables(sb_qindex)
-                                }),
+                                None => {
+                                    m6_pd0_tables.get_or_insert_with(|| pd0_frame_tables(sb_qindex))
+                                }
                             };
                             // The PD1 depth-refinement walk IS edge-aware as of
                             // 2026-08-04 (depth_refine.rs: forced split at a
@@ -11266,11 +11343,18 @@ fn encode_tile_rows(
                 // tree (throwaway arithmetic state; only the CDF updates
                 // matter) and snapshot them for the following SBs.
                 if funnel_chain {
-                    let (mut fc, mut cfc) = chain_base.unwrap_or_else(|| {
-                        (
+                    // The chain's SEED for the first SB is C's
+                    // `md_frame_context` (enc_dec_process.c:3002-3022's
+                    // "neither" arm), which on a frame naming a
+                    // `primary_ref_frame` is the RESTORED context, not the
+                    // defaults — the same rule `pd0_frame_tables` above
+                    // follows.
+                    let (mut fc, mut cfc) = chain_base.unwrap_or_else(|| match md_frame_cdfs {
+                        Some(prev) => (prev.fc.clone(), prev.coeff.clone()),
+                        None => (
                             crate::entropy::context::FrameContext::new_default(),
                             crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
-                        )
+                        ),
                     });
                     // Issue #16: this is C's MD-side `ec_ctx_array[sb]`, not
                     // the bitstream's context. C's encode pass adapts an
