@@ -41,6 +41,12 @@
 //!   candidate — which exists, measured `dir=2` on `gradient 64x64 q40 p8`
 //!   — and the assertion below would then refuse a candidate C really does
 //!   inject.
+//!   **And on the inter campaign's 96-cell grid it is worth ZERO coded
+//!   blocks.** MEASURED 2026-09-02 (`tools/inter_cinter_census.sh`, plan
+//!   §1z¹⁶): across 340 coded inter blocks C codes `rf[1] != NONE` on
+//!   none of them, on the 40 cells that already match AND on the 55 that
+//!   do not. Unsuppressing compound is still the right work for a grid
+//!   that reaches it; it is not the next byte.
 //!   The PREDICTION is not the obstacle:
 //!   `svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1` takes an
 //!   `mvs` SLICE and runs the `jnt_convolve` compound path whenever it has
@@ -70,6 +76,14 @@
 //!   path: `raw_me_mv * 8`, then sub-pel. Say what that makes untestable —
 //!   on any cell whose winner is an NSQ shape this module's ME MV can
 //!   differ from C's, and no assertion in this file can see it.
+//!   MEASURED 2026-09-02: that is **94 of the 259 coded inter blocks on
+//!   the 55 F1DIFF cells** (`tools/inter_cinter_census.sh`), against 12 of
+//!   77 on the 40 that match — the widest measured reach of any control
+//!   listed here. And it is TWO divergences, not one: C's
+//!   `read_refine_me_mvs` also seeds an NSQ block from
+//!   `(sq_sb_me_mv + 4) & ~7` instead of `raw_me_mv * 8` whenever the
+//!   square parent was tested (`product_coding_loop.c:2857-2862`), before
+//!   `md_nsq_motion_search` runs at all.
 //!
 //! What that leaves live is `NEARESTMV` and `NEWMV` off `LAST_FRAME` and
 //! `BWDREF_FRAME`, plus one PME `NEWMV` per reference — with C's own

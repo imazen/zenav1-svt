@@ -56,6 +56,46 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The MD motion search read PAST the source plane — 18 of the 96 inter grid
+  cells PANICKED, and the sweep reported every one as an ordinary byte
+  divergence** (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁶). `InterMdFrame.src`
+  took the ALIGNED source (`encode_input` at stride `w`) where C's MD searches
+  read the block's whole extent and a straddling block runs into C's
+  replicated border; the SB-extent-padded `sb_input` / `in_stride` the
+  pipeline already builds — and that PD0's b64 variance and every straddling
+  leaf's residual gather already read — was in scope the whole time. Measured:
+  `port_md/md_search.rs` "the len is 5184 but the index is 5184" (5184 = 72·72)
+  on every 72x72 cell of uniform, diag and screen. Byte-neutral on 64-aligned
+  frames by construction; grid unchanged at 40 BOTH / 55 F1DIFF / 1 F0DIFF
+  with ZERO verdict flips, and 0 CRASH.
+- **A crash is now SAYABLE.** `identity_diff_inter.sh` exits **4** for a port
+  panic (distinct from 3 = refused, 1 = bytes differ); `inter_byte_matrix.sh`
+  has a CRASH verdict and fails on one; `inter_byte_gate.sh` fails on a crash
+  from either its required or its known-open list. All three previously asked
+  only "was the status 3?" and "does `rs.obu.f0` exist?" — and frame 0 IS
+  written before a frame-1 panic, so `uniform 72 72 40 6` printed
+  `open ... known` through the entire defect. Three 72x72 cells (one per
+  panicking content class) are now crash-regression cells in `OPEN_CELLS`.
+- **`tools/inter_cinter_census.sh` — what C's coded inter decision actually
+  USES, per cell, joined against that cell's byte verdict.** Counts compound /
+  NSQ / motion-mode / inter-intra / DRL / GLOBALMV / NEARMV straight out of
+  `SVT_CINTER_OUT`, so `inter_md_arm`'s eight suppressed controls can be
+  RANKED from C's own dump instead of guessed between. **It retired compound
+  prediction as the next mechanism in one run: across 96 cells and 340 coded
+  inter blocks C codes ZERO compound blocks**, on the 40 cells that match and
+  the 55 that do not, even though `reference_select = 1` makes it reachable on
+  every one. 106 blocks are NSQ shapes (94 of the 259 on F1DIFF cells).
+  Both failure arms proved: exit 2 without a `-Wl,--wrap` linker, exit 1 on
+  zero parsed blocks.
+- **`NSQDBG ICAND` — the port-side field join against C's `SVT_CINTER_OUT`
+  line** (`imc` / `drl` / `mv0` / `pmv0` / `ovl` / `rf` / ref-frame bits /
+  fast luma rate), behind `SVTAV1_CANDDBG` + `SVTAV1_NSQDBG`. The funnel's
+  `NSQDBG CAND` reports only the finished rate, and a total is one number
+  where C's dump has six fields. On `uniform 72x72 q20 p8` frame 1 it showed
+  the 8x8 corner block's inter inputs joining C's EXACTLY — so the port
+  choosing intra there is candidate SELECTION (C reaches MDS3 with one
+  candidate, the port with two), not the motion search and not the rate.
+
 - **The INTER MULTI-REFERENCE path, PME included — the 96-cell grid goes
   36 BOTH / 59 F1DIFF / 1 F0DIFF to 40 / 55 / 1** (`rust/docs/
   INTER-ENCODE-PLAN.md` §1z¹⁵). New `svtav1_encoder::inter_search_arm` runs

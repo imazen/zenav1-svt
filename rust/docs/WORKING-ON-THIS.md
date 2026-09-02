@@ -220,6 +220,36 @@ two real out-of-bounds panics. Synthetic content also **never** codes an IntraBC
 block at any preset (measured), so IntraBC can only be tested on the real screen
 corpus. Ask what your test actually reaches, not what it nominally covers.
 
+**A CRASH AND A WRONG BYTE ARE NOT THE SAME DEFECT, AND A HARNESS THAT
+CANNOT TELL THEM APART WILL REPORT THE WRONG ONE.** MEASURED 2026-09-02:
+`identity_diff_inter.sh` propagated a Rust panic's raw exit status (101),
+and all three of its consumers classified a cell by asking only "was the
+status 3 (a refusal)?" and "does `rs.obu.f0` exist?". **Frame 0 is written
+BEFORE a frame-1 panic**, so a crash passed both checks and fell through to
+the byte comparison, where a missing `rs.obu.f1` scores as "frame 1
+differs". The port panicked on EIGHTEEN of the inter campaign's 96 cells
+(`md_search.rs`'s source gather, off the end of an unpadded 72x72 plane)
+and every one of them was counted as an ordinary F1DIFF — so
+`docs/INTER-ENCODE-PLAN.md` §1z¹⁵'s "55 F1DIFF" was 37 divergences and 18
+crashes, and four chunks ranked mechanisms against that frontier.
+`inter_byte_gate.sh` was WORSE than the sweep, not better: `uniform 72 72
+40 6` sat in its `OPEN_CELLS` printing `open ... known` for the whole
+defect, because "this cell is allowed to differ" and "this cell panicked"
+produced the same string. A known-open cell may DIFFER; it may never
+crash. There is now an exit code 4 for a crash, a CRASH verdict in the
+matrix, and a gate that fails on one from either list — and the fix was a
+single field (`InterMdFrame.src` was the aligned plane where the
+SB-extent-padded `sb_input` was already in scope, and already read by PD0
+and by every straddling leaf's residual gather).
+
+**A `cmp` "first differing byte" inside a length-prefixed container points
+at the LENGTH, not at the defect.** The 72x72 cell above reports "first
+differing byte 4" on a 22-vs-23-byte frame: byte 4 is the OBU size field
+reflecting an extra byte that a block near the END of the tile produced.
+Same misdirection as `vdiff_cell.sh`'s `FIRST DIVERGING OP: 0`. Localize
+with the per-block dumps (`SVT_CINTER_OUT` vs `SVTAV1_PACKTREE`'s `PDV`
+line), never with the byte offset.
+
 **A gate hidden behind a FAILING gate accrues its own debt silently, and
 "nobody looked" is how five chunks land on a red `main`.** MEASURED 2026-09-02:
 `refusal inventory is current` had been the ONLY failing step of the only
@@ -830,16 +860,30 @@ flag.
 
 **Where that stands, re-measured 2026-09-02** (this paragraph used to say "the
 frame HEADER is field-exact but for two CDEF strengths, while the TILE is the
-pre-campaign homegrown path", which has been wrong since §1z): on the campaign's
+pre-campaign homegrown path", which has been wrong since §1z; it then said
+36/59/1, which §1z¹⁵ superseded): on the campaign's
 96-cell grid — `{uniform,gradient,diag,screen}` x `{16,64,72,128}` x
-`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **36 cells are
-byte-identical on BOTH frames**, 59 have a byte-identical frame 0 and a
+`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **40 cells are
+byte-identical on BOTH frames**, 55 have a byte-identical frame 0 and a
 differing frame 1, and 1 still differs on frame 0. `tools/inter_byte_matrix.sh`
-is that sweep and `tools/inter_byte_gate.sh` asserts the 36. The refusal stays
-because 36 of 96 is not "broadly": a stream the public API emits has to be right
+is that sweep and `tools/inter_byte_gate.sh` asserts the 40. The refusal stays
+because 40 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
-Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁰
+Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁶
 for the tile.
+
+**Until 2026-09-02 that 55 included EIGHTEEN CRASHES** — see the
+crash-vs-divergence trap in §5. The sweep now has a CRASH column and fails on
+one; the count above is 55 genuine divergences.
+
+**What C's coded decision actually uses on that grid** — measured, not
+inferred, by `tools/inter_cinter_census.sh` (§1z¹⁶): of 340 coded inter
+blocks, **zero** are compound, zero use a motion mode, zero are inter-intra,
+zero carry a nonzero DRL index and zero are GLOBALMV; 106 are NSQ shapes and
+3 are NEARMV. Before you spend a chunk unsuppressing one of
+`inter_md_arm`'s eight OFF controls, run that census — it ranks them from C's
+own dump, and it retired compound prediction (the feature two briefs called
+the largest remaining gap) in one run.
 
 Two things §1q proves that a reader will otherwise re-derive:
 

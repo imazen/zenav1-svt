@@ -4861,12 +4861,156 @@ defect at 7453 B against C's 7472); every frame-1 reading on it is void.
 
 #### The next mechanism
 
+> **CORRECTED by §1z¹⁶ (2026-09-02), on both counts.** (a) is refuted:
+> `tools/inter_cinter_census.sh` measures **ZERO** coded compound blocks
+> across all 96 cells and all 340 coded inter blocks, so compound
+> prediction — reachable though `reference_select = 1` makes it — moves
+> nothing on this grid. And the "55 F1DIFF cells" below is really
+> **37 F1DIFF + 18 CRASH**: the port panicked on eighteen 72x72 cells and
+> the harness had no way to say so. (b) survives, with reach measured at
+> 94 of the 259 coded blocks on F1DIFF cells.
+
 Not the search. The port's PME, ME and MVP state now join C's field for field
 on the cells measured. The 55 remaining F1DIFF cells need the next named
 thing, and the two candidates the dumps point at are (a) compound prediction,
 which C's `reference_select = 1` makes reachable on every one of them, and
 (b) the NSQ ME inheritance above, which is the only place the port knowingly
 computes a different MV from C.
+
+### 1z¹⁶. C never codes a compound block on this grid — and 18 of the "55 F1DIFF" cells were PANICS (2026-09-02)
+
+§1z¹⁵ closed by naming two candidates for the next mechanism: (a) compound
+prediction and (b) the NSQ ME inheritance. **Measurement refutes (a)
+outright**, and it turned up a defect neither candidate covers: a third of
+the F1DIFF population was not a divergence at all.
+
+#### The census, and why it is a tool and not a paragraph
+
+`tools/inter_cinter_census.sh` runs the 96-cell grid with `SVT_CINTER_OUT`
+set and counts, per cell, what C's frame-1 decision actually USES —
+`rf=%d,%d` names compound, `bsize` names NSQ, `mm=%d` names warped/OBMC,
+`iiu=%d` names inter-intra, `drl=%d` names the DRL index — joined against
+that cell's BOTH / F1DIFF / F0DIFF verdict. It exists because
+`inter_md_arm`'s header lists EIGHT suppressed controls and every one of
+them is a plausible "next mechanism"; C's own dump already ranks them, so
+the script counts instead of arguing. Both its failure arms are proved: it
+exits 2 on a linker without `-Wl,--wrap` (so macOS cannot silently report
+96 rows of zeros) and exits 1 if it parses zero coded blocks.
+
+**96 cells, 340 coded inter blocks:**
+
+| feature | blocks | on F1DIFF cells | on BOTH cells |
+|---|---|---|---|
+| compound (`rf[1] != -1`) | **0** | 0 of 259 | 0 of 77 |
+| NSQ shape (`bwidth != bheight`) | 106 | 94 of 259 (24 of 55 cells) | 12 of 77 (2 of 40 cells) |
+| motion mode (warped / OBMC) | 0 | 0 | 0 |
+| inter-intra | 0 | 0 | 0 |
+| DRL index != 0 | 0 | 0 | 0 |
+| GLOBALMV | 0 | 0 | 0 |
+| NEARMV | 3 | 3 | 0 |
+
+**Compound prediction cannot be the next mechanism on this grid.** C signals
+`reference_select = 1` and carries `LAST_BWD` in `ref_frame_type_arr` on
+every cell, and it codes the compound pair on NONE of them. Widening
+`inter_pred_arm`'s adapter is still the right work for a grid that reaches
+it — but it would move zero bytes here, and the brief that ranked it "the
+larger" of the two gaps was ranking by porting effort, not by measured
+reach. The same measurement retires warped motion, OBMC, inter-intra and
+GLOBALMV for this grid; the only suppressed control besides NSQ with any
+coded reach at all is **NEARMV, at 3 blocks on 3 cells**.
+
+#### The 18 crashes
+
+Every `72x72` cell is F1DIFF except one — and **eighteen of the twenty-four
+were PANICS**, not divergences. `port_md/md_search.rs`'s source gather ran
+off the end of the plane ("the len is 5184 but the index is 5184", 5184 =
+72·72) on every 72x72 cell of `uniform`, `diag` and `screen`;
+`gradient`'s six never panicked.
+
+They were invisible because **`identity_diff_inter.sh` propagated the raw
+panic status (101) and every consumer only asked "was it 3 (a refusal)?"
+and "does `rs.obu.f0` exist?"**. Frame 0 IS written before a frame-1 panic,
+so a crash passed both checks and fell through to the byte comparison,
+where a missing `rs.obu.f1` scores as "frame 1 differs". `inter_byte_gate.sh`
+was worse than the matrix, not better: `uniform 72 72 40 6` sat in its
+`OPEN_CELLS` reporting `open ... known` through the whole defect, because
+"known-open" and "panicking" produced the same string.
+
+So **§1z¹⁵'s grid should be read as 40 BOTH / 37 F1DIFF / 18 CRASH / 1
+F0DIFF.** Four chunks have been ranking mechanisms against a frontier that
+included eighteen crashes.
+
+The cause is a one-field wiring error with the correct buffer already in
+scope: `InterMdFrame.src` took `encode_input` at stride `w` (the ALIGNED
+source), where C's MD searches read `input_pic->y_buffer` over the block's
+whole extent and a straddling block runs into C's replicated border.
+`sb_input` / `in_stride` is that padded buffer, and PD0's per-b64 variance
+and every straddling leaf's residual gather already read out of it — the
+inter search was the single consumer pointed at the unpadded plane. Same
+shape as `docs/WORKING-ON-THIS.md` §4's lambda finding.
+
+**After the fix: 40 BOTH / 55 F1DIFF / 1 F0DIFF / 0 CRASH, with ZERO
+verdict flips against the pre-fix run.** The BOTH envelope is unchanged;
+the 18 crashes became the genuine divergences they always were.
+
+`identity_diff_inter.sh` now exits **4** for a crash, `inter_byte_matrix.sh`
+has a CRASH column and fails on one, `inter_byte_gate.sh` fails on a crash
+from EITHER list, and three 72x72 cells (one per panicking content class)
+sit in `OPEN_CELLS` as crash-regression cells — they meet §3's
+"failed before, passes after" rule in the CRASH column while staying
+honestly open on bytes.
+
+#### What the divergence at a 72x72 cell actually is — and what it is NOT
+
+`uniform 72x72 q20 p8` frame 1 is the minimal case: C codes four blocks, the
+port codes four blocks, and **three of the four agree exactly**.
+
+```
+C     mi=(16,16) bsize=3 mode=13 rf=1,-1 mv0=0,0 pmv0=0,0 drl=0 imc=93 ovl=2 skip=1
+port  mi=(16,16) 8x8   inter=0                                   <- INTRA
+```
+
+The other three (`mi=(0,0)` 64x64, `(0,16)`, `(16,0)`) match C's mode,
+reference and MV. The one that flips is the 8x8 at the partial-SB corner,
+and the extra byte it costs is the whole 23-vs-22 difference. (The `cmp`
+"first differing byte 4" is the OBU SIZE field reflecting that byte, not
+the divergence — the same misdirection `vdiff_cell.sh`'s
+`FIRST DIVERGING OP: 0` produces.)
+
+**It is not the motion search, and it is not the inter rate inputs.** The
+new `NSQDBG ICAND` line (the port-side field join against C's `CINTER`)
+reports for that block:
+
+```
+NSQDBG ICAND mi=(16,16) 8x8 mode=13 rf=1,-1 mv0=0,0 pmv0=0,0 drl=0
+             imc=93 ovl=2 isinterctx=3 refmvcnt=1 refbits=274 flr=3014
+```
+
+Every field C's dump also carries — `mode`, `rf`, `mv0`, `pmv0`, `drl`,
+`imc`, `ovl` — is EQUAL to C's. The divergence is downstream of all of
+them, in candidate SELECTION: pinning `SVT_FULLCOST_OUT` at `(64,64)` shows
+C reaching MDS3 with **exactly one candidate on frame 1** (`mode=13`,
+cost 92978), while the port reaches MDS3 with two (`ci=0` intra at
+full 81648, `ci=4` inter at 151674) and the intra one wins. C's intra
+candidate for that block never survives to MDS3; the port's does.
+
+That is the next thing to measure — C's MDS0/MDS1 ordering and NIC at a
+partial-SB leaf — and it is a different question from every control
+`inter_md_arm` currently suppresses.
+
+#### What this entry does NOT close
+
+* **The NSQ ME inheritance is still unmeasured.** `md_nsq_motion_search` is
+  still ported and not called, and `read_refine_me_mvs`' `blk_avail_sqi &&
+  b_w_ne_h` arm — which also changes the ME MV SEED to
+  `(sq_sb_me_mv + 4) & ~7` before any search runs — is still unported. Those
+  are TWO divergences on an NSQ block, not one, and the census says they
+  have reach: 94 of the 259 coded blocks on F1DIFF cells are NSQ shapes.
+  Still no assertion in the repo can see either.
+* **No hot-path work was added.** This chunk removed an out-of-bounds read
+  and added a debug print behind two env gates. The per-block inter search
+  §1z¹⁵ added is still unmeasured for cost; see `docs/perf-status.md`.
+* The ONE F0DIFF cell (`gradient 128x128 q20 p8`) is untouched.
 
 ## 2. Chunks
 
