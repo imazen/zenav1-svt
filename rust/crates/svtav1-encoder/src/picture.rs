@@ -105,6 +105,18 @@ pub struct DecodedPictureBuffer {
 pub struct ReferenceFrame {
     /// Reconstructed luma pixels.
     pub y_plane: Vec<u8>,
+    /// Reconstructed CHROMA pixels, `(width/2) * (height/2)` each on the
+    /// 4:2:0 path. EMPTY on the monochrome path and for any encode whose
+    /// chroma the pipeline did not reconstruct.
+    ///
+    /// Inter prediction reads all three planes, so a luma-only DPB can only
+    /// ever produce a luma-correct inter frame — that missing chroma is one of
+    /// the defects the inter refusal in `pipeline.rs` names. Storing it is
+    /// byte-inert for every still/key encode (nothing reads the DPB on a key
+    /// frame); it costs one `w*h/2` clone per coded frame in a video encode.
+    pub u_plane: Vec<u8>,
+    /// See [`Self::u_plane`].
+    pub v_plane: Vec<u8>,
     /// Frame width.
     pub width: u32,
     /// Frame height.
@@ -252,6 +264,8 @@ mod tests {
 
         let frame = ReferenceFrame {
             y_plane: alloc::vec![128u8; 64 * 64],
+            u_plane: alloc::vec![],
+            v_plane: alloc::vec![],
             width: 64,
             height: 64,
             display_order: 0,
@@ -268,6 +282,8 @@ mod tests {
         let mut dpb = DecodedPictureBuffer::new();
         let frame = ReferenceFrame {
             y_plane: alloc::vec![128u8; 16],
+            u_plane: alloc::vec![],
+            v_plane: alloc::vec![],
             width: 4,
             height: 4,
             display_order: 0,

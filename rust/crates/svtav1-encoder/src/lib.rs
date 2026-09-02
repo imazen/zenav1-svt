@@ -28,6 +28,7 @@ pub mod film_grain;
 pub mod frame_geom;
 pub(crate) mod funnel_arm;
 pub mod hdr_mode;
+pub mod inter_hdr_arm;
 pub mod inter_me;
 pub mod inter_mv_code;
 pub mod inter_mvp;

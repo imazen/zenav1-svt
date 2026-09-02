@@ -241,6 +241,15 @@ pub struct EncodePipeline {
     /// the infallible `encode_frame*` methods are unaffected. Set via
     /// [`Self::with_stop`].
     pub stop: almost_enough::StopToken,
+    /// C's picture-decision state (`PictureDecisionContext` — the shadow DPB,
+    /// the layer-0/1 toggle rings and the reference-order-hint map), carried
+    /// across frames so [`crate::port_picstruct::picture_decision_per_picture`]
+    /// derives the SAME reference structure C does.
+    ///
+    /// Only touched on a MULTI-FRAME (GOP) encode; a still/key encode never
+    /// reads or writes it, so every existing cell is byte-inert by
+    /// construction.
+    pd_ctx: crate::port_picstruct::PicDecisionCtx,
 }
 
 /// Tighten a strided plane to `w * h` contiguous bytes.
@@ -369,6 +378,7 @@ impl EncodePipeline {
         let (sb_size, sb128_fallback) = Self::resolve_sb_size(derived_sb, None, preset);
         Self {
             hdr: crate::hdr_mode::HdrForkConfig::default(),
+            pd_ctx: crate::port_picstruct::PicDecisionCtx::new(),
             speed_config: SpeedConfig::from_preset(preset),
             rc_config,
             rc_state: RcState::default(),
@@ -451,6 +461,90 @@ impl EncodePipeline {
 
     /// Apply the override + capability gate to a derived SB size.
     /// Returns `(sb_size, fell_back)`.
+    /// Run C's picture decision for one picture and return its
+    /// [`crate::port_picstruct::PicParams`].
+    ///
+    /// This is the port's only caller of `av1_generate_rps_info`; everything
+    /// the INTER frame header says about references comes from here, so the
+    /// header and the DPB can never describe different structures.
+    ///
+    /// # Errors
+    ///
+    /// [`EncodeError::UnsupportedConfig`] for a prediction-structure branch
+    /// [`crate::port_picstruct::generate_rps_info`] does not translate. That
+    /// is a refusal, not a fallback: an invented reference row would put
+    /// `ref_frame_idx[]` in the header pointing at the wrong DPB slots.
+    fn run_picture_decision(
+        &mut self,
+        display_order: u64,
+        is_key: bool,
+        temporal_layer: u8,
+    ) -> EncodeResult<crate::port_picstruct::PicParams> {
+        use crate::port_picstruct as pp;
+
+        let hier = self.gop.hierarchical_levels;
+        let seq = pp::SeqPicParams {
+            // The campaign's GOP: low-delay P, CQP/CRF. C's driver is given
+            // `SVT_PRED_STRUCT=1` (LOW_DELAY) for the same cells.
+            pred_structure: pp::PredStructure::LowDelay,
+            rate_control_mode: pp::RcMode::CqpOrCrf,
+            rtc: false,
+            allintra: false,
+            // NOT the per-preset `set_mrp_ctrl` table (`enc_handle.c:3573`),
+            // which is not ported. Its caps only bind once a frame has more
+            // than one DISTINCT reference POC in a list, and
+            // `set_ref_list_counts` collapses both lists to 1 while every DPB
+            // slot still holds the key frame — so on the 2-frame cell the caps
+            // are provably inert. A longer GOP needs the real table; that is
+            // why `generate_rps_info` is called through a function that can
+            // refuse rather than inlined.
+            mrp_ctrls: pp::MrpCtrls::default(),
+            order_hint_info: crate::inter_mvp::OrderHintInfo {
+                enable_order_hint: true,
+                order_hint_bits: crate::entropy::obu::ORDER_HINT_BITS,
+            },
+            hierarchical_levels: hier,
+            max_managed_refs: 0,
+        };
+        let mini_gop = 1u32 << hier;
+        self.pd_ctx.mini_gop_length[0] = mini_gop;
+        // Flat GOP (`hierarchical_levels == 0`): every picture is the base of
+        // its own one-picture mini-GOP, so `pic_idx` is always 0.
+        let pic_idx = if is_key {
+            0
+        } else {
+            (display_order % u64::from(mini_gop)) as u32
+        };
+        let mut pic = pp::PicParams {
+            picture_number: display_order,
+            decode_order: display_order,
+            slice_type: if is_key {
+                pp::SliceType::I
+            } else {
+                pp::SliceType::B
+            },
+            is_key_frame: is_key,
+            is_intra_only: is_key,
+            temporal_layer_index: temporal_layer,
+            hierarchical_levels: hier,
+            pred_struct_type: pp::PredStructure::LowDelay,
+            pred_struct_entry_count: mini_gop,
+            frame_offset: display_order,
+            aligned_width: self.width,
+            aligned_height: self.height,
+            ..Default::default()
+        };
+        pp::picture_decision_per_picture(&mut pic, &seq, &mut self.pd_ctx, pic_idx, 0).map_err(
+            |_| {
+                whereat::at!(EncodeError::UnsupportedConfig(
+                    "this GOP shape's reference structure is not ported \
+                     (port_picstruct::generate_rps_info translates 4 of C's 8 branches)",
+                ))
+            },
+        )?;
+        Ok(pic)
+    }
+
     fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: u8) -> (usize, bool) {
         let want = override_.unwrap_or(derived);
         debug_assert!(
@@ -802,7 +896,11 @@ impl EncodePipeline {
         }
         // The 4:2:0 path is still/key-only (mirrors the `encode_frame_impl`
         // `chroma.is_none() || is_key` assert).
-        if !self.gop.is_key_frame(self.frame_count) {
+        //
+        // `SVTAV1_INTER_EXPERIMENTAL` lifts it for the differential harness
+        // only — see `crate::dbgenv::inter_experimental`. The refusal is the
+        // shipped behaviour and stays until the inter tile is byte-identical.
+        if !self.gop.is_key_frame(self.frame_count) && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "chroma_420 pipeline supports still/key frames only (intra_period <= 1)",
             )));
@@ -1481,7 +1579,14 @@ impl EncodePipeline {
         // Keyed on the FRAME TYPE rather than `intra_period` so that
         // constructing a pipeline with a GOP structure and encoding only its
         // key frame keeps working: that stream is a valid still.
-        if !is_key {
+        //
+        // `SVTAV1_INTER_EXPERIMENTAL` lifts the refusal for the differential
+        // harness ONLY (`crate::dbgenv::inter_experimental`). Under it the
+        // frame header is derived from the real reference structure and the
+        // real picture-level ladders, and the TILE is still the pre-campaign
+        // homegrown path — so the stream is measurable, not correct. It must
+        // never leave `tools/identity_diff_inter.sh`.
+        if !is_key && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "inter frames are not implemented: the inter path emits a stream neither aomdec \
                  nor dav1d can decode (malformed sequence/frame header fields, MV coding against \
@@ -1493,6 +1598,25 @@ impl EncodePipeline {
         } else {
             let pos = (display_order % self.gop.mini_gop_size as u64) as u32;
             self.gop.get_temporal_layer(pos)
+        };
+
+        // Step 1b: C's PICTURE DECISION — the reference structure.
+        //
+        // `picture_decision_per_picture` fills `rps.ref_dpb_index[]` (the
+        // header's `ref_frame_idx[]`), `rps.refresh_frame_mask` (its
+        // `refresh_frame_flags`), the skip-mode allowance and the shadow DPB.
+        // It has to run on the KEY frame too — `set_key_frame_rps` seeds the
+        // layer-0 toggle ring that every later frame's refresh mask advances
+        // from, so skipping it would put frame 1 in the wrong DPB slot.
+        //
+        // Byte-inert for a still encode: it is skipped entirely when no GOP is
+        // configured, and even when it runs it only writes `self.pd_ctx` and
+        // the local `PicParams` — nothing downstream of a KEY frame reads
+        // either.
+        let pic_decision = if self.gop.intra_period > 1 {
+            Some(self.run_picture_decision(display_order, is_key, temporal_layer)?)
+        } else {
+            None
         };
 
         // Step 2: Create PCS
@@ -3531,8 +3655,23 @@ impl EncodePipeline {
         // LF_UPDATE` (enc_mode_config.h:100-116). A KEY frame is intra-only
         // and KF_UPDATE, so both are true; written out rather than folded to
         // literals so the inter chunks inherit the rule.
-        let cdef_frame_is_boosted = is_key;
-        let cdef_is_not_highest_layer = is_key;
+        // C `frame_is_boosted` = `frame_is_kf_gf_arf`, and `is_not_highest_layer`
+        // = `!frame_is_leaf` = `update_type != LF_UPDATE`
+        // (`enc_mode_config.h:100-116`). Both were literal `is_key` while only
+        // key frames were encodable. They now come from the picture decision's
+        // `update_type` (`port_picstruct::set_frame_update_type`,
+        // `pd_process.c:4591`), which is what C reads.
+        //
+        // A KEY frame is intra-only and KF_UPDATE, so both stay true there —
+        // byte-inert for every existing cell, by construction rather than by
+        // measurement alone.
+        let (cdef_frame_is_boosted, cdef_is_not_highest_layer) = match pic_decision.as_ref() {
+            Some(pic) => (
+                crate::port_picstruct::frame_is_boosted(pic),
+                pic.update_type != crate::port_picstruct::FrameUpdateType::Lf,
+            ),
+            None => (is_key, is_key),
+        };
         // C's `default:` arm is `assert(0)`; the port refuses rather than
         // inventing a control set.
         // C `cdef_recon_level` -> `set_cdef_recon_controls` (enc_mode_config.c
@@ -3570,7 +3709,13 @@ impl EncodePipeline {
         ))?;
         let cdef_params = if sc_derivation.allow_intrabc || coded_lossless {
             crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
-        } else if is_key {
+        } else {
+            // C runs the CDEF pick on EVERY coded frame; this used to be
+            // `else if is_key`, and an inter frame fell through to
+            // `CdefFrameParams::default()` — damping 3 and zero strengths,
+            // which was the ONLY divergence left in the inter frame header
+            // (`docs/INTER-ENCODE-PLAN.md` §1q).
+            //
             // C splits the strength policy per preset (allintra
             // enc_mode_config.c:3543-3600): presets <= M6 run the CDEF
             // RDO search, >= M7 the use_qp_strength fast path we ported.
@@ -3694,8 +3839,6 @@ impl EncodePipeline {
                 // IntraBC/lossless suppression is the outer branch above.
                 crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
             }
-        } else {
-            crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
         };
         // Non-vacuity evidence (same role as `last_cdef_stats` /
         // `last_lr_stats`): the strength set 0 actually WRITTEN into the
@@ -4167,34 +4310,143 @@ impl EncodePipeline {
             },
         };
 
-        let bitstream = if is_key {
+        // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
+        // tool ladders. It is EXPORTED and gated at tier 1; the frame header
+        // reads its `allow_high_precision_mv`, `allow_warped_motion`,
+        // `is_motion_mode_switchable`, `mfmv_level` and `interpolation_filter`
+        // so the header can never disagree with the tools the encode ran.
+        //
+        // Only computed for an inter frame — a key frame's header carries none
+        // of those fields, so this is byte-inert for every still cell.
+        let md_config_signals = if is_key {
+            None
+        } else {
+            let pd = pic_decision.as_ref();
+            crate::inter_hdr_arm::md_config_inputs(crate::inter_hdr_arm::PipelineMdInputs {
+                enc_mode: self.speed_config.preset as i8,
+                sq_qp: u32::from(self.rc_config.qp),
+                base_q_idx: base_qindex,
+                picture_qp: u32::from(pcs.qp),
+                temporal_layer_index: temporal_layer,
+                hierarchical_levels: self.gop.hierarchical_levels,
+                is_ref: pd.is_some_and(|p| p.is_ref),
+                is_islice: false,
+                sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                input_resolution: crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+                    self.width * self.height,
+                ),
+                encoder_bit_depth: self.bit_depth,
+                super_block_size: self.sb_size as u16,
+                enable_interintra_compound: seq_tools.enable_interintra_compound,
+                frame_superres_enabled: self.superres_denom.is_some(),
+                ref_list0_count_try: pd.map_or(0, |p| u32::from(p.ref_list0_count)),
+                ref_list1_count_try: pd.map_or(0, |p| u32::from(p.ref_list1_count)),
+                // Every DPB slot still holds the key frame on the 2-frame
+                // cell; the shadow DPB's POC 0 IS that key frame.
+                ref_l0_is_islice: self.pd_ctx.dpb
+                    [pd.map_or(0, |p| p.rps.ref_dpb_index[0] as usize)]
+                .picture_number
+                    == 0,
+                ref_l1_is_islice: self.pd_ctx.dpb
+                    [pd.map_or(0, |p| p.rps.ref_dpb_index[4] as usize)]
+                .picture_number
+                    == 0,
+            })
+            .and_then(
+                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
+            )
+        };
+
+        // The INTER frame header's picture-level fields, from the SAME
+        // derivations the encode used: the reference structure out of
+        // `run_picture_decision` and the tool ladders out of
+        // `svt_aom_sig_deriv_mode_decision_config_default`. See
+        // `crate::inter_hdr_arm`.
+        let inter_signal: Option<crate::entropy::obu::InterSignal> = if is_key {
+            None
+        } else {
+            let pic = pic_decision.as_ref().ok_or_else(|| {
+                whereat::at!(EncodeError::UnsupportedConfig(
+                    "an inter frame needs the picture decision, which only runs when a GOP is \
+                     configured (intra_period > 1)",
+                ))
+            })?;
+            let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
+            let binding = crate::port_picstruct::bind_refs_and_primary_ref_frame(
+                pic, &ref_queue,
+                // C `frame_end_cdf_update_mode` — the picture manager assigns
+                // REFRESH_FRAME_CONTEXT_BACKWARD to coded pictures, which is
+                // the same fact the header's `disable_frame_end_update_cdf = 0`
+                // records (obu.rs).
+                true, /*is_s_frame=*/ false,
+            );
+            let sigs = md_config_signals.ok_or_else(|| {
+                whereat::at!(EncodeError::UnsupportedConfig(
+                    "the inter frame header needs sig_deriv_mode_decision_config_default's \
+                     signals, which this configuration does not resolve",
+                ))
+            })?;
+            Some(
+                crate::inter_hdr_arm::inter_signal(
+                    pic,
+                    &sigs,
+                    binding.primary_ref_frame,
+                    crate::entropy::obu::ORDER_HINT_BITS,
+                    crate::inter_hdr_arm::SeqInterTools {
+                        enable_order_hint: seq_tools.enable_order_hint,
+                        enable_ref_frame_mvs: seq_tools.enable_ref_frame_mvs,
+                        enable_warped_motion: seq_tools.enable_warped_motion,
+                    },
+                )
+                .map_err(|_| {
+                    whereat::at!(EncodeError::UnsupportedConfig(
+                        "an inter frame header field is not derivable in this configuration \
+                         (crate::inter_hdr_arm::InterHdrError)",
+                    ))
+                })?,
+            )
+        };
+
+        // ONE assembly path for both frame types. It used to fork into a
+        // separate, monochrome-shaped `write_inter_frame` that shared none of
+        // the key frame's derivations — so the inter header could not carry
+        // the deblock levels, the CDEF strengths, the LR types, real
+        // tile_info() or the chroma quantizer deltas the encode actually used.
+        // Signaling and application must agree on every one of those or the
+        // recon desyncs from a conforming decoder.
+        let bitstream = {
             let mut bs = alloc::vec::Vec::new();
             bs.extend_from_slice(&crate::entropy::obu::write_temporal_delimiter());
-            bs.extend_from_slice(&crate::entropy::obu::write_sequence_header_ex(
-                // TRUE (unaligned) dims flow to the sequence header:
-                // max_frame_width/height_minus_1 carry the coded size, and
-                // the level derivation keys off the real picture size (C
-                // captures max_frame_width BEFORE 8-alignment,
-                // enc_handle.c:4792). Everything else in the encode uses
-                // the aligned self.width/height.
-                // Superres: the sequence header advertises the UPSCALED
-                // width (what a decoder outputs); the encode itself ran at
-                // the reduced `true_width`. Equal when superres is off.
-                self.upscaled_width,
-                self.true_height,
-                is_single_frame,
-                self.bit_depth,
-                &self.color_description,
-                chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
-                // seq_level_idx auto-derivation input (C: scs->frame_rate).
-                self.rc_config.framerate,
-                seq_tools,
-            ));
-            // Key frame header (raw bytes) + tile group with proper header.
+            // The sequence header is written once, on the key frame — C emits
+            // it on the first packet only (verified: `c.obu.pts1` of the
+            // 2-frame cell is a temporal delimiter plus one OBU_FRAME).
+            if is_key {
+                bs.extend_from_slice(&crate::entropy::obu::write_sequence_header_ex(
+                    // TRUE (unaligned) dims flow to the sequence header:
+                    // max_frame_width/height_minus_1 carry the coded size, and
+                    // the level derivation keys off the real picture size (C
+                    // captures max_frame_width BEFORE 8-alignment,
+                    // enc_handle.c:4792). Everything else in the encode uses
+                    // the aligned self.width/height.
+                    // Superres: the sequence header advertises the UPSCALED
+                    // width (what a decoder outputs); the encode itself ran at
+                    // the reduced `true_width`. Equal when superres is off.
+                    self.upscaled_width,
+                    self.true_height,
+                    is_single_frame,
+                    self.bit_depth,
+                    &self.color_description,
+                    chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
+                    // seq_level_idx auto-derivation input (C: scs->frame_rate).
+                    self.rc_config.framerate,
+                    seq_tools,
+                ));
+            }
+            // Frame header (raw bytes) + tile group with proper header.
             // base_qindex is the SAME value used for quantization, CDF
             // bucket selection and the deblock picker above — the decoder's
             // dequant/CDF init must match the encoder's exactly.
-            let fh_bytes = crate::entropy::obu::write_key_frame_header_full_lr_sb(
+            let fh_bytes = crate::entropy::obu::write_frame_header_full_lr_sb(
                 self.width,
                 self.height,
                 base_qindex,
@@ -4282,6 +4534,8 @@ impl EncodePipeline {
                 // a literal 1 and then code per-block tx_depth symbols that
                 // TX_MODE_LARGEST forbids.
                 frame_tx_mode_select,
+                // `None` on a key frame -> exactly the previous bit layout.
+                inter_signal.as_ref(),
             );
             // Diagnostic (SVTAV1_FHDUMP=<path>): dump the raw frame-header
             // bytes (the OBU_FRAME payload prefix before tile data — the FH
@@ -4301,15 +4555,6 @@ impl EncodePipeline {
                 &frame_payload,
             ));
             bs
-        } else {
-            // Inter frame: proper frame header with type, qindex, refresh
-            // flags, ref indices.
-            crate::entropy::obu::write_inter_frame(
-                base_qindex,
-                pcs.refresh_frame_flags,
-                display_order as u8,
-                &tile_data,
-            )
         };
 
         // Step 7: Publish recon for the recon-parity gate, then update DPB.
@@ -4354,6 +4599,18 @@ impl EncodePipeline {
         }
         let ref_frame = ReferenceFrame {
             y_plane: recon,
+            // 4:2:0 chroma recon, empty on the monochrome path. Inter
+            // prediction needs all three planes; see `ReferenceFrame::u_plane`.
+            u_plane: if chroma.is_some() {
+                u_recon.clone()
+            } else {
+                alloc::vec::Vec::new()
+            },
+            v_plane: if chroma.is_some() {
+                v_recon.clone()
+            } else {
+                alloc::vec::Vec::new()
+            },
             width: self.width,
             height: self.height,
             display_order,

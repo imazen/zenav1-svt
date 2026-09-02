@@ -97,6 +97,20 @@ presence_flags! {
     bd10_postpass => "SVTAV1_BD10_POSTPASS",
     /// `SVTAV1_LAMBDA_DBG`: per-superblock lambda derivation dump.
     lambda_dbg_set => "SVTAV1_LAMBDA_DBG",
+    /// `SVTAV1_INTER_EXPERIMENTAL`: lift the INTER-frame refusal
+    /// (`pipeline.rs`) so the campaign harness can measure a frame the port
+    /// cannot yet encode correctly.
+    ///
+    /// **This is not a feature flag and it is not for callers.** The public
+    /// API still refuses inter frames (`docs/WORKING-ON-THIS.md` §6 — refuse,
+    /// never emit a plausible-but-wrong stream); the stream this produces is
+    /// known to diverge from C past the frame header, so it must never reach a
+    /// decoder outside the differential harness. It exists because a frame
+    /// that EMITS is a measurable state and a frame that refuses is not: the
+    /// header can be byte-compared against C's while the tile is still wrong.
+    /// Remove the variable — do not promote it — once the inter tile is
+    /// byte-identical and the refusal can simply be deleted.
+    inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
 }
 
 /// The value-carrying debug vars that also sit on per-block paths. Same

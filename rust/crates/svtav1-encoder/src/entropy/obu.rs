@@ -1096,7 +1096,7 @@ impl ChromaQSignal {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn write_key_frame_header_full_lr_sb(
+pub fn write_frame_header_full_lr_sb(
     width: u32,
     height: u32,
     base_qindex: u8,
@@ -1117,10 +1117,13 @@ pub fn write_key_frame_header_full_lr_sb(
     // Superblock size in PIXELS (64 or 128); must match the SH's
     // `use_128x128_superblock`.
     sb_size: u32,
-    // `frm_hdr->tx_mode == TX_MODE_SELECT` — see `key_frame_header_bits_lr`.
+    // `frm_hdr->tx_mode == TX_MODE_SELECT` — see `frame_header_bits_lr`.
     tx_mode_select: bool,
+    // `None` -> KEY_FRAME (the historical behaviour of every caller);
+    // `Some(..)` -> INTER_FRAME. See [`InterSignal`].
+    inter: Option<&InterSignal>,
 ) -> Vec<u8> {
-    let mut wb = key_frame_header_bits_lr(
+    let mut wb = frame_header_bits_lr(
         width,
         height,
         base_qindex,
@@ -1140,6 +1143,7 @@ pub fn write_key_frame_header_full_lr_sb(
         tile_size_bytes_minus_1,
         sb_size,
         tx_mode_select,
+        inter,
     );
     // This header is embedded in an OBU_FRAME: the spec requires
     // byte_alignment() (zero bits only) between frame_header and tile_group —
@@ -1147,6 +1151,56 @@ pub fn write_key_frame_header_full_lr_sb(
     // OBU_FRAME_HEADER. C: write_frame_header_obu(appendTrailingBits=0).
     byte_align_zero(&mut wb);
     wb.into_data()
+}
+
+/// Key-frame form of [`write_frame_header_full_lr_sb`] — `inter = None`.
+///
+/// Every pre-inter caller goes through here, so the key-frame layout is
+/// byte-identical by construction.
+#[allow(clippy::too_many_arguments)]
+pub fn write_key_frame_header_full_lr_sb(
+    width: u32,
+    height: u32,
+    base_qindex: u8,
+    reduced_sh: bool,
+    monochrome: bool,
+    lf_levels: [u8; 4],
+    lf_sharpness: u8,
+    cdef: &CdefSignal,
+    lr: &LrSignal,
+    sc: ScSignal,
+    chroma_q: Option<ChromaQSignal>,
+    delta_q_res: Option<u8>,
+    qm: Option<[u8; 3]>,
+    fgs: Option<&FilmGrainParams>,
+    tile_rows_log2: u8,
+    tile_cols_log2: u8,
+    tile_size_bytes_minus_1: u8,
+    sb_size: u32,
+    tx_mode_select: bool,
+) -> Vec<u8> {
+    write_frame_header_full_lr_sb(
+        width,
+        height,
+        base_qindex,
+        reduced_sh,
+        monochrome,
+        lf_levels,
+        lf_sharpness,
+        cdef,
+        lr,
+        sc,
+        chroma_q,
+        delta_q_res,
+        qm,
+        fgs,
+        tile_rows_log2,
+        tile_cols_log2,
+        tile_size_bytes_minus_1,
+        sb_size,
+        tx_mode_select,
+        None,
+    )
 }
 
 /// 64px-superblock form of [`write_key_frame_header_full_lr_sb`] — the
@@ -1213,7 +1267,7 @@ fn key_frame_header_bits(
     cdef: [u8; 3],
     enable_restoration: bool,
 ) -> BitWriter {
-    key_frame_header_bits_lr(
+    frame_header_bits_lr(
         width,
         height,
         base_qindex,
@@ -1237,12 +1291,72 @@ fn key_frame_header_bits(
         0,    // tile_size_bytes_minus_1: unused when NumTiles == 1
         64,
         true, // tx_mode_select: the allintra arm's unconditional TX_MODE_SELECT
+        None, // inter: this test wrapper is key-frame only
     )
 }
 
+/// Everything `uncompressed_header()` writes for a NON-key frame that a key
+/// frame does not (AV1 spec 5.9.2; C `write_uncompressed_header_obu`,
+/// `Codec/entropy_coding.c:3299`).
+///
+/// Passing `Some(..)` to [`frame_header_bits_lr`] selects `frame_type =
+/// INTER_FRAME` and every field below; `None` keeps the key-frame layout
+/// byte-for-byte, so no existing caller moves.
+///
+/// **Presence, not just value.** The three `Option<bool>` fields are the
+/// spec's conditionally-read bits: `None` means the decoder reads NO bit there
+/// and infers 0. Spelling them as plain `bool` would have made a wrong
+/// presence decision invisible — and in a frame header one missing bit shifts
+/// every field after it, which is the failure mode `pipeline.rs`'s inter
+/// refusal was written against.
+#[derive(Debug, Clone, Default)]
+pub struct InterSignal {
+    /// FH `error_resilient_mode`. C derives it; the low-delay CQP GOP this
+    /// port encodes writes 0, which is what makes `primary_ref_frame` present.
+    pub error_resilient_mode: bool,
+    /// FH `order_hint`, `OrderHintBits` wide.
+    pub order_hint: u8,
+    /// FH `primary_ref_frame` (3 bits) — the reference whose END-OF-FRAME CDFs
+    /// this frame inherits. Written only when `!error_resilient_mode`.
+    /// `PRIMARY_REF_NONE` (7) means "start from the default CDFs".
+    pub primary_ref_frame: u8,
+    /// FH `refresh_frame_flags` (8 bits) — C `pic.rps.refresh_frame_mask`.
+    pub refresh_frame_flags: u8,
+    /// FH `ref_frame_idx[0..7]`, 3 bits each — C `pic.rps.ref_dpb_index[]`,
+    /// in LAST, LAST2, LAST3, GOLDEN, BWDREF, ALTREF2, ALTREF order.
+    pub ref_frame_idx: [u8; 7],
+    /// FH `allow_high_precision_mv`.
+    pub allow_high_precision_mv: bool,
+    /// `read_interpolation_filter()`: `None` = `is_filter_switchable = 1` (no
+    /// further bits); `Some(f)` = the 2-bit `interpolation_filter`.
+    pub interpolation_filter: Option<u8>,
+    /// FH `is_motion_mode_switchable`.
+    pub is_motion_mode_switchable: bool,
+    /// FH `use_ref_frame_mvs` — `None` when `error_resilient_mode ||
+    /// !enable_ref_frame_mvs`, where the decoder reads no bit.
+    pub use_ref_frame_mvs: Option<bool>,
+    /// FH `reference_select` (`frame_reference_mode()`).
+    pub reference_select: bool,
+    /// FH `skip_mode_present` — `None` when `skipModeAllowed` is 0, where the
+    /// decoder reads no bit (spec `skip_mode_params()`).
+    pub skip_mode_present: Option<bool>,
+    /// FH `allow_warped_motion` — `None` when `error_resilient_mode ||
+    /// !enable_warped_motion`, where the decoder reads no bit.
+    pub allow_warped_motion: Option<bool>,
+    /// `global_motion_params()`: `is_global[ref]` for LAST..ALTREF.
+    ///
+    /// Only the all-false row is emittable today: a `true` entry needs the
+    /// type / parameter coding this writer does not have, so it is a
+    /// `debug_assert` rather than a silently-wrong bit.
+    pub is_global: [bool; 7],
+}
+
 /// Body of [`write_key_frame_header_full_lr`] (see the compat wrapper above).
+///
+/// `inter` is `None` for a key frame and `Some(..)` for an INTER frame; see
+/// [`InterSignal`].
 #[allow(clippy::too_many_arguments)]
-fn key_frame_header_bits_lr(
+fn frame_header_bits_lr(
     width: u32,
     height: u32,
     base_qindex: u8,
@@ -1267,16 +1381,25 @@ fn key_frame_header_bits_lr(
     // `frm_hdr->tx_mode == TX_MODE_SELECT` (`crate::txs_arm::tx_mode_select`).
     // ALWAYS true on the allintra arm, which is why this used to be a literal.
     tx_mode_select: bool,
+    // `None` -> KEY_FRAME, the historical layout. `Some(..)` -> INTER_FRAME.
+    inter: Option<&InterSignal>,
 ) -> BitWriter {
     let mut wb = BitWriter::new();
 
     if !reduced_sh {
         // ---- Full frame header preamble ----
         wb.write_bit(false); // show_existing_frame = 0
-        wb.write_bits(0, 2); // frame_type = KEY_FRAME (0)
+        // frame_type: KEY_FRAME (0) or INTER_FRAME (1).
+        wb.write_bits(u32::from(inter.is_some()), 2);
         wb.write_bit(true); // show_frame = 1
-        // showable_frame: implicit 0 for KEY_FRAME with show_frame=1
-        // error_resilient_mode: implicit 1 for KEY_FRAME with show_frame=1
+        // showable_frame: implicit for show_frame = 1.
+        // error_resilient_mode: implicit 1 for KEY_FRAME with show_frame = 1
+        // (and for SWITCH_FRAME); READ for every other frame type. C's
+        // low-delay CQP inter frames carry 0, which is what makes
+        // `primary_ref_frame` present a few fields down.
+        if let Some(it) = inter {
+            wb.write_bit(it.error_resilient_mode);
+        }
     }
     // For reduced SH: show_existing_frame/frame_type/show_frame/error_resilient
     // are all implicit.
@@ -1300,7 +1423,33 @@ fn key_frame_header_bits_lr(
 
     if !reduced_sh {
         wb.write_bit(false); // frame_size_override_flag = 0
-        wb.write_bits(0, ORDER_HINT_BITS); // order_hint = 0
+        wb.write_bits(
+            u32::from(inter.map_or(0, |it| it.order_hint)),
+            ORDER_HINT_BITS,
+        ); // order_hint (0 for a key frame)
+        if let Some(it) = inter {
+            // primary_ref_frame (spec 5.9.2): read when
+            // `!FrameIsIntra && !error_resilient_mode`. It names the reference
+            // whose END-OF-FRAME CDFs this frame starts from, so getting it
+            // wrong desynchronises the entropy decoder at the first symbol —
+            // it is a hard bitstream field, not a hint.
+            if !it.error_resilient_mode {
+                wb.write_bits(u32::from(it.primary_ref_frame), 3);
+            }
+            // refresh_frame_flags: implicit `allFrames` ONLY for SWITCH_FRAME
+            // and a SHOWN key frame; written for every inter frame.
+            wb.write_bits(u32::from(it.refresh_frame_flags), 8);
+            // The `ref_order_hint[NUM_REF_FRAMES]` map that follows is read
+            // only when `error_resilient_mode && enable_order_hint`. This port
+            // does not produce error-resilient inter frames, and emitting the
+            // map wrong would shift every following field, so the branch is an
+            // assertion rather than a guess.
+            debug_assert!(
+                !it.error_resilient_mode,
+                "error-resilient inter frames need the ref_order_hint[8] map \
+                 (spec 5.9.2); this writer does not emit it"
+            );
+        }
         // primary_ref_frame: NOT signaled for KEY_FRAME with error_resilient=1
         //   (implicit PRIMARY_REF_NONE)
         //
@@ -1314,24 +1463,65 @@ fn key_frame_header_bits_lr(
         // frame OBU, at bit 14, immediately after order_hint.
     }
 
-    // ---- frame_size() ----
-    // frame_size_override_flag = 0 → use SH dimensions, no bits.
-    // superres_params() (spec 5.9.8): one `use_superres` bit when the SH has
-    // the tool on, plus 3 bits of `coded_denom` when it is set. Nothing is
-    // written when `enable_superres` is off (every current gate cell), so this
-    // is bit-for-bit the previous behaviour there.
-    sc.superres.write(&mut wb);
+    if let Some(it) = inter {
+        // ---- the INTER arm of spec 5.9.2 ----
+        // Order is load-bearing and differs from the intra arm: the reference
+        // indices come BEFORE frame_size()/render_size(), not after.
+        //
+        // frame_refs_short_signaling: read when the SH has enable_order_hint
+        // (it does — the key frame this port already emits byte-identically
+        // signals it). C never sets it (`entropy_coding.c:3492-3497` writes
+        // `pcs->frame_refs_short_signaling`, left 0), so all seven indices are
+        // written explicitly.
+        wb.write_bit(false); // frame_refs_short_signaling = 0
+        for idx in it.ref_frame_idx {
+            debug_assert!(idx < 8, "ref_frame_idx is a DPB slot, 0..=7");
+            wb.write_bits(u32::from(idx), 3);
+        }
+        // frame_id_numbers_present_flag = 0 in the SH -> no delta_frame_id.
+        // frame_size_override_flag = 0 -> frame_size(); render_size().
+        sc.superres.write(&mut wb);
+        wb.write_bit(false); // render_and_frame_size_different = 0
+        // force_integer_mv is 0 here: it is only written when
+        // allow_screen_content_tools is set, and the writer above emits a
+        // literal 0 for it in that case.
+        wb.write_bit(it.allow_high_precision_mv);
+        // read_interpolation_filter()
+        match it.interpolation_filter {
+            None => wb.write_bit(true), // is_filter_switchable = 1
+            Some(f) => {
+                debug_assert!(f < 4, "interpolation_filter is 2 bits");
+                wb.write_bit(false);
+                wb.write_bits(u32::from(f), 2);
+            }
+        }
+        wb.write_bit(it.is_motion_mode_switchable);
+        // use_ref_frame_mvs: no bit when error_resilient_mode ||
+        // !enable_ref_frame_mvs.
+        if let Some(v) = it.use_ref_frame_mvs {
+            wb.write_bit(v);
+        }
+        // allow_intrabc is an intra-frame field only.
+    } else {
+        // ---- frame_size() ----
+        // frame_size_override_flag = 0 → use SH dimensions, no bits.
+        // superres_params() (spec 5.9.8): one `use_superres` bit when the SH
+        // has the tool on, plus 3 bits of `coded_denom` when it is set.
+        // Nothing is written when `enable_superres` is off (every current gate
+        // cell), so this is bit-for-bit the previous behaviour there.
+        sc.superres.write(&mut wb);
 
-    // ---- render_size() ----
-    wb.write_bit(false); // render_and_frame_size_different = 0
+        // ---- render_size() ----
+        wb.write_bit(false); // render_and_frame_size_different = 0
 
-    // allow_intrabc: signaled iff allow_screen_content_tools AND the frame is
-    // NOT superres-scaled (spec 5.9.11 `UpscaledWidth == FrameWidth`; C
-    // entropy_coding.c:3464-3466, after write_frame_size). IntraBC cannot be
-    // combined with superres because the block copy would read the
-    // pre-upscale grid.
-    if sc.allow_screen_content_tools && sc.superres.denom.is_none() {
-        wb.write_bit(sc.allow_intrabc);
+        // allow_intrabc: signaled iff allow_screen_content_tools AND the frame
+        // is NOT superres-scaled (spec 5.9.11 `UpscaledWidth == FrameWidth`; C
+        // entropy_coding.c:3464-3466, after write_frame_size). IntraBC cannot
+        // be combined with superres because the block copy would read the
+        // pre-upscale grid.
+        if sc.allow_screen_content_tools && sc.superres.denom.is_none() {
+            wb.write_bit(sc.allow_intrabc);
+        }
     }
 
     // ---- disable_frame_end_update_cdf (spec 5.9.2) ----
@@ -1607,9 +1797,38 @@ fn key_frame_header_bits_lr(
         wb.write_bit(tx_mode_select);
     }
 
-    // For intra frames: no reference_select, skip_mode, warped_motion, global_motion
+    // ---- frame_reference_mode() + skip_mode_params() + allow_warped_motion ----
+    // Intra frames write none of these (spec 5.9.2 gates each on
+    // `!FrameIsIntra`); C: entropy_coding.c:3615-3629.
+    if let Some(it) = inter {
+        wb.write_bit(it.reference_select);
+        // skip_mode_present: no bit when `skipModeAllowed` is 0.
+        if let Some(v) = it.skip_mode_present {
+            wb.write_bit(v);
+        }
+        // allow_warped_motion: no bit when error_resilient_mode ||
+        // !enable_warped_motion.
+        if let Some(v) = it.allow_warped_motion {
+            wb.write_bit(v);
+        }
+    }
 
     wb.write_bit(false); // reduced_tx_set = 0
+
+    // ---- global_motion_params() (spec 5.9.24) ----
+    // Intra frames write nothing. For an inter frame, one `is_global` bit per
+    // reference; a set bit is followed by the type and the parameter coding,
+    // which this writer does not have — so a `true` entry is an assertion
+    // rather than a bit that would desync the decoder.
+    if let Some(it) = inter {
+        for g in it.is_global {
+            debug_assert!(
+                !g,
+                "global_motion_params() type/parameter coding is not implemented"
+            );
+            wb.write_bit(g);
+        }
+    }
 
     // ---- film_grain_params() (spec 5.9.30) ---- read only when the SH
     // signaled film_grain_params_present && show_frame (C
