@@ -101,6 +101,15 @@ one of them writes a frame 0 that is byte-identical to C. Before measuring
 anything on an inter cell, check that the port completes it — a refusal or a
 crash makes any ratio a comparison against a smaller workload.
 
+**And with the crashes gone that grid describes the BYTE frontier honestly for
+the first time, which is much narrower than the campaign's headline ratio.**
+Of the 52 cells that complete, **5** are byte-identical on both frames: p6 2/12,
+p8 3/12, **p10 0/12, p13 0/16**; 64-aligned 5/19, **partial-SB 0/33**; and every
+one of the five is 64, 128 or 256 square. The campaign's 96-cell grid sweeps
+{16, 64, 72, 128} — one partial size out of four, none above 128 — which is why
+its ratio is so much higher. Neither number is wrong; they describe different
+grids. **Quote the grid with the ratio.**
+
 **TRAP, and it cost this file its own numbers: the FIRST completion scan
 (`benchmarks/inter_completion_2026-09-02.tsv`, 24 OK / 6 REFUSED / 34 CRASH)
 measured a binary built THREE MINUTES BEFORE a fix that was already landing.**

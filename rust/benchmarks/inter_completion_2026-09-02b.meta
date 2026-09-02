@@ -48,7 +48,21 @@
 #
 # IDENT is Y on 5 cells (64/128 at p6; 64/128/256 at p8). That is the byte
 # frontier, not the completion one, and it moved for reasons outside this
-# chunk (f5804e454).
+# chunk (f5804e454). BUT IT IS WORTH READING, because with the crashes gone
+# this grid can describe that frontier honestly for the first time, and it is
+# far narrower than the campaign grid's "55 of 96":
+#
+#   of the 52 cells that COMPLETE, 5 are byte-identical on BOTH frames.
+#   by preset:     p6 2/12    p8 3/12    p10 0/12    p13 0/16
+#   by alignment:  64-aligned 5/19       partial-SB  0/33
+#   by size:       every identical cell is 64, 128 or 256 square.
+#
+# So the inter byte frontier as measured today is: 64-aligned, at or below
+# 256x256, at preset 6 or 8. ZERO partial-superblock cells and ZERO cells at
+# p10 or p13 match. The campaign's 96-cell grid sweeps {16,64,72,128} — one
+# partial size out of four, none above 128 — which is why its ratio is so much
+# higher. Neither number is wrong; they describe different grids, and this one
+# is the wider of the two. Quote the grid with the ratio.
 #
 # CONTENT INDEPENDENCE, measured 2026-09-02 so the gradient-only gate is not
 # taken on faith: all FIVE content classes the harness has — gradient, screen,
