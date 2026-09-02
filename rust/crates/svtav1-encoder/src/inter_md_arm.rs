@@ -30,9 +30,16 @@
 //! injector as OFF, and each one is a separate unported search rather than a
 //! shortcut in the composition:
 //!
-//! * `inter_comp_ctrls` / bipred — no second reference exists in the port's
-//!   low-delay-P reference set, so compound is structurally unreachable, not
-//!   suppressed.
+//! * `inter_comp_ctrls` / bipred — compound PREDICTION is unported
+//!   (`inter_pred_arm` has no two-reference path), and this module's
+//!   `ref_frame_type_arr` carries one entry, so no compound candidate can be
+//!   built. **This used to say "no second reference EXISTS in the port's
+//!   low-delay-P reference set", and that was MEASURED FALSE on 2026-09-02:**
+//!   C reports `ref_frame_type_arr = [LAST, BWDREF, LAST_BWD]`,
+//!   `reference_select = 1`, and it CODES `rf=5` (BWDREF) on the 128-wide
+//!   cells (`SVT_INJCFG_OUT` / `SVT_CINTER_OUT`). The second reference is
+//!   real; this module does not model it yet, and
+//!   `docs/INTER-ENCODE-PLAN.md` §1z¹⁴ says why the fix is atomic with PME.
 //! * `wm_ctrls` (warped motion) and `obmc_ctrls` — the DSP is ported
 //!   (`svtav1_dsp::obmc`, the warp family) and the PREDICTION drivers are
 //!   not wired, so a warped or OBMC candidate could not be predicted. The
@@ -48,7 +55,9 @@
 //!   `read_refine_me_mvs` sub-pel refinement is unported, so this is the
 //!   value C's refinement STARTS from.
 //!
-//! What that leaves live is `NEARESTMV` and `NEWMV` off `LAST_FRAME`, with
+//! What that leaves live is `NEARESTMV` and `NEWMV` off `LAST_FRAME` — where
+//! C, on the same cells, has three reference types and a PME candidate per
+//! type (§1z¹⁴) — with
 //! C's own injection ORDER (MVP before NEW) and C's own
 //! `mv_is_already_injected` dedup — which is what makes the port pick
 //! `NEARESTMV` alone on flat content, as C does.

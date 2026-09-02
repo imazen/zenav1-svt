@@ -4611,6 +4611,103 @@ and it is a REFERENCE-SET chunk, not a search chunk:
 Do NOT read the 59 F1DIFF cells as 59 mechanisms until that one is closed —
 every one of them codes an inter frame whose ME candidate is list 1's.
 
+### 1z¹⁴. The next mechanism is the REFERENCE SET, and it is atomic with PME — measured, with the failed attempt recorded (2026-09-02)
+
+§1z¹³ left the port's ME arm joining C's exactly and the 96-cell verdicts
+unmoved. This entry measures WHY, names the next mechanism, and records an
+attempt at half of it that FAILED — with the number, so nobody re-attempts the
+same half.
+
+#### What C actually codes on an F1DIFF cell
+
+A second interposer, **`SVT_INJCFG_OUT`** (`wrap_recon.c`'s
+`__wrap_svt_aom_update_mi_map`, one line per CODED block), dumps
+`ctx->tot_ref_frame_types` / `ref_frame_type_arr`, every injector's enable
+flag, and `valid_pme_mv` / `best_pme_mv`. On `gradient 128x128 q40 p8`
+frame 1:
+
+```
+INJCFG poc=1 mi=(0,0) bsize=12 totrf=3 rf=[1,5,8] nn=1 nnnc=0 newme=1 gmv=0
+       u3x3=0 newpme=1 uepme=1 ibord=0 pme=[1:(-2,-24),0:(0,0),1:(0,-24),0:(0,0)]
+CINTER poc=1 mi=(0,0) bsize=12 mode=16 rf=5,-1 mv0=0,-24 ... skip=1
+CINTER poc=1 mi=(0,16) ... mode=13 rf=5,-1 mv0=0,-24 ... skip=1   (x3)
+```
+
+* `rf=[1,5,8]` — **LAST_FRAME, BWDREF_FRAME and the compound pair LAST_BWD**.
+  `reference_select = 1` in the frame header (measured with `fh_fields.py`), so
+  `allow_bipred` is TRUE.
+* C **codes `rf=5`** — BWDREF — on all four superblocks of this cell.
+* On a cell the port already matches (`gradient 64x64 q40 p8`, BOTH) C codes
+  **`rf=1`** — LAST — at the same MV. The reference type FLIPS between cells.
+* `newpme=1 uepme=1`, and `valid_pme_mv[0][0] = 1` with
+  `best_pme_mv[0][0] = (y=-2, x=-24)` — a SUB-PEL MV. PME is live on every
+  block of every cell measured.
+
+#### Why the reference set cannot be landed without PME — the failed attempt
+
+The obvious half-chunk is: carry the picture's `ref_frame_type_arr` into
+`inter_md_arm` (the port already builds it correctly in
+`port_picstruct::set_all_ref_frame_type`), build an MVP stack per entry, and
+stop forcing the ME candidate's direction to 0. That was implemented and
+**measured: `inter_byte_gate` 36 required, 23 FAILED.** On
+`gradient 64x64 q40 p8` the port then codes `rf=5` where C codes `rf=1`.
+
+The reason is structural, and the dumps state it. C's candidate set for these
+blocks is built by exactly three live injectors (`nn=1`, `newme=1`,
+`newpme=1`; `gmv`, `u3x3`, `nnnc` are all 0):
+
+* `inject_mvp_candidates_ii` — NEAREST/NEAR only, never NEWMV;
+* `inject_new_candidates` — walks `me_candidate_array`, whose single unipred
+  entry is **list 1's** (§1z¹³), so it can only produce a BWDREF NEWMV;
+* `inject_pme_candidates` — one NEWMV **per entry of `ref_frame_type_arr`**,
+  from `best_pme_mv`.
+
+So **the LAST_FRAME NEWMV that C codes on the 64-wide cells exists only
+because of PME.** Adding the reference set without PME hands MD a BWDREF
+candidate and no LAST one, and BWDREF wins by default — the reference set and
+PME are one mechanism, not two chunks.
+
+The committed state is the honest approximation of that pair: one NEWMV
+candidate against LAST_FRAME at the MV C's own candidate names
+(`FrameMe::cand_mv_for`). It reproduces C's winner on 36 cells because C's PME
+and its ME agree on the MV there; it cannot reproduce the reference TYPE.
+
+#### What the chunk needs, in the order the C source stacks it
+
+`inter_md_arm` has every leaf and none of the drivers:
+
+| C | port | state |
+|---|---|---|
+| `mcomp.c` (17 fns) | `md_subpel.rs` | **ported**, tier-1 on its 3 exported entries |
+| `md_full_pel_search` (`:1914`) | `port_md::md_search` | **ported** |
+| `md_subpel_search_fixed_stage` (`:2634`) | `port_md::md_search` | **ported** |
+| `md_pme_search_controls`, `md_subpel_{me,pme}_controls` | `port_enc_mode_config::encdec` | **ported** |
+| `pme_search`'s predicates (`:3203-3346`) | `port_md::md_search` | **ported** |
+| `inject_pme_candidates` (`:2723`) | `port_md::inject` | **ported** |
+| `md_subpel_search` (`:2609`) | — | **missing driver** |
+| `read_refine_me_mvs` (`:2815`) | only `me_mv_center` | **missing driver** |
+| `pme_search` (`:3197`) | — | **missing driver** |
+| two-reference (compound) PREDICTION | — | **missing** (`inter_pred_arm` is single-ref) |
+
+`read_refine_me_mvs` is the one that produces everything `pme_search` reads:
+`mvp_array` / `mvp_count` per (list, ref), `best_fp_mvp_idx` / `best_fp_mvp_dist`,
+`fp_me_mv` / `fp_me_dist`, `sub_me_mv` and `post_subpel_me_mv_cost`. Land it
+first, then `md_subpel_search`, then `pme_search`, then flip
+`inject_new_pme`/`updated_enable_pme` on and widen `ref_frame_type_arr` — in
+ONE gate-visible step, because the intermediate states each regress.
+
+Compound stays out of that step: `allow_bipred` must be suppressed in the
+injector (C's own `reference_mode_is_single` gate) until `inter_pred_arm`
+grows a two-reference path, and `inter_md_arm`'s assert must keep refusing a
+compound candidate rather than dropping it.
+
+**One thing to check before predicting from BWDREF.** On this GOP the frame
+header maps `ref_frame_idx[0..3] = 0` and `ref_frame_idx[4..6] = 3`, two
+DIFFERENT DPB slots that both hold frame 0 — C's own `MEL1` line shows
+`l1ref == l0ref`. `inter_md_arm` predicts from a single `PaddedRef`, so a
+BWDREF candidate must either assert that the two slots hold the same picture
+or index a real per-reference DPB.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

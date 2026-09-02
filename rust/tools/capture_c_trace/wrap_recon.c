@@ -824,6 +824,56 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
      *
      * Only INTER blocks are printed (`mode >= NEARESTMV`), so the dump is the
      * inter frames' decisions with no intra noise to cut out. */
+    /* ---- the INJECTOR configuration + reference set (SVT_INJCFG_OUT) -----
+     * `docs/INTER-ENCODE-PLAN.md` §1z13 measured that C's surviving ME
+     * candidate is LIST 1's, so `inject_new_candidates` injects a
+     * BWDREF_FRAME NEWMV — and `SVT_CINTER_OUT` then shows C CODING `rf=5`
+     * on the 128-wide cells while it codes `rf=1` on the 64-wide ones. The
+     * port's `inter_md_arm` carries `ref_frame_type_arr = [LAST_FRAME]` and
+     * a doc claim that "no second reference exists in the port's
+     * low-delay-P reference set", which that measurement refutes.
+     *
+     * This dumps the whole injector configuration so the port's `InjectCtx`
+     * can be JOINED field for field instead of fitted to the coded output —
+     * the method §1z13 used on `svt_aom_sig_deriv_me`.
+     *
+     * Env: SVT_INJCFG_OUT (file). One line per CODED BLOCK. */
+    {
+        const char*  jpath = getenv("SVT_INJCFG_OUT");
+        static FILE* jf    = NULL;
+        if (jpath && *jpath && !jf)
+            jf = fopen(jpath, "w");
+        if (jf) {
+            fprintf(jf, "INJCFG poc=%u mi=(%d,%d) bsize=%d totrf=%u rf=[",
+                    (unsigned)pcs->picture_number, mi_row, mi_col, (int)bsize,
+                    (unsigned)ctx->tot_ref_frame_types);
+            for (uint8_t i = 0; i < ctx->tot_ref_frame_types; i++) {
+                fprintf(jf, "%s%d", i ? "," : "", (int)ctx->ref_frame_type_arr[i]);
+            }
+            fprintf(jf,
+                    "] nn=%u nnnc=%u newme=%u gmv=%u u3x3=%u newpme=%u uepme=%u"
+                    " ibord=%u pme=[",
+                    (unsigned)ctx->new_nearest_injection,
+                    (unsigned)ctx->new_nearest_near_comb_injection,
+                    (unsigned)ctx->inject_new_me,
+                    (unsigned)ctx->global_mv_injection,
+                    (unsigned)ctx->unipred3x3_injection,
+                    (unsigned)ctx->inject_new_pme,
+                    (unsigned)ctx->updated_enable_pme,
+                    (unsigned)ctx->is_intra_bordered);
+            for (int li = 0; li < 2; li++) {
+                for (int ri = 0; ri < 2; ri++) {
+                    fprintf(jf, "%s%d:(%d,%d)", (li || ri) ? "," : "",
+                            (int)ctx->valid_pme_mv[li][ri],
+                            (int)ctx->best_pme_mv[li][ri].y,
+                            (int)ctx->best_pme_mv[li][ri].x);
+                }
+            }
+            fprintf(jf, "]\n");
+            fflush(jf);
+        }
+    }
+
     if (m->mode >= NEARESTMV) {
         const char*  ipath = getenv("SVT_CINTER_OUT");
         static FILE* cif   = NULL;
