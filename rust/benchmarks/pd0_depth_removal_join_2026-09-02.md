@@ -37,16 +37,17 @@ C reports **3251** on the six superblocks whose ME distortion is zero and
 **4878** on the three right-column ones (x=128), *within the same frame*. The
 port reports a flat **4163** everywhere, because `pipeline.rs` builds one
 `LambdaContext` per frame and calls `compute_fast_lambda` once
-(`pd0_min_sq`'s derivation). `update_lambda` (rc_process.c:404) has a
-per-SB arm — its `stats_based` block reads `ctx->sb_ptr->qindex` against the
-picture qindex — so a frame-level value cannot be right on both sets.
+(`pd0_min_sq`'s derivation). The only genuinely per-SB machinery in
+`update_lambda` (rc_process.c:404) is its `stats_based_sb_lambda_modulation`
+block, and the port passes that flag `false`.
 
-This is not a rounding gap: 4163 x 150 >> 7 = 4878 exactly, and 150 is
-`RD_FRAME_TYPE_FACTOR[0][ArfUpdate]` while 128 (the identity) is
-`RD_FRAME_TYPE_FACTOR[1][ArfUpdate]` — so a wrong `hbd` row, a wrong
-`gf_update_type` index, or a `pcs->lambda_weight` of 128-vs-150 all produce
-exactly this ratio and all are one line. The 3251 arm is a separate question:
-whatever selects it is not modelled at all.
+**Two values in ONE frame rules out the frame-type factor**, which is where a
+first reading lands: `4163 x 150 >> 7 = 4878` exactly, and 150 vs 128 is
+`RD_FRAME_TYPE_FACTOR[0][ArfUpdate]` vs `[1][ArfUpdate]` — a tempting fit, but
+that factor is per-FRAME and cannot produce 3251 on six superblocks and 4878
+on three of the same picture. The arithmetic that DOES fit two values in one
+frame is below, and it supersedes this paragraph; the coincidence is recorded
+because it is the wrong turn a reader will take first.
 
 `fast_lambda` is the lambda in every `RDCOST(fast_lambda, cost_th_rate, ...)`
 threshold `set_depth_removal_level_controls` compares against
