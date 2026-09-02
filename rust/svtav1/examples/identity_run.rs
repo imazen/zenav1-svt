@@ -545,6 +545,15 @@ fn main() {
         if !mono {
             pipeline = pipeline.with_chroma_420(true);
         }
+        // Only when SVTAV1_FINAL_RECON asks for the per-frame dump below.
+        // Byte-INERT here by construction: `recon_output` reaches the encode
+        // through `postfilter_consumed` (pipeline.rs), which a multi-frame run
+        // already forces true via `!is_single_frame` — a later frame may
+        // predict from this recon, so the filters run either way. Everything
+        // else it does is a clone into `last_recon*`.
+        if std::env::var_os("SVTAV1_FINAL_RECON").is_some() {
+            pipeline = pipeline.with_recon_output(true);
+        }
         let frame_len = w * h + 2 * cw * ch;
         let mut all = Vec::new();
         for f in 0..n_frames {
@@ -563,6 +572,42 @@ fn main() {
                     // can compare ONE frame instead of a stream whose first
                     // divergence is just "frame 0 got longer".
                     std::fs::write(format!("{prefix}.obu.f{f}"), &bytes).expect("write frame obu");
+                    // SVTAV1_FINAL_RECON=<path> on a MULTI-frame run writes
+                    // `<path>.f<i>` per frame — the ENCODER's final
+                    // (deblock -> CDEF -> LR) reconstruction of that frame,
+                    // cropped and tightly packed as I420, byte-comparable
+                    // with `dav1d -o` output for the same frame.
+                    //
+                    // It exists because byte-identity to C cannot see an
+                    // encoder/decoder recon MISMATCH, and an INTER frame
+                    // PREDICTS from this buffer: a reference that is not what
+                    // a decoder reconstructs makes every inter mode decision
+                    // score a prediction the stream does not describe. See
+                    // docs/INTER-ENCODE-PLAN.md §1y.
+                    if let Ok(path) = std::env::var("SVTAV1_FINAL_RECON") {
+                        let aw = pipeline.width as usize;
+                        let (tw2, th2) =
+                            (pipeline.true_width as usize, pipeline.true_height as usize);
+                        let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
+                        let crop = |p: &[u8], stride: usize, cw: usize, chh: usize| -> Vec<u8> {
+                            let mut o = Vec::with_capacity(cw * chh);
+                            for r in 0..chh {
+                                o.extend_from_slice(&p[r * stride..r * stride + cw]);
+                            }
+                            o
+                        };
+                        let (ry, ru, rv) = pipeline
+                            .last_recon
+                            .as_ref()
+                            .expect("with_recon_output(true) is set above");
+                        let mut b = crop(ry, aw, tw2, th2);
+                        if !ru.is_empty() {
+                            b.extend_from_slice(&crop(ru, acw, tcw2, tch2));
+                            b.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+                        }
+                        std::fs::write(format!("{path}.f{f}"), &b)
+                            .expect("write SVTAV1_FINAL_RECON");
+                    }
                     all.extend_from_slice(&bytes);
                 }
                 Err(e) => {

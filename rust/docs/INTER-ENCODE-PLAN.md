@@ -3174,6 +3174,13 @@ before its recon dumps on any multi-frame run today), compare it against
 diverges. Do that before touching the skip decision — the skip decision is
 arithmetically C's and is being fed a wrong number.
 
+**CORRECTED by §1z, same day: the last sentence is right and the reading that
+led to it is WRONG.** The recon gate was built and it proved the recon
+INNOCENT — the port's stored recon0 is byte-identical to dav1d's, and the
+port's prediction is byte-identical to the ideal shifted copy. The wrong
+number was the SOURCE: the port was temporally filtering it. §1z has the
+chain.
+
 #### Measured byte movement, with the same caveat as §1u and §1v
 
 `gradient 64x64 q40 p6 frames=2`, `SVTAV1_INTER_EXPERIMENTAL=1`:
@@ -3195,6 +3202,110 @@ skip decision above.
 not 37 < 74; it is that the block the port DECIDES is now C's block, decided
 by the C-exact path, with the tile writer behind it already proven byte-exact
 (§1u).
+
+### 1z. The FIRST byte-identical INTER frame (2026-09-01) — the MD source was TEMPORALLY FILTERED
+
+§1y closed with "the open question is the distortion pair, and it needs one
+`SVT_FULLCOST_OUT` dump". The dump was taken, and the answer was not where §1y
+predicted it would be.
+
+`tools/identity_diff_inter.sh 64 64 40 6 2 gradient`:
+
+```
+frame 0: IDENTICAL (961 B)
+frame 1: IDENTICAL (22 B)
+```
+
+and the tile the port's own pack writes is `94 9a b0` — C's.
+
+#### The root is ONE predicate, and no byte count could have found it
+
+`encode_frame_impl` ran `crate::temporal_filter` over the SOURCE of every
+non-key frame at preset <= 12 (`speed_config.enable_temporal_filter`, a
+homegrown ladder). MODE DECISION therefore scored a byte-EXACT motion
+compensation against a picture no decoder will ever see.
+
+C `derive_tf_params` (`Globals/enc_handle.c:3333`) says NO for every cell this
+port can encode, twice over:
+
+* `pred_structure == LOW_DELAY` sets `tf_level = 0` and RETURNS
+  (`:3339-3343`); C's own comment on that line is *"TF disabled for all LD"*.
+* Outside LD, `do_tf` still needs `hierarchical_levels >= 1` (`:3336`), and
+  this campaign's GOP is flat.
+
+`derive_pic_params` constructs `PredStructure::LowDelay` for every picture, so
+the answer is a constant — but the gate is spelled as C's predicate so a
+future non-LD structure has to change the line rather than inherit a `false`.
+
+#### The measurement chain, because the diagnosis was wrong twice first
+
+| step | number |
+|---|--:|
+| C `SVT_FULLCOST_OUT`, frame-1 winner: `ycb` | 1 519 (about THREE bits — C's residual quantizes to nothing) |
+| C `ydist` (= `y_distortion[DIST_SSD][1]` after the skip arm's overwrite) | 426 160, i.e. **26 635** per `/16` |
+| `sse(frame-1 source, dav1d's recon0 shifted -3, left-replicated)` | **26 635** |
+| the port's MD prediction distortion | 90 965 |
+| the port's PREDICTION vs that ideal shifted copy | **0 — byte-identical** |
+| the port's stored recon0 vs dav1d's recon0 | **0 — byte-identical** |
+
+The last two rows are what turned the diagnosis around. §1y read the 90 965 as
+an encoder/decoder RECON mismatch and wrote that the next chunk should be a
+recon gate; the recon gate was built, and it proved the recon INNOCENT. With
+the prediction and the reference both exact and the distortion still 3.4x too
+big, the only remaining term is the SOURCE.
+
+Four gross MC hypotheses were ruled out numerically before any of that, each
+computed against the decoder's own recon0: zero MV (1 726 660), the wrong sign
+(2 889 368), a 128 fill instead of the replicated margin (1 074 664), a
+full-pel-vs-eighth-pel unit bug (1 135 799). None is 90 965 and all are far
+worse, which is how the MV, its direction, its units and the margin were
+cleared in one step.
+
+**Method note worth keeping.** The interposer prints `ydist` AFTER
+`svt_aom_full_cost` has run, and C's skip arm overwrites
+`y_distortion[DIST_SSD][0]` with `[1]` — so on a block C skips, the field
+labelled "the coded distortion" is the PREDICTION distortion. That is what
+made it comparable to a quantity reproducible outside both encoders.
+
+#### `identity_run` gained the dump that made this answerable
+
+The multi-frame path returned before every recon dump, so "is the port's
+reference what a decoder reconstructs?" had no answer at all.
+`SVTAV1_FINAL_RECON=<path>` now writes `<path>.f<i>` per frame on that path
+too. It is byte-INERT: `recon_output` reaches the encode only through
+`postfilter_consumed`, which a multi-frame run already forces true because a
+later frame may predict from the recon.
+
+#### The frontier, stated
+
+96 cells (`{uniform, gradient, diag, screen}` x `{16, 64, 72, 128}` x
+`{q20, q40, q55}` x `{p6, p8}`, all `frames=2` low-delay P):
+
+| result | cells |
+|---|--:|
+| BOTH frames byte-identical | **6** — `gradient` 64 and 16 at q40/q55 p6, `screen` 16 at q20/q40 p6 |
+| frame 0 identical, frame 1 differs | 78 |
+| frame 0 already differs (the video-KEY frontier, not this chunk's) | 12 |
+
+A new gate locks it in: **`tools/inter_byte_gate.sh`**, six PASS cells and
+three named open ones, same OPEN -> PASS progress shape as
+`inter_decode_gate.sh`. Its teeth were measured rather than asserted:
+reverting the temporal-filter gate fails **2 of the 6** — `gradient 64x64 q40
+p6` and `gradient 16x16 q40 p6`. The other four stay green because at q55, and
+on `screen` 16x16, the filtered source still quantizes to the same decision.
+That is the honest number, and it is written into the script so nobody has to
+re-derive it.
+
+Two shapes in the residual are worth naming because they are different
+problems:
+
+* **`uniform` at 16/64, and `screen`/`gradient` 16 at some qp: C's LENGTH
+  exactly, differing at byte 15.** Byte 15 is inside the frame HEADER. That is
+  §1x's recorded `cdef_damping_minus_3` finding (C 1, port 0) finally showing
+  up as a byte rather than as a field-walk note.
+* **preset 8 diverges far more widely than preset 6** (873 B against C's 22 on
+  `gradient 64 q20 p8`). The video arm's p8 mode-decision ladder is a separate
+  frontier from p6's and has never been exercised on an inter frame.
 
 ## 2. Chunks
 

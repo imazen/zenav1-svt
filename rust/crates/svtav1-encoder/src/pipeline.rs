@@ -1648,42 +1648,79 @@ impl EncodePipeline {
         // Step 3: Rate control — assign QP
         pcs.qp = assign_picture_qp(&self.rc_config, &self.rc_state, temporal_layer);
 
-        // Step 3b: Temporal filtering (if enabled and we have reference frames)
+        // Step 3b: Temporal filtering.
+        //
+        // C `derive_tf_params` (Globals/enc_handle.c:3333) decides this for the
+        // WHOLE SEQUENCE, and it says NO for every cell this port can encode:
+        //
+        //   * `pred_structure == LOW_DELAY` -> `tf_level = 0` and an immediate
+        //     `return` (:3339-3343, comment "TF disabled for all LD"). The
+        //     port constructs `PredStructure::LowDelay` unconditionally
+        //     (`derive_pic_params`), so this arm alone settles it.
+        //   * outside LD, `do_tf` also needs `hierarchical_levels >= 1`
+        //     (:3336) — this campaign's GOP is flat (hier 0).
+        //
+        // MEASURED, and it is why this gate exists (docs/INTER-ENCODE-PLAN.md
+        // §1y): on `gradient 64x64 q40 p6 frames=2` the port was filtering
+        // frame 1's SOURCE before mode decision, so MD scored a CORRECT motion
+        // compensation against a source no decoder will ever see. Its
+        // prediction distortion came out 90 965 where C's `SVT_FULLCOST_OUT`
+        // prints 26 635 — a number reproducible outside both encoders as
+        // `sse(frame-1 source, dav1d's recon of frame 0 shifted -3)`. The
+        // prediction was byte-exact; the SOURCE was not.
+        //
+        // `crate::temporal_filter` stays (docs/CLAUDE.md "DEAD-LOOKING C STAYS
+        // TRANSLATED"), and so does the `enable_temporal_filter` preset flag,
+        // which is a homegrown ladder rather than C's `tf_level`. Reaching a
+        // configuration where C's answer is YES needs C's real
+        // `svt_av1_apply_temporal_filter_planewise_medium` — the port's filter
+        // is a homegrown heuristic that blends with the RECON, where SVT's
+        // filters the source against neighbouring SOURCE pictures.
+        // `derive_pic_params` constructs `PredStructure::LowDelay` for every
+        // picture this encoder produces, so C's LD arm applies unconditionally
+        // and the answer is a constant `false`. It is spelled as C's predicate
+        // rather than as `false` so that a future non-LD pred structure has to
+        // change this line, and so the reason is readable at the site.
+        let pred_structure = crate::port_picstruct::PredStructure::LowDelay;
+        let c_tf_enabled = pred_structure != crate::port_picstruct::PredStructure::LowDelay
+            && self.gop.hierarchical_levels >= 1;
         let w = self.width as usize;
         let h = self.height as usize;
         let n = w * h;
-        let encode_input =
-            if self.speed_config.enable_temporal_filter && !is_key && self.dpb.occupied_slots() > 0
-            {
-                // Collect available reference frames for TF
-                let mut ref_frames: alloc::vec::Vec<&[u8]> = alloc::vec::Vec::new();
-                for slot in 0..svtav1_types::reference::REF_FRAMES {
-                    if let Some(rf) = self.dpb.get(slot)
-                        && rf.y_plane.len() == n
-                    {
-                        ref_frames.push(&rf.y_plane);
-                    }
-                    if ref_frames.len() >= 3 {
-                        break;
-                    }
+        let encode_input = if c_tf_enabled
+            && self.speed_config.enable_temporal_filter
+            && !is_key
+            && self.dpb.occupied_slots() > 0
+        {
+            // Collect available reference frames for TF
+            let mut ref_frames: alloc::vec::Vec<&[u8]> = alloc::vec::Vec::new();
+            for slot in 0..svtav1_types::reference::REF_FRAMES {
+                if let Some(rf) = self.dpb.get(slot)
+                    && rf.y_plane.len() == n
+                {
+                    ref_frames.push(&rf.y_plane);
                 }
-                if !ref_frames.is_empty() {
-                    let tf_config = crate::temporal_filter::TfConfig::default();
-                    let tf_result = crate::temporal_filter::temporal_filter(
-                        y_plane,
-                        &ref_frames,
-                        w,
-                        h,
-                        y_stride,
-                        &tf_config,
-                    )?;
-                    tf_result.filtered
-                } else {
-                    gather_rows(y_plane, y_stride, w, h)?
+                if ref_frames.len() >= 3 {
+                    break;
                 }
+            }
+            if !ref_frames.is_empty() {
+                let tf_config = crate::temporal_filter::TfConfig::default();
+                let tf_result = crate::temporal_filter::temporal_filter(
+                    y_plane,
+                    &ref_frames,
+                    w,
+                    h,
+                    y_stride,
+                    &tf_config,
+                )?;
+                tf_result.filtered
             } else {
                 gather_rows(y_plane, y_stride, w, h)?
-            };
+            }
+        } else {
+            gather_rows(y_plane, y_stride, w, h)?
+        };
 
         // Task #95 chunk 2 — partial-SB variance source. `compute_b64_variance`
         // walks a full 64x64 grid per b64, so on a partial SB (aligned dims not
