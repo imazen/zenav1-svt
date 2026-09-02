@@ -6,36 +6,58 @@
 > port binary (NOT the `symtrace` wrapper the 2026-08-16 record used).
 > Supersedes `benchmarks/mem_2026-08-16.meta`.
 >
-> | path | 64x64 | 256x256 | 1 MP | 4 MP | port fit | C fit |
-> |---|---|---|---|---|---|---|
-> | still p2  | 0.50x | 0.63x | 0.82x | **0.78x** | 6.69 MiB + 31.28/MP | 10.02 + 38.68 |
-> | still p6  | 0.57x | 0.70x | 0.99x | **1.06x** | 4.87 MiB + 30.20/MP |  7.60 + 27.40 |
-> | still p10 | 0.64x | 0.77x | 1.07x | **1.18x** | 4.11 MiB + 24.35/MP |  6.11 + 19.93 |
-> | still p13 | 0.64x | 0.77x | 1.07x | **1.18x** | 4.11 MiB + 24.35/MP |  6.11 + 19.93 |
-> | INTER p13 | 0.81x | 0.86x | 1.27x | **1.53x** | 4.55 MiB + 40.34/MP |  7.24 + 25.51 |
+> The same THREE ARMS the CPU section below uses, `perf_encode` as the port
+> binary, gradient qp 40 (`benchmarks/mem_arms_2026-09-02.{tsv,meta}`):
+>
+> | arm | 64x64 | 256x256 | 1 MP | 4 MP | port fit | C fit | slope ratio |
+> |---|---|---|---|---|---|---|---|
+> | still p13    | 0.61x | 0.73x | 1.01x | **1.01x** | 4.21 MiB + 20.61/MP | 6.12 + 19.90 | 1.04x |
+> | videokey p13 | 0.67x | 0.75x | 1.09x | **1.11x** | 4.69 MiB + 25.22/MP | 6.67 + 22.27 | 1.13x |
+> | INTER p13    | 0.81x | 0.93x | 1.39x | **1.60x** | 5.18 MiB + 42.04/MP | 7.19 + 25.46 | **1.65x** |
+> | still p8     |       |       |       | 1.01x | 4.38 MiB + 20.67/MP | 6.32 + 19.88 | 1.04x |
+> | videokey p8  |       |       |       | 1.11x | 4.59 MiB + 33.37/MP | 8.13 + 41.11 | **0.81x** |
+> | inter p8 (64..512 only — refuses at >= 576) | 0.68x | 0.77x | — | — | 5.44 + 50.99/MP | 8.29 + 50.95 | 1.00x |
 >
 > (fit = `alpha + beta*pixels`; both terms are quoted because at 64x64 the
 > intercept is ~100 % of the number and at 4 MP it is ~4 %.)
 >
-> **The STILL path already meets the 25 % memory goal at every size measured**
-> — worst cell 1.18x, and the port is LIGHTER than C below ~1 MP at every
-> preset and at EVERY size at preset 2. **The INTER path does not, and it is a
-> SLOPE problem:** at preset 13 the port's per-pixel term is 40.34 MiB/MP
-> against C's 25.51 (1.58x) while its fixed term is 0.63x C's, so the ratio
-> grows with size — 1.27x at 1 MP, 1.53x at 4 MP (169.8 vs 111.2 MiB). Same
-> preset, still vs inter: the port adds **16.0 MiB/MP** for one reference
-> frame where C adds **5.6**. One 8-bit 4:2:0 reference is 1.43 MiB/MP of
-> pixels, so C carries ~4x the raw reference and the port ~11x.
+> **STILL and the VIDEO-MODE KEY FRAME both meet the 25 % memory goal at every
+> size measured** — still is at parity from 1 MP up (1.00-1.01x) and lighter
+> below it, and at preset 8 the port is LIGHTER than C for the video config
+> (0.81x slope). **The whole memory gap is the INTER FRAME**, and it grows with
+> size: 1.14x at 512x512, 1.39x at 1 MP, 1.60x at 4 MP.
 >
-> Two caveats the `.meta` states in full and that are load-bearing:
-> * **No inter cell above 128x128 is byte-identical to C**, so the inter
->   ratios compare two encoders making different decisions. The p6/p8 inter
->   cells that ARE byte-identical (64..256) put the port at 0.64-0.75x. Re-run
->   this once the inter byte frontier reaches 1 MP.
+> By subtraction of the arms, what ONE INTER FRAME adds to the peak (preset 13):
+> 2.2 / 5.0 / 14.4 / 39.1 / **68.1 MiB** at 256/512/1024/1536/2048 against C's
+> 0.8 / 1.5 / 3.9 / 7.8 / **13.2** — 2.8x rising to **5.2x**. At 4 MP that is
+> 54.9 MiB of the 64.9 MiB total gap: **85 % of the inter path's memory excess
+> is the inter frame's own footprint.** Per megapixel the port adds 17.0 MiB/MP
+> for one reference and C adds 3.3; one 8-bit 4:2:0 reference is 1.43 MiB/MP of
+> pixels, so C carries ~2.3x the raw reference and the port ~11.9x. The ratio
+> GROWING with size says it is per-pixel state, not one oversized fixed
+> structure. Which structure is NOT measured — that needs an allocation trace
+> (heaptrack on Linux, or MallocStackLogging + malloc_history here), and this
+> record does not have one. Do not attribute the 17.0 MiB/MP to a named buffer.
+>
+> **CORRECTION to `benchmarks/mem_2026-09-02.meta`, measured the same day.**
+> That record's port numbers came through `identity_run`, which holds ~14.5 MiB
+> more at 4 MP than the encoder does: same library, same cell, only the harness
+> binary changed — 102,832 KiB -> 88,480 KiB at 2048x2048 p13, and the same
+> 14.5 MiB at qp 32 and qp 40, so the variable is the binary, not the quantizer.
+> **Its STILL ratios are ~0.15x too high (1.17x should read 1.01x).** Its INTER
+> ratios stand: the harness's extra buffers sit below the encoder's own peak once
+> an inter frame is in flight, and both records put the inter path at 1.55-1.60x
+> at 4 MP. Its frontier scan and its corrections to the 08-16 record also stand.
+>
+> Two caveats that remain load-bearing:
+> * **No inter cell above 256x256 is byte-identical to C**, so the 1.39-1.60x
+>   cells compare two encoders making different decisions. The inter cells that
+>   ARE byte-identical (p8 at 64..256) put the port at 0.68-0.77x. Re-measure
+>   once the inter byte frontier reaches 1 MP.
 > * **The port's peak RSS is not single-run stable** — 2048x2048 p6 spans
 >   126.2-136.6 MiB over seven runs (8 %) where C spans 0.04 %. It encodes
->   tiles on a thread pool; C at `--lp 1` does not. `tools/mem_gate.sh` now
->   takes `MEM_REPS` (default 5) and reports the median with the spread.
+>   tiles on a thread pool; C at `--lp 1` does not. `tools/mem_gate.sh` takes
+>   `MEM_REPS` (default 5) and reports the median with the spread.
 >
 > **THE INTER PATH PANICS ON 31 OF 36 PARTIAL-SUPERBLOCK CELLS**
 > (`tools/inter_completion_scan.sh`,

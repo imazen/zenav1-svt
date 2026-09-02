@@ -1,6 +1,17 @@
 Peak RSS, port vs C — STILL and the FIRST EVER INTER measurement.
 Supersedes benchmarks/mem_2026-08-16.meta (see CORRECTIONS at the bottom).
 
+**PARTLY SUPERSEDED THE SAME DAY by benchmarks/mem_arms_2026-09-02.{tsv,meta}.**
+The port numbers below were taken through `identity_run`, and that harness holds
+~14.5 MiB more at 4 MP than the encoder does — measured by re-running the same
+cell through `perf_encode` with the same library (102,832 -> 88,480 KiB at
+2048x2048 p13; the variable is the binary, not the quantizer). **The STILL
+ratios below are therefore ~0.15x too high: the still path is 1.01-1.04x C, not
+1.17-1.18x.** The INTER ratios are NOT affected the same way — the harness's
+extra buffers sit below the encoder's own peak once an inter frame is in flight,
+and both records put the inter path at ~1.55-1.60x at 4 MP. The frontier scan
+and the corrections at the bottom of this file stand unchanged.
+
 commit:  ef0b122bd269 (main@origin at the time of the run)
 host:    mac — Apple M4 Pro, 12 cores, 24 GiB, aarch64-darwin. macOS RSS.
 command: MEM_REPS=7 MEM_SIZES="64 128 256 512 1024 1536 2048" \

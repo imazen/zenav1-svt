@@ -40,6 +40,13 @@
 #                the always-fresh wrapper — which builds with `--features
 #                symtrace`. Point this at a plain `--release` build of the
 #                `identity_run` example to measure the SHIPPED configuration.)
+#   MEM_VIDEO    1 = video-mode config even at MEM_FRAMES=1 — a video-mode KEY
+#                frame and nothing else. The same control `perf_gate.sh`'s
+#                PERF_VIDEO is, and for the same reason: a 2-frame cell changes
+#                the still-vs-video signal derivation AND adds an inter frame,
+#                and only three arms can tell which of them costs the memory.
+#                REQUIRES MEM_RS_BIN pointing at the `perf_encode` example —
+#                `identity_run` has no single-frame video arm.
 #   MEM_REPS     repeats per cell, median reported   (default 5)
 #   MEM_TSV      write a machine-readable TSV here as well as the table
 set -uo pipefail
@@ -51,6 +58,7 @@ QP=${MEM_QP:-32}
 CONTENT=${MEM_CONTENT:-gradient}
 FRAMES=${MEM_FRAMES:-1}
 SHIFT=${MEM_SHIFT:-3}
+VIDEO=${MEM_VIDEO:-0}
 RS_BIN=${MEM_RS_BIN:-$HERE/identity_run}
 REPS=${MEM_REPS:-5}
 TSV=${MEM_TSV:-}
@@ -107,13 +115,14 @@ peak_kib_median() {
 # both sides: low-delay P, flat (no pyramid), only frame 0 a key frame.
 port_env=(SVTAV1_BD=8 "SVTAV1_FRAMES=$FRAMES")
 c_env=(SVT_TRACE_OUT=/dev/null "SVT_FRAMES=$FRAMES")
-if [[ $FRAMES -gt 1 ]]; then
+if [[ $FRAMES -gt 1 || $VIDEO == 1 ]]; then
     port_env+=(SVTAV1_INTER_EXPERIMENTAL=1 "SVTAV1_FRAME_SHIFT=$SHIFT"
                SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0)
     c_env+=(SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1)
+    [[ $VIDEO == 1 ]] && { port_env+=(SVTAV1_VIDEO=1); c_env+=(SVT_AVIF=0); }
 fi
 
-echo "mem_gate: content=$CONTENT preset=$PRESET qp=$QP frames=$FRAMES shift=$SHIFT"
+echo "mem_gate: content=$CONTENT preset=$PRESET qp=$QP frames=$FRAMES shift=$SHIFT video=$VIDEO"
 echo "mem_gate: port=$RS_BIN"
 printf "%-9s %-7s %12s %-15s %12s %-15s %8s %6s %9s\n" \
     "size" "px(MP)" "port KiB" "[min,max]" "C KiB" "[min,max]" "port/C" "ident" "port"
@@ -121,6 +130,7 @@ rows=""
 [[ -n "$TSV" ]] && {
     printf '# mem_gate: content=%s preset=%s qp=%s frames=%s shift=%s host=%s date=%s\n' \
         "$CONTENT" "$PRESET" "$QP" "$FRAMES" "$SHIFT" "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$TSV"
+    printf '# video=%s\n' "$VIDEO" >>"$TSV"
     printf '# reps=%s (median reported; min/max are the observed spread)  port=%s\n' "$REPS" "$RS_BIN" >>"$TSV"
     printf 'size\tmegapixels\tframes\tpreset\tqp\treps\tport_kib\tport_min\tport_max\tc_kib\tc_min\tc_max\tratio\tident\tport_status\n' >>"$TSV"
 }
@@ -144,6 +154,9 @@ for s in $SIZES; do
     # Byte identity, per frame. Only meaningful when BOTH sides completed.
     ident="-"
     if [[ "$pstat" == OK ]]; then
+        # One frame compares the whole stream on both sides — including the
+        # MEM_VIDEO arm, because `capture_c_trace` writes its per-PTS files only
+        # when SVT_FRAMES > 1, so `c.obu.pts0` does not exist here.
         if [[ $FRAMES -eq 1 ]]; then
             [[ -s "$W/rs.obu" && -s "$W/c.obu" ]] && { ident=N; cmp -s "$W/rs.obu" "$W/c.obu" && ident=Y; }
         else

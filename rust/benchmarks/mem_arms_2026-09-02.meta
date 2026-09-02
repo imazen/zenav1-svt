@@ -1,0 +1,95 @@
+Peak RSS, three-arm decomposition — and a CORRECTION to the still numbers in
+benchmarks/mem_2026-09-02.meta, which were inflated by the harness process.
+
+date:   2026-09-02 (same day, later than mem_2026-09-02.*)
+host:   mac — Apple M4 Pro, 12 cores, 24 GiB, aarch64-darwin. macOS max RSS.
+commit: 3fe2e2f95686
+command: MEM_REPS=7 MEM_QP=40 MEM_SIZES="64 128 256 512 1024 1536 2048" \
+         MEM_RS_BIN=<target/release/examples/perf_encode> tools/mem_gate.sh <preset>
+         with (MEM_FRAMES=1), (MEM_FRAMES=1 MEM_VIDEO=1) and (MEM_FRAMES=2).
+data:   benchmarks/mem_arms_2026-09-02.tsv (42 cells, median of 7 runs each)
+
+=================== CORRECTION: ~14.5 MiB WAS THE HARNESS ====================
+`mem_2026-09-02.{tsv,meta}` measured the port through `identity_run`. Measured
+here, same encoder library, same cell, same day, only the harness binary
+changed:
+
+  gradient 2048x2048 preset 13, port peak RSS      C peak RSS   ratio
+    identity_run, qp 32                102,832 KiB   87,520 KiB  1.17x
+    perf_encode,  qp 32                 88,480 KiB   87,520 KiB  1.01x
+    identity_run, qp 40                102,384 KiB   87,440 KiB  1.17x
+    perf_encode,  qp 40                 87,936 KiB   87,440 KiB  1.01x
+
+The variable is the BINARY, not the quantizer: ~14.5 MiB at 4 MP (3.6 MiB/MP)
+is `identity_run`'s own buffers, not the encoder's. **The STILL path's real
+memory ratio is 1.01-1.04x C, not the 1.17-1.18x that record reports.**
+
+The INTER numbers in that record are NOT affected in the same way: at
+2048x2048 p13 the inter arm measures 172,800 KiB through identity_run (qp 32)
+and 177,459 KiB through perf_encode (qp 40) — the harness's extra buffers sit
+BELOW the encoder's own peak once an inter frame is in flight, so they do not
+add to it. Both records agree the inter path is ~1.55-1.60x at 4 MP.
+
+======================= THE THREE ARMS, alpha + beta*px ======================
+Same decomposition the CPU record uses (benchmarks/perf_inter_attrib_2026-09-02),
+so the two can be read together.
+
+  arm            range      port MiB fixed  MiB/MP   C fixed  MiB/MP  slope ratio
+  still    p8    64..2048        4.38        20.67     6.32    19.88     1.04
+  videokey p8    64..2048        4.59        33.37     8.13    41.11     0.81
+  inter    p8    64..512         5.44        50.99     8.29    50.95     1.00
+  still    p13   64..2048        4.21        20.61     6.12    19.90     1.04
+  videokey p13   64..2048        4.69        25.22     6.67    22.27     1.13
+  inter    p13   64..2048        5.18        42.04     7.19    25.46     1.65
+(p8's inter arm stops at 512x512: the port REFUSES frame 1 at >= 576x576.)
+
+Per-cell ratios, preset 13 (the only preset whose inter arm reaches 4 MP):
+
+  size      still    videokey   inter
+  64x64     0.61x     0.67x     0.81x
+  256x256   0.73x     0.75x     0.93x
+  512x512   0.81x     0.86x     1.14x
+  1024x1024 1.01x     1.09x     1.39x
+  1536x1536 1.00x     1.06x     1.54x
+  2048x2048 1.01x     1.11x     1.60x
+
+**STILL AND VIDEOKEY BOTH MEET THE 25 % MEMORY GOAL AT EVERY SIZE MEASURED.**
+The still arm is at parity from 1 MP up (1.00-1.01x) and lighter below it; the
+video-mode KEY frame adds little (1.11x at 4 MP, and at preset 8 the port is
+LIGHTER than C for it, 0.81x slope). **The whole memory gap is the INTER
+FRAME.**
+
+======================= WHERE THE INTER MEMORY GOES =========================
+By subtraction of measured arms — what one inter frame ADDS to a video-mode
+key frame's peak:
+
+  preset 13    port MiB   C MiB   ratio
+  256x256         2.2       0.8    2.8x
+  512x512         5.0       1.5    3.3x
+  1024x1024      14.4       3.9    3.7x
+  1536x1536      39.1       7.8    5.0x
+  2048x2048      68.1      13.2    5.2x
+
+At 4 MP that is 54.9 MiB of the arms' 64.9 MiB total gap — **85 % of the inter
+path's memory excess is the inter frame's own footprint.** Per megapixel the
+port adds 17.0 MiB/MP for one reference frame and C adds 3.3. One 8-bit 4:2:0
+reference is 1.43 MiB/MP of pixels, so C carries ~2.3x the raw reference and
+the port ~11.9x.
+
+The ratio also GROWS with size (2.8x at 0.06 MP to 5.2x at 4 MP), so it is not
+one oversized fixed structure; it is per-pixel state whose count or width scales
+with the frame. The obvious candidates — the HME pyramid levels the CPU record
+shows the port building (`inter_me::hme::hme_level_{0,1}`, `prehme_core`), the
+reference planes themselves, and any per-SB inter scratch — are NOT separated
+here. Separating them needs an allocation trace (heaptrack on Linux, or
+MallocStackLogging + malloc_history on macOS), which this record does NOT have.
+Do not attribute the 17.0 MiB/MP to a specific structure from this table.
+
+=========================== NOT MEASURED ===================================
+* Any inter cell above 512x512 that is BYTE-IDENTICAL to C (the frontier ends
+  at 256x256), so the 1.39-1.60x cells compare two encoders making different
+  decisions. They are reported as two absolute numbers and their quotient.
+* More than one inter frame (the port refuses frame 2).
+* Allocation-level attribution (see above). RSS is a ceiling on what the process
+  touched, not an allocator trace.
+* 10-bit, real content, non-square dims, Linux/glibc.
