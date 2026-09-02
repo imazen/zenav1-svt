@@ -4,13 +4,26 @@
 //! |---|---|
 //! | [`md_full_pel_search`] | `:1914-2049` |
 //! | [`md_full_pel_search_large_lbd`] | `:1830-1912` |
-//! | [`md_sq_motion_search`] | `:2329-2510` |
-//! | [`md_nsq_motion_search`] | `:2080-2252` |
 //! | [`md_subpel_search_fixed_stage`] | `:2634-2731` |
-//! | [`subpel_mv_limits`] | `:2547-2557` (the `md_subpel_search` limit derivation) |
-//! | [`build_single_ref_mvp_array`] | `:3097-3187` |
-//! | [`pme_search`] | `:3197-3372` |
-//! | [`read_refine_me_mvs`] | `:2815-2936` |
+//! | [`md_subpel_search`] | `:2520-2630` |
+//! | [`subpel_mv_limits`] | `:2547-2557` (its limit derivation) |
+//! | [`build_single_ref_mvp_list`] | `:3097-3187` (`build_single_ref_mvp_array`) |
+//!
+//! **Four C functions are represented here by their PIECES, not by a
+//! driver, and this table used to name them as if they were ported.**
+//! Corrected 2026-09-02 (the four entries were also broken intra-doc
+//! links, which is how it was caught):
+//!
+//! | C driver | line | what IS here |
+//! |---|---|---|
+//! | `md_sq_motion_search` | `:2329-2510` | [`MdSqMeCtrls`], [`sparse_extent`], [`sq_search_area_multiplier`], [`nudge_sprs_lev1`] |
+//! | `md_nsq_motion_search` | `:2080-2252` | [`nsq_mvc_list`] |
+//! | `read_refine_me_mvs` | `:2815-2936` | [`me_mv_center`] |
+//! | `pme_search` | `:3197-3372` | [`MdPmeCtrls`], [`pme_search_extents`], [`pme_me_mv_differs_from_mvps`], [`pme_to_me_cost_dev`], [`pme_bails_to_me`], [`best_mvp_by_distortion`] |
+//!
+//! Those four drivers are the remaining work for the inter reference set;
+//! `docs/INTER-ENCODE-PLAN.md` §1z¹⁴ says why they have to land together
+//! with a widened `ref_frame_type_arr` rather than one at a time.
 //!
 //! # The shape of this port
 //!
@@ -806,6 +819,211 @@ pub fn subpel_mv_limits(
     let row_max = (mi_rows - mi_row) * MI_SIZE + AOM_INTERP_EXTEND;
     let col_max = (mi_cols - mi_col) * MI_SIZE + AOM_INTERP_EXTEND;
     (row_min, row_max, col_min, col_max)
+}
+
+// ---------------------------------------------------------------------------
+// md_subpel_search (product_coding_loop.c:2520-2630)
+// ---------------------------------------------------------------------------
+
+/// The pieces of C's `md_subpel_search` that its caller owns: the block's
+/// mi geometry, the picture's, and the reference/source planes.
+///
+/// The two plane fields mirror C's `ms_buffers`: `src` is the SOURCE
+/// picture (`pcs->ppcs->enhanced_pic`, NOT a recon) at this block's origin,
+/// and `ref_alloc` is the padded REFERENCE allocation with `ref_base` the
+/// index of the block's own (0, 0) inside it — the same shape
+/// [`crate::md_subpel::SubpelSearchVarParams`] takes, because that is what
+/// the negative offsets `get_buf_from_mv` produces require.
+#[derive(Debug, Clone, Copy)]
+pub struct SubpelBlockGeom {
+    /// C `xd->mi_row` / `xd->mi_col`.
+    pub mi_row: i32,
+    pub mi_col: i32,
+    /// C `mi_size_wide[bsize]` / `mi_size_high[bsize]`.
+    pub mi_width: i32,
+    pub mi_height: i32,
+    /// C `cm->mi_rows` / `cm->mi_cols`.
+    pub mi_rows: i32,
+    pub mi_cols: i32,
+    /// C `block_size_wide[bsize]` / `block_size_high[bsize]`.
+    pub bwidth: usize,
+    pub bheight: usize,
+    /// C `ctx->blk_geom->sq_size` — the SQUARE size the block came from,
+    /// which for an NSQ shape is its parent's, NOT `max(bwidth, bheight)`.
+    /// `svt_init_mv_cost_params` reads it for `early_exit_th`.
+    pub sq_size: u16,
+}
+
+/// C `md_subpel_search` (product_coding_loop.c:2520-2630) — the SETUP
+/// wrapper around `mcomp.c`'s two tree searches.
+///
+/// It owns no geometry of its own: everything it does is derive the MV
+/// limits, the MV-cost parameters and the variance parameters, then
+/// dispatch to [`crate::md_subpel::find_best_sub_pixel_tree`] or
+/// [`crate::md_subpel::find_best_sub_pixel_tree_pruned`]. `me_mv` is
+/// updated in place with the refined EIGHTH-PEL MV and the return value is
+/// C's `besterr`.
+///
+/// Three things a rewrite gets wrong, all transcribed here:
+///
+/// * **The MV-limit chain is three steps, and the middle one narrows the
+///   FULL-PEL set in place.** [`subpel_mv_limits`] gives the block/picture
+///   rectangle, `svt_av1_set_mv_search_range` intersects it with the
+///   `±MAX_FULL_PEL_VAL` window around `ref_mv`, and only then does
+///   `svt_av1_set_subpel_mv_search_range` scale to eighth pel. Skipping
+///   the middle step leaves a search range up to 1023 full pels wider.
+/// * **The two limit helpers take their four components in DIFFERENT
+///   orders** — [`subpel_mv_limits`] returns `(row_min, row_max, col_min,
+///   col_max)` and
+///   [`crate::md_subpel::set_subpel_mv_search_range`] takes `(col_min,
+///   col_max, row_min, row_max)`.
+/// * **The start MV is a full-pel ROUND-TRIP, not the input MV.** C takes
+///   `me_mv >> 3` and then `get_mv_from_fullmv` (`<< 3`), so any
+///   fractional part of the incoming MV is DISCARDED before the search
+///   starts. (C's own comment says it should use `get_fullmv_from_mv`,
+///   which rounds; it does not, and the truncation is the behaviour.)
+///
+/// **`md_ctx` is `Some` in C, always.** `md_subpel_search` passes
+/// `ctx` to the tree search unconditionally, and the PRUNED variant writes
+/// `ctx->fp_me_dist[list][ref] = besterr` there when
+/// `search_stage == SPEL_ME` (mcomp.c:616-618) — a value
+/// `read_refine_me_mvs` and `pme_search` both READ afterwards. Passing
+/// `None` reproduces C's `ictx == NULL` arm, which no call site in
+/// `product_coding_loop.c` takes; a caller wiring the ME/PME drivers must
+/// pass `Some` or it silently loses that write. (The UNPRUNED variant
+/// casts `ictx` without a null check, so `None` there is C's undefined
+/// behaviour, not a supported arm.)
+///
+/// Evidence tier 4 — `md_subpel_search` is `static` with no exported
+/// symbol. Its leaves are not: the two tree searches are C's exported
+/// `svt_av1_find_best_sub_pixel_tree{,_pruned}` and are called here rather
+/// than re-transcribed.
+#[allow(clippy::too_many_arguments)]
+pub fn md_subpel_search(
+    search_stage: i32,
+    ctrls: &crate::port_enc_mode_config::encdec::MdSubPelSearchCtrls,
+    geom: SubpelBlockGeom,
+    bsize: svtav1_types::block::BlockSize,
+    list_idx: usize,
+    ref_idx: usize,
+    allow_high_precision_mv: bool,
+    ref_mv: Mv,
+    base_q_idx: usize,
+    full_lambda: u32,
+    // C `ctx->md_subpel_me_ctrls.skip_diag_refinement` — see the note at
+    // the `mv_cost_type` assignment; it is the ME controls' field even on
+    // a PME call.
+    me_skip_diag_refinement: u8,
+    mv_cost_tables: Option<&crate::intrabc::MvCostTables>,
+    src: &[u8],
+    src_base: usize,
+    src_stride: usize,
+    ref_alloc: &[u8],
+    ref_base: i64,
+    ref_stride: usize,
+    md_ctx: Option<&mut crate::md_subpel::SubpelMdContext>,
+    me_mv: &mut Mv,
+) -> u32 {
+    use crate::md_subpel::{
+        SubpelSearchParams, SubpelSearchVarParams, find_best_sub_pixel_tree,
+        find_best_sub_pixel_tree_pruned, set_subpel_mv_search_range,
+    };
+
+    // C `mv_limits` (:2547-2557), then `svt_av1_set_mv_search_range`
+    // (:2558) narrowing it in place, then the eighth-pel conversion.
+    let (row_min, row_max, col_min, col_max) = subpel_mv_limits(
+        geom.mi_row,
+        geom.mi_col,
+        geom.mi_width,
+        geom.mi_height,
+        geom.mi_rows,
+        geom.mi_cols,
+    );
+    let mut full = svtav1_types::motion::FullMvLimits {
+        col_min,
+        col_max,
+        row_min,
+        row_max,
+    };
+    crate::intrabc::set_mv_search_range(&mut full, ref_mv);
+    let mv_limits = set_subpel_mv_search_range(
+        (full.col_min, full.col_max, full.row_min, full.row_max),
+        ref_mv,
+    );
+
+    let ms = SubpelSearchParams {
+        allow_hp: allow_high_precision_mv,
+        forced_stop: i32::from(ctrls.max_precision),
+        iters_per_step: ctrls.subpel_iters_per_step,
+        pred_variance_th: ctrls.pred_variance_th,
+        abs_th_mult: ctrls.abs_th_mult,
+        round_dev_th: ctrls.round_dev_th,
+        skip_diag_refinement: ctrls.skip_diag_refinement,
+        search_stage,
+        list_idx,
+        ref_idx,
+        mv_limits,
+    };
+
+    // C `svt_init_mv_cost_params` (:2560-2565), restricted to the members
+    // `mcomp.c` actually reads (`md_subpel::MvCostParams` documents which
+    // two it drops). The 8-BIT lambda, because the variance this search
+    // minimises is computed at 8 bits.
+    //
+    // NOTE `base_q_idx` is unread here for exactly that reason: it feeds
+    // `sad_per_bit`, and no function in `mcomp.c` reads `sad_per_bit`. It
+    // stays in the signature because C passes it and a caller wiring the
+    // PME/ME drivers must not have to rediscover that.
+    let _ = base_q_idx;
+    let mv_cost_params = crate::md_subpel::MvCostParams {
+        ref_mv,
+        // **C reads the ME controls here, not `ctrls`**
+        // (`svt_init_mv_cost_params`, product_coding_loop.c:1906:
+        // `ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3`). So a PME
+        // call, which passes `md_subpel_pme_ctrls` as `ctrls`, still takes
+        // its MV-cost TYPE from the ME controls. That is why this is a
+        // separate parameter instead of `ctrls.skip_diag_refinement`.
+        mv_cost_type: if me_skip_diag_refinement >= 3 {
+            crate::md_subpel::MvCostType::Opt
+        } else {
+            crate::md_subpel::MvCostType::Entropy
+        },
+        tables: mv_cost_tables,
+        // C `AOMMAX(rdmult >> RD_EPB_SHIFT, 1)`, `RD_EPB_SHIFT` = 6.
+        error_per_bit: ((full_lambda >> 6).max(1)) as i32,
+        // C `1020 - (ctx->blk_geom->sq_size >> 2)`.
+        early_exit_th: 1020 - (i32::from(geom.sq_size) >> 2),
+    };
+
+    let var_params = SubpelSearchVarParams {
+        src,
+        src_base,
+        src_stride,
+        ref_alloc,
+        ref_base,
+        ref_stride,
+        w: geom.bwidth,
+        h: geom.bheight,
+        bias_fp: ctrls.bias_fp,
+        subpel_search_type: i32::from(ctrls.subpel_search_type),
+    };
+
+    // C `best_mv = me_mv >> 3` then `get_mv_from_fullmv` — a TRUNCATING
+    // round trip, see the doc note above.
+    let start_mv = Mv {
+        x: (me_mv.x >> 3).wrapping_mul(8),
+        y: (me_mv.y >> 3).wrapping_mul(8),
+    };
+
+    let (besterr, st) = if ctrls.subpel_search_method
+        == crate::port_enc_mode_config::encdec::subpel_search_method::SUBPEL_TREE
+    {
+        find_best_sub_pixel_tree(md_ctx, &ms, &var_params, &mv_cost_params, start_mv, bsize)
+    } else {
+        find_best_sub_pixel_tree_pruned(md_ctx, &ms, &var_params, &mv_cost_params, start_mv, bsize)
+    };
+    *me_mv = st.best_mv;
+    besterr
 }
 
 // ---------------------------------------------------------------------------
@@ -1770,6 +1988,283 @@ mod tests {
         let mut probe = Probe::new(2);
         let (idx, cost) = best_mvp_by_distortion(&mvps, &mut probe, 0, 0, 448, 0);
         assert_eq!((idx, cost), (2, 0));
+    }
+
+    // -----------------------------------------------------------------
+    // md_subpel_search
+    // -----------------------------------------------------------------
+
+    /// Index of the test block's (0, 0) inside the 64x64 test planes.
+    const SUBPEL_BLK_BASE: usize = 16 * 64 + 16;
+
+    /// A ctrls set that lets the search actually run: every early exit
+    /// disarmed, the PRUNED tree (C's default at every preset this port
+    /// reaches), quarter-pel stop.
+    fn subpel_ctrls() -> crate::port_enc_mode_config::encdec::MdSubPelSearchCtrls {
+        crate::port_enc_mode_config::encdec::MdSubPelSearchCtrls {
+            enabled: 1,
+            subpel_search_type: 1,
+            max_precision: 0,
+            subpel_search_method:
+                crate::port_enc_mode_config::encdec::subpel_search_method::SUBPEL_TREE_PRUNED,
+            subpel_iters_per_step: 1,
+            pred_variance_th: 0,
+            abs_th_mult: 0,
+            round_dev_th: i32::MIN,
+            skip_diag_refinement: 0,
+            min_blk_sz: 0,
+            mvp_th: 0,
+            hp_mv_th: 0,
+            bias_fp: 0,
+        }
+    }
+
+    fn subpel_geom() -> SubpelBlockGeom {
+        SubpelBlockGeom {
+            // The block sits at (16, 16) of a 64x64 plane, so the search's
+            // NEGATIVE offsets stay inside the allocation — C's reference is
+            // a padded picture and `ref_base` is the block's own (0, 0)
+            // inside it, never index 0.
+            mi_row: 4,
+            mi_col: 4,
+            mi_width: 4,
+            mi_height: 4,
+            mi_rows: 64,
+            mi_cols: 64,
+            bwidth: 16,
+            bheight: 16,
+            sq_size: 16,
+        }
+    }
+
+    /// A 64x64 plane whose value at (r, c) is a fixed pseudo-random
+    /// function, so the block has real gradient in both directions.
+    fn subpel_plane(shift: usize) -> Vec<u8> {
+        (0..64)
+            .flat_map(|r: usize| {
+                (0..64).map(move |c: usize| {
+                    let c = c.saturating_sub(shift);
+                    (((r * 7 + c * 13) % 251) ^ ((c * 3) & 0x3f)) as u8
+                })
+            })
+            .collect()
+    }
+
+    /// **`md_subpel_search` is REACHED and reads real pixels.** The two
+    /// cells are the positive control: an identical reference scores zero
+    /// and does not move, a shifted one scores non-zero.
+    ///
+    /// Evidence tier 4 — `md_subpel_search` is `static` in C. Its two
+    /// leaves (`svt_av1_find_best_sub_pixel_tree{,_pruned}`) are exported
+    /// and are called here, not re-transcribed.
+    #[test]
+    fn tier4_md_subpel_search_is_exact_on_an_identical_reference() {
+        let ctrls = subpel_ctrls();
+        let geom = subpel_geom();
+        let src = subpel_plane(0);
+        let same = subpel_plane(0);
+        let mut mv = Mv::ZERO;
+        let err = md_subpel_search(
+            crate::md_subpel::SPEL_ME,
+            &ctrls,
+            geom,
+            svtav1_types::block::BlockSize::Block16x16,
+            0,
+            0,
+            true,
+            Mv::ZERO,
+            100,
+            1 << 12,
+            0,
+            None,
+            &src,
+            SUBPEL_BLK_BASE,
+            64,
+            &same,
+            SUBPEL_BLK_BASE as i64,
+            64,
+            None,
+            &mut mv,
+        );
+        assert_eq!(
+            (err, mv.x, mv.y),
+            (0, 0, 0),
+            "an identical reference has zero variance at the start MV, and \
+             nothing can beat zero"
+        );
+
+        // POSITIVE CONTROL: the same call against a DIFFERENT reference
+        // must score non-zero, otherwise the zero above would be a search
+        // that never read a pixel.
+        let shifted = subpel_plane(3);
+        let mut mv2 = Mv::ZERO;
+        let err2 = md_subpel_search(
+            crate::md_subpel::SPEL_ME,
+            &ctrls,
+            geom,
+            svtav1_types::block::BlockSize::Block16x16,
+            0,
+            0,
+            true,
+            Mv::ZERO,
+            100,
+            1 << 12,
+            0,
+            None,
+            &src,
+            SUBPEL_BLK_BASE,
+            64,
+            &shifted,
+            SUBPEL_BLK_BASE as i64,
+            64,
+            None,
+            &mut mv2,
+        );
+        assert!(
+            err2 > 0,
+            "a shifted reference must cost something; got {err2}"
+        );
+        assert!(
+            mv2.x.abs() <= 8 && mv2.y.abs() <= 8,
+            "the SUB-pel refinement cannot travel a whole pel from its start; \
+             got ({}, {})",
+            mv2.x,
+            mv2.y
+        );
+    }
+
+    /// **The start MV is TRUNCATED to full pel before the search.**
+    /// C does `me_mv >> 3` then `get_mv_from_fullmv` (`<< 3`), so a
+    /// fractional input is discarded. With an identical reference the
+    /// full-pel origin is exact, so a truncating implementation returns
+    /// (0, 0) from a `(7, 7)` start — a non-truncating one would start
+    /// 7/8 pel away and could not reach zero error in one half-pel step.
+    #[test]
+    fn tier4_md_subpel_search_truncates_its_start_mv_to_full_pel() {
+        let ctrls = subpel_ctrls();
+        let src = subpel_plane(0);
+        let same = subpel_plane(0);
+        let mut mv = Mv { x: 7, y: 7 };
+        let err = md_subpel_search(
+            crate::md_subpel::SPEL_ME,
+            &ctrls,
+            subpel_geom(),
+            svtav1_types::block::BlockSize::Block16x16,
+            0,
+            0,
+            true,
+            Mv::ZERO,
+            100,
+            1 << 12,
+            0,
+            None,
+            &src,
+            SUBPEL_BLK_BASE,
+            64,
+            &same,
+            SUBPEL_BLK_BASE as i64,
+            64,
+            None,
+            &mut mv,
+        );
+        assert_eq!((err, mv.x, mv.y), (0, 0, 0));
+    }
+
+    /// **`md_subpel::mv_err_cost` and `port_md::pme::mv_err_cost` are two
+    /// transcriptions of ONE C function** (`svt_mv_err_cost`,
+    /// mcomp.c:42-72), and `docs/WORKING-ON-THIS.md` §4 says a second
+    /// transcription must be PINNED to the first rather than left to
+    /// drift. Both are driven from the SAME cost table (the pme table is
+    /// derived from `intrabc::build_nmv_cost_table`, which is what the
+    /// mcomp side takes directly), over every cost type and a spread of
+    /// MV differences including the `i16::MIN` wrap the doc comments both
+    /// call out.
+    ///
+    /// TEETH, measured by mutating the pme side one arm at a time:
+    /// `L1LowRes`'s shift and the `Opt` arm's `abs_sum` each fail this
+    /// test. **`L1MidRes` does NOT** — `SSE_LAMBDA_MIDRES` is 0
+    /// (mcomp.c:33), so that arm is identically zero on both sides and no
+    /// mutation of its shift is observable. That is a statement about the
+    /// constant, not coverage: say it rather than counting the cell.
+    #[test]
+    fn tier4_the_two_mv_err_cost_transcriptions_agree() {
+        use crate::entropy::mv_coding::MvSubpelPrecision;
+        let fc = crate::entropy::context::FrameContext::new_default();
+        let tables = crate::intrabc::build_nmv_cost_table(&fc.nmvc, MvSubpelPrecision::High);
+        let pme_tbl = crate::inter_md_arm::nmv_cost_table(&fc.nmvc, MvSubpelPrecision::High);
+
+        let types = [
+            (
+                crate::md_subpel::MvCostType::Entropy,
+                super::super::pme::MvCostType::Entropy,
+            ),
+            (
+                crate::md_subpel::MvCostType::L1LowRes,
+                super::super::pme::MvCostType::L1LowRes,
+            ),
+            (
+                crate::md_subpel::MvCostType::L1MidRes,
+                super::super::pme::MvCostType::L1MidRes,
+            ),
+            (
+                crate::md_subpel::MvCostType::L1HdRes,
+                super::super::pme::MvCostType::L1HdRes,
+            ),
+            (
+                crate::md_subpel::MvCostType::Opt,
+                super::super::pme::MvCostType::Opt,
+            ),
+            (
+                crate::md_subpel::MvCostType::None,
+                super::super::pme::MvCostType::None,
+            ),
+        ];
+        let mvs = [
+            (0i16, 0i16),
+            (1, -1),
+            (8, 8),
+            (-8, 24),
+            (255, -255),
+            (1024, 2047),
+            (-2048, 1),
+            (i16::MIN, i16::MAX),
+        ];
+        let refs = [(0i16, 0i16), (8, -8), (-1000, 1000)];
+        let epbs = [1i32, 7, 64, 4095];
+
+        let mut cells = 0usize;
+        for (mt_a, mt_b) in types {
+            for (rx, ry) in refs {
+                for (mx, my) in mvs {
+                    for epb in epbs {
+                        let a = crate::md_subpel::MvCostParams {
+                            ref_mv: Mv { x: rx, y: ry },
+                            mv_cost_type: mt_a,
+                            tables: Some(&tables),
+                            error_per_bit: epb,
+                            early_exit_th: 0,
+                        };
+                        let b = super::super::pme::MvCostParams {
+                            ref_mv: Mv { x: rx, y: ry },
+                            full_ref_mv: super::super::pme::get_fullmv_from_mv(Mv { x: rx, y: ry }),
+                            mv_cost_type: mt_b,
+                            mv_cost_tables: Some(&pme_tbl),
+                            error_per_bit: epb,
+                            early_exit_th: 0,
+                            sad_per_bit: 0,
+                        };
+                        let mv = Mv { x: mx, y: my };
+                        assert_eq!(
+                            a.err_cost(mv),
+                            super::super::pme::mv_err_cost(mv, &b),
+                            "mv=({mx},{my}) ref=({rx},{ry}) epb={epb} type={mt_a:?}"
+                        );
+                        cells += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(cells, 6 * 3 * 8 * 4, "the sweep must not silently shrink");
     }
 
     /// TIER 4 — the PME extents floor at 3 AFTER the rounding division.

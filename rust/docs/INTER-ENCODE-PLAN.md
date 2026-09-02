@@ -4684,10 +4684,20 @@ and its ME agree on the MV there; it cannot reproduce the reference TYPE.
 | `md_pme_search_controls`, `md_subpel_{me,pme}_controls` | `port_enc_mode_config::encdec` | **ported** |
 | `pme_search`'s predicates (`:3203-3346`) | `port_md::md_search` | **ported** |
 | `inject_pme_candidates` (`:2723`) | `port_md::inject` | **ported** |
-| `md_subpel_search` (`:2609`) | — | **missing driver** |
+| `md_subpel_search` (`:2520`) | `port_md::md_search` | **ported 2026-09-02**, tier 4, byte-inert until a caller exists |
 | `read_refine_me_mvs` (`:2815`) | only `me_mv_center` | **missing driver** |
 | `pme_search` (`:3197`) | — | **missing driver** |
 | two-reference (compound) PREDICTION | — | **missing** (`inter_pred_arm` is single-ref) |
+
+**Landed since this entry was written:** `md_subpel_search`
+(`port_md::md_search::md_subpel_search`), the first of the three drivers. Two
+C details it carries that a rewrite loses — the MV-limit chain's THREE steps
+(the middle one narrows the full-pel set in place) and the fact that
+`svt_init_mv_cost_params` reads **`ctx->md_subpel_me_ctrls`**'s
+`skip_diag_refinement` even on a PME call, not the ctrls it was handed. Wiring
+it also found a SECOND TRANSCRIPTION of `svt_mv_err_cost`
+(`md_subpel::mv_err_cost` vs `port_md::pme::mv_err_cost`), now pinned over 576
+cells per `docs/WORKING-ON-THIS.md` §4.
 
 `read_refine_me_mvs` is the one that produces everything `pme_search` reads:
 `mvp_array` / `mvp_count` per (list, ref), `best_fp_mvp_idx` / `best_fp_mvp_dist`,
