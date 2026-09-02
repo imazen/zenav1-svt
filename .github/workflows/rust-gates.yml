@@ -226,6 +226,20 @@ jobs:
         # without being promoted.
         run: ./tools/inter_byte_gate.sh
 
+      - name: INTER ME join gate (the port's full-pel MV against C's, per block)
+        working-directory: rust
+        # THE ASSERTION THAT DID NOT EXIST. docs/INTER-ENCODE-PLAN.md §1z¹⁵
+        # recorded that `md_nsq_motion_search` is ported and never called, that
+        # an NSQ block therefore takes the square path, and — in its own words
+        # — that "no assertion in the repo can see the difference". This is
+        # that assertion: it joins C's `SVT_SUBPEL_OUT` stage-0 `start=` (the
+        # full-pel chain's output, NSQ search included) against the port's
+        # `PMEDBG fpme=`, per (origin, shape, list, ref), and pins the two rows
+        # that disagree today BY KEY. It fails on a disagreement outside that
+        # pin, on a pinned row that starts agreeing, and — anti-vacuity — on a
+        # run that joins zero NSQ rows at all. ~1 min.
+        run: ./tools/inter_me_join_gate.sh
+
       - name: INTER frame-context + header + decode gates
         working-directory: rust
         # The three siblings of the byte gate, same reason. `fctx_gate` diffs
