@@ -73,6 +73,13 @@ pub struct CdefSearchControls {
     /// `use_qp_strength` — bypass the search and take
     /// `svt_pick_cdef_from_qp`.
     pub use_qp_strength: bool,
+    /// `pred_y_f` — the packed luma strength to USE without searching, set by
+    /// [`update_cdef_filters_on_ref_info`] when it takes the
+    /// `use_reference_cdef_fs` arm. Only meaningful while
+    /// `use_reference_cdef_fs != 0`.
+    pub pred_y_f: i8,
+    /// `pred_uv_f` — the chroma twin of [`Self::pred_y_f`].
+    pub pred_uv_f: i8,
 }
 
 impl Default for CdefSearchControls {
@@ -90,6 +97,8 @@ impl Default for CdefSearchControls {
             search_best_ref_fs: 0,
             skip_th: 0,
             uv_from_y: false,
+            pred_y_f: 0,
+            pred_uv_f: 0,
             use_qp_strength: false,
         }
     }
@@ -376,6 +385,146 @@ pub fn cdef_search_level_allintra(
     }
 }
 
+/// One reference picture's CHOSEN CDEF strengths, as
+/// `EbReferenceObject::ref_cdef_strengths[2][..num]`
+/// (`reference_object.h:51-52`, written by `rest_process.c:207-210` from the
+/// frame header's `cdef_y_strength[]` / `cdef_uv_strength[]`).
+///
+/// Packed `gi` values (`pri * 4 + sec_code`), the same domain
+/// `default_first_pass_fs` is in — not a (pri, sec) pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefCdefStrengths {
+    /// `ref_cdef_strengths[0][0]` — the luma strength of slot 0. This is the
+    /// one C reads on the `search_best_ref_fs` path, which indexes `[0][0]`
+    /// literally.
+    pub y0: u8,
+    /// `ref_cdef_strengths[1][0]` — the chroma strength of slot 0.
+    pub uv0: u8,
+    /// `min(ref_cdef_strengths[0][..num])` — the `use_reference_cdef_fs` path
+    /// walks EVERY slot, not just slot 0, so the two extremes are carried
+    /// separately rather than assuming `num == 1`. With one strength (every
+    /// `cdef_bits == 0` frame) both equal [`Self::y0`].
+    pub y_min: u8,
+    /// `max(ref_cdef_strengths[0][..num])` — see [`Self::y_min`].
+    pub y_max: u8,
+}
+
+/// What [`update_cdef_filters_on_ref_info`] decided beyond the controls it
+/// mutated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RefCdefUpdate {
+    /// C sets `pcs->ppcs->cdef_level = 0` — CDEF off for this frame — when the
+    /// reference-derived prediction is "no filtering", or when the
+    /// `search_best_ref_fs` arm ends with a single candidate.
+    pub force_cdef_off: bool,
+}
+
+/// C `update_cdef_filters_on_ref_info` (`md_config_process.c:681-772`) —
+/// static, tier 4.
+///
+/// Rewrites the CDEF candidate set from the REFERENCE pictures' own chosen
+/// strengths. It is not a threshold or a bias: on the `use_reference_cdef_fs`
+/// arm it removes the search entirely and hands the frame the reference's
+/// strength, and on the `search_best_ref_fs` arm it replaces the level's
+/// candidate list with (default, ref-l0, ref-l1).
+///
+/// **Why an inter frame reaches it and no key frame can.**
+/// `set_cdef_search_controls` level 5 sets
+/// `search_best_ref_fs = is_not_highest_layer ? 0 : 1`
+/// (`enc_mode_config.c:1073`), and `is_not_highest_layer` is
+/// `update_type != LF_UPDATE` — true for every KEY frame. So this whole
+/// function is unreachable on the still/key envelope and reachable on the
+/// first inter frame of a flat low-delay GOP, which is exactly where it was
+/// found: it is ALL of the residual CDEF divergence in
+/// `docs/INTER-ENCODE-PLAN.md` §1q.
+///
+/// C's caller (`md_config_process.c:983-985`) invokes it only when
+/// `use_reference_cdef_fs || search_best_ref_fs`, and only after
+/// `me_based_cdef_skip` declined to switch CDEF off; that skip needs ME
+/// distortion this pipeline does not produce and is NOT modelled here — see
+/// the plan doc.
+///
+/// `ref_l1` is `None` when the picture is not a B slice or
+/// `ref_list1_count_try == 0`, which is exactly C's guard.
+pub fn update_cdef_filters_on_ref_info(
+    c: &mut CdefSearchControls,
+    ref_l0: RefCdefStrengths,
+    ref_l1: Option<RefCdefStrengths>,
+) -> RefCdefUpdate {
+    let mut out = RefCdefUpdate::default();
+    if c.use_reference_cdef_fs != 0 {
+        // Luma: the midpoint of the LOWEST and HIGHEST strength across both
+        // reference lists, over EVERY slot of each — which is why
+        // `RefCdefStrengths` carries `y_min`/`y_max` rather than slot 0 alone.
+        // C's seeds (`TOTAL_STRENGTHS - 1` / `0`) only matter when a list has
+        // no strengths at all, which cannot happen here: the caller cannot
+        // build a `RefCdefStrengths` from an empty reference.
+        let mut lowest = ref_l0.y_min;
+        let mut highest = ref_l0.y_max;
+        if let Some(l1) = ref_l1 {
+            lowest = lowest.min(l1.y_min);
+            highest = highest.max(l1.y_max);
+        }
+        let mid = ((u16::from(lowest) + u16::from(highest)) / 2).min(63);
+        c.pred_y_f = mid as i8;
+        c.pred_uv_f = 0;
+        c.first_pass_fs_num = 0;
+        c.default_second_pass_fs_num = 0;
+        if c.pred_y_f == 0 && c.pred_uv_f == 0 {
+            out.force_cdef_off = true;
+        }
+        return out;
+    }
+    if c.search_best_ref_fs == 0 {
+        return out;
+    }
+
+    c.first_pass_fs_num = 1;
+    c.default_second_pass_fs_num = 0;
+
+    // Add list 0's filter, if it is not already the default.
+    if ref_l0.y0 != c.default_first_pass_fs[0] {
+        c.default_first_pass_fs[1] = ref_l0.y0;
+        c.first_pass_fs_num += 1;
+    }
+
+    if let Some(l1) = ref_l1 {
+        // Add list 1's, if different from BOTH the default and the last added.
+        if l1.y0 != c.default_first_pass_fs[0]
+            && l1.y0 != c.default_first_pass_fs[c.first_pass_fs_num as usize - 1]
+        {
+            c.default_first_pass_fs[c.first_pass_fs_num as usize] = l1.y0;
+            c.first_pass_fs_num += 1;
+            if ref_l0.uv0 == u8::try_from(c.default_first_pass_fs_uv[0]).unwrap_or(u8::MAX)
+                && l1.uv0 == u8::try_from(c.default_first_pass_fs_uv[0]).unwrap_or(u8::MAX)
+            {
+                c.default_first_pass_fs_uv[0] = -1;
+                c.default_first_pass_fs_uv[1] = -1;
+            }
+        } else if c.first_pass_fs_num == 2 && ref_l0.y0 == l1.y0 {
+            // BOTH lists chose the same filter: skip the search entirely and
+            // take it. This is the arm the campaign's first inter frame lands
+            // on — every DPB slot still holds the key frame, so list 0 and
+            // list 1 ARE the same picture.
+            c.use_reference_cdef_fs = 1;
+            c.pred_y_f = ref_l0.y0 as i8;
+            c.pred_uv_f = ((u16::from(ref_l0.uv0) + u16::from(l1.uv0)) / 2).min(63) as i8;
+            c.first_pass_fs_num = 0;
+            c.default_second_pass_fs_num = 0;
+        }
+    } else if ref_l0.uv0 == u8::try_from(c.default_first_pass_fs_uv[0]).unwrap_or(u8::MAX) {
+        c.default_first_pass_fs_uv[0] = -1;
+        c.default_first_pass_fs_uv[1] = -1;
+    }
+
+    // "Set cdef to off if pred luma is" — C's comment; the test is on the
+    // candidate COUNT, not on a strength.
+    if c.first_pass_fs_num == 1 {
+        out.force_cdef_off = true;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +591,103 @@ mod tests {
             let real = (0..n).any(|i| c.default_second_pass_fs_uv[i] >= 0);
             assert_eq!(real, lvl == 1, "level {lvl}");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // update_cdef_filters_on_ref_info (md_config_process.c:681-772)
+    // -----------------------------------------------------------------
+
+    /// The arm the campaign's first INTER frame takes, and the exact numbers
+    /// it takes it with.
+    ///
+    /// `gradient 64x64 q40 p6`, frame 1 of a 2-frame low-delay-P GOP: level 5,
+    /// `is_not_highest_layer = false` (an LF_UPDATE), so
+    /// `search_best_ref_fs = 1`. Every DPB slot still holds the key frame, so
+    /// list 0 and list 1 are the SAME picture and both report the key frame's
+    /// signalled strengths: packed y = 2 (`pri 0, sec 2`) and uv = 28
+    /// (`pri 7, sec 0`). C must then take `use_reference_cdef_fs` and hand the
+    /// frame exactly those, with no search — which is what the C encoder's own
+    /// frame-1 header says (`docs/INTER-ENCODE-PLAN.md` §1r).
+    #[test]
+    fn ref_info_takes_the_use_reference_arm_when_both_lists_agree() {
+        let mut c = set_cdef_search_controls(
+            5, /*is_base=*/ false, /*is_not_highest_layer=*/ false,
+        )
+        .expect("level 5");
+        assert_eq!(c.search_best_ref_fs, 1, "level 5 on a non-leaf-layer frame");
+        let r = RefCdefStrengths {
+            y0: 2,
+            uv0: 28,
+            y_min: 2,
+            y_max: 2,
+        };
+        let out = update_cdef_filters_on_ref_info(&mut c, r, Some(r));
+        assert_eq!(c.use_reference_cdef_fs, 1);
+        assert_eq!(c.pred_y_f, 2, "the reference's own luma strength");
+        assert_eq!(c.pred_uv_f, 28, "the MEAN of the two lists' chroma");
+        assert_eq!(c.first_pass_fs_num, 0, "no search runs");
+        assert_eq!(c.default_second_pass_fs_num, 0);
+        assert!(!out.force_cdef_off);
+    }
+
+    /// A KEY frame can never reach the function: both flags are derived from
+    /// `!is_base` / `!is_not_highest_layer`, and a key frame has both true.
+    /// This is what makes the whole change byte-inert for the still envelope
+    /// BY CONSTRUCTION rather than only by measurement.
+    #[test]
+    fn a_key_frame_never_asks_for_a_reference_derived_set() {
+        for lvl in 0..=10u8 {
+            let c = set_cdef_search_controls(
+                lvl, /*is_base=*/ true, /*is_not_highest_layer=*/ true,
+            )
+            .unwrap_or_else(|| panic!("level {lvl}"));
+            assert_eq!(c.search_best_ref_fs, 0, "level {lvl}");
+            assert_eq!(c.use_reference_cdef_fs, 0, "level {lvl}");
+        }
+    }
+
+    /// Two DIFFERENT references: the candidate list grows to three (the
+    /// level's default plus each list's), the search still runs, and
+    /// `use_reference_cdef_fs` stays off.
+    #[test]
+    fn ref_info_grows_the_candidate_list_when_the_lists_disagree() {
+        let mut c = set_cdef_search_controls(5, false, false).expect("level 5");
+        let default0 = c.default_first_pass_fs[0];
+        let a = RefCdefStrengths {
+            y0: default0.wrapping_add(1),
+            uv0: 5,
+            y_min: default0.wrapping_add(1),
+            y_max: default0.wrapping_add(1),
+        };
+        let b = RefCdefStrengths {
+            y0: default0.wrapping_add(2),
+            uv0: 9,
+            y_min: default0.wrapping_add(2),
+            y_max: default0.wrapping_add(2),
+        };
+        let out = update_cdef_filters_on_ref_info(&mut c, a, Some(b));
+        assert_eq!(c.use_reference_cdef_fs, 0);
+        assert_eq!(c.first_pass_fs_num, 3);
+        assert_eq!(c.default_first_pass_fs[1], a.y0);
+        assert_eq!(c.default_first_pass_fs[2], b.y0);
+        assert!(!out.force_cdef_off);
+    }
+
+    /// One list only, and its filter IS the level's default: nothing is added,
+    /// the count stays 1, and C switches CDEF off for the frame
+    /// ("Set cdef to off if pred luma is", `md_config_process.c:768`). The
+    /// test is on the candidate COUNT, not on a strength value.
+    #[test]
+    fn ref_info_forces_cdef_off_when_only_the_default_survives() {
+        let mut c = set_cdef_search_controls(5, false, false).expect("level 5");
+        let same = RefCdefStrengths {
+            y0: c.default_first_pass_fs[0],
+            uv0: 3,
+            y_min: c.default_first_pass_fs[0],
+            y_max: c.default_first_pass_fs[0],
+        };
+        let out = update_cdef_filters_on_ref_info(&mut c, same, None);
+        assert_eq!(c.first_pass_fs_num, 1);
+        assert!(out.force_cdef_off);
     }
 }

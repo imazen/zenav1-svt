@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**14 CAPABILITY refusals** (unimplemented — this is DEBT) and **22
+**18 CAPABILITY refusals** (unimplemented — this is DEBT) and **25
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -32,12 +32,16 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — use the 4:2:0 path or QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) is not byte-verified against C so far — use QP >= 1 on this content |
 | `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
+| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used, and global motion's parameter coding is unported (crate::inter_hdr_arm::InterHdrError) |
+| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has no 12-bit kernels |
-| `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented: the inter path emits a stream neither aomdec nor dav1d can decode (malformed sequence/frame header fields, MV coding against fresh CDFs). This encoder is still-image only — encode a single key frame |
+| `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented: the frame HEADER is byte-identical to the C encoder's, but the TILE is not ported — no CDF continuation from the frame the header names in primary_ref_frame, and no inter syntax in the tile walk — so the stream does not decode. This encoder is still-image only: encode a single key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode requires 8-aligned dims (arbitrary-dims padding is wired on the 4:2:0 path only) |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres is 8-bit only so far (the u16 source downscale is unported) |
+| `crates/svtav1-encoder/src/pipeline.rs` | the inter frame header needs sig_deriv_mode_decision_config_default's signals, and the reference statistics they read (ref_hp_percentage, ref_skip_percentage) are unported so far — so this configuration is refused rather than answered from a placeholder |
 | `crates/svtav1-encoder/src/pipeline.rs` | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header |
+| `crates/svtav1-encoder/src/pipeline.rs` | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
 | `svtav1/src/avif.rs` | lossless encoding is not implemented for monochrome (encode_y8); QP 0 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline mode |
 
 ## CONTRACT — caller misuse (permanent, correct)
@@ -46,8 +50,11 @@ aloud in a status report before anyone acted on it.
 |---|---|
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |
+| `crates/svtav1-encoder/src/pipeline.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
+| `crates/svtav1-encoder/src/pipeline.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_420 pipeline supports still/key frames only (intra_period <= 1) |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_sample_position must be 0 (unknown), 1 (vertical) or 2 (colocated); 3 is reserved (C verify_settings, enc_settings.c:762) |
+| `crates/svtav1-encoder/src/pipeline.rs` | dlf level outside svt_aom_set_dlf_controls' 0..=7 |
 | `crates/svtav1-encoder/src/pipeline.rs` | encode_frame_420 requires the pipeline to be built with with_chroma_420(true) |
 | `crates/svtav1-encoder/src/pipeline.rs` | extended_crf_qindex_offset must be 0..=3 (a quarter-step fractional CRF) or, at qp 63, at most 28 (CRF 70) — C verify_settings, enc_settings.c:270 |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd luma plane must cover the true dims at y_stride |

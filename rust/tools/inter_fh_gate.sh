@@ -16,14 +16,12 @@
 # gate green; a NEW divergence, or a field whose presence changed (which shifts
 # every field after it), turns it red.
 #
-# Open set, MEASURED 2026-09-01 on gradient 64x64 q40 p6:
-#   cdef_y_pri_strength[0]   C 0  port 15
-#   cdef_uv_pri_strength[0]  C 7  port 0
-# The pick now RUNS on inter frames (it used to be `is_key`-only, which left
-# damping and every strength at their defaults); damping and y_sec agree. The
-# two primary strengths are an ENCODE-side gap — which arm of the CDEF policy
-# an LF_UPDATE frame takes — not a header-layout defect: the fields are in the
-# right places with the wrong values.
+# Open set: EMPTY as of 2026-09-01 (docs/INTER-ENCODE-PLAN.md §1r) — the inter
+# frame header is byte-identical to C's on this cell, so the subset test is
+# currently a plain field-identity assertion. The mechanism is kept rather than
+# replaced by a byte compare because the NEXT open field, whenever one appears,
+# should be nameable and listable here instead of turning the cell red for
+# months. Add a field to $INTER_FH_OPEN only with the measurement that says why.
 #
 # Frame 0 (the VIDEO-MODE key frame) must stay byte-identical; that half is a
 # hard byte assertion.
@@ -31,7 +29,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 W=${1:-64}; H=${2:-64}; QP=${3:-40}; PRESET=${4:-6}; CONTENT=${5:-gradient}
-OPEN_DEFAULT="cdef_y_pri_strength[0] cdef_uv_pri_strength[0]"
+OPEN_DEFAULT=""
 OPEN=${INTER_FH_OPEN:-$OPEN_DEFAULT}
 
 OUT="$HERE/../target/inter-fh-gate/${CONTENT}_${W}x${H}_q${QP}_p${PRESET}"

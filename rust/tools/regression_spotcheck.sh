@@ -217,6 +217,52 @@ fhVideoKey() {
   fi
 }
 
+# fhInterFrame <label> <content> <w> <h> <qp> <preset>
+# The INTER-frame sibling of fhVideoKey: asserts every FRAME-HEADER field of
+# the port's frame 1 equals C's frame 1.
+#
+# It needs SVTAV1_INTER_EXPERIMENTAL, because the public API still refuses
+# inter frames (docs/WORKING-ON-THIS.md §6/§7b) — the tile is not ported, so
+# the STREAM is measurable rather than correct, and only the header is being
+# asserted here.
+#
+# The `--index 1` walk is not a jump: fh_fields.py replays frames 0..1 to
+# maintain the decoder's RefOrderHint[], which skip_mode_params() reads.
+fhInterFrame() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  rm -f "$W"/c.obu.pts* "$W"/rs.obu.f* "$W"/rs.obu "$W"/c.obu
+  local rc=0
+  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+    SVTAV1_HIER_LEVELS=0 \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || rc=$?
+  # rc 3 is the REFUSAL, which is exactly the regression this cell guards: the
+  # frame must ENCODE. It is a failure here, unlike in fhVideoKey.
+  if [ "$rc" -ne 0 ]; then
+    fail=$((fail+1)); failed+=("$label [port did not encode frame 1, rc=$rc]"); return
+  fi
+  if ! SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+       SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" "$w" "$h" "$qp" "$p" \
+       "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label [C oracle failed]"); return
+  fi
+  if [ ! -e "$W/c.obu.pts1" ] || [ ! -e "$W/rs.obu.f1" ]; then
+    fail=$((fail+1)); failed+=("$label [frame 1 missing on one side]"); return
+  fi
+  local out
+  if ! out=$(python3 "$HERE/fh_fields.py" --index 1 "$W/c.obu" "$W/rs.obu" 2>&1); then
+    fail=$((fail+1)); failed+=("$label [fh_fields.py could not walk the header]"); return
+  fi
+  if ! printf '%s\n' "$out" | grep -q '^show_existing_frame'; then
+    fail=$((fail+1)); failed+=("$label [fh_fields.py emitted no fields]"); return
+  fi
+  if printf '%s\n' "$out" | grep -qE 'DIFFERS|field counts differ'; then
+    fail=$((fail+1))
+    failed+=("$label [first diverging FH field: $(printf '%s\n' "$out" | grep -m1 'DIFFERS' | sed 's/  */ /g')]")
+  else
+    pass=$((pass+1))
+  fi
+}
+
 # ratioVideoKey <label> <content> <w> <h> <qp> <preset> <limit_pct>
 # The size counterpart of fhVideoKey: asserts the port's VIDEO-mode KEY frame
 # is within <limit_pct> of C's byte count.
@@ -1056,6 +1102,22 @@ byteVideoKey "video-key-lr-sgr-arm-p3-gradient" gradient 72 88 40 3
 # superblocks, which is why it is here alongside the 72x88 scoreboard cell.
 byteVideoKey "video-key-ssse-mds1-p0-diag"      diag     72  88 40 0
 byteVideoKey "video-key-ssse-mds1-p2-gradient"  gradient 128 128 40 2
+
+# The INTER FRAME HEADER (docs/INTER-ENCODE-PLAN.md §1q + §1r).
+#
+# BEFORE: `identity_run` exited 3 — the port REFUSED frame 1 at the
+# `pipeline.rs` entry guards, so there was no header to compare at all.
+# AFTER: frame 1's frame header is byte-identical to C's, all 15 bytes
+# (30 02 00 80 00 db 3b 40 00 00 04 04 e0 1c 00), and every field walks equal.
+#
+# This one cell guards the whole chain at once: the reference structure out of
+# `av1_generate_rps_info` (refresh_frame_flags 2, ref_frame_idx
+# [0,0,0,0,3,3,3]), `primary_ref_frame` 0, the picture-level tool ladders
+# (allow_high_precision_mv / is_filter_switchable / is_motion_mode_switchable /
+# use_ref_frame_mvs / allow_warped_motion), and the reference-derived CDEF
+# strengths (`update_cdef_filters_on_ref_info`). A wrong value in ANY of them
+# shifts or changes a header field.
+fhInterFrame "inter-frame-header-gradient-p6" gradient 64 64 40 6
 
 # ---------------------------------------------------------------------------
 total=$((pass + fail))

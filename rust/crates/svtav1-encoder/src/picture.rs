@@ -117,6 +117,17 @@ pub struct ReferenceFrame {
     pub u_plane: Vec<u8>,
     /// See [`Self::u_plane`].
     pub v_plane: Vec<u8>,
+    /// C `EbReferenceObject::ref_cdef_strengths[0][..num]`
+    /// (`reference_object.h:52`, written by `rest_process.c:207-210`) — the
+    /// PACKED luma CDEF strengths this picture's frame header signalled.
+    ///
+    /// A later frame's CDEF candidate set is rewritten from these
+    /// (`update_cdef_filters_on_ref_info`), so a DPB that does not carry them
+    /// cannot reproduce C's inter-frame CDEF at all.
+    pub cdef_y_strengths: Vec<u8>,
+    /// The chroma twin of [`Self::cdef_y_strengths`]
+    /// (`ref_cdef_strengths[1][..num]`).
+    pub cdef_uv_strengths: Vec<u8>,
     /// Frame width.
     pub width: u32,
     /// Frame height.
@@ -266,6 +277,8 @@ mod tests {
             y_plane: alloc::vec![128u8; 64 * 64],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],
+            cdef_y_strengths: alloc::vec![],
+            cdef_uv_strengths: alloc::vec![],
             width: 64,
             height: 64,
             display_order: 0,
@@ -284,6 +297,8 @@ mod tests {
             y_plane: alloc::vec![128u8; 16],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],
+            cdef_y_strengths: alloc::vec![],
+            cdef_uv_strengths: alloc::vec![],
             width: 4,
             height: 4,
             display_order: 0,

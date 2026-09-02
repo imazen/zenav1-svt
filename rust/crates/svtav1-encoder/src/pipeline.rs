@@ -537,7 +537,7 @@ impl EncodePipeline {
         pp::picture_decision_per_picture(&mut pic, &seq, &mut self.pd_ctx, pic_idx, 0).map_err(
             |_| {
                 whereat::at!(EncodeError::UnsupportedConfig(
-                    "this GOP shape's reference structure is not ported \
+                    "this GOP shape's reference structure is not implemented \
                      (port_picstruct::generate_rps_info translates 4 of C's 8 branches)",
                 ))
             },
@@ -1588,9 +1588,11 @@ impl EncodePipeline {
         // never leave `tools/identity_diff_inter.sh`.
         if !is_key && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "inter frames are not implemented: the inter path emits a stream neither aomdec \
-                 nor dav1d can decode (malformed sequence/frame header fields, MV coding against \
-                 fresh CDFs). This encoder is still-image only — encode a single key frame",
+                "inter frames are not implemented: the frame HEADER is byte-identical to the C \
+                 encoder's, but the TILE is not ported — no CDF continuation from the frame the \
+                 header names in primary_ref_frame, and no inter syntax in the tile walk — so \
+                 the stream does not decode. This encoder is still-image only: encode a single \
+                 key frame",
             )));
         }
         let temporal_layer = if is_key {
@@ -3699,7 +3701,7 @@ impl EncodePipeline {
                     "cdef recon level outside set_cdef_recon_controls' 0..=4",
                 ))?
                 .zero_fs_cost_bias;
-        let cdef_ctrls = crate::port_enc_mode_config::cdef_search::set_cdef_search_controls(
+        let mut cdef_ctrls = crate::port_enc_mode_config::cdef_search::set_cdef_search_controls(
             cdef_level,
             cdef_frame_is_boosted,
             cdef_is_not_highest_layer,
@@ -3707,8 +3709,72 @@ impl EncodePipeline {
         .ok_or(EncodeError::UnsupportedConfig(
             "cdef search level outside set_cdef_search_controls' 0..=10",
         ))?;
+        // C `md_config_process.c:983-985`: when the level asked for either
+        // reference-derived mode, the candidate set is REWRITTEN from the
+        // reference pictures' own chosen strengths. Unreachable on a key frame
+        // — `search_best_ref_fs` is `is_not_highest_layer ? 0 : 1` and a key
+        // frame's `is_not_highest_layer` is true — so this is byte-inert for
+        // the whole still envelope by construction.
+        //
+        // NOT modelled, and named rather than dropped: C reaches this only
+        // after `me_based_cdef_skip` (`md_config_process.c:781`) declined to
+        // switch CDEF off, which needs ME distortion this pipeline does not
+        // produce. `me_based_cdef_skip` returns false immediately on an
+        // I_SLICE, so the omission is invisible on every key frame and is a
+        // real gap on inter frames whose ME distortion would have tripped it.
+        let mut cdef_force_off = false;
+        if !is_key
+            && (cdef_ctrls.use_reference_cdef_fs != 0 || cdef_ctrls.search_best_ref_fs != 0)
+            && let Some(pic) = pic_decision.as_ref()
+        {
+            use crate::port_enc_mode_config::cdef_search::RefCdefStrengths;
+            // C reads `ref_pic_ptr_array[REF_LIST_0][0]` and
+            // `[REF_LIST_1][0]` — the FIRST entry of each list, which is
+            // LAST_FRAME's and BWDREF's DPB slot.
+            let strengths_of = |slot: usize| -> Option<RefCdefStrengths> {
+                let rf = self.dpb.get(slot)?;
+                Some(RefCdefStrengths {
+                    y0: *rf.cdef_y_strengths.first()?,
+                    uv0: *rf.cdef_uv_strengths.first()?,
+                    // C's `use_reference_cdef_fs` arm walks every slot
+                    // (`ref_cdef_strengths_num`), not just slot 0, so the two
+                    // extremes are computed here rather than assumed equal.
+                    y_min: rf.cdef_y_strengths.iter().copied().min()?,
+                    y_max: rf.cdef_y_strengths.iter().copied().max()?,
+                })
+            };
+            const LAST: usize = 0;
+            const BWD: usize = 4;
+            if let Some(l0) = strengths_of(pic.rps.ref_dpb_index[LAST] as usize) {
+                // C's list-1 guard: `slice_type == B_SLICE && ref_list1_count_try`.
+                let l1 = (pic.ref_list1_count_try != 0)
+                    .then(|| strengths_of(pic.rps.ref_dpb_index[BWD] as usize))
+                    .flatten();
+                let upd = crate::port_enc_mode_config::cdef_search::update_cdef_filters_on_ref_info(
+                    &mut cdef_ctrls,
+                    l0,
+                    l1,
+                );
+                cdef_force_off = upd.force_cdef_off;
+            }
+        }
         let cdef_params = if sc_derivation.allow_intrabc || coded_lossless {
             crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
+        } else if cdef_force_off {
+            // C `pcs->ppcs->cdef_level = 0` inside
+            // `update_cdef_filters_on_ref_info`: no search, no application,
+            // and the header codes zero strengths.
+            crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
+        } else if cdef_ctrls.use_reference_cdef_fs != 0 {
+            // The reference-derived prediction REPLACES the search
+            // (`md_config_process.c:713-722` / `:750-758`). Damping is still
+            // this frame's own `CDEF_DAMPING_FROM_QP` (`enc_cdef.c:1446`) —
+            // only the strengths come from the reference.
+            crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams {
+                damping: 3 + (base_qindex >> 6),
+                y_strength: cdef_ctrls.pred_y_f as u8,
+                uv_strength: cdef_ctrls.pred_uv_f as u8,
+            })
         } else {
             // C runs the CDEF pick on EVERY coded frame; this used to be
             // `else if is_key`, and an inter frame fell through to
@@ -4367,8 +4433,8 @@ impl EncodePipeline {
         } else {
             let pic = pic_decision.as_ref().ok_or_else(|| {
                 whereat::at!(EncodeError::UnsupportedConfig(
-                    "an inter frame needs the picture decision, which only runs when a GOP is \
-                     configured (intra_period > 1)",
+                    "an inter frame needs the picture decision, which this port so far runs \
+                     only when a GOP is configured (intra_period > 1)",
                 ))
             })?;
             let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
@@ -4383,7 +4449,9 @@ impl EncodePipeline {
             let sigs = md_config_signals.ok_or_else(|| {
                 whereat::at!(EncodeError::UnsupportedConfig(
                     "the inter frame header needs sig_deriv_mode_decision_config_default's \
-                     signals, which this configuration does not resolve",
+                     signals, and the reference statistics they read (ref_hp_percentage, \
+                     ref_skip_percentage) are unported so far — so this configuration is \
+                     refused rather than answered from a placeholder",
                 ))
             })?;
             Some(
@@ -4400,8 +4468,10 @@ impl EncodePipeline {
                 )
                 .map_err(|_| {
                     whereat::at!(EncodeError::UnsupportedConfig(
-                        "an inter frame header field is not derivable in this configuration \
-                         (crate::inter_hdr_arm::InterHdrError)",
+                        "an inter frame header field is not implemented for this \
+                         configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 \
+                         and the references' own is_mfmv_used, and global motion's parameter \
+                         coding is unported (crate::inter_hdr_arm::InterHdrError)",
                     ))
                 })?,
             )
@@ -4611,6 +4681,12 @@ impl EncodePipeline {
             } else {
                 alloc::vec::Vec::new()
             },
+            // C `rest_process.c:207-210`: the strengths the FRAME HEADER
+            // signalled, not the ones the search proposed. A later frame's
+            // CDEF candidate set is rewritten from these
+            // (`update_cdef_filters_on_ref_info`).
+            cdef_y_strengths: cdef_params.strengths.iter().map(|s| s.0).collect(),
+            cdef_uv_strengths: cdef_params.strengths.iter().map(|s| s.1).collect(),
             width: self.width,
             height: self.height,
             display_order,
