@@ -5042,14 +5042,85 @@ mutation before it landed — an unpinned disagreement, a pinned row that
 starts agreeing, a run that joins zero NSQ rows (anti-vacuity), and a
 linker without `-Wl,--wrap` (exit 2, a harness failure). It runs in CI.
 
+#### And then it was WIRED — the gate's two rows close
+
+The gate did its job twice. First it found the divergence; then, with the
+wiring in and the pin untouched, it **failed with "2 pinned row(s) now
+agreeing"** — which is the direction a pin has to work in if it is going to
+mean anything. `KNOWN_OPEN` is empty.
+
+**What was missing** was caller wiring, not translation.
+`refine_me_mv_for_ref` already took `blk_avail_sqi` / `sq_sb_me_mv` and an
+optional `nsq` tuple; `inter_search_arm` passed `false` and `None`. What it
+needed was C's own state:
+
+`inter_search_arm::SqMeState` carries `ctx->sq_sb_me_mv` and answers
+`pc_tree->tested_blk[PART_N][0]` **without a node chain** — it stores
+`(org_x, org_y, size)` of the square whose MV it holds, and an NSQ block asks
+whether that is its own node (the square of side `max(bw, bh)` containing it,
+which is size-aligned). A bare boolean would have answered "was ANY square
+tested" — a weaker claim that silently reads another node's MV the day a
+node's square shape is skipped. It lives on `FunnelCtx` beside `ibc_mvp`,
+because C keeps it on the mode-decision context for the same reason: it
+crosses blocks.
+
+The MVC list is the ME-table walk `md_search` deliberately takes from its
+caller. `inter_me_arm` gained `pu_geometry` (C's `pu_search_index_map` +
+`partition_width`/`height`, **generated** rather than transcribed as 85
+literal pairs — and pinned against C's own literals at every group boundary,
+because a generated table that only agreed with itself would prove nothing),
+`number_of_pus`, `mv_at_pu` and `me_data_present_at_pu`.
+
+**One trap avoided by having read §4 first.** A hand-rolled seed was written
+into `inter_search_arm` and deleted before it landed: `me_mv_center` already
+IS that transcription, and a second copy of it is precisely how this campaign
+lost a lambda. `seed_me_centre` calls the existing function.
+
+#### Positive controls — because "the MVs changed" does not say WHICH code ran
+
+| control | result | reading |
+|---|---|---|
+| NSQ search OFF, seed ON | the two rows read `(-8,-32)` — the old wrong value | the search is REACHED, and it is what produces C's answer |
+| seed OFF, search ON | 34 joined rows, 16 NSQ, **0 disagree** | the seed is **measured INERT on 0 of 16 NSQ rows** |
+
+The seed is kept because it is C's code and the search consumes its output as
+`MVC[0]` (`docs/WORKING-ON-THIS.md` §7, dead-looking C stays translated) —
+**not** because anything here shows it mattering. Say the fraction.
+
+C's THIRD seed arm — `bsize == BLOCK_4X4` with the PARENT node's square
+tested — is **not ported**. One `SqMeState` slot cannot tell "my node's
+square" from "my parent's". It is unreachable at the presets measured
+(`shapes_for_size` returns `N_ONLY` at size 4, so the funnel never evaluates a
+4x4 leaf), but that is a reachability argument and the code says so instead of
+hiding behind a `false`.
+
+#### What it cost, and what it did not buy
+
+**Grid unchanged: 40 BOTH / 55 F1DIFF / 1 F0DIFF / 0 CRASH, with ZERO verdict
+flips.** One frame-1 byte count moved — `diag 72x72 q55 p6`, 29 -> 27 against
+C's 29 — and a control attributes it to the NSQ SEARCH (search off: 29 B,
+first differing byte 14; search on: 27 B). Both differ from C's stream; the
+byte-count equality was coincidence, which is the trap §1z¹⁵ already records.
+
+**Hot-path work was added and is UNMEASURED.** Per NSQ block per reference: a
+walk over at most 85 PU slots with a pixel-free geometry test, then
+`md_nsq_motion_search` — up to 6 MVC positions at one point each, then a
+3-pass full-pel ladder (`±(w>>1)` step 4, `±2` step 2, `±1` step 1). C runs
+the same search at these presets (`SVT_INJCFG_OUT`: `nsqme=1`), so the
+ALGORITHM now matches C's rather than exceeding it — but the port's kernels
+are not C's and no wall-time or memory delta was measured. No number is
+quoted; `docs/perf-status.md` is unchanged.
+
 #### What this entry does NOT close
 
-* **The NSQ ME inheritance is still UNWIRED** — but it is no longer
-  unobservable. `md_nsq_motion_search` is still ported and not called and the
-  `sq_sb_me_mv` seed is still unported; both need a `pc_tree->tested_blk`
-  mirror the port does not have. The census says they have reach: 94 of the
-  259 coded blocks on F1DIFF cells are NSQ shapes. The gate above now fails
-  the moment either lands without the pin shrinking.
+* **The 55 F1DIFF cells.** Closing the NSQ ME divergence moved none of them.
+  That is worth saying plainly: the port's full-pel motion vector now joins
+  C's on every row either side can observe, and the bytes did not move — so
+  the next mechanism is downstream of the search, and the localization above
+  (candidate SELECTION at a partial-SB leaf, where C reaches MDS3 with one
+  candidate and the port with two) is the lead that has evidence behind it.
+* The ONE F0DIFF cell (`gradient 128x128 q20 p8`) is untouched.
+* C's 4x4 seed arm, above.
 * **No hot-path work was added.** This chunk removed an out-of-bounds read
   and added a debug print behind two env gates. The per-block inter search
   §1z¹⁵ added is still unmeasured for cost; see `docs/perf-status.md`.

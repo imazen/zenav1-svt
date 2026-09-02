@@ -56,6 +56,30 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **C's NSQ motion search and its square-MV seed are WIRED** — the ME join
+  gate's two open rows close (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁶). C's
+  `read_refine_me_mvs` seeds an NSQ block from
+  `(sq_sb_me_mv[list][ref] + 4) & ~0x07` when the square parent was tested,
+  then runs `md_nsq_motion_search` on it; both leaves were ported and the
+  caller passed `false` / `None`. New `inter_search_arm::SqMeState` carries
+  C's `ctx->sq_sb_me_mv` and answers `pc_tree->tested_blk[PART_N][0]` by
+  storing the square's `(org_x, org_y, size)` rather than a boolean — a
+  boolean would have answered "was ANY square tested". `inter_me_arm` gains
+  `pu_geometry` (C's `pu_search_index_map` + `partition_width`/`height`,
+  generated and pinned against C's literals), `number_of_pus`, `mv_at_pu` and
+  `me_data_present_at_pu`. Positive controls: with the search off the rows
+  read the old `(-8,-32)`, so the search is reached and load-bearing; with the
+  seed off and the search on all 34 joined rows still agree, so the seed is
+  **measured inert on 0 of 16 NSQ rows** and is kept for faithfulness, not for
+  effect. C's third seed arm (`BLOCK_4X4` off the parent node) is NOT ported
+  and is unreachable at the presets measured. Grid unchanged at 40 BOTH / 55
+  F1DIFF / 1 F0DIFF with zero verdict flips; one frame-1 byte count moved
+  (`diag 72x72 q55 p6`, 29 → 27 against C's 29, attributed by control to the
+  search). Hot-path work was added — up to 6 MVC evaluations plus a 3-pass
+  full-pel ladder per NSQ block per reference — and is **unmeasured**; C runs
+  the same search at these presets, so the algorithm matches rather than
+  exceeds C's, but no delta was measured and none is quoted.
+
 - **`tools/inter_me_join_gate.sh` — the assertion that can SEE the NSQ
   motion-search gap.** `rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁵ recorded that
   `md_nsq_motion_search` is ported and never called and that "no assertion in

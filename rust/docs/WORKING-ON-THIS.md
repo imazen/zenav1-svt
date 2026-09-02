@@ -902,6 +902,14 @@ for the tile.
 crash-vs-divergence trap in §5. The sweep now has a CRASH column and fails on
 one; the count above is 55 genuine divergences.
 
+**The NSQ motion search is wired as of 2026-09-02** (§1z¹⁶) and the byte
+grid did not move: `md_nsq_motion_search` plus C's `sq_sb_me_mv` seed now
+make the port's full-pel MD motion vector join C's on every row either side
+can observe (`tools/inter_me_join_gate.sh`, 34 rows, 16 NSQ, 0 disagree) —
+and the 55 F1DIFF cells stayed 55. **A closed mechanism that moves no bytes
+is a real result, and it narrows the next one**: the divergence is downstream
+of the motion search.
+
 **What C's coded decision actually uses on that grid** — measured, not
 inferred, by `tools/inter_cinter_census.sh` (§1z¹⁶): of 340 coded inter
 blocks, **zero** are compound, zero use a motion mode, zero are inter-intra,
