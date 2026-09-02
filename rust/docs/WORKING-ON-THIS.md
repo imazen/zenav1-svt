@@ -146,6 +146,20 @@ waiters kept reporting RUNNING for another twenty minutes. Match the SCRIPT PATH
 (`pgrep -f "tools/identity_full_8bit.sh"`), or watch the log's own completion
 line, or use a pid — never a bare name the waiter also carries.
 
+**A grid whose ME distortion is identically ZERO cannot witness a
+motion-keyed defect.** The inter campaign's 96-cell grid is synthetic content
+translated by exactly `SVTAV1_FRAME_SHIFT` pixels, so the open-loop search
+finds an exact match and **every cell reports `me_{64,32,16,8}x*_distortion = 0`
+and `me_8x8_cost_variance = 0` — on BOTH sides** (measured 2026-09-02 through
+`SVT_PD0CFG_OUT` and `SVTAV1_PD0DBG`'s `PD0DR` line). Everything downstream
+that keys on ME distortion is therefore evaluated at its trivial corner:
+`set_depth_removal_level_controls`' three cost thresholds and both `dev_*`
+comparisons, `compute_subres_th`'s `cost_64x64`, `compute_intra_pd0_th`. A fix
+in any of them can be perfectly C-correct and move ZERO bytes on this grid, and
+a DEFECT in any of them is equally invisible. When a chunk lands in that
+region, say so and reach for real content or a non-integer displacement rather
+than reading the flat verdict count as coverage.
+
 **A gate that cannot reach a feature cannot guard it.** The panic-freedom gate
 encoded `gradient` only — which never arms the screen-content detector — so
 palette and IntraBC were switched off in all 64 of its cells, and it sailed past

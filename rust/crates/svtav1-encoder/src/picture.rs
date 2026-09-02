@@ -231,6 +231,17 @@ pub struct ReferenceFrame {
     /// what `PRIMARY_REF_NONE` means, so the failure mode is a wrong stream,
     /// never a panic. See [`crate::port_frame_cdf`].
     pub frame_cdfs: Option<alloc::sync::Arc<crate::port_frame_cdf::FrameCdfs>>,
+    /// C `EbReferenceObject::sb_min_sq_size[sb]` — the minimum
+    /// `blk_geom->sq_size` this picture CODED in each superblock, in raster SB
+    /// order (`coding_loop.c:1640`; init 128 at `enc_dec_process.c:3101`).
+    ///
+    /// Read by the NEXT frame's `set_depth_removal_level_controls`
+    /// (`enc_mode_config.c:3173-3196`), which raises `dev_32x32_to_16x16_th`
+    /// and `dev_16x16_to_8x8_th` when the value is >= 64 or >= 32. EMPTY on a
+    /// picture whose trees were not folded, which the reader treats as C's
+    /// `(uint8_t)~0` "no usable reference" sentinel — the arm that makes NO
+    /// adjustment, so an empty vector is inert rather than wrong.
+    pub sb_min_sq_size: alloc::vec::Vec<u8>,
     /// The same recon with C's replicated reference margin
     /// ([`PaddedRef`]), which is the form INTER PREDICTION indexes — see
     /// [`REF_BORDER`] for why the margin is load-bearing for the DECISION
@@ -397,6 +408,7 @@ mod tests {
             cdef_y_strengths: alloc::vec![],
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
+            sb_min_sq_size: alloc::vec![],
             width: 64,
             height: 64,
             display_order: 0,
@@ -419,6 +431,7 @@ mod tests {
             cdef_y_strengths: alloc::vec![],
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
+            sb_min_sq_size: alloc::vec![],
             width: 4,
             height: 4,
             display_order: 0,

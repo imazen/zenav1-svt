@@ -2955,6 +2955,149 @@ impl EncodePipeline {
             _ => None,
         };
 
+        // C `set_blocks_to_be_tested`'s per-SB `min_sq_size`
+        // (enc_dec_process.c:1485), which `depth_removal_ctrls` decides.
+        // Frame-level here because every input is: the level is a picture
+        // signal, the ME distortions are `frame_me`'s per-b64 outputs, and the
+        // reference's `sb_min_sq_size` is a DPB field. `None` on a key frame,
+        // where `set_depth_removal_level_controls` returns `enabled = 0`
+        // outright — which is why the still path has never carried this and is
+        // byte-neutral by construction.
+        //
+        // MEASURED against C's own resolved controls (`SVT_PD0CFG_OUT`'s `dr`
+        // field, added for this chunk) on `diag 64x64 q40 p8 frames=2`:
+        // frame 0 `dr=0/0/0/0` and frame 1 `dr=1/0/1/1` — enabled, and
+        // `disallow_below_32x32` set, so C's PD0 may not test below 32x32
+        // there while `Pd0Ctx::min_sq` was a flat 8.
+        let pd0_min_sq: Option<Vec<u8>> = match (
+            md_config_signals.as_ref(),
+            frame_me.as_ref(),
+            inter_md_frame.as_ref(),
+        ) {
+            (Some(sigs), Some(me), Some(imf)) => {
+                use crate::port_enc_mode_config::common as pcommon;
+                // C `av1_lambda_assign_md`'s `fast_lambda_md[EB_8_BIT_MD]`
+                // (md_process.c:726 + :747 + :758): the table entry through
+                // `update_lambda`, then `pcs->lambda_weight`, then
+                // `lambda_scale_factors` (128 = identity on this port).
+                let lctx = crate::port_rc_process::LambdaContext {
+                    frame_type: 1, // not KEY_FRAME
+                    temporal_layer_index: temporal_layer,
+                    hierarchical_levels: self.gop.hierarchical_levels,
+                    update_type: imf.base_update_type,
+                    alt_lambda_factors: md_alt_lambda_factors,
+                    rtc: false,
+                    // C `scs->stats_based_sb_lambda_modulation`; this port
+                    // signals no per-SB delta-q, so the factor is the 128
+                    // no-op either way — see `pd0::inter_full_lambda_8bit`'s
+                    // `qdiff_vs_base`.
+                    stats_based_sb_lambda_modulation: false,
+                    base_q_idx: i32::from(base_qindex),
+                    delta_q_present: false,
+                    r0_delta_qp_md: false,
+                    lambda_scale_factors: [128; 7],
+                };
+                let lw = crate::pd0::frame_lambda_weight(
+                    u32::from(picture_qp),
+                    self.hdr.tune == crate::tune::TUNE_IQ,
+                    lw_bump,
+                );
+                let raw =
+                    crate::port_rc_process::compute_fast_lambda(&lctx, base_qindex, base_qindex, 8);
+                let fast_lambda = if lw == 0 {
+                    raw
+                } else {
+                    ((u64::from(raw) * u64::from(lw)) >> 7) as u32
+                };
+                // C `ctx->disallow_8x8` on the VIDEO arm
+                // (`sig_deriv_enc_dec_common`, enc_mode_config.c:7122).
+                let disallow_8x8 = crate::port_enc_mode_config::leaf::get_disallow_8x8_default();
+                let ref_mins = self.dpb.get(0).map(|rf| rf.sb_min_sq_size.clone());
+                let mut out = Vec::with_capacity(sb_cols * sb_rows);
+                for sb_row in 0..sb_rows {
+                    for sb_col in 0..sb_cols {
+                        let sb_idx = sb_row * sb_cols + sb_col;
+                        let (x0, y0) = (sb_col * sb_size, sb_row * sb_size);
+                        let b = me.per_b64.get(sb_idx);
+                        let res = pcommon::set_depth_removal_level_controls(
+                            pcommon::DepthRemovalInputs {
+                                level: sigs.pic_depth_removal_level,
+                                is_islice: false,
+                                fast_lambda_8bit: fast_lambda,
+                                delta_q_present: false,
+                                r0_delta_qp_md: false,
+                                sb_qindex: i32::from(base_qindex),
+                                picture_qindex: i32::from(base_qindex),
+                                picture_qp: i32::from(picture_qp),
+                                dist_64: b.map_or(0, |o| o.me_64x64_distortion),
+                                dist_32: b.map_or(0, |o| o.me_32x32_distortion),
+                                dist_16: b.map_or(0, |o| o.me_16x16_distortion),
+                                dist_8: b.map_or(0, |o| o.me_8x8_distortion),
+                                me_8x8_cost_variance: b.map_or(0, |o| o.me_8x8_cost_variance),
+                                sb_width: u16::try_from(sb_size.min(w - x0)).unwrap_or(u16::MAX),
+                                sb_height: u16::try_from(sb_size.min(h - y0)).unwrap_or(u16::MAX),
+                                disallow_4x4_in: true,
+                                // C `(uint8_t)~0` when no same-size reference
+                                // within one POC exists; the port's DPB slot 0
+                                // is the only reference in this envelope and
+                                // it is always POC-adjacent here. An EMPTY
+                                // vector (a picture whose trees were never
+                                // folded) takes the same `None` arm, which is
+                                // the no-adjustment one.
+                                ref_sb_min_sq_size: ref_mins
+                                    .as_ref()
+                                    .and_then(|v| v.get(sb_idx).copied()),
+                            },
+                        );
+                        let c = res.map(|r| r.ctrls).unwrap_or_default();
+                        // C `set_blocks_to_be_tested` (enc_dec_process.c:1485).
+                        let min_sq = if c.enabled != 0 && c.disallow_below_64x64 != 0 {
+                            64usize
+                        } else if c.enabled != 0 && c.disallow_below_32x32 != 0 {
+                            32
+                        } else if disallow_8x8 || (c.enabled != 0 && c.disallow_below_16x16 != 0) {
+                            16
+                        } else {
+                            // `pic_disallow_4x4` is 1 at every preset this
+                            // port reaches, so C's `: 4` arm is unreachable.
+                            8
+                        };
+                        // `SVTAV1_PD0DBG`: the port-side twin of C's
+                        // `SVT_PD0CFG_OUT` `dr=<enabled>/<64>/<32>/<16>`
+                        // field, same order, so the two join per superblock.
+                        #[cfg(feature = "std")]
+                        if crate::dbgenv::pd0dbg() {
+                            eprintln!(
+                                "PD0DR sb={sb_idx} org=({x0},{y0}) dr={}/{}/{}/{} minsq={min_sq} \
+                                 drlvl={} fastlam={fast_lambda} pqp={picture_qp} \
+                                 med={}/{}/{}/{} mev={} refmin={}",
+                                c.enabled,
+                                c.disallow_below_64x64,
+                                c.disallow_below_32x32,
+                                c.disallow_below_16x16,
+                                sigs.pic_depth_removal_level,
+                                b.map_or(0, |o| o.me_64x64_distortion),
+                                b.map_or(0, |o| o.me_32x32_distortion),
+                                b.map_or(0, |o| o.me_16x16_distortion),
+                                b.map_or(0, |o| o.me_8x8_distortion),
+                                b.map_or(0, |o| o.me_8x8_cost_variance),
+                                ref_mins
+                                    .as_ref()
+                                    .and_then(|v| v.get(sb_idx).copied())
+                                    .map_or(255, u32::from),
+                            );
+                        }
+                        out.push(
+                            u8::try_from(min_sq.min(usize::from(self.hdr.max_tx_size)))
+                                .unwrap_or(8),
+                        );
+                    }
+                }
+                Some(out)
+            }
+            _ => None,
+        };
+
         let tile_recons = encode_tile_rows(
             &encode_input,
             sb_input,
@@ -3007,6 +3150,7 @@ impl EncodePipeline {
             // The padded twin of the plane above, from the SAME DPB slot.
             ref_padded_luma.as_deref().map(|p| &p.y),
             inter_md_frame.as_ref(),
+            pd0_min_sq.as_deref(),
             primary_ref_cdfs.as_deref(),
             &mv_map,
             mv_map_stride,
@@ -3185,6 +3329,17 @@ impl EncodePipeline {
         let mut all_trees: Vec<crate::partition::PartitionTree> = tree_slots
             .into_iter()
             .map(|t| t.expect("every SB is covered by exactly one tile"))
+            .collect();
+        // C `pcs->sb_min_sq_size[sb]` (`coding_loop.c:1640`), folded here
+        // rather than during the pack because this is the point where the
+        // trees are in RASTER SB order — which is the order
+        // `EbReferenceObject::sb_min_sq_size` is indexed in by the NEXT
+        // frame's `set_depth_removal_level_controls`
+        // (`enc_mode_config.c:3173-3196`). Cheap: one walk of the decided
+        // tree, no `BlockDecision` touched.
+        let sb_min_sq_sizes: Vec<u8> = all_trees
+            .iter()
+            .map(|t| u8::try_from(t.min_sq_size(sb_size)).unwrap_or(u8::MAX))
             .collect();
 
         // Step 4c: bd10 LUMA re-encode (task #94, the u16 MD path). The u8
@@ -5243,6 +5398,7 @@ impl EncodePipeline {
             // signalled, not the ones the search proposed. A later frame's
             // CDEF candidate set is rewritten from these
             // (`update_cdef_filters_on_ref_info`).
+            sb_min_sq_size: sb_min_sq_sizes,
             cdef_y_strengths: cdef_params.strengths.iter().map(|s| s.0).collect(),
             cdef_uv_strengths: cdef_params.strengths.iter().map(|s| s.1).collect(),
             // C `packetization_process.c:741-744`: reset the CDF symbol
@@ -9318,6 +9474,11 @@ fn encode_tile_rows(
     // motion search, the inter rate tables and the MVP environment. `None`
     // on a key frame.
     inter_md: Option<&crate::inter_md_arm::InterMdFrame<'_>>,
+    // C `set_blocks_to_be_tested`'s per-SB `min_sq_size`
+    // (enc_dec_process.c:1485) — what `depth_removal_ctrls` decides. Indexed
+    // by RASTER superblock (`sb_row * sb_cols + sb_col`), like `all_trees`.
+    // `None` on a key frame, where the controls are `enabled = 0`.
+    pd0_min_sq: Option<&[u8]>,
     // C `pcs->md_frame_context` (`init_frame_rate_tables`,
     // md_config_process.c:292-310) — §1s item 8. When the frame header names
     // a `primary_ref_frame`, MODE DECISION prices against THAT REFERENCE's
@@ -9592,7 +9753,7 @@ fn encode_tile_rows(
         // "this frame is a non-I slice with a DPB reference" (the same
         // predicate `video_pic` above keys on), so a key frame and every
         // allintra cell get `None` and are byte-neutral by construction.
-        let pd0_inter = inter_md.map(|f| crate::pd0::Pd0InterRef {
+        let pd0_inter_base = inter_md.map(|f| crate::pd0::Pd0InterRef {
             padded_y: &f.padded.y,
             me: f.me,
             sb_size: f.sb_size,
@@ -9601,6 +9762,9 @@ fn encode_tile_rows(
             base_update_type: f.base_update_type,
             factor_update_type: f.factor_update_type,
             alt_lambda_factors: f.alt_lambda_factors,
+            // Overwritten per superblock below; 8 is C's `disallow_4x4 ? 8`
+            // arm, i.e. the value with depth removal OFF.
+            min_sq: 8,
         });
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
@@ -10398,6 +10562,17 @@ fn encode_tile_rows(
                 // SB, lazily, from the same pure PD0 eval the unit loop recomputes
                 // (`pd0_pick_sb_partition_m6_eval` reads only source pixels).
                 // `None` at SB64 (units.len() == 1) → byte-identical.
+                // This superblock's PD0 inter context. The frame-level base
+                // is copied and given THIS SB's `min_sq`, because
+                // `depth_removal_ctrls` is resolved per superblock from its
+                // own ME distortions (`set_depth_removal_level_controls`,
+                // enc_mode_config.c:3160-3270).
+                let pd0_inter = pd0_inter_base.map(|b| crate::pd0::Pd0InterRef {
+                    min_sq: pd0_min_sq
+                        .and_then(|v| v.get(sb_row * sb_cols + sb_col).copied())
+                        .map_or(8, usize::from),
+                    ..b
+                });
                 let mut sb_pd0_max_min: Option<(usize, usize)> = None;
                 for &(x0, y0) in units.iter() {
                     let cur_w = unit_size.min(w - x0);

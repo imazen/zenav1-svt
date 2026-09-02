@@ -1722,6 +1722,7 @@ impl M6Pd0Tables {
 ///
 /// `enable_intra/intra_mode_end/angular_pred_level` is `0/0/0` on the inter
 /// frame — which is the assertion this struct's presence stands for.
+#[derive(Clone, Copy)]
 pub struct Pd0InterRef<'a> {
     /// The DPB reference's PADDED luma plane. C's PD0 MC does NOT clamp the
     /// MV on the unscaled path (see
@@ -1744,6 +1745,21 @@ pub struct Pd0InterRef<'a> {
     pub factor_update_type: crate::port_rc_process::FrameUpdateType,
     /// [SVT_HDR_MODE] `static_config.alt_lambda_factors`.
     pub alt_lambda_factors: bool,
+    /// C `set_blocks_to_be_tested`'s `min_sq_size` (enc_dec_process.c:1485),
+    /// which `depth_removal_ctrls` decides:
+    ///
+    /// ```text
+    /// disallow_below_64x64 ? 64
+    ///   : disallow_below_32x32 ? 32
+    ///   : (disallow_8x8 || disallow_below_16x16) ? 16
+    ///   : disallow_4x4 ? 8 : 4          then MIN(.., max_tx_size)
+    /// ```
+    ///
+    /// The controls are computed per SUPERBLOCK from the open-loop ME
+    /// distortions, so this is a per-SB value and not a frame one. On an
+    /// I-slice `set_depth_removal_level_controls` returns `enabled = 0`
+    /// outright, which is why the key path never carries it.
+    pub min_sq: usize,
 }
 
 /// C `BlockSize` for a shape PD0 can cost — the square depths plus the two
@@ -3508,8 +3524,15 @@ pub fn pd0_pick_sb_partition_video_eval(
         lvl1: Some(tables),
         // `get_max_block_size_default` = `scs->super_block_size`, uncapped.
         max_sq: 64.min(max_tx_size as usize),
-        // `pic_disallow_4x4` is 1 on both arms at every preset this reaches.
-        min_sq: if ctl_nosplit { 64 } else { 8 },
+        // `pic_disallow_4x4` is 1 on both arms at every preset this reaches,
+        // which is C's `disallow_4x4 ? 8 : 4` arm. On a NON-KEY frame
+        // `depth_removal_ctrls` can raise it to 16, 32 or 64 per superblock —
+        // see `Pd0InterRef::min_sq`.
+        min_sq: if ctl_nosplit {
+            64
+        } else {
+            inter.map_or(8, |ir| ir.min_sq)
+        },
 
         is_subres_safe: if sb_x + 64 <= aligned_w && sb_y + 64 <= aligned_h {
             255

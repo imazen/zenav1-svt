@@ -4069,8 +4069,7 @@ Nothing regressed — every other cell's two byte counts are unchanged.
    `pd0::build_m6_pd0_tables_from_ctx` already takes exactly that pair, so this
    is a call-site change. It is inert on a key frame by construction
    (`primary_ref_frame == NONE` -> C uses the defaults too).
-2. **STILL OPEN — the next thing to build.** **`depth_removal_ctrls` is unwired
-   in PD0.** C's inter frame resolves
+2. **LANDED in §1z¹¹.** **`depth_removal_ctrls` is unwired in PD0.** C's inter frame resolves
    `dr=1/0/1/1` on the reference cell — `disallow_below_32x32` and
    `disallow_below_16x16` both set — and the port's `Pd0Ctx::min_sq` is a flat
    8. It did not matter on the five cells that closed, because the `i == 0`
@@ -4224,6 +4223,90 @@ and neither move reached the index because the gate that would have said so was
 never reached. Both ledgers are regenerated here and both `--check`s pass
 locally. **A gate hidden behind another failing gate accrues its own debt
 silently**, which is the second-order form of the same trap.
+
+### 1z¹¹. `depth_removal_ctrls` WIRED into PD0, and the port's derivation joins C's field for field (2026-09-02)
+
+§1z¹⁰ ranked this first of two open leads and it is now landed. It is the
+PORT-SIDE half of a function that was already tier-1 gated: C's
+`set_depth_removal_level_controls` (`enc_mode_config.c:2965`) has had a
+differential against the real exported symbol since it was ported
+(`c_parity_sig_deriv_common.rs`), and nothing called it.
+
+#### What it decides
+
+`set_blocks_to_be_tested` (`enc_dec_process.c:1485`):
+
+```c
+int min_sq_size = (depth_removal_ctrls.enabled && disallow_below_64x64) ? 64
+    : (enabled && disallow_below_32x32) ? 32
+    : (disallow_8x8 || (enabled && disallow_below_16x16)) ? 16
+    : disallow_4x4 ? 8 : 4;
+min_sq_size = MIN(min_sq_size, static_config.max_tx_size);
+```
+
+`Pd0Ctx::min_sq` was a flat 8 on every frame. On an I-slice that is right —
+`set_depth_removal_level_controls` returns `enabled = 0` outright — which is
+why the still path never needed it and is byte-neutral by construction here.
+
+#### The oracle, and it JOINS
+
+`SVT_PD0CFG_OUT` gained `set_depth_removal_level_controls`' whole input set for
+this chunk, and `SVTAV1_PD0DBG` gained a `PD0DR` line with the same fields in
+the same order. On `diag 64x64 q40 p8 frames=2`, frame 1:
+
+```
+C     dr=1/0/1/1 drlvl=5 fastlam=6633 pqp=40 med=0/0/0/0 mev=0 refmin=8
+port  dr=1/0/1/1 drlvl=5 fastlam=6633 pqp=40 med=0/0/0/0 mev=0 refmin=8  minsq=32
+```
+
+and on the MULTI-SB `screen 128x128 q40 p8`, all four superblocks:
+
+```
+C     dr=0/0/0/0 drlvl=0 fastlam=6633 pqp=40 med=0/0/0/0 mev=0 refmin=16
+port  dr=0/0/0/0 drlvl=0 fastlam=6633 pqp=40 med=0/0/0/0 mev=0 refmin=16 minsq=8
+```
+
+Every field: the picture level, the MD fast lambda through
+`av1_lambda_assign_md`'s table -> `update_lambda` -> `lambda_weight` chain, the
+picture qp, all four ME distortions, the ME 8x8 cost variance, and the three
+resolved flags. `refmin` is the interesting one — it is the REFERENCE's
+`sb_min_sq_size` (C `coding_loop.c:1640`, `MIN(blk_geom->sq_size)` over the
+coded blocks), which this port now folds out of the key frame's own decided
+partition trees and carries on the DPB entry. It agrees on both cells (8 and
+16), which is an independent check of `PartitionTree::min_sq_size` — the
+subtlety there being that `blk_geom->sq_size` of an NSQ block is the SQUARE it
+partitions, so only `PARTITION_SPLIT` halves it.
+
+#### Byte movement: none on the verdicts, two cells much closer
+
+| result | §1z¹⁰ | after |
+|---|--:|--:|
+| BOTH | 36 | 36 |
+| F1DIFF | 59 | 59 |
+| F0DIFF | 1 | 1 |
+
+Two cells moved and both moved TOWARD C: `gradient 128x128 q40 p8` frame 1
+goes 45 -> 23 B against C's 24, and the F0DIFF cell `gradient 128x128 q20 p8`
+goes 40 -> 27 against C's 25 (a frame-1 reading that is void until its frame 0
+closes, recorded only because it is the same mechanism). Nothing regressed.
+
+#### The COVERAGE HOLE this exposed, and it is the honest headline
+
+**Every cell of the 96-cell grid reports `med=0/0/0/0 mev=0` — on BOTH sides.**
+The campaign's synthetic content is a pure `SVTAV1_FRAME_SHIFT=3` translation,
+so the open-loop ME finds an exact match and every one of
+`set_depth_removal_level_controls`' distortion thresholds is trivially
+satisfied. What the grid therefore exercises is the LEVEL row and the
+`(w % 64)` / `(h % 32)` geometry predicates — not the `dev_32x32_to_16x16` /
+`dev_16x16_to_8x8` comparisons, not the `me_8x8_cost_variance` banding, and not
+the reference-`sb_min_sq_size` threshold bumps (which need `refmin >= 32`; the
+two cells measured give 8 and 16).
+
+So this chunk is C-correct by a field-for-field join and by a tier-1
+differential underneath it, and the byte grid is nearly BLIND to it. That is a
+statement about the corpus, not about the code: a grid whose ME distortion is
+identically zero cannot witness a depth-removal defect at all. Real content, or
+a shift that is not an exact integer translation, is what would.
 
 ## 2. Chunks
 

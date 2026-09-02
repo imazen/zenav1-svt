@@ -609,6 +609,43 @@ impl PartitionTree {
         }
     }
 
+    /// C `pcs->sb_min_sq_size[sb]` for one superblock — the MINIMUM
+    /// `blk_geom->sq_size` over every block this tree codes
+    /// (`coding_loop.c:1640`, `MIN(blk_geom->sq_size, ...)` folded over the
+    /// coded blocks, initialised to 128 at `enc_dec_process.c:3101`).
+    ///
+    /// `node_sq` is the SQUARE this node partitions, which is what
+    /// `blk_geom->sq_size` means for an NSQ shape: a 64x32 block produced by
+    /// `PARTITION_HORZ` of a 64x64 has `sq_size == 64`, not 32. So only
+    /// `PARTITION_SPLIT` halves it; every other partition type hands its
+    /// children the same square.
+    ///
+    /// Read by the NEXT frame: `set_depth_removal_level_controls`
+    /// (`enc_mode_config.c:3173-3196`) raises two dev thresholds when the
+    /// list-0 reference's value for this superblock is >= 32 or >= 64.
+    #[must_use]
+    pub fn min_sq_size(&self, node_sq: usize) -> usize {
+        match self {
+            PartitionTree::Leaf(_) => node_sq,
+            PartitionTree::Split {
+                partition_type,
+                children,
+                ..
+            } => {
+                let child_sq = if *partition_type == PartitionType::Split {
+                    node_sq / 2
+                } else {
+                    node_sq
+                };
+                children
+                    .iter()
+                    .map(|c| c.min_sq_size(child_sq))
+                    .min()
+                    .unwrap_or(node_sq)
+            }
+        }
+    }
+
     /// Collect all leaf decisions in tree order (depth-first).
     pub fn collect_decisions(&self) -> alloc::vec::Vec<BlockDecision> {
         match self {

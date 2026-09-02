@@ -1,0 +1,32 @@
+# tools/inter_byte_matrix.sh — the INTER campaign's 96-cell frontier
+#
+# grid    {uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55}
+#         x {p6,p8}, frames=2 low-delay P, SVTAV1_FRAME_SHIFT=3
+# host    Apple M4 Pro, aarch64-apple-darwin
+# date    2026-09-02
+# after   docs/INTER-ENCODE-PLAN.md §1z¹¹ (PD0 honours depth_removal_ctrls)
+#
+#   BOTH 36 / F1DIFF 59 / F0DIFF 1 — UNCHANGED from the §1z¹⁰ scoreboard
+#   (inter_byte_matrix_2026-09-02b.tsv). Two cells moved, both TOWARD C:
+#     gradient 128x128 q40 p8  frame 1  45 -> 23 B against C's 24
+#     gradient 128x128 q20 p8  frame 1  40 -> 27 B against C's 25   (F0DIFF,
+#         so that frame-1 reading is void until its frame 0 closes)
+#
+# WHY THE VERDICTS DID NOT MOVE, and it is a statement about the CORPUS.
+# Every cell of this grid reports `me_{64,32,16,8}x*_distortion = 0` and
+# `me_8x8_cost_variance = 0` on BOTH sides — the content is a pure integer
+# translation, so the open-loop search finds an exact match. Every distortion
+# threshold in `set_depth_removal_level_controls` is therefore trivially
+# satisfied and only its LEVEL row and the SB-geometry predicates are
+# exercised. The port's derivation was verified instead by a field-for-field
+# join against C's own resolved controls (`SVT_PD0CFG_OUT`'s dr/drlvl/fastlam/
+# pqp/med/mev/refmin vs `SVTAV1_PD0DBG`'s PD0DR line), on the reference cell
+# and on all four superblocks of a multi-SB one.
+#
+# STILL OPEN:
+#   1. `gradient 128x128 q20 p8` — the ONE F0DIFF cell, a video-KEY defect,
+#      7453 B against C's 7472. Every frame-1 reading on it is void.
+#   2. The 59 F1DIFF cells, none of which has been localized past PD0.
+#
+# Reproduce: tools/inter_byte_matrix.sh
+# Assert:    tools/inter_byte_gate.sh (36 required cells + 3 named open)
