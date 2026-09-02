@@ -27,6 +27,20 @@ import sys
 
 # ---------------------------------------------------------------- OBU layer
 
+LAST_FRAME = 1
+ALTREF_FRAME = 7
+REFS_PER_FRAME_ = 7
+
+
+def get_relative_dist(s, a, b):
+    """Spec 5.9.3 get_relative_dist()."""
+    if not s['enable_order_hint']:
+        return 0
+    diff = a - b
+    m = 1 << (s['OrderHintBits'] - 1)
+    return (diff & (m - 1)) - (diff & m)
+
+
 OBU_SEQUENCE_HEADER = 1
 OBU_TEMPORAL_DELIMITER = 2
 OBU_FRAME_HEADER = 3
@@ -278,10 +292,20 @@ def tile_log2(blkSize, target):
     return k
 
 
-def decode_frame_header(payload, s, obu_type):
-    """Walk uncompressed_header(). Returns [(name, value)] in bit order."""
+def decode_frame_header(payload, s, obu_type, dpb=None, upd=None):
+    """Walk uncompressed_header(). Returns [(name, value)] in bit order.
+
+    `dpb` is the decoder's `RefOrderHint[NUM_REF_FRAMES]`, threaded across the
+    frames of the stream by the caller. It is what `skip_mode_params()` needs
+    (spec 5.9.2 -> `skip_mode_params`): without it the walk cannot know whether
+    `skip_mode_present` is even PRESENT, and a wrong presence decision shifts
+    every field after it. Pass `None` only when no earlier frame is available;
+    the walk then says so instead of guessing.
+    """
     r = BR(payload)
     o = []
+    if upd is None:
+        upd = {}      # what the caller must apply to `dpb` after this frame
 
     def rd(name, n):
         v = r.f(n)
@@ -307,7 +331,8 @@ def decode_frame_header(payload, s, obu_type):
     else:
         show_existing = rd('show_existing_frame', 1)
         if show_existing:
-            rd('frame_to_show_map_idx', 3)
+            upd['show_existing'] = rd('frame_to_show_map_idx', 3)
+            upd['refresh_frame_flags'] = 0
             return o
         frame_type = rd('frame_type', 2)
         FrameIsIntra = 1 if frame_type in (KEY_FRAME, INTRA_ONLY_FRAME) else 0
@@ -342,8 +367,10 @@ def decode_frame_header(payload, s, obu_type):
         frame_size_override_flag = note('frame_size_override_flag*', 0)
     else:
         frame_size_override_flag = rd('frame_size_override_flag', 1)
+    OrderHint = 0
     if s['OrderHintBits']:
-        rd('order_hint', s['OrderHintBits'])
+        OrderHint = rd('order_hint', s['OrderHintBits'])
+    upd['OrderHint'] = OrderHint
     if FrameIsIntra or error_resilient_mode:
         primary_ref_frame = note('primary_ref_frame*', PRIMARY_REF_NONE)
     else:
@@ -362,6 +389,7 @@ def decode_frame_header(payload, s, obu_type):
         refresh_frame_flags = note('refresh_frame_flags*', 255)
     else:
         refresh_frame_flags = rd('refresh_frame_flags', 8)
+    upd['refresh_frame_flags'] = refresh_frame_flags
     if (not FrameIsIntra) or refresh_frame_flags != 255:
         if error_resilient_mode and s['enable_order_hint']:
             for i in range(NUM_REF_FRAMES):
@@ -405,9 +433,10 @@ def decode_frame_header(payload, s, obu_type):
             if frame_refs_short_signaling:
                 rd('last_frame_idx', 3)
                 rd('gold_frame_idx', 3)
+        ref_frame_idx = [0] * REFS_PER_FRAME
         for i in range(REFS_PER_FRAME):
             if not frame_refs_short_signaling:
-                rd(f'ref_frame_idx[{i}]', 3)
+                ref_frame_idx[i] = rd(f'ref_frame_idx[{i}]', 3)
             if s['frame_id_numbers_present_flag']:
                 rd(f'delta_frame_id_minus_1[{i}]',
                    s['delta_frame_id_length_minus_2'] + 2)
@@ -627,9 +656,59 @@ def decode_frame_header(payload, s, obu_type):
         reference_select = note('reference_select*', 0)
     else:
         reference_select = rd('reference_select', 1)
+    # skip_mode_params() — spec 5.9.2. The PRESENCE of `skip_mode_present`
+    # depends on the reference ORDER HINTS, so it needs the decoder's
+    # RefOrderHint[] as of this frame.
+    #
+    # This used to be approximated as "1 whenever reference_select is set",
+    # with a comment admitting the real rule needs the order hints. That
+    # approximation is WRONG on the inter campaign's own 2-frame cell
+    # (MEASURED 2026-09-01, gradient 64x64 q40 p6): every DPB slot still holds
+    # the key frame, so there is no second distinct forward reference and C
+    # writes NO skip_mode_present bit — but the tool read one, and then
+    # reported `allow_warped_motion = 0` when the stream says 1. Every field
+    # from `skip_mode_present` on was off by one bit, and the printout gave no
+    # sign of it because the shifted values were all zeros.
     skipModeAllowed = 0
-    if not (FrameIsIntra or not reference_select or not s['enable_order_hint']):
-        skipModeAllowed = 1  # the real rule needs ref order hints; low-delay P
+    if FrameIsIntra or not reference_select or not s['enable_order_hint']:
+        skipModeAllowed = 0
+    elif dpb is None:
+        note('skip_mode_present?', -1)
+        o.append(('(no DPB: RefOrderHint unknown, walk stops here)', -1))
+        return o
+    else:
+        OrderHints = [0] * (ALTREF_FRAME + 1)
+        for i in range(REFS_PER_FRAME):
+            OrderHints[LAST_FRAME + i] = dpb[ref_frame_idx[i]]
+        forwardIdx = -1
+        backwardIdx = -1
+        forwardHint = 0
+        backwardHint = 0
+        for i in range(REFS_PER_FRAME):
+            refHint = OrderHints[LAST_FRAME + i]
+            if get_relative_dist(s, refHint, OrderHint) < 0:
+                if forwardIdx < 0 or get_relative_dist(s, refHint, forwardHint) > 0:
+                    forwardIdx = i
+                    forwardHint = refHint
+            elif get_relative_dist(s, refHint, OrderHint) > 0:
+                if backwardIdx < 0 or get_relative_dist(s, refHint, backwardHint) < 0:
+                    backwardIdx = i
+                    backwardHint = refHint
+        if forwardIdx < 0:
+            skipModeAllowed = 0
+        elif backwardIdx >= 0:
+            skipModeAllowed = 1
+        else:
+            secondForwardIdx = -1
+            secondForwardHint = 0
+            for i in range(REFS_PER_FRAME):
+                refHint = OrderHints[LAST_FRAME + i]
+                if get_relative_dist(s, refHint, forwardHint) < 0:
+                    if (secondForwardIdx < 0
+                            or get_relative_dist(s, refHint, secondForwardHint) > 0):
+                        secondForwardIdx = i
+                        secondForwardHint = refHint
+            skipModeAllowed = 1 if secondForwardIdx >= 0 else 0
     if skipModeAllowed:
         rd('skip_mode_present', 1)
 
@@ -684,12 +763,29 @@ def main(argv):
             print(f"{path}: only {len(frames)} frame OBU(s), wanted index {index}",
                   file=sys.stderr)
             return 2
-        t, p = frames[index]
+        # Walk EVERY frame up to `index`, maintaining the decoder's
+        # RefOrderHint[] — `skip_mode_params()` reads it, so frame N cannot be
+        # parsed correctly without the frames before it.
+        # Walk EVERY frame up to `index`, maintaining the decoder's
+        # RefOrderHint[] — `skip_mode_params()` reads it, so frame N cannot be
+        # parsed correctly without the frames before it.
+        dpb = None
+        fields = None
         try:
-            out.append(decode_frame_header(p, seq, t))
+            for k in range(index + 1):
+                t, p = frames[k]
+                upd = {}
+                fields = decode_frame_header(p, seq, t, dpb, upd)
+                if dpb is None:
+                    dpb = [0] * NUM_REF_FRAMES
+                mask = upd.get('refresh_frame_flags', 0)
+                for slot in range(NUM_REF_FRAMES):
+                    if mask & (1 << slot):
+                        dpb[slot] = upd.get('OrderHint', 0)
         except EOFError as e:
             print(f"{path}: {e}", file=sys.stderr)
             return 2
+        out.append(fields)
     a, b = out
     print(f"{'field':38} {'A':>8} {'B':>8}")
     first = True
