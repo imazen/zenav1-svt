@@ -4292,9 +4292,9 @@ closes, recorded only because it is the same mechanism). Nothing regressed.
 
 #### The COVERAGE HOLE this exposed, and it is the honest headline
 
-**Every cell of the 96-cell grid reports `med=0/0/0/0 mev=0` — on BOTH sides.**
-The campaign's synthetic content is a pure `SVTAV1_FRAME_SHIFT=3` translation,
-so the open-loop ME finds an exact match and every one of
+**Every cell measured reports `med=0/0/0/0 mev=0` on C's side.** The
+campaign's synthetic content is a pure `SVTAV1_FRAME_SHIFT=3` translation, so
+C's open-loop ME finds an exact match and every one of
 `set_depth_removal_level_controls`' distortion thresholds is trivially
 satisfied. What the grid therefore exercises is the LEVEL row and the
 `(w % 64)` / `(h % 32)` geometry predicates — not the `dev_32x32_to_16x16` /
@@ -4304,9 +4304,120 @@ two cells measured give 8 and 16).
 
 So this chunk is C-correct by a field-for-field join and by a tier-1
 differential underneath it, and the byte grid is nearly BLIND to it. That is a
-statement about the corpus, not about the code: a grid whose ME distortion is
-identically zero cannot witness a depth-removal defect at all. Real content, or
-a shift that is not an exact integer translation, is what would.
+statement about the corpus, not about the code: a grid on which C's ME
+distortion is zero everywhere cannot witness a depth-removal defect at all.
+Real content, or a shift that is not an exact integer translation, is what
+would.
+
+**CORRECTED the same day, and the correction is a NEW defect.** The claim
+above was first written as "on BOTH sides" off two cells (`diag 64x64` and
+`screen 128x128`, both `med=0/0/0/0` on both). It is FALSE for the port on the
+128-wide `gradient` cells, and that is §1z¹².
+
+### 1z¹². The port's OPEN-LOOP ME misses the exact match in the SECOND SB COLUMN — a localization, not a fix (2026-09-02)
+
+§1z¹¹'s `PD0DR` line and `SVT_PD0CFG_OUT`'s matching block make the two sides'
+ME distortions directly comparable for the first time. On the multi-SB cells
+they DISAGREE, and only there.
+
+`gradient 128x128 q40 p8 frames=2`, frame 1, all four superblocks:
+
+```
+        sb=0 org=(0,0)    sb=1 org=(64,0)         sb=2 org=(0,64)   sb=3 org=(64,64)
+C       med=0/0/0/0       med=0/0/0/0             med=0/0/0/0       med=0/0/0/0
+port    med=0/0/0/0       med=3328/3328/3316/2916 med=0/0/0/0       med=3328/3328/3316/2916
+C       mev=0             mev=0                   mev=0             mev=0
+port    mev=0             mev=2466                mev=0             mev=2466
+```
+
+Identical on `gradient 128x128 q20 p8`. Every OTHER field of that line agrees on
+both cells and both frames — `dr=1/0/1/1`, `drlvl=5`, `fastlam`, `pqp`,
+`refmin` — so this is not a configuration difference: it is the SEARCH.
+
+#### What the shape says
+
+The two divergent superblocks are the ones at **x = 64**, and the two that
+agree are at x = 0. It is keyed on the horizontal ORIGIN, not on the superblock
+index (sb 2 is at (0,64) and is zero). On content that is a pure 3-pixel
+horizontal translation — where an exact match exists for every block and C
+finds it everywhere — the port's search finds it only in the first SB column.
+
+`me_64x64_distortion` and `me_32x32_distortion` are the SAME number (3328),
+which is what a search that never descends past its starting candidate looks
+like, and `me_8x8_distortion` (2916) is lower than `me_16x16` (3316) rather
+than proportionally lower, so the smaller partitions are recovering some of it.
+
+#### Why nothing caught it before
+
+Nothing compared the two sides' ME distortion. `inter_me_arm::run_frame_me`'s
+output reached mode decision as an MV and the MV was right on the cells the
+campaign closed — all of which are 64- or 72-wide, i.e. ONE superblock column.
+The distortions themselves had no consumer until §1z¹¹ wired
+`set_depth_removal_level_controls`, and no oracle until this chunk added the
+inputs to `SVT_PD0CFG_OUT`.
+
+It is INERT on the two cells measured — `set_depth_removal_level_controls`
+resolves `dr=1/0/1/1` from both the zero and the non-zero distortions, because
+level 5's `below_{16,32}x_mult = 6` thresholds are far above 3328 either way.
+That is luck, not correctness: the same numbers feed `compute_subres_th`'s
+`cost_64x64`, `compute_intra_pd0_th`, the `me_8x8_cost_variance` banding of the
+two `dev_*` thresholds, and `pic_lpd1_lvl`'s M10+ modulation.
+
+#### Reproduced OUT of the encoder, and narrowed to HME LEVEL 0
+
+`inter_me_arm::tests::reference_cell(128, 128, 3)` + `run_frame_me` reproduces
+it with no pipeline at all — which makes the next chunk a unit-test loop rather
+than a byte sweep. Driving it with a temporary probe on the four b64s:
+
+```
+b64 0 org=(0,0)   mv=(-3,0)   d64=0      hme_sc=(-3,0)   hme_sad=0
+b64 1 org=(64,0)  mv=(-24,0)  d64=3328   hme_sc=(-24,0)  hme_sad=13312
+b64 2 org=(0,64)  mv=(-3,0)   d64=0      hme_sc=(-3,0)   hme_sad=0
+b64 3 org=(64,64) mv=(-24,0)  d64=3328   hme_sc=(-24,0)  hme_sad=13312
+```
+
+and the per-level search centres of quadrant [0][0] (all in QUARTER units,
+`hme.rs:160` scales the level-0 result by 4):
+
+```
+b64 0   l0sc=(-4,-4)    l1sc=(-4,-2)    l2sc=(-3,-1)    -> hme_sc=(-3,0)
+b64 1   l0sc=(-24,-4)   l1sc=(-24,-2)   l2sc=(-24,-1)   -> hme_sc=(-24,0)
+b64 2   l0sc=(-60,-4)   l1sc=(-48,-2)   l2sc=(-46,-1)   -> hme_sc=(-3,0)
+b64 3   l0sc=(-24,-4)   l1sc=(-24,-2)   l2sc=(-24,-1)   -> hme_sc=(-24,0)
+```
+
+Three things this rules out and one it points at:
+
+* **The decimated planes are FINE.** The sixteenth plane was compared cell for
+  cell against a 4x4 box average of the source: `32x32 bad=0` on both
+  pictures. `PaPlane::decimate` is not the bug.
+* **`me_static_b64_bypass` is not firing** — `do_ref = 1` and the search runs.
+* **The failing b64s are not "stuck at zero"**: `-24` is a real search result,
+  not an uninitialised value, and it is the SAME on both failing b64s.
+* **HME LEVEL 0 already has it wrong.** `l0sc` is `-24` quarter = `-6`
+  sixteenth for b64 1, where b64 0 gets `-4` quarter = `-1` sixteenth. Levels
+  1 and 2 only refine around the level-0 centre, so from `-6` they can never
+  reach `-0.75`. And b64 2 shows the recovery path that DOES exist: its
+  quadrant-[0][0] chain ends at `-46` and the final `hme_sc` is still `-3`,
+  because `set_final_search_centre_sb` picks the best of the
+  `num_hme_sa_w x num_hme_sa_h` quadrants. On b64 1 and 3 every quadrant lands
+  on `-24`.
+
+**Why level 0 can legitimately be ambiguous, and why that is not an excuse.**
+On the sixteenth plane a 3-pixel shift is 0.75 pixels, and the `gradient`
+content's column pattern `(c*3) & 0x3f` has period 64 in full-pel — period
+**16** in sixteenth-pel. The decimated match is therefore genuinely aliased and
+`-6` is a plausible local minimum. But **C recovers `-3` on all four b64s**
+(`med=0/0/0/0` on every superblock of both `gradient 128x128 q20 p8` and
+`q40 p8`), so whatever breaks the tie in C is missing here. The next
+measurement is C's own per-b64 HME state, which needs a new interposer:
+`svt_aom_hme_level0_b64` is `static`, so it has to go through
+`crates/svtav1-cref/build.rs`'s `--globalize-symbol` promotion (and
+`docs/WORKING-ON-THIS.md` §5's rule applies — verify with `nm -g`, never with
+objcopy's exit status).
+
+The 96-cell grid's twelve 128-wide cells are all F1DIFF; this is the first
+named mechanism they share.
 
 ## 2. Chunks
 

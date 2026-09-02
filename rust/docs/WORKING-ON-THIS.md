@@ -146,12 +146,14 @@ waiters kept reporting RUNNING for another twenty minutes. Match the SCRIPT PATH
 (`pgrep -f "tools/identity_full_8bit.sh"`), or watch the log's own completion
 line, or use a pid — never a bare name the waiter also carries.
 
-**A grid whose ME distortion is identically ZERO cannot witness a
-motion-keyed defect.** The inter campaign's 96-cell grid is synthetic content
-translated by exactly `SVTAV1_FRAME_SHIFT` pixels, so the open-loop search
-finds an exact match and **every cell reports `me_{64,32,16,8}x*_distortion = 0`
-and `me_8x8_cost_variance = 0` — on BOTH sides** (measured 2026-09-02 through
-`SVT_PD0CFG_OUT` and `SVTAV1_PD0DBG`'s `PD0DR` line). Everything downstream
+**A grid whose ME distortion is ZERO cannot witness a motion-keyed defect.**
+The inter campaign's 96-cell grid is synthetic content translated by exactly
+`SVTAV1_FRAME_SHIFT` pixels, so C's open-loop search finds an exact match and
+**every superblock of every cell measured reports
+`me_{64,32,16,8}x*_distortion = 0` and `me_8x8_cost_variance = 0` on C's side**
+(2026-09-02, `SVT_PD0CFG_OUT`). The PORT's side is zero on the 64- and 72-wide
+cells and NOT on the 128-wide ones — which is itself a defect, not a property
+of the corpus; see `docs/INTER-ENCODE-PLAN.md` §1z¹². Everything downstream
 that keys on ME distortion is therefore evaluated at its trivial corner:
 `set_depth_removal_level_controls`' three cost thresholds and both `dev_*`
 comparisons, `compute_subres_th`'s `cost_64x64`, `compute_intra_pd0_th`. A fix
