@@ -5456,6 +5456,31 @@ at `:9478`), which is not. Same shape as the other video-arm levels being
 wired in this repo (`nic_level`, `txt_level`, `mds0_use_hadamard_sb`), so
 **check for a concurrent lane before starting it.**
 
+**And the leaf is ALREADY PORTED — this is a caller passing a constant, for
+the fourth time today.** `port_enc_mode_config::leaf::get_dlf_level_default`
+(`leaf.rs:855`, C `enc_mode_config.c:1466`) exists and is gated by
+`c_parity_dlf_ctrls.rs`; `dlf_level_modulation` is ported beside it; and
+`md_config.rs:948` reads `let dlf_level = 0u8;` with a comment explaining
+that 0 is faithful *"for this surface"* because the DIFFERENTIAL's shim pins
+`enable_dlf_flag = 0`. That is true of the shim and NOT of the encoder: C's
+call site (`:9477`) runs the ladder whenever
+`static_config.enable_dlf_flag && frm_hdr->allow_intrabc == 0`.
+
+The ladder predicts the split exactly. On this flat low-delay-P GOP every
+frame has `temporal_layer_index == 0`, so `is_base` is true and
+`is_not_last_layer` is false: at `ENC_M6` `dlf_level = is_not_last_layer ? 3
+: 6` = **6**, and at `ENC_M8` (which is `<= ENC_M9`) it is
+`is_not_last_layer ? 6 : 0` = **0**. p6 wrong, p8 right — precisely the 20
+cells, and precisely the preset split the census found.
+
+**The concurrent lane was checked for and FOUND (2026-09-02).** A sibling jj
+workspace (`zenav1-svt--crash1`, marker live) carries unpushed commits
+wiring C's VIDEO arms of `nic_level`, `txt_level`, `cfl_level` and
+`mds0_use_hadamard_sb` — all `md_config.rs` signals, the same file and the
+same line neighbourhood as `dlf_level`. **Coordinate before editing
+`md_config.rs`.** This entry stops short of the fix for that reason and not
+for want of a plan.
+
 The other 20 have a byte-identical frame header and diverge inside the tile.
 `diag 16x16 q20 p6` is the minimal one and worth reading first: **its
 frame-1 arithmetic-coder op stream is IDENTICAL to C's, 16 operations, and
