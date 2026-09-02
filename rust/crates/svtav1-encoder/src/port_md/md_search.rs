@@ -8,6 +8,7 @@
 //! | [`md_subpel_search`] | `:2520-2630` |
 //! | [`subpel_mv_limits`] | `:2547-2557` (its limit derivation) |
 //! | [`md_nsq_motion_search`] | `:2080-2252` |
+//! | [`pme_search_for_ref`] | `:3216-3364` (`pme_search`'s per-reference BODY; the loop over `ref_frame_type_arr` is the caller's) |
 //! | [`build_single_ref_mvp_list`] | `:3097-3187` (`build_single_ref_mvp_array`) |
 //!
 //! **Four C functions are represented here by their PIECES, not by a
@@ -19,7 +20,6 @@
 //! |---|---|---|
 //! | `md_sq_motion_search` | `:2329-2510` | [`MdSqMeCtrls`], [`sparse_extent`], [`sq_search_area_multiplier`], [`nudge_sprs_lev1`] |
 //! | `read_refine_me_mvs` | `:2815-2936` | [`me_mv_center`] + [`refine_me_mv_for_ref`] (its per-reference BODY; the loop over `ref_frame_type_arr` is the caller's) |
-//! | `pme_search` | `:3197-3372` | [`MdPmeCtrls`], [`pme_search_extents`], [`pme_me_mv_differs_from_mvps`], [`pme_to_me_cost_dev`], [`pme_bails_to_me`], [`best_mvp_by_distortion`] |
 //!
 //! Those four drivers are the remaining work for the inter reference set;
 //! `docs/INTER-ENCODE-PLAN.md` §1z¹⁴ says why they have to land together
@@ -1592,6 +1592,214 @@ pub fn refine_me_mv_for_ref(
 }
 
 // ---------------------------------------------------------------------------
+// pme_search (product_coding_loop.c:3197-3372)
+// ---------------------------------------------------------------------------
+
+/// What C's `pme_search` writes for one `(list_idx, ref_idx)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PmeSearchOut {
+    /// C `ctx->valid_pme_mv[list][ref]`.
+    pub valid: bool,
+    /// C `ctx->best_pme_mv[list][ref]`, EIGHTH PEL.
+    pub best_pme_mv: Mv,
+    /// C `ctx->pme_res[list][ref].dist`.
+    pub dist: u32,
+    /// Which of C's four exits produced the result. Not a C field — C
+    /// distinguishes them only by control flow, and a caller (or a test)
+    /// that cannot tell "PME ran" from "PME handed back the ME MV" cannot
+    /// check the thing that matters.
+    pub exit: PmeExit,
+}
+
+/// Where [`pme_search_for_ref`] left, in C's own order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PmeExit {
+    /// `continue` before anything ran: `pme_ref0_only` skipped a farther
+    /// reference, or `svt_aom_is_valid_unipred_ref` refused it. C leaves
+    /// `valid_pme_mv` at the 0 it just wrote.
+    Skipped,
+    /// The early MVP-vs-ME direction check found the ME MV agrees with
+    /// every MVP, so C adopts the ME MV (`:3305-3310`).
+    EarlyMvpCheck,
+    /// The PRE-full-pel deviation check bailed to the ME MV (`:3324-3330`).
+    PreFullPel,
+    /// The POST-full-pel deviation check bailed to the ME MV (`:3348-3354`).
+    PostFullPel,
+    /// The search ran to the end and its own MV was taken.
+    Searched,
+}
+
+/// C `pme_search`'s per-reference body (product_coding_loop.c:3216-3364),
+/// single-reference arm.
+///
+/// As with [`refine_me_mv_for_ref`], the loop over `ref_frame_type_arr` is
+/// the caller's — each iteration needs a different reference picture, MVP
+/// list and MVP stack. C's compound arm is not here because
+/// `pme_search`'s `rf[1] == NONE_FRAME` guard means a compound entry does
+/// nothing at all.
+///
+/// **Three of the four exits hand back the ME MV, not a searched one**, and
+/// they are the common case on a well-behaved GOP — which is exactly why
+/// [`PmeSearchOut::exit`] exists: `valid_pme_mv = 1` says nothing about
+/// whether a search happened, and a caller that reads only `best_pme_mv`
+/// cannot tell a PME result from an ME echo.
+///
+/// Details transcribed:
+///
+/// * **All three bail-outs write the ME values, not the MVP** —
+///   `dist = post_subpel_me_mv_cost`, `best_pme_mv = sub_me_mv`.
+/// * **`me_mv_cost` is `fp_me_dist`, the FULL-PEL cost**, while the value
+///   the bail-outs store is the SUB-pel one. C mixes the two on purpose.
+/// * **The full-pel search is centred on the best MVP, not on the ME MV**,
+///   and its window is `±(full_pel_search_{width,height} >> 1)` at step 1
+///   — the qp modulation of those extents is [`pme_search_extents`], which
+///   the caller applies.
+/// * **`ctx->ref_mv` is set from `choose_best_av1_mv_pred(best_mvp)`**
+///   before the search, so the MV rate inside the search is measured
+///   against the MVP — the caller must build `mv_cost_params` from that,
+///   the same contract [`refine_me_mv_for_ref`] documents.
+///
+/// Evidence tier 4 — `pme_search` is `static` with no exported symbol.
+#[allow(clippy::too_many_arguments)]
+pub fn pme_search_for_ref(
+    ctrls: &MdPmeCtrls,
+    fp_ctx: &FullPelCtx,
+    r: &RefPicGeom,
+    dist: &mut impl DistortionSource,
+    mv_cost_params: &MvCostParams<'_>,
+    input_origin_index: usize,
+    // C `ctx->md_pme_ctrls.dist_type`. `MdPmeCtrls` here carries the
+    // fields the PREDICATES read; the distortion metric is a parameter so
+    // this body does not need a second copy of that table.
+    dist_type: DistortionType,
+    /* C's two `continue`-before-anything gates, already evaluated: */
+    skipped: bool,
+    me_data_present: bool,
+    /* the ME state `read_refine_me_mvs` left: */
+    fp_me_mv: Mv,
+    sub_me_mv: Mv,
+    fp_me_dist: u32,
+    post_subpel_me_mv_cost: u32,
+    /* the MVP list and the qp-modulated extents: */
+    mvps: &[Mv],
+    full_pel_search_width: u8,
+    full_pel_search_height: u8,
+    pic_width: u32,
+    pic_height: u32,
+    subpel: Option<&mut dyn FnMut(&mut Mv) -> u32>,
+) -> PmeSearchOut {
+    let bail = |exit: PmeExit| PmeSearchOut {
+        valid: true,
+        best_pme_mv: sub_me_mv,
+        dist: post_subpel_me_mv_cost,
+        exit,
+    };
+    if skipped {
+        return PmeSearchOut {
+            valid: false,
+            best_pme_mv: Mv::ZERO,
+            dist: u32::MAX,
+            exit: PmeExit::Skipped,
+        };
+    }
+
+    let mut me_mv_cost = u32::MAX;
+    if me_data_present {
+        if ctrls.early_check_mv_th_multiplier != PME_EARLY_CHECK_OFF
+            && !pme_me_mv_differs_from_mvps(
+                mvps,
+                fp_me_mv,
+                pic_width,
+                pic_height,
+                ctrls.early_check_mv_th_multiplier,
+            )
+        {
+            return bail(PmeExit::EarlyMvpCheck);
+        }
+        me_mv_cost = fp_me_dist;
+    }
+
+    // Step 1: the best MVP by DISTORTION (C `:3316-3317`).
+    let (best_idx, best_mvp_cost) = best_mvp_by_distortion(
+        mvps,
+        dist,
+        fp_ctx.blk_org_x,
+        fp_ctx.blk_org_y,
+        r.y_stride,
+        input_origin_index,
+    );
+    let best_mvp = mvps[best_idx];
+
+    if me_data_present
+        && pme_bails_to_me(
+            fp_me_mv,
+            best_mvp,
+            ctrls.pre_fp_pme_to_me_mv_th,
+            pme_to_me_cost_dev(best_mvp_cost, me_mv_cost),
+            ctrls.pre_fp_pme_to_me_cost_th,
+        )
+    {
+        return bail(PmeExit::PreFullPel);
+    }
+
+    let mut search = PmeBest {
+        cost: u32::MAX,
+        mvx: 0,
+        mvy: 0,
+    };
+    let mut psad_ctx = *fp_ctx;
+    psad_ctx.enable_psad = ctrls.enable_psad;
+    md_full_pel_search(
+        &psad_ctx,
+        r,
+        dist,
+        mv_cost_params,
+        input_origin_index,
+        dist_type,
+        best_mvp.x,
+        best_mvp.y,
+        SearchWindow {
+            start_x: -(i32::from(full_pel_search_width) >> 1),
+            end_x: i32::from(full_pel_search_width) >> 1,
+            start_y: -(i32::from(full_pel_search_height) >> 1),
+            end_y: i32::from(full_pel_search_height) >> 1,
+            sparse_search_step: 1,
+            is_sprs_lev0_performed: false,
+        },
+        &mut search,
+    );
+    let mut best_search_mv = Mv {
+        x: search.mvx,
+        y: search.mvy,
+    };
+
+    if me_data_present
+        && pme_bails_to_me(
+            fp_me_mv,
+            best_search_mv,
+            ctrls.post_fp_pme_to_me_mv_th,
+            pme_to_me_cost_dev(search.cost, me_mv_cost),
+            ctrls.post_fp_pme_to_me_cost_th,
+        )
+    {
+        return bail(PmeExit::PostFullPel);
+    }
+
+    // C leaves `post_subpel_pme_mv_cost` at `~0` when the subpel search is
+    // disabled, and stores THAT into `pme_res.dist`.
+    let mut d = u32::MAX;
+    if let Some(f) = subpel {
+        d = f(&mut best_search_mv);
+    }
+    PmeSearchOut {
+        valid: true,
+        best_pme_mv: best_search_mv,
+        dist: d,
+        exit: PmeExit::Searched,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TIER 4 — every C function ported here is `static` with no exported
 // symbol (`nm -g`). These are hand-derived vectors traced against the C
 // source. The pieces WITH an oracle (pme_sad_loop_kernel,
@@ -2412,6 +2620,231 @@ mod tests {
             (mv3.x, mv3.y),
             (32, 0),
             "the refinement ladder must be able to move the MV off the MVC"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // pme_search (per-reference body)
+    // -----------------------------------------------------------------
+
+    fn pme_ctrls() -> MdPmeCtrls {
+        MdPmeCtrls {
+            enabled: true,
+            full_pel_search_width: 2,
+            full_pel_search_height: 2,
+            sa_q_weight: false,
+            enable_psad: false,
+            early_check_mv_th_multiplier: PME_EARLY_CHECK_OFF,
+            // DIFFERENT on purpose: swapping the two thresholds must be
+            // observable, and it is not when both are 0.
+            pre_fp_pme_to_me_mv_th: 0,
+            pre_fp_pme_to_me_cost_th: i64::MAX,
+            post_fp_pme_to_me_mv_th: 100,
+            post_fp_pme_to_me_cost_th: i64::MAX,
+        }
+    }
+
+    /// **Three of `pme_search`'s four exits hand back the ME MV, and all
+    /// three write `valid_pme_mv = 1`** — so `valid` alone cannot tell a
+    /// searched MV from an ME echo, which is why the port returns
+    /// [`PmeExit`]. One cell per exit:
+    ///
+    /// * `Skipped` — `valid` stays FALSE and nothing is written.
+    /// * `EarlyMvpCheck` — the ME MV agrees with every MVP.
+    /// * `PreFullPel` — the MVP is within `pre_fp_pme_to_me_mv_th` of the
+    ///   ME MV.
+    /// * `Searched` — the search ran and its own MV came back.
+    ///
+    /// Each bail returns `sub_me_mv` and `post_subpel_me_mv_cost`, NOT the
+    /// MVP and not the full-pel cost; the assertions pin that pairing
+    /// because C mixes the two deliberately (`me_mv_cost` is the FULL-pel
+    /// `fp_me_dist` while the stored dist is the SUB-pel one).
+    ///
+    /// **What these cells do NOT witness.** Both `*_cost_th` are
+    /// `i64::MAX` here, so the COST arm of [`pme_bails_to_me`] never fires
+    /// and swapping `me_mv_cost`'s source from `fp_me_dist` to
+    /// `post_subpel_me_mv_cost` leaves them green (measured). The
+    /// deviation arithmetic is covered by [`pme_to_me_cost_dev`]'s own
+    /// cell; what is uncovered is WHICH of the two ME costs feeds it, and
+    /// a cell for that needs a cost threshold low enough to make the arm
+    /// decide.
+    ///
+    /// Evidence tier 4.
+    #[test]
+    fn tier4_pme_search_exits_and_what_each_one_writes() {
+        let ctx = fp_ctx();
+        let r = geom();
+        let t = zero_cost();
+        let p = params(&t);
+        // DIFFERENT on purpose: every bail-out must return the SUB-pel MV,
+        // and a port that returned `fp_me_mv` instead would be
+        // indistinguishable if these were equal.
+        let sub_me = Mv { x: 26, y: -7 };
+        let fp_me = Mv { x: 24, y: -8 };
+
+        // 1. Skipped.
+        let mut probe = Probe::new(i32::MIN);
+        let out = pme_search_for_ref(
+            &pme_ctrls(),
+            &ctx,
+            &r,
+            &mut probe,
+            &p,
+            0,
+            DistortionType::Var,
+            true,
+            true,
+            fp_me,
+            sub_me,
+            10,
+            20,
+            &[Mv::ZERO],
+            2,
+            2,
+            320,
+            240,
+            None,
+        );
+        assert_eq!(out.exit, PmeExit::Skipped);
+        assert!(!out.valid);
+        assert!(
+            probe.visited.is_empty(),
+            "a skipped ref must touch no pixel"
+        );
+
+        // 2. EarlyMvpCheck: the multiplier is ON and the ME MV agrees with
+        //    the single (0,0) MVP, so C adopts the ME MV.
+        let mut c2 = pme_ctrls();
+        c2.early_check_mv_th_multiplier = 10;
+        let mut probe2 = Probe::new(i32::MIN);
+        let out2 = pme_search_for_ref(
+            &c2,
+            &ctx,
+            &r,
+            &mut probe2,
+            &p,
+            0,
+            DistortionType::Var,
+            false,
+            true,
+            fp_me,
+            sub_me,
+            10,
+            20,
+            &[Mv::ZERO],
+            2,
+            2,
+            320,
+            240,
+            None,
+        );
+        assert_eq!(out2.exit, PmeExit::EarlyMvpCheck);
+        assert_eq!(
+            (out2.valid, out2.best_pme_mv, out2.dist),
+            (true, sub_me, 20)
+        );
+        assert!(
+            probe2.visited.is_empty(),
+            "the early check runs BEFORE any distortion is computed"
+        );
+
+        // 3. PreFullPel: the MVP is the ME MV itself, so the pre-full-pel
+        //    MV threshold of 0 is satisfied.
+        let mut probe3 = Probe::new(i32::MIN);
+        let out3 = pme_search_for_ref(
+            &pme_ctrls(),
+            &ctx,
+            &r,
+            &mut probe3,
+            &p,
+            0,
+            DistortionType::Var,
+            false,
+            true,
+            fp_me,
+            sub_me,
+            10,
+            20,
+            &[fp_me],
+            2,
+            2,
+            320,
+            240,
+            None,
+        );
+        assert_eq!(out3.exit, PmeExit::PreFullPel);
+        assert_eq!((out3.best_pme_mv, out3.dist), (sub_me, 20));
+
+        // 4. Searched: no ME data at all, so every bail-out is skipped and
+        //    the full-pel search's own MV comes back. The zero-cost
+        //    position is +1 full pel from the (0,0) MVP, inside the +-1
+        //    window.
+        let target = (ctx.blk_org_x + 1) + ctx.blk_org_y * r.y_stride as i32;
+        let mut probe4 = Probe::new(target);
+        let out4 = pme_search_for_ref(
+            &pme_ctrls(),
+            &ctx,
+            &r,
+            &mut probe4,
+            &p,
+            0,
+            DistortionType::Var,
+            false,
+            false,
+            fp_me,
+            sub_me,
+            10,
+            20,
+            &[Mv::ZERO],
+            2,
+            2,
+            320,
+            240,
+            None,
+        );
+        assert_eq!(out4.exit, PmeExit::Searched);
+        assert_eq!(out4.best_pme_mv, Mv { x: 8, y: 0 });
+        assert_eq!(
+            out4.dist,
+            u32::MAX,
+            "with no subpel search C stores its `~0` sentinel into pme_res.dist"
+        );
+
+        // 5. PostFullPel, and the PRE/POST thresholds are not
+        //    interchangeable. The MVP is one eighth-pel off the ME MV, so
+        //    the PRE check (th 0) does NOT fire and the search runs; the
+        //    POST check (th 100) then does. Using the post threshold in the
+        //    pre check turns this into `PreFullPel` and fails.
+        let mut probe5 = Probe::new(i32::MIN);
+        let out5 = pme_search_for_ref(
+            &pme_ctrls(),
+            &ctx,
+            &r,
+            &mut probe5,
+            &p,
+            0,
+            DistortionType::Var,
+            false,
+            true,
+            fp_me,
+            sub_me,
+            10,
+            20,
+            &[Mv {
+                x: fp_me.x + 1,
+                y: fp_me.y,
+            }],
+            2,
+            2,
+            320,
+            240,
+            None,
+        );
+        assert_eq!(out5.exit, PmeExit::PostFullPel);
+        assert_eq!((out5.best_pme_mv, out5.dist), (sub_me, 20));
+        assert!(
+            !probe5.visited.is_empty(),
+            "the PRE check must NOT have bailed — the full-pel search ran"
         );
     }
 

@@ -4688,7 +4688,7 @@ and its ME agree on the MV there; it cannot reproduce the reference TYPE.
 | `md_nsq_motion_search` (`:2080`) | `port_md::md_search` | **ported 2026-09-02**, tier 4, same |
 | `md_sq_motion_search` (`:2329`) | — | **never runs**: `md_sq_mv_search_level` is 0 at every preset (`enc_mode_config.c:9200`, `:9753`, `:10033`), so `read_refine_me_mvs`' `md_sq_me_enabled` arm is dead |
 | `read_refine_me_mvs` (`:2815`) | `port_md::md_search::refine_me_mv_for_ref` | **per-reference BODY ported 2026-09-02**, tier 4; the loop over `ref_frame_type_arr` stays the caller's, because each iteration needs a different reference picture and MVP stack |
-| `pme_search` (`:3197`) | — | **missing driver** |
+| `pme_search` (`:3197`) | `port_md::md_search::pme_search_for_ref` | **per-reference BODY ported 2026-09-02**, tier 4; same shape as `refine_me_mv_for_ref` |
 | two-reference (compound) PREDICTION | — | **missing** (`inter_pred_arm` is single-ref) |
 
 **Landed since this entry was written:** `md_subpel_search` and
@@ -4696,8 +4696,14 @@ and its ME agree on the MV there; it cannot reproduce the reference TYPE.
 `refine_me_mv_for_ref` — plus
 the finding that the third search `read_refine_me_mvs` can call —
 `md_sq_motion_search` — is DEAD at every preset (`md_sq_mv_search_level = 0`,
-unconditional). That leaves only `pme_search` and the `ref_frame_type_arr` loop, with no
-missing leaf under either. Two
+unconditional). **All three drivers are now ported as their per-reference BODIES**
+(`md_subpel_search`, `refine_me_mv_for_ref`, `pme_search_for_ref`, plus
+`md_nsq_motion_search`). What remains for the chunk is WIRING, not
+translation: the `ref_frame_type_arr` loop in `inter_md_arm` (per-reference
+picture, MVP stack, MVP list and cost params), turning `inject_new_pme` /
+`updated_enable_pme` on, and compound PREDICTION — `inter_pred_arm` still has
+no two-reference path, so `allow_bipred` must stay suppressed with the
+existing refusal until it does. Two
 C details it carries that a rewrite loses — the MV-limit chain's THREE steps
 (the middle one narrows the full-pel set in place) and the fact that
 `svt_init_mv_cost_params` reads **`ctx->md_subpel_me_ctrls`**'s
