@@ -233,6 +233,26 @@ Crates are not published to crates.io yet — depend by git.
   gates now use `${ARR[@]+"${ARR[@]}"}`. Recorded in
   `rust/docs/WORKING-ON-THIS.md` §5.
 
+- **PD0_LVL_5 was unreachable on the pred-depth-only path, and C's
+  `pd0_detector` runs on every inter frame.** Two defects that had to be fixed
+  together: (A) `pipeline.rs`'s pred-depth-only branch took its PD0 model from
+  `part_arm::refined_pd0_model`, which carries levels 3 and 4 and falls back to
+  `Pd0Mode::Lvl1` otherwise — so a CLI-qp-20 M8 video key frame, whose
+  `set_pic_pd0_lvl_default` row is `3 + ldp0_lvl_offset[qp_band]` = 5, ran
+  PD0_LVL_1's block cost against C's PD0_LVL_5, and the port's p8 output was
+  byte-identical to its own p6 output where C's differed. (B) `pd0_detector`
+  (enc_dec_process.c:2406) gates every test on `slice_type != I_SLICE`, so on a
+  KEY frame the picture level IS the SB level, but on an INTER frame whose L0
+  reference is a key frame the `use_ref_info` arms walk 5 -> 4 -> 3 without
+  reading any ME threshold — every inter frame in this envelope runs PD0_LVL_3.
+  New `port_pd0_detector::pd0_ctrls_for_level` (C `set_pd0_ctrls`) plus
+  `part_arm::VideoPic` give the already-ported detector its first caller.
+  Video key frames 6 F0DIFF -> 4 (`gradient {64,72} q20 p8` byte-identical at
+  2044 and 2747 B); nothing regressed. `identity_full_8bit` 1100/1100,
+  `regression_spotcheck` 65/65, `video_key_matrix` 58/60, `fctx_gate` 96/96,
+  `inter_byte_gate` 31 required PASS. Full record in
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z⁶.
+
 - **`fixed_partition` is a TWO-term predicate and the port had one term — 27
   of 96 cells becomes 31.** C: `fixed_partition = pred_depth_only &&
   md_disallow_nsq_search` (enc_dec_process.c:3054), where

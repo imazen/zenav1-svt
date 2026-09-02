@@ -3180,6 +3180,74 @@ pub fn pd0_pick_sb_partition_video(
     // frame's MD recon; `None` keeps the source prediction.
     video_recon: Option<(&[u8], usize)>,
 ) -> Pd0Tree {
+    pd0_pick_sb_partition_video_eval(
+        src,
+        stride,
+        sb_x,
+        sb_y,
+        qp,
+        qindex,
+        lambda_weight,
+        tables,
+        pic_pd0_lvl,
+        coeff_rate_est_lvl,
+        accurate_part_ctx,
+        nsq_enabled,
+        depth_early_exit_lvl1,
+        ires_factor,
+        aligned_w,
+        aligned_h,
+        tile_top,
+        tile_left,
+        stale_vars,
+        max_tx_size,
+        video_recon,
+    )
+    .tree()
+}
+
+/// [`pd0_pick_sb_partition_video`]'s tree, as the EVAL it is derived from, so
+/// `SVTAV1_PD0DBG` can walk the per-node PD0 costs on the pred-depth-only path
+/// the way it already can on the `pd0_pick_sb_partition_m6_eval` one. Same
+/// computation — `pd0_pick_sb_partition_video` is `…_eval(..).tree()`.
+#[allow(clippy::too_many_arguments)]
+pub fn pd0_pick_sb_partition_video_eval(
+    src: &[u8],
+    stride: usize,
+    sb_x: usize,
+    sb_y: usize,
+    qp: u32,
+    qindex: u8,
+    lambda_weight: u32,
+    tables: &M6Pd0Tables,
+    // C `pcs->pic_pd0_lvl` from `set_pic_pd0_lvl_default`.
+    pic_pd0_lvl: u8,
+    // C `MAX(2, pcs->rate_est_level)` / `MAX(4, ..)` at PD0
+    // (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7355) mapped
+    // through `set_rate_est_ctrls` to `coeff_rate_est_lvl`. Read only by the
+    // LVL_1 family; LVL_5's closed form ignores it.
+    coeff_rate_est_lvl: u8,
+    // C `pcs->ppcs->use_accurate_part_ctx` (`enc_mode <= M8`).
+    accurate_part_ctx: bool,
+    // C `ctx->nsq_geom_ctrls.enabled`.
+    nsq_enabled: bool,
+    // C `pd0_level <= PD0_LVL_1 || ctx->pic_pred_depth_only`.
+    depth_early_exit_lvl1: bool,
+    // C `input_resolution_factor[..]` — the LVL_5 closed form's per-picture
+    // coeff-rate addend.
+    ires_factor: u64,
+    aligned_w: usize,
+    aligned_h: usize,
+    tile_top: usize,
+    tile_left: usize,
+    stale_vars: Option<&SbVariance>,
+    max_tx_size: u8,
+    // C `ctx->pd0_use_src_samples == false` (enc_mode_config.c:7309) — the
+    // same parameter `pd0_pick_sb_partition_m6_eval` takes, and the same
+    // value from the same call site. `Some((md_recon_plane, stride))` is the
+    // frame's MD recon; `None` keeps the source prediction.
+    video_recon: Option<(&[u8], usize)>,
+) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
@@ -3219,8 +3287,7 @@ pub fn pd0_pick_sb_partition_video(
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
         pending_recon: None,
     };
-    let (_cost, eval) = ctx.pick(64, 0, 0);
-    eval.tree()
+    ctx.pick(64, 0, 0).1
 }
 
 #[cfg(test)]

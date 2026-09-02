@@ -9457,6 +9457,17 @@ fn encode_tile_rows(
             matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
         );
+        // Which VIDEO picture this is, for the PD0 level. C's `pd0_detector`
+        // gates every one of its tests on `slice_type != I_SLICE`, so a key
+        // frame keeps the picture level and an inter frame walks down — see
+        // `part_arm::VideoPic`. `inter_md.is_some()` IS "this frame has a
+        // reference and the inter arm is armed", and the only reference the
+        // port's low-delay-P envelope holds is the key frame.
+        let video_pic = if inter_md.is_some() {
+            crate::part_arm::VideoPic::InterOnIntraRef
+        } else {
+            crate::part_arm::VideoPic::IntraSlice
+        };
         // C `pcs->pic_pd0_lvl` -> `set_pd0_ctrls`, for THIS arm, as the
         // REFINEMENT path's PD0 model. The allintra arm is PD0_LVL_1 at every
         // preset this path serves; the video arm is PD0_LVL_3 at M3..M7 and
@@ -9481,6 +9492,7 @@ fn encode_tile_rows(
                     u32::from(cli_qp),
                 )
                 .pred_depth_only,
+                video_pic,
             );
         // PD0's own coefficient-rate level. `None` on the allintra arm keeps
         // the frame-level `FunnelCfg` value the call sites already pass.
@@ -10364,6 +10376,7 @@ fn encode_tile_rows(
                                         crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
                                         u32::from(cli_qp),
                                         w * h,
+                                        video_pic,
                                     );
                                 let tables = m6_pd0_tables.get_or_insert_with(|| {
                                     crate::pd0::build_m6_pd0_tables(sb_qindex)
@@ -10902,69 +10915,148 @@ fn encode_tile_rows(
                                 // for depth-flip drills at M6-M8 — the C
                                 // counterpart is the PICKPART wrap, which fires
                                 // at every preset.
-                                let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                    sb_input,
-                                    in_stride,
-                                    x0,
-                                    y0,
-                                    cli_qp as u32,
-                                    sb_qindex,
-                                    // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
-                                    // ladder on `picture_qp` + the extended-CRF bump.
-                                    crate::pd0::frame_lambda_weight(
-                                        u32::from(picture_qp),
-                                        tune_iq,
-                                        lw_bump,
-                                    ),
-                                    tables,
-                                    8,
-                                    // M6: coeff_rate_est_lvl 1 (real PD0 coeff
-                                    // rate, unchanged). M7/M8: 2 -> the C
-                                    // perform_tx_pd0 `eob<th ? 6000+eob*500`
-                                    // approximation that lowers the parent-NONE
-                                    // cost and matches C's partition depth.
-                                    pd0_refined_rate_lvl,
-                                    pd0_refined_mode,
-                                    pd0_refined_eexit_th,
-                                    // The max-block variance cap, per ARM.
-                                    // Allintra (`get_max_block_size_allintra`,
-                                    // enc_mode_config.c:7042): fires at M8+
-                                    // only, and stays at sb_size for
-                                    // incomplete edge SBs. VIDEO
-                                    // (`get_max_block_size_default`, :6991):
-                                    // no cap at any preset.
-                                    crate::part_arm::max_block_cap_active(
-                                        sc_arm,
-                                        speed_config.preset,
-                                        x0 + 64 <= w && y0 + 64 <= h,
-                                    ),
-                                    // NSQ geometry, per ARM. Allintra
-                                    // (`svt_aom_get_nsq_geom_level_allintra`,
-                                    // enc_mode_config.c:8240): presets 0..=6 →
-                                    // level 1/2/3 → enabled, presets 7+ → level 0
-                                    // → disabled; when disabled a one-false
-                                    // boundary node force-splits (no edge shape)
-                                    // — the presets 7/8 partial-SB fix. VIDEO
-                                    // (`svt_aom_get_nsq_geom_level_default`,
-                                    // :8216) never returns 0, so geometry stays
-                                    // on at every preset there.
-                                    crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset),
-                                    // ALIGNED dims — the spec-5.11.4 edge grid.
-                                    w,
-                                    h,
-                                    // This tile's pixel origin: the M6 PD0 leaf-cost
-                                    // DC prediction must not read across a tile
-                                    // boundary (C up/left_available respect tiles).
-                                    // 0 for a single-tile frame → byte-inert.
-                                    tile_sb_row_start * sb_size,
-                                    tile_sb_col_start * sb_size,
-                                    // Superres chunk B.4: this SB's STALE full-res variance entry.
-                                    sb_stale_vars,
-                                    // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
-                                    max_tx_size,
-                                    // C `pd0_use_src_samples` (video arm: recon).
-                                    pd0_video_recon.then_some((&tile_frame_recon[..], w)),
-                                );
+                                let eval =
+                                    if matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }) {
+                                        // The VIDEO arm's own PD0 entry point, the
+                                        // one the `preset >= 9` branch above already
+                                        // uses (docs/INTER-ENCODE-PLAN.md §1z⁶).
+                                        // This branch is C's `pic_pred_depth_only`
+                                        // case, which on the video arm starts at M8,
+                                        // and `set_pic_pd0_lvl_default`'s M8 row is
+                                        // `3 + ldp0_lvl_offset[qp_band]` — level 5 at
+                                        // CLI qp <= 27, 4 at 40..=43, 3 above.
+                                        // `refined_pd0_model` carries only 3 and 4
+                                        // and documents that it falls back to LVL_1
+                                        // otherwise, so a q20 M8 video KEY frame ran
+                                        // PD0_LVL_1's block cost against C's
+                                        // PD0_LVL_5. `pd0_pick_sb_partition_video`
+                                        // has `Pd0Mode::Lvl5` and the `ires_factor`
+                                        // its closed form needs, which
+                                        // `pd0_pick_sb_partition_m6_eval` hardcodes
+                                        // to 0.
+                                        //
+                                        // Byte-inert on the ALLINTRA arm by
+                                        // construction (this is an arm match), and
+                                        // equivalent at levels 3 and 4: with
+                                        // `cap_max_block` false — which
+                                        // `max_block_cap_active` always is on the
+                                        // video arm — the two entry points build the
+                                        // same `Pd0Ctx`, and `ires_factor` is read
+                                        // only by LVL_5's closed form.
+                                        let (
+                                            pic_pd0_lvl,
+                                            pd0_coeff_rate_est_lvl,
+                                            accurate_part_ctx,
+                                        ) = crate::part_arm::video_pd0_params(
+                                            crate::rate_arm::eff_enc_mode(
+                                                sc_arm,
+                                                speed_config.preset,
+                                            ),
+                                            u32::from(cli_qp),
+                                            w * h,
+                                            video_pic,
+                                        );
+                                        crate::pd0::pd0_pick_sb_partition_video_eval(
+                                            sb_input,
+                                            in_stride,
+                                            x0,
+                                            y0,
+                                            cli_qp as u32,
+                                            sb_qindex,
+                                            crate::pd0::frame_lambda_weight(
+                                                u32::from(picture_qp),
+                                                tune_iq,
+                                                lw_bump,
+                                            ),
+                                            tables,
+                                            pic_pd0_lvl,
+                                            pd0_coeff_rate_est_lvl,
+                                            accurate_part_ctx,
+                                            crate::part_arm::nsq_geom_enabled(
+                                                sc_arm,
+                                                speed_config.preset,
+                                            ),
+                                            // C `pd0_level <= PD0_LVL_1 ||
+                                            // ctx->pic_pred_depth_only` — this branch
+                                            // IS the pred-depth-only one.
+                                            true,
+                                            crate::pd0::input_resolution_factor(w * h),
+                                            w,
+                                            h,
+                                            tile_sb_row_start * sb_size,
+                                            tile_sb_col_start * sb_size,
+                                            sb_stale_vars,
+                                            max_tx_size,
+                                            pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                        )
+                                    } else {
+                                        crate::pd0::pd0_pick_sb_partition_m6_eval(
+                                            sb_input,
+                                            in_stride,
+                                            x0,
+                                            y0,
+                                            cli_qp as u32,
+                                            sb_qindex,
+                                            // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
+                                            // ladder on `picture_qp` + the extended-CRF bump.
+                                            crate::pd0::frame_lambda_weight(
+                                                u32::from(picture_qp),
+                                                tune_iq,
+                                                lw_bump,
+                                            ),
+                                            tables,
+                                            8,
+                                            // M6: coeff_rate_est_lvl 1 (real PD0 coeff
+                                            // rate, unchanged). M7/M8: 2 -> the C
+                                            // perform_tx_pd0 `eob<th ? 6000+eob*500`
+                                            // approximation that lowers the parent-NONE
+                                            // cost and matches C's partition depth.
+                                            pd0_refined_rate_lvl,
+                                            pd0_refined_mode,
+                                            pd0_refined_eexit_th,
+                                            // The max-block variance cap, per ARM.
+                                            // Allintra (`get_max_block_size_allintra`,
+                                            // enc_mode_config.c:7042): fires at M8+
+                                            // only, and stays at sb_size for
+                                            // incomplete edge SBs. VIDEO
+                                            // (`get_max_block_size_default`, :6991):
+                                            // no cap at any preset.
+                                            crate::part_arm::max_block_cap_active(
+                                                sc_arm,
+                                                speed_config.preset,
+                                                x0 + 64 <= w && y0 + 64 <= h,
+                                            ),
+                                            // NSQ geometry, per ARM. Allintra
+                                            // (`svt_aom_get_nsq_geom_level_allintra`,
+                                            // enc_mode_config.c:8240): presets 0..=6 →
+                                            // level 1/2/3 → enabled, presets 7+ → level 0
+                                            // → disabled; when disabled a one-false
+                                            // boundary node force-splits (no edge shape)
+                                            // — the presets 7/8 partial-SB fix. VIDEO
+                                            // (`svt_aom_get_nsq_geom_level_default`,
+                                            // :8216) never returns 0, so geometry stays
+                                            // on at every preset there.
+                                            crate::part_arm::nsq_geom_enabled(
+                                                sc_arm,
+                                                speed_config.preset,
+                                            ),
+                                            // ALIGNED dims — the spec-5.11.4 edge grid.
+                                            w,
+                                            h,
+                                            // This tile's pixel origin: the M6 PD0 leaf-cost
+                                            // DC prediction must not read across a tile
+                                            // boundary (C up/left_available respect tiles).
+                                            // 0 for a single-tile frame → byte-inert.
+                                            tile_sb_row_start * sb_size,
+                                            tile_sb_col_start * sb_size,
+                                            // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                            sb_stale_vars,
+                                            // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                            max_tx_size,
+                                            // C `pd0_use_src_samples` (video arm: recon).
+                                            pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                        )
+                                    };
                                 #[cfg(feature = "std")]
                                 if crate::dbgenv::pd0dbg()
                                     && crate::depth_refine::nsqdbg_here(x0, y0)

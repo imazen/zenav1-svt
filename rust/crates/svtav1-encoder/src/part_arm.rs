@@ -404,15 +404,50 @@ mod tests {
 /// * `use_accurate_part_ctx` — `enc_mode <= M8` (`:8955` / `:9937`).
 ///
 /// `enc_mode` must already be [`crate::rate_arm::eff_enc_mode`]-clamped.
+/// Which VIDEO picture the PD0 level is being derived for.
+///
+/// The distinction is not cosmetic: C's `pd0_detector`
+/// (`enc_dec_process.c:2406`) gates EVERY one of its tests on
+/// `slice_type != I_SLICE`, so on a key frame the picture level IS the
+/// superblock level, and on an inter frame the ladder can step down several
+/// levels before any search runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VideoPic {
+    /// C `slice_type == I_SLICE`. The detector is a no-op below `PD0_LVL_6`.
+    IntraSlice,
+    /// A non-I slice whose list-0 reference is an I_SLICE — which is every
+    /// inter frame the port's low-delay-P envelope can produce, because the
+    /// only reference is the key frame.
+    ///
+    /// `ref_obj_l0->sb_intra[sb]` is then 1 for EVERY superblock (a key frame
+    /// codes only intra blocks), so `use_ref_info` decides the whole ladder
+    /// and no per-SB ME datum is read — see
+    /// `port_pd0_detector::tests::an_all_intra_l0_reference_walks_every_level_down_to_lvl3`.
+    ///
+    /// NOT COVERED, and it is a real gap rather than an impossibility: an
+    /// inter frame whose reference is itself an inter frame. C reads that
+    /// reference's per-SB `sb_intra` (`coding_loop.c:1606`, set when any block
+    /// in the SB is intra), which this port does not carry on its DPB entry.
+    /// `InterOnInterRef` is deliberately ABSENT from this enum so that adding
+    /// it is a compile error at every call site rather than a silent wrong
+    /// level.
+    InterOnIntraRef,
+}
+
 #[must_use]
-pub(crate) fn video_pd0_params(enc_mode: u8, cli_qp: u32, luma_pixels: usize) -> (u8, u8, bool) {
+pub(crate) fn video_pd0_params(
+    enc_mode: u8,
+    cli_qp: u32,
+    luma_pixels: usize,
+    pic: VideoPic,
+) -> (u8, u8, bool) {
     let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+    let is_islice = pic == VideoPic::IntraSlice;
     let pic_pd0_lvl = leaf::set_pic_pd0_lvl_default(
         m,
-        // Every video picture this port encodes is a KEY frame at
-        // temporal_layer_index 0.
+        // Every video picture this port encodes is at temporal_layer_index 0.
         true,
-        true,
+        is_islice,
         false,
         VIDEO_ISLICE_COEFF_LVL,
         crate::port_enc_mode_config::ResolutionRange::from_luma_area(
@@ -422,6 +457,26 @@ pub(crate) fn video_pd0_params(enc_mode: u8, cli_qp: u32, luma_pixels: usize) ->
         SEQ_QP_MOD,
         64,
     );
+    // C `set_pd0_ctrls` then `pd0_detector` (`enc_dec_process.c:3018` calls
+    // `svt_aom_sig_deriv_enc_dec_pd0`, which ends in `set_pd0_ctrls`, and the
+    // detector runs per superblock right after). On an I_SLICE every test is
+    // gated off, so this is the identity there; on an inter frame with an
+    // all-intra L0 reference the `use_ref_info` arms walk 5 -> 4 -> 3 before
+    // any ME threshold is consulted, which is why no per-SB input is needed.
+    let pic_pd0_lvl = match pic {
+        VideoPic::IntraSlice => pic_pd0_lvl,
+        VideoPic::InterOnIntraRef => {
+            let ctrls = crate::port_pd0_detector::pd0_ctrls_for_level(pic_pd0_lvl);
+            crate::port_pd0_detector::pd0_detector(
+                &ctrls,
+                &crate::port_pd0_detector::Pd0SbInput {
+                    slice_type_is_intra: false,
+                    ref_l0: crate::port_pd0_detector::RefSbInfo { was_intra: Some(1) },
+                    ..crate::port_pd0_detector::Pd0SbInput::default()
+                },
+            ) as u8
+        }
+    };
     let pd0_rate_est_level = if pic_pd0_lvl <= 3 {
         2
     } else if pic_pd0_lvl == 4 {
@@ -493,11 +548,12 @@ pub(crate) fn refined_pd0_model(
     cli_qp: u32,
     luma_pixels: usize,
     pred_depth_only: bool,
+    pic: VideoPic,
 ) -> (crate::pd0::Pd0Mode, u128, Option<u8>) {
     match arm {
         ScArm::Allintra => (crate::pd0::Pd0Mode::Lvl1, 1000, None),
         ScArm::Video { .. } => {
-            let (pic_pd0_lvl, _, _) = video_pd0_params(enc_mode, cli_qp, luma_pixels);
+            let (pic_pd0_lvl, _, _) = video_pd0_params(enc_mode, cli_qp, luma_pixels, pic);
             // `set_depth_early_exit_ctrls` (enc_mode_config.c:7229-7233).
             let th: u128 = if pic_pd0_lvl <= 1 || pred_depth_only {
                 1000

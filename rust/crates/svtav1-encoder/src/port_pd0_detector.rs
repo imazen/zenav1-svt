@@ -181,6 +181,96 @@ pub struct Pd0SbInput {
     pub ref_l1: RefSbInfo,
 }
 
+/// C `set_pd0_ctrls` (`enc_mode_config.c:5415`) — the `pcs->pic_pd0_lvl`
+/// (0..=8) to [`Pd0Ctrls`] table the detector then walks down.
+///
+/// NOTE the two places where the LEVEL NUMBER and the `Pd0Level` disagree, and
+/// they are C's, not a transcription slip: `lpd0_lvl` 5 AND 6 both land on
+/// `PD0_LVL_5`, and 7 AND 8 both land on `PD0_LVL_6`. Each pair differs only in
+/// the detector rows — 5 arms the `PD0_LVL_4` fallback row and `use_ref_info`
+/// 1 at LVL_5, 6 disarms LVL_4 and sets `use_ref_info` 0 with double the
+/// variance threshold.
+///
+/// `ctx->hbd_md` FORCES `PD0_LVL_0` before the switch runs; that is the
+/// caller's fact (the bd10 path already routes to
+/// [`crate::pd0::pd0_pick_sb_partition_lvl0`]) so it is not reproduced here.
+///
+/// # Evidence
+///
+/// TIER 4, like the rest of this module: `set_pd0_ctrls` is `static` in C and
+/// its only caller is `svt_aom_sig_deriv_enc_dec_pd0`, which writes into a
+/// `ModeDecisionContext` a shim would have to synthesise. The values are
+/// transcribed from the switch and each row is pinned by
+/// `ctrls_for_level_matches_c`.
+///
+/// # Panics
+/// On a level outside 0..=8 — C `assert(0)`s there.
+#[must_use]
+pub fn pd0_ctrls_for_level(lpd0_lvl: u8) -> Pd0Ctrls {
+    let mut c = Pd0Ctrls {
+        pd0_level: Pd0Level::Lvl0,
+        // C zeroes `use_pd0_detector` for every level at or below the chosen
+        // one and leaves the rest untouched; the struct starts zeroed, so
+        // "leaves untouched" and "false" are the same thing here.
+        use_pd0_detector: [false; PD0_LEVELS],
+        use_ref_info: [0; PD0_LEVELS],
+        me_8x8_cost_variance_th: [0; PD0_LEVELS],
+        edge_dist_th: [0; PD0_LEVELS],
+        neigh_me_dist_shift: [u16::MAX; PD0_LEVELS],
+    };
+    const L4: usize = Pd0Level::Lvl4 as usize;
+    const L5: usize = Pd0Level::Lvl5 as usize;
+    const L6: usize = Pd0Level::Lvl6 as usize;
+    match lpd0_lvl {
+        0 => c.pd0_level = Pd0Level::Lvl0,
+        1 => c.pd0_level = Pd0Level::Lvl1,
+        2 => c.pd0_level = Pd0Level::Lvl2,
+        3 => c.pd0_level = Pd0Level::Lvl3,
+        4 | 5 => {
+            c.pd0_level = if lpd0_lvl == 4 {
+                Pd0Level::Lvl4
+            } else {
+                Pd0Level::Lvl5
+            };
+            c.use_pd0_detector[L4] = true;
+            c.use_ref_info[L4] = 2;
+            c.me_8x8_cost_variance_th[L4] = 250_000;
+            c.edge_dist_th[L4] = 16384;
+            c.neigh_me_dist_shift[L4] = 3;
+            if lpd0_lvl == 5 {
+                c.use_pd0_detector[L5] = true;
+                c.use_ref_info[L5] = 1;
+                c.me_8x8_cost_variance_th[L5] = 250_000 >> 1;
+                c.edge_dist_th[L5] = 16384;
+                c.neigh_me_dist_shift[L5] = 2;
+            }
+        }
+        6 => {
+            c.pd0_level = Pd0Level::Lvl5;
+            c.use_pd0_detector[L5] = true;
+            c.use_ref_info[L5] = 0;
+            c.me_8x8_cost_variance_th[L5] = 500_000;
+            c.edge_dist_th[L5] = 16384;
+            c.neigh_me_dist_shift[L5] = 2;
+        }
+        7 | 8 => {
+            c.pd0_level = Pd0Level::Lvl6;
+            c.use_pd0_detector[L5] = true;
+            c.use_ref_info[L5] = 0;
+            c.me_8x8_cost_variance_th[L5] = 500_000 << 1;
+            c.edge_dist_th[L5] = u32::MAX;
+            c.neigh_me_dist_shift[L5] = u16::MAX;
+            c.use_pd0_detector[L6] = true;
+            c.use_ref_info[L6] = if lpd0_lvl == 7 { 1 } else { 2 };
+            c.me_8x8_cost_variance_th[L6] = 250_000;
+            c.edge_dist_th[L6] = 16384;
+            c.neigh_me_dist_shift[L6] = 2;
+        }
+        other => panic!("set_pd0_ctrls: lpd0_lvl {other} is outside 0..=8 (C asserts)"),
+    }
+    c
+}
+
 /// C `pd0_detector` (enc_dec_process.c:2406) — the light-PD0 classifier.
 ///
 /// Walks the level ladder downward; at each level that matches the current
@@ -468,6 +558,127 @@ mod tests {
     /// thread body. Vectors are hand-derived from the C source at the cited
     /// lines.
     const _: () = ();
+
+    /// `set_pd0_ctrls` (enc_mode_config.c:5415), row for row.
+    ///
+    /// The two aliasing pairs are the point of this test: 5 and 6 both give
+    /// `Lvl5`, 7 and 8 both give `Lvl6`, and they are told apart only by the
+    /// detector rows below them.
+    #[test]
+    fn ctrls_for_level_matches_c() {
+        for (lvl, want) in [
+            (0u8, Pd0Level::Lvl0),
+            (1, Pd0Level::Lvl1),
+            (2, Pd0Level::Lvl2),
+            (3, Pd0Level::Lvl3),
+            (4, Pd0Level::Lvl4),
+            (5, Pd0Level::Lvl5),
+            (6, Pd0Level::Lvl5),
+            (7, Pd0Level::Lvl6),
+            (8, Pd0Level::Lvl6),
+        ] {
+            assert_eq!(pd0_ctrls_for_level(lvl).pd0_level, want, "lpd0_lvl {lvl}");
+        }
+        // 0..=3 arm NO detector at all.
+        for lvl in 0..=3u8 {
+            let c = pd0_ctrls_for_level(lvl);
+            assert!(
+                c.use_pd0_detector.iter().all(|d| !d),
+                "lpd0_lvl {lvl} must arm no detector"
+            );
+        }
+        let l4 = pd0_ctrls_for_level(4);
+        assert!(l4.use_pd0_detector[Pd0Level::Lvl4 as usize]);
+        assert_eq!(l4.use_ref_info[Pd0Level::Lvl4 as usize], 2);
+        assert_eq!(l4.me_8x8_cost_variance_th[Pd0Level::Lvl4 as usize], 250_000);
+        assert_eq!(l4.neigh_me_dist_shift[Pd0Level::Lvl4 as usize], 3);
+        assert!(!l4.use_pd0_detector[Pd0Level::Lvl5 as usize]);
+
+        let l5 = pd0_ctrls_for_level(5);
+        assert!(l5.use_pd0_detector[Pd0Level::Lvl4 as usize]);
+        assert!(l5.use_pd0_detector[Pd0Level::Lvl5 as usize]);
+        assert_eq!(l5.use_ref_info[Pd0Level::Lvl5 as usize], 1);
+        assert_eq!(l5.me_8x8_cost_variance_th[Pd0Level::Lvl5 as usize], 125_000);
+        assert_eq!(l5.neigh_me_dist_shift[Pd0Level::Lvl5 as usize], 2);
+
+        // 6 DISARMS the LVL_4 row that 5 arms, and drops use_ref_info to 0.
+        let l6 = pd0_ctrls_for_level(6);
+        assert!(!l6.use_pd0_detector[Pd0Level::Lvl4 as usize]);
+        assert_eq!(l6.use_ref_info[Pd0Level::Lvl5 as usize], 0);
+        assert_eq!(l6.me_8x8_cost_variance_th[Pd0Level::Lvl5 as usize], 500_000);
+
+        let l7 = pd0_ctrls_for_level(7);
+        assert_eq!(l7.edge_dist_th[Pd0Level::Lvl5 as usize], u32::MAX);
+        assert_eq!(l7.neigh_me_dist_shift[Pd0Level::Lvl5 as usize], u16::MAX);
+        assert_eq!(l7.use_ref_info[Pd0Level::Lvl6 as usize], 1);
+        assert_eq!(
+            pd0_ctrls_for_level(8).use_ref_info[Pd0Level::Lvl6 as usize],
+            2
+        );
+    }
+
+    /// The wiring fact `pipeline.rs` depends on, as a test rather than a
+    /// comment: on the port's low-delay-P envelope the L0 reference is the KEY
+    /// frame, whose every SB is intra, and the ladder then walks
+    /// `Lvl5 -> Lvl4 -> Lvl3` on the REFERENCE tests alone — no ME threshold is
+    /// ever consulted, so the answer does not depend on per-SB ME data.
+    ///
+    /// The I-slice control is the other half: on frame 0 the same picture
+    /// levels are a NO-OP, which is why the key frame keeps 3 / 4 / 5.
+    #[test]
+    fn an_all_intra_l0_reference_walks_every_level_down_to_lvl3() {
+        let inter_sb = |was_intra: u8| Pd0SbInput {
+            slice_type_is_intra: false,
+            ref_l0: RefSbInfo {
+                was_intra: Some(was_intra),
+            },
+            // Deliberately EXTREME, so that if the reference arm did not fire
+            // the ME arm certainly would and the test could not pass by
+            // accident on the same answer.
+            me_8x8_cost_variance: u32::MAX / 4,
+            me_64x64_distortion: u32::MAX / 4,
+            picture_qp: 40,
+            is_edge_sb: true,
+            ..Pd0SbInput::default()
+        };
+        for lpd0_lvl in [3u8, 4, 5] {
+            let ctrls = pd0_ctrls_for_level(lpd0_lvl);
+            assert_eq!(
+                pd0_detector(&ctrls, &inter_sb(1)),
+                Pd0Level::Lvl3,
+                "lpd0_lvl {lpd0_lvl} with an all-intra L0 reference"
+            );
+        }
+        // Positive control: with a NON-intra reference the ladder does NOT
+        // stop at Lvl3 for every input — level 5 still steps (the ME arm
+        // fires on the extreme values above), which proves the assert above is
+        // reading the reference arm and not a constant.
+        let ctrls5 = pd0_ctrls_for_level(5);
+        assert_ne!(pd0_detector(&ctrls5, &inter_sb(0)), Pd0Level::Lvl5);
+
+        // I-slice: levels 3/4/5 are untouched, because every test in the body
+        // is gated on `slice_type != I_SLICE`.
+        for (lpd0_lvl, want) in [
+            (3u8, Pd0Level::Lvl3),
+            (4, Pd0Level::Lvl4),
+            (5, Pd0Level::Lvl5),
+        ] {
+            let ctrls = pd0_ctrls_for_level(lpd0_lvl);
+            let sb = Pd0SbInput {
+                slice_type_is_intra: true,
+                me_8x8_cost_variance: u32::MAX / 4,
+                me_64x64_distortion: u32::MAX / 4,
+                picture_qp: 40,
+                is_edge_sb: true,
+                ..Pd0SbInput::default()
+            };
+            assert_eq!(
+                pd0_detector(&ctrls, &sb),
+                want,
+                "I-slice lpd0_lvl {lpd0_lvl}"
+            );
+        }
+    }
 
     fn ctrls_at(level: Pd0Level) -> Pd0Ctrls {
         Pd0Ctrls {

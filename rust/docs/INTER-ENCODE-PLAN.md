@@ -3644,6 +3644,114 @@ wired to it at all.
   q20 / q40 / q55 and the port's level-18 control row was checked field-for-
   field against C's `case 18:` and agrees, so the search LEVEL is not it.
 
+### 1z⁶. PD0_LVL_5 was unreachable, and C's `pd0_detector` runs on every INTER frame — the q20 preset-8 key frames close (2026-09-02)
+
+§1z⁵ left four video-KEY F0DIFF cells with two named causes. Three of them —
+`gradient {64,72,128} q20 p8` — are this one, and it is two defects that have to
+be fixed together because either alone regresses a cell the byte gate already
+requires.
+
+#### Defect A — the pred-depth-only path could not express PD0_LVL_5
+
+`set_pic_pd0_lvl_default`'s `enc_mode <= ENC_M8` row for a <=360p picture
+(`enc_mode_config.c:8631`) is `MIN(MAX_PD0_LVL, 3 + ldp0_lvl_offset[qp_band])`
+with `ldp0_lvl_offset = {2, 2, 1, 0}` and bands `<=27 / <=39 / <=43 / else`:
+
+| CLI qp | band | offset | `pic_pd0_lvl` |
+|---|--:|--:|--:|
+| 20 | 0 | 2 | **5** |
+| 40 | 2 | 1 | 4 |
+| 55 | 3 | 0 | 3 |
+
+`pipeline.rs`'s pred-depth-only branch took its PD0 model from
+`part_arm::refined_pd0_model`, which carries levels 3 and 4 and says in its own
+comment that it falls back to `Pd0Mode::Lvl1` otherwise. So a q20 M8 video key
+frame ran **PD0_LVL_1's block cost against C's PD0_LVL_5** — and the port's p8
+output was byte-identical to its own p6 output on `gradient 128x128 q20`, where
+C's differed (7295 vs 7472). That equality is what pointed here: the port had no
+M8 behaviour at all on that cell.
+
+The fix routes the branch through `pd0::pd0_pick_sb_partition_video_eval` — the
+same entry point the `preset >= 9` branch already uses, which has
+`Pd0Mode::Lvl5` and the `ires_factor` its closed form needs (the m6 entry point
+hardcodes that to 0). Byte-inert on the allintra arm by construction (it is an
+arm match) and equivalent at levels 3 and 4, where with `cap_max_block` false —
+which `max_block_cap_active` always is on the video arm — the two entry points
+build the same `Pd0Ctx`.
+
+#### Defect B — `pd0_detector` runs on an inter frame, and the port had none
+
+Routing alone REGRESSED `gradient 16x16 q20 p8`'s frame 1 from 21 B (C's) to
+23 B, because level 5 is the PICTURE level and C does not use it on an inter
+frame. `pd0_detector` (`enc_dec_process.c:2406`) walks the level ladder DOWN per
+superblock, and every one of its tests is gated on `slice_type != I_SLICE`:
+
+* On a KEY frame it is a no-op below `PD0_LVL_6`, so the picture level IS the
+  superblock level — the port was right on frame 0 all along.
+* On an INTER frame the `use_ref_info` arm reads `ref_obj_l0->sb_intra[sb]`,
+  which is 1 for every superblock of a KEY reference (`coding_loop.c:1606` sets
+  it when any block in the SB is intra; a key frame has only intra blocks). So
+  `PD0_LVL_5` steps to `PD0_LVL_4` (`use_ref_info[LVL_5] == 1`, "either usable
+  reference was intra"), `PD0_LVL_4` steps to `PD0_LVL_3`
+  (`use_ref_info[LVL_4] == 2`), and `PD0_LVL_3` arms no detector at all.
+  **Every inter frame in this port's low-delay-P envelope runs PD0_LVL_3**, and
+  it gets there without reading a single ME threshold — which is why no per-SB
+  input is needed to reproduce it.
+
+`port_pd0_detector` was already ported (tier 4) with no caller. What it needed
+was C's `set_pd0_ctrls` (`enc_mode_config.c:5415`), now
+`port_pd0_detector::pd0_ctrls_for_level`, whose two ALIASING pairs are the
+point of its test: `lpd0_lvl` 5 and 6 both give `PD0_LVL_5` and 7 and 8 both
+give `PD0_LVL_6`, differing only in the detector rows.
+
+`part_arm::VideoPic` carries the distinction. Its `InterOnIntraRef` variant is
+named for what it asserts, and the case it does NOT cover —
+an inter frame whose reference is itself an inter frame, where C reads that
+reference's real per-SB `sb_intra` and this port's DPB entry does not carry it —
+is deliberately ABSENT from the enum so that adding it is a compile error at
+every call site rather than a silent wrong level.
+
+#### Evidence
+
+`port_pd0_detector::tests::an_all_intra_l0_reference_walks_every_level_down_to_lvl3`
+drives the ported detector over levels 3/4/5 with `me_8x8_cost_variance` and
+`me_64x64_distortion` at `u32::MAX / 4` — values extreme enough that if the
+reference arm had NOT fired, the ME arm certainly would, so the test cannot pass
+by landing on the same answer for the wrong reason. Its negative control is the
+same input with `was_intra = 0`, which does not stop at `PD0_LVL_5`; its I-slice
+control asserts levels 3/4/5 are returned untouched.
+`ctrls_for_level_matches_c` pins all nine rows of the table, both aliasing pairs
+included.
+
+#### The frontier
+
+| result | §1z⁵ | after |
+|---|--:|--:|
+| BOTH frames byte-identical | 31 | 31 |
+| frame 0 identical, frame 1 differs | 59 | 61 |
+| frame 0 already differs | 6 | **4** |
+
+`gradient {64,72} q20 p8`'s key frames closed (2044 and 2747 B exactly);
+`gradient 128x128 q20 p8` moved 7295 -> 7453 against C's 7472 but did not close.
+Nothing regressed — in particular `gradient 16x16 q20 p8` stays BOTH, which is
+defect B doing its job.
+
+#### Still open on the video-KEY frontier: 4 cells
+
+* `gradient 128x128 q20 p8` — 7453 against C's 7472, the only MULTI-SB cell of
+  the q20 p8 group and the only one still open, so the next thing to look at is
+  what is per-SB there: the funnel CDF chain (`funnel_chain` is live at video
+  M8, `update_cdf_level` being `is_islice ? 1 : 0` through M8) and the PD0
+  chained rate tables it feeds.
+* `diag {64,72,128} q20 p6` — NOT localized. C 441/584/1284 against 444/587/1275,
+  with q40 and q55 identical at the same preset, so it is qp-keyed at M6 where
+  the refinement walk runs. Ruled out at source: the `nsq_search_level`
+  ladder (18/17/15 for q20/q40/q55) and its level-18 control row, checked
+  field-for-field against C's `case 18:`; and the s1/s2-vs-e1/e2 scaling
+  asymmetry, which `depth_refine::for_arm` already reproduces deliberately
+  (C computes the scaled parent thresholds and then overwrites them with the
+  unscaled ones).
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
