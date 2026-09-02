@@ -2537,6 +2537,16 @@ Items 4, 5 and 6 are **decoder-conformance** requirements, not RD ones: they
 decide whether the encoder's recon equals what a decoder produces from the
 bytes it wrote. Items 1, 2, 3 and 7 are what make the bytes exist at all.
 
+**Item 1 is DE-RISKED but must land with 1b, measured 2026-09-01.** Taking
+both gates off behind a temporary env var (since reverted) runs the C-exact
+PD0 + leaf-funnel MD on the inter frame **without panicking**: frame 0 stays
+at 961 B (the key path cannot see the change — the gates only differ when a
+reference exists) and frame 1's tile goes 94 -> 119 B. It is LARGER because
+the C-exact path has no inter candidate, so it codes the frame all-intra where
+the legacy recursion at least inter-predicts 24 leaves. So item 1 is safe to
+do and useless on its own: it has to land in the same change as 1b, and the
+byte number to watch is not 119 but C's 3.
+
 **Item 1 is the one that reorders the rest.** Until the two `ref_*.is_none()`
 gates come off, work on the inter path lands in `partition.rs`'s legacy
 recursion — code that item 1 then bypasses. That is why this chunk did NOT
