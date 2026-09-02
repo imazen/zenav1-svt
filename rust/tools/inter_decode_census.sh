@@ -18,9 +18,14 @@
 # quality difference. A byte gate cannot see the difference between "wrong
 # bytes" and "bytes no decoder will accept"; this can.
 #
-# THE PIN IS EXACT. The 22 are listed by name. A cell that starts failing is
-# a regression; a pinned cell that starts DECODING means the defect moved and
-# the list must shrink in the same commit. There is no count to nudge.
+# THE PIN IS EXACT, and it is now EMPTY. It held 22 cells for the length of
+# one commit: this gate landed with the defect measured and pinned,
+# `av1_find_samples` was ported in the next change, and the gate REFUSED to
+# let that land quietly — it failed with "22 pinned cell(s) now decoding",
+# which is the direction a pin has to work in if it is going to mean
+# anything. All 96 streams decode.
+# A cell that starts failing is a conformance regression; there is no count
+# to nudge.
 #
 # The comparison is restricted to the cells this run actually SWEPT, and that
 # is load-bearing rather than tidy: without it, narrowing the grid with the
@@ -51,30 +56,15 @@ PRESETS="${IBM_PRESETS:-6 8}"
 OUT="${1:-$RS_ROOT/target/inter-decode-census}"
 mkdir -p "$OUT"
 
-# The cells whose stream a decoder REJECTS today, by name. Every one is
-# preset 6, which is where `allow_warped_motion` is 1 — see the header.
-KNOWN_UNDECODABLE="diag_128x128_q20_p6
-diag_128x128_q40_p6
-diag_128x128_q55_p6
-diag_64x64_q20_p6
-diag_64x64_q40_p6
-diag_72x72_q20_p6
-diag_72x72_q40_p6
-diag_72x72_q55_p6
-gradient_128x128_q20_p6
-gradient_128x128_q55_p6
-gradient_72x72_q20_p6
-gradient_72x72_q40_p6
-gradient_72x72_q55_p6
-screen_128x128_q20_p6
-screen_128x128_q40_p6
-screen_64x64_q20_p6
-screen_72x72_q20_p6
-screen_72x72_q40_p6
-screen_72x72_q55_p6
-uniform_72x72_q20_p6
-uniform_72x72_q40_p6
-uniform_72x72_q55_p6"
+# The cells whose stream a decoder REJECTS, by name — EMPTY. What was here:
+# 22 cells, every one preset 6, which is where `allow_warped_motion` is 1.
+# The port wrote the two-symbol OBMC motion-mode symbol where the decoder
+# reads the three-symbol MOTION_MODES one, because `num_proj_ref` was always
+# zero. `av1_find_samples` is ported now and all 96 streams decode.
+#
+# Keep the format if a cell ever has to go back in: one
+# `<content>_<w>x<h>_q<q>_p<p>` per line.
+KNOWN_UNDECODABLE=""
 
 : >"$OUT/observed.txt"
 : >"$OUT/swept.txt"

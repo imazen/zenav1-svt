@@ -52,14 +52,48 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 49 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 55 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z16 (40 at §1z15; the
-    # nine below closed when MD's `is_inter_ctx` stopped reading an INVERTED
-    # context table). Listed in full:
-    # a gate that samples its own frontier reports a smaller regression than
-    # it should. `tools/inter_byte_matrix.sh` is the sweep this list is the
-    # assertion of.
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z19. The envelope this
+    # session: 40 (§1z15) -> 49 (§1z17, MD's `is_inter_ctx` was reading an
+    # INVERTED context table) -> 55 (§1z19, `av1_find_samples` ported so
+    # `num_proj_ref` is real and the motion-mode ALPHABET matches C's).
+    #
+    # Listed in full, and regenerated wholesale rather than appended to: a
+    # gate that samples its own frontier reports a smaller regression than it
+    # should, and a hand-appended list drifts from the sweep it claims to
+    # assert. `tools/inter_byte_matrix.sh` is that sweep.
+    "diag 16 16 20 8 2 3"
+    "diag 16 16 55 6 2 3"
+    "diag 64 64 20 8 2 3"
+    "diag 64 64 40 8 2 3"
+    "diag 64 64 55 8 2 3"
+    "diag 128 128 40 8 2 3"
+    "diag 128 128 55 8 2 3"
+    "gradient 16 16 20 6 2 3"
+    "gradient 16 16 20 8 2 3"
+    "gradient 16 16 40 6 2 3"
+    "gradient 16 16 55 6 2 3"
+    "gradient 64 64 20 8 2 3"
+    "gradient 64 64 40 6 2 3"
+    "gradient 64 64 40 8 2 3"
+    "gradient 64 64 55 6 2 3"
+    "gradient 64 64 55 8 2 3"
+    "gradient 72 72 20 8 2 3"
+    "gradient 72 72 40 6 2 3"
+    "gradient 128 128 40 6 2 3"
+    "gradient 128 128 40 8 2 3"
+    "gradient 128 128 55 6 2 3"
+    "gradient 128 128 55 8 2 3"
+    "screen 16 16 20 6 2 3"
+    "screen 16 16 20 8 2 3"
+    "screen 16 16 40 6 2 3"
+    "screen 16 16 55 6 2 3"
+    "screen 64 64 40 6 2 3"
+    "screen 64 64 55 6 2 3"
+    "screen 64 64 55 8 2 3"
+    "screen 128 128 55 6 2 3"
+    "screen 128 128 55 8 2 3"
     "uniform 16 16 20 6 2 3"
     "uniform 16 16 20 8 2 3"
     "uniform 16 16 40 6 2 3"
@@ -72,12 +106,11 @@ PASS_CELLS=(
     "uniform 64 64 40 8 2 3"
     "uniform 64 64 55 6 2 3"
     "uniform 64 64 55 8 2 3"
-    # §1z¹⁶: MD priced `intra_inter` at the wrong CONTEXT (the table was
-    # inverted AND collapsed "no neighbour" into "intra"), 1207 rate units on
-    # every inter candidate of every block with two neighbours. All nine of
-    # these closed on that one fix.
+    "uniform 72 72 20 6 2 3"
     "uniform 72 72 20 8 2 3"
+    "uniform 72 72 40 6 2 3"
     "uniform 72 72 40 8 2 3"
+    "uniform 72 72 55 6 2 3"
     "uniform 72 72 55 8 2 3"
     "uniform 128 128 20 6 2 3"
     "uniform 128 128 20 8 2 3"
@@ -85,42 +118,6 @@ PASS_CELLS=(
     "uniform 128 128 40 8 2 3"
     "uniform 128 128 55 6 2 3"
     "uniform 128 128 55 8 2 3"
-    "gradient 16 16 20 6 2 3"
-    "gradient 16 16 20 8 2 3"
-    "gradient 64 64 20 8 2 3"   # §1z⁹: PD0 inter compensation
-    "gradient 72 72 20 8 2 3"   # §1z⁹
-    "diag 64 64 20 8 2 3"       # §1z⁹
-    "diag 64 64 40 8 2 3"       # §1z⁹'s reference cell (SVTAV1_PD0_NOSPLIT no longer needed)
-    "screen 16 16 20 8 2 3"     # §1z⁹
-    "gradient 16 16 40 6 2 3"
-    "gradient 16 16 55 6 2 3"
-    "gradient 64 64 40 6 2 3"   # §1z's reference cell: one 64x64 NEWMV skip block
-    "gradient 64 64 40 8 2 3"   # §1z''''s cell: the PD0 fixed-tree path's dropped inter arm
-    "gradient 64 64 55 6 2 3"
-    "gradient 64 64 55 8 2 3"   # §1z'''''s cell: fixed_partition's second conjunct
-    "gradient 128 128 55 8 2 3" # §1z'''''
-    "diag 64 64 55 8 2 3"       # §1z'''''
-    "diag 128 128 55 8 2 3"     # §1z'''''
-    "screen 16 16 20 6 2 3"
-    "screen 16 16 40 6 2 3"
-    "screen 16 16 55 6 2 3"
-    "screen 64 64 40 6 2 3"
-    "screen 64 64 55 6 2 3"
-    "screen 64 64 55 8 2 3"
-    "screen 128 128 55 6 2 3"
-    "screen 128 128 55 8 2 3"
-    # The four cells §1z15 promoted: C's reference set is
-    # [LAST, BWDREF, LAST_BWD] with `reference_select = 1`, and its ME
-    # candidate on these is LIST 1's, so C codes `rf=5` where the port coded
-    # `rf=1`. MEASURED before the chunk (benchmarks/
-    # inter_byte_matrix_2026-09-02d.tsv): all four F1DIFF at the SAME frame-1
-    # byte count as C on three of them (23/21/21) — the difference was the
-    # reference-frame syntax alone, which is why a size-only reading missed
-    # it for four chunks.
-    "diag 128 128 40 8 2 3"     # was F1DIFF 23 B vs C's 23
-    "diag 16 16 20 8 2 3"       # was F1DIFF 21 B vs C's 21
-    "diag 16 16 55 6 2 3"       # was F1DIFF 21 B vs C's 21
-    "gradient 128 128 40 8 2 3" # was F1DIFF 23 B vs C's 24
 )
 # Read below as `${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}` — see the same note in
 # `inter_decode_gate.sh`: on bash < 4.4 (`/bin/bash` on macOS is 3.2.57)
@@ -139,7 +136,6 @@ PASS_CELLS=(
 OPEN_CELLS=(
     "gradient 64 64 20 6 2 3"   # tile 24 B vs C's 22
     "diag 64 64 40 6 2 3"       # the widest p6 residual on this content
-    "uniform 72 72 40 6 2 3"    # 23 B vs 22 — a partial-SB inter frame; was a PANIC
     "diag 72 72 40 6 2 3"       # partial-SB, diag content; was a PANIC
     "screen 72 72 40 6 2 3"     # partial-SB, screen content; was a PANIC
 )

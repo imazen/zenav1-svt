@@ -2528,3 +2528,360 @@ pub fn count_overlappable_neighbors(grid: &MvpGrid, ctx: &MvpBlockCtx, bsize: us
     count_overlappable_nb_above(grid, ctx, u32::MAX)
         + count_overlappable_nb_left(grid, ctx, u32::MAX)
 }
+
+// ---------------------------------------------------------------------------
+// av1_find_samples (adaptive_mv_pred.c:1594-1750) — the WARPED-MOTION sample
+// scan, whose COUNT decides the motion-mode ALPHABET
+// ---------------------------------------------------------------------------
+
+/// C `LEAST_SQUARES_SAMPLES_MAX` (definitions.h:469) — `1 << 3`.
+pub const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
+
+/// C `record_samples` (adaptive_mv_pred.c:1594) — one neighbour's centre
+/// point and its projection through that neighbour's MV, both in EIGHTH pel
+/// and relative to this block's top-left pixel.
+///
+/// `sign_r` / `sign_c` are C's own `+1` / `-1` selectors, not booleans: the
+/// above scan passes `(0, -1, col_offset, 1)` and the left scan
+/// `(row_offset, 1, 0, -1)`, so the two differ in WHICH axis gets the
+/// half-block bias and in its direction.
+#[must_use]
+fn record_samples(
+    e: &crate::intrabc_mvp::MvpMiEntry,
+    row_offset: i32,
+    sign_r: i32,
+    col_offset: i32,
+    sign_c: i32,
+) -> ([i32; 2], [i32; 2]) {
+    let bw = i32::from(svtav1_types::tables::block::BLOCK_SIZE_WIDE[e.bsize as usize]);
+    let bh = i32::from(svtav1_types::tables::block::BLOCK_SIZE_HIGH[e.bsize as usize]);
+    // C `MI_SIZE` is 4.
+    let x = col_offset * 4 + sign_c * bw.max(4) / 2 - 1;
+    let y = row_offset * 4 + sign_r * bh.max(4) / 2 - 1;
+    (
+        [x * 8, y * 8],
+        [x * 8 + i32::from(e.mv[0].x), y * 8 + i32::from(e.mv[0].y)],
+    )
+}
+
+/// C `av1_find_samples` (adaptive_mv_pred.c:1610-1750) — how many
+/// SINGLE-reference neighbours predict from `rf0`, and where they are.
+///
+/// # Why the COUNT is bitstream-critical even with warped motion switched off
+///
+/// `motion_mode_allowed` promotes a block to `WARPED_CAUSAL` — and with it
+/// the THREE-symbol `MOTION_MODES` alphabet instead of the two-symbol OBMC
+/// one — when `allow_warped_motion` is set and this count is `>= 1`. The
+/// DECODER runs the same scan. A port that leaves the count at 0 writes the
+/// wrong ALPHABET on every inter block with an overlappable neighbour, and
+/// the arithmetic coder desynchronises: `docs/INTER-ENCODE-PLAN.md` §1z¹⁸
+/// measured `aomdec` rejecting 22 of the campaign's 96 cells for exactly
+/// this, every one of them at the preset where `allow_warped_motion` is 1.
+///
+/// **So this is not a warped-motion feature.** Turning `wm_ctrls` off keeps
+/// warped motion out of the candidate SET and does nothing about the symbol
+/// every inter block writes.
+///
+/// Four scans in C's order — above, left, top-left, top-right — each with
+/// C's own early return at [`LEAST_SQUARES_SAMPLES_MAX`]. The `do_tl` /
+/// `do_tr` suppressions are set by the ABOVE and LEFT scans' "current block
+/// is no wider/taller than the neighbour" arms and are read by the last two,
+/// so the order is load-bearing.
+///
+/// The sample POINTS are returned as well as the count. Nothing in this port
+/// consumes them yet — warped-motion parameter estimation is unported — but
+/// they are what a future `svt_aom_warped_motion_parameters` needs, and
+/// computing the count without them would be a second, partial transcription
+/// of the same scan.
+///
+/// Evidence tier 4 — `av1_find_samples` is `static` with no exported symbol.
+#[must_use]
+pub fn find_warp_samples(
+    grid: &crate::intrabc_mvp::MvpGrid<'_>,
+    ctx: &crate::intrabc_mvp::MvpBlockCtx,
+    rf0: i8,
+) -> (
+    u8,
+    [[i32; 2]; LEAST_SQUARES_SAMPLES_MAX],
+    [[i32; 2]; LEAST_SQUARES_SAMPLES_MAX],
+) {
+    let mut pts = [[0i32; 2]; LEAST_SQUARES_SAMPLES_MAX];
+    let mut pts_inref = [[0i32; 2]; LEAST_SQUARES_SAMPLES_MAX];
+    let mut np: usize = 0;
+    let (mut do_tl, mut do_tr) = (true, true);
+    let stride = grid.stride;
+
+    // C's `mbmi->block_mi.ref_frame[0] == rf0 && ref_frame[1] == NONE_FRAME`.
+    let matches = |e: &crate::intrabc_mvp::MvpMiEntry| -> bool {
+        e.ref_frame[0] == rf0 && e.ref_frame[1] == NONE_FRAME
+    };
+    let n4w = |e: &crate::intrabc_mvp::MvpMiEntry| -> i32 {
+        i32::from(svtav1_types::tables::block::BLOCK_SIZE_WIDE[e.bsize as usize]) >> 2
+    };
+    let n4h = |e: &crate::intrabc_mvp::MvpMiEntry| -> i32 {
+        i32::from(svtav1_types::tables::block::BLOCK_SIZE_HIGH[e.bsize as usize]) >> 2
+    };
+
+    // ---- the nearest ABOVE row ----
+    if ctx.up_available {
+        let above = *grid.at(-stride);
+        let a_n4_w = n4w(&above);
+        if ctx.n8_w <= a_n4_w {
+            // C `int col_offset = -mi_col % n4_w;` — a C remainder, which is
+            // NEGATIVE for a positive mi_col, and both suppressions below read
+            // that sign. Rust's `%` on i32 truncates toward zero exactly as
+            // C's does, so this is the same expression.
+            let col_offset = -ctx.mi_col % a_n4_w;
+            if col_offset < 0 {
+                do_tl = false;
+            }
+            if col_offset + a_n4_w > ctx.n8_w {
+                do_tr = false;
+            }
+            if matches(&above) {
+                let (p, q) = record_samples(&above, 0, -1, col_offset, 1);
+                pts[np] = p;
+                pts_inref[np] = q;
+                np += 1;
+                if np >= LEAST_SQUARES_SAMPLES_MAX {
+                    return (LEAST_SQUARES_SAMPLES_MAX as u8, pts, pts_inref);
+                }
+            }
+        } else {
+            let mut i = 0i32;
+            let end = ctx.n8_w.min(ctx.mi_cols - ctx.mi_col);
+            while i < end {
+                let e = *grid.at(i - stride);
+                // C `mi_step = AOMMIN(xd->n4_w, n4_w)` with no lower bound —
+                // it does not need one, because every `BlockSize` is at least
+                // 4 px wide and `mi_size_wide` is therefore at least 1. The
+                // `.max(1)` is a LOOP-TERMINATION guard on a value C proves
+                // and Rust does not; it cannot change behaviour for any real
+                // bsize, and without it a corrupt grid entry would hang.
+                let step = ctx.n8_w.min(n4w(&e)).max(1);
+                if matches(&e) {
+                    let (p, q) = record_samples(&e, 0, -1, i, 1);
+                    pts[np] = p;
+                    pts_inref[np] = q;
+                    np += 1;
+                    if np >= LEAST_SQUARES_SAMPLES_MAX {
+                        return (LEAST_SQUARES_SAMPLES_MAX as u8, pts, pts_inref);
+                    }
+                }
+                i += step;
+            }
+        }
+    }
+
+    // ---- the nearest LEFT column ----
+    if ctx.left_available {
+        let left = *grid.at(-1);
+        let l_n4_h = n4h(&left);
+        if ctx.n8_h <= l_n4_h {
+            let row_offset = -ctx.mi_row % l_n4_h;
+            if row_offset < 0 {
+                do_tl = false;
+            }
+            if matches(&left) {
+                let (p, q) = record_samples(&left, row_offset, 1, 0, -1);
+                pts[np] = p;
+                pts_inref[np] = q;
+                np += 1;
+                if np >= LEAST_SQUARES_SAMPLES_MAX {
+                    return (LEAST_SQUARES_SAMPLES_MAX as u8, pts, pts_inref);
+                }
+            }
+        } else {
+            let mut i = 0i32;
+            let end = ctx.n8_h.min(ctx.mi_rows - ctx.mi_row);
+            while i < end {
+                let e = *grid.at(i * stride - 1);
+                // Same guard as the above scan — see there.
+                let step = ctx.n8_h.min(n4h(&e)).max(1);
+                if matches(&e) {
+                    let (p, q) = record_samples(&e, i, 1, 0, -1);
+                    pts[np] = p;
+                    pts_inref[np] = q;
+                    np += 1;
+                    if np >= LEAST_SQUARES_SAMPLES_MAX {
+                        return (LEAST_SQUARES_SAMPLES_MAX as u8, pts, pts_inref);
+                    }
+                }
+                i += step;
+            }
+        }
+    }
+
+    // ---- TOP-LEFT ----
+    if do_tl && ctx.left_available && ctx.up_available {
+        let e = *grid.at(-stride - 1);
+        if matches(&e) {
+            let (p, q) = record_samples(&e, 0, -1, 0, -1);
+            pts[np] = p;
+            pts_inref[np] = q;
+            np += 1;
+            if np >= LEAST_SQUARES_SAMPLES_MAX {
+                return (LEAST_SQUARES_SAMPLES_MAX as u8, pts, pts_inref);
+            }
+        }
+    }
+
+    // ---- TOP-RIGHT ----
+    if do_tr
+        && crate::intrabc_mvp::has_top_right(grid, ctx, ctx.n8_w.max(ctx.n8_h))
+        && crate::intrabc_mvp::is_inside(ctx.tile, ctx.mi_col, ctx.mi_row, -1, ctx.n8_w)
+    {
+        let e = *grid.at(ctx.n8_w - stride);
+        if matches(&e) {
+            let (p, q) = record_samples(&e, 0, -1, ctx.n8_w, 1);
+            pts[np] = p;
+            pts_inref[np] = q;
+            np += 1;
+        }
+    }
+
+    (np as u8, pts, pts_inref)
+}
+
+#[cfg(test)]
+mod find_warp_samples_tests {
+    use super::*;
+    use crate::intrabc::TileMiBounds;
+    use crate::intrabc_mvp::{MvpGrid, MvpMiEntry, derive_block_ctx};
+
+    const MI: i32 = 16; // a 64x64 frame in 4x4 mi units
+    const BSIZE_8X8: usize = 3;
+
+    fn tile() -> TileMiBounds {
+        TileMiBounds {
+            mi_row_start: 0,
+            mi_col_start: 0,
+            mi_row_end: MI,
+            mi_col_end: MI,
+        }
+    }
+
+    /// An 8x8 neighbour predicting from `rf0` with MV `(mvy, mvx)` in
+    /// eighth-pel, or an INTRA cell when `rf0` is `INTRA_FRAME`.
+    fn cell(rf0: i8, rf1: i8, mvy: i16, mvx: i16) -> MvpMiEntry {
+        MvpMiEntry {
+            bsize: BSIZE_8X8 as u8,
+            mode: 13, // NEARESTMV
+            use_intrabc: false,
+            ref_frame: [rf0, rf1],
+            mv: [Mv { x: mvx, y: mvy }, Mv::ZERO],
+            partition: 0,
+            interp_filters: 0,
+        }
+    }
+
+    /// Grid of intra cells with the above row, left column and top-left
+    /// corner of the block at mi `(4,4)` set to `n`.
+    fn grid_with_neighbours(n: MvpMiEntry) -> alloc::vec::Vec<MvpMiEntry> {
+        let mut g = alloc::vec![MvpMiEntry::default(); (MI * MI) as usize];
+        for c in 0..MI {
+            g[(3 * MI + c) as usize] = n; // the whole row above
+        }
+        for r in 0..MI {
+            g[(r * MI + 3) as usize] = n; // the whole column left
+        }
+        g
+    }
+
+    fn run(entries: &[MvpMiEntry], rf0: i8) -> u8 {
+        let ctx = derive_block_ctx(4, 4, BSIZE_8X8, MI, MI, tile(), MI);
+        let grid = MvpGrid {
+            entries,
+            stride: MI,
+            base: 4 * MI + 4,
+        };
+        find_warp_samples(&grid, &ctx, rf0).0
+    }
+
+    /// TIER 4 — ALL FOUR scans fire for an 8x8 block at mi (4,4) with 8x8
+    /// neighbours above, left, top-left and top-right.
+    /// `av1_find_samples` is `static` with no exported symbol, so this is
+    /// hand-derived against `adaptive_mv_pred.c:1610-1750`:
+    ///
+    /// * above: `xd->n4_w`(2) `<= n4_w`(2), so `col_offset = -4 % 2 = 0`;
+    ///   `col_offset < 0` is false so `do_tl` survives, and
+    ///   `col_offset + n4_w > xd->n4_w` is `2 > 2` = false so `do_tr`
+    ///   survives too. Sample 1.
+    /// * left: the mirror, `row_offset = -4 % 2 = 0`. Sample 2.
+    /// * top-left: `do_tl` and both edges. Sample 3.
+    /// * top-right: `do_tr`, `has_top_right` (`mask_row & 2` and
+    ///   `mask_col & 2` are both 0 at mi 4, so it is not suppressed) and
+    ///   `is_inside`. Sample 4.
+    ///
+    /// **The first draft of this test expected THREE and was wrong** — it
+    /// forgot the top-right scan, and the implementation was right. Recorded
+    /// because a test written to agree with the code it tests is worth
+    /// nothing; this one was re-derived from C after it failed.
+    ///
+    /// It is a POSITIVE CONTROL as much as a value check: the whole point of
+    /// this function is that the count is NON-ZERO where C's is, because a
+    /// zero writes the wrong motion-mode ALPHABET
+    /// (`docs/INTER-ENCODE-PLAN.md` §1z¹⁸).
+    #[test]
+    fn counts_all_four_scans_for_an_8x8_with_8x8_neighbours() {
+        let g = grid_with_neighbours(cell(1, NONE_FRAME, -8, 16));
+        assert_eq!(run(&g, 1), 4, "above + left + top-left + top-right");
+    }
+
+    /// TIER 4 — a neighbour that predicts from a DIFFERENT reference is not a
+    /// sample. C's test is `ref_frame[0] == rf0`, and the scan is run once per
+    /// reference precisely because the answer differs per reference.
+    #[test]
+    fn a_different_reference_contributes_nothing() {
+        let g = grid_with_neighbours(cell(1, NONE_FRAME, -8, 16));
+        assert_eq!(run(&g, 5), 0, "BWDREF has no samples here");
+    }
+
+    /// TIER 4 — a COMPOUND neighbour is not a sample either: C requires
+    /// `ref_frame[1] == NONE_FRAME`. Without this half of the test a port
+    /// that dropped the second condition would still pass the two above.
+    #[test]
+    fn a_compound_neighbour_contributes_nothing() {
+        let g = grid_with_neighbours(cell(1, 5, -8, 16));
+        assert_eq!(run(&g, 1), 0, "LAST_BWD neighbours are not samples");
+    }
+
+    /// TIER 4 — an all-INTRA neighbourhood gives zero, which is the case the
+    /// port used to hard-code for every block.
+    #[test]
+    fn an_intra_neighbourhood_gives_zero() {
+        let g = alloc::vec![MvpMiEntry::default(); (MI * MI) as usize];
+        assert_eq!(run(&g, 1), 0);
+    }
+
+    /// TIER 4 — the recorded POINT, hand-derived from C's `record_samples`
+    /// (adaptive_mv_pred.c:1594) for the ABOVE neighbour of an 8x8 block at
+    /// mi (4,4) with 8x8 neighbours:
+    ///
+    /// `n4_w` is 2 and `xd->n4_w` is 2, so C takes the "current block width
+    /// <= above block width" arm with `col_offset = -mi_col % n4_w = -4 % 2 =
+    /// 0`. Then `x = 0*4 + 1*max(8,4)/2 - 1 = 3` and
+    /// `y = 0*4 + (-1)*max(8,4)/2 - 1 = -5`, and the point is `(x*8, y*8)`
+    /// with the projection offset by the neighbour's own MV.
+    ///
+    /// The MV components are deliberately DIFFERENT (`mv = (y=-8, x=16)`) so
+    /// a transposed `pts_inref` cannot pass.
+    #[test]
+    fn the_recorded_point_matches_c_for_the_above_neighbour() {
+        let g = grid_with_neighbours(cell(1, NONE_FRAME, -8, 16));
+        let ctx = derive_block_ctx(4, 4, BSIZE_8X8, MI, MI, tile(), MI);
+        let grid = MvpGrid {
+            entries: &g,
+            stride: MI,
+            base: 4 * MI + 4,
+        };
+        let (n, pts, pts_inref) = find_warp_samples(&grid, &ctx, 1);
+        assert_eq!(n, 4);
+        assert_eq!(pts[0], [3 * 8, -5 * 8], "the above neighbour's centre");
+        assert_eq!(
+            pts_inref[0],
+            [3 * 8 + 16, -5 * 8 + -8],
+            "projected through the neighbour's own MV"
+        );
+    }
+}

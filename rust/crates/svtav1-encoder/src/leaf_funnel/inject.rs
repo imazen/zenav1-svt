@@ -1543,7 +1543,12 @@ pub(super) fn inject_candidates(
                     drl_index: c.drl_index,
                     interp_filters: c.interp_filters,
                     motion_mode: c.motion_mode,
-                    num_proj_ref: 0,
+                    // C `cand->block_mi.num_proj_ref`. It is NOT decorative:
+                    // the motion-mode ALPHABET the writer picks depends on it
+                    // (docs/INTER-ENCODE-PLAN.md §1z¹⁸), so a zero here writes
+                    // the two-symbol OBMC symbol where the decoder reads the
+                    // three-symbol MOTION_MODES one.
+                    num_proj_ref: c.num_proj_ref,
                     overlappable_neighbors: overlappable.min(255) as u8,
                     u_pred: c.u_pred,
                     v_pred: c.v_pred,

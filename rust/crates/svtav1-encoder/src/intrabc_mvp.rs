@@ -131,7 +131,7 @@ pub struct MvpGrid<'a> {
 
 impl MvpGrid<'_> {
     #[inline]
-    fn at(&self, offset: i32) -> &MvpMiEntry {
+    pub(crate) fn at(&self, offset: i32) -> &MvpMiEntry {
         &self.entries[(self.base + offset) as usize]
     }
 }
@@ -402,7 +402,7 @@ fn scan_col_mbmi(
 
 /// C `is_inside` (adaptive_mv_pred.c:44-47).
 #[inline]
-fn is_inside(tile: TileMiBounds, mi_col: i32, mi_row: i32, pos_row: i32, pos_col: i32) -> bool {
+pub(crate) fn is_inside(tile: TileMiBounds, mi_col: i32, mi_row: i32, pos_row: i32, pos_col: i32) -> bool {
     !(mi_row + pos_row < tile.mi_row_start
         || mi_col + pos_col < tile.mi_col_start
         || mi_row + pos_row >= tile.mi_row_end
@@ -450,7 +450,7 @@ fn scan_blk_mbmi(
 /// `ref_mv_stack[0].weight` 668 in C against 672 here. Pinned by
 /// `c_parity_has_top_right_vert_a_uses_mutated_bs` in
 /// `tests/c_parity_intrabc_mvp.rs`.
-fn has_top_right(grid: &MvpGrid, ctx: &MvpBlockCtx, bs: i32) -> bool {
+pub(crate) fn has_top_right(grid: &MvpGrid, ctx: &MvpBlockCtx, bs: i32) -> bool {
     if bs > 16 {
         // mi_size_wide[BLOCK_64X64]
         return false;

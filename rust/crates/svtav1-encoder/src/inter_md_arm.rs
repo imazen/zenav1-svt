@@ -276,6 +276,12 @@ pub struct InterCandOut {
     pub v_pred: Vec<u8>,
     /// C `cand_bf->fast_luma_rate`.
     pub fast_luma_rate: u32,
+    /// C `cand->block_mi.num_proj_ref` — the warped-motion SAMPLE COUNT, which
+    /// the WRITER needs because it decides the motion-mode ALPHABET
+    /// (`docs/INTER-ENCODE-PLAN.md` §1z¹⁸). It is carried even though this
+    /// port never selects warped motion: the symbol is written by every inter
+    /// block, whatever the search does.
+    pub num_proj_ref: u8,
 }
 
 /// The per-block inputs the caller has and this module does not.
@@ -463,7 +469,37 @@ pub fn build_inter_candidates(
 
     let gm = [svtav1_types::motion::WarpedMotionParams::default(); 8];
     let ref_pruning = RefPruningState::default();
-    let wm_sample_num = [0u8; 8];
+    // C `svt_aom_init_wm_samples` (adaptive_mv_pred.c:1752) -> the injector's
+    // `num_proj_ref`. This was `[0u8; 8]`, and a zero here is not a
+    // conservative default: `motion_mode_allowed` promotes a block to
+    // WARPED_CAUSAL — and with it the THREE-symbol MOTION_MODES alphabet
+    // instead of the two-symbol OBMC one — exactly when this count is >= 1
+    // and the frame allows warped motion. The DECODER runs the same scan, so
+    // a wrong count is an arithmetic-coder DESYNC, not a quality choice:
+    // `docs/INTER-ENCODE-PLAN.md` §1z¹⁸ measured `aomdec` REJECTING 22 of the
+    // campaign's 96 cells for this, every one at the preset where
+    // `allow_warped_motion` is 1.
+    //
+    // C's three-part gate is reproduced exactly; the `else` arm zeroes every
+    // entry, which is what the old constant happened to be right about on the
+    // frames where the gate is false.
+    let mut wm_sample_num = [0u8; 8];
+    if f.allow_warped_motion
+        && crate::port_entropy_inter::modes::is_motion_variation_allowed_bsize(
+            svtav1_types::block::BlockSize::from_u8(b.bsize)
+                .expect("an injected inter block must have a real BlockSize"),
+        )
+        && b.overlappable_neighbors != 0
+    {
+        for &rt in f.ref_frame_type_arr {
+            let rf = crate::inter_mvp::av1_set_ref_frame(rt);
+            if rf[1] != NONE_FRAME {
+                continue;
+            }
+            let (n, _pts, _pts_inref) = crate::inter_mvp::find_warp_samples(&grid, &ctx, rf[0]);
+            wm_sample_num[rf[0].max(0) as usize] = n;
+        }
+    }
     let inj = InjectCtx {
         bsize: b.bsize,
         bwidth: b.bw as u16,
@@ -797,6 +833,7 @@ fn predict_and_price(
         u_pred,
         v_pred,
         fast_luma_rate: cost.rate.luma,
+        num_proj_ref: c.num_proj_ref,
     }
 }
 
