@@ -461,7 +461,9 @@ divergence in MD or only in the partition?" is one run instead of an argument.
 It answered that on `diag 64x64 q40 p8` (frame 1 byte-identical to C with it,
 35 vs 22 B without: `docs/INTER-ENCODE-PLAN.md` §1z⁸). **C never runs this way**
 — it is a CONTROL, not a configuration, and a byte count it produces is never a
-parity result.
+parity result. As of §1z⁹ that cell is byte-identical WITHOUT the knob (PD0 now
+does inter compensation), so it has answered the question it was built for and
+no longer stands in for a fix.
 
 `SVTAV1_SC_TOOLS={nopalette,noibc,none}` forces a screen-content tool off at
 runtime so you can bisect without editing and rebuilding. It deliberately does
@@ -723,13 +725,13 @@ flag.
 frame HEADER is field-exact but for two CDEF strengths, while the TILE is the
 pre-campaign homegrown path", which has been wrong since §1z): on the campaign's
 96-cell grid — `{uniform,gradient,diag,screen}` x `{16,64,72,128}` x
-`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **31 cells are
-byte-identical on BOTH frames**, 64 have a byte-identical frame 0 and a
+`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **36 cells are
+byte-identical on BOTH frames**, 59 have a byte-identical frame 0 and a
 differing frame 1, and 1 still differs on frame 0. `tools/inter_byte_matrix.sh`
-is that sweep and `tools/inter_byte_gate.sh` asserts the 31. The refusal stays
-because 31 of 96 is not "broadly": a stream the public API emits has to be right
+is that sweep and `tools/inter_byte_gate.sh` asserts the 36. The refusal stays
+because 36 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
-Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z⁸
+Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z⁹
 for the tile.
 
 Two things §1q proves that a reader will otherwise re-derive:

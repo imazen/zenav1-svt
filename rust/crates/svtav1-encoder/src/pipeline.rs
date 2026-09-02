@@ -1632,6 +1632,44 @@ impl EncodePipeline {
             None
         };
 
+        // C `av1_lambda_assign_md`'s TWO update-type selectors
+        // (`pd0::inter_full_lambda_8bit`): the rdmult BASE reads
+        // `ppcs->update_type`, which the picture decision already resolved,
+        // and the frame-type FACTOR reads `update_lambda`'s own
+        // `gf_update_type`. On a flat low-delay P GOP they DISAGREE (Lf vs
+        // Arf), so both are carried and neither is derived from the other.
+        // Hoisted here because the funnel's `c_quant` and PD0's own
+        // `full_sb_lambda_md` must be the same number.
+        let md_lambda_base_update_type = pic_decision.as_ref().map(|pic| match pic.update_type {
+            crate::port_picstruct::FrameUpdateType::Kf => {
+                crate::port_rc_process::FrameUpdateType::KfUpdate
+            }
+            crate::port_picstruct::FrameUpdateType::Lf => {
+                crate::port_rc_process::FrameUpdateType::LfUpdate
+            }
+            crate::port_picstruct::FrameUpdateType::Gf => {
+                crate::port_rc_process::FrameUpdateType::GfUpdate
+            }
+            crate::port_picstruct::FrameUpdateType::Arf => {
+                crate::port_rc_process::FrameUpdateType::ArfUpdate
+            }
+            crate::port_picstruct::FrameUpdateType::Overlay => {
+                crate::port_rc_process::FrameUpdateType::OverlayUpdate
+            }
+            crate::port_picstruct::FrameUpdateType::IntnlOverlay => {
+                crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate
+            }
+            crate::port_picstruct::FrameUpdateType::IntnlArf => {
+                crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
+            }
+        });
+        let md_lambda_factor_update_type = crate::port_rc_process::lambda_gf_update_type(
+            is_key,
+            self.gop.hierarchical_levels,
+            temporal_layer,
+        );
+        let md_alt_lambda_factors = self.hdr.is_fork() && self.hdr.alt_lambda_factors;
+
         // Step 2: Create PCS
         let mut pcs = if is_key {
             PictureControlSet::new_key_frame(self.width, self.height, display_order)
@@ -2334,41 +2372,10 @@ impl EncodePipeline {
                 // gave 244 792.
                 let lambda = crate::pd0::inter_full_lambda_8bit(
                     base_qindex,
-                    // C `ppcs->update_type`, already computed by the picture
-                    // decision (`port_picstruct::set_frame_update_type`).
-                    match pic_decision
-                        .as_ref()
-                        .map(|p| p.update_type)
-                        .expect("an inter frame always has a picture decision")
-                    {
-                        crate::port_picstruct::FrameUpdateType::Kf => {
-                            crate::port_rc_process::FrameUpdateType::KfUpdate
-                        }
-                        crate::port_picstruct::FrameUpdateType::Lf => {
-                            crate::port_rc_process::FrameUpdateType::LfUpdate
-                        }
-                        crate::port_picstruct::FrameUpdateType::Gf => {
-                            crate::port_rc_process::FrameUpdateType::GfUpdate
-                        }
-                        crate::port_picstruct::FrameUpdateType::Arf => {
-                            crate::port_rc_process::FrameUpdateType::ArfUpdate
-                        }
-                        crate::port_picstruct::FrameUpdateType::Overlay => {
-                            crate::port_rc_process::FrameUpdateType::OverlayUpdate
-                        }
-                        crate::port_picstruct::FrameUpdateType::IntnlOverlay => {
-                            crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate
-                        }
-                        crate::port_picstruct::FrameUpdateType::IntnlArf => {
-                            crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
-                        }
-                    },
-                    crate::port_rc_process::lambda_gf_update_type(
-                        false,
-                        self.gop.hierarchical_levels,
-                        temporal_layer,
-                    ),
-                    self.hdr.is_fork() && self.hdr.alt_lambda_factors,
+                    md_lambda_base_update_type
+                        .expect("an inter frame always has a picture decision"),
+                    md_lambda_factor_update_type,
+                    md_alt_lambda_factors,
                     0,
                     crate::pd0::frame_lambda_weight(
                         picture_qp as u32,
@@ -2922,6 +2929,10 @@ impl EncodePipeline {
                     frame_h: h,
                     sb_size,
                     gm_wmtype: st.gm_wmtype,
+                    base_update_type: md_lambda_base_update_type
+                        .expect("an inter frame always has a picture decision"),
+                    factor_update_type: md_lambda_factor_update_type,
+                    alt_lambda_factors: md_alt_lambda_factors,
                 })
             }
             _ => None,
@@ -9538,6 +9549,21 @@ fn encode_tile_rows(
         // the source path there too.
         let pd0_video_recon =
             matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }) && bit_depth != 10;
+        // C `product_prediction_fun_table_pd0[1]` — PD0's INTER arm, live on
+        // exactly the frames that have a reference. `inter_md.is_some()` IS
+        // "this frame is a non-I slice with a DPB reference" (the same
+        // predicate `video_pic` above keys on), so a key frame and every
+        // allintra cell get `None` and are byte-neutral by construction.
+        let pd0_inter = inter_md.map(|f| crate::pd0::Pd0InterRef {
+            padded_y: &f.padded.y,
+            me: f.me,
+            sb_size: f.sb_size,
+            frame_w: f.frame_w,
+            frame_h: f.frame_h,
+            base_update_type: f.base_update_type,
+            factor_update_type: f.factor_update_type,
+            alt_lambda_factors: f.alt_lambda_factors,
+        });
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
         }
@@ -10450,6 +10476,7 @@ fn encode_tile_rows(
                                     // C `pd0_use_src_samples` (video arm: recon)
                                     // — the same value the refinement path gets.
                                     pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                    pd0_inter.as_ref(),
                                 )
                             } else {
                                 crate::pd0::pd0_pick_sb_partition(
@@ -11022,6 +11049,7 @@ fn encode_tile_rows(
                                             max_tx_size,
                                             pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                             crate::dbgenv::pd0_nosplit() && inter_md.is_some(),
+                                            pd0_inter.as_ref(),
                                         )
                                     } else {
                                         crate::pd0::pd0_pick_sb_partition_m6_eval(

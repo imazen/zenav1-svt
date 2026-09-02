@@ -129,6 +129,74 @@ pub fn predict_inter_luma(
     );
 }
 
+/// The PD0 luma prediction — C `svt_aom_inter_pu_prediction_av1_pd0`
+/// (`enc_inter_prediction.c:3718`) -> `av1_inter_prediction_pd0` (`:2723`).
+///
+/// It is NOT [`predict_inter_luma`] with a different name. PD0's driver is a
+/// SEPARATE C entry point with a materially smaller body: no `component_mask`
+/// (luma only, always), no interpolation filter (it reaches
+/// `svt_inter_predictor_pd0`, whose kernel is the PD0 one), and — the part
+/// that matters for byte parity — **it does not call `compute_subpel_params`
+/// on the unscaled path at all**. `pos_x` / `pos_y` are
+/// `blk_org + (mv >> 3)` straight, with NO clamp against the frame edges, so
+/// a legal MV reads into the reference's replicated margin and the caller
+/// must supply one ([`crate::picture::PaddedRef`]).
+///
+/// The `MbEdges` argument therefore exists only for the SCALED branch, which
+/// this port never takes (superres refuses an inter frame, so the scale
+/// factors are the identity and `is_scaled()` is false). It is built the same
+/// way anyway rather than faked, so that wiring a scaled reference later is a
+/// change of one caller and not of this function's contract.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_luma_pd0(
+    reference: &PaddedPlane,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    out: &mut [u8],
+    out_stride: usize,
+) {
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let rp = RefPlane {
+        buf: &reference.buf,
+        origin: reference.origin,
+        stride: reference.stride,
+        width: reference.width as i32,
+        height: reference.height as i32,
+    };
+    svtav1_dsp::port_pd_pred::av1_inter_prediction_pd0(
+        &BlkGeom {
+            org_x: org_x as i32,
+            org_y: org_y as i32,
+            bwidth: bw,
+            bheight: bh,
+            // PD0 is luma-only; C `av1_inter_prediction_pd0` never reads the
+            // chroma dims. They are filled with the real 4:2:0 values rather
+            // than zeros so a future chroma arm cannot inherit a lie.
+            bwidth_uv: bw / 2,
+            bheight_uv: bh / 2,
+            super_block_size: sb_size as i32,
+        },
+        &[DspMv { x: mv.x, y: mv.y }],
+        &[rp],
+        &[sf],
+        &edges,
+        out,
+        out_stride,
+    );
+}
+
 /// The same block predicted on ALL THREE planes — §1s item 6.
 ///
 /// C's driver takes one `component_mask` and does luma and both chroma planes

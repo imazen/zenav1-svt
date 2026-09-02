@@ -3019,8 +3019,13 @@ The inter arm of `c_quant` is C's `derive_inter_coeff_level`
   `compute_rd_mult_based_on_qindex` + `update_lambda` (rc_process.c:365-449).
   It differs from the KF builder in exactly two frame-type switches: the base
   multiplier (`def_kf_rd_multiplier` 3.3, `def_arf_` 3.25, `def_inter_` 3.2)
-  and the `rd_frame_type_factor` row. A flat low-delay P GOP puts every frame
-  at temporal layer 0, which `update_lambda` (:406-410) maps to `ARF_UPDATE`.
+  and the `rd_frame_type_factor` row. **CORRECTED 2026-09-02 (§1z⁹): the two
+  switches read DIFFERENT update types.** The base reads `ppcs->update_type`
+  (`set_frame_update_type`, pd_process.c:4591), which on a flat low-delay P GOP
+  is `LF_UPDATE` (base 3.2); only the factor reads `update_lambda`'s own
+  `gf_update_type` (:406-410), which at temporal layer 0 is `ARF_UPDATE`
+  (150). Using `ARF_UPDATE` for both — which this bullet said to do — gives
+  244 792 where C gives 241 378.
 
 Note what C does NOT do: a VIDEO-mode KEY frame takes NEITHER coeff-level arm
 (`md_config_process.c:898-903` needs `allintra` for the intra one and
@@ -3112,7 +3117,13 @@ CODING where C picks SKIP. The numbers, measured:
 | skip | 2 699 | 1 474 512 | 190 027 953 |
 
 `rdcost` is C's `((rate * lambda + 256) >> 9) + (dist << 7)` with
-`lambda = 244 792`. Coding reduces the luma SSE from 90 965 to 67 042 for
+`lambda = 244 792`. **CORRECTED 2026-09-02 (§1z⁹): 244 792 was the PORT's
+lambda, not C's.** C's `full_sb_lambda_md[EB_8_BIT_MD]` on this frame is
+**241 378** — measured off its own `svt_aom_full_cost_pd0` argument — because
+the rdmult BASE reads `ppcs->update_type` (`LF_UPDATE`, base 3.2) while only
+the frame-type FACTOR reads `update_lambda`'s `ARF_UPDATE` (150). The 1.4 %
+does not change this table's conclusion (the margin is 18.1 M, and skip would
+need 1.59x), but the number itself was wrong. Coding reduces the luma SSE from 90 965 to 67 042 for
 ~131 bits, and at this lambda that trade wins by 18.1 M. For skip to win the
 lambda would have to exceed ~388 224, i.e. 1.59x — so this is NOT a near-tie
 that a rounding difference explains.
@@ -3905,6 +3916,156 @@ through both entry points, so the plumbing shape exists; what is missing is the
 candidate and the predictor. Until it lands, every F1DIFF cell whose frame-1
 tree is deeper than C's is downstream of this and should not be chased
 separately.
+
+**LANDED 2026-09-02 — see §1z⁹.** Two corrections to the paragraph above. (1)
+"a real subsystem" oversized it: C's PD0 has exactly ONE candidate on a non-I
+slice (no intra at all), so the change is one prediction call, not a candidate
+pipeline. (2) The mechanism that stops C at the 64x64 on the reference cell is
+`test_split_partition_pd0`'s `i == 0` early exit, which the port already
+modelled — not a cost comparison against costed children, and not depth
+removal.
+
+### 1z⁹. PD0 INTER COMPENSATION landed, and the inter MD lambda was reading the wrong rdmult base — BOTH 31 -> 36 (2026-09-02)
+
+§1z⁸ scoped this and declined to half-land it. Its reading was right and its
+sizing was wrong: the gap is not "a real subsystem", it is **one prediction
+call plus one lambda**, because C's PD0 on a non-I slice has exactly ONE
+candidate and everything downstream of the prediction is the same function the
+key frame already runs.
+
+#### What C's PD0 actually does on an inter frame — measured before anything was written
+
+`SVT_PD0CFG_OUT` on `diag 64x64 q40 p8 frames=2` (the cell §1z⁸ named), both
+frames, with the three `depth_removal_ctrls` flags added to that interposer for
+this chunk:
+
+```
+PD0CFG sb=0 org=(0,0) islice=1 lvl=4 subres=1 ... rate_lvl=2 srcsamp=0 intra=1/12/1 ... dr=0/0/0/0
+PD0CFG sb=0 org=(0,0) islice=0 lvl=3 subres=1 ... rate_lvl=1 srcsamp=0 intra=0/0/0 ... dr=1/0/1/1
+```
+
+`intra=<enable_intra>/<intra_mode_end>/<angular_pred_level>` is **`0/0/0`** on
+the inter frame. `svt_aom_sig_deriv_enc_dec_pd0` resolves `intra_level = 0` for
+a non-I slice at `pd0_level > PD0_LVL_2` and `enc_mode <= M10`
+(`enc_mode_config.c:7240-7253`), `set_intra_ctrls` case 0 clears
+`enable_intra`, and `generate_md_stage_0_cand_pd0` therefore injects **no intra
+candidate at all** (`mode_decision.c:3500`). `inject_new_candidates_pd0`
+(`:2293`) then injects one `NEWMV` per open-loop ME candidate at `me_mv * 8`,
+and the port's single-reference low-delay-P set has one. So
+`md_encode_block_pd0` takes its `fast_candidate_total_count == 1 &&
+pd0_level < PD0_LVL_6` shortcut (`product_coding_loop.c:8390`) — compensate,
+no MDS0 distortion — and `md_stage_3_pd0` runs the same `full_loop_core_pd0`
+the key frame runs.
+
+Two consequences a natural port gets wrong, both taken:
+
+* **`skip_intra` is 1 on the inter frame**, so `md_encode_block_pd0`'s
+  `if (!ctx->skip_intra && !ctx->pd0_use_src_samples)` recon generation
+  (`:8430`) does NOT run. C writes nothing into PD0's recon neighbour arrays on
+  an inter frame — consistent, since with no intra candidate nothing reads
+  them. The port's `Pd0ReconCanvas` write is gated the same way.
+* **`av1_inter_prediction_pd0` is not `..._light_pd1`.** It is a separate C
+  entry point (`enc_inter_prediction.c:2723`) that never calls
+  `compute_subpel_params` on the unscaled path: `pos_x/pos_y` are
+  `blk_org + (mv >> 3)` with NO clamp against the frame edges, so a legal MV
+  reads the reference's replicated margin. `inter_pred_arm` gained
+  `predict_inter_luma_pd0` for it rather than reusing `predict_inter_luma`,
+  which would have clamped.
+
+#### The reference cell, before and after
+
+C's PD0 costs exactly ONE block on frame 1 (`SVT_PD0COST_OUT`, last line):
+
+```
+PD0COST org=(0,0) 64x64 dist=64712 ybits=1519 cost=9142574 lambda=241378
+```
+
+and the port costed **64** — every 8x8, every one from an INTRA DC prediction
+of a translated frame (`SVTAV1_PD0DBG`). The mechanism that stops C at the
+64x64 is NOT depth removal: `dr=1/0/1/1` disallows below **32x32**, so C would
+still have costed four 32x32s. It is `test_split_partition_pd0`'s **`i == 0`
+early exit** (`product_coding_loop.c:10464`) at `split_cost_th = 50` —
+`parent_cost * 50 * 1000 <= split_cost * 1000 * 1000` — which the port already
+models exactly. A well-predicted parent simply never reaches its children.
+
+After, on the same cell:
+
+```
+PD0BLK org=(0,0) 64x64 dist=64712 ybits=2423 cost=9626273 lambda=241378 subres=1
+```
+
+**`dist` is C's 64712 to the unit**, which is the strong statement here: the
+port's motion-compensated PD0 prediction is byte-identical to C's over a whole
+64x64 block, so the MC, the ME MV, the `* 8` scaling, the padded-margin reads
+and the residual/transform/quant chain all agree. Frame 1 is **22 B, byte-
+identical to C**, with `SVTAV1_PD0_NOSPLIT` NOT set — the control §1z⁸ used to
+prove the diagnosis is no longer needed on that cell and stays a control.
+
+#### The lambda, which is a SEPARATE defect the same dump exposed
+
+C's PD0 lambda on frame 1 is 241378 and on frame 0 is 18500 (`base_q_idx` 160
+and 67). The KF chain gives 18500 at qindex 67 — frame 0 was right — but
+**248207** at qindex 160, and the port's own inter MD lambda (the funnel's
+`c_quant`, §1y) was **244792**. None of the three is C's.
+
+The cause: C's chain reads **two different update types**.
+`svt_aom_compute_rd_mult_based_on_qindex` (`rc_process.c:365`) selects the
+rdmult BASE multiplier with `ppcs->update_type`, while `update_lambda` (`:406`)
+derives its OWN `gf_update_type` from `frame_type` + `temporal_layer_index` and
+indexes `rd_frame_type_factor` with that. On a flat low-delay P GOP they
+DISAGREE: `set_frame_update_type` (`pd_process.c:4591`) falls through to its
+`frame_offset & 1 -> LF_UPDATE` arm (base **3.2**) while `update_lambda` sees
+`temporal_layer_index == 0` and picks `ARF_UPDATE` (factor **150**). 3.2 x 150
+is 241378 exactly; 3.25 x 150 (ARF for both) is 244792.
+
+`pd0::inter_full_lambda_8bit` now takes the two selectors separately. **§1y's
+"`lambda = 244 792`" is corrected in place by this paragraph** — the arithmetic
+in that section's skip-decision table is unchanged in shape, but its lambda was
+the port's, not C's.
+
+That fix alone is **byte-inert on all 96 cells**, and so is doubling the lambda
+at the call site, so its reachability was measured directly rather than
+inferred from a silent byte diff: a probe at the call site printed
+`inter_md_lambda=241378 qindex=160`. Two silences that look like "this code is
+never called" are not the same as one, and §5d of `docs/WORKING-ON-THIS.md` is
+about exactly this.
+
+#### The frontier
+
+| result | §1z⁸ | after |
+|---|--:|--:|
+| BOTH frames byte-identical | 31 | **36** |
+| frame 0 identical, frame 1 differs | 64 | 59 |
+| frame 0 already differs | 1 | 1 |
+
+Closed: `gradient {64,72} q20 p8`, `diag 64 q{20,40} p8`, `screen 16 q20 p8`.
+Nothing regressed — every other cell's two byte counts are unchanged.
+
+#### What is measurably NEXT, in the order the dumps rank it
+
+1. **PD0's rate tables are the DEFAULTS on an inter frame; C's are the restored
+   `md_frame_context`.** The residual on the reference cell is exactly this:
+   `ybits` 2423 against C's 1519, at the same `coeff_rate_est_lvl` and the same
+   eob. `init_frame_rate_tables` (`md_config_process.c:299-310`) seeds
+   `md_frame_context` from the primary reference's SAVED CDFs whenever the
+   header names one, and §1y wired that for the FUNNEL's rates only —
+   `pipeline.rs` still calls `pd0::build_m6_pd0_tables(sb_qindex)`, which is
+   `FrameContext::new_default()` + `CoeffFc::default_for_qindex`. The pair C
+   wants is already in `primary_ref_cdfs` (`FrameCdfs { fc, coeff }`) and
+   `pd0::build_m6_pd0_tables_from_ctx` already takes exactly that pair, so this
+   is a call-site change. It is inert on a key frame by construction
+   (`primary_ref_frame == NONE` -> C uses the defaults too).
+2. **`depth_removal_ctrls` is unwired in PD0.** C's inter frame resolves
+   `dr=1/0/1/1` on the reference cell — `disallow_below_32x32` and
+   `disallow_below_16x16` both set — and the port's `Pd0Ctx::min_sq` is a flat
+   8. It did not matter on the five cells that closed, because the `i == 0`
+   early exit fires above it, but it binds on every cell where the parent is
+   not well enough predicted to trigger that exit.
+   `port_enc_mode_config::common::set_depth_removal_level_controls` is ported
+   with every input it needs, and `inter_me_arm::FrameMe::per_b64` already
+   carries `me_{64x64,32x32,16x16,8x8}_distortion` + `me_8x8_cost_variance`.
+   What is missing is `fast_lambda_md[EB_8_BIT_MD]` (C
+   `svt_aom_compute_fast_lambda`) and the call site.
 
 ## 2. Chunks
 

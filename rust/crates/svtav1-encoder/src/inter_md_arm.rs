@@ -113,6 +113,17 @@ pub struct InterMdFrame<'a> {
     pub sb_size: usize,
     /// C `ppcs->global_motion[ref].wmtype`.
     pub gm_wmtype: [TransformationType; 8],
+    /// C `ppcs->update_type` — the rdmult BASE selector of
+    /// `av1_lambda_assign_md`'s chain. Carried here so PD0 can build the SAME
+    /// `full_sb_lambda_md[EB_8_BIT_MD]` the funnel's `c_quant` already has,
+    /// rather than re-deriving the picture state per superblock.
+    pub base_update_type: crate::port_rc_process::FrameUpdateType,
+    /// C `update_lambda`'s own `gf_update_type` — the frame-type FACTOR row.
+    /// It DISAGREES with [`Self::base_update_type`] on a flat low-delay P GOP;
+    /// see `pd0::inter_full_lambda_8bit`.
+    pub factor_update_type: crate::port_rc_process::FrameUpdateType,
+    /// [SVT_HDR_MODE] `static_config.alt_lambda_factors`.
+    pub alt_lambda_factors: bool,
 }
 
 /// The order-hint half of [`InterFrame`], owned so the borrow is local.

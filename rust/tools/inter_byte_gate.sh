@@ -33,6 +33,11 @@
 # them takes the fixed-tree path and codes squares where C codes an NSQ shape
 # (`gradient 64x64 q55 p8`: 418 B against C's 295 on frame 0 alone).
 #
+# The five cells added on 2026-09-02 for §1z⁹ witness PD0's missing INTER
+# compensation: with the `Pd0InterRef` arm removed, each one's frame 1 goes back
+# to a PD0 tree of 8x8s decided from an INTRA DC prediction of a translated
+# frame (`diag 64x64 q40 p8`: 35 B against C's 22).
+#
 # The `uniform` cells are the ones that witness §1z''s intra-rate defect:
 # every one of the six p6 ones was a DIFFERS before it and is byte-identical
 # after. The eight p8 cells added on 2026-09-02 witness §1z''''s dropped inter
@@ -47,7 +52,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 31 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 36 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
     # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z''''. Listed in full:
     # a gate that samples its own frontier reports a smaller regression than
@@ -67,6 +72,11 @@ PASS_CELLS=(
     "uniform 64 64 55 8 2 3"
     "gradient 16 16 20 6 2 3"
     "gradient 16 16 20 8 2 3"
+    "gradient 64 64 20 8 2 3"   # §1z⁹: PD0 inter compensation
+    "gradient 72 72 20 8 2 3"   # §1z⁹
+    "diag 64 64 20 8 2 3"       # §1z⁹
+    "diag 64 64 40 8 2 3"       # §1z⁹'s reference cell (SVTAV1_PD0_NOSPLIT no longer needed)
+    "screen 16 16 20 8 2 3"     # §1z⁹
     "gradient 16 16 40 6 2 3"
     "gradient 16 16 55 6 2 3"
     "gradient 64 64 40 6 2 3"   # §1z's reference cell: one 64x64 NEWMV skip block

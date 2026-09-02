@@ -1093,6 +1093,7 @@ EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionC
  *          maxbs=<max_block_size> cb64=<is_complete_b64> bias=<parent_cost_bias>
  *          intra=<enable_intra>/<intra_mode_end>/<angular_pred_level>
  *          nsq=<md_disallow_nsq_search> subsafe=<is_subres_safe>
+ *          dr=<depth_removal enabled>/<disallow_below_64x64>/<..32x32>/<..16x16>
  */
 void __real_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx);
 
@@ -1113,7 +1114,7 @@ void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureContro
     fprintf(f,
             "PD0CFG sb=%u org=(%u,%u) islice=%d lvl=%d subres=%u dev_th=%u split_th=%u exit_th=%u "
             "rate_lvl=%u qpoff=%d fastcoef=%u srcsamp=%d pred_only=%d d4=%d d8=%d maxbs=%u cb64=%d "
-            "bias=%u intra=%u/%u/%u nsq=%d subsafe=%u\n",
+            "bias=%u intra=%u/%u/%u nsq=%d subsafe=%u dr=%d/%d/%d/%d\n",
             (unsigned)ctx->sb_index,
             (unsigned)ctx->sb_origin_x,
             (unsigned)ctx->sb_origin_y,
@@ -1137,7 +1138,11 @@ void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureContro
             (unsigned)ctx->intra_ctrls.intra_mode_end,
             (unsigned)ctx->intra_ctrls.angular_pred_level,
             (int)ctx->md_disallow_nsq_search,
-            (unsigned)ctx->is_subres_safe);
+            (unsigned)ctx->is_subres_safe,
+            (int)ctx->depth_removal_ctrls.enabled,
+            (int)ctx->depth_removal_ctrls.disallow_below_64x64,
+            (int)ctx->depth_removal_ctrls.disallow_below_32x32,
+            (int)ctx->depth_removal_ctrls.disallow_below_16x16);
     fflush(f);
 }
 

@@ -1692,6 +1692,91 @@ impl M6Pd0Tables {
     }
 }
 
+/// The INTER arm of PD0's per-block prediction on a NON-KEY frame.
+///
+/// C's PD0 dispatches through
+/// `product_prediction_fun_table_pd0[is_inter_mode(cand->block_mi.mode)]`
+/// (product_coding_loop.c:53), and on a non-I slice the candidate set that
+/// reaches it is ONE inter `NEWMV`:
+///
+/// * `svt_aom_sig_deriv_enc_dec_pd0` resolves `intra_level = 0` for
+///   `slice_type != I_SLICE` at `pd0_level > PD0_LVL_2` and
+///   `enc_mode <= M10` (enc_mode_config.c:7240-7253), so `set_intra_ctrls`
+///   leaves `enable_intra = 0` and `generate_md_stage_0_cand_pd0` injects NO
+///   intra candidate at all (mode_decision.c:3500).
+/// * `inject_new_candidates_pd0` (mode_decision.c:2293) injects one `NEWMV`
+///   per open-loop ME candidate at `me_mv * 8`, capped at three. The port's
+///   low-delay-P reference set has ONE reference, so there is one.
+/// * With a single candidate `md_encode_block_pd0` takes its
+///   `fast_candidate_total_count == 1 && pd0_level < PD0_LVL_6` shortcut
+///   (product_coding_loop.c:8390): prediction only, no MDS0 distortion, then
+///   `md_stage_3_pd0` -> `full_loop_core_pd0` on it. So the ONLY thing that
+///   changes versus the key-frame path is where `pred` comes from.
+///
+/// MEASURED with `SVT_PD0CFG_OUT` on `diag 64x64 q40 p8 frames=2`:
+///
+/// ```text
+/// PD0CFG sb=0 org=(0,0) islice=1 lvl=4 ... intra=1/12/1 ...
+/// PD0CFG sb=0 org=(0,0) islice=0 lvl=3 ... intra=0/0/0  ...
+/// ```
+///
+/// `enable_intra/intra_mode_end/angular_pred_level` is `0/0/0` on the inter
+/// frame — which is the assertion this struct's presence stands for.
+pub struct Pd0InterRef<'a> {
+    /// The DPB reference's PADDED luma plane. C's PD0 MC does NOT clamp the
+    /// MV on the unscaled path (see
+    /// [`crate::inter_pred_arm::predict_inter_luma_pd0`]), so a legal MV
+    /// reads the replicated margin.
+    pub padded_y: &'a crate::picture::PaddedPlane,
+    /// This frame's open-loop motion search — C `pcs->ppcs->pa_me_data`.
+    pub me: &'a crate::inter_me_arm::FrameMe,
+    /// C `scs->super_block_size`, which sizes the driver's CONV_BUF.
+    pub sb_size: usize,
+    /// ALIGNED frame dims, for the (never-taken) scaled branch's edges.
+    pub frame_w: usize,
+    pub frame_h: usize,
+    /// C `ppcs->update_type` — the rdmult BASE selector. See
+    /// [`inter_full_lambda_8bit`]: PD0's `full_sb_lambda_md[EB_8_BIT_MD]` is
+    /// the frame's MD lambda, so on an inter frame it is NOT the KF chain
+    /// [`kf_full_lambda_8bit_lw`] that every key-frame caller passes.
+    pub base_update_type: crate::port_rc_process::FrameUpdateType,
+    /// C `update_lambda`'s own `gf_update_type` — the frame-type FACTOR row.
+    pub factor_update_type: crate::port_rc_process::FrameUpdateType,
+    /// [SVT_HDR_MODE] `static_config.alt_lambda_factors`.
+    pub alt_lambda_factors: bool,
+}
+
+/// C `BlockSize` for a shape PD0 can cost — the square depths plus the two
+/// fitting boundary rectangles [`Pd0Ctx::pick_q`] injects at a one-false node.
+///
+/// Only [`crate::port_md::predicates::get_me_block_offset`] reads it, and that
+/// function keys on `MAX(bwidth, bheight)` plus the origin bits, so the
+/// rectangles land on the same ME PU as their square parent — which is what C
+/// does, because `svt_aom_get_me_block_offset` takes the NSQ `bsize` directly.
+fn pd0_bsize(bw: usize, bh: usize) -> u8 {
+    use svtav1_types::block::BlockSize as B;
+    let b = match (bw, bh) {
+        (4, 4) => B::Block4x4,
+        (8, 8) => B::Block8x8,
+        (16, 16) => B::Block16x16,
+        (32, 32) => B::Block32x32,
+        (64, 64) => B::Block64x64,
+        (128, 128) => B::Block128x128,
+        (8, 4) => B::Block8x4,
+        (4, 8) => B::Block4x8,
+        (16, 8) => B::Block16x8,
+        (8, 16) => B::Block8x16,
+        (32, 16) => B::Block32x16,
+        (16, 32) => B::Block16x32,
+        (64, 32) => B::Block64x32,
+        (32, 64) => B::Block32x64,
+        (128, 64) => B::Block128x64,
+        (64, 128) => B::Block64x128,
+        _ => unreachable!("PD0 block shape {bw}x{bh}"),
+    };
+    b as u8
+}
+
 struct Pd0Ctx<'a> {
     src: &'a [u8],
     stride: usize,
@@ -1788,6 +1873,10 @@ struct Pd0Ctx<'a> {
     /// still source-predicted on both arms — a REAL remaining gap, recorded in
     /// `docs/INTER-ENCODE-PLAN.md`, not a claim that C differs there.
     recon_canvas: Option<Pd0ReconCanvas>,
+    /// C `product_prediction_fun_table_pd0[1]` — the INTER arm of the PD0
+    /// block prediction. `None` on every key frame and on the allintra arm,
+    /// which is what keeps the still envelope byte-neutral by construction.
+    inter: Option<&'a Pd0InterRef<'a>>,
     /// The recon of the block [`Pd0Ctx::lvl1_block_cost_rect`] just costed,
     /// held until [`Pd0Ctx::pick`] knows whether this node's partition was
     /// DECIDED (C only writes the arrays at the decision points, never for a
@@ -1980,7 +2069,13 @@ impl<'a> Pd0Ctx<'a> {
         // next block can predict from it. Same inverse-transform +
         // even/odd-row expansion as the LVL_1 family's twin — see
         // `lvl1_block_cost_rect`, whose block this mirrors.
-        if self.recon_canvas.is_some() {
+        // C `md_encode_block_pd0` (product_coding_loop.c:8430) generates the
+        // recon only `if (!ctx->skip_intra && !ctx->pd0_use_src_samples)`. On
+        // an INTER frame `intra_level == 0` makes `skip_intra` 1
+        // (enc_mode_config.c:6718), so C writes NOTHING into the PD0 recon
+        // neighbour arrays — which is consistent, because with no intra
+        // candidate nothing reads them.
+        if self.recon_canvas.is_some() && self.inter.is_none() {
             let mut recon = alloc::vec![0u8; bw * bh];
             if eob > 0 {
                 let packed_w = bw.min(32);
@@ -2057,6 +2152,16 @@ impl<'a> Pd0Ctx<'a> {
         // allintra arm. Without it the arrays hold PD0's own recon, and the
         // canvas is that state. The availability, `n_top_px`/`n_left_px` clamp
         // and edge replication are the SAME function either way.
+        // C `product_prediction_fun_table_pd0[is_inter_mode(mode)]`
+        // (product_coding_loop.c:970). On a non-I slice PD0's ONLY candidate is
+        // an inter NEWMV (see [`Pd0InterRef`]), so the INTRA neighbour
+        // extraction below is not merely unused there — C never runs it,
+        // because `pd0_use_src_samples` is false and `skip_intra` is 1.
+        if let Some(ir) = self.inter {
+            let mut pred = vec![0u8; bw * bh];
+            self.inter_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred);
+            return self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, pred, None);
+        }
         let (above, left, _tl, has_above, has_left) = match self.recon_canvas.as_ref() {
             None => crate::partition::extract_neighbors_tiled(
                 self.src,
@@ -2093,7 +2198,35 @@ impl<'a> Pd0Ctx<'a> {
         svtav1_dsp::intra_pred::predict_dc(
             &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
         );
+        self.lvl1_cost_from_pred(
+            bw,
+            bh,
+            abs_x,
+            abs_y,
+            pred,
+            Some((&above, &left, has_above, has_left)),
+        )
+    }
 
+    /// [`Pd0Ctx::lvl1_block_cost_rect`] from the point the PREDICTION exists —
+    /// C `full_loop_core_pd0` (product_coding_loop.c:5963) plus the recon
+    /// generation `md_encode_block_pd0` runs after it.
+    ///
+    /// Split out because the two arms of
+    /// `product_prediction_fun_table_pd0` differ ONLY in how `pred` is
+    /// produced; everything from the residual down is one C function that both
+    /// reach. `nb` is the intra arm's neighbour state, carried only so the
+    /// `SVTAV1_PD0DBG` line keeps printing it; `None` is the inter arm.
+    #[allow(clippy::too_many_arguments)]
+    fn lvl1_cost_from_pred(
+        &mut self,
+        bw: usize,
+        bh: usize,
+        abs_x: usize,
+        abs_y: usize,
+        pred: Vec<u8>,
+        nb: Option<(&[u8], &[u8], bool, bool)>,
+    ) -> u64 {
         // `subres_ctrls.step`, and the per-SB safety check that gates it —
         // identical machinery to [`Pd0Ctx::lvl5_like_block_cost`], because it
         // is the same `full_loop_core_pd0` code. LVL_1 / LVL_0 configure step
@@ -2224,13 +2357,69 @@ impl<'a> Pd0Ctx<'a> {
                 self.lambda,
                 step,
                 pred[0],
-                u8::from(has_above),
-                u8::from(has_left),
-                &above[..above.len().min(4)],
-                &left[..left.len().min(4)]
+                u8::from(nb.is_some_and(|n| n.2)),
+                u8::from(nb.is_some_and(|n| n.3)),
+                nb.map_or(&[][..], |n| &n.0[..n.0.len().min(4)]),
+                nb.map_or(&[][..], |n| &n.1[..n.1.len().min(4)])
             );
         }
         cost
+    }
+
+    /// C `svt_aom_inter_pu_prediction_av1_pd0` for this block's ONE injected
+    /// `NEWMV` candidate.
+    ///
+    /// The MV is `inject_new_candidates_pd0`'s (mode_decision.c:2320-2325):
+    /// the open-loop search's FULL-PEL result for this block's ME PU, times 8.
+    /// When the search left no candidate for the PU,
+    /// `generate_md_stage_0_cand_pd0` falls back to
+    /// `inject_zz_backup_candidate` (mode_decision.c:3511) — the ZERO MV on
+    /// `LAST_FRAME` — which is the `unwrap_or` here and NOT a silent default.
+    fn inter_pred_into(
+        &self,
+        ir: &Pd0InterRef<'_>,
+        bw: usize,
+        bh: usize,
+        abs_x: usize,
+        abs_y: usize,
+        out: &mut [u8],
+    ) {
+        assert!(
+            self.is_lvl1_family(),
+            "PD0 inter compensation is wired for the LVL_1 family only, and the \
+             caller resolved {:?}. C's PD0_LVL_5 / PD0_LVL_6 inter arms are \
+             `compute_lpd0_cost_inter`'s variance closed form, not this block \
+             encode; refusing rather than costing an inter block with the wrong \
+             model. On this port's low-delay-P envelope `pd0_detector` walks \
+             every picture level down to PD0_LVL_3 before a search runs \
+             (docs/INTER-ENCODE-PLAN.md 1z^6), so this is unreachable today.",
+            self.mode
+        );
+        // C `pcs->pa_me_data->max_l0` for the single-reference low-delay list-0
+        // configuration `inter_me_arm::run_frame_me` builds — the same literal
+        // `inter_md_arm::build_inter_candidates` passes.
+        const MAX_L0: usize = 4;
+        let mv_fp = ir
+            .me
+            .mv_for(abs_x, abs_y, pd0_bsize(bw, bh), 0, 0, MAX_L0)
+            .unwrap_or(svtav1_types::motion::Mv::ZERO);
+        let mv = svtav1_types::motion::Mv {
+            x: mv_fp.x.saturating_mul(8),
+            y: mv_fp.y.saturating_mul(8),
+        };
+        crate::inter_pred_arm::predict_inter_luma_pd0(
+            ir.padded_y,
+            abs_x,
+            abs_y,
+            bw,
+            bh,
+            mv,
+            ir.sb_size,
+            ir.frame_w,
+            ir.frame_h,
+            out,
+            bw,
+        );
     }
 
     /// The LVL_1 FAMILY — every level whose block cost is
@@ -2770,6 +2959,7 @@ pub fn pd0_pick_sb_partition(
         tile_top: 0,
         tile_left: 0,
         recon_canvas: None,
+        inter: None,
         pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
@@ -2874,6 +3064,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         tile_top: 0,
         tile_left: 0,
         recon_canvas: None,
+        inter: None,
         pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
@@ -2963,6 +3154,7 @@ pub fn pd0_pick_sb_partition_m6(
         tile_top: 0,
         tile_left: 0,
         recon_canvas: None,
+        inter: None,
         pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
@@ -3096,6 +3288,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         tile_top,
         tile_left,
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
+        inter: None,
         pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
@@ -3197,6 +3390,8 @@ pub fn pd0_pick_sb_partition_video(
     // value from the same call site. `Some((md_recon_plane, stride))` is the
     // frame's MD recon; `None` keeps the source prediction.
     video_recon: Option<(&[u8], usize)>,
+    // C `product_prediction_fun_table_pd0[1]` — `Some` on a NON-KEY frame.
+    inter: Option<&Pd0InterRef<'_>>,
 ) -> Pd0Tree {
     pd0_pick_sb_partition_video_eval(
         src,
@@ -3221,6 +3416,7 @@ pub fn pd0_pick_sb_partition_video(
         max_tx_size,
         video_recon,
         false,
+        inter,
     )
     .tree()
 }
@@ -3269,13 +3465,33 @@ pub fn pd0_pick_sb_partition_video_eval(
     // `SVTAV1_PD0_NOSPLIT`, a CONTROL — see `crate::dbgenv::pd0_nosplit`.
     // Never true in a shipped configuration.
     ctl_nosplit: bool,
+    // C `product_prediction_fun_table_pd0[1]` — `Some` on a NON-KEY frame
+    // only. See [`Pd0InterRef`] for why an inter frame's PD0 has exactly one
+    // candidate and it is never intra.
+    inter: Option<&Pd0InterRef<'_>>,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
     let mode = video_pd0_mode(pic_pd0_lvl);
-    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
+    // C `full_sb_lambda_md[EB_8_BIT_MD]` = `av1_lambda_assign_md`'s
+    // `full_lambda_md[0]` (md_process.c:763), which is the FRAME's MD lambda —
+    // the KF chain only on a key frame. MEASURED on `diag 64x64 q40 p8`:
+    // C's `svt_aom_full_cost_pd0` lambda is 18500 on frame 0 (`base_q_idx`
+    // 67, the KF chain) and 241378 on frame 1 (`base_q_idx` 160, base 3.2 x
+    // factor 150) — where the KF chain at qindex 160 would give 248207.
+    let lambda = match inter {
+        None => kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64,
+        Some(ir) => inter_full_lambda_8bit(
+            qindex,
+            ir.base_update_type,
+            ir.factor_update_type,
+            ir.alt_lambda_factors,
+            0,
+            lambda_weight,
+        ) as u64,
+    };
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -3308,6 +3524,7 @@ pub fn pd0_pick_sb_partition_video_eval(
         tile_top,
         tile_left,
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
+        inter,
         pending_recon: None,
     };
     ctx.pick(64, 0, 0).1
@@ -3477,6 +3694,7 @@ mod tests {
             tile_top: 0,
             tile_left: 0,
             recon_canvas: None,
+            inter: None,
             pending_recon: None,
         };
         assert_eq!(ctx.lambda, 25650);
@@ -3598,6 +3816,7 @@ mod tests {
             tile_top: 0,
             tile_left: 0,
             recon_canvas: None,
+            inter: None,
             pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
@@ -3647,6 +3866,7 @@ mod tests {
             tile_top: 0,
             tile_left: 0,
             recon_canvas: None,
+            inter: None,
             pending_recon: None,
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
@@ -3809,6 +4029,7 @@ mod tests {
             tile_top: 0,
             tile_left: 0,
             recon_canvas: None,
+            inter: None,
             pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
@@ -3854,6 +4075,7 @@ mod tests {
             tile_top: 0,
             tile_left: 0,
             recon_canvas: None,
+            inter: None,
             pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
@@ -3895,6 +4117,7 @@ mod tests {
             tile_top: 0,
             tile_left: 0,
             recon_canvas: None,
+            inter: None,
             pending_recon: None,
         };
         for (sq, ox, oy, cost) in [
