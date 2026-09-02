@@ -1,0 +1,56 @@
+# inter completion frontier — the crash-fix chunk's before/after
+#
+# THREE scans of the same 64-cell grid exist for 2026-09-02 and they are NOT
+# three measurements of the same tree. Read this before quoting any of them.
+#
+#   inter_completion_2026-09-02.tsv   24 OK /  6 REFUSED / 34 CRASH
+#     The FIRST scan. Its `port=` line names /Users/lilith/tmp/perf1-bin/
+#     identity_run.nosym, built 2026-09-02 13:15 local — THREE MINUTES BEFORE
+#     commit 628a19cda ("the MD motion search read PAST the source plane")
+#     landed at 13:18. So 20 of its 34 crashes are the source-gather panic that
+#     commit had already fixed, and the scan describes a tree that was never on
+#     main. Kept as the record of that binary; do NOT quote it as a main-branch
+#     frontier. The tell is in the numbers: its panic text reads "the len is
+#     10816 but the index is 10816", and 10816 = 104*104, i.e. an UNPADDED
+#     plane — which is exactly the field 628a19cda changed.
+#
+#   inter_completion_2026-09-02a.tsv  38 OK /  8 REFUSED / 18 CRASH
+#     Same grid re-measured on main at fed59574 (the tip when this chunk
+#     started), with a binary built from it. This is the real BEFORE.
+#
+#   inter_completion_2026-09-02b.tsv  52 OK / 12 REFUSED /  0 CRASH
+#     AFTER the two crash fixes below, on main at 4ae1ffb6.
+#
+# WHAT THE TWO FIXES WERE
+#   * `video pic_pd0_lvl 7 …` (4 cells: 568/576/1024/2048 square at p10, and
+#     p9 by the same ladder row) — a KEY-frame panic, frame 0 never reached
+#     disk. `part_arm::video_pd0_params` skipped `pd0_detector` on an I_SLICE,
+#     and the one branch of that function gated ON `slice_type == I_SLICE` is
+#     the demote out of PD0_LVL_6. Fixed in commit 4974a859. All four key
+#     frames are now byte-IDENTICAL to C.
+#   * `leaf must be tested (min_sq <= size <= max_sq)` (14 cells: every size
+#     congruent to 40 mod 64 at p8/p10/p13) — an INTER-frame panic.
+#     `Pd0Ctx::pick_q` treated "no d1 shape to cost" as "must SPLIT" and
+#     descended below `min_sq`, which only an inter frame's
+#     `depth_removal_ctrls` can raise above 8. Fixed in commit 4ae1ffb6.
+#
+# PARTIAL-SB CELLS (the 9 sizes that are not multiples of 64, x 4 presets = 36)
+#   first scan : 31 CRASH        (of a binary that predated a landed fix)
+#   ...a.tsv   : 15 CRASH, 19 OK,  2 REFUSED
+#   ...b.tsv   :  0 CRASH, 33 OK,  3 REFUSED
+#
+# THE 12 REFUSALS in ...b.tsv are 568/576/1024/2048 square at p6/p8/p10, all of
+# them the SAME pre-existing frame-1 refusal ("an inter frame header field is
+# not implemented for this configuration"), all of them with frame 0 written
+# and byte-identical to C. The count rose from 8 to 12 because the four p10
+# cells used to CRASH on the KEY frame and now reach that refusal — no refusal
+# was widened to make this scan look green.
+#
+# IDENT is Y on 5 cells (64/128 at p6; 64/128/256 at p8). That is the byte
+# frontier, not the completion one, and it moved for reasons outside this
+# chunk (f5804e454).
+#
+# host=mac (aarch64, Apple), oracle = reference/svt-av1 on fix/suspected-c-bug-17
+# via Bin/Release/libSvtAv1Enc.a. NOTE: `-Wl,--wrap` is rejected by Apple ld64,
+# so capture_c_trace builds its BYTE-ONLY variant here and no SVT_* interposer
+# can fire on this host — the C-side dumps in docs/ were taken on Linux.

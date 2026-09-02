@@ -92,13 +92,30 @@ sets the repeat count.
 with the range, which is why the gate prints the adjacent-pair slopes next to
 the least-squares fit.
 
-**Inter completion (2026-09-02):** `tools/inter_completion_scan.sh` +
-`benchmarks/inter_completion_2026-09-02.tsv` — of 64 video-mode cells, 24 OK
-(4 byte-identical), 6 REFUSED, **34 CRASH**, and **31 of the 36 partial-SB
-cells panic**. Three distinct panics; see `docs/perf-status.md`'s memory block
-for which is which. Before measuring anything on an inter cell, check that the
-port completes it — a refusal or a crash makes any ratio a comparison against a
-smaller workload.
+**Inter completion (2026-09-02, CURRENT):** `tools/inter_completion_scan.sh` +
+`benchmarks/inter_completion_2026-09-02b.tsv` — of 64 video-mode cells,
+**52 OK** (5 byte-identical), 12 REFUSED, **0 CRASH**, and **0 of the 36
+partial-SB cells panic** (33 OK, 3 REFUSED). All twelve refusals are the same
+pre-existing frame-1 one, on 568/576/1024/2048 square at p6/p8/p10, and every
+one of them writes a frame 0 that is byte-identical to C. Before measuring
+anything on an inter cell, check that the port completes it — a refusal or a
+crash makes any ratio a comparison against a smaller workload.
+
+**TRAP, and it cost this file its own numbers: the FIRST completion scan
+(`benchmarks/inter_completion_2026-09-02.tsv`, 24 OK / 6 REFUSED / 34 CRASH)
+measured a binary built THREE MINUTES BEFORE a fix that was already landing.**
+Its `port=` header names `/Users/lilith/tmp/perf1-bin/identity_run.nosym`, built
+13:15 local; `628a19cda` ("the MD motion search read PAST the source plane")
+was committed at 13:18. Twenty of its thirty-four crashes were that already-fixed
+panic, so the scan described a tree that was never on `main` — and this
+paragraph, `docs/perf-status.md`'s memory block and an agent brief all quoted it
+as the frontier. The tell was in the panic text: "the len is 10816 but the index
+is 10816", and 10816 = 104x104, an UNPADDED plane, which is precisely the field
+that commit changed. **A scan's `port=` line is a claim about a BINARY, not
+about a branch; check its mtime against `git log` before quoting it.**
+`benchmarks/inter_completion_2026-09-02a.tsv` is the honest BEFORE — the same
+grid re-measured on `main` at `fed59574` — at 38 OK / 8 REFUSED / 18 CRASH.
+`benchmarks/inter_completion_2026-09-02b.meta` carries all three side by side.
 
 ## 3. Adding a fix? Add its cell.
 

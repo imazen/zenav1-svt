@@ -82,18 +82,31 @@
 >   tiles on a thread pool; C at `--lp 1` does not. `tools/mem_gate.sh` takes
 >   `MEM_REPS` (default 5) and reports the median with the spread.
 >
-> **THE INTER PATH PANICS ON 31 OF 36 PARTIAL-SUPERBLOCK CELLS**
-> (`tools/inter_completion_scan.sh`,
-> `benchmarks/inter_completion_2026-09-02.tsv`: 64 cells, 24 OK — only 4 of
-> them byte-identical — 6 REFUSED, **34 CRASH**). Three distinct panics:
-> an off-the-end plane index in `port_md/md_search.rs:422` (frame 1, every
-> preset scanned), `leaf must be tested` in `pd0.rs:2703` (frame 1, p10/p13,
-> sizes with SB remainder 40), and `video pic_pd0_lvl 7` in `pd0.rs:3337`
-> (frame **0**, the KEY frame, p9/p10, every size at or above the 360p->480p
-> class boundary — 560x560 clean, 568x568 panics; this is why the p10 inter
-> memory series stops at 512x512). The inter byte gate and matrix sweep
-> {16,64,72,128}, of which only 72 is partial, so the frontier they describe
-> is almost entirely 64-aligned and this surface is invisible to them.
+> **THE INTER PATH NO LONGER PANICS ON ANY OF THE 64 CELLS** (2026-09-02,
+> `tools/inter_completion_scan.sh`, `benchmarks/inter_completion_2026-09-02b.tsv`:
+> **52 OK** — 5 byte-identical — 12 REFUSED, **0 CRASH**; partial-SB cells
+> 33 OK / 3 REFUSED / 0 CRASH). The block below is kept because the three
+> panics are what the memory series above was measured around, and because two
+> of the three were still live when it was taken:
+>
+> * an off-the-end plane index in `port_md/md_search.rs:422` (frame 1, every
+>   preset) — fixed by `628a19cda` BEFORE the first scan was even filed; that
+>   scan's binary predated the commit by three minutes and reported it anyway
+>   (see `docs/WORKING-ON-THIS.md` §2's trap).
+> * `leaf must be tested` in `pd0.rs:2703` (frame 1, p8/p10/p13, sizes with SB
+>   remainder 40) — `Pd0Ctx::pick_q` treated "no d1 shape to cost" as "must
+>   SPLIT" and walked below `min_sq`, which only an inter frame's
+>   `depth_removal_ctrls` raises above 8. Fixed, commit `4ae1ffb6`.
+> * `video pic_pd0_lvl 7` in `pd0.rs:3337` (frame **0**, the KEY frame, p9/p10,
+>   every size at or above the 360p->480p class boundary — 560x560 clean,
+>   568x568 panics; this is why the p10 inter memory series stops at 512x512).
+>   `pd0_detector`'s I_SLICE demote out of `PD0_LVL_6` was skipped. Fixed,
+>   commit `4974a859`; all four key frames are now byte-identical to C, so the
+>   p10 series can be extended past 512x512 whenever someone re-measures.
+>
+> The inter byte gate and matrix sweep {16,64,72,128}, of which only 72 is
+> partial, so the frontier they describe is almost entirely 64-aligned and this
+> surface was invisible to them; `inter_completion_scan.sh` is what sees it.
 >
 > **INTER CPU (2026-09-02, aarch64 / Apple M4 Pro) — FIRST port/C wall-clock
 > ratio on the inter path, and the answer is NOT "the inter frame".** Records:

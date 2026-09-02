@@ -426,6 +426,36 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The inter path PANICKED on 18 of 64 video-mode completion cells; it now
+  panics on none** (4974a859, 4ae1ffb6). Two distinct defects, both found by
+  `tools/inter_completion_scan.sh`, both with the same shape — a comment
+  asserting an invariant the code did not implement.
+  (1) A **KEY frame** at 480p and up ran `set_pic_pd0_lvl_default`'s
+  `lpd0_lvl` 7 = `PD0_LVL_6`, which C's `pd0_detector` demotes on an I_SLICE
+  because VERY_LIGHT_PD0 does inter compensation only;
+  `part_arm::video_pd0_params` skipped the detector on an I_SLICE and
+  `pd0::video_pd0_mode` panicked on the level its own doc comment said could
+  not occur. Four cells (568/576/1024/2048 square at p10, and p9 by the same
+  ladder row), frame 0 never written — an ordinary still-image configuration.
+  All four key frames are now byte-IDENTICAL to C.
+  (2) An **INTER frame** whose superblock remainder is 40 px: `Pd0Ctx::pick_q`
+  treated C's `tot_shapes == 0` ("no d1 shape to cost here") as "this node must
+  SPLIT", where C sets `mds->split_flag` from `sq_size > min_sq_size` alone and
+  leaves such a node INVALID. The port descended below `min_sq` — a value only
+  an inter frame's `depth_removal_ctrls` raises above 8 — into a node with no
+  cost. Fourteen cells at p8/p10/p13. Byte-neutral on every key frame,
+  measured against the pre-fix binary.
+  Completion frontier 38 OK / 8 REFUSED / 18 CRASH → **52 OK / 12 REFUSED /
+  0 CRASH**; partial-superblock cells 19/2/15 → **33/3/0**. Records:
+  `rust/benchmarks/inter_completion_2026-09-02{a,b}.tsv` + the `b.meta`, which
+  also documents why the first scan of that day (24 OK / 34 CRASH) described a
+  binary that predated a landed fix by three minutes and was never main.
+  New gates: `regression_spotcheck.sh` grows an `encodesInter` helper (the
+  existing `noPanic` drives the PUBLIC API, which refuses inter frames and so
+  could never reach this code) and five cells, each proved to fail before and
+  pass after; `part_arm::video_pd0_level_tests` pins the PD0 level with a
+  positive control on the raw ladder value.
+
 - **The open-loop ME searched ONE list where C searches two, with four wrong
   signal fields, and mode decision read an `me_mv_array` slot C never writes**
   (a473fa38). `inter_me_arm::run_frame_me` hard-coded all four HME flags to 1
