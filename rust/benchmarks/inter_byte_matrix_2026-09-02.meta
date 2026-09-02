@@ -1,0 +1,70 @@
+# The INTER campaign's 96-cell FRONTIER matrix — after the five 2026-09-02
+# chunks (docs/INTER-ENCODE-PLAN.md §1z'''..§1z⁸)
+
+date: 2026-09-02
+host: mac (Apple aarch64, M-series), release build
+commit: cfc4135852c8
+base:   825f30410706 (§1z'', "19 of 96")
+
+## How it was produced
+
+  tools/inter_byte_matrix.sh <outdir>
+
+Grid: {uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x
+{p6,p8}, all frames=2 low-delay P with SVTAV1_FRAME_SHIFT=3, BOTH frames
+compared against `capture_c_trace`'s two packets. One line per cell, always.
+
+Verdicts, and the ORDER matters:
+  BOTH    both frames byte-identical
+  F1DIFF  frame 0 identical, frame 1 differs  -> an INTER-decision defect
+  F0DIFF  frame 0 already differs             -> a video-KEY defect, and every
+          frame-1 reading downstream of it is meaningless
+
+## Result
+
+|                | 825f3041 | cfc41358 |
+|----------------|---------:|---------:|
+| BOTH           |       19 |   **31** |
+| F1DIFF         |       65 |       64 |
+| F0DIFF         |       12 |    **1** |
+
+The twelve video-KEY cells closed in four steps, each with its own cause:
+  §1z'''  the PD0 fixed-tree leaf path passed `inter: None`, so every preset-8
+          inter frame decided from an intra-only candidate set (8 cells, all
+          F1DIFF -> BOTH)
+  §1z''''  `fixed_partition = pred_depth_only && md_disallow_nsq_search` had
+          only the first conjunct (the six q55 p8 key frames)
+  §1z⁵     PD0_LVL_5 unreachable on the pred-depth-only path + C's
+          `pd0_detector` demoting every inter frame to PD0_LVL_3
+          (gradient {64,72} q20 p8)
+  §1z⁶     an UNSIGNED UNDERFLOW in C's NSQ shape gate, reproduced
+          (SUSPECTED-C-BUGS #28; the three diag q20 p6 cells)
+
+## The one still open, and read it as a warning
+
+`gradient 128x128 q20 p8`: 7453 B against C's 7472. It is the only MULTI-SB
+cell of §1z⁵'s q20 p8 group and the only one that did not close there, so what
+to look at is what is per-SB: the funnel CDF chain (live at video M8, since
+`update_cdf_level` is `is_islice ? 1 : 0` through M8) and the PD0 chained rate
+tables it feeds.
+
+## Read the verdict column, not the byte counts
+
+A cell can read the same size and differ. `gradient 128x128 q20 p8` at 0.25 %
+off is a DIFFERENT encode, not a nearly-closed one.
+
+## What the 64 F1DIFF cells are
+
+Measured, not guessed: §1z⁸ shows C coding ONE 64x64 NEARESTMV skip block on
+`diag 64x64 q40 p8` frame 1 where the port codes sixteen 8x8s, and the
+`SVTAV1_PD0_NOSPLIT` control makes that frame byte-identical. The port's PD0
+does no inter compensation, so on a translated frame every large block looks
+expensive. Until that lands, an F1DIFF cell whose frame-1 tree is deeper than
+C's is downstream of it and should not be chased separately.
+
+## Cross-ISA
+
+`cargo nextest run --workspace` is 2437/2437 on this host and 2447/2447 on
+x86_64-linux (`r7900x`) at the same commits. The matrix itself is a byte
+comparison against the C oracle built on the same host, so it is not
+meaningfully re-runnable elsewhere without rebuilding that oracle.
