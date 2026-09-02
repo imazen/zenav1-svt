@@ -29,7 +29,11 @@
 # cells and not on others.
 #
 # The `uniform` cells are the ones that witness §1z''s intra-rate defect:
-# every one of the six was a DIFFERS before it and is byte-identical after.
+# every one of the six p6 ones was a DIFFERS before it and is byte-identical
+# after. The eight p8 cells added on 2026-09-02 witness §1z''''s dropped inter
+# arm: reverting that one-line wiring puts every one of them back to an
+# intra-only candidate set and a frame 1 an order of magnitude too large
+# (`gradient 64x64 q40 p8`: 291 B against C's 22).
 #
 # Usage: tools/inter_byte_gate.sh
 set -uo pipefail
@@ -38,34 +42,46 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 19 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 27 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z''. Listed in full:
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z'''. Listed in full:
     # a gate that samples its own frontier reports a smaller regression than
-    # it should.
-    "uniform 64 64 20 6 2 3"
-    "uniform 64 64 40 6 2 3"
-    "uniform 64 64 55 6 2 3"
+    # it should. `tools/inter_byte_matrix.sh` is the sweep this list is the
+    # assertion of.
     "uniform 16 16 20 6 2 3"
+    "uniform 16 16 20 8 2 3"
     "uniform 16 16 40 6 2 3"
+    "uniform 16 16 40 8 2 3"
     "uniform 16 16 55 6 2 3"
-    "gradient 64 64 40 6 2 3"   # §1z's reference cell: one 64x64 NEWMV skip block
-    "gradient 64 64 55 6 2 3"
+    "uniform 16 16 55 8 2 3"
+    "uniform 64 64 20 6 2 3"
+    "uniform 64 64 20 8 2 3"
+    "uniform 64 64 40 6 2 3"
+    "uniform 64 64 40 8 2 3"
+    "uniform 64 64 55 6 2 3"
+    "uniform 64 64 55 8 2 3"
     "gradient 16 16 20 6 2 3"
+    "gradient 16 16 20 8 2 3"
     "gradient 16 16 40 6 2 3"
     "gradient 16 16 55 6 2 3"
-    "screen 64 64 40 6 2 3"
-    "screen 64 64 55 6 2 3"
-    "screen 64 64 55 8 2 3"
+    "gradient 64 64 40 6 2 3"   # §1z's reference cell: one 64x64 NEWMV skip block
+    "gradient 64 64 40 8 2 3"   # §1z''''s cell: the PD0 fixed-tree path's dropped inter arm
+    "gradient 64 64 55 6 2 3"
     "screen 16 16 20 6 2 3"
     "screen 16 16 40 6 2 3"
     "screen 16 16 55 6 2 3"
+    "screen 64 64 40 6 2 3"
+    "screen 64 64 55 6 2 3"
+    "screen 64 64 55 8 2 3"
     "screen 128 128 55 6 2 3"
     "screen 128 128 55 8 2 3"
 )
+# Read below as `${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}` — see the same note in
+# `inter_decode_gate.sh`: on bash < 4.4 (`/bin/bash` on macOS is 3.2.57)
+# expanding an EMPTY array under `set -u` aborts the script, so a gate whose
+# last open cell gets promoted would stop being able to report PASS.
 OPEN_CELLS=(
     "gradient 64 64 20 6 2 3"   # tile 24 B vs C's 22
-    "gradient 64 64 40 8 2 3"   # the preset-8 ladder, 291 B vs 22
     "diag 64 64 40 6 2 3"       # the widest p6 residual on this content
     "uniform 72 72 40 6 2 3"    # 23 B vs 22 — a partial-SB inter frame
 )
@@ -112,7 +128,7 @@ for spec in "${PASS_CELLS[@]}"; do
     fi
 done
 echo "-- known-open cells --"
-for spec in "${OPEN_CELLS[@]}"; do
+for spec in ${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}; do
     # shellcheck disable=SC2086
     got=$(run_cell $spec)
     if [[ "$got" == "1/1" ]]; then

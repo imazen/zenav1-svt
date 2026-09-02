@@ -11006,8 +11006,36 @@ fn encode_tile_rows(
                                         // bd10 post-pass: IBC is bd8-only (the injection
                                         // self-gates on bd10 too).
                                         ibc: None,
-                                        inter: None,
-                                        ibc_mvp: None,
+                                        // The INTER arm, which this site DROPPED
+                                        // (docs/INTER-ENCODE-PLAN.md §1z'''). This is
+                                        // the third of three `FunnelCtx`
+                                        // constructions and the only one that reached
+                                        // a leaf with `inter: None` while the frame
+                                        // had an inter arm: it is the PD0 FIXED-TREE
+                                        // path taken when `refined` is false, i.e.
+                                        // `DrCtrls::for_arm` reports a
+                                        // non-adaptive depth-refinement level. On the
+                                        // VIDEO arm that is exactly M8 and above, so
+                                        // every preset-8 inter frame in the campaign's
+                                        // grid decided its blocks from an intra-only
+                                        // candidate set and the injector never ran.
+                                        // MEASURED with `SVTAV1_CANDDBG=1 SVTAV1_NSQDBG=1`'s new
+                                        // `NSQDBG PINTER` line: 2 inter candidates at
+                                        // p6, ZERO at p8, on `gradient 64x64 q40`.
+                                        //
+                                        // Byte-inert on the still envelope BY
+                                        // CONSTRUCTION: `inter_md` is `None` on every
+                                        // key frame, so both fields keep the values
+                                        // they had. `ibc` deliberately stays `None` —
+                                        // wiring IBC here is a separate question with
+                                        // a separate byte risk, and this chunk does
+                                        // not measure it.
+                                        inter: inter_md,
+                                        ibc_mvp: if inter_md.is_some() {
+                                            Some(&mut ibc_mvp_grid)
+                                        } else {
+                                            None
+                                        },
                                         ibc_gate: Default::default(),
                                         full_rd10: bd10_full_rd,
                                     })

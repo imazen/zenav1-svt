@@ -56,6 +56,16 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`tools/inter_byte_matrix.sh` — the inter campaign's 96-cell frontier
+  sweep.** `inter_byte_gate.sh` asserts the closed cells; this walks the whole
+  grid and classifies each as BOTH / F1DIFF (an inter-decision defect) /
+  F0DIFF (a video-KEY defect, which makes every frame-1 reading below it
+  meaningless). Committed because `INTER-ENCODE-PLAN.md` §1z, §1z' and §1z''
+  each re-derived the same loop in a scratch directory.
+- **`SVTAV1_CANDDBG`'s `NSQDBG PINTER` line.** The candidate dump printed an
+  `NSQDBG PFAST` line per INTRA candidate and nothing for the inter one, so
+  "the injector ran and lost" and "the injector never ran" were
+  indistinguishable. That ambiguity hid the defect below for a whole chunk.
 - **The port's OWN inter ME and MVP produce C's decision** (aeca0196). Two
   permanent gates in `pipeline.rs::inter_decision_probe` answer the question
   §1s's inventory presumes: `inter_me::motion_estimation_b64` (configured by
@@ -214,6 +224,29 @@ Crates are not published to crates.io yet — depend by git.
   divergence is the TILE: C 3 bytes, port 94.
 
 ### Fixed
+
+- **`inter_decode_gate.sh` could not report PASS on macOS.** Its `OPEN_CELLS`
+  array emptied when the last open cell was promoted, and `"${arr[@]}"` on an
+  EMPTY array under `set -u` is an "unbound variable" error on bash < 4.4 —
+  `/bin/bash` on every macOS is 3.2.57. The gate printed five green required
+  cells and then aborted nonzero, which reads as a gate failure. Both inter
+  gates now use `${ARR[@]+"${ARR[@]}"}`. Recorded in
+  `rust/docs/WORKING-ON-THIS.md` §5.
+
+- **The INTER arm was dropped by one of three leaf paths — 19 of 96 cells
+  becomes 27.** `pipeline.rs` builds `leaf_funnel::FunnelCtx` at three sites;
+  the PD0 FIXED-TREE one hardcoded `inter: None`. That path is taken whenever
+  `DrCtrls::for_arm` reports a non-adaptive depth-refinement level, which on
+  the VIDEO arm is `pic_block_based_depth_refinement_level == 10`, i.e. **M8
+  and above** — so every preset-8 inter frame in the campaign's grid decided
+  its blocks from an intra-only candidate set and emitted an intra block with
+  a full residual where C emits a 22-byte skip frame. MEASURED with the new
+  `NSQDBG PINTER` line: 2 inter candidates offered at p6, ZERO at p8, on
+  `gradient 64x64 q40 frames=2`. Byte-inert on the still envelope by
+  construction (`inter_md` is `None` on every key frame) and measured so:
+  `identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
+  `video_key_matrix` 58/60, `fctx_gate` 96/96 all unchanged. Full record in
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z'''.
 
 - **The frame-CDF shim needed RTCD setup — SIGSEGV on x86-64 only** (4c2e61bb).
   `svt_aom_init_mode_probs` / `svt_av1_default_coef_probs` copy through

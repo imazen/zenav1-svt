@@ -1454,6 +1454,31 @@ pub(super) fn inject_candidates(
             };
             let flr = u64::from(c.fast_luma_rate);
             let fast_cost = rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 });
+            // The intra lanes above each print an `NSQDBG PFAST` line; without
+            // this one the inter candidate is INVISIBLE in the candidate dump,
+            // and "the injector ran and the candidate lost" is indistinguishable
+            // from "the injector never ran" (`docs/WORKING-ON-THIS.md` §5, the
+            // silent-harness trap). Same gate, so it costs nothing when off.
+            #[cfg(feature = "std")]
+            if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+                eprintln!(
+                    "NSQDBG PINTER mi=({},{}) {}x{} mode={:?} rf={:?} mv=({},{}) pmv=({},{}) drl={} flr={} satd={} fast={}",
+                    abs_y / 4,
+                    abs_x / 4,
+                    w,
+                    h,
+                    c.mode,
+                    c.ref_frame,
+                    c.mv[0].y,
+                    c.mv[0].x,
+                    c.pred_mv[0].y,
+                    c.pred_mv[0].x,
+                    c.drl_index,
+                    flr,
+                    satd,
+                    fast_cost,
+                );
+            }
             cands.push(Cand {
                 // An inter block codes NEITHER an intra y_mode nor a uv_mode
                 // (§1x defects 2 and 6), so these two stay at their C

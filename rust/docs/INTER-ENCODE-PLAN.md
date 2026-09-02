@@ -3444,6 +3444,83 @@ samples its own frontier reports a smaller regression than it should — plus
 four named open cells. The `uniform` six are the ones that witness this
 chunk's intra-rate defect: every one was a DIFFERS before it.
 
+### 1z‴. The inter arm was DROPPED by one of three leaf paths — 19 of 96 cells becomes 27 (2026-09-02)
+
+§1z″ left `gradient 64x64 q20 p8` at 873 B against C's 22, and the brief for
+this chunk predicted a **C ladder fork**: a video row of some
+`sig_deriv_*_default` that the port was reading from the `_allintra` twin at
+M8. That prediction is **REFUTED**. Nothing about C's per-picture derivation is
+wrong at M8. The port simply never offered an inter candidate on that path.
+
+#### How it was found — the candidate dump could not see the inter lane
+
+`SVTAV1_CANDDBG` prints an `NSQDBG PFAST` line for every INTRA candidate the
+funnel injects. The inter candidate, added in §1s item 1b, had no such line, so
+"the injector ran and the candidate lost on cost" and "the injector never ran"
+looked identical in the dump — a silent-harness shape
+(`docs/WORKING-ON-THIS.md` §5). Adding `NSQDBG PINTER` (same gate, same place)
+answered it in one run:
+
+| cell | inter candidates offered at the 64x64 leaf |
+|---|--:|
+| `gradient 64x64 q40 p6 frames=2` | **2** (`NearestMv` @ (0,0), `NewMv` @ (0,−24)) |
+| `gradient 64x64 q40 p8 frames=2` | **0** |
+
+The port's frame-1 leaf at p8 was choosing between FOUR intra candidates
+(`DC/V/H/SMOOTH`) and packing `SMOOTH_PRED` with `yeob=2121`, where at p6 it
+packs a skip `NEWMV`. That is why p8's inter frames were an order of magnitude
+too big: 291 B vs C's 22 on that cell, 2 962 vs 25 on `gradient 128x128 q20`.
+
+#### The defect: the THIRD `FunnelCtx`
+
+`pipeline.rs` builds `leaf_funnel::FunnelCtx` at exactly three sites. Two pass
+`inter: inter_md`. The third — `pipeline.rs:~10991`, the **PD0 fixed-tree**
+path — was written before the inter arm existed and still had `inter: None,
+ibc_mvp: None` hardcoded next to a comment about bd10 IBC.
+
+Which leaf takes that path is decided by
+
+```rust
+let dr = crate::depth_refine::DrCtrls::for_arm(sc_arm, preset, sc_class5, cli_qp);
+let refined = dr.adaptive && use_funnel;
+```
+
+and on the VIDEO arm `pic_block_based_depth_refinement_level`
+(`enc_mode_config.c:9384-9394`, the `!sc_class5` row) is 6 at M4..M6, 8 at M7
+and **10 — `PD0_DEPTH_PRED_PART_ONLY`, not adaptive — from M8 up**. So *every*
+preset-8 inter frame in the campaign's 96-cell grid decided its blocks from an
+intra-only candidate set. The two cells that already passed at p8
+(`screen 64x64 q55 p8`, `screen 128x128 q55 p8`) pass because C also codes
+nothing there.
+
+`inter: inter_md` and the `ibc_mvp` grid are now wired at that site. `ibc`
+deliberately stays `None`: whether IBC belongs on this path is a separate
+question with its own byte risk on the still envelope, and this chunk does not
+measure it.
+
+**Byte-inert on the still envelope by construction** — `inter_md` is `None` on
+every key frame, so both fields keep the values they had. Measured, not
+assumed: `identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
+`video_key_matrix` 58/60, `fctx_gate` 96/96, `inter_fh_gate` PASS,
+`inter_decode_gate` PASS, all unchanged.
+
+#### The frontier, re-measured over the same 96 cells
+
+| result | §1z″ | after this fix |
+|---|--:|--:|
+| BOTH frames byte-identical | 19 | **27** |
+| frame 0 identical, frame 1 differs | 65 | 57 |
+| frame 0 already differs (the video-KEY frontier) | 12 | 12 |
+
+The eight that closed are `uniform {16,64} x {q20,q40,q55} p8` and
+`gradient 16x16 q20 p8` / `gradient 64x64 q40 p8`. Nothing regressed: every
+changed cell moved F1DIFF -> BOTH.
+
+`tools/inter_byte_matrix.sh` is that sweep, committed. §1z, §1z′ and §1z″ each
+re-derived it in a scratch directory; it prints one line per cell and writes a
+TSV that diffs against the previous chunk's, which is how "8 closed, 0
+regressed" above is a diff rather than a recollection.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

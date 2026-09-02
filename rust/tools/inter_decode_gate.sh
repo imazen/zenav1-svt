@@ -67,6 +67,14 @@ PASS_CELLS=(
 # Empty on purpose, and that is a claim: every cell this gate knows about
 # decodes completely. A NEW open cell goes here with its measured reason, so
 # the gate keeps stating a frontier instead of hiding one.
+#
+# It is READ below as `${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}`, not as
+# `"${OPEN_CELLS[@]}"`. On bash < 4.4 — which is `/bin/bash` on every macOS,
+# 3.2.57 — expanding an EMPTY array under `set -u` is an "unbound variable"
+# error, so the moment the last open cell was promoted this gate stopped being
+# able to report PASS at all: it printed five green required cells, then
+# aborted at the `for` below with a nonzero status. MEASURED 2026-09-02, and
+# the failure looks exactly like a real gate failure in a summary line.
 OPEN_CELLS=()
 
 work="${TMPDIR:-/tmp}/inter-decode-gate.$$"
@@ -124,7 +132,7 @@ for c in "${PASS_CELLS[@]}"; do
     ((rc == 2)) && harness=$((harness + 1))
 done
 echo "-- known-open cells --"
-for c in "${OPEN_CELLS[@]}"; do
+for c in ${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}; do
     run_cell "$c" open; rc=$?
     ((rc == 3)) && promoted=$((promoted + 1))
     ((rc == 2)) && harness=$((harness + 1))

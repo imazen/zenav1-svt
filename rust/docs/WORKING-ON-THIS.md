@@ -399,6 +399,19 @@ MEASURED 2026-09-01: `1091 / 1100` with the last NINE cells failing
 contiguously and all nine passing individually. A CONTIGUOUS TAIL of failures
 is the tell — a real regression does not respect sweep order.
 
+**An EMPTY `OPEN_CELLS` array aborts a `set -u` gate on macOS's `/bin/bash`.**
+Every frontier gate here has the shape `PASS_CELLS` + `OPEN_CELLS`, and moving
+the last open cell to `PASS_CELLS` is how progress is recorded — but on bash
+< 4.4 (`/bin/bash` is 3.2.57 on every macOS) `"${arr[@]}"` on an EMPTY array
+under `set -u` is an "unbound variable" error. So the moment
+`inter_decode_gate.sh`'s open list emptied, the gate printed five green
+required cells and then **aborted**, nonzero, at the `for` — a state
+indistinguishable in a summary line from a real gate failure, and one that a
+handoff brief recorded as "PASS" because it had been run under a newer `env
+bash`. MEASURED 2026-09-02. Write `${ARR[@]+"${ARR[@]}"}` in every such loop;
+both inter gates do now. Same shape as the corpus gates' `0 / 0 identical`:
+**a gate that cannot finish is not a gate that passed.**
+
 **Every byte gate in this repo compares the port to C. NONE of them asks
 whether the port's own bytes are a bitstream.** Running a real decoder over
 the port's stream is a different question with a different answer: on
@@ -421,6 +434,9 @@ These are committed so nobody rebuilds them in a scratch dir:
 tools/drill_two_images.sh     # per-preset/per-qp verdicts for the two open images
 tools/sc_tool_bisect.sh       # palette? IntraBC? neither? (SVTAV1_SC_TOOLS)
 tools/regression_spotcheck.sh # every fixed bug, ~90s
+tools/inter_byte_matrix.sh    # the inter campaign's 96-cell frontier:
+                              # BOTH / F1DIFF (inter defect) / F0DIFF (video-KEY
+                              # defect, so every frame-1 reading below it is void)
 python3 tools/coverage_matrix.py
 ```
 
