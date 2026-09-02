@@ -700,6 +700,42 @@ workspace was 2300/2301 at `c8758e359` with this the ONLY failure, and
 both. Recorded because "it is green now" without the before-number is not a
 measurement.
 
+**AMENDED 2026-09-02 — a SECOND site, and the divergence is wider than "two
+ISAs disagree".**
+
+`rc_rtc_cbr.c:523` carried the identical expression on the RTC-CBR runtime
+bitrate-change path:
+
+```c
+rc->avg_frame_bandwidth = (int)(bandwidth / framerate);   // bandwidth is int32_t
+```
+
+Fixing only `pass2_strategy.c` would have left the defect live on the low-delay
+RTC path, which is the one a realtime caller actually reaches. Note this branch
+runs on a **runtime** rate change; it was NOT confirmed that a runtime change is
+re-validated against `verify_settings`' 1e8 cap, so the UNREACHABLE verdict
+above is an init-time verdict and may not carry here.
+
+Measured on aarch64-darwin (Apple clang 21) at the (4e9, 0.1) cell, the UB is
+not merely ISA-dependent — it is codegen-dependent, and once folded it is not
+even stable between runs of the SAME binary:
+
+| shape | value |
+|---|---|
+| real call, values opaque to the optimizer, -O0 and -O2 | 2147483647 |
+| inlined + constant-folded, -O2 | 37635608, then **77874712 on a second run** |
+| minimal repro, inlined, -O2 | -97304320 |
+| minimal repro, inlined, -O0 | 2147483647 |
+
+So "aarch64 saturates" holds only for the non-inlined shape. Any differential
+that inlines the expression is sampling a value with no defined meaning.
+
+Both sites are fixed on branch `fix/suspected-c-bug-17` in
+`imazen/zenav1-svt-c` (`70fda0f`, `39f909e`) — clamp before the cast, the order
+`rc_process.c:392` and `:647` already use. Per this file's own rule the fix was
+gated on byte-parity before adoption; the submodule pin is unchanged pending
+that result.
+
 **Two lanes reached this independently on the same day** — the rate-control
 port lane hit it on a second-ISA run and filed a duplicate as #25, since
 removed. That is the failure mode this file exists to prevent, and it only
@@ -1351,3 +1387,63 @@ never crosses. `identity_full_8bit` is 1100/1100 with the underflow reproduced.
 
 **What the port does:** `skip_by_split_rate` computes the adjustment in `u32`
 with `wrapping_sub(..).max(1)` and says why, rather than saturating.
+
+---
+
+## 29. A guard applied AFTER the narrowing it was meant to guard — three sites
+
+**Status: UNCONFIRMED by execution; read from source. Two of the three are
+REACHABLE inside our envelope. NOT fixed — fixing them changes rate-control
+behaviour and therefore the oracle.**
+
+Same shape three times: a value is narrowed to `int`, and only then clamped —
+so the clamp can never fire, because its input is already the truncated result.
+
+**a. `pass2_strategy.c:907-908` — reachable.**
+
+```c
+vbr_max_bits = (int)(((int64_t)rc->avg_frame_bandwidth * vbrmax_section) / 100);
+vbr_max_bits = AOMMIN(vbr_max_bits, INT_MAX);   // dead: already an int
+```
+
+At stock defaults (`vbr_max_section_pct` 2000, capped at 10000) and an
+in-envelope 1e8 bits/s at 0.1 fps, `avg_frame_bandwidth` is 1e9 and the product
+is 2e10 — truncated, not clamped. The correct pattern is in the same file 850
+lines above, at `:53`, where `frame_max_bits` keeps `int64_t` and uses `CLIP3`.
+
+**b. `rc_rtc_cbr.c:418` and `:438` — reachable, and an unsigned wrap.**
+
+```c
+int maxi = rc->avg_frame_bandwidth * rc_cfg->max_intra_bitrate_pct / 100;
+int maxp = rc->avg_frame_bandwidth * rc_cfg->max_inter_bitrate_pct / 100;
+```
+
+`max_intra_bitrate_pct` is `unsigned int` (`encoder.h:60`), default **300**, and
+`verify_settings` does not cap it. So the `int` operand converts to unsigned and
+the product wraps mod 2^32 rather than overflowing. It wraps once
+`avg_frame_bandwidth` exceeds ~14.3e6 bits/frame — a 14.3 Mbit/s stream at 1 fps,
+well inside the validated envelope. Same family as entry 28.
+
+**c. `rc_vbr_cbr.c:1705-1707` — guard non-functional; overflow marginally out of
+reach.**
+
+```c
+int tolerance           = (int)AOMMAX(100, (int64_t)recode_tolerance * ppcs->max_frame_size / 100);
+*frame_over_shoot_limit = AOMMIN(ppcs->max_frame_size + tolerance, INT_MAX);
+```
+
+`max_frame_size` is `int` (`pcs.h:1120`) and `tolerance` is `int`, so the sum is
+signed overflow — undefined — *before* the `AOMMIN` that was meant to catch it.
+With `recode_tolerance <= 100` the sum is at most ~2x `max_frame_size`, needing
+>~1.07e9 bits/frame to overflow, so the UB itself is out of reach in our
+envelope. The guard is still inert.
+
+**What the port does:** nothing reaches (a) or (c) — the port has no VBR/CBR
+rate control on the still or low-delay paths under test. (b) is likewise
+unreached. All three are recorded because the *shape* is the thing to recognise:
+`rc_process.c:392` and `:647` do the same job in the correct order (clamp, then
+cast), so this is a defect pattern in the file, not the codebase's convention.
+
+**Before touching any of these:** they are reachable, so unlike entry 17 they
+are NOT encode-inert. Changing them moves the oracle for any VBR/CBR
+configuration. Measure byte-parity first.

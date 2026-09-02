@@ -114,6 +114,31 @@ fix it — PIN IT to the first with a sweep test, which is what
 `pd0::inter_lambda_tests::it_agrees_with_port_rc_process_compute_rd_mult_over_a_sweep`
 now does over 160 (qindex, update-type, lambda-weight) points.
 
+
+### TRAP: the oracle's identity is a BRANCH now, not just the pin (2026-09-02)
+
+`reference/svt-av1` is a separate repo (`imazen/zenav1-svt-c`) and was sitting on
+a **detached HEAD at `3115c0c` that no branch or tag pointed at** — one `git gc`
+from losing the reference the entire byte-parity campaign is measured against.
+It is now preserved as `oracle-base-hdr-fork` and pushed.
+
+The working tree is currently on `fix/suspected-c-bug-17` (`39f909e`), which
+saturates two UB double-to-int casts (SUSPECTED-C-BUGS 17). **Measured inert:
+`identity_full_8bit` 1100/1100 against a library rebuilt from it.** The outer
+repo's submodule pin still reads `3115c0c`, so tree and pin disagree — if you
+need to reproduce a number exactly, check out the branch above, do not assume
+the pin.
+
+Two things that will mislead you here:
+- `crates/svtav1-cref/build.rs` has `rerun-if-changed` for its own shims ONLY,
+  not for the C library sources. Editing C and running cargo does NOT rebuild
+  the oracle. Force it with `ninja -C cbuild-static`.
+- Object mtimes are useless for deciding whether a C edit is compiled in — a
+  `.o` can carry the same minute as the source that postdates it. Grepping the
+  object for a constant is ALSO useless: `(int)AOMMIN(v, (double)INT_MAX)` emits
+  no INT_MAX constant on aarch64, because `fcvtzs` already saturates. Force the
+  rebuild and diff behaviour instead of inspecting artefacts.
+
 ## 5. The harness traps
 
 Each of these produced a confident wrong answer in a single day. They are not
