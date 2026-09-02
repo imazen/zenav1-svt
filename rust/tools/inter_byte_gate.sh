@@ -126,7 +126,13 @@ work="${TMPDIR:-$HOME/tmp}/inter-byte-gate.$$"
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
 
-# echoes "<f0>/<f1>" as 1 (identical) or 0, or "ERR"
+# echoes "<f0>/<f1>" as 1 (identical) or 0, or "ERR", or "CRASH".
+#
+# CRASH IS ITS OWN ANSWER. MEASURED 2026-09-02: a frame-1 panic leaves
+# `rs.obu.f0` on disk, so the two checks below (status 3, missing files) both
+# passed and the cell scored "0/0" — a PASS cell would have failed loudly, but
+# a KNOWN-OPEN cell read as "open ... known", indistinguishable from the byte
+# divergence it is not. Eighteen 72x72 cells were in exactly that state.
 run_cell() {
     local content=$1 w=$2 h=$3 qp=$4 preset=$5 frames=$6 shift_px=$7
     local out="$work/${content}_${w}x${h}_q${qp}_p${preset}"
@@ -135,6 +141,7 @@ run_cell() {
         "$HERE/identity_diff_inter.sh" "$w" "$h" "$qp" "$preset" "$frames" "$content" "$out" \
         >"$out/diff.txt" 2>&1
     local st=$?
+    if [[ $st -eq 4 ]]; then echo "CRASH"; return; fi
     if [[ $st -eq 3 ]]; then echo "ERR"; return; fi
     if [[ ! -s "$out/c.obu.pts0" || ! -s "$out/rs.obu.f0" ]]; then echo "ERR"; return; fi
     local a=0 b=0
@@ -143,12 +150,15 @@ run_cell() {
     echo "$a/$b"
 }
 
-fail=0; err=0; promoted=0
+fail=0; err=0; promoted=0; crashed=0
 echo "== inter byte gate =="
 for spec in "${PASS_CELLS[@]}"; do
     # shellcheck disable=SC2086
     got=$(run_cell $spec)
-    if [[ "$got" == "ERR" ]]; then
+    if [[ "$got" == "CRASH" ]]; then
+        echo "  CRASH  $spec  (the encoder PANICKED — not a byte divergence)"
+        crashed=$((crashed + 1))
+    elif [[ "$got" == "ERR" ]]; then
         echo "  HARNESS  $spec  (the encoder refused, or produced no stream)"
         err=$((err + 1))
     elif [[ "$got" == "1/1" ]]; then
@@ -162,7 +172,10 @@ echo "-- known-open cells --"
 for spec in ${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}; do
     # shellcheck disable=SC2086
     got=$(run_cell $spec)
-    if [[ "$got" == "1/1" ]]; then
+    if [[ "$got" == "CRASH" ]]; then
+        echo "  CRASH  $spec  (the encoder PANICKED — a known-open cell may DIFFER, never crash)"
+        crashed=$((crashed + 1))
+    elif [[ "$got" == "1/1" ]]; then
         echo "  PROMOTED  $spec  (now byte-identical — move it to PASS_CELLS)"
         promoted=$((promoted + 1))
     else
@@ -171,7 +184,14 @@ for spec in ${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}; do
 done
 
 echo
-echo "inter byte gate: ${#PASS_CELLS[@]} required, $fail failed, ${#OPEN_CELLS[@]} known-open ($promoted now identical), $err harness errors"
+echo "inter byte gate: ${#PASS_CELLS[@]} required, $fail failed, ${#OPEN_CELLS[@]} known-open ($promoted now identical), $crashed crashed, $err harness errors"
+# A crash fails the gate from EITHER list. A known-open cell is allowed to
+# produce different bytes; it is never allowed to panic.
+if [[ $crashed -gt 0 ]]; then
+    echo "inter byte gate: FAIL — $crashed cell(s) PANICKED. A panic is a defect," >&2
+    echo "  not a frontier state, and it is not what 'known-open' means." >&2
+    exit 1
+fi
 if [[ $err -gt 0 ]]; then
     echo "inter byte gate: HARNESS FAILURE — not a parity result" >&2
     exit 2

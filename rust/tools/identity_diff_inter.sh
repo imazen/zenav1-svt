@@ -22,7 +22,18 @@
 # Exit status: 0 iff every frame is byte-identical. 3 iff the port REFUSED a
 # frame (a refusal is not a crash and not a byte divergence — the gate says so
 # in those words, because conflating them is how a missing feature gets read as
-# a corruption bug).
+# a corruption bug). 4 iff the port CRASHED — see below. 1 for a byte
+# divergence, 2 for a usage error.
+#
+# WHY 4 EXISTS, MEASURED 2026-09-02. A Rust panic exits 101, and this script
+# used to propagate that raw status. Every consumer keyed on "3 = refusal" and
+# on whether `rs.obu.f0` exists — and frame 0 IS written before a frame-1
+# panic, so a crash sailed through both checks and was classified as an
+# ordinary frame-1 byte divergence. `inter_byte_matrix.sh` reported EIGHTEEN
+# panicking 72x72 cells as F1DIFF, and `docs/INTER-ENCODE-PLAN.md` §1z15's
+# "55 F1DIFF cells" therefore counted 18 crashes as divergences for a whole
+# chunk. A crash and a wrong byte are not the same defect and must never share
+# a verdict.
 set -euo pipefail
 
 if [[ $# -lt 4 ]]; then
@@ -82,7 +93,17 @@ if [[ $rs_status -eq 3 ]]; then
     cat "$OUTDIR/report.txt"
     exit 3
 fi
-[[ $rs_status -eq 0 ]] || { echo "identity_run failed with status $rs_status" >&2; exit $rs_status; }
+# Any other nonzero status is a CRASH (a Rust panic is 101), and it gets its
+# OWN exit code so no caller can classify it as a byte divergence. See the
+# status list at the top of this file.
+if [[ $rs_status -ne 0 ]]; then
+    {
+        echo "PORT CRASHED — this is a crash, not a refusal and not a byte divergence."
+        echo "identity_run exited $rs_status. The panic, if any:"
+        grep -h "panicked at" "$OUTDIR/rs.trace" || echo "  (no panic line in rs.trace)"
+    } | tee -a "$OUTDIR/report.txt" >&2
+    exit 4
+fi
 
 # 3. Per-frame byte comparison.
 ok=1

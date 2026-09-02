@@ -14,9 +14,18 @@
 #
 # The three verdicts are the campaign's three states, and the ORDER matters:
 #   BOTH    both frames byte-identical
+#   CRASH   the port PANICKED                   -> not a divergence at all
 #   F1DIFF  frame 0 identical, frame 1 differs  -> an INTER-decision defect
 #   F0DIFF  frame 0 already differs             -> a video-KEY defect, and every
 #           frame-1 reading downstream of it is meaningless
+#
+# CRASH IS NOT F1DIFF, AND IT USED TO BE. MEASURED 2026-09-02: the port
+# panicked on EIGHTEEN 72x72 cells (`md_search.rs`'s source read, off the end
+# of an unpadded plane on a partial superblock) and this script reported every
+# one of them as F1DIFF, because frame 0 had already been written when the
+# frame-1 panic hit and the only crash check here was "does rs.obu.f0 exist".
+# §1z15's "55 F1DIFF cells" was therefore 37 divergences and 18 crashes. A
+# crash gets its own column and its own nonzero exit.
 #
 # Usage: tools/inter_byte_matrix.sh [outdir]
 # Env: IBM_CONTENT / IBM_SIZES / IBM_QPS / IBM_PRESETS / IBM_FRAMES / IBM_SHIFT
@@ -35,7 +44,7 @@ OUT="${1:-$RS_ROOT/target/inter-byte-matrix}"
 mkdir -p "$OUT"
 
 printf 'content\tsize\tqp\tpreset\tc_f0\tp_f0\tc_f1\tp_f1\tverdict\n'
-both=0; f1d=0; f0d=0; broke=0
+both=0; f1d=0; f0d=0; broke=0; crash=0
 for content in $CONTENTS; do
   for s in $SIZES; do
     for q in $QPS; do
@@ -46,6 +55,13 @@ for content in $CONTENTS; do
           "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$content" "$d" \
           >"$d/diff.txt" 2>&1
         st=$?
+        # A CRASH first: `identity_diff_inter.sh` exits 4 for it, and the test
+        # must come BEFORE the file checks, because a frame-1 panic leaves a
+        # perfectly good rs.obu.f0 behind and would otherwise be scored.
+        if [[ $st -eq 4 ]]; then
+          printf '%s\t%s\t%s\t%s\t-\t-\t-\t-\tCRASH\n' "$content" "$s" "$q" "$p"
+          crash=$((crash+1)); continue
+        fi
         if [[ $st -eq 3 || ! -s "$d/c.obu.pts0" || ! -s "$d/rs.obu.f0" ]]; then
           printf '%s\t%s\t%s\t%s\t-\t-\t-\t-\tHARNESS\n' "$content" "$s" "$q" "$p"
           broke=$((broke+1)); continue
@@ -73,7 +89,9 @@ for content in $CONTENTS; do
     done
   done
 done
-total=$((both+f1d+f0d+broke))
-printf '# %d BOTH / %d F1DIFF / %d F0DIFF / %d HARNESS of %d\n' \
-  "$both" "$f1d" "$f0d" "$broke" "$total"
-[[ $broke -eq 0 ]]
+total=$((both+f1d+f0d+broke+crash))
+printf '# %d BOTH / %d F1DIFF / %d F0DIFF / %d CRASH / %d HARNESS of %d\n' \
+  "$both" "$f1d" "$f0d" "$crash" "$broke" "$total"
+# A crash is a DEFECT, not a frontier state: this sweep fails on one, the same
+# way it fails on a broken harness.
+[[ $broke -eq 0 && $crash -eq 0 ]]
