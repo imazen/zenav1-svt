@@ -4419,6 +4419,198 @@ objcopy's exit status).
 The 96-cell grid's twelve 128-wide cells are all F1DIFF; this is the first
 named mechanism they share.
 
+> **SUPERSEDED by §1z¹³ (2026-09-02).** The localization above is sound about
+> WHERE the port's list-0 HME lands and wrong about what C does there. C's
+> level 0 lands on the SAME `-24`; its `med=0/0/0/0` does not come from the
+> list-0 search at all. Read §1z¹³ before acting on anything in this entry.
+
+### 1z¹³. C's ME searches LIST 1 with a ZERO search centre, and that — not HME level 0 — is where `med=0` comes from (2026-09-02)
+
+Three separate premises this campaign was carrying turned out to be false, and
+one interposer refuted all three at once.
+
+#### The interposer
+
+`hme_level_0` and `hme_level0_b64` are both `static`, but the per-b64 entry
+`svt_aom_motion_estimation_b64` is EXPORTED, and it returns with the whole
+pyramid still live in `me_ctx`. `tools/capture_c_trace/wrap_recon.c` now wraps
+it and emits **`SVT_HME_OUT`** — four lines per b64:
+
+* `HME` — `num_hme_sa_{w,h}`, `hme_l0_sa`, and per quadrant the level-0/1/2
+  search centre and SAD, plus `search_results[0][0]` and a checksum of the
+  sixteenth source block (so a search disagreement can be separated from a
+  pyramid disagreement without assuming either).
+* `MESIG` — the ENTIRE signal set `svt_aom_sig_deriv_me` resolved, so the
+  port's derivation can be JOINED field for field.
+* `PHME` — both pre-HME regions' results and `zz_sad`.
+* `MERES` / `MEL1` — `me_distortion[]`, `p_sb_best_{sad,mv}` for BOTH lists,
+  `total_me_candidate_index`, and the two `me_mv_array` slots.
+
+`tools/ctrace-linux/run.sh` forwards `SVT_HME_OUT` (it is a path var, so it
+must be in `DUMP_ENV`, not `CONFIG_ENV`).
+
+#### Refutation 1 — the port's ME CONFIGURATION was wrong in four fields
+
+`MESIG` against the port's `sig_deriv_me` inputs on
+`gradient 128x128 q40 p8`, frame 1:
+
+| field | C | port (before) |
+|---|---|---|
+| `enable_hme_level2_flag` | **0** | 1 |
+| `me_sa` min/max | **10x4 / 15x8** | 16x6 / 24x12 |
+| `hme_l0_sa` min/max | **10x10 / 122x122** | 16x16 / 192x192 |
+| `stationary_hme_sad_abs_th` | **3000** | 12000 |
+| `reduce_me_sr_based_on_hme_sad_abs_th` | **3000** | 12000 |
+| `use_best_unipred_cand_only` | **1** | 0 |
+
+Every one of them is a defect in the DRIVER (`inter_me_arm::run_frame_me`),
+not in `port_enc_mode_config::me` — which is faithful, and takes all of these
+as inputs:
+
+* **HME level 2.** `run_frame_me` hard-coded all four HME flags to 1 with the
+  comment "enc_mode_config.c:1987-1999 sets all four unconditionally". The line
+  range is right and the reading is wrong: at :1988 levels 0 and 1 are
+  unconditional, **level 2 is `sc_class5 && enc_mode <= ENC_M2`**. The port's
+  OWN correct transcription was sitting in
+  `port_enc_mode_config::multi_processes::sig_deriv_multi_processes_default`
+  (`enable_hme_level2_flag = u8::from(sc5 && enc_mode <= M2)`) — the same
+  two-transcriptions trap §1z⁹ hit on the MD lambda, in the same crate, one
+  chunk later. The :2764 assignment that DOES set all four to 1 is
+  `sig_deriv_pre_analysis`, the ALLOCATION pre-pass, overwritten later.
+* **The qp-based search-area scaling.** `set_{me,hme}_search_params` end with a
+  `svt_aom_get_qp_based_th_scaling_factors` modulation gated on
+  `scs->qp_based_th_scaling_ctrls.{me,hme}_qp_based_th_scaling`, which
+  `set_qp_based_th_scaling_ctrls_default` (`enc_handle.c:3785`) sets to **1 for
+  every preset above ENC_MR**. The driver passed `false`, so the port searched
+  C's UNSCALED areas at every preset and every qp.
+* The two `me_sr` thresholds are not an independent defect: they are
+  `svt_aom_set_me_sr_adjustment_ctrls`' `/ 4` tail
+  (`enc_mode_config.c:513-523`), which only fires when level 2 is off.
+
+After the fix the port's `PORTSIG` line equals C's `MESIG` line field for
+field, and `SVTAV1_PD0DBG`'s `PD0DR` equals `SVT_PD0CFG_OUT`'s block
+(`dr=1/0/1/1 med=0/0/0/0 mev=0 refmin=64`) on all four superblocks.
+
+#### Refutation 2 — C's open-loop search does NOT find the exact match
+
+`MERES`, `gradient 128x128 q40 p8` frame 1:
+
+```
+b64 0 org=(0,0)   d64=0  p_sb_best_sad[L0]=18816  p_sb_best_mv[L0]=(40,0)
+b64 1 org=(64,0)  d64=0  p_sb_best_sad[L0]=13312  p_sb_best_mv[L0]=(-24,0)
+b64 2 org=(0,64)  d64=0  p_sb_best_sad[L0]=18816  p_sb_best_mv[L0]=(40,0)
+b64 3 org=(64,64) d64=0  p_sb_best_sad[L0]=13312  p_sb_best_mv[L0]=(-24,0)
+```
+
+C's list-0 result is `(-24,0)` at x=64 — **exactly what §1z¹² called the port's
+defect** — and `(40,0)`, not `(-3,0)`, at x=0. C's HME level 0 lands on the
+same aliased minimum the port's does; the port's level 0 was never wrong. What
+was wrong was reading `me_64x64_distortion = 0` as "the search found the
+match".
+
+#### Refutation 3 — `med=0` comes from LIST 1, whose HME centre is pinned to ZERO
+
+`MEL1`, same cells: `l1sad64=0`, `l1mv64=(-3,0)`, `l1hme=(0,0):0`, and
+`l1ref == l0ref` — list 1's reference is the SAME PA picture as list 0's.
+
+`set_final_search_centre_sb` (`motion_estimation.c:2057`) guards its whole HME
+block with `temporal_layer_index > 0 || list_index == 0`. On a flat low-delay-P
+GOP `temporal_layer_index` is 0, so **list 1 gets no HME at all** and its
+`hme_sc` stays `(0,0)`. `integer_search_b64` has NO such guard: it runs the
+full-pel search for list 1 from that zero centre, and from (0,0) the true
+`(-3,0)` is inside the search area. So the "bad" list-0 HME and the "good"
+list-1 zero start are both C, on purpose, on every b64.
+
+`construct_me_candidate_array_mrp_off` then takes
+`best_me_dist = MIN(sad[L0], sad[L1]) = 0`, and `prune_me_candidates_th = 65`
+prunes LIST 0 out entirely (`(18816 - 0) * 100 > 0 * 65`). The surviving ME
+candidate is list 1's, and — this is the part that bites — **the list-0 slot of
+`me_mv_array` is then never written**, so it still reads `(0,0)`:
+
+```
+MEL1 b64=1 ... mv0=(0,0) mvl1=(-3,0)
+```
+
+#### What the port had to change, and it is three things
+
+1. **`run_frame_me` searches BOTH lists** — `num_of_list_to_search = 2`,
+   `num_of_ref_pic_to_search = [1, 1]`, and `MeRefs.arr[1][0]` set to the same
+   `MeDsRef` as `arr[0][0]`, which is what C's `l1ref == l0ref` says. The port's
+   `set_final_search_centre_sb` / `integer_search_b64` / the
+   `construct_me_candidate_array_*` trio were already faithful, so this alone
+   moves the port's per-b64 output onto C's:
+   `d64=0 mecand=1 cand0=direction 1 mv0=(0,0) mvl1=(-3,0)` — an exact join.
+2. **The ME configuration fixes above.**
+3. **Consumers read the ME CANDIDATE's slot, not list 0's.**
+   `inject_new_candidates` (`mode_decision.c:2320-2326`) indexes
+   `me_mv_array[off * max_refs + (inter_direction ? max_l0 : 0) + ref_idx]` —
+   the direction comes from the candidate. `inter_md_arm::build_inter_candidates`
+   and `pd0`'s inter compensation both read list 0 unconditionally, which after
+   (1) is a slot C leaves at (0,0). Both now go through
+   `FrameMe::cand_mv_for`, which reproduces C's indexing.
+   The candidate's DIRECTION is deliberately NOT propagated into the injector:
+   `ref_frame_type_arr` carries `LAST_FRAME` alone, so a direction-1 candidate
+   would resolve to `BWDREF_FRAME` and be dropped. The port still models one
+   reference and takes that candidate's MV against it. Wiring the second
+   reference type through MD is a separate chunk, and it is what stands between
+   this and C's actual candidate set (C injects a BWDREF `NEWMV`, plus a bipred
+   `NEW_NEWMV` wherever both lists survive).
+
+#### Why the fix could not be split
+
+The configuration fix ALONE regresses `gradient 128x128 q55 p8` and
+`diag 128x128 q55 p8` from byte-identical to 190 B against C's 23 B, and that
+is the honest reading of what those cells were: **two wrongs making a right.**
+With HME level 2 wrongly ENABLED, the port's list-0 search refined all the way
+to `(-3,0)` — the same MV C reaches through list 1 — so MD got the right MV
+from the wrong place. Turning level 2 off (correct) without also reading the
+list-1 slot (correct) leaves MD with C's genuine list-0 slot value of (0,0),
+and the prediction falls apart. All three changes are one chunk for that
+reason.
+
+#### The frontier
+
+`tools/inter_byte_matrix.sh`, 96 cells, before -> after:
+
+```
+BOTH   36 -> 36
+F1DIFF 59 -> 59
+F0DIFF  1 ->  1
+```
+
+**No verdict moved, and that is the honest headline.** Three cells' frame-1
+byte counts moved (`gradient 128x128 q20 p8` 27 -> 24 against C's 25,
+`diag 72x72 q20 p8` 26 -> 27 against 29, `diag 128x128 q20 p8` 25 -> 26 against
+25); the rest are byte-for-byte what they were. What the chunk bought is not
+bytes, it is that the ME arm's INPUTS and OUTPUTS now join C's measured ones
+instead of differing in six fields, and that two cells stopped passing for the
+wrong reason.
+
+The 36 `inter_byte_gate` cells, the 5 decode-gate cells, `fctx_gate` 96/96,
+`inter_fh_gate`, `video_key_matrix` and the still envelope are all unchanged.
+
+#### What is measurably NEXT
+
+The same dumps name it. C's surviving ME candidate is `direction = 1`, so
+`inject_new_candidates` injects `svt_get_ref_frame_type(1, 0)` = **`BWDREF_FRAME`
+`NEWMV`**, and wherever both lists survive the prune it also injects a bipred
+`NEW_NEWMV`. The port's `inter_md_arm::build_inter_candidates` carries
+`ref_frame_type_arr = [LAST_FRAME]` and one unipred candidate. So on this
+envelope the port is coding the right MV against the wrong reference type, and
+is missing C's bipred candidate entirely. That is the next shared mechanism,
+and it is a REFERENCE-SET chunk, not a search chunk:
+
+* `pic_decision`'s `ref_list1_count` must reach `run_frame_me` (it is hard-wired
+  to `[1, 1]` today, which is what C resolves for this GOP but not a derivation).
+* `ref_frame_type_arr` needs list 1's type, its MVP stack
+  (`setup_ref_mv_list` for `BWDREF_FRAME`), and the ref-frame syntax that goes
+  with it.
+* `FrameMe::cand_mv_for` already returns the candidate's direction; today
+  `inter_md_arm` throws it away. That is the seam the chunk opens at.
+
+Do NOT read the 59 F1DIFF cells as 59 mechanisms until that one is closed —
+every one of them codes an inter frame whose ME candidate is list 1's.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

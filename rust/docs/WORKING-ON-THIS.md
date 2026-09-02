@@ -171,15 +171,24 @@ waiters kept reporting RUNNING for another twenty minutes. Match the SCRIPT PATH
 (`pgrep -f "tools/identity_full_8bit.sh"`), or watch the log's own completion
 line, or use a pid — never a bare name the waiter also carries.
 
-**A grid whose ME distortion is ZERO cannot witness a motion-keyed defect.**
-The inter campaign's 96-cell grid is synthetic content translated by exactly
-`SVTAV1_FRAME_SHIFT` pixels, so C's open-loop search finds an exact match and
-**every superblock of every cell measured reports
+**A grid whose ME distortion is ZERO cannot witness a motion-keyed defect —
+and the REASON it is zero was itself wrong for a day.** The inter campaign's
+96-cell grid is synthetic content translated by exactly `SVTAV1_FRAME_SHIFT`
+pixels, and **every superblock of every cell measured reports
 `me_{64,32,16,8}x*_distortion = 0` and `me_8x8_cost_variance = 0` on C's side**
-(2026-09-02, `SVT_PD0CFG_OUT`). The PORT's side is zero on the 64- and 72-wide
-cells and NOT on the 128-wide ones — which is itself a defect, not a property
-of the corpus; see `docs/INTER-ENCODE-PLAN.md` §1z¹². Everything downstream
-that keys on ME distortion is therefore evaluated at its trivial corner:
+(2026-09-02, `SVT_PD0CFG_OUT`). That was read as "C's open-loop search finds an
+exact match", and it is NOT what happens. MEASURED 2026-09-02 through
+`SVT_HME_OUT` (`gradient 128x128 q40 p8`): C's LIST-0 search ends at
+`p_sb_best_sad = 18816` with MV `(40,0)` — it does not find the match at all.
+The zero comes from **list 1**, whose HME is skipped by
+`set_final_search_centre_sb`'s `temporal_layer_index > 0 || list_index == 0`
+guard so its full-pel search starts at (0,0) and walks straight onto the true
+`(-3,0)` with SAD 0; `construct_me_candidate_array_mrp_off` then takes
+`MIN(list0, list1)`. Full account: `docs/INTER-ENCODE-PLAN.md` §1z¹³, which
+supersedes §1z¹². **The lesson is the one this section keeps repeating: a
+statistic being zero does not tell you which code path zeroed it.** Everything
+downstream that keys on ME distortion is still evaluated at its trivial
+corner:
 `set_depth_removal_level_controls`' three cost thresholds and both `dev_*`
 comparisons, `compute_subres_th`'s `cost_64x64`, `compute_intra_pd0_th`. A fix
 in any of them can be perfectly C-correct and move ZERO bytes on this grid, and

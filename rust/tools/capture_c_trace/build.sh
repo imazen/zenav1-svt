@@ -193,6 +193,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_quantize_inv_quantize \
     -Wl,--wrap=svt_aom_sig_deriv_enc_dec_pd0 \
     -Wl,--wrap=svt_av1_reset_cdf_symbol_counters \
+    -Wl,--wrap=svt_aom_motion_estimation_b64 \
     "$LIB" -lpthread -lm
 
 echo "capture_c_trace: built $OUT (SVT_HDR_MODE=$HDR_MODE, lib=$LIB)"

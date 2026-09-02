@@ -38,6 +38,7 @@ use crate::inter_me::context::{
 };
 use crate::inter_me::motion_estimation_b64;
 use crate::port_enc_mode_config::ResolutionRange;
+use crate::port_enc_mode_config::enc_mode as enc_mode_c;
 use crate::port_enc_mode_config::me::{MeDerivInputs, apply_me_signals, sig_deriv_me};
 use crate::port_preanalysis::{downsample_2d, generate_padding};
 use alloc::vec;
@@ -170,6 +171,11 @@ pub struct FrameMe {
     pub b64_rows: usize,
     /// C `pcs->pa_me_data->max_refs` — the `me_mv_array` row stride.
     pub max_refs: usize,
+    /// C `pcs->pa_me_data->max_cand` — the `me_candidate_array` row stride.
+    pub max_cand: usize,
+    /// C `pcs->pa_me_data->max_l0` — the list-1 offset inside an
+    /// `me_mv_array` row.
+    pub max_l0: usize,
     /// C `pcs->enable_me_8x8` / `enable_me_16x16`, which
     /// [`crate::port_md::predicates::get_me_block_offset`] needs to resolve a
     /// block origin to a slot in these arrays.
@@ -210,6 +216,65 @@ impl FrameMe {
         let slot = off * self.max_refs + if list == 1 { max_l0 } else { 0 } + ref_idx;
         out.me_mv_array.get(slot).copied()
     }
+
+    /// The MV of ME candidate `cand` for the block at `(org_x, org_y)`, read
+    /// out of the `me_mv_array` slot that candidate's OWN `direction` names —
+    /// which is how C indexes it (`mode_decision.c:2320-2326`):
+    ///
+    /// ```text
+    /// me_mv_array[me_block_offset * max_refs + (inter_direction ? max_l0 : 0) + ref_idx]
+    /// ```
+    ///
+    /// Returns `(direction, mv)` in FULL PEL, or `None` for a block outside
+    /// the picture, a candidate past `total_me_candidate_index`, or a BI_PRED
+    /// candidate (which names two slots, not one).
+    ///
+    /// **Why a consumer must not just read list 0.** On a flat low-delay-P
+    /// GOP `construct_me_candidate_array_mrp_off` frequently emits its single
+    /// unipred candidate for LIST 1, because `use_best_unipred_cand_only` is
+    /// set and a tie in `p_sb_best_sad` resolves to list 1; and when list 0's
+    /// distortion is far worse it is PRUNED outright by
+    /// `prune_me_candidates_th`, in which case the list-0 slot is never
+    /// written at all and still reads (0, 0). MEASURED 2026-09-02 on
+    /// `gradient 128x128 q40 p8` frame 1: C's list-0 slot is `(0,0)`, its
+    /// list-1 slot is `(-3,0)`, and `(-3,0)` is the MV mode decision uses.
+    #[must_use]
+    pub fn cand_mv_for(
+        &self,
+        org_x: usize,
+        org_y: usize,
+        bsize: u8,
+        cand: usize,
+    ) -> Option<(u8, svtav1_types::motion::Mv)> {
+        let (b64_x, b64_y) = (org_x / 64, org_y / 64);
+        if b64_x >= self.b64_cols || b64_y >= self.b64_rows {
+            return None;
+        }
+        let out = &self.per_b64[b64_y * self.b64_cols + b64_x];
+        let off = crate::port_md::predicates::get_me_block_offset(
+            (org_x % 64) as u32,
+            (org_y % 64) as u32,
+            bsize,
+            self.enable_me_8x8,
+            self.enable_me_16x16,
+        ) as usize;
+        if cand >= usize::from(*out.total_me_candidate_index.get(off)?) {
+            return None;
+        }
+        let c = out.me_candidate_array.get(off * self.max_cand + cand)?;
+        // C `BI_PRED` is 2; a bipred candidate names one slot per list and has
+        // no single MV to return.
+        if c.direction >= 2 {
+            return None;
+        }
+        let ref_idx = usize::from(if c.direction == 1 {
+            c.ref_idx_l1
+        } else {
+            c.ref_idx_l0
+        });
+        let slot = off * self.max_refs + if c.direction == 1 { self.max_l0 } else { 0 } + ref_idx;
+        out.me_mv_array.get(slot).copied().map(|m| (c.direction, m))
+    }
 }
 
 /// Everything the frame-level search needs that is not a picture.
@@ -229,6 +294,53 @@ pub struct FrameMeParams {
     pub frame_is_boosted: bool,
     /// C `pcs->hierarchical_levels`.
     pub hierarchical_levels: u8,
+    /// C `pcs->sc_class5` — the screen-content class that gates HME level 2.
+    pub sc_class5: u8,
+}
+
+/// The `svt_aom_sig_deriv_me` INPUT set for one frame, split out of
+/// [`run_frame_me`] so a test can assert the resolved search areas against
+/// C's own `SVT_HME_OUT` `MESIG` line without re-transcribing the derivation
+/// (`docs/WORKING-ON-THIS.md` §4: two transcriptions of one C function will
+/// diverge).
+#[must_use]
+pub fn me_deriv_inputs(p: FrameMeParams, input_resolution: ResolutionRange) -> MeDerivInputs {
+    let enc_mode = p.enc_mode as i8;
+    // C `svt_aom_sig_deriv_multi_processes_default` (enc_mode_config.c:1988) —
+    // levels 0 and 1 ARE unconditional, but level 2 is on only for SCREEN
+    // CONTENT at <= M2. The port's own transcription of that ladder is
+    // `port_enc_mode_config::multi_processes::sig_deriv_multi_processes_default`;
+    // this driver carried a SECOND, wrong copy that hard-coded all four to 1,
+    // with a comment citing the right lines and reading the wrong branch.
+    // MEASURED 2026-09-02 through `SVT_HME_OUT` on `gradient 128x128 q40 p8`:
+    // C reports `hme=1/1/1/0`. See `docs/INTER-ENCODE-PLAN.md` §1z13.
+    let enable_hme_level2_flag = u8::from(p.sc_class5 != 0 && enc_mode <= enc_mode_c::M2);
+    // C `set_qp_based_th_scaling_ctrls_default` (`enc_handle.c:3785`): every
+    // scaling flag is 1 above ENC_MR, and both the ME and the HME search areas
+    // are modulated by the SEQUENCE qp before the search ever runs. Passing
+    // `false` here left the port searching C's UNSCALED areas —
+    // `mesa=16x6/24x12` where C has `10x4/15x8`, and `l0sa=16x16/192x192`
+    // where C has `10x10/122x122` (same measurement).
+    let qp_th_scaling = enc_mode > enc_mode_c::MR;
+    MeDerivInputs {
+        enc_mode,
+        sc_class5: p.sc_class5,
+        input_resolution,
+        rtc_tune: false,
+        is_base: p.frame_is_boosted,
+        hierarchical_levels: p.hierarchical_levels,
+        enable_hme_flag: 1,
+        enable_hme_level0_flag: 1,
+        enable_hme_level1_flag: 1,
+        enable_hme_level2_flag,
+        // C `enc_mode_config.c:2168`.
+        use_best_me_unipred_cand_only: u8::from(enc_mode > enc_mode_c::M1),
+        me_qp_based_th_scaling: qp_th_scaling,
+        hme_qp_based_th_scaling: qp_th_scaling,
+        qp: u32::from(p.qp),
+        safe_limit_nref: 0,
+        safe_limit_zz_th: 0,
+    }
 }
 
 /// Run C's open-loop motion estimation over the whole frame.
@@ -250,25 +362,7 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
     // C `svt_aom_sig_deriv_me` (enc_mode_config.c) — this is what installs the
     // HME/ME search areas. A default `MeContext` has a ZERO search area, so
     // skipping it would silently pin every MV to (0, 0).
-    let signals = sig_deriv_me(MeDerivInputs {
-        enc_mode: p.enc_mode as i8,
-        sc_class5: 0,
-        input_resolution,
-        rtc_tune: false,
-        is_base: p.frame_is_boosted,
-        hierarchical_levels: p.hierarchical_levels,
-        // enc_mode_config.c:1987-1999 sets all four unconditionally.
-        enable_hme_flag: 1,
-        enable_hme_level0_flag: 1,
-        enable_hme_level1_flag: 1,
-        enable_hme_level2_flag: 1,
-        use_best_me_unipred_cand_only: 0,
-        me_qp_based_th_scaling: false,
-        hme_qp_based_th_scaling: false,
-        qp: u32::from(p.qp),
-        safe_limit_nref: 0,
-        safe_limit_zz_th: 0,
-    });
+    let signals = sig_deriv_me(me_deriv_inputs(p, input_resolution));
 
     let pic = MePicParams {
         picture_number: p.picture_number,
@@ -296,20 +390,16 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
         input_height: p.height as u16,
     };
 
+    let ds_ref = MeDsRef {
+        picture: reference.full.view(),
+        quarter: reference.quarter.view(),
+        sixteenth: reference.sixteenth.view(),
+        picture_number: reference.picture_number,
+    };
     let refs = MeRefs {
         arr: [
-            [
-                Some(MeDsRef {
-                    picture: reference.full.view(),
-                    quarter: reference.quarter.view(),
-                    sixteenth: reference.sixteenth.view(),
-                    picture_number: reference.picture_number,
-                }),
-                None,
-                None,
-                None,
-            ],
-            [None, None, None, None],
+            [Some(ds_ref), None, None, None],
+            [Some(ds_ref), None, None, None],
         ],
     };
 
@@ -333,8 +423,13 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
             };
             let mut me = MeContext::default();
             apply_me_signals(&mut me, &signals);
-            me.num_of_list_to_search = 1;
-            me.num_of_ref_pic_to_search = [1, 0];
+            me.num_of_list_to_search = 2;
+            me.num_of_ref_pic_to_search = [1, 1];
+            // C `me_process.c:213` — every picture of a low-delay P GOP is a
+            // reference. INERT at every preset this arm runs today, because
+            // `me_early_exit_th != 0` takes the other arm of
+            // `motion_estimation.c:1261`; set for faithfulness, not effect.
+            me.is_ref = true;
             me.me_type = MeType::OpenLoop;
             let mut out = MeB64Output::new(MAX_CAND, MAX_REFS);
             motion_estimation_b64(&pic, ox as u32, oy as u32, &mut me, &src, &refs, &mut out);
@@ -347,6 +442,8 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
         b64_cols,
         b64_rows,
         max_refs: MAX_REFS,
+        max_cand: MAX_CAND,
+        max_l0: MAX_L0,
         enable_me_8x8: pic.enable_me_8x8,
         enable_me_16x16: pic.enable_me_16x16,
     }
@@ -413,6 +510,7 @@ mod tests {
                 picture_number: 1,
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
+                sc_class5: 0,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (1, 1));
@@ -449,6 +547,7 @@ mod tests {
                 picture_number: 1,
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
+                sc_class5: 0,
             },
         );
         assert_eq!(
@@ -457,5 +556,160 @@ mod tests {
             "an unmoved picture must give the zero MV — otherwise the -3 above \
              is noise, not a search result"
         );
+    }
+
+    /// **The two-SB-column cell, PINNED to values read out of the real C
+    /// encoder** through `SVT_HME_OUT` (`tools/capture_c_trace/wrap_recon.c`'s
+    /// `__wrap_svt_aom_motion_estimation_b64`), which is the only exported
+    /// vantage point on `motion_estimation.c`'s otherwise-`static` pyramid.
+    ///
+    /// Measured 2026-09-02, `gradient 128x128 q40 p8 frames=2` frame 1, all
+    /// four b64s, on the container oracle (`tools/ctrace-linux/run.sh`):
+    ///
+    /// ```text
+    /// MESIG hme=1/1/1/0 mesa=10x4/15x8 l0sa=10x10/122x122 ubuc=1 nlist=2 nref=1/1
+    /// MERES b64=0 d64=0 bestsad64=18816 bestmv64=(40,0)  mecand=1
+    /// MERES b64=1 d64=0 bestsad64=13312 bestmv64=(-24,0) mecand=1
+    /// MEL1  b64=* l1sad64=0 l1mv64=(-3,0) l1hme=(0,0):0 mv0=(0,0) mvl1=(-3,0)
+    /// ```
+    ///
+    /// Every assertion below is one of those numbers, and each one has TEETH
+    /// against a specific defect this chunk fixed
+    /// (`docs/INTER-ENCODE-PLAN.md` §1z¹³):
+    ///
+    /// * `me_64x64_distortion == 0` and `cand_mv_for == (1, (-3,0))` fail if
+    ///   list 1 is not searched (`num_of_list_to_search = 1`) — the port then
+    ///   reports 3328/4704 and candidate direction 0.
+    /// * `mv_for(list 0) == (0,0)` on the x=64 column fails if
+    ///   `enable_hme_level2_flag` is wrongly 1: level 2 refines list 0 all the
+    ///   way to (-3,0) and the list-0 slot stops being C's.
+    ///
+    /// It does NOT witness the qp-based search-area scaling: turning that flag
+    /// back off leaves every assertion here green (measured). The scaling has
+    /// its own cell, [`the_search_areas_join_cs_measured_mesig_line`].
+    ///
+    /// Evidence tier 2 (`docs/WORKING-ON-THIS.md` §4) — the constants come
+    /// from the real `libSvtAv1Enc.a` running the real encoder, but through a
+    /// link-time interposer on an outer entry point, not a per-function
+    /// differential.
+    #[test]
+    fn the_me_arm_joins_cs_measured_two_sb_column_state() {
+        const W: usize = 128;
+        const H: usize = 128;
+        let (f0, f1) = reference_cell(W, H, 3);
+        let me = run_frame_me(
+            &PaPicture::from_source(&f1, W, W, H, 1),
+            &PaPicture::from_source(&f0, W, W, H, 0),
+            FrameMeParams {
+                enc_mode: 8,
+                qp: 40,
+                width: W,
+                height: H,
+                picture_number: 1,
+                frame_is_boosted: false,
+                hierarchical_levels: 0,
+                sc_class5: 0,
+            },
+        );
+        assert_eq!((me.b64_cols, me.b64_rows), (2, 2));
+        for (b64, (org_x, org_y)) in [(0, 0), (64, 0), (0, 64), (64, 64)].into_iter().enumerate() {
+            let out = &me.per_b64[b64];
+            assert_eq!(
+                out.me_64x64_distortion, 0,
+                "b64 {b64}: C reports med=0/0/0/0 on every superblock"
+            );
+            assert_eq!(out.me_32x32_distortion, 0, "b64 {b64}");
+            assert_eq!(out.me_8x8_cost_variance, 0, "b64 {b64}");
+            assert_eq!(
+                out.total_me_candidate_index[0], 1,
+                "b64 {b64}: C emits ONE me candidate (list 0 is pruned by \
+                 prune_me_candidates_th against list 1's zero distortion)"
+            );
+            assert_eq!(
+                me.cand_mv_for(org_x, org_y, 12, 0)
+                    .map(|(d, m)| (d, m.x, m.y)),
+                Some((1, -3, 0)),
+                "b64 {b64}: C's surviving candidate is LIST 1's, at the cell's \
+                 true full-pel MV"
+            );
+            // C's list-0 slot: written on neither column, because list 0 is
+            // pruned before `construct_me_candidate_array_mrp_off` writes it.
+            assert_eq!(
+                me.mv_for(org_x, org_y, 12, 0, 0, me.max_l0)
+                    .map(|m| (m.x, m.y)),
+                Some((0, 0)),
+                "b64 {b64}: C leaves the list-0 me_mv_array slot untouched"
+            );
+        }
+    }
+
+    /// **The resolved ME/HME search areas, PINNED to C's `MESIG` line.**
+    /// Measured 2026-09-02 through `SVT_HME_OUT` on a 128x128 preset-8
+    /// low-delay-P encode:
+    ///
+    /// ```text
+    /// q40: mesa=10x4/15x8   l0sa=10x10/122x122   hme=1/1/1/0   ubuc=1
+    /// q55: mesa=15x5/22x11  l0sa=15x15/176x176   hme=1/1/1/0   ubuc=1
+    /// ```
+    ///
+    /// TEETH: with `me_qp_based_th_scaling` / `hme_qp_based_th_scaling` forced
+    /// back to `false` — the value the driver passed before §1z¹³ — this reads
+    /// `mesa=16x6/24x12` and `l0sa=16x16/192x192` at BOTH qps, and every
+    /// assertion below fails. Evidence tier 2.
+    #[test]
+    fn the_search_areas_join_cs_measured_mesig_line() {
+        let res = ResolutionRange::from_luma_area(128 * 128);
+        let params = |qp: u8| FrameMeParams {
+            enc_mode: 8,
+            qp,
+            width: 128,
+            height: 128,
+            picture_number: 1,
+            frame_is_boosted: false,
+            hierarchical_levels: 0,
+            sc_class5: 0,
+        };
+        for (qp, sa_min, sa_max, l0sa) in [
+            (
+                40u8,
+                (10u16, 4u16),
+                (15u16, 8u16),
+                (10u16, 10u16, 122u16, 122u16),
+            ),
+            (55, (15, 5), (22, 11), (15, 15, 176, 176)),
+        ] {
+            let s = sig_deriv_me(me_deriv_inputs(params(qp), res));
+            assert_eq!(
+                (s.me_sa.sa_min.width, s.me_sa.sa_min.height),
+                sa_min,
+                "q{qp} me_sa.sa_min"
+            );
+            assert_eq!(
+                (s.me_sa.sa_max.width, s.me_sa.sa_max.height),
+                sa_max,
+                "q{qp} me_sa.sa_max"
+            );
+            assert_eq!(
+                (
+                    s.hme.hme_l0_sa.sa_min.width,
+                    s.hme.hme_l0_sa.sa_min.height,
+                    s.hme.hme_l0_sa.sa_max.width,
+                    s.hme.hme_l0_sa.sa_max.height
+                ),
+                l0sa,
+                "q{qp} hme_l0_sa"
+            );
+            assert_eq!(
+                (
+                    s.enable_hme_flag,
+                    s.enable_hme_level0_flag,
+                    s.enable_hme_level1_flag,
+                    s.enable_hme_level2_flag
+                ),
+                (1, 1, 1, 0),
+                "q{qp} HME flags — C reports hme=1/1/1/0 at preset 8"
+            );
+            assert_eq!(s.use_best_unipred_cand_only, 1, "q{qp} ubuc");
+        }
     }
 }

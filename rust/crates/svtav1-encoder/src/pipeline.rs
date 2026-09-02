@@ -2267,6 +2267,7 @@ impl EncodePipeline {
                         // a flat low-delay P GOP never has.
                         frame_is_boosted: temporal_layer == 0 && self.gop.hierarchical_levels > 0,
                         hierarchical_levels: self.gop.hierarchical_levels,
+                        sc_class5: u8::from(sc_derivation.classes.sc_class5),
                     },
                 ))
             }

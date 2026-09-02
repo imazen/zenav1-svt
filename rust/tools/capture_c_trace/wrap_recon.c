@@ -85,6 +85,8 @@
 #include "coding_loop.h"
 #include "inv_transforms.h"
 #include "md_process.h"
+#include "me_context.h"
+#include "motion_estimation.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
 void __real_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
@@ -1311,4 +1313,244 @@ void __wrap_svt_av1_reset_cdf_symbol_counters(FRAME_CONTEXT *fc) {
     FCTX_DUMP(f, n, "cfl_alpha", fc->cfl_alpha_cdf);
     fflush(f);
     fclose(f);
+}
+
+
+/* ---------------------------------------------------------------------------
+ * SVT_HME_OUT — C's per-b64 HME pyramid state, straight out of `MeContext`.
+ *
+ * WHY: `docs/INTER-ENCODE-PLAN.md` §1z12 localized the port's open-loop ME
+ * defect to HME LEVEL 0 on the SECOND superblock column, but nothing had ever
+ * measured C's own level-0 search centres — `hme_level_0` and `hme_level0_b64`
+ * are both `static`, so the only exported vantage point is the per-b64 entry
+ * `svt_aom_motion_estimation_b64`, which returns with the whole pyramid still
+ * live in `me_ctx`.
+ *
+ * Env: SVT_HME_OUT (file). Pure pass-through when unset.
+ *
+ * One line per b64 per call (appends across frames — cut at the frame boundary
+ * yourself, same as SVT_CTREE_OUT):
+ *   HME b64=<idx> org=(x,y) bw=<b64_width> bh=<b64_height> meth=<hme_search_method>
+ *       nw=<num_hme_sa_w> nh=<num_hme_sa_h>
+ *       l0sa=<min_w>x<min_h>/<max_w>x<max_h>
+ *       q[<sr_w>][<sr_h>] l0=(x,y):<sad> l1=(x,y):<sad> l2=(x,y):<sad>  (one group per quadrant)
+ *       fin=(hme_sc_x,hme_sc_y):<hme_sad> doref=<0|1>
+ *       src16=<16 bytes of row 0 of sixteenth_b64_buffer, hex>
+ *       src16sum=<sum of the block's block_width*block_height sixteenth samples>
+ *
+ * The `src16` fields exist because the port's sixteenth pyramid is built by its
+ * OWN two-stage decimation; a level-0 disagreement is only a SEARCH defect if
+ * the two sides are searching the same planes, and this is the cheapest way to
+ * prove that rather than assume it.
+ * ------------------------------------------------------------------------- */
+EbErrorType __real_svt_aom_motion_estimation_b64(PictureParentControlSet* pcs, uint32_t b64_index,
+                                                 uint32_t b64_origin_x, uint32_t b64_origin_y, MeContext* me_ctx,
+                                                 EbPictureBufferDesc* input_ptr);
+
+EbErrorType __wrap_svt_aom_motion_estimation_b64(PictureParentControlSet* pcs, uint32_t b64_index,
+                                                 uint32_t b64_origin_x, uint32_t b64_origin_y, MeContext* me_ctx,
+                                                 EbPictureBufferDesc* input_ptr) {
+    EbErrorType rc = __real_svt_aom_motion_estimation_b64(pcs, b64_index, b64_origin_x, b64_origin_y, me_ctx,
+                                                          input_ptr);
+    const char* path = getenv("SVT_HME_OUT");
+    if (!path || !*path) {
+        return rc;
+    }
+    static FILE* f = NULL;
+    if (!f) {
+        f = fopen(path, "a");
+    }
+    if (!f) {
+        return rc;
+    }
+    fprintf(f,
+            "HME b64=%u org=(%u,%u) bw=%u bh=%u meth=%u nw=%u nh=%u l0sa=%ux%u/%ux%u",
+            (unsigned)b64_index,
+            (unsigned)b64_origin_x,
+            (unsigned)b64_origin_y,
+            (unsigned)me_ctx->b64_width,
+            (unsigned)me_ctx->b64_height,
+            (unsigned)me_ctx->hme_search_method,
+            (unsigned)me_ctx->num_hme_sa_w,
+            (unsigned)me_ctx->num_hme_sa_h,
+            (unsigned)me_ctx->hme_l0_sa.sa_min.width,
+            (unsigned)me_ctx->hme_l0_sa.sa_min.height,
+            (unsigned)me_ctx->hme_l0_sa.sa_max.width,
+            (unsigned)me_ctx->hme_l0_sa.sa_max.height);
+    for (uint32_t h = 0; h < me_ctx->num_hme_sa_h; h++) {
+        for (uint32_t w = 0; w < me_ctx->num_hme_sa_w; w++) {
+            fprintf(f,
+                    " q[%u][%u] l0=(%d,%d):%llu l1=(%d,%d):%llu l2=(%d,%d):%llu",
+                    (unsigned)w,
+                    (unsigned)h,
+                    (int)me_ctx->x_hme_level0_search_center[0][0][w][h],
+                    (int)me_ctx->y_hme_level0_search_center[0][0][w][h],
+                    (unsigned long long)me_ctx->hme_level0_sad[0][0][w][h],
+                    (int)me_ctx->x_hme_level1_search_center[0][0][w][h],
+                    (int)me_ctx->y_hme_level1_search_center[0][0][w][h],
+                    (unsigned long long)me_ctx->hme_level1_sad[0][0][w][h],
+                    (int)me_ctx->x_hme_level2_search_center[0][0][w][h],
+                    (int)me_ctx->y_hme_level2_search_center[0][0][w][h],
+                    (unsigned long long)me_ctx->hme_level2_sad[0][0][w][h]);
+        }
+    }
+    fprintf(f,
+            " fin=(%d,%d):%llu doref=%u",
+            (int)me_ctx->search_results[0][0].hme_sc_x,
+            (int)me_ctx->search_results[0][0].hme_sc_y,
+            (unsigned long long)me_ctx->search_results[0][0].hme_sad,
+            (unsigned)me_ctx->search_results[0][0].do_ref);
+    if (me_ctx->sixteenth_b64_buffer) {
+        const uint32_t bw   = me_ctx->b64_width >> 2;
+        const uint32_t bh   = me_ctx->b64_height >> 2;
+        const uint32_t strd = me_ctx->sixteenth_b64_buffer_stride;
+        fprintf(f, " src16=");
+        for (uint32_t i = 0; i < bw; i++) {
+            fprintf(f, "%02x", (unsigned)me_ctx->sixteenth_b64_buffer[i]);
+        }
+        unsigned long long sum = 0;
+        for (uint32_t r = 0; r < bh; r++) {
+            for (uint32_t c = 0; c < bw; c++) {
+                sum += me_ctx->sixteenth_b64_buffer[r * strd + c];
+            }
+        }
+        fprintf(f, " src16sum=%llu src16stride=%u", sum, (unsigned)strd);
+    }
+    fprintf(f, "\n");
+    /* The whole ME signal set `svt_aom_sig_deriv_me` resolved, so the port's
+     * own derivation can be JOINED field for field instead of guessed at. */
+    fprintf(f,
+            "MESIG b64=%u hme=%u/%u/%u/%u hmeth=%u meth=%u"
+            " mesa=%ux%u/%ux%u l1sa=%ux%u l2sa=%ux%u"
+            " prehme=%u/%u/%u sa0=%ux%u/%ux%u sa1=%ux%u/%ux%u"
+            " earlyexit=%u staticth=%u prevexit=%u redl0=%u/%u"
+            " mesr=%u/%u/%u/%u/%u/%u/%u me8x8var=%u/%u/%u/%u"
+            " mvadj=%u/%u/%u/%u prune=%u/%u/%u/%u/%u/%u/%u"
+            " tli=%u isref=%u nlist=%u nref=%u/%u prunecand=%d ubuc=%u scboost=%u\n",
+            (unsigned)b64_index,
+            (unsigned)me_ctx->enable_hme_flag,
+            (unsigned)me_ctx->enable_hme_level0_flag,
+            (unsigned)me_ctx->enable_hme_level1_flag,
+            (unsigned)me_ctx->enable_hme_level2_flag,
+            (unsigned)me_ctx->hme_search_method,
+            (unsigned)me_ctx->me_search_method,
+            (unsigned)me_ctx->me_sa.sa_min.width,
+            (unsigned)me_ctx->me_sa.sa_min.height,
+            (unsigned)me_ctx->me_sa.sa_max.width,
+            (unsigned)me_ctx->me_sa.sa_max.height,
+            (unsigned)me_ctx->hme_l1_sa.width,
+            (unsigned)me_ctx->hme_l1_sa.height,
+            (unsigned)me_ctx->hme_l2_sa.width,
+            (unsigned)me_ctx->hme_l2_sa.height,
+            (unsigned)me_ctx->prehme_ctrl.enable,
+            (unsigned)me_ctx->prehme_ctrl.skip_search_line,
+            (unsigned)me_ctx->prehme_ctrl.l1_early_exit,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[0].sa_min.width,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[0].sa_min.height,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[0].sa_max.width,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[0].sa_max.height,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[1].sa_min.width,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[1].sa_min.height,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[1].sa_max.width,
+            (unsigned)me_ctx->prehme_ctrl.prehme_sa_cfg[1].sa_max.height,
+            (unsigned)me_ctx->me_early_exit_th,
+            (unsigned)me_ctx->me_static_b64_th,
+            (unsigned)me_ctx->prev_me_stage_based_exit_th,
+            (unsigned)me_ctx->reduce_hme_l0_sr_th_min,
+            (unsigned)me_ctx->reduce_hme_l0_sr_th_max,
+            (unsigned)me_ctx->me_sr_adjustment_ctrls.enable_me_sr_adjustment,
+            (unsigned)me_ctx->me_sr_adjustment_ctrls.reduce_me_sr_based_on_mv_length_th,
+            (unsigned)me_ctx->me_sr_adjustment_ctrls.stationary_hme_sad_abs_th,
+            (unsigned)me_ctx->me_sr_adjustment_ctrls.stationary_me_sr_divisor,
+            (unsigned)me_ctx->me_sr_adjustment_ctrls.reduce_me_sr_based_on_hme_sad_abs_th,
+            (unsigned)me_ctx->me_sr_adjustment_ctrls.me_sr_divisor_for_low_hme_sad,
+            (unsigned)me_ctx->me_sr_adjustment_ctrls.distance_based_hme_resizing,
+            (unsigned)me_ctx->me_8x8_var_ctrls.enabled,
+            (unsigned)me_ctx->me_8x8_var_ctrls.me_sr_div4_th,
+            (unsigned)me_ctx->me_8x8_var_ctrls.me_sr_div2_th,
+            (unsigned)me_ctx->me_8x8_var_ctrls.me_sr_mult2_th,
+            (unsigned)me_ctx->mv_based_sa_adj.enabled,
+            (unsigned)me_ctx->mv_based_sa_adj.nearest_ref_only,
+            (unsigned)me_ctx->mv_based_sa_adj.mv_size_th,
+            (unsigned)me_ctx->mv_based_sa_adj.sa_multiplier,
+            (unsigned)me_ctx->me_hme_prune_ctrls.enable_me_hme_ref_pruning,
+            (unsigned)me_ctx->me_hme_prune_ctrls.prune_ref_if_hme_sad_dev_bigger_than_th,
+            (unsigned)me_ctx->me_hme_prune_ctrls.prune_ref_if_me_sad_dev_bigger_than_th,
+            (unsigned)me_ctx->me_hme_prune_ctrls.zz_sad_th,
+            (unsigned)me_ctx->me_hme_prune_ctrls.zz_sad_pct,
+            (unsigned)me_ctx->me_hme_prune_ctrls.phme_sad_th,
+            (unsigned)me_ctx->me_hme_prune_ctrls.phme_sad_pct,
+            (unsigned)me_ctx->temporal_layer_index,
+            (unsigned)me_ctx->is_ref,
+            (unsigned)me_ctx->num_of_list_to_search,
+            (unsigned)me_ctx->num_of_ref_pic_to_search[0],
+            (unsigned)me_ctx->num_of_ref_pic_to_search[1],
+            (int)me_ctx->prune_me_candidates_th,
+            (unsigned)me_ctx->use_best_unipred_cand_only,
+            (unsigned)me_ctx->sc_class_me_boost);
+    fprintf(f,
+            "PHME b64=%u p0=(%d,%d):%llu v=%u sa=%ux%u p1=(%d,%d):%llu v=%u sa=%ux%u"
+            " done=%u/%u zz=%u\n",
+            (unsigned)b64_index,
+            (int)me_ctx->prehme_data[0][0][0].best_mv.x,
+            (int)me_ctx->prehme_data[0][0][0].best_mv.y,
+            (unsigned long long)me_ctx->prehme_data[0][0][0].sad,
+            (unsigned)me_ctx->prehme_data[0][0][0].valid,
+            (unsigned)me_ctx->prehme_data[0][0][0].sa.width,
+            (unsigned)me_ctx->prehme_data[0][0][0].sa.height,
+            (int)me_ctx->prehme_data[0][0][1].best_mv.x,
+            (int)me_ctx->prehme_data[0][0][1].best_mv.y,
+            (unsigned long long)me_ctx->prehme_data[0][0][1].sad,
+            (unsigned)me_ctx->prehme_data[0][0][1].valid,
+            (unsigned)me_ctx->prehme_data[0][0][1].sa.width,
+            (unsigned)me_ctx->prehme_data[0][0][1].sa.height,
+            (unsigned)me_ctx->performed_phme[0][0][0],
+            (unsigned)me_ctx->performed_phme[0][0][1],
+            (unsigned)me_ctx->zz_sad[0][0]);
+    {
+        const uint32_t mv64 = me_ctx->p_sb_best_mv[0][0][0];
+        fprintf(f,
+                "MERES b64=%u d64=%u d32=%u/%u/%u/%u bestsad64=%u bestmv64=(%d,%d)"
+                " redivisor=%u mecand=%u\n",
+                (unsigned)b64_index,
+                (unsigned)me_ctx->me_distortion[0],
+                (unsigned)me_ctx->me_distortion[1],
+                (unsigned)me_ctx->me_distortion[2],
+                (unsigned)me_ctx->me_distortion[3],
+                (unsigned)me_ctx->me_distortion[4],
+                (unsigned)me_ctx->p_sb_best_sad[0][0][0],
+                (int)(int16_t)(mv64 & 0xFFFF),
+                (int)(int16_t)(mv64 >> 16),
+                (unsigned)me_ctx->reduce_me_sr_divisor[0][0],
+                (unsigned)pcs->pa_me_data->me_results[b64_index]->total_me_candidate_index[0]);
+        const uint32_t mv64l1 = me_ctx->p_sb_best_mv[1][0][0];
+        fprintf(f,
+                "MEL1 b64=%u l1sad64=%u l1mv64=(%d,%d) l1doref=%u l1hme=(%d,%d):%llu"
+                " l1ref=%p l0ref=%p l1div=%u mv0=(%d,%d) mvl1=(%d,%d)\n",
+                (unsigned)b64_index,
+                (unsigned)me_ctx->p_sb_best_sad[1][0][0],
+                (int)(int16_t)(mv64l1 & 0xFFFF),
+                (int)(int16_t)(mv64l1 >> 16),
+                (unsigned)me_ctx->search_results[1][0].do_ref,
+                (int)me_ctx->search_results[1][0].hme_sc_x,
+                (int)me_ctx->search_results[1][0].hme_sc_y,
+                (unsigned long long)me_ctx->search_results[1][0].hme_sad,
+                (void*)me_ctx->me_ds_ref_array[1][0].picture_ptr,
+                (void*)me_ctx->me_ds_ref_array[0][0].picture_ptr,
+                (unsigned)me_ctx->reduce_me_sr_divisor[1][0],
+                (int)pcs->pa_me_data->me_results[b64_index]
+                    ->me_mv_array[0 * pcs->pa_me_data->max_refs + 0]
+                    .x,
+                (int)pcs->pa_me_data->me_results[b64_index]
+                    ->me_mv_array[0 * pcs->pa_me_data->max_refs + 0]
+                    .y,
+                (int)pcs->pa_me_data->me_results[b64_index]
+                    ->me_mv_array[0 * pcs->pa_me_data->max_refs + pcs->pa_me_data->max_l0]
+                    .x,
+                (int)pcs->pa_me_data->me_results[b64_index]
+                    ->me_mv_array[0 * pcs->pa_me_data->max_refs + pcs->pa_me_data->max_l0]
+                    .y);
+    }
+    fflush(f);
+    return rc;
 }

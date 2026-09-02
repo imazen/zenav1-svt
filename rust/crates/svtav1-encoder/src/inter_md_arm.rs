@@ -327,7 +327,17 @@ pub fn build_inter_candidates(
     //     it starts from.
     let mut sb_me_mv = [[Mv::ZERO; 4]; 2];
     let mut me_cands: Vec<MeCandidateRef> = Vec::new();
-    if let Some(mv_fp) = f.me.mv_for(b.org_x, b.org_y, b.bsize, 0, 0, 4) {
+    //
+    //     C indexes `me_mv_array` by the ME CANDIDATE's own `direction`
+    //     (`mode_decision.c:2320-2326`), and on a flat low-delay-P GOP that
+    //     candidate is usually LIST 1's — see
+    //     [`crate::inter_me_arm::FrameMe::cand_mv_for`] for the measurement.
+    //     The DIRECTION is deliberately NOT propagated: `ref_frame_type_arr`
+    //     below carries `LAST_FRAME` alone, so a direction-1 candidate would
+    //     resolve to `BWDREF_FRAME` and be dropped by the injector. This port
+    //     models one reference and takes that candidate's MV against it; the
+    //     second reference is a separate chunk.
+    if let Some((_dir, mv_fp)) = f.me.cand_mv_for(b.org_x, b.org_y, b.bsize, 0) {
         sb_me_mv[0][0] = Mv {
             x: mv_fp.x.saturating_mul(8),
             y: mv_fp.y.saturating_mul(8),

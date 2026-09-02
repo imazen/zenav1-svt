@@ -2411,14 +2411,15 @@ impl<'a> Pd0Ctx<'a> {
              (docs/INTER-ENCODE-PLAN.md 1z^6), so this is unreachable today.",
             self.mode
         );
-        // C `pcs->pa_me_data->max_l0` for the single-reference low-delay list-0
-        // configuration `inter_me_arm::run_frame_me` builds — the same literal
-        // `inter_md_arm::build_inter_candidates` passes.
-        const MAX_L0: usize = 4;
+        // C `inject_new_candidates` (mode_decision.c:2320) reads the
+        // `me_mv_array` slot named by the ME CANDIDATE's own `direction`, not
+        // list 0's — and on this envelope the single candidate is usually
+        // LIST 1's (see `inter_me_arm::FrameMe::cand_mv_for`). Reading list 0
+        // unconditionally picked up a slot C never writes.
         let mv_fp = ir
             .me
-            .mv_for(abs_x, abs_y, pd0_bsize(bw, bh), 0, 0, MAX_L0)
-            .unwrap_or(svtav1_types::motion::Mv::ZERO);
+            .cand_mv_for(abs_x, abs_y, pd0_bsize(bw, bh), 0)
+            .map_or(svtav1_types::motion::Mv::ZERO, |(_dir, mv)| mv);
         let mv = svtav1_types::motion::Mv {
             x: mv_fp.x.saturating_mul(8),
             y: mv_fp.y.saturating_mul(8),

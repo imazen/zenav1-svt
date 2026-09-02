@@ -1,0 +1,44 @@
+# tools/inter_byte_matrix.sh — the INTER campaign's 96-cell frontier
+#
+# grid    {uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55}
+#         x {p6,p8}, frames=2 low-delay P, SVTAV1_FRAME_SHIFT=3
+# host    Apple M4 Pro, aarch64-apple-darwin
+# date    2026-09-02
+# after   docs/INTER-ENCODE-PLAN.md §1z13 (the ME arm searches LIST 1, joins
+#         C's ME signal set field for field, and MD reads the ME CANDIDATE's
+#         me_mv_array slot instead of list 0's)
+#
+#   BOTH 36 / F1DIFF 59 / F0DIFF 1 — UNCHANGED from the §1z11 scoreboard
+#   (inter_byte_matrix_2026-09-02c.tsv). Three cells' frame-1 byte counts
+#   moved:
+#     gradient 128x128 q20 p8  27 -> 24 B against C's 25   (F0DIFF, void)
+#     diag      72x72  q20 p8  26 -> 27 B against C's 29
+#     diag     128x128 q20 p8  25 -> 26 B against C's 25
+#
+# WHY NO VERDICT MOVED, and it is a statement about what the chunk FIXED.
+# The defect was never in the bytes this grid can currently reach: the port's
+# open-loop ME was searching one list where C searches two, with four wrong
+# signal fields, and its consumers read a me_mv_array slot C never writes.
+# After the chunk the port's per-b64 ME output is an EXACT join with C's
+# (`SVT_HME_OUT`: d64=0, one candidate, direction 1, mv0=(0,0), mvl1=(-3,0)
+# on all four superblocks of `gradient 128x128 q40 p8`), and the resolved
+# signal set matches C's `MESIG` line field for field.
+#
+# TWO CELLS STOPPED PASSING FOR THE WRONG REASON. `gradient 128x128 q55 p8`
+# and `diag 128x128 q55 p8` were byte-identical because HME level 2 was
+# wrongly ENABLED: the port's list-0 search refined to (-3,0), which is the
+# MV C reaches through LIST 1. Turning level 2 off (correct, C reports
+# hme=1/1/1/0) without also reading the list-1 slot regressed both to 190 B
+# against C's 23; reading the candidate's own slot (correct) restores them.
+# Both fixes are in this chunk for that reason.
+#
+# STILL OPEN:
+#   1. `gradient 128x128 q20 p8` — the ONE F0DIFF cell, a video-KEY defect,
+#      7453 B against C's 7472. Every frame-1 reading on it is void.
+#   2. The 59 F1DIFF cells. The next named shared mechanism is the REFERENCE
+#      SET, not the search: C's surviving ME candidate is list 1's, so
+#      `inject_new_candidates` injects a BWDREF_FRAME NEWMV (plus a bipred
+#      NEW_NEWMV wherever both lists survive the prune), while the port's
+#      `inter_md_arm` carries `ref_frame_type_arr = [LAST_FRAME]` and one
+#      unipred candidate. Do not read these 59 as 59 mechanisms until that
+#      one is closed.
