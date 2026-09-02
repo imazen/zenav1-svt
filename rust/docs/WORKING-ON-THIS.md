@@ -614,6 +614,30 @@ not.
 Suspected *C* bugs go in `docs/SUSPECTED-C-BUGS.md`, not into a fix. A C bug is
 still the oracle; byte-identity means reproducing it.
 
+## 7b. INTER frames: the refusal is still the shipped behaviour
+
+`EncodePipeline` refuses every non-key frame (§6). `SVTAV1_INTER_EXPERIMENTAL`
+lifts that guard **for the differential harness only** — the frame HEADER is
+derived from C's own reference structure and tool ladders and is field-exact
+but for two CDEF strengths, while the TILE is the pre-campaign homegrown path.
+The stream it produces is measurable, not correct, and must never leave
+`tools/identity_diff_inter.sh` / `tools/inter_fh_gate.sh`. The variable is to
+be DELETED once the tile is byte-identical, not promoted to a feature flag.
+Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q.
+
+Two things §1q proves that a reader will otherwise re-derive:
+
+* **The C oracle segfaults above TWO frames in low-delay mode.** The library's
+  single-thread object pool exhausts (`sys_resource_manager.c:791`) and the
+  caller dereferences a wrapper it never popped. Interleaving a non-blocking
+  `get_packet` between sends — `SvtAv1EncApp`'s own pattern — makes it worse
+  (the 2-frame cell then crashes too); that was measured and reverted.
+* **`fh_fields.py` used to GUESS `skipModeAllowed`** and got it wrong on the
+  first inter cell, shifting every field after `skip_mode_present` by one bit
+  without any sign in the printout. It now implements the real rule and threads
+  the decoder's `RefOrderHint[]` across the stream. Any inter-frame reading
+  taken off that tool before 2026-09-01 is suspect.
+
 ## 8. What is actually true right now
 
 `STATUS.md` leads with the measured envelope; `docs/*-port-map.md` holds

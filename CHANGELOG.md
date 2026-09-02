@@ -56,6 +56,39 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The INTER frame emits, and its header is field-exact but for two CDEF
+  strengths.** Frame 1 of a 2-frame low-delay-P encode was refused at the
+  `pipeline.rs` entry guards; it now encodes. `entropy/obu.rs`'s
+  `key_frame_header_bits_lr` becomes `frame_header_bits_lr` with an
+  `Option<&InterSignal>` (`None` reproduces the key layout bit for bit through
+  a `write_key_frame_header_full_lr_sb` shim), the bitstream assembly is one
+  path for both frame types, and the new `crate::inter_hdr_arm` feeds the
+  header from `port_picstruct::picture_decision_per_picture` (references,
+  refresh mask, `primary_ref_frame`) and
+  `svt_aom_sig_deriv_mode_decision_config_default` (the tool ladders). The CDEF
+  pick now runs on every coded frame with `cdef_frame_is_boosted` /
+  `cdef_is_not_highest_layer` read from the picture decision's `update_type`
+  instead of a literal `is_key`, and `ReferenceFrame` carries chroma. On
+  `gradient 64x64 q40 p6`, 13 of the 15 frame-header bytes match C and the
+  field walk names the two open ones (`cdef_y_pri_strength[0]`,
+  `cdef_uv_pri_strength[0]`, both `search_best_ref_fs` — see
+  `docs/INTER-ENCODE-PLAN.md` §1q). **The public API still refuses inter
+  frames**; `SVTAV1_INTER_EXPERIMENTAL` lifts the guard for the differential
+  harness only. New gate `tools/inter_fh_gate.sh`. No regression:
+  `identity_full_8bit` 1100/1100, `regression_spotcheck` 64/64, video-key
+  matrix 58/60, six pinned still cells at 290/839/63/171/580/693 B.
+
+### Fixed
+
+- **`tools/fh_fields.py` was GUESSING `skipModeAllowed`** and got it wrong on
+  the campaign's own first inter cell: C writes no `skip_mode_present` bit
+  there, the tool read one, and every field after it was off by one bit with no
+  sign in the printout (it reported `allow_warped_motion = 0` where the stream
+  says 1). It now implements the real `skip_mode_params()` and threads the
+  decoder's `RefOrderHint[]` across the frames of the stream to do it.
+
+### Added
+
 - **`tools/ctrace-linux/vdiff_cell.sh` + `optrace_first_diff.py`** — op-trace
   localization for a VIDEO-mode cell. `diff_cell.sh` is still-only (it cannot
   express the low-delay-P GOP, and it treats the port's expected frame-1 inter

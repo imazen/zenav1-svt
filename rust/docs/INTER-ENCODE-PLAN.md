@@ -2105,6 +2105,150 @@ tile more than once — so a per-key count off that file is not a leaf count.
 `tree_diff.py` takes the last record per key and is unaffected; a hand-rolled
 `grep -c` is not.
 
+### 1q. THE INTER FRAME EMITS — and its header is field-exact but for CDEF (2026-09-01)
+
+Frame 1 of a 2-frame encode no longer refuses. `gradient 64x64 q40 p6`,
+`tools/identity_diff_inter.sh 64 64 40 6 2 gradient`:
+
+| | frame 0 | frame 1 |
+|---|--:|--:|
+| C | 961 B | 22 B |
+| port | **961 B, IDENTICAL** | 113 B, DIFFERS |
+
+The 22-byte target decomposes as a 2-byte temporal delimiter, a 2-byte OBU
+header, a **15-byte frame header** and a 3-byte tile. The port's frame header
+is also **15 bytes**, and **12 of those 15 bytes are identical**:
+
+```
+C    30 02 00 80 00 db 3b 40 00 00 04 04 e0 1c 00
+port 30 02 00 80 00 db 3b 40 00 00 00 00 00 1c 00   <- before the CDEF wiring
+port 30 02 00 80 00 db 3b 40 00 00 04 3e 00 1c 00   <- after
+```
+
+Same length means the same FIELD LAYOUT — every conditional field's presence
+decision agrees, which is the part that shifts everything after it when it is
+wrong. `tools/fh_fields.py --index 1` names the three differing fields:
+
+| field | C | port before | port after |
+|---|--:|--:|--:|
+| `cdef_damping_minus_3` | 2 | 0 | **2** |
+| `cdef_y_sec_strength[0]` | 2 | 0 | **2** |
+| `cdef_y_pri_strength[0]` | 0 | 0 | 15 |
+| `cdef_uv_pri_strength[0]` | 7 | 0 | 0 |
+
+**That is an ENCODE-side gap, not a header defect** — the fields are in the
+right places with the wrong values. `pipeline.rs` ran the CDEF pick under
+`if is_key`, so an inter frame fell through to `CdefFrameParams::default()`:
+damping 3 and every strength 0. The pick now runs on every coded frame, and
+`cdef_frame_is_boosted` / `cdef_is_not_highest_layer` — literal `is_key` while
+only key frames were encodable — come from the picture decision's
+`update_type` (C's `frame_is_kf_gf_arf` and `update_type != LF_UPDATE`). That
+closed `cdef_damping_minus_3` and `cdef_y_sec_strength[0]`.
+
+**Still open: the two PRIMARY strengths — and the cause is NAMED, not guessed.**
+
+Frame 1 of this GOP is an `LF_UPDATE` (`set_frame_update_type`:
+`hierarchical_levels == 0`, so `frame_offset % 4` — offset 1 is odd, hence LF),
+so `frame_is_boosted` and `is_not_highest_layer` are BOTH false. At preset 6
+`cdef_search_level_default` gives level **5**, and level 5's row is
+`search_best_ref_fs = is_not_highest_layer ? 0 : 1`
+(`enc_mode_config.c:1073`) — so on this frame it is **1**, a value no key frame
+can ever select (a key frame's `is_not_highest_layer` is true).
+
+`search_best_ref_fs = 1` is not a threshold; it REPLACES the candidate set.
+`update_cdef_filters_on_ref_info` (`md_config_process.c:681-745`) sets
+`first_pass_fs_num = 1`, clears the second pass, and then ADDS the list-0 (and
+list-1) REFERENCE pictures' own chosen strengths
+(`EbReferenceObject::ref_cdef_strengths[0][0]`) as extra first-pass
+candidates. The port searches its default `{0, 7, 15}` set instead and picks
+`y_pri = 15`; C, searching the reference's strength, picks `y_pri = 0`,
+`uv_pri = 7`.
+
+So the chunk is: **store the chosen CDEF strengths on the DPB entry and port
+`update_cdef_filters_on_ref_info`** (both its `use_reference_cdef_fs` and its
+`search_best_ref_fs` arms). `ReferenceFrame` already gained chroma in this
+chunk; `ref_cdef_strengths` / `ref_cdef_strengths_num` belong beside it. Note
+the sibling trap while you are there: the `use_qp_strength` fast path reads
+`allintra ? ppcs->sc_class5 : ppcs->sc_class1` (`enc_cdef.c:913-918`), and
+`pipeline.rs` passes `sc_class5` unconditionally — correct on the allintra arm
+it was written for, unverified on the video arm.
+
+Everything else in the header is C's, from C's own derivations rather than
+from constants:
+
+* `refresh_frame_flags = 2` and `ref_frame_idx = [0,0,0,0,3,3,3]` come from
+  `port_picstruct::picture_decision_per_picture` — the ported
+  `av1_generate_rps_info` low-delay CQP branch plus `prune_refs`. Nothing was
+  tuned to make them match.
+* `primary_ref_frame = 0` from `bind_refs_and_primary_ref_frame`. **CDF
+  continuation is therefore LIVE**: `error_resilient_mode = 0`, so C's inter
+  frame inherits slot 0's end-of-frame CDFs. The port does not implement that
+  yet (there is no per-ref-slot CDF store anywhere in the tree) — which is the
+  single largest remaining tile-side prerequisite, ahead of the MVs.
+* `allow_high_precision_mv = 0`, `is_filter_switchable = 1`,
+  `is_motion_mode_switchable = 1`, `use_ref_frame_mvs = 1`,
+  `allow_warped_motion = 1` from
+  `sig_deriv_mode_decision_config_default` (EXPORTED, tier 1) via
+  `crate::inter_hdr_arm`.
+
+Gate: `tools/inter_fh_gate.sh`. It asserts frame 0 byte-identity outright and,
+for frame 1, that the set of differing HEADER FIELDS is a SUBSET of the open
+set above — so closing a field keeps it green while a new divergence, or a
+changed field PRESENCE, turns it red.
+
+#### Two traps this chunk paid for
+
+**`SWITCHABLE` is 4, not 3.** `definitions.h:844-846` — `SWITCHABLE_FILTERS =
+BILINEAR = 3` and `SWITCHABLE = SWITCHABLE_FILTERS + 1 = 4`. Comparing
+`interpolation_filter` against 3 made the header write
+`is_filter_switchable = 0` plus a 2-bit filter index C never wrote, and every
+field from bit 50 on was off by two bits. Use
+`port_enc_mode_config::md_config::SWITCHABLE`, never a literal.
+
+**`fh_fields.py` was GUESSING `skipModeAllowed`, and it lied on this cell.**
+It approximated the rule as "1 whenever `reference_select` is set" (its own
+comment said the real rule needs the reference order hints). On the 2-frame
+cell every DPB slot still holds the key frame, so there is no second distinct
+forward reference and C writes **no** `skip_mode_present` bit — but the tool
+read one, and then reported `allow_warped_motion = 0` when the stream says 1.
+Every field after `skip_mode_present` was off by one bit and the printout gave
+no sign of it, because the shifted values were all zeros. **A reading taken off
+that tool before 2026-09-01, on any inter frame, is suspect.** It now
+implements the real `skip_mode_params()` and threads the decoder's
+`RefOrderHint[]` across the frames of the stream to do it, which is why it
+takes `--index N` by walking frames 0..N rather than jumping to N.
+
+#### No regression, measured after the chunk
+
+`identity_full_8bit.sh` **1100 / 1100**, `regression_spotcheck.sh` **64 / 64**,
+the 72x88 q40 video-key matrix **58 / 60** (unchanged — `gradient p0` and
+`screenrep p0` still open), and the six pinned still cells byte-identical at
+290 / 839 / 63 / 171 / 580 / 693 B. The key-frame header layout is unchanged
+BY CONSTRUCTION, not only by measurement: every pre-inter caller reaches the
+writer through a shim that passes `inter = None`.
+
+#### The C oracle is capped at TWO frames in this GOP — measured, not assumed
+
+`capture_c_trace` **segfaults (rc 139) for every low-delay run
+(`SVT_PRED_STRUCT=1`) of three or more frames**, at 64x64 preset 8 q35 and
+preset 6 q40 alike. The library prints
+`ST mode: empty object pool exhausted after pumping dispatcher`
+(`sys_resource_manager.c:791`) and then dereferences the wrapper it did not
+pop. Random-access (`SVT_PRED_STRUCT=2`) survives at least 3 frames, which is
+why the RA capture script could take 7/9/17/25/41.
+
+**The obvious fix does not work.** Interleaving a non-blocking
+`svt_av1_enc_get_packet(.., pic_send_done = 0)` after every `send_picture` —
+which is exactly what `SvtAv1EncApp` does
+(`app_process_cmd.c:1104-1111`) — makes it WORSE: the 2-frame cell then
+segfaults too, after writing `pts0`. That was tried, measured and reverted; the
+driver in tree is the send-all-then-drain one that gets 2 frames. Do not
+"fix" it again without a measurement.
+
+Consequence for the campaign: every inter cell is a 2-frame cell until that is
+solved, and the first inter frame's references are therefore all the key frame,
+which is what collapses both reference lists to one entry.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
