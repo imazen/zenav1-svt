@@ -89,6 +89,16 @@ pub struct SearchFrameCfg {
     pub md_subpel_me: crate::port_enc_mode_config::encdec::MdSubPelSearchCtrls,
     /// C `ctx->md_subpel_pme_ctrls`.
     pub md_subpel_pme: crate::port_enc_mode_config::encdec::MdSubPelSearchCtrls,
+    /// C `ctx->ifs_ctrls.level == IFS_MDS0` — whether the interpolation
+    /// filter is DECIDED at MDS0 and therefore priced there.
+    ///
+    /// It is FALSE at every preset this port reaches:
+    /// `pcs->interpolation_search_level` is 2 (`IFS_MDS1`) at MR and 4
+    /// (`IFS_MDS3`) above it, never 1. MEASURED 2026-09-02 against C's own
+    /// `svt_aom_inter_fast_cost` (`SVT_IFCOST_OUT`): the port hard-coded it
+    /// TRUE and paid `get_switchable_rate` at MDS0 where C pays nothing,
+    /// 20 to 109 rate units on every inter candidate.
+    pub ifs_at_mds0: bool,
     /// C `ctx->md_nsq_me_ctrls.enabled`.
     pub md_nsq_me_enabled: bool,
     /// C `ctx->md_nsq_me_ctrls`' search parameters — `md_nsq_motion_search`
@@ -858,6 +868,8 @@ pub struct SearchFrameInputs {
     pub pme_subpel_level: u8,
     /// `pcs->md_nsq_mv_search_level`
     pub md_nsq_mv_search_level: u8,
+    /// `pcs->interpolation_search_level`
+    pub interpolation_search_level: u8,
     /// `pcs->dist_based_ref_pruning`
     pub dist_based_ref_pruning: u8,
     /// `scs->static_config.qp` — the CLI qp the PME search-area scaling
@@ -927,6 +939,8 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         pme_full_pel_h: h,
         md_subpel_me: subpel_me,
         md_subpel_pme: subpel_pme,
+        ifs_at_mds0: ctrls::set_interpolation_search_level_ctrls(i.interpolation_search_level)?
+            == ctrls::IfsLevel::Mds0,
         md_nsq_me_enabled: nsq.enabled != 0,
         md_nsq_me_dist: match nsq.dist_type {
             ctrls::DistortionType::Sad => DistortionType::Sad,
@@ -1089,6 +1103,8 @@ mod tests {
             me_subpel_level: 4,
             pme_subpel_level: 2,
             md_nsq_mv_search_level: 2,
+            // p8 -> `interpolation_search_level` 4 (`IFS_MDS3`).
+            interpolation_search_level: 4,
             dist_based_ref_pruning: 0,
             cli_qp: 40,
             pme_qp_based_th_scaling: true,

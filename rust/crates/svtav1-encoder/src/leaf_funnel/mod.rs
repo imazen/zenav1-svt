@@ -364,10 +364,11 @@ pub(crate) fn evaluate_leaf(
                 (abs_x / 4) as i32,
                 im.tile,
             );
-            crate::entropy::context::get_intra_inter_context(
-                nb.above_avail().is_none_or(|a| !a.is_inter_block()),
-                nb.left_avail().is_none_or(|l| !l.is_inter_block()),
-            )
+            // `port_entropy_inter`'s transcription, which handles
+            // AVAILABILITY — see the same change in `inject.rs`. Collapsing
+            // "not available" into "intra" and reading an inverted table
+            // cost 1207 rate units per inter candidate, measured against C.
+            crate::port_entropy_inter::intra_inter_context(&nb)
         }
         None => 0,
     };

@@ -52,9 +52,11 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 40 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 49 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z15. Listed in full:
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z16 (40 at §1z15; the
+    # nine below closed when MD's `is_inter_ctx` stopped reading an INVERTED
+    # context table). Listed in full:
     # a gate that samples its own frontier reports a smaller regression than
     # it should. `tools/inter_byte_matrix.sh` is the sweep this list is the
     # assertion of.
@@ -70,6 +72,19 @@ PASS_CELLS=(
     "uniform 64 64 40 8 2 3"
     "uniform 64 64 55 6 2 3"
     "uniform 64 64 55 8 2 3"
+    # §1z¹⁶: MD priced `intra_inter` at the wrong CONTEXT (the table was
+    # inverted AND collapsed "no neighbour" into "intra"), 1207 rate units on
+    # every inter candidate of every block with two neighbours. All nine of
+    # these closed on that one fix.
+    "uniform 72 72 20 8 2 3"
+    "uniform 72 72 40 8 2 3"
+    "uniform 72 72 55 8 2 3"
+    "uniform 128 128 20 6 2 3"
+    "uniform 128 128 20 8 2 3"
+    "uniform 128 128 40 6 2 3"
+    "uniform 128 128 40 8 2 3"
+    "uniform 128 128 55 6 2 3"
+    "uniform 128 128 55 8 2 3"
     "gradient 16 16 20 6 2 3"
     "gradient 16 16 20 8 2 3"
     "gradient 64 64 20 8 2 3"   # §1z⁹: PD0 inter compensation

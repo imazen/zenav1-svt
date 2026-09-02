@@ -1426,10 +1426,18 @@ pub(super) fn inject_candidates(
                 overlappable_neighbors: overlappable,
                 // C `ctx->is_inter_ctx` — `svt_av1_get_intra_inter_context`
                 // over the same neighbour pair (entropy_coding.c:1127).
-                is_inter_ctx: crate::entropy::context::get_intra_inter_context(
-                    neighbors.above_avail().is_none_or(|a| !a.is_inter_block()),
-                    neighbors.left_avail().is_none_or(|l| !l.is_inter_block()),
-                ),
+                //
+                // Through `port_entropy_inter`'s transcription, NOT
+                // `entropy::context::get_intra_inter_context`: this call
+                // used to collapse "not available" into "intra" and then
+                // read an INVERTED table, so a block with two INTER
+                // neighbours priced at context 3 (both intra) instead of 0.
+                // MEASURED 2026-09-02 against C's own
+                // `svt_aom_inter_fast_cost`: 1207 rate units on EVERY inter
+                // candidate of the block. The writer already used this
+                // function (`write_intra_inter`'s call site); MD did not,
+                // and the two disagreed for as long as both existed.
+                is_inter_ctx: crate::port_entropy_inter::intra_inter_context(&neighbors),
                 has_uv,
                 // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`:
                 // one slot, written by a square block's own search and read

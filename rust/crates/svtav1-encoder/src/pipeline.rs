@@ -1610,16 +1610,16 @@ impl EncodePipeline {
         if !is_key && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "inter frames are not implemented for the public API — not because the machinery \
-                 is missing, but because its ENVELOPE is 40 of 96 cells. CDF continuation, the \
+                 is missing, but because its ENVELOPE is 49 of 96 cells. CDF continuation, the \
                  inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame \
                  stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, \
-                 inter_decode_gate.sh); on the campaign's frontier grid \
+                 inter_decode_gate.sh, inter_me_join_gate.sh); on the campaign's frontier grid \
                  ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, \
-                 frames=2 low-delay P) 40 cells are byte-identical to C on BOTH frames, 55 \
+                 frames=2 low-delay P) 49 cells are byte-identical to C on BOTH frames, 46 \
                  differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be \
                  right on the closed cells and silently wrong elsewhere, which is exactly the \
                  outcome docs/WORKING-ON-THIS.md section 6 refuses. See \
-                 docs/INTER-ENCODE-PLAN.md section 1z^15. This encoder is still-image only: \
+                 docs/INTER-ENCODE-PLAN.md section 1z^16. This encoder is still-image only: \
                  encode a single key frame",
             )));
         }
@@ -3023,6 +3023,7 @@ impl EncodePipeline {
                         me_subpel_level: sigs.me_subpel_level,
                         pme_subpel_level: sigs.pme_subpel_level,
                         md_nsq_mv_search_level: sigs.md_nsq_mv_search_level,
+                        interpolation_search_level: sigs.interpolation_search_level,
                         dist_based_ref_pruning: sigs.dist_based_ref_pruning,
                         cli_qp: u32::from(self.rc_config.qp),
                         // `set_qp_based_th_scaling_ctrls_default`

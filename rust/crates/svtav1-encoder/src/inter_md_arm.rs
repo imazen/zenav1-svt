@@ -700,10 +700,23 @@ fn predict_and_price(
             neighbors: &b.neighbors,
             overlappable_neighbors: b.overlappable_neighbors,
             approx_inter_rate: 0,
-            // C prices the interpolation filter at MDS0 only when the IFS
-            // level says the filter is already decided there; this port runs
-            // no filter search, so the filter IS known and is priced.
-            ifs_at_mds0: true,
+            // C prices the interpolation filter at MDS0 only when
+            // `ctx->ifs_ctrls.level == IFS_MDS0` (rd_cost.c:1179).
+            //
+            // This was hard-coded TRUE on the reasoning that "this port runs
+            // no filter search, so the filter IS known and is priced". The
+            // reasoning is about a DIFFERENT gap: C's level here is
+            // `IFS_MDS1` or `IFS_MDS3` (`interpolation_search_level` is 2 at
+            // MR and 4 above it, never 1), so C does not price the filter at
+            // MDS0 either — it prices it after the search it runs and this
+            // port does not. Paying it early is not "pricing what C prices
+            // later"; it is a DIFFERENT MDS0 ordering. MEASURED 2026-09-02
+            // against C's `svt_aom_inter_fast_cost` (`SVT_IFCOST_OUT`) on
+            // `uniform 72x72 q20 p8`: 20 to 109 rate units on every inter
+            // candidate, on top of the 1207 the inverted `is_inter_ctx`
+            // cost. That the port never prices the filter AT ALL is the
+            // still-open IFS gap, named in this module's header.
+            ifs_at_mds0: f.search.ifs_at_mds0,
         },
         &InterCandidate {
             mode: c.mode,
@@ -744,7 +757,7 @@ fn predict_and_price(
     if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(b.org_x, b.org_y) {
         std::eprintln!(
             "NSQDBG ICAND mi=({},{}) {}x{} mode={} rf={},{} mv0={},{} pmv0={},{} drl={} imc={} \
-             ovl={} isinterctx={} refmvcnt={} refbits={} flr={}",
+             ovl={} isinterctx={} nb=[{},{}] refmvcnt={} refbits={} flr={}",
             b.org_y / 4,
             b.org_x / 4,
             b.bw,
@@ -760,6 +773,12 @@ fn predict_and_price(
             inter_mode_ctx,
             b.overlappable_neighbors,
             b.is_inter_ctx,
+            // The two neighbours' `ref_frame[0]`, which is what
+            // `svt_av1_get_intra_inter_context` reads: `-9` for "not
+            // available". Without them `isinterctx` is a verdict with no
+            // premises, and the premise is the MD mi grid.
+            b.neighbors.above_avail().map_or(-9, |m| m.ref_frame[0]),
+            b.neighbors.left_avail().map_or(-9, |m| m.ref_frame[0]),
             stack.count,
             ref_frames_num_bits,
             cost.rate.luma,
