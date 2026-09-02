@@ -56,6 +56,30 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **CONFORMANCE: the port emits an UNDECODABLE inter stream on 22 of 96 grid
+  cells, every one preset 6** (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁸).
+  `aomdec` rejects frame 1 with "Failed to decode tile data"; measured on both
+  aarch64-darwin and x86_64-linux, same 22 cells. Traced to ONE operation: at
+  p6 the frame header carries `allow_warped_motion = 1` (0 at p8 — the whole
+  split), so C's `motion_mode_allowed` promotes a block with an overlappable
+  neighbour to `WARPED_CAUSAL` and writes the motion mode from the
+  THREE-symbol `MOTION_MODE_CDF[10]` (`[12408, 4706]`); the port's
+  `num_proj_ref` is always 0 because `av1_find_samples` is unported, so it
+  writes the TWO-symbol `OBMC_CDF[10]` (`[9945]`). Both write symbol 0, from
+  different alphabets, and the arithmetic coder desyncs. **No user is
+  exposed** — the public API refuses inter frames (refusal #12) and all 96
+  cells are reached only through `SVTAV1_INTER_EXPERIMENTAL`. NOT fixed here;
+  gated, and the next chunk is named (port `av1_find_samples`).
+- **`tools/inter_decode_census.sh` — does the port's stream DECODE, on all 96
+  cells?** `inter_decode_gate.sh` asks that of five. The 22 rejections are
+  pinned BY NAME: a new one is a conformance regression, and a pinned cell
+  that starts decoding means the defect moved and the list must shrink in the
+  same commit. Five arms proved by mutation (unpinned rejection, pinned cell
+  now decoding, no decoder → exit 2, zero decoded → anti-vacuity, a panicking
+  cell → fail). The mutation also found a bug in the gate itself — the pin was
+  compared against the whole list rather than the cells actually swept, so a
+  narrowed grid failed for a reason that was purely its own scope. Runs in CI.
+
 - **C's NSQ motion search and its square-MV seed are WIRED** — the ME join
   gate's two open rows close (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁶). C's
   `read_refine_me_mvs` seeds an NSQ block from

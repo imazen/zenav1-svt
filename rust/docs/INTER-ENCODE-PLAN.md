@@ -5246,6 +5246,114 @@ claimed to reproduce and reading the two numbers side by side. The census and
 the ME join gate were not wasted: they are what RETIRED the two named
 candidates fast enough to keep looking.
 
+### 1z¹⁸. CONFORMANCE — the port emits an UNDECODABLE stream on 22 of 96 cells, and the motion-mode ALPHABET is why (2026-09-02)
+
+§1z¹⁷ left the port's `inter_fast_cost` exactly equal to C's and 46 cells
+still differing. The next thing measured was not a byte count. **Twenty-two
+of the 96 cells produce a stream a decoder REJECTS**, and
+`inter_decode_gate.sh` has been green throughout because none of its five
+cells is one of them.
+
+```
+$ aomdec --summary -o /dev/null rs.obu          # uniform 72x72 q20 p6
+Warning: Failed to decode frame 2: Corrupt frame detected
+Warning: Additional information: Failed to decode tile data
+```
+
+Measured on **both ISAs**, same 22 cells: aarch64-darwin and x86_64-linux
+agree exactly.
+
+#### The localization — every block agreed, and the stream still broke
+
+`uniform 72x72 q20 p6` is the minimal case, and its shape is the finding.
+C codes four blocks; the port codes four blocks; **all four agree
+completely** — mode `NEARESTMV`, reference `LAST`, MV `(0,0)` — and 20 of
+the 22 frame-1 bytes match. A decision-level dump could not see anything
+wrong.
+
+The op-trace differ could. `SVT_TRACE_OUT` against the port's `symtrace`,
+with C's `BOOL` and the port's 2-symbol `CDF` normalised to one spelling
+(they are the same operation written two ways — without that, the streams
+"diverge" at operation 1 of every frame and the tool tells you nothing),
+puts it at **frame 1 operation 21 of 48**, with everything before AND after
+identical:
+
+| | alphabet | icdf | table |
+|---|---|---|---|
+| C | 3 symbols | `[12408, 4706]` | `MOTION_MODE_CDF[10]` |
+| port | 2 symbols | `[9945]` | `OBMC_CDF[10]` |
+
+Index 10 is `BLOCK_32X64` — the block C codes at `mi=(0,16)`. Both write
+symbol 0 (`SIMPLE_TRANSLATION`). They write it **from different
+alphabets**, and that desynchronises the arithmetic coder.
+
+#### Why, and why exactly preset 6
+
+`motion_mode_allowed` promotes a block to `WARPED_CAUSAL` — and with it the
+three-symbol `MOTION_MODES` alphabet — when `allow_warped_motion` is set and
+`num_proj_ref >= 1`. **The port's `num_proj_ref` is always 0**, because
+`av1_find_samples` (`adaptive_mv_pred.c`, reached through
+`svt_aom_init_wm_samples`) is unported and nothing fills
+`ctx->wm_sample_info[].num`. So the port always takes the two-symbol OBMC
+arm. The DECODER derives the sample count itself and reads three symbols
+where the port wrote two.
+
+That is the whole preset split, and it is checkable in one line —
+`fh_fields.py` on the C streams, frame 1:
+
+| preset | `allow_warped_motion` | result |
+|---|---|---|
+| 6 | **1** (both sides) | C takes the WARPED arm, the port cannot: **all 22 failures are here** |
+| 8 | **0** (both sides) | both take the OBMC arm and agree: **no p8 cell fails** |
+
+The header field itself is field-exact on both sides — `inter_fh_gate`
+covers it. The divergence is entirely in what the two sides DERIVE from it.
+
+#### The lesson: turning a control OFF does not remove its SYNTAX
+
+`inter_md_arm`'s header lists `wm_ctrls` among the controls it hands the
+injector as OFF, and says the injector "would produce them". Both halves are
+true and neither helps: **the motion-mode alphabet depends on the SAMPLE
+COUNT, not on whether the encoder would ever choose warped motion.** Every
+inter block at a motion-variation-allowed size with an overlappable
+neighbour writes that symbol, whatever the search does. This is the same
+shape as `docs/WORKING-ON-THIS.md` §5's "a parameter can be SHIFTED OUT of
+relevance before the code under test sees it", inverted: a feature can be
+switched out of the SEARCH while staying in the BITSTREAM.
+
+#### No user is exposed, and that is what the refusal is for
+
+The public API refuses inter frames (refusal #12); all 96 cells are reached
+only through `SVTAV1_INTER_EXPERIMENTAL`. §6 of `docs/WORKING-ON-THIS.md`
+— *refuse, never emit a plausible-but-wrong stream* — is doing exactly its
+job here, which is why this is filed and gated rather than hot-fixed.
+
+#### The gate — `tools/inter_decode_census.sh`, in CI
+
+It sweeps all 96 cells and requires every stream not on a pinned list to
+DECODE. The 22 are pinned **by name**. Five arms, all proved by mutation
+before it landed: an unpinned rejection fails, a pinned cell that starts
+decoding fails, a missing decoder exits 2 as a harness failure, zero
+decoded streams fails anti-vacuity, and a panicking cell fails (it reads
+`identity_diff_inter.sh`'s exit 4, so a crash can never read as a decode
+failure or as a pass).
+
+**The mutation found a bug in the gate itself**, which is the point of
+running one: the first version compared the pin against the whole list
+rather than against the cells the run actually SWEPT, so narrowing the grid
+with the `IBM_*` vars reported every unswept pinned cell as "now decoding".
+The comparison is restricted to the swept set now.
+
+#### The next chunk
+
+**Port `av1_find_samples` and fill `num_proj_ref`.** It is not a
+speculative lead: the alphabet is decided by that one number, the gate
+above will say the moment it is right (22 pinned cells start decoding, and
+the census fails until the list shrinks), and it is the only thing standing
+between the p6 half of this grid and a stream that decodes at all. It is
+also a prerequisite for reading any p6 byte verdict — a stream the decoder
+rejects has nothing useful to say about mode decision.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

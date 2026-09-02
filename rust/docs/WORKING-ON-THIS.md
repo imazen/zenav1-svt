@@ -901,7 +901,11 @@ pre-campaign homegrown path", which has been wrong since §1z; it then said
 byte-identical on BOTH frames**, 55 have a byte-identical frame 0 and a
 differing frame 1, and 1 still differs on frame 0 — **49 / 46 / 1 as of
 §1z¹⁷**. `tools/inter_byte_matrix.sh`
-is that sweep and `tools/inter_byte_gate.sh` asserts the 49. The refusal stays
+is that sweep and `tools/inter_byte_gate.sh` asserts the 49. **22 of the 96
+also emit a stream a DECODER REJECTS** (§1z¹⁸ — every one preset 6;
+`tools/inter_decode_census.sh` pins them), so "byte-identical" and
+"decodable" are two different questions here and the grid answers both.
+The refusal stays
 because 49 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
 Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁶
@@ -910,6 +914,48 @@ for the tile.
 **Until 2026-09-02 that 55 included EIGHTEEN CRASHES** — see the
 crash-vs-divergence trap in §5. The sweep now has a CRASH column and fails on
 one; the count above is 55 genuine divergences.
+
+**A BYTE GATE CANNOT TELL "WRONG BYTES" FROM "BYTES NO DECODER WILL
+ACCEPT", AND 22 OF 96 CELLS WERE THE SECOND** (§1z¹⁸, 2026-09-02, measured
+on both ISAs). `aomdec` REJECTS the port's frame 1 on 22 of the campaign's
+96 cells — "Failed to decode tile data" — and `inter_decode_gate.sh` was
+green throughout, because none of its five named cells is one of the 22.
+The mechanism is ONE operation: at preset 6 the frame header carries
+`allow_warped_motion = 1` (at preset 8 it is 0, which is the whole split),
+so C's `motion_mode_allowed` promotes a block with an overlappable
+neighbour to `WARPED_CAUSAL` and writes the motion mode from the
+THREE-symbol `MOTION_MODE_CDF`; the port's `num_proj_ref` is always 0
+because `av1_find_samples` is unported, so it writes the TWO-symbol
+`OBMC_CDF`. Both write symbol 0. They write it from different alphabets,
+and the arithmetic coder desyncs. `tools/inter_decode_census.sh` is the
+gate; the 22 are pinned by name.
+
+Two things to carry from it. **Turning a control OFF does not remove its
+SYNTAX** — `wm_ctrls` being off keeps warped motion out of the candidate
+SET and does nothing about the symbol every inter block writes; the
+alphabet depends on the SAMPLE COUNT, not on whether the tool would ever
+be chosen. And **a decision-level dump can show every block agreeing while
+the stream is still broken**: all four coded blocks matched C exactly on
+the cell that localized this, and 20 of its 22 bytes matched. Only the
+op-trace differ could see it — after normalising C's `BOOL` and the port's
+2-symbol `CDF` to one spelling, without which every frame "diverges" at
+operation 1 and the tool tells you nothing.
+
+**MD PRICED A CONTEXT IT DID NOT CODE, and that was worth nine cells**
+(§1z¹⁷, 2026-09-02). `entropy::context::get_intra_inter_context`'s
+four-entry table was INVERTED — it returned 0 for "both neighbours intra"
+and 3 for "both inter", where C returns 3 and 0 — and its call sites
+collapsed "no neighbour" into "intra". The correct transcription,
+`port_entropy_inter::intra_inter_context`, was already in the repo, already
+tier-1 gated, already used by the WRITER, and its own doc comment said "the
+two must agree — if they ever do not, one of them is wrong and this
+module's parity test is the one with a C oracle behind it." It was right.
+The encoder priced context 3 and coded context 0 on every inter candidate
+of every block with two neighbours: **1207 rate units**, measured against
+C's own `svt_aom_inter_fast_cost` through the `SVT_IFCOST_OUT` interposer.
+Fixing it took the 96-cell grid from 40 BOTH to 49. This is the THIRD
+duplicate transcription this campaign has found (`svt_mv_err_cost`, the MD
+lambda, this) — §4's rule is not a style preference.
 
 **The NSQ motion search is wired as of 2026-09-02** (§1z¹⁶) and the byte
 grid did not move: `md_nsq_motion_search` plus C's `sq_sb_me_mv` seed now
