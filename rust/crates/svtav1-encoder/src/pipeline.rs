@@ -4259,8 +4259,10 @@ impl EncodePipeline {
         } else if cdef_force_off {
             // C `pcs->ppcs->cdef_level = 0` inside
             // `update_cdef_filters_on_ref_info`: no search, no application,
-            // and the header codes zero strengths.
-            crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
+            // and the header codes zero strengths — plus the DAMPING quirk
+            // that comes with never calling `finish_cdef_search`
+            // (`CdefFrameParams::never_picked`).
+            crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::never_picked())
         } else if cdef_ctrls.use_reference_cdef_fs != 0 {
             // The reference-derived prediction REPLACES the search
             // (`md_config_process.c:713-722` / `:750-758`). Damping is still
@@ -4399,7 +4401,10 @@ impl EncodePipeline {
                 // neither arm runs and the header codes zero strengths. Only
                 // reachable through a level-0 ladder entry, since the
                 // IntraBC/lossless suppression is the outer branch above.
-                crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::default())
+                // Same C state as the `cdef_force_off` arm — `cdef_level == 0`
+                // means `finish_cdef_search` is never called, so `cdef_damping`
+                // keeps its 0 initialisation and the header signals 1.
+                crate::cdef::CdefPick::single(crate::cdef::CdefFrameParams::never_picked())
             }
         };
         // Non-vacuity evidence (same role as `last_cdef_stats` /

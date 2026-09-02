@@ -3302,10 +3302,59 @@ problems:
 * **`uniform` at 16/64, and `screen`/`gradient` 16 at some qp: C's LENGTH
   exactly, differing at byte 15.** Byte 15 is inside the frame HEADER. That is
   §1x's recorded `cdef_damping_minus_3` finding (C 1, port 0) finally showing
-  up as a byte rather than as a field-walk note.
+  up as a byte rather than as a field-walk note. **CLOSED the same day — see
+  §1z' below.**
 * **preset 8 diverges far more widely than preset 6** (873 B against C's 22 on
   `gradient 64 q20 p8`). The video arm's p8 mode-decision ladder is a separate
   frontier from p6's and has never been exercised on an inter frame.
+
+### 1z′. §1x's `cdef_damping_minus_3` field CLOSED — it is an unsigned underflow in C (2026-09-01)
+
+The frame-1 header field §1x recorded as open (`C 1, port 0` on `uniform
+64x64 q40 p6`) is now field-exact. It was NOT a derivation the port was
+missing; it is C reading a field its own pick never assigned.
+
+`frm_hdr->cdef_params.cdef_damping` is initialised to 0
+(`resource_coordination_process.c:423`) and assigned ONLY inside
+`finish_cdef_search`. When `pcs->ppcs->cdef_level == 0` that function is never
+called — `cdef_process.c:683-696` takes the `else` arm, which zeroes
+`cdef_bits` and both strengths and leaves `cdef_damping` alone. The header
+writer runs anyway (it is gated only on `!coded_lossless && !allow_intrabc &&
+enable_cdef`) and emits `cdef_damping - 3` as a 2-BIT literal
+(`entropy_coding.c:2349`): `(uint8_t)0 - 3` promotes to `-3`, whose low two
+bits are **1**.
+
+**The disambiguating measurement, because two explanations fit one data
+point.** `3 + (base_q_idx >> 6) - 3` also equals 1 when `base_q_idx` is in
+64..127, and §1x's single cell was q40. Re-running `uniform 64x64 p6
+frames=2` at three quantizers whose `base_q_idx >> 6` are 1, 2 and 3
+(`base_q_idx` 80 / 160 / 220) settles it: C writes **1 at all three**. The qp
+derivation is refuted; the underflow is not.
+
+It is reachable on an inter frame through `update_cdef_filters_on_ref_info`
+(`md_config_process.c:713-758`), which sets `cdef_level = 0` when the
+reference's own strengths were all zero — which is every `uniform` cell. In
+the still envelope C's allintra `cdef_level` is nonzero at every representable
+preset, which is why the still gates never saw it.
+
+Ported as `cdef::CdefFrameParams::never_picked()` (damping 0, i.e. C's
+never-assigned value) plus a writer that emits `damping.wrapping_sub(3) & 3`
+— reproducing the underflow explicitly instead of underflowing in debug and
+silently differing in release. Filed as `docs/SUSPECTED-C-BUGS.md` #27.
+
+**AFTER: `uniform 64x64 q20/q40/q55 p6` frame-1 headers are field-exact and
+the remaining difference is the TILE — 2 bytes each way, C `93 a0` vs port
+`91 34`.** And C's own decision there names the next gap outright:
+
+```
+CINTER poc=1 mi=(0,0) bsize=12 part=0 mode=13 rf=1,-1 mv0=0,0 ... skip=1
+```
+
+`mode = 13` is `NEARESTMV`, and §1y's own MISSING list says this port injects
+no NEAREST/NEAR/GLOBAL candidate at all — only `NEWMV`. On flat content
+NEARESTMV codes no MV, so it is strictly cheaper than the NEWMV the port
+injects at the same `(0,0)`; C's `mv_is_already_injected` even suppresses the
+NEWMV duplicate. The port picked an INTRA DC block instead.
 
 ## 2. Chunks
 

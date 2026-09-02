@@ -38,6 +38,34 @@ impl Default for CdefFrameParams {
 }
 
 impl CdefFrameParams {
+    /// C's state when the CDEF PICK NEVER RAN for this frame.
+    ///
+    /// `frm_hdr->cdef_params.cdef_damping` is initialised to **0**
+    /// (`resource_coordination_process.c:423`) and is assigned ONLY inside
+    /// `finish_cdef_search` (`enc_cdef.c:923` / `:937` / `:1123`). When
+    /// `pcs->ppcs->cdef_level == 0` that function is not called at all —
+    /// `cdef_process.c:683-696` takes the `else` arm, which zeroes
+    /// `cdef_bits` and both strengths and leaves `cdef_damping` alone.
+    ///
+    /// The writer then emits `cdef_damping - 3` as a 2-BIT literal
+    /// (`entropy_coding.c:2349`), and `(uint8_t)0 - 3` promoted to `int` is
+    /// `-3`, whose low two bits are **1**. So a frame C decided not to filter
+    /// signals `cdef_damping_minus_3 = 1` — not 0, and not the qp-derived
+    /// value. See `docs/SUSPECTED-C-BUGS.md`.
+    ///
+    /// MEASURED on `uniform 64x64 p6 frames=2` at three quantizers whose
+    /// `base_q_idx >> 6` are 1, 2 and 3 (80 / 160 / 220): C writes **1** at
+    /// all three, which is what rules out the qp derivation as the
+    /// explanation.
+    #[must_use]
+    pub fn never_picked() -> Self {
+        Self {
+            damping: 0,
+            y_strength: 0,
+            uv_strength: 0,
+        }
+    }
+
     /// True when a conforming decoder will run the CDEF frame pass: libaom
     /// `do_cdef = cdef_bits || cdef_strengths[0] || cdef_uv_strengths[0]`
     /// (decodeframe.c:5417; we always signal cdef_bits = 0). Monochrome

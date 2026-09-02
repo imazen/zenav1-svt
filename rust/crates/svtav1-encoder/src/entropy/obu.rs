@@ -1694,9 +1694,19 @@ fn frame_header_bits_lr(
     // allow_intrabc — either one means NO cdef bits (spec 5.9.19 early-out;
     // C entropy_coding.c:3598-3600 under `!coded_lossless`).
     if !sc.allow_intrabc && !coded_lossless {
-        debug_assert!((3..=6).contains(&cdef.damping), "cdef_damping out of range");
+        // `damping == 0` is C's "the pick never ran" state, NOT an
+        // out-of-range value — see `cdef::CdefFrameParams::never_picked`.
+        debug_assert!(
+            (3..=6).contains(&cdef.damping) || cdef.damping == 0,
+            "cdef_damping out of range"
+        );
         debug_assert_eq!(cdef.strengths.len(), 1usize << cdef.bits);
-        wb.write_bits((cdef.damping - 3) as u32, 2); // cdef_damping_minus_3
+        // C `svt_aom_wb_write_literal(wb, cdef_damping - 3, 2)`
+        // (entropy_coding.c:2349) on a `uint8_t` promoted to `int`: at
+        // damping 0 that is `-3`, whose low two bits are 1. The wrapping
+        // subtraction reproduces it instead of underflowing in debug and
+        // silently differing in release.
+        wb.write_bits(u32::from(cdef.damping.wrapping_sub(3)) & 3, 2); // cdef_damping_minus_3
         wb.write_bits(cdef.bits as u32, 2); // cdef_bits -> (1 << bits) strength sets
         for &(y, uv) in &cdef.strengths {
             wb.write_bits(y as u32, 6); // cdef_y_pri(4) + cdef_y_sec(2) packed

@@ -1244,3 +1244,52 @@ are what this file exists to replace.
 
 Do **not** file an upstream patch for anything here without first checking what
 the fix would do to our byte-parity gates. We are downstream of the bug.
+
+---
+
+## 27. A frame C decides NOT to filter signals `cdef_damping_minus_3 = 1`, from an unsigned underflow of a never-assigned field
+
+**Status: REPRODUCED (`cdef::CdefFrameParams::never_picked`).**
+
+`frm_hdr->cdef_params.cdef_damping` is initialised to **0**
+(`resource_coordination_process.c:423`) and is assigned in exactly one
+function, `finish_cdef_search` (`enc_cdef.c:923`, `:937`, `:1123`, all
+`CDEF_DAMPING_FROM_QP(base_q_idx)` = `3 + (base_q_idx >> 6)`).
+
+When `pcs->ppcs->cdef_level == 0` that function is never called:
+`cdef_process.c:683-696` takes the `else` arm, which sets `cdef_bits = 0`,
+`nb_cdef_strengths = 1` and both strengths to 0 — and does not touch
+`cdef_damping`. The header writer then runs anyway, because it is gated only
+on `!coded_lossless && !allow_intrabc && enable_cdef`, and emits
+
+```c
+svt_aom_wb_write_literal(wb, frm_hdr->cdef_params.cdef_damping - 3, 2);
+```
+(`entropy_coding.c:2349`). `cdef_damping` is a `uint8_t`; `0 - 3` promotes to
+`int` `-3`; the low two bits of `-3` are **1**. So the frame signals
+`cdef_damping = 4` while nothing in the encoder ever chose 4, and the value is
+independent of the quantizer.
+
+**Why it is a defect rather than a convention:** every other path writes the
+qp-derived damping, the spec field is `f(2)` with no "unset" encoding, and a
+decoder that ran CDEF with damping 4 here would be doing so on C's say-so
+alone. It is harmless in practice ONLY because the same `else` arm zeroes both
+strengths, so `do_cdef` is false and no decoder reads the damping.
+
+**Reachable, and it was a live divergence.** In the still/AVIF envelope C's
+allintra `cdef_level` is nonzero at every representable preset, so the arm is
+unreachable there. On an INTER frame it is reachable through
+`update_cdef_filters_on_ref_info` (`md_config_process.c:713-758`), which sets
+`cdef_level = 0` when the reference's own strengths were all zero — which is
+every `uniform` cell.
+
+**MEASURED** on `uniform 64x64 p6 frames=2` at three quantizers whose
+`base_q_idx >> 6` are 1, 2 and 3 (`base_q_idx` 80 / 160 / 220): C writes
+`cdef_damping_minus_3 = 1` at **all three**. That is what rules out the qp
+derivation as the explanation and leaves the underflow. It was
+`docs/INTER-ENCODE-PLAN.md` §1x's recorded open frame-header field.
+
+**What the port does:** `CdefFrameParams::never_picked()` carries C's `0`
+rather than a legal 3..=6, and the writer emits
+`damping.wrapping_sub(3) & 3` — reproducing the underflow explicitly instead
+of underflowing in debug and silently differing in release.
