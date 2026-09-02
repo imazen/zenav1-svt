@@ -1,8 +1,21 @@
-//! 10-bit (bd10) — chunk-1 scaffolding (task #94, inert for bd8).
+//! 10-bit (bd10) — task #94. Source translation per docs/bd10-port-map.md.
 //!
-//! Source translation per docs/bd10-port-map.md. UNWIRED (add
-//! `pub mod bd10;` when integration starts); bulk-write directive
-//! 2026-07-17, no build run yet.
+//! WIRED and LOAD-BEARING. `lib.rs` declares `pub mod bd10;` and production
+//! code reads it: `cdef.rs`'s `bd == 10` arm takes `AC_QLOOKUP_10`, and
+//! `quant.rs::build_quant_table_bd_sharp` takes `dc_qlookup_10` /
+//! `ac_qlookup_10` / `qzbin_factor`. Gated by
+//! `tests/c_parity_bd10_quant.rs`.
+//!
+//! `qzbin_factor` carries BOTH bit depths (`8 => 148`, `10 => 592`); its bd8
+//! arm reproduces `quant.rs::build_quant_table`'s own `dc < 148` threshold
+//! exactly, so bd8 output is byte-inert BY CONSTRUCTION — which is not the
+//! same claim as "unreached", and the difference is what a reader needs.
+//!
+//! (This header read "UNWIRED (add `pub mod bd10;` when integration
+//! starts) ... no build run yet" until 2026-09-02. It described the
+//! 2026-07-17 bulk-write directive and was never updated when integration
+//! landed; corrected against `lib.rs` + the call sites above, no behaviour
+//! change.)
 //!
 //! Design decisions locked by the map:
 //! - Plain u16 planes everywhere; the C 8+2 split is input-buffer memory
