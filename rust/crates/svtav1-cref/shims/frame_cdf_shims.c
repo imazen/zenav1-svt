@@ -33,6 +33,37 @@
 #include "EbSvtAv1.h"
 #include "cabac_context_model.h"
 
+/* RTCD FIRST — this shim re-hit a trap `entropy_inter_shims.c:107-118` had
+ * already solved and commented, and it cost a cross-ISA run to find.
+ *
+ * `svt_aom_init_mode_probs` and `svt_av1_default_coef_probs` copy their tables
+ * with `COPY_CDF`, which is `svt_memcpy` (cabac_context_model.c:735) — an RTCD
+ * FUNCTION POINTER in .bss (common_dsp_rtcd.h:1083), NULL until
+ * `svt_aom_setup_common_rtcd_internal` runs. On aarch64 the hazard CANNOT
+ * fire: NEON devirtualization rewrites `svt_memcpy` to the concrete
+ * `svt_memcpy_neon` (common_dsp_rtcd_neon_devirt.h:266), so there is no
+ * pointer to be NULL. On x86-64 the call lands at rip=0x0.
+ *
+ * MEASURED 2026-09-01: without this, `the_default_frame_context_matches_c_
+ * field_for_field` and `the_reset_is_observable_at_all` SIGSEGV on
+ * x86_64-linux and pass on aarch64-darwin — while the two tests that only use
+ * the PAINTED modes (which call neither initializer) pass on both. That split
+ * is the fingerprint: a NULL RTCD pointer, not a buffer bug.
+ *
+ * `g_fctx_rtcd_ready` is an idempotent one-shot, not per-call state — a racing
+ * double-init lands the same pointers. */
+typedef uint64_t FctxCpuFlags;
+FctxCpuFlags svt_aom_get_cpu_flags_to_use(void);
+void         svt_aom_setup_common_rtcd_internal(uint64_t flags);
+
+static int  g_fctx_rtcd_ready = 0;
+static void fctx_ensure_rtcd(void) {
+    if (!g_fctx_rtcd_ready) {
+        svt_aom_setup_common_rtcd_internal(svt_aom_get_cpu_flags_to_use());
+        g_fctx_rtcd_ready = 1;
+    }
+}
+
 typedef struct {
     const char       *name;
     const AomCdfProb *ptr;
@@ -177,6 +208,7 @@ static size_t fctx_build(FctxField *tbl, const FRAME_CONTEXT *fc) {
  * rather than silently comparing a prefix.
  */
 size_t ref_frame_ctx_field(int32_t qindex, int32_t mode, const char *name, uint16_t *out, size_t cap) {
+    fctx_ensure_rtcd();
     FRAME_CONTEXT fc;
     if (mode >= 2) {
         memset(&fc, 0x12, sizeof(fc));
