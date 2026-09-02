@@ -6360,7 +6360,7 @@ fn encode_block_syntax(
             );
             let _ = writeln!(
                 f,
-                "PDV mi=({},{}) dvr={} dvc={} dvrefr={} dvrefc={} txt={}",
+                "PDV mi=({},{}) dvr={} dvc={} dvrefr={} dvrefc={} txt={} inter={} mvr={} mvc={} rf={} mode={}",
                 block_y / 4,
                 block_x / 4,
                 decision.dv.y,
@@ -6368,6 +6368,18 @@ fn encode_block_syntax(
                 decision.dv_ref.y,
                 decision.dv_ref.x,
                 decision.tx_type,
+                // The INTER half of the committed decision, so a PTREE dump
+                // can be joined against C's `SVT_CINTER_OUT` the way the
+                // intra half already joins against `SVT_CTREE_OUT`. Without
+                // it an inter leaf is indistinguishable from a DC intra one
+                // in this dump (`mode` is `intra_mode`, which an inter block
+                // leaves at 0) — which is exactly how a decode failure on an
+                // inter frame had no per-block evidence behind it.
+                u8::from(decision.is_inter),
+                decision.inter.as_deref().map_or(0, |b| b.mv[0].y),
+                decision.inter.as_deref().map_or(0, |b| b.mv[0].x),
+                decision.inter.as_deref().map_or(0, |b| b.ref_frame[0]),
+                decision.inter.as_deref().map_or(0, |b| b.mode as u8),
             );
         }
     }
@@ -6638,7 +6650,24 @@ fn encode_block_syntax(
     // Mode syntax is ALWAYS coded — the skip flag only gates residuals
     // (AV1 intra_frame_mode_info reads y_mode regardless of skip).
     if !is_key {
-        crate::entropy::context::write_intra_inter(writer, frame_ctx, 0, decision.is_inter);
+        // C `write_is_inter` (entropy_coding.c:1147) takes
+        // `svt_av1_get_intra_inter_context(xd)` — a FOUR-valued context off
+        // the above/left neighbours' `is_inter_block`, not a constant.
+        //
+        // The port passed a hard-coded 0. That was inert while no inter
+        // frame could reach the pack, and it is a DECODER DESYNC the moment
+        // one does: the decoder computes the real context, reads a symbol
+        // from a different CDF row, and every bit after it is misaligned.
+        // FOUND by decoding the experimental 2-frame stream — `aomdec`
+        // reported "Failed to decode tile data" on frame 1 and `dav1d`
+        // "Invalid argument", with frame 0 decoding cleanly.
+        //
+        // `intra_inter_context` is already ported and tier-1 gated in
+        // `port_entropy_inter`, and takes exactly the `Neighbors` the mi
+        // grid now supplies.
+        let ctx =
+            crate::port_entropy_inter::intra_inter_context(&ectx.inter_neighbors(block_x, block_y));
+        crate::entropy::context::write_intra_inter(writer, frame_ctx, ctx, decision.is_inter);
     }
 
     if use_intrabc {
@@ -6737,6 +6766,36 @@ fn encode_block_syntax(
         // `fc` pointer). Split the copies out and write them BACK — a caller
         // that dropped them would silently code every following block
         // against unadapted inter CDFs.
+        // Diagnostic (SVTAV1_INTERDBG=1): the per-block inter decision AS THE
+        // WRITER SEES IT — including the three fields derived here rather
+        // than carried from MD (`pred_mv`, `inter_mode_ctx`, `drl_ctx`) and
+        // the neighbour pair their contexts read. Field-for-field the C
+        // `SVT_CINTER_OUT` dump plus the neighbours, so a divergence can be
+        // localized to a block and a field instead of to a byte offset.
+        //
+        // It exists because a decode failure on an inter frame had NO
+        // per-block evidence behind it: `SVTAV1_PACKTREE` shows `intra_mode`,
+        // which an inter block leaves at 0, so an inter leaf was
+        // indistinguishable from a DC intra one.
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_INTERDBG").is_some() {
+            std::eprintln!(
+                "IDBG mi=({},{}) bs={:?} mv=({},{}) pmv=({},{}) imc={} drl={:?} nb_up={} nb_left={} nbA={:?} nbL={:?}",
+                block_y / 4,
+                block_x / 4,
+                info.bsize,
+                info.mv[0].y,
+                info.mv[0].x,
+                info.pred_mv[0].y,
+                info.pred_mv[0].x,
+                info.inter_mode_ctx,
+                info.drl,
+                nb.up_available,
+                nb.left_available,
+                nb.above.map(|a| (a.mode, a.ref_frame, a.interp_filters)),
+                nb.left.map(|a| (a.mode, a.ref_frame, a.interp_filters)),
+            );
+        }
         let mut ic = frame_ctx.inter.clone();
         let mut nmvc = frame_ctx.nmvc.clone();
         crate::port_entropy_inter::block::write_inter_mode_info(
@@ -6801,8 +6860,18 @@ fn encode_block_syntax(
     //   follows directional UV modes — UV_DC triggers neither.
     // CFL allowed = LUMA block w <= 32 && h <= 32 (is_cfl_allowed,
     // blockd.h, non-lossless path).
-    if chroma_blocks.is_some() && !use_intrabc {
-        debug_assert!(!decision.is_inter, "420 path is key/intra only");
+    //
+    // ...and NOT for an INTER block. In C the whole chroma mode-info slice
+    // lives inside `write_modes_b`'s intra branch (entropy_coding.c:5199-5215)
+    // — an inter block's chroma mode is implied by its motion, so no symbol is
+    // coded. The port's gate was `chroma_blocks.is_some() && !use_intrabc`
+    // with a `debug_assert!(!decision.is_inter, "420 path is key/intra only")`
+    // recording the assumption; the assumption stopped holding the moment the
+    // inter arm reached the pack, and `identity_run` builds RELEASE, where the
+    // assert is compiled out — so the extra `uv_mode` symbol was written
+    // SILENTLY. FOUND by decoding the experimental 2-frame stream (`aomdec`:
+    // "Failed to decode tile data"), not by any byte count.
+    if chroma_blocks.is_some() && !use_intrabc && !decision.is_inter {
         let cfl_allowed = decision.width <= 32 && decision.height <= 32;
         crate::entropy::context::write_uv_mode(
             writer,
@@ -7141,7 +7210,12 @@ fn encode_block_syntax(
                 tx_intra_dir,
                 base_q_idx,
                 false,
-                use_intrabc, // IntraBC blocks code tx types over the INTER rows
+                // `is_inter_block` = `use_intrabc || ref_frame[0] > INTRA_FRAME`
+                // — the depth-0 twin of the depth>0 site below. This is the
+                // FOURTH place the port spelled that predicate `use_intrabc`,
+                // which was the same thing only while IntraBC was the one
+                // inter-classified block the pack could emit.
+                use_intrabc || decision.is_inter,
             );
             ectx.record_coeff(block_x, block_y, w, h, cul_level as u8);
         } else {
@@ -7207,7 +7281,15 @@ fn encode_block_syntax(
                     tx_intra_dir,
                     base_q_idx,
                     false,
-                    use_intrabc, // IntraBC blocks code tx types over the INTER rows
+                    // C `get_ext_tx_set` / `av1_get_tx_type` select the
+                    // tx-type CDF rows on `is_inter_block(mbmi)` =
+                    // `use_intrabc || ref_frame[0] > INTRA_FRAME`
+                    // (block_structures.h:119). The port tested `use_intrabc`
+                    // alone, which was the same predicate while IntraBC was
+                    // the only inter-classified block the pack could emit —
+                    // the THIRD site with that bug (the other two are
+                    // `av1_code_tx_size`'s arm and `record_inter_dims`).
+                    use_intrabc || decision.is_inter,
                 );
                 ectx.record_coeff(tx_x, tx_y, txw, txh, cul_level as u8);
             }
@@ -7227,7 +7309,15 @@ fn encode_block_syntax(
             // follows-luma rule MDS3 applied: luma txb-0's type when the
             // chroma inter ext set admits it, else DCT. Intra blocks keep
             // the uv-mode mapping.
-            let uv_tt = if use_intrabc {
+            // ...and a genuinely INTER block takes the same arm: C's
+            // predicate is `is_inter_block(mbmi)`, not `use_intrabc`. The
+            // chroma tx type selects the SCAN ORDER, so an inter block that
+            // fell into the uv-mode arm scanned its chroma levels in a
+            // different order than the decoder — the SIXTH site of this
+            // predicate confusion, and the one with the least visible
+            // symptom, because chroma is derived and codes no tx-type symbol
+            // of its own.
+            let uv_tt = if use_intrabc || decision.is_inter {
                 let luma_tt = if decision.tx_depth == 0 {
                     decision.tx_type
                 } else {
@@ -7331,7 +7421,18 @@ fn encode_block_syntax(
         decision.width as usize,
         decision.height as usize,
         crate::port_entropy_inter::NeighborMi {
-            mode,
+            // C `block_mi.mode` — the INTER mode (`NEWMV` = 16 and up) on an
+            // inter block, not `intra_mode`, which an inter block leaves at
+            // 0 (`DC_PRED`).
+            //
+            // This is load-bearing and silent: `inter_mvp::setup_ref_mv_list`
+            // counts `have_newmv_in_inter_mode(entry.mode)` over the scanned
+            // neighbours into `newmv_count`, which selects the `mode_context`
+            // a decoder ALSO derives from its own reconstructed mi map. Stamp
+            // `DC_PRED` for an inter neighbour and the two derivations part
+            // company, the `newmv` symbol is coded from a different CDF row
+            // than the one read, and the tile desyncs from that block on.
+            mode: decision.inter.as_deref().map_or(mode, |b| b.mode as u8),
             ref_frame: decision.inter.as_deref().map_or([0, -1], |b| b.ref_frame),
             interp_filters: decision.inter.as_deref().map_or(0, |b| b.interp_filters),
             use_intrabc: decision.use_intrabc,

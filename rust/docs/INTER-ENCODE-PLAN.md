@@ -2876,6 +2876,92 @@ routes every block through the intra path. `inter_pred_arm` deliberately does
 NOT expose a chroma entry point yet: surface with no caller has no positive
 control.
 
+### 1x. The port emits a DECODABLE inter frame — six defects a byte gate cannot see (2026-09-01)
+
+Every gate in this repo compares the port's bytes to C's. None of them asks
+whether the port's OWN bytes are a bitstream. Running `dav1d` on the
+experimental 2-frame stream asked that for the first time, and the answer was
+no: frame 0 decoded, frame 1 came back `Invalid argument` (`aomdec`: "Failed
+to decode tile data"). **The C stream decodes both frames**, which is the
+control that makes this a port defect rather than a harness one.
+
+Six defects, found one at a time by fixing and re-decoding. Five are the SAME
+mistake:
+
+| # | defect | why no byte gate saw it |
+|---|---|---|
+| 1 | `write_is_inter` passed a CONSTANT context 0 where C computes `svt_av1_get_intra_inter_context` — a FOUR-valued context off the neighbours' `is_inter_block` | inert while no inter frame could reach the pack; the port's own bytes were self-consistent, just not decodable |
+| 2 | an INTER block wrote the intra **`uv_mode`** symbol. In C the whole chroma mode-info slice lives inside `write_modes_b`'s intra branch (:5199-5215) | it was guarded by `debug_assert!(!decision.is_inter, "420 path is key/intra only")` — and `identity_run` builds RELEASE, where the assert is compiled out, so the extra symbol was written SILENTLY |
+| 3 | `av1_code_tx_size` picked its var-tx arm on `use_intrabc` instead of `is_inter_block` = `use_intrabc \|\| ref_frame[0] > INTRA_FRAME` (block_structures.h:119), coding a `tx_size` depth symbol C omits | see §1u — this one WAS byte-visible, as `94 9a 9e` vs `94 9a b0` |
+| 4 | the luma coefficient writer picked the tx-type CDF ROWS the same wrong way, at **two** call sites (`tx_depth == 0` and `> 0`) | the two arms are 60 lines apart and only one was found by the tile gate |
+| 5 | the chroma tx type followed `uv_mode` instead of the luma type on an inter block | chroma codes no tx-type symbol of its own — the type only selects the SCAN ORDER, so it is invisible until the levels come out in the wrong places |
+| 6 | the mi grid stamped `intra_mode` (0 = `DC_PRED`) as an inter neighbour's `mode` | `setup_ref_mv_list` counts `have_newmv_in_inter_mode` over it into `newmv_count`, which moves `mode_context` — the CDF ROW, not the symbol |
+
+**Four of the six are one predicate.** `use_intrabc` and `is_inter_block` were
+the same thing for as long as IntraBC was the only inter-classified block this
+pack could emit. Expect more: grep `use_intrabc` at every site that is really
+asking "is this block inter".
+
+**`SVTAV1_INTERDBG=1`** was added for the hunt and kept: it prints the
+per-block inter decision AS THE WRITER SEES IT — including the three fields
+derived in the pack (`pred_mv`, `inter_mode_ctx`, `drl_ctx`) and the neighbour
+pair their contexts read. `SVTAV1_PACKTREE` could not do this: it prints
+`intra_mode`, which an inter block leaves at 0, so an inter leaf was
+indistinguishable from a DC intra one. `SVTAV1_PACKTREE`'s `PDV` line now
+carries `inter=/mvr=/mvc=/rf=/mode=` for the same reason.
+
+#### A new gate: `tools/inter_decode_gate.sh` (evidence tier 3)
+
+Three cells must decode COMPLETELY; two known-open cells are listed with the
+measured reason, so the gate states a frontier instead of hiding one. Moving a
+cell from `OPEN_CELLS` to `PASS_CELLS` is how it records progress; a `PASS`
+cell regressing fails it.
+
+**Its anti-vacuity was checked by reverting fixes, and the result is honest
+rather than flattering.** Restoring defect 2 (the `uv_mode` leak) fails 2 of
+the 3 required cells. Restoring defect 1 (the constant `intra_inter` context)
+does NOT fail any of them — every passing cell has a single block, whose
+context is 0 either way. So this gate witnesses the leak; the neighbour-context
+fixes are not yet covered by any cell, and will be exactly when the open cells
+below are closed.
+
+#### The remaining defect, with its minimal reproduction
+
+`gradient 16 16 44 6` frames=2 `SVTAV1_FRAME_SHIFT=1` is **TWO 8x16 all-skip
+NEWMV blocks off LAST_FRAME**, and it does not decode. Everything narrowed:
+
+* **ONE block decodes.** The same cell at q50 is a single 8x16 block and
+  decodes 2/2. So it is neighbour-dependent.
+* **It is not the residual.** Both blocks are `skip`, with no luma or chroma
+  coefficients at all.
+* **It is not the MV coding.** Forcing the coded MV to equal `pred_mv` (a zero
+  difference on every block) still fails.
+* **It is not interintra or motion-mode.** Forcing
+  `enable_interintra_compound = false` and `is_motion_mode_switchable = false`
+  each still fail.
+* **It is inter-specific.** Forcing the same frame ALL-INTRA (the inter
+  candidate never wins) decodes 2/2.
+* The frame header is field-exact with C's (`fh_fields.py`), and the sequence
+  header's tool bits match C's (`sh_fields.py`: `enable_interintra_compound 1`,
+  `enable_masked_compound 0`, `enable_jnt_comp 0`, `enable_dual_filter 0`,
+  `enable_ref_frame_mvs 1`).
+
+So the defect is a NEIGHBOUR-DEPENDENT context inside the inter mode-info
+group. `SVTAV1_INTERDBG` on the failing cell prints, for the second block:
+`imc=58 pmv=(0,0) drl_ctx=[-1,-1] nbL=(mode 16, rf [1,-1], interp 0)` — each of
+which matches a hand-derivation from the spec, so the next chunk's search space
+is the three remaining neighbour-driven contexts:
+`collect_neighbors_ref_counts` -> `write_ref_frames`'s comp/single-ref
+contexts, `av1_get_pred_context_switchable_interp`, and `mode_context` itself.
+
+#### A frame-header finding, from widening the cell
+
+`inter_fh_gate.sh` covers ONE cell. On `uniform 64x64 q40 p6 frames=2` the
+frame-1 header differs from C's in `cdef_damping_minus_3` (C 1, port 0) — a
+CDEF derivation gap on an inter frame that the gradient cell happens not to
+expose. Recorded rather than gated: adding a knowingly-diverging cell to a
+green gate would make it red without adding information the gate can act on.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

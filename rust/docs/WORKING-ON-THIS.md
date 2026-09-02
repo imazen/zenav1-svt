@@ -399,6 +399,19 @@ MEASURED 2026-09-01: `1091 / 1100` with the last NINE cells failing
 contiguously and all nine passing individually. A CONTIGUOUS TAIL of failures
 is the tell — a real regression does not respect sweep order.
 
+**Every byte gate in this repo compares the port to C. NONE of them asks
+whether the port's own bytes are a bitstream.** Running a real decoder over
+the port's stream is a different question with a different answer: on
+2026-09-01 the first `dav1d` run over the experimental 2-frame inter stream
+found SIX defects in one afternoon, every one of them invisible to every byte
+count here, because each wrote a symbol a decoder does not read (or read one
+it does not write) and showed up only as a desync. One of them was hidden
+behind a `debug_assert!` — and `identity_run` builds RELEASE, where the assert
+is compiled out. `tools/inter_decode_gate.sh` is that question as a gate
+(evidence tier 3); `tools/decode_conformance.sh` is its still-picture sibling.
+**Decode the control first**: C's stream must decode, or the finding is about
+the decoder, not the port.
+
 ## 5b. Drills you don't have to write
 
 Localizing a divergence starts with narrowing WHAT changed, not reading code.

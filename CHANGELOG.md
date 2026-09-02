@@ -96,6 +96,27 @@ Crates are not published to crates.io yet — depend by git.
   frame 1 goes 75 B -> 85 B — NOT a regression: the smaller number came from a
   prediction no decoder has, and the increase is evidence about the homegrown
   ME's quarter-pel MV under an 8-tap filter, not about the convolve.
+- **SIX inter-syntax defects a byte gate cannot see, found by DECODING**
+  (SHA4). Every gate here compares the port's bytes to C's; none asks whether
+  the port's own bytes are a bitstream. `dav1d` over the experimental 2-frame
+  stream said no (`aomdec`: "Failed to decode tile data"), with C's stream
+  decoding as the control. Fixed: `write_is_inter` used a CONSTANT context
+  where C computes a 4-valued one; an INTER block wrote the intra `uv_mode`
+  symbol (behind a `debug_assert!` that RELEASE builds compile out); the
+  var-tx arm, BOTH luma coefficient call sites and the chroma tx type all
+  picked `use_intrabc` where C's predicate is `is_inter_block` =
+  `use_intrabc || ref_frame[0] > INTRA_FRAME`; and the mi grid stamped
+  `DC_PRED` as an inter neighbour's mode, moving `mode_context`. Four of the
+  six are that one predicate, which was only ever right because IntraBC was
+  the sole inter-classified block the pack could emit. New
+  `tools/inter_decode_gate.sh` (evidence tier 3) requires three cells to
+  decode completely and lists two known-open ones with their measured reason;
+  its anti-vacuity was checked by reverting fixes, and it witnesses the
+  `uv_mode` leak but NOT the constant-context fix, which is recorded rather
+  than glossed. New `SVTAV1_INTERDBG=1` prints the per-block inter decision as
+  the WRITER sees it, and `SVTAV1_PACKTREE`'s `PDV` line gained the inter
+  fields — `PACKTREE` prints `intra_mode`, which an inter block leaves at 0,
+  so an inter leaf had been indistinguishable from a DC intra one.
 - **REFERENCE PADDING — the DPB carries C's replicated margin** (ed1b10cf).
   `pad_ref_and_set_flags` (enc_dec_process.c:1072) pads a recon with
   `border = BLOCK_SIZE_64 + 4` before it becomes a reference, because a legal
