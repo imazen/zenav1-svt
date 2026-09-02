@@ -181,6 +181,64 @@ static void dump_pc_tree(FILE* f, const PC_TREE* t) {
     }
 }
 
+/* ---- PD0 partition-tree interposer (2026-09-02) --------------------------
+ * `svt_aom_pick_partition_pd0` is PD0's depth recursion and, like its PD1
+ * sibling above, recurses INTRA-TU through `test_split_partition_pd0` — so
+ * `--wrap` catches only the cross-TU SB-ROOT call from
+ * enc_dec_process.c:2989. That is enough, because after the root returns the
+ * whole `pc_tree` carries each node's chosen partition and, crucially,
+ * `rdc.valid`.
+ *
+ * `rdc.valid` is the thing this dump exists for. C keeps two states apart that
+ * a port can easily merge: a node with no d1 shape to cost
+ * (`set_blocks_to_test` zeroes `tot_shapes`) is INVALID when it also cannot
+ * split (`init_md_scan`'s `split_flag = sq_size > min_sq_size`), and an
+ * invalid child makes its PARENT's split unavailable
+ * (product_coding_loop.c:10481) rather than making the parent split. There is
+ * no other way to observe that from outside: the final bitstream is PD1's
+ * tree, and a byte comparison on a cell whose payload is still open cannot
+ * separate the two.
+ *
+ * Env: SVT_PICKPART0_OUT (file). Pure pass-through when unset.
+ * Output, one line per node on the WINNING path:
+ *   PICKPART0 poc=<n> islice=<0|1> mi=(row,col) bsize=<n> partition=<n> valid=<0|1> rd=<cost>
+ * `partition` is meaningful only when `valid=1`; an invalid node never had one
+ * assigned and holds whatever `svt_aom_init_sb_data` left.
+ */
+bool __real_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                       MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col);
+
+static void dump_pd0_tree(FILE* f, const PC_TREE* t, unsigned poc, int islice) {
+    if (!t) {
+        return;
+    }
+    fprintf(f, "PICKPART0 poc=%u islice=%d mi=(%d,%d) bsize=%d partition=%d valid=%d rd=%lld\n", poc, islice,
+            t->mi_row, t->mi_col, (int)t->bsize, (int)t->partition, (int)t->rdc.valid, (long long)t->rdc.rd_cost);
+    if (t->rdc.valid && t->partition == PARTITION_SPLIT) {
+        for (int i = 0; i < 4; i++) {
+            dump_pd0_tree(f, t->split[i], poc, islice);
+        }
+    }
+}
+
+bool __wrap_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                       MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
+    const bool  r    = __real_svt_aom_pick_partition_pd0(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);
+    const char* path = getenv("SVT_PICKPART0_OUT");
+    if (!path || !*path) {
+        return r;
+    }
+    static FILE* f = NULL;
+    if (!f) {
+        f = fopen(path, "a");
+    }
+    if (f) {
+        dump_pd0_tree(f, pc_tree, (unsigned)pcs->picture_number, (int)(pcs->slice_type == I_SLICE));
+        fflush(f);
+    }
+    return r;
+}
+
 bool __wrap_svt_aom_pick_partition(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                    MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
     bool r = __real_svt_aom_pick_partition(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);

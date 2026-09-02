@@ -64,6 +64,16 @@
 # higher. Neither number is wrong; they describe different grids, and this one
 # is the wider of the two. Quote the grid with the ratio.
 #
+# WHAT THE 33 PARTIAL-SB CELLS THAT NOW COMPLETE-BUT-DIFFER ARE WAITING ON:
+# `benchmarks/pd0_depth_removal_join_2026-09-02.md` joins the port's
+# depth-removal inputs against C's per superblock on `gradient 168x168 q32 p8`
+# frame 1 and finds two live divergences that were invisible while that cell
+# panicked — C's `fast_lambda_md` is PER-SUPERBLOCK (3251 / 4878) where the
+# port computes one per frame (4163), and the ME DISTORTIONS disagree by
+# 11-18x on exactly the three partial superblocks while
+# `me_8x8_cost_variance` matches C EXACTLY on all nine. Consequence: C's
+# `min_sq_size` is 8 at those superblocks and the port's is 16.
+#
 # CONTENT INDEPENDENCE, measured 2026-09-02 so the gradient-only gate is not
 # taken on faith: all FIVE content classes the harness has — gradient, screen,
 # screenrep, uniform, diag — give the SAME 52 OK / 12 REFUSED / 0 CRASH on this

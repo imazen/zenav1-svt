@@ -183,6 +183,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_txb_estimate_coeff_bits \
     -Wl,--wrap=svt_aom_partition_rate_cost \
     -Wl,--wrap=svt_aom_pick_partition \
+    -Wl,--wrap=svt_aom_pick_partition_pd0 \
     -Wl,--wrap=svt_aom_estimate_syntax_rate \
     -Wl,--wrap=svt_aom_intra_fast_cost \
     -Wl,--wrap=svt_aom_inter_fast_cost \
