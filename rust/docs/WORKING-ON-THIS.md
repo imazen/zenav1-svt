@@ -58,13 +58,27 @@ SIMD tier-invariance suite (207 s), the workspace test suite (167 s) and the
 C oracle build (141 s, cached since 2026-08-28). Local arm64 numbers differ;
 measure with `time` and record the host.
 
-**Memory (2026-08-16, the first ever measured):** port 3.5 MiB fixed +
-~29-34 MiB/MP; C 7-9 MiB fixed + ~27-29. Half C's fixed cost, slightly more per
-pixel, crossing near 1 MP; 122 vs 117 MiB at 4 MP.
-`benchmarks/mem_2026-08-16.meta`. **Do not quote a MiB/MP figure at a size you
-did not measure** — the slope moves with the range (33.6 over 64..1024, 29.2
-over 1024..2048), which is the same never-extrapolate rule the wall-clock
-harness follows.
+**Memory (2026-09-02, supersedes the 2026-08-16 first-ever measurement):**
+`benchmarks/mem_2026-09-02.{tsv,meta}` — 56 cells, median of 7 runs,
+`/usr/bin/time -l` max RSS, plain `--release` port binary (the 08-16 record used
+the `symtrace` wrapper and reported one run per cell; both are corrected there).
+**STILL is inside the 25 % goal everywhere measured** — 1.06x (p6) / 1.18x
+(p10/p13) at 4 MP, LIGHTER than C below ~1 MP, and lighter at every size at p2.
+**INTER is not:** at p13 the port is 1.27x at 1 MP and **1.53x at 4 MP**, a
+slope problem (40.34 MiB/MP vs C's 25.51) not an overhead one — it adds 16.0
+MiB/MP for one reference frame where C adds 5.6. `MEM_FRAMES=2 tools/mem_gate.sh`
+runs the inter arm; `MEM_REPS` sets the repeat count.
+**Do not quote a MiB/MP figure at a size you did not measure** — the slope moves
+with the range, which is why the gate prints the adjacent-pair slopes next to
+the least-squares fit.
+
+**Inter completion (2026-09-02):** `tools/inter_completion_scan.sh` +
+`benchmarks/inter_completion_2026-09-02.tsv` — of 64 video-mode cells, 24 OK
+(4 byte-identical), 6 REFUSED, **34 CRASH**, and **31 of the 36 partial-SB
+cells panic**. Three distinct panics; see `docs/perf-status.md`'s memory block
+for which is which. Before measuring anything on an inter cell, check that the
+port completes it — a refusal or a crash makes any ratio a comparison against a
+smaller workload.
 
 ## 3. Adding a fix? Add its cell.
 

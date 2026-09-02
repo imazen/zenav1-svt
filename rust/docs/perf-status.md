@@ -1,5 +1,65 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **MEMORY (2026-09-02, aarch64 / Apple M4 Pro) — read this before quoting any
+> memory number.** Record: `benchmarks/mem_2026-09-02.{tsv,meta}`, 56 cells,
+> median of 7 runs per cell, `/usr/bin/time -l` max RSS, plain `--release`
+> port binary (NOT the `symtrace` wrapper the 2026-08-16 record used).
+> Supersedes `benchmarks/mem_2026-08-16.meta`.
+>
+> | path | 64x64 | 256x256 | 1 MP | 4 MP | port fit | C fit |
+> |---|---|---|---|---|---|---|
+> | still p2  | 0.50x | 0.63x | 0.82x | **0.78x** | 6.69 MiB + 31.28/MP | 10.02 + 38.68 |
+> | still p6  | 0.57x | 0.70x | 0.99x | **1.06x** | 4.87 MiB + 30.20/MP |  7.60 + 27.40 |
+> | still p10 | 0.64x | 0.77x | 1.07x | **1.18x** | 4.11 MiB + 24.35/MP |  6.11 + 19.93 |
+> | still p13 | 0.64x | 0.77x | 1.07x | **1.18x** | 4.11 MiB + 24.35/MP |  6.11 + 19.93 |
+> | INTER p13 | 0.81x | 0.86x | 1.27x | **1.53x** | 4.55 MiB + 40.34/MP |  7.24 + 25.51 |
+>
+> (fit = `alpha + beta*pixels`; both terms are quoted because at 64x64 the
+> intercept is ~100 % of the number and at 4 MP it is ~4 %.)
+>
+> **The STILL path already meets the 25 % memory goal at every size measured**
+> — worst cell 1.18x, and the port is LIGHTER than C below ~1 MP at every
+> preset and at EVERY size at preset 2. **The INTER path does not, and it is a
+> SLOPE problem:** at preset 13 the port's per-pixel term is 40.34 MiB/MP
+> against C's 25.51 (1.58x) while its fixed term is 0.63x C's, so the ratio
+> grows with size — 1.27x at 1 MP, 1.53x at 4 MP (169.8 vs 111.2 MiB). Same
+> preset, still vs inter: the port adds **16.0 MiB/MP** for one reference
+> frame where C adds **5.6**. One 8-bit 4:2:0 reference is 1.43 MiB/MP of
+> pixels, so C carries ~4x the raw reference and the port ~11x.
+>
+> Two caveats the `.meta` states in full and that are load-bearing:
+> * **No inter cell above 128x128 is byte-identical to C**, so the inter
+>   ratios compare two encoders making different decisions. The p6/p8 inter
+>   cells that ARE byte-identical (64..256) put the port at 0.64-0.75x. Re-run
+>   this once the inter byte frontier reaches 1 MP.
+> * **The port's peak RSS is not single-run stable** — 2048x2048 p6 spans
+>   126.2-136.6 MiB over seven runs (8 %) where C spans 0.04 %. It encodes
+>   tiles on a thread pool; C at `--lp 1` does not. `tools/mem_gate.sh` now
+>   takes `MEM_REPS` (default 5) and reports the median with the spread.
+>
+> **THE INTER PATH PANICS ON 31 OF 36 PARTIAL-SUPERBLOCK CELLS**
+> (`tools/inter_completion_scan.sh`,
+> `benchmarks/inter_completion_2026-09-02.tsv`: 64 cells, 24 OK — only 4 of
+> them byte-identical — 6 REFUSED, **34 CRASH**). Three distinct panics:
+> an off-the-end plane index in `port_md/md_search.rs:422` (frame 1, every
+> preset scanned), `leaf must be tested` in `pd0.rs:2703` (frame 1, p10/p13,
+> sizes with SB remainder 40), and `video pic_pd0_lvl 7` in `pd0.rs:3337`
+> (frame **0**, the KEY frame, p9/p10, every size at or above the 360p->480p
+> class boundary — 560x560 clean, 568x568 panics; this is why the p10 inter
+> memory series stops at 512x512). The inter byte gate and matrix sweep
+> {16,64,72,128}, of which only 72 is partial, so the frontier they describe
+> is almost entirely 64-aligned and this surface is invisible to them.
+>
+> **CPU on the inter path is still UNMEASURED as a port/C ratio.** The
+> harnesses now exist — `perf_gate.sh` takes `PERF_FRAMES`, and both
+> `svtav1/examples/perf_encode.rs` and `tools/perf_c_encode` encode a matched
+> low-delay-P sequence (verified byte-identical to the `identity_run` /
+> `capture_c_trace` pair on `gradient 64x64 q40 p6 f2`) — but a wall-clock
+> number taken while two other agents were building on this box would not be
+> defensible, and is not reported here. See the INTER CPU section below for
+> what was measured instead.
+
+
 > **CURRENT (2026-08-13, aarch64 / Apple M4 Pro — read this first).** Everything
 > below the "Results — 2026-07-20" heading is the **x86-64/AVX2 history** on
 > `dev-32gb`. The live numbers on the aarch64 box are:

@@ -1,0 +1,71 @@
+# inter completion frontier — does the port ENCODE this cell at all?
+# host=mac  date=2026-09-02T19:28:53Z  port=/Users/lilith/tmp/perf1-bin/identity_run.nosym
+# content=gradient qp=32 shift=3 frames=2 (low-delay P, flat GOP, key frame 0 only)
+# status: OK | REFUSED (exit 3, the shipped behaviour) | CRASH (panic, exit 101)
+# frames_written: how many of the 2 frames reached disk before the verdict
+# ident: Y/N vs the C reference, only meaningful when status=OK
+size	preset	status	frames_written	ident	note
+64	6	OK	2	Y	
+88	6	OK	2	N	
+104	6	CRASH	1	-	index out of bounds: the len is 10816 but the index is 10816
+120	6	CRASH	1	-	index out of bounds: the len is 14400 but the index is 14400
+128	6	OK	2	N	
+152	6	OK	2	N	
+168	6	OK	2	N	
+232	6	OK	2	N	
+256	6	OK	2	N	
+296	6	OK	2	N	
+512	6	OK	2	N	
+552	6	CRASH	1	-	index out of bounds: the len is 304704 but the index is 304768
+568	6	CRASH	1	-	index out of bounds: the len is 322624 but the index is 322624
+576	6	REFUSED	1	-	REFUSED by the encoder at frame 1: unsupported config: an inter frame header field is not 
+1024	6	REFUSED	1	-	REFUSED by the encoder at frame 1: unsupported config: an inter frame header field is not 
+2048	6	REFUSED	1	-	REFUSED by the encoder at frame 1: unsupported config: an inter frame header field is not 
+64	8	OK	2	Y	
+88	8	CRASH	1	-	index out of bounds: the len is 7744 but the index is 7744
+104	8	CRASH	1	-	index out of bounds: the len is 10816 but the index is 10816
+120	8	CRASH	1	-	index out of bounds: the len is 14400 but the index is 14400
+128	8	OK	2	Y	
+152	8	CRASH	1	-	index out of bounds: the len is 23104 but the index is 23104
+168	8	CRASH	1	-	index out of bounds: the len is 28224 but the index is 28224
+232	8	CRASH	1	-	index out of bounds: the len is 53824 but the index is 53824
+256	8	OK	2	Y	
+296	8	CRASH	1	-	index out of bounds: the len is 87616 but the index is 87616
+512	8	OK	2	N	
+552	8	CRASH	1	-	index out of bounds: the len is 304704 but the index is 304704
+568	8	CRASH	1	-	index out of bounds: the len is 322624 but the index is 322624
+576	8	REFUSED	1	-	REFUSED by the encoder at frame 1: unsupported config: an inter frame header field is not 
+1024	8	REFUSED	1	-	REFUSED by the encoder at frame 1: unsupported config: an inter frame header field is not 
+2048	8	REFUSED	1	-	REFUSED by the encoder at frame 1: unsupported config: an inter frame header field is not 
+64	10	OK	2	N	
+88	10	CRASH	1	-	index out of bounds: the len is 7744 but the index is 7744
+104	10	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+120	10	CRASH	1	-	index out of bounds: the len is 14400 but the index is 14400
+128	10	OK	2	N	
+152	10	CRASH	1	-	index out of bounds: the len is 23104 but the index is 23104
+168	10	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+232	10	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+256	10	OK	2	N	
+296	10	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+512	10	OK	2	N	
+552	10	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+568	10	CRASH	0	-	video pic_pd0_lvl 7 selects a PD0 level this port has no block cost for (0..=2 are PD0_LVL
+576	10	CRASH	0	-	video pic_pd0_lvl 7 selects a PD0 level this port has no block cost for (0..=2 are PD0_LVL
+1024	10	CRASH	0	-	video pic_pd0_lvl 7 selects a PD0 level this port has no block cost for (0..=2 are PD0_LVL
+2048	10	CRASH	0	-	video pic_pd0_lvl 7 selects a PD0 level this port has no block cost for (0..=2 are PD0_LVL
+64	13	OK	2	N	
+88	13	CRASH	1	-	index out of bounds: the len is 7744 but the index is 7744
+104	13	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+120	13	CRASH	1	-	index out of bounds: the len is 14400 but the index is 14400
+128	13	OK	2	N	
+152	13	CRASH	1	-	index out of bounds: the len is 23104 but the index is 23104
+168	13	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+232	13	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+256	13	OK	2	N	
+296	13	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+512	13	OK	2	N	
+552	13	CRASH	1	-	leaf must be tested (min_sq <= size <= max_sq)
+568	13	CRASH	1	-	index out of bounds: the len is 322624 but the index is 322624
+576	13	OK	2	N	
+1024	13	OK	2	N	
+2048	13	OK	2	N	

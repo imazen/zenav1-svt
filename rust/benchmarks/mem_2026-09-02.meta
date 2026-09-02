@@ -1,0 +1,167 @@
+Peak RSS, port vs C — STILL and the FIRST EVER INTER measurement.
+Supersedes benchmarks/mem_2026-08-16.meta (see CORRECTIONS at the bottom).
+
+commit:  ef0b122bd269 (main@origin at the time of the run)
+host:    mac — Apple M4 Pro, 12 cores, 24 GiB, aarch64-darwin. macOS RSS.
+command: MEM_REPS=7 MEM_SIZES="64 128 256 512 1024 1536 2048" \
+         MEM_RS_BIN=<plain --release identity_run> tools/mem_gate.sh <preset>
+         with MEM_FRAMES=1 (still) and MEM_FRAMES=2 (inter)
+method:  /usr/bin/time -l "maximum resident set size" — the evidence
+         docs/ACCEPTANCE-CRITERIA.md:112 sanctions. RSS is a ceiling on what the
+         process touched, not an allocator trace. MEDIAN of 7 runs per cell.
+grid:    gradient, qp 32, 8-bit 4:2:0, presets {2,6,10,13} still and {6,8,10,13}
+         inter; sizes 64..2048 square (0.004 .. 4.0 MP). Every size MEASURED —
+         nothing is scaled from another size.
+data:    benchmarks/mem_2026-09-02.tsv (56 cells, per-cell min/median/max)
+
+WHY THE PORT BINARY IS NOT tools/identity_run. That wrapper builds with
+`--features symtrace`, which puts an `eprintln!` on every entropy symbol. The
+2026-08-16 record was taken through it. This run uses a plain `--release` build
+of the same example — the SHIPPED configuration — so `MEM_RS_BIN` was added to
+the gate rather than silently changing its default.
+
+============================ STILL (1 frame) ============================
+Every still cell is byte-identical to C (ident=Y), so every still ratio is
+apples-to-apples.
+
+  preset  64x64   256x256  1024x1024  2048x2048     port fit          C fit
+  p2      0.50x   0.63x    0.82x      0.78x     6.69 MiB + 31.28/MP  10.02 + 38.68
+  p6      0.57x   0.70x    0.99x      1.06x     4.87 MiB + 30.20/MP   7.60 + 27.40
+  p10     0.64x   0.77x    1.07x      1.18x     4.11 MiB + 24.35/MP   6.11 + 19.93
+  p13     0.64x   0.77x    1.07x      1.18x     4.11 MiB + 24.35/MP   6.11 + 19.93
+  (fit = alpha + beta*pixels, least squares over the whole 64..2048 range,
+   MiB and MiB/megapixel; both terms reported because at 64x64 the intercept is
+   ~100 % of the number and at 2048x2048 it is ~4 %.)
+
+  THE STILL PATH IS INSIDE THE 25 % MEMORY GOAL EVERYWHERE MEASURED. Worst
+  cell is 1.18x (p10/p13 at 2.25 and 4 MP); at preset 2 the port is LIGHTER
+  than C at every size (0.50-0.84x), and below ~1 MP it is lighter at every
+  preset. The port's fixed cost is 0.55-0.67x C's; its per-pixel slope is
+  1.10x (p6) to 1.22x (p10/p13) C's, and 0.81x at p2.
+
+============================ INTER (2 frames) ===========================
+FIRST MEASUREMENT OF THIS PATH. Read the port_status column first.
+
+  preset  what the port does
+  p6      completes to 512x512; REFUSES frame 1 at >= 576x576
+  p8      completes to 512x512; REFUSES frame 1 at >= 576x576
+  p10     completes to 512x512; PANICS on frame 0 at >= 576x576
+  p13     completes at every size measured
+
+  Cells where the port completed:
+
+  preset  64x64  128    256    512    1024   1536   2048    port fit          C fit
+  p6      0.64x  0.67x  0.74x  0.77x   -      -      -    5.85 + 42.42/MP   8.82 + 49.94
+  p8      0.65x  0.66x  0.75x  0.86x   -      -      -    5.39 + 52.53/MP   8.44 + 51.97
+  p10     0.78x  0.77x  0.85x  0.99x   -      -      -    5.13 + 36.92/MP   6.77 + 30.80
+  p13     0.81x  0.79x  0.86x  1.01x  1.27x  1.47x  1.53x  4.55 + 40.34/MP   7.24 + 25.51
+
+  **THE INTER PATH IS OUTSIDE THE 25 % MEMORY GOAL FROM ~1 MP UP, and it is a
+  SLOPE problem, not an overhead problem.** At preset 13 — the only preset that
+  completes at every size — the port's per-pixel term is 40.34 MiB/MP against
+  C's 25.51, a 1.58x slope ratio, while its fixed term is 0.63x C's. The two
+  cross near 0.25 MP and the ratio then grows monotonically: 1.27x at 1 MP,
+  1.47x at 2.25 MP, 1.53x at 4 MP (169.8 MiB vs 111.2 MiB).
+
+  Compare the SAME preset still-vs-inter to see what the second frame costs:
+  p13 still is 24.35 MiB/MP, p13 inter is 40.34 — the port adds 16.0 MiB/MP for
+  one reference frame, where C adds 5.6 (19.93 -> 25.51). Both encoders keep
+  one 8-bit 4:2:0 reference (1.5 B/px = 1.43 MiB/MP of pixel data), so C's +5.6
+  is already ~4x the raw reference; the port's +16.0 is ~11x it.
+
+  CAVEAT, and it is the reason the ident column exists: no inter cell above
+  128x128 is byte-identical to C, so the two encoders are not doing identical
+  work. The p6/p8 cells at 64..256 that ARE byte-identical (ident=Y) put the
+  port at 0.64-0.75x C, which is the same shape as the still path at those
+  sizes. The 1.53x at 4 MP is a comparison of two encoders that made different
+  decisions; it is reported as two absolute numbers plus their quotient, and it
+  should be re-measured once the inter byte frontier reaches those sizes.
+
+  NOT MEASURED: >2 frames (a longer GOP holds more references and the slope
+  above is for ONE), 10-bit, real content, non-square dims, anything on Linux
+  or glibc, allocation counts, and transient peaks between samples. If you need
+  a number at a size or frame count not in the .tsv, MEASURE it.
+
+=================== THE INTER COMPLETION FRONTIER ====================
+Measured while establishing which inter cells can be compared at all, because a
+memory or wall-clock ratio on a cell where the port refused or crashed is a
+comparison against a SMALLER workload. Probe: tools/inter_completion_scan.sh
+(a script file, not an inline loop — this repo's rule for any probe whose zero
+you intend to act on). Full inventory: benchmarks/inter_completion_2026-09-02.tsv
+
+Grid: {64, 88, 104, 120, 128, 152, 168, 232, 256, 296, 512, 552, 568, 576, 1024,
+2048} square x presets {6, 8, 10, 13}, gradient, qp 32, 2 frames, low-delay P
+flat GOP. 64 cells.
+
+  verdict   cells   of which
+  OK          24    4 byte-identical to C, 20 not
+  REFUSED      6    all p6/p8 at >= 576x576, all the same mfmv/global-motion
+                    refusal — the SHIPPED behaviour, not a bug
+  CRASH       34    a panic. Always a defect.
+
+  Split by superblock alignment, which is where the shape is:
+    64-ALIGNED sizes (64,128,256,512,576,1024,2048): 19 OK, 6 REFUSED, 3 CRASH
+    PARTIAL-SB sizes (88,104,120,152,168,232,296,552,568): 5 OK, **31 CRASH**
+
+**THE INTER PATH PANICS ON 31 OF 36 PARTIAL-SUPERBLOCK CELLS.** That is the
+single biggest fact this scan produced and nothing in the repo records it: the
+inter byte gate and the inter byte matrix sweep {16,64,72,128}, of which only 72
+is partial, so the frontier they describe is almost entirely 64-aligned. (The
+18 crashing 72x72 cells `identity_diff_inter.sh`'s exit-code-4 note describes
+are the same class seen through the one partial size that gate does sweep.)
+
+Three DISTINCT panics, kept distinct because a crash, a refusal and a byte
+divergence are different defects (identity_diff_inter.sh grew exit code 4 for
+exactly this reason):
+
+1. `index out of bounds: the len is N but the index is N`
+   (port_md/md_search.rs:422) — on FRAME 1, at EVERY preset scanned (6, 8, 10,
+   13), on partial-SB sizes. A read exactly one element past the end of the
+   plane; at 552x552 p6 the index is 64 PAST it (len 304704, index 304768).
+   16 of the 34 crashes.
+
+2. `leaf must be tested (min_sq <= size <= max_sq)` (pd0.rs:2703, from
+   `pd0_pick_sb_partition_video_eval`) — on FRAME 1, at presets 10 and 13, on
+   partial-SB sizes whose remainder mod 64 is 40 (104, 168, 232, 296, 552).
+   15 of the 34.
+
+3. `video pic_pd0_lvl 7 selects a PD0 level this port has no block cost for`
+   (pd0.rs:3337, same entry point) — on FRAME 0, the KEY frame, at presets 9
+   and 10 only, for every size at or above the 360p -> 480p resolution-class
+   boundary (INPUT_SIZE_360p_TH = 0x4CE00 = 315,392 luma px: 560x560 =
+   313,600 is clean, 568x568 = 322,624 panics). This one is NOT alignment-keyed
+   — 1024x1024 and 2048x2048 hit it. 3 of the 34, and the reason the p10 inter
+   memory series stops at 512x512.
+   `video_pd0_mode`'s own doc comment asserts "the video ladder never assigns a
+   level whose `pd0_level` is `PD0_LVL_6` at the presets this port encodes".
+   `set_pic_pd0_lvl_default`'s `enc_mode <= M8` arm reaches `cap(5 + qp_offset)`
+   above 480p, so 7 IS assignable there and that assertion is wrong as written.
+   Whether the fix is a `PD0_LVL_6` block cost or a corrected derivation is a
+   question for the inter workstream; this record only measures that it fires.
+
+None of this is a memory or performance finding. It is here because it BOUNDS
+what could be measured: the 4 MP inter numbers above exist only at preset 13,
+and no inter number at all exists off 64-aligned dimensions.
+
+=========================== CORRECTIONS ============================
+To benchmarks/mem_2026-08-16.meta, which this supersedes:
+
+* Its port numbers came from a `--features symtrace` build (tools/identity_run
+  forces that feature). It did not say so. The effect on RSS is small — at
+  1024x1024 p6 it reported 37,984 KiB where this run's plain release build
+  medians 36,384 — but the two are not the same binary and the earlier record
+  should not be read as measuring the shipped configuration.
+* It reported ONE run per cell. The port's peak RSS is NOT single-run stable:
+  at 2048x2048 p6 seven runs of the same binary on the same input span
+  126,160-136,592 KiB (8 %), while C's span 119,488-119,536 KiB (0.04 %). The
+  port encodes tiles on a `std::thread::scope` pool and how much of each tile's
+  working set is live at once depends on scheduling; C at `--lp 1` has no such
+  freedom. A ratio built from two single runs inherits all of that. This gate
+  now takes MEM_REPS (default 5) runs and reports the median with the spread.
+* Its "port 3.5 MiB fixed + 33.62 MiB/MP over 64..1024" is not reproduced here
+  (4.87 + 30.20 over 64..2048 at the same preset). Some of that is the fit range
+  and some is 17 days of encoder change; the two are not comparable term by term.
+* Its per-range caution stands and is now built into the tool: mem_gate.sh
+  prints the adjacent-pair slopes next to the least-squares fit, because the
+  slope moves with the range and quoting either fit outside its own range is the
+  extrapolation this repo bans.
