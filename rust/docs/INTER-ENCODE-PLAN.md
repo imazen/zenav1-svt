@@ -2523,10 +2523,11 @@ chunk. Each line was checked against the tree, not inferred from the map above.
 
 | # | what is missing | where it goes | what already exists |
 |---|---|---|---|
-| 1 | **an inter candidate in the FUNNEL MD** — `leaf_funnel/` mentions no reference plane, no ME and no inter mode anywhere; the only MVs it handles are IntraBC DVs | `leaf_funnel/inject.rs` + `types.rs` | the IntraBC injection path is the shape to copy |
+| 1 | **BOTH C-exact MD paths are switched OFF on any frame with a reference.** `use_pd0 = ref_ctx.is_none() && …` (`pipeline.rs:9156`) and `use_funnel = … && ref_frame_data.is_none() && …` (`:8469`). An inter frame therefore bypasses the PD0 partition search AND the leaf funnel and runs the pre-campaign `partition::partition_search_with_config` / `encode_single_block` recursion — the code every video-KEY chunk of this campaign was built to replace. Flipping `use_funnel` alone changes nothing (MEASURED: same 94-byte tile, same head bytes), because `use_pd0` gates the branch that reaches it | `pipeline.rs:8469` + `:9156` | everything the KEY path uses |
+| 1b | **an inter candidate inside the funnel** — `leaf_funnel/` names no reference plane, no ME and no inter mode anywhere; every MV it handles is an IntraBC DV | `leaf_funnel/inject.rs` + `types.rs` | the IntraBC injection path is the shape to copy |
 | 2 | **an inter entry in the MD mi grid** | `leaf_funnel/commit.rs:42-65` | the grid is ALREADY stamped per commit as `intrabc_mvp::MvpMiEntry`, with `ref_frame: [0, -1]` hard-coded to `{INTRA_FRAME, NONE}`; and `inter_mvp::setup_ref_mv_list` reads exactly this type. It is allocated only when `ibc_state.is_some()` (`pipeline.rs:8804`), i.e. never on an inter frame |
 | 3 | **the MVP stack call** to get `pred_mv` / `inter_mode_ctx` / `drl_ctx` | MD, per candidate | `inter_mvp::setup_ref_mv_list` is TIER-1 gated including `mode_context` (`c_parity_inter_mvp.rs:269`, randomized grids) — it needs wiring, not gating |
-| 4 | **a PADDED reference view.** `port_pd_pred::RefPlane` takes `buf` + `origin` because C's reference pictures carry a replicated margin the MC indexes negatively into; `picture::ReferenceFrame` stores bare planes and `partition::RefFrameCtx` hands them over raw | the DPB / the per-frame reference setup | nothing |
+| 4 | **a PADDED reference view.** `port_pd_pred::RefPlane` takes `buf` + `origin` because C's reference pictures carry a replicated margin the MC indexes negatively into; `picture::ReferenceFrame` stores bare planes and `partition::RefFrameCtx` hands them over raw | the DPB / the per-frame reference setup | the padding PRIMITIVE is already ported and tier-1 gated — `port_preanalysis::generate_padding` vs `svt_aom_generate_padding` (`c_parity_preanalysis.rs:115`). What is missing is applying it to a DPB plane and handing out the `origin`/`stride` view |
 | 5 | **the real reconstruction MC on the encoder's inter path.** `partition::generate_inter_pred` is a hand-rolled BILINEAR that also fills out-of-frame samples with **128** instead of replicating the edge | `partition.rs` | `port_convolve.rs` (the `_sr` + `jnt_` families, tier 1) and its drivers `port_pd_pred::av1_inter_prediction_{pd0,light_pd1}` / `port_enc_make_pred::enc_make_inter_predictor` |
 | 6 | **chroma inter prediction.** `generate_inter_pred` is luma-only; an inter block's chroma still goes through `encode_chroma_block_dc`, i.e. INTRA DC. A stream that signals inter and reconstructs chroma from an intra DC predictor cannot match any decoder | `partition.rs` / the chroma pass | the drivers above take all three planes |
 | 7 | **the inter payload on `BlockDecision`** (`ref_frame`, mode, `pred_mv`, `inter_mode_ctx`, `drl`, `interp_filters`, `motion_mode`, `num_proj_ref`, `overlappable_neighbors`) and the `write_inter_mode_info` call in the pack | `partition.rs` + `pipeline.rs`'s block writer | `port_entropy_inter::block::write_inter_mode_info`, now proven byte-exact end to end |
@@ -2535,6 +2536,14 @@ chunk. Each line was checked against the tree, not inferred from the map above.
 Items 4, 5 and 6 are **decoder-conformance** requirements, not RD ones: they
 decide whether the encoder's recon equals what a decoder produces from the
 bytes it wrote. Items 1, 2, 3 and 7 are what make the bytes exist at all.
+
+**Item 1 is the one that reorders the rest.** Until the two `ref_*.is_none()`
+gates come off, work on the inter path lands in `partition.rs`'s legacy
+recursion — code that item 1 then bypasses. That is why this chunk did NOT
+swap `generate_inter_pred` for the real reconstruction convolve even though
+the convolve is ported and tier-1 gated (item 5): the swap belongs in whatever
+MD path survives item 1, and doing it in the legacy one first would be churn
+with no gate able to see it. The order is 1 → (2, 3) → 7 → (4, 5, 6) → 8.
 
 #### No regression, measured after both chunks
 
