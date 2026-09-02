@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**18 CAPABILITY refusals** (unimplemented — this is DEBT) and **27
+**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **28
 CONTRACT refusals** (caller misuse — permanent and correct).
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
@@ -39,7 +39,6 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode requires 8-aligned dims (arbitrary-dims padding is wired on the 4:2:0 path only) |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
 | `crates/svtav1-encoder/src/pipeline.rs` | superres is 8-bit only so far (the u16 source downscale is unported) |
-| `crates/svtav1-encoder/src/pipeline.rs` | the inter frame header needs sig_deriv_mode_decision_config_default's signals, and the reference statistics they read (ref_hp_percentage, ref_skip_percentage) are unported so far — so this configuration is refused rather than answered from a placeholder |
 | `crates/svtav1-encoder/src/pipeline.rs` | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header |
 | `crates/svtav1-encoder/src/pipeline.rs` | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
 | `svtav1/src/avif.rs` | lossless encoding is not implemented for monochrome (encode_y8); QP 0 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline mode |
@@ -50,6 +49,7 @@ aloud in a status report before anyone acted on it.
 |---|---|
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | a picture-level MD search level is outside the range its C control table accepts (crate::inter_search_arm::frame_cfg) |
+| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame whose REFERENCE is itself an inter frame needs that reference's coded-area statistics: C accumulates hp_coded_area / skip_coded_area / intra_coded_area per block in update_b (coding_loop.c:1605-1638), turns them into percentages (rest_process.c:347) and stores them on the EbReferenceObject, and sig_deriv_mode_decision_config_default reads them for allow_high_precision_mv and interpolation_search_level. This port carries none of them, so only get_ref_hp_percentage's -1 \"every reference was an I_SLICE\" answer is trustworthy — which is the FIRST inter frame only. Encode at most two frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |

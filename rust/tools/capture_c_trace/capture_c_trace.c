@@ -72,6 +72,36 @@ static void die(const char* msg, int32_t err) {
     exit(1);
 }
 
+/* Append one packet's payload to the concatenated stream and, on a multi-frame
+ * run, ALSO write it on its own named by PTS — so a differ compares one frame
+ * instead of a concatenation whose first divergence would just be "frame 0's
+ * length changed" (docs/WORKING-ON-THIS.md section 5: a `cmp` offset inside a
+ * length-prefixed container points at the LENGTH, not at the defect).
+ * Single-frame runs write nothing extra.
+ *
+ * Hoisted out of the drain loop for the interleaved drain in main(); a packet
+ * with no payload (the EOS marker) is counted by neither counter, exactly as
+ * before. */
+static void emit_pkt(EbBufferHeaderType* pkt, FILE* fo, const char* out, uint32_t n_frames,
+                     uint32_t* npkt, uint32_t* nbytes) {
+    if (!pkt->n_filled_len)
+        return;
+    fwrite(pkt->p_buffer, 1, pkt->n_filled_len, fo);
+    *nbytes += pkt->n_filled_len;
+    (*npkt)++;
+    if (n_frames > 1) {
+        char per[4096];
+        snprintf(per, sizeof(per), "%s.pts%lld", out, (long long)pkt->pts);
+        FILE* pf = fopen(per, "wb");
+        if (!pf)
+            die("cannot open per-frame output", 0);
+        fwrite(pkt->p_buffer, 1, pkt->n_filled_len, pf);
+        fclose(pf);
+    }
+    fprintf(stderr, "capture_c_trace: packet %u: %u bytes, pts=%lld, flags=0x%x\n", *npkt,
+            pkt->n_filled_len, (long long)pkt->pts, pkt->flags);
+}
+
 /* ---- SVT_FORK_* knob passthrough (see the header comment) ---------------- *
  * Each setter is a no-op when its env var is absent, so the config the library
  * loaded stays untouched. Applied AFTER the still-picture/CQP config block and
@@ -103,7 +133,8 @@ int main(int argc, char** argv) {
     if (argc != 7 && argc != 8) {
         fprintf(stderr,
                 "usage: %s <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu> [bit_depth=8|10]\n"
-                "  env: SVT_FRAMES=N (default 1; N>1 clears avif/still-picture and needs N frames in the .yuv),\n"
+                "  env: SVT_FRAMES=N (1..256, default 1; N>1 clears avif/still-picture and needs N frames in the .yuv;\n"
+                "                     N>2 drains packets between sends -- see the comment on n_frames),\n"
                 "       SVT_INTRA_PERIOD, SVT_HIER_LEVELS, SVT_PRED_STRUCT\n",
                 argv[0]);
         return 2;
@@ -169,7 +200,24 @@ int main(int argc, char** argv) {
        N>1 REQUIRES N full frames in the .yuv and dies on a short read. It does
        NOT repeat the last frame to fill: a silently-repeated frame is a
        zero-motion cell wearing a motion cell's name, and this repo's harness
-       rules ban a probe whose absence is indistinguishable from its result. */
+       rules ban a probe whose absence is indistinguishable from its result.
+
+       N > 2 WORKS AS OF 2026-09-02 AND DID NOT BEFORE, and the limit was this
+       driver's, not the encoder's — see the interleaved drain in the send loop
+       below. Every inter measurement in this repo predating that date stops at
+       two frames because SVT_FRAMES=3 died with
+       "ST mode: empty object pool exhausted after pumping dispatcher" and
+       wrote zero packets. MEASURED after the fix: `gradient 64x64 q32 p8`
+       codes 1480 / 22 / 21 bytes at SVT_FRAMES=3 and the concatenation decodes
+       in both aomdec and dav1d (3/3 frames, 18432 raw bytes).
+
+       The PORT still refuses frame 2 — `md_config_inputs` declines any
+       `ref_hp_percentage` other than the -1 "reference was an I_SLICE"
+       sentinel, because `EbReferenceObject::hp_coded_area` /
+       `skip_coded_area` / `intra_coded_area` (accumulated per block in C's
+       `update_b`, coding_loop.c:1605-1638) are unported. That refusal is
+       independent of this driver; what changed here is that when it is lifted
+       there will be an oracle to check the result against. */
     uint32_t n_frames = 1;
     {
         const char* frames_env = getenv("SVT_FRAMES");
@@ -402,6 +450,14 @@ int main(int argc, char** argv) {
     io.cb_stride = (uint32_t)cw; /* ceiling chroma stride (matches the .yuv layout) */
     io.cr_stride = (uint32_t)cw;
 
+    /* STEP 4b: the output file is opened BEFORE the send loop because a
+       multi-frame run has to drain packets WHILE it sends them — see
+       `emit_pkt` and the `n_frames > 2` arm below. */
+    FILE* fo = fopen(out, "wb");
+    if (!fo)
+        die("cannot open output", 0);
+    uint32_t npkt = 0, nbytes = 0;
+
     for (uint32_t f = 0; f < n_frames; ++f) {
         uint8_t* base = yuv + (size_t)f * frame_bytes;
         io.luma       = base;
@@ -418,6 +474,43 @@ int main(int argc, char** argv) {
         err                 = svt_av1_enc_send_picture(handle, &in_hdr);
         if (err != EB_ErrorNone)
             die("svt_av1_enc_send_picture", err);
+
+        /* DRAIN AS WE GO, above two frames. The library's output-stream buffer
+           pool is finite; holding every packet until after the last send runs
+           it dry, and in CONFIG_SINGLE_THREAD_KERNEL builds that is FATAL, not
+           a stall:
+
+             Svt[fatal]: ST mode: empty object pool exhausted after pumping
+                         dispatcher            (sys_resource_manager.c:791)
+
+           MEASURED 2026-09-02: SVT_FRAMES=3 died there with ZERO packets
+           written, which is why every inter measurement in this repo stops at
+           two frames — not because the encoder cannot code a third, but
+           because this driver could not collect it. With the drain below the
+           same call codes 1480 / 22 / 21 bytes for `gradient 64x64 q32 p8`.
+
+           WHY ONE BLOCKING GET IS SAFE HERE, and it is only safe here: in ST
+           mode `svt_av1_enc_send_picture` runs the WHOLE pipeline
+           synchronously before returning (enc_handle.c:5805), so this frame's
+           packet is already in the full fifo. `svt_get_full_object`'s ST arm
+           is a DIRECT POP with no emptiness check (sys_resource_manager.c:869)
+           and would dereference NULL on an empty fifo, so do not move this
+           call anywhere the pipeline has not just run, and do not pass
+           pic_send_done=1 before EOS (enc_handle.c:5852 asserts on that).
+
+           GATED ON `n_frames > 2` so the 1- and 2-frame runs every existing
+           gate uses take byte-identical code and write their packets in the
+           same order as before. */
+        if (n_frames > 2) {
+            EbBufferHeaderType* pkt = NULL;
+            err                     = svt_av1_enc_get_packet(handle, &pkt, 0);
+            if (err == EB_ErrorMax)
+                die("encode error from svt_av1_enc_get_packet (interleaved)", err);
+            if (pkt) {
+                emit_pkt(pkt, fo, out, n_frames, &npkt, &nbytes);
+                svt_av1_enc_release_out_buffer(&pkt);
+            }
+        }
     }
 
     EbBufferHeaderType eos_hdr;
@@ -429,11 +522,9 @@ int main(int argc, char** argv) {
     if (err != EB_ErrorNone)
         die("svt_av1_enc_send_picture(EOS)", err);
 
-    /* STEP 5: drain packets; concatenated payloads == raw OBU stream. */
-    FILE* fo = fopen(out, "wb");
-    if (!fo)
-        die("cannot open output", 0);
-    uint32_t npkt = 0, nbytes = 0;
+    /* STEP 5: drain the remaining packets; concatenated payloads == raw OBU
+       stream. On an `n_frames > 2` run the frame packets were already taken
+       above and this loop collects only the EOS one. */
     for (;;) {
         EbBufferHeaderType* pkt = NULL;
         err                     = svt_av1_enc_get_packet(handle, &pkt, 1 /* pic_send_done */);
@@ -441,26 +532,7 @@ int main(int argc, char** argv) {
             die("encode error from svt_av1_enc_get_packet", err);
         if (pkt == NULL)
             break;
-        if (pkt->n_filled_len) {
-            fwrite(pkt->p_buffer, 1, pkt->n_filled_len, fo);
-            nbytes += pkt->n_filled_len;
-            npkt++;
-            /* Multi-frame only: also write each packet on its own, named by
-               PTS, so a differ can compare one frame instead of a
-               concatenation whose first divergence would just be "frame 0's
-               length changed". Single-frame runs write nothing extra. */
-            if (n_frames > 1) {
-                char per[4096];
-                snprintf(per, sizeof(per), "%s.pts%lld", out, (long long)pkt->pts);
-                FILE* pf = fopen(per, "wb");
-                if (!pf)
-                    die("cannot open per-frame output", 0);
-                fwrite(pkt->p_buffer, 1, pkt->n_filled_len, pf);
-                fclose(pf);
-            }
-            fprintf(stderr, "capture_c_trace: packet %u: %u bytes, pts=%lld, flags=0x%x\n", npkt,
-                    pkt->n_filled_len, (long long)pkt->pts, pkt->flags);
-        }
+        emit_pkt(pkt, fo, out, n_frames, &npkt, &nbytes);
         const uint32_t last = (pkt->flags & EB_BUFFERFLAG_EOS) != 0;
         svt_av1_enc_release_out_buffer(&pkt);
         if (last)

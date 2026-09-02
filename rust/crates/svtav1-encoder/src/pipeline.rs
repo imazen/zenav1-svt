@@ -5284,12 +5284,56 @@ impl EncodePipeline {
                 // records (obu.rs).
                 true, /*is_s_frame=*/ false,
             );
+            // THIS IS THE FRAME-2 WALL, and it is worth naming precisely
+            // because it is NOT what it looks like. It is not the DPB, not
+            // reference management, and not the picture-decision GOP
+            // requirement (`intra_period > 1`, the refusal two arms above) —
+            // all three are satisfied on the frame that hits it.
+            //
+            // `md_config_inputs` returns `None` when
+            // `get_ref_hp_percentage` gives anything other than its -1
+            // sentinel, and -1 means "every usable reference was an I_SLICE"
+            // (rc_process.c:126). On frame 1 both references ARE the key
+            // frame, so the sentinel is the honest answer and nothing is
+            // read. On frame 2 list 0 points at frame 1, a non-I slice, and C
+            // reads that picture's `EbReferenceObject::hp_coded_area` — a
+            // statistic C accumulates PER CODED BLOCK in `update_b`
+            // (coding_loop.c:1605-1638: intra area, high-precision-MV area,
+            // and no-coeff area), normalises to a percentage at
+            // rest_process.c:347-349 and copies onto the reference object at
+            // :195-197. This port carries none of the three on its DPB entry,
+            // so the only alternative to refusing is to answer from the
+            // zeroed placeholder in `inter_hdr_arm::md_config_inputs` — and
+            // those values pick `allow_high_precision_mv` and
+            // `interpolation_search_level`, i.e. real bitstream syntax.
+            //
+            // WHAT LIFTING IT NEEDS, measured 2026-09-02:
+            //   1. the three coded-area accumulators, folded onto the DPB
+            //      entry beside `sb_min_sq_size` (which the port already
+            //      carries, so the plumbing exists);
+            //   2. per-SB `sb_intra` on the DPB entry — `pd0_detector`'s
+            //      `use_ref_info` arms read it, and `part_arm::VideoPic`
+            //      deliberately has no `InterOnInterRef` variant so that
+            //      needing one is a compile error rather than a wrong level;
+            //   3. `ref_intra_percentage` and `ref_skip_percentage`, which
+            //      are also placeholder zeros in `MdConfigInputs`.
+            // Until 2026-09-02 there was also no way to CHECK the result:
+            // `capture_c_trace` died at SVT_FRAMES=3 with "ST mode: empty
+            // object pool exhausted" because it held every output buffer
+            // until after the last send. That is fixed (it now drains between
+            // sends above two frames), so a frame-2 oracle exists.
             let sigs = md_config_signals.ok_or_else(|| {
                 whereat::at!(EncodeError::UnsupportedConfig(
-                    "the inter frame header needs sig_deriv_mode_decision_config_default's \
-                     signals, and the reference statistics they read (ref_hp_percentage, \
-                     ref_skip_percentage) are unported so far — so this configuration is \
-                     refused rather than answered from a placeholder",
+                    "an inter frame whose REFERENCE is itself an inter frame needs that \
+                     reference's coded-area statistics: C accumulates hp_coded_area / \
+                     skip_coded_area / intra_coded_area per block in update_b \
+                     (coding_loop.c:1605-1638), turns them into percentages \
+                     (rest_process.c:347) and stores them on the EbReferenceObject, and \
+                     sig_deriv_mode_decision_config_default reads them for \
+                     allow_high_precision_mv and interpolation_search_level. This port \
+                     carries none of them, so only get_ref_hp_percentage's -1 \
+                     \"every reference was an I_SLICE\" answer is trustworthy — which is the \
+                     FIRST inter frame only. Encode at most two frames",
                 ))
             })?;
             // The tile above was coded from whatever `primary_ref_frame_for_cdf`
