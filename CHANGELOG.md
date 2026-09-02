@@ -468,6 +468,35 @@ Crates are not published to crates.io yet — depend by git.
   both, spot-check 76/76 on both, `inter_byte_gate` 55 required / 0 failed on
   both, plus `identity_full_8bit` 1100/1100 and `video_key_matrix` 58/60.
 
+- **Every `me_*_distortion` was normalised by the PICTURE's area instead of the
+  superblock's, so all three `disallow_below_*` decisions were wrong on every
+  partial superblock** (this release). C divides by
+  `pix_num = b64_geom->width * b64_geom->height`
+  (`compute_distortion`, motion_estimation.c:2779) and `b64_geom`'s dims are
+  the CROPPED per-superblock extent, `MIN(picture_dim - org, 64)`
+  (pcs.c:1507); `inter_me_arm::run_frame_me` built one `MePicParams` per FRAME
+  and put `p.width` / `p.height` in that field for every b64. On
+  `gradient 168x168` the port divided by 28224 where C divides by 4096, 2560
+  or 1600. MEASURED against C's own `SVT_PD0CFG_OUT` on frame 1: C
+  36736/35776/32640/23584 against the port's 3332/3244/2960/2139 at the
+  (128,0) superblock, and 52326/51640/47933/35553 against 2966/2927/2717/2015
+  at the 40x40 corner — ratios of 11.02 and 17.64, which are
+  `(4096/pix_num_C)/(4096/28224)` exactly. AFTER, all nine superblocks' `med=`
+  AND `dr=` equal C's, and `min_sq` at the three partial ones goes 16 -> 8,
+  which is C's.
+  `me_8x8_cost_variance` matched C throughout and could not have caught this:
+  it is computed from the RAW distortion array before normalisation. That is
+  why the defect survived — the checked statistic was the one it cannot move.
+  BYTE-INERT on everything measured (inter byte gate 55 required / 0 failed,
+  the completion grid's 5 identical cells unchanged, `identity_full_8bit`
+  1100/1100, `video_key_matrix` 58/60, and the four 40-remainder cells emit
+  identical frame-1 bytes before and after), so per the spot-check's own rule
+  it gets no cell there and is gated by
+  `inter_me_arm::tests::a_partial_superblocks_distortions_are_normalised_by_its_own_cropped_extent`,
+  which pins C's numbers and was proved to fail on the old code.
+  Full per-superblock join, and the still-open per-superblock `fast_lambda`
+  divergence beside it: `rust/benchmarks/pd0_depth_removal_join_2026-09-02.md`.
+
 - **The C oracle could not encode more than two frames — and the ceiling was
   `capture_c_trace`, not the library** (ab253150). It sent every frame before
   draining any packet, so the finite output-stream buffer pool ran dry on the

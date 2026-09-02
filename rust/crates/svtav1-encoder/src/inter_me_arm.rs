@@ -471,8 +471,12 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
         max_cand: MAX_CAND,
         max_refs: MAX_REFS,
         max_l0: MAX_L0,
-        b64_geom_width: p.width as u32,
-        b64_geom_height: p.height as u32,
+        // OVERWRITTEN PER B64 in the loop below — C's
+        // `pcs->b64_geom[i].{width,height}` is `MIN(picture_dim - org, 64)`
+        // (pcs.c:1507), a CROPPED per-superblock extent, and this frame-level
+        // struct can only hold a placeholder. See the loop.
+        b64_geom_width: 64,
+        b64_geom_height: 64,
         input_width: p.width as u16,
         input_height: p.height as u16,
     };
@@ -519,7 +523,34 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
             me.is_ref = true;
             me.me_type = MeType::OpenLoop;
             let mut out = MeB64Output::new(MAX_CAND, MAX_REFS);
-            motion_estimation_b64(&pic, ox as u32, oy as u32, &mut me, &src, &refs, &mut out);
+            // C `pcs->b64_geom[b64_index].{width,height}` = `MIN(dim - org,
+            // 64)` (pcs.c:1507-1508). `compute_distortion` normalises every
+            // `me_*_distortion` by `pix_num = b64_geom->width *
+            // b64_geom->height` (motion_estimation.c:2779), so on a PARTIAL
+            // superblock this is the difference between dividing by 1600 and
+            // dividing by the whole picture.
+            //
+            // MEASURED 2026-09-02, `gradient 168x168 q32 p8` frame 1, against
+            // C's own `SVT_PD0CFG_OUT` `med=` field: this struct carried
+            // `p.width * p.height` for EVERY b64, so the port divided a
+            // 40x40 corner superblock's distortion by 28224 where C divides by
+            // 1600. C 52326/51640/47933/35553 against the port's
+            // 2966/2927/2717/2015 — a ratio of 17.64, and
+            // (4096/1600)/(4096/28224) = 17.64 exactly. At the two 40x64
+            // superblocks the same arithmetic predicts 11.03 and the measured
+            // ratios are 11.02 and 11.03.
+            //
+            // `me_8x8_cost_variance` was UNAFFECTED and matched C exactly on
+            // all nine superblocks throughout, because it is computed from the
+            // RAW `me_distortion[]` array before any normalisation — which is
+            // why the defect survived: the one statistic out of that function
+            // anybody had checked was the one this cannot move.
+            let mut b64_pic = pic;
+            b64_pic.b64_geom_width = (p.width - ox).min(64) as u32;
+            b64_pic.b64_geom_height = (p.height - oy).min(64) as u32;
+            motion_estimation_b64(
+                &b64_pic, ox as u32, oy as u32, &mut me, &src, &refs, &mut out,
+            );
             per_b64.push(out);
         }
     }
@@ -643,6 +674,104 @@ mod tests {
             "an unmoved picture must give the zero MV — otherwise the -3 above \
              is noise, not a search result"
         );
+    }
+
+    /// **The PARTIAL-SUPERBLOCK cell, PINNED to C's own normalised distortions.**
+    ///
+    /// C normalises every `me_*_distortion` by
+    /// `pix_num = b64_geom->width * b64_geom->height`
+    /// (`compute_distortion`, motion_estimation.c:2779), and `b64_geom`'s
+    /// dims are the CROPPED per-superblock extent,
+    /// `MIN(picture_dim - org, 64)` (pcs.c:1507-1508). This port carried the
+    /// whole PICTURE's dims in that field for every b64, so on a partial
+    /// superblock it divided by 28224 where C divides by 1600.
+    ///
+    /// MEASURED 2026-09-02 on `gradient 168x168 q32 p8 frames=2` frame 1,
+    /// from C's own `SVT_PD0CFG_OUT` `med=` field (which prints
+    /// `ppcs->me_{64,32,16,8}x*_distortion[sb_index]` indexed explicitly, so
+    /// §5's "an interposer reads the context at its own call site" trap does
+    /// not apply). The six FULL superblocks report `med=0/0/0/0` on both
+    /// sides; the three partial ones are asserted here.
+    ///
+    /// OBSERVED BEFORE, against the same C values:
+    /// ```text
+    ///   b64 2 (128,0)   C 36736/35776/32640/23584   port 3332/3244/2960/2139
+    ///   b64 5 (128,64)  C 37990/37990/35699/25299   port 3445/3445/3238/2294
+    ///   b64 8 (128,128) C 52326/51640/47933/35553   port 2966/2927/2717/2015
+    /// ```
+    /// The ratios — 11.02, 11.03 and 17.64 — are exactly
+    /// `(4096/pix_num_C) / (4096/28224)` for `pix_num_C` of 2560, 2560 and
+    /// 1600.
+    ///
+    /// **`me_8x8_cost_variance` is asserted alongside BECAUSE IT NEVER MOVED**
+    /// (it matched C exactly on all nine superblocks before and after): it is
+    /// computed from the RAW `me_distortion[]` array before any normalisation,
+    /// so it is the one statistic out of that function this defect could not
+    /// touch — and it is why the defect survived, since it was the statistic
+    /// that had been checked. A cell that asserted only the variance would
+    /// have passed throughout.
+    ///
+    /// This fix is BYTE-INERT on everything measured (inter byte gate 55
+    /// required / 0 failed, completion grid's 5 identical cells unchanged,
+    /// `identity_full_8bit` 1100/1100, `video_key_matrix` 58/60, and the four
+    /// 40-remainder cells emit the same frame-1 bytes before and after), which
+    /// is exactly why it is gated HERE and has no `regression_spotcheck.sh`
+    /// cell: per §3 a cell must have failed before and passed after, and no
+    /// byte comparison did.
+    ///
+    /// Evidence tier 2.
+    #[test]
+    fn a_partial_superblocks_distortions_are_normalised_by_its_own_cropped_extent() {
+        const W: usize = 168;
+        const H: usize = 168;
+        let (f0, f1) = reference_cell(W, H, 3);
+        let me = run_frame_me(
+            &PaPicture::from_source(&f1, W, W, H, 1),
+            &PaPicture::from_source(&f0, W, W, H, 0),
+            FrameMeParams {
+                enc_mode: 8,
+                qp: 32,
+                width: W,
+                height: H,
+                picture_number: 1,
+                frame_is_boosted: false,
+                hierarchical_levels: 0,
+                sc_class5: 0,
+            },
+        );
+        assert_eq!((me.b64_cols, me.b64_rows), (3, 3));
+        // (b64 index, C's med=64/32/16/8, C's mev)
+        let expected: [(usize, [u32; 4], u32); 3] = [
+            (2, [36736, 35776, 32640, 23584], 110342),
+            (5, [37990, 37990, 35699, 25299], 125504),
+            (8, [52326, 51640, 47933, 35553], 97383),
+        ];
+        for (b64, med, mev) in expected {
+            let o = &me.per_b64[b64];
+            assert_eq!(
+                [
+                    o.me_64x64_distortion,
+                    o.me_32x32_distortion,
+                    o.me_16x16_distortion,
+                    o.me_8x8_distortion
+                ],
+                med,
+                "b64 {b64}: C's normalised me_*_distortion"
+            );
+            assert_eq!(
+                o.me_8x8_cost_variance, mev,
+                "b64 {b64}: the variance is normalisation-free and matched C                  before this fix too — it is the control, not the assertion"
+            );
+        }
+        // The six COMPLETE superblocks: C reports med=0/0/0/0 on each, and a
+        // fix that normalised everything by 64x64 unconditionally would keep
+        // them at 0 too. They are here so the cell says what it does NOT
+        // separate.
+        for b64 in [0usize, 1, 3, 4, 6, 7] {
+            let o = &me.per_b64[b64];
+            assert_eq!(o.me_64x64_distortion, 0, "b64 {b64}");
+            assert_eq!(o.me_8x8_distortion, 0, "b64 {b64}");
+        }
     }
 
     /// **The two-SB-column cell, PINNED to values read out of the real C

@@ -1,5 +1,5 @@
-# The port's depth-removal inputs vs C's, per superblock — two live divergences
-# on the cells the crash fixes just unblocked
+# The port's depth-removal inputs vs C's, per superblock — two divergences on
+# the cells the crash fixes just unblocked; ONE FIXED, one still open
 
 `gradient 168x168 q32 p8`, `SVTAV1_FRAME_SHIFT=3`, 2 frames, low-delay P flat
 GOP, **frame 1** (the inter frame). Host r7900x (x86-64 Linux — `-Wl,--wrap`
@@ -27,8 +27,11 @@ Port: `SVTAV1_PD0DBG`'s `PD0DR` line, built as the twin of that field set.
 | (128,128) | **1/0/0/0** | **1/0/0/1** | **4878** | 4163 | **52326/51640/47933/35553** | **2966/2927/2717/2015** | 97383 = 97383 |
 
 `dr` is `enabled/disallow_below_64x64/disallow_below_32x32/disallow_below_16x16`.
+The `port` columns above are the state BEFORE the fix in "Divergence 2"; after
+it, every `dr` and every `med` in this table matches C, and only `fastlam`
+still differs.
 
-## Divergence 1: `fast_lambda_md` is PER-SUPERBLOCK in C and per-FRAME here
+## Divergence 1 (STILL OPEN): `fast_lambda_md` is PER-SUPERBLOCK in C and per-FRAME here
 
 C reports **3251** on the six superblocks whose ME distortion is zero and
 **4878** on the three right-column ones (x=128), *within the same frame*. The
@@ -50,7 +53,26 @@ threshold `set_depth_removal_level_controls` compares against
 (`enc_mode_config.c:3018-3034`), so a wrong value moves all three
 `disallow_below_*` decisions at once.
 
-## Divergence 2: the ME DISTORTIONS disagree by ~11-18x, while the COST VARIANCE is exact
+**WHICH superblocks get 4878 is the clue to hand the next chunk, and it is not
+what the completeness flag would predict.** C's 4878 lands on org=(128,0),
+(128,64) and (128,128) — the whole x=128 COLUMN, i.e. every superblock whose
+cropped WIDTH is 40 — and 3251 on the other six, including (0,128) and
+(64,128), which are equally partial in HEIGHT and have `is_complete_b64 = 0`
+in the same dump. So it tracks neither `is_complete_b64` nor partial-ness in
+general. A lambda has no business depending on superblock dimensions at all,
+which suggests the varying input is `ctx->sb_ptr->qindex` — `update_lambda`'s
+only genuinely per-SB input (rc_process.c:404) — where `pipeline.rs` passes a
+flat `base_qindex` into `compute_fast_lambda` even though it already carries a
+per-SB `sb_qindex` for `pd0_pick_sb_partition_video`. That is a hypothesis
+from a correlation, NOT a measurement: check it by dumping
+`ctx->sb_ptr->qindex` before acting on it.
+
+Note also that with divergence 2 fixed, every `dr=` outcome on this cell now
+agrees with C *despite* this lambda still being wrong — so a cell that only
+compares `dr=` cannot witness it. It needs a direct join on `fastlam`, or a
+cell whose thresholds sit near a boundary.
+
+## Divergence 2 (FIXED): the ME DISTORTIONS disagreed by 11-18x, while the COST VARIANCE was exact
 
 `me_8x8_cost_variance` matches C **exactly on all nine superblocks**
 (0, 0, 110342, 0, 0, 125504, 0, 0, 97383). `me_{64,32,16,8}x*_distortion` does
@@ -66,31 +88,55 @@ useful part, and it narrows the search a long way. Both come from ONE array —
 * `me_8x8_cost_variance = sum((d[i] - mean)^2) / 64`
 * `me_8x8_distortion    = (sum(d[i]) * 4096) / pix_num`
 
-**Variance is invariant under adding a constant and NOT under scaling.** The
-variance matches C to the digit on all nine superblocks while the sum is
-11-18x off, so the port's per-8x8 distortions are C's SHIFTED, not C's SCALED.
-Working back through the normalisation at (128,128) (`pix_num = 40*40 =
-1600`), the per-block offsets are:
+**FOUND AND FIXED, 2026-09-02.** The variance is the clue but not for the
+reason first written here: the two statistics are not both normalised.
+`me_8x8_cost_variance` is computed from the RAW `me_distortion[]` array and
+`me_*_distortion` is that array's sum times `4096 / pix_num`, where
+`pix_num = b64_geom->width * b64_geom->height`. **The variance was untouched
+because the defect was ENTIRELY in `pix_num`.**
 
-| depth | C sum | port sum | offset per block |
-|---|---|---|---|
-| 8x8 (64 blocks)   | 13888 | 787  | ~205  |
-| 16x16 (16 blocks) | 18724 | 1061 | ~1104 |
-| 32x32 (4 blocks)  | 20172 | 1143 | ~4757 |
-| 64x64 (1 block)   | 20439 | 1158 | ~19281 |
+`inter_me_arm::run_frame_me` built ONE `MePicParams` for the frame and set
+`b64_geom_width = p.width`, `b64_geom_height = p.height` — the whole
+PICTURE's dims — for every b64. C's `b64_geom[i]` dims are the CROPPED
+per-superblock extent, `MIN(picture_dim - org, 64)` (pcs.c:1507-1508). So on
+`gradient 168x168` the port divided by 28224 on every superblock where C
+divides by 4096, 2560 or 1600.
 
-The offset grows with BLOCK AREA (1 : 5.4 : 23.2 : 94 against areas
-1 : 4 : 16 : 64), i.e. roughly 3.2-4.7 per PIXEL — so it reads as a per-pixel
-sample difference over the whole block, not a per-block additive rate term.
-A per-pixel difference that appears only on partial superblocks points at what
-the two searches READ at the picture edge (C's replicated border versus
-whatever the port's ME hands its SAD), not at the accumulation.
+That predicts the observed ratios exactly:
+`(4096/1600) / (4096/28224) = 17.64` at the 40x40 corner and
+`(4096/2560) / (4096/28224) = 11.025` at the two 40x64 edges — measured 17.64,
+11.02 and 11.03. On a COMPLETE superblock C's `pix_num` is 4096 and the port's
+was 28224, a 6.89x error that was invisible only because every complete
+superblock's distortion on this grid is zero.
 
-**`compute_distortion` itself is NOT the bug** — the port's
-(`inter_me/candidates.rs:401`) is a line-for-line transcription of C's
-(`motion_estimation.c:2739`), including the `pix_num = b64_geom->width *
-b64_geom->height` cropping that makes a partial superblock's numbers scale up.
-So the divergence is entirely upstream, in `me_ctx->me_distortion[]`.
+AFTER (`SVTAV1_PD0DBG`, same cell, same run shape): **all nine superblocks'
+`med=` and `dr=` now equal C's**, and `min_sq` at the three right-column ones
+goes 16 -> 8, which is C's. Gated by
+`inter_me_arm::tests::a_partial_superblocks_distortions_are_normalised_by_its_own_cropped_extent`,
+which pins C's numbers and fails on the old code with
+`[3332, 3244, 2960, 2139]` against `[36736, 35776, 32640, 23584]`.
+
+**`compute_distortion` itself was NOT the bug**, and it was checked first
+because it is where a reader looks: the port's (`inter_me/candidates.rs:401`)
+is a line-for-line transcription of C's (`motion_estimation.c:2739`), the
+`pix_num` division included. The defect was in what its CALLER put in that
+field — one struct literal, three superblocks, and no byte anywhere moved.
+
+**THE FIX IS BYTE-INERT ON EVERYTHING MEASURED**, which is why it has no
+`regression_spotcheck.sh` cell (§3: a cell must have failed before and passed
+after, and no byte comparison did): inter byte gate 55 required / 0 failed,
+the completion grid's 5 identical cells unchanged, `identity_full_8bit`
+1100/1100, `video_key_matrix` 58/60, and the four 40-remainder cells emit the
+same frame-1 bytes before and after (168 p8: 35 B both ways against C's 38).
+It is a correctness fix whose effect is upstream of anything the current
+partition path lets reach the bitstream.
+
+**The blast radius is bounded structurally, not just by measurement:**
+`b64_geom_width` and `b64_geom_height` have exactly ONE consumer in the whole
+ME module — `pix_num` in `compute_distortion` (`grep` says so). No search
+stage, no SAD, no MV reads them. So the fix can move the four
+`me_*_distortion` outputs and nothing else, and those feed only
+`set_depth_removal_level_controls` and `pd0_detector`'s thresholds.
 
 **One LATENT divergence in that function, found while checking it and not the
 cause here:** C computes `(dist_64x64 * b64_size) / pix_num` in `uint32_t`,
@@ -107,7 +153,7 @@ three partial ones — so the partial-SB cells are the first cells in this
 campaign where those statistics are observable at all, and they are the cells
 the crash fixes just unblocked.
 
-## The consequence, and why nothing saw it before
+## The consequence of divergence 2, and why nothing saw it before
 
 C's `disallow_below_16x16` is **0** at all three x=128 superblocks; the port's
 is **1**. So C's `min_sq_size` there is 8 and the port's is 16, and C's PD0
@@ -135,7 +181,11 @@ visible end of a chain whose first link is above.
 
 ## For the next chunk
 
-Fix order is 2 then 1: the ME distortions feed the same thresholds
-`fast_lambda` scales, so fixing the lambda against wrong distortions would fit
-one error to another. Both are checkable per superblock against this table,
-and `SVT_PICKPART0_OUT` then says whether the PD0 tree follows.
+Divergence 2 is FIXED (see above). **Divergence 1 — the per-superblock
+`fast_lambda` — is still open**, and with the distortions corrected its effect
+is now measurable in isolation, which is why the fix order was 2 then 1: the
+port still reports a flat 4163 on all nine superblocks where C reports 3251 on
+six and 4878 on three. It happens not to move any `dr=` outcome on THIS cell
+(all nine now agree despite it), so it needs a cell where a threshold is near
+a boundary, or a direct join. `SVT_PICKPART0_OUT` then says whether the PD0
+tree follows.

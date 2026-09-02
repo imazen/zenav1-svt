@@ -64,7 +64,8 @@
 # higher. Neither number is wrong; they describe different grids, and this one
 # is the wider of the two. Quote the grid with the ratio.
 #
-# WHAT THE 33 PARTIAL-SB CELLS THAT NOW COMPLETE-BUT-DIFFER ARE WAITING ON:
+# WHAT THE 33 PARTIAL-SB CELLS THAT NOW COMPLETE-BUT-DIFFER ARE WAITING ON
+# (the ME-distortion half of this is now FIXED — see the doc):
 # `benchmarks/pd0_depth_removal_join_2026-09-02.md` joins the port's
 # depth-removal inputs against C's per superblock on `gradient 168x168 q32 p8`
 # frame 1 and finds two live divergences that were invisible while that cell
