@@ -300,6 +300,12 @@ pub struct InterBlockCtx<'a> {
     /// Whether the block has a chroma pair; when false the chroma prediction
     /// is not produced.
     pub has_uv: bool,
+    /// C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]` — see
+    /// [`crate::inter_search_arm::SqMeState`]. It is the CALLER's state
+    /// because C's is: one slot on the mode-decision context, written by
+    /// every square block's own search and read by the NSQ shapes that
+    /// follow it at the same node.
+    pub sq_me: Option<&'a mut crate::inter_search_arm::SqMeState>,
 }
 
 /// C `BlockModeInfo::mode` as a `PredictionMode`.
@@ -352,7 +358,7 @@ fn mode_from_u8(v: u8) -> Option<PredictionMode> {
 #[must_use]
 pub fn build_inter_candidates(
     f: &InterMdFrame<'_>,
-    b: &InterBlockCtx<'_>,
+    b: &mut InterBlockCtx<'_>,
     lambda: u64,
 ) -> Vec<InterCandOut> {
     use crate::port_md::inject::{
@@ -418,8 +424,25 @@ pub fn build_inter_candidates(
             drl_mode_fac_bits: &f.fac.drl_mode,
             search_tables: &f.search_tables,
             me: f.me,
+            // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`, which
+            // live ACROSS blocks. `None` here means the caller has no
+            // square-parent state, which makes every shape take C's
+            // `me_mv_array` seed — the behaviour this module had before the
+            // state existed. The funnel supplies it.
+            sq_me: b.sq_me.as_deref().copied(),
         },
     );
+    // C `if (ctx->shape == PART_N) ctx->sq_sb_me_mv = ctx->sb_me_mv`
+    // (product_coding_loop.c:2932-2934), and the `tested_blk[PART_N][0]` that
+    // guards its reader. The write is HERE and not in `inter_search_arm`
+    // because the state is the caller's — C's is one slot on the
+    // mode-decision context, and the funnel is what owns the block walk that
+    // gives it its meaning.
+    if search.is_square_shape
+        && let Some(q) = b.sq_me.as_deref_mut()
+    {
+        q.record_square(b.org_x, b.org_y, b.bw, search.sb_me_mv);
+    }
 
     // --- C's ME candidate array for this block, verbatim: the injectors
     //     read each candidate's own `direction` and resolve it to a

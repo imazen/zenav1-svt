@@ -20,13 +20,16 @@
 # `(sq_sb_me_mv + 4) & ~7` where the port uses `raw_me_mv * 8` — this gate
 # says so, on the exact block, instead of a cell's byte count moving by one.
 #
-# THE KNOWN-OPEN SET IS EXACT, NOT A THRESHOLD. `md_nsq_motion_search` is not
-# wired yet, so two rows DO disagree today and they are pinned BY KEY below
-# (`KNOWN_OPEN`), in the same shape `inter_byte_gate.sh` pins its open cells.
-# The gate fails on a disagreement that is NOT in the set AND on a pinned row
-# that starts AGREEING — so wiring the NSQ search cannot land silently, and
-# neither can breaking a row that works. It is a pin, never a tolerance: there
-# is no count to nudge.
+# THE KNOWN-OPEN SET IS EXACT, NOT A THRESHOLD, and it is EMPTY. It was not:
+# when this gate first ran, two NSQ rows disagreed and were pinned here by
+# key. Wiring C's NSQ seed (`sq_sb_me_mv`) and `md_nsq_motion_search` closed
+# both, and the gate REFUSED to let that land quietly — it failed with "2
+# pinned row(s) now agreeing", which is the direction a pin has to work in if
+# it is going to mean anything. The set is emptied in the same commit that
+# closed them.
+# The gate fails on ANY disagreement now, and it would fail again on a pinned
+# row that started agreeing. It is a pin, never a tolerance: there is no count
+# to nudge.
 #
 # IT REPORTS ITS OWN COVERAGE, and that is load-bearing. The two dumps do not
 # cover the same block set: C's fires only for blocks that REACH the sub-pel
@@ -76,17 +79,22 @@ CELLS="${IMJ_CELLS:-$DEFAULT_CELLS}"
 
 # The pinned disagreements: `<cell> <SQ|NSQ> org_x org_y bw bh li ri Cy Cx Py Px`.
 #
-# MEASURED 2026-09-02. Both are NSQ shapes straddling the frame edge of a
-# 72x72 picture, both on LIST 1, and both are the divergence
-# `docs/INTER-ENCODE-PLAN.md` §1z¹⁵ named and could not see: C's
-# `read_refine_me_mvs` seeds an NSQ block whose square parent was tested from
-# `(sq_sb_me_mv[list][ref] + 4) & ~0x07` (product_coding_loop.c:2857-2862) and
-# then runs `md_nsq_motion_search` on it; the port takes the `else` arm,
-# `raw_me_mv * 8`, and runs no NSQ search. C lands on (0,0); the port on
-# (-8,-32). TWO unported things, one observable — which is why this pin says
-# what it is waiting for.
-KNOWN_OPEN="uniform_72x72_q40_p6 NSQ 0 64 64 32 1 0 0 0 -8 -32
-uniform_72x72_q40_p6 NSQ 64 0 32 64 1 0 0 0 -8 -32"
+# MEASURED 2026-09-02, and now EMPTY. What used to be here:
+#
+#   uniform_72x72_q40_p6 NSQ  0 64 64 32 li=1  C=(0,0)  port=(-8,-32)
+#   uniform_72x72_q40_p6 NSQ 64  0 32 64 li=1  C=(0,0)  port=(-8,-32)
+#
+# Both were NSQ shapes straddling the frame edge of a 72x72 picture, both on
+# LIST 1, and both were the divergence `docs/INTER-ENCODE-PLAN.md` §1z¹⁵ named
+# and could not see. TWO unported things showed through that one observable:
+# C's `read_refine_me_mvs` SEEDS an NSQ block whose square parent was tested
+# from `(sq_sb_me_mv[list][ref] + 4) & ~0x07`
+# (product_coding_loop.c:2857-2862), and then runs `md_nsq_motion_search` on
+# the result. Both are wired now and both rows agree.
+#
+# Keep the format if a row ever has to go back in:
+#   <cell> <SQ|NSQ> org_x org_y bw bh li ri Cy Cx Py Px
+KNOWN_OPEN=""
 
 joined_total=0; nsq_total=0; differ_total=0; cells=0; unexpected=0; promoted=0
 : >"$OUT/observed.txt"

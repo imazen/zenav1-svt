@@ -10932,6 +10932,13 @@ fn encode_tile_rows(
                             let sb_vars = sb_stale_vars.copied().unwrap_or_else(|| {
                                 crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0)
                             });
+                            // C `ctx->sq_sb_me_mv` — see
+                            // `inter_search_arm::SqMeState`. Declared per
+                            // superblock walk, which is where C's own
+                            // `pc_tree` is reset; the state is node-KEYED, so
+                            // a leftover from another superblock could not be
+                            // read anyway.
+                            let mut inter_sq_me = crate::inter_search_arm::SqMeState::default();
                             let mut funnel_ctx = if use_funnel {
                                 let (u_src, v_src) = chroma_src.unwrap();
                                 Some(crate::leaf_funnel::FunnelCtx {
@@ -10966,6 +10973,12 @@ fn encode_tile_rows(
                                     // IBC chunk 8: frame IntraBC state + the MD mi grid.
                                     ibc: ibc_state.as_deref(),
                                     inter: inter_md,
+                                    // C `ctx->sq_sb_me_mv` +
+                                    // `pc_tree->tested_blk[PART_N][0]` — one
+                                    // slot per superblock walk, written by a
+                                    // square block's MD motion search and read
+                                    // by the NSQ shapes at the same node.
+                                    inter_sq_me: inter_md.map(|_| &mut inter_sq_me),
                                     ibc_mvp: if ibc_state.is_some() || inter_md.is_some() {
                                         Some(&mut ibc_mvp_grid)
                                     } else {
@@ -11274,6 +11287,7 @@ fn encode_tile_rows(
                                     ),
                                 };
                                 let (u_src, v_src) = chroma_src.unwrap();
+                                let mut inter_sq_me = crate::inter_search_arm::SqMeState::default();
                                 let mut fx = crate::leaf_funnel::FunnelCtx {
                                     u_src,
                                     v_src,
@@ -11315,6 +11329,12 @@ fn encode_tile_rows(
                                     // IBC chunk 8: frame IntraBC state + the MD mi grid.
                                     ibc: ibc_state.as_deref(),
                                     inter: inter_md,
+                                    // C `ctx->sq_sb_me_mv` +
+                                    // `pc_tree->tested_blk[PART_N][0]` — one
+                                    // slot per superblock walk, written by a
+                                    // square block's MD motion search and read
+                                    // by the NSQ shapes at the same node.
+                                    inter_sq_me: inter_md.map(|_| &mut inter_sq_me),
                                     ibc_mvp: if ibc_state.is_some() || inter_md.is_some() {
                                         Some(&mut ibc_mvp_grid)
                                     } else {
@@ -11564,6 +11584,7 @@ fn encode_tile_rows(
                                 let sb_vars = sb_stale_vars.copied().unwrap_or_else(|| {
                                     crate::pd0::compute_b64_variance(sb_input, in_stride, x0, y0)
                                 });
+                                let mut inter_sq_me = crate::inter_search_arm::SqMeState::default();
                                 let mut funnel_ctx = if use_funnel {
                                     let (u_src, v_src) = chroma_src.unwrap();
                                     Some(crate::leaf_funnel::FunnelCtx {
@@ -11619,6 +11640,12 @@ fn encode_tile_rows(
                                         // a separate byte risk, and this chunk does
                                         // not measure it.
                                         inter: inter_md,
+                                        // C `ctx->sq_sb_me_mv` +
+                                        // `pc_tree->tested_blk[PART_N][0]` — one
+                                        // slot per superblock walk, written by a
+                                        // square block's MD motion search and read
+                                        // by the NSQ shapes at the same node.
+                                        inter_sq_me: inter_md.map(|_| &mut inter_sq_me),
                                         ibc_mvp: if inter_md.is_some() {
                                             Some(&mut ibc_mvp_grid)
                                         } else {

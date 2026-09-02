@@ -91,6 +91,12 @@ pub struct SearchFrameCfg {
     pub md_subpel_pme: crate::port_enc_mode_config::encdec::MdSubPelSearchCtrls,
     /// C `ctx->md_nsq_me_ctrls.enabled`.
     pub md_nsq_me_enabled: bool,
+    /// C `ctx->md_nsq_me_ctrls`' search parameters — `md_nsq_motion_search`
+    /// reads all of them, not just `enabled`.
+    pub md_nsq_me_dist: DistortionType,
+    pub md_nsq_full_pel_w: u8,
+    pub md_nsq_full_pel_h: u8,
+    pub md_nsq_enable_psad: bool,
     /// C `ctx->ref_pruning_ctrls.enabled`.
     pub ref_pruning_enabled: bool,
     /// C `ctx->updated_enable_pme` (product_coding_loop.c:9418-9422).
@@ -144,7 +150,74 @@ pub struct BlockSearchIn<'a> {
     pub search_tables: &'a crate::intrabc::MvCostTables,
     /// This frame's open-loop ME.
     pub me: &'a crate::inter_me_arm::FrameMe,
+    /// C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`, carried
+    /// ACROSS blocks by the caller — see [`SqMeState`]. `None` means the
+    /// caller has no square-parent state to offer, which makes every block
+    /// take C's `me_mv_array` seed (what the port did before this existed).
+    pub sq_me: Option<SqMeState>,
 }
+
+/// C `ctx->sq_sb_me_mv` and `pc_tree->tested_blk[PART_N][0]`, which are the
+/// two things an NSQ block's ME needs and neither of which is per-block.
+///
+/// C keeps ONE `sq_sb_me_mv[list][ref]` on the mode-decision context and
+/// overwrites it at the end of every `read_refine_me_mvs` whose `ctx->shape`
+/// is `PART_N` (product_coding_loop.c:2932-2934). Because MD walks a node's
+/// shapes with the square FIRST, the value an NSQ shape reads is its own
+/// square parent's — so a single slot IS the faithful structure, not an
+/// approximation of a per-node one. `tested` is `pc_tree->tested_blk[PART_N][0]`:
+/// false until any square has been searched, which is exactly when C falls
+/// through to the `me_mv_array` seed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SqMeState {
+    /// C `ctx->sq_sb_me_mv[list][ref]`, EIGHTH-pel.
+    pub sq_sb_me_mv: [[Mv; REF_LIST_MAX_DEPTH]; 2],
+    /// `(org_x, org_y, size)` of the SQUARE whose MV [`Self::sq_sb_me_mv`]
+    /// holds — `None` before any square has been searched.
+    ///
+    /// This is how `pc_tree->tested_blk[PART_N][0]` is answered without a
+    /// node chain. C asks "was the square at MY node tested"; an NSQ shape's
+    /// node is the square of side `max(bwidth, bheight)` containing it, and
+    /// nodes are size-aligned, so the question is `sq_block == (org_x &
+    /// !(s-1), org_y & !(s-1), s)`. A bare boolean would have answered "was
+    /// ANY square tested", which is a different and weaker claim — and one
+    /// that silently reads another node's MV if a node's square shape is ever
+    /// skipped.
+    pub sq_block: Option<(usize, usize, usize)>,
+}
+
+impl SqMeState {
+    /// C `pc_tree->tested_blk[PART_N][0]` for the block at
+    /// `(org_x, org_y)` of `bw x bh` — see [`Self::sq_block`].
+    #[must_use]
+    pub fn tested_for(&self, org_x: usize, org_y: usize, bw: usize, bh: usize) -> bool {
+        let s = bw.max(bh);
+        debug_assert!(
+            s.is_power_of_two(),
+            "a partition node's side is a power of two"
+        );
+        self.sq_block == Some((org_x & !(s - 1), org_y & !(s - 1), s))
+    }
+
+    /// C `if (ctx->shape == PART_N) ctx->sq_sb_me_mv = ctx->sb_me_mv`
+    /// (product_coding_loop.c:2932-2934).
+    pub fn record_square(
+        &mut self,
+        org_x: usize,
+        org_y: usize,
+        size: usize,
+        mv: [[Mv; REF_LIST_MAX_DEPTH]; 2],
+    ) {
+        self.sq_sb_me_mv = mv;
+        self.sq_block = Some((org_x, org_y, size));
+    }
+}
+
+/// C `BLOCK_64X128` / `BLOCK_128X64` (`BlockSize`), the two shapes C excludes
+/// from the square-MV inheritance because their second half and the 128x128
+/// do not share an `me_results` entry (product_coding_loop.c:2858-2860).
+const BLOCK_64X128: u8 = 13;
+const BLOCK_128X64: u8 = 14;
 
 /// What the driver leaves for `inject_inter_candidates`.
 #[derive(Debug, Clone)]
@@ -167,6 +240,11 @@ pub struct BlockSearchOut {
     /// back the ME MV", and the positive control below would pass with the
     /// search deleted.
     pub pme_exit: [[Option<crate::port_md::md_search::PmeExit>; REF_LIST_MAX_DEPTH]; 2],
+    /// True when this block was a SQUARE shape, i.e. C would have executed
+    /// `if (ctx->shape == PART_N) ctx->sq_sb_me_mv = ctx->sb_me_mv`. The
+    /// caller stores [`Self::sb_me_mv`] into its [`SqMeState`] when set —
+    /// the write is the caller's because the STATE is the caller's.
+    pub is_square_shape: bool,
 }
 
 impl Default for BlockSearchOut {
@@ -178,6 +256,7 @@ impl Default for BlockSearchOut {
             valid_pme_mv: [[false; REF_LIST_MAX_DEPTH]; 2],
             best_pme_mv: [[Mv::ZERO; REF_LIST_MAX_DEPTH]; 2],
             pme_exit: [[None; REF_LIST_MAX_DEPTH]; 2],
+            is_square_shape: false,
         }
     }
 }
@@ -212,6 +291,17 @@ fn ref_geom(p: &PaddedRef) -> RefPicGeom {
 #[must_use]
 pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockSearchOut {
     let mut out = BlockSearchOut::default();
+    // C `blk_geom->bwidth != blk_geom->bheight` (product_coding_loop.c:2830)
+    // and `ctx->shape == PART_N` (:2932). A square-DIMENSION block is the
+    // PART_N shape in this funnel, so the two spellings coincide.
+    let b_w_ne_h = b.bw != b.bh;
+    out.is_square_shape = !b_w_ne_h;
+    // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`. A caller that
+    // offers none behaves exactly as this function did before `SqMeState`
+    // existed: `tested = false` makes `me_mv_center` take the
+    // `me_mv_array` arm for every shape.
+    let sq_state = b.sq_me.unwrap_or_default();
+    let sq_tested = sq_state.tested_for(b.org_x, b.org_y, b.bw, b.bh);
     let mut st: [[RefState; REF_LIST_MAX_DEPTH]; 2] = Default::default();
 
     let input_origin_index = b.org_y * b.src_stride + b.org_x;
@@ -294,11 +384,16 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
             continue;
         };
 
-        // C sets `ctx->ref_mv` from `choose_best_av1_mv_pred(NEWMV, me_mv)`
-        // AFTER the clip; `refine_me_mv_for_ref`'s doc states that contract
-        // and does the clip itself, so the centre it uses and the centre
-        // this prediction is measured against are derived the same way.
-        let centre = clipped_me_centre(b, &r, raw);
+        // C `read_refine_me_mvs` picks the ME seed from THREE arms
+        // (product_coding_loop.c:2856-2871) and this port has ONE
+        // transcription of that choice — `md_search::me_mv_center`, which
+        // `refine_me_mv_for_ref` calls below. C sets `ctx->ref_mv` from
+        // `choose_best_av1_mv_pred(NEWMV, me_mv)` on the CLIPPED seed, before
+        // any search, so the caller needs the same value here — and it gets
+        // it by calling the SAME function, not by re-deriving it.
+        // `docs/WORKING-ON-THIS.md` §4: a second transcription of a function
+        // that already exists is how this campaign lost a lambda.
+        let centre = seed_me_centre(b, &r, sq_state, sq_tested, li, ri, raw);
         let ref_mv = choose_pred_mv(b, cfg, rf[0], centre);
         let mvcp = full_pel_mv_cost_params(cfg, b, ref_mv, DistortionType::Sad);
 
@@ -382,25 +477,45 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         };
 
         let do_subpel = cfg.md_subpel_me.enabled != 0;
+        // C `md_nsq_motion_search`'s own arguments. Built here and not inside
+        // `refine_me_mv_for_ref` because the MVC list is ME-TABLE machinery —
+        // `pu_search_index_map` over this block's b64 — which that module
+        // deliberately takes from its caller.
+        let nsq_mvcs = if b_w_ne_h && cfg.md_nsq_me_enabled {
+            nsq_sub_block_mvs(b, li, ri)
+        } else {
+            Vec::new()
+        };
         let res = refine_me_mv_for_ref(
             RefineMeIn {
-                // The port has no NSQ MV inheritance yet (see the module
-                // note below), so the square-block path is the only one.
-                blk_avail_sqi: false,
-                bsize_is_64x128_or_128x64: false,
+                blk_avail_sqi: sq_tested,
+                bsize_is_64x128_or_128x64: b.bsize == BLOCK_64X128 || b.bsize == BLOCK_128X64,
                 bsize_is_4x4: b.bw == 4 && b.bh == 4,
+                // See `seed_me_centre`: this port keeps one `SqMeState` slot,
+                // not a node chain, so C's 4x4 arm has no counterpart. It is
+                // unreachable at the presets measured (`shapes_for_size`
+                // returns N_ONLY at size 4) and unported, not proven inert.
                 parent_tested: false,
-                sq_sb_me_mv: Mv::ZERO,
+                sq_sb_me_mv: sq_state.sq_sb_me_mv[li][ri],
                 raw_me_mv_full_pel: raw,
-                md_nsq_me_enabled: false,
+                md_nsq_me_enabled: cfg.md_nsq_me_enabled,
                 do_subpel,
                 subpel_fixed_stage: false,
                 needs_fp_me_dist: cfg.updated_enable_pme || cfg.ref_pruning_enabled,
-                shape_is_part_n: b.bw == b.bh,
+                shape_is_part_n: !b_w_ne_h,
             },
             &fp_ctx,
             &r,
-            None,
+            if b_w_ne_h && cfg.md_nsq_me_enabled {
+                Some((
+                    cfg.md_nsq_me_dist,
+                    cfg.md_nsq_full_pel_w,
+                    cfg.md_nsq_full_pel_h,
+                    nsq_mvcs.as_slice(),
+                ))
+            } else {
+                None
+            },
             if do_subpel { Some(&mut subpel) } else { None },
             if do_subpel { None } else { Some(&mut fp_dist) },
             &mut dist,
@@ -589,11 +704,34 @@ fn subpel_geom(b: &BlockSearchIn<'_>, mi_row: i32, mi_col: i32) -> SubpelBlockGe
 /// C's ME centre after `clip_mv_on_pic_boundary`
 /// (product_coding_loop.c:2870-2871), which runs BEFORE
 /// `choose_best_av1_mv_pred`.
-fn clipped_me_centre(b: &BlockSearchIn<'_>, r: &RefPicGeom, raw_full_pel: Mv) -> Mv {
-    let mut mv = Mv {
-        x: raw_full_pel.x.wrapping_mul(8),
-        y: raw_full_pel.y.wrapping_mul(8),
-    };
+#[allow(clippy::too_many_arguments)]
+fn seed_me_centre(
+    b: &BlockSearchIn<'_>,
+    r: &RefPicGeom,
+    sq: SqMeState,
+    sq_tested: bool,
+    li: usize,
+    ri: usize,
+    raw_full_pel: Mv,
+) -> Mv {
+    let mut mv = crate::port_md::md_search::me_mv_center(
+        sq_tested,
+        b.bw as u16,
+        b.bh as u16,
+        b.bsize == BLOCK_64X128 || b.bsize == BLOCK_128X64,
+        b.bw == 4 && b.bh == 4,
+        // C `pc_tree->parent->tested_blk[PART_N][0]`, the 4x4 arm. This port
+        // keeps ONE `SqMeState` slot, not a node chain, so it cannot answer
+        // "was the PARENT node's square tested" separately from "was ANY
+        // square tested". At the presets this campaign measures the arm is
+        // unreachable — `shapes_for_size` returns `N_ONLY` at size 4, so the
+        // funnel never evaluates a 4x4 leaf — but that is a reachability
+        // argument, not an implementation, and it is said out loud here
+        // rather than hidden behind a `false`.
+        false,
+        sq.sq_sb_me_mv[li][ri],
+        raw_full_pel,
+    );
     crate::port_md::coding_loop::clip_mv_on_pic_boundary(
         b.org_x as i32,
         b.org_y as i32,
@@ -606,6 +744,52 @@ fn clipped_me_centre(b: &BlockSearchIn<'_>, r: &RefPicGeom, raw_full_pel: Mv) ->
         &mut mv.y,
     );
     mv
+}
+
+/// C `md_nsq_motion_search`'s MVC pass (product_coding_loop.c:2096-2134) —
+/// the SUB-BLOCK MV list, geometry- and ME-presence-filtered.
+///
+/// C walks every square PU slot of this block's own b64 and keeps the ones
+/// that (a) have a side equal to `MIN(bwidth, bheight)`, (b) sit inside this
+/// block's rectangle, and (c) have ME data for `(list, ref)`. The whole pass
+/// is gated on `(bwidth != 4 && bheight != 4) && sq_size >= 16`.
+///
+/// The MVs come back in FULL PEL times 8, C's own units, in C's `block_index`
+/// order — the order is load-bearing, because `nsq_mvc_list` truncates at
+/// `MAX_MD_NSQ_SEARCH_MVC_CNT` and a different order keeps a different set.
+fn nsq_sub_block_mvs(b: &BlockSearchIn<'_>, li: usize, ri: usize) -> Vec<Mv> {
+    let mut out = Vec::new();
+    if (b.bw == 4 || b.bh == 4) || b.sq_size < 16 {
+        return out;
+    }
+    let (b64_x, b64_y) = (b.org_x / 64, b.org_y / 64);
+    // C `blk_geom_offset` — the block's origin relative to its own b64
+    // (`blk_org_x - sb_origin_x - geom_offset_x`; the two subtractions
+    // together are exactly the offset inside the b64, which is what a 128-wide
+    // superblock's `geom_offset_x` exists to remove).
+    let (off_x, off_y) = ((b.org_x % 64) as u32, (b.org_y % 64) as u32);
+    let min_size = b.bw.min(b.bh) as u32;
+    let n = crate::inter_me_arm::number_of_pus(b.me.enable_me_8x8, b.me.enable_me_16x16);
+    for idx in 0..n {
+        let (px, py, pw, ph) = crate::inter_me_arm::pu_geometry(idx);
+        if (min_size != pw && min_size != ph)
+            || px < off_x
+            || px >= off_x + b.bw as u32
+            || py < off_y
+            || py >= off_y + b.bh as u32
+            || !b.me.me_data_present_at_pu(b64_x, b64_y, idx, li, ri)
+        {
+            continue;
+        }
+        let Some(mv) = b.me.mv_at_pu(b64_x, b64_y, idx, li, ri) else {
+            continue;
+        };
+        out.push(Mv {
+            x: mv.x.wrapping_mul(8),
+            y: mv.y.wrapping_mul(8),
+        });
+    }
+    out
 }
 
 /// C `svt_aom_choose_best_av1_mv_pred(ctx, ref_pair, NEWMV, mv, 0, ...)`
@@ -744,6 +928,14 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         md_subpel_me: subpel_me,
         md_subpel_pme: subpel_pme,
         md_nsq_me_enabled: nsq.enabled != 0,
+        md_nsq_me_dist: match nsq.dist_type {
+            ctrls::DistortionType::Sad => DistortionType::Sad,
+            ctrls::DistortionType::Var => DistortionType::Var,
+            ctrls::DistortionType::Ssd => DistortionType::Ssd,
+        },
+        md_nsq_full_pel_w: nsq.full_pel_search_width,
+        md_nsq_full_pel_h: nsq.full_pel_search_height,
+        md_nsq_enable_psad: nsq.enable_psad != 0,
         ref_pruning_enabled: pruning.enabled != 0,
         // C `product_coding_loop.c:9418-9422`. The second assignment zeroes
         // it when `is_intra_bordered && use_neighbouring_mode_ctrls.enabled`;
@@ -966,6 +1158,9 @@ mod tests {
                 drl_mode_fac_bits: &fac,
                 search_tables: &tables,
                 me: &me,
+                // No square parent: this positive control drives a 64x64
+                // square, which is the block that WRITES the state.
+                sq_me: None,
             },
         );
 

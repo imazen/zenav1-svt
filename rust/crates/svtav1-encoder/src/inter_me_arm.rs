@@ -800,3 +800,173 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The ME-table geometry `md_nsq_motion_search` walks (motion_estimation.h:97-143)
+// ---------------------------------------------------------------------------
+
+/// C `SQUARE_PU_COUNT` (me_sb_results.h:25) — the number of square PU slots
+/// in a b64's ME result: one 64x64, four 32x32, sixteen 16x16, sixty-four
+/// 8x8.
+pub const SQUARE_PU_COUNT: usize = 85;
+/// C `MAX_SB64_PU_COUNT_NO_8X8` (me_sb_results.h:26) — 64x64 down to 16x16.
+pub const MAX_SB64_PU_COUNT_NO_8X8: usize = 21;
+/// C `MAX_SB64_PU_COUNT_WO_16X16` (me_sb_results.h:27) — 64x64 and 32x32.
+pub const MAX_SB64_PU_COUNT_WO_16X16: usize = 5;
+
+/// C `pu_search_index_map` (motion_estimation.h:115) — each PU slot's origin
+/// `(x, y)` inside its b64.
+///
+/// Generated rather than transcribed as 85 literal pairs, because the layout
+/// is exactly the four raster blocks `partition_width` already states and a
+/// hand-copied 85-entry table is a transcription with 170 chances to be
+/// wrong. [`pu_geometry_matches_c`] pins the generated table against the C
+/// values that MATTER — the block sizes and the raster order — and
+/// `md_nsq_motion_search`'s MVC list is keyed on both.
+#[must_use]
+pub fn pu_geometry(index: usize) -> (u32, u32, u32, u32) {
+    // (org_x, org_y, width, height). C's four groups, in C's order.
+    match index {
+        0 => (0, 0, 64, 64),
+        1..=4 => {
+            let i = index - 1;
+            (((i % 2) * 32) as u32, ((i / 2) * 32) as u32, 32, 32)
+        }
+        5..=20 => {
+            let i = index - 5;
+            (((i % 4) * 16) as u32, ((i / 4) * 16) as u32, 16, 16)
+        }
+        21..=84 => {
+            let i = index - 21;
+            (((i % 8) * 8) as u32, ((i / 8) * 8) as u32, 8, 8)
+        }
+        _ => panic!("pu_geometry: index {index} is outside SQUARE_PU_COUNT"),
+    }
+}
+
+/// C's `number_of_pus` bound (product_coding_loop.c:2100-2103): the ME result
+/// carries only the depths the picture's ME actually filled.
+#[must_use]
+pub fn number_of_pus(enable_me_8x8: bool, enable_me_16x16: bool) -> usize {
+    if !enable_me_16x16 {
+        MAX_SB64_PU_COUNT_WO_16X16
+    } else if enable_me_8x8 {
+        SQUARE_PU_COUNT
+    } else {
+        MAX_SB64_PU_COUNT_NO_8X8
+    }
+}
+
+impl FrameMe {
+    /// C `me_results->me_mv_array[block_index * max_refs + slot]` — the ME MV
+    /// for a RAW PU slot, in FULL PEL.
+    ///
+    /// [`Self::mv_for`] resolves a block ORIGIN to a slot;
+    /// `md_nsq_motion_search`'s MVC pass walks the slots directly, so it needs
+    /// this shape instead.
+    #[must_use]
+    pub fn mv_at_pu(
+        &self,
+        b64_x: usize,
+        b64_y: usize,
+        block_index: usize,
+        list: usize,
+        ref_idx: usize,
+    ) -> Option<svtav1_types::motion::Mv> {
+        let out = self.per_b64.get(b64_y * self.b64_cols + b64_x)?;
+        let slot = block_index * self.max_refs + if list == 1 { self.max_l0 } else { 0 } + ref_idx;
+        out.me_mv_array.get(slot).copied()
+    }
+
+    /// C `svt_aom_is_me_data_present(block_index, block_index * max_cand, ...)`
+    /// for a RAW PU slot — the same rule as [`Self::me_data_present`],
+    /// BI_PRED counting for both lists included, keyed on the slot rather than
+    /// on a block origin.
+    #[must_use]
+    pub fn me_data_present_at_pu(
+        &self,
+        b64_x: usize,
+        b64_y: usize,
+        block_index: usize,
+        list_idx: usize,
+        ref_idx: usize,
+    ) -> bool {
+        let Some(out) = self.per_b64.get(b64_y * self.b64_cols + b64_x) else {
+            return false;
+        };
+        let n = out
+            .total_me_candidate_index
+            .get(block_index)
+            .map_or(0, |&v| usize::from(v));
+        (0..n).any(|i| {
+            out.me_candidate_array
+                .get(block_index * self.max_cand + i)
+                .is_some_and(|c| {
+                    ((c.direction == 0 || c.direction == 2)
+                        && list_idx == usize::from(c.ref0_list)
+                        && ref_idx == usize::from(c.ref_idx_l0))
+                        || ((c.direction == 1 || c.direction == 2)
+                            && list_idx == usize::from(c.ref1_list)
+                            && ref_idx == usize::from(c.ref_idx_l1))
+                })
+        })
+    }
+}
+
+#[cfg(test)]
+mod pu_geometry_tests {
+    use super::*;
+
+    /// TIER 4 — the generated table against C's own literals
+    /// (motion_estimation.h:97-143), spot-checked at every group boundary
+    /// plus the two corners of each group. A generated table that agreed with
+    /// itself would prove nothing; these are C's numbers, read out of the
+    /// header.
+    #[test]
+    fn pu_geometry_matches_c() {
+        // C `pu_search_index_map` + `partition_width` / `partition_height`.
+        let expect: &[(usize, (u32, u32, u32, u32))] = &[
+            (0, (0, 0, 64, 64)),
+            (1, (0, 0, 32, 32)),
+            (2, (32, 0, 32, 32)),
+            (3, (0, 32, 32, 32)),
+            (4, (32, 32, 32, 32)),
+            (5, (0, 0, 16, 16)),
+            (8, (48, 0, 16, 16)),
+            (9, (0, 16, 16, 16)),
+            (20, (48, 48, 16, 16)),
+            (21, (0, 0, 8, 8)),
+            (28, (56, 0, 8, 8)),
+            (29, (0, 8, 8, 8)),
+            (84, (56, 56, 8, 8)),
+        ];
+        for &(i, want) in expect {
+            assert_eq!(pu_geometry(i), want, "pu_geometry({i})");
+        }
+    }
+
+    /// TIER 4 — every slot lies inside the b64 and no two slots of the same
+    /// size share an origin. A shifted raster would still pass the spot
+    /// checks above at the group corners; this catches the middle.
+    #[test]
+    fn pu_geometry_tiles_the_b64_without_overlap() {
+        let mut seen = alloc::collections::BTreeSet::new();
+        for i in 0..SQUARE_PU_COUNT {
+            let (x, y, w, h) = pu_geometry(i);
+            assert!(x + w <= 64 && y + h <= 64, "slot {i} escapes the b64");
+            assert!(
+                seen.insert((x, y, w, h)),
+                "slot {i} duplicates an earlier one"
+            );
+        }
+        assert_eq!(seen.len(), SQUARE_PU_COUNT);
+    }
+
+    #[test]
+    fn number_of_pus_matches_c_gate() {
+        assert_eq!(number_of_pus(true, true), SQUARE_PU_COUNT);
+        assert_eq!(number_of_pus(false, true), MAX_SB64_PU_COUNT_NO_8X8);
+        assert_eq!(number_of_pus(false, false), MAX_SB64_PU_COUNT_WO_16X16);
+        assert_eq!(number_of_pus(true, false), MAX_SB64_PU_COUNT_WO_16X16);
+    }
+}

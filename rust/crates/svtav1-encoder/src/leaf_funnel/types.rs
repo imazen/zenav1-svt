@@ -286,6 +286,13 @@ pub(crate) struct FunnelCtx<'a> {
     /// prediction can never both be live on one frame, so there is exactly
     /// one grid and one stamping site.
     pub inter: Option<&'a crate::inter_md_arm::InterMdFrame<'a>>,
+    /// C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`
+    /// ([`crate::inter_search_arm::SqMeState`]) — ONE slot, written by every
+    /// square block's MD motion search and read by the NSQ shapes that follow
+    /// it. It is mutable and lives on the funnel context for the same reason
+    /// `ibc_mvp` does: it is state that crosses blocks, and C keeps it on the
+    /// mode-decision context for exactly that reason.
+    pub inter_sq_me: Option<&'a mut crate::inter_search_arm::SqMeState>,
 }
 
 /// C `BlockSize` enum index from pixel dims (definitions.h block order) —

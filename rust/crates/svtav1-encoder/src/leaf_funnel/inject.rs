@@ -1414,7 +1414,7 @@ pub(super) fn inject_candidates(
         );
         let built = crate::inter_md_arm::build_inter_candidates(
             im,
-            &crate::inter_md_arm::InterBlockCtx {
+            &mut crate::inter_md_arm::InterBlockCtx {
                 org_x: abs_x,
                 org_y: abs_y,
                 bw: w,
@@ -1431,6 +1431,12 @@ pub(super) fn inject_candidates(
                     neighbors.left_avail().is_none_or(|l| !l.is_inter_block()),
                 ),
                 has_uv,
+                // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`:
+                // one slot, written by a square block's own search and read
+                // by the NSQ shapes that follow it at the same node. The
+                // funnel walks a node's shapes with PART_N first, which is
+                // what makes a single slot the faithful structure.
+                sq_me: fx.inter_sq_me.as_deref_mut(),
             },
             lambda,
         );
