@@ -226,6 +226,42 @@ jobs:
         # without being promoted.
         run: ./tools/inter_byte_gate.sh
 
+      - name: INTER completion gate (does the port ENCODE the cell AT ALL)
+        working-directory: rust
+        # THE PANIC GATE THE INTER PATH NEVER HAD. `arbitrary_size_robustness.sh`
+        # below is this repo's panic-freedom gate and it drives the PUBLIC API,
+        # which REFUSES inter frames outright — so it cannot reach the inter
+        # mode-decision path at all, and EIGHTEEN inter panics lived behind it
+        # (docs/WORKING-ON-THIS.md §5: "a gate that cannot reach a feature
+        # cannot guard it"). The byte gates above cannot see them either: a
+        # crash and a wrong byte are different defects, and until 2026-09-02
+        # the sweep scored a panic as an ordinary frame-1 divergence.
+        #
+        # 64 cells = 16 sizes (9 of them NOT multiples of 64, which is where
+        # every one of the panics lived) x presets 6/8/10/13, 2 frames each.
+        # It asserts THREE things, and the middle one is why it is here rather
+        # than folded into a byte gate:
+        #   * no cell crashes;
+        #   * no MORE than SCAN_MAX_REFUSED cells refuse — retiring a panic by
+        #     widening a refusal must fail this gate, because a refusal makes a
+        #     gap look handled (docs/REFUSED-CONFIGS.md's own preamble);
+        #   * at least SCAN_MIN_OK encode, and the grid actually ran.
+        # The two floors are LIMITS. Moving either needs a measured reason in
+        # the commit message, like the byte gate's.
+        # ~1 min on aarch64; the sizes go to 2048 but the presets are fast.
+        #
+        # SCAN_RS_BIN points at a PLAIN release build, not `tools/identity_run`.
+        # That wrapper builds `--features symtrace`, whose per-symbol
+        # arithmetic-coder trace goes to stderr — MEASURED 7.2 MB for one
+        # 512x512 p13 cell, and this grid's largest cells are 16x that area. It
+        # is also the configuration this gate should be asking about: the
+        # shipped one.
+        run: |
+          cargo build --release -p zenav1-svt --example identity_run
+          SCAN_GATE=1 SCAN_MIN_OK=52 SCAN_MAX_REFUSED=12 \
+            SCAN_RS_BIN="$PWD/target/release/examples/identity_run" \
+            ./tools/inter_completion_scan.sh
+
       - name: INTER decode census (does the port's stream DECODE, on all 96 cells)
         working-directory: rust
         # `inter_decode_gate.sh` asks that of FIVE named cells. This asks it of

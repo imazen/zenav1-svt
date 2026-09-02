@@ -57,8 +57,17 @@ else
 fi
 [[ -n "$OUT" ]] && emit "size	preset	status	frames_written	ident	note"
 
+n_ok=0
+n_refused=0
+n_crash=0
+n_other=0
+n_cells=0
+crashed_cells=()
+refused_cells=()
+
 for preset in $PRESETS; do
     for s in $SIZES; do
+        n_cells=$((n_cells + 1))
         rm -rf "${W:?}/c"; mkdir -p "$W/c"
         SVTAV1_BD=8 SVTAV1_FRAMES=2 SVTAV1_INTER_EXPERIMENTAL=1 \
         SVTAV1_FRAME_SHIFT="$SHIFT" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
@@ -69,10 +78,10 @@ for preset in $PRESETS; do
         [[ -s "$W/c/rs.obu.f0" ]] && nf=$((nf + 1))
         [[ -s "$W/c/rs.obu.f1" ]] && nf=$((nf + 1))
         case $rc in
-            0)   status=OK ;;
-            3)   status=REFUSED ;;
-            101) status=CRASH ;;
-            *)   status="rc$rc" ;;
+            0)   status=OK;      n_ok=$((n_ok + 1)) ;;
+            3)   status=REFUSED; n_refused=$((n_refused + 1)); refused_cells+=("${s}x${s} p${preset}") ;;
+            101) status=CRASH;   n_crash=$((n_crash + 1));     crashed_cells+=("${s}x${s} p${preset}") ;;
+            *)   status="rc$rc"; n_other=$((n_other + 1));     crashed_cells+=("${s}x${s} p${preset} rc=$rc") ;;
         esac
         note=""
         if [[ $status == CRASH ]]; then
@@ -98,3 +107,58 @@ for preset in $PRESETS; do
         fi
     done
 done
+
+# ---------------------------------------------------------------------------
+# GATE MODE (SCAN_GATE=1). Off by default so the scan stays a plain inventory.
+#
+# THREE ASSERTIONS, and the middle one is the point:
+#
+#   1. NO CRASHES. A panic is always a defect. This is the assertion CI never
+#      had: `arbitrary_size_robustness.sh` is the repo's panic-freedom gate and
+#      it drives the PUBLIC API, which refuses inter frames outright — so it
+#      cannot reach the inter mode-decision path at all, and 18 inter panics
+#      lived behind it (docs/WORKING-ON-THIS.md section 5, "a gate that cannot
+#      reach a feature cannot guard it").
+#
+#   2. NOT MORE THAN `SCAN_MAX_REFUSED` REFUSALS. Converting a panic into a
+#      refusal makes a crash gate green while the gap is untouched, and
+#      docs/REFUSED-CONFIGS.md's own preamble warns that a refusal makes a gap
+#      look handled. Raising this ceiling has to be a deliberate edit with a
+#      reason beside it, exactly like raising the byte gate's floor.
+#
+#   3. AT LEAST `SCAN_MIN_OK` cells encode, and the grid actually ran
+#      (anti-vacuity: a scan that executed zero cells must never pass).
+#
+# The floors are LIMITS, not targets. Lower one only with a measured reason.
+if [[ ${SCAN_GATE:-0} == 1 ]]; then
+    MIN_OK=${SCAN_MIN_OK:-52}
+    MAX_REFUSED=${SCAN_MAX_REFUSED:-12}
+    MIN_CELLS=${SCAN_MIN_CELLS:-64}
+    fail=0
+    echo
+    echo "inter completion gate: $n_cells cells — $n_ok OK, $n_refused REFUSED, $n_crash CRASH, $n_other other"
+    if ((n_cells < MIN_CELLS)); then
+        echo "  FAIL: only $n_cells cells ran, expected at least $MIN_CELLS (a scan that reaches nothing must not pass)"
+        fail=1
+    fi
+    if ((n_crash + n_other > 0)); then
+        echo "  FAIL: $((n_crash + n_other)) cell(s) did not complete:"
+        printf '    %s\n' "${crashed_cells[@]}"
+        fail=1
+    fi
+    if ((n_ok < MIN_OK)); then
+        echo "  FAIL: $n_ok cells encoded, floor is $MIN_OK"
+        fail=1
+    fi
+    if ((n_refused > MAX_REFUSED)); then
+        echo "  FAIL: $n_refused refusals, ceiling is $MAX_REFUSED — a panic must not be"
+        echo "        retired by widening a refusal. If the new refusal is genuine, raise"
+        echo "        SCAN_MAX_REFUSED in the CI step and say what is unimplemented."
+        printf '    %s\n' "${refused_cells[@]}"
+        fail=1
+    fi
+    if ((fail == 0)); then
+        echo "inter completion gate: PASS"
+    fi
+    exit $fail
+fi

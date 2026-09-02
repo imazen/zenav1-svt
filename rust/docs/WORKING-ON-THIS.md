@@ -1006,11 +1006,30 @@ the largest remaining gap) in one run.
 
 Two things §1q proves that a reader will otherwise re-derive:
 
-* **The C oracle segfaults above TWO frames in low-delay mode.** The library's
-  single-thread object pool exhausts (`sys_resource_manager.c:791`) and the
-  caller dereferences a wrapper it never popped. Interleaving a non-blocking
-  `get_packet` between sends — `SvtAv1EncApp`'s own pattern — makes it worse
-  (the 2-frame cell then crashes too); that was measured and reverted.
+* **The C oracle used to die above TWO frames in low-delay mode — FIXED
+  2026-09-02, and the ceiling was the DRIVER, not the library.** The library's
+  single-thread object pool exhausted (`sys_resource_manager.c:791`) because
+  `capture_c_trace` sent every frame before draining any packet, so the finite
+  output-stream buffer pool ran dry on the third send. It now drains one
+  packet after each send **when `n_frames > 2`**, which is safe precisely
+  because ST mode runs the whole pipeline inside `svt_av1_enc_send_picture`
+  (`enc_handle.c:5805`) — the packet is already in the fifo, and
+  `svt_get_full_object`'s ST arm is a direct pop that would deref NULL on an
+  empty one. MEASURED: `SVT_FRAMES=3` on `gradient 64x64 q32 p8` gives
+  1480 / 22 / 21 B and decodes 3/3 in aomdec AND dav1d.
+  **`docs/INTER-ENCODE-PLAN.md` §1q said this fix "makes it WORSE — the
+  2-frame cell then segfaults too". That does not reproduce.** Measured on the
+  same cell the plan named: with the drain UNGATED (every send, at every
+  `n_frames`), `gradient 128x128 q32 p8` at `SVT_FRAMES=2` still exits 0 and
+  still writes 5015 / 24 B, identical to the send-all-then-drain build. So the
+  earlier attempt differed from this one somewhere the note does not record —
+  most likely in the FINAL drain, which must not ask for a packet after the
+  last one has been taken. The `n_frames > 2` gate is kept anyway, not because
+  the ungated form was observed to fail but because it makes every 1- and
+  2-frame run byte-identical BY CONSTRUCTION rather than by measurement.
+  Verified regardless: byte gate 55 required / 0 failed, spot-check 76/76.
+  The PORT still refuses frame 2, for an unrelated reason — see
+  `docs/REFUSED-CONFIGS.md`'s coded-area-statistics entry.
 * **`fh_fields.py` used to GUESS `skipModeAllowed`** and got it wrong on the
   first inter cell, shifting every field after `skip_mode_present` by one bit
   without any sign in the printout. It now implements the real rule and threads

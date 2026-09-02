@@ -2332,27 +2332,55 @@ is the stronger claim:
   all eleven levels by
   `cdef_search::tests::a_key_frame_never_asks_for_a_reference_derived_set`.
 
-#### The C oracle is capped at TWO frames in this GOP — measured, not assumed
+#### The C oracle was capped at TWO frames in this GOP — SUPERSEDED 2026-09-02, it is not
 
-`capture_c_trace` **segfaults (rc 139) for every low-delay run
-(`SVT_PRED_STRUCT=1`) of three or more frames**, at 64x64 preset 8 q35 and
-preset 6 q40 alike. The library prints
+**What this section said, and it was true of the driver it described:**
+`capture_c_trace` segfaulted (rc 139) for every low-delay run
+(`SVT_PRED_STRUCT=1`) of three or more frames, at 64x64 preset 8 q35 and
+preset 6 q40 alike, printing
 `ST mode: empty object pool exhausted after pumping dispatcher`
-(`sys_resource_manager.c:791`) and then dereferences the wrapper it did not
+(`sys_resource_manager.c:791`) and then dereferencing the wrapper it did not
 pop. Random-access (`SVT_PRED_STRUCT=2`) survives at least 3 frames, which is
 why the RA capture script could take 7/9/17/25/41.
 
-**The obvious fix does not work.** Interleaving a non-blocking
-`svt_av1_enc_get_packet(.., pic_send_done = 0)` after every `send_picture` —
-which is exactly what `SvtAv1EncApp` does
-(`app_process_cmd.c:1104-1111`) — makes it WORSE: the 2-frame cell then
-segfaults too, after writing `pts0`. That was tried, measured and reverted; the
-driver in tree is the send-all-then-drain one that gets 2 frames. Do not
-"fix" it again without a measurement.
+**The cap was the DRIVER's, not the library's.** The driver sent every frame
+before draining any packet, so the library's finite output-stream buffer pool
+ran dry on the third send. It now drains one packet after each send, GATED ON
+`n_frames > 2`. MEASURED 2026-09-02: `SVT_FRAMES=3` on `gradient 64x64 q32 p8`
+codes 1480 / 22 / 21 bytes and the concatenation decodes 3/3 frames in both
+aomdec and dav1d.
 
-Consequence for the campaign: every inter cell is a 2-frame cell until that is
-solved, and the first inter frame's references are therefore all the key frame,
-which is what collapses both reference lists to one entry.
+**AND THE "obvious fix does not work" NOTE DOES NOT REPRODUCE — do not let it
+stop the next person the way it nearly stopped this one.** That note said an
+interleaved non-blocking `get_packet` after every `send_picture` (what
+`SvtAv1EncApp` does, `app_process_cmd.c:1104-1111`) "makes it WORSE: the
+2-frame cell then segfaults too, after writing `pts0`". Measured 2026-09-02 on
+that exact cell with the drain UNGATED — every send, at every `n_frames` —
+`gradient 128x128 q32 p8` at `SVT_FRAMES=2` exits 0 and writes 5015 / 24 B,
+byte-identical to the send-all-then-drain build. Whatever the earlier attempt
+did differently is not recorded here; the likeliest candidate is the FINAL
+drain, which must not ask for another packet once the last one has been taken
+(`svt_get_full_object`'s ST arm would deref NULL). The `n_frames > 2` gate in
+tree is therefore belt-and-braces, not a workaround: it makes every 1- and
+2-frame run byte-identical BY CONSTRUCTION. Verified anyway by
+`inter_byte_gate.sh` (55 required / 0 failed), `regression_spotcheck.sh`
+(76/76) and a direct 2-frame re-check.
+
+The general lesson is this file's own: **a "tried it, does not work" note is a
+claim about one implementation, not about the approach.** Re-measure before
+inheriting one.
+Why ONE blocking get is safe where a general non-blocking one is not:
+`svt_av1_enc_send_picture` runs the WHOLE pipeline synchronously in ST mode
+(`enc_handle.c:5805`), so the packet is already in the full fifo when the drain
+asks for it — `svt_get_full_object`'s ST arm is a direct pop with no emptiness
+check (`sys_resource_manager.c:869`).
+
+Consequence for the campaign, restated: every inter cell is STILL a 2-frame
+cell, but now because the PORT refuses frame 2, not because nothing could
+check it. That refusal is scoped in `docs/REFUSED-CONFIGS.md` — it needs the
+reference picture's `hp_coded_area` / `skip_coded_area` / `intra_coded_area`,
+which C accumulates per coded block in `update_b` (coding_loop.c:1605-1638) —
+and it is now a lift with an oracle behind it rather than a wall.
 
 ### 1s. CDF CONTINUATION LANDED, and the inter TILE is BYTE-IDENTICAL from C's decision (2026-09-01)
 
