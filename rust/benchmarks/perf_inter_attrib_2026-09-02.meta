@@ -142,3 +142,53 @@ share x paired-ms and the shares as +-1-2 points.
 * Any partial-SB inter cell (they panic — benchmarks/inter_completion_2026-09-02.tsv).
 * The operation census that would split coverage from volume (see FINDING 2).
 * 10-bit, real content, non-square dims, x86-64.
+
+============ ADDENDUM: WHICH SEARCH STAGE the distortion time is in ===========
+tools/perf_profile/ancestor.py (added with this record) — nearest-named-ancestor
+attribution of the distortion kernels' SELF samples, with the videokey arm as
+the CONTROL (a video-mode key frame has no inter frame, so it must return ~0;
+it returns 0.09 ms against the inter arm's 2.93, which is what makes the
+difference attributable to the inter frame rather than to the regex).
+
+Distortion self time in the INTER FRAME (inter arm minus videokey arm):
+port 2.835 ms, C 0.122 ms — **23.2x**.
+
+  stage                                      port ms  port %  |  C ms   C %
+  open-loop ME / HME                           1.529   53.9%  | 0.064  52.5%
+    inter_me::b64::motion_estimation_b64        0.590          | svt_aom_motion_estimation_b64 0.020
+    inter_me::hme::prehme_core                  0.344          | integer_search_b64            0.044
+    inter_me::hme::hme_level_1                  0.315          |
+    inter_me::hme::hme_level_0                  0.278          |
+    (get_zz_sad, *_b64 tails)                   0.017          |
+  port_md::md_search::md_subpel_search          0.781   27.6%  | md_subpel_search    0.036  29.5%
+  port_md::md_search::md_full_pel_search        0.246    8.7%  | md_full_pel_search  0.012   9.8%
+  port_md::md_search::pme_search_for_ref        0.052    1.8%  | (inside md_encode_block)
+  leaf_funnel::inject::inject_candidates        0.062    2.2%  |
+  unattributed (inlined into encode_frame_impl) 0.152    5.4%  | md_encode_block etc 0.010   8.2%
+
+**THE COMPOSITION MATCHES C's WITHIN ~2 POINTS AT EVERY STAGE.** Open-loop ME is
+53.9 % of the port's inter-frame distortion and 52.5 % of C's; `md_subpel_search`
+is 27.6 % vs 29.5 %; `md_full_pel_search` is 8.7 % vs 9.8 %. The port is not
+spending its search time somewhere C does not — it is spending ~23x more in the
+same places, in the same proportions.
+
+THIS CORRECTS THE FRAMING THAT PROMPTED THE MEASUREMENT. The per-block MD
+searches recent chunks added — the MVP variance scan, the full-pel PME, the two
+sub-pel tree searches — are together 1.08 ms: 38 % of the inter frame's
+distortion, 23 % of the inter frame, and 7 % of the whole 2-frame encode. Within
+that, the PME (`pme_search_for_ref`) is 0.052 ms, **1.8 %** of the distortion —
+the smallest of the three, not a major cost at this cell — and the MVP variance
+scan (`best_mvp_by_distortion`) does not appear as a distinct ancestor at all,
+i.e. it is at or below this profile's ~0.02 ms floor. **The dominant half is the
+PICTURE-LEVEL open-loop ME/HME (1.53 ms, 54 %), which is not per-block work and
+was not on the list of suspects.**
+
+CAVEAT, and it is the one docs/WORKING-ON-THIS.md §5 already raises about this
+grid: the content is a pure horizontal translation, and every superblock of every
+cell in this campaign's grid reports `me_*_distortion = 0` on C's side because
+list 1's search walks straight onto the true MV with SAD 0. A search that
+terminates on an exact match early is not necessarily priced like one on real
+content — the STAGE SHARES above may be atypical in either direction. Re-measure
+on real content before sizing any change from them. What does NOT depend on the
+content is the 23x itself being concentrated in kernels that are scalar on one
+side and NEON-dotprod on the other.

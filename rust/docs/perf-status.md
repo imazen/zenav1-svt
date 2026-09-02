@@ -151,16 +151,45 @@
 > `port_md/md_search.rs` contains an `incant!`, `#[arcane]`, `#[rite]` or
 > `magetypes` anywhere.
 >
-> **DO NOT budget a 28x SIMD win from that table.** A pure coverage gap
-> plausibly explains a single-digit factor, not 28x; the rest is consistent with
-> the port ISSUING MORE SEARCH WORK than C — `md_search.rs` carries an MVP scan
-> (`best_mvp_by_distortion`), a full-pel PME (`pme_search_for_ref`) and up to two
-> sub-pel tree searches per reference (`md_subpel_search`,
-> `md_subpel_search_fixed_stage`), and none has had its CALL VOLUME compared
-> against C's. Splitting coverage from volume needs an operation census (count
-> SAD / variance / sub-pel evaluations per block on both sides), not another
-> profile. The still path already taught this: `aom_hadamard_8x8` was 1.88 % of
-> p2 and delivered 1.031x because the caller's own scalar loop stayed.
+> **WHICH SEARCH STAGE that time is in** — `tools/perf_profile/ancestor.py`,
+> nearest-named-ancestor attribution of the distortion kernels' self samples,
+> with the videokey arm as the control (it must return ~0 and returns 0.09 ms
+> against the inter arm's 2.93). Distortion in the INTER FRAME: port 2.835 ms,
+> C 0.122 ms — **23.2x**.
+>
+> | stage | port ms | port % | C % |
+> |---|---:|---:|---:|
+> | **picture-level open-loop ME / HME** (`inter_me::b64::motion_estimation_b64`, `hme::prehme_core`, `hme::hme_level_{0,1}`) | **1.529** | **53.9 %** | 52.5 % |
+> | `port_md::md_search::md_subpel_search` | 0.781 | 27.6 % | 29.5 % |
+> | `port_md::md_search::md_full_pel_search` | 0.246 | 8.7 % | 9.8 % |
+> | `port_md::md_search::pme_search_for_ref` | 0.052 | 1.8 % | (in `md_encode_block`) |
+> | `leaf_funnel::inject::inject_candidates` | 0.062 | 2.2 % | — |
+> | unattributed (inlined) | 0.152 | 5.4 % | 8.2 % |
+>
+> **The composition matches C's within ~2 points at every stage.** The port is
+> not spending its search time somewhere C does not — it is spending ~23x more
+> in the same places, in the same proportions. So the 28x is NOT the port
+> issuing a categorically different set of searches at this cell; a per-block
+> operation census would still be needed to rule out uniformly wider search
+> areas, but the "extra stage" hypothesis is measured and does not hold here.
+>
+> **This corrects the framing that prompted the measurement.** The per-block MD
+> searches recent chunks added are together 1.08 ms — 38 % of the inter frame's
+> distortion, 23 % of the inter frame, 7 % of the whole 2-frame encode. The PME
+> is **1.8 %** of the distortion, the smallest of the three; the MVP variance
+> scan (`best_mvp_by_distortion`) does not appear as a distinct ancestor at all,
+> i.e. it is at or below the ~0.02 ms floor. **The dominant half is the
+> picture-level open-loop ME/HME, which is not per-block work and was not on the
+> list of suspects.**
+>
+> **DO NOT budget a 23-28x SIMD win from these tables.** The still path already
+> taught this: `aom_hadamard_8x8` was 1.88 % of p2 and delivered 1.031x because
+> the caller's own scalar loop stayed. And this grid is a pure horizontal
+> translation whose ME distortion is ZERO on C's side (§5 of
+> `docs/WORKING-ON-THIS.md`) — a search that terminates on an exact match is not
+> necessarily priced like one on real content, so the STAGE SHARES may be
+> atypical in either direction. What does not depend on the content is that the
+> 23x sits in kernels that are scalar on one side and NEON-dotprod on the other.
 >
 > **What the VIDEO CONFIG adds to the KEY frame (port 7.75 ms, C 2.45 ms,
 > 3.17x)** lands almost entirely on kernels the still-path queue ALREADY ranks:

@@ -58,9 +58,14 @@ cell is 1.92x / 2.74x / 3.40x at 64/128/256 (slope ratio 3.67x). **Half the
 port's excess is the VIDEO-MODE KEY FRAME, not the inter frame** — 44-52 % at
 every cell measured. The inter frame alone is 5.10x C at 256x256 p8 and is 61 %
 motion-search distortion in kernels that are SCALAR on the port and NEON-dotprod
-in C (2.74 ms vs C's 0.099). Before optimising, read the meta's warning that the
-28x is NOT all coverage: the port's MVP scan / full-pel PME / two sub-pel tree
-searches have never had their call volume compared against C's.
+in C (2.84 ms vs C's 0.122 — 23x). Nearest-ancestor attribution
+(`tools/perf_profile/ancestor.py`) puts **54 % of that in the picture-level
+open-loop ME/HME**, 28 % in `md_subpel_search`, 9 % in `md_full_pel_search` and
+**1.8 % in the PME** — and C's proportions match within ~2 points at every stage,
+so the port is spending ~23x more in the SAME places, not running extra searches.
+Two warnings before sizing anything from it: this grid's ME distortion is ZERO on
+C's side (§5), so the stage shares may be atypical; and the still path already
+showed a 1.88 %-of-frame kernel deliver 1.031x because its caller stayed scalar.
 
 **Per-gate wall clock (CI, x86-64 `ubuntu-latest`, measured 2026-08-27):**
 `benchmarks/gate_wallclock_ci_2026-08-27.md` — every CI step's duration from
