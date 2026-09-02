@@ -3048,8 +3048,27 @@ impl EncodePipeline {
                 Some(crate::inter_md_arm::InterMdFrame {
                     padded,
                     padded_by_ref: inter_padded_by_ref,
-                    src: &encode_input,
-                    src_stride: w,
+                    // The SB-EXTENT-padded source, NOT `encode_input` at
+                    // stride `w`. C's MD searches read
+                    // `input_pic->y_buffer + blk_org_y * y_stride + blk_org_x`
+                    // over the BLOCK's full extent, and on a frame whose dims
+                    // are not a multiple of 64 a straddling block runs past
+                    // the aligned edge into C's replicated border
+                    // (`pad_input_picture` + `svt_aom_generate_padding`).
+                    // `sb_input` is that buffer and the port already reads PD0's
+                    // b64 variance and every straddling leaf's residual out of
+                    // it; wiring the inter search to the unpadded plane instead
+                    // was an out-of-bounds READ, not a different number.
+                    //
+                    // MEASURED 2026-09-02: the port PANICKED at
+                    // `port_md/md_search.rs`'s source gather ("the len is 5184
+                    // but the index is 5184", 5184 = 72*72) on 18 of the 96
+                    // grid cells — every 72x72 cell of uniform, diag and screen
+                    // content. For a 64-aligned frame `sb_input == encode_input`
+                    // and `in_stride == w`, so this is byte-neutral on the other
+                    // 72 cells by construction.
+                    src: sb_input,
+                    src_stride: in_stride,
                     ref_frame_type_arr: &inter_ref_types,
                     search,
                     search_tables: crate::intrabc::build_nmv_cost_table(

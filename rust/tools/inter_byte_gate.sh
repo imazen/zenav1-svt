@@ -111,10 +111,22 @@ PASS_CELLS=(
 # `inter_decode_gate.sh`: on bash < 4.4 (`/bin/bash` on macOS is 3.2.57)
 # expanding an EMPTY array under `set -u` aborts the script, so a gate whose
 # last open cell gets promoted would stop being able to report PASS.
+#
+# THE THREE 72x72 CELLS ARE CRASH-REGRESSION CELLS, and they meet
+# `docs/WORKING-ON-THIS.md` §3's rule in the CRASH column rather than the byte
+# one: each PANICKED before the fix that landed with them
+# (`md_search.rs`'s source gather, off the end of an unpadded 72x72 plane) and
+# each ENCODES after it. They are still open on bytes, which is exactly why
+# they belong here and not in PASS_CELLS — and it is why `run_cell` had to
+# learn to say CRASH first: as plain open cells they reported
+# "open ... known" through the whole defect. One per panicking content class
+# (gradient's six 72x72 cells never panicked).
 OPEN_CELLS=(
     "gradient 64 64 20 6 2 3"   # tile 24 B vs C's 22
     "diag 64 64 40 6 2 3"       # the widest p6 residual on this content
-    "uniform 72 72 40 6 2 3"    # 23 B vs 22 — a partial-SB inter frame
+    "uniform 72 72 40 6 2 3"    # 23 B vs 22 — a partial-SB inter frame; was a PANIC
+    "diag 72 72 40 6 2 3"       # partial-SB, diag content; was a PANIC
+    "screen 72 72 40 6 2 3"     # partial-SB, screen content; was a PANIC
 )
 
 if [[ ${#PASS_CELLS[@]} -eq 0 ]]; then

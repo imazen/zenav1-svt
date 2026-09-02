@@ -693,6 +693,42 @@ fn predict_and_price(
         &f.fac,
     );
 
+    // The FIELD JOIN against C's `SVT_CINTER_OUT` line, which carries exactly
+    // these inputs (`imc=`, `drl=`, `mv0=`, `pmv0=`, `ovl=`, `rf=`) plus the
+    // decision C made with them. It exists because the funnel's `NSQDBG CAND`
+    // line reports only the FINISHED rate: on `uniform 72x72 q20 p8` frame 1
+    // the port priced the 8x8 corner block's NEARESTMV at `flr = 3014` and
+    // chose intra where C codes inter, and nothing in the repo could say
+    // which of the six inputs to `svt_aom_inter_fast_cost` differed. A total
+    // is one number; C's dump has six fields, so print six.
+    //
+    // Gated on SVTAV1_CANDDBG + SVTAV1_NSQDBG like every other funnel dump.
+    #[cfg(feature = "std")]
+    if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(b.org_x, b.org_y) {
+        std::eprintln!(
+            "NSQDBG ICAND mi=({},{}) {}x{} mode={} rf={},{} mv0={},{} pmv0={},{} drl={} imc={} \
+             ovl={} isinterctx={} refmvcnt={} refbits={} flr={}",
+            b.org_y / 4,
+            b.org_x / 4,
+            b.bw,
+            b.bh,
+            c.mode as u8,
+            c.ref_frame[0],
+            c.ref_frame[1],
+            c.mv[0].y,
+            c.mv[0].x,
+            c.pred_mv[0].y,
+            c.pred_mv[0].x,
+            c.drl_index,
+            inter_mode_ctx,
+            b.overlappable_neighbors,
+            b.is_inter_ctx,
+            stack.count,
+            ref_frames_num_bits,
+            cost.rate.luma,
+        );
+    }
+
     InterCandOut {
         mode: c.mode,
         ref_frame: c.ref_frame,
