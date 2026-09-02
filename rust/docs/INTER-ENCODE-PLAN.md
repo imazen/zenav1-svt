@@ -2769,6 +2769,68 @@ than a placeholder. A candidate that sets `interintra`, `compound` or a
 warped `motion_mode` must EXTEND `InterDecision`; the pack passes `None` for
 those groups and cannot invent them.
 
+### 1v. The DPB reference carries C's margin — item 4 (2026-09-01)
+
+§1s files a padded reference view under "decoder-conformance, not RD". §1t
+measured that it is BOTH, and this chunk lands it.
+
+C pads a recon before it becomes a reference: `pad_ref_and_set_flags`
+(enc_dec_process.c:1072-1112) calls `svt_aom_generate_padding` on all three
+planes with `scs->border = BLOCK_SIZE_64 + 4` = **68**
+(Globals/enc_handle.c:4256), chroma at `(border + ss_x) >> ss_x`. AV1 clamps a
+motion vector so the predicted block plus its filter taps stays inside the
+frame PLUS that margin, and the MC then indexes NEGATIVE offsets from pixel
+(0,0) — a reference stored without it cannot answer a legal MV at all.
+
+The port stored bare planes and `partition::generate_inter_pred` filled every
+out-of-frame sample with the constant **128**. That is a value no decoder
+produces, and on this campaign's own cell it also makes C's decision
+unreachable: the harness translates frame 1 right by 3 px WITH left-edge
+replication, so at the correct MV `-3` the block's first three columns read
+outside the reference and match EXACTLY only against a replicated margin.
+Against a 128 fill the residual is large and `skip = 1` is impossible at any
+quantizer.
+
+`picture::PaddedPlane` / `PaddedRef` are built once per stored reference from
+the already tier-1-gated `port_preanalysis::generate_padding`
+(`c_parity_preanalysis.rs:115`), and `ReferenceFrame::padded` carries them
+beside the bare planes — which stay, because every non-MC reader (TPL's SB qp
+offsets, the open-loop ME's own pyramid) indexes them at frame stride.
+
+**Gate:** `inter_decision_probe::the_dpb_reference_carries_cs_replicated_margin`
+— the margin exists on the DPB slot at C's widths, replicates the edge in all
+four directions AND at the corners (which `generate_padding` gets right by
+replicating the already-padded first and last ROWS; a port that padded
+vertically first leaves them zero), and the LIVE prediction path reads it. The
+last is a positive control with teeth: it compares against the 128 the old
+path produced, so a padded plane built but never consulted fails.
+
+**MEASURED:** `SVTAV1_INTER_EXPERIMENTAL=1` frame 1 goes **90 B -> 75 B**
+against C's 22 B. Same caveat as §1u — the content is still wrong, the
+decision feeding it is still the pre-campaign one, and a smaller number is not
+parity.
+
+**What item 5 still owes.** The interpolation is still the homegrown BILINEAR;
+`port_convolve`'s 8-tap family and its drivers
+(`port_pd_pred::av1_inter_prediction_light_pd1`, which does luma AND both
+chroma planes in one call, so it is item 6 as well) are ported and tier-1
+gated but unwired. That swap deliberately did NOT happen here: per §1s it
+belongs in whatever MD path survives item 1, and the padded reference it needs
+is exactly what this chunk provides. `generate_inter_pred` now REFUSES
+(returns the untouched buffer) when no padded reference is supplied rather
+than falling back to the fill it replaced.
+
+### A second harness trap: EDITING SOURCE DURING A GATE RUN
+
+`identity_full_8bit.sh` reported `1091 / 1100` with the LAST NINE cells
+(`screen 512 512 48 p5..p13`) as `RS_ERR`. They pass individually. The cause
+is the same mechanism as §1u's concurrent-cargo note, from the other side:
+`tools/identity_run` rebuilds on EVERY invocation, so a source edit made while
+the sweep is running turns into a build failure mid-run, and the harness
+records it as "the port failed to encode" — which reads exactly like a crash
+in those cells. Do not edit the tree while a byte sweep is running; the
+position of the failures (a contiguous tail) is the tell.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

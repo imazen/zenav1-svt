@@ -2181,6 +2181,15 @@ impl EncodePipeline {
             None
         };
 
+        // The padded twin of the reference plane above (C
+        // `pad_ref_and_set_flags`, enc_dec_process.c:1072) — what INTER
+        // PREDICTION indexes, because a legal MV reads outside the frame.
+        let ref_padded_luma: Option<alloc::boxed::Box<crate::picture::PaddedRef>> = if is_key {
+            None
+        } else {
+            self.dpb.get(0).and_then(|rf| rf.padded.clone())
+        };
+
         // MV map for spatial MV prediction (8x8 block grid)
         let mv_map_stride = w.div_ceil(8);
         let mv_map_size = mv_map_stride * h.div_ceil(8);
@@ -2439,6 +2448,8 @@ impl EncodePipeline {
             lambda,
             &self.speed_config,
             ref_frame_data.as_deref(),
+            // The padded twin of the plane above, from the SAME DPB slot.
+            ref_padded_luma.as_deref().map(|p| &p.y),
             &mv_map,
             mv_map_stride,
             &sb_qp_offsets,
@@ -4905,7 +4916,28 @@ impl EncodePipeline {
             // at the output geometry.
             self.last_recon10_final = recon10;
         }
+        // C `pad_ref_and_set_flags` (enc_dec_process.c:1072-1112): the recon
+        // is padded with a replicated margin BEFORE it becomes a reference,
+        // because inter prediction indexes negative offsets from pixel
+        // (0,0). Built here, once, from the same buffers stored below.
+        let padded_ref = {
+            let (rw, rh) = (w, h);
+            let y =
+                crate::picture::PaddedPlane::from_plane(&recon, rw, rh, crate::picture::REF_BORDER);
+            let uv = if chroma.is_some() {
+                // C `(border + ss_x) >> ss_x` at 4:2:0 (:1102-1112).
+                let cb = (crate::picture::REF_BORDER + 1) >> 1;
+                Some((
+                    crate::picture::PaddedPlane::from_plane(&u_recon, rw / 2, rh / 2, cb),
+                    crate::picture::PaddedPlane::from_plane(&v_recon, rw / 2, rh / 2, cb),
+                ))
+            } else {
+                None
+            };
+            alloc::boxed::Box::new(crate::picture::PaddedRef { y, uv })
+        };
         let ref_frame = ReferenceFrame {
+            padded: Some(padded_ref),
             y_plane: recon,
             // 4:2:0 chroma recon, empty on the monochrome path. Inter
             // prediction needs all three planes; see `ReferenceFrame::u_plane`.
@@ -8881,6 +8913,10 @@ fn encode_tile_rows(
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
     ref_frame_data: Option<&[u8]>,
+    // The same reference luma plane with C's replicated margin
+    // (docs/INTER-ENCODE-PLAN.md §1s item 4). `Some` exactly when
+    // `ref_frame_data` is; the inter arm cannot predict without it.
+    ref_padded_y: Option<&crate::picture::PaddedPlane>,
     mv_map: &[svtav1_types::motion::Mv],
     mv_map_stride: usize,
     sb_qp_offsets: &[i8],
@@ -9600,6 +9636,7 @@ fn encode_tile_rows(
                 }
 
                 let ref_ctx = ref_frame_data.map(|rf| crate::partition::RefFrameCtx {
+                    y_padded: ref_padded_y,
                     y_plane: rf,
                     stride: w,
                     pic_width: w,
@@ -12157,6 +12194,146 @@ mod inter_decision_probe {
             nb.above.map(|a| a.ref_frame),
             Some([1, -1]),
             "the block below must see a LAST_FRAME inter neighbour"
+        );
+    }
+
+    /// **The DPB's reference carries C's replicated margin** — §1s item 4.
+    ///
+    /// C pads a recon before it becomes a reference
+    /// (`pad_ref_and_set_flags`, enc_dec_process.c:1072-1112, `border =
+    /// BLOCK_SIZE_64 + 4`). The port stored bare planes, and the inter
+    /// prediction filled every out-of-frame sample with the constant **128**
+    /// — a value no decoder produces.
+    ///
+    /// §1t measured why that is a MODE-DECISION defect and not only a
+    /// conformance one: the harness translates frame 1 right by 3 px WITH
+    /// left-edge replication, so at the correct MV `-3` the block's first
+    /// three columns read outside the reference and match EXACTLY only
+    /// against a replicated margin. Against a 128 fill the residual is large
+    /// and C's `skip = 1` is unreachable at any quantizer.
+    ///
+    /// This asserts the three things that break: the margin exists on the
+    /// DPB slot, it replicates the edge in all four directions, and the
+    /// prediction path reads it. The last is a POSITIVE CONTROL with teeth —
+    /// it compares against the 128 the old path would have produced, so a
+    /// padded plane that were built but never consulted fails here.
+    #[test]
+    fn the_dpb_reference_carries_cs_replicated_margin() {
+        use crate::picture::REF_BORDER;
+        use crate::rate_control::RcMode;
+
+        let (w, h) = (64usize, 64usize);
+        let y: Vec<u8> = (0..h)
+            .flat_map(|r| (0..w).map(move |c| (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8)))
+            .collect();
+        let uv = vec![128u8; (w / 2) * (h / 2)];
+        let mut pipeline = EncodePipeline::new(
+            w as u32,
+            h as u32,
+            6,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 40,
+                ..RcConfig::default()
+            },
+            0,
+            64,
+        )
+        .with_bit_depth(8)
+        .with_chroma_420(true);
+        let f0 = pipeline
+            .try_encode_frame_420(&y, &uv, &uv, w)
+            .expect("the video-mode key frame encodes");
+        assert_eq!(f0.len(), 961, "this is not the reference cell");
+
+        let slot = pipeline.dpb.get(0).expect("the key frame refreshed slot 0");
+        let padded = slot
+            .padded
+            .as_ref()
+            .expect("a stored reference must carry its padded twin");
+        assert_eq!(padded.y.border, REF_BORDER);
+        assert_eq!(padded.y.width, w);
+        assert_eq!(padded.y.height, h);
+        let (cu, cv) = padded.uv.as_ref().expect("4:2:0 chroma is reconstructed");
+        // C `(border + ss_x) >> ss_x` at 4:2:0 (enc_dec_process.c:1102).
+        assert_eq!(cu.border, (REF_BORDER + 1) >> 1);
+        assert_eq!(cv.border, (REF_BORDER + 1) >> 1);
+        assert_eq!((cu.width, cu.height), (w / 2, h / 2));
+
+        // The recon this margin replicates. Reading it back off the bare
+        // plane keeps the two representations honest: a padded plane built
+        // from the WRONG buffer would pass every size assertion above.
+        let recon = &slot.y_plane;
+        for r in 0..h {
+            assert_eq!(padded.y.at(0, r as isize), recon[r * w]);
+            for d in 1..=REF_BORDER as isize {
+                assert_eq!(
+                    padded.y.at(-d, r as isize),
+                    recon[r * w],
+                    "left margin at row {r}, depth {d} must replicate column 0"
+                );
+                assert_eq!(
+                    padded.y.at(w as isize - 1 + d, r as isize),
+                    recon[r * w + w - 1],
+                    "right margin at row {r}, depth {d}"
+                );
+            }
+        }
+        for c in 0..w {
+            for d in 1..=REF_BORDER as isize {
+                assert_eq!(
+                    padded.y.at(c as isize, -d),
+                    recon[c],
+                    "top margin at col {c}, depth {d}"
+                );
+                assert_eq!(
+                    padded.y.at(c as isize, h as isize - 1 + d),
+                    recon[(h - 1) * w + c],
+                    "bottom margin at col {c}, depth {d}"
+                );
+            }
+        }
+        // The CORNERS are the part `generate_padding` gets right by
+        // replicating the already-padded first and last ROWS, not by a
+        // second horizontal pass — worth pinning, because a port that padded
+        // vertically first leaves them zero.
+        assert_eq!(padded.y.at(-1, -1), recon[0]);
+        assert_eq!(padded.y.at(w as isize, h as isize), recon[h * w - 1]);
+
+        // The prediction path reads it. `generate_inter_pred` is `pub(crate)`
+        // only through `partition`, so drive it the way the search does: a
+        // 8x8 block at the frame's left edge with a full-pel MV of -3, whose
+        // first three columns are OUTSIDE the reference.
+        let rfc = crate::partition::RefFrameCtx {
+            y_plane: recon,
+            stride: w,
+            pic_width: w,
+            pic_height: h,
+            mv_map: None,
+            mv_map_stride: 0,
+            y_padded: Some(&padded.y),
+        };
+        let pred = crate::partition::generate_inter_pred_for_test(
+            &rfc,
+            svtav1_types::motion::Mv { x: -24, y: 0 },
+            0,
+            0,
+            8,
+            8,
+        );
+        for r in 0..8usize {
+            for c in 0..8usize {
+                let want = recon[r * w + (c as isize - 3).max(0) as usize];
+                assert_eq!(
+                    pred[r * 8 + c],
+                    want,
+                    "prediction at ({c}, {r}) must come from the replicated margin, not 128"
+                );
+            }
+        }
+        assert_ne!(
+            pred[0], 128,
+            "the out-of-frame column still reads the 128 fill this replaced"
         );
     }
 }

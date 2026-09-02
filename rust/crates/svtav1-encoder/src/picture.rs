@@ -100,6 +100,96 @@ pub struct DecodedPictureBuffer {
     slots: [Option<alloc::sync::Arc<ReferenceFrame>>; REF_FRAMES],
 }
 
+/// C `scs->border` (`Globals/enc_handle.c:4256`): `BLOCK_SIZE_64 + 4`, the
+/// margin every REFERENCE picture buffer carries.
+///
+/// It is not decoration. AV1 clamps a motion vector so the predicted block
+/// plus its filter taps stays inside the frame PLUS this margin, and the MC
+/// then indexes NEGATIVE offsets from pixel (0, 0) — so a reference stored
+/// without it cannot answer a legal MV at all. `docs/INTER-ENCODE-PLAN.md`
+/// §1t measured the consequence on the campaign's own cell: the harness
+/// translates frame 1 right by 3 px with left-edge replication, so at the
+/// correct MV `-3` the block's first three columns read outside the frame and
+/// match EXACTLY only against a replicated margin. With a zero- or
+/// 128-filled margin the residual is non-zero and C's `skip = 1` is not
+/// reachable, which makes this a MODE-DECISION requirement and not only a
+/// decoder-conformance one.
+pub const REF_BORDER: usize = 64 + 4;
+
+/// One reference plane with C's replicated margin applied
+/// (`svt_aom_generate_padding`, driven from `pad_ref_and_set_flags`,
+/// enc_dec_process.c:1088-1112).
+#[derive(Debug, Clone)]
+pub struct PaddedPlane {
+    /// The whole allocation, `stride * (height + 2 * border)` bytes.
+    pub buf: alloc::vec::Vec<u8>,
+    /// Index of pixel (0, 0) — C's `y_buffer - buffer_y`.
+    pub origin: usize,
+    pub stride: usize,
+    /// The plane's own dims, NOT counting the margin.
+    pub width: usize,
+    pub height: usize,
+    pub border: usize,
+}
+
+impl PaddedPlane {
+    /// Copy a bare `width x height` plane into a bordered allocation and
+    /// replicate its edges, exactly as C pads a reference picture.
+    ///
+    /// `border` is [`REF_BORDER`] for luma and `(REF_BORDER + 1) >> 1` for
+    /// 4:2:0 chroma — C's `(ref_pic_ptr->border + ss_x) >> ss_x`
+    /// (enc_dec_process.c:1098-1112).
+    #[must_use]
+    pub fn from_plane(src: &[u8], width: usize, height: usize, border: usize) -> Self {
+        let stride = width + 2 * border;
+        let origin = border * stride + border;
+        let mut buf = alloc::vec![0u8; stride * (height + 2 * border)];
+        for r in 0..height {
+            buf[origin + r * stride..origin + r * stride + width]
+                .copy_from_slice(&src[r * width..r * width + width]);
+        }
+        crate::port_preanalysis::generate_padding(
+            &mut buf, origin, stride, width, height, border, border,
+        );
+        Self {
+            buf,
+            origin,
+            stride,
+            width,
+            height,
+            border,
+        }
+    }
+
+    /// The sample at `(x, y)` in PLANE coordinates, where negative values and
+    /// values past the plane's own dims read the replicated margin.
+    ///
+    /// Out-of-margin coordinates PANIC rather than clamp: a legal MV cannot
+    /// produce one (that is what the clamp in `compute_subpel_params` is
+    /// for), so silently clamping would hide an MV-clamp defect as a
+    /// pixel divergence.
+    #[must_use]
+    pub fn at(&self, x: isize, y: isize) -> u8 {
+        let b = self.border as isize;
+        assert!(
+            x >= -b
+                && y >= -b
+                && x < (self.width + self.border) as isize
+                && y < (self.height + self.border) as isize,
+            "({x}, {y}) is outside the reference's {b}-pixel margin"
+        );
+        self.buf[(self.origin as isize + y * self.stride as isize + x) as usize]
+    }
+}
+
+/// The three padded planes of one reference picture.
+#[derive(Debug, Clone)]
+pub struct PaddedRef {
+    pub y: PaddedPlane,
+    /// 4:2:0 chroma. `None` on a monochrome encode, where there is none.
+    pub uv: Option<(PaddedPlane, PaddedPlane)>,
+}
+
 /// A reference frame stored in the DPB.
 #[derive(Debug, Clone)]
 pub struct ReferenceFrame {
@@ -141,6 +231,16 @@ pub struct ReferenceFrame {
     /// what `PRIMARY_REF_NONE` means, so the failure mode is a wrong stream,
     /// never a panic. See [`crate::port_frame_cdf`].
     pub frame_cdfs: Option<alloc::sync::Arc<crate::port_frame_cdf::FrameCdfs>>,
+    /// The same recon with C's replicated reference margin
+    /// ([`PaddedRef`]), which is the form INTER PREDICTION indexes — see
+    /// [`REF_BORDER`] for why the margin is load-bearing for the DECISION
+    /// and not only for conformance.
+    ///
+    /// `None` only on a frame whose recon was not stored (there is none
+    /// today); the bare planes above stay because every non-MC reader —
+    /// TPL's SB qp offsets, the open-loop ME's own pyramid — indexes them
+    /// at frame stride.
+    pub padded: Option<alloc::boxed::Box<PaddedRef>>,
     /// The chroma twin of [`Self::cdef_y_strengths`]
     /// (`ref_cdef_strengths[1][..num]`).
     pub cdef_uv_strengths: Vec<u8>,
@@ -290,6 +390,7 @@ mod tests {
         assert_eq!(dpb.occupied_slots(), 0);
 
         let frame = ReferenceFrame {
+            padded: None,
             y_plane: alloc::vec![128u8; 64 * 64],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],
@@ -311,6 +412,7 @@ mod tests {
     fn dpb_refresh() {
         let mut dpb = DecodedPictureBuffer::new();
         let frame = ReferenceFrame {
+            padded: None,
             y_plane: alloc::vec![128u8; 16],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],

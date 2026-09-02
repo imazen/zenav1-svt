@@ -141,6 +141,14 @@ pub struct RefFrameCtx<'a> {
     pub mv_map: Option<&'a [svtav1_types::motion::Mv]>,
     /// Stride of the MV map (= frame_width / 8).
     pub mv_map_stride: usize,
+    /// The SAME reference luma plane with C's replicated margin
+    /// (`picture::PaddedPlane`, `docs/INTER-ENCODE-PLAN.md` §1s item 4).
+    ///
+    /// `y_plane` above is the bare recon at frame stride, which every
+    /// non-MC reader indexes; this is the form INTER PREDICTION needs,
+    /// because a legal MV puts the predicted block partly OUTSIDE the frame
+    /// and the samples there are the replicated edge, not a constant.
+    pub y_padded: Option<&'a crate::picture::PaddedPlane>,
 }
 
 /// The frame-constant half of the inter MVP environment — everything
@@ -2193,6 +2201,22 @@ fn encode_with_neighbors(
 ///
 /// Generate an inter prediction block from reference + MV with bilinear interpolation.
 /// Supports full-pel, half-pel, and quarter-pel positions.
+/// [`generate_inter_pred`] for the padded-reference gate in
+/// `pipeline::inter_decision_probe`, which must drive the REAL prediction
+/// path rather than a copy of it — a second implementation could read the
+/// margin correctly while the live one still filled 128.
+#[cfg(test)]
+pub fn generate_inter_pred_for_test(
+    rfc: &RefFrameCtx,
+    mv: svtav1_types::motion::Mv,
+    abs_x: usize,
+    abs_y: usize,
+    width: usize,
+    height: usize,
+) -> alloc::vec::Vec<u8> {
+    generate_inter_pred(rfc, mv, abs_x, abs_y, width, height)
+}
+
 fn generate_inter_pred(
     rfc: &RefFrameCtx,
     mv: svtav1_types::motion::Mv,
@@ -2207,36 +2231,43 @@ fn generate_inter_pred(
     let fy = (mv.y & 7) as i32;
     let n = width * height;
     let mut pred = alloc::vec![128u8; n];
+    // Sample the reference through its REPLICATED MARGIN. The previous form
+    // read `rfc.y_plane` at frame stride and left every out-of-frame sample
+    // at 128 — a constant no decoder produces, so any block whose MV reached
+    // outside the frame reconstructed differently on the two sides
+    // (`docs/INTER-ENCODE-PLAN.md` §1s item 5). It is also a MODE-DECISION
+    // error, not only a conformance one: §1t measured the campaign's own
+    // cell, where the correct MV matches EXACTLY against a replicated margin
+    // and not at all against a filled one.
+    //
+    // The interpolation itself is still the homegrown BILINEAR, which is not
+    // C's 8-tap convolve — that swap is item 5's other half and belongs in
+    // whatever MD path survives item 1, so it is NOT done here.
+    let Some(rp) = rfc.y_padded else {
+        // No padded reference means no inter prediction. Refuse rather than
+        // fall back to the 128 fill this replaced.
+        return pred;
+    };
     for r in 0..height {
         for c in 0..width {
-            let ry = int_y + r as i32;
-            let rx = int_x + c as i32;
-            if ry >= 0
-                && (ry as usize + 1) < rfc.pic_height
-                && rx >= 0
-                && (rx as usize + 1) < rfc.pic_width
-            {
-                let off = ry as usize * rfc.stride + rx as usize;
-                let val = if fx == 0 && fy == 0 {
-                    rfc.y_plane[off] as i32
-                } else if fy == 0 {
-                    ((8 - fx) * rfc.y_plane[off] as i32 + fx * rfc.y_plane[off + 1] as i32 + 4) >> 3
-                } else if fx == 0 {
-                    ((8 - fy) * rfc.y_plane[off] as i32
-                        + fy * rfc.y_plane[off + rfc.stride] as i32
-                        + 4)
-                        >> 3
-                } else {
-                    let tl = rfc.y_plane[off] as i32;
-                    let tr = rfc.y_plane[off + 1] as i32;
-                    let bl = rfc.y_plane[off + rfc.stride] as i32;
-                    let br = rfc.y_plane[off + rfc.stride + 1] as i32;
-                    let top = (8 - fx) * tl + fx * tr;
-                    let bot = (8 - fx) * bl + fx * br;
-                    ((8 - fy) * top + fy * bot + 32) >> 6
-                };
-                pred[r * width + c] = val.clamp(0, 255) as u8;
-            }
+            let ry = (int_y + r as i32) as isize;
+            let rx = (int_x + c as i32) as isize;
+            let val = if fx == 0 && fy == 0 {
+                i32::from(rp.at(rx, ry))
+            } else if fy == 0 {
+                ((8 - fx) * i32::from(rp.at(rx, ry)) + fx * i32::from(rp.at(rx + 1, ry)) + 4) >> 3
+            } else if fx == 0 {
+                ((8 - fy) * i32::from(rp.at(rx, ry)) + fy * i32::from(rp.at(rx, ry + 1)) + 4) >> 3
+            } else {
+                let tl = i32::from(rp.at(rx, ry));
+                let tr = i32::from(rp.at(rx + 1, ry));
+                let bl = i32::from(rp.at(rx, ry + 1));
+                let br = i32::from(rp.at(rx + 1, ry + 1));
+                let top = (8 - fx) * tl + fx * tr;
+                let bot = (8 - fx) * bl + fx * br;
+                ((8 - fy) * top + fy * bot + 32) >> 6
+            };
+            pred[r * width + c] = val.clamp(0, 255) as u8;
         }
     }
     pred

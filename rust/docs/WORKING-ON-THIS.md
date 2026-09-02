@@ -392,6 +392,13 @@ from a real panic. MEASURED 2026-09-01: `regression_spotcheck.sh` reported
 the same commit. Run the byte gates ONE AT A TIME, and treat "port failed to
 encode" as "check for a concurrent cargo" before treating it as a regression.
 
+**Editing the tree DURING a byte sweep does the same thing from the other
+side.** `identity_run`'s rebuild fails on a half-finished edit, and
+`identity_full_8bit.sh` records the cells that were in flight as `RS_ERR`.
+MEASURED 2026-09-01: `1091 / 1100` with the last NINE cells failing
+contiguously and all nine passing individually. A CONTIGUOUS TAIL of failures
+is the tell — a real regression does not respect sweep order.
+
 ## 5b. Drills you don't have to write
 
 Localizing a divergence starts with narrowing WHAT changed, not reading code.
