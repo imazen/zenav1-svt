@@ -77,7 +77,8 @@ Crates are not published to crates.io yet — depend by git.
   harness only. New gate `tools/inter_fh_gate.sh`. No regression:
   `identity_full_8bit` 1100/1100, `regression_spotcheck` 64/64, video-key
   matrix 58/60, six pinned still cells at 290/839/63/171/580/693 B, workspace
-  2422/2422 (aarch64); cross-ISA on x86-64: same gate, same result.
+  2422/2422 (aarch64); cross-ISA on x86-64: the same gate with the same
+  result, spot-check 65/65, workspace 2432/2432.
 - **The inter frame header is BYTE-IDENTICAL to C's** — all 15 bytes of frame
   1 on `gradient 64x64 q40 p6` (`docs/INTER-ENCODE-PLAN.md` §1r). The residual
   was never a CDEF search difference: C does not search on that frame.

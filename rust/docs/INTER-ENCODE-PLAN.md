@@ -2312,9 +2312,13 @@ video-key matrix **58 / 60** (unchanged — `gradient p0` and `screenrep p0`
 still open), the six pinned still cells byte-identical at
 290 / 839 / 63 / 171 / 580 / 693 B, and `cargo nextest run --workspace`
 **2422 / 2422** on aarch64 (2418 + the four new
-`update_cdef_filters_on_ref_info` unit tests). Cross-ISA on x86-64 (`r7900x`): the same inter
-frame-header gate passes with the same result, and `regression_spotcheck.sh`
-64 / 64.
+`update_cdef_filters_on_ref_info` unit tests). Cross-ISA on x86-64 (`r7900x`, from `main@origin` after
+the chunk landed): the inter frame-header gate passes with the SAME result
+(frame 0 identical, frame 1 header field-exact with an empty open set),
+`regression_spotcheck.sh` **65 / 65** and `cargo nextest run --workspace`
+**2432 / 2432**. Both the reference-derived CDEF path and the header assembly
+are therefore ISA-independent, which was not a given: the CDEF pick is a SIMD
+search on both arms.
 
 Two things are unchanged BY CONSTRUCTION rather than only by measurement, which
 is the stronger claim:
