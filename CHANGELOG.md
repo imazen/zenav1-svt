@@ -83,7 +83,7 @@ Crates are not published to crates.io yet — depend by git.
   whose own grid lags cannot write a context no decoder can reproduce; new
   `EntropyCtx::mvp_grid` is that grid, stamped by every coded block.
 - **INTER PREDICTION — C's 8-tap convolve replaces a homegrown bilinear**
-  (243180b0). `port_pd_pred::av1_inter_prediction_light_pd1` and the
+  (81be1cab). `port_pd_pred::av1_inter_prediction_light_pd1` and the
   `port_convolve` family under it were ported and tier-1 gated and nothing in
   the encoder called them. New `crate::inter_pred_arm` is the adapter — block
   origin + size + padded reference + eighth-pel MV into `BlkGeom` /
