@@ -1610,16 +1610,16 @@ impl EncodePipeline {
         if !is_key && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "inter frames are not implemented for the public API — not because the machinery \
-                 is missing, but because its ENVELOPE is 55 of 96 cells. CDF continuation, the \
+                 is missing, but because its ENVELOPE is 67 of 96 cells. CDF continuation, the \
                  inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame \
                  stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, \
                  inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid \
                  ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, \
-                 frames=2 low-delay P) 55 cells are byte-identical to C on BOTH frames, 40 \
+                 frames=2 low-delay P) 67 cells are byte-identical to C on BOTH frames, 28 \
                  differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be \
                  right on the closed cells and silently wrong elsewhere, which is exactly the \
                  outcome docs/WORKING-ON-THIS.md section 6 refuses. See \
-                 docs/INTER-ENCODE-PLAN.md section 1z^19. This encoder is still-image only: \
+                 docs/INTER-ENCODE-PLAN.md section 1z^21. This encoder is still-image only: \
                  encode a single key frame",
             )));
         }
@@ -4260,7 +4260,16 @@ impl EncodePipeline {
         // exists precisely so a flat GOP does not mark every picture highest).
         // Written out rather than folded to constants so the inter chunks
         // inherit the rule instead of re-deriving it.
-        let dlf_temporal_layer_index: u8 = 0;
+        //
+        // INTER (2026-09-02): this is now the REAL `temporal_layer`, not the
+        // key frame's literal 0. On the campaign's flat low-delay-P GOP it is
+        // still 0 for every picture — which is the point: `is_highest_layer`
+        // ANDs in `hierarchical_levels != 0` (`pd_process.c:5560`, its own
+        // comment says "for flat, set is_highest_layer to false to avoid using
+        // aggressive settings for all pictures"), so `is_not_last_layer` is
+        // TRUE on a flat GOP and `get_dlf_level_default` gives 3 at <= M6 and
+        // 6 at <= M9. Both are ENABLED levels; the port used to signal 0.
+        let dlf_temporal_layer_index: u8 = temporal_layer;
         let dlf_is_base = dlf_temporal_layer_index == 0;
         let dlf_is_highest_layer = dlf_temporal_layer_index == self.gop.hierarchical_levels
             && self.gop.hierarchical_levels != 0;
@@ -4330,9 +4339,103 @@ impl EncodePipeline {
         let dlf_ctrls = crate::port_enc_mode_config::ctrls::set_dlf_controls(dlf_level).ok_or(
             EncodeError::UnsupportedConfig("dlf level outside svt_aom_set_dlf_controls' 0..=7"),
         )?;
-        let lf_levels = if sc_derivation.allow_intrabc || coded_lossless {
+
+        // C `ppcs->ref_frame_type_arr[0 .. tot_ref_frame_types]`, restricted
+        // to the SINGLE-reference entries (`rf[1] == NONE_FRAME`) — the only
+        // ones either picker reads. `set_all_ref_frame_type`
+        // (`pd_process.c:1044`, ported at `port_picstruct`) lays list 0's
+        // singles down first, then list 1's, then the compounds, so the
+        // singles are exactly the first `ref_list0_count_try +
+        // ref_list1_count_try` entries and the DPB slot for each is
+        // `rps.ref_dpb_index[LAST + i]` / `[BWD + i]`.
+        //
+        // EMPTY on a key frame, which is what makes `tot_ref_frame_types == 0`
+        // and leaves every reference-dependent branch inert.
+        let dlf_refs: alloc::vec::Vec<crate::dlf_arm::RefDlfState> = match pic_decision.as_ref() {
+            Some(pic) if !is_key => {
+                let mut v = alloc::vec::Vec::new();
+                let mut push = |idx: usize| {
+                    if let Some(rf) = self.dpb.get(pic.rps.ref_dpb_index[idx] as usize) {
+                        v.push(crate::dlf_arm::RefDlfState {
+                            filter_level: [
+                                i32::from(rf.lf_levels[0]),
+                                i32::from(rf.lf_levels[1]),
+                                i32::from(rf.lf_levels[2]),
+                                i32::from(rf.lf_levels[3]),
+                            ],
+                            dlf_dist_dev: rf.dlf_dist_dev,
+                        });
+                    }
+                };
+                for i in 0..usize::from(pic.ref_list0_count_try) {
+                    push(crate::port_picstruct::LAST + i);
+                }
+                for i in 0..usize::from(pic.ref_list1_count_try) {
+                    push(crate::port_picstruct::BWD + i);
+                }
+                v
+            }
+            _ => alloc::vec::Vec::new(),
+        };
+        // C `average_me_sad` (`deblocking_filter.c:982-986`): the MEAN of
+        // `ppcs->rc_me_distortion[b64]` over `b64_total_count`, which
+        // `motion_estimation.c:2778` fills with the b64's 8x8 SAD sum at
+        // <= 480p and its 16x16 sum above. Read ONLY by `me_based_dlf_skip`,
+        // i.e. only at a `dlf_level` whose controls set
+        // `zero_filter_strength_lvl` (5 / 6 / 7), and never on an I_SLICE.
+        //
+        // MEASURED 2026-09-02, and it is why this is not optional at p8:
+        // `uniform` content translates exactly, so every b64's SAD is 0 and C
+        // writes `loop_filter_level = 0` on every one of its inter frames
+        // DESPITE a nonzero reference level — while `gradient 16x16 q40 p8`
+        // clears the threshold and C writes 9. `screen 16x16 q40 p8` lands
+        // BETWEEN the two thresholds and C writes luma 9 with chroma 0.
+        let dlf_avg_me_sad: u32 = match frame_me.as_ref() {
+            Some(me) if !me.per_b64.is_empty() => {
+                let total: u64 = me
+                    .per_b64
+                    .iter()
+                    .map(|b| u64::from(b.rc_me_distortion))
+                    .sum();
+                (total / me.per_b64.len() as u64) as u32
+            }
+            _ => 0,
+        };
+        let dlf_pick_inputs = crate::dlf_arm::DlfPickInputs {
+            ctrls: dlf_ctrls,
+            frame_type_is_key: is_key,
+            // `pcs->slice_type == I_SLICE`. This port has no intra-only
+            // non-key frame, so it equals `is_key`; C reads two fields and so
+            // does `DlfPickInputs`.
+            is_intra_slice: is_key,
+            // `frame_is_boosted` / `frame_is_leaf` come from the picture
+            // decision's `update_type`, the same source `cdef_frame_is_boosted`
+            // below already uses. A KEY frame is intra-only and KF_UPDATE, so
+            // boosted is true and leaf is false either way.
+            frame_is_boosted: pic_decision
+                .as_ref()
+                .map_or(is_key, crate::port_picstruct::frame_is_boosted),
+            frame_is_leaf: pic_decision
+                .as_ref()
+                .is_some_and(|pic| pic.update_type == crate::port_picstruct::FrameUpdateType::Lf),
+            hierarchical_levels: self.gop.hierarchical_levels,
+            temporal_layer_index: dlf_temporal_layer_index,
+            input_resolution: dlf_resolution,
+            refs: &dlf_refs,
+            avg_me_sad: dlf_avg_me_sad,
+            base_qindex,
+            bit_depth: self.bit_depth,
+        };
+        // C `dlf_process.c:89-91` seeds all three to -1 ("not computed"); only
+        // the non-SB-based path overwrites them, so a frame that takes the
+        // by-q arm genuinely has no measurement and its `dlf_dist_dev` must
+        // stay -1 for the NEXT frame to skip rather than average.
+        let mut dlf_zero_filt_sse: i64 = -1;
+        let mut dlf_best_filt_sse: i64 = -1;
+        let mut dlf_full_image_ran = false;
+        let mut lf_levels = if sc_derivation.allow_intrabc || coded_lossless {
             crate::deblock::LfLevels::default()
-        } else if is_key {
+        } else {
             if dlf_ctrls.enabled == 0 {
                 // `enable_dlf_flag == 0` or a level-0 ladder entry: C neither
                 // picks nor applies, and the header codes zeros.
@@ -4340,7 +4443,7 @@ impl EncodePipeline {
             } else if dlf_ctrls.sb_based_dlf == 0 {
                 let (su, sv) = chroma.unwrap_or((&[][..], &[][..]));
                 let early_exit_convergence = i32::from(dlf_ctrls.early_exit_convergence);
-                match recon10.as_ref() {
+                let pick = match recon10.as_ref() {
                     // bd10: search on the true 10-bit unfiltered recon
                     // against the true 10-bit source, with the highbd lpf
                     // kernels and `svt_full_distortion_kernel16_bits`
@@ -4378,7 +4481,7 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)?
+                        crate::deblock::pick_filter_levels_full_image(&input, &dlf_pick_inputs)?
                     }
                     None => {
                         let input = crate::deblock::DlfSearchInput::<u8> {
@@ -4396,15 +4499,20 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_search(&input)?
+                        crate::deblock::pick_filter_levels_full_image(&input, &dlf_pick_inputs)?
                     }
-                }
+                };
+                dlf_full_image_ran = true;
+                dlf_zero_filt_sse = pick.zero_filt_sse;
+                dlf_best_filt_sse = pick.best_filt_sse;
+                pick.levels
             } else {
-                // `sb_based_dlf = 1` -> LPF_PICK_FROM_Q.
-                crate::deblock::pick_filter_levels_key_frame(base_qindex, self.bit_depth)
+                // `sb_based_dlf = 1` -> LPF_PICK_FROM_Q
+                // (`enc_dec_process.c:3132`). This path computes no SSE, so
+                // `dlf_dist_dev` stays -1 and the NEXT frame skips this one
+                // rather than reading a zero.
+                crate::dlf_arm::pick_filter_level_by_q(&dlf_pick_inputs)
             }
-        } else {
-            crate::deblock::LfLevels::default()
         };
         // The in-loop post-filters (deblock -> CDEF) are applied here for two
         // possible consumers: (1) an in-frame search that measures distortion
@@ -4429,6 +4537,24 @@ impl EncodePipeline {
             || !is_single_frame;
         if self.recon_output {
             self.last_recon_unfiltered = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+        }
+        // C `dlf_process.c:103-112`, and it is NOT dead code on the inter
+        // path even though the port's key-frame comment used to say the guard
+        // "can never fire": `search_filter_level` seeds its hill climb at
+        // `last_frame_filter_level`, which is 0 on a key frame (so `ss_err[0]`
+        // is always evaluated and `zero_filt_sse` is always set) but is the
+        // REFERENCE'S level on an inter frame, so level 0 can go unvisited.
+        // C then measures the unfiltered SSE explicitly, and shuts the filter
+        // off if filtering did not actually beat not filtering.
+        //
+        // The ref-average arms reach here with BOTH sentinels intact (they
+        // never call the search at all), which is exactly the state where C
+        // recomputes `zero` and leaves `best` for after the filter.
+        if dlf_full_image_ran && dlf_zero_filt_sse == -1 && lf_levels.any() {
+            dlf_zero_filt_sse = crate::deblock::plane_sse(&encode_input, &recon, w, h);
+            if dlf_best_filt_sse != -1 && dlf_zero_filt_sse <= dlf_best_filt_sse {
+                lf_levels = crate::deblock::LfLevels::default();
+            }
         }
         if let Some((y10, u10, v10)) = recon10.as_mut()
             && lf_levels.any()
@@ -4459,7 +4585,22 @@ impl EncodePipeline {
                 &lf_levels,
                 lf_sharp_eff, // = signaled loop_filter_sharpness
             );
+            // C `dlf_process.c:114-117`: the FILTERED SSE, measured after
+            // `svt_av1_loop_filter_frame`, when the search did not leave one.
+            if dlf_full_image_ran && dlf_best_filt_sse == -1 {
+                dlf_best_filt_sse = crate::deblock::plane_sse(&encode_input, &recon, w, h);
+            }
         }
+        // C `pcs->dlf_dist_dev` (`dlf_process.c:119`) — the per-mille SSE
+        // improvement this frame's own deblock bought, which the NEXT frame
+        // reads off the reference object to decide whether to filter at all.
+        // -1 ("never computed") everywhere the SB-based arm ran, per
+        // `dlf_process.c:92`.
+        let dlf_dist_dev = if dlf_full_image_ran {
+            crate::dlf_arm::dlf_dist_dev(lf_levels, dlf_zero_filt_sse, dlf_best_filt_sse)
+        } else {
+            -1
+        };
 
         // Step 6a': CDEF — decoder order is deblock -> CDEF (-> restoration,
         // unported). Key frames signal the qp-picked strengths
@@ -5652,6 +5793,12 @@ impl EncodePipeline {
                 }
                 alloc::sync::Arc::new(c)
             }),
+            // C `rest_process.c:200-204`: the loop-filter levels this frame's
+            // HEADER signalled, plus the SSE-improvement measure. The next
+            // frame's deblock level is derived from BOTH — see
+            // `crate::dlf_arm`.
+            lf_levels: lf_levels.levels,
+            dlf_dist_dev,
             width: self.width,
             height: self.height,
             display_order,

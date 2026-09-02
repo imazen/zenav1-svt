@@ -38,6 +38,20 @@
 # to a PD0 tree of 8x8s decided from an INTRA DC prediction of a translated
 # frame (`diag 64x64 q40 p8`: 35 B against C's 22).
 #
+# The TWELVE cells promoted on 2026-09-02 for §1z21 witness the DLF VIDEO
+# ARM. `pipeline.rs` handed every non-key frame `LfLevels::default()`, so the
+# port signalled `loop_filter_level = 0` on every inter frame while C signalled
+# 8/9/12/16/20/24. With `dlf_arm` reverted to that constant each of the twelve
+# goes back to a frame-1 header that differs at `loop_filter_level[0]` —
+# measured, not asserted. They cover BOTH arms of the ladder on purpose:
+# the seven p6 cells (`diag 16x16 q20`, `diag 16x16 q40`, `diag 64x64 q55`,
+# `diag 128x128 q55`) exercise dlf_level 3, whose levels are COPIED from the
+# reference with no search; the five p8 ones (`gradient 16x16 q40/q55`,
+# `screen 16x16 q40/q55`, `diag 72x72 q40`) exercise dlf_level 6's by-q closed
+# form with the INTER slope, and `screen 16x16 q40 p8` in particular pins
+# `me_based_dlf_skip`'s SEPARATE luma and chroma thresholds — C writes luma 9
+# with chroma 0 there, which a single-threshold implementation cannot produce.
+#
 # The `uniform` cells are the ones that witness §1z''s intra-rate defect:
 # every one of the six p6 ones was a DIFFERS before it and is byte-identical
 # after. The eight p8 cells added on 2026-09-02 witness §1z''''s dropped inter
@@ -52,48 +66,20 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 55 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 67 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z19. The envelope this
-    # session: 40 (§1z15) -> 49 (§1z17, MD's `is_inter_ctx` was reading an
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z21. The envelope this
+    # campaign: 40 (§1z15) -> 49 (§1z17, MD's `is_inter_ctx` was reading an
     # INVERTED context table) -> 55 (§1z19, `av1_find_samples` ported so
-    # `num_proj_ref` is real and the motion-mode ALPHABET matches C's).
+    # `num_proj_ref` is real and the motion-mode ALPHABET matches C's) ->
+    # 67 (§1z21, the DLF video arm — the port signalled
+    # `loop_filter_level = 0` on EVERY inter frame because
+    # `svt_av1_pick_filter_level` was ported only in its key-frame corner).
     #
     # Listed in full, and regenerated wholesale rather than appended to: a
     # gate that samples its own frontier reports a smaller regression than it
     # should, and a hand-appended list drifts from the sweep it claims to
     # assert. `tools/inter_byte_matrix.sh` is that sweep.
-    "diag 16 16 20 8 2 3"
-    "diag 16 16 55 6 2 3"
-    "diag 64 64 20 8 2 3"
-    "diag 64 64 40 8 2 3"
-    "diag 64 64 55 8 2 3"
-    "diag 128 128 40 8 2 3"
-    "diag 128 128 55 8 2 3"
-    "gradient 16 16 20 6 2 3"
-    "gradient 16 16 20 8 2 3"
-    "gradient 16 16 40 6 2 3"
-    "gradient 16 16 55 6 2 3"
-    "gradient 64 64 20 8 2 3"
-    "gradient 64 64 40 6 2 3"
-    "gradient 64 64 40 8 2 3"
-    "gradient 64 64 55 6 2 3"
-    "gradient 64 64 55 8 2 3"
-    "gradient 72 72 20 8 2 3"
-    "gradient 72 72 40 6 2 3"
-    "gradient 128 128 40 6 2 3"
-    "gradient 128 128 40 8 2 3"
-    "gradient 128 128 55 6 2 3"
-    "gradient 128 128 55 8 2 3"
-    "screen 16 16 20 6 2 3"
-    "screen 16 16 20 8 2 3"
-    "screen 16 16 40 6 2 3"
-    "screen 16 16 55 6 2 3"
-    "screen 64 64 40 6 2 3"
-    "screen 64 64 55 6 2 3"
-    "screen 64 64 55 8 2 3"
-    "screen 128 128 55 6 2 3"
-    "screen 128 128 55 8 2 3"
     "uniform 16 16 20 6 2 3"
     "uniform 16 16 20 8 2 3"
     "uniform 16 16 40 6 2 3"
@@ -118,6 +104,49 @@ PASS_CELLS=(
     "uniform 128 128 40 8 2 3"
     "uniform 128 128 55 6 2 3"
     "uniform 128 128 55 8 2 3"
+    "gradient 16 16 20 6 2 3"
+    "gradient 16 16 20 8 2 3"
+    "gradient 16 16 40 6 2 3"
+    "gradient 16 16 40 8 2 3"
+    "gradient 16 16 55 6 2 3"
+    "gradient 16 16 55 8 2 3"
+    "gradient 64 64 20 8 2 3"
+    "gradient 64 64 40 6 2 3"
+    "gradient 64 64 40 8 2 3"
+    "gradient 64 64 55 6 2 3"
+    "gradient 64 64 55 8 2 3"
+    "gradient 72 72 20 8 2 3"
+    "gradient 72 72 40 6 2 3"
+    "gradient 72 72 40 8 2 3"
+    "gradient 128 128 40 6 2 3"
+    "gradient 128 128 40 8 2 3"
+    "gradient 128 128 55 6 2 3"
+    "gradient 128 128 55 8 2 3"
+    "diag 16 16 20 6 2 3"
+    "diag 16 16 20 8 2 3"
+    "diag 16 16 40 6 2 3"
+    "diag 16 16 40 8 2 3"
+    "diag 16 16 55 6 2 3"
+    "diag 16 16 55 8 2 3"
+    "diag 64 64 20 8 2 3"
+    "diag 64 64 40 8 2 3"
+    "diag 64 64 55 6 2 3"
+    "diag 64 64 55 8 2 3"
+    "diag 72 72 40 8 2 3"
+    "diag 128 128 40 8 2 3"
+    "diag 128 128 55 6 2 3"
+    "diag 128 128 55 8 2 3"
+    "screen 16 16 20 6 2 3"
+    "screen 16 16 20 8 2 3"
+    "screen 16 16 40 6 2 3"
+    "screen 16 16 40 8 2 3"
+    "screen 16 16 55 6 2 3"
+    "screen 16 16 55 8 2 3"
+    "screen 64 64 40 6 2 3"
+    "screen 64 64 55 6 2 3"
+    "screen 64 64 55 8 2 3"
+    "screen 128 128 55 6 2 3"
+    "screen 128 128 55 8 2 3"
 )
 # Read below as `${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}` — see the same note in
 # `inter_decode_gate.sh`: on bash < 4.4 (`/bin/bash` on macOS is 3.2.57)

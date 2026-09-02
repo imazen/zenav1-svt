@@ -225,7 +225,7 @@ pub struct DlfSearchInput<'a, P: DlfPixel = u8> {
 /// `svt_spatial_full_distortion_kernel` as called by
 /// `picture_sse_calculations` (deblocking_filter.c:743) with the full
 /// aligned plane dims (our frames are 64-aligned by construction).
-fn plane_sse(a: &[u8], b: &[u8], w: usize, h: usize) -> i64 {
+pub fn plane_sse(a: &[u8], b: &[u8], w: usize, h: usize) -> i64 {
     debug_assert!(a.len() >= w * h && b.len() >= w * h);
     let mut sum = 0u64;
     for r in 0..h {

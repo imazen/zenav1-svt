@@ -221,9 +221,12 @@ jobs:
         # It runs on Linux, where `-Wl,--wrap` works, against the same C oracle
         # every step above uses. ~4 min.
         #
-        # It asserts a LIMIT (40 cells byte-identical on BOTH frames) and fails
-        # if a cell regresses OR if a known-open cell silently starts passing
-        # without being promoted.
+        # It asserts a LIMIT (67 cells byte-identical on BOTH frames, as of
+        # docs/INTER-ENCODE-PLAN.md §1z21) and fails if a cell regresses OR if
+        # a known-open cell silently starts passing without being promoted.
+        # The number in this comment is a SCOREBOARD, not the gate: the list in
+        # the script is, and it is regenerated wholesale from
+        # `tools/inter_byte_matrix.sh` rather than appended to.
         run: ./tools/inter_byte_gate.sh
 
       - name: INTER completion gate (does the port ENCODE the cell AT ALL)

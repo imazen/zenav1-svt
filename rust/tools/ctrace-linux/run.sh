@@ -97,12 +97,28 @@ fi
 #
 # The file dumps all APPEND, so truncate first — a stale dump read as fresh is
 # the `SVTAV1_PACKTREE` trap in rust/CLAUDE.md, from the other side.
+# Every env var `wrap_recon.c` reads, PATH vars and SELECTORS together. The
+# drift guard below derives the same set from the source and refuses to run if
+# this list has fallen behind it.
+DUMP_KNOWN=(
+    SVT_CTREE_OUT SVT_PICKPART_OUT SVT_QLEVELS_OUT SVT_CCOEF_OUT
+    SVT_CCOST_OUT SVT_PART_OUT SVT_SEED_OUT SVT_RECON_OUT SVT_RECON_BIN
+    SVT_CEDGE_OUT SVT_FASTCOST_OUT SVT_FULLCOST_OUT SVT_UVLOOP_OUT
+    SVT_UVRATE_OUT SVT_PD0COST_OUT SVT_PD0CFG_OUT SVT_LFRECON_OUT SVT_LFRECON_BIN
+    SVT_FCTX_OUT SVT_CINTER_OUT SVT_HME_OUT SVT_INJCFG_OUT SVT_SUBPEL_OUT
+    SVT_IFCOST_OUT SVT_PICKPART0_OUT SVT_REFSTATS_OUT
+    SVT_PICKPART_MIROW SVT_PICKPART_MICOL SVT_CCOEF_XY SVT_QLEVELS_XY
+    SVT_QLEVELS_COMP SVT_PART_MI SVT_CEDGE_XY SVT_FASTCOST_XY
+    SVT_FULLCOST_XY SVT_UVLOOP_XY SVT_UVRATE_XY SVT_PD0COST_SBY
+    SVT_IFCOST_XY
+)
 DUMP_ENV=()
 for v in SVT_CTREE_OUT SVT_PICKPART_OUT SVT_QLEVELS_OUT SVT_CCOEF_OUT \
     SVT_CCOST_OUT SVT_PART_OUT SVT_SEED_OUT SVT_RECON_OUT SVT_RECON_BIN \
     SVT_CEDGE_OUT SVT_FASTCOST_OUT SVT_FULLCOST_OUT SVT_UVLOOP_OUT \
     SVT_UVRATE_OUT SVT_PD0COST_OUT SVT_PD0CFG_OUT SVT_LFRECON_OUT SVT_LFRECON_BIN \
-    SVT_FCTX_OUT SVT_CINTER_OUT SVT_HME_OUT SVT_INJCFG_OUT SVT_SUBPEL_OUT; do
+    SVT_FCTX_OUT SVT_CINTER_OUT SVT_HME_OUT SVT_INJCFG_OUT SVT_SUBPEL_OUT \
+    SVT_IFCOST_OUT SVT_PICKPART0_OUT SVT_REFSTATS_OUT; do
     if [[ -n "${!v:-}" ]]; then
         # The *_BIN vars are PREFIXES (the interposer appends `.p<plane>`), so
         # they have no file of their own to truncate.
@@ -112,9 +128,49 @@ for v in SVT_CTREE_OUT SVT_PICKPART_OUT SVT_QLEVELS_OUT SVT_CCOEF_OUT \
 done
 for v in SVT_PICKPART_MIROW SVT_PICKPART_MICOL SVT_CCOEF_XY SVT_QLEVELS_XY \
     SVT_QLEVELS_COMP SVT_PART_MI SVT_CEDGE_XY SVT_FASTCOST_XY \
-    SVT_FULLCOST_XY SVT_UVLOOP_XY SVT_UVRATE_XY SVT_PD0COST_SBY; do
+    SVT_FULLCOST_XY SVT_UVLOOP_XY SVT_UVRATE_XY SVT_PD0COST_SBY \
+    SVT_IFCOST_XY; do
     [[ -n "${!v:-}" ]] && DUMP_ENV+=(-e "$v=${!v}")
 done
+
+# DRIFT GUARD, and it is not decoration: the comment above records that
+# SVT_RECON_OUT / SVT_RECON_BIN were missing once and the deblock-level
+# investigation read the resulting silence as "the interposer produced no
+# data". It happened AGAIN — `SVT_IFCOST_OUT` and `SVT_IFCOST_XY` were added to
+# `wrap_recon.c` and never to either list above, so the interposer that found
+# the inverted 4-entry context table (docs/INTER-ENCODE-PLAN.md §1z17) could
+# not have been driven from this host at all. And on its FIRST run against a
+# current `main` the guard immediately found TWO MORE — `SVT_PICKPART0_OUT`
+# and `SVT_REFSTATS_OUT`, the latter being the interposer §1z's frame-2
+# verdict is credited to. Three misses in one file is not a lapse, it is a
+# list that cannot be maintained by hand.
+#
+# So DERIVE the required set from the interposer source instead of trusting a
+# hand-maintained list, and fail LOUDLY on a name that is in neither list. This
+# fires on the NEXT var somebody adds, which is the whole point.
+#
+# Only names that are actually SET are ever forwarded, so an unlisted var is
+# harmless until someone uses it — which is exactly when a silent miss is most
+# expensive. The check therefore runs unconditionally, not only when the var is
+# set.
+WRAP_SRC="$REPO/rust/tools/capture_c_trace/wrap_recon.c"
+if [[ -r "$WRAP_SRC" ]]; then
+    missing=()
+    while read -r v; do
+        [[ -n "$v" ]] || continue
+        case " ${DUMP_KNOWN[*]} " in *" $v "*) continue ;; esac
+        missing+=("$v")
+    done < <(grep -o 'getenv("SVT_[A-Z0-9_]*")' "$WRAP_SRC" |
+        sed 's/getenv("//; s/")//' | sort -u)
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "error: $WRAP_SRC reads env vars this script never forwards:" >&2
+        printf '  %s\n' "${missing[@]}" >&2
+        echo "  Add each to DUMP_KNOWN and to the PATH or SELECTOR loop above." >&2
+        echo "  An unforwarded interposer writes INSIDE the container and the host" >&2
+        echo "  sees nothing, which reads as 'C never called this'." >&2
+        exit 2
+    fi
+fi
 
 # The driver's own CONFIGURATION selectors, read by capture_c_trace.c's
 # getenv() calls. Keep this list in sync with them.

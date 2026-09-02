@@ -1182,6 +1182,43 @@ byteVideoKey "video-key-fixed-partition-p11-q55-diag"     diag     64 64 55 11
 # shifts or changes a header field.
 fhInterFrame "inter-frame-header-gradient-p6" gradient 64 64 40 6
 
+# --- The DLF VIDEO ARM: the port signalled loop_filter_level 0 on EVERY inter
+# --- frame, 2026-09-02 (docs/INTER-ENCODE-PLAN.md §1z21). -------------------
+#
+# `pipeline.rs` derived `dlf_level` through the ported ladder and then threw it
+# away for anything but a key frame (`else { LfLevels::default() }`), because
+# `deblock.rs` carried both pickers specialized to a KEY frame. 20 of the 40
+# residual F1DIFF cells differed FIRST at `loop_filter_level[0]`, C writing
+# 8/9/12/16/20/24 against the port's 0.
+#
+# TWO cells because the ladder takes TWO DIFFERENT PICKERS on this flat GOP,
+# and a fix to one says nothing about the other:
+#
+#   p6 -> dlf_level 3 -> sb_based_dlf 0 -> the full-image path, where
+#         `dlf_avg` + `use_ref_avg_y/uv` COPY the reference's levels and no
+#         search runs. OBSERVED before: C 12, port 0. After: 12.
+#   p8 -> dlf_level 6 -> sb_based_dlf 1 -> the by-q closed form with the INTER
+#         slope, gated by `me_based_dlf_skip`'s SEPARATE luma and chroma
+#         thresholds. `screen 16x16 q40 p8` is picked because C writes luma 9
+#         with chroma 0 there — a single-threshold implementation cannot
+#         produce that, and every other p8 cell on this grid is all-on or
+#         all-off. OBSERVED before: C 9, port 0. After: 9.
+#
+# Both are HEADER cells rather than byte cells on purpose: `diag 72x72 q40 p6`
+# still diverges inside the TILE (it is one of §1z21's 28 survivors), so a byte
+# cell could not witness the header fix at all. `tools/inter_byte_gate.sh`
+# carries the twelve cells that went fully byte-identical.
+#
+# NOT cells, and the reason is the rule at the top of this file: `gradient
+# 72x72 q40 p6` (where C's `prev_dlf_dist < 5` arm writes 0 after a frame-0
+# level of 8) and every `uniform` p8 cell (where `me_based_dlf_skip` zeroes on
+# a mean ME SAD of 0) MATCHED before the fix, because the port wrote 0 there
+# too — by accident. They cannot witness it. They are in `inter_byte_gate.sh`
+# as PASS cells, which is where a regression in the opposite direction (a copy
+# without the shut-off) would show up.
+fhInterFrame "inter-dlf-video-arm-refavg-diag-72x72-p6"  diag   72 72 40 6
+fhInterFrame "inter-dlf-video-arm-byq-screen-16x16-p8"   screen 16 16 40 8
+
 # --- PD0 descended BELOW min_sq on an inter frame, 2026-09-02. --------------
 #
 # `Pd0Ctx::pick_q` treated "this node has no d1 shape to cost" as "this node

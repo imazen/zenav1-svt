@@ -1,0 +1,50 @@
+# tools/inter_byte_matrix.sh — the INTER campaign's 96-cell frontier
+#
+# grid    {uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55}
+#         x {p6,p8}, frames=2 low-delay P, SVTAV1_FRAME_SHIFT=3
+# host    Apple M4 Pro, aarch64-apple-darwin
+# date    2026-09-02
+# after   docs/INTER-ENCODE-PLAN.md §1z21 (the DLF VIDEO ARM — the port
+#         signalled loop_filter_level 0 on EVERY inter frame because
+#         `svt_av1_pick_filter_level` was ported only in its key-frame corner)
+#
+#   BOTH 67 / F1DIFF 28 / F0DIFF 1 / CRASH 0
+#   (was 55 / 40 / 1 / 0 on the same grid, MEASURED on this same tree with the
+#    fix reverted — a one-line `|| !is_key` that restores the old constant —
+#    rather than quoted from the plan. §5's "a scan's port= line is a claim
+#    about a BINARY" applies to the baseline as much as to the result, and it
+#    bit this chunk once already: the first pass of both runs was taken on a
+#    checkout 15 commits BEHIND origin/main, including
+#    `d82a19800 fix(inter): every me_*_distortion was normalised by the
+#    PICTURE's area`. Both numbers came out the same after rebasing, which is a
+#    result and not a reason to have skipped the re-measurement.)
+#
+# The twelve cells that moved F1DIFF -> BOTH, all of them §1z20's HEADER half:
+#   diag      16x16  q20 p6      diag      16x16  q40 p6
+#   diag      16x16  q40 p8      diag      16x16  q55 p8
+#   diag      64x64  q55 p6      diag      72x72  q40 p8
+#   diag     128x128 q55 p6      gradient  16x16  q40 p8
+#   gradient  16x16  q55 p8      gradient  72x72  q40 p8
+#   screen    16x16  q40 p8      screen    16x16  q55 p8
+#
+# THE HEADER HALF IS NOW ZERO. §1z20 measured the 40 residual cells as 20 that
+# differ FIRST in the frame header (all at `loop_filter_level[0]`) and 20 that
+# have an identical header and diverge inside the tile. Re-running that
+# classification on this tsv gives 0 header / 28 tile: the eight header cells
+# that did not go all the way to BOTH now match C's loop-filter levels and
+# fall through to the tile divergence the other twenty already had.
+#
+# WHY THE OTHER 28 DID NOT MOVE. They are the PARTITION half, unchanged: the
+# port over-splits the tree on 18 of the 20 §1z20 counted, and the block-level
+# reading on `gradient 64x64 q20 p6` (C codes ONE 64x64 PARTITION_NONE NEWMV
+# where the port codes four 32x32s with the same reference and the same MV)
+# still stands.
+#
+# NOT A REGRESSION ANYWHERE, measured on the same binary: identity_full_8bit
+# 1100/1100, regression_spotcheck 83/83 (81 on main + this chunk's two new
+# cells), nextest --workspace 2483/2483, video_key_matrix 58/60 (the same
+# gradient-p0 / screenrep-p0 pair as before), fctx_gate 96/96,
+# inter_decode_gate 5/5, inter_decode_census 96/96, inter_fh_gate PASS,
+# inter_me_join_gate PASS, inter_completion_scan 0 CRASH. F0DIFF is still
+# exactly 1 — `gradient 128x128 q20 p8`, a video-KEY defect on which every
+# frame-1 reading is void.

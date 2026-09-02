@@ -966,31 +966,68 @@ flag.
 **Where that stands, re-measured 2026-09-02** (this paragraph used to say "the
 frame HEADER is field-exact but for two CDEF strengths, while the TILE is the
 pre-campaign homegrown path", which has been wrong since §1z; it then said
-36/59/1, which §1z¹⁵ superseded): on the campaign's
-96-cell grid — `{uniform,gradient,diag,screen}` x `{16,64,72,128}` x
-`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **55 cells are
-byte-identical on BOTH frames**, 55 have a byte-identical frame 0 and a
-differing frame 1, and 1 still differs on frame 0 — **55 / 40 / 1 as of
-§1z¹⁹**, and **all 96 streams DECODE**. `tools/inter_byte_matrix.sh`
-is that sweep and `tools/inter_byte_gate.sh` asserts the 55.
-`tools/inter_decode_census.sh` asks the OTHER question — does the stream
-decode — of all 96, because "byte-identical" and "decodable" are not the
-same question and 22 cells once answered them differently (§1z¹⁸/§1z¹⁹).
-**The 40 that remain split exactly in half** (§1z²⁰): 20 differ in the frame
-HEADER — `loop_filter_level[0]`, C 12/16/24 against the port's 0, i.e. the
-port switches deblocking OFF and C does not, which is the unported VIDEO arm
-of the DLF level and not a mode-decision defect at all — and 20 have a
-byte-identical header and differ inside the tile. Read §1z²⁰ before opening
-either; it also lists what no longer needs investigating.
+36/59/1, which §1z¹⁵ superseded, then 55/40/1, which §1z²¹ superseded): on
+the campaign's 96-cell grid — `{uniform,gradient,diag,screen}` x
+`{16,64,72,128}` x `{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P —
+**67 cells are byte-identical on BOTH frames**, 28 have a byte-identical
+frame 0 and a differing frame 1, and 1 still differs on frame 0 —
+**67 / 28 / 1 as of §1z²¹**, and **all 96 streams DECODE**.
+`tools/inter_byte_matrix.sh` is that sweep and `tools/inter_byte_gate.sh`
+asserts the 67. `tools/inter_decode_census.sh` asks the OTHER question — does
+the stream decode — of all 96, because "byte-identical" and "decodable" are
+not the same question and 22 cells once answered them differently
+(§1z¹⁸/§1z¹⁹).
+**The residual 28 are ALL the tile** — §1z²⁰ split the then-40 into 20 that
+differ first in the frame HEADER (every one at `loop_filter_level[0]`) and 20
+that differ inside the tile; §1z²¹ closed the header half outright, so
+re-running that classification now gives **0 header / 28 tile**. What is left
+is the PARTITION tree: the port over-splits it, and on `gradient 64x64 q20 p6`
+C codes ONE 64x64 `PARTITION_NONE` `NEWMV` where the port codes four 32x32s
+with the SAME reference and the SAME MV. Read §1z²⁰ and §1z²¹ before opening
+it; §1z²⁰ also lists what no longer needs investigating.
+**And read §1z²¹'s three corrections to §1z²⁰ first** — the plan predicted the
+DLF split would fall on p6-wrong / p8-right, from an `is_not_last_layer` that
+is actually TRUE on a flat GOP (`pd_process.c:5560` ANDs in
+`hierarchical_levels != 0`), so BOTH presets were wrong and by two different
+pickers. A ladder read off the source without running it got the direction
+right and the arms backwards.
 The refusal stays
-because 55 of 96 is not "broadly": a stream the public API emits has to be right
+because 67 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
 Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁶
 for the tile.
 
-**Until 2026-09-02 that 55 included EIGHTEEN CRASHES** — see the
+**Until 2026-09-02 the then-55 F1DIFF included EIGHTEEN CRASHES** — see the
 crash-vs-divergence trap in §5. The sweep now has a CRASH column and fails on
-one; the count above is 55 genuine divergences.
+one; every count above is genuine divergences.
+
+**A STALE CHECKOUT IS THE BRANCH VERSION OF THE STALE-BINARY TRAP, AND THIS
+FILE'S OWN WARNING DID NOT COVER IT** (2026-09-02). The §1z²¹ chunk took its
+baseline, its result and four gate numbers on a working copy whose parent was
+**15 commits behind `origin/main`** — including the `me_*_distortion`
+normalisation fix its own brief had flagged as possibly having moved the cells
+under measurement. TWO numbers disagreed with the brief (spot-check 76 against
+81, nextest 2478 against 2474) and both were written off as a stale brief; the
+real cause was that `tools/regression_spotcheck.sh` had gained 30 lines in the
+commits the checkout was missing. **A number that disagrees with the handoff is
+evidence about the TREE first and about the handoff second.** Run
+`jj log -r '@- | main@origin'` before the first measurement — it takes a
+second, and re-running a 96-cell sweep plus a 1100-cell identity sweep does
+not.
+
+**THE DLF VIDEO ARM WAS ONE `else` ARM, AND IT WAS WORTH TWELVE CELLS**
+(§1z²¹, 2026-09-02). `pipeline.rs` derived `dlf_level` through the ported
+ladder for both arms, mapped it through `set_dlf_controls` — and then handed
+every non-key frame `LfLevels::default()`, because `deblock.rs` carried both
+level pickers SPECIALIZED to a key frame and the inter arms of
+`svt_av1_pick_filter_level` had nowhere to live. The port switched deblocking
+OFF on every inter frame while C signalled 8/9/12/16/20/24.
+This is the FOURTH "the leaf is already ported, a caller passes a constant"
+finding of the campaign, and the second where the constant carried a comment
+explaining why it was faithful — `md_config.rs:948`'s `let dlf_level = 0u8`
+is faithful for the DIFFERENTIAL's shim, which pins `enable_dlf_flag = 0`, and
+was never true of the encoder. **When a constant's justification names a
+specific surface, check whether the code you are reading is that surface.**
 
 **FIXED the same day (§1z¹⁹) — `av1_find_samples` is ported, `num_proj_ref`
 is real, and all 96 streams decode; the census pin is empty.** The entry

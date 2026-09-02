@@ -5501,6 +5501,19 @@ frame has `temporal_layer_index == 0`, so `is_base` is true and
 `is_not_last_layer ? 6 : 0` = **0**. p6 wrong, p8 right — precisely the 20
 cells, and precisely the preset split the census found.
 
+> **THE PARAGRAPH ABOVE IS WRONG, and §1z²¹ measured it wrong.**
+> `is_not_last_layer` is `!ppcs->is_highest_layer` (`enc_mode_config.c:8912`),
+> and `pd_process.c:5560` sets `is_highest_layer = (temporal_layer_index ==
+> hierarchical_levels) && hierarchical_levels != 0` — the second clause exists
+> precisely so a FLAT GOP does not mark every picture highest, and its own
+> comment says so. On `hierarchical_levels == 0` the flag is therefore FALSE
+> and `is_not_last_layer` is **TRUE**: the ladder gives **3** at `<= M6` and
+> **6** at `<= M9`, both ENABLED. Both presets were wrong, by two DIFFERENT
+> pickers (level 3 clears `sb_based_dlf`, level 6 sets it), and C's values are
+> 8/9/12/16/20/24 rather than 12/16/24. The prediction was derived from the
+> source without running it; the correction came from `fh_fields.py` on all 40
+> cells. See §1z²¹.
+
 **The concurrent lane was checked for and FOUND (2026-09-02).** A sibling jj
 workspace (`zenav1-svt--crash1`, marker live) carries unpushed commits
 wiring C's VIDEO arms of `nic_level`, `txt_level`, `cfl_level` and
@@ -5547,8 +5560,10 @@ counts it in the header half.)
 
 #### Order of work
 
-1. **The DLF video arm — 20 cells, one control.** The largest single
-   remaining group, and it is a level derivation, not a search.
+1. ~~**The DLF video arm — 20 cells, one control.**~~ **DONE — §1z²¹**, and it
+   was one `else` arm rather than one control: the ladder was already being
+   run, its result was discarded for every non-key frame. 55 -> 67 BOTH, and
+   the header half of this section's split is now zero.
 2. **The tile-only 20 — the partition tree, not the mode.** The port
    over-splits on 18 of them (above). They start from a much better place
    than any chunk in this campaign has: the port's PME, ME, MVP, NSQ motion search,
@@ -5564,6 +5579,161 @@ coded blocks; the SYNTAX is now correct, §1z¹⁹), inter-intra (0), GLOBALMV
 fast cost (exactly C's, §1z¹⁷) and stream decodability (96 of 96, §1z¹⁹).
 NEARMV is 3 coded blocks on 3 cells and is the only suppressed control left
 with any measured reach at all.
+
+### 1z²¹. The DLF VIDEO ARM — the port switched the deblocking filter OFF on every inter frame (2026-09-02)
+
+Half of §1z²⁰'s residual, closed. **Grid 55 BOTH / 40 F1DIFF / 1 F0DIFF ->
+67 BOTH / 28 F1DIFF / 1 F0DIFF**, 12 cells promoted, none regressed, and
+**every one of the 28 survivors now has a byte-identical frame-1 HEADER** —
+the header/tile split §1z²⁰ measured is now 0 / 28.
+
+**The defect was one `else` arm.** `pipeline.rs` derived `dlf_level` through
+the ported ladder for both arms and mapped it through `set_dlf_controls`, then
+threw the result away for anything but a key frame:
+
+```rust
+let lf_levels = if ... { default }
+    else if is_key { /* the two pickers */ }
+    else { crate::deblock::LfLevels::default() };   // <- every inter frame
+```
+
+`deblock.rs` carried both pickers **specialized to a key frame**, so the inter
+arms of `svt_av1_pick_filter_level` had nowhere to live. They now do:
+`svtav1-encoder/src/dlf_arm.rs` carries C's whole function and
+`deblock::pick_filter_levels_{key_frame,full_search}` delegate to it, so there
+is ONE transcription (the §4 trap that `pd0::inter_full_lambda_8bit` already
+paid for).
+
+#### Three corrections to §1z²⁰, all measured
+
+1. **`is_not_last_layer` is TRUE on this flat GOP, not false.** §1z²⁰ predicted
+   `dlf_level` 6 at p6 and **0 at p8**, i.e. "p6 wrong, p8 right". That is
+   backwards. `is_highest_layer` is `(temporal_layer_index ==
+   hierarchical_levels) && hierarchical_levels != 0` (`pd_process.c:5560`,
+   whose own comment says the second clause exists "for flat, ... to avoid
+   using aggressive settings for all pictures"), so on `hierarchical_levels =
+   0` it is FALSE and `is_not_last_layer` is 1. The ladder therefore gives
+   **3 at `<= M6`** and **6 at `<= M9`** — both ENABLED — and the header half
+   contains p8 cells as well as p6 ones.
+2. **C's values are 8/9/12/16/20/24, not 12/16/24**, and they split cleanly by
+   preset because the two levels take DIFFERENT PICKERS: level 3 clears
+   `sb_based_dlf` (the full-image path) and level 6 sets it (the by-q closed
+   form). The p8 values depend on qindex alone (9 at 160, 24 at 220, on every
+   content class and every size); the p6 values vary with content and size.
+3. **The p6 arm does not SEARCH.** Level 3 sets `dlf_avg`, `use_ref_avg_y` and
+   `use_ref_avg_uv`, so with a reference present and the frame not boosted C
+   takes neither search branch: `lf->filter_level[..]` is seeded from the mean
+   of the references' own levels and kept. Measured on every level-3 cell —
+   C's frame-1 level EQUALS its frame-0 level exactly, luma and chroma
+   (`diag 16x16 q20` 8 -> 8, `diag 72x72 q40` 12 -> 12, `diag 128x128 q55`
+   24 -> 24).
+
+#### The three inter-only behaviours, and the cell that witnesses each
+
+| behaviour | C source | witness |
+|---|---|---|
+| `dlf_avg` + `use_ref_avg_*` copy the reference's levels | `deblocking_filter.c:1180-1196`, `:1264-1268` | `diag 72x72 q40 p6`: frame 0 level 12, frame 1 level 12 |
+| `prev_dlf_dist < 5` turns the copy back OFF | `:1234-1256` | `gradient 72x72 q40 p6`: frame 0 level **8**, frame 1 level **0** |
+| `me_based_dlf_skip` zeroes by MOTION, with SEPARATE luma and chroma thresholds | `:964-1019` | `screen 16x16 q40 p8`: luma **9**, chroma **0** |
+
+The third is the one a naive by-q port gets wrong, and the grid says so
+loudly. Level 6 sets `zero_filter_strength_lvl = 2`, so the threshold is
+`disable_dlf_th[2][in_res] * mult` with `mult = 3` for a leaf (`LF_UPDATE`)
+picture on a flat GOP — 2700 at `<= 240p` — compared against
+`mean(rc_me_distortion[b64])`, and chroma against **twice** it. On `uniform`
+content the translate is exact, the mean SAD is 0, and **C writes
+`loop_filter_level = 0` on every one of its inter frames despite a nonzero
+reference level**; on `gradient 16x16 q40 p8` the same qindex gives 9. A port
+that implemented only the closed form would have signalled 9 on all of them
+and REGRESSED the 24 `uniform` cells that were already BOTH.
+
+**This is the counterexample to §5's "the grid's ME distortion is ZERO"
+warning, and it narrows that warning rather than contradicting it.** §1z¹³
+measured `me_{64,32,16,8}x*_distortion = 0` on C's side for
+`gradient 128x128 q40 p8`. `rc_me_distortion` is a different field (the raw
+8x8 SAD sum at `<= 480p`, `motion_estimation.c:2778`, not area-normalised) and
+it is zero on some cells and not others — which is exactly what the observed
+verdicts require: `gradient 128x128 q40 p8` gets level 0 (mean below the
+threshold) while `gradient 16x16 q40 p8` gets 9. So "ME distortion is zero on
+this grid" is true of the cell it was measured on, not of the grid.
+
+#### `dlf_dist_dev` — the reference state nothing carried
+
+Both new behaviours read reference state the DPB did not hold.
+`ReferenceFrame` gained two fields, mirroring `rest_process.c:200-204`:
+
+* `lf_levels: [u8; 4]` — the levels this frame's HEADER signalled. The by-q
+  picker takes their per-plane MIN and shuts its own filter off when any is
+  zero (`min_ref_filter_level || frame_is_boosted`); the full-image picker
+  takes their MEAN.
+* `dlf_dist_dev: i32` — `1000 - 1000 * best_sse / zero_sse`, the per-mille SSE
+  improvement this frame's own deblock bought (`dlf_process.c:119`).
+  **-1 means "never computed"** and readers must SKIP it, not average it:
+  `dlf_process.c:92` seeds it there and only the non-SB-based path overwrites
+  it, so every `sb_based_dlf` frame genuinely has no measurement. Reading -1 as
+  a small number would trip the `< 5` shut-off on every frame after a
+  fast-path one.
+
+The two SSEs come out of `search_filter_level`, which already returned them and
+whose callers already discarded them. C's `dlf_process.c:103-117` recompute
+guard is ported with them, and it is NOT dead on the inter path even though
+`deblock.rs`'s key-frame comment said the guard "can never fire": the hill
+climb starts at `last_frame_filter_level`, which is 0 on a key frame (so
+`ss_err[0]` is always evaluated) but is the REFERENCE'S level on an inter one,
+so level 0 can go unvisited and `zero_filt_sse` stays at its sentinel.
+
+#### Gate
+
+`tools/inter_byte_gate.sh` PASS_CELLS regenerated wholesale, 55 -> **67**.
+**Mutation-tested both ways**: with the one-line `|| !is_key` revert that
+restores the old constant, the gate reports `67 required, 12 failed` and names
+exactly the twelve promoted cells; restored, `0 failed`. The twelve cover both
+ladder arms on purpose — seven p6 (level 3, the ref-average path) and five p8
+(level 6, the by-q path), with `screen 16x16 q40 p8` pinning the separate
+luma/chroma thresholds that a single-threshold implementation cannot produce.
+
+**No still regression, measured:** `identity_full_8bit.sh` **1100/1100**,
+`regression_spotcheck.sh` **83/83** (81 on `main` plus this chunk's two new
+cells), `cargo nextest run --workspace` **2483/2483**, `video_key_matrix.sh`
+58/60 (unmoved — the same `gradient p0` / `screenrep p0` pair),
+`fctx_gate.sh` 96/96, `inter_decode_gate.sh` 5/5, `inter_decode_census.sh`
+96/96, `inter_fh_gate.sh` PASS, `inter_me_join_gate.sh` PASS,
+`inter_completion_scan.sh` 0 CRASH, and the byte matrix's F0DIFF count is
+still exactly 1. The still/AVIF path reduces to the old code by construction: with
+no references `dlf_avg` is inert and `min_ref_filter_level` keeps its truthy
+`MAX_LOOP_FILTER` seed, `is_intra_slice` makes `me_based_dlf_skip` return
+before its table lookup, and `frame_is_boosted` forces the search arms.
+
+#### The trap this chunk paid for: a CHECKOUT can be stale, not just a binary
+
+§5 records "a scan's `port=` line is a claim about a BINARY, not about a
+branch". The branch half of that is real too, and it cost this chunk a full
+re-measurement. The first pass of every number above — the 55/40/1 baseline,
+the 67/28/1 result, `regression_spotcheck` 76/76, `nextest` 2478 — was taken
+on a working copy whose parent was **15 commits behind `origin/main`**,
+including `d82a19800 fix(inter): every me_*_distortion was normalised by the
+PICTURE's area, not the superblock's` — which is precisely the fix the chunk
+brief warned might already have moved these cells. Two of those numbers were
+visibly wrong against the brief (76 against its 81, 2478 against its 2474) and
+were written off as "the brief is stale" instead of being taken as the tell
+they were: `tools/regression_spotcheck.sh` had gained 30 lines in the commits
+the checkout was missing.
+
+Every number in this section is the RE-MEASUREMENT after rebasing onto
+`41b49ac0`, and the BEFORE baseline is a fresh run of the same tree with the
+fix reverted rather than a figure quoted from the plan. The verdicts came out
+identical — 55/40/1 -> 67/28/1, the same twelve cells — which is a result and
+not a reason to have skipped it. **Check `jj log -r '@- | main@origin'` before
+the first measurement, not after the last one.**
+
+#### What is left of §1z²⁰
+
+The tile half, unchanged and now the WHOLE residual: 28 cells with a
+byte-identical frame-1 header that diverge inside the tile, on which the port
+over-splits the partition tree. §1z²⁰'s block-level reading of
+`gradient 64x64 q20 p6` still stands (C codes ONE 64x64 `PARTITION_NONE`
+`NEWMV` where the port codes four 32x32s with the same reference and the same
+MV), and that cell is still open.
 
 ## 2. Chunks
 

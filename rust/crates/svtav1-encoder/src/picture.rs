@@ -255,6 +255,31 @@ pub struct ReferenceFrame {
     /// The chroma twin of [`Self::cdef_y_strengths`]
     /// (`ref_cdef_strengths[1][..num]`).
     pub cdef_uv_strengths: Vec<u8>,
+    /// C `EbReferenceObject::filter_level[0..2]` + `filter_level_u` +
+    /// `filter_level_v` (`reference_object.h:44-47`, written by
+    /// `rest_process.c:200-203`) — the loop-filter levels this picture's
+    /// FRAME HEADER signalled, as `[y_vert, y_horz, u, v]`.
+    ///
+    /// A later frame's deblock level is derived from these on BOTH pickers:
+    /// the by-q one takes their per-plane MIN and shuts its own filter off
+    /// when any is zero, and the full-image one takes their MEAN as the
+    /// level it copies (see [`crate::dlf_arm`]). A DPB that does not carry
+    /// them cannot reproduce C's inter-frame deblocking at all — which is
+    /// what made 20 of the inter campaign's 40 residual cells differ FIRST
+    /// at `loop_filter_level[0]`.
+    pub lf_levels: [u8; 4],
+    /// C `EbReferenceObject::dlf_dist_dev` (`reference_object.h:49`, written
+    /// by `rest_process.c:204`) — `1000 - 1000 * best_sse / zero_sse` for
+    /// this picture's own deblock, i.e. the per-mille SSE improvement the
+    /// filter actually bought.
+    ///
+    /// **-1 means "never computed"**, and readers must SKIP it rather than
+    /// average it in: `dlf_process.c:92` seeds it there and only the
+    /// non-SB-based path overwrites it, so a picture coded with
+    /// `sb_based_dlf` genuinely has no measurement. Treating -1 as a small
+    /// number would trip the `prev_dlf_dist < 5` shut-off on every frame
+    /// that follows a fast-path one.
+    pub dlf_dist_dev: i32,
     /// Frame width.
     pub width: u32,
     /// Frame height.
@@ -409,6 +434,8 @@ mod tests {
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
             sb_min_sq_size: alloc::vec![],
+            lf_levels: [0; 4],
+            dlf_dist_dev: -1,
             width: 64,
             height: 64,
             display_order: 0,
@@ -432,6 +459,8 @@ mod tests {
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
             sb_min_sq_size: alloc::vec![],
+            lf_levels: [0; 4],
+            dlf_dist_dev: -1,
             width: 4,
             height: 4,
             display_order: 0,
