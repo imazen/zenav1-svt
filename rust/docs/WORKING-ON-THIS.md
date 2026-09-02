@@ -897,16 +897,16 @@ frame HEADER is field-exact but for two CDEF strengths, while the TILE is the
 pre-campaign homegrown path", which has been wrong since §1z; it then said
 36/59/1, which §1z¹⁵ superseded): on the campaign's
 96-cell grid — `{uniform,gradient,diag,screen}` x `{16,64,72,128}` x
-`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **49 cells are
+`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **55 cells are
 byte-identical on BOTH frames**, 55 have a byte-identical frame 0 and a
-differing frame 1, and 1 still differs on frame 0 — **49 / 46 / 1 as of
-§1z¹⁷**. `tools/inter_byte_matrix.sh`
-is that sweep and `tools/inter_byte_gate.sh` asserts the 49. **22 of the 96
-also emit a stream a DECODER REJECTS** (§1z¹⁸ — every one preset 6;
-`tools/inter_decode_census.sh` pins them), so "byte-identical" and
-"decodable" are two different questions here and the grid answers both.
+differing frame 1, and 1 still differs on frame 0 — **55 / 40 / 1 as of
+§1z¹⁹**, and **all 96 streams DECODE**. `tools/inter_byte_matrix.sh`
+is that sweep and `tools/inter_byte_gate.sh` asserts the 55.
+`tools/inter_decode_census.sh` asks the OTHER question — does the stream
+decode — of all 96, because "byte-identical" and "decodable" are not the
+same question and 22 cells once answered them differently (§1z¹⁸/§1z¹⁹).
 The refusal stays
-because 49 of 96 is not "broadly": a stream the public API emits has to be right
+because 55 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
 Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁶
 for the tile.
@@ -914,6 +914,13 @@ for the tile.
 **Until 2026-09-02 that 55 included EIGHTEEN CRASHES** — see the
 crash-vs-divergence trap in §5. The sweep now has a CRASH column and fails on
 one; the count above is 55 genuine divergences.
+
+**FIXED the same day (§1z¹⁹) — `av1_find_samples` is ported, `num_proj_ref`
+is real, and all 96 streams decode; the census pin is empty.** The entry
+below stays because the TRAP is not the bug: a byte gate still cannot tell
+"wrong bytes" from "bytes no decoder will accept", and the next feature that
+gets switched off in the SEARCH while staying in the BITSTREAM will look
+exactly like this one did.
 
 **A BYTE GATE CANNOT TELL "WRONG BYTES" FROM "BYTES NO DECODER WILL
 ACCEPT", AND 22 OF 96 CELLS WERE THE SECOND** (§1z¹⁸, 2026-09-02, measured

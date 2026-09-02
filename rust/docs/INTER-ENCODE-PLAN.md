@@ -5354,6 +5354,89 @@ between the p6 half of this grid and a stream that decodes at all. It is
 also a prerequisite for reading any p6 byte verdict — a stream the decoder
 rejects has nothing useful to say about mode decision.
 
+### 1z¹⁹. `av1_find_samples` ported — every stream decodes, and 49 -> 55 BOTH (2026-09-02)
+
+§1z¹⁸ named the next chunk in one sentence: *port `av1_find_samples` and fill
+`num_proj_ref`.* It is done, and it did both things it was predicted to do.
+
+**All 96 streams decode.** `tools/inter_decode_census.sh` was pinned at 22
+rejections; it now reports `96 streams, 96 decode, 0 rejected` — and it
+**refused to let that land quietly**, failing first with *"22 pinned cell(s)
+now decoding"*. That is the second time this session a pin has caught its own
+fix (the first was the ME join gate in §1z¹⁶), and it is the whole argument
+for pinning by name instead of by count.
+
+**Grid: 49 BOTH / 46 F1DIFF -> 55 / 40**, zero cells lost. The six are
+`uniform 72x72` at q20/q40/q55 p6, `gradient 72x72 q40 p6` and
+`gradient 128x128` at q40/q55 p6 — all preset 6, which is where
+`allow_warped_motion` is 1 and therefore the only place this could move
+anything.
+
+#### What was ported
+
+`inter_mvp::find_warp_samples` — C `av1_find_samples`
+(`adaptive_mv_pred.c:1610-1750`) with its `record_samples` leaf — and its
+caller-side gate, C `svt_aom_init_wm_samples` (`:1752`), which
+`inter_md_arm` now runs per single reference before injection. Four scans in
+C's order (above, left, top-left, top-right); the `do_tl` / `do_tr`
+suppressions are set by the first two arms and read by the last two, so the
+order is load-bearing and is transcribed rather than restructured.
+
+Two details worth keeping:
+
+* **C's `col_offset = -mi_col % n4_w` is a C remainder — NEGATIVE for a
+  positive `mi_col` — and both suppressions read that sign.** Rust's `%` on
+  `i32` truncates toward zero exactly as C's does, so the expression carries
+  over unchanged; a `rem_euclid` "fix" would silently disable `do_tl`.
+* **The sample POINTS are returned as well as the count**, though nothing
+  consumes them yet — warped-motion parameter estimation is unported. They
+  are what `svt_aom_warped_motion_parameters` will need, and computing the
+  count alone would be a second, partial transcription of the same scan.
+
+#### The reachability control is the defect itself
+
+`inter_md_arm` passed the injector `wm_sample_num = [0u8; 8]`. The measured
+consequence of that constant — `aomdec` rejecting 22 of 96 cells — and its
+disappearance the moment the real count is supplied is a stronger positive
+control than any call counter: the code is not merely reached, it is
+load-bearing on 22 cells' decodability and on six cells' bytes.
+
+Five tier-4 tests pin the scan itself (`find_warp_samples_tests`): all four
+scans firing, a different reference contributing nothing, a COMPOUND
+neighbour contributing nothing (C requires `ref_frame[1] == NONE_FRAME`, and
+without this a port that dropped the second condition passes everything
+else), an all-intra neighbourhood giving zero, and one hand-derived
+`record_samples` point with **different** MV components so a transposed
+`pts_inref` cannot pass. **The first draft of the four-scan test expected
+THREE and was wrong** — it forgot the top-right scan and the implementation
+was right; it was re-derived from C after it failed, and says so, because a
+test written to agree with the code it tests is worth nothing.
+
+#### What is still NOT ported
+
+Warped motion itself. `num_proj_ref` is real now, so the motion-mode
+ALPHABET matches C's — but the port still never SELECTS `WARPED_CAUSAL`:
+`wm_ctrls` stays off, `svt_aom_warped_motion_parameters` and the warp
+prediction are unwired, and `inter_md_arm`'s assert still refuses a
+candidate whose `motion_mode` is anything but `SimpleTranslation`. What
+changed is that the port now writes the symbol C writes, from the alphabet
+C writes it from. Say it as a fraction: **the motion-mode SYNTAX is
+correct; the motion-mode SEARCH is 0 of 2 non-simple modes.**
+
+Hot-path work added: one neighbour scan per (block, single reference) that
+reads at most `n4_w + n4_h + 2` mi cells and touches no pixels. C runs the
+same scan under the same gate. Not measured, and no number is quoted.
+
+#### Where the campaign stands
+
+**55 BOTH / 40 F1DIFF / 1 F0DIFF, and 96 of 96 streams decode.** The
+envelope moved 40 -> 49 -> 55 in one session, and the two moves came from
+places neither of the session's two named targets pointed at: an inverted
+four-entry context table (§1z¹⁷) and a sample count that decides a
+syntax alphabet (§1z¹⁸/§1z¹⁹). Both were found the same way — wrap the C
+function whose output the port claims to reproduce, and read the two numbers
+side by side.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

@@ -56,6 +56,25 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`av1_find_samples` ported — every one of the 96 inter streams now DECODES,
+  and the grid goes 49 BOTH → 55** (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁹).
+  New `inter_mvp::find_warp_samples` (C `adaptive_mv_pred.c:1610-1750`) plus
+  its caller gate `svt_aom_init_wm_samples`, run per single reference in
+  `inter_md_arm`, so the injector's `wm_sample_num` is real instead of
+  `[0u8; 8]` and `num_proj_ref` reaches the writer. That count decides the
+  motion-mode ALPHABET, so the conformance defect from §1z¹⁸ is closed: the
+  decode census went from 22 rejections to 0, and it FAILED first with "22
+  pinned cell(s) now decoding" rather than letting the fix land quietly. Six
+  cells gained, none lost — all preset 6, the only place
+  `allow_warped_motion` is 1. `inter_byte_gate.sh` asserts 55 and refusal
+  #12's envelope reads 55 of 96. Five tier-4 tests pin the scan; the first
+  draft of one of them expected the wrong count and was re-derived from C
+  after it failed. **Warped motion itself is still unported** — the port
+  writes the symbol C writes from the alphabet C writes it from, and still
+  never SELECTS `WARPED_CAUSAL`. Hot-path work added: one neighbour scan per
+  (block, single reference), no pixels touched, C runs the same scan under
+  the same gate; not measured and no number quoted.
+
 - **CONFORMANCE: the port emits an UNDECODABLE inter stream on 22 of 96 grid
   cells, every one preset 6** (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁸).
   `aomdec` rejects frame 1 with "Failed to decode tile data"; measured on both
