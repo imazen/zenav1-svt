@@ -2831,6 +2831,51 @@ records it as "the port failed to encode" — which reads exactly like a crash
 in those cells. Do not edit the tree while a byte sweep is running; the
 position of the failures (a contiguous tail) is the tell.
 
+### 1w. C's 8-tap convolve replaces the homegrown bilinear — item 5's luma half (2026-09-01)
+
+`svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1` and the
+`port_convolve` family under it have been ported and tier-1 gated for some
+time, and **nothing in the encoder called them**. `crate::inter_pred_arm` is
+the adapter that finally does: it turns a block origin, a block size, a padded
+reference and an eighth-pel MV into the `BlkGeom` / `RefPlane` / `MbEdges` /
+`ScaleFactors` set the driver takes.
+
+**The adapter is not churn; only its call site is.** §1s warns that work
+landed in the pre-campaign recursion is thrown away the moment item 1's gates
+come off. That applies to the CALL, not to the conversion — every MD path
+needs exactly this `MbEdges` derivation and exactly these `RefPlane`s. So the
+adapter is its own module and `partition::generate_inter_pred` is one call
+into it.
+
+**MEASURED, and the number goes the "wrong" way: frame 1 is 75 B -> 85 B**
+against C's 22 B. That is not a regression, and reading it as one is the trap
+this paragraph exists to prevent. The 75 B stream's luma recon came from a
+BILINEAR no decoder has, so it was never a stream a decoder could reproduce;
+the 85 B one's luma prediction is C's. It got bigger because the homegrown ME
+lands on the quarter-pel `mv.x = -22` (§1s) where C finds the integer `-24`,
+and a fractional position that a 2-tap average smoothed into a decent match is
+a poor one under an 8-tap filter with negative taps. **That is evidence about
+the SEARCH, not about the convolve** — and it is the second independent
+measurement pointing at C4's call site (§1t was the first: the ported
+`inter_me` finds `-3` with SAD 0 on the same content).
+
+**The positive control is shaped for exactly this.** Asserting "the bytes
+changed" would pass for any bug. The gate asserts that a HALF-PEL prediction
+leaves the interval bounded by its two neighbouring samples: a 2-tap average
+can never do that, an 8-tap filter with negative taps routinely does. So the
+test can tell "an 8-tap convolve ran" from "something else changed".
+
+**Item 6 is still open, and it is now the largest remaining conformance gap.**
+An inter block's chroma still goes through `encode_chroma_block_dc`, i.e. an
+INTRA DC predictor, while the bitstream says the block is inter — so a decoder
+predicts chroma with the MC and the port's recon does not match it. The driver
+needs one extra `component_mask` and the two `PaddedPlane`s from
+`picture::PaddedRef::uv` (both already built and gated); what it does NOT have
+is a chroma pass willing to take an inter prediction, because `ChromaPass`
+routes every block through the intra path. `inter_pred_arm` deliberately does
+NOT expose a chroma entry point yet: surface with no caller has no positive
+control.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

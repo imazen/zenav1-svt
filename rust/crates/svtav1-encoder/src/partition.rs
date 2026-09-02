@@ -149,6 +149,10 @@ pub struct RefFrameCtx<'a> {
     /// because a legal MV puts the predicted block partly OUTSIDE the frame
     /// and the samples there are the replicated edge, not a constant.
     pub y_padded: Option<&'a crate::picture::PaddedPlane>,
+    /// `scs->super_block_size` — read by `compute_subpel_params`'s MV clamp
+    /// (`clamp_mv_to_umv_border_sb`), which bounds the MV against the SB, not
+    /// the block.
+    pub sb_size: usize,
 }
 
 /// The frame-constant half of the inter MVP environment — everything
@@ -2225,51 +2229,39 @@ fn generate_inter_pred(
     width: usize,
     height: usize,
 ) -> alloc::vec::Vec<u8> {
-    let int_x = abs_x as i32 + (mv.x as i32 >> 3);
-    let int_y = abs_y as i32 + (mv.y as i32 >> 3);
-    let fx = (mv.x & 7) as i32;
-    let fy = (mv.y & 7) as i32;
     let n = width * height;
     let mut pred = alloc::vec![128u8; n];
-    // Sample the reference through its REPLICATED MARGIN. The previous form
-    // read `rfc.y_plane` at frame stride and left every out-of-frame sample
-    // at 128 — a constant no decoder produces, so any block whose MV reached
-    // outside the frame reconstructed differently on the two sides
-    // (`docs/INTER-ENCODE-PLAN.md` §1s item 5). It is also a MODE-DECISION
-    // error, not only a conformance one: §1t measured the campaign's own
-    // cell, where the correct MV matches EXACTLY against a replicated margin
-    // and not at all against a filled one.
-    //
-    // The interpolation itself is still the homegrown BILINEAR, which is not
-    // C's 8-tap convolve — that swap is item 5's other half and belongs in
-    // whatever MD path survives item 1, so it is NOT done here.
+    // C's 8-tap convolve over a REPLICATED-MARGIN reference
+    // (`crate::inter_pred_arm`, which drives
+    // `port_pd_pred::av1_inter_prediction_light_pd1`), replacing a homegrown
+    // BILINEAR that also filled every out-of-frame sample with the constant
+    // 128 — `docs/INTER-ENCODE-PLAN.md` §1s items 4 and 5. Both were
+    // decoder-conformance defects AND mode-decision ones: §1t measured that
+    // on this campaign's cell the correct MV matches EXACTLY only against a
+    // replicated margin, so C's `skip = 1` was unreachable either way.
     let Some(rp) = rfc.y_padded else {
-        // No padded reference means no inter prediction. Refuse rather than
-        // fall back to the 128 fill this replaced.
+        // No padded reference means no inter prediction. REFUSE rather than
+        // fall back to the fill this replaced.
         return pred;
     };
-    for r in 0..height {
-        for c in 0..width {
-            let ry = (int_y + r as i32) as isize;
-            let rx = (int_x + c as i32) as isize;
-            let val = if fx == 0 && fy == 0 {
-                i32::from(rp.at(rx, ry))
-            } else if fy == 0 {
-                ((8 - fx) * i32::from(rp.at(rx, ry)) + fx * i32::from(rp.at(rx + 1, ry)) + 4) >> 3
-            } else if fx == 0 {
-                ((8 - fy) * i32::from(rp.at(rx, ry)) + fy * i32::from(rp.at(rx, ry + 1)) + 4) >> 3
-            } else {
-                let tl = i32::from(rp.at(rx, ry));
-                let tr = i32::from(rp.at(rx + 1, ry));
-                let bl = i32::from(rp.at(rx, ry + 1));
-                let br = i32::from(rp.at(rx + 1, ry + 1));
-                let top = (8 - fx) * tl + fx * tr;
-                let bot = (8 - fx) * bl + fx * br;
-                ((8 - fy) * top + fy * bot + 32) >> 6
-            };
-            pred[r * width + c] = val.clamp(0, 255) as u8;
-        }
-    }
+    crate::inter_pred_arm::predict_inter_luma(
+        rp,
+        abs_x,
+        abs_y,
+        width,
+        height,
+        mv,
+        // EIGHTTAP_REGULAR in both directions. There is no interpolation
+        // filter search on this path, and the pack writes the same 0 into
+        // the SWITCHABLE symbol (`partition::InterDecision::interp_filters`),
+        // so the prediction and the bitstream agree by construction.
+        0,
+        rfc.sb_size,
+        rfc.pic_width,
+        rfc.pic_height,
+        &mut pred,
+        width,
+    );
     pred
 }
 

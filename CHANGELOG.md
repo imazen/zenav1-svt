@@ -82,6 +82,20 @@ Crates are not published to crates.io yet — depend by git.
   committed mode-info grid rather than cached from MD as C does, so an MD path
   whose own grid lags cannot write a context no decoder can reproduce; new
   `EntropyCtx::mvp_grid` is that grid, stamped by every coded block.
+- **INTER PREDICTION — C's 8-tap convolve replaces a homegrown bilinear**
+  (243180b0). `port_pd_pred::av1_inter_prediction_light_pd1` and the
+  `port_convolve` family under it were ported and tier-1 gated and nothing in
+  the encoder called them. New `crate::inter_pred_arm` is the adapter — block
+  origin + size + padded reference + eighth-pel MV into `BlkGeom` /
+  `RefPlane` / `MbEdges` / `ScaleFactors` — and it is deliberately its own
+  module, because every mode-decision path needs that conversion while only
+  the call site is code the campaign's item 1 will bypass. Gated by a
+  positive control shaped to distinguish an 8-tap filter from a 2-tap one: a
+  half-pel prediction must leave the interval bounded by its two neighbouring
+  samples, which a bilinear average cannot do. The experimental inter cell's
+  frame 1 goes 75 B -> 85 B — NOT a regression: the smaller number came from a
+  prediction no decoder has, and the increase is evidence about the homegrown
+  ME's quarter-pel MV under an 8-tap filter, not about the convolve.
 - **REFERENCE PADDING — the DPB carries C's replicated margin** (ed1b10cf).
   `pad_ref_and_set_flags` (enc_dec_process.c:1072) pads a recon with
   `border = BLOCK_SIZE_64 + 4` before it becomes a reference, because a legal

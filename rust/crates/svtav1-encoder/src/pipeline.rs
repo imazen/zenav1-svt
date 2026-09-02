@@ -9637,6 +9637,7 @@ fn encode_tile_rows(
 
                 let ref_ctx = ref_frame_data.map(|rf| crate::partition::RefFrameCtx {
                     y_padded: ref_padded_y,
+                    sb_size,
                     y_plane: rf,
                     stride: w,
                     pic_width: w,
@@ -12312,7 +12313,11 @@ mod inter_decision_probe {
             mv_map: None,
             mv_map_stride: 0,
             y_padded: Some(&padded.y),
+            sb_size: 64,
         };
+        // A FULL-PEL MV takes the convolve's COPY corner, so the prediction
+        // is the reference sampled at the MV — including the three columns
+        // that fall outside the frame, which is the whole point.
         let pred = crate::partition::generate_inter_pred_for_test(
             &rfc,
             svtav1_types::motion::Mv { x: -24, y: 0 },
@@ -12334,6 +12339,38 @@ mod inter_decision_probe {
         assert_ne!(
             pred[0], 128,
             "the out-of-frame column still reads the 128 fill this replaced"
+        );
+
+        // A SUB-PEL MV must not take the copy corner. This is the positive
+        // control for the convolve swap itself (§1s item 5): the homegrown
+        // BILINEAR this replaced is a 2-tap average of the two neighbouring
+        // samples, so it can never leave the interval they bound — C's 8-tap
+        // filter has negative taps and routinely does. Asserting only "the
+        // result changed" would pass for any other bug; asserting it leaves
+        // the bilinear interval proves an 8-tap filter ran.
+        let sub = crate::partition::generate_inter_pred_for_test(
+            &rfc,
+            svtav1_types::motion::Mv { x: 4, y: 0 },
+            8,
+            8,
+            8,
+            8,
+        );
+        let mut outside_bilinear_interval = 0usize;
+        for r in 0..8usize {
+            for c in 0..8usize {
+                let a = i32::from(recon[(8 + r) * w + 8 + c]);
+                let b = i32::from(recon[(8 + r) * w + 9 + c]);
+                let v = i32::from(sub[r * 8 + c]);
+                if v < a.min(b) || v > a.max(b) {
+                    outside_bilinear_interval += 1;
+                }
+            }
+        }
+        assert!(
+            outside_bilinear_interval > 0,
+            "every half-pel sample stayed inside the two-tap interval — an 8-tap \
+             convolve did not run (bilinear cannot leave it, C's filter can)"
         );
     }
 }
