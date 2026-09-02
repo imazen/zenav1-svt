@@ -938,3 +938,165 @@ pub fn sig_deriv_me_tf(
     s.prev_me_stage_based_exit_th = exit_th;
     Some(s)
 }
+
+// ---------------------------------------------------------------------------
+// The bridge into `crate::inter_me`
+// ---------------------------------------------------------------------------
+
+/// Copy the signals [`sig_deriv_me`] derived onto the [`MeContext`] the ported
+/// search actually reads — C's `svt_aom_sig_deriv_me(pcs, me_ctx)`, which
+/// writes those fields IN PLACE on the context it is handed.
+///
+/// # Why this function has to exist at all
+///
+/// Two lanes ported the same seven C structs independently, so
+/// `SearchArea`, `SearchAreaMinMax`, `MeHmeRefPruneCtrls`, `MeSrCtrls`,
+/// `Me8x8VarCtrls`, `MvBasedSearchAdj` and `PreHmeCtrls` each exist TWICE —
+/// once here (the derivation's output type) and once in
+/// [`crate::inter_me::context`] (the search's input type). They are
+/// field-identical except `PreHmeCtrls`, whose two `prehme_sa_cfg_{vert,horz}`
+/// fields are C's `prehme_sa_cfg[2]` array spelled out. Nothing in the
+/// encoder called either one, so nothing forced them together; this is the
+/// wiring `docs/INTER-ENCODE-PLAN.md` §1s item 1b needs, and it is the shape
+/// the whole inter chunk keeps hitting — the translation was done, the
+/// connection was not.
+///
+/// # The two ports also disagree on FIELD WIDTHS, and `inter_me` is the
+/// # faithful one
+///
+/// Checked against `me_context.h` field by field: five fields are wider or
+/// narrower here than in C, and `inter_me::context` matches C in all five.
+///
+/// | field | C | this module | `inter_me` |
+/// |---|---|---|---|
+/// | `MeHmeRefPruneCtrls::enable_me_hme_ref_pruning` | `bool` | `u8` | `bool` |
+/// | `MeHmeRefPruneCtrls::{zz,phme}_sad_pct` | `uint16_t` | `u32` | `u16` |
+/// | `MeSrCtrls::stationary_hme_sad_abs_th` | `uint16_t` | `u32` | `u16` |
+/// | `MeSrCtrls::reduce_me_sr_based_on_hme_sad_abs_th` | `uint16_t` | `u32` | `u16` |
+/// | `MvBasedSearchAdj::sa_multiplier` | `uint16_t` | **`u8`** | `u16` |
+///
+/// The narrowing casts below are therefore C's OWN assignment truncation,
+/// not an invention of the bridge. MEASURED that they are inert on every
+/// value the derivation can produce: `enc_mode_config.c` assigns the two
+/// `*_pct` fields only 0 or 5, the two `*_abs_th` fields at most 24000, and
+/// `sa_multiplier` only 2; the sole post-switch arithmetic on the `*_abs_th`
+/// pair is a `/ 4` or `/ 16` (`:513-522`), and the QP-based `q_weight`
+/// rescale touches `me_sa` alone (`:338-342`). `debug_assert`s pin that so a
+/// future preset row that broke it would say so rather than wrap.
+///
+/// # What it deliberately does NOT touch
+///
+/// `num_of_list_to_search`, `num_of_ref_pic_to_search`, `me_type`,
+/// `temporal_layer_index` and `is_ref` are set by the CALLER from the
+/// picture's reference configuration, not by `sig_deriv_me` — C sets them in
+/// `motion_estimation_kernel` before it calls the derivation. Writing them
+/// here would silently give a caller a reference set it never asked for.
+pub fn apply_me_signals(me_ctx: &mut crate::inter_me::context::MeContext, s: &MeSignals) {
+    use crate::inter_me::context as ime;
+
+    // The five width divergences documented above: C's own uint16_t fields.
+    debug_assert!(
+        s.me_hme_prune_ctrls.zz_sad_pct <= u32::from(u16::MAX)
+            && s.me_hme_prune_ctrls.phme_sad_pct <= u32::from(u16::MAX)
+            && s.me_sr_adjustment_ctrls.stationary_hme_sad_abs_th <= u32::from(u16::MAX)
+            && s.me_sr_adjustment_ctrls
+                .reduce_me_sr_based_on_hme_sad_abs_th
+                <= u32::from(u16::MAX),
+        "a derivation row now exceeds C's uint16_t field width — the cast below \
+         would reproduce C's truncation, but say so instead of doing it silently"
+    );
+
+    #[inline]
+    fn sa(a: SearchArea) -> ime::SearchArea {
+        ime::SearchArea {
+            width: a.width,
+            height: a.height,
+        }
+    }
+    #[inline]
+    fn samm(a: SearchAreaMinMax) -> ime::SearchAreaMinMax {
+        ime::SearchAreaMinMax {
+            sa_min: sa(a.sa_min),
+            sa_max: sa(a.sa_max),
+        }
+    }
+
+    me_ctx.me_sa = samm(s.me_sa);
+    me_ctx.num_hme_sa_w = u16::from(s.hme.num_hme_sa_w);
+    me_ctx.num_hme_sa_h = u16::from(s.hme.num_hme_sa_h);
+    me_ctx.hme_l0_sa = samm(s.hme.hme_l0_sa);
+    me_ctx.hme_l1_sa = sa(s.hme.hme_l1_sa);
+    me_ctx.hme_l2_sa = sa(s.hme.hme_l2_sa);
+
+    me_ctx.enable_hme_flag = s.enable_hme_flag != 0;
+    me_ctx.enable_hme_level0_flag = s.enable_hme_level0_flag != 0;
+    me_ctx.enable_hme_level1_flag = s.enable_hme_level1_flag != 0;
+    me_ctx.enable_hme_level2_flag = s.enable_hme_level2_flag != 0;
+    me_ctx.hme_search_method = s.hme_search_method;
+    me_ctx.me_search_method = s.me_search_method;
+    me_ctx.reduce_hme_l0_sr_th_min = s.reduce_hme_l0_sr_th_min;
+    me_ctx.reduce_hme_l0_sr_th_max = s.reduce_hme_l0_sr_th_max;
+
+    me_ctx.prehme_ctrl = ime::PreHmeCtrls {
+        enable: s.prehme_ctrl.enable,
+        // C's `prehme_sa_cfg[0]` is the VERTICAL region and `[1]` the
+        // horizontal one (`set_prehme_ctrls`, enc_mode_config.c) — the two
+        // named fields here are that array, in that order.
+        prehme_sa_cfg: [
+            samm(s.prehme_ctrl.prehme_sa_cfg_vert),
+            samm(s.prehme_ctrl.prehme_sa_cfg_horz),
+        ],
+        skip_search_line: s.prehme_ctrl.skip_search_line,
+        l1_early_exit: s.prehme_ctrl.l1_early_exit,
+    };
+
+    me_ctx.me_hme_prune_ctrls = ime::MeHmeRefPruneCtrls {
+        enable_me_hme_ref_pruning: s.me_hme_prune_ctrls.enable_me_hme_ref_pruning != 0,
+        prune_ref_if_hme_sad_dev_bigger_than_th: s
+            .me_hme_prune_ctrls
+            .prune_ref_if_hme_sad_dev_bigger_than_th,
+        prune_ref_if_me_sad_dev_bigger_than_th: s
+            .me_hme_prune_ctrls
+            .prune_ref_if_me_sad_dev_bigger_than_th,
+        zz_sad_th: s.me_hme_prune_ctrls.zz_sad_th,
+        zz_sad_pct: s.me_hme_prune_ctrls.zz_sad_pct as u16,
+        phme_sad_th: s.me_hme_prune_ctrls.phme_sad_th,
+        phme_sad_pct: s.me_hme_prune_ctrls.phme_sad_pct as u16,
+    };
+
+    me_ctx.me_sr_adjustment_ctrls = ime::MeSrCtrls {
+        enable_me_sr_adjustment: s.me_sr_adjustment_ctrls.enable_me_sr_adjustment,
+        reduce_me_sr_based_on_mv_length_th: s
+            .me_sr_adjustment_ctrls
+            .reduce_me_sr_based_on_mv_length_th,
+        stationary_hme_sad_abs_th: s.me_sr_adjustment_ctrls.stationary_hme_sad_abs_th as u16,
+        stationary_me_sr_divisor: s.me_sr_adjustment_ctrls.stationary_me_sr_divisor,
+        reduce_me_sr_based_on_hme_sad_abs_th: s
+            .me_sr_adjustment_ctrls
+            .reduce_me_sr_based_on_hme_sad_abs_th
+            as u16,
+        me_sr_divisor_for_low_hme_sad: s.me_sr_adjustment_ctrls.me_sr_divisor_for_low_hme_sad,
+        distance_based_hme_resizing: s.me_sr_adjustment_ctrls.distance_based_hme_resizing,
+    };
+
+    me_ctx.mv_based_sa_adj = ime::MvBasedSearchAdj {
+        enabled: s.mv_based_sa_adj.enabled != 0,
+        nearest_ref_only: s.mv_based_sa_adj.nearest_ref_only != 0,
+        mv_size_th: s.mv_based_sa_adj.mv_size_th,
+        sa_multiplier: u16::from(s.mv_based_sa_adj.sa_multiplier),
+    };
+
+    me_ctx.me_8x8_var_ctrls = ime::Me8x8VarCtrls {
+        enabled: s.me_8x8_var_ctrls.enabled,
+        me_sr_div4_th: s.me_8x8_var_ctrls.me_sr_div4_th,
+        me_sr_div2_th: s.me_8x8_var_ctrls.me_sr_div2_th,
+        me_sr_mult2_th: s.me_8x8_var_ctrls.me_sr_mult2_th,
+    };
+
+    me_ctx.prune_me_candidates_th = i32::from(s.prune_me_candidates_th);
+    me_ctx.sc_class_me_boost = s.sc_class_me_boost;
+    me_ctx.use_best_unipred_cand_only = s.use_best_unipred_cand_only;
+    me_ctx.me_early_exit_th = s.me_early_exit_th;
+    me_ctx.me_static_b64_th = s.me_static_b64_th;
+    me_ctx.me_safe_limit_zz_th = s.me_safe_limit_zz_th;
+}

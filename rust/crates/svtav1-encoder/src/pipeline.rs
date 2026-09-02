@@ -11008,3 +11008,451 @@ mod inter_tile_byte_gate {
         w_.done().to_vec()
     }
 }
+
+/// **How far does the PORT'S OWN decision get on the inter cell?**
+///
+/// `inter_tile_byte_gate` above proves the ENTROPY path by feeding C's
+/// MEASURED block decision through the port's writers. That leaves one
+/// question open, and it is the whole remaining campaign: does the port,
+/// running its OWN ported machinery, arrive at that decision?
+///
+/// This module answers it field by field, for the two pieces that are
+/// ported and gated but unwired — the MVP stack (`crate::inter_mvp`,
+/// tier-1 against `svt_av1_find_best_ref_mvs_from_stack` /
+/// `setup_ref_mv_list`) and the DRL/pred-MV chooser
+/// (`crate::port_md::drl`, tier-1 against
+/// `svt_aom_choose_best_av1_mv_pred`). It does NOT prove the pipeline
+/// reaches them; `docs/INTER-ENCODE-PLAN.md` §1s item 1 is that wiring.
+/// What it proves is that when they ARE reached with this cell's inputs,
+/// they produce C's numbers — so a divergence found later is a WIRING
+/// defect, not a translation one.
+///
+/// The C values it is checked against are the `SVT_CINTER_OUT` dump quoted
+/// on `inter_tile_byte_gate`:
+///
+/// ```text
+/// mode=16 rf=1,-1 mv0=0,-24 pmv0=0,0 imc=8 drl=0 drlctx=-1,-1 drlnear=0,0
+/// ```
+#[cfg(test)]
+mod inter_decision_probe {
+    use crate::inter_mvp::{
+        InterMvpEnv, OrderHintInfo, TplMvRef, get_av1_mv_pred_drl, setup_ref_mv_list,
+    };
+    use crate::intrabc::TileMiBounds;
+    use crate::intrabc_mvp::{MvpGrid, MvpMiEntry, derive_block_ctx};
+    use crate::port_md::drl::{ChooseDrlCtx, av1_drl_ctx, choose_best_av1_mv_pred};
+    use crate::port_md::pme::MvCostTable;
+    use alloc::vec;
+    use svtav1_types::motion::{Mv, WarpedMotionParams};
+    use svtav1_types::prediction::PredictionMode;
+
+    /// C `BLOCK_64X64` (definitions.h block order) — the bsize
+    /// `SVT_CINTER_OUT` printed (`bsize=12`).
+    const BLOCK_64X64: usize = 12;
+    /// C `LAST_FRAME`.
+    const LAST_FRAME: i8 = 1;
+
+    /// The reference cell's frame-1 MVP inputs, exactly as the frame header
+    /// the port already writes byte-identically describes them
+    /// (`tools/fh_fields.py --index 1`: `primary_ref_frame 0`,
+    /// `allow_high_precision_mv 0`, `use_ref_frame_mvs 1`,
+    /// `reference_select 1`, `order_hint 1`).
+    ///
+    /// `use_ref_frame_mvs = 1` is load-bearing and easy to get wrong: it is
+    /// the ONLY path that sets the `GLOBALMV_OFFSET` bit on a block with no
+    /// coded neighbours, and that bit is the whole of C's `imc = 8`. With
+    /// the flag read as 0 the port would produce `inter_mode_ctx = 0`,
+    /// which selects a different `newmv` CDF row and a different tile.
+    #[test]
+    fn the_ports_own_mvp_stack_reproduces_cs_pred_mv_mode_ctx_and_drl() {
+        // 64x64 frame => 16x16 mi cells, one tile.
+        let (mi_rows, mi_cols) = (16i32, 16i32);
+        let tile = TileMiBounds {
+            mi_col_start: 0,
+            mi_col_end: mi_cols,
+            mi_row_start: 0,
+            mi_row_end: mi_rows,
+        };
+        // The MD mi grid at the FIRST block of the frame: every cell is the
+        // default intra entry, because nothing has been committed yet. This
+        // is `docs/INTER-ENCODE-PLAN.md` §1s item 2's grid — the type is
+        // already the one `setup_ref_mv_list` reads.
+        let entries = vec![MvpMiEntry::default(); (mi_rows * mi_cols) as usize];
+        let grid = MvpGrid {
+            entries: &entries,
+            stride: mi_cols,
+            base: 0,
+        };
+        let ctx = derive_block_ctx(0, 0, BLOCK_64X64, mi_rows, mi_cols, tile, 16);
+        assert!(
+            !ctx.up_available && !ctx.left_available,
+            "the frame's first block has no coded neighbours — if this flips, \
+             every number below is about a different block"
+        );
+
+        let gm = [WarpedMotionParams::default(); 8];
+        // C's tpl_mvs after `av1_setup_motion_field`'s reset: INVALID_MV
+        // everywhere, so every `add_tpl_ref_mv` returns 0.
+        let tpl_stride = mi_cols >> 1;
+        let tpl_mvs =
+            vec![TplMvRef::default(); ((mi_rows >> 1) + 8) as usize * tpl_stride as usize];
+        let env = InterMvpEnv {
+            global_motion: &gm,
+            ref_frame_sign_bias: [0; 8],
+            allow_high_precision_mv: false,
+            force_integer_mv: false,
+            use_ref_frame_mvs: true,
+            order_hint_info: OrderHintInfo {
+                enable_order_hint: true,
+                order_hint_bits: u32::from(crate::entropy::obu::ORDER_HINT_BITS),
+            },
+            cur_order_hint: 1,
+            ref_order_hint: [0; 8],
+            tpl_mvs: &tpl_mvs,
+            tpl_stride,
+            sb64_sq_no4xn_geom: true,
+            symmetric_refs: false,
+        };
+
+        // C `svt_aom_generate_av1_mvp_table`'s gm_mv for an IDENTITY global
+        // motion model is the zero MV.
+        let stack = setup_ref_mv_list(&grid, &ctx, &env, LAST_FRAME, [Mv::ZERO; 2]);
+
+        // --- C `imc=8` -------------------------------------------------
+        assert_eq!(
+            stack.mode_context, 8,
+            "inter_mode_ctx: C's SVT_CINTER_OUT prints imc=8"
+        );
+        // ... and it is the GLOBALMV bit, not an accident of another term.
+        assert_eq!(
+            stack.count, 0,
+            "no coded neighbours and an INVALID_MV temporal field => empty stack"
+        );
+
+        // NEGATIVE CONTROL for the paragraph above: the ONLY term that can
+        // set bit 3 on a neighbourless block is the temporal-MVP block's
+        // `is_available == 0`, so reading `use_ref_frame_mvs` as 0 gives a
+        // DIFFERENT mode context — and hence a different `newmv` CDF row and
+        // a different tile. Without this the `== 8` assertion could not
+        // distinguish "the port reproduces C" from "8 falls out anyway".
+        let off = InterMvpEnv {
+            use_ref_frame_mvs: false,
+            ..env
+        };
+        let no_mfmv = setup_ref_mv_list(&grid, &ctx, &off, LAST_FRAME, [Mv::ZERO; 2]);
+        assert_eq!(
+            no_mfmv.mode_context, 0,
+            "with use_ref_frame_mvs = 0 the GLOBALMV bit must NOT be set"
+        );
+
+        // --- C `drl=0`, `pmv0=0,0`, `drlctx=-1,-1` ---------------------
+        // The cost table is unread on this path (`max_drl_index == 1`
+        // short-circuits before any MV is priced); a zeroed one makes that
+        // explicit instead of smuggling in a rate model the cell does not
+        // exercise.
+        let nmv_cost = MvCostTable {
+            joint: [0; 4],
+            comp: [
+                vec![0i32; crate::port_md::pme::MV_VALS],
+                vec![0i32; crate::port_md::pme::MV_VALS],
+            ],
+        };
+        let drl_ctx = ChooseDrlCtx {
+            shut_fast_rate: false,
+            approx_inter_rate: 0,
+            ref_mv_stack: &stack.stack,
+            ref_mv_count: stack.count,
+            nmv_cost: &nmv_cost,
+            drl_mode_fac_bits: &[[0; 2]; 3],
+        };
+        let mut drl_index = 0xFFu8;
+        let mut pred_mv = [Mv { x: 111, y: 222 }; 2];
+        choose_best_av1_mv_pred(
+            &drl_ctx,
+            PredictionMode::NewMv,
+            Mv { x: -24, y: 0 },
+            Mv::ZERO,
+            &mut drl_index,
+            &mut pred_mv,
+        );
+        assert_eq!(drl_index, 0, "drl_index: C prints drl=0");
+        assert_eq!(
+            pred_mv[0],
+            Mv::ZERO,
+            "pred_mv: C prints pmv0=0,0 — this is what the writer differences the coded MV from"
+        );
+
+        // `get_av1_mv_pred_drl` is what MD calls to fill `nearestmv`; on a
+        // single-ref NEWMV with an empty stack it must agree.
+        let pred = get_av1_mv_pred_drl(
+            &stack,
+            false,
+            PredictionMode::NewMv as u8,
+            0,
+            crate::inter_mvp::DrlMvPred::default(),
+        );
+        assert_eq!(pred.ref_mv[0], Mv::ZERO, "get_av1_mv_pred_drl's ref_mv[0]");
+
+        // C's `drl_ctx[2] = {-1, -1}` is the "never computed" sentinel: MD
+        // only fills it when `max_drl_index > 1`, which needs a stack with
+        // more than one candidate. With `count == 0` the writer must not
+        // emit a DRL symbol at all — corroborated independently by the
+        // frame-context delta, which shows NO `drl` CDF moving on C's tile
+        // (docs/INTER-ENCODE-PLAN.md §1s).
+        assert_eq!(
+            crate::port_md::predicates::get_max_drl_index(stack.count, PredictionMode::NewMv),
+            1,
+            "max_drl_index must be 1, i.e. no DRL symbol is coded"
+        );
+        // A POSITIVE CONTROL on that reasoning: with a two-candidate stack
+        // the same code DOES ask for a DRL context, so the assertion above
+        // is about this cell rather than about a function that always
+        // returns 1.
+        let mut two = stack;
+        two.count = 2;
+        two.stack[0].weight = 700;
+        two.stack[1].weight = 700;
+        assert!(
+            crate::port_md::predicates::get_max_drl_index(two.count, PredictionMode::NewMv) > 1,
+            "a 2-candidate stack must signal DRL — otherwise this test proves nothing"
+        );
+        assert_eq!(av1_drl_ctx(&two.stack, 0), 0);
+    }
+
+    /// **Does the port's OWN motion search find C's MV?**
+    ///
+    /// C's `SVT_CINTER_OUT` prints `mv0=0,-24` — eighth-pel, i.e. the
+    /// full-pel `(-3, 0)` that the harness's 3-pixel right-shift makes
+    /// exact. The port has two searches: the pre-campaign homegrown
+    /// `crate::motion_est`, which lands on `-22` (a quarter pel short of an
+    /// EXACT integer match — measured, `docs/INTER-ENCODE-PLAN.md` §1s), and
+    /// the wholesale port of `motion_estimation.c` in `crate::inter_me`,
+    /// which nothing calls. This drives the second one on the reference
+    /// cell's actual planes.
+    ///
+    /// **Evidence tier: this is NOT a parity claim.** Most of
+    /// `motion_estimation.c` is `static`, so the composed search can only
+    /// reach tier 4 (`docs/WORKING-ON-THIS.md` §4); what a green run here
+    /// says is "the ported search, configured by the ported
+    /// `svt_aom_sig_deriv_me`, recovers this cell's MV" — a reachability and
+    /// wiring result, not a bit-exactness one. The tier-1 kernels underneath
+    /// it are gated in `tests/c_parity_inter_me.rs`.
+    ///
+    /// It doubles as the POSITIVE CONTROL for
+    /// `port_enc_mode_config::me::apply_me_signals`: the search area it
+    /// installs is what makes a `-3` MV reachable at all, so a bridge that
+    /// silently wrote nothing would fail here rather than pass quietly.
+    #[test]
+    fn the_ports_own_svt_motion_search_finds_cs_mv_on_the_reference_cell() {
+        use crate::inter_me::context::{
+            MeB64Output, MeContext, MeDsRef, MePicParams, MeRefs, MeSrcBufs, Plane,
+        };
+        use crate::inter_me::context::{PU_8X8_0, PU_16X16_0, PU_32X32_0, PU_64X64};
+        use crate::inter_me::motion_estimation_b64;
+        use crate::port_enc_mode_config::ResolutionRange;
+        use crate::port_enc_mode_config::me::{MeDerivInputs, apply_me_signals, sig_deriv_me};
+        use crate::port_preanalysis::{downsample_2d, generate_padding};
+
+        const W: usize = 64;
+        const H: usize = 64;
+        /// `tools/identity_run`'s `SVTAV1_FRAME_SHIFT` default.
+        const SHIFT: usize = 3;
+
+        // `tools/identity_run`'s `gradient` plane and its frame-1 translate.
+        let f0: Vec<u8> = (0..H)
+            .flat_map(|r| (0..W).map(move |c| (((r * 255) / H) as u8) ^ (((c * 3) & 0x3f) as u8)))
+            .collect();
+        let mut f1 = vec![0u8; W * H];
+        for r in 0..H {
+            for c in 0..W {
+                f1[r * W + c] = f0[r * W + c.saturating_sub(SHIFT)];
+            }
+        }
+        assert_ne!(f0, f1, "the translate must actually move the picture");
+
+        // The REFERENCE picture, with C's replicated margin
+        // (`svt_aom_generate_padding`, tier-1 gated in
+        // `c_parity_preanalysis.rs`). The margin is not decoration here: at
+        // MV -3 the block's left three columns read OUTSIDE the frame, and
+        // the harness built frame 1 by replicating column 0 — so the match
+        // is EXACT only against a replicated margin, and only then can the
+        // residual be zero, which is what C's `skip = 1` records.
+        const BORDER: usize = 64;
+        let stride = W + 2 * BORDER;
+        let rows = H + 2 * BORDER;
+        let org = BORDER * stride + BORDER;
+        let mut refbuf = vec![0u8; stride * rows];
+        for r in 0..H {
+            refbuf[org + r * stride..org + r * stride + W].copy_from_slice(&f0[r * W..r * W + W]);
+        }
+        generate_padding(&mut refbuf, org, stride, W, H, BORDER, BORDER);
+        assert_eq!(
+            refbuf[org - 3],
+            f0[0],
+            "the left margin must replicate column 0 — that is what makes the -3 match exact"
+        );
+
+        // The 1/4 and 1/16 luma pyramids HME levels 1 and 0 search, built
+        // with the same `svt_aom_downsample_2d` C uses
+        // (`svt_aom_downsample_filtering_input_picture`), each padded to its
+        // own border.
+        let mk_ds =
+            |src: &[u8], s_org: usize, s_stride: usize, sw: usize, sh: usize, step: usize| {
+                let (dw, dh) = (sw / step, sh / step);
+                let db = BORDER / step;
+                let dstride = dw + 2 * db;
+                let dorg = db * dstride + db;
+                let mut buf = vec![0u8; dstride * (dh + 2 * db)];
+                downsample_2d(
+                    &src[s_org..],
+                    s_stride,
+                    sw,
+                    sh,
+                    &mut buf[dorg..],
+                    dstride,
+                    step,
+                );
+                generate_padding(&mut buf, dorg, dstride, dw, dh, db, db);
+                (buf, dorg, dstride, dw, dh, db)
+            };
+        let (qbuf, qorg, qstride, qw, qh, qb) = mk_ds(&refbuf, org, stride, W, H, 2);
+        let (sbuf, sorg, sstride, sw_, sh_, sb_) = mk_ds(&qbuf, qorg, qstride, qw, qh, 2);
+
+        let refs = MeRefs {
+            arr: [
+                [
+                    Some(MeDsRef {
+                        picture: Plane {
+                            data: &refbuf,
+                            org,
+                            stride,
+                            width: W as u16,
+                            height: H as u16,
+                            border: BORDER as u16,
+                        },
+                        quarter: Plane {
+                            data: &qbuf,
+                            org: qorg,
+                            stride: qstride,
+                            width: qw as u16,
+                            height: qh as u16,
+                            border: qb as u16,
+                        },
+                        sixteenth: Plane {
+                            data: &sbuf,
+                            org: sorg,
+                            stride: sstride,
+                            width: sw_ as u16,
+                            height: sh_ as u16,
+                            border: sb_ as u16,
+                        },
+                        picture_number: 0,
+                    }),
+                    None,
+                    None,
+                    None,
+                ],
+                [None, None, None, None],
+            ],
+        };
+
+        // The SOURCE b64 and its two decimations (C `quarter_b64_buffer` /
+        // `sixteenth_b64_buffer`).
+        let mut src_q = vec![0u8; (W / 2) * (H / 2)];
+        downsample_2d(&f1, W, W, H, &mut src_q, W / 2, 2);
+        let mut src_s = vec![0u8; (W / 4) * (H / 4)];
+        downsample_2d(&src_q, W / 2, W / 2, H / 2, &mut src_s, W / 4, 2);
+        let src = MeSrcBufs {
+            b64: &f1,
+            b64_stride: W,
+            quarter: &src_q,
+            quarter_stride: W / 2,
+            sixteenth: &src_s,
+            sixteenth_stride: W / 4,
+        };
+
+        let pic = MePicParams {
+            picture_number: 1,
+            aligned_width: W as i16,
+            aligned_height: H as i16,
+            enhanced_width: W as u32,
+            enhanced_height: H as u32,
+            ahd_error: u32::MAX,
+            input_resolution: 0,
+            enable_me_8x8: true,
+            enable_me_16x16: true,
+            max_number_of_pus_per_sb: 85,
+            hierarchical_levels: 0,
+            similar_brightness_refs: false,
+            frame_is_boosted: false,
+            frame_is_leaf: false,
+            gm_enabled: false,
+            only_l_bwd: false,
+            max_cand: 23,
+            max_refs: 7,
+            max_l0: 4,
+            b64_geom_width: W as u32,
+            b64_geom_height: H as u32,
+            input_width: W as u16,
+            input_height: H as u16,
+        };
+
+        // `frame_is_boosted` is the one derivation input this cell does not
+        // pin from a dump, so BOTH values are swept: the answer must not
+        // depend on a guess.
+        for &boosted in &[false, true] {
+            let signals = sig_deriv_me(MeDerivInputs {
+                enc_mode: 6,
+                sc_class5: 0,
+                input_resolution: ResolutionRange::R240p,
+                rtc_tune: false,
+                is_base: boosted,
+                hierarchical_levels: 0,
+                // `enc_mode_config.c:1987-1999` sets all three
+                // unconditionally (quoted in `port_preanalysis`).
+                enable_hme_flag: 1,
+                enable_hme_level0_flag: 1,
+                enable_hme_level1_flag: 1,
+                enable_hme_level2_flag: 1,
+                use_best_me_unipred_cand_only: 0,
+                me_qp_based_th_scaling: false,
+                hme_qp_based_th_scaling: false,
+                qp: 40,
+                safe_limit_nref: 0,
+                safe_limit_zz_th: 0,
+            });
+            let mut me = MeContext::default();
+            apply_me_signals(&mut me, &signals);
+            // POSITIVE CONTROL that the bridge wrote something: a default
+            // `MeContext` has a ZERO search area, in which no MV but (0,0)
+            // is reachable.
+            assert!(
+                me.me_sa.sa_max.width >= 8 && me.me_sa.sa_max.height >= 3,
+                "apply_me_signals installed no search area (boosted={boosted})"
+            );
+            me.num_of_list_to_search = 1;
+            me.num_of_ref_pic_to_search = [1, 0];
+            me.me_type = crate::inter_me::context::MeType::OpenLoop;
+
+            let mut out = MeB64Output::new(pic.max_cand, pic.max_refs);
+            motion_estimation_b64(&pic, 0, 0, &mut me, &src, &refs, &mut out);
+
+            assert_eq!(
+                (out.me_mv_array[0].x, out.me_mv_array[0].y),
+                (-(SHIFT as i16), 0),
+                "the ported SVT search must recover the cell's full-pel MV \
+                 (boosted={boosted}); C codes it as the eighth-pel {}",
+                -(SHIFT as i32) * 8
+            );
+            assert_eq!(
+                me.p_sb_best_sad[0][0][PU_64X64], 0,
+                "an exact translation against a replicated margin has SAD 0 \
+                 (boosted={boosted}) — a non-zero SAD here is what would make \
+                 C's skip = 1 unreachable"
+            );
+            for i in [PU_32X32_0, PU_16X16_0, PU_8X8_0] {
+                assert_eq!(me.p_sb_best_sad[0][0][i], 0, "sub-PU {i} SAD");
+            }
+        }
+    }
+}

@@ -2579,6 +2579,81 @@ fingerprint of a NULL RTCD pointer rather than a buffer bug. Fixed with an
 before writing a new one** (`docs/WORKING-ON-THIS.md` §5) — this is the fourth
 lane to pay for that lesson.
 
+### 1t. The port's OWN ME and MVP already produce C's decision — the gap is WIRING (2026-09-01)
+
+§1s ends with an inventory and an order. Before wiring anything, this chunk
+asked the question the inventory presumes an answer to: **when the ported
+islands ARE reached with this cell's inputs, do they produce C's numbers?**
+The answer is yes, for every field of C's decision except the ones that need a
+prediction loop, and it was measured rather than argued.
+
+Two permanent gates, `pipeline.rs::inter_decision_probe`:
+
+| C's `SVT_CINTER_OUT` field | port's own machinery | agrees? |
+|---|---|---|
+| `mv0 = 0,-24` (eighth-pel) | `inter_me::motion_estimation_b64`, configured by `sig_deriv_me` | **yes** — full-pel `(-3, 0)`, SAD **0** |
+| `pmv0 = 0,0` | `port_md::drl::choose_best_av1_mv_pred` over `inter_mvp::setup_ref_mv_list` | **yes** |
+| `imc = 8` | `inter_mvp::setup_ref_mv_list`'s `mode_context` | **yes** |
+| `drl = 0`, `drlctx = -1,-1` | `predicates::get_max_drl_index` == 1, so NO DRL symbol | **yes** |
+
+So on this cell **no ported algorithm is wrong**. Every remaining byte is
+§1s's items 1/1b/2/7 — connecting code that already exists.
+
+**The homegrown ME's `-22` was not a search-quality gap either.** §1s recorded
+`crate::motion_est` landing a quarter pel short of the exact integer match.
+The wholesale port finds `-3` with SAD 0 on the same content, first try, at
+both `frame_is_boosted` values (swept, because that is the one derivation input
+this cell does not pin from a dump). C4 does not need to be *invented*; it
+needs to be *called*.
+
+**A conformance item turns out to be load-bearing for the DECISION.** §1s
+classes item 4 (a padded reference view) as decoder-conformance rather than RD.
+It is both. The harness builds frame 1 by translating right 3 px **with left-
+edge replication**, so at MV `-3` the block's first three columns read OUTSIDE
+the reference — and they match EXACTLY only against a replicated margin. With
+a zero-filled or 128-filled margin the SAD is non-zero, the residual is
+non-zero, and C's `skip = 1` is not reachable at all. The probe asserts the
+margin replicates column 0 for exactly this reason. Item 4 is a prerequisite of
+items 1b/7, not a follow-up to them.
+
+#### Two lanes ported the same C structs, and the widths disagree
+
+Wiring `sig_deriv_me` (`port_enc_mode_config::me`) to the search
+(`inter_me::context`) needed a bridge, `me::apply_me_signals`, because seven C
+structs — `SearchArea`, `SearchAreaMinMax`, `MeHmeRefPruneCtrls`, `MeSrCtrls`,
+`Me8x8VarCtrls`, `MvBasedSearchAdj`, `PreHmeCtrls` — exist TWICE in the tree,
+once per lane, with no conversion between them. Nothing called either lane, so
+nothing forced them together.
+
+Checked field by field against `me_context.h`: five fields differ in WIDTH from
+C, and `inter_me` is the faithful side in all five.
+
+| field | C | `port_enc_mode_config` | `inter_me` |
+|---|---|---|---|
+| `MeHmeRefPruneCtrls::enable_me_hme_ref_pruning` | `bool` | `u8` | `bool` |
+| `MeHmeRefPruneCtrls::{zz,phme}_sad_pct` | `uint16_t` | `u32` | `u16` |
+| `MeSrCtrls::stationary_hme_sad_abs_th` | `uint16_t` | `u32` | `u16` |
+| `MeSrCtrls::reduce_me_sr_based_on_hme_sad_abs_th` | `uint16_t` | `u32` | `u16` |
+| `MvBasedSearchAdj::sa_multiplier` | `uint16_t` | **`u8`** | `u16` |
+
+MEASURED inert on every value the derivation can produce: `enc_mode_config.c`
+assigns the `*_pct` pair only 0 or 5, the `*_abs_th` pair at most 24000 and
+`sa_multiplier` only 2; the only post-switch arithmetic on the `*_abs_th` pair
+is `/4` or `/16` (:513-522), and the QP `q_weight` rescale touches `me_sa`
+alone (:338-342). The bridge's casts are therefore C's own assignment
+truncation, and a `debug_assert` fires if a future preset row breaks that.
+
+`PreHmeCtrls` differs in SHAPE too: C's `prehme_sa_cfg[2]` is an array in
+`inter_me` and two named `_vert`/`_horz` fields in the config lane.
+
+#### What this changes about §1s's order
+
+Nothing about the order, one thing about its risk profile. §1s's `1 -> (2,3)
+-> 7 -> (4,5,6) -> 8` stands, with item 4 promoted out of the "conformance
+only" bucket (above). What it removes is the possibility that a ported island
+is simply wrong: on this cell they are not, so any divergence found while
+wiring is a wiring defect and should be hunted as one.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
