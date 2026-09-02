@@ -3053,6 +3053,170 @@ impl EncodePipeline {
             (crate::port_picstruct::PRIMARY_REF_NONE, None)
         };
 
+        // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
+        // tool ladders. It is EXPORTED and gated at tier 1; the frame header
+        // reads its `allow_high_precision_mv`, `allow_warped_motion`,
+        // `is_motion_mode_switchable`, `mfmv_level` and `interpolation_filter`
+        // so the header can never disagree with the tools the encode ran.
+        //
+        // Only computed for an inter frame — a key frame's header carries none
+        // of those fields, so this is byte-inert for every still cell.
+        let md_config_signals = if is_key {
+            None
+        } else {
+            let pd = pic_decision.as_ref();
+            crate::inter_hdr_arm::md_config_inputs(crate::inter_hdr_arm::PipelineMdInputs {
+                enc_mode: self.speed_config.preset as i8,
+                sq_qp: u32::from(self.rc_config.qp),
+                base_q_idx: base_qindex,
+                picture_qp: u32::from(pcs.qp),
+                temporal_layer_index: temporal_layer,
+                hierarchical_levels: self.gop.hierarchical_levels,
+                is_ref: pd.is_some_and(|p| p.is_ref),
+                is_islice: false,
+                sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                input_resolution: crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+                    self.width * self.height,
+                ),
+                encoder_bit_depth: self.bit_depth,
+                super_block_size: self.sb_size as u16,
+                enable_interintra_compound: seq_tools.enable_interintra_compound,
+                frame_superres_enabled: self.superres_denom.is_some(),
+                ref_list0_count_try: pd.map_or(0, |p| u32::from(p.ref_list0_count)),
+                ref_list1_count_try: pd.map_or(0, |p| u32::from(p.ref_list1_count)),
+                // Every DPB slot still holds the key frame on the 2-frame
+                // cell; the shadow DPB's POC 0 IS that key frame.
+                ref_l0_is_islice: self.pd_ctx.dpb
+                    [pd.map_or(0, |p| p.rps.ref_dpb_index[0] as usize)]
+                .picture_number
+                    == 0,
+                ref_l1_is_islice: self.pd_ctx.dpb
+                    [pd.map_or(0, |p| p.rps.ref_dpb_index[4] as usize)]
+                .picture_number
+                    == 0,
+            })
+            .and_then(
+                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
+            )
+        };
+
+        // The frame-level INTER syntax the pack's inter mode-info writer
+        // reads (`docs/INTER-ENCODE-PLAN.md` §1s item 7). It is derived HERE,
+        // beside `primary_ref_frame_for_cdf`, rather than at the header
+        // assembly below, because the TILE is coded before the header is
+        // written and the writer needs these values while it codes. The
+        // header re-derives the same fields from the same inputs and the two
+        // are asserted equal there, exactly like `primary_ref_frame`.
+        //
+        // `md_config_signals` moved up with it for the same reason; nothing
+        // between its old and new position reads it.
+        let inter_syntax_state: Option<InterSyntaxState> = md_config_signals.map(|sigs| {
+            let mut ref_order_hint = [0i32; 7];
+            if let Some(pic) = pic_decision.as_ref() {
+                for (i, oh) in ref_order_hint.iter_mut().enumerate() {
+                    let slot = pic.rps.ref_dpb_index[i] as usize;
+                    *oh = self.dpb.get(slot).map_or(0, |r| r.order_hint as i32);
+                }
+            }
+            InterSyntaxState {
+                // C `frm_hdr->reference_mode`. The port has no compound
+                // candidate yet, but the SYMBOL layout depends on this bit
+                // and the header writes it, so it must be the header's value
+                // and not a convenient constant.
+                // C `frm_hdr->reference_mode`, i.e. the header's
+                // `reference_select` bit — `inter_hdr_arm::inter_signal`
+                // derives it from `pic.reference_mode` and this reads the
+                // same field, so the tile and the header cannot disagree.
+                reference_mode: match pic_decision.as_ref().map(|p| p.reference_mode) {
+                    Some(crate::port_picstruct::ReferenceMode::Select) => {
+                        crate::port_entropy_inter::refframe::ReferenceMode::Select
+                    }
+                    _ => crate::port_entropy_inter::refframe::ReferenceMode::Single,
+                },
+                interpolation_filter: sigs.interpolation_filter,
+                enable_dual_filter: seq_tools.enable_dual_filter,
+                enable_interintra_compound: seq_tools.enable_interintra_compound,
+                enable_masked_compound: seq_tools.enable_masked_compound,
+                enable_jnt_comp: seq_tools.enable_jnt_comp,
+                enable_order_hint: seq_tools.enable_order_hint,
+                order_hint_bits: u32::from(crate::entropy::obu::ORDER_HINT_BITS),
+                is_motion_mode_switchable: sigs.is_motion_mode_switchable,
+                allow_warped_motion: sigs.allow_warped_motion,
+                allow_high_precision_mv: sigs.allow_high_precision_mv != 0,
+                // C keeps `frm_hdr->force_integer_mv = 0` unconditionally
+                // (resource_coordination_process.c:362), which is also the
+                // bit `write_uncompressed_header` emits (obu.rs:1421). Read
+                // from the same place rather than from a signal that has no
+                // such field.
+                force_integer_mv: false,
+                // Global-motion PARAMETER coding is unported and
+                // `inter_hdr_arm::inter_signal` refuses a non-identity model,
+                // so every reference is IDENTITY here by the same rule the
+                // header is written under — not by assumption.
+                gm_wmtype: [crate::port_entropy_inter::modes::TransformationType::Identity; 8],
+                cur_order_hint: display_order as i32,
+                ref_order_hint,
+                // C `mfmv_controls` (enc_mode_config.c:8852) for the VALUE
+                // and `frame_might_allow_ref_frame_mvs`
+                // (entropy_coding.h:71) for its PRESENCE — the same two
+                // rules `inter_hdr_arm::inter_signal` applies to write the
+                // header bit, asserted equal to it below.
+                use_ref_frame_mvs: seq_tools.enable_ref_frame_mvs
+                    && seq_tools.enable_order_hint
+                    && sigs.mfmv_level == 1,
+            }
+        });
+
+        // The frame-constant MVP environment the pack derives `predmv` /
+        // `inter_mode_ctx` / `drl_ctx` from (§1s items 2 and 3). Same
+        // provenance rule as `inter_syntax_state` above: every field is the
+        // one the HEADER announces, so the contexts the tile codes are the
+        // ones a decoder rebuilds.
+        let inter_mvp_env: Option<crate::partition::InterMdEnv> =
+            inter_syntax_state.as_ref().map(|st| {
+                let (mi_cols, mi_rows) = (w.div_ceil(4) as i32, h.div_ceil(4) as i32);
+                let tpl_stride = (mi_cols + 1) >> 1;
+                crate::partition::InterMdEnv {
+                    mi_stride: mi_cols,
+                    mi_rows,
+                    mi_cols,
+                    tile: crate::intrabc::TileMiBounds {
+                        mi_col_start: 0,
+                        mi_col_end: mi_cols,
+                        mi_row_start: 0,
+                        mi_row_end: mi_rows,
+                    },
+                    sb_mi_size: (sb_size / 4) as i32,
+                    global_motion: [svtav1_types::motion::WarpedMotionParams::default(); 8],
+                    allow_high_precision_mv: st.allow_high_precision_mv,
+                    force_integer_mv: st.force_integer_mv,
+                    use_ref_frame_mvs: st.use_ref_frame_mvs,
+                    order_hint_info: crate::inter_mvp::OrderHintInfo {
+                        enable_order_hint: st.enable_order_hint,
+                        order_hint_bits: st.order_hint_bits,
+                    },
+                    cur_order_hint: st.cur_order_hint,
+                    // `inter_mvp` indexes by `MvReferenceFrame`
+                    // (LAST = 1 ..= ALTREF = 7, slot 0 unused); the entropy
+                    // side's array is `ref_frame - 1`.
+                    ref_order_hint: {
+                        let mut a = [0i32; 8];
+                        a[1..8].copy_from_slice(&st.ref_order_hint);
+                        a
+                    },
+                    // C's `av1_setup_motion_field` reset leaves every cell
+                    // INVALID_MV; the temporal field itself is unported, so
+                    // every `add_tpl_ref_mv` returns 0 — which is what sets
+                    // the GLOBALMV bit of `mode_context` (§1t).
+                    tpl_mvs: alloc::vec![
+                        crate::inter_mvp::TplMvRef::default();
+                        (((mi_rows + 32) >> 1) * tpl_stride) as usize
+                    ],
+                    tpl_stride,
+                    sb64_sq_no4xn_geom: sb_size == 64,
+                }
+            });
+
         // CDF CONTINUATION (`crate::port_frame_cdf`): the end-of-frame entropy
         // state this frame hands to whatever later frame names it in
         // `primary_ref_frame`. C saves it at
@@ -3177,6 +3341,13 @@ impl EncodePipeline {
                 // that set the FH bit — signaling and coding MUST agree or
                 // the stream is undecodable.
                 ectx.allow_intrabc = sc_derivation.allow_intrabc;
+                // The frame-level inter syntax the pack's inter arm reads
+                // (docs/INTER-ENCODE-PLAN.md §1s item 7). `None` on a key
+                // frame, where the arm is unreachable.
+                ectx.inter_syntax = inter_syntax_state.clone();
+                if let Some(env) = inter_mvp_env.clone() {
+                    ectx.arm_inter_mvp(env);
+                }
                 // Task #86: this tile's own top row — gates "above"
                 // availability in tx_size_ctx and (via chroma_pass's
                 // encode_chroma_block_dc calls below) chroma prediction.
@@ -4468,53 +4639,6 @@ impl EncodePipeline {
             },
         };
 
-        // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
-        // tool ladders. It is EXPORTED and gated at tier 1; the frame header
-        // reads its `allow_high_precision_mv`, `allow_warped_motion`,
-        // `is_motion_mode_switchable`, `mfmv_level` and `interpolation_filter`
-        // so the header can never disagree with the tools the encode ran.
-        //
-        // Only computed for an inter frame — a key frame's header carries none
-        // of those fields, so this is byte-inert for every still cell.
-        let md_config_signals = if is_key {
-            None
-        } else {
-            let pd = pic_decision.as_ref();
-            crate::inter_hdr_arm::md_config_inputs(crate::inter_hdr_arm::PipelineMdInputs {
-                enc_mode: self.speed_config.preset as i8,
-                sq_qp: u32::from(self.rc_config.qp),
-                base_q_idx: base_qindex,
-                picture_qp: u32::from(pcs.qp),
-                temporal_layer_index: temporal_layer,
-                hierarchical_levels: self.gop.hierarchical_levels,
-                is_ref: pd.is_some_and(|p| p.is_ref),
-                is_islice: false,
-                sc_class5: u8::from(sc_derivation.classes.sc_class5),
-                input_resolution: crate::port_enc_mode_config::ResolutionRange::from_luma_area(
-                    self.width * self.height,
-                ),
-                encoder_bit_depth: self.bit_depth,
-                super_block_size: self.sb_size as u16,
-                enable_interintra_compound: seq_tools.enable_interintra_compound,
-                frame_superres_enabled: self.superres_denom.is_some(),
-                ref_list0_count_try: pd.map_or(0, |p| u32::from(p.ref_list0_count)),
-                ref_list1_count_try: pd.map_or(0, |p| u32::from(p.ref_list1_count)),
-                // Every DPB slot still holds the key frame on the 2-frame
-                // cell; the shadow DPB's POC 0 IS that key frame.
-                ref_l0_is_islice: self.pd_ctx.dpb
-                    [pd.map_or(0, |p| p.rps.ref_dpb_index[0] as usize)]
-                .picture_number
-                    == 0,
-                ref_l1_is_islice: self.pd_ctx.dpb
-                    [pd.map_or(0, |p| p.rps.ref_dpb_index[4] as usize)]
-                .picture_number
-                    == 0,
-            })
-            .and_then(
-                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
-            )
-        };
-
         // The INTER frame header's picture-level fields, from the SAME
         // derivations the encode used: the reference structure out of
         // `run_picture_decision` and the tool ladders out of
@@ -4575,6 +4699,21 @@ impl EncodePipeline {
                 })?,
             )
         };
+
+        // The tile above coded its MVP contexts from `inter_mvp_env`, which
+        // derived `use_ref_frame_mvs` from the same two rules
+        // `inter_hdr_arm::inter_signal` applies. Assert rather than assume:
+        // that bit is the ONLY term that sets the GLOBALMV bit of
+        // `mode_context` on a block with no coded neighbours (§1t), so a
+        // disagreement silently moves a `newmv` CDF row and is invisible in
+        // any byte count.
+        if let (Some(sig), Some(env)) = (inter_signal.as_ref(), inter_mvp_env.as_ref()) {
+            assert_eq!(
+                sig.use_ref_frame_mvs.unwrap_or(false),
+                env.use_ref_frame_mvs,
+                "the header's use_ref_frame_mvs must equal the one the tile's MVP used",
+            );
+        }
 
         // ONE assembly path for both frame types. It used to fork into a
         // separate, monochrome-shaped `write_inter_frame` that shared none of
@@ -5088,6 +5227,86 @@ pub(crate) struct EntropyCtx {
     /// are assigned together at each of the (few) tile-walk sites and a
     /// debug_assert keeps them consistent.
     pub(crate) tile_mi: crate::intra_edge::TileMi,
+    /// C `xd->above_mbmi` / `xd->left_mbmi` as
+    /// [`crate::port_entropy_inter::block::write_inter_mode_info`] reads
+    /// them, at 4x4 granularity — `docs/INTER-ENCODE-PLAN.md` §1s item 2's
+    /// mi grid, restricted to the fields the inter contexts touch. Same
+    /// shapes and same stamping cadence as `above_mode`/`left_mode`: the
+    /// above row is frame-wide, the left column is one SB column high, and
+    /// every coded block writes its own span.
+    ///
+    /// A `Default` entry is C's zeroed `MbModeInfo`, i.e. `DC_PRED` with
+    /// `ref_frame = {0, 0}`. That is never READ: every lookup is gated on
+    /// `tile_top_px` / `tile_left_px` first, so an unwritten cell is
+    /// unreachable, exactly like `above_txfm`'s.
+    above_nmi: Vec<crate::port_entropy_inter::NeighborMi>,
+    left_nmi: Vec<crate::port_entropy_inter::NeighborMi>,
+    /// The FULL mode-info grid `inter_mvp::setup_ref_mv_list` scans — C's
+    /// `pcs->mi_grid_base` as `svt_aom_update_mi_map` leaves it
+    /// (`docs/INTER-ENCODE-PLAN.md` §1s item 2). The above/left rows above
+    /// are the two cells the entropy CONTEXTS read; the MVP walk reads rows
+    /// -1..-3, columns -1..-3 and the top-right cell, so it needs the grid.
+    ///
+    /// Empty on a key frame, where every MVP scan is the IntraBC one
+    /// (`crate::intrabc_mvp`, which keeps its own grid in the funnel).
+    mvp_grid: Vec<crate::intrabc_mvp::MvpMiEntry>,
+    /// The frame-constant half of the MVP environment. `Some` exactly when
+    /// [`Self::inter_syntax`] is.
+    pub(crate) mvp_env: Option<crate::partition::InterMdEnv>,
+    /// The frame-level inter syntax the pack's inter arm needs. `Some`
+    /// exactly on a non-key frame; the arm refuses without it rather than
+    /// inventing a header it cannot have read.
+    pub(crate) inter_syntax: Option<InterSyntaxState>,
+}
+
+/// The owned twin of
+/// [`crate::port_entropy_inter::block::InterFrameSyntax`], which borrows its
+/// two tables. Held per frame by [`EntropyCtx`] and lent out per block.
+#[derive(Clone, Debug)]
+pub(crate) struct InterSyntaxState {
+    pub reference_mode: crate::port_entropy_inter::refframe::ReferenceMode,
+    pub interpolation_filter: u8,
+    pub enable_dual_filter: bool,
+    pub enable_interintra_compound: bool,
+    pub enable_masked_compound: bool,
+    pub enable_jnt_comp: bool,
+    pub enable_order_hint: bool,
+    pub order_hint_bits: u32,
+    pub is_motion_mode_switchable: bool,
+    pub allow_warped_motion: bool,
+    pub allow_high_precision_mv: bool,
+    pub force_integer_mv: bool,
+    pub gm_wmtype: [crate::port_entropy_inter::modes::TransformationType; 8],
+    pub cur_order_hint: i32,
+    pub ref_order_hint: [i32; 7],
+    /// C `frm_hdr->use_ref_frame_mvs`. NOT part of
+    /// [`crate::port_entropy_inter::block::InterFrameSyntax`] — the entropy
+    /// walk never reads it — but the MVP walk does, and it is the same
+    /// frame-header bit derived from the same signals, so it is carried
+    /// with them rather than re-derived somewhere the header cannot see.
+    pub use_ref_frame_mvs: bool,
+}
+
+impl InterSyntaxState {
+    pub(crate) fn syntax(&self) -> crate::port_entropy_inter::block::InterFrameSyntax<'_> {
+        crate::port_entropy_inter::block::InterFrameSyntax {
+            reference_mode: self.reference_mode,
+            interpolation_filter: self.interpolation_filter,
+            enable_dual_filter: self.enable_dual_filter,
+            enable_interintra_compound: self.enable_interintra_compound,
+            enable_masked_compound: self.enable_masked_compound,
+            enable_jnt_comp: self.enable_jnt_comp,
+            enable_order_hint: self.enable_order_hint,
+            order_hint_bits: self.order_hint_bits,
+            is_motion_mode_switchable: self.is_motion_mode_switchable,
+            allow_warped_motion: self.allow_warped_motion,
+            allow_high_precision_mv: self.allow_high_precision_mv,
+            force_integer_mv: self.force_integer_mv,
+            gm_wmtype: &self.gm_wmtype,
+            cur_order_hint: self.cur_order_hint,
+            ref_order_hint: &self.ref_order_hint,
+        }
+    }
 }
 
 /// C `write_cdef`'s per-superblock state (entropy_coding.c:3986-4017).
@@ -5258,6 +5477,131 @@ impl EntropyCtx {
                 mi_col_start: 0,
                 mi_col_end: width_4x4,
             },
+            above_nmi: alloc::vec![
+                crate::port_entropy_inter::NeighborMi::default();
+                width_4x4
+            ],
+            left_nmi: alloc::vec![
+                crate::port_entropy_inter::NeighborMi::default();
+                height_4x4
+            ],
+            inter_syntax: None,
+            mvp_grid: Vec::new(),
+            mvp_env: None,
+        }
+    }
+
+    /// Allocate the mode-info grid for a frame that has references
+    /// (`docs/INTER-ENCODE-PLAN.md` §1s item 2). Separate from `new` because
+    /// a key frame must NOT pay for it — every still cell in the 1,100-cell
+    /// envelope goes through the same constructor.
+    pub(crate) fn arm_inter_mvp(&mut self, env: crate::partition::InterMdEnv) {
+        self.mvp_grid = alloc::vec![
+            crate::intrabc_mvp::MvpMiEntry::default();
+            (env.mi_rows * env.mi_stride) as usize
+        ];
+        self.mvp_env = Some(env);
+    }
+
+    /// The three fields C caches on `BlkStruct` for the entropy coder —
+    /// `predmv`, `inter_mode_ctx` and `drl_ctx`/`drl_ctx_near` — derived
+    /// HERE from the committed mode-info map instead of carried from MD.
+    /// See [`crate::partition::InterDecision`] for why.
+    ///
+    /// Returns `None` when the frame has no MVP environment, which is
+    /// exactly when no inter block can exist.
+    pub(crate) fn inter_mvp_fields(
+        &self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        d: &crate::partition::InterDecision,
+    ) -> Option<(
+        [svtav1_types::motion::Mv; 2],
+        i16,
+        crate::port_entropy_inter::modes::DrlBlock,
+    )> {
+        let env = self.mvp_env.as_ref()?;
+        let (mi_row, mi_col) = ((y / 4) as i32, (x / 4) as i32);
+        let bsize = crate::leaf_funnel::c_bsize_index(w, h);
+        let ctx = crate::intrabc_mvp::derive_block_ctx(
+            mi_row,
+            mi_col,
+            bsize,
+            env.mi_rows,
+            env.mi_cols,
+            env.tile,
+            env.sb_mi_size,
+        );
+        let grid = crate::intrabc_mvp::MvpGrid {
+            entries: &self.mvp_grid,
+            stride: env.mi_stride,
+            base: mi_row * env.mi_stride + mi_col,
+        };
+        // C `svt_aom_generate_av1_mvp_table`'s `gm_mv` for an IDENTITY
+        // global-motion model is the zero MV; the header refuses any other
+        // model (`inter_hdr_arm::inter_signal`), so this is the model the
+        // frame actually signalled rather than an assumption.
+        let stack = crate::inter_mvp::setup_ref_mv_list(
+            &grid,
+            &ctx,
+            &env.mvp_env(),
+            crate::inter_mvp::av1_ref_frame_type(d.ref_frame),
+            [svtav1_types::motion::Mv::ZERO; 2],
+        );
+        let pred = crate::inter_mvp::get_av1_mv_pred_drl(
+            &stack,
+            d.ref_frame[1] > 0,
+            d.mode as u8,
+            usize::from(d.drl_index),
+            crate::inter_mvp::DrlMvPred::default(),
+        );
+        // C `mode_decision.c:3709-3728` — the two loops that fill
+        // `drl_ctx` (0..2, NEWMV family) and `drl_ctx_near` (1..3, NEARMV
+        // family), already ported as `port_md_winner::winner_signals`'s
+        // `drl_contexts`.
+        let (drl_ctx, drl_ctx_near) =
+            crate::port_md_winner::drl_contexts_for(d.mode as u8, stack.count, &stack.stack);
+        Some((
+            pred.ref_mv,
+            stack.mode_context,
+            crate::port_entropy_inter::modes::DrlBlock {
+                drl_ctx,
+                drl_ctx_near,
+                drl_index: d.drl_index,
+            },
+        ))
+    }
+
+    /// C `set_mi_row_col`'s `above_mbmi` / `left_mbmi` pair for a block at
+    /// `(x, y)`, with the tile-boundary availability the rest of this type
+    /// already models (`tile_top_px` / `tile_left_px`).
+    ///
+    /// The pointer and the availability flag are SEPARATE knobs in C, and
+    /// [`crate::port_entropy_inter::Neighbors`] keeps them separate for the
+    /// reason its doc gives; a caller that collapsed them would change the
+    /// reference-count contexts.
+    pub(crate) fn inter_neighbors(
+        &self,
+        x: usize,
+        y: usize,
+    ) -> crate::port_entropy_inter::Neighbors {
+        let up = y > self.tile_top_px;
+        let le = x > self.tile_left_px;
+        crate::port_entropy_inter::Neighbors {
+            above: if up {
+                self.above_nmi.get(x / 4).copied()
+            } else {
+                None
+            },
+            left: if le {
+                self.left_nmi.get(y / 4).copied()
+            } else {
+                None
+            },
+            up_available: up,
+            left_available: le,
         }
     }
 
@@ -5505,6 +5849,47 @@ impl EntropyCtx {
             self.left_mode[i] = mode;
             self.left_uv_mode[i] = uv_mode;
             self.left_skip[i] = skip;
+        }
+    }
+
+    /// Stamp one block's span of the inter mi grid — C's
+    /// `svt_aom_update_mi_map` (product_coding_loop.c:670) restricted to the
+    /// fields [`crate::port_entropy_inter`]'s context functions read.
+    pub(crate) fn record_inter_mi(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        mi: crate::port_entropy_inter::NeighborMi,
+        mv: [svtav1_types::motion::Mv; 2],
+        partition_type: u8,
+    ) {
+        let (x4, y4) = (x / 4, y / 4);
+        for i in x4..(x4 + w / 4).min(self.above_nmi.len()) {
+            self.above_nmi[i] = mi;
+        }
+        for i in y4..(y4 + h / 4).min(self.left_nmi.len()) {
+            self.left_nmi[i] = mi;
+        }
+        // ...and the FULL grid the MVP walk scans, when this frame has one.
+        // C stamps both from the same `svt_aom_update_mi_map` call, so they
+        // can never disagree here either.
+        if let Some(env) = self.mvp_env.as_ref() {
+            let e = crate::intrabc_mvp::MvpMiEntry {
+                bsize: mi.bsize,
+                mode: mi.mode,
+                use_intrabc: mi.use_intrabc,
+                ref_frame: mi.ref_frame,
+                mv,
+                partition: partition_type,
+            };
+            let stride = env.mi_stride as usize;
+            for r in y4..(y4 + h / 4).min(env.mi_rows as usize) {
+                for c in x4..(x4 + w / 4).min(env.mi_cols as usize) {
+                    self.mvp_grid[r * stride + c] = e;
+                }
+            }
         }
     }
 
@@ -6258,7 +6643,75 @@ fn encode_block_syntax(
         // `-24`. A sub-pel refinement that prefers a fractional position over
         // an exact integer match is evidence about the ME, which chunk C4
         // replaces wholesale.
-        crate::entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
+        //
+        // REPLACED (docs/INTER-ENCODE-PLAN.md §1s item 7): the arm below is
+        // the proven `port_entropy_inter::block::write_inter_mode_info`,
+        // whose output is byte-identical to C's frame-1 tile when fed C's
+        // measured decision (`inter_tile_byte_gate`). All four defects above
+        // are gone by construction — the walk writes `write_ref_frames`, the
+        // inter mode symbol, the DRL group and the interp filter in C's
+        // order, differences the MV against `pred_mv`, and takes the FRAME's
+        // single adapting `nmvc` at the header's own precision.
+        let blk = decision.inter.as_deref().expect(
+            "an is_inter block reached the pack with no InterModeInfo — the writer \
+             REFUSES rather than falling back, because the fallback is not a decodable \
+             bitstream (see BlockDecision::inter)",
+        );
+        let st = ectx
+            .inter_syntax
+            .as_ref()
+            .expect("an inter block on a frame with no inter frame-syntax state");
+        let frame = st.syntax();
+        let nb = ectx.inter_neighbors(block_x, block_y);
+        // `predmv` / `inter_mode_ctx` / `drl_ctx` are DERIVED from the
+        // committed mode-info map here rather than carried from MD — see
+        // `crate::partition::InterDecision`.
+        let (pred_mv, inter_mode_ctx, drl) = ectx
+            .inter_mvp_fields(
+                block_x,
+                block_y,
+                decision.width as usize,
+                decision.height as usize,
+                blk,
+            )
+            .expect("an inter block on a frame with no MVP environment");
+        let info = crate::port_entropy_inter::block::InterModeInfo {
+            // `c_bsize_index` IS the C `BlockSize` enum order, which is the
+            // discriminant `from_u8` decodes.
+            bsize: svtav1_types::block::BlockSize::from_u8(crate::leaf_funnel::c_bsize_index(
+                decision.width as usize,
+                decision.height as usize,
+            ) as u8)
+            .expect("c_bsize_index yields a valid BlockSize discriminant"),
+            mode: blk.mode,
+            ref_frame: blk.ref_frame,
+            mv: blk.mv,
+            pred_mv,
+            inter_mode_ctx,
+            drl,
+            // Inter-intra, compound and the two warped-motion inputs have no
+            // candidate to come from yet; a candidate that sets them must
+            // extend `InterDecision` rather than have them defaulted here.
+            interintra: None,
+            motion_mode: blk.motion_mode,
+            num_proj_ref: blk.num_proj_ref,
+            overlappable_neighbors: blk.overlappable_neighbors,
+            compound: None,
+            interp_filters: blk.interp_filters,
+            skip_mode: blk.skip_mode,
+        };
+        // `FrameContext` carries `inter` and `nmvc` inline while the writer
+        // takes them as separate `&mut`s (C reaches all three through one
+        // `fc` pointer). Split the copies out and write them BACK — a caller
+        // that dropped them would silently code every following block
+        // against unadapted inter CDFs.
+        let mut ic = frame_ctx.inter.clone();
+        let mut nmvc = frame_ctx.nmvc.clone();
+        crate::port_entropy_inter::block::write_inter_mode_info(
+            writer, frame_ctx, &mut ic, &mut nmvc, &nb, &frame, &info,
+        );
+        frame_ctx.inter = ic;
+        frame_ctx.nmvc = nmvc;
     } else if is_key {
         let above_ctx = ectx.above_mode_ctx(block_x);
         let left_ctx = ectx.left_mode_ctx(block_y);
@@ -6511,7 +6964,19 @@ fn encode_block_syntax(
         let w = decision.width as usize;
         let h = decision.height as usize;
         let depth = decision.tx_depth;
-        if use_intrabc {
+        // C `av1_code_tx_size` picks its arm on `is_inter_block(mbmi)`,
+        // which is `use_intrabc || ref_frame[0] > INTRA_FRAME`
+        // (block_structures.h:119) — an IntraBC block AND a genuinely inter
+        // one both take the var-tx arm. While IntraBC was the only
+        // inter-CLASSIFIED block this pack could emit, `use_intrabc` alone
+        // was the same predicate; wiring a real inter block
+        // (docs/INTER-ENCODE-PLAN.md §1s item 7) made the two differ, and an
+        // inter block fell into the INTRA arm and coded a `tx_size` depth
+        // symbol C does not write. MEASURED on the reference cell: the tile
+        // came out `94 9a 9e` against C's `94 9a b0`, one extra 3-symbol
+        // write at the end (`tx_size_cdf[2]`), everything before it
+        // symbol-for-symbol and range-for-range identical.
+        if use_intrabc || decision.is_inter {
             // C av1_code_tx_size inter arm (entropy_coding.c:4658-4676):
             // TX_MODE_SELECT && block_signals_txsize && !(is_inter && skip)
             // -> the var-tx walk over txfm_partition_cdf; the skip arm
@@ -6824,6 +7289,47 @@ fn encode_block_syntax(
         decision.uv_mode,
         skip,
     );
+    // The inter mi grid (docs/INTER-ENCODE-PLAN.md §1s item 2), stamped for
+    // EVERY block — an intra block inside a P frame is a neighbour the inter
+    // reference-count and mode contexts read, so stamping only inter blocks
+    // would leave the previous block's ref_frame standing in for it.
+    ectx.record_inter_mi(
+        block_x,
+        block_y,
+        decision.width as usize,
+        decision.height as usize,
+        crate::port_entropy_inter::NeighborMi {
+            mode,
+            ref_frame: decision.inter.as_deref().map_or([0, -1], |b| b.ref_frame),
+            interp_filters: decision.inter.as_deref().map_or(0, |b| b.interp_filters),
+            use_intrabc: decision.use_intrabc,
+            skip_mode: decision.inter.as_deref().is_some_and(|b| b.skip_mode),
+            // Both are 0 until a COMPOUND candidate exists: C codes them
+            // only under `has_second_ref`, and every candidate this port
+            // injects is single-reference. They are stamped rather than
+            // omitted because the neighbour contexts
+            // (`comp_group_idx_context` / `comp_index_context`) read them
+            // off the NEIGHBOUR, so leaving a stale value here would move a
+            // future compound block's symbol.
+            comp_group_idx: 0,
+            compound_idx: 0,
+            bsize: crate::entropy::context::block_size_index(
+                decision.width as usize,
+                decision.height as usize,
+            ) as u8,
+        },
+        // C `block_mi.mv` — a DV for an IntraBC block, the inter MV for an
+        // inter one, zero for a plain intra block.
+        if decision.use_intrabc {
+            [decision.dv, svtav1_types::motion::Mv::ZERO]
+        } else {
+            decision
+                .inter
+                .as_deref()
+                .map_or([svtav1_types::motion::Mv::ZERO; 2], |b| b.mv)
+        },
+        decision.partition_type as u8,
+    );
     // IBC chunk 9 (aom-rs Root 6): stamp the inter-neighbour override
     // state — get_tx_size_context substitutes an is_inter neighbour's
     // BLOCK dims for its TXFM-context byte (entropy_coding.c:4626-4637);
@@ -6833,7 +7339,10 @@ fn encode_block_syntax(
         block_y,
         decision.width as usize,
         decision.height as usize,
-        use_intrabc,
+        // Same `is_inter_block` predicate as the tx_size arm above: the
+        // neighbour override is about INTER blocks, of which IntraBC is one
+        // kind and a real inter block is the other.
+        use_intrabc || decision.is_inter,
     );
     // Palette neighbor state (C mbmi->palette_mode_info, stamped for
     // EVERY block — palette or not, matching record_block above).
@@ -11035,6 +11544,7 @@ mod inter_tile_byte_gate {
 /// ```
 #[cfg(test)]
 mod inter_decision_probe {
+    use super::*;
     use crate::inter_mvp::{
         InterMvpEnv, OrderHintInfo, TplMvRef, get_av1_mv_pred_drl, setup_ref_mv_list,
     };
@@ -11454,5 +11964,199 @@ mod inter_decision_probe {
                 assert_eq!(me.p_sb_best_sad[0][0][i], 0, "sub-PU {i} SAD");
             }
         }
+    }
+
+    /// **The REAL pack walk writes C's tile**, not a hand-assembled
+    /// composition of the same writers.
+    ///
+    /// `inter_tile_byte_gate` drives
+    /// `port_entropy_inter::block::write_inter_mode_info` directly, with
+    /// every field of C's measured decision spelled out at the call site —
+    /// including `pred_mv`, `inter_mode_ctx` and `drl_ctx`. This test runs
+    /// the same cell through `encode_block_syntax`, the function the frame's
+    /// entropy walk actually calls, and hands it only what MODE DECISION
+    /// decides (`partition::InterDecision`): the mode, the reference, the MV
+    /// and `drl_index`. The three context fields are DERIVED inside the pack
+    /// from `EntropyCtx`'s committed mode-info grid.
+    ///
+    /// So it gates two things the direct call cannot see:
+    ///
+    /// * the frame-level `InterSyntaxState` -> `InterFrameSyntax` plumbing,
+    ///   and the neighbour derivation from the pack's own mi grid;
+    /// * that the DERIVED `pred_mv` / `inter_mode_ctx` / `drl_ctx` equal
+    ///   C's measured ones on a grid with nothing committed yet — i.e. that
+    ///   moving them out of the MD payload did not change the bytes.
+    ///
+    /// It also pins the prologue this arm now shares with every other
+    /// block: `write_skip` and `write_intra_inter` come from
+    /// `encode_block_syntax` itself here, where the older gate wrote them by
+    /// hand.
+    #[test]
+    fn the_real_pack_walk_writes_cs_inter_tile() {
+        use crate::entropy::writer::AomWriter;
+        use crate::partition::{BlockDecision, InterDecision, PartitionType};
+        use crate::port_entropy_inter::modes::MotionMode;
+        use crate::port_entropy_inter::refframe::ReferenceMode;
+        use crate::rate_control::RcMode;
+        use svtav1_types::prediction::PredictionMode;
+
+        let (w, h) = (64usize, 64usize);
+        let y: Vec<u8> = (0..h)
+            .flat_map(|r| (0..w).map(move |c| (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8)))
+            .collect();
+        let uv = vec![128u8; (w / 2) * (h / 2)];
+
+        let mut pipeline = EncodePipeline::new(
+            w as u32,
+            h as u32,
+            6,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 40,
+                ..RcConfig::default()
+            },
+            0,
+            64,
+        )
+        .with_bit_depth(8)
+        .with_chroma_420(true);
+        let f0 = pipeline
+            .try_encode_frame_420(&y, &uv, &uv, w)
+            .expect("the video-mode key frame encodes");
+        assert_eq!(
+            f0.len(),
+            961,
+            "this is not the reference cell — frame 0 must be C's 961 bytes"
+        );
+        let saved = pipeline
+            .dpb
+            .get(0)
+            .and_then(|r| r.frame_cdfs.clone())
+            .expect("the key frame stored its end-of-frame CDFs");
+
+        let mut fc = saved.fc.clone();
+        let mut coeff_fc = saved.coeff.clone();
+        let mut writer = AomWriter::new(256);
+        let mut ectx = EntropyCtx::new(w / 4, h / 4, false, true, false, 8);
+        // The frame-1 header the port already writes byte-identically
+        // (tools/inter_fh_gate.sh): reference_select 1, SWITCHABLE interp,
+        // allow_high_precision_mv 0, use_ref_frame_mvs 1, order_hint 1.
+        ectx.inter_syntax = Some(InterSyntaxState {
+            reference_mode: ReferenceMode::Select,
+            interpolation_filter: crate::port_enc_mode_config::md_config::SWITCHABLE,
+            enable_dual_filter: false,
+            enable_interintra_compound: false,
+            enable_masked_compound: false,
+            enable_jnt_comp: false,
+            enable_order_hint: true,
+            order_hint_bits: u32::from(crate::entropy::obu::ORDER_HINT_BITS),
+            is_motion_mode_switchable: true,
+            allow_warped_motion: true,
+            allow_high_precision_mv: false,
+            force_integer_mv: false,
+            gm_wmtype: [crate::port_entropy_inter::modes::TransformationType::Identity; 8],
+            cur_order_hint: 1,
+            ref_order_hint: [0; 7],
+            use_ref_frame_mvs: true,
+        });
+        let (mi_cols, mi_rows) = ((w / 4) as i32, (h / 4) as i32);
+        let tpl_stride = (mi_cols + 1) >> 1;
+        ectx.arm_inter_mvp(crate::partition::InterMdEnv {
+            mi_stride: mi_cols,
+            mi_rows,
+            mi_cols,
+            tile: crate::intrabc::TileMiBounds {
+                mi_col_start: 0,
+                mi_col_end: mi_cols,
+                mi_row_start: 0,
+                mi_row_end: mi_rows,
+            },
+            sb_mi_size: 16,
+            global_motion: [svtav1_types::motion::WarpedMotionParams::default(); 8],
+            allow_high_precision_mv: false,
+            force_integer_mv: false,
+            use_ref_frame_mvs: true,
+            order_hint_info: crate::inter_mvp::OrderHintInfo {
+                enable_order_hint: true,
+                order_hint_bits: u32::from(crate::entropy::obu::ORDER_HINT_BITS),
+            },
+            cur_order_hint: 1,
+            ref_order_hint: [0; 8],
+            tpl_mvs: vec![
+                crate::inter_mvp::TplMvRef::default();
+                (((mi_rows + 32) >> 1) * tpl_stride) as usize
+            ],
+            tpl_stride,
+            sb64_sq_no4xn_geom: true,
+        });
+
+        // C's measured decision, minus everything the pack now derives.
+        let decision = BlockDecision {
+            partition_type: PartitionType::None,
+            is_inter: true,
+            width: 64,
+            height: 64,
+            eob: 0,
+            inter: Some(alloc::boxed::Box::new(InterDecision {
+                mode: PredictionMode::NewMv,
+                ref_frame: [1, -1],
+                mv: [
+                    svtav1_types::motion::Mv { x: -24, y: 0 },
+                    svtav1_types::motion::Mv::ZERO,
+                ],
+                drl_index: 0,
+                interp_filters: 0,
+                motion_mode: MotionMode::SimpleTranslation,
+                num_proj_ref: 0,
+                overlappable_neighbors: 0,
+                skip_mode: false,
+            })),
+            ..Default::default()
+        };
+
+        // The partition symbol is the WALK's, not the block writer's.
+        let (part_ctx, nsymbs) = ectx.partition_ctx(0, 0, 64);
+        crate::entropy::context::write_partition_edge(
+            &mut writer,
+            &mut fc,
+            part_ctx,
+            0,
+            nsymbs,
+            false,
+            true,
+            true,
+        );
+        let mut geom = crate::deblock::DeblockGeom::new(w, h, w, h);
+        encode_block_syntax(
+            &decision,
+            &mut writer,
+            &mut fc,
+            &mut coeff_fc,
+            160,
+            &mut ectx,
+            /*is_key=*/ false,
+            0,
+            0,
+            &mut None,
+            &mut geom,
+        );
+        let tile = writer.done().to_vec();
+        assert_eq!(
+            tile.as_slice(),
+            &[0x94u8, 0x9a, 0xb0][..],
+            "the real pack walk's inter tile does not match C's; port {tile:02x?}"
+        );
+
+        // The mi grid the walk stamped is what a NEXT block would scan.
+        // Asserting it here is the positive control for `record_inter_mi`'s
+        // grid half: without it the MVP walk would read an all-intra map and
+        // this test would still pass, because the FIRST block of a frame has
+        // no neighbours to read.
+        let nb = ectx.inter_neighbors(0, 8);
+        assert_eq!(
+            nb.above.map(|a| a.ref_frame),
+            Some([1, -1]),
+            "the block below must see a LAST_FRAME inter neighbour"
+        );
     }
 }

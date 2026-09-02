@@ -2654,6 +2654,121 @@ only" bucket (above). What it removes is the possibility that a ported island
 is simply wrong: on this cell they are not, so any divergence found while
 wiring is a wiring defect and should be hunted as one.
 
+### 1u. The REAL pack walk writes C's inter tile — item 7 landed (2026-09-01)
+
+§1s item 7's two halves are asymmetric and only one of them is churn. The MD
+half (filling an inter payload) lands in whichever mode-decision path survives
+item 1. The PACK half does not: `encode_block_syntax` is the block writer BOTH
+MD paths feed, so replacing its arm is work item 1 cannot invalidate. This
+chunk did the pack half, and it removes the conformance debt §1s named.
+
+**Gate:** `pipeline.rs::inter_decision_probe::the_real_pack_walk_writes_cs_inter_tile`
+— the reference cell's decision through `encode_block_syntax`, the function
+the frame's entropy walk actually calls, producing **`94 9a b0`**, C's frame-1
+tile. The older `inter_tile_byte_gate` drives `write_inter_mode_info` directly
+with every field spelled out; this one hands the pack only what MODE DECISION
+decides and derives the rest, so it additionally gates the frame-syntax
+plumbing, the neighbour derivation and the mi grid.
+
+#### The four defects are gone, and the arm that had them is deleted
+
+`pipeline.rs`'s inter arm no longer calls `entropy::mv_coding::write_mv`. It
+calls `port_entropy_inter::block::write_inter_mode_info`, which writes
+`write_ref_frames`, the inter mode symbol, the DRL group and the interpolation
+filter in C's order, differences the MV against `pred_mv`, and takes the
+FRAME's single adapting `nmvc` at the header's own `allow_high_precision_mv`.
+Defects 1-4 cannot recur: there is no second writer.
+
+The arm REFUSES rather than falling back. `BlockDecision::is_inter` without
+`BlockDecision::inter` panics with a message saying why — a quiet fallback
+would turn an undecodable stream back into a byte divergence, which is the
+failure mode that is hardest to see.
+
+#### A split C does not make, for a reason C does not need
+
+C caches `predmv`, `inter_mode_ctx` and `drl_ctx` on `BlkStruct` at MD time,
+with the comment *"Store drl_ctx in blk to avoid storing final_ref_mv_stack
+for EC"* (mode_decision.c:3708) — a caching decision. This port DERIVES them
+in the pack (`EntropyCtx::inter_mvp_fields`) from the committed mode-info grid
+and carries only MD's actual choices in `partition::InterDecision` (mode,
+`ref_frame`, `mv`, `drl_index`, interp filters, motion mode, skip mode).
+
+That is not a cosmetic rearrangement. The values are a pure function of the
+reference-MV stack, which is a pure function of the mode-info map — the map a
+DECODER rebuilds. Deriving them where the map is committed makes it
+structurally impossible for an MD path whose own grid lags (the pre-campaign
+recursion stamps no mi map at all) to write a context no decoder can
+reproduce. The gate proves the move is byte-neutral on the reference cell: the
+derived triple equals C's measured `pmv0 = 0,0`, `imc = 8`, `drlctx = -1,-1`.
+
+#### A REAL defect the wiring exposed: `is_inter_block` is not `use_intrabc`
+
+C's `av1_code_tx_size` picks its var-tx arm on `is_inter_block(mbmi)` =
+`use_intrabc || ref_frame[0] > INTRA_FRAME` (block_structures.h:119). The pack
+tested `use_intrabc` alone. While IntraBC was the only inter-CLASSIFIED block
+this pack could emit the two predicates were the same; a genuinely inter block
+made them differ, fell into the INTRA arm, and coded a `tx_size` depth symbol
+C does not write.
+
+MEASURED: the tile came out `94 9a 9e` against C's `94 9a b0` — one extra
+3-symbol write at the end (`tx_size_cdf[2]`), with every symbol before it
+identical in `nsyms`, `s`, `icdf` AND range. The same predicate was wrong at
+`record_inter_dims`, the neighbour override `get_tx_size_context` reads. Both
+are `use_intrabc || decision.is_inter` now.
+
+This is the shape to expect from the rest of the campaign: the pack has ten
+years of "the only inter-ish block here is IntraBC" baked into it, and each
+one surfaces as exactly one extra or missing symbol.
+
+#### Items 2 and 3, in the pack
+
+* **Item 2 (the mi grid)** is `EntropyCtx::mvp_grid` — one `MvpMiEntry` per
+  4x4 cell, allocated only on a frame that HAS references (`arm_inter_mvp`),
+  stamped by every coded block from `record_inter_mi` alongside the
+  above/left rows, with the real `ref_frame` / `mv` / `partition` instead of
+  §1s's hard-coded `{INTRA_FRAME, NONE}`. Intra blocks inside a P frame are
+  stamped too — they are neighbours the inter contexts read.
+* **Item 3 (the MVP call)** is `inter_mvp::setup_ref_mv_list` +
+  `get_av1_mv_pred_drl` + `port_md_winner::drl_contexts_for`, the last of
+  which this chunk exposed: `winner_signals` wraps the same two loops in a
+  `pd_pass == PD_PASS_1` gate that belongs to the mode-decision site, not to
+  the arithmetic. Nothing was re-transcribed.
+
+#### Measured byte movement, and what it is NOT
+
+`SVTAV1_INTER_EXPERIMENTAL=1` on `gradient 64x64 q40 p6 frames=2`: frame 1
+goes **113 B -> 90 B** against C's 22 B (frame 0 stays IDENTICAL at 961 B).
+
+**That number is not progress toward parity and must not be read as such.**
+The old 113 B was not a bitstream, so the two are not comparable as encodings;
+the new 90 B is a real inter tile whose CONTENT is still wrong because the
+decision feeding it is the pre-campaign one — 20-odd small leaves from the
+homegrown ME at `mv.x = -22`, predicted through a bilinear MC, where C codes
+one 64x64 block. Parity on this cell needs items 1/1b/4/5/6, not a smaller
+number here.
+
+#### A harness trap, paid for once
+
+`regression_spotcheck.sh` reported `64 / 65` with `cropped-tx-72x88 [port
+failed to encode]` while a `cargo build` and `identity_full_8bit.sh` were
+running in parallel. The cell is fine: `tools/identity_run` re-checks
+freshness on EVERY invocation, so a concurrent cargo job holds the build lock
+and the run reports a port failure that looks exactly like a real encode
+panic. Serially it is `65 / 65`. **Run the byte gates one at a time**, and
+read "port failed to encode" as "check for a concurrent cargo" before reading
+it as a regression.
+
+#### What the MD half still owes
+
+`partition::InterDecision` is filled by the legacy recursion with `NEWMV` off
+`LAST_FRAME`, `drl_index` 0, `EIGHTTAP_REGULAR`, `SimpleTranslation` and no
+projected or overlappable neighbours — which is exactly what that search
+decides, one candidate against one reference with no filter search and no
+motion-mode search. Every field is honest about an unported search rather
+than a placeholder. A candidate that sets `interintra`, `compound` or a
+warped `motion_mode` must EXTEND `InterDecision`; the pack passes `None` for
+those groups and cannot invent them.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

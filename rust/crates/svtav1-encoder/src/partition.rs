@@ -143,6 +143,70 @@ pub struct RefFrameCtx<'a> {
     pub mv_map_stride: usize,
 }
 
+/// The frame-constant half of the inter MVP environment — everything
+/// `inter_mvp::setup_ref_mv_list` reads that is NOT the mode-info grid.
+///
+/// The grid itself lives on the walk that stamps it
+/// (`EntropyCtx::mvp_grid`), because C stamps its mi map **mid-walk** from
+/// inside `svt_aom_update_mi_map` and the values coded into the bitstream
+/// must come from the COMMITTED map — the one a decoder rebuilds — not from
+/// a search-time copy.
+#[derive(Clone)]
+pub struct InterMdEnv {
+    pub mi_stride: i32,
+    pub mi_rows: i32,
+    pub mi_cols: i32,
+    pub tile: crate::intrabc::TileMiBounds,
+    /// `mi_size_wide[seq_header.sb_size]` (16 at SB64, 32 at SB128).
+    pub sb_mi_size: i32,
+    /// C `pcs->ppcs->global_motion` — IDENTITY for every reference until
+    /// global-motion parameter coding lands (the frame header refuses a
+    /// non-identity model, `inter_hdr_arm::inter_signal`).
+    pub global_motion: [svtav1_types::motion::WarpedMotionParams; 8],
+    pub allow_high_precision_mv: bool,
+    pub force_integer_mv: bool,
+    pub use_ref_frame_mvs: bool,
+    pub order_hint_info: crate::inter_mvp::OrderHintInfo,
+    pub cur_order_hint: i32,
+    pub ref_order_hint: [i32; 8],
+    /// C `pcs->tpl_mvs` — every cell `INVALID_MV` (the state
+    /// `av1_setup_motion_field`'s reset leaves) until the temporal MV field
+    /// is wired. Allocated rather than empty because `add_tpl_ref_mv`
+    /// indexes it unconditionally.
+    pub tpl_mvs: alloc::vec::Vec<crate::inter_mvp::TplMvRef>,
+    pub tpl_stride: i32,
+    /// C `ctx->sb64_sq_no4xn_geom`.
+    pub sb64_sq_no4xn_geom: bool,
+}
+
+impl InterMdEnv {
+    /// The borrowed view `inter_mvp` takes.
+    pub fn mvp_env(&self) -> crate::inter_mvp::InterMvpEnv<'_> {
+        crate::inter_mvp::InterMvpEnv {
+            global_motion: &self.global_motion,
+            // Every reference of a low-delay P frame is in the past, so no
+            // sign bias. C derives this in `svt_av1_setup_frame_sign_bias`
+            // from the order hints; a future GOP shape with backward refs
+            // must replace this rather than inherit it.
+            ref_frame_sign_bias: [0; 8],
+            allow_high_precision_mv: self.allow_high_precision_mv,
+            force_integer_mv: self.force_integer_mv,
+            use_ref_frame_mvs: self.use_ref_frame_mvs,
+            order_hint_info: self.order_hint_info,
+            cur_order_hint: self.cur_order_hint,
+            ref_order_hint: self.ref_order_hint,
+            tpl_mvs: &self.tpl_mvs,
+            tpl_stride: self.tpl_stride,
+            sb64_sq_no4xn_geom: self.sb64_sq_no4xn_geom,
+            // C's `symteric_refs` shortcut needs a random-access pred
+            // structure at `temporal_layer_index > 0` with exactly
+            // {LAST, BWDREF, LAST_BWD}; the low-delay P cells this path
+            // encodes are none of those.
+            symmetric_refs: false,
+        }
+    }
+}
+
 impl<'a> RefFrameCtx<'a> {
     /// Get the spatial MV predictor for a block at (abs_x, abs_y).
     /// Returns the median of above and left MVs if available.
@@ -573,6 +637,20 @@ pub struct BlockDecision {
     pub tx_type: u8,
     /// Motion vector (for inter blocks).
     pub mv: svtav1_types::motion::Mv,
+    /// What MODE DECISION chose for an inter block
+    /// (`docs/INTER-ENCODE-PLAN.md` §1s item 7).
+    ///
+    /// `Some` exactly when [`Self::is_inter`]; the pack REFUSES an
+    /// `is_inter` block without it rather than falling back, because the
+    /// fallback it replaced — a bare `write_mv` with a fresh `NmvContext`,
+    /// no reference-frame / mode / DRL / interp-filter symbols and a RAW
+    /// (undifferenced) MV — is not a decodable bitstream. A quiet fallback
+    /// would turn that into a byte divergence instead of a break.
+    ///
+    /// Boxed because it is `None` on every intra block, which is every
+    /// block of every still-picture cell in the 1,100-cell envelope, and
+    /// `BlockDecision` is cloned per candidate.
+    pub inter: Option<alloc::boxed::Box<InterDecision>>,
     /// Quantized coefficients.
     pub qcoeffs: alloc::vec::Vec<i32>,
     /// End of block position.
@@ -636,6 +714,7 @@ impl Default for BlockDecision {
             intra_mode: 0,
             tx_type: 0,
             mv: svtav1_types::motion::Mv::ZERO,
+            inter: None,
             qcoeffs: alloc::vec::Vec::new(),
             eob: 0,
             width: 0,
@@ -2599,6 +2678,37 @@ fn encode_single_block(
         intra_mode: chosen_mode,
         tx_type: if chose_inter { 0 } else { chosen_tx },
         mv: chosen_mv,
+        // What this homegrown search actually decided, in the form the pack
+        // codes. Everything DERIVED (`predmv`, `inter_mode_ctx`, `drl_ctx`)
+        // is left to the pack, which reads the committed mode-info map —
+        // see `InterDecision`. The three fixed values are honest about what
+        // is unported rather than placeholders:
+        //
+        // * `mode` is always `NEWMV` and `ref_frame` always
+        //   `{LAST_FRAME, NONE}` because this search injects exactly one
+        //   candidate: one reference, one MV, no NEAREST/NEAR/GLOBAL and no
+        //   compound. `drl_index` is 0 for the same reason.
+        // * `interp_filters` is `EIGHTTAP_REGULAR` in both directions
+        //   (packed 0). There is no interpolation-filter search; the frame
+        //   header signals SWITCHABLE, so the symbol IS coded and 0 is the
+        //   filter this block's prediction was actually built with.
+        // * `motion_mode` is `SimpleTranslation` with no projected or
+        //   overlappable neighbours, which is what makes
+        //   `motion_mode_allowed` resolve to it — OBMC and warped motion
+        //   are unported on this path.
+        inter: chose_inter.then(|| {
+            alloc::boxed::Box::new(InterDecision {
+                mode: svtav1_types::prediction::PredictionMode::NewMv,
+                ref_frame: [1, -1],
+                mv: [chosen_mv, svtav1_types::motion::Mv::ZERO],
+                drl_index: 0,
+                interp_filters: 0,
+                motion_mode: crate::port_entropy_inter::modes::MotionMode::SimpleTranslation,
+                num_proj_ref: 0,
+                overlappable_neighbors: 0,
+                skip_mode: false,
+            })
+        }),
         qcoeffs: enc.qcoeffs.to_vec(),
         eob: enc.eob,
         width: width as u16,
@@ -2975,4 +3085,44 @@ mod tests {
             "in-SB above must be live: {above:?}"
         );
     }
+}
+
+/// What MODE DECISION chooses for an inter block, as distinct from what is
+/// DERIVED from the coded mode-info map.
+///
+/// C stores both on `BlkStruct` — `predmv`, `inter_mode_ctx` and `drl_ctx`
+/// alongside the mode and the MV — with the comment "Store drl_ctx in blk to
+/// avoid storing final_ref_mv_stack for EC" (mode_decision.c:3708). That is a
+/// caching decision, not a semantic one: those three are a pure function of
+/// the reference-MV stack, which is a pure function of the mode-info map the
+/// pack walk already maintains and the decoder rebuilds. So they are derived
+/// in the pack (`EntropyCtx::inter_mvp_fields`) rather than carried here, and
+/// what this struct holds is only what MD actually DECIDES.
+///
+/// The split is not cosmetic. Deriving them in the pack makes the coded
+/// contexts a function of the COMMITTED map, which is what a decoder sees —
+/// so an MD path whose own grid lags (the pre-campaign recursion stamps no
+/// mi map at all) cannot silently write a context no decoder can reproduce.
+#[derive(Clone, Debug)]
+pub struct InterDecision {
+    /// C `block_mi.mode` — an inter mode (`NEWMV` and up).
+    pub mode: svtav1_types::prediction::PredictionMode,
+    /// C `block_mi.ref_frame`.
+    pub ref_frame: [i8; 2],
+    /// C `block_mi.mv`, eighth-pel.
+    pub mv: [svtav1_types::motion::Mv; 2],
+    /// C `blk_ptr->drl_index` — which ref-MV-stack entry this candidate was
+    /// injected against. A DECISION (`svt_aom_choose_best_av1_mv_pred` picks
+    /// it by rate), not a derivation.
+    pub drl_index: u8,
+    /// C `block_mi.interp_filters`, the packed `(y) | (x << 16)` pair.
+    pub interp_filters: u32,
+    /// C `block_mi.motion_mode`.
+    pub motion_mode: crate::port_entropy_inter::modes::MotionMode,
+    /// C `block_mi.num_proj_ref`.
+    pub num_proj_ref: u16,
+    /// C `blk_ptr->overlappable_neighbors`.
+    pub overlappable_neighbors: u32,
+    /// C `block_mi.skip_mode`.
+    pub skip_mode: bool,
 }

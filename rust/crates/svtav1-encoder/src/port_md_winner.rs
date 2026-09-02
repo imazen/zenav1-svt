@@ -277,24 +277,48 @@ pub struct WinnerInputs<'a> {
 }
 
 fn drl_contexts(i: &WinnerInputs<'_>) -> ([i8; 2], [i8; 2]) {
+    drl_contexts_for(i.mode, i.ref_mv_count, i.ref_mv_stack)
+}
+
+/// C's two `drl_ctx` / `drl_ctx_near` fill loops (`mode_decision.c:3709-3728`,
+/// repeated at `:3913-3932`), taken directly on their three real inputs.
+///
+/// Exposed because the ENTROPY side needs the same two arrays derived from
+/// the COMMITTED mode-info map rather than from an MD candidate
+/// (`pipeline::EntropyCtx::inter_mvp_fields`; see
+/// `partition::InterDecision` for why the derivation moved there), and
+/// [`winner_signals`] wraps them in a `pd_pass_1` gate that belongs to the
+/// mode-decision site, not to this arithmetic.
+///
+/// The two loops use DIFFERENT index ranges and DIFFERENT mode predicates —
+/// `drl_ctx` runs `0..2` under `NEWMV || NEW_NEWMV`, `drl_ctx_near` runs
+/// `1..3` storing at `idx - 1` under `have_nearmv_in_inter_mode`, which is
+/// C's own "temporary solution to compensate the NEARESTMV offset". Both
+/// gate on `ref_mv_count > idx + 1`; `-1` means that position codes no bit.
+#[must_use]
+pub fn drl_contexts_for(
+    mode: u8,
+    ref_mv_count: u8,
+    ref_mv_stack: &[svtav1_types::motion::CandidateMv],
+) -> ([i8; 2], [i8; 2]) {
     use crate::port_md::drl::av1_drl_ctx;
     let mut drl_ctx = [0i8; 2];
     let mut drl_ctx_near = [0i8; 2];
-    let newmv = i.mode == crate::port_entropy_inter::modes::NEWMV
-        || i.mode == crate::port_entropy_inter::modes::NEW_NEWMV;
+    let newmv = mode == crate::port_entropy_inter::modes::NEWMV
+        || mode == crate::port_entropy_inter::modes::NEW_NEWMV;
     if newmv {
         for idx in 0..2usize {
-            drl_ctx[idx] = if usize::from(i.ref_mv_count) > idx + 1 {
-                av1_drl_ctx(i.ref_mv_stack, idx) as i8
+            drl_ctx[idx] = if usize::from(ref_mv_count) > idx + 1 {
+                av1_drl_ctx(ref_mv_stack, idx) as i8
             } else {
                 -1
             };
         }
     }
-    if crate::port_entropy_inter::modes::have_nearmv_in_inter_mode(i.mode) {
+    if crate::port_entropy_inter::modes::have_nearmv_in_inter_mode(mode) {
         for idx in 1..3usize {
-            drl_ctx_near[idx - 1] = if usize::from(i.ref_mv_count) > idx + 1 {
-                av1_drl_ctx(i.ref_mv_stack, idx) as i8
+            drl_ctx_near[idx - 1] = if usize::from(ref_mv_count) > idx + 1 {
+                av1_drl_ctx(ref_mv_stack, idx) as i8
             } else {
                 -1
             };

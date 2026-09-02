@@ -383,6 +383,15 @@ the image for the SAME architecture as the host oracle (`run.sh` does) — C's
 kernels are runtime-dispatched, so an x86 container is a different oracle, not
 the same one.
 
+**A byte gate run CONCURRENTLY with a cargo build reports a fake encode
+failure.** `tools/identity_run` re-checks freshness on every invocation, so a
+parallel `cargo build` (or a second gate script) holds the build lock and the
+cell comes back `[port failed to encode]` — indistinguishable in the summary
+from a real panic. MEASURED 2026-09-01: `regression_spotcheck.sh` reported
+`64 / 65` with `cropped-tx-72x88` failing, and `65 / 65` when re-run alone at
+the same commit. Run the byte gates ONE AT A TIME, and treat "port failed to
+encode" as "check for a concurrent cargo" before treating it as a regression.
+
 ## 5b. Drills you don't have to write
 
 Localizing a divergence starts with narrowing WHAT changed, not reading code.
