@@ -5481,6 +5481,32 @@ same line neighbourhood as `dlf_level`. **Coordinate before editing
 `md_config.rs`.** This entry stops short of the fix for that reason and not
 for want of a plan.
 
+#### The other 20: the port OVER-SPLITS the partition tree
+
+Measured on all 20 tile-only cells — C's coded frame-1 block count
+(`SVT_CINTER_OUT`) against the port's (`SVTAV1_PACKTREE`'s `PDV` lines with
+`inter=1`):
+
+| | cells |
+|---|---|
+| the port codes MORE blocks than C | **18** |
+| same count | 1 |
+| C codes more | 1 |
+
+Often by a lot: `screen 128x128 q20 p8` is C 4 against the port's 64,
+`screen 64x64 q20 p8` is C 1 against 16. **Read the DIRECTION, not the
+multiple** — `SVTAV1_PACKTREE` repeats a leaf at some presets
+(`docs/WORKING-ON-THIS.md` §5), so the counts are an upper bound on the
+port's side.
+
+The direction is confirmed block-by-block on `gradient 64x64 q20 p6`, where
+the dump is small enough to read in full: **C codes ONE 64x64 block**
+(`bsize=12`, `PARTITION_NONE`, `NEWMV`, `rf=1`, `mv=(0,-24)`) and **the port
+codes FOUR 32x32s** at `mi=(0,0)/(0,8)/(8,0)/(8,8)` — every one of them with
+the SAME reference and the SAME MV, the first `NEWMV` and the other three
+`NEARESTMV`. Same motion, same reference; a different partition. That is a
+depth/partition-cost divergence on the inter path, not a mode decision, and
+it is what the second half of this list is.
 The other 20 have a byte-identical frame header and diverge inside the tile.
 `diag 16x16 q20 p6` is the minimal one and worth reading first: **its
 frame-1 arithmetic-coder op stream is IDENTICAL to C's, 16 operations, and
@@ -5495,8 +5521,9 @@ counts it in the header half.)
 
 1. **The DLF video arm — 20 cells, one control.** The largest single
    remaining group, and it is a level derivation, not a search.
-2. **The tile-only 20**, which now start from a much better place than any
-   chunk in this campaign has: the port's PME, ME, MVP, NSQ motion search,
+2. **The tile-only 20 — the partition tree, not the mode.** The port
+   over-splits on 18 of them (above). They start from a much better place
+   than any chunk in this campaign has: the port's PME, ME, MVP, NSQ motion search,
    `inter_fast_cost` and motion-mode alphabet all join C's on every row
    either side can observe, and every one of the 96 streams decodes.
 
