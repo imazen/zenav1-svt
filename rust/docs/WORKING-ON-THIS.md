@@ -454,6 +454,15 @@ head -14 $W/c.tree > $W/c.f0.tree    # BOTH dumps append across frames (§5)
 python3 tools/tree_diff.py $W/c.f0.tree $W/rs.tree
 ```
 
+`SVTAV1_PD0_NOSPLIT=1` is the inter campaign's sibling knob: it forces the
+video arm's PD0 to test only the 64x64 square **on an INTER frame**, leaving
+frame 0 — and therefore frame 1's reference — untouched, so "is the residual
+divergence in MD or only in the partition?" is one run instead of an argument.
+It answered that on `diag 64x64 q40 p8` (frame 1 byte-identical to C with it,
+35 vs 22 B without: `docs/INTER-ENCODE-PLAN.md` §1z⁸). **C never runs this way**
+— it is a CONTROL, not a configuration, and a byte count it produces is never a
+parity result.
+
 `SVTAV1_SC_TOOLS={nopalette,noibc,none}` forces a screen-content tool off at
 runtime so you can bisect without editing and rebuilding. It deliberately does
 NOT touch `allow_screen_content_tools` (the frame-header bit), so the streams
@@ -704,13 +713,24 @@ still the oracle; byte-identity means reproducing it.
 ## 7b. INTER frames: the refusal is still the shipped behaviour
 
 `EncodePipeline` refuses every non-key frame (§6). `SVTAV1_INTER_EXPERIMENTAL`
-lifts that guard **for the differential harness only** — the frame HEADER is
-derived from C's own reference structure and tool ladders and is field-exact
-but for two CDEF strengths, while the TILE is the pre-campaign homegrown path.
-The stream it produces is measurable, not correct, and must never leave
-`tools/identity_diff_inter.sh` / `tools/inter_fh_gate.sh`. The variable is to
-be DELETED once the tile is byte-identical, not promoted to a feature flag.
-Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q.
+lifts that guard **for the differential harness only**. It must never leave the
+inter harness (`tools/identity_diff_inter.sh`, `tools/inter_fh_gate.sh`,
+`tools/inter_byte_gate.sh`, `tools/inter_byte_matrix.sh`), and it is to be
+DELETED once the tile is byte-identical broadly — never promoted to a feature
+flag.
+
+**Where that stands, re-measured 2026-09-02** (this paragraph used to say "the
+frame HEADER is field-exact but for two CDEF strengths, while the TILE is the
+pre-campaign homegrown path", which has been wrong since §1z): on the campaign's
+96-cell grid — `{uniform,gradient,diag,screen}` x `{16,64,72,128}` x
+`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **31 cells are
+byte-identical on BOTH frames**, 64 have a byte-identical frame 0 and a
+differing frame 1, and 1 still differs on frame 0. `tools/inter_byte_matrix.sh`
+is that sweep and `tools/inter_byte_gate.sh` asserts the 31. The refusal stays
+because 31 of 96 is not "broadly": a stream the public API emits has to be right
+on content the grid does not cover, not on the cells that happen to be closed.
+Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z⁸
+for the tile.
 
 Two things §1q proves that a reader will otherwise re-derive:
 

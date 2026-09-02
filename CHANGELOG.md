@@ -56,6 +56,16 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`SVTAV1_PD0_NOSPLIT` — a CONTROL that scopes the remaining inter frontier.**
+  Forces the video arm's PD0 to test only the 64x64 square on an INTER frame,
+  leaving frame 0's recon (and so frame 1's reference) untouched. With it,
+  `diag 64x64 q40 p8` frame 1 is BYTE-IDENTICAL to C at 22 B where the port
+  otherwise emits 35 — so the inter mode decision, MVP stack, DRL choice, MV
+  coding, entropy path and pack are all correct on that cell and the whole gap
+  is the PD0 partition: C codes ONE 64x64 NEARESTMV skip block, the port codes
+  sixteen 8x8s. C never runs this way; a byte count it produces is never a
+  parity result. Full record and the next chunk's shape in
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z⁸.
 - **`tools/inter_byte_matrix.sh` — the inter campaign's 96-cell frontier
   sweep.** `inter_byte_gate.sh` asserts the closed cells; this walks the whole
   grid and classifies each as BOTH / F1DIFF (an inter-decision defect) /

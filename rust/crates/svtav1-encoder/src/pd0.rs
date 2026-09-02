@@ -3202,6 +3202,7 @@ pub fn pd0_pick_sb_partition_video(
         stale_vars,
         max_tx_size,
         video_recon,
+        false,
     )
     .tree()
 }
@@ -3247,6 +3248,9 @@ pub fn pd0_pick_sb_partition_video_eval(
     // value from the same call site. `Some((md_recon_plane, stride))` is the
     // frame's MD recon; `None` keeps the source prediction.
     video_recon: Option<(&[u8], usize)>,
+    // `SVTAV1_PD0_NOSPLIT`, a CONTROL — see `crate::dbgenv::pd0_nosplit`.
+    // Never true in a shipped configuration.
+    ctl_nosplit: bool,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -3271,7 +3275,8 @@ pub fn pd0_pick_sb_partition_video_eval(
         // `get_max_block_size_default` = `scs->super_block_size`, uncapped.
         max_sq: 64.min(max_tx_size as usize),
         // `pic_disallow_4x4` is 1 on both arms at every preset this reaches.
-        min_sq: 8,
+        min_sq: if ctl_nosplit { 64 } else { 8 },
+
         is_subres_safe: if sb_x + 64 <= aligned_w && sb_y + 64 <= aligned_h {
             255
         } else {

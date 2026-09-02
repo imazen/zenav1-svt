@@ -52,8 +52,14 @@ for content in $CONTENTS; do
         fi
         cf0=$(wc -c <"$d/c.obu.pts0" | tr -d ' ')
         pf0=$(wc -c <"$d/rs.obu.f0" | tr -d ' ')
-        cf1=$(wc -c <"$d/c.obu.pts1" 2>/dev/null | tr -d ' '); cf1=${cf1:-0}
-        pf1=$(wc -c <"$d/rs.obu.f1" 2>/dev/null | tr -d ' '); pf1=${pf1:-0}
+        # A MISSING frame-1 file is a legitimate state (the port refused, or a
+        # CONTROL such as SVTAV1_PD0_NOSPLIT made the cell unencodable), so ask
+        # before reading. `wc -c < missing` writes to STDERR, and this script's
+        # stdout IS the TSV: without the guard those lines land INSIDE the
+        # table and every keyed join against it silently mis-aligns. MEASURED
+        # 2026-09-02 on the PD0_NOSPLIT control run.
+        cf1=0; [[ -f "$d/c.obu.pts1" ]] && cf1=$(wc -c <"$d/c.obu.pts1" | tr -d ' ')
+        pf1=0; [[ -f "$d/rs.obu.f1" ]] && pf1=$(wc -c <"$d/rs.obu.f1" | tr -d ' ')
         if ! cmp -s "$d/c.obu.pts0" "$d/rs.obu.f0"; then
           v=F0DIFF; f0d=$((f0d+1))
         elif cmp -s "$d/c.obu.pts1" "$d/rs.obu.f1"; then

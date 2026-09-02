@@ -111,6 +111,26 @@ presence_flags! {
     /// Remove the variable — do not promote it — once the inter tile is
     /// byte-identical and the refusal can simply be deleted.
     inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
+    /// `SVTAV1_PD0_NOSPLIT`: a **CONTROL**, not a configuration — force the
+    /// video arm's PD0 to test only the 64x64 square on an INTER frame.
+    ///
+    /// C never runs this way. It exists to answer one question with a
+    /// measurement instead of an argument: *is the inter frame's residual
+    /// divergence in the MD/entropy path, or only in the PD0 partition?*
+    /// Because it changes ONLY the inter frame, frame 0's recon — and
+    /// therefore frame 1's reference — is untouched, so the comparison is
+    /// clean.
+    ///
+    /// MEASURED 2026-09-02 on `diag 64x64 q40 p8 frames=2`: with it, frame 1
+    /// is **byte-identical to C** (22 B) while the port's own PD0 splits the
+    /// frame into sixteen 8x8 NEARESTMV blocks and emits 35 B — so the inter
+    /// mode decision, the MV coding, the entropy path and the pack are all
+    /// correct on that cell and the whole gap is PD0. See
+    /// `docs/INTER-ENCODE-PLAN.md` §1z⁸.
+    ///
+    /// Delete it when PD0 does inter compensation; a byte count it produces is
+    /// NEVER a parity result.
+    pd0_nosplit => "SVTAV1_PD0_NOSPLIT",
 }
 
 /// The value-carrying debug vars that also sit on per-block paths. Same

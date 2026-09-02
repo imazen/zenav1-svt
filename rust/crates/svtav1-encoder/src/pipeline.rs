@@ -10988,6 +10988,7 @@ fn encode_tile_rows(
                                             sb_stale_vars,
                                             max_tx_size,
                                             pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                            crate::dbgenv::pd0_nosplit() && inter_md.is_some(),
                                         )
                                     } else {
                                         crate::pd0::pd0_pick_sb_partition_m6_eval(

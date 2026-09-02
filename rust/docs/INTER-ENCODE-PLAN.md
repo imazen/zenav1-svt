@@ -3843,6 +3843,69 @@ look at is what is per-SB: the funnel CDF chain (`funnel_chain` is live at video
 M8, `update_cdf_level` being `is_islice ? 1 : 0` through M8) and the PD0 chained
 rate tables it feeds.
 
+### 1z⁸. The inter frame's PD0 does NO inter compensation, and that is measurably the whole gap on a 64-aligned cell (2026-09-02)
+
+With the video-KEY frontier down to one cell, the remaining 64 F1DIFF cells are
+INTER-decision defects. This section is a measurement that scopes them, not a
+fix.
+
+#### What C codes and what the port codes
+
+`diag 64x64 q40 p8 frames=2`, frame 0 byte-identical (252 B), frame 1 C 22 B vs
+port 35 B.
+
+C's `SVT_CTREE_OUT`, frame 1, in full — **one line**:
+
+```
+CTREE mi=(0,0) bsize=12 part=0 mode=16 uv=6 txd=0 skip=1
+```
+
+one 64x64 `NEARESTMV` skip block. The port's `SVTAV1_PACKTREE` for the same
+frame is **sixteen 8x8 blocks**, every one of them `inter=1 mvc=-24 rf=1
+mode=13`, every one skip. The port therefore agrees with C about the motion and
+about coding no residual; it disagrees about the PARTITION.
+
+#### The control, and it is exact
+
+`SVTAV1_PD0_NOSPLIT` (new, `dbgenv`) forces the video arm's PD0 to test only the
+64x64 square **on an inter frame only** — so frame 0's recon, and therefore
+frame 1's reference, is untouched and the comparison is clean. C never runs this
+way; it is a control, not a configuration, and its byte counts are never a
+parity result.
+
+With it, `diag 64x64 q40 p8` frame 1 is **BYTE-IDENTICAL to C** at 22 B with
+frame 0 still identical. So on that cell the inter mode decision, the MVP stack,
+the DRL choice, the MV coding, the entropy path and the pack are ALL correct,
+and the entire residual gap is the PD0 partition.
+
+Over the whole 96-cell grid the control closes exactly three cells —
+`diag 64x64 q20 p8`, `diag 64x64 q40 p8`, `gradient 64x64 q20 p8` — and breaks
+three (`{uniform,gradient} 16x16` p8), which is expected: a 64x64-only tree is
+not C's tree on a 16x16 frame either. Read it as "PD0 is the whole gap on these
+three and a contributor elsewhere", not as a fix that was declined.
+
+#### The cause, from C's source
+
+C's PD0 evaluates INTER candidates on a non-I slice — `PD0_LVL_6` is documented
+as "VERY_LIGHT_PD0 ... only supports INTER compensation"
+(`enc_dec_process.c:2413`), which is only sensible because every lighter level
+above it does inter compensation too. The port's `pd0::Pd0Ctx` has no reference
+picture, no ME MV and no motion-compensated prediction: it scores every block
+from an intra prediction. On a translated frame that makes every large block
+look expensive and the tree splits to the minimum size, which is exactly the
+shape observed.
+
+#### What the next chunk has to build
+
+`Pd0Ctx` needs, on a non-key frame: the padded reference (`picture::PaddedRef`,
+already on the DPB entry and already threaded to `inter_md_arm`), this block's
+ME MV (`inter_me_arm::FrameMe::mv_for`, already the funnel's source), and C's
+PD0-side inter prediction. `pd0_video_recon` already carries a per-SB canvas
+through both entry points, so the plumbing shape exists; what is missing is the
+candidate and the predictor. Until it lands, every F1DIFF cell whose frame-1
+tree is deeper than C's is downstream of this and should not be chased
+separately.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
