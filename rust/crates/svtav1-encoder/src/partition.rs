@@ -1763,6 +1763,27 @@ pub(crate) fn funnel_block_decision(
         use_intrabc: choice.ibc.is_some(),
         dv: choice.ibc.map(|(dv, _)| dv).unwrap_or_default(),
         dv_ref: choice.ibc.map(|(_, r)| r).unwrap_or_default(),
+        // The INTER winner (`docs/INTER-ENCODE-PLAN.md` §1s items 1b + 7).
+        // `is_inter` and `inter` are set TOGETHER: `encode_block_syntax`'s
+        // inter arm panics on `is_inter` without a payload rather than
+        // falling back, because a quiet fallback turns an undecodable stream
+        // back into a byte divergence (§1u).
+        is_inter: choice.inter.is_some(),
+        inter: choice.inter.map(|i| {
+            alloc::boxed::Box::new(InterDecision {
+                mode: i.mode,
+                ref_frame: i.ref_frame,
+                mv: i.mv,
+                drl_index: i.drl_index,
+                interp_filters: i.interp_filters,
+                motion_mode: i.motion_mode,
+                num_proj_ref: u16::from(i.num_proj_ref),
+                overlappable_neighbors: u32::from(i.overlappable_neighbors),
+                // The port writes `skip_mode_present = 0` on every frame, so
+                // no candidate can be a skip-mode one.
+                skip_mode: false,
+            })
+        }),
         ..Default::default()
     }
 }

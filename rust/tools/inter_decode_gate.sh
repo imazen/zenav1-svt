@@ -48,18 +48,26 @@ PASS_CELLS=(
     "uniform 64 64 40 6 2 3"    # one 64x64 all-skip inter block
     "gradient 64 64 40 6 2 0"   # zero motion: one all-skip inter block
     "gradient 16 16 50 6 2 1"   # one 8x16 all-skip inter block
+    # PROMOTED 2026-09-01 by docs/INTER-ENCODE-PLAN.md §1y, which is also the
+    # answer to §1x's open defect. Both cells refused frame 1 under the
+    # PRE-CAMPAIGN recursion, which stamps no mode-info map at all, so every
+    # neighbour-dependent inter context it wrote was derived from an
+    # all-intra grid. §1s item 1 put those frames on the C-exact PD0 + leaf
+    # funnel, whose `commit_leaf` stamps the real `mode` / `ref_frame` / `mv`
+    # / `interp_filters` per committed block — and both decode 2/2.
+    #
+    # §1x's search space named three candidates
+    # (`collect_neighbors_ref_counts` -> `write_ref_frames`,
+    # `av1_get_pred_context_switchable_interp`, `mode_context`); all three
+    # read that grid, so the fix is upstream of the choice between them and
+    # the question of WHICH one was wrong is now moot rather than answered.
+    "gradient 16 16 44 6 2 1"   # TWO 8x16 all-skip NEWMV blocks (§1x's repro)
+    "gradient 64 64 40 6 2 3"   # the campaign's reference cell, 3px shift
 )
-# Every one of these decodes frame 0 and REFUSES frame 1. Minimal repro:
-# `gradient 16 16 44 6` with shift 1 is TWO 8x16 all-skip NEWMV blocks, and
-# the first one ALONE (q50, one block) decodes — so the open defect is in a
-# neighbour-dependent context inside the inter mode-info group, not in the
-# residual (these blocks have none) and not in the MV coding (forcing a zero
-# MV difference does not fix it). An all-intra P frame on the same cell
-# decodes, so it is inter-specific. See docs/INTER-ENCODE-PLAN.md §1x.
-OPEN_CELLS=(
-    "gradient 16 16 44 6 2 1"
-    "gradient 64 64 40 6 2 3"
-)
+# Empty on purpose, and that is a claim: every cell this gate knows about
+# decodes completely. A NEW open cell goes here with its measured reason, so
+# the gate keeps stating a frontier instead of hiding one.
+OPEN_CELLS=()
 
 work="${TMPDIR:-/tmp}/inter-decode-gate.$$"
 mkdir -p "$work"

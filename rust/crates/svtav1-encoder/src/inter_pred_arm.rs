@@ -19,13 +19,14 @@
 //!
 //! # What is here and what is not
 //!
-//! [`predict_inter_luma`] is the luma half (§1s item 5). The chroma half
-//! (item 6) is the same driver with `CHROMA_MASK` and the two `PaddedPlane`s
-//! from [`crate::picture::PaddedRef::uv`]; it is NOT exposed yet because the
-//! chroma pass that would call it still routes an inter block's chroma
-//! through `encode_chroma_block_dc` (an INTRA DC predictor), and adding an
-//! entry point with no caller would be surface without a positive control.
-//! The driver call it needs is one `component_mask` away.
+//! [`predict_inter_luma`] is the luma half (§1s item 5) and
+//! [`predict_inter_yuv`] the luma + chroma one (item 6): C's driver does all
+//! three planes in ONE call under a `component_mask`, so the chroma half is
+//! not a second prediction — it is the same `compute_subpel_params` result at
+//! a halved origin, which is exactly why doing it separately would be a
+//! different arithmetic. Both take the same geometry; the caller picks by
+//! whether it has the two chroma `PaddedPlane`s from
+//! [`crate::picture::PaddedRef::uv`].
 //!
 //! # Compound, warped and OBMC
 //!
@@ -38,15 +39,12 @@
 //! instead of here.
 
 use crate::picture::PaddedPlane;
-use svtav1_dsp::port_pd_pred::{BlkGeom, PredPlanes, RefPlane, av1_inter_prediction_light_pd1};
+use svtav1_dsp::port_pd_pred::{
+    BlkGeom, CHROMA_MASK, LUMA_MASK, PredPlanes, RefPlane, av1_inter_prediction_light_pd1,
+};
 use svtav1_dsp::port_scale_factors::ScaleFactors;
 use svtav1_dsp::port_subpel_params::{MbEdges, Mv as DspMv};
 use svtav1_types::motion::Mv;
-
-/// C `LUMA_MASK` — `av1_inter_prediction_light_pd1`'s luma-only component
-/// mask (`enc_inter_prediction.c`; MDS0 asks for luma, MDS3 for chroma,
-/// which is what makes the two passes independent).
-const LUMA_ONLY: u32 = 1;
 
 /// One inter-predicted LUMA block, exactly as C reconstructs it.
 ///
@@ -84,20 +82,7 @@ pub fn predict_inter_luma(
         frame_w as i32,
         frame_h as i32,
     );
-    // C `xd->mb_to_*_edge` (`svt_aom_init_xd`, adaptive_mv_pred.c:1054-1057),
-    // in EIGHTH-pel: `-((mi_col * MI_SIZE) * 8)` and
-    // `((mi_cols - bw_mi - mi_col) * MI_SIZE) * 8`. They bound the MV clamp,
-    // so getting the sign or the unit wrong moves the prediction rather than
-    // failing.
-    let (mi_cols, mi_rows) = (frame_w.div_ceil(4) as i32, frame_h.div_ceil(4) as i32);
-    let (mi_col, mi_row) = ((org_x / 4) as i32, (org_y / 4) as i32);
-    let (bw_mi, bh_mi) = ((bw / 4) as i32, (bh / 4) as i32);
-    let edges = MbEdges {
-        to_left: -((mi_col * 4) * 8),
-        to_right: (mi_cols - bw_mi - mi_col) * 4 * 8,
-        to_top: -((mi_row * 4) * 8),
-        to_bottom: (mi_rows - bh_mi - mi_row) * 4 * 8,
-    };
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
     let rp = RefPlane {
         buf: &reference.buf,
         origin: reference.origin,
@@ -140,6 +125,105 @@ pub fn predict_inter_luma(
         &edges,
         interp_filters,
         &mut pred,
-        LUMA_ONLY,
+        LUMA_MASK,
     );
+}
+
+/// The same block predicted on ALL THREE planes — §1s item 6.
+///
+/// C's driver takes one `component_mask` and does luma and both chroma planes
+/// in one call (`enc_inter_prediction.c`; the chroma arm reuses the LUMA
+/// block dims for `compute_subpel_params` and only halves the ORIGIN, see
+/// `port_pd_pred.rs:302-306`), so this is one call and not three.
+///
+/// `u_out` / `v_out` are `bw/2 x bh/2` at `uv_stride`. All three references
+/// must carry their replicated margins — C pads chroma at
+/// `(border + ss_x) >> ss_x` (`enc_dec_process.c:1102`), which
+/// [`crate::picture::PaddedRef`] already does.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv(
+    refs: (&PaddedPlane, &PaddedPlane, &PaddedPlane),
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    y_out: &mut [u8],
+    y_stride: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) {
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    fn plane(p: &PaddedPlane) -> RefPlane<'_> {
+        RefPlane {
+            buf: &p.buf,
+            origin: p.origin,
+            stride: p.stride,
+            width: p.width as i32,
+            height: p.height as i32,
+        }
+    }
+    let mut pred = PredPlanes {
+        y: y_out,
+        y_stride,
+        u: u_out,
+        u_stride: uv_stride,
+        v: v_out,
+        v_stride: uv_stride,
+    };
+    av1_inter_prediction_light_pd1(
+        &BlkGeom {
+            org_x: org_x as i32,
+            org_y: org_y as i32,
+            bwidth: bw,
+            bheight: bh,
+            bwidth_uv: bw / 2,
+            bheight_uv: bh / 2,
+            super_block_size: sb_size as i32,
+        },
+        &[DspMv { x: mv.x, y: mv.y }],
+        &[plane(refs.0)],
+        &[plane(refs.1)],
+        &[plane(refs.2)],
+        &[sf],
+        &edges,
+        interp_filters,
+        &mut pred,
+        LUMA_MASK | CHROMA_MASK,
+    );
+}
+
+/// C `xd->mb_to_*_edge` (`svt_aom_init_xd`, adaptive_mv_pred.c:1054-1057), in
+/// EIGHTH-pel: `-((mi_col * MI_SIZE) * 8)` and
+/// `((mi_cols - bw_mi - mi_col) * MI_SIZE) * 8`. They bound the MV clamp, so
+/// getting the sign or the unit wrong moves the prediction rather than
+/// failing.
+fn mb_edges(
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    frame_w: usize,
+    frame_h: usize,
+) -> MbEdges {
+    let (mi_cols, mi_rows) = (frame_w.div_ceil(4) as i32, frame_h.div_ceil(4) as i32);
+    let (mi_col, mi_row) = ((org_x / 4) as i32, (org_y / 4) as i32);
+    let (bw_mi, bh_mi) = ((bw / 4) as i32, (bh / 4) as i32);
+    MbEdges {
+        to_left: -((mi_col * 4) * 8),
+        to_right: (mi_cols - bw_mi - mi_col) * 4 * 8,
+        to_top: -((mi_row * 4) * 8),
+        to_bottom: (mi_rows - bh_mi - mi_row) * 4 * 8,
+    }
 }

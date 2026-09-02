@@ -97,6 +97,16 @@ pub struct EncodePipeline {
     /// (empty on the monochrome entry point). The bd10 consumers are all
     /// 64-aligned-gated, so this stride equals the funnel's SB-extended one.
     hbd_source: Option<HbdSource>,
+    /// The PREVIOUS frame's PA (picture-analysis) picture — its padded SOURCE
+    /// luma at full, 1/4 and 1/16 resolution.
+    ///
+    /// SVT's motion estimation is OPEN LOOP: `me_process.c:185-203` searches
+    /// against the PA reference, which `reference_object.c:242-250` documents
+    /// as pointing directly at the app's luma input, NOT at a recon. So the
+    /// search needs the previous SOURCE and the DPB's padded recon is a
+    /// different buffer for a different job (motion compensation). `None`
+    /// until the first frame has been encoded.
+    pa_ref: Option<alloc::boxed::Box<crate::inter_me_arm::PaPicture>>,
     /// CICP color description.
     pub color_description: crate::entropy::obu::ColorDescription,
     /// SH `chroma_sample_position` (spec 6.4.2: 0 = CSP_UNKNOWN, 1 =
@@ -394,6 +404,7 @@ impl EncodePipeline {
             superres_denom: None,
             superres_stats_luma: None,
             hbd_source: None,
+            pa_ref: None,
             // C-matched default: CICP "unspecified" (cp/tc/mc = 2/2/2,
             // studio range) — the library defaults of enc_settings.c:1043.
             // The SH then carries color_description_present_flag=0 and
@@ -2065,6 +2076,111 @@ impl EncodePipeline {
         // rdoq policy line `<=M5 -> 1, else f(coeff_lvl)` covers both,
         // enc_mode_config.c:14931) on 64-aligned dims — everywhere else
         // the legacy dead-zone quantizer stays.
+        // MOVED UP with the inter MD derivations below (§1s item 8): MODE
+        // DECISION prices against `md_frame_context`, which C copies from
+        // this same reference (md_config_process.c:299-310) — so the binding
+        // has to exist before MD runs, not only before the entropy walk.
+        // CDF CONTINUATION, RESTORE side — C `reset_entropy_coding_picture`
+        // (`ec_process.c:101-112`):
+        //
+        //     if (primary_ref_frame != PRIMARY_REF_NONE)
+        //         svt_memcpy(ec->fc, &ref->frame_context, sizeof(FRAME_CONTEXT));
+        //     else
+        //         svt_aom_reset_entropy_coder(...);
+        //
+        // The DPB slot is the one the FRAME HEADER names:
+        // `ref_frame_idx[primary_ref_frame]`, i.e. `rps.ref_dpb_index[]`, which
+        // is what a DECODER resolves. (C indexes its own
+        // `ref_pic_ptr_array[list][idx]` via `get_list_idx`/`get_ref_frame_idx`
+        // instead; the two agree, and the spec mapping is the one conformance
+        // depends on, so that is the one used here.)
+        //
+        // `binding` is recomputed at the header-assembly site below from the
+        // same pure inputs; `primary_ref_frame_for_cdf` is carried down so the
+        // two are ASSERTED equal rather than assumed — a tile coded against
+        // slot A while the header announces slot B is a decoder desync, and it
+        // is exactly the kind of divergence no byte count would explain.
+        let (primary_ref_frame_for_cdf, primary_ref_cdfs) = if is_key {
+            (crate::port_picstruct::PRIMARY_REF_NONE, None)
+        } else if let Some(pic) = pic_decision.as_ref() {
+            let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
+            let b = crate::port_picstruct::bind_refs_and_primary_ref_frame(
+                pic, &ref_queue, /*frame_end_cdf_update_mode=*/ true,
+                /*is_s_frame=*/ false,
+            );
+            let prf = b.primary_ref_frame;
+            let cdfs = if prf == crate::port_picstruct::PRIMARY_REF_NONE {
+                None
+            } else {
+                let slot = pic.rps.ref_dpb_index[prf as usize] as usize;
+                let stored = self.dpb.get(slot).and_then(|rf| rf.frame_cdfs.clone());
+                if stored.is_none() {
+                    // REFUSE rather than fall back to the defaults. The header
+                    // this frame is about to write says "start from slot N's
+                    // end-of-frame CDFs"; coding against the defaults instead
+                    // produces a stream a conforming decoder turns into
+                    // garbage, which is the one failure mode `docs/WORKING-ON-
+                    // THIS.md` §6 exists to forbid. It is also the POSITIVE
+                    // CONTROL for this wiring: if the store ever stops
+                    // running, every inter cell fails loudly instead of
+                    // quietly regressing to default-CDF bytes.
+                    return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                        "the frame header names a primary_ref_frame, but the DPB slot it \
+                         resolves to carries no saved CDF state — the referenced frame's \
+                         entropy walk never ran (crate::port_frame_cdf)",
+                    )));
+                }
+                stored
+            };
+            (prf, cdfs)
+        } else {
+            (crate::port_picstruct::PRIMARY_REF_NONE, None)
+        };
+
+        // --- The INTER branch of MODE DECISION (docs/INTER-ENCODE-PLAN.md
+        // §1s items 1b/2/3/6). `None` on a key frame, which is what keeps the
+        // whole still envelope byte-identical by construction.
+        //
+        // The open-loop search runs against the PREVIOUS FRAME'S SOURCE, not
+        // the DPB recon — SVT's ME is open loop (`me_process.c:185-203` reads
+        // the PA reference, `reference_object.c:242-250`). The recon side is
+        // `ref_padded_luma`, which the motion COMPENSATION indexes.
+        //
+        // The PA picture is built only in VIDEO mode: on a still/AVIF encode
+        // nothing can ever reference this frame, and the pyramid is a padded
+        // copy plus two decimations of the whole luma plane — real work to
+        // spend on a buffer with no reader.
+        let pa_cur = (self.gop.intra_period > 1).then(|| {
+            alloc::boxed::Box::new(crate::inter_me_arm::PaPicture::from_source(
+                &encode_input,
+                w,
+                w,
+                h,
+                display_order,
+            ))
+        });
+        let frame_me = match (is_key, pa_cur.as_deref(), self.pa_ref.as_deref()) {
+            (false, Some(cur), Some(prev)) => {
+                Some(crate::inter_me_arm::run_frame_me(
+                    cur,
+                    prev,
+                    crate::inter_me_arm::FrameMeParams {
+                        enc_mode: self.speed_config.preset,
+                        qp: self.rc_config.qp,
+                        width: w,
+                        height: h,
+                        picture_number: display_order,
+                        // C `frame_is_boosted(pcs)` (enc_mode_config.h:108):
+                        // true only for the base layer of a hierarchy, which
+                        // a flat low-delay P GOP never has.
+                        frame_is_boosted: temporal_layer == 0 && self.gop.hierarchical_levels > 0,
+                        hierarchical_levels: self.gop.hierarchical_levels,
+                    },
+                ))
+            }
+            _ => None,
+        };
+
         let mut c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
             // Task #95 chunk 2: was gated on 64-aligned dims; the padded
             // `sb_input` now lets the per-b64 walk read C's replicated border
@@ -2144,6 +2260,57 @@ impl EncodePipeline {
                 // this port. Video frames therefore weight CHROMA rate at 20,
                 // not 13.
                 cq.allintra_rd_mult = matches!(sc_arm, crate::sc_detect::ScArm::Allintra);
+                Some(alloc::sync::Arc::new(cq))
+            } else if let Some(me) = frame_me.as_ref() {
+                // The INTER frame's coding quantizer (docs/INTER-ENCODE-PLAN.md
+                // §1s item 1b). Without it `use_funnel` is false on every frame
+                // with a reference and the C-exact MD path is unreachable no
+                // matter what the two `ref_*.is_none()` gates say — which is
+                // what item 1's measurement could not see.
+                //
+                // C `derive_inter_coeff_level` (md_config_process.c:650) keys
+                // on `ppcs->norm_me_dist`, the MEAN of the open-loop ME's
+                // per-b64 8x8 distortion (initial_rc_process.c:718-726) — so
+                // the search has to have run, which is why this sits below it.
+                let dist: u64 = me.per_b64.iter().map(|o| u64::from(o.me_8x8_distortion)).sum();
+                let norm_me_dist = dist / me.per_b64.len().max(1) as u64;
+                let coeff_lvl = crate::quant::derive_inter_coeff_level(
+                    norm_me_dist,
+                    tpl_adjusted_qp as u32,
+                    w,
+                    h,
+                );
+                let eff_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
+                // The VIDEO arm's RDOQ ladder (`rdoq_level_default`,
+                // enc_mode_config.c:8933) is a flat 1 through M10 and ignores
+                // `coeff_lvl` — which is why C can leave a video-mode I-slice
+                // at INVALID_LVL. The level is still derived, because the
+                // coeff-driven arms above M10 read it.
+                let rdoq_level = crate::rate_arm::rdoq_level(sc_arm, eff_mode, coeff_lvl);
+                // C `av1_lambda_assign_md` (md_process.c:725) for a non-key
+                // frame; a flat low-delay P GOP puts every frame at temporal
+                // layer 0, which `update_lambda` (rc_process.c:406-410) maps
+                // to ARF_UPDATE.
+                let lambda = crate::pd0::inter_full_lambda_8bit(
+                    base_qindex,
+                    if temporal_layer == 0 {
+                        crate::port_rc_process::FrameUpdateType::ArfUpdate
+                    } else {
+                        crate::port_rc_process::FrameUpdateType::LfUpdate
+                    },
+                    self.hdr.is_fork() && self.hdr.alt_lambda_factors,
+                    0,
+                    crate::pd0::frame_lambda_weight(
+                        picture_qp as u32,
+                        self.hdr.tune == crate::tune::TUNE_IQ,
+                        lw_bump,
+                    ),
+                );
+                let mut cq =
+                    crate::quant::CodingQuantCfg::new(rdoq_level, lambda, base_qindex);
+                // C `svt_av1_optimize_b`'s `allintra || rtc` (full_loop.c:1046):
+                // an inter frame is never `allintra`, so chroma rate weighs 20.
+                cq.allintra_rd_mult = false;
                 Some(alloc::sync::Arc::new(cq))
             } else {
                 None
@@ -2399,6 +2566,297 @@ impl EncodePipeline {
             cfg.sharp_tx_active = sharp_tx_active;
             cfg.qm_levels = qm_levels;
         }
+        // MOVED UP (inter campaign, docs/INTER-ENCODE-PLAN.md §1s item 1b):
+        // these three derivations used to sit beside the header assembly.
+        // MODE DECISION now needs them — the inter branch of MD prices with
+        // the same tables the pack codes with, and reads the same MVP
+        // environment — and MD runs before the header is written. Nothing
+        // between their old and new positions produced any of their inputs
+        // (checked field by field: every one is a `self` field or a local
+        // from above this point), so the move is byte-neutral by
+        // construction and pinned by the still gates.
+        // Sequence-level tool bits (C svt_aom_sig_deriv_pre_analysis_scs):
+        // per-preset for the still/allintra path, off for multi-frame.
+        // Threaded to the SH + FH writers AND the entropy walk below —
+        // the per-block use_filter_intra symbol exists exactly when the
+        // SH signals the tool, so all three consumers MUST see one value.
+        let is_single_frame = self.gop.intra_period <= 1;
+        let seq_tools = {
+            let mut t = crate::speed_config::seq_tools_for_preset(
+                self.speed_config.preset,
+                is_single_frame,
+                self.width as usize * self.height as usize,
+            );
+            // Task #91: C derives `use_128x128_superblock` at SH-write time
+            // from `sb_size == BLOCK_128X128` (entropy_coding.c:2800). The
+            // port's `sb_size` comes from the same rule
+            // (sb128_geom::derive_super_block_size), so the bit follows it.
+            t.use_128x128_superblock = self.sb_size == 128;
+            // Superres chunk B.3: the SH tool bit must agree with what the
+            // frame header signals (`SuperresParams::enabled_in_seq`) or the
+            // decoder's bit walk desyncs. Off by default -> unchanged bit.
+            t.enable_superres = self.superres_denom.is_some();
+            // Issue #9 item 5: C writes `static_config.chroma_sample_position`
+            // into the 4:2:0 color_config (entropy_coding.c:2743).
+            t.chroma_sample_position = self.chroma_sample_position;
+            // Inter campaign C1a: the non-reduced header's
+            // `initial_display_delay` is `min(hierarchical_levels + 1, 10)`
+            // (enc_handle.c:4975-4993). Unread on the still path, where those
+            // bits are not written at all.
+            t.hierarchical_levels = self.gop.hierarchical_levels;
+            // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
+            // (its FH writes independent U/V deltas — entropy_coding.c
+            // fork block hardcodes both flags true).
+            if self.hdr.is_fork() {
+                t.separate_uv_delta_q = true;
+                // Photon noise signals grain tables per frame.
+                t.film_grain_params_present = self.hdr.noise_strength > 0;
+            }
+            // enable_intra_edge_filter's C-parity surface is still/420
+            // (the C matched config). The mono extension keeps 0: C cannot
+            // emit mono, and the mono leaf coder predicts without edge
+            // filtering — signaling 0 keeps our recon decoder-exact on
+            // that self-consistent surface.
+            t.enable_intra_edge_filter &= self.chroma_420;
+            // Small-frame implementation limit (enc_settings.c:214-232):
+            // when the TRUE source width OR height is < 64, C force-clears
+            // enable_restoration_filtering (and aq_mode, already off on the
+            // allintra path) BEFORE the SH derivation, so the SH bit is 0.
+            // Uses the TRUE (unaligned) dims — a 60x60 frame aligns to
+            // 64x64 but still trips this.
+            if self.true_width < 64 || self.true_height < 64 {
+                t.enable_restoration = false;
+            }
+            t
+        };
+
+        // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
+        // tool ladders. It is EXPORTED and gated at tier 1; the frame header
+        // reads its `allow_high_precision_mv`, `allow_warped_motion`,
+        // `is_motion_mode_switchable`, `mfmv_level` and `interpolation_filter`
+        // so the header can never disagree with the tools the encode ran.
+        //
+        // Only computed for an inter frame — a key frame's header carries none
+        // of those fields, so this is byte-inert for every still cell.
+        let md_config_signals = if is_key {
+            None
+        } else {
+            let pd = pic_decision.as_ref();
+            crate::inter_hdr_arm::md_config_inputs(crate::inter_hdr_arm::PipelineMdInputs {
+                enc_mode: self.speed_config.preset as i8,
+                sq_qp: u32::from(self.rc_config.qp),
+                base_q_idx: base_qindex,
+                picture_qp: u32::from(pcs.qp),
+                temporal_layer_index: temporal_layer,
+                hierarchical_levels: self.gop.hierarchical_levels,
+                is_ref: pd.is_some_and(|p| p.is_ref),
+                is_islice: false,
+                sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                input_resolution: crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+                    self.width * self.height,
+                ),
+                encoder_bit_depth: self.bit_depth,
+                super_block_size: self.sb_size as u16,
+                enable_interintra_compound: seq_tools.enable_interintra_compound,
+                frame_superres_enabled: self.superres_denom.is_some(),
+                ref_list0_count_try: pd.map_or(0, |p| u32::from(p.ref_list0_count)),
+                ref_list1_count_try: pd.map_or(0, |p| u32::from(p.ref_list1_count)),
+                // Every DPB slot still holds the key frame on the 2-frame
+                // cell; the shadow DPB's POC 0 IS that key frame.
+                ref_l0_is_islice: self.pd_ctx.dpb
+                    [pd.map_or(0, |p| p.rps.ref_dpb_index[0] as usize)]
+                .picture_number
+                    == 0,
+                ref_l1_is_islice: self.pd_ctx.dpb
+                    [pd.map_or(0, |p| p.rps.ref_dpb_index[4] as usize)]
+                .picture_number
+                    == 0,
+            })
+            .and_then(
+                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
+            )
+        };
+
+        // The frame-level INTER syntax the pack's inter mode-info writer
+        // reads (`docs/INTER-ENCODE-PLAN.md` §1s item 7). It is derived HERE,
+        // beside `primary_ref_frame_for_cdf`, rather than at the header
+        // assembly below, because the TILE is coded before the header is
+        // written and the writer needs these values while it codes. The
+        // header re-derives the same fields from the same inputs and the two
+        // are asserted equal there, exactly like `primary_ref_frame`.
+        //
+        // `md_config_signals` moved up with it for the same reason; nothing
+        // between its old and new position reads it.
+        let inter_syntax_state: Option<InterSyntaxState> = md_config_signals.map(|sigs| {
+            let mut ref_order_hint = [0i32; 7];
+            if let Some(pic) = pic_decision.as_ref() {
+                for (i, oh) in ref_order_hint.iter_mut().enumerate() {
+                    let slot = pic.rps.ref_dpb_index[i] as usize;
+                    *oh = self.dpb.get(slot).map_or(0, |r| r.order_hint as i32);
+                }
+            }
+            InterSyntaxState {
+                // C `frm_hdr->reference_mode`. The port has no compound
+                // candidate yet, but the SYMBOL layout depends on this bit
+                // and the header writes it, so it must be the header's value
+                // and not a convenient constant.
+                // C `frm_hdr->reference_mode`, i.e. the header's
+                // `reference_select` bit — `inter_hdr_arm::inter_signal`
+                // derives it from `pic.reference_mode` and this reads the
+                // same field, so the tile and the header cannot disagree.
+                reference_mode: match pic_decision.as_ref().map(|p| p.reference_mode) {
+                    Some(crate::port_picstruct::ReferenceMode::Select) => {
+                        crate::port_entropy_inter::refframe::ReferenceMode::Select
+                    }
+                    _ => crate::port_entropy_inter::refframe::ReferenceMode::Single,
+                },
+                interpolation_filter: sigs.interpolation_filter,
+                enable_dual_filter: seq_tools.enable_dual_filter,
+                enable_interintra_compound: seq_tools.enable_interintra_compound,
+                enable_masked_compound: seq_tools.enable_masked_compound,
+                enable_jnt_comp: seq_tools.enable_jnt_comp,
+                enable_order_hint: seq_tools.enable_order_hint,
+                order_hint_bits: u32::from(crate::entropy::obu::ORDER_HINT_BITS),
+                is_motion_mode_switchable: sigs.is_motion_mode_switchable,
+                allow_warped_motion: sigs.allow_warped_motion,
+                allow_high_precision_mv: sigs.allow_high_precision_mv != 0,
+                // C keeps `frm_hdr->force_integer_mv = 0` unconditionally
+                // (resource_coordination_process.c:362), which is also the
+                // bit `write_uncompressed_header` emits (obu.rs:1421). Read
+                // from the same place rather than from a signal that has no
+                // such field.
+                force_integer_mv: false,
+                // Global-motion PARAMETER coding is unported and
+                // `inter_hdr_arm::inter_signal` refuses a non-identity model,
+                // so every reference is IDENTITY here by the same rule the
+                // header is written under — not by assumption.
+                gm_wmtype: [crate::port_entropy_inter::modes::TransformationType::Identity; 8],
+                cur_order_hint: display_order as i32,
+                ref_order_hint,
+                // C `mfmv_controls` (enc_mode_config.c:8852) for the VALUE
+                // and `frame_might_allow_ref_frame_mvs`
+                // (entropy_coding.h:71) for its PRESENCE — the same two
+                // rules `inter_hdr_arm::inter_signal` applies to write the
+                // header bit, asserted equal to it below.
+                use_ref_frame_mvs: seq_tools.enable_ref_frame_mvs
+                    && seq_tools.enable_order_hint
+                    && sigs.mfmv_level == 1,
+            }
+        });
+
+        // The frame-constant MVP environment the pack derives `predmv` /
+        // `inter_mode_ctx` / `drl_ctx` from (§1s items 2 and 3). Same
+        // provenance rule as `inter_syntax_state` above: every field is the
+        // one the HEADER announces, so the contexts the tile codes are the
+        // ones a decoder rebuilds.
+        let inter_mvp_env: Option<crate::partition::InterMdEnv> =
+            inter_syntax_state.as_ref().map(|st| {
+                let (mi_cols, mi_rows) = (w.div_ceil(4) as i32, h.div_ceil(4) as i32);
+                let tpl_stride = (mi_cols + 1) >> 1;
+                crate::partition::InterMdEnv {
+                    mi_stride: mi_cols,
+                    mi_rows,
+                    mi_cols,
+                    tile: crate::intrabc::TileMiBounds {
+                        mi_col_start: 0,
+                        mi_col_end: mi_cols,
+                        mi_row_start: 0,
+                        mi_row_end: mi_rows,
+                    },
+                    sb_mi_size: (sb_size / 4) as i32,
+                    global_motion: [svtav1_types::motion::WarpedMotionParams::default(); 8],
+                    allow_high_precision_mv: st.allow_high_precision_mv,
+                    force_integer_mv: st.force_integer_mv,
+                    use_ref_frame_mvs: st.use_ref_frame_mvs,
+                    order_hint_info: crate::inter_mvp::OrderHintInfo {
+                        enable_order_hint: st.enable_order_hint,
+                        order_hint_bits: st.order_hint_bits,
+                    },
+                    cur_order_hint: st.cur_order_hint,
+                    // `inter_mvp` indexes by `MvReferenceFrame`
+                    // (LAST = 1 ..= ALTREF = 7, slot 0 unused); the entropy
+                    // side's array is `ref_frame - 1`.
+                    ref_order_hint: {
+                        let mut a = [0i32; 8];
+                        a[1..8].copy_from_slice(&st.ref_order_hint);
+                        a
+                    },
+                    // C's `av1_setup_motion_field` reset leaves every cell
+                    // INVALID_MV; the temporal field itself is unported, so
+                    // every `add_tpl_ref_mv` returns 0 — which is what sets
+                    // the GLOBALMV bit of `mode_context` (§1t).
+                    tpl_mvs: alloc::vec![
+                        crate::inter_mvp::TplMvRef::default();
+                        (((mi_rows + 32) >> 1) * tpl_stride) as usize
+                    ],
+                    tpl_stride,
+                    sb64_sq_no4xn_geom: sb_size == 64,
+                }
+            });
+
+        let inter_md_frame = match (
+            frame_me.as_ref(),
+            ref_padded_luma.as_deref(),
+            inter_syntax_state.as_ref(),
+            inter_mvp_env.as_ref(),
+        ) {
+            (Some(me), Some(padded), Some(st), Some(env)) => {
+                // §1s item 8, the inter half: the same `md_frame_context`
+                // the intra rate tables are built from.
+                let default_fc = crate::entropy::context::FrameContext::new_default();
+                let default_ic = crate::port_entropy_inter::InterCdfs::new_default();
+                let (fc, ic) = match primary_ref_cdfs.as_deref() {
+                    Some(prev) => (&prev.fc, &prev.fc.inter),
+                    None => (&default_fc, &default_ic),
+                };
+                let (fac, ref_fac) = crate::inter_md_arm::build_inter_rates(fc, ic);
+                let nmv = crate::inter_md_arm::nmv_cost_table(
+                    &fc.nmvc,
+                    crate::inter_mv_code::mv_precision(
+                        st.allow_high_precision_mv,
+                        st.force_integer_mv,
+                    ),
+                );
+                Some(crate::inter_md_arm::InterMdFrame {
+                    padded,
+                    me,
+                    fac,
+                    ref_fac,
+                    nmv,
+                    interpolation_filter: st.interpolation_filter,
+                    is_motion_mode_switchable: st.is_motion_mode_switchable,
+                    allow_warped_motion: st.allow_warped_motion,
+                    force_integer_mv: st.force_integer_mv,
+                    allow_high_precision_mv: st.allow_high_precision_mv,
+                    enable_dual_filter: st.enable_dual_filter,
+                    enable_masked_compound: st.enable_masked_compound,
+                    enable_jnt_comp: st.enable_jnt_comp,
+                    enable_interintra_compound: st.enable_interintra_compound,
+                    reference_mode_is_select: matches!(
+                        st.reference_mode,
+                        crate::port_entropy_inter::refframe::ReferenceMode::Select
+                    ),
+                    allow_screen_content_tools: sc_derivation.allow_screen_content_tools,
+                    order_hint: crate::inter_md_arm::OrderHints {
+                        enable_order_hint: st.enable_order_hint,
+                        order_hint_bits: st.order_hint_bits,
+                        cur_order_hint: st.cur_order_hint,
+                        ref_order_hint: st.ref_order_hint,
+                    },
+                    mvp_env: env.mvp_env(),
+                    mi_rows: env.mi_rows,
+                    mi_cols: env.mi_cols,
+                    tile: env.tile,
+                    sb_mi_size: env.sb_mi_size,
+                    frame_w: w,
+                    frame_h: h,
+                    sb_size,
+                    gm_wmtype: st.gm_wmtype,
+                })
+            }
+            _ => None,
+        };
+
         let tile_recons = encode_tile_rows(
             &encode_input,
             sb_input,
@@ -2450,6 +2908,8 @@ impl EncodePipeline {
             ref_frame_data.as_deref(),
             // The padded twin of the plane above, from the SAME DPB slot.
             ref_padded_luma.as_deref().map(|p| &p.y),
+            inter_md_frame.as_ref(),
+            primary_ref_cdfs.as_deref(),
             &mv_map,
             mv_map_stride,
             &sb_qp_offsets,
@@ -2932,61 +3392,6 @@ impl EncodePipeline {
             }
         }
 
-        // Sequence-level tool bits (C svt_aom_sig_deriv_pre_analysis_scs):
-        // per-preset for the still/allintra path, off for multi-frame.
-        // Threaded to the SH + FH writers AND the entropy walk below —
-        // the per-block use_filter_intra symbol exists exactly when the
-        // SH signals the tool, so all three consumers MUST see one value.
-        let is_single_frame = self.gop.intra_period <= 1;
-        let seq_tools = {
-            let mut t = crate::speed_config::seq_tools_for_preset(
-                self.speed_config.preset,
-                is_single_frame,
-                self.width as usize * self.height as usize,
-            );
-            // Task #91: C derives `use_128x128_superblock` at SH-write time
-            // from `sb_size == BLOCK_128X128` (entropy_coding.c:2800). The
-            // port's `sb_size` comes from the same rule
-            // (sb128_geom::derive_super_block_size), so the bit follows it.
-            t.use_128x128_superblock = self.sb_size == 128;
-            // Superres chunk B.3: the SH tool bit must agree with what the
-            // frame header signals (`SuperresParams::enabled_in_seq`) or the
-            // decoder's bit walk desyncs. Off by default -> unchanged bit.
-            t.enable_superres = self.superres_denom.is_some();
-            // Issue #9 item 5: C writes `static_config.chroma_sample_position`
-            // into the 4:2:0 color_config (entropy_coding.c:2743).
-            t.chroma_sample_position = self.chroma_sample_position;
-            // Inter campaign C1a: the non-reduced header's
-            // `initial_display_delay` is `min(hierarchical_levels + 1, 10)`
-            // (enc_handle.c:4975-4993). Unread on the still path, where those
-            // bits are not written at all.
-            t.hierarchical_levels = self.gop.hierarchical_levels;
-            // [SVT_HDR_MODE] the fork ALWAYS signals separate_uv_delta_q
-            // (its FH writes independent U/V deltas — entropy_coding.c
-            // fork block hardcodes both flags true).
-            if self.hdr.is_fork() {
-                t.separate_uv_delta_q = true;
-                // Photon noise signals grain tables per frame.
-                t.film_grain_params_present = self.hdr.noise_strength > 0;
-            }
-            // enable_intra_edge_filter's C-parity surface is still/420
-            // (the C matched config). The mono extension keeps 0: C cannot
-            // emit mono, and the mono leaf coder predicts without edge
-            // filtering — signaling 0 keeps our recon decoder-exact on
-            // that self-consistent surface.
-            t.enable_intra_edge_filter &= self.chroma_420;
-            // Small-frame implementation limit (enc_settings.c:214-232):
-            // when the TRUE source width OR height is < 64, C force-clears
-            // enable_restoration_filtering (and aq_mode, already off on the
-            // allintra path) BEFORE the SH derivation, so the SH bit is 0.
-            // Uses the TRUE (unaligned) dims — a 60x60 frame aligns to
-            // 64x64 but still trips this.
-            if self.true_width < 64 || self.true_height < 64 {
-                t.enable_restoration = false;
-            }
-            t
-        };
-
         // Task #95 goal 1 (odd true dims): the loop-restoration RU grid is
         // sized off the TRUE (coded) dims — C `whole_frame_rect` uses
         // frame_height / superres_upscaled_width, CEILING for chroma
@@ -3007,226 +3412,6 @@ impl EncodePipeline {
         // the post-CDEF recon, so the tile must be re-written AFTER
         // deblock+CDEF when any plane signals wiener — C's pipeline order
         // (rest_process before the EC kernel) gives it the same view.
-        // CDF CONTINUATION, RESTORE side — C `reset_entropy_coding_picture`
-        // (`ec_process.c:101-112`):
-        //
-        //     if (primary_ref_frame != PRIMARY_REF_NONE)
-        //         svt_memcpy(ec->fc, &ref->frame_context, sizeof(FRAME_CONTEXT));
-        //     else
-        //         svt_aom_reset_entropy_coder(...);
-        //
-        // The DPB slot is the one the FRAME HEADER names:
-        // `ref_frame_idx[primary_ref_frame]`, i.e. `rps.ref_dpb_index[]`, which
-        // is what a DECODER resolves. (C indexes its own
-        // `ref_pic_ptr_array[list][idx]` via `get_list_idx`/`get_ref_frame_idx`
-        // instead; the two agree, and the spec mapping is the one conformance
-        // depends on, so that is the one used here.)
-        //
-        // `binding` is recomputed at the header-assembly site below from the
-        // same pure inputs; `primary_ref_frame_for_cdf` is carried down so the
-        // two are ASSERTED equal rather than assumed — a tile coded against
-        // slot A while the header announces slot B is a decoder desync, and it
-        // is exactly the kind of divergence no byte count would explain.
-        let (primary_ref_frame_for_cdf, primary_ref_cdfs) = if is_key {
-            (crate::port_picstruct::PRIMARY_REF_NONE, None)
-        } else if let Some(pic) = pic_decision.as_ref() {
-            let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
-            let b = crate::port_picstruct::bind_refs_and_primary_ref_frame(
-                pic, &ref_queue, /*frame_end_cdf_update_mode=*/ true,
-                /*is_s_frame=*/ false,
-            );
-            let prf = b.primary_ref_frame;
-            let cdfs = if prf == crate::port_picstruct::PRIMARY_REF_NONE {
-                None
-            } else {
-                let slot = pic.rps.ref_dpb_index[prf as usize] as usize;
-                let stored = self.dpb.get(slot).and_then(|rf| rf.frame_cdfs.clone());
-                if stored.is_none() {
-                    // REFUSE rather than fall back to the defaults. The header
-                    // this frame is about to write says "start from slot N's
-                    // end-of-frame CDFs"; coding against the defaults instead
-                    // produces a stream a conforming decoder turns into
-                    // garbage, which is the one failure mode `docs/WORKING-ON-
-                    // THIS.md` §6 exists to forbid. It is also the POSITIVE
-                    // CONTROL for this wiring: if the store ever stops
-                    // running, every inter cell fails loudly instead of
-                    // quietly regressing to default-CDF bytes.
-                    return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                        "the frame header names a primary_ref_frame, but the DPB slot it \
-                         resolves to carries no saved CDF state — the referenced frame's \
-                         entropy walk never ran (crate::port_frame_cdf)",
-                    )));
-                }
-                stored
-            };
-            (prf, cdfs)
-        } else {
-            (crate::port_picstruct::PRIMARY_REF_NONE, None)
-        };
-
-        // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
-        // tool ladders. It is EXPORTED and gated at tier 1; the frame header
-        // reads its `allow_high_precision_mv`, `allow_warped_motion`,
-        // `is_motion_mode_switchable`, `mfmv_level` and `interpolation_filter`
-        // so the header can never disagree with the tools the encode ran.
-        //
-        // Only computed for an inter frame — a key frame's header carries none
-        // of those fields, so this is byte-inert for every still cell.
-        let md_config_signals = if is_key {
-            None
-        } else {
-            let pd = pic_decision.as_ref();
-            crate::inter_hdr_arm::md_config_inputs(crate::inter_hdr_arm::PipelineMdInputs {
-                enc_mode: self.speed_config.preset as i8,
-                sq_qp: u32::from(self.rc_config.qp),
-                base_q_idx: base_qindex,
-                picture_qp: u32::from(pcs.qp),
-                temporal_layer_index: temporal_layer,
-                hierarchical_levels: self.gop.hierarchical_levels,
-                is_ref: pd.is_some_and(|p| p.is_ref),
-                is_islice: false,
-                sc_class5: u8::from(sc_derivation.classes.sc_class5),
-                input_resolution: crate::port_enc_mode_config::ResolutionRange::from_luma_area(
-                    self.width * self.height,
-                ),
-                encoder_bit_depth: self.bit_depth,
-                super_block_size: self.sb_size as u16,
-                enable_interintra_compound: seq_tools.enable_interintra_compound,
-                frame_superres_enabled: self.superres_denom.is_some(),
-                ref_list0_count_try: pd.map_or(0, |p| u32::from(p.ref_list0_count)),
-                ref_list1_count_try: pd.map_or(0, |p| u32::from(p.ref_list1_count)),
-                // Every DPB slot still holds the key frame on the 2-frame
-                // cell; the shadow DPB's POC 0 IS that key frame.
-                ref_l0_is_islice: self.pd_ctx.dpb
-                    [pd.map_or(0, |p| p.rps.ref_dpb_index[0] as usize)]
-                .picture_number
-                    == 0,
-                ref_l1_is_islice: self.pd_ctx.dpb
-                    [pd.map_or(0, |p| p.rps.ref_dpb_index[4] as usize)]
-                .picture_number
-                    == 0,
-            })
-            .and_then(
-                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
-            )
-        };
-
-        // The frame-level INTER syntax the pack's inter mode-info writer
-        // reads (`docs/INTER-ENCODE-PLAN.md` §1s item 7). It is derived HERE,
-        // beside `primary_ref_frame_for_cdf`, rather than at the header
-        // assembly below, because the TILE is coded before the header is
-        // written and the writer needs these values while it codes. The
-        // header re-derives the same fields from the same inputs and the two
-        // are asserted equal there, exactly like `primary_ref_frame`.
-        //
-        // `md_config_signals` moved up with it for the same reason; nothing
-        // between its old and new position reads it.
-        let inter_syntax_state: Option<InterSyntaxState> = md_config_signals.map(|sigs| {
-            let mut ref_order_hint = [0i32; 7];
-            if let Some(pic) = pic_decision.as_ref() {
-                for (i, oh) in ref_order_hint.iter_mut().enumerate() {
-                    let slot = pic.rps.ref_dpb_index[i] as usize;
-                    *oh = self.dpb.get(slot).map_or(0, |r| r.order_hint as i32);
-                }
-            }
-            InterSyntaxState {
-                // C `frm_hdr->reference_mode`. The port has no compound
-                // candidate yet, but the SYMBOL layout depends on this bit
-                // and the header writes it, so it must be the header's value
-                // and not a convenient constant.
-                // C `frm_hdr->reference_mode`, i.e. the header's
-                // `reference_select` bit — `inter_hdr_arm::inter_signal`
-                // derives it from `pic.reference_mode` and this reads the
-                // same field, so the tile and the header cannot disagree.
-                reference_mode: match pic_decision.as_ref().map(|p| p.reference_mode) {
-                    Some(crate::port_picstruct::ReferenceMode::Select) => {
-                        crate::port_entropy_inter::refframe::ReferenceMode::Select
-                    }
-                    _ => crate::port_entropy_inter::refframe::ReferenceMode::Single,
-                },
-                interpolation_filter: sigs.interpolation_filter,
-                enable_dual_filter: seq_tools.enable_dual_filter,
-                enable_interintra_compound: seq_tools.enable_interintra_compound,
-                enable_masked_compound: seq_tools.enable_masked_compound,
-                enable_jnt_comp: seq_tools.enable_jnt_comp,
-                enable_order_hint: seq_tools.enable_order_hint,
-                order_hint_bits: u32::from(crate::entropy::obu::ORDER_HINT_BITS),
-                is_motion_mode_switchable: sigs.is_motion_mode_switchable,
-                allow_warped_motion: sigs.allow_warped_motion,
-                allow_high_precision_mv: sigs.allow_high_precision_mv != 0,
-                // C keeps `frm_hdr->force_integer_mv = 0` unconditionally
-                // (resource_coordination_process.c:362), which is also the
-                // bit `write_uncompressed_header` emits (obu.rs:1421). Read
-                // from the same place rather than from a signal that has no
-                // such field.
-                force_integer_mv: false,
-                // Global-motion PARAMETER coding is unported and
-                // `inter_hdr_arm::inter_signal` refuses a non-identity model,
-                // so every reference is IDENTITY here by the same rule the
-                // header is written under — not by assumption.
-                gm_wmtype: [crate::port_entropy_inter::modes::TransformationType::Identity; 8],
-                cur_order_hint: display_order as i32,
-                ref_order_hint,
-                // C `mfmv_controls` (enc_mode_config.c:8852) for the VALUE
-                // and `frame_might_allow_ref_frame_mvs`
-                // (entropy_coding.h:71) for its PRESENCE — the same two
-                // rules `inter_hdr_arm::inter_signal` applies to write the
-                // header bit, asserted equal to it below.
-                use_ref_frame_mvs: seq_tools.enable_ref_frame_mvs
-                    && seq_tools.enable_order_hint
-                    && sigs.mfmv_level == 1,
-            }
-        });
-
-        // The frame-constant MVP environment the pack derives `predmv` /
-        // `inter_mode_ctx` / `drl_ctx` from (§1s items 2 and 3). Same
-        // provenance rule as `inter_syntax_state` above: every field is the
-        // one the HEADER announces, so the contexts the tile codes are the
-        // ones a decoder rebuilds.
-        let inter_mvp_env: Option<crate::partition::InterMdEnv> =
-            inter_syntax_state.as_ref().map(|st| {
-                let (mi_cols, mi_rows) = (w.div_ceil(4) as i32, h.div_ceil(4) as i32);
-                let tpl_stride = (mi_cols + 1) >> 1;
-                crate::partition::InterMdEnv {
-                    mi_stride: mi_cols,
-                    mi_rows,
-                    mi_cols,
-                    tile: crate::intrabc::TileMiBounds {
-                        mi_col_start: 0,
-                        mi_col_end: mi_cols,
-                        mi_row_start: 0,
-                        mi_row_end: mi_rows,
-                    },
-                    sb_mi_size: (sb_size / 4) as i32,
-                    global_motion: [svtav1_types::motion::WarpedMotionParams::default(); 8],
-                    allow_high_precision_mv: st.allow_high_precision_mv,
-                    force_integer_mv: st.force_integer_mv,
-                    use_ref_frame_mvs: st.use_ref_frame_mvs,
-                    order_hint_info: crate::inter_mvp::OrderHintInfo {
-                        enable_order_hint: st.enable_order_hint,
-                        order_hint_bits: st.order_hint_bits,
-                    },
-                    cur_order_hint: st.cur_order_hint,
-                    // `inter_mvp` indexes by `MvReferenceFrame`
-                    // (LAST = 1 ..= ALTREF = 7, slot 0 unused); the entropy
-                    // side's array is `ref_frame - 1`.
-                    ref_order_hint: {
-                        let mut a = [0i32; 8];
-                        a[1..8].copy_from_slice(&st.ref_order_hint);
-                        a
-                    },
-                    // C's `av1_setup_motion_field` reset leaves every cell
-                    // INVALID_MV; the temporal field itself is unported, so
-                    // every `add_tpl_ref_mv` returns 0 — which is what sets
-                    // the GLOBALMV bit of `mode_context` (§1t).
-                    tpl_mvs: alloc::vec![
-                        crate::inter_mvp::TplMvRef::default();
-                        (((mi_rows + 32) >> 1) * tpl_stride) as usize
-                    ],
-                    tpl_stride,
-                    sb64_sq_no4xn_geom: sb_size == 64,
-                }
-            });
 
         // CDF CONTINUATION (`crate::port_frame_cdf`): the end-of-frame entropy
         // state this frame hands to whatever later frame names it in
@@ -4981,6 +5166,12 @@ impl EncodePipeline {
             order_hint: display_order as u32,
         };
         self.dpb.refresh(pcs.refresh_frame_flags, &ref_frame);
+        // The PA (picture-analysis) reference the NEXT frame's open-loop
+        // motion search reads — this frame's padded SOURCE pyramid, not its
+        // recon. `None` in still mode, where no later frame exists.
+        if pa_cur.is_some() {
+            self.pa_ref = pa_cur;
+        }
 
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
@@ -5915,6 +6106,7 @@ impl EntropyCtx {
                 ref_frame: mi.ref_frame,
                 mv,
                 partition: partition_type,
+                interp_filters: mi.interp_filters,
             };
             let stride = env.mi_stride as usize;
             for r in y4..(y4 + h / 4).min(env.mi_rows as usize) {
@@ -9018,6 +9210,19 @@ fn encode_tile_rows(
     // (docs/INTER-ENCODE-PLAN.md §1s item 4). `Some` exactly when
     // `ref_frame_data` is; the inter arm cannot predict without it.
     ref_padded_y: Option<&crate::picture::PaddedPlane>,
+    // The INTER branch of mode decision (`docs/INTER-ENCODE-PLAN.md` §1s
+    // items 1b/2/3/6): the padded DPB reference, this frame's open-loop
+    // motion search, the inter rate tables and the MVP environment. `None`
+    // on a key frame.
+    inter_md: Option<&crate::inter_md_arm::InterMdFrame<'_>>,
+    // C `pcs->md_frame_context` (`init_frame_rate_tables`,
+    // md_config_process.c:292-310) — §1s item 8. When the frame header names
+    // a `primary_ref_frame`, MODE DECISION prices against THAT REFERENCE's
+    // saved end-of-frame CDFs, not the defaults. `None` reproduces C's
+    // `PRIMARY_REF_NONE` arm: `svt_av1_default_coef_probs(base_q_idx)` +
+    // `svt_aom_init_mode_probs`, which is what the still path has always
+    // built.
+    md_frame_cdfs: Option<&crate::port_frame_cdf::FrameCdfs>,
     mv_map: &[svtav1_types::motion::Mv],
     mv_map_stride: usize,
     sb_qp_offsets: &[i8],
@@ -9112,8 +9317,7 @@ fn encode_tile_rows(
         // `rate_arm::update_cdf_level` rather than spelled as a preset range
         // (see the `funnel_chain` binding below and docs/rate-arm-port-map.md).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
-        let use_funnel =
-            chroma_420 && chroma_src.is_some() && ref_frame_data.is_none() && c_quant.is_some();
+        let use_funnel = chroma_420 && chroma_src.is_some() && c_quant.is_some();
         // Same sc derivation as the pack side (identical inputs -> identical
         // result): the MD walk's rates + its per-SB CDF evolution must see
         // the same allow_sct as the real pack or the chains desync on
@@ -9331,9 +9535,23 @@ fn encode_tile_rows(
             None
         };
         let fun_rates = if use_funnel {
-            let fc = crate::entropy::context::FrameContext::new_default();
-            let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
-            Some(crate::leaf_funnel::build_md_rates(&fc, &cfc))
+            // §1s item 8: C's `init_frame_rate_tables` (md_config_process.c:292)
+            // seeds `md_frame_context` from the primary reference's SAVED
+            // end-of-frame CDFs when the header names one, and only otherwise
+            // from `svt_av1_default_coef_probs(base_q_idx)` +
+            // `svt_aom_init_mode_probs`. Pricing an inter frame against the
+            // defaults understates the coefficient rate by roughly half on
+            // this campaign's reference cell — measured — and that is what
+            // makes C's `blk_skip_decision` pick `skip` where a
+            // default-priced MD picks a coded residual.
+            match md_frame_cdfs {
+                Some(prev) => Some(crate::leaf_funnel::build_md_rates(&prev.fc, &prev.coeff)),
+                None => {
+                    let fc = crate::entropy::context::FrameContext::new_default();
+                    let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                    Some(crate::leaf_funnel::build_md_rates(&fc, &cfc))
+                }
+            }
         } else {
             None
         };
@@ -9447,8 +9665,12 @@ fn encode_tile_rows(
         };
         // The MD mode-info grid the MVP scans read (C mi_grid_base as MD
         // stamps it) — frame-wide, one entry per 4x4 cell.
+        // The MD mode-info grid — C `mi_grid_base` as MD stamps it. Shared by
+        // the IntraBC MVP scans and the inter ones; IntraBC is intra-frame
+        // only and inter prediction needs a reference, so the two can never
+        // both be live and there is exactly one grid.
         let mut ibc_mvp_grid: alloc::vec::Vec<crate::intrabc_mvp::MvpMiEntry> =
-            if ibc_state.is_some() {
+            if ibc_state.is_some() || inter_md.is_some() {
                 alloc::vec![crate::intrabc_mvp::MvpMiEntry::default(); (w / 4) * (h / 4)]
             } else {
                 alloc::vec::Vec::new()
@@ -9799,9 +10021,15 @@ fn encode_tile_rows(
                 // for free.
                 let units = crate::sb128_geom::sb_coding_units(sb_x0, sb_y0, sb_size, w, h);
                 let unit_size = if sb_size == 128 { 64 } else { sb_size };
-                let use_pd0 = ref_ctx.is_none()
-                    && (speed_config.preset >= 6
-                        || (matches!(speed_config.preset, 0..=5) && use_funnel));
+                // §1s item 1: BOTH gates used to carry a `ref_*.is_none()`
+                // term, so any frame with a reference bypassed the C-exact
+                // PD0 partition search AND the leaf funnel and ran the
+                // pre-campaign `partition::partition_search_with_config`
+                // recursion — the code every video-KEY chunk of this campaign
+                // was built to replace. They are gone; the funnel's inter
+                // candidate (item 1b) is what makes taking them off pay.
+                let use_pd0 = speed_config.preset >= 6
+                    || (matches!(speed_config.preset, 0..=5) && use_funnel);
                 // CLI-qp-calibrated lambda via the exact inverse mapping
                 // (see qp_to_lambda's domain note). On the PD0 fixed-tree
                 // path the leaf funnel must be preset-INDEPENDENT like
@@ -10201,7 +10429,8 @@ fn encode_tile_rows(
                                     },
                                     // IBC chunk 8: frame IntraBC state + the MD mi grid.
                                     ibc: ibc_state.as_deref(),
-                                    ibc_mvp: if ibc_state.is_some() {
+                                    inter: inter_md,
+                                    ibc_mvp: if ibc_state.is_some() || inter_md.is_some() {
                                         Some(&mut ibc_mvp_grid)
                                     } else {
                                         None
@@ -10532,7 +10761,8 @@ fn encode_tile_rows(
                                     },
                                     // IBC chunk 8: frame IntraBC state + the MD mi grid.
                                     ibc: ibc_state.as_deref(),
-                                    ibc_mvp: if ibc_state.is_some() {
+                                    inter: inter_md,
+                                    ibc_mvp: if ibc_state.is_some() || inter_md.is_some() {
                                         Some(&mut ibc_mvp_grid)
                                     } else {
                                         None
@@ -10730,6 +10960,7 @@ fn encode_tile_rows(
                                         // bd10 post-pass: IBC is bd8-only (the injection
                                         // self-gates on bd10 too).
                                         ibc: None,
+                                        inter: None,
                                         ibc_mvp: None,
                                         ibc_gate: Default::default(),
                                         full_rd10: bd10_full_rd,

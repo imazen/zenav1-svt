@@ -211,7 +211,7 @@ fn search_best_uv_mode(
         let mut best_inter = u64::MAX;
         for &ci in order1.iter().take(n3) {
             let c = &cands[ci];
-            if c.ibc.is_some() {
+            if c.is_inter() {
                 best_inter = best_inter.min(c.full_cost);
             } else {
                 if c.uv != 0 {
@@ -299,7 +299,7 @@ fn search_best_uv_mode(
             // C search_best_mds3_uv_mode skips inter-classified candidates
             // (product_coding_loop.c:7335 — an IntraBC cand keeps UV_DC and
             // never seeds a per-luma-mode table row).
-            if cands[ci].ibc.is_some() {
+            if cands[ci].is_inter() {
                 continue;
             }
             let luma = cands[ci].mode as usize;
@@ -444,7 +444,7 @@ fn eval_candidate(
     if let Some(tbl) = &ind_uv {
         // C update_intra_chroma_mode skips inter-classified candidates
         // (:7077 `!is_inter` gate) — an IntraBC cand keeps UV_DC.
-        if (cfg.ind_uv_last_mds1 || cfg.ind_uv_mds3) && cands[ci].ibc.is_none() {
+        if (cfg.ind_uv_last_mds1 || cfg.ind_uv_mds3) && !cands[ci].is_inter() {
             // The rewrite keys on the CODED luma mode (`cand->block_mi.mode`
             // in update_intra_chroma_mode — DC for FILTER candidates), NOT
             // the fi-mapped direction. A/B-verified (g64 p0): mapping the
@@ -543,7 +543,7 @@ fn eval_candidate(
     // uniform-`depth` model already represents — then per-txb
     // all_zero / tx_type over the 16-type inter set (`CDF nsyms=16`) /
     // `eob_pt_64` (`CDF nsyms=7`). Widen the caps against THAT stream.
-    let cand_end_depth = if cands[ci].ibc.is_some() {
+    let cand_end_depth = if cands[ci].is_inter() {
         if txs_active {
             end_tx_depth_inter(w, h, &cfg)
         } else {
@@ -646,7 +646,7 @@ fn eval_candidate(
             let cand = &cands[ci];
             // Inter (IntraBC) txbs walk the C tx_org is_inter=1 rows
             // (z-order at depth 2); intra keeps the plain raster.
-            let (tx_x, tx_y) = if cand.ibc.is_some() {
+            let (tx_x, tx_y) = if cand.is_inter() {
                 txb_org_inter(w, h, depth, txb)
             } else {
                 ((txb % cols) * txw, (txb / cols) * txh)
@@ -657,7 +657,7 @@ fn eval_candidate(
             let mut txb_pred = vec![0u8; txw * txh];
             if depth == 0 {
                 txb_pred.copy_from_slice(&cand.pred);
-            } else if cand.palette.is_some() || cand.ibc.is_some() {
+            } else if cand.palette.is_some() || cand.is_inter() {
                 // Palette: position-only substitution. IntraBC: C
                 // computes the INTER residual once from the block-level
                 // prediction and never re-predicts per txb (the
@@ -712,7 +712,7 @@ fn eval_candidate(
                 txb_pred10 = vec![0u16; txw * txh];
                 if depth == 0 {
                     txb_pred10.copy_from_slice(&cand.pred10);
-                } else if cand.palette.is_some() || cand.ibc.is_some() {
+                } else if cand.palette.is_some() || cand.is_inter() {
                     for r in 0..txh {
                         let src0 = (tx_y + r) * w + tx_x;
                         txb_pred10[r * txw..(r + 1) * txw]
@@ -760,7 +760,7 @@ fn eval_candidate(
             // TXT search over this txb. IntraBC txbs carry the
             // INTER_TXT_DIR sentinel: the inter ext-tx set + the
             // inter tx-type rate rows (tx_type_search is_inter).
-            let intra_dir = if cand.ibc.is_some() {
+            let intra_dir = if cand.is_inter() {
                 INTER_TXT_DIR
             } else if cand.fi != FI_NONE {
                 FIMODE_TO_INTRADIR[cand.fi as usize] as usize
@@ -938,7 +938,7 @@ fn eval_candidate(
             // only gate the inter path).
             if cfg.txs_quadrant_sf != 0 && depth > 0 {
                 let normlized = ((txb as u64 + 1) * best_cost) / txbs as u64;
-                let tsb = if cands[ci].ibc.is_some() {
+                let tsb = if cands[ci].is_inter() {
                     // Inert at the IBC presets (quadrant_sf == 0 at
                     // txs_level 2/3) — kept faithful to
                     // svt_aom_get_tx_size_bits' inter arm regardless.
@@ -975,7 +975,7 @@ fn eval_candidate(
         // IntraBC (inter-classified): svt_aom_get_tx_size_bits prices the
         // var-tx walk when the depth kept coeffs, 0 bits when skip
         // (`!(is_inter_tx && skip)`).
-        let tx_size_bits = if cands[ci].ibc.is_some() {
+        let tx_size_bits = if cands[ci].is_inter() {
             if dep_has_coeff && block_signals_txsize(w, h) {
                 crate::vartx::tx_size_bits_vartx(
                     &rates.txfm_partition_fac_bits,
@@ -1010,7 +1010,7 @@ fn eval_candidate(
             if dbg_xy(&XY, "SVTAV1_TXDEPTH_XY") == Some((abs_x, abs_y)) {
                 eprintln!(
                     "PTXDEPTH org=({abs_x},{abs_y}) {w}x{h} d={depth} ibc={} mode={} ycb={dep_bits} txsz={tx_size_bits} dist={dep_dist} cost={cost} best={best_cost}",
-                    u8::from(cands[ci].ibc.is_some()),
+                    u8::from(cands[ci].is_inter()),
                     cands[ci].mode,
                 );
             }
@@ -1047,7 +1047,71 @@ fn eval_candidate(
     // The INTER chroma tx type the IBC arm derives below, so the bd10 twin
     // can use the SAME one instead of re-deriving it from the intra rule.
     let mut ibc_uv_tt: Option<usize> = None;
-    let (mut u_out, mut v_out) = if has_uv && let Some((dv, _)) = cand.ibc {
+    let (mut u_out, mut v_out) = if has_uv && let Some(ic) = cand.inter.as_deref() {
+        // INTER chroma (docs/INTER-ENCODE-PLAN.md §1s item 6): the
+        // motion-compensated prediction, produced with the LUMA one in a
+        // single `av1_inter_prediction_light_pd1` call at injection — C's
+        // chroma arm reuses the luma block's `compute_subpel_params` result
+        // at a halved origin, so predicting it here would be different
+        // arithmetic. The tx-type rule is the INTER one, identical to the
+        // IntraBC arm below (tx_type_search, product_coding_loop.c:5087).
+        let luma_tt = best_txb_type.first().copied().unwrap_or(0) as usize;
+        let uv_tx = cc::adjusted_tx_size(cc::tx_size_from_dims(cw, chh));
+        let uv_set = cc::ext_tx_set_type(uv_tx, true, false);
+        let tt = if AV1_EXT_TX_USED[uv_set][luma_tt] != 0 {
+            luma_tt
+        } else {
+            cc::DCT_DCT
+        };
+        let u_out = tx_unit(
+            fx.u_src,
+            fx.c_stride,
+            ccy * fx.c_stride + ccx,
+            &ic.u_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            tt,
+            1,
+            cb_tsc,
+            cb_dsc,
+            0,
+            &qt_u,
+            frame,
+            rates,
+            do_rdoq,
+            true,
+            uv_crop,
+            true,
+            RateMode::Exact,
+        );
+        let v_out = tx_unit(
+            fx.v_src,
+            fx.c_stride,
+            ccy * fx.c_stride + ccx,
+            &ic.v_pred,
+            cw,
+            0,
+            cw,
+            chh,
+            tt,
+            1,
+            cr_tsc,
+            cr_dsc,
+            0,
+            &qt_v,
+            frame,
+            rates,
+            do_rdoq,
+            true,
+            uv_crop,
+            true,
+            RateMode::Exact,
+        );
+        ibc_uv_tt = Some(tt);
+        (u_out, v_out)
+    } else if has_uv && let Some((dv, _)) = cand.ibc {
         // IBC chunk 7: IntraBC chroma — the DV copy / half-pel bilinear
         // from the chroma recon canvases (enc_inter_prediction chroma
         // arm, sf_identity), with the INTER chroma tx type rule: the
@@ -1144,6 +1208,13 @@ fn eval_candidate(
     };
     // bd10 chroma full loop — the decision terms for this candidate.
     let mut uv_out10 = match (&bd10_rd, has_uv) {
+        (Some(_), true) if cand.inter.is_some() => panic!(
+            "the bd10 chroma full loop has no INTER arm: an inter candidate's \
+             10-bit chroma prediction is not built (docs/INTER-ENCODE-PLAN.md \
+             §1s item 6). Refusing rather than scoring chroma from the intra \
+             predictor, which would decide the block on a prediction the \
+             stream does not describe."
+        ),
         (Some(b), true) => Some(match (cand.ibc, ibc_uv_tt) {
             // IBC: the DV copy at 10 bits, with the inter tx-type rule.
             (Some((dv, _)), Some(tt)) => chroma::eval_uv_ibc_hbd(cx, fx, b, dv, tt),
@@ -1162,7 +1233,7 @@ fn eval_candidate(
     // IntraBC candidates: no chroma detector, no CfL, no uv rewrite —
     // C excludes inter-classified candidates from every chroma search
     // (search_best_mds3_uv_mode :7335, the CfL arm :6932-equivalent).
-    if has_uv && cand.ibc.is_none() {
+    if has_uv && !cand.is_inter() {
         // Chroma complexity detector (chroma_complexity_check_pred,
         // product_coding_loop.c:6095), use_var=1: cfl_complexity ==
         // COMPONENT_CHROMA iff the SAD arm (cb/cr pred SAD > 2x luma
@@ -2556,12 +2627,88 @@ fn eval_candidate(
             u_out.dist + v_out.dist,
         ),
     };
-    let block_has_coeff = best_coeff_count > 0 || uv_eob10.0 > 0 || uv_eob10.1 > 0;
+    let mut block_has_coeff = best_coeff_count > 0 || uv_eob10.0 > 0 || uv_eob10.1 > 0;
+    // ---- C `blk_skip_decision` (rd_cost.c:1371-1406) ----
+    //
+    // An INTER block gets an explicit RD comparison between CODING its
+    // residual and signalling `skip` (no coefficients at all). An intra
+    // block does not — `is_inter_mode(cand->block_mi.mode)` gates it, and
+    // `use_intrabc` is NOT part of that predicate here (C tests the MODE,
+    // not `is_inter_block`), so an IntraBC candidate keeps its coefficients.
+    //
+    // Without it the funnel codes every inter residual it produces. On this
+    // campaign's reference cell that is the whole remaining difference: C
+    // commits `skip = 1` on a block whose MC prediction already matches, and
+    // the port coded 452 luma coefficients against C's zero.
+    //
+    // `ctx->blk_skip_decision` is `uv_ctrls.uv_mode <= CHROMA_MODE_1`
+    // (enc_mode_config.c:7858) — i.e. it is on exactly when MD evaluated
+    // chroma, which on this path is `has_uv`.
+    let mut skip_dist: Option<(u64, u64)> = None;
+    if cand.inter.is_some() && block_has_coeff && has_uv && !frame.coded_lossless {
+        // `y_distortion[DIST_SSD][1]` — the distortion with NO residual
+        // coded, i.e. the prediction against the source, in the same
+        // `sse << 4` domain the spatial arm of `tx_unit` produces.
+        let (crop_w, crop_h) =
+            crate::frame_geom::cropped_tx_dims(&aligned_dims, abs_x, abs_y, w, h);
+        let skip_y = (svtav1_dsp::variance::sse(
+            &y_src[y_src_off..],
+            y_src_stride,
+            &cand.pred,
+            w,
+            crop_w,
+            crop_h,
+        ) << 4) as u64;
+        let ic = cand.inter.as_deref().expect("checked above");
+        let (ucw, uch) = uv_crop;
+        let skip_uv = ((svtav1_dsp::variance::sse(
+            &fx.u_src[ccy * fx.c_stride + ccx..],
+            fx.c_stride,
+            &ic.u_pred,
+            cw,
+            ucw,
+            uch,
+        ) + svtav1_dsp::variance::sse(
+            &fx.v_src[ccy * fx.c_stride + ccx..],
+            fx.c_stride,
+            &ic.v_pred,
+            cw,
+            ucw,
+            uch,
+        )) << 4) as u64;
+        // C prices the NON-skip arm with the var-tx `tx_size` bits and the
+        // skip arm with zero of them — the assert at rd_cost.c:1369 states
+        // that `skip_tx_size_bits == 0` for every inter mode.
+        let non_skip_tx_bits = if block_signals_txsize(w, h) {
+            crate::vartx::tx_size_bits_vartx(
+                &rates.txfm_partition_fac_bits,
+                fx.ectx.txfm_above_span(abs_x, w),
+                fx.ectx.txfm_left_span(abs_y, h),
+                w,
+                h,
+                best_depth,
+                abs_y,
+                frame.frame_h_px,
+            )
+        } else {
+            0
+        };
+        let non_skip_cost = rdcost(
+            lambda3,
+            best_bits + u_bits10 + v_bits10 + non_skip_tx_bits + rates.skip[skip_ctx][0] as u64,
+            best_dist + uv_dist10,
+        );
+        let skip_cost = rdcost(lambda3, rates.skip[skip_ctx][1] as u64, skip_y + skip_uv);
+        if skip_cost < non_skip_cost {
+            skip_dist = Some((skip_y, skip_uv));
+            block_has_coeff = false;
+        }
+    }
     // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
     // IntraBC: svt_aom_full_cost prices non_skip_tx_size_bits = the
     // var-tx walk (block_has_coeff) and skip_tx_size_bits = 0
     // (rd_cost.c:1367-1377 + the `!(is_inter_tx && skip)` gate).
-    let tx_size_bits_final = if cand.ibc.is_some() {
+    let tx_size_bits_final = if cand.is_inter() {
         if block_has_coeff && block_signals_txsize(w, h) {
             crate::vartx::tx_size_bits_vartx(
                 &rates.txfm_partition_fac_bits,
@@ -2647,7 +2794,7 @@ fn eval_candidate(
     } else {
         rates.skip[skip_ctx][1] as u64 + tx_size_bits_final
     };
-    let dist = best_dist + uv_dist10;
+    let dist = skip_dist.map_or(best_dist + uv_dist10, |(y, uv)| y + uv);
     // fcr_final == cand.fcr unless CfL was selected above (then the
     // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
     let full = rdcost(lambda3, cand.flr + fcr_final + coeff_rate, dist);
@@ -2664,7 +2811,7 @@ fn eval_candidate(
             cand.fi,
             cand.delta,
             uv_mode_final,
-            u8::from(cand.ibc.is_some()),
+            u8::from(cand.is_inter()),
             best_depth,
             cand_end_depth,
             cand.flr,
@@ -2676,6 +2823,59 @@ fn eval_candidate(
     }
 
     let cand = &mut cands[ci];
+    // C's skip arm zeroes every coded artefact of the candidate
+    // (rd_cost.c:1387-1405): no coefficients, no eobs, tx_depth 0 and
+    // DCT_DCT on every txb — "signalling skip means no TX depth is used and
+    // the TX type will be DCT_DCT". The RECON becomes the prediction, which
+    // is what a decoder reconstructs from a skip block and therefore what
+    // the next block's neighbours must read.
+    if let Some((skip_y, _)) = skip_dist {
+        // The tune-SSIM parallel cost below this writeback has no inter arm:
+        // it would need the block-SSIM distortion of a prediction-only recon.
+        // REFUSE rather than leave `mds3_cost_ssim` at MAX and let the winner
+        // scan compare a real cost against a sentinel. The fork refuses inter
+        // frames today, so this is unreachable — and an `assert!`, not a
+        // `debug_assert!`, because `identity_run` builds RELEASE and
+        // `docs/INTER-ENCODE-PLAN.md` §1x records a defect a debug-only check
+        // hid for exactly that reason.
+        assert!(
+            !frame.tune_ssim,
+            "the tune-SSIM parallel full cost has no INTER skip arm"
+        );
+        let ic = cand
+            .inter
+            .as_deref()
+            .expect("the skip decision only runs for an inter candidate");
+        let (u_pred, v_pred) = (ic.u_pred.clone(), ic.v_pred.clone());
+        let pred = cand.pred.clone();
+        cand.mds3_cost = full;
+        cand.total_rate = cand.flr + fcr_final + coeff_rate;
+        cand.full_dist = dist;
+        cand.uv = uv_mode_final;
+        cand.uv_delta = uv_delta_final;
+        cand.fcr = fcr_final;
+        cand.cfl_alpha_idx = 0;
+        cand.cfl_alpha_signs = 0;
+        cand.tx_depth = 0;
+        cand.txb_q = alloc::vec![alloc::vec![0i32; w * h]];
+        cand.txb_eob = alloc::vec![0u16];
+        cand.txb_cul = alloc::vec![0u8];
+        cand.txb_type = alloc::vec![cc::DCT_DCT as u8];
+        cand.y_recon = pred.clone();
+        cand.y_recon_d0 = pred;
+        cand.y_bits = 0;
+        cand.y_dist = skip_y;
+        cand.u_q = alloc::vec![0i32; cw * chh];
+        cand.v_q = alloc::vec![0i32; cw * chh];
+        cand.u_eob = 0;
+        cand.v_eob = 0;
+        cand.u_cul = 0;
+        cand.v_cul = 0;
+        cand.u_recon = u_pred;
+        cand.v_recon = v_pred;
+        cand.block_has_coeff = false;
+        return;
+    }
     cand.mds3_cost = full;
     cand.total_rate = cand.flr + fcr_final + coeff_rate;
     cand.full_dist = dist;

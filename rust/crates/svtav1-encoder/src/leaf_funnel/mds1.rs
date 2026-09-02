@@ -67,7 +67,7 @@ pub(super) fn run_mds1(
         // didn't, under-pricing fi=V/H/D157 coeff rates by the row delta
         // (g128 q20 p0 16x4@(2,0): C ycb higher by exactly 630/684/736 for
         // fi=1/2/3 with bit-equal dists; fi=0/4 map to DC and matched).
-        let intra_dir = if cand.ibc.is_some() {
+        let intra_dir = if cand.is_inter() {
             // IBC chunk 7: inter-classified — the coeff cost's tx-type
             // rate reads the INTER rows (av1_txt_rate_est is_inter arm).
             INTER_TXT_DIR
@@ -210,7 +210,7 @@ pub(super) fn run_mds1(
         // block has coeffs, and ZERO bits when skip (svt_aom_tx_size_bits'
         // `!(is_inter_tx && skip)` gate) — svt_aom_full_cost prices exactly
         // that pair at MDS1 too.
-        let coeff_rate = if cand.ibc.is_some() {
+        let coeff_rate = if cand.is_inter() {
             let vartx_bits = if has && block_signals_txsize(w, h) {
                 crate::vartx::tx_size_bits_vartx(
                     &rates.txfm_partition_fac_bits,
@@ -309,7 +309,7 @@ fn lossless_mds1_txbs(
     for txb in 0..txbs {
         let (tx_x, tx_y) = ((txb % cols) * txw, (txb / cols) * txh);
         let mut txb_pred = vec![0u8; txw * txh];
-        if cand.palette.is_some() || cand.ibc.is_some() {
+        if cand.palette.is_some() || cand.is_inter() {
             for r in 0..txh {
                 let src0 = (tx_y + r) * w + tx_x;
                 txb_pred[r * txw..(r + 1) * txw].copy_from_slice(&cand.pred[src0..src0 + txw]);

@@ -80,6 +80,13 @@ pub struct MvpMiEntry {
     /// C `MbModeInfo::partition` (PartitionType; read by
     /// `has_top_right`'s VERT_A special case on the CURRENT cell).
     pub partition: u8,
+    /// C `BlockModeInfo::interp_filters` — the packed pair
+    /// `(y_filter) | (x_filter << 16)`. Zero on every intra cell (C leaves
+    /// it 0 there too); read by
+    /// `svt_aom_get_pred_context_switchable_interp` through the neighbour
+    /// projection in `crate::inter_md_arm::neighbors_from_grid`, which is
+    /// why an inter block must stamp its real value.
+    pub interp_filters: u32,
 }
 
 impl Default for MvpMiEntry {
@@ -92,6 +99,7 @@ impl Default for MvpMiEntry {
             ref_frame: [0, -1], // {INTRA_FRAME, NONE_FRAME}
             mv: [Mv::default(); 2],
             partition: 0,
+            interp_filters: 0,
         }
     }
 }
@@ -924,6 +932,7 @@ mod tests {
                     ref_frame: [0, -1],
                     mv: [dv, Mv::default()],
                     partition: 0,
+                    interp_filters: 0,
                 };
             }
         }

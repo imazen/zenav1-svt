@@ -1572,6 +1572,81 @@ pub fn derive_intra_coeff_level(
     }
 }
 
+/// C `derive_inter_coeff_level` (md_config_process.c:650): the INTER twin of
+/// [`derive_intra_coeff_level`].
+///
+/// Two things differ and both matter: the complexity input is
+/// `ppcs->norm_me_dist` (the mean of the open-loop ME's per-b64 8x8
+/// distortion, `initial_rc_process.c:718-726`) rather than
+/// `pic_avg_variance`, and the thresholds are the INTER set
+/// `{5833/96, 5833/48, 16666/48}` = `{60, 121, 347}` (definitions.h:279-281,
+/// integer division in C — the port spells the RESULTS so the truncation
+/// cannot drift). The resolution scaling is the same ladder.
+///
+/// C runs it only when `!scs->allintra && !rtc && slice_type != I_SLICE`
+/// (md_config_process.c:898-903): a VIDEO-mode KEY frame takes NEITHER arm
+/// and keeps `INVALID_LVL`.
+#[must_use]
+pub fn derive_inter_coeff_level(norm_me_dist: u64, cli_qp: u32, w: usize, h: usize) -> CoeffLvl {
+    let pixels = w * h;
+    // C: `(5833 / 96)`, `(5833 / 48)`, `(16666 / 48)` — INTEGER division in
+    // the macro, before the floating-point resolution scale.
+    let (mut vlow, mut low, mut high) = (60.0f64, 121.0f64, 347.0f64);
+    if pixels < 0x28500 {
+        vlow *= 1.7;
+        low *= 1.7;
+        high *= 1.7;
+    } else if pixels < 0xA1400 {
+        vlow *= 1.3;
+        low *= 1.3;
+        high *= 1.3;
+    } else if pixels < 0x16DA00 {
+        vlow *= 1.2;
+        low *= 1.2;
+        high *= 1.2;
+    }
+    let (vlow, low, high) = (vlow as u64, low as u64, high as u64);
+    let cmplx = norm_me_dist / u64::from(1.max(cli_qp));
+    if cmplx < vlow {
+        CoeffLvl::VLow
+    } else if cmplx < low {
+        CoeffLvl::Low
+    } else if cmplx > high {
+        CoeffLvl::High
+    } else {
+        CoeffLvl::Normal
+    }
+}
+
+#[cfg(test)]
+mod inter_coeff_level_tests {
+    use super::*;
+
+    /// The INTER thresholds are `{5833/96, 5833/48, 16666/48}` with C's
+    /// INTEGER division, not the rationals: 60.76 -> 60, 121.5 -> 121,
+    /// 347.2 -> 347. Getting that wrong moves a band boundary by one, which
+    /// is a different RDOQ level for a whole frame.
+    #[test]
+    fn the_inter_thresholds_are_cs_truncated_ones() {
+        assert_eq!((5833 / 96, 5833 / 48, 16666 / 48), (60, 121, 347));
+        // 240p (this campaign's cells) scales them by 1.7 -> {102, 205, 589}.
+        let (w, h) = (64usize, 64usize);
+        let at = |d: u64| derive_inter_coeff_level(d, 1, w, h);
+        assert_eq!(at(101), CoeffLvl::VLow);
+        assert_eq!(at(102), CoeffLvl::Low);
+        assert_eq!(at(204), CoeffLvl::Low);
+        assert_eq!(at(205), CoeffLvl::Normal);
+        assert_eq!(at(589), CoeffLvl::Normal);
+        assert_eq!(at(590), CoeffLvl::High);
+        // The qp divisor is `max(1, qp)`, so qp 0 must not divide by zero —
+        // it divides by ONE, which is a different (and much larger) cmplx
+        // than a naive `qp` divisor would give at qp 1.
+        assert_eq!(at(0), CoeffLvl::VLow);
+        assert_eq!(derive_inter_coeff_level(1000, 0, w, h), CoeffLvl::High);
+        assert_eq!(derive_inter_coeff_level(1000, 5, w, h), CoeffLvl::Low);
+    }
+}
+
 /// C allintra RDOQ policy (enc_mode_config.c:14931), `OPT_APPROX_COEFF_RATE`
 /// branch: presets <= M5 always level 1; above, by coeff_lvl.
 pub fn rdoq_level_allintra(eff_enc_mode: u8, coeff_lvl: CoeffLvl) -> u8 {

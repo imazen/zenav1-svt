@@ -125,6 +125,7 @@ fn random_grid(rng: &mut Rng, intra_pct: u64, compound_pct: u64) -> Vec<MvpMiEnt
                         Mv::default(),
                     ],
                     partition: rng.below(10) as u8,
+                    interp_filters: 0,
                 }
             } else if roll < intra_pct + compound_pct {
                 // Compound: pick a pair straight out of C's ref_frame_map
@@ -138,6 +139,7 @@ fn random_grid(rng: &mut Rng, intra_pct: u64, compound_pct: u64) -> Vec<MvpMiEnt
                     ref_frame: rf,
                     mv: [pick_mv(rng), pick_mv(rng)],
                     partition: rng.below(10) as u8,
+                    interp_filters: 0,
                 }
             } else {
                 MvpMiEntry {
@@ -147,6 +149,7 @@ fn random_grid(rng: &mut Rng, intra_pct: u64, compound_pct: u64) -> Vec<MvpMiEnt
                     ref_frame: [1 + rng.below(7) as i8, -1],
                     mv: [pick_mv(rng), pick_mv(rng)],
                     partition: rng.below(10) as u8,
+                    interp_filters: 0,
                 }
             };
             for dr in 0..h as usize {
@@ -779,6 +782,7 @@ fn c_parity_has_top_right_vert_a_uses_mutated_bs() {
         ref_frame: [2, 5],
         mv: [Mv { x: -84, y: 122 }, Mv { x: 260, y: 164 }],
         partition: 0,
+        interp_filters: 0,
     };
     let gm = [WarpedMotionParams::default(); 8];
     let tpl = vec![rmvp::TplMvRef::default(); TPL_CELLS];

@@ -223,6 +223,60 @@ impl InterFacBits {
     }
 }
 
+impl InterFacBits {
+    /// Fill every table from the LIVE frame contexts, exactly as C's
+    /// `svt_aom_estimate_syntax_rate` does (`rd_cost.c` /
+    /// `md_rate_estimation.c`): each entry is
+    /// `av1_cost_symbol(cdf)` over that element's alphabet.
+    ///
+    /// The two sources are the two places this port keeps inter CDFs:
+    /// [`crate::entropy::context::FrameContext`] holds `intra_inter_cdf`, and
+    /// [`crate::port_entropy_inter::InterCdfs`] holds the rest — because
+    /// `FrameContext`'s `newmv` / `zeromv` / `refmv` / `drl` / `skip_mode` /
+    /// `interp_filter` fields are UNIFORM PLACEHOLDERS (documented at
+    /// `port_entropy_inter/cdfs.rs:14`) and pricing against a placeholder
+    /// would give every inter mode the same rate.
+    ///
+    /// Alphabet sizes are C's, not `len - 1`: a CDF array can be wider than
+    /// its alphabet (`docs/INTER-ENCODE-PLAN.md` §1s records the same trap on
+    /// the adaptation side), so each `costs_from_cdf::<N>` spells N out.
+    #[must_use]
+    pub fn from_cdfs(
+        fc: &crate::entropy::context::FrameContext,
+        ic: &crate::port_entropy_inter::InterCdfs,
+    ) -> Self {
+        fn fill<const N: usize>(cdf: &[u16]) -> [i32; N] {
+            let mut out = [0i32; N];
+            crate::quant::syntax_rate_from_cdf(&mut out, cdf);
+            out
+        }
+        fn rows<const R: usize, const N: usize>(src: impl Fn(usize) -> [i32; N]) -> [[i32; N]; R] {
+            core::array::from_fn(src)
+        }
+        Self {
+            skip_mode: rows(|i| fill::<2>(&ic.skip_mode_cdf[i])),
+            intra_inter: rows(|i| fill::<2>(&fc.intra_inter_cdf[i])),
+            new_mv_mode: rows(|i| fill::<2>(&ic.newmv_cdf[i])),
+            zero_mv_mode: rows(|i| fill::<2>(&ic.zeromv_cdf[i])),
+            ref_mv_mode: rows(|i| fill::<2>(&ic.refmv_cdf[i])),
+            drl_mode: rows(|i| fill::<2>(&ic.drl_cdf[i])),
+            inter_compound_mode: rows(|i| {
+                fill::<INTER_COMPOUND_MODES>(&ic.inter_compound_mode_cdf[i])
+            }),
+            switchable_interp: rows(|i| fill::<SWITCHABLE_FILTERS>(&ic.switchable_interp_cdf[i])),
+            motion_mode: rows(|i| fill::<MOTION_MODES>(&ic.motion_mode_cdf[i])),
+            motion_mode1: rows(|i| fill::<2>(&ic.obmc_cdf[i])),
+            inter_intra: rows(|i| fill::<2>(&ic.interintra_cdf[i])),
+            inter_intra_mode: rows(|i| fill::<INTERINTRA_MODES>(&ic.interintra_mode_cdf[i])),
+            wedge_inter_intra: rows(|i| fill::<2>(&ic.wedge_interintra_cdf[i])),
+            wedge_idx: rows(|i| fill::<16>(&ic.wedge_idx_cdf[i])),
+            comp_group_idx: rows(|i| fill::<2>(&ic.comp_group_idx_cdf[i])),
+            comp_idx: rows(|i| fill::<2>(&ic.compound_index_cdf[i])),
+            compound_type: rows(|i| fill::<MASKED_COMPOUND_TYPES>(&ic.compound_type_cdf[i])),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------

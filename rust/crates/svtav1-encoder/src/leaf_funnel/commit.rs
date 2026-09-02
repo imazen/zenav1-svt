@@ -40,18 +40,31 @@ pub(crate) fn commit_leaf(
     // commit and NEVER restored by node snapshots, mirroring C (losing
     // shapes' stamps linger until overwritten).
     if let Some(mvp) = fx.ibc_mvp.as_deref_mut() {
-        let stride = fx.ibc.map(|i| i.mi_cols as usize).unwrap_or(0);
+        let stride = fx
+            .ibc
+            .map(|i| i.mi_cols as usize)
+            .or_else(|| fx.inter.map(|i| i.mi_cols as usize))
+            .unwrap_or(0);
         if stride > 0 {
+            // The INTER winner stamps its REAL mode / reference / MV.
+            // `docs/INTER-ENCODE-PLAN.md` §1x defect 6: stamping the intra
+            // `mode` (0 = DC_PRED) on an inter cell makes
+            // `setup_ref_mv_list`'s `have_newmv_in_inter_mode` count zero,
+            // which moves `mode_context` — the CDF ROW, not the symbol — so
+            // the next block codes against probabilities no decoder holds.
+            let ic = ev.win.inter.as_deref();
             let entry = crate::intrabc_mvp::MvpMiEntry {
                 bsize: c_bsize_index(w, h) as u8,
-                mode: ev.win.mode,
+                mode: ic.map_or(ev.win.mode, |i| i.mode as u8),
                 use_intrabc: ev.win.ibc.is_some(),
-                ref_frame: [0, -1], // {INTRA_FRAME, NONE_FRAME}
-                mv: [
-                    ev.win.ibc.map(|(dv, _)| dv).unwrap_or_default(),
-                    svtav1_types::motion::Mv::default(),
-                ],
+                ref_frame: ic.map_or([0, -1], |i| i.ref_frame), // {INTRA_FRAME, NONE_FRAME}
+                mv: match (ic, ev.win.ibc) {
+                    (Some(i), _) => i.mv,
+                    (None, Some((dv, _))) => [dv, svtav1_types::motion::Mv::default()],
+                    (None, None) => [svtav1_types::motion::Mv::default(); 2],
+                },
                 partition,
+                interp_filters: ic.map_or(0, |i| i.interp_filters),
             };
             let (mi_x, mi_y) = (abs_x / 4, abs_y / 4);
             for my in mi_y..(mi_y + h / 4).min(mvp.len() / stride) {
@@ -172,7 +185,7 @@ pub(crate) fn commit_leaf(
     // IBC chunk 9 (Root 6 twin, MD side): stamp the inter-neighbour dims
     // — the funnel's tx_size_ctx reads them for the C is_inter override.
     fx.ectx
-        .record_inter_dims(abs_x, abs_y, w, h, cand.ibc.is_some());
+        .record_inter_dims(abs_x, abs_y, w, h, cand.is_inter());
     // MD-time palette neighbour state (C mbmi->palette_mode_info, stamped for
     // EVERY committed winner in coding order — mirrors the pack walk's
     // record_palette + the record_block above). Read back by the NEXT
@@ -200,7 +213,7 @@ pub(crate) fn commit_leaf(
     // — the skip && is_inter arm stores the BLOCK dims instead (IntraBC
     // skip winners; entropy_coding.c:4620-4624).
     let (txw, txh) = txb_dims_at_depth(w, h, cand.tx_depth);
-    if cand.ibc.is_some() && skip {
+    if cand.is_inter() && skip {
         fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, w, h);
     } else {
         fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, txw, txh);
@@ -213,7 +226,7 @@ pub(crate) fn commit_leaf(
     // coeff contexts (pack vs decode) desync.
     let cols = w / txw;
     for (txb, &cul) in cand.txb_cul.iter().enumerate() {
-        let (tx_x, tx_y) = if cand.ibc.is_some() {
+        let (tx_x, tx_y) = if cand.is_inter() {
             txb_org_inter(w, h, cand.tx_depth, txb)
         } else {
             ((txb % cols) * txw, (txb / cols) * txh)

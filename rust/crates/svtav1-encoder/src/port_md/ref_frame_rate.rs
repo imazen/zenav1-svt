@@ -388,6 +388,46 @@ pub struct RefFrameFacBits {
     pub single_ref: [[[i32; 2]; 6]; REF_CONTEXTS],
 }
 
+impl RefFrameFacBits {
+    /// Fill every table from the LIVE frame contexts, as C's
+    /// `svt_aom_estimate_syntax_rate` does.
+    ///
+    /// Three of the six rows come from
+    /// [`crate::port_entropy_inter::InterCdfs`] rather than
+    /// [`crate::entropy::context::FrameContext`], for the same reason
+    /// [`crate::port_rd_cost::inter_cost::InterFacBits::from_cdfs`] does:
+    /// `FrameContext` simply has no `comp_ref_type` / `uni_comp_ref` /
+    /// `comp_bwdref` field, and pricing against something else would be a
+    /// different rate, not an approximation of the same one.
+    #[must_use]
+    pub fn from_cdfs(
+        fc: &crate::entropy::context::FrameContext,
+        ic: &crate::port_entropy_inter::InterCdfs,
+    ) -> Self {
+        fn fill<const N: usize>(cdf: &[u16]) -> [i32; N] {
+            let mut out = [0i32; N];
+            crate::quant::syntax_rate_from_cdf(&mut out, cdf);
+            out
+        }
+        Self {
+            comp_inter: core::array::from_fn(|i| fill::<2>(&fc.comp_inter_cdf[i])),
+            comp_ref_type: core::array::from_fn(|i| fill::<2>(&ic.comp_ref_type_cdf[i])),
+            uni_comp_ref: core::array::from_fn(|i| {
+                core::array::from_fn(|j| fill::<2>(&ic.uni_comp_ref_cdf[i][j]))
+            }),
+            comp_ref: core::array::from_fn(|i| {
+                core::array::from_fn(|j| fill::<2>(&fc.comp_ref_cdf[i][j]))
+            }),
+            comp_bwd_ref: core::array::from_fn(|i| {
+                core::array::from_fn(|j| fill::<2>(&ic.comp_bwdref_cdf[i][j]))
+            }),
+            single_ref: core::array::from_fn(|i| {
+                core::array::from_fn(|j| fill::<2>(&fc.single_ref_cdf[i][j]))
+            }),
+        }
+    }
+}
+
 /// C `estimate_ref_frame_type_bits` (rd_cost.c:643-777, EXPORTED).
 ///
 /// `ref_type` is a `MvReferenceFrame` — a single reference 1..7 or a

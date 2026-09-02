@@ -86,12 +86,69 @@ pub(super) struct Cand {
     /// NONE, deltas 0 — an IBC cand is `is_inter`-classified everywhere
     /// (tx set, tx_size vartx coding, no CfL / no ind-uv rewrite).
     pub(super) ibc: Option<(svtav1_types::motion::Mv, svtav1_types::motion::Mv)>,
+    /// INTER candidate payload (`docs/INTER-ENCODE-PLAN.md` §1s item 1b) —
+    /// `Some` only for candidates injected by
+    /// [`super::inject::inject_inter_candidates`]. Like `ibc`, an inter cand
+    /// is `is_inter`-classified everywhere ([`Cand::is_inter`]): the inter
+    /// ext-tx set, the var-tx `tx_size` coding, no CfL and no ind-uv rewrite.
+    /// Its `mode` / `uv` fields stay 0 because an inter block codes NEITHER
+    /// an intra y_mode nor a uv_mode (`docs/INTER-ENCODE-PLAN.md` §1x defect
+    /// 2), and the neighbour grid reads `InterCand::mode` instead (defect 6).
+    pub(super) inter: Option<alloc::boxed::Box<InterCand>>,
     pub(super) mds3_cost: u64,
     pub(super) block_has_coeff: bool,
     /// C `blk_ptr->total_rate` / `full_dist` (svt_aom_full_cost writeback)
     /// — read by the NSQ component-multiple / recon-dist gates.
     pub(super) total_rate: u64,
     pub(super) full_dist: u64,
+}
+
+impl Cand {
+    /// C `is_inter_block(mbmi)` = `use_intrabc || ref_frame[0] > INTRA_FRAME`
+    /// (block_structures.h:119).
+    ///
+    /// `docs/INTER-ENCODE-PLAN.md` §1u and §1x record what happens when a
+    /// site tests `use_intrabc` instead: while IntraBC was the only
+    /// inter-CLASSIFIED candidate the funnel could build, the two predicates
+    /// were the same, and four separate pack defects came from the moment
+    /// they stopped being.
+    pub(super) fn is_inter(&self) -> bool {
+        self.ibc.is_some() || self.inter.is_some()
+    }
+}
+
+/// One INTER candidate's mode-decision payload.
+///
+/// It carries exactly what MODE DECISION chooses; the three context fields C
+/// caches on `BlkStruct` (`pred_mv`, `inter_mode_ctx`, `drl_ctx`) are derived
+/// in the pack from the committed mode-info grid instead — see §1u for why
+/// that split is structural rather than cosmetic. `pred_mv` is the one
+/// exception: the MV RATE needs it at injection time, before any pack runs.
+#[derive(Clone, Debug)]
+pub struct InterCand {
+    pub mode: svtav1_types::prediction::PredictionMode,
+    /// C `ref_frame[2]`; `[LAST_FRAME, NONE_FRAME]` = `[1, -1]` for the
+    /// single-reference low-delay shape this port injects.
+    pub ref_frame: [i8; 2],
+    /// Eighth-pel MVs, one per reference.
+    pub mv: [svtav1_types::motion::Mv; 2],
+    /// The MVP stack's chosen predictor — what the writer differences the
+    /// coded MV against, and what the MV rate is measured from.
+    pub pred_mv: [svtav1_types::motion::Mv; 2],
+    pub drl_index: u8,
+    /// C's packed `(y) | (x << 16)` interpolation filter pair.
+    pub interp_filters: u32,
+    pub motion_mode: crate::port_entropy_inter::modes::MotionMode,
+    pub num_proj_ref: u8,
+    pub overlappable_neighbors: u8,
+    /// The MOTION-COMPENSATED chroma prediction (`cw * chh` each), produced
+    /// with the luma one in a single `av1_inter_prediction_light_pd1` call at
+    /// injection (§1s item 6). It is carried rather than recomputed because
+    /// C's chroma arm reuses the LUMA block's `compute_subpel_params` result
+    /// at a halved origin — predicting chroma separately would be different
+    /// arithmetic, not a refactor.
+    pub u_pred: alloc::vec::Vec<u8>,
+    pub v_pred: alloc::vec::Vec<u8>,
 }
 
 /// The chosen leaf coding, consumed by the fixed-tree walk + the entropy
@@ -131,6 +188,11 @@ pub struct LeafChoice {
     /// this leaf; flows into BlockDecision (chunk 9) for the pack's
     /// `write_intrabc_info` + var-tx tx_size writer.
     pub ibc: Option<(svtav1_types::motion::Mv, svtav1_types::motion::Mv)>,
+    /// The winning INTER candidate's payload — `Some` iff an inter candidate
+    /// won this leaf. Flows into `BlockDecision::inter`, which
+    /// `encode_block_syntax`'s inter arm requires (it REFUSES rather than
+    /// falling back; §1u).
+    pub inter: Option<alloc::boxed::Box<InterCand>>,
 }
 
 /// Per-frame/SB mutable funnel context threaded through the fixed tree.
@@ -212,6 +274,18 @@ pub(crate) struct FunnelCtx<'a> {
     /// `evaluate_leaf` call (the C `ctx->shape` + `pc_tree` state the
     /// `do_intra_bc` gate reads, mode_decision.c:3597-3616).
     pub ibc_gate: IbcGateInput,
+    /// INTER frame state (`docs/INTER-ENCODE-PLAN.md` §1s items 1b/2/3/6):
+    /// the padded DPB reference, the frame's open-loop motion search, the
+    /// inter rate tables and the MVP environment. `None` on a KEY frame,
+    /// where every inter path is unreachable — which is what keeps the whole
+    /// still envelope byte-identical by construction.
+    ///
+    /// It shares [`Self::ibc_mvp`] as its mode-info grid: the grid IS C's
+    /// `mi_grid_base` as MD stamps it, and IntraBC (an intra-frame-only tool
+    /// — the spec gates `allow_intrabc` on an intra frame) and inter
+    /// prediction can never both be live on one frame, so there is exactly
+    /// one grid and one stamping site.
+    pub inter: Option<&'a crate::inter_md_arm::InterMdFrame<'a>>,
 }
 
 /// C `BlockSize` enum index from pixel dims (definitions.h block order) —
@@ -538,6 +612,7 @@ impl LeafEval {
             cfl_alpha_signs: cand.cfl_alpha_signs,
             palette: cand.palette,
             ibc: cand.ibc,
+            inter: cand.inter,
         }
     }
 }

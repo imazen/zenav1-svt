@@ -323,6 +323,73 @@ pub(crate) fn kf_full_lambda_8bit_tuned(
     lambda
 }
 
+/// C `rd_frame_type_factor[0]` (rc_process.c:395), the 8-bit row, indexed by
+/// [`crate::port_rc_process::FrameUpdateType`].
+const RD_FRAME_TYPE_FACTOR_8BIT: [i64; 7] = [150, 180, 150, 150, 180, 180, 150];
+/// C `rd_frame_type_factor_alt` (rc_process.c:397).
+const RD_FRAME_TYPE_FACTOR_ALT: [i64; 7] = [140, 180, 128, 140, 164, 164, 140];
+
+/// The 8-bit full MD lambda for a NON-KEY frame — C
+/// `svt_aom_compute_rd_mult` -> `update_lambda` (rc_process.c:365-449),
+/// which `av1_lambda_assign_md` (md_process.c:725) calls.
+///
+/// It differs from [`kf_full_lambda_8bit_tuned`] in exactly two places, and
+/// both are frame-type switches rather than new arithmetic:
+///
+/// * the rdmult BASE multiplier — `def_kf_rd_multiplier` is `3.3 + 0.0015 q`
+///   (rc_process.c:361), `def_arf_rd_multiplier` `3.25 + …` (:354) and
+///   `def_inter_rd_multiplier` `3.2 + …` (:347); `compute_rd_mult_based_on_
+///   qindex` (:365) picks by `update_type`;
+/// * the frame-type FACTOR row, `rd_frame_type_factor[bd != 8][update_type]`
+///   (:417) or the `_alt` row when `alt_lambda_factors` is set (:415).
+///
+/// `update_type` for a low-delay P frame is `ARF_UPDATE`: `update_lambda`
+/// derives it as `KEY ? KF : temporal_layer == 0 ? ARF : temporal_layer <
+/// max_temporal_layer ? INTNL_ARF : LF` (:406-410), and a flat GOP puts
+/// every frame at temporal layer 0.
+///
+/// `stats_based_sb_lambda_modulation`'s factor is the 128 no-op whenever
+/// `q_index == base_q_idx` (:432-441), which is every frame this port emits
+/// (no per-SB delta-q is signalled), so it is carried as `qdiff_vs_base`
+/// exactly like the KF builder's.
+pub(crate) fn inter_full_lambda_8bit(
+    qindex: u8,
+    update_type: crate::port_rc_process::FrameUpdateType,
+    alt_lambda_factors: bool,
+    qdiff_vs_base: i32,
+    lambda_weight: u32,
+) -> u32 {
+    use crate::port_rc_process::FrameUpdateType as U;
+    let q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as f64;
+    let base = match update_type {
+        U::KfUpdate => 3.3,
+        U::GfUpdate | U::ArfUpdate => 3.25,
+        _ => 3.2,
+    };
+    let mut rdmult = ((base + 0.0015 * q) * q * q) as i64;
+    let ut = update_type as usize;
+    rdmult = (rdmult
+        * if alt_lambda_factors {
+            RD_FRAME_TYPE_FACTOR_ALT[ut]
+        } else {
+            RD_FRAME_TYPE_FACTOR_8BIT[ut]
+        })
+        >> 7;
+    let stats_factor: i64 = if qdiff_vs_base < 0 {
+        if qdiff_vs_base <= -8 { 90 } else { 115 }
+    } else if qdiff_vs_base > 0 {
+        if qdiff_vs_base <= 8 { 135 } else { 150 }
+    } else {
+        128
+    };
+    rdmult = (rdmult * stats_factor) >> 7;
+    let mut lambda = rdmult as u32;
+    if lambda_weight != 0 {
+        lambda = ((u64::from(lambda) * u64::from(lambda_weight)) >> 7) as u32;
+    }
+    lambda
+}
+
 /// KF full MD lambda at bd10 (C `full_lambda_md[1]`, md_process.c:725-759),
 /// mainline still/allintra path. Task #94 (the u16 MD path): the bd10 lambda
 /// is NOT `kf_full_lambda_8bit * 16` — the rdmult base is computed from the

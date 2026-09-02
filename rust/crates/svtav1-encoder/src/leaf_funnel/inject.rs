@@ -721,6 +721,7 @@ pub(super) fn inject_candidates(
             cfl_alpha_signs: 0,
             palette: None,
             ibc: None,
+            inter: None,
             mds3_cost: u64::MAX,
             block_has_coeff: false,
             total_rate: 0,
@@ -1077,6 +1078,7 @@ pub(super) fn inject_candidates(
                 cfl_alpha_signs: 0,
                 palette: Some((pc.colors, pc.idx_map)),
                 ibc: None,
+                inter: None,
                 mds3_cost: u64::MAX,
                 block_has_coeff: false,
                 total_rate: 0,
@@ -1328,12 +1330,161 @@ pub(super) fn inject_candidates(
                     cfl_alpha_signs: 0,
                     palette: None,
                     ibc: Some((dv, dv_ref)),
+                    inter: None,
                     mds3_cost: u64::MAX,
                     block_has_coeff: false,
                     total_rate: 0,
                     full_dist: 0,
                 });
             }
+        }
+    }
+
+    // ---- The INTER candidate (docs/INTER-ENCODE-PLAN.md §1s item 1b) ----
+    //
+    // C injects its inter candidates in `inject_inter_candidates`
+    // (mode_decision.c:2264) BEFORE the intra ones and MDS0 sorts the union;
+    // this port appends and the same sort follows, so the order here is not
+    // load-bearing. The candidate itself is built by `crate::inter_md_arm`,
+    // which owns the motion search, the reference-MV stack, the DRL choice,
+    // the motion-compensated prediction and C's `svt_aom_inter_fast_cost` —
+    // see that module's header for the fraction of C's candidate set this is.
+    if let Some(im) = fx.inter {
+        let mi_row = (abs_y / 4) as i32;
+        let mi_col = (abs_x / 4) as i32;
+        let stride = im.mi_cols;
+        let base = mi_row * stride + mi_col;
+        // The MVP scan runs against the LIVE mi state, in which the CURRENT
+        // cell already carries this block's own partition (the
+        // `has_top_right` VERT_A read) — exactly as the IBC arm above does.
+        let grid = fx
+            .ibc_mvp
+            .as_deref_mut()
+            .expect("the MD mi grid is allocated whenever the inter arm is armed");
+        grid[base as usize].partition = fx.ibc_gate.partition;
+        let neighbors =
+            crate::inter_md_arm::neighbors_from_grid(grid, stride, mi_row, mi_col, im.tile);
+        let bctx = crate::intrabc_mvp::derive_block_ctx(
+            mi_row,
+            mi_col,
+            bsize_idx,
+            im.mi_rows,
+            im.mi_cols,
+            im.tile,
+            im.sb_mi_size,
+        );
+        let overlappable = crate::inter_mvp::count_overlappable_neighbors(
+            &crate::intrabc_mvp::MvpGrid {
+                entries: grid,
+                stride,
+                base,
+            },
+            &bctx,
+            bsize_idx,
+        );
+        let built = crate::inter_md_arm::build_inter_candidate(
+            im,
+            &crate::inter_md_arm::InterBlockCtx {
+                org_x: abs_x,
+                org_y: abs_y,
+                bw: w,
+                bh: h,
+                bsize: bsize_idx as u8,
+                grid,
+                grid_stride: stride,
+                neighbors,
+                overlappable_neighbors: overlappable,
+                // C `ctx->is_inter_ctx` — `svt_av1_get_intra_inter_context`
+                // over the same neighbour pair (entropy_coding.c:1127).
+                is_inter_ctx: crate::entropy::context::get_intra_inter_context(
+                    neighbors.above_avail().is_none_or(|a| !a.is_inter_block()),
+                    neighbors.left_avail().is_none_or(|l| !l.is_inter_block()),
+                ),
+                has_uv,
+            },
+            lambda,
+            0,
+        );
+        if let Some(c) = built {
+            // MDS0's distortion is the same SATD every intra candidate is
+            // scored with; `build_inter_candidate` is called once for the
+            // rate and the cost is re-formed here so the two lanes are
+            // comparable. (C computes both inside `fast_loop_core`.)
+            let satd = if frame.mds0_ssd {
+                let mut sse: u64 = 0;
+                for r in 0..h {
+                    let srow = y_src_off + r * y_src_stride;
+                    for col in 0..w {
+                        let d = i64::from(y_src[srow + col]) - i64::from(c.y_pred[r * w + col]);
+                        sse += (d * d) as u64;
+                    }
+                }
+                sse
+            } else {
+                hadamard_satd(y_src, y_src_stride, y_src_off, &c.y_pred, w, h)
+            };
+            let flr = u64::from(c.fast_luma_rate);
+            let fast_cost = rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 });
+            cands.push(Cand {
+                // An inter block codes NEITHER an intra y_mode nor a uv_mode
+                // (§1x defects 2 and 6), so these two stay at their C
+                // initial values and the neighbour grid reads
+                // `InterCand::mode` instead.
+                mode: 0,
+                delta: 0,
+                fi: FI_NONE,
+                uv: 0,
+                uv_delta: 0,
+                pred: c.y_pred,
+                pred10: Vec::new(),
+                flr,
+                fcr: 0,
+                fast_cost,
+                full_cost: u64::MAX,
+                mds3_cost_ssim: u64::MAX,
+                mds1_has_coeff: false,
+                tx_depth: 0,
+                txb_q: Vec::new(),
+                txb_eob: Vec::new(),
+                txb_cul: Vec::new(),
+                txb_type: Vec::new(),
+                y_recon: Vec::new(),
+                y_recon10: Vec::new(),
+                u_recon10: Vec::new(),
+                v_recon10: Vec::new(),
+                y_recon_d0: Vec::new(),
+                y_bits: 0,
+                y_dist: 0,
+                u_q: Vec::new(),
+                v_q: Vec::new(),
+                u_eob: 0,
+                v_eob: 0,
+                u_cul: 0,
+                v_cul: 0,
+                u_recon: Vec::new(),
+                v_recon: Vec::new(),
+                cfl_alpha_idx: 0,
+                cfl_alpha_signs: 0,
+                palette: None,
+                ibc: None,
+                inter: Some(alloc::boxed::Box::new(super::types::InterCand {
+                    mode: c.mode,
+                    ref_frame: c.ref_frame,
+                    mv: c.mv,
+                    pred_mv: c.pred_mv,
+                    drl_index: c.drl_index,
+                    interp_filters: c.interp_filters,
+                    motion_mode: c.motion_mode,
+                    num_proj_ref: 0,
+                    overlappable_neighbors: overlappable.min(255) as u8,
+                    u_pred: c.u_pred,
+                    v_pred: c.v_pred,
+                })),
+                mds3_cost: u64::MAX,
+                block_has_coeff: false,
+                total_rate: 0,
+                full_dist: 0,
+            });
         }
     }
     cands

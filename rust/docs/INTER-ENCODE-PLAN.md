@@ -2537,6 +2537,14 @@ Items 4, 5 and 6 are **decoder-conformance** requirements, not RD ones: they
 decide whether the encoder's recon equals what a decoder produces from the
 bytes it wrote. Items 1, 2, 3 and 7 are what make the bytes exist at all.
 
+**STATUS, updated in place as each landed. Every item in this table is now
+closed** — 2 and 3 in §1u, 4 in §1v, 5's luma half in §1w, and 1, 1b, 5's
+remaining half, 6 and 8 in **§1y**, which also records the ONE thing that
+replaced them: C's `blk_skip_decision` fires in the port and disagrees with C
+on the reference cell. A THIRD gate the table did not list is recorded there
+too — `c_quant` was itself `if is_key`, so item 1's two `ref_*.is_none()`
+terms could not have armed the funnel on an inter frame whatever they said.
+
 **Item 1 is DE-RISKED but must land with 1b, measured 2026-09-01.** Taking
 both gates off behind a temporary env var (since reverted) runs the C-exact
 PD0 + leaf-funnel MD on the inter frame **without panicking**: frame 0 stays
@@ -2956,11 +2964,237 @@ contexts, `av1_get_pred_context_switchable_interp`, and `mode_context` itself.
 
 #### A frame-header finding, from widening the cell
 
+**Still open as of §1y** — nothing in the inter-MD chunk touched the CDEF
+derivation, and re-measuring it was not attempted.
+
 `inter_fh_gate.sh` covers ONE cell. On `uniform 64x64 q40 p6 frames=2` the
 frame-1 header differs from C's in `cdef_damping_minus_3` (C 1, port 0) — a
 CDEF derivation gap on an inter frame that the gradient cell happens not to
 expose. Recorded rather than gated: adding a knowingly-diverging cell to a
 green gate would make it red without adding information the gate can act on.
+
+### 1y. The port's OWN C-exact MD path produces C's BLOCK — items 1, 1b, 6 and 8 (2026-09-01)
+
+§1s item 1 said both C-exact mode-decision paths were switched off on any
+frame with a reference, and that item 1 was useless without 1b. Both landed
+together, with 6 and 8, and the reference cell's frame-1 leaf is now decided
+by the port's own PD0 + leaf funnel:
+
+```
+PTREE mi=(0,0) bsize=12 part=0 ...      # 64x64, PARTITION_NONE
+PDV   mi=(0,0) inter=1 mvr=0 mvc=-24 rf=1 mode=16
+```
+
+against C's measured decision (`SVT_CINTER_OUT`, §1s):
+
+```
+CINTER poc=1 mi=(0,0) bsize=12 part=0 mode=16 rf=1,-1 mv0=0,-24 ... skip=1
+```
+
+Same block size, same partition, same mode, same reference, same MV. The one
+field that still differs is `skip`, and that is the whole of the remaining
+byte gap — see "the residual" below.
+
+#### A THIRD gate nobody had named, and it is why item 1 alone measured nothing
+
+`use_funnel` is `chroma_420 && chroma_src && ref_frame_data.is_none() &&
+c_quant.is_some()`, and **`c_quant` was itself `if is_key`**. So taking the
+two `ref_*.is_none()` terms off could not have armed the funnel on an inter
+frame no matter what: the third term was already false. §1s's measurement of
+item 1 ("frame 1's tile goes 94 -> 119 B") was real, but it measured the PD0
+half only — the funnel never ran on that frame either before or after.
+
+The inter arm of `c_quant` is C's `derive_inter_coeff_level`
+(md_config_process.c:650) plus C's non-key MD lambda:
+
+* the coeff level keys on `ppcs->norm_me_dist`, the MEAN of the open-loop ME's
+  per-b64 8x8 distortion (`initial_rc_process.c:718-726`) — so it cannot be
+  derived before the motion search, which is why the search moved above it;
+* the thresholds are the INTER set `{5833/96, 5833/48, 16666/48}` with C's
+  INTEGER division = `{60, 121, 347}` (definitions.h:279-281), NOT the intra
+  `{25, 50, 150}`; `quant::inter_coeff_level_tests` pins the truncation
+  because getting it wrong moves a band boundary by one, which is a different
+  RDOQ level for a whole frame;
+* the lambda is `crate::pd0::inter_full_lambda_8bit` — C
+  `compute_rd_mult_based_on_qindex` + `update_lambda` (rc_process.c:365-449).
+  It differs from the KF builder in exactly two frame-type switches: the base
+  multiplier (`def_kf_rd_multiplier` 3.3, `def_arf_` 3.25, `def_inter_` 3.2)
+  and the `rd_frame_type_factor` row. A flat low-delay P GOP puts every frame
+  at temporal layer 0, which `update_lambda` (:406-410) maps to `ARF_UPDATE`.
+
+Note what C does NOT do: a VIDEO-mode KEY frame takes NEITHER coeff-level arm
+(`md_config_process.c:898-903` needs `allintra` for the intra one and
+`slice_type != I_SLICE` for the inter one) and keeps `INVALID_LVL`. The video
+RDOQ ladder ignores `coeff_lvl` up to M10, which is how C gets away with it.
+
+#### Item 1b — the candidate, and the class it belongs to
+
+`crate::inter_md_arm::build_inter_candidate` is the caller every ported island
+was waiting for: `inter_me_arm` for the MV, `inter_mvp::setup_ref_mv_list` +
+`port_md::drl::choose_best_av1_mv_pred` for the predictor and the DRL choice,
+`inter_pred_arm::predict_inter_yuv` for the prediction, and
+`port_rd_cost::inter_cost::inter_fast_cost` — C's real
+`svt_aom_inter_fast_cost` — for the MDS0 rate. Nothing was re-transcribed.
+
+**Stated as a fraction, MISSING first** (`docs/WORKING-ON-THIS.md`): no
+compound candidate, no NEAREST/NEAR/GLOBAL, no second reference, no
+interpolation-filter search, no motion-mode search (no OBMC, no warp), no
+inter-intra, no predictive-ME refinement, no sub-pel refinement, no
+`skip_mode`. C's `inject_inter_candidates` (mode_decision.c:2264) builds all
+of those. What IS here is the ONE candidate C commits on this cell.
+
+**It gets its own NIC lane.** C classes an inter NEWMV candidate
+`CAND_CLASS_1` (definitions.h:787-794) and prunes every class against its OWN
+best fast cost. Putting the inter candidate in lane 0 would have reproduced
+the palette defect §"#71 palette calibration" records from the other side: an
+inter candidate on a well-predicted block has a fast cost far below any intra
+mode's, so it would prune out every regular candidate before MDS1. `nic.rs`
+is now `LANES = 4` in C's class order (C0, C1, C3, C4) rather than three
+hard-coded segments; `CAND_CLASS_2` (inter NEAREST/NEAR) has no candidate to
+put in it and is deliberately absent rather than repurposed.
+
+#### Item 6 — chroma is MOTION COMPENSATED, and it is ONE call
+
+§1w left an inter block's chroma going through `encode_chroma_block_dc`, an
+INTRA DC predictor, while the bitstream said the block was inter. C's driver
+does luma and both chroma planes in a single
+`av1_inter_prediction_light_pd1` under a `component_mask`, and the chroma arm
+REUSES the luma block's `compute_subpel_params` result at a halved origin
+(`port_pd_pred.rs:302-306`) — so predicting chroma separately would be
+different arithmetic, not a refactor. `inter_pred_arm::predict_inter_yuv` is
+that one call; the prediction is produced at injection and carried on the
+candidate, and MDS3's chroma loop runs it through the same `tx_unit` the
+IntraBC arm uses, with the same INTER chroma tx-type rule.
+
+The bd10 chroma loop has no inter arm and REFUSES rather than falling back to
+the intra predictor — scoring chroma from a prediction the stream does not
+describe would decide the block on a fiction.
+
+#### Item 8 — `md_frame_context`, which is a RATE change and was measurable
+
+C's `init_frame_rate_tables` (md_config_process.c:292-310) seeds
+`md_frame_context` from the primary reference's SAVED end-of-frame CDFs
+whenever the header names one, and only otherwise from
+`svt_av1_default_coef_probs(base_q_idx)` + `svt_aom_init_mode_probs`. Both the
+intra rate tables (`build_md_rates`) and the new inter ones
+(`InterFacBits::from_cdfs` + `RefFrameFacBits::from_cdfs`) now come from it.
+
+Three of `RefFrameFacBits`' six rows and most of `InterFacBits` are built from
+`port_entropy_inter::InterCdfs` rather than `FrameContext`, and that is not a
+convenience: `FrameContext`'s `newmv` / `zeromv` / `refmv` / `drl` /
+`skip_mode` / `interp_filter` fields are UNIFORM PLACEHOLDERS (documented at
+`port_entropy_inter/cdfs.rs:14`), and pricing against a placeholder gives
+every inter mode the same rate.
+
+MEASURED on the reference cell: it moves the luma coefficient rate estimate
+from 66787 to 66968 and `skip_fac_bits` from `{26, 2510}` to `{20, 2699}` —
+small, because frame 0's CDFs have barely moved off the defaults on a
+single-superblock frame. It is landed because C does it, not because it paid
+here; on a frame with more superblocks the gap is not small.
+
+#### C's `blk_skip_decision` is ported, and it is the residual
+
+C gives an INTER block an explicit RD comparison between coding its residual
+and signalling `skip` (rd_cost.c:1371-1406), gated on
+`is_inter_mode(cand->block_mi.mode)` — the MODE, so IntraBC is excluded — and
+on `ctx->blk_skip_decision`, which is `uv_ctrls.uv_mode <= CHROMA_MODE_1`
+(enc_mode_config.c:7858), i.e. on exactly when MD evaluated chroma. An intra
+block gets no such comparison, which is why the funnel had no counterpart.
+
+It is implemented in `mds3.rs` and it FIRES — and on this cell it picks
+CODING where C picks SKIP. The numbers, measured:
+
+| | rate | distortion (`sse << 4`) | cost |
+|---|--:|--:|--:|
+| code the residual | 66 968 + 125 + 125 + 102 + 20 | 1 091 744 | 171 939 117 |
+| skip | 2 699 | 1 474 512 | 190 027 953 |
+
+`rdcost` is C's `((rate * lambda + 256) >> 9) + (dist << 7)` with
+`lambda = 244 792`. Coding reduces the luma SSE from 90 965 to 67 042 for
+~131 bits, and at this lambda that trade wins by 18.1 M. For skip to win the
+lambda would have to exceed ~388 224, i.e. 1.59x — so this is NOT a near-tie
+that a rounding difference explains.
+
+**What that rules out.** The lambda is C's own chain and its inputs
+(`lambda_scale_factors` defaults to 128 at `enc_settings.c:1021`, so the final
+scale is a no-op; `lambda_weight` is 150 at `picture_qp >= 16` on BOTH the
+allintra arm at `:10103` and the video arm at `:9456`). The rate estimate is
+corroborated by the coded stream: the port's frame-1 tile is 18 bytes = 144
+bits, of which the mode info is ~20, and the estimate says 131.
+
+**And the dump answers the rest. The port's INTER PREDICTION is 3.4x worse
+than C's, and that is the whole of it.** One `SVT_FULLCOST_OUT` run in the
+Linux container (§5: Apple `ld64` has no `-Wl,--wrap`, so the macOS
+`capture_c_trace` is the byte-only driver and NONE of the `SVT_*_OUT`
+interposers exist there) on the reference cell prints, for the winning
+candidate:
+
+```
+CFULL org=(0,0) 64x64 st=3 mode=16 fi=0 ang=0 uv=0 ibc=0 ycb=1519 ydist=426160 cost=60964418
+```
+
+`ycb = 1519` is about THREE bits — C's residual quantizes to nothing, so C
+does not reach the skip comparison at all; it simply has no coefficients.
+`ydist = 426160` is `y_distortion[DIST_SSD][0]`, which the skip arm has
+already overwritten with `[1]`, so it is C's PREDICTION distortion:
+`426160 / 16 = 26 635`.
+
+The port's is **90 965**. And 26 635 is not an opaque C number — it is
+reproducible from the DECODER, which is the ground truth here:
+
+| quantity | value |
+|---|--:|
+| `sse(frame-0 source, dav1d's recon of frame 0)` | 26 658 |
+| `sse(frame-1 source, dav1d's recon0 shifted -3 with left replication)` | **26 635** |
+| C's `ydist / 16` | **26 635** |
+| `sse(frame-1 source, dav1d's recon of frame 1)` | 26 635 |
+| the port's MD prediction distortion | 90 965 |
+
+So the correct MV against the correct reference gives EXACTLY C's number, and
+the port's mode decision is scoring a prediction 3.4x worse. Four gross
+hypotheses were ruled out by computing them against the decoder's recon0:
+zero MV (1 726 660), the wrong sign (2 889 368), a 128 fill instead of the
+replicated margin (1 074 664), a full-pel-vs-eighth-pel unit bug
+(1 135 799) — none is 90 965, and all are far worse, so the MV, its
+direction, its units and the margin are all right.
+
+**What that leaves is the REFERENCE BUFFER itself: the port's stored recon of
+the video-mode KEY frame is not what a decoder reconstructs from the same
+bytes.** That is an encoder/decoder recon MISMATCH — the class
+`rust/CLAUDE.md`'s issue-#15 note calls out as worse than a byte divergence —
+and no gate covers it, because `recon_parity` and `decode_conformance` run the
+STILL path and the byte gates compare bytes, not pixels. The video arm's
+deblock / CDEF / SGR-LR chain is new as of §1n-§1o' and has never been
+compared against a decoder's output on the frame it produces.
+
+**The next chunk is therefore a RECON gate, not an RD investigation**: dump
+the port's per-frame final recon on a video-mode cell (`identity_run` returns
+before its recon dumps on any multi-frame run today), compare it against
+`dav1d`'s decode of the port's own bytes, and localise which filter stage
+diverges. Do that before touching the skip decision — the skip decision is
+arithmetically C's and is being fed a wrong number.
+
+#### Measured byte movement, with the same caveat as §1u and §1v
+
+`gradient 64x64 q40 p6 frames=2`, `SVTAV1_INTER_EXPERIMENTAL=1`:
+
+| state | frame 1 |
+|---|--:|
+| the pre-campaign recursion (this chunk's `before`) | 74 B |
+| the C-exact MD path with NO inter candidate (item 1 alone) | 139 B |
+| the C-exact MD path WITH the inter candidate | **37 B** |
+| C | 22 B |
+
+Frame 0 is IDENTICAL at 961 B in every row — the two gates item 1 removed can
+only differ on a frame that HAS a reference, so the key path cannot see them.
+Of the port's 37 bytes, 19 are the frame header, which is byte-identical to
+C's; the tile is 18 B against C's 3 B, and every one of those 15 bytes is the
+skip decision above.
+
+**A smaller number is still not parity.** What makes this chunk a milestone is
+not 37 < 74; it is that the block the port DECIDES is now C's block, decided
+by the C-exact path, with the tile writer behind it already proven byte-exact
+(§1u).
 
 ## 2. Chunks
 

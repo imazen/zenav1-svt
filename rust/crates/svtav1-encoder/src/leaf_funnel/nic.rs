@@ -24,9 +24,11 @@ pub(super) struct Mds1Staging {
     /// C never merges them, and the winner scan's strict `<` breaks
     /// cross-class ties toward the earlier class.
     pub(super) order: Vec<usize>,
-    /// Per-class segment lengths `(k0, k3, k4)` of `order`, or `None` on the
+    /// Per-class segment lengths of `order` in C's class order — C0
+    /// (regular intra), C1 (inter), C3 (palette), C4 (IntraBC) — or `None`
+    /// on the
     /// single-class fast path.
-    pub(super) seg: Option<(usize, usize, usize)>,
+    pub(super) seg: Option<[usize; LANES]>,
     /// C `mds0_best` -- strict `<` over the per-class sorted heads.
     pub(super) mds0_best_idx: usize,
     /// qp-scaled MDS2/MDS3 stage counts, needed by the later prunes.
@@ -183,6 +185,14 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
     // overflows in practice. Union order = class order (C0, C3, C4 —
     // construct_best_sorted_arrays), stable-sorted by fast cost.
     let has_ibc_lane = cands.iter().any(|c| c.ibc.is_some());
+    // The inter lane (`CAND_CLASS_1`) is C's own class for the NEWMV
+    // candidates `inject_inter_candidates` builds. It must NOT share lane 0
+    // with the intra modes: the per-class dev-prune below measures each
+    // candidate against its OWN class's best, and an inter candidate on a
+    // well-predicted block has a fast cost far below any intra mode's — the
+    // exact shape that let palette prune out every regular mode before the
+    // per-class lanes landed (see the EPICA note above).
+    let has_inter_lane = cands.iter().any(|c| c.inter.is_some());
     // Multi-lane: `seg` carries the per-class segment lengths (k0, k3, k4)
     // of the CLASS-CONCATENATED `order` — C's cand_buff_indices structure.
     // C never merges the classes into one cost-sorted list: MDS1 evaluates
@@ -192,27 +202,22 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
     // previous union `sort_by_key(fast_cost)` matched C on all DISTINCT
     // costs but flipped cross-class tie/order corners (winner-scan ties,
     // uv_list order, mds1-best identity) — the screen multi-lane pins.
-    let (order, seg): (Vec<usize>, Option<(usize, usize, usize)>) =
-        if has_palette_lane || has_ibc_lane {
+    let (order, seg): (Vec<usize>, Option<[usize; LANES]>) =
+        if has_palette_lane || has_ibc_lane || has_inter_lane {
             let cap = (ncand as u32).min(nic1).max(1) as usize + 1;
-            let lane0: Vec<usize> = (0..ncand)
-                .filter(|&i| cands[i].palette.is_none() && cands[i].ibc.is_none())
-                .collect();
-            let lane3: Vec<usize> = (0..ncand).filter(|&i| cands[i].palette.is_some()).collect();
-            let lane4: Vec<usize> = (0..ncand).filter(|&i| cands[i].ibc.is_some()).collect();
+            let lanes: [Vec<usize>; LANES] =
+                core::array::from_fn(|l| (0..ncand).filter(|&i| lane_of(&cands[i]) == l).collect());
             // Per-class MDS0 replacement pool -> sort -> per-class dev-prune.
-            let s0 = sort_lane(lane_pool(&lane0, cands, cap), cands);
-            let s3 = sort_lane(lane_pool(&lane3, cands, cap), cands);
-            let s4 = sort_lane(lane_pool(&lane4, cands, cap), cands);
-            let k0 = dev_prune(&s0, cands);
-            let k3 = dev_prune(&s3, cands);
-            let k4 = dev_prune(&s4, cands);
+            let sorted: [Vec<usize>; LANES] =
+                lanes.map(|l| sort_lane(lane_pool(&l, cands, cap), cands));
+            let k: [usize; LANES] = core::array::from_fn(|l| dev_prune(&sorted[l], cands));
             // MDS1 evaluates the per-class survivors, class-concatenated in
-            // class order (C0, C3, C4) — NOT cost-merged.
-            let mut u: Vec<usize> = s0[..k0].to_vec();
-            u.extend_from_slice(&s3[..k3]);
-            u.extend_from_slice(&s4[..k4]);
-            (u, Some((k0, k3, k4)))
+            // class order (C0, C1, C3, C4) — NOT cost-merged.
+            let mut u: Vec<usize> = Vec::new();
+            for l in 0..LANES {
+                u.extend_from_slice(&sorted[l][..k[l]]);
+            }
+            (u, Some(k))
         } else {
             // Single-class fast path (no palette candidates) — byte-identical
             // to the prior single-pool behaviour: pool -> sort -> dev-prune.
@@ -227,17 +232,19 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
     // the single-class path this is order[0]; on the multi-lane concat it
     // must be scanned (the concat head is C0's head, not the global min).
     let mds0_best_idx = match seg {
-        Some((k0, k3, _)) => {
+        Some(k) => {
             let mut bi = order[0];
             let mut bc = u64::MAX;
-            for head in [order.first(), order.get(k0), order.get(k0 + k3)]
-                .into_iter()
-                .flatten()
-            {
-                if cands[*head].fast_cost < bc {
+            let mut off = 0usize;
+            for len in k {
+                if let Some(head) = order.get(off)
+                    && len > 0
+                    && cands[*head].fast_cost < bc
+                {
                     bc = cands[*head].fast_cost;
                     bi = *head;
                 }
+                off += len;
             }
             bi
         }
@@ -252,6 +259,38 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
         qw,
         qwd,
     }
+}
+
+/// The candidate CLASSES this funnel can build, in C's own class order.
+///
+/// C has five (`CandClass`, definitions.h:787-794); this port builds four of
+/// them — `CAND_CLASS_2` (the inter NEAREST/NEAR class) has no candidate here
+/// because no such candidate is injected, so it would be an always-empty
+/// lane. Adding one means adding a lane, not repurposing another: the class
+/// identity feeds the rank-staging `+3` arm and the cross-class tie order.
+pub(super) const LANES: usize = 4;
+
+/// C's candidate class for one funnel candidate, as an index into a
+/// `[_; LANES]` in class order: 0 = `CAND_CLASS_0` (regular intra),
+/// 1 = `CAND_CLASS_1` (inter, mode_decision.c:2264), 2 = `CAND_CLASS_3`
+/// (palette), 3 = `CAND_CLASS_4` (IntraBC, mode_decision.c:3659).
+pub(super) fn lane_of(c: &Cand) -> usize {
+    if c.inter.is_some() {
+        1
+    } else if c.palette.is_some() {
+        2
+    } else if c.ibc.is_some() {
+        3
+    } else {
+        0
+    }
+}
+
+/// The C `CandClass` VALUE for a lane index — what the rank-staging compare
+/// tests for equality. (Lane index and class value differ because C's class 2
+/// has no lane here.)
+pub(super) fn class_value(lane: usize) -> u8 {
+    [0u8, 1, 3, 4][lane]
 }
 
 /// What the MDS1 -> MDS3 staging hands to the MDS3 full loop.
@@ -298,22 +337,24 @@ pub(super) fn stage_mds1_to_mds3(cands: &[Cand], cfg: FunnelCfg, st: &Mds1Stagin
     // `mds0_best_idx == mds1_best_idx` compare and the class +3 arm).
     let mut order1: Vec<usize> = order[..n1].to_vec();
     let mds1_best_idx = match seg {
-        Some((k0, k3, _)) => {
-            let (a, rest) = order1.split_at_mut(k0);
-            let (b, c) = rest.split_at_mut(k3);
-            c_exchange_sort_by(a, |i| cands[i].full_cost);
-            c_exchange_sort_by(b, |i| cands[i].full_cost);
-            c_exchange_sort_by(c, |i| cands[i].full_cost);
+        Some(k) => {
+            let mut off = 0usize;
+            for len in k {
+                c_exchange_sort_by(&mut order1[off..off + len], |i| cands[i].full_cost);
+                off += len;
+            }
             let mut bi = order1[0];
             let mut bc = u64::MAX;
-            for head in [order1.first(), order1.get(k0), order1.get(k0 + k3)]
-                .into_iter()
-                .flatten()
-            {
-                if cands[*head].full_cost < bc {
+            let mut off = 0usize;
+            for len in k {
+                if let Some(head) = order1.get(off)
+                    && len > 0
+                    && cands[*head].full_cost < bc
+                {
                     bc = cands[*head].full_cost;
                     bi = *head;
                 }
+                off += len;
             }
             bi
         }
@@ -355,18 +396,10 @@ pub(super) fn stage_mds1_to_mds3(cands: &[Cand], cfg: FunnelCfg, st: &Mds1Stagin
     // (no MD_STAGE_2 full loop), so it stays the MDS1 GLOBAL best
     // (product_coding_loop.c:9580-9585) — the overall cheapest MDS1 full cost.
     let global_best = cands[mds1_best_idx].full_cost;
-    // Class id for the rank-staging compare: 0 regular, 3 palette, 4 IBC.
-    let class_of = |c: &Cand| -> u8 {
-        if c.ibc.is_some() {
-            4
-        } else if c.palette.is_some() {
-            3
-        } else {
-            0
-        }
-    };
+    // Class id for the rank-staging compare: C's CandClass VALUE.
+    let class_of = |c: &Cand| -> u8 { class_value(lane_of(c)) };
     let n3;
-    if let Some((k0s, k3s, _)) = seg {
+    if let Some(ks) = seg {
         let mds1_best_class = class_of(&cands[mds1_best_idx]);
         // post_mds1 (n2) then post_mds2 (n3) for one class lane, each
         // against that lane's own best. Returns the post_mds2 survivor
@@ -461,21 +494,23 @@ pub(super) fn stage_mds1_to_mds3(cands: &[Cand], cfg: FunnelCfg, st: &Mds1Stagin
         };
         // The class segments are contiguous in `order1` (per-class sorted
         // above) — C's cand_buff_indices[cidx] arrays.
-        let lane0: Vec<usize> = order1[..k0s].to_vec();
-        let lane3: Vec<usize> = order1[k0s..k0s + k3s].to_vec();
-        let lane4: Vec<usize> = order1[k0s + k3s..].to_vec();
-        let k0 = prune_lane(&lane0);
-        let k3 = prune_lane(&lane3);
-        let k4 = prune_lane(&lane4);
+        let mut off = 0usize;
+        let lanes: [Vec<usize>; LANES] = core::array::from_fn(|l| {
+            let v = order1[off..off + ks[l]].to_vec();
+            off += ks[l];
+            v
+        });
+        let kept: [usize; LANES] = core::array::from_fn(|l| prune_lane(&lanes[l]));
         // MDS3 evaluates the class-CONCATENATED survivors in class order —
         // C `construct_best_sorted_arrays_md_stage_3` (:1454) does NOT
         // re-sort the union; the winner scan's strict-`<` therefore breaks
         // cross-class full-cost ties toward the earlier class (C0 intra
         // beats palette/IBC on an exact tie), and the ind-uv uv_list /
         // MDS3 evaluation order follow the same concatenation.
-        let mut u: Vec<usize> = lane0[..k0].to_vec();
-        u.extend_from_slice(&lane3[..k3]);
-        u.extend_from_slice(&lane4[..k4]);
+        let mut u: Vec<usize> = Vec::new();
+        for l in 0..LANES {
+            u.extend_from_slice(&lanes[l][..kept[l]]);
+        }
         n3 = u.len();
         order1 = u;
     } else {
