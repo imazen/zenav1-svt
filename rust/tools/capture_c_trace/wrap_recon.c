@@ -87,6 +87,7 @@
 #include "md_process.h"
 #include "me_context.h"
 #include "motion_estimation.h"
+#include "mcomp.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
 void __real_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
@@ -870,6 +871,75 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
                 }
             }
             fprintf(jf, "]\n");
+            /* The CONTROLS and the ME/MVP state the PME + subpel drivers read
+             * (`docs/INTER-ENCODE-PLAN.md` §1z14). A port wiring those drivers
+             * has to JOIN these field for field; without them the only
+             * observable is `best_pme_mv`, which is four exits collapsed into
+             * one number. */
+            fprintf(jf,
+                    "PMEST poc=%u mi=(%d,%d) pme=%u/%d/%u/%u/%d/%d/%d/%d/%d/%u/%u"
+                    " uepme=%u refprun=%u sfr=%u nsqme=%u sqme=%u"
+                    " sme=%u/%u/%u/%u/%d/%d/%u/%u/%u/%u/%u"
+                    " spme=%u/%u/%u/%u/%d/%d/%u/%u/%u/%u/%u",
+                    (unsigned)pcs->picture_number, mi_row, mi_col,
+                    (unsigned)ctx->md_pme_ctrls.enabled, (int)ctx->md_pme_ctrls.dist_type,
+                    (unsigned)ctx->md_pme_ctrls.full_pel_search_width,
+                    (unsigned)ctx->md_pme_ctrls.full_pel_search_height,
+                    (int)ctx->md_pme_ctrls.early_check_mv_th_multiplier,
+                    (int)ctx->md_pme_ctrls.pre_fp_pme_to_me_cost_th,
+                    (int)ctx->md_pme_ctrls.pre_fp_pme_to_me_mv_th,
+                    (int)ctx->md_pme_ctrls.post_fp_pme_to_me_cost_th,
+                    (int)ctx->md_pme_ctrls.post_fp_pme_to_me_mv_th,
+                    (unsigned)ctx->md_pme_ctrls.enable_psad,
+                    (unsigned)ctx->md_pme_ctrls.sa_q_weight,
+                    (unsigned)ctx->updated_enable_pme,
+                    (unsigned)ctx->ref_pruning_ctrls.enabled,
+                    (unsigned)ctx->shut_fast_rate,
+                    (unsigned)ctx->md_nsq_me_ctrls.enabled,
+                    (unsigned)ctx->md_sq_me_ctrls.enabled,
+                    (unsigned)ctx->md_subpel_me_ctrls.enabled,
+                    (unsigned)ctx->md_subpel_me_ctrls.subpel_search_type,
+                    (unsigned)ctx->md_subpel_me_ctrls.max_precision,
+                    (unsigned)ctx->md_subpel_me_ctrls.subpel_search_method,
+                    (int)ctx->md_subpel_me_ctrls.subpel_iters_per_step,
+                    (int)ctx->md_subpel_me_ctrls.pred_variance_th,
+                    (unsigned)ctx->md_subpel_me_ctrls.abs_th_mult,
+                    (unsigned)ctx->md_subpel_me_ctrls.round_dev_th,
+                    (unsigned)ctx->md_subpel_me_ctrls.skip_diag_refinement,
+                    (unsigned)ctx->md_subpel_me_ctrls.bias_fp,
+                    (unsigned)ctx->md_subpel_me_ctrls.min_blk_sz,
+                    (unsigned)ctx->md_subpel_pme_ctrls.enabled,
+                    (unsigned)ctx->md_subpel_pme_ctrls.subpel_search_type,
+                    (unsigned)ctx->md_subpel_pme_ctrls.max_precision,
+                    (unsigned)ctx->md_subpel_pme_ctrls.subpel_search_method,
+                    (int)ctx->md_subpel_pme_ctrls.subpel_iters_per_step,
+                    (int)ctx->md_subpel_pme_ctrls.pred_variance_th,
+                    (unsigned)ctx->md_subpel_pme_ctrls.abs_th_mult,
+                    (unsigned)ctx->md_subpel_pme_ctrls.round_dev_th,
+                    (unsigned)ctx->md_subpel_pme_ctrls.skip_diag_refinement,
+                    (unsigned)ctx->md_subpel_pme_ctrls.bias_fp,
+                    (unsigned)ctx->md_subpel_pme_ctrls.min_blk_sz);
+            for (int li = 0; li < 2; li++) {
+                for (int ri = 0; ri < 1; ri++) {
+                    fprintf(jf,
+                            " L%d%d[mvpn=%d best=%d/%u fpme=(%d,%d) subme=(%d,%d)"
+                            " sbme=(%d,%d) fpdist=%u pscost=%u mvp=",
+                            li, ri, (int)ctx->mvp_count[li][ri],
+                            (int)ctx->best_fp_mvp_idx[li][ri],
+                            (unsigned)ctx->best_fp_mvp_dist[li][ri],
+                            (int)ctx->fp_me_mv[li][ri].y, (int)ctx->fp_me_mv[li][ri].x,
+                            (int)ctx->sub_me_mv[li][ri].y, (int)ctx->sub_me_mv[li][ri].x,
+                            (int)ctx->sb_me_mv[li][ri].y, (int)ctx->sb_me_mv[li][ri].x,
+                            (unsigned)ctx->fp_me_dist[li][ri],
+                            (unsigned)ctx->post_subpel_me_mv_cost[li][ri]);
+                    for (int k = 0; k < ctx->mvp_count[li][ri]; k++) {
+                        fprintf(jf, "%s(%d,%d)", k ? "," : "",
+                                (int)ctx->mvp_array[li][ri][k].y, (int)ctx->mvp_array[li][ri][k].x);
+                    }
+                    fprintf(jf, "]");
+                }
+            }
+            fprintf(jf, "\n");
             fflush(jf);
         }
     }
@@ -1601,6 +1671,92 @@ EbErrorType __wrap_svt_aom_motion_estimation_b64(PictureParentControlSet* pcs, u
                     ->me_mv_array[0 * pcs->pa_me_data->max_refs + pcs->pa_me_data->max_l0]
                     .y);
     }
+    /* ---- the ME CANDIDATE ARRAY for block offset 0 (b64 granularity) -----
+     * `docs/INTER-ENCODE-PLAN.md` §1z14 needs to know which LIST each
+     * surviving ME candidate names, because `inject_new_candidates` turns a
+     * candidate's `direction` into its reference frame — and the whole
+     * question of whether C's coded `rf` comes from ME or from PME turns on
+     * that. `mecand` above is only the COUNT. */
+    {
+        const MeCandidate* ca = pcs->pa_me_data->me_results[b64_index]->me_candidate_array;
+        const uint8_t      n  = pcs->pa_me_data->me_results[b64_index]->total_me_candidate_index[0];
+        fprintf(f, "MECAND b64=%u maxrefs=%u maxl0=%u maxcand=%u n=%u c=[",
+                (unsigned)b64_index, (unsigned)pcs->pa_me_data->max_refs,
+                (unsigned)pcs->pa_me_data->max_l0, (unsigned)pcs->pa_me_data->max_cand,
+                (unsigned)n);
+        for (uint8_t i = 0; i < n; i++) {
+            const MeCandidate* c = &ca[0 * pcs->pa_me_data->max_cand + i];
+            fprintf(f, "%s%u:dir=%u l0=%u l1=%u rl0=%u rl1=%u", i ? "," : "", (unsigned)i,
+                    (unsigned)c->direction, (unsigned)c->ref_idx_l0, (unsigned)c->ref_idx_l1,
+                    (unsigned)c->ref0_list, (unsigned)c->ref1_list);
+        }
+        fprintf(f, "]\n");
+    }
     fflush(f);
+    return rc;
+}
+
+/* ===================================================================
+ * SVT_SUBPEL_OUT — the PER-(block, list, ref, stage) join point for the
+ * MD motion searches (`docs/INTER-ENCODE-PLAN.md` §1z14).
+ *
+ * WHY IT IS NOT THE `svt_aom_update_mi_map` DUMP. `SVT_INJCFG_OUT`'s
+ * `PMEST` line reads `ctx->mvp_array` / `fp_me_mv` / `best_pme_mv` at
+ * neighbour-array update time, which is AFTER the whole depth's blocks
+ * have been searched — so those fields belong to whatever block MD
+ * happened to process last, not to the block the line names. This
+ * interposer fires INSIDE the search, once per (list_idx, ref_idx,
+ * search_stage), with `ctx` still holding that reference's own state.
+ *
+ * `svt_av1_find_best_sub_pixel_tree_pruned` is EXPORTED (mcomp.h:111) and
+ * is the only sub-pel entry `md_subpel_search` reaches at the presets this
+ * campaign uses (`subpel_search_method == SUBPEL_TREE_PRUNED`).
+ * `search_stage` separates the two callers: SPEL_ME is
+ * `read_refine_me_mvs`, SPEL_PME is `pme_search`.
+ * =================================================================== */
+int __real_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, const struct AV1Common* const cm,
+                                                   SUBPEL_MOTION_SEARCH_PARAMS* ms_params, Mv start_mv, Mv* bestmv,
+                                                   int* distortion, unsigned int* sse1, BlockSize bsize);
+
+int __wrap_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, const struct AV1Common* const cm,
+                                                   SUBPEL_MOTION_SEARCH_PARAMS* ms_params, Mv start_mv, Mv* bestmv,
+                                                   int* distortion, unsigned int* sse1, BlockSize bsize) {
+    const int rc = __real_svt_av1_find_best_sub_pixel_tree_pruned(
+        ictx, xd, cm, ms_params, start_mv, bestmv, distortion, sse1, bsize);
+    const char*  path = getenv("SVT_SUBPEL_OUT");
+    static FILE* f    = NULL;
+    if (path && *path && !f)
+        f = fopen(path, "w");
+    if (f && ictx) {
+        const ModeDecisionContext* ctx = (const ModeDecisionContext*)ictx;
+        const uint8_t              li  = (uint8_t)ms_params->list_idx;
+        const uint8_t              ri  = (uint8_t)ms_params->ref_idx;
+        fprintf(f,
+                "SUBPEL stage=%d org=(%u,%u) bsize=%d bw=%u bh=%u sq=%u li=%u ri=%u"
+                " start=(%d,%d) best=(%d,%d) err=%d refmv=(%d,%d)"
+                " epb=%d spb=%d mct=%d flam=%u fastlam=%u"
+                " fpme=(%d,%d) subme=(%d,%d) fpdist=%u pscost=%u"
+                " mvpn=%d bestidx=%d bestdist=%u mvp=",
+                (int)ms_params->search_stage, (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y,
+                (int)bsize, (unsigned)ctx->blk_geom->bwidth, (unsigned)ctx->blk_geom->bheight,
+                (unsigned)ctx->blk_geom->sq_size, (unsigned)li, (unsigned)ri,
+                (int)start_mv.y, (int)start_mv.x, (int)bestmv->y, (int)bestmv->x, rc,
+                (int)ms_params->mv_cost_params.ref_mv->y, (int)ms_params->mv_cost_params.ref_mv->x,
+                (int)ms_params->mv_cost_params.error_per_bit,
+                (int)ms_params->mv_cost_params.sad_per_bit,
+                (int)ms_params->mv_cost_params.mv_cost_type,
+                (unsigned)ctx->full_lambda_md[0], (unsigned)ctx->fast_lambda_md[0],
+                (int)ctx->fp_me_mv[li][ri].y, (int)ctx->fp_me_mv[li][ri].x,
+                (int)ctx->sub_me_mv[li][ri].y, (int)ctx->sub_me_mv[li][ri].x,
+                (unsigned)ctx->fp_me_dist[li][ri], (unsigned)ctx->post_subpel_me_mv_cost[li][ri],
+                (int)ctx->mvp_count[li][ri], (int)ctx->best_fp_mvp_idx[li][ri],
+                (unsigned)ctx->best_fp_mvp_dist[li][ri]);
+        for (int k = 0; k < ctx->mvp_count[li][ri]; k++) {
+            fprintf(f, "%s(%d,%d)", k ? "," : "", (int)ctx->mvp_array[li][ri][k].y,
+                    (int)ctx->mvp_array[li][ri][k].x);
+        }
+        fprintf(f, "\n");
+        fflush(f);
+    }
     return rc;
 }
