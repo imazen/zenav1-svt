@@ -18,7 +18,7 @@
 //! | C driver | line | what IS here |
 //! |---|---|---|
 //! | `md_sq_motion_search` | `:2329-2510` | [`MdSqMeCtrls`], [`sparse_extent`], [`sq_search_area_multiplier`], [`nudge_sprs_lev1`] |
-//! | `read_refine_me_mvs` | `:2815-2936` | [`me_mv_center`] |
+//! | `read_refine_me_mvs` | `:2815-2936` | [`me_mv_center`] + [`refine_me_mv_for_ref`] (its per-reference BODY; the loop over `ref_frame_type_arr` is the caller's) |
 //! | `pme_search` | `:3197-3372` | [`MdPmeCtrls`], [`pme_search_extents`], [`pme_me_mv_differs_from_mvps`], [`pme_to_me_cost_dev`], [`pme_bails_to_me`], [`best_mvp_by_distortion`] |
 //!
 //! Those four drivers are the remaining work for the inter reference set;
@@ -1402,6 +1402,196 @@ pub fn me_mv_center(
 }
 
 // ---------------------------------------------------------------------------
+// read_refine_me_mvs (product_coding_loop.c:2815-2936)
+// ---------------------------------------------------------------------------
+
+/// Everything C's `read_refine_me_mvs` reads out of `ModeDecisionContext`
+/// and the block geometry for ONE `(list_idx, ref_idx)` pair.
+#[derive(Debug, Clone, Copy)]
+pub struct RefineMeIn {
+    /// C `pc_tree->tested_blk[PART_N][0]`.
+    pub blk_avail_sqi: bool,
+    /// C `ctx->blk_geom->bsize == BLOCK_64X128 || == BLOCK_128X64`.
+    pub bsize_is_64x128_or_128x64: bool,
+    /// C `ctx->blk_geom->bsize == BLOCK_4X4`.
+    pub bsize_is_4x4: bool,
+    /// C `pc_tree->parent->tested_blk[PART_N][0]`.
+    pub parent_tested: bool,
+    /// C `ctx->sq_sb_me_mv[list][ref]` — the SQUARE block's MV, which an
+    /// NSQ shape inherits.
+    pub sq_sb_me_mv: Mv,
+    /// C `me_results->me_mv_array[...]` for this pair, in FULL PEL.
+    pub raw_me_mv_full_pel: Mv,
+    /// C `ctx->md_nsq_me_ctrls.enabled`.
+    pub md_nsq_me_enabled: bool,
+    /// C `ctx->md_subpel_me_ctrls.enabled`.
+    pub do_subpel: bool,
+    /// C `ctx->md_subpel_me_ctrls.subpel_search_method ==
+    /// SUBPEL_FIXED_STAGE_SEARCH`. **This body does not branch on it** —
+    /// the caller does, when it builds the `subpel` closure, because the
+    /// two searches take different buffers
+    /// ([`md_subpel_search_fixed_stage`] wants a `DistortionSource`,
+    /// [`md_subpel_search`] wants planes). It is carried so C's condition
+    /// stays visible at the call site instead of being re-derived there.
+    pub subpel_fixed_stage: bool,
+    /// C `ctx->updated_enable_pme || ctx->ref_pruning_ctrls.enabled` — the
+    /// only reason the full-pel ME cost is computed when subpel is OFF.
+    pub needs_fp_me_dist: bool,
+    /// C `ctx->shape == PART_N`.
+    pub shape_is_part_n: bool,
+}
+
+/// What C's `read_refine_me_mvs` writes for one `(list_idx, ref_idx)`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RefineMeOut {
+    /// C `ctx->fp_me_mv[list][ref]`.
+    pub fp_me_mv: Mv,
+    /// C `ctx->sub_me_mv[list][ref]`.
+    pub sub_me_mv: Mv,
+    /// C `ctx->sb_me_mv[list][ref]` — the same MV, clipped AGAIN.
+    pub sb_me_mv: Mv,
+    /// C `ctx->sq_sb_me_mv[list][ref]`, written only on a square shape.
+    pub sq_sb_me_mv: Option<Mv>,
+    /// C `ctx->post_subpel_me_mv_cost[list][ref]`; `u32::MAX` when subpel
+    /// did not run, which is C's `(int32_t)~0` initialisation.
+    pub post_subpel_me_mv_cost: u32,
+    /// C `ctx->fp_me_dist[list][ref]`, written ONLY on the
+    /// no-subpel-but-someone-needs-it arm.
+    pub fp_me_dist: Option<u32>,
+}
+
+/// C `read_refine_me_mvs`' per-reference body (product_coding_loop.c:2851-2934).
+///
+/// The enclosing loop is over `ref_frame_type_arr`, skipping compound
+/// entries and pairs with no ME data (`svt_aom_is_me_data_present`); the
+/// caller owns that loop because each iteration needs a DIFFERENT reference
+/// picture and a different MVP stack, neither of which this module models.
+///
+/// **Caller contract for `ref_mv`.** Between the clip and the searches C sets
+/// `ctx->ref_mv` from
+/// `svt_aom_choose_best_av1_mv_pred(ref_pair, NEWMV, me_mv, 0)`, and that
+/// is the MV every cost in both searches is measured against. There is no
+/// `ref_mv` parameter here because it reaches the searches through
+/// `mv_cost_params.ref_mv` — the caller MUST build `mv_cost_params` (and
+/// the `subpel` closure's own params) from that value, not from the ME MV.
+/// The clip runs FIRST, so `choose_best_av1_mv_pred` sees the clipped
+/// centre.
+///
+/// Four things transcribed that a rewrite loses:
+///
+/// * **The centre MV is clipped BEFORE `choose_best_av1_mv_pred`, and the
+///   result is clipped AGAIN into `sb_me_mv` afterwards** — `sub_me_mv`
+///   keeps the UNCLIPPED post-search value while `sb_me_mv` gets the
+///   clipped one, so the two can differ.
+/// * **`md_sq_motion_search` is DEAD.** C guards it with
+///   `ctx->md_sq_me_ctrls.enabled`, and `pcs->md_sq_mv_search_level` is 0
+///   unconditionally at all three of its derivation sites
+///   (`enc_mode_config.c:9200`, `:9753`, `:10033`). The square arm of C's
+///   `if (b_w_ne_h) { nsq } else if (md_sq_me_enabled) { sq }` therefore
+///   never runs, and this port has no parameter for it.
+/// * **`post_subpel_me_mv_cost` is set to `~0` BEFORE the subpel search**,
+///   so a block that skips subpel leaves the sentinel rather than a stale
+///   cost.
+/// * **The full-pel ME cost is computed only when subpel is off AND
+///   somebody needs it** (`updated_enable_pme || ref_pruning_ctrls.enabled`)
+///   — it is not a fallback, it is a conditional side-effect.
+///
+/// Evidence tier 4 — `read_refine_me_mvs` is `static` with no exported
+/// symbol. Every leaf it calls is already ported: [`me_mv_center`],
+/// [`clip_mv_on_pic_boundary`], [`md_nsq_motion_search`],
+/// [`md_subpel_search`], [`md_subpel_search_fixed_stage`] and
+/// [`super::pme::fp_mv_err_cost`].
+#[allow(clippy::too_many_arguments)]
+pub fn refine_me_mv_for_ref(
+    inp: RefineMeIn,
+    fp_ctx: &FullPelCtx,
+    r: &RefPicGeom,
+    nsq: Option<(DistortionType, u8, u8, &[Mv])>,
+    subpel: Option<&mut dyn FnMut(&mut Mv) -> u32>,
+    fp_dist: Option<&mut dyn FnMut(Mv) -> u32>,
+    dist: &mut impl DistortionSource,
+    mv_cost_params: &MvCostParams<'_>,
+    input_origin_index: usize,
+) -> RefineMeOut {
+    let mut me_mv = me_mv_center(
+        inp.blk_avail_sqi,
+        fp_ctx.bwidth as u16,
+        fp_ctx.bheight as u16,
+        inp.bsize_is_64x128_or_128x64,
+        inp.bsize_is_4x4,
+        inp.parent_tested,
+        inp.sq_sb_me_mv,
+        inp.raw_me_mv_full_pel,
+    );
+    clip_mv_on_pic_boundary(
+        fp_ctx.blk_org_x,
+        fp_ctx.blk_org_y,
+        fp_ctx.bwidth,
+        fp_ctx.bheight,
+        r.max_width,
+        r.max_height,
+        r.border,
+        &mut me_mv.x,
+        &mut me_mv.y,
+    );
+    let b_w_ne_h = fp_ctx.bwidth != fp_ctx.bheight;
+    if b_w_ne_h
+        && inp.md_nsq_me_enabled
+        && let Some((dist_type, w, h, sub_block_mvs)) = nsq
+    {
+        md_nsq_motion_search(
+            fp_ctx,
+            r,
+            dist,
+            mv_cost_params,
+            input_origin_index,
+            dist_type,
+            w,
+            h,
+            me_mv,
+            sub_block_mvs,
+            &mut me_mv,
+        );
+    }
+
+    let mut out = RefineMeOut {
+        // C `(int32_t)~0`.
+        post_subpel_me_mv_cost: u32::MAX,
+        fp_me_mv: me_mv,
+        ..RefineMeOut::default()
+    };
+
+    if inp.do_subpel {
+        if let Some(f) = subpel {
+            out.post_subpel_me_mv_cost = f(&mut me_mv);
+        }
+    } else if inp.needs_fp_me_dist
+        && let Some(f) = fp_dist
+    {
+        out.fp_me_dist = Some(f(me_mv));
+    }
+
+    out.sub_me_mv = me_mv;
+    let mut sb = me_mv;
+    clip_mv_on_pic_boundary(
+        fp_ctx.blk_org_x,
+        fp_ctx.blk_org_y,
+        fp_ctx.bwidth,
+        fp_ctx.bheight,
+        r.max_width,
+        r.max_height,
+        r.border,
+        &mut sb.x,
+        &mut sb.y,
+    );
+    out.sb_me_mv = sb;
+    if inp.shape_is_part_n {
+        out.sq_sb_me_mv = Some(sb);
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // TIER 4 — every C function ported here is `static` with no exported
 // symbol (`nm -g`). These are hand-derived vectors traced against the C
 // source. The pieces WITH an oracle (pme_sad_loop_kernel,
@@ -2223,6 +2413,170 @@ mod tests {
             (32, 0),
             "the refinement ladder must be able to move the MV off the MVC"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // read_refine_me_mvs (per-reference body)
+    // -----------------------------------------------------------------
+
+    fn refine_in() -> RefineMeIn {
+        RefineMeIn {
+            blk_avail_sqi: false,
+            bsize_is_64x128_or_128x64: false,
+            bsize_is_4x4: false,
+            parent_tested: false,
+            sq_sb_me_mv: Mv::ZERO,
+            raw_me_mv_full_pel: Mv::ZERO,
+            md_nsq_me_enabled: false,
+            do_subpel: false,
+            subpel_fixed_stage: false,
+            needs_fp_me_dist: false,
+            shape_is_part_n: true,
+        }
+    }
+
+    /// **`sub_me_mv` keeps the post-search MV and `sb_me_mv` gets a SECOND
+    /// clip**, so the two differ whenever the search left the picture. C
+    /// clips once before `choose_best_av1_mv_pred` and again into
+    /// `sb_me_mv` after the searches; a port that clipped once, or that
+    /// wrote the clipped value into both, is a different MV downstream.
+    ///
+    /// The MV here is 1000 full pels right of a block at x=32 in a
+    /// 320-wide reference with a 64 border, so both clips fire.
+    ///
+    /// Also asserts the two sentinels: `post_subpel_me_mv_cost` stays
+    /// `u32::MAX` (C's `(int32_t)~0`) when subpel is off, and `fp_me_dist`
+    /// stays absent unless somebody asked for it.
+    ///
+    /// Evidence tier 4.
+    #[test]
+    fn tier4_refine_me_clips_twice_and_leaves_the_cost_sentinel() {
+        let ctx = fp_ctx();
+        let r = geom();
+        let t = zero_cost();
+        let p = params(&t);
+        let mut probe = Probe::new(i32::MIN);
+
+        let mut inp = refine_in();
+        inp.raw_me_mv_full_pel = Mv { x: 1000, y: 0 };
+        let out = refine_me_mv_for_ref(inp, &ctx, &r, None, None, None, &mut probe, &p, 0);
+
+        // C's clip: `(max_width - blk_org_x) * 8` = (320 - 32) * 8.
+        let clipped = ((r.max_width - ctx.blk_org_x) * 8) as i16;
+        assert_eq!(out.fp_me_mv.x, clipped, "the CENTRE is clipped first");
+        assert_eq!(out.sub_me_mv.x, clipped);
+        assert_eq!(out.sb_me_mv.x, clipped, "and clipped again into sb_me_mv");
+        assert_eq!(
+            out.post_subpel_me_mv_cost,
+            u32::MAX,
+            "no subpel search ran, so C's `~0` sentinel must survive"
+        );
+        assert_eq!(out.fp_me_dist, None);
+        assert_eq!(out.sq_sb_me_mv, Some(out.sb_me_mv), "PART_N writes it back");
+
+        // A NON-square shape must NOT write `sq_sb_me_mv`.
+        let mut nsq_in = refine_in();
+        nsq_in.shape_is_part_n = false;
+        let out2 = refine_me_mv_for_ref(nsq_in, &ctx, &r, None, None, None, &mut probe, &p, 0);
+        assert_eq!(out2.sq_sb_me_mv, None);
+
+        // THE SECOND CLIP, witnessed: let the SEARCH push the MV back out
+        // of the picture after the first clip already ran. `sub_me_mv`
+        // must keep the out-of-range value and `sb_me_mv` must be clipped
+        // — deleting the second clip makes them equal and fails here.
+        let mut moved = refine_in();
+        moved.do_subpel = true;
+        let mut push_out = |mv: &mut Mv| {
+            mv.x = 20_000;
+            0u32
+        };
+        let out3 = refine_me_mv_for_ref(
+            moved,
+            &ctx,
+            &r,
+            None,
+            Some(&mut push_out),
+            None,
+            &mut probe,
+            &p,
+            0,
+        );
+        assert_eq!(
+            out3.sub_me_mv.x, 20_000,
+            "sub_me_mv keeps the UNCLIPPED post-search MV"
+        );
+        assert_eq!(
+            out3.sb_me_mv.x, clipped,
+            "sb_me_mv is the same MV clipped a SECOND time"
+        );
+        assert_ne!(out3.sub_me_mv.x, out3.sb_me_mv.x);
+    }
+
+    /// **The full-pel ME cost is a CONDITIONAL side effect, not a
+    /// fallback.** C computes `fp_me_dist` only when subpel is off AND
+    /// `updated_enable_pme || ref_pruning_ctrls.enabled`; with subpel ON it
+    /// is never written no matter who wants it, and with both off it is
+    /// skipped even though nothing else fills the slot.
+    ///
+    /// Evidence tier 4.
+    #[test]
+    fn tier4_refine_me_fp_dist_needs_subpel_off_and_a_consumer() {
+        let ctx = fp_ctx();
+        let r = geom();
+        let t = zero_cost();
+        let p = params(&t);
+        let mut probe = Probe::new(i32::MIN);
+
+        // subpel OFF + a consumer -> written.
+        let mut a = refine_in();
+        a.needs_fp_me_dist = true;
+        let mut fp = |_mv: Mv| 4242u32;
+        let out = refine_me_mv_for_ref(a, &ctx, &r, None, None, Some(&mut fp), &mut probe, &p, 0);
+        assert_eq!(out.fp_me_dist, Some(4242));
+        assert_eq!(out.post_subpel_me_mv_cost, u32::MAX);
+
+        // subpel ON -> the subpel cost is written and fp_me_dist is not,
+        // even with a consumer asking.
+        let mut b = refine_in();
+        b.needs_fp_me_dist = true;
+        b.do_subpel = true;
+        let mut sp = |mv: &mut Mv| {
+            mv.x += 3;
+            77u32
+        };
+        let mut fp2 = |_mv: Mv| 4242u32;
+        let out2 = refine_me_mv_for_ref(
+            b,
+            &ctx,
+            &r,
+            None,
+            Some(&mut sp),
+            Some(&mut fp2),
+            &mut probe,
+            &p,
+            0,
+        );
+        assert_eq!(out2.post_subpel_me_mv_cost, 77);
+        assert_eq!(out2.fp_me_dist, None);
+        assert_eq!(
+            (out2.fp_me_mv.x, out2.sub_me_mv.x),
+            (0, 3),
+            "fp_me_mv is the PRE-subpel MV and sub_me_mv the POST-subpel one"
+        );
+
+        // subpel OFF and nobody needs it -> nothing written.
+        let out3 = refine_me_mv_for_ref(
+            refine_in(),
+            &ctx,
+            &r,
+            None,
+            None,
+            Some(&mut fp),
+            &mut probe,
+            &p,
+            0,
+        );
+        assert_eq!(out3.fp_me_dist, None);
     }
 
     // -----------------------------------------------------------------

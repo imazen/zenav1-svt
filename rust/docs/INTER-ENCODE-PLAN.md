@@ -4687,16 +4687,17 @@ and its ME agree on the MV there; it cannot reproduce the reference TYPE.
 | `md_subpel_search` (`:2520`) | `port_md::md_search` | **ported 2026-09-02**, tier 4, byte-inert until a caller exists |
 | `md_nsq_motion_search` (`:2080`) | `port_md::md_search` | **ported 2026-09-02**, tier 4, same |
 | `md_sq_motion_search` (`:2329`) | — | **never runs**: `md_sq_mv_search_level` is 0 at every preset (`enc_mode_config.c:9200`, `:9753`, `:10033`), so `read_refine_me_mvs`' `md_sq_me_enabled` arm is dead |
-| `read_refine_me_mvs` (`:2815`) | only `me_mv_center` | **missing driver** |
+| `read_refine_me_mvs` (`:2815`) | `port_md::md_search::refine_me_mv_for_ref` | **per-reference BODY ported 2026-09-02**, tier 4; the loop over `ref_frame_type_arr` stays the caller's, because each iteration needs a different reference picture and MVP stack |
 | `pme_search` (`:3197`) | — | **missing driver** |
 | two-reference (compound) PREDICTION | — | **missing** (`inter_pred_arm` is single-ref) |
 
 **Landed since this entry was written:** `md_subpel_search` and
-`md_nsq_motion_search` (`port_md::md_search`), two of the three drivers, plus
+`md_nsq_motion_search` (`port_md::md_search`), two of the three drivers — and `read_refine_me_mvs`' per-reference BODY as
+`refine_me_mv_for_ref` — plus
 the finding that the third search `read_refine_me_mvs` can call —
 `md_sq_motion_search` — is DEAD at every preset (`md_sq_mv_search_level = 0`,
-unconditional). That leaves `read_refine_me_mvs` and `pme_search` with no
-missing leaf. Two
+unconditional). That leaves only `pme_search` and the `ref_frame_type_arr` loop, with no
+missing leaf under either. Two
 C details it carries that a rewrite loses — the MV-limit chain's THREE steps
 (the middle one narrows the full-pel set in place) and the fact that
 `svt_init_mv_cost_params` reads **`ctx->md_subpel_me_ctrls`**'s
