@@ -79,7 +79,39 @@ Crates are not published to crates.io yet — depend by git.
   full-pel ladder per NSQ block per reference — and is **unmeasured**; C runs
   the same search at these presets, so the algorithm matches rather than
   exceeds C's, but no delta was measured and none is quoted.
-
+- **MD priced an `intra_inter` context it did not code — the 96-cell inter grid
+  goes 40 BOTH → 49** (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁷).
+  `entropy::context::get_intra_inter_context`'s four-entry table was INVERTED
+  (0 for "both neighbours intra", 3 for "both inter"; C says 3 and 0, and both
+  mixed cases are 1 — 2 is the one-available-intra-neighbour value that
+  signature cannot express), and its call sites collapsed "not available" into
+  "intra". The correct transcription,
+  `port_entropy_inter::intra_inter_context`, was already tier-1 gated and
+  already used by the WRITER, so the encoder priced one context and coded
+  another. **1207 rate units on every inter candidate of every block with two
+  neighbours**, measured against C's own `svt_aom_inter_fast_cost`. Nine cells
+  closed, none regressed; `inter_byte_gate.sh` now asserts 49 and refusal #12's
+  envelope reads 49 of 96. Both MD call sites now use the oracle
+  transcription, the bool form is corrected and PINNED to it over the quadrant
+  they share.
+- **The port paid the interpolation-filter rate at MDS0 where C pays none.**
+  C's gate is `ctx->ifs_ctrls.level == IFS_MDS0` and
+  `pcs->interpolation_search_level` is 2 (`IFS_MDS1`) at MR and 4 (`IFS_MDS3`)
+  above it — never 1 — so no preset this port reaches prices the filter at
+  MDS0. `SearchFrameCfg` carries the real level. 20-109 rate units per
+  candidate; byte-neutral on the grid, landed because the port's
+  `inter_fast_cost` now equals C's EXACTLY (1787 / 5216 / 10364 against
+  C's 1787 / 5216 / 10364).
+- **`SVT_IFCOST_OUT` — an interposer on the exported
+  `svt_aom_inter_fast_cost`**, the exact counterpart of the port's
+  `inter_fast_cost`, pinned by `SVT_IFCOST_XY`. It is what named both defects
+  above: `SVT_FULLCOST_OUT` could only say that C reached MDS3 with one
+  candidate and the port with two, which is a total, and a total is rate and
+  lambda and distortion collapsed into one integer. It also showed C injecting
+  and PRICING compound candidates (`NEAREST_NEARESTMV` / `NEW_NEWMV` off
+  `LAST_BWD`) — so §1z¹⁶'s census result stands as "zero coded compound
+  blocks" but not as "compound has zero influence": injected candidates occupy
+  NIC slots.
 - **`tools/inter_me_join_gate.sh` — the assertion that can SEE the NSQ
   motion-search gap.** `rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁵ recorded that
   `md_nsq_motion_search` is ported and never called and that "no assertion in

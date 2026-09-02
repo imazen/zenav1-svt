@@ -5126,6 +5126,126 @@ quoted; `docs/perf-status.md` is unchanged.
   §1z¹⁵ added is still unmeasured for cost; see `docs/perf-status.md`.
 * The ONE F0DIFF cell (`gradient 128x128 q20 p8`) is untouched.
 
+### 1z¹⁷. MD priced a context it did not code — 40 -> 49 BOTH, on an INVERTED four-entry table (2026-09-02)
+
+§1z¹⁶ closed the NSQ motion search and moved zero bytes, and said so: *"the
+next mechanism is downstream of the search."* It is, and it is not a missing
+feature. The port's `svt_aom_inter_fast_cost` was **wrong by a constant on
+every inter candidate of every block with two neighbours**, and the wrong
+number came from a second transcription of a function the repo already had
+right.
+
+#### The interposer that named it
+
+`SVT_IFCOST_OUT` wraps **`svt_aom_inter_fast_cost`** — exported
+(`rd_cost.h:47`), and the exact counterpart of the port's
+`port_rd_cost::inter_cost::inter_fast_cost`. It fires after the real call, so
+`cand_bf->fast_luma_rate` is the number C just wrote, and it prints every
+input alongside it. Pinned by `SVT_IFCOST_XY` because MD calls it for every
+inter candidate of every block of every depth.
+
+It was built because the localization in §1z¹⁶ had gone as far as a total
+could take it: `SVT_FULLCOST_OUT` showed C reaching MDS3 with **one**
+candidate where the port reaches it with two, and `NSQDBG ICAND` showed the
+port's INPUTS joining C's exactly — same mode, reference, MV, predicted MV,
+DRL index, mode context, overlappable count. Same inputs, different survivor
+means the MDS0 cost differs, and `fast_luma_rate` is that cost's rate.
+
+On `uniform 72x72 q20 p8` frame 1, block `(64,64)` 8x8:
+
+| candidate | C `flr` | port `flr` | Δ |
+|---|---|---|---|
+| `NEARESTMV` LAST | 1787 | 3014 | +1227 |
+| `NEARESTMV` BWDREF | 5216 | 6532 | +1316 |
+| `NEWMV` BWDREF | 10364 | 11680 | +1316 |
+
+**And it named something the census could not.** C's dump also shows two
+candidates the port never builds: `NEAREST_NEARESTMV` and `NEW_NEWMV` off
+`LAST_BWD`, priced at 3667 and 11728. §1z¹⁶'s census measured C coding ZERO
+compound BLOCKS across 96 cells, which is still true and still the right
+measure of "what moves bytes" — but C **injects and prices** compound
+candidates, and injected candidates occupy slots in the NIC ladder. The
+census's conclusion needs that caveat: compound is worth zero coded blocks,
+not zero influence.
+
+#### Two defects, separated by control
+
+The Δ was not one constant. Turning the port's MDS0 interpolation-filter rate
+off left **exactly 1207 on all three** — so there were two.
+
+**1. `is_inter_ctx` read an INVERTED table (1207 units).**
+`entropy::context::get_intra_inter_context` said:
+
+```rust
+(true,  true)  => 0,   // "Both intra -> likely intra"
+(true,  false) => 1,
+(false, true)  => 2,
+(false, false) => 3,   // "Both inter -> likely inter"
+```
+
+C says the opposite, and the mixed cases are both 1 — 2 is the value C
+reserves for a SINGLE available INTRA neighbour, which that signature cannot
+express at all:
+
+```c
+if (has_above && has_left) return left_intra && above_intra ? 3 : left_intra || above_intra;
+else if (has_above || has_left) return 2 * !is_inter_block(...);
+else return 0;
+```
+
+The call sites also collapsed "not available" into "intra" via `is_none_or`.
+So a block with two INTER neighbours priced at context **3** (both intra)
+where C prices it **0** — measured `nb=[1,1] isinterctx=3` on the new
+`NSQDBG ICAND` line, which carries the neighbours' `ref_frame[0]` precisely so
+the context is a verdict with premises attached.
+
+**This is the third duplicate transcription this campaign has found, and the
+correct one was already in the repo with a comment predicting exactly this.**
+`port_entropy_inter::intra_inter_context` is availability-aware, tier-1
+gated, and — the part that matters — is what the **WRITER** already used
+(`write_intra_inter`'s call site). So the encoder PRICED one context and
+CODED another, for as long as both existed. Its own doc says *"The two must
+agree — if they ever do not, one of them is wrong and this module's parity
+test is the one with a C oracle behind it."* It was right.
+
+Both MD call sites now use it; the bool-form entry point is corrected, kept
+for callers that have already resolved availability, and PINNED to the
+oracle transcription over the quadrant they share
+(`intra_inter_context_tests`).
+
+**2. The port paid the interpolation-filter rate at MDS0; C does not
+(20-109 units).** C's gate is `ctx->ifs_ctrls.level == IFS_MDS0`
+(`rd_cost.c:1179`), and `pcs->interpolation_search_level` is **2 (`IFS_MDS1`)
+at MR and 4 (`IFS_MDS3`) above it, never 1** — so C never prices the filter
+at MDS0 on any preset this port reaches. The port hard-coded `ifs_at_mds0 =
+true` on the reasoning that "this port runs no filter search, so the filter
+IS known and is priced." That reasoning is about a DIFFERENT gap: paying it
+early is not "pricing what C prices later", it is a different MDS0 ordering.
+`SearchFrameCfg` now carries the real level.
+
+With both fixed the port's `inter_fast_cost` is **EXACTLY C's** on all three
+candidates: 1787 / 5216 / 10364.
+
+#### Grid: **40 BOTH / 55 F1DIFF -> 49 BOTH / 46 F1DIFF**, 0 lost
+
+Nine cells closed, none regressed: `uniform 128x128` at all six
+(q, preset) points and `uniform 72x72` at q20/q40/q55 p8. **All nine closed on
+defect 1 alone**; defect 2 is byte-neutral on this grid and was landed anyway
+because the fast cost now equals C's exactly, which is what axis 2 asks for.
+
+`inter_byte_gate.sh` asserts **49** required cells. Refusal #12's envelope is
+updated to 49 of 96.
+
+#### What this says about the method
+
+The chunk that produced this was aimed at compound prediction and the NSQ
+motion search. Compound turned out to be worth zero coded blocks; NSQ turned
+out to be real, fixable and worth zero bytes. **The nine cells came from
+neither** — they came from wrapping the one C function whose output the port
+claimed to reproduce and reading the two numbers side by side. The census and
+the ME join gate were not wasted: they are what RETIRED the two named
+candidates fast enough to keep looking.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

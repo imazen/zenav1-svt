@@ -897,11 +897,12 @@ frame HEADER is field-exact but for two CDEF strengths, while the TILE is the
 pre-campaign homegrown path", which has been wrong since §1z; it then said
 36/59/1, which §1z¹⁵ superseded): on the campaign's
 96-cell grid — `{uniform,gradient,diag,screen}` x `{16,64,72,128}` x
-`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **40 cells are
+`{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P — **49 cells are
 byte-identical on BOTH frames**, 55 have a byte-identical frame 0 and a
-differing frame 1, and 1 still differs on frame 0. `tools/inter_byte_matrix.sh`
-is that sweep and `tools/inter_byte_gate.sh` asserts the 40. The refusal stays
-because 40 of 96 is not "broadly": a stream the public API emits has to be right
+differing frame 1, and 1 still differs on frame 0 — **49 / 46 / 1 as of
+§1z¹⁷**. `tools/inter_byte_matrix.sh`
+is that sweep and `tools/inter_byte_gate.sh` asserts the 49. The refusal stays
+because 49 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
 Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁶
 for the tile.
