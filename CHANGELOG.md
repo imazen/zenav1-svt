@@ -444,6 +444,37 @@ Crates are not published to crates.io yet — depend by git.
   level 2 wrongly enabled had been refining list 0 onto the MV C reaches
   through list 1). Full record: `rust/docs/INTER-ENCODE-PLAN.md` §1z¹³.
 
+- **bd10 intra prediction crossed TILE boundaries, so every forced-multi-tile
+  10-bit encode produced wrong pixels (issue #18).** AV1 forces a multi-tile
+  grid once a frame exceeds `MAX_TILE_AREA` (4096*2304 = 9,437,184 px of
+  SB-aligned area) or `MAX_TILE_WIDTH` (4096 px) — `TileGrid::resolve`, C
+  `svt_av1_get_tile_limits` — so an AVIF caller that never requests a tile
+  still gets two above ~9.44 MP. Intra prediction is tile-scoped in AV1; the
+  u8 path honoured that (`extract_neighbors_tiled`), two bd10 sites did not:
+  `predict_unit_hbd`'s non-directional arm called `extract_neighbors_hbd` with
+  frame-absolute availability (preset <= 8, the full-RD funnel), and
+  `bd10_reencode_{luma,chroma}_node` hardcoded `TileMi::whole_frame`
+  (preset >= 9, the level re-encode post-pass). The encoder read real pixels
+  across the tile edge while a conforming decoder used the unavailable-edge
+  fills, so everything from the boundary onward drifted. Reported as an
+  "8-12 MP size cliff" (mean SSIMULACRA2 **-57.05** at 3000x4000 q90 where the
+  8-bit control read **86.57**); the size threshold is a proxy for the forced
+  tile grid, and the same defect reproduces at **0.27 MP** on a 4160x64 frame.
+  MEASURED, encoder final 10-bit recon vs `aomdec`: `gradient 4160x64 q20 p6`
+  65,054 of 399,360 samples differ before / 0 after; `gradient 256x256 q20`
+  with 2 tile rows 24,169 (p6) and 49,606 (p9/p10/p13) before / 0 after;
+  `gradient 2944x3264` (9.61 MP, 2346 SB > the 2304 SB limit) 3,448,059 of
+  14,413,824 before / 0 after, while `2944x3200` (9.42 MP, 2300 SB, single
+  tile) was and is clean. Byte-INERT outside the broken configuration: 26 of 28
+  A/B cells emit identical OBUs, including every single-tile cell at both
+  depths and every bd8 multi-tile cell; only bd10 x multi-tile moved. New
+  `TileGrid::tile_mi_for_sb` is the single owner of "which tile is this SB in".
+  Gates: `svtav1/tests/issue18_repro.rs` (4 cells + a single-tile control) and
+  four `bd10ReconEq` cells in `tools/regression_spotcheck.sh`. Scope correction
+  recorded in `rust/docs/coverage-combos-map.md` — the 2026-07-22 note that
+  threading this was "byte-inert" was true on the C-byte oracle and blind to
+  this class.
+
 - **`inter_decode_gate.sh` could not report PASS on macOS.** Its `OPEN_CELLS`
   array emptied when the last open cell was promoted, and `"${arr[@]}"` on an
   EMPTY array under `set -u` is an "unbound variable" error on bash < 4.4 —

@@ -1,5 +1,36 @@
 # 10-bit (bd10) port map (task #94, extracted 2026-07-17)
 
+
+## ⛔ TILE SCOPE — every bd10 prediction site must be tile-scoped (issue #18, 2026-09-02)
+
+AV1 **forces** a multi-tile grid above `MAX_TILE_WIDTH` (4096 px) or
+`MAX_TILE_AREA` (4096*2304 = 9,437,184 px of SB-aligned area), regardless of
+what the caller requested — see `rust/CLAUDE.md` envelope guard 8. Two bd10
+sites predicted across tile edges and produced pixels a conforming decoder does
+not reconstruct:
+
+| site | preset band | was | now |
+|---|---|---|---|
+| `predict_unit_hbd` non-directional arm → `partition::extract_neighbors_hbd` | <= 8 (full-RD funnel) | availability `abs_y > 0` / `abs_x > 0` | `tile_top`/`tile_left` from `geom.tile`, mirroring the u8 `extract_neighbors_tiled` |
+| `bd10_reencode_luma` / `bd10_reencode_chroma` node walks | >= 9 (level re-encode post-pass) | `TileMi::whole_frame` | `TileGrid::tile_mi_for_sb` per superblock |
+
+`predict_unit_hbd`'s DIRECTIONAL arm was already correct — it passed
+`tile: geom.tile` into `dr_predict_hbd` — so the gap was exactly DC / V / H /
+smooth\* / paeth / filter-intra.
+
+MEASURED (encoder final 10-bit recon vs `aomdec`, before → after):
+`gradient 4160x64 q20 p6` 65,054/399,360 → 0; `gradient 256x256 q20` 2 tile
+rows 24,169 (p6) and 49,606 (p9/p10/p13) → 0; `gradient 2944x3264` (9.61 MP,
+2346 SB) 3,448,059/14,413,824 → 0, with `2944x3200` (9.42 MP, 2300 SB, single
+tile) clean throughout. Byte-INERT elsewhere: 26 of 28 A/B cells emit identical
+OBUs — every single-tile cell at both depths and every bd8 multi-tile cell.
+
+The re-encode walks the merged frame in RASTER SB order, which is not tile
+order once there are tile COLUMNS. That is fine for the recon reads (an in-tile
+above/left SB is always already written in raster order); only the
+AVAILABILITY needed scoping. Gates: `svtav1/tests/issue18_repro.rs`,
+`bd10ReconEq` cells in `tools/regression_spotcheck.sh`.
+
 > **Line numbers in this document are as of `5584555a9` (2026-07-17)** unless
 > a section states its own commit. The sources have drifted by 1-2k lines
 > since; re-locate every citation by SYMBOL NAME, not by line.

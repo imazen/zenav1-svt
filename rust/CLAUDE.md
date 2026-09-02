@@ -171,6 +171,36 @@ cite the source, don't re-argue them.
    separates them. A port that implements only the fork variant will look
    plausible and produce silently-neutral output on the mainline path.
 
+8. **TILES ARE NOT OPT-IN. AV1 FORCES a multi-tile grid on large frames, so
+   "the caller asked for one tile" is never a scope you may assume** (issue
+   #18, 2026-09-02). `TileGrid::resolve` ports C `svt_av1_get_tile_limits`:
+   `minLog2TileCols` fires once `sb_cols > max_tile_width_sb`, and
+   `minLog2Tiles` once `sb_rows * sb_cols > max_tile_area_sb`. In PIXELS those
+   limits are **width > 4096** and **SB-aligned area > 4096*2304 =
+   9,437,184** — identical at SB64 and SB128, because both the limit and the
+   SB shift scale together. A REQUEST of `(0, 0)` is CLAMPED UP to the minimum,
+   never honoured. The `AvifEncoder` surface never requests a tile, so every
+   AVIF encode past ~9.44 MP is multi-tile whether anyone planned for it or not.
+   Consequences that have already bitten:
+   - Any "single tile" premise in a doc comment (`extract_neighbors_hbd` once
+     said *"`tile_top == 0` (single tile row) matches the funnel's current
+     scope"*) is a claim about a knob the caller does not own. If a code path
+     can reach a tile boundary, scope it with `TileMi` — do not assume, and do
+     not pass `TileMi::whole_frame` as a stand-in for "we have no tile grid
+     here" (derive one: `TileGrid::tile_mi_for_sb`).
+   - A defect gated on forced tiling LOOKS like a SIZE cliff, because area is
+     the proxy that trips the limit. Issue #18 was reported as "10-bit breaks
+     above ~8-12 MP"; it reproduces at **0.27 MP** on a 4160-wide frame, which
+     is both the real localization and a CI-cheap regression cell. When a
+     defect's bracket is a resolution, check what changes STRUCTURALLY across
+     it (tiles, SB size, `input_resolution` class) before hunting for an
+     overflowing accumulator.
+   - **Byte-parity against C cannot see tile-boundary prediction errors.** Both
+     encoders can be wrong the same way. Multi-tile coverage needs the DECODER
+     leg (encoder final recon == `aomdec`), which is what
+     `svtav1/tests/issue18_repro.rs` and `bd10ReconEq` in
+     `tools/regression_spotcheck.sh` are.
+
 Master capability map: issue #7 (imazen/zenav1-svt). C's actual shipping envelope is narrow
 (8/10-bit, 420, CQP-ish), so the real distance to C is *feature*-level (rate control, inter,
 superres, segmentation, HDR metadata), not format-level.

@@ -769,6 +769,15 @@ pub(crate) fn predict_unit_hbd(
         w,
         h,
         bd,
+        // ISSUE #18: tile-scoped neighbour availability, exactly as the u8
+        // twin `predict_unit` passes it. The directional arm above already
+        // carried `geom.tile` into `dr_predict_hbd`; this arm (DC / V / H /
+        // smooth* / paeth / filter-intra) did not, so a forced multi-tile
+        // bd10 frame predicted across the tile edge. `geom.tile` is the whole
+        // frame for a single-tile encode, where both are 0 and this is
+        // bit-for-bit the previous behaviour.
+        geom.tile.top_px(geom.ss),
+        geom.tile.left_px(geom.ss),
         // C n_top_px/n_left_px: this plane's ALIGNED extent (u8 twin's comment).
         geom.frame_w >> geom.ss,
         geom.frame_h >> geom.ss,

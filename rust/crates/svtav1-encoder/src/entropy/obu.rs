@@ -2008,6 +2008,38 @@ impl TileGrid {
         let start = tr * self.tile_height_sb;
         (start, ((tr + 1) * self.tile_height_sb).min(self.sb_rows))
     }
+
+    /// The tile bounds, in LUMA mi (4px) units, of the tile CONTAINING the
+    /// superblock at `(sb_row, sb_col)` — what every intra-availability
+    /// predicate is scoped to (C `TileInfo`).
+    ///
+    /// ONE owner for this derivation: it is the same
+    /// `start * sb_size / 4` / `min(end * sb_size / 4, dim / 4)` the per-tile
+    /// `EntropyCtx` construction in `pipeline.rs` used to spell out inline,
+    /// and the bd10 level re-encode post-pass (which walks the merged frame in
+    /// raster SB order, so it cannot inherit a tile's context) needs the same
+    /// answer per SB. Issue #18: that post-pass previously used
+    /// `TileMi::whole_frame`, which predicts across tile edges a conforming
+    /// decoder cannot see.
+    ///
+    /// `w`/`h` are the ALIGNED luma dims, matching the `EntropyCtx` sites.
+    pub fn tile_mi_for_sb(
+        &self,
+        sb_row: usize,
+        sb_col: usize,
+        sb_size: usize,
+        w: usize,
+        h: usize,
+    ) -> crate::intra_edge::TileMi {
+        let (r0, r1) = self.row_span(sb_row / self.tile_height_sb);
+        let (c0, c1) = self.col_span(sb_col / self.tile_width_sb);
+        crate::intra_edge::TileMi {
+            mi_row_start: r0 * sb_size / 4,
+            mi_row_end: (r1 * sb_size / 4).min(h / 4),
+            mi_col_start: c0 * sb_size / 4,
+            mi_col_end: (c1 * sb_size / 4).min(w / 4),
+        }
+    }
 }
 
 /// Rows-only convenience over [`TileGrid::resolve`] at SB64 — clamps a

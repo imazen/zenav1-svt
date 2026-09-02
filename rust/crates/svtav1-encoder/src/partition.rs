@@ -444,15 +444,26 @@ pub(crate) fn extract_neighbors_tiled(
     (above, left, top_left, has_above, has_left)
 }
 
-/// High-bit-depth (u16) mirror of [`extract_neighbors`] for the bd10 u16 MD
-/// path (task #94). Identical neighbour-availability + edge-extend rules; the
-/// only bit-depth dependence is the C `build_intra_predictors_high` fallback
-/// fills — `base = 128 << (bd - 8)` (512 at bd10), so a missing above row with
-/// no left is `base - 1` (511) and a missing left column with no above is
-/// `base + 1` (513), top-left-neither is `base` (512). At bd == 8 this reduces
-/// to the exact 127/129/128 the u8 path uses (verified in tests), so the u8
-/// path is untouched. `tile_top == 0` (single tile row) matches the funnel's
-/// current scope.
+/// High-bit-depth (u16) mirror of [`extract_neighbors_tiled`] for the bd10
+/// u16 MD path (task #94). Identical neighbour-availability + edge-extend
+/// rules; the only bit-depth dependence is the C `build_intra_predictors_high`
+/// fallback fills — `base = 128 << (bd - 8)` (512 at bd10), so a missing above
+/// row with no left is `base - 1` (511) and a missing left column with no
+/// above is `base + 1` (513), top-left-neither is `base` (512). At bd == 8
+/// this reduces to the exact 127/129/128 the u8 path uses (verified in tests),
+/// so the u8 path is untouched.
+///
+/// ISSUE #18: `tile_top`/`tile_left` are NOT optional decoration. This used to
+/// derive availability from the FRAME (`abs_y > 0` / `abs_x > 0`) with a doc
+/// note claiming "`tile_top == 0` (single tile row) matches the funnel's
+/// current scope" — but the funnel's scope is not the caller's choice. AV1
+/// FORCES a multi-tile grid once the frame exceeds `MAX_TILE_AREA`
+/// (4096*2304 px) or `MAX_TILE_WIDTH` (4096 px), so an AVIF encode that never
+/// asked for a tile still got two, and the bd10 predictor then read real
+/// pixels across the tile edge while a conforming decoder — which
+/// reconstructs each tile independently — used the unavailable-edge fills.
+/// Everything from the boundary onward drifted. Witness:
+/// `svtav1/tests/issue18_repro.rs`.
 pub(crate) fn extract_neighbors_hbd(
     recon: &[u16],
     stride: usize,
@@ -461,12 +472,18 @@ pub(crate) fn extract_neighbors_hbd(
     width: usize,
     height: usize,
     bd: u8,
+    tile_top: usize,
+    tile_left: usize,
     plane_w: usize,
     plane_h: usize,
 ) -> (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, u16, bool, bool) {
     let base: u16 = 128u16 << (bd - 8);
-    let has_above = abs_y > 0;
-    let has_left = abs_x > 0;
+    // Same rule as the u8 twin (`extract_neighbors_tiled`): a block on a
+    // TILE's own top row / left column has no above / left neighbour even
+    // when it is not the FRAME's. `tile_top`/`tile_left` are 0 for a
+    // single-tile encode, where this is bit-for-bit the previous behaviour.
+    let has_above = abs_y > tile_top;
+    let has_left = abs_x > tile_left;
     // C `n_top_px` / `n_left_px` — see the u8 twin's comment. Same rule, same
     // reason: on a partial superblock the recon buffer holds data past the
     // ALIGNED extent that a conforming decoder replicates instead.

@@ -3678,6 +3678,7 @@ impl EncodePipeline {
                     &mut all_trees,
                     sb_cols,
                     sb_size,
+                    &tile_grid,
                     w,
                     h,
                     &src10,
@@ -3727,6 +3728,7 @@ impl EncodePipeline {
                         &mut all_trees,
                         sb_cols,
                         sb_size,
+                        &tile_grid,
                         w,
                         h,
                         &u10,
@@ -8669,6 +8671,14 @@ fn bd10_reencode_luma(
     all_trees: &mut [crate::partition::PartitionTree],
     sb_cols: usize,
     sb_size: usize,
+    // ISSUE #18: the resolved tile grid. This pass runs POST-merge over the
+    // whole frame in raster SB order, so unlike the per-tile funnel it has no
+    // tile context to inherit and must derive each SB's tile itself. It used
+    // `TileMi::whole_frame`, which let the bd10 predictor read across a tile
+    // edge that a conforming decoder cannot see. Raster order is still fine
+    // for the RECON reads (every in-tile above/left SB is already written);
+    // only the AVAILABILITY had to become tile-scoped.
+    tile_grid: &crate::entropy::obu::TileGrid,
     w: usize,
     h: usize,
     // The 10-bit SOURCE, padded to the SB extent at `src_stride` (the u16 twin
@@ -8714,6 +8724,7 @@ fn bd10_reencode_luma(
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
+        let tile_mi = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, w, h);
         bd10_reencode_node(
             sb_size / 4,
             tree,
@@ -8733,6 +8744,7 @@ fn bd10_reencode_luma(
             h,
             bd,
             qm_level,
+            tile_mi,
         );
     }
     Ok(recon10)
@@ -8762,6 +8774,9 @@ fn bd10_reencode_node(
     frame_h: usize,
     bd: u8,
     qm_level: u8,
+    // ISSUE #18: the tile CONTAINING this superblock, from
+    // `TileGrid::tile_mi_for_sb`. Was `TileMi::whole_frame`.
+    tile_mi: crate::intra_edge::TileMi,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -8789,24 +8804,27 @@ fn bd10_reencode_node(
                 ss: 0,
                 frame_w,
                 frame_h,
-                // PORT-NOTE(task #96): the bd10 re-encode runs AFTER the
-                // per-tile search merges, so it has no tile grid threaded and
-                // treats the frame as one tile. Byte-neutral for every gated
-                // bd10 cell (all single-tile).
+                // ISSUE #18 (2026-09-02): this WAS
+                // `TileMi::whole_frame(frame_w, frame_h)`. The re-encode runs
+                // post-merge over the frame in raster SB order, so it has no
+                // tile context to inherit — but "no context to inherit" is a
+                // reason to DERIVE the tile, not to pretend there is one tile.
+                // With `whole_frame` a block on a tile's own top row / left
+                // column predicted from real pixels across the tile edge while
+                // the decoder used the unavailable-edge fills, and everything
+                // from the boundary onward drifted (MEASURED at preset 9/10/13:
+                // gradient 256x256 q20 with 2 tile rows, 49,606 of 98,304
+                // samples differ from aomdec; 0 after this line).
                 //
-                // MEASURED CORRECTION (bd10 x tiles coverage, 2026-07-22): this
-                // whole_frame TileMi is NOT the bd10 x multi-tile divergence
-                // root. Threading per-tile bounds here was verified
-                // BYTE-INERT on the diverging cells (stash "cov-combos:
-                // byte-inert bd10 re-encode tile threading"). The actual root
-                // is UPSTREAM: the port's eff-M9 partition search picks a
-                // different tree at a tile boundary at bd10 (tree_diff on
-                // gradient 256x256 q40 p10 r1c1: port keeps bsize 9 at the
-                // y=128 tile-row-boundary SBs mi(32,16)/(32,48) where C — at
-                // BOTH bit depths — splits to bsize 6; the port matches C at
-                // bd8 tiles and at bd10 single-tile). See
-                // docs/coverage-combos-map.md (axis "bd10 x tiles").
-                tile: crate::intra_edge::TileMi::whole_frame(frame_w, frame_h),
+                // The 2026-07-22 coverage-combos note that threading this was
+                // "BYTE-INERT on the diverging cells" stands and is not a
+                // contradiction: it was measured on the C-BYTE-PARITY axis,
+                // where the divergence has a separate upstream cause (the
+                // eff-M9 partition search picks a different tree at a tile
+                // boundary at bd10 — see docs/coverage-combos-map.md). Byte
+                // parity cannot see an encoder/decoder prediction MISMATCH at
+                // all, which is why that measurement did not catch this.
+                tile: tile_mi,
             };
             crate::leaf_funnel::predict_unit_hbd(
                 recon10,
@@ -8932,6 +8950,9 @@ fn bd10_reencode_node(
                     frame_h,
                     bd,
                     qm_level,
+                    // Children are inside the same superblock, hence the same
+                    // tile (issue #18).
+                    tile_mi,
                 );
             };
             match *partition_type {
@@ -9009,6 +9030,11 @@ fn bd10_reencode_chroma(
     all_trees: &mut [crate::partition::PartitionTree],
     sb_cols: usize,
     sb_size: usize,
+    // ISSUE #18: see the luma twin. Chroma's `UnitGeom` here is built with
+    // `ss: 0` over the CHROMA plane's own dims, so the TileMi handed down is
+    // derived in that same domain (`sb_size / 2`, `cframe_*`) rather than
+    // converted with `ss` the way the funnel does it.
+    tile_grid: &crate::entropy::obu::TileGrid,
     w: usize,
     h: usize,
     // The 10-bit CHROMA source, in the SB-extent shape `sb_chroma_owned` has
@@ -9078,6 +9104,7 @@ fn bd10_reencode_chroma(
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
+        let tile_mi_c = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size / 2, cframe_w, cframe_h);
         bd10_reencode_chroma_node(
             sb_size / 4,
             tree,
@@ -9101,6 +9128,7 @@ fn bd10_reencode_chroma(
             cframe_h,
             bd,
             qm_uv,
+            tile_mi_c,
         );
     }
     // The frame's true 10-bit CHROMA recon — the post-MD canvas the bd10
@@ -9235,6 +9263,10 @@ fn bd10_reencode_chroma_node(
     cframe_h: usize,
     bd: u8,
     qm_uv: [u8; 2],
+    // ISSUE #18: this superblock's tile, in the CHROMA plane's own pixel
+    // domain (the geom below is `ss: 0` over `cframe_*`). Was
+    // `TileMi::whole_frame(cframe_w, cframe_h)`.
+    tile_mi_c: crate::intra_edge::TileMi,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -9292,12 +9324,9 @@ fn bd10_reencode_chroma_node(
                 ss: 0,
                 frame_w: cframe_w,
                 frame_h: cframe_h,
-                // PORT-NOTE(task #96): see the luma twin above — bd10
-                // re-encode is post-merge and frame-scoped. The MEASURED
-                // CORRECTION there applies here too: whole_frame is NOT the
-                // bd10 x tiles root (threading was byte-inert); the partition
-                // search is. docs/coverage-combos-map.md.
-                tile: crate::intra_edge::TileMi::whole_frame(cframe_w, cframe_h),
+                // ISSUE #18: see the luma twin above. Was
+                // `TileMi::whole_frame(cframe_w, cframe_h)`.
+                tile: tile_mi_c,
             };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
                 recon10_u,
@@ -9386,6 +9415,8 @@ fn bd10_reencode_chroma_node(
                     cframe_h,
                     bd,
                     qm_uv,
+                    // Children share the superblock, hence the tile (issue #18).
+                    tile_mi_c,
                 );
             };
             match *partition_type {

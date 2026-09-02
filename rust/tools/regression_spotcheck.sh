@@ -1175,6 +1175,74 @@ byteVideoKey "video-key-pd0-lvl6-demote-568-p10" gradient 568 568 32 10
 byteVideoKey "video-key-pd0-lvl6-boundary-560-p10" gradient 560 560 32 10
 
 # ---------------------------------------------------------------------------
+# 2026-09-02 (issue #18) — bd10 INTRA PREDICTION crossed TILE boundaries, so a
+# multi-tile 10-bit encode reconstructed differently in the decoder than in the
+# encoder. AV1 forces a multi-tile grid once the frame passes MAX_TILE_AREA
+# (4096*2304 = 9,437,184 px of SB-aligned area) or MAX_TILE_WIDTH (4096 px), so
+# an AVIF caller that never asked for a tile still got two above ~9.44 MP —
+# which is why this presented as an "8-12 MP size cliff" (issue #18 measured
+# mean SSIMULACRA2 -57.05 at 3000x4000 q90 where the 8-bit control read 86.57).
+#
+# TWO sites, one per preset band, both now tile-scoped:
+#   * preset <= 8: `predict_unit_hbd`'s non-directional arm called
+#     `extract_neighbors_hbd`, whose availability was frame-absolute.
+#   * preset >= 9: `bd10_reencode_{luma,chroma}_node` hardcoded
+#     `TileMi::whole_frame`.
+#
+# OBSERVED before the fix (encoder FINAL 10-bit recon vs aomdec, the oracle
+# below): gradient 4160x64 q20 p6 = 65,054 of 399,360 samples differ, first at
+# Y r0 c2122 (tile-column boundary 33 SB * 64 = 2112); gradient 256x256 q20
+# with 2 tile rows = 24,169 differ at p6 and 49,606 at p9/p10/p13. bd8 is
+# IDENTICAL at every one of those tilings, and 4096x64 (one SB column fewer, so
+# a single tile) is identical at bd10 — those are the controls below.
+#
+# NOT byte cells: byte-parity against C cannot see this class at all (both
+# encoders being wrong the same way stays green), and the bd10 x tiles axis has
+# a separate, still-open C divergence in the eff-M9 partition search
+# (docs/coverage-combos-map.md). The oracle is the reference DECODER.
+#
+# bd10ReconEq <label> <content> <w> <h> <qp> <preset> <rows_log2> <cols_log2>
+# bd10 4:2:0 encode; asserts the port's FINAL 10-bit reconstruction
+# (SVTAV1_FINAL_RECON, u16 LE Y|U|V at the true dims) equals aomdec's
+# --rawvideo output byte-for-byte.
+bd10ReconEq() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6 rl=${7:-0} cl=${8:-0}
+  local dec=${AOMDEC:-$(command -v aomdec || true)}
+  if [ -z "$dec" ]; then
+    skip=$((skip+1)); skipped+=("$label (no aomdec on PATH; set AOMDEC=)")
+    return
+  fi
+  if ! SVTAV1_BD=10 SVTAV1_HBD_SRC=1 SVTAV1_TILE_ROWS_LOG2="$rl" \
+       SVTAV1_TILE_COLS_LOG2="$cl" SVTAV1_FINAL_RECON="$W/rs.recon" \
+       $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label rs-err"); return
+  fi
+  if ! "$dec" --rawvideo -o "$W/rs.dec.yuv" "$W/rs.obu" >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label DECODE-FAIL"); return
+  fi
+  # (Y + 2 chroma) samples, 2 bytes each. Even dims only, so chroma is w/2*h/2.
+  local nbytes=$(( (w * h + 2 * (w / 2) * (h / 2)) * 2 ))
+  head -c "$nbytes" "$W/rs.recon"  > "$W/rs.recon.f"
+  head -c "$nbytes" "$W/rs.dec.yuv" > "$W/rs.dec.f"
+  if cmp -s "$W/rs.recon.f" "$W/rs.dec.f"; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1))
+    failed+=("$label RECON!=DECODE ($(cmp -l "$W/rs.recon.f" "$W/rs.dec.f" | wc -l | tr -d ' ') of $nbytes bytes differ)")
+  fi
+}
+# FORCED multi-tile at requested (0,0) — the product path (AvifEncoder never
+# requests tiles). sb_cols 65 > max_tile_width_sb 64 => 2 tile columns at
+# 0.27 MP.
+bd10ReconEq "bd10-tile-intra-forcedcols-4160x64-p6" gradient 4160 64 20 6 0 0
+# The re-encode arm (preset >= 9) on the tile-ROW axis.
+bd10ReconEq "bd10-tile-intra-rows-256x256-p9"       gradient  256 256 20 9 1 0
+bd10ReconEq "bd10-tile-intra-rows-256x256-p6"       gradient  256 256 20 6 1 0
+# CONTROL: one SB column narrower => a SINGLE tile. Was always correct and must
+# stay correct; without it the three cells above could pass for the wrong reason.
+bd10ReconEq "bd10-tile-intra-control-4096x64-p6"    gradient 4096  64 20 6 0 0
+
+# ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"

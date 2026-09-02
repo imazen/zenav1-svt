@@ -189,6 +189,29 @@ BYTE_EXACT=(
   "bd10 10 uniform  256 256 40 6  2 2"
   "bd10 10 uniform  256 256 40 10 2 2"
   "bd10 10 uniform  256 256 40 13 2 2"
+  # PROMOTED 2026-09-02 (issue #18): 7 of the 8 gradient/diag cells that had
+  # been pinned-diverging since 2026-07-22 became BYTE-EXACT once bd10 intra
+  # prediction stopped crossing tile edges (`extract_neighbors_hbd` gained
+  # `tile_top`/`tile_left`; `bd10_reencode_{luma,chroma}_node` stopped using
+  # `TileMi::whole_frame`). The gate's own PIN-BROKEN check is what demanded
+  # the promotion — it fired on all seven.
+  #
+  # NOTE the earlier measurement this supersedes: threading per-tile bounds
+  # into the RE-ENCODE alone was verified byte-inert, and that is still true.
+  # The cells moved because the OTHER site — the preset <= 8 funnel's
+  # frame-absolute neighbour availability — was never in that experiment.
+  "bd10 10 gradient 128 128 40 10 1 1"
+  "bd10 10 gradient 256 256 20 10 1 1"
+  "bd10 10 gradient 256 256 40 6  2 2"
+  "bd10 10 gradient 256 256 40 10 2 2"
+  "bd10 10 gradient 256 256 40 13 2 2"
+  "bd10 10 diag     256 256 40 10 1 1"
+  "bd10 10 diag     256 256 40 13 2 2"
+  # STILL PINNED-DIVERGING — the ONE bd10 x tiles cell this fix did not move
+  # (C=2250B port=2240B), and the doc's tree_diff analysis of it stands: the
+  # eff-M9 partition search picks bsize 9 where C splits to bsize 6 at the
+  # y=128 tile-row-boundary SBs. That is a byte root, not a correctness one.
+  #   "bd10 10 gradient 256 256 40 10 1 1"
   # --- Axis 3: real x tiles (measured 2026-07-22) — a MIXED map: some real
   #     cells byte-match with tiles, some DIVERGE (control matches on all —
   #     verified — so every DIFF here is a genuine tile-intersection finding,

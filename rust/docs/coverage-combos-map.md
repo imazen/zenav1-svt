@@ -42,9 +42,11 @@ Per cell it produces four encodes and compares:
 ## The map
 
 Gate result: **40 / 40 green** — SB128×tiles 16 byte-exact / 0 diverging;
-bd10×tiles 4 byte-exact / 8 pinned-diverging; real×tiles 8 byte-exact / 4
+bd10×tiles 11 byte-exact / 1 pinned-diverging (was 4/8 before the issue-#18
+tile-scope fix, 2026-09-02); real×tiles 8 byte-exact / 4
 pinned-diverging. **Every cell's single-tile CONTROL matches** (no
-content-diverges), so all 12 DIFF cells are genuine tile-intersection findings.
+content-diverges), so all 5 remaining DIFF cells are genuine tile-intersection
+findings.
 
 ### Axis 1 — SB128 × tiles: 16 / 16 BYTE-EXACT ✅ (clean intersection)
 
@@ -61,7 +63,20 @@ funnel, **including the SB128 tile limits** (`TileGrid::resolve` shifts
 `max_tile_width_sb` by the SB128 pixel-log2 — the code the tile_gate note said
 "nothing exercises"). These 16 are now asserted in the gate.
 
-### Axis 2 — bd10 × tiles: 4 / 12 byte-exact, 8 / 12 DIVERGE (localized)
+### Axis 2 — bd10 × tiles: **11 / 12 byte-exact, 1 / 12 DIVERGES** (2026-09-02)
+
+> **UPDATED 2026-09-02 (issue #18).** This axis read *4 / 12 byte-exact, 8 / 12
+> DIVERGE* from 2026-07-22 until the bd10 tile-scope fix. Making bd10 intra
+> prediction tile-scoped moved **7 of the 8** diverging cells to byte-exact —
+> the gate's own PIN-BROKEN check demanded the promotion, and they are now in
+> `BYTE_EXACT`. The paragraphs below are the ORIGINAL 2026-07-22 reading, kept
+> because the one cell that did NOT move (`gradient 256x256 q40 p10 r1c1`,
+> C=2250B port=2240B) is still diverging for exactly the reason they give.
+>
+> Why the earlier "byte-inert" experiment did not predict this: it threaded
+> per-tile bounds into the RE-ENCODE only. The other site — the preset <= 8
+> funnel's frame-absolute neighbour availability in `extract_neighbors_hbd` —
+> was never in it, and that is the one carrying the seven cells.
 
 * **uniform → byte-exact (4/4).** Bit-depth-independent skip content: the coded
   tile is identical to bd8 apart from the SH `high_bitdepth` bit, tiles or not.
@@ -70,13 +85,31 @@ funnel, **including the SB128 tile limits** (`TileGrid::resolve` shifts
   3006B vs C 2982B. **Controls all match** (bd10 single-tile gradient/diag are
   byte-exact — the existing bd10 envelope).
 
-**Root — localized, NOT the whole-frame re-encode.** The `docs/finishing-survey`
-and the `bd10_reencode_node` PORT-NOTE blamed the whole-frame `TileMi` in the
-bd10 re-encode (it runs post-merge, treating the frame as one tile). **That is
-wrong, and now measured wrong:** threading correct per-tile `TileMi` into the
-bd10 luma+chroma re-encode was verified **byte-inert** on every diverging cell
-(preserved in git stash "cov-combos: byte-inert bd10 re-encode tile threading";
-the `bd10_reencode_node` PORT-NOTE was corrected in place).
+**Root of the BYTE divergence — localized, NOT the whole-frame re-encode.** The
+`docs/finishing-survey` and the `bd10_reencode_node` PORT-NOTE blamed the
+whole-frame `TileMi` in the bd10 re-encode (it runs post-merge, treating the
+frame as one tile). **That is wrong for the BYTE axis, and measured wrong:**
+threading correct per-tile `TileMi` into the bd10 luma+chroma re-encode was
+verified **byte-inert** on every diverging cell (preserved in git stash
+"cov-combos: byte-inert bd10 re-encode tile threading").
+
+> **⚠ SCOPE CORRECTION 2026-09-02 (issue #18) — that byte-inert measurement is
+> still true and it hid a CORRECTNESS bug for six weeks.** "Byte-inert on the
+> C-parity axis" and "correct" are different claims, and this axis is exactly
+> where they come apart: a byte gate cannot see an encoder/decoder prediction
+> MISMATCH, because C and the port being wrong the SAME way keeps it green.
+> Measured against the reference DECODER instead of against C, the whole-frame
+> `TileMi` WAS a root — of wrong pixels, not of wrong bytes. `gradient 256x256
+> q20` with 2 tile rows differed from `aomdec` on **49,606 of 98,304 samples**
+> at presets 9/10/13, and the preset <= 8 twin (`predict_unit_hbd` →
+> `extract_neighbors_hbd`, availability frame-absolute) on **24,169** at preset
+> 6. Both are fixed; both are pinned by `svtav1/tests/issue18_repro.rs` and
+> four `bd10ReconEq` cells in `tools/regression_spotcheck.sh`. The eff-M9
+> partition near-tie below remains the open BYTE root — unchanged by that fix.
+>
+> The lesson for this whole document: **every axis here is measured on the byte
+> oracle, so none of its "root" verdicts are statements about correctness.**
+> Where an axis can change reconstruction, it needs a decoder leg too.
 
 The divergence is UPSTREAM, in the **eff-M9 partition search**. `tree_diff` on
 `gradient 256x256 q40 p10 r1c1`:
@@ -148,8 +181,11 @@ sibling-C RD dump at each flipped node (the KB-2/KB-3 method) is the close.
   quartering only binds on frames far larger than any still image.
 * **real × tiles at presets < 6** — the real cells are preset 6/10 (SB64). Lower
   presets add the full-RD partition search on top of tiles; unmeasured here.
-* **bd10 × tiles fix** — localized to the partition, not landed (needs the bd10
-  u16 partition pass). The byte-inert re-encode threading is in stash for when
-  that lands.
+* **bd10 × tiles fix** — the BYTE half is localized to the partition, not landed
+  (needs the bd10 u16 partition pass). The CORRECTNESS half landed 2026-09-02
+  (issue #18): the re-encode threading that was held in stash as "byte-inert"
+  is now in tree, because it was never byte-inert on the DECODER oracle. Recheck
+  the 12 cells' byte verdicts after any further bd10 tile work — the counts
+  above predate that fix.
 * **real × tiles fix** — localized to eff-M9 tile-boundary partition near-ties,
   not landed (per-node RD dump is the close).
