@@ -4998,15 +4998,58 @@ That is the next thing to measure — C's MDS0/MDS1 ordering and NIC at a
 partial-SB leaf — and it is a different question from every control
 `inter_md_arm` currently suppresses.
 
+#### The NSQ gap is now VISIBLE — `tools/inter_me_join_gate.sh`
+
+§1z¹⁵ said of `md_nsq_motion_search`: *"no assertion in the repo can see the
+difference."* There is one now, and it did not need a new interposer — both
+halves of the join already existed and had never been joined.
+
+* C's `SVT_SUBPEL_OUT` **`start=` at `stage=0`** is the MV
+  `read_refine_me_mvs` hands the sub-pel tree, i.e. the output of the whole
+  full-pel chain **including `md_nsq_motion_search`**.
+* The port's **`PMEDBG fpme=`** is `inter_search_arm`'s `fp_me_mv` at the
+  same point.
+
+The key is `(org_x, org_y, bwidth, bheight, list_idx, ref_idx)`. **The SHAPE
+is in the key on purpose:** C tests a 16x32 at `(64,0)` where the port tests
+an 8x16, and joining those would invent an agreement between two different
+searches.
+
+**First run — 6 cells, 34 joined rows, 16 of them NSQ, TWO disagreements:**
+
+```
+NSQ org=(0,64) 64x32 li=1 ri=0   C=(0,0)   port=(-8,-32)
+NSQ org=(64,0) 32x64 li=1 ri=0   C=(0,0)   port=(-8,-32)
+```
+
+Both are NSQ shapes straddling the frame edge of a 72x72 picture, both on
+list 1. Everything else joins exactly — including
+`org=(64,64) 8x8 li=0`, where both sides land on `(-184,-208)`, which is
+not a value two implementations agree on by accident.
+
+**And it names a SECOND unported thing §1z¹⁵ did not record.** Besides never
+running `md_nsq_motion_search`, C also **seeds** an NSQ block differently:
+when the square parent was tested (`pc_tree->tested_blk[PART_N][0]`) and
+`bwidth != bheight`, `read_refine_me_mvs` takes
+`(sq_sb_me_mv[list][ref] + 4) & ~0x07` (`product_coding_loop.c:2857-2862`)
+instead of `me_mv_array[...] * 8`. The port always takes the `else` arm. So
+an NSQ block has **two** divergences, not one, and they share one
+observable — which is why the gate's pin says what it is waiting for.
+
+The pin is **exact, by key**, in the shape `inter_byte_gate.sh` pins its
+open cells: there is no count to nudge. Four failure arms, all proved by
+mutation before it landed — an unpinned disagreement, a pinned row that
+starts agreeing, a run that joins zero NSQ rows (anti-vacuity), and a
+linker without `-Wl,--wrap` (exit 2, a harness failure). It runs in CI.
+
 #### What this entry does NOT close
 
-* **The NSQ ME inheritance is still unmeasured.** `md_nsq_motion_search` is
-  still ported and not called, and `read_refine_me_mvs`' `blk_avail_sqi &&
-  b_w_ne_h` arm — which also changes the ME MV SEED to
-  `(sq_sb_me_mv + 4) & ~7` before any search runs — is still unported. Those
-  are TWO divergences on an NSQ block, not one, and the census says they
-  have reach: 94 of the 259 coded blocks on F1DIFF cells are NSQ shapes.
-  Still no assertion in the repo can see either.
+* **The NSQ ME inheritance is still UNWIRED** — but it is no longer
+  unobservable. `md_nsq_motion_search` is still ported and not called and the
+  `sq_sb_me_mv` seed is still unported; both need a `pc_tree->tested_blk`
+  mirror the port does not have. The census says they have reach: 94 of the
+  259 coded blocks on F1DIFF cells are NSQ shapes. The gate above now fails
+  the moment either lands without the pin shrinking.
 * **No hot-path work was added.** This chunk removed an out-of-bounds read
   and added a debug print behind two env gates. The per-block inter search
   §1z¹⁵ added is still unmeasured for cost; see `docs/perf-status.md`.

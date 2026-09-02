@@ -56,6 +56,22 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`tools/inter_me_join_gate.sh` — the assertion that can SEE the NSQ
+  motion-search gap.** `rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁵ recorded that
+  `md_nsq_motion_search` is ported and never called and that "no assertion in
+  the repo can see the difference"; this joins C's `SVT_SUBPEL_OUT` stage-0
+  `start=` (the full-pel chain's output, NSQ search included) against the
+  port's `PMEDBG fpme=`, per (origin, shape, list, ref). First run: 6 cells,
+  34 joined rows, 16 NSQ, **2 disagreements** — both NSQ shapes on the frame
+  edge of a 72x72 picture, C `(0,0)` against the port's `(-8,-32)`. It also
+  named a SECOND unported thing: C seeds an NSQ block from
+  `(sq_sb_me_mv + 4) & ~0x07` when the square parent was tested
+  (`product_coding_loop.c:2857-2862`), where the port always takes
+  `raw_me_mv * 8`. The two rows are pinned BY KEY, not by a count; the gate
+  fails on an unpinned disagreement, on a pinned row that starts agreeing, on
+  a run joining zero NSQ rows, and on a linker without `-Wl,--wrap`. All four
+  arms proved by mutation. Runs in CI.
+
 - **The MD motion search read PAST the source plane — 18 of the 96 inter grid
   cells PANICKED, and the sweep reported every one as an ordinary byte
   divergence** (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁶). `InterMdFrame.src`
