@@ -504,6 +504,38 @@ Crates are not published to crates.io yet — depend by git.
   level 2 wrongly enabled had been refining list 0 onto the MV C reaches
   through list 1). Full record: `rust/docs/INTER-ENCODE-PLAN.md` §1z¹³.
 
+- **bd10 DIRECTIONAL intra prediction still crossed tile boundaries after the
+  first fix — issue #18 round 2, the half that real photographs actually hit.**
+  `intra_edge::dr_predict_hbd` took a `DrGeom` carrying the correct tile and
+  derived every availability predicate from the FRAME anyway (`have_top` /
+  `have_left` from `g.mi_row > 0`, `right_available` / `bottom_available`
+  against `mi_cols` / `mi_rows`), while its u8 twin `dr_predict` scoped all
+  four to `g.tile`. Round 1's note that *"the DIRECTIONAL arm was already
+  correct — it passed `tile: geom.tile`"* was the error: **passing a tile is
+  not using one.** The failing band is presets **0-5**, exactly where the intra
+  candidate set still offers directional modes — and round 1's tests pinned
+  presets 6 and 9, the two that pass, so four green tests sat over a live bug.
+  MEASURED at 256x256 / 2 tile rows / bd10: p0,p2,p3,p4,p5 differ from `aomdec`
+  on `gradient` AND `diag` at every qp in {6,12,20,40} (12,480-24,901 of
+  98,304); p6..p9 clean; `uniform` clean everywhere — so it is the PRESET axis,
+  not content, qp, tile axis or orientation. On the reported cell itself, the
+  real 3000x4000 photograph at `AvifEncoder` quality 90 / speed 4 (= qp 6,
+  preset 4): **6,468,452 of 18,000,000 samples differ, first at Y r2048** = the
+  32-SB tile-row boundary, **0 after**. Forced-by-AREA portrait control
+  `gradient 2920x3270` (9.55 MP, 46x52 = 2392 SB, partial SB both axes):
+  4,185,160 of 14,322,600, first Y r1664 = 26 SB x 64, **0 after**. The whole
+  60-cell {gradient,diag,uniform} x preset {0,2,4,6,9} x qp {6,12,20,40} sweep
+  is clean after at 2 tile rows and at 2x2 tiles; **bd8 was clean before and
+  after** (its directional path was always tile-scoped). Byte-INERT elsewhere:
+  **30 of 32** A/B cells emit identical OBUs — every single-tile cell at both
+  depths across presets 0/2/3/4/5/6/9/10/13 including partial-SB and `screen`,
+  and every bd8 multi-tile cell. Gates extended: `issue18_repro.rs` grew a
+  preset-BAND sweep, a directional forced-tile-column cell, a single-tile band
+  control, and a forced-by-area PORTRAIT cell at the reported shape
+  (`2920x3270`, ~6.4 s, partial SB on both axes); `regression_spotcheck.sh`
+  grew 5 `bd10ReconEq` cells. The stale "a single tile spanning the frame"
+  premise in `intra_edge`'s module doc is retracted in place.
+
 - **bd10 intra prediction crossed TILE boundaries, so every forced-multi-tile
   10-bit encode produced wrong pixels (issue #18).** AV1 forces a multi-tile
   grid once a frame exceeds `MAX_TILE_AREA` (4096*2304 = 9,437,184 px of

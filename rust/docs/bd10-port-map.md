@@ -13,17 +13,40 @@ not reconstruct:
 |---|---|---|---|
 | `predict_unit_hbd` non-directional arm → `partition::extract_neighbors_hbd` | <= 8 (full-RD funnel) | availability `abs_y > 0` / `abs_x > 0` | `tile_top`/`tile_left` from `geom.tile`, mirroring the u8 `extract_neighbors_tiled` |
 | `bd10_reencode_luma` / `bd10_reencode_chroma` node walks | >= 9 (level re-encode post-pass) | `TileMi::whole_frame` | `TileGrid::tile_mi_for_sb` per superblock |
+| `intra_edge::dr_predict_hbd` — the DIRECTIONAL arm (**round 2**, 2026-09-02) | **0-5** (where the intra candidate set still offers directional modes) | `have_top`/`have_left` from the FRAME (`g.mi_row > 0`), `right_available`/`bottom_available` vs `mi_cols`/`mi_rows` — **all four `g.tile` fields ignored** | character-for-character its u8 twin `dr_predict`: `g.tile.mi_{row,col}_{start,end}` |
 
-`predict_unit_hbd`'s DIRECTIONAL arm was already correct — it passed
-`tile: geom.tile` into `dr_predict_hbd` — so the gap was exactly DC / V / H /
-smooth\* / paeth / filter-intra.
+⚠ **ROUND 1 GOT THE DIRECTIONAL ARM WRONG, and the wording is preserved here
+as the exact shape of the mistake.** It said: *"`predict_unit_hbd`'s
+DIRECTIONAL arm was already correct — it passed `tile: geom.tile` into
+`dr_predict_hbd` — so the gap was exactly DC / V / H / smooth\* / paeth /
+filter-intra."* **Passing a tile is not using one.** `dr_predict_hbd` received
+the correct `DrGeom.tile` and derived every availability predicate from the
+frame regardless, so the directional arm was the *larger* half of the defect —
+it is the one real photographic content reaches. Round 1's tests pinned presets
+6 and 9, which are precisely the two where no directional leaf wins at the test
+cell, so all four went green over a live bug. **Check that a threaded field is
+read, not that it is threaded.**
 
-MEASURED (encoder final 10-bit recon vs `aomdec`, before → after):
-`gradient 4160x64 q20 p6` 65,054/399,360 → 0; `gradient 256x256 q20` 2 tile
-rows 24,169 (p6) and 49,606 (p9/p10/p13) → 0; `gradient 2944x3264` (9.61 MP,
-2346 SB) 3,448,059/14,413,824 → 0, with `2944x3200` (9.42 MP, 2300 SB, single
-tile) clean throughout. Byte-INERT elsewhere: 26 of 28 A/B cells emit identical
-OBUs — every single-tile cell at both depths and every bd8 multi-tile cell.
+MEASURED (encoder final 10-bit recon vs `aomdec`, before → after).
+
+*Round 1 (`extract_neighbors_hbd` + the re-encode):* `gradient 4160x64 q20 p6`
+65,054/399,360 → 0; `gradient 256x256 q20` 2 tile rows 24,169 (p6) and 49,606
+(p9/p10/p13) → 0; `gradient 2944x3264` (9.61 MP, 2346 SB) 3,448,059/14,413,824
+→ 0, with `2944x3200` (9.42 MP, 2300 SB, single tile) clean throughout.
+Byte-INERT elsewhere: 26 of 28 A/B cells identical.
+
+*Round 2 (`dr_predict_hbd`):* the reported cell itself — the real 3000x4000
+photograph at **qp 6 / preset 4** (`AvifEncoder` quality 90 / speed 4) —
+**6,468,452 of 18,000,000 differing, first at Y r2048 = the 32-SB tile-row
+boundary → 0**; `gradient 2920x3270` (9.55 MP, 46x52 = 2392 SB, portrait,
+partial SB on both axes, forced by AREA) 4,185,160/14,322,600, first Y r1664 =
+26 SB x 64 → 0. **The first-mismatch row is the tile-row boundary in both, a
+predicted-and-confirmed boundary.** The whole 60-cell {gradient, diag, uniform}
+x preset {0,2,4,6,9} x qp {6,12,20,40} sweep at 2 tile rows and at 2x2 tiles is
+clean after; bd8 was clean throughout, before and after. Byte-INERT elsewhere:
+**30 of 32** A/B cells identical — every single-tile cell at both depths across
+presets 0/2/3/4/5/6/9/10/13 (incl. partial-SB 200x136, 96x80, 65x257, 383x512
+and `screen`), and every bd8 multi-tile cell.
 
 The re-encode walks the merged frame in RASTER SB order, which is not tile
 order once there are tile COLUMNS. That is fine for the recon reads (an in-tile

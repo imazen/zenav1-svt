@@ -200,6 +200,23 @@ cite the source, don't re-argue them.
      leg (encoder final recon == `aomdec`), which is what
      `svtav1/tests/issue18_repro.rs` and `bd10ReconEq` in
      `tools/regression_spotcheck.sh` are.
+   - **A tile-scope gate MUST sweep the PRESET BAND, not a preset.** Issue #18
+     was fixed twice: round 1 repaired `extract_neighbors_hbd` (DC / V / H /
+     smooth\* / paeth / filter-intra) and its tests pinned presets 6 and 9;
+     round 2 found `dr_predict_hbd` still frame-scoped, and the failing band is
+     presets **0-5** — exactly the ones round 1 did not test. MEASURED at
+     256x256 / 2 tile rows / bd10: p0,p2,p3,p4,p5 differ from `aomdec` on
+     `gradient` AND `diag` at every qp in {6,12,20,40}; p6..p9 read clean;
+     `uniform` reads clean everywhere. The reason is mechanical — a predictor is
+     only reached when mode decision picks it, and the intra candidate set
+     narrows with preset — so **"this cell passes" bounds one candidate set,
+     not the encoder.** `AvifEncoder` speed 4 -> preset 4 and quality 90 -> qp
+     6 sit in the failing band, which is why real product cells failed while
+     synthetic gates were green.
+   - **Every `DrGeom`/`UnitGeom` carries a `tile`; grep that it is USED, not
+     just passed.** `dr_predict_hbd` accepted the correct tile and derived all
+     four predicates from the frame anyway. A field threaded to a callee that
+     ignores it looks exactly like coverage.
 
 Master capability map: issue #7 (imazen/zenav1-svt). C's actual shipping envelope is narrow
 (8/10-bit, 420, CQP-ish), so the real distance to C is *feature*-level (rate control, inter,

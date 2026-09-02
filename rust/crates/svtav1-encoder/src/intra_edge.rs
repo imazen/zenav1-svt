@@ -15,8 +15,20 @@
 //! - one whole-block transform per coded block → `row_off == col_off == 0`
 //!   and `tx_size_wide_unit == mi_size_wide[bsize]` (ditto height);
 //! - directional modes are luma-only (chroma is UV_DC) → `ss_x == ss_y == 0`;
-//! - a single tile spanning the frame → `tile.mi_row_end == mi_rows`,
-//!   `tile.mi_col_end == mi_cols`, availability from `mi_row/mi_col > 0`;
+//! - ~~a single tile spanning the frame → `tile.mi_row_end == mi_rows`,
+//!   `tile.mi_col_end == mi_cols`, availability from `mi_row/mi_col > 0`~~
+//!   **RETRACTED (issue #18, 2026-09-02). TILES ARE NOT OPT-IN**: AV1 FORCES
+//!   a multi-tile grid past `MAX_TILE_WIDTH` (w > 4096 px) or `MAX_TILE_AREA`
+//!   (SB-aligned area > 9,437,184 px) and clamps a `(0,0)` request UP, so no
+//!   caller can promise this. `dr_predict` scopes all four availability
+//!   predicates to `g.tile`; `dr_predict_hbd` did NOT until 2026-09-02, and
+//!   `build_directional_edges` (the `encode_with_neighbors` path) still takes
+//!   no tile at all — it is frame-scoped and would be wrong the same way if a
+//!   tile-crossing block ever reached it. MEASURED clean today across bd8
+//!   {gradient, diag, uniform} x presets {0,2,4,6,9} x qp {6,12,20,40} at
+//!   2 tile rows, and on a real 3000x4000 photograph at qp 6 / preset 4, so
+//!   it is not reached in any configuration tested — an unproven bound, not a
+//!   proof. Do not add a caller without threading a tile;
 //! - SH signals `enable_intra_edge_filter = 0` and no filter_intra →
 //!   `disable_edge_filter` in C: no edge filtering, no upsampling — only
 //!   array construction;
@@ -1190,8 +1202,23 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
     let x_off = (g.col_off * 4) as i64;
     let y_off = (g.row_off * 4) as i64;
 
-    let have_top = g.row_off > 0 || g.mi_row > 0;
-    let have_left = g.col_off > 0 || g.mi_col > 0;
+    // ISSUE #18 round 2 (2026-09-02): these four were FRAME-scoped
+    // (`g.mi_row > 0`, `< mi_cols`/`mi_rows`) while the u8 twin `dr_predict`
+    // above scoped all four to `g.tile` — so this function took a `DrGeom`
+    // carrying the correct tile and threw every tile field away. A directional
+    // leaf on a tile's own top row therefore predicted from real pixels across
+    // the tile edge, which a conforming decoder (reconstructing each tile
+    // independently) does not have. That is the whole residual the first fix
+    // left behind: it repaired `extract_neighbors_hbd` (DC / V / H / smooth* /
+    // paeth / filter-intra) while directional prediction — which is what real
+    // photographic content picks, at presets 0-5 where the intra candidate set
+    // still offers it — kept crossing.
+    //
+    // Now character-for-character the u8 twin's derivation. Identical to the
+    // previous `> 0` / `< mi_cols` for a whole-frame tile, so every single-tile
+    // encode is byte-unchanged by construction.
+    let have_top = g.row_off > 0 || g.mi_row > g.tile.mi_row_start;
+    let have_left = g.col_off > 0 || g.mi_col > g.tile.mi_col_start;
 
     let xr = (((mi_cols * 4) as i64 - (g.mi_col * 4) as i64 - g.bw_px as i64) >> g.ss)
         + (wpx - x_off - txwpx);
@@ -1200,8 +1227,8 @@ pub fn dr_predict_hbd<S: Fn(usize, usize) -> u16>(
 
     let txw_mi = g.txw / 4;
     let txh_mi = g.txh / 4;
-    let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < mi_cols;
-    let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < mi_rows;
+    let right_available = g.mi_col + ((g.col_off + txw_mi) << g.ss) < g.tile.mi_col_end;
+    let bottom_available = yd > 0 && g.mi_row + ((g.row_off + txh_mi) << g.ss) < g.tile.mi_row_end;
 
     let shape_ok = is_av1_block_shape(g.bw_px, g.bh_px);
     let have_top_right = shape_ok

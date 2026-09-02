@@ -1314,6 +1314,36 @@ bd10ReconEq "bd10-tile-intra-rows-256x256-p6"       gradient  256 256 20 6 1 0
 # stay correct; without it the three cells above could pass for the wrong reason.
 bd10ReconEq "bd10-tile-intra-control-4096x64-p6"    gradient 4096  64 20 6 0 0
 
+# 2026-09-02 (issue #18, ROUND 2) — the same class in the DIRECTIONAL predictor,
+# which the cells above could not reach. `intra_edge::dr_predict_hbd` derived
+# `have_top`/`have_left` from the FRAME and `right_available`/`bottom_available`
+# against `mi_cols`/`mi_rows`, ignoring all four `g.tile` fields its u8 twin
+# `dr_predict` honours — so a DrGeom carrying the correct tile was handed in and
+# discarded.
+#
+# WHY THE FIRST ROUND MISSED IT, measured at 256x256 with 2 tile rows, bd10:
+# presets 0/2/3/4/5 differ from aomdec on gradient AND diag at every qp in
+# {6,12,20,40} (12,480-24,901 of 98,304), while presets 6/7/8/9 read clean and
+# `uniform` reads clean everywhere. The first round's cells were preset 6 and 9
+# ONLY — the two that pass. `dr_predict_hbd` is reached only when a DIRECTIONAL
+# leaf wins, and that is the preset band where the intra candidate set still
+# offers one. AvifEncoder speed 4 -> preset 4 and quality 90 -> qp 6, dead
+# centre of the failing band; the reported cell was 3000x4000 there
+# (6,468,452 of 18,000,000 samples wrong, first Y r2048 = the 32-SB tile-row
+# boundary; clean after).
+#
+# `diag` is the content the harness documents for this predictor
+# (identity_run.rs: "D45/D135/... that gradient never selects. Used to verify
+# the bd10 directional re-encode (dr_predict_hbd)").
+bd10ReconEq "bd10-tile-dir-rows-256x256-p2-diag"  diag     256 256  6 2 1 0
+bd10ReconEq "bd10-tile-dir-rows-256x256-p4"       gradient 256 256 12 4 1 0
+bd10ReconEq "bd10-tile-dir-forcedcols-4160x64-p2" diag    4160  64 12 2 0 0
+# CONTROL for the band: identical cells at a SINGLE tile. Keeps the three above
+# from passing for "low preset is just broken" reasons, and stops a fix that
+# merely disabled directional prediction at bd10 from looking green.
+bd10ReconEq "bd10-tile-dir-control-256x256-p2"    diag     256 256  6 2 0 0
+bd10ReconEq "bd10-tile-dir-control-256x256-p4"    gradient 256 256 12 4 0 0
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

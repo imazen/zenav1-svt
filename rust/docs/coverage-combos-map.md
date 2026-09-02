@@ -77,6 +77,17 @@ funnel, **including the SB128 tile limits** (`TileGrid::resolve` shifts
 > per-tile bounds into the RE-ENCODE only. The other site — the preset <= 8
 > funnel's frame-absolute neighbour availability in `extract_neighbors_hbd` —
 > was never in it, and that is the one carrying the seven cells.
+>
+> **ROUND 2 (2026-09-02), and it is a warning about THIS axis specifically.**
+> A third site was still frame-scoped after the promotion above:
+> `intra_edge::dr_predict_hbd`, the DIRECTIONAL predictor, which ignored all
+> four `g.tile` fields it was handed. Its failing band is presets **0-5**;
+> every cell on this axis is preset 6, 10 or 13, so **all 12 cells here read
+> exactly the same before and after that fix** (re-run: 11/12, unchanged, no
+> PROMOTE fired). A green axis meant nothing about it. If you extend this axis,
+> extend it DOWN into presets 0-5 — that is where the intra candidate set still
+> offers directional modes, and it is where the product actually runs
+> (`AvifEncoder` speed 4 -> preset 4).
 
 * **uniform → byte-exact (4/4).** Bit-depth-independent skip content: the coded
   tile is identical to bd8 apart from the SH `high_bitdepth` bit, tiles or not.
