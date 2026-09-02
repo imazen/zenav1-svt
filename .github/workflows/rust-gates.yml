@@ -248,11 +248,13 @@ jobs:
         #   * at least SCAN_MIN_OK encode, and the grid actually ran.
         # The two floors are LIMITS. Moving either needs a measured reason in
         # the commit message, like the byte gate's.
-        # MEASURED 15 s for the 64 cells on aarch64 (Apple M4 Pro) — the sizes
-        # go to 2048 but presets 6/8/10/13 are fast and half the cells refuse
-        # frame 1. No claim is made about this runner; the step's own duration
-        # is the measurement, and `benchmarks/gate_wallclock_ci_2026-08-27.md`
-        # is where CI step durations get recorded.
+        # MEASURED 15 s for the 64 cells on aarch64 (Apple M4 Pro) and 29 s for
+        # ONE content class on this runner (`ubuntu-latest` x86-64, run
+        # 33684184264, 21:32:54Z -> 21:33:23Z) — the sizes go to 2048 but
+        # presets 6/8/10/13 are fast and a fifth of the cells refuse frame 1.
+        # With the second content class below, budget ~60 s.
+        # `benchmarks/gate_wallclock_ci_2026-08-27.md` is where CI step
+        # durations get recorded.
         #
         # SCAN_RS_BIN points at a PLAIN release build, not `tools/identity_run`.
         # That wrapper builds `--features symtrace`, whose per-symbol
