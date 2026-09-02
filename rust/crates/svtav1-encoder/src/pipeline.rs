@@ -1610,16 +1610,16 @@ impl EncodePipeline {
         if !is_key && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "inter frames are not implemented for the public API — not because the machinery \
-                 is missing, but because its ENVELOPE is 36 of 96 cells. CDF continuation, the \
+                 is missing, but because its ENVELOPE is 40 of 96 cells. CDF continuation, the \
                  inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame \
                  stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, \
                  inter_decode_gate.sh); on the campaign's frontier grid \
                  ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, \
-                 frames=2 low-delay P) 36 cells are byte-identical to C on BOTH frames, 59 \
+                 frames=2 low-delay P) 40 cells are byte-identical to C on BOTH frames, 55 \
                  differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be \
                  right on the closed cells and silently wrong elsewhere, which is exactly the \
                  outcome docs/WORKING-ON-THIS.md section 6 refuses. See \
-                 docs/INTER-ENCODE-PLAN.md section 1z^9. This encoder is still-image only: \
+                 docs/INTER-ENCODE-PLAN.md section 1z^15. This encoder is still-image only: \
                  encode a single key frame",
             )));
         }
@@ -2889,13 +2889,67 @@ impl EncodePipeline {
                 }
             });
 
+        // C `ctx->ref_frame_type_arr` (`set_all_ref_frame_type`,
+        // pd_process.c:1044) restricted to the SINGLE-reference entries, and
+        // the DPB picture each one names.
+        //
+        // `inter_md_arm` drops the compound entry on purpose (that module's
+        // header says why); building the array here rather than there keeps
+        // the picture-decision state in the pipeline, which is the only place
+        // that has `rps.ref_dpb_index`.
+        let inter_ref_types: alloc::vec::Vec<i8> = match pic_decision.as_ref() {
+            Some(pic) if !is_key => {
+                let (arr, tot) = crate::port_picstruct::set_all_ref_frame_type(pic);
+                arr[..usize::from(tot)]
+                    .iter()
+                    .copied()
+                    .filter(|&rt| {
+                        crate::inter_mvp::av1_set_ref_frame(rt)[1] == crate::inter_mvp::NONE_FRAME
+                    })
+                    .collect()
+            }
+            _ => alloc::vec::Vec::new(),
+        };
+        // The padded DPB picture per `MvReferenceFrame`. C's
+        // `svt_aom_get_ref_pic_buffer(pcs, rf)` resolves LAST through
+        // `ref_dpb_index[0]` and BWDREF through `ref_dpb_index[4]` — two
+        // DIFFERENT slots that hold the same picture on a flat low-delay-P
+        // GOP. The port's inter path predicts from `ref_padded_luma`, which
+        // is slot 0's, so any OTHER reference must be PROVED to be the same
+        // picture before it is offered; a reference whose slot holds a
+        // different frame is simply not put in the table, and
+        // `inter_ref_types` is filtered to match. Without this the day a
+        // real GOP fills slot 3 with frame N-2, MD would silently predict
+        // BWDREF from frame N-1 and no test would fail.
+        let mut inter_padded_by_ref: [Option<&crate::picture::PaddedRef>; 8] = [None; 8];
+        if let (Some(pic), Some(p0)) = (pic_decision.as_ref(), ref_padded_luma.as_deref())
+            && !is_key
+        {
+            let slot0 = pic.rps.ref_dpb_index[crate::port_picstruct::LAST] as usize;
+            let order0 = self.dpb.get(slot0).map(|r| r.display_order);
+            for rt in 1i8..=7 {
+                let idx = usize::from(rt as u8 - 1);
+                let slot = pic.rps.ref_dpb_index[idx] as usize;
+                let same = slot == slot0
+                    || (order0.is_some() && self.dpb.get(slot).map(|r| r.display_order) == order0);
+                if same {
+                    inter_padded_by_ref[rt as usize] = Some(p0);
+                }
+            }
+        }
+        let inter_ref_types: alloc::vec::Vec<i8> = inter_ref_types
+            .into_iter()
+            .filter(|&rt| inter_padded_by_ref[rt.max(0) as usize].is_some())
+            .collect();
+
         let inter_md_frame = match (
             frame_me.as_ref(),
             ref_padded_luma.as_deref(),
             inter_syntax_state.as_ref(),
             inter_mvp_env.as_ref(),
+            md_config_signals.as_ref(),
         ) {
-            (Some(me), Some(padded), Some(st), Some(env)) => {
+            (Some(me), Some(padded), Some(st), Some(env), Some(sigs)) => {
                 // §1s item 8, the inter half: the same `md_frame_context`
                 // the intra rate tables are built from.
                 let default_fc = crate::entropy::context::FrameContext::new_default();
@@ -2912,8 +2966,99 @@ impl EncodePipeline {
                         st.force_integer_mv,
                     ),
                 );
+                // C `ctx->full_lambda_md[EB_8_BIT_MD]` / `fast_lambda_md`
+                // — frame-constant on this port (no per-SB delta-q is
+                // signalled, so `update_lambda`'s `qdiff_vs_base` is 0).
+                // The SAME frame weight `c_quant`'s inter lambda uses
+                // (`picture_qp` + the extended-CRF bump), NOT the picture's
+                // own `lambda_weight` signal — passing that as the bump
+                // double-counts the 150 and lands on exactly 2x C's lambda
+                // (measured: 482 756 against C's 241 378 on
+                // `gradient 128x128 q40 p8` frame 1, `SVT_SUBPEL_OUT`'s
+                // `flam=` field).
+                let lw = crate::pd0::frame_lambda_weight(
+                    picture_qp as u32,
+                    self.hdr.tune == crate::tune::TUNE_IQ,
+                    lw_bump,
+                );
+                let inter_full_lambda = crate::pd0::inter_full_lambda_8bit(
+                    base_qindex,
+                    md_lambda_base_update_type
+                        .expect("an inter frame always has a picture decision"),
+                    md_lambda_factor_update_type,
+                    md_alt_lambda_factors,
+                    0,
+                    lw,
+                );
+                let inter_fast_lambda = {
+                    let lctx = crate::port_rc_process::LambdaContext {
+                        frame_type: 1,
+                        temporal_layer_index: temporal_layer,
+                        hierarchical_levels: self.gop.hierarchical_levels,
+                        update_type: md_lambda_base_update_type
+                            .expect("an inter frame always has a picture decision"),
+                        alt_lambda_factors: md_alt_lambda_factors,
+                        rtc: false,
+                        stats_based_sb_lambda_modulation: false,
+                        base_q_idx: i32::from(base_qindex),
+                        delta_q_present: false,
+                        r0_delta_qp_md: false,
+                        lambda_scale_factors: [128; 7],
+                    };
+                    let raw = crate::port_rc_process::compute_fast_lambda(
+                        &lctx,
+                        base_qindex,
+                        base_qindex,
+                        8,
+                    );
+                    if lw == 0 {
+                        raw
+                    } else {
+                        ((u64::from(raw) * u64::from(lw)) >> 7) as u32
+                    }
+                };
+                let search = crate::inter_search_arm::frame_cfg(
+                    &crate::inter_search_arm::SearchFrameInputs {
+                        md_pme_level: sigs.md_pme_level,
+                        me_subpel_level: sigs.me_subpel_level,
+                        pme_subpel_level: sigs.pme_subpel_level,
+                        md_nsq_mv_search_level: sigs.md_nsq_mv_search_level,
+                        dist_based_ref_pruning: sigs.dist_based_ref_pruning,
+                        cli_qp: u32::from(self.rc_config.qp),
+                        // `set_qp_based_th_scaling_ctrls_default`
+                        // (enc_handle.c:3812) — 1 at every preset above
+                        // `ENC_MR`, which is every preset this port reaches
+                        // on the video arm.
+                        pme_qp_based_th_scaling: self.speed_config.preset > 0,
+                        full_lambda_8bit: inter_full_lambda,
+                        fast_lambda_8bit: inter_fast_lambda,
+                        base_q_idx: base_qindex,
+                        allow_high_precision_mv: st.allow_high_precision_mv,
+                        approx_inter_rate: sigs.approx_inter_rate,
+                        pic_width: w as u32,
+                        pic_height: h as u32,
+                    },
+                )
+                .ok_or_else(|| {
+                    whereat::at!(EncodeError::UnsupportedConfig(
+                        "a picture-level MD search level is outside the range its C control \
+                         table accepts (crate::inter_search_arm::frame_cfg)",
+                    ))
+                })?;
                 Some(crate::inter_md_arm::InterMdFrame {
                     padded,
+                    padded_by_ref: inter_padded_by_ref,
+                    src: &encode_input,
+                    src_stride: w,
+                    ref_frame_type_arr: &inter_ref_types,
+                    search,
+                    search_tables: crate::intrabc::build_nmv_cost_table(
+                        &fc.nmvc,
+                        crate::inter_mv_code::mv_precision(
+                            st.allow_high_precision_mv,
+                            st.force_integer_mv,
+                        ),
+                    ),
                     me,
                     fac,
                     ref_fac,

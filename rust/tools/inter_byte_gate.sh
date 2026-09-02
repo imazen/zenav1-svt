@@ -52,9 +52,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 36 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 40 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z''''. Listed in full:
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z15. Listed in full:
     # a gate that samples its own frontier reports a smaller regression than
     # it should. `tools/inter_byte_matrix.sh` is the sweep this list is the
     # assertion of.
@@ -94,6 +94,18 @@ PASS_CELLS=(
     "screen 64 64 55 8 2 3"
     "screen 128 128 55 6 2 3"
     "screen 128 128 55 8 2 3"
+    # The four cells §1z15 promoted: C's reference set is
+    # [LAST, BWDREF, LAST_BWD] with `reference_select = 1`, and its ME
+    # candidate on these is LIST 1's, so C codes `rf=5` where the port coded
+    # `rf=1`. MEASURED before the chunk (benchmarks/
+    # inter_byte_matrix_2026-09-02d.tsv): all four F1DIFF at the SAME frame-1
+    # byte count as C on three of them (23/21/21) — the difference was the
+    # reference-frame syntax alone, which is why a size-only reading missed
+    # it for four chunks.
+    "diag 128 128 40 8 2 3"     # was F1DIFF 23 B vs C's 23
+    "diag 16 16 20 8 2 3"       # was F1DIFF 21 B vs C's 21
+    "diag 16 16 55 6 2 3"       # was F1DIFF 21 B vs C's 21
+    "gradient 128 128 40 8 2 3" # was F1DIFF 23 B vs C's 24
 )
 # Read below as `${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}` — see the same note in
 # `inter_decode_gate.sh`: on bash < 4.4 (`/bin/bash` on macOS is 3.2.57)

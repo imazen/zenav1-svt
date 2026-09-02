@@ -30,41 +30,51 @@
 //! injector as OFF, and each one is a separate unported search rather than a
 //! shortcut in the composition:
 //!
-//! * `inter_comp_ctrls` / bipred — this module's `ref_frame_type_arr` carries
-//!   ONE entry, so no compound candidate can be built. The PREDICTION is not
-//!   the obstacle: `svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1`
-//!   takes an `mvs` SLICE and runs the `jnt_convolve` compound path whenever
-//!   it has two (`port_pd_pred.rs:240`); it is
-//!   [`crate::inter_pred_arm`]'s ADAPTER that narrows it to one MV, on
-//!   purpose, because no candidate here is compound. Widening the reference
-//!   set therefore has to widen the adapter with it. **This used to say "no second reference EXISTS in the port's
-//!   low-delay-P reference set", and that was MEASURED FALSE on 2026-09-02:**
-//!   C reports `ref_frame_type_arr = [LAST, BWDREF, LAST_BWD]`,
-//!   `reference_select = 1`, and it CODES `rf=5` (BWDREF) on the 128-wide
-//!   cells (`SVT_INJCFG_OUT` / `SVT_CINTER_OUT`). The second reference is
-//!   real; this module does not model it yet, and
-//!   `docs/INTER-ENCODE-PLAN.md` §1z¹⁴ says why the fix is atomic with PME.
+//! * `inter_comp_ctrls` / bipred — C's `ref_frame_type_arr` on these frames
+//!   is `[LAST, BWDREF, LAST_BWD]` with `reference_select = 1`
+//!   (`SVT_INJCFG_OUT`, 2026-09-02). This module now carries the two SINGLE
+//!   entries and DROPS `LAST_BWD`, and it hands the injector
+//!   `reference_mode_is_single = true` so `allow_bipred` is false.
+//!   **Those two suppressions are ONE missing feature, not two choices:**
+//!   dropping the compound entry alone would still let
+//!   `inject_new_candidates` build a `NEW_NEWMV` out of C's BI_PRED ME
+//!   candidate — which exists, measured `dir=2` on `gradient 64x64 q40 p8`
+//!   — and the assertion below would then refuse a candidate C really does
+//!   inject.
+//!   The PREDICTION is not the obstacle:
+//!   `svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1` takes an
+//!   `mvs` SLICE and runs the `jnt_convolve` compound path whenever it has
+//!   two (`port_pd_pred.rs:240`); it is [`crate::inter_pred_arm`]'s ADAPTER
+//!   that narrows it to one MV. Unsuppressing bipred therefore means
+//!   widening that adapter, plus the `interinter_comp_type` / `compound_idx`
+//!   half of the rate — a separate chunk.
 //! * `wm_ctrls` (warped motion) and `obmc_ctrls` — the DSP is ported
 //!   (`svtav1_dsp::obmc`, the warp family) and the PREDICTION drivers are
 //!   not wired, so a warped or OBMC candidate could not be predicted. The
 //!   injector would produce them; the ctrls are off and the module ASSERTS
 //!   none arrive rather than dropping them silently.
 //! * `inter_intra_comp_ctrls` — same shape.
-//! * `unipred3x3_injection`, `bipred3x3_ctrls`, `inject_new_pme` — the 3x3
-//!   refinement and the predictive-ME search are unported.
+//! * `unipred3x3_injection`, `bipred3x3_ctrls` — the 3x3 refinements are
+//!   unported. `inject_new_pme` / `updated_enable_pme` are now ON:
+//!   [`crate::inter_search_arm`] runs C's `build_single_ref_mvp_array` ->
+//!   `read_refine_me_mvs` -> `pme_search` chain per reference.
 //! * `near_count_ctrls` — C caps the NEAR DRL loop to ZERO unless this
 //!   control is enabled (it REPLACES `max_drl_index`, it does not refine
 //!   it), so `NEARMV` is absent exactly the way C makes it absent.
-//! * The ME MV handed to `sb_me_mv` is the OPEN-LOOP one; C's
-//!   `read_refine_me_mvs` sub-pel refinement is unported, so this is the
-//!   value C's refinement STARTS from.
+//! * `md_nsq_motion_search` — PORTED but NOT CALLED here. C runs it inside
+//!   `read_refine_me_mvs` for every NSQ shape (`bwidth != bheight`), seeded
+//!   from the square parent's `sq_sb_me_mv` and from a geometry-filtered
+//!   set of sub-block ME MVs. Both are ME-TABLE machinery this module does
+//!   not carry (there is no `pc_tree->tested_blk` mirror and no
+//!   `pu_search_index_map` walk), so an NSQ block here takes the square
+//!   path: `raw_me_mv * 8`, then sub-pel. Say what that makes untestable —
+//!   on any cell whose winner is an NSQ shape this module's ME MV can
+//!   differ from C's, and no assertion in this file can see it.
 //!
-//! What that leaves live is `NEARESTMV` and `NEWMV` off `LAST_FRAME` — where
-//! C, on the same cells, has three reference types and a PME candidate per
-//! type (§1z¹⁴) — with
-//! C's own injection ORDER (MVP before NEW) and C's own
-//! `mv_is_already_injected` dedup — which is what makes the port pick
-//! `NEARESTMV` alone on flat content, as C does.
+//! What that leaves live is `NEARESTMV` and `NEWMV` off `LAST_FRAME` and
+//! `BWDREF_FRAME`, plus one PME `NEWMV` per reference — with C's own
+//! injection ORDER (MVP before NEW before PME) and C's own
+//! `mv_is_already_injected` dedup.
 
 use crate::inter_me_arm::FrameMe;
 use crate::inter_mvp::NONE_FRAME;
@@ -91,7 +101,35 @@ pub const LAST_FRAME: i8 = 1;
 /// Built once per inter frame, shared by every leaf.
 pub struct InterMdFrame<'a> {
     /// The DPB reference with C's replicated margins — what the MC indexes.
+    ///
+    /// This is `LAST_FRAME`'s. [`Self::padded_by_ref`] is the per-reference
+    /// table the multi-reference path uses; the two agree on `LAST_FRAME`.
     pub padded: &'a PaddedRef,
+    /// The padded DPB picture per `MvReferenceFrame` (index 1..=7), `None`
+    /// for a reference this frame does not signal.
+    ///
+    /// **C maps LAST to DPB slot 0 and BWDREF to slot 3** and on this GOP
+    /// both hold frame 0 (C's own `MEL1` line reports `l1ref == l0ref`).
+    /// The pipeline ASSERTS that rather than assuming it — see
+    /// `pipeline.rs`'s construction — because the day a real GOP puts a
+    /// different picture in slot 3, a table that silently aliased the two
+    /// would predict from the wrong picture with no failing test.
+    pub padded_by_ref: [Option<&'a PaddedRef>; 8],
+    /// C `pcs->ppcs->enhanced_pic` luma plane and its stride — the MD
+    /// SOURCE the motion searches score against (not a recon).
+    pub src: &'a [u8],
+    pub src_stride: usize,
+    /// C `ctx->ref_frame_type_arr[0..tot_ref_frame_types]`, restricted to
+    /// the SINGLE-reference entries (see this module's header).
+    pub ref_frame_type_arr: &'a [i8],
+    /// The frame-constant halves of C's MD search context.
+    pub search: crate::inter_search_arm::SearchFrameCfg,
+    /// C `md_rate_est_ctx->nmv_vec_cost` / `nmvcoststack` in the shape
+    /// [`crate::md_subpel`] wants. [`Self::nmv`] is the same tables in the
+    /// shape `port_md` wants; both are built from one
+    /// `svt_av1_build_nmv_cost_table` transcription (see
+    /// [`nmv_cost_table`]).
+    pub search_tables: crate::intrabc::MvCostTables,
     /// This frame's open-loop motion search.
     pub me: &'a FrameMe,
     /// C `md_rate_estimation_ptr`'s inter tables.
@@ -308,9 +346,10 @@ pub fn build_inter_candidates(
     };
     use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef, RefPruningState};
 
-    // --- The reference-MV stack, per reference type. Only LAST_FRAME is
-    //     populated: the port's low-delay-P reference set has one entry, and
-    //     `ref_frame_type_arr` below says so.
+    // --- The reference-MV stack, PER REFERENCE TYPE. C calls
+    //     `svt_aom_generate_av1_mvp_table(ctx, ..., ctx->ref_frame_type_arr,
+    //     ctx->tot_ref_frame_types, pcs)` (product_coding_loop.c:9393), i.e.
+    //     one stack per entry — not one for LAST.
     let ctx = derive_block_ctx(
         (b.org_y / 4) as i32,
         (b.org_x / 4) as i32,
@@ -327,47 +366,66 @@ pub fn build_inter_candidates(
     };
     // C `svt_aom_generate_av1_mvp_table`'s `gm_mv` for an IDENTITY global
     // motion model is the zero MV; this port signals no global motion.
-    let last_stack = setup_ref_mv_list(&grid, &ctx, &f.mvp_env, LAST_FRAME, [Mv::ZERO; 2]);
     let mut stacks = alloc::vec![crate::inter_mvp::InterMvpStack::default(); 8];
     let mut ref_mv_count = [0u8; 8];
-    stacks[LAST_FRAME as usize] = last_stack;
-    ref_mv_count[LAST_FRAME as usize] = stacks[LAST_FRAME as usize].count;
-    let inter_mode_ctx = stacks[LAST_FRAME as usize].mode_context;
-
-    // --- The open-loop ME MV, as C stores it: full-pel `* 8`
-    //     (mode_decision.c:2323-2325). `sb_me_mv` is C's REFINED value; the
-    //     refinement (`read_refine_me_mvs`) is unported, so this is the value
-    //     it starts from.
-    let mut sb_me_mv = [[Mv::ZERO; 4]; 2];
-    let mut me_cands: Vec<MeCandidateRef> = Vec::new();
-    //
-    //     C indexes `me_mv_array` by the ME CANDIDATE's own `direction`
-    //     (`mode_decision.c:2320-2326`), and on a flat low-delay-P GOP that
-    //     candidate is usually LIST 1's — see
-    //     [`crate::inter_me_arm::FrameMe::cand_mv_for`] for the measurement.
-    //     The DIRECTION is deliberately NOT propagated: `ref_frame_type_arr`
-    //     below carries `LAST_FRAME` alone, so a direction-1 candidate would
-    //     resolve to `BWDREF_FRAME` and be dropped by the injector. This port
-    //     models one reference and takes that candidate's MV against it; the
-    //     second reference is a separate chunk.
-    if let Some((_dir, mv_fp)) = f.me.cand_mv_for(b.org_x, b.org_y, b.bsize, 0) {
-        sb_me_mv[0][0] = Mv {
-            x: mv_fp.x.saturating_mul(8),
-            y: mv_fp.y.saturating_mul(8),
-        };
-        me_cands.push(MeCandidateRef {
-            direction: 0,
-            ref_idx_l0: 0,
-            ref_idx_l1: 0,
-            ref0_list: 0,
-            ref1_list: 0,
-        });
+    for &rt in f.ref_frame_type_arr {
+        let i = rt.max(0) as usize;
+        stacks[i] = setup_ref_mv_list(&grid, &ctx, &f.mvp_env, rt, [Mv::ZERO; 2]);
+        ref_mv_count[i] = stacks[i].count;
     }
+
+    // --- C's per-block MD motion searches, in C's own order:
+    //     `build_single_ref_mvp_array` -> `read_refine_me_mvs` ->
+    //     `pme_search` (product_coding_loop.c:9425-9447). See
+    //     [`crate::inter_search_arm`] for why the reference set and PME are
+    //     one mechanism.
+    let search = crate::inter_search_arm::run_block_searches(
+        &f.search,
+        &crate::inter_search_arm::BlockSearchIn {
+            org_x: b.org_x,
+            org_y: b.org_y,
+            bw: b.bw,
+            bh: b.bh,
+            bsize: b.bsize,
+            // C `blk_geom->sq_size` — the SQUARE this shape came from. The
+            // funnel has no NSQ parent link here, so a square block's own
+            // size is used; for an NSQ shape that is the larger side, which
+            // is what `svt_init_mv_cost_params`' `early_exit_th` reads.
+            sq_size: b.bw.max(b.bh) as u16,
+            mi_rows: f.mi_rows,
+            mi_cols: f.mi_cols,
+            src: f.src,
+            src_stride: f.src_stride,
+            ref_frame_type_arr: f.ref_frame_type_arr,
+            padded_by_ref: &f.padded_by_ref,
+            stacks: &stacks,
+            ref_mv_count: &ref_mv_count,
+            nmv: &f.nmv,
+            drl_mode_fac_bits: &f.fac.drl_mode,
+            search_tables: &f.search_tables,
+            me: f.me,
+        },
+    );
+
+    // --- C's ME candidate array for this block, verbatim: the injectors
+    //     read each candidate's own `direction` and resolve it to a
+    //     reference frame (`mode_decision.c:2320-2326`).
+    let me_cands: Vec<MeCandidateRef> =
+        f.me.cands_for(b.org_x, b.org_y, b.bsize)
+            .iter()
+            .map(|c| MeCandidateRef {
+                direction: c.direction,
+                ref_idx_l0: c.ref_idx_l0,
+                ref_idx_l1: c.ref_idx_l1,
+                ref0_list: c.ref0_list,
+                ref1_list: c.ref1_list,
+            })
+            .collect();
     let me_totals = [me_cands.len() as u8];
+    let sb_me_mv = search.sb_me_mv;
 
     let gm = [svtav1_types::motion::WarpedMotionParams::default(); 8];
     let ref_pruning = RefPruningState::default();
-    let ref_frame_type_arr = [LAST_FRAME];
     let wm_sample_num = [0u8; 8];
     let inj = InjectCtx {
         bsize: b.bsize,
@@ -376,7 +434,13 @@ pub fn build_inter_candidates(
         blk_org_x: b.org_x as u32,
         blk_org_y: b.org_y as u32,
         shape_is_part_n: true,
-        reference_mode_is_single: !f.reference_mode_is_select,
+        // NOT C's value (`reference_select` is 1 on these frames, so C's
+        // `reference_mode_is_single` is 0). This is the bipred suppression
+        // the module header names: `inter_pred_arm` has no two-reference
+        // path, and `allow_bipred` is the single switch that keeps every
+        // compound injector — MVP-ii, ME's BI_PRED entry and PME's — from
+        // producing a candidate this port could not predict.
+        reference_mode_is_single: true,
         allow_high_precision_mv: f.allow_high_precision_mv,
         is_motion_mode_switchable: f.is_motion_mode_switchable,
         force_integer_mv: u8::from(f.force_integer_mv),
@@ -385,7 +449,7 @@ pub fn build_inter_candidates(
         skip_mode_ref_frame_idx_0: -1,
         skip_mode_ref_frame_idx_1: -1,
         is_lossless_segment: false,
-        ref_frame_type_arr: &ref_frame_type_arr,
+        ref_frame_type_arr: f.ref_frame_type_arr,
         global_motion: &gm,
         // C `gm_ctrls.skip_identity`: with it set and every model IDENTITY,
         // `inject_global_candidates` `continue`s — which is why no GLOBALMV
@@ -403,9 +467,9 @@ pub fn build_inter_candidates(
         me_totals: &me_totals,
         me_block_offset: 0,
         sb_me_mv: &sb_me_mv,
-        post_subpel_me_mv_cost: &[[0u32; 4]; 2],
-        valid_pme_mv: &[[false; 4]; 2],
-        best_pme_mv: &[[Mv::ZERO; 4]; 2],
+        post_subpel_me_mv_cost: &search.post_subpel_me_mv_cost,
+        valid_pme_mv: &search.valid_pme_mv,
+        best_pme_mv: &search.best_pme_mv,
         ref_pruning: &ref_pruning,
         // C `ctx->corrupted_mv_check`: the `is_valid_mv_diff` guard. On with
         // a real cost table, which is what this module supplies.
@@ -427,8 +491,8 @@ pub fn build_inter_candidates(
         new_nearest_near_comb_injection: 0,
         inject_new_me: true,
         global_mv_injection: true,
-        inject_new_pme: false,
-        updated_enable_pme: false,
+        inject_new_pme: true,
+        updated_enable_pme: f.search.updated_enable_pme,
         reduce_unipred_candidates: 0,
         use_neighbouring_mode_ctrls_enabled: false,
         is_intra_bordered: false,
@@ -464,7 +528,10 @@ pub fn build_inter_candidates(
             c.is_interintra_used,
             c.ref_frame,
         );
-        out.push(predict_and_price(f, b, c, inter_mode_ctx, &stacks, lambda));
+        // C `blk_ptr->inter_mode_ctx[ref_frame_type]` — the mode context of
+        // the candidate's OWN reference, not LAST's.
+        let imc = stacks[c.ref_frame[0].max(0) as usize].mode_context;
+        out.push(predict_and_price(f, b, c, imc, &stacks, lambda));
     }
     out
 }
@@ -504,9 +571,20 @@ fn predict_and_price(
     } else {
         (Vec::new(), Vec::new())
     };
-    match (b.has_uv, f.padded.uv.as_ref()) {
+    // C `svt_aom_get_ref_pic_buffer(pcs, rf[0])` — the candidate's OWN
+    // reference picture. A missing entry is a caller bug: the injector can
+    // only produce a reference that was in `ref_frame_type_arr`, and the
+    // pipeline fills the table for every entry it puts there.
+    let padded = f.padded_by_ref[c.ref_frame[0].max(0) as usize].unwrap_or_else(|| {
+        panic!(
+            "an inter candidate names reference {} with no DPB picture — \
+             `ref_frame_type_arr` and `padded_by_ref` disagree",
+            c.ref_frame[0]
+        )
+    });
+    match (b.has_uv, padded.uv.as_ref()) {
         (true, Some((refu, refv))) => crate::inter_pred_arm::predict_inter_yuv(
-            (&f.padded.y, refu, refv),
+            (&padded.y, refu, refv),
             b.org_x,
             b.org_y,
             b.bw,
@@ -523,7 +601,7 @@ fn predict_and_price(
             cw,
         ),
         _ => crate::inter_pred_arm::predict_inter_luma(
-            &f.padded.y,
+            &padded.y,
             b.org_x,
             b.org_y,
             b.bw,

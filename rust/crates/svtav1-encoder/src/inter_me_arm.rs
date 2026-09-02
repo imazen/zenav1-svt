@@ -229,6 +229,93 @@ impl FrameMe {
     /// the picture, a candidate past `total_me_candidate_index`, or a BI_PRED
     /// candidate (which names two slots, not one).
     ///
+    /// C `svt_aom_is_me_data_present` (mode_decision.c:179-198): does ANY
+    /// surviving ME candidate for this block name `(list_idx, ref_idx)`?
+    ///
+    /// **A BI_PRED candidate counts for BOTH lists**, which is the whole
+    /// reason this is not `cand_mv_for(..).is_some()`. MEASURED 2026-09-02
+    /// on `gradient 64x64 q40 p8` frame 1: C's candidate array for the
+    /// coded 64x64 is `[dir=1, dir=2]` — no list-0 UNIPRED entry — yet
+    /// `is_me_data_present(list 0)` is TRUE because of the BI_PRED one, so
+    /// `read_refine_me_mvs` refines a list-0 MV and `pme_search` takes its
+    /// bail-to-ME arm. On `gradient 128x128 q40 p8` the array is `[dir=1]`
+    /// alone, list 0 has no data, and PME runs its full search instead —
+    /// the two cells diverge on exactly this predicate.
+    #[must_use]
+    pub fn me_data_present(
+        &self,
+        org_x: usize,
+        org_y: usize,
+        bsize: u8,
+        list_idx: usize,
+        ref_idx: usize,
+    ) -> bool {
+        let (b64_x, b64_y) = (org_x / 64, org_y / 64);
+        if b64_x >= self.b64_cols || b64_y >= self.b64_rows {
+            return false;
+        }
+        let out = &self.per_b64[b64_y * self.b64_cols + b64_x];
+        let off = crate::port_md::predicates::get_me_block_offset(
+            (org_x % 64) as u32,
+            (org_y % 64) as u32,
+            bsize,
+            self.enable_me_8x8,
+            self.enable_me_16x16,
+        ) as usize;
+        let n = out
+            .total_me_candidate_index
+            .get(off)
+            .map_or(0, |&v| usize::from(v));
+        for i in 0..n {
+            let Some(c) = out.me_candidate_array.get(off * self.max_cand + i) else {
+                break;
+            };
+            if (c.direction == 0 || c.direction == 2)
+                && list_idx == usize::from(c.ref0_list)
+                && ref_idx == usize::from(c.ref_idx_l0)
+            {
+                return true;
+            }
+            if (c.direction == 1 || c.direction == 2)
+                && list_idx == usize::from(c.ref1_list)
+                && ref_idx == usize::from(c.ref_idx_l1)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// This block's surviving ME candidates, in C's own order — what
+    /// `inject_new_candidates` and `unipred_3x3_candidates_injection` walk.
+    #[must_use]
+    pub fn cands_for(
+        &self,
+        org_x: usize,
+        org_y: usize,
+        bsize: u8,
+    ) -> &[crate::inter_me::context::MeCandidate] {
+        let (b64_x, b64_y) = (org_x / 64, org_y / 64);
+        if b64_x >= self.b64_cols || b64_y >= self.b64_rows {
+            return &[];
+        }
+        let out = &self.per_b64[b64_y * self.b64_cols + b64_x];
+        let off = crate::port_md::predicates::get_me_block_offset(
+            (org_x % 64) as u32,
+            (org_y % 64) as u32,
+            bsize,
+            self.enable_me_8x8,
+            self.enable_me_16x16,
+        ) as usize;
+        let n = out
+            .total_me_candidate_index
+            .get(off)
+            .map_or(0, |&v| usize::from(v));
+        let start = off * self.max_cand;
+        let end = (start + n).min(out.me_candidate_array.len());
+        out.me_candidate_array.get(start..end).unwrap_or(&[])
+    }
+
     /// **Why a consumer must not just read list 0.** On a flat low-delay-P
     /// GOP `construct_me_candidate_array_mrp_off` frequently emits its single
     /// unipred candidate for LIST 1, because `use_best_unipred_cand_only` is

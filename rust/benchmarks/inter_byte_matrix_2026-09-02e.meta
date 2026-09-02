@@ -1,0 +1,43 @@
+# tools/inter_byte_matrix.sh — the INTER campaign's 96-cell frontier
+#
+# grid    {uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55}
+#         x {p6,p8}, frames=2 low-delay P, SVTAV1_FRAME_SHIFT=3
+# host    Apple M4 Pro, aarch64-apple-darwin
+# date    2026-09-02
+# after   docs/INTER-ENCODE-PLAN.md §1z15 (the MULTI-REFERENCE path: C's
+#         ref_frame_type_arr single entries [LAST, BWDREF], a per-reference
+#         MVP stack and prediction, and C's build_single_ref_mvp_array ->
+#         read_refine_me_mvs -> pme_search driver behind them)
+#
+#   BOTH 40 / F1DIFF 55 / F0DIFF 1  (was 36 / 59 / 1 in ...02d.tsv)
+#
+# The four cells that moved F1DIFF -> BOTH:
+#   diag     128x128 q40 p8   23 B, already equal to C's — the divergence was
+#   diag      16x16  q20 p8   21 B     the reference-frame SYNTAX, not the
+#   diag      16x16  q55 p6   21 B     size, on three of the four
+#   gradient 128x128 q40 p8   23 -> 24 B against C's 24
+#
+# WHY THE OTHER 55 DID NOT MOVE, stated so nobody reads them as 55 mechanisms.
+# The port's PME now joins C's exactly where it was measured
+# (`SVT_SUBPEL_OUT`, the new per-(block, list, ref, stage) interposer, on
+# `gradient 128x128 q40 p8` frame 1): full_lambda_md 241378, fast_lambda_md
+# 6633, error_per_bit 3771, best_fp_mvp_dist 1730650 / 26607 / 24316 / 26289,
+# list-1 fp_me_dist 27816 / 26961 / 24670 / 26643, and list 0's PME search
+# landing on (-2,-24) at the first superblock and (0,-24) at the other three
+# — every one of those equal to C's. What the remaining cells need is the
+# next mechanism, not a closer number on this one.
+#
+# STILL SUPPRESSED, and both are ONE missing feature (compound PREDICTION):
+#   * `ref_frame_type_arr`'s compound entry (LAST_BWD) is dropped;
+#   * `reference_mode_is_single` is forced TRUE so `allow_bipred` is false,
+#     which is what keeps C's BI_PRED ME candidate (measured `dir=2` on
+#     `gradient 64x64 q40 p8`) from producing a NEW_NEWMV this port cannot
+#     predict.
+#
+# STILL OPEN:
+#   1. `gradient 128x128 q20 p8` — the ONE F0DIFF cell, a video-KEY defect,
+#      7453 B against C's 7472. Every frame-1 reading on it is void.
+#   2. `md_nsq_motion_search` is ported but NOT called: the NSQ ME-MV
+#      inheritance (`sq_sb_me_mv`) and the sub-block MVC list need a
+#      `pc_tree->tested_blk` mirror the port does not have, so an NSQ block
+#      takes the square path.
