@@ -1294,6 +1294,75 @@ void __real_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureContro
 
 void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx) {
     __real_svt_aom_sig_deriv_enc_dec_pd0(scs, pcs, ctx);
+    /* ---- REFERENCE-PICTURE CODED-AREA STATS (frame-2 scoping, 2026-09-02) --
+     * Env: SVT_REFSTATS_OUT (file). Pure pass-through when unset.
+     *
+     * WHAT THIS IS FOR. The port REFUSES the second inter frame because
+     * `get_ref_hp_percentage` (rc_process.c:118) reads the REFERENCE
+     * picture's `EbReferenceObject::hp_coded_area`, and that statistic —
+     * with `skip_coded_area` and `intra_coded_area` — is accumulated per
+     * coded block in `update_b` (coding_loop.c:1605-1638), normalised to a
+     * percentage at rest_process.c:347 and copied onto the reference object
+     * at :195. This port carries none of the three, and they pick
+     * `allow_high_precision_mv` and `interpolation_search_level`, i.e. real
+     * bitstream syntax. This line is what a port-side implementation joins
+     * against: the values C actually put on the reference, per frame.
+     *
+     * Hosted on THIS wrapper rather than a new one because
+     * `svt_aom_sig_deriv_enc_dec_pd0` runs once per superblock per frame,
+     * AFTER the picture manager has bound the references — so the reference's
+     * stats are final by the time it fires — and it is already wrapped. C's
+     * own normalisation happens at the END of the REFERENCE's rest stage, so
+     * a value read here belongs to a previous picture, never to this one.
+     * `svt_aom_rest_kernel_iter` is the exported function that owns the
+     * normalisation, but its argument is an opaque `void* context` whose
+     * `RestContext` layout a shim would have to duplicate; this is the same
+     * information without that coupling.
+     *
+     * One line per (frame, superblock); cut at the frame boundary yourself,
+     * same as SVT_CTREE_OUT. `-1` in a reference field means "no reference in
+     * that list". */
+    {
+        const char* rspath = getenv("SVT_REFSTATS_OUT");
+        if (rspath && *rspath) {
+            static FILE* rf = NULL;
+            if (!rf) {
+                rf = fopen(rspath, "a");
+            }
+            if (rf) {
+                const EbReferenceObject* r0 = (pcs->slice_type != I_SLICE && pcs->ppcs->ref_list0_count_try &&
+                                               pcs->ref_pic_ptr_array[REF_LIST_0][0])
+                    ? (EbReferenceObject*)pcs->ref_pic_ptr_array[REF_LIST_0][0]->object_ptr
+                    : NULL;
+                const EbReferenceObject* r1 = (pcs->slice_type == B_SLICE && pcs->ppcs->ref_list1_count_try &&
+                                               pcs->ref_pic_ptr_array[REF_LIST_1][0])
+                    ? (EbReferenceObject*)pcs->ref_pic_ptr_array[REF_LIST_1][0]->object_ptr
+                    : NULL;
+                fprintf(rf,
+                        "REFSTATS poc=%u sb=%u slice=%d l0cnt=%u l1cnt=%u "
+                        "l0=%d/%d/%d/%d l1=%d/%d/%d/%d "
+                        "refhp=%d refskip=%u refintra=%u\n",
+                        (unsigned)pcs->picture_number,
+                        (unsigned)ctx->sb_index,
+                        (int)pcs->slice_type,
+                        (unsigned)pcs->ppcs->ref_list0_count_try,
+                        (unsigned)pcs->ppcs->ref_list1_count_try,
+                        r0 ? (int)r0->slice_type : -1,
+                        r0 ? (int)r0->intra_coded_area : -1,
+                        r0 ? (int)r0->skip_coded_area : -1,
+                        r0 ? (int)r0->hp_coded_area : -1,
+                        r1 ? (int)r1->slice_type : -1,
+                        r1 ? (int)r1->intra_coded_area : -1,
+                        r1 ? (int)r1->skip_coded_area : -1,
+                        r1 ? (int)r1->hp_coded_area : -1,
+                        (int)pcs->ref_hp_percentage,
+                        (unsigned)pcs->ref_skip_percentage,
+                        (unsigned)pcs->ref_intra_percentage);
+                fflush(rf);
+            }
+        }
+    }
+
     const char* path = getenv("SVT_PD0CFG_OUT");
     if (!path || !*path) {
         return;

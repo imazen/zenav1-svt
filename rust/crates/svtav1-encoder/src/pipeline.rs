@@ -5314,6 +5314,20 @@ impl EncodePipeline {
             // those values pick `allow_high_precision_mv` and
             // `interpolation_search_level`, i.e. real bitstream syntax.
             //
+            // MEASURED 2026-09-02 through C's own reference objects
+            // (`SVT_REFSTATS_OUT`, `gradient 64x64 q32 p8`, three frames —
+            // `benchmarks/ref_coded_area_stats_2026-09-02.md`): at frame 2
+            // C has `ref_hp_percentage` 0, `ref_skip_percentage` **100** and
+            // `ref_intra_percentage` 0, and its list-0 reference (frame 1, a
+            // 22-byte all-skip frame) carries
+            // `intra/skip/hp_coded_area = 0/100/0`. So this refusal is
+            // CONSERVATIVE rather than tight: the placeholder would have got
+            // `ref_hp_percentage` right by accident, and the value that
+            // actually disagrees is `ref_skip_percentage`. It also showed
+            // that `ref_list0_count_try` goes 1 -> 2 and
+            // `ref_list1_count_try` 1 -> 0 at frame 2, so the reference
+            // STRUCTURE changes too.
+            //
             // WHAT LIFTING IT NEEDS, measured 2026-09-02:
             //   1. the three coded-area accumulators, folded onto the DPB
             //      entry beside `sb_min_sq_size` (which the port already
