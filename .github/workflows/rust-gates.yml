@@ -226,6 +226,21 @@ jobs:
         # without being promoted.
         run: ./tools/inter_byte_gate.sh
 
+      - name: INTER decode census (does the port's stream DECODE, on all 96 cells)
+        working-directory: rust
+        # `inter_decode_gate.sh` asks that of FIVE named cells. This asks it of
+        # all 96 — and 22 of them produce a stream `aomdec` REJECTS, which the
+        # five never saw. Every one is preset 6, where the frame header carries
+        # `allow_warped_motion = 1`; the port writes the two-symbol OBMC
+        # alphabet where the decoder reads the three-symbol MOTION_MODES one,
+        # because `av1_find_samples` is unported and `num_proj_ref` is always
+        # zero (docs/INTER-ENCODE-PLAN.md §1z¹⁸). That is a CONFORMANCE defect,
+        # not a quality one, and a byte gate cannot tell "wrong bytes" from
+        # "bytes no decoder will accept". The 22 are pinned BY NAME: a new
+        # rejection fails, and so does a pinned cell that starts decoding.
+        # ~4 min.
+        run: RS_AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/inter_decode_census.sh
+
       - name: INTER ME join gate (the port's full-pel MV against C's, per block)
         working-directory: rust
         # THE ASSERTION THAT DID NOT EXIST. docs/INTER-ENCODE-PLAN.md §1z¹⁵
