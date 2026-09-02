@@ -35,9 +35,25 @@
 > for one reference and C adds 3.3; one 8-bit 4:2:0 reference is 1.43 MiB/MP of
 > pixels, so C carries ~2.3x the raw reference and the port ~11.9x. The ratio
 > GROWING with size says it is per-pixel state, not one oversized fixed
-> structure. Which structure is NOT measured — that needs an allocation trace
-> (heaptrack on Linux, or MallocStackLogging + malloc_history here), and this
-> record does not have one. Do not attribute the 17.0 MiB/MP to a named buffer.
+> structure.
+>
+> A LEAD LIST for it (`/usr/bin/heap` under `MallocStackLogging`, max live bytes
+> per site over 12 inter / 8 still snapshots at 2048x2048 p13 — **snapshots, not
+> a peak: the maxima do not co-occur and do not sum to 68.1 MiB**). Sites the
+> inter arm holds and the still arm does not: `DecodedPictureBuffer::refresh`
+> 12.89 MiB, `inter_me::context::MeB64Output::new` 12.50 (2048 nodes x 6,400 B),
+> `inter_me_arm::PaPicture::from_source` 9.12, `encode_frame_impl::{closure#9}`
+> 6.84, `cdef::apply_cdef_frame` 6.05, `inter_me_arm::PaPlane::decimate` 2.88.
+> Sites that GROW: `funnel_block_decision` 0.62 -> 12.19, `RawVecInner::
+> try_allocate_in` 8.05 -> 20.09, `encode_tile_rows::{closure#0}` 6.05 -> 11.06.
+> The ME entries are the same `inter_me::hme` / `motion_estimation_b64` stages
+> the CPU record puts at 54 % of the inter frame's distortion time, and
+> `apply_cdef_frame` appears for the same reason the videokey arm turns CDEF on.
+> **One warning from the same table: `perf_encode::translate` at 6.05 MiB is the
+> HARNESS's translated frame.** Both harnesses grow with frame count, so the
+> 68.1 / 13.2 MiB arm difference includes harness growth on both sides — the
+> same trap as the `identity_run` correction above, one level down. Re-measure
+> through a one-frame-at-a-time harness before treating 17.0 MiB/MP as a target.
 >
 > **CORRECTION to `benchmarks/mem_2026-09-02.meta`, measured the same day.**
 > That record's port numbers came through `identity_run`, which holds ~14.5 MiB

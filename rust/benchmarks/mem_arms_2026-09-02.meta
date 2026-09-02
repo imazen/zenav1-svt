@@ -93,3 +93,53 @@ Do not attribute the 17.0 MiB/MP to a specific structure from this table.
 * Allocation-level attribution (see above). RSS is a ceiling on what the process
   touched, not an allocator trace.
 * 10-bit, real content, non-square dims, Linux/glibc.
+
+============ ADDENDUM: A LEAD LIST FOR THE 17.0 MiB/MP — NOT A PEAK ==========
+The body of this record says the structure behind the inter frame's footprint is
+not measured. This addendum is a LEAD LIST, and the distinction is load-bearing:
+it is `/usr/bin/heap` under `MallocStackLogging=1`, taken at 2 s intervals during
+a warm loop of `gradient 2048x2048 p13 q40` — 12 snapshots of the inter arm and
+8 of the still arm, reporting the MAXIMUM live bytes each allocation site was
+ever seen holding. **A live-heap snapshot at an arbitrary instant is not the
+peak, the maxima do not co-occur, and they do not sum to the measured peak.**
+Read this as "these sites exist and are at least this big", never as a
+decomposition of the 68.1 MiB.
+
+  max live MiB   inter    still   allocation site
+                 12.89     0.00   picture::DecodedPictureBuffer::refresh
+                 12.50     0.00   inter_me::context::MeB64Output::new  (2048 nodes x 6400 B)
+                  9.12     0.00   inter_me_arm::PaPicture::from_source
+                  6.84     0.00   pipeline::EncodePipeline::encode_frame_impl::{closure#9}
+                  6.05     0.00   cdef::apply_cdef_frame
+                  6.05     0.00   perf_encode::translate            <-- THE HARNESS, see below
+                  4.02     0.00   pipeline::EncodePipeline::encode_frame_impl
+                  2.88     0.00   inter_me_arm::PaPlane::decimate
+                 32.65    31.90   leaf_funnel::tx_pipeline::tx_unit_inner
+                 20.09     8.05   alloc::raw_vec::RawVecInner::try_allocate_in
+                 12.19     0.62   partition::funnel_block_decision
+                 11.06     6.05   pipeline::encode_tile_rows::{closure#0}
+                  4.66     2.27   partition::encode_fixed_tree
+                  3.19     1.59   deblock::DeblockGeom::new
+
+Three things it does say, and they are consistent with the CPU record:
+  * The ME machinery is real and sizeable — `MeB64Output::new` (12.50 MiB, 2048
+    nodes of 6,400 B, i.e. two per 64x64 block at this size), `PaPicture::
+    from_source` (9.12) and `PaPlane::decimate` (2.88, the HME pyramid). Those
+    are the same `inter_me::hme` / `motion_estimation_b64` stages
+    benchmarks/perf_inter_attrib_2026-09-02 measures at 54 % of the inter
+    frame's distortion TIME.
+  * `cdef::apply_cdef_frame` appears only in the inter arm because a video
+    frame's reconstruction is a reference and the post-filters must run — the
+    same reason the CPU record's videokey arm turns CDEF and loop restoration on.
+  * The per-block scratch grows rather than appearing: `tx_unit_inner` 31.9 ->
+    32.7, `funnel_block_decision` 0.62 -> 12.19, `RawVecInner` 8.05 -> 20.09.
+
+AND ONE WARNING IT ALSO GIVES. `perf_encode::translate` at 6.05 MiB is the
+HARNESS's own translated frame, not the encoder's. Both harnesses grow with the
+frame count — the port's `encode_sequence` holds every frame's planes plus the
+concatenated `.yuv`, and `capture_c_trace` mallocs `frame_bytes * n_frames` —
+so the 68.1 / 13.2 MiB arm difference in the body includes harness growth on
+BOTH sides. That is exactly the trap the 14.5 MiB `identity_run` correction at
+the top of this file is about, one level down. Anyone turning the 17.0 MiB/MP
+into a target must first re-measure it through a harness that holds one frame at
+a time, or instrument the encoder directly.
