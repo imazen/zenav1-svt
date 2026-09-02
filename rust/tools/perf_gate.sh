@@ -39,6 +39,9 @@
 #   PERF_WARMUP  untimed warmup encodes/spawn    (default 1)
 #   PERF_FRAMES  frames per timed encode        (default 1 = still)
 #   PERF_SHIFT   px/frame translation when >1   (default 3)
+#   PERF_VIDEO   1 = video-mode config even at PERF_FRAMES=1 (the control that
+#                separates the still-vs-video signal derivation from the
+#                presence of an inter frame; default 0)
 #
 # INTER CELLS (PERF_FRAMES=N, N > 1). Unset, or =1, is byte-for-byte the
 # pre-existing still gate — the env below is never exported and neither harness
@@ -83,14 +86,20 @@ ROUNDS="${PERF_ROUNDS:-20}"
 WARMUP="${PERF_WARMUP:-1}"
 FRAMES="${PERF_FRAMES:-1}"
 SHIFT="${PERF_SHIFT:-3}"
+# PERF_VIDEO=1 with PERF_FRAMES=1 measures a video-mode KEY frame and nothing
+# else — the control that separates the still-vs-video signal derivation from
+# the presence of an inter frame. See the note in perf_encode.rs.
+VIDEO="${PERF_VIDEO:-0}"
 
-# Multi-frame only: the matched GOP + the port's experimental-inter unlock.
-# Exported ONLY when FRAMES > 1, so the still gate's environment is unchanged.
-if [[ "$FRAMES" -gt 1 ]]; then
+# Multi-frame (or the single-frame video control): the matched GOP + the port's
+# experimental-inter unlock. Exported ONLY then, so the still gate's
+# environment is unchanged.
+if [[ "$FRAMES" -gt 1 || "$VIDEO" == "1" ]]; then
     export SVTAV1_FRAMES="$FRAMES" SVTAV1_FRAME_SHIFT="$SHIFT" \
            SVTAV1_INTRA_PERIOD="${SVTAV1_INTRA_PERIOD:-64}" \
            SVTAV1_HIER_LEVELS="${SVTAV1_HIER_LEVELS:-0}" \
            SVTAV1_INTER_EXPERIMENTAL=1
+    [[ "$VIDEO" == "1" ]] && export SVTAV1_VIDEO=1 SVT_AVIF=0
     export SVT_FRAMES="$FRAMES" \
            SVT_INTRA_PERIOD="${SVT_INTRA_PERIOD:--1}" \
            SVT_HIER_LEVELS="${SVT_HIER_LEVELS:-0}" \
@@ -119,7 +128,7 @@ fi
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 HOST=$(hostname)
 NCORES=$(nproc 2>/dev/null || echo "?")
-GRID="content=$CONTENT sizes=[${SIZES[*]}] presets=[${PRESETS[*]}] qp=$QP rounds=$ROUNDS warmup=$WARMUP frames=$FRAMES shift=$SHIFT"
+GRID="content=$CONTENT sizes=[${SIZES[*]}] presets=[${PRESETS[*]}] qp=$QP rounds=$ROUNDS warmup=$WARMUP frames=$FRAMES shift=$SHIFT video=$VIDEO"
 
 # --- raw per-sample TSV (auditable provenance of every number) --------------
 {
@@ -150,7 +159,7 @@ for sz in "${SIZES[@]}"; do
         rm -f "$WORK"/cell.obu* "$WORK"/cell.c.obu*
         run_port "$sz" "$preset" >/dev/null
         run_c "$sz" "$preset" >/dev/null
-        if [[ "$FRAMES" -eq 1 ]]; then
+        if [[ "$FRAMES" -eq 1 && "$VIDEO" != "1" ]]; then
             ident="Y"; cmp -s "$WORK/cell.obu" "$WORK/cell.c.obu" || ident="N"
         else
             # Per FRAME, never on the concatenation: frame 0 changing length

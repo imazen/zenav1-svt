@@ -99,7 +99,18 @@ fn main() {
         (1..=256).contains(&n_frames),
         "SVTAV1_FRAMES must be 1..256, got {n_frames}"
     );
-    if n_frames > 1 {
+    // SVTAV1_VIDEO=1 takes the video arm at ONE frame — a video-mode KEY frame
+    // and nothing else. It is a CONTROL, and it is the C driver's `SVT_AVIF=0`
+    // by another name (capture_c_trace.c documents why that one exists): a
+    // 2-frame cell changes TWO variables at once, the still-vs-video signal
+    // derivation and the presence of an inter frame, and without this arm the
+    // cost of the first cannot be separated from the cost of the second.
+    // MEASURED 2026-09-02 at 256x256 p8: the port's video-mode key frame costs
+    // 10.64 ms where its still-mode key frame costs 2.95 ms, so that variable
+    // is not small and attributing the whole gap to "the inter frame" would be
+    // wrong by a factor of three.
+    let video_single = std::env::var_os("SVTAV1_VIDEO").is_some();
+    if n_frames > 1 || video_single {
         encode_sequence(
             content, &y, &u, &v, w, h, cw, ch, qp, preset, prefix, warmup, n_frames,
         );

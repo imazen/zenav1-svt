@@ -97,8 +97,19 @@ static int64_t encode_once(uint32_t w, uint32_t h, uint32_t qp, int8_t preset,
     /* INTER cells only — see the header. still_picture=1 forbids a second
        frame, so a multi-frame run MUST clear it, and that is the only reason
        it is cleared. A single-frame run never enters this branch. */
-    if (n_frames > 1) {
+    if (n_frames > 1)
         cfg.avif = false;
+    /* SVT_AVIF=0 forces video mode at ANY frame count — the control that
+       separates "still vs video configuration" from "one frame vs many",
+       verbatim in purpose and spelling from capture_c_trace.c. Absent =>
+       untouched, so no existing cell moves. */
+    {
+        const char* avif_env = getenv("SVT_AVIF");
+        if (avif_env && *avif_env)
+            cfg.avif = atoi(avif_env) != 0;
+    }
+    const int video_mode = !cfg.avif;
+    if (video_mode) {
         const char* ip_env = getenv("SVT_INTRA_PERIOD");
         if (ip_env && *ip_env)
             cfg.intra_period_length = atoi(ip_env);
@@ -177,7 +188,7 @@ static int64_t encode_once(uint32_t w, uint32_t h, uint32_t qp, int8_t preset,
             /* Multi-frame only: one file per PTS, named exactly as
                capture_c_trace names them, so the gate's per-frame byte
                compare works against either C driver. */
-            if (n_frames > 1 && out_path) {
+            if (video_mode && out_path) {
                 char per[4096];
                 snprintf(per, sizeof(per), "%s.pts%lld", out_path, (long long)pkt->pts);
                 FILE* pf = fopen(per, "wb");
