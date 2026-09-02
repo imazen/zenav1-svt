@@ -56,6 +56,27 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The INTER MULTI-REFERENCE path, PME included — the 96-cell grid goes
+  36 BOTH / 59 F1DIFF / 1 F0DIFF to 40 / 55 / 1** (`rust/docs/
+  INTER-ENCODE-PLAN.md` §1z¹⁵). New `svtav1_encoder::inter_search_arm` runs
+  C's `build_single_ref_mvp_array` -> `read_refine_me_mvs` -> `pme_search`
+  chain (product_coding_loop.c:9425-9447) once per single-reference entry of
+  `ref_frame_type_arr`; `inter_md_arm` builds an MVP stack per reference,
+  propagates the ME candidate's own list direction, predicts from the
+  candidate's own reference picture and turns `inject_new_pme` on. The
+  reference set and PME are ONE mechanism: on the cells C codes `rf=1` the
+  LAST_FRAME NEWMV exists only because PME ran. Compound stays suppressed
+  (`inter_pred_arm` has no two-reference path). `inter_byte_gate.sh` is 40
+  required; `identity_full_8bit` 1100/1100, `regression_spotcheck` 67/67 and
+  every other envelope gate unmoved.
+- **`SVT_SUBPEL_OUT` — an interposer on the exported
+  `svt_av1_find_best_sub_pixel_tree_pruned`**, which fires once per
+  `(block, list_idx, ref_idx, search_stage)` and is the per-block join point
+  for the MD motion searches. It exists because `SVT_INJCFG_OUT`'s `PMEST`
+  line reads that state at neighbour-array-update time, where it belongs to
+  whatever block MD searched last (recorded in `rust/docs/WORKING-ON-THIS.md`
+  §5). It immediately named a lambda defect the byte output could not: the
+  inter search was running at exactly 2x C's `full_lambda_md`.
 - **`SVT_HME_OUT` and `SVT_INJCFG_OUT` — two interposers on the exported
   per-b64 ME entry and on `svt_aom_update_mi_map`** (a473fa38, fe51c8a7). The
   first dumps C's whole HME pyramid, the ENTIRE `svt_aom_sig_deriv_me` signal

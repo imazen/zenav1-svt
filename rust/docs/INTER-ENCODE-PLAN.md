@@ -4613,6 +4613,15 @@ every one of them codes an inter frame whose ME candidate is list 1's.
 
 ### 1z¹⁴. The next mechanism is the REFERENCE SET, and it is atomic with PME — measured, with the failed attempt recorded (2026-09-02)
 
+> **LANDED — see §1z¹⁵.** Everything this entry predicted held: the
+> reference set and PME are one mechanism, and the split-half attempt it
+> records is exactly what fails. One correction: this entry says C's
+> `me_candidate_array` "can only produce a BWDREF NEWMV", which is true of
+> the UNIPRED entry — but on the 64-wide cells there is also a **BI_PRED**
+> entry, and `svt_aom_is_me_data_present` counts that one for BOTH lists.
+> That is why PME BAILS to the ME MV for LAST there and SEARCHES on the
+> 128-wide cells, which is the whole difference between `rf=1` and `rf=5`.
+
 §1z¹³ left the port's ME arm joining C's exactly and the 96-cell verdicts
 unmoved. This entry measures WHY, names the next mechanism, and records an
 attempt at half of it that FAILED — with the number, so nobody re-attempts the
@@ -4734,6 +4743,130 @@ DIFFERENT DPB slots that both hold frame 0 — C's own `MEL1` line shows
 `l1ref == l0ref`. `inter_md_arm` predicts from a single `PaddedRef`, so a
 BWDREF candidate must either assert that the two slots hold the same picture
 or index a real per-reference DPB.
+
+### 1z¹⁵. The multi-reference path landed, PME included — 36 -> 40 BOTH (2026-09-02)
+
+§1z¹⁴ named the mechanism and recorded a failed HALF of it. This entry
+records the whole thing landing, the interposer that made it checkable, and
+the two things it did NOT close.
+
+#### The interposer that made it checkable, and the one that lies
+
+`SVT_INJCFG_OUT`'s `PMEST` line — added while investigating this chunk — reads
+`ctx->mvp_array` / `fp_me_mv` / `fp_me_dist` / `best_pme_mv` from inside
+`__wrap_svt_aom_update_mi_map`. **Those fields are STALE there.**
+`svt_aom_update_mi_map` is called from `md_update_all_neighbour_arrays`
+(product_coding_loop.c:669), i.e. after a partition decision, so the
+per-reference search state belongs to whatever block MD searched last, not to
+the block the line names. `ctx->blk_ptr` IS the named block's, which is why
+`CINTER` and the injector-config half of `INJCFG` are sound.
+
+`SVT_SUBPEL_OUT` is the honest one. It wraps
+`svt_av1_find_best_sub_pixel_tree_pruned` — EXPORTED (mcomp.h:111), and the
+only sub-pel entry `md_subpel_search` reaches at these presets — so it fires
+once per `(block, list_idx, ref_idx, search_stage)` with `ctx` still holding
+that reference's own state, and it prints `search_stage` (SPEL_ME 0 /
+SPEL_PME 1), `start_mv`, the result, `besterr`, `ref_mv`, `error_per_bit`,
+`full_lambda_md[0]`, `fast_lambda_md[0]`, `mvp_array` and `best_fp_mvp_dist`.
+Use it, not `PMEST`, for anything per-block.
+
+Also added: `MECAND` on the `SVT_HME_OUT` line, which prints each surviving ME
+candidate's `direction` / `ref*_list` / `ref_idx_*`. `mecand` was only a COUNT
+before, and the whole question of whether C's coded `rf` comes from ME or from
+PME turns on the direction.
+
+#### What C actually does, measured
+
+On `gradient 128x128 q40 p8` frame 1 the candidate array is `n=1
+c=[0:dir=1 …]` on all four b64s — a LIST-1 unipred and nothing else. On
+`gradient 64x64 q40 p8` it is `n=2 c=[0:dir=1, 1:dir=2]` — a list-1 unipred
+and a BI_PRED. **`svt_aom_is_me_data_present` counts a BI_PRED candidate for
+BOTH lists** (mode_decision.c:186-196), so those two cells reach `pme_search`
+in different states:
+
+| cell | list 0 has ME data | `pme_search` list 0 | C codes |
+|---|---|---|---|
+| 64x64 | YES (via the BI_PRED entry) | bails to the ME MV, `(0,-24)` | `rf=1` NEWMV |
+| 128x128 | NO | RUNS the search, `(-2,-24)` at SB 0 | `rf=5` NEWMV |
+
+That is the whole story of the two verdicts. On the 64-wide cell PME hands
+LAST the SAME MV as BWDREF, so the reference-frame RATE decides and LAST
+wins; on the 128-wide one PME hands LAST a sub-pel MV, which loses.
+
+#### What landed
+
+New `svtav1_encoder::inter_search_arm` — the loop
+`product_coding_loop.c:9425-9447` runs: `build_single_ref_mvp_array` ->
+`read_refine_me_mvs` -> `pme_search`, once per single-reference entry of
+`ref_frame_type_arr`, each with its own reference picture, MVP list and
+`mv_cost_params`. Every leaf was already ported with no caller; this is the
+caller. `inter_md_arm` now builds an MVP STACK per reference, propagates the
+ME candidate's own `direction`, predicts from the candidate's own reference,
+and hands the injector `inject_new_pme = updated_enable_pme = 1`.
+
+**The port's PME joins C's exactly where it was measured**
+(`gradient 128x128 q40 p8` frame 1, `SVT_SUBPEL_OUT` against `PMEDBG`):
+`full_lambda_md` 241 378, `fast_lambda_md` 6 633, `error_per_bit` 3 771,
+`best_fp_mvp_dist` 1 730 650 / 26 607 / 24 316 / 26 289, list-1 `fp_me_dist`
+27 816 / 26 961 / 24 670 / 26 643, and list 0's search landing on `(-2,-24)`
+at SB 0 and `(0,-24)` at the other three.
+
+**A lambda defect the join found.** The first wiring passed the picture's own
+`lambda_weight` signal as `frame_lambda_weight`'s extended-CRF BUMP, which
+adds 150 to the 150 the ladder already returns and lands on exactly 2x C's
+lambda (482 756 against 241 378). Nothing in the byte output could have named
+that; the `flam=` field did, immediately. This is the same shape as §4 of
+`docs/WORKING-ON-THIS.md`: a second path to a lambda that a first path already
+had right.
+
+#### Grid: **36 BOTH / 59 F1DIFF / 1 F0DIFF -> 40 / 55 / 1**
+
+`benchmarks/inter_byte_matrix_2026-09-02e.tsv`. The four cells that moved —
+`diag 128x128 q40 p8`, `diag 16x16 q20 p8`, `diag 16x16 q55 p6`,
+`gradient 128x128 q40 p8` — were F1DIFF at the SAME frame-1 byte count as C
+on three of them (`…02d.tsv`: 23/21/21 against 23/21/21). **The divergence was
+the reference-frame SYNTAX, not the size**, which is why four chunks of
+size-reading missed it. All four are now in `inter_byte_gate.sh`'s PASS list;
+the gate is 40 required, and every previously-passing cell still passes.
+
+No regression: `identity_full_8bit` 1100/1100, `regression_spotcheck` 67/67,
+`video_key_matrix` 58/60 (the same two preset-0 KEY cells), `inter_fh_gate`
+PASS, `fctx_gate` 96/96, `inter_decode_gate` 5/5, `cargo nextest --workspace`
+2453/2453.
+
+#### What is still suppressed, and it is ONE feature
+
+Compound prediction. `ref_frame_type_arr`'s `LAST_BWD` entry is dropped AND
+`reference_mode_is_single` is forced true so `allow_bipred` is false. Those
+are not two choices: dropping the compound entry alone would still let
+`inject_new_candidates` build a `NEW_NEWMV` out of C's BI_PRED ME candidate,
+which really exists on the 64-wide cells. Unsuppressing means widening
+`inter_pred_arm`'s adapter (the DSP under it,
+`av1_inter_prediction_light_pd1`, already takes an `mvs` slice and runs
+`jnt_convolve`) plus the `interinter_comp_type` / `compound_idx` half of the
+rate.
+
+#### What is still MISSING, said as a fraction
+
+`md_nsq_motion_search` is ported and NOT called. C runs it inside
+`read_refine_me_mvs` for every shape with `bwidth != bheight`, seeded from the
+square parent's `sq_sb_me_mv` and from a geometry-filtered sub-block MVC list;
+both need a `pc_tree->tested_blk` mirror and a `pu_search_index_map` walk this
+port does not have. An NSQ block therefore takes the square path
+(`raw_me_mv * 8`, then sub-pel), and **no assertion in the repo can see the
+difference** — say so rather than counting the drivers as three of three.
+
+Also unchanged: the ONE F0DIFF cell (`gradient 128x128 q20 p8`, a video-KEY
+defect at 7453 B against C's 7472); every frame-1 reading on it is void.
+
+#### The next mechanism
+
+Not the search. The port's PME, ME and MVP state now join C's field for field
+on the cells measured. The 55 remaining F1DIFF cells need the next named
+thing, and the two candidates the dumps point at are (a) compound prediction,
+which C's `reference_select = 1` makes reachable on every one of them, and
+(b) the NSQ ME inheritance above, which is the only place the port knowingly
+computes a different MV from C.
 
 ## 2. Chunks
 

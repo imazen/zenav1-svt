@@ -196,6 +196,23 @@ a DEFECT in any of them is equally invisible. When a chunk lands in that
 region, say so and reach for real content or a non-integer displacement rather
 than reading the flat verdict count as coverage.
 
+**AN INTERPOSER READS THE CONTEXT AT ITS OWN CALL SITE, NOT AT THE BLOCK IT
+NAMES.** `SVT_INJCFG_OUT`'s `PMEST` line prints `ctx->mvp_array`,
+`fp_me_mv`, `fp_me_dist` and `best_pme_mv` from inside
+`__wrap_svt_aom_update_mi_map` — and that wrapper is called from
+`md_update_all_neighbour_arrays` (`product_coding_loop.c:669`), i.e. AFTER a
+partition decision, once the whole depth has been searched. `ctx->blk_ptr` is
+the named block's (so `CINTER` and the injector-config half are sound), but
+every per-REFERENCE search field belongs to whatever block MD happened to
+search last. MEASURED 2026-09-02: on `gradient 128x128 q40 p8` the `PMEST`
+line for `mi=(0,0)` reported a list-1 `fp_me_dist` of 27 816 while three
+sibling superblocks' real values were 26 961 / 24 670 / 26 643 — the numbers
+happened to be close enough to look like a clean join and wrong enough to
+chase. **Hook a function that runs INSIDE the thing you are measuring.**
+`SVT_SUBPEL_OUT` wraps `svt_av1_find_best_sub_pixel_tree_pruned`, which is
+exported and fires once per `(block, list_idx, ref_idx, search_stage)`, and
+it is the join point for anything the MD motion searches touch.
+
 **A gate that cannot reach a feature cannot guard it.** The panic-freedom gate
 encoded `gradient` only — which never arms the screen-content detector — so
 palette and IntraBC were switched off in all 64 of its cells, and it sailed past
