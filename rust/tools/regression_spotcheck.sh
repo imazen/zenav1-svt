@@ -1145,6 +1145,35 @@ byteVideoKey "video-key-fixed-partition-p11-q55-diag"     diag     64 64 55 11
 # shifts or changes a header field.
 fhInterFrame "inter-frame-header-gradient-p6" gradient 64 64 40 6
 
+# --- PD0_LVL_6 on a video KEY frame, 2026-09-02. -----------------------------
+#
+# `part_arm::video_pd0_params` took the IDENTITY on an I_SLICE, on the reading
+# that `pd0_detector` "gates every one of its tests on slice_type != I_SLICE".
+# Tests 2-4, yes. Test 1, no: `enc_dec_process.c:2413` is gated ON
+# `slice_type == I_SLICE` (or `transition_present`) and demotes `PD0_LVL_6`,
+# because VERY_LIGHT_PD0 does INTER compensation only. C's closing
+# `assert(IMPLIES(I_SLICE, pd0_level < PD0_LVL_6))` (:2517) holds BECAUSE of
+# that demote — and `pd0.rs`'s `video_pd0_mode` carried a doc comment asserting
+# the opposite, that "the video ladder never assigns a level whose pd0_level is
+# PD0_LVL_6".  It does: `set_pic_pd0_lvl_default`'s M9..M10 row hands out
+# `lpd0_lvl` 7 (= `PD0_LVL_6`) for a base picture above the 360p class with
+# NORMAL coefficients, which at CLI qp 32 is `MIN(8, 5 + 2)`.
+#
+# OBSERVED BEFORE, video mode (frames=2), frame 0 — the KEY frame, an ordinary
+# still-image configuration:
+#   gradient 568x568 q32 p10:  PANIC, rc=101, ZERO frames written
+#     "video pic_pd0_lvl 7 selects a PD0 level this port has no block cost for"
+#   same at 576, 1024 and 2048 square — 4 of the 64 cells of
+#   tools/inter_completion_scan.sh, and every size at or above the boundary.
+# AFTER: frame 0 is byte-identical to C at 45 385 B (568), 45 600 B (576).
+#
+# 560 vs 568 is the class boundary itself (560^2 = 313 600 is R360p, 568^2 =
+# 322 624 is R480p) and 560 was already clean, so the pair is the minimal
+# separation of the two ladder rows. Both cells are here because a fix that
+# demoted unconditionally would keep 568 green and break 560's `lpd0_lvl` 6.
+byteVideoKey "video-key-pd0-lvl6-demote-568-p10" gradient 568 568 32 10
+byteVideoKey "video-key-pd0-lvl6-boundary-560-p10" gradient 560 560 32 10
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

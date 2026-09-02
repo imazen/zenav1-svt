@@ -3312,31 +3312,45 @@ pub fn pd0_pick_sb_partition_m6_eval(
     eval
 }
 
-/// C `set_pd0_ctrls` (`enc_mode_config.c:5413`) reduced to the block-cost
-/// model each `pic_pd0_lvl` selects, for the VIDEO arm on a KEY frame.
+/// The block-cost model a RESOLVED C `Pd0Level` selects, on the VIDEO arm.
 ///
-/// The detector half of that table is INERT here and that is why this returns
-/// a mode rather than a `Pd0Ctrls`: `pd0_detector` (enc_dec_process.c:2406)
-/// demotes only through branches gated on `slice_type != I_SLICE`, except the
-/// LVL_6 demote — and the video ladder never assigns a level whose
-/// `pd0_level` is `PD0_LVL_6` at the presets this port encodes. C asserts the
-/// same invariant at `:2514` (`IMPLIES(I_SLICE, pd0_level < PD0_LVL_6)`).
+/// **The argument is a `Pd0Level` (0..=6), NOT C's `pcs->pic_pd0_lvl`
+/// (0..=8).** Those two numberings are not the same map — `set_pd0_ctrls`
+/// (`enc_mode_config.c:5413`) sends `lpd0_lvl` 5 AND 6 to `PD0_LVL_5`, and 7
+/// AND 8 to `PD0_LVL_6` — and the caller has already run BOTH `set_pd0_ctrls`
+/// and `pd0_detector` (which C does at `enc_dec_process.c:2957`, before
+/// `svt_aom_sig_deriv_enc_dec_pd0`). See
+/// [`crate::part_arm::video_pd0_params`], which is the single place that
+/// resolution happens.
+///
+/// CORRECTED 2026-09-02. This function used to take the raw `pic_pd0_lvl`,
+/// map `5 | 6` to `Lvl5`, and carry a doc comment asserting that "the video
+/// ladder never assigns a level whose `pd0_level` is `PD0_LVL_6` at the
+/// presets this port encodes". The ladder DOES assign it — a KEY frame at
+/// 480p and up takes `set_pic_pd0_lvl_default`'s `lpd0_lvl` 7 — and what
+/// keeps C's `assert(IMPLIES(I_SLICE, pd0_level < PD0_LVL_6))` (`:2517`)
+/// true is `pd0_detector`'s I_SLICE demote, not the ladder. With the demote
+/// missing the port panicked on 4 of 64 video completion cells; the invariant
+/// the comment asserted was exactly the code that was absent.
 ///
 /// # Panics
-/// On a level outside 0..=7 (C `assert(0)`s), and on levels 0..=2, whose
-/// `PD0_LVL_0..PD0_LVL_2` block cost this port carries only in the bd10
-/// [`pd0_pick_sb_partition_lvl0`] entry point.
+/// On `PD0_LVL_0..PD0_LVL_2`, whose block cost this port carries only in the
+/// bd10 [`pd0_pick_sb_partition_lvl0`] entry point, and on `PD0_LVL_6`
+/// (VERY_LIGHT_PD0), which is unported. Neither is reachable from
+/// [`crate::part_arm::video_pd0_params`] today: `PD0_LVL_6` survives the
+/// detector only on a non-I slice whose references were not all intra, and
+/// the port's low-delay-P envelope has exactly one reference and it is the
+/// key frame.
 #[must_use]
-fn video_pd0_mode(pic_pd0_lvl: u8) -> Pd0Mode {
-    match pic_pd0_lvl {
+fn video_pd0_mode(pd0_level: u8) -> Pd0Mode {
+    match pd0_level {
         3 => Pd0Mode::Lvl3,
         4 => Pd0Mode::Lvl4,
-        // Cases 5 and 6 both set `pd0_level = PD0_LVL_5`; they differ only in
-        // the detector rows, which an I-slice never reads.
-        5 | 6 => Pd0Mode::Lvl5,
+        5 => Pd0Mode::Lvl5,
         other => panic!(
-            "video pic_pd0_lvl {other} selects a PD0 level this port has no block cost for \
-             (0..=2 are PD0_LVL_0..2, 7 is PD0_LVL_6 which C forbids on an I-slice)"
+            "PD0_LVL_{other} has no block cost in this port's video arm \
+             (0..=2 live only in the bd10 entry point; 6 is VERY_LIGHT_PD0, \
+             which is unported and which pd0_detector demotes on an I-slice)"
         ),
     }
 }
@@ -3380,8 +3394,11 @@ pub fn pd0_pick_sb_partition_video(
     qindex: u8,
     lambda_weight: u32,
     tables: &M6Pd0Tables,
-    // C `pcs->pic_pd0_lvl` from `set_pic_pd0_lvl_default`.
-    pic_pd0_lvl: u8,
+    // The RESOLVED C `Pd0Level` (0..=6) — `set_pic_pd0_lvl_default` ->
+    // `set_pd0_ctrls` -> `pd0_detector`, all three of which
+    // `crate::part_arm::video_pd0_params` runs. NOT `pcs->pic_pd0_lvl`,
+    // whose 0..=8 numbering is a different map; see [`video_pd0_mode`].
+    pd0_level: u8,
     // C `MAX(2, pcs->rate_est_level)` / `MAX(4, ..)` at PD0
     // (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7355) mapped
     // through `set_rate_est_ctrls` to `coeff_rate_est_lvl`. Read only by the
@@ -3419,7 +3436,7 @@ pub fn pd0_pick_sb_partition_video(
         qindex,
         lambda_weight,
         tables,
-        pic_pd0_lvl,
+        pd0_level,
         coeff_rate_est_lvl,
         accurate_part_ctx,
         nsq_enabled,
@@ -3452,8 +3469,11 @@ pub fn pd0_pick_sb_partition_video_eval(
     qindex: u8,
     lambda_weight: u32,
     tables: &M6Pd0Tables,
-    // C `pcs->pic_pd0_lvl` from `set_pic_pd0_lvl_default`.
-    pic_pd0_lvl: u8,
+    // The RESOLVED C `Pd0Level` (0..=6) — `set_pic_pd0_lvl_default` ->
+    // `set_pd0_ctrls` -> `pd0_detector`, all three of which
+    // `crate::part_arm::video_pd0_params` runs. NOT `pcs->pic_pd0_lvl`,
+    // whose 0..=8 numbering is a different map; see [`video_pd0_mode`].
+    pd0_level: u8,
     // C `MAX(2, pcs->rate_est_level)` / `MAX(4, ..)` at PD0
     // (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7355) mapped
     // through `set_rate_est_ctrls` to `coeff_rate_est_lvl`. Read only by the
@@ -3491,7 +3511,7 @@ pub fn pd0_pick_sb_partition_video_eval(
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let mode = video_pd0_mode(pic_pd0_lvl);
+    let mode = video_pd0_mode(pd0_level);
     // C `full_sb_lambda_md[EB_8_BIT_MD]` = `av1_lambda_assign_md`'s
     // `full_lambda_md[0]` (md_process.c:763), which is the FRAME's MD lambda —
     // the KF chain only on a key frame. MEASURED on `diag 64x64 q40 p8`:
