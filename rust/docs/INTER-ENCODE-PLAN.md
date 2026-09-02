@@ -2515,13 +2515,50 @@ number is recorded so that replacement has a before.
    (1) exists — there are no inter candidates whose cost it could change — but
    it must land with (1), not after it.
 
+
+#### An INVENTORY of what the inter-MD chunk actually needs (measured 2026-09-01)
+
+Everything downstream of mode decision is ported and gated, so this list is the
+chunk. Each line was checked against the tree, not inferred from the map above.
+
+| # | what is missing | where it goes | what already exists |
+|---|---|---|---|
+| 1 | **an inter candidate in the FUNNEL MD** — `leaf_funnel/` mentions no reference plane, no ME and no inter mode anywhere; the only MVs it handles are IntraBC DVs | `leaf_funnel/inject.rs` + `types.rs` | the IntraBC injection path is the shape to copy |
+| 2 | **an inter entry in the MD mi grid** | `leaf_funnel/commit.rs:42-65` | the grid is ALREADY stamped per commit as `intrabc_mvp::MvpMiEntry`, with `ref_frame: [0, -1]` hard-coded to `{INTRA_FRAME, NONE}`; and `inter_mvp::setup_ref_mv_list` reads exactly this type. It is allocated only when `ibc_state.is_some()` (`pipeline.rs:8804`), i.e. never on an inter frame |
+| 3 | **the MVP stack call** to get `pred_mv` / `inter_mode_ctx` / `drl_ctx` | MD, per candidate | `inter_mvp::setup_ref_mv_list` is TIER-1 gated including `mode_context` (`c_parity_inter_mvp.rs:269`, randomized grids) — it needs wiring, not gating |
+| 4 | **a PADDED reference view.** `port_pd_pred::RefPlane` takes `buf` + `origin` because C's reference pictures carry a replicated margin the MC indexes negatively into; `picture::ReferenceFrame` stores bare planes and `partition::RefFrameCtx` hands them over raw | the DPB / the per-frame reference setup | nothing |
+| 5 | **the real reconstruction MC on the encoder's inter path.** `partition::generate_inter_pred` is a hand-rolled BILINEAR that also fills out-of-frame samples with **128** instead of replicating the edge | `partition.rs` | `port_convolve.rs` (the `_sr` + `jnt_` families, tier 1) and its drivers `port_pd_pred::av1_inter_prediction_{pd0,light_pd1}` / `port_enc_make_pred::enc_make_inter_predictor` |
+| 6 | **chroma inter prediction.** `generate_inter_pred` is luma-only; an inter block's chroma still goes through `encode_chroma_block_dc`, i.e. INTRA DC. A stream that signals inter and reconstructs chroma from an intra DC predictor cannot match any decoder | `partition.rs` / the chroma pass | the drivers above take all three planes |
+| 7 | **the inter payload on `BlockDecision`** (`ref_frame`, mode, `pred_mv`, `inter_mode_ctx`, `drl`, `interp_filters`, `motion_mode`, `num_proj_ref`, `overlappable_neighbors`) and the `write_inter_mode_info` call in the pack | `partition.rs` + `pipeline.rs`'s block writer | `port_entropy_inter::block::write_inter_mode_info`, now proven byte-exact end to end |
+| 8 | `md_config_process.c`'s `md_frame_context` restore | `encode_tile_rows` | `crate::port_frame_cdf`, landed |
+
+Items 4, 5 and 6 are **decoder-conformance** requirements, not RD ones: they
+decide whether the encoder's recon equals what a decoder produces from the
+bytes it wrote. Items 1, 2, 3 and 7 are what make the bytes exist at all.
+
 #### No regression, measured after both chunks
 
 `identity_full_8bit.sh` **1100 / 1100**, `regression_spotcheck.sh` **65 / 65**,
 `tools/inter_fh_gate.sh` PASS (frame 0 identical, frame 1 header field-exact
 with an empty open set), the six pinned still cells unchanged, and
 `cargo nextest run --workspace` **2429 / 2429** on aarch64 (2422 + 4
-`c_parity_frame_cdf` + 2 `port_frame_cdf` units + the tile byte gate).
+`c_parity_frame_cdf` + 2 `port_frame_cdf` units + the tile byte gate) and
+**2439 / 2439** on x86-64 (`r7900x`, from `main@origin`), where
+`regression_spotcheck.sh` is also **65 / 65** and `inter_fh_gate.sh` PASSes
+with the same result (frame 0 identical, frame 1 header field-exact, empty
+open set).
+
+**The x86-64 run was not a formality — it caught a real defect.** The new
+`frame_cdf_shims.c` re-hit the trap `entropy_inter_shims.c:107-118` had already
+solved and commented: `svt_aom_init_mode_probs` / `svt_av1_default_coef_probs`
+copy through `svt_memcpy`, an RTCD pointer that is NULL until
+`svt_aom_setup_common_rtcd_internal` runs, and that NEON devirtualization makes
+a direct call on aarch64. The two tests that call an initializer SIGSEGV'd on
+x86 while the two using only the PAINTED modes passed — which is the
+fingerprint of a NULL RTCD pointer rather than a buffer bug. Fixed with an
+`fctx_ensure_rtcd()` at the entry point. **Grep the nearest existing shim
+before writing a new one** (`docs/WORKING-ON-THIS.md` §5) — this is the fourth
+lane to pay for that lesson.
 
 ## 2. Chunks
 
