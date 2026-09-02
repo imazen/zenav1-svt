@@ -1,0 +1,48 @@
+# VIDEO-mode KEY frame byte-identity matrix, 72x88 q40 — AFTER wiring the
+# video arm's SPATIAL SSE at MDS1 (docs/INTER-ENCODE-PLAN.md §1o''')
+
+date: 2026-09-01
+host: mac (Apple aarch64, M-series), release build
+base: dbf067070190 (the video-arm loop-restoration ladders, 57/60)
+
+## How it was produced
+
+  tools/video_key_matrix.sh <outdir>
+
+72x88 q40, five synthetic content classes x twelve presets, frames=2
+low-delay-P, FRAME 0 compared.
+
+## Result
+
+**58 / 60 byte-identical**, up from 57.
+
+Closed: `diag p0` (C 207 B; port 206 -> 207).
+Unchanged: `screenrep p0` at 0.043 %.
+MOVED THE WRONG WAY IN BYTES: `gradient p0` 0.447 % -> 0.522 % (port 1335 ->
+1348 against C's 1341 — it crossed over C). Recorded, not hidden: on the
+64-aligned cell this chunk was localized on (`gradient 128x128 q40 p0`) the
+SAME change took the coded tree from 287 field flips to 201 with `bsize` and
+`txd` flips going to ZERO and port-only geometry to ZERO, and made every MDS1
+candidate's distortion equal C's. The byte count is not the thing improving
+here; §1f's cancellation warning applies in both directions.
+
+The chunk's own cell, on a geometry with no partial superblocks:
+`gradient 128x128 q40 p2` C 3257 / port 3257 with DIFFERING bytes ->
+byte-identical. p0 2714 -> 2651 (C 2665), p1 2961 -> 2990 (C 3012).
+
+## Read the verdict column, not the percentage
+
+A zero percentage is a SIZE claim, not a byte claim (§1i). `gradient 128x128
+q40 p2` above is the live example: 3257 on both sides, 0.000 %, and NOT
+byte-identical before this chunk.
+
+## A SECOND geometry, same build: 128x128
+
+`VKM_W=128 VKM_H=128 tools/video_key_matrix.sh` —
+`benchmarks/video_key_matrix_128x128_2026-09-01-ssse.tsv`. Also **58 / 60**,
+and the two open cells are the SAME two content classes at the SAME preset:
+`gradient p0` (C 2665, port 2651, 0.525 %) and `screenrep p0` (C 6517, port
+6518, 0.015 %). 128x128 has FOUR COMPLETE superblocks and no partial-SB
+geometry at all, so the residual is a content x preset property, not an
+alignment one — which is why §1o''' localizes on this geometry rather than on
+72x88.

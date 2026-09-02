@@ -1030,6 +1030,33 @@ byteVideoKey "video-key-pd0-lvl4-predonly-fork-p8-screen" screen 72 88 40 8
 # `video-key-pd0-lvl4-*-p8-*` trio is what guards that half.
 byteVideoKey "video-key-lr-sgr-arm-p3-gradient" gradient 72 88 40 3
 
+# --- video-arm SPATIAL SSE at MDS1 (SSSE_MDS1), 2026-09-01 -----------------
+#
+# `svt_aom_sig_deriv_mode_decision_config_allintra` pins
+# `spatial_sse_full_loop_level = 3` (SSSE_MDS3, enc_mode_config.c:10010) at
+# EVERY preset, so MDS1 had always been a frequency-domain stage here. The
+# VIDEO ladder (`:9161-9165`) is `enc_mode <= ENC_M2 ? 1 : 3`, and level 1 is
+# SSSE_MDS1 — from MD stage 1 onward the distortion is the SPATIAL SSE of the
+# reconstruction against the source (`md_stage_1`, product_coding_loop.c:7025;
+# SSSE_MDS1 is the FIRST enum value, definitions.h:886, so the test is
+# `level == SSSE_MDS1`).
+#
+# OBSERVED BEFORE the fix, 72x88 q40 video frame 0:
+#   diag p0: C 207 B, port 206 B -> BYTE-IDENTICAL.
+# and on the 64-ALIGNED cell the chunk was localized on
+# (`gradient 128x128 q40`, four complete superblocks):
+#   video p2: C 3257, port 3257 but DIFFERING bytes -> BYTE-IDENTICAL
+#   video p0: coded-tree field flips 287 -> 201, `bsize` 2 -> 0, `txd` 5 -> 0,
+#             port-only geometry 4 -> 0, and every MDS1 candidate's ydist went
+#             from differing to EQUAL against C's SVT_FULLCOST_OUT.
+# `gradient 72x88 p0` moved 0.447 % -> 0.522 % in BYTES while its tree got
+# much closer — the §1f cancellation pattern — so it is not a cell here.
+#
+# The 128x128 p2 cell is the one that closed on a geometry with no partial
+# superblocks, which is why it is here alongside the 72x88 scoreboard cell.
+byteVideoKey "video-key-ssse-mds1-p0-diag"      diag     72  88 40 0
+byteVideoKey "video-key-ssse-mds1-p2-gradient"  gradient 128 128 40 2
+
 # ---------------------------------------------------------------------------
 total=$((pass + fail))
 echo

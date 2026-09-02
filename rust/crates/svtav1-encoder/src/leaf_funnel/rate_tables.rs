@@ -520,6 +520,18 @@ pub struct FunnelCfg {
     /// `rate_est_ctrls.update_skip_ctx_dc_sign_ctx`/`update_skip_coeff_ctx`
     /// (M6 rate_est 1: real neighbour contexts; M7/M8 rate_est 4: 0/0).
     pub real_coeff_ctx: bool,
+    /// `ctx->mds_do_spatial_sse` at MD STAGE 1 —
+    /// `spatial_sse_ctrls.level <= SSSE_MDS1` (product_coding_loop.c:7025).
+    ///
+    /// FALSE on the all-intra arm at EVERY preset, because
+    /// `svt_aom_sig_deriv_mode_decision_config_allintra` pins
+    /// `spatial_sse_full_loop_level = 3` (SSSE_MDS3, enc_mode_config.c:10010)
+    /// — which is why MDS1 has always been a freq-domain stage here. The
+    /// VIDEO ladder is `enc_mode <= ENC_M2 ? 1 : 3` (`:9161-9165`), so at
+    /// video M0..M2 MDS1's distortion is the SPATIAL SSE of the
+    /// reconstruction against the source, and the inverse transform C's
+    /// `full_loop_core` gate (`:4784`) skips at MDS1 elsewhere runs here.
+    pub spatial_sse_mds1: bool,
     /// TX-size search on (M6/M7 txs_level 3) vs off (M8 txs_level 0 ->
     /// depth 0 only).
     pub txs_on: bool,
@@ -725,6 +737,9 @@ impl FunnelCfg {
             mds3_band_cnt: 16,
             i_mds3_class_th_mult: 50,
             real_coeff_ctx: true,
+            // All-intra pins SSSE_MDS3 at every preset; `intra_arm::apply`
+            // overrides this for the video arm.
+            spatial_sse_mds1: false,
             txs_on: true,
             dc_only_gate: false,
             txt_on: true,

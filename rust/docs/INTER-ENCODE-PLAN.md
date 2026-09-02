@@ -1850,6 +1850,92 @@ flips and 24 C-only blocks; cut, it reports **10 and 24** — and the 14
 phantom flips are frame 1's `mode=16`/`skip=1` blocks landing on frame 0's
 keys. Read any tree number without the cut and it is inflated.
 
+### 1o'''. The video arm's SPATIAL SSE at MDS1 (2026-09-01) — `diag p0` closes
+
+The chunk §1o'' hands forward, taken the same session. **58 of 60** on
+the 72x88 scoreboard, up from 57; `diag p0` byte-identical.
+
+**The fork, and it is one row wide again.**
+`svt_aom_sig_deriv_mode_decision_config_allintra` pins
+`spatial_sse_full_loop_level = 3` — SSSE_MDS3 — at EVERY preset
+(`enc_mode_config.c:10010`), which is why MDS1 has always been a
+frequency-domain stage in this port. The VIDEO ladder (`:9161-9165`) is
+
+```c
+if (enc_mode <= ENC_M2) pcs->spatial_sse_full_loop_level = 1;   /* SSSE_MDS1 */
+else                    pcs->spatial_sse_full_loop_level = 3;   /* SSSE_MDS3 */
+```
+
+and `md_stage_1` reads it as `ctx->mds_do_spatial_sse =
+spatial_sse_ctrls.level <= SSSE_MDS1` (`product_coding_loop.c:7025`), with
+`SSSE_MDS1` the FIRST enum value (`definitions.h:886`) — so that test is
+`level == SSSE_MDS1`, not "anything at or below". At video M0..M2, therefore,
+MDS1's distortion is the SPATIAL SSE of the reconstruction against the source,
+and the inverse transform that `full_loop_core`'s gate (`:4784`) skips at MDS1
+everywhere else runs.
+
+The ladder was ALREADY ported and unwired (`port_enc_mode_config::md_config`'s
+`spatial_sse_full_loop_level`, `encdec::set_spatial_sse_full_loop_level`) — the
+same shape as the SGR chunk. `FunnelCfg` gains `spatial_sse_mds1`,
+`intra_arm::apply` stamps it per arm, and `mds1.rs` passes it as `tx_unit`'s
+`spatial_dist`. No `need_recon` change: `tx_unit` derives it
+(`do_recon = need_recon || spatial_dist`).
+
+**Measured, `gradient 128x128 q40` (the 64-aligned cell), one build per side:**
+
+| preset | still | video before | video after |
+|---|---|--:|--:|
+| 0 | IDENTICAL | 2714 (C 2665) | 2651 |
+| 1 | IDENTICAL | 2961 (C 3012) | 2990 |
+| 2 | IDENTICAL | 3257 (C 3257, differing bytes) | **IDENTICAL** |
+| 3 / 4 / 6 / 8 | IDENTICAL | IDENTICAL | IDENTICAL |
+
+and at video p0, block-level, C's `SVT_FULLCOST_OUT` against the port's
+`SVTAV1_CANDDBG` at `mi=(0,0)` over every tested block size:
+
+| | ydist |
+|---|---|
+| before | differed on all 46 MDS1 candidates of every size |
+| after | **EQUAL on all 46 of every size**, 64x64 through 4x8 |
+
+and that cell's coded tree: **287 field flips -> 201**, `bsize` 2 -> **0**,
+`txd` 5 -> **0**, port-only geometry 4 -> **0**. The partition and the tx depth
+are exact now.
+
+**On the 72x88 scoreboard: 57 -> 58.** `diag p0` C 207 / port 206 ->
+byte-identical. `screenrep p0` unchanged at 0.043 %. `gradient p0` moved
+0.447 % -> **0.522 %** — FURTHER in bytes (1335 -> 1348 against C's 1341, i.e.
+it crossed over) while its tree got much closer. That is §1f's
+cancellation pattern read from the other side, and it is recorded as a
+percentage regression rather than hidden: the byte count is not the thing
+improving here.
+
+**What is left at video p0/p1, measured.** At `mi=(5,0)` of the 128x128 cell —
+the first remaining flip inside superblock 0 — MDS1 is now EXACT: same 46
+candidates, same order, `ydist` identical, rate off only by the inert dump
+offset below. C picks PAETH with no filter-intra there and the port picks V/DC
+with filter-intra 1, so the divergence has moved to **MDS3** (TXS / TXT / RDOQ
+/ chroma); 24 of the 201 flips are inside superblock 0 and the rest are
+downstream of them. Ruled out by reading both `sig_deriv_mode_decision_config`
+arms at M0..M2: `rdoq_level` (1 on both), `txt_level` (2 on both for
+`is_base`), `intra_level` (1 on both — mode_end PAETH, angular 1),
+`rate_est_level` (1 on both).
+
+**One ladder IS forked and IS unwired, and it explains p1 but not p0:**
+`svt_aom_get_chroma_level_{default,allintra}` (`enc_mode_config.c:8547` /
+`:8573`) disagree at **M1 alone** on an I-slice — allintra 2, video 4 — and
+agree at M0 (1 on both) and M2..M5 (4 on both). Both rows are already ported
+and tier-1 EXPORTED in `port_enc_mode_config::leaf::get_chroma_level_*`;
+`funnel_arm` wires `txt_level` and `cfl_level` but NOT `chroma_level`, so the
+funnel still takes the allintra row. That is the next thing to wire, and it
+cannot be p0's cause. Also still unread for p0: `nsq_search_level` and
+`tx_shortcut_level`.
+
+**A dump offset to not chase.** The port's `NSQDBG PMDS1 coeff_rate` runs a
+constant ABOVE C's `ycb`, per tx-size class: 8x8 392, 16x16 750, 32x32 709,
+64x64 1306. It is present at video **p6**, which is BYTE-IDENTICAL, so it is
+inert — a dump-field difference, not a cost divergence.
+
 ### 1p. PD0_LVL_4 on the REFINEMENT path (2026-09-01) — `gradient p8`, and a latent `th` defect it exposed
 
 `gradient 72x88 q40 p8` was 1.673 % off (C 1554 B, the port 1528 — the port
@@ -1977,6 +2063,10 @@ Nothing above 0.5 % survives at `72x88 q40` in video mode.
 it was the video arm's loop-restoration ladder, and `lr_type` 3 is
 RESTORE_SGRPROJ, not SWITCHABLE. Only the three p0 cells remain, and §1o' does
 not touch them. Reproduce the scoreboard with `tools/video_key_matrix.sh`.
+
+**UPDATE 2026-09-01 (§1o'''): 58 / 60.** `diag p0` is closed too — the video
+arm's SPATIAL SSE at MDS1. Open: `gradient p0` (0.522 %, a percentage that went
+UP while its tree got closer) and `screenrep p0` (0.043 %).
 
 **But read the p0 cluster as a WARNING, not as "nearly closed" — measured,
 2026-09-01.** `gradient 72x88 q40 p0` is 0.447 % off in BYTES and its coded

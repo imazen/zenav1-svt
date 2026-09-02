@@ -207,6 +207,27 @@ pub(crate) fn intra_edge_filter(arm: ScArm, enc_mode: u8) -> bool {
     }
 }
 
+/// `pcs->spatial_sse_full_loop_level` for this arm. `enc_mode` must already be
+/// [`crate::rate_arm::eff_enc_mode`]-clamped.
+///
+/// The allintra arm is the LITERAL 3 at `enc_mode_config.c:10010` — no ladder
+/// at all — which is why the still path has always run MDS1 in the frequency
+/// domain. The video arm (`:9161-9165`) is `enc_mode <= ENC_M2 ? 1 : 3`, and
+/// level 1 is `SSSE_MDS1`: spatial SSE from MD stage 1 onward.
+#[must_use]
+pub(crate) fn spatial_sse_full_loop_level(arm: ScArm, enc_mode: u8) -> u8 {
+    match arm {
+        ScArm::Allintra => 3,
+        ScArm::Video { .. } => {
+            if enc_mode <= 2 {
+                1
+            } else {
+                3
+            }
+        }
+    }
+}
+
 /// Stamp both ladders' results onto a [`FunnelCfg`], replacing the values
 /// `FunnelCfg::for_preset` baked from the allintra arm.
 ///
@@ -228,6 +249,18 @@ pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_islice: bo
     cfg.prune_best_mode = prune_best;
     cfg.dc_only_gate = prune_edge;
 
+    // `ctx->mds_do_spatial_sse` at MDS1 — `spatial_sse_ctrls.level <=
+    // SSSE_MDS1` (product_coding_loop.c:7025), with `SSSE_MDS1` the FIRST
+    // enum value (`definitions.h:886`), so the test is level == SSSE_MDS1.
+    cfg.spatial_sse_mds1 = matches!(
+        crate::port_enc_mode_config::encdec::set_spatial_sse_full_loop_level(
+            spatial_sse_full_loop_level(arm, enc_mode),
+        )
+        .expect("spatial_sse level outside C's switch")
+        .level,
+        crate::port_enc_mode_config::encdec::SpatialSseLevel::Mds1
+    );
+
     // The SH bit the decoder reads, applied to the funnel's own prediction.
     cfg.edge_filter = intra_edge_filter(arm, enc_mode);
 }
@@ -243,6 +276,43 @@ mod tests {
     /// and `part_arm::allintra_flattening_matches_*` — the baked table is the
     /// regression oracle, so a divergence fails here rather than in a 1,100-cell
     /// sweep.
+    /// `spatial_sse_full_loop_level` — the ONE-ROW fork at M0..M2 that makes
+    /// the video arm run MDS1 in the SPATIAL domain. Anti-vacuity: the M3 row
+    /// must agree on both arms, or the sweep below would pass trivially.
+    #[test]
+    fn spatial_sse_ladder_forks_only_at_m0_to_m2() {
+        let vid = ScArm::Video { is_islice: true };
+        for preset in 0u8..=13 {
+            let eff_a = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);
+            let eff_v = crate::rate_arm::eff_enc_mode(vid, preset);
+            assert_eq!(
+                spatial_sse_full_loop_level(ScArm::Allintra, eff_a),
+                3,
+                "allintra is the literal 3 at M{preset}"
+            );
+            let want = if preset <= 2 { 1 } else { 3 };
+            assert_eq!(
+                spatial_sse_full_loop_level(vid, eff_v),
+                want,
+                "video ladder at M{preset}"
+            );
+        }
+        // The arms DISAGREE at M0..M2 and AGREE from M3 — the shape the
+        // 128x128 video matrix measured (p0/p1/p2 diff, p3+ identical).
+        for preset in 0u8..=2 {
+            assert_ne!(
+                spatial_sse_full_loop_level(ScArm::Allintra, preset),
+                spatial_sse_full_loop_level(vid, preset)
+            );
+        }
+        for preset in 3u8..=8 {
+            assert_eq!(
+                spatial_sse_full_loop_level(ScArm::Allintra, preset),
+                spatial_sse_full_loop_level(vid, preset)
+            );
+        }
+    }
+
     #[test]
     fn allintra_flattening_matches_the_ladder() {
         for preset in 0u8..=13 {

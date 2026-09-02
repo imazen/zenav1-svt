@@ -127,7 +127,10 @@ pub(super) fn run_mds1(
                 frame,
                 rates,
                 false, // no RDOQ at MDS1
-                false, // freq-domain dist
+                // MDS1's distortion domain — `ctx->mds_do_spatial_sse`
+                // (product_coding_loop.c:7025). FALSE on every all-intra
+                // preset (SSSE_MDS3), TRUE on the video arm at M0..M2.
+                cfg.spatial_sse_mds1,
                 blk_crop,
                 // R1: MDS1's reconstruction is UNREAD. The loop body below takes
                 // only `out.eob / .bits / .dist` (and `out10`'s twins); grepping
@@ -139,6 +142,10 @@ pub(super) fn run_mds1(
                 // enc_mode_config.c:10010) so `mds_do_spatial_sse` is FALSE at
                 // MDS1 (:7025), and MDS1 evaluates tx_depth 0 — both disjuncts
                 // false, so C inverts nothing here at any all-intra preset.
+                // On the VIDEO arm at M0..M2 the first disjunct is TRUE and C
+                // does invert; `tx_unit` derives that itself
+                // (`do_recon = need_recon || spatial_dist`), so this stays
+                // false and still gets a recon when the spatial arm needs one.
                 false,
                 RateMode::Exact,
             )
@@ -176,7 +183,9 @@ pub(super) fn run_mds1(
                 b.bd,
                 b.qt.qm_level,
                 Some(&TxRdArgs {
-                    spatial_dist: false, // MDS1 = freq-domain residual
+                    // Same fork as the u8 call above: freq-domain residual
+                    // unless the arm asks for SSSE_MDS1.
+                    spatial_dist: cfg.spatial_sse_mds1,
                     intra_dir,
                     coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
                     tx_bias: frame.tx_bias,
