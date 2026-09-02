@@ -13,6 +13,7 @@ pub mod dlf;
 pub mod enc_dec_metrics;
 pub mod entropy_block;
 pub mod entropy_inter;
+pub mod frame_cdf;
 pub mod inter_me;
 pub mod inter_mvp;
 pub mod inter_pred;

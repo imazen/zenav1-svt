@@ -125,6 +125,22 @@ pub struct ReferenceFrame {
     /// (`update_cdef_filters_on_ref_info`), so a DPB that does not carry them
     /// cannot reproduce C's inter-frame CDEF at all.
     pub cdef_y_strengths: Vec<u8>,
+    /// C `EbReferenceObject::frame_context` (`reference_object.h:39`), written
+    /// at `packetization_process.c:741-744` — the END-OF-FRAME entropy state,
+    /// counters already reset.
+    ///
+    /// A later frame whose header names this slot in `primary_ref_frame` starts
+    /// its tile CDFs from exactly these tables (`ec_process.c:101-112`). That
+    /// is a CONFORMANCE requirement, not a compression choice: a decoder reads
+    /// `primary_ref_frame` and does the same restore, so an encoder that coded
+    /// against different probabilities produces a stream that decodes to
+    /// garbage rather than one that merely differs in size.
+    ///
+    /// `None` on any frame whose entropy walk did not run (there is none
+    /// today) — a restore from `None` falls back to the spec defaults, which is
+    /// what `PRIMARY_REF_NONE` means, so the failure mode is a wrong stream,
+    /// never a panic. See [`crate::port_frame_cdf`].
+    pub frame_cdfs: Option<alloc::sync::Arc<crate::port_frame_cdf::FrameCdfs>>,
     /// The chroma twin of [`Self::cdef_y_strengths`]
     /// (`ref_cdef_strengths[1][..num]`).
     pub cdef_uv_strengths: Vec<u8>,
@@ -279,6 +295,7 @@ mod tests {
             v_plane: alloc::vec![],
             cdef_y_strengths: alloc::vec![],
             cdef_uv_strengths: alloc::vec![],
+            frame_cdfs: None,
             width: 64,
             height: 64,
             display_order: 0,
@@ -299,6 +316,7 @@ mod tests {
             v_plane: alloc::vec![],
             cdef_y_strengths: alloc::vec![],
             cdef_uv_strengths: alloc::vec![],
+            frame_cdfs: None,
             width: 4,
             height: 4,
             display_order: 0,

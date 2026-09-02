@@ -61,6 +61,7 @@ pub mod port_enc_dec_cdf;
 pub mod port_enc_dec_metrics;
 pub mod port_enc_mode_config;
 pub mod port_entropy_inter;
+pub mod port_frame_cdf;
 pub mod port_frame_update;
 pub mod port_full_loop;
 pub mod port_full_loop_md;

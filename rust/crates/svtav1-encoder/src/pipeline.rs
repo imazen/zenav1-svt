@@ -2996,6 +2996,80 @@ impl EncodePipeline {
         // the post-CDEF recon, so the tile must be re-written AFTER
         // deblock+CDEF when any plane signals wiener — C's pipeline order
         // (rest_process before the EC kernel) gives it the same view.
+        // CDF CONTINUATION, RESTORE side — C `reset_entropy_coding_picture`
+        // (`ec_process.c:101-112`):
+        //
+        //     if (primary_ref_frame != PRIMARY_REF_NONE)
+        //         svt_memcpy(ec->fc, &ref->frame_context, sizeof(FRAME_CONTEXT));
+        //     else
+        //         svt_aom_reset_entropy_coder(...);
+        //
+        // The DPB slot is the one the FRAME HEADER names:
+        // `ref_frame_idx[primary_ref_frame]`, i.e. `rps.ref_dpb_index[]`, which
+        // is what a DECODER resolves. (C indexes its own
+        // `ref_pic_ptr_array[list][idx]` via `get_list_idx`/`get_ref_frame_idx`
+        // instead; the two agree, and the spec mapping is the one conformance
+        // depends on, so that is the one used here.)
+        //
+        // `binding` is recomputed at the header-assembly site below from the
+        // same pure inputs; `primary_ref_frame_for_cdf` is carried down so the
+        // two are ASSERTED equal rather than assumed — a tile coded against
+        // slot A while the header announces slot B is a decoder desync, and it
+        // is exactly the kind of divergence no byte count would explain.
+        let (primary_ref_frame_for_cdf, primary_ref_cdfs) = if is_key {
+            (crate::port_picstruct::PRIMARY_REF_NONE, None)
+        } else if let Some(pic) = pic_decision.as_ref() {
+            let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
+            let b = crate::port_picstruct::bind_refs_and_primary_ref_frame(
+                pic, &ref_queue, /*frame_end_cdf_update_mode=*/ true,
+                /*is_s_frame=*/ false,
+            );
+            let prf = b.primary_ref_frame;
+            let cdfs = if prf == crate::port_picstruct::PRIMARY_REF_NONE {
+                None
+            } else {
+                let slot = pic.rps.ref_dpb_index[prf as usize] as usize;
+                let stored = self.dpb.get(slot).and_then(|rf| rf.frame_cdfs.clone());
+                if stored.is_none() {
+                    // REFUSE rather than fall back to the defaults. The header
+                    // this frame is about to write says "start from slot N's
+                    // end-of-frame CDFs"; coding against the defaults instead
+                    // produces a stream a conforming decoder turns into
+                    // garbage, which is the one failure mode `docs/WORKING-ON-
+                    // THIS.md` §6 exists to forbid. It is also the POSITIVE
+                    // CONTROL for this wiring: if the store ever stops
+                    // running, every inter cell fails loudly instead of
+                    // quietly regressing to default-CDF bytes.
+                    return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                        "the frame header names a primary_ref_frame, but the DPB slot it \
+                         resolves to carries no saved CDF state — the referenced frame's \
+                         entropy walk never ran (crate::port_frame_cdf)",
+                    )));
+                }
+                stored
+            };
+            (prf, cdfs)
+        } else {
+            (crate::port_picstruct::PRIMARY_REF_NONE, None)
+        };
+
+        // CDF CONTINUATION (`crate::port_frame_cdf`): the end-of-frame entropy
+        // state this frame hands to whatever later frame names it in
+        // `primary_ref_frame`. C saves it at
+        // `packetization_process.c:741-744`, from `pcs->ec_info[tile_idx]->ec->fc`
+        // — a loop over tiles that OVERWRITES, so the LAST tile's context is
+        // what lands on the reference object. Single-tile frames (every cell in
+        // the inter campaign) make that tile 0, which is also the
+        // `context_update_tile_id` a decoder would use; the two can only differ
+        // on a multi-tile frame, and that is recorded in the module docs rather
+        // than silently resolved here.
+        //
+        // The walk runs up to THREE times (base, +CDEF syntax, +LR syntax) and
+        // each rerun replaces `tile_data`, so the cell is overwritten every
+        // time and ends holding the state of the walk whose bytes actually
+        // ship. Anything else would save the CDFs of a bitstream nobody sent.
+        let walk_end_cdfs: core::cell::RefCell<Option<crate::port_frame_cdf::FrameCdfs>> =
+            core::cell::RefCell::new(None);
         #[allow(clippy::type_complexity)]
         // inline tuple documents the shape; a `type` alias would hide it
         let run_entropy_walk = |lr: Option<&crate::restoration::FrameRestInfo>,
@@ -3071,12 +3145,23 @@ impl EncodePipeline {
                     tile_grid.col_span(tile_idx % tile_grid.tile_cols);
 
                 let mut writer = crate::entropy::writer::AomWriter::new(n + 256);
-                // CDF updates enabled — matches the frame header's disable_cdf_update=0
-                let mut frame_ctx = crate::entropy::context::FrameContext::new_default();
-                // C-exact coefficient CDFs for the base_q_idx bucket
-                // (svt_av1_default_coef_probs semantics) — qindex domain.
-                let mut coeff_fc =
-                    crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
+                // CDF updates enabled — matches the frame header's disable_cdf_update=0.
+                //
+                // C `reset_entropy_coding_picture` (ec_process.c:101-112) does
+                // this per TILE, and so does this loop: with
+                // `primary_ref_frame != PRIMARY_REF_NONE` every tile starts
+                // from the SAME restored reference context (not from the
+                // previous tile's end state), which is what makes tiles
+                // independently decodable.
+                let (mut frame_ctx, mut coeff_fc) = match primary_ref_cdfs.as_ref() {
+                    Some(prev) => (prev.fc.clone(), prev.coeff.clone()),
+                    // C-exact coefficient CDFs for the base_q_idx bucket
+                    // (svt_av1_default_coef_probs semantics) — qindex domain.
+                    None => (
+                        crate::entropy::context::FrameContext::new_default(),
+                        crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex),
+                    ),
+                };
                 let mut ectx = EntropyCtx::new(
                     w4,
                     h4,
@@ -3244,6 +3329,13 @@ impl EncodePipeline {
                 }
 
                 tile_bitstreams.push(writer.done().to_vec());
+                // See `walk_end_cdfs`: overwritten per tile AND per walk, so
+                // it ends holding the last tile of the last walk — C's own
+                // "last tile wins" save order.
+                *walk_end_cdfs.borrow_mut() = Some(crate::port_frame_cdf::FrameCdfs {
+                    fc: frame_ctx,
+                    coeff: coeff_fc,
+                });
             }
 
             // Shared derivation for the frame header's tile_info() trailer
@@ -4454,6 +4546,13 @@ impl EncodePipeline {
                      refused rather than answered from a placeholder",
                 ))
             })?;
+            // The tile above was coded from whatever `primary_ref_frame_for_cdf`
+            // resolved to; the header must announce the SAME reference or the
+            // decoder restores different CDFs than the encoder used.
+            assert_eq!(
+                binding.primary_ref_frame, primary_ref_frame_for_cdf,
+                "the header's primary_ref_frame must equal the one the tile's CDFs came from",
+            );
             Some(
                 crate::inter_hdr_arm::inter_signal(
                     pic,
@@ -4687,6 +4786,24 @@ impl EncodePipeline {
             // (`update_cdef_filters_on_ref_info`).
             cdef_y_strengths: cdef_params.strengths.iter().map(|s| s.0).collect(),
             cdef_uv_strengths: cdef_params.strengths.iter().map(|s| s.1).collect(),
+            // C `packetization_process.c:741-744`: reset the CDF symbol
+            // counters, THEN copy into the reference object. The reset is not
+            // cosmetic — `update_cdf` reads `cdf[nsymbs]` to choose the
+            // adaptation RATE, so a saved state that kept a frame's final
+            // counts would make the next frame adapt at the slow late-frame
+            // rate from its first symbol.
+            frame_cdfs: walk_end_cdfs.borrow_mut().take().map(|mut c| {
+                c.reset_symbol_counters();
+                #[cfg(feature = "std")]
+                if let Some(path) = std::env::var_os("SVTAV1_FCTX_OUT") {
+                    // Same format and field order as the C oracle's
+                    // `__wrap_svt_av1_reset_cdf_symbol_counters`
+                    // (tools/capture_c_trace/wrap_recon.c), so
+                    // tools/fctx_diff.py can compare them directly.
+                    c.dump_to(&path, display_order as u32);
+                }
+                alloc::sync::Arc::new(c)
+            }),
             width: self.width,
             height: self.height,
             display_order,

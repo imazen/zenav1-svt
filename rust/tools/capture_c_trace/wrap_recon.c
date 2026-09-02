@@ -1103,3 +1103,149 @@ void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureContro
             (unsigned)ctx->is_subres_safe);
     fflush(f);
 }
+
+/* ---------------------------------------------------------------------------
+ * svt_av1_reset_cdf_symbol_counters — the END-OF-FRAME CDF STATE ORACLE.
+ *
+ * WHY THIS ONE FUNCTION. `packetization_process.c:741-744` is the only place
+ * C saves a frame context for a LATER frame to start from:
+ *
+ *     svt_av1_reset_cdf_symbol_counters(pcs->ec_info[tile_idx]->ec->fc);
+ *     ((EbReferenceObject*)...->object_ptr)->frame_context = *(...->ec->fc);
+ *
+ * so wrapping it and dumping the fc AFTER the real call gives EXACTLY the
+ * bytes that land in the reference object — the state the next frame's
+ * `reset_entropy_coding_picture` (ec_process.c:101-112) and
+ * `init_frame_rate_tables` (md_config_process.c:299-310) copy back when
+ * `primary_ref_frame != PRIMARY_REF_NONE`.
+ *
+ * That makes this the oracle for CDF CONTINUATION: the port's own saved state
+ * can be compared field-for-field against it without decoding a bitstream, and
+ * without needing the inter tile walk to work first.
+ *
+ * The counters are part of the answer, not noise: `update_cdf`'s adaptation
+ * RATE reads `cdf[nsymbs]`, so a save that skipped the reset would make the
+ * next frame adapt at the wrong speed from its first symbol.
+ *
+ * Output (SVT_FCTX_OUT, appended; one line per CDF array):
+ *     FCTX <call#> <field> <count> <v0> <v1> ...
+ * `<call#>` counts calls, so a 2-frame encode where only frame 0 is a
+ * reference has a single block numbered 0. The port's twin dump
+ * (SVTAV1_FCTX_OUT) uses the same field names and the same flat order.
+ * ------------------------------------------------------------------------- */
+void __real_svt_av1_reset_cdf_symbol_counters(FRAME_CONTEXT *fc);
+
+#define FCTX_DUMP(f, n, name, arr)                                            \
+    do {                                                                      \
+        const AomCdfProb *_p = (const AomCdfProb *)(arr);                     \
+        size_t            _n = sizeof(arr) / sizeof(AomCdfProb);              \
+        fprintf((f), "FCTX %u %s %zu", (unsigned)(n), (name), _n);            \
+        for (size_t _i = 0; _i < _n; _i++) fprintf((f), " %u", (unsigned)_p[_i]); \
+        fputc('\n', (f));                                                     \
+    } while (0)
+
+static void fctx_dump_nmv(FILE *f, unsigned n, const char *prefix, const NmvContext *nmv) {
+    char nm[96];
+    snprintf(nm, sizeof(nm), "%s.joints", prefix);
+    FCTX_DUMP(f, n, nm, nmv->joints_cdf);
+    for (int i = 0; i < 2; i++) {
+        snprintf(nm, sizeof(nm), "%s.comp%d.classes", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].classes_cdf);
+        snprintf(nm, sizeof(nm), "%s.comp%d.class0_fp", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].class0_fp_cdf);
+        snprintf(nm, sizeof(nm), "%s.comp%d.fp", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].fp_cdf);
+        snprintf(nm, sizeof(nm), "%s.comp%d.sign", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].sign_cdf);
+        snprintf(nm, sizeof(nm), "%s.comp%d.class0_hp", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].class0_hp_cdf);
+        snprintf(nm, sizeof(nm), "%s.comp%d.hp", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].hp_cdf);
+        snprintf(nm, sizeof(nm), "%s.comp%d.class0", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].class0_cdf);
+        snprintf(nm, sizeof(nm), "%s.comp%d.bits", prefix, i);
+        FCTX_DUMP(f, n, nm, nmv->comps[i].bits_cdf);
+    }
+}
+
+void __wrap_svt_av1_reset_cdf_symbol_counters(FRAME_CONTEXT *fc) {
+    __real_svt_av1_reset_cdf_symbol_counters(fc);
+    const char *path = getenv("SVT_FCTX_OUT");
+    if (!path || !*path)
+        return;
+    static unsigned call_no = 0;
+    FILE          *f        = fopen(path, "a");
+    if (!f)
+        return;
+    unsigned n = call_no++;
+    FCTX_DUMP(f, n, "txb_skip", fc->txb_skip_cdf);
+    FCTX_DUMP(f, n, "eob_extra", fc->eob_extra_cdf);
+    FCTX_DUMP(f, n, "dc_sign", fc->dc_sign_cdf);
+    FCTX_DUMP(f, n, "eob_flag16", fc->eob_flag_cdf16);
+    FCTX_DUMP(f, n, "eob_flag32", fc->eob_flag_cdf32);
+    FCTX_DUMP(f, n, "eob_flag64", fc->eob_flag_cdf64);
+    FCTX_DUMP(f, n, "eob_flag128", fc->eob_flag_cdf128);
+    FCTX_DUMP(f, n, "eob_flag256", fc->eob_flag_cdf256);
+    FCTX_DUMP(f, n, "eob_flag512", fc->eob_flag_cdf512);
+    FCTX_DUMP(f, n, "eob_flag1024", fc->eob_flag_cdf1024);
+    FCTX_DUMP(f, n, "coeff_base_eob", fc->coeff_base_eob_cdf);
+    FCTX_DUMP(f, n, "coeff_base", fc->coeff_base_cdf);
+    FCTX_DUMP(f, n, "coeff_br", fc->coeff_br_cdf);
+    FCTX_DUMP(f, n, "newmv", fc->newmv_cdf);
+    FCTX_DUMP(f, n, "zeromv", fc->zeromv_cdf);
+    FCTX_DUMP(f, n, "refmv", fc->refmv_cdf);
+    FCTX_DUMP(f, n, "drl", fc->drl_cdf);
+    FCTX_DUMP(f, n, "inter_compound_mode", fc->inter_compound_mode_cdf);
+    FCTX_DUMP(f, n, "compound_type", fc->compound_type_cdf);
+    FCTX_DUMP(f, n, "wedge_idx", fc->wedge_idx_cdf);
+    FCTX_DUMP(f, n, "interintra", fc->interintra_cdf);
+    FCTX_DUMP(f, n, "wedge_interintra", fc->wedge_interintra_cdf);
+    FCTX_DUMP(f, n, "interintra_mode", fc->interintra_mode_cdf);
+    FCTX_DUMP(f, n, "motion_mode", fc->motion_mode_cdf);
+    FCTX_DUMP(f, n, "obmc", fc->obmc_cdf);
+    FCTX_DUMP(f, n, "palette_y_size", fc->palette_y_size_cdf);
+    FCTX_DUMP(f, n, "palette_uv_size", fc->palette_uv_size_cdf);
+    FCTX_DUMP(f, n, "palette_y_color_index", fc->palette_y_color_index_cdf);
+    FCTX_DUMP(f, n, "palette_uv_color_index", fc->palette_uv_color_index_cdf);
+    FCTX_DUMP(f, n, "palette_y_mode", fc->palette_y_mode_cdf);
+    FCTX_DUMP(f, n, "palette_uv_mode", fc->palette_uv_mode_cdf);
+    FCTX_DUMP(f, n, "comp_inter", fc->comp_inter_cdf);
+    FCTX_DUMP(f, n, "single_ref", fc->single_ref_cdf);
+    FCTX_DUMP(f, n, "comp_ref_type", fc->comp_ref_type_cdf);
+    FCTX_DUMP(f, n, "uni_comp_ref", fc->uni_comp_ref_cdf);
+    FCTX_DUMP(f, n, "comp_ref", fc->comp_ref_cdf);
+    FCTX_DUMP(f, n, "comp_bwdref", fc->comp_bwdref_cdf);
+    FCTX_DUMP(f, n, "txfm_partition", fc->txfm_partition_cdf);
+    FCTX_DUMP(f, n, "compound_index", fc->compound_index_cdf);
+    FCTX_DUMP(f, n, "comp_group_idx", fc->comp_group_idx_cdf);
+    FCTX_DUMP(f, n, "skip_mode", fc->skip_mode_cdfs);
+    FCTX_DUMP(f, n, "skip", fc->skip_cdfs);
+    FCTX_DUMP(f, n, "intra_inter", fc->intra_inter_cdf);
+    fctx_dump_nmv(f, n, "nmvc", &fc->nmvc);
+    fctx_dump_nmv(f, n, "ndvc", &fc->ndvc);
+    FCTX_DUMP(f, n, "intrabc", fc->intrabc_cdf);
+    FCTX_DUMP(f, n, "seg.tree", fc->seg.tree_cdf);
+    FCTX_DUMP(f, n, "seg.pred", fc->seg.pred_cdf);
+    FCTX_DUMP(f, n, "seg.spatial_pred", fc->seg.spatial_pred_seg_cdf);
+    FCTX_DUMP(f, n, "filter_intra", fc->filter_intra_cdfs);
+    FCTX_DUMP(f, n, "filter_intra_mode", fc->filter_intra_mode_cdf);
+    FCTX_DUMP(f, n, "switchable_restore", fc->switchable_restore_cdf);
+    FCTX_DUMP(f, n, "wiener_restore", fc->wiener_restore_cdf);
+    FCTX_DUMP(f, n, "sgrproj_restore", fc->sgrproj_restore_cdf);
+    FCTX_DUMP(f, n, "y_mode", fc->y_mode_cdf);
+    FCTX_DUMP(f, n, "uv_mode", fc->uv_mode_cdf);
+    FCTX_DUMP(f, n, "partition", fc->partition_cdf);
+    FCTX_DUMP(f, n, "switchable_interp", fc->switchable_interp_cdf);
+    FCTX_DUMP(f, n, "kf_y", fc->kf_y_cdf);
+    FCTX_DUMP(f, n, "angle_delta", fc->angle_delta_cdf);
+    FCTX_DUMP(f, n, "tx_size", fc->tx_size_cdf);
+    FCTX_DUMP(f, n, "delta_q", fc->delta_q_cdf);
+    FCTX_DUMP(f, n, "delta_lf_multi", fc->delta_lf_multi_cdf);
+    FCTX_DUMP(f, n, "delta_lf", fc->delta_lf_cdf);
+    FCTX_DUMP(f, n, "intra_ext_tx", fc->intra_ext_tx_cdf);
+    FCTX_DUMP(f, n, "inter_ext_tx", fc->inter_ext_tx_cdf);
+    FCTX_DUMP(f, n, "cfl_sign", fc->cfl_sign_cdf);
+    FCTX_DUMP(f, n, "cfl_alpha", fc->cfl_alpha_cdf);
+    fflush(f);
+    fclose(f);
+}
