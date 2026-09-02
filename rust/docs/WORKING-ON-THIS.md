@@ -101,6 +101,18 @@ one of them writes a frame 0 that is byte-identical to C. Before measuring
 anything on an inter cell, check that the port completes it — a refusal or a
 crash makes any ratio a comparison against a smaller workload.
 
+**And the 33 partial-SB cells it unblocked immediately paid for themselves.**
+The first thing measured on one of them (`gradient 168x168 q32 p8` frame 1,
+against C's `SVT_PD0CFG_OUT`) was that every `me_*_distortion` was normalised
+by the PICTURE's area instead of the superblock's, so all three
+`disallow_below_*` decisions and hence `min_sq` were wrong on every partial
+superblock — invisible while those cells panicked, and invisible to
+`me_8x8_cost_variance`, which matched C throughout because it is computed
+before the normalisation. Fixed; the still-open half of that join (C's
+`fast_lambda_md` is per-SUPERBLOCK, the port's is per-frame) is in
+`benchmarks/pd0_depth_removal_join_2026-09-02.md`. **A crash is not only a
+crash: it is a region of the configuration space nothing can measure.**
+
 **And with the crashes gone that grid describes the BYTE frontier honestly for
 the first time, which is much narrower than the campaign's headline ratio.**
 Of the 52 cells that complete, **5** are byte-identical on both frames: p6 2/12,
