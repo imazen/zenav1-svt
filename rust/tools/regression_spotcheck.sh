@@ -218,6 +218,43 @@ fhVideoKey() {
 }
 
 # fhInterFrame <label> <content> <w> <h> <qp> <preset>
+# encodesInter <label> <content> <w> <h> <qp> <preset>
+# Asserts the port ENCODES BOTH FRAMES of a 2-frame low-delay P sequence
+# without panicking. It does NOT compare bytes.
+#
+# WHY IT IS SEPARATE FROM noPanic(). That helper runs the PUBLIC API, which
+# refuses an inter frame outright (docs/WORKING-ON-THIS.md §6/§7b), so it can
+# never reach the inter mode-decision path where these crashes live — the same
+# "a gate that cannot reach a feature cannot guard it" trap §5 records for the
+# screen-content detector. This one sets SVTAV1_INTER_EXPERIMENTAL.
+#
+# A REFUSAL (exit 3) FAILS here, unlike in byteVideoKey. Every cell below is a
+# configuration the port ALREADY encodes both frames of, so a refusal appearing
+# would mean a crash had been papered over as an out-of-envelope config —
+# which docs/REFUSED-CONFIGS.md's own preamble warns is how a gap gets to look
+# handled.
+encodesInter() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  rm -f "$W"/rs.obu.f*
+  local rc=0
+  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+    SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>"$W/err" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if grep -q "panicked at" "$W/err"; then
+      fail=$((fail+1))
+      failed+=("$label PANIC: $(grep -m1 -A1 'panicked at' "$W/err" | tail -1 | cut -c1-90)")
+    else
+      fail=$((fail+1)); failed+=("$label [did not encode both frames, rc=$rc]")
+    fi
+    return
+  fi
+  if [ ! -s "$W/rs.obu.f0" ] || [ ! -s "$W/rs.obu.f1" ]; then
+    fail=$((fail+1)); failed+=("$label [exit 0 but a frame is missing]"); return
+  fi
+  pass=$((pass+1))
+}
+
 # The INTER-frame sibling of fhVideoKey: asserts every FRAME-HEADER field of
 # the port's frame 1 equals C's frame 1.
 #
@@ -1144,6 +1181,41 @@ byteVideoKey "video-key-fixed-partition-p11-q55-diag"     diag     64 64 55 11
 # strengths (`update_cdef_filters_on_ref_info`). A wrong value in ANY of them
 # shifts or changes a header field.
 fhInterFrame "inter-frame-header-gradient-p6" gradient 64 64 40 6
+
+# --- PD0 descended BELOW min_sq on an inter frame, 2026-09-02. --------------
+#
+# `Pd0Ctx::pick_q` treated "this node has no d1 shape to cost" as "this node
+# must SPLIT". C keeps the two apart: `init_md_scan` (enc_dec_process.c:1457)
+# sets `mds->split_flag = (sq_size > min_sq_size)` from the SIZE ALONE, while
+# `set_blocks_to_test` (:1404) zeroes `tot_shapes` for a both-false boundary
+# node. When both hold, C's node is simply INVALID — no cost, no children,
+# `svt_aom_pick_partition_pd0` returns false — and its PARENT's split is
+# rejected ("all split quadrants must be valid for split to be selected",
+# product_coding_loop.c:10481), so the parent keeps its own shape.
+#
+# The port force-split instead, and on an INTER frame — where
+# `depth_removal_ctrls` raises `min_sq` above 8, which an I-slice never does —
+# walked past `min_sq` into a node with no cost:
+#
+# OBSERVED BEFORE (2-frame low-delay P, SVTAV1_INTER_EXPERIMENTAL=1), frame 1:
+#   gradient 168x168 q32 p8    PANIC "leaf must be tested (min_sq <= size <=
+#                              max_sq)" at sq_size=8 min_sq=16 abs=(160,160)
+#   gradient 104x104 q32 p10   same, abs=(96,96)
+#   gradient 552x552 q32 p13   same, abs=(544,544)
+# 14 of the 64 cells of tools/inter_completion_scan.sh — EVERY size congruent
+# to 40 mod 64 at preset 8/10/13, because a 40 px SB remainder is the shape
+# `dimensions_require_8x8` calls false, which is what lets
+# `disallow_below_16x16` arm.
+# AFTER: all three encode both frames. Frame 0 is byte-IDENTICAL to the
+# pre-fix build at all three (8192 / 3861 / 36016 B), which is the fix's
+# byte-neutrality: a KEY frame's `min_sq` is 8, where the old force-split
+# reasoning held.
+#
+# Three cells, one per preset family, because the PD0 block-cost model differs
+# (p8 Lvl3, p10/p13 Lvl5) and the crash was reached through both.
+encodesInter "inter-pd0-below-minsq-168-p8"  gradient 168 168 32 8
+encodesInter "inter-pd0-below-minsq-104-p10" gradient 104 104 32 10
+encodesInter "inter-pd0-below-minsq-552-p13" gradient 552 552 32 13
 
 # --- PD0_LVL_6 on a video KEY frame, 2026-09-02. -----------------------------
 #

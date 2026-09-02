@@ -2509,8 +2509,21 @@ impl<'a> Pd0Ctx<'a> {
     fn pick(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> (u64, Pd0Eval) {
         // The SB root is quadrant 0 of nothing: C's `mds->index` for the root
         // is 0, which only matters for the `index < 3` leaf-update rule below.
-        let (cost, eval, _) = self.pick_q(sq_size, org_x, org_y, 0);
-        (cost, eval)
+        //
+        // C's `svt_aom_mode_decision_kernel` (enc_dec_process.c:2989) DISCARDS
+        // `svt_aom_pick_partition_pd0`'s return value at the SB root, and an
+        // invalid root leaves `pc_tree->partition` at whatever
+        // `svt_aom_init_sb_data` left. The port has no such reachable case —
+        // an SB root is invalid only if EVERY in-bounds descendant is, and the
+        // (0,0) quadrant chain always reaches a node with `has_rows &&
+        // has_cols` before `min_sq` unless `min_sq` exceeds the SB's own
+        // remainder, which `set_depth_removal_level_controls`' three
+        // "entire SB can be covered" guards forbid — so this returns an
+        // untested leaf rather than inventing a tree.
+        match self.pick_q(sq_size, org_x, org_y, 0) {
+            Some((cost, eval, _)) => (cost, eval),
+            None => (0, Pd0Eval::untested(sq_size)),
+        }
     }
 
     /// [`Pd0Ctx::pick`] with C's `mds->index` (this node's quadrant inside its
@@ -2522,13 +2535,20 @@ impl<'a> Pd0Ctx<'a> {
     /// which `svt_aom_pick_partition_pd0`'s `mds->index < 3` guard
     /// deliberately skips "to avoid redundant copies". `None` everywhere the
     /// node either wrote itself or must not be written (it ended SPLIT).
+    /// `None` is C's `svt_aom_pick_partition_pd0` returning **false** —
+    /// `pc_tree->rdc.valid == 0`, i.e. this node costed no shape AND could not
+    /// split. C's caller treats that as fatal to the PARENT's split ("all
+    /// split quadrants must be valid for split to be selected",
+    /// product_coding_loop.c:10481), which is NOT the same as an out-of-bounds
+    /// quadrant — those are `continue`d and contribute nothing
+    /// ([`Pd0Eval::off`]).
     fn pick_q(
         &mut self,
         sq_size: usize,
         org_x: usize,
         org_y: usize,
         quad_idx: usize,
-    ) -> (u64, Pd0Eval, Option<(alloc::vec::Vec<u8>, usize, usize)>) {
+    ) -> Option<(u64, Pd0Eval, Option<(alloc::vec::Vec<u8>, usize, usize)>)> {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
         // C `svt_aom_write_modes_sb` early return: a node whose top-left is
@@ -2536,7 +2556,7 @@ impl<'a> Pd0Ctx<'a> {
         // parent decision (parents of off-frame nodes are forced-split edge
         // nodes, which ignore cost), so 0 is inert.
         if abs_x >= self.aligned_w || abs_y >= self.aligned_h {
-            return (0, Pd0Eval::off(sq_size), None);
+            return Some((0, Pd0Eval::off(sq_size), None));
         }
         // spec 5.11.4 / `set_blocks_to_test` (enc_dec_process.c:1394) edge
         // predicate vs the ALIGNED grid. `half` = half the square's pixel
@@ -2569,6 +2589,30 @@ impl<'a> Pd0Ctx<'a> {
         // sizes the recon + chroma-source buffers to the SB extent — a
         // straddling block writes into the padded rows, never out of bounds.
         let forced_split = both_false || (one_false && !self.nsq_enabled);
+        // C `init_md_scan` (enc_dec_process.c:1457): `mds->split_flag =
+        // (sq_size > min_sq_size)` is set from the SIZE ALONE and is what
+        // gates the recursion — `set_blocks_to_test`'s `tot_shapes = 0` says
+        // only that no d1 SHAPE is costable here, never that the node splits.
+        // When both hold the node is simply INVALID: no cost, no children,
+        // `svt_aom_pick_partition_pd0` returns false.
+        //
+        // MEASURED 2026-09-02: this port force-split such a node anyway. On an
+        // INTER frame `depth_removal_ctrls` raises `min_sq` above 8 — on a
+        // superblock whose cropped extent is 40 px, `dimensions_require_8x8`
+        // is false so `disallow_below_16x16` may arm and `min_sq` becomes 16 —
+        // and the 16x16 both-false quadrant at the picture's bottom-right then
+        // descended to 8x8, where `sq_size >= min_sq` is false, no cost
+        // exists, and the leaf `expect` fired: "leaf must be tested (min_sq <=
+        // size <= max_sq)". 14 of the 64 cells of
+        // `tools/inter_completion_scan.sh` crashed there — every size
+        // congruent to 40 mod 64 at preset 8/10/13. The old code carried the
+        // reasoning that made it look safe: "8x8 nodes are never edge nodes on
+        // an 8-aligned frame, so a force-split node always has sq_size >
+        // min_sq". True at `min_sq == 8`, which is the only value a KEY frame
+        // ever has, and false the moment depth removal raises it.
+        if forced_split && sq_size <= self.min_sq {
+            return None;
+        }
         if forced_split {
             let mut children: Vec<Pd0Eval> = Vec::with_capacity(4);
             let mut total = 0u64;
@@ -2580,7 +2624,11 @@ impl<'a> Pd0Ctx<'a> {
                 if self.sb_x + cx >= self.aligned_w || self.sb_y + cy >= self.aligned_h {
                     last_quad_valid = false;
                 }
-                let (c_cost, c_eval, c_recon) = self.pick_q(half, cx, cy, i);
+                // C `test_split_partition_pd0` returns false at the FIRST
+                // invalid quadrant (:10481), before the array-update tail. A
+                // force-split node has no shape of its own to fall back on, so
+                // it is invalid too.
+                let (c_cost, c_eval, c_recon) = self.pick_q(half, cx, cy, i)?;
                 total += c_cost;
                 if i == 3 {
                     last_recon = c_recon;
@@ -2640,7 +2688,7 @@ impl<'a> Pd0Ctx<'a> {
                 off: false,
                 children: Some(Box::new(ch)),
             };
-            return (total, eval, None);
+            return Some((total, eval, None));
         }
         // A FITTING one-false node prices its EDGE SHAPE block, not the square
         // PART_N — C's LPD0 costs "PART_H/PART_V for boundary blocks"
@@ -2700,15 +2748,25 @@ impl<'a> Pd0Ctx<'a> {
 
         let split_flag = sq_size > self.min_sq;
         if !split_flag {
-            let cost = parent_cost.expect("leaf must be tested (min_sq <= size <= max_sq)");
+            // `parent_cost` is `Some` here because the recursion never
+            // descends below `min_sq` (this branch is what stops it) and
+            // `min_sq <= max_sq` — C asserts exactly that in
+            // `set_blocks_to_be_tested` (enc_dec_process.c:1500), having
+            // clamped `min_sq_size` to `static_config.max_tx_size` on the
+            // preceding line for this reason. `pipeline.rs` applies the same
+            // clamp when it fills `Pd0InterRef::min_sq`.
+            let cost = parent_cost.expect(
+                "a node at min_sq must be costable: C clamps min_sq_size to max_tx_size and \
+                 asserts min_sq_size <= max_sq_size (enc_dec_process.c:1499-1500)",
+            );
             // C `svt_aom_pick_partition_pd0` (product_coding_loop.c:10568):
             // a leaf updates the neighbour arrays itself for quadrants 0..2;
             // quadrant 3 is left to the parent's tail.
             if quad_idx < 3 {
                 self.write_recon(abs_x, abs_y, node_w, node_h, node_recon.as_deref());
-                return (cost, eval, None);
+                return Some((cost, eval, None));
             }
-            return (cost, eval, node_recon.map(|r| (r, node_w, node_h)));
+            return Some((cost, eval, node_recon.map(|r| (r, node_w, node_h))));
         }
 
         // test_split_partition_pd0: split rate term (0 at LVL_6 allintra;
@@ -2798,7 +2856,15 @@ impl<'a> Pd0Ctx<'a> {
                     break;
                 }
             }
-            let (child_cost, child_eval, child_recon) = self.pick_q(half, cx, cy, i);
+            // C `test_split_partition_pd0` (:10479-10483): "If split is
+            // invalid, then exit (all split quadrants must be valid for split
+            // to be selected)." Same effect as the depth-early-exit above —
+            // the split is abandoned and the node keeps its own shape — so it
+            // shares that arm rather than duplicating it.
+            let Some((child_cost, child_eval, child_recon)) = self.pick_q(half, cx, cy, i) else {
+                split_valid = false;
+                break;
+            };
             split_cost += child_cost;
             if i == 3 {
                 last_recon = child_recon;
@@ -2819,13 +2885,21 @@ impl<'a> Pd0Ctx<'a> {
         }
 
         if !split_valid {
-            let cost = parent_cost.expect("early exit requires a valid parent");
+            // The depth-early-exit arm cannot get here without a parent cost
+            // (it reads one to fire), but the invalid-child arm can: a node
+            // whose `sq_size` is outside `[min_sq, max_sq]` costs no shape
+            // (C `init_md_scan`'s `test_depth`), and if its split is also
+            // invalid then `pc_tree->rdc.valid` stays 0 and
+            // `svt_aom_pick_partition_pd0` returns false to ITS parent.
+            let Some(cost) = parent_cost else {
+                return None;
+            };
             // C `svt_aom_pick_partition_pd0` (:10564): `if (!valid_part &&
             // pc_tree->rdc.valid) mode_decision_update_neighbor_arrays_pd0`.
             // The abandoned split's children may already have written; the
             // node's own recon now supersedes them, exactly as in C.
             self.write_recon(abs_x, abs_y, node_w, node_h, node_recon.as_deref());
-            return (cost, eval, None);
+            return Some((cost, eval, None));
         }
 
         // parent_cost_bias = 1000 (allintra): parent wins on <=.
@@ -2835,7 +2909,7 @@ impl<'a> Pd0Ctx<'a> {
             // C `test_split_partition_pd0` (:10490): the parent keeps its
             // partition, so IT is the array-update part.
             self.write_recon(abs_x, abs_y, node_w, node_h, node_recon.as_deref());
-            return (pc, eval, None);
+            return Some((pc, eval, None));
         }
         eval.split = true;
         // Split wins: the array-update part is the LAST quadrant, and only
@@ -2852,7 +2926,7 @@ impl<'a> Pd0Ctx<'a> {
                 Some(&r),
             );
         }
-        (split_cost, eval, None)
+        Some((split_cost, eval, None))
     }
 
     /// C `mode_decision_update_neighbor_arrays_pd0` (product_coding_loop.c:121)
