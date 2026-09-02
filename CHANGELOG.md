@@ -56,6 +56,21 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`SVT_HME_OUT` and `SVT_INJCFG_OUT` — two interposers on the exported
+  per-b64 ME entry and on `svt_aom_update_mi_map`** (a473fa38, fe51c8a7). The
+  first dumps C's whole HME pyramid, the ENTIRE `svt_aom_sig_deriv_me` signal
+  set, both pre-HME regions, `me_distortion[]` and `p_sb_best_{sad,mv}` for
+  BOTH lists; the second dumps `ref_frame_type_arr`, every inter injector's
+  enable flag and `valid_pme_mv` / `best_pme_mv`. Between them they refuted
+  three standing premises of the inter campaign in one measurement — see
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z¹³ and §1z¹⁴.
+- **`port_md::md_search::md_subpel_search`** (50e67db4) and
+  **`md_nsq_motion_search`** — two of the three MD-search drivers between the
+  port and C's reference set, tier 4, byte-inert until their callers land.
+  Wiring the first found a SECOND transcription of `svt_mv_err_cost`
+  (`md_subpel::mv_err_cost` vs `port_md::pme::mv_err_cost`), now pinned over
+  576 cells per `rust/docs/WORKING-ON-THIS.md` §4.
+
 - **`SVTAV1_PD0_NOSPLIT` — a CONTROL that scopes the remaining inter frontier.**
   Forces the video arm's PD0 to test only the 64x64 square on an INTER frame,
   leaving frame 0's recon (and so frame 1's reference) untouched. With it,
@@ -234,6 +249,24 @@ Crates are not published to crates.io yet — depend by git.
   divergence is the TILE: C 3 bytes, port 94.
 
 ### Fixed
+
+- **The open-loop ME searched ONE list where C searches two, with four wrong
+  signal fields, and mode decision read an `me_mv_array` slot C never writes**
+  (a473fa38). `inter_me_arm::run_frame_me` hard-coded all four HME flags to 1
+  (C's level 2 is `sc_class5 && enc_mode <= M2`) and passed the qp-based
+  search-area scaling as OFF (C sets it for every preset above `ENC_MR`), so
+  the port searched C's UNSCALED ME/HME areas at every preset and qp; and
+  `num_of_list_to_search = 1` left out the LIST-1 search, whose ZERO HME
+  centre — `set_final_search_centre_sb` skips HME for list 1 at temporal layer
+  0 — is where C's `me_64x64_distortion = 0` actually comes from. C's own
+  list-0 search does NOT find the match (`p_sb_best_sad` 18816 / 13312).
+  Consumers now read the `me_mv_array` slot named by the ME CANDIDATE's own
+  direction, as `inject_new_candidates` does. The port's per-b64 ME output is
+  now an exact join with C's, and `SVTAV1_PD0DBG`'s `PD0DR` line joins
+  `SVT_PD0CFG_OUT` field for field. 96-cell grid unchanged at BOTH 36 /
+  F1DIFF 59 / F0DIFF 1; two cells stopped passing for the WRONG reason (HME
+  level 2 wrongly enabled had been refining list 0 onto the MV C reaches
+  through list 1). Full record: `rust/docs/INTER-ENCODE-PLAN.md` §1z¹³.
 
 - **`inter_decode_gate.sh` could not report PASS on macOS.** Its `OPEN_CELLS`
   array emptied when the last open cell was promoted, and `"${arr[@]}"` on an

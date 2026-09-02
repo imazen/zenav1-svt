@@ -7,6 +7,7 @@
 //! | [`md_subpel_search_fixed_stage`] | `:2634-2731` |
 //! | [`md_subpel_search`] | `:2520-2630` |
 //! | [`subpel_mv_limits`] | `:2547-2557` (its limit derivation) |
+//! | [`md_nsq_motion_search`] | `:2080-2252` |
 //! | [`build_single_ref_mvp_list`] | `:3097-3187` (`build_single_ref_mvp_array`) |
 //!
 //! **Four C functions are represented here by their PIECES, not by a
@@ -17,7 +18,6 @@
 //! | C driver | line | what IS here |
 //! |---|---|---|
 //! | `md_sq_motion_search` | `:2329-2510` | [`MdSqMeCtrls`], [`sparse_extent`], [`sq_search_area_multiplier`], [`nudge_sprs_lev1`] |
-//! | `md_nsq_motion_search` | `:2080-2252` | [`nsq_mvc_list`] |
 //! | `read_refine_me_mvs` | `:2815-2936` | [`me_mv_center`] |
 //! | `pme_search` | `:3197-3372` | [`MdPmeCtrls`], [`pme_search_extents`], [`pme_me_mv_differs_from_mvps`], [`pme_to_me_cost_dev`], [`pme_bails_to_me`], [`best_mvp_by_distortion`] |
 //!
@@ -653,6 +653,136 @@ pub fn nsq_mvc_list(sq_mv: Mv, sub_block_mvs: &[Mv]) -> Vec<Mv> {
 #[inline]
 pub fn round_to_full_pel(v: i16) -> i16 {
     (v.wrapping_add(4)) & !0x07
+}
+
+/// C `md_nsq_motion_search` (product_coding_loop.c:2080-2252) — the
+/// NSQ-shape full-pel refinement, assembled from [`nsq_mvc_list`] and four
+/// [`md_full_pel_search`] passes.
+///
+/// `me_mv` is EIGHTH-PEL in and out. `sub_block_mvs` is the geometry- and
+/// ME-presence-filtered sub-block candidate set in C's `block_index` order
+/// (already multiplied by 8), which the caller supplies because the filter
+/// itself is ME-table machinery, not search geometry — see
+/// [`nsq_mvc_list`].
+///
+/// Four details that decide the MV:
+///
+/// * **The MVC entries are rounded IN PLACE, and the first search centre
+///   is read BEFORE the rounding.** C seeds `search_center_mv` from
+///   `mvc_array[0]` unrounded with cost `~0`, then rounds each entry
+///   inside the evaluation loop. The seed is therefore dead — any
+///   evaluation beats `~0` — but it is transcribed rather than
+///   simplified away.
+/// * **Each MVC entry is evaluated with a ZERO window** (`0,0,0,0`,
+///   step 1), i.e. one position each; the search proper only starts
+///   afterwards.
+/// * **The three refinement passes are a 4 -> 2 -> 1 step ladder** with
+///   windows `±(full_pel_search_{width,height} >> 1)`, `±2` and `±1`, each
+///   starting from the previous pass's winner and sharing ONE running
+///   `best_search_cost`.
+/// * **The refinement result is taken only if it BEATS the MVC winner**
+///   (`best_search_cost < search_center_cost`); on a tie the MVC winner
+///   stands.
+///
+/// Evidence tier 4 — `md_nsq_motion_search` is `static` with no exported
+/// symbol. Its two leaves are the already-ported [`nsq_mvc_list`] and
+/// [`md_full_pel_search`], and the per-position distortion arrives through
+/// [`DistortionSource`] so the geometry can be asserted without pixels.
+#[allow(clippy::too_many_arguments)]
+pub fn md_nsq_motion_search(
+    ctx: &FullPelCtx,
+    r: &RefPicGeom,
+    dist: &mut impl DistortionSource,
+    mv_cost_params: &MvCostParams<'_>,
+    input_origin_index: usize,
+    dist_type: DistortionType,
+    full_pel_search_width: u8,
+    full_pel_search_height: u8,
+    sq_mv: Mv,
+    sub_block_mvs: &[Mv],
+    me_mv: &mut Mv,
+) {
+    let mut mvc = nsq_mvc_list(sq_mv, sub_block_mvs);
+
+    // C: seeded from the UNROUNDED first entry, with cost ~0.
+    let mut center = PmeBest {
+        cost: u32::MAX,
+        mvx: mvc[0].x,
+        mvy: mvc[0].y,
+    };
+    let zero_window = SearchWindow {
+        start_x: 0,
+        end_x: 0,
+        start_y: 0,
+        end_y: 0,
+        sparse_search_step: 1,
+        is_sprs_lev0_performed: false,
+    };
+    for m in &mut mvc {
+        m.x = round_to_full_pel(m.x);
+        m.y = round_to_full_pel(m.y);
+        md_full_pel_search(
+            ctx,
+            r,
+            dist,
+            mv_cost_params,
+            input_origin_index,
+            dist_type,
+            m.x,
+            m.y,
+            zero_window,
+            &mut center,
+        );
+    }
+
+    me_mv.x = center.mvx;
+    me_mv.y = center.mvy;
+
+    // C initialises the refinement best to `(int16_t)~0` = -1 with cost
+    // `~0`; the first pass overwrites both.
+    let mut best = PmeBest {
+        cost: u32::MAX,
+        mvx: -1,
+        mvy: -1,
+    };
+    let ladder = [
+        (
+            i32::from(full_pel_search_width) >> 1,
+            i32::from(full_pel_search_height) >> 1,
+            4i32,
+        ),
+        (2, 2, 2),
+        (1, 1, 1),
+    ];
+    let (mut sx, mut sy) = (center.mvx, center.mvy);
+    for (wx, wy, step) in ladder {
+        md_full_pel_search(
+            ctx,
+            r,
+            dist,
+            mv_cost_params,
+            input_origin_index,
+            dist_type,
+            sx,
+            sy,
+            SearchWindow {
+                start_x: -wx,
+                end_x: wx,
+                start_y: -wy,
+                end_y: wy,
+                sparse_search_step: step,
+                is_sprs_lev0_performed: false,
+            },
+            &mut best,
+        );
+        sx = best.mvx;
+        sy = best.mvy;
+    }
+
+    if best.cost < center.cost {
+        me_mv.x = best.mvx;
+        me_mv.y = best.mvy;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1988,6 +2118,111 @@ mod tests {
         let mut probe = Probe::new(2);
         let (idx, cost) = best_mvp_by_distortion(&mvps, &mut probe, 0, 0, 448, 0);
         assert_eq!((idx, cost), (2, 0));
+    }
+
+    /// **`md_nsq_motion_search`'s MVC pass rounds IN PLACE and the ladder
+    /// only wins on a STRICT improvement.** Two cells:
+    ///
+    /// 1. The winning position is one of the MVC entries, so `me_mv`
+    ///    comes back as that entry ROUNDED to full pel.
+    /// 2. Every position costs the same, so `best_search_cost` ties
+    ///    `search_center_cost` and the MVC winner must STAND — C's
+    ///    comparison is `<`, not `<=`. Mutating it to `<=` fails this
+    ///    test (measured).
+    ///
+    /// **What this cell does NOT witness, and why.** Deleting the in-place
+    /// `round_to_full_pel` leaves it GREEN (measured). That is a property
+    /// of the arithmetic, not a gap in the assertions: rounding to the
+    /// nearest multiple of 8 eighth-pels moves the centre by at most one
+    /// FULL pel after `md_full_pel_search`'s `>> 3`, and the ladder's last
+    /// pass is `±1` at step 1 — so on any surface with a single minimum
+    /// the ladder recovers the same MV either way. The rounding is
+    /// observable only through which position becomes `search_center_cost`
+    /// (and therefore whether the ladder's strict win fires); a cell for
+    /// that needs a cost surface with two competing minima and is not
+    /// written here.
+    ///
+    /// Evidence tier 4.
+    #[test]
+    fn tier4_md_nsq_motion_search_rounds_mvcs_and_needs_a_strict_win() {
+        let ctx = fp_ctx();
+        let r = geom();
+        let t = zero_cost();
+        let p = params(&t);
+
+        // MVC[1] is (12, -4) eighth-pel, which ROUNDS to (16, 0) = full-pel
+        // (2, 0). Make that the unique zero-cost position.
+        let target = (ctx.blk_org_x + 2) + ctx.blk_org_y * r.y_stride as i32;
+        let mut probe = Probe::new(target);
+        let mut mv = Mv::ZERO;
+        md_nsq_motion_search(
+            &ctx,
+            &r,
+            &mut probe,
+            &p,
+            0,
+            DistortionType::Var,
+            0,
+            0,
+            Mv { x: 0, y: 0 },
+            &[Mv { x: 12, y: -4 }],
+            &mut mv,
+        );
+        assert_eq!(
+            (mv.x, mv.y),
+            (16, 0),
+            "the winning MVC must come back ROUNDED to full pel"
+        );
+
+        // Every position ties: the MVC winner stands, because the ladder's
+        // result is taken only on `best_search_cost < search_center_cost`.
+        let mut flat = Probe::new(i32::MIN);
+        let mut mv2 = Mv::ZERO;
+        md_nsq_motion_search(
+            &ctx,
+            &r,
+            &mut flat,
+            &p,
+            0,
+            DistortionType::Var,
+            4,
+            4,
+            Mv { x: 0, y: 0 },
+            &[],
+            &mut mv2,
+        );
+        assert_eq!(
+            (mv2.x, mv2.y),
+            (0, 0),
+            "on an all-equal cost surface the MVC winner must survive the ladder"
+        );
+
+        // POSITIVE CONTROL: the ladder DOES take over when it strictly
+        // wins. With `full_pel_search_width/height = 8` the FIRST ladder
+        // pass is +-4 at step 4, i.e. full-pel offsets {-4, 0, +4} on each
+        // axis, so a zero-cost position 4 full pels right of the only MVC
+        // is reachable there and NOT by the MVC pass's zero window.
+        let far = (ctx.blk_org_x + 4) + ctx.blk_org_y * r.y_stride as i32;
+        let mut probe3 = Probe::new(far);
+        let mut mv3 = Mv::ZERO;
+        md_nsq_motion_search(
+            &ctx,
+            &r,
+            &mut probe3,
+            &p,
+            0,
+            DistortionType::Var,
+            8,
+            8,
+            Mv { x: 0, y: 0 },
+            &[],
+            &mut mv3,
+        );
+        assert_eq!(
+            (mv3.x, mv3.y),
+            (32, 0),
+            "the refinement ladder must be able to move the MV off the MVC"
+        );
     }
 
     // -----------------------------------------------------------------
