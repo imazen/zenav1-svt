@@ -6229,6 +6229,35 @@ fn encode_block_syntax(
         // palette + filter_intra are ALL suppressed for an IntraBC block
         // (each writer is nested under `use_intrabc == 0`).
     } else if decision.is_inter {
+        // THE PRE-CAMPAIGN HOMEGROWN INTER ARM. It is reachable ONLY under
+        // `SVTAV1_INTER_EXPERIMENTAL` (the public entry point refuses inter
+        // frames above), and it is NOT a bitstream: measured 2026-09-01 on
+        // `gradient 64x64 q40 p6 frames=2`, it commits 24 inter leaves and
+        // for each one writes an MV and NOTHING ELSE. Four defects, named so
+        // the chunk that replaces this line with
+        // `port_entropy_inter::write_inter_mode_info` has the list:
+        //
+        // 1. **A FRESH `NmvContext` PER BLOCK.** `write_mv` builds
+        //    `NmvContext::default()` on every call, so no MV symbol adapts
+        //    the frame's context and no MV after the first is coded against
+        //    the probabilities a decoder holds. C's `av1_encode_mv` takes the
+        //    FRAME's single adapting `nmvc`. This is a decoder desync, not a
+        //    size difference.
+        // 2. **No `write_ref_frames`, no inter mode symbol, no DRL, no
+        //    interp filter.** A decoder reading `is_inter = 1` reads all of
+        //    those before the MV, so it consumes the MV's bits as a reference
+        //    index.
+        // 3. **`allow_hp = true` is hard-coded**, while this frame's header
+        //    writes `allow_high_precision_mv = 0` (measured, §1r).
+        // 4. **The MV is written raw, not as a difference from the MVP
+        //    stack's predictor** — `inter_mvp.rs` is ported and unwired.
+        //
+        // Separately measured, and it is a MODE DECISION fact rather than a
+        // syntax one: the homegrown ME lands on `mv.x = -22` eighth-pel on a
+        // content translation of exactly 3 pixels, where C finds the integer
+        // `-24`. A sub-pel refinement that prefers a fractional position over
+        // an exact integer match is evidence about the ME, which chunk C4
+        // replaces wholesale.
         crate::entropy::mv_coding::write_mv(writer, decision.mv.x, decision.mv.y, true);
     } else if is_key {
         let above_ctx = ectx.above_mode_ctx(block_x);

@@ -424,6 +424,40 @@ dispatch level, which is how you test whether a divergence is C's own SIMD
 choice (see `docs/SUSPECTED-C-BUGS.md` #9). `SVT_CPU_FLAGS=0` is pure-C kernels
 and works on x86-64; it SEGFAULTS on aarch64, where Neon is mandatory.
 
+### Which SYMBOLS a tile coded, without an arithmetic-coder trace
+
+An encoder saves its END-OF-FRAME CDFs onto the reference it refreshes
+(`packetization_process.c:741-744`), and a CDF only moves if a symbol was coded
+against it. So **diffing one frame's saved context against the previous frame's
+names exactly which syntax elements that frame's tile coded** — a symbol-level
+comparison with no `-Wl,--wrap` op trace, which means it works on macOS (§5).
+
+```bash
+W=~/tmp/zenav1-ctrace/fctx; mkdir -p $W
+SVTAV1_FCTX_OUT=$W/rs.fctx SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 \
+  SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 tools/identity_run gradient 64 64 40 6 $W/rs
+SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+  SVT_FCTX_OUT=$W/c.fctx tools/ctrace-linux/run.sh 64 64 40 6 $W/rs.yuv $W/c.obu 8
+python3 tools/fctx_diff.py $W/c.fctx $W/rs.fctx --frame=0   # do the SAVES agree?
+```
+
+`fctx_diff.py --frame=N` compares the two sides' saved contexts field for field;
+comparing frame N against frame N+1 **on one side** instead names that frame's
+coded symbol set. That second reading is what showed C's 3-byte inter tile codes
+`partition/skip/intra_inter/comp_inter/single_ref/newmv/switchable_interp` plus
+the COLUMN half of the MV context and nothing else, while the port's 94-byte one
+codes intra modes and every coefficient CDF
+(`docs/INTER-ENCODE-PLAN.md` §1s).
+
+The C side is `__wrap_svt_av1_reset_cdf_symbol_counters`, which dumps the
+FRAME_CONTEXT **after** the real reset — byte-for-byte what lands in
+`EbReferenceObject::frame_context`. Its sibling `SVT_CINTER_OUT` prints the
+committed per-block inter decision (`mode`, `ref_frame`, `mv`, `predmv`,
+`interp_filters`, `motion_mode`, `drl_*`, `inter_mode_ctx`, `skip`) from inside
+`svt_aom_update_mi_map` — the exact field set
+`port_entropy_inter::write_inter_mode_info` reads, so a tile byte gate can be
+built from C's MEASURED decision instead of one fitted to the bytes.
+
 ## 5c. Cross-ISA questions need an emulator, not an argument
 
 CI runs ONE architecture. Every cross-ISA question was therefore answered by

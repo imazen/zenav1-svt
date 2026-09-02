@@ -2278,7 +2278,8 @@ distortion would have tripped it, the port will filter where C would not.
 C's frame-1 tile is **3 bytes** for a whole 64x64 frame. The port's is 94. The
 prerequisites, ordered so nothing downstream is measured over a broken premise:
 
-1. **CDF continuation — the blocker, and it is not optional.** The header this
+1. **CDF continuation — the blocker, and it is not optional.** *(CLOSED
+   2026-09-01 — see §1s.)* The header this
    chunk made byte-exact says `primary_ref_frame = 0` and
    `error_resilient_mode = 0`, which means the tile's CDFs start from the
    REFERENCED frame's END-OF-FRAME state, not from the defaults. The port has
@@ -2352,6 +2353,175 @@ driver in tree is the send-all-then-drain one that gets 2 frames. Do not
 Consequence for the campaign: every inter cell is a 2-frame cell until that is
 solved, and the first inter frame's references are therefore all the key frame,
 which is what collapses both reference lists to one entry.
+
+### 1s. CDF CONTINUATION LANDED, and the inter TILE is BYTE-IDENTICAL from C's decision (2026-09-01)
+
+Two chunks. The first closed §1r's named blocker; the second turned the
+remaining question from "is the entropy path right?" into "is the mode
+decision right?", which is a much smaller and much better-posed question.
+
+#### The store (`crate::port_frame_cdf`)
+
+C has three sites and this chunk landed two of them:
+
+| C | what it does | port |
+|---|---|---|
+| `packetization_process.c:741-744` | `svt_av1_reset_cdf_symbol_counters(ec->fc)` then `((EbReferenceObject*)…)->frame_context = *ec->fc` | `FrameCdfs::reset_symbol_counters` + `ReferenceFrame::frame_cdfs` |
+| `ec_process.c:101-112` | every tile of a frame with `primary_ref_frame != PRIMARY_REF_NONE` copies `ref->frame_context` into `ec->fc` | the entropy walk's per-tile seed |
+| `md_config_process.c:299-310` | the same copy into `pcs->md_frame_context` | **NOT wired** — see below |
+
+Four things about the C semantics that a natural port gets wrong:
+
+* **The counter reset is not cosmetic.** `update_cdf` reads `cdf[nsymbs]` to
+  choose the adaptation RATE, so a save that kept a frame's final counts makes
+  the next frame adapt at the slow late-frame rate from its first symbol. And
+  `nsymbs` is NOT always `len - 1`: `partition` (4 / 10 / 8 in a stride of 11),
+  `uv_mode[0]` (13 in 15), `tx_size[0]` (2 in 4) and the ext-tx sets
+  (7 / 5 / 16 / 12 / 2 in 17) all use a stride wider than their alphabet.
+  Getting one wrong zeroes a PROBABILITY.
+* **`svt_av1_default_coef_probs` is SKIPPED on the restore arm.** The
+  coefficient CDFs come from the reference, NOT from this frame's own
+  `base_q_idx` — even though the two frames' qindexes differ.
+* **The DPB slot is `ref_frame_idx[primary_ref_frame]`.** C indexes its own
+  `ref_pic_ptr_array[list][idx]` through `get_list_idx`/`get_ref_frame_idx`;
+  the two agree here, and the spec mapping is the one conformance depends on.
+* **C's save loop OVERWRITES per tile**, so the LAST tile's context is what
+  lands on the reference object. Single-tile frames (every inter cell so far)
+  make that tile 0, which is also the `context_update_tile_id` a decoder uses.
+  They can only differ on a multi-tile frame.
+
+**The store's POSITIVE CONTROL is a refusal.** A frame whose header names a
+`primary_ref_frame` whose DPB slot carries no saved CDFs now refuses, rather
+than falling back to the defaults — falling back emits a stream a conforming
+decoder turns into garbage, and would read as a quiet byte regression rather
+than a break.
+
+#### A new oracle: C's SAVED frame context, dumped
+
+`tools/capture_c_trace/wrap_recon.c` gained
+`__wrap_svt_av1_reset_cdf_symbol_counters`, which dumps the FRAME_CONTEXT
+**after** the real reset — i.e. byte-for-byte what C copies onto the reference
+object. `SVTAV1_FCTX_OUT` makes the port emit the same field names in the same
+flat order and `tools/fctx_diff.py` compares them.
+
+**It needs no working inter tile walk**, which is the point: the saved state was
+proven right before anything consumed it.
+
+Result on `gradient 64x64 q40 p6 frames=2`: the port's saved end-of-frame-0
+context is **byte-identical to C's for all 96 shared fields**. Four fields C
+carries and the port does not — `delta_lf`, `delta_lf_multi`,
+`palette_uv_size`, `palette_uv_color_index` — are identical between C's frame-0
+and frame-1 saves on this cell, so the omission is inert here;
+`c_parity_frame_cdf.rs` asserts that absent set is EXACTLY those four.
+
+#### The tile is 94 9a b0, and the port writes exactly that
+
+C's frame-1 tile is three bytes. Feeding C's OWN measured block decision through
+the port's restored CDFs and `port_entropy_inter::write_inter_mode_info`
+reproduces them exactly (`pipeline.rs`,
+`inter_tile_byte_gate::the_inter_tile_matches_c_from_cs_measured_decision`).
+
+The decision was MEASURED, not guessed from the bytes — a decision fitted to
+three bytes would be curve fitting. A new `SVT_CINTER_OUT` dump prints, from
+inside `svt_aom_update_mi_map`, the committed fields the writer reads:
+
+```
+CINTER poc=1 mi=(0,0) bsize=12 part=0 mode=16 rf=1,-1 mv0=0,-24 pmv0=0,0
+       interp=0x0 mm=0 npr=0 ovl=0 imc=8 drl=0 drlctx=-1,-1 iiu=0 skip=1
+```
+
+**One 64x64 `PARTITION_NONE` block, `NEWMV` off `LAST_FRAME`, MV `(0,-24)`
+eighth-pel** — the harness's 3-pixel horizontal translation — predicted from
+`(0,0)`, `EIGHTTAP_REGULAR`, `skip = 1`, for the whole frame.
+
+So for this cell, **the entire remaining divergence is MODE DECISION**. Every
+entropy step behind it is byte-exact.
+
+Two negative controls, both permanent: the same decision coded from DEFAULT
+CDFs does NOT reproduce C's bytes (so the gate cannot pass with the restore
+deleted), and frame 0 is asserted to be 961 B before anything is read out of it
+(so a wrong configuration cannot hand the writer plausible CDFs from the wrong
+encode). Checked by hand while writing it: MV `(0,-22)` gives `94 9a 94`.
+
+#### A cheap symbol-level tile differ, with no op trace
+
+Diffing a frame's SAVED context against the previous frame's names exactly
+which CDFs its tile ADAPTED — i.e. which syntax elements it coded. That is a
+symbol-level comparison of two tiles that needs no arithmetic-coder trace, and
+therefore works on macOS (§5: Apple `ld64` has no `-Wl,--wrap`).
+
+| | fields the frame-1 tile adapts |
+|---|---|
+| C | `partition` `skip` `intra_inter` **`comp_inter` `single_ref` `newmv` `switchable_interp` `nmvc.joints` `nmvc.comp1.{classes,bits,fp,sign}`** |
+| port | `partition` `skip` `intra_inter` **`y_mode` `uv_mode` `angle_delta` `intra_ext_tx` `tx_size` `txb_skip` `dc_sign` `eob_extra` `eob_flag{64,128,256}` `coeff_base` `coeff_base_eob` `coeff_br`** |
+
+Note what is absent on C's side and what it rules out: no `refmv`/`zeromv` (the
+mode symbol chain stopped at `NEWMV`), no `drl` (one ref-MV candidate), no
+`motion_mode` (`num_proj_ref = 0`, `overlappable_neighbors = 0` at the frame's
+first block), no `tx_size` (`skip && is_inter`), and only `nmvc.comp1` — the
+COLUMN component — because the MV's row is zero.
+
+**A CORRECTION to the obvious reading of that table, and the reason the
+absence of `nmvc` on the port's row is the interesting part.** "The port codes
+everything intra" is WRONG. Instrumenting the pack walk on the same cell
+counts **24 committed INTER leaves** on frame 1 (8x8 to 32x8, against C's one
+64x64). They do not appear in the CDF delta because the homegrown inter arm
+writes its MV through `entropy::mv_coding::write_mv`, which builds a **fresh
+`NmvContext::default()` on every call** — so no MV symbol adapts the frame
+context, and no MV after the first is coded against probabilities a decoder
+holds. A CDF delta shows what a tile ADAPTED, which is not quite what it
+CODED; when a writer bypasses the frame context, the two differ.
+
+#### The homegrown inter arm is not a bitstream — four named defects
+
+Reachable only under `SVTAV1_INTER_EXPERIMENTAL`. Recorded at the call site in
+`pipeline.rs` as well, so the chunk that replaces it has the list:
+
+1. **A fresh `NmvContext` per block** (above). A decoder desync, not a size
+   difference.
+2. **No `write_ref_frames`, no inter mode symbol, no DRL, no interp filter.**
+   A decoder that reads `is_inter = 1` reads all of those *before* the MV, so
+   it consumes the MV's bits as a reference index.
+3. **`allow_hp = true` hard-coded**, while the frame header writes
+   `allow_high_precision_mv = 0` (§1r).
+4. **The MV is raw, not a difference from the MVP stack's predictor** —
+   `inter_mvp.rs` is ported and unwired.
+
+#### The homegrown ME misses an exact integer match by a quarter pel
+
+Same instrumentation, same cell: every committed inter leaf carries
+`mv.x = -22` eighth-pel, on content translated by exactly 3 pixels, where C
+finds the integer `-24`. A sub-pel refinement that prefers a fractional
+position over an exact integer match is evidence about the search, not about
+rounding — and it is measured on the easiest possible input, a pure global
+translation with no occlusion. Chunk C4 replaces this search wholesale; the
+number is recorded so that replacement has a before.
+
+#### What is next, in dependency order
+
+1. **The inter branch of MODE DECISION.** It is now the only thing between the
+   port and a byte-identical inter frame on this cell — the entropy path
+   behind it is byte-exact. The islands
+   (`inter_mvp.rs` 2,530 lines, `inter_mv_code.rs` 833, `inter_me/` ~4.7k,
+   `port_md/`) are ported; what is missing is a pipeline that injects an inter
+   candidate, prices it, and commits `is_inter` + `ref_frame` + `mv` +
+   `interp_filters` + `skip` onto a `BlockDecision`.
+2. **Wiring `write_inter_mode_info` into the tile walk itself.** The byte gate
+   drives it directly; `pipeline.rs`'s block writer still has only the
+   pre-campaign homegrown `write_mv` arm.
+3. **`md_config_process.c`'s `md_frame_context` restore.** It changes MD RATE
+   ESTIMATES, not syntax, and its call sites are inside `encode_tile_rows`,
+   which runs before the reference binding is computed. It is meaningless until
+   (1) exists — there are no inter candidates whose cost it could change — but
+   it must land with (1), not after it.
+
+#### No regression, measured after both chunks
+
+`identity_full_8bit.sh` **1100 / 1100**, `regression_spotcheck.sh` **65 / 65**,
+`tools/inter_fh_gate.sh` PASS (frame 0 identical, frame 1 header field-exact
+with an empty open set), the six pinned still cells unchanged, and
+`cargo nextest run --workspace` **2429 / 2429** on aarch64 (2422 + 4
+`c_parity_frame_cdf` + 2 `port_frame_cdf` units + the tile byte gate).
 
 ## 2. Chunks
 
