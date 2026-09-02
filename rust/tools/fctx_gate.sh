@@ -18,11 +18,19 @@
 # Usage: fctx_gate.sh [width] [height] [cli_qp] [preset] [frames] [content]
 #        (defaults: the inter campaign's reference cell, 64 64 40 6 2 gradient)
 #
-# REQUIRES DOCKER, and says so rather than skipping: the C side needs
-# `-Wl,--wrap`, which Apple's ld64 lacks, so the oracle runs in the Linux
-# container (docs/WORKING-ON-THIS.md §5). A missing docker daemon is a HARNESS
-# FAILURE, never a pass — a gate that silently skips is the trap that section
-# was written about.
+# THE C ORACLE NEEDS `-Wl,--wrap`, so WHERE it runs depends on the linker.
+# On a GNU-ld host (every Linux, including CI) the host driver
+# `tools/capture_c_trace/capture_c_trace` IS a wrap build and is used directly;
+# on Apple's ld64 it is not, and the oracle runs in the Linux container
+# (docs/WORKING-ON-THIS.md §5). Neither arm may SKIP: a missing docker daemon
+# on the container arm is a HARNESS FAILURE, never a pass.
+#
+# MEASURED 2026-09-02, and it is why the probe exists: this gate used to call
+# `ctrace-linux/run.sh` unconditionally. On Linux with a docker CLI but no
+# daemon, `set -e` aborted at that call with every diagnostic already
+# redirected into `$WORK/c.log` — **rc=1 and ZERO output**, on a host where the
+# host driver would have worked. That is the silent-harness trap from the
+# inside, and it is the reason this gate was never wired into CI.
 set -euo pipefail
 
 W=${1:-64}
@@ -36,9 +44,22 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 WORK="${CTRACE_WORK:-$HOME/tmp/zenav1-ctrace}/fctx-gate"
 mkdir -p "$WORK"
 
-if ! command -v docker >/dev/null 2>&1; then
-    echo "fctx gate: FAIL — no docker. The C oracle needs -Wl,--wrap, which" >&2
-    echo "           Apple ld64 lacks, so it runs in tools/ctrace-linux." >&2
+# Does THIS host's linker support `-Wl,--wrap`? Probed exactly the way
+# `capture_c_trace/build.sh` probes it, so the two can never disagree about
+# which driver got built.
+probe=$(mktemp -d)
+printf 'void __wrap_probe_fn(void){} int probe_fn(void); int main(void){return 0;}\n' \
+    >"$probe/p.c"
+if cc -o "$probe/p" "$probe/p.c" -Wl,--wrap=probe_fn >/dev/null 2>&1; then
+    HOST_WRAP=1
+else
+    HOST_WRAP=0
+fi
+rm -rf "$probe"
+
+if [[ $HOST_WRAP -eq 0 ]] && ! command -v docker >/dev/null 2>&1; then
+    echo "fctx gate: FAIL — this linker has no -Wl,--wrap (Apple ld64) and there" >&2
+    echo "           is no docker to run tools/ctrace-linux in." >&2
     echo "           This is a harness failure, not a parity result." >&2
     exit 2
 fi
@@ -54,14 +75,27 @@ SVTAV1_FCTX_OUT="$WORK/rs.fctx" \
     "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$PRESET" "$WORK/rs" \
     >"$WORK/rs.trace" 2>&1
 
-# 2. C side, on the SAME .yuv and the same GOP shape.
-SVT_FRAMES="$FRAMES" \
+# 2. C side, on the SAME .yuv and the same GOP shape. `run.sh` is a drop-in
+#    for the host driver's argv, so the only difference is which one runs.
+#    The failure is REPORTED here rather than left to `set -e`, because
+#    everything the driver says is already redirected into `$WORK/c.log` and an
+#    errexit abort at this line prints nothing at all.
+if [[ $HOST_WRAP -eq 1 ]]; then
+    C_DRIVER="$HERE/capture_c_trace/capture_c_trace"
+else
+    C_DRIVER="$HERE/ctrace-linux/run.sh"
+fi
+if ! SVT_FRAMES="$FRAMES" \
     SVT_INTRA_PERIOD="${SVT_INTRA_PERIOD:--1}" \
     SVT_HIER_LEVELS="${SVT_HIER_LEVELS:-0}" \
     SVT_PRED_STRUCT="${SVT_PRED_STRUCT:-1}" \
     SVT_FCTX_OUT="$WORK/c.fctx" \
-    "$HERE/ctrace-linux/run.sh" "$W" "$H" "$QP" "$PRESET" \
-    "$WORK/rs.yuv" "$WORK/c.obu" 8 >"$WORK/c.log" 2>&1
+    "$C_DRIVER" "$W" "$H" "$QP" "$PRESET" \
+    "$WORK/rs.yuv" "$WORK/c.obu" 8 >"$WORK/c.log" 2>&1; then
+    echo "fctx gate: FAIL — the C oracle ($C_DRIVER) did not run:" >&2
+    tail -20 "$WORK/c.log" >&2
+    exit 2
+fi
 
 for f in "$WORK/c.fctx" "$WORK/rs.fctx"; do
     if [[ ! -s "$f" ]]; then

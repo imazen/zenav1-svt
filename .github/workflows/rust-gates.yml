@@ -209,6 +209,34 @@ jobs:
         run: |
           RS_AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/regression_spotcheck.sh
 
+      - name: INTER byte gate (both frames of a 2-frame low-delay P encode)
+        working-directory: rust
+        # THE GATE THAT WAS NEVER IN CI. `inter_byte_gate.sh`, `fctx_gate.sh`,
+        # `inter_decode_gate.sh` and `inter_fh_gate.sh` guard the entire inter
+        # campaign's envelope -- the number quoted in refusal 12 and in every
+        # §1z entry -- and NONE of them ran here, so that envelope was held up
+        # only by whoever remembered to run it locally. That is one step worse
+        # than the "gate hidden behind a failing gate" trap
+        # docs/WORKING-ON-THIS.md §5 records: this one was never wired at all.
+        # It runs on Linux, where `-Wl,--wrap` works, against the same C oracle
+        # every step above uses. ~4 min.
+        #
+        # It asserts a LIMIT (40 cells byte-identical on BOTH frames) and fails
+        # if a cell regresses OR if a known-open cell silently starts passing
+        # without being promoted.
+        run: ./tools/inter_byte_gate.sh
+
+      - name: INTER frame-context + header + decode gates
+        working-directory: rust
+        # The three siblings of the byte gate, same reason. `fctx_gate` diffs
+        # C's end-of-frame CDF state against the port's field by field (96
+        # shared fields), `inter_fh_gate` walks frame 1's header, and
+        # `inter_decode_gate` requires the two-frame stream to DECODE.
+        run: |
+          ./tools/fctx_gate.sh
+          ./tools/inter_fh_gate.sh
+          ./tools/inter_decode_gate.sh "$GITHUB_WORKSPACE/aom-build/aomdec"
+
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         working-directory: rust
         # THE gate this repo went without. `identity_matrix.sh` is a scoreboard
