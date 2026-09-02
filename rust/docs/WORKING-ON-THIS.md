@@ -43,12 +43,24 @@ tools/mem_gate.sh 6         # peak RSS, port vs C, tiny -> large
 tools/fp_cross_isa.sh       # transcendentals, this host vs emulated x86-64
 ```
 
-**Wall clock (2026-08-13, aarch64):** port/C slope 3.77x at p2, 3.22x p6, 2.74x
-p10, 2.73x p13 — and the port is FASTER than C below ~64 px on the fast presets
-(0.86-0.90x fixed cost). `docs/perf-status.md` leads with the live table and a
-SIMD-coverage queue ranked by measured frame share; read that before optimising
-anything, because the top entries are already NEON and the queue is about
-quality, not coverage.
+**Wall clock, STILL (2026-08-13, aarch64):** port/C slope 3.77x at p2, 3.22x p6,
+2.74x p10, 2.73x p13 — and the port is FASTER than C below ~64 px on the fast
+presets (0.86-0.90x fixed cost). `docs/perf-status.md` leads with the live table
+and a SIMD-coverage queue ranked by measured frame share; read that before
+optimising anything, because the top entries are already NEON and the queue is
+about quality, not coverage.
+
+**Wall clock, INTER (2026-09-02, first measurement):** `PERF_FRAMES=2` /
+`PERF_VIDEO=1` on `perf_gate.sh`; records
+`benchmarks/perf_2026-09-02-arm-{still,videokey,inter}.*` and
+`benchmarks/perf_inter_attrib_2026-09-02.{tsv,meta}`. At preset 8 the 2-frame
+cell is 1.92x / 2.74x / 3.40x at 64/128/256 (slope ratio 3.67x). **Half the
+port's excess is the VIDEO-MODE KEY FRAME, not the inter frame** — 44-52 % at
+every cell measured. The inter frame alone is 5.10x C at 256x256 p8 and is 61 %
+motion-search distortion in kernels that are SCALAR on the port and NEON-dotprod
+in C (2.74 ms vs C's 0.099). Before optimising, read the meta's warning that the
+28x is NOT all coverage: the port's MVP scan / full-pel PME / two sub-pel tree
+searches have never had their call volume compared against C's.
 
 **Per-gate wall clock (CI, x86-64 `ubuntu-latest`, measured 2026-08-27):**
 `benchmarks/gate_wallclock_ci_2026-08-27.md` — every CI step's duration from

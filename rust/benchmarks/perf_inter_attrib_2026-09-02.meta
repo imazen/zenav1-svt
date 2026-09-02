@@ -1,0 +1,144 @@
+Where the INTER path's port-vs-C CPU gap actually is — a three-arm decomposition.
+
+date:    2026-09-02
+host:    mac — Apple M4 Pro, 12 logical cores, aarch64-darwin.
+         FOREIGN LOAD PRESENT THROUGHOUT: a sibling agent's
+         `encode_backend_sweep` held ~4 cores for the whole session. See
+         "IS THIS NUMBER DEFENSIBLE" below — it was checked, not assumed.
+commit:  1b009a2f0bf5
+cell:    gradient 256x256 qp 40 preset 8, 8-bit 4:2:0. All three arms are
+         byte-identical to C at this cell.
+scale:   benchmarks/perf_2026-09-02-arm-{still,videokey,inter}.tsv — paired
+         interleaved, randomized order per round, 25 rounds/cell.
+shares:  /usr/bin/sample, 1 ms, 12 s steady state, ~9,100-9,300 leaf samples per
+         arm per side. tools/perf_profile/{prof.sh,selftime.py,classify.py}.
+data:    benchmarks/perf_inter_attrib_2026-09-02.tsv
+
+THE THREE ARMS, and why there are three. A 2-frame inter cell changes TWO things
+relative to the still gate: the encoder switches from the all-intra signal
+derivation to the video one, AND an inter frame appears. Measuring only "still
+vs 2-frame" attributes both to "the inter path". The middle arm
+(`PERF_VIDEO=1 PERF_FRAMES=1` / `SVT_AVIF=0 SVT_FRAMES=1`) is a video-mode KEY
+frame and nothing else, so the two can be separated by subtraction — of
+measured quantities, never a projection.
+
+  arm        what it is                        port ms   C ms   ratio
+  still      1 frame, avif still config          2.977   1.189  2.50x
+  videokey   1 frame, VIDEO config              10.726   3.636  2.95x
+  inter      2 frames, low-delay P              15.373   4.548  3.38x
+
+  by subtraction:
+  video config's cost ON THE KEY FRAME          7.749   2.447  3.17x
+  the INTER FRAME itself                        4.647   0.912  5.10x
+
+  Cross-check: the port harness's own FRAME_NS (9 runs, median) splits the
+  2-frame encode 10.64 / 4.54 ms. The subtraction gives 10.73 / 4.65. Two
+  independent methods within 1 %.
+
+=========== FINDING 1: half the excess is the KEY frame, not the inter frame ===
+Port minus C on the 2-frame cell is 10.83 ms. Split:
+    still key frame          1.79 ms   17 %
+    video config on the key  5.30 ms   49 %
+    the inter frame          3.74 ms   35 %
+That 44-52 % video-config share reproduces at EVERY cell measured — 64/128/256/
+512 x presets 6/8 — and is the most stable number in the whole run. Anyone
+optimising "the inter path" who starts at the motion search is starting at the
+smaller half.
+
+What the video config turns ON, per class (port ms / C ms of the 7.749 / 2.447):
+    COEFF_CTX      1.406 / 0.597  (2.4x)   nz_map_ctx 0.824 ms alone
+    LOOP_RESTORE   1.016 / 0.170  (6.0x)   compute_stats 0.676 + wiener_convolve 0.315
+    RANGE_CODER    0.905 / 0.134  (6.7x)   OdEcEnc::normalize 0.666
+    QUANT_RDOQ     0.895 / 0.551  (1.6x)   optimize_b 0.577
+    CDEF           0.887 / 0.127  (7.0x)   cdef_filter_block 0.410 + cdef_find_dir 0.213
+    COEFF_WRITE    0.648 / 0.176  (3.7x)   write_coeffs_txb_1d 0.619
+    INTRA_PRED     0.646 / 0.060 (10.7x)   dr_predictor_edged 0.342, cfl_predict_lbd 0.123
+Loop restoration and CDEF are ZERO in the still arm at preset 8 and non-zero in
+the video arm on BOTH sides: the still API produces no reconstruction so the
+post-filters are skipped (`EncodePipeline::with_recon_output`, the 2026-08-11
+change), while a video-mode frame's recon is a reference and they must run. That
+is faithful, not waste — but the port pays 6-7x C for it, and these are the SAME
+kernels docs/perf-status.md's still-path SIMD queue already ranks
+(`restoration::compute_stats`, `wiener_convolve_add_src`, `cdef_find_dir`,
+`intra_pred::dr_predictor_edged`). **The video arm makes that existing queue
+roughly twice as valuable as the still numbers suggested.**
+
+============= FINDING 2: the inter frame is 61 % motion-search distortion ======
+The port's 4.647 ms inter frame, by class (port / C):
+    DISTORTION     2.824 / 0.133  (21.2x)   60.8 % of the port's inter frame
+    OTHER          0.482 / 0.172   (2.8x)   10.4 %
+    FWD_TXFM       0.346 / 0.142   (2.4x)    7.4 %
+    LIBC_MEM       0.275 / 0.013  (21.1x)    5.9 %
+    MD_DRIVER      0.270 / 0.047   (5.7x)    5.8 %
+    PIPELINE       0.255 / 0.101   (2.5x)    5.5 %
+    ALLOC          0.146 / 0.037   (3.9x)    3.1 %
+Everything else is under 2 % or negative.
+
+By SYMBOL, the port's inter frame:
+    ms      %     symbol                                      SIMD?
+    0.955  20.5   inter_me::sad::nxm_sad_kernel               SCALAR
+    0.759  16.3   dsp::subpel_variance::sub_pixel_variance    SCALAR
+    0.548  11.8   inter_me::sad::compute8x4_sad_kernel        SCALAR
+    0.339   7.3   port_md::md_search::PlaneDistortion impls   SCALAR (plain double loops)
+    0.231   5.0   intrabc::build_nmv_component_cost_table     (C has the same fn: 0.094)
+    0.201   4.3   dsp::txfm_simd::neon::fdct64_x8             NEON already
+    0.142   3.0   motion_est::full_pel_search                 SCALAR
+"SIMD?" is by source read: none of the four scalar entries contains an
+`incant!`, `#[arcane]`, `#[rite]` or `magetypes` anywhere in its file.
+
+The same five distortion entries sum to 2.743 ms = 59.0 % of the port's inter
+frame. C's whole inter frame spends 0.099 ms on the corresponding kernels:
+    0.044  svt_ext_all_sad_calculation_8x8_16x16_neon
+    0.035  sub_pixel_variance_w64_neon_dotprod
+    0.020  svt_sad_loop_kernel_neon_dotprod
+**2.743 ms against 0.099 ms — 28x.**
+
+WHAT THAT 28x IS NOT YET SPLIT INTO, and saying so is the point. C ships NEON
+and NEON-dotprod kernels for every one of these; a pure coverage gap would
+plausibly account for a single-digit factor, not 28x. The rest is consistent
+with the port ISSUING MORE SEARCH WORK than C — `md_search.rs` carries an MVP
+scan (`best_mvp_by_distortion`), a full-pel PME (`pme_search_for_ref`) and up to
+two sub-pel tree searches per reference (`md_subpel_search`,
+`md_subpel_search_fixed_stage`), and none of those has ever had its call volume
+compared against C's. **THAT SPLIT IS NOT MEASURED HERE.** Measuring it needs an
+operation census — count SAD/variance/subpel evaluations per block on both sides
+— not another profile. Do not budget a SIMD win from the table above without it:
+the still path already taught this lesson once (`aom_hadamard_8x8` was 1.88 % of
+p2 and delivered 1.031x because the caller's own scalar loop stayed).
+
+===================== IS THIS NUMBER DEFENSIBLE ===============================
+The box was NOT quiet. Rather than assert that the paired design handles it, the
+still control re-measured 8 cells that benchmarks/perf_2026-08-13-hadamard.tsv
+already carries, in this session, on this load:
+
+  cell        08-14 ratio   this session   delta
+  64  p6        1.630          1.615       -0.9 %
+  64  p10       0.756          0.770       +1.9 %
+  128 p6        2.386          2.396       +0.4 %
+  128 p10       1.365          1.412       +3.4 %
+  256 p6        3.054          3.033       -0.7 %
+  256 p10       2.199          2.273       +3.4 %
+  512 p6        3.058          3.024       -1.1 %
+  512 p10       2.659          2.713       +2.0 %
+
+The ABSOLUTE times did move: 512 p6 port 39.1 -> 44.0 ms and C 12.8 -> 14.6, both
+about +13 %. The randomized-order paired ratio absorbed it. This is the first
+time that property has been CHECKED against contention in this repo rather than
+asserted. Read ratios out of this session, not absolute ms.
+
+Profile SHARES carry the same caveat one step weaker — a share is a ratio within
+one process, so contention has to bias sampling non-uniformly across symbols to
+move it — but nothing here checks that directly, so treat the ms values as
+share x paired-ms and the shares as +-1-2 points.
+
+=========================== NOT MEASURED ======================================
+* Any inter cell above 256x256 apples-to-apples (512x512 inter is not
+  byte-identical at p8; the byte frontier ends at 256).
+* More than ONE inter frame. The port refuses frame 2 outright
+  ("sig_deriv_mode_decision_config_default's signals, and the reference
+  statistics they read (ref_hp_percentage, ref_skip_percentage) are unported").
+  Every inter number in this repo is therefore about the FIRST inter frame after
+  a key frame, which is the cheapest one a GOP has.
+* Any partial-SB inter cell (they panic — benchmarks/inter_completion_2026-09-02.tsv).
+* The operation census that would split coverage from volume (see FINDING 2).
+* 10-bit, real content, non-square dims, x86-64.

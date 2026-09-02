@@ -50,14 +50,131 @@
 > {16,64,72,128}, of which only 72 is partial, so the frontier they describe
 > is almost entirely 64-aligned and this surface is invisible to them.
 >
-> **CPU on the inter path is still UNMEASURED as a port/C ratio.** The
-> harnesses now exist — `perf_gate.sh` takes `PERF_FRAMES`, and both
-> `svtav1/examples/perf_encode.rs` and `tools/perf_c_encode` encode a matched
-> low-delay-P sequence (verified byte-identical to the `identity_run` /
-> `capture_c_trace` pair on `gradient 64x64 q40 p6 f2`) — but a wall-clock
-> number taken while two other agents were building on this box would not be
-> defensible, and is not reported here. See the INTER CPU section below for
-> what was measured instead.
+> **INTER CPU (2026-09-02, aarch64 / Apple M4 Pro) — FIRST port/C wall-clock
+> ratio on the inter path, and the answer is NOT "the inter frame".** Records:
+> `benchmarks/perf_2026-09-02-arm-{still,videokey,inter}.{tsv,raw.tsv,meta}`,
+> paired interleaved, 25 rounds/cell, gradient qp 40, `PERF_FRAMES` /
+> `PERF_VIDEO`.
+>
+> THREE ARMS at the same size, preset, qp and session, so the two variables a
+> 2-frame cell changes at once can be separated:
+>   * **still** — 1 frame, `avif` still-picture config (what every prior perf
+>     number in this file measures)
+>   * **videokey** — 1 frame, VIDEO config (`PERF_VIDEO=1` / `SVT_AVIF=0`). A
+>     video-mode KEY frame and nothing else. Byte-identical to C at every size
+>     and both presets measured.
+>   * **inter** — 2 frames, low-delay P, flat GOP: that same key frame plus one
+>     inter frame.
+>
+> | preset 8 | 64x64 | 128x128 | 256x256 | 512x512 | slope ratio |
+> |---|---|---|---|---|---|
+> | still    | 0.90x | 1.53x | 2.50x | 2.66x | 2.78x |
+> | videokey | 1.52x | 2.30x | 2.95x | 3.14x | 3.19x |
+> | inter    | 1.92x | 2.74x | 3.40x | 3.83x* | 3.67x |
+>
+> (* 512x512 inter is the one cell of the three arms that is NOT byte-identical
+> at p8; every other cell in the table is. At preset 6 all three arms are
+> byte-identical at 64x64 and the videokey arm is byte-identical at every size:
+> still 1.67/2.39/3.06/3.06, videokey 2.14/2.62/2.98/3.03, inter 2.26/2.80*/
+> 3.10*/3.40*.)
+>
+> **DIFFERENCING the arms — a subtraction of measured quantities, never a
+> projection — splits the port's excess over C on an inter cell three ways.**
+> At 256x256 p8, where all three arms are byte-identical:
+>
+> | component | port | C | ratio | share of the excess |
+> |---|---:|---:|---:|---:|
+> | still key frame            |  2.98 ms | 1.19 ms | 2.50x | 17 % |
+> | what VIDEO CONFIG adds to that key frame |  7.75 ms | 2.45 ms | 3.17x | **49 %** |
+> | the INTER frame itself     |  4.65 ms | 0.91 ms | **5.10x** | 35 % |
+> | total (2 frames)           | 15.37 ms | 4.55 ms | 3.40x | |
+>
+> **HALF the port's excess on an inter cell is the VIDEO-MODE KEY FRAME, not
+> the inter frame.** That share is 44-52 % at EVERY cell measured (both presets,
+> all four sizes) — the most stable number in this table. Encoding the same key
+> frame under the video signal derivation instead of the all-intra one costs the
+> port 3.2x what it costs C, and it is a bigger absolute item than the inter
+> frame at every cell except 64x64 p8. Anyone optimising "the inter path" who
+> starts at the motion search is starting at the smaller half.
+>
+> The inter FRAME on its own is 2.68x (64 p6), 2.94x (64 p8), 4.11x (128 p8),
+> **5.10x (256 p8)** — the four cells where all three arms are byte-identical —
+> and the ratio GROWS with size, so it is a per-pixel problem in the inter
+> frame too, not a fixed cost.
+>
+> Two independent methods agree on the port's own key/inter split, which is
+> why the differencing above is trusted: subtracting the arms gives
+> videokey 10.73 ms / inter 4.65 ms at 256x256 p8, and the port harness's own
+> `FRAME_NS` (9 runs, median) gives 10.64 / 4.54 — within 1 %.
+>
+> **THE BOX WAS NOT QUIET AND THE CONTROL SAYS THAT DID NOT MATTER.** A sibling
+> agent's `encode_backend_sweep` held ~4 cores for the whole session. The still
+> control re-measured 8 cells that `benchmarks/perf_2026-08-13-hadamard.tsv`
+> already carries (64/128/256/512 x p6/p10 at qp 40) and reproduced every one
+> within 3.4 %, most within 1 %: 64 p6 1.630 -> 1.615, 128 p6 2.386 -> 2.396,
+> 256 p6 3.054 -> 3.033, 512 p6 3.058 -> 3.024, 64 p10 0.756 -> 0.770, 128 p10
+> 1.365 -> 1.412, 256 p10 2.199 -> 2.273, 512 p10 2.659 -> 2.713. The ABSOLUTE
+> times did move (512 p6 port 39.1 -> 44.0 ms, C 12.8 -> 14.6, both ~+13 %) —
+> the randomized-order paired design cancelled it out of the ratio, which is
+> the first time that claim has been checked against contention rather than
+> asserted. Record: `benchmarks/perf_2026-09-02-control-still.{tsv,meta}`.
+> Read the ratios, not the absolute ms, out of this session.
+>
+> **What is NOT measured:** any inter cell above 256x256 apples-to-apples (the
+> byte frontier ends there), more than ONE inter frame (the port refuses frame 2
+> — `ref_hp_percentage`/`ref_skip_percentage` unported, so every inter number in
+> this repo is about the FIRST inter frame after a key frame, the cheapest one a
+> GOP has), any partial-SB inter cell (they panic), and 10-bit or real content.
+>
+> ### WHERE THE INTER GAP IS, BY SYMBOL (2026-09-02)
+>
+> `benchmarks/perf_inter_attrib_2026-09-02.{tsv,meta}` — paired
+> `/usr/bin/sample` profiles of all THREE arms on both binaries at the same
+> byte-identical cell (gradient 256x256 p8 q40), self time per symbol, shares
+> scaled by the paired encode ms above. The two differences below are
+> subtractions of measured quantities.
+>
+> **The INTER FRAME itself (port 4.65 ms, C 0.91 ms) is 61 % motion-search
+> distortion, and every kernel in it is SCALAR while C ships NEON-dotprod:**
+>
+> | port function | ms | % of the port's inter frame | C counterpart |
+> |---|---:|---:|---|
+> | `inter_me::sad::nxm_sad_kernel` | 0.955 | **20.5 %** | `svt_sad_loop_kernel*_neon_dotprod` |
+> | `dsp::subpel_variance::sub_pixel_variance` | 0.759 | **16.3 %** | `sub_pixel_variance_w*_neon_dotprod` |
+> | `inter_me::sad::compute8x4_sad_kernel` | 0.548 | 11.8 % | `svt_ext_all_sad_calculation_8x8_16x16_neon` |
+> | `port_md::md_search::PlaneDistortion` impls | 0.339 | 7.3 % | same NEON family |
+> | `motion_est::full_pel_search` | 0.142 | 3.0 % | `svt_sad_loop_kernel_neon_dotprod` |
+>
+> Those five sum to **2.74 ms = 59 % of the port's inter frame. C's whole inter
+> frame spends 0.099 ms on the corresponding kernels — a 28x gap.** Verified
+> scalar by source read: none of `inter_me/sad.rs`, `dsp/subpel_variance.rs` or
+> `port_md/md_search.rs` contains an `incant!`, `#[arcane]`, `#[rite]` or
+> `magetypes` anywhere.
+>
+> **DO NOT budget a 28x SIMD win from that table.** A pure coverage gap
+> plausibly explains a single-digit factor, not 28x; the rest is consistent with
+> the port ISSUING MORE SEARCH WORK than C — `md_search.rs` carries an MVP scan
+> (`best_mvp_by_distortion`), a full-pel PME (`pme_search_for_ref`) and up to two
+> sub-pel tree searches per reference (`md_subpel_search`,
+> `md_subpel_search_fixed_stage`), and none has had its CALL VOLUME compared
+> against C's. Splitting coverage from volume needs an operation census (count
+> SAD / variance / sub-pel evaluations per block on both sides), not another
+> profile. The still path already taught this: `aom_hadamard_8x8` was 1.88 % of
+> p2 and delivered 1.031x because the caller's own scalar loop stayed.
+>
+> **What the VIDEO CONFIG adds to the KEY frame (port 7.75 ms, C 2.45 ms,
+> 3.17x)** lands almost entirely on kernels the still-path queue ALREADY ranks:
+> `COEFF_CTX` 1.41 ms (`nz_map_ctx` 0.82 alone), `LOOP_RESTORE` 1.02 (6.0x —
+> `compute_stats` 0.68 + `wiener_convolve_add_src` 0.32), `RANGE_CODER` 0.91
+> (6.7x), `QUANT_RDOQ` 0.90, `CDEF` 0.89 (7.0x — `cdef_filter_block` 0.41 +
+> `cdef_find_dir` 0.21), `COEFF_WRITE` 0.65, `INTRA_PRED` 0.65 (10.7x —
+> `dr_predictor_edged` 0.34). Loop restoration and CDEF are ZERO in the still
+> arm at p8 and non-zero in the video arm on BOTH sides — the still API produces
+> no recon so the post-filters are skipped (`with_recon_output`, the 2026-08-11
+> change) while a video frame's recon IS a reference. That is faithful, not
+> waste. **It also means the existing SIMD-coverage queue below is worth roughly
+> twice what the still-only numbers suggested**, because those same kernels run
+> on every frame of a video encode and on none of a still one.
 
 
 > **CURRENT (2026-08-13, aarch64 / Apple M4 Pro — read this first).** Everything
