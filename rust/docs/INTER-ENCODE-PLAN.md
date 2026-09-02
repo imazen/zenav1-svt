@@ -2107,6 +2107,10 @@ tile more than once — so a per-key count off that file is not a leaf count.
 
 ### 1q. THE INTER FRAME EMITS — and its header is field-exact but for CDEF (2026-09-01)
 
+*(Superseded within the day by §1r, which closes the CDEF residual and makes
+the header byte-identical. Kept because the field-by-field record and the two
+harness traps below are what the next chunk needs.)*
+
 Frame 1 of a 2-frame encode no longer refuses. `gradient 64x64 q40 p6`,
 `tools/identity_diff_inter.sh 64 64 40 6 2 gradient`:
 
@@ -2145,7 +2149,9 @@ only key frames were encodable — come from the picture decision's
 `update_type` (C's `frame_is_kf_gf_arf` and `update_type != LF_UPDATE`). That
 closed `cdef_damping_minus_3` and `cdef_y_sec_strength[0]`.
 
-**Still open: the two PRIMARY strengths — and the cause is NAMED, not guessed.**
+**CLOSED, same day — the inter frame header is BYTE-IDENTICAL to C's.**
+See §1r below. What follows is the localization that closed it, kept because
+the mechanism is the reason no key frame could ever have exercised it.
 
 Frame 1 of this GOP is an `LF_UPDATE` (`set_frame_update_type`:
 `hierarchical_levels == 0`, so `frame_offset % 4` — offset 1 is odd, hence LF),
@@ -2192,9 +2198,10 @@ from constants:
   `crate::inter_hdr_arm`.
 
 Gate: `tools/inter_fh_gate.sh`. It asserts frame 0 byte-identity outright and,
-for frame 1, that the set of differing HEADER FIELDS is a SUBSET of the open
-set above — so closing a field keeps it green while a new divergence, or a
-changed field PRESENCE, turns it red.
+for frame 1, that the set of differing HEADER FIELDS is a SUBSET of a listed
+open set — so closing a field keeps it green while a new divergence, or a
+changed field PRESENCE, turns it red. **That open set is now EMPTY** (§1r), so
+the gate is a plain field-identity assertion on the inter frame header.
 
 #### Two traps this chunk paid for
 
@@ -2218,14 +2225,107 @@ implements the real `skip_mode_params()` and threads the decoder's
 `RefOrderHint[]` across the frames of the stream to do it, which is why it
 takes `--index N` by walking frames 0..N rather than jumping to N.
 
+### 1r. The inter frame header is BYTE-IDENTICAL (2026-09-01)
+
+```
+C    30 02 00 80 00 db 3b 40 00 00 04 04 e0 1c 00
+port 30 02 00 80 00 db 3b 40 00 00 04 04 e0 1c 00
+```
+
+All 15 bytes. `tools/inter_fh_gate.sh` reports "field-exact except 0
+known-open field(s)". The whole of frame 1's remaining divergence is now the
+TILE: C's is **3 bytes**, the port's is 94.
+
+What closed it was NOT a CDEF search fix. C never searches on that frame.
+
+`set_cdef_search_controls` level 5 sets
+`search_best_ref_fs = is_not_highest_layer ? 0 : 1` (`enc_mode_config.c:1073`),
+and `is_not_highest_layer` is `update_type != LF_UPDATE` — TRUE for every key
+frame. So on a key frame that flag is always 0 and
+`update_cdef_filters_on_ref_info` (`md_config_process.c:681-772`) is
+unreachable; on the first inter frame of a flat low-delay GOP it is 1, and that
+function then:
+
+1. seeds the candidate list with the list-0 reference's own chosen strength,
+2. finds that the list-1 reference chose the SAME one — every DPB slot still
+   holds the key frame, so list 0 and list 1 ARE the same picture — and
+3. takes the `use_reference_cdef_fs` arm: **`first_pass_fs_num = 0`**, no
+   search at all, `pred_y_f = ref_l0.y0`, `pred_uv_f = (ref_l0.uv0 +
+   ref_l1.uv0) / 2`.
+
+The prediction that confirmed it before a line was written: if that is what C
+does, frame 1's strengths must EQUAL frame 0's. `fh_fields.py --index 0` on the
+same stream gives `y_pri 0 / y_sec 2 / uv_pri 7 / uv_sec 0` — frame 1's values
+exactly. (Damping legitimately differs, 4 vs 5: it is
+`3 + (base_q_idx >> 6)` per frame, not inherited.)
+
+So the port needed two things it did not have, and both are now in:
+`ReferenceFrame::cdef_{y,uv}_strengths` (C's
+`EbReferenceObject::ref_cdef_strengths`, written from the FRAME HEADER at
+`rest_process.c:207-210`), and the port of
+`update_cdef_filters_on_ref_info` in
+`port_enc_mode_config::cdef_search`.
+
+**One gap in that path is NAMED, not silently absent.** C reaches
+`update_cdef_filters_on_ref_info` only after `me_based_cdef_skip`
+(`md_config_process.c:781`) declined to switch CDEF off, and that skip needs ME
+distortion this pipeline does not produce. It returns false immediately on an
+I_SLICE, so the omission cannot affect a key frame; on an inter frame whose ME
+distortion would have tripped it, the port will filter where C would not.
+
+#### What the TILE needs next, in dependency order
+
+C's frame-1 tile is **3 bytes** for a whole 64x64 frame. The port's is 94. The
+prerequisites, ordered so nothing downstream is measured over a broken premise:
+
+1. **CDF continuation — the blocker, and it is not optional.** The header this
+   chunk made byte-exact says `primary_ref_frame = 0` and
+   `error_resilient_mode = 0`, which means the tile's CDFs start from the
+   REFERENCED frame's END-OF-FRAME state, not from the defaults. The port has
+   **no per-ref-slot CDF store anywhere in the tree** (`save_cdfs` /
+   `restore_cdfs` / `load_cdfs`: zero occurrences), and `pipeline.rs` says in
+   so many words that it always assumes `PRIMARY_REF_NONE`. Until that exists,
+   the FIRST symbol of the tile is coded against the wrong probabilities and no
+   amount of correct mode decision can produce matching bytes. It also needs
+   `disable_frame_end_update_cdf` to stay 0 (it is) AND the frame-end CDF
+   save to actually run.
+2. **The inter branch of the tile walk.** `entropy/tile.rs` writes no inter
+   syntax at all; `port_entropy_inter/` (4,321 lines, 12 files) is ported and
+   tested but is not reachable from `encode_frame_impl`. Wiring it is a
+   plumbing chunk, not a porting one.
+3. **The MVP stack's inter branch and MV coding** (`inter_mvp.rs` 2,530 lines,
+   `inter_mv_code.rs` 833 — both ported, both islands), then the real ME
+   (`inter_me/`, ~4.7k lines, also an island). The campaign's map called these
+   C2/C3/C4; the measurement above says they are BEHIND the CDF store, not
+   ahead of it.
+
+The counting matters: roughly 25 kLOC of tier-1/tier-4-gated inter port is
+already in tree and unreachable, against ~1 kLOC of homegrown inter code that
+is what the pipeline calls today. The next chunks are mostly WIRING.
+
 #### No regression, measured after the chunk
 
-`identity_full_8bit.sh` **1100 / 1100**, `regression_spotcheck.sh` **64 / 64**,
-the 72x88 q40 video-key matrix **58 / 60** (unchanged — `gradient p0` and
-`screenrep p0` still open), and the six pinned still cells byte-identical at
-290 / 839 / 63 / 171 / 580 / 693 B. The key-frame header layout is unchanged
-BY CONSTRUCTION, not only by measurement: every pre-inter caller reaches the
-writer through a shim that passes `inter = None`.
+`identity_full_8bit.sh` **1100 / 1100**, `regression_spotcheck.sh` **65 / 65**
+(the new `inter-frame-header-gradient-p6` cell included — before the chunk it
+could not run at all, because the port refused frame 1), the 72x88 q40
+video-key matrix **58 / 60** (unchanged — `gradient p0` and `screenrep p0`
+still open), the six pinned still cells byte-identical at
+290 / 839 / 63 / 171 / 580 / 693 B, and `cargo nextest run --workspace`
+**2422 / 2422** on aarch64 (2418 + the four new
+`update_cdef_filters_on_ref_info` unit tests). Cross-ISA on x86-64 (`r7900x`): the same inter
+frame-header gate passes with the same result, and `regression_spotcheck.sh`
+64 / 64.
+
+Two things are unchanged BY CONSTRUCTION rather than only by measurement, which
+is the stronger claim:
+
+* the key-frame header layout — every pre-inter caller reaches the writer
+  through a shim that passes `inter = None`;
+* the reference-derived CDEF path — every level derives
+  `use_reference_cdef_fs` / `search_best_ref_fs` from `!is_base` or
+  `!is_not_highest_layer`, and a key frame has both true. That is asserted for
+  all eleven levels by
+  `cdef_search::tests::a_key_frame_never_asks_for_a_reference_derived_set`.
 
 #### The C oracle is capped at TWO frames in this GOP — measured, not assumed
 

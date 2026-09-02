@@ -76,7 +76,22 @@ Crates are not published to crates.io yet — depend by git.
   frames**; `SVTAV1_INTER_EXPERIMENTAL` lifts the guard for the differential
   harness only. New gate `tools/inter_fh_gate.sh`. No regression:
   `identity_full_8bit` 1100/1100, `regression_spotcheck` 64/64, video-key
-  matrix 58/60, six pinned still cells at 290/839/63/171/580/693 B.
+  matrix 58/60, six pinned still cells at 290/839/63/171/580/693 B, workspace
+  2422/2422 (aarch64); cross-ISA on x86-64: same gate, same result.
+- **The inter frame header is BYTE-IDENTICAL to C's** — all 15 bytes of frame
+  1 on `gradient 64x64 q40 p6` (`docs/INTER-ENCODE-PLAN.md` §1r). The residual
+  was never a CDEF search difference: C does not search on that frame.
+  `set_cdef_search_controls` level 5 sets
+  `search_best_ref_fs = is_not_highest_layer ? 0 : 1`, which is 0 for every key
+  frame, so `update_cdef_filters_on_ref_info` (`md_config_process.c:681`) is
+  unreachable on the still envelope; on the first inter frame it takes the
+  `use_reference_cdef_fs` arm and hands the frame the REFERENCE picture's own
+  strengths with no search. `ReferenceFrame` now carries
+  `cdef_{y,uv}_strengths` (C's `EbReferenceObject::ref_cdef_strengths`) and
+  `port_enc_mode_config::cdef_search` gains the function. Named gap: C reaches
+  it only after `me_based_cdef_skip` declines, which needs ME distortion this
+  pipeline does not produce (inert on any I_SLICE). Frame 1's whole remaining
+  divergence is the TILE: C 3 bytes, port 94.
 
 ### Fixed
 
