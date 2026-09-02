@@ -60,9 +60,45 @@ not, on exactly the three superblocks where it is non-zero: 11.0x at (128,0),
 AREA or a clipping term rather than a scale constant.
 
 That two statistics out of the same open-loop search disagree this way is the
-useful part: whatever is wrong is in the DISTORTION accumulation, not in the
-search that produced the MVs, because the variance is computed from the same
-per-8x8 costs and is exact.
+useful part, and it narrows the search a long way. Both come from ONE array —
+`me_ctx->me_distortion[21..85]` — in one function:
+
+* `me_8x8_cost_variance = sum((d[i] - mean)^2) / 64`
+* `me_8x8_distortion    = (sum(d[i]) * 4096) / pix_num`
+
+**Variance is invariant under adding a constant and NOT under scaling.** The
+variance matches C to the digit on all nine superblocks while the sum is
+11-18x off, so the port's per-8x8 distortions are C's SHIFTED, not C's SCALED.
+Working back through the normalisation at (128,128) (`pix_num = 40*40 =
+1600`), the per-block offsets are:
+
+| depth | C sum | port sum | offset per block |
+|---|---|---|---|
+| 8x8 (64 blocks)   | 13888 | 787  | ~205  |
+| 16x16 (16 blocks) | 18724 | 1061 | ~1104 |
+| 32x32 (4 blocks)  | 20172 | 1143 | ~4757 |
+| 64x64 (1 block)   | 20439 | 1158 | ~19281 |
+
+The offset grows with BLOCK AREA (1 : 5.4 : 23.2 : 94 against areas
+1 : 4 : 16 : 64), i.e. roughly 3.2-4.7 per PIXEL — so it reads as a per-pixel
+sample difference over the whole block, not a per-block additive rate term.
+A per-pixel difference that appears only on partial superblocks points at what
+the two searches READ at the picture edge (C's replicated border versus
+whatever the port's ME hands its SAD), not at the accumulation.
+
+**`compute_distortion` itself is NOT the bug** — the port's
+(`inter_me/candidates.rs:401`) is a line-for-line transcription of C's
+(`motion_estimation.c:2739`), including the `pix_num = b64_geom->width *
+b64_geom->height` cropping that makes a partial superblock's numbers scale up.
+So the divergence is entirely upstream, in `me_ctx->me_distortion[]`.
+
+**One LATENT divergence in that function, found while checking it and not the
+cause here:** C computes `(dist_64x64 * b64_size) / pix_num` in `uint32_t`,
+where `dist * 4096` OVERFLOWS above `dist == 1_048_576`; the port promotes to
+`u64` first and cannot wrap. The sums are already re-narrowed to `u32` with a
+comment saying why, so the intent was right and the product was missed. Not
+reachable at these magnitudes (dist_64x64 is ~20439 here), and C is the oracle
+bugs included, so this is a defect to FIX toward C's wrap, not away from it.
 
 `docs/WORKING-ON-THIS.md` §5 records that on the campaign's 96-cell grid
 "every superblock of every cell measured reports `me_*_distortion = 0` on C's
