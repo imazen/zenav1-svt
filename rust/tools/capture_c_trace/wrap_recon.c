@@ -808,6 +808,43 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
     if (f)
         fflush(f);
 
+    /* ---- committed per-block INTER DECISION (SVT_CINTER_OUT) -------------
+     * The exact `InterModeInfo` the port's `write_inter_mode_info` takes
+     * (crates/svtav1-encoder/src/port_entropy_inter/block.rs), so a byte gate
+     * on the inter TILE can be built from C's measured decision before the
+     * port's own inter mode decision exists. Without this, the decision would
+     * have to be GUESSED from the tile bytes, and a guess that reproduces
+     * three bytes is not evidence about a decision.
+     *
+     * `predmv` is what `svt_av1_find_best_ref_mvs_from_stack` left (already
+     * lower_mv_precision-rounded), NOT a raw ref-MV-stack entry — the MV the
+     * bitstream diffs against.
+     *
+     * Only INTER blocks are printed (`mode >= NEARESTMV`), so the dump is the
+     * inter frames' decisions with no intra noise to cut out. */
+    if (m->mode >= NEARESTMV) {
+        const char*  ipath = getenv("SVT_CINTER_OUT");
+        static FILE* cif   = NULL;
+        if (ipath && *ipath && !cif)
+            cif = fopen(ipath, "w");
+        if (cif) {
+            fprintf(cif,
+                "CINTER poc=%u mi=(%d,%d) bsize=%d part=%d mode=%d rf=%d,%d "
+                "mv0=%d,%d mv1=%d,%d pmv0=%d,%d pmv1=%d,%d "
+                "interp=0x%x mm=%d npr=%d ovl=%u imc=%d drl=%d drlctx=%d,%d drlnear=%d,%d "
+                "iiu=%d skip=%d skipmode=%d cgi=%d cidx=%d\n",
+                (unsigned)pcs->picture_number, mi_row, mi_col, (int)bsize, (int)part, (int)m->mode,
+                (int)m->ref_frame[0], (int)m->ref_frame[1], (int)m->mv[0].y, (int)m->mv[0].x,
+                (int)m->mv[1].y, (int)m->mv[1].x, (int)b->predmv[0].y, (int)b->predmv[0].x,
+                (int)b->predmv[1].y, (int)b->predmv[1].x, (unsigned)m->interp_filters,
+                (int)m->motion_mode, (int)m->num_proj_ref, (unsigned)b->overlappable_neighbors,
+                (int)b->inter_mode_ctx, (int)b->drl_index, (int)b->drl_ctx[0], (int)b->drl_ctx[1],
+                (int)b->drl_ctx_near[0], (int)b->drl_ctx_near[1], (int)m->is_interintra_used,
+                (int)m->skip, (int)m->skip_mode, (int)m->comp_group_idx, (int)m->compound_idx);
+            fflush(cif);
+        }
+    }
+
     /* ---- committed per-block RECON EDGES (SVT_CEDGE_OUT) -----------------
      * blk_ptr->neigh_top_recon_16bit[p] is the block's BOTTOM row and
      * neigh_left_recon_16bit[p] its RIGHT column (:8552-8578) — exactly the

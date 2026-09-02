@@ -102,7 +102,7 @@ for v in SVT_CTREE_OUT SVT_PICKPART_OUT SVT_QLEVELS_OUT SVT_CCOEF_OUT \
     SVT_CCOST_OUT SVT_PART_OUT SVT_SEED_OUT SVT_RECON_OUT SVT_RECON_BIN \
     SVT_CEDGE_OUT SVT_FASTCOST_OUT SVT_FULLCOST_OUT SVT_UVLOOP_OUT \
     SVT_UVRATE_OUT SVT_PD0COST_OUT SVT_PD0CFG_OUT SVT_LFRECON_OUT SVT_LFRECON_BIN \
-    SVT_FCTX_OUT; do
+    SVT_FCTX_OUT SVT_CINTER_OUT; do
     if [[ -n "${!v:-}" ]]; then
         # The *_BIN vars are PREFIXES (the interposer appends `.p<plane>`), so
         # they have no file of their own to truncate.
