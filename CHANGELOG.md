@@ -56,6 +56,56 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The port's OWN inter ME and MVP produce C's decision** (aeca0196). Two
+  permanent gates in `pipeline.rs::inter_decision_probe` answer the question
+  §1s's inventory presumes: `inter_me::motion_estimation_b64` (configured by
+  the ported `svt_aom_sig_deriv_me`) recovers this cell's full-pel `(-3, 0)`
+  with SAD 0, and `inter_mvp::setup_ref_mv_list` +
+  `port_md::drl::choose_best_av1_mv_pred` reproduce C's `pmv0 = 0,0`,
+  `imc = 8` and "no DRL symbol" — with a negative control that
+  `use_ref_frame_mvs = 0` gives a different mode context. So no ported inter
+  algorithm is wrong on this cell; the remaining divergence is WIRING. The
+  homegrown ME's quarter-pel miss was a call-site gap, not a search gap.
+- **INTER MODE INFO — the real pack walk writes C's tile** (a56ef2df, ed1b10cf). The
+  pre-campaign inter arm in `pipeline.rs`'s block writer wrote an MV and
+  nothing else, through a `NmvContext` it rebuilt per block: no
+  `write_ref_frames`, no inter mode symbol, no DRL, no interpolation filter,
+  `allow_hp` hard-coded against a header that writes 0, and a RAW MV where an
+  MVP difference belongs. It is replaced by
+  `port_entropy_inter::block::write_inter_mode_info`, and an `is_inter` block
+  that arrives without its payload now REFUSES rather than falling back —
+  a quiet fallback turns an undecodable stream back into a byte divergence.
+  Gated by `inter_decision_probe::the_real_pack_walk_writes_cs_inter_tile`,
+  which runs C's measured frame-1 decision through `encode_block_syntax` (the
+  function the entropy walk actually calls) and gets C's `94 9a b0`.
+  `predmv` / `inter_mode_ctx` / `drl_ctx` are DERIVED in the pack from the
+  committed mode-info grid rather than cached from MD as C does, so an MD path
+  whose own grid lags cannot write a context no decoder can reproduce; new
+  `EntropyCtx::mvp_grid` is that grid, stamped by every coded block.
+- **REFERENCE PADDING — the DPB carries C's replicated margin** (ed1b10cf).
+  `pad_ref_and_set_flags` (enc_dec_process.c:1072) pads a recon with
+  `border = BLOCK_SIZE_64 + 4` before it becomes a reference, because a legal
+  MV puts the predicted block partly outside the frame. The port stored bare
+  planes and filled those samples with the constant 128. New
+  `picture::PaddedPlane` / `PaddedRef` on `ReferenceFrame::padded`, built from
+  the tier-1-gated `port_preanalysis::generate_padding`. It is a MODE-DECISION
+  requirement and not only a conformance one: on the campaign's own cell the
+  correct MV matches EXACTLY only against a replicated margin, so C's
+  `skip = 1` is unreachable against a fill.
+- **`av1_code_tx_size` picked its arm on `use_intrabc` instead of
+  `is_inter_block`** (a56ef2df). C's predicate is
+  `use_intrabc || ref_frame[0] > INTRA_FRAME` (block_structures.h:119); while
+  IntraBC was the only inter-classified block the pack could emit the two
+  agreed. A genuinely inter block took the INTRA arm and coded a `tx_size`
+  depth symbol C does not write — MEASURED as one extra 3-symbol write with
+  every symbol before it identical in `nsyms`, `s`, `icdf` and range.
+  `record_inter_dims` had the same predicate.
+- **`port_enc_mode_config::me::apply_me_signals`** (aeca0196), the bridge from the
+  ported `svt_aom_sig_deriv_me` to the ported `inter_me` search: seven C
+  structs were transcribed TWICE, once per lane, with no conversion. Five
+  fields differ in width from `me_context.h` and `inter_me` is the faithful
+  side in all five; measured inert on every value the derivation can produce.
+
 - **CDF CONTINUATION — the per-reference-slot frame-context store** (31bdc16e).
   The byte-exact inter frame header says `primary_ref_frame = 0` with
   `error_resilient_mode = 0`, so the tile's CDFs must start from the REFERENCED
