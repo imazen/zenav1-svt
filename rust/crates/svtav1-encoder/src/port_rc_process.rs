@@ -1538,3 +1538,75 @@ pub fn generate_sb_qindex_steps(
         generate_b64_me_qindex_map: stats_based_sb_lambda_modulation,
     }
 }
+
+// ---------------------------------------------------------------------------
+// update_lambda's own gf_update_type (rc_process.c:406)
+// ---------------------------------------------------------------------------
+
+/// C `update_lambda`'s own `gf_update_type` (rc_process.c:406-410) — the
+/// `rd_frame_type_factor` row's selector, derived from the FRAME TYPE and the
+/// temporal layer rather than from `ppcs->update_type`.
+#[must_use]
+pub fn lambda_gf_update_type(
+    is_key: bool,
+    hierarchical_levels: u8,
+    temporal_layer_index: u8,
+) -> FrameUpdateType {
+    if is_key {
+        FrameUpdateType::KfUpdate
+    } else if temporal_layer_index == 0 {
+        FrameUpdateType::ArfUpdate
+    } else if temporal_layer_index < hierarchical_levels {
+        FrameUpdateType::IntnlArfUpdate
+    } else {
+        FrameUpdateType::LfUpdate
+    }
+}
+
+#[cfg(test)]
+mod frame_update_type_tests {
+    use super::*;
+
+    /// `update_lambda`'s selector is NOT `ppcs->update_type`, and the two
+    /// DISAGREE on the port's own low-delay P envelope: `set_frame_update_type`
+    /// (`port_picstruct`, pd_process.c:4591) gives `Lf` for frame 1 while this
+    /// gives `Arf`. That disagreement is the whole reason both exist — see
+    /// `pd0::inter_full_lambda_8bit`.
+    #[test]
+    fn low_delay_p_frame_1_is_arf_for_the_factor_while_the_picture_is_lf() {
+        assert_eq!(lambda_gf_update_type(true, 0, 0), FrameUpdateType::KfUpdate);
+        assert_eq!(
+            lambda_gf_update_type(false, 0, 0),
+            FrameUpdateType::ArfUpdate
+        );
+
+        // The picture's own type, from the already-ported `set_frame_update_type`.
+        let mut pic = crate::port_picstruct::PicParams {
+            is_key_frame: false,
+            hierarchical_levels: 0,
+            temporal_layer_index: 0,
+            frame_offset: 1,
+            ..Default::default()
+        };
+        crate::port_picstruct::set_frame_update_type(&mut pic);
+        assert_eq!(pic.update_type, crate::port_picstruct::FrameUpdateType::Lf);
+    }
+
+    /// C's `gf_update_type` ladder itself: the LAST-layer arm is `<`, not
+    /// `<=`, so `temporal_layer_index == hierarchical_levels` is `Lf`.
+    #[test]
+    fn the_hierarchical_ladder_matches_update_lambdas_own_comparisons() {
+        assert_eq!(
+            lambda_gf_update_type(false, 3, 0),
+            FrameUpdateType::ArfUpdate
+        );
+        assert_eq!(
+            lambda_gf_update_type(false, 3, 2),
+            FrameUpdateType::IntnlArfUpdate
+        );
+        assert_eq!(
+            lambda_gf_update_type(false, 3, 3),
+            FrameUpdateType::LfUpdate
+        );
+    }
+}

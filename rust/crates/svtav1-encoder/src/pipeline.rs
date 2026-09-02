@@ -2325,16 +2325,49 @@ impl EncodePipeline {
                 // coeff-driven arms above M10 read it.
                 let rdoq_level = crate::rate_arm::rdoq_level(sc_arm, eff_mode, coeff_lvl);
                 // C `av1_lambda_assign_md` (md_process.c:725) for a non-key
-                // frame; a flat low-delay P GOP puts every frame at temporal
-                // layer 0, which `update_lambda` (rc_process.c:406-410) maps
-                // to ARF_UPDATE.
+                // frame. The rdmult BASE and the frame-type FACTOR read
+                // DIFFERENT update types — `ppcs->update_type` and
+                // `update_lambda`'s own `gf_update_type` — and on a flat
+                // low-delay P GOP they disagree (LF vs ARF). MEASURED against
+                // C's `svt_aom_full_cost_pd0` lambda: 241 378 on
+                // `diag 64x64 q40 p8` frame 1, where one update type for both
+                // gave 244 792.
                 let lambda = crate::pd0::inter_full_lambda_8bit(
                     base_qindex,
-                    if temporal_layer == 0 {
-                        crate::port_rc_process::FrameUpdateType::ArfUpdate
-                    } else {
-                        crate::port_rc_process::FrameUpdateType::LfUpdate
+                    // C `ppcs->update_type`, already computed by the picture
+                    // decision (`port_picstruct::set_frame_update_type`).
+                    match pic_decision
+                        .as_ref()
+                        .map(|p| p.update_type)
+                        .expect("an inter frame always has a picture decision")
+                    {
+                        crate::port_picstruct::FrameUpdateType::Kf => {
+                            crate::port_rc_process::FrameUpdateType::KfUpdate
+                        }
+                        crate::port_picstruct::FrameUpdateType::Lf => {
+                            crate::port_rc_process::FrameUpdateType::LfUpdate
+                        }
+                        crate::port_picstruct::FrameUpdateType::Gf => {
+                            crate::port_rc_process::FrameUpdateType::GfUpdate
+                        }
+                        crate::port_picstruct::FrameUpdateType::Arf => {
+                            crate::port_rc_process::FrameUpdateType::ArfUpdate
+                        }
+                        crate::port_picstruct::FrameUpdateType::Overlay => {
+                            crate::port_rc_process::FrameUpdateType::OverlayUpdate
+                        }
+                        crate::port_picstruct::FrameUpdateType::IntnlOverlay => {
+                            crate::port_rc_process::FrameUpdateType::IntnlOverlayUpdate
+                        }
+                        crate::port_picstruct::FrameUpdateType::IntnlArf => {
+                            crate::port_rc_process::FrameUpdateType::IntnlArfUpdate
+                        }
                     },
+                    crate::port_rc_process::lambda_gf_update_type(
+                        false,
+                        self.gop.hierarchical_levels,
+                        temporal_layer,
+                    ),
                     self.hdr.is_fork() && self.hdr.alt_lambda_factors,
                     0,
                     crate::pd0::frame_lambda_weight(

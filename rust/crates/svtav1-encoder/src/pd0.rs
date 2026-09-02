@@ -343,10 +343,23 @@ const RD_FRAME_TYPE_FACTOR_ALT: [i64; 7] = [140, 180, 128, 140, 164, 164, 140];
 /// * the frame-type FACTOR row, `rd_frame_type_factor[bd != 8][update_type]`
 ///   (:417) or the `_alt` row when `alt_lambda_factors` is set (:415).
 ///
-/// `update_type` for a low-delay P frame is `ARF_UPDATE`: `update_lambda`
-/// derives it as `KEY ? KF : temporal_layer == 0 ? ARF : temporal_layer <
-/// max_temporal_layer ? INTNL_ARF : LF` (:406-410), and a flat GOP puts
-/// every frame at temporal layer 0.
+/// **The two switches read DIFFERENT update types, and conflating them is a
+/// measured defect.** `svt_aom_compute_rd_mult_based_on_qindex` (:365) is
+/// called with `ppcs->update_type` — the PICTURE's own type from
+/// `set_frame_update_type` (pd_process.c:4591) — while `update_lambda` (:406)
+/// derives its OWN `gf_update_type` from `frame_type` + `temporal_layer_index`
+/// and indexes `rd_frame_type_factor` with THAT. For a flat low-delay P GOP
+/// (`hierarchical_levels == 0`) they disagree: `set_frame_update_type` falls
+/// through to the `frame_offset & 1 -> LF_UPDATE` arm (base `3.2`), while
+/// `update_lambda` sees `temporal_layer_index == 0` and picks `ARF_UPDATE`
+/// (factor 150).
+///
+/// MEASURED on `diag 64x64 q40 p8 frames=2`, frame 1 (`base_q_idx = 160`),
+/// against C's own `svt_aom_full_cost_pd0` lambda argument
+/// (`SVT_PD0COST_OUT`): C is **241 378**, which is base 3.2 x factor 150.
+/// Passing one update type for both gave 244 792 (ARF base 3.25) — the value
+/// `docs/INTER-ENCODE-PLAN.md` §1y recorded for the port — and the KF chain
+/// would give 248 207.
 ///
 /// `stats_based_sb_lambda_modulation`'s factor is the 128 no-op whenever
 /// `q_index == base_q_idx` (:432-441), which is every frame this port emits
@@ -354,20 +367,25 @@ const RD_FRAME_TYPE_FACTOR_ALT: [i64; 7] = [140, 180, 128, 140, 164, 164, 140];
 /// exactly like the KF builder's.
 pub(crate) fn inter_full_lambda_8bit(
     qindex: u8,
-    update_type: crate::port_rc_process::FrameUpdateType,
+    // C `ppcs->update_type` (`set_frame_update_type`, pd_process.c:4591) —
+    // the rdmult BASE multiplier's selector.
+    base_update_type: crate::port_rc_process::FrameUpdateType,
+    // C `gf_update_type` (`update_lambda`, rc_process.c:406) — the
+    // `rd_frame_type_factor` row's selector.
+    factor_update_type: crate::port_rc_process::FrameUpdateType,
     alt_lambda_factors: bool,
     qdiff_vs_base: i32,
     lambda_weight: u32,
 ) -> u32 {
     use crate::port_rc_process::FrameUpdateType as U;
     let q = svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as f64;
-    let base = match update_type {
+    let base = match base_update_type {
         U::KfUpdate => 3.3,
         U::GfUpdate | U::ArfUpdate => 3.25,
         _ => 3.2,
     };
     let mut rdmult = ((base + 0.0015 * q) * q * q) as i64;
-    let ut = update_type as usize;
+    let ut = factor_update_type as usize;
     rdmult = (rdmult
         * if alt_lambda_factors {
             RD_FRAME_TYPE_FACTOR_ALT[ut]
@@ -3293,6 +3311,55 @@ pub fn pd0_pick_sb_partition_video_eval(
         pending_recon: None,
     };
     ctx.pick(64, 0, 0).1
+}
+
+#[cfg(test)]
+mod inter_lambda_tests {
+    use super::*;
+    use crate::port_rc_process::FrameUpdateType as U;
+
+    /// C's OWN `full_sb_lambda_md[EB_8_BIT_MD]`, read off the `lambda`
+    /// argument of `svt_aom_full_cost_pd0` through the `SVT_PD0COST_OUT`
+    /// interposer on `diag 64x64 q40 p8 frames=2` (evidence tier 2 — the real
+    /// encoder, not a transcription):
+    ///
+    /// ```text
+    /// PD0COST org=(0,0) 64x64 dist=64712 ybits=1519 cost=9142574 lambda=241378
+    /// ```
+    ///
+    /// with `base_q_idx = 160` on that frame (`tools/fh_fields.py --index 1`).
+    /// The KEY frame of the same cell is `base_q_idx = 67`, `lambda=18500`,
+    /// which the KF builder already reproduced.
+    #[test]
+    fn the_low_delay_p_inter_lambda_matches_cs_measured_value() {
+        // The two selectors C actually uses on that frame.
+        assert_eq!(
+            inter_full_lambda_8bit(160, U::LfUpdate, U::ArfUpdate, false, 0, 150),
+            241_378
+        );
+        // The KEY frame, for the same cell, from the same dump.
+        assert_eq!(kf_full_lambda_8bit_lw(67, 150), 18_500);
+    }
+
+    /// The NEGATIVE control: conflating the two update types — which is what
+    /// the port did until 2026-09-02 — gives a DIFFERENT number, so the test
+    /// above cannot pass with the split reverted.
+    #[test]
+    fn one_update_type_for_both_halves_does_not_reproduce_c() {
+        // ARF for both: the value `docs/INTER-ENCODE-PLAN.md` §1y recorded.
+        assert_eq!(
+            inter_full_lambda_8bit(160, U::ArfUpdate, U::ArfUpdate, false, 0, 150),
+            244_792
+        );
+        // LF for both: factor 180 instead of 150.
+        assert_eq!(
+            inter_full_lambda_8bit(160, U::LfUpdate, U::LfUpdate, false, 0, 150),
+            289_654
+        );
+        // And the KF chain at the same qindex, which is what a caller that
+        // forgot the frame type entirely would produce.
+        assert_eq!(kf_full_lambda_8bit_lw(160, 150), 248_207);
+    }
 }
 
 #[cfg(test)]
