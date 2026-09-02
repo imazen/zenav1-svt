@@ -56,6 +56,40 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **CDF CONTINUATION — the per-reference-slot frame-context store** (31bdc16e).
+  The byte-exact inter frame header says `primary_ref_frame = 0` with
+  `error_resilient_mode = 0`, so the tile's CDFs must start from the REFERENCED
+  frame's end-of-frame state; the port had no such store anywhere. New
+  `crate::port_frame_cdf` holds C's `FRAME_CONTEXT` as one object (the port
+  splits it across `entropy::context::FrameContext`, `entropy::coeff_c::CoeffFc`
+  and `port_entropy_inter::InterCdfs`) plus the port of
+  `svt_av1_reset_cdf_symbol_counters`; `picture::ReferenceFrame` carries it; the
+  entropy walk seeds every tile from `ref_dpb_index[primary_ref_frame]`'s saved
+  state (C `ec_process.c:101-112`). Note what C does NOT do on that arm:
+  `svt_av1_default_coef_probs` is skipped, so the coefficient CDFs come from the
+  reference and not from this frame's own `base_q_idx`. A frame that names a
+  `primary_ref_frame` whose slot carries no saved CDFs REFUSES rather than
+  falling back to the defaults. MEASURED: the port's saved end-of-frame-0
+  context is byte-identical to C's for all 96 shared fields, through a new
+  `__wrap_svt_av1_reset_cdf_symbol_counters` oracle (`SVT_FCTX_OUT`) and
+  `tools/fctx_diff.py`; the four fields C carries and the port does not
+  (`delta_lf`, `delta_lf_multi`, `palette_uv_size`, `palette_uv_color_index`)
+  are asserted to be exactly that set. New TIER-1 gate
+  `tests/c_parity_frame_cdf.rs` drives `svt_aom_init_mode_probs`,
+  `svt_av1_default_coef_probs` and `svt_av1_reset_cdf_symbol_counters`.
+- **The inter TILE is BYTE-IDENTICAL to C's, from C's measured decision**
+  (e092afd2). C's frame-1 tile on `gradient 64x64 q40 p6 frames=2` is three
+  bytes (`94 9a b0`) and the port now produces exactly those. What that proves
+  byte-exact: CDF continuation, the partition symbol, skip, is_inter,
+  `write_ref_frames`, the inter mode symbol, DRL gating, MV coding, the
+  interintra/motion-mode/compound gates and the interpolation filter. What it
+  does NOT test is MODE DECISION — the block decision fed in is C's own,
+  measured through a new `SVT_CINTER_OUT` dump rather than fitted to the bytes
+  (one 64x64 `PARTITION_NONE` block, `NEWMV` off `LAST_FRAME`, MV `(0,-24)`
+  eighth-pel, `EIGHTTAP_REGULAR`, `skip = 1`). **So for that cell the entire
+  remaining divergence is mode decision.** Two permanent negative controls: the
+  same decision from DEFAULT CDFs does not reproduce C's bytes, and frame 0 is
+  asserted to be 961 B before anything is read out of it.
 - **The INTER frame emits, and its header is field-exact but for two CDEF
   strengths.** Frame 1 of a 2-frame low-delay-P encode was refused at the
   `pipeline.rs` entry guards; it now encodes. `entropy/obu.rs`'s
@@ -95,6 +129,16 @@ Crates are not published to crates.io yet — depend by git.
   divergence is the TILE: C 3 bytes, port 94.
 
 ### Fixed
+
+- **The frame-CDF shim needed RTCD setup — SIGSEGV on x86-64 only** (4c2e61bb).
+  `svt_aom_init_mode_probs` / `svt_av1_default_coef_probs` copy through
+  `svt_memcpy`, an RTCD pointer that is NULL until
+  `svt_aom_setup_common_rtcd_internal` runs and that NEON devirtualization turns
+  into a direct call on aarch64. Two of the four new tier-1 tests crashed on
+  x86-64 and passed on aarch64; the two that use only the PAINTED shim modes
+  (which call neither initializer) passed on both, which is the fingerprint of a
+  NULL RTCD pointer rather than a buffer bug. `entropy_inter_shims.c:107-118`
+  had already solved and commented this exact trap.
 
 - **`tools/fh_fields.py` was GUESSING `skipModeAllowed`** and got it wrong on
   the campaign's own first inter cell: C writes no `skip_mode_present` bit
