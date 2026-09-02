@@ -11,19 +11,23 @@
 //! | [`pme_search_for_ref`] | `:3216-3364` (`pme_search`'s per-reference BODY; the loop over `ref_frame_type_arr` is the caller's) |
 //! | [`build_single_ref_mvp_list`] | `:3097-3187` (`build_single_ref_mvp_array`) |
 //!
-//! **Four C functions are represented here by their PIECES, not by a
-//! driver, and this table used to name them as if they were ported.**
-//! Corrected 2026-09-02 (the four entries were also broken intra-doc
-//! links, which is how it was caught):
+//! Two C functions are represented here by their PIECES rather than by a
+//! driver. This table once listed FOUR of them as if they were ported, all
+//! four as broken intra-doc links; corrected 2026-09-02, and the other two
+//! (`md_nsq_motion_search`, `pme_search`) were ported the same day.
 //!
 //! | C driver | line | what IS here |
 //! |---|---|---|
-//! | `md_sq_motion_search` | `:2329-2510` | [`MdSqMeCtrls`], [`sparse_extent`], [`sq_search_area_multiplier`], [`nudge_sprs_lev1`] |
-//! | `read_refine_me_mvs` | `:2815-2936` | [`me_mv_center`] + [`refine_me_mv_for_ref`] (its per-reference BODY; the loop over `ref_frame_type_arr` is the caller's) |
+//! | `md_sq_motion_search` | `:2329-2510` | [`MdSqMeCtrls`], [`sparse_extent`], [`sq_search_area_multiplier`], [`nudge_sprs_lev1`] — and the DRIVER is deliberately absent: `pcs->md_sq_mv_search_level` is 0 unconditionally at all three of its derivation sites (`enc_mode_config.c:9200`, `:9753`, `:10033`), so it never runs |
+//! | `read_refine_me_mvs` | `:2815-2936` | [`me_mv_center`] + [`refine_me_mv_for_ref`] (its per-reference BODY; the loop over `ref_frame_type_arr` is the caller's, because each iteration needs a different reference picture and MVP stack) |
 //!
-//! Those four drivers are the remaining work for the inter reference set;
-//! `docs/INTER-ENCODE-PLAN.md` §1z¹⁴ says why they have to land together
-//! with a widened `ref_frame_type_arr` rather than one at a time.
+//! What is left between this module and C's inter reference set is WIRING,
+//! not translation: the `ref_frame_type_arr` loop in
+//! [`crate::inter_md_arm`], turning `inject_new_pme` /
+//! `updated_enable_pme` on, and a two-reference path in
+//! [`crate::inter_pred_arm`] before compound can be unsuppressed.
+//! `docs/INTER-ENCODE-PLAN.md` §1z¹⁴ says why those have to land together
+//! rather than one at a time.
 //!
 //! # The shape of this port
 //!
