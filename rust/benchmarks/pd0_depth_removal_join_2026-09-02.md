@@ -59,13 +59,31 @@ what the completeness flag would predict.** C's 4878 lands on org=(128,0),
 cropped WIDTH is 40 — and 3251 on the other six, including (0,128) and
 (64,128), which are equally partial in HEIGHT and have `is_complete_b64 = 0`
 in the same dump. So it tracks neither `is_complete_b64` nor partial-ness in
-general. A lambda has no business depending on superblock dimensions at all,
-which suggests the varying input is `ctx->sb_ptr->qindex` — `update_lambda`'s
-only genuinely per-SB input (rc_process.c:404) — where `pipeline.rs` passes a
-flat `base_qindex` into `compute_fast_lambda` even though it already carries a
-per-SB `sb_qindex` for `pd0_pick_sb_partition_video`. That is a hypothesis
-from a correlation, NOT a measurement: check it by dumping
-`ctx->sb_ptr->qindex` before acting on it.
+general. A lambda has no business depending on superblock dimensions at all, and the
+ARITHMETIC narrows it further: 4878 / 3251 = 1.5005, and the only pair in
+`update_lambda`'s factor set {90, 100, 115, 128, 135, 150} with that ratio is
+**150 / 100** — the `qdiff > 4` and `qdiff <= -4` arms of its
+`stats_based_sb_lambda_modulation` block (rc_process.c:404). (The fit is not
+exact to the unit — no single integer base gives both 3251 and 4878 under
+those two factors — so a second per-SB term, most likely
+`pcs->lambda_weight`, is in play too. Say "consistent with", not "is".)
+
+**And the port's justification for switching that block off is unsound even
+if its value is right.** `pipeline.rs` passes
+`stats_based_sb_lambda_modulation: false` with the comment "this port signals
+no per-SB delta-q, so the factor is the 128 no-op either way". But the field
+is `scs->stats_based_sb_lambda_modulation`, a SEQUENCE config, and the arm it
+would take here is the FINAL `else` — neither `rtc` nor `delta_q_present` —
+which keys on `me_q_index`, a per-SB quantity, not on delta-q at all. Whether
+the value is right is a question about the sequence config; the reason given
+is about something else.
+
+THE CHECK, in order: dump `scs->stats_based_sb_lambda_modulation`,
+`ctx->sb_ptr->qindex` and the `me_q_index` C hands `svt_aom_compute_fast_lambda`
+from a wrapper on that EXPORTED function, then compare. Do not act on the
+ratio alone — this paragraph is a correlation with an arithmetic coincidence
+attached, and this file has already recorded one confident inference from a
+variance that turned out to be right for the wrong reason.
 
 Note also that with divergence 2 fixed, every `dr=` outcome on this cell now
 agrees with C *despite* this lambda still being wrong — so a cell that only
