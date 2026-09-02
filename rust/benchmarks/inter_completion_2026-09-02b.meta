@@ -50,6 +50,17 @@
 # frontier, not the completion one, and it moved for reasons outside this
 # chunk (f5804e454).
 #
+# CONTENT INDEPENDENCE, measured 2026-09-02 so the gradient-only gate is not
+# taken on faith: all FIVE content classes the harness has — gradient, screen,
+# screenrep, uniform, diag — give the SAME 52 OK / 12 REFUSED / 0 CRASH on this
+# grid. The completion frontier is geometry-driven (SB remainder mod 64, and
+# the 360p/480p resolution class), not content-driven. `...b-screen.tsv` is the
+# screen run, kept because `gradient` never arms the screen-content detector
+# and so codes no palette or IntraBC candidate in any cell — the blind spot
+# that let two out-of-bounds panics past the STILL panic gate until 2026-08-03.
+# The CI gate runs gradient AND screen for that reason, not because they differ
+# today.
+#
 # CROSS-ISA: the AFTER numbers were re-measured on r7900x (x86-64, Linux, 24
 # cores) from main at f321cb04 and are IDENTICAL — 64 cells, 52 OK, 12 REFUSED,
 # 0 CRASH. Also there: workspace suite 2480/2480, regression spot-check 76/76,

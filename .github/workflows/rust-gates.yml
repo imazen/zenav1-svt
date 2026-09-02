@@ -260,11 +260,27 @@ jobs:
         # 512x512 p13 cell, and this grid's largest cells are 16x that area. It
         # is also the configuration this gate should be asking about: the
         # shipped one.
+        #
+        # TWO CONTENT CLASSES, and the second one is the §5 lesson applied to
+        # this gate rather than quoted at it: `gradient` never arms the
+        # screen-content detector, so palette and IntraBC candidates do not
+        # exist in any of its cells — which is exactly how the STILL panic gate
+        # sailed past two out-of-bounds panics until 2026-08-03. MEASURED
+        # 2026-09-02: all five content classes the harness has
+        # (gradient / screen / screenrep / uniform / diag) give the SAME
+        # 52 OK / 12 REFUSED / 0 CRASH, so this frontier is geometry-driven —
+        # SB remainder and resolution class — not content-driven. The screen
+        # pass is therefore currently redundant and is here anyway, because
+        # "redundant today" is not "unreachable", and a gate that cannot reach
+        # a candidate set cannot guard it.
         run: |
           cargo build --release -p zenav1-svt --example identity_run
-          SCAN_GATE=1 SCAN_MIN_OK=52 SCAN_MAX_REFUSED=12 \
-            SCAN_RS_BIN="$PWD/target/release/examples/identity_run" \
-            ./tools/inter_completion_scan.sh
+          for c in gradient screen; do
+            echo "=== inter completion gate: content=$c ==="
+            SCAN_GATE=1 SCAN_MIN_OK=52 SCAN_MAX_REFUSED=12 SCAN_CONTENT="$c" \
+              SCAN_RS_BIN="$PWD/target/release/examples/identity_run" \
+              ./tools/inter_completion_scan.sh
+          done
 
       - name: INTER decode census (does the port's stream DECODE, on all 96 cells)
         working-directory: rust
