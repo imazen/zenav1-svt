@@ -607,6 +607,71 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
     }
 }
 
+/* ---- SVT_IFCOST_OUT — C's INTER fast cost, per candidate ---------------
+ * `svt_aom_inter_fast_cost` is EXPORTED (rd_cost.h:47) and is the exact
+ * counterpart of the port's `port_rd_cost::inter_cost::inter_fast_cost`.
+ *
+ * WHY IT EXISTS (docs/INTER-ENCODE-PLAN.md §1z16). On `uniform 72x72 q20 p8`
+ * frame 1 the port prices the 8x8 corner block's NEARESTMV at
+ * `fast_luma_rate = 3014` and codes INTRA where C codes inter, and the port's
+ * INPUTS to that function join C's exactly (`NSQDBG ICAND` against
+ * `SVT_CINTER_OUT`: same mode, ref, mv, pred_mv, drl, inter_mode_ctx,
+ * overlappable count, reference-frame bits). `SVT_FULLCOST_OUT` shows C
+ * reaching MDS3 with ONE candidate where the port reaches it with two, so the
+ * divergence is in the MDS0 cost that decides which candidates survive — and
+ * `cand_bf->fast_luma_rate` is that number. Without this the only observable
+ * is the finished cost, which is rate and lambda and distortion collapsed
+ * into one integer.
+ *
+ * Fires AFTER the real call, so `cand_bf->fast_luma_rate` /
+ * `fast_chroma_rate` are the values C just wrote.
+ *
+ * Env: SVT_IFCOST_OUT (file), SVT_IFCOST_XY ("x,y" block origin pin —
+ * REQUIRED, because MD calls this for every inter candidate of every block of
+ * every depth and an unpinned dump is megabytes of noise). */
+uint64_t __real_svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                        ModeDecisionCandidateBuffer* cand_bf, uint64_t lambda,
+                                        uint64_t luma_distortion);
+
+uint64_t __wrap_svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                        ModeDecisionCandidateBuffer* cand_bf, uint64_t lambda,
+                                        uint64_t luma_distortion) {
+    const uint64_t rc = __real_svt_aom_inter_fast_cost(pcs, ctx, cand_bf, lambda, luma_distortion);
+    const char* path = getenv("SVT_IFCOST_OUT");
+    const char* xy   = getenv("SVT_IFCOST_XY");
+    if (path && *path && xy) {
+        int px = -1, py = -1;
+        sscanf(xy, "%d,%d", &px, &py);
+        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                const ModeDecisionCandidate* cand = cand_bf->cand;
+                fprintf(f,
+                        "IFCOST poc=%u org=(%u,%u) %ux%u st=%d mode=%d rf=%d,%d mv0=%d,%d "
+                        "pmv0=%d,%d drl=%d imc=%d interp=0x%x mm=%d iiu=%d "
+                        "flr=%u fcr=%u lambda=%llu dist=%llu cost=%llu\n",
+                        (unsigned)pcs->picture_number, (unsigned)ctx->blk_org_x,
+                        (unsigned)ctx->blk_org_y, (unsigned)ctx->blk_geom->bwidth,
+                        (unsigned)ctx->blk_geom->bheight, (int)ctx->md_stage,
+                        (int)cand->block_mi.mode, (int)cand->block_mi.ref_frame[0],
+                        (int)cand->block_mi.ref_frame[1], (int)cand->block_mi.mv[0].y,
+                        (int)cand->block_mi.mv[0].x, (int)cand->pred_mv[0].y,
+                        (int)cand->pred_mv[0].x, (int)cand->drl_index,
+                        (int)ctx->blk_ptr->inter_mode_ctx,
+                        (unsigned)cand->block_mi.interp_filters, (int)cand->block_mi.motion_mode,
+                        (int)cand->block_mi.is_interintra_used,
+                        (unsigned)cand_bf->fast_luma_rate, (unsigned)cand_bf->fast_chroma_rate,
+                        (unsigned long long)lambda, (unsigned long long)luma_distortion,
+                        (unsigned long long)rc);
+                fflush(f);
+            }
+        }
+    }
+    return rc;
+}
+
 /* ---- POST-DEBLOCK recon interposer (SVT_LFRECON_BIN / SVT_LFRECON_OUT) ---
  * `svt_av1_loop_filter_frame` is declared in deblocking_filter.h:47 and called
  * from dlf_process.c:114 — a CROSS-TU call, so --wrap reaches it. The search's
