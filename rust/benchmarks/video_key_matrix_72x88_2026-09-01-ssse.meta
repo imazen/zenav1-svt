@@ -46,3 +46,10 @@ and the two open cells are the SAME two content classes at the SAME preset:
 geometry at all, so the residual is a content x preset property, not an
 alignment one — which is why §1o''' localizes on this geometry rather than on
 72x88.
+
+## Cross-ISA
+
+Re-run on x86-64 (`r7900x`, Ryzen 9 7900X, Linux) at commit 4ab2288c6665 from a
+scratch clone: **58 / 60 on BOTH geometries**, cell for cell the same verdicts
+as aarch64, with `cargo nextest run --workspace` 2428/2428 and
+`tools/regression_spotcheck.sh` 64/64.
