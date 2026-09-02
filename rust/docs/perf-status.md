@@ -1,13 +1,20 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
 > **MEMORY (2026-09-02, aarch64 / Apple M4 Pro) — read this before quoting any
-> memory number.** Record: `benchmarks/mem_2026-09-02.{tsv,meta}`, 56 cells,
-> median of 7 runs per cell, `/usr/bin/time -l` max RSS, plain `--release`
-> port binary (NOT the `symtrace` wrapper the 2026-08-16 record used).
-> Supersedes `benchmarks/mem_2026-08-16.meta`.
+> memory number.** `/usr/bin/time -l` max RSS, median of 7 runs per cell, plain
+> `--release` port binary (NOT the `symtrace` wrapper the 2026-08-16 record
+> used). Two records, and they answer different questions:
+> * `benchmarks/mem_arms_2026-09-02.{tsv,meta}` — **the live numbers below.**
+>   Three arms (still / video-mode key frame / inter), 42 cells, `perf_encode`
+>   as the port binary, gradient qp 40.
+> * `benchmarks/mem_2026-09-02.{tsv,meta}` — the wider preset x size sweep (56
+>   cells, presets 2/6/10/13, qp 32) and the **inter completion frontier**. Its
+>   STILL ratios are ~0.15x too high; see the correction below.
 >
-> The same THREE ARMS the CPU section below uses, `perf_encode` as the port
-> binary, gradient qp 40 (`benchmarks/mem_arms_2026-09-02.{tsv,meta}`):
+> Both supersede `benchmarks/mem_2026-08-16.meta`.
+>
+> The THREE ARMS are the same ones the CPU section below uses, so the two can be
+> read together:
 >
 > | arm | 64x64 | 256x256 | 1 MP | 4 MP | port fit | C fit | slope ratio |
 > |---|---|---|---|---|---|---|---|
