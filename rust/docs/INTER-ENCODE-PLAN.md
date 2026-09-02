@@ -5437,6 +5437,54 @@ syntax alphabet (§1z¹⁸/§1z¹⁹). Both were found the same way — wrap the
 function whose output the port claims to reproduce, and read the two numbers
 side by side.
 
+### 1z²⁰. The 40 remaining F1DIFF cells split EXACTLY in half, and one half is not the tile at all (2026-09-02)
+
+Measured after §1z¹⁹, on all 40: `fh_fields.py --index 1` on the C and port
+streams of every cell the byte matrix still calls F1DIFF.
+
+| | cells | first differing thing |
+|---|---|---|
+| **frame HEADER differs** | **20** | `loop_filter_level[0]` — C 12 / 16 / 24, **the port 0**, on every one of the 20 |
+| **header identical** | **20** | the tile |
+
+**The port switches the deblocking filter OFF on those inter frames and C
+does not.** That is not a mode-decision defect and no amount of work in
+`inter_md_arm` will move it; it is the video arm of the DLF level.
+`get_dlf_level_allintra` (`enc_mode_config.c:1540`) is ported — it is the
+still path — and C's video arm is `get_dlf_level_default` (`:1466`, called
+at `:9478`), which is not. Same shape as the other video-arm levels being
+wired in this repo (`nic_level`, `txt_level`, `mds0_use_hadamard_sb`), so
+**check for a concurrent lane before starting it.**
+
+The other 20 have a byte-identical frame header and diverge inside the tile.
+`diag 16x16 q20 p6` is the minimal one and worth reading first: **its
+frame-1 arithmetic-coder op stream is IDENTICAL to C's, 16 operations, and
+its single coded block matches C exactly** (`mi=(0,0)`, `NEWMV`, `rf=5`,
+`mv=(0,-24)`) — but the frame is 21 B against C's 23. So on that cell the
+divergence is neither the decision nor the symbols: it is what surrounds
+them. (Its header shows the same `loop_filter_level` difference, so it may
+well be the SAME mechanism reaching the tile-size field; the census above
+counts it in the header half.)
+
+#### Order of work
+
+1. **The DLF video arm — 20 cells, one control.** The largest single
+   remaining group, and it is a level derivation, not a search.
+2. **The tile-only 20**, which now start from a much better place than any
+   chunk in this campaign has: the port's PME, ME, MVP, NSQ motion search,
+   `inter_fast_cost` and motion-mode alphabet all join C's on every row
+   either side can observe, and every one of the 96 streams decodes.
+
+#### What no longer needs investigating
+
+Recorded so the next chunk does not re-derive them: compound prediction (0
+coded blocks in 96 cells, §1z¹⁶), warped motion and OBMC as SELECTIONS (0
+coded blocks; the SYNTAX is now correct, §1z¹⁹), inter-intra (0), GLOBALMV
+(0), nonzero DRL (0), the NSQ motion search (wired, §1z¹⁶), the MD inter
+fast cost (exactly C's, §1z¹⁷) and stream decodability (96 of 96, §1z¹⁹).
+NEARMV is 3 coded blocks on 3 cells and is the only suppressed control left
+with any measured reach at all.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

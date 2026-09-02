@@ -905,6 +905,12 @@ is that sweep and `tools/inter_byte_gate.sh` asserts the 55.
 `tools/inter_decode_census.sh` asks the OTHER question — does the stream
 decode — of all 96, because "byte-identical" and "decodable" are not the
 same question and 22 cells once answered them differently (§1z¹⁸/§1z¹⁹).
+**The 40 that remain split exactly in half** (§1z²⁰): 20 differ in the frame
+HEADER — `loop_filter_level[0]`, C 12/16/24 against the port's 0, i.e. the
+port switches deblocking OFF and C does not, which is the unported VIDEO arm
+of the DLF level and not a mode-decision defect at all — and 20 have a
+byte-identical header and differ inside the tile. Read §1z²⁰ before opening
+either; it also lists what no longer needs investigating.
 The refusal stays
 because 55 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
