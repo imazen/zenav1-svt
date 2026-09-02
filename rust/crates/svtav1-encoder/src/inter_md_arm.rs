@@ -30,10 +30,14 @@
 //! injector as OFF, and each one is a separate unported search rather than a
 //! shortcut in the composition:
 //!
-//! * `inter_comp_ctrls` / bipred — compound PREDICTION is unported
-//!   (`inter_pred_arm` has no two-reference path), and this module's
-//!   `ref_frame_type_arr` carries one entry, so no compound candidate can be
-//!   built. **This used to say "no second reference EXISTS in the port's
+//! * `inter_comp_ctrls` / bipred — this module's `ref_frame_type_arr` carries
+//!   ONE entry, so no compound candidate can be built. The PREDICTION is not
+//!   the obstacle: `svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1`
+//!   takes an `mvs` SLICE and runs the `jnt_convolve` compound path whenever
+//!   it has two (`port_pd_pred.rs:240`); it is
+//!   [`crate::inter_pred_arm`]'s ADAPTER that narrows it to one MV, on
+//!   purpose, because no candidate here is compound. Widening the reference
+//!   set therefore has to widen the adapter with it. **This used to say "no second reference EXISTS in the port's
 //!   low-delay-P reference set", and that was MEASURED FALSE on 2026-09-02:**
 //!   C reports `ref_frame_type_arr = [LAST, BWDREF, LAST_BWD]`,
 //!   `reference_select = 1`, and it CODES `rf=5` (BWDREF) on the 128-wide

@@ -24,8 +24,11 @@
 //! What is left between this module and C's inter reference set is WIRING,
 //! not translation: the `ref_frame_type_arr` loop in
 //! [`crate::inter_md_arm`], turning `inject_new_pme` /
-//! `updated_enable_pme` on, and a two-reference path in
-//! [`crate::inter_pred_arm`] before compound can be unsuppressed.
+//! `updated_enable_pme` on, and widening
+//! [`crate::inter_pred_arm`]'s adapter to pass TWO MVs and two reference
+//! planes — the compound prediction itself is already executable
+//! (`svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1` takes an
+//! `mvs` slice and compounds when it has two).
 //! `docs/INTER-ENCODE-PLAN.md` §1z¹⁴ says why those have to land together
 //! rather than one at a time.
 //!

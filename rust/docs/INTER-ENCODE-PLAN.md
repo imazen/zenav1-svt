@@ -4689,7 +4689,7 @@ and its ME agree on the MV there; it cannot reproduce the reference TYPE.
 | `md_sq_motion_search` (`:2329`) | — | **never runs**: `md_sq_mv_search_level` is 0 at every preset (`enc_mode_config.c:9200`, `:9753`, `:10033`), so `read_refine_me_mvs`' `md_sq_me_enabled` arm is dead |
 | `read_refine_me_mvs` (`:2815`) | `port_md::md_search::refine_me_mv_for_ref` | **per-reference BODY ported 2026-09-02**, tier 4; the loop over `ref_frame_type_arr` stays the caller's, because each iteration needs a different reference picture and MVP stack |
 | `pme_search` (`:3197`) | `port_md::md_search::pme_search_for_ref` | **per-reference BODY ported 2026-09-02**, tier 4; same shape as `refine_me_mv_for_ref` |
-| two-reference (compound) PREDICTION | — | **missing** (`inter_pred_arm` is single-ref) |
+| two-reference (compound) PREDICTION | `svtav1_dsp::port_pd_pred` | **ported and executable** — `av1_inter_prediction_light_pd1` takes an `mvs` SLICE and sets `is_compound = mvs.len() > 1` (`:240`), running the `jnt_convolve` path. What is single-ref is the ADAPTER, `inter_pred_arm`, which takes ONE mv deliberately because no candidate here is compound |
 
 **Landed since this entry was written:** `md_subpel_search` and
 `md_nsq_motion_search` (`port_md::md_search`), two of the three drivers — and `read_refine_me_mvs`' per-reference BODY as
@@ -4701,9 +4701,8 @@ unconditional). **All three drivers are now ported as their per-reference BODIES
 `md_nsq_motion_search`). What remains for the chunk is WIRING, not
 translation: the `ref_frame_type_arr` loop in `inter_md_arm` (per-reference
 picture, MVP stack, MVP list and cost params), turning `inject_new_pme` /
-`updated_enable_pme` on, and compound PREDICTION — `inter_pred_arm` still has
-no two-reference path, so `allow_bipred` must stay suppressed with the
-existing refusal until it does. Two
+`updated_enable_pme` on, and widening `inter_pred_arm`'s adapter to pass two
+MVs and two reference planes to the compound path the DSP already has. Two
 C details it carries that a rewrite loses — the MV-limit chain's THREE steps
 (the middle one narrows the full-pel set in place) and the fact that
 `svt_init_mv_cost_params` reads **`ctx->md_subpel_me_ctrls`**'s
@@ -4719,10 +4718,15 @@ first, then `md_subpel_search`, then `pme_search`, then flip
 `inject_new_pme`/`updated_enable_pme` on and widen `ref_frame_type_arr` — in
 ONE gate-visible step, because the intermediate states each regress.
 
-Compound stays out of that step: `allow_bipred` must be suppressed in the
-injector (C's own `reference_mode_is_single` gate) until `inter_pred_arm`
-grows a two-reference path, and `inter_md_arm`'s assert must keep refusing a
-compound candidate rather than dropping it.
+Compound is a smaller job than the first draft of this entry claimed — that
+draft said the prediction was unported, and it is not (see the table row
+above; corrected 2026-09-02 by reading `port_pd_pred.rs` rather than trusting
+`inter_md_arm`'s own header, which said the same wrong thing). What compound
+needs is the ADAPTER: `inter_pred_arm::predict_inter_{luma,yuv}` take one
+`mv` and one `PaddedRef`, and the DSP driver under them already takes slices
+of both. Until that widening lands, `allow_bipred` must be suppressed in the
+injector (C's own `reference_mode_is_single` gate) and `inter_md_arm`'s
+assert must keep REFUSING a compound candidate rather than dropping it.
 
 **One thing to check before predicting from BWDREF.** On this GOP the frame
 header maps `ref_frame_idx[0..3] = 0` and `ref_frame_idx[4..6] = 3`, two
