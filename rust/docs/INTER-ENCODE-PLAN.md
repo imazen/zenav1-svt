@@ -3521,6 +3521,129 @@ re-derived it in a scratch directory; it prints one line per cell and writes a
 TSV that diffs against the previous chunk's, which is how "8 closed, 0
 regressed" above is a diff rather than a recollection.
 
+### 1z⁗. `fixed_partition` is a TWO-term predicate and the port had one term — the q55 preset-8 key frames close (2026-09-02)
+
+Six of §1z‴'s twelve remaining F0DIFF cells were `{gradient,diag} x {64,72,128}
+q55 p8`, and all six have one cause.
+
+C, `enc_dec_process.c:3054`, with its own comment:
+
+```c
+// If there is only one depth and no NSQ search at PD1, then the partition
+// structure is fixed.
+md_ctx->fixed_partition = md_ctx->pred_depth_only && md_ctx->md_disallow_nsq_search;
+```
+
+and `md_disallow_nsq_search = !ctx->nsq_geom_ctrls.enabled ||
+!ctx->nsq_search_ctrls.enabled` (`:7846`). `pipeline.rs` had
+
+```rust
+let refined = dr.adaptive && use_funnel;
+```
+
+— the FIRST conjunct only. So a picture that is pred-depth-only but still
+SEARCHES NSQ shapes took the fixed-tree path and coded squares where C codes an
+H / V / 4-way shape at the same depth.
+
+#### Why it never showed on the still envelope
+
+`svt_aom_get_nsq_search_level_allintra` (`enc_mode_config.c:8363`) returns **0
+from M4 up**, and `svt_aom_get_nsq_geom_level_allintra` returns 0 from M7 up.
+So on the ALLINTRA arm `md_disallow_nsq_search` is true at every preset where
+the depth refinement is non-adaptive, and the one-term predicate is exactly
+right. It is the VIDEO arm that separates them: `..._default` never returns a
+zero geometry level, and its search level is nonzero except where the sequence-
+QP modulation pushes it past 19.
+
+#### Why exactly q55, and exactly p8 — the arithmetic that predicts the cell set
+
+`svt_aom_get_nsq_search_level_default` (`:8254`) gives base 19 above M7, then
+adds a seq-QP offset that SATURATES TO ZERO (`level + n > 19 ? 0 : level + n`):
+
+| CLI qp | M8 base | seq_qp_mod offset | `nsq_search_level` | C `fixed_partition` |
+|---|--:|---|--:|---|
+| 20 | 19 | `qp <= 39` -> +3 | **0** | true — port was right |
+| 40 | 19 | `qp <= 43` -> +2 | **0** | true — port was right |
+| 55 | 19 | none applies | **19** | **false — port was wrong** |
+
+That is the whole q55/q20/q40 pattern in the F0DIFF list, derived from the
+source before it was measured. At M6/M7 the base is 15/18, so no qp lands on
+the saturation and `dr.adaptive` is true anyway — which is why p6 and p7 were
+already identical.
+
+#### The fix, and it is the gate not the walk
+
+```rust
+let nsq_search_on = NsqCfg::for_arm(sc_arm, preset, cli_qp).enabled;
+let refined = use_funnel && (dr.adaptive || nsq_search_on);
+```
+
+Nothing else changed. `decide_sb_refined` run with a `pred_depth_only` control
+row admits no extra depths (`s = e = 0` everywhere, which this module's header
+already stated) — so widening the gate adds the NSQ SHAPE search at the
+predicted depth and nothing else, which is precisely what C does.
+
+**Byte-inert on the still envelope, by argument and by measurement.** On the
+allintra arm `NsqCfg::for_arm(..).enabled` is true only at presets 0..=3, where
+`DrCtrls::for_preset_sc` gives level 1/5/6 — never 10 — so `dr.adaptive` is
+already true and the disjunction cannot change the branch. Measured:
+`identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
+`video_key_matrix` 58/60, `fctx_gate` 96/96, `inter_fh_gate` PASS,
+`inter_decode_gate` 5/5 PASS.
+
+#### The frontier
+
+| result | §1z‴ | after |
+|---|--:|--:|
+| BOTH frames byte-identical | 27 | **31** |
+| frame 0 identical, frame 1 differs | 57 | 59 |
+| frame 0 already differs | 12 | **6** |
+
+All six q55 p8 key frames closed; four of the six went straight to BOTH.
+Nothing regressed.
+
+#### The same defect is still LIVE one branch over, and is named rather than fixed
+
+`pipeline.rs`'s PD0 dispatch has a SECOND fixed-tree path, the
+`coded_lossless || preset >= 9` branch, which does not compute `refined` at all
+and therefore cannot consult `nsq_search_on`. MEASURED on
+`gradient 64x64 q55 p9 frames=2`: C 289 B, port 412 B, and the same q20/q40
+cells are identical — the p8 signature exactly. Whoever takes it: the fix is
+not a copy of the one above, because that branch has no depth-refinement walk
+wired to it at all.
+
+#### Still open on the video-KEY frontier after this: 6 cells, two causes
+
+* `gradient {64,72,128} q20 p8` — `set_pic_pd0_lvl_default`'s M8 row is
+  `3 + ldp0_lvl_offset[qp_band]`, i.e. **PD0_LVL_5** at CLI qp <= 27, and the
+  pred-depth-only path derives its PD0 model from
+  `part_arm::refined_pd0_model`, which carries only levels 3 and 4 and
+  documents that it falls back to LVL_1 otherwise. Routing that path through
+  `pd0::pd0_pick_sb_partition_video` (which has `Pd0Mode::Lvl5` and the
+  `ires_factor` its closed form needs) closes the 64 and 72 key frames and
+  moves 128 from 7295 to 7453 against C's 7472 — MEASURED, not landed, because
+  it costs `gradient 16x16 q20 p8`'s frame 1, a cell already in
+  `inter_byte_gate`. The reason it costs it is the next bullet.
+* **C's `pd0_detector` demotes on an INTER frame and the port has none.**
+  `enc_dec_process.c:2406`: on an I_SLICE every test is gated off
+  (`slice_type != I_SLICE`), so the picture level IS the SB level on frame 0
+  and the port is right there. On frame 1 the `use_ref_info` arm reads
+  `ref_obj_l0->sb_intra[sb]`, which is 1 for every SB of a KEY reference — and
+  the port's 2-frame envelope has no other kind — so level 5 steps to 4
+  (`use_ref_info[LVL_5] == 1`, "either usable reference was intra") and 4 steps
+  to 3 (`use_ref_info[LVL_4] == 2`), landing on **PD0_LVL_3 on every inter
+  frame**, before any ME threshold is consulted. `port_pd0_detector` is ported
+  (tier 4) and still has no caller; what it additionally needs is C's
+  `set_pd0_ctrls` table and a per-SB `sb_intra` on the DPB entry.
+  Forcing level 3 on the inter frame as a probe restores `gradient 16x16 q20
+  p8` and costs `screen 16x16 q20 p8`, so the detector is necessary but not
+  sufficient there.
+* `diag {64,72,128} q20 p6` — NOT localized. C 441/584/1284 against the port's
+  444/587/1275; q40 and q55 are identical at the same preset, so it is
+  qp-keyed. `svt_aom_get_nsq_search_level_default` at M6 gives 18 / 17 / 15 for
+  q20 / q40 / q55 and the port's level-18 control row was checked field-for-
+  field against C's `case 18:` and agrees, so the search LEVEL is not it.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

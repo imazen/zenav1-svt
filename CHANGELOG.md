@@ -233,6 +233,23 @@ Crates are not published to crates.io yet — depend by git.
   gates now use `${ARR[@]+"${ARR[@]}"}`. Recorded in
   `rust/docs/WORKING-ON-THIS.md` §5.
 
+- **`fixed_partition` is a TWO-term predicate and the port had one term — 27
+  of 96 cells becomes 31.** C: `fixed_partition = pred_depth_only &&
+  md_disallow_nsq_search` (enc_dec_process.c:3054), where
+  `md_disallow_nsq_search = !nsq_geom_ctrls.enabled || !nsq_search_ctrls.enabled`
+  (:7846). `pipeline.rs`'s `refined = dr.adaptive && use_funnel` had only the
+  first conjunct, so a picture that is pred-depth-only but still SEARCHES NSQ
+  shapes coded squares where C codes an H/V/4-way shape at the same depth. The
+  allintra arm never separated the two terms (`get_nsq_search_level_allintra`
+  is 0 from M4 up), which is why the still envelope never saw it; the video
+  arm's search level saturates to 0 only at CLI qp <= 43, so the whole
+  `{gradient,diag} x {64,72,128} q55 p8` F0DIFF cluster was one cause. Video
+  key frames 12 F0DIFF -> 6, BOTH 27 -> 31, nothing regressed.
+  `identity_full_8bit` 1100/1100, `regression_spotcheck` 65/65,
+  `video_key_matrix` 58/60, `fctx_gate` 96/96 all unchanged. The SAME defect is
+  still live in the `preset >= 9` PD0 branch, measured and named in
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z''''' rather than fixed.
+
 - **The INTER arm was dropped by one of three leaf paths — 19 of 96 cells
   becomes 27.** `pipeline.rs` builds `leaf_funnel::FunnelCtx` at three sites;
   the PD0 FIXED-TREE one hardcoded `inter: None`. That path is taken whenever

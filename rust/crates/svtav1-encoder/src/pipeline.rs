@@ -10552,7 +10552,24 @@ fn encode_tile_rows(
                                 tile_sc.classes.sc_class5,
                                 cli_qp as u32,
                             );
-                            let refined = dr.adaptive && use_funnel;
+                            // C `md_ctx->fixed_partition = md_ctx->pred_depth_only &&
+                            // md_ctx->md_disallow_nsq_search`
+                            // (enc_dec_process.c:3054, comment: "If there is only
+                            // one depth and no NSQ search at PD1, then the
+                            // partition structure is fixed"), with
+                            // `md_disallow_nsq_search = !nsq_geom_ctrls.enabled ||
+                            // !nsq_search_ctrls.enabled` (:7846). This gate had
+                            // only the FIRST conjunct, so a picture that is
+                            // pred-depth-only but still SEARCHES NSQ shapes took
+                            // the fixed-tree path and coded squares where C codes
+                            // an H/V/4-way shape at the same depth.
+                            let nsq_search_on = crate::depth_refine::NsqCfg::for_arm(
+                                sc_arm,
+                                speed_config.preset,
+                                cli_qp as u32,
+                            )
+                            .enabled;
+                            let refined = use_funnel && (dr.adaptive || nsq_search_on);
                             if refined {
                                 // M4/M5 (`dr_mode = 1`, PD0_DEPTH_ADAPTIVE):
                                 // PD1 re-decides depths around the PD0 tree —

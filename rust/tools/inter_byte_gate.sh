@@ -28,6 +28,11 @@
 # That is the honest number: this gate WITNESSES that defect on some of its
 # cells and not on others.
 #
+# The four q55 p8 cells added on 2026-09-02 witness §1z'''''s missing
+# `md_disallow_nsq_search` conjunct: with the one-term gate restored, each of
+# them takes the fixed-tree path and codes squares where C codes an NSQ shape
+# (`gradient 64x64 q55 p8`: 418 B against C's 295 on frame 0 alone).
+#
 # The `uniform` cells are the ones that witness §1z''s intra-rate defect:
 # every one of the six p6 ones was a DIFFERS before it and is byte-identical
 # after. The eight p8 cells added on 2026-09-02 witness §1z''''s dropped inter
@@ -42,9 +47,9 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 27 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 31 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z'''. Listed in full:
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z''''. Listed in full:
     # a gate that samples its own frontier reports a smaller regression than
     # it should. `tools/inter_byte_matrix.sh` is the sweep this list is the
     # assertion of.
@@ -67,6 +72,10 @@ PASS_CELLS=(
     "gradient 64 64 40 6 2 3"   # §1z's reference cell: one 64x64 NEWMV skip block
     "gradient 64 64 40 8 2 3"   # §1z''''s cell: the PD0 fixed-tree path's dropped inter arm
     "gradient 64 64 55 6 2 3"
+    "gradient 64 64 55 8 2 3"   # §1z'''''s cell: fixed_partition's second conjunct
+    "gradient 128 128 55 8 2 3" # §1z'''''
+    "diag 64 64 55 8 2 3"       # §1z'''''
+    "diag 128 128 55 8 2 3"     # §1z'''''
     "screen 16 16 20 6 2 3"
     "screen 16 16 40 6 2 3"
     "screen 16 16 55 6 2 3"
