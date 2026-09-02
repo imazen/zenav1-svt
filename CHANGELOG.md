@@ -454,7 +454,37 @@ Crates are not published to crates.io yet — depend by git.
   existing `noPanic` drives the PUBLIC API, which refuses inter frames and so
   could never reach this code) and five cells, each proved to fail before and
   pass after; `part_arm::video_pd0_level_tests` pins the PD0 level with a
-  positive control on the raw ladder value.
+  positive control on the raw ladder value; and `inter_completion_scan.sh`
+  gains a `SCAN_GATE=1` mode wired into CI that fails on any crash, on more
+  than `SCAN_MAX_REFUSED` refusals (so a panic cannot be retired by widening a
+  refusal) and on a grid that did not run — proved able to fail all three ways
+  and to pass.
+  EVIDENCE TIER 2 for the first defect, not just byte-identity: C's own
+  `SVT_PD0CFG_OUT` dump for `gradient 568x568 q32 p10` (taken on the Linux
+  host, where `-Wl,--wrap` works) reports `lvl=5` on ALL 81 superblocks of the
+  key frame — `PD0_LVL_6` demoted to `PD0_LVL_5`, the level the port now
+  computes, read out of C's live `ModeDecisionContext`.
+  CROSS-ISA: aarch64 and x86-64 agree on every gate — completion 52/12/0 on
+  both, spot-check 76/76 on both, `inter_byte_gate` 55 required / 0 failed on
+  both, plus `identity_full_8bit` 1100/1100 and `video_key_matrix` 58/60.
+
+- **The C oracle could not encode more than two frames — and the ceiling was
+  `capture_c_trace`, not the library** (ab253150). It sent every frame before
+  draining any packet, so the finite output-stream buffer pool ran dry on the
+  third send; in a `CONFIG_SINGLE_THREAD_KERNEL` build that is fatal
+  (`ST mode: empty object pool exhausted after pumping dispatcher`) and wrote
+  ZERO packets. The driver now drains one packet after each send when
+  `n_frames > 2`, which is safe because ST mode runs the whole pipeline inside
+  `svt_av1_enc_send_picture`. MEASURED: `SVT_FRAMES=3` on `gradient 64x64 q32
+  p8` codes 1480 / 22 / 21 B and decodes 3/3 frames in both aomdec and dav1d.
+  Gated on `n_frames > 2`, so every 1- and 2-frame run — every gate in this
+  repo — takes byte-identical code. `docs/INTER-ENCODE-PLAN.md` §1q's note that
+  this fix "makes it WORSE" does not reproduce and is corrected in place.
+  The PORT still refuses frame 2, for an unrelated and now precisely scoped
+  reason: the reference picture's `hp_coded_area` / `skip_coded_area` /
+  `intra_coded_area`, which C accumulates per coded block in `update_b`
+  (coding_loop.c:1605-1638). Not the DPB, not reference management, not the
+  GOP requirement — `generate_rps_info` already produces frame 2's RPS.
 
 - **The open-loop ME searched ONE list where C searches two, with four wrong
   signal fields, and mode decision read an `me_mv_array` slot C never writes**

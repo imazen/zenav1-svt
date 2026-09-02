@@ -50,6 +50,22 @@
 # frontier, not the completion one, and it moved for reasons outside this
 # chunk (f5804e454).
 #
+# CROSS-ISA: the AFTER numbers were re-measured on r7900x (x86-64, Linux, 24
+# cores) from main at f321cb04 and are IDENTICAL — 64 cells, 52 OK, 12 REFUSED,
+# 0 CRASH. Also there: workspace suite 2480/2480, regression spot-check 76/76,
+# inter_byte_gate 55 required / 0 failed. On mac the same commit gives 2470
+# tests (the count is SIMD-tier dependent), spot-check 76/76, byte gate 55/0,
+# identity_full_8bit 1100/1100 and video_key_matrix 58/60.
+#
+# TIER-2 EVIDENCE for the PD0_LVL_6 fix, taken on the Linux host because
+# `-Wl,--wrap` works there: C's own `SVT_PD0CFG_OUT` dump for
+# `gradient 568x568 q32 p10` reports `lvl=5` on ALL 81 superblocks of frame 0
+# (`islice=1`) and all 81 of frame 1. That is `PD0_LVL_6` demoted to
+# `PD0_LVL_5` by `pd0_detector`'s I_SLICE branch — the resolved level the port
+# now computes — joined against C's actual ModeDecisionContext rather than
+# inferred from the output. The port's frame 0 for that cell is byte-identical
+# to C's on both hosts.
+#
 # host=mac (aarch64, Apple), oracle = reference/svt-av1 on fix/suspected-c-bug-17
 # via Bin/Release/libSvtAv1Enc.a. NOTE: `-Wl,--wrap` is rejected by Apple ld64,
 # so capture_c_trace builds its BYTE-ONLY variant here and no SVT_* interposer

@@ -5288,7 +5288,14 @@ impl EncodePipeline {
             // because it is NOT what it looks like. It is not the DPB, not
             // reference management, and not the picture-decision GOP
             // requirement (`intra_period > 1`, the refusal two arms above) —
-            // all three are satisfied on the frame that hits it.
+            // all three are satisfied on the frame that hits it, and the
+            // control flow PROVES it: this arm is downstream of the
+            // `pic_decision.as_ref().ok_or_else(..)` above, so
+            // `port_picstruct::generate_rps_info` already produced frame 2's
+            // reference structure. Its "4 of C's 8 branches" refusal
+            // (REFUSED-CONFIGS capability #18) covers the RANDOM-ACCESS
+            // hierarchical branches at `hierarchical_levels` 1..5; the
+            // low-delay CQP branch this GOP uses is translated.
             //
             // `md_config_inputs` returns `None` when
             // `get_ref_hp_percentage` gives anything other than its -1

@@ -613,6 +613,39 @@ is compiled out. `tools/inter_decode_gate.sh` is that question as a gate
 **Decode the control first**: C's stream must decode, or the finding is about
 the decoder, not the port.
 
+**A DOC COMMENT ASSERTING AN INVARIANT IS NOT THE CODE THAT MAINTAINS IT — and
+when the two disagree, the comment is usually the thing that let the gap in.**
+MEASURED 2026-09-02: `pd0::video_pd0_mode` panicked on `pic_pd0_lvl` 7 under a
+comment reading "the video ladder never assigns a level whose `pd0_level` is
+`PD0_LVL_6` at the presets this port encodes. C asserts the same invariant at
+`:2514`." Both halves were wrong in the same direction. The ladder DOES assign
+it — `set_pic_pd0_lvl_default`'s M9..M10 row gives `lpd0_lvl` 7 to any base
+picture above the 360p class with NORMAL coefficients — and what makes C's
+assert hold is `pd0_detector`'s I_SLICE demote, i.e. the very code the port had
+skipped. The port had a faithful transcription of that demote sitting in
+`port_pd0_detector`, unused on this path. **When you write "C guarantees X",
+name the LINE that guarantees it and check the port runs it.** A citation to an
+assert is a citation to a POSTcondition; the precondition is somewhere else.
+
+**A SCAN'S `port=` LINE IS A CLAIM ABOUT A BINARY, NOT ABOUT A BRANCH.**
+MEASURED 2026-09-02: `benchmarks/inter_completion_2026-09-02.tsv` reported 34
+crashing cells, and twenty of them were a panic that had been fixed on `main`
+three minutes before the scan's binary was built. That number reached two docs
+and an agent brief as "the frontier". Re-measuring the same grid on `main` gave
+18. **Before quoting a recorded sweep, check its binary's mtime against
+`git log` for the files it exercises** — and prefer re-running it to quoting
+it, which for that scan costs fifteen seconds.
+
+**A "TRIED IT, DOES NOT WORK" NOTE IS A CLAIM ABOUT ONE IMPLEMENTATION.**
+`docs/INTER-ENCODE-PLAN.md` §1q recorded that interleaving a `get_packet`
+between `send_picture` calls "makes it WORSE: the 2-frame cell then segfaults
+too", and closed with "do not fix it again without a measurement". The
+measurement (2026-09-02) says the 2-frame cell is fine with the drain in place,
+and the three-frame ceiling it was blocking was never the encoder's — it was
+the driver holding every output buffer until after the last send. Taking the
+note at face value would have left the campaign permanently two frames deep.
+Honour the "without a measurement" half; do not read the note as the answer.
+
 ## 5b. Drills you don't have to write
 
 Localizing a divergence starts with narrowing WHAT changed, not reading code.
