@@ -349,6 +349,28 @@ pub(crate) fn evaluate_leaf(
     // (rate_est_level 1 at M6). M7/M8 (rate_est_level 4) price it at ctx 0.
     let above_ctx = fx.ectx.above_mode_ctx(abs_x);
     let left_ctx = fx.ectx.left_mode_ctx(abs_y);
+    // C `ctx->is_inter_ctx` (`svt_av1_get_intra_inter_context`,
+    // entropy_coding.c:1127) over the MD mode-info grid's neighbour pair.
+    // Zero on a KEY frame, where the grid is absent and no `intra_inter`
+    // symbol exists — which is what keeps the still path byte-neutral.
+    let is_inter_ctx = match fx.inter {
+        Some(im) => {
+            let nb = crate::inter_md_arm::neighbors_from_grid(
+                fx.ibc_mvp
+                    .as_deref()
+                    .expect("the MD mi grid is allocated whenever the inter arm is armed"),
+                im.mi_cols,
+                (abs_y / 4) as i32,
+                (abs_x / 4) as i32,
+                im.tile,
+            );
+            crate::entropy::context::get_intra_inter_context(
+                nb.above_avail().is_none_or(|a| !a.is_inter_block()),
+                nb.left_avail().is_none_or(|l| !l.is_inter_block()),
+            )
+        }
+        None => 0,
+    };
     let skip_ctx = if fx.frame.cfg.real_coeff_ctx {
         fx.ectx.skip_ctx(abs_x, abs_y)
     } else {
@@ -605,6 +627,7 @@ pub(crate) fn evaluate_leaf(
         fi_allowed_bsize,
         above_ctx,
         left_ctx,
+        is_inter_ctx,
         skip_ctx,
         blk_crop,
         aligned_dims,

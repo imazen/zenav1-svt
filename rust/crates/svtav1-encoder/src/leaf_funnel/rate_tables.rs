@@ -18,6 +18,16 @@ use super::*;
 pub struct MdRates {
     /// kf y mode: [above_ctx][left_ctx][mode] (y_mode_fac_bits).
     pub kf_y: [[[i32; 13]; 5]; 5],
+    /// C `mb_mode_fac_bits[BlockSize_GROUPS][INTRA_MODES]`, from
+    /// `fc.y_mode_cdf` — the table an intra candidate on a NON-I-slice is
+    /// priced with (`svt_aom_intra_fast_cost`, rd_cost.c:558-560), where
+    /// [`Self::kf_y`] contributes ZERO instead (`:568-570`). The two are
+    /// exclusive, not additive.
+    pub mb_mode: [[i32; 13]; 4],
+    /// C `intra_inter_fac_bits[INTRA_INTER_CONTEXTS][2]`. An intra candidate
+    /// on a NON-I-slice pays `[ctx][0]` for the `is_inter = 0` flag
+    /// (rd_cost.c:624-626); an I-slice codes no such symbol.
+    pub intra_inter: [[i32; 2]; crate::entropy::context::INTRA_INTER_CONTEXTS],
     /// uv mode: [cfl_allowed][y_mode][uv_mode] (intra_uv_mode_fac_bits).
     pub uv: [[[i32; 14]; 13]; 2],
     /// angle_delta: [dir_mode - V][3 + delta] (angle_delta_fac_bits).
@@ -146,6 +156,8 @@ pub(super) fn costs_from_cdf<const N: usize>(cdf: &[u16]) -> [i32; N] {
 pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box<MdRates> {
     let mut r = alloc::boxed::Box::new(MdRates {
         kf_y: [[[0; 13]; 5]; 5],
+        mb_mode: [[0; 13]; 4],
+        intra_inter: [[0; 2]; crate::entropy::context::INTRA_INTER_CONTEXTS],
         uv: [[[0; 14]; 13]; 2],
         angle: [[0; 7]; 8],
         fi_flag: [[0; 2]; 22],
@@ -217,6 +229,14 @@ pub fn build_md_rates(fc: &FrameContext, cfc: &cc::CoeffFc) -> alloc::boxed::Box
         for l in 0..5 {
             r.kf_y[a][l] = costs_from_cdf(&fc.kf_y_mode_cdf[a][l]);
         }
+    }
+    // The NON-I-slice intra luma table (C `mb_mode_fac_bits`), and the
+    // `is_inter = 0` flag an intra block pays only on a non-I-slice.
+    for g in 0..4 {
+        r.mb_mode[g] = costs_from_cdf(&fc.y_mode_cdf[g]);
+    }
+    for c in 0..crate::entropy::context::INTRA_INTER_CONTEXTS {
+        r.intra_inter[c] = costs_from_cdf(&fc.intra_inter_cdf[c]);
     }
     for cfl in 0..2 {
         for y in 0..13 {
@@ -351,6 +371,15 @@ pub struct FunnelFrame {
     pub sb_mi_size: usize,
     /// `full_lambda_md[EB_8_BIT_MD]` — the kf chain at the frame qindex.
     pub lambda: u64,
+    /// C `pcs->slice_type != I_SLICE`. It selects which luma-mode rate table
+    /// an INTRA candidate is priced with — `mb_mode_fac_bits[size_group]`
+    /// versus the key-frame `y_mode_fac_bits[top][left]`, which are
+    /// EXCLUSIVE in `svt_aom_intra_fast_cost` (rd_cost.c:558-570) — and
+    /// whether it pays the `is_inter = 0` flag at all (`:624-626`).
+    ///
+    /// False on every still/AVIF encode, which is why this is byte-neutral
+    /// there by construction.
+    pub non_i_slice: bool,
     /// CLI qp 0..63 (qp-based threshold scaling input).
     pub cli_qp: u32,
     /// Frame rdoq level (0 = quantize_b at MDS3 too).

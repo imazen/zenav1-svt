@@ -3045,7 +3045,9 @@ of those. What IS here is the ONE candidate C commits on this cell.
 
 **It gets its own NIC lane.** C classes an inter NEWMV candidate
 `CAND_CLASS_1` (definitions.h:787-794) and prunes every class against its OWN
-best fast cost. Putting the inter candidate in lane 0 would have reproduced
+best fast cost. **CORRECTED by §1z'': it is `CAND_CLASS_2`, not
+`CAND_CLASS_1` — `mode_decision.c:3663-3671` puts `NEWMV` / `NEW_NEWMV` in
+class 2 and every OTHER inter mode in class 1.** Putting the inter candidate in lane 0 would have reproduced
 the palette defect §"#71 palette calibration" records from the other side: an
 inter candidate on a well-predicted block has a fast cost far below any intra
 mode's, so it would prune out every regular candidate before MDS1. `nic.rs`
@@ -3355,6 +3357,92 @@ no NEAREST/NEAR/GLOBAL candidate at all — only `NEWMV`. On flat content
 NEARESTMV codes no MV, so it is strictly cheaper than the NEWMV the port
 injects at the same `(0,0)`; C's `mv_is_already_injected` even suppresses the
 NEWMV duplicate. The port picked an INTRA DC block instead.
+
+### 1z″. C's OWN candidate injector, the right candidate CLASSES, and the intra rate an inter frame uses — 19 of 96 cells (2026-09-01)
+
+Three findings, in the order the measurements produced them, and the third is
+the one that moved the most.
+
+#### The candidate SET is now C's `inject_inter_candidates`, not a hand-rolled one
+
+§1y built ONE candidate — `NEWMV` off `LAST_FRAME` — and said so. C's whole
+composition was already ported and unwired: `port_md::inject`
+(`mode_decision.c:2836-2921`) carries `inject_mvp_candidates_ii`,
+`inject_new_candidates`, `inject_global_candidates`, `inject_pme_candidates`,
+the 3x3 injectors, `inj_non_simple_modes`, the `mv_is_already_injected` log
+and `InjectCtx`. `inter_md_arm` now fills that context and calls the real
+thing; nothing about WHICH candidates exist is decided here any more.
+
+What is missing became a list of CONTROLS handed in as OFF, each naming a
+separate unported search rather than a shortcut in the composition — compound
+(structurally unreachable: one reference), warp, OBMC, inter-intra, the 3x3
+refinements, predictive ME, and `near_count_ctrls` (C caps the NEAR DRL loop
+to ZERO unless it is enabled; the cap REPLACES `max_drl_index` rather than
+refining it, so `NEARMV` is absent exactly the way C makes it absent). The
+module ASSERTS that no candidate a control should have suppressed arrives,
+rather than dropping one silently.
+
+What that turns on is `NEARESTMV`, with C's injection ORDER (MVP before NEW)
+and C's dedup — which is why the port now picks `NEARESTMV` alone on flat
+content, as C does, instead of a `NEWMV` at the same MV.
+
+#### A CORRECTION to §1y: the two inter classes are the other way round
+
+§1y wrote that the NEWMV candidate is `CAND_CLASS_1`. It is not.
+`mode_decision.c:3663-3671`: `NEWMV` / `NEW_NEWMV` are **`CAND_CLASS_2`**
+("MV Prediction") and every other inter mode is **`CAND_CLASS_1`** ("MVP
+Prediction"). `nic.rs` had the NEWMV candidate in a lane whose
+`class_value` was 1, which is the wrong class identity for the rank-staging
+`+3` compare and the cross-class tie order. `LANES` is 5 now, one per C
+class, and the lane index IS the class value.
+
+`merge_inter_cands` (`:3637-3643`) stays unported and is named at the site: it
+puts EVERY inter candidate in class 2 when
+`min(md_me_dist, md_pme_dist) / (bw * bh)` is under a threshold, and both
+distortions come from `read_refine_me_mvs`. It can only MERGE, so its absence
+is a class-identity difference, never a missing candidate.
+
+#### The one that moved 13 cells: an inter frame's INTRA candidate was priced with the KEY-frame table
+
+`svt_aom_intra_fast_cost` (rd_cost.c:545-630) is slice-type dependent in three
+places, and the port had all three wrong on a non-I-slice:
+
+| term | I-slice | non-I-slice | C |
+|---|---|---|---|
+| `intra_mode_bits_num` | ZERO | `mb_mode_fac_bits[size_group][mode]` | `:558-560` |
+| `intra_luma_mode_bits_num` | `y_mode_fac_bits[top][left][mode]` (the KF table) | ZERO | `:568-570` |
+| `is_inter_rate` | ZERO | `intra_inter_fac_bits[is_inter_ctx][0]` | `:624-626` |
+
+The first two are EXCLUSIVE, not additive. The port priced every intra
+candidate from the KEY-frame table on every frame, and never charged the
+`is_inter = 0` flag — so on an inter frame its intra candidates were both
+mis-priced and cheaper than they should be, and they beat the inter ones.
+
+**This was an MD-vs-PACK disagreement, not only a C divergence.** The pack has
+always written `write_intra_mode_inter` (the `y_mode_cdf[size_group]` path)
+for an intra block on a non-key frame — correct — while MD priced the same
+symbol from `kf_y_mode_cdf`. A rate estimate that prices a symbol the writer
+does not emit is the same class of defect as §1s's fresh-`NmvContext` MV
+writer, seen from the rate side.
+
+MEASURED, `uniform 64x64 q40 p6 frames=2`: C's `SVT_FULLCOST_OUT` gives its
+`NEARESTMV` candidate 2 025 784 at MDS1 against its intra DC's 2 923 880, so C
+picks inter; the port picked intra. After the fix all six `uniform` cells
+(16 and 64, q20/q40/q55, p6) are byte-identical on both frames, having been
+DIFFERS at every quantizer before it.
+
+#### The frontier, re-measured over the same 96 cells
+
+| result | before this chunk | after |
+|---|--:|--:|
+| BOTH frames byte-identical | 6 | **19** |
+| frame 0 identical, frame 1 differs | 78 | 65 |
+| frame 0 already differs (the video-KEY frontier) | 12 | 12 |
+
+`tools/inter_byte_gate.sh` lists all 19 rather than a sample — a gate that
+samples its own frontier reports a smaller regression than it should — plus
+four named open cells. The `uniform` six are the ones that witness this
+chunk's intra-rate defect: every one was a DIFFERS before it.
 
 ## 2. Chunks
 

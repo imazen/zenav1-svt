@@ -599,6 +599,8 @@ fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFr
     FunnelFrame {
         sb_mi_size: 16,
         lambda: 100_000,
+        // These fixtures are the still/allintra funnel, i.e. an I-slice.
+        non_i_slice: false,
         cli_qp: 32,
         rdoq_level: 0,
         // These fixtures exercise the still/allintra funnel.

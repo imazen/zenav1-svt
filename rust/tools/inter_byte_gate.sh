@@ -20,13 +20,16 @@
 # because "0 / 0 identical" is the failure mode `docs/WORKING-ON-THIS.md` §5
 # records for the corpus gates.
 #
-# TEETH, measured rather than asserted: reverting §1z's fix (letting the
-# homegrown temporal filter run over an inter frame's MD source again) fails
-# **2 of the 6** required cells — `gradient 64x64 q40 p6` and
-# `gradient 16x16 q40 p6`. The other four stay green because at q55, and on
+# TEETH, measured rather than asserted: reverting §1z's temporal-filter fix
+# (letting the homegrown filter run over an inter frame's MD source again)
+# failed 2 of the 6 cells the gate had at the time — `gradient 64x64 q40 p6`
+# and `gradient 16x16 q40 p6`. The rest stayed green because at q55, and on
 # `screen` 16x16, the filtered source still quantizes to the same decision.
-# That is the honest number: this gate WITNESSES the temporal-filter defect,
-# and four of its cells do not.
+# That is the honest number: this gate WITNESSES that defect on some of its
+# cells and not on others.
+#
+# The `uniform` cells are the ones that witness §1z''s intra-rate defect:
+# every one of the six was a DIFFERS before it and is byte-identical after.
 #
 # Usage: tools/inter_byte_gate.sh
 set -uo pipefail
@@ -35,26 +38,36 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
+    # 19 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z''. Listed in full:
+    # a gate that samples its own frontier reports a smaller regression than
+    # it should.
+    "uniform 64 64 20 6 2 3"
+    "uniform 64 64 40 6 2 3"
+    "uniform 64 64 55 6 2 3"
+    "uniform 16 16 20 6 2 3"
+    "uniform 16 16 40 6 2 3"
+    "uniform 16 16 55 6 2 3"
     "gradient 64 64 40 6 2 3"   # §1z's reference cell: one 64x64 NEWMV skip block
     "gradient 64 64 55 6 2 3"
+    "gradient 16 16 20 6 2 3"
     "gradient 16 16 40 6 2 3"
     "gradient 16 16 55 6 2 3"
+    "screen 64 64 40 6 2 3"
+    "screen 64 64 55 6 2 3"
+    "screen 64 64 55 8 2 3"
     "screen 16 16 20 6 2 3"
     "screen 16 16 40 6 2 3"
+    "screen 16 16 55 6 2 3"
+    "screen 128 128 55 6 2 3"
+    "screen 128 128 55 8 2 3"
 )
-# The frontier, measured 2026-09-01 over 96 cells
-# ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}).
-# Two named shapes, and they are different problems:
-#   * `uniform` at 16/64 matches C's LENGTH exactly and differs at byte 15,
-#     which is inside the frame HEADER — that is §1x's recorded
-#     `cdef_damping_minus_3` finding (C 1, port 0) showing up as a byte.
-#   * preset 8 diverges far more widely than preset 6 (873 B against C's 22 on
-#     `gradient 64 q20 p8`): the video arm's p8 mode-decision ladder has never
-#     been exercised on an inter frame.
 OPEN_CELLS=(
-    "uniform 64 64 40 6 2 3"    # header: cdef_damping_minus_3, §1x
-    "gradient 64 64 20 6 2 3"   # tile 25 B vs C's 22
-    "gradient 64 64 40 8 2 3"   # preset-8 ladder
+    "gradient 64 64 20 6 2 3"   # tile 24 B vs C's 22
+    "gradient 64 64 40 8 2 3"   # the preset-8 ladder, 291 B vs 22
+    "diag 64 64 40 6 2 3"       # the widest p6 residual on this content
+    "uniform 72 72 40 6 2 3"    # 23 B vs 22 — a partial-SB inter frame
 )
 
 if [[ ${#PASS_CELLS[@]} -eq 0 ]]; then

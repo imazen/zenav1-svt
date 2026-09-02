@@ -29,6 +29,30 @@ use super::*;
 /// candidate's fast cost prices its FINAL uv pair), and again at MDS3 for
 /// every other config.
 #[allow(clippy::too_many_arguments)]
+
+/// C `svt_aom_intra_fast_cost`'s luma-MODE rate for an INTRA candidate
+/// (rd_cost.c:545-630), which is slice-type dependent in three places:
+///
+/// * `intra_mode_bits_num` = `mb_mode_fac_bits[size_group][mode]` when
+///   `slice_type != I_SLICE`, else ZERO (`:558-560`);
+/// * `intra_luma_mode_bits_num` = the KEY-frame `y_mode_fac_bits[top][left]
+///   [mode]` when `slice_type == I_SLICE`, else ZERO (`:568-570`);
+/// * `is_inter_rate` = `intra_inter_fac_bits[is_inter_ctx][0]` when
+///   `slice_type != I_SLICE`, else ZERO (`:624-626`).
+///
+/// The first two are EXCLUSIVE, not additive — pricing an inter frame's
+/// intra candidate from the key-frame table both over-prices it against C
+/// and disagrees with the pack, which already writes
+/// `write_intra_mode_inter` (`pipeline.rs`) there.
+fn intra_mode_rate(frame: &FunnelFrame, rates: &MdRates, g: &LeafGeom, mode: u8) -> u64 {
+    if frame.non_i_slice {
+        let group = crate::entropy::context::block_size_group(g.w, g.h);
+        rates.mb_mode[group][mode as usize] as u64 + rates.intra_inter[g.is_inter_ctx][0] as u64
+    } else {
+        rates.kf_y[g.above_ctx][g.left_ctx][mode as usize] as u64
+    }
+}
+
 pub(super) fn inject_candidates(
     fx: &mut FunnelCtx<'_>,
     g: &LeafGeom,
@@ -61,8 +85,8 @@ pub(super) fn inject_candidates(
         cfl_allowed,
         use_angle,
         fi_allowed_bsize,
-        above_ctx,
-        left_ctx,
+        // `above_ctx` / `left_ctx` are now read through `intra_mode_rate`
+        // (they select the KEY-frame luma table), so they stay on `g`.
         // `skip_ctx` and `aligned_dims` are MDS3 inputs; injection prices no
         // residual and takes no distortion crop, so it reads neither.
         ..
@@ -541,7 +565,13 @@ pub(super) fn inject_candidates(
             ))
         };
 
-        let mut flr = rates.kf_y[above_ctx][left_ctx][mode as usize] as u64;
+        // C `svt_aom_intra_fast_cost` prices the luma MODE from ONE of two
+        // exclusive tables (rd_cost.c:558-570): on an I-slice the key-frame
+        // `y_mode_fac_bits[top][left]`, on any other slice
+        // `mb_mode_fac_bits[size_group]` — and the other contributes ZERO,
+        // it is not an addend. On a non-I-slice the candidate also pays the
+        // `is_inter = 0` flag (`:624-626`), which an I-slice never codes.
+        let mut flr = intra_mode_rate(frame, rates, g, mode);
         if use_angle && matches!(mode, 1..=8) {
             flr += rates.angle[mode as usize - 1][(3 + delta) as usize] as u64;
         }
@@ -891,7 +921,7 @@ pub(super) fn inject_candidates(
             // for every DC candidate) + the palette slice (rd_cost.c:579-605
             // use_palette=1 arm): ymode YES + size + (0,0) uniform + colors
             // + map tokens.
-            let r_mode = rates.kf_y[above_ctx][left_ctx][0] as u64;
+            let r_mode = intra_mode_rate(frame, rates, g, 0);
             // C prices NO filter-intra flag on a palette candidate:
             // svt_aom_filter_intra_allowed (mode_decision.c:106) returns 0
             // whenever palette_size > 0, so the use_filter_intra syntax is
@@ -1382,7 +1412,7 @@ pub(super) fn inject_candidates(
             &bctx,
             bsize_idx,
         );
-        let built = crate::inter_md_arm::build_inter_candidate(
+        let built = crate::inter_md_arm::build_inter_candidates(
             im,
             &crate::inter_md_arm::InterBlockCtx {
                 org_x: abs_x,
@@ -1403,13 +1433,12 @@ pub(super) fn inject_candidates(
                 has_uv,
             },
             lambda,
-            0,
         );
-        if let Some(c) = built {
+        for c in built {
             // MDS0's distortion is the same SATD every intra candidate is
-            // scored with; `build_inter_candidate` is called once for the
-            // rate and the cost is re-formed here so the two lanes are
-            // comparable. (C computes both inside `fast_loop_core`.)
+            // scored with; `build_inter_candidates` prices the RATE and the
+            // cost is re-formed here so the two lanes are comparable. (C
+            // computes both inside `fast_loop_core`.)
             let satd = if frame.mds0_ssd {
                 let mut sse: u64 = 0;
                 for r in 0..h {

@@ -9604,6 +9604,10 @@ fn encode_tile_rows(
         let mut fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
+                // C `pcs->slice_type != I_SLICE`.
+                // `ref_frame_data` is `Some` exactly on a non-key frame
+                // (`encode_frame_impl`'s `if !is_key` binding).
+                non_i_slice: ref_frame_data.is_some(),
                 // C `seq_header.sb_mi_size` (task #91): 16 at SB64, 32 at
                 // SB128. 16 for every SB64 encode -> byte-neutral there.
                 sb_mi_size: sb_size / 4,

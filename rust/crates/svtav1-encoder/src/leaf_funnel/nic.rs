@@ -185,13 +185,13 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
     // overflows in practice. Union order = class order (C0, C3, C4 —
     // construct_best_sorted_arrays), stable-sorted by fast cost.
     let has_ibc_lane = cands.iter().any(|c| c.ibc.is_some());
-    // The inter lane (`CAND_CLASS_1`) is C's own class for the NEWMV
-    // candidates `inject_inter_candidates` builds. It must NOT share lane 0
-    // with the intra modes: the per-class dev-prune below measures each
-    // candidate against its OWN class's best, and an inter candidate on a
-    // well-predicted block has a fast cost far below any intra mode's — the
-    // exact shape that let palette prune out every regular mode before the
-    // per-class lanes landed (see the EPICA note above).
+    // The inter lanes are C's own classes 1 and 2 (`lane_of`). They must NOT
+    // share lane 0 with the intra modes: the per-class dev-prune below
+    // measures each candidate against its OWN class's best, and an inter
+    // candidate on a well-predicted block has a fast cost far below any
+    // intra mode's — the exact shape that let palette prune out every
+    // regular mode before the per-class lanes landed (see the EPICA note
+    // above).
     let has_inter_lane = cands.iter().any(|c| c.inter.is_some());
     // Multi-lane: `seg` carries the per-class segment lengths (k0, k3, k4)
     // of the CLASS-CONCATENATED `order` — C's cand_buff_indices structure.
@@ -212,7 +212,7 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
                 lanes.map(|l| sort_lane(lane_pool(&l, cands, cap), cands));
             let k: [usize; LANES] = core::array::from_fn(|l| dev_prune(&sorted[l], cands));
             // MDS1 evaluates the per-class survivors, class-concatenated in
-            // class order (C0, C1, C3, C4) — NOT cost-merged.
+            // class order (C0..C4) — NOT cost-merged.
             let mut u: Vec<usize> = Vec::new();
             for l in 0..LANES {
                 u.extend_from_slice(&sorted[l][..k[l]]);
@@ -261,36 +261,53 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
     }
 }
 
-/// The candidate CLASSES this funnel can build, in C's own class order.
-///
-/// C has five (`CandClass`, definitions.h:787-794); this port builds four of
-/// them — `CAND_CLASS_2` (the inter NEAREST/NEAR class) has no candidate here
-/// because no such candidate is injected, so it would be an always-empty
-/// lane. Adding one means adding a lane, not repurposing another: the class
-/// identity feeds the rank-staging `+3` arm and the cross-class tie order.
-pub(super) const LANES: usize = 4;
+/// C's five candidate CLASSES (`CandClass`, definitions.h:787-794), one lane
+/// each, in class order. The lane index IS the class value.
+pub(super) const LANES: usize = 5;
 
-/// C's candidate class for one funnel candidate, as an index into a
-/// `[_; LANES]` in class order: 0 = `CAND_CLASS_0` (regular intra),
-/// 1 = `CAND_CLASS_1` (inter, mode_decision.c:2264), 2 = `CAND_CLASS_3`
-/// (palette), 3 = `CAND_CLASS_4` (IntraBC, mode_decision.c:3659).
+/// C's candidate class for one funnel candidate
+/// (`mode_decision.c:3646-3672`, the loop that assigns `cand->cand_class`):
+///
+/// | class | C's own comment | this port |
+/// |---|---|---|
+/// | 0 | intra, no palette, no intrabc | the regular intra lane |
+/// | 1 | "MVP Prediction" — every inter mode EXCEPT `NEWMV` / `NEW_NEWMV` | `NEARESTMV` |
+/// | 2 | "MV Prediction" — `NEWMV`, `NEW_NEWMV`, and everything when `merge_inter_cands` | `NEWMV` |
+/// | 3 | palette | palette |
+/// | 4 | IntraBC | IntraBC |
+///
+/// **`merge_inter_cands` is NOT ported** (`mode_decision.c:3637-3643`): when
+/// `nic_ctrls.pruning_ctrls.merge_inter_cands_mult != ~0` and
+/// `min(md_me_dist, md_pme_dist) / (bw * bh)` is under its threshold, C puts
+/// EVERY inter candidate in class 2. Both distortions are written by
+/// `read_refine_me_mvs`, which this port does not have. It can only MERGE
+/// classes, so its absence is a class-IDENTITY difference in the
+/// rank-staging `+3` arm and in the cross-class tie order — never a missing
+/// candidate.
 pub(super) fn lane_of(c: &Cand) -> usize {
-    if c.inter.is_some() {
-        1
-    } else if c.palette.is_some() {
-        2
-    } else if c.ibc.is_some() {
-        3
-    } else {
-        0
+    match c.inter.as_deref() {
+        Some(i) => {
+            if matches!(
+                i.mode,
+                svtav1_types::prediction::PredictionMode::NewMv
+                    | svtav1_types::prediction::PredictionMode::NewNewMv
+            ) {
+                2
+            } else {
+                1
+            }
+        }
+        None if c.palette.is_some() => 3,
+        None if c.ibc.is_some() => 4,
+        None => 0,
     }
 }
 
 /// The C `CandClass` VALUE for a lane index — what the rank-staging compare
-/// tests for equality. (Lane index and class value differ because C's class 2
-/// has no lane here.)
+/// tests for equality. Identity now that all five lanes exist; kept as a
+/// function so the two concepts stay separable if a class is ever dropped.
 pub(super) fn class_value(lane: usize) -> u8 {
-    [0u8, 1, 3, 4][lane]
+    lane as u8
 }
 
 /// What the MDS1 -> MDS3 staging hands to the MDS3 full loop.

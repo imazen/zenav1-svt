@@ -20,16 +20,38 @@
 //! # Scope, stated as a fraction (`docs/WORKING-ON-THIS.md` §NEVER CLAIM
 //! FALSE COMPLETION)
 //!
-//! What is MISSING, first: no compound candidate, no NEAREST/NEAR/GLOBAL
-//! candidate (only `NEWMV`), no second reference, no interpolation-filter
-//! search (`EIGHTTAP_REGULAR` in both directions), no motion-mode search (no
-//! OBMC, no warp), no inter-intra, no predictive-ME refinement of the ME MV,
-//! no sub-pel refinement, and no `skip_mode`. C's `inject_inter_candidates`
-//! (mode_decision.c:2264) builds all of those. What IS here is the ONE
-//! candidate C commits on this campaign's reference cell — `NEWMV` off
-//! `LAST_FRAME` at the open-loop MV — priced with C's real
-//! `svt_aom_inter_fast_cost`, predicted with C's real convolve, and placed on
-//! C's real reference-MV stack.
+//! The candidate SET is C's own: `port_md::inject::inject_inter_candidates`,
+//! a transcription of `mode_decision.c:2836-2921`, is what builds it — this
+//! module fills the `InjectCtx` it takes and turns each candidate it returns
+//! into a prediction and an `svt_aom_inter_fast_cost`. Nothing about which
+//! candidates exist is re-decided here.
+//!
+//! What is MISSING is therefore a list of CONTROLS this module hands the
+//! injector as OFF, and each one is a separate unported search rather than a
+//! shortcut in the composition:
+//!
+//! * `inter_comp_ctrls` / bipred — no second reference exists in the port's
+//!   low-delay-P reference set, so compound is structurally unreachable, not
+//!   suppressed.
+//! * `wm_ctrls` (warped motion) and `obmc_ctrls` — the DSP is ported
+//!   (`svtav1_dsp::obmc`, the warp family) and the PREDICTION drivers are
+//!   not wired, so a warped or OBMC candidate could not be predicted. The
+//!   injector would produce them; the ctrls are off and the module ASSERTS
+//!   none arrive rather than dropping them silently.
+//! * `inter_intra_comp_ctrls` — same shape.
+//! * `unipred3x3_injection`, `bipred3x3_ctrls`, `inject_new_pme` — the 3x3
+//!   refinement and the predictive-ME search are unported.
+//! * `near_count_ctrls` — C caps the NEAR DRL loop to ZERO unless this
+//!   control is enabled (it REPLACES `max_drl_index`, it does not refine
+//!   it), so `NEARMV` is absent exactly the way C makes it absent.
+//! * The ME MV handed to `sb_me_mv` is the OPEN-LOOP one; C's
+//!   `read_refine_me_mvs` sub-pel refinement is unported, so this is the
+//!   value C's refinement STARTS from.
+//!
+//! What that leaves live is `NEARESTMV` and `NEWMV` off `LAST_FRAME`, with
+//! C's own injection ORDER (MVP before NEW) and C's own
+//! `mv_is_already_injected` dedup — which is what makes the port pick
+//! `NEARESTMV` alone on flat content, as C does.
 
 use crate::inter_me_arm::FrameMe;
 use crate::inter_mvp::NONE_FRAME;
@@ -39,7 +61,6 @@ use crate::intrabc_mvp::{MvpGrid, MvpMiEntry, derive_block_ctx};
 use crate::picture::PaddedRef;
 use crate::port_entropy_inter::modes::{MotionMode, TransformationType};
 use crate::port_entropy_inter::{InterCdfs, NeighborMi, Neighbors};
-use crate::port_md::drl::{ChooseDrlCtx, choose_best_av1_mv_pred};
 use crate::port_md::pme::{MV_VALS, MvCostTable};
 use crate::port_md::ref_frame_rate::{NeighborRefCounts, RefFrameFacBits};
 use crate::port_rd_cost::inter_cost::{
@@ -205,26 +226,67 @@ pub struct InterBlockCtx<'a> {
     pub has_uv: bool,
 }
 
-/// Build the block's `NEWMV` candidate off `LAST_FRAME`.
+/// C `BlockModeInfo::mode` as a `PredictionMode`.
 ///
-/// Returns `None` when the open-loop search has no entry for this geometry,
-/// which is a caller-geometry question and not a decision.
+/// The mode-info grid stores C's raw `u8` (that is what
+/// `svt_aom_update_mi_map` writes) and `InjectCtx` wants the enum, so the
+/// mapping lives here rather than as a new public constructor on the shared
+/// types crate. `None` is a value outside AV1's 25 modes, which is a caller
+/// bug rather than a neighbour state.
+fn mode_from_u8(v: u8) -> Option<PredictionMode> {
+    use PredictionMode as M;
+    Some(match v {
+        0 => M::DcPred,
+        1 => M::VPred,
+        2 => M::HPred,
+        3 => M::D45Pred,
+        4 => M::D135Pred,
+        5 => M::D113Pred,
+        6 => M::D157Pred,
+        7 => M::D203Pred,
+        8 => M::D67Pred,
+        9 => M::SmoothPred,
+        10 => M::SmoothVPred,
+        11 => M::SmoothHPred,
+        12 => M::PaethPred,
+        13 => M::NearestMv,
+        14 => M::NearMv,
+        15 => M::GlobalMv,
+        16 => M::NewMv,
+        17 => M::NearestNearestMv,
+        18 => M::NearNearMv,
+        19 => M::NearestNewMv,
+        20 => M::NewNearestMv,
+        21 => M::NearNewMv,
+        22 => M::NewNearMv,
+        23 => M::GlobalGlobalMv,
+        24 => M::NewNewMv,
+        _ => return None,
+    })
+}
+
+/// Build this block's INTER candidate set, exactly as C composes it.
+///
+/// `port_md::inject::inject_inter_candidates` (C `mode_decision.c:2836`)
+/// decides WHICH candidates exist; this fills its `InjectCtx` and turns each
+/// one into a motion-compensated prediction plus C's real
+/// `svt_aom_inter_fast_cost`. The returned order is the injector's, which is
+/// load-bearing — each stage sees the injected-MV log the previous ones
+/// filled, so `NEARESTMV` at the same MV suppresses the `NEWMV` duplicate.
 #[must_use]
-pub fn build_inter_candidate(
+pub fn build_inter_candidates(
     f: &InterMdFrame<'_>,
     b: &InterBlockCtx<'_>,
     lambda: u64,
-    luma_distortion: u64,
-) -> Option<InterCandOut> {
-    // --- 1. The open-loop MV (full pel), as C injects it: `* 8`
-    //        (mode_decision.c:2323-2325).
-    let mv_fp = f.me.mv_for(b.org_x, b.org_y, b.bsize, 0, 0, 4)?;
-    let mv = Mv {
-        x: mv_fp.x.saturating_mul(8),
-        y: mv_fp.y.saturating_mul(8),
+) -> Vec<InterCandOut> {
+    use crate::port_md::inject::{
+        CandArray, InjectCtx, NoRefinement, WmCtrls, inject_inter_candidates,
     };
+    use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef, RefPruningState};
 
-    // --- 2. The reference-MV stack, and the DRL choice over it.
+    // --- The reference-MV stack, per reference type. Only LAST_FRAME is
+    //     populated: the port's low-delay-P reference set has one entry, and
+    //     `ref_frame_type_arr` below says so.
     let ctx = derive_block_ctx(
         (b.org_y / 4) as i32,
         (b.org_x / 4) as i32,
@@ -241,29 +303,166 @@ pub fn build_inter_candidate(
     };
     // C `svt_aom_generate_av1_mvp_table`'s `gm_mv` for an IDENTITY global
     // motion model is the zero MV; this port signals no global motion.
-    let stack = setup_ref_mv_list(&grid, &ctx, &f.mvp_env, LAST_FRAME, [Mv::ZERO; 2]);
-    let mut drl_index = 0u8;
-    let mut pred_mv = [Mv::ZERO; 2];
-    choose_best_av1_mv_pred(
-        &ChooseDrlCtx {
-            shut_fast_rate: false,
-            approx_inter_rate: 0,
-            ref_mv_stack: &stack.stack,
-            ref_mv_count: stack.count,
-            nmv_cost: &f.nmv,
-            drl_mode_fac_bits: &f.fac.drl_mode,
-        },
-        PredictionMode::NewMv,
-        mv,
-        Mv::ZERO,
-        &mut drl_index,
-        &mut pred_mv,
-    );
+    let last_stack = setup_ref_mv_list(&grid, &ctx, &f.mvp_env, LAST_FRAME, [Mv::ZERO; 2]);
+    let mut stacks = alloc::vec![crate::inter_mvp::InterMvpStack::default(); 8];
+    let mut ref_mv_count = [0u8; 8];
+    stacks[LAST_FRAME as usize] = last_stack;
+    ref_mv_count[LAST_FRAME as usize] = stacks[LAST_FRAME as usize].count;
+    let inter_mode_ctx = stacks[LAST_FRAME as usize].mode_context;
 
-    // --- 3. The motion-compensated prediction. C does luma and both chroma
-    //        planes in ONE `av1_inter_prediction_light_pd1` call under a
-    //        component mask, so this is one call (see `inter_pred_arm`).
-    let interp_filters = 0u32; // EIGHTTAP_REGULAR in both directions
+    // --- The open-loop ME MV, as C stores it: full-pel `* 8`
+    //     (mode_decision.c:2323-2325). `sb_me_mv` is C's REFINED value; the
+    //     refinement (`read_refine_me_mvs`) is unported, so this is the value
+    //     it starts from.
+    let mut sb_me_mv = [[Mv::ZERO; 4]; 2];
+    let mut me_cands: Vec<MeCandidateRef> = Vec::new();
+    if let Some(mv_fp) = f.me.mv_for(b.org_x, b.org_y, b.bsize, 0, 0, 4) {
+        sb_me_mv[0][0] = Mv {
+            x: mv_fp.x.saturating_mul(8),
+            y: mv_fp.y.saturating_mul(8),
+        };
+        me_cands.push(MeCandidateRef {
+            direction: 0,
+            ref_idx_l0: 0,
+            ref_idx_l1: 0,
+            ref0_list: 0,
+            ref1_list: 0,
+        });
+    }
+    let me_totals = [me_cands.len() as u8];
+
+    let gm = [svtav1_types::motion::WarpedMotionParams::default(); 8];
+    let ref_pruning = RefPruningState::default();
+    let ref_frame_type_arr = [LAST_FRAME];
+    let wm_sample_num = [0u8; 8];
+    let inj = InjectCtx {
+        bsize: b.bsize,
+        bwidth: b.bw as u16,
+        bheight: b.bh as u16,
+        blk_org_x: b.org_x as u32,
+        blk_org_y: b.org_y as u32,
+        shape_is_part_n: true,
+        reference_mode_is_single: !f.reference_mode_is_select,
+        allow_high_precision_mv: f.allow_high_precision_mv,
+        is_motion_mode_switchable: f.is_motion_mode_switchable,
+        force_integer_mv: u8::from(f.force_integer_mv),
+        // The port writes `skip_mode_present = 0` on every frame it emits.
+        skip_mode_flag: false,
+        skip_mode_ref_frame_idx_0: -1,
+        skip_mode_ref_frame_idx_1: -1,
+        is_lossless_segment: false,
+        ref_frame_type_arr: &ref_frame_type_arr,
+        global_motion: &gm,
+        // C `gm_ctrls.skip_identity`: with it set and every model IDENTITY,
+        // `inject_global_candidates` `continue`s — which is why no GLOBALMV
+        // candidate appears even though the injector runs.
+        gm_skip_identity: true,
+        wm_sample_num: &wm_sample_num,
+        ref_mv_stack: &stacks,
+        ref_mv_count: &ref_mv_count,
+        nmv_cost: &f.nmv,
+        drl_mode_fac_bits: &f.fac.drl_mode,
+        shut_fast_rate: false,
+        approx_inter_rate: 0,
+        total_me_cnt: me_cands.len(),
+        me_cands: &me_cands,
+        me_totals: &me_totals,
+        me_block_offset: 0,
+        sb_me_mv: &sb_me_mv,
+        post_subpel_me_mv_cost: &[[0u32; 4]; 2],
+        valid_pme_mv: &[[false; 4]; 2],
+        best_pme_mv: &[[Mv::ZERO; 4]; 2],
+        ref_pruning: &ref_pruning,
+        // C `ctx->corrupted_mv_check`: the `is_valid_mv_diff` guard. On with
+        // a real cost table, which is what this module supplies.
+        corrupted_mv_check: true,
+        redundant_cand_ctrls: Default::default(),
+        // Every one of these OFF controls is an unported search, named in
+        // this module's header. They are not a smaller candidate set chosen
+        // here — they are the inputs that make C's own injector produce the
+        // smaller set, and the assertion below refuses anything they should
+        // have suppressed.
+        inter_comp_ctrls: Default::default(),
+        inter_intra_comp_ctrls: Default::default(),
+        wm_ctrls: WmCtrls::default(),
+        obmc_ctrls: Default::default(),
+        near_count_ctrls: Default::default(),
+        bipred3x3_ctrls: Default::default(),
+        unipred3x3_injection: 0,
+        new_nearest_injection: true,
+        new_nearest_near_comb_injection: 0,
+        inject_new_me: true,
+        global_mv_injection: true,
+        inject_new_pme: false,
+        updated_enable_pme: false,
+        reduce_unipred_candidates: 0,
+        use_neighbouring_mode_ctrls_enabled: false,
+        is_intra_bordered: false,
+        has_overlappable_candidates: b.overlappable_neighbors != 0,
+        allow_warped_motion: f.allow_warped_motion,
+        left_available: b.neighbors.left_available,
+        up_available: b.neighbors.up_available,
+        left_mi: b
+            .neighbors
+            .left_avail()
+            .and_then(|m| mode_from_u8(m.mode).map(|md| (md, m.ref_frame))),
+        above_mi: b
+            .neighbors
+            .above_avail()
+            .and_then(|m| mode_from_u8(m.mode).map(|md| (md, m.ref_frame))),
+    };
+
+    let mut cands = CandArray::new(64);
+    let mut log = InjectedMvLog::default();
+    inject_inter_candidates(&inj, &mut cands, &mut log, &mut NoRefinement);
+
+    let mut out = Vec::new();
+    for c in cands.as_slice() {
+        assert!(
+            c.motion_mode == crate::port_md::predicates::MotionMode::SimpleTranslation
+                && !c.is_interintra_used
+                && c.ref_frame[1] == NONE_FRAME,
+            "the inter candidate set produced a candidate this port cannot PREDICT \
+             (motion_mode {:?}, interintra {}, ref_frame {:?}). Its control was supposed \
+             to be off — see `inter_md_arm`'s header. Refusing rather than dropping it, \
+             because a silently dropped candidate is a mode decision nobody made.",
+            c.motion_mode,
+            c.is_interintra_used,
+            c.ref_frame,
+        );
+        out.push(predict_and_price(f, b, c, inter_mode_ctx, &stacks, lambda));
+    }
+    out
+}
+
+/// One injected candidate -> its prediction and C's MDS0 rate.
+fn predict_and_price(
+    f: &InterMdFrame<'_>,
+    b: &InterBlockCtx<'_>,
+    c: &crate::port_md::inject::InterCandidate,
+    inter_mode_ctx: i16,
+    stacks: &[crate::inter_mvp::InterMvpStack],
+    lambda: u64,
+) -> InterCandOut {
+    // --- The motion-compensated prediction. C does luma and both chroma
+    //     planes in ONE `av1_inter_prediction_light_pd1` call under a
+    //     component mask, so this is one call (see `inter_pred_arm`).
+    // C `block_mi.interp_filters` — this port runs no interpolation-filter
+    // search, so every candidate is EIGHTTAP_REGULAR in both directions,
+    // which is the packed value 0. `InterCandidate` (the injector's) carries
+    // no filter field for the same reason C's injectors never set one: the
+    // filter is decided later, by the IFS search this port does not have.
+    let interp_filters = 0u32;
+    // The two crates carry their own `MotionMode` (the injector's lives in
+    // `port_md::predicates`, the writer's and the rate's in
+    // `port_entropy_inter::modes`); the discriminants are C's, so this is a
+    // re-spelling. The assertion at the call site has already established
+    // that only SimpleTranslation reaches here.
+    let mm = match c.motion_mode {
+        crate::port_md::predicates::MotionMode::SimpleTranslation => MotionMode::SimpleTranslation,
+        crate::port_md::predicates::MotionMode::ObmcCausal => MotionMode::ObmcCausal,
+        crate::port_md::predicates::MotionMode::WarpedCausal => MotionMode::WarpedCausal,
+    };
     let mut y_pred = alloc::vec![0u8; b.bw * b.bh];
     let (cw, chh) = (b.bw / 2, b.bh / 2);
     let (mut u_pred, mut v_pred) = if b.has_uv {
@@ -278,7 +477,7 @@ pub fn build_inter_candidate(
             b.org_y,
             b.bw,
             b.bh,
-            mv,
+            c.mv[0],
             interp_filters,
             f.sb_size,
             f.frame_w,
@@ -295,7 +494,7 @@ pub fn build_inter_candidate(
             b.org_y,
             b.bw,
             b.bh,
-            mv,
+            c.mv[0],
             interp_filters,
             f.sb_size,
             f.frame_w,
@@ -305,7 +504,8 @@ pub fn build_inter_candidate(
         ),
     }
 
-    // --- 4. C's real MDS0 rate, `svt_aom_inter_fast_cost` (rd_cost.c:1005).
+    // --- C's real MDS0 rate, `svt_aom_inter_fast_cost` (rd_cost.c:1005).
+    //
     // `ref_frame_rate` carries its own two-field `NeighborMi` (only
     // `ref_frame` + `use_intrabc` are read there); this is a projection, not
     // a second neighbour derivation.
@@ -321,7 +521,7 @@ pub fn build_inter_candidate(
     );
     let counts = NeighborRefCounts::collect(rr_above, rr_left);
     let ref_bits = crate::port_md::ref_frame_rate::estimate_ref_frames_num_bits(
-        &[LAST_FRAME],
+        &[c.ref_frame[0]],
         &counts,
         rr_above,
         rr_left,
@@ -335,6 +535,7 @@ pub fn build_inter_candidate(
 
     let bsize = svtav1_types::block::BlockSize::from_u8(b.bsize)
         .expect("an injected inter block must have a real BlockSize");
+    let stack = &stacks[c.ref_frame[0].max(0) as usize];
     let cost = inter_fast_cost(
         &f.cost_frame(),
         &InterBlock {
@@ -343,7 +544,7 @@ pub fn build_inter_candidate(
             // context is never read; 0 is C's own initial value.
             skip_mode_ctx: 0,
             is_inter_ctx: b.is_inter_ctx,
-            inter_mode_ctx: stack.mode_context,
+            inter_mode_ctx,
             ref_mv_count: stack.count,
             ref_mv_stack: &stack.stack,
             ref_frames_num_bits,
@@ -356,14 +557,14 @@ pub fn build_inter_candidate(
             ifs_at_mds0: true,
         },
         &InterCandidate {
-            mode: PredictionMode::NewMv,
-            ref_frame: [LAST_FRAME, NONE_FRAME],
-            mv: [mv, Mv::ZERO],
-            pred_mv,
-            drl_index,
+            mode: c.mode,
+            ref_frame: c.ref_frame,
+            mv: c.mv,
+            pred_mv: c.pred_mv,
+            drl_index: c.drl_index,
             interp_filters,
-            motion_mode: MotionMode::SimpleTranslation,
-            num_proj_ref: 0,
+            motion_mode: mm,
+            num_proj_ref: u16::from(c.num_proj_ref),
             is_interintra_used: false,
             interintra_mode: 0,
             use_wedge_interintra: false,
@@ -375,24 +576,24 @@ pub fn build_inter_candidate(
             skip_mode_allowed: false,
         },
         lambda,
-        luma_distortion,
+        0,
         Some(&f.nmv),
         &f.fac,
     );
 
-    Some(InterCandOut {
-        mode: PredictionMode::NewMv,
-        ref_frame: [LAST_FRAME, NONE_FRAME],
-        mv: [mv, Mv::ZERO],
-        pred_mv,
-        drl_index,
+    InterCandOut {
+        mode: c.mode,
+        ref_frame: c.ref_frame,
+        mv: c.mv,
+        pred_mv: c.pred_mv,
+        drl_index: c.drl_index,
         interp_filters,
-        motion_mode: MotionMode::SimpleTranslation,
+        motion_mode: mm,
         y_pred,
         u_pred,
         v_pred,
         fast_luma_rate: cost.rate.luma,
-    })
+    }
 }
 
 /// The neighbour pair the inter contexts read, from the MD mode-info grid.

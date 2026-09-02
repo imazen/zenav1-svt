@@ -657,6 +657,11 @@ pub(super) struct LeafGeom {
     /// Neighbour-derived intra-mode contexts.
     pub(super) above_ctx: usize,
     pub(super) left_ctx: usize,
+    /// C `ctx->is_inter_ctx` — `svt_av1_get_intra_inter_context` over the
+    /// neighbours' `is_inter_block`. Read only on a NON-I-slice, where an
+    /// intra candidate pays the `is_inter = 0` flag; 0 (C's own initial
+    /// value) on a key frame, where no such symbol exists.
+    pub(super) is_inter_ctx: usize,
     /// Real skip-coeff context, or 0 when the config does not price it.
     pub(super) skip_ctx: usize,
     /// Spatial-distortion crop for the whole-block luma txb (C
