@@ -21,6 +21,7 @@ mod dbgenv;
 pub mod deblock;
 pub mod depth_refine;
 pub mod dist_facade;
+pub mod dlf_arm;
 pub(crate) mod encdec_arm;
 pub mod encode_loop;
 pub mod entropy;

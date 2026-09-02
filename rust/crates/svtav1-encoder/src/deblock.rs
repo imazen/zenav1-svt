@@ -53,30 +53,50 @@ impl LfLevels {
 /// Returns `[filt_guess, filt_guess, chroma, chroma]` for
 /// `[level0, level1, U, V]`.
 pub fn pick_filter_levels_key_frame(qindex: u8, bit_depth: u8) -> LfLevels {
-    // C `svt_av1_pick_filter_level_by_q` (deblocking_filter.c:1056-1096), KEY
-    // arm: `q = ac_quant_qtx(qindex, 0, bd)` (the per-bd AC qlookup), then a
-    // per-bit-depth linear fit; bd>8 additionally subtracts 4.
-    // ROUND_POWER_OF_TWO(v, n) == (v + (1 << (n-1))) >> n (arithmetic shift;
-    // Rust's i32 >> is arithmetic, matching C on negatives).
-    let filt_guess = match bit_depth {
-        8 => {
-            let q = svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32;
-            (q * 17563 - 421574 + (1 << 17)) >> 18 // filt_guess = q*0.06699 - 1.60817
-        }
-        10 => {
-            let q = crate::bd10::AC_QLOOKUP_10[qindex as usize] as i32;
-            ((q * 20723 + 4060632 + (1 << 19)) >> 20) - 4 // q*0.316206 + 3.87252, then -4 for bd>8 KEY
-        }
-        // bd12 is out of scope for this port (docs/bd10-port-map.md: "bd 8 or
-        // 10 only"); C's arm is `ROUND_POWER_OF_TWO(q*20723 + 16242526, 22) - 4`
-        // with the bd12 AC qlookup — transcribe when bd12 is in scope.
-        _ => unreachable!("bit_depth must be 8 or 10 (bd12 out of scope, bd10-port-map.md)"),
-    };
-    let filt_guess_chroma = filt_guess / 2;
-    let y = filt_guess.clamp(0, MAX_LOOP_FILTER) as u8;
-    let uv = filt_guess_chroma.clamp(0, MAX_LOOP_FILTER) as u8;
-    LfLevels {
-        levels: [y, y, uv, uv],
+    // ONE transcription: [`crate::dlf_arm::pick_filter_level_by_q`] carries
+    // C's whole function, INTER arms included, and this is the key-frame
+    // corner of it. Keeping a second copy here is exactly the failure
+    // `docs/WORKING-ON-THIS.md` §4 records (two transcriptions of the same C
+    // function diverged, and the wrong copy was the one the inter path used).
+    crate::dlf_arm::pick_filter_level_by_q(&key_frame_pick_inputs(qindex, bit_depth))
+}
+
+/// The key-frame corner of [`crate::dlf_arm::DlfPickInputs`], shared by both
+/// pickers' key-frame wrappers.
+///
+/// `refs` is EMPTY, which is what makes `tot_ref_frame_types == 0` and
+/// therefore leaves `min_ref_filter_level` at its `MAX_LOOP_FILTER` seed (so
+/// every by-q level takes the `clamp(filt_guess)` arm) and `dlf_avg` inert.
+/// `is_intra_slice` makes `me_based_dlf_skip` return before it reads
+/// `avg_me_sad`, and `frame_is_boosted` forces the search arms.
+fn key_frame_pick_inputs(qindex: u8, bit_depth: u8) -> crate::dlf_arm::DlfPickInputs<'static> {
+    crate::dlf_arm::DlfPickInputs {
+        // Level 1 is the lowest `enabled` row of `set_dlf_controls` and the
+        // one that reads nothing: `sb_based_dlf`/`dlf_avg`/`use_ref_avg_*`/
+        // `zero_filter_strength_lvl`/`prev_dlf_dist_th` are all 0. Neither
+        // entry point below reads `sb_based_dlf` — the CALLER already chose
+        // which one to run from it — so this is a neutral filler, not a
+        // claim about the frame's real level.
+        ctrls: crate::port_enc_mode_config::ctrls::DlfCtrls {
+            enabled: 1,
+            ..Default::default()
+        },
+        frame_type_is_key: true,
+        is_intra_slice: true,
+        frame_is_boosted: true,
+        frame_is_leaf: false,
+        hierarchical_levels: 0,
+        temporal_layer_index: 0,
+        // Provably unread on both key wrappers: the by-q picker indexes
+        // `inter_frame_multiplier` only on the non-key arm, and
+        // `me_based_dlf_skip` returns on `is_intra_slice` before the
+        // `disable_dlf_th` lookup. Callers such as `segmentation.rs` do not
+        // carry a resolution, which is only sound because of that.
+        input_resolution: crate::port_enc_mode_config::ResolutionRange::R240p,
+        refs: &[],
+        avg_me_sad: 0,
+        base_qindex: qindex,
+        bit_depth,
     }
 }
 
@@ -481,46 +501,48 @@ pub fn recondbg_dump(
 pub fn pick_filter_levels_full_search<P: DlfPixel>(
     input: &DlfSearchInput<'_, P>,
 ) -> crate::EncodeResult<LfLevels> {
+    let pick = key_frame_pick_inputs(0, input.bit_depth);
+    Ok(pick_filter_levels_full_image(input, &pick)?.levels)
+}
+
+/// C `svt_av1_pick_filter_level(.., LPF_PICK_FROM_FULL_IMAGE)` for ANY frame
+/// type — the pixel half of [`crate::dlf_arm::pick_filter_level_full_image`],
+/// which carries every branch.
+///
+/// Split this way because the branch structure is the part that differs
+/// between a key frame and an inter one (reference-average seeding,
+/// `use_ref_avg_*` copies, the `prev_dlf_dist < 5` shut-off) while the hill
+/// climb underneath is identical. The closure is C's `search_filter_level`.
+///
+/// The returned `zero_filt_sse` / `best_filt_sse` are C's `pcs->` fields
+/// with its `-1` "not evaluated" sentinel intact — `dlf_process.c:103/:115`
+/// recomputes each from the recon when the frame filters but the search
+/// never ran, which is exactly the state the `use_ref_avg_y` arm leaves.
+pub fn pick_filter_levels_full_image<P: DlfPixel>(
+    input: &DlfSearchInput<'_, P>,
+    pick: &crate::dlf_arm::DlfPickInputs<'_>,
+) -> crate::EncodeResult<crate::dlf_arm::DlfPick> {
     let mut scratch: Vec<P> = svtav1_types::try_with_capacity![input.width * input.height]?;
-    let last = [0i32; 4];
-
-    // Luma: one level for both edge directions (dir = 2).
-    let (filt_y, _zero_sse, _best_sse) = search_filter_level(
-        input,
-        &mut scratch,
-        0,
-        2,
-        last,
-        input.early_exit_convergence,
-    );
-
-    // Chroma filtering is not allowed when the luma filters are off; when
-    // luma is on, key frames search U and V independently (dir = 0).
-    let (filt_u, filt_v) = if filt_y == 0 || !input.chroma_420 {
-        (0, 0)
-    } else {
-        let (u, _, _) = search_filter_level(
-            input,
-            &mut scratch,
-            1,
-            0,
-            last,
-            input.early_exit_convergence,
-        );
-        let (v, _, _) = search_filter_level(
-            input,
-            &mut scratch,
-            2,
-            0,
-            last,
-            input.early_exit_convergence,
-        );
-        (u, v)
-    };
-
-    Ok(LfLevels {
-        levels: [filt_y as u8, filt_y as u8, filt_u as u8, filt_v as u8],
-    })
+    // Chroma filtering is unreachable on a monochrome encode: C's chroma
+    // searches read planes that do not exist. Reported as a level of 0,
+    // which is what the frame header then codes.
+    let chroma = input.chroma_420;
+    Ok(crate::dlf_arm::pick_filter_level_full_image(
+        pick,
+        |plane, dir, last| {
+            if plane != 0 && !chroma {
+                return (0, -1, -1);
+            }
+            search_filter_level(
+                input,
+                &mut scratch,
+                plane,
+                dir,
+                last,
+                input.early_exit_convergence,
+            )
+        },
+    ))
 }
 
 /// Per-4x4 (mode-info unit) frame geometry for deblocking, recorded during
