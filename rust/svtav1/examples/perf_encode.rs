@@ -21,6 +21,29 @@
 //!   content: uniform (y=128) | gradient (identity campaign's gradient)
 //! Output (stdout, machine-readable, one line): "ENCODE_NS=<n> BYTES=<m>"
 //!         everything else (notes) -> stderr, so the driver parses stdout clean.
+//!
+//! # INTER cells (`SVTAV1_FRAMES=N`, N > 1)
+//!
+//! Unset, or =1, leaves EVERY byte of the still path above untouched — the
+//! whole multi-frame block is skipped, the `.yuv` layout is the same single
+//! frame, and no existing `perf_gate.sh` cell moves. This is the same
+//! opt-in shape `identity_run.rs` uses, and it reads the SAME env vars
+//! (`SVTAV1_FRAMES`, `SVTAV1_FRAME_SHIFT`, `SVTAV1_INTRA_PERIOD`,
+//! `SVTAV1_HIER_LEVELS`) so one set of variables drives the byte harness and
+//! the timing harness identically. The motion model is `identity_run`'s: a
+//! horizontal translation by `SVTAV1_FRAME_SHIFT` px/frame with edge
+//! replication, generated here so both encoders still consume the ONE `.yuv`.
+//!
+//! WHAT IS TIMED, and why it is the WHOLE SEQUENCE. The port encodes frame
+//! `f` only after frame `f-1` has produced the reference it predicts from, so
+//! there is no fresh-pipeline "encode just the inter frame" to time. The C
+//! side is worse: its API is pipelined, so a per-frame host clock around
+//! `send_picture` measures queue admission, not encode. Both harnesses
+//! therefore time `send all N frames -> drain`, and the INTER frame's own
+//! cost is obtained by DIFFERENCING two measured cells (N=2 minus N=1) on
+//! each side — a subtraction of two measurements, never a projection.
+//! `FRAME_NS=` is additionally printed (port only) as a per-frame breakdown;
+//! it has no C counterpart and must not be compared across encoders.
 
 use std::time::Instant;
 use svtav1_encoder::pipeline::EncodePipeline;
@@ -67,6 +90,21 @@ fn main() {
     let (cw, ch) = (w / 2, h / 2);
     let u = vec![128u8; cw * ch];
     let v = vec![128u8; cw * ch];
+
+    let n_frames: usize = std::env::var("SVTAV1_FRAMES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
+    assert!(
+        (1..=256).contains(&n_frames),
+        "SVTAV1_FRAMES must be 1..256, got {n_frames}"
+    );
+    if n_frames > 1 {
+        encode_sequence(
+            content, &y, &u, &v, w, h, cw, ch, qp, preset, prefix, warmup, n_frames,
+        );
+        return;
+    }
 
     // Write the raw I420 8-bit .yuv the C driver (tools/perf_c_encode) reads —
     // the ONE byte stream both encoders consume, keeping the comparison honest.
@@ -117,4 +155,127 @@ fn main() {
     std::fs::write(format!("{prefix}.obu"), &obu).expect("write .obu");
     // The ONLY stdout line — the driver greps it.
     println!("ENCODE_NS={ns} BYTES={}", obu.len());
+}
+
+/// Translate a plane right by `dx`, replicating the left edge — the identical
+/// motion model `identity_run.rs` uses, so a timing cell and a byte cell at the
+/// same `(content, size, qp, preset, frames, shift)` encode the same pixels.
+fn translate(src: &[u8], pw: usize, ph: usize, dx: usize) -> Vec<u8> {
+    let mut out = vec![0u8; pw * ph];
+    for r in 0..ph {
+        for c in 0..pw {
+            out[r * pw + c] = src[r * pw + c.saturating_sub(dx)];
+        }
+    }
+    out
+}
+
+/// The `SVTAV1_FRAMES > 1` arm. See the module docs for what is timed.
+#[allow(clippy::too_many_arguments)]
+fn encode_sequence(
+    _content: &str,
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    w: usize,
+    h: usize,
+    cw: usize,
+    ch: usize,
+    qp: u8,
+    preset: u8,
+    prefix: &str,
+    warmup: usize,
+    n_frames: usize,
+) {
+    let shift_px: usize = std::env::var("SVTAV1_FRAME_SHIFT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let intra_period: u32 = std::env::var("SVTAV1_INTRA_PERIOD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64);
+    let hier: u8 = std::env::var("SVTAV1_HIER_LEVELS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let frame_len = w * h + 2 * cw * ch;
+    let mut yuv = Vec::with_capacity(n_frames * frame_len);
+    let mut frames: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::with_capacity(n_frames);
+    for f in 0..n_frames {
+        let dx = shift_px * f;
+        let (fy, fu, fv) = if f == 0 {
+            (y.to_vec(), u.to_vec(), v.to_vec())
+        } else {
+            (
+                translate(y, w, h, dx),
+                translate(u, cw, ch, dx / 2),
+                translate(v, cw, ch, dx / 2),
+            )
+        };
+        yuv.extend_from_slice(&fy);
+        yuv.extend_from_slice(&fu);
+        yuv.extend_from_slice(&fv);
+        frames.push((fy, fu, fv));
+    }
+    std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+
+    let build = || {
+        let rc = RcConfig {
+            mode: RcMode::Cqp,
+            qp,
+            ..RcConfig::default()
+        };
+        EncodePipeline::new(w as u32, h as u32, preset, rc, hier, intra_period)
+            .with_bit_depth(8)
+            .with_tile_rows_log2(0)
+            .with_tile_cols_log2(0)
+            .with_sb_size(None)
+            .with_chroma_420(true)
+    };
+
+    // Untimed warmup: whole sequences, fresh pipeline each time.
+    for _ in 0..warmup {
+        let mut p = build();
+        for (fy, fu, fv) in &frames {
+            if p.try_encode_frame_420(fy, fu, fv, w).is_err() {
+                break;
+            }
+        }
+    }
+
+    let mut p = build();
+    let mut per_frame_ns: Vec<u128> = Vec::with_capacity(n_frames);
+    let mut all = Vec::new();
+    let t = std::time::Instant::now();
+    for (f, (fy, fu, fv)) in frames.iter().enumerate() {
+        let t0 = std::time::Instant::now();
+        match p.try_encode_frame_420(fy, fu, fv, w) {
+            Ok(bytes) => {
+                per_frame_ns.push(t0.elapsed().as_nanos());
+                std::fs::write(format!("{prefix}.obu.f{f}"), &bytes).expect("write frame obu");
+                all.extend_from_slice(&bytes);
+            }
+            Err(e) => {
+                // A refusal is not a timing result. Say so on stderr, write
+                // what encoded, and exit 3 — the same code `identity_run` uses,
+                // so a driver cannot read a refusal as a fast encode.
+                std::fs::write(format!("{prefix}.obu"), &all).expect("write .obu");
+                eprintln!("perf_encode: REFUSED by the encoder at frame {f}: {e}");
+                std::process::exit(3);
+            }
+        }
+    }
+    let ns = t.elapsed().as_nanos();
+    std::fs::write(format!("{prefix}.obu"), &all).expect("write .obu");
+    let per: Vec<String> = per_frame_ns
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    println!(
+        "ENCODE_NS={ns} BYTES={} FRAMES={n_frames} FRAME_NS={}",
+        all.len(),
+        per.join(",")
+    );
 }

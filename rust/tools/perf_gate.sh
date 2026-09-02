@@ -37,6 +37,25 @@
 #   PERF_QP      CLI qp 0..63             (default 40)
 #   PERF_ROUNDS  interleaved paired rounds/cell (default 20)
 #   PERF_WARMUP  untimed warmup encodes/spawn    (default 1)
+#   PERF_FRAMES  frames per timed encode        (default 1 = still)
+#   PERF_SHIFT   px/frame translation when >1   (default 3)
+#
+# INTER CELLS (PERF_FRAMES=N, N > 1). Unset, or =1, is byte-for-byte the
+# pre-existing still gate — the env below is never exported and neither harness
+# enters its multi-frame arm. With N > 1 both sides encode the SAME low-delay-P
+# flat GOP `identity_diff_inter.sh` uses (port SVTAV1_INTRA_PERIOD=64/
+# SVTAV1_HIER_LEVELS=0, C SVT_INTRA_PERIOD=-1/SVT_HIER_LEVELS=0/
+# SVT_PRED_STRUCT=1) over a source translated `PERF_SHIFT` px/frame, and the
+# TIMED region is the whole sequence on both sides (the C API is pipelined, so
+# a per-frame host clock there measures queue admission, not encode). The
+# inter frame's own cost is the DIFFERENCE of two measured cells, N=2 minus
+# N=1 — a subtraction of measurements, never a projection.
+#
+# The port refuses (exit 3) rather than encoding a frame it cannot encode
+# faithfully, and it PANICS on some cells; a refusal or a crash prints no
+# ENCODE_NS, so those rounds are dropped with an ERR line rather than silently
+# scoring as a fast encode. Check the cell's `ident` and the ERR count before
+# reading any inter ratio.
 #
 # Writes:
 #   benchmarks/perf_<suffix>.tsv       per-cell summary (committed)
@@ -62,6 +81,21 @@ CONTENT="${PERF_CONTENT:-gradient}"
 QP="${PERF_QP:-40}"
 ROUNDS="${PERF_ROUNDS:-20}"
 WARMUP="${PERF_WARMUP:-1}"
+FRAMES="${PERF_FRAMES:-1}"
+SHIFT="${PERF_SHIFT:-3}"
+
+# Multi-frame only: the matched GOP + the port's experimental-inter unlock.
+# Exported ONLY when FRAMES > 1, so the still gate's environment is unchanged.
+if [[ "$FRAMES" -gt 1 ]]; then
+    export SVTAV1_FRAMES="$FRAMES" SVTAV1_FRAME_SHIFT="$SHIFT" \
+           SVTAV1_INTRA_PERIOD="${SVTAV1_INTRA_PERIOD:-64}" \
+           SVTAV1_HIER_LEVELS="${SVTAV1_HIER_LEVELS:-0}" \
+           SVTAV1_INTER_EXPERIMENTAL=1
+    export SVT_FRAMES="$FRAMES" \
+           SVT_INTRA_PERIOD="${SVT_INTRA_PERIOD:--1}" \
+           SVT_HIER_LEVELS="${SVT_HIER_LEVELS:-0}" \
+           SVT_PRED_STRUCT="${SVT_PRED_STRUCT:-1}"
+fi
 
 PE="$RS_ROOT/target/release/examples/perf_encode"
 CE="$HERE/perf_c_encode/perf_c_encode"
@@ -85,7 +119,7 @@ fi
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 HOST=$(hostname)
 NCORES=$(nproc 2>/dev/null || echo "?")
-GRID="content=$CONTENT sizes=[${SIZES[*]}] presets=[${PRESETS[*]}] qp=$QP rounds=$ROUNDS warmup=$WARMUP"
+GRID="content=$CONTENT sizes=[${SIZES[*]}] presets=[${PRESETS[*]}] qp=$QP rounds=$ROUNDS warmup=$WARMUP frames=$FRAMES shift=$SHIFT"
 
 # --- raw per-sample TSV (auditable provenance of every number) --------------
 {
@@ -113,14 +147,25 @@ for sz in "${SIZES[@]}"; do
     for preset in "${PRESETS[@]}"; do
         # Identity pre-pass (runs port FIRST so the .yuv exists for C):
         # confirm this cell is byte-identical before trusting its ratio.
+        rm -f "$WORK"/cell.obu* "$WORK"/cell.c.obu*
         run_port "$sz" "$preset" >/dev/null
         run_c "$sz" "$preset" >/dev/null
-        if cmp -s "$WORK/cell.obu" "$WORK/cell.c.obu"; then
-            ident="Y"
+        if [[ "$FRAMES" -eq 1 ]]; then
+            ident="Y"; cmp -s "$WORK/cell.obu" "$WORK/cell.c.obu" || ident="N"
         else
-            ident="N"
-            echo "  WARN ${sz}x${sz} p${preset}: NOT byte-identical — ratio not apples-to-apples (excluded from fit)"
+            # Per FRAME, never on the concatenation: frame 0 changing length
+            # shifts every byte after it, so a whole-stream compare reports the
+            # wrong frame. Same rule identity_diff_inter.sh states.
+            ident="Y"
+            for ((fi = 0; fi < FRAMES; fi++)); do
+                if [[ ! -s "$WORK/cell.obu.f$fi" || ! -s "$WORK/cell.c.obu.pts$fi" ]]; then
+                    ident="N"; break
+                fi
+                cmp -s "$WORK/cell.obu.f$fi" "$WORK/cell.c.obu.pts$fi" || { ident="N"; break; }
+            done
         fi
+        [[ "$ident" == "N" ]] && \
+            echo "  WARN ${sz}x${sz} p${preset}: NOT byte-identical — ratio not apples-to-apples (excluded from fit)"
 
         # Interleaved paired rounds, order randomized per round.
         for ((r = 1; r <= ROUNDS; r++)); do
