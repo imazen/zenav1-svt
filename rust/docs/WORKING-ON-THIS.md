@@ -100,6 +100,20 @@ Ranked, strongest first. State the tier in your commit message.
 A transcribed oracle agreeing with transcribed code proves only that both were
 transcribed the same way.
 
+**And TWO transcriptions of the same C function will diverge — grep before you
+write the second.** MEASURED 2026-09-02: `port_rc_process::compute_rd_mult` had
+C's MD-lambda chain right, including the part that is easy to get wrong — the
+rdmult BASE reads `ppcs->update_type` while the frame-type FACTOR reads
+`update_lambda`'s OWN `gf_update_type`, and on a flat low-delay P GOP those two
+DISAGREE (`LF_UPDATE` vs `ARF_UPDATE`). `pd0::inter_full_lambda_8bit`
+re-transcribed the same chain, collapsed the two selectors, and was the copy
+the inter path used: the inter frame's MD lambda was 244 792 where C's is
+241 378, with a correct implementation sitting in the same crate and nothing
+pointing one at the other. When you find a second transcription, do not just
+fix it — PIN IT to the first with a sweep test, which is what
+`pd0::inter_lambda_tests::it_agrees_with_port_rc_process_compute_rd_mult_over_a_sweep`
+now does over 160 (qindex, update-type, lambda-weight) points.
+
 ## 5. The harness traps
 
 Each of these produced a confident wrong answer in a single day. They are not

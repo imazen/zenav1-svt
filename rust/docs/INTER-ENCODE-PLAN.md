@@ -4018,6 +4018,20 @@ DISAGREE: `set_frame_update_type` (`pd_process.c:4591`) falls through to its
 `temporal_layer_index == 0` and picks `ARF_UPDATE` (factor **150**). 3.2 x 150
 is 241378 exactly; 3.25 x 150 (ARF for both) is 244792.
 
+**And the port already HAD this right, somewhere else.**
+`port_rc_process::compute_rd_mult` takes `LambdaContext::update_type` for the
+base and lets `update_lambda` derive its own `gf_update_type` for the factor —
+exactly C's split — and has done since it was ported.
+`pd0::inter_full_lambda_8bit` is a SECOND transcription of the same C chain,
+and it collapsed the two. That is the failure mode a duplicate transcription
+always has, and it is worth more than the 1.4 %: nothing pointed one at the
+other, so the wrong copy was the one the inter path used.
+`pd0::inter_lambda_tests::it_agrees_with_port_rc_process_compute_rd_mult_over_a_sweep`
+now pins them together over 160 (qindex, update-type, lambda-weight) points —
+the only thing the pd0 builder adds is the `lambda_weight` multiply
+`av1_lambda_assign_md` (md_process.c:747) applies afterwards — so they cannot
+diverge again without a red test.
+
 `pd0::inter_full_lambda_8bit` now takes the two selectors separately. **§1y's
 "`lambda = 244 792`" is corrected in place by this paragraph** — the arithmetic
 in that section's skip-decision table is unchanged in shape, but its lambda was

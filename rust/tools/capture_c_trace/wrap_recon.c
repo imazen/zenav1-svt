@@ -1094,6 +1094,14 @@ EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionC
  *          intra=<enable_intra>/<intra_mode_end>/<angular_pred_level>
  *          nsq=<md_disallow_nsq_search> subsafe=<is_subres_safe>
  *          dr=<depth_removal enabled>/<disallow_below_64x64>/<..32x32>/<..16x16>
+ *          drlvl=<pcs->pic_depth_removal_level> fastlam=<fast_lambda_md[8bit]>
+ *          pqp=<ppcs->picture_qp>
+ *          med=<me_64x64_dist>/<me_32x32>/<me_16x16>/<me_8x8>
+ *          mev=<me_8x8_cost_variance> refmin=<ref l0 sb_min_sq_size, 255 = none>
+ *
+ * The trailing block is exactly `set_depth_removal_level_controls`' input set
+ * (enc_mode_config.c:2965), so the PORT's derivation can be joined field for
+ * field instead of being fitted to the three output flags.
  */
 void __real_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx);
 
@@ -1114,7 +1122,8 @@ void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureContro
     fprintf(f,
             "PD0CFG sb=%u org=(%u,%u) islice=%d lvl=%d subres=%u dev_th=%u split_th=%u exit_th=%u "
             "rate_lvl=%u qpoff=%d fastcoef=%u srcsamp=%d pred_only=%d d4=%d d8=%d maxbs=%u cb64=%d "
-            "bias=%u intra=%u/%u/%u nsq=%d subsafe=%u dr=%d/%d/%d/%d\n",
+            "bias=%u intra=%u/%u/%u nsq=%d subsafe=%u dr=%d/%d/%d/%d "
+            "drlvl=%u fastlam=%u pqp=%u med=%u/%u/%u/%u mev=%u refmin=%u\n",
             (unsigned)ctx->sb_index,
             (unsigned)ctx->sb_origin_x,
             (unsigned)ctx->sb_origin_y,
@@ -1142,7 +1151,19 @@ void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureContro
             (int)ctx->depth_removal_ctrls.enabled,
             (int)ctx->depth_removal_ctrls.disallow_below_64x64,
             (int)ctx->depth_removal_ctrls.disallow_below_32x32,
-            (int)ctx->depth_removal_ctrls.disallow_below_16x16);
+            (int)ctx->depth_removal_ctrls.disallow_below_16x16,
+            (unsigned)pcs->pic_depth_removal_level,
+            (unsigned)ctx->fast_lambda_md[EB_8_BIT_MD],
+            (unsigned)pcs->ppcs->picture_qp,
+            (unsigned)pcs->ppcs->me_64x64_distortion[ctx->sb_index],
+            (unsigned)pcs->ppcs->me_32x32_distortion[ctx->sb_index],
+            (unsigned)pcs->ppcs->me_16x16_distortion[ctx->sb_index],
+            (unsigned)pcs->ppcs->me_8x8_distortion[ctx->sb_index],
+            (unsigned)pcs->ppcs->me_8x8_cost_variance[ctx->sb_index],
+            (unsigned)(pcs->slice_type != I_SLICE && pcs->ref_pic_ptr_array[0][0]
+                           ? ((EbReferenceObject*)pcs->ref_pic_ptr_array[0][0]->object_ptr)
+                                 ->sb_min_sq_size[ctx->sb_index]
+                           : 255));
     fflush(f);
 }
 

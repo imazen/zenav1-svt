@@ -3558,6 +3558,64 @@ mod inter_lambda_tests {
         assert_eq!(kf_full_lambda_8bit_lw(67, 150), 18_500);
     }
 
+    /// **The port already HAD a correct transcription, and this function is a
+    /// SECOND one that diverged from it.**
+    /// `port_rc_process::compute_rd_mult` takes `LambdaContext::update_type`
+    /// for the base and lets `update_lambda` derive its own `gf_update_type`
+    /// for the factor — exactly C's split — and has done since it was ported.
+    /// `inter_full_lambda_8bit` re-transcribed the same C chain and collapsed
+    /// the two, which is the failure mode a duplicate transcription always
+    /// has. This test PINS THEM TOGETHER over a sweep so they cannot diverge
+    /// again: the only thing this function adds is the `lambda_weight`
+    /// multiply `av1_lambda_assign_md` (md_process.c:747) applies afterwards.
+    #[test]
+    fn it_agrees_with_port_rc_process_compute_rd_mult_over_a_sweep() {
+        use crate::port_rc_process::{LambdaContext, compute_rd_mult};
+        for &qindex in &[0u8, 1, 20, 67, 100, 160, 200, 255] {
+            for &(base, factor_tl) in &[
+                (U::LfUpdate, 0u8),
+                (U::ArfUpdate, 0),
+                (U::GfUpdate, 0),
+                (U::IntnlArfUpdate, 0),
+                (U::LfUpdate, 3),
+            ] {
+                for &lw in &[0u32, 128, 150, 175] {
+                    let ctx = LambdaContext {
+                        frame_type: 1, // not KEY_FRAME
+                        temporal_layer_index: factor_tl,
+                        hierarchical_levels: 3,
+                        update_type: base,
+                        alt_lambda_factors: false,
+                        rtc: false,
+                        // The pd0 builder carries the stats factor as an
+                        // explicit `qdiff_vs_base`; drive the same 128 no-op.
+                        stats_based_sb_lambda_modulation: false,
+                        base_q_idx: i32::from(qindex),
+                        delta_q_present: false,
+                        r0_delta_qp_md: false,
+                        lambda_scale_factors: [128; 7],
+                    };
+                    let rc = compute_rd_mult(&ctx, qindex, qindex, 8);
+                    let want = if lw == 0 {
+                        rc
+                    } else {
+                        ((u64::from(rc) * u64::from(lw)) >> 7) as u32
+                    };
+                    let factor = crate::port_rc_process::lambda_gf_update_type(
+                        false,
+                        ctx.hierarchical_levels,
+                        factor_tl,
+                    );
+                    assert_eq!(
+                        inter_full_lambda_8bit(qindex, base, factor, false, 0, lw),
+                        want,
+                        "qindex {qindex} base {base:?} tl {factor_tl} lw {lw}"
+                    );
+                }
+            }
+        }
+    }
+
     /// The NEGATIVE control: conflating the two update types — which is what
     /// the port did until 2026-09-02 — gives a DIFFERENT number, so the test
     /// above cannot pass with the split reverted.
