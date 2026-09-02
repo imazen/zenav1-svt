@@ -3752,6 +3752,97 @@ defect B doing its job.
   (C computes the scaled parent thresholds and then overwrites them with the
   unscaled ones).
 
+### 1z⁷. The last `diag` video-KEY cluster is an UNSIGNED UNDERFLOW in C's NSQ shape gate — video-KEY F0DIFF 4 -> 1 (2026-09-02)
+
+`diag {64,72,128} q20 p6` was §1z⁶'s "NOT localized" cluster. It is one line of
+C, and the port had tidied it.
+
+#### The drill, in the order it ran
+
+The container tree diff named the block in one pass:
+
+```
+python3 tools/tree_diff.py c.f0.tree rs.tree
+  FLIP mi=(8, 12) bsize: C=5 port=6        # C codes 16x8 x2, the port one 16x16
+  SKIPFLIP mi=(8, 12) C_skip=1 port eobs y=82
+```
+
+`SVT_PICKPART_OUT` then gave C's per-shape RD at that node, and
+`SVTAV1_NSQDBG` the port's:
+
+| | C | port |
+|---|--:|--:|
+| `PART_N` (16x16 square) cost | 514776 | **514776** |
+| `PART_H` shape sum | 449905 | — |
+| chosen | `partition=1`, `rd=452807` | `PART_N` |
+
+The square evaluation is byte-for-byte the same number, so nothing about the
+prediction, the transform or the rate is wrong. The port printed
+`NSQDBG SKIP mi=(8,12) bsize=6 shape=1 gate=1` — it never evaluated `PART_H` at
+all.
+
+#### The cause
+
+`product_coding_loop.c:9727-9746` is the first of the four shape-admission
+gates:
+
+```c
+uint32_t nsq_split_cost_th = ctx->nsq_search_ctrls.nsq_split_cost_th;
+if (nsq_split_cost_th) {
+    if (sq_size <= 16)
+        nsq_split_cost_th = MAX(1, nsq_split_cost_th - ctx->nsq_search_ctrls.rate_th_offset_lte16);
+    ...
+    if (part_cost * 1000 > sq_blk_ptr->cost * nsq_split_cost_th) return true;
+}
+```
+
+Both fields are `uint32_t` (`md_process.h:565`, `:576`). `set_nsq_search_ctrls`'s
+tail rescales `nsq_split_cost_th` by `MAX(10, qp) / 63` below CLI qp 46 and does
+NOT rescale `rate_th_offset_lte16` — so at low quantizers the two cross and the
+subtraction WRAPS:
+
+| CLI qp | scaled th (level-18 row's 40) | offset | `sq_size <= 16` result |
+|---|--:|--:|---|
+| 20 | 13 | 15 | **4294967294** |
+| 40 | 25 | 15 | 10 |
+| 55 | 37 | 15 | 22 |
+
+At 4294967294 the comparison can never be true, so a gate that reads as "skip
+this shape when its split rate is significant" becomes "skip nothing". The port
+had `saturating_sub(..).max(1)` = **1**, which is the opposite extreme: skip
+everything. That single value is the whole cluster — q40 and q55 do not cross
+and were already identical.
+
+Recorded as `docs/SUSPECTED-C-BUGS.md` #28. The `MAX(1, ..)` is what makes it a
+defect rather than a convention: it guards against exactly the zero the
+underflow jumps over.
+
+#### Result
+
+`diag {64,72,128} q20 p6` frame 0 is now byte-identical (441 / 584 / 1284 B),
+and q40 / q55 are unchanged at the same preset — which is the control, because
+neither underflows.
+
+| result | §1z⁶ | after |
+|---|--:|--:|
+| BOTH frames byte-identical | 31 | 31 |
+| frame 0 identical, frame 1 differs | 61 | 64 |
+| frame 0 already differs | 4 | **1** |
+
+**Not reachable on the still envelope**, by argument and by measurement:
+`nsq_qp_based_th_scaling` is 0 through M3 on the allintra arm — the only band
+that reaches this tail, since `get_nsq_search_level_allintra` is 0 from M4 up —
+so `q_weight/q_weight_denom` is `1/1`, the threshold keeps its table value (40
+and up) and the subtraction never crosses. `identity_full_8bit` 1100/1100.
+
+#### The video-KEY frontier is now ONE cell
+
+`gradient 128x128 q20 p8`: 7453 B against C's 7472. It is the only MULTI-SB cell
+of §1z⁶'s q20 p8 group and the only one that did not close there, so what to
+look at is what is per-SB: the funnel CDF chain (`funnel_chain` is live at video
+M8, `update_cdf_level` being `is_islice ? 1 : 0` through M8) and the PD0 chained
+rate tables it feeds.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

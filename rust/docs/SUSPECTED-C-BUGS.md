@@ -1293,3 +1293,61 @@ derivation as the explanation and leaves the underflow. It was
 rather than a legal 3..=6, and the writer emits
 `damping.wrapping_sub(3) & 3` — reproducing the underflow explicitly instead
 of underflowing in debug and silently differing in release.
+
+## 28. `nsq_split_cost_th - rate_th_offset_lte16` underflows in `uint32_t`, turning a skip-everything gate into a skip-nothing one
+
+**Status: REPRODUCED (`depth_refine::skip_by_split_rate`).**
+
+`product_coding_loop.c:9727-9746`, the first of the four gates that decide
+whether an NSQ shape is evaluated at all:
+
+```c
+uint32_t nsq_split_cost_th = ctx->nsq_search_ctrls.nsq_split_cost_th;
+if (nsq_split_cost_th) {
+    if (sq_size <= 16) {
+        nsq_split_cost_th = MAX(1, nsq_split_cost_th - ctx->nsq_search_ctrls.rate_th_offset_lte16);
+    }
+    ...
+    if (part_cost * 1000 > sq_blk_ptr->cost * nsq_split_cost_th) {
+        return true;   // skip this shape
+    }
+}
+```
+
+Both fields are `uint32_t` (`md_process.h:565` and `:576`). When the threshold
+is SMALLER than the offset the subtraction wraps to ~4.29e9, `MAX(1, ..)` keeps
+the wrapped value, and the comparison `part_cost * 1000 > cost * 4294967294`
+can no longer be true for any realistic cost — so a gate whose plain reading is
+"the split rate is significant relative to the square's cost, skip the shape"
+becomes "never skip". The `MAX(1, ..)` is what says the author expected a small
+positive number here, which is what makes this a defect rather than a
+convention: it is guarding against exactly the zero the underflow jumps over.
+
+**Reachable, and it decides a partition.** `nsq_split_cost_th` is not the table
+value — `set_nsq_search_ctrls`'s tail rescales it by `q_weight / q_weight_denom`
+= `MAX(10, qp) / 63` below CLI qp 46 (`enc_mode_config.c:5277`), while
+`rate_th_offset_lte16` is NOT rescaled. So the two cross at low quantizers. On
+the VIDEO arm at M6 the level-18 row's 40 becomes:
+
+| CLI qp | scaled `nsq_split_cost_th` | `rate_th_offset_lte16` | `sq_size <= 16` result |
+|---|--:|--:|---|
+| 20 | 13 | 15 | **4294967294** (underflow) |
+| 40 | 25 | 15 | 10 |
+| 55 | 37 | 15 | 22 |
+
+**MEASURED** on `diag 64x64 q20 p6 frames=2`, superblock mi=(8,12): C's
+`SVT_PICKPART_OUT` shows `PART_N` at cost 514776 and shape `PART_H` evaluated
+at a summed 449905, and C CHOOSES `partition=1` with `rd=452807`. The port,
+with a saturating subtraction, printed `NSQDBG SKIP ... shape=1 gate=1` and
+coded the 16x16 square. Reproducing the underflow makes that frame **441 B,
+byte-identical to C**, and leaves q40 (238 B) and q55 (164 B) unchanged —
+which is the control, because neither of those underflows.
+
+**Not reachable on the still/allintra envelope.** `nsq_qp_based_th_scaling` is
+0 through M3 there — the only allintra band that reaches this tail, since
+`get_nsq_search_level_allintra` is 0 from M4 up — so `q_weight/q_weight_denom`
+is `1/1`, the threshold keeps its table value (40 and up) and the subtraction
+never crosses. `identity_full_8bit` is 1100/1100 with the underflow reproduced.
+
+**What the port does:** `skip_by_split_rate` computes the adjustment in `u32`
+with `wrapping_sub(..).max(1)` and says why, rather than saturating.

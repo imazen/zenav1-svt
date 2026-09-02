@@ -233,6 +233,23 @@ Crates are not published to crates.io yet — depend by git.
   gates now use `${ARR[@]+"${ARR[@]}"}`. Recorded in
   `rust/docs/WORKING-ON-THIS.md` §5.
 
+- **An unsigned underflow in C's NSQ shape gate — the last `diag` video-KEY
+  cluster.** `product_coding_loop.c:9732` computes
+  `MAX(1, nsq_split_cost_th - rate_th_offset_lte16)` in `uint32_t`
+  (md_process.h:565/576). `set_nsq_search_ctrls`'s tail rescales the threshold
+  by `MAX(10, qp) / 63` below CLI qp 46 and does NOT rescale the offset, so at
+  low quantizers the subtraction WRAPS to ~4.29e9 and the gate that reads as
+  "skip this shape when its split rate is significant" skips nothing. The port
+  had `saturating_sub(..).max(1)` = 1, the opposite extreme. MEASURED on
+  `diag 64x64 q20 p6` mi=(8,12): C evaluates and CHOOSES `PART_H` (449905 summed
+  against the square's 514776) where the port printed
+  `NSQDBG SKIP ... shape=1 gate=1`; reproducing the underflow makes all three
+  `diag {64,72,128} q20 p6` key frames byte-identical and leaves q40/q55
+  unchanged. Video key frames 4 F0DIFF -> 1. Not reachable on the still
+  envelope (`nsq_qp_based_th_scaling` is 0 through M3 on the allintra arm, the
+  only band that reaches the tail) — `identity_full_8bit` 1100/1100. Recorded
+  as `rust/docs/SUSPECTED-C-BUGS.md` #28, plan §1z⁷.
+
 - **PD0_LVL_5 was unreachable on the pred-depth-only path, and C's
   `pd0_detector` runs on every inter frame.** Two defects that had to be fixed
   together: (A) `pipeline.rs`'s pred-depth-only branch took its PD0 model from

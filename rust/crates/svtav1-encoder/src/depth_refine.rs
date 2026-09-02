@@ -1648,9 +1648,28 @@ impl DepthWalk<'_, '_> {
         let mut nsq_split_cost_th = nsq.nsq_split_cost_th;
         if nsq_split_cost_th != 0 {
             if sq_size <= 16 {
-                nsq_split_cost_th = nsq_split_cost_th
-                    .saturating_sub(nsq.rate_th_offset_lte16)
-                    .max(1);
+                // C `MAX(1, nsq_split_cost_th - rate_th_offset_lte16)`
+                // (product_coding_loop.c:9732) in **uint32_t**: both fields are
+                // `uint32_t` (md_process.h:565/576), so when the qp-scaled
+                // threshold is SMALLER than the offset the subtraction
+                // UNDERFLOWS to ~4.29e9 and `MAX(1, ..)` keeps it — turning a
+                // gate that would skip every shape into one that skips none.
+                //
+                // Reproduced, not tidied: a C bug is still the oracle
+                // (docs/SUSPECTED-C-BUGS.md #28). It is REACHABLE and it moves
+                // bytes: on the video arm at M6 the level-18 row's
+                // `nsq_split_cost_th` 40 scales by `qp/63`, giving 13 at CLI qp
+                // 20 against a `rate_th_offset_lte16` of 15 — the only cell in
+                // the campaign's grid where the two cross (q40 gives 25, q55
+                // gives 37). `saturating_sub(..).max(1)` here made the port skip
+                // the HORZ shape at `diag 64x64 q20 p6` mi=(8,12) that C
+                // evaluates and CHOOSES.
+                nsq_split_cost_th = u64::from(
+                    u32::try_from(nsq_split_cost_th)
+                        .unwrap_or(u32::MAX)
+                        .wrapping_sub(u32::try_from(nsq.rate_th_offset_lte16).unwrap_or(u32::MAX))
+                        .max(1),
+                );
             }
             let split_rate = self.part_rates.bits(ctx_row, shape);
             let part_cost = rdcost(self.lambda, split_rate, 0);
