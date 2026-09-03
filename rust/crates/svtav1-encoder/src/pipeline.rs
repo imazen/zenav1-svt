@@ -107,6 +107,29 @@ pub struct EncodePipeline {
     /// different buffer for a different job (motion compensation). `None`
     /// until the first frame has been encoded.
     pa_ref: Option<alloc::boxed::Box<crate::inter_me_arm::PaPicture>>,
+    /// The PA pyramid two frames back, kept as a RECYCLABLE allocation rather
+    /// than freed.
+    ///
+    /// C constructs its PA reference objects ONCE into a pool at
+    /// `svt_av1_enc_init` (`svt_aom_pa_reference_object_ctor`,
+    /// `reference_object.c`) and every picture checks one out of the pool;
+    /// its per-frame heap cost for them is zero. The port allocated, zeroed
+    /// and freed three padded planes per frame — `PaPicture::from_source`
+    /// 9.54 M and `PaPlane::decimate` 2.96 M in
+    /// `benchmarks/mem_heaptrack_2026-09-03.txt`, plus the matching
+    /// `_xzm_free` / `calloc` / `__bzero` in the video-key CPU attribution's
+    /// ALLOC and LIBC_MEM classes (2.69 ms + 2.04 ms against C's 0.000 and
+    /// 0.489). This is the pool, sized one: the frame-before-last's pyramid,
+    /// which nothing reads any more, is refilled in place instead.
+    pa_scratch: Option<alloc::boxed::Box<crate::inter_me_arm::PaPicture>>,
+    /// The previous frame's open-loop ME result set, kept as a RECYCLABLE
+    /// allocation. Same argument as [`Self::pa_scratch`]: C checks its
+    /// `MeResults` out of a pool built once at `svt_av1_enc_init`, the port
+    /// allocated three `Vec`s per b64 per frame
+    /// (`inter_me::context::MeB64Output::new` 12.53 M over 6,144 calls in
+    /// `benchmarks/mem_heaptrack_2026-09-03.txt`). Nothing reads it once the
+    /// frame that produced it has been packed.
+    me_scratch: Option<crate::inter_me_arm::FrameMe>,
     /// CICP color description.
     pub color_description: crate::entropy::obu::ColorDescription,
     /// SH `chroma_sample_position` (spec 6.4.2: 0 = CSP_UNKNOWN, 1 =
@@ -405,6 +428,8 @@ impl EncodePipeline {
             superres_stats_luma: None,
             hbd_source: None,
             pa_ref: None,
+            pa_scratch: None,
+            me_scratch: None,
             // C-matched default: CICP "unspecified" (cp/tc/mc = 2/2/2,
             // studio range) — the library defaults of enc_settings.c:1043.
             // The SH then carries color_description_present_flag=0 and
@@ -2242,18 +2267,34 @@ impl EncodePipeline {
         // nothing can ever reference this frame, and the pyramid is a padded
         // copy plus two decimations of the whole luma plane — real work to
         // spend on a buffer with no reader.
-        let pa_cur = (self.gop.intra_period > 1).then(|| {
-            alloc::boxed::Box::new(crate::inter_me_arm::PaPicture::from_source(
+        let pa_cur = (self.gop.intra_period > 1).then(|| match self.pa_scratch.take() {
+            // Recycle the frame-before-last's pyramid. `refill_from_source`
+            // rewrites every byte and every descriptor field, so this is
+            // byte-identical to the fresh allocation it replaces.
+            Some(mut recycled) => {
+                recycled.refill_from_source(&encode_input, w, w, h, display_order);
+                recycled
+            }
+            None => alloc::boxed::Box::new(crate::inter_me_arm::PaPicture::from_source(
                 &encode_input,
                 w,
                 w,
                 h,
                 display_order,
-            ))
+            )),
         });
         let frame_me = match (is_key, pa_cur.as_deref(), self.pa_ref.as_deref()) {
             (false, Some(cur), Some(prev)) => {
-                Some(crate::inter_me_arm::run_frame_me(
+                // Recycle the previous frame's result set. `run_frame_me_into`
+                // resets every per-b64 entry to exactly what
+                // `MeB64Output::new` builds and reassigns every scalar, so
+                // this is byte-identical to a fresh `run_frame_me`.
+                let mut out = self
+                    .me_scratch
+                    .take()
+                    .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
+                crate::inter_me_arm::run_frame_me_into(
+                    &mut out,
                     cur,
                     prev,
                     crate::inter_me_arm::FrameMeParams {
@@ -2269,7 +2310,8 @@ impl EncodePipeline {
                         hierarchical_levels: self.gop.hierarchical_levels,
                         sc_class5: u8::from(sc_derivation.classes.sc_class5),
                     },
-                ))
+                );
+                Some(out)
             }
             _ => None,
         };
@@ -5809,8 +5851,15 @@ impl EncodePipeline {
         // motion search reads — this frame's padded SOURCE pyramid, not its
         // recon. `None` in still mode, where no later frame exists.
         if pa_cur.is_some() {
+            // The pyramid this displaces is two frames back: the search only
+            // ever reads `pa_ref` (the PREVIOUS frame) against `pa_cur`, so
+            // nothing can still be looking at it. Keep the allocation.
+            self.pa_scratch = self.pa_ref.take();
             self.pa_ref = pa_cur;
         }
+        // This frame's ME results have been consumed by mode decision and the
+        // pack; keep the allocation for the next frame's search.
+        self.me_scratch = frame_me;
 
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
@@ -9968,7 +10017,6 @@ fn encode_tile_rows(
         let (tile_sb_col_start, tile_sb_col_end) =
             tile_grid.col_span(tile_idx % tile_grid.tile_cols);
         let tile_sb_cols = tile_sb_col_end - tile_sb_col_start;
-
         let mut tile_recon = Vec::new();
         // PD0_LVL_1 rate tables (presets 6..8), built once per tile on
         // first use — default CDFs at the frame qindex (C md_frame_context).

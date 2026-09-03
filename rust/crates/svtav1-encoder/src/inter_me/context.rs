@@ -640,11 +640,38 @@ impl MeB64Output {
     /// `svt_aom_pa_reference_object_ctor` sizes them: one candidate slot per
     /// `(pu, max_cand)`, one MV slot per `(pu, max_refs)`, one count per pu.
     pub fn new(max_cand: usize, max_refs: usize) -> Self {
-        Self {
-            total_me_candidate_index: alloc::vec![0u8; SQUARE_PU_COUNT],
-            me_candidate_array: alloc::vec![MeCandidate::default(); SQUARE_PU_COUNT * max_cand],
-            me_mv_array: alloc::vec![Mv::ZERO; SQUARE_PU_COUNT * max_refs],
-            ..Self::default()
-        }
+        let mut me = Self::default();
+        me.reset(max_cand, max_refs);
+        me
+    }
+
+    /// [`new`](Self::new) into an EXISTING allocation.
+    ///
+    /// C checks a `MeResults` out of a pool built once by
+    /// `svt_aom_pa_reference_object_ctor` (`reference_object.c`) and clears
+    /// the counts; the port allocated three `Vec`s per b64 per frame
+    /// (`MeB64Output::new` 12.53 M over 6,144 calls in
+    /// `benchmarks/mem_heaptrack_2026-09-03.txt`). This reproduces `new`'s
+    /// state exactly — every element is overwritten with the same value
+    /// `new` would have allocated it with, and every scalar is reset to its
+    /// `Default` — so the search that follows cannot observe the difference.
+    pub fn reset(&mut self, max_cand: usize, max_refs: usize) {
+        self.total_me_candidate_index.clear();
+        self.total_me_candidate_index.resize(SQUARE_PU_COUNT, 0u8);
+        self.me_candidate_array.clear();
+        self.me_candidate_array
+            .resize(SQUARE_PU_COUNT * max_cand, MeCandidate::default());
+        self.me_mv_array.clear();
+        self.me_mv_array
+            .resize(SQUARE_PU_COUNT * max_refs, Mv::ZERO);
+        // The scalar tail of `..Self::default()`.
+        let d = Self::default();
+        self.rc_me_allow_gm = d.rc_me_allow_gm;
+        self.rc_me_distortion = d.rc_me_distortion;
+        self.me_8x8_cost_variance = d.me_8x8_cost_variance;
+        self.me_64x64_distortion = d.me_64x64_distortion;
+        self.me_32x32_distortion = d.me_32x32_distortion;
+        self.me_16x16_distortion = d.me_16x16_distortion;
+        self.me_8x8_distortion = d.me_8x8_distortion;
     }
 }

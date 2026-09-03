@@ -41,7 +41,6 @@ use crate::port_enc_mode_config::ResolutionRange;
 use crate::port_enc_mode_config::enc_mode as enc_mode_c;
 use crate::port_enc_mode_config::me::{MeDerivInputs, apply_me_signals, sig_deriv_me};
 use crate::port_preanalysis::{downsample_2d, generate_padding};
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// C `scs->border` (`enc_handle.c:4256`), the PA reference's full-resolution
@@ -75,48 +74,81 @@ impl PaPlane {
         height: usize,
         border: usize,
     ) -> Self {
-        let stride = width + 2 * border;
-        let org = border * stride + border;
-        let mut buf = vec![0u8; stride * (height + 2 * border)];
-        for r in 0..height {
-            buf[org + r * stride..org + r * stride + width]
-                .copy_from_slice(&src[r * src_stride..r * src_stride + width]);
-        }
-        generate_padding(&mut buf, org, stride, width, height, border, border);
+        let mut me = Self::empty();
+        me.refill_from_plane(src, src_stride, width, height, border);
+        me
+    }
+
+    /// A zero-sized plane, to be filled by `refill_*`.
+    fn empty() -> Self {
         Self {
-            buf,
-            org,
-            stride,
-            width,
-            height,
-            border,
+            buf: Vec::new(),
+            org: 0,
+            stride: 0,
+            width: 0,
+            height: 0,
+            border: 0,
         }
     }
 
-    /// Decimate `self` by `step` and pad the result to `border`.
-    fn decimate(&self, step: usize, border: usize) -> Self {
-        let (dw, dh) = (self.width / step, self.height / step);
+    /// [`from_plane`](Self::from_plane) into an EXISTING allocation.
+    ///
+    /// **Every byte of the buffer is written**, so this is byte-identical to a
+    /// fresh `vec![0u8; n]` fill and the zeroing is pure waste: the active
+    /// rows are covered by the `copy_from_slice` plus `generate_padding`'s
+    /// horizontal pass (which fills `[row - border, row + width + border)` =
+    /// exactly one `stride`), and the border rows by its vertical pass (which
+    /// copies a whole `stride`-long already-padded row). `resize` only
+    /// reallocates when the geometry changes, which within one encode it does
+    /// not — so after the first frame this is a pure overwrite.
+    fn refill_from_plane(
+        &mut self,
+        src: &[u8],
+        src_stride: usize,
+        width: usize,
+        height: usize,
+        border: usize,
+    ) {
+        let stride = width + 2 * border;
+        let org = border * stride + border;
+        self.buf.resize(stride * (height + 2 * border), 0);
+        for r in 0..height {
+            self.buf[org + r * stride..org + r * stride + width]
+                .copy_from_slice(&src[r * src_stride..r * src_stride + width]);
+        }
+        generate_padding(&mut self.buf, org, stride, width, height, border, border);
+        self.org = org;
+        self.stride = stride;
+        self.width = width;
+        self.height = height;
+        self.border = border;
+    }
+
+    /// Decimate `src` by `step` into `self`, padded to `border`.
+    ///
+    /// The same full-overwrite argument as [`refill_from_plane`](Self::refill_from_plane)
+    /// applies: `downsample_2d` writes every interior pixel and
+    /// `generate_padding` writes every border byte.
+    fn refill_decimate(&mut self, src: &PaPlane, step: usize, border: usize) {
+        let (dw, dh) = (src.width / step, src.height / step);
         let stride = dw + 2 * border;
         let org = border * stride + border;
-        let mut buf = vec![0u8; stride * (dh + 2 * border)];
+        self.buf.resize(stride * (dh + 2 * border), 0);
         downsample_2d(
-            &self.buf[self.org..],
-            self.stride,
-            self.width,
-            self.height,
-            &mut buf[org..],
+            &src.buf[src.org..],
+            src.stride,
+            src.width,
+            src.height,
+            &mut self.buf[org..],
             stride,
             step,
         );
-        generate_padding(&mut buf, org, stride, dw, dh, border, border);
-        Self {
-            buf,
-            org,
-            stride,
-            width: dw,
-            height: dh,
-            border,
-        }
+        generate_padding(&mut self.buf, org, stride, dw, dh, border, border);
+        self.org = org;
+        self.stride = stride;
+        self.width = dw;
+        self.height = dh;
+        self.border = border;
     }
 
     fn view(&self) -> Plane<'_> {
@@ -152,14 +184,49 @@ impl PaPicture {
         picture_number: u64,
     ) -> Self {
         let full = PaPlane::from_plane(y, y_stride, width, height, PA_BORDER);
-        let quarter = full.decimate(2, PA_BORDER_QUARTER);
-        let sixteenth = quarter.decimate(2, PA_BORDER_SIXTEENTH);
+        let mut quarter = PaPlane::empty();
+        quarter.refill_decimate(&full, 2, PA_BORDER_QUARTER);
+        let mut sixteenth = PaPlane::empty();
+        sixteenth.refill_decimate(&quarter, 2, PA_BORDER_SIXTEENTH);
         Self {
             full,
             quarter,
             sixteenth,
             picture_number,
         }
+    }
+
+    /// [`from_source`](Self::from_source) into an EXISTING pyramid — C's
+    /// shape, where `svt_aom_pa_reference_object_ctor` allocates the three
+    /// planes ONCE into a pool at `svt_av1_enc_init` and every later picture
+    /// reuses a pooled object (`reference_object.c`). The port had been
+    /// allocating (and zeroing, and freeing) three padded planes per frame.
+    ///
+    /// Byte-identical to `from_source` by construction: every byte of all
+    /// three buffers is rewritten (see
+    /// [`PaPlane::refill_from_plane`](PaPlane::refill_from_plane)), and
+    /// `refill_*` recomputes `org`/`stride`/`width`/`height`/`border` from the
+    /// arguments rather than trusting what the previous frame left behind.
+    pub fn refill_from_source(
+        &mut self,
+        y: &[u8],
+        y_stride: usize,
+        width: usize,
+        height: usize,
+        picture_number: u64,
+    ) {
+        // Disjoint field borrows: the decimations read one plane and write
+        // the next.
+        let Self {
+            full,
+            quarter,
+            sixteenth,
+            picture_number: pn,
+        } = self;
+        full.refill_from_plane(y, y_stride, width, height, PA_BORDER);
+        quarter.refill_decimate(full, 2, PA_BORDER_QUARTER);
+        sixteenth.refill_decimate(quarter, 2, PA_BORDER_SIXTEENTH);
+        *pn = picture_number;
     }
 }
 
@@ -184,6 +251,21 @@ pub struct FrameMe {
 }
 
 impl FrameMe {
+    /// An empty result set, to be filled by [`run_frame_me_into`].
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            per_b64: Vec::new(),
+            b64_cols: 0,
+            b64_rows: 0,
+            max_refs: 0,
+            max_cand: 0,
+            max_l0: 0,
+            enable_me_8x8: false,
+            enable_me_16x16: false,
+        }
+    }
+
     /// The full-pel MV this frame's search chose for the block at
     /// `(org_x, org_y)` of size `bsize`, against `[list][ref_idx]`.
     ///
@@ -438,6 +520,26 @@ pub fn me_deriv_inputs(p: FrameMeParams, input_resolution: ResolutionRange) -> M
 /// `num_of_ref_pic_to_search` is `[1, 0]`.
 #[must_use]
 pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) -> FrameMe {
+    let mut out = FrameMe::empty();
+    run_frame_me_into(&mut out, cur, reference, p);
+    out
+}
+
+/// [`run_frame_me`] into an EXISTING [`FrameMe`], reusing its per-b64
+/// allocations.
+///
+/// C's `MeResults` live in a pool built once by
+/// `svt_aom_pa_reference_object_ctor` (`reference_object.c`); the port
+/// allocated three `Vec`s per b64 per frame. `MeB64Output::reset` restores
+/// exactly the state `MeB64Output::new` produces, and every scalar field of
+/// `FrameMe` is reassigned below, so this is byte-identical to building a
+/// fresh one.
+pub fn run_frame_me_into(
+    out: &mut FrameMe,
+    cur: &PaPicture,
+    reference: &PaPicture,
+    p: FrameMeParams,
+) {
     // C `pcs->pa_me_data->max_*` (pcs.c) for a single-reference low-delay
     // list-0 configuration; the arrays are sized by these, so they only need
     // to be >= what the search writes.
@@ -496,7 +598,13 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
 
     let b64_cols = p.width.div_ceil(64);
     let b64_rows = p.height.div_ceil(64);
-    let mut per_b64 = Vec::with_capacity(b64_cols * b64_rows);
+    // Reuse the recycled entries in place; grow only when the b64 count does
+    // (which within one encode it does not), and drop any surplus so a
+    // later, smaller frame cannot read a stale tail.
+    out.per_b64.truncate(b64_cols * b64_rows);
+    out.per_b64
+        .resize_with(b64_cols * b64_rows, MeB64Output::default);
+    let mut b64_index = 0usize;
     for b64_y in 0..b64_rows {
         for b64_x in 0..b64_cols {
             let (ox, oy) = (b64_x * 64, b64_y * 64);
@@ -522,7 +630,9 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
             // `motion_estimation.c:1261`; set for faithfulness, not effect.
             me.is_ref = true;
             me.me_type = MeType::OpenLoop;
-            let mut out = MeB64Output::new(MAX_CAND, MAX_REFS);
+            let out_b64 = &mut out.per_b64[b64_index];
+            b64_index += 1;
+            out_b64.reset(MAX_CAND, MAX_REFS);
             // C `pcs->b64_geom[b64_index].{width,height}` = `MIN(dim - org,
             // 64)` (pcs.c:1507-1508). `compute_distortion` normalises every
             // `me_*_distortion` by `pix_num = b64_geom->width *
@@ -549,22 +659,18 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
             b64_pic.b64_geom_width = (p.width - ox).min(64) as u32;
             b64_pic.b64_geom_height = (p.height - oy).min(64) as u32;
             motion_estimation_b64(
-                &b64_pic, ox as u32, oy as u32, &mut me, &src, &refs, &mut out,
+                &b64_pic, ox as u32, oy as u32, &mut me, &src, &refs, out_b64,
             );
-            per_b64.push(out);
         }
     }
 
-    FrameMe {
-        per_b64,
-        b64_cols,
-        b64_rows,
-        max_refs: MAX_REFS,
-        max_cand: MAX_CAND,
-        max_l0: MAX_L0,
-        enable_me_8x8: pic.enable_me_8x8,
-        enable_me_16x16: pic.enable_me_16x16,
-    }
+    out.b64_cols = b64_cols;
+    out.b64_rows = b64_rows;
+    out.max_refs = MAX_REFS;
+    out.max_cand = MAX_CAND;
+    out.max_l0 = MAX_L0;
+    out.enable_me_8x8 = pic.enable_me_8x8;
+    out.enable_me_16x16 = pic.enable_me_16x16;
 }
 
 #[cfg(test)]
@@ -1097,5 +1203,211 @@ mod pu_geometry_tests {
         assert_eq!(number_of_pus(false, true), MAX_SB64_PU_COUNT_NO_8X8);
         assert_eq!(number_of_pus(false, false), MAX_SB64_PU_COUNT_WO_16X16);
         assert_eq!(number_of_pus(true, false), MAX_SB64_PU_COUNT_WO_16X16);
+    }
+}
+
+/// The RECYCLE path's positive control.
+///
+/// **The public encoder cannot reach this code today.** `pa_scratch` /
+/// `me_scratch` first hand back a recycled allocation on frame 2, and
+/// `encode_frame_impl` REFUSES frame 2 ("an inter frame whose REFERENCE is
+/// itself an inter frame needs that reference's coded-area statistics" —
+/// `docs/INTER-ENCODE-PLAN.md`). So a whole-encoder byte gate cannot witness
+/// the recycle at all: a 5-frame or 8-frame cell exits 3 at frame 2 and
+/// writes only the two frames it managed, which is why a port-vs-port sweep
+/// over `SVTAV1_FRAMES` up to 8 reports 270/270 identical while exercising
+/// nothing past frame 1. These tests are the control that the refill produces
+/// the same bytes as the fresh build, asserted at the API directly.
+#[cfg(test)]
+mod recycle_tests {
+    use super::*;
+
+    fn ramp(w: usize, h: usize, seed: usize) -> Vec<u8> {
+        (0..h)
+            .flat_map(|r| {
+                (0..w)
+                    .map(move |c| (((r * 7 + c * 13 + seed * 29) % 251) as u8) ^ ((c & 0x1f) as u8))
+            })
+            .collect()
+    }
+
+    /// `PaPicture::refill_from_source` into an allocation built for a
+    /// DIFFERENT picture must produce byte-for-byte what `from_source` builds
+    /// fresh — all three planes and every descriptor field. The recycled
+    /// buffer is deliberately seeded from another frame first, so a missed
+    /// write shows up as stale content rather than as a zero.
+    #[test]
+    fn a_refilled_pa_pyramid_is_byte_identical_to_a_fresh_one() {
+        for &(w, h) in &[(64usize, 64usize), (128, 64), (192, 128), (256, 256)] {
+            let a = ramp(w, h, 1);
+            let b = ramp(w, h, 2);
+            let fresh = PaPicture::from_source(&b, w, w, h, 7);
+            // Build on `a`, then refill with `b` — the recycle's actual shape.
+            let mut recycled = PaPicture::from_source(&a, w, w, h, 3);
+            recycled.refill_from_source(&b, w, w, h, 7);
+            for (name, (r, f)) in [
+                ("full", (&recycled.full, &fresh.full)),
+                ("quarter", (&recycled.quarter, &fresh.quarter)),
+                ("sixteenth", (&recycled.sixteenth, &fresh.sixteenth)),
+            ] {
+                assert_eq!(r.buf, f.buf, "{name} plane bytes differ at {w}x{h}");
+                assert_eq!(
+                    (r.org, r.stride, r.width, r.height, r.border),
+                    (f.org, f.stride, f.width, f.height, f.border),
+                    "{name} plane descriptor differs at {w}x{h}"
+                );
+            }
+            assert_eq!(recycled.picture_number, fresh.picture_number);
+        }
+    }
+
+    /// And the control on the control: if the refill did NOT rewrite every
+    /// byte, seeding from a different picture would leave stale content. This
+    /// asserts the two source pictures really do produce different pyramids,
+    /// so the test above is not comparing a buffer with itself.
+    #[test]
+    fn the_two_seed_pictures_produce_different_pyramids() {
+        let (w, h) = (128usize, 64usize);
+        let a = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
+        let b = PaPicture::from_source(&ramp(w, h, 2), w, w, h, 0);
+        assert_ne!(a.full.buf, b.full.buf);
+        assert_ne!(a.quarter.buf, b.quarter.buf);
+        assert_ne!(a.sixteenth.buf, b.sixteenth.buf);
+    }
+
+    /// `run_frame_me_into` on a RECYCLED [`FrameMe`] must produce exactly what
+    /// `run_frame_me` produces fresh — every per-b64 array and every scalar.
+    /// The recycled set is first filled from a different frame pair, so a
+    /// missed `MeB64Output::reset` field would show up as the previous
+    /// frame's search result.
+    #[test]
+    fn a_recycled_frame_me_is_identical_to_a_fresh_one() {
+        let (w, h) = (128usize, 128usize);
+        let p = FrameMeParams {
+            enc_mode: 8,
+            qp: 40,
+            width: w,
+            height: h,
+            picture_number: 1,
+            frame_is_boosted: false,
+            hierarchical_levels: 0,
+            sc_class5: 0,
+        };
+        let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
+        let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);
+        let f2 = PaPicture::from_source(&ramp(w, h, 9), w, w, h, 2);
+
+        let fresh = run_frame_me(&f2, &f1, p);
+        // The recycle's actual shape: a set already filled by an EARLIER
+        // frame pair, handed back for the next one.
+        let mut recycled = run_frame_me(&f1, &f0, p);
+        run_frame_me_into(&mut recycled, &f2, &f1, p);
+
+        assert_eq!(recycled.per_b64.len(), fresh.per_b64.len());
+        assert!(!fresh.per_b64.is_empty(), "the grid must not be empty");
+        for (i, (r, f)) in recycled.per_b64.iter().zip(&fresh.per_b64).enumerate() {
+            assert_eq!(
+                r.total_me_candidate_index, f.total_me_candidate_index,
+                "b64 {i} total_me_candidate_index"
+            );
+            assert_eq!(r.me_mv_array, f.me_mv_array, "b64 {i} me_mv_array");
+            assert_eq!(
+                r.me_candidate_array.len(),
+                f.me_candidate_array.len(),
+                "b64 {i} me_candidate_array len"
+            );
+            for (j, (rc, fc)) in r
+                .me_candidate_array
+                .iter()
+                .zip(&f.me_candidate_array)
+                .enumerate()
+            {
+                assert_eq!(
+                    (
+                        rc.direction,
+                        rc.ref_idx_l0,
+                        rc.ref_idx_l1,
+                        rc.ref0_list,
+                        rc.ref1_list
+                    ),
+                    (
+                        fc.direction,
+                        fc.ref_idx_l0,
+                        fc.ref_idx_l1,
+                        fc.ref0_list,
+                        fc.ref1_list
+                    ),
+                    "b64 {i} candidate {j}"
+                );
+            }
+            assert_eq!(
+                (
+                    r.rc_me_allow_gm,
+                    r.rc_me_distortion,
+                    r.me_8x8_cost_variance,
+                    r.me_64x64_distortion,
+                    r.me_32x32_distortion,
+                    r.me_16x16_distortion,
+                    r.me_8x8_distortion,
+                ),
+                (
+                    f.rc_me_allow_gm,
+                    f.rc_me_distortion,
+                    f.me_8x8_cost_variance,
+                    f.me_64x64_distortion,
+                    f.me_32x32_distortion,
+                    f.me_16x16_distortion,
+                    f.me_8x8_distortion,
+                ),
+                "b64 {i} scalars"
+            );
+        }
+        assert_eq!(
+            (
+                recycled.b64_cols,
+                recycled.b64_rows,
+                recycled.max_refs,
+                recycled.max_cand,
+                recycled.max_l0,
+                recycled.enable_me_8x8,
+                recycled.enable_me_16x16,
+            ),
+            (
+                fresh.b64_cols,
+                fresh.b64_rows,
+                fresh.max_refs,
+                fresh.max_cand,
+                fresh.max_l0,
+                fresh.enable_me_8x8,
+                fresh.enable_me_16x16,
+            )
+        );
+    }
+
+    /// The control on THAT control: the two frame pairs must produce
+    /// DIFFERENT searches, or the test above would pass on a `reset` that
+    /// does nothing.
+    #[test]
+    fn the_two_frame_pairs_produce_different_searches() {
+        let (w, h) = (128usize, 128usize);
+        let p = FrameMeParams {
+            enc_mode: 8,
+            qp: 40,
+            width: w,
+            height: h,
+            picture_number: 1,
+            frame_is_boosted: false,
+            hierarchical_levels: 0,
+            sc_class5: 0,
+        };
+        let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
+        let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);
+        let f2 = PaPicture::from_source(&ramp(w, h, 9), w, w, h, 2);
+        let a = run_frame_me(&f1, &f0, p);
+        let b = run_frame_me(&f2, &f1, p);
+        let differs = a.per_b64.iter().zip(&b.per_b64).any(|(x, y)| {
+            x.me_mv_array != y.me_mv_array || x.rc_me_distortion != y.rc_me_distortion
+        });
+        assert!(differs, "the two frame pairs must not search identically");
     }
 }
