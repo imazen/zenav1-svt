@@ -50,6 +50,20 @@ and a SIMD-coverage queue ranked by measured frame share; read that before
 optimising anything, because the top entries are already NEON and the queue is
 about quality, not coverage.
 
+**MEMORY TRAFFIC IS THE STILL ARM'S CHEAPEST REMAINING WORK, AND YOU FIND IT
+WITH `ancestor.py`, NOT WITH THE CLASS TABLE (2026-09-03, CURRENT).** Two
+byte-identical commits (`ab7c5ed4`, `ee7a755f`) are together ~1.07x on a
+preset-2 still frame at 256 and 512 and ~1.02-1.03x at p6; records
+`benchmarks/{dqfull,levelscratch}_ab_2026-09-03.*`, full account at the top of
+`docs/perf-status.md`. Both were dead buffer work — an inverse-transform input
+that was a byte-for-byte copy of the buffer beside it, and four copies of one
+stack array zeroed in full and then re-zeroed in part. **A class share names a
+SYMBOL (`_platform_memset`), and the cause is always its CALLER**; run
+`tools/perf_profile/ancestor.py <profile> '_platform_memset|__bzero'
+'svtav1_|perf_encode' <arm_ms> <samples>` (and the memmove / malloc twins)
+before planning any of it. The whole family is 15.6 % of the port's 512 p6
+frame against C's 4.6 %.
+
 **Wall clock, THREE ARMS (2026-09-03, CURRENT — read this before the 09-02
 paragraph below).** Latest position, after the three allocation-site hoists
 (`benchmarks/perf_2026-09-03-arm4-{still,videokey,inter}.*`, 25 paired rounds,

@@ -1,0 +1,123 @@
+FOUR COPIES OF ONE STACK ARRAY, ZEROED IN FULL ON EVERY CALL AND THEN
+RE-ZEROED IN PART BY THE FUNCTION THAT USES IT.
+
+date:   2026-09-03
+host:   mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores). The box was
+        checked QUIET before timing — a sibling workspace was running a
+        2048x2048 encode and the A/B was deferred until it exited.
+tool:   tools/perf_ab.sh — interleaved paired rounds, order randomised per
+        round, one untimed warmup inside each sample, NEITHER SIDE NICED, no
+        -C target-cpu=native.
+base:   ab7c5ed4 (main, the dq_full elision)
+cand:   base + this commit, nothing else.
+grid:   gradient qp 40. STILL arm 256/512 x p{2,6,10}, n=15. VIDEOKEY arm
+        (SVTAV1_VIDEO=1 SVT_AVIF=0, one key frame) 128/256/512 x p{6,8}, n=25.
+data:   benchmarks/levelscratch_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}
+
+=================== WHAT CHANGED ============================================
+
+Four functions each declared their own `let mut levels_buf = [0u8;
+LEVELS_SCRATCH_LEN]` — `leaf_funnel::coeff_rate::cost_coeffs_txb`,
+`pd0::cost_coeffs_txb_pd0`, `quant::optimize_b_tc` and
+`entropy::coeff_c::write_coeffs_txb_1d` — and two of them a
+`[0i8; MAX_TXB_COEFF_AREA]` beside it. That is **1,456 + 1,024 bytes of stack
+zeroed on every call**, and `txb_init_levels` then re-zeroes the only part that
+is ever touched: the `used` prefix, ~112 bytes for a 4x4 txb. The whole
+declaration-time zero-fill was dead at three of the four sites and oversized at
+the fourth, and the 1,024-byte context array was zeroed in full where `n_ctx`
+can be 16.
+
+C does not pay this. It keeps ONE persistent `md_levels_buf` whose pad is
+zeroed once (`md_process.c:235`) and refills only the body per txb — which the
+comment on the port's own `txb_init_levels` has said since it was written.
+
+The four sites now share a per-thread `coeff_c::TxbScratch` (levels + context
+array), taken through `with_txb_scratch`. `Cell::take` leaves `None` behind, so
+a re-entrant call builds its own buffer instead of aliasing or panicking. Each
+site zeroes only what it must: `txb_init_levels` covers `[..used]` itself, and
+the three sites that SKIP it at `eob <= 1` — where there is no body to fill but
+the map is still READ — zero `[..levels_used_len(w, h)]` explicitly.
+
+=================== THE CONTROL, WHICH IS THE POINT =========================
+
+The claim this change rests on is "every byte any reader touches lies inside
+`[0, used)`". That was PROSE in `txb_init_levels`' comment. It is now measured,
+on a release build, and the measurement went through three stages:
+
+1. `with_txb_scratch` POISONS the buffer (0xAA / -86) before every hand-out.
+   Shipped under `cfg(debug_assertions)`; for the control below it was made
+   unconditional and the encoder rebuilt `--release`.
+
+2. **TEETH — remove the `eob <= 1` zeroing, keep the poison:**
+   `tools/regression_spotcheck.sh` **96 / 100**, four named cells failing with
+   SIZE differences, i.e. real coded-bit changes:
+       lr-align-cross-383x512-bd8   C=4588B port=4584B
+       sc-q63-p1-128                C= 185B port= 184B
+       ibc-outofset-txtype          C= 252B port= 246B
+       intra-edge-fill              C= 328B port= 329B
+   So the `eob <= 1` read is REACHABLE on real content, the poison reaches a
+   release encode, and the explicit prefix zero is load-bearing rather than
+   defensive.
+
+3. **CONTROL — restore the zeroing, keep the poison:**
+   `regression_spotcheck` **100 / 100**, the six pinned reference cells
+   6/6 at 290/839/63/171/580/693 B, and `tools/identity_full_8bit.sh`
+   **1100 / 1100 byte-identical** with 0xAA in every byte outside the zeroed
+   prefix. That is the positive result the `used` bound needed.
+
+**`cargo nextest` does NOT witness this.** Run with the teeth applied and the
+poison on, the whole 2,509-test suite passes — the debug suite never reaches an
+`eob == 1` txb whose DC level exceeds `NUM_BASE_LEVELS`. The debug-build poison
+is kept because it costs nothing and a future test may reach it, but the
+evidence above is a RELEASE-build poison against the byte gates, and nothing
+weaker would have been evidence at all.
+
+=================== MEASURED ================================================
+
+STILL (n=15), speedup = base/cand:
+
+  cell      speedup    p25/p75 of the ratio
+  256 p2    **1.039x**   0.9595 / 0.9662   entirely below 1.0
+  256 p6    1.017x       0.9699 / 0.9958   entirely below 1.0
+  256 p10   1.013x       0.9740 / 1.0204   crosses 1.0
+  512 p2    **1.029x**   0.9693 / 0.9730   entirely below 1.0
+  512 p6    1.013x       0.9803 / 0.9913   entirely below 1.0
+  512 p10   0.998x       0.9850 / 1.0095   NULL
+
+VIDEOKEY (n=25):
+
+  cell      speedup   p25/p75
+  128 p6    1.017x    0.9787 / 0.9881   entirely below 1.0
+  128 p8    0.995x    0.9896 / 1.0190   NULL
+  256 p6    1.023x    0.9702 / 0.9845   entirely below 1.0
+  256 p8    1.006x    0.9836 / 0.9987   entirely below 1.0
+  512 p6    1.019x    0.9759 / 0.9841   entirely below 1.0
+  512 p8    1.017x    0.9785 / 0.9874   entirely below 1.0
+
+EVERY cell of both arms is `ident=Y`. Nine of twelve cells have their whole
+p25/p75 span below 1.0; the two nulls (512 p10 still, 128 p8 videokey) are
+reported rather than dropped.
+
+=================== HOW IT WAS FOUND, AND THE METHOD ========================
+
+Not from the class table. `perf_still_attrib_2026-09-03` puts LIBC_MEM at 9.9 %
+of the gap at 512 p6 and 11.6 % at p10, but a class share names a SYMBOL
+(`_platform_memset`), not a cause. Nearest-ancestor attribution of that symbol
+family (tools/perf_profile/ancestor.py, fresh 512 p6 / p10 profiles) ranks its
+CALLERS, and `cost_coeffs_txb` was #2 at both presets (66 of 464 memset self
+samples at p6, 81 of 684 at p10) behind only `tx_unit_inner`. Grepping the
+constant it zeroes then found the other three copies at once.
+
+**Ancestor-attribute `_platform_memset` / `_platform_memmove` / the malloc
+family before planning any memory-traffic work.** It is a five-minute query, it
+ranks the work directly, and both of this chunk's wins came out of it.
+
+=================== NOT ESTABLISHED =========================================
+  * Any size but 128/256/512, content but gradient, qp but 40.
+  * The inter arm.
+  * Peak RSS or peak heap. Nothing here allocates: the buffers were STACK
+    arrays and are now one per-thread `Box` per encoder thread, so the live
+    bytes are unchanged to within a few KiB and the allocation COUNT falls by
+    one per thread, not per call. There is nothing for a peak to move on.
+  * That the debug-build poison guards anything ongoing — measured above that
+    it does not fire in `cargo nextest`.

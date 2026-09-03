@@ -1279,6 +1279,23 @@ fn cost_coeffs_txb_pd0(
     tx_rates: &TxTypeRatesDc,
     subres_step: u32,
 ) -> i32 {
+    crate::entropy::coeff_c::with_txb_scratch(|sc| {
+        cost_coeffs_txb_pd0_inner(qcoeff, eob, c_tx_size, tables, tx_rates, subres_step, sc)
+    })
+}
+
+/// [`cost_coeffs_txb_pd0`]'s body, with the level map and the nz-map context
+/// array supplied by the caller (see `coeff_c::TxbScratch`).
+#[allow(clippy::too_many_arguments)]
+fn cost_coeffs_txb_pd0_inner(
+    qcoeff: &[i32],
+    eob: u16,
+    c_tx_size: usize,
+    tables: &crate::quant::CoeffCostTables,
+    tx_rates: &TxTypeRatesDc,
+    subres_step: u32,
+    sc: &mut crate::entropy::coeff_c::TxbScratch,
+) -> i32 {
     use crate::entropy::coeff_c as cc;
     debug_assert!(eob > 0);
     let txs_ctx = cc::txsize_entropy_ctx(c_tx_size);
@@ -1292,36 +1309,44 @@ fn cost_coeffs_txb_pd0(
 
     let mut cost = coeff_costs.txb_skip_cost[0][0];
 
-    let mut levels_buf = [0u8; cc::LEVELS_SCRATCH_LEN];
+    let cc::TxbScratch {
+        levels: levels_buf,
+        ctx: ctx_buf,
+    } = sc;
     if eob > 1 {
-        cc::txb_init_levels(qcoeff, width, height, &mut levels_buf);
+        cc::txb_init_levels(qcoeff, width, height, levels_buf);
+    } else {
+        // See the twin in `leaf_funnel::coeff_rate::cost_coeffs_txb_inner`:
+        // eob == 1 reads the map without filling it, so the `used` prefix must
+        // be zeroed to reproduce the old per-call stack array.
+        let used = cc::levels_used_len(width, height, levels_buf.len());
+        levels_buf[..used].fill(0);
     }
     cost += tx_rates.rate_for(c_tx_size);
     cost += crate::quant::eob_cost(eob as i32, eob_bits, coeff_costs, cc::TX_CLASS_2D);
 
-    // Same fixed stack scratch as `leaf_funnel::coeff_rate::cost_coeffs_txb`'s
-    // — see `cc::MAX_TXB_COEFF_AREA`. Non-escaping, zero-initialised exactly
-    // as the `Vec` was.
+    // Same per-thread scratch as `leaf_funnel::coeff_rate::cost_coeffs_txb`'s
+    // — see `cc::TxbScratch`. Only the `n_ctx` prefix is cleared.
     let n_ctx = width * height;
     debug_assert!(n_ctx <= cc::MAX_TXB_COEFF_AREA);
-    let mut coeff_contexts_buf = [0i8; cc::MAX_TXB_COEFF_AREA];
+    ctx_buf[..n_ctx].fill(0);
     cc::get_nz_map_contexts(
-        &levels_buf,
+        &levels_buf[..],
         scan,
         eob as usize,
         c_tx_size,
         cc::TX_CLASS_2D,
-        &mut coeff_contexts_buf[..n_ctx],
+        &mut ctx_buf[..n_ctx],
     );
-    let coeff_contexts: &[i8] = &coeff_contexts_buf[..n_ctx];
+    let coeff_contexts: &[i8] = &ctx_buf[..n_ctx];
     let cost = cost
         + loop_cost_eob_pd0(
             qcoeff,
             eob,
             scan,
-            &coeff_contexts,
+            coeff_contexts,
             coeff_costs,
-            &levels_buf,
+            &levels_buf[..],
             bwl,
             subres_step,
         );

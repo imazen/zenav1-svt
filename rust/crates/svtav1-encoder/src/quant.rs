@@ -1376,18 +1376,23 @@ pub fn optimize_b(
     t: &QuantTable,
     o: &OptimizeCtx,
 ) {
-    match o.tx_class {
-        coeff_c::TX_CLASS_HORIZ => {
-            optimize_b_tc::<{ coeff_c::TX_CLASS_HORIZ }>(tcoeffs, qcoeff, dqcoeff, eob, scan, t, o)
+    coeff_c::with_txb_scratch(|sc| {
+        let lv = &mut sc.levels;
+        match o.tx_class {
+            coeff_c::TX_CLASS_HORIZ => optimize_b_tc::<{ coeff_c::TX_CLASS_HORIZ }>(
+                tcoeffs, qcoeff, dqcoeff, eob, scan, t, o, lv,
+            ),
+            coeff_c::TX_CLASS_VERT => optimize_b_tc::<{ coeff_c::TX_CLASS_VERT }>(
+                tcoeffs, qcoeff, dqcoeff, eob, scan, t, o, lv,
+            ),
+            _ => {
+                debug_assert_eq!(o.tx_class, coeff_c::TX_CLASS_2D);
+                optimize_b_tc::<{ coeff_c::TX_CLASS_2D }>(
+                    tcoeffs, qcoeff, dqcoeff, eob, scan, t, o, lv,
+                )
+            }
         }
-        coeff_c::TX_CLASS_VERT => {
-            optimize_b_tc::<{ coeff_c::TX_CLASS_VERT }>(tcoeffs, qcoeff, dqcoeff, eob, scan, t, o)
-        }
-        _ => {
-            debug_assert_eq!(o.tx_class, coeff_c::TX_CLASS_2D);
-            optimize_b_tc::<{ coeff_c::TX_CLASS_2D }>(tcoeffs, qcoeff, dqcoeff, eob, scan, t, o)
-        }
-    }
+    })
 }
 
 /// [`optimize_b`]'s body, with the transform class as a CONST.
@@ -1400,6 +1405,7 @@ fn optimize_b_tc<const TC: usize>(
     scan: &[u16],
     t: &QuantTable,
     o: &OptimizeCtx,
+    levels_buf: &mut [u8; coeff_c::LEVELS_SCRATCH_LEN],
 ) {
     debug_assert_eq!(TC, o.tx_class);
     let shift = TX_SCALE_TAB[o.tx_size];
@@ -1410,9 +1416,14 @@ fn optimize_b_tc<const TC: usize>(
     let skip_cost = o.txb_costs.txb_skip_cost[o.txb_skip_ctx][1];
     let eob_cost_init = eob_cost_tc::<TC>(*eob as i32, o.eob_costs, o.txb_costs);
 
-    let mut levels_buf = [0u8; coeff_c::LEVELS_SCRATCH_LEN];
     if *eob > 1 {
-        coeff_c::txb_init_levels(qcoeff, width, height, &mut levels_buf);
+        coeff_c::txb_init_levels(qcoeff, width, height, levels_buf);
+    } else {
+        // See the twin in `leaf_funnel::coeff_rate::cost_coeffs_txb_inner`:
+        // the trellis reads the map at eob == 1 without filling it, so the
+        // `used` prefix must be zeroed to reproduce the old stack array.
+        let used = coeff_c::levels_used_len(width, height, levels_buf.len());
+        levels_buf[..used].fill(0);
     }
 
     let mut accu_rate = eob_cost_init;
@@ -1441,13 +1452,13 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf,
+            &mut levels_buf[..],
         );
         si -= 1;
     } else {
         debug_assert_eq!(abs_qc, 1);
         let coeff_ctx = coeff_c::lower_levels_ctx_general_tc::<TC>(
-            &levels_buf,
+            &levels_buf[..],
             ci,
             bwl,
             height,
@@ -1483,7 +1494,7 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf,
+            &mut levels_buf[..],
         );
         si -= 1;
     }
@@ -1524,7 +1535,7 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf,
+            &mut levels_buf[..],
         );
         si -= 1;
     }
@@ -1547,7 +1558,7 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf,
+            &mut levels_buf[..],
         );
     }
 }

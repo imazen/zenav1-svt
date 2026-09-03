@@ -287,13 +287,112 @@ pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &
     // every byte read and every byte written lies in `[0, used)`; bytes in
     // `[used, len)` are never accessed for a txb of this size (for a 4x4 that is
     // ~112 bytes zeroed instead of 4640).
-    let stride = width + TX_PAD_HOR;
-    let used =
-        ((TX_PAD_TOP + height + TX_PAD_BOTTOM + 4) * stride + TX_PAD_END).min(levels_buf.len());
+    let used = levels_used_len(width, height, levels_buf.len());
     for b in levels_buf[..used].iter_mut() {
         *b = 0;
     }
     crate::entropy::coeff_simd::fill_levels(coeff, width, height, levels_buf);
+}
+
+/// The prefix [`txb_init_levels`] zeroes for a `(width, height)` txb — every
+/// byte any reader of the map touches for that shape lies inside it (see that
+/// function's comment for the derivation).
+///
+/// Exposed because the call sites that SKIP `txb_init_levels` (`eob <= 1`,
+/// where there is no body to fill) still READ the map, and with the shared
+/// per-thread [`TxbScratch`] they must reproduce the all-zero buffer a
+/// per-call stack array used to hand them. Zeroing this prefix is the exact
+/// reproduction; zeroing the whole `LEVELS_SCRATCH_LEN` was what made the old
+/// stack array cost `LEVELS_SCRATCH_LEN` (1,456) bytes of `memset` per call.
+#[inline]
+pub fn levels_used_len(width: usize, height: usize, buf_len: usize) -> usize {
+    let stride = width + TX_PAD_HOR;
+    ((TX_PAD_TOP + height + TX_PAD_BOTTOM + 4) * stride + TX_PAD_END).min(buf_len)
+}
+
+/// Per-thread scratch for the padded coefficient-LEVEL map and the nz-map
+/// context array.
+///
+/// FOUR call sites carried an identical `let mut levels_buf = [0u8;
+/// LEVELS_SCRATCH_LEN]` — `cost_coeffs_txb`, `cost_coeffs_txb_pd0`,
+/// `optimize_b_tc` and `write_coeffs_txb_1d` — and two of them a
+/// `[0i8; MAX_TXB_COEFF_AREA]` beside it. That is 1,456 + 1,024 bytes of stack
+/// zeroed on EVERY call, and `txb_init_levels` immediately re-zeroes the only
+/// part that matters: the `used` prefix, as little as ~112 bytes for a 4x4.
+///
+/// C does not pay this. It keeps ONE persistent `md_levels_buf` whose pad is
+/// zeroed once at `md_process.c:235` and refills only the body per txb; the
+/// comment on `txb_init_levels` has said so since it was written. This is that
+/// shape.
+///
+/// Nothing re-zeroes the buffer on entry, so a site that skips
+/// `txb_init_levels` MUST call [`levels_used_len`] and zero that prefix
+/// itself.
+pub struct TxbScratch {
+    /// The padded level map — `txb_init_levels`' buffer.
+    pub levels: [u8; LEVELS_SCRATCH_LEN],
+    /// `get_nz_map_contexts`' output, `width * height` of which is used.
+    pub ctx: [i8; MAX_TXB_COEFF_AREA],
+}
+
+impl TxbScratch {
+    const fn new() -> Self {
+        TxbScratch {
+            levels: [0u8; LEVELS_SCRATCH_LEN],
+            ctx: [0i8; MAX_TXB_COEFF_AREA],
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static TXB_SCRATCH: core::cell::Cell<Option<alloc::boxed::Box<TxbScratch>>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// Run `f` with the per-thread [`TxbScratch`].
+///
+/// `Cell::take` leaves `None` behind, so a RE-ENTRANT call builds its own
+/// buffer rather than aliasing this one or panicking. Nothing in the encoder
+/// nests these calls today; this makes a future one correct instead of a
+/// hazard.
+///
+/// POSITIVE CONTROL. Each site re-zeroes only the `used` prefix, so a read
+/// outside that prefix would silently see the PREVIOUS txb's map where a fresh
+/// stack array gave it a zero. The buffer is therefore POISONED (0xAA / -86)
+/// before every hand-out, so such a read changes coded bits instead of hiding.
+///
+/// **`cargo nextest` does not witness that read** — measured, not assumed: with
+/// the `eob <= 1` prefix-zeroing deliberately removed AND the poison on, the
+/// whole 2,509-test suite still passes, because the debug suite never reaches
+/// an `eob == 1` txb whose DC level exceeds `NUM_BASE_LEVELS`. The evidence for
+/// the `used` bound is a RELEASE build with the poison made unconditional:
+/// teeth `regression_spotcheck` 96/100 (four cells with real size differences)
+/// without the zeroing, and 100/100 + `identity_full_8bit` **1100/1100** with
+/// it. See `benchmarks/levelscratch_ab_2026-09-03.meta`. The `debug_assertions`
+/// poison below is kept because it costs nothing and a future test may reach
+/// the case — it is NOT the control.
+#[inline]
+pub fn with_txb_scratch<R>(f: impl FnOnce(&mut TxbScratch) -> R) -> R {
+    #[cfg(feature = "std")]
+    {
+        let mut b = TXB_SCRATCH
+            .with(|c| c.take())
+            .unwrap_or_else(|| alloc::boxed::Box::new(TxbScratch::new()));
+        #[cfg(debug_assertions)]
+        {
+            b.levels.fill(0xAA);
+            b.ctx.fill(-86);
+        }
+        let r = f(&mut b);
+        TXB_SCRATCH.with(|c| c.set(Some(b)));
+        r
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let mut b = TxbScratch::new();
+        f(&mut b)
+    }
 }
 
 /// C `get_padded_idx`.
@@ -1104,6 +1203,44 @@ pub fn write_coeffs_txb_1d(
     reduced_tx_set: bool,
     is_inter: bool,
 ) -> i32 {
+    with_txb_scratch(|sc| {
+        write_coeffs_txb_1d_inner(
+            fc,
+            w,
+            tx_size,
+            tx_type,
+            plane_type,
+            txb_skip_ctx,
+            dc_sign_ctx,
+            coeffs,
+            eob,
+            intra_dir,
+            base_q_idx,
+            reduced_tx_set,
+            is_inter,
+            &mut sc.levels,
+        )
+    })
+}
+
+/// [`write_coeffs_txb_1d`]'s body, with the level map supplied by the caller.
+#[allow(clippy::too_many_arguments)]
+fn write_coeffs_txb_1d_inner(
+    fc: &mut CoeffFc,
+    w: &mut AomWriter,
+    tx_size: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    coeffs: &[i32],
+    eob: i32,
+    intra_dir: usize,
+    base_q_idx: u8,
+    reduced_tx_set: bool,
+    is_inter: bool,
+    levels_buf: &mut [u8; LEVELS_SCRATCH_LEN],
+) -> i32 {
     let txs_ctx = txsize_entropy_ctx(tx_size);
     let scan = scan_tables::scan(
         tx_size,
@@ -1121,8 +1258,9 @@ pub fn write_coeffs_txb_1d(
         return 0;
     }
 
-    let mut levels_buf = [0u8; LEVELS_SCRATCH_LEN];
-    txb_init_levels(coeffs, width, height, &mut levels_buf);
+    // `txb_init_levels` zeroes the whole `used` prefix itself, so the scratch
+    // arrives dirty and leaves correct — this site needs no extra clear.
+    txb_init_levels(coeffs, width, height, levels_buf);
 
     if plane_type == 0 {
         if is_inter {
@@ -1197,7 +1335,7 @@ pub fn write_coeffs_txb_1d(
 
     let mut coeff_contexts = [0i8; 32 * 32];
     get_nz_map_contexts(
-        &levels_buf,
+        &levels_buf[..],
         scan,
         eob as usize,
         tx_size,
@@ -1220,7 +1358,7 @@ pub fn write_coeffs_txb_1d(
         }
         if level > NUM_BASE_LEVELS {
             let base_range = level - 1 - NUM_BASE_LEVELS;
-            let ctx = br_ctx(&levels_buf, pos, bwl, tx_class);
+            let ctx = br_ctx(&levels_buf[..], pos, bwl, tx_class);
             let mut idx = 0i32;
             while idx < COEFF_BASE_RANGE {
                 let k = (base_range - idx).min(BR_CDF_SIZE as i32 - 1);

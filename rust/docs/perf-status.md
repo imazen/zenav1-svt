@@ -1,5 +1,95 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE STILL ARM'S MEMORY TRAFFIC IS DEAD BUFFER WORK IN THE DRIVERS, AND IT
+> IS FOUND BY ASKING WHO CALLS `memset` (2026-09-03).** Commits `ab7c5ed4`
+> (the `dq_full` elision) and `ee7a755f` (the shared level-map scratch);
+> records `benchmarks/dqfull_ab_2026-09-03.*` and
+> `benchmarks/levelscratch_ab_2026-09-03.*`. Both are byte-identical, both were
+> found the same way, and together they are the largest still-arm movement of
+> the day at the slow presets:
+>
+> | arm | 256 p2 | 256 p6 | 256 p10 | 512 p2 | 512 p6 | 512 p10 |
+> |---|---|---|---|---|---|---|
+> | `dq_full` (still, n=15) | **1.028x** | 1.013x | 1.006x | **1.023x** | 1.008x | 1.002x |
+> | level scratch (still, n=15) | **1.039x** | 1.017x | 1.013x | **1.029x** | 1.013x | 0.998x |
+>
+> | arm | 128 p6 | 128 p8 | 256 p6 | 256 p8 | 512 p6 | 512 p8 |
+> |---|---|---|---|---|---|---|
+> | `dq_full` (videokey, n=25) | 1.004x | 1.001x | 1.013x | 1.000x | 1.007x | 1.011x |
+> | level scratch (videokey, n=25) | 1.017x | 0.995x | 1.023x | 1.006x | 1.019x | 1.017x |
+>
+> Stated as a PRODUCT of the two paired measurements and not as a third
+> measurement, the pair is **~1.07x on a preset-2 still frame** at both sizes
+> and ~1.02-1.03x at p6. Three cells are NULL and are reported (512 p10 still
+> for the scratch, 128 p8 videokey for the scratch, and the two p10 still cells
+> for `dq_full` cross 1.0).
+>
+> **1. THE INVERSE TRANSFORM'S INPUT WAS A COPY OF THE BUFFER BESIDE IT.**
+> `tx_unit_inner` built `dq_full` — a `w x h` buffer, zeroed then filled row by
+> row from the `pw x ph` quantised corner — for every reconstructed transform
+> unit, because the inverse dispatch reads its input at the SAME stride it
+> writes its output at. But `pw = w.min(32)` and `ph = h.min(32)`, so **for
+> every TX up to 32x32 it was a byte-for-byte copy of `dqcoeff` at the same
+> stride**: a `memset` of `w*h*4` bytes plus a `memcpy` of `w*h*4`, both dead,
+> 16 KiB apiece on a 32x32 TU. Only the 64-dim shapes need the re-lay, and
+> there its zero-fill IS load-bearing.
+>
+> **2. FOUR COPIES OF ONE STACK ARRAY, ZEROED IN FULL AND THEN RE-ZEROED IN
+> PART.** `cost_coeffs_txb`, `cost_coeffs_txb_pd0`, `optimize_b_tc` and
+> `write_coeffs_txb_1d` each declared `[0u8; LEVELS_SCRATCH_LEN]` (1,456 bytes)
+> and two of them a `[0i8; MAX_TXB_COEFF_AREA]` (1,024) beside it —
+> per call — and `txb_init_levels` then re-zeroes the only part anything reads,
+> the `used` prefix, ~112 bytes for a 4x4. C keeps ONE persistent
+> `md_levels_buf` zeroed once at `md_process.c:235`. The four now share a
+> per-thread `coeff_c::TxbScratch`.
+>
+> **THE CONTROL FOR (2) IS WORTH MORE THAN THE WIN.** "Every reader stays inside
+> `[0, used)`" was PROSE in a comment. `with_txb_scratch` poisons the buffer
+> before every hand-out; made unconditional on a RELEASE build it turns the
+> claim into a measurement — **teeth**: with the `eob <= 1` prefix-zeroing
+> removed, `regression_spotcheck` is **96/100** with four cells showing real
+> SIZE differences; **control**: with it restored, `regression_spotcheck`
+> 100/100 and `identity_full_8bit` **1100/1100** with 0xAA in every byte outside
+> the zeroed prefix. **`cargo nextest` does NOT witness it** — 2,509/2,509 pass
+> with the teeth applied, because the debug suite never reaches an `eob == 1`
+> txb whose DC level exceeds `NUM_BASE_LEVELS`. A `debug_assertions`-only
+> poison would have been no evidence at all.
+>
+> **THE METHOD, WHICH IS THE TRANSFERABLE PART.** Neither change came out of the
+> class table. `perf_still_attrib_2026-09-03` puts LIBC_MEM at 9.9 % of the gap
+> at 512 p6 and 11.6 % at p10, but a class share names a SYMBOL
+> (`_platform_memset`), not a cause — and the cause is always its CALLER, the
+> same inversion `residual_simd_ab_2026-09-03.meta` recorded for `SIMD_GAP`.
+> Nearest-ancestor attribution of the memset / memmove / malloc families
+> (`tools/perf_profile/ancestor.py`, one query per family) ranks the callers
+> directly. On a fresh 512 p6 profile of `ab7c5ed4`'s parent that ranking was:
+>
+> | caller | memset | memmove | alloc | total, % of the port's frame |
+> |---|---:|---:|---:|---:|
+> | `mds3::eval_candidate` | 34 | 60 | 131 | 2.4 % |
+> | `tx_pipeline::tx_unit_inner` | 71 | 70 | 74 | 2.3 % |
+> | `pipeline::encode_tile_rows::{closure#0}` | 0 | 26 | 71 | 1.0 % |
+> | `pd0::lvl1_cost_from_pred` | 47 | 0 | 34 | 0.9 % |
+> | `coeff_rate::cost_coeffs_txb` | 66 | 0 | 0 | 0.7 % |
+> | `txfm_simd::try_fwd_dct_square` | 49 | 0 | 0 | 0.5 % |
+>
+> The whole memory-traffic family is **15.6 % of the port's 512 p6 frame and
+> ~25 % of its gap to C** (C's is 0.59 ms of 12.79). **Ancestor-attribute those
+> three symbol families before planning any of this work**; it is a five-minute
+> query and both of this chunk's wins came straight out of it.
+>
+> WHAT THE TABLE STILL NAMES, unworked: `mds3::eval_candidate` is the largest
+> single allocator caller at both p6 (131 samples) and p10 (273 of 1,262), and
+> it is ~10 allocations per candidate — `dep_recon`, `dep_pred`, `txb_pred` per
+> txb, `loc_above`/`loc_left`, the `Vec<Vec<i32>>` of per-txb levels, plus the
+> `qcoeff`/`recon` `Vec`s `tx_unit_inner` allocates and it frees. Only
+> `txb_pred`, `loc_above` and `loc_left` are pure temporaries; the rest are
+> MOVED into the depth winner, so the fix is a flat arena, not a scratch
+> buffer. `try_fwd_dct_square`'s memset is the `[0i32; N*N]` intermediate in
+> `dct_square_driver!` (16 KiB at N=64), fully written by the column pass before
+> the row pass reads it — dead, and unremovable in safe Rust without threading
+> a scratch through the four driver macro families.
+
 > **THE STILL ARM'S #1 CLASS WAS FOUR HAND-ROLLED LOOPS CALLING NOTHING
 > (2026-09-03).** Commit `d1a00ae2`; record
 > `benchmarks/residual_simd_ab_2026-09-03.*`. DISTORTION is **17.4 % of the
