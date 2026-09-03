@@ -220,6 +220,29 @@
 > cell's excess is 54-59 % (was 60-64 %) and its excess at 512x512 is 23.6 ms
 > (was 27.8): still 6.54 / video 23.60 / inter frame 9.74 of a 39.88 ms total.
 >
+> GATED ON BOTH ISAs, at `64d43c64e` (the four byte-identical changes of
+> 2026-09-03: compute_stats row-pair, the nz-map offset table, the
+> context-helper inlining, the cdef_find_dir NEON arm). **aarch64**: nextest
+> 2496/2496 (bar 2494; +2 are the new
+> `coeff_simd::nz_offset_2d_table_matches_the_generator` and
+> `c_parity_cdef::find_dir_all_tiers_match_c`), `identity_full_8bit` 1100/1100,
+> `regression_spotcheck` 83/83, `video_key_matrix` 58/60, `fctx_gate` 96/96,
+> `inter_byte_gate` 89 required / 0 failed / 0 crashed, `inter_decode_gate`
+> 5/5, `inter_decode_census` 96/96, `inter_completion_scan` (`SCAN_GATE=1`)
+> 52 OK / 12 REFUSED / **0 CRASH**, `screen_palette_gate` 50/50.
+> **x86-64 (r7900x)**: 2241 dsp+encoder tests, `c_parity_wiener` 5/5 including
+> the all-tiers `compute_stats`, `identity_full_8bit` 1100/1100,
+> `inter_byte_gate` 89/0, `regression_spotcheck` 83/83. CI green on all four
+> jobs for every push. `screen_ibc_gate.sh` did not run on either host — it
+> self-reports a HARNESS portability failure (literal path deps in its oracle),
+> pre-existing and unrelated.
+>
+> The cross-ISA run is not a formality even though three of the four changes
+> are aarch64-only or compiler directives: the cdef change also refactored the
+> SCALAR path (splitting the shared cost tail out), and both new tests assert
+> `permutations_run >= 2` with no excluded tokens, so the tier sweeps provably
+> RAN on x86 rather than collapsing to the native arm.
+>
 > WHAT THE VIDEO CONFIG ADDS TO THE KEY FRAME, BY CLASS at 512x512 p8 (port
 > delta / C delta of the same subtraction; the port's deltas sum to 39.4 ms
 > against the 39.887 ms the paired gate measures, so the profile accounts for
