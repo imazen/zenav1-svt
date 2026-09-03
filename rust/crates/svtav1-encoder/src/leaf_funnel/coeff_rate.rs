@@ -107,15 +107,23 @@ pub(crate) fn cost_coeffs_txb(
     }
     cost += crate::quant::eob_cost(eob as i32, eob_bits, costs, tx_class);
 
-    let mut coeff_contexts = vec![0i8; width * height];
+    // Fixed stack scratch rather than a per-call `vec![0i8; width * height]`:
+    // `cc::MAX_TXB_COEFF_AREA` is the bound `adjusted_tx_size` guarantees, and
+    // this function was 19,553 calls to the allocator on one 512x512
+    // video-mode key frame at preset 8 (heaptrack --print-allocators, r7900x).
+    // The buffer does not escape. Zero-initialised exactly as the `Vec` was.
+    let n_ctx = width * height;
+    debug_assert!(n_ctx <= cc::MAX_TXB_COEFF_AREA);
+    let mut coeff_contexts_buf = [0i8; cc::MAX_TXB_COEFF_AREA];
     cc::get_nz_map_contexts(
         &levels_buf,
         scan,
         eob as usize,
         c_tx_size,
         tx_class,
-        &mut coeff_contexts,
+        &mut coeff_contexts_buf[..n_ctx],
     );
+    let coeff_contexts: &[i8] = &coeff_contexts_buf[..n_ctx];
 
     let lit = 512i32; // av1_cost_literal(1)
     let eob_us = eob as usize;

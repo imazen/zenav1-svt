@@ -1,0 +1,43 @@
+# The per-txb `coeff_contexts` scratch moved from a per-call `Vec` to a fixed
+# stack array.
+#
+# host  : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool  : tools/perf_ab.sh — interleaved paired rounds, order randomised per
+#         round, one untimed warmup inside each sample, NEITHER SIDE NICED,
+#         no -C target-cpu=native
+# base  : fbd341b3 (the `txb_coeff_satd` scratch)   cand: + this change
+# grid  : gradient qp 40; still 256/512 x p{2,6,10} n=15,
+#         videokey (SVTAV1_VIDEO=1) 128/256/512 x p{6,8} n=25
+# ident : Y on all twelve cells
+#
+# WHY THIS SITE. `leaf_funnel::coeff_rate::cost_coeffs_txb` is 19,553 calls to
+# the allocator on ONE 512x512 video-mode key frame at preset 8
+# (heaptrack --print-allocators, r7900x) — the fourth largest allocation SITE
+# in the encoder — and `pd0::cost_coeffs_txb_pd0` holds the same `Vec` for the
+# same reason. Both are `vec![0i8; txb_wide * txb_high]`, neither escapes.
+#
+# AND IT NEEDS NO THREAD-LOCAL. `cc::adjusted_tx_size` caps every 64-dimension
+# transform at 32 for coefficient coding, so the product is <= 32 * 32 for
+# every reachable `tx_size`. `cc::MAX_TXB_COEFF_AREA` names that bound and the
+# scratch is a plain `[0i8; MAX_TXB_COEFF_AREA]`. Compare the two hoists
+# before it, which both needed a `thread_local!` + `RefCell` because their
+# buffers are sized by a runtime block dimension with no such static cap.
+#
+# RESULT — the most UNIFORM of the three hoists:
+#   still     256 p2  1.013x  (p25/p75 0.9842/0.9886)
+#             256 p6  1.012x | 256 p10 1.015x
+#             512 p2  1.014x | 512 p6  1.011x | 512 p10 1.006x
+#   videokey  128 p6  1.013x | 128 p8  1.015x
+#             256 p6  1.012x | 256 p8  1.012x
+#             512 p6  1.010x | 512 p8  1.006x
+#
+# Twelve of twelve move; ten of twelve have their whole p25/p75 span below 1.0
+# (still 256 p10 at 1.0030 and videokey 128 p6 at 1.0030 are the two that
+# touch it). Unlike the SATD and `dqcoeff` hoists it does NOT concentrate at
+# the slow presets: the coefficient-rate estimate runs on every candidate at
+# every preset, where the chroma SATD detector and the RDOQ trellis do not.
+#
+# NOT ESTABLISHED: any movement in peak heap. Measured NULL for the two hoists
+# before it (benchmarks/mem_heaptrack_satd_2026-09-03.meta, twelve cells at
+# +0.01 MiB or less) and the same argument applies here — a buffer freed
+# before the next one is taken was never live at the peak.

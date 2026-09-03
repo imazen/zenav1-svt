@@ -1299,15 +1299,21 @@ fn cost_coeffs_txb_pd0(
     cost += tx_rates.rate_for(c_tx_size);
     cost += crate::quant::eob_cost(eob as i32, eob_bits, coeff_costs, cc::TX_CLASS_2D);
 
-    let mut coeff_contexts = vec![0i8; width * height];
+    // Same fixed stack scratch as `leaf_funnel::coeff_rate::cost_coeffs_txb`'s
+    // — see `cc::MAX_TXB_COEFF_AREA`. Non-escaping, zero-initialised exactly
+    // as the `Vec` was.
+    let n_ctx = width * height;
+    debug_assert!(n_ctx <= cc::MAX_TXB_COEFF_AREA);
+    let mut coeff_contexts_buf = [0i8; cc::MAX_TXB_COEFF_AREA];
     cc::get_nz_map_contexts(
         &levels_buf,
         scan,
         eob as usize,
         c_tx_size,
         cc::TX_CLASS_2D,
-        &mut coeff_contexts,
+        &mut coeff_contexts_buf[..n_ctx],
     );
+    let coeff_contexts: &[i8] = &coeff_contexts_buf[..n_ctx];
     let cost = cost
         + loop_cost_eob_pd0(
             qcoeff,

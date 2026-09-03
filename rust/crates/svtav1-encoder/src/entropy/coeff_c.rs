@@ -249,6 +249,15 @@ pub const TX_PAD_2D: usize =
 pub const LEVELS_SCRATCH_LEN: usize =
     (TX_PAD_TOP + 32 + TX_PAD_BOTTOM + 4) * (32 + TX_PAD_HOR) + TX_PAD_END;
 
+/// Largest coefficient-coding area a transform block can have, in samples.
+///
+/// [`adjusted_tx_size`] caps every 64-dimension transform at 32 for
+/// COEFFICIENT coding (C `av1_get_adjusted_tx_size`), so
+/// `txb_wide(tx) * txb_high(tx) <= 32 * 32` for every `tx_size` the encoder
+/// can reach. That bound is what lets the per-txb `coeff_contexts` scratch be
+/// a fixed stack array instead of a per-call `Vec`.
+pub const MAX_TXB_COEFF_AREA: usize = 32 * 32;
+
 /// Offset of the (0,0) level inside the padded buffer (C `set_levels`).
 #[inline]
 pub const fn levels_origin(width: usize) -> usize {
