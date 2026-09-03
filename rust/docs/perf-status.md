@@ -203,6 +203,25 @@
 > hardest at the slow presets — and two cells (256 p6, 512 p10) are NULL with
 > spans across 1.0.
 >
+> **AND THE SECOND HALF, SAME DAY: the six context helpers are
+> `#[inline(always)]` now, which is a BIGGER win than the table.** Plain
+> `#[inline]` was being declined — `nz_map_ctx` showed 4.61 ms of SELF time as
+> its own symbol in a 50.33 ms frame, and `update_coeff_eob` pays that call
+> four times per coefficient (`lower_levels_ctx_general` twice,
+> `coeff_cost_general`/`br_ctx` twice). A/B against the table commit, every
+> cell `ident=Y` (`benchmarks/nzmap_inline_ab_2026-09-03.*`):
+>
+> | arm | 128 p6 | 128 p8 | 256 p2 | 256 p6 | 256 p8 | 256 p10 | 512 p2 | 512 p6 | 512 p8 | 512 p10 |
+> |---|---|---|---|---|---|---|---|---|---|---|
+> | videokey (n=25) | 1.047x | 1.048x | — | 1.045x | 1.037x | — | — | 1.039x | 1.047x | — |
+> | still (n=15) | — | — | 1.032x | 1.028x | — | 1.019x | 1.041x | 1.023x | — | 1.026x |
+>
+> **Twelve of twelve cells move**, every p25/p75 span entirely below 1.0,
+> including the two still cells that were NULL for the table change. Stated as
+> a PRODUCT of the two paired measurements and not as a third measurement, the
+> two commits together are ~1.08x on the video-mode key frame and ~1.06-1.07x
+> on a preset-2 still frame.
+>
 > Two further facts from the same profiles, both recorded because the next
 > chunk needs them. (1) The STILL arm is the same shape: 97.5 % of the family's
 > self time is under `optimize_b` there too (0.377 ms of 10.44), so this is a

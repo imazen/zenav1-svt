@@ -299,7 +299,7 @@ fn clip_max3(v: u8) -> u32 {
 }
 
 /// C `get_nz_mag` — `levels` points at the padded position of the coefficient.
-#[inline]
+#[inline(always)]
 fn nz_mag(levels: &[u8], base: usize, bwl: usize, tx_class: usize) -> u32 {
     let mut mag = clip_max3(levels[base + 1]);
     mag += clip_max3(levels[base + (1 << bwl) + TX_PAD_HOR]);
@@ -375,7 +375,7 @@ pub const fn nz_map_ctx_offset_2d(tx_size: usize, coeff_idx: usize) -> usize {
 }
 
 /// C `get_nz_map_ctx_from_stats`.
-#[inline]
+#[inline(always)]
 fn nz_map_ctx_from_stats(
     stats: u32,
     coeff_idx: usize,
@@ -403,7 +403,7 @@ fn nz_map_ctx_from_stats(
 }
 
 /// C `get_nz_map_ctx` (encode_txb_ref_c.c:17).
-#[inline]
+#[inline(always)]
 pub(crate) fn nz_map_ctx(
     levels: &[u8],
     origin: usize,
@@ -436,7 +436,7 @@ pub(crate) fn nz_map_ctx(
 /// per-coefficient base-level context the RDOQ trellis
 /// (`svt_av1_optimize_b`) prices with. `levels_buf` is the full padded
 /// buffer from [`txb_init_levels`]; `ci` is the packed raster position.
-#[inline]
+#[inline(always)]
 pub fn lower_levels_ctx_general(
     levels_buf: &[u8],
     ci: usize,
@@ -462,7 +462,7 @@ pub fn lower_levels_ctx_general(
 
 /// C `get_br_ctx_eob` (coefficients.h:68) — the coeff_br context for the
 /// last (eob) coefficient, which never reads neighbor levels.
-#[inline]
+#[inline(always)]
 pub fn br_ctx_eob(c: usize, bwl: usize, tx_class: usize) -> usize {
     let row = c >> bwl;
     let col = c - (row << bwl);
@@ -553,7 +553,7 @@ pub(crate) fn nz_map_contexts_scan_order(
 }
 
 /// C `get_br_ctx` (coefficients.h:82) — `c` is the raster position.
-#[inline]
+#[inline(always)]
 pub fn br_ctx(levels_buf: &[u8], c: usize, bwl: usize, tx_class: usize) -> usize {
     let row = c >> bwl;
     let col = c - (row << bwl);

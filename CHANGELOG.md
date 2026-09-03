@@ -56,6 +56,21 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The RDOQ trellis's six context helpers are `#[inline(always)]` now, as C's
+  are — 12 of 12 A/B cells move, 1.9-4.8 %.** C's `get_nz_map_ctx` does not
+  appear as a symbol anywhere in its profile (grep over the whole 512x512 p8
+  videokey call graph: 0 hits) because it is `static INLINE` beside the
+  trellis; the port's carried plain `#[inline]`, LLVM declined, and
+  `nz_map_ctx` showed 4.61 ms of SELF time in a 50.33 ms frame with 94.8 % of
+  it inside `quant::optimize_b`. `update_coeff_eob` pays that call four times
+  per coefficient. Promoting `nz_mag`, `nz_map_ctx_from_stats`, `nz_map_ctx`,
+  `lower_levels_ctx_general`, `br_ctx` and `br_ctx_eob` gives videokey
+  1.037-1.048x (n=25) and still 1.019-1.041x (n=15), every p25/p75 span below
+  1.0, every cell `ident=Y` — a LARGER win than the table lookup above, and it
+  moves the two still cells that were NULL there. Records
+  `benchmarks/nzmap_inline_ab_2026-09-03.*`. NOT MEASURED: monomorphising the
+  trellis on `tx_class`, which is what makes C's version fold away completely.
+
 - **The 2D nz-map context offset is a TABLE READ now, as C's is — 2.7-3.6 % on
   every video-mode key-frame cell, byte-identical.** C's
   `get_nz_map_ctx_from_stats` reads one byte out of
