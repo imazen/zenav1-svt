@@ -337,6 +337,12 @@ pub(crate) const fn nz_map_ctx_offset_1d(pos: usize) -> usize {
 /// The generating algorithm for C `eb_av1_nz_map_ctx_offset[tx_size][idx]`
 /// (documented in coefficients.h:176-186); verified against the exported C
 /// data in tests/c_parity.rs.
+///
+/// This is the DEFINITION, not the hot path. The run-time lookup goes through
+/// [`crate::entropy::coeff_simd::nz_offset_2d`], a compile-time table built by
+/// calling this very function — exactly as C reads a static table rather than
+/// re-deriving. Keep this the single source of truth; the table is pinned to
+/// it by `coeff_simd::nz_offset_tests`.
 #[inline]
 pub const fn nz_map_ctx_offset_2d(tx_size: usize, coeff_idx: usize) -> usize {
     if coeff_idx == 0 {
@@ -382,7 +388,7 @@ fn nz_map_ctx_from_stats(
     }
     let ctx = (((stats + 1) >> 1) as usize).min(4);
     match tx_class {
-        TX_CLASS_2D => ctx + nz_map_ctx_offset_2d(tx_size, coeff_idx),
+        TX_CLASS_2D => ctx + crate::entropy::coeff_simd::nz_offset_2d(tx_size, coeff_idx),
         TX_CLASS_HORIZ => {
             let row = coeff_idx >> bwl;
             let col = coeff_idx - (row << bwl);

@@ -107,7 +107,7 @@
 > The inter byte gate and matrix sweep {16,64,72,128}, of which only 72 is
 > partial, so the frontier they describe is almost entirely 64-aligned and this
 > surface was invisible to them; `inter_completion_scan.sh` is what sees it.
->
+
 > **VIDEO-KEY CPU (2026-09-03, aarch64 / Apple M4 Pro) — the three arms
 > re-measured in ONE session after the ME SIMD chunk, and the first attribution
 > of the video-mode key frame. Records:
@@ -180,6 +180,41 @@
 > port's RDOQ is ~10.2 ms against C's 3.4 — **~3.0x and ~24 % of the video
 > config's excess, the largest single item** — and COEFF_CTX proper drops to
 > near parity. **Rank by excess, and join `nz_map_ctx` to RDOQ before ranking.**
+>
+> **LANDED FROM THIS ATTRIBUTION (2026-09-03): the 2D nz-map context offset is
+> now a TABLE READ, as C's is.** `get_nz_map_ctx_from_stats` in C reads one byte
+> out of `eb_av1_nz_map_ctx_offset[tx_size][coeff_idx]` (coefficients.h:178);
+> the port re-DERIVED it per call — `adjusted_tx_size`, two log2 table loads, a
+> row/col split and four branches — while a compile-time table built from that
+> same `const fn`, and already pinned to the exported C data, sat unused next to
+> it in `coeff_simd::NZ_OFFSET`. Byte-identical by construction (same
+> generator), and pinned cell-by-cell by
+> `coeff_simd::nz_offset_tests::nz_offset_2d_table_matches_the_generator`.
+> A/B `tools/perf_ab.sh`, every cell `ident=Y`
+> (`benchmarks/nzmap_table_ab_2026-09-03.{videokey,still}.*`):
+>
+> | arm | 128 p6 | 128 p8 | 256 p2 | 256 p6 | 256 p8 | 256 p10 | 512 p2 | 512 p6 | 512 p8 | 512 p10 |
+> |---|---|---|---|---|---|---|---|---|---|---|
+> | videokey (n=25) | 1.034x | 1.033x | — | 1.029x | 1.036x | — | — | 1.027x | 1.027x | — |
+> | still (n=15) | — | — | 1.024x | 0.998x | — | 1.017x | **1.032x** | 1.017x | — | 1.000x |
+>
+> All six VIDEOKEY cells move 2.7-3.6 % with every p25/p75 span entirely below
+> 1.0. On the still arm p2 moves most (1.024x / 1.032x) — the trellis runs
+> hardest at the slow presets — and two cells (256 p6, 512 p10) are NULL with
+> spans across 1.0.
+>
+> Two further facts from the same profiles, both recorded because the next
+> chunk needs them. (1) The STILL arm is the same shape: 97.5 % of the family's
+> self time is under `optimize_b` there too (0.377 ms of 10.44), so this is a
+> property of the port's structure, not of the video config. (2) On C's side
+> `get_nz_map_ctx` **does not appear as a symbol at all** — `grep -c` over the
+> whole videokey call graph returns 0 — because C's trellis is a `switch
+> (tx_class)` over three macro-expanded loops (`UPDATE_COEFF_EOB_CASE`,
+> full_loop.c) with `tx_class` a literal, so the whole context derivation
+> inlines and constant-folds into `svt_aom_quantize_inv_quantize`. The port
+> passes `tx_class` as a runtime `usize` and `nz_map_ctx` stays out of line.
+> **Monomorphising the trellis on `tx_class` is the untried remainder here, and
+> it is NOT MEASURED.**
 >
 > THREE THINGS THIS SAYS THAT THE 256x256 RECORD DID NOT.
 > * **ALLOC is the third-largest item and C's is ZERO** — 2.690 ms added on the

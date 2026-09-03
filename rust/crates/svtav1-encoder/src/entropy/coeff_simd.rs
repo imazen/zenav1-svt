@@ -205,6 +205,30 @@ const MAX_TXB_COEFFS: usize = 32 * 32;
 /// is populated and read. ~57 KiB of `.rodata`.
 static NZ_OFFSET: [[[u8; MAX_TXB_COEFFS]; TX_SIZES_ALL]; 3] = build_nz_offset();
 
+/// The TX_CLASS_2D plane of [`NZ_OFFSET`] — C's `eb_av1_nz_map_ctx_offset`
+/// (coefficients.c:1551), which `get_nz_map_ctx_from_stats` reads as ONE byte
+/// (coefficients.h:178).
+///
+/// The scalar context path re-DERIVED this value on every call
+/// (`adjusted_tx_size`, two log2 table loads, a row/col split and four
+/// branches) while this table — built from that same `const fn`, and already
+/// pinned to the exported C data by `tests/c_parity_entropy.rs` — sat beside it
+/// unused. **94.8 % of those calls are inside the RDOQ trellis**
+/// (`benchmarks/perf_videokey_attrib_2026-09-03.meta`), one or two per
+/// coefficient per trellis step. Byte-identical by construction: same
+/// generator, evaluated by the compiler instead of at run time.
+///
+/// `coeff_idx` is a raster position inside the (32-capped) txb, so it is always
+/// below `txb_wide * txb_high` — the extent `build_nz_offset` populates. The
+/// `debug_assert` pins that: outside it the table reads 0 where the generator
+/// would not, so a violation must fail loudly in tests rather than silently
+/// change a context.
+#[inline]
+pub(crate) fn nz_offset_2d(tx_size: usize, coeff_idx: usize) -> usize {
+    debug_assert!(coeff_idx < txb_wide(tx_size) * txb_high(tx_size));
+    NZ_OFFSET[0][tx_size][coeff_idx] as usize
+}
+
 const fn build_nz_offset() -> [[[u8; MAX_TXB_COEFFS]; TX_SIZES_ALL]; 3] {
     let mut t = [[[0u8; MAX_TXB_COEFFS]; TX_SIZES_ALL]; 3];
     let mut cls = 0usize;
@@ -691,5 +715,32 @@ mod tests {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod nz_offset_tests {
+    use super::*;
+
+    /// The table [`nz_offset_2d`] reads must agree with
+    /// [`crate::entropy::coeff_c::nz_map_ctx_offset_2d`] — the generator that
+    /// `tests/c_parity_entropy.rs` pins to the exported C data — at EVERY
+    /// populated cell. Without this the const-fn build and the run-time reader
+    /// could drift (a changed cap, a changed extent) with nothing failing.
+    #[test]
+    fn nz_offset_2d_table_matches_the_generator() {
+        let mut cells = 0usize;
+        for ts in 0..TX_SIZES_ALL {
+            let n = txb_wide(ts) * txb_high(ts);
+            for idx in 0..n {
+                assert_eq!(
+                    nz_offset_2d(ts, idx),
+                    nz_map_ctx_offset_2d(ts, idx),
+                    "nz_offset_2d ts={ts} idx={idx}"
+                );
+                cells += 1;
+            }
+        }
+        assert!(cells > 4000, "table sweep covered only {cells} cells");
     }
 }

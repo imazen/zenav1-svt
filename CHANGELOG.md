@@ -56,6 +56,33 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The 2D nz-map context offset is a TABLE READ now, as C's is — 2.7-3.6 % on
+  every video-mode key-frame cell, byte-identical.** C's
+  `get_nz_map_ctx_from_stats` reads one byte out of
+  `eb_av1_nz_map_ctx_offset[tx_size][coeff_idx]` (coefficients.h:178); the port
+  re-derived it on every call (`adjusted_tx_size`, two log2 table loads, a
+  row/col split, four branches) while a compile-time table built from that same
+  `const fn` — and already pinned to the exported C data by
+  `tests/c_parity_entropy.rs` — sat unused beside it in
+  `coeff_simd::NZ_OFFSET`. 94.8 % of those calls are inside the RDOQ trellis
+  (`benchmarks/perf_videokey_attrib_2026-09-03.meta`). Byte-identical by
+  construction (same generator, evaluated at compile time) and pinned
+  cell-by-cell by a new
+  `coeff_simd::nz_offset_tests::nz_offset_2d_table_matches_the_generator`.
+  A/B, every cell `ident=Y`: videokey 1.027-1.036x across all six cells with
+  every p25/p75 span below 1.0 (n=25); still 1.024x/1.032x at preset 2, 1.017x
+  at 512 p6 and 256 p10, NULL at 256 p6 and 512 p10 (n=15). Records
+  `benchmarks/nzmap_table_ab_2026-09-03.*`. NOT MEASURED: monomorphising the
+  trellis on `tx_class`, which is what makes C's version inline away entirely
+  (`get_nz_map_ctx` does not appear as a symbol in C's profile at all).
+- **`compute_stats_all_tiers_match_c` now ASSERTS its tier sweep was real.** It
+  dropped the `#[must_use]` `PermutationReport`, so a build where archmage
+  excludes every token (an ambient `-C target-cpu=native`, or no
+  `testable_dispatch`) would collapse the sweep to the single native arm and
+  still report green — the test would silently stop being an all-tiers test.
+  It now uses the same `for_each_tier` helper `tests/c_parity_txfm.rs` has,
+  which fails on any exclusion warning and on `permutations_run < 2`.
+
 - **`restoration::compute_stats` re-derived by ROW-PAIR CORRELATION — about 9x
   fewer multiply-accumulates, byte-identical, 1.074x on the whole preset-6
   still frame.** The old NEON arm issued one dot product per `(region row, k,

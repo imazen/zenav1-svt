@@ -186,7 +186,6 @@ fn compute_stats_matches_c() {
 /// multiples of 8) is exercised on every case.
 #[test]
 fn compute_stats_all_tiers_match_c() {
-    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
     let mut rng = Rng(0x5EED_57A7);
     // Explicit region widths/heights hitting the SIMD boundary conditions,
     // plus random sizes. (w, h) are the plane content extents; the region
@@ -241,7 +240,7 @@ fn compute_stats_all_tiers_match_c() {
         // Reference tier snapshot (asserted equal across all tiers too).
         let mut m_first: Option<Vec<i64>> = None;
         let mut h_first: Option<Vec<i64>> = None;
-        let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+        for_each_tier("compute_stats", |_perm| {
             let mut m_r = vec![0i64; win2];
             let mut h_r = vec![0i64; win2 * win2];
             rst::compute_stats(
@@ -406,3 +405,35 @@ fn filter_unit_matches_c() {
 // The subexp-with-reference tap coding chain is differentially tested in
 // svtav1-entropy/tests/c_parity_lr_syntax.rs (it lives in the entropy
 // crate; svtav1-dsp does not depend on it).
+
+/// Run `f` under EVERY archmage token permutation and assert the sweep was
+/// real — the same helper `tests/c_parity_txfm.rs` uses, for the same reason.
+///
+/// `for_each_token_permutation` returns a `#[must_use]` `PermutationReport`,
+/// and dropping it throws away the only LIVENESS signal a caller gets. When a
+/// token is compile-time guaranteed (an ambient `-C target-cpu=native`, or a
+/// build without archmage's `testable_dispatch` dev-feature) archmage silently
+/// EXCLUDES it, and the sweep collapses to the single native arm: an
+/// `..._all_tiers_match_c` test then degrades into a native-tier-only test and
+/// still reports green. `CompileTimePolicy::WarnStderr` prints the exclusions,
+/// but the test runner hides stderr on a PASSING test, so nothing observable
+/// distinguishes full coverage from none. These two asserts are what make it a
+/// checked property.
+fn for_each_tier(label: &str, f: impl FnMut(&archmage::testing::TokenPermutation)) {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, f);
+    assert!(
+        report.warnings.is_empty(),
+        "{label}: archmage excluded {} token(s) from the tier sweep, so this \
+         test covered FEWER tiers than its name claims: {:?}",
+        report.warnings.len(),
+        report.warnings
+    );
+    assert!(
+        report.permutations_run >= 2,
+        "{label}: the tier sweep ran {} permutation(s) -- only the native tier. \
+         A one-arm sweep cannot catch a SIMD-vs-scalar divergence, so a green \
+         result here would mean nothing.",
+        report.permutations_run
+    );
+}
