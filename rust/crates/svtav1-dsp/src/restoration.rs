@@ -187,6 +187,41 @@ fn round_power_of_two(value: i32, n: i32) -> i32 {
     (value + (1 << (n - 1))) >> n
 }
 
+/// The widest processing unit `wiener_filter_stripe` can ask for:
+/// `w = procunit_width.min(..)` and `procunit_width = RESTORATION_PROC_UNIT_SIZE
+/// >> ss_x`, so luma is 64 and chroma narrower. The streamed path below sizes
+/// its row ring to this; anything wider falls back to
+/// [`wiener_convolve_add_src_materialised`] rather than panicking.
+const WIENER_MAX_PROC_W: usize = RESTORATION_PROC_UNIT_SIZE as usize;
+
+/// One horizontal-pass row of `svt_aom_convolve_add_src_horiz_hip`.
+///
+/// `s` starts at the row's `x = -3` sample, so the 8-tap window for output `x`
+/// is `s[x .. x + 8]` and the centre tap is `s[x + 3]`.
+fn wiener_h_row(s: &[u8], w: usize, f: &[i16; 8], clamp_limit: i32, out: &mut [u16]) {
+    for x in 0..w {
+        let mut sum: i32 = (i32::from(s[x + 3]) << FILTER_BITS) + (1 << (8 + FILTER_BITS - 1));
+        for (k, &fk) in f.iter().enumerate() {
+            sum += i32::from(s[x + k]) * i32::from(fk);
+        }
+        out[x] = round_power_of_two(sum, WIENER_ROUND0_BITS).clamp(0, clamp_limit) as u16;
+    }
+}
+
+/// One vertical-pass row of `svt_aom_convolve_add_src_vert_hip`.
+///
+/// `rows[k]` is horizontal-pass row `y + k`; the centre tap is `rows[3]`.
+fn wiener_v_row(rows: &[&[u16]; 8], w: usize, f: &[i16; 8], out: &mut [u8]) {
+    for x in 0..w {
+        let mut sum: i32 =
+            (i32::from(rows[3][x]) << FILTER_BITS) - (1 << (8 + WIENER_ROUND1_BITS - 1));
+        for (k, &fk) in f.iter().enumerate() {
+            sum += i32::from(rows[k][x]) * i32::from(fk);
+        }
+        out[x] = round_power_of_two(sum, WIENER_ROUND1_BITS).clamp(0, 255) as u8;
+    }
+}
+
 /// C `svt_av1_wiener_convolve_add_src_c` (convolve.c:106), 8-bit.
 ///
 /// `src`/`dst` are whole padded planes; `src_origin`/`dst_origin` index the
@@ -197,8 +232,103 @@ fn round_power_of_two(value: i32, n: i32) -> i32 {
 ///
 /// `hfilter`/`vfilter` are full 8-tap rows (tap\[7\] = 0 by construction).
 /// round0/round1 are `get_conv_params_wiener(8)`: 3 and 11.
+///
+/// # Streamed, and row-major on BOTH passes
+///
+/// C materialises the whole `(h + 7) x w` `uint16_t` intermediate, and so did
+/// this port — one heap allocation per processing unit, on a function the
+/// loop-restoration filter calls once per 64-wide column of every stripe of
+/// every frame. Output row `y` reads intermediate rows `y .. y + 7`, so the
+/// dependency is seven rows deep and the whole thing streams through a ring of
+/// eight rows on the stack.
+///
+/// The vertical pass ALSO ran `for x { for y { .. } }`, i.e. column-major over
+/// both the intermediate and the destination — every inner step jumped a
+/// stride. C's `svt_aom_convolve_add_src_vert_hip` is row-major. Reordering two
+/// independent loops changes nothing arithmetically and is byte-identical by
+/// construction; it is called out here because it is the kind of change that
+/// looks like a rewrite in a diff and is not one.
+///
+/// Intermediate row `h + 6` (the last one output row `h - 1` reads) is past
+/// what the horizontal pass produces; C memsets it and its taps are weight 0.
+/// The ring zero-fills it for the same reason.
 #[allow(clippy::too_many_arguments)]
 pub fn wiener_convolve_add_src(
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_origin: usize,
+    dst_stride: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    w: usize,
+    h: usize,
+) {
+    if w > WIENER_MAX_PROC_W {
+        return wiener_convolve_add_src_materialised(
+            src, src_origin, src_stride, dst, dst_origin, dst_stride, hfilter, vfilter, w, h,
+        );
+    }
+
+    let bd = 8i32;
+    let ih = h + 6;
+    let clamp_limit = (1i32 << (bd + 1 + FILTER_BITS - WIENER_ROUND0_BITS)) - 1;
+
+    // Ring of the eight intermediate rows output row `y` needs. Row `j` of the
+    // intermediate lives at `ring[j % 8]`.
+    let mut ring = [[0u16; WIENER_MAX_PROC_W]; 8];
+
+    // C receives `src - 3 * stride` and subtracts three columns internally, so
+    // intermediate row `j` is built from source row `j - 3` starting at
+    // column -3.
+    let h_row_base = |j: usize| -> usize {
+        ((src_origin + j * src_stride) as isize - 3 * src_stride as isize - 3) as usize
+    };
+
+    let fill = |ring: &mut [[u16; WIENER_MAX_PROC_W]; 8], j: usize| {
+        if j < ih {
+            let base = h_row_base(j);
+            wiener_h_row(&src[base..], w, hfilter, clamp_limit, &mut ring[j % 8]);
+        } else {
+            // Intermediate row `ih` is the one C memsets; weight 0, but read.
+            ring[j % 8][..w].fill(0);
+        }
+    };
+
+    for j in 0..8 {
+        fill(&mut ring, j);
+    }
+
+    let mut out_row = [0u8; WIENER_MAX_PROC_W];
+    for y in 0..h {
+        {
+            let rows: [&[u16]; 8] = [
+                &ring[y % 8],
+                &ring[(y + 1) % 8],
+                &ring[(y + 2) % 8],
+                &ring[(y + 3) % 8],
+                &ring[(y + 4) % 8],
+                &ring[(y + 5) % 8],
+                &ring[(y + 6) % 8],
+                &ring[(y + 7) % 8],
+            ];
+            wiener_v_row(&rows, w, vfilter, &mut out_row);
+        }
+        let d = dst_origin + y * dst_stride;
+        dst[d..d + w].copy_from_slice(&out_row[..w]);
+        if y + 8 <= ih {
+            fill(&mut ring, y + 8);
+        }
+    }
+}
+
+/// The materialised form C writes: the whole `(h + 7) x w` intermediate, both
+/// passes over it. Kept as the `w > WIENER_MAX_PROC_W` fallback AND as the
+/// oracle [`wiener_convolve_add_src`]'s streamed form is pinned against
+/// (`wiener_streaming_matches_materialised`).
+#[allow(clippy::too_many_arguments)]
+pub fn wiener_convolve_add_src_materialised(
     src: &[u8],
     src_origin: usize,
     src_stride: usize,
@@ -2414,6 +2544,56 @@ pub fn sse_region_hbd(
 
 #[cfg(test)]
 mod tests {
+
+    /// The streamed `wiener_convolve_add_src` must equal the materialised form
+    /// C writes at every processing-unit shape the restoration filter can ask
+    /// for, and at both loop orders. This is the pin for BOTH changes in that
+    /// function: the eight-row ring that replaced the heap intermediate, and
+    /// the row-major rewrite of the vertical pass.
+    #[test]
+    fn wiener_streaming_matches_materialised() {
+        let stride = 256usize;
+        let mut st = 0x9E37_79B9u32;
+        let mut next = || {
+            st ^= st << 13;
+            st ^= st >> 17;
+            st ^= st << 5;
+            (st >> 21) as u8
+        };
+        let src: alloc::vec::Vec<u8> = (0..stride * 256).map(|_| next()).collect();
+        // Origin far enough in that the 3-above / 3-left margins are in bounds.
+        let origin = 8 * stride + 8;
+        // Real Wiener taps sum to 128 and are symmetric; a few shapes plus the
+        // identity filter, which is the one that would hide an off-by-one.
+        let filters: [[i16; 8]; 3] = [
+            [0, 0, 0, 128, 0, 0, 0, 0],
+            [3, -7, 15, 104, 15, -7, 3, 0],
+            [-5, 12, -21, 156, -21, 12, -5, 0],
+        ];
+        for hf in &filters {
+            for vf in &filters {
+                for &(w, h) in &[
+                    (16usize, 8usize),
+                    (32, 16),
+                    (48, 24),
+                    (64, 64),
+                    (64, 1),
+                    (16, 2),
+                    (8, 56),
+                ] {
+                    let mut a = alloc::vec![0u8; stride * 256];
+                    let mut b = alloc::vec![0u8; stride * 256];
+                    wiener_convolve_add_src(
+                        &src, origin, stride, &mut a, origin, stride, hf, vf, w, h,
+                    );
+                    wiener_convolve_add_src_materialised(
+                        &src, origin, stride, &mut b, origin, stride, hf, vf, w, h,
+                    );
+                    assert_eq!(a, b, "wiener {w}x{h} hf={hf:?} vf={vf:?}");
+                }
+            }
+        }
+    }
     use super::*;
 
     /// The default WienerInfo must match C set_default_wiener: taps sum with

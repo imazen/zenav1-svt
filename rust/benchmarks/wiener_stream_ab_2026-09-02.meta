@@ -1,0 +1,41 @@
+# wiener_convolve_add_src A/B — streamed 8-row ring + row-major vertical pass
+# THE HEADLINE IS: THIS MEASURED NULL ON WALL CLOCK. Read that before reusing it.
+date: 2026-09-02 (UTC timestamps inside each .raw.tsv header)
+host: mac — Apple M4 Pro, aarch64-apple-darwin, 12 cores
+baseline binary: 59f40fe99 (the ME SIMD chunk + the dsp::sad fold)
+tool: tools/perf_ab.sh, interleaved randomised-order paired rounds, NEITHER
+      SIDE NICED, no -C target-cpu=native, gradient qp40
+
+what changed: `dsp::restoration::wiener_convolve_add_src` held ONE heap
+  allocation per processing unit (`vec![0u16; (h+7)*w]`, called once per
+  64-wide column of every stripe of every frame that produces recon). Output
+  row y reads intermediate rows y..y+7, so it now streams through an 8-row
+  stack ring. Its vertical pass ALSO ran `for x { for y { } }` — column-major
+  over both the intermediate and the destination, where C's
+  `svt_aom_convolve_add_src_vert_hip` is row-major; the two loops are
+  independent so reordering is byte-identical by construction.
+
+RESULT — VIDEOKEY arm (SVTAV1_VIDEO=1, where loop restoration actually runs),
+n=25, all ident=Y:
+  128 p6 1.004x   128 p8 1.000x
+  256 p6 0.998x   256 p8 1.006x
+  512 p6 0.997x   512 p8 1.000x
+  Every p25/p75 span crosses 1.0. NULL.
+
+RESULT — STILL arm, n=15, all ident=Y:
+  256 p2 1.005x   256 p6 0.998x
+  512 p2 1.002x   512 p6 1.014x  (p25/p75 0.9816/0.9948 — the ONLY span that
+                                  does not cross 1.0, i.e. the only cell where
+                                  a real effect was measured)
+
+HOW TO READ IT. `wiener_convolve_add_src` is 2.68 % of the port's p6 still
+frame (benchmarks/perf_class_attrib_2026-08-13.tsv), so 2.68 % was the ceiling
+even if the function went to zero, and this change touched the plumbing, not
+the arithmetic — the 8-tap loops are still scalar against C's
+`svt_av1_wiener_convolve_add_src_neon` (10.3x). 1.014x at 512x512 p6 is about
+half that ceiling and is the honest size of the win.
+
+WHY IT WAS KEPT ANYWAY: it is byte-identical, it removes a per-processing-unit
+heap allocation (an ALLOC-bucket item — ALLOC is 27-30 % of the port's frame
+and does NOT show up in this function's self time), and it fixes a
+column-major inner loop. NOT MEASURED: the allocation's effect on peak RSS.

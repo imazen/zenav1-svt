@@ -489,6 +489,25 @@
 > | port function | p6 share | p2 share | C counterpart |
 > |---|---|---|---|
 > | `restoration::compute_stats` (**already NEON** — quality, not coverage) | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
+>
+> **WHERE `compute_stats`'s 5.1x LIVES, read from source 2026-09-02 (structure,
+> NOT a measurement — nothing here has been A/B'd).** For each output row the
+> port issues `win2 + win2*(win2+1)/2` = **1,274 separate `dot_i16_neon` calls**
+> at `wiener_win = 7` (`restoration.rs`, the `for i in 0..height` loop). Each
+> call re-enters with four `vdupq_n_s32` zeroed accumulators and leaves through
+> a cross-lane `vaddvq_s32`, so the row loop pays **1,274 horizontal reductions
+> per row** on top of the MACs. The MAC COUNT is inherent — `H` has 1,225
+> entries and each needs `width` products — so the lever is not fewer
+> multiplies, it is (a) hoisting the horizontal reduce out of the per-row loop
+> the way C's `svt_av1_compute_stats_neon` does, and (b) reusing `dk` across
+> the inner `t` loop instead of re-streaming it. **The blocker on (a) is
+> overflow**: `d`/`s` are `pixel - avg` in `[-255, 255]`, so a product is
+> <= 65_025 and a 4-lane i32 accumulator carrying a whole 256x256 unit holds
+> `16_384 * 65_025 ~ 1.07e9` — inside i32 by only 2x, which is exactly the kind
+> of margin this repo's SIMD kernels are supposed to ASSERT rather than argue.
+> Anyone taking this needs a periodic drain into i64 and a test that pins the
+> drain interval. This is the largest single p6 item in the table and it is NOT
+> a coverage gap — do not queue it as one.
 > | `cdef::cdef_filter_block` (**already NEON** — quality) | 4.70 % | 2.73 % | 5.6x vs `cdef_filter_block_*_neon` |
 > | `restoration::wiener_convolve_add_src` | **2.68 %** | 1.17 % | `svt_av1_wiener_convolve_add_src_neon` (10.3x) |
 > | `cdef::cdef_find_dir` | **2.02 %** | — | `svt_aom_cdef_find_dir*_neon` (15x) |
