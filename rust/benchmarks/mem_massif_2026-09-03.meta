@@ -1,0 +1,147 @@
+THE PEAK, DECOMPOSED — massif instead of heaptrack, and the decomposition SUMS.
+
+date:   2026-09-03
+host:   r7900x — AMD Ryzen 7900X, 24 threads, x86_64-unknown-linux-gnu, 29 GiB.
+        NOT the aarch64 box the RSS records use. HEAP, not RSS.
+commit: 01ef6f1f1 (main) — the tree this measures. A `--release` build with
+        `CARGO_PROFILE_RELEASE_DEBUG=2` added for the file:line half; the peak
+        it reports is the same as the plain release build's to within massif's
+        own resolution (138.39 M vs heaptrack's 139.62 M on the same cell, the
+        difference being massif's accounting of its own bookkeeping).
+tool:   valgrind 3.26 `--tool=massif --time-unit=B --detailed-freq=4
+        --max-snapshots=300 --threshold=0.05`, peak snapshot read directly.
+cell:   gradient 2048x2048 (4 MP) qp 40 preset 13, 8-bit 4:2:0, ONE encode per
+        arm, arms as in benchmarks/mem_heaptrack_2026-09-03.meta.
+        Every arm produced its `.obu` (70,893 / 139,700 / 139,762 B).
+
+=============== WHY MASSIF AND NOT MORE HEAPTRACK ==============================
+
+`mem_heaptrack_2026-09-03.meta` says of its own site table: "**A LEAD LIST, NOT
+A DECOMPOSITION** — heaptrack_print says so itself for merged backtraces ('the
+merged peak consumption is not correct'): these are per-site peaks that do NOT
+co-occur and do NOT sum." That is the correct reading of that tool's output and
+it is why the lead list could not be turned into a budget.
+
+massif answers the other question. Its **peak snapshot** is one instant — the
+allocation tree of what is LIVE SIMULTANEOUSLY at the high-water mark — so its
+entries DO sum to the peak, and "what is live across a frame" is readable off
+it directly. Both tools were pointed at the same cell and agree on the peak
+(138.39 vs 139.62 M); they disagree only about what a "site total" means.
+
+=============== 1. THE PEAK IS A RAMP THAT ENDS WHERE MD ENDS =================
+
+massif's time series (191 snapshots, inter arm) is not a plateau. It is a
+MONOTONIC RISE through the superblock walk, a peak at the END of the walk, and
+a cliff:
+
+  frame 1:  63.1 -> 136.6 M over snapshots 4..80, then drops to 65.9
+  frame 2:  63.5 -> 137.3 M over snapshots 88..176, peak 138.39, then 51.9
+
+The videokey arm has the same single ramp (~50 -> 95.61, then 38.8). **Peak
+heap is a linear function of how many superblocks have been DECIDED but not yet
+entropy-coded**, on every arm — which is the lifetime property
+`mem_heaptrack_satd_2026-09-03.meta` named, now seen directly instead of
+inferred.
+
+=============== 2. WHAT IS LIVE AT EACH ARM'S PEAK, IN MB =====================
+
+Attributed to the first non-`alloc::`/`core::` frame above each allocation, so
+the column sums to the arm's peak.
+
+  site                                         still    vkey   inter
+  perf_encode::main                 (HARNESS)  12.58   18.87   25.17
+  perf_encode::translate            (HARNESS)   0.00    0.00    6.29
+  leaf_funnel::tx_pipeline::tx_unit_inner      26.74   27.26   10.09
+  partition::funnel_block_decision              0.52    0.00   16.14
+  pipeline::encode_tile_rows::{closure#0}       0.00    0.00   16.02
+  picture::DecodedPictureBuffer::refresh       13.45   13.45   13.45
+  inter_me::context::MeB64Output::reset         0.00    0.00   12.53
+  inter_me_arm::PaPlane::refill_from_plane      0.00    4.77    9.54
+  pipeline::EncodePipeline
+      ::encode_frame_impl::{closure#9}          0.00    0.00    7.15
+  picture::PaddedPlane::from_plane              7.15    7.15    0.00
+  partition::encode_fixed_tree                  2.14    4.39    0.00
+  pipeline::gather_rows                         4.19    4.19    4.19
+  <u8 as SpecFromElem>::from_elem
+      <- encode_frame_impl                      4.19    4.19    4.19
+  pipeline::EncodePipeline::encode_frame_impl   2.46    2.53    4.19
+  inter_me_arm::PaPlane::refill_decimate        0.00    1.48    2.96
+  deblock::DeblockGeom::new                     2.62    2.62    2.62
+  encode_frame_impl::{closure#53}               2.10    2.10    0.00
+  encode_frame_impl::{closure#2}                2.10    2.10    2.10
+  everything below 0.5 M                        0.48    0.51    1.76
+  ------------------------------------------- ------  ------  ------
+  ARM PEAK                                     80.72   95.61  138.39
+
+The last row is a CHECK, not a rounding: the per-site column sums to the arm's
+peak to the byte, because a massif peak snapshot is one instant. That is the
+property `mem_heaptrack_2026-09-03.meta`'s lead list does not have.
+
+Two entries need naming because they are the SAME BYTES seen from different
+call paths, and reading them as separate structures is a mistake:
+
+  * `tx_unit_inner` and `funnel_block_decision` are both the frame's retained
+    QUANTIZED COEFFICIENTS. `funnel_block_decision` either `mem::take`s the
+    packed txb the transform pipeline allocated (site = `tx_unit_inner`) or, on
+    a block with a 64-dim side, allocates the full raster itself (site =
+    `funnel_block_decision`). Which site a byte lands under is decided by the
+    block shape, not by a difference in what is stored. Their SUM is the
+    quantity: 27.26 M videokey, 26.23 M inter, 27.26 M still.
+  * `PaddedPlane::from_plane` (still/videokey) and
+    `encode_frame_impl::{closure#9}` (inter) are both 7.15 M and swap places
+    between the arms.
+
+=============== 3. THE HARNESS IS 19-31 MB OF IT, NOT 6.29 ====================
+
+`mem_heaptrack_2026-09-03.meta` accounted for the harness as
+`perf_encode::translate` = 6.29 M, "the SAME 6.29 MB sits on the port's side,
+so the harness growth CANCELS in the arm difference". **That undercounts it by
+one whole frame.** `perf_encode` holds THREE copies of the sequence:
+
+  y / u / v   the generated source planes            6.29 M
+  yuv         the concatenation written to `.yuv`    6.29 M per frame
+  frames      one owned (fy, fu, fv) per frame       6.29 M per frame
+
+so `perf_encode::main` is 12.58 M on the 1-frame still arm, 18.87 M on the
+1-frame videokey arm (which also builds `frames`), and 25.17 M on the 2-frame
+inter arm, with `translate` carrying frame 1's copy on top. Totals: still
+12.58, videokey 18.87, inter **31.45** M. C's `perf_c_encode` holds ONE copy
+(`main` = 6.29 M / 12.58 M for 1 / 2 frames).
+
+  ENCODER-SIDE PEAK, both harnesses subtracted, 2048x2048:
+    arm        port      C        port/C
+    still      68.14 M   109.43 M  0.62x
+    videokey   76.74 M   107.53 M  0.71x
+    inter     106.94 M   107.54 M  0.99x
+
+The videokey->inter marginal cost, encoder-side, is port +30.2 M against C's
++0.01 M — not the +37.65 M `mem_heaptrack_satd_2026-09-03.meta` records, which
+subtracted only `translate`.
+
+=============== 4. THE COEFFICIENT STORE IS AT PARITY WITH C, NOT EXCESS ======
+
+The port retains ~26-27 M of quantized coefficients per frame at 4 MP (§2), and
+the obvious reading — "the port holds the whole frame's coefficients where C
+packs a superblock and releases" — is WRONG. C does exactly the same thing:
+`svt_aom_me_sb_results_ctor`'s sibling in `pcs.c:348-368` allocates
+`quantized_coeff`, one `EbPictureBufferDesc` per b64, `bit_depth =
+EB_THIRTYTWO_BIT`, `PICTURE_BUFFER_DESC_FULL_MASK` (Y+U+V), `sb_size x
+sb_size` — i.e. 4 bytes per luma pixel plus 4 per chroma sample, for the whole
+frame, allocated once at PCS construction. At 4 MP that is 25.2 MB, and it is
+`svt_aom_pic_buf_desc_pool_ctor` = **26.18 M** in
+`benchmarks/mem_heaptrack_2026-09-03.txt`'s C column, measured.
+
+So the port's per-block `Vec<i32>` retention reproduces C's shape at C's size.
+The difference is only WHEN: C allocates the pool once and reuses it every
+frame, the port builds it per frame — which is why C's marginal inter-frame
+cost is ~0 and the port's is not, and why the port is nonetheless LIGHTER in
+absolute terms on every arm.
+
+=============== NOT ESTABLISHED ===============================================
+  * Any RSS number. This is heap. See benchmarks/mem_mecand_2026-09-03.tsv for
+    the RSS half of the same grid.
+  * Any aarch64 number. Different allocator, different page size.
+  * Any size but 2048x2048, any preset but 13, content but gradient, qp but 40.
+  * Repeat variance: one encode per arm.
+  * That massif's absolute peak equals heaptrack's — it does not (138.39 vs
+    139.62 M). Compare DECOMPOSITIONS from massif and TOTALS from heaptrack.
