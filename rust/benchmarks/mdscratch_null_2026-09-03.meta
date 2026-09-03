@@ -1,0 +1,67 @@
+# HOISTING `hadamard_satd`'s AND PD0's RESIDUAL BUFFERS IS A **NULL**, AND THE
+# REASON GENERALISES — read this before hoisting another allocation site.
+#
+# host  : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool  : tools/perf_ab.sh — interleaved paired rounds, order randomised per
+#         round, one untimed warmup inside each sample, NEITHER SIDE NICED,
+#         no -C target-cpu=native
+# base  : d56a8ef8 (the z1/z3 directional-intra NEON arms)
+# grid  : gradient qp 40, STILL arm, 256/512 x p{2,6,10}, n=15
+# ident : Y on all six cells of both A/Bs
+#
+# WHAT WAS BUILT AND MEASURED (and is NOT landed):
+#   (a) `leaf_funnel::predict::hadamard_satd` and its bd10 twin — the two
+#       `vec![0i16; tx*tx]` / `vec![0i32; tx*tx]` per call moved into a
+#       per-thread `HadamardScratch`, resized and NOT re-zeroed (both buffers
+#       are fully overwritten: the residual double loop writes every
+#       `res[r*tx+c]`, and every Hadamard variant writes every one of the
+#       `tx*tx` coefficients).
+#   (b) `pd0::Pd0Ctx::{lvl5_like_block_cost_rect, lvl1_cost_from_pred}` — the
+#       `vec![0i32; bw*tx_h]` residual at BOTH sites (they are duplicate
+#       transcriptions of the same loop) moved into a per-thread buffer, same
+#       argument, same non-re-zeroing.
+#
+# RESULT — both halves are NULL, and the combination is marginally NEGATIVE:
+#
+#   (a) hadamard scratch alone, vs base
+#       256 p2  1.002x | 256 p6  1.002x | 256 p10 0.982x
+#       512 p2  1.001x | 512 p6  0.998x | 512 p10 1.005x
+#       Every span crosses 1.0 except 512 p2's (0.9942/0.9995), which is
+#       0.1 %. NULL.
+#
+#   (b) both halves together, vs base
+#       256 p2  1.000x | 256 p6  0.998x | 256 p10 0.997x
+#       512 p2  0.997x (p25/p75 1.0010/1.0057 — entirely ABOVE 1.0)
+#       512 p6  0.996x | 512 p10 1.006x
+#       The 512 p2 cell is a small REGRESSION, not a null.
+#
+# WHY, AND THIS IS THE TRANSFERABLE PART. The three hoists that DID pay
+# earlier the same day (benchmarks/{txscratch_dqcoeff,satdscratch,coeffctx}_
+# ab_2026-09-03.*, 1.006x-1.034x) were all sites with a HIGH ALLOCATION-TO-WORK
+# ratio: `tx_unit_inner` at 72,919 allocator calls per frame, `txb_coeff_satd`
+# at 28,006 and `cost_coeffs_txb` at 19,553, each around a few hundred
+# arithmetic operations. `hadamard_satd` allocates once and then runs a full
+# Hadamard over `tx*tx` samples — up to 1024 — and the PD0 residual sites
+# allocate once around a whole forward transform + quantise. The malloc is
+# already small against the work it brackets, and a `thread_local!` +
+# `RefCell::try_borrow_mut` + a closure that captures the loop is not free
+# either: wrapping `tx_quant_core`'s call site in a closure is the likely cause
+# of the 512 p2 regression.
+#
+# **Rank an allocation-hoist candidate by allocator calls PER UNIT OF WORK, not
+# by allocator calls.** The heaptrack site list
+# (benchmarks/mem_heaptrack_2026-09-03.meta) is ordered by call count and does
+# NOT order by expected win; `pd0::lvl1_cost_from_pred` sits at 25,160 calls in
+# it and is measured null here.
+#
+# STILL UNTRIED, and it is the one this result does NOT rule out:
+# `partition::extract_neighbors_tiled` (31,696 calls per frame, the largest
+# remaining site) RETURNS its two `Vec`s, so it cannot take this shape at all —
+# it needs a caller-provided-buffer signature change, which is a different
+# experiment with a different cost model. Same for `pd0::tx_quant_core`, whose
+# `qcoeff`/`dqcoeff` are returned.
+#
+# NOT ESTABLISHED: anything about peak heap (these buffers are freed before the
+# next is taken, so they were never at the peak — see
+# benchmarks/mem_heaptrack_satd_2026-09-03.meta), the videokey or inter arms,
+# or any size other than 256/512.
