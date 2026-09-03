@@ -1,0 +1,55 @@
+# The directional-intra z1 and z3 kernels gained NEON arms.
+#
+# host  : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool  : tools/perf_ab.sh — interleaved paired rounds, order randomised per
+#         round, one untimed warmup inside each sample, NEITHER SIDE NICED,
+#         no -C target-cpu=native
+# base  : 0c70f3fc (the coeff_contexts stack scratch)   cand: + this change
+# grid  : gradient qp 40; still 256/512 x p{2,6,10} n=15,
+#         videokey (SVTAV1_VIDEO=1) 128/256/512 x p{6,8} n=25
+# ident : Y on all twelve cells
+#
+# WHY THIS KERNEL. `benchmarks/perf_videokey_attrib_2026-09-03.tsv` puts
+# INTRA_PRED at 9.3 % of what the VIDEO config adds to a key frame at
+# 512x512 p8 (port 3.271 ms against C's 0.687 — 4.76x), with
+# `intra_pred::dr_predictor_edged` the largest symbol in it at 1.321 ms. It is
+# a COVERAGE gap, not a quality one: C ships
+# `svt_av1_dr_prediction_z{1,2,3}_neon` (ASM_NEON/intra_prediction_neon.c) and
+# the port's `dr_z{1,2,3}_edged` were all scalar.
+#
+# RESULT — and the two arms disagree, which is the interesting part:
+#   still     256 p2  1.005x  (p25/p75 0.9919/0.9980)
+#             512 p2  1.016x  (0.9824/0.9854)
+#             256 p6  0.999x | 512 p6 1.001x   <- NULL, spans cross 1.0
+#             256 p10 0.997x | 512 p10 0.999x  <- NULL, spans cross 1.0
+#   videokey  128 p6  1.035x  (0.9596/0.9722)
+#             256 p6  1.024x  (0.9690/0.9811)
+#             512 p6  1.030x  (0.9658/0.9747)
+#             128 p8  1.010x | 256 p8 1.006x | 512 p8 1.009x
+#
+# ALL SIX VIDEOKEY CELLS move with their whole p25/p75 span below 1.0, and the
+# p6 cells move 2.4-3.5 % — the largest single-change win on the videokey arm
+# measured this day. The STILL arm only moves at preset 2. That split is the
+# expected one and it is why both arms are swept: the still API produces no
+# recon, so a still frame runs a narrower intra candidate set at the fast
+# presets, while a video-mode key frame is a REFERENCE and runs the full one.
+#
+# THE SIZE GATE IS PART OF THE RESULT, MEASURED. A first version dispatched on
+# every call and was a REGRESSION at the fast presets: 256 p6 read 0.992x with
+# its whole span ABOVE 1.0 (and 512 p6 0.996x, also above) while still being
+# 1.016x at 512 p2. Below 16 the vector loop cannot run one 16-lane chunk, so
+# the `incant!` summoned a token and crossed a target-feature boundary to
+# execute the scalar tail — archmage's documented ~4x boundary cost, paid at
+# the small-block call rate. Gating the vector path on `bw >= 16` (z1) and
+# `bh >= 16` (z3) turned both cells NULL and left the p2 and videokey wins
+# intact. The numbers above are the gated version; the ungated ones are in
+# this file's history rather than a separate record because the change never
+# landed.
+#
+# NOT DONE: z2 (angles strictly between 90 and 180) is still scalar. Its
+# inner loop selects between the `above` and `left` edge per COLUMN on a
+# runtime predicate, so it is not the same shape as z1/z3 and needs its own
+# design; C's `dr_prediction_z2_{4,8,W}xH_neon` are three separate kernels for
+# that reason. The upsampled path is also still scalar on all three — it is
+# reachable only for `bw + bh <= 16`, i.e. exactly the sizes the size gate
+# above excludes anyway.

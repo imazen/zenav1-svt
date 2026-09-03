@@ -675,7 +675,155 @@ pub fn upsample_intra_edge(p: &mut [u8], origin: usize, sz: usize) {
 
 /// C `svt_av1_dr_prediction_z1_c` (intra_prediction.c:351) with upsampling.
 /// `above[origin + i]` is C `above[i]`.
+///
+/// Dispatches to a NEON arm on the NON-upsampled path, which is the one the
+/// large blocks take (`svt_aom_use_intra_edge_upsample` can only return 1 for
+/// `bw + bh <= 16`, C intra_prediction.c). The upsampled path and any caller
+/// whose edge buffer is too short for a 16-lane load stay on the scalar core.
+#[allow(clippy::too_many_arguments)]
 fn dr_z1_edged(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    dx: i32,
+) {
+    // The vector arm reads `above[origin + base + c + 1 .. + 16]` with
+    // `base + c < max_base_x = bw + bh - 1`, so the highest index it can touch
+    // is `origin + max_base_x + 1`. Anything shorter takes the scalar core.
+    // `bw >= 16` is the gate, not just a guard: below it the vector loop
+    // cannot run a single 16-lane chunk (`valid <= bw`), so the `incant!`
+    // would summon a token and cross a target-feature boundary to execute
+    // the scalar tail. MEASURED: without this the whole change is 0.992x at
+    // 256x256 p6 (a REGRESSION, span entirely above 1.0) while still being
+    // 1.016x at 512x512 p2 -- the small-block call rate at the fast presets
+    // pays the dispatch and gets nothing back.
+    if bw >= 16 && !upsample_above && above.len() > origin + bw + bh {
+        incant!(
+            dr_z1_edged_flat(dst, dst_stride, bw, bh, above, origin, dx),
+            [neon, scalar]
+        );
+        return;
+    }
+    dr_z1_edged_core(dst, dst_stride, bw, bh, above, origin, upsample_above, dx);
+}
+
+fn dr_z1_edged_flat_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    origin: usize,
+    dx: i32,
+) {
+    dr_z1_edged_core(dst, dst_stride, bw, bh, above, origin, false, dx);
+}
+
+/// # Why this is a hand-written per-ISA arm and not `#[magetypes]`
+///
+/// The kernel is `u8 -> u16 -> u8`: it widens two `u8x16` loads to `u16x8`
+/// pairs, accumulates `(a0 << 5) + (a1 - a0) * shift` there, and narrows back
+/// with a ROUNDING shift. magetypes 0.9.28 cannot express any of those three
+/// steps, verified by source read of the local checkout
+/// (`~/work/archmage/magetypes`), not from memory:
+/// * `src/simd/backends/convert_int.rs` carries **only same-width bitcasts**
+///   (`bitcast_u8_to_i8`, `bitcast_u16_to_i16`, ...); there is no
+///   `u8x16 -> u16x8` widening in either direction, and
+///   `src/simd/generic/cross_width.rs` is **f32-only** (`f32x4 <-> f32x8 <->
+///   f32x16`).
+/// * `U16x8Backend` has no rounding narrowing shift (`vrshrn`-shaped) and no
+///   widening multiply-accumulate (`vmlal`-shaped).
+/// * `u8x16`'s only reduction is `reduce_add(..) -> u8`, which wraps.
+///
+/// So this takes the same route `crate::me_sad` documents for the SAD family:
+/// `incant!` + per-ISA `#[arcane]`. If magetypes gains integer widening
+/// (`u8xN <-> u16xN`, `i16xN <-> i32xN`) plus a rounding narrowing shift, this
+/// kernel and `dr_z3_edged_flat_neon` collapse into one generic body.
+///
+/// C `svt_av1_dr_prediction_z1_neon`'s inner loop
+/// (`ASM_NEON/intra_prediction_neon.c:89`, the `_large` variant), at
+/// `upsample_above == 0`.
+///
+/// EXACT, not an approximation. C's NEON arm rewrites the scalar
+/// `(a0 * (32 - shift) + a1 * shift + 16) >> 5` as
+/// `((a0 << 5) + (a1 - a0) * shift + 16) >> 5`. The two are the same integer:
+/// they differ by algebra only, the true value lies in `[0, 255 * 32]`, and
+/// `vsubl_u8(a1, a0)` wrapping when `a1 < a0` cancels in the `vmlaq_u16`
+/// because everything is mod 2^16 and the true result fits in 16 bits. No
+/// clamp is needed for the same reason (the scalar core's `.clamp(0, 255)` can
+/// never fire), and `vrshrn_n_u16::<5>` IS `(v + 16) >> 5`.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn dr_z1_edged_flat_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    origin: usize,
+    dx: i32,
+) {
+    let max_base_x = (bw + bh) as i32 - 1;
+    let fill = above[origin + max_base_x as usize];
+    let mut x = dx;
+    for r in 0..bh {
+        let base = x >> 6;
+        if base >= max_base_x {
+            for row in dst.chunks_mut(dst_stride).skip(r).take(bh - r) {
+                row[..bw].fill(fill);
+            }
+            return;
+        }
+        let bi = origin + base as usize;
+        let shift = ((x & 0x3f) >> 1) as u16;
+        let shift_v = vdupq_n_u16(shift);
+        // Columns `c` with `base + c < max_base_x` take the interpolation;
+        // the rest take `above[max_base_x]`, exactly as the scalar core does.
+        let valid = core::cmp::min(bw, (max_base_x - base) as usize);
+        let drow = &mut dst[r * dst_stride..r * dst_stride + bw];
+        let mut c = 0;
+        while c + 16 <= valid {
+            let a0: &[u8; 16] = above[bi + c..bi + c + 16].try_into().unwrap();
+            let a1: &[u8; 16] = above[bi + c + 1..bi + c + 17].try_into().unwrap();
+            let a0v = vld1q_u8(a0);
+            let a1v = vld1q_u8(a1);
+            let lo = vmlaq_u16(
+                vshll_n_u8::<5>(vget_low_u8(a0v)),
+                vsubl_u8(vget_low_u8(a1v), vget_low_u8(a0v)),
+                shift_v,
+            );
+            let hi = vmlaq_u16(
+                vshll_n_u8::<5>(vget_high_u8(a0v)),
+                vsubl_u8(vget_high_u8(a1v), vget_high_u8(a0v)),
+                shift_v,
+            );
+            let out = vcombine_u8(vrshrn_n_u16::<5>(lo), vrshrn_n_u16::<5>(hi));
+            let o: &mut [u8; 16] = (&mut drow[c..c + 16]).try_into().unwrap();
+            vst1q_u8(o, out);
+            c += 16;
+        }
+        let sh = shift as i32;
+        while c < valid {
+            let v = (above[bi + c] as i32 * (32 - sh) + above[bi + c + 1] as i32 * sh + 16) >> 5;
+            drow[c] = v as u8;
+            c += 1;
+        }
+        drow[c..].fill(fill);
+        x += dx;
+    }
+}
+
+/// Scalar C `svt_av1_dr_prediction_z1_c` (intra_prediction.c:351) with
+/// upsampling. `above[origin + i]` is C `above[i]`. Reached through
+/// [`dr_z1_edged`], which routes the flat (non-upsampled) case to a NEON arm.
+#[allow(clippy::too_many_arguments)]
+fn dr_z1_edged_core(
     dst: &mut [u8],
     dst_stride: usize,
     bw: usize,
@@ -763,7 +911,133 @@ fn dr_z2_edged(
 }
 
 /// C `svt_av1_dr_prediction_z3_c` (intra_prediction.c:321) with upsampling.
+///
+/// Dispatches to a NEON arm on the NON-upsampled path, which is the one large
+/// blocks take. The output is COLUMN-major here (`dst[r * stride + c]` for a
+/// fixed `c`), so the arm vectorises the arithmetic 16 rows at a time into a
+/// stack staging buffer and scatters it out; C's NEON arm reaches the same
+/// place by building a tile and transposing it. The scatter is the same number
+/// of byte stores the scalar core does — what is saved is the interpolation.
+#[allow(clippy::too_many_arguments)]
 fn dr_z3_edged(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u8],
+    origin: usize,
+    upsample_left: bool,
+    dy: i32,
+) {
+    // The vector arm reads `left[origin + base + r + 1 .. + 16]` with
+    // `base + r < max_base_y = bw + bh - 1`, so the highest index it can touch
+    // is `origin + max_base_y + 1`.
+    // `bh >= 16` for the same reason [`dr_z1_edged`] gates on `bw >= 16`:
+    // this arm's 16-lane chunk walks ROWS, so below 16 rows it cannot run
+    // one and the dispatch is pure overhead.
+    if bh >= 16 && !upsample_left && left.len() > origin + bw + bh {
+        incant!(
+            dr_z3_edged_flat(dst, dst_stride, bw, bh, left, origin, dy),
+            [neon, scalar]
+        );
+        return;
+    }
+    dr_z3_edged_core(dst, dst_stride, bw, bh, left, origin, upsample_left, dy);
+}
+
+fn dr_z3_edged_flat_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u8],
+    origin: usize,
+    dy: i32,
+) {
+    dr_z3_edged_core(dst, dst_stride, bw, bh, left, origin, false, dy);
+}
+
+/// NEON arm of [`dr_z3_edged`], `upsample_left == 0`.
+///
+/// Exactness is [`dr_z1_edged_flat_neon`]'s, verbatim: the same
+/// `(a0 << 5) + (a1 - a0) * shift` rewrite of the same two-tap interpolation,
+/// with the same mod-2^16 argument and the same `vrshrn_n_u16::<5>` rounding
+/// narrow. Only the traversal differs — `base` walks with the ROW here, so a
+/// 16-lane load covers 16 consecutive rows of one column.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn dr_z3_edged_flat_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    left: &[u8],
+    origin: usize,
+    dy: i32,
+) {
+    let max_base_y = (bw + bh) as i32 - 1;
+    let fill = left[origin + max_base_y as usize];
+    let mut y = dy;
+    for c in 0..bw {
+        let base = y >> 6;
+        let shift = ((y & 0x3f) >> 1) as u16;
+        let shift_v = vdupq_n_u16(shift);
+        let bi = origin + base as usize;
+        // Rows `r` with `base + r < max_base_y` interpolate; the rest take
+        // `left[max_base_y]`, exactly as the scalar core does (its inner
+        // `while` fills the remainder of the column and breaks).
+        let valid = if base >= max_base_y {
+            0
+        } else {
+            core::cmp::min(bh, (max_base_y - base) as usize)
+        };
+        let mut r = 0usize;
+        let mut tmp = [0u8; 16];
+        while r + 16 <= valid {
+            let a0: &[u8; 16] = left[bi + r..bi + r + 16].try_into().unwrap();
+            let a1: &[u8; 16] = left[bi + r + 1..bi + r + 17].try_into().unwrap();
+            let a0v = vld1q_u8(a0);
+            let a1v = vld1q_u8(a1);
+            let lo = vmlaq_u16(
+                vshll_n_u8::<5>(vget_low_u8(a0v)),
+                vsubl_u8(vget_low_u8(a1v), vget_low_u8(a0v)),
+                shift_v,
+            );
+            let hi = vmlaq_u16(
+                vshll_n_u8::<5>(vget_high_u8(a0v)),
+                vsubl_u8(vget_high_u8(a1v), vget_high_u8(a0v)),
+                shift_v,
+            );
+            vst1q_u8(
+                &mut tmp,
+                vcombine_u8(vrshrn_n_u16::<5>(lo), vrshrn_n_u16::<5>(hi)),
+            );
+            for (k, &v) in tmp.iter().enumerate() {
+                dst[(r + k) * dst_stride + c] = v;
+            }
+            r += 16;
+        }
+        let sh = shift as i32;
+        while r < valid {
+            let v = (left[bi + r] as i32 * (32 - sh) + left[bi + r + 1] as i32 * sh + 16) >> 5;
+            dst[r * dst_stride + c] = v as u8;
+            r += 1;
+        }
+        while r < bh {
+            dst[r * dst_stride + c] = fill;
+            r += 1;
+        }
+        y += dy;
+    }
+}
+
+/// Scalar C `svt_av1_dr_prediction_z3_c` (intra_prediction.c:321) with
+/// upsampling. Reached through [`dr_z3_edged`], which routes the flat
+/// (non-upsampled) case to a NEON arm.
+#[allow(clippy::too_many_arguments)]
+fn dr_z3_edged_core(
     dst: &mut [u8],
     dst_stride: usize,
     bw: usize,

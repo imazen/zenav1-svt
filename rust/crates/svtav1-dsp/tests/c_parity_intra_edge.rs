@@ -181,3 +181,108 @@ fn dr_prediction_kernels_match_c() {
         }
     }
 }
+
+/// Every archmage TIER of the dr kernels against real C, on the same
+/// production (size, angle, upsample) grid.
+///
+/// `dr_prediction_kernels_match_c` above runs whatever tier this host picks.
+/// This one FORCES each tier and asserts both (a) equality with C and (b)
+/// equality with the first tier's answer, so a NEON-vs-scalar divergence in
+/// the z1 arm cannot hide behind a green host run. It also asserts the sweep
+/// was REAL: `for_each_token_permutation` returns a `#[must_use]` report, and
+/// when archmage has excluded every token (an ambient `-C target-cpu=native`,
+/// or no `testable_dispatch`) the sweep collapses to the single native arm
+/// while still reporting green.
+#[test]
+fn dr_prediction_all_tiers_match_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let mut rng = Rng(0x5EED_2A17_u64 ^ 0x9E3779B97F4A7C15);
+    let base_angles = [45i32, 67, 90, 113, 135, 157, 203, 180];
+    let sizes = [(4usize, 4usize), (8, 8), (16, 16), (32, 32), (64, 64)];
+    let mut perms = 0usize;
+    let mut warned = 0usize;
+    let mut cells = 0usize;
+    for &(w, h) in &sizes {
+        for &base in &base_angles {
+            for delta in [-3i32, 0, 3] {
+                let angle = base + delta * 3;
+                if angle <= 0 || angle >= 270 || angle == 90 || angle == 180 {
+                    continue; // exact V/H route to predict_v/h (no dr kernel)
+                }
+                for filt_type in 0..=1 {
+                    let upsample_above =
+                        ip::use_intra_edge_upsample(w as i32, h as i32, angle - 90, filt_type);
+                    let upsample_left =
+                        ip::use_intra_edge_upsample(h as i32, w as i32, angle - 180, filt_type);
+                    for _ in 0..3 {
+                        let mut above = vec![0u8; ip::EDGE_BUF_LEN];
+                        let mut left = vec![0u8; ip::EDGE_BUF_LEN];
+                        for b in above.iter_mut() {
+                            *b = rng.byte();
+                        }
+                        for b in left.iter_mut() {
+                            *b = rng.byte();
+                        }
+                        left[ip::EDGE_ORIGIN - 1] = above[ip::EDGE_ORIGIN - 1];
+                        let mut dst_c = vec![0u8; w * h];
+                        cref::dr_predictor_edged(
+                            &mut dst_c,
+                            w,
+                            &above,
+                            &left,
+                            ip::EDGE_ORIGIN,
+                            upsample_above,
+                            upsample_left,
+                            w,
+                            h,
+                            angle,
+                        );
+                        let mut first: Option<Vec<u8>> = None;
+                        let report =
+                            for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+                                let mut dst_r = vec![0u8; w * h];
+                                ip::dr_predictor_edged(
+                                    &mut dst_r,
+                                    w,
+                                    &above,
+                                    &left,
+                                    ip::EDGE_ORIGIN,
+                                    upsample_above,
+                                    upsample_left,
+                                    w,
+                                    h,
+                                    angle,
+                                );
+                                assert_eq!(
+                                    dst_r, dst_c,
+                                    "dr tier != C: {w}x{h} angle={angle} \
+                                     up_a={upsample_above} up_l={upsample_left}"
+                                );
+                                match &first {
+                                    Some(f) => assert_eq!(
+                                        &dst_r, f,
+                                        "dr tier != tier0: {w}x{h} angle={angle}"
+                                    ),
+                                    None => first = Some(dst_r),
+                                }
+                            });
+                        perms = report.permutations_run;
+                        warned = report.warnings.len();
+                        cells += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(cells > 0, "the grid produced no cells");
+    assert_eq!(
+        warned, 0,
+        "archmage excluded {warned} token(s) from the sweep, so this test \
+         covered FEWER tiers than its name claims"
+    );
+    assert!(
+        perms >= 2,
+        "the tier sweep ran {perms} permutation(s) -- only the native tier. A \
+         one-arm sweep cannot catch a SIMD-vs-scalar divergence."
+    );
+}
