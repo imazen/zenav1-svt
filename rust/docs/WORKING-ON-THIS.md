@@ -116,6 +116,26 @@ SIMD tier-invariance suite (207 s), the workspace test suite (167 s) and the
 C oracle build (141 s, cached since 2026-08-28). Local arm64 numbers differ;
 measure with `time` and record the host.
 
+**Memory — CHURN CANNOT MOVE PEAK HEAP AND DOES MOVE PEAK RSS, AT ~100 BYTES
+PER ALLOCATION ON macOS (2026-09-03, CURRENT — read this first).**
+`benchmarks/mem_churn_rss_2026-09-03.{tsv,meta}`.
+`benchmarks/mem_heaptrack_satd_2026-09-03.meta` concluded "removing allocator
+churn cannot lower a peak … the memory gap stays a lifetime property" from
+twelve heaptrack cells reading +0.01 MiB. **That is true of PEAK HEAP and false
+of PEAK RSS**, which is the quantity `mem_gate.sh` and the goal use. Measured on
+gradient 2048x2048 qp 40, harness subtracted, differencing the videokey and
+inter arms: between p13 and p6 the inter frame's LIVE cost FALLS 47 %
+(23.34 -> 12.44 MB) while its macOS resident cost RISES 13 % (48.89 -> 55.39 MB)
+and its allocation count rises 112 % (214,114 -> 454,196). Resident-minus-live
+per allocation is **94.6 B at p6 and 119.3 B at p13 on macOS, and -9.7 to
++8.3 B on Linux**. So removing N allocations from a frame is worth ~100*N bytes
+of peak RSS on macOS and nothing on Linux — a real lever on the metric the goal
+is stated in, and the OPPOSITE of the recorded conclusion. Both statements are
+true of their own quantity; always say which. **Consequence not yet measured:
+the three hoists of 2026-09-03 (`58fa779e`, `fbd341b3`, `0c70f3fc`) removed
+~100k allocations from one 512x512 frame and were scored a NULL on heap alone;
+at this rate that is ~10 MB of macOS peak RSS nobody looked for.**
+
 **Memory — THE PEAK IS DECOMPOSED NOW, AND THE HARNESS WAS 31 MB OF IT
 (2026-09-03, CURRENT — read this before every memory paragraph below).**
 `benchmarks/mem_massif_2026-09-03.meta` + `benchmarks/mem_mecand_2026-09-03.*`;

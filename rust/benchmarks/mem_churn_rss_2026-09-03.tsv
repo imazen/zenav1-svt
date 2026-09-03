@@ -1,0 +1,15 @@
+# THE RESIDENT-NOT-LIVE EXCESS SCALES WITH ALLOCATION COUNT, NOT WITH LIVE BYTES.
+# cell = gradient 2048x2048 qp 40, 8-bit 4:2:0. Arms/harness as in benchmarks/mem_harness_2026-09-03.tsv.
+# tree = 940b855a (main) = 01ef6f1f + the one-byte MeCandidate commit + the perf_encode one-copy commit.
+# live_MB   = peak HEAP, heaptrack, r7900x x86_64-linux, harness subtracted (n_frames * w*h*3/2).
+# rss_*_MB  = peak RSS, /usr/bin/time, harness subtracted; x86 = r7900x, arm = mac (Apple silicon, macOS).
+# allocs    = heaptrack "calls to allocation functions", WHOLE PROCESS (harness included; it cancels
+#             in the marginal difference). r7900x; the count is ISA-independent by construction.
+# The MARGINAL row of each preset is inter minus videokey: what ONE INTER FRAME costs.
+preset	arm	live_MB	rss_x86_MB	rss_arm_MB	allocs
+6	videokey	94.14	107.89	131.68	8225365
+6	inter	106.58	124.12	187.07	8679561
+6	MARGINAL	12.44	16.23	55.39	454196
+13	videokey	76.81	83.83	92.21	2496391
+13	inter	100.15	105.10	141.10	2710505
+13	MARGINAL	23.34	21.27	48.89	214114

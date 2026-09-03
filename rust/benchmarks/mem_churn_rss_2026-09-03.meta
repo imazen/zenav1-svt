@@ -1,0 +1,102 @@
+ALLOCATOR CHURN CANNOT MOVE PEAK HEAP AND DOES MOVE PEAK RSS — ~100 BYTES OF
+RESIDENT-NOT-LIVE MEMORY PER ALLOCATION ON macOS, AND ~0 ON LINUX.
+
+date:   2026-09-03
+tree:   940b855a (main) = 01ef6f1f + the one-byte `MeCandidate` commit + the
+        `perf_encode` one-copy harness commit.
+hosts:  x86 = r7900x, x86_64-unknown-linux-gnu (heap via heaptrack, RSS via
+        `/usr/bin/time -v`, median of 5 / 3).
+        arm = mac, Apple silicon / macOS, 16 KiB pages, libmalloc (RSS via
+        `/usr/bin/time -l`, median of 5 / 3). NO HEAP NUMBER — no heaptrack.
+cell:   gradient 2048x2048 qp 40, presets 6 and 13, arms and harness as in
+        benchmarks/mem_harness_2026-09-03.tsv. Harness subtracted throughout as
+        `n_frames * w*h*3/2`, which is exactly what it now is on both sides.
+data:   benchmarks/mem_churn_rss_2026-09-03.tsv
+
+=================== WHY THIS FILE EXISTS ======================================
+
+`benchmarks/mem_heaptrack_satd_2026-09-03.meta` concluded, from twelve heaptrack
+cells that all read +0.01 MiB after three allocation-site hoists:
+
+  "Removing allocator churn cannot lower a peak: every hoisted buffer is freed
+   before the next is taken. The memory gap stays a lifetime property."
+
+**The first sentence is true of PEAK HEAP and false of PEAK RSS**, and peak RSS
+is the quantity `tools/mem_gate.sh` and the acceptance criterion use. A buffer
+that is freed before the next is taken was never part of the live high-water —
+but its PAGES stay resident on an allocator that does not hand them back, and
+the next allocation may be satisfied from a fresh region rather than that one.
+
+=================== THE MEASUREMENT ===========================================
+
+Difference the videokey and inter arms, harness removed. That is what ONE INTER
+FRAME costs, in three quantities plus the number of allocations it performs:
+
+  preset  quantity                    videokey    inter   MARGINAL
+    6     live bytes (x86 heap)         94.14   106.58    +12.44 MB
+    6     peak RSS, x86                107.89   124.12    +16.23 MB
+    6     peak RSS, arm                131.68   187.07    +55.39 MB
+    6     allocation calls           8,225,365 8,679,561   +454,196
+   13     live bytes (x86 heap)         76.81   100.15    +23.34 MB
+   13     peak RSS, x86                 83.83   105.10    +21.27 MB
+   13     peak RSS, arm                 92.21   141.10    +48.89 MB
+   13     allocation calls           2,496,391 2,710,505   +214,114
+
+Now subtract the live bytes from the resident bytes and divide by the
+allocations that produced them:
+
+  preset   RESIDENT-NOT-LIVE, arm    per allocation
+    6      55.39 - 12.44 = 42.95 MB    94.6 bytes
+   13      48.89 - 23.34 = 25.55 MB   119.3 bytes
+
+  preset   RESIDENT-NOT-LIVE, x86    per allocation
+    6      16.23 - 12.44 =  3.79 MB     8.3 bytes
+   13      21.27 - 23.34 = -2.07 MB    -9.7 bytes
+
+**Between preset 13 and preset 6 the inter frame's LIVE cost FALLS by 47 %
+(23.34 -> 12.44 MB) while its resident cost on macOS RISES by 13 %
+(48.89 -> 55.39 MB) — and its allocation count rises by 112 %.** The excess
+does not track live bytes at all; it tracks allocation count, at roughly 100
+bytes per allocation, with the two points agreeing to 26 % across a 2.1x change
+in count and a 1.9x change in live bytes.
+
+On Linux the same subtraction gives ±10 bytes per allocation — i.e. nothing,
+and the sign flips between the two presets, which is what "no effect plus
+measurement noise" looks like.
+
+=================== WHAT FOLLOWS ==============================================
+
+1. **Removing N allocations from a frame is worth roughly 100 * N bytes of peak
+   RSS on macOS and nothing on Linux.** That is a real, quantified lever on the
+   metric the goal is stated in, and it is the OPPOSITE of what the recorded
+   conclusion says. Peak heap remains untouchable by churn; both statements are
+   true of their own quantity.
+
+2. **The three allocation-site hoists of 2026-09-03 (`58fa779e`, `fbd341b3`,
+   `0c70f3fc`) should be re-measured on macOS RSS.** Their own records count
+   72,919 removed allocations at `tx_pipeline::tx_unit_inner` and 28,006 at
+   `leaf_funnel::detect::txb_coeff_satd` on ONE 512x512 video-mode key frame at
+   preset 8. At ~100 bytes each that is ~10 MB of peak RSS on macOS that was
+   scored as a NULL because only heap was measured. NOT MEASURED HERE — this
+   file establishes the rate, not that particular A/B.
+
+3. It also explains the ISA split the day's other records report without
+   explaining: `benchmarks/mem_aarch64_2026-09-03.meta`'s 36 MB aarch64-over-x86
+   gap on the inter arm, its absence on the still arm, and its growth with
+   picture size are all "the inter path performs more allocations".
+
+=================== NOT ESTABLISHED ===========================================
+  * The aarch64 LIVE bytes. The `live_MB` column is x86 heap, used for the arm
+    subtraction on the assumption that peak heap is ISA-invariant. The
+    allocation SIZES are the same code, so this is likely, but heaptrack does
+    not exist on macOS and it is NOT measured. Every "resident-not-live, arm"
+    figure inherits that assumption.
+  * A LAW. Two presets on one cell is two points. The per-allocation constant
+    is a rate estimate, not a fit; 94.6 and 119.3 bytes are not the same number.
+  * WHICH allocator behaviour produces it. Region reuse across frames is the
+    hypothesis (benchmarks/mem_aarch64_2026-09-03.meta §2b); libmalloc's
+    retention POLICY is ruled out there by measurement (the env knobs move the
+    cell <= 4 %), and so is a flat per-process ISA tax (the still arm agrees
+    across the ISAs to within 2-5 MB).
+  * Any content but gradient, qp but 40, size but 2048x2048, preset but 6/13.
+  * Repeat variance on the allocation counts and the heap: one run per cell.

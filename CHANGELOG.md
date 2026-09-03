@@ -101,6 +101,21 @@ Crates are not published to crates.io yet — depend by git.
   0.886-0.938) and **peak RSS is inside the 25 % goal on all twelve** (inter
   1.035-1.122, against `main`'s 1.279-1.334 on the same grid). Records
   `rust/benchmarks/mem_harness_2026-09-03.{tsv,meta}`.
+- **Allocator churn cannot move peak HEAP and *does* move peak RSS — ~100 bytes
+  of resident-not-live memory per allocation on macOS, ~0 on Linux.**
+  `rust/benchmarks/mem_churn_rss_2026-09-03.{tsv,meta}` corrects
+  `mem_heaptrack_satd_2026-09-03.meta`'s "removing allocator churn cannot lower a
+  peak … the memory gap stays a LIFETIME property", which is true of peak heap
+  and false of peak RSS — the quantity `tools/mem_gate.sh` and the 25 % goal
+  actually use. Differencing the videokey and inter arms on gradient 2048x2048
+  qp 40 with the harness subtracted: from p13 to p6 the inter frame's LIVE cost
+  FALLS 47 % (23.34 -> 12.44 MB) while its macOS resident cost RISES 13 %
+  (48.89 -> 55.39 MB) and its allocation count rises 112 % (214,114 -> 454,196).
+  Resident-minus-live per allocation is 94.6 B (p6) and 119.3 B (p13) on macOS
+  against -9.7 and +8.3 B on Linux. Consequence, not measured here: the three
+  allocation-site hoists of the same day (`58fa779e`, `fbd341b3`, `0c70f3fc`)
+  removed ~100k allocations from one 512x512 frame and were scored a NULL on
+  heap alone.
 - **The same two changes on aarch64-darwin, and the ISA is worth more than
   either of them** — `rust/benchmarks/mem_aarch64_2026-09-03.{tsv,meta}`. Peak
   RSS at p13 goes from 1.360x-1.483x of C to **1.121x-1.257x** on the inter arm

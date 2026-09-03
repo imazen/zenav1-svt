@@ -125,6 +125,24 @@
 > same 8 columns as a `[int32x4_t; 2]` pair — twice the vector ops for the same
 > work.
 
+> **CURRENT — CHURN CANNOT MOVE PEAK HEAP AND *DOES* MOVE PEAK RSS, AT ~100
+> BYTES PER ALLOCATION ON macOS (2026-09-03). READ THIS BEFORE EVERY MEMORY
+> BLOCK BELOW.** Record: `benchmarks/mem_churn_rss_2026-09-03.{tsv,meta}`.
+> `benchmarks/mem_heaptrack_satd_2026-09-03.meta` concluded "removing allocator
+> churn cannot lower a peak … the memory gap stays a LIFETIME property" from
+> twelve heaptrack cells at +0.01 MiB. **True of peak HEAP, false of peak RSS**,
+> and peak RSS is what `tools/mem_gate.sh` and the 25 % goal measure. Differencing
+> the videokey and inter arms on gradient 2048x2048 qp 40 with the harness
+> subtracted: from p13 to p6 the inter frame's LIVE cost FALLS 47 %
+> (23.34 -> 12.44 MB), its macOS resident cost RISES 13 % (48.89 -> 55.39 MB),
+> and its allocation count rises 112 % (214,114 -> 454,196). Resident-minus-live
+> per allocation is **94.6 B (p6) / 119.3 B (p13) on macOS and -9.7 / +8.3 B on
+> Linux**. Removing N allocations is therefore worth ~100*N bytes of macOS peak
+> RSS and ~0 on Linux. **The three hoists of 2026-09-03 (`58fa779e`, `fbd341b3`,
+> `0c70f3fc`) removed ~100k allocations from one 512x512 frame and were scored a
+> NULL on heap alone — at this rate that is ~10 MB of macOS peak RSS nobody
+> measured.** That A/B is the obvious next chunk and is NOT run here.
+
 > **CURRENT MEMORY POSITION — THE PEAK IS NOW DECOMPOSED, AND `MeCandidate` WAS
 > FIVE BYTES WHERE C'S IS ONE (2026-09-03, fourth chunk of the day). READ THIS
 > BEFORE EVERY MEMORY BLOCK BELOW.** Records:
