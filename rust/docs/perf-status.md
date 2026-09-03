@@ -125,6 +125,24 @@
 > same 8 columns as a `[int32x4_t; 2]` pair — twice the vector ops for the same
 > work.
 
+> **A MEASURED NULL AND A MEASURED REGRESSION — THE PORT'S LARGEST
+> ALLOCATION-COUNT SITE, HOISTED AND REVERTED (2026-09-03).** Record
+> `benchmarks/neighbor_scratch_ab_2026-09-03.{tsv,meta}`; **the change is NOT in
+> the tree.** `partition::extract_neighbors_tiled` returns two `Vec<u8>` of at
+> most 64 bytes for every predicted transform unit — 637,972 calls on one
+> `gradient 2048x2048 p13` two-frame encode, **23.5 % of the whole process's
+> allocations**, carrying 128 B of peak heap. Hoisting it into a thread-local
+> scratch (the `txb_coeff_satd` shape) removes **488,413 / 499,865 allocations,
+> 18-20 % of the process**, with peak heap and `.obu` unchanged to the digit —
+> and then: CPU `after/before` 0.9944 / 0.9911 / 0.9903 / 0.9941 on aarch64 (a
+> ~0.7 % win) but 1.0018 / 1.0062 / 0.9925 / 0.9978 on x86 (a null); peak RSS
+> 0.995 / 1.019 on macOS (a null inside a 15 % spread) and **1.033 on Linux at
+> 2048 inter — a 3.7 MiB REGRESSION whose fifteen paired rounds do not overlap
+> ([114392, 115004] before against [118060, 118952] after)**. A memory chunk
+> does not ship a 3.7 MiB peak-RSS regression for a 0.7 % single-ISA CPU gain,
+> so it was reverted. Peak heap is unchanged, so the Linux rise is
+> resident-page PLACEMENT, not live bytes.
+
 > **CURRENT — CHURN CANNOT MOVE PEAK HEAP AND *DOES* MOVE PEAK RSS, AT ~100
 > BYTES PER ALLOCATION ON macOS (2026-09-03). READ THIS BEFORE EVERY MEMORY
 > BLOCK BELOW.** Record: `benchmarks/mem_churn_rss_2026-09-03.{tsv,meta}`.
@@ -137,11 +155,21 @@
 > (23.34 -> 12.44 MB), its macOS resident cost RISES 13 % (48.89 -> 55.39 MB),
 > and its allocation count rises 112 % (214,114 -> 454,196). Resident-minus-live
 > per allocation is **94.6 B (p6) / 119.3 B (p13) on macOS and -9.7 / +8.3 B on
-> Linux**. Removing N allocations is therefore worth ~100*N bytes of macOS peak
-> RSS and ~0 on Linux. **The three hoists of 2026-09-03 (`58fa779e`, `fbd341b3`,
-> `0c70f3fc`) removed ~100k allocations from one 512x512 frame and were scored a
-> NULL on heap alone — at this rate that is ~10 MB of macOS peak RSS nobody
-> measured.** That A/B is the obvious next chunk and is NOT run here.
+> Linux**.
+>
+> **AND THE OBVIOUS CAUSAL READING OF THAT — "remove N allocations, get 100*N
+> bytes back" — WAS TESTED DIRECTLY AND IS FALSE.**
+> `partition::extract_neighbors_tiled` is the port's largest allocation-COUNT
+> site (637,972 calls on that cell, 23.5 % of the process, 128 B of peak heap).
+> Hoisting it into a per-thread scratch removes **488,413 / 499,865 allocations
+> — 18-20 % of every allocation the process makes** — and moves macOS peak RSS
+> by 0.995x at 1536 inter and 1.019x at 2048 inter, both inside a 15 % spread.
+> **NULL.** So §2's bytes-per-allocation is a CORRELATION across two presets and
+> not a lever; most likely these 64-byte allocations come from libmalloc's
+> tiny/nano magazines, which reuse already-resident pages. The hoist is kept as
+> a small CPU result (0.9903x-0.9944x over four interleaved cells) and NOT as a
+> memory one. What survives for METHOD: a peak-heap null is not a peak-RSS null,
+> and a memory claim must name which quantity it is about.
 
 > **CURRENT MEMORY POSITION — THE PEAK IS NOW DECOMPOSED, AND `MeCandidate` WAS
 > FIVE BYTES WHERE C'S IS ONE (2026-09-03, fourth chunk of the day). READ THIS

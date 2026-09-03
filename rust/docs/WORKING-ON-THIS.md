@@ -129,12 +129,17 @@ inter arms: between p13 and p6 the inter frame's LIVE cost FALLS 47 %
 and its allocation count rises 112 % (214,114 -> 454,196). Resident-minus-live
 per allocation is **94.6 B at p6 and 119.3 B at p13 on macOS, and -9.7 to
 +8.3 B on Linux**. So removing N allocations from a frame is worth ~100*N bytes
-of peak RSS on macOS and nothing on Linux — a real lever on the metric the goal
-is stated in, and the OPPOSITE of the recorded conclusion. Both statements are
-true of their own quantity; always say which. **Consequence not yet measured:
-the three hoists of 2026-09-03 (`58fa779e`, `fbd341b3`, `0c70f3fc`) removed
-~100k allocations from one 512x512 frame and were scored a NULL on heap alone;
-at this rate that is ~10 MB of macOS peak RSS nobody looked for.**
+of peak RSS on macOS and nothing on Linux. **BUT THE CAUSAL READING OF THAT IS
+FALSIFIED**: hoisting `partition::extract_neighbors_tiled` (the port's largest
+allocation-COUNT site, 23.5 % of the process, 128 B of peak heap) into a
+per-thread scratch removes 18-20 % of ALL the process's allocations and moves
+macOS peak RSS by 0.995x / 1.019x — a NULL inside a 15 % spread — while making
+**Linux peak RSS 3.3 % WORSE** at 2048 inter, over fifteen paired rounds whose
+distributions do not overlap. That change was REVERTED and is not in the tree
+(`benchmarks/neighbor_scratch_ab_2026-09-03.*`). So the bytes-per-allocation figure is a CORRELATION across two presets,
+not a budget; do not plan work against it. What survives, and it is the part
+that matters: **a peak-heap null is not a peak-RSS null, the two move
+independently, and every memory claim must name which quantity it is about.**
 
 **Memory — THE PEAK IS DECOMPOSED NOW, AND THE HARNESS WAS 31 MB OF IT
 (2026-09-03, CURRENT — read this before every memory paragraph below).**

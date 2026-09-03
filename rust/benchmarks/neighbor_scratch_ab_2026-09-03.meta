@@ -1,0 +1,133 @@
+THE PORT'S LARGEST ALLOCATION-COUNT SITE, HOISTED — AND REVERTED. 18-20 % OF
+EVERY ALLOCATION GONE, 0.7 % OF aarch64 CPU BACK, PEAK RSS UNMOVED ON macOS AND
+**+3.3 % WORSE ON LINUX**.
+
+**THE CHANGE IS NOT IN THE TREE.** It was written, measured on four axes and two
+ISAs, and reverted; this file is the measurement. Read §"THE VERDICT" first.
+
+date:   2026-09-03
+before: 673fbb22 (main)
+after:  before + this commit (nothing else)
+hosts:  CPU and RSS on mac (Apple silicon, macOS); allocation counts and peak
+        heap on r7900x (x86_64-unknown-linux-gnu, heaptrack).
+cell:   gradient, qp 40, 8-bit 4:2:0, inter arm (SVTAV1_VIDEO=1
+        SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTER_EXPERIMENTAL=1).
+data:   benchmarks/neighbor_scratch_ab_2026-09-03.tsv
+
+=================== WHAT CHANGED =============================================
+
+`partition::extract_neighbors_tiled` returns two `Vec<u8>` — the above row and
+the left column of a block's intra reference samples, at most 64 bytes each —
+and they die before the next block is predicted. It is called once per
+predicted transform unit, which makes it **the port's single largest
+ALLOCATION-COUNT site: 637,972 calls on one gradient 2048x2048 p13 two-frame
+encode, 23.5 % of the whole process's allocations, carrying 128 B of peak
+heap.**
+
+`extract_neighbors_tiled_into` writes the same values into caller-owned
+buffers; the allocating form is kept as a thin wrapper so the five cold call
+sites and the tests are untouched. The hot caller,
+`leaf_funnel::predict::predict_unit`, takes a thread-local `NeighborScratch`
+(the shape `leaf_funnel::detect::txb_coeff_satd` already uses, including its
+re-entrancy contract) which also absorbs the filter-intra arm's `above_c`.
+
+Byte-inert by construction: every buffer is cleared and refilled to exactly the
+length and contents the allocating form produced.
+
+=================== MEASURED =================================================
+
+ALLOCATIONS (heaptrack, whole process, 2048x2048 p13):
+  videokey   2,496,391 -> 2,007,978    -488,413   0.804x
+  inter      2,710,505 -> 2,210,640    -499,865   0.816x
+
+PEAK HEAP (heaptrack, same cells): 83.10 M and 112.73 M, **unchanged to the
+digit** — as expected, since the buffers were never live at the peak.
+
+CPU (perf_encode ENCODE_NS over the whole 2-frame sequence, interleaved, median
+of 9 paired rounds, after/before) — **AND IT IS ISA-SPLIT**:
+
+  cell        aarch64-darwin    x86_64-linux
+  512 p8          0.9944           1.0018
+  1024 p8         0.9911           1.0062
+  512 p13         0.9903           0.9925
+  2048 p13        0.9941           0.9978
+
+**aarch64: four cells, all below 1.0, 0.990-0.994 — a ~0.7 % win. x86: a
+NULL** — two cells above 1.0 and two below, median ~1.00, which is what noise
+looks like. Do not quote the aarch64 figure as the change's cost anywhere else.
+The plausible reason for the split is that libmalloc's per-call cost is higher
+than glibc's, so the same removed calls are worth more on the Mac; not
+measured.
+
+PEAK RSS (interleaved, paired rounds, median):
+  macOS, 11 rounds        1536 inter   88512 ->  88080   0.995
+                          2048 inter  150096 -> 152880   1.019
+**NULL on macOS.** Both are inside the run-to-run spread, which on this host is
+15 % ([149888, 171312] before and [147872, 168128] after at 2048).
+
+  x86_64-linux, 7/15 rds  1536 inter   67596 ->  67500   0.999
+                          2048 inter  114724 -> 118472   **1.033**
+**A REGRESSION on Linux, and it is not noise.** Over fifteen paired rounds at
+2048 the two distributions do not overlap at all — before spans
+[114392, 115004] and after spans [118060, 118952]. Removing a fifth of the
+process's allocations makes its peak resident set **3.7 MiB LARGER**.
+
+Peak HEAP is unchanged to the digit on the same cells, so this is a
+resident-page-layout effect, not live bytes: with 500k fewer small requests the
+allocator satisfies the remaining large ones out of different chunks and the
+heap's high-water rises. Not chased further — the direction is what matters.
+
+=================== THE VERDICT: REVERTED =====================================
+
+Four axes, two ISAs:
+
+  allocations   -18 to -20 %          (measured)
+  peak heap      0.000               (measured, both cells)
+  CPU            -0.7 % on aarch64, NULL on x86   (measured, four cells each)
+  peak RSS       NULL on macOS, **+3.3 % on Linux**  (measured)
+
+**A memory chunk does not ship a 3.7 MiB peak-RSS regression for a 0.7 %
+single-ISA CPU gain.** The change is reverted. What is kept is this file and the
+null in §"WHY THE NULL MATTERS", which is the reason the work was worth
+doing.
+
+=================== WHY THE NULL MATTERS MORE THAN THE WIN ===================
+
+`benchmarks/mem_churn_rss_2026-09-03.meta` measured ~100 bytes of
+resident-not-live memory per allocation on macOS, correlating across two
+presets. This change is the direct test of the causal reading of that number,
+and on the biggest lever available — a fifth of every allocation the process
+makes — it buys nothing. **That figure is a correlation, not a budget.**
+
+The most likely reason it does not transfer: these are 64-byte allocations,
+served out of libmalloc's tiny/nano magazines, which hand back
+already-resident pages and never grow the resident set. Whatever scales the
+macOS resident-not-live excess with mode-decision work, it is not the COUNT of
+small allocations. A candidate consistent with both results is the SIZE
+distribution — transient allocations large enough to take fresh regions — and
+it is NOT measured.
+
+Filed as a CPU result. Do not quote it on the memory axis.
+
+=================== BYTE-CLEANLINESS, AS FAR AS IT WAS TAKEN =================
+
+The change was byte-inert on everything that ran before it was withdrawn:
+
+  aarch64-darwin  cargo nextest 2509/2509; regression_spotcheck 98/98;
+                  inter_byte_gate 93 required / 0 failed / 4 known-open;
+                  fctx_gate 96/96; inter_decode_gate 5/5;
+                  inter_decode_census 96/96; video_key_matrix 58/60.
+  x86_64-linux    cargo build --all-targets clean; cargo nextest 2519/2519.
+
+`inter_completion_scan` and `identity_full_8bit` were STOPPED mid-run when the
+Linux peak-RSS measurement came in, because the change was being reverted. They
+are NOT reported as passes here. Nothing in this file depends on them: the
+memory verdict is the reason for the revert and it does not need a byte gate.
+
+=================== NOT ESTABLISHED ==========================================
+  * WHY the Linux peak RSS rises. Measured cleanly, not attributed. The heap is
+    unchanged, so it is placement, not live bytes.
+  * A CPU WIN on x86. The four x86 cells read 1.0018 / 1.0062 / 0.9925 /
+    0.9978 — a null. Only the aarch64 half is a win.
+  * Any content but gradient, qp but 40, preset outside {8, 13}.
+  * That the RSS null holds at other sizes or presets. Two cells, one preset.

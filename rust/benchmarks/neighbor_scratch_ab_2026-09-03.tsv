@@ -1,0 +1,28 @@
+# extract_neighbors_tiled -> per-thread scratch: a CPU result and a memory NULL.
+# host=mac (Apple silicon, macOS); content=gradient qp=40 8-bit 4:2:0; inter arm
+# (SVTAV1_VIDEO=1 SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTER_EXPERIMENTAL=1).
+# before = 673fbb22 (main); after = before + this commit. Interleaved, median reported.
+# cpu_*_ns  = perf_encode ENCODE_NS (whole 2-frame sequence), 9 paired rounds.
+# rss_arm_KiB = /usr/bin/time -l max RSS on mac, 11 paired rounds, median.
+# rss_x86_KiB = /usr/bin/time -v max RSS on r7900x, 15 paired rounds at 2048 / 7 at 1536, median.
+#   The x86 2048 rows do NOT overlap: before spans [114392, 115004] over 15 runs and after
+#   spans [118060, 118952] over 15. That is a real +3.7 MiB REGRESSION, not noise.
+# allocs_*  = heaptrack "calls to allocation functions", whole process, r7900x x86_64-linux, one run.
+# heap_*_MB = heaptrack peak heap, r7900x, one run.
+metric	cell	before	after	after_over_before
+cpu_ns_arm	512 p8	56100000	55790000	0.9944
+cpu_ns_arm	1024 p8	193940000	192220000	0.9911
+cpu_ns_arm	512 p13	27560000	27290000	0.9903
+cpu_ns_arm	2048 p13	346410000	344360000	0.9941
+cpu_ns_x86	512 p8	87890000	88040000	1.0018
+cpu_ns_x86	1024 p8	317060000	319010000	1.0062
+cpu_ns_x86	512 p13	36490000	36220000	0.9925
+cpu_ns_x86	2048 p13	486290000	485210000	0.9978
+rss_arm_KiB	1536 inter p13	88512	88080	0.9951
+rss_arm_KiB	2048 inter p13	150096	152880	1.0185
+rss_x86_KiB	1536 inter p13	67596	67500	0.9986
+rss_x86_KiB	2048 inter p13	114724	118472	1.0327
+allocs	2048 videokey p13	2496391	2007978	0.8043
+allocs	2048 inter p13	2710505	2210640	0.8156
+heap_MB	2048 videokey p13	83.10	83.10	1.0000
+heap_MB	2048 inter p13	112.73	112.73	1.0000

@@ -112,10 +112,29 @@ Crates are not published to crates.io yet — depend by git.
   FALLS 47 % (23.34 -> 12.44 MB) while its macOS resident cost RISES 13 %
   (48.89 -> 55.39 MB) and its allocation count rises 112 % (214,114 -> 454,196).
   Resident-minus-live per allocation is 94.6 B (p6) and 119.3 B (p13) on macOS
-  against -9.7 and +8.3 B on Linux. Consequence, not measured here: the three
-  allocation-site hoists of the same day (`58fa779e`, `fbd341b3`, `0c70f3fc`)
-  removed ~100k allocations from one 512x512 frame and were scored a NULL on
-  heap alone.
+  against -9.7 and +8.3 B on Linux. **The obvious causal reading of that —
+  "remove N allocations, get 100*N bytes back" — is FALSIFIED in the same file**:
+  hoisting `partition::extract_neighbors_tiled` (the port's largest
+  allocation-COUNT site, 23.5 % of the process) removes 18-20 % of every
+  allocation the process makes, moves macOS peak RSS by 0.995x / 1.019x (a null
+  inside a 15 % spread) and makes LINUX peak RSS 3.3 % WORSE. What survives is the METHOD point: a peak-heap null
+  is not a peak-RSS null, and a memory claim must name which quantity it is
+  about.
+- **A measured NULL and a measured REGRESSION: the port's largest
+  allocation-COUNT site, hoisted and REVERTED.**
+  `rust/benchmarks/neighbor_scratch_ab_2026-09-03.{tsv,meta}`; **the change is
+  not in the tree.** `partition::extract_neighbors_tiled` returns two `Vec<u8>`
+  of at most 64 bytes per predicted transform unit — 637,972 calls on one
+  `gradient 2048x2048 p13` two-frame encode, 23.5 % of the whole process's
+  allocations, 128 B of peak heap. A thread-local scratch removes 488,413 /
+  499,865 of them (18-20 % of the process) with peak heap and `.obu` unchanged
+  to the digit, and then buys: aarch64 CPU 0.9944 / 0.9911 / 0.9903 / 0.9941 (a
+  ~0.7 % win), x86 CPU 1.0018 / 1.0062 / 0.9925 / 0.9978 (a null), macOS peak
+  RSS 0.995 / 1.019 (a null inside a 15 % spread), and **Linux peak RSS 1.033 at
+  2048 inter — a 3.7 MiB regression whose fifteen paired rounds do not overlap**.
+  Reverted: a memory chunk does not ship a 3.7 MiB peak-RSS regression for a
+  0.7 % single-ISA CPU gain. Peak heap is unchanged, so the Linux rise is
+  resident-page placement rather than live bytes.
 - **The same two changes on aarch64-darwin, and the ISA is worth more than
   either of them** — `rust/benchmarks/mem_aarch64_2026-09-03.{tsv,meta}`. Peak
   RSS at p13 goes from 1.360x-1.483x of C to **1.121x-1.257x** on the inter arm

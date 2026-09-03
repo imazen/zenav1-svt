@@ -64,26 +64,74 @@ On Linux the same subtraction gives ±10 bytes per allocation — i.e. nothing,
 and the sign flips between the two presets, which is what "no effect plus
 measurement noise" looks like.
 
+=================== THE CAUSAL READING IS FALSIFIED — SEE §4 =================
+
+The correlation above is measured and stands. **The obvious causal reading of
+it — "remove N allocations, get 100*N bytes of macOS RSS back" — was tested
+directly and is FALSE.** §4 is that test. Read it before acting on this file.
+
 =================== WHAT FOLLOWS ==============================================
 
-1. **Removing N allocations from a frame is worth roughly 100 * N bytes of peak
-   RSS on macOS and nothing on Linux.** That is a real, quantified lever on the
-   metric the goal is stated in, and it is the OPPOSITE of what the recorded
-   conclusion says. Peak heap remains untouchable by churn; both statements are
-   true of their own quantity.
+1. ~~Removing N allocations from a frame is worth roughly 100 * N bytes of peak
+   RSS on macOS and nothing on Linux.~~ **RETRACTED BY §4.** What survives is
+   the correlation and its consequence for METHOD: a peak-heap null is not a
+   peak-RSS null, the two quantities move independently, and a memory claim
+   must name which one it is about.
 
-2. **The three allocation-site hoists of 2026-09-03 (`58fa779e`, `fbd341b3`,
-   `0c70f3fc`) should be re-measured on macOS RSS.** Their own records count
-   72,919 removed allocations at `tx_pipeline::tx_unit_inner` and 28,006 at
-   `leaf_funnel::detect::txb_coeff_satd` on ONE 512x512 video-mode key frame at
-   preset 8. At ~100 bytes each that is ~10 MB of peak RSS on macOS that was
-   scored as a NULL because only heap was measured. NOT MEASURED HERE — this
-   file establishes the rate, not that particular A/B.
+2. ~~The three allocation-site hoists of 2026-09-03 should be re-measured on
+   macOS RSS, at ~100 bytes each.~~ **WITHDRAWN.** §4 removes 5x as many
+   allocations as those three did and measures nothing, so there is no reason
+   to expect them to have moved peak RSS either. Their heap NULL stands and
+   their CPU win stands.
 
 3. It also explains the ISA split the day's other records report without
    explaining: `benchmarks/mem_aarch64_2026-09-03.meta`'s 36 MB aarch64-over-x86
    gap on the inter arm, its absence on the still arm, and its growth with
    picture size are all "the inter path performs more allocations".
+
+=================== 4. THE DIRECT TEST: A NULL ON macOS, A REGRESSION ON LINUX
+
+`partition::extract_neighbors_tiled` is the port's single largest
+ALLOCATION-COUNT site: **637,972 calls on this cell, 23.5 % of the whole
+process**, for two `Vec`s of at most 64 bytes each that die before the next
+block is predicted, with 128 B of peak heap. If the rate above were causal it
+is the biggest single lever available.
+
+It was hoisted into a per-thread scratch (the same shape
+`leaf_funnel::detect::txb_coeff_satd` uses), which removes **488,413
+allocations on the videokey arm and 499,865 on the inter arm — 18-20 % of every
+allocation the process makes.** Peak heap is unchanged to the digit (83.10 M /
+112.73 M) and the `.obu` is unchanged, as expected.
+
+Peak RSS on macOS, interleaved A/B, eleven paired rounds per cell, median:
+
+  cell             before    after   after/before
+  1536 inter       88512     88080      0.995
+  2048 inter      150096    152880      1.019
+
+**NULL on macOS.** Both cells are inside the run-to-run spread, which on this
+host is 15 % ([149888, 171312] before, [147872, 168128] after at 2048).
+
+**And WORSE on Linux** — 114,724 -> 118,472 KiB at 2048 inter, `1.033`, over
+fifteen paired rounds whose distributions do not overlap ([114392, 115004]
+against [118060, 118952]). Removing a fifth of the process's allocations bought
+nothing on one host and cost 3.7 MiB on the other. (Peak heap is unchanged on
+both, so the Linux rise is resident-page PLACEMENT, not live bytes.)
+
+The change was therefore REVERTED; `benchmarks/neighbor_scratch_ab_2026-09-03.meta`
+carries its full four-axis, two-ISA measurement.
+
+So the ~100 bytes/allocation of §2 is a CORRELATION across two presets and not
+a lever. The most likely reason it does not transfer: these are 64-byte
+allocations served out of libmalloc's tiny/nano magazines, which reuse the same
+already-resident pages, so they never grow the resident set at all. Whatever
+scales the macOS resident-not-live excess with MD work, it is not the COUNT of
+small allocations. A candidate consistent with both results is the SIZE
+distribution — transient allocations large enough to take fresh regions — and
+that is not measured.
+
+Its CPU delta was a ~0.7 % win on aarch64 and a null on x86; that did not pay
+for the Linux memory regression, so it is not in the tree.
 
 =================== NOT ESTABLISHED ===========================================
   * The aarch64 LIVE bytes. The `live_MB` column is x86 heap, used for the arm
@@ -96,7 +144,11 @@ measurement noise" looks like.
   * WHICH allocator behaviour produces it. Region reuse across frames is the
     hypothesis (benchmarks/mem_aarch64_2026-09-03.meta §2b); libmalloc's
     retention POLICY is ruled out there by measurement (the env knobs move the
-    cell <= 4 %), and so is a flat per-process ISA tax (the still arm agrees
-    across the ISAs to within 2-5 MB).
+    cell <= 4 %), a flat per-process ISA tax is ruled out there too (the still
+    arm agrees across the ISAs to within 2-5 MB), and **the COUNT of small
+    allocations is ruled out by §4**.
+  * That removing allocations reduces peak RSS. §4 removed a fifth of them,
+    measured nothing on macOS and a 3.3 % REGRESSION on Linux. Do not quote
+    §2's bytes-per-allocation as a budget.
   * Any content but gradient, qp but 40, size but 2048x2048, preset but 6/13.
   * Repeat variance on the allocation counts and the heap: one run per cell.
