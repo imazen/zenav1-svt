@@ -1064,13 +1064,7 @@ mod tests {
         // candidate, so the driver reaches the same state at any block size.
         for pu in 0..b.total_me_candidate_index.len() {
             b.total_me_candidate_index[pu] = 1;
-            b.me_candidate_array[pu * max_cand] = MeCandidate {
-                direction: 1,
-                ref_idx_l0: 0,
-                ref_idx_l1: 0,
-                ref0_list: 0,
-                ref1_list: 1,
-            };
+            b.me_candidate_array[pu * max_cand] = MeCandidate::new(1, 0, 0, 0, 1);
             // list 0's slot is left at (0,0) — C never writes it when the
             // list-0 search is pruned, and reading it as if it were a result
             // is the defect §1z¹³ measured.

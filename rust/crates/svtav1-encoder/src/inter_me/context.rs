@@ -207,23 +207,30 @@ pub struct SearchResults {
     pub do_ref: u8,
 }
 
-/// C `MeCandidate` (me_sb_results.h:29). C declares each field as a bitfield
-/// (`direction : 2`, `ref_idx_l* : 2`, `ref*_list : 1`); the port stores plain
-/// `u8` and **masks on write** so the truncation C performs — notably
-/// `ref0_list = 24` becoming `0` — is reproduced rather than accidentally
-/// widened.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// C `MeCandidate` (me_sb_results.h:29). C declares all five fields as
+/// bitfields of ONE `uint8_t` (`direction : 2`, `ref_idx_l* : 2`,
+/// `ref*_list : 1` — 2+2+2+1+1 = 8 bits), so `sizeof(MeCandidate) == 1`, and
+/// the port stores the same single byte.
+///
+/// **Why one byte and not five.** `me_candidate_array` is sized
+/// `SQUARE_PU_COUNT * max_cand` per b64 and lives for the whole frame, so its
+/// width is multiplied by the b64 count: five `pub u8` fields cost
+/// `85 * 23 * 5 = 9,775` bytes per b64 against C's 1,955, and at
+/// 2048x2048 (1,024 b64s) that is 10.01 MB of live heap against C's 2.00 MB.
+/// MEASURED at the inter arm's peak with massif — `MeB64Output::reset` is
+/// exactly the 10.01 MB entry of `benchmarks/mem_massif_2026-09-03.meta`.
+/// Packing is byte-inert by construction: every write already masked to the
+/// bitfield width, and the accessors below re-derive the same masked values.
+///
+/// The five accessors **mask on read** and [`MeCandidate::set`] masks on
+/// write, so the truncation C performs — notably `ref0_list = 24` becoming
+/// `0` — is reproduced rather than accidentally widened.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct MeCandidate {
-    /// C `direction : 2`.
-    pub direction: u8,
-    /// C `ref_idx_l0 : 2`.
-    pub ref_idx_l0: u8,
-    /// C `ref_idx_l1 : 2`.
-    pub ref_idx_l1: u8,
-    /// C `ref0_list : 1`.
-    pub ref0_list: u8,
-    /// C `ref1_list : 1`.
-    pub ref1_list: u8,
+    /// The five C bitfields in one byte. The BIT ORDER is the port's own —
+    /// nothing reads this byte through an FFI boundary, only the accessors —
+    /// so it does not have to match any particular C ABI's field packing.
+    bits: u8,
 }
 
 impl MeCandidate {
@@ -236,11 +243,70 @@ impl MeCandidate {
         ref0_list: u8,
         ref1_list: u8,
     ) {
-        self.direction = direction & 0x3;
-        self.ref_idx_l0 = ref_idx_l0 & 0x3;
-        self.ref_idx_l1 = ref_idx_l1 & 0x3;
-        self.ref0_list = ref0_list & 0x1;
-        self.ref1_list = ref1_list & 0x1;
+        self.bits = (direction & 0x3)
+            | ((ref_idx_l0 & 0x3) << 2)
+            | ((ref_idx_l1 & 0x3) << 4)
+            | ((ref0_list & 0x1) << 6)
+            | ((ref1_list & 0x1) << 7);
+    }
+
+    /// [`set`](Self::set) on a fresh value.
+    #[must_use]
+    pub fn new(
+        direction: u8,
+        ref_idx_l0: u8,
+        ref_idx_l1: u8,
+        ref0_list: u8,
+        ref1_list: u8,
+    ) -> Self {
+        let mut c = Self::default();
+        c.set(direction, ref_idx_l0, ref_idx_l1, ref0_list, ref1_list);
+        c
+    }
+
+    /// C `direction : 2` — 0 = list-0 uni, 1 = list-1 uni, 2 = bi.
+    #[inline]
+    #[must_use]
+    pub const fn direction(self) -> u8 {
+        self.bits & 0x3
+    }
+    /// C `ref_idx_l0 : 2`.
+    #[inline]
+    #[must_use]
+    pub const fn ref_idx_l0(self) -> u8 {
+        (self.bits >> 2) & 0x3
+    }
+    /// C `ref_idx_l1 : 2`.
+    #[inline]
+    #[must_use]
+    pub const fn ref_idx_l1(self) -> u8 {
+        (self.bits >> 4) & 0x3
+    }
+    /// C `ref0_list : 1`.
+    #[inline]
+    #[must_use]
+    pub const fn ref0_list(self) -> u8 {
+        (self.bits >> 6) & 0x1
+    }
+    /// C `ref1_list : 1`.
+    #[inline]
+    #[must_use]
+    pub const fn ref1_list(self) -> u8 {
+        (self.bits >> 7) & 0x1
+    }
+}
+
+impl core::fmt::Debug for MeCandidate {
+    /// Print the five C fields, not the packed byte — every dump that reads
+    /// this type reads it as C's five bitfields.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MeCandidate")
+            .field("direction", &self.direction())
+            .field("ref_idx_l0", &self.ref_idx_l0())
+            .field("ref_idx_l1", &self.ref_idx_l1())
+            .field("ref0_list", &self.ref0_list())
+            .field("ref1_list", &self.ref1_list())
+            .finish()
     }
 }
 

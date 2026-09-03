@@ -1,0 +1,25 @@
+# MeCandidate packed to ONE BYTE (C's own width) — peak heap AND peak RSS, port and C.
+# commit_before=01ef6f1f1 (main)  commit_after=<this commit>
+# host=r7900x  x86_64-unknown-linux-gnu  24 threads  29 GiB
+# grid: content=gradient  sizes={1280,1536,1920,2048} square  qp=40  preset=13  8-bit 4:2:0
+# arms: still = perf_encode default; videokey = SVTAV1_VIDEO=1 + the matched low-delay-P GOP;
+#       inter = videokey + SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3.  C: SVT_AVIF=0 + SVT_FRAMES,
+#       SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 (tools/perf_gate.sh's pairing).
+# harness: rust/tools/mem_peak.sh.  heap = heaptrack peak heap memory consumption (ONE encode
+#       per cell).  rss = /usr/bin/time -v maximum resident set size, MEDIAN OF 5.
+# Every cell produced a non-empty .obu; obu_before == obu_after on all 12 cells (byte-inert).
+# C's obu differs from the port's on the inter arm at these sizes (the byte frontier is 64/128/256
+# square) — read the inter port/C columns as two encoders doing SIMILAR, not identical, work.
+size	arm	heap_before_MB	heap_after_MB	heap_c_MB	rss_before_KiB	rss_after_KiB	rss_c_KiB	obu_port	obu_c
+1280	still	32.26	32.26	49.28	36568	36564	37876	34293	34293
+1280	videokey	38.67	38.67	48.76	43884	43812	42784	81771	81771
+1280	inter	55.90	52.77	51.22	61288	56256	48280	81815	81837
+1536	still	45.95	45.95	68.16	50164	50200	50456	42501	42501
+1536	videokey	54.72	54.72	67.26	60180	60284	56496	102930	102930
+1536	inter	79.58	75.07	70.80	85556	78268	64620	102993	104557
+1920	still	71.18	71.18	102.60	76060	75848	73484	65904	65904
+1920	videokey	84.11	84.11	100.99	90076	90048	83056	127832	127832
+1920	inter	123.02	115.98	106.52	124984	122544	94632	127879	135825
+2048	still	80.80	80.80	115.72	85892	85744	82084	70893	70893
+2048	videokey	95.68	95.68	113.82	100956	100644	92632	139700	139700
+2048	inter	139.62	131.61	120.12	141144	138420	105828	139762	148295

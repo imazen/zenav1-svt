@@ -357,15 +357,15 @@ pub fn perform_gm_detection(pic: &MePicParams, me_ctx: &MeContext, out: &mut MeB
         }
 
         let cand = out.me_candidate_array[n_idx as usize * pic.max_cand];
-        let list_index = usize::from(if cand.direction == 0 || cand.direction == 2 {
-            cand.ref0_list
+        let list_index = usize::from(if cand.direction() == 0 || cand.direction() == 2 {
+            cand.ref0_list()
         } else {
-            cand.ref1_list
+            cand.ref1_list()
         });
-        let ref_pic_index = usize::from(if cand.direction == 0 || cand.direction == 2 {
-            cand.ref_idx_l0
+        let ref_pic_index = usize::from(if cand.direction() == 0 || cand.direction() == 2 {
+            cand.ref_idx_l0()
         } else {
-            cand.ref_idx_l1
+            cand.ref_idx_l1()
         });
 
         let packed = me_ctx.p_sb_best_mv[list_index][ref_pic_index][n_idx as usize];

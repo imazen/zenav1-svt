@@ -1,0 +1,125 @@
+ONE BYTE INSTEAD OF FIVE: -8.01 MB OF LIVE HEAP ON THE INTER ARM AT 4 MP, AND
+THE PREDICTION AND THE MEASUREMENT AGREE TO 0.1 %.
+
+date:   2026-09-03
+host:   r7900x — AMD Ryzen 7900X, 24 threads, x86_64-unknown-linux-gnu, 29 GiB.
+        HEAP is heaptrack; RSS is `/usr/bin/time -v` max RSS, median of 5.
+        These are DIFFERENT QUANTITIES and the change moves them by different
+        amounts — see §3.
+before: 01ef6f1f1 (main)
+after:  before + this commit (nothing else)
+data:   benchmarks/mem_mecand_2026-09-03.tsv (12 cells x {heap, rss} x {port, C})
+tool:   rust/tools/mem_peak.sh — the harness that produced this file, now IN
+        THE REPO rather than in a scratch directory. `MP_MODE=heap` for the
+        heaptrack half, default `rss` for the other.
+
+=================== 1. WHAT CHANGED ===========================================
+
+C's `MeCandidate` (me_sb_results.h:29-35) is five bitfields of ONE `uint8_t`:
+`direction : 2`, `ref_idx_l0 : 2`, `ref_idx_l1 : 2`, `ref0_list : 1`,
+`ref1_list : 1` — 8 bits exactly, so `sizeof(MeCandidate) == 1`. The port
+stored five separate `pub u8` fields, so its `MeCandidate` was **5 bytes**.
+
+That width is multiplied by the frame: `me_candidate_array` is
+`SQUARE_PU_COUNT (85) * max_cand (23) = 1,955` entries PER b64, and it is live
+from the picture-level motion search until the frame is packed. At 2048x2048
+there are 1,024 b64s, so
+
+  port   1,955 * 5 * 1,024 = 10.01 MB
+  C      1,955 * 1 * 1,024 =  2.00 MB
+  excess                      8.01 MB
+
+The change packs the five fields into one `u8`, with `set()` masking on write
+exactly as before and five `const` accessors masking on read. Every existing
+write already went through `set()`; the reads are ~20 call sites across
+`inter_me_arm`, `inter_me::candidates`, `inter_md_arm` and two tests. Nothing
+crosses an FFI boundary, so the BIT ORDER inside the byte is the port's own
+choice and does not have to match any C ABI's field packing.
+
+=================== 2. MEASURED, HEAP =========================================
+
+  size  arm        before    after    delta    after/before
+  1280  still       32.26    32.26     0.00      1.000
+  1280  videokey    38.67    38.67     0.00      1.000
+  1280  inter       55.90    52.77    -3.13      0.944
+  1536  still       45.95    45.95     0.00      1.000
+  1536  videokey    54.72    54.72     0.00      1.000
+  1536  inter       79.58    75.07    -4.51      0.943
+  1920  still       71.18    71.18     0.00      1.000
+  1920  videokey    84.11    84.11     0.00      1.000
+  1920  inter      123.02   115.98    -7.04      0.943
+  2048  still       80.80    80.80     0.00      1.000
+  2048  videokey    95.68    95.68     0.00      1.000
+  2048  inter      139.62   131.61    -8.01      0.943
+
+**The still and videokey arms do not move by one printable digit**, which is
+the control: neither runs the picture-level motion search, so neither allocates
+a `me_candidate_array`. The inter arm moves by 5.6-5.7 % at every size, and at
+2048x2048 the delta is 8.01 MB against the 8.008 MB the arithmetic above
+predicts — agreement to 0.1 %, on a quantity derived from C's struct
+definition and the port's own array sizing before the measurement was taken.
+
+Provenance of the 10.01 MB figure: it is one line of
+`benchmarks/mem_massif_2026-09-03.meta`'s peak decomposition
+(`MeB64Output::reset` under `finish_grow`, 10.01 M for `me_candidate_array` and
+2.44 M for `me_mv_array` — the second is `85 * 7` `Mv` per b64 and is
+unchanged here).
+
+=================== 3. MEASURED, RSS — AND IT IS NOT THE SAME NUMBER ==========
+
+  size  arm      before KiB  after KiB   delta   C KiB   port/C before -> after
+  1280  inter        61288      56256   -5032   48280     1.269 -> 1.165
+  1536  inter        85556      78268   -7288   64620     1.324 -> 1.211
+  1920  inter       124984     122544   -2440   94632     1.318 -> 1.295
+  2048  inter       141144     138420   -2724  105828     1.331 -> 1.308
+  (still/videokey move by less than the 0.6 % run-to-run spread; C's two
+   independent measurements of the same cells agree within 0.6 %, which is the
+   control on that spread.)
+
+**The RSS delta is NOT the heap delta, in either direction.** At 1280 the RSS
+saving (5.03 MiB) is LARGER than the heap saving (3.13 MB); at 2048 it is a
+third of it (2.72 MiB against 8.01 MB). Peak RSS is the high-water of resident
+PAGES, and the allocator is free to satisfy other requests out of the address
+range this array no longer occupies — so removing live bytes bounds the RSS
+saving from neither side. Quote heap deltas from the heap column and RSS
+deltas from the RSS column; do not convert one into the other.
+
+=================== 4. WHERE THIS LEAVES THE MEMORY AXIS ======================
+
+  port/C peak HEAP, 2048x2048:  still 0.70x   videokey 0.84x   inter 1.096x
+                                (inter was 1.162x)
+  port/C peak RSS,  2048x2048:  still 1.045x  videokey 1.086x  inter 1.308x
+                                (inter was 1.331x)
+
+On the HEAP the port is now inside 25 % of C on all three arms and at all four
+sizes. On RSS the inter arm is not, and 18.87 MB of that residual is
+`perf_encode`'s own three copies of the input sequence against
+`perf_c_encode`'s one — see benchmarks/mem_massif_2026-09-03.meta §3, which is
+a HARNESS asymmetry and not the encoder.
+
+=================== 5. CPU: NEUTRAL ===========================================
+
+Interleaved paired A/B of the two binaries, inter arm, median of 9 rounds per
+cell (r7900x, same session):
+
+  512 p8 1.0022   512 p13 1.0033   1024 p8 0.9934   1024 p13 1.0026
+  2048 p8 0.9933  2048 p13 0.9868      (after/before; <1 is faster)
+
+Within noise at the small cells and slightly faster at 2048 — consistent with a
+5x smaller array being touched, but not claimed as a CPU win.
+
+=================== NOT ESTABLISHED ===========================================
+  * Any aarch64 memory number. Different allocator, different page size. The
+    byte-identity gates were run on BOTH ISAs; the memory numbers are x86 only.
+  * Any preset but 13, content but gradient, qp but 40, size outside 1280-2048.
+  * Repeat variance on the heap half: one encode per cell (the RSS half is a
+    median of five).
+  * That `max_cand = 23` / `max_refs = 7` are the right SIZES. They are the
+    port's hardcoded upper bounds; C derives them per-config from
+    `svt_aom_get_max_allocated_me_refs` (pcs.c:88-93) as
+    `l0 + l1 + l0*l1 + (l0-1) + (l1 == 3)`, which for a single-reference
+    low-delay list-0 configuration is **1**, not 23. Sizing them C's way would
+    remove most of the remaining 2.00 + 2.44 MB, and is NOT attempted here
+    because `max_cand` is also the array's row STRIDE and `max_l0` its list-1
+    offset — a change to any of them is a byte-risk that needs its own gate
+    run. Recorded as a lead, not as a result.

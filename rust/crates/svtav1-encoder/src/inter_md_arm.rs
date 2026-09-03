@@ -457,11 +457,11 @@ pub fn build_inter_candidates(
         f.me.cands_for(b.org_x, b.org_y, b.bsize)
             .iter()
             .map(|c| MeCandidateRef {
-                direction: c.direction,
-                ref_idx_l0: c.ref_idx_l0,
-                ref_idx_l1: c.ref_idx_l1,
-                ref0_list: c.ref0_list,
-                ref1_list: c.ref1_list,
+                direction: c.direction(),
+                ref_idx_l0: c.ref_idx_l0(),
+                ref_idx_l1: c.ref_idx_l1(),
+                ref0_list: c.ref0_list(),
+                ref1_list: c.ref1_list(),
             })
             .collect();
     let me_totals = [me_cands.len() as u8];

@@ -725,11 +725,11 @@ fn single_ref_candidate_array_matches_the_traced_shape() {
     let c = out.me_candidate_array[0];
     assert_eq!(
         (
-            c.direction,
-            c.ref_idx_l0,
-            c.ref_idx_l1,
-            c.ref0_list,
-            c.ref1_list
+            c.direction(),
+            c.ref_idx_l0(),
+            c.ref_idx_l1(),
+            c.ref0_list(),
+            c.ref1_list()
         ),
         (0, 0, 0, 0, 0)
     );
@@ -762,15 +762,18 @@ fn mrp_off_candidate_array_emits_two_unipred_and_one_bipred() {
 
     assert_eq!(out.total_me_candidate_index[0], 3);
     let c0 = out.me_candidate_array[0];
-    assert_eq!((c0.direction, c0.ref0_list, c0.ref1_list), (0, 0, 0));
+    assert_eq!((c0.direction(), c0.ref0_list(), c0.ref1_list()), (0, 0, 0));
     let c1 = out.me_candidate_array[1];
     assert_eq!(
-        (c1.direction, c1.ref0_list, c1.ref1_list),
+        (c1.direction(), c1.ref0_list(), c1.ref1_list()),
         (1, 0, 1),
         "ref0_list is C's literal 24 truncated into a 1-bit field"
     );
     let c2 = out.me_candidate_array[2];
-    assert_eq!((c2.direction, c2.ref0_list, c2.ref1_list), (BI_PRED, 0, 1));
+    assert_eq!(
+        (c2.direction(), c2.ref0_list(), c2.ref1_list()),
+        (BI_PRED, 0, 1)
+    );
     assert_eq!(ctx.me_distortion[0], 500, "best of the two lists");
     // L1's MV lands at max_l0 offset inside the PU's MV slot group.
     assert_eq!(out.me_mv_array[pic.max_l0].x, -1);

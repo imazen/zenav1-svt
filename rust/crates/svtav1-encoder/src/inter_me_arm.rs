@@ -352,15 +352,15 @@ impl FrameMe {
             let Some(c) = out.me_candidate_array.get(off * self.max_cand + i) else {
                 break;
             };
-            if (c.direction == 0 || c.direction == 2)
-                && list_idx == usize::from(c.ref0_list)
-                && ref_idx == usize::from(c.ref_idx_l0)
+            if (c.direction() == 0 || c.direction() == 2)
+                && list_idx == usize::from(c.ref0_list())
+                && ref_idx == usize::from(c.ref_idx_l0())
             {
                 return true;
             }
-            if (c.direction == 1 || c.direction == 2)
-                && list_idx == usize::from(c.ref1_list)
-                && ref_idx == usize::from(c.ref_idx_l1)
+            if (c.direction() == 1 || c.direction() == 2)
+                && list_idx == usize::from(c.ref1_list())
+                && ref_idx == usize::from(c.ref_idx_l1())
             {
                 return true;
             }
@@ -433,16 +433,19 @@ impl FrameMe {
         let c = out.me_candidate_array.get(off * self.max_cand + cand)?;
         // C `BI_PRED` is 2; a bipred candidate names one slot per list and has
         // no single MV to return.
-        if c.direction >= 2 {
+        if c.direction() >= 2 {
             return None;
         }
-        let ref_idx = usize::from(if c.direction == 1 {
-            c.ref_idx_l1
+        let ref_idx = usize::from(if c.direction() == 1 {
+            c.ref_idx_l1()
         } else {
-            c.ref_idx_l0
+            c.ref_idx_l0()
         });
-        let slot = off * self.max_refs + if c.direction == 1 { self.max_l0 } else { 0 } + ref_idx;
-        out.me_mv_array.get(slot).copied().map(|m| (c.direction, m))
+        let slot = off * self.max_refs + if c.direction() == 1 { self.max_l0 } else { 0 } + ref_idx;
+        out.me_mv_array
+            .get(slot)
+            .copied()
+            .map(|m| (c.direction(), m))
     }
 }
 
@@ -1137,12 +1140,12 @@ impl FrameMe {
             out.me_candidate_array
                 .get(block_index * self.max_cand + i)
                 .is_some_and(|c| {
-                    ((c.direction == 0 || c.direction == 2)
-                        && list_idx == usize::from(c.ref0_list)
-                        && ref_idx == usize::from(c.ref_idx_l0))
-                        || ((c.direction == 1 || c.direction == 2)
-                            && list_idx == usize::from(c.ref1_list)
-                            && ref_idx == usize::from(c.ref_idx_l1))
+                    ((c.direction() == 0 || c.direction() == 2)
+                        && list_idx == usize::from(c.ref0_list())
+                        && ref_idx == usize::from(c.ref_idx_l0()))
+                        || ((c.direction() == 1 || c.direction() == 2)
+                            && list_idx == usize::from(c.ref1_list())
+                            && ref_idx == usize::from(c.ref_idx_l1()))
                 })
         })
     }
@@ -1322,23 +1325,7 @@ mod recycle_tests {
                 .zip(&f.me_candidate_array)
                 .enumerate()
             {
-                assert_eq!(
-                    (
-                        rc.direction,
-                        rc.ref_idx_l0,
-                        rc.ref_idx_l1,
-                        rc.ref0_list,
-                        rc.ref1_list
-                    ),
-                    (
-                        fc.direction,
-                        fc.ref_idx_l0,
-                        fc.ref_idx_l1,
-                        fc.ref0_list,
-                        fc.ref1_list
-                    ),
-                    "b64 {i} candidate {j}"
-                );
+                assert_eq!(rc, fc, "b64 {i} candidate {j}");
             }
             assert_eq!(
                 (
