@@ -56,6 +56,36 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`restoration::compute_stats` re-derived by ROW-PAIR CORRELATION — about 9x
+  fewer multiply-accumulates, byte-identical, 1.074x on the whole preset-6
+  still frame.** The old NEON arm issued one dot product per `(region row, k,
+  t)` triple — 1,225 per row for `H` plus 49 for `M` at `wiener_win = 7`. Most
+  of those are the SAME dot: `H[k][t]` depends only on the pair of `d` ROWS and
+  the pair of column offsets, so row-pair sharing collapses 1,225 to 322 per
+  `d` row and an exact O(1) sliding-window update over the column offset
+  collapses that to 85. `docs/perf-status.md` had recorded the opposite
+  ("the MAC count is inherent") and prescribed a hoisted reduce with an i64
+  drain interval; the correction and the evidence are in that file. The i32
+  flush boundary is still ONE ROW, so no drain interval exists to pin.
+  Byte-identical: `c_parity_wiener::compute_stats_all_tiers_match_c` (220
+  iterations, widths 1..90, both window sizes, every dispatch tier, against the
+  real exported C symbol), plus the full gate set. A/B, every cell `ident=Y`:
+  videokey arm 1.030-1.053x (n=25), still arm 1.074x at 256 and 512 preset 6
+  (n=15), NULL at preset 8 where loop restoration does not run — the control.
+  Records `benchmarks/compute_stats_rowpair_ab_2026-09-03.*`. NOT MEASURED: the
+  x86 `_v3` arm, which still uses the old per-pixel gather.
+- **First attribution of the VIDEO-MODE KEY FRAME, and a correction to the
+  standing 44-52 % figure.** All three arms (still / video-mode key frame /
+  inter) re-measured in one session after the ME SIMD chunk: the video-mode key
+  frame is now **50-64 %** of the port's excess on an inter cell, and the inter
+  frame 20-21 %. Per-class and per-symbol attribution at 512x512 preset 8 in
+  `benchmarks/perf_videokey_attrib_2026-09-03.{tsv,meta}`; two findings no
+  earlier record carries — 94.8 % of `nz_map_ctx`'s time is inside the RDOQ
+  trellis (so re-joining it puts RDOQ at ~3.0x and ~24 % of the excess, the
+  largest single item), and the video config adds 2.69 ms of allocator work to
+  the port against 0.000 ms to C. Records
+  `benchmarks/perf_2026-09-03-arm3-{still,videokey,inter}.*`.
+
 - **`dsp::sad::sad` was a SECOND TRANSCRIPTION of the kernel `me_sad`
   transcribes, and is now a thin alias for it.** It carried its own scalar /
   AVX2 / NEON arms; two transcriptions of one C function with nothing pointing

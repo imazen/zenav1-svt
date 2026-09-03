@@ -108,6 +108,101 @@
 > partial, so the frontier they describe is almost entirely 64-aligned and this
 > surface was invisible to them; `inter_completion_scan.sh` is what sees it.
 >
+> **VIDEO-KEY CPU (2026-09-03, aarch64 / Apple M4 Pro) — the three arms
+> re-measured in ONE session after the ME SIMD chunk, and the first attribution
+> of the video-mode key frame. Records:
+> `benchmarks/perf_2026-09-03-arm3-{still,videokey,inter}.{tsv,raw.tsv,meta}`
+> (paired interleaved, 25 rounds/cell, gradient qp 40, p8) and
+> `benchmarks/perf_videokey_attrib_2026-09-03.{tsv,meta}` (paired
+> `/usr/bin/sample` profiles of BOTH arms on BOTH binaries at 512x512 p8).**
+>
+> | preset 8, port/C | 64 | 128 | 256 | 512 | slope ratio |
+> |---|---|---|---|---|---|
+> | still    | 0.90x | 1.51x | 2.53x | 2.71x | 2.81x |
+> | videokey | 1.49x | 2.34x | 2.95x | 3.14x | 3.21x |
+> | inter    | 1.76x | 2.43x | 2.99x | 3.29x* | 3.23x |
+>
+> (* 512 inter is `ident=N`, as in every prior record, and is out of the fit.
+> Every other cell of all three arms is `ident=Y`.)
+>
+> **CORRECTION: THE VIDEO-MODE KEY FRAME IS NOW 50-64 % OF THE INTER CELL'S
+> EXCESS, NOT 44-52 %.** The older figure below was measured BEFORE the ME SIMD
+> chunk. That chunk cut the inter frame 1.75x and left the key frame untouched,
+> so the key frame's share ROSE and the inter frame's FELL from 35 % to 20-21 %.
+> Differencing the three arms above (a subtraction of measured quantities):
+>
+> | size | still key frame | video config on it | the inter frame | total excess |
+> |---|---|---|---|---|
+> | 64  | -0.020 (-3.8 %) | +0.262 (**50.4 %**) | +0.278 (53.5 %) | 0.520 ms |
+> | 128 | +0.161 (8.3 %)  | +1.192 (**61.2 %**) | +0.594 (30.5 %) | 1.947 ms |
+> | 256 | +1.648 (19.3 %) | +5.148 (**60.4 %**) | +1.730 (20.3 %) | 8.526 ms |
+> | 512 | +6.585 (15.1 %) | +27.774 (**63.5 %**) | +9.385 (21.5 %) | 43.744 ms |
+>
+> WHAT THE VIDEO CONFIG ADDS TO THE KEY FRAME, BY CLASS at 512x512 p8 (port
+> delta / C delta of the same subtraction; the port's deltas sum to 39.4 ms
+> against the 39.887 ms the paired gate measures, so the profile accounts for
+> ~99 % of it):
+>
+> | class | port | C | ratio | excess | % of the 27.774 ms excess |
+> |---|---:|---:|---:|---:|---:|
+> | COEFF_CTX    | 7.037 | 2.265 | 3.11x | 4.772 | **17.2 %** |
+> | CDEF         | 3.636 | 0.367 | **9.92x** | 3.269 | 11.8 % |
+> | ALLOC        | 2.690 | 0.000 | **inf** | 2.690 | 9.7 % |
+> | INTRA_PRED   | 3.271 | 0.687 | 4.76x | 2.584 | 9.3 % |
+> | LOOP_RESTORE | 3.073 | 0.513 | 5.99x | 2.560 | 9.2 % |
+> | QUANT_RDOQ   | 5.660 | 3.405 | 1.66x | 2.255 | 8.1 % |
+> | MD_DRIVER    | 2.593 | 0.762 | 3.40x | 1.831 | 6.6 % |
+> | LIBC_MEM     | 2.042 | 0.489 | 4.18x | 1.553 | 5.6 % |
+> | RANGE_CODER  | 1.657 | 0.299 | 5.55x | 1.359 | 4.9 % |
+> | DISTORTION   | 1.423 | 0.179 | 7.97x | 1.245 | 4.5 % |
+> | FWD_TXFM     | 1.580 | 0.463 | 3.41x | 1.117 | 4.0 % |
+> | INV_TXFM     | 1.511 | 0.487 | 3.10x | 1.024 | 3.7 % |
+> | COEFF_WRITE  | 1.517 | 0.603 | 2.52x | 0.914 | 3.3 % |
+> | SYNTAX_WRITE | 0.782 | 0.000 | inf   | 0.782 | 2.8 % |
+> | DEBLOCK      | 0.361 | 0.098 | 3.67x | 0.263 | 0.9 % |
+>
+> Port symbols, ten largest additions: `nz_map_ctx` 4.236,
+> `quant::optimize_b` 3.871, `restoration::compute_stats` 2.563,
+> `cdef::cdef_filter_block` 1.556, `coeff_rate::cost_coeffs_txb` 1.338,
+> `intra_pred::dr_predictor_edged` 1.321, `write_coeffs_txb_1d` 1.317,
+> `_xzm_free` 1.283, `tx_pipeline::tx_unit_inner` 1.017,
+> `OdEcEnc::normalize` 1.004. C's five: `svt_aom_quantize_inv_quantize` 3.000,
+> `svt_av1_cost_coeffs_txb` 1.589, `svt_av1_compute_stats_neon` 0.468,
+> `full_loop_core` 0.359, `av1_write_coeffs_txb_1d` 0.321.
+>
+> **THE CLASS TABLE UNDERSTATES RDOQ AND OVERSTATES COEFF_CTX. MEASURED:
+> 94.8 % of `nz_map_ctx`'s self time is inside `quant::optimize_b`**
+> (`tools/perf_profile/ancestor.py` over the videokey arm: 1,431 of 1,509 self
+> samples of the `nz_map_ctx|nz_mag|br_ctx` family, 4.738 ms of the 50.326 ms
+> frame; `cost_coeffs_txb` is 3.8 %, `write_coeffs_txb_1d` 0.9 %). C's trellis
+> derives the same contexts INSIDE `svt_aom_quantize_inv_quantize`, so the
+> classifier splits the port's RDOQ in two and leaves C's whole. Re-joined, the
+> port's RDOQ is ~10.2 ms against C's 3.4 — **~3.0x and ~24 % of the video
+> config's excess, the largest single item** — and COEFF_CTX proper drops to
+> near parity. **Rank by excess, and join `nz_map_ctx` to RDOQ before ranking.**
+>
+> THREE THINGS THIS SAYS THAT THE 256x256 RECORD DID NOT.
+> * **ALLOC is the third-largest item and C's is ZERO** — 2.690 ms added on the
+>   port (`_xzm_free` 1.28, `calloc` entry 0.26, `madvise` 0.24, `_xzm_xzone_malloc`
+>   0.22, tail) against **0.000** on C, every C symbol below the 0.02 ms cut. With
+>   LIBC_MEM (`__bzero` 0.71, `_platform_memmove` 0.66, `_platform_memset` 0.62)
+>   the memory-traffic pair is 4.24 ms, 15.3 % of the excess. NOT MEASURED: which
+>   structure. This is a DIFFERENT population from the one
+>   `benchmarks/alloc_bufpool_null_2026-08-13.meta` measured NULL — that pooled
+>   the per-block decision `Vec`s; these are buffers the video config turns on.
+> * **CDEF's 9.92x is the worst ratio of any class** and it outranks loop
+>   restoration at this size. `cdef_filter_block` (1.556) is NEON on both sides
+>   — a quality item; `cdef_find_dir` (0.709) is a coverage gap, still scalar by
+>   source read, against `svt_aom_cdef_find_dir_8bit_neon`
+>   (`cdef_block_neon.c:348`).
+> * **QUANT_RDOQ as the classifier reports it is NOT a lever** (1.66x, the
+>   closest to parity here) — but see the re-join above: it is the largest lever
+>   once `nz_map_ctx` is put back where it belongs.
+>
+> SINGLE CELL: 512x512 p8. The class ORDER differs from the 2026-09-02 256x256
+> record (CDEF and ALLOC move up), so neither ordering is size-independent.
+
+
 > **ME SIMD COVERAGE LANDED (2026-09-02, aarch64 / Apple M4 Pro) — the five
 > scalar motion-search kernels are now vectorised, and the INTER cell moved
 > 1.15x.** Records: `benchmarks/{me_sad,ext_sad8,subpel_stream,me_dist,
@@ -251,7 +346,8 @@
 > unrelated.
 >
 > WHAT THIS DOES NOT DO. It does not touch the VIDEO-MODE KEY FRAME, which the
-> differencing below puts at 44-52 % of the port's excess on an inter cell —
+> differencing below puts at 44-52 % of the port's excess on an inter cell
+> (**50-64 % as re-measured 2026-09-03 — see the VIDEO-KEY CPU block above**) —
 > a bigger item than the inter frame at almost every cell. The kernels it
 > lands on are the inter frame's 61 % motion-search distortion.
 
@@ -303,7 +399,9 @@
 >
 > **HALF the port's excess on an inter cell is the VIDEO-MODE KEY FRAME, not
 > the inter frame.** That share is 44-52 % at EVERY cell measured (both presets,
-> all four sizes) — the most stable number in this table. Encoding the same key
+> all four sizes) — the most stable number in this table. **SUPERSEDED: after the
+> ME SIMD chunk it is 50-64 %; the VIDEO-KEY CPU block above re-measures all
+> three arms in one session.** Encoding the same key
 > frame under the video signal derivation instead of the all-intra one costs the
 > port 3.2x what it costs C, and it is a bigger absolute item than the inter
 > frame at every cell except 64x64 p8. Anyone optimising "the inter path" who
@@ -488,26 +586,66 @@
 >
 > | port function | p6 share | p2 share | C counterpart |
 > |---|---|---|---|
-> | `restoration::compute_stats` (**already NEON** — quality, not coverage) | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
+> | `restoration::compute_stats` (**already NEON** — quality, not coverage; **WORKED 2026-09-03, see below**) | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
 >
-> **WHERE `compute_stats`'s 5.1x LIVES, read from source 2026-09-02 (structure,
-> NOT a measurement — nothing here has been A/B'd).** For each output row the
-> port issues `win2 + win2*(win2+1)/2` = **1,274 separate `dot_i16_neon` calls**
-> at `wiener_win = 7` (`restoration.rs`, the `for i in 0..height` loop). Each
-> call re-enters with four `vdupq_n_s32` zeroed accumulators and leaves through
-> a cross-lane `vaddvq_s32`, so the row loop pays **1,274 horizontal reductions
-> per row** on top of the MACs. The MAC COUNT is inherent — `H` has 1,225
+> **WHERE `compute_stats`'s 5.1x LIVED, AND THE FIX THAT LANDED (2026-09-03).**
+> This paragraph used to record a structural read of the port's NEON arm and a
+> prescription. **The read was right and the CONCLUSION WAS WRONG**; both are
+> kept here because the wrong conclusion sat in this file (and in three agent
+> briefs) for a day.
+>
+> WHAT WAS OBSERVED, and still holds: for each output row the old arm issued
+> `win2 + win2*(win2+1)/2` = **1,274 separate `dot_i16_neon` calls** at
+> `wiener_win = 7`, each re-entering with four `vdupq_n_s32` zeroed
+> accumulators and leaving through a cross-lane `vaddvq_s32`.
+>
+> WHAT WAS CONCLUDED, and is FALSE: *"The MAC COUNT is inherent — `H` has 1,225
 > entries and each needs `width` products — so the lever is not fewer
-> multiplies, it is (a) hoisting the horizontal reduce out of the per-row loop
-> the way C's `svt_av1_compute_stats_neon` does, and (b) reusing `dk` across
-> the inner `t` loop instead of re-streaming it. **The blocker on (a) is
-> overflow**: `d`/`s` are `pixel - avg` in `[-255, 255]`, so a product is
-> <= 65_025 and a 4-lane i32 accumulator carrying a whole 256x256 unit holds
-> `16_384 * 65_025 ~ 1.07e9` — inside i32 by only 2x, which is exactly the kind
-> of margin this repo's SIMD kernels are supposed to ASSERT rather than argue.
-> Anyone taking this needs a periodic drain into i64 and a test that pins the
-> drain interval. This is the largest single p6 item in the table and it is NOT
-> a coverage gap — do not queue it as one.
+> multiplies, it is hoisting the horizontal reduce"*, plus a blocker that any
+> such hoist *"needs a periodic drain into i64 and a test that pins the drain
+> interval"*. Neither survives. Writing `k = (kk, ll)` and `t = (tt, mm)` for
+> the window's column and row offsets,
+>
+> ```text
+>   H[k][t] = sum_i dot( d[i+ll][kk .. kk+width], d[i+mm][tt .. tt+width] )
+> ```
+>
+> the dot depends only on the PAIR OF `d` ROWS and the pair of column offsets,
+> never on `i`, `ll` and `mm` separately — so most of those 1,225 dots are the
+> same dot. Two collapses follow: **row-pair sharing** (parameterise by the top
+> row and the row delta: 1,225 dots per region row become 322 per `d` row) and
+> **column sliding** (for a fixed row pair and column delta the up-to-7 column
+> positions are a sliding window,
+> `P(c1+1) = P(c1) - A[c1]*B[c1+dc] + A[c1+width]*B[c1+dc+width]`, an exact
+> O(1) update: 322 become 85). **1,274 dots per region row become 85 per `d`
+> row plus M's 49 per region row — about 9x fewer multiply-accumulates**, and
+> 134 dot CALLS instead of 1,274, so the per-call reduce overhead the old note
+> blamed falls by the same factor as a side effect. This is the asymptotic
+> shape C's `compute_stats_win7_neon` already had (its step 1 spends ~98
+> products per pixel and steps 3-4 derive the rest from O(width+height) edge
+> deltas) — the 5.1x was **C doing less arithmetic**, not C reducing better.
+> And no i64 drain interval is introduced: the flush boundary is still ONE ROW
+> of products accumulated in `i32`, the grouping the scalar core and the AVX2
+> arm already document, so the `NEON_STATS_MAX_ROW` envelope is untouched.
+>
+> LANDED (commit on 2026-09-03). A/B `tools/perf_ab.sh`, interleaved
+> randomised-order paired rounds, gradient qp40, aarch64 / M4 Pro, **every cell
+> `ident=Y`**; records `benchmarks/compute_stats_rowpair_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}`:
+>
+> | arm | 128 p6 | 128 p8 | 256 p2 | 256 p6 | 256 p8 | 512 p2 | 512 p6 | 512 p8 |
+> |---|---|---|---|---|---|---|---|---|
+> | videokey (n=25) | 1.030x | 1.053x | — | 1.009x | 1.048x | — | 1.016x | 1.036x |
+> | still (n=15) | — | — | 1.005x | **1.074x** | 0.990x | 1.005x | **1.074x** | 1.003x |
+>
+> **The two p8 STILL cells are the control and they are NULL** (both p25/p75
+> spans cross 1.0): at preset >= 7 the still API produces no reconstruction, the
+> post-filters are skipped and loop restoration never runs. Every p6 and
+> videokey cell's span sits entirely below 1.0. Back-solving 1.074x against the
+> 9.83 % p6 frame share puts the FUNCTION at ~3.35x faster, i.e. roughly 1.5x C
+> rather than 5.1x — NOT the 9x the MAC count alone would suggest, because the
+> sub-average build, `find_average` and the H scatter are unchanged. The x86
+> `_v3` arm still uses the old per-pixel gather; the same two collapses apply
+> to it and are UNMEASURED there.
 > | `cdef::cdef_filter_block` (**already NEON** — quality) | 4.70 % | 2.73 % | 5.6x vs `cdef_filter_block_*_neon` |
 > | `restoration::wiener_convolve_add_src` | **2.68 %** | 1.17 % | `svt_av1_wiener_convolve_add_src_neon` (10.3x) |
 > | `cdef::cdef_find_dir` | **2.02 %** | — | `svt_aom_cdef_find_dir*_neon` (15x) |

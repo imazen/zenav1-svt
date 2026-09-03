@@ -50,6 +50,22 @@ and a SIMD-coverage queue ranked by measured frame share; read that before
 optimising anything, because the top entries are already NEON and the queue is
 about quality, not coverage.
 
+**Wall clock, VIDEO-KEY (2026-09-03, CURRENT — read this before the 09-02
+paragraph below).** All three arms re-measured in ONE session after the ME SIMD
+chunk: `benchmarks/perf_2026-09-03-arm3-{still,videokey,inter}.*`. At preset 8
+the arms read still 0.90/1.51/2.53/2.71x, videokey 1.49/2.34/2.95/3.14x, inter
+1.76/2.43/2.99/3.29x at 64/128/256/512. **The video-mode KEY frame is now
+50-64 % of the port's excess on an inter cell, not the 44-52 % the paragraph
+below quotes** — the ME work cut the inter frame and left the key frame alone,
+so its share rose while the inter frame's fell to 20-21 %. What that key frame
+is made of is attributed per class and per symbol at 512x512 p8 in
+`benchmarks/perf_videokey_attrib_2026-09-03.{tsv,meta}`; the two things that
+record says and no earlier one did are that **94.8 % of `nz_map_ctx`'s time is
+inside the RDOQ trellis** (so the classifier's COEFF_CTX/QUANT_RDOQ split hides
+the largest single item — re-joined, RDOQ is ~3.0x and ~24 % of the excess) and
+that **the video config adds 2.69 ms of allocator work to the port and 0.000 ms
+to C**.
+
 **Wall clock, INTER (2026-09-02, first measurement):** `PERF_FRAMES=2` /
 `PERF_VIDEO=1` on `perf_gate.sh`; records
 `benchmarks/perf_2026-09-02-arm-{still,videokey,inter}.*` and

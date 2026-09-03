@@ -1,0 +1,151 @@
+WHAT THE VIDEO CONFIG ADDS TO A KEY FRAME — attribution at 512x512, and the
+first same-session three-arm split taken AFTER the ME SIMD chunk landed.
+
+date:   2026-09-03
+host:   mac — Apple M4 Pro, 12 logical cores, aarch64-apple-darwin. No foreign
+        load: `ps` showed no other cargo/encoder process for the whole run.
+commit: 22fd10e76 (main; the compute_stats row-pair change is the NEXT commit
+        and is NOT in these numbers).
+cell:   gradient 512x512 qp 40 preset 8, 8-bit 4:2:0. Both arms byte-identical
+        to C at this cell (`ident=Y` in every perf_gate row below).
+scale:  benchmarks/perf_2026-09-03-arm3-{still,videokey,inter}.tsv — paired
+        interleaved, randomised order per round, 25 rounds/cell, all three
+        arms run back to back in ONE session by ~/tmp/zsvt/arms.sh.
+shares: /usr/bin/sample, 1 ms, 20 s steady state, 15.2-15.4 k leaf samples per
+        arm per side. tools/perf_profile/{prof.sh,selftime.py,classify.py}.
+data:   benchmarks/perf_videokey_attrib_2026-09-03.tsv
+
+============ 1. THE THREE ARMS, SAME SESSION, POST-ME-SIMD =====================
+
+The 2026-09-02 three-arm record measured its STILL arm in a different session
+from its VIDEOKEY and INTER arms, and its INTER arm on a pre-SIMD binary. This
+run measures all three back to back on one binary, so the subtraction below
+carries no cross-session drift.
+
+  preset 8, port ms / C ms (ratio)
+  size   still                videokey              inter (2 frames)
+   64    0.188 / 0.208 (0.90) 0.746 / 0.504 (1.49)  1.212 / 0.692 (1.76)
+  128    0.494 / 0.333 (1.51) 2.392 / 1.039 (2.34)  3.318 / 1.371 (2.43)
+  256    2.739 / 1.091 (2.53) 10.255 / 3.459 (2.95) 12.816 / 4.290 (2.99)
+  512   10.439 / 3.854 (2.71) 50.326 / 15.967 (3.14) 62.891 / 19.147 (3.29)*
+  slope-ratio  2.81x               3.21x                 3.23x
+
+  (* the 512 INTER cell is ident=N — it compares two encoders making different
+  decisions — and is excluded from the inter fit, as in every prior record.)
+
+DIFFERENCING THE ARMS (a subtraction of measured quantities, never a
+projection) splits the port's excess over C on an inter cell three ways:
+
+  size  still key frame   video config on it   the inter frame   total excess
+   64    -0.020  (-3.8%)   +0.262  (50.4%)      +0.278  (53.5%)    0.520
+  128    +0.161   (8.3%)   +1.192  (61.2%)      +0.594  (30.5%)    1.947
+  256    +1.648  (19.3%)   +5.148  (60.4%)      +1.730  (20.3%)    8.526
+  512    +6.585  (15.1%)   +27.774 (63.5%)      +9.385  (21.5%)   43.744
+
+**CORRECTION TO THE STANDING FIGURE.** docs/perf-status.md and four agent
+briefs quote "44-52 % of the port's excess on an inter cell is the video-mode
+key frame". That was measured BEFORE the ME SIMD chunk. The ME work cut the
+inter frame 1.75x and left the key frame untouched, so the key frame's share
+ROSE: it is now **50-64 %** (50.4 / 61.2 / 60.4 / 63.5 at 64/128/256/512 p8),
+and the inter frame's share FELL from 35 % to 20-21 % at 256 and above. The
+video-mode key frame is now the largest component at every size except 64x64,
+where it ties the inter frame.
+
+The video config costs the port 3.09x (256) and 3.29x (512) what it costs C —
+higher than the still key frame's own 2.53x / 2.71x, so it is not merely "more
+of the same work".
+
+============ 2. WHAT THAT ADD IS MADE OF, BY CLASS (512x512 p8) ================
+
+port delta = videokey_ms - still_ms on the port; C delta likewise on C. The
+port's deltas sum to 39.4 ms against the 39.887 ms the paired gate measures for
+the same subtraction, i.e. the profile accounts for ~99 % of it.
+
+  class          port_D    C_D   ratio   excess   % of the 27.774 ms excess
+  COEFF_CTX       7.037   2.265   3.11    4.772     17.2 %
+  CDEF            3.636   0.367   9.92    3.269     11.8 %
+  ALLOC           2.690   0.000    inf    2.690      9.7 %
+  INTRA_PRED      3.271   0.687   4.76    2.584      9.3 %
+  LOOP_RESTORE    3.073   0.513   5.99    2.560      9.2 %
+  QUANT_RDOQ      5.660   3.405   1.66    2.255      8.1 %
+  MD_DRIVER       2.593   0.762   3.40    1.831      6.6 %
+  LIBC_MEM        2.042   0.489   4.18    1.553      5.6 %
+  RANGE_CODER     1.657   0.299   5.55    1.359      4.9 %
+  DISTORTION      1.423   0.179   7.97    1.245      4.5 %
+  FWD_TXFM        1.580   0.463   3.41    1.117      4.0 %
+  INV_TXFM        1.511   0.487   3.10    1.024      3.7 %
+  COEFF_WRITE     1.517   0.603   2.52    0.914      3.3 %
+  SYNTAX_WRITE    0.782   0.000    inf    0.782      2.8 %
+  DEBLOCK         0.361   0.098   3.67    0.263      0.9 %
+  OTHER           0.632   0.681   0.93   -0.049     -0.2 %
+
+By SYMBOL, the port's ten largest additions:
+
+  +4.236  COEFF_CTX     entropy::coeff_c::nz_map_ctx
+  +3.871  QUANT_RDOQ    quant::optimize_b
+  +2.563  LOOP_RESTORE  dsp::restoration::compute_stats
+  +1.556  CDEF          dsp::cdef::cdef_filter_block
+  +1.338  COEFF_CTX     leaf_funnel::coeff_rate::cost_coeffs_txb
+  +1.321  INTRA_PRED    dsp::intra_pred::dr_predictor_edged
+  +1.317  COEFF_WRITE   entropy::coeff_c::write_coeffs_txb_1d
+  +1.283  ALLOC         _xzm_free
+  +1.017  MD_DRIVER     leaf_funnel::tx_pipeline::tx_unit_inner
+  +1.004  RANGE_CODER   entropy::range_coder::OdEcEnc::normalize
+
+and C's five largest, for the same subtraction:
+
+  +3.000  QUANT_RDOQ    svt_aom_quantize_inv_quantize
+  +1.589  COEFF_CTX     svt_av1_cost_coeffs_txb
+  +0.468  LOOP_RESTORE  svt_av1_compute_stats_neon
+  +0.359  MD_DRIVER     full_loop_core
+  +0.321  COEFF_WRITE   av1_write_coeffs_txb_1d
+
+============ 3. FOUR THINGS THIS SAYS THAT THE 256x256 RECORD DID NOT ==========
+
+(a) **QUANT_RDOQ IS NOT A LEVER.** It is the port's second-largest addition in
+    absolute ms (5.66) but its ratio is **1.66x** — the closest to parity of
+    any class here, and `optimize_b` (3.87) faces `svt_aom_quantize_inv_quantize`
+    (3.00), 1.29x. Ranking by absolute self time puts it second; ranking by
+    EXCESS puts it sixth. Rank by excess.
+
+(b) **ALLOC IS THE THIRD-LARGEST ITEM AND C'S IS ZERO.** The video config adds
+    2.69 ms of allocator work to the port (`_xzm_free` 1.28,
+    `_xzm_malloc_zone_malloc_type_calloc_entry` 0.26, `madvise` 0.24,
+    `_xzm_xzone_malloc` 0.22, tail) and **0.000 ms** to C — every symbol on C's
+    side is below the 0.02 ms cut. Add LIBC_MEM (`__bzero` 0.71,
+    `_platform_memmove` 0.66, `_platform_memset` 0.62) and the memory-traffic
+    pair is 4.24 ms, 15.3 % of the excess. NOT MEASURED: which structure. The
+    still path's own allocation work was measured NULL when pooled
+    (benchmarks/alloc_bufpool_null_2026-08-13.meta — do not re-run that
+    experiment), but this is a DIFFERENT population: buffers the video config
+    turns on (recon, post-filter staging, LR/CDEF search state), not the
+    per-block decision Vecs that experiment pooled.
+
+(c) **CDEF's ratio is 9.92x, the worst of any class**, and it is 11.8 % of the
+    excess — bigger than LOOP_RESTORE. `cdef_filter_block` (1.556) is already
+    NEON on both sides, so it is a QUALITY item; `cdef_find_dir` (0.709) is a
+    coverage gap, verified scalar by source read (crates/svtav1-dsp/src/cdef.rs
+    has no `incant!`/`#[arcane]` anywhere near it) against C's
+    `svt_aom_cdef_find_dir_8bit_neon` (cdef_block_neon.c:348).
+
+(d) **The still-path SIMD queue and this list are the same list.** Every entry
+    in docs/perf-status.md's ranked coverage queue appears here, which is what
+    the 2026-09-02 record predicted; what is new is that CDEF outranks loop
+    restoration at 512x512 and that ALLOC — which is not in that queue at all —
+    outranks both `dr_predictor_edged` and `cdef_find_dir`.
+
+============ IS THIS NUMBER DEFENSIBLE ========================================
+
+* The profile accounts for 99 % of the paired subtraction on the port side
+  (39.44 profiled vs 39.887 measured) and 93 % on C's (11.30 vs 12.113); the
+  shortfall on C is the |delta| < 0.02 ms row cut, which drops more rows from
+  the smaller side.
+* Both harnesses loop init -> encode -> teardown; >99 % of samples land in the
+  timed region on both sides at this cell (checked at the top of each call
+  graph, per tools/perf_profile/README.md trap 2).
+* The shares are multiplied by the PAIRED gate ms, never by a stopwatch on the
+  profiling run (trap 3).
+* `<deduplicated_symbol>` is re-parented by selftime.py (trap 1).
+* SINGLE CELL. 512x512 p8 only. The class ORDER differs from the 2026-09-02
+  256x256 record (CDEF and ALLOC move up), so do not treat either ordering as
+  size-independent.
