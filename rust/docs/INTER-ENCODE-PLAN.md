@@ -6248,6 +6248,129 @@ nothing reads the DPB after frame 1, `md_config_inputs`' three percentages are
 those for an I_SLICE regardless), and `CodedAreaAcc` is armed only on the
 VIDEO arm, which no allintra cell takes.
 
+### 1z²⁶. The NEAR candidate C injects on every frame, and the port injected NONE — the grid goes 91 -> 92 (2026-09-03)
+
+§1z²⁴ closed the `diag 72x72 q40 p6` edge-shape depth and left the cell one
+byte off with the defect MOVED to a MODE: the port coded `NEWMV` at
+`mi=(8,16)` where C codes `NEARMV`, with the same MV `(24,0)`.
+`benchmarks/inter_edge_shape_mode_2026-09-03.md` named the interposer pair to
+build. Built, and the answer was one field.
+
+Full record with every number:
+`benchmarks/inter_near_candidate_2026-09-03.md`.
+
+#### The join, and the premise it refuted
+
+C's `SVT_IFCOST_OUT` (pinned `SVT_IFCOST_XY=64,32`) against the port's
+`SVTAV1_CANDDBG`'s `NSQDBG ICAND`, at that block:
+
+| mode | rf | mv | C `fast_luma_rate` | port |
+|---|---|---|---|---|
+| 13 `NEARESTMV` | 1 | (0,-24) | 2520 | **2520** |
+| 14 `NEARMV` | 1 | (24,0) | **2845** | **absent** |
+| 13 `NEARESTMV` | 5 | (24,0) | 4957 | **4957** |
+| 17 `NEAREST_NEARESTMV` | 1,5 | (24,0) | 3667 | suppressed (bipred) |
+| 16 `NEWMV` | 1 | (24,0) | — | 4187 (what the port coded) |
+
+**The port's rate model was already exact on both shared candidates.** The
+divergence was a candidate that did not exist: `inter_md_arm` handed
+`port_md::inject`'s `InjectCtx` a `near_count_ctrls: Default::default()`, and
+its module header justified that with
+
+> C caps the NEAR DRL loop to ZERO unless this control is enabled ... so
+> `NEARMV` is absent exactly the way C makes it absent.
+
+True of C's `enabled == 0` arm (`mode_decision.c:1377-1381`) and **false as a
+conclusion**: `near_count_ctrls.enabled` is 1 in all seven arms of
+`set_cand_reduction_ctrls` (`enc_mode_config.c:4113` onward), and the video
+arm's `pcs->cand_reduction_level` is 0, 1 or 2 (`:9039-9050`), every one of
+which carries `near_count = 3`. Level 6 — the only arm that caps to zero — is
+assigned solely under `scs->rc_stat_gen_pass_mode` (`:9052`). So C injects up
+to `MIN(3, svt_aom_get_max_drl_index(ref_mv_count, NEARMV))` NEARs per single
+reference on **every frame this port can encode**.
+
+And the port's ref-MV stack already held `(24,0)` at the NEARMV position — its
+own `NEWMV` line reads `pmv0=24,0 drl=1`, i.e. `ref_mv_stack[1]`. This was
+never an MVP-stack defect, which is what the `benchmarks/` note predicted as
+the alternative.
+
+#### The experiment came before the refactor
+
+A throwaway `SVTAV1_XNEAR` env forced `{enabled, 3, 3}` into that one field:
+the cell went 29 B -> **28 B**, the port's list gained `mode=14 flr=2845`, and
+its `NEWMV` DISAPPEARED — C's own `mv_is_already_injected` dedup, which the
+port already had, drops the ME `NEWMV` at `(24,0)` once NEARMV has injected
+that MV. The full 96-cell grid under the hack is **byte-for-byte identical to
+the grid under the landed wiring**. The hack is gone from the tree.
+
+#### What landed
+
+The NEAR loop was already ported and unit-tested
+(`port_md/inject.rs:849-880`); the control's derivation was already ported and
+tier-1 gated (`port_enc_mode_config::encdec::set_cand_reduction_ctrls`, driven
+through `svt_aom_sig_deriv_enc_dec_default`). Only the wire between them was
+missing — the **SIXTH** "a caller passes a constant where the derivation is
+already ported" finding of this campaign, after `dlf_level = 0`, PD0's `inter`
+argument, `md_config.rs:948`, `was_intra: Some(1)` and `refresh_frame_flags: 0`.
+
+* `inter_hdr_arm::enc_dec_cand_reduction` — C's
+  `svt_aom_sig_deriv_enc_dec_default` cand-reduction call
+  (`enc_mode_config.c:7826-7834`) with that function's own fixed arguments
+  (`me_*` are `(uint32_t)~0`, `l0/l1_was_skip` are 0, `is_lpd1` false).
+* `pipeline.rs` binds `PipelineMdInputs` once and feeds BOTH derivations from
+  it — the picture-level ladders and this one — so the two cannot drift on an
+  input, and hands the result to `InterMdFrame::cand_reduction`.
+* `inter_md_arm` fills four `InjectCtx` fields from it:
+  `near_count_ctrls`, `redundant_cand_ctrls`, `reduce_unipred_candidates` and
+  `use_neighbouring_mode_ctrls_enabled`. Only the first is live on this
+  envelope; the other three are 0/0/inert at levels 0..2 by C's own table, and
+  the fourth is additionally gated on `is_intra_bordered`, which
+  `inter_md_arm` still answers with the constant `false`. Wired anyway so the
+  pair is ONE unported input rather than two.
+
+Two unit tests drive the real ladder (`md_config_inputs` ->
+`sig_deriv_mode_decision_config_default` -> `enc_dec_cand_reduction`) rather
+than asserting the table: `the_near_drl_loop_is_live_at_every_preset_this_
+port_reaches` (14 presets, with a positive control on the loop count) and
+`level_six_is_the_only_arm_that_caps_the_near_loop_to_zero`.
+
+#### The grid, and what did NOT move
+
+`inter_byte_matrix.sh` 91 BOTH / 4 F1DIFF / 1 F0DIFF -> **92 / 3 / 1**.
+`inter_byte_gate.sh` 93 required -> **94 required, 0 failed**, OPEN_CELLS
+4 -> 3. Mutation-verified: with `near_count_ctrls.enabled` forced false the
+gate reports `94 required, 1 failed` naming exactly `diag 72 72 40 6`;
+restored, 0 failed.
+
+**The three residual F1DIFF cells did not move by a single byte** —
+`diag 72x72 q55 p6` 31 vs C's 29, `diag 72x72 q55 p8` 30 vs 29,
+`diag 128x128 q20 p8` 26 vs 25, identical counts before and after. That is the
+honest reading of a fix that closed one cell's mechanism and not theirs.
+
+#### A SECOND divergence the join exposed, recorded rather than chased
+
+With NEAR injection on, the port emits a FOURTH candidate C does not have at
+that block: `mode=14 rf=5 mv0=(0,-24)`, a `NEARMV` off `BWDREF_FRAME`. C's
+dump has no such line, so C's `ref_mv_count[BWDREF_FRAME]` is below 2 there
+while the port's is at least 2 — a real BWDREF ref-MV-stack divergence. It
+loses on cost here (`flr=5699`) and moves nothing on the grid, so it is
+recorded, not fixed. **The next chunk on the `q55` cells should check whether
+it is live on them before assuming it is not.**
+
+#### No regression, measured
+
+`cargo nextest run --workspace` **2511/2511**, `regression_spotcheck.sh`
+**100/100**, `identity_full_8bit.sh` **1100/1100**, `inter_byte_gate.sh`
+**94 required / 0 failed**, `fctx_gate.sh` **96/96**, `inter_decode_gate.sh`
+**5/5**, `inter_decode_census.sh` **96/96 decode**, `inter_fh_gate.sh` PASS,
+`video_key_matrix.sh` **58/60** (unmoved — the same `gradient p0` /
+`screenrep p0` pair), `inter_completion_scan.sh` (`SCAN_GATE=1`)
+**64 OK / 0 REFUSED / 0 CRASH**.
+
+Byte-inert on the still and key-frame paths BY CONSTRUCTION:
+`InterMdFrame::cand_reduction` exists only when `md_config_signals` does,
+which is `None` on a key frame, and `inter_md_arm` is the INTER branch of MD.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

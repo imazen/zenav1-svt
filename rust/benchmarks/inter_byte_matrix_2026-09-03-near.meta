@@ -1,0 +1,42 @@
+# The NEAR candidate injection, before and after
+#
+# commit (parent): 4e29d8fa  (main@origin at the time of the run)
+# host:            Apple M-series, aarch64-apple-darwin (this repo's primary)
+# C oracle:        reference/svt-av1 @ fix/suspected-c-bug-17, run through
+#                  tools/ctrace-linux/run.sh (linux/arm64 container -- Apple
+#                  ld64 has no -Wl,--wrap, so the interposers only exist there)
+# sweep:           tools/inter_byte_matrix.sh, defaults
+#                  {uniform,gradient,diag,screen} x {16,64,72,128} square
+#                  x {q20,q40,q55} x {p6,p8}, frames=2, shift=3, low-delay P
+#
+# before: 91 BOTH / 4 F1DIFF / 1 F0DIFF / 0 CRASH   (inter_byte_matrix_2026-09-03-before-near.tsv)
+# after:  92 BOTH / 3 F1DIFF / 1 F0DIFF / 0 CRASH   (this file)
+#
+# Promoted: diag 72x72 q40 p6  (frame 1: 29 B -> C's 28 B)
+# Regressed: none.
+#
+# The three residual F1DIFF cells did NOT move by a byte:
+#   diag  72x72  q55 p6   port 31  C 29   (identical before and after)
+#   diag  72x72  q55 p8   port 30  C 29   (identical before and after)
+#   diag 128x128 q20 p8   port 26  C 25   (identical before and after)
+# The one F0DIFF (gradient 128x128 q20 p8, a video-KEY defect) is unchanged.
+#
+# The join that drove it, C's SVT_IFCOST_OUT (SVT_IFCOST_XY=64,32) against the
+# port's SVTAV1_CANDDBG `NSQDBG ICAND`, at mi=(8,16) on `diag 72x72 q40 p6`
+# frame 1 -- fast_luma_rate per MDS0 candidate:
+#
+#   mode         rf     mv       C flr   port flr (before)
+#   13 NEARESTMV  1     (0,-24)   2520    2520
+#   14 NEARMV     1     (24,0)    2845    ABSENT
+#   13 NEARESTMV  5     (24,0)    4957    4957
+#   17 NEAREST_N. 1,5   (24,0)    3667    suppressed (bipred, by design)
+#   16 NEWMV      1     (24,0)    n/a     4187   <- what the port coded
+#
+# C's MDS0 cost is (lambda * flr) >> 9 + distortion * 128 with lambda=188575:
+# NEARMV 3 525 924 beats the port's NEWMV 4 020 196. The port's rate model was
+# already exact on both shared candidates; the candidate itself was missing,
+# because `inter_md_arm` handed the injector a DEFAULTED `near_count_ctrls`
+# while C's is {enabled 1, near_count 3, near_near_count 3} at every level the
+# video arm assigns (enc_mode_config.c:4113/4138/4163, :9039-9050).
+#
+# Full record: benchmarks/inter_near_candidate_2026-09-03.md

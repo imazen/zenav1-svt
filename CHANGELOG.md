@@ -737,6 +737,31 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **C injects a `NEARMV` candidate on every inter frame and the port injected
+  NONE — the inter byte grid goes 91 → 92 of 96.** `inter_md_arm` handed the
+  candidate injector a defaulted `near_count_ctrls`, justified by a module
+  comment reading "C caps the NEAR DRL loop to ZERO unless this control is
+  enabled ... so `NEARMV` is absent exactly the way C makes it absent". That
+  is a correct reading of C's `enabled == 0` arm (`mode_decision.c:1377-1381`)
+  and a wrong conclusion: `enabled` is **1 in all seven arms** of
+  `set_cand_reduction_ctrls` (`enc_mode_config.c:4113` onward) and the video
+  arm's `pcs->cand_reduction_level` is 0, 1 or 2 (`:9039-9050`) — each with
+  `near_count = 3`. MEASURED on `diag 72x72 q40 p6` frame 1 by joining C's
+  `SVT_IFCOST_OUT` to the port's `SVTAV1_CANDDBG` at `mi=(8,16)`: C's MDS0
+  list carries `mode=14 NEARMV` at `fast_luma_rate = 2845` and codes it, the
+  port had no such candidate and coded `NEWMV` at 4187 with the SAME MV
+  `(24,0)`; the port's rate model was already exact on both candidates the two
+  lists share (2520 and 4957 to the unit). The control is now derived through
+  the already-ported, tier-1-gated
+  `port_enc_mode_config::encdec::set_cand_reduction_ctrls`, so this was a
+  missing wire and not a missing port — the **sixth** "a caller passes a
+  constant where the derivation is already ported" finding of the inter
+  campaign. `inter_byte_gate` 93 → **94 required, 0 failed** (mutation-verified:
+  forcing the control off fails exactly `diag 72 72 40 6`); the three residual
+  F1DIFF cells did not move by a byte. Full record
+  `rust/benchmarks/inter_near_candidate_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁶.
+
 - **The port's DPB never received an inter frame, and the frame-2 refusal was
   naming a gap it had closed.** `PictureControlSet::new_inter_frame`
   hard-coded `refresh_frame_flags: 0`, and that constant — not

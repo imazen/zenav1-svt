@@ -434,3 +434,164 @@ pub fn md_config_inputs(
         extended_crf_qindex_offset: 0,
     })
 }
+
+/// C `svt_aom_sig_deriv_enc_dec_default`'s `set_cand_reduction_ctrls` call
+/// (`enc_mode_config.c:7826-7834`), with that function's own fixed arguments.
+///
+/// The REGULAR-PD1 arm passes `pcs->cand_reduction_level` straight through and
+/// pins four of the eight remaining inputs to constants at the call site:
+/// `me_8x8_cost_variance` and `me_64x64_distortion` are `(uint32_t)~0`,
+/// `l0_was_skip` and `l1_was_skip` are 0 (`:7819-7821`), and `is_lpd1` is
+/// false because `ctx->lpd1_ctrls.pd1_level` is `REGULAR_PD1` on this path.
+/// Those four are read only by the level-4/5/6 `dc_only_th` and
+/// `reduce_unipred_candidates` arms, which the default arm's
+/// `cand_reduction_level` (0, 1 or 2 — `enc_mode_config.c:9039-9050`) never
+/// reaches; they are reproduced anyway rather than dropped, because "the arm
+/// is unreachable here" is a claim about the envelope and not about C.
+///
+/// `use_flat_ipp` is `scs->static_config.rtc && hierarchical_levels == 0` and
+/// this port never sets `rtc`.
+///
+/// Returns `None` exactly when [`crate::port_enc_mode_config::encdec::
+/// set_cand_reduction_ctrls`] does, i.e. on a level outside C's switch.
+#[must_use]
+pub fn enc_dec_cand_reduction(
+    p: &PipelineMdInputs,
+    cand_reduction_level: u8,
+) -> Option<crate::port_enc_mode_config::encdec::CandReductionCtrls> {
+    use crate::port_rc_process::SliceType;
+    let slice = if p.is_islice {
+        SliceType::I
+    } else {
+        SliceType::B
+    };
+    let l1_count = u8::try_from(p.ref_list1_count_try).unwrap_or(u8::MAX);
+    let ref_skip_percentage = crate::port_rc_process::get_ref_skip_percentage(
+        slice,
+        l1_count,
+        p.ref_l0.as_ref(),
+        p.ref_l1.as_ref(),
+    );
+    crate::port_enc_mode_config::encdec::set_cand_reduction_ctrls(
+        crate::port_enc_mode_config::encdec::CandReductionInputs {
+            level: cand_reduction_level,
+            is_lpd1: false,
+            is_not_last_layer: p.temporal_layer_index != p.hierarchical_levels,
+            use_flat_ipp: false,
+            picture_qp: p.picture_qp,
+            me_8x8_cost_variance: u32::MAX,
+            me_64x64_distortion: u32::MAX,
+            l0_was_skip: 0,
+            l1_was_skip: 0,
+            ref_skip_perc: ref_skip_percentage,
+            ref_list0_count_try: p.ref_list0_count_try,
+            ref_list1_count_try: p.ref_list1_count_try,
+            use_best_me_unipred_cand_only: 0,
+        },
+    )
+}
+
+#[cfg(test)]
+mod cand_reduction_tests {
+    use super::*;
+
+    /// A minimal inter-frame `PipelineMdInputs` at a given preset: the shape
+    /// the campaign's 96-cell grid encodes (flat low-delay P, one list-0
+    /// reference, base layer, 8-bit 4:2:0, 64px superblocks).
+    fn inputs(enc_mode: i8) -> PipelineMdInputs {
+        PipelineMdInputs {
+            enc_mode,
+            sq_qp: 40,
+            base_q_idx: 160,
+            picture_qp: 40,
+            temporal_layer_index: 0,
+            hierarchical_levels: 0,
+            is_ref: true,
+            is_islice: false,
+            sc_class5: 0,
+            input_resolution: crate::port_enc_mode_config::ResolutionRange::R240p,
+            encoder_bit_depth: 8,
+            super_block_size: 64,
+            enable_interintra_compound: true,
+            frame_superres_enabled: false,
+            ref_list0_count_try: 1,
+            ref_list1_count_try: 0,
+            ref_l0: None,
+            ref_l1: None,
+        }
+    }
+
+    /// **The premise `inter_md_arm`'s header carried until 2026-09-03, and it
+    /// was wrong.** It read "C caps the NEAR DRL loop to ZERO unless this
+    /// control is enabled ... so `NEARMV` is absent exactly the way C makes
+    /// it absent" — but `near_count_ctrls.enabled` is **1 in every arm** of
+    /// `set_cand_reduction_ctrls` (`enc_mode_config.c:4113` onward), and the
+    /// default arm's `pcs->cand_reduction_level` is 0, 1 or 2 (`:9039-9050`),
+    /// all three of which carry `near_count = 3`.
+    ///
+    /// So on EVERY preset this port can express, C injects up to three
+    /// `NEARMV` candidates per single reference. This test drives the real
+    /// ladder — `md_config_inputs` -> `sig_deriv_mode_decision_config_default`
+    /// -> `enc_dec_cand_reduction` — rather than asserting the table, so a
+    /// change to any link in it fails here.
+    #[test]
+    fn the_near_drl_loop_is_live_at_every_preset_this_port_reaches() {
+        let mut seen = 0usize;
+        for preset in 0i8..=13 {
+            let mi = inputs(preset);
+            let Some(sigs) = md_config_inputs(mi.clone()).and_then(
+                crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
+            ) else {
+                continue;
+            };
+            assert!(
+                sigs.cand_reduction_level <= 2,
+                "preset {preset}: the default arm's cand_reduction_level is 0/1/2 \
+                 (enc_mode_config.c:9039-9050), got {}",
+                sigs.cand_reduction_level
+            );
+            let cr = enc_dec_cand_reduction(&mi, sigs.cand_reduction_level)
+                .expect("a level of 0..=2 is inside C's switch");
+            assert_eq!(
+                (
+                    cr.near_count_ctrls.enabled,
+                    cr.near_count_ctrls.near_count,
+                    cr.near_count_ctrls.near_near_count
+                ),
+                (1, 3, 3),
+                "preset {preset} (cand_reduction_level {}): C's NEAR DRL loop \
+                 is capped to MIN(near_count, max_drl_index), NOT to zero",
+                sigs.cand_reduction_level
+            );
+            seen += 1;
+        }
+        // Positive control: the loop above must actually have run. A ladder
+        // that started refusing every preset would otherwise pass vacuously
+        // — `docs/WORKING-ON-THIS.md` §5's "prove the probe fires".
+        assert!(
+            seen >= 9,
+            "the preset ladder produced only {seen} inter configurations; \
+             this test would have been vacuous"
+        );
+    }
+
+    /// The one level that DOES cap the NEAR loop to zero is 6, which
+    /// `sig_deriv_mode_decision_config_default` assigns only under
+    /// `scs->rc_stat_gen_pass_mode` (`enc_mode_config.c:9052`) — a mode this
+    /// port never runs. Pinned so the test above cannot be read as "the
+    /// control is always 3"; it is 3 *on this envelope*.
+    #[test]
+    fn level_six_is_the_only_arm_that_caps_the_near_loop_to_zero() {
+        let mi = inputs(6);
+        for level in 0u8..=6 {
+            let cr = enc_dec_cand_reduction(&mi, level).expect("levels 0..=6 are C's switch");
+            assert_eq!(cr.near_count_ctrls.enabled, 1, "level {level}");
+            assert_eq!(
+                cr.near_count_ctrls.near_count == 0,
+                level == 6,
+                "level {level}: near_count {}",
+                cr.near_count_ctrls.near_count
+            );
+        }
+    }
+}

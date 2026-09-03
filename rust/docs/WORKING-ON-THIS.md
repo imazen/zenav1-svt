@@ -618,6 +618,24 @@ shift applied to them was inert and a `>> ss_x`-instead-of-`>> ss_y` mutation
 passed the whole suite. Pick inputs the transform cannot collapse, and assert
 that it does not collapse them.
 
+**A CONSTANT AT A CALL SITE IS A CLAIM, AND ITS COMMENT IS NOT EVIDENCE. This
+has now been the root cause SIX times.** The shape is always the same: a
+derivation is ported and tier-1 gated, a caller hands its consumer a
+`Default::default()` / `0` / `Some(1)` instead, and a comment beside the
+constant explains why that is C-faithful. `dlf_level = 0`, PD0's `inter`
+argument, `md_config.rs:948`, `was_intra: Some(1)`, `refresh_frame_flags: 0`,
+and on 2026-09-03 `near_count_ctrls: Default::default()` — whose comment read
+"C caps the NEAR DRL loop to ZERO unless this control is enabled ... so
+`NEARMV` is absent exactly the way C makes it absent". The first clause is a
+correct reading of C's `enabled == 0` arm; the conclusion is wrong because
+`enabled` is **1 in all seven arms** of `set_cand_reduction_ctrls`, so C
+injects up to three `NEARMV` candidates on every frame and the port injected
+none (`docs/INTER-ENCODE-PLAN.md` §1z²⁶). **When you find a constant with a
+justifying comment, go read the C table it cites and check the arm the
+envelope actually takes** — the comment was written by someone who read one
+arm. Grepping for `Default::default()` in a `*_arm.rs` injector/config
+construction is a five-minute audit that has paid six times.
+
 **A parameter that is genuinely inert should be SAID to be inert, not swept.**
 The OBMC single-prediction functions pass `is_compound = 0`, and the
 single-prediction kernels never read `conv_params->dst` — so their CONV_BUF

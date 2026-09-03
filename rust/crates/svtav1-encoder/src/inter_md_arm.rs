@@ -64,9 +64,6 @@
 //!   unported. `inject_new_pme` / `updated_enable_pme` are now ON:
 //!   [`crate::inter_search_arm`] runs C's `build_single_ref_mvp_array` ->
 //!   `read_refine_me_mvs` -> `pme_search` chain per reference.
-//! * `near_count_ctrls` — C caps the NEAR DRL loop to ZERO unless this
-//!   control is enabled (it REPLACES `max_drl_index`, it does not refine
-//!   it), so `NEARMV` is absent exactly the way C makes it absent.
 //! * `md_nsq_motion_search` — PORTED but NOT CALLED here. C runs it inside
 //!   `read_refine_me_mvs` for every NSQ shape (`bwidth != bheight`), seeded
 //!   from the square parent's `sq_sb_me_mv` and from a geometry-filtered
@@ -85,9 +82,26 @@
 //!   square parent was tested (`product_coding_loop.c:2857-2862`), before
 //!   `md_nsq_motion_search` runs at all.
 //!
-//! What that leaves live is `NEARESTMV` and `NEWMV` off `LAST_FRAME` and
-//! `BWDREF_FRAME`, plus one PME `NEWMV` per reference — with C's own
-//! injection ORDER (MVP before NEW before PME) and C's own
+//! `near_count_ctrls` WAS on that list, and its entry was WRONG. It read "C
+//! caps the NEAR DRL loop to ZERO unless this control is enabled (it REPLACES
+//! `max_drl_index`, it does not refine it), so `NEARMV` is absent exactly the
+//! way C makes it absent" — a correct reading of C's `enabled == 0` arm
+//! (`mode_decision.c:1377-1381`) and a wrong conclusion, because `enabled` is
+//! **1 in all seven arms** of `set_cand_reduction_ctrls`
+//! (`enc_mode_config.c:4113/4138/4163/4193/4224/4255/4290`) and the video
+//! arm's `pcs->cand_reduction_level` is 0, 1 or 2 (`:9039-9050`) — every one
+//! of which carries `near_count = 3`. So C injects up to three `NEARMV`
+//! candidates per single reference on every frame this port can encode, and
+//! this module injected none. MEASURED on `diag 72x72 q40 p6` frame 1: at
+//! `mi=(8,16)` C's `SVT_IFCOST_OUT` carries `mode=14` at
+//! `fast_luma_rate = 2845` and CODES it, while this module's best was `NEWMV`
+//! at 4187 with the SAME MV `(24,0)`. The control is derived now
+//! ([`InterMdFrame::cand_reduction`]); full record
+//! `benchmarks/inter_near_candidate_2026-09-03.md`.
+//!
+//! What that leaves live is `NEARESTMV`, `NEARMV` and `NEWMV` off
+//! `LAST_FRAME` and `BWDREF_FRAME`, plus one PME `NEWMV` per reference — with
+//! C's own injection ORDER (MVP before NEW before PME) and C's own
 //! `mv_is_already_injected` dedup.
 
 use crate::inter_me_arm::FrameMe;
@@ -189,6 +203,13 @@ pub struct InterMdFrame<'a> {
     pub factor_update_type: crate::port_rc_process::FrameUpdateType,
     /// [SVT_HDR_MODE] `static_config.alt_lambda_factors`.
     pub alt_lambda_factors: bool,
+    /// C `ctx->cand_reduction_ctrls`, as
+    /// `svt_aom_sig_deriv_enc_dec_default` sets it from
+    /// `pcs->cand_reduction_level` (`enc_mode_config.c:7826`).
+    ///
+    /// The injector reads four of its fields; see the module header for what
+    /// each one does here and which are inert on this envelope.
+    pub cand_reduction: crate::port_enc_mode_config::encdec::CandReductionCtrls,
 }
 
 /// The order-hint half of [`InterFrame`], owned so the borrow is local.
@@ -555,7 +576,14 @@ pub fn build_inter_candidates(
         // C `ctx->corrupted_mv_check`: the `is_valid_mv_diff` guard. On with
         // a real cost table, which is what this module supplies.
         corrupted_mv_check: true,
-        redundant_cand_ctrls: Default::default(),
+        // C `ctx->cand_reduction_ctrls.redundant_cand_ctrls`. `score_th` is 0
+        // at levels 0..3, i.e. everywhere this port's `cand_reduction_level`
+        // can land, so this is inert TODAY and would not be if a level 4+
+        // ever became reachable.
+        redundant_cand_ctrls: crate::port_md::predicates::RedundantCandCtrls {
+            score_th: f.cand_reduction.redundant_cand_ctrls.score_th,
+            mag_th: f.cand_reduction.redundant_cand_ctrls.mag_th,
+        },
         // Every one of these OFF controls is an unported search, named in
         // this module's header. They are not a smaller candidate set chosen
         // here — they are the inputs that make C's own injector produce the
@@ -565,7 +593,16 @@ pub fn build_inter_candidates(
         inter_intra_comp_ctrls: Default::default(),
         wm_ctrls: WmCtrls::default(),
         obmc_ctrls: Default::default(),
-        near_count_ctrls: Default::default(),
+        // C `ctx->cand_reduction_ctrls.near_count_ctrls`, and the ONE field
+        // of that struct this envelope is not inert in: it is
+        // `{enabled 1, near_count 3, near_near_count 3}` at every level the
+        // default arm reaches, which is up to three `NEARMV` candidates per
+        // single reference. See the module header for the measurement.
+        near_count_ctrls: crate::port_md::inject::NearCountCtrls {
+            enabled: f.cand_reduction.near_count_ctrls.enabled != 0,
+            near_count: f.cand_reduction.near_count_ctrls.near_count,
+            near_near_count: f.cand_reduction.near_count_ctrls.near_near_count,
+        },
         bipred3x3_ctrls: Default::default(),
         unipred3x3_injection: 0,
         new_nearest_injection: true,
@@ -574,8 +611,16 @@ pub fn build_inter_candidates(
         global_mv_injection: true,
         inject_new_pme: true,
         updated_enable_pme: f.search.updated_enable_pme,
-        reduce_unipred_candidates: 0,
-        use_neighbouring_mode_ctrls_enabled: false,
+        // C `ctx->cand_reduction_ctrls.reduce_unipred_candidates` — 0 at
+        // levels 0..2, so inert on this envelope for the same reason.
+        reduce_unipred_candidates: f.cand_reduction.reduce_unipred_candidates,
+        // C `ctx->cand_reduction_ctrls.use_neighbouring_mode_ctrls.enabled`,
+        // which is 1 from level 2 up. It is read ONLY in conjunction with
+        // `is_intra_bordered`, and that is still the constant `false` below —
+        // so wiring this field cannot move a byte until `is_intra_bordered`
+        // is derived too. Wired anyway so the pair is one unported input
+        // rather than two.
+        use_neighbouring_mode_ctrls_enabled: f.cand_reduction.use_neighbouring_mode_enabled != 0,
         is_intra_bordered: false,
         has_overlappable_candidates: b.overlappable_neighbors != 0,
         allow_warped_motion: f.allow_warped_motion,

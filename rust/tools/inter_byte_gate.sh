@@ -180,6 +180,12 @@ PASS_CELLS=(
     "diag 64 64 55 8 2 3"
     "diag 72 72 20 6 2 3"
     "diag 72 72 20 8 2 3"
+    # Promoted 2026-09-03 by the NEAR-candidate wiring: at mi=(8,16) the port
+    # coded NEWMV at fast_luma_rate 4187 where C codes NEARMV at 2845 with the
+    # SAME MV, because `inter_md_arm` handed the injector a DEFAULTED
+    # `near_count_ctrls` (NEAR DRL loop capped to zero) while C's is
+    # {enabled 1, near_count 3} at every level this port reaches. 29 B -> 28.
+    "diag 72 72 40 6 2 3"
     "diag 72 72 40 8 2 3"
     "diag 128 128 20 6 2 3"
     "diag 128 128 40 6 2 3"
@@ -226,19 +232,13 @@ PASS_CELLS=(
 # "open ... known" through the whole defect. One per panicking content class
 # (gradient's six 72x72 cells never panicked).
 OPEN_CELLS=(
-    # FOUR cells, re-derived from `inter_byte_matrix.sh` rather than carried
-    # forward. §1z24 (the per-superblock MD lambda) promoted two of the six
-    # this list held — `gradient 72x72 q20 p6` and `diag 72x72 q20 p8` — and
-    # they are now in PASS_CELLS.
+    # THREE cells, re-derived from `inter_byte_matrix.sh` rather than carried
+    # forward. The NEAR-candidate wiring promoted `diag 72x72 q40 p6`, the
+    # fourth; the remaining three did not move by a single byte (before and
+    # after counts identical on all three), which is the honest reading of a
+    # fix that closed one cell's mechanism and not theirs.
     #
-    # THREE OF THE FOUR ARE STILL 72x72, a PARTIAL superblock. What changed
-    # is WHAT is left there: on `diag 72x72 q40 p6` the partition tree now
-    # matches C's exactly (five inter blocks, `mi=(8,16)` included), and the
-    # residual byte is a MODE — the port codes NEWMV where C codes NEARMV at
-    # `mi=(8,16)`, same MV `(24,0)`. So §1z22's "the port stops the edge
-    # descent one depth too early" is CLOSED and the remaining defect is in
-    # the candidate/MVP lane, not in the partition cost model.
-    "diag 72 72 40 6 2 3"   # frame 1 29 B vs C's 28
+    # TWO OF THE THREE ARE STILL 72x72, a PARTIAL superblock.
     "diag 72 72 55 6 2 3"   # frame 1 31 B vs C's 29
     "diag 72 72 55 8 2 3"   # frame 1 30 B vs C's 29
     "diag 128 128 20 8 2 3"   # frame 1 26 B vs C's 25

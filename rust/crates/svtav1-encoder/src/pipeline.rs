@@ -2971,19 +2971,21 @@ impl EncodePipeline {
             t
         };
 
-        // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
-        // tool ladders. It is EXPORTED and gated at tier 1; the frame header
-        // reads its `allow_high_precision_mv`, `allow_warped_motion`,
-        // `is_motion_mode_switchable`, `mfmv_level` and `interpolation_filter`
-        // so the header can never disagree with the tools the encode ran.
+        // The picture-level MD inputs, BOUND rather than passed inline because
+        // TWO derivations read them: `md_config_inputs` ->
+        // `sig_deriv_mode_decision_config_default` (the tool ladders) and
+        // `enc_dec_cand_reduction` (C's `svt_aom_sig_deriv_enc_dec_default`
+        // half, which the inter candidate injector reads). Binding them means
+        // the two cannot drift apart on an input.
         //
         // Only computed for an inter frame — a key frame's header carries none
-        // of those fields, so this is byte-inert for every still cell.
-        let md_config_signals = if is_key {
+        // of these fields, so both derivations are byte-inert for every still
+        // cell.
+        let pipeline_md_inputs = if is_key {
             None
         } else {
             let pd = pic_decision.as_ref();
-            crate::inter_hdr_arm::md_config_inputs(crate::inter_hdr_arm::PipelineMdInputs {
+            Some(crate::inter_hdr_arm::PipelineMdInputs {
                 enc_mode: self.speed_config.preset as i8,
                 sq_qp: u32::from(self.rc_config.qp),
                 base_q_idx: base_qindex,
@@ -3027,9 +3029,44 @@ impl EncodePipeline {
                         .flatten()
                 }),
             })
+        };
+        // C `svt_aom_sig_deriv_mode_decision_config_default` — the picture-level
+        // tool ladders. It is EXPORTED and gated at tier 1; the frame header
+        // reads its `allow_high_precision_mv`, `allow_warped_motion`,
+        // `is_motion_mode_switchable`, `mfmv_level` and `interpolation_filter`
+        // so the header can never disagree with the tools the encode ran.
+        let md_config_signals = pipeline_md_inputs
+            .clone()
+            .and_then(crate::inter_hdr_arm::md_config_inputs)
             .and_then(
                 crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
-            )
+            );
+        // C `svt_aom_sig_deriv_enc_dec_default` (`enc_mode_config.c:7826`) —
+        // the per-superblock EncDec derivation, of which the injector reads
+        // `cand_reduction_ctrls`. It is derived here beside the picture-level
+        // ladders because every input it takes is picture-level: C calls it
+        // per superblock but passes `pcs->cand_reduction_level` and, on this
+        // arm, constants for everything else (see `enc_dec_cand_reduction`).
+        //
+        // A `None` here is REFUSED rather than folded into the inter path's
+        // `None`: `inter_md_frame` being absent on an inter frame does not
+        // refuse anything, it codes the frame all-intra — a plausible-but-wrong
+        // stream, which is the one outcome `docs/WORKING-ON-THIS.md` §6 rules
+        // out. `set_cand_reduction_ctrls` answers `None` only for a level
+        // outside C's switch, which this arm cannot produce (it assigns 0, 1,
+        // 2 or 6), so this is a guard on a claim about the ladder rather than
+        // a reachable path.
+        let inter_cand_reduction = match (pipeline_md_inputs.as_ref(), md_config_signals.as_ref()) {
+            (Some(mi), Some(sigs)) => Some(
+                crate::inter_hdr_arm::enc_dec_cand_reduction(mi, sigs.cand_reduction_level)
+                    .ok_or_else(|| {
+                        whereat::at!(EncodeError::UnsupportedConfig(
+                            "cand_reduction_level is outside C's set_cand_reduction_ctrls \
+                             switch (crate::inter_hdr_arm::enc_dec_cand_reduction)",
+                        ))
+                    })?,
+            ),
+            _ => None,
         };
 
         // The frame-level INTER syntax the pack's inter mode-info writer
@@ -3245,8 +3282,9 @@ impl EncodePipeline {
             inter_syntax_state.as_ref(),
             inter_mvp_env.as_ref(),
             md_config_signals.as_ref(),
+            inter_cand_reduction.as_ref(),
         ) {
-            (Some(me), Some(padded), Some(st), Some(env), Some(sigs)) => {
+            (Some(me), Some(padded), Some(st), Some(env), Some(sigs), Some(cand_red)) => {
                 // §1s item 8, the inter half: the same `md_frame_context`
                 // the intra rate tables are built from.
                 let default_fc = crate::entropy::context::FrameContext::new_default();
@@ -3291,6 +3329,7 @@ impl EncodePipeline {
                     ))
                 })?;
                 Some(crate::inter_md_arm::InterMdFrame {
+                    cand_reduction: *cand_red,
                     padded,
                     padded_by_ref: inter_padded_by_ref,
                     // The SB-EXTENT-padded source, NOT `encode_input` at
