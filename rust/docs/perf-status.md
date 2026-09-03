@@ -1,5 +1,44 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE STILL ARM'S #1 CLASS WAS FOUR HAND-ROLLED LOOPS CALLING NOTHING
+> (2026-09-03).** Commit `d1a00ae2`; record
+> `benchmarks/residual_simd_ab_2026-09-03.*`. DISTORTION is **17.4 % of the
+> still gap at 512x512 p2**, the largest class there, and its two biggest port
+> symbols — `predict::hadamard_satd` (854 self samples of 19,115) and
+> `detect::txb_coeff_satd::{closure#0}` (690) — **are not the transform**. The
+> Hadamard kernels and the forward DCT are separate symbols and already
+> vectorised; that self time is the `src as iN - pred as iN` loop each function
+> carried INLINE. C computes it with `svt_residual_kernel8bit_neon` (268
+> samples).
+>
+> **And the port already had the kernel.** `dsp::residual::residual_i32` has
+> scalar / AVX2 / NEON arms and sits in the same profile at 337 samples; four
+> call sites just were not using it (`txb_coeff_satd`, `pd0::lvl1_cost_from_pred`,
+> `pd0::lvl5_like_block_cost_rect` — duplicate transcriptions of one loop — and
+> `hadamard_satd`, which needed an i16 output that did not exist and is added
+> as `residual_i16`). A/B, every cell `ident=Y`:
+>
+> | arm | 256 p2 | 512 p2 | 256 p6 | 512 p6 | 256 p10 | 512 p10 |
+> |---|---|---|---|---|---|---|
+> | still (n=15) | **1.037x** | **1.052x** | 1.022x | 1.024x | 1.012x | 1.011x |
+>
+> | arm | 128 p6 | 256 p6 | 512 p6 | 128 p8 | 256 p8 | 512 p8 |
+> |---|---|---|---|---|---|---|
+> | videokey (n=25) | 0.990x | 1.006x | **1.017x** | 1.001x | 1.002x | 1.007x |
+>
+> **All six STILL cells move with their whole p25/p75 span below 1.0, and
+> 512 p2 — the still arm's worst cell at 3.17x C — gains 5.2 %**, the largest
+> still-arm win of the day. The preset gradient matches the attribution
+> (DISTORTION is 17.4 / 7.7 / 6.2 % of the gap at p2 / p6 / p10). The videokey
+> 128 p6 cell is a NULL with the widest span of any cell measured this day
+> (0.9536/1.0630) and is reported rather than dropped.
+>
+> **THE LESSON IS NOT "VECTORISE MORE".** Three of the four sites had a
+> vectorised kernel sitting in the same crate the whole time. Before writing a
+> SIMD arm for a hot loop, grep for one — `perf_class_attrib`'s own
+> `SIMD_GAP` bucket cannot see this case, because the port symbol it names is
+> the CALLER, not a missing kernel.
+
 > **THE 8-WIDE CDEF FILTER RUNS IN `int16x8` LANES NOW, AND THE MAGETYPES GAP
 > THAT KEPT IT HAND-WRITTEN IS RECORDED (2026-09-03).** Commit `c68247aa545b`;
 > record `benchmarks/cdef_i16_ab_2026-09-03.*`. The still ranking above puts
