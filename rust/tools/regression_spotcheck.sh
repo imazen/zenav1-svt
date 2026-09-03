@@ -78,6 +78,31 @@ noPanic() {
   fi
 }
 
+# refuses <label> <content> <w> <h> <qp> <preset> <bd>
+# Asserts the encoder REFUSES this cell (exit 3), and that it neither encodes
+# nor panics.
+#
+# This is the counterpart every "we lifted a refusal" cell needs. A gate that
+# only asserts the newly-allowed side passes identically if the refusal is
+# deleted outright — and here deleting it re-enables a PANIC
+# (`intrabc_hash::get_block_hash_value` at QP 0, presets 0..4). Exit 3 and exit
+# 101 are DIFFERENT answers and this helper keeps them apart, the same
+# distinction `identity_diff_inter.sh` grew exit code 4 for.
+refuses() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6 bd=${7:-8}
+  SVTAV1_BD="$bd" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>"$W/err"
+  local rc=$?
+  if [ "$rc" -eq 3 ]; then
+    pass=$((pass+1))
+  elif grep -q "panicked at" "$W/err"; then
+    fail=$((fail+1)); failed+=("$label PANICKED where a refusal was required: $(grep -m1 'panicked at' "$W/err" | sed 's/.*panicked at //')")
+  elif [ "$rc" -eq 0 ]; then
+    fail=$((fail+1)); failed+=("$label ENCODED where a refusal was required (the refusal was lifted without evidence)")
+  else
+    fail=$((fail+1)); failed+=("$label [rc=$rc, expected 3]")
+  fi
+}
+
 # decodes <label> <content> <w> <h> <qp> <preset> <bd>
 # Asserts the port's stream DECODES under the reference decoder.
 #
@@ -719,6 +744,32 @@ byte "sh-width-bits-control-2x2" gradient 2 2 20 7
 # (`verify_settings` rejects any `encoder_color_format` other than EB_YUV420,
 # Globals/enc_settings.c:473). These use the recon oracle, like the mono cells
 # above.
+# ---------------------------------------------------------------------------
+# 2026-09-03 — QP 0 (coded-lossless) on SCREEN CONTENT was refused at EVERY
+# preset, with the text "not byte-verified against C so far" — a statement
+# about effort, not about the encoder. Measured, the envelope is preset >= 6
+# and it is byte-identical to C there (48/48 over {screen, screenrep} x
+# {64x64, 128x128, 96x80, 200x136}, tools/lossless_gate.sh), which includes
+# `AvifEncoder`'s DEFAULT speed 6 -> preset 7. Lossless AVIF of a screenshot
+# was refused at the default setting because nobody had run it.
+#
+# OBSERVED BEFORE: `identity_run screen 64 64 0 7` exits 3 with "REFUSED by the
+# encoder: ... QP 0 (coded-lossless) with screen-content tools". AFTER: 163 B,
+# byte-identical to C, lossless under aomdec.
+#
+# The refusal SURVIVES below preset 6 and now names why: presets 0..4 PANIC in
+# `intrabc_hash::get_block_hash_value` (QP-0-only — qp 1/2/5/20/40 all encode
+# at preset 4), and preset 5 diverges from C on `screenrep`. Both are pinned by
+# the `refuses` cells below, so lifting either without evidence fails here.
+byte "qp0-screen-p6-64x64"   screen  64 64 0 6
+byte "qp0-screen-p7-64x64"   screen  64 64 0 7
+byte "qp0-screen-p8-96x80"   screen  96 80 0 8
+# The refusal is still LOAD-BEARING below preset 6. A cell that only asserted
+# the lift would pass just as well if the whole refusal were deleted — and
+# deleting it re-enables a PANIC.
+refuses "qp0-screen-refused-p4" screen 64 64 0 4
+refuses "qp0-screen-refused-p5" screen 64 64 0 5
+
 ramp_yuv 100 100 "$W/ramp_100x100.yuv"
 monoReconEq "mono-arbitrary-dims-p7-100x100" "raw:$W/ramp_100x100.yuv" 100 100 20 7
 ramp_yuv 98 78 "$W/ramp_98x78.yuv"

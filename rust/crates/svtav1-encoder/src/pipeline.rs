@@ -1361,10 +1361,44 @@ impl EncodePipeline {
                  key frame [C: accepts]",
             );
         }
-        if allow_screen_content_tools {
+        // SCREEN-CONTENT TOOLS AT QP 0 — the envelope is preset >= 6, and both
+        // halves of that boundary are MEASURED (2026-09-03), not assumed.
+        //
+        // The refusal used to cover EVERY preset and said the combination was
+        // "not byte-verified against C so far", which is a statement about
+        // effort rather than about the encoder. Running it says something much
+        // more useful:
+        //
+        //   presets 6..13  48 / 48 BYTE-IDENTICAL to C, over
+        //                  {screen, screenrep} x {64x64, 128x128, 96x80,
+        //                  200x136} (tools/lossless_gate.sh), and lossless
+        //                  under aomdec in every cell. This is the AVIF
+        //                  product case: `AvifEncoder`'s DEFAULT speed 6 maps
+        //                  to preset 7, so lossless AVIF of a screenshot was
+        //                  refused at the default setting for want of a
+        //                  measurement.
+        //   preset 5       DIVERGES, and only on `screenrep`: 128x128 port
+        //                  17,241 B vs C 17,242, and 200x136 17,241-shaped —
+        //                  28,926 B on both sides with different bytes. Both
+        //                  decode losslessly, so it is an RD-decision residual
+        //                  like the p0..p3 pinned set, not a pixel defect.
+        //   presets 0..4   PANIC: `intrabc_hash.rs`'s `get_block_hash_value`
+        //                  indexes past the end of the source slice
+        //                  ("the len is 0 but the index is 0"). QP-0-SPECIFIC —
+        //                  qp 1, 2, 5, 20 and 40 all encode at preset 4 — and
+        //                  IntraBC-preset-specific, which is why it has never
+        //                  been reachable in shipped code. Fixing it is its own
+        //                  chunk; refusing is correct until then, and a refusal
+        //                  that names a CRASH is worth more than one that says
+        //                  "not byte-verified".
+        if allow_screen_content_tools && self.speed_config.preset < 6 {
             return Some(
-                "QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) is not \
-                 byte-verified against C so far — use QP >= 1 on this content [C: accepts]",
+                "QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) needs \
+                 preset >= 6: at preset <= 4 the IntraBC hash search indexes past its source \
+                 slice (intrabc_hash::get_block_hash_value — QP-0-only, qp >= 1 encodes), and \
+                 preset 5 diverges from C on screenrep content. Presets 6..13 are byte-identical \
+                 to C (48/48, tools/lossless_gate.sh) — use one of those, or QP >= 1 \
+                 [C: accepts]",
             );
         }
         if self.superres_denom.is_some() {

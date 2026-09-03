@@ -470,8 +470,23 @@ jobs:
         # 64x64 + partial-SB 96x80 geometries (72 cells); the 128x128 /
         # 200x136 twins are local (`tools/lossless_gate.sh`, 144 cells,
         # benchmarks/lossless_gate_2026-08-28.md).
+        #
+        # SCREEN CONTENT is a SECOND invocation with a narrower preset range,
+        # not an extra content in the first. Added 2026-09-03 with the lift of
+        # the blanket "QP 0 with screen-content tools" refusal: presets 6..13
+        # are byte-identical to C (48/48 locally over {screen, screenrep} x
+        # {64x64, 128x128, 96x80, 200x136}), preset 5 diverges on `screenrep`,
+        # and presets 0..4 PANIC in intrabc_hash at QP 0 — so the refusal
+        # survives below 6 and is pinned from the other side by
+        # `regression_spotcheck.sh`'s two `qp0-screen-refused-*` cells. Folding
+        # screen into the first run's preset ladder would just fail on the
+        # refused cells; asserting the refusal is the gate for those.
         run: |
           LL_DIMS="64x64 96x80" AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
+            ./tools/lossless_gate.sh
+          LL_CONTENTS="screen screenrep" LL_DIMS="64x64 96x80" \
+            LL_PRESETS="6 7 8 9 10 13" \
+            AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
             ./tools/lossless_gate.sh
 
       - name: superres identity + conformance (chunk B.3)

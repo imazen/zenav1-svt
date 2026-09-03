@@ -668,6 +668,24 @@ Crates are not published to crates.io yet — depend by git.
   path. Five new `regression_spotcheck.sh` cells (four cases + a 2x2 control);
   reverting the fix fails exactly those four **at identical byte counts**,
   which is why they are byte cells and not size cells.
+- **QP 0 (coded-lossless) on SCREEN CONTENT works at preset >= 6, and the
+  blanket refusal was hiding a crash at the other end.** The refusal read "not
+  byte-verified against C so far" — a statement about effort. Measured:
+  presets 6..13 are **48/48 byte-identical to C** over `{screen, screenrep}` x
+  `{64x64, 128x128, 96x80, 200x136}` and lossless under aomdec in every cell;
+  preset 5 diverges on `screenrep` only (128x128 port 17,241 B vs C 17,242,
+  both lossless — an RD residual like the pinned p0..p3 set); presets 0..4
+  **PANIC** in `intrabc_hash::get_block_hash_value`, QP-0-specific (qp 1, 2, 5,
+  20, 40 all encode at preset 4). `AvifEncoder`'s DEFAULT speed 6 maps to
+  preset 7, so lossless AVIF of a screenshot was refused at the default setting
+  for want of running it once. The refusal now stops at preset 6 and names both
+  causes. Pinned from BOTH sides: three `byte` cells for the lift and two
+  `refuses` cells (a new `regression_spotcheck.sh` helper that tells exit 3
+  apart from a panic) for the presets that must stay refused — without the
+  second pair, deleting the refusal outright would pass every test in the repo
+  and re-enable the panic. New CI invocation of `lossless_gate.sh` over the
+  screen contents at presets 6..13.
+
 - **Monochrome encodes arbitrary (non-8-aligned) dimensions — the AVIF alpha
   case.** An alpha plane is a monochrome AV1 image at the picture's own size,
   and the mono path refused anything not already 8-aligned ("arbitrary-dims

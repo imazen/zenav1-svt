@@ -48,7 +48,7 @@ that only matters for video is ranked low here even when it is easy.
 | 2 | global motion (no refusal existed) | **C-ACCEPTS** | `svt_aom_derive_gm_level`, `enc_mode_config.c:194`; `inter-preset4` accepted | high — it was SILENT, not refused | **REFUSAL ADDED** (below) |
 | 3 | monochrome at non-8-aligned dims | **C-ABSENT** | no mono mode in C | high — AVIF alpha is a mono plane at the image's own (arbitrary) size | **IMPLEMENTED** (below) |
 | 4 | QP 0 (coded-lossless) at 10-bit | C-ACCEPTS | `qp0-10bit` = 1977 B | medium — lossless 10-bit AVIF | leave refused; needs a WHT/TX_4X4 arm in a bd10 level producer |
-| 5 | QP 0 with screen-content tools | C-ACCEPTS | `qp0-screen-content` = 509 B | medium — lossless AVIF of screenshots is a real PNG-replacement case | leave refused; the palette/IntraBC × lossless product is unverified, not unimplemented |
+| 5 | QP 0 with screen-content tools | C-ACCEPTS | `qp0-screen-content` = 509 B | medium-high — lossless AVIF of a screenshot, and `AvifEncoder`'s DEFAULT speed lands inside the working range | **IMPLEMENTED for preset >= 6** (below) |
 | 6 | QP 0 on the monochrome path | **C-ABSENT** | no mono mode in C | medium — lossless AVIF alpha | leave refused; needs a mono WHT/TX_4X4 arm AND a non-byte oracle |
 | 7 | 10-bit monochrome below preset 9 | **C-ABSENT** | no mono mode in C | medium — 10-bit AVIF alpha | leave refused; needs the bd10 funnel to run without chroma |
 | 8 | GOP shapes outside the 4 translated `generate_rps_info` branches | C-ACCEPTS | `inter-randomaccess` = 138 B | low for stills | leave refused; random-access pyramids are a video feature |
@@ -191,3 +191,37 @@ cells observed to FAIL, the fix restored, the cells observed to pass:
 4. **`InterHdrError::GlobalMotionNotImplemented` was dead, not merely
    unreached** — never constructed anywhere in the crate — and the comment that
    relied on it claimed the opposite in as many words.
+
+## Item 5, added after the ranked table was drawn: the refusal said "unverified", and it was two different things
+
+`QP 0 (coded-lossless) with screen-content tools ... is not byte-verified
+against C so far` is a statement about effort, not about the encoder, and this
+triage's whole point is that the difference is measurable. Running it:
+
+| presets | result |
+|---|---|
+| **6..13** | **48 / 48 BYTE-IDENTICAL to C**, `{screen, screenrep}` x `{64x64, 128x128, 96x80, 200x136}`, lossless under aomdec in every cell |
+| 5 | DIVERGES, and only on `screenrep`: 128x128 port 17,241 B vs C 17,242; 200x136 28,926 B on both sides with different bytes. Both decode losslessly, so it is an RD residual like the pinned p0..p3 set, not a pixel defect |
+| 0..4 | **PANIC** — `intrabc_hash::get_block_hash_value` indexes past the end of its source slice. QP-0-SPECIFIC (qp 1, 2, 5, 20 and 40 all encode at preset 4) and IntraBC-preset-specific, so it has never been reachable in shipped code |
+
+So the blanket refusal was hiding a **crash** at one end and a **48-cell
+byte-identical envelope** at the other, and `AvifEncoder`'s default speed 6 maps
+to preset 7 — lossless AVIF of a screenshot was refused at the default setting
+for want of running it once.
+
+Refusal narrowed to `preset < 6` and reworded to name both measured causes.
+**Pinned from BOTH sides**, which is the part a lift is usually missing: three
+`byte` cells for the newly-allowed presets, and two new `refuses` cells (a new
+`regression_spotcheck.sh` helper) for the presets that must stay refused. The
+`refuses` helper distinguishes exit 3 from a panic, so "the refusal was deleted"
+and "the refusal was deleted and this now crashes" are different failure
+messages. Both mutations were run:
+
+* refusal deleted → `qp0-screen-refused-p4 PANICKED where a refusal was
+  required: intrabc_hash.rs:422`, `qp0-screen-refused-p5 ENCODED where a
+  refusal was required`;
+* refusal restored to its old blanket form → the three `byte` cells fail with
+  `[port failed to encode]`.
+
+Without the second pair of cells, a future change that deletes the refusal
+entirely would pass every test in this repo and re-enable the panic.
