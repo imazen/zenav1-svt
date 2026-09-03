@@ -1,0 +1,31 @@
+# ext_sad 8x8/16x16 A/B — SIMD compute8x4 / compute8x8 under the ext_* kernels
+date: 2026-09-02 (UTC timestamps inside the .raw.tsv header)
+host: mac — Apple M4 Pro, aarch64-apple-darwin, 12 cores
+baseline binary: the me_sad chunk (benchmarks/me_sad_ab_2026-09-02.*), NOT main
+tool: tools/perf_ab.sh, 15 interleaved randomised-order paired rounds/cell,
+      one untimed warmup inside each sample, NEITHER SIDE NICED
+build: cargo build --release, NO -C target-cpu=native
+grid: content=gradient sizes=[64 128 256 512] presets=[8] qp=40
+arm:  INTER — SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTRA_PERIOD=64
+      SVTAV1_HIER_LEVELS=0 SVTAV1_INTER_EXPERIMENTAL=1
+
+what changed: inter_me::sad's ext_sad_calculation_8x8_16x16,
+  ext_eight_sad_calculation_8x8_16x16 and ext_all_sad_calculation_8x8_16x16
+  became `#[inline(always)]` generics taking the 8x4 / 8x8 block SAD as
+  closures, plus one `#[arcane]` wrapper per tier that binds those closures to
+  svtav1_dsp::me_sad::block_sad_{scalar,neon,arm_v2,v3}. A closure defined in
+  an `#[arcane]` body inherits its target features, so the SIMD helper is
+  reached without a per-8x8-block boundary; the boundary is crossed once per
+  public call. ext_all_sad_calculation_8x8_16x16 evaluates 512 8x8 SADs per
+  call, so that is 512:1 amortisation.
+
+result: byte-identical at every cell (perf_ab's own cmp, ident=Y)
+  64x64    1.4109 -> 1.3773 ms  speedup 1.029x  (p25/p75 ratio 0.9492/0.9823)
+  128x128  3.9044 -> 3.7431 ms  speedup 1.048x  (0.9376/0.9649)
+  256x256 14.6840 -> 14.1598 ms speedup 1.038x  (0.9566/0.9734)
+  512x512 72.4304 -> 70.4422 ms speedup 1.032x  (0.9631/0.9781)
+
+cumulative vs main (884f94e8f) at 256x256 p8: 15.3615 -> 14.1598 ms = 1.085x.
+
+reading it: compute8x4_sad_kernel was 0.548 ms of the 15.36 ms two-frame
+  encode at 256x256 p8 = 3.6 %; the measured 3.8 % is that share.

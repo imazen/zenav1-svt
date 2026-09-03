@@ -26,6 +26,7 @@ pub mod intra_pred;
 // is the one verified against C (`svt_aom_is_dv_valid` et al.).
 pub mod inv_txfm;
 pub mod loop_filter;
+pub mod me_sad;
 pub mod obmc;
 pub mod pic_operators;
 pub mod port_compound_prep;

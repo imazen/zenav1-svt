@@ -1,0 +1,35 @@
+# me_sad A/B — SIMD block SAD for the ME search loops
+date: 2026-09-02 (UTC timestamps inside the .raw.tsv header)
+host: mac — Apple M4 Pro, aarch64-apple-darwin, 12 cores
+base commit: 884f94e8f (main)
+tool: tools/perf_ab.sh (interleaved paired rounds, order randomised per round,
+      one untimed warmup encode inside each sample, NEITHER SIDE NICED)
+build: cargo build --release -p zenav1-svt --example perf_encode
+       NO -C target-cpu=native on either side (runtime dispatch is what ships)
+grid: content=gradient sizes=[64 128 256 512] presets=[8] qp=40 rounds=15
+arm:  INTER — SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTRA_PERIOD=64
+      SVTAV1_HIER_LEVELS=0 SVTAV1_INTER_EXPERIMENTAL=1
+      (the same two-frame low-delay-P flat GOP perf_gate.sh's inter arm uses)
+
+what changed: crates/svtav1-dsp/src/me_sad.rs (new) + inter_me::sad's
+  nxm_sad_kernel / sad_loop_kernel. Token summoned once per sad_loop_kernel
+  CALL; the search loop is stamped per tier so no target-feature boundary is
+  crossed per search position. Tiers: arm_v2 (dotprod, vabdq_u8 + vdotq_u32 —
+  the shape of C's *_neon_dotprod), neon (vabdq_u8 + vpadalq), v3
+  (_mm256_sad_epu8), scalar.
+
+result: byte-identical at every cell (perf_ab's own cmp, ident=Y)
+  64x64    1.4308 -> 1.4222 ms  speedup 1.018x  (p25/p75 ratio 0.9721/0.9983)
+  128x128  4.0133 -> 3.8622 ms  speedup 1.038x  (0.9545/0.9781)
+  256x256 15.3615 -> 14.5318 ms speedup 1.058x  (0.9359/0.9557)
+  512x512 75.5348 -> 72.5431 ms speedup 1.039x  (0.9569/0.9697)
+
+reading it: 256x256 p8 is the cell benchmarks/perf_inter_attrib_2026-09-02.tsv
+  was taken at. There nxm_sad_kernel was 0.955 ms of a 15.36 ms two-frame
+  encode = 6.2 %, and the measured speedup is 1.058x = 5.5 % off the total, so
+  the kernel's cost is essentially gone rather than merely reduced. The 64x64
+  cell is smaller because the fixed per-frame cost dominates there.
+
+not measured here: preset 6, sizes above 512 (the inter byte frontier ends at
+  256 above p6 — see perf-status.md), x86-64 (see the cross-ISA note in the
+  commit; the dsp tier-parity test covers block_sad_v3 when run on x86).
