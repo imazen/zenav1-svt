@@ -62,6 +62,44 @@ the obvious A/B for it: they were measured as a CPU win and a peak-HEAP null
 a peak-RSS null on an allocator that does not return freed pages. That
 measurement has not been made and this file does not make it.
 
+=================== 2b. TWO THINGS THE 36 MB IS *NOT*, MEASURED =============
+
+**(a) It is not libmalloc's retention POLICY.** Peak RSS of the same
+2048x2048 inter cell under three macOS allocator env knobs, three runs each,
+median (KiB):
+
+  default                                       150032
+  MallocNanoZone=0                              149600   -0.3 %
+  MallocSpaceEfficient=1                        144208   -3.9 %
+  MallocNanoZone=0 MallocSpaceEfficient=1       157168   (noisy, +4.8 %)
+
+The `.obu` is 139,762 B in every configuration. A 4 % ceiling on the whole
+policy axis does not account for a 30 % gap, so "macOS just holds onto freed
+memory" is not the answer, and neither is the nano zone (which only handles
+allocations of 256 B or less).
+
+**(b) It is not a flat per-process ISA tax — it is ARM-SPECIFIC TO THE INTER
+PATH.** aarch64 peak RSS minus x86_64 peak RSS, same commits, same cells (KiB):
+
+  size   still   videokey    inter
+  1280   +1620     +2968    +9932
+  1536   +5292     +3496   +20344
+  1920   +2244     +6216   +25840
+  2048   +1896     +8184   +35156
+
+**The still arm agrees across the two ISAs to within 2-5 MB at every size**, so
+page size, thread stacks and static tables cannot be carrying 36 MB — they
+would show up on the still arm too. The excess appears with the video config
+and TRIPLES again with the second frame, and it grows with picture size.
+
+That shape is what CROSS-FRAME REGION REUSE failing would look like: on Linux
+frame 1's freed structures are handed back out for frame 2, so the high-water
+is roughly one frame's worth; if macOS's magazine allocator satisfies frame 2
+out of fresh regions instead, the inter arm's resident set is closer to two.
+It is consistent with the CHURN hypothesis in §2 and it is still a HYPOTHESIS —
+nothing here isolates it, and the obvious falsification (an A/B of the three
+allocation-site hoists on macOS RSS) has not been run.
+
 =================== 3. WHAT THIS SAYS ABOUT THE RECORDED 1.60x ===============
 
 `benchmarks/mem_arms_2026-09-02.meta` records the inter arm at 1.60x at 4 MP on
