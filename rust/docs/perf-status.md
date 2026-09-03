@@ -1,5 +1,111 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **CURRENT — THE ALLOCATION-SITE HOISTS: A MEASURED CPU WIN AND A MEMORY NULL
+> (2026-09-03, third chunk of the day). READ THIS BEFORE THE MEMORY BLOCK
+> BELOW.** Three byte-identical changes hoist the three biggest per-call
+> allocation sites out of the allocator, and the pair of records they produced
+> disagree in exactly the way the lifetime argument predicts: every cell moves
+> on the CPU and **not one cell moves on the heap**.
+>
+> Commits: `58fa779e` (the RDOQ trellis's `dqcoeff` into the per-thread
+> `TxScratch`), `fbd341b3` (`txb_coeff_satd`'s `residual` + `coeffs` into a
+> per-thread scratch), `0c70f3fc` (`cost_coeffs_txb`'s and
+> `cost_coeffs_txb_pd0`'s `coeff_contexts` into a fixed stack array).
+> Records: `benchmarks/txscratch_dqcoeff_ab_2026-09-03.*`,
+> `benchmarks/satdscratch_ab_2026-09-03.*`,
+> `benchmarks/coeffctx_ab_2026-09-03.*`,
+> `benchmarks/mem_heaptrack_satd_2026-09-03.meta`,
+> `benchmarks/perf_2026-09-03-arm4-{still,videokey,inter}.*`.
+>
+> **1. THE THREE PAIRED A/Bs** (`tools/perf_ab.sh`, interleaved, order
+> randomised per round, no `-C target-cpu=native`, gradient qp 40, aarch64 /
+> Apple M4 Pro, EVERY cell `ident=Y`). Read each as a speedup over the tree
+> immediately before it:
+>
+> | change | arm | best cell | worst cell | shape |
+> |---|---|---|---|---|
+> | `dqcoeff` -> TxScratch | still n=15 | 1.022x (256 p6) | 1.003x (512 p10) | four of six spans below 1.0 |
+> | | videokey n=25 | 1.009x (128 p8) | 0.998x (256 p6) | NULL-to-marginal |
+> | `txb_coeff_satd` scratch | still n=15 | **1.034x (256 p2)** | 0.991x (512 p10, NULL) | concentrated at the SLOW presets |
+> | | videokey n=25 | 1.016x (512 p6) | 0.999x (128 p8) | |
+> | `coeff_contexts` -> stack | still n=15 | 1.015x (256 p10) | 1.006x (512 p10) | **six of six move** |
+> | | videokey n=25 | 1.015x (128 p8) | 1.006x (512 p8) | **six of six move** |
+>
+> The `coeff_contexts` change is the most uniform of the three — eleven of its
+> twelve cells have their whole p25/p75 span below 1.0 — and it is also the
+> cheapest: the buffer is `vec![0i8; txb_wide * txb_high]`, `adjusted_tx_size`
+> caps that product at `32 * 32` for every reachable `tx_size`, so it needs no
+> thread-local at all, only a `[0i8; cc::MAX_TXB_COEFF_AREA]` on the stack.
+> **Check for that bound before reaching for a thread-local scratch.**
+>
+> **2. THE POSITION AFTER ALL THREE** (`perf_gate.sh`, three arms, one session,
+> 25 paired rounds, sizes 64/128/256/512 at preset 8, gradient qp 40, all cells
+> `ident=Y` except the 512 inter cell). Two independent runs of the same grid
+> ten minutes apart agree within 0.01x on every slope ratio:
+>
+> | preset 8, port/C | 64 | 128 | 256 | 512 | slope ratio |
+> |---|---|---|---|---|---|
+> | still — arm3b | 0.87x | 1.50x | 2.42x | 2.61x | 2.70x |
+> | still — arm4 | 0.85x | 1.50x | 2.43x | 2.59x | **2.70x** |
+> | videokey — arm3b | 1.36x | 1.98x | 2.55x | 2.83x | 2.88x |
+> | videokey — arm4 | 1.37x | 1.93x | 2.52x | **2.73x** | **2.77x** |
+> | inter — arm3b | 1.68x | 2.16x | 2.66x | 3.00x* | 2.86x |
+> | inter — arm4 | 1.65x | 2.15x | 2.60x | **2.90x*** | **2.81x** |
+>
+> READ THIS AS POSITION, NOT ATTRIBUTION — it carries C's own drift, and this
+> session's C is 1.9-3.3 % faster than arm3b's at 512x512 on all three arms.
+> The port moved 3.0 % (still), 5.5 % (videokey) and 4.6 % (inter) at that
+> cell, so roughly 2-3.6 % of each is real and the rest is drift; the three
+> A/Bs above are the attribution. **The video-mode key frame's slope ratio is
+> 2.88x -> 2.77x and the inter cell's 2.86x -> 2.81x.**
+>
+> Re-differenced on the arm4 numbers (a subtraction of measured quantities),
+> the port's excess over C on an inter cell splits:
+>
+> | size | still key frame | what the VIDEO config adds | the inter frame | total excess |
+> |---|---|---|---|---|
+> | 64  | -0.030 ms (-6.8 %) | +0.216 (**48.6 %**) | +0.258 (58.1 %) | 0.444 ms |
+> | 128 | +0.167 (10.3 %) | +0.855 (**53.0 %**) | +0.592 (36.7 %) | 1.614 ms |
+> | 256 | +1.575 (22.1 %) | +3.832 (**53.8 %**) | +1.715 (24.1 %) | 7.122 ms |
+> | 512 | +6.351 (17.0 %) | +21.518 (**57.6 %**) | +9.505 (25.4 %) | 37.374 ms |
+>
+> (The 512 row differences an `ident=N` inter cell — two encoders making
+> different decisions — and is quoted for shape, not as a precise figure.)
+> **The video config is still the largest single item at every size, and its
+> share is where the previous record left it (54-59 %).**
+>
+> **3. THE HEAP DID NOT MOVE AT ALL.** Twelve heaptrack cells on r7900x
+> (1280/1536/1920/2048 x still/videokey/inter, gradient qp 40 preset 13, each
+> cell's `.obu` checked non-empty first), comparing `061aae79` with
+> `fbd341b3`: ten cells read **+0.01 MiB** and two read unchanged, where
+> +0.01 MiB is `heaptrack_print`'s smallest printable difference. By
+> subtraction at 2048x2048 the video config still adds **+14.88 M** to the port
+> and one inter frame still adds **+43.94 M**, i.e. **+37.65 M encoder-side
+> against C's +0.01 M** once the harness's own 6.29 MB input frame is removed
+> from both sides — the same numbers `mem_heaptrack_2026-09-03.meta` recorded
+> before any of this work.
+>
+> **This is the expected result and it is worth stating plainly: removing
+> allocator CHURN cannot lower a PEAK.** All three buffers live for one
+> transform unit (or one txb) and are freed before the next is taken, so they
+> were never simultaneously live at the peak. The memory gap remains what
+> `mem_heaptrack_arena_2026-09-03.meta` diagnosed — a LIFETIME property: the
+> port holds the whole frame's decision tree, with a coefficient `Vec` per
+> block, until the entropy walk, where C packs a superblock and releases its
+> buffers. **Further allocation-shape hoists will keep paying in CPU and keep
+> paying nothing in peak heap.** Do not price one as a memory change.
+>
+> WHAT REMAINS, as fractions of the video config's excess, from
+> `benchmarks/perf_videokey_attrib_2026-09-03.tsv` (512x512 p8, unchanged by
+> this chunk — the classes it moves are ALLOC and QUANT_RDOQ, both of which
+> were already measured small): CDEF **11.8 %** (`cdef_filter_block` is NEON on
+> BOTH sides, so a quality item, not a coverage gap), INTRA_PRED **9.3 %**
+> (`dr_predictor_edged` at 10.7x, and a genuine coverage gap — C ships
+> `svt_av1_dr_prediction_z{1,2,3}_neon`, the port's `dr_z{1,2,3}_edged` are
+> scalar), LOOP_RESTORE 9.2 %, MD_DRIVER 6.6 %. ALLOC was 9.7 %; the three
+> hoists above are the first bite out of it and the A/Bs say what that bite was
+> worth.
+
 > **MEMORY (2026-09-02, aarch64 / Apple M4 Pro) — read this before quoting any
 > memory number.** `/usr/bin/time -l` max RSS, median of 7 runs per cell, plain
 > `--release` port binary (NOT the `symtrace` wrapper the 2026-08-16 record

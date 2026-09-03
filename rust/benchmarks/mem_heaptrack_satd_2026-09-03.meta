@@ -1,0 +1,93 @@
+PEAK HEAP AFTER THE TWO ALLOCATION-SITE HOISTS — AND IT IS A NULL, AS THE
+LIFETIME ARGUMENT PREDICTED.
+
+date:   2026-09-03
+host:   r7900x — AMD Ryzen 7900X, 24 threads, x86_64-unknown-linux-gnu, 29 GiB.
+        NOT the aarch64 box the RSS records use. This is HEAP, not RSS.
+        The box was concurrently running this commit's own x86 gate suite;
+        that affects wall clock, which this file does not report, and not heap
+        bytes, which are load-independent (same caveat as
+        benchmarks/mem_heaptrack_arena_2026-09-03.meta).
+tool:   heaptrack + heaptrack_print ("peak heap memory consumption").
+cell:   gradient <size>x<size> qp 40 preset 13, 8-bit 4:2:0, ONE encode per
+        cell (not a median). Sizes 1280 / 1536 / 1920 / 2048.
+arms:   still    = perf_encode default (avif still config), 1 frame
+        videokey = SVTAV1_VIDEO=1, 1 frame
+        inter    = SVTAV1_VIDEO=1 SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3
+        REFUSAL TRAP (mem_heaptrack_2026-09-03.meta): the harness checks each
+        cell's `.obu` is non-empty BEFORE reading its peak, and prints
+        NO-OBU-REFUSED instead of a number if it is not. Every one of the 12
+        cells below produced an `.obu` (70,893-139,762 bytes).
+trees:  BEFORE = 061aae79 (the tile-buffer reservation) — the RESRV column of
+                 benchmarks/mem_heaptrack_arena_2026-09-03.meta
+        AFTER  = fbd341b37 = BEFORE + 9b323c6f (docs)
+                 + 58fa779e (the RDOQ trellis's `dqcoeff` hoisted into
+                   `TxScratch`)
+                 + fbd341b3 (`txb_coeff_satd`'s two buffers hoisted into a
+                   per-thread scratch)
+
+======================= PEAK HEAP, MiB =======================
+
+  size  arm        BEFORE    AFTER     AFTER/BEFORE
+  1280  still       32.26     32.26    1.000
+  1280  videokey    38.66     38.67    1.000
+  1280  inter       55.89     55.90    1.000
+  1536  still       45.95     45.95    1.000
+  1536  videokey    54.71     54.72    1.000
+  1536  inter       79.57     79.58    1.000
+  1920  still       71.17     71.18    1.000
+  1920  videokey    84.10     84.11    1.000
+  1920  inter      123.01    123.02    1.000
+  2048  still       80.79     80.80    1.000
+  2048  videokey    95.68     95.68    1.000
+  2048  inter      139.61    139.62    1.000
+
+Ten of the twelve cells read +0.01 M and two read unchanged; +0.01 M at
+heaptrack_print's two-decimal MiB resolution is the smallest non-zero
+difference the tool can print. **The change is NULL to within 0.01 %.**
+
+======================= WHAT THIS SAYS =======================
+
+1. **TWO MEASURED CPU WINS BOUGHT ZERO PEAK HEAP, and that is the expected
+   result, not a surprise.** Both commits remove allocator CHURN — 72,919
+   calls at `tx_pipeline::tx_unit_inner` and 28,006 at
+   `leaf_funnel::detect::txb_coeff_satd` on one 512x512 video-mode key frame
+   at preset 8 — from buffers whose LIFETIME is one transform unit. A buffer
+   that is freed before the next one is allocated was never part of the peak.
+   This is the same finding `mem_heaptrack_arena_2026-09-03.meta` records for
+   the PA/ME pooling, reached from the opposite direction: there the pooling
+   was a CPU null AND a memory null; here the hoists are a CPU win and still a
+   memory null.
+
+2. **THE INTER FRAME'S MARGINAL HEAP COST HAS NOT MOVED.** At 2048x2048, by
+   subtraction of the arms (a subtraction of measured quantities):
+
+     what the VIDEO config adds:   port +14.88 M   (was +14.89 M)
+     what ONE INTER FRAME adds:    port +43.94 M   (was +43.93 M)
+     minus the harness's own extra input frame (`perf_encode::translate`,
+     6.29 MB exactly, measured in mem_heaptrack_2026-09-03.meta):
+
+       ONE INTER FRAME, ENCODER-SIDE:  port +37.65 M   against C's +0.01 M
+
+   The C side is unchanged by construction — no C code changed — so the
+   port/C inter-frame heap ratio stands where mem_heaptrack_2026-09-03.meta
+   left it.
+
+3. **The memory axis therefore still needs the LIFETIME change, not more
+   allocation-shape changes.** The port holds the whole frame's decision tree,
+   with a coefficient `Vec` per block, until the entropy walk; C packs a
+   superblock and releases its buffers. `funnel_block_decision` (16.79 M over
+   4096 calls) and the `Vec<PartitionTree>` collect in `encode_tile_rows`
+   (11.53 M over 4110) are that one structure seen from two sites. Hoisting
+   more non-escaping scratch will keep paying in CPU and keep paying nothing
+   in peak heap.
+
+======================= NOT ESTABLISHED =======================
+
+  * Any RSS number. This is heap.
+  * Any aarch64 number. Different allocator, different page size.
+  * Repeat variance: one encode per cell, as in the record it compares to.
+  * Any preset but 13, content but gradient, qp but 40.
+  * That the CPU wins are null too — they are not. See
+    benchmarks/txscratch_dqcoeff_ab_2026-09-03.* and
+    benchmarks/satdscratch_ab_2026-09-03.*, both paired A/Bs on aarch64.

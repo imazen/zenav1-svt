@@ -50,8 +50,20 @@ and a SIMD-coverage queue ranked by measured frame share; read that before
 optimising anything, because the top entries are already NEON and the queue is
 about quality, not coverage.
 
-**Wall clock, VIDEO-KEY (2026-09-03, CURRENT — read this before the 09-02
-paragraph below).** Three byte-identical changes landed the same day and moved
+**Wall clock, THREE ARMS (2026-09-03, CURRENT — read this before the 09-02
+paragraph below).** Latest position, after the three allocation-site hoists
+(`benchmarks/perf_2026-09-03-arm4-{still,videokey,inter}.*`, 25 paired rounds,
+p8, gradient qp 40, two independent runs of the grid agreeing within 0.01x on
+every slope ratio): **still 2.70x, videokey 2.77x, inter 2.81x** slope ratio;
+per cell at 64/128/256/512 still 0.85/1.50/2.43/2.59, videokey
+1.37/1.93/2.52/2.73, inter 1.65/2.15/2.60/2.90*. The video-mode key frame is
+49-58 % of the inter cell's excess. **And the same three commits moved the
+peak HEAP by nothing at all** — twelve heaptrack cells at +0.01 MiB or less
+(`benchmarks/mem_heaptrack_satd_2026-09-03.meta`), because removing allocator
+CHURN cannot lower a peak the churned buffers were never live at. The block
+below is the previous position and its attribution.
+
+**Wall clock, VIDEO-KEY (2026-09-03).** Three byte-identical changes landed the same day and moved
 the video-mode key frame's slope ratio **3.21x -> 2.88x** and the inter cell's
 **3.23x -> 2.86x** (`benchmarks/perf_2026-09-03-arm3b-*`, position; the paired
 A/Bs `compute_stats_rowpair_*`, `nzmap_table_*`, `nzmap_inline_*` are the
