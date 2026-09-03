@@ -51,7 +51,16 @@ optimising anything, because the top entries are already NEON and the queue is
 about quality, not coverage.
 
 **Wall clock, VIDEO-KEY (2026-09-03, CURRENT — read this before the 09-02
-paragraph below).** All three arms re-measured in ONE session after the ME SIMD
+paragraph below).** Three byte-identical changes landed the same day and moved
+the video-mode key frame's slope ratio **3.21x -> 2.88x** and the inter cell's
+**3.23x -> 2.86x** (`benchmarks/perf_2026-09-03-arm3b-*`, position; the paired
+A/Bs `compute_stats_rowpair_*`, `nzmap_table_*`, `nzmap_inline_*` are the
+attribution): `restoration::compute_stats` re-derived by row-pair correlation
+(~9x fewer MACs), the 2D nz-map context offset read from the table C reads it
+from instead of re-derived, and the RDOQ trellis's six context helpers promoted
+to `#[inline(always)]` as C's are. The first two corrected recorded claims in
+`docs/perf-status.md` — "the MAC count is inherent" and the drain-interval
+blocker — so re-read that file's compute_stats block before quoting it. All three arms re-measured in ONE session after the ME SIMD
 chunk: `benchmarks/perf_2026-09-03-arm3-{still,videokey,inter}.*`. At preset 8
 the arms read still 0.90/1.51/2.53/2.71x, videokey 1.49/2.34/2.95/3.14x, inter
 1.76/2.43/2.99/3.29x at 64/128/256/512. **The video-mode KEY frame is now

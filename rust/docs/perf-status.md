@@ -138,6 +138,31 @@
 > | 256 | +1.648 (19.3 %) | +5.148 (**60.4 %**) | +1.730 (20.3 %) | 8.526 ms |
 > | 512 | +6.585 (15.1 %) | +27.774 (**63.5 %**) | +9.385 (21.5 %) | 43.744 ms |
 >
+> **POSITION AFTER THE THREE CHANGES THIS FILE RECORDS BELOW** (compute_stats
+> row-pair, nz-map offset table, context-helper inlining) — same tool, same
+> grid, 25 paired rounds, all cells `ident=Y` except the 512 inter cell.
+> Records: `benchmarks/perf_2026-09-03-arm3b-{still,videokey,inter}.*`.
+>
+> | preset 8, port/C | 64 | 128 | 256 | 512 | slope ratio |
+> |---|---|---|---|---|---|
+> | still — before | 0.90x | 1.51x | 2.53x | 2.71x | 2.81x |
+> | still — after | 0.87x | 1.50x | **2.42x** | **2.61x** | **2.70x** |
+> | videokey — before | 1.49x | 2.34x | 2.95x | 3.14x | 3.21x |
+> | videokey — after | **1.36x** | **1.98x** | **2.55x** | **2.83x** | **2.88x** |
+> | inter — before | 1.76x | 2.43x | 2.99x | 3.29x* | 3.23x |
+> | inter — after | **1.68x** | **2.16x** | **2.66x** | **3.00x*** | **2.86x** |
+>
+> READ THIS AS POSITION, NOT AS ATTRIBUTION — it is a different session from
+> the "before" row and carries C's own drift (C's 512 still frame reads 4.097 ms
+> here against 3.854 ms an hour earlier, +6 %). The paired A/Bs recorded below
+> are the attribution. What the position says is that the video-mode key frame's
+> slope ratio moved **3.21x -> 2.88x** and the inter cell's **3.23x -> 2.86x**,
+> the first movement on either since the ME SIMD chunk.
+>
+> Re-differenced on the AFTER numbers, the video config's share of the inter
+> cell's excess is 54-59 % (was 60-64 %) and its excess at 512x512 is 23.6 ms
+> (was 27.8): still 6.54 / video 23.60 / inter frame 9.74 of a 39.88 ms total.
+>
 > WHAT THE VIDEO CONFIG ADDS TO THE KEY FRAME, BY CLASS at 512x512 p8 (port
 > delta / C delta of the same subtraction; the port's deltas sum to 39.4 ms
 > against the 39.887 ms the paired gate measures, so the profile accounts for
