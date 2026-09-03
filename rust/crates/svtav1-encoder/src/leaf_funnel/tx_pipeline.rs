@@ -77,9 +77,18 @@ impl TxUnitOut {
 /// **5.5 % of preset-6 self time, 6.7 % at preset 10 and ~9.9 % at preset 2**,
 /// against 0.01–0.15 ms on the C side, which allocates none of this per TU.
 ///
-/// Five of the seven never escape the function (`residual`, `coeffs`, `packed`,
-/// `dq_full`, `inv`) and are hoisted here. The remaining two (`qcoeff`, `recon`)
-/// are moved into the returned [`TxUnitOut`] and still allocate.
+/// SIX of the seven never escape the function (`residual`, `coeffs`, `packed`,
+/// `dq_full`, `inv`, `dqcoeff`) and are hoisted here. The remaining two
+/// (`qcoeff`, `recon`) are moved into the returned [`TxUnitOut`] and still
+/// allocate.
+///
+/// **`dqcoeff` was the miscounted one** (this comment said "five of seven" and
+/// "the remaining two" while the body allocated three). It is written by the
+/// quantizer, read by the `dq_full` fold and the frequency-domain SSE, and
+/// returned to nobody. On a 512x512 video-mode key frame at preset 8,
+/// `tx_unit_inner` was the single largest allocation SITE in the whole encoder
+/// — 72,919 calls to the allocator, measured by heaptrack on r7900x — and this
+/// is a third of them.
 ///
 /// Byte-identity argument, buffer by buffer — the whole point is that a reused
 /// buffer must not leak a previous TU's bytes into this one:
@@ -101,6 +110,7 @@ pub(super) struct TxScratch {
     pub(super) packed: Vec<i32>,
     pub(super) dq_full: Vec<i32>,
     pub(super) inv: Vec<i32>,
+    pub(super) dqcoeff: Vec<i32>,
 }
 
 impl TxScratch {
@@ -122,7 +132,7 @@ std::thread_local! {
     static TX_SCRATCH: core::cell::RefCell<TxScratch> =
         const { core::cell::RefCell::new(TxScratch {
             residual: Vec::new(), coeffs: Vec::new(), packed: Vec::new(),
-            dq_full: Vec::new(), inv: Vec::new(),
+            dq_full: Vec::new(), inv: Vec::new(), dqcoeff: Vec::new(),
         }) };
 }
 
@@ -306,6 +316,7 @@ pub(super) fn tx_unit_inner(
         packed: packed_buf,
         dq_full,
         inv,
+        dqcoeff: dqcoeff_buf,
     } = sc;
     if residual.len() < n {
         residual.resize(n, 0);
@@ -402,7 +413,11 @@ pub(super) fn tx_unit_inner(
         None
     };
     let mut qcoeff = vec![0i32; pw * ph];
-    let mut dqcoeff = vec![0i32; pw * ph];
+    // The exact replacement for the `vec![0i32; pw * ph]` this was: resized
+    // and zeroed over the working length, so a reused buffer cannot leak the
+    // previous transform unit's dequantized levels. Only `pw * ph` of it is
+    // ever indexed, by every reader below.
+    let dqcoeff: &mut [i32] = TxScratch::zeroed(dqcoeff_buf, pw * ph);
     let mut eob = if do_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => crate::qm::quantize_fp_qm(
@@ -413,11 +428,9 @@ pub(super) fn tx_unit_inner(
                 wt,
                 iwt,
                 &mut qcoeff,
-                &mut dqcoeff,
+                dqcoeff,
             ),
-            None => {
-                crate::quant::quantize_fp(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
-            }
+            None => crate::quant::quantize_fp(packed, scan, qt, log_scale, &mut qcoeff, dqcoeff),
         };
         if e != 0 {
             let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(frame.rdoq_level);
@@ -442,24 +455,15 @@ pub(super) fn tx_unit_inner(
                 cut_off_num,
                 cut_off_denum,
             };
-            crate::quant::optimize_b(packed, &mut qcoeff, &mut dqcoeff, &mut e, scan, qt, &o);
+            crate::quant::optimize_b(packed, &mut qcoeff, dqcoeff, &mut e, scan, qt, &o);
         }
         e
     } else {
         match qm {
-            Some((wt, iwt)) => crate::qm::quantize_b_qm(
-                packed,
-                scan,
-                qt,
-                log_scale,
-                wt,
-                iwt,
-                &mut qcoeff,
-                &mut dqcoeff,
-            ),
-            None => {
-                crate::quant::quantize_b(packed, scan, qt, log_scale, &mut qcoeff, &mut dqcoeff)
+            Some((wt, iwt)) => {
+                crate::qm::quantize_b_qm(packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, dqcoeff)
             }
+            None => crate::quant::quantize_b(packed, scan, qt, log_scale, &mut qcoeff, dqcoeff),
         }
     };
     let _ = &mut eob;
@@ -470,7 +474,7 @@ pub(super) fn tx_unit_inner(
             qm.map(|(_, iwt)| iwt),
             packed,
             &mut qcoeff,
-            &mut dqcoeff,
+            dqcoeff,
             &mut eob,
             scan,
             c_tx,

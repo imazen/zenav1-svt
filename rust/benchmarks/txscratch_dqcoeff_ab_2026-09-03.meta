@@ -1,0 +1,35 @@
+# `dqcoeff` hoisted into the per-thread `TxScratch` — paired A/B.
+#
+# host  : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool  : tools/perf_ab.sh — interleaved paired rounds, order randomised per
+#         round, one untimed warmup inside each sample, NEITHER SIDE NICED,
+#         no -C target-cpu=native
+# base  : the tile-buffer reservation commit   cand: + this hoist
+# grid  : gradient qp 40; still 256/512 x p{2,6,10} n=15,
+#         videokey (SVTAV1_VIDEO=1) 128/256/512 x p{6,8} n=25
+# ident : Y on all twelve cells
+#
+# WHY THIS SITE. `tx_unit_inner` is the largest allocation SITE in the whole
+# encoder — 72,919 calls to the allocator on ONE 512x512 video-mode key frame
+# at preset 8 (heaptrack --print-allocators on r7900x). It allocated three
+# `Vec`s per transform unit; `TxScratch`'s doc comment claimed two. `dqcoeff`
+# is the miscounted one: written by the quantizer, read by the `dq_full` fold
+# and the frequency-domain SSE, returned to nobody.
+#
+# RESULT
+#   still     256 p2 1.014x | 256 p6 1.022x | 256 p10 1.006x
+#             512 p2 1.007x | 512 p6 1.009x | 512 p10 1.003x
+#   videokey  128 p6 1.007x | 128 p8 1.009x | 256 p6 0.998x
+#             256 p8 1.004x | 512 p6 1.003x | 512 p8 1.006x
+#
+# Four of six STILL cells have their whole p25/p75 span below 1.0; both
+# exceptions are p10, where the trellis barely runs. The VIDEOKEY arm is
+# NULL-to-marginal — five of six move the right way, every span but 128 p8's
+# crosses 1.0.
+#
+# WHAT IS NOT ESTABLISHED. That removing the OTHER two allocations at this
+# site (`qcoeff`, `recon`) would scale this by 3x. They are moved into the
+# returned `TxUnitOut` and escape the `TX_SCRATCH.with` closure, so hoisting
+# them needs a different mechanism than this one — and the thread-local Vec
+# POOL that mechanism would most obviously be has already measured NULL once
+# (benchmarks/alloc_bufpool_null_2026-08-13.meta). Do not assume; measure.
