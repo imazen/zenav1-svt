@@ -1,0 +1,71 @@
+# inter completion frontier — does the port ENCODE this cell at all?
+# host=mac  date=2026-09-03T18:34:03Z  port=/Users/lilith/work/zen/zenav1-svt--cfg1/rust/tools/identity_run
+# content=gradient qp=32 shift=3 frames=2 (low-delay P, flat GOP, key frame 0 only)
+# status: OK | REFUSED (exit 3, the shipped behaviour) | CRASH (panic, exit 101)
+# frames_written: how many of the 2 frames reached disk before the verdict
+# ident: Y/N vs the C reference, only meaningful when status=OK
+size	preset	status	frames_written	ident	note
+64	6	OK	2	Y	
+88	6	OK	2	N	
+104	6	OK	2	N	
+120	6	OK	2	N	
+128	6	OK	2	Y	
+152	6	OK	2	N	
+168	6	OK	2	N	
+232	6	OK	2	N	
+256	6	OK	2	Y	
+296	6	OK	2	N	
+512	6	OK	2	N	
+552	6	OK	2	N	
+568	6	OK	2	N	
+576	6	OK	2	Y	
+1024	6	OK	2	N	
+2048	6	OK	2	N	
+64	8	OK	2	Y	
+88	8	OK	2	N	
+104	8	OK	2	N	
+120	8	OK	2	N	
+128	8	OK	2	Y	
+152	8	OK	2	N	
+168	8	OK	2	N	
+232	8	OK	2	N	
+256	8	OK	2	Y	
+296	8	OK	2	N	
+512	8	OK	2	N	
+552	8	OK	2	N	
+568	8	OK	2	N	
+576	8	OK	2	Y	
+1024	8	OK	2	N	
+2048	8	OK	2	N	
+64	10	OK	2	N	
+88	10	OK	2	N	
+104	10	OK	2	N	
+120	10	OK	2	N	
+128	10	OK	2	N	
+152	10	OK	2	N	
+168	10	OK	2	N	
+232	10	OK	2	N	
+256	10	OK	2	N	
+296	10	OK	2	N	
+512	10	OK	2	N	
+552	10	OK	2	N	
+568	10	OK	2	N	
+576	10	OK	2	N	
+1024	10	OK	2	N	
+2048	10	OK	2	N	
+64	13	OK	2	N	
+88	13	OK	2	N	
+104	13	OK	2	N	
+120	13	OK	2	N	
+128	13	OK	2	N	
+152	13	OK	2	N	
+168	13	OK	2	N	
+232	13	OK	2	N	
+256	13	OK	2	N	
+296	13	OK	2	N	
+512	13	OK	2	N	
+552	13	OK	2	N	
+568	13	OK	2	N	
+576	13	OK	2	N	
+1024	13	OK	2	N	
+2048	13	OK	2	N	

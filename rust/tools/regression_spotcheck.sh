@@ -668,6 +668,72 @@ ramp_yuv 96 80 "$W/ramp_96x80.yuv"
 monoReconEq "mono-straddle-control-p6-96x80" "raw:$W/ramp_96x80.yuv" 96 80 10 6
 
 # ---------------------------------------------------------------------------
+# 2026-09-03 — the SEQUENCE HEADER underflowed `frame_width_bits_minus_1` at
+# width or height 1. `32 - (1 - 1).leading_zeros()` is 0, so `w_bits - 1` wrapped:
+# a release build wrote 15 into that 4-bit field ("16 bits of
+# max_frame_width_minus_1 follow") and then wrote ZERO bits of it, shifting
+# every following SH field. Spec 5.5.1 reads `f(frame_width_bits_minus_1 + 1)`,
+# so the minimum legal encoding of width 1 is `0` plus one zero bit.
+#
+# OBSERVED BEFORE (release, gradient 1x1 q20 p7): the port emitted 21 bytes and
+# dav1d said "Error parsing sequence header / Overrun in OBU bit buffer / No
+# data decoded"; aomdec said "Corrupt frame detected: Truncated packet". C
+# emitted 21 bytes that decode. AFTER: 24 B on both sides, BYTE-IDENTICAL.
+# (The 21 -> 24 is the SH growing the bits it always owed.)
+#
+# It affected the 4:2:0 path as much as the monochrome one and had been there
+# the whole time; nothing reached it because no gate encodes a 1-pixel
+# dimension. Found while lifting the mono arbitrary-dims refusal, which made
+# these sizes reachable on a second path.
+#
+# 8x1 / 16x1 / 32x1 / 8x2 are deliberately NOT cells: C SIGBUSes on them
+# (docs/SUSPECTED-C-BUGS.md #30), so there is no oracle. 64x1 and 1x64 are the
+# one-row/one-column geometries C does survive.
+byte "sh-width-bits-1x1"   gradient   1   1 20 7
+byte "sh-width-bits-1x8"   gradient   1   8 20 7
+byte "sh-width-bits-64x1"  gradient  64   1 20 7
+byte "sh-width-bits-1x64"  gradient   1  64 20 7
+# CONTROL: 2x2 is the smallest size where the old arithmetic was already right
+# (`w_bits` = 1 without the clamp), so it passed before and after. It keeps the
+# four cells above from being read as "tiny sizes were simply broken".
+byte "sh-width-bits-control-2x2" gradient 2 2 20 7
+
+# ---------------------------------------------------------------------------
+# 2026-09-03 — MONOCHROME refused every non-8-aligned dimension outright
+# ("monochrome encode requires 8-aligned dims (arbitrary-dims padding is wired
+# on the 4:2:0 path only)"), which is the AVIF ALPHA case: an alpha plane is a
+# monochrome AV1 image at the picture's own, arbitrary size. `AvifEncoder::
+# encode_y8` worked around it by pre-padding to a multiple of 64 while still
+# reporting the caller's TRUE size, so the coded frame and the announced frame
+# disagreed for every non-64-multiple gray image.
+#
+# OBSERVED BEFORE (release): `identity_run` exits 3 with
+# "REFUSED by the encoder: invalid dimensions 100x100: monochrome encode
+# requires 8-aligned dims" — so these cells failed as `rs-err`. AFTER: 100x100
+# codes 2090 B, 99x77 1710 B, 250x150 6555 B, every one decoding under BOTH
+# aomdec and dav1d with the decoder emitting exactly w*h luma bytes (10,000 /
+# 7,623 / 37,500), which is what proves the stream announces the TRUE size and
+# not the padded one.
+#
+# No C oracle exists and never will: C v4.2.0 has no monochrome mode at all
+# (`verify_settings` rejects any `encoder_color_format` other than EB_YUV420,
+# Globals/enc_settings.c:473). These use the recon oracle, like the mono cells
+# above.
+ramp_yuv 100 100 "$W/ramp_100x100.yuv"
+monoReconEq "mono-arbitrary-dims-p7-100x100" "raw:$W/ramp_100x100.yuv" 100 100 20 7
+ramp_yuv 98 78 "$W/ramp_98x78.yuv"
+monoReconEq "mono-arbitrary-dims-p7-98x78"   "raw:$W/ramp_98x78.yuv"    98  78 20 7
+ramp_yuv 250 150 "$W/ramp_250x150.yuv"
+monoReconEq "mono-arbitrary-dims-p8-250x150" "raw:$W/ramp_250x150.yuv" 250 150 20 8
+# ODD dimensions, which `monoReconEq` cannot express: its `raw:` loader is an
+# I420 harness and refuses an odd .yuv layout. `gradient` is generated at any
+# size, so the odd half of the lift is asserted as decodability instead — a
+# weaker oracle for a case the recon oracle structurally cannot reach, said out
+# loud rather than quietly dropped.
+SVTAV1_MONO=1 decodes "mono-arbitrary-dims-odd-p7-99x77"  gradient  99  77 20 7
+SVTAV1_MONO=1 decodes "mono-arbitrary-dims-odd-p8-171x33" gradient 171  33 20 8
+
+# ---------------------------------------------------------------------------
 # 2026-08-28 — MAINLINE tune-IQ chroma delta-q was emitted in the FORK's
 # four-delta form, under a sequence header that signalled
 # separate_uv_delta_q = 0. Spec 5.9.12 reads `diff_uv_delta` ONLY when that SH

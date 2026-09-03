@@ -1,0 +1,43 @@
+# inter completion frontier, 2026-09-03 — 64 OK / 0 REFUSED / 0 CRASH
+#
+# grid: gradient, qp 32, shift 3, frames 2 (low-delay P, flat GOP), sizes
+#   {64 88 104 120 128 152 168 232 256 296 512 552 568 576 1024 2048} x
+#   presets {6 8 10 13} = 64 cells
+# host: mac (aarch64), library reference/svt-av1 @ 39f909e
+# port: rust/tools/identity_run (symtrace wrapper), built from this workspace
+#
+# BEFORE (benchmarks/inter_completion_2026-09-02b.tsv, same grid):
+#   52 OK / 12 REFUSED / 0 CRASH, 5 of 64 byte-identical on BOTH frames.
+# AFTER (this file):
+#   64 OK /  0 REFUSED / 0 CRASH, 8 of 64 byte-identical on BOTH frames.
+#
+# WHAT MOVED, and what did NOT.
+#
+# The twelve refusals were ONE refusal: `use_ref_frame_mvs` at
+# `mfmv_level >= 2`, on 568 / 576 / 1024 / 2048 square at presets 6, 8 and 10.
+# `mfmv_level` is 2 when `m <= M8 && input_resolution > R360p`
+# (sig_deriv_mode_decision_config_default) and 4 at M9..M10, and R360p's
+# threshold is 0x4CE00 = 314,880 luma samples — which is why 552x552
+# (304,704) was fine and 568x568 (322,624) was not, and why preset 13 was
+# unaffected (`mfmv_enabled = 0` above M10 → level 0). See
+# benchmarks/refused_config_triage_2026-09-03.md for the full account.
+#
+# THREE cells are byte-identical here that were not on 09-02, and only TWO of
+# them are attributable to this change:
+#   576x576 p6  — was REFUSED. frame 0 41,537 B, frame 1 35 B, both identical.
+#   576x576 p8  — was REFUSED. same sizes.
+#   256x256 p6  — was OK-but-differing on 09-02 and is identical now. This is
+#                 NOT from the mfmv work and must not be claimed as such:
+#                 256x256 is 65,536 luma samples, i.e. R240p, where
+#                 `mfmv_level` is 1 — the one level whose value the change
+#                 leaves bit-identical by construction (old code: `level == 1
+#                 => true`; new code: `mfmv_controls(level 1) == Some(1)`).
+#                 It moved somewhere else on main between 2026-09-02 and
+#                 2026-09-03.
+#
+# 568x568 is OK-but-differing at every preset, not identical: it is a PARTIAL
+# superblock (568 = 8*71) and its frame 1 is 55 B against C's 53. That is the
+# pre-existing partial-SB frontier — 0 of 33 partial-SB cells were
+# byte-identical on 09-02 and none are now — not an mfmv effect. Lifting the
+# refusal made those cells MEASURABLE; it did not make them identical, and the
+# distinction is the point of this scan existing.

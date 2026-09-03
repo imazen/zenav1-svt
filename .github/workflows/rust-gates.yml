@@ -273,16 +273,27 @@ jobs:
         # sailed past two out-of-bounds panics until 2026-08-03. MEASURED
         # 2026-09-02: all five content classes the harness has
         # (gradient / screen / screenrep / uniform / diag) give the SAME
-        # 52 OK / 12 REFUSED / 0 CRASH, so this frontier is geometry-driven —
+        # frontier, so it is geometry-driven —
         # SB remainder and resolution class — not content-driven. The screen
         # pass is therefore currently redundant and is here anyway, because
         # "redundant today" is not "unreachable", and a gate that cannot reach
         # a candidate set cannot guard it.
+        #
+        # FLOORS RAISED 2026-09-03 (52 OK / <=12 REFUSED -> 64 OK / 0 REFUSED).
+        # The twelve refusals were ONE refusal - `use_ref_frame_mvs` at
+        # `mfmv_level >= 2` - on every cell at 568 px and up, because
+        # `mfmv_level` is 2 above 360p at preset <= M8. It was refused as
+        # needing "the TPL r0 and the references' own is_mfmv_used", which C
+        # only reads when `scs->tpl` is on, and this port's `aq_mode == 0`
+        # refusal makes TPL structurally off. Leaving the ceiling at 12 after
+        # closing it would let all twelve come back silently, which is the one
+        # thing a ceiling is for. See
+        # rust/benchmarks/refused_config_triage_2026-09-03.md.
         run: |
           cargo build --release -p zenav1-svt --example identity_run
           for c in gradient screen; do
             echo "=== inter completion gate: content=$c ==="
-            SCAN_GATE=1 SCAN_MIN_OK=52 SCAN_MAX_REFUSED=12 SCAN_CONTENT="$c" \
+            SCAN_GATE=1 SCAN_MIN_OK=64 SCAN_MAX_REFUSED=0 SCAN_CONTENT="$c" \
               SCAN_RS_BIN="$PWD/target/release/examples/identity_run" \
               ./tools/inter_completion_scan.sh
           done

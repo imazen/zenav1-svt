@@ -2,8 +2,11 @@
 
 # Configs this encoder refuses
 
-**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **28
-CONTRACT refusals** (caller misuse — permanent and correct).
+**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **30
+CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
+refusals, **11** name a configuration C v4.2.0 actually encodes — the
+only ones a byte-parity gate could ever close — and **1** carry no
+`[C: ...]` marker at all.
 
 Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
 
@@ -11,37 +14,49 @@ Regenerate with `tools/refusal_inventory.sh`; `--check` is a CI gate.
 
 Refusing beats emitting a wrong bitstream — that rule is correct and stays. But
 a refusal also makes a gap look handled: `arbitrary_size_robustness.sh` counts
-its 48 refusals as PASSES, and `coverage_matrix.py` cannot show a refused
-config even as `--`, because a refused config produces no cell at all. So the
-one tool built to surface gaps is structurally blind to this one.
+refusals as PASSES, and `coverage_matrix.py` cannot show a refused config even
+as `--`, because a refused config produces no cell at all. So the one tool
+built to surface gaps is structurally blind to this one.
 
 That is not hypothetical. 10-bit at non-64-aligned dimensions — the actual AVIF
 product case — sat behind a refusal while every gate stayed green, and was read
-aloud in a status report before anyone acted on it.
+aloud in a status report before anyone acted on it. It was 48 of that gate's
+128 cells; it was lifted on 2026-08-04, and the gate now reads **128 / 128 with
+zero refusals** (re-measured 2026-09-03). The sentence you are reading said "its
+48 refusals" for a month after they were gone, which is the same rot one level
+up: **re-run the gate, do not quote this file's prose at it.**
 
 **Read the CAPABILITY list as a backlog, not as a specification.**
 
 ## CAPABILITY — not implemented (debt)
 
-| where | refusal |
-|---|---|
-| `crates/svtav1-encoder/src/pipeline.rs` | 10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit sequence header |
-| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — use mainline mode or QP >= 1 |
-| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) is 8-bit only so far: neither bd10 level producer has a WHT / TX_4X4 arm — use QP >= 1 at 10-bit |
-| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) is not implemented for inter frames — encode a single key frame |
-| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — use the 4:2:0 path or QP >= 1 |
-| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) is not byte-verified against C so far — use QP >= 1 on this content |
-| `crates/svtav1-encoder/src/pipeline.rs` | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
-| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used, and global motion's parameter coding is unported (crate::inter_hdr_arm::InterHdrError) |
-| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
-| `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has no 12-bit kernels |
-| `crates/svtav1-encoder/src/pipeline.rs` | inter frames are not implemented for the public API — not because the machinery is missing, but because its ENVELOPE is 89 of 96 cells. CDF continuation, the inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, frames=2 low-delay P) 89 cells are byte-identical to C on BOTH frames, 6 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be right on the closed cells and silently wrong elsewhere, which is exactly the outcome docs/WORKING-ON-THIS.md section 6 refuses. See docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: encode a single key frame |
-| `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode requires 8-aligned dims (arbitrary-dims padding is wired on the 4:2:0 path only) |
-| `crates/svtav1-encoder/src/pipeline.rs` | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
-| `crates/svtav1-encoder/src/pipeline.rs` | superres is 8-bit only so far (the u16 source downscale is unported) |
-| `crates/svtav1-encoder/src/pipeline.rs` | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header |
-| `crates/svtav1-encoder/src/pipeline.rs` | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
-| `svtav1/src/avif.rs` | lossless encoding is not implemented for monochrome (encode_y8); QP 0 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline mode |
+`C?` is what the ORACLE does with this configuration, declared by the refusal
+itself and verified by `tools/c_envelope_probe.sh`:
+`accepts` = C encodes it, so byte-parity can close it;
+`no mono mode` = C cannot encode monochrome at all, so byte-parity NEVER can
+(use the recon oracle, as `regression_spotcheck.sh` does);
+`rejects` = C refuses it too, so there is nothing to build;
+`?` = nobody has said, which is itself a gap.
+
+| where | C? | refusal |
+|---|---|---|
+| `crates/svtav1-encoder/src/pipeline.rs` | ? | QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — use mainline mode or QP >= 1 |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) is 8-bit only so far: neither bd10 level producer has a WHT / TX_4X4 arm — use QP >= 1 at 10-bit |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) is not implemented for inter frames — encode a single key frame |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) is not byte-verified against C so far — use QP >= 1 on this content |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used (crate::inter_hdr_arm:: InterHdrError). This port's TPL is structurally off (aq_mode 0), so reaching this means the aq_mode refusal was lifted without porting r0 |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: C svt_aom_derive_gm_level (enc_mode_config.c:194) gives an inter frame at preset <= 4 a non-zero gm_level, so C searches a model and global_motion_params() codes its type and parameters, while this port writes seven is_global = 0 bits and an IDENTITY model — use preset >= 5 for inter frames |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | inter frames are not implemented for the public API — not because the machinery is missing, but because its ENVELOPE is 89 of 96 cells. CDF continuation, the inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, frames=2 low-delay P) 89 cells are byte-identical to C on BOTH frames, 6 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be right on the closed cells and silently wrong elsewhere, which is exactly the outcome docs/WORKING-ON-THIS.md section 6 refuses. See docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: encode a single key frame |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres is 8-bit only so far (the u16 source downscale is unported) |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
+| `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | 10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit sequence header |
+| `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | 10-bit monochrome requires 8-aligned dims (not implemented otherwise): the TRUE -> ALIGNED replicate pad is wired on the 8-bit mono path and the 4:2:0 path, and this source's only consumer (the bd10 level re-encode post-pass) needs 64-aligned dims at preset >= 9 anyway |
+| `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — use the 4:2:0 path or QP >= 1 |
+| `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
+| `svtav1/src/avif.rs` | no mono mode | lossless encoding is not implemented for monochrome (encode_y8); QP 0 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline mode |
 
 ## CONTRACT — caller misuse (permanent, correct)
 
@@ -62,6 +77,7 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd planes must cover the true dims (y at y_stride, u/v at true_w/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd source carries a sample above the configured bit depth |
 | `crates/svtav1-encoder/src/pipeline.rs` | max_tx_size must be 32 or 64 (C verify_settings, enc_settings.c:922) |
+| `crates/svtav1-encoder/src/pipeline.rs` | monochrome luma plane must cover the true dims at y_stride |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit input needs a bd10 consumer: 64-aligned dims and either preset >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit monochrome input needs the bd10 level re-encode post-pass: 64-aligned dims at preset >= 9 — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit source went unconsumed (the bd10 level re-encode was skipped for this frame's partition trees) — the encode would have silently truncated to 8 bits; see docs/hbd-input-port-map.md chunk 2 |
@@ -72,6 +88,7 @@ aloud in a status report before anyone acted on it.
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd is the monochrome entry point; use try_encode_frame_420_hbd on a 4:2:0 pipeline |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
+| `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
 | `svtav1/src/avif.rs` | quality > 99.2 maps to QP 0, which is coded-lossless AV1 (WHT transform + lossless header signalling); the monochrome leaf coder has no lossless arm — use a lower quality, or encode_yuv420 for a coded-lossless 4:2:0 still |

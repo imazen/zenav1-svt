@@ -381,36 +381,36 @@ impl AvifEncoder {
         self.validate_quality()?;
         self.validate_inert_knobs(false)?;
 
-        // MONOCHROME NEEDS PRE-PADDING; 4:2:0 DOES NOT. `EncodePipeline`'s
-        // TRUE -> ALIGNED replicate-pad is wired on the 4:2:0 path only
-        // (`try_encode_frame` refuses `width != true_width` outright), so a
-        // mono caller has to hand in already-aligned planes. Pad to a
-        // multiple of 64 — not 8 — because below preset 6 the mono path also
-        // refuses partial superblocks, and the alignment must not depend on
-        // the speed knob. CONSEQUENCE, and a real limitation: the coded frame
-        // for a non-64-multiple gray image is the PADDED size, with the edge
-        // replicated into the pad, so `EncodedAvif::{width, height}` (the
-        // caller's true size) is smaller than the AV1 frame the container
-        // wraps. `encode_yuv420` has no such gap — it signals the true size
-        // at any even size. Arbitrary-dims MONO is a pipeline gap, not one
-        // this wrapper can close.
-        let sb_size = 64usize;
-        let padded_w = (width as usize).div_ceil(sb_size) * sb_size;
-        let padded_h = (height as usize).div_ceil(sb_size) * sb_size;
+        // MONOCHROME NO LONGER NEEDS PRE-PADDING. `EncodePipeline`'s
+        // TRUE -> ALIGNED replicate-pad is wired on the mono path too
+        // (`encode_frame_mono_core`), so this hands the pipeline the TRUE
+        // dimensions and the pipeline signals them in the frame header — the
+        // same contract `encode_yuv420` has always had.
+        //
+        // WHAT THIS FIXES, and why it was not cosmetic. This wrapper used to
+        // pad the gray plane up to a multiple of 64 and then build the
+        // pipeline AT THE PADDED SIZE, while still returning
+        // `EncodedAvif::{width, height}` = the caller's TRUE size. For every
+        // non-64-multiple gray image the AV1 frame and the size the struct
+        // announces therefore DISAGREED — a 100x100 alpha plane came back as
+        // a 128x128 AV1 stream labelled 100x100. That is the AVIF alpha case
+        // (an alpha plane is a monochrome AV1 image at the picture's own,
+        // arbitrary size), and it is the "plausible-but-wrong output" shape
+        // `rust/CLAUDE.md` forbids: nothing fails, the bytes decode, and the
+        // container is built around a mismatched extent.
+        //
+        // The one residual: below preset 6 the mono pipeline still refuses a
+        // PARTIAL SUPERBLOCK (the sub-M6 search roots at the clamped extent).
+        // That is now a typed REFUSAL rather than a silently padded encode —
+        // `examples/decode_conformance.rs`'s avif corpus already had the `Err`
+        // arm for it and a comment saying refusing is the correct behaviour;
+        // the pre-pad was what kept that arm dead.
         let (w, h, st) = (width as usize, height as usize, stride as usize);
-        let mut src = vec![128u8; padded_w * padded_h];
+        let mut src = vec![0u8; w * h];
         for r in 0..h {
-            src[r * padded_w..r * padded_w + w].copy_from_slice(&pixels[r * st..r * st + w]);
-            // Replicate the last valid column across the width pad.
-            for c in w..padded_w {
-                src[r * padded_w + c] = src[r * padded_w + w - 1];
-            }
+            src[r * w..(r + 1) * w].copy_from_slice(&pixels[r * st..r * st + w]);
         }
-        // Replicate the last valid row down the height pad.
-        for r in h..padded_h {
-            src.copy_within((h - 1) * padded_w..h * padded_w, r * padded_w);
-        }
-        let mut pipeline = self.build_pipeline(padded_w as u32, padded_h as u32);
+        let mut pipeline = self.build_pipeline(width, height);
 
         // Fallible entry point, NOT the infallible `encode_frame` wrapper: the
         // latter `.expect()`s on every refusal the pipeline can raise
@@ -418,7 +418,7 @@ impl AvifEncoder {
         // monochrome partial superblock below preset 6), turning a caller
         // mistake into a process abort inside a Result-returning API.
         let bitstream = pipeline
-            .try_encode_frame(&src, padded_w)
+            .try_encode_frame(&src, w)
             .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?;
 
         Ok(EncodedAvif {
@@ -578,7 +578,7 @@ impl AvifEncoder {
             return Err(EncodeError::UnsupportedConfig(
                 "lossless encoding is not implemented for monochrome (encode_y8); QP 0 \
                  (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline \
-                 mode",
+                 mode [C: no mono mode]",
             ));
         }
         if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
@@ -991,6 +991,80 @@ mod tests {
         assert!(!result.data.is_empty());
         assert_eq!(result.width, 10);
         assert_eq!(result.height, 10);
+    }
+
+    /// `encode_y8` codes the frame at the size it REPORTS.
+    ///
+    /// It used to pad the gray plane up to a multiple of 64 and build the
+    /// pipeline at the PADDED size while returning the caller's true size, so
+    /// a 100x100 alpha plane came back as a 128x128 AV1 stream labelled
+    /// 100x100 — the AVIF alpha case, and an output whose container extent
+    /// could not be right. There is no decoder in this crate, so the property
+    /// is pinned indirectly but decisively: encoding the SAME pixels through
+    /// the 128x128 twin the old code would have built must not produce the
+    /// same bytes. It did, exactly, before this change.
+    ///
+    /// The decoding half of the assertion (aomdec/dav1d emit exactly `w*h`
+    /// luma bytes, and the encoder's recon equals them) is
+    /// `tools/regression_spotcheck.sh`'s `mono-arbitrary-dims-*` cells.
+    #[test]
+    fn encode_y8_codes_the_size_it_reports() {
+        let enc = AvifEncoder::new(); // speed 6 -> preset 7, partial SBs OK
+        let gray = |w: usize, h: usize| -> Vec<u8> {
+            (0..h)
+                .flat_map(|y| (0..w).map(move |x| (((x + y) * 255) / (w + h)) as u8))
+                .collect()
+        };
+        let small = enc
+            .encode_y8(&gray(100, 100), 100, 100, 100)
+            .expect("100x100");
+        assert_eq!((small.width, small.height), (100, 100));
+
+        // The plane the OLD wrapper handed the pipeline: 128x128, the 100x100
+        // content in the corner, last column then last row replicated.
+        let src = gray(100, 100);
+        let mut padded = vec![0u8; 128 * 128];
+        for r in 0..100 {
+            padded[r * 128..r * 128 + 100].copy_from_slice(&src[r * 100..(r + 1) * 100]);
+            for c in 100..128 {
+                padded[r * 128 + c] = padded[r * 128 + 99];
+            }
+        }
+        for r in 100..128 {
+            padded.copy_within(99 * 128..100 * 128, r * 128);
+        }
+        let old_shape = enc.encode_y8(&padded, 128, 128, 128).expect("128x128");
+        assert_ne!(
+            small.data, old_shape.data,
+            "encode_y8 is still coding the 64-padded frame and mislabelling it"
+        );
+    }
+
+    /// Below preset 6 the mono pipeline refuses a PARTIAL superblock, and
+    /// `encode_y8` now surfaces that instead of padding around it.
+    ///
+    /// This is the deliberate behaviour CHANGE that came with the fix above:
+    /// speed 1 maps to preset 0, where the sub-M6 search roots at the clamped
+    /// extent. Emitting a 64-padded stream labelled 66x66 was the alternative,
+    /// and it is the one `rust/CLAUDE.md` forbids.
+    #[test]
+    fn encode_y8_refuses_a_partial_sb_below_preset_6_instead_of_padding() {
+        let slow = AvifEncoder::new().with_speed(1); // -> preset 0
+        let pixels = vec![100u8; 66 * 66];
+        assert!(
+            matches!(
+                slow.encode_y8(&pixels, 66, 66, 66),
+                Err(EncodeError::UnsupportedConfig(_))
+            ),
+            "speed 1 at 66x66 must refuse, not pad"
+        );
+        // 128x128 is a whole number of superblocks and still works there, so
+        // the refusal is about GEOMETRY and not about preset 0 being broken.
+        let ok = AvifEncoder::new().with_speed(1);
+        assert!(ok.encode_y8(&vec![100u8; 128 * 128], 128, 128, 128).is_ok());
+        // ...and the DEFAULT speed handles 66x66 fine, which is the half of
+        // the envelope that matters for the product.
+        assert!(AvifEncoder::new().encode_y8(&pixels, 66, 66, 66).is_ok());
     }
 
     #[test]

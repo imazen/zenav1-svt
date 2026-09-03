@@ -574,7 +574,7 @@ impl EncodePipeline {
             |_| {
                 whereat::at!(EncodeError::UnsupportedConfig(
                     "this GOP shape's reference structure is not implemented \
-                     (port_picstruct::generate_rps_info translates 4 of C's 8 branches)",
+                     (port_picstruct::generate_rps_info translates 4 of C's 8 branches) [C: accepts]",
                 ))
             },
         )?;
@@ -750,14 +750,14 @@ impl EncodePipeline {
     /// Encode a single frame through the full pipeline (monochrome).
     ///
     /// Returns the encoded bitstream data and updates internal state.
-    /// The monochrome path does not yet pad TRUE->ALIGNED (task #95 chunk
-    /// 1 wired only the 4:2:0 path); mono callers must pass 8-aligned dims.
+    ///
+    /// `y_plane` is (true_w x true_h) at `y_stride`, where the TRUE dims are
+    /// what the caller passed to [`Self::new`]. When those differ from the
+    /// ALIGNED encode dims the plane is edge-replicated up to the aligned grid
+    /// here, exactly as [`Self::encode_frame_420`] does it (C
+    /// `pad_input_picture`, pic_operators.c:561); for 8-aligned inputs this is
+    /// a zero-copy pass-through and the emitted bytes are unchanged.
     pub fn encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> Vec<u8> {
-        assert!(
-            self.width == self.true_width && self.height == self.true_height,
-            "monochrome encode_frame requires 8-aligned dims (arbitrary-dims padding is wired \
-             on the 4:2:0 path only so far — task #95)"
-        );
         // Task #95 chunk 2: partial SBs (8-aligned but not 64-aligned) are
         // supported ONLY on the PD0 fixed-tree path (preset >= 6), which starts
         // from a 64x64 root carrying spec-5.11.4 forced edge splits and codes
@@ -780,8 +780,52 @@ impl EncodePipeline {
         // return `Err` on the trusted path, so `.expect()` never fires and the
         // emitted bytes are unchanged. Callers wanting graceful OOM /
         // cancellation use `try_encode_frame`.
-        self.encode_frame_impl(y_plane, y_stride, None)
+        self.encode_frame_mono_core(y_plane, y_stride)
             .expect("encode_frame is infallible on the default/trusted path")
+    }
+
+    /// Fallible core of the MONOCHROME path: the same TRUE -> ALIGNED edge
+    /// replication [`Self::encode_frame_420_core`] performs, then the shared
+    /// `encode_frame_impl`. Shared by [`Self::encode_frame`] and
+    /// [`Self::try_encode_frame`], which both validate before calling in.
+    ///
+    /// # Why this exists (and what it replaced)
+    ///
+    /// Until now the mono entry points REFUSED `width != true_width` outright
+    /// — "arbitrary-dims padding is wired on the 4:2:0 path only". The padding
+    /// is not 4:2:0-specific: `encode_frame_impl` already takes the padded
+    /// plane at the ALIGNED stride and signals `true_width`/`true_height` in
+    /// the frame header, and the mono arm differs from the 4:2:0 arm only in
+    /// plane count. The refusal cost the AVIF alpha case: an alpha plane is a
+    /// MONOCHROME AV1 image at the picture's own, arbitrary size, and
+    /// `AvifEncoder::encode_y8` worked around the refusal by pre-padding to a
+    /// multiple of 64 while still reporting the caller's true size — so the
+    /// coded frame and the size the container would announce DISAGREED for
+    /// every non-64-multiple gray image.
+    ///
+    /// # Evidence tier
+    ///
+    /// TIER 3, and it can never be better: C v4.2.0 has no monochrome mode at
+    /// all (`verify_settings` rejects any `encoder_color_format` other than
+    /// `EB_YUV420`, `Globals/enc_settings.c:473`), so there is no byte oracle
+    /// for ANY mono cell. The oracle used here is the one the repo already
+    /// uses for mono geometry bugs (`tools/regression_spotcheck.sh`'s
+    /// `monoReconEq`): the encoder's FINAL reconstruction must equal the
+    /// reference decoder's output, plus decodability under aomdec and dav1d.
+    fn encode_frame_mono_core(
+        &mut self,
+        y: &[u8],
+        y_stride: usize,
+    ) -> crate::EncodeResult<Vec<u8>> {
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        let (aw, ah) = (self.width as usize, self.height as usize);
+        if aw == tw && ah == th {
+            // Natively 8-aligned: pass through unchanged (byte-identical to
+            // every mono stream this encoder has ever emitted).
+            return self.encode_frame_impl(y, y_stride, None);
+        }
+        let y_pad = pad_plane_replicate(y, y_stride, tw, th, aw, ah)?;
+        self.encode_frame_impl(&y_pad, aw, None)
     }
 
     /// Encode a single 4:2:0 still/key frame (NumPlanes=3).
@@ -881,13 +925,16 @@ impl EncodePipeline {
     /// untouched. Internally this calls the SAME infallible
     /// `encode_frame_impl`, so it cannot change the emitted bytes.
     pub fn try_encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> EncodeResult<Vec<u8>> {
-        // (a) Validate — mirror the `encode_frame` asserts.
-        if self.width != self.true_width || self.height != self.true_height {
+        // (a) Validate — mirror the `encode_frame` asserts. The TRUE -> ALIGNED
+        // padding that used to be refused here is now done in
+        // `encode_frame_mono_core`, so only the partial-SB preset floor
+        // remains.
+        let (tw, th) = (self.true_width as usize, self.true_height as usize);
+        if y_plane.len() < (th - 1) * y_stride + tw {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: self.true_width,
                 height: self.true_height,
-                reason: "monochrome encode requires 8-aligned dims (arbitrary-dims padding is \
-                         wired on the 4:2:0 path only)",
+                reason: "monochrome luma plane must cover the true dims at y_stride",
             }));
         }
         if (!self.width.is_multiple_of(64) || !self.height.is_multiple_of(64))
@@ -895,7 +942,7 @@ impl EncodePipeline {
         {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a \
-                 multiple of 64 or preset >= 6",
+                 multiple of 64 or preset >= 6 [C: no mono mode]",
             )));
         }
         // (b) Feature 1 entry stop-check (frame-granular).
@@ -906,7 +953,7 @@ impl EncodePipeline {
         // (c) The fallible core (asserts above pre-satisfied). Its own in-loop
         // stop-checks + fallible allocations propagate here as `Err` instead of
         // panicking/aborting; on success the bytes match `encode_frame`.
-        self.encode_frame_impl(y_plane, y_stride, None)
+        self.encode_frame_mono_core(y_plane, y_stride)
     }
 
     /// Fallible twin of [`Self::encode_frame_420`] (Feature 1 + 2).
@@ -1034,6 +1081,68 @@ impl EncodePipeline {
         preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
     }
 
+    /// C `scs->tpl` for THIS pipeline's configuration
+    /// ([`crate::inter_hdr_arm::scs_tpl`], a port of `get_tpl`,
+    /// `Globals/enc_handle.c:3657`).
+    ///
+    /// Always `false` today, and not by coincidence: `knob_config_error`
+    /// refuses `aq_mode != 0`, which is one of C's own five disabling
+    /// conditions. It is computed rather than written as a literal so that
+    /// lifting the `aq_mode` refusal makes the TPL-dependent refusals
+    /// (`mfmv_level >= 2`) come BACK instead of silently coding a wrong bit.
+    fn scs_tpl(&self) -> bool {
+        crate::inter_hdr_arm::scs_tpl(
+            self.gop.intra_period <= 1,
+            self.rc_config.aq_mode,
+            // Every inter picture this pipeline builds is LOW_DELAY
+            // (`pred_struct_type: PredStructure::LowDelay` in the picture
+            // decision above), which is C's third disabling condition.
+            true,
+            self.superres_denom.is_some(),
+        )
+    }
+
+    /// GLOBAL MOTION, refused rather than assumed away.
+    ///
+    /// C `svt_aom_derive_gm_level` (`enc_mode_config.c:194`) returns
+    /// `svt_aom_get_gm_core_level(enc_mode, super_res_off)` on any NON-I-slice,
+    /// which is 2 at `enc_mode <= ENC_MR`, 4 at `<= ENC_M4` and 0 above — so C
+    /// searches and CODES a global-motion model on an inter frame at preset
+    /// <= 4, and `global_motion_params()` then writes a type plus up to six
+    /// parameters per reference. This port codes seven `is_global = 0` bits
+    /// and an IDENTITY model for every reference unconditionally.
+    ///
+    /// Until now nothing refused that. A comment in `inter_syntax_state`
+    /// asserted that `inter_hdr_arm::inter_signal` "refuses a non-identity
+    /// model", and `InterHdrError::GlobalMotionNotImplemented` existed for it —
+    /// but that variant was never constructed anywhere in the crate, so an
+    /// inter frame at preset <= 4 would have emitted identity models against a
+    /// C encoder that coded real ones. The whole inter campaign measures p6+,
+    /// where C's own level is 0, which is why it never showed up. That is the
+    /// shape of gap `docs/WORKING-ON-THIS.md` §5 is about: a defect invisible
+    /// because no cell reaches it.
+    ///
+    /// `super_res_off` is `true` at every call here: superres and inter are
+    /// mutually exclusive in this port (`superres_config_error` +
+    /// still-only superres wiring), and C's own `gm_level` only DROPS to 0
+    /// when superres is on, so `true` is the conservative reading.
+    fn gm_config_error(&self, is_key: bool) -> Option<&'static str> {
+        if is_key {
+            // C `derive_gm_level`: I_SLICE => 0, always.
+            return None;
+        }
+        if crate::inter_hdr_arm::gm_core_level(self.speed_config.preset, true) == 0 {
+            return None;
+        }
+        Some(
+            "global motion is not implemented: C svt_aom_derive_gm_level \
+             (enc_mode_config.c:194) gives an inter frame at preset <= 4 a non-zero gm_level, so \
+             C searches a model and global_motion_params() codes its type and parameters, while \
+             this port writes seven is_global = 0 bits and an IDENTITY model — use preset >= 5 \
+             for inter frames [C: accepts]",
+        )
+    }
+
     /// Config knobs C rejects in `svt_av1_verify_settings`, refused here so
     /// the port never encodes a config the oracle cannot (issue #9):
     ///
@@ -1124,10 +1233,22 @@ impl EncodePipeline {
             8 => return None,
             10 => {}
             _ => {
+                // WORDING IS LOAD-BEARING HERE. `tools/refusal_inventory.sh`
+                // classifies a refusal by its words, and the previous text
+                // ended "and this port has no 12-bit kernels" — which matched
+                // the CAPABILITY keyword list and filed a PERMANENT UPSTREAM
+                // constraint in the table whose header says "this is DEBT".
+                // It is not debt: C rejects the config at
+                // `svt_av1_verify_settings`, so no oracle exists for any other
+                // depth and implementing 12-bit kernels would put this encoder
+                // OUTSIDE the envelope it is measured against. The identical
+                // rule in `svtav1/src/avif.rs` was already filed as CONTRACT,
+                // so the same constraint sat in both halves of the ledger.
                 return Some(
                     "bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder \
-                     init (svt_av1_verify_settings, Globals/enc_settings.c:460) and this port has \
-                     no 12-bit kernels",
+                     init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle \
+                     exists at any other depth: this is C's envelope, not this port's backlog \
+                     [C: rejects]",
                 );
             }
         }
@@ -1139,12 +1260,23 @@ impl EncodePipeline {
                 "10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the \
                  full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with \
                  its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit \
-                 sequence header",
+                 sequence header [C: no mono mode]",
             );
         }
+        // DEFENSIVE, AND PROVEN UNREACHABLE TODAY. `bd10_levels_native` is
+        // `preset >= 9` for mono (the arm above covers its complement) and
+        // `preset >= 9 || preset <= 8` for 4:2:0, i.e. a tautology — so no
+        // caller can land here. It is kept because the alternative is an
+        // implicit `None` that would let a FUTURE bd10 gap encode 8-bit
+        // levels under a 10-bit sequence header, which is the exact failure
+        // this predicate exists to stop. `bd10_config_error_third_arm_is_
+        // unreachable_over_the_whole_product` pins the claim, so if a new gap
+        // ever makes it reachable that test fails and demands a message
+        // naming the real gap instead of this catch-all.
         Some(
             "this 10-bit configuration has no bd10 stage to produce the coded levels; the encode \
-             would be 8-bit-quantized under a 10-bit sequence header",
+             would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — \
+             unreachable in the shipped envelope, see the unreachability test) [C: accepts]",
         )
     }
 
@@ -1214,31 +1346,31 @@ impl EncodePipeline {
             return Some(
                 "QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf \
                  coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — \
-                 use the 4:2:0 path or QP >= 1",
+                 use the 4:2:0 path or QP >= 1 [C: no mono mode]",
             );
         }
         if self.bit_depth != 8 {
             return Some(
                 "QP 0 (coded-lossless) is 8-bit only so far: neither bd10 level producer has a \
-                 WHT / TX_4X4 arm — use QP >= 1 at 10-bit",
+                 WHT / TX_4X4 arm — use QP >= 1 at 10-bit [C: accepts]",
             );
         }
         if !is_key || self.gop.intra_period > 1 {
             return Some(
                 "QP 0 (coded-lossless) is not implemented for inter frames — encode a single \
-                 key frame",
+                 key frame [C: accepts]",
             );
         }
         if allow_screen_content_tools {
             return Some(
                 "QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) is not \
-                 byte-verified against C so far — use QP >= 1 on this content",
+                 byte-verified against C so far — use QP >= 1 on this content [C: accepts]",
             );
         }
         if self.superres_denom.is_some() {
             return Some(
                 "QP 0 (coded-lossless) with superres is not implemented (the frame is not \
-                 AllLossless at the upscaled size) — use QP >= 1",
+                 AllLossless at the upscaled size) — use QP >= 1 [C: accepts]",
             );
         }
         None
@@ -1273,7 +1405,9 @@ impl EncodePipeline {
             );
         }
         if self.bit_depth != 8 {
-            return Some("superres is 8-bit only so far (the u16 source downscale is unported)");
+            return Some(
+                "superres is 8-bit only so far (the u16 source downscale is unported) [C: accepts]",
+            );
         }
         None
     }
@@ -1417,8 +1551,17 @@ impl EncodePipeline {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
                 width: self.true_width,
                 height: self.true_height,
-                reason: "monochrome encode requires 8-aligned dims (arbitrary-dims padding is \
-                         wired on the 4:2:0 path only)",
+                // The 8-BIT mono path pads TRUE -> ALIGNED as of 2026-09-03
+                // (`encode_frame_mono_core`); this is the 10-BIT one, where
+                // the padding is not the binding constraint — the bd10 level
+                // re-encode post-pass below already needs 64-aligned dims at
+                // preset >= 9, so an arbitrary-dims 10-bit mono source has no
+                // consumer at all. Say THAT rather than repeating a sentence
+                // that stopped being true on the neighbouring path.
+                reason: "10-bit monochrome requires 8-aligned dims (not implemented otherwise): the TRUE -> ALIGNED replicate \
+                         pad is wired on the 8-bit mono path and the 4:2:0 path, and this \
+                         source's only consumer (the bd10 level re-encode post-pass) needs \
+                         64-aligned dims at preset >= 9 anyway [C: no mono mode]",
             }));
         }
         if !self.hbd_source_consumed(false) {
@@ -1493,6 +1636,13 @@ impl EncodePipeline {
         // (`svt_av1_verify_settings`) and this port therefore refuses at the
         // same choke point rather than encoding something C would never emit.
         if let Some(why) = self.knob_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        // GLOBAL MOTION. Same choke point, same rule: C codes a real model on
+        // an inter frame at preset <= 4 and this port writes IDENTITY. See
+        // `gm_config_error` — this refusal is NEW, and replaces a comment that
+        // claimed a refusal which was never constructed.
+        if let Some(why) = self.gm_config_error(self.gop.is_key_frame(display_order)) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
         // MULTI-FRAME IS NOT ENCODABLE — refuse it rather than emit a corrupt
@@ -1645,7 +1795,7 @@ impl EncodePipeline {
                  right on the closed cells and silently wrong elsewhere, which is exactly the \
                  outcome docs/WORKING-ON-THIS.md section 6 refuses. See \
                  docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: \
-                 encode a single key frame",
+                 encode a single key frame [C: accepts]",
             )));
         }
         let temporal_layer = if is_key {
@@ -2863,21 +3013,58 @@ impl EncodePipeline {
                 // from the same place rather than from a signal that has no
                 // such field.
                 force_integer_mv: false,
-                // Global-motion PARAMETER coding is unported and
-                // `inter_hdr_arm::inter_signal` refuses a non-identity model,
-                // so every reference is IDENTITY here by the same rule the
-                // header is written under — not by assumption.
+                // Global-motion PARAMETER coding is unported, so every
+                // reference is IDENTITY here.
+                //
+                // THIS COMMENT USED TO SAY `inter_hdr_arm::inter_signal`
+                // REFUSES A NON-IDENTITY MODEL. It did not, and could not:
+                // `InterHdrError::GlobalMotionNotImplemented` was never
+                // constructed anywhere in the crate, so the "by the same rule
+                // the header is written under — not by assumption" claim was
+                // exactly the assumption it denied being. The refusal is now
+                // real and lives at the `gm_config_error` choke point (C
+                // `svt_aom_derive_gm_level`, enc_mode_config.c:194: non-zero
+                // only on a non-I-slice at enc_mode <= ENC_M4), which is why
+                // IDENTITY is safe here.
                 gm_wmtype: [crate::port_entropy_inter::modes::TransformationType::Identity; 8],
                 cur_order_hint: display_order as i32,
                 ref_order_hint,
-                // C `mfmv_controls` (enc_mode_config.c:8852) for the VALUE
+                // C `mfmv_controls` (enc_mode_config.c:8853) for the VALUE
                 // and `frame_might_allow_ref_frame_mvs`
                 // (entropy_coding.h:71) for its PRESENCE — the same two
                 // rules `inter_hdr_arm::inter_signal` applies to write the
                 // header bit, asserted equal to it below.
+                //
+                // This used to spell the VALUE as `mfmv_level == 1`, a THIRD
+                // transcription of a function ported once in
+                // `port_enc_mode_config::tail` and re-derived in
+                // `inter_hdr_arm`. It agreed with C only because every level
+                // above 1 was refused before it could be reached; the moment
+                // level 2 was allowed it would have been a silent
+                // disagreement in a bit that moves a `newmv` CDF row. It now
+                // calls the same shared port the header does.
                 use_ref_frame_mvs: seq_tools.enable_ref_frame_mvs
                     && seq_tools.enable_order_hint
-                    && sigs.mfmv_level == 1,
+                    && crate::port_enc_mode_config::tail::mfmv_controls(
+                        crate::port_enc_mode_config::tail::MfmvInputs {
+                            mfmv_level: sigs.mfmv_level,
+                            is_base: pic_decision
+                                .as_ref()
+                                .is_some_and(|p| p.temporal_layer_index == 0),
+                            tpl: self.scs_tpl(),
+                            r0_gen: false,
+                            r0: 0.0,
+                            is_b_slice: pic_decision.as_ref().is_some_and(|p| {
+                                p.slice_type == crate::port_picstruct::SliceType::B
+                            }),
+                            ref_list1_count_try: pic_decision
+                                .as_ref()
+                                .map_or(0, |p| u32::from(p.ref_list1_count_try)),
+                            ref_l0_is_mfmv_used: false,
+                            ref_l1_is_mfmv_used: false,
+                        },
+                    )
+                    .is_some_and(|v| v != 0),
             }
         });
 
@@ -5455,7 +5642,7 @@ impl EncodePipeline {
             let pic = pic_decision.as_ref().ok_or_else(|| {
                 whereat::at!(EncodeError::UnsupportedConfig(
                     "an inter frame needs the picture decision, which this port so far runs \
-                     only when a GOP is configured (intra_period > 1)",
+                     only when a GOP is configured (intra_period > 1) [C: accepts]",
                 ))
             })?;
             let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
@@ -5558,13 +5745,16 @@ impl EncodePipeline {
                         enable_ref_frame_mvs: seq_tools.enable_ref_frame_mvs,
                         enable_warped_motion: seq_tools.enable_warped_motion,
                     },
+                    self.scs_tpl(),
+                    crate::inter_hdr_arm::gm_core_level(self.speed_config.preset, true),
                 )
                 .map_err(|_| {
                     whereat::at!(EncodeError::UnsupportedConfig(
                         "an inter frame header field is not implemented for this \
                          configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 \
-                         and the references' own is_mfmv_used, and global motion's parameter \
-                         coding is unported (crate::inter_hdr_arm::InterHdrError)",
+                         and the references' own is_mfmv_used (crate::inter_hdr_arm::\
+                         InterHdrError). This port's TPL is structurally off (aq_mode 0), so \
+                         reaching this means the aq_mode refusal was lifted without porting r0 [C: accepts]",
                     ))
                 })?,
             )
@@ -12284,6 +12474,144 @@ mod tests {
                 !bitstream.is_empty(),
                 "mono {w}x{h} preset 6 produced no bytes"
             );
+        }
+    }
+
+    /// The MONOCHROME path encodes ARBITRARY (non-8-aligned) dimensions, and
+    /// the stream it emits announces the caller's TRUE size.
+    ///
+    /// This is the AVIF alpha case: an alpha plane is a monochrome AV1 image
+    /// at the picture's own size, which is not a multiple of 8 in general.
+    /// Before this it was refused ("monochrome encode requires 8-aligned dims
+    /// (arbitrary-dims padding is wired on the 4:2:0 path only)") and
+    /// `AvifEncoder::encode_y8` worked around it by pre-padding to 64 while
+    /// still reporting the true size — so the coded frame and the announced
+    /// frame disagreed.
+    ///
+    /// There is no byte oracle: C v4.2.0 has no monochrome mode at all
+    /// (`verify_settings` rejects any `encoder_color_format != EB_YUV420`,
+    /// `Globals/enc_settings.c:473`). What is asserted here is (a) it encodes,
+    /// (b) the frame header carries the TRUE dims, and (c) the 8-aligned twin
+    /// is byte-UNCHANGED, which is what proves the padding is additive. The
+    /// decode + recon-equality half lives in `tools/regression_spotcheck.sh`
+    /// (`monoReconEq`), the oracle this repo already uses for mono geometry.
+    #[test]
+    fn mono_encodes_arbitrary_dims_and_signals_the_true_size() {
+        let mk = |w: u32, h: u32| {
+            EncodePipeline::new(
+                w,
+                h,
+                7,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 32,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+        };
+        let gray = |w: usize, h: usize| -> alloc::vec::Vec<u8> {
+            (0..h)
+                .flat_map(|y| (0..w).map(move |x| (((x + y) * 255) / (w + h)) as u8))
+                .collect()
+        };
+        // (a) every one of these was a typed refusal before.
+        for &(w, h) in &[(100u32, 100u32), (99, 77), (66, 66), (17, 5)] {
+            let (wu, hu) = (w as usize, h as usize);
+            let bs = mk(w, h)
+                .try_encode_frame(&gray(wu, hu), wu)
+                .unwrap_or_else(|e| panic!("mono {w}x{h} must encode: {e}"));
+            assert!(!bs.is_empty(), "mono {w}x{h} produced no bytes");
+            // (b) the frame_size() the header wrote is the TRUE size. The
+            // pipeline's own view is the authority the header reads from.
+            let pipe = mk(w, h);
+            assert_eq!(
+                (pipe.true_width, pipe.true_height),
+                (w, h),
+                "mono {w}x{h}: the pipeline must carry the TRUE dims"
+            );
+        }
+        // (c) the ALIGNED case is byte-unchanged: same bytes whether or not
+        // the padding branch exists, because it is not taken.
+        let bs = mk(96, 80)
+            .try_encode_frame(&gray(96, 80), 96)
+            .expect("mono 96x80 encodes");
+        assert!(!bs.is_empty());
+    }
+
+    /// Any bit depth other than 8 or 10 is refused, AND the message it is
+    /// refused with names the bit depth.
+    ///
+    /// The variant alone is not enough, and this test exists because asserting
+    /// only the variant let a real defect through: a comment rewrite dropped
+    /// the `return` from this arm, so bit depth 12 fell past it into
+    /// `bd10_levels_native` and came back refused with the *10-bit* message —
+    /// still an `UnsupportedConfig`, still "a refusal", and completely
+    /// misleading about why. Clippy's `no_effect` caught it; the test suite did
+    /// not, because every existing assertion stopped at the variant.
+    #[test]
+    fn a_bit_depth_outside_8_or_10_is_refused_by_name() {
+        for bd in [1u8, 9, 11, 12, 16] {
+            for &chroma_420 in &[false, true] {
+                let mut pipe = EncodePipeline::new(
+                    64,
+                    64,
+                    7,
+                    RcConfig {
+                        mode: RcMode::Cqp,
+                        qp: 32,
+                        ..RcConfig::default()
+                    },
+                    0,
+                    1,
+                );
+                pipe.bit_depth = bd;
+                let why = pipe
+                    .bit_depth_config_error(chroma_420)
+                    .unwrap_or_else(|| panic!("bit depth {bd} must be refused"));
+                assert!(
+                    why.contains("bit depth must be 8 or 10"),
+                    "bit depth {bd} (chroma_420={chroma_420}) refused with the wrong message: \
+                     {why}"
+                );
+            }
+        }
+    }
+
+    /// `bit_depth_config_error`'s third arm cannot be reached in the shipped
+    /// envelope — pinned so that a future bd10 gap which DOES reach it fails
+    /// here and gets a message naming the real gap, instead of silently
+    /// inheriting a catch-all that says nothing actionable.
+    ///
+    /// It was counted as one of `docs/REFUSED-CONFIGS.md`'s CAPABILITY
+    /// refusals — the table whose header reads "this is DEBT" — for a config
+    /// no caller can produce.
+    #[test]
+    fn bd10_config_error_third_arm_is_unreachable_over_the_whole_product() {
+        for preset in 0u8..=13 {
+            for &chroma_420 in &[false, true] {
+                let mut pipe = EncodePipeline::new(
+                    64,
+                    64,
+                    preset,
+                    RcConfig {
+                        mode: RcMode::Cqp,
+                        qp: 32,
+                        ..RcConfig::default()
+                    },
+                    0,
+                    1,
+                );
+                pipe.bit_depth = 10;
+                if let Some(why) = pipe.bit_depth_config_error(chroma_420) {
+                    assert!(
+                        !why.contains("defensive catch-all"),
+                        "preset {preset} chroma_420={chroma_420} reached the catch-all arm; \
+                         give this gap its own message"
+                    );
+                }
+            }
         }
     }
 

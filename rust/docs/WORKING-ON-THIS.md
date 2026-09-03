@@ -187,14 +187,36 @@ sets the repeat count.
 with the range, which is why the gate prints the adjacent-pair slopes next to
 the least-squares fit.
 
-**Inter completion (2026-09-02, CURRENT):** `tools/inter_completion_scan.sh` +
-`benchmarks/inter_completion_2026-09-02b.tsv` — of 64 video-mode cells,
-**52 OK** (5 byte-identical), 12 REFUSED, **0 CRASH**, and **0 of the 36
-partial-SB cells panic** (33 OK, 3 REFUSED). All twelve refusals are the same
-pre-existing frame-1 one, on 568/576/1024/2048 square at p6/p8/p10, and every
-one of them writes a frame 0 that is byte-identical to C. Before measuring
+**Inter completion (2026-09-03, CURRENT):** `tools/inter_completion_scan.sh` +
+`benchmarks/inter_completion_2026-09-03.{tsv,meta}` — of 64 video-mode cells,
+**64 OK** (8 byte-identical), **0 REFUSED**, **0 CRASH**. Before measuring
 anything on an inter cell, check that the port completes it — a refusal or a
 crash makes any ratio a comparison against a smaller workload.
+
+The twelve refusals the 09-02 scan had (568/576/1024/2048 square at p6/p8/p10)
+were ONE refusal, and it named the wrong precondition: `use_ref_frame_mvs` at
+`mfmv_level >= 2`, refused as needing "the TPL r0 and the references' own
+is_mfmv_used". C only reads those when `scs->tpl` is on — `mfmv_controls` sets
+`r0_th = tpl ? 0.1x : 0` and guards the whole block behind `if (r0_th)` — and
+`get_tpl` (`Globals/enc_handle.c:3657`) returns 0 for `aq_mode == 0`, which this
+port refuses to be anything else. **The rule was already ported, tier-1
+C-parity-tested, in `port_enc_mode_config::tail::mfmv_controls`, with a doc
+comment saying exactly that; `inter_hdr_arm` had re-derived it and refused, and
+`inter_mvp_env` carried a THIRD copy spelled `mfmv_level == 1`.** §4's "grep
+before you write the second" again. `mfmv_level` is 2 above R360p at preset
+<= M8, and R360p's threshold is 314,880 luma samples — which is why 552x552
+(304,704) was fine and 568x568 (322,624) was not.
+
+Two of the three newly-byte-identical cells are from that lift (576x576 at p6
+and p8, the smallest 64-aligned size past R360p). **The third, 256x256 p6, is
+NOT** — 256x256 is R240p, where `mfmv_level` is 1 and the change is
+bit-identical by construction; it moved somewhere else on main between 09-02
+and 09-03. Attribute from the resolution class, not from the diff of two scans.
+
+**Lifting a refusal made those cells MEASURABLE; it did not make them
+identical.** 568x568 is a partial superblock and its frame 1 is 55 B against
+C's 53 at every preset — the pre-existing partial-SB frontier (0 of 33
+partial-SB cells byte-identical, before and after), not an mfmv effect.
 
 **And the 33 partial-SB cells it unblocked immediately paid for themselves.**
 The first thing measured on one of them (`gradient 168x168 q32 p8` frame 1,

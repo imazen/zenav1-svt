@@ -1447,3 +1447,41 @@ cast), so this is a defect pattern in the file, not the codebase's convention.
 **Before touching any of these:** they are reachable, so unlike entry 17 they
 are NOT encode-inert. Changing them moves the oracle for any VBR/CBR
 configuration. Measure byte-parity first.
+
+## 30. `SvtAv1Enc` takes a SIGBUS on several one- and two-row frames its own `verify_settings` accepts
+
+**MEASURED 2026-09-03**, `reference/svt-av1` at `39f909e`, aarch64/macOS, via
+`tools/capture_c_trace` (the real library, real public API), 8-bit 4:2:0 CQP
+still, preset 7, flat mid-grey input:
+
+| dims | C | dims | C |
+|---|---|---|---|
+| 1x1  | 21 B, decodes | 8x2 | **SIGBUS** |
+| 1x8  | 21 B, decodes | 4x1 | **SIGBUS** |
+| 8x3  | 31 B, decodes | 8x1 | **SIGBUS** |
+| 64x1 | 26 B, decodes | 16x1 | **SIGBUS** |
+|      |               | 32x1 | **SIGBUS** |
+
+`svt_av1_verify_settings` accepts all of them — its floor is 1
+(`"Source Width must be at least 1"` / `"...Height..."`,
+`Globals/enc_settings.c:50,54`) — so this is a crash on an ACCEPTED
+configuration, not a rejected one. The shape is odd enough to be worth stating
+precisely rather than generalising: **height 1 crashes at widths 4..32 but not
+at 1 or 64**, and height 2 crashes at width 8 while height 3 does not. Whatever
+the cause, it is not "C refuses tiny frames".
+
+**Why this is recorded here rather than fixed.** It bounds where a BYTE ORACLE
+exists. `benchmarks/refused_config_triage_2026-09-03.md` ranks this port's
+refusals by whether C can encode the configuration at all; these cells are a
+region where the answer is "C accepts it and then dies", which is neither
+`accepts` nor `rejects`. The port encodes every one of them and every one
+decodes under `aomdec` and `dav1d` — so a differential harness pointed at them
+compares a stream against a core dump.
+
+**Found while** lifting the monochrome arbitrary-dimensions refusal, which made
+1-row and 1-column frames reachable on a second path and turned up a REAL port
+bug next door: `write_sequence_header`'s `frame_width_bits_minus_1` underflowed
+at width or height 1 (fixed 2026-09-03, `entropy/obu.rs`; the port is now
+byte-identical to C at 1x1, 1x8, 1x64, 64x1, 2x2 and 3x3). The port bug and
+this C crash are independent, and the port bug was found only because these
+sizes were probed against C at all.

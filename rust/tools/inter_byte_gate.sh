@@ -92,6 +92,29 @@ PASS_CELLS=(
     # gate that samples its own frontier reports a smaller regression than it
     # should, and a hand-appended list drifts from the sweep it claims to
     # assert. `tools/inter_byte_matrix.sh` is that sweep.
+    # ------------------------------------------------------------------
+    # ABOVE 360p — added 2026-09-03, and they are the FIRST cells this gate
+    # has had there. Every cell above is 16/64/72/128 square, i.e. C's
+    # `input_resolution` R240p, where `mfmv_level` is 1. At 568 px and up it
+    # is 2 (`sig_deriv_mode_decision_config_default`: `m <= M8 && res >
+    # R360p`), and `inter_hdr_arm` REFUSED that — so the whole resolution
+    # class was invisible to every byte gate in this repo, and showed up only
+    # as twelve REFUSED cells in `inter_completion_scan.sh`.
+    #
+    # 576 is the smallest 64-ALIGNED size past the R360p threshold
+    # (0x4CE00 = 314,880 luma samples; 552x552 = 304,704 is under it,
+    # 568x568 = 322,624 is over). Both frames byte-identical, MEASURED
+    # 2026-09-03: p6 frame 0 41,537 B / frame 1 35 B, p8 the same.
+    # 568x568 is deliberately NOT here: it is a PARTIAL superblock and its
+    # frame 1 is 55 B against C's 53, which is the pre-existing partial-SB
+    # frontier (`inter_completion_scan` has 0 of 33 partial-SB cells
+    # byte-identical), not an mfmv effect.
+    #
+    # TEETH: reverting the `mfmv_controls` wiring turns both into HARNESS
+    # ("the encoder refused"), not FAIL — which is why they belong in a gate
+    # that distinguishes the two.
+    "gradient 576 576 32 6 2 3"
+    "gradient 576 576 32 8 2 3"
     "uniform 16 16 20 6 2 3"
     "uniform 16 16 20 8 2 3"
     "uniform 16 16 40 6 2 3"

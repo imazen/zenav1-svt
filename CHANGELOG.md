@@ -56,6 +56,25 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The refusal ledger gained the axis that decides what is workable: does C
+  support it?** `docs/REFUSED-CONFIGS.md` split refusals into CAPABILITY (debt)
+  and CONTRACT (caller misuse), which is a claim about the WORDS someone wrote.
+  It did not answer the question that ranks a CAPABILITY refusal — can C v4.2.0
+  encode this configuration at all? Each refusal now declares its own answer
+  with a trailing `[C: accepts | rejects | no mono mode]` marker,
+  `tools/refusal_inventory.sh` lifts it into a `C?` column and counts how many
+  refusals a byte gate could ever close, and `tools/c_envelope_probe.sh` (NEW)
+  checks the markers by running each configuration through the real C library —
+  with a positive AND a negative control that abort the probe if they come out
+  wrong, so a broken driver cannot report "C rejects everything". Ranked triage
+  with both kinds of evidence per row:
+  `rust/benchmarks/refused_config_triage_2026-09-03.md`; raw probe:
+  `rust/benchmarks/c_envelope_2026-09-03.tsv`.
+  **The largest finding is structural: C v4.2.0 has no monochrome mode at all**
+  (`verify_settings` rejects any `encoder_color_format` other than EB_YUV420,
+  `Globals/enc_settings.c:473`), so no mono refusal can EVER be closed by
+  byte-parity — the substitute is the recon oracle this repo already uses.
+
 - **A NEON arm for `cdef::cdef_find_dir` — 1.82x on the kernel, NULL-to-marginal
   on the frame, and a correction to the queue entry it closes.** All eight of
   C's direction formulas are the same shape ("place a row-derived vector at an
@@ -604,6 +623,64 @@ Crates are not published to crates.io yet — depend by git.
   divergence is the TILE: C 3 bytes, port 94.
 
 ### Fixed
+
+- **`use_ref_frame_mvs` at `mfmv_level >= 2` is a CLOSED FORM here, and
+  refusing it cost twelve inter cells.** `inter_completion_scan.sh` goes
+  **52 OK / 12 REFUSED -> 64 OK / 0 REFUSED**, and `576x576` at presets 6 and 8
+  is byte-identical to C on BOTH frames (frame 0 41,537 B, frame 1 35 B) where
+  it previously produced no stream at all. The refusal said the bit "needs the
+  TPL r0 and the references' own is_mfmv_used" — true of C in general, false of
+  any configuration this port can encode: C's `mfmv_controls` sets
+  `r0_th = scs->tpl ? 0.1x : 0` and guards that whole block behind
+  `if (r0_th)`, and `get_tpl` (`Globals/enc_handle.c:3657`) returns 0 for
+  `aq_mode == 0`, which this port refuses to be anything else. `mfmv_controls`
+  was ALREADY ported and tier-1 C-parity-tested in
+  `port_enc_mode_config::tail`, with a doc comment stating that argument in
+  those words; `inter_hdr_arm` re-derived the rule and refused, and
+  `inter_mvp_env` carried a THIRD copy spelled `mfmv_level == 1`. All three now
+  call the one ported function (`docs/WORKING-ON-THIS.md` §4). Refused only
+  when TPL is genuinely on. New `inter_byte_gate.sh` cells at 576x576 — the
+  first cells any byte gate in this repo has had above 360p, which is exactly
+  where `mfmv_level` stops being 1. CI floors raised to 64 OK / 0 REFUSED.
+- **Global motion was never refused — only a comment said it was.**
+  `inter_syntax_state` claimed `inter_hdr_arm::inter_signal` "refuses a
+  non-identity model, so every reference is IDENTITY here by the same rule the
+  header is written under — not by assumption", and
+  `InterHdrError::GlobalMotionNotImplemented` existed for it. That variant was
+  never constructed anywhere in the crate. C's `svt_aom_derive_gm_level`
+  (`enc_mode_config.c:194`) gives a NON-I-slice at `enc_mode <= ENC_M4` a
+  non-zero `gm_level`, so C searches a model and `global_motion_params()` codes
+  its type and parameters while this port writes seven `is_global = 0` bits —
+  and the whole inter campaign measures preset >= 6, where C's own level is 0,
+  so nothing could reach it. Now a real refusal at the `encode_frame_impl`
+  choke point.
+- **The sequence header underflowed `frame_width_bits_minus_1` at width or
+  height 1, on BOTH the 4:2:0 and monochrome paths.**
+  `32 - (1 - 1).leading_zeros()` is 0, so `w_bits - 1` wrapped: a release build
+  wrote 15 into that 4-bit field ("16 bits follow") and then wrote ZERO bits of
+  `max_frame_width_minus_1`, shifting every later field. MEASURED: the port's
+  1x1 stream was 21 B and dav1d said "Error parsing sequence header / Overrun
+  in OBU bit buffer"; C's 1x1 stream is 21 B and decodes. After: 24 B on both
+  sides, **byte-identical**, and likewise at 1x8, 1x64, 64x1. `verify_settings`
+  accepts width and height down to 1, so these are inside C's envelope and
+  always were; no gate encoded a 1-pixel dimension. Found while lifting the
+  mono arbitrary-dims refusal, which made these sizes reachable on a second
+  path. Five new `regression_spotcheck.sh` cells (four cases + a 2x2 control);
+  reverting the fix fails exactly those four **at identical byte counts**,
+  which is why they are byte cells and not size cells.
+- **Monochrome encodes arbitrary (non-8-aligned) dimensions — the AVIF alpha
+  case.** An alpha plane is a monochrome AV1 image at the picture's own size,
+  and the mono path refused anything not already 8-aligned ("arbitrary-dims
+  padding is wired on the 4:2:0 path only"). It is not 4:2:0-specific:
+  `encode_frame_impl` already takes the padded plane at the ALIGNED stride and
+  signals the TRUE size, and the mono arm differs only in plane count. The
+  padding is now shared (`encode_frame_mono_core`). MEASURED: 100x100, 98x78,
+  99x77, 171x33 and 250x150 all encode, decode under BOTH aomdec and dav1d, and
+  the decoder emits exactly `w*h` luma bytes — which is what proves the stream
+  announces the true size. Recon-equality cells added to
+  `regression_spotcheck.sh` (93/93, was 83/83). No byte oracle exists and never
+  will: C cannot encode monochrome at all.
+
 
 - **PD0's INTER arm never reached the REFINEMENT path — the grid goes
   67 BOTH → 89** (`rust/docs/INTER-ENCODE-PLAN.md` §1z²², 89ec75a). `pipeline.rs`
@@ -2392,6 +2469,23 @@ Crates are not published to crates.io yet — depend by git.
 
 - `svtav1_dsp::superres::{superres_upscale, superres_upscale_row}` — the
   non-normative 16-phase stub, replaced by the real kernel. No in-tree callers.
+
+### Changed
+
+- **`AvifEncoder::encode_y8` no longer pre-pads to a multiple of 64, and now
+  REFUSES the case it used to paper over.** It padded the gray plane up to 64
+  and built the pipeline AT THE PADDED SIZE while still returning
+  `EncodedAvif::{width, height}` = the caller's TRUE size, so for every
+  non-64-multiple gray image the AV1 frame and the announced frame disagreed —
+  a 100x100 alpha plane came back as a 128x128 stream labelled 100x100. It now
+  hands the pipeline the true dimensions. The residual is that below preset 6
+  (speeds 1-4) the mono pipeline still refuses a PARTIAL superblock, which is
+  now a typed `UnsupportedConfig` instead of a padded encode:
+  `examples/decode_conformance.rs`'s avif corpus already had the `Err` arm and
+  a comment saying refusing is the correct behaviour, and the pre-pad was what
+  kept that arm dead. 16 of its 240 mono cells now refuse (the four
+  non-64-multiple sizes at speed 1); 224 encode and all 224 decode.
+
 
 ## Earlier history
 

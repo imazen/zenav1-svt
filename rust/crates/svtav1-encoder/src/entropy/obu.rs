@@ -778,9 +778,31 @@ fn write_sequence_header_inner(
         wb.write_bits(display_delay - 1, 4); // initial_display_delay_minus_1
     }
 
-    // Frame dimensions
-    let w_bits = 32 - (width - 1).leading_zeros();
-    let h_bits = 32 - (height - 1).leading_zeros();
+    // Frame dimensions.
+    //
+    // `.max(1)` IS LOAD-BEARING, and its absence was a shipping defect at
+    // width or height 1. `32 - (1 - 1).leading_zeros()` is 0, so `w_bits - 1`
+    // below underflowed: a release build wrote `frame_width_bits_minus_1` as
+    // the low 4 bits of `u32::MAX` (15, i.e. "16 bits follow") and then wrote
+    // ZERO bits of `max_frame_width_minus_1`, so every following field was
+    // read at the wrong offset. MEASURED 2026-09-03: the port's 1x1 stream is
+    // 21 bytes and dav1d says "Error parsing sequence header / Overrun in OBU
+    // bit buffer"; C's 1x1 stream is also 21 bytes and decodes. 8x1 and 1x8
+    // fail the same way, on the 4:2:0 path as well as the monochrome one.
+    //
+    // Spec 5.5.1 reads `max_frame_width_minus_1` as `f(n)` with
+    // `n = frame_width_bits_minus_1 + 1`, so n is at least 1 and the minimum
+    // legal encoding of width 1 is `frame_width_bits_minus_1 = 0` plus one
+    // zero bit. C is not in fact a second transcription risk here: it derives
+    // the count from `svt_aom_get_msb`, which is only ever called on a
+    // non-zero value in its own guarded path.
+    //
+    // This is C-ENVELOPE work, not out-of-envelope generosity:
+    // `svt_av1_verify_settings` accepts width and height down to 1
+    // ("Source Width must be at least 1", enc_settings.c:50), so a byte oracle
+    // exists at these sizes.
+    let w_bits = (32 - (width - 1).leading_zeros()).max(1);
+    let h_bits = (32 - (height - 1).leading_zeros()).max(1);
     wb.write_bits(w_bits - 1, 4); // frame_width_bits_minus_1
     wb.write_bits(h_bits - 1, 4); // frame_height_bits_minus_1
     wb.write_bits(width - 1, w_bits); // max_frame_width_minus_1

@@ -12,11 +12,20 @@
 //!
 //! # What is refused rather than guessed
 //!
-//! `use_ref_frame_mvs` at `mfmv_level >= 2` needs the TPL `r0` and the
-//! REFERENCE pictures' own `is_mfmv_used` flags (`mfmv_controls`,
-//! `enc_mode_config.c:8852-8896`), neither of which this pipeline produces.
-//! Levels 0 and 1 are closed forms (0 and 1); anything else returns
-//! [`InterHdrError::MfmvLevelNotDerivable`] instead of inventing a bit.
+//! `use_ref_frame_mvs` is read from the SHARED port of C `mfmv_controls`
+//! ([`crate::port_enc_mode_config::tail::mfmv_controls`], tier-1
+//! C-parity-tested through the exported `sig_deriv_mode_decision_config_default`
+//! shim), not re-derived here. That function's levels 2/3/4 arm sets
+//! `r0_th = scs->tpl ? 0.1x : 0` and then tests `if (r0_th)`, so with TPL OFF
+//! it leaves the bit at 0 and never reads `r0` or the references'
+//! `is_mfmv_used` at all (`enc_mode_config.c:8853-8896`). This port's envelope
+//! is TPL-less BY CONSTRUCTION — see [`scs_tpl`] — so levels 2/3/4 are as
+//! closed a form as 0 and 1 here.
+//!
+//! What is still refused: those same levels with TPL ON, where `r0` and the
+//! reference objects' `is_mfmv_used` really are needed and this pipeline
+//! produces neither. That returns [`InterHdrError::MfmvLevelNotDerivable`]
+//! instead of inventing a bit.
 
 use crate::entropy::obu::InterSignal;
 use crate::port_enc_mode_config::md_config::MdConfigSignals;
@@ -29,12 +38,54 @@ use crate::port_picstruct::{PicDecisionCtx, PicParams, REF_FRAMES, RefQueueEntry
 /// (`docs/WORKING-ON-THIS.md` §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InterHdrError {
-    /// `mfmv_level` 2, 3 or 4: `use_ref_frame_mvs` depends on the TPL `r0`
-    /// and on the references' `is_mfmv_used`.
+    /// `mfmv_level` 2, 3 or 4 **with TPL ON**: `use_ref_frame_mvs` then
+    /// depends on the TPL `r0` and on the references' `is_mfmv_used`, neither
+    /// of which this pipeline produces. With TPL off (every config this port
+    /// can reach — see [`scs_tpl`]) C's own `r0_th` is 0 and the bit is a
+    /// closed 0, so those levels are NOT refused.
     MfmvLevelNotDerivable(u8),
     /// A global-motion model was selected; `global_motion_params()`'s type and
     /// parameter coding is not implemented.
+    ///
+    /// C `svt_aom_derive_gm_level` (`enc_mode_config.c:194`) returns a
+    /// non-zero level only on a NON-I-slice at `enc_mode <= ENC_M4`, so this
+    /// fires exactly on an inter frame at preset <= 4. Above that C's own
+    /// `gm_level` is 0 and every reference is IDENTITY, which is what the
+    /// header and the MVP environment both write.
     GlobalMotionNotImplemented,
+}
+
+/// C `svt_aom_get_gm_core_level` (`enc_mode_config.c:180`).
+///
+/// `enc_mode <= ENC_MR` (-1) => 2, `<= ENC_M4` => 4, above => 0; and 0
+/// unconditionally when superres is on. `svt_aom_derive_gm_level` (`:194`)
+/// wraps it with "I_SLICE => 0".
+#[must_use]
+pub fn gm_core_level(preset: u8, super_res_off: bool) -> u8 {
+    if !super_res_off {
+        return 0;
+    }
+    // ENC_MR is -1 in C's EncMode; this port's `preset` is the 0..=13 CLI
+    // domain, so MR is unreachable here and the `<= ENC_M4` arm is the live
+    // one.
+    if preset <= 4 { 4 } else { 0 }
+}
+
+/// C `get_tpl` (`Globals/enc_handle.c:3657`) — is TPL on for this sequence?
+///
+/// C disables TPL for all-intra, for `aq_mode == 0`, for `LOW_DELAY`, for a
+/// non-auto superres mode and for reference scaling. This port refuses
+/// `aq_mode != 0` outright (`EncodePipeline::knob_config_error`, issue #9 item
+/// 8), so the second clause alone makes TPL **structurally off in every
+/// configuration this encoder can encode**. The other clauses are ported
+/// anyway so the answer stays right if that refusal is ever lifted.
+///
+/// This matters because it is what makes `mfmv_level >= 2` a closed form here:
+/// `mfmv_controls` reads `r0_th = tpl ? 0.1x : 0` and skips its whole `r0` /
+/// `is_mfmv_used` block when the threshold is 0.
+#[must_use]
+pub fn scs_tpl(allintra: bool, aq_mode: u8, low_delay: bool, superres_fixed: bool) -> bool {
+    !(allintra || aq_mode == 0 || low_delay || superres_fixed)
 }
 
 /// The SEQUENCE header tool bits the inter frame header's field PRESENCE
@@ -59,6 +110,11 @@ pub struct SeqInterTools {
 /// `rps.ref_dpb_index`, `rps.refresh_frame_mask` and `skip_mode`), and `sigs`
 /// must be the SAME `MdConfigSignals` the encode used.
 ///
+/// `tpl` is C `scs->tpl` — pass [`scs_tpl`]'s answer for the pipeline's own
+/// configuration, never a literal. It is the ONLY input `mfmv_controls` needs
+/// beyond the level, because a false `tpl` zeroes C's `r0_th` and short-circuits
+/// the `r0` / `is_mfmv_used` block entirely.
+///
 /// # Errors
 ///
 /// [`InterHdrError`] for a field this port refuses to guess.
@@ -68,18 +124,58 @@ pub fn inter_signal(
     primary_ref_frame: u8,
     order_hint_bits: u32,
     seq: SeqInterTools,
+    tpl: bool,
+    gm_level: u8,
 ) -> Result<InterSignal, InterHdrError> {
+    // GLOBAL MOTION, refused here as well as at the pipeline's choke point.
+    //
+    // Two guards for one rule is deliberate and is this file's existing habit
+    // ("Assert rather than assume", below): the pipeline's `gm_config_error`
+    // is the friendly early refusal a caller sees, and this one makes
+    // `GlobalMotionNotImplemented` a variant that can actually be constructed.
+    // It could not before — it existed, a comment in `inter_syntax_state`
+    // claimed this function raised it, and no code anywhere in the crate ever
+    // did. `is_global: [false; 7]` below is only sound while `gm_level == 0`.
+    if gm_level != 0 {
+        return Err(InterHdrError::GlobalMotionNotImplemented);
+    }
     // C never sets `error_resilient_mode` on a coded picture
     // (`resource_coordination_process.c:418` writes 0; only the S-frame path
     // at `pd_process.c:1727` sets 1, and S-frames are outside this envelope).
     let error_resilient_mode = false;
 
-    // use_ref_frame_mvs — `mfmv_controls` (enc_mode_config.c:8852).
-    let use_ref_frame_mvs_value = match sigs.mfmv_level {
-        0 => false,
-        1 => true,
-        other => return Err(InterHdrError::MfmvLevelNotDerivable(other)),
-    };
+    // use_ref_frame_mvs — the SHARED port of C `mfmv_controls`
+    // (enc_mode_config.c:8853), not a second transcription of it. The rule this
+    // file used to carry inline ("levels 0 and 1 are closed forms, refuse the
+    // rest") refused three levels that are equally closed once `tpl` is false:
+    // C computes `r0_th = tpl ? 0.1x : 0` and guards the whole `r0` +
+    // `is_mfmv_used` block behind `if (r0_th)`, so a TPL-less encode leaves the
+    // bit at 0 without reading either. `mfmv_level == 2` is what preset <= M8
+    // derives above 360p, which is why every cell at 568x568 and larger sat
+    // refused.
+    //
+    // With TPL ON those inputs are real and unported, so the refusal stays —
+    // it is now conditioned on the thing that actually makes them needed.
+    if tpl && sigs.mfmv_level >= 2 {
+        return Err(InterHdrError::MfmvLevelNotDerivable(sigs.mfmv_level));
+    }
+    let use_ref_frame_mvs_value = crate::port_enc_mode_config::tail::mfmv_controls(
+        crate::port_enc_mode_config::tail::MfmvInputs {
+            mfmv_level: sigs.mfmv_level,
+            is_base: pic.temporal_layer_index == 0,
+            tpl,
+            // Inert while `tpl` is false (C's `if (r0_th)` is not taken); the
+            // guard above refuses the only case where they would be read.
+            r0_gen: false,
+            r0: 0.0,
+            is_b_slice: pic.slice_type == SliceType::B,
+            ref_list1_count_try: u32::from(pic.ref_list1_count_try),
+            ref_l0_is_mfmv_used: false,
+            ref_l1_is_mfmv_used: false,
+        },
+    )
+    .ok_or(InterHdrError::MfmvLevelNotDerivable(sigs.mfmv_level))?
+        != 0;
     // ...and its PRESENCE — C `frame_might_allow_ref_frame_mvs`
     // (entropy_coding.h:71).
     let use_ref_frame_mvs =

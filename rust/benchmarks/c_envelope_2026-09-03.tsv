@@ -1,0 +1,19 @@
+# does C v4.2.0 support the configuration this port refuses?
+# host=mac  date=2026-09-03T18:35:43Z  size=64x64
+# driver=tools/capture_c_trace (the real library, real public API)
+# C-ACCEPTS: an oracle exists.  C-REJECTS: upstream constraint, permanent.
+# C-ABSENT:  no such mode in C at all — byte-parity can never be the evidence.
+config	c_verdict	bytes
+baseline	C-ACCEPTS	53
+bitdepth-12	C-REJECTS	0
+qp0-8bit-still	C-ACCEPTS	844
+qp0-10bit	C-ACCEPTS	1977
+qp0-screen-content	C-ACCEPTS	509
+qp0-superres	C-ACCEPTS	651
+qp0-inter	C-ACCEPTS	929
+superres-10bit	C-ACCEPTS	42
+superres-8bit	C-ACCEPTS	42
+inter-preset4	C-ACCEPTS	120
+inter-intraperiod-1	C-ACCEPTS	126
+inter-randomaccess	C-ACCEPTS	138
+monochrome	C-ABSENT	0

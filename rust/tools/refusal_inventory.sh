@@ -13,11 +13,19 @@
 #
 # A refusal makes a gap look handled:
 #
-#   - `arbitrary_size_robustness.sh` reports "80 / 80 panic-free +
-#     aomdec-decodable (48 refused as out-of-envelope)". The 48 refusals are
-#     counted as PASSES, because refusing IS the correct behaviour. Nothing in
-#     that line distinguishes "genuinely out of scope" from "nobody has done
+#   - `arbitrary_size_robustness.sh` used to report "80 / 80 panic-free +
+#     aomdec-decodable (48 refused as out-of-envelope)". Refusals are counted
+#     as PASSES there, because refusing IS the correct behaviour, and nothing
+#     in that line distinguishes "genuinely out of scope" from "nobody has done
 #     the work yet".
+#
+#     AND THE LINE ITSELF WENT STALE, which is the same failure one level up.
+#     MEASURED 2026-09-03: that gate is **128 / 128 with ZERO refusals**. Its 48
+#     were exactly the bd10 cells at non-64-aligned dims (26 bd10 cells x 2
+#     contents, minus the 4 that are 64-aligned = 48), and that refusal was
+#     lifted on 2026-08-04 — a month before this comment was read aloud as a
+#     current fact. A scoreboard quoted from prose is a scoreboard nobody
+#     re-ran.
 #   - `coverage_matrix.py` prints `--` for an untested axis, which is the right
 #     instinct — but a REFUSED config never produces a cell at all, so it cannot
 #     even show as `--`. Refusals are invisible to the one tool built to surface
@@ -46,6 +54,39 @@
 # only as good as the messages. That is deliberate: a capability refusal whose
 # text does not say it is unimplemented is ALSO a defect, because the caller
 # cannot tell either.
+#
+# THE THIRD AXIS (added 2026-09-03): DOES C SUPPORT IT?
+#
+# CAPABILITY-vs-CONTRACT is a claim about what someone typed. It does not say
+# what a CAPABILITY refusal is worth working on, and that is decided by a
+# question nothing here asked: can C v4.2.0 encode this configuration at all?
+# Three answers, three different backlog items:
+#
+#   accepts     C encodes it, so a BYTE oracle exists and "implement it and
+#               prove byte-parity" is a coherent instruction. The only class a
+#               ranked backlog should be drawn from.
+#   no mono     C has no monochrome mode AT ALL — `verify_settings` rejects any
+#               `encoder_color_format` other than EB_YUV420 ("Only support 420
+#               now", Globals/enc_settings.c:473) and the word `monochrome`
+#               appears nowhere in its App, settings or public headers. Real
+#               debt, but byte-parity can NEVER be its evidence; the substitute
+#               this repo already uses is the recon oracle plus decodability
+#               (tools/regression_spotcheck.sh's `monoReconEq`).
+#   rejects     C refuses it too, so there is nothing to implement and never
+#               will be — building it would put this port OUTSIDE the envelope
+#               it is measured against.
+#
+# A refusal declares its answer with a trailing `[C: ...]` marker in the message
+# itself, for the same reason the CAPABILITY/CONTRACT split lives there: the
+# person who writes the refusal is the one who knows, and a fact kept in a
+# separate table rots. Missing marker => `?`, and the summary counts those, so
+# an unclassified refusal is visible rather than silently assumed workable.
+#
+# The markers are checked against the real library by
+# `tools/c_envelope_probe.sh`, which runs each configuration through the actual
+# encoder (with a positive and a negative control, so a broken driver cannot
+# report "C rejects everything"). The ranked triage this feeds is
+# benchmarks/refused_config_triage_2026-09-03.md.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -80,6 +121,8 @@ UNSUP = re.compile(r'UnsupportedConfig\(\s*"((?:[^"\\]|\\.)*)"')
 # A third construct: `EncodeError::InvalidDimensions { reason: "..." }`. Missing
 # it dropped the two real monochrome-geometry refusals from the ledger.
 REASON = re.compile(r'\breason:\s*"((?:[^"\\]|\\.)*)"')
+# The C-envelope marker, stripped out of the message into its own column.
+CMARK = re.compile(r"\[C:\s*([^\]]*)\]")
 # Trailing comma and `.to_string()` are both common; requiring a bare
 # `)` right after the string silently dropped half the real refusals.
 SOMES = re.compile(r'\bSome\(\s*"((?:[^"\\]|\\.)*)"\s*(?:\.to_string\(\))?\s*,?\s*\)')
@@ -106,12 +149,17 @@ for path in sys.argv[1:]:
         if len(msg) < 20:
             continue
         kind = "CAPABILITY" if CAP.search(msg) else "CONTRACT"
-        print(f"{kind}\t{path}\t{msg}")
+        # `[C: ...]` — does the oracle support this? Split OFF the message so
+        # the table has a column instead of a sentence to read.
+        m = CMARK.search(msg)
+        cverdict = m.group(1).strip() if m else "?"
+        msg = " ".join(CMARK.sub("", msg).split()).rstrip()
+        print(f"{kind}\t{path}\t{cverdict}\t{msg}")
 PY
 }
 
 generate() {
-    local rows cap con
+    local rows cap con oracle noora
     # LC_ALL=C: byte collation, not locale collation. Without it macOS and the
     # Linux CI runner order the same rows differently and `--check` fails on a
     # diff that is pure sort order — which is exactly how this gate first went
@@ -119,6 +167,9 @@ generate() {
     rows=$(collect | LC_ALL=C sort -u)
     cap=$(printf '%s\n' "$rows" | grep -c '^CAPABILITY' || true)
     con=$(printf '%s\n' "$rows" | grep -c '^CONTRACT' || true)
+    # How many CAPABILITY refusals could EVER be closed by a byte gate?
+    oracle=$(printf '%s\n' "$rows" | awk -F'\t' '$1=="CAPABILITY" && $3=="accepts"' | wc -l | tr -d ' ')
+    noora=$(printf '%s\n' "$rows" | awk -F'\t' '$1=="CAPABILITY" && $3=="?"' | wc -l | tr -d ' ')
 
     cat <<EOF
 <!-- generated by tools/refusal_inventory.sh — do not edit by hand -->
@@ -126,7 +177,10 @@ generate() {
 # Configs this encoder refuses
 
 **${cap} CAPABILITY refusals** (unimplemented — this is DEBT) and **${con}
-CONTRACT refusals** (caller misuse — permanent and correct).
+CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
+refusals, **${oracle}** name a configuration C v4.2.0 actually encodes — the
+only ones a byte-parity gate could ever close — and **${noora}** carry no
+\`[C: ...]\` marker at all.
 
 Regenerate with \`tools/refusal_inventory.sh\`; \`--check\` is a CI gate.
 
@@ -134,22 +188,34 @@ Regenerate with \`tools/refusal_inventory.sh\`; \`--check\` is a CI gate.
 
 Refusing beats emitting a wrong bitstream — that rule is correct and stays. But
 a refusal also makes a gap look handled: \`arbitrary_size_robustness.sh\` counts
-its 48 refusals as PASSES, and \`coverage_matrix.py\` cannot show a refused
-config even as \`--\`, because a refused config produces no cell at all. So the
-one tool built to surface gaps is structurally blind to this one.
+refusals as PASSES, and \`coverage_matrix.py\` cannot show a refused config even
+as \`--\`, because a refused config produces no cell at all. So the one tool
+built to surface gaps is structurally blind to this one.
 
 That is not hypothetical. 10-bit at non-64-aligned dimensions — the actual AVIF
 product case — sat behind a refusal while every gate stayed green, and was read
-aloud in a status report before anyone acted on it.
+aloud in a status report before anyone acted on it. It was 48 of that gate's
+128 cells; it was lifted on 2026-08-04, and the gate now reads **128 / 128 with
+zero refusals** (re-measured 2026-09-03). The sentence you are reading said "its
+48 refusals" for a month after they were gone, which is the same rot one level
+up: **re-run the gate, do not quote this file's prose at it.**
 
 **Read the CAPABILITY list as a backlog, not as a specification.**
 
 ## CAPABILITY — not implemented (debt)
 
-| where | refusal |
-|---|---|
+\`C?\` is what the ORACLE does with this configuration, declared by the refusal
+itself and verified by \`tools/c_envelope_probe.sh\`:
+\`accepts\` = C encodes it, so byte-parity can close it;
+\`no mono mode\` = C cannot encode monochrome at all, so byte-parity NEVER can
+(use the recon oracle, as \`regression_spotcheck.sh\` does);
+\`rejects\` = C refuses it too, so there is nothing to build;
+\`?\` = nobody has said, which is itself a gap.
+
+| where | C? | refusal |
+|---|---|---|
 EOF
-    printf '%s\n' "$rows" | awk -F'\t' '$1=="CAPABILITY"{printf "| `%s` | %s |\n", $2, $3}'
+    printf '%s\n' "$rows" | awk -F'\t' '$1=="CAPABILITY"{printf "| `%s` | %s | %s |\n", $2, $3, $4}'
 
     cat <<EOF
 
@@ -158,7 +224,7 @@ EOF
 | where | refusal |
 |---|---|
 EOF
-    printf '%s\n' "$rows" | awk -F'\t' '$1=="CONTRACT"{printf "| `%s` | %s |\n", $2, $3}'
+    printf '%s\n' "$rows" | awk -F'\t' '$1=="CONTRACT"{printf "| `%s` | %s |\n", $2, $4}'
 }
 
 tmp=$(mktemp)
