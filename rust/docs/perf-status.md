@@ -233,6 +233,23 @@
 > 3.47x as the direction and rough size of the position move, not a precise
 > figure.**
 >
+> GATED ON BOTH ISAs, at `59f40fe99`. aarch64: nextest 2493/2493 (bar 2487,
+> and it includes the two `tier_invariance` whole-encoder byte tests),
+> `identity_full_8bit` 1100/1100, `inter_byte_gate` 89 required / 0 failed,
+> `regression_spotcheck` 83/83, `video_key_matrix` 58/60, `fctx_gate` 96/96,
+> `inter_decode_gate` 5/5, `inter_decode_census` 96/96,
+> `inter_completion_scan` 52 OK / 12 REFUSED / **0 CRASH**,
+> `screen_palette_gate` 50/50, `screen_ibc_fh_gate` PASS. x86-64 (r7900x):
+> 2238 dsp+encoder tests, `inter_byte_gate` 89/0, `regression_spotcheck` 83/83,
+> `identity_full_8bit` 1100/1100. **The cross-ISA run is not a formality here**
+> — every SIMD arm added is hand-written per ISA, and `docs/SUSPECTED-C-BUGS.md`
+> #6/#11/#20/#21/#26 are all "a SIMD kernel disagreed with its `_c` twin". The
+> dsp tier-parity tests assert `permutations_run >= 2` with no excluded tokens,
+> so the `_v3` arms provably RAN on x86 rather than being skipped.
+> `screen_ibc_gate.sh` did not run on either host: it self-reports a HARNESS
+> portability failure (literal path deps in its oracle), pre-existing and
+> unrelated.
+>
 > WHAT THIS DOES NOT DO. It does not touch the VIDEO-MODE KEY FRAME, which the
 > differencing below puts at 44-52 % of the port's excess on an inter cell —
 > a bigger item than the inter frame at almost every cell. The kernels it
