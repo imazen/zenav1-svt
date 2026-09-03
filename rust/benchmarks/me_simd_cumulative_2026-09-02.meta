@@ -1,0 +1,45 @@
+# ME SIMD coverage — CUMULATIVE A/B, main@884f94e8f vs the landed state
+date: 2026-09-02 (UTC timestamps inside each .raw.tsv header)
+host: mac — Apple M4 Pro, aarch64-apple-darwin, 12 cores
+tool: tools/perf_ab.sh — interleaved paired rounds, order randomised per round,
+      one untimed warmup encode inside each sample, NEITHER SIDE NICED
+build: cargo build --release -p zenav1-svt --example perf_encode
+       NO -C target-cpu=native on either side (runtime dispatch is what ships)
+
+THREE ARMS, the same three the 2026-09-02 CPU record uses, so the change can be
+attributed rather than assumed:
+
+INTER (SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTRA_PERIOD=64
+       SVTAV1_HIER_LEVELS=0 SVTAV1_INTER_EXPERIMENTAL=1), gradient qp40, n=25,
+       EVERY CELL byte-identical (ident=Y) --> .inter.tsv
+  size  p6 speedup  p8 speedup
+  64    1.073x      1.080x
+  128   1.083x      1.154x
+  256   1.067x      1.150x
+  512   1.107x      1.158x
+
+STILL (no inter env), gradient qp40, sizes 64/256/512 x presets 6/10, n=15,
+       ident=Y --> .still.tsv
+  0.993x .. 1.023x, every p25/p75 span crossing 1.0 --> NULL, as expected:
+  these are inter-path kernels.
+
+VIDEOKEY (SVTAV1_VIDEO=1 SVT_AVIF=0), gradient qp40, 64/128/256/512 p8, n=25,
+       ident=Y --> .videokey.tsv
+  0.996x .. 1.003x, every span crossing 1.0 --> NULL.
+  An earlier n=15 pass (.videokey.n15.raw.tsv) read 0.992x at 256x256 with its
+  whole span ABOVE 1.0, i.e. it looked like a real ~0.8 % regression. The n=25
+  re-measure put the span back across 1.0 (0.9950-1.0106). It is kept here
+  rather than dropped, because a span-above-1.0 at n=15 that vanishes at n=25
+  is exactly the shape a reader needs to see to calibrate this harness's noise
+  floor on the videokey arm.
+
+WHAT CHANGED, in five commits, each with its own paired A/B against the
+previous one:
+  me_sad_ab_2026-09-02        nxm_sad_kernel + sad_loop_kernel
+  ext_sad8_ab_2026-09-02      the three ext_*_sad_calculation_8x8_16x16
+  subpel_stream_ab_2026-09-02 sub_pixel_variance stops allocating
+  me_dist_ab_2026-09-02       PlaneDistortion + pme_sad_loop_kernel +
+                              full_pel_search + variance_diff_sse
+  subpel_simd_ab_2026-09-02   both sub-pel bilinear passes + fused accumulate
+
+POSITION AFTERWARDS (port vs C): benchmarks/perf_2026-09-02-arm-inter-simd.*

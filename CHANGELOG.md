@@ -56,6 +56,44 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The five scalar motion-search kernels are vectorised — the INTER cell is
+  1.15x faster, byte for byte** (`rust/docs/perf-status.md`, "ME SIMD COVERAGE
+  LANDED"). New `svtav1-dsp::me_sad` exports two block primitives as
+  tier-suffixed `#[arcane]` helpers — `block_sad_*` and `block_sum_sse_*`
+  (`(SUM(a-b), SUM((a-b)^2))`) — with `scalar` / `neon` / `arm_v2` / `v3` arms.
+  `arm_v2` is the arm that matches C: `Arm64V2Token` bundles `dotprod`, so
+  `vabdq_u8` + `vdotq_u32` is the shape of `svt_sad_loop_kernel*_neon_dotprod`.
+  Callers summon ONE token per call and run their search loop inside the tiered
+  body, so no target-feature boundary is crossed per search position:
+  `inter_me::sad::{sad_loop_kernel, nxm_sad_kernel, compute8x4_sad_kernel,
+  compute8x8_sad_kernel}` and the three `ext_*_sad_calculation_8x8_16x16`,
+  `port_md::pme::pme_sad_loop_kernel`,
+  `port_md::md_search::PlaneDistortion::{sad, variance, ssd}`,
+  `motion_est::full_pel_search`, and
+  `dsp::subpel_variance::{sub_pixel_variance, variance_diff_sse}`.
+  `sub_pixel_variance` additionally stopped allocating — it held two heap
+  buffers per call — and its vertical bilinear pass is fused into the variance
+  accumulation, so C's `H x W` `temp2` buffer is gone rather than smaller.
+  MEASURED, paired A/B `main@884f94e8f` vs landed, 25 interleaved
+  randomised-order rounds/cell on aarch64 / M4 Pro with no
+  `-C target-cpu=native`, gradient qp40, INTER arm, **every cell
+  byte-identical**: p8 1.080x / 1.154x / 1.150x / 1.158x and p6 1.073x /
+  1.083x / 1.067x / 1.107x at 64/128/256/512. Port/C on the same arm moved
+  from 1.92 / 2.74 / 3.40 / 3.83 to 1.82 / 2.47 / 2.99 / 3.29 (slope ratio
+  3.67x -> 3.22x). The STILL and VIDEOKEY arms measured NULL, as they should —
+  these are inter-path kernels. Records:
+  `benchmarks/{me_sad,ext_sad8,subpel_stream,me_dist,subpel_simd}_ab_2026-09-02.*`
+  and `benchmarks/perf_2026-09-02-arm-inter-simd.*`. Exactness is pinned by
+  `me_sad::tests::{me_sad_all_tiers_agree, me_sum_sse_all_tiers_agree}` and
+  `subpel_variance::tests::streaming_matches_materialised`, all of which run
+  under `for_each_token_permutation` and CONSUME the `PermutationReport`, plus
+  the unchanged tier-1 `c_parity_{inter_me,md_pme,md_subpel,motion_est,
+  dist_facade,subpel_variance}` suites. Verified on BOTH ISAs: x86-64 (r7900x)
+  runs 2238 dsp+encoder tests green with `inter_byte_gate` 89 and
+  `regression_spotcheck` clean at the same commit. NOTE: `#[magetypes]` cannot
+  express these kernels — magetypes 0.9.28 has no integer-widening conversion,
+  no `abs_diff`, and `U8x16Backend::reduce_add` returns `u8`, which wraps.
+
 - **The per-superblock MD lambda: the map, the corrected arm and C's own two
   numbers as a test — PORTED, NOT WIRED** (`rust/docs/INTER-ENCODE-PLAN.md`
   §1z²³, c25a464). Byte-inert as landed: every caller still passes qdiff 0, so

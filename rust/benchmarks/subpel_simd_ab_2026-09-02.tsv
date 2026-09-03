@@ -1,0 +1,6 @@
+# perf_ab — candidate/base per-frame encode wall time (median of paired rounds)
+# speedup = base/cand (>1 means the candidate is FASTER). ident=Y: byte-identical output.
+size	preset	ident	n	base_ms	cand_ms	ratio	speedup	ratio_p25	ratio_p75
+128	8	Y	25	3.6225	3.5309	0.9857	1.014	0.9472	0.9949
+256	8	Y	25	13.6934	13.3141	0.9770	1.024	0.9533	0.9851
+512	8	Y	25	67.2862	65.4442	0.9707	1.030	0.9502	0.9806

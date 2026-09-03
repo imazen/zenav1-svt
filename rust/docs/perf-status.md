@@ -108,6 +108,136 @@
 > partial, so the frontier they describe is almost entirely 64-aligned and this
 > surface was invisible to them; `inter_completion_scan.sh` is what sees it.
 >
+> **ME SIMD COVERAGE LANDED (2026-09-02, aarch64 / Apple M4 Pro) — the five
+> scalar motion-search kernels are now vectorised, and the INTER cell moved
+> 1.15x.** Records: `benchmarks/{me_sad,ext_sad8,subpel_stream,me_dist,
+> subpel_simd}_ab_2026-09-02.{tsv,raw.tsv,meta}` (five paired A/Bs, one per
+> step) and `benchmarks/perf_2026-09-02-arm-inter-simd.{tsv,raw.tsv,meta}`
+> (the port/C position afterwards).
+>
+> WHAT LANDED. `svtav1-dsp::me_sad` (new) exports two block primitives as
+> tier-suffixed `#[arcane]` helpers — `block_sad_*` and `block_sum_sse_*`
+> (`(SUM(a-b), SUM((a-b)^2))`) — with `scalar` / `neon` / `arm_v2` / `v3`
+> arms. **`arm_v2` is the one that matches C**: `Arm64V2Token` bundles
+> `dotprod`, so `vabdq_u8` + `vdotq_u32` is the shape of C's
+> `svt_sad_loop_kernel*_neon_dotprod`. Every caller in the by-symbol table
+> below now summons ONE token per call and runs its search loop inside the
+> tiered body, so no target-feature boundary is crossed per search position:
+> `inter_me::sad::sad_loop_kernel`, the three `ext_*_sad_calculation_8x8_16x16`
+> kernels, `port_md::pme::pme_sad_loop_kernel`,
+> `port_md::md_search::PlaneDistortion::{sad, variance, ssd}` and
+> `motion_est::full_pel_search`. `dsp::subpel_variance::sub_pixel_variance`
+> additionally STOPPED ALLOCATING (it held two heap buffers per call) and its
+> two bilinear passes plus the variance accumulate are now SIMD, with the
+> vertical pass fused into the accumulation so C's `H x W` `temp2` buffer is
+> gone rather than merely smaller.
+>
+> CUMULATIVE, paired A/B `main@884f94e8f` vs the landed state
+> (`tools/perf_ab.sh`, 25 interleaved randomised-order rounds/cell, no
+> `-C target-cpu=native`, gradient qp 40, INTER arm). **Every cell
+> byte-identical (`ident=Y`)** — this is a port-vs-port A/B, so it reads
+> speedup, not a port/C ratio:
+>
+> | inter cell | p6 | p8 |
+> |---|---|---|
+> | 64x64   | 1.073x | 1.080x |
+> | 128x128 | 1.083x | **1.154x** |
+> | 256x256 | 1.067x | **1.150x** |
+> | 512x512 | 1.107x | **1.158x** |
+>
+> **THE STILL AND VIDEOKEY ARMS ARE NULL, AS THEY SHOULD BE** — these are
+> inter-path kernels. Still (n=15, sizes 64/256/512 x p6/p10): 0.993-1.023x,
+> every span crossing 1.0. Videokey (n=25, 64/128/256/512 p8): 0.996-1.003x,
+> every span crossing 1.0. An n=15 videokey pass had read 0.992x at 256x256
+> with its whole span above 1.0; the n=25 re-measure put the span back across
+> 1.0, so that was noise and is recorded here rather than dropped.
+>
+> POSITION AFTERWARDS (`perf_gate.sh`, port vs C, same 25-round paired design,
+> `benchmarks/perf_2026-09-02-arm-inter-simd.*`). The preset-8 inter row of the
+> table below, re-measured:
+>
+> | inter, port/C | 64x64 | 128x128 | 256x256 | 512x512 | slope ratio |
+> |---|---|---|---|---|---|
+> | p8 was (`perf_2026-09-02-arm-inter`) | 1.92x | 2.74x | 3.40x | 3.83x* | 3.67x |
+> | p8 now | **1.82x** | **2.47x** | **2.99x** | 3.29x* | **3.22x** |
+> | p6 was (`perf_2026-09-02-arm-inter`) | 2.26x | 2.80x* | 3.10x* | 3.40x* | — |
+> | p6 now | 2.42x | 2.69x | 2.95x | 3.22x* | 3.01x |
+>
+> **The p6 64x64 cell went the WRONG WAY across sessions (2.26x -> 2.42x) while
+> the same-session A/B measured it 1.073x FASTER.** Both can be true: the A/B
+> is port-vs-port and C is not in it, and a perf_gate ratio moves when C's own
+> absolute time moves. Do not read a cross-session perf_gate delta as an
+> attribution — that is what the five A/B records are for. What the perf_gate
+> is for is POSITION, and the p8 slope-ratio move (3.67x -> 3.22x) is the
+> position claim.
+>
+> (* 512x512 is `ident=N` on both presets and is excluded from the fit, exactly
+> as before. 128 and 256 at p6 are `ident=Y` in this run where the earlier
+> record marked them `*`; that is the three inter chunks of 2026-09-02 that
+> moved the byte frontier 55 -> 67 -> 89, not this change. **The p6 fit's
+> intercept comes out NEGATIVE (-0.978 ms), so its intercept-ratio of 18.06x
+> in the `.meta` is meaningless — read the p6 slope only.**)
+>
+> READ THE A/B FOR THE SIZE OF THE CHANGE AND THE PERF_GATE FOR THE POSITION.
+> The two disagree in the expected direction: the A/B is port-vs-port in one
+> session and cancels drift, while the perf_gate re-measures C in a different
+> session and C's own absolute times move (the 2026-09-02 control block below
+> measured ~13 % session-to-session movement in the absolute ms with the
+> ratios reproducing within 3.4 %).
+>
+> WHAT LANDED ON THE INTER FRAME ITSELF, by DIFFERENCING the two arms above —
+> a subtraction of measured quantities, never a projection. Both arms were
+> measured with the same tool at n=25 on the same box within the same hour,
+> but in SEPARATE `perf_ab` invocations, which is a weaker pairing than the
+> 2026-09-02 three-arm record's (all three in one session) and is why the
+> numbers are quoted to two figures:
+>
+> | p8 cell | inter FRAME, main | inter FRAME, landed | speedup |
+> |---|---:|---:|---:|
+> | 64x64   |  0.64 ms |  0.54 ms | 1.19x |
+> | 128x128 |  1.48 ms |  0.98 ms | 1.52x |
+> | 256x256 |  4.89 ms |  2.80 ms | **1.75x** |
+> | 512x512 | 24.24 ms | 13.96 ms | **1.74x** |
+>
+> (inter FRAME = the 2-frame INTER cell minus the 1-frame VIDEOKEY cell, on
+> each binary. 256x256's 4.89 ms reproduces the 2026-09-02 three-arm record's
+> 4.65 ms within 5 %, which is the check that the differencing is sound.)
+>
+> THE C SIDE OF THAT DIFFERENCING WAS THEN MEASURED TOO —
+> `benchmarks/perf_2026-09-02-arm-videokey-simd.{tsv,raw.tsv,meta}`, the same
+> 25-round paired design, all four cells `ident=Y`. The videokey arm is
+> UNCHANGED by this work, which is the control the A/B already implied:
+>
+> | videokey, port/C p8 | 64x64 | 128x128 | 256x256 | 512x512 | slope ratio |
+> |---|---|---|---|---|---|
+> | was (`perf_2026-09-02-arm-videokey`) | 1.52x | 2.30x | 2.95x | 3.14x | 3.19x |
+> | now | 1.51x | 2.28x | 2.89x | 3.15x | 3.21x |
+>
+> Subtracting that from the inter arm gives the INTER FRAME's own port/C:
+>
+> | p8 cell | port ms | C ms | ratio | was |
+> |---|---:|---:|---:|---:|
+> | 64x64   |  0.461 | 0.160 | 2.88x | 2.94x |
+> | 128x128 |  0.834 | 0.254 | 3.28x | 4.11x |
+> | 256x256 |  2.386 | 0.687 | **3.47x** | **5.10x** |
+> | 512x512 | 12.350 | 3.070 | (4.02x) | — |
+>
+> **TWO WARNINGS ON THAT TABLE, both of which the reader needs.** (1) The
+> 512x512 row differences an `ident=N` inter cell and is parenthesised for that
+> reason — it compares two encoders making different decisions. (2) It
+> differences two ~4 ms numbers to get a ~0.7 ms one, which amplifies noise: the
+> port-side inter frame at 256x256 comes out 2.39 ms here and 2.80 ms from the
+> A/B differencing above, 17 % apart, and C's own 256x256 inter frame reads
+> 0.687 ms here against 0.91 ms in the 2026-09-02 record. **Quote the A/B for
+> what changed (1.75x on the inter frame at 256x256) and treat the 5.10x ->
+> 3.47x as the direction and rough size of the position move, not a precise
+> figure.**
+>
+> WHAT THIS DOES NOT DO. It does not touch the VIDEO-MODE KEY FRAME, which the
+> differencing below puts at 44-52 % of the port's excess on an inter cell —
+> a bigger item than the inter frame at almost every cell. The kernels it
+> lands on are the inter frame's 61 % motion-search distortion.
+
 > **INTER CPU (2026-09-02, aarch64 / Apple M4 Pro) — FIRST port/C wall-clock
 > ratio on the inter path, and the answer is NOT "the inter frame".** Records:
 > `benchmarks/perf_2026-09-02-arm-{still,videokey,inter}.{tsv,raw.tsv,meta}`,
@@ -129,6 +259,13 @@
 > | still    | 0.90x | 1.53x | 2.50x | 2.66x | 2.78x |
 > | videokey | 1.52x | 2.30x | 2.95x | 3.14x | 3.19x |
 > | inter    | 1.92x | 2.74x | 3.40x | 3.83x* | 3.67x |
+>
+> (**the inter row is SUPERSEDED** by the ME SIMD COVERAGE LANDED block
+> above: re-measured 2026-09-02 after the ME kernels were vectorised it reads
+> 1.82 / 2.47 / 2.99 / 3.29 with a 3.22x slope. The still and videokey rows
+> stand — both arms measured NULL against that change. The DIFFERENCING
+> below was taken on the pre-SIMD binary and its component ms are therefore
+> pre-SIMD; its SHARES are what to reuse, not its absolute times.)
 >
 > (* 512x512 inter is the one cell of the three arms that is NOT byte-identical
 > at p8; every other cell in the table is. At preset 6 all three arms are
@@ -202,6 +339,18 @@
 > | `inter_me::sad::compute8x4_sad_kernel` | 0.548 | 11.8 % | `svt_ext_all_sad_calculation_8x8_16x16_neon` |
 > | `port_md::md_search::PlaneDistortion` impls | 0.339 | 7.3 % | same NEON family |
 > | `motion_est::full_pel_search` | 0.142 | 3.0 % | `svt_sad_loop_kernel_neon_dotprod` |
+>
+> **ALL FIVE ARE NOW VECTORISED** (2026-09-02, see the ME SIMD COVERAGE LANDED
+> block above). The table is kept as the ATTRIBUTION that motivated the work,
+> and its numbers are pre-SIMD. What the five delivered together is 1.15x on
+> the inter cell, NOT the 28x the last line of this block quotes — that gap is
+> what the kernels would cost if the callers around them were free, and they
+> are not. The delivered fractions, cell by cell, are in
+> `benchmarks/*_ab_2026-09-02.meta`. `sub_pixel_variance` under-delivered
+> against its 16.3 % share (1.014-1.030x for the whole SIMD step): the MD
+> sub-pel tree evaluates many small blocks, down to 4x4, where neither the
+> 16-wide nor the 8-wide arm fires. A per-block-size histogram of those calls
+> is NOT MEASURED and is the next thing to measure there.
 >
 > Those five sum to **2.74 ms = 59 % of the port's inter frame. C's whole inter
 > frame spends 0.099 ms on the corresponding kernels — a 28x gap.** Verified
@@ -315,6 +464,10 @@
 > — profile shares, not A/B results). Do NOT budget a win from these directly:
 > `aom_hadamard_8x8` was 1.88 % of p2 and delivered 1.031x at that cell because
 > the caller's own scalar loop stayed. Price each one, then build it.
+>
+> **This queue is the STILL path's. The INTER path's five-kernel queue — the
+> one the by-symbol block above ranks — was worked 2026-09-02 and is now
+> EMPTY: all five are vectorised via `svtav1-dsp::me_sad`. Nothing below moved.**
 >
 > | port function | p6 share | p2 share | C counterpart |
 > |---|---|---|---|

@@ -1,0 +1,40 @@
+# subpel_variance A/B — SIMD both bilinear passes and the variance accumulation
+date: 2026-09-02 (UTC timestamps inside the .raw.tsv headers)
+host: mac — Apple M4 Pro, aarch64-apple-darwin, 12 cores
+baseline binary: the me_dist chunk (benchmarks/me_dist_ab_2026-09-02.*)
+tool: tools/perf_ab.sh, interleaved randomised-order paired rounds,
+      NEITHER SIDE NICED, no -C target-cpu=native
+grid: content=gradient sizes=[128 256 512] presets=[8] qp=40 rounds=25
+arm:  INTER — SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTRA_PERIOD=64
+      SVTAV1_HIER_LEVELS=0 SVTAV1_INTER_EXPERIMENTAL=1
+
+what changed: the streaming sub_pixel_variance's three scalar row loops became
+  two tier-suffixed row kernels — `h_row_*` (horizontal 2-tap) and `v_accum_*`
+  (vertical 2-tap FUSED with the variance accumulation, which removes C's
+  `H x W` temp2 buffer entirely). Tiers: neon (vmull/vmlal_u8 + vrshrq_n_u16,
+  then vpadalq_s16 / vmlal_s16), v3 (_mm256_cvtepu8_epi16 + mullo + srli,
+  then madd_epi16), scalar. The loop over `h` rows lives inside the
+  `#[arcane]` wrapper, so one target-feature boundary per call.
+
+exactness: every `BILINEAR_FILTERS_2T` row sums to 128, so a 2-tap sum is at
+  most 255 * 128 = 32_640 and the 16-bit lanes cannot overflow;
+  ROUND_POWER_OF_TWO(v, 7) is exactly a rounding shift right by 7. Pinned by
+  `streaming_matches_materialised` — 22 instantiated sizes x 64 phase pairs
+  against the materialised C-shaped oracle, run under
+  for_each_token_permutation with the report consumed.
+
+result (n=25): byte-identical at every cell (ident=Y)
+  128x128  3.6225 -> 3.5309 ms  speedup 1.014x  (p25/p75 ratio 0.9472/0.9949)
+  256x256 13.6934 -> 13.3141 ms speedup 1.024x  (0.9533/0.9851)
+  512x512 67.2862 -> 65.4442 ms speedup 1.030x  (0.9502/0.9806)
+
+an earlier n=15 pass of the same A/B is kept as
+`subpel_simd_ab_2026-09-02.n15.raw.tsv`: 1.021 / 1.007 / 1.024 with p75
+crossing 1.0 at two cells. The n=25 run is the one to quote; the n=15 one is
+kept so the noise is visible rather than filtered.
+
+why it is smaller than sub_pixel_variance's 16.3 % share of the inter frame:
+  the MD sub-pel tree evaluates many SMALL blocks (down to 4x4), where the
+  16-wide and 8-wide arms do not fire and the per-call dispatch is a larger
+  fraction. NOT MEASURED: a per-block-size histogram of the sub-pel calls,
+  which is what would turn that from an explanation into a finding.
