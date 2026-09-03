@@ -511,6 +511,13 @@ const NEON_STATS_MAX_ROW: usize = 32_000;
 /// in a 9.6 KB scratch, and `vmlal_s16` / `vmlal_high_s16` do the widen,
 /// multiply and accumulate in ONE instruction, 8 products per two of them.
 ///
+/// **A SECOND reformulation sits on top of that one**, and it is where most of
+/// the arithmetic went: the dot above depends only on the PAIR OF `d` ROWS and
+/// the pair of column offsets, so the 1_274 dots per region row collapse to 85
+/// per `d` row plus M's 49 — see the `H, by ROW-PAIR CORRELATION` comment in
+/// the body for the derivation, the sliding-window update and the
+/// byte-identity argument.
+///
 /// The `- avg` subtraction is also hoisted: it used to run `win2` times per
 /// pixel (once per gathered window element); now it runs once per source pixel,
 /// into the `d` / `s` sub-average buffers, exactly as the C NEON kernel's
@@ -617,11 +624,123 @@ fn compute_stats_impl_neon(
         for k in 0..win2 {
             let dk = &d[dbase + d_off[k]..dbase + d_off[k] + width];
             m[k] += dot_i16_neon(token, dk, srow) as i64;
-            let hrow = &mut h[k * win2..(k + 1) * win2];
-            for (t, hv) in hrow.iter_mut().enumerate().skip(k) {
-                let dt = &d[dbase + d_off[t]..dbase + d_off[t] + width];
-                *hv += dot_i16_neon(token, dk, dt) as i64;
+        }
+    }
+
+    // ---- H, by ROW-PAIR CORRELATION instead of by (k, t) pair -------------
+    //
+    // The previous formulation issued one dot product per (region row, k, t)
+    // triple: `win2 * (win2 + 1) / 2` = 1_225 of them per row at `win = 7`,
+    // plus 49 for M. Most of those dots are the SAME dot product. Writing
+    // `k = (kk, ll)` and `t = (tt, mm)` (column offset, row offset — see
+    // `d_off` above),
+    //
+    // ```text
+    //   H[k][t] = sum_i dot( d[i+ll][kk .. kk+width], d[i+mm][tt .. tt+width] )
+    // ```
+    //
+    // so the dot depends only on the PAIR OF `d` ROWS `(i+ll, i+mm)` and the
+    // pair of column offsets `(kk, tt)` — not on `i`, `ll` and `mm`
+    // separately. Two reductions follow.
+    //
+    // 1. **Row-pair sharing.** Parameterise by the top row `a = min(i+ll, i+mm)`
+    //    and the row delta `dm = |mm - ll|`. Every `(k, t)` whose rows differ
+    //    by `dm` reuses the same `P[a][dm][c1][c2]`, so the 1_225 dots per
+    //    region row collapse to 322 per `d` row (`6 * 49` for `dm = 1..6`
+    //    plus `28` for the symmetric `dm = 0` half).
+    //
+    // 2. **Column sliding.** For a fixed row pair and a fixed column DELTA
+    //    `dc = c2 - c1`, the up-to-7 values of `c1` are a sliding window over
+    //    the same two rows:
+    //
+    //    ```text
+    //      P(c1+1) = P(c1) - A[c1] * B[c1+dc] + A[c1+width] * B[c1+dc+width]
+    //    ```
+    //
+    //    an exact O(1) update. That leaves 85 real dot products per `d` row
+    //    (13 column deltas x 6 row deltas, plus 7 for `dm = 0`).
+    //
+    // Together: 1_274 dots per region row become 85 per `d` row plus M's 49
+    // per region row — about **9x fewer multiply-accumulates** at
+    // `win = 7`, and 134 dot CALLS per row instead of 1_274, so the
+    // per-call zero/reduce overhead falls by the same factor. This is the
+    // same asymptotic shape C's `compute_stats_win7_neon` uses (its step 1
+    // computes ~98 products per pixel and its steps 3-4 derive the rest from
+    // O(width + height) edge deltas); the port reaches it by sharing rather
+    // than by C's delta machinery.
+    //
+    // BYTE-IDENTITY. The set of products is unchanged and the GROUPING is the
+    // one the scalar core and the AVX2 arm already document: one row of
+    // products accumulated in `i32`, flushed into the `i64` output. A `P`
+    // value is a dot of at most `NEON_STATS_MAX_ROW` products of magnitude
+    // <= 65_025, so it is exact in `i32` (see [`dot_i16_neon`]); the sliding
+    // update adds and subtracts two more such products, and every partial
+    // stays inside the same bound. The final `i64` value is the sum of the
+    // same 1_225 x width x height products in a different order, which for
+    // exact integers is the same number. No i64 drain interval is introduced
+    // — the flush boundary is still ONE ROW, exactly as before.
+    let cmax = wiener_win - 1; // largest window offset, = 2 * halfwin
+    // `hw[((dm * win + c1) * win + c2) * win + lo]` accumulates
+    // `sum_{a=lo}^{lo+height-1} P[a][dm][c1][c2]`.
+    let mut hw = [0i64; WIENER_WIN * WIENER_WIN * WIENER_WIN * WIENER_WIN];
+    for a in 0..dh {
+        for dm in 0..=cmax {
+            // `a` contributes to window `lo` iff `lo <= a <= lo + height - 1`,
+            // and `lo` ranges over `0 ..= cmax - dm` (both `lo` and `lo + dm`
+            // are window row offsets). Rows outside every window are skipped,
+            // which also keeps `a + dm` inside `d`.
+            let lo_hi = (cmax - dm).min(a);
+            let lo_lo = (a + 1).saturating_sub(height);
+            if lo_lo > lo_hi {
+                continue;
             }
+            let arow = a * dw;
+            let brow = (a + dm) * dw;
+            // `dm == 0` is symmetric in the columns, so only `dc >= 0` is
+            // stored (the (k, t) scatter below reads that half).
+            let dc_lo = if dm == 0 { 0isize } else { -(cmax as isize) };
+            for dc in dc_lo..=cmax as isize {
+                let c1_lo = (-dc).max(0) as usize;
+                let c1_hi = (cmax as isize - dc.max(0)) as usize;
+                let c2_lo = (c1_lo as isize + dc) as usize;
+                let mut acc = dot_i16_neon(
+                    token,
+                    &d[arow + c1_lo..arow + c1_lo + width],
+                    &d[brow + c2_lo..brow + c2_lo + width],
+                );
+                let mut c1 = c1_lo;
+                let mut c2 = c2_lo;
+                loop {
+                    let base = ((dm * wiener_win + c1) * wiener_win + c2) * wiener_win;
+                    for hv in &mut hw[base + lo_lo..=base + lo_hi] {
+                        *hv += acc as i64;
+                    }
+                    if c1 == c1_hi {
+                        break;
+                    }
+                    acc = acc - d[arow + c1] as i32 * d[brow + c2] as i32
+                        + d[arow + c1 + width] as i32 * d[brow + c2 + width] as i32;
+                    c1 += 1;
+                    c2 += 1;
+                }
+            }
+        }
+    }
+
+    // Scatter the row-pair sums into H's upper triangle. The map
+    // `(k, t) -> (dm, c1, c2, lo)` is a bijection onto the accumulated set:
+    // `dm = |mm - ll|`, `lo = min(ll, mm)`, and the column offsets are taken
+    // in the order that makes the row delta non-negative.
+    for k in 0..win2 {
+        let (kk, ll) = (k / wiener_win, k % wiener_win);
+        for t in k..win2 {
+            let (tt, mm) = (t / wiener_win, t % wiener_win);
+            let (dm, c1, c2, lo) = if mm >= ll {
+                (mm - ll, kk, tt, ll)
+            } else {
+                (ll - mm, tt, kk, mm)
+            };
+            h[k * win2 + t] = hw[((dm * wiener_win + c1) * wiener_win + c2) * wiener_win + lo];
         }
     }
 
