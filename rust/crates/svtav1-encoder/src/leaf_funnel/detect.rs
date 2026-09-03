@@ -10,6 +10,82 @@
 
 use super::*;
 
+/// Per-thread scratch for [`txb_coeff_satd`]'s two internal buffers.
+///
+/// Both were `vec![0i32; n]` per call, and `txb_coeff_satd` was the second
+/// largest allocation SITE in the encoder after `tx_pipeline::tx_unit_inner`
+/// — **28,006 calls to the allocator on one 512x512 video-mode key frame at
+/// preset 8** (heaptrack `--print-allocators`, r7900x). Neither buffer
+/// escapes the function.
+///
+/// Byte-identity argument, buffer by buffer:
+/// * `residual` is written at EVERY one of its `w * h` positions by the
+///   double loop below (`r` over `0..h`, `c` over `0..w`, index `r * w + c`),
+///   so its `vec![0; n]` zero-fill was dead and a reused buffer cannot leak
+///   the previous call's values. It is resized but NOT re-zeroed.
+/// * `coeffs` is handed to `fwd_txfm2d_dispatch`, which does not promise to
+///   write every element for every transform shape, so its zero-fill IS
+///   load-bearing and is kept verbatim (`resize` + `fill(0)`).
+#[derive(Default)]
+struct SatdScratch {
+    residual: alloc::vec::Vec<i32>,
+    coeffs: alloc::vec::Vec<i32>,
+}
+
+impl SatdScratch {
+    /// `residual` sized to `n` WITHOUT zeroing (every element is overwritten)
+    /// and `coeffs` sized to `n` AND zeroed.
+    fn split(&mut self, n: usize) -> (&mut [i32], &mut [i32]) {
+        if self.residual.len() < n {
+            self.residual.resize(n, 0);
+        }
+        if self.coeffs.len() < n {
+            self.coeffs.resize(n, 0);
+        }
+        let coeffs = &mut self.coeffs[..n];
+        coeffs.fill(0);
+        (&mut self.residual[..n], coeffs)
+    }
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static SATD_SCRATCH: core::cell::RefCell<SatdScratch> = const {
+        core::cell::RefCell::new(SatdScratch {
+            residual: alloc::vec::Vec::new(),
+            coeffs: alloc::vec::Vec::new(),
+        })
+    };
+}
+
+/// Run `f` with the per-thread [`SatdScratch`].
+///
+/// `try_borrow_mut` rather than `borrow_mut`, and a fresh scratch on failure:
+/// these kernels call only the transform dispatch and never re-enter
+/// themselves, but a future re-entrant caller should get a correct answer
+/// rather than a panic. Same contract as `tx_pipeline::tx_unit`'s.
+#[inline]
+fn with_satd_scratch<R>(f: impl FnOnce(&mut SatdScratch) -> R) -> R {
+    #[cfg(feature = "std")]
+    {
+        // `Result<R, f>`: on a failed borrow the closure is handed BACK
+        // un-called, so it is run exactly once on either arm.
+        let taken = SATD_SCRATCH.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut sc) => Ok(f(&mut sc)),
+            Err(_) => Err(f),
+        });
+        return match taken {
+            Ok(r) => r,
+            // Re-entered: a fresh scratch rather than a panic.
+            Err(f) => f(&mut SatdScratch::default()),
+        };
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        f(&mut SatdScratch::default())
+    }
+}
+
 /// bd10 twin of [`txb_coeff_satd`] — the forward-transform coefficient SATD on
 /// the 10-bit residual. The transform is bit-depth-independent; only the
 /// residual's source/prediction type changes.
@@ -23,27 +99,28 @@ pub(super) fn txb_coeff_satd_hbd(
     tx_type: usize,
 ) -> i64 {
     let n = w * h;
-    let mut residual = vec![0i32; n];
-    for r in 0..h {
-        let srow = src_off + r * src_stride;
-        let prow = r * w;
-        for c in 0..w {
-            residual[r * w + c] = i32::from(src[srow + c]) - i32::from(pred[prow + c]);
+    with_satd_scratch(|sc| {
+        let (residual, coeffs) = sc.split(n);
+        for r in 0..h {
+            let srow = src_off + r * src_stride;
+            let prow = r * w;
+            for c in 0..w {
+                residual[r * w + c] = i32::from(src[srow + c]) - i32::from(pred[prow + c]);
+            }
         }
-    }
-    let mut coeffs = vec![0i32; n];
-    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        &residual,
-        &mut coeffs,
-        w,
-        rs_tx_size(w, h),
-        TX_TYPE_FROM_C[tx_type],
-    );
-    let mut satd: i64 = 0;
-    for &c in &coeffs {
-        satd += c.unsigned_abs() as i64;
-    }
-    satd
+        svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            residual,
+            coeffs,
+            w,
+            rs_tx_size(w, h),
+            TX_TYPE_FROM_C[tx_type],
+        );
+        let mut satd: i64 = 0;
+        for &c in coeffs.iter() {
+            satd += c.unsigned_abs() as i64;
+        }
+        satd
+    })
 }
 
 /// SATD of the forward-transform coefficients (C computes it inline on
@@ -58,27 +135,28 @@ pub(super) fn txb_coeff_satd(
     tx_type: usize,
 ) -> i64 {
     let n = w * h;
-    let mut residual = vec![0i32; n];
-    for r in 0..h {
-        let srow = src_off + r * src_stride;
-        let prow = r * w;
-        for c in 0..w {
-            residual[r * w + c] = src[srow + c] as i32 - pred[prow + c] as i32;
+    with_satd_scratch(|sc| {
+        let (residual, coeffs) = sc.split(n);
+        for r in 0..h {
+            let srow = src_off + r * src_stride;
+            let prow = r * w;
+            for c in 0..w {
+                residual[r * w + c] = src[srow + c] as i32 - pred[prow + c] as i32;
+            }
         }
-    }
-    let mut coeffs = vec![0i32; n];
-    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        &residual,
-        &mut coeffs,
-        w,
-        rs_tx_size(w, h),
-        TX_TYPE_FROM_C[tx_type],
-    );
-    let mut satd: i64 = 0;
-    for &c in &coeffs {
-        satd += c.unsigned_abs() as i64;
-    }
-    satd
+        svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            residual,
+            coeffs,
+            w,
+            rs_tx_size(w, h),
+            TX_TYPE_FROM_C[tx_type],
+        );
+        let mut satd: i64 = 0;
+        for &c in coeffs.iter() {
+            satd += c.unsigned_abs() as i64;
+        }
+        satd
+    })
 }
 
 /// C `chroma_complexity_check_pred` (product_coding_loop.c:6095), exact:

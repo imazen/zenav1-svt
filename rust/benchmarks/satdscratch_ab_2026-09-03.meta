@@ -1,0 +1,41 @@
+# `txb_coeff_satd`'s two internal buffers hoisted into a per-thread scratch.
+#
+# host  : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool  : tools/perf_ab.sh — interleaved paired rounds, order randomised per
+#         round, one untimed warmup inside each sample, NEITHER SIDE NICED,
+#         no -C target-cpu=native
+# base  : the `dqcoeff` hoist commit          cand: + this hoist
+# grid  : gradient qp 40; still 256/512 x p{2,6,10} n=15,
+#         videokey (SVTAV1_VIDEO=1) 128/256/512 x p{6,8} n=25
+# ident : Y on all twelve cells
+#
+# WHY THIS SITE. Second largest allocation SITE in the encoder after
+# `tx_pipeline::tx_unit_inner` — 28,006 calls to the allocator on ONE 512x512
+# video-mode key frame at preset 8 (heaptrack --print-allocators, r7900x),
+# two `vec![0i32; w*h]` per call, neither escaping.
+#
+# RESULT — and it is the largest single win of the day, at the SLOW presets:
+#   still     256 p2  1.034x  (p25/p75 0.9633/0.9681)
+#             512 p2  1.029x  (0.9694/0.9740)
+#             256 p6  1.008x | 512 p6 1.012x
+#             256 p10 1.003x | 512 p10 0.991x  <- the one cell that goes the
+#                                                 wrong way; its span crosses
+#                                                 1.0 and it is NULL, not a
+#                                                 regression
+#   videokey  256 p6  1.013x | 512 p6 1.016x   (both spans below 1.0)
+#             128 p6  1.002x | 128 p8 0.999x | 256 p8 1.003x | 512 p8 1.009x
+#
+# THE SHAPE OF THE RESULT IS THE INTERESTING PART: it concentrates at the SLOW
+# presets, which is where the candidate set is widest and the chroma detector
+# runs most. A p10-only measurement would have called this NULL. That is the
+# same lesson the tile-reservation record carries from the size axis: sweep the
+# axis the mechanism is keyed on, or you will report one cell's answer as the
+# answer.
+#
+# NOT ESTABLISHED: that the remaining ~170k per-frame allocations
+# (`extract_neighbors_tiled` 31,696, `mds3::eval_candidate` 25,799,
+# `pd0::lvl1_cost_from_pred` 25,160, `cost_coeffs_txb` 19,553,
+# `pd0::tx_quant_core` 15,096, `inject_candidates` 12,064,
+# `md_cfl_rd_pick_alpha` 9,280) would scale this. Each needs its own
+# measurement; two of them return their buffers to the caller and cannot take
+# this shape at all.
