@@ -101,6 +101,19 @@ Crates are not published to crates.io yet — depend by git.
   0.886-0.938) and **peak RSS is inside the 25 % goal on all twelve** (inter
   1.035-1.122, against `main`'s 1.279-1.334 on the same grid). Records
   `rust/benchmarks/mem_harness_2026-09-03.{tsv,meta}`.
+- **The same two changes on aarch64-darwin, and the ISA is worth more than
+  either of them** — `rust/benchmarks/mem_aarch64_2026-09-03.{tsv,meta}`. Peak
+  RSS at p13 goes from 1.360x-1.483x of C to **1.121x-1.257x** on the inter arm
+  (-15 % to -18 % at every size), eleven of twelve cells inside the 25 % goal —
+  and **2048x2048 inter is 1.257x, over the line**, where x86 reads 1.086x on
+  the same commits and cells. On that cell the port's peak RSS is 153.7 MB on
+  macOS against 117.7 MB on Linux and 112.73 MB of peak HEAP on Linux, so ~36 MB
+  of the aarch64 figure is not live bytes and no lifetime change can reach it.
+  Unattributed (16 KiB pages, libmalloc retention and thread-stack accounting
+  are all candidates; heaptrack does not exist on macOS). Raises an untested
+  hypothesis: allocator CHURN may move macOS RSS even though it provably cannot
+  move peak heap, which would mean the three allocation-site hoists of the same
+  day were never measured on the metric they could have moved.
 - **The port/C memory ratio is a function of PRESET, and the port's worst preset
   is the FASTEST one** — `rust/benchmarks/mem_preset_2026-09-03.{tsv,meta}`.
   Every memory record before today measured one preset. On gradient 2048x2048

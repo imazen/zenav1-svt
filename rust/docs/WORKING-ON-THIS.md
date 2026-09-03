@@ -155,6 +155,18 @@ p13 qp40 gradient: peak HEAP port/C is **below 1.0 on all twelve cells**
 1.035-1.122 inter) against `main`'s 1.279x-1.334x on the inter arm. aarch64
 NOT re-measured — different allocator, different page size.
 
+**And the ISA is worth more than either change** (`benchmarks/mem_aarch64_2026-09-03.*`):
+the same two commits on aarch64-darwin at p13 take the inter arm from
+1.360x-1.483x to **1.121x-1.257x** of C, eleven of twelve cells inside the 25 %
+goal and **2048x2048 inter at 1.257x, over the line**, where x86 reads 1.086x.
+On that cell the port's peak RSS is 153.7 MB on macOS against 117.7 MB on Linux
+and 112.73 MB of peak HEAP on Linux — **~36 MB of the aarch64 number is not
+live bytes and no lifetime change can reach it** (unattributed: 16 KiB pages,
+libmalloc retention, thread stacks are all candidates; there is no heaptrack on
+macOS). Untested hypothesis worth the next chunk: allocator CHURN can move
+macOS RSS even though it provably cannot move peak heap, which would mean the
+three 2026-09-03 hoists were never measured on the metric they could move.
+
 **And a memory ratio without its PRESET is meaningless**
 (`benchmarks/mem_preset_2026-09-03.*`): on gradient 2048x2048 qp 40 the inter
 arm's peak heap is **C 240.25 M at p6 and 120.12 M at p13** — C DOUBLES — while

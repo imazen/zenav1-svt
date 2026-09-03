@@ -197,6 +197,22 @@
 > series below is a different allocator and page size and has NOT been
 > re-measured.
 >
+> **6b. AND THE ISA IS WORTH MORE THAN EITHER CHANGE — aarch64 is NOT x86 here**
+> (`benchmarks/mem_aarch64_2026-09-03.{tsv,meta}`). The same two commits measured
+> on aarch64-darwin at p13 take the inter arm from **1.360x-1.483x to
+> 1.121x-1.257x** of C (-15 % to -18 % of peak RSS at every size), and eleven of
+> the twelve cells land inside the 25 % goal — but **2048x2048 inter is 1.257x,
+> over the line**, where the same commits on x86 read 1.086x. On the same cell
+> the port's peak RSS is 153.7 MB on macOS against 117.7 MB on Linux, and its
+> Linux peak HEAP is 112.73 MB: **~36 MB of the aarch64 number is not live
+> bytes**, and no lifetime change can reach it. NOT ATTRIBUTED — 16 KiB pages,
+> libmalloc's retention policy and thread-stack accounting are all candidates.
+> **The untested hypothesis this raises is that allocator CHURN moves macOS RSS
+> even though it cannot move peak heap** — which would mean 2026-09-03's three
+> allocation-site hoists (`58fa779e`, `fbd341b3`, `0c70f3fc`), recorded as a CPU
+> win and a peak-heap NULL, were never measured on the metric they could have
+> moved. That A/B has not been run.
+>
 > **6. AND THE RATIO IS A FUNCTION OF PRESET — the port's WORST preset is the
 > FASTEST one** (`benchmarks/mem_preset_2026-09-03.{tsv,meta}`). On gradient
 > 2048x2048 qp 40, C's peak heap on the inter arm is **240.25 M at p6 and

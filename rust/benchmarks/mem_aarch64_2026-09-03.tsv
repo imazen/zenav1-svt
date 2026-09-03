@@ -1,0 +1,22 @@
+# THE SAME TWO CHANGES ON aarch64-darwin — peak RSS, port vs C. THE ISA MATTERS.
+# host=mac (Apple silicon, macOS, 16 KiB pages, libmalloc); /usr/bin/time -l maximum resident set size,
+# MEDIAN OF 5. Harness rust/tools/mem_peak.sh; port=examples/perf_encode, C=tools/perf_c_encode.
+# grid: content=gradient qp=40 preset=13 8-bit 4:2:0; arms as in benchmarks/mem_harness_2026-09-03.tsv.
+# base  = 01ef6f1f1 (main)
+# after = base + the one-byte MeCandidate commit + the perf_encode one-copy harness commit
+# Every cell produced a non-empty .obu; obu_port is identical between the two trees on all 12 cells.
+# The still and videokey arms are byte-identical to C at every size here; the inter arm is not
+# (C 81837/104557/135825/148295 vs the port's 81815/102993/127879/139762).
+size	arm	rss_base_KiB	rss_after_KiB	rss_c_KiB	ratio_base	ratio_after
+1280	still	38128	35760	45392	0.840	0.788
+1280	videokey	44272	41824	47568	0.930	0.879
+1280	inter	72160	59520	53072	1.360	1.121
+1536	still	55360	51920	59296	0.932	0.876
+1536	videokey	63952	56912	64144	0.997	0.887
+1536	inter	102960	88048	72048	1.430	1.222
+1920	still	78016	72592	87408	0.893	0.831
+1920	videokey	95712	85504	95472	1.002	0.896
+1920	inter	156656	132224	106752	1.467	1.239
+2048	still	87712	81520	95824	0.916	0.851
+2048	videokey	107600	96192	106816	1.007	0.901
+2048	inter	177216	150080	119424	1.483	1.257

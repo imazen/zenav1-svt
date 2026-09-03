@@ -1,0 +1,82 @@
+THE SAME TWO CHANGES ON aarch64-darwin — AND THE ISA IS WORTH 0.17x ON THE
+INTER ARM.
+
+date:   2026-09-03
+host:   mac — Apple silicon, macOS (16 KiB pages, libmalloc magazine
+        allocator). `/usr/bin/time -l` maximum resident set size, MEDIAN OF 5.
+        There is no heaptrack on macOS, so **no heap number appears in this
+        file**; every figure here is RSS.
+trees:  base  = 01ef6f1f1 (main)
+        after = base + the one-byte `MeCandidate` commit + the `perf_encode`
+                one-copy harness commit
+data:   benchmarks/mem_aarch64_2026-09-03.tsv
+        x86 sibling: benchmarks/mem_harness_2026-09-03.tsv (same harness, same
+        grid, same two trees)
+
+=================== 1. THE CHANGES CARRY ACROSS, BY MORE THAN ON x86 =========
+
+  size  arm         base    after    delta    C     base/C  after/C
+  1280  still      38128    35760    -2368   45392   0.840   0.788
+  1280  videokey   44272    41824    -2448   47568   0.930   0.879
+  1280  inter      72160    59520   -12640   53072   1.360   1.121
+  1536  inter     102960    88048   -14912   72048   1.430   1.222
+  1920  inter     156656   132224   -24432  106752   1.467   1.239
+  2048  still      87712    81520    -6192   95824   0.916   0.851
+  2048  videokey  107600    96192   -11408  106816   1.007   0.901
+  2048  inter     177216   150080   -27136  119424   1.483   1.257
+
+**The inter arm loses 15-18 % of its peak RSS at every size**, and **eleven of
+the twelve cells are now inside the 25 % goal**. The twelfth — 2048x2048
+inter — is 1.257x, which is over the line by 0.007 and inside the port's own
+run-to-run spread on that cell ([149936, 157376], 5 %). Call it AT the boundary,
+not inside it.
+
+Attribution between the two commits, measured separately on this host at p13:
+the `MeCandidate` packing alone is -3552 KiB at 1280 inter and -8816 at 2048
+inter, and **0 on the still and videokey arms** (+64 to +176 KiB, i.e. noise) —
+the same control the x86 record has. The rest is the harness change.
+
+=================== 2. THE ISA IS WORTH MORE THAN EITHER CHANGE ==============
+
+Same commits, same cells, same harness, two hosts:
+
+  2048x2048 inter, after both changes
+    aarch64-darwin  peak RSS  150080 KiB (153.7 MB)   port/C 1.257
+    x86_64-linux    peak RSS  114924 KiB (117.7 MB)   port/C 1.086
+    x86_64-linux    peak HEAP            112.73 MB
+
+**36 MB of the aarch64 number is not live bytes.** On Linux the port's peak RSS
+sits 2.2 MB above its peak heap on this cell; on macOS it sits ~37 MB above the
+same encode's heap, if the heap is close to ISA-invariant — which is likely
+(the allocation SIZES are the same code) but is NOT MEASURED, because heaptrack
+does not exist on macOS. Treat "37 MB" as bounded above by "the aarch64 RSS
+minus the x86 heap", not as an attributed quantity.
+
+Whatever it is, it is not something a lifetime change can reach: the two
+changes here removed ~27 MB of live bytes on aarch64 and the residual gap to C
+is still 30 MB. **The next thing to measure on this axis is whether allocator
+CHURN moves macOS RSS**, which nothing in this repo has tested. The three
+allocation-site hoists of 2026-09-03 (`58fa779e`, `fbd341b3`, `0c70f3fc`) are
+the obvious A/B for it: they were measured as a CPU win and a peak-HEAP null
+(`benchmarks/mem_heaptrack_satd_2026-09-03.meta`), and a peak-heap null is NOT
+a peak-RSS null on an allocator that does not return freed pages. That
+measurement has not been made and this file does not make it.
+
+=================== 3. WHAT THIS SAYS ABOUT THE RECORDED 1.60x ===============
+
+`benchmarks/mem_arms_2026-09-02.meta` records the inter arm at 1.60x at 4 MP on
+aarch64. This file reads **1.483x on `main`** at 4 MP on aarch64 — same ISA,
+same quantity, close enough that the difference is plausibly the day's commits
+and the C driver (that record used `capture_c_trace`; this uses
+`perf_c_encode`). So the aarch64 series is broadly reproducible and it is the
+**x86 reading of 0.84x at p6** (benchmarks/mem_preset_2026-09-03.meta) that is
+the outlier — i.e. the conflict recorded there is an ISA conflict, not a
+harness one. Neither host has been measured with the other's C driver.
+
+=================== NOT ESTABLISHED ==========================================
+  * Any aarch64 HEAP number. No heaptrack on macOS.
+  * Any preset but 13, content but gradient, qp but 40, size outside 1280-2048.
+  * That the 36 MB aarch64-over-x86 RSS gap is allocator retention. It is
+    UNATTRIBUTED; page size (16 KiB vs 4 KiB), the malloc implementation, and
+    thread-stack accounting are all candidates and none has been isolated.
+  * That the 2048 inter cell meets the goal. 1.257x is over 1.25x.
