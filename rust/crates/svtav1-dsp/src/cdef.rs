@@ -140,13 +140,28 @@ pub fn adjust_strength(strength: i32, var: i32) -> i32 {
 /// 2 = horizontal, 4 = down-right, 6 = vertical (spec 7.15.3 ordering).
 ///
 /// Reads exactly the 8x8 interior — border/sentinel pixels are never seen.
+///
+/// Runtime-dispatched (`incant!([neon, scalar])`). Both arms build the SAME
+/// `partial[8][15]` array and then run the SAME cost/argmax tail
+/// ([`cdef_dir_from_partials`]), so only the accumulation differs and the
+/// arithmetic that turns partials into `(dir, var)` cannot diverge between
+/// tiers by construction. C ships `svt_aom_cdef_find_dir_neon`
+/// (`cdef_block_neon.c:337`) here and the port was scalar: 15x on the measured
+/// profile (`benchmarks/perf_videokey_attrib_2026-09-03.meta` —
+/// `cdef::cdef_find_dir` 0.918 ms against C's `cdef_dir_from_lines_neon`
+/// 0.069 ms at 512x512 preset 8).
 pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) {
-    let mut cost = [0i32; 8];
+    incant!(cdef_find_dir_impl(img, stride, coeff_shift), [neon, scalar])
+}
+
+/// 840/n for n in 1..=8 (offset by 1; entry 0 unused).
+const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
+
+/// The eight direction partial-sum arrays, verbatim `svt_aom_cdef_find_dir_c`'s
+/// accumulation loop. `partial[k][m]` collects every pixel whose (row, col)
+/// maps to index `m` under direction `k`'s formula.
+fn cdef_dir_partials_scalar(img: &[u16], stride: usize, coeff_shift: i32) -> [[i32; 15]; 8] {
     let mut partial = [[0i32; 15]; 8];
-    let mut best_cost = 0i32;
-    let mut best_dir = 0usize;
-    // 840/n for n in 1..=8 (offset by 1; entry 0 unused).
-    const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
     for i in 0..8usize {
         for j in 0..8usize {
             let x = ((img[i * stride + j] as i32) >> coeff_shift) - 128;
@@ -160,6 +175,16 @@ pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) 
             partial[7][i / 2 + j] += x;
         }
     }
+    partial
+}
+
+/// The cost/argmax/variance tail of `svt_aom_cdef_find_dir_c`, verbatim, split
+/// out so every dispatch tier shares it. Only the partial-sum ACCUMULATION is
+/// tier-specific; this half is one copy.
+fn cdef_dir_from_partials(partial: &[[i32; 15]; 8]) -> (u8, i32) {
+    let mut cost = [0i32; 8];
+    let mut best_cost = 0i32;
+    let mut best_dir = 0usize;
     for i in 0..8 {
         cost[2] += partial[2][i] * partial[2][i];
         cost[6] += partial[6][i] * partial[6][i];
@@ -195,6 +220,264 @@ pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) 
     let mut var = best_cost - cost[(best_dir + 4) & 7];
     var >>= 10;
     (best_dir as u8, var)
+}
+
+fn cdef_find_dir_impl_scalar(
+    _token: ScalarToken,
+    img: &[u16],
+    stride: usize,
+    coeff_shift: i32,
+) -> (u8, i32) {
+    cdef_dir_from_partials(&cdef_dir_partials_scalar(img, stride, coeff_shift))
+}
+
+/// NEON partial-sum accumulation for [`cdef_find_dir`].
+///
+/// Every one of the eight directions is the SAME shape once the index formula
+/// is read as "place a row-derived vector at an offset":
+///
+/// ```text
+///   k=0  partial[i + j]        <- the row,                 at offset i
+///   k=1  partial[i + j/2]      <- adjacent-pair sums,      at offset i
+///   k=2  partial[i]            <- the row's horizontal sum
+///   k=3  partial[3 + i - j/2]  <- REVERSED pair sums,      at offset i
+///   k=4  partial[7 + i - j]    <- the REVERSED row,        at offset i
+///   k=5  partial[3 - i/2 + j]  <- the row,                 at offset 3 - i/2
+///   k=6  partial[j]            <- the column sums
+///   k=7  partial[i/2 + j]      <- the row,                 at offset i/2
+/// ```
+///
+/// so the scalar's 8 x 64 = 512 accumulations become, per row, one 8-lane
+/// vector add per placed direction plus a pairwise add and two reverses.
+///
+/// THE ACCUMULATORS LIVE IN REGISTERS, which is why the row loop is unrolled
+/// by hand. A first version kept them as `[[i16; 16]; 8]` in memory and did
+/// `acc[off..off+8] += v` with a load/store pair; that MEASURED 1.56x over the
+/// scalar on `benches/kernel_tiers.rs` and NULL on the whole encoder, because
+/// each direction's accumulator is re-loaded immediately after being stored and
+/// the store-to-load latency serialises all eight rows. Two 8-lane registers
+/// per placed direction (indices 0..7 and 8..15) plus `vextq_s16` for the
+/// offset removes that — the shape C's `compute_vert_directions_neon` /
+/// `compute_horiz_directions_neon` use. `vextq_s16::<N>` needs a literal `N`,
+/// which is why the eight rows are written out.
+///
+/// EXACTNESS. `x = (img >> coeff_shift) - 128` and every real caller feeds
+/// reconstructed pixels at the frame's bit depth with `coeff_shift = bd - 8`,
+/// so `img >> coeff_shift <= 255` and `x` is in `[-128, 127]`; a partial is a
+/// sum of at most 8 of them, `|partial| <= 1024`, exact in `i16`. That bound is
+/// CHECKED rather than assumed — if any shifted pixel exceeds 255 the caller
+/// falls back to the scalar accumulation, so the tier can never disagree with
+/// `svt_aom_cdef_find_dir_c` on an input outside the domain. The cost tail is
+/// shared code ([`cdef_dir_from_partials`]), not a second transcription.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_dir_partials_neon(
+    _token: NeonToken,
+    img: &[u16],
+    stride: usize,
+    coeff_shift: i32,
+) -> Option<[[i32; 15]; 8]> {
+    let shift = vdupq_n_s16(-(coeff_shift as i16));
+    let bias = vdupq_n_u16(128);
+    let zero = vdupq_n_s16(0);
+    let mut rows = [zero; 8];
+    let mut over = vdupq_n_u16(0);
+    for (i, r) in rows.iter_mut().enumerate() {
+        let src: &[u16; 8] = img[i * stride..i * stride + 8].try_into().ok()?;
+        let v = vshlq_u16(vld1q_u16(src), shift);
+        over = vmaxq_u16(over, v);
+        *r = vreinterpretq_s16_u16(vsubq_u16(v, bias));
+    }
+    // Outside `[0, 255]` the i16 partials could overflow; hand those to the
+    // scalar reference rather than risk a silently different direction.
+    if vmaxvq_u16(over) > 255 {
+        return None;
+    }
+
+    // `a[k] = [indices 0..7, indices 8..15]` for the six PLACED directions
+    // (k = 2 and k = 6 are the row and column sums and need no placement).
+    let mut a = [[zero; 2]; 8];
+    let mut colsum = zero;
+
+    // `place!(k, N, v)` adds `v` at offset `8 - N`: `vextq_s16::<N>(zero, v)`
+    // is `8 - N` zeros followed by `v[0 .. N]`, and `vextq_s16::<N>(v, zero)`
+    // is the part that spills past lane 7. `place0!` is the offset-0 case
+    // (`vextq_s16::<8>` does not exist and nothing spills).
+    macro_rules! place {
+        ($k:literal, $n:literal, $v:expr) => {{
+            a[$k][0] = vaddq_s16(a[$k][0], vextq_s16::<$n>(zero, $v));
+            a[$k][1] = vaddq_s16(a[$k][1], vextq_s16::<$n>($v, zero));
+        }};
+    }
+    macro_rules! place0 {
+        ($k:literal, $v:expr) => {{
+            a[$k][0] = vaddq_s16(a[$k][0], $v);
+        }};
+    }
+
+    // row 0
+    {
+        let v = rows[0];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place0!(0, v);
+        place0!(1, pv);
+        place0!(3, rpv);
+        place0!(4, rv);
+        place!(5, 5, v);
+        place0!(7, v);
+    }
+    // row 1
+    {
+        let v = rows[1];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place!(0, 7, v);
+        place!(1, 7, pv);
+        place!(3, 7, rpv);
+        place!(4, 7, rv);
+        place!(5, 5, v);
+        place0!(7, v);
+    }
+    // row 2
+    {
+        let v = rows[2];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place!(0, 6, v);
+        place!(1, 6, pv);
+        place!(3, 6, rpv);
+        place!(4, 6, rv);
+        place!(5, 6, v);
+        place!(7, 7, v);
+    }
+    // row 3
+    {
+        let v = rows[3];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place!(0, 5, v);
+        place!(1, 5, pv);
+        place!(3, 5, rpv);
+        place!(4, 5, rv);
+        place!(5, 6, v);
+        place!(7, 7, v);
+    }
+    // row 4
+    {
+        let v = rows[4];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place!(0, 4, v);
+        place!(1, 4, pv);
+        place!(3, 4, rpv);
+        place!(4, 4, rv);
+        place!(5, 7, v);
+        place!(7, 6, v);
+    }
+    // row 5
+    {
+        let v = rows[5];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place!(0, 3, v);
+        place!(1, 3, pv);
+        place!(3, 3, rpv);
+        place!(4, 3, rv);
+        place!(5, 7, v);
+        place!(7, 6, v);
+    }
+    // row 6
+    {
+        let v = rows[6];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place!(0, 2, v);
+        place!(1, 2, pv);
+        place!(3, 2, rpv);
+        place!(4, 2, rv);
+        place0!(5, v);
+        place!(7, 5, v);
+    }
+    // row 7
+    {
+        let v = rows[7];
+        let pv = vpaddq_s16(v, zero);
+        let rq = vrev64q_s16(v);
+        let rv = vextq_s16::<4>(rq, rq);
+        let rpv = vrev64q_s16(pv);
+        colsum = vaddq_s16(colsum, v);
+        place!(0, 1, v);
+        place!(1, 1, pv);
+        place!(3, 1, rpv);
+        place!(4, 1, rv);
+        place0!(5, v);
+        place!(7, 5, v);
+    }
+
+    let mut partial = [[0i32; 15]; 8];
+    let mut lanes = [0i16; 8];
+    for k in [0usize, 1, 3, 4, 5, 7] {
+        vst1q_s16(&mut lanes, a[k][0]);
+        for m in 0..8 {
+            partial[k][m] = lanes[m] as i32;
+        }
+        vst1q_s16(&mut lanes, a[k][1]);
+        for m in 0..7 {
+            partial[k][8 + m] = lanes[m] as i32;
+        }
+    }
+    // The eight ROW sums (`partial[2]`) as a pairwise-add tree over the eight
+    // row vectors: six `vpaddq_s16` instead of eight `vaddvq_s16`, which are
+    // cross-lane reductions with a serial dependency each.
+    let p01 = vpaddq_s16(rows[0], rows[1]);
+    let p23 = vpaddq_s16(rows[2], rows[3]);
+    let p45 = vpaddq_s16(rows[4], rows[5]);
+    let p67 = vpaddq_s16(rows[6], rows[7]);
+    let rowsums = vpaddq_s16(vpaddq_s16(p01, p23), vpaddq_s16(p45, p67));
+    let mut rs = [0i16; 8];
+    vst1q_s16(&mut rs, rowsums);
+    vst1q_s16(&mut lanes, colsum);
+    for i in 0..8 {
+        partial[2][i] = rs[i] as i32;
+        partial[6][i] = lanes[i] as i32;
+    }
+    Some(partial)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+fn cdef_find_dir_impl_neon(
+    token: NeonToken,
+    img: &[u16],
+    stride: usize,
+    coeff_shift: i32,
+) -> (u8, i32) {
+    match cdef_dir_partials_neon(token, img, stride, coeff_shift) {
+        Some(p) => cdef_dir_from_partials(&p),
+        None => cdef_dir_from_partials(&cdef_dir_partials_scalar(img, stride, coeff_shift)),
+    }
 }
 
 /// `svt_aom_cdef_find_dir_8bit_c` (cdef.c:303): widen an 8x8 of 8-bit pixels

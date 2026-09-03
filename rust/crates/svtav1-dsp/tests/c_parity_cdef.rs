@@ -805,3 +805,63 @@ fn filter_block_sign_straddle_matches_c() {
         );
     }
 }
+
+/// `cdef_find_dir` under EVERY archmage token permutation, against real C.
+///
+/// The suite above runs whatever tier this host picks; this one forces each
+/// tier and asserts (a) it equals real C and (b) it equals the first tier's
+/// answer, so a NEON-vs-scalar divergence cannot hide behind a green host run.
+/// It also asserts the sweep was REAL: `for_each_token_permutation` returns a
+/// `#[must_use]` report, and when archmage excludes every token (an ambient
+/// `-C target-cpu=native`, or no `testable_dispatch`) the sweep collapses to
+/// the single native arm while still reporting green.
+///
+/// Content classes cover the flat / gradient / edge / near-uniform blocks
+/// `fill_dir_block` builds, both `coeff_shift` domains, and a non-8 stride
+/// (`CDEF_BSTRIDE`, what the frame pass actually searches at).
+#[test]
+fn find_dir_all_tiers_match_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let mut rng = Rng(0xD1F_71E45);
+    let stride = cdef::CDEF_BSTRIDE;
+    let mut buf = vec![0u16; stride * 8 + 16];
+    let mut perms = 0usize;
+    let mut warned = 0usize;
+    for round in 0..240usize {
+        let shift = if round % 3 == 0 { 2i32 } else { 0 };
+        let wide = round % 4 == 3;
+        let st = if wide { stride } else { 8 };
+        let mut img = [0u16; 64];
+        fill_dir_block((round % 4) as u32, &mut rng, shift, &mut img);
+        for v in buf.iter_mut() {
+            *v = 0;
+        }
+        for i in 0..8usize {
+            for j in 0..8usize {
+                buf[i * st + j] = img[i * 8 + j];
+            }
+        }
+        let want = cref::cdef_find_dir(&buf, st, shift);
+        let mut first: Option<(u8, i32)> = None;
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            let got = cdef::cdef_find_dir(&buf, st, shift);
+            assert_eq!(got, want, "find_dir tier != C, round {round} shift {shift}");
+            match first {
+                Some(f) => assert_eq!(got, f, "find_dir tier != tier0, round {round}"),
+                None => first = Some(got),
+            }
+        });
+        perms = report.permutations_run;
+        warned = report.warnings.len();
+    }
+    assert_eq!(
+        warned, 0,
+        "archmage excluded {warned} token(s) from the sweep, so this test \
+         covered FEWER tiers than its name claims"
+    );
+    assert!(
+        perms >= 2,
+        "the tier sweep ran {perms} permutation(s) -- only the native tier. A \
+         one-arm sweep cannot catch a SIMD-vs-scalar divergence."
+    );
+}

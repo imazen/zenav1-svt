@@ -56,6 +56,24 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **A NEON arm for `cdef::cdef_find_dir` — 1.82x on the kernel, NULL-to-marginal
+  on the frame, and a correction to the queue entry it closes.** All eight of
+  C's direction formulas are the same shape ("place a row-derived vector at an
+  offset"), so the scalar's 8 x 64 accumulations become one 8-lane vector add
+  per placed direction per row, with the accumulators in registers and
+  `vextq_s16` for the offset. Both tiers now share ONE copy of the
+  cost/argmax/variance tail (`cdef_dir_from_partials`), so only the
+  accumulation is tier-specific. The i16 exactness bound is CHECKED at run time
+  (`vmaxvq_u16` over the shifted rows) with a scalar fallback, not argued. New
+  `find_dir_all_tiers_match_c` forces every dispatch tier against real C over
+  240 rounds and asserts the sweep was real; `find_dir_matches_c` only ever ran
+  the host tier. **The "15x" `docs/perf-status.md` listed is the RATIO between
+  the port's function and C's, not a budget** — the measured win is 1.82x on
+  the kernel (`benches/kernel_tiers.rs` 159 ns vs 289 ns) and 1.005-1.015x on
+  the three preset-8 videokey cells with every other cell NULL. Kept because it
+  is strictly less work, byte-identical, and closes a tier coverage hole.
+  Records `benchmarks/cdef_find_dir_neon_ab_2026-09-03.*`.
+
 - **First heaptrack run on this repo: the inter frame's memory is attributed to
   allocation sites, and C's encoder is measured to add NOTHING for one.** C's
   peak-consumption site table is identical entry for entry between its

@@ -784,7 +784,32 @@
 > to it and are UNMEASURED there.
 > | `cdef::cdef_filter_block` (**already NEON** — quality) | 4.70 % | 2.73 % | 5.6x vs `cdef_filter_block_*_neon` |
 > | `restoration::wiener_convolve_add_src` | **2.68 %** | 1.17 % | `svt_av1_wiener_convolve_add_src_neon` (10.3x) |
-> | `cdef::cdef_find_dir` | **2.02 %** | — | `svt_aom_cdef_find_dir*_neon` (15x) |
+> | `cdef::cdef_find_dir` (**WORKED 2026-09-03 — the 15x was NOT available**) | **2.02 %** | — | `svt_aom_cdef_find_dir*_neon` (15x) |
+>
+> **`cdef_find_dir` — WORKED 2026-09-03, AND THE 15x IN THIS TABLE WAS NOT A
+> BUDGET.** That 15x is the RATIO between two functions (the port's 0.918 ms
+> against C's `cdef_dir_from_lines_neon` 0.069 at 512x512 p8), and a direct
+> NEON vectorisation of the same algorithm gets **1.82x on the kernel**
+> (`benches/kernel_tiers.rs`: 159 ns vs 289 ns) and 1.005-1.015x on the three
+> p8 videokey cells with everything else NULL
+> (`benchmarks/cdef_find_dir_neon_ab_2026-09-03.*`, every cell `ident=Y`). It
+> is kept because it is strictly less work, byte-identical, and closes a tier
+> coverage hole — not because it moved the frame.
+>
+> Where the rest of C's 15x is: C batches TWO 8x8 blocks per call
+> (`svt_aom_cdef_find_dir_dual_8bit_neon`), reads 8-bit source with no u16
+> widen, and vectorises the COST FOLD, which the port still runs scalar and
+> which is now about a third of the kernel. **A ratio between two functions is
+> an upper bound on a rewrite, not an estimate of one** — the same lesson
+> `aom_hadamard_8x8` taught (1.88 % of p2, delivered 1.031x). Re-read every
+> other "Nx" in this table with that in mind.
+>
+> One measurement from the attempt that generalises: a first version kept the
+> eight direction accumulators in MEMORY (`[[i16; 16]; 8]`, `acc[off..off+8]
+> += v`) and measured **1.56x on the kernel and NULL on the frame** — each
+> accumulator is re-loaded immediately after being stored and the
+> store-to-load latency serialises all eight rows. Register accumulators plus
+> `vextq_s16` took it to 1.78x and a `vpaddq_s16` row-sum tree to 1.82x.
 > | `intra_pred::dr_predictor_edged` | — | **4.51 %** | `svt_av1_dr_prediction_z{1,2,3}_neon` |
 > | `leaf_funnel::hadamard_satd` (its own residual loop) | 1.47 % | **3.55 %** | `svt_aom_residual_kernel*_neon` inside `hadamard_path` |
 > | `intra_pred::predict_dc` | 1.25 % | 0.29 % | `svt_aom_dc_predictor_WxH_neon` |
