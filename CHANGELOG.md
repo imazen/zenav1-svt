@@ -56,6 +56,72 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`MeCandidate` is ONE byte, as C's is — -8.01 MB of peak heap on the inter
+  arm at 4 MP.** C declares all five fields as bitfields of a single `uint8_t`
+  (`me_sb_results.h:29`: `direction : 2`, `ref_idx_l* : 2`, `ref*_list : 1`),
+  so `sizeof(MeCandidate) == 1`; the port stored five `pub u8` fields. That
+  width multiplies by the frame — `me_candidate_array` is 85 x 23 entries per
+  b64 and lives from the picture-level motion search to the pack — so at
+  2048x2048 it cost 10.01 MB of live heap against C's 2.00. Packed into one
+  byte with `set()` masking on write (unchanged) and five `const` accessors
+  masking on read: **-8.01 M peak heap at 2048x2048, -5.6 % to -5.7 % of the
+  inter arm at 1280/1536/1920/2048, and 0.000 on the still and videokey arms**
+  (the control — neither runs the picture ME). Predicted 8.008 MB from C's
+  struct and the port's own sizing; measured 8.01. Peak RSS moves too, by a
+  DIFFERENT amount (-5.03 MiB at 1280, -2.72 at 2048), because RSS counts
+  resident pages and not live bytes. CPU neutral (0.987-1.003, six interleaved
+  cells). Records `rust/benchmarks/mem_mecand_2026-09-03.{tsv,meta}`.
+- **The peak is decomposed for the first time, with massif instead of
+  heaptrack** — `rust/benchmarks/mem_massif_2026-09-03.meta`. A massif peak
+  snapshot is one instant, so its entries sum to the peak exactly (checked to
+  the byte), where heaptrack's merged per-site totals do not co-occur and could
+  only ever be a lead list. It shows peak heap is a MONOTONIC RAMP that ends
+  where mode decision ends, on every arm, and it corrects two recorded claims:
+  the port's harness is **31.45 M** on the 2-frame arm at 4 MP (three copies of
+  the sequence against `perf_c_encode`'s one), so the encoder-side inter frame
+  is **+30.2 M** and not +37.65; and the port's frame-wide retained
+  coefficients are **at parity with C**, whose `pcs.c:348-368` allocates the
+  same `EB_THIRTYTWO_BIT` `sb_size x sb_size` FULL_MASK buffer per b64 for the
+  whole frame (C's own measured 26.18 M `svt_aom_pic_buf_desc_pool_ctor`).
+- **`examples/perf_encode` holds ONE copy of the input sequence, as
+  `tools/perf_c_encode` always has — -18.88 MB off the reported peak at 4 MP on
+  the 2-frame arm.** It held three: the generated `y/u/v`, a whole-sequence
+  `yuv` concatenation built only so `fs::write` could take one slice, and an
+  owned `frames` whose frame 0 was a `to_vec()` of the first. Now each frame is
+  streamed to the `.yuv` through a `BufWriter` as it is produced and the
+  caller's planes are MOVED into frame 0. **A HARNESS change, not an encoder
+  one** — the encoder allocates exactly what it did before; what moves is how
+  much of the measured peak belongs to the measuring binary, which is what made
+  every port-vs-C memory ratio in this repo carry a 6.3-18.9 MB handicap C's
+  driver never had. Every delta is an exact multiple of the frame size (one
+  frame on still, two on videokey, three on inter). C's `.obu` is byte-identical
+  before and after on all 12 cells — the control, since C reads the file this
+  code writes. After it and the `MeCandidate` packing, on x86_64-linux at p13
+  qp40 gradient: **peak heap port/C is below 1.0 on all twelve cells** (inter
+  0.886-0.938) and **peak RSS is inside the 25 % goal on all twelve** (inter
+  1.035-1.122, against `main`'s 1.279-1.334 on the same grid). Records
+  `rust/benchmarks/mem_harness_2026-09-03.{tsv,meta}`.
+- **The port/C memory ratio is a function of PRESET, and the port's worst preset
+  is the FASTEST one** — `rust/benchmarks/mem_preset_2026-09-03.{tsv,meta}`.
+  Every memory record before today measured one preset. On gradient 2048x2048
+  qp 40 the inter arm's peak heap is **C 240.25 M at p6 against 120.12 M at
+  p13** — C doubles — while the port's moves 5 % (146.04 -> 139.62 on `main`).
+  A memory ratio quoted without its preset is therefore meaningless. After the
+  two changes above, all 24 cells of the p6+p13 grid are inside the 25 % goal on
+  both peak heap and peak RSS, and only three exceed 1.0 at all (the p13 inter
+  arm, 1.035x-1.122x); at p6 the port is 0.27x-0.62x of C on heap and
+  0.58x-0.90x on RSS. Records an unresolved conflict rather than papering over
+  it: `mem_arms_2026-09-02.meta` has the inter arm at 1.60x at p6 / 4 MP
+  (aarch64, `capture_c_trace`), and this harness reads 0.84x on `main` at the
+  same preset and size (x86_64, `perf_c_encode`) — ISA, C driver and tree are
+  all confounded.
+- **`rust/tools/mem_peak.sh`** — the peak-memory harness the `mem_heaptrack_*`
+  records were produced with, now in the repo instead of a scratch directory.
+  Measures peak HEAP (heaptrack) or peak RSS (`/usr/bin/time`, median of N) for
+  port and C over the three arms and a size sweep, with the refusal trap
+  (exit status AND a non-empty `.obu`) on every cell.
+
+
 - **The refusal ledger gained the axis that decides what is workable: does C
   support it?** `docs/REFUSED-CONFIGS.md` split refusals into CAPABILITY (debt)
   and CONTRACT (caller misuse), which is a claim about the WORDS someone wrote.

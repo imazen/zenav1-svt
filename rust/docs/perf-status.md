@@ -125,6 +125,93 @@
 > same 8 columns as a `[int32x4_t; 2]` pair — twice the vector ops for the same
 > work.
 
+> **CURRENT MEMORY POSITION — THE PEAK IS NOW DECOMPOSED, AND `MeCandidate` WAS
+> FIVE BYTES WHERE C'S IS ONE (2026-09-03, fourth chunk of the day). READ THIS
+> BEFORE EVERY MEMORY BLOCK BELOW.** Records:
+> `benchmarks/mem_massif_2026-09-03.meta` (the decomposition),
+> `benchmarks/mem_mecand_2026-09-03.{tsv,meta}` (the A/B), harness now in the
+> repo at `rust/tools/mem_peak.sh`.
+>
+> **1. THE PEAK DECOMPOSES, and heaptrack could not say so.** heaptrack's
+> merged per-site totals do NOT co-occur (that file says so itself), so its
+> table is a lead list. massif's PEAK SNAPSHOT is one instant, so its entries
+> sum to the peak exactly — checked, to the byte. On gradient 2048x2048 p13
+> qp40 the inter arm's 138.39 M is: harness 31.45, retained quantized
+> coefficients 26.23 (`tx_unit_inner` + `funnel_block_decision`, one structure
+> under two sites), the per-tile results 16.02, `DecodedPictureBuffer::refresh`
+> 13.45, `MeB64Output` 12.53, the PA pyramid 12.50, four 4.19 M planes, the
+> rest small. The time series shows a MONOTONIC RAMP peaking at the END of mode
+> decision on every arm — peak heap is linear in how many superblocks have been
+> decided but not yet entropy-coded.
+>
+> **2. TWO RECORDED CLAIMS ARE CORRECTED THERE.** (a) The harness is **31.45 M**
+> on the inter arm, not 6.29: `perf_encode` holds THREE copies of the sequence
+> (`y/u/v`, the `yuv` concatenation, and the owned `frames`) where
+> `perf_c_encode` holds one, so the encoder-side inter-frame cost is port
+> **+30.2 M** against C's +0.01, not the +37.65 M the earlier records state.
+> (b) **The frame-wide coefficient store is at PARITY with C, not excess** —
+> C's `pcs.c:348-368` allocates `quantized_coeff`, one `EB_THIRTYTWO_BIT`
+> `sb_size x sb_size` FULL_MASK buffer per b64 for the whole frame, and that is
+> the measured 26.18 M `svt_aom_pic_buf_desc_pool_ctor` entry in C's own
+> heaptrack column. The port reproduces C's shape at C's size; it just builds
+> it per frame where C pools it at init.
+>
+> **3. THE ONE REAL EXCESS FOUND, AND FIXED.** C's `MeCandidate`
+> (me_sb_results.h:29) is five bitfields of ONE `uint8_t`; the port stored five
+> `pub u8` fields, so `me_candidate_array` (85 x 23 entries per b64, live for
+> the whole frame) cost 10.01 MB at 4 MP against C's 2.00. Packing it to one
+> byte is **-8.01 M of peak heap at 2048x2048, -5.6 % to -5.7 % of the inter
+> arm at every size, 0.000 on still and videokey** (the control: neither runs
+> the picture ME), and the measured delta matches the predicted 8.008 MB to
+> 0.1 %. CPU neutral (0.987-1.003 over six interleaved cells).
+>
+> **4. AND THE HARNESS ASYMMETRY IN (2a) IS FIXED** —
+> `benchmarks/mem_harness_2026-09-03.{tsv,meta}`. `perf_encode` now streams each
+> frame to the `.yuv` instead of concatenating it, and MOVES the caller's planes
+> into frame 0 instead of cloning them, so it holds the same ONE copy of the
+> sequence `perf_c_encode` does. Every delta is an exact multiple of the frame
+> size (one frame on still, two on videokey, three on inter): **-6.29 / -12.58 /
+> -18.88 M of peak heap at 2048x2048**. C's `.obu` is byte-identical before and
+> after on all 12 cells, which is the control — C reads the file this code
+> writes. **This is a HARNESS result, not an encoder one**: the encoder
+> allocates exactly what it did before; what changed is how much of the reported
+> peak belongs to the measuring binary.
+>
+> **5. WHERE THAT LEAVES THE RATIOS** (x86_64-linux, p13 qp40 gradient), after
+> both changes:
+>
+> | | 1280 | 1536 | 1920 | 2048 |
+> |---|---|---|---|---|
+> | heap still | 0.605 | 0.622 | 0.640 | 0.644 |
+> | heap videokey | 0.692 | 0.708 | 0.723 | 0.730 |
+> | heap inter | 0.886 | 0.910 | 0.933 | **0.938** |
+> | RSS still | 0.905 | 0.929 | 0.958 | 0.969 |
+> | RSS videokey | 0.913 | 0.940 | 0.954 | 0.950 |
+> | RSS inter | 1.035 | 1.048 | 1.122 | **1.086** |
+>
+> **Peak heap is below C on all twelve cells and peak RSS is inside 25 % on all
+> twelve**, against `main`'s RSS inter 1.279x-1.334x on the same grid. **RSS and
+> HEAP move by DIFFERENT amounts** — the `MeCandidate` change saved more RSS
+> (5.03 MiB) than heap (3.13 MB) at 1280 and a third as much at 2048 — so never
+> convert one into the other. These are x86_64-linux numbers; the aarch64 RSS
+> series below is a different allocator and page size and has NOT been
+> re-measured.
+>
+> **6. AND THE RATIO IS A FUNCTION OF PRESET — the port's WORST preset is the
+> FASTEST one** (`benchmarks/mem_preset_2026-09-03.{tsv,meta}`). On gradient
+> 2048x2048 qp 40, C's peak heap on the inter arm is **240.25 M at p6 and
+> 120.12 M at p13** — it DOUBLES — while the port's moves 5 % (146.04 -> 139.62
+> on `main`). So a memory ratio quoted without its preset is meaningless, and
+> the p13 arm above is the port's hard case, not its typical one. After the two
+> changes, all 24 cells of the p6+p13 grid are inside the goal on both metrics
+> and only three exceed 1.0 at all (the p13 inter arm, 1.035x-1.122x); at p6 the
+> port is **0.27x-0.62x of C on heap and 0.58x-0.90x on RSS**. Note the
+> unexplained conflict with `benchmarks/mem_arms_2026-09-02.meta`'s 1.60x at p6
+> and 4 MP: that number is aarch64, `capture_c_trace` on the C side, and a
+> different tree, and this harness reads 0.84x on `main` at the same preset and
+> size. Do not treat either as refuting the other until one harness has been run
+> on both hosts.
+
 > **CURRENT — THE ALLOCATION-SITE HOISTS: A MEASURED CPU WIN AND A MEMORY NULL
 > (2026-09-03, third chunk of the day). READ THIS BEFORE THE MEMORY BLOCK
 > BELOW.** Three byte-identical changes hoist the three biggest per-call

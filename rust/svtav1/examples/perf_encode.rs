@@ -64,6 +64,35 @@ fn gen_content(content: &str, w: usize, h: usize) -> Vec<u8> {
     y
 }
 
+/// Append planes to `path`, creating it on the FIRST call of a run and
+/// appending on every later one, through a `BufWriter` — so the harness never
+/// materialises a whole-sequence copy of the input just to write it out. See
+/// the call site for why that matters to every memory number this binary
+/// produces.
+fn write_yuv(path: &str, planes: &[&[u8]]) {
+    use std::io::Write;
+    let f = std::fs::File::create(path).expect("create .yuv");
+    let mut w = std::io::BufWriter::with_capacity(1 << 16, f);
+    for p in planes {
+        w.write_all(p).expect("write .yuv");
+    }
+    w.flush().expect("flush .yuv");
+}
+
+/// [`write_yuv`] in append mode — the sequence arm streams one frame at a time.
+fn append_yuv(path: &str, planes: &[&[u8]]) {
+    use std::io::Write;
+    let f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("append .yuv");
+    let mut w = std::io::BufWriter::with_capacity(1 << 16, f);
+    for p in planes {
+        w.write_all(p).expect("write .yuv");
+    }
+    w.flush().expect("flush .yuv");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 7 && args.len() != 8 {
@@ -112,18 +141,22 @@ fn main() {
     let video_single = std::env::var_os("SVTAV1_VIDEO").is_some();
     if n_frames > 1 || video_single {
         encode_sequence(
-            content, &y, &u, &v, w, h, cw, ch, qp, preset, prefix, warmup, n_frames,
+            content, y, u, v, w, h, cw, ch, qp, preset, prefix, warmup, n_frames,
         );
         return;
     }
 
     // Write the raw I420 8-bit .yuv the C driver (tools/perf_c_encode) reads —
     // the ONE byte stream both encoders consume, keeping the comparison honest.
-    let mut yuv = Vec::with_capacity(w * h + 2 * cw * ch);
-    yuv.extend_from_slice(&y);
-    yuv.extend_from_slice(&u);
-    yuv.extend_from_slice(&v);
-    std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+    //
+    // STREAMED, not concatenated. A `Vec` holding Y+U+V is one whole extra copy
+    // of the frame that stays live for the rest of the process, and this binary
+    // is what `tools/mem_gate.sh` and `tools/mem_peak.sh` MEASURE: at 4 MP that
+    // copy was 6.29 MB of the reported peak on the still arm and 12.58 MB on
+    // the 2-frame arm, against `perf_c_encode`, which holds exactly one copy of
+    // the sequence. Measured, and named as the harness's own share of the peak,
+    // in benchmarks/mem_massif_2026-09-03.meta §3.
+    write_yuv(&format!("{prefix}.yuv"), &[&y, &u, &v]);
 
     // Fresh-pipeline encode at the proven byte-identical still-picture CQP
     // config (identity_run.rs / capture_c_trace.c): bd8, 4:2:0, tiles 0/0, SB
@@ -185,9 +218,9 @@ fn translate(src: &[u8], pw: usize, ph: usize, dx: usize) -> Vec<u8> {
 #[allow(clippy::too_many_arguments)]
 fn encode_sequence(
     _content: &str,
-    y: &[u8],
-    u: &[u8],
-    v: &[u8],
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
     w: usize,
     h: usize,
     cw: usize,
@@ -211,26 +244,28 @@ fn encode_sequence(
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    let frame_len = w * h + 2 * cw * ch;
-    let mut yuv = Vec::with_capacity(n_frames * frame_len);
+    // ONE copy of the sequence, and it is the one the encoder reads.
+    //
+    // This loop used to build a second whole-sequence `Vec` (`yuv`) purely to
+    // hand `std::fs::write` a single slice, AND to keep the caller's `y/u/v` on
+    // top of frame 0's copy of them — three copies live at once. At 2048x2048
+    // that is 31.45 MB of the peak this binary reports on the 2-frame arm,
+    // where `perf_c_encode` holds 12.58 MB (benchmarks/mem_massif_2026-09-03.meta
+    // §3). Streaming each frame to the file as it is produced, and MOVING the
+    // caller's planes into frame 0 instead of cloning them, leaves exactly the
+    // `frames` vector — the same one copy C's driver holds.
+    let path = format!("{prefix}.yuv");
     let mut frames: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> = Vec::with_capacity(n_frames);
-    for f in 0..n_frames {
+    write_yuv(&path, &[&y, &u, &v]);
+    frames.push((y, u, v)); // MOVED, not cloned — see the comment above.
+    for f in 1..n_frames {
         let dx = shift_px * f;
-        let (fy, fu, fv) = if f == 0 {
-            (y.to_vec(), u.to_vec(), v.to_vec())
-        } else {
-            (
-                translate(y, w, h, dx),
-                translate(u, cw, ch, dx / 2),
-                translate(v, cw, ch, dx / 2),
-            )
-        };
-        yuv.extend_from_slice(&fy);
-        yuv.extend_from_slice(&fu);
-        yuv.extend_from_slice(&fv);
+        let fy = translate(&frames[0].0, w, h, dx);
+        let fu = translate(&frames[0].1, cw, ch, dx / 2);
+        let fv = translate(&frames[0].2, cw, ch, dx / 2);
+        append_yuv(&path, &[&fy, &fu, &fv]);
         frames.push((fy, fu, fv));
     }
-    std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
 
     let build = || {
         let rc = RcConfig {

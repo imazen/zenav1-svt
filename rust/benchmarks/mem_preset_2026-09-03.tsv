@@ -1,0 +1,31 @@
+# THE PORT/C MEMORY RATIO IS A STRONG FUNCTION OF PRESET — measured at p6 and p13.
+# host=r7900x x86_64-unknown-linux-gnu; content=gradient qp=40 8-bit 4:2:0; arms and harness as in
+# benchmarks/mem_harness_2026-09-03.tsv (rust/tools/mem_peak.sh, perf_encode vs perf_c_encode).
+# base = 01ef6f1f1 (main); after = base + the one-byte MeCandidate commit + the perf_encode harness commit.
+# heap = heaptrack peak heap (one encode per cell); rss = /usr/bin/time -v max RSS, median of 5 (p13) / 3 (p6).
+# Every cell produced a non-empty .obu. p6 sizes are 512..2048; p13 sizes are 1280..2048.
+preset	size	arm	heap_base_MB	heap_after_MB	heap_c_MB	rss_base_KiB	rss_after_KiB	rss_c_KiB
+6	512	still	6.59	6.20	19.32	12148	11660	16072
+6	512	videokey	7.55	6.77	24.94	13036	12260	21000
+6	512	inter	10.77	9.09	25.33	15688	14316	22736
+6	1024	still	25.18	23.60	46.22	31160	29484	36168
+6	1024	videokey	29.52	26.37	69.14	36256	32876	51368
+6	1024	inter	38.14	31.42	70.71	43808	37916	55376
+6	1536	still	58.91	55.37	89.78	63576	60320	67784
+6	1536	videokey	67.76	60.69	138.30	73104	66136	98864
+6	1536	inter	83.21	68.09	141.84	92400	77344	106656
+6	2048	still	98.44	92.15	149.99	108180	101948	113040
+6	2048	videokey	113.01	100.43	233.96	124352	111508	165092
+6	2048	inter	146.04	119.16	240.25	149520	133500	178244
+13	1280	still	32.26	29.80	49.28	36568	34140	37732
+13	1280	videokey	38.67	33.75	48.76	43884	38856	42544
+13	1280	inter	55.90	45.40	51.22	61288	49588	47904
+13	1536	still	45.95	42.42	68.16	50164	46628	50216
+13	1536	videokey	54.72	47.64	67.26	60180	53416	56832
+13	1536	inter	79.58	64.46	70.80	85556	67704	64620
+13	1920	still	71.18	65.65	102.60	76060	70348	73448
+13	1920	videokey	84.11	73.05	100.99	90076	79288	83088
+13	1920	inter	123.02	99.39	106.52	124984	106384	94776
+13	2048	still	80.80	74.51	115.72	85892	79624	82200
+13	2048	videokey	95.68	83.10	113.82	100956	88008	92612
+13	2048	inter	139.62	112.73	120.12	141144	114924	105828

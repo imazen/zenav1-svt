@@ -1,0 +1,80 @@
+THE PORT/C MEMORY RATIO IS A FUNCTION OF PRESET, AND THE PORT'S WORST PRESET IS
+THE FASTEST ONE — 0.50x C at p6 and 0.94x at p13, on the same cell.
+
+date:   2026-09-03
+host:   r7900x — AMD Ryzen 7900X, x86_64-unknown-linux-gnu. HEAP is heaptrack;
+        RSS is `/usr/bin/time -v` max RSS (median of 5 at p13, 3 at p6).
+        Harness `rust/tools/mem_peak.sh`.
+trees:  base  = 01ef6f1f1 (main)
+        after = base + the one-byte `MeCandidate` commit + the `perf_encode`
+                one-copy harness commit
+data:   benchmarks/mem_preset_2026-09-03.tsv
+
+=================== WHY THIS FILE EXISTS =====================================
+
+Every memory record in this repo before today measured ONE preset, and the two
+that measured different ones (p6 in `benchmarks/mem_arms_2026-09-02.*`, p13 in
+the `mem_heaptrack_*` series) were never put side by side. They disagree, and
+the reason is not noise: **C's footprint moves enormously with preset and the
+port's barely moves at all.** On gradient 2048x2048 qp 40:
+
+  peak heap, 2048x2048 inter arm      p6        p13     p6/p13
+    port (base)                    146.04 M   139.62 M   1.05x
+    C                              240.25 M   120.12 M   2.00x
+
+C doubles between p13 and p6; the port grows 5 %. So the port/C ratio at a
+FAST preset is the port's worst case, and any conclusion drawn from one preset
+is a conclusion about that preset only.
+
+=================== PORT/C, BOTH PRESETS, AFTER THE TWO CHANGES ==============
+
+  peak HEAP port/C            512    1024    1280    1536    1920    2048
+    p6  still                0.321   0.511      -    0.617      -    0.614
+    p6  videokey             0.271   0.381      -    0.439      -    0.429
+    p6  inter                0.359   0.444      -    0.480      -    0.496
+    p13 still                    -       -   0.605   0.622   0.640   0.644
+    p13 videokey                 -       -   0.692   0.708   0.723   0.730
+    p13 inter                    -       -   0.886   0.910   0.933   0.938
+
+  peak RSS port/C             512    1024    1280    1536    1920    2048
+    p6  still                0.725   0.815      -    0.890      -    0.902
+    p6  videokey             0.584   0.640      -    0.669      -    0.675
+    p6  inter                0.630   0.685      -    0.725      -    0.749
+    p13 still                    -       -   0.905   0.929   0.958   0.969
+    p13 videokey                 -       -   0.913   0.940   0.954   0.950
+    p13 inter                    -       -   1.035   1.048   1.122   1.086
+
+**Every one of the 24 cells is inside the 25 % goal on both metrics, and only
+three cells exceed 1.0 at all** — the p13 inter arm at 1280/1536/1920/2048,
+1.035x to 1.122x.
+
+=================== THE SAME GRID ON `main` ==================================
+
+  peak RSS port/C on 01ef6f1f1          p6 2048   p13 2048
+    still                                0.956     1.045
+    videokey                             0.752     1.090
+    inter                                0.839     1.331
+  (each divided by the C column of its OWN run — C was measured twice at p13
+   and the two runs agree within 0.6 %, which is the control on the spread.)
+
+So the p13 inter arm was the only place the goal was in doubt, and it was in
+doubt by 33 %. It now reads 1.086x. The p6 arm was never outside the goal at
+all on this harness — which is worth stating plainly, because
+`benchmarks/mem_arms_2026-09-02.meta` records the inter arm at **1.60x** at
+4 MP and p6. That number is aarch64, `capture_c_trace` on the C side, and a
+different day; it does not reproduce here at 0.84x, and NOTHING in this file
+explains the difference. Do not treat either as refuting the other until the
+same harness has been run on both hosts — the change of ISA, of C driver, and
+of code are all confounded.
+
+=================== NOT ESTABLISHED ==========================================
+  * Any aarch64 number. x86_64-linux only.
+  * Any preset other than 6 and 13. Presets 0-5 and 7-12 are NOT measured, and
+    the two measured points do not establish the shape between them.
+  * Any content but gradient, any qp but 40, any size outside 512-2048.
+  * Byte identity on the inter arm at these sizes: C's `.obu` differs from the
+    port's on every inter cell here (the inter byte frontier is 64/128/256
+    square), so those rows compare two encoders doing SIMILAR work. The still
+    and videokey arms ARE byte-identical at every size and preset in the grid
+    except p6 2048 videokey (107,177 vs 107,368).
+  * Repeat variance on the heap half: one encode per cell.

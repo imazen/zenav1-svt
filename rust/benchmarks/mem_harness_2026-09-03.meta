@@ -1,0 +1,106 @@
+THE MEASURING BINARY WAS HOLDING THREE COPIES OF THE INPUT AND C'S WAS HOLDING
+ONE — 18.87 MB OF THE PORT'S REPORTED PEAK AT 4 MP.
+
+date:   2026-09-03
+host:   r7900x — AMD Ryzen 7900X, x86_64-unknown-linux-gnu. HEAP is heaptrack;
+        RSS is `/usr/bin/time -v` max RSS, median of 5. Harness
+        `rust/tools/mem_peak.sh`.
+trees:  base   = 01ef6f1f1 (main)
+        mecand = base + the one-byte `MeCandidate` commit
+                 (benchmarks/mem_mecand_2026-09-03.meta)
+        harn   = mecand + this commit
+data:   benchmarks/mem_harness_2026-09-03.tsv
+
+**THIS IS A HARNESS CHANGE AND MUST NOT BE READ AS AN ENCODER RESULT.** The
+encoder allocates exactly what it allocated before; every byte this removes
+belonged to `examples/perf_encode` itself. What it buys is that the two sides
+of every port-vs-C memory number now hold the SAME amount of input, so the
+ratio is about the encoders.
+
+=================== WHAT WAS WRONG ============================================
+
+`perf_encode` held, simultaneously, for the whole encode:
+
+  y / u / v   the generated source planes                6.29 M at 4 MP
+  yuv         a whole-sequence concatenation, built only
+              so `std::fs::write` could take one slice    6.29 M per frame
+  frames      one OWNED (fy, fu, fv) per frame, whose
+              frame 0 was a `to_vec()` COPY of y/u/v      6.29 M per frame
+
+= 12.58 M on the still arm, 18.87 M on the 1-frame videokey arm, **31.45 M on
+the 2-frame inter arm**. `tools/perf_c_encode` reads the `.yuv` into ONE buffer
+and feeds slices of it: 6.29 M / 12.58 M for 1 / 2 frames. So every port-vs-C
+memory ratio this repo has ever printed carried an 6.3-18.9 MB handicap that
+was the harness's, and `benchmarks/mem_heaptrack_2026-09-03.meta` accounted for
+only 6.29 M of it ("the harness growth CANCELS in the arm difference").
+
+The fix is two lines of shape: stream each frame's three planes to the `.yuv`
+through a `BufWriter` as it is produced instead of concatenating, and MOVE the
+caller's planes into frame 0 instead of cloning them. One copy remains — the
+`frames` vector the encoder actually reads, which is what C's driver holds.
+
+The `.yuv` bytes are unchanged (C's `.obu` is byte-identical before and after
+on all 12 cells, which is the control: C reads the file this code writes).
+
+=================== MEASURED, PEAK HEAP (MB) ==================================
+
+  size  arm         base   mecand    harn   harn-mecand      C   harn/C
+  1280  still      32.26    32.26   29.80        -2.46   49.28    0.605
+  1280  videokey   38.67    38.67   33.75        -4.92   48.76    0.692
+  1280  inter      55.90    52.77   45.40        -7.37   51.22    0.886
+  1536  still      45.95    45.95   42.42        -3.53   68.16    0.622
+  1536  videokey   54.72    54.72   47.64        -7.08   67.26    0.708
+  1536  inter      79.58    75.07   64.46       -10.61   70.80    0.910
+  1920  still      71.18    71.18   65.65        -5.53  102.60    0.640
+  1920  videokey   84.11    84.11   73.05       -11.06  100.99    0.723
+  1920  inter     123.02   115.98   99.39       -16.59  106.52    0.933
+  2048  still      80.80    80.80   74.51        -6.29  115.72    0.644
+  2048  videokey   95.68    95.68   83.10       -12.58  113.82    0.730
+  2048  inter     139.62   131.61  112.73       -18.88  120.12    0.938
+
+Every delta is an exact multiple of the frame size (w*h*3/2): one frame on the
+still arm, two on videokey, three on inter — 2.46 / 4.92 / 7.37 M at 1280,
+6.29 / 12.58 / 18.88 M at 2048. That is the arithmetic above, measured.
+
+**Peak heap is now below C on all twelve cells.**
+
+=================== MEASURED, PEAK RSS (KiB, median of 5) =====================
+
+  size  arm         base   mecand    harn       C   harn/C   base/C
+  1280  still      36568    36564   34140   37732    0.905    0.969
+  1280  videokey   43884    43812   38856   42544    0.913    1.031
+  1280  inter      61288    56256   49588   47904    1.035    1.279
+  1536  still      50164    50200   46628   50216    0.929    0.999
+  1536  videokey   60180    60284   53416   56832    0.940    1.059
+  1536  inter      85556    78268   67704   64620    1.048    1.324
+  1920  still      76060    75848   70348   73448    0.958    1.036
+  1920  videokey   90076    90048   79288   83088    0.954    1.084
+  1920  inter     124984   122544  106384   94776    1.122    1.319
+  2048  still      85892    85744   79624   82200    0.969    1.045
+  2048  videokey  100956   100644   88008   92612    0.950    1.086
+  2048  inter     141144   138420  114924  105828    1.086    1.334
+
+**Every cell is inside the 25 % goal, and only the inter arm is above 1.0x at
+all** — 1.035x to 1.122x against C, where the same grid on `main` reads 1.279x
+to 1.334x. Of that improvement the encoder change (`mecand`) is 2.0-8.2 % and
+this harness change is the rest.
+
+=================== HOW TO READ THE RATIO NOW =================================
+
+The port and C harnesses now hold the same one copy of the sequence, so the
+`harn/C` columns are a comparison of encoders. If you want the encoders alone,
+subtract 12.58 M (2 frames at 4 MP) from both sides.
+
+The inter arm's C `.obu` is NOT byte-identical to the port's at these sizes
+(148,295 vs 139,762 at 2048x2048 — the inter byte frontier is 64/128/256
+square), so those cells compare two encoders doing SIMILAR, not identical,
+work. The still and videokey arms ARE byte-identical at every size here.
+
+=================== NOT ESTABLISHED ===========================================
+  * Any aarch64 number. x86_64-linux only; different allocator and page size.
+  * Any preset but 13, content but gradient, qp but 40, size outside 1280-2048.
+  * Repeat variance on the heap half: one encode per cell.
+  * That `tools/mem_gate.sh`'s recorded ratios move by the same amounts — that
+    gate measures `tools/identity_run` by default, which is a DIFFERENT harness
+    with its own overhead (measured at ~14.5 MiB more than the encoder at 4 MP,
+    benchmarks/mem_2026-09-02.meta) and is not touched here.

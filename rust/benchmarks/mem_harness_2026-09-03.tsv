@@ -1,0 +1,21 @@
+# perf_encode holds ONE copy of the input sequence now, as perf_c_encode always has.
+# THIS IS A HARNESS CHANGE, NOT AN ENCODER CHANGE — the encoder allocates exactly what it
+# allocated before; what moves is how much of the reported peak belongs to the measuring binary.
+# host=r7900x x86_64-unknown-linux-gnu; grid + arms + tool as in mem_mecand_2026-09-03.tsv.
+# base   = 01ef6f1f1 (main)
+# mecand = base + the one-byte MeCandidate commit
+# harn   = mecand + this commit
+# obu_port and obu_c are unchanged across all three trees on all 12 cells.
+size	arm	heap_base_MB	heap_mecand_MB	heap_harn_MB	heap_c_MB	rss_base_KiB	rss_mecand_KiB	rss_harn_KiB	rss_c_KiB
+1280	still	32.26	32.26	29.80	49.28	36568	36564	34140	37732
+1280	videokey	38.67	38.67	33.75	48.76	43884	43812	38856	42544
+1280	inter	55.90	52.77	45.40	51.22	61288	56256	49588	47904
+1536	still	45.95	45.95	42.42	68.16	50164	50200	46628	50216
+1536	videokey	54.72	54.72	47.64	67.26	60180	60284	53416	56832
+1536	inter	79.58	75.07	64.46	70.80	85556	78268	67704	64620
+1920	still	71.18	71.18	65.65	102.60	76060	75848	70348	73448
+1920	videokey	84.11	84.11	73.05	100.99	90076	90048	79288	83088
+1920	inter	123.02	115.98	99.39	106.52	124984	122544	106384	94776
+2048	still	80.80	80.80	74.51	115.72	85892	85744	79624	82200
+2048	videokey	95.68	95.68	83.10	113.82	100956	100644	88008	92612
+2048	inter	139.62	131.61	112.73	120.12	141144	138420	114924	105828

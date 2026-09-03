@@ -116,6 +116,58 @@ SIMD tier-invariance suite (207 s), the workspace test suite (167 s) and the
 C oracle build (141 s, cached since 2026-08-28). Local arm64 numbers differ;
 measure with `time` and record the host.
 
+**Memory — THE PEAK IS DECOMPOSED NOW, AND THE HARNESS WAS 31 MB OF IT
+(2026-09-03, CURRENT — read this before every memory paragraph below).**
+`benchmarks/mem_massif_2026-09-03.meta` + `benchmarks/mem_mecand_2026-09-03.*`;
+harness `tools/mem_peak.sh` (`MP_MODE=heap` for heaptrack, default for max RSS).
+**Use massif, not heaptrack, to ask what is live at the peak** — a massif peak
+snapshot is one instant so its entries sum to the peak exactly (checked), where
+heaptrack's merged per-site totals do not co-occur and cannot be budgeted. The
+time series says the peak is a MONOTONIC RAMP that ends where mode decision
+ends, on every arm. Three corrections it forces: (1) `perf_encode` holds THREE
+copies of the input sequence where `perf_c_encode` holds one, so the port's
+harness is **31.45 M** on the 2-frame arm at 4 MP and the encoder-side inter
+frame costs **+30.2 M**, not the +37.65 M the older records state; (2) the
+port's frame-wide retained coefficients (~26 M at 4 MP) are **at parity with C**
+— `pcs.c:348-368` allocates the same `EB_THIRTYTWO_BIT` `sb_size x sb_size`
+FULL_MASK buffer per b64 for the whole frame, measured as C's own 26.18 M
+`svt_aom_pic_buf_desc_pool_ctor` entry — so "the port holds the frame's
+coefficients and C does not" is FALSE; (3) the one real excess found was
+`MeCandidate`, five `pub u8` fields where C's is five bitfields of ONE
+`uint8_t`, costing 10.01 MB of live `me_candidate_array` at 4 MP against C's
+2.00. Packed: **-8.01 M peak heap on the inter arm at 2048x2048** (-5.6 to
+-5.7 % at every size), 0.000 on still and videokey, CPU neutral. Peak HEAP
+port/C is now 0.70x / 0.84x / **1.096x** at 4 MP — all three inside 25 %. Peak
+RSS port/C is 1.045x / 1.086x / **1.308x**, and **RSS and HEAP do not move
+together**: this change saved 5.03 MiB of RSS against 3.13 MB of heap at 1280
+and 2.72 MiB against 8.01 MB at 2048. Quote each from its own column.
+
+**And the harness asymmetry in (1) is fixed** (`benchmarks/mem_harness_2026-09-03.*`):
+`perf_encode` streams each frame to the `.yuv` and moves the caller's planes
+into frame 0, so it holds the same ONE copy of the sequence `perf_c_encode`
+does — **-6.29 / -12.58 / -18.88 M of peak heap at 4 MP on still / videokey /
+inter**, every delta an exact multiple of the frame size, with C's `.obu`
+byte-identical before and after (the control: C reads the file this writes).
+**A HARNESS result, not an encoder one.** After both changes, x86_64-linux
+p13 qp40 gradient: peak HEAP port/C is **below 1.0 on all twelve cells**
+(0.605-0.644 still, 0.692-0.730 videokey, 0.886-0.938 inter) and peak RSS is
+**inside 25 % on all twelve** (0.905-0.969 still, 0.913-0.954 videokey,
+1.035-1.122 inter) against `main`'s 1.279x-1.334x on the inter arm. aarch64
+NOT re-measured — different allocator, different page size.
+
+**And a memory ratio without its PRESET is meaningless**
+(`benchmarks/mem_preset_2026-09-03.*`): on gradient 2048x2048 qp 40 the inter
+arm's peak heap is **C 240.25 M at p6 and 120.12 M at p13** — C DOUBLES — while
+the port moves 5 % (146.04 -> 139.62). The port's worst preset is therefore the
+FASTEST one. Across the p6+p13 grid after the two changes, all 24 cells are
+inside the 25 % goal on both heap and RSS and only three exceed 1.0 at all (the
+p13 inter arm); at p6 the port is 0.27x-0.62x of C on heap. **Unresolved
+conflict**: `benchmarks/mem_arms_2026-09-02.meta` records 1.60x at p6 / 4 MP on
+aarch64 through `capture_c_trace`, and `tools/mem_peak.sh` reads 0.84x on
+`main` at the same preset and size on x86 through `perf_c_encode`. ISA, C
+driver and tree are all confounded; run one harness on both hosts before
+quoting either as the position.
+
 **Memory — THE ARENA IS A NULL AND THE GAP IS A LIFETIME PROBLEM (2026-09-03,
 CURRENT — read this before the heaptrack paragraph below).** The prescription
 that paragraph ends with ("one arena allocated at pipeline construction") is
