@@ -73,7 +73,11 @@ record says and no earlier one did are that **94.8 % of `nz_map_ctx`'s time is
 inside the RDOQ trellis** (so the classifier's COEFF_CTX/QUANT_RDOQ split hides
 the largest single item — re-joined, RDOQ is ~3.0x and ~24 % of the excess) and
 that **the video config adds 2.69 ms of allocator work to the port and 0.000 ms
-to C**.
+to C**. **BOTH OF THOSE LEADS HAVE NOW BEEN WORKED, and both paid less than the
+attribution implied**: monomorphising the trellis on `tx_class` (the remainder
+that record named) is **1.006x-1.022x**, not ~24 % (`de4bfaf7`,
+`benchmarks/rdoq_txclass_ab_2026-09-03.*`), and the allocator prescription is a
+**NULL** — see the memory paragraph above.
 
 **Wall clock, INTER (2026-09-02, first measurement):** `PERF_FRAMES=2` /
 `PERF_VIDEO=1` on `perf_gate.sh`; records
@@ -99,6 +103,40 @@ whole differential job is ~21 min; the three biggest single steps are the
 SIMD tier-invariance suite (207 s), the workspace test suite (167 s) and the
 C oracle build (141 s, cached since 2026-08-28). Local arm64 numbers differ;
 measure with `time` and record the host.
+
+**Memory — THE ARENA IS A NULL AND THE GAP IS A LIFETIME PROBLEM (2026-09-03,
+CURRENT — read this before the heaptrack paragraph below).** The prescription
+that paragraph ends with ("one arena allocated at pipeline construction") is
+now BUILT for the two biggest per-frame sites — `PaPicture`/`PaPlane`
+`refill_*`, `FrameMe::run_frame_me_into`, `MeB64Output::reset`, and
+`EncodePipeline`'s `pa_scratch`/`me_scratch` (`7acb8502`) — and it moves
+**nothing**: twelve heaptrack cells (1280/1536/1920/2048 x still/videokey/
+inter) identical to the digit
+(`benchmarks/mem_heaptrack_arena_2026-09-03.meta`). Two structural reasons:
+the recycle first hands back an allocation on **frame 2** and
+`encode_frame_impl` REFUSES frame 2, so it cannot execute through the public
+encoder at all; and even once it can, at a 2-frame peak BOTH frames'
+structures are simultaneously live, so pooling removes allocation CHURN and
+not live bytes. **The memory gap is a LIFETIME property** — the port holds the
+whole frame's decision tree, with a coefficient `Vec` per block, until the
+entropy walk, where C packs a superblock and releases its buffers
+(`funnel_block_decision` 16.79 M and the `Vec<PartitionTree>` collect in
+`encode_tile_rows` are that one structure seen from two sites). Nothing that
+only changes WHERE the bytes come from will close it. The one reachable win
+found alongside was reserving the tile recon/tree buffers exactly
+(`061aae79`): **-0.4 % to -2.4 % of the inter arm's peak and 0.0 % at
+2048x2048**, because 2048x2048 is exactly 4 MiB and a doubling `Vec` lands on
+its payload there with no slack — a single-size measurement would have
+reported either NULL or 2.4 % and both would have been wrong. CPU null.
+
+**A byte gate cannot witness a recycle that starts at frame 2, and the attempt
+looks exactly like coverage.** A port-vs-port sweep of 270 cells over
+`SVTAV1_FRAMES` {1,2,3,5,8} read 270/270 identical while every cell past two
+frames exited 3 at frame 2 and wrote only what encoded. Same family:
+`tools/perf_ab.sh` prints `measured 768x768 p6 ident=Y` for a cell the encoder
+REFUSES and contributes zero rows — `ident=Y` there means two empty files
+compared equal. **Read the `n` column of a perf_ab `.tsv`, not the `measured`
+lines of its log**, and check the `.obu` exists before quoting any arm.
 
 **Memory — WHERE THE INTER FRAME'S BYTES GO (2026-09-03, heaptrack on
 r7900x / x86_64-linux, the first heaptrack run on this repo):**

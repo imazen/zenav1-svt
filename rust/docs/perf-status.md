@@ -94,6 +94,15 @@
 > thread-local Vec-pool experiment (`alloc_bufpool_null_2026-08-13.meta`
 > measured it NULL); the prescription there — one arena at pipeline
 > construction that the buffers are `&mut [T]` slices INTO — is the untried one.
+> **CORRECTED 2026-09-03: that arena is now BUILT for the two biggest per-frame
+> sites (`7acb8502`) and it measured NULL on twelve heaptrack cells. Pooling
+> removes allocation CHURN, not live bytes: at a 2-frame peak both frames'
+> structures are simultaneously live, and the recycle cannot even execute
+> because it first fires on frame 2 and the encoder refuses frame 2. The gap
+> is a LIFETIME property — the port holds the whole frame's decision tree with
+> a coefficient `Vec` per block until the entropy walk, where C packs a
+> superblock and releases its buffers. Read the block at the top of this file
+> before planning any further allocator-shaped work.**
 >
 > ONE MORE TRAP, MEASURED: the C harness's FIRST inter run scored 12.66 M and
 > was a REFUSAL — it needs a 2-frame `.yuv` and printed "short read (need
@@ -164,6 +173,115 @@
 > The inter byte gate and matrix sweep {16,64,72,128}, of which only 72 is
 > partial, so the frontier they describe is almost entirely 64-aligned and this
 > surface was invisible to them; `inter_completion_scan.sh` is what sees it.
+
+> **THE RDOQ TRELLIS IS MONOMORPHISED ON `tx_class` NOW, AND THE ARENA
+> PRESCRIPTION BELOW IS CORRECTED (2026-09-03, second chunk of the day).**
+> Commits `de4bfaf7` (tx_class), `7acb8502` (PA/ME pooling — a NULL),
+> `061aae79` (tile-buffer reservation). Records:
+> `benchmarks/rdoq_txclass_ab_2026-09-03.{videokey,still}.*`,
+> `benchmarks/mem_heaptrack_arena_2026-09-03.meta`,
+> `benchmarks/tile_reserve_ab_2026-09-03.*`.
+>
+> **1. `tx_class` MONOMORPHISATION — the untried remainder named in the block
+> below is now MEASURED, and it is 1.006x-1.022x, not the ~24 % the class
+> attribution implied.** `optimize_b` dispatches ONCE into
+> `optimize_b_tc<const TC>` and the whole trellis plus the
+> `nz_map_ctx`/`br_ctx` chain under it takes the class as a const generic, so
+> the three-way branches fold exactly as C's `UPDATE_COEFF_EOB_CASE` macro
+> expansion does. `tools/perf_ab.sh`, every cell `ident=Y`:
+>
+> | arm | 128 p6 | 128 p8 | 256 p2 | 256 p6 | 256 p8 | 256 p10 | 512 p2 | 512 p6 | 512 p8 | 512 p10 |
+> |---|---|---|---|---|---|---|---|---|---|---|
+> | videokey (n=25) | 1.014x | 1.008x | — | 1.022x | 1.013x | — | — | 1.015x | 1.021x | — |
+> | still (n=15) | — | — | 1.007x | 1.007x | — | 1.011x | 1.006x | 1.014x | — | 1.017x |
+>
+> Twelve of twelve move; ten of twelve have their whole p25/p75 span below 1.0
+> (128 p8 videokey at 0.9960 and 256 p6 still at 1.0019 are the marginal two).
+> **It is a SMALLER win than the context-helper inlining that preceded it**
+> (4.7 % videokey) — once the calls were gone, the branch that folds away was
+> already cheap. Exhaustiveness of the three-arm dispatch rests on
+> `tx_type_to_class` being ternary, pinned by
+> `coeff_c::tx_class_tests::tx_type_to_class_is_ternary`; a second test pins
+> every const-generic helper against its runtime wrapper at every class
+> INCLUDING the unreachable fall-through, so the wrappers are byte-identical
+> to the pre-monomorphisation code for every input rather than only the
+> reachable ones. **This closes the RDOQ item.** What remains of RDOQ's excess
+> is NOT MEASURED to a cause; the next probe is a per-symbol profile of
+> `optimize_b`'s now-inlined body, not another dispatch change.
+>
+> **2. THE ARENA IS A NULL, AND THE PRESCRIPTION IT CAME FROM WAS WRONG ABOUT
+> WHY.** `mem_heaptrack_2026-09-03.meta` prescribed "one arena allocated at
+> pipeline construction that the per-SB buffers are `&mut [T]` slices INTO".
+> That pool is now built for the two biggest per-frame sites — `PaPicture` /
+> `PaPlane` gained `refill_*`, `FrameMe` gained `run_frame_me_into`,
+> `MeB64Output` gained `reset`, and `EncodePipeline` carries
+> `pa_scratch` / `me_scratch` — and it moves **nothing**, on twelve heaptrack
+> cells (1280/1536/1920/2048 x still/videokey/inter), identical to the digit.
+> Two reasons, both structural:
+>
+> * **The recycle first hands back an allocation on FRAME 2, and
+>   `encode_frame_impl` REFUSES frame 2** (the coded-area-statistics refusal).
+>   It is unreachable through the public encoder today.
+> * **Even once it is reachable it cannot lower a 2-frame peak**, because at
+>   that peak BOTH frames' pyramids and result sets are simultaneously live.
+>   Pooling removes allocation CHURN — 3,072 mallocs per frame at
+>   `MeB64Output::new` alone — not live bytes.
+>
+> **So the memory gap is a LIFETIME property, not an allocation-count one.**
+> The port holds the whole frame's decision tree, with a coefficient `Vec` per
+> block, until the entropy walk; C packs a superblock and releases its
+> buffers. `funnel_block_decision` at 16.79 M over 2,048 calls and the
+> `Vec<PartitionTree>` collect in `encode_tile_rows` are the same structure
+> seen from two sites. **Nothing that only changes WHERE the bytes come from
+> will close it; the next chunk has to change HOW LONG they live**, which is a
+> pipeline restructure (pack per SB) and not an allocator change.
+>
+> A byte gate cannot witness the recycle either, and the attempt is recorded
+> because it looks like coverage: a port-vs-port sweep of 270 cells over
+> `SVTAV1_FRAMES` {1,2,3,5,8} reads 270/270 identical while every cell past
+> two frames exits 3 at frame 2 and writes only what encoded. The positive
+> control is `inter_me_arm::recycle_tests` — four tests, teeth measured by
+> reverting the interior copy and the `me_mv_array` clear.
+>
+> **3. THE TILE-BUFFER RESERVATION IS THE ONE REACHABLE MEMORY WIN, AND ITS
+> SIZE IS KEYED ON THE BINARY EXPANSION OF THE TILE AREA.**
+> `encode_tile_rows` collected the tile's luma recon and its `PartitionTree`s
+> by doubling; both are reserved exactly now, with two `debug_assert`s pinning
+> `tile_recon.len()` to both the reservation and the capacity (teeth: `+ 1`
+> fails 5 of 19 `pipeline` tests). Peak heap, INTER arm:
+>
+> | size | still | videokey | inter |
+> |---|---|---|---|
+> | 1280 | 0.0 % | 0.0 % | 56.38 -> 55.89 M (**-0.9 %**) |
+> | 1536 | 0.0 % | 0.0 % | 81.54 -> 79.57 M (**-2.4 %**) |
+> | 1920 | 0.0 % | 0.0 % | 123.56 -> 123.01 M (**-0.4 %**) |
+> | 2048 | 0.0 % | 0.0 % | 139.61 -> 139.61 M (**0.0 %**) |
+>
+> **The size sweep IS the result.** 2048x2048 is exactly 4 MiB, so a doubling
+> `Vec` lands on its payload with no slack and the change is worth nothing
+> there; 1536x1536 is 2.25 MiB, so the doubling reserves 4 MiB and 1.75 MiB is
+> slack. A single 2048 cell would have reported NULL and a single 1536 cell
+> would have reported 2.4 % as if it generalised. CPU is NULL
+> (0.998x-1.000x, n=25, every span crossing 1.0).
+>
+> GATED ON BOTH ISAs, at `061aae79`. **aarch64**: nextest 2502/2502 (bar 2498;
+> +4 are `inter_me_arm::recycle_tests`; the tx_class commit added
+> `coeff_c::tx_class_tests`'s two), `identity_full_8bit` 1100/1100,
+> `regression_spotcheck` 83/83, `inter_byte_gate` 89 required / 0 failed / 0
+> crashed, `video_key_matrix` 58/60, `fctx_gate` 96/96, `inter_decode_gate`
+> 5/5, `inter_decode_census` 96/96, `screen_palette_gate` 50/50,
+> `inter_completion_scan` (`SCAN_GATE=1`) 52 OK / 12 REFUSED / **0 CRASH**.
+> **x86-64 (r7900x)**: 2247 dsp+encoder tests, `identity_full_8bit` 1100/1100,
+> `regression_spotcheck` 83/83, `inter_byte_gate` 89/0 — run separately at
+> `de4bfaf7` (2243 tests) and at `061aae79`. CI green on all four jobs.
+>
+> **TWO HARNESS TRAPS HIT WHILE MEASURING THIS, both the "a refusal is not a
+> measurement" family.** (a) `perf_ab.sh` prints `measured 768x768 p6 ident=Y`
+> for a cell the encoder REFUSES and contributes zero rows — `ident=Y` there
+> means two empty files compared equal. **Read the `n` column of the `.tsv`,
+> not the `measured` lines of the log.** (b) The 270-cell frame sweep above.
+> Both are the same shape as the C-harness refusal
+> `mem_heaptrack_2026-09-03.meta` records.
 
 > **VIDEO-KEY CPU (2026-09-03, aarch64 / Apple M4 Pro) — the three arms
 > re-measured in ONE session after the ME SIMD chunk, and the first attribution
@@ -337,8 +455,11 @@
 > full_loop.c) with `tx_class` a literal, so the whole context derivation
 > inlines and constant-folds into `svt_aom_quantize_inv_quantize`. The port
 > passes `tx_class` as a runtime `usize` and `nz_map_ctx` stays out of line.
-> **Monomorphising the trellis on `tx_class` is the untried remainder here, and
-> it is NOT MEASURED.**
+> **Monomorphising the trellis on `tx_class` WAS the untried remainder here.
+> It is now DONE and MEASURED at 1.006x-1.022x — see the block at the top of
+> this file (`de4bfaf7`,
+> `benchmarks/rdoq_txclass_ab_2026-09-03.*`), which is a good deal less than
+> this attribution implied.**
 >
 > THREE THINGS THIS SAYS THAT THE 256x256 RECORD DID NOT.
 > * **ALLOC is the third-largest item and C's is ZERO** — 2.690 ms added on the
