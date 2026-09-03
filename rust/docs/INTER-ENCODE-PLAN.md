@@ -5910,13 +5910,31 @@ including C's two measured lambdas and the I-slice no-op, and the corrected
 arm. `port_md_rate_estimation::get_me_qindex` was already ported and had said
 in its own doc that it had "no producer inside the port"; it does now.
 
-**Not landed — the wiring, which is the next chunk and is one edit.**
-`pipeline.rs` must build the map once per frame from
-`FrameMe::per_b64[..].me_8x8_cost_variance`, and thread a PER-SUPERBLOCK
-`me_q_index` into the three call sites that pass `base_qindex` today:
-`pd0_min_sq`'s `compute_fast_lambda` (which is hoisted OUT of the superblock
-loop and has to move into it), and the two `inter_full_lambda_8bit` /
-`Pd0InterRef` paths. `scs->stats_based_sb_lambda_modulation` is
+**Not landed — the wiring, and it is TWO chunks, not one.** The scope was
+checked rather than assumed, because "it is one edit" was the first reading
+and it is wrong for half of it:
+
+* **PD0 (small, self-contained).** `pipeline.rs` builds the map once per frame
+  from `FrameMe::per_b64[..].me_8x8_cost_variance`, then per superblock feeds
+  `get_me_qindex` into (a) `pd0_min_sq`'s `compute_fast_lambda` — which is
+  currently hoisted OUT of the superblock loop and has to move into it — and
+  (b) `Pd0InterRef`, which already carries a per-SB `min_sq` and would gain a
+  per-SB `me_q_index` beside it.
+* **MD (a chunk of its own).** `inter_full_lambda_8bit` is also called at
+  `pipeline.rs:2391` and `:2984` to build the FRAME-level `InterMdFrame`
+  lambdas that the whole inter funnel reads. C computes those per superblock
+  too (`av1_lambda_assign_md` runs from
+  `svt_aom_mode_decision_configure_sb`), so making them per-SB means threading
+  a per-SB lambda through `inter_md_arm` / `inter_search_arm` and the funnel —
+  not a call-site edit.
+
+**Do NOT land only the PD0 half.** C uses ONE `me_q_index` for both lambdas of
+a superblock; wiring PD0 while MD stays frame-level would price the partition
+search and the mode search against different lambdas, which is not a smaller
+version of C's behaviour but a different one. That is the reason this entry
+stops at ported-and-tested.
+
+`scs->stats_based_sb_lambda_modulation` is
 `enc_mode <= (rtc ? ENC_M10 : ENC_M11)` (`enc_handle.c:4375`), i.e. on at
 every preset this port reaches — the observed 100/150 split is proof of that
 from the other side, which settles the open question the benchmark note asked.

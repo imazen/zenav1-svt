@@ -120,7 +120,11 @@ the derivation predicts factors 100 / 100 / 100 / 150 and C's dump reads
 the port's own value as the base. That file carries the arithmetic, the C
 sites and the cell to verify an implementation against; it also refutes the
 earlier geometry reading (it is not "cropped width 40", it is "non-zero ME
-cost variance"). **A crash is not only a
+cost variance"). **The map, the consumer and the corrected factor arm are all
+PORTED and tested as of §1z²³; what is open is the WIRING**, and it is two
+chunks rather than one — PD0's is a call-site edit, MD's needs a per-SB lambda
+threaded through `inter_md_arm` / the funnel, and landing only the first would
+price the partition search and the mode search against different lambdas. **A crash is not only a
 crash: it is a region of the configuration space nothing can measure.**
 
 **And with the crashes gone that grid describes the BYTE frontier honestly for

@@ -126,12 +126,18 @@ pub fn wedge_idx_fac_bits(
 /// `svt_aom_compute_rd_mult` (rc_aq.c:767), and a wrong lambda changes the RD
 /// winner on every block.
 ///
-/// **STILL UNWIRED, and that is the next chunk, not an oversight.** The
+/// **STILL UNWIRED, and that is the next work, not an oversight.** The
 /// producer, this consumer and `update_lambda`'s factor block are all ported
 /// and tested; what is missing is `pipeline.rs` threading a PER-SUPERBLOCK
-/// `me_q_index` into the three lambda call sites that currently pass
-/// `base_qindex` (`pd0_min_sq`'s `compute_fast_lambda`, and the two
-/// `pd0::inter_full_lambda_8bit` / `Pd0InterRef` paths). MEASURED consequence
+/// `me_q_index` into the lambda call sites that pass `base_qindex` today. The
+/// PD0 half is a call-site edit (`pd0_min_sq`'s `compute_fast_lambda`, which
+/// has to move INTO the superblock loop, plus a field on `Pd0InterRef` beside
+/// its existing per-SB `min_sq`); the MD half is a chunk of its own, because
+/// `pipeline.rs:2391` / `:2984` build FRAME-level `InterMdFrame` lambdas that
+/// the whole inter funnel reads and C computes those per superblock too.
+/// **Do not land only the PD0 half** — C uses ONE `me_q_index` for both
+/// lambdas of a superblock, so a half-wiring prices the partition search and
+/// the mode search against different lambdas. MEASURED consequence
 /// of not doing it, on `diag 72x72 q40 p6` frame 1: C's own
 /// `SVT_PD0CFG_OUT` reports `fastlam` 5182 / 5182 / 5182 / **7773** across the
 /// four superblocks of ONE frame where the port reports a flat 6633, and the
