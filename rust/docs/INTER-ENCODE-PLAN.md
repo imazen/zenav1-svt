@@ -5828,6 +5828,28 @@ and is the one that will need a different mechanism. The F0DIFF cell is
 unchanged and is still a video-KEY defect on which every frame-1 reading is
 void.
 
+**And the direction has FLIPPED on them, which is worth knowing before the
+next chunk opens with the old hypothesis.** §1z²⁰'s reading was "the port
+over-splits"; on `diag 72x72 q40 p6` frame 1 it now **UNDER**-splits by
+exactly one node. C's `SVT_CINTER_OUT` codes FIVE inter blocks and the port's
+`SVTAV1_PACKTREE` codes FOUR:
+
+| C | port |
+|---|---|
+| `mi=(0,0)` bsize 12, `part=0`, NEWMV `mv=(0,-24)` | same |
+| `mi=(0,16)` bsize 7, **`part=2` (VERT)**, NEWMV `mv=(24,0)` | `mi=(0,16)` NEWMV `mv=(24,0)` |
+| `mi=(8,16)` bsize 7, `part=2`, `mode=14`, `mv=(24,0)` | **absent** |
+| `mi=(16,0)` bsize 11, `part=1` (HORZ), `mode=13`, `mv=(0,-24)` | same |
+| `mi=(16,16)` bsize 3, `part=0`, `mode=13`, `mv=(0,-24)` | same |
+
+`mi` is (row, col) in 4-px units, so `mi=(0,16)` is pixel column 64 — the
+8-px-wide RIGHT EDGE of a 72-wide frame. C splits that node with
+`PARTITION_VERT` and codes both halves; the port codes one block. Every mode
+and MV either side agrees on the four shared blocks. So the remaining
+mechanism on the 72x72 cells is an EDGE-SHAPE decision at a one-false
+boundary node, not a depth-cost one — and 28 B vs 27 B is exactly the one
+missing block.
+
 #### Gates
 
 `inter_byte_gate.sh` PASS_CELLS regenerated wholesale 67 -> **89**, and
