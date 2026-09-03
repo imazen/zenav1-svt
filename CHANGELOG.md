@@ -56,6 +56,24 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **First heaptrack run on this repo: the inter frame's memory is attributed to
+  allocation sites, and C's encoder is measured to add NOTHING for one.** C's
+  peak-consumption site table is identical entry for entry between its
+  video-key and its inter arm; its entire +6.30 M is `perf_c_encode`'s own
+  input buffer growing by one 2048x2048 I420 frame (6.29 MB exactly). The
+  port's harness costs the same 6.29 MB (`perf_encode::translate`), so the
+  harness cancels and the comparison is harness-clean — closing the caveat
+  `benchmarks/mem_arms_2026-09-02.meta` had to leave open. Encoder-side, one
+  inter frame at 4 MP is **port +37.64 M against C's +0.01 M** on the heap.
+  On the heap the port is LIGHTER than C for both one-frame arms (still 0.70x,
+  videokey 0.84x); only the inter frame flips it (1.16x). Lead list with call
+  counts (`funnel_block_decision` 16.79 M / 4096 calls, `MeB64Output::new`
+  12.53 M / 6144, `encode_tile_rows::{closure#0}` 11.53 M / 4110, …) reproduces
+  five macOS `/usr/bin/heap` entries within ~10 % on a different OS, ISA and
+  allocator. Record `benchmarks/mem_heaptrack_2026-09-03.{txt,meta}`. NOT
+  MEASURED: any MiB/MP figure (one size), any RSS statement (this is heap),
+  aarch64 sizes, or repeat variance.
+
 - **The RDOQ trellis's six context helpers are `#[inline(always)]` now, as C's
   are — 12 of 12 A/B cells move, 1.9-4.8 %.** C's `get_nz_map_ctx` does not
   appear as a symbol anywhere in its profile (grep over the whole 512x512 p8

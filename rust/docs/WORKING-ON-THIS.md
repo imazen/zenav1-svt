@@ -100,6 +100,26 @@ SIMD tier-invariance suite (207 s), the workspace test suite (167 s) and the
 C oracle build (141 s, cached since 2026-08-28). Local arm64 numbers differ;
 measure with `time` and record the host.
 
+**Memory — WHERE THE INTER FRAME'S BYTES GO (2026-09-03, heaptrack on
+r7900x / x86_64-linux, the first heaptrack run on this repo):**
+`benchmarks/mem_heaptrack_2026-09-03.{txt,meta}`. **C's encoder adds NOTHING
+for an inter frame** — its peak-consumption site table is identical entry for
+entry between its videokey and inter arms, and its whole +6.30 M is
+`perf_c_encode`'s own input buffer growing by one 2048x2048 I420 frame
+(6.29 MB exactly). The port's harness costs the SAME 6.29 MB
+(`perf_encode::translate`), so it cancels: encoder-side, one inter frame is
+**port +37.64 M against C's +0.01 M** on the heap at 4 MP. On the heap the port
+is LIGHTER than C for both one-frame arms (still 0.70x, videokey 0.84x); only
+the inter frame flips it (1.16x). The lead list — `funnel_block_decision`
+16.79 M over 4096 calls, `MeB64Output::new` 12.53 M over 6144,
+`encode_tile_rows::{closure#0}` 11.53 M over 4110, `PaPicture::from_source`
+9.54 M, `RawVecInner::finish_grow` 4.53 M over 87,253 — reproduces five of the
+macOS `/usr/bin/heap` entries within ~10 % on a different OS, ISA and
+allocator. It is a LEAD LIST, not a decomposition (the per-site peaks do not
+co-occur). **Trap that run hit: the C harness needs a 2-frame `.yuv` for the
+inter arm and its first run REFUSED with "short read", scoring 12.66 M — a
+memory number from a program that did not encode. Check the `.obu` exists.**
+
 **Memory (2026-09-02, supersedes the 2026-08-16 first-ever measurement):**
 `benchmarks/mem_arms_2026-09-02.{tsv,meta}` is the live record (three arms,
 `perf_encode` as the port binary); `benchmarks/mem_2026-09-02.{tsv,meta}` is the

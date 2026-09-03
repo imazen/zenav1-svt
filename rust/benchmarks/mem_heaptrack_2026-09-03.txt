@@ -1,0 +1,108 @@
+===PORT still
+26.74M     151360    svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner
+13.45M     22        <svtav1_encoder::picture::DecodedPictureBuffer>::refresh
+12.58M     4         <alloc::raw_vec::RawVecInner>::try_allocate_in
+7.15M      6         <svtav1_encoder::picture::PaddedPlane>::from_plane
+4.19M      2         svtav1_encoder::pipeline::gather_rows
+4.19M      2         <u8 as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global>
+2.62M      28        <svtav1_encoder::deblock::DeblockGeom>::new
+2.14M      3712      svtav1_encoder::partition::encode_fixed_tree
+2.10M      4         <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#2}
+2.10M      4         <alloc::vec::Vec<u8> as core::clone::Clone>::clone
+2.10M      10        <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#53}
+524.29K    64        svtav1_encoder::partition::funnel_block_decision
+294.91K    2         <alloc::vec::Vec<core::option::Option<svtav1_encoder::partition::PartitionTree>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<svtav1_encoder::partition::PartitionTree>, core::iter::adapters::map::Map<core::ops::range::Range<usize>, <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#37}>>>::from_iter
+262.14K    2         <svtav1_types::motion::Mv as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global>
+140.53K    13255     <alloc::raw_vec::RawVecInner>::finish_grow
+73.73K     1         0x73e0ae2bf8f6
+70.87K     2         svtav1_encoder::entropy::obu::build_tile_group_multi
+39.02K     8         svtav1_encoder::quant::build_coeff_cost_tables_from_fc
+13.52K     6         <svtav1_encoder::entropy::coeff_c::CoeffFc>::default_for_qindex
+7.18K      2         <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#71}
+1.02K      2         <i8 as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global>
+1.02K      2         <alloc::vec::Vec<u8> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<u8, core::iter::adapters::map::Map<core::slice::iter::Iter<svtav1_encoder::partition::PartitionTree>, <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#41}>>>::from_iter
+===PORT videokey
+27.26M     318418    svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner
+18.87M     9         <alloc::raw_vec::RawVecInner>::try_allocate_in
+13.45M     22        <svtav1_encoder::picture::DecodedPictureBuffer>::refresh
+7.15M      6         <svtav1_encoder::picture::PaddedPlane>::from_plane
+4.77M      2         <svtav1_encoder::inter_me_arm::PaPicture>::from_source
+4.39M      7628      svtav1_encoder::partition::encode_fixed_tree
+4.19M      2         svtav1_encoder::pipeline::gather_rows
+4.19M      2         <u8 as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global>
+2.62M      42        <svtav1_encoder::deblock::DeblockGeom>::new
+2.10M      4         <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#2}
+2.10M      20        <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#53}
+2.10M      4         <alloc::vec::Vec<u8> as core::clone::Clone>::clone
+1.48M      4         <svtav1_encoder::inter_me_arm::PaPlane>::decimate
+294.91K    2         <alloc::vec::Vec<core::option::Option<svtav1_encoder::partition::PartitionTree>> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<core::option::Option<svtav1_encoder::partition::PartitionTree>, core::iter::adapters::map::Map<core::ops::range::Range<usize>, <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#37}>>>::from_iter
+262.14K    2         <svtav1_types::motion::Mv as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global>
+156.08K    74900     <alloc::raw_vec::RawVecInner>::finish_grow
+139.67K    4         svtav1_encoder::entropy::obu::build_tile_group_multi
+73.73K     1         0x742df6abf8f6
+39.02K     12        svtav1_encoder::quant::build_coeff_cost_tables_from_fc
+13.52K     10        <svtav1_encoder::entropy::coeff_c::CoeffFc>::default_for_qindex
+7.18K      2         <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#71}
+1.02K      4104      svtav1_encoder::cdef::cdef_search_still
+===PORT inter
+25.17M     9         <alloc::raw_vec::RawVecInner>::try_allocate_in
+16.79M     4096      svtav1_encoder::partition::funnel_block_decision
+13.45M     22        <svtav1_encoder::picture::DecodedPictureBuffer>::refresh
+12.53M     6144      <svtav1_encoder::inter_me::context::MeB64Output>::new
+11.53M     4110      svtav1_encoder::pipeline::encode_tile_rows::{closure#0}
+10.48M     351804    svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner
+9.54M      4         <svtav1_encoder::inter_me_arm::PaPicture>::from_source
+7.15M      8         <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#9}
+6.29M      3         perf_encode::translate
+4.53M      87253     <alloc::raw_vec::RawVecInner>::finish_grow
+4.19M      12        <alloc::vec::Vec<u8> as core::clone::Clone>::clone
+4.19M      4         <u8 as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global>
+4.19M      4         svtav1_encoder::pipeline::gather_rows
+2.96M      8         <svtav1_encoder::inter_me_arm::PaPlane>::decimate
+2.62M      70        <svtav1_encoder::deblock::DeblockGeom>::new
+2.10M      8         <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#2}
+417.79K    2         <svtav1_encoder::pipeline::EncodePipeline>::encode_frame_impl::{closure#18}
+262.14K    4         <svtav1_types::motion::Mv as alloc::vec::spec_from_elem::SpecFromElem>::from_elem::<alloc::alloc::Global>
+262.14K    4         <alloc::vec::Vec<i32> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<i32, core::iter::adapters::map::Map<core::ops::range::Range<usize>, svtav1_encoder::inter_md_arm::nmv_cost_table::{closure#0}::{closure#0}>>>::from_iter
+262.14K    8         svtav1_encoder::intrabc::build_nmv_component_cost_table
+139.70K    2         <alloc::raw_vec::RawVecInner>::finish_grow
+135.17K    4096      <svtav1_encoder::pd0::Pd0ReconCanvas>::new
+===C c_still
+34.47M     48        svt_picture_buffer_desc_ctor
+26.18M     16        svt_aom_pic_buf_desc_pool_ctor
+14.32M     6         svt_aom_largest_coding_unit_ctor
+10.32M     2258      picture_control_set_ctor
+9.61M      8         svt_picture_buffer_desc_ctor_noy8b
+7.53M      2         svt_recon_picture_buffer_desc_ctor
+6.29M      1         main
+3.15M      12        svt_aom_output_bitstream_unit_ctor
+1.08M      44        svt_reference_object_ctor
+1.02M      144       svt_aom_picture_parent_control_set_creator
+701.89K    20        svt_aom_pic_buf_desc_pool_ctor_var
+185.58K    4         svt_sequence_control_set_instance_ctor
+===C c_videokey
+41.63M     58        svt_picture_buffer_desc_ctor
+26.18M     16        svt_aom_pic_buf_desc_pool_ctor
+14.32M     6         svt_aom_largest_coding_unit_ctor
+9.77M      2264      picture_control_set_ctor
+7.53M      2         svt_recon_picture_buffer_desc_ctor
+6.29M      1         main
+3.15M      6         svt_aom_output_bitstream_unit_ctor
+2.40M      2         svt_picture_buffer_desc_ctor_noy8b
+906.37K    20        svt_aom_pic_buf_desc_pool_ctor_var
+207.64K    90        svt_aom_mode_decision_context_ctor
+185.58K    4         svt_sequence_control_set_instance_ctor
+182.76K    14        svt_av1_cdef_frame
+===C c_inter2
+41.63M     58        svt_picture_buffer_desc_ctor
+26.18M     16        svt_aom_pic_buf_desc_pool_ctor
+14.32M     6         svt_aom_largest_coding_unit_ctor
+12.58M     1         main
+9.77M      2264      picture_control_set_ctor
+7.53M      2         svt_recon_picture_buffer_desc_ctor
+3.15M      6         svt_aom_output_bitstream_unit_ctor
+2.40M      2         svt_picture_buffer_desc_ctor_noy8b
+906.37K    20        svt_aom_pic_buf_desc_pool_ctor_var
+207.64K    90        svt_aom_mode_decision_context_ctor
+185.58K    4         svt_sequence_control_set_instance_ctor
+182.76K    14        svt_av1_cdef_frame

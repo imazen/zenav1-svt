@@ -44,6 +44,63 @@
 > GROWING with size says it is per-pixel state, not one oversized fixed
 > structure.
 >
+> **THE INTER FRAME'S MEMORY IS NOW ATTRIBUTED TO ALLOCATION SITES, AND C'S
+> ENCODER ADDS NOTHING FOR AN INTER FRAME (2026-09-03, heaptrack on r7900x /
+> x86_64-linux — the first heaptrack run on this repo).** Record:
+> `benchmarks/mem_heaptrack_2026-09-03.{txt,meta}`. Gradient 2048x2048 (4 MP)
+> qp 40 preset 13, one encode per arm. **This is HEAP, not RSS** — a different
+> quantity from every other memory number in this file.
+>
+> | arm | port | C | port/C |
+> |---|---:|---:|---:|
+> | still | 80.79 M | 115.72 M | **0.70x** |
+> | videokey | 95.68 M | 113.82 M | **0.84x** |
+> | inter | 139.61 M | 120.12 M | 1.16x |
+>
+> On the heap the port is LIGHTER than C for both one-frame arms; only the
+> inter frame flips it. By subtraction the video config adds +14.89 M to the
+> port and **-1.90 M** to C, and one inter frame adds +43.93 M to the port and
+> +6.30 M to C.
+>
+> **C'S +6.30 M IS ENTIRELY ITS HARNESS.** C's peak-consumption site table is
+> identical entry-for-entry between its videokey and inter arms —
+> `svt_picture_buffer_desc_ctor` 41.63 M, `svt_aom_pic_buf_desc_pool_ctor`
+> 26.18 M, `svt_aom_largest_coding_unit_ctor` 14.32 M,
+> `picture_control_set_ctor` 9.77 M, all unchanged — with ONE exception:
+> `main` goes 6.29 M -> 12.58 M, which is `perf_c_encode` reading one extra
+> 2048x2048 I420 frame (6.29 MB exactly). **C allocates its picture-buffer pool
+> up front and an inter frame reuses it; its marginal heap cost is ~0.** The
+> SAME 6.29 MB sits on the port's side as `perf_encode::translate`, so the
+> harness cancels and the comparison is harness-clean — which closes the
+> warning the block below had to leave open. Encoder-side, one inter frame:
+> **port +37.64 M, C +0.01 M.**
+>
+> The port's inter-only sites, with call counts (videokey -> inter):
+> `RawVecInner::try_allocate_in` 18.87 -> 25.17 M (9 calls),
+> `partition::funnel_block_decision` <0.5 -> **16.79 M (4096 calls)**,
+> `inter_me::context::MeB64Output::new` **12.53 M (6144)**,
+> `pipeline::encode_tile_rows::{closure#0}` **11.53 M (4110)**,
+> `inter_me_arm::PaPicture::from_source` 4.77 -> 9.54 M,
+> `encode_frame_impl::{closure#9}` 7.15 M, `RawVecInner::finish_grow`
+> 0.156 -> 4.53 M (87,253 calls), `PaPlane::decimate` 1.48 -> 2.96 M.
+> **A LEAD LIST, NOT A DECOMPOSITION** — heaptrack itself says merged per-site
+> peaks are not correct as a sum, and they do not add to 139.61 M.
+>
+> **FIVE OF THOSE SITES REPRODUCE THE macOS LIST BELOW WITHIN ~10 %** on a
+> different OS, ISA and allocator, which is the check that neither list is an
+> artefact of its tool. The per-SB call counts (4096 / 6144 / 4110 for a
+> 32x32-SB frame) say the shape of the fix: C pre-allocates once at
+> `svt_av1_enc_init`; the port allocates per superblock. Do NOT re-run the
+> thread-local Vec-pool experiment (`alloc_bufpool_null_2026-08-13.meta`
+> measured it NULL); the prescription there — one arena at pipeline
+> construction that the buffers are `&mut [T]` slices INTO — is the untried one.
+>
+> ONE MORE TRAP, MEASURED: the C harness's FIRST inter run scored 12.66 M and
+> was a REFUSAL — it needs a 2-frame `.yuv` and printed "short read (need
+> SVT_FRAMES * w*h*3/2 bytes)" while writing no `.obu`. A memory number from a
+> program that did not encode is smaller than the real one and looks like a win.
+> Check the output file exists before quoting any arm.
+>
 > A LEAD LIST for it (`/usr/bin/heap` under `MallocStackLogging`, max live bytes
 > per site over 12 inter / 8 still snapshots at 2048x2048 p13 — **snapshots, not
 > a peak: the maxima do not co-occur and do not sum to 68.1 MiB**). Sites the
