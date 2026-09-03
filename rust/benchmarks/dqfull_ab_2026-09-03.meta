@@ -1,0 +1,91 @@
+THE INVERSE TRANSFORM'S INPUT BUFFER WAS A COPY OF THE BUFFER NEXT TO IT, FOR
+EVERY TX SIZE UP TO 32x32.
+
+date:   2026-09-03
+host:   mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores) — no other build or
+        encode running (checked with `ps`) beyond a background sccache daemon.
+tool:   tools/perf_ab.sh — interleaved paired rounds, order randomised per
+        round, one untimed warmup inside each sample, NEITHER SIDE NICED, no
+        -C target-cpu=native.
+base:   c2e99a4e (main)
+cand:   base + this commit, nothing else.
+grid:   gradient qp 40. STILL arm 256/512 x p{2,6,10}, n=15. VIDEOKEY arm
+        (SVTAV1_VIDEO=1 SVT_AVIF=0, one key frame) 128/256/512 x p{6,8}, n=25.
+data:   benchmarks/dqfull_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}
+
+=================== WHAT CHANGED ============================================
+
+`leaf_funnel::tx_pipeline::tx_unit_inner` built `dq_full` — a `w x h` buffer,
+zeroed and then filled row by row from the `pw x ph` quantised corner — and
+handed it to `inv_txfm2d_dispatch`. The re-lay exists because the dispatch
+reads its input at the SAME stride it writes its output at, so a 64-dim
+transform (`dqcoeff` packed at `pw = 32`, output at `w = 64`) genuinely needs
+it.
+
+**`pw = w.min(32)` and `ph = h.min(32)`, so for every TX up to 32x32 —
+which is every TX the still path codes at these presets — `pw == w` and
+`ph == h`, and `dq_full` was a byte-for-byte copy of `dqcoeff` at the same
+stride.** Per transform unit that is a `memset` of `w*h*4` bytes followed by a
+`memcpy` of `w*h*4` bytes, both dead: 16 KiB of pointless memory traffic on a
+32x32 TU, once per reconstructed transform unit per candidate per TX depth.
+
+The fix is a two-arm binding: pass `&dqcoeff[..n]` straight through when
+`pw == w && ph == h`, keep the re-lay (and its load-bearing zero-fill, which
+covers the columns nothing writes) otherwise. Byte-identical by construction —
+the two buffers had equal contents and equal strides on the elided arm.
+
+=================== MEASURED ================================================
+
+STILL (n=15), speedup = base/cand:
+
+  cell      speedup   p25/p75 of the ratio
+  256 p2    **1.028x**  0.9663 / 0.9757   entirely below 1.0
+  256 p6    1.013x      0.9816 / 0.9899   entirely below 1.0
+  256 p10   1.006x      0.9909 / 1.0033   crosses 1.0
+  512 p2    **1.023x**  0.9720 / 0.9788   entirely below 1.0
+  512 p6    1.008x      0.9869 / 0.9959   entirely below 1.0
+  512 p10   1.002x      0.9869 / 1.0016   crosses 1.0
+
+VIDEOKEY (n=25):
+
+  cell      speedup   p25/p75
+  128 p6    1.004x    0.9870 / 1.0031   crosses
+  128 p8    1.001x    0.9864 / 1.0097   crosses
+  256 p6    1.013x    0.9803 / 0.9967   entirely below 1.0
+  256 p8    1.000x    0.9867 / 1.0008   crosses (NULL)
+  512 p6    1.007x    0.9864 / 0.9962   entirely below 1.0
+  512 p8    1.011x    0.9796 / 0.9953   entirely below 1.0
+
+EVERY cell of both arms is `ident=Y`.
+
+**The preset gradient is the check that the attribution is right.** The elided
+work is per RECONSTRUCTED transform unit, and the number of those per pixel
+falls steeply with preset: p2 gains 2.3-2.8 %, p6 gains 0.8-1.3 %, p10 gains
+0.2-0.6 % and reads NULL. That is the shape a per-TU constant must have, and it
+is the same shape the residual-kernel routing showed
+(benchmarks/residual_simd_ab_2026-09-03.meta).
+
+=================== WHAT THIS IS AN INSTANCE OF =============================
+
+The still-arm attribution (benchmarks/perf_still_attrib_2026-09-03.meta) puts
+LIBC_MEM at 9.9 % of the gap at 512 p6 and 11.6 % at p10, with `_platform_memset`
+and `_platform_memmove` its two largest symbols on the port side. Nearest-ancestor
+attribution of those two symbol families on a fresh 512 p6 profile
+(tools/perf_profile/ancestor.py) named `tx_unit_inner` the single largest
+caller of BOTH — 71 of 464 memset self samples and 70 of 313 memmove — and this
+one buffer is why.
+
+**LIBC_MEM is not a kernel-quality gap and it is not the allocator; it is dead
+buffer traffic in the drivers, and it is found by asking who CALLS memset, not
+by reading the class table.** Ancestor-attributing `_platform_memset` /
+`_platform_memmove` / the malloc family is a five-minute query and it ranks the
+work directly.
+
+=================== NOT ESTABLISHED =========================================
+  * Any size but 256/512, content but gradient, qp but 40.
+  * The inter arm (not measured here).
+  * Peak RSS. This removes transient traffic through buffers that were already
+    allocated (`TxScratch`'s `dq_full` is a reused per-thread `Vec`), so no
+    allocation count and no live-byte total changes — there is nothing here for
+    a peak to move on. `dq_full` still exists and is still grown by the 64-dim
+    arm.

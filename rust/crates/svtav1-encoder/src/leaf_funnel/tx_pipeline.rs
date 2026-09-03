@@ -504,13 +504,25 @@ pub(super) fn tx_unit_inner(
     if !do_recon {
         // C's branch is simply not taken here.
     } else if eob > 0 {
-        // `dq_full` is only PARTIALLY overwritten below (a pw x ph corner into a
-        // w x h buffer), so zeroing it is load-bearing, not decorative — it is
-        // kept exactly as the `vec![0i32; n]` it replaces.
-        let dq_full = TxScratch::zeroed(dq_full, n);
-        for r in 0..ph {
-            dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
-        }
+        // `dq_full` re-lays the pw x ph quantised corner into a zero-padded
+        // w x h buffer at stride `w`, because the inverse dispatch reads its
+        // input at the SAME stride it writes its output at. When there is no
+        // 64-dim fold (`pw == w && ph == h`, i.e. every TX up to 32x32) that
+        // buffer is a byte-for-byte COPY of `dqcoeff` at the same stride, so
+        // the zero-fill and the row copy are both dead: pass `dqcoeff`
+        // straight through. Only the 64-dim shapes, where `dqcoeff` is packed
+        // at stride `pw = 32` and the dispatch wants stride `w`, still need
+        // the re-lay — and there the zero-fill IS load-bearing, since only the
+        // pw x ph corner is written.
+        let dq_src: &[i32] = if pw == w && ph == h {
+            &dqcoeff[..n]
+        } else {
+            let dq_full = TxScratch::zeroed(dq_full, n);
+            for r in 0..ph {
+                dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
+            }
+            &dq_full[..n]
+        };
         if lossless_wht {
             // C `svt_aom_inv_transform_recon8bit` (inv_transforms.c:3141):
             // widens the 8-bit prediction into a u16 scratch, runs the highbd
@@ -525,14 +537,14 @@ pub(super) fn tx_unit_inner(
                 }
             }
             let mut out16 = [0u16; 16];
-            svtav1_dsp::inv_txfm::highbd_iwht4x4_16_add(dq_full, &pred16, 4, &mut out16, 4, 8);
+            svtav1_dsp::inv_txfm::highbd_iwht4x4_16_add(dq_src, &pred16, 4, &mut out16, 4, 8);
             for (d, &s) in recon.iter_mut().zip(out16.iter()) {
                 *d = s as u8;
             }
         } else {
             let inv = TxScratch::zeroed(inv, n);
             let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                dq_full,
+                dq_src,
                 inv,
                 w,
                 rs_tx_size(w, h),
