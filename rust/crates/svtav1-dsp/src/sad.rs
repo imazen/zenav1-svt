@@ -8,8 +8,6 @@
 //! Ported from SVT-AV1's sad_calculation functions.
 //! SIMD implementations use archmage for dispatch.
 
-use archmage::prelude::*;
-
 /// Compute SAD between two blocks of 8-bit pixels.
 ///
 /// # Arguments
@@ -19,6 +17,15 @@ use archmage::prelude::*;
 /// * `ref_stride` - Distance between reference rows in bytes
 /// * `width` - Block width in pixels
 /// * `height` - Block height in pixels
+///
+/// This is a thin alias for [`crate::me_sad::block_sad`]. It used to carry its
+/// OWN scalar / AVX2 / NEON arms, which made it a SECOND TRANSCRIPTION of the
+/// same C kernel `me_sad` transcribes — the exact hazard
+/// `docs/WORKING-ON-THIS.md` §4 records ("TWO transcriptions of the same C
+/// function will diverge — grep before you write the second"). Pointing both
+/// at one implementation removes the hazard, and it also gives this entry
+/// point the `arm_v2` dotprod arm and the 8-wide arm it never had (its NEON
+/// path fell entirely to scalar below 16 px wide).
 pub fn sad(
     src: &[u8],
     src_stride: usize,
@@ -27,10 +34,7 @@ pub fn sad(
     width: usize,
     height: usize,
 ) -> u32 {
-    incant!(
-        sad_impl(src, src_stride, ref_, ref_stride, width, height),
-        [v3, neon, scalar]
-    )
+    crate::me_sad::block_sad(src, src_stride, ref_, ref_stride, width, height)
 }
 
 /// SAD for specific common block sizes — 8x8.
@@ -51,225 +55,6 @@ pub fn sad_32x32(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) 
 /// SAD for specific common block sizes — 64x64.
 pub fn sad_64x64(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
     sad(src, src_stride, ref_, ref_stride, 64, 64)
-}
-
-// --- Scalar implementation ---
-
-fn sad_impl_scalar(
-    _token: ScalarToken,
-    src: &[u8],
-    src_stride: usize,
-    ref_: &[u8],
-    ref_stride: usize,
-    width: usize,
-    height: usize,
-) -> u32 {
-    let mut sum: u32 = 0;
-    for row in 0..height {
-        let src_row = row * src_stride;
-        let ref_row = row * ref_stride;
-        for col in 0..width {
-            let s = src[src_row + col] as i32;
-            let r = ref_[ref_row + col] as i32;
-            sum += (s - r).unsigned_abs();
-        }
-    }
-    sum
-}
-
-// --- AVX2 implementation ---
-
-#[cfg(target_arch = "x86_64")]
-#[arcane]
-fn sad_impl_v3(
-    _token: Desktop64,
-    src: &[u8],
-    src_stride: usize,
-    ref_: &[u8],
-    ref_stride: usize,
-    width: usize,
-    height: usize,
-) -> u32 {
-    // For widths >= 32, use full AVX2 _mm256_sad_epu8
-    // For widths >= 16, use SSE2 _mm_sad_epu8
-    // For smaller widths, fall through to scalar
-    //
-    // Note: This is a starting implementation. Will be optimized further
-    // with dedicated per-size kernels after parity tests pass.
-
-    if width >= 32 {
-        sad_avx2_wide(_token, src, src_stride, ref_, ref_stride, width, height)
-    } else if width >= 16 {
-        sad_sse2_16(_token, src, src_stride, ref_, ref_stride, width, height)
-    } else {
-        // Scalar fallback for small blocks (4x4, 8x8, etc.)
-        // The compiler will auto-vectorize this with AVX2 enabled
-        let mut sum: u32 = 0;
-        for row in 0..height {
-            let src_row = row * src_stride;
-            let ref_row = row * ref_stride;
-            for col in 0..width {
-                let s = src[src_row + col] as i32;
-                let r = ref_[ref_row + col] as i32;
-                sum += (s - r).unsigned_abs();
-            }
-        }
-        sum
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[rite]
-fn sad_avx2_wide(
-    _token: Desktop64,
-    src: &[u8],
-    src_stride: usize,
-    ref_: &[u8],
-    ref_stride: usize,
-    width: usize,
-    height: usize,
-) -> u32 {
-    let mut total_sad: u64 = 0;
-
-    for row in 0..height {
-        let src_offset = row * src_stride;
-        let ref_offset = row * ref_stride;
-        let mut col = 0;
-
-        while col + 32 <= width {
-            let s_arr: &[u8; 32] = src[src_offset + col..src_offset + col + 32]
-                .try_into()
-                .unwrap();
-            let r_arr: &[u8; 32] = ref_[ref_offset + col..ref_offset + col + 32]
-                .try_into()
-                .unwrap();
-            let s = _mm256_loadu_si256(s_arr);
-            let r = _mm256_loadu_si256(r_arr);
-            let sad = _mm256_sad_epu8(s, r);
-
-            // Extract the 4 u64 partial sums
-            let lo = _mm256_castsi256_si128(sad);
-            let hi = _mm256_extracti128_si256::<1>(sad);
-            let sum128 = _mm_add_epi64(lo, hi);
-            let hi64 = _mm_srli_si128::<8>(sum128);
-            let sum64 = _mm_add_epi64(sum128, hi64);
-            total_sad += _mm_cvtsi128_si64(sum64) as u64;
-
-            col += 32;
-        }
-
-        // Handle remaining columns with scalar
-        while col < width {
-            let s = src[src_offset + col] as i32;
-            let r = ref_[ref_offset + col] as i32;
-            total_sad += (s - r).unsigned_abs() as u64;
-            col += 1;
-        }
-    }
-
-    total_sad as u32
-}
-
-#[cfg(target_arch = "x86_64")]
-#[rite]
-fn sad_sse2_16(
-    _token: Desktop64,
-    src: &[u8],
-    src_stride: usize,
-    ref_: &[u8],
-    ref_stride: usize,
-    width: usize,
-    height: usize,
-) -> u32 {
-    let mut total_sad: u64 = 0;
-
-    for row in 0..height {
-        let src_offset = row * src_stride;
-        let ref_offset = row * ref_stride;
-        let mut col = 0;
-
-        while col + 16 <= width {
-            let s_arr: &[u8; 16] = src[src_offset + col..src_offset + col + 16]
-                .try_into()
-                .unwrap();
-            let r_arr: &[u8; 16] = ref_[ref_offset + col..ref_offset + col + 16]
-                .try_into()
-                .unwrap();
-            let s = _mm_loadu_si128(s_arr);
-            let r = _mm_loadu_si128(r_arr);
-            let sad = _mm_sad_epu8(s, r);
-
-            let hi64 = _mm_srli_si128::<8>(sad);
-            let sum64 = _mm_add_epi64(sad, hi64);
-            total_sad += _mm_cvtsi128_si64(sum64) as u64;
-
-            col += 16;
-        }
-
-        while col < width {
-            let s = src[src_offset + col] as i32;
-            let r = ref_[ref_offset + col] as i32;
-            total_sad += (s - r).unsigned_abs() as u64;
-            col += 1;
-        }
-    }
-
-    total_sad as u32
-}
-
-// --- NEON implementation ---
-
-#[cfg(target_arch = "aarch64")]
-#[arcane]
-fn sad_impl_neon(
-    _token: NeonToken,
-    src: &[u8],
-    src_stride: usize,
-    ref_: &[u8],
-    ref_stride: usize,
-    width: usize,
-    height: usize,
-) -> u32 {
-    // Real NEON: vabdq_u8 for |a-b| on 16 bytes, then widening pairwise adds
-    // (vpadalq) to accumulate into u16 and u32 lanes without overflow.
-    //
-    // A block row is at most 128 px wide here and height at most 128, so the
-    // u16 accumulator could overflow (255 * 128 = 32640 fits, but summing
-    // across rows would not) — hence the per-row drain into the u32
-    // accumulator rather than accumulating u16 across the whole block.
-    //
-    // Exact by construction: absolute difference and addition are exact in
-    // integer lanes, so this equals the scalar sum bit for bit. Pinned by
-    // `sad_neon_matches_scalar_exactly` below.
-    let mut acc = vdupq_n_u32(0);
-    let mut tail: u32 = 0;
-
-    for row in 0..height {
-        let s_row = row * src_stride;
-        let r_row = row * ref_stride;
-        let mut col = 0;
-        let mut row_acc = vdupq_n_u16(0);
-
-        while col + 16 <= width {
-            let a: &[u8; 16] = src[s_row + col..s_row + col + 16].try_into().unwrap();
-            let b: &[u8; 16] = ref_[r_row + col..r_row + col + 16].try_into().unwrap();
-            let d = vabdq_u8(vld1q_u8(a), vld1q_u8(b));
-            // |diff| <= 255 per lane; 16 lanes -> at most 4080 per row chunk,
-            // and a 128-wide row is 8 chunks -> 32640, still inside u16.
-            row_acc = vpadalq_u8(row_acc, d);
-            col += 16;
-        }
-        acc = vpadalq_u16(acc, row_acc);
-
-        while col < width {
-            let s = src[s_row + col] as i32;
-            let r = ref_[r_row + col] as i32;
-            tail += (s - r).unsigned_abs();
-            col += 1;
-        }
-    }
-
-    vaddvq_u32(acc) + tail
 }
 
 #[cfg(test)]

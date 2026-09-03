@@ -56,6 +56,19 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **`dsp::sad::sad` was a SECOND TRANSCRIPTION of the kernel `me_sad`
+  transcribes, and is now a thin alias for it.** It carried its own scalar /
+  AVX2 / NEON arms; two transcriptions of one C function with nothing pointing
+  either at the other is exactly the hazard `docs/WORKING-ON-THIS.md` §4
+  records. Pointing both at `me_sad::block_sad` removes it, and incidentally
+  gives this entry point (intrabc's block search and `port_global_motion`) the
+  `arm_v2` dotprod arm and the 8-wide arm it never had — its NEON path fell
+  entirely to scalar below 16 px wide. Byte-identical: `identity_full_8bit`
+  1100/1100, `inter_byte_gate` 89/0, `regression_spotcheck` 83/83,
+  `screen_palette_gate` 50/50, `screen_ibc_fh_gate` PASS, nextest 2493/2493
+  including the tier-1 `c_parity_{sad,intrabc_search}` and
+  `sad_neon_parity`. NOT MEASURED: whether the better arm makes intrabc or
+  global motion faster — no A/B was run on that path.
 - **The five scalar motion-search kernels are vectorised — the INTER cell is
   1.15x faster, byte for byte** (`rust/docs/perf-status.md`, "ME SIMD COVERAGE
   LANDED"). New `svtav1-dsp::me_sad` exports two block primitives as

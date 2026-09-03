@@ -320,7 +320,6 @@ pub fn block_sum_sse_v3(
     w: usize,
     h: usize,
 ) -> (i32, u32) {
-    let zero = _mm256_setzero_si256();
     let mut acc_a = _mm256_setzero_si256();
     let mut acc_b = _mm256_setzero_si256();
     let mut acc_sse = _mm256_setzero_si256();
@@ -361,7 +360,6 @@ pub fn block_sum_sse_v3(
             c += 1;
         }
     }
-    let _ = zero;
     let red = |v: __m256i| -> i32 {
         let lo = _mm256_castsi256_si128(v);
         let hi = _mm256_extracti128_si256::<1>(v);
