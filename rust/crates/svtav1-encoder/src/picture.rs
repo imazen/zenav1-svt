@@ -242,6 +242,47 @@ pub struct ReferenceFrame {
     /// `(uint8_t)~0` "no usable reference" sentinel — the arm that makes NO
     /// adjustment, so an empty vector is inert rather than wrong.
     pub sb_min_sq_size: alloc::vec::Vec<u8>,
+    /// C `EbReferenceObject::intra_coded_area` / `skip_coded_area` /
+    /// `hp_coded_area` (`reference_object.h`), as PERCENTAGES.
+    ///
+    /// C accumulates each as an AREA in `update_b` (coding_loop.c:1605-1638)
+    /// over every coded block of a non-allintra picture — intra area,
+    /// high-precision-MV area (only while `allow_high_precision_mv`), and
+    /// no-coeff area — sums them into the picture at
+    /// enc_dec_process.c:3167-3169, normalises to `100 * area /
+    /// (aligned_w * aligned_h)` at rest_process.c:347-349 (with
+    /// `intra_coded_area` forced to 0 on an I_SLICE) and copies them onto the
+    /// reference object at :195-197.
+    ///
+    /// The NEXT frame reads them through `get_ref_intra_percentage` /
+    /// `get_ref_skip_percentage` / `get_ref_hp_percentage`
+    /// (rc_process.c:66/96/118), which is what
+    /// `sig_deriv_mode_decision_config_default` prices
+    /// `allow_high_precision_mv` and `interpolation_search_level` from. All
+    /// three are ZERO on a picture whose walk did not accumulate, which is
+    /// every allintra cell — and C's own readers return 0 / 0 / -1 for an
+    /// I_SLICE reference regardless, so a key frame's values are never read.
+    pub intra_coded_area: u8,
+    /// See [`Self::intra_coded_area`].
+    pub skip_coded_area: u8,
+    /// See [`Self::intra_coded_area`].
+    pub hp_coded_area: u8,
+    /// C `EbReferenceObject::sb_intra[sb]` — 1 when ANY block in that
+    /// superblock was coded intra (`coding_loop.c:1606`), in raster SB order.
+    ///
+    /// `pd0_detector`'s `use_ref_info` arms read it per superblock
+    /// (enc_dec_process.c:2126/2140). EMPTY on a picture whose walk did not
+    /// accumulate.
+    pub sb_intra: alloc::vec::Vec<u8>,
+    /// C `EbReferenceObject::sb_skip[sb]` — 1 until a block in that
+    /// superblock codes a coefficient (`coding_loop.c:1643`, init 1 at
+    /// enc_dec_process.c:3099). EMPTY on a picture whose walk did not
+    /// accumulate.
+    pub sb_skip: alloc::vec::Vec<u8>,
+    /// C `EbReferenceObject::slice_type` — I_SLICE or not. Every
+    /// `get_ref_*_percentage` reader gates on it first (rc_process.c:66-140),
+    /// and a key-frame reference contributes ZERO to all three.
+    pub is_islice: bool,
     /// The same recon with C's replicated reference margin
     /// ([`PaddedRef`]), which is the form INTER PREDICTION indexes — see
     /// [`REF_BORDER`] for why the margin is load-bearing for the DECISION
@@ -434,6 +475,12 @@ mod tests {
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
             sb_min_sq_size: alloc::vec![],
+            intra_coded_area: 0,
+            skip_coded_area: 0,
+            hp_coded_area: 0,
+            sb_intra: alloc::vec![],
+            sb_skip: alloc::vec![],
+            is_islice: false,
             lf_levels: [0; 4],
             dlf_dist_dev: -1,
             width: 64,
@@ -459,6 +506,12 @@ mod tests {
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
             sb_min_sq_size: alloc::vec![],
+            intra_coded_area: 0,
+            skip_coded_area: 0,
+            hp_coded_area: 0,
+            sb_intra: alloc::vec![],
+            sb_skip: alloc::vec![],
+            is_islice: false,
             lf_levels: [0; 4],
             dlf_dist_dev: -1,
             width: 4,

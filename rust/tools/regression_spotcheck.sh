@@ -103,6 +103,42 @@ refuses() {
   fi
 }
 
+# refuses_inter3 <label> <content> <w> <h> <qp> <preset>
+# Asserts the port REFUSES the THIRD frame of a low-delay-P sequence — the
+# first inter frame whose LIST-0 REFERENCE is itself an inter frame.
+#
+# Why a cell for a refusal. The frame-2 refusal used to name a gap that has
+# since been CLOSED (the reference's three coded-area percentages, which
+# `ReferenceFrame` now carries and `SVT_REFSTATS_OUT` verifies), and lifting it
+# on that basis alone is exactly wrong: with mechanisms 1 and 4 in and nothing
+# else, frame 2 of `gradient 64x64 q32 p8` codes 466 B against C's 21, every
+# block intra. What is still missing is C's per-superblock `pd0_detector`
+# inputs (`ref_obj_l0->sb_intra[sb_index]`, enc_dec_process.c:2126) and the
+# `part_arm::VideoPic::InterOnInterRef` arm that would consume them.
+#
+# So this cell pins the refusal FROM THE OTHER SIDE: deleting it fails here
+# with "ENCODED where a refusal was required", instead of silently shipping a
+# 466-byte frame where C writes 21. See docs/INTER-ENCODE-PLAN.md 1z25.
+#
+# It drives the SAME harness configuration `identity_diff_inter.sh` does, so a
+# refusal here is the one the inter campaign would hit.
+refuses_inter3() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  SVTAV1_FRAMES=3 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
+    SVTAV1_INTER_EXPERIMENTAL=1 $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
+    >/dev/null 2>"$W/err"
+  local rc=$?
+  if [ "$rc" -eq 3 ]; then
+    pass=$((pass+1))
+  elif grep -q "panicked at" "$W/err"; then
+    fail=$((fail+1)); failed+=("$label PANICKED where a refusal was required: $(grep -m1 'panicked at' "$W/err" | sed 's/.*panicked at //')")
+  elif [ "$rc" -eq 0 ]; then
+    fail=$((fail+1)); failed+=("$label ENCODED where a refusal was required (the frame-2 refusal was lifted without byte-parity evidence)")
+  else
+    fail=$((fail+1)); failed+=("$label [rc=$rc, expected 3]")
+  fi
+}
+
 # decodes <label> <content> <w> <h> <qp> <preset> <bd>
 # Asserts the port's stream DECODES under the reference decoder.
 #
@@ -769,6 +805,17 @@ byte "qp0-screen-p8-96x80"   screen  96 80 0 8
 # deleting it re-enables a PANIC.
 refuses "qp0-screen-refused-p4" screen 64 64 0 4
 refuses "qp0-screen-refused-p5" screen 64 64 0 5
+
+# INTER frame 2 — the first frame whose list-0 reference is itself an inter
+# frame. The refusal MOVED on 2026-09-03 (docs/INTER-ENCODE-PLAN.md 1z25): the
+# coded-area statistics it used to name are carried and joined to C now, and
+# the gap that is left is the per-superblock `pd0_detector` input.
+#
+# OBSERVED with the refusal removed: `gradient 64x64 q32 p8` frames=3 encodes
+# frame 2 at 466 B where C writes 21, coding every block intra. Two cells, so a
+# lift has to be argued at more than one geometry.
+refuses_inter3 "inter-frame2-refused-g64-p8"  gradient  64  64 32 8
+refuses_inter3 "inter-frame2-refused-d128-p6" diag     128 128 40 6
 
 ramp_yuv 100 100 "$W/ramp_100x100.yuv"
 monoReconEq "mono-arbitrary-dims-p7-100x100" "raw:$W/ramp_100x100.yuv" 100 100 20 7

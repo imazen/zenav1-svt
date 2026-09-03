@@ -81,6 +81,11 @@ presence_flags! {
     dump_lr => "SVTAV1_DUMP_LR",
     /// `SVTAV1_PD0DBG`: PD0 decision dump (per block).
     pd0dbg => "SVTAV1_PD0DBG",
+    /// `SVTAV1_REFSTATS`: the coded-area statistics this frame put on its DPB
+    /// entry, in the field order of the C interposer's `REFSTATS` line
+    /// (`tools/capture_c_trace/wrap_recon.c`) so the two can be joined
+    /// directly. One line per coded frame.
+    refstats => "SVTAV1_REFSTATS",
     /// `SVTAV1_CHAIN_DUMP`: funnel-chain dump.
     chain_dump => "SVTAV1_CHAIN_DUMP",
     /// `SVTAV1_SEED_DUMP`: funnel-seed dump.

@@ -6145,6 +6145,109 @@ every entry anyway (`qdiff = 0`, factor 128, the identity).
 Data: `benchmarks/inter_byte_matrix_2026-09-03-sblambda.{tsv,meta}` and the
 `-before-` sibling.
 
+### 1z²⁵. The frame-2 refusal MOVED — two of four mechanisms landed, and a FIFTH the list never named (2026-09-03)
+
+`benchmarks/ref_coded_area_stats_2026-09-02.md` scoped the frame-2 refusal to
+four mechanisms. This chunk re-took its measurement on THIS host, landed two
+of the four, found a fifth that would have voided every frame-2 reading, and
+**left the refusal in place** — re-keyed on the gap that is actually left.
+
+Full record with every number: `benchmarks/frame2_mechanisms_2026-09-03.md`.
+
+#### The 09-02 verdict REPRODUCES
+
+The brief that commissioned this work flagged the verdict's evidence path as
+in question: `ctrace-linux/run.sh` did not forward `SVT_REFSTATS_OUT` until
+the drift guard was added, so the dump may never have been driven from this
+host. Re-run here, it is byte for byte the same three lines — `l0=0/0/100/0`
+at poc 2, `refskip=100`, `refhp=0`, `l0cnt` 1 -> 2 and `l1cnt` 1 -> 0. **The
+verdict stands and the evidence path is now sound.**
+
+#### Landed: mechanisms 1 and 4
+
+`CodedAreaAcc` accumulates C's three coded areas in the port's own walk,
+placed beside the `skip` symbol the walk already writes — because C's skip
+accumulator IS `blk_ptr->block_has_coeff == 0`, and a second derivation of
+that would have been the campaign's sixth duplicate transcription. The
+normalised percentages plus per-superblock `sb_intra` / `sb_skip` and the
+picture's `slice_type` now live on `picture::ReferenceFrame`, and
+`md_config_inputs` derives all three `ref_*_percentage` values through the
+already-ported `rc_process.c:66/96/118` readers instead of from zeros.
+
+**Joined to C, field for field** (`SVTAV1_REFSTATS=1` against
+`SVT_REFSTATS_OUT`): C reads its frame-2 list-0 reference as
+`slice/intra/skip/hp = 0/0/100/0`; the port writes exactly
+`slice=0 intra=0 skip=100 hp=0` onto frame 1's DPB entry, and its
+`l0cnt=2 l1cnt=0` at poc 2 matches C's.
+
+It also exposed a latent defect: `MdConfigInputs::ref_list{0,1}_count_try`
+was filled from `ref_list{0,1}_count`, the UNCAPPED counts. Equal on every
+cell this port has encoded, different under `list0_only` or off the base
+layer — and `ref_list1_count_try` is precisely the field C's dump reports
+going 1 -> 0 at frame 2. Corrected.
+
+#### The FIFTH mechanism: the DPB never received an inter frame
+
+`PictureControlSet::new_inter_frame` hard-codes `refresh_frame_flags: 0`, and
+that constant — not `pic.rps.refresh_frame_mask`, which the frame HEADER
+already writes — is what reached `self.dpb.refresh(..)`. So the stream
+announced C's real mask while this encoder's own DPB stayed all-key-frame.
+
+MEASURED at poc 2 before the fix: `rps.ref_dpb_index[0]` is slot 1 and all
+eight slots still held the key frame, so LAST resolved to poc 0 where C's
+resolves to poc 1. After: `poc=1 refresh=0x02`, and poc 2's slot 1 reports
+`is_islice=false`.
+
+**This is the FIFTH "a caller passes a constant where the derivation is
+already ported" finding of this campaign** (after `dlf_level = 0`, PD0's
+`inter` argument, `md_config.rs:948`, and `was_intra: Some(1)` — which is
+still live, below). It is invisible at two frames because nothing reads the
+DPB after frame 1, which is the whole envelope every gate in this repo
+covers. **Any frame-2 reading taken before it is void.**
+
+#### What is still refused, and why the refusal MOVED rather than lifting
+
+With 1 and 4 in and nothing else changed, frame 2 ENCODES — at **466 B
+against C's 21**, coding `intra=100`, i.e. every block intra. The brief that
+commissioned this said it in advance: "Do not partially lift it ... landing
+some converts an honest refusal into silently-wrong output." So the refusal is
+reinstated, and re-keyed:
+
+> an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's
+> per-superblock `pd0_detector` inputs
+
+`pd0_detector` reads `ref_obj_l0->sb_intra[sb_index]` PER SUPERBLOCK
+(`enc_dec_process.c:2126`); `part_arm::VideoPic` still has no
+`InterOnInterRef` variant and `video_pd0_params` answers a constant
+`was_intra: Some(1)`, true only of a KEY-frame reference. It picks
+`pic_pd0_lvl`, the level the whole partition search runs at.
+
+**Mechanisms 2 and 3 are NOT landed.** The DPB now carries the per-superblock
+flags they need, so what is left is the `InterOnInterRef` arm plus the CURRENT
+picture's `sb_intra[left]` / `sb_skip[top]` — which C has for free because its
+MD and EncDec are ONE loop and this port's are two passes, so a port-side
+answer needs an MD-pass fold that does not exist yet.
+
+#### No regression, measured
+
+`cargo nextest run --workspace` **2509/2509**, `regression_spotcheck.sh`
+**100/100** (the two new `refuses_inter3` cells included),
+`identity_full_8bit.sh` **1100/1100**, `inter_byte_gate.sh` **93/0 failed**,
+`fctx_gate.sh` PASS, `inter_decode_gate.sh` PASS, `inter_decode_census.sh`
+PASS, `video_key_matrix.sh` 58/60 (unmoved), `inter_completion_scan.sh`
+**64 OK / 0 REFUSED / 0 CRASH** with all 64 rows byte-for-byte the same
+verdicts as before the change.
+
+Mutation-verified: with the refusal's predicate forced false, the spot-check
+reports `inter-frame2-refused-g64-p8 ENCODED where a refusal was required` and
+the same for `d128-p6`; restored, 100/100.
+
+The whole change is byte-inert on the two-frame envelope BY CONSTRUCTION:
+nothing reads the DPB after frame 1, `md_config_inputs`' three percentages are
+0 / 0 / -1 for the key-frame reference frame 1 has (C's own readers return
+those for an I_SLICE regardless), and `CodedAreaAcc` is armed only on the
+VIDEO arm, which no allintra cell takes.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

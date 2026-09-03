@@ -1909,6 +1909,26 @@ impl EncodePipeline {
             )
         };
 
+        // C `frm_hdr->refresh_frame_flags = ppcs->rps.refresh_frame_mask`
+        // — the SAME value the frame header signals (`inter_hdr_arm.rs`:
+        // `refresh_frame_flags: pic.rps.refresh_frame_mask`).
+        //
+        // `PictureControlSet::new_inter_frame` hard-codes 0, and that constant
+        // reached `self.dpb.refresh(..)` — so the HEADER announced C's real
+        // mask while THIS ENCODER'S DPB never received an inter frame at all.
+        // Invisible at two frames (nothing reads the DPB after frame 1) and
+        // fatal at three: MEASURED 2026-09-03 on
+        // `gradient 64x64 q32 p8 frames=3`, at poc 2 the port's
+        // `rps.ref_dpb_index[0]` is slot 1 and every slot still held the KEY
+        // frame, so LAST resolved to poc 0 where C's is poc 1. Every
+        // frame-2 reading taken before this fix is void.
+        //
+        // A key frame keeps 0xFF from `new_key_frame`: it has no picture
+        // decision on the allintra path, and C's own key-frame mask is 0xFF.
+        if let Some(pic) = pic_decision.as_ref() {
+            pcs.refresh_frame_flags = pic.rps.refresh_frame_mask;
+        }
+
         // Step 3: Rate control — assign QP
         pcs.qp = assign_picture_qp(&self.rc_config, &self.rc_state, temporal_layer);
 
@@ -2980,18 +3000,32 @@ impl EncodePipeline {
                 super_block_size: self.sb_size as u16,
                 enable_interintra_compound: seq_tools.enable_interintra_compound,
                 frame_superres_enabled: self.superres_denom.is_some(),
-                ref_list0_count_try: pd.map_or(0, |p| u32::from(p.ref_list0_count)),
-                ref_list1_count_try: pd.map_or(0, |p| u32::from(p.ref_list1_count)),
-                // Every DPB slot still holds the key frame on the 2-frame
-                // cell; the shadow DPB's POC 0 IS that key frame.
-                ref_l0_is_islice: self.pd_ctx.dpb
-                    [pd.map_or(0, |p| p.rps.ref_dpb_index[0] as usize)]
-                .picture_number
-                    == 0,
-                ref_l1_is_islice: self.pd_ctx.dpb
-                    [pd.map_or(0, |p| p.rps.ref_dpb_index[4] as usize)]
-                .picture_number
-                    == 0,
+                // C `ppcs->ref_list{0,1}_count_try` — the MRP-CAPPED counts
+                // `update_count_try` (pd_process.c:4507) produces, NOT
+                // `ref_list{0,1}_count`. This site read the uncapped pair
+                // until 2026-09-03; the two agree on every cell this port has
+                // encoded (both are `min(found, base_ref_listN_count)` on a
+                // base-layer frame) but they diverge the moment `list0_only`
+                // or a non-base layer applies, and `ref_list1_count_try` is
+                // exactly the field C's own dump reports going 1 -> 0 at
+                // frame 2 (`benchmarks/ref_coded_area_stats_2026-09-02.md`).
+                ref_list0_count_try: pd.map_or(0, |p| u32::from(p.ref_list0_count_try)),
+                ref_list1_count_try: pd.map_or(0, |p| u32::from(p.ref_list1_count_try)),
+                // C `pcs->ref_pic_ptr_array[REF_LIST_{0,1}][0]->object_ptr`,
+                // through the RPS's DPB indices — the same slots
+                // `port_picstruct::bind_refs_and_primary_ref_frame` binds.
+                // `None` when that list is empty, which is C's own guard in
+                // every `get_ref_*_percentage` reader.
+                ref_l0: pd.and_then(|p| {
+                    (p.ref_list0_count_try > 0)
+                        .then(|| ref_obj_stats(&self.dpb, p.rps.ref_dpb_index[0] as usize))
+                        .flatten()
+                }),
+                ref_l1: pd.and_then(|p| {
+                    (p.ref_list1_count_try > 0)
+                        .then(|| ref_obj_stats(&self.dpb, p.rps.ref_dpb_index[4] as usize))
+                        .flatten()
+                }),
             })
             .and_then(
                 crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
@@ -4142,6 +4176,15 @@ impl EncodePipeline {
         // each rerun replaces `tile_data`, so the cell is overwritten every
         // time and ends holding the state of the walk whose bytes actually
         // ship. Anything else would save the CDFs of a bitstream nobody sent.
+        // C `pcs->{intra,skip,hp}_coded_area` + `pcs->sb_{intra,skip}[]`, the
+        // per-picture sums of every tile's `update_b` accumulators. `None`
+        // unless the walk armed them, which is the VIDEO arm only — so an
+        // allintra cell carries the same zeros it always did.
+        //
+        // A `RefCell` for the same reason `walk_end_cdfs` is one: the walk
+        // runs inside a closure that borrows `&self`.
+        let frame_coded_area: core::cell::RefCell<Option<CodedAreaAcc>> =
+            core::cell::RefCell::new(None);
         let walk_end_cdfs: core::cell::RefCell<Option<crate::port_frame_cdf::FrameCdfs>> =
             core::cell::RefCell::new(None);
         #[allow(clippy::type_complexity)]
@@ -4255,6 +4298,26 @@ impl EncodePipeline {
                 // (docs/INTER-ENCODE-PLAN.md §1s item 7). `None` on a key
                 // frame, where the arm is unreachable.
                 ectx.inter_syntax = inter_syntax_state.clone();
+                // C `update_b`'s accumulators, armed on the VIDEO arm only —
+                // C's own gate is `!pcs->scs->allintra` (coding_loop.c:1603),
+                // a SEQUENCE flag, so both frame types of a video encode
+                // accumulate and no allintra cell does. That is what keeps
+                // the still envelope untouched by construction.
+                ectx.coded_area =
+                    matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }).then(|| {
+                        CodedAreaAcc::new(
+                            // C `frm_hdr->allow_high_precision_mv`, from the
+                            // same derivation the header signals. FALSE on a
+                            // key frame, where `inter_syntax_state` is `None`
+                            // and no block carries an MV anyway.
+                            inter_syntax_state
+                                .as_ref()
+                                .is_some_and(|st| st.allow_high_precision_mv),
+                            sb_size,
+                            w.div_ceil(sb_size),
+                            h.div_ceil(sb_size),
+                        )
+                    });
                 if let Some(env) = inter_mvp_env.clone() {
                     ectx.arm_inter_mvp(env);
                 }
@@ -4410,6 +4473,16 @@ impl EncodePipeline {
                 }
 
                 tile_bitstreams.push(writer.done().to_vec());
+                // C `enc_dec_process.c:3166-3170`: each EncDec context's
+                // coded-area totals are summed into the picture under
+                // `pcs->intra_mutex`. One tile per context here.
+                if let Some(acc) = ectx.coded_area.as_ref() {
+                    let mut slot = frame_coded_area.borrow_mut();
+                    match slot.as_mut() {
+                        Some(f) => f.merge(acc),
+                        None => *slot = Some(acc.clone()),
+                    }
+                }
                 // See `walk_end_cdfs`: overwritten per tile AND per walk, so
                 // it ends holding the last tile of the last walk — C's own
                 // "last tile wins" save order.
@@ -5718,77 +5791,79 @@ impl EncodePipeline {
                 // records (obu.rs).
                 true, /*is_s_frame=*/ false,
             );
-            // THIS IS THE FRAME-2 WALL, and it is worth naming precisely
-            // because it is NOT what it looks like. It is not the DPB, not
-            // reference management, and not the picture-decision GOP
-            // requirement (`intra_period > 1`, the refusal two arms above) —
-            // all three are satisfied on the frame that hits it, and the
-            // control flow PROVES it: this arm is downstream of the
-            // `pic_decision.as_ref().ok_or_else(..)` above, so
-            // `port_picstruct::generate_rps_info` already produced frame 2's
-            // reference structure. Its "4 of C's 8 branches" refusal
-            // (REFUSED-CONFIGS capability #18) covers the RANDOM-ACCESS
-            // hierarchical branches at `hierarchical_levels` 1..5; the
-            // low-delay CQP branch this GOP uses is translated.
+            // THE FRAME-2 WALL, MOVED 2026-09-03 and now naming the gap
+            // that is actually left.
             //
-            // `md_config_inputs` returns `None` when
-            // `get_ref_hp_percentage` gives anything other than its -1
-            // sentinel, and -1 means "every usable reference was an I_SLICE"
-            // (rc_process.c:126). On frame 1 both references ARE the key
-            // frame, so the sentinel is the honest answer and nothing is
-            // read. On frame 2 list 0 points at frame 1, a non-I slice, and C
-            // reads that picture's `EbReferenceObject::hp_coded_area` — a
-            // statistic C accumulates PER CODED BLOCK in `update_b`
-            // (coding_loop.c:1605-1638: intra area, high-precision-MV area,
-            // and no-coeff area), normalises to a percentage at
-            // rest_process.c:347-349 and copies onto the reference object at
-            // :195-197. This port carries none of the three on its DPB entry,
-            // so the only alternative to refusing is to answer from the
-            // zeroed placeholder in `inter_hdr_arm::md_config_inputs` — and
-            // those values pick `allow_high_precision_mv` and
-            // `interpolation_search_level`, i.e. real bitstream syntax.
+            // It used to be `md_config_inputs` returning `None` for any
+            // `get_ref_hp_percentage` answer other than its -1 sentinel,
+            // because the port carried NONE of the three coded-area
+            // statistics C reads off a reference. It carries all three now —
+            // `ReferenceFrame::{intra,skip,hp}_coded_area`, accumulated in
+            // the walk by `CodedAreaAcc` exactly where C's `update_b` does,
+            // and VERIFIED against C's own reference objects
+            // (`SVT_REFSTATS_OUT` on `gradient 64x64 q32 p8 frames=3`): C
+            // reads its frame-2 list-0 reference as `0/0/100/0`
+            // (slice/intra/skip/hp) and this port writes exactly
+            // `slice=0 intra=0 skip=100 hp=0` onto frame 1's DPB entry.
             //
-            // MEASURED 2026-09-02 through C's own reference objects
-            // (`SVT_REFSTATS_OUT`, `gradient 64x64 q32 p8`, three frames —
-            // `benchmarks/ref_coded_area_stats_2026-09-02.md`): at frame 2
-            // C has `ref_hp_percentage` 0, `ref_skip_percentage` **100** and
-            // `ref_intra_percentage` 0, and its list-0 reference (frame 1, a
-            // 22-byte all-skip frame) carries
-            // `intra/skip/hp_coded_area = 0/100/0`. So this refusal is
-            // CONSERVATIVE rather than tight: the placeholder would have got
-            // `ref_hp_percentage` right by accident, and the value that
-            // actually disagrees is `ref_skip_percentage`. It also showed
-            // that `ref_list0_count_try` goes 1 -> 2 and
-            // `ref_list1_count_try` 1 -> 0 at frame 2, so the reference
-            // STRUCTURE changes too.
+            // WHAT IS STILL MISSING, and it is a DIFFERENT mechanism:
+            // `part_arm::VideoPic` has two variants, `IntraSlice` and
+            // `InterOnIntraRef`, and NO `InterOnInterRef`. C's `pd0_detector`
+            // (enc_dec_process.c:2126/2140) reads
+            // `ref_obj_l0->sb_intra[sb_index]` PER SUPERBLOCK; the port's
+            // `video_pd0_params` hard-codes `was_intra: Some(1)`, which is
+            // right only because the only reference in its envelope is a key
+            // frame (every superblock of which codes intra). On an inter
+            // reference it is a guess, and it decides `pic_pd0_lvl` — the
+            // PD0 level the whole partition search runs at.
             //
-            // WHAT LIFTING IT NEEDS, measured 2026-09-02:
-            //   1. the three coded-area accumulators, folded onto the DPB
-            //      entry beside `sb_min_sq_size` (which the port already
-            //      carries, so the plumbing exists);
-            //   2. per-SB `sb_intra` on the DPB entry — `pd0_detector`'s
-            //      `use_ref_info` arms read it, and `part_arm::VideoPic`
-            //      deliberately has no `InterOnInterRef` variant so that
-            //      needing one is a compile error rather than a wrong level;
-            //   3. `ref_intra_percentage` and `ref_skip_percentage`, which
-            //      are also placeholder zeros in `MdConfigInputs`.
-            // Until 2026-09-02 there was also no way to CHECK the result:
-            // `capture_c_trace` died at SVT_FRAMES=3 with "ST mode: empty
-            // object pool exhausted" because it held every output buffer
-            // until after the last send. That is fixed (it now drains between
-            // sends above two frames), so a frame-2 oracle exists.
+            // MEASURED with this refusal lifted and nothing else changed:
+            // `gradient 64x64 q32 p8 frames=3` frame 2 codes **466 B against
+            // C's 21**, so the honest thing is a refusal, not a stream. The
+            // DPB now carries `sb_intra` / `sb_skip` per superblock, so the
+            // remaining work is the `InterOnInterRef` arm and the per-SB
+            // detector inputs it needs — see
+            // `docs/INTER-ENCODE-PLAN.md` 1z25.
+            #[cfg(feature = "std")]
+            if crate::dbgenv::refstats() {
+                std::eprintln!(
+                    "PORTREFBIND poc={display_order} l0cnt={} l1cnt={} dpb0={} l0slot={} \
+                     l0_is_islice={:?} prf={} refresh=0x{:02x}",
+                    pic.ref_list0_count_try,
+                    pic.ref_list1_count_try,
+                    self.dpb.occupied_slots(),
+                    pic.rps.ref_dpb_index[0],
+                    self.dpb
+                        .get(pic.rps.ref_dpb_index[0] as usize)
+                        .map(|rf| rf.is_islice),
+                    binding.primary_ref_frame,
+                    pic.rps.refresh_frame_mask,
+                );
+            }
+            if pic.ref_list0_count_try > 0
+                && self
+                    .dpb
+                    .get(pic.rps.ref_dpb_index[0] as usize)
+                    .is_some_and(|rf| !rf.is_islice)
+            {
+                return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                    "an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's \
+                     per-superblock pd0_detector inputs: pd0_detector reads \
+                     ref_obj_l0->sb_intra[sb_index] (enc_dec_process.c:2126) and \
+                     part_arm::VideoPic has no InterOnInterRef arm, so video_pd0_params \
+                     answers a constant 1 that is only true of a KEY-frame reference. \
+                     The three coded-area percentages this refusal used to name ARE \
+                     carried now (ReferenceFrame::intra_coded_area, joined to C's \
+                     SVT_REFSTATS_OUT). Measured with the refusal lifted: frame 2 of \
+                     gradient 64x64 q32 p8 codes 466 B against C's 21. Encode at most \
+                     two frames [C: accepts]",
+                )));
+            }
             let sigs = md_config_signals.ok_or_else(|| {
                 whereat::at!(EncodeError::UnsupportedConfig(
-                    "an inter frame whose REFERENCE is itself an inter frame needs that \
-                     reference's coded-area statistics: C accumulates hp_coded_area / \
-                     skip_coded_area / intra_coded_area per block in update_b \
-                     (coding_loop.c:1605-1638), turns them into percentages \
-                     (rest_process.c:347) and stores them on the EbReferenceObject, and \
-                     sig_deriv_mode_decision_config_default reads them for \
-                     allow_high_precision_mv and interpolation_search_level. This port \
-                     carries none of them, so only get_ref_hp_percentage's -1 \
-                     \"every reference was an I_SLICE\" answer is trustworthy — which is the \
-                     FIRST inter frame only. Encode at most two frames",
+                    "an inter frame's mode-decision configuration is outside this port's \
+                     envelope: sig_deriv_mode_decision_config_default declined a level \
+                     (crate::inter_hdr_arm::md_config_inputs) [C: accepts]",
                 ))
             })?;
             // The tile above was coded from whatever `primary_ref_frame_for_cdf`
@@ -6049,6 +6124,41 @@ impl EncodePipeline {
             };
             alloc::boxed::Box::new(crate::picture::PaddedRef { y, uv })
         };
+        // C `rest_process.c:347-349`, run on EVERY coded picture (the RC
+        // reads them even for a non-reference frame) — `intra_coded_area` is
+        // forced to 0 on an I_SLICE there, which is why a key frame stores
+        // only its skip/hp areas.
+        let coded_area_pct = frame_coded_area
+            .borrow()
+            .as_ref()
+            .map_or((0, 0, 0), |a| a.percentages(w, h, is_key));
+        // The join to C's `SVT_REFSTATS_OUT` interposer, which prints the
+        // reference object's `slice_type/intra/skip/hp` for the frame that
+        // READS it. This prints the same four for the frame that WRITES it,
+        // so `REFSTATS poc=N ... l0=a/b/c/d` on the C side must equal
+        // `PORTREFSTATS poc=N-1 slice=a intra=b skip=c hp=d` here.
+        #[cfg(feature = "std")]
+        if crate::dbgenv::refstats() {
+            let (i_pct, s_pct, h_pct) = coded_area_pct;
+            let acc = frame_coded_area.borrow();
+            std::eprintln!(
+                "PORTREFSTATS poc={display_order} slice={} intra={i_pct} skip={s_pct} hp={h_pct} \
+                 sbintra=[{}] sbskip=[{}]",
+                u8::from(is_key),
+                acc.as_ref().map_or(alloc::string::String::new(), |a| a
+                    .sb_intra
+                    .iter()
+                    .map(|v| alloc::format!("{v}"))
+                    .collect::<alloc::vec::Vec<_>>()
+                    .join(",")),
+                acc.as_ref().map_or(alloc::string::String::new(), |a| a
+                    .sb_skip
+                    .iter()
+                    .map(|v| alloc::format!("{v}"))
+                    .collect::<alloc::vec::Vec<_>>()
+                    .join(",")),
+            );
+        }
         let ref_frame = ReferenceFrame {
             padded: Some(padded_ref),
             y_plane: recon,
@@ -6069,6 +6179,27 @@ impl EncodePipeline {
             // CDEF candidate set is rewritten from these
             // (`update_cdef_filters_on_ref_info`).
             sb_min_sq_size: sb_min_sq_sizes,
+            // C `copy_statistics_to_ref_obj_ect` (rest_process.c:190-220):
+            // the NORMALISED percentages (`:347-349`) and the per-superblock
+            // flags this picture's walk accumulated. All zero / empty on
+            // every allintra cell, where the walk never armed the
+            // accumulator — and C's own readers return 0 / 0 / -1 for an
+            // I_SLICE reference regardless of what it stored.
+            intra_coded_area: coded_area_pct.0,
+            skip_coded_area: coded_area_pct.1,
+            hp_coded_area: coded_area_pct.2,
+            sb_intra: frame_coded_area
+                .borrow()
+                .as_ref()
+                .map(|a| a.sb_intra.clone())
+                .unwrap_or_default(),
+            sb_skip: frame_coded_area
+                .borrow()
+                .as_ref()
+                .map(|a| a.sb_skip.clone())
+                .unwrap_or_default(),
+            // C `EbReferenceObject::slice_type`.
+            is_islice: is_key,
             cdef_y_strengths: cdef_params.strengths.iter().map(|s| s.0).collect(),
             cdef_uv_strengths: cdef_params.strengths.iter().map(|s| s.1).collect(),
             // C `packetization_process.c:741-744`: reset the CDF symbol
@@ -6422,6 +6553,146 @@ pub(crate) struct EntropyCtx {
     /// exactly on a non-key frame; the arm refuses without it rather than
     /// inventing a header it cannot have read.
     pub(crate) inter_syntax: Option<InterSyntaxState>,
+    /// C's `update_b` coded-area accumulators (`coding_loop.c:1605-1643`),
+    /// `Some` exactly when `!scs->allintra` — i.e. on the VIDEO arm, which is
+    /// the only arm whose pictures are ever read as references.
+    ///
+    /// They live here rather than in a fold over the decided trees because
+    /// the SKIP half is `blk_ptr->block_has_coeff`, and the walk is the one
+    /// place that already computes it (the `skip` symbol it writes IS
+    /// `!block_has_coeff`). A second derivation would be the campaign's
+    /// sixth duplicate transcription — see `docs/WORKING-ON-THIS.md` 4.
+    pub(crate) coded_area: Option<CodedAreaAcc>,
+}
+
+/// C's per-picture coded-area accumulators, as `update_b` builds them
+/// (`coding_loop.c:1605-1643`) and `enc_dec_process.c:3167-3169` sums them.
+///
+/// AREAS in luma pixels here; `rest_process.c:347-349` turns them into
+/// percentages, which is what the DPB entry carries.
+#[derive(Clone, Debug)]
+pub(crate) struct CodedAreaAcc {
+    /// C `frm_hdr->allow_high_precision_mv` — the gate on the hp accumulator.
+    pub(crate) allow_high_precision_mv: bool,
+    /// Superblock size in luma pixels, for the `sb_index` of a block origin.
+    pub(crate) sb_size: usize,
+    /// Superblocks per row.
+    pub(crate) sb_cols: usize,
+    /// C `ctx->tot_intra_coded_area`.
+    pub(crate) intra_area: u64,
+    /// C `ctx->tot_skip_coded_area`.
+    pub(crate) skip_area: u64,
+    /// C `ctx->tot_hp_coded_area`.
+    pub(crate) hp_area: u64,
+    /// C `pcs->sb_intra[sb]`, init 0 (`enc_dec_process.c:3099`).
+    pub(crate) sb_intra: Vec<u8>,
+    /// C `pcs->sb_skip[sb]`, init **1** (`enc_dec_process.c:3100`).
+    pub(crate) sb_skip: Vec<u8>,
+}
+
+impl CodedAreaAcc {
+    pub(crate) fn new(
+        allow_high_precision_mv: bool,
+        sb_size: usize,
+        sb_cols: usize,
+        sb_rows: usize,
+    ) -> Self {
+        Self {
+            allow_high_precision_mv,
+            sb_size,
+            sb_cols,
+            intra_area: 0,
+            skip_area: 0,
+            hp_area: 0,
+            sb_intra: alloc::vec![0u8; sb_cols * sb_rows],
+            sb_skip: alloc::vec![1u8; sb_cols * sb_rows],
+        }
+    }
+
+    /// Fold another tile's accumulators in. C accumulates per EncDec context
+    /// and sums under `pcs->intra_mutex` (`enc_dec_process.c:3166-3170`); the
+    /// per-superblock flags are written to disjoint entries, so a max/min is
+    /// the same thing as C's single shared array.
+    pub(crate) fn merge(&mut self, other: &Self) {
+        self.intra_area += other.intra_area;
+        self.skip_area += other.skip_area;
+        self.hp_area += other.hp_area;
+        for (d, s) in self.sb_intra.iter_mut().zip(&other.sb_intra) {
+            *d |= *s;
+        }
+        for (d, s) in self.sb_skip.iter_mut().zip(&other.sb_skip) {
+            *d &= *s;
+        }
+    }
+
+    /// C `update_b`, for ONE coded block (`coding_loop.c:1605-1643`).
+    ///
+    /// `skip` is C's `blk_ptr->block_has_coeff == 0`, which is exactly the
+    /// `skip` symbol the walk writes.
+    pub(crate) fn add_block(
+        &mut self,
+        decision: &crate::partition::BlockDecision,
+        block_x: usize,
+        block_y: usize,
+        skip: bool,
+    ) {
+        let area = u64::from(decision.width) * u64::from(decision.height);
+        let sb_idx = (block_y / self.sb_size) * self.sb_cols + (block_x / self.sb_size);
+        if decision.is_inter {
+            // C reads `blk_ptr->block_mi.mv[0]` (and mv[1] on a compound
+            // block) and asks whether EITHER component is odd, i.e. whether
+            // the eighth-pel MV is not a quarter-pel one. Gated on
+            // `allow_high_precision_mv` because C is.
+            if self.allow_high_precision_mv
+                && let Some(i) = decision.inter.as_ref()
+            {
+                let odd = |m: svtav1_types::motion::Mv| m.x % 2 != 0 || m.y % 2 != 0;
+                let mut hp = odd(i.mv[0]);
+                if !hp && i.ref_frame[1] > 0 {
+                    hp = odd(i.mv[1]);
+                }
+                if hp {
+                    self.hp_area += area;
+                }
+            }
+        } else {
+            // C `is_intra_mode(blk_ptr->block_mi.mode)`. An IntraBC block
+            // codes DC_PRED and is therefore INTRA to this accumulator, which
+            // is what `!decision.is_inter` says (see `BlockDecision`'s
+            // `use_intrabc`: the two are independent).
+            self.intra_area += area;
+            if let Some(f) = self.sb_intra.get_mut(sb_idx) {
+                *f = 1;
+            }
+        }
+        if skip {
+            self.skip_area += area;
+        } else if let Some(f) = self.sb_skip.get_mut(sb_idx) {
+            *f = 0;
+        }
+    }
+
+    /// C `rest_process.c:347-349`: `100 * area / (aligned_w * aligned_h)`,
+    /// with `intra_coded_area` forced to 0 on an I_SLICE. Returns
+    /// `(intra, skip, hp)` as the `uint8_t` percentages the reference object
+    /// stores (`copy_statistics_to_ref_obj_ect`, :195-197).
+    pub(crate) fn percentages(
+        &self,
+        aligned_w: usize,
+        aligned_h: usize,
+        is_islice: bool,
+    ) -> (u8, u8, u8) {
+        let n = (aligned_w * aligned_h) as u64;
+        if n == 0 {
+            return (0, 0, 0);
+        }
+        let pct = |a: u64| (100 * a / n) as u8;
+        (
+            if is_islice { 0 } else { pct(self.intra_area) },
+            pct(self.skip_area),
+            pct(self.hp_area),
+        )
+    }
 }
 
 /// The owned twin of
@@ -6651,6 +6922,8 @@ impl EntropyCtx {
                 height_4x4
             ],
             inter_syntax: None,
+            // Armed by the caller on the VIDEO arm only (`CodedAreaAcc`).
+            coded_area: None,
             mvp_grid: Vec::new(),
             mvp_env: None,
         }
@@ -7303,6 +7576,30 @@ impl EntropyCtx {
 /// C `av1_use_angle_delta(bsize)` (reconintra.h:59): `bsize >= BLOCK_8X8` in
 /// enum order — true for every block size except BLOCK_4X4, BLOCK_4X8 and
 /// BLOCK_8X4 (the 4:1 rects 4x16/16x4 come AFTER BLOCK_128X128 in the enum).
+/// C `get_ref_obj` (rc_process.c:61) narrowed to the four fields the three
+/// `get_ref_*_percentage` readers use: the DPB slot's `slice_type` and its
+/// three coded-area percentages.
+///
+/// `None` for an empty slot, which C cannot express — it would dereference a
+/// null `object_ptr` — so `None` is this port refusing rather than reproducing
+/// UB, the same choice `port_rc_process::get_ref_obj` documents.
+fn ref_obj_stats(
+    dpb: &crate::picture::DecodedPictureBuffer,
+    slot: usize,
+) -> Option<crate::port_rc_process::RefObjStats> {
+    let rf = dpb.get(slot)?;
+    Some(crate::port_rc_process::RefObjStats {
+        slice_type: if rf.is_islice {
+            crate::port_rc_process::SliceType::I
+        } else {
+            crate::port_rc_process::SliceType::B
+        },
+        intra_coded_area: rf.intra_coded_area,
+        skip_coded_area: rf.skip_coded_area,
+        hp_coded_area: rf.hp_coded_area,
+    })
+}
+
 fn use_angle_delta(width: u16, height: u16) -> bool {
     !matches!((width, height), (4, 4) | (4, 8) | (8, 4))
 }
@@ -7710,6 +8007,15 @@ fn encode_block_syntax(
         && chroma_blocks
             .as_ref()
             .is_none_or(|(_, u_eob, _, v_eob)| *u_eob == 0 && *v_eob == 0);
+    // C `update_b` (coding_loop.c:1605-1643), which runs on every coded block
+    // of a `!scs->allintra` picture and is the SOURCE of the three coded-area
+    // statistics the NEXT frame reads off this picture's reference object.
+    // Placed here, immediately beside the `skip` the walk already computed,
+    // because C's own skip accumulator is `blk_ptr->block_has_coeff == 0` and
+    // a second derivation of that would diverge.
+    if let Some(acc) = ectx.coded_area.as_mut() {
+        acc.add_block(decision, block_x, block_y, skip);
+    }
     let skip_ctx = ectx.skip_ctx(block_x, block_y);
     crate::entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
 

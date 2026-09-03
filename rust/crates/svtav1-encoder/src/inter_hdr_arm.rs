@@ -273,7 +273,7 @@ pub fn ref_queue_from_dpb(ctx: &PicDecisionCtx, base_q_idx: u8) -> alloc::vec::V
 /// A narrow struct rather than 38 positional arguments, and every field is
 /// something `EncodePipeline` genuinely holds — the ones it does NOT hold are
 /// resolved inside [`md_config_inputs`] with their provenance stated there.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct PipelineMdInputs {
     /// `pcs->enc_mode` — the preset.
     pub enc_mode: i8,
@@ -308,12 +308,20 @@ pub struct PipelineMdInputs {
     pub ref_list0_count_try: u32,
     /// `ppcs->ref_list1_count_try`.
     pub ref_list1_count_try: u32,
-    /// The reference-picture slice types, list 0 / list 1 index 0. Only the
-    /// slice type is needed: `get_ref_hp_percentage` returns its -1 sentinel
-    /// for an I-slice reference regardless of the coded areas.
-    pub ref_l0_is_islice: bool,
-    /// See [`Self::ref_l0_is_islice`].
-    pub ref_l1_is_islice: bool,
+    /// The list-0 / list-1 index-0 reference objects' coded-area statistics,
+    /// as `copy_statistics_to_ref_obj_ect` stored them (rest_process.c:190).
+    /// `None` when that list has no reference.
+    ///
+    /// These USED to be a pair of `is_islice` bools with the three areas
+    /// pinned to zero, and [`md_config_inputs`] refused any `ref_hp_percentage`
+    /// other than the -1 "every reference was an I_SLICE" sentinel because of
+    /// it. The port now carries the real values on its DPB entry
+    /// (`crate::picture::ReferenceFrame::intra_coded_area`), verified against
+    /// C's own `SVT_REFSTATS_OUT` — see
+    /// `benchmarks/ref_coded_area_stats_2026-09-02.md`.
+    pub ref_l0: Option<crate::port_rc_process::RefObjStats>,
+    /// See [`Self::ref_l0`].
+    pub ref_l1: Option<crate::port_rc_process::RefObjStats>,
 }
 
 /// Build C's `MdConfigInputs` for an inter frame.
@@ -332,17 +340,23 @@ pub struct PipelineMdInputs {
 ///   this pipeline does not produce. They feed signals this header does not
 ///   read; `mfmv_level >= 2` is the one place `r0` would matter, and
 ///   [`inter_signal`] REFUSES there rather than trusting the placeholder.
-/// * `ref_intra_percentage` / `ref_skip_percentage` — reference statistics
-///   (`rc_process.c:96`) this pipeline does not accumulate. `ref_skip_percentage`
-///   reaches `interpolation_search_level` only above `ENC_M8`, so this returns
-///   `None` there rather than answering from a placeholder.
+/// The three reference-picture coded-area statistics
+/// (`ref_{intra,skip,hp}_percentage`) are NO LONGER placeholders: the caller
+/// supplies the DPB entries' real values and this derives all three through
+/// the ported `rc_process.c:66/96/118` readers. The refusal that used to
+/// stand here — "any `ref_hp_percentage` other than -1" — is gone with them.
 /// * `coeff_lvl` — `InputCoeffLvl::Normal`, C's value before the coefficient
 ///   analysis runs.
 ///
 /// # Errors
 ///
 /// `None` when a field the header reads would depend on a statistic this
-/// pipeline does not compute.
+/// pipeline does not compute. ONE such refusal is left, and it is the
+/// `enc_mode > ENC_M8 && !is_base` arm of `interpolation_search_level`: it
+/// reads `ref_skip_percentage`, which this pipeline now HAS — the remaining
+/// gap is `is_base`, i.e. `temporal_layer_index`, which is 0 on every flat
+/// GOP this port builds and so cannot be exercised. Kept rather than lifted
+/// because "the arm is unreachable here" is a claim about the envelope.
 #[must_use]
 pub fn md_config_inputs(
     p: PipelineMdInputs,
@@ -351,7 +365,7 @@ pub fn md_config_inputs(
     // NB: `port_rc_process` has its OWN `SliceType` — the two are distinct
     // types in this crate, and mixing them is a compile error rather than a
     // silent mismatch.
-    use crate::port_rc_process::{RefObjStats, SliceType, get_ref_hp_percentage};
+    use crate::port_rc_process::{SliceType, get_ref_hp_percentage};
 
     // `interpolation_search_level` consults `ref_skip_percentage` only on the
     // `enc_mode > ENC_M8`, non-base arm (`enc_mode_config.c:9088-9096`).
@@ -359,30 +373,26 @@ pub fn md_config_inputs(
     if p.enc_mode > 8 && p.temporal_layer_index != 0 {
         return None;
     }
-    let mk = |is_i: bool| RefObjStats {
-        slice_type: if is_i { SliceType::I } else { SliceType::B },
-        intra_coded_area: 0,
-        skip_coded_area: 0,
-        hp_coded_area: 0,
+    let slice = if p.is_islice {
+        SliceType::I
+    } else {
+        SliceType::B
     };
-    let l0 = mk(p.ref_l0_is_islice);
-    let l1 = mk(p.ref_l1_is_islice);
-    let ref_hp_percentage = get_ref_hp_percentage(
-        if p.is_islice {
-            SliceType::I
-        } else {
-            SliceType::B
-        },
-        u8::try_from(p.ref_list1_count_try).unwrap_or(u8::MAX),
-        Some(&l0),
-        Some(&l1),
+    let l1_count = u8::try_from(p.ref_list1_count_try).unwrap_or(u8::MAX);
+    let ref_hp_percentage =
+        get_ref_hp_percentage(slice, l1_count, p.ref_l0.as_ref(), p.ref_l1.as_ref());
+    let ref_intra_percentage = crate::port_rc_process::get_ref_intra_percentage(
+        slice,
+        l1_count,
+        p.ref_l0.as_ref(),
+        p.ref_l1.as_ref(),
     );
-    // A non-sentinel percentage would have come from `hp_coded_area`, which is
-    // a placeholder here — so only the -1 "no usable reference" answer is
-    // trustworthy, and anything else is refused.
-    if ref_hp_percentage != -1 {
-        return None;
-    }
+    let ref_skip_percentage = crate::port_rc_process::get_ref_skip_percentage(
+        slice,
+        l1_count,
+        p.ref_l0.as_ref(),
+        p.ref_l1.as_ref(),
+    );
     Some(MdConfigInputs {
         enc_mode: p.enc_mode,
         is_ref: p.is_ref,
@@ -405,9 +415,9 @@ pub fn md_config_inputs(
         frame_resize_enabled: false,
         seq_qp_mod: 2,
         resize_mode: 0,
-        ref_intra_percentage: 0,
+        ref_intra_percentage,
         rc_stat_gen_pass_mode: 0,
-        ref_skip_percentage: 0,
+        ref_skip_percentage,
         coeff_lvl: InputCoeffLvl::Normal,
         ref_list0_count_try: p.ref_list0_count_try,
         ref_list1_count_try: p.ref_list1_count_try,

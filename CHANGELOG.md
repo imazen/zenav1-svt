@@ -737,6 +737,36 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The port's DPB never received an inter frame, and the frame-2 refusal was
+  naming a gap it had closed.** `PictureControlSet::new_inter_frame`
+  hard-coded `refresh_frame_flags: 0`, and that constant — not
+  `pic.rps.refresh_frame_mask`, which the frame HEADER already writes — is
+  what reached `self.dpb.refresh(..)`, so the stream announced C's real mask
+  while the encoder's own DPB stayed all-key-frame. MEASURED at poc 2 of
+  `gradient 64x64 q32 p8 frames=3`: `rps.ref_dpb_index[0]` is slot 1 and all
+  eight slots still held the key frame, so LAST resolved to poc 0 where C's
+  resolves to poc 1. Invisible at two frames (nothing reads the DPB after
+  frame 1), which is the whole envelope every gate covers — so **any frame-2
+  reading taken before this fix is void**. Alongside it, the DPB entry now
+  carries C's three coded-area percentages (`intra`/`skip`/`hp`), the
+  per-superblock `sb_intra` / `sb_skip` flags and the picture's `slice_type`,
+  accumulated in the walk exactly where C's `update_b` does
+  (coding_loop.c:1605-1643) and VERIFIED against C's own reference objects
+  through `SVT_REFSTATS_OUT`: C reads its frame-2 list-0 reference as
+  `slice/intra/skip/hp = 0/0/100/0` and the port writes exactly that onto
+  frame 1's entry. `MdConfigInputs` derives all three `ref_*_percentage`
+  values from them instead of from placeholder zeros, and its
+  `ref_list{0,1}_count_try` fields are now filled from the CAPPED counts C
+  reads rather than the uncapped `ref_list{0,1}_count`. Byte-inert on the
+  two-frame envelope by construction. The frame-2 refusal is NOT lifted: with
+  these in and nothing else, frame 2 codes 466 B against C's 21, so it is
+  re-keyed on the gap that is actually left — `pd0_detector` reads
+  `ref_obj_l0->sb_intra[sb_index]` per superblock and
+  `part_arm::VideoPic` has no `InterOnInterRef` arm.
+  (`docs/INTER-ENCODE-PLAN.md` 1z25,
+  `benchmarks/frame2_mechanisms_2026-09-03.md`)
+
+
 - **C's MD lambda is PER-SUPERBLOCK and this port had one per frame — the
   inter byte grid goes 89 -> 91 of 96, `inter_byte_gate` 91 -> 93.**
   `svt_aom_mode_decision_configure_sb` (md_process.c:796) is called per

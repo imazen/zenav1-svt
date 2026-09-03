@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **30
+**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **31
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **11** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -64,7 +64,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 |---|---|
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | a picture-level MD search level is outside the range its C control table accepts (crate::inter_search_arm::frame_cfg) |
-| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame whose REFERENCE is itself an inter frame needs that reference's coded-area statistics: C accumulates hp_coded_area / skip_coded_area / intra_coded_area per block in update_b (coding_loop.c:1605-1638), turns them into percentages (rest_process.c:347) and stores them on the EbReferenceObject, and sig_deriv_mode_decision_config_default reads them for allow_high_precision_mv and interpolation_search_level. This port carries none of them, so only get_ref_hp_percentage's -1 \"every reference was an I_SLICE\" answer is trustworthy — which is the FIRST inter frame only. Encode at most two frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |
@@ -88,6 +87,8 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd is the monochrome entry point; use try_encode_frame_420_hbd on a 4:2:0 pipeline |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
+| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's per-superblock pd0_detector inputs: pd0_detector reads ref_obj_l0->sb_intra[sb_index] (enc_dec_process.c:2126) and part_arm::VideoPic has no InterOnInterRef arm, so video_pd0_params answers a constant 1 that is only true of a KEY-frame reference. The three coded-area percentages this refusal used to name ARE carried now (ReferenceFrame::intra_coded_area, joined to C's SVT_REFSTATS_OUT). Measured with the refusal lifted: frame 2 of gradient 64x64 q32 p8 codes 466 B against C's 21. Encode at most two frames |
+| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |

@@ -1265,6 +1265,25 @@ chunks read that `PD0DR` line as confirmation. **Join the probe to the
 DECISION, not to C's probe**: the cheap version here was counting PD0 nodes
 per frame in the port's own dump (80 vs 5) which needs no oracle at all.
 
+**THE PORT'S DPB NEVER RECEIVED AN INTER FRAME, AND NO GATE COULD SEE IT**
+(§1z²⁵, 2026-09-03). `PictureControlSet::new_inter_frame` hard-codes
+`refresh_frame_flags: 0`, and that constant — not `pic.rps.refresh_frame_mask`,
+which the frame HEADER already writes — is what reached
+`self.dpb.refresh(..)`. So the stream announced C's real mask while this
+encoder's own DPB stayed all-key-frame. MEASURED at poc 2 of
+`gradient 64x64 q32 p8 frames=3`: `rps.ref_dpb_index[0]` is slot 1 and all
+EIGHT slots still held the key frame, so LAST resolved to poc 0 where C's
+resolves to poc 1.
+
+Two things to carry. **It is invisible at two frames** — nothing reads the DPB
+after frame 1 — and two frames is the entire envelope every gate in this repo
+covers, so "93 byte-identical cells" said nothing about it. **And any frame-2
+reading taken before 2026-09-03 is void**, including numbers a future chunk
+might lift out of the 09-02 notes. This is the FIFTH "a caller passes a
+constant where the derivation is already ported" finding of the campaign; the
+sibling that is STILL live is `part_arm::video_pd0_params`' `was_intra:
+Some(1)`, which is true only of a key-frame reference.
+
 **THE DLF VIDEO ARM WAS ONE `else` ARM, AND IT WAS WORTH TWELVE CELLS**
 (§1z²¹, 2026-09-02). `pipeline.rs` derived `dlf_level` through the ported
 ladder for both arms, mapped it through `set_dlf_controls` — and then handed
@@ -1372,8 +1391,16 @@ Two things §1q proves that a reader will otherwise re-derive:
   the ungated form was observed to fail but because it makes every 1- and
   2-frame run byte-identical BY CONSTRUCTION rather than by measurement.
   Verified regardless: byte gate 55 required / 0 failed, spot-check 76/76.
-  The PORT still refuses frame 2, for an unrelated reason — see
-  `docs/REFUSED-CONFIGS.md`'s coded-area-statistics entry.
+  The PORT still refuses frame 2, but the reason CHANGED on 2026-09-03
+  (§1z²⁵): the coded-area statistics the old refusal named are carried on the
+  DPB entry now and joined to C's own `SVT_REFSTATS_OUT` field for field
+  (`slice/intra/skip/hp = 0/0/100/0` on both sides). What is left is the
+  per-superblock `pd0_detector` input — `ref_obj_l0->sb_intra[sb_index]`, which
+  `part_arm::VideoPic` has no `InterOnInterRef` arm to consume. **Do not read
+  the lift as close because two of four mechanisms landed**: with them in and
+  nothing else, frame 2 codes 466 B against C's 21, every block intra. Two
+  `refuses_inter3` cells in `regression_spotcheck.sh` pin that from the other
+  side.
 * **`fh_fields.py` used to GUESS `skipModeAllowed`** and got it wrong on the
   first inter cell, shifting every field after `skip_mode_present` by one bit
   without any sign in the printout. It now implements the real rule and threads
