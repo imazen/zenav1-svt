@@ -5845,6 +5845,87 @@ The still and key-frame paths are untouched BY CONSTRUCTION, not only by
 measurement: the new argument is `pd0_inter.as_ref()`, and `pd0_inter` is
 `inter_md.map(..)` — `None` on every key frame and every allintra cell.
 
+### 1z²³. The per-superblock lambda: PORTED and TESTED against C's own numbers, NOT yet wired (2026-09-02)
+
+The mechanism behind §1z²²'s residual six, derived rather than suspected, and
+carried as far as it can go without the pipeline threading that is the next
+chunk. Byte-inert as landed — every caller still passes qdiff 0 — which is
+deliberate: the producer, the consumer and the factor block all exist and are
+pinned, so wiring is one edit rather than a port.
+
+**What C does that the port does not.** `fast_lambda_md` and `full_lambda_md`
+are PER-SUPERBLOCK, through `update_lambda`'s
+`stats_based_sb_lambda_modulation` block (`rc_process.c:423-446`), whose
+`qdiff` is `me_q_index - base_q_idx`. `me_q_index` is
+`svt_aom_get_me_qindex` (`md_rate_estimation.c:1084`) over
+`b64_me_qindex[]`, which `svt_av1_generate_b64_me_qindex_map`
+(`rc_aq.c:656`) derives from **`me_8x8_cost_variance` alone** — a quantity
+this port already computes EXACTLY (`benchmarks/pd0_depth_removal_join_
+2026-09-02.md`'s divergence 2 established that).
+
+**The measurement, `diag 72x72 q40 p6` frame 1** — C's `SVT_PD0CFG_OUT`
+against the port's `PD0DR`, four superblocks of ONE frame:
+
+| SB | org | C `fastlam` | port | C `mev` | port `mev` |
+|---|---|---|---|---|---|
+| 0 | (0,0) | **5182** | 6633 | 0 | 0 |
+| 1 | (64,0) | **5182** | 6633 | 0 | 0 |
+| 2 | (0,64) | **5182** | 6633 | 0 | 0 |
+| 3 | (64,64) | **7773** | 6633 | 1341553 | 1341553 |
+
+Run the map on those four `mev` values with `base_q_idx = 160`:
+`avg = 335388`, `min = 0`, `max = 1341553`; SBs 0-2 get `offset = -8` ->
+qindex 152 -> `qdiff = -8 <= -4` -> factor **100**, SB 3 gets `offset = +8` ->
+qindex 168 -> `qdiff = +8 > 4` -> factor **150**. Applied in C's order —
+`update_lambda`'s factor first, `av1_lambda_assign_md`'s `lambda_weight`
+(150 here) second — that is 5182 and 7773 exactly, from the port's own
+pre-factor 5661. Both points, no fitting.
+
+**This REFUTES the earlier geometry reading.**
+`benchmarks/pd0_depth_removal_join_2026-09-02.md` recorded the high lambda as
+landing on "the whole x=128 COLUMN, i.e. every superblock whose cropped WIDTH
+is 40". Here the high one is (64,64), cropped 8x8, while (64,0) is 8x64 and
+(0,64) is 64x8 and both take the LOW value. The separator is non-zero
+`me_8x8_cost_variance`, and re-read against the nine-superblock cell it fits
+that one too — its three high-lambda superblocks are exactly its three with
+non-zero ME distortion.
+
+**And it found a FOURTH duplicate transcription of `update_lambda`.**
+`pd0::inter_full_lambda_8bit` carried `kf_full_lambda_8bit_tuned`'s stats
+block verbatim — the `delta_q_present` arm, thresholds ±8 with a low factor of
+**90**. That arm is correct for `kf_full_lambda_8bit_tuned` (its caller is the
+fork's per-SB delta-q path, and C keys that one on `q_index`); it is the wrong
+one for an inter frame, where `delta_q_present` is false and the live arm is
+±4 with a low factor of **100**. Inert at qdiff 0, which is why nothing saw
+it, and wrong on the first real `me_q_index`. Corrected, and the existing
+`inter_lambda_tests` sweep now drives the qdiff axis at
+`{0, ±3, ±4, ±5, ±9}` against `port_rc_process::compute_rd_mult` — the
+tier-1-gated transcription — so the two spellings cannot diverge again.
+Mutation-verified: restoring the ±8/90 arm fails that sweep.
+
+**Landed:** `port_rc_process::generate_b64_me_qindex_map` (tier 4 for the
+arithmetic — C's function is `void` over a `PictureControlSet`, nothing to
+shim; **tier 2 for the result**, which is the table above), four unit tests
+including C's two measured lambdas and the I-slice no-op, and the corrected
+arm. `port_md_rate_estimation::get_me_qindex` was already ported and had said
+in its own doc that it had "no producer inside the port"; it does now.
+
+**Not landed — the wiring, which is the next chunk and is one edit.**
+`pipeline.rs` must build the map once per frame from
+`FrameMe::per_b64[..].me_8x8_cost_variance`, and thread a PER-SUPERBLOCK
+`me_q_index` into the three call sites that pass `base_qindex` today:
+`pd0_min_sq`'s `compute_fast_lambda` (which is hoisted OUT of the superblock
+loop and has to move into it), and the two `inter_full_lambda_8bit` /
+`Pd0InterRef` paths. `scs->stats_based_sb_lambda_modulation` is
+`enc_mode <= (rtc ? ENC_M10 : ENC_M11)` (`enc_handle.c:4375`), i.e. on at
+every preset this port reaches — the observed 100/150 split is proof of that
+from the other side, which settles the open question the benchmark note asked.
+
+**It cannot move a still or a key frame**: the map's I-slice arm writes
+`base_q_idx` into every entry, so `qdiff` is 0 and the factor is the identity
+128. The verification cell is the table above — `fastlam` must read
+5182 / 5182 / 5182 / 7773 on `diag 72x72 q40 p6` frame 1.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

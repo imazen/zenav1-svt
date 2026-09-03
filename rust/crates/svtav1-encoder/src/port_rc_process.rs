@@ -1563,6 +1563,93 @@ pub fn lambda_gf_update_type(
     }
 }
 
+/// C `svt_av1_generate_b64_me_qindex_map` (`rc_aq.c:656`) — a per-b64 qindex
+/// derived from the open-loop ME COST VARIANCE, for LAMBDA MODULATION ONLY.
+///
+/// C's own header comment says "to be used for lambda modulation only; not at
+/// Q/Q-1": nothing quantizes with this value, and it never reaches the frame
+/// header. Its only consumer is
+/// [`crate::port_md_rate_estimation::get_me_qindex`], whose result is
+/// `update_lambda`'s `me_q_index` — the `qdiff` in the
+/// `stats_based_sb_lambda_modulation` factor, which is what makes C's
+/// `fast_lambda_md` and `full_lambda_md` PER-SUPERBLOCK.
+///
+/// **Byte-inert on every I-slice by construction.** C takes the `else` branch
+/// there and writes `base_q_idx` into every entry, so `qdiff` is 0 and the
+/// factor is the identity 128. That is what lets this be wired without moving
+/// a still or a key frame.
+///
+/// The offsets: `min_offset` / `max_offset` are `-8` / `+8` at every temporal
+/// layer (C spells them as per-layer arrays that happen to be uniform, kept
+/// that shape here), and the clip is `base_q_idx ± (9 * 4 - 1)` = ±35, which
+/// an 8-wide offset cannot reach except against the 1 / MAXQ ends.
+///
+/// **The multiply happens in C's `int`, not in 64 bits.** `min_offset[tl]` and
+/// `diff_dist` are both `int`, so `min_offset[tl] * diff_dist` is a 32-bit
+/// product that is only then widened for the division by the `int64_t`
+/// denominator. Reproduced with `wrapping_mul` on `i32` rather than promoted,
+/// because a 32-bit overflow there is C's behaviour and not ours to fix.
+///
+/// **No division by zero is reachable**, and it is worth saying why rather
+/// than guarding: the `diff_dist < 0` arm divides by `min_dist - avg_dist`,
+/// and `diff_dist < 0` means `mev[b] < avg`, which forces `min <= mev < avg`;
+/// symmetrically for the `> 0` arm. When every value is equal, `diff_dist` is
+/// 0 and neither arm runs.
+///
+/// **Evidence tier 2** for the RESULT, on `diag 72x72 q40 p6` frame 1: this
+/// map's four outputs put `update_lambda`'s factor at 100 / 100 / 100 / 150,
+/// and C's own `SVT_PD0CFG_OUT` reports `fastlam` 5182 / 5182 / 5182 / 7773
+/// against a pre-factor 6633 — both reproduced exactly. Tier 4 for the
+/// arithmetic itself (C's function is `void` and takes a `PictureControlSet`,
+/// so there is nothing to shim a differential against).
+/// Full derivation: `benchmarks/pd0_depth_removal_join_2026-09-02.md`.
+#[must_use]
+pub fn generate_b64_me_qindex_map(
+    me_8x8_cost_variance: &[u32],
+    base_q_idx: i32,
+    is_islice: bool,
+) -> alloc::vec::Vec<u8> {
+    let n = me_8x8_cost_variance.len();
+    // C clamps the WRITTEN value to `1..=MAXQ` only inside the non-I arm; the
+    // I arm writes `base_q_idx` raw, which is already a valid qindex.
+    let base = base_q_idx.clamp(0, 255) as u8;
+    if is_islice || n == 0 {
+        return alloc::vec![base; n];
+    }
+
+    let mut sum: i64 = 0;
+    let mut min_dist: i64 = i64::MAX;
+    let mut max_dist: i64 = 0;
+    for &v in me_8x8_cost_variance {
+        let v = i64::from(v);
+        sum += v;
+        min_dist = min_dist.min(v);
+        max_dist = max_dist.max(v);
+    }
+    let avg_dist = sum / n as i64;
+
+    const MIN_OFFSET: i32 = -8;
+    const MAX_OFFSET: i32 = 8;
+    let min_q_idx = (base_q_idx - 9 * 4 + 1).max(1);
+    let max_q_idx = (base_q_idx + 9 * 4 - 1).min(255);
+
+    me_8x8_cost_variance
+        .iter()
+        .map(|&v| {
+            // C: `int diff_dist = (int)(mev - avg_dist);`
+            let diff_dist = (i64::from(v) - avg_dist) as i32;
+            let offset: i32 = if diff_dist < 0 {
+                (i64::from(MIN_OFFSET.wrapping_mul(diff_dist)) / (min_dist - avg_dist)) as i32
+            } else if diff_dist > 0 {
+                (i64::from(MAX_OFFSET.wrapping_mul(diff_dist)) / (max_dist - avg_dist)) as i32
+            } else {
+                0
+            };
+            (base_q_idx + offset).clamp(min_q_idx, max_q_idx) as u8
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod frame_update_type_tests {
     use super::*;
@@ -1608,5 +1695,155 @@ mod frame_update_type_tests {
             lambda_gf_update_type(false, 3, 3),
             FrameUpdateType::LfUpdate
         );
+    }
+
+    /// **C's OWN per-superblock lambdas, read off `SVT_PD0CFG_OUT`'s
+    /// `fastlam=` field on `diag 72x72 q40 p6` frame 1** (evidence tier 2 —
+    /// the real encoder, not a transcription):
+    ///
+    /// ```text
+    /// PD0CFG sb=0 org=(0,0)   islice=0 ... fastlam=5182 ... mev=0
+    /// PD0CFG sb=1 org=(64,0)  islice=0 ... fastlam=5182 ... mev=0
+    /// PD0CFG sb=2 org=(0,64)  islice=0 ... fastlam=5182 ... mev=0
+    /// PD0CFG sb=3 org=(64,64) islice=0 ... fastlam=7773 ... mev=1341553
+    /// ```
+    ///
+    /// with `base_q_idx = 160`, and the port's pre-factor value 6633 (its own
+    /// `PD0DR fastlam=` before this map existed). This test drives the map and
+    /// `update_lambda`'s factor block and asserts BOTH of C's numbers.
+    ///
+    /// It is the cell to re-run if this ever moves:
+    /// `benchmarks/pd0_depth_removal_join_2026-09-02.md`.
+    #[test]
+    fn the_per_sb_lambda_matches_cs_measured_values_on_diag_72x72_q40_p6() {
+        // The four `me_8x8_cost_variance` values, which the port's own
+        // `PD0DR mev=` already reproduced exactly before this map existed.
+        let mev = [0u32, 0, 0, 1_341_553];
+        let map = generate_b64_me_qindex_map(&mev, 160, false);
+        assert_eq!(
+            map,
+            [152, 152, 152, 168],
+            "offset -8 on the three zero-variance b64s and +8 on the outlier"
+        );
+
+        let ctx = LambdaContext {
+            frame_type: 1, // not KEY_FRAME
+            temporal_layer_index: 0,
+            hierarchical_levels: 0,
+            update_type: FrameUpdateType::LfUpdate,
+            alt_lambda_factors: false,
+            rtc: false,
+            stats_based_sb_lambda_modulation: true,
+            base_q_idx: 160,
+            delta_q_present: false,
+            r0_delta_qp_md: false,
+            lambda_scale_factors: [128; 7],
+        };
+        // ORDER MATTERS AND IS NOT THE OBVIOUS ONE. `update_lambda` applies
+        // the per-SB factor and RETURNS; `av1_lambda_assign_md`
+        // (md_process.c:747) then multiplies by `pcs->lambda_weight`, which is
+        // 150 on this cell. So the port's reported flat 6633 is
+        // POST-lambda_weight — `compute_fast_lambda` alone gives 5661 — and an
+        // implementation that folded the weight in first would land on the
+        // same two numbers here only by luck of the flooring.
+        let weight = |v: u32| ((u64::from(v) * 150) >> 7) as u32;
+        let off = LambdaContext {
+            stats_based_sb_lambda_modulation: false,
+            ..ctx
+        };
+        assert_eq!(compute_fast_lambda(&off, 160, 160, 8), 5661, "pre-weight");
+        assert_eq!(
+            weight(compute_fast_lambda(&off, 160, 160, 8)),
+            6633,
+            "the flat value the port reported before this map existed"
+        );
+        assert_eq!(
+            weight(compute_fast_lambda(&ctx, 160, map[0], 8)),
+            5182,
+            "C's SB 0/1/2 — factor 100"
+        );
+        assert_eq!(
+            weight(compute_fast_lambda(&ctx, 160, map[3], 8)),
+            7773,
+            "C's SB 3 — factor 150"
+        );
+    }
+
+    /// An I_SLICE writes `base_q_idx` everywhere, which is what makes wiring
+    /// this byte-inert for every still and every key frame — the factor is
+    /// then the identity 128 rather than 100 or 150.
+    #[test]
+    fn an_i_slice_map_is_flat_and_the_factor_is_the_identity() {
+        let mev = [0u32, 7, 1_341_553, 42];
+        assert_eq!(generate_b64_me_qindex_map(&mev, 160, true), [160; 4]);
+
+        let ctx = LambdaContext {
+            frame_type: 0, // KEY_FRAME
+            temporal_layer_index: 0,
+            hierarchical_levels: 0,
+            update_type: FrameUpdateType::KfUpdate,
+            alt_lambda_factors: false,
+            rtc: false,
+            stats_based_sb_lambda_modulation: true,
+            base_q_idx: 160,
+            delta_q_present: false,
+            r0_delta_qp_md: false,
+            lambda_scale_factors: [128; 7],
+        };
+        let off = LambdaContext {
+            stats_based_sb_lambda_modulation: false,
+            ..ctx
+        };
+        assert_eq!(
+            compute_fast_lambda(&ctx, 160, 160, 8),
+            compute_fast_lambda(&off, 160, 160, 8),
+            "qdiff 0 -> factor 128 -> the modulation is a no-op"
+        );
+    }
+
+    /// The two boundaries of the arm this port takes — C's FINAL `else`, whose
+    /// thresholds are +-4 with a LOW factor of 100. They are NOT the
+    /// `delta_q_present` arm's +-8 / 90, which `pd0::inter_full_lambda_8bit`
+    /// transcribed instead (see the benchmark note); a test that only checked
+    /// the extremes would pass against either.
+    #[test]
+    fn the_me_q_index_arm_uses_plus_minus_four_and_a_low_factor_of_one_hundred() {
+        let ctx = LambdaContext {
+            frame_type: 1,
+            temporal_layer_index: 0,
+            hierarchical_levels: 0,
+            update_type: FrameUpdateType::LfUpdate,
+            alt_lambda_factors: false,
+            rtc: false,
+            stats_based_sb_lambda_modulation: true,
+            base_q_idx: 160,
+            delta_q_present: false,
+            r0_delta_qp_md: false,
+            lambda_scale_factors: [128; 7],
+        };
+        let f = |me: u8| compute_fast_lambda(&ctx, 160, me, 8);
+        // `LAMBDA_MODE_DECISION_8BIT_SAD[160]` through the frame-type factor,
+        // i.e. the value with the modulation off (asserted in the sibling
+        // test above), before `lambda_weight`.
+        let base = 5661i64;
+        let with = |factor: i64| ((base * factor) >> 7) as u32;
+        assert_eq!(f(156), with(100), "qdiff -4 is <= -4 -> 100, not 115");
+        assert_eq!(f(157), with(115), "qdiff -3 -> 115");
+        assert_eq!(f(160), with(128), "qdiff 0 -> identity");
+        assert_eq!(f(163), with(135), "qdiff +3 -> 135");
+        assert_eq!(f(164), with(135), "qdiff +4 is <= 4 -> 135, not 150");
+        assert_eq!(f(165), with(150), "qdiff +5 -> 150");
+    }
+
+    /// A map over values that are all equal takes NEITHER division arm, which
+    /// is why no divide-by-zero guard is needed. Asserted rather than argued
+    /// because the denominators (`min - avg`, `max - avg`) are both zero here.
+    #[test]
+    fn a_uniform_variance_map_divides_by_nothing() {
+        assert_eq!(
+            generate_b64_me_qindex_map(&[7, 7, 7, 7], 100, false),
+            [100; 4]
+        );
+        assert_eq!(generate_b64_me_qindex_map(&[0, 0], 100, false), [100; 2]);
     }
 }

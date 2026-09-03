@@ -393,10 +393,29 @@ pub(crate) fn inter_full_lambda_8bit(
             RD_FRAME_TYPE_FACTOR_8BIT[ut]
         })
         >> 7;
+    // C `update_lambda`'s `stats_based_sb_lambda_modulation` block
+    // (rc_process.c:423-446), FINAL `else` arm — the one an INTER frame in
+    // this port takes, because `rtc` is false and neither `delta_q_present`
+    // nor `r0_delta_qp_md` is set. `qdiff_vs_base` is C's
+    // `me_q_index - base_q_idx`, NOT `q_index - base_q_idx`.
+    //
+    // CORRECTED 2026-09-02: this carried `kf_full_lambda_8bit_tuned`'s block
+    // verbatim — the `delta_q_present` arm, thresholds +-8 with a low factor
+    // of **90**. That arm is right for THAT function (its caller is the fork's
+    // per-SB delta-q path, and C keys it on `q_index`); it is the wrong one
+    // here, where the live arm is +-4 with a low factor of **100**. Inert
+    // while every caller passes 0 — which they still do — and wrong the moment
+    // a real per-superblock `me_q_index` arrives. Found while deriving where
+    // C's per-SB `fastlam` comes from: the arithmetic, the C sites and the
+    // verification cell are in
+    // `benchmarks/pd0_depth_removal_join_2026-09-02.md`. The sweep in
+    // `inter_lambda_tests` now drives this axis against
+    // `port_rc_process::compute_rd_mult`, which is the tier-1-gated
+    // transcription, instead of only the 128 no-op.
     let stats_factor: i64 = if qdiff_vs_base < 0 {
-        if qdiff_vs_base <= -8 { 90 } else { 115 }
+        if qdiff_vs_base <= -4 { 100 } else { 115 }
     } else if qdiff_vs_base > 0 {
-        if qdiff_vs_base <= 8 { 135 } else { 150 }
+        if qdiff_vs_base <= 4 { 135 } else { 150 }
     } else {
         128
     };
@@ -3744,37 +3763,45 @@ mod inter_lambda_tests {
                 (U::LfUpdate, 3),
             ] {
                 for &lw in &[0u32, 128, 150, 175] {
-                    let ctx = LambdaContext {
-                        frame_type: 1, // not KEY_FRAME
-                        temporal_layer_index: factor_tl,
-                        hierarchical_levels: 3,
-                        update_type: base,
-                        alt_lambda_factors: false,
-                        rtc: false,
-                        // The pd0 builder carries the stats factor as an
-                        // explicit `qdiff_vs_base`; drive the same 128 no-op.
-                        stats_based_sb_lambda_modulation: false,
-                        base_q_idx: i32::from(qindex),
-                        delta_q_present: false,
-                        r0_delta_qp_md: false,
-                        lambda_scale_factors: [128; 7],
-                    };
-                    let rc = compute_rd_mult(&ctx, qindex, qindex, 8);
-                    let want = if lw == 0 {
-                        rc
-                    } else {
-                        ((u64::from(rc) * u64::from(lw)) >> 7) as u32
-                    };
-                    let factor = crate::port_rc_process::lambda_gf_update_type(
-                        false,
-                        ctx.hierarchical_levels,
-                        factor_tl,
-                    );
-                    assert_eq!(
-                        inter_full_lambda_8bit(qindex, base, factor, false, 0, lw),
-                        want,
-                        "qindex {qindex} base {base:?} tl {factor_tl} lw {lw}"
-                    );
+                    // Every qdiff that selects a DIFFERENT factor, plus both
+                    // boundaries of each threshold. Sweeping this axis is what
+                    // lets the test SEE the wrong-arm transcription corrected
+                    // on 2026-09-02: the `delta_q_present` arm and the one an
+                    // inter frame takes agree at qdiff 0 and at no other point
+                    // in this list, so a revert fails here.
+                    for &qd in &[0i32, -3, -4, -5, -9, 3, 4, 5, 9] {
+                        let ctx = LambdaContext {
+                            frame_type: 1, // not KEY_FRAME
+                            temporal_layer_index: factor_tl,
+                            hierarchical_levels: 3,
+                            update_type: base,
+                            alt_lambda_factors: false,
+                            rtc: false,
+                            stats_based_sb_lambda_modulation: true,
+                            base_q_idx: i32::from(qindex),
+                            delta_q_present: false,
+                            r0_delta_qp_md: false,
+                            lambda_scale_factors: [128; 7],
+                        };
+                        let me_q = (i32::from(qindex) + qd).clamp(0, 255) as u8;
+                        let qd = i32::from(me_q) - i32::from(qindex);
+                        let rc = compute_rd_mult(&ctx, qindex, me_q, 8);
+                        let want = if lw == 0 {
+                            rc
+                        } else {
+                            ((u64::from(rc) * u64::from(lw)) >> 7) as u32
+                        };
+                        let factor = crate::port_rc_process::lambda_gf_update_type(
+                            false,
+                            ctx.hierarchical_levels,
+                            factor_tl,
+                        );
+                        assert_eq!(
+                            inter_full_lambda_8bit(qindex, base, factor, false, qd, lw),
+                            want,
+                            "qindex {qindex} base {base:?} tl {factor_tl} lw {lw} qdiff {qd}"
+                        );
+                    }
                 }
             }
         }

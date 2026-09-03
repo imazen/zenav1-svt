@@ -119,13 +119,31 @@ pub fn wedge_idx_fac_bits(
 ///
 /// `b64_me_qindex` is filled by `svt_av1_generate_b64_me_qindex_map`
 /// (rc_aq.c:656, called from rc_process.c:748), which is in the rate-control
-/// group and is NOT ported here — so this function currently has no producer
-/// inside the port. It is translated now because it is the second qindex
-/// argument to `svt_aom_mode_decision_configure_sb` (enc_dec_process.c:2926)
-/// and to `svt_aom_compute_rd_mult` (rc_aq.c:767), and a wrong lambda changes
-/// the RD winner on every block.
+/// group — **PORTED 2026-09-02** as
+/// [`crate::port_rc_process::generate_b64_me_qindex_map`], so this function
+/// finally has a producer. It is the second qindex argument to
+/// `svt_aom_mode_decision_configure_sb` (enc_dec_process.c:2926) and to
+/// `svt_aom_compute_rd_mult` (rc_aq.c:767), and a wrong lambda changes the RD
+/// winner on every block.
 ///
-/// Video-only: `b64_me_qindex` has no still-picture producer either.
+/// **STILL UNWIRED, and that is the next chunk, not an oversight.** The
+/// producer, this consumer and `update_lambda`'s factor block are all ported
+/// and tested; what is missing is `pipeline.rs` threading a PER-SUPERBLOCK
+/// `me_q_index` into the three lambda call sites that currently pass
+/// `base_qindex` (`pd0_min_sq`'s `compute_fast_lambda`, and the two
+/// `pd0::inter_full_lambda_8bit` / `Pd0InterRef` paths). MEASURED consequence
+/// of not doing it, on `diag 72x72 q40 p6` frame 1: C's own
+/// `SVT_PD0CFG_OUT` reports `fastlam` 5182 / 5182 / 5182 / **7773** across the
+/// four superblocks of ONE frame where the port reports a flat 6633, and the
+/// port reproduces both of C's numbers exactly once this map's output is fed
+/// through `port_rc_process::compute_fast_lambda`
+/// (`port_rc_process::frame_update_type_tests::
+/// the_per_sb_lambda_matches_cs_measured_values_on_diag_72x72_q40_p6`).
+/// Full derivation and the C sites:
+/// `benchmarks/pd0_depth_removal_join_2026-09-02.md`.
+///
+/// Video-only: the map's I-slice arm writes `base_q_idx` into every entry, so
+/// wiring it cannot move a still or a key frame.
 pub fn get_me_qindex(
     b64_me_qindex: &[u8],
     aligned_width: u16,
