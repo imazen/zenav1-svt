@@ -1,5 +1,50 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE 8-WIDE CDEF FILTER RUNS IN `int16x8` LANES NOW, AND THE MAGETYPES GAP
+> THAT KEPT IT HAND-WRITTEN IS RECORDED (2026-09-03).** Commit `c68247aa545b`;
+> record `benchmarks/cdef_i16_ab_2026-09-03.*`. The still ranking above puts
+> CDEF at **14.2 % of the gap at 512x512 p6** (6.60x) and the video-key record
+> at 11.8 %; both sides are NEON, so it was a QUALITY item, and the cause was
+> one line of structure — C works in `int16x8` throughout
+> (`ASM_NEON/cdef_filter_block_neon.c:26`) where the port carried the same 8
+> columns as an `[int32x4_t; 2]` pair. A/B, every cell `ident=Y`:
+>
+> | arm | 256 p2 | 512 p2 | 256 p6 | 512 p6 | 256 p10 | 512 p10 |
+> |---|---|---|---|---|---|---|
+> | still (n=15) | 1.000x | **1.006x** | 1.000x | **1.007x** | 0.998x | 0.998x |
+>
+> | arm | 128 p6 | 256 p6 | 512 p6 | 128 p8 | 256 p8 | 512 p8 |
+> |---|---|---|---|---|---|---|
+> | videokey (n=25) | **1.030x** | 1.014x | **1.019x** | 1.015x | 1.016x | 1.002x |
+>
+> The p10 still cells are the CONTROL — the still path runs no CDEF there at
+> all — and they read NULL, as they must. **The win is 1.5-3.0 % on the
+> videokey arm and 0.6-0.7 % on the still arm at 512 only, well under the
+> 14.2 % share**: halving the vector op count of a kernel that is 5.4 % of the
+> port's own frame can be worth ~2-3 % at best, and 0.7 % says it was not
+> vector-throughput bound. **Price by A/B, not by share** — that is now four
+> times this campaign has learned it.
+>
+> **WHY IT IS HAND-WRITTEN NEON AND NOT `#[magetypes]`.** Verified by source
+> read of the local checkout (`~/work/archmage/magetypes`, 0.9.28), not from
+> memory. The kernel needs three things the generic API does not have:
+> 1. a **variable (runtime-scalar) integer shift** — only `shl_const<N>`,
+>    `shr_logical_const<N>` and `shr_arithmetic_const<N>` exist, and CDEF's
+>    shift is `max(damping - msb(strength), 0)`, known only at run time.
+>    Without it the body would have to be monomorphised on both shift values
+>    (81 instantiations at the reachable bounds);
+> 2. **saturating integer add/sub** — no `qadd`/`qsub` on any integer backend,
+>    and `vqsubq_u16` here IS the `max(thr - shifted, 0)` clamp, not an
+>    optimisation of it;
+> 3. **integer widening/narrowing conversions** (`i16xN <-> i32xN`,
+>    `u8xN <-> u16xN`) — `src/simd/backends/convert_int.rs` carries only
+>    same-width bitcasts and `src/simd/generic/cross_width.rs` is f32-only.
+>
+> The same (3) is what keeps the directional-intra arms and `crate::me_sad`
+> hand-written. **Those three primitives are the whole list; with them, CDEF,
+> the dr predictors, `residual_i32`, `variance::sse` and the SAD family all
+> become one generic body each.**
+
 > **THE STILL ARM HAS ITS OWN RANKING NOW, AND IT IS NOT THE VIDEO-KEY ONE
 > (2026-09-03).** `benchmarks/perf_still_attrib_2026-09-03.{tsv,meta,detail.txt}`
 > — the first per-class attribution taken on the STILL binary since 2026-08-13,
