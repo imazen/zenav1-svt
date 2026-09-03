@@ -163,9 +163,19 @@ On that cell the port's peak RSS is 153.7 MB on macOS against 117.7 MB on Linux
 and 112.73 MB of peak HEAP on Linux — **~36 MB of the aarch64 number is not
 live bytes and no lifetime change can reach it** (unattributed: 16 KiB pages,
 libmalloc retention, thread stacks are all candidates; there is no heaptrack on
-macOS). Untested hypothesis worth the next chunk: allocator CHURN can move
-macOS RSS even though it provably cannot move peak heap, which would mean the
-three 2026-09-03 hoists were never measured on the metric they could move.
+macOS). **And the gap is measurably NOT live bytes**: subtract each arm's harness (now
+exactly `n_frames * w*h*3/2` on both sides) and one inter frame costs +23.34 MB
+of live heap, +21.3 MB of x86 RSS (0.91x live) and **+48.9 MB of aarch64 RSS
+(2.09x live)** at 4 MP; 2.13x at 1536 too. On macOS the inter path's resident
+cost is twice its live cost, so **no change to what the port keeps alive can
+close it**. Two things it is NOT, measured: libmalloc's retention POLICY (the
+env knobs move it <= 4 %) and a flat per-process ISA tax (the STILL arm agrees
+across the ISAs to within 2-5 MB at every size). Leading hypothesis, still
+unconfirmed: cross-frame region reuse. The natural test — does RSS climb per
+encoded frame? — CANNOT RUN until the frame-2 refusal is lifted (at
+`SVTAV1_FRAMES` 3 and 4 the encoder still writes only f0 and f1, and the RSS
+that grows is the harness's extra input frames). The falsifying A/B for the
+churn half is the three 2026-09-03 hoists measured on macOS RSS; not run.
 
 **And a memory ratio without its PRESET is meaningless**
 (`benchmarks/mem_preset_2026-09-03.*`): on gradient 2048x2048 qp 40 the inter

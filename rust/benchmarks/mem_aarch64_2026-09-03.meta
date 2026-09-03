@@ -100,6 +100,41 @@ It is consistent with the CHURN hypothesis in §2 and it is still a HYPOTHESIS �
 nothing here isolates it, and the obvious falsification (an A/B of the three
 allocation-site hoists on macOS RSS) has not been run.
 
+=================== 2c. THE DECISIVE ONE: THE INTER FRAME'S *MARGINAL*
+                        RESIDENT COST IS 2.1x ITS LIVE COST ON macOS AND
+                        0.9x ON LINUX ==========================================
+
+Subtract each arm's harness (which is now exactly `n_frames * w*h*3/2` on both
+sides, after the one-copy commit) and difference the two arms. That gives what
+ONE INTER FRAME costs, encoder-side, in each quantity:
+
+  2048x2048            videokey    inter    marginal inter frame
+    peak HEAP  (x86)   76.81 M  100.15 M    +23.34 MB   <- LIVE BYTES
+    peak RSS   (x86)   81864 K  102636 K    +20772 KiB = +21.3 MB   0.91x live
+    peak RSS   (arm)   90048 K  137792 K    +47744 KiB = +48.9 MB   2.09x live
+
+  1536x1536
+    peak HEAP  (x86)   44.10 M   57.38 M    +13.28 MB   <- LIVE BYTES
+    peak RSS   (x86)   49960 K   60792 K    +10832 KiB = +11.1 MB   0.84x live
+    peak RSS   (arm)   53456 K   81136 K    +27680 KiB = +28.3 MB   2.13x live
+
+  (harness subtracted as `n_frames * w*h*3/2` = 6.29 M / 12.58 M at 2048 and
+   3.46 M / 6.91 M at 1536, which is what it now IS on both sides.)
+
+On Linux the inter frame's resident cost is slightly BELOW its live cost, which
+is what lazily-faulted `calloc` pages look like. On macOS it is 2.1x its live
+cost at both sizes measured. **The aarch64 gap is resident-but-not-live memory on the
+INTER path, and no change to what the port keeps alive can remove it** — the
+live number is already the smaller one.
+
+What this does NOT establish: which allocator behaviour produces it. Region
+reuse across frames is the hypothesis (§2b) and it is not confirmed. The
+natural test — does peak RSS keep climbing per encoded frame? — CANNOT BE RUN
+YET: at `SVTAV1_FRAMES` 3 and 4 the encoder still writes only `f0` and `f1`
+(the frame-2 refusal), and the RSS that does grow, +3.4 and +6.7 MB at 1536, is
+exactly the harness holding the extra input frames (3.54 MB each). Re-run this
+when the refusal is lifted.
+
 =================== 3. WHAT THIS SAYS ABOUT THE RECORDED 1.60x ===============
 
 `benchmarks/mem_arms_2026-09-02.meta` records the inter arm at 1.60x at 4 MP on

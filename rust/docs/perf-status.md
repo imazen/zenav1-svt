@@ -207,11 +207,23 @@
 > Linux peak HEAP is 112.73 MB: **~36 MB of the aarch64 number is not live
 > bytes**, and no lifetime change can reach it. NOT ATTRIBUTED — 16 KiB pages,
 > libmalloc's retention policy and thread-stack accounting are all candidates.
-> **The untested hypothesis this raises is that allocator CHURN moves macOS RSS
-> even though it cannot move peak heap** — which would mean 2026-09-03's three
-> allocation-site hoists (`58fa779e`, `fbd341b3`, `0c70f3fc`), recorded as a CPU
-> win and a peak-heap NULL, were never measured on the metric they could have
-> moved. That A/B has not been run.
+> **And the gap is measurably NOT live bytes.** Subtract each arm's harness (now
+> exactly `n_frames * w*h*3/2` on both sides) and difference the arms: one inter
+> frame costs **+23.34 MB of live heap, +21.3 MB of x86 RSS (0.91x live) and
+> +48.9 MB of aarch64 RSS (2.09x live)** at 4 MP — 2.13x at 1536 as well. On
+> macOS the inter path's resident cost is twice its live cost, so no change to
+> what the port keeps ALIVE can close it. Two candidates are already ruled out by
+> measurement: libmalloc's retention POLICY (`MallocNanoZone=0` /
+> `MallocSpaceEfficient=1` move it <= 4 %) and a flat per-process ISA tax (the
+> STILL arm agrees across the two ISAs to within 2-5 MB at every size, so page
+> size, thread stacks and static tables cannot carry 36 MB). Leading hypothesis,
+> unconfirmed: cross-frame region reuse. Its natural test — does peak RSS climb
+> per encoded frame? — CANNOT BE RUN until the frame-2 refusal is lifted (at
+> `SVTAV1_FRAMES` 3 and 4 the encoder still writes only `f0` and `f1`, and the
+> RSS that does grow is the harness's extra input frames). The other half is an
+> A/B of 2026-09-03's three allocation-site hoists (`58fa779e`, `fbd341b3`,
+> `0c70f3fc`) on macOS RSS — recorded as a CPU win and a peak-heap NULL, they
+> were never measured on the metric they could have moved. Neither has been run.
 >
 > **6. AND THE RATIO IS A FUNCTION OF PRESET — the port's WORST preset is the
 > FASTEST one** (`benchmarks/mem_preset_2026-09-03.{tsv,meta}`). On gradient
