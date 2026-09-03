@@ -56,6 +56,26 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The per-superblock MD lambda: the map, the corrected arm and C's own two
+  numbers as a test — PORTED, NOT WIRED** (`rust/docs/INTER-ENCODE-PLAN.md`
+  §1z²³, c25a464). Byte-inert as landed: every caller still passes qdiff 0, so
+  the only changed code is unreachable. C's `fast_lambda_md` /
+  `full_lambda_md` are PER-SUPERBLOCK through `update_lambda`'s
+  `stats_based_sb_lambda_modulation` factor, keyed on `me_q_index`, which
+  `svt_av1_generate_b64_me_qindex_map` (rc_aq.c:656) derives from
+  `me_8x8_cost_variance` — a quantity this port already computes exactly. That
+  map is now ported, and on `diag 72x72 q40 p6` frame 1 it reproduces C's own
+  dumped `fastlam` of **5182 / 5182 / 5182 / 7773** against the port's flat
+  6633, both points exact. It also found a FOURTH duplicate transcription of
+  `update_lambda`: `pd0::inter_full_lambda_8bit` carried the
+  `delta_q_present` arm (±8, low factor 90) where an inter frame takes the
+  `me_q_index` arm (±4, low factor 100) — inert at qdiff 0, wrong on the first
+  real value, corrected, and the `inter_lambda_tests` sweep now drives that
+  axis against the tier-1-gated `compute_rd_mult` (mutation-verified). The
+  WIRING is two chunks and is named in the entry, with the reason not to land
+  only the PD0 half. `nextest --workspace` 2487/2487, spot-check 83/83,
+  `inter_byte_gate` 89/0.
+
 - **`av1_find_samples` ported — every one of the 96 inter streams now DECODES,
   and the grid goes 49 BOTH → 55** (`rust/docs/INTER-ENCODE-PLAN.md` §1z¹⁹).
   New `inter_mvp::find_warp_samples` (C `adaptive_mv_pred.c:1610-1750`) plus
@@ -425,6 +445,53 @@ Crates are not published to crates.io yet — depend by git.
   divergence is the TILE: C 3 bytes, port 94.
 
 ### Fixed
+
+- **PD0's INTER arm never reached the REFINEMENT path — the grid goes
+  67 BOTH → 89** (`rust/docs/INTER-ENCODE-PLAN.md` §1z²², 89ec75a). `pipeline.rs`
+  builds `pd0_inter` (the reference planes, the frame's update types and the
+  superblock's `min_sq`) and the non-refined arm already used it; the
+  `refined` arm — every preset ≤ 6 on both arms — called the ALLINTRA entry
+  point instead, so an inter frame's PD0 predicted DC intra, priced with the
+  KEY-frame lambda and descended to 8x8. On `gradient 64x64 q20 p6` frame 1
+  that is 80 evaluated nodes against C's 5 and a 64x64 distortion of 2 045 904
+  against C's 50 800; after the fix all five nodes match C field for field.
+  Twenty-two cells promoted, none regressed. `inter_byte_gate` 67 → **89**,
+  mutation-verified (reverting the argument fails exactly the 22). Refusal
+  #12's envelope reads 89 of 96. The residual six are five 72x72 partial-SB
+  cells plus `diag 128x128 q20 p8`, and the direction on them has FLIPPED to
+  an UNDER-split at the frame's 8-px right edge (b97e71a) — an edge-shape
+  DEPTH, which the per-SB lambda's direction predicts.
+  identity_full_8bit 1100/1100, spot-check 83/83, nextest 2483/2483,
+  video_key_matrix 58/60, fctx 96/96, decode census 96/96, completion scan
+  52 OK / 12 REFUSED / 0 CRASH.
+
+- **The DLF VIDEO arm — the port switched deblocking OFF on every inter frame;
+  the grid goes 55 BOTH → 67** (`rust/docs/INTER-ENCODE-PLAN.md` §1z²¹,
+  a7dd951 + 445d3b1). `pipeline.rs` derived `dlf_level` through the ported
+  ladder for both arms and then discarded it for anything but a key frame,
+  because `deblock.rs` carried both level pickers specialized to a KEY frame.
+  C signals `loop_filter_level[0]` of 8/9/12/16/20/24 where the port signalled
+  0, on exactly the 20 cells §1z²⁰ measured as differing FIRST in the frame
+  header — a half now closed to zero. New `dlf_arm` carries C's whole
+  `svt_av1_pick_filter_level` (both pickers, `me_based_dlf_skip`, the
+  reference-average arms and the `prev_dlf_dist < 5` shut-off) and
+  `deblock.rs` delegates to it, so there is ONE transcription; `ReferenceFrame`
+  gained `lf_levels` and `dlf_dist_dev` with C's -1 "never computed" sentinel.
+  Corrects three claims in §1z²⁰, including its ladder prediction —
+  `is_not_last_layer` is TRUE on a flat GOP, so both presets were wrong and by
+  two different pickers. `inter_byte_gate` 55 → **67**, mutation-verified;
+  two new `fhInterFrame` spot-check cells, one per ladder arm.
+  identity_full_8bit 1100/1100, nextest 2483/2483.
+
+- **`tools/ctrace-linux/run.sh` never forwarded three interposer env vars**
+  (a7dd951). `SVT_IFCOST_OUT`, `SVT_PICKPART0_OUT` and `SVT_REFSTATS_OUT`
+  were read by `wrap_recon.c` and listed in neither of the script's forwarding
+  loops, so on a macOS host they wrote inside the container and the host read
+  the silence as "C never called this" — the same failure the script's own
+  comment records for `SVT_RECON_OUT`. All three are forwarded, and a DRIFT
+  GUARD now derives the required set from `wrap_recon.c` itself and refuses to
+  run on a name in neither list (mutation-verified both ways). It found two of
+  the three on its first run against a current `main`.
 
 - **The inter path PANICKED on 18 of 64 video-mode completion cells; it now
   panics on none** (4974a859, 4ae1ffb6). Two distinct defects, both found by
