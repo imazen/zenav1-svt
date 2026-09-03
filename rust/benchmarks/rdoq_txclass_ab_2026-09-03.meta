@@ -1,0 +1,34 @@
+# RDOQ trellis monomorphised on tx_class — paired A/B record
+#
+# commit(candidate) : the "perf(entropy): monomorphise the RDOQ trellis on
+#                     tx_class, as C's is" change
+# commit(baseline)  : 4fb64c7a72ce  (main, "docs(perf): record the 2026-09-03
+#                     chunk's gate results on both ISAs")
+# host              : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool              : tools/perf_ab.sh — interleaved paired rounds, order
+#                     randomised per round, one untimed warmup encode inside
+#                     each sample, NEITHER SIDE NICED, no -C target-cpu=native
+# grid              : content=gradient qp=40
+#                     videokey  SVTAV1_VIDEO=1, sizes {128,256,512} x presets
+#                               {6,8}, 25 rounds/cell
+#                     still     sizes {256,512} x presets {2,6,10},
+#                               15 rounds/cell
+# byte identity     : ident=Y on all 12 cells (perf_ab cmp's the .obu before
+#                     timing; a differing cell would print and be marked N)
+#
+# WHAT CHANGED. C's svt_av1_optimize_b is a `switch (tx_class)` over three
+# macro-expanded loops (UPDATE_COEFF_EOB_CASE, full_loop.c) with tx_class a
+# compile-time literal, which is why `get_nz_map_ctx` appears nowhere in C's
+# profile — the context derivation constant-folds into
+# svt_aom_quantize_inv_quantize. The port passed tx_class as a runtime usize.
+# optimize_b now dispatches once into optimize_b_tc<const TC> and the whole
+# trellis + context-helper chain below it is const-generic on the class.
+#
+# RESULT: 1.006x - 1.022x. Twelve of twelve cells move; ten of twelve have
+# their whole p25/p75 span below 1.0. SMALLER than the context-helper
+# inlining that preceded it (4.7 % videokey) — once the calls were gone the
+# branch that folds away was already cheap. Recorded at the size measured.
+#
+# NOT MEASURED: whether the residual RDOQ excess is now the levels-buffer
+# loads rather than any control flow. The next probe for that is a per-symbol
+# profile of optimize_b's inlined body, not another dispatch change.

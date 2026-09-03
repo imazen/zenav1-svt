@@ -299,11 +299,17 @@ fn clip_max3(v: u8) -> u32 {
 }
 
 /// C `get_nz_mag` — `levels` points at the padded position of the coefficient.
+///
+/// `TC` is the transform class as a CONST, so the three-way branch below folds
+/// away exactly as C's does: C's callers reach this through
+/// `UPDATE_COEFF_EOB_CASE(TX_CLASS_2D)` and friends (full_loop.c), macros that
+/// expand the whole trellis once per class with `tx_class` a literal. See
+/// [`nz_mag`] for the runtime-dispatched wrapper.
 #[inline(always)]
-fn nz_mag(levels: &[u8], base: usize, bwl: usize, tx_class: usize) -> u32 {
+fn nz_mag_tc<const TC: usize>(levels: &[u8], base: usize, bwl: usize) -> u32 {
     let mut mag = clip_max3(levels[base + 1]);
     mag += clip_max3(levels[base + (1 << bwl) + TX_PAD_HOR]);
-    match tx_class {
+    match TC {
         TX_CLASS_2D => {
             mag += clip_max3(levels[base + (1 << bwl) + TX_PAD_HOR + 1]);
             mag += clip_max3(levels[base + 2]);
@@ -374,20 +380,19 @@ pub const fn nz_map_ctx_offset_2d(tx_size: usize, coeff_idx: usize) -> usize {
     21
 }
 
-/// C `get_nz_map_ctx_from_stats`.
+/// C `get_nz_map_ctx_from_stats`, with the transform class as a CONST.
 #[inline(always)]
-fn nz_map_ctx_from_stats(
+fn nz_map_ctx_from_stats_tc<const TC: usize>(
     stats: u32,
     coeff_idx: usize,
     bwl: usize,
     tx_size: usize,
-    tx_class: usize,
 ) -> usize {
-    if (tx_class | coeff_idx) == 0 {
+    if (TC | coeff_idx) == 0 {
         return 0;
     }
     let ctx = (((stats + 1) >> 1) as usize).min(4);
-    match tx_class {
+    match TC {
         TX_CLASS_2D => ctx + crate::entropy::coeff_simd::nz_offset_2d(tx_size, coeff_idx),
         TX_CLASS_HORIZ => {
             let row = coeff_idx >> bwl;
@@ -402,9 +407,10 @@ fn nz_map_ctx_from_stats(
     }
 }
 
-/// C `get_nz_map_ctx` (encode_txb_ref_c.c:17).
+/// C `get_nz_map_ctx` (encode_txb_ref_c.c:17), with the transform class as a
+/// CONST — the shape C gets for free from its per-class macro expansion.
 #[inline(always)]
-pub(crate) fn nz_map_ctx(
+pub(crate) fn nz_map_ctx_tc<const TC: usize>(
     levels: &[u8],
     origin: usize,
     coeff_idx: usize,
@@ -413,7 +419,6 @@ pub(crate) fn nz_map_ctx(
     scan_idx: usize,
     is_eob: bool,
     tx_size: usize,
-    tx_class: usize,
 ) -> usize {
     if is_eob {
         if scan_idx == 0 {
@@ -427,8 +432,46 @@ pub(crate) fn nz_map_ctx(
         }
         return 3;
     }
-    let stats = nz_mag(levels, origin + padded_idx(coeff_idx, bwl), bwl, tx_class);
-    nz_map_ctx_from_stats(stats, coeff_idx, bwl, tx_size, tx_class)
+    let stats = nz_mag_tc::<TC>(levels, origin + padded_idx(coeff_idx, bwl), bwl);
+    nz_map_ctx_from_stats_tc::<TC>(stats, coeff_idx, bwl, tx_size)
+}
+
+/// The value the `_` fall-through arms of [`nz_map_ctx_tc`]'s inner matches
+/// take. No [`TX_TYPE_TO_CLASS`] entry produces it (pinned by
+/// `tx_class_tests::tx_type_to_class_is_ternary`), but instantiating it keeps
+/// [`nz_map_ctx`] byte-identical to the pre-monomorphisation code for EVERY
+/// input rather than only the reachable ones.
+const TX_CLASS_UNREACHABLE: usize = 3;
+
+/// Runtime-`tx_class` wrapper over [`nz_map_ctx_tc`], for the callers that do
+/// not know the class at compile time (the scan-order reference loop and the
+/// parity tests).
+#[inline(always)]
+pub(crate) fn nz_map_ctx(
+    levels: &[u8],
+    origin: usize,
+    coeff_idx: usize,
+    bwl: usize,
+    height: usize,
+    scan_idx: usize,
+    is_eob: bool,
+    tx_size: usize,
+    tx_class: usize,
+) -> usize {
+    match tx_class {
+        TX_CLASS_2D => nz_map_ctx_tc::<TX_CLASS_2D>(
+            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
+        ),
+        TX_CLASS_HORIZ => nz_map_ctx_tc::<TX_CLASS_HORIZ>(
+            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
+        ),
+        TX_CLASS_VERT => nz_map_ctx_tc::<TX_CLASS_VERT>(
+            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
+        ),
+        _ => nz_map_ctx_tc::<TX_CLASS_UNREACHABLE>(
+            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
+        ),
+    }
 }
 
 /// C `get_lower_levels_ctx_general` (coefficients.h:195 + the
@@ -460,6 +503,29 @@ pub fn lower_levels_ctx_general(
     )
 }
 
+/// [`lower_levels_ctx_general`] with the transform class as a CONST.
+#[inline(always)]
+pub fn lower_levels_ctx_general_tc<const TC: usize>(
+    levels_buf: &[u8],
+    ci: usize,
+    bwl: usize,
+    height: usize,
+    scan_idx: usize,
+    is_last: bool,
+    tx_size: usize,
+) -> usize {
+    nz_map_ctx_tc::<TC>(
+        levels_buf,
+        levels_origin(1 << bwl),
+        ci,
+        bwl,
+        height,
+        scan_idx,
+        is_last,
+        tx_size,
+    )
+}
+
 /// C `get_br_ctx_eob` (coefficients.h:68) — the coeff_br context for the
 /// last (eob) coefficient, which never reads neighbor levels.
 #[inline(always)]
@@ -472,6 +538,23 @@ pub fn br_ctx_eob(c: usize, bwl: usize, tx_class: usize) -> usize {
     if (tx_class == TX_CLASS_2D && row < 2 && col < 2)
         || (tx_class == TX_CLASS_HORIZ && col == 0)
         || (tx_class == TX_CLASS_VERT && row == 0)
+    {
+        return 7;
+    }
+    14
+}
+
+/// [`br_ctx_eob`] with the transform class as a CONST.
+#[inline(always)]
+pub fn br_ctx_eob_tc<const TC: usize>(c: usize, bwl: usize) -> usize {
+    let row = c >> bwl;
+    let col = c - (row << bwl);
+    if c == 0 {
+        return 0;
+    }
+    if (TC == TX_CLASS_2D && row < 2 && col < 2)
+        || (TC == TX_CLASS_HORIZ && col == 0)
+        || (TC == TX_CLASS_VERT && row == 0)
     {
         return 7;
     }
@@ -553,8 +636,22 @@ pub(crate) fn nz_map_contexts_scan_order(
 }
 
 /// C `get_br_ctx` (coefficients.h:82) — `c` is the raster position.
+///
+/// Runtime-`tx_class` wrapper over [`br_ctx_tc`]; see [`nz_map_ctx`] for why
+/// the `_` arm is instantiated rather than asserted away.
 #[inline(always)]
 pub fn br_ctx(levels_buf: &[u8], c: usize, bwl: usize, tx_class: usize) -> usize {
+    match tx_class {
+        TX_CLASS_2D => br_ctx_tc::<TX_CLASS_2D>(levels_buf, c, bwl),
+        TX_CLASS_HORIZ => br_ctx_tc::<TX_CLASS_HORIZ>(levels_buf, c, bwl),
+        TX_CLASS_VERT => br_ctx_tc::<TX_CLASS_VERT>(levels_buf, c, bwl),
+        _ => br_ctx_tc::<TX_CLASS_UNREACHABLE>(levels_buf, c, bwl),
+    }
+}
+
+/// [`br_ctx`] with the transform class as a CONST.
+#[inline(always)]
+pub fn br_ctx_tc<const TC: usize>(levels_buf: &[u8], c: usize, bwl: usize) -> usize {
     let row = c >> bwl;
     let col = c - (row << bwl);
     let stride = (1 << bwl) + TX_PAD_HOR;
@@ -562,7 +659,7 @@ pub fn br_ctx(levels_buf: &[u8], c: usize, bwl: usize, tx_class: usize) -> usize
     let pos = levels_origin(1 << bwl) + row * stride + col;
     let mut mag = levels_buf[pos + 1] as u32;
     mag += levels_buf[pos + stride] as u32;
-    match tx_class {
+    match TC {
         TX_CLASS_2D => {
             mag += levels_buf[pos + stride + 1] as u32;
             mag = ((mag + 1) >> 1).min(6);
@@ -1246,4 +1343,96 @@ pub fn get_txb_ctx(
     };
 
     (txb_skip_ctx, dc_sign_ctx)
+}
+
+#[cfg(test)]
+mod tx_class_tests {
+    use super::*;
+
+    /// The RDOQ trellis and the entropy writers dispatch on `tx_class` with a
+    /// three-arm `match` that instantiates a const-generic body per class
+    /// (C does the same with `UPDATE_COEFF_EOB_CASE`, full_loop.c). That
+    /// dispatch is exhaustive only because `tx_type_to_class` is ternary — if
+    /// a fourth class ever appeared, the trellis's `_ => TX_CLASS_2D` arm
+    /// would silently mis-price it. Pin the table.
+    #[test]
+    fn tx_type_to_class_is_ternary() {
+        for (tx_type, &class) in TX_TYPE_TO_CLASS.iter().enumerate() {
+            assert!(
+                class <= TX_CLASS_VERT,
+                "tx_type {tx_type} maps to class {class}, outside 0..=2"
+            );
+        }
+        assert!(TX_CLASS_UNREACHABLE > TX_CLASS_VERT);
+    }
+
+    /// The const-generic context helpers must agree with the runtime-dispatch
+    /// wrappers at every class — including the unreachable fall-through, which
+    /// is what makes the wrappers byte-identical to the pre-monomorphisation
+    /// code for every input and not merely the reachable ones.
+    #[test]
+    fn tc_helpers_match_their_runtime_wrappers() {
+        // A padded levels buffer with a deterministic non-trivial fill.
+        let mut levels = vec![0u8; LEVELS_SCRATCH_LEN];
+        for (i, v) in levels.iter_mut().enumerate() {
+            *v = ((i * 37 + 11) % 9) as u8;
+        }
+        for &tx_size in &[0usize, 1, 2, 3, 4, 5, 6, 7, 8] {
+            let bwl = txb_bwl(tx_size);
+            let height = txb_high(tx_size);
+            let origin = levels_origin(txb_wide(tx_size));
+            let n = txb_wide(tx_size) * height;
+            for ci in 0..n {
+                for scan_idx in [0usize, 1, n / 3, n.saturating_sub(1)] {
+                    for is_eob in [false, true] {
+                        for tx_class in 0..=TX_CLASS_UNREACHABLE {
+                            let want = nz_map_ctx(
+                                &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                tx_class,
+                            );
+                            let got = match tx_class {
+                                TX_CLASS_2D => nz_map_ctx_tc::<TX_CLASS_2D>(
+                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                ),
+                                TX_CLASS_HORIZ => nz_map_ctx_tc::<TX_CLASS_HORIZ>(
+                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                ),
+                                TX_CLASS_VERT => nz_map_ctx_tc::<TX_CLASS_VERT>(
+                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                ),
+                                _ => nz_map_ctx_tc::<TX_CLASS_UNREACHABLE>(
+                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                ),
+                            };
+                            assert_eq!(
+                                want, got,
+                                "nz_map_ctx tx_size={tx_size} ci={ci} si={scan_idx} \
+                                 eob={is_eob} class={tx_class}"
+                            );
+                        }
+                    }
+                }
+                for tx_class in 0..=TX_CLASS_UNREACHABLE {
+                    let want_br = br_ctx(&levels, ci, bwl, tx_class);
+                    let got_br = match tx_class {
+                        TX_CLASS_2D => br_ctx_tc::<TX_CLASS_2D>(&levels, ci, bwl),
+                        TX_CLASS_HORIZ => br_ctx_tc::<TX_CLASS_HORIZ>(&levels, ci, bwl),
+                        TX_CLASS_VERT => br_ctx_tc::<TX_CLASS_VERT>(&levels, ci, bwl),
+                        _ => br_ctx_tc::<TX_CLASS_UNREACHABLE>(&levels, ci, bwl),
+                    };
+                    assert_eq!(want_br, got_br, "br_ctx ci={ci} class={tx_class}");
+
+                    if tx_class <= TX_CLASS_VERT {
+                        let want_eob = br_ctx_eob(ci, bwl, tx_class);
+                        let got_eob = match tx_class {
+                            TX_CLASS_2D => br_ctx_eob_tc::<TX_CLASS_2D>(ci, bwl),
+                            TX_CLASS_HORIZ => br_ctx_eob_tc::<TX_CLASS_HORIZ>(ci, bwl),
+                            _ => br_ctx_eob_tc::<TX_CLASS_VERT>(ci, bwl),
+                        };
+                        assert_eq!(want_eob, got_eob, "br_ctx_eob ci={ci} class={tx_class}");
+                    }
+                }
+            }
+        }
+    }
 }

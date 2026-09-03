@@ -754,8 +754,11 @@ fn br_cost_with_diff(level: i32, coeff_lps: &[i32], diff: &mut i32) -> i32 {
 
 /// C `get_coeff_cost_general` (full_loop.c:627). `levels_buf` is the full
 /// padded buffer; `ci` a packed raster position.
+///
+/// `TC` is the transform class as a CONST — see [`optimize_b`] for why the
+/// whole trellis is monomorphised on it.
 #[allow(clippy::too_many_arguments)]
-fn coeff_cost_general(
+fn coeff_cost_general<const TC: usize>(
     is_last: bool,
     ci: usize,
     abs_qc: i32,
@@ -764,7 +767,6 @@ fn coeff_cost_general(
     dc_sign_ctx: usize,
     txb_costs: &TxbCosts,
     bwl: usize,
-    tx_class: usize,
     levels_buf: &[u8],
 ) -> i32 {
     let mut cost = if is_last {
@@ -780,9 +782,9 @@ fn coeff_cost_general(
         }
         if abs_qc > NUM_BASE_LEVELS {
             let br_ctx = if is_last {
-                coeff_c::br_ctx_eob(ci, bwl, tx_class)
+                coeff_c::br_ctx_eob_tc::<TC>(ci, bwl)
             } else {
-                coeff_c::br_ctx(levels_buf, ci, bwl, tx_class)
+                coeff_c::br_ctx_tc::<TC>(levels_buf, ci, bwl)
             };
             cost += br_cost(abs_qc, &txb_costs.lps_cost[br_ctx]);
         }
@@ -792,7 +794,7 @@ fn coeff_cost_general(
 
 /// C `get_coeff_cost_eob` (full_loop.c:722).
 #[allow(clippy::too_many_arguments)]
-fn coeff_cost_eob(
+fn coeff_cost_eob<const TC: usize>(
     ci: usize,
     abs_qc: i32,
     sign: usize,
@@ -800,7 +802,6 @@ fn coeff_cost_eob(
     dc_sign_ctx: usize,
     txb_costs: &TxbCosts,
     bwl: usize,
-    tx_class: usize,
 ) -> i32 {
     let mut cost = txb_costs.base_eob_cost[coeff_ctx][(abs_qc.min(3) - 1) as usize];
     if abs_qc != 0 {
@@ -810,7 +811,7 @@ fn coeff_cost_eob(
             cost += cost_literal(1);
         }
         if abs_qc > NUM_BASE_LEVELS {
-            let br_ctx = coeff_c::br_ctx_eob(ci, bwl, tx_class);
+            let br_ctx = coeff_c::br_ctx_eob_tc::<TC>(ci, bwl);
             cost += br_cost(abs_qc, &txb_costs.lps_cost[br_ctx]);
         }
     }
@@ -819,13 +820,12 @@ fn coeff_cost_eob(
 
 /// C `get_two_coeff_cost_simple` (full_loop.c:696).
 #[allow(clippy::too_many_arguments)]
-fn two_coeff_cost_simple(
+fn two_coeff_cost_simple<const TC: usize>(
     ci: usize,
     abs_qc: i32,
     coeff_ctx: usize,
     txb_costs: &TxbCosts,
     bwl: usize,
-    tx_class: usize,
     levels_buf: &[u8],
     cost_low: &mut i32,
 ) -> i32 {
@@ -837,7 +837,7 @@ fn two_coeff_cost_simple(
     if abs_qc != 0 {
         cost += cost_literal(1);
         if abs_qc > NUM_BASE_LEVELS {
-            let br_ctx = coeff_c::br_ctx(levels_buf, ci, bwl, tx_class);
+            let br_ctx = coeff_c::br_ctx_tc::<TC>(levels_buf, ci, bwl);
             let mut brcost_diff = 0i32;
             cost += br_cost_with_diff(abs_qc, &txb_costs.lps_cost[br_ctx], &mut brcost_diff);
             diff += brcost_diff;
@@ -849,8 +849,19 @@ fn two_coeff_cost_simple(
 
 /// C `get_eob_cost` (rd_cost.c:198).
 pub fn eob_cost(eob: i32, eob_costs: &EobCosts, txb_costs: &TxbCosts, tx_class: usize) -> i32 {
+    eob_cost_inner(eob, eob_costs, txb_costs, tx_class != coeff_c::TX_CLASS_2D)
+}
+
+/// [`eob_cost`] with the transform class as a CONST.
+#[inline(always)]
+fn eob_cost_tc<const TC: usize>(eob: i32, eob_costs: &EobCosts, txb_costs: &TxbCosts) -> i32 {
+    eob_cost_inner(eob, eob_costs, txb_costs, TC != coeff_c::TX_CLASS_2D)
+}
+
+#[inline(always)]
+fn eob_cost_inner(eob: i32, eob_costs: &EobCosts, txb_costs: &TxbCosts, is_1d_class: bool) -> i32 {
     let (eob_pt, eob_extra) = coeff_c::eob_pos_token(eob);
-    let eob_multi_ctx = usize::from(tx_class != coeff_c::TX_CLASS_2D);
+    let eob_multi_ctx = usize::from(is_1d_class);
     let mut cost = eob_costs.eob_cost[eob_multi_ctx][eob_pt - 1];
     if eob_pt > 2 {
         let cnt = eob_pt - 3;
@@ -1005,7 +1016,7 @@ pub fn light_rdoq_low_dc_chroma(
 
 /// C `update_coeff_general` (full_loop.c:851).
 #[allow(clippy::too_many_arguments)]
-fn update_coeff_general(
+fn update_coeff_general<const TC: usize>(
     accu_rate: &mut i32,
     accu_dist: &mut i64,
     si: usize,
@@ -1026,8 +1037,8 @@ fn update_coeff_general(
     let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let is_last = si == (eob as usize - 1);
-    let coeff_ctx = coeff_c::lower_levels_ctx_general(
-        levels_buf, ci, bwl, height, si, is_last, o.tx_size, o.tx_class,
+    let coeff_ctx = coeff_c::lower_levels_ctx_general_tc::<TC>(
+        levels_buf, ci, bwl, height, si, is_last, o.tx_size,
     );
     if qc == 0 {
         *accu_rate += o.txb_costs.base_cost[coeff_ctx][0];
@@ -1038,7 +1049,7 @@ fn update_coeff_general(
         let dqc = dqcoeff[ci];
         let dist = get_coeff_dist(tqc, dqc, shift);
         let dist0 = get_coeff_dist(tqc, 0, shift);
-        let rate = coeff_cost_general(
+        let rate = coeff_cost_general::<TC>(
             is_last,
             ci,
             abs_qc,
@@ -1047,7 +1058,6 @@ fn update_coeff_general(
             o.dc_sign_ctx,
             o.txb_costs,
             bwl,
-            o.tx_class,
             levels_buf,
         );
         let rd = rdcost(o.rdmult, rate as i64, dist);
@@ -1065,7 +1075,7 @@ fn update_coeff_general(
             dqc_low = d;
             abs_qc_low = abs_qc - 1;
             dist_low = get_coeff_dist(tqc, dqc_low, shift);
-            rate_low = coeff_cost_general(
+            rate_low = coeff_cost_general::<TC>(
                 is_last,
                 ci,
                 abs_qc_low,
@@ -1074,7 +1084,6 @@ fn update_coeff_general(
                 o.dc_sign_ctx,
                 o.txb_costs,
                 bwl,
-                o.tx_class,
                 levels_buf,
             );
         }
@@ -1095,7 +1104,7 @@ fn update_coeff_general(
 
 /// C `update_coeff_simple` (full_loop.c:904).
 #[allow(clippy::too_many_arguments)]
-fn update_coeff_simple(
+fn update_coeff_simple<const TC: usize>(
     accu_rate: &mut i32,
     si: usize,
     o: &OptimizeCtx,
@@ -1114,7 +1123,7 @@ fn update_coeff_simple(
     let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
-        coeff_c::lower_levels_ctx_general(levels_buf, ci, bwl, 0, si, false, o.tx_size, o.tx_class);
+        coeff_c::lower_levels_ctx_general_tc::<TC>(levels_buf, ci, bwl, 0, si, false, o.tx_size);
     if qc == 0 {
         *accu_rate += o.txb_costs.base_cost[coeff_ctx][0];
     } else {
@@ -1122,13 +1131,12 @@ fn update_coeff_simple(
         let abs_tqc = tcoeff[ci].abs();
         let abs_dqc = dqcoeff[ci].abs();
         let mut rate_low = 0i32;
-        let rate = two_coeff_cost_simple(
+        let rate = two_coeff_cost_simple::<TC>(
             ci,
             abs_qc,
             coeff_ctx,
             o.txb_costs,
             bwl,
-            o.tx_class,
             levels_buf,
             &mut rate_low,
         );
@@ -1159,7 +1167,7 @@ fn update_coeff_simple(
 
 /// C `update_coeff_eob` (full_loop.c:749).
 #[allow(clippy::too_many_arguments)]
-fn update_coeff_eob(
+fn update_coeff_eob<const TC: usize>(
     accu_rate: &mut i32,
     accu_dist: &mut i64,
     eob: &mut u16,
@@ -1183,7 +1191,7 @@ fn update_coeff_eob(
     let dqv = crate::qm::dqv_qm(dequant, ci, iwt);
     let qc = qcoeff[ci];
     let coeff_ctx =
-        coeff_c::lower_levels_ctx_general(levels_buf, ci, bwl, 0, si, false, o.tx_size, o.tx_class);
+        coeff_c::lower_levels_ctx_general_tc::<TC>(levels_buf, ci, bwl, 0, si, false, o.tx_size);
     if qc == 0 {
         *accu_rate += o.txb_costs.base_cost[coeff_ctx][0];
     } else {
@@ -1194,7 +1202,7 @@ fn update_coeff_eob(
         let sign = usize::from(qc < 0);
         let dist0 = get_coeff_dist(tqc, 0, shift);
         let mut dist = get_coeff_dist(tqc, dqc, shift) - dist0;
-        let mut rate = coeff_cost_general(
+        let mut rate = coeff_cost_general::<TC>(
             false,
             ci,
             abs_qc,
@@ -1203,7 +1211,6 @@ fn update_coeff_eob(
             o.dc_sign_ctx,
             o.txb_costs,
             bwl,
-            o.tx_class,
             levels_buf,
         );
         let rd = rdcost(o.rdmult, (*accu_rate + rate) as i64, *accu_dist + dist);
@@ -1222,7 +1229,7 @@ fn update_coeff_eob(
             dqc_low = d;
             abs_qc_low = abs_qc - 1;
             dist_low = get_coeff_dist(tqc, dqc_low, shift) - dist0;
-            rate_low = coeff_cost_general(
+            rate_low = coeff_cost_general::<TC>(
                 false,
                 ci,
                 abs_qc_low,
@@ -1231,7 +1238,6 @@ fn update_coeff_eob(
                 o.dc_sign_ctx,
                 o.txb_costs,
                 bwl,
-                o.tx_class,
                 levels_buf,
             );
             rd_low = rdcost(
@@ -1243,12 +1249,12 @@ fn update_coeff_eob(
 
         let mut lower_level_new_eob = false;
         let new_eob = si + 1;
-        let coeff_ctx_new_eob = coeff_c::lower_levels_ctx_general(
-            levels_buf, ci, bwl, height, si, true, o.tx_size, o.tx_class,
+        let coeff_ctx_new_eob = coeff_c::lower_levels_ctx_general_tc::<TC>(
+            levels_buf, ci, bwl, height, si, true, o.tx_size,
         );
-        let new_eob_cost = eob_cost(new_eob as i32, o.eob_costs, o.txb_costs, o.tx_class);
+        let new_eob_cost = eob_cost_tc::<TC>(new_eob as i32, o.eob_costs, o.txb_costs);
         let mut rate_coeff_eob = new_eob_cost
-            + coeff_cost_eob(
+            + coeff_cost_eob::<TC>(
                 ci,
                 abs_qc,
                 sign,
@@ -1256,14 +1262,13 @@ fn update_coeff_eob(
                 o.dc_sign_ctx,
                 o.txb_costs,
                 bwl,
-                o.tx_class,
             );
         let mut dist_new_eob = dist;
         let mut rd_new_eob = rdcost(o.rdmult, rate_coeff_eob as i64, dist_new_eob);
 
         if abs_qc_low > 0 {
             let rate_coeff_eob_low = new_eob_cost
-                + coeff_cost_eob(
+                + coeff_cost_eob::<TC>(
                     ci,
                     abs_qc_low,
                     sign,
@@ -1271,7 +1276,6 @@ fn update_coeff_eob(
                     o.dc_sign_ctx,
                     o.txb_costs,
                     bwl,
-                    o.tx_class,
                 );
             let dist_new_eob_low = dist_low;
             let rd_new_eob_low = rdcost(o.rdmult, rate_coeff_eob_low as i64, dist_new_eob_low);
@@ -1350,6 +1354,18 @@ fn update_skip(
 /// Operates on the PACKED (adjusted-size) coefficient buffers; `tcoeffs`
 /// are the pre-quantization transform coefficients, `qcoeff`/`dqcoeff` the
 /// `quantize_fp` outputs, updated in place. `eob` must be > 0.
+///
+/// **The trellis is MONOMORPHISED on `tx_class`, as C's is.** C writes the
+/// three scan loops as `switch (tx_class) { case TX_CLASS_2D:
+/// UPDATE_COEFF_EOB_CASE(TX_CLASS_2D); ... }` (full_loop.c), a macro that
+/// expands the whole body once per class with `tx_class` a compile-time
+/// literal — which is why `get_nz_map_ctx` appears NOWHERE in C's profile:
+/// every context derivation constant-folds into
+/// `svt_aom_quantize_inv_quantize`. This function dispatches ONCE on
+/// `o.tx_class` and every callee below takes the class as a const generic, so
+/// the per-coefficient three-way branches fold the same way. The dispatch is
+/// exhaustive because `tx_type_to_class` is ternary
+/// (`coeff_c::tx_class_tests::tx_type_to_class_is_ternary`).
 #[allow(clippy::too_many_arguments)]
 pub fn optimize_b(
     tcoeffs: &[i32],
@@ -1360,13 +1376,39 @@ pub fn optimize_b(
     t: &QuantTable,
     o: &OptimizeCtx,
 ) {
+    match o.tx_class {
+        coeff_c::TX_CLASS_HORIZ => {
+            optimize_b_tc::<{ coeff_c::TX_CLASS_HORIZ }>(tcoeffs, qcoeff, dqcoeff, eob, scan, t, o)
+        }
+        coeff_c::TX_CLASS_VERT => {
+            optimize_b_tc::<{ coeff_c::TX_CLASS_VERT }>(tcoeffs, qcoeff, dqcoeff, eob, scan, t, o)
+        }
+        _ => {
+            debug_assert_eq!(o.tx_class, coeff_c::TX_CLASS_2D);
+            optimize_b_tc::<{ coeff_c::TX_CLASS_2D }>(tcoeffs, qcoeff, dqcoeff, eob, scan, t, o)
+        }
+    }
+}
+
+/// [`optimize_b`]'s body, with the transform class as a CONST.
+#[allow(clippy::too_many_arguments)]
+fn optimize_b_tc<const TC: usize>(
+    tcoeffs: &[i32],
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+    eob: &mut u16,
+    scan: &[u16],
+    t: &QuantTable,
+    o: &OptimizeCtx,
+) {
+    debug_assert_eq!(TC, o.tx_class);
     let shift = TX_SCALE_TAB[o.tx_size];
     let bwl = coeff_c::txb_bwl(o.tx_size);
     let width = coeff_c::txb_wide(o.tx_size);
     let height = coeff_c::txb_high(o.tx_size);
     let non_skip_cost = o.txb_costs.txb_skip_cost[o.txb_skip_ctx][0];
     let skip_cost = o.txb_costs.txb_skip_cost[o.txb_skip_ctx][1];
-    let eob_cost_init = eob_cost(*eob as i32, o.eob_costs, o.txb_costs, o.tx_class);
+    let eob_cost_init = eob_cost_tc::<TC>(*eob as i32, o.eob_costs, o.txb_costs);
 
     let mut levels_buf = [0u8; coeff_c::LEVELS_SCRATCH_LEN];
     if *eob > 1 {
@@ -1384,7 +1426,7 @@ pub fn optimize_b(
     let mut nz_num = 1usize;
     let mut nz_ci = [ci, 0, 0, 0, 0];
     if abs_qc >= 2 {
-        update_coeff_general(
+        update_coeff_general::<TC>(
             &mut accu_rate,
             &mut accu_dist,
             si as usize,
@@ -1404,7 +1446,7 @@ pub fn optimize_b(
         si -= 1;
     } else {
         debug_assert_eq!(abs_qc, 1);
-        let coeff_ctx = coeff_c::lower_levels_ctx_general(
+        let coeff_ctx = coeff_c::lower_levels_ctx_general_tc::<TC>(
             &levels_buf,
             ci,
             bwl,
@@ -1412,18 +1454,9 @@ pub fn optimize_b(
             si as usize,
             true,
             o.tx_size,
-            o.tx_class,
         );
-        accu_rate += coeff_cost_eob(
-            ci,
-            abs_qc,
-            sign,
-            coeff_ctx,
-            o.dc_sign_ctx,
-            o.txb_costs,
-            bwl,
-            o.tx_class,
-        );
+        accu_rate +=
+            coeff_cost_eob::<TC>(ci, abs_qc, sign, coeff_ctx, o.dc_sign_ctx, o.txb_costs, bwl);
         let tqc = tcoeffs[ci];
         let dqc = dqcoeff[ci];
         let dist = get_coeff_dist(tqc, dqc, shift);
@@ -1433,7 +1466,7 @@ pub fn optimize_b(
     }
 
     while si >= 0 && nz_num <= MAX_NZ_NUM {
-        update_coeff_eob(
+        update_coeff_eob::<TC>(
             &mut accu_rate,
             &mut accu_dist,
             eob,
@@ -1479,7 +1512,7 @@ pub fn optimize_b(
         si_end = (*eob as i32 - cut_off_coeff).max(1);
     }
     while si >= si_end {
-        update_coeff_simple(
+        update_coeff_simple::<TC>(
             &mut accu_rate,
             si as usize,
             o,
@@ -1499,7 +1532,7 @@ pub fn optimize_b(
     // DC position.
     if si == 0 {
         let mut dummy_dist = 0i64;
-        update_coeff_general(
+        update_coeff_general::<TC>(
             &mut accu_rate,
             &mut dummy_dist,
             0,
