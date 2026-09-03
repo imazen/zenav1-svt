@@ -1,0 +1,54 @@
+# The 8-wide CDEF filter kernel moved from `[int32x4_t; 2]` to `int16x8_t`
+# lanes, as C's has always been.
+#
+# host  : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool  : tools/perf_ab.sh — interleaved paired rounds, order randomised per
+#         round, one untimed warmup inside each sample, NEITHER SIDE NICED,
+#         no -C target-cpu=native
+# base  : c9ff2f4a (main)   cand: + this change
+# grid  : gradient qp 40; still 256/512 x p{2,6,10} n=15,
+#         videokey (SVTAV1_VIDEO=1) 128/256/512 x p{6,8} n=25
+# ident : Y on all twelve cells
+#
+# WHY THIS KERNEL. `benchmarks/perf_still_attrib_2026-09-03.*` puts CDEF at
+# **14.2 % of the still gap at 512x512 p6** (6.60x) and 4.9 % at p2 (6.49x) —
+# and at ZERO at p10, where the still path does not run it. The video-key
+# record puts it at 11.8 %. `cdef_filter_block` is 828 self samples of 15,202
+# at 512 p6 against C's four NEON kernels at 255 + 56 + 48 + 19. Both sides
+# are NEON, so it is a QUALITY item, and the structural difference is in the
+# source: C works in `int16x8` lanes throughout
+# (`ASM_NEON/cdef_filter_block_neon.c:26`) while the port carried the same 8
+# columns as an `[int32x4_t; 2]` pair — TWICE the vector operations for the
+# same work.
+#
+# RESULT:
+#   still     512 p2  1.006x  (p25/p75 0.9903/0.9975)
+#             512 p6  1.007x  (0.9735/0.9986)
+#             256 p2  1.000x | 256 p6 1.000x           <- NULL
+#             256 p10 0.998x | 512 p10 0.998x          <- NULL, and p10 is the
+#                                                         CONTROL: the still
+#                                                         path runs no CDEF
+#                                                         there at all.
+#   videokey  128 p6  1.030x  (0.9661/0.9844)
+#             512 p6  1.019x  (0.9745/0.9862)
+#             256 p8  1.016x | 128 p8 1.015x | 256 p6 1.014x
+#             512 p8  1.002x
+#
+# Five of the six VIDEOKEY cells have their whole span below 1.0 (256 p6 at
+# 1.0041 and 512 p8 at 1.0076 are the two that touch it). **The videokey arm
+# gains 1.5-3.0 % and the still arm 0.6-0.7 % at 512 only** — which is what
+# the two attributions predict, because a video-mode frame's recon is a
+# reference and runs the post-filters where a still frame at 256x256 barely
+# does.
+#
+# AND IT IS SMALLER THAN THE 14.2 % SHARE SUGGESTS, as every profile share in
+# this campaign has been. Halving the vector op count of a kernel that is
+# 5.4 % of the port's own frame at 512 p6 can only be worth ~2-3 % of that
+# frame at best; the measured 0.7 % says the kernel was not vector-throughput
+# bound to begin with. Price by A/B, not by share.
+#
+# NOT DONE: the 4-wide chroma arm (`cdef_filter_cols4_neon`) still carries one
+# `int32x4_t` per row. Moving it to i16 would not change the LANE COUNT (4
+# lanes either way on a d-register), so the win there would have to come from
+# packing two ROWS into one `int16x8_t`, which is a different transformation.
+# The AVX2 arm (`cdef_filter_cols8_v3`) is untouched.

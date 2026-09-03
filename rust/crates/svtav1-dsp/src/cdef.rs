@@ -607,6 +607,64 @@ fn cdef_load8_u16_neon(_token: NeonToken, inb: &[u16], idx: usize) -> [int32x4_t
     [vmovl_s16(vget_low_s16(v)), vmovl_s16(vget_high_s16(v))]
 }
 
+/// Load 8 taps as a BIASED `uint16x8_t` (`value ^ 0x8000`).
+///
+/// The buffer is `int16_t` to every arm of this kernel — the AVX2 arm reads it
+/// with `_mm256_cvtepi16_epi32` and the scalar core with `at(..) as i16`, so a
+/// tap at or above 0x8000 is NEGATIVE. Biasing by `^ 0x8000` maps that signed
+/// value into `[0, 65535]` **preserving order and preserving differences**
+/// (`a_biased - b_biased == a_signed - b_signed`), which is what lets the whole
+/// constrain step run in u16 lanes with saturating arithmetic and stay exact
+/// over the entire i16 domain. C's NEON arm works in the same u16 domain
+/// (`ASM_NEON/cdef_filter_block_neon.c:18`, `constrain_neon(uint16x8_t a,
+/// uint16x8_t b, ...)`); it does not need the bias only because its inputs are
+/// pixel values below 0x8000.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_load8_bias_neon(_token: NeonToken, inb: &[u16], idx: usize) -> uint16x8_t {
+    let a: &[u16; 8] = inb[idx..idx + 8].try_into().unwrap();
+    veorq_u16(vld1q_u16(a), vdupq_n_u16(0x8000))
+}
+
+/// SIMD [`constrain`] over 8 biased taps against the biased centre pixel,
+/// returning `sign(tap - x) * min(|tap - x|, max(thr - (|tap - x| >> shift), 0))`
+/// as an `int16x8_t`.
+///
+/// EXACT over the whole i16 domain, with no bound on the strengths or the
+/// damping, because every step is exact in u16:
+/// * `vabdq_u16` on the biased pair IS `|tap - x|` computed on the SIGNED
+///   values (the bias cancels in the difference) and cannot overflow — the
+///   largest possible value is 65535.
+/// * `vqsubq_u16(thr, shifted)` IS `max(thr - shifted, 0)`; the saturation is
+///   the clamp, not an approximation of it.
+/// * `m = min(adiff, capped) <= thr <= 32767`, so reinterpreting it as `i16`
+///   and negating it cannot overflow.
+///
+/// The i32 arm this replaces widened to `[int32x4_t; 2]` per row and therefore
+/// issued twice the vector operations for the same 8 columns; C has always
+/// worked in `int16x8` here.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_constrain8_bias_neon(
+    _token: NeonToken,
+    tap: uint16x8_t,
+    x: uint16x8_t,
+    thr: uint16x8_t,
+    neg_shift: int16x8_t,
+    active: bool,
+) -> int16x8_t {
+    if !active {
+        return vdupq_n_s16(0);
+    }
+    let adiff = vabdq_u16(tap, x);
+    // Negative shift count = right shift in NEON's variable-shift.
+    let shifted = vshlq_u16(adiff, neg_shift);
+    let capped = vqsubq_u16(thr, shifted);
+    let m = vreinterpretq_s16_u16(vminq_u16(adiff, capped));
+    // sign(tap - x) * m; `m` is already 0 where the taps are equal.
+    vbslq_s16(vcltq_u16(tap, x), vnegq_s16(m), m)
+}
+
 /// SIMD [`constrain`] over an i32x4 of diffs. `threshold`/`shift` are scalar
 /// (broadcast); `active == false` disables the tap, matching the scalar
 /// early-return for `threshold == 0`.
@@ -665,13 +723,15 @@ pub(crate) fn cdef_filter_cols8_neon(
     } else {
         0
     };
-    let pri_shift_v = vdupq_n_s32(pri_shift);
-    let sec_shift_v = vdupq_n_s32(sec_shift);
-    let pri_thr = vdupq_n_s32(pri_strength);
-    let sec_thr = vdupq_n_s32(sec_strength);
-    let sentinel = vdupq_n_s32(CDEF_VERY_LARGE as i32);
+    // u16 lanes for the constrain chain (see `cdef_constrain8_bias_neon`);
+    // NEON takes a NEGATIVE count for a variable right shift.
+    let pri_nsh = vdupq_n_s16(-(pri_shift as i16));
+    let sec_nsh = vdupq_n_s16(-(sec_shift as i16));
+    let pri_thr = vdupq_n_u16(pri_strength as u16);
+    let sec_thr = vdupq_n_u16(sec_strength as u16);
+    // The sentinel compared in the BIASED domain, like every tap here.
+    let sentinel = vdupq_n_u16((CDEF_VERY_LARGE as u16) ^ 0x8000);
     let eight = vdupq_n_s32(8);
-    let zero = vdupq_n_s32(0);
 
     let p_off = [
         cdef_direction(dir, 0),
@@ -704,45 +764,66 @@ pub(crate) fn cdef_filter_cols8_neon(
     let mut i = 0i32;
     while i < rows {
         let base = (ioff as i32 + i * s) as usize;
-        let x = cdef_load8_u16_neon(token, inb, base);
-        let mut sum = [zero, zero];
+        let x = cdef_load8_bias_neon(token, inb, base);
+        let mut sum = vdupq_n_s16(0);
         let mut mx = x;
         let mut mn = x;
 
         for t in 0..4usize {
             let idx = (base as i32 + p_off[t]) as usize;
-            let tap = cdef_load8_u16_neon(token, inb, idx);
-            let cof = vdupq_n_s32(p_cof[t]);
-            for h in 0..2usize {
-                let diff = vsubq_s32(tap[h], x[h]);
-                let c = cdef_constrain4_neon(token, diff, pri_thr, pri_shift_v, pri_active);
-                sum[h] = vaddq_s32(sum[h], vmulq_s32(c, cof));
-                let is_sent = vceqq_s32(tap[h], sentinel);
-                mx[h] = vbslq_s32(is_sent, mx[h], vmaxq_s32(mx[h], tap[h]));
-                mn[h] = vminq_s32(mn[h], tap[h]);
-            }
+            let tap = cdef_load8_bias_neon(token, inb, idx);
+            let cof = vdupq_n_s16(p_cof[t] as i16);
+            let c = cdef_constrain8_bias_neon(token, tap, x, pri_thr, pri_nsh, pri_active);
+            // `vmulq_s16` keeps the LOW 16 bits of the product, which is
+            // exactly the scalar core's `(pri_taps[k] * constrain(..)) as i16`,
+            // and `vaddq_s16` wraps exactly like its `wrapping_add`.
+            sum = vaddq_s16(sum, vmulq_s16(c, cof));
+            let is_sent = vceqq_u16(tap, sentinel);
+            mx = vbslq_u16(is_sent, mx, vmaxq_u16(mx, tap));
+            mn = vminq_u16(mn, tap);
         }
         for t in 0..8usize {
             let idx = (base as i32 + s_off[t]) as usize;
-            let tap = cdef_load8_u16_neon(token, inb, idx);
-            let cof = vdupq_n_s32(s_cof[t]);
-            for h in 0..2usize {
-                let diff = vsubq_s32(tap[h], x[h]);
-                let c = cdef_constrain4_neon(token, diff, sec_thr, sec_shift_v, sec_active);
-                sum[h] = vaddq_s32(sum[h], vmulq_s32(c, cof));
-                let is_sent = vceqq_s32(tap[h], sentinel);
-                mx[h] = vbslq_s32(is_sent, mx[h], vmaxq_s32(mx[h], tap[h]));
-                mn[h] = vminq_s32(mn[h], tap[h]);
-            }
+            let tap = cdef_load8_bias_neon(token, inb, idx);
+            let cof = vdupq_n_s16(s_cof[t] as i16);
+            let c = cdef_constrain8_bias_neon(token, tap, x, sec_thr, sec_nsh, sec_active);
+            sum = vaddq_s16(sum, vmulq_s16(c, cof));
+            let is_sent = vceqq_u16(tap, sentinel);
+            mx = vbslq_u16(is_sent, mx, vmaxq_u16(mx, tap));
+            mn = vminq_u16(mn, tap);
         }
 
+        // Unbias back to the signed domain for the tail.
+        let bias = vdupq_n_u16(0x8000);
+        let x_s = vreinterpretq_s16_u16(veorq_u16(x, bias));
+        let mx_s = vreinterpretq_s16_u16(veorq_u16(mx, bias));
+        let mn_s = vreinterpretq_s16_u16(veorq_u16(mn, bias));
+
+        // THE TAIL STAYS IN i32, deliberately. The scalar core computes
+        // `x + ((8 + sum - (sum < 0)) >> 4)` on the SIGN-EXTENDED `sum`, and
+        // `8 + sum` leaves i16 range for a `sum` near 32767 — unreachable with
+        // AV1 strengths but reachable by a synthetic caller, and "unreachable"
+        // is not a proof. `vmovl_s16` of the i16 accumulator IS the previous
+        // arm's `(sum << 16) >> 16` sign-truncation, so the mod-2^16 argument
+        // that arm carried is unchanged: two's-complement addition is
+        // associative mod 2^16, so an i16 accumulator equals the scalar's
+        // per-tap `wrapping_add::<i16>` bit for bit.
+        let sum32 = [vmovl_s16(vget_low_s16(sum)), vmovl_s16(vget_high_s16(sum))];
+        let x32 = [vmovl_s16(vget_low_s16(x_s)), vmovl_s16(vget_high_s16(x_s))];
+        let mn32 = [
+            vmovl_s16(vget_low_s16(mn_s)),
+            vmovl_s16(vget_high_s16(mn_s)),
+        ];
+        let mx32 = [
+            vmovl_s16(vget_low_s16(mx_s)),
+            vmovl_s16(vget_high_s16(mx_s)),
+        ];
         for h in 0..2usize {
-            // sign-extend the low 16 bits, then x + ((8 + sum - (sum<0)) >> 4)
-            let sw = vshrq_n_s32::<16>(vshlq_n_s32::<16>(sum[h]));
+            let sw = sum32[h];
             let neg = vreinterpretq_s32_u32(vshrq_n_u32::<31>(vreinterpretq_u32_s32(sw)));
             let adj = vshrq_n_s32::<4>(vsubq_s32(vaddq_s32(eight, sw), neg));
-            let val = vaddq_s32(x[h], adj);
-            let y = vminq_s32(vmaxq_s32(val, mn[h]), mx[h]);
+            let val = vaddq_s32(x32[h], adj);
+            let y = vminq_s32(vmaxq_s32(val, mn32[h]), mx32[h]);
             let dst: &mut [i32; 4] = (&mut out[i as usize * 8 + h * 4..i as usize * 8 + h * 4 + 4])
                 .try_into()
                 .unwrap();
