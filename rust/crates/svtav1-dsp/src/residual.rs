@@ -133,6 +133,128 @@ fn residual_i32_impl_neon(
     }
 }
 
+/// `out[r*w + c] = src[r*src_stride + c] as i16 - pred[r*pred_stride + c] as i16`.
+///
+/// The i16 twin of [`residual_i32`], for the Hadamard/SATD path (C
+/// `svt_residual_kernel8bit`, whose output is `int16_t`). The difference of two
+/// `u8`s lies in `[-255, 255]`, so i16 is exact and this is not a narrowing.
+///
+/// `out` must be exactly `w * h` long; every element is written.
+///
+/// # Why this is a hand-written per-ISA arm and not `#[magetypes]`
+///
+/// It needs a `u8x16 -> i16x8` WIDENING subtract, and magetypes 0.9.28 has no
+/// integer widening in either direction — verified by source read of the local
+/// checkout (`~/work/archmage/magetypes`):
+/// `src/simd/backends/convert_int.rs` carries only same-width bitcasts and
+/// `src/simd/generic/cross_width.rs` is f32-only. Same gap that keeps
+/// [`residual_i32`], `crate::me_sad` and the directional-intra arms
+/// hand-written.
+pub fn residual_i16(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    w: usize,
+    h: usize,
+    out: &mut [i16],
+) {
+    incant!(
+        residual_i16_impl(src, src_stride, pred, pred_stride, w, h, out),
+        [v3, neon, scalar]
+    )
+}
+
+#[inline]
+fn residual_i16_core(
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    w: usize,
+    h: usize,
+    out: &mut [i16],
+) {
+    for r in 0..h {
+        let s = &src[r * src_stride..r * src_stride + w];
+        let p = &pred[r * pred_stride..r * pred_stride + w];
+        let o = &mut out[r * w..r * w + w];
+        for ((o, &s), &p) in o.iter_mut().zip(s).zip(p) {
+            *o = s as i16 - p as i16;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn residual_i16_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    w: usize,
+    h: usize,
+    out: &mut [i16],
+) {
+    residual_i16_core(src, src_stride, pred, pred_stride, w, h, out);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn residual_i16_impl_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    w: usize,
+    h: usize,
+    out: &mut [i16],
+) {
+    residual_i16_core(src, src_stride, pred, pred_stride, w, h, out);
+}
+
+/// 16 columns per iteration: widen both u8 rows to i16 and subtract (the
+/// difference is in `[-255, 255]`, so i16 is exact). Tail columns fall to the
+/// scalar core, which computes the identical value.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn residual_i16_impl_neon(
+    _token: NeonToken,
+    src: &[u8],
+    src_stride: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    w: usize,
+    h: usize,
+    out: &mut [i16],
+) {
+    for r in 0..h {
+        let s = &src[r * src_stride..r * src_stride + w];
+        let p = &pred[r * pred_stride..r * pred_stride + w];
+        let o = &mut out[r * w..r * w + w];
+        let mut c = 0usize;
+        while c + 16 <= w {
+            let sa: &[u8; 16] = s[c..c + 16].try_into().unwrap();
+            let pa: &[u8; 16] = p[c..c + 16].try_into().unwrap();
+            let sv = vld1q_u8(sa);
+            let pv = vld1q_u8(pa);
+            let d_lo = vreinterpretq_s16_u16(vsubl_u8(vget_low_u8(sv), vget_low_u8(pv)));
+            let d_hi = vreinterpretq_s16_u16(vsubl_high_u8(sv, pv));
+            let q0: &mut [i16; 8] = (&mut o[c..c + 8]).try_into().unwrap();
+            vst1q_s16(q0, d_lo);
+            let q1: &mut [i16; 8] = (&mut o[c + 8..c + 16]).try_into().unwrap();
+            vst1q_s16(q1, d_hi);
+            c += 16;
+        }
+        for k in c..w {
+            o[k] = s[k] as i16 - p[k] as i16;
+        }
+    }
+}
+
 /// `out[r*w + c] = clamp(pred[r*pred_stride + c] as i32 + inv[r*w + c], 0, 255)`.
 ///
 /// The reconstruction add after the inverse transform. `inv` and `out` are both
@@ -463,6 +585,18 @@ mod tests {
                 let mut got = vec![0i32; w * h];
                 residual_i32(&src, sstride, &pred, pstride, w, h, &mut got);
                 assert_eq!(got, want, "residual {w}x{h}");
+            });
+            // i16 twin, same grid and the same tier sweep.
+            let mut want16 = vec![0i16; w * h];
+            residual_i16_core(&src, sstride, &pred, pstride, w, h, &mut want16);
+            assert!(
+                want16.iter().zip(&want).all(|(&a, &b)| i32::from(a) == b),
+                "residual_i16 core disagrees with residual_i32 core at {w}x{h}"
+            );
+            let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_p| {
+                let mut got = vec![0i16; w * h];
+                residual_i16(&src, sstride, &pred, pstride, w, h, &mut got);
+                assert_eq!(got, want16, "residual_i16 {w}x{h}");
             });
             // Recon: inv values chosen to straddle both clamp bounds hard.
             let inv: Vec<i32> = (0..w * h)

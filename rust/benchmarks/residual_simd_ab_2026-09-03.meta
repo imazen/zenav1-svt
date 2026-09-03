@@ -1,0 +1,58 @@
+# Four hand-rolled scalar residual loops routed through the dsp residual
+# kernels, plus a new `residual_i16`.
+#
+# host  : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool  : tools/perf_ab.sh — interleaved paired rounds, order randomised per
+#         round, one untimed warmup inside each sample, NEITHER SIDE NICED,
+#         no -C target-cpu=native
+# base  : 5bfff452 (main)   cand: + this change
+# grid  : gradient qp 40; still 256/512 x p{2,6,10} n=15,
+#         videokey (SVTAV1_VIDEO=1) 128/256/512 x p{6,8} n=25
+# ident : Y on all twelve cells
+#
+# WHY. `benchmarks/perf_still_attrib_2026-09-03.*` puts DISTORTION at
+# **17.4 % of the still gap at 512x512 p2** — the largest class there — and its
+# two biggest port symbols are `leaf_funnel::predict::hadamard_satd` (854 self
+# samples of 19,115) and `leaf_funnel::detect::txb_coeff_satd::{closure#0}`
+# (690). Neither symbol is the transform: the Hadamard kernels and the forward
+# DCT are separate symbols and already vectorised. That self time is the
+# hand-rolled `src[..] as iN - pred[..] as iN` loop each function carries
+# inline. C computes the same thing with `svt_residual_kernel8bit_neon` (268
+# samples on its side).
+#
+# The port ALREADY HAD the kernel: `svtav1_dsp::residual::residual_i32` has
+# scalar/AVX2/NEON arms and appears in the same profile at 337 samples. Four
+# call sites simply were not using it — two in `pd0` (`lvl1_cost_from_pred`
+# and `lvl5_like_block_cost_rect`, duplicate transcriptions of the same loop),
+# one in `txb_coeff_satd`, and one in `hadamard_satd`, which needs an i16
+# output that did not exist and is added here as `residual_i16`.
+#
+# RESULT — the largest still-arm win measured this day, and ALL SIX still cells
+# move with their whole p25/p75 span below 1.0:
+#   still     512 p2  **1.052x**  (p25/p75 0.9476/0.9531)
+#             256 p2  **1.037x**  (0.9573/0.9666)
+#             512 p6  1.024x | 256 p6 1.022x
+#             256 p10 1.012x | 512 p10 1.011x
+#   videokey  512 p6  1.017x  (0.9796/0.9935)
+#             512 p8  1.007x  (0.9757/0.9965)
+#             256 p6  1.006x | 256 p8 1.002x | 128 p8 1.001x
+#             128 p6  0.990x  <- NULL: its span is 0.9536/1.0630, the widest of
+#                                any cell in any record this day. Reported as
+#                                measured rather than dropped.
+#
+# The still arm gains most at preset 2 and least at preset 10, which is the
+# shape the attribution predicts: DISTORTION is 17.4 % of the gap at p2, 7.7 %
+# at p6 and 6.2 % at p10.
+#
+# NOT DONE, and both for the same reason: the bd10 twins
+# (`hadamard_satd_hbd`, `txb_coeff_satd10`) keep their inline loops because
+# their `src`/`pred` are `u16` and there is no hbd residual kernel. Adding one
+# is a separate chunk with its own parity test.
+#
+# WHY `residual_i16` IS HAND-WRITTEN PER-ISA AND NOT `#[magetypes]`: it needs a
+# `u8x16 -> i16x8` WIDENING subtract, and magetypes 0.9.28 has no integer
+# widening in either direction — `src/simd/backends/convert_int.rs` carries
+# only same-width bitcasts and `src/simd/generic/cross_width.rs` is f32-only
+# (verified by source read of ~/work/archmage/magetypes, not from memory). It
+# therefore mirrors `residual_i32`, which is hand-written for exactly the same
+# reason.

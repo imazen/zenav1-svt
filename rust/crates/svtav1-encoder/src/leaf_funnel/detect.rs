@@ -137,13 +137,11 @@ pub(super) fn txb_coeff_satd(
     let n = w * h;
     with_satd_scratch(|sc| {
         let (residual, coeffs) = sc.split(n);
-        for r in 0..h {
-            let srow = src_off + r * src_stride;
-            let prow = r * w;
-            for c in 0..w {
-                residual[r * w + c] = src[srow + c] as i32 - pred[prow + c] as i32;
-            }
-        }
+        // C `svt_residual_kernel8bit`, via the dsp kernel that already carries
+        // NEON and AVX2 arms: it computes exactly `src as i32 - pred as i32`
+        // per element, which is what this loop did inline. The bd10 twin above
+        // keeps its inline loop — its `src`/`pred` are `u16`.
+        svtav1_dsp::residual::residual_i32(&src[src_off..], src_stride, pred, w, w, h, residual);
         svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
             residual,
             coeffs,

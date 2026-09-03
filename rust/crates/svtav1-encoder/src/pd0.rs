@@ -2085,14 +2085,21 @@ impl<'a> Pd0Ctx<'a> {
         }
 
         let tx_h = bh >> step;
+        // C `svt_residual_kernel8bit`, via the dsp kernel that already carries
+        // NEON and AVX2 arms. The sub-resolution `step` is expressed as a
+        // DOUBLED stride on both sides — `(r << step) * stride` is
+        // `r * (stride << step)` — which is exactly what this loop did with its
+        // shifted row index.
         let mut residual = vec![0i32; bw * tx_h];
-        for r in 0..tx_h {
-            let srow = (abs_y + (r << step)) * self.stride + abs_x;
-            let prow = (r << step) * bw;
-            for c in 0..bw {
-                residual[r * bw + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
-            }
-        }
+        svtav1_dsp::residual::residual_i32(
+            &self.src[abs_y * self.stride + abs_x..],
+            self.stride << step,
+            &pred,
+            bw << step,
+            bw,
+            tx_h,
+            &mut residual,
+        );
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
         let (eob, dist, _qcoeff, _c_tx, dqcoeff) =
             tx_quant_core(&residual, bw, tx_h, qindex_off, self.qm_level, step);
@@ -2294,14 +2301,21 @@ impl<'a> Pd0Ctx<'a> {
         }
 
         let tx_h = bh >> step;
+        // C `svt_residual_kernel8bit`, via the dsp kernel that already carries
+        // NEON and AVX2 arms. The sub-resolution `step` is expressed as a
+        // DOUBLED stride on both sides — `(r << step) * stride` is
+        // `r * (stride << step)` — which is exactly what this loop did with its
+        // shifted row index.
         let mut residual = vec![0i32; bw * tx_h];
-        for r in 0..tx_h {
-            let srow = (abs_y + (r << step)) * self.stride + abs_x;
-            let prow = (r << step) * bw;
-            for c in 0..bw {
-                residual[r * bw + c] = self.src[srow + c] as i32 - pred[prow + c] as i32;
-            }
-        }
+        svtav1_dsp::residual::residual_i32(
+            &self.src[abs_y * self.stride + abs_x..],
+            self.stride << step,
+            &pred,
+            bw << step,
+            bw,
+            tx_h,
+            &mut residual,
+        );
         let (eob, dist, qcoeff, c_tx, dqcoeff) =
             tx_quant_core(&residual, bw, tx_h, self.qindex, self.qm_level, step);
         let tables = self.lvl1.expect("LVL_1 requires tables");

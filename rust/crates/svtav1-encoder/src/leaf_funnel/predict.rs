@@ -154,13 +154,25 @@ pub(super) fn hadamard_satd(
     let mut coeff = vec![0i32; tx * tx];
     for ty in (0..h).step_by(tx) {
         for tx_x in (0..w).step_by(tx) {
-            for r in 0..tx {
-                let srow = src_off + (ty + r) * src_stride + tx_x;
-                let prow = (ty + r) * w + tx_x;
-                for c in 0..tx {
-                    res[r * tx + c] = src[srow + c] as i16 - pred[prow + c] as i16;
-                }
-            }
+            // C `svt_residual_kernel8bit`, via the dsp kernel that already
+            // carries NEON and AVX2 arms: it computes exactly
+            // `src as i16 - pred as i16` per element, which is what this loop
+            // did inline. `hadamard_satd` is the largest DISTORTION symbol on
+            // the still arm — 854 self samples of 19,115 at gradient 512x512
+            // qp 40 preset 2 — and that self time IS this loop; the Hadamard
+            // kernels below are separate symbols and already vectorised.
+            //
+            // The bd10 twin below keeps its inline loop: its `src`/`pred` are
+            // `u16` and no `residual_i16` overload takes those.
+            svtav1_dsp::residual::residual_i16(
+                &src[src_off + ty * src_stride + tx_x..],
+                src_stride,
+                &pred[ty * w + tx_x..],
+                w,
+                tx,
+                tx,
+                &mut res,
+            );
             match tx {
                 4 => svtav1_dsp::hadamard::aom_hadamard_4x4(&res, tx, &mut coeff),
                 8 => svtav1_dsp::hadamard::aom_hadamard_8x8(&res, tx, &mut coeff),
