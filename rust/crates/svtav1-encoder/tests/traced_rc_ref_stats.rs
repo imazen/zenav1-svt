@@ -522,3 +522,26 @@ fn generate_sb_qindex_skips_normalize_at_delta_q_res_one() {
     let s = generate_sb_qindex_steps(false, 1, true);
     assert!(s.generate_b64_me_qindex_map);
 }
+
+/// C `scs->stats_based_sb_lambda_modulation` (`Globals/enc_handle.c:4375`).
+///
+/// It is the ON/OFF switch for the whole per-superblock lambda: at preset 12
+/// and 13 `generate_sb_qindex` never builds `b64_me_qindex` (rc_process.c:747)
+/// and `update_lambda`'s factor block is skipped (rc_process.c:423), so a
+/// lambda derived from an `me_q_index` qdiff there is WRONG rather than
+/// merely conservative. The port's inter arm reaches presets 6..13, so the
+/// boundary is inside its own envelope.
+#[test]
+fn stats_based_sb_lambda_modulation_is_off_above_m11() {
+    use svtav1_encoder::port_rc_process::stats_based_sb_lambda_modulation as f;
+    // Non-RTC: `enc_mode <= ENC_M11`.
+    for m in 0..=11u8 {
+        assert!(f(m, false), "preset {m} must have modulation ON");
+    }
+    for m in 12..=13u8 {
+        assert!(!f(m, false), "preset {m} must have modulation OFF");
+    }
+    // RTC drops the boundary to ENC_M10.
+    assert!(f(10, true));
+    assert!(!f(11, true));
+}

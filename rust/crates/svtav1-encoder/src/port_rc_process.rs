@@ -1525,6 +1525,27 @@ pub struct SbQindexSteps {
     pub generate_b64_me_qindex_map: bool,
 }
 
+/// C `scs->stats_based_sb_lambda_modulation` (`Globals/enc_handle.c:4375`):
+///
+/// ```text
+/// scs->stats_based_sb_lambda_modulation =
+///     (scs->static_config.enc_mode <= (rtc_tune ? ENC_M10 : ENC_M11)) ? 1 : 0;
+/// ```
+///
+/// It gates BOTH halves of the per-superblock lambda: `generate_sb_qindex`
+/// only fills `b64_me_qindex` when it is set (rc_process.c:747), and
+/// `update_lambda`'s factor block is skipped entirely when it is not
+/// (rc_process.c:423). So at preset 12 and 13 the `me_q_index` qdiff is not
+/// merely zero — the map is never built — and a lambda derived from one there
+/// is wrong, not conservative.
+///
+/// `enc_mode` is `static_config.enc_mode`, the CLI preset, NOT the
+/// screen-content-clamped `eff_enc_mode`.
+#[must_use]
+pub fn stats_based_sb_lambda_modulation(enc_mode: u8, rtc: bool) -> bool {
+    enc_mode <= if rtc { 10 } else { 11 }
+}
+
 /// C `generate_sb_qindex` (rc_process.c:735) — its step selection.
 #[must_use]
 pub fn generate_sb_qindex_steps(

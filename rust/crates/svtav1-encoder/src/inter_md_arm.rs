@@ -366,6 +366,7 @@ pub fn build_inter_candidates(
     f: &InterMdFrame<'_>,
     b: &mut InterBlockCtx<'_>,
     lambda: u64,
+    fast_lambda: u32,
 ) -> Vec<InterCandOut> {
     use crate::port_md::inject::{
         CandArray, InjectCtx, NoRefinement, WmCtrls, inject_inter_candidates,
@@ -408,6 +409,13 @@ pub fn build_inter_candidates(
     let search = crate::inter_search_arm::run_block_searches(
         &f.search,
         &crate::inter_search_arm::BlockSearchIn {
+            // C `ctx->full_lambda_md[0]` / `fast_lambda_md[0]` as
+            // `svt_aom_mode_decision_configure_sb` set them for THIS
+            // superblock. `lambda` is the funnel's own per-SB MD lambda,
+            // which is the SAME quantity the search used to re-derive at
+            // frame level -- one value, one derivation.
+            full_lambda_8bit: u32::try_from(lambda).unwrap_or(u32::MAX),
+            fast_lambda_8bit: fast_lambda,
             org_x: b.org_x,
             org_y: b.org_y,
             bw: b.bw,

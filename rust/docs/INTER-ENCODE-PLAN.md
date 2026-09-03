@@ -5984,6 +5984,167 @@ from the other side, which settles the open question the benchmark note asked.
 128. The verification cell is the table above — `fastlam` must read
 5182 / 5182 / 5182 / 7773 on `diag 72x72 q40 p6` frame 1.
 
+### 1z²⁴. The MD lambda is PER-SUPERBLOCK and the port had one per frame — §1z²³ wired, and the 72x72 under-split is CLOSED (2026-09-03)
+
+§1z²³ landed `generate_b64_me_qindex_map` ported-and-tested but **not wired**,
+and predicted from the numbers that the per-superblock lambda was §1z²²'s
+residual 72x72 under-split. It is. **Grid 89 BOTH / 6 F1DIFF / 1 F0DIFF ->
+91 / 4 / 1**, two cells promoted, none regressed.
+
+#### The premise was re-measured before anything was written
+
+`benchmarks/ref_coded_area_stats_2026-09-02.md` and §1z²³ were both taken on
+`r7900x`; this chunk re-took the `fastlam` half **on this host** through
+`tools/ctrace-linux/run.sh` (the linux/arm64 container that exists because
+Apple ld64 has no `-Wl,--wrap`) before touching code. C's `SVT_PD0CFG_OUT` on
+`diag 72x72 q40 p6` frame 1:
+
+| sb | org | C `fastlam` | port BEFORE | port AFTER |
+|---|---|---|---|---|
+| 0 | (0,0) | 5182 | 6633 | **5182** |
+| 1 | (64,0) | 5182 | 6633 | **5182** |
+| 2 | (0,64) | 5182 | 6633 | **5182** |
+| 3 | (64,64) | **7773** | 6633 | **7773** |
+
+Every other field of C's `PD0CFG` line and the port's `PD0DR` line (`dr`,
+`drlvl`, `pqp`, `med`, `mev`, `refmin`) already agreed and still does.
+
+#### The experiment came before the refactor
+
+Rather than write the per-SB plumbing and hope, a throwaway
+`SVTAV1_XLAM_QDIFF` env forced ONE global `qdiff` into all four inter lambda
+sites. At `qdiff = -8` (C's factor 100, its value for superblocks 0-2) the
+port's `PD0DR` printed C's 5182 on every superblock and
+`SVTAV1_PACKTREE` gained the block the tree was missing:
+
+```
+C:              mi=(0,0) mi=(0,16) mi=(8,16) mi=(16,0) mi=(16,16)   5 blocks
+port qdiff=0:   mi=(0,0) mi=(0,16)           mi=(16,0) mi=(16,16)   4 blocks
+port qdiff=-8:  mi=(0,0) mi=(0,16) mi=(8,16) mi=(16,0) mi=(16,16)   5 blocks
+```
+
+That is §1z²²'s prediction confirmed as a measurement, on the cell it was
+made on, for the cost of one env var — and it is why the refactor below was
+worth doing rather than a guess. The hack is gone from the tree.
+
+#### What C does, and where the port had it frame-level
+
+`svt_aom_mode_decision_configure_sb` (md_process.c:796) is called PER
+SUPERBLOCK from `enc_dec_process.c:2922` with
+`svt_aom_get_me_qindex(pcs, sb_ptr, ..)` as its fourth argument. It sets
+`ctx->me_q_index` and calls `av1_lambda_assign_md`, so
+`full_lambda_md[0]`, `fast_lambda_md[0]` and `full_sb_lambda_md[0]` are all
+per-superblock — **even with no per-SB delta-q signalled**, because
+`update_lambda`'s `stats_based_sb_lambda_modulation` block keys on
+`me_q_index - base_q_idx` and `me_q_index` comes from
+`me_8x8_cost_variance` alone (`rc_aq.c:656`).
+
+`scs->stats_based_sb_lambda_modulation` is `enc_mode <= ENC_M11` off the RTC
+arm (`enc_handle.c:4375`), i.e. ON at every preset this port reaches.
+
+The port derived ONE lambda per frame and handed it to five consumers:
+`c_quant.lambda` (the funnel's MD + RDOQ lambda), `SearchFrameCfg.
+{full,fast}_lambda_8bit` (the MD motion searches), `Pd0InterRef` (PD0's
+rdcost), `set_depth_removal_level_controls`' `fast_lambda_8bit`, and the
+depth-refinement scan.
+
+#### What landed
+
+One producer, `pipeline.rs`'s `sb_inter_lambda: Option<Vec<pd0::SbInterLambda>>`
+— `full_8bit`, `fast_8bit` and `me_qdiff` per superblock in raster order,
+built from `FrameMe::per_b64[..].me_8x8_cost_variance` through the two
+already-ported functions (`port_rc_process::generate_b64_me_qindex_map`,
+`port_md_rate_estimation::get_me_qindex`) and the already-ported
+`inter_full_lambda_8bit` / `compute_fast_lambda`. Every consumer reads that
+one array:
+
+* `set_depth_removal_level_controls`' `fast_lambda_8bit` — and this **removed
+  a duplicate**: `pd0_min_sq`'s block carried its own `LambdaContext` +
+  `frame_lambda_weight` transcription of the same chain, hoisted out of the
+  superblock loop exactly as §1z²³ described. It is gone.
+* `Pd0InterRef::me_qdiff` (new field) -> `pd0_frame_lambda_and_min_sq`.
+* `FunnelFrame::lambda` per superblock — the field the HDR fork's per-SB
+  delta-q path already mutated in that loop, so the mechanism existed.
+* `FunnelFrame::inter_fast_lambda` (new field) — C `fast_lambda_md[0]`.
+* the PD0 depth-refinement scan and the PD1 walk, which C also prices with
+  `full_lambda_md[0]` / `full_sb_lambda_md[0]`.
+
+**And it deleted a THIRD transcription of the frame lambda.** The MD searches
+took `full_lambda_8bit` / `fast_lambda_8bit` off `SearchFrameCfg`, which
+`pipeline.rs` filled by re-deriving `inter_full_lambda_8bit(base_qindex, ..)`
+with the same arguments `c_quant.lambda` already used two hundred lines
+earlier — the same value, computed twice, one of them now stale the moment
+the other went per-SB. Both fields moved to `BlockSearchIn`, where
+`build_inter_candidates` fills them from the funnel's own per-SB lambda. There
+is now ONE derivation, and `SearchFrameCfg` cannot carry a lambda again
+without a compile error. This is the FIFTH duplicate transcription this
+campaign has found (§4's rule).
+
+**§1z²³'s "do NOT land only the PD0 half" was followed**: PD0, the funnel, the
+RDOQ trellis, the motion searches, the refinement scan and the PD1 walk all
+read the same superblock's `me_q_index`. The MD half turned out to be much
+smaller than that entry feared, because `FunnelFrame` was ALREADY mutated per
+superblock for the fork's delta-q path and the search's lambda had a per-block
+struct to move into.
+
+#### A defect this chunk introduced and then found, and the gate could not have
+
+The first wiring hard-coded `stats_based_sb_lambda_modulation: true` "because
+it is on at every preset this port reaches", which is a claim about the
+envelope rather than about C. It is `enc_mode <= (rtc ? ENC_M10 : ENC_M11)`
+(`Globals/enc_handle.c:4375`), so it is **OFF at preset 12 and 13** — and
+there `generate_sb_qindex` does not merely produce a zero qdiff, it never
+builds `b64_me_qindex` at all (rc_process.c:747) while `update_lambda` skips
+the factor block outright (rc_process.c:423). A lambda derived from an
+`me_q_index` there is wrong, not conservative.
+
+**No byte gate in this repo covers it**: `inter_byte_gate` is p6/p8 only, and
+`inter_completion_scan` asserts encode/refuse/crash counts, not identity —
+its p10 and p13 rows all read `N` before and after. So the guard is a UNIT
+test on the derivation (`stats_based_sb_lambda_modulation_is_off_above_m11`,
+both arms of the RTC ternary) plus a match guard that skips the whole per-SB
+binding above M11, which leaves every consumer on the frame lambda by
+construction. Recorded rather than quietly fixed because "on at every preset
+this port reaches" is exactly the shape of premise this campaign keeps
+finding wrong.
+
+#### The residual, and the direction it points
+
+`inter_byte_gate.sh` 91 -> **93** (91 grid cells + the two 576x576 ones),
+OPEN_CELLS 6 -> 4. Mutation-verified both ways: with `sb_inter_lambda` forced
+to `None` the gate reports the two promoted cells failing and `PD0DR` goes
+back to a flat 6633; restored, 0 failed.
+
+**§1z²²'s "the port stops the edge descent one depth too early" is CLOSED.**
+On `diag 72x72 q40 p6` frame 1 the port now codes C's five blocks with C's
+shapes — `mi=(0,16)` and `mi=(8,16)` both `BLOCK_16X32` `PARTITION_VERT`,
+where it used to code one `BLOCK_32X64`. The cell is still one byte off (29 vs
+28) and **the defect moved**: C codes `mi=(8,16)` as `mode=14` (NEARMV) and
+the port codes `mode=16` (NEWMV) — the SAME MV `(24,0)`, at NEWMV's price.
+That is a candidate/MVP-lane defect, not a partition-cost one, and it is where
+the next chunk on this cell goes. The full side-by-side of all five blocks,
+with what it rules in and out and which interposer pair to build next, is
+`benchmarks/inter_edge_shape_mode_2026-09-03.md`.
+
+The four remaining F1DIFF cells are `diag 72x72 q40 p6`, `diag 72x72 q55 p6`,
+`diag 72x72 q55 p8` and `diag 128x128 q20 p8`; the one F0DIFF
+(`gradient 128x128 q20 p8`) is unchanged and is still a video-KEY defect on
+which every frame-1 reading is void.
+
+#### No regression, measured
+
+`cargo nextest run --workspace` **2508/2508**, `regression_spotcheck.sh`
+**98/98**, `identity_full_8bit.sh` **1100/1100**, `fctx_gate.sh` **96/96**,
+`inter_decode_gate.sh` **5/5**, `inter_decode_census.sh` **96/96**,
+`video_key_matrix.sh` **58/60** (unmoved). The still and key-frame paths are
+untouched BY CONSTRUCTION and not only by measurement: `sb_inter_lambda` is
+`None` unless `inter_md_frame` is `Some`, which is exactly "non-key frame with
+a DPB reference", and the map's own I-slice arm would write `base_q_idx` into
+every entry anyway (`qdiff = 0`, factor 128, the identity).
+
+Data: `benchmarks/inter_byte_matrix_2026-09-03-sblambda.{tsv,meta}` and the
+`-before-` sibling.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

@@ -369,8 +369,15 @@ pub struct FunnelFrame {
     /// half at SB128, with completely different top-right / bottom-left
     /// availability. 16 for every SB64 encode, i.e. byte-neutral there.
     pub sb_mi_size: usize,
-    /// `full_lambda_md[EB_8_BIT_MD]` — the kf chain at the frame qindex.
+    /// `full_lambda_md[EB_8_BIT_MD]` — the kf chain at the frame qindex on a
+    /// key frame, and this SUPERBLOCK's inter MD lambda on a video frame
+    /// (C `svt_aom_mode_decision_configure_sb`, md_process.c:796).
     pub lambda: u64,
+    /// C `fast_lambda_md[EB_8_BIT_MD]` for this superblock — the MD motion
+    /// searches' SAD-domain lambda (`svt_init_mv_cost_params`,
+    /// md_subpel.c:1920-1922). ZERO on a key frame, where no inter search
+    /// runs; the inter arm is the only reader.
+    pub inter_fast_lambda: u32,
     /// C `pcs->slice_type != I_SLICE`. It selects which luma-mode rate table
     /// an INTRA candidate is priced with — `mb_mode_fac_bits[size_group]`
     /// versus the key-frame `y_mode_fac_bits[top][left]`, which are

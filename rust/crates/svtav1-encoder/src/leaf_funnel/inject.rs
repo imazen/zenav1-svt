@@ -1447,6 +1447,7 @@ pub(super) fn inject_candidates(
                 sq_me: fx.inter_sq_me.as_deref_mut(),
             },
             lambda,
+            frame.inter_fast_lambda,
         );
         for c in built {
             // MDS0's distortion is the same SATD every intra candidate is

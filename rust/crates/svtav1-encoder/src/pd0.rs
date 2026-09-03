@@ -1785,6 +1785,30 @@ pub struct Pd0InterRef<'a> {
     /// I-slice `set_depth_removal_level_controls` returns `enabled = 0`
     /// outright, which is why the key path never carries it.
     pub min_sq: usize,
+    /// C `update_lambda`'s `me_q_index - base_q_idx` for THIS superblock
+    /// (`rc_process.c:437-446`), which is what makes `full_lambda_md` and
+    /// `fast_lambda_md` per-superblock. 0 reproduces the frame-level lambda.
+    pub me_qdiff: i32,
+}
+
+/// C `av1_lambda_assign_md`'s per-SUPERBLOCK output on an INTER frame
+/// (`svt_aom_mode_decision_configure_sb`, md_process.c:796).
+///
+/// One value per superblock in raster order. It exists because C's MD lambdas
+/// are per-SB through `update_lambda`'s `stats_based_sb_lambda_modulation`
+/// block (rc_process.c:423-446), whose `qdiff` is
+/// `svt_aom_get_me_qindex(sb) - base_q_idx` — a quantity derived from
+/// `me_8x8_cost_variance` alone and therefore live even with no per-SB
+/// delta-q signalled.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SbInterLambda {
+    /// C `ctx->full_lambda_md[EB_8_BIT_MD]` (== `full_sb_lambda_md[0]`).
+    pub full_8bit: u32,
+    /// C `ctx->fast_lambda_md[EB_8_BIT_MD]`.
+    pub fast_8bit: u32,
+    /// `me_q_index - base_q_idx` for this superblock — the ONE input the
+    /// three lambda derivations (PD0, the MD funnel, the MD searches) share.
+    pub me_qdiff: i32,
 }
 
 /// C `BlockSize` for a shape PD0 can cost — the square depths plus the two
@@ -3328,7 +3352,7 @@ fn pd0_frame_lambda_and_min_sq(
                 ir.base_update_type,
                 ir.factor_update_type,
                 ir.alt_lambda_factors,
-                0,
+                ir.me_qdiff,
                 lambda_weight,
             ) as u64,
             ir.min_sq,

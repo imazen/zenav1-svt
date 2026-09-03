@@ -3229,57 +3229,6 @@ impl EncodePipeline {
                         st.force_integer_mv,
                     ),
                 );
-                // C `ctx->full_lambda_md[EB_8_BIT_MD]` / `fast_lambda_md`
-                // — frame-constant on this port (no per-SB delta-q is
-                // signalled, so `update_lambda`'s `qdiff_vs_base` is 0).
-                // The SAME frame weight `c_quant`'s inter lambda uses
-                // (`picture_qp` + the extended-CRF bump), NOT the picture's
-                // own `lambda_weight` signal — passing that as the bump
-                // double-counts the 150 and lands on exactly 2x C's lambda
-                // (measured: 482 756 against C's 241 378 on
-                // `gradient 128x128 q40 p8` frame 1, `SVT_SUBPEL_OUT`'s
-                // `flam=` field).
-                let lw = crate::pd0::frame_lambda_weight(
-                    picture_qp as u32,
-                    self.hdr.tune == crate::tune::TUNE_IQ,
-                    lw_bump,
-                );
-                let inter_full_lambda = crate::pd0::inter_full_lambda_8bit(
-                    base_qindex,
-                    md_lambda_base_update_type
-                        .expect("an inter frame always has a picture decision"),
-                    md_lambda_factor_update_type,
-                    md_alt_lambda_factors,
-                    0,
-                    lw,
-                );
-                let inter_fast_lambda = {
-                    let lctx = crate::port_rc_process::LambdaContext {
-                        frame_type: 1,
-                        temporal_layer_index: temporal_layer,
-                        hierarchical_levels: self.gop.hierarchical_levels,
-                        update_type: md_lambda_base_update_type
-                            .expect("an inter frame always has a picture decision"),
-                        alt_lambda_factors: md_alt_lambda_factors,
-                        rtc: false,
-                        stats_based_sb_lambda_modulation: false,
-                        base_q_idx: i32::from(base_qindex),
-                        delta_q_present: false,
-                        r0_delta_qp_md: false,
-                        lambda_scale_factors: [128; 7],
-                    };
-                    let raw = crate::port_rc_process::compute_fast_lambda(
-                        &lctx,
-                        base_qindex,
-                        base_qindex,
-                        8,
-                    );
-                    if lw == 0 {
-                        raw
-                    } else {
-                        ((u64::from(raw) * u64::from(lw)) >> 7) as u32
-                    }
-                };
                 let search = crate::inter_search_arm::frame_cfg(
                     &crate::inter_search_arm::SearchFrameInputs {
                         md_pme_level: sigs.md_pme_level,
@@ -3294,8 +3243,6 @@ impl EncodePipeline {
                         // `ENC_MR`, which is every preset this port reaches
                         // on the video arm.
                         pme_qp_based_th_scaling: self.speed_config.preset > 0,
-                        full_lambda_8bit: inter_full_lambda,
-                        fast_lambda_8bit: inter_fast_lambda,
                         base_q_idx: base_qindex,
                         allow_high_precision_mv: st.allow_high_precision_mv,
                         approx_inter_rate: sigs.approx_inter_rate,
@@ -3384,6 +3331,112 @@ impl EncodePipeline {
             _ => None,
         };
 
+        // C `av1_lambda_assign_md` (md_process.c:725) run PER SUPERBLOCK, as
+        // `svt_aom_mode_decision_configure_sb` (md_process.c:796) calls it —
+        // `ctx->me_q_index = svt_aom_get_me_qindex(pcs, sb_ptr, ..)`
+        // (enc_dec_process.c:2926) is a per-SB input, so `full_lambda_md[0]`
+        // and `fast_lambda_md[0]` are per-SB even with no delta-q signalled.
+        //
+        // The chain, all already ported and tier-tested:
+        //   `me_8x8_cost_variance[b64]`
+        //     -> `port_rc_process::generate_b64_me_qindex_map` (rc_aq.c:656)
+        //     -> `port_md_rate_estimation::get_me_qindex` (md_rate_estimation.c:1084)
+        //     -> `update_lambda`'s `stats_based_sb_lambda_modulation` factor
+        //        (rc_process.c:437-446), which is `me_q_index - base_q_idx`.
+        //
+        // MEASURED against C's own `SVT_PD0CFG_OUT` on `diag 72x72 q40 p6`
+        // frame 1: `fastlam` 5182 / 5182 / 5182 / 7773 across the four
+        // superblocks of ONE frame, where the port reported a flat 6633.
+        //
+        // BYTE-INERT ON A KEY FRAME BY CONSTRUCTION: the map's I-slice arm
+        // writes `base_q_idx` into every entry, so `qdiff` is 0 and the
+        // factor is the identity 128 — and this whole binding is `None`
+        // unless `inter_md_frame` is `Some`, which is exactly "non-key with a
+        // DPB reference".
+        let sb_inter_lambda: Option<Vec<crate::pd0::SbInterLambda>> =
+            match (frame_me.as_ref(), inter_md_frame.as_ref()) {
+                // C `scs->stats_based_sb_lambda_modulation` (enc_handle.c:4375)
+                // is OFF above ENC_M11, and there `generate_sb_qindex` never
+                // builds `b64_me_qindex` at all (rc_process.c:747). Skipping
+                // the whole binding there leaves every consumer on the frame
+                // lambda, which is what C prices with.
+                (Some(me), Some(imf))
+                    if crate::port_rc_process::stats_based_sb_lambda_modulation(
+                        self.speed_config.preset,
+                        false,
+                    ) =>
+                {
+                    let mev: Vec<u32> = me.per_b64.iter().map(|o| o.me_8x8_cost_variance).collect();
+                    let map = crate::port_rc_process::generate_b64_me_qindex_map(
+                        &mev,
+                        i32::from(base_qindex),
+                        /*is_islice=*/ false,
+                    );
+                    let lw = crate::pd0::frame_lambda_weight(
+                        picture_qp as u32,
+                        self.hdr.tune == crate::tune::TUNE_IQ,
+                        lw_bump,
+                    );
+                    let lctx = crate::port_rc_process::LambdaContext {
+                        frame_type: 1, // not KEY_FRAME
+                        temporal_layer_index: temporal_layer,
+                        hierarchical_levels: self.gop.hierarchical_levels,
+                        update_type: imf.base_update_type,
+                        alt_lambda_factors: md_alt_lambda_factors,
+                        rtc: false,
+                        // C `scs->stats_based_sb_lambda_modulation`
+                        // (enc_handle.c:4375). The match guard above already
+                        // proved it true for this frame; passing a literal
+                        // here would be a second spelling of the same rule.
+                        stats_based_sb_lambda_modulation: true,
+                        base_q_idx: i32::from(base_qindex),
+                        delta_q_present: false,
+                        r0_delta_qp_md: false,
+                        lambda_scale_factors: [128; 7],
+                    };
+                    let mut out = Vec::with_capacity(sb_cols * sb_rows);
+                    for sb_row in 0..sb_rows {
+                        for sb_col in 0..sb_cols {
+                            let sb_idx = sb_row * sb_cols + sb_col;
+                            let me_q = crate::port_md_rate_estimation::get_me_qindex(
+                                &map,
+                                u16::try_from(w).unwrap_or(u16::MAX),
+                                u16::try_from(h).unwrap_or(u16::MAX),
+                                u32::try_from(sb_idx).unwrap_or(u32::MAX),
+                                u32::try_from(sb_col * sb_size).unwrap_or(u32::MAX),
+                                u32::try_from(sb_row * sb_size).unwrap_or(u32::MAX),
+                                sb_size == 128,
+                            );
+                            let me_qdiff = i32::from(me_q) - i32::from(base_qindex);
+                            let raw = crate::port_rc_process::compute_fast_lambda(
+                                &lctx,
+                                base_qindex,
+                                me_q,
+                                8,
+                            );
+                            out.push(crate::pd0::SbInterLambda {
+                                full_8bit: crate::pd0::inter_full_lambda_8bit(
+                                    base_qindex,
+                                    imf.base_update_type,
+                                    md_lambda_factor_update_type,
+                                    md_alt_lambda_factors,
+                                    me_qdiff,
+                                    lw,
+                                ),
+                                fast_8bit: if lw == 0 {
+                                    raw
+                                } else {
+                                    ((u64::from(raw) * u64::from(lw)) >> 7) as u32
+                                },
+                                me_qdiff,
+                            });
+                        }
+                    }
+                    Some(out)
+                }
+                _ => None,
+            };
+
         // C `set_blocks_to_be_tested`'s per-SB `min_sq_size`
         // (enc_dec_process.c:1485), which `depth_removal_ctrls` decides.
         // Frame-level here because every input is: the level is a picture
@@ -3403,41 +3456,8 @@ impl EncodePipeline {
             frame_me.as_ref(),
             inter_md_frame.as_ref(),
         ) {
-            (Some(sigs), Some(me), Some(imf)) => {
+            (Some(sigs), Some(me), Some(_imf)) => {
                 use crate::port_enc_mode_config::common as pcommon;
-                // C `av1_lambda_assign_md`'s `fast_lambda_md[EB_8_BIT_MD]`
-                // (md_process.c:726 + :747 + :758): the table entry through
-                // `update_lambda`, then `pcs->lambda_weight`, then
-                // `lambda_scale_factors` (128 = identity on this port).
-                let lctx = crate::port_rc_process::LambdaContext {
-                    frame_type: 1, // not KEY_FRAME
-                    temporal_layer_index: temporal_layer,
-                    hierarchical_levels: self.gop.hierarchical_levels,
-                    update_type: imf.base_update_type,
-                    alt_lambda_factors: md_alt_lambda_factors,
-                    rtc: false,
-                    // C `scs->stats_based_sb_lambda_modulation`; this port
-                    // signals no per-SB delta-q, so the factor is the 128
-                    // no-op either way — see `pd0::inter_full_lambda_8bit`'s
-                    // `qdiff_vs_base`.
-                    stats_based_sb_lambda_modulation: false,
-                    base_q_idx: i32::from(base_qindex),
-                    delta_q_present: false,
-                    r0_delta_qp_md: false,
-                    lambda_scale_factors: [128; 7],
-                };
-                let lw = crate::pd0::frame_lambda_weight(
-                    u32::from(picture_qp),
-                    self.hdr.tune == crate::tune::TUNE_IQ,
-                    lw_bump,
-                );
-                let raw =
-                    crate::port_rc_process::compute_fast_lambda(&lctx, base_qindex, base_qindex, 8);
-                let fast_lambda = if lw == 0 {
-                    raw
-                } else {
-                    ((u64::from(raw) * u64::from(lw)) >> 7) as u32
-                };
                 // C `ctx->disallow_8x8` on the VIDEO arm
                 // (`sig_deriv_enc_dec_common`, enc_mode_config.c:7122).
                 let disallow_8x8 = crate::port_enc_mode_config::leaf::get_disallow_8x8_default();
@@ -3448,6 +3468,15 @@ impl EncodePipeline {
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let (x0, y0) = (sb_col * sb_size, sb_row * sb_size);
                         let b = me.per_b64.get(sb_idx);
+                        // C `ctx->fast_lambda_md[EB_8_BIT_MD]` for THIS
+                        // superblock, from the one derivation above — the
+                        // depth-removal thresholds are scaled by it
+                        // (`set_depth_removal_level_controls`), and C's own
+                        // `SVT_PD0CFG_OUT` `fastlam` field is this value.
+                        let fast_lambda = sb_inter_lambda
+                            .as_ref()
+                            .and_then(|v| v.get(sb_idx))
+                            .map_or(0, |l| l.fast_8bit);
                         let res = pcommon::set_depth_removal_level_controls(
                             pcommon::DepthRemovalInputs {
                                 level: sigs.pic_depth_removal_level,
@@ -3580,6 +3609,7 @@ impl EncodePipeline {
             ref_padded_luma.as_deref().map(|p| &p.y),
             inter_md_frame.as_ref(),
             pd0_min_sq.as_deref(),
+            sb_inter_lambda.as_deref(),
             primary_ref_cdfs.as_deref(),
             &mv_map,
             mv_map_stride,
@@ -10161,6 +10191,11 @@ fn encode_tile_rows(
     // by RASTER superblock (`sb_row * sb_cols + sb_col`), like `all_trees`.
     // `None` on a key frame, where the controls are `enabled = 0`.
     pd0_min_sq: Option<&[u8]>,
+    // C `av1_lambda_assign_md` per SUPERBLOCK on an inter frame
+    // (`svt_aom_mode_decision_configure_sb`, md_process.c:796). `None` on a
+    // key frame and on every allintra cell, which is what keeps the still
+    // envelope byte-identical by construction.
+    sb_inter_lambda: Option<&[crate::pd0::SbInterLambda]>,
     // C `pcs->md_frame_context` (`init_frame_rate_tables`,
     // md_config_process.c:292-310) — §1s item 8. When the frame header names
     // a `primary_ref_frame`, MODE DECISION prices against THAT REFERENCE's
@@ -10462,6 +10497,8 @@ fn encode_tile_rows(
             // Overwritten per superblock below; 8 is C's `disallow_4x4 ? 8`
             // arm, i.e. the value with depth removal OFF.
             min_sq: 8,
+            // Overwritten per superblock below.
+            me_qdiff: 0,
         });
         if coded_lossless {
             funnel_cfg.apply_coded_lossless();
@@ -10590,6 +10627,11 @@ fn encode_tile_rows(
                 tune_ssim: hdr_alt_ssim,
                 tune_ssim_threshold: if w * h > 1_665 * 1_120 { 1.02 } else { 1.03 },
                 lambda: cq.lambda as u64,
+                // Overwritten per superblock below on the inter arm; zero on
+                // a key frame, where no inter search reads it.
+                inter_fast_lambda: sb_inter_lambda
+                    .and_then(|v| v.first())
+                    .map_or(0, |l| l.fast_8bit),
                 cli_qp: cli_qp as u32,
                 rdoq_level: cq.rdoq_level,
                 // Same source as `cq.allintra_rd_mult` (set beside
@@ -10906,6 +10948,32 @@ fn encode_tile_rows(
                 let sb_y0 = sb_row * sb_size;
                 let sb_cur_w = sb_size.min(w - sb_x0);
                 let sb_cur_h = sb_size.min(h - sb_y0);
+
+                // C `svt_aom_mode_decision_configure_sb` (md_process.c:796):
+                // this superblock's MD lambdas, from its own
+                // `svt_aom_get_me_qindex`. `sb_inter_lambda` is `None` on a
+                // key frame and on every allintra cell, so the still
+                // envelope takes neither branch.
+                if let (Some(sl), Some(f)) = (
+                    sb_inter_lambda.and_then(|v| v.get(sb_row * sb_cols + sb_col)),
+                    fun_frame.as_mut(),
+                ) {
+                    f.lambda = u64::from(sl.full_8bit);
+                    f.inter_fast_lambda = sl.fast_8bit;
+                }
+                // The SAME value, for the two partition-side costs C also
+                // prices with `full_lambda_md[EB_8_BIT_MD]` /
+                // `full_sb_lambda_md[EB_8_BIT_MD]`: the PD0 depth-refinement
+                // scan (`perform_pred_depth_refinement`,
+                // enc_dec_process.c:3017) and the PD1 walk. Falls back to the
+                // frame lambda on a key frame / allintra cell, where
+                // `sb_inter_lambda` is `None`.
+                let sb_md_full_lambda: u64 = sb_inter_lambda
+                    .and_then(|v| v.get(sb_row * sb_cols + sb_col))
+                    .map_or_else(
+                        || c_quant.as_ref().map_or(0, |cq| u64::from(cq.lambda)),
+                        |l| u64::from(l.full_8bit),
+                    );
 
                 // [SVT_HDR_MODE] variance boost: this SB searches/quantizes
                 // at its PLANNED qindex (luma + per-plane chroma) with the
@@ -11272,6 +11340,12 @@ fn encode_tile_rows(
                     min_sq: pd0_min_sq
                         .and_then(|v| v.get(sb_row * sb_cols + sb_col).copied())
                         .map_or(8, usize::from),
+                    // C `full_sb_lambda_md[EB_8_BIT_MD]` is this superblock's
+                    // MD lambda (`av1_lambda_assign_md`'s last two lines), so
+                    // PD0's own rdcost is per-SB too.
+                    me_qdiff: sb_inter_lambda
+                        .and_then(|v| v.get(sb_row * sb_cols + sb_col))
+                        .map_or(0, |l| l.me_qdiff),
                     ..b
                 });
                 let mut sb_pd0_max_min: Option<(usize, usize)> = None;
@@ -11737,7 +11811,6 @@ fn encode_tile_rows(
                                     // construction.
                                     pd0_inter.as_ref(),
                                 );
-                                let cq = c_quant.as_ref().unwrap();
                                 // 8-BIT lambda even at bd10 — deliberate, not an
                                 // oversight. C's `perform_pred_depth_refinement`
                                 // (enc_dec_process.c:3017) runs INSIDE the window
@@ -11831,7 +11904,7 @@ fn encode_tile_rows(
                                 let scan = crate::depth_refine::build_refined_scan_at(
                                     &eval,
                                     &dr,
-                                    cq.lambda as u64,
+                                    sb_md_full_lambda,
                                     tables,
                                     x0,
                                     y0,
@@ -11940,7 +12013,7 @@ fn encode_tile_rows(
                                             cli_qp as u32,
                                         ))
                                     } else {
-                                        cq.lambda as u64
+                                        sb_md_full_lambda
                                     },
                                     &part_rates,
                                     &nsq,

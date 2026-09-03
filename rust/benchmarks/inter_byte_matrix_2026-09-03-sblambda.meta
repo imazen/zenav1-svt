@@ -1,0 +1,30 @@
+# The per-superblock MD lambda, before and after
+#
+# commit (parent): 881bba5b  (main@origin at the time of the run)
+# host:            Apple M-series, aarch64-apple-darwin (this repo's primary)
+# C oracle:        reference/svt-av1 @ fix/suspected-c-bug-17, run through
+#                  tools/ctrace-linux/run.sh (linux/arm64 container -- Apple
+#                  ld64 has no -Wl,--wrap, so the interposers only exist there)
+# sweep:           tools/inter_byte_matrix.sh, defaults
+#                  {uniform,gradient,diag,screen} x {16,64,72,128} square
+#                  x {q20,q40,q55} x {p6,p8}, frames=2, shift=3, low-delay P
+#
+# before: 89 BOTH / 6 F1DIFF / 1 F0DIFF / 0 CRASH   (inter_byte_matrix_2026-09-03-before-sblambda.tsv)
+# after:  91 BOTH / 4 F1DIFF / 1 F0DIFF / 0 CRASH   (this file)
+#
+# Promoted, both 72x72 partial-superblock cells:
+#   gradient 72x72 q20 p6
+#   diag     72x72 q20 p8
+# Regressed: none.
+#
+# The join that drove it, C's SVT_PD0CFG_OUT `fastlam` against the port's
+# SVTAV1_PD0DBG `PD0DR fastlam`, on `diag 72x72 q40 p6` frame 1:
+#
+#   sb  org        C      port BEFORE   port AFTER
+#   0   (0,0)      5182   6633          5182
+#   1   (64,0)     5182   6633          5182
+#   2   (0,64)     5182   6633          5182
+#   3   (64,64)    7773   6633          7773
+#
+# Every other field of those two lines (dr, drlvl, pqp, med, mev, refmin)
+# already agreed before this change and still does.

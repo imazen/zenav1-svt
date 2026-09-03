@@ -69,10 +69,18 @@ pub const REF_LIST_MAX_DEPTH: usize = 4;
 /// The frame-constant halves of C's `ModeDecisionContext` that the two
 /// searches read.
 ///
-/// Every field is a picture-level signal on this port: no per-SB delta-q is
-/// signalled, so `full_lambda_md[EB_8_BIT_MD]` / `fast_lambda_md[..]` do not
-/// vary by superblock, and the four control structs come from
-/// `svt_aom_sig_deriv_enc_dec_default`, which takes no per-SB input.
+/// Every field here is a picture-level signal: the four control structs come
+/// from `svt_aom_sig_deriv_enc_dec_default`, which takes no per-SB input.
+///
+/// **The MD LAMBDAS ARE NOT AMONG THEM AND USED TO BE.** C sets
+/// `full_lambda_md[EB_8_BIT_MD]` / `fast_lambda_md[EB_8_BIT_MD]` in
+/// `svt_aom_mode_decision_configure_sb` (md_process.c:796) from that
+/// superblock's `svt_aom_get_me_qindex`, so they vary by superblock even
+/// with no per-SB delta-q signalled — `update_lambda`'s
+/// `stats_based_sb_lambda_modulation` block keys on `me_q_index -
+/// base_q_idx` (rc_process.c:423-446). They live on
+/// [`BlockSearchIn`] for that reason; this struct carrying them was the
+/// defect `docs/INTER-ENCODE-PLAN.md` 1z24 fixed.
 pub struct SearchFrameCfg {
     /// C `ctx->md_pme_ctrls`.
     pub md_pme: MdPmeCtrls,
@@ -111,10 +119,6 @@ pub struct SearchFrameCfg {
     pub ref_pruning_enabled: bool,
     /// C `ctx->updated_enable_pme` (product_coding_loop.c:9418-9422).
     pub updated_enable_pme: bool,
-    /// C `ctx->full_lambda_md[EB_8_BIT_MD]`.
-    pub full_lambda_8bit: u32,
-    /// C `ctx->fast_lambda_md[EB_8_BIT_MD]`.
-    pub fast_lambda_8bit: u32,
     /// C `frm_hdr->quantization_params.base_q_idx`.
     pub base_q_idx: u8,
     /// C `svt_aom_get_sad_per_bit(base_q_idx, 0)`.
@@ -132,6 +136,13 @@ pub struct SearchFrameCfg {
 
 /// The per-block inputs, all of which the caller already has.
 pub struct BlockSearchIn<'a> {
+    /// C `ctx->full_lambda_md[EB_8_BIT_MD]` for THIS superblock, as
+    /// `svt_aom_mode_decision_configure_sb` set it (md_process.c:796 ->
+    /// `av1_lambda_assign_md`). Per-SUPERBLOCK, not per-frame: see
+    /// [`SearchFrameCfg`]'s header.
+    pub full_lambda_8bit: u32,
+    /// C `ctx->fast_lambda_md[EB_8_BIT_MD]` for this superblock.
+    pub fast_lambda_8bit: u32,
     pub org_x: usize,
     pub org_y: usize,
     pub bw: usize,
@@ -453,7 +464,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 cfg.allow_high_precision_mv,
                 ref_mv,
                 usize::from(cfg.base_q_idx),
-                cfg.full_lambda_8bit,
+                b.full_lambda_8bit,
                 cfg.md_subpel_me.skip_diag_refinement,
                 Some(b.search_tables),
                 b.src,
@@ -616,7 +627,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 cfg.allow_high_precision_mv,
                 ref_mv,
                 usize::from(cfg.base_q_idx),
-                cfg.full_lambda_8bit,
+                b.full_lambda_8bit,
                 // C reads the ME controls' `skip_diag_refinement` even on a
                 // PME call (`svt_init_mv_cost_params`, :1906).
                 cfg.md_subpel_me.skip_diag_refinement,
@@ -684,9 +695,9 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 res.best_pme_mv.y,
                 res.best_pme_mv.x,
                 res.valid,
-                cfg.full_lambda_8bit,
-                cfg.fast_lambda_8bit,
-                (cfg.full_lambda_8bit >> 6).max(1),
+                b.full_lambda_8bit,
+                b.fast_lambda_8bit,
+                (b.full_lambda_8bit >> 6).max(1),
             );
         }
     }
@@ -835,9 +846,9 @@ fn full_pel_mv_cost_params<'a>(
     dist_type: DistortionType,
 ) -> MvCostParams<'a> {
     let rdmult = if dist_type == DistortionType::Sad {
-        cfg.fast_lambda_8bit
+        b.fast_lambda_8bit
     } else {
-        cfg.full_lambda_8bit
+        b.full_lambda_8bit
     };
     MvCostParams {
         ref_mv,
@@ -878,8 +889,6 @@ pub struct SearchFrameInputs {
     /// `scs->qp_based_th_scaling_ctrls.pme_qp_based_th_scaling`
     /// (`enc_handle.c:3812`: 1 on the `_default` arm above `ENC_MR`).
     pub pme_qp_based_th_scaling: bool,
-    pub full_lambda_8bit: u32,
-    pub fast_lambda_8bit: u32,
     pub base_q_idx: u8,
     pub allow_high_precision_mv: bool,
     /// `ctx->approx_inter_rate`
@@ -958,8 +967,6 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         // and the value is the control's own. C agrees on the campaign's
         // cells (`SVT_INJCFG_OUT`: `ibord=0 uepme=1`).
         updated_enable_pme: pme.enabled != 0,
-        full_lambda_8bit: i.full_lambda_8bit,
-        fast_lambda_8bit: i.fast_lambda_8bit,
         base_q_idx: i.base_q_idx,
         sad_per_bit: crate::port_md::pme::get_sad_per_bit(usize::from(i.base_q_idx), false),
         allow_high_precision_mv: i.allow_high_precision_mv,
@@ -1102,8 +1109,6 @@ mod tests {
             dist_based_ref_pruning: 0,
             cli_qp: 40,
             pme_qp_based_th_scaling: true,
-            full_lambda_8bit: 241_378,
-            fast_lambda_8bit: 6_633,
             base_q_idx: 160,
             allow_high_precision_mv: false,
             approx_inter_rate: 0,
@@ -1149,6 +1154,10 @@ mod tests {
         let out = run_block_searches(
             &cfg(),
             &BlockSearchIn {
+                // The measured frame-1 lambdas of `gradient 128x128 q40 p8`,
+                // which is the cell this fixture reproduces.
+                full_lambda_8bit: 241_378,
+                fast_lambda_8bit: 6_633,
                 org_x: 0,
                 org_y: 0,
                 bw: 64,

@@ -1174,11 +1174,11 @@ pre-campaign homegrown path", which has been wrong since §1z; it then said
 36/59/1, which §1z¹⁵ superseded, then 55/40/1, which §1z²¹ superseded): on
 the campaign's 96-cell grid — `{uniform,gradient,diag,screen}` x
 `{16,64,72,128}` x `{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P —
-**89 cells are byte-identical on BOTH frames**, 6 have a byte-identical
+**91 cells are byte-identical on BOTH frames**, 4 have a byte-identical
 frame 0 and a differing frame 1, and 1 still differs on frame 0 —
-**89 / 6 / 1 as of §1z²²**, and **all 96 streams DECODE**.
+**91 / 4 / 1 as of §1z²⁴**, and **all 96 streams DECODE**.
 `tools/inter_byte_matrix.sh` is that sweep and `tools/inter_byte_gate.sh`
-asserts the 89. `tools/inter_decode_census.sh` asks the OTHER question — does
+asserts the 91 plus two 576x576 cells (93 required). `tools/inter_decode_census.sh` asks the OTHER question — does
 the stream decode — of all 96, because "byte-identical" and "decodable" are
 not the same question and 22 cells once answered them differently
 (§1z¹⁸/§1z¹⁹).
@@ -1188,10 +1188,17 @@ DLF video arm, §1z²¹. The tile half was NOT a cost model: §1z²² found that
 `pipeline.rs` ran the ALLINTRA PD0 entry point on every inter frame at preset
 <= 6, so PD0 predicted DC intra, priced with the KEY-frame lambda and ignored
 the per-superblock `min_sq` its own probe had already computed — 80 evaluated
-nodes against C's 5 on `gradient 64x64 q20 p6`. **The residual SIX are five
-72x72 partial-superblock cells plus `diag 128x128 q20 p8`**, which is a much
-sharper target than "the tile". Read §1z²⁰ for what no longer needs
-investigating, then §1z²¹ and §1z²² for the two corrections they make to it.
+nodes against C's 5 on `gradient 64x64 q20 p6`. **The residual is now FOUR** — three
+72x72 partial-superblock cells plus `diag 128x128 q20 p8`. §1z²⁴ wired C's
+PER-SUPERBLOCK MD lambda (`svt_aom_mode_decision_configure_sb` ->
+`svt_aom_get_me_qindex`, which this port had as one value per FRAME: 6633
+against C's 5182 / 5182 / 5182 / 7773 on `diag 72x72 q40 p6` frame 1) and
+that CLOSED §1z²²'s edge-shape under-split — the partition tree on that cell
+is now C's exactly, five inter blocks with C's shapes, and the residual byte
+is a MODE: the port codes NEWMV where C codes NEARMV at `mi=(8,16)`, same MV
+`(24,0)`. The next chunk there is the candidate/MVP lane, not the partition
+cost model. Read §1z²⁰ for what no longer needs investigating, then §1z²¹,
+§1z²² and §1z²⁴ for the corrections they make to it.
 **And read §1z²¹'s three corrections to §1z²⁰ first** — the plan predicted the
 DLF split would fall on p6-wrong / p8-right, from an `is_not_last_layer` that
 is actually TRUE on a flat GOP (`pd_process.c:5560` ANDs in
@@ -1199,7 +1206,7 @@ is actually TRUE on a flat GOP (`pd_process.c:5560` ANDs in
 pickers. A ladder read off the source without running it got the direction
 right and the arms backwards.
 The refusal stays
-because 89 of 96 is not "broadly": a stream the public API emits has to be right
+because 91 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
 Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁶
 for the tile.
@@ -1294,7 +1301,10 @@ of every block with two neighbours: **1207 rate units**, measured against
 C's own `svt_aom_inter_fast_cost` through the `SVT_IFCOST_OUT` interposer.
 Fixing it took the 96-cell grid from 40 BOTH to 49. This is the THIRD
 duplicate transcription this campaign has found (`svt_mv_err_cost`, the MD
-lambda, this) — §4's rule is not a style preference.
+lambda, this) — §4's rule is not a style preference. **It has since found two
+more** (§1z²²'s `pd0_frame_lambda_and_min_sq`, and §1z²⁴'s: the frame inter
+lambda was derived once for `c_quant` and again for `SearchFrameCfg`, so
+making one per-superblock would silently have left the other stale).
 
 **The NSQ motion search is wired as of 2026-09-02** (§1z¹⁶) and the byte
 grid did not move: `md_nsq_motion_search` plus C's `sq_sb_me_mv` seed now

@@ -703,6 +703,40 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **C's MD lambda is PER-SUPERBLOCK and this port had one per frame — the
+  inter byte grid goes 89 -> 91 of 96, `inter_byte_gate` 91 -> 93.**
+  `svt_aom_mode_decision_configure_sb` (md_process.c:796) is called per
+  superblock with `svt_aom_get_me_qindex(pcs, sb_ptr, ..)`, so
+  `full_lambda_md[0]` / `fast_lambda_md[0]` / `full_sb_lambda_md[0]` vary by
+  superblock even with no per-SB delta-q signalled: `update_lambda`'s
+  `stats_based_sb_lambda_modulation` block keys on `me_q_index - base_q_idx`,
+  and `me_q_index` is derived from `me_8x8_cost_variance` alone (rc_aq.c:656).
+  MEASURED against C's own `SVT_PD0CFG_OUT` on `diag 72x72 q40 p6` frame 1:
+  C's `fastlam` is 5182 / 5182 / 5182 / 7773 across the four superblocks of
+  one frame where the port reported a flat 6633. Wiring it promoted
+  `gradient 72x72 q20 p6` and `diag 72x72 q20 p8` to byte-identical and
+  CLOSED the residual 72x72 under-split — the partition tree on
+  `diag 72x72 q40 p6` is now C's exactly (five inter blocks, `mi=(8,16)`
+  included, both edge shapes `BLOCK_16X32` `PARTITION_VERT`), with the
+  remaining byte a MODE divergence (port NEWMV, C NEARMV, same MV). The
+  producer and consumer had been ported and tested since 2026-09-02 and only
+  the pipeline threading was missing. Byte-inert on stills and key frames by
+  construction (the per-SB array is `None` unless the frame has a DPB
+  reference). It also deleted a duplicate transcription: the frame inter
+  lambda was derived once for `c_quant` and again for
+  `inter_search_arm::SearchFrameCfg`, so the two lambda fields moved to the
+  per-block `BlockSearchIn` and `SearchFrameCfg` can no longer carry one.
+  Mutation-verified: with the per-SB array forced to `None` the gate reports
+  the two promoted cells failing; restored, 0 failed. The per-SB path is
+  gated on C's own `stats_based_sb_lambda_modulation`
+  (`enc_mode <= (rtc ? ENC_M10 : ENC_M11)`, enc_handle.c:4375), which is OFF
+  at presets 12-13 — where C never builds `b64_me_qindex` at all — and that
+  boundary is guarded by a unit test because no byte gate in this repo
+  reaches it.
+  (`docs/INTER-ENCODE-PLAN.md` §1z24,
+  `benchmarks/inter_byte_matrix_2026-09-03-sblambda.{tsv,meta}`)
+
+
 - **`use_ref_frame_mvs` at `mfmv_level >= 2` is a CLOSED FORM here, and
   refusing it cost twelve inter cells.** `inter_completion_scan.sh` goes
   **52 OK / 12 REFUSED -> 64 OK / 0 REFUSED**, and `576x576` at presets 6 and 8

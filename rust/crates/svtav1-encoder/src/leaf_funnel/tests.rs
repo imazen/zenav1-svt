@@ -597,6 +597,8 @@ fn uv_tx_type_m6_subset_matches_c() {
 /// `tx_bias == 0 && ac_bias == 0`.
 fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFrame {
     FunnelFrame {
+        // Key-frame fixture: no inter search reads this.
+        inter_fast_lambda: 0,
         sb_mi_size: 16,
         lambda: 100_000,
         // These fixtures are the still/allintra funnel, i.e. an I-slice.

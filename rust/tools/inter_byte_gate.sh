@@ -78,15 +78,19 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 89 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 91 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z22. The envelope this
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z24. The envelope this
     # campaign: 40 (§1z15) -> 49 (§1z17, MD's `is_inter_ctx` was reading an
     # INVERTED context table) -> 55 (§1z19, `av1_find_samples` ported so
     # `num_proj_ref` is real and the motion-mode ALPHABET matches C's) ->
     # 67 (§1z21, the DLF video arm) -> 89 (§1z22, PD0's INTER arm on the
     # REFINEMENT path — the port ran the ALLINTRA PD0 on every inter frame at
-    # preset <= 6, with a DC prediction, the KEY-frame lambda and `min_sq` 8).
+    # preset <= 6, with a DC prediction, the KEY-frame lambda and `min_sq` 8)
+    # -> 91 (§1z24, the PER-SUPERBLOCK MD lambda: C's `full_lambda_md` /
+    # `fast_lambda_md` come from `svt_aom_get_me_qindex(sb)`, so a flat frame
+    # lambda priced every superblock's partition search wrong — 6633 against
+    # C's 5182 / 5182 / 5182 / 7773 on `diag 72x72 q40 p6` frame 1).
     #
     # Listed in full, and regenerated wholesale rather than appended to: a
     # gate that samples its own frontier reports a smaller regression than it
@@ -151,6 +155,7 @@ PASS_CELLS=(
     "gradient 64 64 40 8 2 3"
     "gradient 64 64 55 6 2 3"
     "gradient 64 64 55 8 2 3"
+    "gradient 72 72 20 6 2 3"
     "gradient 72 72 20 8 2 3"
     "gradient 72 72 40 6 2 3"
     "gradient 72 72 40 8 2 3"
@@ -174,6 +179,7 @@ PASS_CELLS=(
     "diag 64 64 55 6 2 3"
     "diag 64 64 55 8 2 3"
     "diag 72 72 20 6 2 3"
+    "diag 72 72 20 8 2 3"
     "diag 72 72 40 8 2 3"
     "diag 128 128 20 6 2 3"
     "diag 128 128 40 6 2 3"
@@ -220,19 +226,22 @@ PASS_CELLS=(
 # "open ... known" through the whole defect. One per panicking content class
 # (gradient's six 72x72 cells never panicked).
 OPEN_CELLS=(
-    # SIX cells, all of them re-derived from `inter_byte_matrix.sh` rather
-    # than carried forward: three of the four this list held before §1z22
-    # (`gradient 64x64 q20 p6`, `diag 64x64 q40 p6`, `screen 72x72 q40 p6`)
-    # are now byte-identical and moved to PASS_CELLS.
+    # FOUR cells, re-derived from `inter_byte_matrix.sh` rather than carried
+    # forward. §1z24 (the per-superblock MD lambda) promoted two of the six
+    # this list held — `gradient 72x72 q20 p6` and `diag 72x72 q20 p8` — and
+    # they are now in PASS_CELLS.
     #
-    # FIVE OF THE SIX ARE 72x72 — a PARTIAL superblock — which is the shape
-    # the whole residual now points at. The sixth is `diag 128x128 q20 p8`.
-    "gradient 72 72 20 6 2 3"   # frame 1 28 B vs C's 29
-    "diag 72 72 20 8 2 3"       # 27 vs 29; was a PANIC before §1z16
-    "diag 72 72 40 6 2 3"       # 27 vs 28
-    "diag 72 72 55 6 2 3"       # 31 vs 29
-    "diag 72 72 55 8 2 3"       # 30 vs 29
-    "diag 128 128 20 8 2 3"     # 26 vs 25 — the only 64-aligned one left
+    # THREE OF THE FOUR ARE STILL 72x72, a PARTIAL superblock. What changed
+    # is WHAT is left there: on `diag 72x72 q40 p6` the partition tree now
+    # matches C's exactly (five inter blocks, `mi=(8,16)` included), and the
+    # residual byte is a MODE — the port codes NEWMV where C codes NEARMV at
+    # `mi=(8,16)`, same MV `(24,0)`. So §1z22's "the port stops the edge
+    # descent one depth too early" is CLOSED and the remaining defect is in
+    # the candidate/MVP lane, not in the partition cost model.
+    "diag 72 72 40 6 2 3"   # frame 1 29 B vs C's 28
+    "diag 72 72 55 6 2 3"   # frame 1 31 B vs C's 29
+    "diag 72 72 55 8 2 3"   # frame 1 30 B vs C's 29
+    "diag 128 128 20 8 2 3"   # frame 1 26 B vs C's 25
 )
 
 if [[ ${#PASS_CELLS[@]} -eq 0 ]]; then
