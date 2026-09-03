@@ -21,6 +21,12 @@
 //! is absent on key/still frames — dormant for the conformance + identity
 //! gates.
 
+use archmage::prelude::*;
+use svtav1_dsp::me_sad::block_sad_scalar;
+#[cfg(target_arch = "x86_64")]
+use svtav1_dsp::me_sad::block_sad_v3;
+#[cfg(target_arch = "aarch64")]
+use svtav1_dsp::me_sad::{block_sad_arm_v2, block_sad_neon};
 use svtav1_types::motion::Mv;
 
 /// Search parameters for motion estimation.
@@ -71,7 +77,10 @@ pub struct MeResult {
 /// * `center_mv` - Initial MV to search around
 /// * `search_w`, `search_h` - Search area half-dimensions
 /// * `pic_width`, `pic_height` - Reference picture dimensions for bounds checking
-pub fn full_pel_search(
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn full_pel_search_generic<F>(
+    sad_fn: &F,
     src: &[u8],
     src_stride: usize,
     ref_pic: &[u8],
@@ -85,7 +94,10 @@ pub fn full_pel_search(
     search_h: i32,
     pic_width: usize,
     pic_height: usize,
-) -> MeResult {
+) -> MeResult
+where
+    F: Fn(&[u8], usize, &[u8], usize, usize, usize) -> u32,
+{
     let mut best = MeResult {
         mv: center_mv,
         distortion: u32::MAX,
@@ -111,21 +123,20 @@ pub fn full_pel_search(
 
             let ref_offset = ref_y as usize * ref_stride + ref_x as usize;
 
-            // Compute SAD
-            let mut sad: u32 = 0;
-            for row in 0..height {
-                let s_off = row * src_stride;
-                let r_off = ref_offset + row * ref_stride;
-                for col in 0..width {
-                    let s = src[s_off + col] as i32;
-                    let r = ref_pic[r_off + col] as i32;
-                    sad += (s - r).unsigned_abs();
-                }
-                // Early termination
-                if sad >= best.distortion {
-                    break;
-                }
-            }
+            // The scalar form broke out of the ROW loop once the partial sum
+            // reached the running best. That early exit could only make the
+            // partial `sad` smaller than the true block SAD, and the
+            // `sad < best.distortion` test below is then false either way, so
+            // dropping it for the vectorised whole-block SAD selects the same
+            // position with the same distortion.
+            let sad = sad_fn(
+                &src[..],
+                src_stride,
+                &ref_pic[ref_offset..],
+                ref_stride,
+                width,
+                height,
+            );
 
             if sad < best.distortion {
                 best.distortion = sad;
@@ -138,6 +149,112 @@ pub fn full_pel_search(
     }
 
     best
+}
+
+macro_rules! full_pel_search_variant {
+    ($(#[$m:meta])* $name:ident, $tok:ident, $k:ident) => {
+        $(#[$m])*
+        #[allow(clippy::too_many_arguments)]
+        fn $name(
+            token: $tok,
+            src: &[u8],
+            src_stride: usize,
+            ref_pic: &[u8],
+            ref_stride: usize,
+            ref_origin_x: i32,
+            ref_origin_y: i32,
+            width: usize,
+            height: usize,
+            center_mv: Mv,
+            search_w: i32,
+            search_h: i32,
+            pic_width: usize,
+            pic_height: usize,
+        ) -> MeResult {
+            let sad = |a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize| {
+                $k(token, a, sa, b, sb, w, h)
+            };
+            full_pel_search_generic(
+                &sad,
+                src,
+                src_stride,
+                ref_pic,
+                ref_stride,
+                ref_origin_x,
+                ref_origin_y,
+                width,
+                height,
+                center_mv,
+                search_w,
+                search_h,
+                pic_width,
+                pic_height,
+            )
+        }
+    };
+}
+
+full_pel_search_variant!(
+    full_pel_search_dispatch_scalar,
+    ScalarToken,
+    block_sad_scalar
+);
+#[cfg(target_arch = "aarch64")]
+full_pel_search_variant!(
+    #[arcane]
+    full_pel_search_dispatch_neon,
+    NeonToken,
+    block_sad_neon
+);
+#[cfg(target_arch = "aarch64")]
+full_pel_search_variant!(
+    #[arcane]
+    full_pel_search_dispatch_arm_v2,
+    Arm64V2Token,
+    block_sad_arm_v2
+);
+#[cfg(target_arch = "x86_64")]
+full_pel_search_variant!(
+    #[arcane]
+    full_pel_search_dispatch_v3,
+    Desktop64,
+    block_sad_v3
+);
+
+#[allow(clippy::too_many_arguments)]
+pub fn full_pel_search(
+    src: &[u8],
+    src_stride: usize,
+    ref_pic: &[u8],
+    ref_stride: usize,
+    ref_origin_x: i32,
+    ref_origin_y: i32,
+    width: usize,
+    height: usize,
+    center_mv: Mv,
+    search_w: i32,
+    search_h: i32,
+    pic_width: usize,
+    pic_height: usize,
+) -> MeResult {
+    incant!(
+        full_pel_search_dispatch(
+            src,
+            src_stride,
+            ref_pic,
+            ref_stride,
+            ref_origin_x,
+            ref_origin_y,
+            width,
+            height,
+            center_mv,
+            search_w,
+            search_h,
+            pic_width,
+            pic_height
+        ),
+        [arm_v2, v3, neon, scalar]
+    )
 }
 
 /// Half-pel sub-pixel refinement.

@@ -34,6 +34,12 @@
 //! and is gated directly as well.
 //! [`init_mv_cost_params`] is `static` in C — **tier 4**.
 
+use archmage::prelude::*;
+use svtav1_dsp::me_sad::block_sad_scalar;
+#[cfg(target_arch = "x86_64")]
+use svtav1_dsp::me_sad::block_sad_v3;
+#[cfg(target_arch = "aarch64")]
+use svtav1_dsp::me_sad::{block_sad_arm_v2, block_sad_neon};
 use svtav1_types::motion::Mv;
 
 // ---------------------------------------------------------------------------
@@ -380,7 +386,9 @@ pub struct PmeBest {
 /// `src` is indexed from 0; `ref_base` is indexed from 0 and the caller
 /// has already applied C's `ref_origin_index`.
 #[allow(clippy::too_many_arguments)]
-pub fn pme_sad_loop_kernel(
+#[inline(always)]
+fn pme_sad_loop_kernel_generic<F>(
+    sad: &F,
     params: &MvCostParams<'_>,
     src: &[u8],
     src_stride: usize,
@@ -396,7 +404,9 @@ pub fn pme_sad_loop_kernel(
     search_step: i16,
     mvx: i16,
     mvy: i16,
-) {
+) where
+    F: Fn(&[u8], usize, &[u8], usize, usize, usize) -> u32,
+{
     let mut col_num: i16 = 0;
     let mut search_step_x: i16 = 1;
     // C advances the `ref` POINTER by search_step * ref_stride per outer
@@ -422,15 +432,18 @@ pub fn pme_sad_loop_kernel(
                 search_step_x = 1;
             }
 
-            let mut cost: u32 = 0;
-            for y in 0..block_height {
-                let s = &src[y * src_stride..y * src_stride + block_width];
-                let r_off = ref_row_base + isize::from(x_search_index) + (y * ref_stride) as isize;
-                for (x, sv) in s.iter().enumerate() {
-                    let rv = ref_buf[(r_off + x as isize) as usize];
-                    cost += u32::from(sv.abs_diff(rv));
-                }
-            }
+            // C walks the block with two scalar loops; the sum is a plain
+            // integer SAD, so the SIMD kernel is bit-identical (see
+            // `svtav1_dsp::me_sad`). `ref_row_base` only ever grows from 0.
+            let r_base = (ref_row_base + isize::from(x_search_index)) as usize;
+            let mut cost: u32 = sad(
+                src,
+                src_stride,
+                &ref_buf[r_base..],
+                ref_stride,
+                block_width,
+                block_height,
+            );
 
             // C computes the refinement position into `uint32_t` and then
             // multiplies by 8 BEFORE adding mvx/mvy, so a negative start
@@ -459,6 +472,129 @@ pub fn pme_sad_loop_kernel(
         ref_row_base += isize::from(search_step) * ref_stride as isize;
         y_search_index += search_step;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tier wrappers for `pme_sad_loop_kernel`.
+//
+// The generic body above is `#[inline(always)]` and takes the block SAD as a
+// closure; the closure inherits the `#[arcane]` wrapper's target features, so
+// the search loop runs with ONE target-feature boundary per call instead of
+// one per search position.
+// ---------------------------------------------------------------------------
+
+macro_rules! pme_sad_loop_variant {
+    ($(#[$m:meta])* $name:ident, $tok:ident, $k:ident) => {
+        $(#[$m])*
+        #[allow(clippy::too_many_arguments)]
+        fn $name(
+            token: $tok,
+            params: &MvCostParams<'_>,
+            src: &[u8],
+            src_stride: usize,
+            ref_buf: &[u8],
+            ref_stride: usize,
+            block_height: usize,
+            block_width: usize,
+            best: &mut PmeBest,
+            search_position_start_x: i16,
+            search_position_start_y: i16,
+            search_area_width: i16,
+            search_area_height: i16,
+            search_step: i16,
+            mvx: i16,
+            mvy: i16,
+        ) {
+            let sad = |a: &[u8], sa: usize, b: &[u8], sb: usize, w: usize, h: usize| {
+                $k(token, a, sa, b, sb, w, h)
+            };
+            pme_sad_loop_kernel_generic(
+                &sad,
+                params,
+                src,
+                src_stride,
+                ref_buf,
+                ref_stride,
+                block_height,
+                block_width,
+                best,
+                search_position_start_x,
+                search_position_start_y,
+                search_area_width,
+                search_area_height,
+                search_step,
+                mvx,
+                mvy,
+            );
+        }
+    };
+}
+
+pme_sad_loop_variant!(pme_sad_loop_dispatch_scalar, ScalarToken, block_sad_scalar);
+#[cfg(target_arch = "aarch64")]
+pme_sad_loop_variant!(
+    #[arcane]
+    pme_sad_loop_dispatch_neon,
+    NeonToken,
+    block_sad_neon
+);
+#[cfg(target_arch = "aarch64")]
+pme_sad_loop_variant!(
+    #[arcane]
+    pme_sad_loop_dispatch_arm_v2,
+    Arm64V2Token,
+    block_sad_arm_v2
+);
+#[cfg(target_arch = "x86_64")]
+pme_sad_loop_variant!(
+    #[arcane]
+    pme_sad_loop_dispatch_v3,
+    Desktop64,
+    block_sad_v3
+);
+
+/// C `svt_pme_sad_loop_kernel_c` (product_coding_loop.c:1775-1826, EXPORTED).
+///
+/// See [`pme_sad_loop_kernel_generic`] for the three control-flow details a
+/// naive rewrite gets wrong; this is the dispatching entry point.
+#[allow(clippy::too_many_arguments)]
+pub fn pme_sad_loop_kernel(
+    params: &MvCostParams<'_>,
+    src: &[u8],
+    src_stride: usize,
+    ref_buf: &[u8],
+    ref_stride: usize,
+    block_height: usize,
+    block_width: usize,
+    best: &mut PmeBest,
+    search_position_start_x: i16,
+    search_position_start_y: i16,
+    search_area_width: i16,
+    search_area_height: i16,
+    search_step: i16,
+    mvx: i16,
+    mvy: i16,
+) {
+    incant!(
+        pme_sad_loop_dispatch(
+            params,
+            src,
+            src_stride,
+            ref_buf,
+            ref_stride,
+            block_height,
+            block_width,
+            best,
+            search_position_start_x,
+            search_position_start_y,
+            search_area_width,
+            search_area_height,
+            search_step,
+            mvx,
+            mvy
+        ),
+        [arm_v2, v3, neon, scalar]
+    )
 }
 
 #[cfg(test)]

@@ -1,0 +1,44 @@
+# me_dist A/B — SIMD PlaneDistortion, pme_sad_loop_kernel, full_pel_search,
+# variance_diff_sse
+date: 2026-09-02 (UTC timestamps inside the .raw.tsv header)
+host: mac — Apple M4 Pro, aarch64-apple-darwin, 12 cores
+baseline binary: the subpel-streaming chunk (benchmarks/subpel_stream_ab_2026-09-02.*)
+tool: tools/perf_ab.sh, 15 interleaved randomised-order paired rounds/cell,
+      NEITHER SIDE NICED, no -C target-cpu=native
+grid: content=gradient sizes=[64 128 256 512] presets=[8] qp=40
+arm:  INTER — SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTRA_PERIOD=64
+      SVTAV1_HIER_LEVELS=0 SVTAV1_INTER_EXPERIMENTAL=1
+
+what changed:
+  * new `svtav1_dsp::me_sad::block_sum_sse_*` — (SUM(a-b), SUM((a-b)^2)) with
+    four tiers. `sum` is computed as SUM(a) - SUM(b) (two unsigned
+    reductions) and `sse` as SUM(|a-b|^2), so no signed SIMD subtract is
+    needed and both are exact.
+  * `port_md::md_search::PlaneDistortion::{sad, variance, ssd}` route through
+    `block_sad` / `block_sum_sse` instead of their own scalar double loops.
+  * `port_md::pme::pme_sad_loop_kernel` becomes an `#[inline(always)]` generic
+    over the block SAD with one `#[arcane]` wrapper per tier — one
+    target-feature boundary per CALL, not one per search position.
+  * `motion_est::full_pel_search` likewise. Its scalar form broke out of the
+    ROW loop once the partial sum reached the running best; that early exit
+    can only make the partial sum smaller than the true block SAD and the
+    `sad < best` test is false either way, so the whole-block vectorised SAD
+    selects the same position with the same distortion.
+  * `dsp::subpel_variance::variance_diff_sse` routes through `block_sum_sse`;
+    C's reduction (truncating division BEFORE the subtraction) is unchanged.
+
+result: byte-identical at every cell (ident=Y)
+  64x64    1.3822 -> 1.3856 ms  speedup 0.998x  (p25/p75 ratio 0.9821/1.0247)
+  128x128  3.6439 -> 3.6207 ms  speedup 1.006x  (0.9796/1.0010)
+  256x256 13.8865 -> 13.5601 ms speedup 1.029x  (0.9699/0.9816)
+  512x512 68.5883 -> 66.8674 ms speedup 1.023x  (0.9696/0.9807)
+
+  The 64 and 128 cells are inside the noise: at those sizes the per-block MD
+  searches this chunk touches are a small share and the fixed per-frame cost
+  dominates. Read the 256/512 cells.
+
+cumulative vs main (884f94e8f), same tool and grid:
+  64x64    1.4308 -> 1.3856 ms  1.033x
+  128x128  4.0133 -> 3.6207 ms  1.108x
+  256x256 15.3615 -> 13.5601 ms 1.133x
+  512x512 75.5348 -> 66.8674 ms 1.130x

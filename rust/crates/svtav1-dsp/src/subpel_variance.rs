@@ -111,8 +111,97 @@ pub fn var_filter_block2d_bil_second_pass(
 /// `a_base` is the index of the block's (0, 0) inside `a`. The first pass
 /// reads `H + 1` rows and `W + 1` columns of `a`, which is why C's callers
 /// hand it a reference plane with a guard band rather than a tight block.
+/// Widest block `VARIANCES(W, H)` instantiates (`variance.c:208-229`).
+const MAX_SUBPEL_W: usize = 128;
+
+/// C `svt_aom_sub_pixel_variance{W}x{H}_c` (`SUBPIX_VAR`, `variance.c:192-203`).
+///
+/// Returns `(variance, sse)`; C returns the variance and writes `sse` through
+/// its out-parameter.
+///
+/// `a_base` is the index of the block's (0, 0) inside `a`. The first pass
+/// reads `H + 1` rows and `W + 1` columns of `a`, which is why C's callers
+/// hand it a reference plane with a guard band rather than a tight block.
+///
+/// # Streamed, not materialised
+///
+/// C allocates the full `(H + 1) x W` `uint16_t` intermediate and the full
+/// `H x W` `uint8_t` second-pass output, and so did this port — two heap
+/// allocations per call, on a function the sub-pel tree calls once per
+/// candidate. The row dependency is only one row deep (`fdata3[i]` and
+/// `fdata3[i+1]`), so the whole thing streams with TWO first-pass rows and one
+/// second-pass row live, all on the stack. The arithmetic is untouched: same
+/// order, same `i32` intermediates, same `ROUND_POWER_OF_TWO`, same truncating
+/// `(sum * sum) / n` taken BEFORE the subtraction.
+///
+/// `w > MAX_SUBPEL_W` cannot happen for any size C instantiates, but rather
+/// than panic on one it falls back to the materialised path.
 #[allow(clippy::too_many_arguments)]
 pub fn sub_pixel_variance(
+    a: &[u8],
+    a_base: usize,
+    a_stride: usize,
+    xoffset: usize,
+    yoffset: usize,
+    b: &[u8],
+    b_base: usize,
+    b_stride: usize,
+    w: usize,
+    h: usize,
+) -> (u32, u32) {
+    if w > MAX_SUBPEL_W {
+        return sub_pixel_variance_materialised(
+            a, a_base, a_stride, xoffset, yoffset, b, b_base, b_stride, w, h,
+        );
+    }
+
+    let fx = &BILINEAR_FILTERS_2T[xoffset];
+    let fy = &BILINEAR_FILTERS_2T[yoffset];
+    let (fx0, fx1) = (i32::from(fx[0]), i32::from(fx[1]));
+    let (fy0, fy1) = (i32::from(fy[0]), i32::from(fy[1]));
+
+    let mut prev = [0u16; MAX_SUBPEL_W];
+    let mut cur = [0u16; MAX_SUBPEL_W];
+    let mut temp = [0u8; MAX_SUBPEL_W];
+
+    // First-pass row 0. `pixel_step` is 1 at every call site, so the second
+    // tap is the next sample in the row.
+    for j in 0..w {
+        let v = i32::from(a[a_base + j]) * fx0 + i32::from(a[a_base + j + 1]) * fx1;
+        prev[j] = round_power_of_two(v, FILTER_BITS) as u16;
+    }
+
+    let mut sum: i64 = 0;
+    let mut sse: u64 = 0;
+    for i in 0..h {
+        let row = a_base + (i + 1) * a_stride;
+        for j in 0..w {
+            let v = i32::from(a[row + j]) * fx0 + i32::from(a[row + j + 1]) * fx1;
+            cur[j] = round_power_of_two(v, FILTER_BITS) as u16;
+        }
+        for j in 0..w {
+            let v = i32::from(prev[j]) * fy0 + i32::from(cur[j]) * fy1;
+            temp[j] = round_power_of_two(v, FILTER_BITS) as u8;
+        }
+        let bo = b_base + i * b_stride;
+        for j in 0..w {
+            let diff = i32::from(temp[j]) - i32::from(b[bo + j]);
+            sum += i64::from(diff);
+            sse += (diff * diff) as u64;
+        }
+        core::mem::swap(&mut prev, &mut cur);
+    }
+
+    let sse = sse as u32;
+    let n = (w * h) as i64;
+    (sse.wrapping_sub(((sum * sum) / n) as u32), sse)
+}
+
+/// The materialised form C writes, kept for `w > MAX_SUBPEL_W` and as the
+/// oracle [`sub_pixel_variance`]'s streaming form is pinned against
+/// (`streaming_matches_materialised`).
+#[allow(clippy::too_many_arguments)]
+pub fn sub_pixel_variance_materialised(
     a: &[u8],
     a_base: usize,
     a_stride: usize,
@@ -171,18 +260,12 @@ pub fn variance_diff_sse(
     w: usize,
     h: usize,
 ) -> (u32, u32) {
-    let mut sum: i64 = 0;
-    let mut sse: u64 = 0;
-    for i in 0..h {
-        let ao = a_base + i * a_stride;
-        let bo = b_base + i * b_stride;
-        for j in 0..w {
-            let diff = i32::from(a[ao + j]) - i32::from(b[bo + j]);
-            sum += i64::from(diff);
-            sse += (diff * diff) as u64;
-        }
-    }
-    let sse = sse as u32;
+    // The accumulation is `crate::me_sad::block_sum_sse` (SIMD, exact — see
+    // that module's range argument); the reduction below is C's, unchanged:
+    // the division truncates and happens BEFORE the subtraction.
+    let (sum, sse) =
+        crate::me_sad::block_sum_sse(&a[a_base..], a_stride, &b[b_base..], b_stride, w, h);
+    let sum = i64::from(sum);
     let n = (w * h) as i64;
     (sse.wrapping_sub(((sum * sum) / n) as u32), sse)
 }
@@ -190,6 +273,60 @@ pub fn variance_diff_sse(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The streaming form must equal the materialised one C writes, at every
+    /// instantiated size and every phase pair. This is the pin for the
+    /// two-heap-allocations-per-call removal: the arithmetic is unchanged, so
+    /// the only thing that could differ is the row plumbing.
+    #[test]
+    fn streaming_matches_materialised() {
+        // A deterministic plane with a guard band: the first pass reads
+        // `h + 1` rows and `w + 1` columns.
+        let stride = 160usize;
+        let mut st = 0x2545_F491u32;
+        let mut next = || {
+            st ^= st << 13;
+            st ^= st >> 17;
+            st ^= st << 5;
+            (st >> 19) as u8
+        };
+        let a: alloc::vec::Vec<u8> = (0..stride * 160).map(|_| next()).collect();
+        let bb: alloc::vec::Vec<u8> = (0..stride * 160).map(|_| next()).collect();
+        const SIZES: &[(usize, usize)] = &[
+            (128, 128),
+            (128, 64),
+            (64, 128),
+            (64, 64),
+            (64, 32),
+            (32, 64),
+            (32, 32),
+            (32, 16),
+            (16, 32),
+            (16, 16),
+            (16, 8),
+            (8, 16),
+            (8, 8),
+            (8, 4),
+            (4, 8),
+            (4, 4),
+            (4, 16),
+            (16, 4),
+            (8, 32),
+            (32, 8),
+            (16, 64),
+            (64, 16),
+        ];
+        for &(w, h) in SIZES {
+            for x in 0..8 {
+                for y in 0..8 {
+                    let got = sub_pixel_variance(&a, 3, stride, x, y, &bb, 7, stride, w, h);
+                    let want =
+                        sub_pixel_variance_materialised(&a, 3, stride, x, y, &bb, 7, stride, w, h);
+                    assert_eq!(got, want, "{w}x{h} phase ({x},{y})");
+                }
+            }
+        }
+    }
 
     /// Hand-derived from C: at `xoffset == 0 && yoffset == 0` both filters are
     /// `{128, 0}`, so both passes are the identity and `svf` degenerates to

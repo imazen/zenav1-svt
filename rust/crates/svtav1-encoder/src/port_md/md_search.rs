@@ -399,35 +399,34 @@ impl PlaneDistortion<'_> {
 
     fn sum_abs_diff(&self, ref_origin_index: i32, input_origin_index: usize) -> u32 {
         let base = self.ref_at(ref_origin_index);
-        let mut acc = 0u32;
-        for y in 0..self.bheight {
-            for x in 0..self.bwidth {
-                let s = self.src[input_origin_index + y * self.src_stride + x];
-                let rr = self.ref_plane[base + y * self.ref_stride + x];
-                acc += u32::from(s.abs_diff(rr));
-            }
-        }
-        acc
+        svtav1_dsp::me_sad::block_sad(
+            &self.src[input_origin_index..],
+            self.src_stride,
+            &self.ref_plane[base..],
+            self.ref_stride,
+            self.bwidth,
+            self.bheight,
+        )
     }
 }
 
 impl DistortionSource for PlaneDistortion<'_> {
     fn variance(&mut self, ref_origin_index: i32, input_origin_index: usize) -> u32 {
-        // C `aom_variance<W>x<H>_c`: sum of squares minus (sum^2 / n).
+        // C `aom_variance<W>x<H>_c`: sum of squares minus (sum^2 / n). The
+        // accumulation is `me_sad::block_sum_sse` (SIMD, exact); the operand
+        // order is C's, `d = ref - src`.
         let base = self.ref_at(ref_origin_index);
-        let mut sum: i64 = 0;
-        let mut sse: i64 = 0;
-        for y in 0..self.bheight {
-            for x in 0..self.bwidth {
-                let s = i64::from(self.src[input_origin_index + y * self.src_stride + x]);
-                let rr = i64::from(self.ref_plane[base + y * self.ref_stride + x]);
-                let d = rr - s;
-                sum += d;
-                sse += d * d;
-            }
-        }
+        let (sum, sse) = svtav1_dsp::me_sad::block_sum_sse(
+            &self.ref_plane[base..],
+            self.ref_stride,
+            &self.src[input_origin_index..],
+            self.src_stride,
+            self.bwidth,
+            self.bheight,
+        );
+        let sum = i64::from(sum);
         let n = (self.bwidth * self.bheight) as i64;
-        (sse - (sum * sum) / n) as u32
+        (i64::from(sse) - (sum * sum) / n) as u32
     }
 
     fn subpel_variance(
@@ -449,15 +448,15 @@ impl DistortionSource for PlaneDistortion<'_> {
 
     fn ssd(&mut self, ref_origin_index: i32, input_origin_index: usize) -> u32 {
         let base = self.ref_at(ref_origin_index);
-        let mut acc: u64 = 0;
-        for y in 0..self.bheight {
-            for x in 0..self.bwidth {
-                let s = i64::from(self.src[input_origin_index + y * self.src_stride + x]);
-                let rr = i64::from(self.ref_plane[base + y * self.ref_stride + x]);
-                acc += ((rr - s) * (rr - s)) as u64;
-            }
-        }
-        acc as u32
+        svtav1_dsp::me_sad::block_sum_sse(
+            &self.ref_plane[base..],
+            self.ref_stride,
+            &self.src[input_origin_index..],
+            self.src_stride,
+            self.bwidth,
+            self.bheight,
+        )
+        .1
     }
 
     fn variance_vs_flat(&mut self, _ref_origin_index: i32) -> u32 {

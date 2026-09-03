@@ -1,0 +1,32 @@
+# subpel_variance A/B — streaming the bilinear intermediates instead of allocating
+date: 2026-09-02 (UTC timestamps inside the .raw.tsv header)
+host: mac — Apple M4 Pro, aarch64-apple-darwin, 12 cores
+baseline binary: the ext_sad8 chunk (benchmarks/ext_sad8_ab_2026-09-02.*)
+tool: tools/perf_ab.sh, 15 interleaved randomised-order paired rounds/cell,
+      NEITHER SIDE NICED, no -C target-cpu=native
+grid: content=gradient sizes=[64 128 256 512] presets=[8] qp=40
+arm:  INTER — SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3 SVTAV1_INTRA_PERIOD=64
+      SVTAV1_HIER_LEVELS=0 SVTAV1_INTER_EXPERIMENTAL=1
+
+what changed: dsp::subpel_variance::sub_pixel_variance held TWO heap
+  allocations per call — `vec![0u16; (h+1)*w]` and `vec![0u8; h*w]` — on a
+  function the sub-pel tree calls once per candidate. The row dependency is
+  one row deep, so it now streams with two first-pass rows and one
+  second-pass row on the stack (3 * 128 elements, sized to the widest
+  VARIANCES(W,H) C instantiates). The arithmetic is untouched. The
+  materialised form C writes is kept as `sub_pixel_variance_materialised`
+  and is the oracle the streaming form is pinned against over all 22 sizes x
+  64 phase pairs (`streaming_matches_materialised`).
+
+result: byte-identical at every cell (ident=Y)
+  64x64    1.3970 -> 1.3791 ms  speedup 1.019x
+  128x128  3.8296 -> 3.7195 ms  speedup 1.030x
+  256x256 14.4930 -> 14.0362 ms speedup 1.021x
+  512x512 73.9405 -> 71.1412 ms speedup 1.035x
+
+caveat: this is an ALLOCATION change, and the allocator's cost shows up in
+  the profile's ALLOC bucket (27-30 % of the port's frame per
+  benchmarks/perf_class_attrib_2026-08-13.meta), NOT in sub_pixel_variance's
+  own self time. sub_pixel_variance's 0.759 ms of self time is the two
+  bilinear passes plus the variance accumulation, and those are still scalar
+  after this change.
