@@ -1,0 +1,104 @@
+WHERE THE STILL ARM'S GAP IS — the first per-class attribution taken on the
+STILL binary since 2026-08-13, and it disagrees with the video-key record
+about which intra kernel matters.
+
+date:   2026-09-03
+host:   mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores)
+commit: d56a8ef8 (main, after the three allocation-site hoists and the z1/z3
+        directional-intra NEON arms)
+tool:   /usr/bin/sample @1ms via tools/perf_profile/prof.sh on a steady-state
+        loop of the SAME cell on each side, then selftime.py + classify.py +
+        attrib.py. `<deduplicated_symbol>` is attributed to its parent frame
+        (see tools/perf_profile/README.md trap 1 — leaving it unattributed
+        overstated the transform gap ~2x).
+cells:  gradient 512x512 qp 40, presets 2 / 6 / 10, **STILL config** — the
+        default `perf_encode` avif still-picture path, no `SVTAV1_VIDEO`.
+scale:  per-class ms = (class self samples / total) * the PAIRED encode ms from
+        benchmarks/perf_2026-09-03-still512.tsv (n=15 interleaved paired
+        rounds, ALL THREE CELLS byte-identical to C):
+          512 p2   port 552.905 ms  C 174.230 ms  3.174x
+          512 p6   port  33.094 ms  C  12.790 ms  2.588x
+          512 p10  port   6.606 ms  C   2.601 ms  2.540x
+data:   perf_still_attrib_2026-09-03.tsv (class + why tables, all three cells)
+        perf_still_attrib_2026-09-03.detail.txt (per-symbol lists, both sides,
+        for every class at or above 3 % of the gap)
+
+=================== THE RANKING, BY SHARE OF THE STILL GAP ===================
+
+  rank  512 p2                 512 p6                 512 p10
+  1     DISTORTION   17.4 %    MD_DRIVER    17.0 %    MD_DRIVER    28.9 %
+  2     QUANT_RDOQ   15.3 %    ALLOC        16.4 %    ALLOC        20.3 %
+  3     MD_DRIVER    12.2 %    CDEF         14.2 %    LIBC_MEM     11.6 %
+  4     FWD_TXFM     10.8 %    LIBC_MEM      9.9 %    FWD_TXFM      9.4 %
+  5     ALLOC        10.1 %    DISTORTION    7.7 %    COEFF_CTX     9.2 %
+  6     LIBC_MEM      8.4 %    FWD_TXFM      7.4 %    SYNTAX_WRITE  6.6 %
+  7     INV_TXFM      6.5 %    QUANT_RDOQ    6.1 %    DISTORTION    6.2 %
+  8     INTRA_PRED    6.3 %    LOOP_RESTORE  6.0 %    INTRA_PRED    6.0 %
+  9     COEFF_CTX     6.2 %    INTRA_PRED    5.4 %    QUANT_RDOQ    4.3 %
+  10    CDEF          4.9 %    INV_TXFM      3.6 %    RANGE_CODER   1.6 %
+
+**ALLOC + LIBC_MEM is the only item in the top five at ALL THREE presets** —
+18.5 % of the gap at p2, 26.3 % at p6, 31.9 % at p10 — and it is by far the
+worst RATIO in the table: ALLOC is 387x C at p2, 52x at p6, 25x at p10, and
+LIBC_MEM (memset / memmove / bzero) is 3.9-5.8x. C's ALLOC column at p2 is
+0.099 ms; the port's is 38.3. Three allocation sites were hoisted earlier the
+same day and this is what is LEFT.
+
+=================== THE `why` BUCKETS ===================
+
+  cell     SIMD_GAP   SIMD_QUAL   ALLOC    SCALAR_BOTH
+  512 p2     5.3 %      33.1 %    18.1 %      43.4 %
+  512 p6    11.2 %      25.4 %    25.6 %      37.8 %
+  512 p10    5.1 %      20.4 %    30.7 %      43.8 %
+
+**SIMD COVERAGE is the SMALLEST bucket on the still arm at every preset.** The
+port is not mostly losing to kernels C vectorises and it does not — it is
+losing to kernels BOTH sides vectorise (SIMD_QUAL, 20-33 %), to code neither
+side vectorises (SCALAR_BOTH, 38-44 %), and to the allocator. Anyone planning
+still-path work from the inter record's "five scalar kernels" framing will
+pick the wrong queue.
+
+=================== TWO CORRECTIONS TO THE RECORD ===================
+
+**1. INTRA_PRED's hot symbol is PRESET-DEPENDENT, and the video-key record
+named only one of the two.** At 512 p2 the port's INTRA_PRED is
+`dr_predictor_edged` **763 samples** and C's counterparts are
+`svt_av1_dr_prediction_z2_neon` **323**, `_z3_neon` 94, `_z1_neon` 83 — so
+**z2 is C's largest directional kernel on the still arm, larger than z1 and z3
+combined**, and z2 is the one this repo has NOT ported (see the z1/z3 commit's
+"NOT DONE"). At 512 p6 and p10 the picture is completely different: the port's
+INTRA_PRED is `predict_dc` (235), `predict_filter_intra` (161),
+`predict_smooth` (126) and `dr_predictor_edged` does not appear in the top
+twelve at all. **A directional-intra optimisation is a preset-2 item on the
+still arm; DC / filter-intra / smooth are the p6-p10 items.**
+
+**2. CDEF is a still-arm item at p6 and NOT at p10.** 14.2 % of the gap at p6
+(6.60x) and 4.9 % at p2 (6.49x), but **0.0 %** at p10 — the still path at p10
+does not run it at all. The port's `cdef_filter_block` is 828 samples at p6
+against C's `svt_av1_cdef_filter_block_8xn_8_native_neon` 255 +
+`_4xn_8_native_neon` 56 + the two `_bounded_neon` variants 67. Both sides are
+NEON, so it is a QUALITY item — and the structural difference is visible in
+the source: C works in **int16x8** lanes throughout
+(`ASM_NEON/cdef_filter_block_neon.c:26`, `int16x8_t sum, res; uint16x8_t max,
+min, tap, row`) where the port carries the same 8 columns as a
+`[int32x4_t; 2]` pair, i.e. **twice the vector operations for the same work**.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED:
+  * The class and bucket shares above, for gradient 512x512 qp 40 at three
+    presets on the still config, scaled by paired byte-identical encode times.
+  * That ALLOC + LIBC_MEM is the largest consistent item and has the worst
+    ratio.
+  * That z2 is C's largest dr kernel at p2 and that dr is absent from the p6
+    and p10 top twelve.
+
+NOT ESTABLISHED, and do not quote it as if it were:
+  * Any size other than 512x512, any content other than gradient, any qp but
+    40. `perf_class_attrib_2026-08-13.meta` measured 1024 as well and the class
+    ORDER moved with size.
+  * Any A/B result. These are PROFILE SHARES. The still path has already
+    taught this campaign twice that a share is not a win: `aom_hadamard_8x8`
+    was 1.88 % of p2 and delivered 1.031x because its caller stayed scalar.
+    Price a candidate with tools/perf_ab.sh before building it.
+  * 10-bit or real content.

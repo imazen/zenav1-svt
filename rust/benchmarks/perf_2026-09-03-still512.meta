@@ -1,0 +1,9 @@
+# perf_gate fit + verdict
+date: 2026-09-03T18:38:59Z
+commit: d56a8ef85
+host: mac (12 cores)
+content: gradient
+grid: content=gradient sizes=[512] presets=[2 6 10] qp=40 rounds=15 warmup=1 frames=1 shift=3 video=0
+harness: interleaved paired (randomized per-round order); no target-cpu=native; setup excluded both sides
+target: <= ~1.2x C wall clock (matched preset+qp, byte-identical envelope)
+fits (ms = intercept + slope*pixels):

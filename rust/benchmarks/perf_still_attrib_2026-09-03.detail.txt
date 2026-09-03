@@ -1,0 +1,179 @@
+############ 512_p2 ############
+# port total 19115 samples = 552.905 ms/encode | C total 19367 samples = 174.230 ms/encode | ratio 3.17x
+class	port_ms	C_ms	delta_ms	share_of_gap	port/C
+DISTORTION	84.4037	18.3613	+66.0424	+17.4%	4.60x
+QUANT_RDOQ	100.3415	42.5702	+57.7713	+15.3%	2.36x
+MD_DRIVER	70.8378	24.7036	+46.1341	+12.2%	2.87x
+FWD_TXFM	60.6272	19.6478	+40.9794	+10.8%	3.09x
+ALLOC	38.3259	0.0990	+38.2269	+10.1%	387.29x
+LIBC_MEM	38.3259	6.6302	+31.6957	+8.4%	5.78x
+INV_TXFM	32.2227	7.4219	+24.8008	+6.5%	4.34x
+INTRA_PRED	35.8383	11.9830	+23.8553	+6.3%	2.99x
+COEFF_CTX	50.7926	27.1506	+23.6420	+6.2%	1.87x
+CDEF	21.7228	3.3466	+18.3762	+4.9%	6.49x
+LOOP_RESTORE	7.4916	1.4214	+6.0702	+1.6%	5.27x
+DEBLOCK	4.4545	1.3764	+3.0781	+0.8%	3.24x
+SYNTAX_WRITE	1.5330	0.0540	+1.4791	+0.4%	28.40x
+RANGE_CODER	0.5207	0.1349	+0.3857	+0.1%	3.86x
+COEFF_WRITE	2.0537	1.7003	+0.3534	+0.1%	1.21x
+PIPELINE	0.1736	0.1259	+0.0476	+0.0%	1.38x
+SYSCALL	0.0000	0.0540	-0.0540	-0.0%	0.00x
+OTHER	3.2396	7.4489	-4.2093	-1.1%	0.43x
+
+## DISTORTION
+  PORT: svtav1_encoder::leaf_funnel::predict::hadamard_satd(854), svtav1_encoder::leaf_funnel::detect::txb_coeff_satd::{closure#0}(690), svtav1_dsp::variance::sse(423), svtav1_dsp::residual::residual_i32(337), svtav1_dsp::residual::recon_add_clamp(191), svtav1_dsp::hadamard::aom_hadamard_8x8(133), svtav1_dsp::hadamard::aom_hadamard_16x16(96), svtav1_dsp::residual::sse_i32(75), svtav1_dsp::hadamard::aom_hadamard_32x32(55), <svtav1_encoder::leaf_funnel::detect::SatdScratch>::split(31), svtav1_encoder::leaf_funnel::detect::txb_coeff_satd(27), svtav1_dsp::hadamard::aom_hadamard_4x4(3)
+  C   : svt_aom_hadamard_16x16_neon(488), svt_full_distortion_kernel32_bits_neon(471), svt_aom_satd_neon(287), svt_residual_kernel8bit_neon(268), svt_spatial_full_distortion_kernel_neon_dotprod(138), svt_spatial_full_distortion_kernel_facade(94), svt_aom_hadamard_8x8_neon(86), svt_aom_hadamard_32x32_neon(75), hadamard_path(62), svt_aom_residual_kernel(35), svt_aom_picture_full_distortion32_bits_single_facade(13), svt_nxm_sad_kernel_helper_neon(10)
+
+## QUANT_RDOQ
+  PORT: svtav1_encoder::quant::optimize_b(2554), svtav1_dsp::quant_coding::quantize_fp_raster(327), svtav1_dsp::quant_coding::quantize_b_raster(159), svtav1_encoder::quant::coeff_cost_eob::<0>(99), svtav1_encoder::quant::coeff_cost_general::<0>(94), svtav1_dsp::quant_coding::fp_one(62), svtav1_encoder::quant::eob_cost(44), svtav1_encoder::quant::update_coeff_general::<0>(26), svtav1_encoder::quant::update_skip(21), svtav1_encoder::quant::coeff_cost_general::<2>(20), svtav1_encoder::quant::build_coeff_cost_tables_from_fc(18), svtav1_encoder::quant::update_coeff_general::<1>(14)
+  C   : svt_aom_quantize_inv_quantize(3726), svt_aom_quantize_b_neon(344), svt_av1_quantize_fp_neon(336), get_eob_cost(184), get_coeff_cost_general(57), svt_av1_quantize_fp_32x32_neon(52), svt_av1_quantize_fp_facade(32), svt_av1_build_quantizer(1)
+
+## MD_DRIVER
+  PORT: svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner(1342), svtav1_encoder::leaf_funnel::mds3::eval_candidate(405), svtav1_encoder::leaf_funnel::evaluate_leaf(163), svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit(99), svtav1_encoder::leaf_funnel::tx_pipeline::rs_tx_size(91), <svtav1_encoder::leaf_funnel::rate_tables::MdRates>::txt_rate(71), svtav1_encoder::partition::extract_neighbors_tiled(47), svtav1_encoder::leaf_funnel::nic::stage_mds0_to_mds1::{closure#0}(45), svtav1_encoder::leaf_funnel::inject::inject_candidates(43), svtav1_encoder::pd0::tx_quant_core(35), svtav1_encoder::leaf_funnel::detect::chroma_var_arm_fires(19), <svtav1_encoder::pd0::Pd0Ctx>::lvl1_cost_from_pred(19)
+  C   : full_loop_core(1514), md_encode_block(721), svt_av1_is_lossless_segment(101), tx_update_neighbor_arrays(77), svt_aom_full_loop_uv(66), svt_aom_scale_chroma_bsize(59), svt_aom_full_cost(55), inject_intra_candidates(44), generate_md_stage_0_cand(22), svt_aom_pick_partition_pd0(15), init_md_scan(14), svt_aom_pick_partition(10)
+
+## FWD_TXFM
+  PORT: svtav1_dsp::txfm_simd::neon::fwd_adst(401), svtav1_dsp::txfm_simd::neon::fdct16_x8(281), svtav1_dsp::txfm_simd::try_fwd_dct_square(246), svtav1_dsp::txfm_simd::neon::fwd_ext(239), svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(232), svtav1_dsp::txfm_simd::neon::fdct32_x8(180), svtav1_dsp::txfm_simd::neon::fadst16_x8(169), svtav1_dsp::txfm_simd::try_fwd_4dim(112), svtav1_dsp::txfm_simd::neon::fwd_dct_rect(91), svtav1_dsp::fwd_txfm::fwd_txfm2d_c_exact(89), svtav1_dsp::txfm_simd::neon::fdct8_x8(28), svtav1_dsp::txfm_simd::try_fwd_ext(22)
+  C   : svt_lbd_fwd_txfm2d_16x16_neon(611), svt_lbd_fwd_txfm2d_32x32_neon(372), svt_lbd_fwd_txfm2d_8x8_neon(333), svt_aom_estimate_transform(212), svt_lbd_fwd_txfm2d_32x16_neon(149), svt_lbd_fwd_txfm2d_16x8_neon(144), svt_lbd_fwd_txfm2d_4x4_neon(68), svt_lbd_fwd_txfm2d_16x32_neon(53), svt_lbd_fwd_txfm2d_32x8_neon(36), svt_lbd_fwd_txfm2d_8x16_neon(25), pack_and_load_buffer_16x16(24), pack_and_load_buffer_8x8(23)
+
+## ALLOC
+  PORT: _xzm_free(513), _xzm_xzone_malloc(135), _xzm_malloc_zone_malloc_type_calloc_entry(105), mach_absolute_time(87), _free(73), _xzm_xzone_malloc_tiny(66), _malloc_zone_calloc(62), DYLD-STUB$$free(50), __rustc::__rdl_alloc_zeroed(44), _malloc_zone_malloc(29), DYLD-STUB$$_platform_bzero(20), DYLD-STUB$$calloc(15)
+  C   : madvise(5), _xzm_segment_group_find_and_allocate_chunk(2), mach_absolute_time(1), _xzm_xzone_malloc_tiny(1), _xzm_xzone_malloc_small_freelist(1), _xzm_xzone_malloc(1)
+
+## LIBC_MEM
+  PORT: _platform_memset(755), _platform_memmove(326), __bzero(179), DYLD-STUB$$memcpy(59), DYLD-STUB$$memset(5), DYLD-STUB$$memmove(1)
+  C   : svt_memcpy_neon(325), _platform_memmove(176), _platform_memset(117), DYLD-STUB$$memcpy(50), DYLD-STUB$$memset(34), svt_av1_copy_wxh_8bit_neon(33), svt_memset_neon(1), _platform_memset_pattern16(1)
+
+## INV_TXFM
+  PORT: svtav1_dsp::txfm_simd::neon::inv_adst(256), svtav1_dsp::txfm_simd::neon::iadst16_x8(147), svtav1_dsp::txfm_simd::neon::inv_ext(142), svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(137), svtav1_dsp::txfm_simd::try_inv_dct_square(108), svtav1_dsp::txfm_simd::neon::idct16_x8(86), svtav1_dsp::txfm_simd::neon::iadst8_x8(84), svtav1_dsp::txfm_simd::neon::idct32_x8(49), svtav1_dsp::txfm_simd::neon::inv_4dim(38), svtav1_dsp::inv_txfm::inv_txfm2d_c_exact_bd(34), svtav1_dsp::txfm_simd::neon::inv_dct_rect(22), svtav1_dsp::txfm_simd::try_inv_ext(11)
+  C   : svt_dav1d_inv_txfm_add_neon(218), dedupof_inv_txfm_add_vert_8x16_neon(114), dedupof_inv_txfm_add_8x8_neon(75), dedupof_inv_txfm_horz_16x8_neon(65), svt_aom_inv_transform_recon8bit(40), inv_txfm_add_8x8_neon(39), svt_aom_inv_transform_recon_wrapper(35), dedupof_inv_txfm_add_vert_dct_8x32_neon(33), inv_txfm_add_vert_8x16_neon(32), inv_txfm_horz_16x8_neon(31), inv_txfm_horz_dct_32x8_neon(16), dedupof_inv_txfm_horz_dct_32x8_neon(16)
+
+## INTRA_PRED
+  PORT: svtav1_dsp::intra_pred::dr_predictor_edged(763), svtav1_encoder::leaf_funnel::predict::predict_unit(108), svtav1_encoder::leaf_funnel::overlay::predict_unit_overlay(76), svtav1_dsp::intra_pred::predict_dc(61), svtav1_dsp::intra_pred::predict_filter_intra(46), svtav1_dsp::intra_pred::predict_smooth(30), svtav1_encoder::intra_edge::dr_predict::<svtav1_encoder::leaf_funnel::overlay::predict_unit_overlay::{closure#0}>(26), svtav1_dsp::intra_pred::predict_smooth_v(25), svtav1_dsp::intra_pred::predict_h(23), svtav1_dsp::intra_pred::predict_smooth_h(17), svtav1_encoder::intra_edge::has_bottom_left(15), svtav1_encoder::intra_edge::has_tr_table_plain(13)
+  C   : svt_av1_predict_intra_block(473), svt_av1_dr_prediction_z2_neon(323), svt_av1_intra_prediction(179), svt_av1_dr_prediction_z3_neon(94), svt_av1_dr_prediction_z1_neon(83), svt_aom_intra_has_bottom_left(78), svt_aom_intra_has_top_right(69), svt_aom_filter_intra_allowed(13), svt_av1_filter_intra_predictor_neon(12), svt_av1_filter_intra_predictor_neon_i8mm(8)
+
+## COEFF_CTX
+  PORT: svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb(866), svtav1_encoder::entropy::coeff_simd::fill_levels(387), svtav1_encoder::entropy::coeff_simd::nz_map_contexts(363), svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb::{closure#0}(108), svtav1_encoder::entropy::coeff_c::get_txb_ctx(32)
+  C   : svt_av1_cost_coeffs_txb(1462), svt_av1_compute_cul_level_neon(533), svt_av1_get_nz_map_contexts_neon(519), svt_av1_txb_init_levels_neon(373), svt_aom_get_txb_ctx(131)
+
+## CDEF
+  PORT: svtav1_dsp::cdef::cdef_filter_block(621), svtav1_encoder::cdef::cdef_search_still(55), svtav1_encoder::cdef::search_one_dual(36), svtav1_encoder::cdef::filter_and_count(13), svtav1_encoder::cdef::filter_fb_packed(9), svtav1_encoder::cdef::apply_cdef_frame(7), svtav1_dsp::cdef::cdef_find_dir(6), svtav1_dsp::cdef::cdef_dir_from_partials(4)
+  C   : svt_av1_cdef_filter_block_8xn_8_native_neon(264), svt_cdef_filter_fb_lbd(30), cdef_filter_block_8xn_8_bounded_neon(26), svt_aom_compute_cdef_dist_8bit_neon_dotprod(23), svt_av1_cdef_filter_block_4xn_8_native_neon(10), cdef_filter_block_4xn_8_bounded_neon(6), svt_cdef_filter_block_8bit_neon(5), svt_cdef_filter_block_8bit_bounded_neon(2), svt_aom_cdef_kernel_iter(2), cdef_dir_from_lines_neon(2), svt_aom_cdef_find_dir_dual_8bit_neon(1), finish_cdef_search(1)
+############ 512_p6 ############
+# port total 15202 samples = 33.094 ms/encode | C total 15453 samples = 12.790 ms/encode | ratio 2.59x
+class	port_ms	C_ms	delta_ms	share_of_gap	port/C
+MD_DRIVER	4.7305	1.2788	+3.4518	+17.0%	3.70x
+ALLOC	3.3960	0.0654	+3.3307	+16.4%	51.94x
+CDEF	3.3917	0.5140	+2.8777	+14.2%	6.60x
+LIBC_MEM	2.5361	0.5247	+2.0114	+9.9%	4.83x
+DISTORTION	2.5296	0.9750	+1.5546	+7.7%	2.59x
+FWD_TXFM	2.8344	1.3400	+1.4944	+7.4%	2.12x
+QUANT_RDOQ	3.0064	1.7662	+1.2401	+6.1%	1.70x
+LOOP_RESTORE	2.0877	0.8707	+1.2170	+6.0%	2.40x
+INTRA_PRED	1.5391	0.4337	+1.1054	+5.4%	3.55x
+INV_TXFM	1.2996	0.5736	+0.7261	+3.6%	2.27x
+SYNTAX_WRITE	0.6335	0.0348	+0.5987	+2.9%	18.22x
+RANGE_CODER	0.6291	0.2558	+0.3734	+1.8%	2.46x
+DEBLOCK	0.4789	0.1539	+0.3250	+1.6%	3.11x
+COEFF_CTX	2.3272	2.1064	+0.2207	+1.1%	1.10x
+COEFF_WRITE	0.8490	0.7598	+0.0892	+0.4%	1.12x
+PIPELINE	0.1611	0.1051	+0.0560	+0.3%	1.53x
+SYSCALL	0.0000	0.0223	-0.0223	-0.1%	0.00x
+OTHER	0.6640	1.0098	-0.3458	-1.7%	0.66x
+
+## MD_DRIVER
+  PORT: svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner(643), svtav1_encoder::pd0::tx_quant_core(296), <svtav1_encoder::pd0::Pd0Ctx>::lvl1_cost_from_pred(263), svtav1_encoder::leaf_funnel::mds3::eval_candidate(241), svtav1_encoder::leaf_funnel::evaluate_leaf(140), svtav1_encoder::partition::extract_neighbors_tiled(116), svtav1_encoder::leaf_funnel::rate_tables::build_md_rates(77), svtav1_encoder::leaf_funnel::inject::inject_candidates(58), svtav1_encoder::partition::funnel_block_decision(57), <svtav1_encoder::leaf_funnel::rate_tables::MdRates>::txt_rate(34), svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit(33), svtav1_encoder::leaf_funnel::detect::chroma_detector_fires(31)
+  C   : full_loop_core(546), md_encode_block(246), svt_aom_pick_partition_pd0(217), svt_aom_full_loop_uv(58), svt_av1_is_lossless_segment(55), svt_aom_init_xd(50), tx_update_neighbor_arrays(47), svt_aom_scale_chroma_bsize(46), svt_aom_full_cost(35), inject_intra_candidates(33), init_md_scan(31), md_update_all_neighbour_arrays(27)
+
+## ALLOC
+  PORT: _xzm_free(560), _xzm_xzone_malloc(169), madvise(127), _free(94), mach_absolute_time(90), _xzm_malloc_zone_malloc_type_calloc_entry(82), _xzm_xzone_malloc_tiny(57), _malloc_zone_malloc(57), _malloc_zone_calloc(51), DYLD-STUB$$free(37), __rustc::__rdl_alloc(30), __rustc::__rdl_alloc_zeroed(23)
+  C   : madvise(25), mach_absolute_time(11), _xzm_free(10), _xzm_xzone_malloc_tiny(8), _xzm_malloc_zone_malloc_type_calloc_entry(8), _malloc_zone_calloc(2), _free(2), dedupof_svt_av1_enc_init(1), dedupof_svt_aom_packetization_kernel_iter(1), dedupof_svt_aom_neighbor_array_unit_ctor(1), dedupof__malloc_zone_memalign(1), _xzm_xzone_malloc(1)
+
+## CDEF
+  PORT: svtav1_dsp::cdef::cdef_filter_block(828), svtav1_encoder::cdef::filter_and_count(208), svtav1_encoder::cdef::cdef_search_still(180), svtav1_dsp::cdef::cdef_find_dir(116), svtav1_encoder::cdef::apply_cdef_frame(88), svtav1_dsp::cdef::cdef_dir_from_partials(69), svtav1_encoder::cdef::filter_fb_packed(42), svtav1_encoder::cdef::search_one_dual(26), svtav1_encoder::cdef::finish_cdef_rd_bd(1)
+  C   : svt_av1_cdef_filter_block_8xn_8_native_neon(255), svt_cdef_filter_fb_lbd(87), cdef_dir_from_lines_neon(68), svt_av1_cdef_filter_block_4xn_8_native_neon(56), cdef_filter_block_8xn_8_bounded_neon(48), svt_aom_compute_cdef_dist_8bit_neon_dotprod(41), cdef_filter_block_4xn_8_bounded_neon(19), svt_aom_cdef_kernel_iter(16), svt_av1_cdef_frame(11), svt_cdef_filter_block_8bit_neon(7), svt_sb_compute_cdef_list(5), svt_aom_cdef_find_dir_dual_8bit_neon(5)
+
+## LIBC_MEM
+  PORT: _platform_memset(529), _platform_memmove(400), __bzero(176), DYLD-STUB$$memcpy(53), DYLD-STUB$$memset(7)
+  C   : svt_memcpy_neon(234), _platform_memmove(158), _platform_memset(134), DYLD-STUB$$memset(31), DYLD-STUB$$memcpy(30), svt_av1_copy_wxh_8bit_neon(27), __bzero(10), svt_memset_neon(6), DYLD-STUB$$memset_pattern16(2), _platform_memset_pattern16(1), __memset_chk(1)
+
+## DISTORTION
+  PORT: svtav1_encoder::leaf_funnel::predict::hadamard_satd(284), svtav1_encoder::leaf_funnel::detect::txb_coeff_satd::{closure#0}(248), svtav1_dsp::variance::sse(149), svtav1_dsp::residual::residual_i32(142), svtav1_dsp::residual::recon_add_clamp(73), svtav1_dsp::residual::sse_i32(72), svtav1_encoder::pd0::compute_b64_variance(50), svtav1_dsp::hadamard::aom_hadamard_8x8(48), svtav1_dsp::hadamard::aom_hadamard_16x16(48), svtav1_dsp::hadamard::aom_hadamard_32x32(24), <svtav1_encoder::leaf_funnel::detect::SatdScratch>::split(12), svtav1_encoder::leaf_funnel::detect::txb_coeff_satd(11)
+  C   : svt_full_distortion_kernel32_bits_neon(494), svt_aom_hadamard_16x16_neon(169), svt_residual_kernel8bit_neon(162), svt_aom_satd_neon(107), svt_spatial_full_distortion_kernel_neon_dotprod(56), svt_spatial_full_distortion_kernel_facade(40), svt_aom_hadamard_8x8_neon(33), svt_aom_hadamard_32x32_neon(33), svt_aom_picture_full_distortion32_bits_single_facade(25), hadamard_path(22), svt_aom_residual_kernel(18), svt_nxm_sad_kernel_helper_neon(9)
+
+## FWD_TXFM
+  PORT: svtav1_dsp::txfm_simd::try_fwd_dct_square(377), svtav1_dsp::txfm_simd::neon::fdct16_x8(292), svtav1_dsp::txfm_simd::neon::fdct32_x8(243), svtav1_dsp::txfm_simd::neon::fwd_adst(97), svtav1_dsp::txfm_simd::neon::fdct64_x8(68), svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(63), svtav1_dsp::txfm_simd::neon::fadst16_x8(58), svtav1_dsp::txfm_simd::try_fwd_4dim(33), svtav1_dsp::fwd_txfm::fwd_txfm2d_c_exact(32), svtav1_dsp::txfm_simd::neon::fwd_ext(26), svtav1_dsp::txfm_simd::try_fwd_ext(8), svtav1_dsp::txfm_simd::neon::fdct8_x8(5)
+  C   : svt_lbd_fwd_txfm2d_32x32_neon(596), svt_lbd_fwd_txfm2d_16x16_neon(461), highbd_fdct64_x4_neon(171), svt_lbd_fwd_txfm2d_8x8_neon(123), svt_aom_estimate_transform(86), svt_av1_fwd_txfm2d_64x64_neon(81), pack_and_load_buffer_16x16(30), pack_and_load_buffer_32x32(28), svt_lbd_fwd_txfm2d_4x4_neon(16), svt_av1_fwd_txfm2d_8x8_neon(9), pack_and_load_buffer_8x8(8), svt_av1_fwd_txfm2d_16x16_neon(5)
+
+## QUANT_RDOQ
+  PORT: svtav1_encoder::quant::optimize_b(722), svtav1_encoder::quant::build_coeff_cost_tables_from_fc(224), svtav1_dsp::quant_coding::quantize_fp_raster(158), svtav1_dsp::quant_coding::quantize_b_raster(133), svtav1_encoder::quant::coeff_cost_eob::<0>(32), svtav1_dsp::quant_coding::fp_one(23), svtav1_encoder::quant::eob_cost(22), svtav1_encoder::quant::coeff_cost_general::<0>(22), svtav1_encoder::quant::build_quant_table_sharp(14), svtav1_dsp::quant_coding::b_one(11), svtav1_encoder::quant::update_skip(10), svtav1_encoder::quant::update_coeff_general::<0>(7)
+  C   : svt_aom_quantize_inv_quantize(1451), svt_aom_quantize_b_neon(316), svt_av1_quantize_fp_neon(175), get_eob_cost(83), svt_av1_quantize_fp_32x32_neon(52), svt_av1_build_quantizer(24), svt_av1_quantize_fp_facade(22), svt_aom_quantize_inv_quantize_light(11)
+
+## LOOP_RESTORE
+  PORT: svtav1_dsp::restoration::compute_stats(524), svtav1_dsp::restoration::wiener_convolve_add_src::{closure#1}(293), svtav1_dsp::restoration::wiener_convolve_add_src(80), svtav1_encoder::restoration::try_restoration_unit::<u8>(26), svtav1_encoder::restoration::search_restoration_still_bd::<u8>(25), svtav1_dsp::restoration::wiener_decompose_sep_sym(11)
+  C   : svt_av1_compute_stats_neon(907), svt_av1_wiener_convolve_add_src_neon(116), search_wiener_seg(24), svt_av1_loop_restoration_corners_in_sb(4), svt_av1_loop_restoration_save_boundary_lines(1)
+
+## INTRA_PRED
+  PORT: svtav1_dsp::intra_pred::predict_dc(235), svtav1_dsp::intra_pred::predict_filter_intra(161), svtav1_dsp::intra_pred::predict_smooth(126), svtav1_encoder::leaf_funnel::overlay::predict_unit_overlay(80), svtav1_dsp::intra_pred::predict_h(51), svtav1_encoder::leaf_funnel::predict::predict_unit(30), svtav1_dsp::intra_pred::predict_v(16), <alloc::vec::Vec<u8> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<u8, core::iter::adapters::map::Map<core::ops::range::Range<usize>, svtav1_encoder::leaf_funnel::overlay::predict_unit_overlay::{closure#2}>>>::from_iter(8)
+  C   : svt_av1_predict_intra_block(246), svt_av1_intra_prediction(94), svt_aom_intra_has_bottom_left(60), svt_aom_intra_has_top_right(58), svt_av1_filter_intra_predictor_neon(34), svt_av1_filter_intra_predictor_neon_i8mm(19), svt_aom_filter_intra_allowed(13)
+
+## INV_TXFM
+  PORT: svtav1_dsp::txfm_simd::try_inv_dct_square(148), svtav1_dsp::txfm_simd::neon::idct16_x8(131), svtav1_dsp::txfm_simd::neon::idct32_x8(102), svtav1_dsp::txfm_simd::neon::inv_adst(74), svtav1_dsp::txfm_simd::neon::iadst16_x8(51), svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(31), svtav1_dsp::txfm_simd::neon::inv_ext(29), svtav1_dsp::inv_txfm::inv_txfm2d_c_exact_bd(12), svtav1_dsp::txfm_simd::neon::inv_4dim(9), svtav1_dsp::txfm_simd::neon::iadst8_x8(8), svtav1_dsp::txfm_simd::try_inv_ext(2)
+  C   : svt_dav1d_inv_txfm_add_neon(133), dedupof_inv_txfm_add_vert_8x16_neon(101), dedupof_inv_txfm_add_vert_dct_8x32_neon(81), dedupof_inv_txfm_horz_dct_32x8_neon(66), dedupof_inv_txfm_horz_16x8_neon(60), av1_perform_inverse_transform_recon(54), inv_txfm_horz_dct_32x8_neon(40), inv_txfm_add_vert_dct_8x32_neon(37), inv_txfm_add_vert_8x16_neon(25), inv_txfm_horz_16x8_neon(24), dedupof_inv_txfm_add_8x8_neon(17), inv_txfm_add_8x8_neon(16)
+############ 512_p10 ############
+# port total 15167 samples = 6.606 ms/encode | C total 15487 samples = 2.601 ms/encode | ratio 2.54x
+class	port_ms	C_ms	delta_ms	share_of_gap	port/C
+MD_DRIVER	1.5506	0.3932	+1.1574	+28.9%	3.94x
+ALLOC	0.8463	0.0344	+0.8118	+20.3%	24.58x
+LIBC_MEM	0.6237	0.1607	+0.4630	+11.6%	3.88x
+FWD_TXFM	0.6276	0.2518	+0.3759	+9.4%	2.49x
+COEFF_CTX	0.4077	0.0386	+0.3690	+9.2%	10.55x
+SYNTAX_WRITE	0.2862	0.0233	+0.2628	+6.6%	12.26x
+DISTORTION	0.3524	0.1035	+0.2489	+6.2%	3.41x
+INTRA_PRED	0.3349	0.0932	+0.2417	+6.0%	3.59x
+QUANT_RDOQ	0.5584	0.3856	+0.1728	+4.3%	1.45x
+RANGE_CODER	0.3188	0.2561	+0.0627	+1.6%	1.24x
+PIPELINE	0.1320	0.1004	+0.0315	+0.8%	1.31x
+INV_TXFM	0.2452	0.2219	+0.0234	+0.6%	1.11x
+CDEF	0.0004	0.0000	+0.0004	+0.0%	inf
+DEBLOCK	0.0000	0.0003	-0.0003	-0.0%	0.00x
+LOOP_RESTORE	0.0000	0.0025	-0.0025	-0.1%	0.00x
+SYSCALL	0.0000	0.0294	-0.0294	-0.7%	0.00x
+COEFF_WRITE	0.3018	0.3791	-0.0772	-1.9%	0.80x
+OTHER	0.0200	0.1270	-0.1069	-2.7%	0.16x
+
+## MD_DRIVER
+  PORT: svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner(813), <svtav1_encoder::pd0::Pd0Ctx>::lvl5_like_block_cost_rect(493), svtav1_encoder::pd0::tx_quant_core(461), svtav1_encoder::leaf_funnel::evaluate_leaf(450), svtav1_encoder::partition::funnel_block_decision(239), svtav1_encoder::leaf_funnel::mds3::eval_candidate(236), svtav1_encoder::partition::extract_neighbors_tiled(219), svtav1_encoder::leaf_funnel::detect::chroma_detector_fires(110), svtav1_encoder::leaf_funnel::detect::chroma_var_arm_fires(103), <svtav1_encoder::pd0::Pd0Ctx>::pick_q(81), svtav1_encoder::leaf_funnel::commit::commit_leaf(60), svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit(50)
+  C   : svt_aom_pick_partition_pd0(537), md_encode_block(336), full_loop_core(235), init_md_scan(155), svt_aom_full_loop_uv(139), svt_aom_init_xd(95), svt_aom_set_nics(94), generate_md_stage_0_cand_pd0(77), md_update_all_neighbour_arrays(75), svt_aom_pick_partition(68), svt_aom_scale_chroma_bsize(60), setup_ptree(59)
+
+## ALLOC
+  PORT: _xzm_free(628), _xzm_xzone_malloc(253), mach_absolute_time(165), _free(117), _malloc_zone_malloc(101), _xzm_xzone_malloc_tiny(99), _xzm_malloc_zone_malloc_type_calloc_entry(90), DYLD-STUB$$free(59), dedupof_svtav1_encoder::partition::extract_neighbors_tiled(54), _malloc_zone_calloc(54), __rustc::__rdl_alloc(49), __rustc::__rdl_alloc_zeroed(31)
+  C   : madvise(60), _xzm_free(45), mach_absolute_time(25), _xzm_xzone_malloc(16), _free(10), _malloc_zone_calloc(9), _xzm_xzone_malloc_tiny(8), _xzm_segment_group_find_and_allocate_chunk(6), _xzm_malloc_zone_malloc_type_calloc_entry(5), DYLD-STUB$$free(4), xzm_malloc_zone_memalign(2), _xzm_xzone_malloc_from_freelist_chunk(2)
+
+## LIBC_MEM
+  PORT: _platform_memset(623), _platform_memmove(478), __bzero(232), DYLD-STUB$$memcpy(83), DYLD-STUB$$memset(15), DYLD-STUB$$memmove(1)
+  C   : svt_memcpy_neon(354), _platform_memmove(194), _platform_memset(180), svt_av1_copy_wxh_8bit_neon(84), DYLD-STUB$$memcpy(42), __bzero(39), DYLD-STUB$$memset(38), svt_memset_neon(23), _platform_memset_pattern16(2), DYLD-STUB$$memset_pattern16(1)
+
+## FWD_TXFM
+  PORT: svtav1_dsp::txfm_simd::try_fwd_dct_square(418), svtav1_dsp::txfm_simd::neon::fdct16_x8(414), svtav1_dsp::txfm_simd::neon::fdct32_x8(321), svtav1_dsp::txfm_simd::neon::fwd_dct_rect(172), svtav1_dsp::txfm_simd::neon::fdct64_x8(47), svtav1_dsp::txfm_simd::try_fwd_4dim(30), svtav1_dsp::fwd_txfm::fwd_txfm2d_c_exact(22), svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(17)
+  C   : svt_lbd_fwd_txfm2d_16x16_neon(320), svt_lbd_fwd_txfm2d_32x32_neon(214), svt_lbd_fwd_txfm2d_32x16_neon(188), highbd_fdct64_x4_neon(124), svt_lbd_fwd_txfm2d_16x8_neon(119), svt_av1_fwd_txfm2d_64x32_neon(109), svt_lbd_fwd_txfm2d_8x8_neon(87), highbd_fdct32_x4_neon(85), svt_aom_estimate_transform(69), pack_and_load_buffer_16x16(64), pack_and_load_buffer_32x32(63), svt_lbd_fwd_txfm2d_8x4_neon(17)
+
+## COEFF_CTX
+  PORT: svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb(420), svtav1_encoder::entropy::coeff_simd::nz_map_contexts(267), svtav1_encoder::entropy::coeff_simd::fill_levels(213), svtav1_encoder::entropy::coeff_c::get_txb_ctx(21), svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb::{closure#0}(15)
+  C   : svt_av1_txb_init_levels_neon(135), svt_av1_get_nz_map_contexts_neon(95)
+
+## SYNTAX_WRITE
+  PORT: svtav1_encoder::pipeline::encode_block_syntax(360), svtav1_encoder::pipeline::write_chroma_txb(108), <svtav1_encoder::deblock::DeblockGeom>::record_block(83), svtav1_encoder::entropy::context::write_partition(25), <svtav1_encoder::pipeline::EntropyCtx>::record_block(24), <svtav1_encoder::pipeline::EntropyCtx>::record_palette(23), svtav1_encoder::entropy::context::block_size_index(13), svtav1_encoder::entropy::context::write_tx_depth(8), <svtav1_encoder::pipeline::EntropyCtx>::tx_size_ctx(7), svtav1_encoder::entropy::context::write_intra_mode_kf(3), svtav1_encoder::entropy::context::write_partition_edge(2), <svtav1_encoder::pipeline::EntropyCtx>::update_partition_ctx_leaf(1)
+  C   : write_modes_b(72), svt_aom_write_modes_sb(61), dedupof_write_modes_b(6)
+
+## DISTORTION
+  PORT: svtav1_encoder::pd0::compute_b64_variance(261), svtav1_dsp::residual::residual_i32(187), svtav1_dsp::variance::sse(172), svtav1_dsp::residual::recon_add_clamp(66), svtav1_dsp::variance::variance_diff(64), svtav1_dsp::residual::sse_i32(59)
+  C   : svt_full_distortion_kernel32_bits_neon(224), svt_residual_kernel8bit_neon(119), svt_spatial_full_distortion_kernel_neon_dotprod(85), svt_spatial_full_distortion_kernel_facade(72), svt_aom_picture_full_distortion32_bits_single_facade(31), svt_aom_residual_kernel(29), svt_aom_variance16x16_neon_dotprod(21), svt_nxm_sad_kernel_helper_neon(16), svt_aom_variance32x32_neon_dotprod(11), svt_aom_variance8x8_neon_dotprod(7), svt_full_distortion_kernel_cbf_zero32_bits_neon(1)
+
+## INTRA_PRED
+  PORT: svtav1_dsp::intra_pred::predict_dc(719), svtav1_encoder::leaf_funnel::predict::predict_unit(35), svtav1_encoder::leaf_funnel::overlay::predict_unit_overlay(12), <alloc::vec::Vec<u8> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<u8, core::iter::adapters::map::Map<core::ops::range::Range<usize>, svtav1_encoder::leaf_funnel::overlay::predict_unit_overlay::{closure#2}>>>::from_iter(3)
+  C   : svt_av1_predict_intra_block(249), svt_av1_intra_prediction(136), svt_aom_intra_has_top_right(92), svt_aom_intra_has_bottom_left(75), svt_aom_filter_intra_allowed(3)
+
+## QUANT_RDOQ
+  PORT: svtav1_encoder::quant::optimize_b(712), svtav1_dsp::quant_coding::quantize_fp_raster(213), svtav1_dsp::quant_coding::quantize_b_raster(188), svtav1_encoder::quant::build_quant_table_sharp(48), svtav1_encoder::quant::coeff_cost_general::<0>(37), svtav1_encoder::quant::coeff_cost_eob::<0>(31), svtav1_encoder::quant::build_coeff_cost_tables_from_fc(27), svtav1_dsp::quant_coding::fp_one(13), svtav1_encoder::quant::eob_cost(8), svtav1_dsp::quant_coding::b_one(4), svtav1_encoder::quant::update_skip(1)
+  C   : svt_aom_quantize_inv_quantize(1554), svt_av1_quantize_fp_neon(247), svt_aom_quantize_b_neon(210), svt_av1_build_quantizer(114), get_eob_cost(61), svt_av1_quantize_fp_32x32_neon(53), svt_av1_quantize_fp_facade(34), svt_aom_quantize_inv_quantize_light(20), get_coeff_cost_general(3)

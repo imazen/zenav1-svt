@@ -1,5 +1,46 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE STILL ARM HAS ITS OWN RANKING NOW, AND IT IS NOT THE VIDEO-KEY ONE
+> (2026-09-03).** `benchmarks/perf_still_attrib_2026-09-03.{tsv,meta,detail.txt}`
+> — the first per-class attribution taken on the STILL binary since 2026-08-13,
+> at gradient 512x512 qp 40, presets 2 / 6 / 10, scaled by the paired
+> byte-identical times in `benchmarks/perf_2026-09-03-still512.tsv`
+> (512 p2 **3.174x**, p6 **2.588x**, p10 **2.540x**, n=15).
+>
+> | rank | 512 p2 | 512 p6 | 512 p10 |
+> |---|---|---|---|
+> | 1 | DISTORTION 17.4 % | MD_DRIVER 17.0 % | MD_DRIVER 28.9 % |
+> | 2 | QUANT_RDOQ 15.3 % | **ALLOC 16.4 %** | **ALLOC 20.3 %** |
+> | 3 | MD_DRIVER 12.2 % | **CDEF 14.2 %** | **LIBC_MEM 11.6 %** |
+> | 4 | FWD_TXFM 10.8 % | **LIBC_MEM 9.9 %** | FWD_TXFM 9.4 % |
+> | 5 | **ALLOC 10.1 %** | DISTORTION 7.7 % | COEFF_CTX 9.2 % |
+> | 6 | **LIBC_MEM 8.4 %** | FWD_TXFM 7.4 % | SYNTAX_WRITE 6.6 % |
+> | 7 | INV_TXFM 6.5 % | QUANT_RDOQ 6.1 % | DISTORTION 6.2 % |
+> | 8 | INTRA_PRED 6.3 % | LOOP_RESTORE 6.0 % | INTRA_PRED 6.0 % |
+>
+> **ALLOC + LIBC_MEM is the only item in the top five at all three presets** —
+> 18.5 / 26.3 / 31.9 % — and it has the worst ratio in the table (ALLOC is
+> **387x** C at p2, 52x at p6, 25x at p10). That is what is LEFT after the three
+> hoists recorded above.
+>
+> **SIMD COVERAGE is the SMALLEST `why` bucket on the still arm at every
+> preset** (SIMD_GAP 5.3 / 11.2 / 5.1 %, against SIMD_QUAL 33.1 / 25.4 / 20.4 %,
+> ALLOC 18.1 / 25.6 / 30.7 % and SCALAR_BOTH 43.4 / 37.8 / 43.8 %). Planning
+> still-path work from the inter record's "five scalar kernels" framing picks
+> the wrong queue.
+>
+> TWO CORRECTIONS THE RECORD CARRIES. (1) **INTRA_PRED's hot symbol is
+> preset-dependent.** At p2 it is `dr_predictor_edged` (763 samples) against C's
+> `svt_av1_dr_prediction_z2_neon` **323** / `_z3_neon` 94 / `_z1_neon` 83 — **z2
+> is C's largest directional kernel here, bigger than z1 and z3 combined**, and
+> z2 is the one still unported. At p6/p10 `dr_predictor_edged` is not in the top
+> twelve at all; `predict_dc`, `predict_filter_intra` and `predict_smooth` are.
+> (2) **CDEF is a still item at p6 (14.2 %, 6.60x) and ZERO at p10**, and it is
+> a QUALITY gap with a named cause: C's kernel works in `int16x8` lanes
+> throughout (`ASM_NEON/cdef_filter_block_neon.c:26`) where the port carries the
+> same 8 columns as a `[int32x4_t; 2]` pair — twice the vector ops for the same
+> work.
+
 > **CURRENT — THE ALLOCATION-SITE HOISTS: A MEASURED CPU WIN AND A MEMORY NULL
 > (2026-09-03, third chunk of the day). READ THIS BEFORE THE MEMORY BLOCK
 > BELOW.** Three byte-identical changes hoist the three biggest per-call
