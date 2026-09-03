@@ -5540,6 +5540,14 @@ multiple** — `SVTAV1_PACKTREE` repeats a leaf at some presets
 (`docs/WORKING-ON-THIS.md` §5), so the counts are an upper bound on the
 port's side.
 
+> **SUPERSEDED BY §1z²², which found the CAUSE rather than a cost.** The
+> direction below is right and the reading of it — "a depth/partition-cost
+> divergence" — is not: the port's inter-frame PD0 was not costing badly, it
+> was running the ALLINTRA entry point altogether (DC intra prediction, the
+> KEY-frame lambda, `min_sq` 8 instead of the 32 its own `PD0DR` probe had
+> already computed). On this very cell it evaluated EIGHTY PD0 nodes where C
+> evaluates FIVE. With the inter arm wired the five costs match C's exactly.
+
 The direction is confirmed block-by-block on `gradient 64x64 q20 p6`, where
 the dump is small enough to read in full: **C codes ONE 64x64 block**
 (`bsize=12`, `PARTITION_NONE`, `NEWMV`, `rf=1`, `mv=(0,-24)`) and **the port
@@ -5564,11 +5572,11 @@ counts it in the header half.)
    was one `else` arm rather than one control: the ladder was already being
    run, its result was discarded for every non-key frame. 55 -> 67 BOTH, and
    the header half of this section's split is now zero.
-2. **The tile-only 20 — the partition tree, not the mode.** The port
-   over-splits on 18 of them (above). They start from a much better place
-   than any chunk in this campaign has: the port's PME, ME, MVP, NSQ motion search,
-   `inter_fast_cost` and motion-mode alphabet all join C's on every row
-   either side can observe, and every one of the 96 streams decodes.
+2. ~~**The tile-only 20 — the partition tree, not the mode.**~~ **DONE —
+   §1z²², and the over-split had a cause rather than a cost model**: the
+   REFINEMENT path called the ALLINTRA PD0 entry point on inter frames, so
+   PD0 predicted DC intra, priced with the KEY-frame lambda and ignored the
+   `min_sq` its own probe had already computed correctly. 67 -> 89 BOTH.
 
 #### What no longer needs investigating
 
@@ -5734,6 +5742,108 @@ over-splits the partition tree. §1z²⁰'s block-level reading of
 `gradient 64x64 q20 p6` still stands (C codes ONE 64x64 `PARTITION_NONE`
 `NEWMV` where the port codes four 32x32s with the same reference and the same
 MV), and that cell is still open.
+
+### 1z²². PD0's INTER arm never reached the REFINEMENT path — 67 -> 89 BOTH (2026-09-02)
+
+The other half of §1z²⁰, and the answer is not a cost model. **Grid
+67 BOTH / 28 F1DIFF / 1 F0DIFF -> 89 / 6 / 1**, twenty-two cells promoted,
+none regressed.
+
+**`pipeline.rs` ran the ALLINTRA PD0 on every inter frame at preset <= 6.**
+The superblock loop builds `pd0_inter` — the reference planes, the frame's two
+update types, and THIS superblock's `min_sq` from `depth_removal_ctrls` —
+immediately above the branch, and the NON-refined arm already hands it to
+`pd0_pick_sb_partition_video_eval`. The `refined` arm (`use_funnel &&
+(dr.adaptive || nsq_search_on)`, which is every preset <= 6 on both arms)
+called `pd0_pick_sb_partition_m6_eval` instead, with `min_sq = disallow_4x4 ?
+8 : 4`, the KEY-frame lambda chain and no reference at all.
+
+#### The join, on `gradient 64x64 q20 p6` frame 1
+
+C's `SVT_PD0COST_OUT` (`svt_aom_full_cost_pd0`) against the port's
+`SVTAV1_PD0DBG` `PD0BLK` line — the same four fields in the same order, which
+is what those two dumps were built to allow:
+
+| node | C | port BEFORE | port AFTER |
+|---|---|---|---|
+| lambda | 24898 | 25650 | **24898** |
+| nodes evaluated | **5** (1x64, 4x32) | **80** (1x64, 4x32, 15x16, 60x8) | **5** |
+| 64x64 dist / ybits / cost | 50800 / 157 / 6530459 | 2045904 / 2133852 / 368797737 | **50800 / 157 / 6530459** |
+| 32x32 (0,0) | 15682 / 776 / 2065456 | 191020 / 1034698 / 76307546 | **15682 / 776 / 2065456** |
+| 32x32 (32,0) | 14498 / 776 / 1913904 | 173228 / 1081206 / 76360112 | **14498 / 776 / 1913904** |
+| 32x32 (0,32) | 13706 / 776 / 1812528 | 139488 / 980922 / 67017398 | **13706 / 776 / 1812528** |
+| 32x32 (32,32) | 13450 / 776 / 1779760 | 124900 / 1013536 / 66784019 | **13450 / 776 / 1779760** |
+
+Every field of every node, exactly. And the split sum (7 571 648) losing to
+the 64x64 NONE (6 530 459) is precisely §1z²⁰'s observation from the other
+end: C's `SVT_PICKPART_OUT` records `partition=0` at `mi=(0,0) bsize=12` with
+`mode=16` (NEWMV), `nz=0`, `skip=1`.
+
+**The port's own probe already agreed with C and nobody read it.** The
+`PD0DR` line this repo added for exactly this join prints
+`sb=0 dr=1/0/1/1 minsq=32 drlvl=5 fastlam=2200 pqp=20 med=0/0/0/0 mev=0
+refmin=32`, and C's `SVT_PD0CFG_OUT` frame-1 line is
+`dr=1/0/1/1 drlvl=5 fastlam=2200 pqp=20 med=0/0/0/0 mev=0 refmin=32` — field
+for field. The depth-removal derivation §1z¹¹ landed was right all along; its
+RESULT was computed per superblock and then dropped on the floor by the entry
+point the refinement path calls. **A probe that agrees is not evidence that the
+value is used.**
+
+#### What was actually wrong, in C's terms
+
+Three things, and `pd0_frame_lambda_and_min_sq` now resolves all three in one
+place so the two video-arm entry points cannot drift (§4's rule — this
+campaign has now found four duplicate transcriptions):
+
+1. **`full_sb_lambda_md[EB_8_BIT_MD]`** is the FRAME's MD lambda
+   (`av1_lambda_assign_md`, md_process.c:763) and the KF chain only on a key
+   frame. 25650 against C's 24898 on this cell.
+2. **`min_sq_size`** comes from `set_blocks_to_be_tested`
+   (enc_dec_process.c:1485) reading `depth_removal_ctrls`, which
+   `set_depth_removal_level_controls` returns `enabled = 0` for on an I-slice
+   — so only a NON-key frame can raise it above the `disallow_4x4 ? 8 : 4`
+   arm. 8 against C's 32 here, i.e. 16 times the search.
+3. **`product_prediction_fun_table_pd0[is_inter_mode(mode)]`**
+   (product_coding_loop.c:970): on a non-I slice PD0's ONE candidate is an
+   inter `NEWMV`, never the DC intra prediction. The 40x distortion gap at the
+   64x64 node is that.
+
+#### The residual: SIX cells, and FIVE are 72x72
+
+| cell | C f1 | port f1 |
+|---|---|---|
+| `gradient 72x72 q20 p6` | 29 | 28 |
+| `diag 72x72 q20 p8` | 29 | 27 |
+| `diag 72x72 q40 p6` | 28 | 27 |
+| `diag 72x72 q55 p6` | 29 | 31 |
+| `diag 72x72 q55 p8` | 29 | 30 |
+| `diag 128x128 q20 p8` | 25 | 26 |
+
+Five of the six are the PARTIAL superblock, which is a much sharper target
+than "the tile": 72x72 is the only geometry in the grid where the
+spec-5.11.4 edge predicate, the cropped-RDO distortion and the SB-extent pad
+are all live at once, and it is the shape `d82a19800`'s ME-distortion
+normalisation fix was about. The sixth (`diag 128x128 q20 p8`) is 64-aligned
+and is the one that will need a different mechanism. The F0DIFF cell is
+unchanged and is still a video-KEY defect on which every frame-1 reading is
+void.
+
+#### Gates
+
+`inter_byte_gate.sh` PASS_CELLS regenerated wholesale 67 -> **89**, and
+OPEN_CELLS re-derived from the sweep rather than carried forward (three of its
+four are now PASS cells). **Mutation-tested both ways**: with the `inter`
+argument at the refined call site reverted to `None`, the gate reports
+`89 required, 22 failed` and names exactly the twenty-two; restored, 0 failed.
+
+**No still regression, measured:** `identity_full_8bit.sh` **1100/1100**,
+`regression_spotcheck.sh` **83/83**, `cargo nextest run --workspace`
+**2483/2483**, `video_key_matrix.sh` 58/60 (unmoved — the same `gradient p0` /
+`screenrep p0` pair), `fctx_gate.sh` 96/96, `inter_fh_gate.sh` PASS,
+`inter_decode_gate.sh` 5/5, `inter_decode_census.sh` 96/96 decode.
+The still and key-frame paths are untouched BY CONSTRUCTION, not only by
+measurement: the new argument is `pd0_inter.as_ref()`, and `pd0_inter` is
+`inter_md.map(..)` — `None` on every key frame and every allintra cell.
 
 ## 2. Chunks
 

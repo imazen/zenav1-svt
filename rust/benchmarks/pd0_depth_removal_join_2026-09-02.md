@@ -208,3 +208,130 @@ six and 4878 on three. It happens not to move any `dr=` outcome on THIS cell
 (all nine now agree despite it), so it needs a cell where a threshold is near
 a boundary, or a direct join. `SVT_PICKPART0_OUT` then says whether the PD0
 tree follows.
+
+---
+
+## Divergence 1, SOLVED 2026-09-02 — the chain is `me_8x8_cost_variance -> b64_me_qindex -> update_lambda`'s factor
+
+The section above ends "do not act on the ratio alone ... this paragraph is a
+correlation with an arithmetic coincidence attached". It was the right
+instinct and the correlation was the right one; here is the derivation, on a
+SECOND cell and with every step in C's source.
+
+**The new cell: `diag 72x72 q40 p6`, frame 1, four superblocks.**
+C's `SVT_PD0CFG_OUT` against the port's `PD0DR`:
+
+| SB | org | C `fastlam` | port `fastlam` | C `mev` (= `me_8x8_cost_variance`) | port `mev` | C `dr` | port `dr` |
+|---|---|---|---|---|---|---|---|
+| 0 | (0,0)   | **5182** | 6633 | 0 | 0 | 1/0/1/1 | 1/0/1/1 |
+| 1 | (64,0)  | **5182** | 6633 | 0 | 0 | 1/0/0/0 | 1/0/0/0 |
+| 2 | (0,64)  | **5182** | 6633 | 0 | 0 | 1/0/0/0 | 1/0/0/0 |
+| 3 | (64,64) | **7773** | 6633 | 1341553 | 1341553 | 1/0/0/0 | 1/0/0/0 |
+
+`me_8x8_cost_variance` and all four `me_*_distortion` values match C exactly
+(divergence 2 stayed fixed), and every `dr` matches. Only the lambda differs —
+and 7773 / 5182 = 1.5000, the same ratio the nine-superblock cell showed.
+
+**This cell refutes the geometry reading.** The earlier note said the high
+lambda "lands on the whole x=128 COLUMN, i.e. every superblock whose cropped
+WIDTH is 40". Here the high one is (64,64), whose crop is 8x8, while (64,0) is
+8x64 and (0,64) is 64x8 and both take the LOW value. What actually separates
+them is `me_8x8_cost_variance`: zero on the three low ones, non-zero on the
+high one. Re-read against the earlier cell, that fits it too — its three
+high-lambda superblocks are exactly its three with non-zero ME distortion.
+
+**The arithmetic closes EXACTLY on this cell, both points, from the port's own
+flat value as the base.** `update_lambda` (rc_process.c:423-446) multiplies by
+a per-SB `factor` when `scs->stats_based_sb_lambda_modulation` is set:
+
+```text
+6633 * 100 >> 7 = 663300 >> 7 = 5182   (C's SB 0, 1, 2)
+6633 * 150 >> 7 = 994950 >> 7 = 7773   (C's SB 3)
+```
+
+So the port's flat 6633 IS C's `rdmult` immediately before that factor, and
+the port is effectively applying factor 128 (identity) where C applies 100 or
+150. The observed split is `update_lambda`'s FINAL `else` arm — not the `rtc`
+one and not the `delta_q_present` one:
+
+```c
+int qdiff = me_q_index - base_q_idx;
+if (qdiff < 0)      factor = (qdiff <= -4) ? 100 : 115;
+else if (qdiff > 0) factor = (qdiff <=  4) ? 135 : 150;
+```
+
+**And `me_q_index` is derivable from a quantity the port already computes
+exactly.** `svt_aom_get_me_qindex` (md_rate_estimation.c:1084) is
+`pcs->b64_me_qindex[sb_index]` at SB64, and
+`svt_av1_generate_b64_me_qindex_map` (rc_aq.c:656) fills that array from
+`me_8x8_cost_variance` alone:
+
+```text
+avg = mean(mev over b64s);  min = min(mev);  max = max(mev)
+diff = mev[b] - avg
+offset = diff < 0 ? -8 * diff / (min - avg)
+       : diff > 0 ?  8 * diff / (max - avg) : 0
+b64_me_qindex[b] = CLIP3(base - 35, base + 35, base + offset)
+```
+
+Run on this cell's four values (0, 0, 0, 1341553) with `base_q_idx = 160`:
+`avg = 335388`, `min = 0`, `max = 1341553`.
+SBs 0-2: `diff = -335388`, `offset = -8 * -335388 / -335388 = -8` -> qindex
+152, `qdiff = -8 <= -4` -> **factor 100**. SB 3: `diff = 1006165`,
+`offset = 8 * 1006165 / 1006165 = 8` -> qindex 168, `qdiff = 8 > 4` ->
+**factor 150**. Both factors predicted, both observed.
+
+**The sequence flag is ON, which settles the open question above.** The note
+asked whether `scs->stats_based_sb_lambda_modulation` is even set; it is
+`enc_mode <= (rtc ? ENC_M10 : ENC_M11)` (enc_handle.c:4375), so every preset
+this port reaches. The observed 100/150 split is proof from the other side.
+
+**Byte-inert on every still and every KEY frame BY CONSTRUCTION**, which is
+what makes this implementable without risking the 1100-cell envelope:
+`generate_b64_me_qindex_map` takes its `else` branch on an I_SLICE and writes
+`base_q_idx` into every entry, so `qdiff == 0`, `factor == 128`, and the
+multiply is the identity.
+
+**What to implement, in order:** `generate_b64_me_qindex_map` over
+`FrameMe::per_b64[..].me_8x8_cost_variance`; `get_me_qindex` (SB64 is an
+array read; the SB128 arm averages up to four b64 entries);
+`update_lambda`'s factor block, applied to `compute_fast_lambda` AND
+`compute_rd_mult` — C calls `update_lambda` from both, so `full_lambda_md`
+moves too, and that is the larger blast radius. `av1_lambda_assign_md`'s
+`LAMBDA_MOD_INTRA` scaling (md_process.c:730-746) is gated on
+`temporal_layer_index > 0` and is therefore inert on this flat GOP; port it
+with that noted rather than assuming it away.
+
+**The cell to verify against** is this one: `fastlam` must read 5182 / 5182 /
+5182 / 7773 on the four superblocks of `diag 72x72 q40 p6` frame 1, and the
+still envelope must not move at all.
+
+### A THIRD transcription of `update_lambda`, found while deriving the above
+
+`pd0::inter_full_lambda_8bit` (pd0.rs:368) carries its own copy of the
+`stats_based_sb_lambda_modulation` block — and it is the WRONG ARM:
+
+```rust
+let stats_factor: i64 = if qdiff_vs_base < 0 {
+    if qdiff_vs_base <= -8 { 90 } else { 115 }      // <- delta_q_present arm
+} else if qdiff_vs_base > 0 {
+    if qdiff_vs_base <= 8 { 135 } else { 150 }
+} else { 128 };
+```
+
+Those are the thresholds and factors of `update_lambda`'s
+`delta_q_present || r0_delta_qp_md` branch (±8, low factor **90**). The branch
+this port actually takes is the FINAL `else` — neither `rtc` nor
+`delta_q_present` — whose thresholds are **±4** and whose low factor is
+**100**. It is inert today only because every call site passes
+`qdiff_vs_base = 0`, i.e. factor 128; wiring a real per-SB `me_q_index`
+through it as written would apply the wrong rule at every superblock.
+
+`port_rc_process::update_lambda` has all four branches and is tier-1 gated
+through `compute_rd_mult` / `compute_fast_lambda`. That is the third duplicate
+transcription this campaign has found (`svt_mv_err_cost`, the MD lambda
+itself, this one), so the implementation above should make
+`inter_full_lambda_8bit` DELEGATE rather than gain a fourth copy of the
+factor table — and `pd0::inter_lambda_tests` already pins it to
+`compute_rd_mult` over a 160-point sweep, which is the test that has to be
+extended to cover a non-zero `me_q_index` when it does.

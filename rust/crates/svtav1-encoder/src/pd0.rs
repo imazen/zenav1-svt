@@ -3252,6 +3252,51 @@ pub fn pd0_pick_sb_partition_m6(
     eval.tree()
 }
 
+/// The two `Pd0Ctx` fields an INTER frame resolves differently from a key
+/// frame, in ONE place so the video-arm entry points cannot drift apart.
+///
+/// * **the MD lambda.** `full_sb_lambda_md[EB_8_BIT_MD]` is the FRAME's MD
+///   lambda (`av1_lambda_assign_md`, md_process.c:763), and the KF chain only
+///   on a key frame. MEASURED through C's own `SVT_PD0COST_OUT` on
+///   `gradient 64x64 q20 p6 frames=2`: 1407 on frame 0 and **24898** on
+///   frame 1, where the KF chain at that frame's qindex gives 25650.
+/// * **`min_sq_size`.** `set_blocks_to_be_tested` (enc_dec_process.c:1485)
+///   reads `depth_removal_ctrls`, which `set_depth_removal_level_controls`
+///   returns `enabled = 0` for on an I-slice — so a key frame is always the
+///   `disallow_4x4 ? 8 : 4` arm and only a non-key frame can raise it. Same
+///   cell: C's `SVT_PD0CFG_OUT` reports `dr=1/0/1/1` on frame 1
+///   (`disallow_below_32x32`), and C's PD0 evaluates exactly FIVE nodes there
+///   — one 64x64 and four 32x32 — against 80 when `min_sq` is left at 8.
+///
+/// The third inter-only fact, PD0's ONE candidate being an inter `NEWMV`
+/// rather than the DC intra prediction, is the `Pd0Ctx::inter` field itself
+/// (`product_prediction_fun_table_pd0[is_inter_mode(mode)]`,
+/// product_coding_loop.c:970).
+fn pd0_frame_lambda_and_min_sq(
+    qindex: u8,
+    lambda_weight: u32,
+    key_min_sq: usize,
+    inter: Option<&Pd0InterRef<'_>>,
+) -> (u64, usize) {
+    match inter {
+        None => (
+            kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64,
+            key_min_sq,
+        ),
+        Some(ir) => (
+            inter_full_lambda_8bit(
+                qindex,
+                ir.base_update_type,
+                ir.factor_update_type,
+                ir.alt_lambda_factors,
+                0,
+                lambda_weight,
+            ) as u64,
+            ir.min_sq,
+        ),
+    }
+}
+
 /// [`pd0_pick_sb_partition_m6`] returning the full evaluation record —
 /// the PD1 depth refinement's input (per-node tested/cost like C's
 /// `pc_tree` after PD0).
@@ -3319,12 +3364,22 @@ pub fn pd0_pick_sb_partition_m6_eval(
     // since `copy_neighbour_arrays_pd0` snapshots the live arrays rather than
     // clearing them. `None` = the ALLINTRA arm, byte-identical to before.
     video_recon: Option<(&[u8], usize)>,
+    // C `product_prediction_fun_table_pd0[1]` — PD0's INTER arm, `Some` on a
+    // NON-KEY frame only. It carries this superblock's `min_sq` and the
+    // frame's update types as well as the reference, because all three are
+    // things only a non-key frame has; see [`pd0_frame_lambda_and_min_sq`].
+    //
+    // `None` on every key frame and every allintra cell, which is what makes
+    // this parameter byte-neutral for the still envelope BY CONSTRUCTION
+    // rather than by measurement — the caller's value is `inter_md.map(..)`,
+    // and `inter_md` IS "this frame is a non-I slice with a DPB reference".
+    inter: Option<&Pd0InterRef<'_>>,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
         None => compute_b64_variance(src, stride, sb_x, sb_y),
     };
-    let lambda = kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64;
+    let (lambda, min_sq) = pd0_frame_lambda_and_min_sq(qindex, lambda_weight, min_sq, inter);
     // C `get_max_block_size_allintra` (enc_mode_config.c:7042): the
     // 64-variance cap fires ONLY at enc_mode >= M8 (base_var_th_cap is
     // (uint16_t)~0 = unlimited through M7, 7500 at M8+). A busy SB
@@ -3379,7 +3434,7 @@ pub fn pd0_pick_sb_partition_m6_eval(
         tile_top,
         tile_left,
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
-        inter: None,
+        inter,
         pending_recon: None,
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
@@ -3592,17 +3647,12 @@ pub fn pd0_pick_sb_partition_video_eval(
     // C's `svt_aom_full_cost_pd0` lambda is 18500 on frame 0 (`base_q_idx`
     // 67, the KF chain) and 241378 on frame 1 (`base_q_idx` 160, base 3.2 x
     // factor 150) — where the KF chain at qindex 160 would give 248207.
-    let lambda = match inter {
-        None => kf_full_lambda_8bit_lw(qindex, lambda_weight) as u64,
-        Some(ir) => inter_full_lambda_8bit(
-            qindex,
-            ir.base_update_type,
-            ir.factor_update_type,
-            ir.alt_lambda_factors,
-            0,
-            lambda_weight,
-        ) as u64,
-    };
+    // Shared with `pd0_pick_sb_partition_m6_eval`, which is the entry point
+    // the REFINEMENT path takes — a second copy of this resolution is exactly
+    // the duplicate-transcription trap docs/WORKING-ON-THIS.md §4 records.
+    // `8` is C's `disallow_4x4 ? 8 : 4` arm, i.e. `min_sq` with depth removal
+    // off, which is the only value a key frame can have.
+    let (lambda, inter_min_sq) = pd0_frame_lambda_and_min_sq(qindex, lambda_weight, 8, inter);
     let mut ctx = Pd0Ctx {
         src,
         stride,
@@ -3623,11 +3673,7 @@ pub fn pd0_pick_sb_partition_video_eval(
         // which is C's `disallow_4x4 ? 8 : 4` arm. On a NON-KEY frame
         // `depth_removal_ctrls` can raise it to 16, 32 or 64 per superblock —
         // see `Pd0InterRef::min_sq`.
-        min_sq: if ctl_nosplit {
-            64
-        } else {
-            inter.map_or(8, |ir| ir.min_sq)
-        },
+        min_sq: if ctl_nosplit { 64 } else { inter_min_sq },
 
         is_subres_safe: if sb_x + 64 <= aligned_w && sb_y + 64 <= aligned_h {
             255

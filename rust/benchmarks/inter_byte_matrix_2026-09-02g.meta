@@ -1,0 +1,66 @@
+# tools/inter_byte_matrix.sh — the INTER campaign's 96-cell frontier
+#
+# grid    {uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55}
+#         x {p6,p8}, frames=2 low-delay P, SVTAV1_FRAME_SHIFT=3
+# host    Apple M4 Pro, aarch64-apple-darwin
+# date    2026-09-02
+# after   docs/INTER-ENCODE-PLAN.md §1z22 (PD0's INTER arm never reached the
+#         REFINEMENT path — `pipeline.rs` called the ALLINTRA PD0 entry point
+#         on every inter frame at preset <= 6)
+#
+#   BOTH 89 / F1DIFF 6 / F0DIFF 1 / CRASH 0
+#   (was 67 / 28 / 1 / 0 in ...02f.tsv, the §1z21 state, on the same tree)
+#
+# The twenty-two cells that moved F1DIFF -> BOTH:
+#   diag      64x64  q20 p6      diag      64x64  q40 p6
+#   diag     128x128 q20 p6      diag     128x128 q40 p6
+#   diag      72x72  q20 p6
+#   gradient  64x64  q20 p6      gradient 128x128 q20 p6
+#   gradient  72x72  q55 p6      gradient  72x72  q55 p8
+#   screen    64x64  q20 p6      screen    64x64  q20 p8
+#   screen    64x64  q40 p8      screen    72x72  q20 p6
+#   screen    72x72  q20 p8      screen    72x72  q40 p6
+#   screen    72x72  q40 p8      screen    72x72  q55 p6
+#   screen    72x72  q55 p8      screen   128x128 q20 p6
+#   screen   128x128 q20 p8      screen   128x128 q40 p6
+#   screen   128x128 q40 p8
+#
+# THE JOIN THAT LOCALIZED IT, on `gradient 64x64 q20 p6` frame 1 — C's
+# `SVT_PD0COST_OUT` against the port's `SVTAV1_PD0DBG`:
+#
+#   node          C dist/ybits/cost              port BEFORE
+#   64x64         50800 / 157 / 6530459          2045904 / 2133852 / 368797737
+#   32x32 (0,0)   15682 / 776 / 2065456          191020 / 1034698 / 76307546
+#   lambda        24898                          25650  (the KEY-frame chain)
+#   nodes         5  (1x64, 4x32)                80  (1x64, 4x32, 15x16, 60x8)
+#
+# After the fix every one of the five matches C exactly, field for field.
+# `min_sq` was the port's own `PD0DR minsq=32`, which already AGREED with C's
+# `dr=1/0/1/1` — computed per superblock and then dropped by the entry point
+# the refinement path calls. A probe that agrees is not evidence the value is
+# used.
+#
+# THE RESIDUAL SIX, and five of them are the PARTIAL superblock:
+#   gradient  72x72  q20 p6   f1 28 B vs C's 29
+#   diag      72x72  q20 p8   f1 27 vs 29
+#   diag      72x72  q40 p6   f1 27 vs 28
+#   diag      72x72  q55 p6   f1 31 vs 29
+#   diag      72x72  q55 p8   f1 30 vs 29
+#   diag     128x128 q20 p8   f1 26 vs 25   <- the only 64-aligned one
+#
+# The open mechanism on those is now derived rather than suspected: C's
+# `fast_lambda_md` / `full_lambda_md` are PER-SUPERBLOCK through
+# `update_lambda`'s `stats_based_sb_lambda_modulation` factor, keyed on
+# `me_q_index`, which `svt_av1_generate_b64_me_qindex_map` derives from
+# `me_8x8_cost_variance` — a quantity the port already computes EXACTLY.
+# On `diag 72x72 q40 p6` frame 1 C reads 5182 / 5182 / 5182 / 7773 against the
+# port's flat 6633, and both are reproduced exactly from that 6633 by factors
+# 100 and 150. Full derivation, C sites and the verification cell:
+# benchmarks/pd0_depth_removal_join_2026-09-02.md.
+#
+# NOT A REGRESSION ANYWHERE, measured on this binary: identity_full_8bit
+# 1100/1100, regression_spotcheck 83/83, nextest --workspace 2483/2483,
+# video_key_matrix 58/60 (the same gradient-p0 / screenrep-p0 pair),
+# fctx_gate 96/96, inter_fh_gate PASS, inter_decode_gate 5/5,
+# inter_decode_census 96/96 decode, inter_completion_scan (SCAN_GATE=1)
+# 52 OK / 12 REFUSED / 0 CRASH PASS. F0DIFF is still exactly 1.

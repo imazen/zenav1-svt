@@ -2717,6 +2717,8 @@ mod tests {
                 None,
                 64,
                 None,
+                // These are KEY-frame scans (no reference exists in a unit test).
+                None,
             );
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
@@ -2752,6 +2754,8 @@ mod tests {
             0,
             None,
             64,
+            None,
+            // These are KEY-frame scans (no reference exists in a unit test).
             None,
         );
         assert!(!eval.split);
@@ -2790,6 +2794,8 @@ mod tests {
             0,
             None,
             64,
+            None,
+            // These are KEY-frame scans (no reference exists in a unit test).
             None,
         );
         assert!(eval.split);

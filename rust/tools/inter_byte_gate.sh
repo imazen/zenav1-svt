@@ -38,6 +38,18 @@
 # to a PD0 tree of 8x8s decided from an INTRA DC prediction of a translated
 # frame (`diag 64x64 q40 p8`: 35 B against C's 22).
 #
+# The TWENTY-TWO cells promoted on 2026-09-02 for §1z22 witness PD0's INTER
+# ARM on the REFINEMENT path. `pipeline.rs` routed every `refined` superblock
+# — which is every preset <= 6 on both arms — to `pd0_pick_sb_partition_m6_eval`,
+# the ALLINTRA entry point, so an inter frame's PD0 predicted a DC block from
+# its own recon, priced it with the KEY-frame lambda and descended to 8x8. On
+# `gradient 64x64 q20 p6` frame 1 that is 80 evaluated nodes against C's five,
+# and a 64x64 PART_N distortion of 2_045_904 against C's 50_800. With the
+# `inter` argument reverted to `None` each of the twenty-two goes back to
+# F1DIFF. Fourteen are `screen`, five `diag`, three `gradient`; nineteen are
+# p6-or-p8 pairs of the same geometry, which is the tell that the defect was
+# structural rather than content-keyed.
+#
 # The TWELVE cells promoted on 2026-09-02 for §1z21 witness the DLF VIDEO
 # ARM. `pipeline.rs` handed every non-key frame `LfLevels::default()`, so the
 # port signalled `loop_filter_level = 0` on every inter frame while C signalled
@@ -66,15 +78,15 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # "<content> <w> <h> <qp> <preset> <frames> <shift>"
 PASS_CELLS=(
-    # 67 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
+    # 89 of a 96-cell sweep ({uniform,gradient,diag,screen} x {16,64,72,128}
     # x {q20,q40,q55} x {p6,p8}, all frames=2 low-delay P) are byte-identical
-    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z21. The envelope this
+    # on BOTH frames as of docs/INTER-ENCODE-PLAN.md §1z22. The envelope this
     # campaign: 40 (§1z15) -> 49 (§1z17, MD's `is_inter_ctx` was reading an
     # INVERTED context table) -> 55 (§1z19, `av1_find_samples` ported so
     # `num_proj_ref` is real and the motion-mode ALPHABET matches C's) ->
-    # 67 (§1z21, the DLF video arm — the port signalled
-    # `loop_filter_level = 0` on EVERY inter frame because
-    # `svt_av1_pick_filter_level` was ported only in its key-frame corner).
+    # 67 (§1z21, the DLF video arm) -> 89 (§1z22, PD0's INTER arm on the
+    # REFINEMENT path — the port ran the ALLINTRA PD0 on every inter frame at
+    # preset <= 6, with a DC prediction, the KEY-frame lambda and `min_sq` 8).
     #
     # Listed in full, and regenerated wholesale rather than appended to: a
     # gate that samples its own frontier reports a smaller regression than it
@@ -110,6 +122,7 @@ PASS_CELLS=(
     "gradient 16 16 40 8 2 3"
     "gradient 16 16 55 6 2 3"
     "gradient 16 16 55 8 2 3"
+    "gradient 64 64 20 6 2 3"
     "gradient 64 64 20 8 2 3"
     "gradient 64 64 40 6 2 3"
     "gradient 64 64 40 8 2 3"
@@ -118,6 +131,9 @@ PASS_CELLS=(
     "gradient 72 72 20 8 2 3"
     "gradient 72 72 40 6 2 3"
     "gradient 72 72 40 8 2 3"
+    "gradient 72 72 55 6 2 3"
+    "gradient 72 72 55 8 2 3"
+    "gradient 128 128 20 6 2 3"
     "gradient 128 128 40 6 2 3"
     "gradient 128 128 40 8 2 3"
     "gradient 128 128 55 6 2 3"
@@ -128,11 +144,16 @@ PASS_CELLS=(
     "diag 16 16 40 8 2 3"
     "diag 16 16 55 6 2 3"
     "diag 16 16 55 8 2 3"
+    "diag 64 64 20 6 2 3"
     "diag 64 64 20 8 2 3"
+    "diag 64 64 40 6 2 3"
     "diag 64 64 40 8 2 3"
     "diag 64 64 55 6 2 3"
     "diag 64 64 55 8 2 3"
+    "diag 72 72 20 6 2 3"
     "diag 72 72 40 8 2 3"
+    "diag 128 128 20 6 2 3"
+    "diag 128 128 40 6 2 3"
     "diag 128 128 40 8 2 3"
     "diag 128 128 55 6 2 3"
     "diag 128 128 55 8 2 3"
@@ -142,9 +163,22 @@ PASS_CELLS=(
     "screen 16 16 40 8 2 3"
     "screen 16 16 55 6 2 3"
     "screen 16 16 55 8 2 3"
+    "screen 64 64 20 6 2 3"
+    "screen 64 64 20 8 2 3"
     "screen 64 64 40 6 2 3"
+    "screen 64 64 40 8 2 3"
     "screen 64 64 55 6 2 3"
     "screen 64 64 55 8 2 3"
+    "screen 72 72 20 6 2 3"
+    "screen 72 72 20 8 2 3"
+    "screen 72 72 40 6 2 3"
+    "screen 72 72 40 8 2 3"
+    "screen 72 72 55 6 2 3"
+    "screen 72 72 55 8 2 3"
+    "screen 128 128 20 6 2 3"
+    "screen 128 128 20 8 2 3"
+    "screen 128 128 40 6 2 3"
+    "screen 128 128 40 8 2 3"
     "screen 128 128 55 6 2 3"
     "screen 128 128 55 8 2 3"
 )
@@ -163,10 +197,19 @@ PASS_CELLS=(
 # "open ... known" through the whole defect. One per panicking content class
 # (gradient's six 72x72 cells never panicked).
 OPEN_CELLS=(
-    "gradient 64 64 20 6 2 3"   # tile 24 B vs C's 22
-    "diag 64 64 40 6 2 3"       # the widest p6 residual on this content
-    "diag 72 72 40 6 2 3"       # partial-SB, diag content; was a PANIC
-    "screen 72 72 40 6 2 3"     # partial-SB, screen content; was a PANIC
+    # SIX cells, all of them re-derived from `inter_byte_matrix.sh` rather
+    # than carried forward: three of the four this list held before §1z22
+    # (`gradient 64x64 q20 p6`, `diag 64x64 q40 p6`, `screen 72x72 q40 p6`)
+    # are now byte-identical and moved to PASS_CELLS.
+    #
+    # FIVE OF THE SIX ARE 72x72 — a PARTIAL superblock — which is the shape
+    # the whole residual now points at. The sixth is `diag 128x128 q20 p8`.
+    "gradient 72 72 20 6 2 3"   # frame 1 28 B vs C's 29
+    "diag 72 72 20 8 2 3"       # 27 vs 29; was a PANIC before §1z16
+    "diag 72 72 40 6 2 3"       # 27 vs 28
+    "diag 72 72 55 6 2 3"       # 31 vs 29
+    "diag 72 72 55 8 2 3"       # 30 vs 29
+    "diag 128 128 20 8 2 3"     # 26 vs 25 — the only 64-aligned one left
 )
 
 if [[ ${#PASS_CELLS[@]} -eq 0 ]]; then

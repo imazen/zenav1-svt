@@ -108,9 +108,19 @@ by the PICTURE's area instead of the superblock's, so all three
 `disallow_below_*` decisions and hence `min_sq` were wrong on every partial
 superblock — invisible while those cells panicked, and invisible to
 `me_8x8_cost_variance`, which matched C throughout because it is computed
-before the normalisation. Fixed; the still-open half of that join (C's
+before the normalisation. Fixed; the other half of that join (C's
 `fast_lambda_md` is per-SUPERBLOCK, the port's is per-frame) is in
-`benchmarks/pd0_depth_removal_join_2026-09-02.md`. **A crash is not only a
+`benchmarks/pd0_depth_removal_join_2026-09-02.md` and was **SOLVED 2026-09-02**
+on a second cell: the per-SB factor is `update_lambda`'s
+`stats_based_sb_lambda_modulation` block, keyed on `me_q_index`, which
+`svt_av1_generate_b64_me_qindex_map` derives from `me_8x8_cost_variance` —
+a quantity the port already computes EXACTLY. On `diag 72x72 q40 p6` frame 1
+the derivation predicts factors 100 / 100 / 100 / 150 and C's dump reads
+5182 / 5182 / 5182 / 7773 against the port's flat 6633, both points exact from
+the port's own value as the base. That file carries the arithmetic, the C
+sites and the cell to verify an implementation against; it also refutes the
+earlier geometry reading (it is not "cropped width 40", it is "non-zero ME
+cost variance"). **A crash is not only a
 crash: it is a region of the configuration space nothing can measure.**
 
 **And with the crashes gone that grid describes the BYTE frontier honestly for
@@ -969,22 +979,24 @@ pre-campaign homegrown path", which has been wrong since §1z; it then said
 36/59/1, which §1z¹⁵ superseded, then 55/40/1, which §1z²¹ superseded): on
 the campaign's 96-cell grid — `{uniform,gradient,diag,screen}` x
 `{16,64,72,128}` x `{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P —
-**67 cells are byte-identical on BOTH frames**, 28 have a byte-identical
+**89 cells are byte-identical on BOTH frames**, 6 have a byte-identical
 frame 0 and a differing frame 1, and 1 still differs on frame 0 —
-**67 / 28 / 1 as of §1z²¹**, and **all 96 streams DECODE**.
+**89 / 6 / 1 as of §1z²²**, and **all 96 streams DECODE**.
 `tools/inter_byte_matrix.sh` is that sweep and `tools/inter_byte_gate.sh`
-asserts the 67. `tools/inter_decode_census.sh` asks the OTHER question — does
+asserts the 89. `tools/inter_decode_census.sh` asks the OTHER question — does
 the stream decode — of all 96, because "byte-identical" and "decodable" are
 not the same question and 22 cells once answered them differently
 (§1z¹⁸/§1z¹⁹).
-**The residual 28 are ALL the tile** — §1z²⁰ split the then-40 into 20 that
-differ first in the frame HEADER (every one at `loop_filter_level[0]`) and 20
-that differ inside the tile; §1z²¹ closed the header half outright, so
-re-running that classification now gives **0 header / 28 tile**. What is left
-is the PARTITION tree: the port over-splits it, and on `gradient 64x64 q20 p6`
-C codes ONE 64x64 `PARTITION_NONE` `NEWMV` where the port codes four 32x32s
-with the SAME reference and the SAME MV. Read §1z²⁰ and §1z²¹ before opening
-it; §1z²⁰ also lists what no longer needs investigating.
+**§1z²⁰ split the then-40 in half and BOTH halves are closed.** The header
+half (20 cells, every one differing first at `loop_filter_level[0]`) was the
+DLF video arm, §1z²¹. The tile half was NOT a cost model: §1z²² found that
+`pipeline.rs` ran the ALLINTRA PD0 entry point on every inter frame at preset
+<= 6, so PD0 predicted DC intra, priced with the KEY-frame lambda and ignored
+the per-superblock `min_sq` its own probe had already computed — 80 evaluated
+nodes against C's 5 on `gradient 64x64 q20 p6`. **The residual SIX are five
+72x72 partial-superblock cells plus `diag 128x128 q20 p8`**, which is a much
+sharper target than "the tile". Read §1z²⁰ for what no longer needs
+investigating, then §1z²¹ and §1z²² for the two corrections they make to it.
 **And read §1z²¹'s three corrections to §1z²⁰ first** — the plan predicted the
 DLF split would fall on p6-wrong / p8-right, from an `is_not_last_layer` that
 is actually TRUE on a flat GOP (`pd_process.c:5560` ANDs in
@@ -992,7 +1004,7 @@ is actually TRUE on a flat GOP (`pd_process.c:5560` ANDs in
 pickers. A ladder read off the source without running it got the direction
 right and the arms backwards.
 The refusal stays
-because 67 of 96 is not "broadly": a stream the public API emits has to be right
+because 89 of 96 is not "broadly": a stream the public API emits has to be right
 on content the grid does not cover, not on the cells that happen to be closed.
 Full measurement: `docs/INTER-ENCODE-PLAN.md` §1q for the header, §1z''..§1z¹⁶
 for the tile.
@@ -1014,6 +1026,17 @@ evidence about the TREE first and about the handoff second.** Run
 `jj log -r '@- | main@origin'` before the first measurement — it takes a
 second, and re-running a 96-cell sweep plus a 1100-cell identity sweep does
 not.
+
+**A PROBE THAT AGREES IS NOT EVIDENCE THAT THE VALUE IS USED** (§1z²²,
+2026-09-02, worth TWENTY-TWO cells). `pipeline.rs`'s `PD0DR` line — added for
+exactly this join — printed `minsq=32` for an inter superblock, and C's
+`SVT_PD0CFG_OUT` printed `dr=1/0/1/1` for the same one: field for field
+agreement, on a value the entry point the refinement path actually calls never
+received. The port's PD0 evaluated EIGHTY nodes there where C evaluates five,
+with a DC intra prediction and the KEY-frame lambda, on an inter frame. Two
+chunks read that `PD0DR` line as confirmation. **Join the probe to the
+DECISION, not to C's probe**: the cheap version here was counting PD0 nodes
+per frame in the port's own dump (80 vs 5) which needs no oracle at all.
 
 **THE DLF VIDEO ARM WAS ONE `else` ARM, AND IT WAS WORTH TWELVE CELLS**
 (§1z²¹, 2026-09-02). `pipeline.rs` derived `dlf_level` through the ported

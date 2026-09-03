@@ -1610,16 +1610,16 @@ impl EncodePipeline {
         if !is_key && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "inter frames are not implemented for the public API — not because the machinery \
-                 is missing, but because its ENVELOPE is 67 of 96 cells. CDF continuation, the \
+                 is missing, but because its ENVELOPE is 89 of 96 cells. CDF continuation, the \
                  inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame \
                  stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, \
                  inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid \
                  ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, \
-                 frames=2 low-delay P) 67 cells are byte-identical to C on BOTH frames, 28 \
+                 frames=2 low-delay P) 89 cells are byte-identical to C on BOTH frames, 6 \
                  differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be \
                  right on the closed cells and silently wrong elsewhere, which is exactly the \
                  outcome docs/WORKING-ON-THIS.md section 6 refuses. See \
-                 docs/INTER-ENCODE-PLAN.md section 1z^21. This encoder is still-image only: \
+                 docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: \
                  encode a single key frame",
             )));
         }
@@ -11422,6 +11422,28 @@ fn encode_tile_rows(
                                     max_tx_size,
                                     // C `pd0_use_src_samples` (video arm: recon).
                                     pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                    // PD0's INTER arm on the REFINEMENT path.
+                                    //
+                                    // MEASURED 2026-09-02 on `gradient 64x64
+                                    // q20 p6` frame 1, against C's own
+                                    // `SVT_PD0COST_OUT` + `SVT_PICKPART_OUT`:
+                                    // without it this call ran the ALLINTRA
+                                    // PD0 on an inter frame — a DC prediction
+                                    // (64x64 dist 2_045_904 against C's
+                                    // 50_800), the KEY-frame lambda (25650
+                                    // against C's 24898), and `min_sq` 8, so
+                                    // it evaluated EIGHTY nodes (1x64, 4x32,
+                                    // 15x16, 60x8) where C evaluates FIVE.
+                                    // C's own `dr=1/0/1/1` and the port's
+                                    // `PD0DR ... minsq=32` already AGREED on
+                                    // that superblock; the value simply never
+                                    // reached this entry point.
+                                    //
+                                    // `None` on a key frame and on every
+                                    // allintra cell (see `pd0_inter_base`),
+                                    // so the still envelope is untouched by
+                                    // construction.
+                                    pd0_inter.as_ref(),
                                 );
                                 let cq = c_quant.as_ref().unwrap();
                                 // 8-BIT lambda even at bd10 — deliberate, not an
@@ -11498,6 +11520,13 @@ fn encode_tile_rows(
                                                 // C `pd0_use_src_samples` (video arm: recon).
                                                 pd0_video_recon
                                                     .then_some((&tile_frame_recon[..], w)),
+                                                // Same frame and same arm as
+                                                // the sibling eval this fold
+                                                // summarises — a fold taken
+                                                // from a DIFFERENT PD0 model
+                                                // than the scan it caps would
+                                                // be worse than no fold.
+                                                pd0_inter.as_ref(),
                                             )
                                             .max_min_picked(&mut mx, &mut mn);
                                         }
@@ -11798,6 +11827,18 @@ fn encode_tile_rows(
                                             max_tx_size,
                                             // C `pd0_use_src_samples` (video arm: recon).
                                             pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                            // The ALLINTRA arm of the
+                                            // non-refined branch: its VIDEO
+                                            // sibling above is
+                                            // `pd0_pick_sb_partition_video_eval`
+                                            // and already carries the inter
+                                            // context. `pd0_inter` is `None`
+                                            // on every frame that reaches
+                                            // here, so this is the same value
+                                            // written explicitly rather than
+                                            // a second `None` that hides an
+                                            // arm decision.
+                                            pd0_inter.as_ref(),
                                         )
                                     };
                                 #[cfg(feature = "std")]
