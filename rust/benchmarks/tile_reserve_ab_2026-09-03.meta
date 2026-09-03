@@ -1,0 +1,23 @@
+# Tile recon/tree buffer reservation — CPU paired A/B. The answer is NULL.
+#
+# host   : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tool   : tools/perf_ab.sh, 25 interleaved paired rounds per cell, order
+#          randomised per round, no -C target-cpu=native
+# base   : the PA/ME pooling commit          cand: + the tile reservation
+# arm    : INTER (SVTAV1_VIDEO=1 SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3
+#          SVTAV1_INTER_EXPERIMENTAL=1), gradient qp 40
+# sizes  : 192 / 384 / 768 — deliberately NOT powers of two (see the memory
+#          record: at a power-of-two tile area the reservation is a no-op by
+#          construction)
+#
+# RESULT: 0.998x - 1.000x, every p25/p75 span crossing 1.0. NULL.
+# 43,630 `RawVecInner::finish_grow` calls sound like a lot and are not: they
+# are ~13 reallocations of one large buffer plus a long tail of small ones,
+# against a frame that spends tens of milliseconds in mode decision.
+#
+# TRAP HIT WHILE MEASURING IT, and it is the same one
+# benchmarks/mem_heaptrack_2026-09-03.meta records: the 768x768 cells print
+# `measured ... ident=Y` and contribute ZERO rows, because the encoder REFUSES
+# that inter cell and `perf_ab.sh`'s sample extraction silently drops an empty
+# ENCODE_NS. `ident=Y` there means "two empty files compared equal". Read the
+# `n` column of the .tsv, not the `measured` lines of the log.

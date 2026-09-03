@@ -10017,7 +10017,23 @@ fn encode_tile_rows(
         let (tile_sb_col_start, tile_sb_col_end) =
             tile_grid.col_span(tile_idx % tile_grid.tile_cols);
         let tile_sb_cols = tile_sb_col_end - tile_sb_col_start;
-        let mut tile_recon = Vec::new();
+        // The tile's IN-FRAME luma pixel count, which is EXACTLY what the
+        // per-SB `extend_from_slice` below appends in total (each superblock
+        // contributes `sb_cur_h` rows of `sb_cur_w`, and the SB extents
+        // partition the tile).
+        //
+        // Reserving it is not cosmetic. `Vec::new()` + `extend_from_slice`
+        // doubles: a 4 MP tile reaches 4.19 MB through ~13 reallocations, each
+        // copying everything written so far, and holds up to 2x the payload at
+        // the moment it grows past the last power of two. `RawVecInner::
+        // finish_grow` is 4.53 M over 43,630 calls in
+        // `benchmarks/mem_heaptrack_2026-09-03.txt`, and 4.19 M of it is this
+        // collect. Capacity does not affect contents, so this is byte-neutral
+        // by construction.
+        let tile_luma_px = ((tile_sb_row_end - tile_sb_row_start) * sb_size)
+            .min(h.saturating_sub(tile_sb_row_start * sb_size))
+            * (tile_sb_cols * sb_size).min(w.saturating_sub(tile_sb_col_start * sb_size));
+        let mut tile_recon: Vec<u8> = svtav1_types::try_with_capacity!(tile_luma_px)?;
         // PD0_LVL_1 rate tables (presets 6..8), built once per tile on
         // first use — default CDFs at the frame qindex (C md_frame_context).
         let mut m6_pd0_tables: Option<crate::pd0::M6Pd0Tables> = None;
@@ -10533,7 +10549,11 @@ fn encode_tile_rows(
         let mut sim_v = svtav1_types::try_vec![128u8; if funnel_chain { ext_cbuf } else { 0 }]?;
         let mut sim_prev_sb_row = usize::MAX;
         let mut fun_rates = fun_rates;
-        let mut tile_trees: Vec<crate::partition::PartitionTree> = Vec::new();
+        // One tree per superblock of the tile — the exact final length, for
+        // the same reason `tile_recon` is reserved above. A `PartitionTree` is
+        // a large value, so each doubling memcpy's the whole array.
+        let mut tile_trees: Vec<crate::partition::PartitionTree> =
+            svtav1_types::try_with_capacity!((tile_sb_row_end - tile_sb_row_start) * tile_sb_cols)?;
         let mut tile_frame_recon = svtav1_types::try_vec![128u8; ext_w * ext_h]?;
         // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas
         // so the per-block mode decision (evaluate_leaf MDS0) is made on the
@@ -12135,6 +12155,22 @@ fn encode_tile_rows(
         } else {
             None
         };
+        // The reservation above must be EXACT, or it is a different bug from
+        // the one it fixes: too small and the doubling is back, too large and
+        // the slack it was meant to remove is still there. `sb_cur_w` /
+        // `sb_cur_h` are `sb_size.min(w - sb_x0)` / `sb_size.min(h - sb_y0)`
+        // and the SB extents partition the tile, so the product below is the
+        // sum of their areas.
+        debug_assert_eq!(
+            tile_recon.len(),
+            tile_luma_px,
+            "tile_recon reservation is not the final length"
+        );
+        debug_assert_eq!(
+            tile_recon.len(),
+            tile_recon.capacity(),
+            "tile_recon grew past its reservation"
+        );
         Ok((tile_recon, tile_trees, tile_canvas10))
     };
 

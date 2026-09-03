@@ -1,0 +1,74 @@
+PEAK HEAP ACROSS TWO ALLOCATION-SHAPE CHANGES — and one of them is a NULL.
+
+date:   2026-09-03
+host:   r7900x — AMD Ryzen 7900X, x86_64-unknown-linux-gnu. NOT the aarch64 box
+        the RSS records use. HEAP, not RSS — a different quantity.
+        The box was concurrently running a zenfleet sweep (~15 of 24 threads);
+        that affects wall clock, which is NOT what this file reports, and not
+        heap bytes, which are load-independent.
+tool:   heaptrack + heaptrack_print ("peak heap memory consumption").
+cell:   gradient <size>x<size> qp 40 preset 13, 8-bit 4:2:0, ONE encode per
+        cell (not a median). Sizes 1280 / 1536 / 1920 / 2048.
+arms:   still    = perf_encode default (avif still config), 1 frame
+        videokey = SVTAV1_VIDEO=1, 1 frame
+        inter    = SVTAV1_VIDEO=1 SVTAV1_FRAMES=2 SVTAV1_FRAME_SHIFT=3
+        Every cell's `.obu` was checked non-empty before its peak was read
+        (mem_heaptrack_2026-09-03.meta's refusal trap).
+trees:  BASE  = de4bfaf7 (main, the tx_class monomorphisation)
+        ARENA = BASE + the PA/ME pooling commit
+        RESRV = ARENA + the tile-buffer reservation commit
+
+======================= PEAK HEAP, MiB =======================
+
+  size  arm        BASE      ARENA     RESRV     RESRV/BASE
+  1280  still      32.26     32.26     32.26     1.000
+  1280  videokey   38.66     38.66     38.66     1.000
+  1280  inter      56.38     56.38     55.89     0.991
+  1536  still      45.95     45.95     45.95     1.000
+  1536  videokey   54.71     54.71     54.71     1.000
+  1536  inter      81.54     81.54     79.57     0.976
+  1920  still      71.17     71.17     71.17     1.000
+  1920  videokey   84.10     84.10     84.10     1.000
+  1920  inter     123.56    123.56    123.01     0.996
+  2048  still      80.79     80.79     80.79     1.000
+  2048  videokey   95.68     95.68     95.68     1.000
+  2048  inter     139.61    139.61    139.61     1.000
+
+======================= WHAT THIS SAYS =======================
+
+1. **THE PA/ME POOLING IS A NULL — twelve cells, identical to the digit.**
+   Measured, not argued. The reason is structural and is now recorded in the
+   commit: the recycle first hands back an allocation on FRAME 2, and
+   `encode_frame_impl` REFUSES frame 2, so the code cannot execute through the
+   public encoder at all; and even once it can, at a 2-frame peak BOTH frames'
+   pyramids and result sets are simultaneously live, so recycling removes
+   allocation CHURN and not live bytes.
+
+   This corrects the prescription in `mem_heaptrack_2026-09-03.meta` ("one
+   arena allocated at pipeline construction that the per-SB buffers are
+   `&mut [T]` slices INTO"). That shape is right for the CHURN — 3,072 mallocs
+   per frame at `MeB64Output::new` alone — and cannot by itself close the
+   memory gap, because the gap is a LIFETIME property: the port holds the
+   whole frame's decision tree, with a coefficient `Vec` per block, until the
+   entropy walk, where C packs a superblock and releases its buffers.
+
+2. **The tile-buffer reservation moves the INTER arm only, by 0.4-2.4 %, and
+   its size is a function of how far the tile's area sits above a power of
+   two.** 2048x2048 is exactly 4 MiB, so a doubling `Vec` lands on its payload
+   with zero slack and the change is worth exactly nothing there; 1536x1536 is
+   2.25 MiB, so the doubling reserves 4 MiB and 1.75 MiB is slack. **This is
+   why the size sweep exists: a single 2048 cell would have reported the
+   change as NULL, and a single 1536 cell would have reported 2.4 % as if it
+   generalised.** Neither is the truth; the truth is "between 0 and 2.4 %,
+   keyed on the binary expansion of the tile area".
+
+3. The still and videokey arms do not move at all, on either change. The
+   growth this reserves away is live at the INTER arm's peak and not at
+   theirs.
+
+======================= NOT ESTABLISHED =======================
+
+  * Any RSS number. This is heap.
+  * Any aarch64 number. Different allocator, different page size.
+  * Repeat variance: one encode per cell.
+  * Any preset other than 13, any content other than gradient, any qp but 40.
