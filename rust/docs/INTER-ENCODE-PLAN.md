@@ -5843,12 +5843,30 @@ exactly one node. C's `SVT_CINTER_OUT` codes FIVE inter blocks and the port's
 | `mi=(16,16)` bsize 3, `part=0`, `mode=13`, `mv=(0,-24)` | same |
 
 `mi` is (row, col) in 4-px units, so `mi=(0,16)` is pixel column 64 — the
-8-px-wide RIGHT EDGE of a 72-wide frame. C splits that node with
-`PARTITION_VERT` and codes both halves; the port codes one block. Every mode
-and MV either side agrees on the four shared blocks. So the remaining
-mechanism on the 72x72 cells is an EDGE-SHAPE decision at a one-false
-boundary node, not a depth-cost one — and 28 B vs 27 B is exactly the one
-missing block.
+8-px-wide RIGHT EDGE of a 72-wide frame, and `mi=(8,16)` is the same column
+32 rows down. Read with the port's own `PTREE` lines the shapes say it
+precisely:
+
+* the port codes ONE block there, `bsize=10` = `BLOCK_32X64` with `part=0` —
+  the in-frame half of a **64x64** node taken as `PARTITION_VERT`;
+* C codes TWO, both `bsize=7` = `BLOCK_16X32` with `part=2` — the in-frame
+  halves of the two in-frame **32x32** quadrants, each taken as
+  `PARTITION_VERT`.
+
+Only 8 pixels are in frame either way, so both trees are legal; what differs
+is the DEPTH at which the edge shape is taken. **The port stops the edge
+descent one depth too early**, and 28 B vs 27 B is exactly the one extra
+block. Every mode and every MV agrees on the four shared blocks.
+
+**That joins the two open items rather than adding a third, and the direction
+of the per-SB lambda predicts it.** `pick_q`'s one-false arm prices the edge
+SHAPE and compares it against SPLIT, so this is a cost comparison at a
+boundary node — and C's lambda on that superblock is **5182 against the port's
+6633** (§1z²³'s table; `mi=(0,16)` is SB 1). A LOWER lambda weights distortion
+more heavily against rate and therefore splits MORE, which is exactly the
+direction C goes. That is a prediction, not a measurement: the way to test it
+is to wire §1z²³ and re-read this tree, and if the shapes still differ the
+edge-shape cost model is a separate defect after all.
 
 #### Gates
 
