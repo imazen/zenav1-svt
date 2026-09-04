@@ -524,6 +524,39 @@ pub struct FunnelCfg {
     pub nic_num: (u64, u64, u64),
     /// `mds1_cand_base_th_intra` (M6/M7: 1200; M8: 1).
     pub mds1_cand_base_th: u64,
+    /// `mds1_cand_base_th_inter` — the post-MDS0 candidate threshold C
+    /// applies to the INTER classes (1 and 2), where
+    /// [`FunnelCfg::mds1_cand_base_th`] is the `_intra` half applied to
+    /// classes 0/3/4. C picks between them per class with `is_intra_class`
+    /// (`product_coding_loop.c:7841`). Equal at nic levels 6..8; 1200 vs
+    /// 500/300 at levels 2..7, so the two halves are NOT interchangeable
+    /// once an inter class is live.
+    pub mds1_cand_base_th_inter: u64,
+    /// `nic_ctrls.pruning_ctrls.mds1_class_th` — the post-MDS0 CLASS kill.
+    /// `u64::MAX` is C's `(uint64_t)~0` disabled sentinel.
+    ///
+    /// **Forced to the sentinel on an I_SLICE** (`post_mds0_nic_pruning`,
+    /// `product_coding_loop.c:7826`), which is why the allintra funnel never
+    /// needed it. On an inter frame it is live and it KILLS whole classes:
+    /// measured on `diag 72x72 q55 p6` frame 1 at block (64,32) 16x32, C
+    /// injects 29 intra candidates (`md_stage_0_count[0]`) and admits ZERO to
+    /// MDS1 — this threshold is what removes them.
+    pub mds1_class_th: u64,
+    /// `nic_ctrls.pruning_ctrls.mds1_band_cnt`. Read only when
+    /// [`FunnelCfg::mds1_class_th`] is live; C leaves it unassigned at the
+    /// nic levels whose `mds1_class_th` is the disabled sentinel.
+    pub mds1_band_cnt: u8,
+    /// `nic_ctrls.pruning_ctrls.mds2_class_th` — the post-MDS1 CLASS kill,
+    /// also forced to the sentinel on an I_SLICE (`:7897`).
+    ///
+    /// This is the threshold that drops C's NEWMV class at the block the
+    /// three residual F1DIFF cells diverge on: at nic level 8 the base is 10,
+    /// q-scaled to 9 at CLI qp 55, and class 2's best MDS1 cost deviates 33 %
+    /// from the MDS1 global best, so C admits NOTHING from that class to
+    /// MDS3 while the port carried the candidate through and coded it.
+    pub mds2_class_th: u64,
+    /// `nic_ctrls.pruning_ctrls.mds2_band_cnt`.
+    pub mds2_band_cnt: u8,
     /// `mds1_cand_th_rank_factor` (M5..M8: 3; M4 nic case 5: 0). When 0
     /// the mds1 divisor is 1 — no per-rank tightening (C ternary,
     /// product_coding_loop.c:8095).
@@ -761,6 +794,13 @@ impl FunnelCfg {
             prune_best_mode: false,
             nic_num: (6, 6, 6),
             mds1_cand_base_th: 1200,
+            // nic_level 6 (case 6, enc_mode_config.c:4700-4716) — the CLASS
+            // thresholds, live only on a non-I slice.
+            mds1_cand_base_th_inter: 300,
+            mds1_class_th: 200,
+            mds1_band_cnt: 16,
+            mds2_class_th: 10,
+            mds2_band_cnt: 10,
             mds1_rank_factor: 3,
             mds2_cand_base_th: 15,
             mds2_rank_factor: 1,
@@ -863,9 +903,14 @@ impl FunnelCfg {
                 mds2_rank_factor: 0,
                 mds2_rel_dev_th: 0,
                 mds3_cand_base_th: 50,
-                // nic_level 1 (case 1, enc_mode_config.c:4561-4562).
+                // nic_level 1 (case 1, enc_mode_config.c:4549-4576).
                 mds3_class_th: 25,
                 mds3_band_cnt: 4,
+                mds1_cand_base_th_inter: u64::MAX,
+                mds1_class_th: u64::MAX,
+                mds1_band_cnt: 0,
+                mds2_class_th: 25,
+                mds2_band_cnt: 4,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
                 txt_satd_th: 20,
@@ -909,9 +954,14 @@ impl FunnelCfg {
                 ind_uv_mds3: false,
                 ind_uv_independent: Some(8),
                 ind_uv_last_mds1: true,
-                // nic_level 3 (case 3, enc_mode_config.c:4621-4622).
+                // nic_level 3 (case 3, enc_mode_config.c:4610-4638).
                 mds3_class_th: 25,
                 mds3_band_cnt: 8,
+                mds1_cand_base_th_inter: 500,
+                mds1_class_th: u64::MAX,
+                mds1_band_cnt: 0,
+                mds2_class_th: 25,
+                mds2_band_cnt: 4,
                 ..m6_tail
             },
             // M2/M3 (still/420): the M5DBG CFG enc_mode=2/3 rows
@@ -940,9 +990,14 @@ impl FunnelCfg {
                 mds2_rank_factor: 0,
                 mds2_rel_dev_th: 0,
                 mds3_cand_base_th: 25,
-                // nic_level 3 (case 3, enc_mode_config.c:4621-4622).
+                // nic_level 3 (case 3, enc_mode_config.c:4610-4638).
                 mds3_class_th: 25,
                 mds3_band_cnt: 8,
+                mds1_cand_base_th_inter: 500,
+                mds1_class_th: u64::MAX,
+                mds1_band_cnt: 0,
+                mds2_class_th: 25,
+                mds2_band_cnt: 4,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
                 txt_satd_th: 20,
@@ -960,9 +1015,14 @@ impl FunnelCfg {
             3 => FunnelCfg {
                 mode_end: 12,
                 angular_level: 1,
-                // nic_level 5 (case 5, enc_mode_config.c:4681): class_th 15,
+                // nic_level 5 (case 5, enc_mode_config.c:4670-4696): class_th 15,
                 // band 16 (== m6_tail).
                 mds3_class_th: 15,
+                mds1_cand_base_th_inter: 300,
+                mds1_class_th: 300,
+                mds1_band_cnt: 4,
+                mds2_class_th: 25,
+                mds2_band_cnt: 10,
                 mds1_rank_factor: 0,
                 mds2_cand_base_th: 20,
                 mds2_rank_factor: 0,
@@ -1006,9 +1066,14 @@ impl FunnelCfg {
             4 => FunnelCfg {
                 mode_end: 12,
                 angular_level: 1,
-                // nic_level 5 (case 5, enc_mode_config.c:4681): class_th 15,
+                // nic_level 5 (case 5, enc_mode_config.c:4670-4696): class_th 15,
                 // band 16 (== m6_tail).
                 mds3_class_th: 15,
+                mds1_cand_base_th_inter: 300,
+                mds1_class_th: 300,
+                mds1_band_cnt: 4,
+                mds2_class_th: 25,
+                mds2_band_cnt: 10,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
                 txt_satd_th: 15,
@@ -1079,6 +1144,15 @@ impl FunnelCfg {
                 mds1_cand_base_th: 1,
                 mds2_cand_base_th: 1,
                 mds3_cand_base_th: 1,
+                // nic_level 11 (case 11, enc_mode_config.c:4858-4884). NOTE
+                // this arm keeps m6_tail's `mds3_class_th`; see
+                // `nic_arm::allintra_flattening_matches_the_ladder` for the
+                // one row that is knowingly stale and why.
+                mds1_cand_base_th_inter: 1,
+                mds1_class_th: 75,
+                mds1_band_cnt: 16,
+                mds2_class_th: 0,
+                mds2_band_cnt: 10,
                 real_coeff_ctx: false,
                 txs_on: false,
                 coeff_rate_est_lvl: 2,
@@ -1101,6 +1175,15 @@ impl FunnelCfg {
                 mds1_cand_base_th: 1,
                 mds2_cand_base_th: 1,
                 mds3_cand_base_th: 1,
+                // nic_level 11 (case 11, enc_mode_config.c:4858-4884). NOTE
+                // this arm keeps m6_tail's `mds3_class_th`; see
+                // `nic_arm::allintra_flattening_matches_the_ladder` for the
+                // one row that is knowingly stale and why.
+                mds1_cand_base_th_inter: 1,
+                mds1_class_th: 75,
+                mds1_band_cnt: 16,
+                mds2_class_th: 0,
+                mds2_band_cnt: 10,
                 real_coeff_ctx: false,
                 // eff-M9: pcs->txs_level is 0 at the picture level, but the
                 // FTR_COUPLE_VLPD0_TXS_PER_SB coupling bumps it per-SB to

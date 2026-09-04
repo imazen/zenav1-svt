@@ -33,11 +33,27 @@
 //! `enable_skipping_mds1` is the one row field with no [`FunnelCfg`] home; it
 //! is carried as a `PORT-NOTE(unverified)` on [`nic_ctrls`].
 //!
-//! `mds1_class_th` / `mds2_class_th` have no home either, and that one IS
-//! settled: `post_mds1_nic_pruning` / `post_mds2_nic_pruning` force both to the
-//! `(uint64_t)~0` sentinel on an I_SLICE (`product_coding_loop.c:7826` /
-//! `:7897`), and every picture this port encodes is an I-slice.
-//! `merge_inter_cands_mult` is inter-only.
+//! `mds1_class_th` / `mds2_class_th` and the INTER half of the post-MDS0
+//! candidate threshold (`mds1_cand_base_th_inter`) ARE carried, since
+//! 2026-09-03. They were previously omitted with the reasoning that
+//! `post_mds0_nic_pruning` / `post_mds1_nic_pruning` force both class
+//! thresholds to the `(uint64_t)~0` sentinel on an I_SLICE
+//! (`product_coding_loop.c:7826` / `:7897`) "and every picture this port
+//! encodes is an I-slice". **That premise stopped holding when the port
+//! started encoding inter frames.** On a P/B slice both are live, and they do
+//! not trim a class — they DELETE it. Measured on `diag 72x72 q55 p6` frame 1,
+//! block (64,32) 16x32, C at nic level 8 (`SVT_FULLCOST_OUT`, which now dumps
+//! the per-class stage counts):
+//!
+//! ```text
+//! n0 = 29,6,3,0,0   candidates injected per class
+//! n1 =  0,3,3,0,0   after post_mds0  -> mds1_class_th KILLED all 29 intra
+//! n2 =  0,1,0,0,0   after post_mds1  -> mds2_class_th KILLED the NEWMV class
+//! n3 =  0,1,0,0,0   MDS3 evaluates ONE candidate
+//! ```
+//!
+//! `merge_inter_cands_mult` is inter-only and stays uncarried
+//! (`leaf_funnel::nic::lane_of` records what its absence costs).
 //!
 //! # Evidence
 //!
@@ -80,6 +96,11 @@ const NICS_SCAL_NUM: [(u64, u64, u64); 16] = [
 pub(crate) struct NicRow {
     pub(crate) nic_num: (u64, u64, u64),
     pub(crate) mds1_cand_base_th: u64,
+    pub(crate) mds1_cand_base_th_inter: u64,
+    pub(crate) mds1_class_th: u64,
+    pub(crate) mds1_band_cnt: u8,
+    pub(crate) mds2_class_th: u64,
+    pub(crate) mds2_band_cnt: u8,
     pub(crate) mds1_rank_factor: u64,
     pub(crate) mds2_cand_base_th: u64,
     pub(crate) mds2_rank_factor: u64,
@@ -122,6 +143,7 @@ pub(crate) fn nic_level(arm: ScArm, enc_mode: u8, is_base: bool) -> u8 {
 pub(crate) fn nic_ctrls(level: u8) -> NicRow {
     // (scaling, mds1_cand, mds1_rank, mds2_cand, mds2_rank, mds2_dev,
     //  mds3_cand, mds3_class, mds3_band, i_mds3_mult)
+    #[allow(clippy::type_complexity)]
     let (sc, m1c, m1r, m2c, m2r, m2d, m3c, m3cl, m3b, imult): (
         usize,
         u64,
@@ -148,9 +170,36 @@ pub(crate) fn nic_ctrls(level: u8) -> NicRow {
         11 => (15, 1, 3, 1, 1, 5, 1, 0, 16, 50),
         _ => panic!("nic level {level} outside C's switch"),
     };
+    // The INTER half of the post-MDS0 candidate threshold
+    // (`mds1_cand_base_th_inter`) and the two CLASS thresholds, all of which
+    // are dead on an I_SLICE and live on every other frame.
+    //
+    // `mds1_band_cnt` is UNASSIGNED by C at levels 0..3 and `mds2_band_cnt`
+    // at level 0 — the struct keeps whatever the previous picture left there.
+    // Both are 0 here, and reading either would be a defect on both sides:
+    // C only reaches a band count inside the `if (dev)` arm of a class prune
+    // whose threshold is not the disabled sentinel, and at exactly those
+    // levels the paired class threshold IS the sentinel.
+    let (m1ce, m1cl, m1b, m2cl, m2b): (u64, u64, u8, u64, u8) = match level {
+        0 => (u64::MAX, u64::MAX, 0, u64::MAX, 0),
+        1 => (u64::MAX, u64::MAX, 0, 25, 4),
+        2 | 3 => (500, u64::MAX, 0, 25, 4),
+        4 => (300, 500, 3, 25, 8),
+        5 => (300, 300, 4, 25, 10),
+        6 | 7 | 8 => (300, 200, 16, 10, 10),
+        9 => (100, 200, 16, 10, 10),
+        10 => (1, 150, 16, 5, 10),
+        11 => (1, 75, 16, 0, 10),
+        _ => unreachable!("guarded by the switch above"),
+    };
     NicRow {
         nic_num: NICS_SCAL_NUM[sc],
         mds1_cand_base_th: m1c,
+        mds1_cand_base_th_inter: m1ce,
+        mds1_class_th: m1cl,
+        mds1_band_cnt: m1b,
+        mds2_class_th: m2cl,
+        mds2_band_cnt: m2b,
         mds1_rank_factor: m1r,
         mds2_cand_base_th: m2c,
         mds2_rank_factor: m2r,
@@ -168,6 +217,11 @@ pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_base: bool
     let r = nic_ctrls(nic_level(arm, enc_mode, is_base));
     cfg.nic_num = r.nic_num;
     cfg.mds1_cand_base_th = r.mds1_cand_base_th;
+    cfg.mds1_cand_base_th_inter = r.mds1_cand_base_th_inter;
+    cfg.mds1_class_th = r.mds1_class_th;
+    cfg.mds1_band_cnt = r.mds1_band_cnt;
+    cfg.mds2_class_th = r.mds2_class_th;
+    cfg.mds2_band_cnt = r.mds2_band_cnt;
     cfg.mds1_rank_factor = r.mds1_rank_factor;
     cfg.mds2_cand_base_th = r.mds2_cand_base_th;
     cfg.mds2_rank_factor = r.mds2_rank_factor;
@@ -204,18 +258,28 @@ mod tests {
             let mut walked = baked;
             let eff = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);
             apply(&mut walked, ScArm::Allintra, eff, true);
+            // A NAMED list rather than a tuple: it names the offender on a
+            // failure, and a tuple wide enough for every NIC field is past
+            // the arity `Debug`/`PartialEq` are implemented at.
             let fields = |c: &FunnelCfg| {
-                (
-                    c.nic_num,
-                    c.mds1_cand_base_th,
-                    c.mds1_rank_factor,
-                    c.mds2_cand_base_th,
-                    c.mds2_rank_factor,
-                    c.mds2_rel_dev_th,
-                    c.mds3_cand_base_th,
-                    c.mds3_band_cnt,
-                    c.i_mds3_class_th_mult,
-                )
+                alloc::vec![
+                    ("nic_num.0", c.nic_num.0),
+                    ("nic_num.1", c.nic_num.1),
+                    ("nic_num.2", c.nic_num.2),
+                    ("mds1_cand_base_th", c.mds1_cand_base_th),
+                    ("mds1_cand_base_th_inter", c.mds1_cand_base_th_inter),
+                    ("mds1_rank_factor", c.mds1_rank_factor),
+                    ("mds1_class_th", c.mds1_class_th),
+                    ("mds1_band_cnt", u64::from(c.mds1_band_cnt)),
+                    ("mds2_cand_base_th", c.mds2_cand_base_th),
+                    ("mds2_rank_factor", c.mds2_rank_factor),
+                    ("mds2_rel_dev_th", c.mds2_rel_dev_th),
+                    ("mds2_class_th", c.mds2_class_th),
+                    ("mds2_band_cnt", u64::from(c.mds2_band_cnt)),
+                    ("mds3_cand_base_th", c.mds3_cand_base_th),
+                    ("mds3_band_cnt", u64::from(c.mds3_band_cnt)),
+                    ("i_mds3_class_th_mult", c.i_mds3_class_th_mult),
+                ]
             };
             assert_eq!(
                 fields(&baked),

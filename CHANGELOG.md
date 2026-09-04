@@ -56,6 +56,23 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The NIC CLASS prunes C runs only on inter frames — the inter byte grid goes
+  92 -> 94 of 96.** Each of C's three NIC prunes has an inter-CLASS half that
+  sets a whole candidate class's stage count to ZERO and an intra-class half
+  that trims within a class; `leaf_funnel::nic` carried the trims and only
+  `post_mds2`'s class half, applied with the I-slice `MAX(25, base * mult)`
+  re-floor unconditionally. C forces `mds1_class_th` / `mds2_class_th` to the
+  disabled sentinel on an I_SLICE (`product_coding_loop.c:7826` / `:7897`) and
+  applies that re-floor only there (`:7977`), so all three were right for a
+  still frame and wrong for an inter one. MEASURED on `diag 72x72 q55 p6`
+  frame 1 at block (64,32) 16x32 with an extended `SVT_FULLCOST_OUT`: C injects
+  29 intra / 6 MVP-inter / 3 NEWMV-inter candidates and admits 0/3/3 to MDS1
+  and 0/1/0 to MDS3, while the port reached MDS3 with three and coded the NEWMV
+  C had already dropped. Both `diag 72x72 q55` cells are now byte-identical on
+  both frames. `inter_byte_gate` 94 required / 0 failed, `video_key_matrix`
+  58/60 unchanged (its two open cells are key frames, which this cannot reach),
+  `identity_full_8bit` 1100/1100, `regression_spotcheck` 102/102, nextest 2519.
+  Record `rust/benchmarks/nic_class_prune_2026-09-03.md`.
 - **The RDOQ input buffer's re-zero was dead — 1.5-2.0 % at the still arm's
   p10 cells, and the first confirmation of the memset-not-malloc rule.**
   `tx_unit` zeroed its `dqcoeff` scratch (up to 4 KiB) once per

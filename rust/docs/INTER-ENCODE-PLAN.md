@@ -6962,6 +6962,106 @@ rather than a node chain, so C's `BLOCK_4X4`-off-`parent->tested_blk` seed arm
 measured (`shapes_for_size` returns `N_ONLY` at size 4) and unported, not
 proven inert.
 
+### 1z³³. The class prunes C runs ONLY on inter frames — two of the three residual F1DIFF cells close (2026-09-03)
+
+§1z³² localized the residual cells to `nic::stage_mds1_to_mds3` and stated the
+target as "the COUNT the post-MDS1 NIC prune admits". It is `mds2_class_th`,
+and it has two siblings that were missing for the same reason.
+
+Full record: `benchmarks/nic_class_prune_2026-09-03.md`.
+
+#### The instrument came first, and it corrected the previous chunk
+
+`SVT_FULLCOST_OUT` now dumps the per-class NIC state (`n0`/`n1`/`n2`/`n3`,
+`cls`, `m1bc`) beside each candidate's cost, plus a `CNIC` header carrying the
+whole `NicPruningCtrls` row and the SLICE TYPE. Two things fell out before the
+mechanism did:
+
+* **`I_SLICE` is 1, not 0** (`definitions.h:1892`).
+* **The dump is pinned by block ORIGIN only**, so a 2-frame cell interleaves
+  frame 0's I_SLICE rows with frame 1's. §1z³²'s six-candidate MDS1 table at
+  `mi=(8,16)` is **three of frame 0's intra rows plus three of frame 1's inter
+  rows**. On frame 1 C admits ZERO intra candidates to MDS1 there. The header
+  is now reprinted on every slice-type change and every `CFULL` line carries
+  `sl=`, so the same misreading cannot recur.
+
+#### What C actually does at that block
+
+```
+n0 = 29,6,3,0,0   injected   (29 intra, 6 MVP-inter, 3 NEWMV-inter)
+n1 =  0,3,3,0,0   post_mds0  -> mds1_class_th DELETED the intra class
+n2 =  0,1,0,0,0   post_mds1  -> mds2_class_th DELETED the NEWMV class
+n3 =  0,1,0,0,0   MDS3 evaluates ONE candidate
+```
+
+Class 2's head is 36 661 249 against the MDS1 global best 27 427 295 — dev 33,
+against `DIVIDE_AND_ROUND(10 * 9146, 10000) = 9` at CLI qp 55. The port reached
+MDS3 with three candidates and coded the NEWMV C never priced.
+
+#### It is the pattern the chunk brief predicted, twice over
+
+Each prune has an inter-CLASS half (sets a class's stage count to ZERO) and an
+intra-class half (trims within a class, floored at 1). `leaf_funnel::nic`
+carried the trims and only `post_mds2`'s class half:
+
+| C | I_SLICE | inter frame | the port, before |
+|---|---|---|---|
+| `mds1_class_th` (`:7826`) | forced `~0` | 200 base / 183 scaled | not carried |
+| `mds2_class_th` (`:7897`) | forced `~0` | 10 base / 9 scaled | not carried |
+| `mds3_class_th` re-floor (`:7977`) | `MAX(25, 5*50) = 250` | `5` | 250 always |
+| `mds1_cand_base_th` (`:7840`) | intra half | per class | intra half always |
+
+`nic_arm`'s header gave the reason in as many words — "every picture this port
+encodes is an I-slice" — and nothing re-derived it when that stopped being
+true. And there was a second, correct port sitting beside the live one:
+`port_md::nic_prune` is the general five-class form, parameterised by slice
+type, tier-1 on its one exported C function, with `mds1_class_th` /
+`mds2_class_th` / the I-slice-only re-floor all present — and **called by
+nothing**. Its `CandClass` also named the two inter classes the wrong way round
+(C puts `NEWMV`/`NEW_NEWMV` in class **2**, `mode_decision.c:3662`), which is
+what two copies of one C function look like when they drift; the naming is
+corrected and the duplication is now stated in both headers.
+
+#### What landed
+
+`FunnelCfg` gains `mds1_class_th` / `mds1_band_cnt` / `mds2_class_th` /
+`mds2_band_cnt` / `mds1_cand_base_th_inter`; `nic_arm` transcribes them for all
+twelve `set_nic_controls` rows and the baked allintra rows; `leaf_funnel::nic`
+runs both class prunes gated on `frame.non_i_slice` and applies the MDS3
+re-floor only on an I_SLICE. Three pins in `nic::nic_class_prune_tests` drive
+the measured costs through both slice types.
+
+#### Measured
+
+| cell | before | after | C |
+|---|---|---|---|
+| `diag 72x72 q55 p6` frame 1 | 31 B | **identical** | 29 B |
+| `diag 72x72 q55 p8` frame 1 | 30 B | **identical** | 29 B |
+| `diag 128x128 q20 p8` frame 1 | 26 B | 26 B | 25 B |
+
+Grid **92 -> 94 BOTH**, 1 F1DIFF, 1 F0DIFF of 96.
+
+#### `video_key_matrix` did NOT move, and could not have
+
+Still 58 / 60. Its two unmoved cells are preset-0 KEY frames, and every
+threshold this chunk turned on is one C forces OFF on an I_SLICE. §1z³²'s
+reading that the two scoreboards had become "one target, not two" was drawn
+from both diverging at MDS3 — they do, but not through the same code. That
+prediction is withdrawn: this mechanism structurally cannot reach a key frame.
+
+#### Still not modelled, with its reach
+
+* **`merge_inter_cands`** (`mode_decision.c:3637-3643`) is LIVE on inter frames
+  at nic level 8 (`merge_inter_cands_mult = 4`). It can only MERGE classes 1
+  and 2, so it cannot hide a candidate, but it changes which class the prunes
+  above measure. Both distortions it reads come from `read_refine_me_mvs`,
+  unported.
+* **`MD_STAGE_NICS` picture type.** `nic_counts` hardcodes the I_SLICE row's
+  64/32/16. C runs pic_type 1 at this cell (MEASURED from the stage counts in
+  the same dump), giving MDS1/2/3 caps of 4/2/2 where the port computes 7/2/2.
+  The two later stages agree; the MDS1 cap does not. Deliberately NOT changed
+  in this chunk so the class prunes are attributable on their own.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

@@ -486,7 +486,7 @@ mod tests {
         let r = run_md_stages(&mut ops, &open_ctrls(), &cfg(), counts).unwrap();
         assert_eq!(
             ops.stage0_calls,
-            vec![(CandClass::Intra, 0, 3), (CandClass::InterNew, 3, 3)]
+            vec![(CandClass::Intra, 0, 3), (CandClass::InterMvp, 3, 3)]
         );
         assert_eq!(
             r.cand_buff_indices[2],
@@ -686,11 +686,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             ops.stage1_calls,
-            vec![CandClass::Intra, CandClass::InterNew]
+            vec![CandClass::Intra, CandClass::InterMvp]
         );
         assert_eq!(
             ops.stage2_calls,
-            vec![CandClass::Intra, CandClass::InterNew]
+            vec![CandClass::Intra, CandClass::InterMvp]
         );
     }
 

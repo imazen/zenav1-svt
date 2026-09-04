@@ -662,7 +662,7 @@ pub(crate) fn evaluate_leaf(
     // -- MDS0 -> MDS1 staging: replacement pool, per-class sort, dev-prune --
     // C `md_stage_0` + `sort_fast_cost_based_candidates` +
     // `post_mds0_nic_pruning`, all per candidate class. See [`nic`].
-    let staging = nic::stage_mds0_to_mds1(&cands, cfg, frame.cli_qp);
+    let staging = nic::stage_mds0_to_mds1(&cands, cfg, frame.cli_qp, frame.non_i_slice);
     let order = &staging.order;
     let n1 = order.len();
 

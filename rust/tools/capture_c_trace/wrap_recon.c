@@ -650,15 +650,71 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
             if (!f)
                 f = fopen(path, "w");
             if (f) {
+                /* The NIC STAGING state, printed ONCE per dump: which
+                 * nic_ctrls row MD is actually running and on what slice
+                 * type. `mds1_class_th` / `mds2_class_th` are forced to the
+                 * disabled sentinel on an I_SLICE only
+                 * (product_coding_loop.c:7826 / :7897) and `mds3_class_th`
+                 * gets the MAX(25, th*i_mds3_class_th_mult) re-floor on an
+                 * I_SLICE only (:7978) — so slice_type is the field that
+                 * decides whether three of these thresholds are live at all,
+                 * and a dump without it cannot answer "why did C drop that
+                 * class". */
+                /* Reprinted whenever the SLICE TYPE changes, not once: the
+                 * dump is pinned by block ORIGIN only, so a 2-frame cell puts
+                 * frame 0's I_SLICE rows and frame 1's inter rows in the same
+                 * file, and a single header would attribute both to whichever
+                 * frame reached the block first. `docs/INTER-ENCODE-PLAN.md`
+                 * §1z32's MDS1 table was read that way and mixed frame 0's
+                 * three INTRA rows into frame 1's candidate set. */
+                static int nic_hdr_slice = -1;
+                if (nic_hdr_slice != (int)pcs->slice_type) {
+                    const struct NicPruningCtrls* pc = &ctx->nic_ctrls.pruning_ctrls;
+                    fprintf(f,
+                            "CNIC slice=%d mds1_class_th=%llu m1band=%u mds2_class_th=%llu m2band=%u "
+                            "mds3_class_th=%llu m3band=%u imult=%u m1ci=%llu m1ce=%llu m1rank=%u "
+                            "m2c=%llu m2rank=%u m2dev=%u m3c=%llu skipmds1=%d mergemult=%u "
+                            "scal=%u,%u,%u staging=%u\n",
+                            (int)pcs->slice_type, (unsigned long long)pc->mds1_class_th,
+                            (unsigned)pc->mds1_band_cnt, (unsigned long long)pc->mds2_class_th,
+                            (unsigned)pc->mds2_band_cnt, (unsigned long long)pc->mds3_class_th,
+                            (unsigned)pc->mds3_band_cnt, (unsigned)pc->i_mds3_class_th_mult,
+                            (unsigned long long)pc->mds1_cand_base_th_intra,
+                            (unsigned long long)pc->mds1_cand_base_th_inter,
+                            (unsigned)pc->mds1_cand_th_rank_factor, (unsigned long long)pc->mds2_cand_base_th,
+                            (unsigned)pc->mds2_cand_th_rank_factor, (unsigned)pc->mds2_relative_dev_th,
+                            (unsigned long long)pc->mds3_cand_base_th, (int)pc->enable_skipping_mds1,
+                            (unsigned)pc->merge_inter_cands_mult,
+                            (unsigned)ctx->nic_ctrls.scaling_ctrls.stage1_scaling_num,
+                            (unsigned)ctx->nic_ctrls.scaling_ctrls.stage2_scaling_num,
+                            (unsigned)ctx->nic_ctrls.scaling_ctrls.stage3_scaling_num,
+                            (unsigned)ctx->nic_ctrls.md_staging_mode);
+                    nic_hdr_slice = (int)pcs->slice_type;
+                }
                 fprintf(f,
-                        "CFULL org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ibc=%d ycb=%llu ydist=%llu "
-                        "cost=%llu\n",
+                        "CFULL sl=%d org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ibc=%d ycb=%llu ydist=%llu "
+                        "cost=%llu cls=%d n0=%u,%u,%u,%u,%u n1=%u,%u,%u,%u,%u n2=%u,%u,%u,%u,%u n3=%u,%u,%u,%u,%u m1bc=%d\n",
+                        (int)pcs->slice_type,
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (int)ctx->md_stage, (int)cand_bf->cand->block_mi.mode,
                         (int)cand_bf->cand->block_mi.filter_intra_mode, (int)cand_bf->cand->block_mi.angle_delta[0],
                         (int)cand_bf->cand->block_mi.uv_mode, (int)cand_bf->cand->block_mi.use_intrabc,
                         (unsigned long long)*y_coeff_bits,
-                        (unsigned long long)y_distortion[0][0], (unsigned long long)*(cand_bf->full_cost));
+                        (unsigned long long)y_distortion[0][0], (unsigned long long)*(cand_bf->full_cost),
+                        (int)cand_bf->cand->cand_class,
+                        (unsigned)ctx->md_stage_0_count[0], (unsigned)ctx->md_stage_0_count[1],
+                        (unsigned)ctx->md_stage_0_count[2], (unsigned)ctx->md_stage_0_count[3],
+                        (unsigned)ctx->md_stage_0_count[4],
+                        (unsigned)ctx->md_stage_1_count[0], (unsigned)ctx->md_stage_1_count[1],
+                        (unsigned)ctx->md_stage_1_count[2], (unsigned)ctx->md_stage_1_count[3],
+                        (unsigned)ctx->md_stage_1_count[4],
+                        (unsigned)ctx->md_stage_2_count[0], (unsigned)ctx->md_stage_2_count[1],
+                        (unsigned)ctx->md_stage_2_count[2], (unsigned)ctx->md_stage_2_count[3],
+                        (unsigned)ctx->md_stage_2_count[4],
+                        (unsigned)ctx->md_stage_3_count[0], (unsigned)ctx->md_stage_3_count[1],
+                        (unsigned)ctx->md_stage_3_count[2], (unsigned)ctx->md_stage_3_count[3],
+                        (unsigned)ctx->md_stage_3_count[4],
+                        (int)ctx->mds1_best_class_it);
                 fflush(f);
             }
         }

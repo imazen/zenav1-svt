@@ -10,9 +10,37 @@
 //! (EPICA p6: 2064 palette blocks vs C's 178); see ba58a3ec2 / 765d60a7e.
 //!
 //! Both stages here are PURE over the candidate list -- stage 1 reads only
-//! `cli_qp` besides the candidates and the config, stage 2 reads nothing
-//! external at all. That is why they are the cleanest seam in `evaluate_leaf`
-//! and the first phase to come out of it.
+//! `cli_qp` and the frame's SLICE TYPE besides the candidates and the config,
+//! stage 2 reads nothing external at all. That is why they are the cleanest
+//! seam in `evaluate_leaf` and the first phase to come out of it.
+//!
+//! # The CLASS prunes, and why they were missing until 2026-09-03
+//!
+//! Each of the three prunes has TWO halves: an inter-class half that can set a
+//! whole class's stage count to ZERO, and an intra-class half that trims the
+//! candidate count within a class (floored at 1). This module carried only the
+//! trims and `post_mds2`'s class half, because C forces `mds1_class_th`
+//! (`:7826`) and `mds2_class_th` (`:7897`) to the disabled sentinel on an
+//! I_SLICE and applies `post_mds2`'s `MAX(25, scaled * i_mds3_class_th_mult)`
+//! re-floor only there (`:7977`) -- and this funnel had only ever run on
+//! I-slices. It now runs on inter frames, where all three of those facts flip.
+//!
+//! MEASURED, `diag 72x72 q55 p6` frame 1, block (64,32) 16x32, nic level 8
+//! (`SVT_FULLCOST_OUT` + `SVT_FULLCOST_XY=64,32` through
+//! `tools/ctrace-linux/run.sh`, which now dumps the per-class stage counts):
+//!
+//! ```text
+//! n0 = 29,6,3,0,0   injected
+//! n1 =  0,3,3,0,0   post_mds0: mds1_class_th (200 -> 183) deletes ALL intra
+//! n2 =  0,1,0,0,0   post_mds1: mds2_class_th (10 -> 9) deletes class 2
+//! n3 =  0,1,0,0,0   MDS3 evaluates ONE candidate
+//! ```
+//!
+//! Class 2's best MDS1 cost is 36 661 249 against the MDS1 global best
+//! 27 427 295 -- a 33 % deviation against a threshold of 9. The port reached
+//! MDS3 with three candidates and coded the NEWMV C had already dropped, which
+//! is what `docs/INTER-ENCODE-PLAN.md` §1z32 localized without being able to
+//! name the threshold.
 
 use super::*;
 
@@ -37,6 +65,11 @@ pub(super) struct Mds1Staging {
     /// C `svt_aom_get_qp_based_th_scaling_factors` numerator / denominator.
     pub(super) qw: u64,
     pub(super) qwd: u64,
+    /// C `pcs->slice_type != I_SLICE`. Gates the two class prunes that C
+    /// forces off on an I_SLICE, and the I-slice-only `mds3_class_th`
+    /// re-floor. Carried on the staging rather than re-passed so the two
+    /// stages cannot disagree about which frame they are on.
+    pub(super) non_i_slice: bool,
 }
 
 /// C `md_stage_0`'s replacement pool + `sort_fast_cost_based_candidates` +
@@ -47,7 +80,12 @@ pub(super) struct Mds1Staging {
 // post-dates the 1.89 MSRV floor's clippy, so the allow must tolerate being
 // unknown there (`cargo +1.89 clippy` otherwise reports `unknown lint` here).
 #[allow(unknown_lints, clippy::manual_checked_ops)]
-pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) -> Mds1Staging {
+pub(super) fn stage_mds0_to_mds1(
+    cands: &[Cand],
+    cfg: FunnelCfg,
+    cli_qp: u32,
+    non_i_slice: bool,
+) -> Mds1Staging {
     let ncand = cands.len();
 
     // -- MDS0 -> MDS1 MEMBERSHIP: C's replacement POOL, not a sort. --
@@ -127,10 +165,27 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
     // nic_level 1 (M0) sets mds1_cand_base_th_intra = (uint64_t)~0 (no mds1
     // cand pruning); the qp-scaled threshold stays saturated so the loop
     // below never prunes (guard avoids the base*qw overflow).
-    let mds1_cand_th = if cfg.mds1_cand_base_th == u64::MAX {
-        u64::MAX
+    let scale_th = |base: u64| -> u64 {
+        if base == u64::MAX {
+            u64::MAX
+        } else {
+            div_round(base * qw, qwd)
+        }
+    };
+    // C splits the post-MDS0 candidate threshold by class:
+    // `is_intra_class(cidx) ? mds1_cand_base_th_intra : ..._inter`
+    // (product_coding_loop.c:7840). Equal at nic level 8, 1200 vs 300 at
+    // levels 4..7 — so a funnel that uses the intra half for the inter
+    // classes keeps candidates C drops as soon as an inter class is live.
+    let mds1_cand_th_intra = scale_th(cfg.mds1_cand_base_th);
+    let mds1_cand_th_inter = scale_th(cfg.mds1_cand_base_th_inter);
+    // post_mds0's CLASS prune (:7847-7862). C forces the threshold to the
+    // disabled sentinel on an I_SLICE (:7826), so this is inert on every
+    // still frame and live on every inter one.
+    let mds1_class_th = if non_i_slice {
+        scale_th(cfg.mds1_class_th)
     } else {
-        div_round(cfg.mds1_cand_base_th * qw, qwd)
+        u64::MAX
     };
     // C runs the intra dev-threshold prune PER CLASS (`for cidx`, :7840),
     // each relative to that class's OWN best fast cost (`cand_buff[cidx]
@@ -143,14 +198,44 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
     // out every regular candidate (EPICA p6: 2064 palette blocks vs C's
     // 178, and every port-only block's ONLY MDS1 survivors were palette).
     // Prune each lane against its own class-best, then union + sort.
-    let dev_prune = |sorted: &[usize], cands: &[Cand]| -> usize {
+    // `global_best` is C's `best_md_stage_cost` entering post_mds0: the
+    // strict-`<` minimum over the per-class sorted HEADS, computed during the
+    // MDS0 class loop (:9517-9524) and therefore BEFORE any pruning.
+    let dev_prune = |sorted: &[usize], cands: &[Cand], lane: usize, global_best: u64| -> usize {
         if sorted.is_empty() {
             return 0;
         }
         let best = cands[sorted[0]].fast_cost;
+        // -- inter-CLASS prune (product_coding_loop.c:7847-7862) --
+        // Not a trim: the `continue` arms set this class's MDS1 count to
+        // ZERO, so the whole class is gone. On `diag 72x72 q55 p6` frame 1 at
+        // block (64,32) this is what removes all 29 injected intra
+        // candidates before MDS1 even runs.
+        let mut cnt = sorted.len();
+        if mds1_class_th != u64::MAX && best != 0 && global_best != 0 && best != global_best {
+            if mds1_class_th == 0 {
+                return 0; // C :7849-7851 md_stage_1_count = 0; continue
+            }
+            let dev = (best - global_best) * 100 / global_best;
+            if dev != 0 {
+                if dev >= mds1_class_th {
+                    return 0; // C :7854-7856
+                }
+                if cfg.mds1_band_cnt >= 3 && cnt > 1 {
+                    // C :7858-7860 band reduce (DIVIDE_AND_ROUND).
+                    let band_idx = dev * (u64::from(cfg.mds1_band_cnt) - 1) / mds1_class_th;
+                    cnt = div_round(cnt as u64, band_idx + 1) as usize;
+                }
+            }
+        }
+        let mds1_cand_th = if lane == 1 || lane == 2 {
+            mds1_cand_th_inter
+        } else {
+            mds1_cand_th_intra
+        };
         let mut count = 1usize;
         if best > 0 {
-            while count < sorted.len() {
+            while count < cnt {
                 let dev = (cands[sorted[count]].fast_cost - best) * 100 / best;
                 // C: `mds1_cand_th / (rank ? rank * cand_count : 1)`
                 // (product_coding_loop.c:7869) — rank 0 (M4 nic case 5)
@@ -210,7 +295,16 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
             // Per-class MDS0 replacement pool -> sort -> per-class dev-prune.
             let sorted: [Vec<usize>; LANES] =
                 lanes.map(|l| sort_lane(lane_pool(&l, cands, cap), cands));
-            let k: [usize; LANES] = core::array::from_fn(|l| dev_prune(&sorted[l], cands));
+            // C `best_md_stage_cost` at post_mds0 — the min over class heads.
+            let mut g = u64::MAX;
+            for l in &sorted {
+                if let Some(&h) = l.first()
+                    && cands[h].fast_cost < g
+                {
+                    g = cands[h].fast_cost;
+                }
+            }
+            let k: [usize; LANES] = core::array::from_fn(|l| dev_prune(&sorted[l], cands, l, g));
             // MDS1 evaluates the per-class survivors, class-concatenated in
             // class order (C0..C4) — NOT cost-merged.
             let mut u: Vec<usize> = Vec::new();
@@ -224,7 +318,12 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
             let cap = (ncand as u32).min(nic1) as usize + 1;
             let all: Vec<usize> = (0..ncand).collect();
             let s = sort_lane(lane_pool(&all, cands, cap), cands);
-            let k = dev_prune(&s, cands);
+            // Single class: `best == best_md_stage_cost` by construction, so
+            // the class prune's `best_cost != best_md_stage_cost` guard is
+            // false and the whole block is inert. Passing the head's own cost
+            // says that in the code rather than in a comment.
+            let g = s.first().map_or(0, |&h| cands[h].fast_cost);
+            let k = dev_prune(&s, cands, 0, g);
             (s[..k].to_vec(), None)
         };
     // C mds0_best (:9518-9524): strict `<` over the per-class sorted heads
@@ -258,6 +357,7 @@ pub(super) fn stage_mds0_to_mds1(cands: &[Cand], cfg: FunnelCfg, cli_qp: u32) ->
         nic3,
         qw,
         qwd,
+        non_i_slice,
     }
 }
 
@@ -400,14 +500,35 @@ pub(super) fn stage_mds1_to_mds3(cands: &[Cand], cfg: FunnelCfg, st: &Mds1Stagin
     // path is byte-identical to before (best == global best => inert).
     let mds2_cand_th = div_round(cfg.mds2_cand_base_th * qw, qwd);
     let mds3_cand_th = div_round(cfg.mds3_cand_base_th * qw, qwd);
-    // Inter-class MDS3 threshold (post_mds2_nic_pruning, :7975-7979). This
-    // funnel is always the allintra KEY (I_SLICE), so the I-slice re-floor
-    // MAX(25, scaled*i_mds3_class_th_mult) always applies. u64::MAX == the
-    // `(uint64_t)~0` disabled sentinel (never set on palette-active presets).
+    // Inter-class MDS1 threshold (post_mds1_nic_pruning, :7899-7901). C
+    // forces it to the disabled sentinel on an I_SLICE, so it is inert on
+    // every still frame — which is why the allintra funnel never carried it
+    // and why an inter frame reached MDS3 with a class C had already deleted.
+    let mds2_class_th = if st.non_i_slice {
+        if cfg.mds2_class_th == u64::MAX {
+            u64::MAX
+        } else {
+            div_round(cfg.mds2_class_th * qw, qwd)
+        }
+    } else {
+        u64::MAX
+    };
+    // Inter-class MDS3 threshold (post_mds2_nic_pruning, :7975-7979). Unlike
+    // the two above, this one is live on BOTH slice types — but the
+    // MAX(25, scaled * i_mds3_class_th_mult) re-floor is I_SLICE-ONLY
+    // (`if (pcs->slice_type == I_SLICE ...)`, :7977). Applying it
+    // unconditionally turned nic level 8's base 5 into 250 on an inter frame,
+    // i.e. a fiftyfold-looser class prune than C runs there.
+    // u64::MAX == the `(uint64_t)~0` disabled sentinel.
     let mds3_class_th = if cfg.mds3_class_th == u64::MAX {
         u64::MAX
     } else {
-        25u64.max(div_round(cfg.mds3_class_th * qw, qwd) * cfg.i_mds3_class_th_mult)
+        let scaled = div_round(cfg.mds3_class_th * qw, qwd);
+        if st.non_i_slice {
+            scaled
+        } else {
+            25u64.max(scaled * cfg.i_mds3_class_th_mult)
+        }
     };
     // C `best_md_stage_cost` at post_mds2: MDS2 is bypassed on this funnel
     // (no MD_STAGE_2 full loop), so it stays the MDS1 GLOBAL best
@@ -429,6 +550,30 @@ pub(super) fn stage_mds1_to_mds3(cands: &[Cand], cfg: FunnelCfg, st: &Mds1Stagin
             let best = cands[lane[0]].full_cost;
             // post_mds1 -> n2
             let mut n2 = lane.len().min(nic2 as usize);
+            // -- inter-CLASS prune (post_mds1_nic_pruning, :7911-7928) --
+            // Runs BEFORE the candidate prune and can zero the class outright
+            // (C `continue`s past the candidate prune when it does). MEASURED
+            // on `diag 72x72 q55 p6` frame 1, block (64,32) 16x32: class 2's
+            // best MDS1 cost is 36 661 249 against the MDS1 global best
+            // 27 427 295 — dev 33, against a threshold of 9 at nic level 8 /
+            // CLI qp 55 — so C admits NOTHING from the NEWMV class to MDS3,
+            // while the port carried that candidate through and coded it.
+            if mds2_class_th != u64::MAX && best != 0 && global_best != 0 && best != global_best {
+                if mds2_class_th == 0 {
+                    return 0; // C :7913-7915 md_stage_2_count = 0; continue
+                }
+                let dev = (best - global_best) * 100 / global_best;
+                if dev != 0 {
+                    if dev >= mds2_class_th {
+                        return 0; // C :7918-7920
+                    }
+                    if cfg.mds2_band_cnt >= 3 && n2 > 1 {
+                        // C :7922-7925 band reduce (DIVIDE_AND_ROUND).
+                        let band_idx = dev * (u64::from(cfg.mds2_band_cnt) - 1) / mds2_class_th;
+                        n2 = div_round(n2 as u64, band_idx + 1) as usize;
+                    }
+                }
+            }
             if best > 0 && 1 < n2 {
                 // C rank staging (:7934-7939): +3 when this lane is NOT
                 // the MDS1-best class, else +2 when the MDS0 and MDS1
@@ -584,4 +729,196 @@ pub(super) fn stage_mds1_to_mds3(cands: &[Cand], cfg: FunnelCfg, st: &Mds1Stagin
         n3 = n3v;
     }
     Mds3Staging { order1, n3 }
+}
+
+#[cfg(test)]
+mod nic_class_prune_tests {
+    use super::*;
+    use svtav1_types::prediction::PredictionMode;
+
+    /// A candidate that is nothing but a lane and two costs — the only three
+    /// things the NIC staging reads.
+    fn cand(lane: usize, fast: u64, full: u64) -> Cand {
+        let mut c = Cand {
+            fast_cost: fast,
+            full_cost: full,
+            ..Default::default()
+        };
+        match lane {
+            1 | 2 => {
+                let mode = if lane == 2 {
+                    PredictionMode::NewMv
+                } else {
+                    PredictionMode::NearMv
+                };
+                c.inter = Some(alloc::boxed::Box::new(InterCand {
+                    mode,
+                    ref_frame: [1, -1],
+                    mv: Default::default(),
+                    pred_mv: Default::default(),
+                    drl_index: 0,
+                    interp_filters: 0,
+                    motion_mode: crate::port_entropy_inter::modes::MotionMode::SimpleTranslation,
+                    num_proj_ref: 0,
+                    overlappable_neighbors: 0,
+                    u_pred: alloc::vec::Vec::new(),
+                    v_pred: alloc::vec::Vec::new(),
+                }));
+            }
+            _ => {}
+        }
+        assert_eq!(lane_of(&c), lane, "test cand landed in the wrong lane");
+        c
+    }
+
+    /// M6's VIDEO arm is nic level 8; the still arm is level 6. This is the
+    /// row the two prunes below are measured against.
+    fn cfg_m6_video() -> FunnelCfg {
+        let mut cfg = FunnelCfg::for_preset(6);
+        crate::nic_arm::apply(
+            &mut cfg,
+            crate::sc_detect::ScArm::Video { is_islice: false },
+            6,
+            true,
+        );
+        assert_eq!(cfg.mds2_class_th, 10, "nic level 8 mds2_class_th");
+        assert_eq!(cfg.mds1_class_th, 200, "nic level 8 mds1_class_th");
+        cfg
+    }
+
+    /// The MEASURED C staging at `diag 72x72 q55 p6` frame 1, block
+    /// (64,32) 16x32 — `SVT_FULLCOST_OUT` with `SVT_FULLCOST_XY=64,32`
+    /// through `tools/ctrace-linux/run.sh`:
+    ///
+    /// ```text
+    /// CNIC slice=0 mds1_class_th=200 m1band=16 mds2_class_th=10 m2band=10
+    ///      mds3_class_th=5 m3band=16 imult=50 m1ci=300 m1ce=300 m1rank=3
+    ///      m2c=3 m2rank=1 m2dev=5 m3c=3 scal=2,1,1 staging=1
+    /// n1 = 0,3,3,0,0    n2 = 0,1,0,0,0    n3 = 0,1,0,0,0
+    /// ```
+    ///
+    /// with these MDS1 full costs (C `st=1` rows, and the port matched five
+    /// of six to the unit before this fix):
+    ///
+    /// | class | costs |
+    /// |---|---|
+    /// | 1 | 27 427 295 (NEARMV) / 29 296 708 / 32 230 458 |
+    /// | 2 | 36 661 249 (NEWMV) / 37 647 060 / 44 842 470 |
+    ///
+    /// The MDS1 global best is class 1's 27 427 295. Class 2's head deviates
+    /// 33 %, against a `mds2_class_th` of 10 base / 9 q-scaled at CLI qp 55 —
+    /// so C admits NOTHING from the NEWMV class to MDS3.
+    #[test]
+    fn post_mds1_class_prune_deletes_the_newmv_class_on_an_inter_frame() {
+        let cfg = cfg_m6_video();
+        let cands = [
+            cand(1, 1, 27_427_295),
+            cand(1, 2, 29_296_708),
+            cand(1, 3, 32_230_458),
+            cand(2, 4, 36_661_249),
+            cand(2, 5, 37_647_060),
+            cand(2, 6, 44_842_470),
+        ];
+        let st = stage_mds0_to_mds1(&cands, cfg, 55, true);
+        let out = stage_mds1_to_mds3(&cands, cfg, &st);
+        assert_eq!(out.n3, 1, "C evaluates ONE candidate at MDS3 here");
+        assert_eq!(
+            cands[out.order1[0]].full_cost, 27_427_295,
+            "the survivor is class 1's NEARMV"
+        );
+
+        // The SAME costs on an I_SLICE keep the NEWMV class, because C forces
+        // `mds2_class_th` to the disabled sentinel there (:7897). This is the
+        // half of the behaviour the funnel had before, and it must not move.
+        let st_i = stage_mds0_to_mds1(&cands, cfg, 55, false);
+        let out_i = stage_mds1_to_mds3(&cands, cfg, &st_i);
+        assert!(
+            out_i.n3 > 1,
+            "the I_SLICE form must not run the class prune (got n3 = {})",
+            out_i.n3
+        );
+    }
+
+    /// The post-MDS0 half of the same mechanism, from the same dump:
+    /// `n0 = 29,6,3` candidates injected, `n1 = 0,3,3` admitted to MDS1 —
+    /// every intra candidate is deleted by `mds1_class_th` (200 base, 183
+    /// q-scaled at CLI qp 55) because the intra class's best FAST cost sits
+    /// far enough above the inter classes' on a translated frame.
+    ///
+    /// Exact fast costs are not on the C dump (it wraps the FULL cost), so
+    /// this pins the ARITHMETIC at a deviation either side of the threshold
+    /// rather than C's own numbers: 100 -> 300 is dev 200 >= 183 (killed),
+    /// 100 -> 250 is dev 150 < 183 (kept).
+    #[test]
+    fn post_mds0_class_prune_can_delete_a_whole_class_on_an_inter_frame() {
+        let cfg = cfg_m6_video();
+        let killed = [
+            cand(1, 100, 1),
+            cand(0, 300, 2),
+            cand(0, 310, 3),
+            cand(0, 320, 4),
+        ];
+        let st = stage_mds0_to_mds1(&killed, cfg, 55, true);
+        assert!(
+            st.order.iter().all(|&i| killed[i].inter.is_some()),
+            "dev 200 >= 183: the intra class must be gone"
+        );
+
+        let kept = [
+            cand(1, 100, 1),
+            cand(0, 250, 2),
+            cand(0, 260, 3),
+            cand(0, 270, 4),
+        ];
+        let st = stage_mds0_to_mds1(&kept, cfg, 55, true);
+        assert!(
+            st.order.iter().any(|&i| kept[i].inter.is_none()),
+            "dev 150 < 183: the intra class must survive"
+        );
+
+        // On an I_SLICE the threshold is the disabled sentinel (:7826), so
+        // even the killed case keeps its intra candidates.
+        let st_i = stage_mds0_to_mds1(&killed, cfg, 55, false);
+        assert!(
+            st_i.order.iter().any(|&i| killed[i].inter.is_none()),
+            "the I_SLICE form must not run the post-MDS0 class prune"
+        );
+    }
+
+    /// `post_mds2_nic_pruning`'s `MAX(25, scaled * i_mds3_class_th_mult)`
+    /// re-floor is I_SLICE-ONLY (`product_coding_loop.c:7977`). At nic level
+    /// 8 that is the difference between a class threshold of 5 and one of
+    /// 250 — a fiftyfold-looser prune, which is what the funnel applied to
+    /// every inter frame before this fix.
+    #[test]
+    fn the_mds3_class_refloor_is_i_slice_only() {
+        let cfg = cfg_m6_video();
+        // Two classes whose heads deviate by 40 %: over the inter-frame
+        // threshold (5), under the I-slice one (250).
+        let cands = [
+            cand(1, 1, 1_000_000),
+            cand(1, 2, 1_010_000),
+            cand(2, 3, 1_400_000),
+            cand(2, 4, 1_410_000),
+        ];
+        // Reach post_mds2 with both classes still alive: disable the post_mds1
+        // class prune only, so this test names ONE threshold.
+        let mut c_no_mds2 = cfg;
+        c_no_mds2.mds2_class_th = u64::MAX;
+        let st = stage_mds0_to_mds1(&cands, c_no_mds2, 55, true);
+        let inter = stage_mds1_to_mds3(&cands, c_no_mds2, &st);
+        assert!(
+            inter.order1.iter().all(|&i| cands[i].full_cost < 1_400_000),
+            "dev 40 >= 5: the deviating class must be gone on an inter frame"
+        );
+        let st_i = stage_mds0_to_mds1(&cands, c_no_mds2, 55, false);
+        let islice = stage_mds1_to_mds3(&cands, c_no_mds2, &st_i);
+        assert!(
+            islice
+                .order1
+                .iter()
+                .any(|&i| cands[i].full_cost >= 1_400_000),
+            "dev 40 < 250: the I-slice re-floor must keep it"
+        );
+    }
 }

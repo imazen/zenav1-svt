@@ -13,29 +13,29 @@
 //!
 //! # Why this exists when `leaf_funnel::nic` already prunes
 //!
-//! [`crate::leaf_funnel::nic`] carries the SAME C functions specialised to the
-//! all-intra I-slice funnel: three live classes (regular / palette / IntraBC),
-//! the two inter-class blocks documented as inert, and thresholds read off
-//! `FunnelCfg`. That specialisation is load-bearing there and is not touched.
+//! [`crate::leaf_funnel::nic`] carries the SAME C functions, and as of
+//! 2026-09-03 it carries them for BOTH slice types — the three differences
+//! this header used to list as reasons the funnel "cannot serve an inter
+//! frame" are the three defects §1z33 fixed there, not a division of labour:
 //!
-//! It cannot serve an inter frame, and the difference is not cosmetic:
-//!
-//! * `mds1_class_th` and `mds2_class_th` are **forced to the disabled
-//!   sentinel on an I-slice** (`:7826`, `:7897`). On a P/B slice they are
-//!   live, so the class-kill (`dev >= class_th` -> the whole class drops to
-//!   zero candidates) and the band reduction both fire — on the intra funnel
-//!   neither ever can.
+//! * `mds1_class_th` and `mds2_class_th` are forced to the disabled sentinel
+//!   on an I-slice (`:7826`, `:7897`) and are LIVE on a P/B slice, where the
+//!   class-kill (`dev >= class_th` -> the whole class drops to zero
+//!   candidates) and the band reduction both fire.
 //! * `post_mds0` splits its candidate threshold by class
-//!   (`mds1_cand_base_th_intra` vs `..._inter`, `:7841`); with only intra
-//!   classes live the inter half is unreachable.
-//! * `post_mds2`'s I-slice re-floor `MAX(25, scaled * i_mds3_class_th_mult)`
-//!   (`:7978`) is exactly the arm that does NOT apply to an inter frame.
-//! * Classes 1 and 2 (the inter classes) carry `MD_STAGE_NICS` base 0 on an
-//!   I-slice and 32/16 elsewhere, so the whole per-class loop has two live
-//!   lanes there and five here.
+//!   (`mds1_cand_base_th_intra` vs `..._inter`, `:7841`).
+//! * `post_mds2`'s re-floor `MAX(25, scaled * i_mds3_class_th_mult)`
+//!   (`:7978`) is I-slice-ONLY.
 //!
-//! So this is the general five-class form, parameterised by slice type, with
-//! no funnel types in its signature. It is pure: costs in, counts out.
+//! What is still only here is the SHAPE: this is the general five-class form
+//! with an explicit `CandClass` and no funnel types in its signature, pure
+//! (costs in, counts out) and tier-1 on its one exported C function. The
+//! funnel's copy is a lane-indexed specialisation inside `evaluate_leaf`.
+//!
+//! **Two implementations of one C function is a standing hazard** — the
+//! inverted [`CandClass`] naming this module carried until 2026-09-03 is
+//! exactly what it looks like when they drift. Whichever survives, they must
+//! not both be edited independently again.
 //!
 //! # Evidence
 //!
@@ -48,9 +48,15 @@
 //!
 //! # Reachability
 //!
-//! Nothing calls this yet — the public entry point still refuses inter
-//! frames. Per `docs/WORKING-ON-THIS.md` section 7 a faithful translation
-//! with no caller stays translated and states its reachability.
+//! **Nothing calls this.** Re-verified 2026-09-03: the only references to
+//! `nic_prune` outside itself are [`super::md_stages`] (which nothing calls
+//! either) and `tests/c_parity_pcl_nic.rs`. The live NIC staging on every
+//! path this encoder takes is `leaf_funnel::nic`, reached from
+//! `leaf_funnel::evaluate_leaf`. Per `docs/WORKING-ON-THIS.md` section 7 a
+//! faithful translation with no caller stays translated and states its
+//! reachability — this is that statement, and it is also the reason the
+//! inter-frame class prunes had to be fixed in the funnel: a correct port
+//! sitting beside the live path fixes nothing.
 
 /// C `CAND_CLASS_TOTAL` (definitions.h:792).
 pub const CAND_CLASS_TOTAL: usize = 5;
@@ -58,20 +64,30 @@ pub const CAND_CLASS_TOTAL: usize = 5;
 /// C `CandClass` (definitions.h:787-793).
 ///
 /// C names these `CAND_CLASS_0..4` and comments only that classes 0/3/4 are
-/// "intra". What they actually hold is fixed by the injectors
-/// (`mode_decision.c`): 0 regular intra, 1 NEWMV inter, 2 the remaining
-/// inter modes, 3 palette, 4 IntraBC. The numeric identity is load-bearing
-/// (`MD_STAGE_NICS` is indexed by it), hence `#[repr(u8)]` and the explicit
-/// discriminants rather than a re-ordered "nicer" enum.
+/// "intra". What they actually hold is fixed by the injector loop
+/// (`mode_decision.c:3645-3671`): 0 regular intra, **1 the MVP inter modes —
+/// every inter mode EXCEPT `NEWMV` / `NEW_NEWMV` — and 2 `NEWMV` /
+/// `NEW_NEWMV`** (C's own comments there read "MV Prediction" for class 2 and
+/// "MVP Prediction" for class 1), 3 palette, 4 IntraBC. The numeric identity
+/// is load-bearing (`MD_STAGE_NICS` is indexed by it), hence `#[repr(u8)]`
+/// and the explicit discriminants rather than a re-ordered "nicer" enum.
+///
+/// CORRECTED 2026-09-03: this enum previously named 1 `InterNew` and 2
+/// `InterOther`, i.e. the two inter classes the wrong way round. The
+/// discriminants were right and nothing calls this module, so it never
+/// produced a wrong number — but `leaf_funnel::nic::lane_of` (which IS live)
+/// disagreed with it, and one of the two had to be wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum CandClass {
     /// `CAND_CLASS_0` — regular intra.
     Intra = 0,
-    /// `CAND_CLASS_1` — NEWMV inter.
-    InterNew = 1,
-    /// `CAND_CLASS_2` — the remaining inter modes.
-    InterOther = 2,
+    /// `CAND_CLASS_1` — the MVP inter modes (everything but `NEWMV` /
+    /// `NEW_NEWMV`).
+    InterMvp = 1,
+    /// `CAND_CLASS_2` — `NEWMV` / `NEW_NEWMV`, plus every inter mode when
+    /// C's `merge_inter_cands` fires.
+    InterNew = 2,
     /// `CAND_CLASS_3` — palette.
     Palette = 3,
     /// `CAND_CLASS_4` — IntraBC.
@@ -83,8 +99,8 @@ impl CandClass {
     /// and is load-bearing for [`construct_best_sorted_arrays_md_stage_3`].
     pub const ALL: [CandClass; CAND_CLASS_TOTAL] = [
         CandClass::Intra,
+        CandClass::InterMvp,
         CandClass::InterNew,
-        CandClass::InterOther,
         CandClass::Palette,
         CandClass::IntraBc,
     ];

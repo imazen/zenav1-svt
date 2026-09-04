@@ -13,6 +13,13 @@
 use super::*;
 
 /// One funnel candidate's evolving state.
+///
+/// `Default` is TEST-ONLY on purpose: production always fills every field at
+/// injection, and a derived default in the shipping build would let a new
+/// field be forgotten there silently. Under `cfg(test)` it is what lets the
+/// NIC staging pins state a candidate as the two costs and the lane that
+/// decide its fate, instead of forty fields of noise.
+#[cfg_attr(test, derive(Default))]
 pub(super) struct Cand {
     pub(super) mode: u8,
     /// Luma angle delta (directional modes only; C ANGLE_STEP units).

@@ -187,6 +187,17 @@ PASS_CELLS=(
     # {enabled 1, near_count 3} at every level this port reaches. 29 B -> 28.
     "diag 72 72 40 6 2 3"
     "diag 72 72 40 8 2 3"
+    # Promoted 2026-09-03 by the post-MDS0 / post-MDS1 CLASS prunes
+    # (docs/INTER-ENCODE-PLAN.md §1z33). `leaf_funnel::nic` carried only
+    # `mds3_class_th`, because C forces `mds1_class_th` and `mds2_class_th` to
+    # the disabled sentinel on an I_SLICE and the funnel had only ever run on
+    # one. On an inter frame both are live and they DELETE classes: at
+    # mi=(8,16) C injects 29 intra / 6 class-1 / 3 class-2 candidates and
+    # admits 0 / 3 / 3 to MDS1 and 0 / 1 / 0 to MDS3 — one candidate. The port
+    # reached MDS3 with three and coded the NEWMV C had already dropped.
+    # 31 B -> 29 and 30 B -> 29.
+    "diag 72 72 55 6 2 3"
+    "diag 72 72 55 8 2 3"
     "diag 128 128 20 6 2 3"
     "diag 128 128 40 6 2 3"
     "diag 128 128 40 8 2 3"
@@ -232,15 +243,15 @@ PASS_CELLS=(
 # "open ... known" through the whole defect. One per panicking content class
 # (gradient's six 72x72 cells never panicked).
 OPEN_CELLS=(
-    # THREE cells, re-derived from `inter_byte_matrix.sh` rather than carried
-    # forward. The NEAR-candidate wiring promoted `diag 72x72 q40 p6`, the
-    # fourth; the remaining three did not move by a single byte (before and
-    # after counts identical on all three), which is the honest reading of a
-    # fix that closed one cell's mechanism and not theirs.
+    # ONE cell. The three this list carried on 2026-09-03 were the two 72x72
+    # q55 partial-superblock cells and this one; the NIC CLASS prunes
+    # (§1z33) promoted both 72x72 cells and left this one at exactly its old
+    # count, which is the honest reading of a fix that closed one mechanism
+    # and not this cell's.
     #
-    # TWO OF THE THREE ARE STILL 72x72, a PARTIAL superblock.
-    "diag 72 72 55 6 2 3"   # frame 1 31 B vs C's 29
-    "diag 72 72 55 8 2 3"   # frame 1 30 B vs C's 29
+    # This one is a FULL superblock (128x128) at the LOWEST qp of the sweep,
+    # so it shares neither the partial-SB edge nor the q55 threshold scaling
+    # the promoted pair turned on.
     "diag 128 128 20 8 2 3"   # frame 1 26 B vs C's 25
 )
 
