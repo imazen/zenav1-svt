@@ -1,0 +1,372 @@
+CALL-COUNT ATTRIBUTION ON REAL CONTENT: does any edge that read ~1.0x on the
+synthetic gradient read >1.5x on textured photos, a screenshot, or line art?
+Answer: NO for every MD-search edge the three CPU fixes touched — the tx-type
+promotion rule, the MDS1 skip and the per-stage candidate counts are exact or
+within 2 % on every byte-identical real-content cell. What real content DOES
+change: the per-trial residual re-derivation grows from 1.38x to 2.14x, the
+allocator from 1,339x to 9,292x, and two kernels that are 1:1 by count but
+12x and 127x per call (CFL predict, Wiener compute_stats) become visible —
+the second one is CONTENT-INDEPENDENT and is half of the port's p6 cost on
+every image, gradient included. Two screen-content cells at p2 are NOT
+byte-identical (a correctness finding, reported separately, not counted).
+
+date:   2026-09-04 (runs 22:43-22:54 UTC)
+host:   r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores), valgrind-3.26.0
+        --tool=callgrind (Ir only; no cache/branch sim). rustc 1.98.1
+        (48a229cea 2026-09-01) — NOTE the two earlier callcount records were
+        taken with rustc 1.97.1; the gradient re-baseline below cross-checks
+        that the toolchain bump moved nothing that matters. gcc 15.2.0.
+commit: 600c5177d20118bbc9e87d0eb79fdcd9ebc51a0d (origin/main; both fixes
+        landed: txt screen 0ba430ee, MDS1 skip 600c5177) + this chunk's
+        harness-only edits (perf_encode `raw:` input mode; three tool
+        scripts). Fresh clone on r7900x (`~/work/zen/zenav1-svt--rc1`).
+C:      reference/svt-av1 @ 3115c0c1 — the PREBUILT oracle in the primary
+        r7900x checkout (`Bin/Release/libSvtAv1Enc.a` 2026-08-31,
+        `tools/perf_c_encode/perf_c_encode` 2026-09-03), NOT rebuilt. Same
+        binary the txtscreen record used. Generic build: -O3 -DNDEBUG,
+        NATIVE=OFF, per-ISA kernels chosen by RTCD at run time.
+port:   `env -u RUSTFLAGS cargo build --release -p zenav1-svt --example
+        perf_encode --example identity_run -j 4` (no target-cpu=native;
+        runtime archmage dispatch — the `__arcane_*_impl_v3` symbols in the
+        profiles are the AVX2 arm executing).
+tools:  tools/perf_profile/callcount_cells.sh (NEW: the per-cell driver —
+        identity pre-pass, callgrind both sides, cmp the instrumented runs'
+        own output, callcount.py + callgrind_annotate), callcount_join.py
+        (NEW: the C-function -> port-function(s) join as a script, summing
+        AND listing every symbol a regex matches), tree_callers.py (NEW:
+        caller edges from `callgrind_annotate --tree=caller`).
+data:   benchmarks/callcount_realimg_2026-09-04.tsv (the join: 55 edges x
+        18 cells) + benchmarks/callcount_realimg_2026-09-04.cells.tsv (per
+        cell: identity, OBU bytes/sha, Ir totals both sides).
+
+=================== IMAGES AND PROVENANCE ===================
+
+All from `~/work/zen/codec-corpus` @ 07858713b (2026-08-29). No Kodak, no
+synthetic gradient except the control cell. PNG -> I420 8-bit through
+`identity_run crop:` (the byte gates' own BT.601 limited-range converter,
+`identity_run.rs::rgb_to_i420_bt601`; centre-crop, no resample), then fed to
+BOTH encoders as the one `.yuv` via the new `perf_encode raw:` mode. Resizes
+(where needed) by ImageMagick 7.1.2-30, `-filter Mitchell -resize WxH^
+-gravity center -extent WxH`.
+
+  cell             source (corpus path)                          prep                       sha256(source png)   sha256(.yuv)
+  photo_cid        CID22/CID22-512/training/3571065.png          native 512x512, no resize  a33a4451646774da     88142a484affd4b3
+                   (turf with white pitch lines — the most textured of
+                   the 209 CID22-512 training images by Laplacian std)
+  photo_clic       clic2025/training/1e2f9d41529197f10d32bfa68a1e0bcc.png  Mitchell 2048x1365 -> 512x512 cover crop
+                   (gold glitter — near-noise; 2nd most textured CLIC
+                   training image)                                          8682f74e87a47b7f     688d114c708527ef
+  photo_clic500    same CLIC source                              Mitchell -> 500x332 (NEITHER axis 64-aligned;
+                                                                 8x6 = 48 SBs, partial on both edges)
+                                                                                              (derived png bc2c3d56)   d53e07e6c7ab2499
+  screen_terminal  gb82-sc/terminal.png (1646x1062)              centre crop 512x512        1c9deabfbe43dfff     bd37ccf3c4a65256
+  lineart_graph    gb82-sc/graph.png (796x481)                   centre crop 512x480 (height not 64-aligned;
+                                                                 481 -> 480, no padding)     2f1ba6a3c196a9ba     3a6692113815e12a
+  gradient         perf_encode's synthetic gradient              512x512 — the control, re-run at THIS commit
+
+Grid: qp 40, presets 2 / 6 / 10, STILL config, warmup=0 (one init+encode per
+run), exactly the synthetic record's cells. 18 cells, 36 callgrind runs.
+
+Correction to the brief: the brief suggested 500x333. Odd dims are refused
+by the `raw:` I420 layout on both harnesses (floor chroma; `perf_encode`
+asserts even dims, as does `identity_run raw:`), so the non-aligned cell is
+500x332 — still non-64-aligned on both axes, which is the property that
+mattered. An odd-height real-content cell would need the byte harness's
+ceiling-chroma path, which the perf harness does not have.
+
+=================== BYTE-IDENTITY PER CELL ===================
+
+Two checks per cell, as in the prior records: (1) an uninstrumented pre-pass
+(port writes .yuv+.obu, C reads the same .yuv, `cmp`); (2) each callgrind
+run's OWN .obu `cmp`'d against the pre-pass. (2) passed on all 36 runs.
+
+  cell            p2                              p6            p10
+  gradient        Y 5126 B                        Y 5995 B      Y 6743 B
+  photo_cid       Y 46462 B                       Y 45688 B     Y 44177 B
+  photo_clic      Y 45529 B                       Y 45188 B     Y 44737 B
+  photo_clic500   Y 29907 B                       Y 29857 B     Y 28828 B
+  screen_terminal N  port 4991 B / C 5003 B       Y 10090 B     Y 12941 B
+  lineart_graph   N  port 3087 B / C 3098 B       Y 3872 B      Y 5651 B
+
+16 / 18 identical. The two divergent cells are BOTH screen-content-classified
+images at preset 2 (IntraBC + palette live: the port's
+`intrabc::full_pixel_search` is 12.8 % of its Ir on screen_terminal p2; at p6
+and p10 the same crops are identical). This is a CORRECTNESS finding for the
+screen-content lane, not a count: the tools/screen_ibc_gate.sh grid is
+presets 0-4 x qp {20, 48} on these images, so qp 40 at p2 is not a cell any
+existing gate runs. Counts for those two cells are in the TSV, flagged
+ident=N, and NO ratio below is quoted from them.
+
+=================== POSITIVE CONTROLS ===================
+
+Exact on every one of the 16 identical cells unless stated:
+
+  * SB ctor `svt_aom_largest_coding_unit_ctor` = `pipeline::merge_sb_units`:
+    64 = 64 at 512x512 and 512x480; 48 = 48 at 500x332 (8 x 6).
+  * Leaves `md_encode_block` = `leaf_funnel::evaluate_leaf`: 13217 / 7995 /
+    7285 / 1681 / 984 / ... exact everywhere identical. (The 2026-09-04
+    record's `md_stage_0` is NOT a per-leaf count on screen content — C calls
+    it once per candidate CLASS, 2627 for 1681 leaves at screen_terminal p6 —
+    the join now uses `md_encode_block`.)
+  * MDS0 SATD `hadamard_path` = `predict::hadamard_satd`: 474,718 = 474,718
+    (photo_cid p2) and exact on every identical cell; the 4x4 / 8x8 / 32x32
+    hadamard kernels exact. The 16x16 row reads 1.13-3.5x ONLY because the
+    port's `aom_hadamard_32x32` calls `aom_hadamard_16x16` four times where
+    C's 32x32 AVX2 does not go through the exported 16x16 symbol:
+    71,672 - 4 x 2,046 = 63,488 = C's 63,488 (photo_cid p2), and the same
+    identity holds on every cell. Not a finding; noted in the join.
+  * PD0 recursion `pick_partition_pd0` = `Pd0Ctx::pick_q` (both recursion
+    levels summed) and PD0 quantize `_light` = `pd0::tx_quant_core`: exact.
+  * FINAL COMMITS: MDS1 luma `av1_quantize_b_facade_ii` =
+    `quantize_b_raster` (281,598 = 281,598 at photo_cid p2; 5,834 = 5,834 at
+    p6); MDS3 candidates `perform_tx_partitioning` = `mds3::eval_candidate`
+    (91,350 = 91,350 p2; 2,316 = 2,316 p6); `full_loop_core` = eval_candidate
+    + quantize_b_raster (372,948 = 372,948) — this is the join the mds1skip
+    record established (C's full_loop_core is MDS1 AND MDS3), and it holds
+    to the unit on all 16 cells at all three presets. Chroma
+    `full_loop_uv` = `chroma::eval_uv` at p10 (787 = 787).
+  * The optimizer/rate stack, photo_cid p2 (port / C): quantizer dispatch
+    3,545,999 / 3,571,376 (0.993); `optimize_b` 2,854,762 / 2,859,667
+    (0.998); `cost_coeffs_txb` 3,046,589 / 3,068,834 (0.993); nz-map
+    contexts 3,065,069 / 3,073,775 (0.997); `txb_init_levels` /
+    `fill_levels` 5,826,844 / 5,820,172 (1.001).
+
+=================== THE THREE QUESTIONS, ANSWERED ===================
+
+1. `txt_search -> tx_unit` promotion rule (fix 0ba430ee) — HOLDS on real
+   content. C admits a LARGER fraction of its tx-type trials on photos than on
+   the gradient (tx_type_search -> quantize_inv_quantize / tx_type_search ->
+   estimate_transform: 2,753,262 / 3,445,449 = 79.9 % photo_cid, 73.8 %
+   photo_clic, 77.7 % photo_clic500, vs 55.4 % gradient), so the screen is
+   doing LESS filtering here, and the port tracks it: total forward
+   transforms port/C 0.998 (cid) / 1.015 (clic) / 1.016 (clic500), total
+   quantizer calls 0.993 / 1.013 / 1.014, RDOQ 0.998 / 1.009 / 1.005. The
+   port's screen is an inlined loop with no symbol, so its promoted count is
+   not directly countable; a mis-promotion would have to be cancelled to
+   within 1.5 % by an equal and opposite error elsewhere in the same totals,
+   which is not a mechanism. At p6: 1.008 / 1.052 / 1.051 (transforms). The
+   1-5 % the port sits ABOVE C on the glitter image is real and unattributed
+   (C's `estimate_transform` is 4,222,105 there, the port's
+   `fwd_txfm2d_dispatch` 4,286,185: +64,080 calls); it is not the old 1.8x.
+
+2. `run_mds1` at p10 — ZERO on all six contents (both0 in the TSV), and
+   `full_loop_core` = `eval_candidate` at p10 on all six (886 / 787 / 793 /
+   558 / 1294 / 972). The skip condition is NOT content-dependent; C's
+   `enable_skipping_mds1` at nic level 11 fires on every leaf of a photo and
+   a screenshot exactly as it does on the gradient. `tx_unit_inner` =
+   `svt_aom_quantize_inv_quantize` at p10 on the photos (3752 = 3752,
+   3648 = 3648, 2521 = 2521); on the two screen cells at p10 the port is
+   BELOW C (4240 / 4395 and 3037 / 3910 — C's encode pass re-quantizes
+   there; a C-side extra, not a port one).
+
+3. `eval_candidate` vs `full_loop_core` — exact at every preset on every
+   identical cell (see controls). The "2.307x MDS3 candidates at p10" row in
+   the TSV for gradient (886 / 384) and lineart (972 / 473) is the SAME
+   misjoin the mds1skip record closed: `perform_dct_dct_tx` has no symbol at
+   -O3 (inlined into `full_loop_core`), so the `perform_tx_partitioning`
+   count alone under-counts C's MDS3 at p10. Read the `full_loop_core` row.
+
+=================== WHAT REAL CONTENT CHANGED — the ratio diff vs gradient ===================
+
+Edges that were ~1.0 on the gradient and STAY ~1.0 (p2, port/C; gradient
+first, then cid / clic / clic500):
+  fwd transform         0.993 | 0.998 / 1.015 / 1.016
+  quantizer dispatch    0.977 | 0.993 / 1.013 / 1.014
+  optimize_b            0.993 | 0.998 / 1.009 / 1.005
+  cost_coeffs_txb       0.983 | 0.993 / 0.994 / 0.992
+  nz map contexts       0.994 | 0.997 / 1.001 / 0.999
+  init levels           1.002 | 1.001 / 1.004 / 1.002
+  inverse transform     0.973 | 0.977 / 0.970 / 0.957   (C wrapper join, see correction 1)
+  CFL predict (count)     n/a | 1.000 / 0.997 / 0.997
+  filter-intra          0.993 | 0.985 / 0.986 / 0.985
+  directional (z1+z2+z3)0.998 | 1.011 / 1.007 / 1.006
+No MD-search edge crosses 1.5x. "Repeated work" in the call-graph-shape
+sense (the port calling a kernel more often than C for the same output) is
+now confined to three places, and only one of them grew with content:
+
+  A. RESIDUAL PER TX-TYPE TRIAL — GREW. `svt_aom_residual_kernel` (all C
+     callers) vs `residual::residual_i32`:
+       p2:  gradient 1.383 | cid 2.143 | clic 2.184 | clic500 2.012 | (term 1.371, graph 1.180: ident=N)
+       p6:  gradient 0.948 | cid 1.394 | clic 1.289 | clic500 1.315 | term 0.941 | graph 0.934
+       p10: 1.000 | 0.977 | 0.975 | 0.996 | 0.760 | 0.880
+     C derives the residual ONCE per (tx-depth, TXB) — `perform_tx_partitioning`
+     (product_coding_loop.c:5337, 496,519x at photo_cid p2) and `full_loop_core`
+     (458,000x) — and every tx-type candidate transforms that buffer. The port
+     derives it once per TRIAL inside `tx_unit_inner`
+     (leaf_funnel/tx_pipeline.rs:508, 4,238,186x). The ratio is the mean
+     number of tx-type trials per TXB, which is ~2.1 on textured photos and
+     ~1.4 on the gradient; that is why it grew. Ir: `residual_i32` inclusive
+     1,502,206,698 = 3.05 % of the port's photo_cid p2 total, of which the
+     excess calls are (1 - 1/2.143) = 53 % -> ~1.6 % of the port's Ir at p2
+     on a photo (~1.7 % on clic). At p6 ~0.3 %, at p10 nil. Already named
+     as open in callcount_txtscreen's "WHAT IS NOT FIXED"; this measures it.
+     Fix shape unchanged: hoist the residual out of `txt_search`'s per-type
+     loop (an optional precomputed-residual argument to `tx_unit`).
+
+  B. THE ALLOCATOR — GREW 7x. `malloc+calloc+free` port/C:
+       p2:  gradient 1,339x (3,483,642) | cid 9,292x (24,169,160) | clic 8,473x | clic500 6,325x
+       p6:  125x | 216x | 185x | 143x | term 27x | graph 21x
+       p10:  40x |  38x |  38x |  26x | term 52x | graph 41x
+     C is 2,524-2,601 calls at EVERY cell (410 malloc / 781 calloc / 1,410
+     free at 512x512: one-time setup, preset- and content-independent). The
+     port's traffic scales with trials. Inclusive Ir on photo_cid p2:
+     `__rust_alloc_zeroed` 992,259,808 (2.02 %) + `__rust_dealloc` 634,082,945
+     (1.29 %) + `__rust_alloc` ~119.8 M (0.24 %) = ~3.55 % of the port's
+     total, plus `__memset_avx2_unaligned_erms` 433,763,928 (0.88 %; 18.2 M
+     calls, 17.5x C's 1.04 M — the zero-fills behind `vec![0; n]`). Per cell
+     the alloc/dealloc/alloc_zeroed share is 3.1-3.6 % on photos at every
+     preset, 4.2-5.3 % on screen at p2 and 8.9-10.1 % on screen at p10.
+     SITES (callers, photo_cid p2, from --tree=caller):
+       calloc 9,454,375:  tx_pipeline::tx_unit_inner 6,598,459 (1.56 per
+         trial: `qcoeff = vec![0i32; pw*ph]` tx_pipeline.rs:619 and
+         `recon = vec![0u8; n]` :718 — the same two the txtscreen record
+         named), predict::hadamard_satd 949,436 (2 per call: predict.rs:153-154
+         `res`/`coeff`), mds3::eval_candidate 522,156, inject::inject_candidates
+         474,718, overlay::predict_unit_overlay 258,623, chroma::eval_uv
+         257,800, cfl::md_cfl_rd_pick_alpha 211,831 (one per alpha trial),
+         pd0::tx_quant_core 55,614.
+       free 12,084,570:   mds3::eval_candidate 6,224,725, drop_glue<Cand>
+         1,352,714, hadamard_satd 949,436, predict_unit 940,449, overlay
+         683,517, cfl 423,662, run_mds1 281,598, run_mds3 259,492, eval_uv
+         257,800, drop_glue<EntropyCtx> 203,016.
+       malloc 2,630,196:  partition::extract_neighbors_tiled 964,308,
+         mds3::eval_candidate 844,195, overlay 214,539, Vec<u8>::from_iter
+         210,355, EntropyCtx::clone 202,896.
+     The two `TX_SCRATCH`/`SatdScratch` thread-locals already exist; the
+     traffic above is the sites NOT yet on them. `mds3::eval_candidate`
+     alone frees 6.2 M times (68 per candidate) — 45 `vec![` sites in
+     mds3.rs.
+
+  C. CDEF DIRECTION SEARCH — 2x BY COUNT, CONTENT-INDEPENDENT, TINY.
+     `cdef::cdef_find_dir` 8,192 = 4,096 from `cdef::filter_fb_packed` (the
+     search) + 4,096 from `cdef::apply_cdef_frame` (the apply); C's
+     `svt_aom_cdef_find_dir_dual_avx2` 2,048 calls x 2 blocks = 4,096, all
+     from `svt_cdef_filter_fb` — C computes each 8x8's direction once and
+     caches it (`dirinit`, cdef.c:340/367); the port recomputes it in the
+     apply (cdef.rs:460/666 vs :1081/1176). 17,539,072 Ir (0.04 % at p2,
+     ~0.7 % at p6) — and per block the port's find_dir is ~10x C's
+     (2,140 vs 208 Ir). Same on every content including gradient (3.98x).
+
+Edges that are 1:1 BY COUNT but where the port's Ir per call is far above
+C's — kernel findings, surfaced by real content, and NOT repeated work:
+
+  D. WIENER `compute_stats` — 127x PER CALL, CONTENT-INDEPENDENT, HALF OF p6.
+     Both sides call it 6 times per 512x512 frame (4 at 500x332). Port
+     `svtav1_dsp::restoration::compute_stats` (its `__arcane_..._impl_v3`
+     AVX2 arm) is 746,546,988 Ir on EVERY 512x512 cell — gradient, both
+     photos, the screenshot — at p2 and at p6 (472,802,392 at 500x332); C's
+     `svt_av1_compute_stats_avx2` -> `compute_stats_win5_avx2`
+     (pickrst_avx2.c:775) is 5,873,732 for the same six calls (photo_cid
+     p6). Port `restoration::search_restoration_still_bd` inclusive:
+     790.6 M = 33.0 % of photo_cid p6, 47.1 % of screen_terminal p6,
+     55.2 % of lineart_graph p6, 49.2 % of gradient p6; C's whole
+     `restoration_seg_search` is 8.15 M (1.16 %). With it removed the p6
+     port/C ratio is 2.27x (cid) / 2.50x (term) instead of 3.40x / 4.72x —
+     i.e. the p6 ratio being the worst of the three presets on every
+     content is mostly this one stage. At p2 it is 2.1 % (photo) / 8.5 %
+     (gradient) of the port's Ir; at p10 LR is off. `perf_still_attrib_
+     2026-09-03` reported this kernel at 5.1x on aarch64 NEON and a row-pair
+     fix landed there; on x86 the `_v3` arm is 127x per call against C's
+     AVX2. NOT resolved here (no fix in a measure-only chunk); it is the
+     next kernel to open on x86, ahead of anything in this record's count
+     findings by a factor of ten at p6.
+
+  E. CFL PREDICT — 12x PER CALL. `intra_pred::cfl_predict_lbd` 253,229 calls,
+     305,751,061 Ir (1,207 per call) vs `svt_cfl_predict_lbd_avx2`
+     (cfl_avx2.c:38) 253,259 calls, 25,020,768 Ir (99 per call). The CFL
+     alpha search as a whole (`cfl::md_cfl_rd_pick_alpha` vs
+     `av1_cost_calc_cfl`) is 2.04x C's Ir at photo_cid p2 (907.8 M vs
+     444.5 M, 211,831 alpha trials each side), 1.85x on clic (3.07 G vs
+     1.66 G — 6.3 % of the port's clic p2), with the count of alpha trials,
+     luma subsamplings and predicts all equal. The per-alpha tx unit is the
+     other half (`tx_unit_screened` from the alpha closure 385.7 M vs C's
+     `full_loop_uv` from cost_calc_cfl 374.2 M — about equal).
+
+  F. OUT-OF-LINE HELPERS (port only, no C symbol because C inlines them):
+     `MdRates::txt_rate` 5,974,663 calls / 382.3 M Ir (0.78 %),
+     `tx_pipeline::rs_tx_size` 6,984,051 / 167.4 M (0.34 %),
+     `coeff_c::tx_size_from_dims` 4,766,423 / 113.0 M (0.23 %) at photo_cid
+     p2; on screen content `palette::palette_color_index_context`
+     2,961,716 calls / 211.6 M (1.5 % of screen_terminal p2; C's
+     `av1_fast_palette_color_index_context` is `static inline`). ~1.4 % of
+     a photo's p2 Ir in call overhead of three tiny functions.
+
+RANKED BY (ratio x port inclusive Ir) ON THE PHOTO (photo_cid p2), counting
+only the port's EXCESS over C:
+  1. allocator + zero-fill (B)     ~4.4 % of port Ir     C: ~0
+  2. residual per trial (A)        ~1.6 %                C: 1 per TXB
+  3. compute_stats (D)             ~1.5 % at p2, 31 % at p6   C: 0.02 % / 0.83 %
+  4. CFL predict kernel (E)        ~0.6 % (2.0 % on clic)
+  5. helpers (F)                   ~1.4 %
+  6. CDEF find_dir (C)             ~0.04 % (0.7 % at p6)
+(1, 2, 6 are call-count findings; 3, 4, 5 are per-call cost with equal
+counts. Ir shares are callgrind's, not wall clock — see the standing caveat.)
+
+Edges where the PORT is BELOW C by count (C-side extra work, listed so the
+next reader does not chase them as port defects): `spatial_full_distortion
+_kernel_facade` vs `variance::sse` 0.50-0.53 everywhere (C measures the full
+and the zero-residual distortion as two calls; the port's `sse` covers both);
+`svt_aom_full_loop_uv` 360,189 vs `chroma::eval_uv` 128,900 on photo_cid p2
+(C's CFL alpha search goes through full_loop_uv 211,831 times; the port's
+alpha loop does not call eval_uv); `txb_estimate_coeff_bits` vs `ccost_log`
+0.65-0.90 (C's entry counts eob==0 shortcuts); inverse transforms at p10
+0.51-0.63 (C's encode pass); `get_eob_cost` 0.80-0.87 at p2 on photos.
+
+=================== CORRECTIONS TO THE PRIOR RECORDS ===================
+
+1. callcount_2026-09-04's "inverse-transform dispatcher inflated 2.031x
+   (p2) / 1.658x / 1.613x, does NOT converge at p10, a SEPARATE
+   not-yet-attributed source" was a MISJOIN. It compared the port's total
+   against `svt_av1_lowbd_inv_txfm2d_add_ssse3`, which is a SUB-dispatch
+   (C's `svt_av1_inv_txfm_add_avx2` sends some sizes to AVX2 kernels that
+   never enter the ssse3 entry). Against C's per-block wrapper
+   `svt_aom_inv_transform_recon8bit` the port is 0.973 (p2), 0.844 (p6),
+   0.543 (p10) on the gradient and 0.96-0.98 / 0.87-0.91 / 0.51-0.63 on
+   real content — at or BELOW C at every cell. There is no inverse-
+   transform call-count excess. (The old ssse3 row is kept in the TSV,
+   labelled, so the two can be compared: it reads 0.99 on the photos.)
+2. `md_stage_0` is per candidate class, not per leaf (above). The leaf
+   control is `md_encode_block`.
+3. `perform_dct_dct_tx` has no symbol in the -O3 oracle; the mds1skip
+   record's "502 perform_dct_dct_tx" was an edge-derived number. At p10 the
+   MDS3 join is `full_loop_core` alone.
+4. Gradient re-baseline at 600c5177 (rustc 1.98.1) vs the records at
+   708ef6386+fix / a1a32ca2f+fix (rustc 1.97.1): p2 11,767,652,265 vs
+   11,788,718,910 (-0.18 %), p6 1,605,735,574 vs 1,607,135,446 (-0.09 %),
+   p10 158,270,546 vs 159,339,453 (-0.67 %); C 4,424,517,108 /
+   313,617,813 / 62,749,980 vs 4,424,517,561 / 313,618,266 / 62,749,694
+   (same binary; <0.001 %). Every count in the txtscreen and mds1skip TSVs
+   reproduces here to the unit where re-checked (SB 64, MDS1 commit 67,249,
+   eval_candidate 9,165, optimize_b 260,098 / 7,857 / 1,110, quantizer
+   373,254 / 15,600 / 2,882, allocator 3,483,642 vs 3,483,661). The
+   toolchain bump is inert at this precision.
+
+=================== PORT/C Ir TOTALS PER CELL (for the perf-status picture) ===================
+
+            p2                          p6                       p10
+  gradient  2.660 (11.77 G / 4.42 G)    5.120 (1.61 G / 0.31 G)  2.522 (158 M / 63 M)
+  photo_cid 1.805 (49.17 G / 27.25 G)   3.395 (2.40 G / 0.71 G)  1.803 (185 M / 103 M)
+  photo_clic 1.835 (48.74 G / 26.56 G)  3.440 (2.38 G / 0.69 G)  1.799 (180 M / 100 M)
+  clic500   1.824 (32.24 G / 17.67 G)   3.343 (1.56 G / 0.47 G)  1.816 (122 M / 67 M)
+  terminal  2.206* (14.01 G / 6.35 G)   4.723 (1.68 G / 0.36 G)  2.192 (138 M / 63 M)
+  graph     2.444* (7.22 G / 2.96 G)    5.794 (1.34 G / 0.23 G)  2.477 (133 M / 54 M)
+  (* ident=N)
+The gradient OVERSTATES the p2 and p10 gaps (2.66x / 2.52x vs 1.80x / 1.80x
+on photos): on the gradient most of the port's fixed overhead (LR stats,
+allocator setup, helpers) sits over very little C work. It UNDERSTATES
+nothing at p2. At p6 every content is 3.3-5.8x and the fixed 790 M Ir of
+Wiener stats is 33-55 % of it.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: everything in the tables above, on 16 byte-identical cells, with
+controls that passed. The three fixed mechanisms hold on textured photos, a
+screenshot and line art. The residual and allocator counts grow with texture;
+the compute_stats cost does not depend on content at all.
+NOT ESTABLISHED: any wall-clock figure (no paired A/B run here — Ir on
+r7900x is the record); the mechanism of the +1.5 % forward-transform excess
+on the glitter image; why the port's `compute_stats` v3 arm costs 124 M Ir
+per call (kernel not read in this chunk); anything about the two divergent
+screen cells beyond that they diverge; 10-bit; video/inter; any qp but 40;
+any preset but 2/6/10. The screen_terminal / lineart_graph p2 counts are
+recorded but are NOT ratios (different work).

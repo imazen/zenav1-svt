@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **32
+**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **33
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **11** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -76,6 +76,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd luma plane must cover the true dims at y_stride |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd planes must cover the true dims (y at y_stride, u/v at true_w/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd source carries a sample above the configured bit depth |
+| `crates/svtav1-encoder/src/pipeline.rs` | interpolation-filter search smooth bias (tune vq / film-grain, or alt-ssim tuning) needs `is_noise_level`, which this port does not derive for an inter picture |
 | `crates/svtav1-encoder/src/pipeline.rs` | max_tx_size must be 32 or 64 (C verify_settings, enc_settings.c:922) |
 | `crates/svtav1-encoder/src/pipeline.rs` | monochrome luma plane must cover the true dims at y_stride |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit input needs a bd10 consumer: 64-aligned dims and either preset >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see docs/hbd-input-port-map.md chunk 2 |

@@ -46,3 +46,31 @@ SIMD_QUAL (both vectorised) / ALLOC / SCALAR_BOTH.
    `grep -ci 'hadamard|satd' c_512_p10.txt` returning 0 over 7,126 samples is how
    the MDS0 Hadamard finding in the `.meta` was made — a whole class of work the
    port does and C does not. Look for absences, not just for hot spots.
+
+## Exact call counts (callgrind, Linux only)
+
+`sample`-based profiles give shares; callgrind gives EXACT per-function call
+counts, which is the only way to ask "does the port call this MORE OFTEN than
+C for the same bytes". Runs on r7900x (valgrind does not run on the Mac).
+
+```bash
+# both sides, per cell: identity pre-pass, callgrind port + C, cmp the
+# instrumented runs' own output, then callcount.py / callgrind_annotate
+CE=~/work/zen/zenav1-svt/tools/perf_c_encode/perf_c_encode \
+  tools/perf_profile/callcount_cells.sh ~/tmp/cg \
+  gradient:gradient:512:512 photo:raw:/abs/photo.yuv:512:512
+# the C-function -> port-function(s) ratio table (sums AND lists every
+# symbol a regex matches, so duplicate transcriptions cannot hide)
+python3 tools/perf_profile/callcount_join.py ~/tmp/cg --tsv join.tsv
+# caller edges (which caller, how many times, at what inclusive Ir)
+python3 tools/perf_profile/tree_callers.py ~/tmp/cg/tree_c_photo_p2.txt '^svt_aom_quantize_inv_quantize$'
+```
+
+Real-content `.yuv`s come from `identity_run crop:<png> W H qp preset prefix`
+(the byte gates' BT.601 converter) and feed `perf_encode raw:<prefix>.yuv`.
+Records: `benchmarks/callcount_2026-09-04.*` (gradient), `callcount_txtscreen_*`,
+`callcount_mds1skip_*`, `callcount_realimg_2026-09-04.*` (six contents). Traps
+the last one hit: `callgrind_annotate` drops functions below its 99 % threshold
+(pass `--threshold=100` for small kernels); `md_stage_0` is per candidate class,
+not per leaf; C's `perform_dct_dct_tx` has no symbol at -O3; the port's 32x32
+hadamard calls its 16x16 four times.

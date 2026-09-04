@@ -1,0 +1,182 @@
+# Per-function CALL-COUNT join, port vs C, on REAL CONTENT — 55 edges x 3 presets, one column per
+# content: "<port_count>/<c_count>=<port/C ratio>" (no_c: C has 0 calls; both0: neither side).
+# Read callcount_realimg_2026-09-04.meta first; per-cell identity/Ir in callcount_realimg_2026-09-04.cells.tsv.
+# commit=600c5177d20118bbc9e87d0eb79fdcd9ebc51a0d + harness-only edits; host=r7900x (x86_64-linux);
+#   valgrind-3.26.0 callgrind (Ir); rustc 1.98.1; gcc 15.2.0; C oracle reference/svt-av1 @ 3115c0c1
+#   prebuilt (not rebuilt). qp 40, STILL, warmup=0.
+# cells: gradient = synthetic control | photo_cid = CID22-512 3571065.png 512x512 | photo_clic =
+#   clic2025 1e2f9d41... Mitchell 512x512 | photo_clic500 = same source, 500x332 | screen_terminal =
+#   gb82-sc terminal.png centre crop 512x512 | lineart_graph = gb82-sc graph.png centre crop 512x480.
+# BYTE-IDENTITY: every cell Y EXCEPT screen_terminal p2 and lineart_graph p2 — those two columns at
+#   preset 2 are counts on DIVERGENT encodes and are NOT ratios (marked with a trailing "!").
+# METHOD: tools/perf_profile/callcount_cells.sh -> callcount.py (per-function totals from the raw
+#   callgrind `calls=` edges) -> callcount_join.py --tsv (990-row long form with every matched symbol
+#   listed per side and the port's inclusive Ir; 154 KB, NOT committed for size — regenerate from the
+#   callgrind outputs with the same command, or ask for it) -> this pivot. Every regex may match
+#   several symbols per side; counts are SUMMED, so a duplicate transcription cannot hide in a ratio.
+edge	preset	gradient	photo_cid	photo_clic	photo_clic500	screen_terminal	lineart_graph
+CONTROL SB ctor (once per 64x64 SB)	2	64/64=1.000	64/64=1.000	64/64=1.000	48/48=1.000	64/64=1.000!	64/64=1.000!
+CONTROL leaves: md_encode_block vs evaluate_leaf (md_stage_0 is per CLASS, not per leaf — 1.56x leaves on screen content)	2	2300/2300=1.000	13217/13217=1.000	7995/7995=1.000	7285/7285=1.000	3587/3665=0.979!	2026/2024=1.001!
+CONTROL MDS0 SATD: hadamard_path vs predict::hadamard_satd	2	137416/137416=1.000	474718/474718=1.000	344874/344874=1.000	263124/263124=1.000	203698/208899=0.975!	108635/108534=1.001!
+CONTROL hadamard 4x4	2	18600/18600=1.000	200144/200144=1.000	88912/88912=1.000	109424/109424=1.000	32729/35157=0.931!	17268/17282=0.999!
+CONTROL hadamard 8x8	2	126356/126356=1.000	415896/415896=1.000	385144/385144=1.000	245520/245520=1.000	185466/191914=0.966!	87288/86587=1.008!
+CONTROL hadamard 16x16 (port count INCLUDES 4 per 32x32 — see comment)	2	126976/66712=1.903	71672/63488=1.129	103416/63488=1.629	56962/41106=1.386	85843/50388=1.704!	83761/31268=2.679!
+CONTROL hadamard 32x32	2	15066/15066=1.000	2046/2046=1.000	9982/9982=1.000	3964/3964=1.000	8982/8982=1.000!	13142/13142=1.000!
+CONTROL PD0 recursion: pick_partition_pd0 vs Pd0Ctx::pick_q	2	4618/4618=1.000	18538/18538=1.000	20727/20727=1.000	13575/13575=1.000	6426/6418=1.001!	3061/3061=1.000!
+CONTROL PD0 quant: quantize_inv_quantize_light vs pd0::tx_quant_core (p2/p6 only; C also takes _light in MDS3 at p10)	2	4618/4618=1.000	18538/18538=1.000	20727/20727=1.000	13575/13575=1.000	6426/6418=1.001!	3061/3061=1.000!
+MDS3 candidates: perform_tx_partitioning(+perform_dct_dct_tx if visible) vs mds3::eval_candidate — at p10 use the full_loop_core row	2	9165/9165=1.000	91350/91350=1.000	59488/59488=1.000	52966/52902=1.001	23632/24360=0.970!	11544/11593=0.996!
+MDS1 luma commit: av1_quantize_b_facade_ii vs quant_coding::quantize_b_raster	2	67249/67249=1.000	281598/281598=1.000	189578/189578=1.000	155702/155702=1.000	114670/117523=0.976!	58263/58243=1.000!
+full_loop_core (C MDS1+MDS3 candidates) vs port eval_candidate + quantize_b_raster	2	76414/76414=1.000	372948/372948=1.000	249066/249066=1.000	208668/208668=1.000	138302/141883=0.975!	69807/69836=1.000!
+run_mds1 (port, per leaf; C: none — must be 0 where enable_skipping_mds1)	2	2300/0=no_c	13217/0=no_c	7995/0=no_c	7285/0=no_c	3587/0=no_c!	2026/0=no_c!
+nic::stage_mds1_to_mds3 (port, per leaf)	2	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0!	0/0=both0!
+tx_type_search (C; port txt_search is inlined)	2	0/96754=0.000	0/496519=0.000	0/473979=0.000	0/309287=0.000	0/128927=0.000!	0/54281=0.000!
+trial width: estimate_transform vs tx_unit_inner (port count includes screened-out trials)	2	591253/600171=0.985	4238186/4263563=0.994	4265458/4222105=1.010	2935844/2902758=1.011	967327/1045742=0.925!	413091/435679=0.948!
+forward transform: estimate_transform vs fwd_txfm2d_dispatch	2	595871/600171=0.993	4256724/4263563=0.998	4286185/4222105=1.015	2949419/2902758=1.016	973753/1045742=0.931!	416152/435679=0.955!
+residual: svt_aom_residual_kernel vs residual_i32	2	595871/430945=1.383	4256724/1986776=2.143	4286185/1962551=2.184	2949419/1465869=2.012	973753/710336=1.371!	416152/352674=1.180!
+coefficient SATD screen: svt_aom_satd (port SatdScreen is inlined, no symbol)	2	0/711176=0.000	0/4126759=0.000	0/3823105=0.000	0/2541635=0.000	0/1021108=0.000!	0/425564=0.000!
+quantizer dispatch total: quantize_inv_quantize(+_light) vs quantize_{fp,b}_raster	2	373254/382172=0.977	3545999/3571376=0.993	3406381/3363028=1.013	2458489/2425403=1.014	683929/722866=0.946!	304913/313792=0.972!
+quantize_fp: svt_av1_quantize_fp_facade vs quantize_fp_raster	2	306005/310305=0.986	3264401/3271240=0.998	3216803/3152723=1.020	2302787/2256126=1.021	569259/598925=0.950!	246650/252488=0.977!
+RDOQ: svt_av1_optimize_b vs quant::optimize_b	2	260098/261827=0.993	2854762/2859667=0.998	2825355/2799231=1.009	1839934/1831111=1.005	408586/432508=0.945!	165864/169701=0.977!
+fast RDOQ: svt_fast_optimize_b	2	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0!	0/0=both0!
+coeff rate: svt_av1_cost_coeffs_txb vs coeff_rate::cost_coeffs_txb	2	299116/304169=0.983	3046589/3068834=0.993	2714238/2729398=0.994	1836385/1850433=0.992	438314/467527=0.938!	180184/186283=0.967!
+coeff rate entry: txb_estimate_coeff_bits vs coeff_rate::ccost_log	2	299116/339972=0.880	3046589/3383934=0.900	2714238/3223085=0.842	1836385/2316628=0.793	438314/648327=0.676!	180184/279463=0.645!
+nz map contexts	2	303622/305513=0.994	3065069/3073775=0.997	2734925/2731264=1.001	1849940/1852467=0.999	443344/467811=0.948!	182185/186489=0.977!
+init levels: txb_init_levels vs coeff_simd::fill_levels	2	503702/502857=1.002	5826844/5820172=1.001	5383710/5361202=1.004	3586919/3580615=1.002	801262/850143=0.943!	316487/324141=0.976!
+eob cost: get_eob_cost vs quant::coeff_cost_eob::<0>	2	1208314/1195015=1.011	13857516/17439851=0.795	14564439/16664643=0.874	8989929/10985002=0.818	1986806/2345053=0.847!	690207/837055=0.825!
+distortion: spatial_full_distortion_kernel_facade vs variance::sse	2	306005/579144=0.528	3052460/6069550=0.503	2703050/5254668=0.514	1895134/3682942=0.515	460300/906022=0.508!	188760/360370=0.524!
+inverse transform: inv_transform_recon8bit vs inv_txfm2d_dispatch	2	233171/239525=0.973	2745865/2811836=0.977	2440120/2515661=0.970	1666998/1741562=0.957	323966/365172=0.887!	121349/133149=0.911!
+inverse transform (2026-09-04 record's row): lowbd_inv_txfm2d_add_ssse3 vs inv_txfm2d_c_exact_bd	2	233171/202922=1.149	2745865/2769170=0.992	2440120/2449351=0.996	1666998/1706599=0.977	323966/352928=0.918!	121349/126034=0.963!
+chroma full loop: svt_aom_full_loop_uv vs chroma::eval_uv (C also calls it per CFL alpha)	2	17795/17795=1.000	128900/360189=0.358	93342/622227=0.150	75391/497411=0.152	27902/145844=0.191!	14797/76069=0.195!
+CFL alpha search: av1_cost_calc_cfl (per alpha) vs md_cfl_rd_pick_alpha (per block) — NOT count-comparable	2	0/0=both0	20754/211831=0.098	49290/513713=0.096	39769/407595=0.098	10378/109107=0.095!	4643/58137=0.080!
+CFL predict	2	0/0=both0	253229/253259=1.000	612289/614173=0.997	487105/488719=0.997	123729/128929=0.960!	66680/67413=0.989!
+CFL luma subsampling	2	0/0=both0	20754/20769=0.999	49290/50232=0.981	39769/40572=0.980	10378/10887=0.953!	4643/4739=0.980!
+filter intra predictor	2	9684/9753=0.993	59393/60312=0.985	54331/55122=0.986	36233/36790=0.985	13717/14342=0.956!	5837/5954=0.980!
+directional predictor, all zones: dr_prediction_z{1,2,3} vs dr_predictor_edged	2	150440/150725=0.998	633602/626984=1.011	517231/513536=1.007	359635/357522=1.006	183755/186982=0.983!	105057/102714=1.023!
+directional z2 kernel	2	68080/68123=0.999	290089/286634=1.012	223191/221610=1.007	159834/158934=1.006	90124/91889=0.981!	58076/56020=1.037!
+palette search	2	0/0=both0	0/0=both0	0/0=both0	0/0=both0	2704/2777=0.974!	1464/1462=1.001!
+palette k-means dim1	2	0/0=both0	0/0=both0	0/0=both0	0/0=both0	13087/13404=0.976!	5422/5422=1.000!
+palette color index ctx	2	0/0=both0	0/0=both0	0/0=both0	0/0=both0	2961716/0=no_c!	1701281/0=no_c!
+intrabc hash search	2	2/0=no_c	2/0=no_c	2/0=no_c	2/0=no_c	79246/3651=21.705!	35480/1664=21.322!
+CDEF find_dir: cdef_find_dir_dual (2 blocks/call) + cdef_find_dir vs cdef::cdef_find_dir	2	7978/2002=3.985	8192/2048=4.000	8192/2048=4.000	5292/1323=4.000	0/0=both0!	0/0=both0!
+CDEF filter block	2	111692/111692=1.000	121984/121984=1.000	114688/114688=1.000	74088/74088=1.000	0/0=both0!	0/0=both0!
+DLF frame	2	0/18=0.000	0/5=0.000	0/5=0.000	0/5=0.000	0/0=both0!	0/0=both0!
+restoration search	2	1/0=no_c	1/0=no_c	1/0=no_c	1/0=no_c	0/0=both0!	0/0=both0!
+port helper: tx_pipeline::rs_tx_size	2	824424/0=no_c	6984051/0=no_c	6705578/0=no_c	4602842/0=no_c	1291293/0=no_c!	534440/0=no_c!
+port helper: coeff_c::tx_size_from_dims	2	697948/0=no_c	4766423/0=no_c	4752313/0=no_c	3259164/0=no_c	1091004/0=no_c!	467065/0=no_c!
+port helper: MdRates::txt_rate	2	833836/0=no_c	5974663/0=no_c	5407807/0=no_c	3655247/0=no_c	1148546/0=no_c!	473067/0=no_c!
+allocator: malloc	2	449829/410=1097.144	2630201/410=6415.124	2161215/410=5271.256	1668527/408=4089.527	837323/100374=8.342!	401402/75680=5.304!
+allocator: calloc	2	1291992/781=1654.279	9454379/781=12105.479	8858488/781=11342.494	6443792/765=8423.258	2258295/782=2887.845!	1060692/782=1356.384!
+allocator: free	2	1741821/1410=1235.334	12084580/1410=8570.624	11019703/1410=7815.392	8112319/1392=5827.815	3095618/101374=30.537!	1462094/76680=19.067!
+allocator: malloc+calloc+free	2	3483642/2601=1339.347	24169160/2601=9292.257	22039406/2601=8473.436	16224638/2565=6325.395	6191236/202530=30.569!	2924188/153142=19.095!
+memset	2	2559566/310263=8.250	18191159/1040065=17.490	17060903/997125=17.110	11489992/646145=17.782	3326108/401239=8.290!	1483535/181293=8.183!
+memcpy	2	2979135/1101449=2.705	9995587/5064845=1.974	9194255/4458039=2.062	6279863/3016414=2.082	3428442/1606972=2.133!	1643128/746491=2.201!
+CONTROL SB ctor (once per 64x64 SB)	6	64/64=1.000	64/64=1.000	64/64=1.000	48/48=1.000	64/64=1.000	64/64=1.000
+CONTROL leaves: md_encode_block vs evaluate_leaf (md_stage_0 is per CLASS, not per leaf — 1.56x leaves on screen content)	6	1075/1075=1.000	1177/1177=1.000	727/727=1.000	599/599=1.000	1681/1681=1.000	984/984=1.000
+CONTROL MDS0 SATD: hadamard_path vs predict::hadamard_satd	6	5375/5375=1.000	5885/5885=1.000	3635/3635=1.000	2995/2995=1.000	10547/10547=1.000	5990/5990=1.000
+CONTROL hadamard 4x4	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+CONTROL hadamard 8x8	6	3220/3220=1.000	3020/3020=1.000	1300/1300=1.000	1270/1270=1.000	8514/8514=1.000	4107/4107=1.000
+CONTROL hadamard 16x16 (port count INCLUDES 4 per 32x32 — see comment)	6	4315/1435=3.007	4365/2365=1.846	4795/1515=3.165	2990/1430=2.091	3617/1761=2.054	4262/1218=3.499
+CONTROL hadamard 32x32	6	720/720=1.000	500/500=1.000	820/820=1.000	390/390=1.000	464/464=1.000	761/761=1.000
+CONTROL PD0 recursion: pick_partition_pd0 vs Pd0Ctx::pick_q	6	4393/4393=1.000	5440/5440=1.000	5440/5440=1.000	3542/3542=1.000	2827/2827=1.000	2217/2217=1.000
+CONTROL PD0 quant: quantize_inv_quantize_light vs pd0::tx_quant_core (p2/p6 only; C also takes _light in MDS3 at p10)	6	4393/4393=1.000	5440/5440=1.000	5440/5440=1.000	3542/3542=1.000	2827/2827=1.000	2217/2217=1.000
+MDS3 candidates: perform_tx_partitioning(+perform_dct_dct_tx if visible) vs mds3::eval_candidate — at p10 use the full_loop_core row	6	1519/1519=1.000	2316/2316=1.000	1663/1663=1.000	1279/1273=1.005	2686/2686=1.000	1452/1449=1.002
+MDS1 luma commit: av1_quantize_b_facade_ii vs quant_coding::quantize_b_raster	6	4165/4165=1.000	5834/5834=1.000	3622/3622=1.000	2986/2986=1.000	8392/8392=1.000	4220/4220=1.000
+full_loop_core (C MDS1+MDS3 candidates) vs port eval_candidate + quantize_b_raster	6	5684/5684=1.000	8150/8150=1.000	5285/5285=1.000	4265/4265=1.000	11078/11078=1.000	5672/5672=1.000
+run_mds1 (port, per leaf; C: none — must be 0 where enable_skipping_mds1)	6	1075/0=no_c	1177/0=no_c	727/0=no_c	599/0=no_c	1681/0=no_c	984/0=no_c
+nic::stage_mds1_to_mds3 (port, per leaf)	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+tx_type_search (C; port txt_search is inlined)	6	0/6387=0.000	0/11564=0.000	0/8280=0.000	0/6234=0.000	0/5887=0.000	0/3101=0.000
+trial width: estimate_transform vs tx_unit_inner (port count includes screened-out trials)	6	17740/22133=0.802	54953/59903=0.917	52118/54718=0.952	41050/42446=0.967	43307/45546=0.951	24179/25898=0.934
+forward transform: estimate_transform vs fwd_txfm2d_dispatch	6	22133/22133=1.000	60393/59903=1.008	57558/54718=1.052	44592/42446=1.051	46134/45546=1.013	26396/25898=1.019
+residual: svt_aom_residual_kernel vs residual_i32	6	22133/23358=0.948	60393/43337=1.394	57558/44650=1.289	44592/33900=1.315	46134/49008=0.941	26396/28248=0.934
+coefficient SATD screen: svt_aom_satd (port SatdScreen is inlined, no symbol)	6	0/15568=0.000	0/39644=0.000	0/25197=0.000	0/20764=0.000	0/23838=0.000	0/12790=0.000
+quantizer dispatch total: quantize_inv_quantize(+_light) vs quantize_{fp,b}_raster	6	15600/19993=0.780	46300/51250=0.903	44838/47438=0.945	35852/37248=0.963	39274/41513=0.946	22228/23947=0.928
+quantize_fp: svt_av1_quantize_fp_facade vs quantize_fp_raster	6	11435/11435=1.000	40466/39976=1.012	41216/38376=1.074	32866/30720=1.070	30882/30294=1.019	18008/17510=1.028
+RDOQ: svt_av1_optimize_b vs quant::optimize_b	6	7857/7857=1.000	31243/31064=1.006	30831/29324=1.051	20767/20039=1.036	12584/12282=1.025	7948/7609=1.045
+fast RDOQ: svt_fast_optimize_b	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+coeff rate: svt_av1_cost_coeffs_txb vs coeff_rate::cost_coeffs_txb	6	11132/16829=0.661	33835/40845=0.828	24589/30430=0.808	17816/21869=0.815	13988/16268=0.860	7545/8986=0.840
+coeff rate entry: txb_estimate_coeff_bits vs coeff_rate::ccost_log	6	11132/15365=0.725	33835/44117=0.767	24589/39418=0.624	17816/31790=0.560	13988/34780=0.402	7545/19598=0.385
+nz map contexts	6	15525/18040=0.861	39275/42285=0.929	30029/31195=0.963	21358/22506=0.949	16008/16519=0.969	8952/9169=0.976
+init levels: txb_init_levels vs coeff_simd::fill_levels	6	23812/23623=1.008	71755/67836=1.058	59007/55263=1.068	40313/38252=1.054	26106/24509=1.065	14241/13028=1.093
+eob cost: get_eob_cost vs quant::coeff_cost_eob::<0>	6	39443/38378=1.028	157797/213950=0.738	195852/208254=0.940	104464/128503=0.813	45813/52247=0.877	23536/27233=0.864
+distortion: spatial_full_distortion_kernel_facade vs variance::sse	6	11435/22710=0.504	30484/59952=0.508	20869/36054=0.579	17382/30472=0.570	15091/28008=0.539	8291/14922=0.556
+inverse transform: inv_transform_recon8bit vs inv_txfm2d_dispatch	6	7080/8385=0.844	25799/28354=0.910	15838/17965=0.882	13125/15034=0.873	5987/6742=0.888	3244/3583=0.905
+inverse transform (2026-09-04 record's row): lowbd_inv_txfm2d_add_ssse3 vs inv_txfm2d_c_exact_bd	6	7080/5497=1.288	25799/21743=1.187	15838/11092=1.428	13125/10197=1.287	5987/6123=0.978	3244/3345=0.970
+chroma full loop: svt_aom_full_loop_uv vs chroma::eval_uv (C also calls it per CFL alpha)	6	1519/1519=1.000	2316/11467=0.202	1663/20347=0.082	1279/15488=0.083	2686/17198=0.156	1452/10505=0.138
+CFL alpha search: av1_cost_calc_cfl (per alpha) vs md_cfl_rd_pick_alpha (per block) — NOT count-comparable	6	0/0=both0	831/8320=0.100	1663/17021=0.098	1275/12934=0.099	1279/13233=0.097	664/8389=0.079
+CFL predict	6	0/0=both0	8810/8810=1.000	19861/19861=1.000	15080/15080=1.000	13821/13821=1.000	8887/8887=1.000
+CFL luma subsampling	6	0/0=both0	831/831=1.000	1663/1663=1.000	1275/1275=1.000	1279/1279=1.000	664/664=1.000
+filter intra predictor	6	1753/1753=1.000	3718/3718=1.000	2692/2692=1.000	2086/2086=1.000	2132/2132=1.000	1225/1225=1.000
+directional predictor, all zones: dr_prediction_z{1,2,3} vs dr_predictor_edged	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+directional z2 kernel	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+palette search	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	1681/1681=1.000	984/984=1.000
+palette k-means dim1	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	2078/2078=1.000	942/942=1.000
+palette color index ctx	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	223506/0=no_c	158856/0=no_c
+intrabc hash search	6	2/0=no_c	2/0=no_c	2/0=no_c	2/0=no_c	2/0=no_c	2/0=no_c
+CDEF find_dir: cdef_find_dir_dual (2 blocks/call) + cdef_find_dir vs cdef::cdef_find_dir	6	8112/2038=3.980	8192/2048=4.000	8192/2048=4.000	5292/1323=4.000	2320/592=3.919	1024/264=3.879
+CDEF filter block	6	24336/24336=1.000	26816/26816=1.000	24576/24576=1.000	15876/15876=1.000	6960/6960=1.000	3072/3072=1.000
+DLF frame	6	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+restoration search	6	1/0=no_c	1/0=no_c	1/0=no_c	1/0=no_c	1/0=no_c	1/0=no_c
+port helper: tx_pipeline::rs_tx_size	6	24820/0=no_c	80752/0=no_c	67956/0=no_c	54175/0=no_c	49294/0=no_c	27423/0=no_c
+port helper: coeff_c::tx_size_from_dims	6	31291/0=no_c	81719/0=no_c	69842/0=no_c	55064/0=no_c	55399/0=no_c	30593/0=no_c
+port helper: MdRates::txt_rate	6	24539/0=no_c	56776/0=no_c	33451/0=no_c	28573/0=no_c	30776/0=no_c	15007/0=no_c
+allocator: malloc	6	74328/402=184.896	110402/402=274.632	84102/402=209.209	63919/400=159.798	122358/9435=12.969	69337/6821=10.165
+allocator: calloc	6	87663/782=112.101	168442/782=215.399	154831/782=197.994	118831/766=155.132	157275/783=200.862	91781/783=117.217
+allocator: free	6	161991/1400=115.708	278844/1400=199.174	238933/1400=170.666	182750/1382=132.236	279633/10434=26.800	161118/7820=20.603
+allocator: malloc+calloc+free	6	323982/2584=125.380	557688/2584=215.824	477866/2584=184.933	365500/2548=143.446	559266/20652=27.080	322236/15424=20.892
+memset	6	176384/46004=3.834	364860/56676=6.438	297590/40304=7.384	215663/31516=6.843	255061/57987=4.399	156362/34351=4.552
+memcpy	6	371198/65415=5.675	510417/91100=5.603	441726/59268=7.453	313669/48123=6.518	423818/119035=3.560	276489/78458=3.524
+CONTROL SB ctor (once per 64x64 SB)	10	64/64=1.000	64/64=1.000	64/64=1.000	48/48=1.000	64/64=1.000	64/64=1.000
+CONTROL leaves: md_encode_block vs evaluate_leaf (md_stage_0 is per CLASS, not per leaf — 1.56x leaves on screen content)	10	886/886=1.000	787/787=1.000	793/793=1.000	558/558=1.000	1294/1294=1.000	972/972=1.000
+CONTROL MDS0 SATD: hadamard_path vs predict::hadamard_satd	10	0/0=both0	87/87=1.000	95/95=1.000	10/10=1.000	1385/1385=1.000	534/534=1.000
+CONTROL hadamard 4x4	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+CONTROL hadamard 8x8	10	0/0=both0	0/0=both0	0/0=both0	10/10=1.000	924/924=1.000	496/496=1.000
+CONTROL hadamard 16x16 (port count INCLUDES 4 per 32x32 — see comment)	10	0/0=both0	87/87=1.000	95/95=1.000	0/0=both0	461/461=1.000	38/38=1.000
+CONTROL hadamard 32x32	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+CONTROL PD0 recursion: pick_partition_pd0 vs Pd0Ctx::pick_q	10	3296/3296=1.000	5440/5440=1.000	5440/5440=1.000	3632/3542=1.025	3640/3640=1.000	2468/2452=1.007
+CONTROL PD0 quant: quantize_inv_quantize_light vs pd0::tx_quant_core (p2/p6 only; C also takes _light in MDS3 at p10)	10	1256/1256=1.000	0/0=both0	0/0=both0	0/0=both0	155/155=1.000	873/873=1.000
+MDS3 candidates: perform_tx_partitioning(+perform_dct_dct_tx if visible) vs mds3::eval_candidate — at p10 use the full_loop_core row	10	886/384=2.307	787/787=1.000	793/793=1.000	558/558=1.000	1294/1187=1.090	972/473=2.055
+MDS1 luma commit: av1_quantize_b_facade_ii vs quant_coding::quantize_b_raster	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+full_loop_core (C MDS1+MDS3 candidates) vs port eval_candidate + quantize_b_raster	10	886/886=1.000	787/787=1.000	793/793=1.000	558/558=1.000	1294/1294=1.000	972/972=1.000
+run_mds1 (port, per leaf; C: none — must be 0 where enable_skipping_mds1)	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+nic::stage_mds1_to_mds3 (port, per leaf)	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+tx_type_search (C; port txt_search is inlined)	10	0/608=0.000	0/2178=0.000	0/2062=0.000	0/1405=0.000	0/1545=0.000	0/594=0.000
+trial width: estimate_transform vs tx_unit_inner (port count includes screened-out trials)	10	2882/4138=0.696	3752/3752=1.000	3648/3648=1.000	2521/2521=1.000	4240/4395=0.965	3037/3910=0.777
+forward transform: estimate_transform vs fwd_txfm2d_dispatch	10	4138/4138=1.000	3752/3752=1.000	3648/3648=1.000	2521/2521=1.000	4395/4395=1.000	3910/3910=1.000
+residual: svt_aom_residual_kernel vs residual_i32	10	4138/4138=1.000	3752/3839=0.977	3648/3743=0.975	2521/2531=0.996	4395/5780=0.760	3910/4444=0.880
+coefficient SATD screen: svt_aom_satd (port SatdScreen is inlined, no symbol)	10	0/0=both0	0/87=0.000	0/95=0.000	0/10=0.000	0/1385=0.000	0/534=0.000
+quantizer dispatch total: quantize_inv_quantize(+_light) vs quantize_{fp,b}_raster	10	2882/4138=0.696	3752/3752=1.000	3648/3648=1.000	2521/2521=1.000	4240/4395=0.965	3037/3910=0.777
+quantize_fp: svt_av1_quantize_fp_facade vs quantize_fp_raster	10	2882/2882=1.000	3752/3752=1.000	3648/3648=1.000	2521/2521=1.000	4240/4240=1.000	3037/3037=1.000
+RDOQ: svt_av1_optimize_b vs quant::optimize_b	10	1110/1110=1.000	2544/2544=1.000	2960/2960=1.000	1755/1755=1.000	1721/1721=1.000	964/964=1.000
+fast RDOQ: svt_fast_optimize_b	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+coeff rate: svt_av1_cost_coeffs_txb vs coeff_rate::cost_coeffs_txb	10	502/0=no_c	361/0=no_c	603/0=no_c	245/0=no_c	400/0=no_c	575/0=no_c
+coeff rate entry: txb_estimate_coeff_bits vs coeff_rate::ccost_log	10	502/0=no_c	361/0=no_c	603/0=no_c	245/0=no_c	400/0=no_c	575/0=no_c
+nz map contexts	10	502/934=0.537	361/1205=0.300	603/1230=0.490	245/762=0.322	400/888=0.450	575/491=1.171
+init levels: txb_init_levels vs coeff_simd::fill_levels	10	2546/2044=1.246	3824/3463=1.104	4650/4047=1.149	2582/2337=1.105	2791/2139=1.305	1769/1093=1.618
+eob cost: get_eob_cost vs quant::coeff_cost_eob::<0>	10	8278/7419=1.116	24655/24260=1.016	25565/24884=1.027	16123/15799=1.021	10434/9942=1.049	4614/4270=1.081
+distortion: spatial_full_distortion_kernel_facade vs variance::sse	10	2882/5764=0.500	3752/7504=0.500	3648/7296=0.500	2521/5042=0.500	4240/8480=0.500	3037/6074=0.500
+inverse transform: inv_transform_recon8bit vs inv_txfm2d_dispatch	10	1110/2044=0.543	2539/4053=0.626	2665/4334=0.615	1650/2645=0.624	1641/3071=0.534	909/1772=0.513
+inverse transform (2026-09-04 record's row): lowbd_inv_txfm2d_add_ssse3 vs inv_txfm2d_c_exact_bd	10	1110/688=1.613	2539/2333=1.088	2665/2510=1.062	1650/1505=1.096	1641/2321=0.707	909/1102=0.825
+chroma full loop: svt_aom_full_loop_uv vs chroma::eval_uv (C also calls it per CFL alpha)	10	886/886=1.000	787/787=1.000	793/793=1.000	558/558=1.000	1294/1294=1.000	972/972=1.000
+CFL alpha search: av1_cost_calc_cfl (per alpha) vs md_cfl_rd_pick_alpha (per block) — NOT count-comparable	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+CFL predict	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+CFL luma subsampling	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+filter intra predictor	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+directional predictor, all zones: dr_prediction_z{1,2,3} vs dr_predictor_edged	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+directional z2 kernel	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+palette search	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+palette k-means dim1	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+palette color index ctx	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+intrabc hash search	10	2/0=no_c	2/0=no_c	2/0=no_c	2/0=no_c	2/0=no_c	2/0=no_c
+CDEF find_dir: cdef_find_dir_dual (2 blocks/call) + cdef_find_dir vs cdef::cdef_find_dir	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+CDEF filter block	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+DLF frame	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+restoration search	10	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0	0/0=both0
+port helper: tx_pipeline::rs_tx_size	10	3992/0=no_c	6291/0=no_c	6313/0=no_c	4171/0=no_c	5881/0=no_c	3946/0=no_c
+port helper: coeff_c::tx_size_from_dims	10	7520/0=no_c	8956/0=no_c	8791/0=no_c	6094/0=no_c	10072/0=no_c	6988/0=no_c
+port helper: MdRates::txt_rate	10	502/0=no_c	0/0=both0	0/0=both0	0/0=both0	47/0=no_c	360/0=no_c
+allocator: malloc	10	30497/371=82.202	30784/371=82.976	30739/371=82.854	21289/371=57.383	41497/371=111.852	31636/371=85.272
+allocator: calloc	10	19780/777=25.457	17068/777=21.967	16834/777=21.665	11505/761=15.118	24137/777=31.064	20004/777=25.745
+allocator: free	10	50277/1376=36.539	47852/1376=34.776	47573/1376=34.573	32794/1360=24.113	65634/1376=47.699	51640/1376=37.529
+allocator: malloc+calloc+free	10	100554/2524=39.839	95704/2524=37.918	95146/2524=37.697	65588/2492=26.319	131268/2524=52.008	103280/2524=40.919
+memset	10	42047/8368=5.025	46423/10760=4.314	47131/10478=4.498	31345/7846=3.995	54370/9684=5.614	44007/6554=6.715
+memcpy	10	113495/30551=3.715	130363/26460=4.927	126481/22044=5.738	87029/17731=4.908	143050/38113=3.753	113652/34082=3.335

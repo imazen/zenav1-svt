@@ -1,0 +1,26 @@
+# Per-cell summary for callcount_realimg_2026-09-04 — byte identity + Ir totals both sides.
+# content column: the .yuv each cell encoded (sha256 prefix in the .meta); port_cg_ident / c_cg_ident =
+# the callgrind-instrumented run's OWN .obu equals the uninstrumented pre-pass .obu.
+# callcount_cells.sh summary — one row per (cell, preset)
+# port=/home/lilith/work/zen/zenav1-svt--rc1/rust/target/release/examples/perf_encode
+# c=/home/lilith/work/zen/zenav1-svt/rust/tools/perf_c_encode/perf_c_encode
+# valgrind=valgrind-3.26.0 qp=40 presets=[2 6 10] date=2026-09-04T22:43:42Z host=r7900x
+cell	content	width	height	preset	ident	obu_bytes	obu_sha256	port_ir	c_ir	port_over_c	port_cg_ident	c_cg_ident
+gradient	gradient	512	512	2	Y	5126	12ac5773eb96ccfa	11767652265	4424517108	2.660	Y	Y
+gradient	gradient	512	512	6	Y	5995	5eef4a78a80d40b6	1605735574	313617813	5.120	Y	Y
+gradient	gradient	512	512	10	Y	6743	923d046b98312cd8	158270546	62749980	2.522	Y	Y
+photo_cid	raw:photo_cid.yuv	512	512	2	Y	46462	80a4683a278dd9b6	49174701434	27248546924	1.805	Y	Y
+photo_cid	raw:photo_cid.yuv	512	512	6	Y	45688	8d4ecc23ddb988df	2395399157	705587968	3.395	Y	Y
+photo_cid	raw:photo_cid.yuv	512	512	10	Y	44177	4dce40af2839076f	184978392	102616250	1.803	Y	Y
+screen_terminal	raw:screen_terminal.yuv	512	512	2	N	4991	399c5133344e6b61	14009069202	6351759269	2.206	Y	Y
+screen_terminal	raw:screen_terminal.yuv	512	512	6	Y	10090	0f66e1290af4cc1e	1678499360	355384998	4.723	Y	Y
+screen_terminal	raw:screen_terminal.yuv	512	512	10	Y	12941	056bb8bd8697da25	138000463	62950564	2.192	Y	Y
+lineart_graph	raw:lineart_graph.yuv	512	480	2	N	3087	0f187d0d2cf614ed	7224599988	2955484648	2.444	Y	Y
+lineart_graph	raw:lineart_graph.yuv	512	480	6	Y	3872	1819418a48c09f56	1343790325	231945122	5.794	Y	Y
+lineart_graph	raw:lineart_graph.yuv	512	480	10	Y	5651	10fe8b887a5a483c	132807582	53616323	2.477	Y	Y
+photo_clic500	raw:photo_clic500.yuv	500	332	2	Y	29907	29fe9e65d42bbb2f	32241218069	17672427503	1.824	Y	Y
+photo_clic500	raw:photo_clic500.yuv	500	332	6	Y	29857	cb5dc99ad920c5a4	1562181575	467235962	3.343	Y	Y
+photo_clic500	raw:photo_clic500.yuv	500	332	10	Y	28828	5d7327067e1fdafa	121924432	67134574	1.816	Y	Y
+photo_clic	raw:photo_clic.yuv	512	512	2	Y	45529	b1e5e31b8a350d4e	48743626322	26558491444	1.835	Y	Y
+photo_clic	raw:photo_clic.yuv	512	512	6	Y	45188	2273d3023e3a2c8a	2383845330	693026656	3.440	Y	Y
+photo_clic	raw:photo_clic.yuv	512	512	10	Y	44737	06d65476b8cd3dcf	179728297	99880040	1.799	Y	Y

@@ -19,6 +19,8 @@
 //!
 //! Usage: perf_encode <content> <width> <height> <cli_qp 0..63> <preset> <out_prefix> [warmup=1]
 //!   content: uniform (y=128) | gradient (identity campaign's gradient)
+//!            | raw:<in.yuv> (real content: an I420 8-bit file of exactly
+//!              <width>x<height>, as `identity_run crop:/file:` writes it)
 //! Output (stdout, machine-readable, one line): "ENCODE_NS=<n> BYTES=<m>"
 //!         everything else (notes) -> stderr, so the driver parses stdout clean.
 //!
@@ -115,10 +117,37 @@ fn main() {
         "perf harness uses even dims (floor==ceiling chroma)"
     );
 
-    let y = gen_content(content, w, h);
     let (cw, ch) = (w / 2, h / 2);
-    let u = vec![128u8; cw * ch];
-    let v = vec![128u8; cw * ch];
+    // `raw:<path>` — a real-content I420 8-bit .yuv (w*h luma + 2*(w/2)*(h/2)
+    // chroma, the floor layout `identity_run`'s `crop:`/`file:` modes write),
+    // so a callgrind/timing cell can run on a corpus image instead of the
+    // synthetic ladder. Same contract as `identity_run`'s `raw:`; the file is
+    // re-written to `<prefix>.yuv` below so the C driver reads the ONE stream
+    // both encoders consume, exactly as for synthetic content. REAL chroma —
+    // the synthetic modes are flat u=v=128, this is the only mode that is not.
+    let (y, u, v) = if let Some(path) = content.strip_prefix("raw:") {
+        let bytes = std::fs::read(path).expect("read raw yuv");
+        let ysz = w * h;
+        let csz = cw * ch;
+        assert!(
+            bytes.len() >= ysz + 2 * csz,
+            "raw yuv {} too small: {} < {}",
+            path,
+            bytes.len(),
+            ysz + 2 * csz
+        );
+        (
+            bytes[..ysz].to_vec(),
+            bytes[ysz..ysz + csz].to_vec(),
+            bytes[ysz + csz..ysz + 2 * csz].to_vec(),
+        )
+    } else {
+        (
+            gen_content(content, w, h),
+            vec![128u8; cw * ch],
+            vec![128u8; cw * ch],
+        )
+    };
 
     let n_frames: usize = std::env::var("SVTAV1_FRAMES")
         .ok()

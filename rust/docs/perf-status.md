@@ -1,5 +1,44 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **CALL COUNTS RE-COMPARED ON REAL CONTENT (2026-09-04, measure-only): the
+> three CPU fixes HOLD on photos, a screenshot and line art — no MD-search
+> edge that read ~1.0x on the gradient reads >1.5x on textured content.**
+> Record `benchmarks/callcount_realimg_2026-09-04.{tsv,cells.tsv,meta}`;
+> driver `tools/perf_profile/callcount_cells.sh` + `callcount_join.py` +
+> `tree_callers.py` (new); `perf_encode` gained a `raw:<i420.yuv>` input so
+> a corpus image joins the synthetic cells. Six contents (CID22-512 3571065,
+> a CLIC 2025 glitter photo Mitchell-resized to 512x512 and to 500x332,
+> gb82-sc terminal.png and graph.png crops, the gradient control) x presets
+> 2/6/10 at qp 40 on r7900x, 16/18 cells byte-identical. Positive controls
+> exact everywhere (SB count, `md_encode_block` = `evaluate_leaf`,
+> `full_loop_core` = `eval_candidate` + MDS1 quantize_b commits, PD0
+> recursion, MDS0 hadamards). The tx-type promotion: total forward
+> transforms and quantizer calls port/C 0.998 / 0.993 (CID), 1.015 / 1.013
+> (CLIC) where C admits 74-80 % of its trials on photos vs 55 % on the
+> gradient. `run_mds1` = 0 at p10 on all six contents. What real content
+> DID change: the per-trial residual 1.38x -> 2.14x (~1.6 % of the port's
+> p2 Ir on a photo; C derives it once per TXB at product_coding_loop.c:5337,
+> the port once per trial at tx_pipeline.rs:508); the allocator 1,339x ->
+> 9,292x C (24.2 M calls; ~3.6 % + 0.9 % memset of the port's p2 Ir; sites
+> named — `tx_unit_inner` 6.6 M callocs, `mds3::eval_candidate` 6.2 M
+> frees + 0.84 M mallocs, `hadamard_satd` 0.95 M, `extract_neighbors_tiled`
+> 0.96 M mallocs); CDEF `cdef_find_dir` run twice per 8x8 (search + apply,
+> C caches via `dirinit`), 2x by count, 0.04-0.7 %. Two kernels are 1:1 by
+> count and far off per call: `cfl_predict_lbd` 12x C's AVX2 per call
+> (2.0x the whole CFL alpha search's Ir on CID, 6.3 % of the port's CLIC
+> p2), and Wiener `compute_stats` **127x per call — 746.5 M Ir on EVERY
+> 512x512 cell including the gradient, 33-55 % of the port's p6 total on
+> every content** (C: 5.9 M); with it removed p6 is 2.3-2.5x, not
+> 3.4-5.8x. The gradient OVERSTATES p2/p10 (2.66x / 2.52x vs 1.80x / 1.80x
+> on photos). Corrections: the 2026-09-04 record's "inverse-transform 2.03x,
+> not converging" was a misjoin against the ssse3 SUB-dispatch — against
+> C's `svt_aom_inv_transform_recon8bit` the port is at or BELOW C at every
+> cell; `md_stage_0` is per class, not per leaf. **Open correctness
+> finding:** `screen_terminal` and `lineart_graph` at p2 qp 40 are NOT
+> byte-identical (4991 vs 5003 B, 3087 vs 3098 B; identical at p6/p10;
+> IntraBC live) — not a cell any screen gate runs (they use qp 20/48).
+> Wall clock NOT measured.
+
 > **THE aarch64 INTER MEMORY AXIS IS BACK INSIDE THE GOAL — 1.311x -> 1.189x AT
 > 2048 AND 1.263x -> 1.042x AT 1280 — AND THE REGRESSION WAS THREE COPIES OF THE
 > REFERENCE PICTURE, NOT ALLOCATOR POLICY (2026-09-04).** Records

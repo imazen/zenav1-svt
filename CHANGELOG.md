@@ -55,6 +55,16 @@ Crates are not published to crates.io yet — depend by git.
   break only for out-of-crate struct literals — there are none.
 
 ### Added
+- **Call counts re-compared on real content** (measure-only, r7900x callgrind):
+  `benchmarks/callcount_realimg_2026-09-04.{tsv,cells.tsv,meta}` — CID22 /
+  CLIC photos, a gb82-sc screenshot and line-art crop, 512x512 / 500x332 /
+  512x480, presets 2/6/10, 16/18 cells byte-identical. The tx-type promotion
+  rule, the MDS1 skip and every MD-stage candidate count hold on textured
+  content; the per-trial residual (2.14x) and allocator (9,292x) grow with
+  texture; Wiener `compute_stats` is 127x C per call and 33-55 % of the
+  port's p6 Ir on every content. Harness: `perf_encode raw:<i420.yuv>`,
+  `tools/perf_profile/callcount_cells.sh`, `callcount_join.py`,
+  `tree_callers.py`. Two screen-content p2 cells diverge from C (open).
 
 - **Interpolation-filter search wired at MDS3 (2026-09-04).** C runs
   `interpolation_filter_search` once per MDS3 inter candidate
