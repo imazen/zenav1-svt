@@ -149,6 +149,24 @@ report's resolution log) plus the cross-ISA set on r7900x.
    whose three arms are the same one-liner into `_c_exact` (a no-op
    dispatch, not a second body; `benchmarks/neon_tier_audit_2026-08-07.md`).
 
+2. **`sad_8x8` / `sad_16x16` / `sad_32x32` / `sad_64x64` — the four dead
+   forwards removed, `a2d8ac46`, byte-inert on both ISAs (r7900x x86_64:
+   nextest 2536/2536, spotcheck 102/102, inter_byte_gate 96/0/1,
+   identity_full_8bit 1100/1100).** On arrival the "generic's redundant
+   arm" was already gone — `sad::sad` had been reduced to a forward of
+   `me_sad::block_sad` (the one SAD body) by an earlier pass — and the four
+   named functions were one-line forwards of `sad::sad` with fixed dims,
+   with no production caller and no C-parity test naming them
+   (`tests/c_parity_sad.rs` / `tests/sad_neon_parity.rs` drive `sad::sad`).
+   Their bench pairs and `sad.rs`'s own test call `sad::sad(.., 8, 8)`
+   etc. under the same names. zenbench (r7900x, `kernel_tiers`, v3(avx2)
+   vs forced scalar; `benchmarks/kernel_tiers_sad_dedup_2026-09-04*`):
+   BEFORE 8x8 27.5/16.0 ns, 16x16 43.1/38.8, 32x32 83.4/114.5, 64x64
+   189/311; AFTER 23.9/16.4, 40.5/41.1, 79.7/118.0, 195/309 — the same
+   code either side, as expected of an inlined forward. Finding for a perf
+   pass: on x86_64 the AVX2 arm of `block_sad` loses to the autovectorized
+   scalar arm at 8 and 16 wide and only wins from 32 wide up.
+
 ## On "unregistered SIMD arms" specifically
 
 The brief asks for kernels whose ported SIMD arm the dispatch never selects.

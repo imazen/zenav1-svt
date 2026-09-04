@@ -170,7 +170,11 @@ below means every one of those was unmoved by the fold.
    `md_search` and `inter_search_arm` re-derived it inline).
 
 4. `have_newmv_in_inter_mode` / `is_motion_variation_allowed_bsize` /
-   `is_global_mv_block` — **folded, `4fb78544`, byte-inert on both ISAs
+   `is_global_mv_block` — **folded, `24b7027e` (gated as `4fb78544`, then
+   rebased onto `600c5177` and the whole set re-run on the rebased c3+c4
+   stack on both ISAs: identity_full_8bit 1100/1100, video_key_matrix 59/60
+   — the upstream ind-uv fix's new baseline — and r7900x nextest 2539/2539),
+   byte-inert on both ISAs
    (r7900x x86_64: nextest 2536/2536, spotcheck 102/102, inter_byte_gate
    96/0/1, identity_full_8bit 1100/1100).**
    Verdict at the signature level: every copy is the SAME C function, the
