@@ -64,23 +64,34 @@
 //!   unported. `inject_new_pme` / `updated_enable_pme` are now ON:
 //!   [`crate::inter_search_arm`] runs C's `build_single_ref_mvp_array` ->
 //!   `read_refine_me_mvs` -> `pme_search` chain per reference.
-//! * `md_nsq_motion_search` — PORTED but NOT CALLED here. C runs it inside
-//!   `read_refine_me_mvs` for every NSQ shape (`bwidth != bheight`), seeded
-//!   from the square parent's `sq_sb_me_mv` and from a geometry-filtered
-//!   set of sub-block ME MVs. Both are ME-TABLE machinery this module does
-//!   not carry (there is no `pc_tree->tested_blk` mirror and no
-//!   `pu_search_index_map` walk), so an NSQ block here takes the square
-//!   path: `raw_me_mv * 8`, then sub-pel. Say what that makes untestable —
-//!   on any cell whose winner is an NSQ shape this module's ME MV can
-//!   differ from C's, and no assertion in this file can see it.
-//!   MEASURED 2026-09-02: that is **94 of the 259 coded inter blocks on
-//!   the 55 F1DIFF cells** (`tools/inter_cinter_census.sh`), against 12 of
-//!   77 on the 40 that match — the widest measured reach of any control
-//!   listed here. And it is TWO divergences, not one: C's
-//!   `read_refine_me_mvs` also seeds an NSQ block from
-//!   `(sq_sb_me_mv + 4) & ~7` instead of `raw_me_mv * 8` whenever the
-//!   square parent was tested (`product_coding_loop.c:2857-2862`), before
-//!   `md_nsq_motion_search` runs at all.
+//! * `md_nsq_motion_search` — not called in THIS module, and **that no longer
+//!   means an NSQ block takes the square path**. [`crate::inter_search_arm`]
+//!   builds its MVC list (`nsq_sub_block_mvs`) and passes it into
+//!   `refine_me_mv_for_ref` under `b_w_ne_h && md_nsq_me_enabled`, and it
+//!   seeds from the square parent's `sq_sb_me_mv` through the `SqMeState`
+//!   this module threads. The search RUNS.
+//!
+//!   The entry here used to say the opposite and to quote **94 of the 259
+//!   coded inter blocks on the then-55 F1DIFF cells**
+//!   (`tools/inter_cinter_census.sh`, 2026-09-02) as its reach. That census
+//!   predates the wiring and §1z²⁶; it is kept for provenance and is a
+//!   measurement of a state that no longer holds.
+//!
+//!   MEASURED 2026-09-03 on `diag 72x72 q55 p6`, the cell that reading would
+//!   have been used to explain: C's own `SVT_SUBPEL_OUT` at the one block
+//!   that still diverges (`org=(64,32)`, a `BLOCK_16X32`) reports
+//!   `start=(32,8) best=(32,8)` — **the port's ME MV exactly** — with
+//!   `nsqme=1` confirmed from C's `SVT_INJCFG_OUT`. C does not code it
+//!   because NEARMV's COST wins, not because its search found something
+//!   else. The residual is a cost comparison, and the instrument for it is
+//!   `SVT_FULLCOST_OUT`, not the ME:
+//!   `benchmarks/f1diff_q55_localization_2026-09-03.md`.
+//!
+//!   What IS still unported here: this port keeps ONE `SqMeState` slot, not
+//!   a node chain, so C's `BLOCK_4X4`-off-`parent->tested_blk` seed arm
+//!   (`product_coding_loop.c:2860`) has no counterpart. Unreachable at the
+//!   presets measured (`shapes_for_size` returns `N_ONLY` at size 4) and
+//!   unported, not proven inert.
 //!
 //! `near_count_ctrls` WAS on that list, and its entry was WRONG. It read "C
 //! caps the NEAR DRL loop to ZERO unless this control is enabled (it REPLACES

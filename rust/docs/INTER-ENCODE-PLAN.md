@@ -6830,6 +6830,70 @@ PASS (2 frames compared), `inter_decode_gate.sh` PASS, `inter_fh_gate.sh` PASS,
 `inter_decode_census.sh` PASS, `video_key_matrix.sh` **58/60** (unmoved),
 `inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK / 0 REFUSED / 0 CRASH**.
 
+### 1z³². The three residual F1DIFF cells are a COST comparison, not a search — and a module header was stale (2026-09-03)
+
+`diag 72x72 q55 p6` (port 31 B against C's 29 on frame 1) is one of the three
+cells `inter_byte_gate.sh` still lists open. Two plausible readings of it are
+both WRONG, and C's own dumps say so.
+
+Full record: `benchmarks/f1diff_q55_localization_2026-09-03.md`.
+
+#### Both sides code the SAME SIX BLOCKS at the same positions
+
+The partition tree is C's exactly. One block of six differs — `mi=(8,16)`, the
+same right-edge `BLOCK_16X32` the q40 cell diverged on before §1z²⁶: C codes
+`14 NEARMV (24,0)`, the port `16 NEWMV (32,8)`.
+
+#### Reading 1, WRONG — "the port never injects NEARMV there"
+
+It does, since §1z²⁶. `SVTAV1_CANDDBG` lists `mode=14 rf=1 mv0=24,0 flr=2845`
+— C's coded candidate, at the exact MDS0 rate the q40 join measured C pricing
+it at. The port simply picks `mode=16 mv0=32,8 flr=6774` instead.
+
+#### Reading 2, ALSO WRONG — "`md_nsq_motion_search` is unported"
+
+`inter_md_arm`'s header said it is "PORTED but NOT CALLED here ... so an NSQ
+block here takes the square path: `raw_me_mv * 8`, then sub-pel", and quoted
+94 of 259 coded inter blocks as its reach. **The second half is stale**:
+`inter_search_arm` builds its MVC list (`nsq_sub_block_mvs`) and passes it into
+`refine_me_mv_for_ref` under `b_w_ne_h && md_nsq_me_enabled`. The search runs.
+
+C settles it from the other side. `SVT_SUBPEL_OUT` — the EXPORTED
+`svt_av1_find_best_sub_pixel_tree_pruned` wrap, which fires per
+(block, list, ref, stage) and is the join point `WORKING-ON-THIS` §5
+recommends — at that block:
+
+```
+SUBPEL stage=0 org=(64,32) bsize=7 bw=16 bh=32 li=0 ri=0
+       start=(32,8) best=(32,8) err=11043 refmv=(24,0)
+       fpme=(32,8) subme=(24,0) mvpn=2 bestidx=1 mvp=(0,-24),(24,0)
+```
+
+**C's list-0 ME MV at that block is `(32,8)` — the port's value exactly**, with
+`nsqme=1` confirmed from C's `SVT_INJCFG_OUT`. C does not code it because
+NEARMV's COST wins, not because its search found something else.
+
+#### What that leaves, and the instrument for it
+
+A cost comparison at ONE block: both candidates present on both sides, priced
+so C keeps NEARMV (MDS0 rate 2845) and the port keeps NEWMV (MDS0 rate 6774,
+so it must be winning on DISTORTION). Same class as `video_key_matrix.sh`'s two
+unmoved cells, where MDS1 is exact and the divergence sits in MDS3.
+
+**The next instrument is `SVT_FULLCOST_OUT`** (`SVT_FULLCOST_XY=64,32`) against
+the funnel's `NSQDBG CAND`. `flr` is MDS0 RATE only; it cannot say which of
+distortion, lambda or the later stages flipped the winner — and guessing
+between them is exactly what the two wrong readings above did.
+
+#### What landed
+
+The header correction, with the stale census kept and dated, and the one thing
+that IS still unported named precisely: this port keeps ONE `SqMeState` slot
+rather than a node chain, so C's `BLOCK_4X4`-off-`parent->tested_blk` seed arm
+(`product_coding_loop.c:2860`) has no counterpart — unreachable at the presets
+measured (`shapes_for_size` returns `N_ONLY` at size 4) and unported, not
+proven inert.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

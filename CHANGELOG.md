@@ -768,6 +768,24 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The three residual F1DIFF cells are a COST comparison, not a search — and a
+  module header said otherwise.** `inter_md_arm`'s header claimed
+  `md_nsq_motion_search` is "PORTED but NOT CALLED here ... so an NSQ block here
+  takes the square path", quoting 94 of 259 coded inter blocks as its reach.
+  `inter_search_arm` builds that search's MVC list and passes it into
+  `refine_me_mv_for_ref`; the search runs. MEASURED on `diag 72x72 q55 p6`, the
+  cell that reading would have explained: both sides code the SAME six blocks at
+  the same positions and differ at one, and C's own `SVT_SUBPEL_OUT` there
+  reports `start=(32,8) best=(32,8)` — **the port's ME MV exactly** — with
+  `nsqme=1` confirmed from C's `SVT_INJCFG_OUT`. C codes NEARMV `(24,0)` because
+  its COST wins, not because its search found something else; the port injects
+  that candidate at C's own MDS0 rate (2845) and picks NEWMV (6774) on
+  distortion. The residual is the same class as `video_key_matrix`'s two unmoved
+  cells, and the instrument for it is `SVT_FULLCOST_OUT`, not the ME. Header
+  corrected with the stale census kept and dated. Full record
+  `rust/benchmarks/f1diff_q55_localization_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z³².
+
 - **`skip_mode` is signalled and coded — FIVE of eight three-frame cells are now
   byte-identical end to end.** `pd_process.c:4958` assigns
   `frm_hdr->skip_mode_params.skip_mode_flag = skip_mode_allowed`, and
