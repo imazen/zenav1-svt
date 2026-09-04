@@ -6745,6 +6745,91 @@ changing ONE value of frame 1's `skip_mode` row makes it report
 `95 identical, 1 differ` and exit 1. **Frame 1's end-of-frame CDF state had
 never been under test**, and it is the state a third frame restores from.
 
+### 1z³¹. `skip_mode` wired — FIVE of eight cells are byte-identical at THREE frames (2026-09-03)
+
+§1z³⁰ localized the frame-2 tile divergence to one symbol and recorded the fix
+as "three wires, not a port". Wired, and the eight-cell `frames=3` frontier
+goes from *frame 2 at 466 B against C's 21* (where this chunk sequence started)
+to **five cells byte-identical on every frame**.
+
+Full record: `benchmarks/frame2_skip_mode_wired_2026-09-03.md`.
+
+#### The three wires
+
+| C | port site | was | is |
+|---|---|---|---|
+| `pd_process.c:4958` | `inter_hdr_arm` | `skip_mode_present = allowed.then_some(false)` | `= skip_mode_flag` |
+| `entropy_coding.c:5119` | `pipeline::encode_block_syntax` | nothing | `encode_skip_mode` before `write_skip`, gated on `skip_mode_flag && is_comp_ref_allowed(bsize)` |
+| `rd_cost.c:562` | `inter_md_arm` | `skip_mode_flag: false`, `skip_mode_ctx: 0` | C's frame flag and `skip_mode_context(neighbors)` |
+
+Nothing new was transcribed: `skip_mode_context`, `encode_skip_mode`,
+`is_comp_ref_allowed`, `setup_skip_mode_allowed` and the
+`InterFacBits::skip_mode` rate table were all already in tree. The symbol is a
+FRAME-level arm of `write_modes_b`, not a block-level one, so an INTRA block of
+an inter frame gets it too.
+
+Two constants STAY, named rather than made plausible:
+`skip_mode_ref_frame_idx_{0,1}` on the injector context. Their only reader is
+the `NEAREST_NEAREST` arm, which `allow_bipred: false` makes unreachable, so a
+wrong pair there would be invisible.
+
+#### Measured, `frames=3`, refusal lifted behind a throwaway env for the measurement only
+
+"IDENTICAL" means every frame — 0, 1 and 2 — byte for byte.
+
+| cell | C f2 | before | after |
+|---|---|---|---|
+| `gradient 64x64 q32 p8` | 21 | 21 B, byte 18 | **IDENTICAL** |
+| `diag 64x64 q40 p8` | 21 | 21 B, byte 18 | **IDENTICAL** |
+| `uniform 64x64 q40 p6` | 21 | 21 B, byte 18 | **IDENTICAL** |
+| `screen 64x64 q40 p6` | 21 | 21 B, byte 18 | **IDENTICAL** |
+| `diag 128x128 q40 p6` | 23 | 23 B, byte 20 | **IDENTICAL** |
+| `gradient 64x64 q40 p6` | 21 | 21 B, byte 18 | 21 B, byte 20 |
+| `diag 72x72 q40 p8` | 27 | 26 B | 26 B |
+| `gradient 128x128 q40 p8` | 35 | 23 B | 23 B |
+
+#### The refusal STAYS, and the next move is a HUMAN decision
+
+Three cells are still wrong, so lifting a blanket refusal covering all eight
+would ship silently-wrong bytes on those three — the "partial lift" the two
+`refuses_inter3` cells exist to prevent. Both still pass.
+
+**Written down rather than taken**: the frame-1 path solved this exact tension
+with a PASS/OPEN gate (`inter_byte_gate.sh`) plus a public-API refusal, and
+frame 2 is now in the same shape — a majority of cells provably correct, a
+named minority not. Converting the blanket refusal into that model would give
+the five byte-identical cells the regression protection they currently CANNOT
+have, because nothing can measure them while the refusal fires. Until that call
+is made the five are correct and unguarded, and that is the honest cost of not
+taking it unilaterally.
+
+#### Byte-inert on everything the gates cover, structurally
+
+`inter_byte_matrix.sh` 92 BOTH / 3 F1DIFF / 1 F0DIFF cell for cell before and
+after; `identity_full_8bit.sh` 1100/1100. `skip_mode_allowed` needs two
+references at DIFFERENT order hints and the campaign's first inter frame has
+every DPB slot holding the key frame, so the flag is 0 on every frame any
+current gate reaches and all three wires are no-ops there.
+
+#### The three residual cells
+
+* `gradient 64x64 q40 p6` — same byte count, diverges at byte 20 (was 18): the
+  skip-mode symbol closed part of it and something later in the tile has not.
+* `diag 72x72 q40 p8` — 26 B against 27, a PARTIAL superblock whose frame 1 is
+  one of the grid's three residual F1DIFF cells, so frame-2 readings on it are
+  downstream of that.
+* `gradient 128x128 q40 p8` — 23 B against 35, the largest remaining gap and
+  the only cell where the port codes substantially FEWER bytes than C.
+
+#### No regression, measured
+
+`cargo nextest run --workspace` **2516/2516**, `regression_spotcheck.sh`
+**102/102** (both `refuses_inter3` cells included), `identity_full_8bit.sh`
+**1100/1100**, `inter_byte_gate.sh` **94 required / 0 failed**, `fctx_gate.sh`
+PASS (2 frames compared), `inter_decode_gate.sh` PASS, `inter_fh_gate.sh` PASS,
+`inter_decode_census.sh` PASS, `video_key_matrix.sh` **58/60** (unmoved),
+`inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK / 0 REFUSED / 0 CRASH**.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

@@ -203,6 +203,10 @@ pub struct InterMdFrame<'a> {
     pub factor_update_type: crate::port_rc_process::FrameUpdateType,
     /// [SVT_HDR_MODE] `static_config.alt_lambda_factors`.
     pub alt_lambda_factors: bool,
+    /// C `frm_hdr->skip_mode_params.skip_mode_flag`
+    /// (`pd_process.c:4958` = `skip_mode_allowed`), the frame bit the MDS0
+    /// rate reads.
+    pub skip_mode_flag: bool,
     /// C `ctx->cand_reduction_ctrls`, as
     /// `svt_aom_sig_deriv_enc_dec_default` sets it from
     /// `pcs->cand_reduction_level` (`enc_mode_config.c:7826`).
@@ -225,10 +229,12 @@ impl InterMdFrame<'_> {
     fn cost_frame(&self) -> InterFrame<'_> {
         InterFrame {
             allow_screen_content_tools: self.allow_screen_content_tools,
-            // The port writes `skip_mode_present = 0` on every frame it
-            // emits, so no candidate can be a skip-mode one and the flag's
-            // rate is never paid.
-            skip_mode_flag: false,
+            // C `frm_hdr->skip_mode_params.skip_mode_flag`
+            // (`pd_process.c:4958` = `skip_mode_allowed`). It gates the
+            // skip-mode RATE `inter_fast_cost` adds to every candidate of a
+            // compound-capable block, so a constant false under-priced every
+            // block of a frame that signals the bit.
+            skip_mode_flag: self.skip_mode_flag,
             interpolation_filter: self.interpolation_filter,
             is_motion_mode_switchable: self.is_motion_mode_switchable,
             force_integer_mv: self.force_integer_mv,
@@ -546,8 +552,17 @@ pub fn build_inter_candidates(
         allow_high_precision_mv: f.allow_high_precision_mv,
         is_motion_mode_switchable: f.is_motion_mode_switchable,
         force_integer_mv: u8::from(f.force_integer_mv),
-        // The port writes `skip_mode_present = 0` on every frame it emits.
-        skip_mode_flag: false,
+        // C `frm_hdr->skip_mode_params.skip_mode_flag`. The injector reads it
+        // only in its NEAREST_NEAREST arm, to mark a COMPOUND candidate
+        // `skip_mode_allowed` — unreachable here, because `allow_bipred` is
+        // false. Fed C's real value rather than a constant so the two cannot
+        // silently disagree the day bipred is unsuppressed.
+        skip_mode_flag: f.skip_mode_flag,
+        // C `frm_hdr->skip_mode_params.ref_frame_idx_{0,1}`, which the same
+        // arm compares against. Left at -1: `setup_skip_mode_allowed` derives
+        // them, but the only consumer is that unreachable arm and a wrong
+        // pair there would be invisible, so they stay a NAMED constant rather
+        // than a plausible one.
         skip_mode_ref_frame_idx_0: -1,
         skip_mode_ref_frame_idx_1: -1,
         is_lossless_segment: false,
@@ -778,9 +793,10 @@ fn predict_and_price(
         &f.cost_frame(),
         &InterBlock {
             bsize,
-            // The port writes `skip_mode_present = 0`, so the skip-mode
-            // context is never read; 0 is C's own initial value.
-            skip_mode_ctx: 0,
+            // C `ctx->skip_mode_ctx` = `av1_get_skip_mode_context(xd)`
+            // (`entropy_coding.c:1097`), the same neighbour pair the writer
+            // uses. Read only when the frame signals the bit.
+            skip_mode_ctx: crate::port_entropy_inter::modes::skip_mode_context(&b.neighbors),
             is_inter_ctx: b.is_inter_ctx,
             inter_mode_ctx,
             ref_mv_count: stack.count,

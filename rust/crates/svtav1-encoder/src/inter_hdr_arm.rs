@@ -188,10 +188,30 @@ pub fn inter_signal(
         (!error_resilient_mode && seq.enable_warped_motion).then_some(sigs.allow_warped_motion);
 
     // skip_mode_params() — `svt_av1_setup_skip_mode_allowed` already ran
-    // inside `picture_decision_per_picture`. `skip_mode_flag` itself is left
-    // at C's initialisation value (0, `resource_coordination_process.c:355`);
-    // nothing in the encoder assigns it.
-    let skip_mode_present = (pic.skip_mode.skip_mode_allowed != 0).then_some(false);
+    // inside `picture_decision_per_picture`.
+    //
+    // `skip_mode_flag` used to be `false` here, on the reading that it "is
+    // left at C's initialisation value (0,
+    // `resource_coordination_process.c:355`); nothing in the encoder assigns
+    // it". **`pd_process.c:4958` assigns it**:
+    //
+    // ```c
+    // frm_hdr->skip_mode_params.skip_mode_flag =
+    //     frm_hdr->skip_mode_params.skip_mode_allowed;
+    // ```
+    //
+    // The constant was right by accident on every frame this repo's gates
+    // cover: `skip_mode_allowed` needs two references at DIFFERENT order
+    // hints, and on the campaign's first inter frame every DPB slot still
+    // holds the key frame. It becomes 1 at the SECOND inter frame, where C
+    // then signals the header bit AND codes a `skip_mode` symbol on every
+    // block whose `bsize` allows compound (`entropy_coding.c:5119`).
+    // MEASURED by the every-frame `fctx_gate`: at poc 2 of
+    // `diag 64x64 q40 p8 frames=3` C's `skip_mode` CDF has adapted to 138
+    // while the port's is still the 147 default — proof C coded the symbol.
+    // See `docs/INTER-ENCODE-PLAN.md` 1z30.
+    let skip_mode_flag = pic.skip_mode.skip_mode_allowed != 0;
+    let skip_mode_present = skip_mode_flag.then_some(skip_mode_flag);
 
     let mut ref_frame_idx = [0u8; 7];
     for (dst, src) in ref_frame_idx.iter_mut().zip(pic.rps.ref_dpb_index.iter()) {

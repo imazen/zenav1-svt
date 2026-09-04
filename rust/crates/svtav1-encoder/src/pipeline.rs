@@ -3108,6 +3108,11 @@ impl EncodePipeline {
                 }
             }
             InterSyntaxState {
+                // C `pd_process.c:4958`, and NOT the constant this port used
+                // to imply: `skip_mode_flag` IS `skip_mode_allowed`.
+                skip_mode_flag: pic_decision
+                    .as_ref()
+                    .is_some_and(|p| p.skip_mode.skip_mode_allowed != 0),
                 // C `frm_hdr->reference_mode`. The port has no compound
                 // candidate yet, but the SYMBOL layout depends on this bit
                 // and the header writes it, so it must be the header's value
@@ -3410,6 +3415,7 @@ impl EncodePipeline {
                     ))
                 })?;
                 Some(crate::inter_md_arm::InterMdFrame {
+                    skip_mode_flag: st.skip_mode_flag,
                     cand_reduction: *cand_red,
                     padded,
                     padded_by_ref: inter_padded_by_ref,
@@ -7036,6 +7042,10 @@ impl CodedAreaAcc {
 /// two tables. Held per frame by [`EntropyCtx`] and lent out per block.
 #[derive(Clone, Debug)]
 pub(crate) struct InterSyntaxState {
+    /// C `frm_hdr->skip_mode_params.skip_mode_flag`
+    /// (`pd_process.c:4958` = `skip_mode_allowed`). Gates BOTH the header bit
+    /// and the per-block `skip_mode` symbol (`entropy_coding.c:5119`).
+    pub skip_mode_flag: bool,
     pub reference_mode: crate::port_entropy_inter::refframe::ReferenceMode,
     pub interpolation_filter: u8,
     pub enable_dual_filter: bool,
@@ -8351,6 +8361,38 @@ fn encode_block_syntax(
     // a second derivation of that would diverge.
     if let Some(acc) = ectx.coded_area.as_mut() {
         acc.add_block(decision, block_x, block_y, skip);
+    }
+    // C `entropy_coding.c:5119`, in the non-intra-FRAME arm of
+    // `write_modes_b`, immediately before `encode_skip_coeff_av1`:
+    //
+    // ```c
+    // if (frm_hdr->skip_mode_params.skip_mode_flag && is_comp_ref_allowed(bsize))
+    //     encode_skip_mode_av1(blk_ptr, frame_context, ec_writer, skip_mode);
+    // if (!skip_mode) encode_skip_coeff_av1(...);
+    // ```
+    //
+    // It is a FRAME-level arm, not a block-level one: an INTRA block of an
+    // inter frame gets the symbol too. This port never produces a SKIP-MODE
+    // block — its injector has no compound candidate — so the value is always
+    // 0 and `write_skip` below stays unconditional; but C codes the SYMBOL
+    // either way, and omitting it shifts every following bit of the block.
+    if !is_key
+        && let Some(st) = ectx.inter_syntax.as_ref()
+        && st.skip_mode_flag
+        && let Some(bsize) =
+            svtav1_types::block::BlockSize::from_u8(crate::entropy::context::block_size_index(
+                decision.width as usize,
+                decision.height as usize,
+            ) as u8)
+        && crate::port_entropy_inter::refframe::is_comp_ref_allowed(bsize)
+    {
+        let nb = ectx.inter_neighbors(block_x, block_y);
+        crate::port_entropy_inter::modes::encode_skip_mode(
+            writer,
+            &mut frame_ctx.inter,
+            &nb,
+            false,
+        );
     }
     let skip_ctx = ectx.skip_ctx(block_x, block_y);
     crate::entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
@@ -14554,6 +14596,9 @@ mod inter_decision_probe {
         // (tools/inter_fh_gate.sh): reference_select 1, SWITCHABLE interp,
         // allow_high_precision_mv 0, use_ref_frame_mvs 1, order_hint 1.
         ectx.inter_syntax = Some(InterSyntaxState {
+            // This unit test drives the inter pack arm directly; C's frame-2
+            // skip-mode bit is off on the GOP it models.
+            skip_mode_flag: false,
             reference_mode: ReferenceMode::Select,
             interpolation_filter: crate::port_enc_mode_config::md_config::SWITCHABLE,
             enable_dual_filter: false,

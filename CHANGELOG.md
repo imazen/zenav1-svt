@@ -768,6 +768,30 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **`skip_mode` is signalled and coded — FIVE of eight three-frame cells are now
+  byte-identical end to end.** `pd_process.c:4958` assigns
+  `frm_hdr->skip_mode_params.skip_mode_flag = skip_mode_allowed`, and
+  `entropy_coding.c:5119` codes a `skip_mode` symbol on every block of an inter
+  FRAME whose `bsize` allows compound. The port hard-coded the flag `false`,
+  coded no symbol, and priced no skip-mode rate — right by accident on every
+  frame this repo's gates reach, because `skip_mode_allowed` needs two
+  references at DIFFERENT order hints and the campaign's first inter frame has
+  every DPB slot holding the key frame. Three wires, no new transcription:
+  `skip_mode_context`, `encode_skip_mode`, `is_comp_ref_allowed`,
+  `setup_skip_mode_allowed` and the `InterFacBits::skip_mode` rate table were
+  all already in tree. MEASURED at `frames=3` with the frame-2 refusal lifted
+  behind a throwaway env: `gradient 64x64 q32 p8`, `diag 64x64 q40 p8`,
+  `uniform 64x64 q40 p6`, `screen 64x64 q40 p6` and `diag 128x128 q40 p6` are
+  now byte-identical on **every** frame, where this chunk sequence started with
+  frame 2 at 466 B against C's 21. **The refusal STAYS** — `gradient 64x64
+  q40 p6`, `diag 72x72 q40 p8` and `gradient 128x128 q40 p8` are still wrong, so
+  lifting it would be the partial lift the two `refuses_inter3` cells exist to
+  prevent; converting it into the PASS/OPEN gate model the frame-1 path uses is
+  written down as a decision, not taken. Byte-inert on the two-frame envelope
+  (grid 92 BOTH / 3 F1DIFF / 1 F0DIFF cell for cell, identity 1100/1100). Full
+  record `rust/benchmarks/frame2_skip_mode_wired_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z³¹.
+
 - **`fctx_gate.sh` compares EVERY frame's end-of-frame CDF state, not just
   frame 0** — and the first thing it found is the symbol frame 2 is missing.
   The gate stopped at frame 0 on the reasoning that "frame 1's saved context
