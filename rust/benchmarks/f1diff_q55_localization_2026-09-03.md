@@ -135,3 +135,53 @@ BOTH encoders measure it as the worse-distortion candidate at this block. That
 is the right-edge partial superblock: only 8 of the 16 columns are in frame, so
 the replicated margin dominates the SAD. It is not a defect on either side, and
 it is why this block is the one that keeps diverging.
+
+## Second addendum, same day: MDS1 IS exact — the divergence is the post-MDS1 PRUNE
+
+The addendum above said "whether the port's MDS1 distortion is C's 95 239 is
+NOT measured". It is now, and the port already had the instrument: the funnel
+emits `NSQDBG PMDS1` per candidate at MDS1, beside the `CAND` line it emits at
+MDS3. Reading it at that block, against C's `st=1` rows:
+
+| candidate | C `ydist` / `cost` (st=1) | port `dist` / `full` (PMDS1) |
+|---|---|---|
+| intra mode 4, delta +3 | 193982 / 42 731 002 | 193982 / **42 731 002** |
+| intra mode 6, delta -3 | 195675 / 43 391 877 | 195675 / **43 391 877** |
+| intra mode 4, delta 0 | 163494 / 31 020 555 | 163494 / **31 020 555** |
+| NEARMV | 160867 / 27 427 295 | 160867 / **27 427 295** |
+| NEARESTMV | 160867 / 32 230 458 | 160867 / **32 230 458** |
+| NEWMV | 95239 / 36 661 249 | 95239 / **36 552 086** |
+
+**Five of six agree to the UNIT — distortion, rate and lambda.** The sixth
+agrees on distortion exactly and differs on cost by 109 163, i.e. 0.30 %.
+
+And on BOTH sides NEARMV wins at MDS1 (27 427 295 against NEWMV's ~36.6 M). So
+the port's MDS1 does not pick NEWMV either.
+
+### What actually differs: how many candidates reach MDS3
+
+C's `st=3` rows at that block: **two** — the intra mode 4 and NEARMV. There is
+no `st=3 mode=16`.
+
+The port's `NSQDBG CAND` rows (its MDS3 dump): **three** — `ci=11` (intra),
+`ci=30` (NEARMV, `dist=143296 full=25178207`, matching C's MDS3 to 0.18 %) and
+`ci=33` (NEWMV, `dist=38192 full=20660324`), which wins.
+
+**C's post-MDS1 pruning DROPS NEWMV and the port's keeps it.** That is
+`nic::stage_mds1_to_mds3` — C's `sort_full_cost_based_candidates` +
+`post_mds1_nic_pruning` + `post_mds2_nic_pruning`. The MDS3 distortion of that
+candidate collapses from 95 239 to 38 192 once the real transform and RDOQ run,
+which is why keeping it is decisive: C never computes that number.
+
+### The target, stated as narrowly as the evidence allows
+
+Not the motion search (both find `(32,8)`), not the candidate set (both have
+both modes), not the MDS0 rate (2845 / 6774 on both), not the MDS1 cost (exact
+on five of six candidates). **The number of candidates the port's post-MDS1 NIC
+pruning admits to MDS3, at this block, is one more than C's** — and the
+0.30 % cost gap on the very candidate that survives is the obvious first thing
+to check, since NIC pruning thresholds are relative to the class best.
+
+This is the same shape as `video_key_matrix.sh`'s two unmoved cells, where the
+recorded state is already "MDS1 is exact and the divergence moved to MDS3". The
+two are now one target, not two.

@@ -795,7 +795,15 @@ Crates are not published to crates.io yet — depend by git.
   that candidate at C's own MDS0 rate (2845) and picks NEWMV (6774) on
   distortion. The residual is the same class as `video_key_matrix`'s two unmoved
   cells, and the instrument for it is `SVT_FULLCOST_OUT`, not the ME. Header
-  corrected with the stale census kept and dated. Full record
+  corrected with the stale census kept and dated. **Drilled to the end the same
+  day**: the port's MDS1 costs match C's to the UNIT on five of six candidates
+  at that block (distortion, rate and lambda) and to 0.30 % on the sixth, and
+  NEARMV wins at MDS1 on BOTH sides — what differs is that C admits TWO
+  candidates to MDS3 and the port admits THREE, i.e. C's post-MDS1 NIC prune
+  drops the NEWMV the port keeps, whose distortion collapses from 95 239 to
+  38 192 once the real transform and RDOQ run. The target is
+  `nic::stage_mds1_to_mds3`, and it is the same target as `video_key_matrix`'s
+  two unmoved cells. Full record
   `rust/benchmarks/f1diff_q55_localization_2026-09-03.md`,
   `rust/docs/INTER-ENCODE-PLAN.md` §1z³².
 

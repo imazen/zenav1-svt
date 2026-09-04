@@ -6909,10 +6909,42 @@ port      ci=33   flr=6774 coeff=161   dist= 38192 full=20660324   NEWMV, WINS
    38 192 is an MDS3-domain number and 95 239 an MDS1-domain one. Comparing
    them directly would be the THIRD wrong reading of this cell.
 
-Next probe: the port's MDS1 stage specifically. If its MDS1 NEWMV distortion is
-C's 95 239 the candidate is dropped there and the cell closes; if not, the
-target is the MDS1 distortion of a NEWMV candidate whose NEARMV sibling is
-already exact — much narrower than "the cost model".
+**MEASURED the same day, and the port already had the instrument**: the funnel
+emits `NSQDBG PMDS1` per candidate at MDS1 beside the `CAND` line it emits at
+MDS3. Against C's `st=1` rows at that block:
+
+| candidate | C `ydist` / `cost` | port `dist` / `full` |
+|---|---|---|
+| intra 4, delta +3 | 193982 / 42 731 002 | 193982 / **42 731 002** |
+| intra 6, delta -3 | 195675 / 43 391 877 | 195675 / **43 391 877** |
+| intra 4, delta 0 | 163494 / 31 020 555 | 163494 / **31 020 555** |
+| NEARMV | 160867 / 27 427 295 | 160867 / **27 427 295** |
+| NEARESTMV | 160867 / 32 230 458 | 160867 / **32 230 458** |
+| NEWMV | 95239 / 36 661 249 | 95239 / **36 552 086** |
+
+**Five of six agree to the UNIT.** The sixth agrees on distortion exactly and
+differs on cost by 109 163 — 0.30 %. And on BOTH sides NEARMV wins at MDS1.
+
+**What actually differs is how many candidates reach MDS3.** C has TWO `st=3`
+rows — the intra mode 4 and NEARMV — and no `st=3 mode=16`. The port has
+THREE: intra, NEARMV (`dist=143296 full=25178207`, matching C's MDS3 to
+0.18 %) and NEWMV (`dist=38192 full=20660324`), which wins. **C's post-MDS1
+pruning DROPS NEWMV and the port's keeps it** — `nic::stage_mds1_to_mds3`, C's
+`sort_full_cost_based_candidates` + `post_mds1_nic_pruning` +
+`post_mds2_nic_pruning`. That candidate's distortion collapses from 95 239 to
+38 192 once the real transform and RDOQ run, which is why keeping it is
+decisive: C never computes that number.
+
+**The target, as narrowly as the evidence allows.** Not the motion search (both
+find `(32,8)`), not the candidate set (both have both modes), not the MDS0 rate
+(2845 / 6774 on both), not the MDS1 cost (exact on five of six). It is the
+COUNT the post-MDS1 NIC prune admits, and the 0.30 % cost gap on the very
+candidate that survives is the first thing to check, since those thresholds are
+relative to the class best.
+
+This is the same shape as `video_key_matrix.sh`'s two unmoved cells, whose
+recorded state is already "MDS1 is exact and the divergence moved to MDS3".
+**The two are now one target, not two.**
 
 Both MVs are full-pel — `(32,8)` is (4,1) px, `(24,0)` is (3,0) px — on a
 `diag` sequence translated by exactly 3 px, so the TRUE motion is `(24,0)` and
