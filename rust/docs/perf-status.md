@@ -1,5 +1,31 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE POSITION AFTER THIS CHUNK — AND A MEASURED REASON NOT TO READ A 2-3 %
+> SLOPE MOVE OUT OF TWO POSITION RUNS (2026-09-03).** Records
+> `benchmarks/perf_2026-09-03-arm9-{still,videokey,inter}.*` and
+> `perf_2026-09-03-arm9-POSITION.meta`. 25 paired rounds, preset 8, gradient
+> qp 40, box quiet, **every cell of all three arms ident=Y** (all four inter
+> cells included):
+>
+> | preset 8, port/C | 64 | 128 | 256 | 512 | slope ratio |
+> |---|---|---|---|---|---|
+> | still | 0.791x | 1.402x | 2.214x | 2.376x | **2.46x** |
+> | videokey | 1.338x | 1.850x | 2.400x | 2.542x | **2.60x** |
+> | inter | 1.592x | 2.040x | 2.486x | 2.767x | **2.82x** |
+>
+> Against arm8/arm7 (2.40x / 2.58x / 2.80x) that reads like a small
+> regression. **It is session drift, and this is the run that measured it.** A
+> PAIRED A/B of arm8's tree against this one, in ONE session, 512x512 p8,
+> n=25, ident=Y, says the current tree is **1.013x FASTER**, not slower — and
+> the same `76fdb802` binary measured 9.493 ms in the arm8 session and
+> 9.797 ms in this one, a ~3 % PORT-SIDE offset between sessions. Every
+> position record here already warns about C's drift; this one adds that the
+> port side drifts by about as much, so **a position run's slope ratio cannot
+> resolve a 2-3 % change across sessions — only the paired A/B can.** The same
+> pair of A/Bs separates this chunk's z2 arm (~2.4 % at that cell) from the
+> three inter commits that landed beside it (~-1.1 % there, a difference of
+> TREES, not an attribution to any one of them).
+
 > **TWO ALLOCATION REMOVALS, BOTH MEASURED, BOTH NEGATIVE — AND WHAT
 > SEPARATES THEM FROM THE TWO THAT WON (2026-09-03).** Records
 > `benchmarks/mds3d0_null_2026-09-03.meta` and

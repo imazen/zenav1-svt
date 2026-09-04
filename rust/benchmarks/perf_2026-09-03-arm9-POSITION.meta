@@ -1,0 +1,58 @@
+THE POSITION AFTER THIS CHUNK — AND A MEASURED REASON NOT TO READ A 2-3 %
+SLOPE MOVE OUT OF TWO POSITION RUNS.
+
+date:   2026-09-04 (fourth chunk of 2026-09-03)
+host:   mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores). Box QUIET: the
+        competing-process count printed 0 before and after every run.
+tool:   tools/perf_gate.sh, 25 interleaved paired rounds per cell, one untimed
+        warmup inside each sample, no -C target-cpu=native, gradient qp 40,
+        preset 8, sizes 64/128/256/512.
+tree:   ceedbf3c (main) — this chunk's z2 NEON arm plus the sibling
+        workspace's inter commits (eb658f4b, 9c397e36, f98c5558).
+data:   benchmarks/perf_2026-09-03-arm9-{still,videokey,inter}.{tsv,raw.tsv,meta}
+
+=================== 1. THE POSITION ========================================
+
+  preset 8, port/C      64      128     256     512    slope ratio
+  still               0.791    1.402   2.214   2.376     2.46x
+  videokey            1.338    1.850   2.400   2.542     2.60x
+  inter               1.592    2.040   2.486   2.767     2.82x
+
+**Every cell of all three arms is ident=Y**, including all four inter cells.
+Fits: still port 36.985 ms/MP against C's 15.057; videokey 161.31 against
+62.04; inter 210.25 against 74.56.
+
+=================== 2. AND WHY THE COMPARISON TO arm8/arm7 IS NOT A RESULT ==
+
+Read against `benchmarks/perf_2026-09-03-arm8-still.meta` (02:15Z, the tree
+BEFORE this chunk) the still slope ratio reads 2.40x -> 2.46x, i.e. the port
+apparently got 2 % SLOWER while C stayed flat (15.043 -> 15.057 ms/MP).
+
+**That is session drift, and it is measured, not assumed.** A PAIRED A/B of the
+two trees in ONE session, same harness, same box state, 512x512 p8, n=25,
+ident=Y:
+
+  base 76fdb802 (arm8's tree)  ->  cand ceedbf3c (this tree)   **1.013x FASTER**
+  base 76fdb802 + z2 only      ->  cand ceedbf3c               0.989x
+
+So the current tree is 1.3 % FASTER than arm8's at that cell, not 2 % slower.
+The same 76fdb802 binary measured **9.493 ms** in the arm8 session and
+**9.797 ms** in this one — a ~3 % port-side offset between sessions, larger
+than any single chunk's win.
+
+**THE RULE: a position run's slope ratio cannot resolve a 2-3 % change across
+SESSIONS.** Only the paired A/B can, because both binaries meet the same box
+state within the same interleaved rounds. Every earlier position record in this
+directory already says "read this as position, not attribution" for C's drift;
+this one adds that the PORT side drifts too, by about the same amount.
+
+The second A/B line above also separates this chunk from the sibling's: z2 is
+worth ~2.4 % at 512 p8 still and the three inter commits landed alongside it
+cost ~1.1 % there, for a net 1.3 %. That is a two-binary difference of trees,
+not a per-commit attribution of the sibling's work.
+
+=================== NOT ESTABLISHED ========================================
+  * WHY the port side drifts ~3 % between sessions on this box. Not measured.
+  * Any preset but 8 for the position, size beyond 512, content but gradient.
+  * The sibling's -1.1 % at 512 p8 still is a difference of TREES (three
+    commits), not an attribution to any one of them.
