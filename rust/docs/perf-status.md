@@ -1,5 +1,35 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **TWO ALLOCATION REMOVALS, BOTH MEASURED, BOTH NEGATIVE — AND WHAT
+> SEPARATES THEM FROM THE TWO THAT WON (2026-09-03).** Records
+> `benchmarks/mds3d0_null_2026-09-03.meta` and
+> `benchmarks/hadscratch_null_2026-09-03.meta`. Neither is in the tree.
+>
+> | attempt | what it removed | result |
+> |---|---|---|
+> | `mds3::eval_candidate`'s `d0_recon` | a `w * h` alloc + memcpy per candidate whose result is NEVER read | **0.983-0.988x** at 512 p6/p10, span above 1.0, reproduced |
+> | `predict::hadamard_satd`'s two buffers | two fixed-bound (`<= 1024` element) allocs per call, the #3 allocator caller at 11.9 % | **0.989-0.992x** across the videokey arm, four cells' spans above 1.0 |
+>
+> The d0 attempt carries a PARAMETER-ONLY control (same new argument, allocation
+> kept) showing the cost is the removal and not the signature; the hadamard
+> attempt carries a stack-array variant for small tiles that recovers about half
+> the loss and is still negative.
+>
+> **What separates these from `0c70f3fc` (`coeff_contexts` -> a stack array,
+> six of six cells) and `700357e2` (four stack arrays -> one scratch, nine of
+> twelve) is not the allocations.** `coeff_contexts` removed one and `700357e2`
+> removed NONE; both removed **zeroing**. So the working rule for the next
+> chunk: **on this allocator a malloc/free pair is worth about nothing and a
+> memset is worth real time.** Rank the remaining share by what it MEMSETS.
+> `perf_still_attrib_2026-09-03.tsv`'s LIBC_MEM row (8.4 / 9.9 / 11.6 % of the
+> gap at p2 / p6 / p10, 3.9-5.8x C) is that queue; its ALLOC row (10.1 / 16.4 /
+> 20.3 %, 387x / 52x / 25x C) has now failed to convert twice in one day.
+>
+> The measured ceiling, so nobody re-derives it: the whole allocator family is
+> **5.5 % of the port's 512 p2 frame** (1,040 of 18,913 self samples, 30.4 ms),
+> split `eval_candidate` 28.7 %, `tx_unit_inner` 24.8 %, `hadamard_satd`
+> 11.9 %, `drop_glue::<Cand>` 5.8 %, `inject_candidates` 5.2 %.
+
 > **AN ALLOCATION NOTHING READS IS NOT FREE TO REMOVE — MEASURED, REPRODUCED,
 > REVERTED (2026-09-03).** Record `benchmarks/mds3d0_null_2026-09-03.meta`.
 > `mds3::eval_candidate`'s `d0_recon` is a `vec![0u8; w * h]` + a `w * h`

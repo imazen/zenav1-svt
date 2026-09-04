@@ -1,0 +1,128 @@
+THE SECOND ALLOCATION REMOVAL OF THE DAY IS ALSO A REGRESSION — AND THE TWO
+TOGETHER SAY THE STILL ARM'S REMAINING ALLOCATOR SHARE IS NOT RECOVERABLE BY
+REMOVING ALLOCATIONS.
+
+date:   2026-09-03 (fourth chunk of the day)
+host:   mac (Apple M4 Pro, aarch64-apple-darwin). Box QUIET: the competing-
+        process count printed 0 immediately BEFORE and AFTER every run
+        reported here. One videokey run whose "after" count was 1 was
+        DISCARDED and re-taken; the re-take is what is reported and it
+        reproduced the sign and the magnitude.
+tool:   tools/perf_ab.sh, interleaved paired rounds, order randomised per
+        round, neither side niced, no -C target-cpu=native, gradient qp 40.
+base:   78fc59d5 (main tip, after this chunk's z2 NEON arm)
+cand:   base + the scratch described below. Every cell ident=Y.
+data:   benchmarks/hadscratch_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}
+        benchmarks/hadscratch_ab_2026-09-03.stackvar.{still,videokey}.*
+verdict: **REVERTED. Not in the tree.** This file is the deliverable.
+
+=================== WHAT WAS TRIED, AND WHY IT LOOKED GOOD =================
+
+`leaf_funnel::predict::hadamard_satd` (predict.rs:143) is the **#3 allocator
+caller on the still arm** — 124 of 1,040 malloc-family self samples, 11.9 %,
+3.63 ms of a 552.9 ms frame at gradient 512x512 preset 2
+(tools/perf_profile/ancestor.py; the full ranking is in
+benchmarks/mds3d0_null_2026-09-03.meta). It allocates TWO buffers per call:
+
+    let mut res   = vec![0i16; tx * tx];
+    let mut coeff = vec![0i32; tx * tx];
+
+with `tx = w.min(h).min(32)`, so both are bounded by **1024 elements** — 2 KiB
+and 4 KiB — for every reachable block shape. Neither is read before it is
+written (`residual_i16` fills all `tx * tx` residuals, the Hadamard fills all
+`tx * tx` coefficients, and only then does `aom_satd` read them), so no zeroing
+is needed. That is the SAME shape as `cost_coeffs_txb`'s `coeff_contexts`,
+which moved to a fixed stack array in `0c70f3fc` and won on **six of six**
+cells on both arms.
+
+VARIANT 1: both buffers into a per-thread `RefCell<(Vec<i16>, Vec<i32>)>`,
+grow-only, never re-zeroed, sliced to the exact `tx * tx` working length
+(exact-length slicing is load-bearing, not tidiness — `aom_satd` sums the WHOLE
+slice it is handed, so a longer recycled buffer would fold the previous block's
+coefficients into this block's distortion). `try_borrow_mut` with a local
+fallback, the same shape as `coeff_c::with_txb_scratch`.
+
+  STILL (n=15)      ratio   speedup   p25/p75          verdict
+  256 p2            0.9988   1.001    0.9951/1.0031    crosses
+  256 p6            0.9904   1.010    0.9723/1.0016    crosses
+  256 p10           0.9987   1.001    0.9838/1.0059    crosses
+  512 p2            1.0015   0.999    0.9972/1.0032    crosses
+  512 p6            0.9940   1.006    0.9858/0.9982    span below 1.0
+  512 p10           1.0043   0.996    0.9771/1.0144    crosses
+
+  VIDEOKEY (n=25)   ratio   speedup   p25/p75          verdict
+  128 p6            1.0088   0.991    1.0002/1.0149    span ABOVE 1.0
+  128 p8            1.0023   0.998    0.9915/1.0105    crosses
+  256 p6            1.0109   0.989    1.0038/1.0176    span ABOVE 1.0
+  256 p8            1.0031   0.997    0.9916/1.0073    crosses
+  512 p6            1.0101   0.990    1.0008/1.0158    span ABOVE 1.0
+  512 p8            1.0113   0.989    1.0018/1.0166    span ABOVE 1.0
+
+**One still cell gains 0.6 %; FOUR videokey cells lose ~1 % with their whole
+span above 1.0.** Net negative.
+
+VARIANT 2 tests the obvious explanation — that the per-call thread-local +
+`try_borrow_mut` + `FnOnce` hand-back costs more than the malloc it replaces on
+the SMALL tiles that dominate the MDS0 candidate stream (`tx` is 4 or 8 for
+most blocks, i.e. 16 or 64 elements of work per call — the shape
+benchmarks/mdscratch_null_2026-09-03.meta already measured NULL). So: `n <= 64`
+takes a `[0i16; 64]` / `[0i32; 64]` STACK pair (384 bytes, no malloc, no TLS)
+and only the larger tiles take the scratch.
+
+  VIDEOKEY (n=25)   variant 1        variant 2
+  128 p6            0.991            0.991  (0.9949/1.0161)
+  128 p8            0.998            0.994  (1.0000/1.0157)
+  256 p6            0.989            0.996  (0.9932/1.0095)
+  256 p8            0.997            0.998  (0.9934/1.0060)
+  512 p6            0.990            0.992  (1.0015/1.0116)
+  512 p8            0.989            0.993  (0.9971/1.0103)
+
+  STILL (n=15)      variant 2
+  256 p2            0.996  (0.9974/1.0046)   256 p6  1.009  (0.9726/1.0055)
+  256 p10           0.993  (0.9955/1.0115)   512 p2  1.004  (0.9934/0.9968)
+  512 p6            1.000  (0.9925/1.0041)   512 p10 0.995  (0.9850/1.0138)
+
+The stack path recovers roughly half the videokey loss, so the per-call TLS
+overhead on small tiles IS part of it — but only part. Variant 2 is still
+0.991-0.998 across the videokey arm with two cells' spans above 1.0, and a wash
+on the still arm (512 p2 +0.4 % with its span below 1.0, 256 p10 -0.7 % with
+its span above 1.0). Neither variant is worth landing.
+
+=================== WHAT THE TWO NULLS SAY TOGETHER ========================
+
+Both allocation-removal attempts of this chunk are measured, controlled and
+negative:
+
+  * benchmarks/mds3d0_null_2026-09-03.meta — removing a `w * h` alloc + memcpy
+    per candidate whose result is NEVER READ: **1.2-1.7 % slower** at 512 p6
+    and p10, reproduced, with a parameter-only control showing the cost is the
+    removal and not the signature.
+  * this file — recycling two fixed-bound buffers in the #3 allocator caller:
+    ~1 % slower across the videokey arm in both variants.
+
+Against `0c70f3fc` (`coeff_contexts` -> a fixed STACK array, six of six cells)
+and `700357e2` (four stack arrays -> one shared scratch, nine of twelve), the
+distinguishing feature of the two that WON is not that they removed
+allocations — `coeff_contexts` removed one and `700357e2` removed NONE. Both
+removed **zeroing**. The two that lost removed allocations and left the zeroing
+where it was.
+
+**THE WORKING RULE, stated for the next chunk: on this allocator, removing a
+malloc/free pair is worth approximately nothing, and removing a memset is worth
+real time.** Rank the remaining ALLOC share by what it MEMSETS, not by how many
+times it calls the allocator. `perf_still_attrib_2026-09-03.tsv`'s LIBC_MEM row
+(8.4 / 9.9 / 11.6 % of the gap at p2 / p6 / p10, at 3.9-5.8x C) is that queue;
+its ALLOC row (10.1 / 16.4 / 20.3 %, at 387x / 52x / 25x C) has now failed to
+convert twice in one day.
+
+=================== NOT ESTABLISHED ========================================
+  * WHY. No allocator-level measurement was taken; macOS has no heaptrack and
+    nothing here instruments libmalloc's magazines. The mechanism above is a
+    hypothesis about which HALF of the change pays, not an attribution.
+  * The x86_64 position of either null. Both were measured on aarch64 only, and
+    benchmarks/mem_levelscratch_2026-09-03.meta already found one macOS-only
+    allocator effect that Linux did not reproduce.
+  * Any content but gradient, qp but 40, bit depth but 8.
+  * `hadamard_satd_hbd`, the bd10 twin, carries the same two buffers and was
+    changed the same way in both variants. bd10 is not on any measured cell, so
+    its share is UNMEASURED — do not read these numbers as covering it.
