@@ -886,6 +886,21 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The independent-uv full-loop count takes C's PICTURE-TYPE base
+  (2026-09-04).** `leaf_funnel::inject` carried `uv_mode_nfl_count`'s base as
+  a literal 32 — the allintra arm of C's four-arm ladder
+  (`search_best_independent_uv_mode`, product_coding_loop.c:7693-7696) — so a
+  VIDEO key frame ran 32 full-loop uv candidates at M0 where C runs 64 (all 61
+  injected). On a flat-chroma SAD tie that dropped `UV_SMOOTH*`/`UV_PAETH`
+  from the full loop and the per-luma table resolved luma PAETH to UV_DC,
+  mispricing PAETH_PRED +1310 / DC+FILTER_PAETH -1315 rate units from MDS0 on
+  at the first divergent block of BOTH stuck `video_key_matrix` cells. Now
+  `intra_arm::ind_uv_nfl_base` + `FunnelCfg::ind_uv_nfl_base`, stamped per
+  picture (`for_preset` bakes the still's 32). `video_key_matrix` **58 -> 59
+  of 60** (`screenrep p0` identical at 2335 B; `gradient p0` now 1341 vs 1342).
+  Instrument: `SVT_FULLCOST_XY=all` + `pm1`/`sq`/`mds` fields and
+  `tools/perf_profile/mds3_admission_join.py`. Record:
+  `docs/INTER-ENCODE-PLAN.md` §1z³⁸.
 - **NIC stage caps use C's PICTURE TYPE on inter frames (2026-09-04).**
   `leaf_funnel::rate_tables::nic_counts` hardcoded the I_SLICE row of
   `MD_STAGE_NICS` (definitions.h:811), so every inter frame ran I-slice stage

@@ -11133,6 +11133,12 @@ fn encode_tile_rows(
             crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
             true,
         );
+        // `uv_mode_nfl_count`'s base (product_coding_loop.c:7693-7696), for
+        // THIS arm and picture: 32 on an allintra still, 64 on a video KEY
+        // frame, 32 / 16 on a non-highest / highest-layer inter picture.
+        // `for_preset` bakes the still's 32; a video key frame at M0/M1 was
+        // running half of C's independent-uv full loop until 2026-09-04.
+        funnel_cfg.ind_uv_nfl_base = crate::intra_arm::ind_uv_nfl_base(sc_arm, is_highest_layer);
         // `ctx->mds0_use_hadamard_sb`, for THIS arm (`crate::encdec_arm`).
         // Unlike every arm above it this one does NOT come from
         // `sig_deriv_mode_decision_config` — it is a literal in each

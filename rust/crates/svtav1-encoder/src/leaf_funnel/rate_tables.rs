@@ -703,10 +703,20 @@ pub struct FunnelCfg {
     /// variant (which only tests the survivors' uv-follows-luma modes):
     /// on flat chroma UV_PAETH is injected last and pruned, so a
     /// luma-PAETH block resolves to UV_DC (C M1 codes UV_DC where M2, the
-    /// mds3 variant, codes UV_PAETH). `Some(uv_nic_scaling_num)` = 16 at
+    /// mds3 variant, codes UV_PAETH) — on the ALLINTRA arm, whose nfl base
+    /// is 32; a video key frame's base is 64 (`ind_uv_nfl_base`), so there
+    /// UV_PAETH survives and luma PAETH keeps UV_PAETH, as C does.
+    /// `Some(uv_nic_scaling_num)` = 16 at
     /// chroma_level 1 (M0), 8 at chroma_level 2 (M1); mutually exclusive
     /// with `ind_uv_mds3`. `None` = not the independent variant.
     pub ind_uv_independent: Option<u16>,
+    /// C `uv_mode_nfl_count`'s base before the `uv_nic` scale
+    /// (product_coding_loop.c:7693-7696): 32 on an allintra still, 64 on a
+    /// VIDEO-arm key frame, 32 / 16 on a non-highest / highest-layer inter
+    /// picture. Stamped per picture by the pipeline from
+    /// [`crate::intra_arm::ind_uv_nfl_base`]; `for_preset` bakes the still's
+    /// 32. Only read when `ind_uv_independent` is `Some`.
+    pub ind_uv_nfl_base: u16,
     /// C `ind_uv_last_mds == 1` (chroma_level 2, M1): the independent uv
     /// search runs BEFORE MDS3, not before MDS0 (product_coding_loop.c:9477
     /// vs :9260) — so `ind_uv_avail` is 0 at injection time and every
@@ -846,6 +856,7 @@ impl FunnelCfg {
             coeff_rate_est_lvl: 1,
             ind_uv_mds3: false,
             ind_uv_independent: None,
+            ind_uv_nfl_base: 32,
             ind_uv_last_mds1: false,
             fi_max: 0,
             edge_filter: false,

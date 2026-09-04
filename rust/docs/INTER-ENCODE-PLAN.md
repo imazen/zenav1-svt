@@ -7538,6 +7538,91 @@ is downstream of the remaining unwired video ladders (the palette level from
 2b, and whatever else `sig_deriv_mode_decision_config_default` sets that the
 port still takes from the allintra arm).
 
+### 1z³⁸. The independent-uv full-loop count takes C's PICTURE-TYPE base — a video key frame ran 32 where C runs 64, and `video_key_matrix` moves 58 -> 59 of 60 (2026-09-04)
+
+`video_key_matrix.sh`'s two stuck I_SLICE cells (`gradient p0`, `screenrep p0`,
+72x88 q40) had sat at "MDS1 is exact and the divergence sits in MDS3" since
+§1z³². This chunk localized the first divergent block of BOTH cells to the
+same rate term and found the constant behind it.
+
+#### The instrument came first, again
+
+`SVT_FULLCOST_OUT` (`tools/capture_c_trace/wrap_recon.c`) gains
+`SVT_FULLCOST_XY=all` — every block of the frame, not one pinned origin — and
+three fields per row: `pm1` (`ctx->perform_mds1`), `sq` (the parent square
+size, `BlockGeom.sq_size`) and `mds` (the geometry index). An 8x8 origin is
+visited once as its own square and again as a sub-block of each HA/HB/VA/VB
+shape of its 16x16 parent, so a join keyed on origin+dims alone double-counts;
+`sq`/`mds` are what make a per-block join sound. The consumer is
+`tools/perf_profile/mds3_admission_join.py`: C's `CFULL` rows against the
+port's `SVTAV1_CANDDBG=1 SVTAV1_NSQDBG=1` trace, per block, reporting the
+MDS1/MDS3 counts and whether the ADMITTED MDS3 SET (mode, fi, delta) is
+identical, and printing the first differing block's per-candidate MDS1
+costs side by side. It exits 0 only when every joined block's set matches
+and nothing is one-sided.
+
+#### What the join said on the two cells
+
+On both, the first divergent block in coding order priced its candidates
+identically through MDS1 EXCEPT for two rate terms: `PAETH_PRED` **+1310**
+and `DC_PRED + FILTER_PAETH` **-1315** rate units against C, from MDS0 on.
+That is the uv-mode rate under the coded luma mode: the port's per-luma
+uv table resolved luma PAETH to `UV_DC` where C's resolves it to `UV_PAETH`.
+
+The table is built by the independent-uv search, and its full-loop count is
+the constant. C (`search_best_independent_uv_mode`,
+`product_coding_loop.c:7693-7696`):
+
+```c
+unsigned int uv_mode_nfl_count = pcs->scs->allintra ? ppcs->is_highest_layer ? 16 : 32
+    : pcs->slice_type == I_SLICE                    ? 64
+    : !ppcs->is_highest_layer                       ? 32
+                                                    : 16;
+```
+
+then `* uv_nic_scaling_num / 16` (`:7697`) and `MIN(.., uv_mode_total_count)`
+(`:7698`). The port (`leaf_funnel/inject.rs`, step 4 of the independent
+search) carried **32** — the allintra arm alone, transcribed as a literal
+because every picture the funnel had ever encoded was a still. On a
+VIDEO-arm key frame that is half of C: at M0 (`uv_nic` 16) C's 64 admits
+every one of the 61 injected uv candidates to the full loop, where the
+port's 32 keeps the first 32 of a flat-chroma SAD tie, so `UV_SMOOTH*` and
+`UV_PAETH` never reach the full loop and the per-luma table never learns
+that luma PAETH wants `UV_PAETH`. Defect class: a four-arm C ladder
+transcribed as its one exercised arm.
+
+#### What landed
+
+* `intra_arm::ind_uv_nfl_base(arm, is_highest_layer)` — the ladder as
+  written, with `is_highest_layer` from `port_picstruct` (pd_process.c:5560:
+  `(temporal_layer_index == hierarchical_levels) && hierarchical_levels != 0`,
+  FALSE on every key frame and on every picture of a flat GOP).
+* `FunnelCfg::ind_uv_nfl_base`, stamped per picture by the pipeline next to
+  the other per-arm funnel fields; `for_preset` bakes the still's 32, so the
+  still ladder is unchanged by construction. Only read when
+  `ind_uv_independent` is `Some`.
+* Tests: `nfl_base_matches_c_ladder` (all six arms as C's literals) and
+  `video_key_frame_doubles_the_still_count` (the count the funnel actually
+  uses at M0/M1: still 32/16, video key frame 64/32 — every injected
+  candidate at M0, capped by `uv_mode_total_count` as C's `:7698` caps it).
+
+#### Result
+
+`video_key_matrix` **58 -> 59 of 60**: `screenrep p0` is byte-identical
+(2335 = 2335 B). `gradient p0` moves from its previous divergence to a
+one-byte difference, 1341 C vs 1342 port, and stays open — the same
+instrument is the next step on it.
+
+#### Gates, aarch64, this change alone (tree before `a1a32ca2f`)
+
+nextest 2526/2526, `regression_spotcheck` 102/102, `identity_full_8bit`
+1100/1100, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open),
+`video_key_matrix` 59/60 (as above), `fctx_gate` PASS 96/96,
+`inter_decode_gate` 5/5, decode census PASS, completion scan 64 OK / 0
+REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B.
+The combined tree (this + §1z³⁹) was gated again on both ISAs; that record
+is in §1z³⁹.
+
 ## 2d. Landed after 2c — the video-arm RATE ladders (2026-09-01)
 
 Chunk `wv-rdoq`. Full record: `docs/rate-arm-port-map.md`.

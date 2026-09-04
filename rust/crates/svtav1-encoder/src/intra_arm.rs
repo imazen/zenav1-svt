@@ -359,3 +359,83 @@ mod tests {
         assert_eq!((m5.mode_end, m5.angular_level), (mode_end, angular));
     }
 }
+
+/// C `uv_mode_nfl_count`'s BASE, before the `uv_nic_scaling_num / 16` scale
+/// (`search_best_independent_uv_mode`, product_coding_loop.c:7693-7696):
+///
+/// ```c
+/// unsigned int uv_mode_nfl_count = pcs->scs->allintra ? ppcs->is_highest_layer ? 16 : 32
+///     : pcs->slice_type == I_SLICE                    ? 64
+///     : !ppcs->is_highest_layer                       ? 32
+///                                                     : 16;
+/// ```
+///
+/// The funnel carried the allintra arm's 32 alone (every picture it encoded
+/// was a still), which on a VIDEO-arm key frame halves C's full-loop count:
+/// C tests every injected uv candidate (61 at `intra_mode_end` PAETH, under
+/// the 64 cap) where 32 keeps only the first 32 of a flat-chroma SAD tie, so
+/// UV_SMOOTH*/UV_PAETH never reach the full loop and the per-luma table
+/// resolves luma PAETH to UV_DC. Measured on `video_key_matrix` `gradient p0`
+/// and `screenrep p0` (72x88 q40): both cells' first divergent block in
+/// coding order priced PAETH_PRED +1310 and DC+FILTER_PAETH -1315 rate units
+/// against C from MDS0 on, exactly the uv-mode rate under the coded luma mode
+/// (`docs/INTER-ENCODE-PLAN.md` §1z³⁸).
+///
+/// `is_highest_layer` is C's `(temporal_layer_index == hierarchical_levels)
+/// && hierarchical_levels != 0` (pd_process.c:5560) — false for every key
+/// frame and for every picture of a flat GOP.
+#[must_use]
+pub(crate) fn ind_uv_nfl_base(arm: ScArm, is_highest_layer: bool) -> u16 {
+    match arm {
+        ScArm::Allintra => {
+            if is_highest_layer {
+                16
+            } else {
+                32
+            }
+        }
+        ScArm::Video { is_islice: true } => 64,
+        ScArm::Video { is_islice: false } => {
+            if is_highest_layer {
+                16
+            } else {
+                32
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ind_uv_nfl_tests {
+    use super::*;
+
+    /// The four arms of product_coding_loop.c:7693-7696, as C's literals.
+    #[test]
+    fn nfl_base_matches_c_ladder() {
+        assert_eq!(ind_uv_nfl_base(ScArm::Allintra, false), 32);
+        assert_eq!(ind_uv_nfl_base(ScArm::Allintra, true), 16);
+        assert_eq!(ind_uv_nfl_base(ScArm::Video { is_islice: true }, false), 64);
+        assert_eq!(ind_uv_nfl_base(ScArm::Video { is_islice: true }, true), 64);
+        assert_eq!(
+            ind_uv_nfl_base(ScArm::Video { is_islice: false }, false),
+            32
+        );
+        assert_eq!(ind_uv_nfl_base(ScArm::Video { is_islice: false }, true), 16);
+    }
+
+    /// The count the funnel actually uses at M0 (uv_nic 16) and M1 (uv_nic
+    /// 8): a video key frame runs 64 / 32 full-loop uv candidates where the
+    /// allintra still runs 32 / 16 — i.e. every one of the 61 injected at
+    /// M0, and the `uv_mode_total_count` MIN in C (:7698) is what caps it.
+    #[test]
+    fn video_key_frame_doubles_the_still_count() {
+        for (uv_nic, still, video_kf) in [(16u64, 32u64, 64u64), (8, 16, 32)] {
+            let scale = |base: u16| (u64::from(base) * uv_nic + 8) / 16;
+            assert_eq!(scale(ind_uv_nfl_base(ScArm::Allintra, false)), still);
+            assert_eq!(
+                scale(ind_uv_nfl_base(ScArm::Video { is_islice: true }, false)),
+                video_kf
+            );
+        }
+    }
+}

@@ -279,16 +279,24 @@ pub(super) fn inject_candidates(
             }
         }
 
-        // 4. Full-loop count: allintra path -> base is_highest_layer ? 16
-        //    : 32 (:7919). Under OPT_USE_HL0_FLAT a still KF (temporal layer
-        //    0, hierarchical_levels 0) has is_highest_layer = FALSE
-        //    (pd_process.c:6212: `(tli == hl) && hl != 0`), so base = 32;
-        //    scaled by uv_nic_scaling_num/16, min 1 (:7919-7925). UV_DC is
-        //    always tested (:7927-7947); it is injected first (sorted index
-        //    0 on the flat-chroma tie) so it is already within the first
-        //    nfl, but the explicit force is kept for content where DC sorts
-        //    late. -> nfl = 16 at M1 (uv_nic 8), 32 at M0 (uv_nic 16).
-        let mut nfl = div_round(32 * uv_nic, 16).max(1) as usize;
+        // 4. Full-loop count: base `cfg.ind_uv_nfl_base` -- C's
+        //    `allintra ? (is_highest_layer ? 16 : 32) : I_SLICE ? 64 :
+        //    !is_highest_layer ? 32 : 16` (:7693-7696, stamped per picture
+        //    by `intra_arm::ind_uv_nfl_base`) -- scaled by
+        //    uv_nic_scaling_num/16, min 1, capped by the candidate count
+        //    (:7697-7699). Under OPT_USE_HL0_FLAT a KF (temporal layer 0,
+        //    hierarchical_levels 0) has is_highest_layer = FALSE
+        //    (pd_process.c:6212: `(tli == hl) && hl != 0`). UV_DC is always
+        //    tested (:7700-7720); it is injected first (sorted index 0 on
+        //    the flat-chroma tie) so it is already within the first nfl,
+        //    but the explicit force is kept for content where DC sorts
+        //    late. -> still: 16 at M1 (uv_nic 8), 32 at M0 (uv_nic 16);
+        //    video KEY frame: 32 at M1, 64 at M0 (= all 61 injected).
+        //    The base was a hard-coded 32 until 2026-09-04: on a video key
+        //    frame that cut UV_SMOOTH*/UV_PAETH out of every flat-chroma
+        //    SAD tie and mispriced every PAETH / FILTER_PAETH candidate from
+        //    MDS0 on (`video_key_matrix` gradient/screenrep p0).
+        let mut nfl = div_round(u64::from(cfg.ind_uv_nfl_base) * uv_nic, 16).max(1) as usize;
         nfl = nfl.min(uv_cands.len()).max(1);
         let mut set: Vec<(u8, i8)> = fast.iter().take(nfl).map(|&(_, i)| uv_cands[i]).collect();
         if !set.iter().any(|&(m, _)| m == 0) {

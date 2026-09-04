@@ -645,8 +645,12 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
     const char* xy   = getenv("SVT_FULLCOST_XY");
     if (path && *path && xy) {
         int px = -1, py = -1;
-        sscanf(xy, "%d,%d", &px, &py);
-        if ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py) {
+        /* SVT_FULLCOST_XY=all dumps EVERY block (the whole-frame MDS3 admission
+         * join, tools/perf_profile/mds3_admission_join.py); "x,y" pins one. */
+        const int all = strcmp(xy, "all") == 0;
+        if (!all)
+            sscanf(xy, "%d,%d", &px, &py);
+        if (all || ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py)) {
             static FILE* f = NULL;
             if (!f)
                 f = fopen(path, "w");
@@ -694,7 +698,7 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                 }
                 fprintf(f,
                         "CFULL sl=%d org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ibc=%d ycb=%llu ydist=%llu "
-                        "cost=%llu cls=%d n0=%u,%u,%u,%u,%u n1=%u,%u,%u,%u,%u n2=%u,%u,%u,%u,%u n3=%u,%u,%u,%u,%u m1bc=%d\n",
+                        "cost=%llu cls=%d n0=%u,%u,%u,%u,%u n1=%u,%u,%u,%u,%u n2=%u,%u,%u,%u,%u n3=%u,%u,%u,%u,%u m1bc=%d pm1=%d sq=%u mds=%u\n",
                         (int)pcs->slice_type,
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (int)ctx->md_stage, (int)cand_bf->cand->block_mi.mode,
@@ -715,7 +719,18 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                         (unsigned)ctx->md_stage_3_count[0], (unsigned)ctx->md_stage_3_count[1],
                         (unsigned)ctx->md_stage_3_count[2], (unsigned)ctx->md_stage_3_count[3],
                         (unsigned)ctx->md_stage_3_count[4],
-                        (int)ctx->mds1_best_class_it);
+                        (int)ctx->mds1_best_class_it,
+                        /* perform_mds1: 0 when enable_skipping_mds1 and the
+                         * post-MDS0 stage-1 total is 1 (product_coding_loop.c:7879)
+                         * -- C then runs NO MDS1 full loop on this block. */
+                        (int)ctx->perform_mds1,
+                        /* sq = the parent SQUARE size (BlockGeom.sq_size) and
+                         * mds = the geometry index: an 8x8 origin is visited
+                         * once as its own square (sq=8) and again as a
+                         * sub-block of each HA/HB/VA/VB shape of its 16x16
+                         * parent (sq=16, distinct mds) -- the join keys on
+                         * these, not on origin+dims alone. */
+                        (unsigned)ctx->blk_geom->sq_size, (unsigned)ctx->blk_ptr->mds_idx);
                 fflush(f);
             }
         }
