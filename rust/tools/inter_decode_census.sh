@@ -38,6 +38,10 @@
 # Usage: tools/inter_decode_census.sh [outdir]
 # Env: RS_AOMDEC (decoder path), plus the grid vars inter_byte_matrix.sh uses.
 set -uo pipefail
+# bash >= 4: this script uses mapfile/readarray/declare -A, which bash 3.2
+# (macOS /bin/bash) does not have — there it yields an EMPTY array and the
+# gate passes over nothing (docs/WORKING-ON-THIS.md §5). Refuse, loudly.
+[[ ${BASH_VERSINFO[0]} -ge 4 ]] || { echo "FATAL: needs bash >= 4 (got $BASH_VERSION); run under a newer bash" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"

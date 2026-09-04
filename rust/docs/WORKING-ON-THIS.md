@@ -512,6 +512,19 @@ waiters kept reporting RUNNING for another twenty minutes. Match the SCRIPT PATH
 (`pgrep -f "tools/identity_full_8bit.sh"`), or watch the log's own completion
 line, or use a pid — never a bare name the waiter also carries.
 
+**`mapfile`/`readarray` on macOS `/bin/bash` 3.2 silently yields an empty
+array — a gate iterating it passes over nothing.** MEASURED 2026-09-04:
+`inter_decode_census.sh` under `/bin/bash` printed `mapfile: command not
+found`, then `NEW: unbound variable`, then `inter decode census: PASS` — a
+green verdict over an empty cell list. Every gate that uses `mapfile`,
+`readarray` or `declare -A` now refuses to run on bash < 4 (exit 2, `FATAL:
+needs bash >= 4`); on this Mac run them under Homebrew's bash
+(`/opt/homebrew/bin/bash tools/<gate>.sh`). This is the `bash -l` empty-array
+trap above in a worse costume: the `${ARR[@]+...}` guard that fixed
+`identity_diff.sh` and the census's `NEW` count cannot help here, because bash
+3.2 has no `mapfile` at all — the array is empty BEFORE `set -u` gets a say,
+and the gate's verdict is green. Refusing to run is the only honest fix.
+
 **A grid whose ME distortion is ZERO cannot witness a motion-keyed defect —
 and the REASON it is zero was itself wrong for a day.** The inter campaign's
 96-cell grid is synthetic content translated by exactly `SVTAV1_FRAME_SHIFT`

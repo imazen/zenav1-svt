@@ -23,6 +23,10 @@
 # CORPUS: gb82-sc (10 screen/UI/text PNGs). Override with BD10_SCREEN_CORPUS=<dir>.
 # If absent the gate FAILS LOUDLY (never a silent skip).
 set -uo pipefail
+# bash >= 4: this script uses mapfile/readarray/declare -A, which bash 3.2
+# (macOS /bin/bash) does not have — there it yields an EMPTY array and the
+# gate passes over nothing (docs/WORKING-ON-THIS.md §5). Refuse, loudly.
+[[ ${BASH_VERSINFO[0]} -ge 4 ]] || { echo "FATAL: needs bash >= 4 (got $BASH_VERSION); run under a newer bash" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib_corpus.sh"
 RS_ROOT=$(cd "$HERE/.." && pwd)
