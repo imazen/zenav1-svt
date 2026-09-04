@@ -996,6 +996,15 @@ fn dr_z2_edged_flat_scalar(
 /// So the primitive that decides it is **`u8x16 -> u16x8` widening**, and the
 /// pinned crate does not have it at any version this repo can resolve.
 ///
+/// **CORRECTED 2026-09-04 — UPSTREAM HAS IT NOW, AND THIS KERNEL HAS BEEN
+/// DEMONSTRATED AS ONE GENERIC BODY.** `imazen/archmage` `origin/main` is
+/// `3cd0a04` and carries the widening/narrowing work; against a dev-only git
+/// patch this kernel compiles as a single
+/// `#[magetypes(define(u8x16, u16x8, i16x8), v4, v3, neon, wasm128, scalar)]`
+/// body and is byte-exact against real C on every tier. What is NOT measured
+/// is its SPEED. See `docs/perf-status.md`'s magetypes block for the exact
+/// expression, the patch stanza and the A/B that has to run before it lands.
+///
 /// Two further gaps would survive even a bump to archmage `main`:
 /// * `narrow_saturating` is a SATURATING narrow, not a ROUNDING one; this
 ///   kernel needs `vrshrn_n_u16::<5>`, i.e. `(v + 16) >> 5`, which would have

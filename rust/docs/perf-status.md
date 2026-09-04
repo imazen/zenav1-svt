@@ -1,5 +1,73 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE GENERIC `#[magetypes]` ROUTE IS OPEN FOR THE DIRECTIONAL-INTRA FAMILY
+> — DEMONSTRATED, NOT ASSERTED (2026-09-04). THIS SUPERSEDES THE "WHY IT IS
+> HAND-WRITTEN" PARAGRAPHS BELOW.** Those paragraphs are still CORRECT about
+> the PIN — `Cargo.lock` holds `magetypes 0.9.28`, the only published version,
+> and it has no integer widening. They are now STALE about upstream:
+> `imazen/archmage` `origin/main` is **`3cd0a04`** and carries
+> `magetypes/src/simd/backends/widen_narrow.rs` plus its generated generic
+> surface, i.e. **both** PR #71 (`shl_uniform` / `shr_*_uniform`,
+> `saturating_add`/`sub` at 8/16-bit) and PR #74 (`widen_low` / `widen_high`
+> on `u8xN`/`i8xN`/`u16xN`/`i16xN`, `narrow_saturating_{i8,u8}` on `i16xN`,
+> `narrow_saturating_{i16,u16}` on `i32xN`) — all widths, all six backends.
+>
+> **MEASURED, in this workspace, against a dev-only git patch (not committed):**
+> the zone-2 kernel compiles as ONE `#[magetypes(define(u8x16, u16x8, i16x8),
+> v4, v3, neon, wasm128, scalar)]` body and is **byte-exact against the real C
+> symbol on every archmage tier** — `dr_prediction_kernels_match_c` and
+> `dr_prediction_all_tiers_match_c` both green with `permutations_run >= 2`.
+> So the generic route is VIABLE for this family, which is what the earlier
+> audit's missing-primitive list was written to unblock.
+>
+> The whole 16-lane inner step, verbatim, is:
+>
+> ```rust
+> let lo = ((a0v.widen_low().shl_const::<5>()
+>     + (a1v.widen_low() - a0v.widen_low()) * sh_v) + r16).shr_logical_const::<5>();
+> let hi = ((a0v.widen_high().shl_const::<5>()
+>     + (a1v.widen_high() - a0v.widen_high()) * sh_v) + r16).shr_logical_const::<5>();
+> lo.bitcast_i16x8().narrow_saturating_u8(hi.bitcast_i16x8()).store(o);
+> ```
+>
+> Two notes for whoever lands it. (1) There is still no ROUNDING narrow; the
+> `+ r16` then `shr_logical_const::<5>` above IS `vrshrn_n_u16::<5>` written
+> out, and the SATURATING narrow is inert here only because the result is
+> provably in `[0, 255]` — the `u16 -> i16` bitcast before it is exact for the
+> same reason. Say so at any new call site; it is not a general substitute.
+> (2) `narrow_saturating_*` takes an `i16` source by design (the doc comment
+> says the x86/wasm instruction sets offer no `u16` shape), so the bitcast is
+> mandatory, not stylistic.
+>
+> **The wiring, dev-only, NOT to be committed** (a path/git dep in a pushed
+> manifest fails CI at resolution on the x86 host):
+>
+> ```toml
+> [patch.crates-io]
+> archmage  = { git = "https://github.com/imazen/archmage", rev = "3cd0a04" }
+> magetypes = { git = "https://github.com/imazen/archmage", rev = "3cd0a04" }
+> ```
+>
+> Patch BOTH: `magetypes` depends on `archmage` by path inside that workspace,
+> so patching only one gives two incompatible `archmage` crates and a type
+> error on every token.
+>
+> **NOT ESTABLISHED, and it is the next step:** the generic body's SPEED. The
+> A/B that isolates the route — same patched deps, per-ISA arm vs generic body,
+> `tools/perf_ab.sh` on the still and videokey arms — was built
+> (`~/tmp/pe_mtbase` / `~/tmp/pe_mtgen`) and NOT RUN: the box had a sibling
+> workspace's gates on it and the session ended first. The shipped arm's own
+> numbers are in `benchmarks/z2neon_ab_2026-09-03.*`. Land the generic body
+> only against that A/B — a generic body materially slower than the per-ISA arm
+> is a tradeoff to surface, not to absorb — and note that landing it for real
+> also needs a `magetypes` RELEASE, which is a separate step.
+>
+> The same argument covers the rest of the audit's list: `dr_z1_edged_flat_neon`
+> and `dr_z3_edged_flat_neon` are the identical kernel with a different
+> traversal, `dsp::residual::residual_i16`/`residual_i32` are the same
+> widen-arithmetic-narrow shape, and `me_sad` / `variance::sse` need the same
+> widening plus `u16x8::widen_low() -> u32x4`, which `3cd0a04` also has.
+
 > **THE MEMSET RULE'S FIRST TEST, AND IT PAYS: THE RDOQ INPUT BUFFER'S
 > RE-ZERO WAS DEAD ON ALL FOUR QUANTIZER PATHS (2026-09-03).** Record
 > `benchmarks/dqzero_ab_2026-09-03.*`. Two allocation removals had just failed
