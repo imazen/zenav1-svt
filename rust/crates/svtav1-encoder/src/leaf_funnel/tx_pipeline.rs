@@ -179,6 +179,84 @@ pub(super) fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
     cul as u8
 }
 
+/// C's coefficient-SATD early exit, carried across one `tx_type_search` loop.
+///
+/// C `tx_type_search`, `product_coding_loop.c:4741-4755`, verbatim:
+///
+/// ```text
+/// if (satd_early_exit_th) {
+///     int satd = svt_aom_satd(&tx_coeffs[txb_1d_offset], txbwidth * txbheight)
+///                << ctx->mds_subres_step;
+///     if (satd < best_satd_tx_search) { best_satd_tx_search = satd; }
+///     else if ((satd - best_satd_tx_search) * 100
+///              > best_satd_tx_search * satd_early_exit_th) { continue; }
+///     ...
+/// }
+/// svt_aom_quantize_inv_quantize(...)   // survivors only
+/// ```
+///
+/// `best` is a RUNNING minimum over the whole search (C initialises it once at
+/// `:4643`, before the tx-type-group loop, not per group), so the admitted set
+/// depends on candidate ORDER — which is why the screen is threaded through the
+/// loop as one object rather than recomputed per call. DCT_DCT is always the
+/// first candidate and always faces `best == i64::MAX`, so it is never rejected
+/// and `dct_cost` (the rate gate's denominator) is always populated.
+///
+/// `<< ctx->mds_subres_step` is absent because the port has no subsampled-
+/// residual mode (`mds_subres_step` is 0 at every preset it expresses); the
+/// shift would scale both sides of every comparison identically anyway.
+pub(super) struct SatdScreen {
+    /// C `satd_early_exit_th`, already qp-scaled by the caller. The screen is
+    /// only constructed when this is non-zero (C's `if (satd_early_exit_th)`).
+    th: i64,
+    /// C `best_satd_tx_search`.
+    best: i64,
+    /// The last trial's SATD and the `best` it faced BEFORE being folded in —
+    /// for the `SVTAV1_TXT_XY` dump only, which prints the pre-update value.
+    last: (i64, i64),
+}
+
+impl SatdScreen {
+    /// C `best_satd_tx_search = INT_MAX` (`product_coding_loop.c:4643`).
+    pub(super) fn new(th: i64) -> Self {
+        SatdScreen {
+            th,
+            best: i64::MAX,
+            last: (0, 0),
+        }
+    }
+
+    /// The last trial's `(satd, best_before_update)`, for the dump.
+    pub(super) fn last(&self) -> (i64, i64) {
+        self.last
+    }
+
+    /// Fold one trial's coefficients in; `true` promotes it to quantize.
+    ///
+    /// The sum is C `svt_aom_satd_c` (`picture_operators_c.c:330`), which
+    /// `svtav1_dsp::hadamard::aom_satd` also transcribes — differentially
+    /// fuzzed against the real C symbol in `tests/c_parity_hadamard.rs`. This
+    /// copy is NOT folded into that one because it accumulates in `i64` where
+    /// C (and therefore `aom_satd`) accumulates in `int`: the widening is the
+    /// port's existing, byte-verified choice, and narrowing it back would be a
+    /// behaviour change on any content whose coefficient sum overflows `i32`,
+    /// which no gate in this repo can currently witness. Do not "deduplicate"
+    /// these two without measuring that case first.
+    fn admit(&mut self, coeffs: &[i32]) -> bool {
+        let mut satd: i64 = 0;
+        for &c in coeffs.iter() {
+            satd += c.unsigned_abs() as i64;
+        }
+        self.last = (satd, self.best);
+        if satd < self.best {
+            self.best = satd;
+            true
+        } else {
+            (satd - self.best) * 100 <= self.best * self.th
+        }
+    }
+}
+
 /// Forward transform + (optional RDOQ) quantize + inverse recon + dist +
 /// coeff bits for one TX unit. Mirrors the DCT/TXT iteration body of
 /// `tx_type_search` / `perform_dct_dct_tx` / `svt_aom_full_loop_uv`.
@@ -232,45 +310,122 @@ pub(super) fn tx_unit(
     need_recon: bool,
     rate_mode: RateMode,
 ) -> TxUnitOut {
+    tx_unit_screened(
+        src,
+        src_stride,
+        src_off,
+        pred,
+        pred_stride,
+        pred_off,
+        w,
+        h,
+        tx_type,
+        plane_type,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        intra_dir,
+        qt,
+        frame,
+        rates,
+        do_rdoq,
+        spatial_dist,
+        crop,
+        need_recon,
+        rate_mode,
+        None,
+    )
+    .expect("no screen was passed, so the unit is always committed")
+}
+
+/// [`tx_unit`] with C's SATD early exit wired into its middle.
+///
+/// C's `tx_type_search` (`product_coding_loop.c:4729-4776`) runs the tx-type
+/// trial in TWO phases: the CHEAP one is the forward transform alone
+/// (`svt_aom_estimate_transform`, `:4729`) plus a SATD over the coefficients it
+/// just produced (`svt_aom_satd`, `:4742`); the EXPENSIVE one — quantize,
+/// conditional RDOQ, inverse, distortion, coefficient rate
+/// (`svt_aom_quantize_inv_quantize`, `:4757`, and everything after it) — runs
+/// only for the trials the SATD admits (`:4753`'s `continue` skips the rest of
+/// the loop body entirely). `screen` is that gate, evaluated at exactly C's
+/// position in the pipeline; `None` restores the single-phase [`tx_unit`].
+///
+/// Returns `None` for a REJECTED trial — one C never quantizes. A rejected
+/// trial contributes nothing on either side (C's `continue` is before every
+/// write to `eob_txt` / `y_txb_coeff_bits_txt` / `best_cost_tx_search`), so
+/// admitting it and discarding its result afterwards — which is what this port
+/// did until 2026-09-04 — produces the same bytes and pays for the whole
+/// expensive phase to do it. Measured on `benchmarks/callcount_2026-09-04`:
+/// 488,414 committed trials against C's 270,415 at gradient 512x512 qp40
+/// preset 2, one edge worth 45.20 % of the port's instruction count.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tx_unit_screened(
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    intra_dir: usize,
+    qt: &QuantTable,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    do_rdoq: bool,
+    spatial_dist: bool,
+    crop: (usize, usize),
+    need_recon: bool,
+    rate_mode: RateMode,
+    screen: Option<&mut SatdScreen>,
+) -> Option<TxUnitOut> {
     // Borrow the per-thread scratch (see [`TxScratch`]). `try_borrow_mut`
     // rather than `borrow_mut`: tx_unit calls only DSP / quant / rate kernels
     // and never re-enters itself, but a future re-entrant caller should get a
     // fresh scratch, not a panic.
+    //
+    // `Result<_, screen>`: on a failed borrow the `&mut SatdScreen` is handed
+    // BACK out of the closure rather than dropped inside it, so the fallback
+    // path below can still run the gate. Same contract as
+    // `detect::with_satd_scratch`'s closure hand-back.
     #[cfg(feature = "std")]
-    {
-        let taken = TX_SCRATCH.with(|cell| {
-            cell.try_borrow_mut().ok().map(|mut sc| {
-                #[allow(clippy::too_many_arguments)]
-                tx_unit_inner(
-                    &mut sc,
-                    src,
-                    src_stride,
-                    src_off,
-                    pred,
-                    pred_stride,
-                    pred_off,
-                    w,
-                    h,
-                    tx_type,
-                    plane_type,
-                    txb_skip_ctx,
-                    dc_sign_ctx,
-                    intra_dir,
-                    qt,
-                    frame,
-                    rates,
-                    do_rdoq,
-                    spatial_dist,
-                    crop,
-                    need_recon,
-                    rate_mode,
-                )
-            })
+    let screen = {
+        let taken = TX_SCRATCH.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut sc) => Ok(tx_unit_inner(
+                &mut sc,
+                src,
+                src_stride,
+                src_off,
+                pred,
+                pred_stride,
+                pred_off,
+                w,
+                h,
+                tx_type,
+                plane_type,
+                txb_skip_ctx,
+                dc_sign_ctx,
+                intra_dir,
+                qt,
+                frame,
+                rates,
+                do_rdoq,
+                spatial_dist,
+                crop,
+                need_recon,
+                rate_mode,
+                screen,
+            )),
+            Err(_) => Err(screen),
         });
-        if let Some(out) = taken {
-            return out;
+        match taken {
+            Ok(out) => return out,
+            Err(screen) => screen,
         }
-    }
+    };
     let mut sc = TxScratch::default();
     tx_unit_inner(
         &mut sc,
@@ -295,6 +450,7 @@ pub(super) fn tx_unit(
         crop,
         need_recon,
         rate_mode,
+        screen,
     )
 }
 
@@ -322,7 +478,8 @@ pub(super) fn tx_unit_inner(
     crop: (usize, usize),
     need_recon: bool,
     rate_mode: RateMode,
-) -> TxUnitOut {
+    screen: Option<&mut SatdScreen>,
+) -> Option<TxUnitOut> {
     let (crop_w, crop_h) = crop;
     debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
     let n = w * h;
@@ -389,6 +546,29 @@ pub(super) fn tx_unit_inner(
             rs_tx_type,
         );
         debug_assert!(ok, "fwd txfm {w}x{h} type {tx_type}");
+    }
+
+    // ---- C's SATD early exit, at C's position: after the forward transform,
+    // BEFORE the quantizer (product_coding_loop.c:4741-4755 sits between
+    // `svt_aom_estimate_transform` at :4729 and `svt_aom_quantize_inv_quantize`
+    // at :4757). A rejected trial returns here having paid only the residual
+    // and the transform, exactly as C's `continue` does.
+    //
+    // Placed before the 64-dim fold to match C's ORDER; the two are
+    // order-independent in practice because the fold only exists for w or h
+    // > 32, and `search_dct_dct_only` forces `only_dct_dct` — hence
+    // `satd_early_exit_th = 0` and no screen at all — on exactly those shapes.
+    //
+    // Placed AFTER the coded-lossless Walsh-Hadamard branch for the same
+    // reason C's is after `svt_aom_estimate_transform`: C's SATD reads
+    // whatever that call wrote, WHT included. The old post-hoc screen read a
+    // DCT of the same residual instead. Both are unreachable — lossless
+    // implies `txt_on == false` implies `only_dct` implies no screen — but
+    // this position is the faithful one.
+    if let Some(screen) = screen
+        && !screen.admit(&coeffs[..n])
+    {
+        return None;
     }
 
     // 64-dim fold (svt_handle_transform64x64) + energy of discarded coeffs.
@@ -725,14 +905,14 @@ pub(super) fn tx_unit_inner(
     };
     let cul = compute_cul_level(scan, &qcoeff, eob);
 
-    TxUnitOut {
+    Some(TxUnitOut {
         eob,
         qcoeff,
         recon,
         dist,
         bits,
         cul,
-    }
+    })
 }
 
 pub(super) fn energy_region(coeffs: &[i32], stride: usize, w: usize, h: usize) -> u64 {
@@ -973,6 +1153,68 @@ pub(crate) fn tx_unit_hbd(
     rdoq_level: u8,
     lambda: u64,
     sharpness: i8,
+    allintra_rd_mult: bool,
+    rates: &MdRates,
+    do_rdoq: bool,
+    bd: u8,
+    qm_level: u8,
+    rd: Option<&TxRdArgs>,
+) -> TxUnitOutHbd {
+    tx_unit_hbd_screened(
+        src,
+        src_stride,
+        src_off,
+        pred,
+        pred_stride,
+        pred_off,
+        w,
+        h,
+        tx_type,
+        plane_type,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        qt,
+        rdoq_level,
+        lambda,
+        sharpness,
+        allintra_rd_mult,
+        rates,
+        do_rdoq,
+        bd,
+        qm_level,
+        rd,
+        None,
+    )
+    .expect("no screen was passed, so the unit is always committed")
+}
+
+/// [`tx_unit_hbd`] with C's SATD early exit wired into its middle — the bd10
+/// twin of [`tx_unit_screened`], and the arm `txt_search` uses when the 10-bit
+/// context is present.
+///
+/// C computes its trial SATD on `ctx->tx_coeffs` at the ACTIVE MD bit depth
+/// (`svt_aom_estimate_transform`'s `ctx->hbd_md ? EB_TEN_BIT : EB_EIGHT_BIT`,
+/// `product_coding_loop.c:4737`), so when the port runs bd10 full-RD the gate
+/// belongs on THIS transform, not on the u8 twin's — which is why `txt_search`
+/// screens here first and only computes the u8 unit for admitted trials.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tx_unit_hbd_screened(
+    src: &[u16],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    qt: &QuantTable,
+    rdoq_level: u8,
+    lambda: u64,
+    sharpness: i8,
     // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
@@ -981,7 +1223,8 @@ pub(crate) fn tx_unit_hbd(
     bd: u8,
     qm_level: u8,
     rd: Option<&TxRdArgs>,
-) -> TxUnitOutHbd {
+    screen: Option<&mut SatdScreen>,
+) -> Option<TxUnitOutHbd> {
     let n = w * h;
     let c_tx = cc::tx_size_from_dims(w, h);
     let rs_tx_type = TX_TYPE_FROM_C[tx_type];
@@ -1007,6 +1250,14 @@ pub(crate) fn tx_unit_hbd(
         rs_tx_type,
     );
     debug_assert!(ok, "bd10 fwd txfm {w}x{h} type {tx_type}");
+
+    // C's SATD early exit, at C's position — see [`tx_unit_screened`]'s
+    // comment at the same point in the u8 pipeline.
+    if let Some(screen) = screen
+        && !screen.admit(&coeffs[..n])
+    {
+        return None;
+    }
 
     // 64-dim fold (svt_handle_transform64x64): keep the 32-capped low-freq
     // quadrant packed at the adjusted stride, exactly like tx_unit. The energy
@@ -1263,14 +1514,14 @@ pub(crate) fn tx_unit_hbd(
     };
 
     let cul = compute_cul_level(scan, &qcoeff, eob);
-    TxUnitOutHbd {
+    Some(TxUnitOutHbd {
         eob,
         qcoeff,
         recon,
         cul,
         dist,
         bits,
-    }
+    })
 }
 
 use crate::quant::TX_SCALE_TAB;

@@ -1,0 +1,20 @@
+# perf_ab — candidate/base per-frame encode wall time (median of paired rounds)
+# speedup = base/cand (>1 means the candidate is FASTER). ident=Y: byte-identical output.
+size	preset	ident	n	base_ms	cand_ms	ratio	speedup	ratio_p25	ratio_p75
+64	2	Y	9	28.9182	20.6371	0.6730	1.486	0.6637	0.6867
+64	6	Y	9	1.0639	1.0580	0.9965	1.004	0.9688	1.0087
+64	10	Y	9	0.1556	0.1571	1.0108	0.989	0.9554	1.0148
+256	2	Y	9	294.4976	216.9943	0.7390	1.353	0.7332	0.7412
+256	6	Y	9	17.9100	16.8006	0.9367	1.068	0.9302	0.9495
+256	10	Y	9	1.5882	1.5911	1.0043	0.996	0.9897	1.0138
+512	2	Y	9	652.5406	491.2812	0.7547	1.325	0.7471	0.7565
+512	6	Y	9	61.3394	59.3774	0.9670	1.034	0.9655	0.9683
+512	10	Y	9	7.3407	7.3697	0.9998	1.000	0.9591	1.0101
+# host=r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores), load average 1.35 at
+# launch and no other build/sweep running on the box (checked with ps/uptime).
+# base = 708ef6386, cand = 708ef6386 + the tx-type-search two-phase restructure.
+# AB_ROUNDS=9, gradient, qp 40, tools/perf_ab.sh (interleaved, order randomised
+# per round, NEITHER side niced). ident=Y on every cell: the harness compared
+# the two OBUs and they are byte-identical, so this is a like-for-like timing.
+# The p10 row is the control: TXT search collapses to one candidate there on
+# both sides, the screen never exists, and the measured ratio is 1.000.

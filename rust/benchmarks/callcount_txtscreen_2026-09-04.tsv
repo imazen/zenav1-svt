@@ -1,0 +1,44 @@
+# BEFORE/AFTER call counts for the tx-type-search two-phase restructure, with C
+# as the third column. Companion meta: callcount_txtscreen_2026-09-04.meta.
+#
+# Answers "did the fix reproduce C's control flow", not "did it get faster" —
+# the count IS the evidence; the timing is in the same meta and is secondary.
+#
+# host r7900x (x86_64-linux), valgrind-3.26.0 --tool=callgrind, gradient 512x512
+# qp40 still, presets 2/6/10, warmup=0 both sides.
+# before = 708ef6386 (this commit's parent), after = 708ef6386 + this commit,
+# C = reference/svt-av1 @ 3115c0c1, tools/perf_c_encode (NOT rebuilt).
+# All nine runs wrote byte-identical OBUs: p2 sha 12ac5773eb96ccfa (5126 B),
+# p6 5eef4a78a80d40b6 (5995 B), p10 923d046b98312cd8 (6743 B) — the SAME three
+# on all of before / after / C.
+#
+# ratio columns are after/before and after/C.
+preset	metric	before	after	c	after_over_before	after_over_c	note
+2	Ir PROGRAM TOTALS	15404105161	11788718910	4424517561	0.765	2.665	-23.5 % of the port's whole p2 instruction count
+6	Ir PROGRAM TOTALS	1654915202	1607135446	313618266	0.971	5.125	-2.9 %
+10	Ir PROGRAM TOTALS	177051211	177128382	62750484	1.000	2.823	TXT search is off at p10 on both sides; +0.04 % is codegen noise, not a regression mechanism
+2	luma quantize commit from the tx-type search (port txt_search -> tx_unit_inner -> quantizer; C tx_type_search -> svt_aom_quantize_inv_quantize)	488414	270415	270415	0.554	1.000	HEADLINE #1 CLOSED — EXACT. Port edge derived as (quantize_fp_raster + quantize_b_raster) - mds1 67249 - chroma 35590; C edge is direct --tree=caller output
+6	same	10537	8397	8397	0.797	1.000	EXACT. Port edge = (11435+4165) - mds1 4165 - chroma 3038 = 8397; C edge is direct --tree=caller output (tree_cref_p6.txt, the 15.04 %-of-Ir line)
+2	quantizer dispatch, ALL callers (port quantize_fp_raster+quantize_b_raster; C quantize_inv_quantize+_light)	591253	373254	382172	0.631	0.977	was 1.548x C
+6	same	17740	15600	19993	0.879	0.780	port total now BELOW C's, which counts C-only _light call sites
+10	same	3768	3768	4138	1.000	0.911	unchanged, as predicted
+2	quant::optimize_b / svt_av1_optimize_b.constprop.0	462758	260098	261827	0.562	0.993	was 1.767x C
+6	same	9987	7857	7857	0.787	1.000	EXACT
+10	same	1110	1110	1110	1.000	1.000	already exact before
+2	coeff_rate::cost_coeffs_txb / svt_av1_cost_coeffs_txb	478131	299116	304169	0.626	0.983	was 1.572x C
+6	same	13165	11132	16829	0.846	0.661	
+10	same	1388	1388	1388	1.000	1.000	
+2	detect::txb_coeff_satd -> residual::residual_i32 (the post-hoc screen's redundant residual)	484442	0	0	0.000	1.000	HEADLINE #2 CLOSED — the function is DELETED; C has no such edge at any preset
+6	same	10193	0	0	0.000	1.000	
+10	same	0	0	0	1.000	1.000	mechanism was already absent
+2	forward transform, ALL callers (port fwd_txfm2d_dispatch; C svt_aom_estimate_transform)	1080313	595871	600171	0.552	0.993	the second transform per trial is gone with the second residual
+6	same	32326	22133	22133	0.685	1.000	EXACT
+10	same	5024	5024	4138	1.000	1.214	
+2	residual kernel, ALL callers (port residual_i32; C svt_residual_kernel8bit_avx2)	1080313	595871	435245	0.552	1.369	OPEN, NOT closed by this commit — see meta "WHAT IS NOT FIXED"
+6	same	32326	22133	23358	0.685	0.948	
+10	same	5024	5024	4138	1.000	1.214	
+2	tx_pipeline::tx_unit_inner, ALL callers	591253	591253	na	1.000	na	UNCHANGED BY DESIGN: the trial still enters tx_unit_inner, it just returns before the quantizer when the screen rejects it. The saving is inside, not at the edge
+2	allocator total (malloc+calloc+free)	4355663	3483661	2600	0.800	1340	SECONDARY EFFECT, not targeted: a rejected trial now returns before tx_unit_inner allocates its qcoeff and recon Vecs. before=1727991+449841+2177831 — which reproduces callcount_2026-09-04's 4,355,663 EXACTLY at a different commit, a useful cross-check on the whole setup. C is flat across presets (~2,500-2,600, one-time setup); this does not fix that finding, it only shrinks it
+2	calloc / __rust_alloc_zeroed	1727991	1291992	781	0.748	1654	same cause
+2	__memset_avx2_unaligned_erms	3870785	2559654	310263	0.661	8.25	same cause
+2	__memcpy_avx_unaligned_erms	3266321	2976768	1101449	0.911	2.70	same cause

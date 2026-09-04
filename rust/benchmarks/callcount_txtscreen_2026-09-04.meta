@@ -1,0 +1,231 @@
+TX-TYPE SEARCH, RESTRUCTURED INTO C'S TWO PHASES: the fix for both headline
+mechanisms `callcount_2026-09-04` found, with the before/after call counts that
+prove the port now reproduces C's control flow rather than merely its output.
+
+date:   2026-09-04
+host:   r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores). valgrind does not
+        run on the Apple-Silicon Mac this work was written on.
+before: 708ef6386 (this commit's parent)
+after:  708ef6386 + the commit this file lands with
+C:      reference/svt-av1 @ 3115c0c1, via rust/tools/perf_c_encode. The oracle
+        was NOT rebuilt for this chunk — the binary already built in the primary
+        checkout was reused, exactly as the campaign brief requires.
+tool:   valgrind-3.26.0 --tool=callgrind (Ir only; no cache/branch sim) +
+        tools/perf_profile/callcount.py --demangle for per-function totals and
+        stock `callgrind_annotate --tree=caller` for caller-specific edges.
+grid:   gradient 512x512 qp40, presets 2 / 6 / 10, STILL config, warmup=0 —
+        the same three cells callcount_2026-09-04 used, so the numbers join.
+timing: benchmarks/perf_ab_txtscreen_2026-09-04.tsv (separate, unniced,
+        interleaved paired A/B on the same quiet box).
+
+=================== BYTE-IDENTITY OF THE MEASURED RUNS ===================
+
+All NINE callgrind runs (before/after/C x p2/p6/p10) wrote the same three OBUs:
+  p2   5,126 B  sha256 12ac5773eb96ccfa...
+  p6   5,995 B  sha256 5eef4a78a80d40b6...
+  p10  6,743 B  sha256 923d046b98312cd8...
+so before == after == C at every cell, and no count below was taken from a run
+whose own output diverged.
+
+=================== WHAT C ACTUALLY DOES (transcribed, with lines) ===================
+
+`tx_type_search`, Source/Lib/Codec/product_coding_loop.c. The per-candidate loop
+body is a THREE-gate funnel, and the port implemented only the outermost gate
+in C's position:
+
+  :4643-4645  best_cost_tx_search = ~0; dct_dct_cost = ~0;
+              best_satd_tx_search = INT_MAX;          <- once per CALL, not
+                                                         per tx-type group
+  :4646-4648  satd_early_exit_th = only_dct_dct ? 0
+                                 : is_inter ? txt_ctrls.satd_early_exit_th_inter
+                                            : ...th_intra
+  :4650-4657  the qp-based scaling of that threshold
+  --- per tx-type group, per tx-type (loops open at :4691-4693) ---
+  :4709-4718  GATE 1, the rate gate: skip a type whose signalling rate alone
+              already costs more than txt_rate_cost_th/1000 of dct_dct_cost
+              (the compare itself is :4714)
+  :4729-4740  svt_aom_estimate_transform  <- the CHEAP phase: forward transform
+                                             ONLY, into ctx->tx_coeffs
+  :4741-4755  GATE 2, THE PROMOTION RULE — verbatim:
+
+                if (satd_early_exit_th) {
+                    int satd = svt_aom_satd(&tx_coeffs[txb_1d_offset],
+                                            txbwidth * txbheight)
+                               << ctx->mds_subres_step;
+                    if (satd < best_satd_tx_search) {
+                        best_satd_tx_search = satd;
+                    } else {
+                        if ((satd - best_satd_tx_search) * 100
+                            > best_satd_tx_search * satd_early_exit_th)
+                            continue;
+                    }
+                }
+
+  :4757-4776  svt_aom_quantize_inv_quantize  <- the EXPENSIVE phase starts here
+  :4779-4781  GATE 3a: a non-DCT type with eob == 0 is not signalable -> continue
+  :4784-4906  inverse transform (gated at :4784) + spatial/freq distortion
+  :4908-4911  GATE 3b: `early_cost = RDCOST(lambda, 0, dist)`; if it already
+              exceeds best_cost_tx_search, `continue` WITHOUT estimating rate
+  :4913-4939  coefficient rate (three tiers; the real estimator at :4921)
+  :4944-4955  the RD compare; dct_dct_cost is set ONLY inside the winning branch
+              (:4947's `if (cost < best_cost_tx_search)`)
+  :4957-4969  GATE 4: the absolute coeff/dist early exit that breaks BOTH loops
+              (:4965's `best_tx_non_coeff < coeff_th || best_cost < cost_th`)
+
+THE PROMOTION RULE, in words, because it is the whole fix: the SATD is taken
+over the coefficients THIS candidate's forward transform just produced (not over
+a residual, not over pixels); `best_satd_tx_search` is a RUNNING minimum over
+the whole call, initialised once at :4645 and NOT reset per tx-type group, so
+the admitted set depends on candidate ORDER; a candidate that beats the running
+minimum both updates it and is admitted; a candidate that does not is admitted
+anyway unless it is worse by more than `satd_early_exit_th` percent of the
+running minimum; and a rejected candidate `continue`s BEFORE the quantizer,
+so it never writes eob_txt / y_txb_coeff_bits_txt / txb_full_distortion_txt and
+never reaches the RD compare. Ties (satd == best) are admitted, since
+`(0) * 100 > best * th` is false for any th >= 0.
+
+DCT_DCT can never be rejected: it is the first candidate of the first group and
+faces `best == INT_MAX`, so it always takes the update branch. That is what
+guarantees `dct_dct_cost` — GATE 1's denominator — is populated.
+
+=================== IS THE PORT BYTE-IDENTICAL BY CONSTRUCTION OR BY LUCK? ===================
+
+BY CONSTRUCTION, in both directions. This was the question the brief said to
+answer by reading, before trusting any gate, and the answer is not "the gates
+pass".
+
+The port's OLD shape ran the whole `tx_unit` pipeline for every candidate that
+passed GATE 1, then computed the SATD post-hoc (via a `txb_coeff_satd` that
+re-derived the residual and the transform) and used it to decide whether to
+`continue`. Compare the two orderings:
+
+  C      : G1 -> transform -> G2 -> quantize -> G3a -> dist -> G3b -> rate -> compare
+  old port: G1 -> transform -> quantize -> dist -> rate -> G2 -> G3a -> compare
+  new port: G1 -> transform -> G2 -> quantize -> dist -> rate -> G3a -> compare
+
+G2's predicate is a pure function of (src, pred, tx_type) and of the running
+minimum, and the running minimum is updated in the same order in all three. So
+the SET of candidates that reach the RD compare is identical, and their costs
+are identical, so the winner is identical. Moving G2 earlier cannot change the
+bytes because a G2-rejected candidate had no effect under EITHER shape — its
+result was computed and then discarded. That is the sense in which the old code
+was correct: it paid for the expensive phase in order to throw it away.
+
+Two smaller checks, both done by reading, both clean:
+  * The SATD inputs were already identical. `txb_coeff_satd` zeroed its
+    coefficient buffer and ran the same `fwd_txfm2d_dispatch` on the same
+    residual (same src/pred/stride/offset arguments) that `tx_unit_inner` runs;
+    the bd10 twin likewise. So the screen sees the same numbers from the
+    transform it now shares as it did from the transform it used to repeat.
+  * The port has NO transcription of GATE 3b. That is not a divergence: RDCOST
+    is monotonic in rate, so `RDCOST(l, 0, d) > best` implies
+    `RDCOST(l, bits, d) > best` for any bits >= 0, and the candidate loses the
+    compare the port does run. Same winner, more work. It is the next
+    call-count reduction available here, not a correctness gap — see below.
+
+ONE LATENT BEHAVIOUR CHANGE, in an unreachable path, and it moves TOWARD C. The
+old screen always took a DCT of the residual; the new one reads whatever the
+transform wrote, which on a coded-lossless 4x4 is the Walsh-Hadamard — which is
+what C's SATD reads too, since C's is fed by `svt_aom_estimate_transform`. Both
+are unreachable (coded-lossless implies `txt_on == false` implies `only_dct`
+implies `satd_early_exit_th == 0` implies no screen at all), so no gate can
+witness it either way; the new position is the faithful one.
+
+=================== THE MEASUREMENT ===================
+
+Full table: callcount_txtscreen_2026-09-04.tsv. The four numbers that matter:
+
+1. THE PROMOTED-TRIAL COUNT IS NOW EXACTLY C's, AT BOTH PRESETS WHERE THE
+   SCREEN EXISTS. The port's tx-type-search quantize edge (derived as the
+   quantizer-dispatch total minus the two positive-control edges, mds1's final
+   commit and chroma's) against C's `tx_type_search -> svt_aom_quantize_inv_
+   quantize` (direct --tree=caller output):
+     p2   488,414 -> 270,415   vs C 270,415   EXACT   (was 1.806x)
+     p6    10,537 ->   8,397   vs C   8,397   EXACT   (was 1.255x)
+     p10      608 ->     608   vs C     608   already exact; no screen exists
+   C's admitted fraction is 55.4 % at p2 and 79.7 % at p6, and the port now
+   admits the same candidates rather than the same NUMBER of candidates: the
+   two downstream consumers agree to the call as well —
+     optimize_b     462,758 -> 260,098  vs C 261,827  (p2); 9,987 -> 7,857 vs
+                    C 7,857 EXACT (p6); was 1.767x / 1.271x
+     cost_coeffs_txb 478,131 -> 299,116 vs C 304,169  (p2); was 1.572x
+
+2. HEADLINE #2's EDGE IS GONE, NOT MOVED. `detect::txb_coeff_satd ->
+   residual::residual_i32` was 484,442 (p2) / 10,193 (p6) / 0 (p10); it is now
+   0 everywhere because the function is DELETED. C has no such edge at any
+   preset. The redundant forward TRANSFORM went with it (the old screen ran one
+   too, which the earlier record did not separate out): the port's
+   `fwd_txfm2d_dispatch` total falls 1,080,313 -> 595,871 at p2 against C's
+   600,171 `svt_aom_estimate_transform` (0.993x), and at p6 22,133 -> 22,133,
+   EXACT.
+
+3. THE p10 CONTROL HOLDS. Every count at p10 is unchanged to the unit, and the
+   Ir total moves +0.04 % (codegen noise). TXT search collapses to one candidate
+   there on both sides, so the screen is never constructed — exactly the cell
+   where this fix should do nothing.
+
+4. INSTRUCTION COUNT: 15,404,105,161 -> 11,788,718,910 at p2, **-23.5 %** of the
+   port's entire p2 program total. Port/C 3.482x -> 2.665x. p6 -2.9 %.
+
+5. A SECONDARY EFFECT NOT TARGETED, AND WORTH RECORDING BECAUSE IT VALIDATES
+   THE SETUP. A rejected trial now returns before `tx_unit_inner` allocates its
+   per-call `qcoeff` and `recon` Vecs, so the port's allocator traffic falls
+   with it: malloc+calloc+free 4,355,663 -> 3,483,661 at p2 (-20.0 %), calloc
+   alone 1,727,991 -> 1,291,992 (-25.2 %), `__memset_avx2_unaligned_erms`
+   3,870,785 -> 2,559,654 (-33.9 %). The BEFORE total, 4,355,663, reproduces
+   callcount_2026-09-04's allocator figure to the unit at a different commit —
+   an independent check that the two measurement setups agree. This does not
+   close that finding: C's allocator traffic is still ~2,600 calls, flat across
+   presets, and the port's is still 1,340x it.
+
+TIMING (benchmarks/perf_ab_txtscreen_2026-09-04.tsv, unniced interleaved paired
+A/B, 9 rounds, same box while it was quiet, ident=Y on every cell):
+  512x512 p2  652.54 ms -> 491.28 ms   1.325x faster  (p25/p75 0.747/0.757)
+  256x256 p2  294.50 ms -> 216.99 ms   1.353x
+   64x64  p2   28.92 ms ->  20.64 ms   1.486x
+  p6 1.004x / 1.068x / 1.034x; p10 0.989x / 0.996x / 1.000x (the control).
+
+=================== WHAT IS NOT FIXED, AND IS NOW MEASURABLE ===================
+
+* THE RESIDUAL IS STILL DERIVED PER TX-TYPE TRIAL. C computes it ONCE per
+  (tx-depth, TXB) in `perform_tx_partitioning` and every tx-type candidate in
+  `tx_type_search` transforms that ONE buffer (`cand_bf->residual`); the port's
+  `tx_unit` still starts from src/pred. Post-fix p2: port `residual_i32`
+  595,871 vs C `svt_residual_kernel8bit_avx2` 435,245 (1.369x, 160,626 excess
+  calls). At p6 the port is already BELOW C (22,133 vs 23,358), so this is a
+  p2-shaped opportunity only. Hoisting it means an optional pre-computed-
+  residual argument to `tx_unit`, which is a separate commit.
+* The port's residual kernel is also ~3.6x C's Ir PER CALL (304,998,509 Ir /
+  595,871 calls vs 62,480,484 / 435,245). That is a kernel-speed finding, not a
+  call-count one, and this chunk did not touch it.
+* GATE 3b (C's `early_cost` pre-rate screen) is still absent. C admits 270,415
+  candidates to quantize at p2 but only 253,033 to `svt_av1_cost_coeffs_txb`
+  (`--tree=caller`); the port runs the rate estimate on all 270,415. Byte-inert
+  by the monotonicity argument above; worth roughly the 6.4 % of
+  cost_coeffs_txb's inclusive cost that C skips.
+* GATE 4 (the absolute coeff/dist early exit at :4957-4969) has no port
+  transcription either. It is INERT on this grid — C's trial width and the
+  port's matched exactly BEFORE this fix (488,414 = 488,414 at p2, 10,537 =
+  10,537 at p6), which it could not do if C were breaking out early — but that
+  is an observation about this content and these presets, not a proof.
+* Everything outside gradient / 512x512 / qp40 / still / {p2,p6,p10}. The
+  BYTE-identity evidence is far broader (see the commit message); the CALL-COUNT
+  evidence is these three cells.
+
+=================== CORRECTIONS TO THE PRIOR RECORD ===================
+
+* `callcount_2026-09-04`'s HEADLINE #1 says the fix should drop "the
+  `txt_search -> tx_unit` edge" to C's promoted count. That edge is UNCHANGED at
+  591,253 (all callers) and it should be: the screen lives INSIDE the unit, at
+  C's position between the transform and the quantizer, so a rejected trial
+  still enters `tx_unit_inner` — it just returns before the expensive phase.
+  The C-comparable quantity is the quantizer edge, which is what the table
+  above reports and what is now exact. A future session re-checking this must
+  not read the flat `tx_unit_inner` count as "the fix did not land".
+* HEADLINE #2 counts only the redundant RESIDUAL (484,442 calls, 237,923,278
+  Ir). The old post-hoc screen also ran a redundant forward TRANSFORM on every
+  one of those trials, which is the larger half of what it cost; the transform
+  row in the table separates them.
+* The prior record's p2 Ir total (15,403,051,340 at c4ff4727e) reproduces here
+  as 15,404,105,161 at 708ef6386 — 0.007 % apart across five commits, which is
+  a useful cross-check that the two measurement setups agree.

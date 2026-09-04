@@ -85,6 +85,40 @@
 > (needs a real code change + `tools/perf_ab.sh`, out of scope for a
 > measure-only chunk); anything past still/gradient/qp40/512x512×{p2,p6,p10}.
 
+> **BOTH HEADLINES CLOSED — LANDED 2026-09-04 (the commit carrying
+> `benchmarks/callcount_txtscreen_2026-09-04.{tsv,meta}` +
+> `perf_ab_txtscreen_2026-09-04.tsv`, rebased onto `4bcd5833`, the IFS wiring
+> that landed meanwhile; nextest/spotcheck/inter_byte_gate/six still cells/
+> census re-run green on the rebased tree).** The after-counts below are the
+> record. The wall-clock numbers are the r7900x paired A/B taken on the
+> PRE-rebase tree; timing was NOT re-measured after the rebase, and NOT
+> measured on this Mac at all (two other lanes were live on the box — a
+> timing taken there would have been noise, so none was taken). `txt_search` now runs C's two
+> phases: `tx_pipeline::SatdScreen` is C's `best_satd_tx_search` /
+> `satd_early_exit_th` running minimum, evaluated inside
+> `tx_unit_screened` / `tx_unit_hbd_screened` at C's position — after the
+> forward transform, BEFORE the quantizer — and a rejected trial returns
+> there. `detect::txb_coeff_satd{,_hbd}` (the post-hoc screen that re-derived
+> the residual AND transform per trial) is deleted. Same grid, same box,
+> nine byte-identical runs (before/after/C wrote the same OBUs at every
+> preset): the tx-type-search quantize edge is now **EXACTLY C's** —
+> 488,414 -> 270,415 vs C 270,415 (p2), 10,537 -> 8,397 vs 8,397 (p6), 608 =
+> 608 (p10, no screen); the redundant-residual edge is 484,442 -> **0** and
+> 10,193 -> **0**; the forward-transform total 1,080,313 -> 595,871 vs C
+> 600,171 (p2), 22,133 = C (p6). p2 Ir total -23.5 % (15.40G -> 11.79G),
+> port/C 3.482x -> 2.665x; p6 -2.9 %; p10 +0.04 % (control — unchanged to the
+> unit on every count). Wall clock (paired A/B, 9 rounds, ident=Y every
+> cell): 512² p2 652.5 -> 491.3 ms (**1.325x**), 256² p2 1.353x, 64² p2
+> 1.486x; p6 1.00-1.07x; p10 1.00x. **Do NOT read `tx_unit_inner`'s flat
+> 591,253 as "the fix did not land"** — the screen lives inside the unit; the
+> C-comparable quantity is the quantizer edge. **Still open, now
+> measurable:** the residual is still derived once per tx-type TRIAL (port
+> 595,871 vs C 435,245 at p2; C computes it once per TXB in
+> `perform_tx_partitioning`) — a pre-computed-residual argument to
+> `tx_unit` is the next chunk; C's GATE 3b (`early_cost` pre-rate screen,
+> :4908) and GATE 4 (absolute early exit, :4957) have no port transcription
+> and are byte-inert; the MDS3 p10 2.307x finding above is untouched.
+
 > **THE GENERIC `#[magetypes]` ROUTE IS OPEN FOR THE DIRECTIONAL-INTRA FAMILY
 > — DEMONSTRATED, NOT ASSERTED (2026-09-04). THIS SUPERSEDES THE "WHY IT IS
 > HAND-WRITTEN" PARAGRAPHS BELOW.** Those paragraphs are still CORRECT about

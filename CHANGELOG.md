@@ -839,6 +839,34 @@ Crates are not published to crates.io yet — depend by git.
   pipeline does not produce (inert on any I_SLICE). Frame 1's whole remaining
   divergence is the TILE: C 3 bytes, port 94.
 
+### Changed
+
+- **The tx-type search runs C's two phases — transform + SATD screen first,
+  quantize/RDOQ/cost only for the survivors — and is 1.33x faster at 512² p2,
+  byte for byte.** `txt_search` committed the WHOLE `tx_unit` pipeline on every
+  gated tx-type trial and applied C's SATD early exit post-hoc from a
+  `txb_coeff_satd` that re-derived the residual AND the forward transform
+  (`benchmarks/callcount_2026-09-04`: 488,414 committed trials vs C's 270,415
+  at gradient 512x512 qp40 p2, one edge = 45.2 % of the port's p2
+  instructions). `tx_pipeline::SatdScreen` is now C's `best_satd_tx_search`
+  running minimum (`product_coding_loop.c:4741-4755`), evaluated inside
+  `tx_unit_screened` / `tx_unit_hbd_screened` between the transform and the
+  quantizer; a rejected trial returns there; `detect::txb_coeff_satd{,_hbd}`
+  is deleted. MEASURED (r7900x callgrind, nine byte-identical runs): the
+  tx-type-search quantize edge is EXACTLY C's — 270,415 = 270,415 (p2),
+  8,397 = 8,397 (p6), 608 = 608 (p10); the redundant-residual edge 484,442 ->
+  0; p2 Ir total -23.5 %. Wall clock (paired A/B, 9 rounds): 512² p2 652.5 ->
+  491.3 ms (1.325x), 64² p2 1.486x, p6 1.00-1.07x, p10 1.00x (control).
+  Gates on the tree rebased onto the IFS wiring
+  (aarch64): nextest 2524/2524, `regression_spotcheck` 102/102, six still
+  cells byte-identical, `inter_byte_gate` 96 required / 0 failed / 1 known-open,
+  `inter_decode_gate` 5/5, `inter_decode_census` 96/96; pre-rebase
+  `identity_full_8bit` 1100/1100 (aarch64 AND x86-64), completion scan 64/64
+  OK, x86-64 nextest 2529/2529. Records `rust/benchmarks/callcount_txtscreen_2026-09-04.{tsv,meta}`,
+  `perf_ab_txtscreen_2026-09-04.tsv`; `rust/docs/perf-status.md` updated in
+  place. Still open: the residual is derived once per tx-type TRIAL where C
+  derives it once per TXB (595,871 vs 435,245 calls at p2).
+
 ### Fixed
 
 - **The three residual F1DIFF cells are a COST comparison, not a search — and a

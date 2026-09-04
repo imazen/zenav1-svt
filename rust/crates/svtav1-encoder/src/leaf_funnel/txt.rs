@@ -183,7 +183,12 @@ pub(super) fn txt_search(
     let mut best_type = cc::DCT_DCT;
     let mut best_cost = u64::MAX;
     let mut dct_cost = u64::MAX;
-    let mut best_satd = i64::MAX;
+    // C's `best_satd_tx_search` + `satd_early_exit_th`, carried across the
+    // whole search (product_coding_loop.c:4643/:4645). `None` is C's
+    // `if (satd_early_exit_th)` being false — the screen does not exist and
+    // every gated candidate is committed, which is what `only_dct` already
+    // implies (one candidate, nothing to screen).
+    let mut screen = (satd_th > 0).then(|| SatdScreen::new(satd_th));
 
     'groups: for g in 0..groups as usize {
         for &tx_type in TX_TYPE_GROUPS[g] {
@@ -224,41 +229,94 @@ pub(super) fn txt_search(
                     "cand txt={tx_type} rate_gate_pass rate={tx_type_rate} dctcost={dct_cost}"
                 );
             }
-            let out = tx_unit(
-                src,
-                src_stride,
-                src_off,
-                pred,
-                w,
-                0,
-                w,
-                h,
-                tx_type,
-                0,
-                txb_skip_ctx,
-                dc_sign_ctx,
-                intra_dir,
-                qt,
-                frame,
-                rates,
-                do_rdoq,
-                true, // MDS3 spatial dist
-                crop,
-                true,
-                rate_mode,
-            );
-            // bd10 FULL-RD (task #94): the same TX unit at true depth. Every
-            // gate around it (group order, ext-tx set, the rate-cost th, the
-            // SATD early exit, the non-signalable-eob rule) is bit-depth
-            // INDEPENDENT — only the residual, the quant table, the lambda and
-            // the distortion move — so the search structure is shared and only
-            // the COST source switches.
-            let out10 = bd10.map(|b| {
-                tx_unit_hbd(
-                    b.src10,
-                    b.src10_stride,
-                    b.src10_off,
-                    b.pred10,
+            // ---- C's two-phase trial (product_coding_loop.c:4729-4776) ----
+            //
+            // Phase 1, the CHEAP one, is the residual + forward transform and a
+            // SATD over the coefficients it produced; phase 2 — quantize,
+            // conditional RDOQ, inverse, distortion, coefficient rate — runs
+            // only for the trials the SATD admits. `tx_unit_screened` /
+            // `tx_unit_hbd_screened` are that single pipeline with the gate at
+            // C's position in its middle, so the transform feeds the SATD
+            // directly and neither the residual nor the transform is derived
+            // twice. Until 2026-09-04 this loop ran the WHOLE pipeline first and
+            // applied the SATD post-hoc from a `txb_coeff_satd` that re-derived
+            // both — 488,414 committed trials against C's 270,415 at gradient
+            // 512x512 qp40 preset 2, plus 484,442 redundant residual passes
+            // (`benchmarks/callcount_2026-09-04`). The ADMITTED SET is
+            // unchanged: the SATDs, their order and the running minimum are the
+            // same, and a rejected trial never reached `best`/`best_cost`/
+            // `dct_cost` under either shape — so this is byte-identical by
+            // construction, not by luck.
+            //
+            // bd10 (task #94): C's SATD reads `ctx->tx_coeffs` at the ACTIVE MD
+            // bit depth, so with the 10-bit context present the gate runs on the
+            // 10-bit transform and the u8 twin is computed only for admitted
+            // trials. Every gate around the pair (group order, ext-tx set, the
+            // rate-cost th, the SATD early exit, the non-signalable-eob rule) is
+            // bit-depth INDEPENDENT — only the residual, the quant table, the
+            // lambda and the distortion move.
+            let out10 = match bd10 {
+                Some(b) => {
+                    let o = tx_unit_hbd_screened(
+                        b.src10,
+                        b.src10_stride,
+                        b.src10_off,
+                        b.pred10,
+                        w,
+                        0,
+                        w,
+                        h,
+                        tx_type,
+                        0,
+                        txb_skip_ctx,
+                        dc_sign_ctx,
+                        b.qt,
+                        frame.rdoq_level,
+                        b.lambda,
+                        frame.sharpness,
+                        frame.rdoq_allintra_rd_mult,
+                        rates,
+                        do_rdoq,
+                        b.bd,
+                        b.qt.qm_level,
+                        Some(&TxRdArgs {
+                            spatial_dist: true, // MDS3
+                            intra_dir,
+                            coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
+                            tx_bias: frame.tx_bias,
+                            crop,
+                        }),
+                        screen.as_mut(),
+                    );
+                    if let Some(sc) = screen.as_ref() {
+                        let (satd, prev) = sc.last();
+                        txt_dbg!(
+                            "cand txt={tx_type} satd={satd} best_satd={prev} skip={}",
+                            i32::from(o.is_none())
+                        );
+                    }
+                    match o {
+                        Some(o) => Some(o),
+                        // C `:4753` — the trial is dropped before quantize.
+                        None => continue,
+                    }
+                }
+                None => None,
+            };
+            let out = {
+                // The gate has already run on the 10-bit transform above when
+                // bd10 is live; passing it again here would fold the same
+                // candidate into the running minimum twice.
+                let s = if bd10.is_some() {
+                    None
+                } else {
+                    screen.as_mut()
+                };
+                let o = tx_unit_screened(
+                    src,
+                    src_stride,
+                    src_off,
+                    pred,
                     w,
                     0,
                     w,
@@ -267,50 +325,31 @@ pub(super) fn txt_search(
                     0,
                     txb_skip_ctx,
                     dc_sign_ctx,
-                    b.qt,
-                    frame.rdoq_level,
-                    b.lambda,
-                    frame.sharpness,
-                    frame.rdoq_allintra_rd_mult,
+                    intra_dir,
+                    qt,
+                    frame,
                     rates,
                     do_rdoq,
-                    b.bd,
-                    b.qt.qm_level,
-                    Some(&TxRdArgs {
-                        spatial_dist: true, // MDS3
-                        intra_dir,
-                        coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
-                        tx_bias: frame.tx_bias,
-                        crop,
-                    }),
-                )
-            });
-            // SATD early exit between transform and quantize in C; we
-            // apply it post-hoc on the transform coefficients via a
-            // dedicated pass only when the th is armed.
-            if satd_th > 0 {
-                let satd = match bd10 {
-                    Some(b) => txb_coeff_satd_hbd(
-                        b.src10,
-                        b.src10_stride,
-                        b.src10_off,
-                        b.pred10,
-                        w,
-                        h,
-                        tx_type,
-                    ),
-                    None => txb_coeff_satd(src, src_stride, src_off, pred, w, h, tx_type),
-                };
-                txt_dbg!(
-                    "cand txt={tx_type} satd={satd} best_satd={best_satd} skip={}",
-                    i32::from(satd >= best_satd && (satd - best_satd) * 100 > best_satd * satd_th)
+                    true, // MDS3 spatial dist
+                    crop,
+                    true,
+                    rate_mode,
+                    s,
                 );
-                if satd < best_satd {
-                    best_satd = satd;
-                } else if (satd - best_satd) * 100 > best_satd * satd_th {
-                    continue;
+                if bd10.is_none()
+                    && let Some(sc) = screen.as_ref()
+                {
+                    let (satd, prev) = sc.last();
+                    txt_dbg!(
+                        "cand txt={tx_type} satd={satd} best_satd={prev} skip={}",
+                        i32::from(o.is_none())
+                    );
                 }
-            }
+                match o {
+                    Some(o) => o,
+                    None => continue,
+                }
+            };
             // A non-DCT type with no coefficients is not signalable.
             let dec_eob = out10.as_ref().map_or(out.eob, |o| o.eob);
             txt_dbg!("cand txt={tx_type} eob={dec_eob}");
