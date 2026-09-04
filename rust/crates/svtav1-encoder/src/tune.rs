@@ -36,51 +36,34 @@ pub fn tune_uses_ssim_rdmult(tune: u8) -> bool {
     matches!(tune, TUNE_SSIM | TUNE_IQ | TUNE_MS_SSIM)
 }
 
-/// C `svt_aom_get_perpixel_variance` (src_ops_process.c:2138): the
-/// integer block variance (aom vf semantics: `sse - ((sum*sum) >> log2N)`
-/// over the 128-offset diffs) rounded to per-pixel.
-fn perpixel_variance(buf: &[u8], stride: usize, n: usize) -> u32 {
-    let log2n = (n * n).trailing_zeros();
-    let mut sum: i64 = 0;
-    let mut sse: i64 = 0;
-    for r in 0..n {
-        for c in 0..n {
-            let d = i64::from(buf[r * stride + c]) - 128;
-            sum += d;
-            sse += d * d;
-        }
+/// The square `BlockSize` the SSIM rdmult sweeps measure at (4, 8, 16).
+fn square_bsize(n: usize) -> svtav1_types::block::BlockSize {
+    use svtav1_types::block::BlockSize;
+    match n {
+        4 => BlockSize::Block4x4,
+        8 => BlockSize::Block8x8,
+        16 => BlockSize::Block16x16,
+        _ => unreachable!("the SSIM rdmult sweeps measure at 4, 8 and 16 only"),
     }
-    let var = sse - ((sum * sum) >> log2n);
-    (((var as u64) + (1 << (log2n - 1))) >> log2n) as u32
 }
 
-/// C `svt_aom_get_perceptual_perpixel_variance` (src_ops_process.c:2173):
-/// two-pass mean/variance + the mid-gray parabola boost
-/// `var + (var*weight)/sqrtf(var+1)` (f32 division, truncated).
+/// C `svt_aom_get_perpixel_variance` (src_ops_process.c:2138) — a forward
+/// to the tier-1 transcription, [`crate::port_src_ops::get_perpixel_variance`]
+/// (this file carried its own copy until 2026-09-04; it agreed on every
+/// input — `(sum * sum) >> log2n` and C's `/ (w * h)` coincide because the
+/// square is non-negative).
+fn perpixel_variance(buf: &[u8], stride: usize, n: usize) -> u32 {
+    crate::port_src_ops::get_perpixel_variance(buf, stride, square_bsize(n))
+}
+
+/// C `svt_aom_get_perceptual_perpixel_variance` (src_ops_process.c:2173) —
+/// a forward to the tier-1 transcription,
+/// [`crate::port_src_ops::get_perceptual_perpixel_variance`] (this file
+/// carried its own copy until 2026-09-04; equal on every reachable input —
+/// a per-pixel variance and its `* weight` product are both below 2^24, so
+/// the f32 conversions the two spellings ordered differently are exact).
 fn perceptual_perpixel_variance(buf: &[u8], stride: usize, n: usize) -> u32 {
-    let log2n = (n * n).trailing_zeros();
-    let mut sum: u64 = 0;
-    for r in 0..n {
-        for c in 0..n {
-            sum += u64::from(buf[r * stride + c]);
-        }
-    }
-    let mean = ((sum + (1 << (log2n - 1))) >> log2n) as i32;
-    let mut sse: u64 = 0;
-    for r in 0..n {
-        for c in 0..n {
-            let d = i64::from(buf[r * stride + c]) - i64::from(mean);
-            sse += (d * d) as u64;
-        }
-    }
-    let var = ((sse + (1 << (log2n - 1))) >> log2n) as u32;
-    let centered_mean = mean - 128;
-    let weight_numerator = 128 * 128 - centered_mean * centered_mean;
-    let weight = (weight_numerator * 256) / (128 * 128);
-    // C: `var + ((var * weight) / sqrtf(var + 1.))` — int product, f32
-    // divide, f32 sum, truncating store to unsigned.
-    let boost = (var as i64 * i64::from(weight)) as f32 / ((var as f32) + 1.0).sqrt();
-    (var as f32 + boost) as u32
+    crate::port_src_ops::get_perceptual_perpixel_variance(buf, stride, square_bsize(n))
 }
 
 /// Per-16x16 SSIM rdmult scaling factors for the frame luma (C

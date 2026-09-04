@@ -153,18 +153,11 @@ pub fn sby_perpixel_variance_normalized(
 ) -> u32 {
     debug_assert!(side == 8 || side == 16);
     debug_assert!(norm_side == 8 || norm_side == 16);
-    let mut sum: i64 = 0;
-    let mut sse: u32 = 0;
-    for r in 0..side {
-        for c in 0..side {
-            let diff = src[r * stride + c] as i32 - 128;
-            sum += diff as i64;
-            sse = sse.wrapping_add((diff * diff) as u32);
-        }
-    }
-    // C's `variance_c`: `sse - (uint32_t)((int64_t)sum * sum / (w * h))`,
-    // divided by the WINDOW's pixel count, then rounded by the NORMALISER's.
-    let var = sse.wrapping_sub((sum * sum / (side as i64 * side as i64)) as u32);
+    // C's `variance_c` over the WINDOW — the one body,
+    // `port_src_ops::variance_about_128` (this function carried its own copy
+    // of the loop until 2026-09-04) — then rounded by the NORMALISER's pixel
+    // count.
+    let var = crate::port_src_ops::variance_about_128(src, stride, side, side);
     let log2pels = if norm_side == 8 { 6 } else { 8 };
     (var + (1 << (log2pels - 1))) >> log2pels
 }

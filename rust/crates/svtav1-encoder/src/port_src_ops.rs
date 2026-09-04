@@ -94,22 +94,34 @@ fn num_pels_log2(bsize: BlockSize) -> u32 {
 /// `buf` must hold `block_size_high[bsize]` rows at `stride`.
 pub fn get_perpixel_variance(buf: &[u8], stride: usize, bsize: BlockSize) -> u32 {
     let (bw, bh) = block_dims(bsize);
+    let var = variance_about_128(buf, stride, bw, bh);
+    round_power_of_two_u64(u64::from(var), num_pels_log2(bsize)) as u32
+}
+
+/// C `variance_c` (C_DEFAULT/variance.c:141) against a constant-128
+/// reference read at `b_stride 0` — what BOTH `svt_aom_get_perpixel_variance`
+/// (over `AV1_VAR_OFFS`) and `svt_av1_get_sby_perpixel_variance` (over
+/// `svt_aom_eb_av1_var_offs`, pic_analysis_process.c:944) reduce to before
+/// their per-pixel normalisation. THE body:
+/// `sc_detect::sby_perpixel_variance_normalized` applies its own normaliser
+/// to this, and `tune` reaches it through [`get_perpixel_variance`]. Until
+/// 2026-09-04 each of the three carried the loop (`docs/WORKING-ON-THIS.md`
+/// §4).
+///
+/// `sse - (uint32_t)((int64_t)sum * sum / (w * h))`, in `uint32_t`. The
+/// subtraction is exact — the true variance is non-negative — but the
+/// narrowing is C's, so it is spelled the same way.
+pub(crate) fn variance_about_128(buf: &[u8], stride: usize, bw: usize, bh: usize) -> u32 {
     let mut sum: i64 = 0;
     let mut sse: u64 = 0;
     for r in 0..bh {
-        let row = &buf[r * stride..r * stride + bw];
-        for &px in row {
+        for &px in &buf[r * stride..r * stride + bw] {
             let diff = i32::from(px) - 128;
             sum += i64::from(diff);
             sse += (diff * diff) as u64;
         }
     }
-    // C `variance_c` (C_DEFAULT/variance.c): `sse - (uint32_t)((int64_t)sum *
-    // sum / (w * h))`, in `uint32_t`. The subtraction is exact here — the
-    // true variance is non-negative — but the narrowing is C's, so it is
-    // spelled the same way.
-    let var = (sse as u32).wrapping_sub((sum * sum / (bw as i64 * bh as i64)) as u32);
-    round_power_of_two_u64(u64::from(var), num_pels_log2(bsize)) as u32
+    (sse as u32).wrapping_sub((sum * sum / (bw as i64 * bh as i64)) as u32)
 }
 
 /// `svt_aom_get_mean_and_perpixel_variance` (src_ops_process.c:2136).
