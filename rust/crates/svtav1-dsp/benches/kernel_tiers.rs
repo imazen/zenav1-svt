@@ -80,10 +80,13 @@ fn bench_dsp(suite: &mut Suite) {
         };
     }
 
-    pair!("sad_8x8", sad::sad_8x8(src, STRIDE, rf, STRIDE));
-    pair!("sad_16x16", sad::sad_16x16(src, STRIDE, rf, STRIDE));
-    pair!("sad_32x32", sad::sad_32x32(src, STRIDE, rf, STRIDE));
-    pair!("sad_64x64", sad::sad_64x64(src, STRIDE, rf, STRIDE));
+    // C dedicates RTCD kernels to these four sizes; the port has one
+    // width/height-parameterised entry point (`sad::sad` ->
+    // `me_sad::block_sad`), so the four sizes are benched through it.
+    pair!("sad_8x8", sad::sad(src, STRIDE, rf, STRIDE, 8, 8));
+    pair!("sad_16x16", sad::sad(src, STRIDE, rf, STRIDE, 16, 16));
+    pair!("sad_32x32", sad::sad(src, STRIDE, rf, STRIDE, 32, 32));
+    pair!("sad_64x64", sad::sad(src, STRIDE, rf, STRIDE, 64, 64));
     pair!("satd_4x4", hadamard::satd_4x4(src, STRIDE, rf, STRIDE));
     pair!("satd_8x8", hadamard::satd_8x8(src, STRIDE, rf, STRIDE));
     pair!(

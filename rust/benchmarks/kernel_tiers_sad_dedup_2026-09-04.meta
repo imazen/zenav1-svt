@@ -1,0 +1,7 @@
+# kernel_tiers zenbench, before/after the sad_NxN dedup (cluster 4 of the 2026-09-04 dedup chunk)
+host: r7900x (x86_64, AMD Ryzen 9 7900X, Linux), quiet (load < 1.3 at start), nice -n 19
+command: env -u RUSTFLAGS cargo bench -p zenav1-svt-dsp --bench kernel_tiers   (from rust/)
+before: tree = cluster-3 tree (4fb78544, sad.rs unchanged since a1a32ca2f; zenbench header prints the git HEAD of the worktree's checkout, a1a32ca2f)
+        stopped after the sad_* / satd_* groups (the rest of the 26 groups were not needed) -> *_before_r7900x.txt (.log is gitignored)
+after:  tree = this commit (sad_NxN removed, bench pairs call sad::sad with explicit dims) -> *_after_r7900x.txt
+the named forwards inline to the identical `sad::sad -> me_sad::block_sad` call, so before/after measure the same code.

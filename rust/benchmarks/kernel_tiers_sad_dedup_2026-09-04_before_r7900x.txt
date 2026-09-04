@@ -1,0 +1,351 @@
+   Compiling rustix v1.1.4
+   Compiling utf8parse v0.2.2
+   Compiling serde_core v1.0.229
+   Compiling anstyle v1.0.14
+   Compiling zmij v1.0.23
+   Compiling colorchoice v1.0.5
+   Compiling anstyle-query v1.1.5
+   Compiling linux-raw-sys v0.12.1
+   Compiling shlex v2.0.1
+   Compiling bitflags v2.13.1
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling find-msvc-tools v0.1.11
+   Compiling libc v0.2.189
+   Compiling clap_lex v1.1.0
+   Compiling strsim v0.11.1
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling memchr v2.8.3
+   Compiling heck v0.5.0
+   Compiling itoa v1.0.18
+   Compiling syn v3.0.4
+   Compiling zenav1-svt-types v0.1.0 (/home/lilith/work/zen/zenav1-svt--dup1/rust/crates/svtav1-types)
+   Compiling anstyle-parse v1.0.0
+   Compiling cc v1.4.4
+   Compiling anstream v1.0.0
+   Compiling zenav1-svt-dsp v0.1.0 (/home/lilith/work/zen/zenav1-svt--dup1/rust/crates/svtav1-dsp)
+   Compiling clap_builder v4.6.6
+   Compiling sysinfo v0.36.1
+   Compiling fs4 v1.1.0
+   Compiling terminal_size v0.4.4
+   Compiling zenav1-svt-cref v0.0.0 (/home/lilith/work/zen/zenav1-svt--dup1/rust/crates/svtav1-cref)
+   Compiling serde_derive v1.0.229
+   Compiling clap_derive v4.6.4
+   Compiling clap v4.6.6
+   Compiling zenbench v0.1.9
+warning: zenav1-svt-cref@0.0.0: picstruct tier-1 statics unavailable: /home/lilith/work/zen/zenav1-svt--dup1/cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/pd_process.c.o not found (the C library              has not been built into <repo>/cbuild-static on this host).              set_ref_list_counts / set_all_ref_frame_type stay at              evidence tier 4.
+warning: zenav1-svt-cref@0.0.0: rc_vbr_cbr tier-1 statics unavailable: /home/lilith/work/zen/zenav1-svt--dup1/cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/rc_vbr_cbr.c.o not found (the C library has not been built into <repo>/cbuild-static on this host). av1_rc_regulate_q and friends stay at evidence tier 4.
+warning: zenav1-svt-cref@0.0.0: enc_dec_process tier-1 statics unavailable: /home/lilith/work/zen/zenav1-svt--dup1/cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/enc_dec_process.c.o not found. aom_ssim2 stays at evidence tier 4.
+    Finished `bench` profile [optimized] target(s) in 7.18s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-56462d77f5ab5b3a)
+[kernel_tiers] comparing v3(avx2) vs forced scalar
+[zenbench] calibration: int=0.18ns/iter mem_bw=118.0GiB/s mem_lat=9.3ns
+[zenbench] timer resolution: 10ns, loop overhead: 0.36ns/iter, TSC: 4.691 ticks/ns (invariant)
+[zenbench] results → /tmp/zenbench/zenbench-1788555114-3addcf.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788555114-3addcf
+  git: a1a32ca2f31c71c52503f80941f6c95cec85d6f0
+═══════════════════════════════════════════════════════════════
+
+  sad_8x8  4 rounds × 50K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   27.5 ±3.3ns  [23.6–32.0]ns    
+  ╰─ scalar     16.0 ±0.1ns  [-58.1%–-27.3%]   [1]
+
+  scalar    ████████████████████████████████████ 16.0ns
+  v3(avx2)  █████████████████████████████████████████████████████████████ 27.5ns
+  [1] drift r=-0.60 — later rounds faster
+
+  sad_16x16  4 rounds × 28K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base 
+  ├─ v3(avx2)   43.1 ±0.0ns  [39.9–49.5]ns  
+  ╰─ scalar     38.8 ±0.1ns  [-3.1%–-1.9%]   [1]
+
+  scalar    ███████████████████████████████████████████████████████ 38.8ns
+  v3(avx2)  █████████████████████████████████████████████████████████████ 43.1ns
+  [1] drift r=-1.00 — later rounds faster
+
+  sad_32x32  4 rounds × 10K calls ⚠ only 4 rounds
+                mean ±mad ns  95% CI vs base  
+  ├─ v3(avx2)    83.4 ±3.8ns  [72.1–102.4]ns   [1]
+  ╰─ scalar     114.5 ±0.3ns  [+8.2%–+63.8%]   [2]
+
+  v3(avx2)  ████████████████████████████████████████████ 83.4ns
+  scalar    ████████████████████████████████████████████████████████████ 114.5ns
+  [1] CV=22%
+  [2] drift r=-0.60 — later rounds faster
+
+  sad_64x64  4 rounds × 3K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   189 ±1ns  [177–212]ns      
+  ╰─ scalar     311 ±3ns  [+71.4%–+76.9%]   [1]
+
+  v3(avx2)  ████████████████████████████████████ 189.1ns
+  scalar    ████████████████████████████████████████████████████████████ 311.0ns
+  [1] drift r=1.00 — later rounds slower
+
+  satd_4x4  4 rounds × 62K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   20.6 ±1.2ns  [18.7–23.0]ns    
+  ╰─ scalar     13.6 ±0.0ns  [-34.8%–-26.3%]  
+
+  scalar    ████████████████████████████████████████ 13.6ns
+  v3(avx2)  █████████████████████████████████████████████████████████████ 20.6ns
+
+  satd_8x8  4 rounds × 20K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   56.2 ±0.1ns  [55.5–57.8]ns    
+  ╰─ scalar     53.9 ±0.3ns  [-13.9%–+11.8%]   [1]
+
+  scalar    ██████████████████████████████████████████████████████████ 53.9ns
+  v3(avx2)  █████████████████████████████████████████████████████████████ 56.2ns
+  [1] CI crosses zero
+
+  cdef_find_dir_8bit  4 rounds × 7K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base  
+  ├─ v3(avx2)   156 ±15ns  [141–169]ns     
+  ╰─ scalar      143 ±5ns  [-15.1%–-2.2%]  
+
+  scalar    ███████████████████████████████████████████████████████ 142.9ns
+  v3(avx2)  ████████████████████████████████████████████████████████████ 155.7ns
+
+  cdef_filter_block_8x8  4 rounds × 942 calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base     
+  ├─ v3(avx2)      151 ±3ns  [136–176]ns        
+  ╰─ scalar     1361 ±132ns  [+729.9%–+877.4%]   [1]
+
+  v3(avx2)  ███████ 150.6ns
+  scalar    ████████████████████████████████████████████████████████████ 1.36µs
+  [1] drift r=-0.80 — later rounds faster
+
+  variance_16x16  4 rounds × 9K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   129 ±6ns  [123–135]ns      
+  ╰─ scalar      84 ±0ns  [-40.1%–-30.3%]  
+
+  scalar    ███████████████████████████████████████ 83.6ns
+  v3(avx2)  ████████████████████████████████████████████████████████████ 128.7ns
+
+  variance_64x64  4 rounds × 1K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)    785 ±103ns  [631–904]ns       [1]
+  ╰─ scalar     1271 ±140ns  [+40.1%–+84.1%]   [2] [3]
+
+  v3(avx2)  █████████████████████████████████████ 784.7ns
+  scalar    ████████████████████████████████████████████████████████████ 1.27µs
+  [1] CV=20%
+  [2] drift r=-1.00 — later rounds faster
+  [3] CV=23%
+
+  sse_16x16  4 rounds × 7K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base  
+  ├─ v3(avx2)   163 ±2ns  [157–172]ns     
+  ╰─ scalar     135 ±8ns  [-34.2%–+3.9%]   [1] [2]
+
+  scalar    ██████████████████████████████████████████████████ 135.0ns
+  v3(avx2)  ████████████████████████████████████████████████████████████ 162.8ns
+  [1] CI crosses zero
+  [2] CV=22%
+
+  sse_64x64  4 rounds × 567 calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base     
+  ├─ v3(avx2)    765 ±12ns  [743–801]ns        
+  ╰─ scalar     1831 ±48ns  [+132.9%–+145.9%]  
+
+  v3(avx2)  █████████████████████████ 764.7ns
+  scalar    ████████████████████████████████████████████████████████████ 1.83µs
+
+  paeth_16x16  4 rounds × 3K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base  
+  ├─ v3(avx2)   337 ±30ns  [311–363]ns     
+  ╰─ scalar     312 ±29ns  [-17.4%–+3.6%]   [1]
+
+  scalar    ████████████████████████████████████████████████████████ 311.8ns
+  v3(avx2)  ████████████████████████████████████████████████████████████ 336.9ns
+  [1] CI crosses zero
+
+  paeth_32x32  4 rounds × 913 calls ⚠ only 4 rounds
+               mean ±mad µs  95% CI vs base  
+  ├─ v3(avx2)   1.3 ±0.1µs  [1.2–1.5]µs     
+  ╰─ scalar     1.3 ±0.2µs  [-11.3%–+8.0%]   [1] [2]
+
+  scalar    ███████████████████████████████████████████████████████████ 1.29µs
+  v3(avx2)  ████████████████████████████████████████████████████████████ 1.31µs
+  [1] CI crosses zero
+  [2] drift r=-0.80 — later rounds faster
+
+  cdef_filter_block_hbd_8x8  4 rounds × 911 calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base      
+  ├─ v3(avx2)    139 ±3ns  [137–142]ns         
+  ╰─ scalar     1354 ±1ns  [+778.0%–+1056.8%]  
+
+  v3(avx2)  ██████ 139.3ns
+  scalar    ████████████████████████████████████████████████████████████ 1.35µs
+
+  quantize_fp_raster_1024  4 rounds × 324 calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base       
+  ├─ v3(avx2)     196 ±66ns  [150–242]ns           [1]
+  ╰─ scalar     3712 ±643ns  [+1594.3%–+1991.5%]   [2]
+
+  v3(avx2)  ███ 196.1ns
+  scalar    ████████████████████████████████████████████████████████████ 3.71µs
+  [1] CV=27%
+  [2] drift r=0.80 — later rounds slower
+
+  quantize_b_raster_1024  4 rounds × 285 calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base       
+  ├─ v3(avx2)     190 ±15ns  [164–229]ns           [1]
+  ╰─ scalar     3794 ±284ns  [+1782.3%–+2011.0%]   [2]
+
+  v3(avx2)  ███ 190.0ns
+  scalar    ████████████████████████████████████████████████████████████ 3.79µs
+  [1] CV=21%
+  [2] drift r=1.00 — later rounds slower
+
+  wiener_compute_stats_win5_64x64  4 rounds × 8 calls ⚠ only 4 rounds
+                 mean ±mad µs  95% CI vs base     
+  ├─ v3(avx2)   307.7 ±5.0µs  [303.6–311.8]µs    
+  ╰─ scalar     640.8 ±1.7µs  [+105.2%–+112.4%]  
+
+  v3(avx2)  ████████████████████████████ 307.70µs
+  scalar    ██████████████████████████████████████████████████████████ 640.78µs
+
+  wiener_compute_stats_win7_64x64  4 rounds × 2 calls ⚠ only 4 rounds
+                  mean ±mad µs  95% CI vs base     
+  ├─ v3(avx2)    655.6 ±8.1µs  [647.9–663.3]µs    
+  ╰─ scalar     2125.8 ±7.6µs  [+222.3%–+227.1%]   [1]
+
+  v3(avx2)  ██████████████████ 655.62µs
+  scalar    ██████████████████████████████████████████████████████████ 2.13ms
+  [1] drift r=-0.80 — later rounds faster
+
+  block_average_64x64  4 rounds × 730 calls ⚠ only 4 rounds
+               mean ±mad µs  95% CI vs base   
+  ├─ v3(avx2)   1.6 ±0.1µs  [1.6–1.7]µs      
+  ╰─ scalar     1.0 ±0.0µs  [-46.7%–-32.3%]  
+
+  scalar    ████████████████████████████████████ 966.5ns
+  v3(avx2)  ████████████████████████████████████████████████████████████ 1.61µs
+
+  block_blend_64x64  4 rounds × 431 calls ⚠ only 4 rounds
+               mean ±mad µs  95% CI vs base   
+  ├─ v3(avx2)   2.7 ±0.0µs  [2.6–2.8]µs      
+  ╰─ scalar     1.5 ±0.0µs  [-43.4%–-41.7%]   [1]
+
+  scalar    ██████████████████████████████████ 1.51µs
+  v3(avx2)  ████████████████████████████████████████████████████████████ 2.69µs
+  [1] drift r=-1.00 — later rounds faster
+
+  convolve_horiz_64x64  4 rounds × 166 calls ⚠ only 4 rounds
+               mean ±mad µs  95% CI vs base 
+  ├─ v3(avx2)   7.0 ±0.0µs  [6.9–7.3]µs    
+  ╰─ scalar     6.9 ±0.0µs  [-0.5%–+0.2%]   [1]
+
+  scalar    ███████████████████████████████████████████████████████████ 6.88µs
+  v3(avx2)  ████████████████████████████████████████████████████████████ 7.04µs
+  [1] CI crosses zero
+
+  convolve_2d_64x64  4 rounds × 76 calls ⚠ only 4 rounds
+                mean ±mad µs  95% CI vs base  
+  ├─ v3(avx2)   15.2 ±0.1µs  [14.8–16.0]µs   
+  ╰─ scalar     14.8 ±0.0µs  [-0.6%–+0.4%]    [1] [2]
+
+  scalar    █████████████████████████████████████████████████████████ 14.77µs
+  v3(avx2)  ███████████████████████████████████████████████████████████ 15.20µs
+  [1] CI crosses zero
+  [2] drift r=-1.00 — later rounds faster
+
+  convolve_vert_64x64  4 rounds × 161 calls ⚠ only 4 rounds
+               mean ±mad µs  95% CI vs base  
+  ├─ v3(avx2)   8.1 ±0.9µs  [7.4–8.8]µs     
+  ╰─ scalar     7.1 ±0.0µs  [-20.6%–-3.7%]  
+
+  scalar    █████████████████████████████████████████████████████ 7.11µs
+  v3(avx2)  ████████████████████████████████████████████████████████████ 8.09µs
+
+  fwd_txfm2d_8x8_dct  4 rounds × 3K calls ⚠ only 4 rounds
+                mean ±mad ns  95% CI vs base       
+  ├─ v3(avx2)    27.0 ±1.4ns  [23.7–32.5]ns         [1]
+  ╰─ scalar     314.5 ±3.3ns  [+1035.0%–+1111.2%]   [2]
+
+  v3(avx2)  █████ 27.0ns
+  scalar    ████████████████████████████████████████████████████████████ 314.5ns
+  [1] CV=21%
+  [2] drift r=0.80 — later rounds slower
+
+  fwd_txfm2d_16x16_dct  4 rounds × 1K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base     
+  ├─ v3(avx2)     139 ±1ns  [126–164]ns        
+  ╰─ scalar     1025 ±19ns  [+631.7%–+644.6%]   [1]
+
+  v3(avx2)  ████████ 138.9ns
+  scalar    ████████████████████████████████████████████████████████████ 1.02µs
+  [1] drift r=-0.60 — later rounds faster
+
+  fwd_txfm2d_32x32_dct  4 rounds × 243 calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base     
+  ├─ v3(avx2)    672 ±26ns  [597–801]ns        
+  ╰─ scalar     5007 ±55ns  [+616.9%–+690.9%]  
+
+  v3(avx2)  ████████ 672.3ns
+  scalar    ████████████████████████████████████████████████████████████ 5.01µs
+
+  inv_txfm2d_8x8_dct  4 rounds × 2K calls ⚠ only 4 rounds
+                 mean ±mad ns  95% CI vs base     
+  ├─ v3(avx2)     47.3 ±3.1ns  [39.0–52.9]ns      
+  ╰─ scalar     530.0 ±16.7ns  [+953.1%–+989.6%]   [1]
+
+  v3(avx2)  █████ 47.3ns
+  scalar    ████████████████████████████████████████████████████████████ 530.0ns
+  [1] drift r=1.00 — later rounds slower
+
+  inv_txfm2d_16x16_dct  4 rounds × 642 calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base     
+  ├─ v3(avx2)     217 ±47ns  [177–252]ns         [1]
+  ╰─ scalar     1889 ±139ns  [+692.9%–+872.8%]   [2]
+
+  v3(avx2)  ███████ 216.7ns
+  scalar    ████████████████████████████████████████████████████████████ 1.89µs
+  [1] CV=22%
+  [2] drift r=-1.00 — later rounds faster
+
+  inv_txfm2d_32x32_dct  4 rounds × 114 calls ⚠ only 4 rounds
+                mean ±mad ns  95% CI vs base     
+  ├─ v3(avx2)     985 ±279ns  [788–1182]ns        [1]
+  ╰─ scalar     9621 ±1000ns  [+789.4%–+954.4%]   [2]
+
+  v3(avx2)  ██████ 984.8ns
+  scalar    ████████████████████████████████████████████████████████████ 9.62µs
+  [1] CV=24%
+  [2] drift r=-0.80 — later rounds faster
+
+  fwd_txfm2d_64x64_dct  4 rounds × 48 calls ⚠ only 4 rounds
+                mean ±mad µs  95% CI vs base     
+  ├─ v3(avx2)    4.0 ±1.3µs  [3.0–5.0]µs         [1]
+  ╰─ scalar     23.4 ±2.9µs  [+430.7%–+536.5%]   [2]
+
+  v3(avx2)  ██████████ 4.00µs
+  scalar    ███████████████████████████████████████████████████████████ 23.36µs
+  [1] CV=28%
+  [2] drift r=-0.80 — later rounds faster
+
+  inv_txfm2d_64x64_dct  4 rounds × 23 calls ⚠ only 4 rounds
+                mean ±mad µs  95% CI vs base     
+  ├─ v3(avx2)    7.3 ±0.6µs  [6.0–9.5]µs         [1]
+  ╰─ scalar     44.9 ±0.3µs  [+495.4%–+550.5%]   [2]
+
+  v3(avx2)  ██████████ 7.28µs
+  scalar    ███████████████████████████████████████████████████████████ 44.93µs
+  [1] CV=30%
+  [2] drift r=-0.80 — later rounds faster
+
+  quantize  4 rounds × 687 calls ⚠ only 4 rounds
+                  mean ±mad ns  95% CI vs base       
+  ├─ 64_coeffs       128 ±37ns  [94–161]ns            [1]
+  ╰─ 1024_coeffs   1681 ±264ns  [+1103.0%–+1332.7%]   [2]
+
+  64_coeffs    ████ 127.6ns
+  1024_coeffs  █████████████████████████████████████████████████████████ 1.68µs
+  [1] CV=32%
+  [2] drift r=1.00 — later rounds slower

@@ -37,26 +37,6 @@ pub fn sad(
     crate::me_sad::block_sad(src, src_stride, ref_, ref_stride, width, height)
 }
 
-/// SAD for specific common block sizes — 8x8.
-pub fn sad_8x8(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
-    sad(src, src_stride, ref_, ref_stride, 8, 8)
-}
-
-/// SAD for specific common block sizes — 16x16.
-pub fn sad_16x16(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
-    sad(src, src_stride, ref_, ref_stride, 16, 16)
-}
-
-/// SAD for specific common block sizes — 32x32.
-pub fn sad_32x32(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
-    sad(src, src_stride, ref_, ref_stride, 32, 32)
-}
-
-/// SAD for specific common block sizes — 64x64.
-pub fn sad_64x64(src: &[u8], src_stride: usize, ref_: &[u8], ref_stride: usize) -> u32 {
-    sad(src, src_stride, ref_, ref_stride, 64, 64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,10 +94,10 @@ mod tests {
     #[test]
     fn sad_convenience_functions() {
         let block = [42u8; 64 * 64];
-        assert_eq!(sad_8x8(&block, 64, &block, 64), 0);
-        assert_eq!(sad_16x16(&block, 64, &block, 64), 0);
-        assert_eq!(sad_32x32(&block, 64, &block, 64), 0);
-        assert_eq!(sad_64x64(&block, 64, &block, 64), 0);
+        assert_eq!(sad(&block, 64, &block, 64, 8, 8), 0);
+        assert_eq!(sad(&block, 64, &block, 64, 16, 16), 0);
+        assert_eq!(sad(&block, 64, &block, 64, 32, 32), 0);
+        assert_eq!(sad(&block, 64, &block, 64, 64, 64), 0);
     }
 }
 

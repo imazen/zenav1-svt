@@ -1,0 +1,59 @@
+   Compiling zenav1-svt-cref v0.0.0 (/home/lilith/work/zen/zenav1-svt--dup1/rust/crates/svtav1-cref)
+   Compiling zenav1-svt-dsp v0.1.0 (/home/lilith/work/zen/zenav1-svt--dup1/rust/crates/svtav1-dsp)
+warning: zenav1-svt-cref@0.0.0: picstruct tier-1 statics unavailable: /home/lilith/work/zen/zenav1-svt--dup1/cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/pd_process.c.o not found (the C library              has not been built into <repo>/cbuild-static on this host).              set_ref_list_counts / set_all_ref_frame_type stay at              evidence tier 4.
+warning: zenav1-svt-cref@0.0.0: rc_vbr_cbr tier-1 statics unavailable: /home/lilith/work/zen/zenav1-svt--dup1/cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/rc_vbr_cbr.c.o not found (the C library has not been built into <repo>/cbuild-static on this host). av1_rc_regulate_q and friends stay at evidence tier 4.
+warning: zenav1-svt-cref@0.0.0: enc_dec_process tier-1 statics unavailable: /home/lilith/work/zen/zenav1-svt--dup1/cbuild-static/Source/Lib/Codec/CMakeFiles/CODEC.dir/enc_dec_process.c.o not found. aom_ssim2 stays at evidence tier 4.
+    Finished `bench` profile [optimized] target(s) in 5.16s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-56462d77f5ab5b3a)
+[kernel_tiers] comparing v3(avx2) vs forced scalar
+[zenbench] calibration: int=0.18ns/iter mem_bw=119.8GiB/s mem_lat=9.3ns
+[zenbench] timer resolution: 10ns, loop overhead: 0.18ns/iter, TSC: 4.691 ticks/ns (invariant)
+[zenbench] results → /tmp/zenbench/zenbench-1788559783-135.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788559783-135
+  git: a1a32ca2f31c71c52503f80941f6c95cec85d6f0
+═══════════════════════════════════════════════════════════════
+
+  sad_8x8  4 rounds × 52K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   23.9 ±0.2ns  [22.6–26.3]ns    
+  ╰─ scalar     16.4 ±0.1ns  [-30.0%–-21.4%]  
+
+  scalar    ██████████████████████████████████████████ 16.4ns
+  v3(avx2)  █████████████████████████████████████████████████████████████ 23.9ns
+
+  sad_16x16  4 rounds × 29K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base  
+  ├─ v3(avx2)   40.5 ±1.9ns  [39.1–42.0]ns   
+  ╰─ scalar     41.1 ±0.1ns  [-8.4%–+15.5%]   [1] [2]
+
+  v3(avx2)  ████████████████████████████████████████████████████████████ 40.5ns
+  scalar    █████████████████████████████████████████████████████████████ 41.1ns
+  [1] CI crosses zero
+  [2] drift r=-0.80 — later rounds faster
+
+  sad_32x32  4 rounds × 10K calls ⚠ only 4 rounds
+                mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)    79.7 ±5.7ns  [73.7–85.1]ns    
+  ╰─ scalar     118.0 ±2.2ns  [+30.8%–+77.5%]  
+
+  v3(avx2)  █████████████████████████████████████████ 79.7ns
+  scalar    ████████████████████████████████████████████████████████████ 118.0ns
+
+  sad_64x64  4 rounds × 3K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   195 ±1ns  [178–229]ns      
+  ╰─ scalar     309 ±1ns  [+73.3%–+73.6%]   [1]
+
+  v3(avx2)  ██████████████████████████████████████ 195.0ns
+  scalar    ████████████████████████████████████████████████████████████ 309.2ns
+  [1] drift r=-1.00 — later rounds faster
+
+  satd_4x4  4 rounds × 58K calls ⚠ only 4 rounds
+               mean ±mad ns  95% CI vs base   
+  ├─ v3(avx2)   20.7 ±1.2ns  [19.5–21.7]ns    
+  ╰─ scalar     13.8 ±0.0ns  [-38.2%–-27.9%]  
+
+  scalar    █████████████████████████████████████████ 13.8ns
+  v3(avx2)  █████████████████████████████████████████████████████████████ 20.7ns
