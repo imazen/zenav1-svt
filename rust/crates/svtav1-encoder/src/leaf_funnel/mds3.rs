@@ -106,25 +106,62 @@ pub(super) fn run_mds3(
         tsz_ctx,
         lambda3,
     };
-    for &ci in order1.iter().take(n3) {
-        eval_candidate(
-            fx,
-            g,
-            cx,
-            &mds3_ctx,
-            pal,
-            bd10_rd,
-            qt,
-            lambda,
-            y_src,
-            y_src_stride,
-            y_src_off,
-            y_recon,
-            y_stride,
-            ind_uv,
-            cands,
-            ci,
-        );
+    // ONE borrow per leaf, amortised over every candidate and every depth —
+    // see [`Mds3Scratch`] for why that is the whole design. `try_borrow_mut`
+    // rather than `borrow_mut`: nothing re-enters `run_mds3` today, and a
+    // future caller that does gets its own buffers instead of a panic.
+    let mut own = None;
+    #[cfg(feature = "std")]
+    let taken = MDS3_SCRATCH.with(|cell| {
+        cell.try_borrow_mut().ok().map(|mut sc| {
+            for &ci in order1.iter().take(n3) {
+                eval_candidate(
+                    fx,
+                    g,
+                    cx,
+                    &mds3_ctx,
+                    pal,
+                    bd10_rd,
+                    qt,
+                    lambda,
+                    y_src,
+                    y_src_stride,
+                    y_src_off,
+                    y_recon,
+                    y_stride,
+                    ind_uv,
+                    cands,
+                    ci,
+                    &mut sc,
+                );
+            }
+        })
+    });
+    #[cfg(not(feature = "std"))]
+    let taken: Option<()> = None;
+    if taken.is_none() {
+        let sc = own.insert(Mds3Scratch::default());
+        for &ci in order1.iter().take(n3) {
+            eval_candidate(
+                fx,
+                g,
+                cx,
+                &mds3_ctx,
+                pal,
+                bd10_rd,
+                qt,
+                lambda,
+                y_src,
+                y_src_stride,
+                y_src_off,
+                y_recon,
+                y_stride,
+                ind_uv,
+                cands,
+                ci,
+                sc,
+            );
+        }
     }
 }
 
@@ -374,6 +411,45 @@ struct Mds3Ctx {
 // Same block-scoped `> 0` division guards as the rest of the funnel; see the
 // note on `stage_mds0_to_mds1` in [`super::nic`].
 #[allow(unknown_lints, clippy::manual_checked_ops)]
+/// Per-thread scratch for [`eval_candidate`]'s PURE TEMPORARIES — the three
+/// buffers that are rebuilt from scratch every iteration and never escape.
+///
+/// `txb_pred` is a `vec![0u8; txw * txh]` per TX BLOCK per depth per candidate,
+/// and `loc_above` / `loc_left` a `.to_vec()` pair per DEPTH; on a 512x512
+/// preset-2 still frame `mds3::eval_candidate` is the port's single largest
+/// allocator caller (483 of 1,423 malloc/free self samples, 33.9 %) and these
+/// are the part of it that can be recycled at all — `dep_recon`, `dep_pred`
+/// and the `Vec<Vec<i32>>` of per-txb levels are MOVED into the depth winner
+/// and then into the candidate, so they need a flat arena, not a buffer.
+///
+/// Borrowed ONCE per leaf, in [`run_mds3`], and threaded through the candidate
+/// loop as `&mut`. That is deliberate and it is what separates this from the
+/// hoists `benchmarks/mdscratch_null_2026-09-03.meta` measured NULL: those took
+/// a `thread_local!` + `RefCell::try_borrow_mut` + a closure PER CALL, around a
+/// few hundred arithmetic operations. Here the borrow is amortised over every
+/// candidate and every depth of the leaf.
+///
+/// Nothing is re-zeroed: every element of every buffer is written before it is
+/// read (`txb_pred` by a full-length `copy_from_slice`, a per-row
+/// `copy_from_slice`, or `predict_unit_overlay`; the two spans by
+/// `extend_from_slice`). The lengths are re-established per use, so a longer
+/// previous block cannot leak into a shorter one.
+#[derive(Default)]
+pub(super) struct Mds3Scratch {
+    txb_pred: Vec<u8>,
+    loc_above: Vec<u8>,
+    loc_left: Vec<u8>,
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static MDS3_SCRATCH: core::cell::RefCell<Mds3Scratch> =
+        const { core::cell::RefCell::new(Mds3Scratch {
+            txb_pred: Vec::new(),
+            loc_above: Vec::new(), loc_left: Vec::new(),
+        }) };
+}
+
 fn eval_candidate(
     fx: &mut FunnelCtx<'_>,
     g: &LeafGeom,
@@ -391,6 +467,7 @@ fn eval_candidate(
     ind_uv: &Option<[(u8, i8); 13]>,
     cands: &mut [Cand],
     ci: usize,
+    sc: &mut Mds3Scratch,
 ) {
     // Destructure the carriers back into the names the moved body uses, so the
     // body itself is byte-for-byte what it was inside the loop.
@@ -611,8 +688,14 @@ fn eval_candidate(
         let cols = w / txw;
         let txbs = cols * (h / txh);
         // TX-local dc_sign/cul overlay (tx_reset_neighbor_arrays).
-        let mut loc_above = fx.ectx.above_coeff_span(abs_x, w).to_vec();
-        let mut loc_left = fx.ectx.left_coeff_span(abs_y, h).to_vec();
+        sc.loc_above.clear();
+        sc.loc_above
+            .extend_from_slice(fx.ectx.above_coeff_span(abs_x, w));
+        sc.loc_left.clear();
+        sc.loc_left
+            .extend_from_slice(fx.ectx.left_coeff_span(abs_y, h));
+        let loc_above = &mut sc.loc_above;
+        let loc_left = &mut sc.loc_left;
         let mut dep_bits: u64 = 0;
         let mut dep_dist: u64 = 0;
         let mut dep_q: Vec<Vec<i32>> = Vec::with_capacity(txbs);
@@ -654,7 +737,18 @@ fn eval_candidate(
             // Per-txb prediction: depth 0 reuses the MDS0 pred;
             // depth > 0 predicts from the live canvas (frame recon
             // outside the block, this depth's recon inside).
-            let mut txb_pred = vec![0u8; txw * txh];
+            // Grow-only, and NOT re-zeroed: every one of the `txw * txh`
+            // elements is written below on all three branches (a full-length
+            // `copy_from_slice`, a per-row `copy_from_slice`, or
+            // `predict_unit_overlay`). `clear()` + `resize(n, 0)` was measured
+            // SLOWER than the `vec![0u8; n]` it replaced at 512x512 preset 2
+            // (0.998x with the whole span above 1.0, reproduced) — `vec!` gets
+            // its zeros from fresh `calloc` pages for free, an explicit resize
+            // pays a real `memset`.
+            if sc.txb_pred.len() < txw * txh {
+                sc.txb_pred.resize(txw * txh, 0);
+            }
+            let txb_pred: &mut [u8] = &mut sc.txb_pred[..txw * txh];
             if depth == 0 {
                 txb_pred.copy_from_slice(&cand.pred);
             } else if cand.palette.is_some() || cand.is_inter() {
@@ -693,7 +787,7 @@ fn eval_candidate(
                     &y_geom,
                     cfg.edge_filter,
                     filt_type_y,
-                    &mut txb_pred,
+                    &mut txb_pred[..],
                 );
             }
             // Accumulate this depth's whole-block prediction. At depth 0
@@ -707,6 +801,13 @@ fn eval_candidate(
             // palette is position-only substitution (no neighbour edges),
             // so a deeper txb is a slice of it; otherwise predict from the
             // 10-bit overlay canvas.
+            // NOT scratch-backed, deliberately: this buffer's LENGTH is
+            // observable — `copy_from_slice` below needs it to equal
+            // `cand.pred10`, and it is handed on whole as `pred10:
+            // &txb_pred10`. A grow-only scratch would silently make it longer
+            // than `txw * txh` for a smaller txb. The bd10 MD path is not on
+            // the 8-bit still arm this chunk measures, so it keeps the
+            // per-call `Vec` until someone measures it.
             let mut txb_pred10: Vec<u16> = Vec::new();
             if bd10_rd.is_some() {
                 txb_pred10 = vec![0u16; txw * txh];
@@ -753,7 +854,7 @@ fn eval_candidate(
             // 0/0 at M7/M8 where update_skip_ctx_dc_sign_ctx == 0, so
             // cul_level never accumulates — full_loop.c:1880).
             let (tsc, dsc) = if cfg.real_coeff_ctx {
-                txb_ctx_from_spans(&loc_above, &loc_left, tx_x, tx_y, txw, txh, depth == 0)
+                txb_ctx_from_spans(loc_above, loc_left, tx_x, tx_y, txw, txh, depth == 0)
             } else {
                 (0, 0)
             };
@@ -806,7 +907,7 @@ fn eval_candidate(
                 y_src,
                 y_src_stride,
                 y_src_off + tx_y * y_src_stride + tx_x,
-                &txb_pred,
+                txb_pred,
                 txw,
                 txh,
                 txb_crop,

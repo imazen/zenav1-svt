@@ -78,6 +78,31 @@
 > three symbol families before planning any of this work**; it is a five-minute
 > query and both of this chunk's wins came straight out of it.
 >
+> **AND A THIRD, SMALLER ONE: THE LARGEST ALLOCATOR CALLER'S PURE TEMPORARIES
+> — AND AN EXPLICIT RE-ZERO THAT COST MORE THAN THE `vec!` IT REPLACED.**
+> Record `benchmarks/mds3scratch_ab_2026-09-03.meta`. `mds3::eval_candidate` is
+> the port's single largest allocator caller on the still arm (33.9 % of the
+> malloc/free samples at 512 p2, 19.5 % at p6, 17.8 % at p10), and its
+> `txb_pred` / `loc_above` / `loc_left` are the only three of its ~10
+> per-candidate allocations that never escape — the rest are MOVED into the
+> depth winner and need a flat arena. Recycling those three through a scratch
+> borrowed ONCE per leaf (not per call, which is what
+> `benchmarks/mdscratch_null_2026-09-03.meta` measured NULL) is worth
+> **1.004x at 512 p2 and 1.007x at 512 p6, both confirmed at n=25 with their
+> whole span below 1.0, and NULL on the other ten cells** including all six
+> videokey ones.
+>
+> **The transferable part is the version that did NOT work.** Writing
+> `clear()` + `resize(n, 0)` — the obvious way to reproduce `vec![0u8; n]` in a
+> recycled buffer — **REGRESSED 512 p2 to 0.998x with its whole span above
+> 1.0**, reproduced twice. `vec![0; n]` is a `calloc` whose zeros come from
+> already-zero pages for free; an explicit `resize` pays a real `memset` of up
+> to 4 KiB per TX block. Grow-only (`if len < n { resize }`) plus a slice took
+> the cell from -0.2 % to +0.4 %. **When you replace a `vec![0; n]` with a
+> recycled buffer, re-zero only what is genuinely read before it is written** —
+> `TxScratch::zeroed` is right for the partially-written buffers (`dq_full`,
+> `dqcoeff`) and a waste for the fully-written ones.
+>
 > **THE POSITION AFTER THE TWO, ALL THREE ARMS** (`perf_gate.sh`, 25 paired
 > rounds, sizes 64/128/256/512 at preset 8, gradient qp 40, box verified quiet;
 > `benchmarks/perf_2026-09-03-arm7-{still,videokey,inter}.*`). Read as POSITION,

@@ -1,0 +1,112 @@
+THE PORT'S LARGEST ALLOCATOR CALLER, ITS PURE TEMPORARIES RECYCLED — 0.4-0.7 %
+AT 512, NULL EVERYWHERE ELSE. AND ONE FINDING WORTH MORE THAN THE WIN:
+`clear()` + `resize(n, 0)` IS SLOWER THAN THE `vec![0u8; n]` IT REPLACES.
+
+date:   2026-09-03
+host:   mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores). **Box verified
+        quiet before every number below** — `ps` listing empty, not a count.
+        Three earlier runs of this same A/B were taken while a sibling
+        workspace ran `identity_run` and are NOT reported: they read up to
+        1.024x at 512 p6 where the quiet box reads 1.007x. See
+        benchmarks/chromadetect_ab_2026-09-03.meta for that lesson's own record.
+tool:   tools/perf_ab.sh — interleaved paired rounds, order randomised per
+        round, one untimed warmup per sample, NEITHER SIDE NICED, no
+        -C target-cpu=native.
+base:   4ad4ef87 (main)   cand: base + this commit, nothing else.
+grid:   gradient qp 40. STILL 256/512 x p{2,6,10} n=15 plus an n=25
+        confirmation of the two 512 cells; VIDEOKEY 128/256/512 x p{6,8} n=25.
+data:   benchmarks/mds3scratch_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}
+
+=================== WHY THIS SITE =============================================
+
+`mds3::eval_candidate` is the port's single largest ALLOCATOR caller on the
+still arm at every preset measured — nearest-ancestor attribution of the
+malloc/free family (tools/perf_profile/ancestor.py):
+
+  512 p2   483 of 1,423 samples  (33.9 %) — plus 187 memset and 115 memmove,
+                                  785 in all = 3.5 % of the port's frame
+  512 p6   148 of   758  (19.5 %)
+  512 p10  245 of 1,375  (17.8 %)
+
+Per candidate it takes ~10 allocations: `loc_above` / `loc_left` (a `.to_vec()`
+pair per DEPTH), `txb_pred` (per TX BLOCK per depth), `dep_recon`, `dep_pred`,
+the `Vec<Vec<i32>>` of per-txb levels, and the chroma prediction buffers.
+
+**Only three of those are pure temporaries.** `dep_recon`, `dep_pred` and
+`dep_q` are MOVED into the depth winner and then into the candidate, so they
+need a flat arena, not a recycled buffer; that is left for a later chunk. This
+commit recycles the three that never escape.
+
+=================== THE DESIGN, WHICH IS THE POINT ==========================
+
+`benchmarks/mdscratch_null_2026-09-03.meta` measured two hoists of exactly this
+shape NULL, and diagnosed why: each took a `thread_local!` +
+`RefCell::try_borrow_mut` + a closure **per call**, around a few hundred
+arithmetic operations. **This one borrows ONCE per leaf**, in `run_mds3`, and
+threads `&mut Mds3Scratch` through the candidate loop — so the borrow is
+amortised over every candidate and every depth of the leaf, and the per-use
+cost is a `len()` compare.
+
+=================== MEASURED ================================================
+
+STILL, speedup = base/cand:
+
+  cell      n=15                    n=25 confirmation
+  256 p2    1.003x (0.9876/1.0036)  —            crosses 1.0
+  256 p6    0.998x (0.9947/1.0078)  —            NULL
+  256 p10   1.002x (0.9850/0.9997)  —            marginal
+  512 p2    1.005x (0.9928/0.9969)  **1.004x (0.9933/0.9983)**  span below 1.0
+  512 p6    1.001x (0.9818/1.0063)  **1.007x (0.9878/0.9992)**  span below 1.0
+  512 p10   1.006x (0.9706/1.0030)  —            crosses 1.0
+
+VIDEOKEY (n=25): 128 p6 1.007x, 128 p8 1.005x, 256 p6 1.003x, 256 p8 1.005x,
+512 p6 1.001x, 512 p8 0.996x — **all six spans cross 1.0. NULL.**
+
+Every cell of both arms is `ident=Y`.
+
+**Read it as: 0.4-0.7 % at the two 512 still cells, confirmed at n=25 with
+their whole spans below 1.0, and null on the other ten.** 512x512 preset 2 is
+the still arm's worst cell (3.17x C), which is why a 0.4 % there is worth
+landing at all; nobody should quote this as a general speedup.
+
+=================== THE FINDING: AN EXPLICIT RE-ZERO IS NOT FREE ============
+
+The first version wrote `sc.txb_pred.clear(); sc.txb_pred.resize(txw*txh, 0);`
+— the obvious way to reproduce a `vec![0u8; n]` in a recycled buffer. It
+**REGRESSED 512x512 preset 2**: 0.998x with its whole p25/p75 span
+(0.9988/1.0037) ABOVE 1.0, reproduced on two separate runs, while the smaller
+cells still gained.
+
+`vec![0u8; n]` is a `calloc`, and for a buffer this size the allocator hands
+back pages that are already zero — the zeroing costs nothing. `clear()` +
+`resize(n, 0)` pays a real `memset` of up to 4 KiB per TX block. Recycling the
+allocation and then re-zeroing it can therefore be a net LOSS.
+
+Every element of `txb_pred` is written before it is read (a full-length
+`copy_from_slice`, a per-row `copy_from_slice`, or `predict_unit_overlay`), so
+the fix is to grow only — `if len < n { resize(n, 0) }` — and slice to `n`.
+That turned the p2 cell from -0.2 % to +0.4 %.
+
+**Generalisation, and it applies to the scratch hoists already in this tree:
+when replacing a `vec![0; n]` with a recycled buffer, re-zero ONLY what is
+genuinely read before it is written.** `TxScratch::zeroed` is correct where the
+buffer is partially written (`dq_full`, `dqcoeff`) and would be a waste where
+it is not.
+
+=================== WHAT WAS NOT CHANGED, AND WHY ===========================
+
+`txb_pred10` (the bd10 twin) keeps its per-call `Vec`. Its LENGTH is
+observable — `copy_from_slice` requires it to equal `cand.pred10`, and it is
+handed on whole as `pred10: &txb_pred10` — so a grow-only scratch would
+silently make it longer than `txw * txh` for a smaller txb. The bd10 MD path is
+not on the arm this chunk measures; it keeps the `Vec` until someone measures
+it. (This was caught by reading, not by the 8-bit byte gates, which cannot
+reach it.)
+
+=================== NOT ESTABLISHED =========================================
+  * The inter arm.
+  * Any size but 256/512, content but gradient, qp but 40.
+  * Peak RSS / peak heap for THIS change. Not measured — the buffers are small
+    and the allocation count falls, but `benchmarks/mem_levelscratch_2026-09-03
+    .meta` is this chunk's own evidence that "small and fewer" does not predict
+    the macOS resident set. Measure before quoting.
