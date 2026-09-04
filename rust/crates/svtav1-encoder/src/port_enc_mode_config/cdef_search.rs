@@ -525,6 +525,91 @@ pub fn update_cdef_filters_on_ref_info(
     out
 }
 
+/// C `md_config_process.c:973-980` — the QP adjustment on
+/// `cdef_search_ctrls.skip_th`, then the `skip_perc >= cdef_skip_th` gate that
+/// switches CDEF off for the whole frame.
+///
+/// ```text
+/// uint8_t cdef_skip_th = 0;
+/// if (cdef_ctrls->skip_th) {
+///     cdef_skip_th = CLIP3(25, 100,
+///         (int)cdef_ctrls->skip_th + ((int)base_q_idx - 128) / 4);
+/// }
+/// if (... || (cdef_ctrls->skip_th && skip_perc >= cdef_skip_th) || ...)
+///     pcs->ppcs->cdef_level = 0;
+/// ```
+///
+/// Two details that are easy to lose. The guard is on the RAW `skip_th`, not
+/// on the adjusted threshold — a `skip_th` of 0 disables the gate outright
+/// rather than clipping to 25. And C's `/ 4` is C integer division on a
+/// SIGNED value, so it truncates TOWARD ZERO: at `base_q_idx` 100 the term is
+/// `-28 / 4 = -7`, and at 127 it is `-1 / 4 = 0`, not -1.
+///
+/// # Evidence
+///
+/// TIER 4. The expression is inline in `svt_aom_sig_deriv_md_config` and
+/// exports nothing of its own; the tests below are hand-derived from the four
+/// lines above, and the value that matters is pinned end to end by
+/// `benchmarks/frame2_cdef_skip_2026-09-03.md`'s measurement against C's own
+/// frame-2 header.
+#[must_use]
+pub fn cdef_skip_gate(skip_th: u8, base_q_idx: u8, ref_skip_percentage: u8) -> bool {
+    if skip_th == 0 {
+        return false;
+    }
+    let adjusted = (i32::from(skip_th) + (i32::from(base_q_idx) - 128) / 4).clamp(25, 100) as u8;
+    ref_skip_percentage >= adjusted
+}
+
+#[cfg(test)]
+mod skip_gate_tests {
+    use super::cdef_skip_gate;
+
+    /// EVIDENCE TIER 4 — hand-derived from `md_config_process.c:973-980`.
+    #[test]
+    fn a_zero_skip_th_disables_the_gate_rather_than_clipping_to_25() {
+        // The `if (cdef_ctrls->skip_th)` guard is on the RAW value. With
+        // `skip_th = 0` the CLIP3 never runs, so a 100 % skip reference must
+        // NOT switch CDEF off — which is C's every-preset-<=-M7 behaviour and
+        // its every-base-frame behaviour above that.
+        assert!(!cdef_skip_gate(0, 160, 100));
+        assert!(!cdef_skip_gate(0, 255, 100));
+    }
+
+    /// The cell this gate was found on: `diag 64x64 q40 p8` frame 2, whose
+    /// list-0 reference is a 22-byte all-skip frame.
+    #[test]
+    fn the_measured_frame_two_cell_switches_cdef_off() {
+        // level 7, non-base -> skip_th 80; base_q_idx 160 -> +8 -> 88.
+        assert!(cdef_skip_gate(80, 160, 100));
+        assert!(!cdef_skip_gate(80, 160, 87));
+        assert!(cdef_skip_gate(80, 160, 88));
+    }
+
+    /// C's `/ 4` is signed integer division and truncates TOWARD ZERO, so a
+    /// remainder below 128 does NOT round down a further step. A port written
+    /// with an arithmetic shift would give 99 here instead of 100.
+    #[test]
+    fn the_qp_term_truncates_toward_zero() {
+        // base_q_idx 127 -> (127 - 128) / 4 == 0 in C, -1 with a >> 2.
+        assert!(cdef_skip_gate(100, 127, 100));
+        // base_q_idx 100 -> -28 / 4 == -7 -> 93.
+        assert!(cdef_skip_gate(100, 100, 93));
+        assert!(!cdef_skip_gate(100, 100, 92));
+    }
+
+    /// Both CLIP3 rails.
+    #[test]
+    fn the_threshold_clamps_to_25_and_100() {
+        // A tiny skip_th at qindex 0 would go to 1 - 32 = -31; clipped to 25.
+        assert!(cdef_skip_gate(1, 0, 25));
+        assert!(!cdef_skip_gate(1, 0, 24));
+        // A large one at qindex 255 would go to 100 + 31 = 131; clipped to 100.
+        assert!(cdef_skip_gate(100, 255, 100));
+        assert!(!cdef_skip_gate(100, 255, 99));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

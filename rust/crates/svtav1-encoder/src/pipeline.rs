@@ -5221,12 +5221,13 @@ impl EncodePipeline {
         } else {
             2
         };
-        let cdef_zero_fs_cost_bias =
-            crate::port_enc_mode_config::tail::set_cdef_recon_controls(cdef_recon_level)
-                .ok_or(EncodeError::UnsupportedConfig(
-                    "cdef recon level outside set_cdef_recon_controls' 0..=4",
-                ))?
-                .zero_fs_cost_bias;
+        let cdef_recon_ctrls = crate::port_enc_mode_config::tail::set_cdef_recon_controls(
+            cdef_recon_level,
+        )
+        .ok_or(EncodeError::UnsupportedConfig(
+            "cdef recon level outside set_cdef_recon_controls' 0..=4",
+        ))?;
+        let cdef_zero_fs_cost_bias = cdef_recon_ctrls.zero_fs_cost_bias;
         let mut cdef_ctrls = crate::port_enc_mode_config::cdef_search::set_cdef_search_controls(
             cdef_level,
             cdef_frame_is_boosted,
@@ -5242,14 +5243,48 @@ impl EncodePipeline {
         // frame's `is_not_highest_layer` is true — so this is byte-inert for
         // the whole still envelope by construction.
         //
-        // NOT modelled, and named rather than dropped: C reaches this only
-        // after `me_based_cdef_skip` (`md_config_process.c:781`) declined to
-        // switch CDEF off, which needs ME distortion this pipeline does not
-        // produce. `me_based_cdef_skip` returns false immediately on an
-        // I_SLICE, so the omission is invisible on every key frame and is a
-        // real gap on inter frames whose ME distortion would have tripped it.
-        let mut cdef_force_off = false;
-        if !is_key
+        // C's ORDER, and it is an `else if` (`md_config_process.c:980-985`):
+        // the three CDEF-OFF gates are tested FIRST, and the reference-derived
+        // rewrite runs only when none of them fired.
+        //
+        //   me_based_cdef_skip(pcs)
+        //   || (cdef_ctrls->skip_th && skip_perc >= cdef_skip_th)
+        //   || (vq sharpness && is_noise_level)      -> cdef_level = 0
+        //   else if (use_reference_cdef_fs || search_best_ref_fs)
+        //                                            -> update_cdef_filters_on_ref_info
+        //
+        // The SECOND gate is wired here, and it is what C's frame 2 takes:
+        // `skip_th` is `is_base ? 0 : 80` from level 7 up, the QP adjustment is
+        // `CLIP3(25, 100, skip_th + (base_q_idx - 128) / 4)`, and
+        // `ref_skip_percentage` is the value `md_config_inputs` already
+        // derives. MEASURED on `diag 64x64 q40 p8 frames=3`: at poc 2 the
+        // reference is a 22-byte all-skip frame, so `skip_perc` is 100 against
+        // a threshold of 88 and C switches CDEF OFF for the whole frame —
+        // which is why its header codes `cdef_damping - 3` as the low two bits
+        // of **-3** (the `never_picked` quirk: `cdef_damping` keeps its
+        // `resource_coordination_process.c:423` initialiser 0 because
+        // `finish_cdef_search` never runs). The port coded 2 there.
+        //
+        // The FIRST gate is NOT modelled and is named rather than dropped:
+        // `me_based_cdef_skip` (`md_config_process.c:781`) returns false
+        // immediately on an I_SLICE, and on an inter frame it returns false
+        // before reading any ME statistic whenever
+        // `cdef_recon_ctrls.zero_filter_strength_lvl` is 0 — which
+        // `set_cdef_recon_controls(0)` gives, i.e. every preset <= 8 on the
+        // video arm. So it is INERT on this envelope by C's own table, and a
+        // real gap from preset 9 up, where it needs `rc_me_distortion` and the
+        // references' `cdef_dist_dev`. The THIRD gate needs
+        // `vq_ctrls.sharpness_ctrls`, which this port does not configure.
+        let mut cdef_force_off = !is_key
+            && crate::port_enc_mode_config::cdef_search::cdef_skip_gate(
+                cdef_ctrls.skip_th,
+                base_qindex,
+                pipeline_md_inputs
+                    .as_ref()
+                    .map_or(0, crate::inter_hdr_arm::ref_skip_percentage),
+            );
+        if !cdef_force_off
+            && !is_key
             && (cdef_ctrls.use_reference_cdef_fs != 0 || cdef_ctrls.search_best_ref_fs != 0)
             && let Some(pic) = pic_decision.as_ref()
         {

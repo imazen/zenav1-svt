@@ -459,19 +459,7 @@ pub fn enc_dec_cand_reduction(
     p: &PipelineMdInputs,
     cand_reduction_level: u8,
 ) -> Option<crate::port_enc_mode_config::encdec::CandReductionCtrls> {
-    use crate::port_rc_process::SliceType;
-    let slice = if p.is_islice {
-        SliceType::I
-    } else {
-        SliceType::B
-    };
-    let l1_count = u8::try_from(p.ref_list1_count_try).unwrap_or(u8::MAX);
-    let ref_skip_percentage = crate::port_rc_process::get_ref_skip_percentage(
-        slice,
-        l1_count,
-        p.ref_l0.as_ref(),
-        p.ref_l1.as_ref(),
-    );
+    let ref_skip_percentage = ref_skip_percentage(p);
     crate::port_enc_mode_config::encdec::set_cand_reduction_ctrls(
         crate::port_enc_mode_config::encdec::CandReductionInputs {
             level: cand_reduction_level,
@@ -594,4 +582,26 @@ mod cand_reduction_tests {
             );
         }
     }
+}
+
+/// C `pcs->ref_skip_percentage` (`rc_process.c:96`, through
+/// [`crate::port_rc_process::get_ref_skip_percentage`]) for this picture.
+///
+/// Read at eight sites in `enc_mode_config.c` plus `md_config_process.c`'s
+/// CDEF skip gate; hoisted here so the several consumers share ONE call with
+/// ONE set of arguments rather than each re-spelling the slice/list-count pair.
+#[must_use]
+pub fn ref_skip_percentage(p: &PipelineMdInputs) -> u8 {
+    use crate::port_rc_process::SliceType;
+    let slice = if p.is_islice {
+        SliceType::I
+    } else {
+        SliceType::B
+    };
+    crate::port_rc_process::get_ref_skip_percentage(
+        slice,
+        u8::try_from(p.ref_list1_count_try).unwrap_or(u8::MAX),
+        p.ref_l0.as_ref(),
+        p.ref_l1.as_ref(),
+    )
 }

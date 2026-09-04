@@ -737,6 +737,32 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **C's frame-2 header codes the low two bits of MINUS THREE — the CDEF-off
+  gate the port never tested.** The frame-2 divergence on
+  `diag 64x64 q40 p8 frames=3` looked like `cdef_damping_minus_3` (C 1,
+  port 2), which reads as a CDEF search output. It is not:
+  `CDEF_DAMPING_FROM_QP(160) = 5` (`enc_cdef.c:895`) means the field must be 2
+  on both sides, and 1 is the low two bits of `0 - 3` — i.e. `cdef_damping` was
+  still its `resource_coordination_process.c:423` initialiser because **C's
+  frame 2 never ran CDEF at all**. C's `md_config_process.c:980-985` tests three
+  CDEF-off gates and only ELSE-IF none fired rewrites the candidate set from the
+  reference; the port ran the rewrite unconditionally. The live gate here is
+  `cdef_ctrls->skip_th && skip_perc >= CLIP3(25, 100, skip_th + (base_q_idx -
+  128) / 4)`: at preset 8 `skip_th` is 80 on a non-base frame, the threshold is
+  88, and `ref_skip_percentage` is 0 at frame 1 (an I_SLICE reference) but
+  **100** at frame 2, whose reference is a 22-byte all-skip frame. Now ported as
+  `cdef_search::cdef_skip_gate` with four tier-4 tests for the two details that
+  are easy to lose (the guard is on the RAW `skip_th`; C's `/ 4` truncates
+  toward zero). MEASURED: **no frame-header field differs on that cell any
+  more** — the first divergence moves from byte 15 to byte 18, into the tile
+  payload — and six of the eight `frames=3` cells move likewise. Byte-inert on
+  the two-frame envelope (grid 92 BOTH / 3 F1DIFF / 1 F0DIFF cell for cell,
+  identity 1100/1100) because `skip_th` is 0 at every preset up to M7 and on
+  every base frame. `me_based_cdef_skip`, the first of the three gates, stays
+  unmodelled and is inert below preset 9 by C's own `zero_filter_strength_lvl`
+  table. Full record `rust/benchmarks/frame2_cdef_skip_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁹.
+
 - **The temporal motion field was PORTED and never WIRED.** C's
   `av1_copy_frame_mvs` (`coding_loop.c:1038`), `motion_field_projection` and
   `av1_setup_motion_field` (`md_config_process.c:427/523`) were all in tree at

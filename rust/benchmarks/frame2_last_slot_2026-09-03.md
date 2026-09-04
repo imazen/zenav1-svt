@@ -75,8 +75,17 @@ That is not luck — at poc 1 the RPS's LAST *is* slot 0.
 
 `tools/fh_fields.py` on frame 2 of `diag 64x64 q40 p8 frames=3` (C 21 B, port
 21 B, first differing byte 15) reports every frame-header field identical up to
-`cdef_damping_minus_3` (C 1, port 2) — a CDEF SEARCH output, i.e. downstream of
-the recon. And critically:
+`cdef_damping_minus_3` (C 1, port 2).
+
+**CORRECTED — that field is NOT "a CDEF search output downstream of the recon",
+which is what this file first called it.** `CDEF_DAMPING_FROM_QP(160) = 5`, so
+the field must be 2 on both sides; C's 1 is the low two bits of `0 - 3`, i.e.
+C's frame 2 never ran CDEF at all. It is a picture-level CDEF-OFF gate keyed on
+`ref_skip_percentage`, now wired — full account in
+`benchmarks/frame2_cdef_skip_2026-09-03.md` and §1z²⁹. With it, NO frame-header
+field differs on that cell.
+
+And critically:
 
 ```
 use_ref_frame_mvs                             1        1

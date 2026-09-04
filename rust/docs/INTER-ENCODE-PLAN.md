@@ -6570,6 +6570,105 @@ PASS, `inter_decode_gate.sh` PASS, `inter_fh_gate.sh` PASS,
 `inter_decode_census.sh` PASS, `video_key_matrix.sh` **58/60** (unmoved),
 `inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK / 0 REFUSED / 0 CRASH**.
 
+### 1z²⁹. C's frame-2 header codes the low two bits of MINUS THREE — the CDEF-off gate, and a correction to §1z²⁷ (2026-09-03)
+
+§1z²⁷ reported the first diverging frame-2 header field on
+`diag 64x64 q40 p8 frames=3` as `cdef_damping_minus_3` (C 1, port 2) and called
+it "a CDEF SEARCH output, i.e. downstream of the recon". **The field name was
+right and the reading was wrong**, and the VALUE is the whole finding.
+
+Full record: `benchmarks/frame2_cdef_skip_2026-09-03.md`.
+
+#### The arithmetic that says so
+
+C writes `cdef_damping - 3` as a 2-bit literal (`entropy_coding.c:2349`) and
+`CDEF_DAMPING_FROM_QP(q) = 3 + (q >> 6)` (`enc_cdef.c:895`). Both sides'
+`base_q_idx` is 160 — identical in the header — so the field MUST be
+`3 + 2 - 3 = 2`. C wrote **1**, and there is exactly one way to get it:
+`cdef_damping` is still its `resource_coordination_process.c:423` initialiser
+0, and `0 - 3 = -3` in two bits is `0b01`. That assignment only ever happens
+inside `finish_cdef_search` / `svt_pick_cdef_from_qp`, so **C's frame 2 never
+ran CDEF at all** (`cdef_process.c:682` takes its `else` arm).
+
+A picture-level CDEF-OFF decision, then — not a recon defect — and the port has
+to reproduce a C quirk (coding the low two bits of a negative number) to match.
+`crate::cdef::CdefFrameParams::never_picked()` already existed for it; nothing
+reached it.
+
+#### Why C turns CDEF off at frame 2 and not at frame 1
+
+`md_config_process.c:980-985`, and the ORDER is an `else if`:
+
+```c
+if (me_based_cdef_skip(pcs) || (cdef_ctrls->skip_th && skip_perc >= cdef_skip_th) || ...)
+    pcs->ppcs->cdef_level = 0;
+else if (cdef_ctrls->use_reference_cdef_fs || cdef_ctrls->search_best_ref_fs)
+    update_cdef_filters_on_ref_info(pcs);
+```
+
+with `cdef_skip_th = CLIP3(25, 100, skip_th + (base_q_idx - 128) / 4)`.
+
+At preset 8 the search level is 7, whose controls give `skip_th = is_base ? 0 :
+80`; frames 1 and 2 of a flat low-delay-P GOP are both non-base, so the
+threshold is `80 + (160-128)/4 = 88`. `skip_perc` is `ref_skip_percentage`:
+**0** at frame 1 (its reference is the I_SLICE key frame) and **100** at frame
+2 (its reference is a 22-byte ALL-SKIP frame). C's own `SVT_REFSTATS_OUT` at
+poc 2 reports `refskip=100`, and the port writes exactly that onto frame 1's
+DPB entry (§1z²⁵). **The input was already there; only the gate was missing** —
+the port ran `update_cdef_filters_on_ref_info` unconditionally, i.e. it took
+C's `else` arm without testing C's `if`.
+
+#### What landed
+
+`port_enc_mode_config::cdef_search::cdef_skip_gate` — C's two lines, with four
+tier-4 unit tests for the two details that are easy to lose: the guard is on
+the RAW `skip_th` (0 disables the gate rather than clipping to 25), and C's
+`/ 4` is signed division truncating TOWARD ZERO (at `base_q_idx` 127 the term
+is 0, not the -1 an arithmetic shift gives). `pipeline.rs` tests it before the
+reference-derived rewrite and makes that rewrite an `else if`, as C's is.
+`ref_skip_percentage` is hoisted into `inter_hdr_arm::ref_skip_percentage` so
+this gate and `enc_dec_cand_reduction` share ONE call.
+
+#### Measured
+
+`diag 64x64 q40 p8 frames=3` frame 2: **no frame-header field differs any
+more**; the first divergence moves from byte 15 to byte 18, into the tile
+payload. Across the eight `frames=3` cells the first differing byte moves to 18
+or 20 on six; byte counts are unchanged (six of eight already matched C).
+
+Byte-inert on the two-frame envelope: `inter_byte_matrix.sh` 92 BOTH / 3 F1DIFF
+/ 1 F0DIFF cell for cell before and after, `identity_full_8bit.sh` 1100/1100.
+Structurally so — the gate is `!is_key`, `skip_th` is 0 at every preset up to
+M7 and on every base frame, and frame 1's `ref_skip_percentage` is 0.
+
+#### Still NOT modelled, with its exact reach
+
+`me_based_cdef_skip` (`md_config_process.c:781`) returns false immediately on
+an I_SLICE, and on an inter frame returns false before reading any ME statistic
+whenever `cdef_recon_ctrls.zero_filter_strength_lvl` is 0 — which
+`set_cdef_recon_controls(0)` gives, i.e. **every preset <= 8 on the video arm**.
+Inert here by C's own table; a real gap from preset 9 up, where it needs
+`rc_me_distortion` and the references' `cdef_dist_dev`. The
+`vq_ctrls.sharpness_ctrls.cdef && is_noise_level` arm is unconfigured in this
+port.
+
+#### The methodological correction
+
+"The first diverging frame-header field is a CDEF SEARCH output" was a
+reasonable reading of a field NAME and a wrong reading of its VALUE. A field's
+value can be arithmetically IMPOSSIBLE for the thing it is named after, and
+checking it against the C macro is one line: `CDEF_DAMPING_FROM_QP(160) = 5`
+would have said so immediately.
+
+#### No regression, measured
+
+`cargo nextest run --workspace` **2516/2516**, `regression_spotcheck.sh`
+**102/102**, `identity_full_8bit.sh` **1100/1100**, `inter_byte_gate.sh`
+**94 required / 0 failed**, `fctx_gate.sh` PASS, `inter_decode_gate.sh` PASS,
+`inter_fh_gate.sh` PASS, `inter_decode_census.sh` PASS, `video_key_matrix.sh`
+**58/60** (unmoved), `inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK /
+0 REFUSED / 0 CRASH**.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.
