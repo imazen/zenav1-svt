@@ -56,6 +56,18 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **The RDOQ input buffer's re-zero was dead — 1.5-2.0 % at the still arm's
+  p10 cells, and the first confirmation of the memset-not-malloc rule.**
+  `tx_unit` zeroed its `dqcoeff` scratch (up to 4 KiB) once per
+  (candidate x tx type x tx unit), but all four quantizer paths write every one
+  of the `pw * ph` positions before anything reads them — and the two QM
+  quantizers open with their OWN `fill(0)`, so on that path the caller's was a
+  second memset of the same bytes. Ten of twelve A/B cells gain, six with their
+  whole span below 1.0, and the two biggest are the p10 STILL cells where
+  LIBC_MEM's share of the gap is highest. Control is a RELEASE-unconditional
+  `0x5A5A5A5A` poison in place of the zero-fill: spot-check 102/102,
+  identity_full_8bit 1100/1100. Record
+  `rust/benchmarks/dqzero_ab_2026-09-03.meta` (a32d82e8).
 - **A second NULL, reverted, and the rule the two of them establish.**
   Recycling `predict::hadamard_satd`'s two fixed-bound buffers — the #3
   allocator caller on the still arm at 11.9 % — is **~1 % SLOWER across the
