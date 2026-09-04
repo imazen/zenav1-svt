@@ -138,6 +138,37 @@ the same evidence tier, and item 1 is what that gap looks like. Treat every
 3. **`mv_err_cost` — four independent transcriptions**: `inter_mv_code.rs:464` (`(mv, ref_mv, rate: &NmvRate, error_per_bit)`), `md_subpel.rs:244`, `port_md/pme.rs:190` (`(mv, params: &MvCostParams)`), `intrabc.rs:916` (`(mv, ref_mv, tables: &MvCostTables, error_per_bit)`). Different signatures suggest these may legitimately be different C call sites (`intrabc.rs`'s own doc says it ports `svt_aom_mv_err_cost{,_light}` for the IntraBC half of `av1me.c`, a documented separate case) rather than four copies of one bug — **not asserted as duplicates, flagged for the wiring chunk to disambiguate** signature-by-signature against C before consolidating.
 4. **`have_newmv_in_inter_mode` / `is_motion_variation_allowed_bsize` / `is_global_mv_block` — each transcribed 3 times**: private copies in `inter_mvp.rs` (286, 292, 298 — note: `is_global_mv_block` here is `pub` and IS the live one per the validation table above), and separate `pub(crate)` copies in `port_md/predicates.rs` (632, 644) and `port_entropy_inter/modes.rs` (111, 144). Not yet checked which of the `predicates.rs`/`modes.rs` copies are live vs dead-alongside-item-4/-6 above — flagged, not resolved, given the overlap with the already-large motion-mode investigation.
 
+### Resolution log — the dedup chunk (2026-09-04)
+
+Each cluster is folded to ONE body and gated on the whole grid after each
+commit — `identity_full_8bit` 1100/1100, `regression_spotcheck` 102/102,
+`inter_byte_gate` 96 required / 0 failed / 1 known-open, `video_key_matrix`
+58/60, `fctx_gate` 96/96, `inter_decode_gate` 5/5, `inter_decode_census`
+96/96, `SCAN_GATE=1 inter_completion_scan` 64/0/0, nextest, the six still
+cells at 290/839/63/171/580/693 B, and the cross-ISA set on r7900x (x86_64:
+nextest, spotcheck, `inter_byte_gate`, `identity_full_8bit`). "Byte-inert"
+below means every one of those was unmoved by the fold.
+
+3. `mv_err_cost` — **folded, `2b1a74ed`, byte-inert on both ISAs.**
+   Disambiguated against C: `md_subpel::mv_err_cost` (mcomp.c
+   `svt_mv_err_cost`, all six arms, tier 1 through the exported
+   `svt_aom_fp_mv_err_cost`) is THE body. `port_md::pme::{mv_err_cost,
+   fp_mv_err_cost}` were a second full body with their own `MvCostType` /
+   `MvCostParams` / `MvCostTable` — now re-exports of `md_subpel`'s types
+   (`MvCostTable` is an alias of `intrabc::MvCostTables`) and one-line
+   forwards. `intrabc::mv_err_cost` (av1me.c `svt_aom_mv_err_cost`) is C's
+   older name for the ENTROPY arm — a forward to it, still tier 1 against
+   the real symbol. `inter_mv_code::mv_err_cost` was already a forward over
+   `NmvRate`, not a body. The two retired copies differed from the body only
+   at a per-component diff of exactly -16384 (where C itself reads one past
+   the row and `is_valid_mv_diff` has already rejected the candidate) and in
+   taking the difference in i32 instead of int16 (equal on every legal MV
+   pair) — both unreachable, and the grid agrees (r7900x, x86_64: nextest
+   2536/2536, spotcheck 102/102, inter_byte_gate 96/0/1, identity_full_8bit
+   1100/1100). `svt_init_mv_cost_params`
+   likewise has one transcription now (`port_md::pme::init_mv_cost_params`;
+   `md_search` and `inter_search_arm` re-derived it inline).
+
 ## What this changes about the brief's seed list
 
 Of the 8 named examples in `ported-but-unwired-is-the-default-defect`, **5 are
