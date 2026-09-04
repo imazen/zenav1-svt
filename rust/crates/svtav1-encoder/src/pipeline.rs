@@ -2706,17 +2706,23 @@ impl EncodePipeline {
                 .map(|pic| pic.rps.ref_dpb_index[crate::port_picstruct::LAST] as usize)
                 .or(Some(0))
         };
-        // Get reference frame for inter prediction (if available)
-        let ref_frame_data: Option<alloc::vec::Vec<u8>> = last_ref_slot
-            .and_then(|slot| self.dpb.get(slot))
-            .map(|rf| rf.y_plane.clone());
+        // Get reference frame for inter prediction (if available). This is
+        // the DPB slot's own shared handle, NOT a copy: until 2026-09-04 the
+        // two bindings below deep-cloned `y_plane` and `padded` on every
+        // inter frame (4.19 + 7.15 MB at 2048x2048), which was the whole of
+        // `4e29d8fa7`'s +8.83 MB peak-heap step on both ISAs
+        // (benchmarks/mem_refclone_2026-09-04.meta). The slot is read-only
+        // once stored and is not refreshed until the end of this frame, so
+        // the shared allocation reads the bytes the clone read.
+        let last_ref: Option<alloc::sync::Arc<crate::picture::ReferenceFrame>> =
+            last_ref_slot.and_then(|slot| self.dpb.get_shared(slot));
+        let ref_frame_data: Option<&[u8]> = last_ref.as_ref().map(|rf| rf.y_plane.as_slice());
 
         // The padded twin of the reference plane above (C
         // `pad_ref_and_set_flags`, enc_dec_process.c:1072) — what INTER
         // PREDICTION indexes, because a legal MV reads outside the frame.
-        let ref_padded_luma: Option<alloc::boxed::Box<crate::picture::PaddedRef>> = last_ref_slot
-            .and_then(|slot| self.dpb.get(slot))
-            .and_then(|rf| rf.padded.clone());
+        let ref_padded_luma: Option<&crate::picture::PaddedRef> =
+            last_ref.as_ref().and_then(|rf| rf.padded.as_deref());
 
         // MV map for spatial MV prediction (8x8 block grid)
         let mv_map_stride = w.div_ceil(8);
@@ -2725,7 +2731,7 @@ impl EncodePipeline {
 
         // Compute per-SB TPL QP offsets for spatial bit allocation
         let sb_qp_offsets = if !is_key {
-            if let Some(ref rf) = ref_frame_data {
+            if let Some(rf) = ref_frame_data {
                 crate::rate_control::tpl_sb_qp_offsets(&encode_input, rf, w, h, w, sb_size)
             } else {
                 svtav1_types::try_vec![0i8; sb_cols * sb_rows]?
@@ -3342,7 +3348,7 @@ impl EncodePipeline {
         // real GOP fills slot 3 with frame N-2, MD would silently predict
         // BWDREF from frame N-1 and no test would fail.
         let mut inter_padded_by_ref: [Option<&crate::picture::PaddedRef>; 8] = [None; 8];
-        if let (Some(pic), Some(p0)) = (pic_decision.as_ref(), ref_padded_luma.as_deref())
+        if let (Some(pic), Some(p0)) = (pic_decision.as_ref(), ref_padded_luma)
             && !is_key
         {
             let slot0 = pic.rps.ref_dpb_index[crate::port_picstruct::LAST] as usize;
@@ -3364,7 +3370,7 @@ impl EncodePipeline {
 
         let inter_md_frame = match (
             frame_me.as_ref(),
-            ref_padded_luma.as_deref(),
+            ref_padded_luma,
             inter_syntax_state.as_ref(),
             inter_mvp_env.as_ref(),
             md_config_signals.as_ref(),
@@ -3792,10 +3798,10 @@ impl EncodePipeline {
             self.hdr.sharpness,
             lambda,
             &self.speed_config,
-            ref_frame_data.as_deref(),
+            ref_frame_data,
             crate::port_picstruct::is_highest_layer(temporal_layer, self.gop.hierarchical_levels),
             // The padded twin of the plane above, from the SAME DPB slot.
-            ref_padded_luma.as_deref().map(|p| &p.y),
+            ref_padded_luma.map(|p| &p.y),
             inter_md_frame.as_ref(),
             pd0_min_sq.as_deref(),
             sb_inter_lambda.as_deref(),
@@ -3945,7 +3951,7 @@ impl EncodePipeline {
                     offset += cur_w * cur_h;
 
                     // Update MV map from reference
-                    if let Some(ref rf) = ref_frame_data {
+                    if let Some(rf) = ref_frame_data {
                         let sb_mv = crate::motion_est::full_pel_search(
                             &encode_input[y0 * w + x0..],
                             w,
@@ -6506,7 +6512,7 @@ impl EncodePipeline {
                 a
             },
         };
-        self.dpb.refresh(pcs.refresh_frame_flags, &ref_frame);
+        self.dpb.refresh(pcs.refresh_frame_flags, ref_frame);
         // The PA (picture-analysis) reference the NEXT frame's open-loop
         // motion search reads — this frame's padded SOURCE pyramid, not its
         // recon. `None` in still mode, where no later frame exists.

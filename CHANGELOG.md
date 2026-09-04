@@ -841,6 +841,23 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **The inter path no longer holds the LAST reference three times and the
+  stored picture twice — aarch64 2048x2048 inter peak RSS 1.311x -> 1.189x
+  of C, 1280 1.263x -> 1.042x; x86 1.185x -> 1.022x; x86 peak heap
+  123.13 -> 101.78 M (2026-09-04).** Per-commit attribution over seventeen
+  binaries on both ISAs (`tools/mem_bisect.sh`, new) found the 2026-09-03b
+  regression is two steps: `4e29d8fa7` (+8.83 M live at 2048) and
+  `8fa2d0353` (+1.58 M, the saved motion field C also stores); the level
+  scratch is a null on main's history. The big step was `ref_frame_data` /
+  `ref_padded_luma` deep-cloning the LAST slot's `y_plane` and `padded`
+  every inter frame, and `DecodedPictureBuffer::refresh` cloning a
+  by-reference `ReferenceFrame` whose owner was still alive. `refresh` now
+  takes the frame by value and the frame holds the slot's `Arc`
+  (`get_shared`). The still arm moves too (the KEY frame was cloned the same
+  way): 1280 still 35792 -> 28256 KiB (0.788x -> 0.623x of C), 2048 still
+  81520 -> 72624 (0.851x -> 0.758x), videokey 0.883x -> 0.708x / 0.901x ->
+  0.788x. Byte-identical: `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), `video_key_matrix` 58/60 (unmoved), `fctx_gate` 96/96 fields on the reference cell and 96/97 cells over the inter grid (the one failure is the known-open `diag 128 128 20 8`, whose byte-different tile cannot save C's CDFs), `inter_decode_gate` 5/5, decode census PASS, completion scan (`SCAN_GATE=1`) 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, nextest 2526/2526, `identity_full_8bit` 1100/1100 — all on aarch64 (bash 5); cross-ISA on r7900x: spotcheck 102/102, `inter_byte_gate` PASS, nextest 2536/2536, `identity_full_8bit` 1100/1100. Records
+  `benchmarks/mem_refclone_2026-09-04.{tsv,meta}`.
 - **The tx-type search runs C's two phases — transform + SATD screen first,
   quantize/RDOQ/cost only for the survivors — and is 1.33x faster at 512² p2,
   byte for byte.** `txt_search` committed the WHOLE `tx_unit` pipeline on every

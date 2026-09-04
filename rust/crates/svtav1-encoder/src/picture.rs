@@ -368,13 +368,32 @@ impl DecodedPictureBuffer {
         }
     }
 
+    /// The slot's own shared handle — what a frame that reads a reference
+    /// for its whole duration holds, instead of a copy of the planes. The
+    /// slots are read-only once stored, so the handle reads the same bytes a
+    /// clone would; it just does not allocate them.
+    pub fn get_shared(&self, slot: usize) -> Option<alloc::sync::Arc<ReferenceFrame>> {
+        if slot < REF_FRAMES {
+            self.slots[slot].clone()
+        } else {
+            None
+        }
+    }
+
     /// Refresh slots based on the refresh_frame_flags bitmask.
-    pub fn refresh(&mut self, flags: u8, frame: &ReferenceFrame) {
+    ///
+    /// Takes the frame BY VALUE: the caller's `ReferenceFrame` is dead after
+    /// this call, and the deep clone this used to make of it (`&ReferenceFrame`
+    /// in, `frame.clone()` here) was a ~13.9 MB transient DUPLICATE at
+    /// 2048x2048 — planes, padded planes and the saved motion field — alive
+    /// at the exact instant of the port's peak heap
+    /// (benchmarks/mem_refclone_2026-09-04.meta).
+    pub fn refresh(&mut self, flags: u8, frame: ReferenceFrame) {
         if flags == 0 {
             return;
         }
-        // ONE clone, shared by every refreshed slot (see the `slots` doc).
-        let shared = alloc::sync::Arc::new(frame.clone());
+        // ONE allocation, shared by every refreshed slot (see the `slots` doc).
+        let shared = alloc::sync::Arc::new(frame);
         for i in 0..REF_FRAMES {
             if flags & (1 << i) != 0 {
                 self.slots[i] = Some(alloc::sync::Arc::clone(&shared));
@@ -538,7 +557,7 @@ mod tests {
             order_hint: 0,
         };
         // Refresh slots 0, 2, 4 (flags = 0b00010101 = 0x15)
-        dpb.refresh(0x15, &frame);
+        dpb.refresh(0x15, frame);
         assert_eq!(dpb.occupied_slots(), 3);
         assert!(dpb.get(0).is_some());
         assert!(dpb.get(1).is_none());

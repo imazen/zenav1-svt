@@ -1,3 +1,9 @@
+[RESOLVED 2026-09-04 — benchmarks/mem_refclone_2026-09-04.meta: the rise is
+ `4e29d8fa7` (+8.83 M peak heap at 2048, two per-frame clones of the LAST
+ reference) and `8fa2d0353` (+1.58 M, the saved motion field), measured
+ per commit on both ISAs; the level scratch is a null on main's history.
+ Fixed: 1.311x -> 1.189x at 2048, 1.263x -> 1.042x at 1280 on aarch64.]
+
 THE aarch64 INTER MEMORY AXIS NO LONGER HOLDS: 1.121x -> 1.278x AT 1280 AND
 1.257x -> 1.329x AT 2048. RE-MEASURED, AS THE LEVEL-SCRATCH RECORD ASKED.
 

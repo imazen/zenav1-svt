@@ -1,5 +1,44 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE aarch64 INTER MEMORY AXIS IS BACK INSIDE THE GOAL — 1.311x -> 1.189x AT
+> 2048 AND 1.263x -> 1.042x AT 1280 — AND THE REGRESSION WAS THREE COPIES OF THE
+> REFERENCE PICTURE, NOT ALLOCATOR POLICY (2026-09-04).** Records
+> `benchmarks/mem_refclone_2026-09-04.{tsv,meta}`; harness
+> `tools/mem_bisect.sh` (new: N per-commit binaries round-robin on one cell,
+> so the inter arm's 8-15 % upward thread-timing spread lands on every binary
+> equally; read the MIN there). Seventeen binaries, one per commit of
+> `940b855a..a1a32ca2f`, built at each sha on BOTH hosts: the rise is
+> `4e29d8fa7` (+8.83 M x86 peak heap / +9.9 MB x86 RSS / +10.9 MB mac min at
+> 2048) and `8fa2d0353` (+1.58 M / +1.7 MB), every other commit a null on
+> every quantity — the level scratch included, which reads null on main's
+> history where `mem_levelscratch_2026-09-03.meta` read +4.1 MiB on its own
+> branch pair (both stated in the record; not reconciled). heaptrack's
+> peak-instant contributors on the tip: `DecodedPictureBuffer::refresh`
+> 27.69 M (`Arc::new(frame.clone())` of a `&ReferenceFrame` whose owner was
+> still alive — the stored picture existed twice), plus `rf.y_plane.clone()`
+> 4.19 M and `rf.padded.clone()` 7.15 M per inter frame (the LAST reference
+> existed three times). Fix: `refresh` by value, and the frame holds the
+> slot's own `Arc` (`get_shared`). Interleaved A/B, `.obu` identical on every
+> row: mac 156624 -> 142032 KiB (2048), 66944 -> 55216 (1280); x86 RSS
+> 126596 -> 109220 / 54348 -> 45328; x86 peak heap 123.13 -> 101.78 M /
+> 49.80 -> 40.90 M. C re-measured flat (mac 52992 / 119440), oracle not
+> rebuilt. **Correction to the brief this ran under: x86 RSS was 1.185x on
+> the tip, not 1.086x — the regression was on both ISAs; what is
+> aarch64-only is the EXCESS over x86**, now decomposed by `vmmap -summary`
+> at the peak sample: ~60 MiB of libmalloc regions holding NO live block
+> (LARGE-empty 31.1 M, SMALL-empty 28.6 M after the fix; C has none) that
+> macOS keeps resident and `/usr/bin/time -l` counts. The live small-zone
+> bytes underneath are the per-block coefficient/recon retention C also has
+> (`funnel_block_decision` 16.80 M, `tx_unit_inner` 10.49 M at the x86
+> peak); shrinking those is a per-block SIZE change with a byte-identity
+> surface and is the next lever if the aarch64 margin is ever needed.
+> **The still arm moves too** (`refresh` cloned the KEY frame the same way):
+> canonical `mem_peak.sh` on the candidate, mac, median of 5 — 1280 still
+> 35792 -> 28256 KiB (0.788x -> 0.623x of C), videokey 41984 -> 33664
+> (0.883x -> 0.708x); 2048 still 81520 -> 72624 (0.851x -> 0.758x), videokey
+> 96192 -> 87856 (0.901x -> 0.788x); `.obu` identical to C on every row.
+> Gates: `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), `video_key_matrix` 58/60 (unmoved), `fctx_gate` 96/96 fields on the reference cell and 96/97 cells over the inter grid (the one failure is the known-open `diag 128 128 20 8`, whose byte-different tile cannot save C's CDFs), `inter_decode_gate` 5/5, decode census PASS, completion scan (`SCAN_GATE=1`) 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, nextest 2526/2526, `identity_full_8bit` 1100/1100 — all on aarch64 (bash 5); cross-ISA on r7900x: spotcheck 102/102, `inter_byte_gate` PASS, nextest 2536/2536, `identity_full_8bit` 1100/1100.
+
 > **CALL-COUNT ATTRIBUTION FOUND THE REPEATED WORK — TWO HEADLINE MECHANISMS,
 > BOTH SOURCE-LOCATED, ON r7900x/callgrind (2026-09-04).** Records
 > `benchmarks/callcount_2026-09-04.{tsv,meta}`. Self-time attribution

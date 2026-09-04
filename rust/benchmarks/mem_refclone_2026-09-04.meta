@@ -1,0 +1,219 @@
+THE aarch64 INTER MEMORY REGRESSION IS TWO COMMITS, BOTH ISAs AGREE, AND THE
+BIG ONE WAS THREE COPIES OF THE REFERENCE PICTURE. FIXED: 1.311x -> 1.189x AT
+2048 AND 1.263x -> 1.042x AT 1280 ON aarch64; x86 RSS 1.185x -> 1.022x.
+
+date:   2026-09-04
+what:   the obligation `benchmarks/mem_inter_axis_2026-09-03b.meta` §2 left
+        ("nobody has taken a clean per-commit binary pair across them, and
+        this file does not"), then the fix the attribution supports.
+data:   benchmarks/mem_refclone_2026-09-04.tsv (every number below).
+tools:  rust/tools/mem_bisect.sh (NEW — round-robin peak RSS / peak heap over
+        N perf_encode binaries on one cell, so box drift lands on every
+        binary equally), rust/tools/mem_peak.sh, `vmmap -summary` and
+        `heap -s` sampled every ~50 ms (macOS), heaptrack_print (Linux).
+hosts:  mac (Apple M4 Pro, aarch64-apple-darwin, 16 KiB pages, libmalloc):
+        `/usr/bin/time -l` max RSS, 7 rounds. r7900x (x86_64-linux):
+        `/usr/bin/time -v` max RSS, 5 rounds, and heaptrack peak heap (LIVE
+        bytes). Every mac number is RSS — heaptrack does not exist there.
+trees:  seventeen binaries, one per commit of `940b855a..a1a32ca2f` (main's
+        linear order), each built AT that sha on each host; every binary ran
+        to completion with a non-empty .obu on every round (the harness
+        excludes a refused encode and printed 0 refusals).
+oracle: the same Bin/Release/libSvtAv1Enc.a as the two 2026-09-03 records;
+        NOT rebuilt. Re-measured this session: mac 52992 / 119440 KiB
+        (record: 53056 / 119488, -0.1 % / -0.04 %) — C did not move.
+
+=================== 1. PER-COMMIT ATTRIBUTION — TWO STEPS, NOTHING ELSE =====
+
+x86 peak HEAP over the seventeen commits (2048 inter / 1280 inter, MB):
+
+  940b855a2 .. 64cb668ab   112.73 / 45.40    flat
+  4e29d8fa7                121.56 / 49.18    +8.83 / +3.78   <- STEP 1
+  ab7c5ed45 .. 96083a8e6   121.56 / 49.18    flat, identical to the digit
+  8fa2d0353                123.14 / 49.80    +1.58 / +0.62   <- STEP 2
+  eb658f4b7 .. a1a32ca2f   123.14 / 49.80    flat (0ba430ee1: 123.13)
+
+x86 peak RSS says the same thing (2048: 115244 -> 124888 at 4e29d8fa7,
+124840 -> 126812 at 8fa2d0353, every other adjacent pair within 0.3 %) and
+so does the mac MIN, which is the readable statistic there because the
+inter arm's run-to-run spread is 8-15 % and entirely UPWARD (thread-timing:
+`SVTAV1_THREADS=1` at 1280 is 66864 [66832,66880] where auto is
+[67072,90688]): 2048 min 150064 -> 161184 at 4e29d8fa7 (+10.9 MB); 1280 min
+59632 -> 63952 at 4e29d8fa7 (+4.2 MB) and 63136 -> 67024 at 8fa2d0353
+(+3.8 MB).
+
+**The level scratch `700357e2b` is a NULL in this series on every quantity:**
+x86 heap identical to the digit, x86 RSS +0.1 %, mac min 63856 -> 63936 at
+1280 and 163056 -> 162800 at 2048. `benchmarks/mem_levelscratch_2026-09-03.meta`
+§2 measured it as +4.1 MiB at 1280 against a base of 59.7 MiB; in this
+series the +4 MiB at 1280 sits at `4e29d8fa7`, which precedes it on main,
+and the binary AT `ab7c5ed45` (that record's base sha) already reads
+63856 min. The two measurements were not taken from the same tree lineage
+(that record built its pair on the level-scratch branch while the inter
+commits were landing) and this file does not reconcile them further; what
+it establishes is that on main's history the level scratch carries no
+measurable share of the regression on either ISA.
+
+`mem_inter_axis_2026-09-03b.meta` §2's hypothesis — "four inter correctness
+fixes give the port reference state it did not previously hold" — is half
+right. STEP 2 (`8fa2d0353`, the temporal motion field) is exactly that: a
+per-reference `Vec<MvRef>` (65,536 cells at 2048) that C also stores. STEP 1
+is not.
+
+=================== 2. STEP 1 WAS THREE COPIES OF ONE PICTURE ===============
+
+heaptrack's peak-instant contributors on the tip (2048 inter, x86; the
+instant is frame 1's DPB refresh, because both frames' DPB entries AND the
+caller's un-stored `ReferenceFrame` are live together):
+
+  27.69 M  DecodedPictureBuffer::refresh   — `Arc::new(frame.clone())` of a
+                                             `&ReferenceFrame` whose owner is
+                                             still alive: BOTH frames' entries
+                                             (2 x ~13.9 MB)
+   7.15 M  PaddedPlane::from_plane          — the caller's padded planes, the
+                                             ORIGINAL the clone above copied
+   7.15 M  encode_frame_impl (closure)      — `rf.padded.clone()` per inter
+                                             frame (pipeline.rs:2719)
+   6.29 M  Vec<u8>::clone x3                — recon y/u/v into the caller's
+                                             `ReferenceFrame`
+   4.19 M  Vec::from_elem                   — `rf.y_plane.clone()` per inter
+                                             frame (pipeline.rs:2712)
+  17.18 M  PaPlane::refill_from_plane       — the PA pyramids (C has these)
+  16.80 M  partition::funnel_block_decision — 4,096 x (32x32 i32 qcoeffs):
+                                             per-block retention until the
+                                             pack; C keeps 24 KiB/SB of the
+                                             same (`quantized_coeff`)
+  10.49 M  tx_pipeline::tx_unit_inner       — the winners' qcoeff/recon,
+                                             same retention
+   6.29 M  perf_encode (x2)                 — the harness's frames
+
+So at the peak instant the LAST reference existed THREE times: in the DPB
+slot, as `ref_frame_data` (a `Vec<u8>` clone of `y_plane`), and as
+`ref_padded_luma` (a `Box<PaddedRef>` clone) — and the picture being STORED
+existed twice, as the caller's value and as `refresh`'s clone of it.
+`4e29d8fa7` introduced the two per-frame clones when it made the DPB
+receive inter frames (until then `self.dpb.get(slot)` was `None` on every
+frame and both clones were of nothing), and their sizes ARE its step:
+y_plane 4.19 M + padded (y 4.77 + u/v 2.38) 7.15 M = 11.3 M allocated,
+8.83 M at the peak instant.
+
+=================== 3. THE FIX, AND WHAT IT MEASURES =========================
+
+Two changes, both lifetime/size and neither churn (the rules
+`benchmarks/mem_heaptrack_satd_2026-09-03.meta` and
+`neighbor_scratch_ab_2026-09-03.meta` paid for):
+
+  * `DecodedPictureBuffer::refresh` takes the `ReferenceFrame` BY VALUE. The
+    caller's value was dead after the call; the `frame.clone()` was a
+    transient duplicate of the whole picture alive at the peak instant.
+  * The frame holds the LAST slot's own `Arc<ReferenceFrame>`
+    (`DecodedPictureBuffer::get_shared`, new) and derives `&[u8]` /
+    `&PaddedRef` from it, instead of deep-cloning `y_plane` and `padded`.
+    The slot is read-only once stored and the DPB is not refreshed until the
+    end of the frame, so it reads the bytes the clone read.
+
+Interleaved A/B, tip vs candidate, same session (medians, min in brackets):
+
+  cell           host    tip                    cand1                 delta
+  2048 inter     mac    156624 [156528]        142032 [142000]       -14.6 MB
+  1280 inter     mac     66944 [66864]          55216 [54400]        -11.7 MB
+  2048 inter     x86    126596 [126392]        109220 [109192]       -17.4 MB
+  1280 inter     x86     54348 [53944]          45328 [44764]         -9.0 MB
+  2048 heap      x86    123.13 M               101.78 M              -21.35 M
+  1280 heap      x86     49.80 M                40.90 M               -8.90 M
+
+`obu_bytes` identical on every row (139761 / 81815), and the mac threads=1
+form agrees (2048 min 156640 -> 139952; 1280 66832 -> 55136).
+
+**Ratios against C, now:** mac 2048 inter **1.189x** (was 1.311x), 1280
+**1.042x** (was 1.263x); x86 RSS 1.022x / 0.920x (was 1.185x / 1.104x);
+x86 peak heap 0.847x / 0.799x. Both aarch64 inter cells are back INSIDE
+the 25 % goal, and further inside than the 2026-09-03 "after" column
+(1.257x / 1.121x) they regressed from.
+
+One correction to the record this chunk was briefed on: "x86 RSS 1.086x
+(passing)" was the 2026-09-03 tree. The tip before this fix measured
+**1.185x** on x86 too (126596 vs 106868) — the regression was not
+aarch64-only; the aarch64 EXCESS over x86 is what is.
+
+=================== 4. THE aarch64 EXCESS THAT REMAINS, DECOMPOSED ===========
+
+`vmmap -summary` at the peak sample, mac, threads=1, 2048 inter, resident
+MiB (full rows in the .tsv §6):
+
+                     MALLOC_LARGE  LARGE(empty)  MALLOC_SMALL  SMALL(empty)
+  C                      98.1          —             14.0          —
+  port, tip              20.6         39.7           55.9         35.8
+  port, cand1            20.6         31.1           57.0         28.6
+
+"(empty)" is libmalloc's own label: regions holding NO live block that it
+still keeps resident — freed large blocks parked in the large cache, and
+fully-free 4 MiB small regions parked in the depot — with their pages marked
+reusable but still counted by `/usr/bin/time -l` (the SMALL rows' dirty
+column is well below their resident column for the same reason). C's malloc
+zones have no empty regions at its peak. That is the resident-not-live
+mechanism `mem_aarch64_2026-09-03.meta` §2c inferred: it is not retention
+POLICY (§2b's knobs), it is that libmalloc keeps freed regions resident
+until memory pressure and glibc does not. The fix removed 8.6 MiB of it
+(freed padded/plane clones no longer exist to be parked) and 7.2 MiB of
+empty small regions; ~60 MiB of empties remain at the peak sample, which is
+the residual gap between the two ISAs (mac 142032 vs x86 109220 KiB).
+
+`heap -s` over the same encode puts the port's LIVE small/tiny-zone bytes at
+<= ~45 MB at any sample (x86 heaptrack agrees: 44.5 MB of the peak is the
+three per-block sites above) against ~85 MiB resident in the small zone —
+the 2x of §2c — and those blocks are the per-block coefficient/recon
+retention C also has. Shrinking them is a per-block SIZE change with a
+byte-identity surface, not something this record's attribution supports;
+it is the next thing to measure if the aarch64 margin is ever needed.
+
+Not done, and why: STEP 2 (`8fa2d0353`, +1.58 M at 2048) is the saved
+motion field — the per-reference `mvs` (`(mi_rows+1)/2 x (mi_cols+1)/2` =
+65,536 cells of a 6-byte `MvRef` at 2048, 0.39 M per stored frame) plus
+the projection's `tpl_mvs` — at the SAME 8x8 density C stores its 8-byte
+`MV_REF` (`coding_unit.h:44`). It is state C also holds, sized no larger
+than C's, and it is 1 % of the gap this chunk closed.
+
+=================== 3b. THE STILL AND VIDEOKEY ARMS MOVE TOO — MEASURED, NOT
+                        PREDICTED ==============================================
+
+The first draft of this record said the user-priority arms could not move
+because the key frame takes neither per-frame clone. That was wrong about
+`refresh`: a key frame is stored with `refresh_frame_flags = 0xFF`, so its
+`ReferenceFrame` was cloned in full — planes AND padded planes — while the
+original was alive, on the STILL path as much as on the inter one. The
+canonical `tools/mem_peak.sh` run on the candidate tree (mac, both sides,
+median of 5, .tsv §7):
+
+  cell            before   cand1    C        before/C  cand1/C
+  1280 still       35792    28256    45376     0.788     0.623
+  1280 videokey    41984    33664    47552     0.883     0.708
+  2048 still       81520    72624    95808     0.851     0.758
+  2048 videokey    96192    87856   111536     0.901     0.788
+  2048 inter      158864   142640   119568     1.329     1.193
+
+`obu_bytes` identical to C on every still and videokey row (34293 / 81771 /
+70893 / 139700). -7.5 to -8.9 MB on the still arm at every size, i.e. one
+padded-plus-unpadded copy of the picture, which is what the transient was.
+
+=================== 5. GATES — BYTE-IDENTITY, BOTH ISAs =====================
+
+regression_spotcheck 102/102, inter_byte_gate PASS (96 required, 0 failed, 1 known-open), video_key_matrix 58/60 (unmoved), fctx_gate 96/96 fields on the reference cell and 96/97 cells over the inter grid (the one failure is the known-open diag 128 128 20 8, whose byte-different tile cannot save C's CDFs), inter_decode_gate 5/5, decode census PASS, completion scan (SCAN_GATE=1) 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, nextest 2526/2526, identity_full_8bit 1100/1100 — all on aarch64 (bash 5); cross-ISA on r7900x: spotcheck 102/102, inter_byte_gate PASS, nextest 2536/2536, identity_full_8bit 1100/1100.
+
+Re-gated after rebasing onto `20931a0ac` (the concurrent `2b1a74edb`
+mv_err_cost refactor touches `port_md/`): mac spotcheck 102/102,
+`inter_byte_gate` PASS, `identity_full_8bit` 1100/1100, A/B min 156576 ->
+139952 KiB (2048) and 66848 -> 54320 (1280); r7900x spotcheck 102/102,
+`inter_byte_gate` PASS, nextest 2536/2536, `identity_full_8bit` 1100/1100,
+2048 peak heap 101.78 M — identical to the pre-rebase candidate.
+Rebased once more onto `9b520c378` (`e0275930a`, a byte-inert dsp
+inverse-transform refactor): mac spotcheck 102/102, `inter_byte_gate` PASS
+before the push; `identity_full_8bit` on the pushed commit is recorded in
+the commit that follows if it disagrees, and in perf-status.md if it does not.
+
+=================== NOT ESTABLISHED =========================================
+  * Any preset but 13, content but gradient, qp but 40, size but 1280/2048.
+  * macOS peak HEAP — no heaptrack there; the mac live-bytes reading is
+    `heap -s` at ~0.9 s sampling and bounds, not measures, the peak.
+  * Why the level-scratch record's pair read +4.1 MiB where this series
+    reads a null (§1). Both are stated; neither is retracted.

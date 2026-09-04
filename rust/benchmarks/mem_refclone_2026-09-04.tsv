@@ -1,0 +1,88 @@
+# THE aarch64 INTER MEMORY REGRESSION, ATTRIBUTED PER COMMIT ON BOTH ISAs AND FIXED.
+# Companion: benchmarks/mem_refclone_2026-09-04.meta. Harness rust/tools/mem_bisect.sh (round-robin over
+# per-commit binaries, one binary per commit of 940b855a..a1a32ca2f built at that sha) and rust/tools/mem_peak.sh.
+# grid: content=gradient qp=40 preset=13 8-bit 4:2:0, inter arm (2 frames, low-delay P, SVTAV1_FRAME_SHIFT=3).
+# mac    = Apple M4 Pro, aarch64-apple-darwin, 16 KiB pages, libmalloc; /usr/bin/time -l max RSS (KiB), 7 rounds.
+# r7900x = x86_64-linux; /usr/bin/time -v max RSS (KiB), 5 rounds; heaptrack peak heap (LIVE bytes, MB, one run).
+# A refused encode is excluded by the harness (refused column was 0 for every row below).
+#
+# 1. PER-COMMIT SERIES (main's linear order). x86 columns are tight (spread < 1 %); mac medians are
+#    threads=auto and carry the 8-15 % upward run-to-run spread perf-status.md records, so the mac MIN
+#    is the statistic to read there.
+commit	x86_rss2048_med	x86_rss2048_min	x86_heap2048	x86_rss1280_med	x86_rss1280_min	x86_heap1280	mac_rss2048_med	mac_rss2048_min	mac_rss1280_med	mac_rss1280_min	obu2048	obu1280
+940b855a	115244	114848	112.73M	49932	49388	45.40M	157712	150224	71344	59504	139762	81815
+64cb668ab	115016	114768	112.73M	50044	49704	45.40M	158352	150064	59760	59632	139762	81815
+4e29d8fa7	124888	124752	121.56M	53792	53700	49.18M	167680	161184	74240	63952	139762	81815
+ab7c5ed45	125044	124488	121.56M	53696	53532	49.18M	170176	163056	71696	63856	139762	81815
+700357e2b	125160	124792	121.56M	54060	53808	49.18M	167920	162800	74976	63936	139762	81815
+813bc9393	125092	124964	121.56M	53976	53752	49.18M	162320	157504	65056	63120	139761	81815
+aa3081526	125184	124968	121.56M	53932	53464	49.18M	169024	158128	64784	62912	139761	81815
+96083a8e6	124840	124584	121.56M	53940	53456	49.18M	166144	156288	72592	63136	139761	81815
+8fa2d0353	126812	126240	123.14M	54980	54800	49.80M	171104	157728	68400	67024	139761	81815
+eb658f4b7	126632	126124	123.14M	54864	54548	49.80M	169168	158784	67696	67600	139761	81815
+4382a2475	126640	126464	123.14M	55064	54680	49.80M	164496	156640	74144	66896	139761	81815
+a32d82e82	126624	126408	123.14M	54856	54500	49.80M	169456	163328	79216	67856	139761	81815
+2bc50c52e	126736	126244	123.14M	55016	54628	49.80M	163680	156704	67376	67024	139761	81815
+ed2f655a0	126640	126600	123.14M	54040	53840	49.80M	163840	158624	70016	67552	139761	81815
+4bcd5833b	126600	126312	123.14M	54224	53984	49.80M	170688	163504	70496	67680	139761	81815
+0ba430ee	126356	125988	123.13M	54548	53916	49.80M	162496	158112	70160	67776	139761	81815
+a1a32ca2f	126584	126504	123.13M	54764	54688	49.80M	-	-	-	-	139761	81815
+#
+# 2. A/B OF THE FIX (cand1 = a1a32ca2f + refresh-by-value + Arc-held LAST reference), INTERLEAVED, same session.
+host	threads	size	bin	median_KiB	min_KiB	max_KiB	n	obu_bytes
+mac	auto	2048	a1a32ca2f	156624	156528	184224	7	139761
+mac	auto	2048	cand1	142032	142000	161040	7	139761
+mac	auto	1280	a1a32ca2f	66944	66864	75776	7	81815
+mac	auto	1280	cand1	55216	54400	57840	7	81815
+mac	1	2048	a1a32ca2f	162704	156640	176928	7	139761
+mac	1	2048	cand1	142192	139952	160912	7	139761
+mac	1	1280	a1a32ca2f	66848	66832	73072	7	81815
+mac	1	1280	cand1	55184	55136	79488	7	81815
+r7900x	auto	2048	a1a32ca2f	126596	126392	126792	5	139761
+r7900x	auto	2048	cand1	109220	109192	109716	5	139761
+r7900x	auto	1280	a1a32ca2f	54348	53944	54804	5	81815
+r7900x	auto	1280	cand1	45328	44764	45588	5	81815
+#
+# 3. PEAK HEAP (heaptrack, r7900x, LIVE bytes)
+host	size	bin	peak_heap_MB	obu_bytes
+r7900x	2048	a1a32ca2f	123.13	139761
+r7900x	2048	cand1	101.78	139761
+r7900x	1280	a1a32ca2f	49.80	81815
+r7900x	1280	cand1	40.90	81815
+#
+# 4. THE C ORACLE, same session (Bin/Release/libSvtAv1Enc.a unchanged; NOT rebuilt)
+host	mode	size	c_peak	range	obu_bytes
+mac	rss	1280	52992	[52960,53040]	81837
+mac	rss	2048	119440	[119376,125584]	148295
+r7900x	rss	1280	49252	[48880,49644]	81837
+r7900x	rss	2048	106868	[106532,107244]	148295
+r7900x	heap	1280	51.22M	-	81837
+r7900x	heap	2048	120.12M	-	148295
+#
+# 5. RATIOS port/C on the two inter cells
+host	quantity	size	tip_a1a32ca2f	cand1
+mac	rss	2048	1.311	1.189
+mac	rss	1280	1.263	1.042
+r7900x	rss	2048	1.185	1.022
+r7900x	rss	1280	1.104	0.920
+r7900x	heap	2048	1.025	0.847
+r7900x	heap	1280	0.972	0.799
+#
+# 6. vmmap -summary AT THE PEAK SAMPLE, mac, threads=1, 2048 inter (resident MiB; "empty" = regions with
+#    no live block that libmalloc still holds resident). C's peak sample: LARGE 98.1, SMALL 14.0, no empties.
+bin	MALLOC_LARGE	LARGE_empty	MALLOC_SMALL	SMALL_empty	total_dirty
+a1a32ca2f	20.6	39.7	55.9	35.8	124.1
+cand1	20.6	31.1	57.0	28.6	117.5
+#
+# 7. CANONICAL tools/mem_peak.sh RUN ON THE CANDIDATE TREE, mac, both sides, 3 arms, MEDIAN OF 5 [min,max].
+#    "before" = the port column of benchmarks/mem_inter_axis_2026-09-03b.meta §3 (1280) and
+#    benchmarks/mem_aarch64_2026-09-03.tsv "after" (2048), same harness, same C library.
+size	arm	port_before	port_cand1	c_now	before/C	cand1/C	obu_port	obu_c
+1280	still	35792	28256 [28160,36032]	45376 [45312,45424]	0.788	0.623	34293	34293
+1280	videokey	41984	33664 [33360,37600]	47552 [47504,47584]	0.883	0.708	81771	81771
+1280	inter	67792	55360 [55328,65296]	60752 [53008,60768]	1.278	0.911*	81815	81837
+2048	still	81520	72624 [72544,75040]	95808 [95744,100960]	0.851	0.758	70893	70893
+2048	videokey	96192	87856 [87776,89536]	111536 [106784,111680]	0.901	0.788	139700	139700
+2048	inter	158864	142640 [140624,160720]	119568 [119376,126208]	1.329	1.193	139761	148295
+# * C's 1280 inter median landed on its upper mode this run (min 53008 = the flat value every other run
+#   reads); against 52992 (§4) the cand1 ratio is 1.045. Read the §2 A/B for the inter cells.
