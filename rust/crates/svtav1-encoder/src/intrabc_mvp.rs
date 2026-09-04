@@ -402,7 +402,13 @@ fn scan_col_mbmi(
 
 /// C `is_inside` (adaptive_mv_pred.c:44-47).
 #[inline]
-pub(crate) fn is_inside(tile: TileMiBounds, mi_col: i32, mi_row: i32, pos_row: i32, pos_col: i32) -> bool {
+pub(crate) fn is_inside(
+    tile: TileMiBounds,
+    mi_col: i32,
+    mi_row: i32,
+    pos_row: i32,
+    pos_col: i32,
+) -> bool {
     !(mi_row + pos_row < tile.mi_row_start
         || mi_col + pos_col < tile.mi_col_start
         || mi_row + pos_row >= tile.mi_row_end

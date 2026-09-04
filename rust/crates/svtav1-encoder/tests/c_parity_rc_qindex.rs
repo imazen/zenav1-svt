@@ -136,11 +136,13 @@ fn frame_context_carries_the_real_inter_cdfs() {
     assert_eq!(fc.refmv_cdf, cdfs::REFMV_CDF, "refmv");
     assert_eq!(fc.drl_cdf, cdfs::DRL_CDF, "drl");
     assert_eq!(
-        fc.inter_compound_mode_cdf, cdfs::INTER_COMPOUND_MODE_CDF,
+        fc.inter_compound_mode_cdf,
+        cdfs::INTER_COMPOUND_MODE_CDF,
         "inter_compound_mode"
     );
     assert_eq!(
-        fc.interp_filter_cdf, cdfs::SWITCHABLE_INTERP_CDF,
+        fc.interp_filter_cdf,
+        cdfs::SWITCHABLE_INTERP_CDF,
         "interp_filter/switchable_interp"
     );
 
@@ -180,7 +182,6 @@ fn the_seeded_inter_cdfs_are_not_uniform() {
         "the 9-wide compound table must use entries past the old 5-wide bound"
     );
 }
-
 
 /// The `target_bit_rate` CONTRACT, driven rather than transcribed.
 ///
