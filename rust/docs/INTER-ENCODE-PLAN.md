@@ -6371,6 +6371,94 @@ Byte-inert on the still and key-frame paths BY CONSTRUCTION:
 `InterMdFrame::cand_reduction` exists only when `md_config_signals` does,
 which is `None` on a key frame, and `inter_md_arm` is the INTER branch of MD.
 
+### 1z²⁷. The frame-2 refusal named the WRONG mechanism, and its 466 B was a hard-coded DPB slot (2026-09-03)
+
+§1z²⁵ reinstated the frame-2 refusal keyed on `pd0_detector`'s per-superblock
+`ref_obj_l0->sb_intra[sb_index]`, quoting **466 B against C's 21**. Re-measured
+here: that 466 B was a DIFFERENT defect. Frame 2 now codes **22 B against C's
+21** on the same cell, the refusal is RE-KEYED on the divergence that is
+actually first, and it is NOT lifted.
+
+Full record with every number:
+`benchmarks/frame2_last_slot_2026-09-03.md`.
+
+#### The defect
+
+Three pipeline sites read the reference picture — `ref_frame_data` (the ME's
+plane), `ref_padded_luma` (what motion compensation indexes, and what
+`padded_by_ref` is built from) and PD0's `sb_min_sq_size` read — and all three
+were `self.dpb.get(0)`, a hard-coded DPB SLOT. C resolves LAST through
+`pcs->ppcs->ref_pic_ptr_array[REF_LIST_0][0]`, i.e. `rps.ref_dpb_index[LAST]`.
+
+They agree on every frame this repo's gates cover: poc 1's LAST **is** slot 0.
+They diverge at poc 2, because frame 1 refreshes slot 1 — which is exactly
+what §1z²⁵'s own DPB fix made real. C's LAST is then poc 1; `get(0)` is still
+the KEY frame, two displacements away instead of one.
+
+**SEVENTH** "a caller passes a constant where the derivation is already
+ported" of this campaign, after `dlf_level = 0`, PD0's `inter` argument,
+`md_config.rs:948`, `was_intra: Some(1)`, `refresh_frame_flags: 0` and
+`near_count_ctrls` (§1z²⁶).
+
+#### Measured
+
+`SVTAV1_CANDDBG` at frame 2's only block, `gradient 64x64 q32 p8 frames=3`:
+before, the port's NEWMV searched `mv=(2,-36)` — 4.5 px against a picture 6 px
+away, where the true poc-1 displacement is `(0,-24)` — and coded `intra=100`
+at 466 B. After, its NEWMV is `(0,-24)` and the frame is **22 B**. Eight cells
+at `frames=3`, C / port-after: 21/22, 21/22, 21/21, 21/21, 21/21, 27/26,
+23/24, 35/24; frames 0 and 1 byte-IDENTICAL on all eight.
+
+**Byte-inert on the two-frame envelope, measured not asserted:**
+`inter_byte_matrix.sh` is 92 BOTH / 3 F1DIFF / 1 F0DIFF before and after,
+cell for cell identical.
+
+#### The divergence that IS first now: the temporal motion field
+
+`fh_fields.py` on frame 2 of `diag 64x64 q40 p8 frames=3` (both sides 21 B)
+reports every frame-header field identical up to `cdef_damping_minus_3` — a
+CDEF SEARCH output, downstream of the recon — and, critically,
+`use_ref_frame_mvs = 1` **on both sides**. So C's MFMV block is live and so is
+the port's, while the port's `tpl_mvs` are all `INVALID_MV`:
+`av1_setup_motion_field` / `motion_field_projection`
+(`md_config_process.c:428-580`) are unported, and no frame stores the per-8x8
+`MV_REF` grid a later frame would project.
+
+C's `SVT_CINTER_OUT` at poc 2 codes `mode=13 NEARESTMV mv=(0,-24)` with
+`imc=8`, i.e. ZERO spatial matches; the port reports `refmvcnt=0 imc=8` and a
+`NEARESTMV` of `(0,0)`. With no spatial neighbours, no compound and identity
+global motion, the only source of C's `(0,-24)` is that field.
+
+**On the two-frame envelope the port is FAITHFUL here, and not by accident:**
+C's own `motion_field_projection` returns 0 for a KEY-frame start frame
+(`:441`), so the field is empty on both sides.
+
+#### The refusal is re-keyed, not lifted
+
+None of the eight cells is byte-identical, so it stays. Its text and its
+comment block now name the motion field and carry this measurement.
+`part_arm::VideoPic`'s missing `InterOnInterRef` arm — §1z²⁵'s mechanism — is
+still a real gap and still unported; it is simply not the FIRST one, and the
+DPB already carries the `sb_intra` / `sb_skip` it needs.
+
+**No byte cell can witness the fix**: the refusal fires before frame 2 is
+coded, and lifting it needs an env var the crate resolves once per process.
+The PREMISE is pinned instead —
+`pipeline::inter_decision_probe::last_is_not_dpb_slot_zero_from_poc_two`
+asserts LAST walks 0 -> 0 -> 1 while frame 1's `refresh_frame_mask` leaves
+slot 0 holding the key frame, i.e. the two name DIFFERENT pictures from poc 2
+on. Without that the constant would have been harmless.
+
+#### No regression, measured
+
+`cargo nextest run --workspace` **2512/2512**, `regression_spotcheck.sh`
+**100/100** (both `refuses_inter3` cells included), `identity_full_8bit.sh`
+**1100/1100**, `inter_byte_gate.sh` **94 required / 0 failed**, `fctx_gate.sh`
+PASS, `inter_decode_gate.sh` PASS, `inter_fh_gate.sh` PASS,
+`inter_decode_census.sh` PASS, `video_key_matrix.sh` **58/60** (unmoved),
+`inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK / 0 REFUSED / 0 CRASH**,
+`refusal_inventory --check` and `portnote_index --check` current.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

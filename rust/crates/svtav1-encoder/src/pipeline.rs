@@ -2682,21 +2682,41 @@ impl EncodePipeline {
         let sb_cols = w.div_ceil(sb_size);
         let sb_rows = h.div_ceil(sb_size);
 
-        // Get reference frame for inter prediction (if available)
-        let ref_frame_data: Option<alloc::vec::Vec<u8>> = if !is_key {
-            self.dpb.get(0).map(|rf| rf.y_plane.clone())
-        } else {
+        // C `svt_aom_get_ref_pic_buffer(pcs, LAST_FRAME)` resolves LAST
+        // through `pcs->ppcs->ref_pic_ptr_array[REF_LIST_0][0]`, i.e. this
+        // picture's own RPS — `pic.rps.ref_dpb_index[LAST]`.
+        //
+        // The three sites below read `self.dpb.get(0)` until 2026-09-03, a
+        // hard-coded DPB SLOT. That is right for every frame this port's
+        // gates cover and WRONG the moment a second inter frame exists:
+        // frame 1 refreshes slot 1 (`refresh_frame_mask` 0x02), so at poc 2
+        // C's LAST is slot 1 = poc 1 while `get(0)` is still the KEY frame.
+        // MEASURED on `gradient 64x64 q32 p8 frames=3` before this: the
+        // port's frame-2 MD searched `mv=(2,-36)` against poc 0, where the
+        // true poc-1 displacement is `(0,-24)`, and coded 100 % intra at
+        // 466 B against C's 21. That is the SEVENTH "a caller passes a
+        // constant where the derivation is already ported" finding of this
+        // campaign, and it is invisible at two frames because slot 0 IS
+        // LAST there.
+        let last_ref_slot: Option<usize> = if is_key {
             None
+        } else {
+            pic_decision
+                .as_ref()
+                .map(|pic| pic.rps.ref_dpb_index[crate::port_picstruct::LAST] as usize)
+                .or(Some(0))
         };
+        // Get reference frame for inter prediction (if available)
+        let ref_frame_data: Option<alloc::vec::Vec<u8>> = last_ref_slot
+            .and_then(|slot| self.dpb.get(slot))
+            .map(|rf| rf.y_plane.clone());
 
         // The padded twin of the reference plane above (C
         // `pad_ref_and_set_flags`, enc_dec_process.c:1072) — what INTER
         // PREDICTION indexes, because a legal MV reads outside the frame.
-        let ref_padded_luma: Option<alloc::boxed::Box<crate::picture::PaddedRef>> = if is_key {
-            None
-        } else {
-            self.dpb.get(0).and_then(|rf| rf.padded.clone())
-        };
+        let ref_padded_luma: Option<alloc::boxed::Box<crate::picture::PaddedRef>> = last_ref_slot
+            .and_then(|slot| self.dpb.get(slot))
+            .and_then(|rf| rf.padded.clone());
 
         // MV map for spatial MV prediction (8x8 block grid)
         let mv_map_stride = w.div_ceil(8);
@@ -3534,7 +3554,12 @@ impl EncodePipeline {
                 // C `ctx->disallow_8x8` on the VIDEO arm
                 // (`sig_deriv_enc_dec_common`, enc_mode_config.c:7122).
                 let disallow_8x8 = crate::port_enc_mode_config::leaf::get_disallow_8x8_default();
-                let ref_mins = self.dpb.get(0).map(|rf| rf.sb_min_sq_size.clone());
+                // C `pd0_depth_removal`'s reference read is
+                // `ref_obj_l0->sb_min_sq_size[sb_index]`, i.e. LAST's — see
+                // `last_ref_slot`, not DPB slot 0.
+                let ref_mins = last_ref_slot
+                    .and_then(|slot| self.dpb.get(slot))
+                    .map(|rf| rf.sb_min_sq_size.clone());
                 let mut out = Vec::with_capacity(sb_cols * sb_rows);
                 for sb_row in 0..sb_rows {
                     for sb_col in 0..sb_cols {
@@ -5845,24 +5870,41 @@ impl EncodePipeline {
             // (slice/intra/skip/hp) and this port writes exactly
             // `slice=0 intra=0 skip=100 hp=0` onto frame 1's DPB entry.
             //
-            // WHAT IS STILL MISSING, and it is a DIFFERENT mechanism:
-            // `part_arm::VideoPic` has two variants, `IntraSlice` and
-            // `InterOnIntraRef`, and NO `InterOnInterRef`. C's `pd0_detector`
-            // (enc_dec_process.c:2126/2140) reads
-            // `ref_obj_l0->sb_intra[sb_index]` PER SUPERBLOCK; the port's
-            // `video_pd0_params` hard-codes `was_intra: Some(1)`, which is
-            // right only because the only reference in its envelope is a key
-            // frame (every superblock of which codes intra). On an inter
-            // reference it is a guess, and it decides `pic_pd0_lvl` — the
-            // PD0 level the whole partition search runs at.
+            // WHAT IS STILL MISSING — RE-KEYED 2026-09-03, because the
+            // mechanism this refusal used to name was NOT the first
+            // divergence and the number it quoted was a DIFFERENT defect's.
             //
-            // MEASURED with this refusal lifted and nothing else changed:
-            // `gradient 64x64 q32 p8 frames=3` frame 2 codes **466 B against
-            // C's 21**, so the honest thing is a refusal, not a stream. The
-            // DPB now carries `sb_intra` / `sb_skip` per superblock, so the
-            // remaining work is the `InterOnInterRef` arm and the per-SB
-            // detector inputs it needs — see
-            // `docs/INTER-ENCODE-PLAN.md` 1z25.
+            // It said frame 2 needs `pd0_detector`'s per-superblock
+            // `ref_obj_l0->sb_intra[sb_index]` and cited "466 B against C's
+            // 21". That 466 B was the port PREDICTING FRAME 2 FROM THE WRONG
+            // PICTURE: `ref_frame_data` / `ref_padded_luma` / the PD0
+            // `sb_min_sq_size` read read a hard-coded DPB SLOT 0, where C
+            // resolves LAST through `pic.rps.ref_dpb_index[LAST]` — slot 1 at
+            // poc 2. With that fixed (see `last_ref_slot`) the same cell codes
+            // **22 B against C's 21**, and the frame-2 frontier is a byte, not
+            // a rewrite.
+            //
+            // The measured first divergence NOW is the TEMPORAL MOTION FIELD.
+            // `fh_fields.py` on frame 2 of `diag 64x64 q40 p8 frames=3` shows
+            // `use_ref_frame_mvs = 1` on BOTH sides, so C's MFMV block is live
+            // and so is the port's — but the port's `tpl_mvs` are all
+            // `INVALID_MV` (see `inter_mvp_env` above: C's
+            // `av1_setup_motion_field` / `motion_field_projection`,
+            // md_config_process.c:428-580, is unported, and a frame stores no
+            // per-8x8 `MV_REF` on its DPB entry for a later frame to project).
+            // On the 2-frame envelope that is FAITHFUL — the reference is a
+            // key frame and C's own projection returns 0 for it
+            // (`start_frame_buf->frame_type == KEY_FRAME`, :441) — and at
+            // poc 2 it is a gap: C's `SVT_CINTER_OUT` codes
+            // `mode=13 NEARESTMV mv=(0,-24)` off a stack whose only source is
+            // that field (0 spatial matches, `imc=8` on both sides), while the
+            // port's `SVTAV1_CANDDBG` reports `refmvcnt=0` and a NEARESTMV of
+            // `(0,0)`.
+            //
+            // `part_arm::VideoPic`'s missing `InterOnInterRef` arm is still a
+            // real gap and is still unported; it is simply not the FIRST one,
+            // and the DPB already carries the `sb_intra` / `sb_skip` it needs.
+            // See `docs/INTER-ENCODE-PLAN.md` 1z27.
             #[cfg(feature = "std")]
             if crate::dbgenv::refstats() {
                 std::eprintln!(
@@ -5887,15 +5929,15 @@ impl EncodePipeline {
             {
                 return Err(whereat::at!(EncodeError::UnsupportedConfig(
                     "an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's \
-                     per-superblock pd0_detector inputs: pd0_detector reads \
-                     ref_obj_l0->sb_intra[sb_index] (enc_dec_process.c:2126) and \
-                     part_arm::VideoPic has no InterOnInterRef arm, so video_pd0_params \
-                     answers a constant 1 that is only true of a KEY-frame reference. \
-                     The three coded-area percentages this refusal used to name ARE \
-                     carried now (ReferenceFrame::intra_coded_area, joined to C's \
-                     SVT_REFSTATS_OUT). Measured with the refusal lifted: frame 2 of \
-                     gradient 64x64 q32 p8 codes 466 B against C's 21. Encode at most \
-                     two frames [C: accepts]",
+                     TEMPORAL MOTION FIELD: av1_setup_motion_field / \
+                     motion_field_projection (md_config_process.c:428-580) are unported and \
+                     no frame stores the per-8x8 MV_REF grid a later frame would project, \
+                     so the port's tpl_mvs are all INVALID_MV while frm_hdr.use_ref_frame_mvs \
+                     is 1 on both sides. Measured with the refusal lifted, diag 64x64 q40 p8 \
+                     frames=3: C codes frame 2 as NEARESTMV mv=(0,-24) off a stack with ZERO \
+                     spatial matches, the port reports refmvcnt=0 and NEARESTMV (0,0). \
+                     Faithful at two frames, where C's own projection returns 0 for a \
+                     KEY-frame reference. Encode at most two frames [C: accepts]",
                 )));
             }
             let sigs = md_config_signals.ok_or_else(|| {
@@ -14372,6 +14414,78 @@ mod inter_decision_probe {
             nb.above.map(|a| a.ref_frame),
             Some([1, -1]),
             "the block below must see a LAST_FRAME inter neighbour"
+        );
+    }
+
+    /// **LAST is a slot the RPS names, and from poc 2 it is NOT slot 0.**
+    ///
+    /// Three pipeline sites read the reference picture — `ref_frame_data`
+    /// (the ME source), `ref_padded_luma` (what motion compensation indexes)
+    /// and PD0's `sb_min_sq_size` read — and all three took `self.dpb.get(0)`
+    /// until 2026-09-03, a hard-coded DPB SLOT. C resolves LAST through
+    /// `pcs->ppcs->ref_pic_ptr_array[REF_LIST_0][0]`, i.e. the picture's own
+    /// `rps.ref_dpb_index[LAST]`.
+    ///
+    /// The two agree on every frame this repo's gates cover — poc 1's LAST
+    /// IS slot 0 — and diverge at poc 2, because frame 1 refreshes slot 1.
+    /// MEASURED before the fix on `gradient 64x64 q32 p8 frames=3`: the
+    /// port's frame-2 MD searched `mv=(2,-36)` against poc 0 where the true
+    /// poc-1 displacement is `(0,-24)`, and coded 100 % intra at 466 B
+    /// against C's 21; after, 22 B against 21.
+    ///
+    /// **No byte cell can witness this**, because the frame-2 refusal fires
+    /// before frame 2 is coded and lifting it needs an env var this crate
+    /// resolves once per process. So this pins the PREMISE instead: LAST
+    /// walks 0 -> 0 -> 1 while frame 1's `refresh_frame_mask` leaves slot 0
+    /// holding the key frame, i.e. LAST and slot 0 name DIFFERENT pictures
+    /// from poc 2 on. Without that the constant would have been harmless.
+    #[test]
+    fn last_is_not_dpb_slot_zero_from_poc_two() {
+        use crate::rate_control::RcMode;
+        let mut pipeline = EncodePipeline::new(
+            64,
+            64,
+            8,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 32,
+                ..RcConfig::default()
+            },
+            0,
+            64,
+        )
+        .with_bit_depth(8)
+        .with_chroma_420(true);
+
+        let p0 = pipeline
+            .run_picture_decision(0, true, 0)
+            .expect("the key frame's picture decision");
+        let p1 = pipeline
+            .run_picture_decision(1, false, 0)
+            .expect("poc 1's picture decision");
+        let p2 = pipeline
+            .run_picture_decision(2, false, 0)
+            .expect("poc 2's picture decision");
+
+        let last = crate::port_picstruct::LAST;
+        assert_eq!(
+            (p1.rps.ref_dpb_index[last], p2.rps.ref_dpb_index[last]),
+            (0, 1),
+            "C's LAST is DPB slot 0 at poc 1 and slot 1 at poc 2"
+        );
+        // The other half of the defect: slot 0 is NOT overwritten by frame 1,
+        // so at poc 2 the hard-coded slot named the KEY frame, two
+        // displacements away instead of one.
+        assert_eq!(
+            p0.rps.refresh_frame_mask & 0x01,
+            0x01,
+            "the key frame refreshes slot 0"
+        );
+        assert_eq!(
+            p1.rps.refresh_frame_mask & 0x01,
+            0,
+            "frame 1 must NOT refresh slot 0 — if it did, get(0) would have \
+             been right by accident and this defect would be unreachable"
         );
     }
 

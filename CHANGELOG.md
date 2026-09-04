@@ -737,6 +737,30 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The frame-2 refusal named the wrong mechanism, and its "466 B" was a
+  hard-coded DPB slot.** Three pipeline sites read the reference picture —
+  `ref_frame_data` (the open-loop ME's plane), `ref_padded_luma` (what motion
+  compensation indexes) and PD0's `sb_min_sq_size` read — and all three took
+  `self.dpb.get(0)`, a hard-coded slot, where C resolves LAST through
+  `pcs->ppcs->ref_pic_ptr_array[REF_LIST_0][0]` i.e. `rps.ref_dpb_index[LAST]`.
+  They agree on every frame this repo's gates cover (poc 1's LAST *is* slot 0)
+  and diverge at poc 2, because frame 1 refreshes slot 1 — which the previous
+  entry's DPB fix made real. MEASURED on `gradient 64x64 q32 p8 frames=3`: the
+  port's frame-2 MD searched `mv=(2,-36)` against poc 0 where the true poc-1
+  displacement is `(0,-24)` and coded 100 % intra at **466 B against C's 21**;
+  after, **22 B**, with frames 0 and 1 byte-identical and the two-frame byte
+  grid unmoved cell for cell (92 BOTH / 3 F1DIFF / 1 F0DIFF). Seven other
+  `frames=3` cells land at 21/21, 21/21, 21/21, 26/27, 24/23, 24/35, 22/21.
+  The frame-2 refusal is **re-keyed, not lifted**: `fh_fields.py` shows
+  `use_ref_frame_mvs = 1` on BOTH sides at poc 2 while the port's `tpl_mvs` are
+  all `INVALID_MV` (`av1_setup_motion_field` / `motion_field_projection`,
+  md_config_process.c:428-580, unported), and C codes that frame as
+  `NEARESTMV mv=(0,-24)` off a stack with zero spatial matches where the port
+  reports `refmvcnt=0` and `(0,0)`. Faithful at two frames, where C's own
+  projection returns 0 for a KEY-frame reference. Full record
+  `rust/benchmarks/frame2_last_slot_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁷.
+
 - **C injects a `NEARMV` candidate on every inter frame and the port injected
   NONE — the inter byte grid goes 91 → 92 of 96.** `inter_md_arm` handed the
   candidate injector a defaulted `near_count_ctrls`, justified by a module
