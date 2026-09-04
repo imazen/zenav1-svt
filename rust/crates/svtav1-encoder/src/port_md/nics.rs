@@ -8,17 +8,19 @@
 //! | [`set_nics`] | `product_coding_loop.c:1358-1391` (EXPORTED) |
 //! | [`set_md_stage_counts`] | `product_coding_loop.c:1394-1413` (EXPORTED) |
 //!
-//! # The wrong constant this replaces
+//! # The wrong constant this replaced (closed 2026-09-04)
 //!
-//! `leaf_funnel::rate_tables::nic_counts` hardcodes the **I-slice** row
-//! of `MD_STAGE_NICS` (`{64, 0, 0, 64, 64}` reduced to the 64/32/16 that
-//! class 0 sees) and the `min = 2` rule that only holds for
-//! `pic_type < 2`. `set_md_stage_counts` derives
-//! `pic_type = I_SLICE ? 0 : !is_highest_layer ? 1 : 2`, so **every inter
-//! frame currently takes I-slice stage counts** and, at the highest
-//! temporal layer, the wrong minimum as well. That is a wrong constant on
-//! the inter path, not a missing feature: the fix is to call this
-//! function, not to patch the existing one in place.
+//! `leaf_funnel::rate_tables::nic_counts` used to hardcode the **I-slice**
+//! row of `MD_STAGE_NICS` (`{64, 0, 0, 64, 64}` reduced to the 64/32/16
+//! that class 0 sees) and the `min = 2` rule that only holds for
+//! `pic_type < 2`, so every inter frame took I-slice stage counts. It is
+//! now a front on [`set_nics`] with the picture type from
+//! [`nics_pic_type`] over `FunnelFrame::{non_i_slice, is_highest_layer}`
+//! (`crate::port_picstruct::is_highest_layer`, pd_process.c:5560) — ONE
+//! transcription, this one, on the live path. Measured byte-inert on the
+//! campaign's 96-cell grid (the I-slice row admitted more MDS1 survivors
+//! than C's, none of which ever won); recorded in
+//! `docs/INTER-ENCODE-PLAN.md` §1z³⁷.
 //!
 //! # Evidence
 //!

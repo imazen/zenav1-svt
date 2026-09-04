@@ -387,6 +387,15 @@ pub struct FunnelFrame {
     /// False on every still/AVIF encode, which is why this is byte-neutral
     /// there by construction.
     pub non_i_slice: bool,
+    /// C `pcs->ppcs->is_highest_layer`
+    /// ([`crate::port_picstruct::is_highest_layer`], `pd_process.c:5560`).
+    /// With `non_i_slice` it selects the `MD_STAGE_NICS` row
+    /// (`set_md_stage_counts`, product_coding_loop.c:1398: `I_SLICE ? 0 :
+    /// !is_highest_layer ? 1 : 2`) and the per-stage minimum count
+    /// (`:1367-1369`, 2 below picture type 2, else 1). FALSE on every
+    /// picture of a flat GOP, key frames included, so the campaign's
+    /// low-delay grid runs picture type 1 on every inter frame.
+    pub is_highest_layer: bool,
     /// CLI qp 0..63 (qp-based threshold scaling input).
     pub cli_qp: u32,
     /// Frame rdoq level (0 = quantize_b at MDS3 too).
@@ -1255,19 +1264,50 @@ pub(super) fn qp_scale_factors(cli_qp: u32) -> (u64, u64) {
     (w as u64, d as u64)
 }
 
-/// NIC counts for I-slice class 0 at the config's scaling nums:
-/// `svt_aom_set_nics` (product_coding_loop.c:1347), base {64, 32, 16}
-/// (MD_STAGE_NICS[I][C0] = 64, >>1, >>2), scaled by num/16 then qp-scaled.
-/// `min_nics = 2` when the stage's scaling num != 0 (I-slice pic_type < 2),
-/// else 1 — so nums 0/0/0 (nic level 15/M8) yield 1/1/1.
-pub(super) fn nic_counts(cli_qp: u32, num: (u64, u64, u64)) -> (u32, u32, u32) {
-    let (qw, qwd) = qp_scale_factors(cli_qp);
-    let scale = |base: u64, num: u64| -> u32 {
-        let min = if num != 0 { 2u64 } else { 1u64 };
-        let n = min.max(div_round(base * num, 16));
-        min.max(div_round(n * qw, qwd)) as u32
-    };
-    (scale(64, num.0), scale(32, num.1), scale(16, num.2))
+/// The three per-stage NIC caps this funnel runs its lanes at — C
+/// `svt_aom_set_nics` (product_coding_loop.c:1358) for `pic_type`, read off
+/// CLASS 0 of the result.
+///
+/// `pic_type` is `set_md_stage_counts`'s (`:1398`): 0 on an I_SLICE, 1 on an
+/// inter frame that is not the highest temporal layer, 2 on one that is —
+/// [`crate::port_md::nics::nics_pic_type`]. It selects the `MD_STAGE_NICS`
+/// row (definitions.h:811-815: `{64,0,0,64,64}` / `{32,..}` / `{16,..}`) and
+/// the per-stage minimum (`:1367-1369`: 2 when `pic_type < 2` and the stage's
+/// scaling numerator is non-zero, else 1).
+///
+/// Why one triple is exact for every lane: on rows 1 and 2 every class has
+/// the same base, so class 0's counts ARE every class's; on row 0 classes 3
+/// and 4 (palette, IntraBC) share class 0's 64, and classes 1 and 2 — the
+/// inter classes, whose base is 0 and whose count is therefore the bare
+/// minimum — carry no candidate on an I_SLICE, so their (different) count is
+/// never consulted.
+///
+/// Until 2026-09-04 this hardcoded row 0 (`64/32/16`) with the `pic_type < 2`
+/// minimum, i.e. every inter frame ran I-slice caps: at the campaign's
+/// `p6 q40` that is an MDS1 cap of 5 where C runs 3, and at `p8 q20` 3 where
+/// C runs 2 (the later stages agreed). MEASURED byte-inert on the whole
+/// 96-cell grid and on all eight `frames=3` cells with the row forced
+/// either way, positive control included — the extra MDS1 survivors never
+/// won — so this is C's derivation landing with no cell to witness it, not a
+/// fix that closed one.
+///
+/// This is a thin front on the tier-1 `port_md::nics::set_nics` (pinned to
+/// the EXPORTED C in `tests/c_parity_md_nics.rs`); the second transcription
+/// that used to live here is gone. `nic_max_qp_based_th_scaling` is `true`
+/// on both arms at every preset the port can reach (`enc_handle.c:3785` /
+/// `:3837`; the only 0 is the `default` arm at `ENC_MR`, below preset 0).
+pub(super) fn nic_counts(cli_qp: u32, num: (u64, u64, u64), pic_type: u8) -> (u32, u32, u32) {
+    let c = crate::port_md::nics::set_nics(
+        &crate::port_md::nics::NicScalingCtrls {
+            stage1_scaling_num: num.0 as u32,
+            stage2_scaling_num: num.1 as u32,
+            stage3_scaling_num: num.2 as u32,
+        },
+        pic_type,
+        cli_qp,
+        true,
+    );
+    (c.mds1[0], c.mds2[0], c.mds3[0])
 }
 
 /// C `svt_nxm_sad_kernel` (svt_nxm_sad_kernel_helper_c, compute_sad_c.c:21) —

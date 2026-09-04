@@ -85,6 +85,7 @@ pub(super) fn stage_mds0_to_mds1(
     cfg: FunnelCfg,
     cli_qp: u32,
     non_i_slice: bool,
+    is_highest_layer: bool,
 ) -> Mds1Staging {
     let ncand = cands.len();
 
@@ -106,7 +107,11 @@ pub(super) fn stage_mds0_to_mds1(
     // order with C; cross-mode/cross-iteration ties additionally depend on
     // C's two-iteration MDS0 order (regulars, then angular+fi, :1600) —
     // refine if a cell ever demands it.
-    let (nic1, nic2, nic3) = nic_counts(cli_qp, cfg.nic_num);
+    // C `set_md_stage_counts` (product_coding_loop.c:1394-1413): the
+    // `MD_STAGE_NICS` row is the PICTURE TYPE's — I_SLICE, REF or NON-REF
+    // (`:1398`) — not always the I-slice row this funnel was written for.
+    let pic_type = crate::port_md::nics::nics_pic_type(!non_i_slice, is_highest_layer);
+    let (nic1, nic2, nic3) = nic_counts(cli_qp, cfg.nic_num, pic_type);
     // C runs md_stage_0's replacement pool PER CANDIDATE CLASS
     // (svt_aom_set_nics gives each class its own mds1_count, product_
     // coding_loop.c:1358; the pool + argmax-victim loop runs once per
@@ -115,7 +120,9 @@ pub(super) fn stage_mds0_to_mds1(
     // CAND_CLASS_3 (palette), and MD_STAGE_NICS gives BOTH base 64
     // (definitions.h:811), so each lane keeps up to `nic1` survivors and
     // MDS1/MDS3 evaluate the UNION (construct_best_sorted_arrays_md_
-    // stage_3, :1455). A single shared pool let palette candidates
+    // stage_3, :1455); on an inter frame every class shares one base
+    // (`{32,..}` / `{16,..}`), so `nic1` is every lane's cap there too — see
+    // `nic_counts`. A single shared pool let palette candidates
     // (huge SATD advantage on screen content) flood out the regular
     // survivors — EPICA p6 coded 2064 palette blocks vs C's 178. The
     // per-class dist-to-cost prune (product_coding_loop.c:1309) is INERT
@@ -819,7 +826,7 @@ mod nic_class_prune_tests {
             cand(2, 5, 37_647_060),
             cand(2, 6, 44_842_470),
         ];
-        let st = stage_mds0_to_mds1(&cands, cfg, 55, true);
+        let st = stage_mds0_to_mds1(&cands, cfg, 55, true, false);
         let out = stage_mds1_to_mds3(&cands, cfg, &st);
         assert_eq!(out.n3, 1, "C evaluates ONE candidate at MDS3 here");
         assert_eq!(
@@ -830,7 +837,7 @@ mod nic_class_prune_tests {
         // The SAME costs on an I_SLICE keep the NEWMV class, because C forces
         // `mds2_class_th` to the disabled sentinel there (:7897). This is the
         // half of the behaviour the funnel had before, and it must not move.
-        let st_i = stage_mds0_to_mds1(&cands, cfg, 55, false);
+        let st_i = stage_mds0_to_mds1(&cands, cfg, 55, false, false);
         let out_i = stage_mds1_to_mds3(&cands, cfg, &st_i);
         assert!(
             out_i.n3 > 1,
@@ -858,7 +865,7 @@ mod nic_class_prune_tests {
             cand(0, 310, 3),
             cand(0, 320, 4),
         ];
-        let st = stage_mds0_to_mds1(&killed, cfg, 55, true);
+        let st = stage_mds0_to_mds1(&killed, cfg, 55, true, false);
         assert!(
             st.order.iter().all(|&i| killed[i].inter.is_some()),
             "dev 200 >= 183: the intra class must be gone"
@@ -870,7 +877,7 @@ mod nic_class_prune_tests {
             cand(0, 260, 3),
             cand(0, 270, 4),
         ];
-        let st = stage_mds0_to_mds1(&kept, cfg, 55, true);
+        let st = stage_mds0_to_mds1(&kept, cfg, 55, true, false);
         assert!(
             st.order.iter().any(|&i| kept[i].inter.is_none()),
             "dev 150 < 183: the intra class must survive"
@@ -878,7 +885,7 @@ mod nic_class_prune_tests {
 
         // On an I_SLICE the threshold is the disabled sentinel (:7826), so
         // even the killed case keeps its intra candidates.
-        let st_i = stage_mds0_to_mds1(&killed, cfg, 55, false);
+        let st_i = stage_mds0_to_mds1(&killed, cfg, 55, false, false);
         assert!(
             st_i.order.iter().any(|&i| killed[i].inter.is_none()),
             "the I_SLICE form must not run the post-MDS0 class prune"
@@ -905,13 +912,13 @@ mod nic_class_prune_tests {
         // class prune only, so this test names ONE threshold.
         let mut c_no_mds2 = cfg;
         c_no_mds2.mds2_class_th = u64::MAX;
-        let st = stage_mds0_to_mds1(&cands, c_no_mds2, 55, true);
+        let st = stage_mds0_to_mds1(&cands, c_no_mds2, 55, true, false);
         let inter = stage_mds1_to_mds3(&cands, c_no_mds2, &st);
         assert!(
             inter.order1.iter().all(|&i| cands[i].full_cost < 1_400_000),
             "dev 40 >= 5: the deviating class must be gone on an inter frame"
         );
-        let st_i = stage_mds0_to_mds1(&cands, c_no_mds2, 55, false);
+        let st_i = stage_mds0_to_mds1(&cands, c_no_mds2, 55, false, false);
         let islice = stage_mds1_to_mds3(&cands, c_no_mds2, &st_i);
         assert!(
             islice

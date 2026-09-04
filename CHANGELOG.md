@@ -869,6 +869,20 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **NIC stage caps use C's PICTURE TYPE on inter frames (2026-09-04).**
+  `leaf_funnel::rate_tables::nic_counts` hardcoded the I_SLICE row of
+  `MD_STAGE_NICS` (definitions.h:811), so every inter frame ran I-slice stage
+  caps — at `p6 q40` an MDS1 cap of 5 where C (`set_md_stage_counts`,
+  product_coding_loop.c:1398, picture type 1 on a flat GOP) runs 3, and 3 vs 2
+  at `p8 q20`. It is now a front on the tier-1 `port_md::nics::set_nics`, with
+  the picture type from the new `port_picstruct::is_highest_layer`
+  (pd_process.c:5560 — FALSE on every picture of a flat GOP); the same helper
+  replaces the `temporal_layer_index != hierarchical_levels` paraphrase in
+  `inter_hdr_arm` (wrong at (0,0)) and the DLF block's inline copy. MEASURED
+  byte-inert: the 96-cell inter grid is identical row for row (94 BOTH / 1
+  F1DIFF / 1 F0DIFF), the eight `frames=3` cells unchanged, stills 1100/1100 —
+  the extra MDS1 survivors the I-slice row admitted never won. Record:
+  `docs/INTER-ENCODE-PLAN.md` §1z³⁷.
 - **The three residual F1DIFF cells are a COST comparison, not a search — and a
   module header said otherwise.** `inter_md_arm`'s header claimed
   `md_nsq_motion_search` is "PORTED but NOT CALLED here ... so an NSQ block here

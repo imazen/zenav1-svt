@@ -280,15 +280,40 @@ fn cfl_idx_to_alpha_unpacks_both_planes() {
 /// test they describe lives.)
 #[test]
 fn nic_counts_match_c() {
-    // M6 (nic level 6): nums 6/6/6.
-    assert_eq!(nic_counts(20, (6, 6, 6)), (8, 4, 2));
-    assert_eq!(nic_counts(40, (6, 6, 6)), (15, 8, 4));
-    assert_eq!(nic_counts(55, (6, 6, 6)), (22, 11, 5));
+    // M6 (nic level 6): nums 6/6/6, I-slice row.
+    assert_eq!(nic_counts(20, (6, 6, 6), 0), (8, 4, 2));
+    assert_eq!(nic_counts(40, (6, 6, 6), 0), (15, 8, 4));
+    assert_eq!(nic_counts(55, (6, 6, 6), 0), (22, 11, 5));
     // M8 (nic level 11 -> scaling level 15 -> nums 0/0/0): the min-1
     // floor (scaling num == 0) pins every stage to 1 at all tracked qps.
-    assert_eq!(nic_counts(20, (0, 0, 0)), (1, 1, 1));
-    assert_eq!(nic_counts(40, (0, 0, 0)), (1, 1, 1));
-    assert_eq!(nic_counts(55, (0, 0, 0)), (1, 1, 1));
+    assert_eq!(nic_counts(20, (0, 0, 0), 0), (1, 1, 1));
+    assert_eq!(nic_counts(40, (0, 0, 0), 0), (1, 1, 1));
+    assert_eq!(nic_counts(55, (0, 0, 0), 0), (1, 1, 1));
+}
+
+/// The INTER rows, at the cells the campaign stands on — the values C's
+/// `SVT_FULLCOST_OUT` dump reported for picture type 1
+/// (`docs/INTER-ENCODE-PLAN.md` §1z³³: `diag 72x72 q55 p6`, nic level 8,
+/// caps 4/2/2 where the I-slice row gives 7/2/2), and the two derived from
+/// the same table for the grid's other live nic levels. Each pair asserts
+/// the row is OBSERVABLE at that cell (the I-slice value differs), so a
+/// `nic_counts` that ignored `pic_type` fails here by name rather than by
+/// the sweep below.
+#[test]
+fn nic_counts_inter_rows_at_the_campaign_cells() {
+    // p6 (video nic level 8, nums 2/1/1).
+    assert_eq!(nic_counts(55, (2, 1, 1), 1), (4, 2, 2));
+    assert_eq!(nic_counts(55, (2, 1, 1), 0), (7, 2, 2));
+    assert_eq!(nic_counts(40, (2, 1, 1), 1), (3, 2, 2));
+    assert_eq!(nic_counts(40, (2, 1, 1), 0), (5, 2, 2));
+    // p8 (video nic level 9, nums 2/0/0): the MDS1 cap is the only stage
+    // with a numerator, and the row still moves it.
+    assert_eq!(nic_counts(20, (2, 0, 0), 1), (2, 1, 1));
+    assert_eq!(nic_counts(20, (2, 0, 0), 0), (3, 1, 1));
+    // Picture type 2 (highest temporal layer, unreachable on a flat GOP)
+    // loses the minimum-of-2 as well: base 16, `16 * 2 / 16 = 2`, then
+    // qp 20 scales `2 * 20 / 63` to 1 and the floor is 1, not 2.
+    assert_eq!(nic_counts(20, (2, 0, 0), 2), (1, 1, 1));
 }
 
 /// The same function against the REAL exported C, over EVERY row of
@@ -308,10 +333,10 @@ fn nic_counts_match_c() {
 /// hole in both gates: one covered the wrong function, the other the wrong
 /// grid. Found 2026-09-01 while attributing that cell's byte delta.
 ///
-/// `pic_type` is fixed at 0 here BECAUSE `nic_counts` hardcodes the I-slice
-/// row of `MD_STAGE_NICS` (64/32/16); the other two rows are pinned in
-/// `c_parity_md_nics.rs::all_three_pic_types_differ`, and the day this funnel
-/// codes a non-I frame, that hardcode is the thing to fix.
+/// Since 2026-09-04 `nic_counts` is a front on `port_md::nics::set_nics`
+/// (one transcription, not two) and takes the PICTURE TYPE, so this sweep
+/// runs all three `MD_STAGE_NICS` rows — the I-slice row this funnel was
+/// written for and the two inter rows it now runs on the campaign's frames.
 ///
 /// `nic_max_qp_based_th_scaling` is `true` on both arms at every preset the
 /// port can reach (`enc_handle.c:3785`/`:3837` — the only 0 is the `default`
@@ -340,24 +365,46 @@ fn nic_counts_match_the_real_c_over_every_scaling_row_and_qp() {
         (0, 0, 0),
     ];
     let mut checked = 0usize;
+    let mut rows_differ = 0usize;
     for row in ROWS {
         for qp in 0..=63u32 {
-            let c = svtav1_cref::mode_decision::set_nics(row, 0, qp, true);
-            let r = nic_counts(qp, (u64::from(row.0), u64::from(row.1), u64::from(row.2)));
-            assert_eq!(
-                (c.mds1[0], c.mds2[0], c.mds3[0]),
-                r,
-                "nic_counts row={row:?} qp={qp}"
-            );
-            checked += 1;
+            let mut per_type = [(0u32, 0u32, 0u32); 3];
+            for pic_type in 0u8..3 {
+                let c = svtav1_cref::mode_decision::set_nics(row, pic_type, qp, true);
+                let r = nic_counts(
+                    qp,
+                    (u64::from(row.0), u64::from(row.1), u64::from(row.2)),
+                    pic_type,
+                );
+                assert_eq!(
+                    (c.mds1[0], c.mds2[0], c.mds3[0]),
+                    r,
+                    "nic_counts row={row:?} qp={qp} pic_type={pic_type}"
+                );
+                per_type[usize::from(pic_type)] = r;
+                checked += 1;
+            }
+            if per_type[0] != per_type[1] || per_type[1] != per_type[2] {
+                rows_differ += 1;
+            }
         }
     }
-    assert_eq!(checked, 16 * 64, "the sweep must actually have run");
+    assert_eq!(checked, 16 * 64 * 3, "the sweep must actually have run");
+    // ANTI-VACUITY on the picture-type axis: the three rows must actually
+    // produce different counts somewhere, or agreement with C on all three
+    // could be agreement on one row read three times.
+    assert!(
+        rows_differ > 0,
+        "the picture type must be observable somewhere in the sweep"
+    );
 
     // The exact cell the campaign stands on, spelled out so a regression names
-    // itself: video nic_level 7 (presets 4/5) and 8 (preset 6) at CLI qp 40.
-    assert_eq!(nic_counts(40, (4, 4, 4)), (10, 5, 3));
-    assert_eq!(nic_counts(40, (2, 1, 1)), (5, 2, 2));
+    // itself: video nic_level 7 (presets 4/5) and 8 (preset 6) at CLI qp 40,
+    // on the I-slice row (frame 0) and the REF row (frame 1 of a flat GOP).
+    assert_eq!(nic_counts(40, (4, 4, 4), 0), (10, 5, 3));
+    assert_eq!(nic_counts(40, (2, 1, 1), 0), (5, 2, 2));
+    assert_eq!(nic_counts(40, (4, 4, 4), 1), (5, 3, 2));
+    assert_eq!(nic_counts(40, (2, 1, 1), 1), (3, 2, 2));
 
     // ANTI-VACUITY on the qp axis: without the qp scaling the counts differ,
     // so a `nic_counts` that dropped it would fail the sweep above rather than
@@ -365,9 +412,27 @@ fn nic_counts_match_the_real_c_over_every_scaling_row_and_qp() {
     let unscaled = svtav1_cref::mode_decision::set_nics((4, 4, 4), 0, 40, false);
     assert_ne!(
         (unscaled.mds1[0], unscaled.mds2[0], unscaled.mds3[0]),
-        nic_counts(40, (4, 4, 4)),
+        nic_counts(40, (4, 4, 4), 0),
         "qp scaling must be observable at this cell"
     );
+}
+
+/// `pd_process.c:5559-5561` as a truth table, with the flat-GOP row that two
+/// paraphrases in this port got wrong (`inter_hdr_arm` carried
+/// `temporal_layer_index != hierarchical_levels` until 2026-09-04, which is
+/// FALSE at (0, 0) where C is TRUE for `is_not_last_layer`).
+#[test]
+fn is_highest_layer_matches_pd_process() {
+    use crate::port_picstruct::is_highest_layer;
+    // Flat GOP: never highest, whatever the layer says.
+    assert!(!is_highest_layer(0, 0));
+    // Pyramids: only the top layer.
+    assert!(!is_highest_layer(0, 1));
+    assert!(is_highest_layer(1, 1));
+    assert!(!is_highest_layer(0, 3));
+    assert!(!is_highest_layer(2, 3));
+    assert!(is_highest_layer(3, 3));
+    assert!(is_highest_layer(5, 5));
 }
 
 /// RDCOST identity from the captured g64 q55 MDS3 rows: the DC
@@ -603,6 +668,10 @@ fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFr
         lambda: 100_000,
         // These fixtures are the still/allintra funnel, i.e. an I-slice.
         non_i_slice: false,
+        // A key frame is temporal layer 0 and never the highest layer
+        // (`pd_process.c:5560`); with `non_i_slice: false` this is NIC
+        // picture type 0 either way.
+        is_highest_layer: false,
         cli_qp: 32,
         rdoq_level: 0,
         // These fixtures exercise the still/allintra funnel.

@@ -12,6 +12,7 @@
 //! | Rust | C (`Codec/pd_process.c` unless noted) |
 //! |---|---|
 //! | [`is_pic_used_as_ref`] | `svt_aom_is_pic_used_as_ref` (1770-1803) — EXPORTED |
+//! | [`is_highest_layer`] | `picture_decision_kernel`'s assignment (5559-5561) — inline, static |
 //! | [`is_incomp_mg_frame`] | `svt_aom_is_incomp_mg_frame` (4986-4989) — EXPORTED |
 //! | [`update_count_try`] | `update_count_try` (4507-4517) — EXPORTED |
 //! | [`setup_skip_mode_allowed`] | `svt_av1_setup_skip_mode_allowed` (102-166) — EXPORTED |
@@ -613,6 +614,41 @@ pub fn is_pic_used_as_ref(
 /// random-access sequence: the incomplete mini-GOP at a GOP boundary. Read by
 /// [`set_ref_list_counts`] (forces list 1 empty) and by the `reference_mode`
 /// derivation (forces `SINGLE_REFERENCE`).
+/// C `pcs->is_highest_layer` as `picture_decision_kernel` assigns it
+/// (`pd_process.c:5559-5561`):
+///
+/// ```c
+/// // For flat, set is_highest_layer to false to avoid using aggressive settings for all pictures
+/// pcs->is_highest_layer = (pcs->temporal_layer_index == pcs->hierarchical_levels) &&
+///     pcs->hierarchical_levels != 0;
+/// ```
+///
+/// The second clause is load-bearing and has been dropped by more than one
+/// re-derivation in this port: on a FLAT GOP (`hierarchical_levels == 0`)
+/// every picture is temporal layer 0 == `hierarchical_levels`, and C still
+/// says **false**, so `is_not_last_layer` (`!is_highest_layer`, the form the
+/// `enc_mode_config.c` ladders read) is TRUE for every picture of the inter
+/// campaign's low-delay grid. A `temporal_layer_index != hierarchical_levels`
+/// paraphrase gets the flat GOP backwards.
+///
+/// The overlay arm (`initialize_overlay_frame`, `pd_process.c:3581`, forces
+/// `true`) is not modelled: overlays are `enable_overlays`-gated and this port
+/// never sets it.
+///
+/// Readers: `set_md_stage_counts`'s NIC picture type
+/// (`product_coding_loop.c:1398`, `I_SLICE ? 0 : !is_highest_layer ? 1 : 2`),
+/// the DLF / LR / MD-config `is_not_last_layer` ladders.
+///
+/// Evidence: tier 4 on the assignment itself (inline in a `static` kernel,
+/// no exported symbol); the consumers that read it through
+/// `svt_aom_sig_deriv_mode_decision_config_default` / `svt_aom_set_nics`
+/// are tier-1 gated on their own inputs.
+#[must_use]
+#[inline]
+pub fn is_highest_layer(temporal_layer_index: u8, hierarchical_levels: u8) -> bool {
+    temporal_layer_index == hierarchical_levels && hierarchical_levels != 0
+}
+
 #[must_use]
 pub fn is_incomp_mg_frame(pic: &PicParams, seq: &SeqPicParams) -> bool {
     pic.pred_struct_type == PredStructure::LowDelay

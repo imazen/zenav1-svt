@@ -3793,6 +3793,7 @@ impl EncodePipeline {
             lambda,
             &self.speed_config,
             ref_frame_data.as_deref(),
+            crate::port_picstruct::is_highest_layer(temporal_layer, self.gop.hierarchical_levels),
             // The padded twin of the plane above, from the SAME DPB slot.
             ref_padded_luma.as_deref().map(|p| &p.y),
             inter_md_frame.as_ref(),
@@ -4805,8 +4806,10 @@ impl EncodePipeline {
         // 6 at <= M9. Both are ENABLED levels; the port used to signal 0.
         let dlf_temporal_layer_index: u8 = temporal_layer;
         let dlf_is_base = dlf_temporal_layer_index == 0;
-        let dlf_is_highest_layer = dlf_temporal_layer_index == self.gop.hierarchical_levels
-            && self.gop.hierarchical_levels != 0;
+        let dlf_is_highest_layer = crate::port_picstruct::is_highest_layer(
+            dlf_temporal_layer_index,
+            self.gop.hierarchical_levels,
+        );
         let dlf_is_not_last_layer = u8::from(!dlf_is_highest_layer);
 
         // IBC (chunk 1): C kills the deblock filter at SIGNAL-DERIVATION on
@@ -10884,6 +10887,13 @@ fn encode_tile_rows(
     _lambda: u64, // Per-SB lambda computed from sb_qp_offsets
     speed_config: &crate::speed_config::SpeedConfig,
     ref_frame_data: Option<&[u8]>,
+    // C `ppcs->is_highest_layer` (`crate::port_picstruct::is_highest_layer`,
+    // pd_process.c:5560), resolved by the CALLER from the frame's temporal
+    // layer and the GOP depth — the same value the DLF / LR ladders read as
+    // `!is_not_last_layer`. The funnel's NIC picture type
+    // (`set_md_stage_counts`, product_coding_loop.c:1398) is the only reader
+    // on this side. FALSE on every picture of a flat GOP.
+    is_highest_layer: bool,
     // The same reference luma plane with C's replicated margin
     // (docs/INTER-ENCODE-PLAN.md §1s item 4). `Some` exactly when
     // `ref_frame_data` is; the inter arm cannot predict without it.
@@ -11322,6 +11332,8 @@ fn encode_tile_rows(
                 // `ref_frame_data` is `Some` exactly on a non-key frame
                 // (`encode_frame_impl`'s `if !is_key` binding).
                 non_i_slice: ref_frame_data.is_some(),
+                // C `ppcs->is_highest_layer`, resolved by the caller.
+                is_highest_layer,
                 // C `seq_header.sb_mi_size` (task #91): 16 at SB64, 32 at
                 // SB128. 16 for every SB64 encode -> byte-neutral there.
                 sb_mi_size: sb_size / 4,

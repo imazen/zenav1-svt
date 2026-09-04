@@ -7304,6 +7304,146 @@ it: stated as unverified, not as verified.
 
 #### Gates, aarch64 (this tree): nextest 2524/2524, `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), grid **94 BOTH / 1 F1DIFF / 1 F0DIFF of 96 — every row identical to §1z³⁵'s grid, so paying the switchable rate moved no cell** (it is paid by every inter candidate alike), `video_key_matrix` 58/60, `fctx_gate` 96/96, `inter_decode_gate` 5/5, decode census PASS, completion scan 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, `identity_full_8bit` 1100/1100; frames=3 refuses frame 2 by design on every cell. Cross-ISA on r7900x (x86_64, oracle `3115c0c`): nextest 2533/2533, spotcheck 102/102, inter byte gate PASS, identity 1100/1100. Records: `benchmarks/ifs_probe_2026-09-04.tsv`, `benchmarks/ifs_join_2026-09-04.tsv` + `.meta`.
 
+### 1z³⁷. The NIC picture type is wired — C runs `MD_STAGE_NICS` row 1 on every inter frame of the grid, the port ran row 0, and NO byte moves (2026-09-04)
+
+§1z³³ left one thing out on purpose so the class prunes were attributable
+alone: `leaf_funnel::rate_tables::nic_counts` hardcoded the I_SLICE row of
+`MD_STAGE_NICS` (`64/32/16`), so every inter frame ran I-slice stage caps.
+This chunk derives the picture type, measures it first, and lands it as a
+byte-NULL on every gate — reported as such.
+
+#### What C does, with lines
+
+* The table: `MD_STAGE_NICS[NICS_PIC_TYPE][CAND_CLASS_TOTAL]`
+  (`definitions.h:811-815`) — `{64, 0, 0, 64, 64}` I SLICE,
+  `{32, 32, 32, 32, 32}` REF FRAMES, `{16, 16, 16, 16, 16}` NON-REF FRAMES.
+* The per-stage floor: `svt_aom_set_nics` (`product_coding_loop.c:1358`),
+  `min_mdsN_nics = (pic_type < 2 && stageN_scaling_num) ? 2 : 1`
+  (`:1367-1369`), applied after BOTH scalings (`:1379-1381`, `:1387-1389`).
+* The picture type: `set_md_stage_counts` (`:1394`),
+  `pic_type = slice_type == I_SLICE ? 0 : !ppcs->is_highest_layer ? 1 : 2`
+  (`:1398`).
+* `is_highest_layer`: `picture_decision_kernel`, `pd_process.c:5559-5561`,
+  `(temporal_layer_index == hierarchical_levels) && hierarchical_levels != 0`,
+  with C's own comment "For flat, set is_highest_layer to false to avoid
+  using aggressive settings for all pictures". The only other assignment is
+  the overlay arm (`initialize_overlay_frame`, `:3581`, forces `true`),
+  which is `enable_overlays`-gated and unreachable here.
+
+So on the campaign's flat low-delay GOP (`SVT_HIER_LEVELS=0`) every picture
+is temporal layer 0 == `hierarchical_levels` and C STILL says `false`:
+**picture type 1 on every inter frame**, exactly what §1z³³ read off the
+dump. A pyramid would put its top layer on type 2 (base 16, floor 1). The
+port had no `is_highest_layer` — the brief was right about that — but it
+did have the rule, twice, and disagreeing: `pipeline.rs`'s DLF block had
+C's form (with the `!= 0` clause), while `inter_hdr_arm::md_config_inputs`
+and `enc_dec_cand_reduction` carried `temporal_layer_index !=
+hierarchical_levels`, which is FALSE at (0, 0) where C's `is_not_last_layer`
+is TRUE. Both now go through one `port_picstruct::is_highest_layer`.
+
+#### The premise test came first, with a positive control
+
+A throwaway env forced the row (`SVTAV1_NIC_PICTYPE=1`) inside
+`stage_mds0_to_mds1`, printing the cap it replaced, on the two open cells
+and the eight `frames=3` cells (frame 2 lifted by a second throwaway env,
+neither committed):
+
+| cell | MDS1/2/3 cap, row 0 (port before) | row 1 (C) | leaves | bytes |
+|---|---|---|---|---|
+| `diag 128x128 q20 p8` frame 1 (nic level 9, nums 2/0/0, qp 20) | 3/1/1 | **2**/1/1 | 10 | 26 B either way (C 25) |
+| `gradient 64x64 q40 p6` frame 1 (nic level 8, nums 2/1/1, qp 40) | 5/2/2 | **3**/2/2 | 5 | 22 B either way (C 22) |
+| `gradient 128x128 q20 p8` frame 0 / 1 | — | — | — | 7453 / 25 B either way (C 7472 / 25) |
+| the eight `frames=3` cells | | | | 5 IDENTICAL + 3 DIFF, the SAME five and three, same sizes, either way |
+
+The override fired on every inter leaf (the print is the positive control)
+and changed the MDS1 cap by the amount the table predicts; no frame's bytes
+moved. **The extra MDS1 survivors the I-slice row admitted never won**, so
+this is C's derivation landing with nothing on the grid to witness it — a
+null, stated as one. What it does buy is C's MDS1 work (3 instead of 5
+full-loop candidates at `p6 q40`, 2 instead of 3 at `p8 q20`), and the
+correct answer on any GOP where the caps bind.
+
+#### What landed
+
+* `port_picstruct::is_highest_layer(temporal_layer_index, hierarchical_levels)`
+  — the one transcription of `pd_process.c:5560`; `pipeline.rs`'s DLF
+  block, both `inter_hdr_arm` sites and the new `FunnelFrame::is_highest_layer`
+  read it. Truth table pinned (`is_highest_layer_matches_pd_process`).
+* `nic_counts(cli_qp, nums, pic_type)` is now a FRONT on the tier-1
+  `port_md::nics::set_nics` (pinned to the EXPORTED `svt_aom_set_nics` in
+  `tests/c_parity_md_nics.rs`) — the second transcription of that function
+  is gone, per the duplicate-cluster rule. `nic.rs` derives `pic_type` with
+  `port_md::nics::nics_pic_type(!non_i_slice, is_highest_layer)`.
+* `nic_counts_match_the_real_c_over_every_scaling_row_and_qp` now sweeps all
+  16 scaling rows x 64 qps x **3 picture types** against the real C (3072
+  cells) with an anti-vacuity assert that the rows differ somewhere;
+  `nic_counts_inter_rows_at_the_campaign_cells` pins §1z³³'s measured
+  4/2/2-vs-7/2/2 at `diag 72x72 q55 p6` and the two rows above.
+
+#### Two constants found beside it, NOT changed here
+
+* `nic_arm::apply(.., is_base = true)` at `pipeline.rs:~11114` — and
+  `funnel_arm` / `intra_arm` / `mds0_arm` beside it — hardcode `is_base`.
+  Correct on the flat GOP (every picture is temporal layer 0), wrong on a
+  pyramid (`svt_aom_get_nic_level_default` is `is_base ? 8 : 9` at M7 and
+  `is_base ? 9 : 11` at M9, `enc_mode_config.c:4466/4470`). Same family as
+  §5's "a constant at a call site is a claim"; the temporal layer is now in
+  `encode_tile_rows`' caller, so passing it is a one-line change per arm
+  when a pyramid cell exists to witness it.
+* The `is_not_last_layer` paraphrase in `inter_hdr_arm` fed
+  `set_cand_reduction_ctrls`' `dc_only_th` (`encdec.rs`, C
+  `enc_mode_config.c:7826-7834`): at cand-reduction level 2 — which C runs
+  at **every preset above M7**, i.e. on the grid's p8 half
+  (`enc_mode_config.c:9039-9050`) — C's flat-GOP value is
+  `is_not_last_layer ? 10 : 200` = **10**, the paraphrase gave 200. It moved
+  no byte because the consumer is not wired: C's
+  `cand_elimination_ctrls` prunes INTRA candidates at injection
+  (`eliminate_candidate_based_on_pme_me_results`, `mode_decision.c:3408`,
+  and the `md_me_dist < dc_only_th * area` arm at `:3540-3546` — both set
+  `dc_cand_only_flag`, DC-only intra) and at MDS0
+  (`product_coding_loop.c:1018-1027`: an intra candidate's fast cost is set
+  to `MAX_MODE_COST` when the best MDS0 luma distortion so far is under
+  `dc_only_th` / `skip_dc_th` x area), and the port's only readers are the
+  uncalled `port_md::{coding_loop,lpd1_loop}`. On `diag`, whose ME finds an
+  exact 3-px match, `md_me_dist` is tiny and `10 * area` is not — so on the
+  p8 half of the grid C injects DC-only intra on most blocks where the port
+  injects the full set. Both open cells are p8. **That is the next chunk,
+  scoped: wire `dc_cand_only` from `cand_elimination_ctrls` at injection and
+  the MDS0 early-out, with the corrected `dc_only_th`.** `merge_inter_cands`
+  (§1z³³) is live at nic levels 6..11 (`merge_inter_cands_mult = 4`,
+  `enc_mode_config.c:4725-4878`), i.e. on BOTH halves of the grid, and stays
+  unported; it needs the same `md_me_dist` / `md_pme_dist` this elimination
+  needs, so the two share a prerequisite.
+
+#### Correction to the brief
+
+The brief named `diag 128x128 q20 p8` (26 B vs C's 25) as the F0DIFF cell.
+It is the **F1DIFF** cell (frame 0 identical at 1178 B, frame 1 26 vs 25);
+the F0DIFF cell is `gradient 128x128 q20 p8` (frame 0 7453 B vs C's 7472,
+frame 1 identical at 25 B). Both measured on the baseline grid before any
+edit.
+
+Two scoreboard readings corrected while re-measuring: "`fctx_gate` 96/96"
+in the chunk records above is the count of shared CDF FIELDS on the
+reference cell (§1s), not 96 cells — run over the whole grid the gate
+PASSES on 94 cells and FAILS on exactly the two byte-different ones, as it
+must (a differing tile cannot save C's end-of-frame CDFs).
+
+#### Gates, aarch64 (this tree, all run under bash 5)
+
+nextest **2526/2526** (+2), `regression_spotcheck` **102/102**,
+`inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), grid **94
+BOTH / 1 F1DIFF / 1 F0DIFF of 96 — identical row for row to the baseline at
+`4bcd5833`, and the port's 192 frame outputs `cmp`-identical to that
+baseline's**, `video_key_matrix` 58/60 (unmoved), `fctx_gate` 94/96 cells
+(the two open cells fail, see above), `inter_decode_gate` 5/5, decode census
+96/96 PASS, completion scan (`SCAN_GATE=1`) 64 OK / 0 REFUSED / 0 CRASH,
+six still cells identical at 290/839/63/171/580/693 B, `identity_full_8bit`
+**1100/1100**; frames=3 refuses frame 2 by design on every cell (measured
+with the refusal lifted by a throwaway env: 5 identical / 3 differing,
+unchanged by the row). Cross-ISA (r7900x, x86_64, oracle `3115c0c`): see
+the paragraph appended below once that leg ran on the pushed commit.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

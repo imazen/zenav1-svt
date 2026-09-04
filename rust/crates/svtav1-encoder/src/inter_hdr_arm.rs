@@ -423,7 +423,19 @@ pub fn md_config_inputs(
         fast_decode: 0,
         hierarchical_levels: u32::from(p.hierarchical_levels),
         transition_present: false,
-        is_not_last_layer: p.temporal_layer_index != p.hierarchical_levels,
+        // C `is_not_last_layer = !ppcs->is_highest_layer`
+        // (enc_mode_config.c:8912). NOT `temporal_layer_index !=
+        // hierarchical_levels`: that paraphrase is FALSE on a flat GOP where
+        // C's `is_highest_layer` (`pd_process.c:5560`, ANDs in
+        // `hierarchical_levels != 0`) makes it TRUE. This site carried the
+        // paraphrase until 2026-09-04; its readers on the flat grid are
+        // `pic_lpd1_lvl` (no live consumer) and `set_cand_reduction_ctrls`'s
+        // `dc_only_th` / `skip_dc_th` (level 2 at p8: 10 vs the 200 the
+        // paraphrase produced), whose port consumer is not wired.
+        is_not_last_layer: !crate::port_picstruct::is_highest_layer(
+            p.temporal_layer_index,
+            p.hierarchical_levels,
+        ),
         sq_qp: p.sq_qp,
         mfmv_enabled: u8::from(p.enc_mode <= 10),
         error_resilient_mode: false,
@@ -484,7 +496,12 @@ pub fn enc_dec_cand_reduction(
         crate::port_enc_mode_config::encdec::CandReductionInputs {
             level: cand_reduction_level,
             is_lpd1: false,
-            is_not_last_layer: p.temporal_layer_index != p.hierarchical_levels,
+            // See `md_config_inputs`: C's `!ppcs->is_highest_layer`, TRUE on
+            // a flat GOP.
+            is_not_last_layer: !crate::port_picstruct::is_highest_layer(
+                p.temporal_layer_index,
+                p.hierarchical_levels,
+            ),
             use_flat_ipp: false,
             picture_qp: p.picture_qp,
             me_8x8_cost_variance: u32::MAX,

@@ -13,12 +13,13 @@
 //! prefix and is `static`. Linkage came from `nm -g`, not the name.
 //!
 //! What this pins in particular: **`pic_type` is not always 0.**
-//! `leaf_funnel::rate_tables::nic_counts` hardcodes the I-slice row of
-//! `MD_STAGE_NICS`, so an inter frame gets I-slice counts today. The
-//! `all_three_pic_types_differ` case below asserts the three rows really
-//! do produce different counts — without it, a port that ignored
-//! `pic_type` entirely would still pass every other case that happens to
-//! use `pic_type == 0`.
+//! `leaf_funnel::rate_tables::nic_counts` hardcoded the I-slice row of
+//! `MD_STAGE_NICS` until 2026-09-04, so an inter frame got I-slice counts;
+//! it is now a front on `port_md::nics::set_nics` — the function gated
+//! here — with the real picture type. The `all_three_pic_types_differ`
+//! case below asserts the three rows really do produce different counts —
+//! without it, a port that ignored `pic_type` entirely would still pass
+//! every other case that happens to use `pic_type == 0`.
 
 use svtav1_cref::mode_decision as cmd;
 use svtav1_encoder::port_md::nics as rnic;
