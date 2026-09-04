@@ -56,6 +56,37 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Zone 2 directional intra runs in NEON lanes — 1.4 % at the still arm's
+  worst cell and 2.5-4.2 % on the video key frame at p6.** `dr_predictor_edged`
+  was 763 of 19,115 self samples at gradient 512x512 preset 2 against C's
+  `svt_av1_dr_prediction_z2_neon` 323 — z2 is C's largest directional kernel
+  there and was the last one unported. C reaches zone 2's `left` half with
+  `vqtbl4q_u8`, a 64-byte gather, because within a row that half's `base_y` and
+  `shift` both vary with the column; this arm needs no gather at all, splitting
+  the block into the `above` staircase (walked row-major, z1's kernel) and its
+  complement (walked column-major, z3's kernel) so each region is contiguous
+  along the axis it is walked on. Byte-identical: identity_full_8bit 1100/1100,
+  regression_spotcheck 102/102, inter_byte_gate 94/0, fctx_gate 96/96,
+  video_key_matrix 58/60 unchanged, and the C-parity tier sweep gained ten
+  RECTANGULAR sizes because the staircase depends on `bw` and `bh`
+  independently. Records `rust/benchmarks/z2neon_ab_2026-09-03.*` (d552c62c).
+- **The aarch64 inter peak-RSS axis is re-measured and no longer holds** —
+  1280 inter 1.121x -> **1.278x**, 2048 inter 1.257x -> **1.329x** of C, with
+  C itself unmoved to 0.05 %. About half the 1280 rise is `700357e2`'s known
+  +4.1 MiB; the rest is unattributed and sits across four inter CORRECTNESS
+  fixes that give the port reference state it did not previously hold. The
+  still and videokey arms did not move (0.79x / 0.88x of C).
+  Record `rust/benchmarks/mem_inter_axis_2026-09-03b.meta` (24bd95cc).
+- **A NULL, reverted, with its teeth and its ceiling: removing an allocation
+  nothing reads made the still arm SLOWER.** `mds3::eval_candidate`'s
+  `d0_recon` is a `w * h` alloc + memcpy per candidate whose only reader is
+  `gate_y`, from one candidate, only at `bypass_encdec`; eliding it elsewhere
+  is byte-inert and 1.2-1.7 % slower at 512 p6/p10, reproduced, with a
+  parameter-only control showing the cost is the removal and not the signature.
+  Also records the measured ceiling for the item (the allocator family is 5.5 %
+  of the port's 512 p2 frame) and a pre-existing latent panic it surfaced —
+  `gate_y` is an EMPTY slice on a coded-lossless 8x8 leaf.
+  Record `rust/benchmarks/mds3d0_null_2026-09-03.meta` (869947ea).
 - **`MeCandidate` is ONE byte, as C's is — -8.01 MB of peak heap on the inter
   arm at 4 MP.** C declares all five fields as bitfields of a single `uint8_t`
   (`me_sb_results.h:29`: `direction : 2`, `ref_idx_l* : 2`, `ref*_list : 1`),
