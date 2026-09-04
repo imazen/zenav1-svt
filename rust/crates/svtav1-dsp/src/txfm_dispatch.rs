@@ -66,16 +66,10 @@ pub fn inv_txfm2d_dispatch_bd(
     let (ud_flip, lr_flip) = flip_cfg(tx_type);
 
     if w > 32 || h > 32 {
-        // Remap the top-left 32x32 into a zero-extended w x h buffer,
-        // mirroring the mod_input construction in svt_av1_inv_txfm2d_add_64x*.
-        let keep_w = w.min(32);
-        let keep_h = h.min(32);
-        let mut mod_input = alloc::vec![0i32; w * h];
-        for r in 0..keep_h {
-            for c in 0..keep_w {
-                mod_input[r * w + c] = input[r * stride + c];
-            }
-        }
+        // C's `mod_input` (svt_av1_inv_txfm2d_add_64x*): the top-left 32x32
+        // read out of the full-stride layout and zero-extended to w x h —
+        // the one transcription, shared with the named 64-dim wrappers.
+        let mod_input = crate::inv_txfm::mod_input_64(input, stride, w, h);
         inv_txfm2d_c_exact_bd(
             &mod_input, w, output, stride, w, h, row_1d, col_1d, ud_flip, lr_flip, bd,
         )

@@ -2482,15 +2482,29 @@ pub fn inv_txfm2d_c_exact_bd(
     true
 }
 
-/// 64-dim named-wrapper input remap: the C `svt_av1_inv_txfm2d_add_64x*_c`
-/// functions take input packed at stride min(w, 32) with min(h, 32) rows and
-/// zero-extend it into a w x h buffer (inv_transforms.c:2614-2733).
-fn mod_input_64(input: &[TranLow], w: usize, h: usize) -> alloc::vec::Vec<TranLow> {
+/// The `mod_input` construction of C's `svt_av1_inv_txfm2d_add_64x*_c`
+/// (inv_transforms.c:2614-2733): only the top-left `min(w, 32) x min(h, 32)`
+/// coefficients of a 64-dim block exist, so C copies them out of `input`
+/// and zero-extends into a `w x h` buffer before the 2-D inverse.
+///
+/// `input_stride` is where the two callers differ, not the construction:
+/// C's callers (and the named wrappers below, which are its spelling) hand
+/// the coefficients PACKED at stride `min(w, 32)`; the dispatch
+/// ([`crate::txfm_dispatch::inv_txfm2d_dispatch_bd`]) reads them out of the
+/// port's full-stride coefficient layout. This is the ONE body for both —
+/// until 2026-09-04 the dispatch carried its own inline copy of this loop
+/// (`docs/WORKING-ON-THIS.md` §4).
+pub(crate) fn mod_input_64(
+    input: &[TranLow],
+    input_stride: usize,
+    w: usize,
+    h: usize,
+) -> alloc::vec::Vec<TranLow> {
     let cw = w.min(32);
     let ch = h.min(32);
     let mut m = vec![0i32; w * h];
     for r in 0..ch {
-        m[r * w..r * w + cw].copy_from_slice(&input[r * cw..(r + 1) * cw]);
+        m[r * w..r * w + cw].copy_from_slice(&input[r * input_stride..r * input_stride + cw]);
     }
     m
 }
@@ -2621,7 +2635,7 @@ pub fn inv_txfm2d_32x32_dct_dct(input: &[TranLow], output: &mut [TranLow], strid
 
 /// Inverse 64x64 DCT-DCT.
 pub fn inv_txfm2d_64x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    let m = mod_input_64(input, 64, 64);
+    let m = mod_input_64(input, 32, 64, 64);
     inv_txfm2d_c_exact(&m, 64, output, stride, 64, 64, 0, 0, false, false);
 }
 
@@ -2659,13 +2673,13 @@ pub fn inv_txfm2d_32x16_dct_dct(input: &[TranLow], output: &mut [TranLow], strid
 
 /// Inverse 32x64 DCT-DCT.
 pub fn inv_txfm2d_32x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    let m = mod_input_64(input, 32, 64);
+    let m = mod_input_64(input, 32, 32, 64);
     inv_txfm2d_c_exact(&m, 32, output, stride, 32, 64, 0, 0, false, false);
 }
 
 /// Inverse 64x32 DCT-DCT.
 pub fn inv_txfm2d_64x32_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    let m = mod_input_64(input, 64, 32);
+    let m = mod_input_64(input, 32, 64, 32);
     inv_txfm2d_c_exact(&m, 64, output, stride, 64, 32, 0, 0, false, false);
 }
 
@@ -2691,13 +2705,13 @@ pub fn inv_txfm2d_32x8_dct_dct(input: &[TranLow], output: &mut [TranLow], stride
 
 /// Inverse 16x64 DCT-DCT.
 pub fn inv_txfm2d_16x64_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    let m = mod_input_64(input, 16, 64);
+    let m = mod_input_64(input, 16, 16, 64);
     inv_txfm2d_c_exact(&m, 16, output, stride, 16, 64, 0, 0, false, false);
 }
 
 /// Inverse 64x16 DCT-DCT.
 pub fn inv_txfm2d_64x16_dct_dct(input: &[TranLow], output: &mut [TranLow], stride: usize) {
-    let m = mod_input_64(input, 64, 16);
+    let m = mod_input_64(input, 32, 64, 16);
     inv_txfm2d_c_exact(&m, 64, output, stride, 64, 16, 0, 0, false, false);
 }
 
