@@ -2,9 +2,9 @@
 
 # Configs this encoder refuses
 
-**18 CAPABILITY refusals** (unimplemented — this is DEBT) and **31
+**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **32
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
-refusals, **12** name a configuration C v4.2.0 actually encodes — the
+refusals, **11** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
 `[C: ...]` marker at all.
 
@@ -47,7 +47,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used (crate::inter_hdr_arm:: InterHdrError). This port's TPL is structurally off (aq_mode 0), so reaching this means the aq_mode refusal was lifted without porting r0 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
-| `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's TEMPORAL MOTION FIELD: av1_setup_motion_field / motion_field_projection (md_config_process.c:428-580) are unported and no frame stores the per-8x8 MV_REF grid a later frame would project, so the port's tpl_mvs are all INVALID_MV while frm_hdr.use_ref_frame_mvs is 1 on both sides. Measured with the refusal lifted, diag 64x64 q40 p8 frames=3: C codes frame 2 as NEARESTMV mv=(0,-24) off a stack with ZERO spatial matches, the port reports refmvcnt=0 and NEARESTMV (0,0). Faithful at two frames, where C's own projection returns 0 for a KEY-frame reference. Encode at most two frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: C svt_aom_derive_gm_level (enc_mode_config.c:194) gives an inter frame at preset <= 4 a non-zero gm_level, so C searches a model and global_motion_params() codes its type and parameters, while this port writes seven is_global = 0 bits and an IDENTITY model — use preset >= 5 for inter frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | inter frames are not implemented for the public API — not because the machinery is missing, but because its ENVELOPE is 89 of 96 cells. CDF continuation, the inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, frames=2 low-delay P) 89 cells are byte-identical to C on BOTH frames, 6 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be right on the closed cells and silently wrong elsewhere, which is exactly the outcome docs/WORKING-ON-THIS.md section 6 refuses. See docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: encode a single key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres is 8-bit only so far (the u16 source downscale is unported) |
@@ -89,6 +88,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd is the monochrome entry point; use try_encode_frame_420_hbd on a 4:2:0 pipeline |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
+| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's RECON to agree, and it does not yet. The temporal motion field is WIRED now (setup_motion_field over the DPB, copy_frame_mvs in the walk) and carries C's own candidate: at poc 2 of diag 64x64 q40 p8 frames=3 the port's NEARESTMV is C's (0,-24) off a stack of 1 where it used to be (0,0) off an empty one, and SIX of eight frames=3 cells now match C's frame-2 byte COUNT. NONE is byte-identical: the first diverging frame-header field on that cell is cdef_damping_minus_3 (C 1, port 2), a CDEF SEARCH output and therefore downstream of the recon, and on two other cells no header field differs at all and the whole divergence is in the tile payload. Measured with the refusal lifted, diag 64x64 q40 p8 frames=3: C codes frame 2 as NEARESTMV mv=(0,-24) off a stack with ZERO spatial matches, the port reports refmvcnt=0 and NEARESTMV (0,0). Faithful at two frames, where C's own projection returns 0 for a KEY-frame reference. Encode at most two frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |

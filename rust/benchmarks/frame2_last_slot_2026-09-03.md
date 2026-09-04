@@ -83,9 +83,25 @@ use_ref_frame_mvs                             1        1
 ```
 
 **C's MFMV block is live at poc 2 and so is the port's** — but the port's
-`tpl_mvs` are all `INVALID_MV`. `av1_setup_motion_field` /
-`motion_field_projection` (`md_config_process.c:428-580`) are unported, and no
-frame stores the per-8x8 `MV_REF` grid a later frame would project.
+`tpl_mvs` are all `INVALID_MV`.
+
+**CORRECTION, and it is this file's own first draft being wrong.** That draft
+said `av1_setup_motion_field` / `motion_field_projection` "are unported". They
+are not. `inter_mvp::{motion_field_projection, setup_motion_field}` are C's
+`md_config_process.c:427/523` at tier 4 with traced vectors
+(`tests/inter_mvp_motion_field.rs`), and `port_coding_loop::copy_frame_mvs` is
+C's `av1_copy_frame_mvs` (`coding_loop.c:1038`) — whose module doc has said
+since it landed that it is needed "the moment the GOP is three frames or
+longer". Written before grepping, which is the exact failure
+`docs/WORKING-ON-THIS.md` §4 names ("grep before you write the second"), and
+caught by grepping afterwards.
+
+What is missing is the STATE BETWEEN them, and only that:
+`picture::ReferenceFrame` carries no per-8x8 `MV_REF` grid, nothing folds one
+during the walk (C's `update_b` calls `av1_copy_frame_mvs` per coded block),
+and `inter_mvp_env.tpl_mvs` is built as a constant all-`INVALID_MV` vector
+instead of by `setup_motion_field`. So the frame-2 gap is a WIRE, not a port —
+the same shape as the six constants this campaign has already found.
 
 The join says so directly. C's `SVT_CINTER_OUT` at poc 2:
 

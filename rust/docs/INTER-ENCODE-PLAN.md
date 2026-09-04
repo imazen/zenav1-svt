@@ -6419,10 +6419,19 @@ cell for cell identical.
 reports every frame-header field identical up to `cdef_damping_minus_3` — a
 CDEF SEARCH output, downstream of the recon — and, critically,
 `use_ref_frame_mvs = 1` **on both sides**. So C's MFMV block is live and so is
-the port's, while the port's `tpl_mvs` are all `INVALID_MV`:
-`av1_setup_motion_field` / `motion_field_projection`
-(`md_config_process.c:428-580`) are unported, and no frame stores the per-8x8
-`MV_REF` grid a later frame would project.
+the port's, while the port's `tpl_mvs` are all `INVALID_MV`.
+
+**CORRECTED, same day, by grepping instead of asserting.** This entry first
+said the projection "is unported". It is not: `inter_mvp::
+{motion_field_projection, setup_motion_field}` are `md_config_process.c:427/523`
+at tier 4 with traced vectors (`tests/inter_mvp_motion_field.rs`), and
+`port_coding_loop::copy_frame_mvs` is `av1_copy_frame_mvs`
+(`coding_loop.c:1038`) — whose module doc already said it is needed "the moment
+the GOP is three frames or longer". What is missing is the STATE between them:
+`picture::ReferenceFrame` carries no per-8x8 `MV_REF` grid, nothing folds one
+during the walk, and `inter_mvp_env.tpl_mvs` is a constant all-`INVALID_MV`
+vector rather than `setup_motion_field`'s output. The frame-2 gap is a WIRE,
+not a port — the same shape as the seven constants above it.
 
 C's `SVT_CINTER_OUT` at poc 2 codes `mode=13 NEARESTMV mv=(0,-24)` with
 `imc=8`, i.e. ZERO spatial matches; the port reports `refmvcnt=0 imc=8` and a
@@ -6458,6 +6467,108 @@ PASS, `inter_decode_gate.sh` PASS, `inter_fh_gate.sh` PASS,
 `inter_decode_census.sh` PASS, `video_key_matrix.sh` **58/60** (unmoved),
 `inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK / 0 REFUSED / 0 CRASH**,
 `refusal_inventory --check` and `portnote_index --check` current.
+
+### 1z²⁸. The temporal motion field was PORTED and never WIRED — frame 2's byte count now matches C on six of eight cells (2026-09-03)
+
+§1z²⁷ localized the frame-2 residual to the temporal motion field and, in its
+first draft, said that field "is unported". **It is not.** Three pieces were
+already in tree, tested, and called by nothing:
+`port_coding_loop::copy_frame_mvs` (C `av1_copy_frame_mvs`,
+`coding_loop.c:1038`), `inter_mvp::motion_field_projection` (`:427`) and
+`inter_mvp::setup_motion_field` (`:523`), all tier 4 with traced vectors in
+`tests/inter_mvp_motion_field.rs`. `port_coding_loop`'s own module doc had said
+since it landed that its absence means "every frame from the SECOND inter frame
+onward gets wrong TMVP candidates ... needed the moment the GOP is three frames
+or longer".
+
+**That is this campaign's rule about itself, applied to itself**: §4's "grep
+before you write the second" and `WORKING-ON-THIS` §5's "search before acting"
+both say to check, and §1z²⁷'s draft asserted instead. Corrected in place, same
+day, by grepping.
+
+Full record with every number:
+`benchmarks/frame2_mfmv_wiring_2026-09-03.md`.
+
+#### What was missing was the STATE between them
+
+* `picture::ReferenceFrame` gains `mvs` (C `EbReferenceObject::mvs`, the
+  per-8x8 `MV_REF` grid) and `ref_order_hint[7]`.
+* `CodedAreaAcc` — already the port's `update_b` — gains the MFMV writeback
+  beside the three coded areas, under C's own gate
+  (`scs->mfmv_enabled && slice_type != I_SLICE && ppcs->is_ref`,
+  `coding_loop.c:1748`). `update_b` is ONE C function and this is one port of
+  it, which is the same argument that put the areas there.
+* `pipeline.rs` calls `setup_motion_field` once per picture where it used to
+  build an all-`INVALID_MV` `tpl_mvs` constant, and carries BOTH of its
+  products — the field to the MVP scan, `ref_frame_side` to the walk's
+  `copy_frame_mvs`. C derives both in one function; so does this, so they
+  cannot disagree.
+
+#### Measured: C's temporal candidate reaches the port's stack
+
+`SVTAV1_CANDDBG` at frame 2's block on `diag 64x64 q40 p8 frames=3`, against
+C's `SVT_CINTER_OUT`: C codes `13 NEARESTMV mv=(0,-24)` with `imc=8`, i.e.
+ZERO spatial matches. The port went from `refmvcnt=0` / `NEARESTMV (0,0)` to
+**`refmvcnt=1` / `NEARESTMV (0,-24)`** — C's own candidate, from the only
+source that can produce it.
+
+Frame 2 byte counts (C / port), frames 0 and 1 byte-IDENTICAL throughout:
+`gradient 64x64 q32 p8` 21/**21** (was 22), `gradient 64x64 q40 p6` 21/**21**
+(was 22), `diag 128x128 q40 p6` 23/**23** (was 24), `diag 64x64 q40 p8` 21/21,
+`uniform 64x64 q40 p6` 21/21, `screen 64x64 q40 p6` 21/21, `diag 72x72 q40 p8`
+27/26, `gradient 128x128 q40 p8` 35/23. **Six of eight match C's byte count;
+none is byte-identical, so the refusal STAYS.**
+
+Where the residual is: on `diag 64x64 q40 p8` the first diverging
+frame-header field is `cdef_damping_minus_3` (C 1, port 2), a CDEF SEARCH
+output and therefore downstream of the recon; on `diag 128x128 q40 p6` and
+`gradient 64x64 q40 p6` NO frame-header field differs and the whole divergence
+is in the tile payload.
+
+#### Byte-inert on the two-frame envelope, and structurally so
+
+`inter_byte_matrix.sh` is 92 BOTH / 3 F1DIFF / 1 F0DIFF before and after, cell
+for cell identical. Frame 1's LAST is the KEY frame, and C's own
+`motion_field_projection` returns 0 for a key-frame start frame (`:441`), so
+every cell of `tpl_mvs` stays `INVALID_MV` on both sides.
+
+#### Two defects this chunk introduced, and its own mutation test found both
+
+1. **A SHORT SLICE, not an empty field.** `mvs` was first allocated only when
+   the writeback gate was on. C allocates on every reference object and simply
+   does not WRITE when the gate is false, leaving zeros the projection skips.
+   Forcing `mfmv_active` false PANICKED `inter_mvp.rs:2266` on both
+   `refuses_inter3` cells — `motion_field_projection` indexes before anything
+   can tell it the slice is short. Now allocated unconditionally at C's reset
+   value (`NONE_FRAME`, which like C's zero is `<= INTRA_FRAME`), plus a
+   length check at the wire.
+2. **The gate's observable is the NAMED count, not the length.** The first
+   spot-check asserted the key frame's field was zero-LENGTH, which fix 1
+   makes false. It asserts zero NAMED cells now, which is C's actual gate.
+
+#### The cells that guard a wire with no byte observable
+
+`mfmvField` in `tools/regression_spotcheck.sh`, two cells — `gradient 64x64
+q32 p8` (one superblock, a whole-frame block) and `diag 128x128 q40 p6` (four
+superblocks and a real tree, so `copy_frame_mvs`'s per-block extents are
+exercised rather than one call covering the picture). They read the census the
+port prints beside the coded-area statistics (`PORTREFSTATS ...
+mfmv=<named>/<len>`) and assert the inter frame's field is full with every cell
+naming a reference while the key frame's names none.
+
+**This wire has NO byte observable** — its only consumer is frame 2, which the
+port still refuses — so without a census a wire nothing can see would rot.
+Mutation-verified: forcing the gate false reports `0/64` and `0/256` on exactly
+those two cells and nothing else fails.
+
+#### No regression, measured
+
+`cargo nextest run --workspace` **2512/2512**, `regression_spotcheck.sh`
+**102/102** (the two new `mfmvField` cells included), `identity_full_8bit.sh`
+**1100/1100**, `inter_byte_gate.sh` **94 required / 0 failed**, `fctx_gate.sh`
+PASS, `inter_decode_gate.sh` PASS, `inter_fh_gate.sh` PASS,
+`inter_decode_census.sh` PASS, `video_key_matrix.sh` **58/60** (unmoved),
+`inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK / 0 REFUSED / 0 CRASH**.
 
 ## 2. Chunks
 

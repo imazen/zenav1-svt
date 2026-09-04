@@ -329,6 +329,20 @@ pub struct ReferenceFrame {
     pub display_order: u64,
     /// Order hint for temporal distance computation.
     pub order_hint: u32,
+    /// C `EbReferenceObject::mvs` — the per-8x8 motion field
+    /// `av1_copy_frame_mvs` (coding_loop.c:1038) writes for every coded block
+    /// of a `mfmv_enabled && !I_SLICE && is_ref` picture, and
+    /// `motion_field_projection` (md_config_process.c:427) projects into a
+    /// LATER frame's `tpl_mvs`.
+    ///
+    /// Length `((mi_rows + 1) >> 1) * ((mi_cols + 1) >> 1)`; EMPTY on a key
+    /// frame and on every allintra cell, which is exactly where C writes
+    /// nothing either.
+    pub mvs: alloc::vec::Vec<crate::inter_mvp::MvRef>,
+    /// C `EbReferenceObject::ref_order_hint[0..7]`, indexed by
+    /// `ref - LAST_FRAME` — this picture's own references' order hints, which
+    /// `motion_field_projection` reads to scale a saved MV.
+    pub ref_order_hint: [i32; 7],
 }
 
 impl DecodedPictureBuffer {
@@ -468,6 +482,8 @@ mod tests {
 
         let frame = ReferenceFrame {
             padded: None,
+            mvs: alloc::vec![],
+            ref_order_hint: [0; 7],
             y_plane: alloc::vec![128u8; 64 * 64],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],
@@ -499,6 +515,8 @@ mod tests {
         let mut dpb = DecodedPictureBuffer::new();
         let frame = ReferenceFrame {
             padded: None,
+            mvs: alloc::vec![],
+            ref_order_hint: [0; 7],
             y_plane: alloc::vec![128u8; 16],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],

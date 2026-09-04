@@ -543,7 +543,7 @@ impl Default for TplMvRef {
 
 /// C `MV_REF` (coding_unit.h) — one cell of a reference frame's saved
 /// motion field, read by [`motion_field_projection`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MvRef {
     pub mv: Mv,
     pub ref_frame: i8,

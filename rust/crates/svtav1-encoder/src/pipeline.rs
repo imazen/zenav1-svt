@@ -3198,6 +3198,14 @@ impl EncodePipeline {
         // provenance rule as `inter_syntax_state` above: every field is the
         // one the HEADER announces, so the contexts the tile codes are the
         // ones a decoder rebuilds.
+        //
+        // C `av1_setup_motion_field` (md_config_process.c:523, called from
+        // `:933`) builds BOTH the temporal field and `pcs->ref_frame_side`
+        // from the DPB, once per picture. Its two products go to different
+        // consumers — `tpl_mvs` to the MVP scan below, `ref_frame_side` to the
+        // walk's `av1_copy_frame_mvs` — so it is computed once here and both
+        // are carried, rather than derived twice.
+        let mut inter_ref_frame_side = [0i8; 8];
         let inter_mvp_env: Option<crate::partition::InterMdEnv> =
             inter_syntax_state.as_ref().map(|st| {
                 let (mi_cols, mi_rows) = (w.div_ceil(4) as i32, h.div_ceil(4) as i32);
@@ -3230,14 +3238,67 @@ impl EncodePipeline {
                         a[1..8].copy_from_slice(&st.ref_order_hint);
                         a
                     },
-                    // C's `av1_setup_motion_field` reset leaves every cell
-                    // INVALID_MV; the temporal field itself is unported, so
-                    // every `add_tpl_ref_mv` returns 0 — which is what sets
-                    // the GLOBALMV bit of `mode_context` (§1t).
-                    tpl_mvs: alloc::vec![
-                        crate::inter_mvp::TplMvRef::default();
-                        (((mi_rows + 32) >> 1) * tpl_stride) as usize
-                    ],
+                    // C `av1_setup_motion_field`, run over this picture's own
+                    // DPB references. On a two-frame cell every projection
+                    // returns 0 — LAST is the KEY frame and C aborts on
+                    // `start_frame_buf->frame_type == KEY_FRAME`
+                    // (md_config_process.c:441) — so every cell stays
+                    // `INVALID_MV` and `add_tpl_ref_mv` returns 0, which is
+                    // what sets the GLOBALMV bit of `mode_context` (§1t).
+                    // From the SECOND inter frame on, LAST has a saved motion
+                    // field and this is where it enters the ref-MV stack.
+                    tpl_mvs: {
+                        let mut tpl = alloc::vec![
+                            crate::inter_mvp::TplMvRef::default();
+                            (((mi_rows + 32) >> 1) * tpl_stride) as usize
+                        ];
+                        let refs = crate::inter_mvp::MotionFieldRefs {
+                            refs: core::array::from_fn(|idx| {
+                                let pic = pic_decision.as_ref()?;
+                                let slot = pic.rps.ref_dpb_index[idx] as usize;
+                                let rf = self.dpb.get(slot)?;
+                                // C's field always exists at the reference's
+                                // own half-mi extent. A DPB entry that carries
+                                // none is one this port wrote before the
+                                // writeback existed, or an allintra picture
+                                // that can never be a reference in a GOP; C's
+                                // own `mi_rows != cm->mi_rows` abort covers a
+                                // different-SIZE reference, but nothing in
+                                // that function can see a SHORT slice, so the
+                                // length is checked here rather than indexed
+                                // on faith.
+                                let rf_mi_rows = (rf.height as i32 + 3) >> 2;
+                                let rf_mi_cols = (rf.width as i32 + 3) >> 2;
+                                if rf.mvs.len()
+                                    != (((rf_mi_rows + 1) >> 1) * ((rf_mi_cols + 1) >> 1)) as usize
+                                {
+                                    return None;
+                                }
+                                Some(crate::inter_mvp::RefMotionField {
+                                    mvs: &rf.mvs,
+                                    order_hint: rf.order_hint as i32,
+                                    ref_order_hint: rf.ref_order_hint,
+                                    is_intra_only: rf.is_islice,
+                                    mi_rows: rf_mi_rows,
+                                    mi_cols: rf_mi_cols,
+                                })
+                            }),
+                        };
+                        inter_ref_frame_side = crate::inter_mvp::setup_motion_field(
+                            &mut tpl,
+                            tpl_stride,
+                            mi_rows,
+                            mi_cols,
+                            st.cur_order_hint,
+                            crate::inter_mvp::OrderHintInfo {
+                                enable_order_hint: st.enable_order_hint,
+                                order_hint_bits: st.order_hint_bits,
+                            },
+                            st.use_ref_frame_mvs,
+                            &refs,
+                        );
+                        tpl
+                    },
                     tpl_stride,
                     sb64_sq_no4xn_geom: sb_size == 64,
                 }
@@ -4380,6 +4441,20 @@ impl EncodePipeline {
                             sb_size,
                             w.div_ceil(sb_size),
                             h.div_ceil(sb_size),
+                            h.div_ceil(4) as i32,
+                            w.div_ceil(4) as i32,
+                            // C `coding_loop.c:1748`:
+                            // `scs->mfmv_enabled && slice_type != I_SLICE &&
+                            //  ppcs->is_ref`. `mfmv_enabled` is
+                            // `svt_aom_set_mfmv_config`'s sequence flag, which
+                            // `md_config_inputs` already derives as
+                            // `enc_mode <= ENC_M10`; `is_ref` is the picture
+                            // decision's. On a key frame `md_config_signals`
+                            // is `None`, which is C's `I_SLICE` arm.
+                            md_config_signals.is_some()
+                                && self.speed_config.preset <= 10
+                                && pic_decision.as_ref().is_some_and(|p| p.is_ref),
+                            inter_ref_frame_side,
                         )
                     });
                 if let Some(env) = inter_mvp_env.clone() {
@@ -5888,23 +5963,35 @@ impl EncodePipeline {
             // `fh_fields.py` on frame 2 of `diag 64x64 q40 p8 frames=3` shows
             // `use_ref_frame_mvs = 1` on BOTH sides, so C's MFMV block is live
             // and so is the port's — but the port's `tpl_mvs` are all
-            // `INVALID_MV` (see `inter_mvp_env` above: C's
-            // `av1_setup_motion_field` / `motion_field_projection`,
-            // md_config_process.c:428-580, is unported, and a frame stores no
-            // per-8x8 `MV_REF` on its DPB entry for a later frame to project).
-            // On the 2-frame envelope that is FAITHFUL — the reference is a
-            // key frame and C's own projection returns 0 for it
-            // (`start_frame_buf->frame_type == KEY_FRAME`, :441) — and at
-            // poc 2 it is a gap: C's `SVT_CINTER_OUT` codes
-            // `mode=13 NEARESTMV mv=(0,-24)` off a stack whose only source is
-            // that field (0 spatial matches, `imc=8` on both sides), while the
-            // port's `SVTAV1_CANDDBG` reports `refmvcnt=0` and a NEARESTMV of
-            // `(0,0)`.
+            // `INVALID_MV` (see `inter_mvp_env` above). On the 2-frame
+            // envelope that is FAITHFUL — the reference is a key frame and C's
+            // own projection returns 0 for it
+            // (`start_frame_buf->frame_type == KEY_FRAME`,
+            // md_config_process.c:441) — and at poc 2 it is a gap: C's
+            // `SVT_CINTER_OUT` codes `mode=13 NEARESTMV mv=(0,-24)` off a
+            // stack whose only source is that field (0 spatial matches,
+            // `imc=8` on both sides), while the port's `SVTAV1_CANDDBG`
+            // reports `refmvcnt=0` and a NEARESTMV of `(0,0)`.
             //
-            // `part_arm::VideoPic`'s missing `InterOnInterRef` arm is still a
-            // real gap and is still unported; it is simply not the FIRST one,
-            // and the DPB already carries the `sb_intra` / `sb_skip` it needs.
-            // See `docs/INTER-ENCODE-PLAN.md` 1z27.
+            // THAT FIELD IS WIRED NOW (§1z²⁸) and the refusal survived it.
+            // `ReferenceFrame::mvs` carries C's per-8x8 `MV_REF` grid, the
+            // walk folds it through `port_coding_loop::copy_frame_mvs` under
+            // C's own gate, and `inter_mvp_env.tpl_mvs` is
+            // `inter_mvp::setup_motion_field`'s output rather than a constant.
+            // MEASURED: the port's frame-2 `NEARESTMV` is C's `(0,-24)` off a
+            // stack of 1 where it was `(0,0)` off an empty one, and SIX of
+            // eight `frames=3` cells match C's frame-2 byte COUNT. None is
+            // byte-identical, so what is left is the RECON — the first
+            // diverging frame-header field is a CDEF search output, and on two
+            // cells no header field differs at all.
+            //
+            // `part_arm::VideoPic`'s missing `InterOnInterRef` arm — §1z²⁵'s
+            // mechanism — is still a real gap and still unported. It is a
+            // candidate for that residual: it picks `pic_pd0_lvl`, the level
+            // the whole partition search runs at, and the DPB already carries
+            // the `sb_intra` / `sb_skip` it needs.
+            //
+            // See `docs/INTER-ENCODE-PLAN.md` 1z27 and 1z28.
             #[cfg(feature = "std")]
             if crate::dbgenv::refstats() {
                 std::eprintln!(
@@ -5929,11 +6016,16 @@ impl EncodePipeline {
             {
                 return Err(whereat::at!(EncodeError::UnsupportedConfig(
                     "an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's \
-                     TEMPORAL MOTION FIELD: av1_setup_motion_field / \
-                     motion_field_projection (md_config_process.c:428-580) are unported and \
-                     no frame stores the per-8x8 MV_REF grid a later frame would project, \
-                     so the port's tpl_mvs are all INVALID_MV while frm_hdr.use_ref_frame_mvs \
-                     is 1 on both sides. Measured with the refusal lifted, diag 64x64 q40 p8 \
+                     RECON to agree, and it does not yet. The temporal motion field is \
+                     WIRED now (setup_motion_field over the DPB, copy_frame_mvs in the \
+                     walk) and carries C's own candidate: at poc 2 of diag 64x64 q40 p8 \
+                     frames=3 the port's NEARESTMV is C's (0,-24) off a stack of 1 where \
+                     it used to be (0,0) off an empty one, and SIX of eight frames=3 cells \
+                     now match C's frame-2 byte COUNT. NONE is byte-identical: the first \
+                     diverging frame-header field on that cell is cdef_damping_minus_3 \
+                     (C 1, port 2), a CDEF SEARCH output and therefore downstream of the \
+                     recon, and on two other cells no header field differs at all and the \
+                     whole divergence is in the tile payload. Measured with the refusal lifted, diag 64x64 q40 p8 \
                      frames=3: C codes frame 2 as NEARESTMV mv=(0,-24) off a stack with ZERO \
                      spatial matches, the port reports refmvcnt=0 and NEARESTMV (0,0). \
                      Faithful at two frames, where C's own projection returns 0 for a \
@@ -6224,8 +6316,19 @@ impl EncodePipeline {
             let acc = frame_coded_area.borrow();
             std::eprintln!(
                 "PORTREFSTATS poc={display_order} slice={} intra={i_pct} skip={s_pct} hp={h_pct} \
-                 sbintra=[{}] sbskip=[{}]",
+                 mfmv={}/{} sbintra=[{}] sbskip=[{}]",
                 u8::from(is_key),
+                // The MFMV writeback's census: cells naming a real reference,
+                // out of the field's length. It is the positive control that
+                // `av1_copy_frame_mvs` actually fired — a wire whose only
+                // observable is a LATER frame the port still refuses would
+                // otherwise be untestable. Zero on a key frame BY C'S GATE.
+                acc.as_ref().map_or(0, |a| a
+                    .mvs
+                    .iter()
+                    .filter(|m| m.ref_frame > crate::port_coding_loop::INTRA_FRAME)
+                    .count()),
+                acc.as_ref().map_or(0, |a| a.mvs.len()),
                 acc.as_ref().map_or(alloc::string::String::new(), |a| a
                     .sb_intra
                     .iter()
@@ -6311,6 +6414,30 @@ impl EncodePipeline {
             height: self.height,
             display_order,
             order_hint: display_order as u32,
+            // C `av1_copy_frame_mvs`'s output, which `update_b` wrote into
+            // this picture's own reference object during the walk. EMPTY on a
+            // key frame and on every allintra cell, exactly where C's gate is
+            // false — see `CodedAreaAcc::mfmv_active`.
+            mvs: frame_coded_area
+                .borrow()
+                .as_ref()
+                .map(|a| a.mvs.clone())
+                .unwrap_or_default(),
+            // C `EbReferenceObject::ref_order_hint[0..7]`
+            // (`rest_process.c` / `pad_ref_and_set_flags`): the order hints of
+            // THIS picture's own references, which a LATER picture's
+            // `motion_field_projection` reads to scale a saved MV. All zero on
+            // a key frame, which has none.
+            ref_order_hint: {
+                let mut a = [0i32; 7];
+                if let Some(pic) = pic_decision.as_ref() {
+                    for (i, oh) in a.iter_mut().enumerate() {
+                        let slot = pic.rps.ref_dpb_index[i] as usize;
+                        *oh = self.dpb.get(slot).map_or(0, |r| r.order_hint as i32);
+                    }
+                }
+                a
+            },
         };
         self.dpb.refresh(pcs.refresh_frame_flags, &ref_frame);
         // The PA (picture-analysis) reference the NEXT frame's open-loop
@@ -6669,15 +6796,60 @@ pub(crate) struct CodedAreaAcc {
     pub(crate) sb_intra: Vec<u8>,
     /// C `pcs->sb_skip[sb]`, init **1** (`enc_dec_process.c:3100`).
     pub(crate) sb_skip: Vec<u8>,
+    /// C `EbReferenceObject::mvs`, the MFMV writeback `update_b` performs
+    /// alongside the three areas (`coding_loop.c:1748-1758`). EMPTY unless
+    /// [`Self::mfmv_active`] — C's own gate is
+    /// `scs->mfmv_enabled && slice_type != I_SLICE && ppcs->is_ref`, which is
+    /// false on every key frame and every allintra cell.
+    pub(crate) mvs: Vec<crate::inter_mvp::MvRef>,
+    /// C `pcs->ref_frame_side`, which `av1_copy_frame_mvs` reads as a VETO
+    /// per reference slot. Produced by
+    /// [`crate::inter_mvp::setup_motion_field`] at picture level, so there is
+    /// one derivation and the walk consumes it.
+    pub(crate) ref_frame_side: [i8; 8],
+    /// C `cm->mi_cols` — the stride arithmetic of [`Self::mvs`].
+    pub(crate) mi_cols: i32,
+    /// C `cm->mi_rows`, for the clamp on `y_mis`.
+    pub(crate) mi_rows: i32,
+    /// C's `if (pcs->scs->mfmv_enabled && pcs->slice_type != I_SLICE &&
+    /// pcs->ppcs->is_ref)` at `coding_loop.c:1748`.
+    pub(crate) mfmv_active: bool,
 }
 
 impl CodedAreaAcc {
+    /// C `av1_copy_frame_mvs`'s per-cell reset (`coding_loop.c:1049-1050`),
+    /// and therefore the value every untouched cell of the field holds.
+    const MV_RESET: crate::inter_mvp::MvRef = crate::inter_mvp::MvRef {
+        mv: svtav1_types::motion::Mv { x: 0, y: 0 },
+        ref_frame: crate::port_coding_loop::NONE_FRAME,
+    };
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         allow_high_precision_mv: bool,
         sb_size: usize,
         sb_cols: usize,
         sb_rows: usize,
+        mi_rows: i32,
+        mi_cols: i32,
+        mfmv_active: bool,
+        ref_frame_side: [i8; 8],
     ) -> Self {
+        // C allocates `mvs` at HALF mi resolution in both dimensions, and
+        // `av1_copy_frame_mvs` / `motion_field_projection` both index it with
+        // stride `ROUND_POWER_OF_TWO(mi_cols, 1)`.
+        //
+        // ALLOCATED UNCONDITIONALLY, not only when [`Self::mfmv_active`].
+        // C's `EbReferenceObject::mvs` exists on every reference object and is
+        // simply not WRITTEN when the gate is false, leaving zeros — which
+        // `motion_field_projection` skips (`ref_frame > INTRA_FRAME` is
+        // false). A port that allocated nothing there instead handed that
+        // function a SHORT SLICE, and it indexes before it can know: MEASURED
+        // by mutation, forcing `mfmv_active` false panicked
+        // `inter_mvp.rs:2266` on both `refuses_inter3` cells. The reset value
+        // is `NONE_FRAME` rather than C's zero; both are `<= INTRA_FRAME`, so
+        // the projection behaves identically.
+        let mvs_len = (((mi_rows + 1) >> 1) * ((mi_cols + 1) >> 1)) as usize;
         Self {
             allow_high_precision_mv,
             sb_size,
@@ -6687,6 +6859,11 @@ impl CodedAreaAcc {
             hp_area: 0,
             sb_intra: alloc::vec![0u8; sb_cols * sb_rows],
             sb_skip: alloc::vec![1u8; sb_cols * sb_rows],
+            mvs: alloc::vec![Self::MV_RESET; mvs_len],
+            ref_frame_side,
+            mi_cols,
+            mi_rows,
+            mfmv_active,
         }
     }
 
@@ -6703,6 +6880,19 @@ impl CodedAreaAcc {
         }
         for (d, s) in self.sb_skip.iter_mut().zip(&other.sb_skip) {
             *d &= *s;
+        }
+        // Each tile writes DISJOINT cells of the motion field — a coded block
+        // belongs to exactly one tile — and both sides start at C's own reset
+        // value (`NONE_FRAME`, zero MV), which is also what a block with no
+        // usable reference leaves. So "take the other side when it is not the
+        // reset value" is C's single shared array: a cell this tile owns and
+        // wrote as the reset value is indistinguishable from one it never
+        // owned, and both answers are the same value. Same argument as the
+        // two flag arrays above.
+        for (d, s) in self.mvs.iter_mut().zip(&other.mvs) {
+            if *s != Self::MV_RESET {
+                *d = *s;
+            }
         }
     }
 
@@ -6750,6 +6940,36 @@ impl CodedAreaAcc {
             self.skip_area += area;
         } else if let Some(f) = self.sb_skip.get_mut(sb_idx) {
             *f = 0;
+        }
+        // C `update_b`'s MFMV writeback (`coding_loop.c:1747-1758`), in the
+        // same function and under C's own gate. It runs for EVERY coded block,
+        // intra included — an intra block's `ref_frame` is not `> INTRA_FRAME`
+        // so `copy_frame_mvs` resets its cells, which is exactly how a later
+        // frame stops projecting stale motion through a block that has none.
+        if self.mfmv_active {
+            let mi_row = (block_y / 4) as i32;
+            let mi_col = (block_x / 4) as i32;
+            // C `AOMMIN(blk_geom->bwidth >> MI_SIZE_LOG2, mi_cols - mi_col)`.
+            let x_mis = ((i32::from(decision.width)) >> 2).min(self.mi_cols - mi_col);
+            let y_mis = ((i32::from(decision.height)) >> 2).min(self.mi_rows - mi_row);
+            let (ref_frame, mv) = decision.inter.as_ref().map_or(
+                (
+                    [crate::port_coding_loop::NONE_FRAME; 2],
+                    [svtav1_types::motion::Mv { x: 0, y: 0 }; 2],
+                ),
+                |i| (i.ref_frame, i.mv),
+            );
+            crate::port_coding_loop::copy_frame_mvs(
+                &mut self.mvs,
+                self.mi_cols,
+                ref_frame,
+                mv,
+                &self.ref_frame_side,
+                mi_row,
+                mi_col,
+                x_mis,
+                y_mis,
+            );
         }
     }
 

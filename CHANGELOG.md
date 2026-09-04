@@ -737,6 +737,32 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **The temporal motion field was PORTED and never WIRED.** C's
+  `av1_copy_frame_mvs` (`coding_loop.c:1038`), `motion_field_projection` and
+  `av1_setup_motion_field` (`md_config_process.c:427/523`) were all in tree at
+  tier 4 with traced vectors, called by nothing — and `port_coding_loop`'s own
+  module doc had said since it landed that without them "every frame from the
+  SECOND inter frame onward gets wrong TMVP candidates". What was missing was
+  the state between them: `ReferenceFrame` now carries C's per-8x8 `MV_REF`
+  grid and `ref_order_hint[7]`, the walk's `update_b` port folds the grid under
+  C's own gate (`mfmv_enabled && !I_SLICE && is_ref`), and
+  `inter_mvp_env.tpl_mvs` is `setup_motion_field`'s output over the DPB rather
+  than an all-`INVALID_MV` constant — with `ref_frame_side`, its other product,
+  carried to the walk from the same call so the two cannot disagree. MEASURED
+  at poc 2 of `diag 64x64 q40 p8 frames=3`: the port's `NEARESTMV` becomes C's
+  `(0,-24)` off a stack of 1 where it was `(0,0)` off an empty one, and **six
+  of eight `frames=3` cells now match C's frame-2 byte count** (21/21, 21/21,
+  21/21, 21/21, 21/21, 23/23, 26/27, 23/35). None is byte-identical, so the
+  frame-2 refusal STAYS, re-keyed on the recon. Byte-inert on the two-frame
+  envelope structurally, not by luck — C's own projection returns 0 for a
+  key-frame start frame — and the grid is 92 BOTH / 3 F1DIFF / 1 F0DIFF cell
+  for cell before and after. Guarded by two new `mfmvField` spot-check cells
+  reading a `PORTREFSTATS ... mfmv=<named>/<len>` census, because the wire's
+  only consumer is a frame the port still refuses and so it has no byte
+  observable at all. Full record
+  `rust/benchmarks/frame2_mfmv_wiring_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z²⁸.
+
 - **The frame-2 refusal named the wrong mechanism, and its "466 B" was a
   hard-coded DPB slot.** Three pipeline sites read the reference picture —
   `ref_frame_data` (the open-loop ME's plane), `ref_padded_luma` (what motion
@@ -753,8 +779,11 @@ Crates are not published to crates.io yet — depend by git.
   `frames=3` cells land at 21/21, 21/21, 21/21, 26/27, 24/23, 24/35, 22/21.
   The frame-2 refusal is **re-keyed, not lifted**: `fh_fields.py` shows
   `use_ref_frame_mvs = 1` on BOTH sides at poc 2 while the port's `tpl_mvs` are
-  all `INVALID_MV` (`av1_setup_motion_field` / `motion_field_projection`,
-  md_config_process.c:428-580, unported), and C codes that frame as
+  all `INVALID_MV` — and that is a missing WIRE, not a missing port:
+  `inter_mvp::{motion_field_projection, setup_motion_field}` and
+  `port_coding_loop::copy_frame_mvs` are all ported and tested at tier 4, while
+  `ReferenceFrame` carries no per-8x8 `MV_REF` grid and `tpl_mvs` is built as a
+  constant. C codes that frame as
   `NEARESTMV mv=(0,-24)` off a stack with zero spatial matches where the port
   reports `refmvcnt=0` and `(0,0)`. Faithful at two frames, where C's own
   projection returns 0 for a KEY-frame reference. Full record

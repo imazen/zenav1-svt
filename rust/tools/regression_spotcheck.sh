@@ -107,18 +107,19 @@ refuses() {
 # Asserts the port REFUSES the THIRD frame of a low-delay-P sequence — the
 # first inter frame whose LIST-0 REFERENCE is itself an inter frame.
 #
-# Why a cell for a refusal. The frame-2 refusal used to name a gap that has
-# since been CLOSED (the reference's three coded-area percentages, which
-# `ReferenceFrame` now carries and `SVT_REFSTATS_OUT` verifies), and lifting it
-# on that basis alone is exactly wrong: with mechanisms 1 and 4 in and nothing
-# else, frame 2 of `gradient 64x64 q32 p8` codes 466 B against C's 21, every
-# block intra. What is still missing is C's per-superblock `pd0_detector`
-# inputs (`ref_obj_l0->sb_intra[sb_index]`, enc_dec_process.c:2126) and the
-# `part_arm::VideoPic::InterOnInterRef` arm that would consume them.
+# Why a cell for a refusal. The frame-2 refusal has now named THREE different
+# mechanisms, and the first two were superseded by measurement rather than by
+# being fixed — which is precisely why the refusal must be pinned from the
+# other side rather than trusted to be current:
 #
-# So this cell pins the refusal FROM THE OTHER SIDE: deleting it fails here
-# with "ENCODED where a refusal was required", instead of silently shipping a
-# 466-byte frame where C writes 21. See docs/INTER-ENCODE-PLAN.md 1z25.
+#   1z25  the reference's three coded-area percentages   -> CLOSED
+#   1z27  a hard-coded DPB slot where C resolves LAST    -> CLOSED (466 B -> 22)
+#   1z28  the temporal motion field, now WIRED           -> byte counts match
+#         on six of eight frames=3 cells, none identical
+#
+# Deleting the refusal fails here with "ENCODED where a refusal was required",
+# instead of silently shipping a frame that is a byte or two off C's.
+# See docs/INTER-ENCODE-PLAN.md 1z25 / 1z27 / 1z28.
 #
 # It drives the SAME harness configuration `identity_diff_inter.sh` does, so a
 # refusal here is the one the inter campaign would hit.
@@ -136,6 +137,57 @@ refuses_inter3() {
     fail=$((fail+1)); failed+=("$label ENCODED where a refusal was required (the frame-2 refusal was lifted without byte-parity evidence)")
   else
     fail=$((fail+1)); failed+=("$label [rc=$rc, expected 3]")
+  fi
+}
+
+# mfmvField <label> <content> <w> <h> <qp> <preset>
+# Asserts the MFMV WRITEBACK fires: after a 2-frame low-delay-P encode, the
+# INTER frame's DPB entry carries a full motion field and the KEY frame's
+# carries none.
+#
+# WHY THIS EXISTS. `av1_copy_frame_mvs` (coding_loop.c:1038) writes a
+# reference's per-8x8 MV_REF grid, and the only consumer is a LATER frame's
+# `motion_field_projection` — i.e. frame 2, which this port still REFUSES. So
+# the wire has no byte observable at all, and a wire nothing can see is a wire
+# that rots. This reads the census the port prints beside the coded-area
+# statistics (`PORTREFSTATS ... mfmv=<named>/<len>`) and asserts BOTH halves:
+# the inter frame's field is non-empty and every cell names a reference, and
+# the key frame names NONE, which is C's own gate
+# (`scs->mfmv_enabled && slice_type != I_SLICE && ppcs->is_ref`).
+#
+# The key-frame half asserts ZERO NAMED CELLS, not a zero-LENGTH field: C
+# allocates `EbReferenceObject::mvs` on every reference object and simply does
+# not write it, and this port does the same (a short slice would panic
+# `motion_field_projection`, measured).
+#
+# OBSERVED BEFORE the wire landed: no `mfmv=` field at all, and
+# `ReferenceFrame::mvs` did not exist. AFTER, on `gradient 64x64 q32 p8`:
+# `poc=0 ... mfmv=0/64` and `poc=1 ... mfmv=64/64` (a 64x64 frame is 16x16 mi,
+# i.e. 8x8 half-mi cells).
+mfmvField() {
+  local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
+    SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_REFSTATS=1 \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
+    >/dev/null 2>"$W/err"
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail=$((fail+1)); failed+=("$label [rc=$rc, the 2-frame encode must succeed]"); return
+  fi
+  local key inter
+  key=$(grep -m1 'PORTREFSTATS poc=0 ' "$W/err" | sed -n 's/.* mfmv=\([0-9]*\/[0-9]*\) .*/\1/p')
+  inter=$(grep -m1 'PORTREFSTATS poc=1 ' "$W/err" | sed -n 's/.* mfmv=\([0-9]*\/[0-9]*\) .*/\1/p')
+  if [ -z "$key" ] || [ -z "$inter" ]; then
+    fail=$((fail+1)); failed+=("$label no PORTREFSTATS mfmv census on stderr (the probe did not fire)"); return
+  fi
+  local named=${inter%%/*} len=${inter##*/}
+  local key_named=${key%%/*}
+  if [ "$key_named" -ne 0 ]; then
+    fail=$((fail+1)); failed+=("$label key frame NAMED a reference in its motion field ($key); C's gate is slice_type != I_SLICE")
+  elif [ "$len" -eq 0 ] || [ "$named" -ne "$len" ]; then
+    fail=$((fail+1)); failed+=("$label inter frame's motion field is $inter, expected every cell to name a reference")
+  else
+    pass=$((pass+1))
   fi
 }
 
@@ -816,6 +868,14 @@ refuses "qp0-screen-refused-p5" screen 64 64 0 5
 # lift has to be argued at more than one geometry.
 refuses_inter3 "inter-frame2-refused-g64-p8"  gradient  64  64 32 8
 refuses_inter3 "inter-frame2-refused-d128-p6" diag     128 128 40 6
+
+# The MFMV writeback the frame-2 work wired (docs/INTER-ENCODE-PLAN.md 1z28).
+# Two cells because the field's SHAPE differs: 64x64 is one superblock and a
+# whole-frame block, 128x128 is four superblocks and a real partition tree, so
+# the second one exercises `copy_frame_mvs`'s per-block extents rather than one
+# call covering the picture.
+mfmvField "inter-mfmv-writeback-g64-p8"  gradient  64  64 32 8
+mfmvField "inter-mfmv-writeback-d128-p6" diag     128 128 40 6
 
 ramp_yuv 100 100 "$W/ramp_100x100.yuv"
 monoReconEq "mono-arbitrary-dims-p7-100x100" "raw:$W/ramp_100x100.yuv" 100 100 20 7
