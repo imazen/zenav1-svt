@@ -78,6 +78,23 @@
 > three symbol families before planning any of this work**; it is a five-minute
 > query and both of this chunk's wins came straight out of it.
 >
+> **AND ONE NULL FROM THE SAME CHUNK, REVERTED:** routing the two chroma
+> detectors (`detect::chroma_detector_fires`, `detect::chroma_var_arm_fires` —
+> a hand-rolled triple SAD and a hand-rolled variance-against-128) through the
+> tier-dispatched `dsp::sad::sad` and `dsp::variance::variance_diff` they were
+> transcriptions of is byte-identical and measures NULL on both arms, eleven of
+> twelve spans crossing 1.0 (`benchmarks/chromadetect_ab_2026-09-03.meta`). The
+> blocks are chroma-sized and each call crosses an `#[arcane]` boundary — the
+> "entry points only, one per hot path" rule priced per call. **Third time a
+> profile SHARE has failed to become a win** (`aom_hadamard_8x8` 1.88 %, CDEF
+> `int16x8` 14.2 %, this 1.35 %).
+>
+> **That record also carries a measured cost of timing on a busy box**: the
+> first run of that A/B, taken while a sibling workspace ran a 2048x2048
+> encode, read 512 p10 still at **1.012x with its whole span below 1.0**; the
+> same binaries on a quiet box read **1.002x with the span crossing**. Paired
+> interleaving removes DRIFT, not CONTENTION. Check `ps` and defer.
+>
 > WHAT THE TABLE STILL NAMES, unworked: `mds3::eval_candidate` is the largest
 > single allocator caller at both p6 (131 samples) and p10 (273 of 1,262), and
 > it is ~10 allocations per candidate — `dep_recon`, `dep_pred`, `txb_pred` per

@@ -1,0 +1,99 @@
+ROUTING THE TWO CHROMA DETECTORS THROUGH THE VECTORISED SAD AND VARIANCE
+KERNELS IS A **NULL** ON BOTH ARMS — AND THE FIRST MEASUREMENT SAID OTHERWISE
+BECAUSE THE BOX WAS BUSY.
+
+**THE CHANGE IS NOT IN THE TREE.** It was written, byte-gated, measured twice
+and reverted; this file is the measurement.
+
+date:   2026-09-03
+host:   mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores)
+tool:   tools/perf_ab.sh — interleaved paired rounds, order randomised per
+        round, one untimed warmup inside each sample, NEITHER SIDE NICED, no
+        -C target-cpu=native.
+base:   700357e2 (main, after the dq_full elision and the level scratch)
+cand:   base + this change, nothing else.
+grid:   gradient qp 40. STILL 256/512 x p{2,6,10} n=15; VIDEOKEY
+        (SVTAV1_VIDEO=1 SVT_AVIF=0) 128/256/512 x p{6,8} n=25.
+data:   benchmarks/chromadetect_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}
+
+=================== WHAT WAS BUILT ==========================================
+
+`leaf_funnel::detect::chroma_detector_fires` carried a hand-rolled triple SAD
+(luma, Cb, Cr, over a row-subsampled block) and
+`leaf_funnel::detect::chroma_var_arm_fires` a hand-rolled sum/sum-of-squares
+against a constant 128. Both are transcriptions of C kernels the port ALREADY
+has, tier-dispatched and already pinned to the C reference:
+`svtav1_dsp::sad::sad` (= `me_sad::block_sad`, tests/c_parity_sad.rs) and
+`svtav1_dsp::variance::variance_diff` (C `svt_aom_variance{W}x{H}`). The row
+subsample is expressible as a wider stride, and the constant 128 as a flat
+second BUFFER, so both route with byte-identical integers.
+
+Byte-identical on 25 spot cells (128/256/512 x p{0,2,4,6,8,10,13} gradient plus
+screenrep 128x128 at p{2,4,6}).
+
+=================== MEASURED — NULL, TWICE OVER ==============================
+
+STILL (n=15), speedup = base/cand, quiet box:
+
+  256 p2  1.002x (0.9959/0.9995)   256 p6  0.996x (0.9895/1.0104)
+  256 p10 1.004x (0.9905/1.0166)   512 p2  1.005x (0.9916/1.0030)
+  512 p6  0.994x (0.9948/1.0075)   512 p10 1.002x (0.9827/1.0073)
+
+VIDEOKEY (n=25), quiet box:
+
+  128 p6  1.004x (0.9833/1.0019)   128 p8  0.997x (0.9848/1.0086)
+  256 p6  1.000x (0.9913/1.0067)   256 p8  0.998x (0.9898/1.0119)
+  512 p6  1.001x (0.9915/1.0084)   512 p8  0.994x (0.9938/1.0099)
+
+**Eleven of twelve spans cross 1.0**; the twelfth (256 p2 still) is 0.4 %
+below. That is a null.
+
+=================== WHY, AND IT IS THE ARCANE-BOUNDARY RULE =================
+
+The two detectors run on CHROMA blocks — `cw <= 32`, and the SAD's row count is
+`chh >> shift`, at most 8. Each call crosses an `#[arcane]` dispatch boundary
+(three of them per `chroma_detector_fires` call, two per `chroma_var_arm_fires`),
+and `rust/CLAUDE.md`'s own rule says so: *"`#[arcane]` = entry points only. One
+per hot path"* — the token summon plus the target_feature boundary is priced per
+CALL, and here the call is a few hundred bytes of work. The vectorisation gains
+back roughly what the boundary costs.
+
+**Third time this campaign has learned that a profile SHARE is not a win.**
+`chroma_var_arm_fires` + `chroma_detector_fires` are 1.35 % of the port's own
+512 p10 frame by self time (162 of 12,007 samples) and 0.47 % at p6, and the
+measured delta is inside the noise. The two predecessors are
+`aom_hadamard_8x8` (1.88 % of p2, 1.031x because its CALLER stayed scalar) and
+the CDEF `int16x8` rework (14.2 % of the gap, 0.7 % on the still arm).
+
+=================== THE OTHER RESULT: A BUSY BOX MOVED A CELL 1 % ===========
+
+The FIRST run of this A/B was taken while a sibling jj workspace was running a
+2048x2048 `identity_run`. It read **512 p10 still = 1.012x with its whole
+p25/p75 span (0.9752/0.9953) below 1.0** — a textbook "real" cell. The same
+binaries on a quiet box read **1.002x (0.9827/1.0073)**. The videokey arm moved
+the other way: 512 p8 read 0.994x with its span entirely ABOVE 1.0 while busy,
+and 0.994x with the span crossing when quiet.
+
+Paired interleaving with per-round order randomisation removes DRIFT, not
+CONTENTION: a competing process steals whole samples, and at effect sizes below
+~1 % that shows up as a confident-looking span on the wrong side of 1.0.
+**Check `ps` before timing and defer if anything else is running** — this file
+is the cost of not doing so, and the reason the two landed changes of this
+chunk were both measured on a verified-quiet box.
+
+=================== KEPT FROM THE ATTEMPT ===================================
+
+A SEVENTH duplicate transcription, found while grepping for the second copy of
+the variance loop and NOT fixed here:
+`sc_detect::sby_perpixel_variance_normalized` (sc_detect.rs:148) is the same
+"sum and sum-of-squares of `src - 128`, then `sse - sum*sum/n`" body a third
+time, for 8x8 and 16x16 windows. It is cold on the still arm and is recorded
+rather than changed — but the next person to touch either site should know
+there are three.
+
+=================== NOT ESTABLISHED =========================================
+  * The inter arm.
+  * Any size but 128/256/512, content but gradient, qp but 40.
+  * That the `#[arcane]` boundary is THE cause. It is the mechanism `CLAUDE.md`
+    names and it fits the block sizes, but the null was not decomposed — no
+    per-call cost was measured.
