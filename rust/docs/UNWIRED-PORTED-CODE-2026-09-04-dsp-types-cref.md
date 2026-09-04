@@ -120,6 +120,35 @@ Beyond the nine already known and the encoder-side ones from the first pass:
 
 No new instance of the `mv_err_cost`-style *N-independent-transcriptions-of-one-signature* pattern was found in `svtav1-dsp` — the closest candidates (the `fwd_txfm2d`/`inv_txfm2d` per-size cluster, the `sad_NxN` cluster) are better described as "one dispatch path, N unreachable named specializations" than "N competing hand transcriptions," since only one of each cluster is ever called and the rest were plainly written as C-mirroring completeness rather than independent reinvention.
 
+### Resolution log — the dedup chunk (2026-09-04)
+
+Gated per commit on the whole grid (the set is listed in the encoder
+report's resolution log) plus the cross-ISA set on r7900x.
+
+1. **`fwd_txfm2d_*_dct_dct` / `inv_txfm2d_*_dct_dct` (30) — kept as forwards;
+   the one real second body in the cluster folded, `e0275930`, byte-inert on
+   both ISAs (aarch64 full grid; r7900x x86_64: nextest 2536/2536,
+   spotcheck 102/102, inter_byte_gate 96/0/1, identity_full_8bit
+   1100/1100).** Measured by the demotion method: all 38 per-size DCT_DCT
+   wrappers (the 30 plus the 4+4 square ones) are `never used` inside
+   `svtav1-dsp`, and the 30 have no production caller anywhere (the 4+4
+   square ones are `encode_loop.rs`'s). But they are not transcriptions —
+   each is a one-line forward to the same `*_c_exact` generic the dispatch
+   calls, i.e. the port's spelling of C's exported per-size entry points —
+   and five tier-1 tests in `tests/c_parity_txfm.rs` name them
+   (`fwd_named_square_wrappers_match_c`, `fwd_named_rect_wrappers_match_c`,
+   `inv_named_rect_wrappers_recon_match_c`, `inv_txfm2d_recon_matches_c`,
+   `inv_named_square_wrappers_flat_dc_match_c`). Per `WORKING-ON-THIS.md`
+   §7 they stay and the tests stay where they are. What the cluster hid:
+   the `mod_input` construction of C's `svt_av1_inv_txfm2d_add_64x*_c`
+   (inv_transforms.c:2614-2733) was transcribed twice — `inv_txfm::
+   mod_input_64` (packed input, the five named 64-dim inverse wrappers) and
+   an inline copy in the LIVE `txfm_dispatch::inv_txfm2d_dispatch_bd`
+   (full-stride input). `mod_input_64` now takes the input stride and both
+   call it. Recorded, not changed: the 4+4 square `incant!` dispatchers
+   whose three arms are the same one-liner into `_c_exact` (a no-op
+   dispatch, not a second body; `benchmarks/neon_tier_audit_2026-08-07.md`).
+
 ## On "unregistered SIMD arms" specifically
 
 The brief asks for kernels whose ported SIMD arm the dispatch never selects.
