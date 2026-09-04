@@ -275,7 +275,15 @@ pub fn skip_by_split_rate(
 /// The `* 75 / 100` arm is INTER-ONLY (`NEWMV`, `NEW_NEWMV`) and therefore
 /// unreachable on an intra frame; the `* 2` and `<< 2` arms each gained
 /// inter members that an intra-only table would drop into `default`.
-fn modulate_by_parent_mode(dev: u32, mode: PredictionMode) -> u32 {
+///
+/// **This is the REFERENCE copy of C's switch.** `depth_refine`'s live NSQ
+/// funnel has its own transcription (`DepthWalk::nsq_dev_by_parent_mode`,
+/// which takes C's `block_mi.mode` as a raw `u8`); the two are PINNED to each
+/// other over all 25 modes by
+/// `crate::depth_refine::nsq_mode_table_tests::depth_refine_table_agrees_with_port_md_nsq_skip`,
+/// per `docs/WORKING-ON-THIS.md` §4's rule for a second transcription. Change
+/// one and the pin fails.
+pub(crate) fn modulate_by_parent_mode(dev: u32, mode: PredictionMode) -> u32 {
     use PredictionMode as M;
     match mode {
         M::NewMv | M::NewNewMv => (dev * 75) / 100,

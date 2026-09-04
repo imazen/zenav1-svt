@@ -477,10 +477,31 @@ impl LeafEval {
         self.win.full_dist
     }
 
-    /// Winner luma mode (C `block_mi.mode`) — the NSQ recon-dist gate's
-    /// modulation input.
+    /// Winner INTRA luma mode (`Cand::mode`). **This is NOT C's
+    /// `block_mi.mode` on an inter winner** — an inter candidate is injected
+    /// with `mode: 0` because an inter block codes no intra y_mode, and its
+    /// real mode lives in [`InterCand::mode`]. Use [`Self::block_mi_mode`]
+    /// wherever C reads `blk_ptr->block_mi.mode`.
     pub(crate) fn mode(&self) -> u8 {
         self.win.mode
+    }
+
+    /// C `blk_ptr->block_mi.mode` — the UNIFIED mode field, which holds the
+    /// inter mode (`NEARESTMV`=13 .. `NEW_NEWMV`=24) on an inter block and the
+    /// intra mode on an intra one.
+    ///
+    /// The port splits that one C field in two: `Cand::mode` carries the intra
+    /// y_mode (0 on an inter candidate, because an inter block codes none) and
+    /// `Cand::inter.mode` carries the inter mode. Anything transcribing a C
+    /// `switch (blk->block_mi.mode)` must read THIS, or it silently sees
+    /// `DC_PRED` for every inter block. That is exactly the defect
+    /// `docs/INTER-ENCODE-PLAN.md` §1z³⁵ measured in `depth_refine`'s NSQ
+    /// recon-distortion gate.
+    pub(crate) fn block_mi_mode(&self) -> u8 {
+        match self.win.inter.as_ref() {
+            Some(ic) => ic.mode as u8,
+            None => self.win.mode,
+        }
     }
 
     /// Winner tx_depth (diagnostic; only read by the std-gated NSQDBG dumps).

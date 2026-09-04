@@ -7141,6 +7141,87 @@ so is the dead-code report's item 1. The `SVT_QDELTA_OUT` probe stays: it is
 the standing answer to "does C reach the rate model on our config", and
 re-deriving it costs a container cycle.
 
+### 1z³⁵. The NSQ recon-dist gate modulated its threshold by the INTRA y_mode of an inter parent — fixed and pinned; entered once on the grid, no byte moved (2026-09-04)
+
+`docs/UNWIRED-PORTED-CODE-2026-09-04.md` item 6 suspected that `depth_refine.rs`'s
+four live NSQ skip gates run on inter frames "with the all-intra mode table"
+while the inter-aware `port_md/nsq_skip.rs` sits unused, and asked for a
+differential before anything was wired. The differential found one real
+defect, narrower than the suspicion, and measured it latent on the grid.
+
+#### What was actually wrong
+
+`update_skip_nsq_based_on_sq_recon_dist` (product_coding_loop.c:9847) modulates
+`max_part0_to_part1_dev` by `sq_blk_ptr->block_mi.mode` (`:9867-9895`) — C's
+UNIFIED mode field, intra modes 0..12 and inter modes 13..24 in one switch.
+`skip_by_recon_dist` read `sq.ev.mode()`, which is `Cand::mode`, the intra
+y_mode. The funnel injects every inter candidate with `mode: 0`
+(`leaf_funnel/inject.rs` — an inter block codes no y_mode; its mode lives in
+`InterCand::mode`), so an inter parent always took C's `DC_PRED` arm
+(`* 2`) where C gives `* 75 / 100` for NEWMV/NEW_NEWMV, `<< 2` for
+GLOBALMV/GLOBAL_GLOBALMV, `* 2` for NEAREST_NEARESTMV/NEAR_NEARMV and no
+modulation for NEARESTMV/NEARMV and the mixed compounds. The other three gates
+(split rate, sq txs, shapes) were not re-derived in this chunk; `depth_refine`'s
+copies stay the live ones and `port_md/nsq_skip.rs` stays the general
+reference, un-called.
+
+#### What landed
+
+* `LeafEval::block_mi_mode()` — C's field: the inter mode on an inter winner,
+  the y_mode otherwise. `mode()` is documented as the y_mode it always was.
+* `DepthWalk::nsq_dev_by_parent_mode` transcribes C's whole switch (all five
+  groups, 25 modes) and is PINNED to `port_md::nsq_skip::modulate_by_parent_mode`
+  over every mode x every threshold 0..=100 (`nsq_mode_table_tests`), per
+  §4's rule for a second transcription. The intra arms are unchanged, which
+  is what keeps the still envelope byte-identical by construction.
+* `tools/nsq_inter_reach_census.sh` — per cell, which NSQ gate an inter
+  frame's shapes reach (`SPENTRY`/`SKIP1..4`/`RDENTRY`/`RECONDIST`/`MODEDIFF`
+  from the `SVTAV1_NSQDBG` dump, `sl=1` only). It is the port's half of the
+  differential; C's copy of the gate is `static`, so its side is the tree
+  decision itself, which the byte gates below already compare.
+
+#### Measured — the arm is reached ONCE on the grid, and the cell does not move
+
+96-cell grid, frames=2, shift 3 (the campaign's config):
+
+| | p6 | p8 | total |
+|---|---|---|---|
+| shapes entering `skip_processing_nsq` on frame 1 | 248 | 56 | 304 |
+| killed by gate 1 (split rate) | 246 | 56 | 302 |
+| entering `skip_by_recon_dist` | 2 | 0 | 2 |
+| reaching the parent-mode read | 2 | 0 | 2 |
+| with an inter parent (`ymode != block_mi.mode`) | 2 | 0 | 2 |
+
+Both reaches are `gradient 16x16 q20 p6`, frame 1, mi(0,0), 16x16, shapes H
+and V: parent NEWMV (`bmm=16`, `ymode=0`), `max_dev` 73 -> **54** (C's
+`* 75 / 100` arm) where the old table's DC arm gave **146**. Neither value
+skips the shape (the cell is 145 B / 21 B, byte-identical to C before and
+after), so the fix is exercised on the grid and moves nothing there. The
+p5 census (64/128 x q20/40/55, 72 cells): 584 shapes, all killed by gate 1,
+0 reaches. frames=3: every cell REFUSES frame 2 by design (§7b), before and
+after alike, so the matrix records no per-frame verdict there.
+
+Grid before (parent commit, `wire1b`) and after: **94 BOTH / 1 F1DIFF
+(`diag 128 q20 p8`) / 1 F0DIFF (`gradient 128 q20 p8`) of 96** — same two
+cells, same sizes; no cell moved. `video_key_matrix` 58/60, `fctx_gate`
+96/96, `inter_decode_gate` 5/5, decode census PASS, completion scan 64 OK /
+0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B,
+`regression_spotcheck` 102/102, `identity_full_8bit` 1100/1100, nextest
+2522/2522 (aarch64). Cross-ISA on r7900x (x86_64; its oracle is the detached
+base `3115c0c` = `oracle-base-hdr-fork`, measured inert against
+`fix/suspected-c-bug-17` per §4's trap): nextest 2532/2532, spotcheck
+102/102, inter byte gate PASS, identity 1100/1100.
+
+#### Two harness traps met on the way (recorded in WORKING-ON-THIS §5)
+
+* `identity_diff_inter.sh` needs `SVTAV1_INTER_EXPERIMENTAL=1` (and the
+  grid's `SVTAV1_FRAME_SHIFT=3`); every matrix script sets them, a direct
+  call does not, and the port REFUSES frame 1 without the first. The census
+  script's first run measured 96 refusals as "0 reaches".
+* Two harness invocations from ONE workspace at the same time are not safe:
+  a census run overlapping the gate chain reported `diag 128 q55 p6` as DIFF;
+  two serial re-runs and the chain's own serial grid are IDENTICAL.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

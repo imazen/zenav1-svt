@@ -56,6 +56,24 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **NSQ recon-dist gate: the parent-mode threshold now reads C's unified
+  `block_mi.mode` (2026-09-04).** `depth_refine::skip_by_recon_dist` modulated
+  `max_part0_to_part1_dev` by the intra y_mode, which every inter winner
+  carries as 0, so an inter parent always took C's `DC_PRED` arm (`* 2`)
+  instead of `* 75 / 100` (NEWMV), `<< 2` (GLOBALMV) or none (NEARESTMV). The
+  table is C's full 25-mode switch (`product_coding_loop.c:9867-9895`), pinned
+  25 x 101 to `port_md::nsq_skip::modulate_by_parent_mode`. Measured on the
+  96-cell inter grid: the arm is entered ONCE (`gradient 16x16 q20 p6`,
+  threshold 73 -> 54 where it was 146) and no cell moved — 94 BOTH / 1 F1DIFF
+  / 1 F0DIFF before and after; still envelope 1100/1100. New
+  `tools/nsq_inter_reach_census.sh` counts which NSQ gate an inter frame's
+  shapes reach. `docs/INTER-ENCODE-PLAN.md` §1z³⁵.
+- **`compute_qdelta_by_rate` measured NULL on this envelope (2026-09-04).**
+  C reaches it only under TPL, which `get_tpl` disables for `aq_mode 0`,
+  allintra and low-delay alike, and the delta it returns only feeds the recode
+  loop CQP/CRF forces off. New `SVT_QDELTA_OUT` interposer + `SVT_AQ_MODE`
+  positive control. `docs/INTER-ENCODE-PLAN.md` §1z³⁴.
+
 - **The NIC CLASS prunes C runs only on inter frames — the inter byte grid goes
   92 -> 94 of 96.** Each of C's three NIC prunes has an inter-CLASS half that
   sets a whole candidate class's stage count to ZERO and an intra-class half

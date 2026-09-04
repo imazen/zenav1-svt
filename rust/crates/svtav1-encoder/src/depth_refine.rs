@@ -1772,9 +1772,57 @@ impl DepthWalk<'_, '_> {
         false
     }
 
-    /// C `update_skip_nsq_based_on_sq_recon_dist` (:10317).
+    /// The parent-SQ-mode modulation of `max_part0_to_part1_dev`, C's
+    /// `switch (sq_blk_ptr->block_mi.mode)` at
+    /// `product_coding_loop.c:9867-9895`, transcribed WHOLE.
+    ///
+    /// `mode` is C's unified `block_mi.mode` (see
+    /// [`crate::leaf_funnel::types::LeafEval::block_mi_mode`]), so the inter
+    /// arms are reachable. Three of C's five groups have inter members and
+    /// none of them is the `default:` arm:
+    ///
+    /// | C arm | modes | effect |
+    /// |---|---|---|
+    /// | `:9868` | `NEWMV`(16), `NEW_NEWMV`(24) | `* 75 / 100` |
+    /// | `:9872` | `DC`(0), `H`(2), `V`(1), `NEAREST_NEARESTMV`(17), `NEAR_NEARMV`(18) | `* 2` |
+    /// | `:9879` | `D45..D67`(3..8), `SMOOTH*`(9..11), `PAETH`(12), `GLOBALMV`(15), `GLOBAL_GLOBALMV`(23) | `<< 2` |
+    /// | `default` | `NEARESTMV`(13), `NEARMV`(14), and the mixed compounds (19..22) | unchanged |
+    ///
+    /// C writes the first arm as `((max * 75) / 100)` on a `uint32_t`; the
+    /// port's `u64` cannot differ for any value the level table produces
+    /// (the largest is 80).
+    fn nsq_dev_by_parent_mode(mode: u8, max_dev: u64) -> u64 {
+        use svtav1_types::prediction::PredictionMode as Pm;
+        const NEWMV: u8 = Pm::NewMv as u8;
+        const NEW_NEWMV: u8 = Pm::NewNewMv as u8;
+        const NEAREST_NEARESTMV: u8 = Pm::NearestNearestMv as u8;
+        const NEAR_NEARMV: u8 = Pm::NearNearMv as u8;
+        const GLOBALMV: u8 = Pm::GlobalMv as u8;
+        const GLOBAL_GLOBALMV: u8 = Pm::GlobalGlobalMv as u8;
+        match mode {
+            NEWMV | NEW_NEWMV => (max_dev * 75) / 100,
+            0..=2 | NEAREST_NEARESTMV | NEAR_NEARMV => max_dev * 2,
+            3..=12 | GLOBALMV | GLOBAL_GLOBALMV => max_dev << 2,
+            _ => max_dev,
+        }
+    }
+
+    /// C `update_skip_nsq_based_on_sq_recon_dist` (:9847).
     fn skip_by_recon_dist(&self, shape: PartitionType, sq: &SqInfo) -> bool {
         let mut max_dev = self.nsq.max_part0_to_part1_dev;
+        #[cfg(feature = "std")]
+        if nsqdbg_here(sq.ev.abs_x, sq.ev.abs_y) {
+            eprintln!(
+                "NSQDBG RDENTRY sl={} mi=({},{}) bsize={} shape={} maxdev={} quad={}",
+                u8::from(self.fx.frame.non_i_slice),
+                sq.ev.abs_y / 4,
+                sq.ev.abs_x / 4,
+                c_bsize_sq(sq.ev.w),
+                c_part(shape),
+                max_dev,
+                u8::from(sq.quad.is_some()),
+            );
+        }
         if max_dev == 0 {
             return false;
         }
@@ -1792,14 +1840,46 @@ impl DepthWalk<'_, '_> {
             0 // unused: the <= min_ratio arm forces the threshold to 0
         };
 
-        // Parent SQ mode modulation (C PredictionMode indices: DC 0, V 1,
-        // H 2, D45..D67 3..8, SMOOTH* 9..11, PAETH 12).
-        let mode = sq.ev.mode();
-        match mode {
-            0..=2 => max_dev *= 2,
-            3..=12 => max_dev <<= 2,
-            _ => {}
+        // Parent SQ mode modulation, C's FULL table
+        // (product_coding_loop.c:9867-9895). C switches on
+        // `sq_blk_ptr->block_mi.mode`, which is the UNIFIED mode field: intra
+        // modes 0..12 AND inter modes 13..24 all land in the same switch.
+        //
+        // TRANSCRIPTION DEFECT, fixed 2026-09-04 (`docs/INTER-ENCODE-PLAN.md`
+        // §1z³⁵): this used to read `sq.ev.mode()` and match only `0..=2` /
+        // `3..=12`. `sq.ev.mode()` is `Cand::mode`, the intra y_mode, which an
+        // inter candidate is injected with as **0** (`leaf_funnel/inject.rs` —
+        // an inter block codes no intra y_mode). So an inter winner took C's
+        // `DC_PRED` arm and got `max_dev *= 2`, where C gives `* 75 / 100`
+        // for NEWMV, `<< 2` for GLOBALMV and NO modulation for
+        // NEARESTMV/NEARMV. Read `block_mi_mode()`, which is C's field.
+        //
+        // LATENT on the campaign envelope, and measured so, not assumed: on
+        // the 96-cell grid (frames=2 and 3) this gate is never ENTERED on an
+        // inter frame — `tools/nsq_inter_reach_census.sh` counts zero
+        // `RDENTRY sl=1` because the split-rate gate ahead of it kills every
+        // NSQ shape those frames test — so no grid cell moved. The arm is
+        // reachable the moment an inter frame's SQ winner survives gate 1.
+        let mode = sq.ev.block_mi_mode();
+        #[cfg(feature = "std")]
+        if nsqdbg_here(sq.ev.abs_x, sq.ev.abs_y) {
+            // The join point for the §1z³⁵ differential: `bmm` is C's
+            // `block_mi.mode` and `ymode` is the intra y_mode this gate used
+            // to read. They differ on every inter winner.
+            eprintln!(
+                "NSQDBG RECONDIST sl={} mi=({},{}) bsize={} shape={} ymode={} bmm={} dev_in={} dev_mode={}",
+                u8::from(self.fx.frame.non_i_slice),
+                sq.ev.abs_y / 4,
+                sq.ev.abs_x / 4,
+                c_bsize_sq(sq.ev.w),
+                c_part(shape),
+                sq.ev.mode(),
+                mode,
+                max_dev,
+                Self::nsq_dev_by_parent_mode(mode, max_dev),
+            );
         }
+        max_dev = Self::nsq_dev_by_parent_mode(mode, max_dev);
 
         let dq: [u64; 4] = [
             quad[0].max(1),
@@ -1919,6 +1999,17 @@ impl DepthWalk<'_, '_> {
         h_children: &Option<[(u64, bool); 2]>,
         v_children: &Option<[(u64, bool); 2]>,
     ) -> bool {
+        #[cfg(feature = "std")]
+        if nsqdbg_here(sq.ev.abs_x, sq.ev.abs_y) {
+            eprintln!(
+                "NSQDBG SPENTRY sl={} mi=({},{}) bsize={} shape={}",
+                u8::from(self.fx.frame.non_i_slice),
+                sq.ev.abs_y / 4,
+                sq.ev.abs_x / 4,
+                c_bsize_sq(sq.ev.w),
+                c_part(shape),
+            );
+        }
         if self.skip_by_split_rate(shape, sq, best_part, ctx_row, sq_size, split_flag) {
             return true;
         }
@@ -2089,7 +2180,8 @@ impl DepthWalk<'_, '_> {
                                     4
                                 };
                                 eprintln!(
-                                    "NSQDBG SKIP mi=({},{}) bsize={} shape={} gate={}",
+                                    "NSQDBG SKIP sl={} mi=({},{}) bsize={} shape={} gate={}",
+                                    u8::from(self.fx.frame.non_i_slice),
                                     abs_y / 4,
                                     abs_x / 4,
                                     c_bsize_sq(size),
@@ -3113,6 +3205,124 @@ mod partial_sb_edge_tests {
             q0(&boundary),
             (false, false),
             "a boundary PD0 leaf has no SQ cost: C skips both deviation gates"
+        );
+    }
+}
+
+#[cfg(test)]
+mod nsq_mode_table_tests {
+    use super::*;
+    use svtav1_types::prediction::PredictionMode as M;
+
+    /// Every C `PredictionMode` in enum order, so the sweep below indexes by
+    /// C's raw value (which is what `block_mi.mode` carries).
+    const ALL_MODES: [M; M::COUNT] = [
+        M::DcPred,
+        M::VPred,
+        M::HPred,
+        M::D45Pred,
+        M::D135Pred,
+        M::D113Pred,
+        M::D157Pred,
+        M::D203Pred,
+        M::D67Pred,
+        M::SmoothPred,
+        M::SmoothVPred,
+        M::SmoothHPred,
+        M::PaethPred,
+        M::NearestMv,
+        M::NearMv,
+        M::GlobalMv,
+        M::NewMv,
+        M::NearestNearestMv,
+        M::NearNearMv,
+        M::NearestNewMv,
+        M::NewNearestMv,
+        M::NearNewMv,
+        M::NewNearMv,
+        M::GlobalGlobalMv,
+        M::NewNewMv,
+    ];
+
+    /// The raw discriminants are C's and the table above is indexed by them,
+    /// so a reordering of either is caught here rather than silently
+    /// remapping the modulation arms.
+    #[test]
+    fn all_modes_is_in_raw_discriminant_order() {
+        for (i, m) in ALL_MODES.iter().enumerate() {
+            assert_eq!(*m as usize, i, "ALL_MODES[{i}] is {m:?}");
+        }
+    }
+
+    /// **The duplicate-transcription pin** (`docs/WORKING-ON-THIS.md` §4:
+    /// "when you find a second transcription, do not just fix it — PIN IT to
+    /// the first with a sweep test").
+    ///
+    /// `DepthWalk::nsq_dev_by_parent_mode` is the copy the live NSQ funnel
+    /// runs; [`crate::port_md::nsq_skip::modulate_by_parent_mode`] is the
+    /// reference copy in the general (unwired) port of the same C switch.
+    /// They must agree on every mode and every threshold the level table can
+    /// produce — `max_part0_to_part1_dev` is 0/5/20/50/75/80 before the qp
+    /// scaling, so the sweep covers 0..=100 plus the boundaries where
+    /// `* 75 / 100` truncates.
+    #[test]
+    fn depth_refine_table_agrees_with_port_md_nsq_skip() {
+        for dev in 0..=100u32 {
+            for m in ALL_MODES {
+                let reference = crate::port_md::nsq_skip::modulate_by_parent_mode(dev, m);
+                let live = DepthWalk::nsq_dev_by_parent_mode(m as u8, u64::from(dev));
+                assert_eq!(
+                    u64::from(reference),
+                    live,
+                    "dev={dev} mode={m:?} (raw {})",
+                    m as u8
+                );
+            }
+        }
+    }
+
+    /// The three inter arms C has and an intra-only table does not, spelled
+    /// out as values so a regression names itself. Vectors read straight off
+    /// `product_coding_loop.c:9867-9895`.
+    #[test]
+    fn the_inter_arms_are_the_ones_an_intra_only_table_drops() {
+        // `* 75 / 100`, INTER-ONLY — no intra mode reaches this arm.
+        assert_eq!(DepthWalk::nsq_dev_by_parent_mode(M::NewMv as u8, 80), 60);
+        assert_eq!(DepthWalk::nsq_dev_by_parent_mode(M::NewNewMv as u8, 80), 60);
+        // `* 2`, shared with DC/H/V.
+        assert_eq!(
+            DepthWalk::nsq_dev_by_parent_mode(M::NearestNearestMv as u8, 80),
+            160
+        );
+        assert_eq!(
+            DepthWalk::nsq_dev_by_parent_mode(M::NearNearMv as u8, 80),
+            160
+        );
+        // `<< 2`, shared with the directional/smooth intra modes.
+        assert_eq!(
+            DepthWalk::nsq_dev_by_parent_mode(M::GlobalMv as u8, 80),
+            320
+        );
+        assert_eq!(
+            DepthWalk::nsq_dev_by_parent_mode(M::GlobalGlobalMv as u8, 80),
+            320
+        );
+        // `default:` — unchanged. NEARESTMV/NEARMV and the mixed compounds.
+        assert_eq!(
+            DepthWalk::nsq_dev_by_parent_mode(M::NearestMv as u8, 80),
+            80
+        );
+        assert_eq!(DepthWalk::nsq_dev_by_parent_mode(M::NearMv as u8, 80), 80);
+        assert_eq!(
+            DepthWalk::nsq_dev_by_parent_mode(M::NearestNewMv as u8, 80),
+            80
+        );
+        // The intra arms are unchanged by the fix — this is what keeps the
+        // still path byte-identical by construction.
+        assert_eq!(DepthWalk::nsq_dev_by_parent_mode(M::DcPred as u8, 80), 160);
+        assert_eq!(
+            DepthWalk::nsq_dev_by_parent_mode(M::PaethPred as u8, 80),
+            320
         );
     }
 }

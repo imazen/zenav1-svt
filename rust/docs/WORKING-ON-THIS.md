@@ -469,6 +469,29 @@ ZERO, prove the probe fires somewhere.** Print a positive control. Prefer a
 script *file* over an inline shell loop for anything whose result you will act
 on.
 
+**`identity_diff_inter.sh` called DIRECTLY refuses frame 1.** Every inter
+matrix/gate script exports `SVTAV1_INTER_EXPERIMENTAL=1` (and the grid's
+`SVTAV1_FRAME_SHIFT=3`) around it; a new script that calls the harness
+bare gets `REFUSED ... chroma_420 pipeline supports still/key frames only`
+on frame 1 and, if it counts dump lines, reports the refusal as "zero
+reaches" (2026-09-04, `nsq_inter_reach_census.sh`'s first run). Set both.
+
+**One workspace, one harness invocation at a time.** Two identity runs from
+the same checkout at once (a census overlapping the gate chain) reported
+`diag 128x128 q55 p6` as F1DIFF; two serial re-runs and the chain's own serial
+grid were IDENTICAL. `identity_run` runs `cargo build` per call and the C
+driver relinks on a freshness check, so overlapping invocations can execute a
+binary the other is rewriting. Serialize them.
+
+**`bash -l` on macOS resolves `/usr/bin/env bash` to /bin/bash 3.2**, whose
+`set -u` rejects an EMPTY array expansion (`"${ARR[@]}"`, `${#ARR[@]}`).
+`identity_diff.sh` (`C_TRACE_ARGS`) and `inter_decode_census.sh` (`NEW`) hit
+it when run from a login-shell chain, and the still cells' C comparison
+silently did not run (the port sizes printed; no verdict). Both scripts are
+guarded now (`${ARR[@]+"${ARR[@]}"}`, and a `${ARR[@]+${#ARR[@]}}`-derived
+count); a NEW script must do the same or be run from a shell whose PATH puts
+bash >= 4.4 first.
+
 **`SVTAV1_PACKTREE` appends.** `rm -f` it before every run. A first pass at a
 per-preset IntraBC table reported preset 7 coding 3502 blocks when it codes
 zero, because the counts were cumulative. It was caught only because p7 exactly
