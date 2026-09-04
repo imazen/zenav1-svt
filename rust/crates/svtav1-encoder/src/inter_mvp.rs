@@ -281,25 +281,16 @@ fn is_inter_block(e: &MvpMiEntry) -> bool {
     e.use_intrabc || e.ref_frame[0] > INTRA_FRAME
 }
 
-/// C `svt_aom_have_newmv_in_inter_mode` — the NEWMV family.
-#[inline]
-fn have_newmv_in_inter_mode(mode: u8) -> bool {
-    matches!(mode, 16 | 19 | 20 | 21 | 22 | 24)
-}
-
-/// C `is_motion_variation_allowed_bsize` (inter_prediction.h:407-409).
-#[inline]
-fn is_motion_variation_allowed_bsize(bsize: usize) -> bool {
-    BLOCK_SIZE_WIDE[bsize] >= 8 && BLOCK_SIZE_HIGH[bsize] >= 8
-}
-
-/// C `is_global_mv_block` (inter_prediction.h:411-414).
-#[inline]
-pub fn is_global_mv_block(mode: u8, bsize: usize, wm_type: TransformationType) -> bool {
-    (mode == GLOBALMV || mode == GLOBAL_GLOBALMV)
-        && (wm_type as u8) > (TransformationType::Translation as u8)
-        && is_motion_variation_allowed_bsize(bsize)
-}
+// C `svt_aom_have_newmv_in_inter_mode`, `is_motion_variation_allowed_bsize`
+// (inter_prediction.h:407-409) and `is_global_mv_block` (:411-414), over the
+// raw mode byte / raw `BlockSize` index this builder holds. ONE body each,
+// in `inter_mv_code` and `port_entropy_inter::modes`; until 2026-09-04 this
+// file carried its own copies of all three (`docs/WORKING-ON-THIS.md` §4).
+use crate::inter_mv_code::have_newmv_in_inter_mode_raw as have_newmv_in_inter_mode;
+use crate::port_entropy_inter::modes::{
+    is_global_mv_block_idx as is_global_mv_block,
+    is_motion_variation_allowed_bsize_idx as is_motion_variation_allowed_bsize,
+};
 
 /// C `av1_set_ref_frame` (inter_prediction.h:513-522): expand a
 /// `MvReferenceFrame` type into the `{rf0, rf1}` pair.

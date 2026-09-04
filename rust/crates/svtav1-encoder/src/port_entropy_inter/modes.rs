@@ -106,11 +106,20 @@ pub const fn have_nearmv_in_inter_mode(mode: u8) -> bool {
     matches!(mode, NEARMV | NEAR_NEARMV | NEAR_NEWMV | NEW_NEARMV)
 }
 
+/// C `is_motion_variation_allowed_bsize` (inter_prediction.h:407-409) over
+/// the raw `BlockSize` index — THE body; [`is_motion_variation_allowed_bsize`]
+/// is the typed spelling and `inter_mvp` / `port_md::predicates` (which hold
+/// the index C holds) forward here. Until 2026-09-04 each of the three
+/// carried its own copy (`docs/WORKING-ON-THIS.md` §4).
+#[inline]
+pub fn is_motion_variation_allowed_bsize_idx(bsize: usize) -> bool {
+    BLOCK_SIZE_WIDE[bsize] >= 8 && BLOCK_SIZE_HIGH[bsize] >= 8
+}
+
 /// C `is_motion_variation_allowed_bsize` (inter_prediction.h:407).
 #[inline]
 pub fn is_motion_variation_allowed_bsize(bsize: BlockSize) -> bool {
-    let i = bsize.as_index();
-    BLOCK_SIZE_WIDE[i] >= 8 && BLOCK_SIZE_HIGH[i] >= 8
+    is_motion_variation_allowed_bsize_idx(bsize.as_index())
 }
 
 /// C `TransformationType` (definitions.h:1755).
@@ -127,6 +136,23 @@ pub enum TransformationType {
     Affine = 3,
 }
 
+impl TransformationType {
+    /// The same C enum as spelled by `svtav1_types::motion` (identical
+    /// discriminants) — this enum is a second transcription of it, kept for
+    /// the entropy writers' signatures; the predicate bodies take the
+    /// `svtav1_types` one.
+    #[inline]
+    pub(crate) fn as_motion(self) -> svtav1_types::motion::TransformationType {
+        use svtav1_types::motion::TransformationType as M;
+        match self {
+            Self::Identity => M::Identity,
+            Self::Translation => M::Translation,
+            Self::RotZoom => M::RotZoom,
+            Self::Affine => M::Affine,
+        }
+    }
+}
+
 /// C `MotionMode` (definitions.h:1251).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -139,12 +165,29 @@ pub enum MotionMode {
     WarpedCausal = 2,
 }
 
+/// C `is_global_mv_block` (inter_prediction.h:411-414) over the raw
+/// `BlockSize` index — THE body (see [`is_motion_variation_allowed_bsize_idx`]
+/// for who forwards here and why).
+///
+/// Takes the `svtav1_types` `TransformationType` — the one the MVP builder's
+/// `gm_params` and MD's contexts hold. This module's own [`TransformationType`]
+/// is a second transcription of C's enum (same four discriminants); the
+/// typed spelling below converts through [`TransformationType::as_motion`].
+#[inline]
+pub fn is_global_mv_block_idx(
+    mode: u8,
+    bsize: usize,
+    ty: svtav1_types::motion::TransformationType,
+) -> bool {
+    (mode == GLOBALMV || mode == GLOBAL_GLOBALMV)
+        && (ty as u8) > (svtav1_types::motion::TransformationType::Translation as u8)
+        && is_motion_variation_allowed_bsize_idx(bsize)
+}
+
 /// C `is_global_mv_block` (inter_prediction.h:411).
 #[inline]
 pub fn is_global_mv_block(mode: u8, bsize: BlockSize, ty: TransformationType) -> bool {
-    (mode == GLOBALMV || mode == GLOBAL_GLOBALMV)
-        && ty > TransformationType::Translation
-        && is_motion_variation_allowed_bsize(bsize)
+    is_global_mv_block_idx(mode, bsize.as_index(), ty.as_motion())
 }
 
 // ---- 1. write_is_inter (entropy_coding.c:1147) ----

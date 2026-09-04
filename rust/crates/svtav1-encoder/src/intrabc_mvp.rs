@@ -110,14 +110,11 @@ fn is_inter_block(e: &MvpMiEntry) -> bool {
     e.use_intrabc || e.ref_frame[0] > 0
 }
 
-/// C `svt_aom_have_newmv_in_inter_mode` (NEWMV-family modes; PredictionMode
-/// values per definitions.h:1183-1215). Unreachable-on-KEY but transcribed.
-#[inline]
-fn have_newmv_in_inter_mode(mode: u8) -> bool {
-    // NEWMV=16, NEAREST_NEWMV=19, NEW_NEARESTMV=20, NEAR_NEWMV=21,
-    // NEW_NEARMV=22, NEW_NEWMV=24.
-    matches!(mode, 16 | 19 | 20 | 21 | 22 | 24)
-}
+// C `svt_aom_have_newmv_in_inter_mode` over the raw mode byte —
+// unreachable-on-KEY but transcribed; the ONE body is
+// `inter_mv_code::have_newmv_in_inter_mode_raw` (this file carried a copy
+// until 2026-09-04).
+use crate::inter_mv_code::have_newmv_in_inter_mode_raw as have_newmv_in_inter_mode;
 
 /// The mode-info grid view: `entries` is a `rows * stride` cell array in
 /// ABSOLUTE mi coordinates; `base` indexes the CURRENT block's top-left

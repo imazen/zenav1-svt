@@ -141,18 +141,27 @@ use svtav1_types::prediction::PredictionMode;
 // §1. Inter-mode predicates — which MVs a block codes
 // =============================================================================
 
+/// C `svt_aom_have_newmv_in_inter_mode` (mode_decision.c:257-260, EXPORTED)
+/// over the raw mode byte — THE body. C's `mi` grid stores the mode as a
+/// byte and the MVP builders (`inter_mvp`, `intrabc_mvp`) walk that grid, so
+/// they call this spelling; [`have_newmv_in_inter_mode`] is the typed one,
+/// tier 1 against the exported symbol in tests/c_parity_mv_code.rs. Until
+/// 2026-09-04 each builder carried its own `matches!(mode, 16 | 19 | ...)`
+/// (`docs/WORKING-ON-THIS.md` §4: two transcriptions drift).
+#[inline]
+pub(crate) fn have_newmv_in_inter_mode_raw(mode: u8) -> bool {
+    mode == PredictionMode::NewMv as u8
+        || mode == PredictionMode::NewNewMv as u8
+        || mode == PredictionMode::NearestNewMv as u8
+        || mode == PredictionMode::NewNearestMv as u8
+        || mode == PredictionMode::NearNewMv as u8
+        || mode == PredictionMode::NewNearMv as u8
+}
+
 /// C `svt_aom_have_newmv_in_inter_mode` (mode_decision.c:257-260, EXPORTED).
 #[inline]
 pub fn have_newmv_in_inter_mode(mode: PredictionMode) -> bool {
-    matches!(
-        mode,
-        PredictionMode::NewMv
-            | PredictionMode::NewNewMv
-            | PredictionMode::NearestNewMv
-            | PredictionMode::NewNearestMv
-            | PredictionMode::NearNewMv
-            | PredictionMode::NewNearMv
-    )
+    have_newmv_in_inter_mode_raw(mode as u8)
 }
 
 /// C `have_nearmv_in_inter_mode` (inter_prediction.h:416-418, `static INLINE`).

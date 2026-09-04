@@ -627,10 +627,13 @@ pub fn mv_is_already_injected(
 // Motion-mode gates (mode_decision.c:207-256)
 // ---------------------------------------------------------------------------
 
-/// C `is_motion_variation_allowed_bsize` (inter_prediction.h:407-409).
+/// C `is_motion_variation_allowed_bsize` (inter_prediction.h:407-409) — a
+/// forward to the one body,
+/// [`crate::port_entropy_inter::modes::is_motion_variation_allowed_bsize_idx`]
+/// (this module carried its own copy until 2026-09-04).
 #[inline]
 pub fn is_motion_variation_allowed_bsize(bsize: u8) -> bool {
-    BLOCK_SIZE_WIDE[bsize as usize] >= 8 && BLOCK_SIZE_HIGH[bsize as usize] >= 8
+    crate::port_entropy_inter::modes::is_motion_variation_allowed_bsize_idx(usize::from(bsize))
 }
 
 /// C `is_inter_singleref_mode` (definitions.h:1626-1628).
@@ -639,12 +642,11 @@ pub fn is_inter_singleref_mode(mode: u8) -> bool {
     (PredictionMode::SINGLE_INTER_MODE_START..PredictionMode::SINGLE_INTER_MODE_END).contains(&mode)
 }
 
-/// C `is_global_mv_block` (inter_prediction.h:411-414).
+/// C `is_global_mv_block` (inter_prediction.h:411-414) — a forward to the
+/// one body, [`crate::port_entropy_inter::modes::is_global_mv_block_idx`].
 #[inline]
 pub fn is_global_mv_block(mode: u8, bsize: u8, wm_type: TransformationType) -> bool {
-    (mode == PredictionMode::GlobalMv as u8 || mode == PredictionMode::GlobalGlobalMv as u8)
-        && (wm_type as u8) > (TransformationType::Translation as u8)
-        && is_motion_variation_allowed_bsize(bsize)
+    crate::port_entropy_inter::modes::is_global_mv_block_idx(mode, usize::from(bsize), wm_type)
 }
 
 /// The C context fields [`obmc_motion_mode_allowed`] reads.
