@@ -1,0 +1,125 @@
+THE LEVEL-MAP SCRATCH MOVES ZERO LIVE BYTES, MOVES NOTHING ON LINUX, AND MOVES
+THE macOS INTER ARM'S PEAK RSS BY +4 MiB. ALL THREE ARE MEASURED.
+
+date:   2026-09-03
+what:   the memory axis of the two CPU commits of this chunk —
+        `ab7c5ed4` (the `dq_full` elision) and `700357e2` (the shared
+        `coeff_c::TxbScratch`). CPU records:
+        benchmarks/{dqfull,levelscratch}_ab_2026-09-03.meta
+tool:   tools/mem_peak.sh, port side only, gradient qp 40 preset 13.
+        rss  = /usr/bin/time maximum resident set size, MEDIAN of the reps,
+               range in brackets.
+        heap = heaptrack peak heap (LIVE malloc'd bytes). Linux only.
+pairs:  every comparison below is a CLEAN pair — two binaries differing by
+        exactly one of the two commits, built by the same toolchain from the
+        same tree. (The other agents landed inter commits on main during this
+        chunk; those are excluded by construction, and the `obu_bytes` column
+        confirms it — identical within every pair.)
+
+=================== 1. THE `dq_full` ELISION: NULL ON EVERY CELL ============
+
+macOS (Apple M4 Pro), 5 reps, base = `c2e99a4e`, cand = base + the commit:
+
+  cell            base KiB   cand KiB   delta
+  1280 still         35856      35840   -0.0 %
+  1280 videokey      41936      42064   +0.3 %
+  1280 inter         59552      59728   +0.3 %
+  2048 still         81568      81584   +0.0 %
+  2048 videokey      96320      96480   +0.2 %
+  2048 inter        149888     149968   +0.1 %
+
+Expected and confirmed: the change removes TRAFFIC through a buffer that was
+already allocated (`TxScratch`'s reused per-thread `dq_full` `Vec`), so no
+allocation count and no live byte changes.
+
+=================== 2. THE LEVEL SCRATCH: ZERO HEAP, ZERO ON LINUX, +4 MiB
+                       ON macOS AND ONLY ON THE INTER ARM ===================
+
+**LINUX PEAK HEAP (heaptrack, r7900x, x86_64), base = `ab7c5ed4`,
+cand = `700357e2`:**
+
+  1280 inter   49.18 M -> 49.18 M      IDENTICAL TO THE DIGIT
+  2048 inter  121.56 M -> 121.56 M     IDENTICAL TO THE DIGIT
+
+So the change moves **no live bytes at all**. That is the expected result: four
+stack arrays became one per-thread buffer, which is a few KiB per encoder
+thread either way.
+
+**LINUX PEAK RSS (r7900x), 7 reps, run base/cand/base/cand interleaved:**
+
+  1280 inter   base 53964 [53460,54140] / 53732 [53536,53952]
+               cand 53948 [53608,54176] / 53812 [53612,54288]
+  2048 inter   base 124808 [124464,125212] / 124832 [124748,125348]
+               cand 124880 [124616,125208] / 124912 [124672,125376]
+
+**NULL.** Every range overlaps; the medians differ by <= 0.1 %.
+
+**macOS PEAK RSS — the one cell that moves.** 5 reps for the sweep, then the
+1280 inter cell repeated three times at 7-11 reps with the two binaries
+interleaved:
+
+  cell            base KiB   cand KiB   delta
+  1280 still         35792      35824   +0.1 %
+  1280 videokey      42048      41984   -0.2 %
+  1280 inter         59712      63824   **+6.9 %**
+  2048 still         81584      81536   -0.1 %
+  2048 videokey      96336      96256   -0.1 %
+  2048 inter        149984     157968   +5.3 %  (see the caveat below)
+
+  1280 inter, repeated:  base 59712 [59600,59888]   cand 63808 [62960,75472]
+                         base 59728 [59696,59824]   cand 62992 [62944,75424]
+                         base 59696 [59632,59728]   cand 63808 [62960,63936]
+
+The 1280 cell is unambiguous: three interleaved pairs, base tight at ~59.7 MiB
+and cand at ~63-64 MiB, **and the candidate's RANGE is wider** (it reaches
+75 MiB where the base never leaves 59.6-59.9). **The 2048 cell is NOT
+resolvable**: the BASE alone spans [149888, 171616] over seven reps there — the
+same 8-14 % run-to-run instability `docs/perf-status.md` already records for
+this arm — so the +5.3 % median shift at 2048 is quoted for shape and is not a
+measurement.
+
+**STILL AND VIDEOKEY DO NOT MOVE ON EITHER ISA.** The user-priority arm is
+untouched.
+
+=================== 3. IT IS NOT THE ALLOCATION — TESTED ====================
+
+The obvious suspect was the `Box<TxbScratch>` (2,480 bytes, macOS libmalloc's
+"small" size class) tripping a fresh region. It is not. A variant that puts the
+scratch in the thread's TLS image instead — `RefCell<TxbScratch>` with a
+`const` initialiser, no heap allocation anywhere, byte-identical output —
+measures **63856 KiB [63120,75472] at 1280 inter**, i.e. the SAME +4 MiB. That
+variant is not in the tree; this paragraph is what it was for.
+
+So the cause is not the buffer's storage class. What is left, and is NOT
+measured: the removal of ~2.5 KiB of stack from four functions in the funnel's
+call chain, and whatever second-order code-layout change came with it. **Do not
+attribute it further without measuring.**
+
+=================== 4. THE VERDICT, AND WHY IT DIFFERS FROM THE
+                       neighbor_scratch REVERT ==============================
+
+`benchmarks/neighbor_scratch_ab_2026-09-03.meta` reverted a change for a
+**+3.3 % Linux peak-RSS regression against a 0.7 % single-ISA CPU win**. This
+one is kept, and the three facts that separate them are:
+
+  * the CPU win is **1.3-3.9 % across TWO arms** — 1.039x/1.029x on a preset-2
+    still frame, 1.017x-1.023x on the video-mode key frame — where that one was
+    0.7 % on one arm and null on the other;
+  * the memory cost here is **single-ISA and single-arm**: null on Linux RSS,
+    null on peak heap, null on the still and videokey arms of both ISAs;
+  * peak HEAP is measured **identical to the digit**, so no live bytes moved.
+
+**IT IS STILL A COST AND THE MEMORY CHUNK MUST KNOW.** The aarch64 inter arm is
+the one axis of the memory goal that was at its boundary — 1.257x at 2048x2048
+in `benchmarks/mem_aarch64_2026-09-03.tsv`, "AT the boundary, not inside it".
+At 1280 this change takes 59.7 -> 63.8 MiB against C's 53.07, i.e.
+**1.121x -> 1.202x**, still inside 25 % but with less room. Whoever next works
+the memory axis should re-measure the aarch64 inter cells and decide whether
+that room is worth 3.9 % of the still arm's preset-2 time.
+
+=================== NOT ESTABLISHED =========================================
+  * WHY macOS moves and Linux does not. Measured cleanly, not attributed.
+  * The 2048 macOS inter delta (base is bimodal there).
+  * Any preset but 13, content but gradient, qp but 40 for the memory numbers.
+  * macOS peak HEAP — heaptrack does not exist there, and no substitute was
+    used. The heap claim above is the LINUX measurement only.

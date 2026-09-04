@@ -115,9 +115,10 @@ ranks the work directly, and both of this chunk's wins came out of it.
 =================== NOT ESTABLISHED =========================================
   * Any size but 128/256/512, content but gradient, qp but 40.
   * The inter arm.
-  * Peak RSS or peak heap. Nothing here allocates: the buffers were STACK
-    arrays and are now one per-thread `Box` per encoder thread, so the live
-    bytes are unchanged to within a few KiB and the allocation COUNT falls by
-    one per thread, not per call. There is nothing for a peak to move on.
+  * (superseded — the memory axis WAS measured; see
+    benchmarks/mem_levelscratch_2026-09-03.meta. Linux peak HEAP identical to
+    the digit, Linux peak RSS null, macOS still/videokey null, macOS INTER
+    +4 MiB at 1280. The "nothing for a peak to move on" reasoning was right
+    about live bytes and wrong about resident pages.)
   * That the debug-build poison guards anything ongoing — measured above that
     it does not fire in `cargo nextest`.

@@ -78,6 +78,47 @@
 > three symbol families before planning any of this work**; it is a five-minute
 > query and both of this chunk's wins came straight out of it.
 >
+> **THE POSITION AFTER THE TWO, ALL THREE ARMS** (`perf_gate.sh`, 25 paired
+> rounds, sizes 64/128/256/512 at preset 8, gradient qp 40, box verified quiet;
+> `benchmarks/perf_2026-09-03-arm7-{still,videokey,inter}.*`). Read as POSITION,
+> not attribution — the paired A/Bs above are the attribution, and **the inter
+> arm also carries two OTHER agents' commits landed the same day** (`4e29d8fa`
+> the DPB fix, `813bc939` the NEARMV injection), which change what an inter
+> frame does:
+>
+> | preset 8, port/C | 64 | 128 | 256 | 512 | slope ratio |
+> |---|---|---|---|---|---|
+> | still — arm6 (before) | 0.81x | 1.38x | 2.23x | 2.38x | 2.48x |
+> | still — arm7 (after) | 0.80x | 1.37x | **2.20x** | **2.34x** | **2.45x** |
+> | videokey — arm6 | 1.32x | 1.84x | 2.37x | 2.61x | 2.66x |
+> | videokey — arm7 | 1.28x | 1.81x | **2.35x** | **2.54x** | **2.58x** |
+> | inter — arm6 | 1.62x | 2.00x | 2.46x | 2.80x* | 2.64x |
+> | inter — arm7 | 1.59x | 2.04x | 2.44x | 2.74x | 2.80x |
+>
+> (* arm6's 512 inter cell is `ident=N` — two encoders making different
+> decisions — and is out of its fit. Every arm7 cell of all three arms is
+> `ident=Y`.)
+>
+> The port's own slope moved 37.37 -> **36.89 ms/MP** on the still arm and
+> 166.57 -> **162.03** on the video-mode key frame, against a C slope that
+> moved 15.075 -> 15.088 and 62.53 -> 62.73 — so ~1.3 % and ~2.7 % of each is
+> real. **The inter arm's slope ratio RISES to 2.80x and that is not this
+> chunk**: all four of its cells are `ident=Y` now (the 512 cell never was
+> before), i.e. the port is making different, more faithful inter decisions
+> after the two commits above. Do not read it as a regression from this chunk.
+>
+> **MEMORY: ZERO LIVE BYTES, AND ONE macOS-ONLY CELL THAT MOVES.** Full record
+> `benchmarks/mem_levelscratch_2026-09-03.meta`. The `dq_full` elision is NULL
+> on all twelve cells. The level scratch is **identical to the digit on Linux
+> peak HEAP** (heaptrack, 49.18 M and 121.56 M at 1280/2048 inter), **null on
+> Linux peak RSS**, and **null on the still and videokey arms of both ISAs** —
+> but it raises the **macOS INTER arm's peak RSS by ~4 MiB at 1280
+> (59.7 -> 63.8, +6.9 %, three interleaved pairs)**. It is NOT the `Box`: a
+> TLS-resident variant with no heap allocation measures the same +4 MiB. Kept
+> because the CPU win is 1.3-3.9 % across two arms and the cost is one arm on
+> one ISA with no live bytes behind it — but the aarch64 inter arm is the axis
+> that was AT its 25 % boundary, so **the next memory chunk must re-measure it**.
+>
 > **AND ONE NULL FROM THE SAME CHUNK, REVERTED:** routing the two chroma
 > detectors (`detect::chroma_detector_fires`, `detect::chroma_var_arm_fires` —
 > a hand-rolled triple SAD and a hand-rolled variance-against-128) through the
