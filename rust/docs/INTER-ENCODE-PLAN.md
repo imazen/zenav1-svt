@@ -6885,6 +6885,42 @@ the funnel's `NSQDBG CAND`. `flr` is MDS0 RATE only; it cannot say which of
 distortion, lambda or the later stages flipped the winner — and guessing
 between them is exactly what the two wrong readings above did.
 
+#### The full costs, and where the two sides part
+
+`SVT_FULLCOST_OUT` (`SVT_FULLCOST_XY=64,32`) against the port's
+`NSQDBG CAND`. C's lines carry their MD STAGE; the port's do not.
+
+```
+C    st=1 mode=14 ycb=2792 ydist=160867 cost=27427295   NEARMV
+C    st=1 mode=16 ycb=2362 ydist= 95239 cost=36661249   NEWMV
+C    st=3 mode=14 ycb=2792 ydist=143296 cost=25223692   NEARMV, MDS3
+port      ci=30   flr=2845 coeff=161   dist=143296 full=25178207   NEARMV
+port      ci=33   flr=6774 coeff=161   dist= 38192 full=20660324   NEWMV, WINS
+```
+
+1. **The port's NEARMV is C's to the unit** — `dist` equals C's MDS3 `ydist`
+   exactly (143 296) and the full costs are 0.18 % apart. Distortion, rate and
+   lambda all agree on that candidate.
+2. **C DROPS NEWMV AT MDS1** — there is no `st=3 mode=16` line. C's choice is
+   made a stage earlier than the port's.
+3. The port carries NEWMV to its final stage and it wins at `dist = 38192`.
+   **Whether the port's MDS1 distortion is C's 95 239 is NOT measured**: its
+   `CAND` line carries no stage and its NEARMV value aligns with C's MDS3, so
+   38 192 is an MDS3-domain number and 95 239 an MDS1-domain one. Comparing
+   them directly would be the THIRD wrong reading of this cell.
+
+Next probe: the port's MDS1 stage specifically. If its MDS1 NEWMV distortion is
+C's 95 239 the candidate is dropped there and the cell closes; if not, the
+target is the MDS1 distortion of a NEWMV candidate whose NEARMV sibling is
+already exact — much narrower than "the cost model".
+
+Both MVs are full-pel — `(32,8)` is (4,1) px, `(24,0)` is (3,0) px — on a
+`diag` sequence translated by exactly 3 px, so the TRUE motion is `(24,0)` and
+BOTH encoders measure it as the worse-distortion candidate here. That is the
+right-edge partial superblock: 8 of 16 columns are in frame and the replicated
+margin dominates the SAD. Not a defect on either side, and it is why this block
+is the one that keeps diverging.
+
 #### What landed
 
 The header correction, with the stale census kept and dated, and the one thing

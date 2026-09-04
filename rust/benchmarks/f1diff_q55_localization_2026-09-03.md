@@ -84,3 +84,54 @@ exactly what the two wrong readings above did.
 diverges on this cell. The 94-of-259 census it quotes was taken on 2026-09-02,
 before the search was wired and before §1z²⁶; it is kept, dated, and marked as
 a measurement of a state that no longer holds.
+
+## Addendum, same day: the full costs, and where the two sides part
+
+`SVT_FULLCOST_OUT` with `SVT_FULLCOST_XY=64,32` against the port's
+`NSQDBG CAND`, at that block. C's lines carry their MD STAGE (`st=`); the
+port's do not, so the two are aligned by the one value that is identical on
+both sides.
+
+C, the two competing inter candidates:
+
+```
+CFULL org=(64,32) 16x32 st=1 mode=14 ycb=2792 ydist=160867 cost=27427295   <- NEARMV
+CFULL org=(64,32) 16x32 st=1 mode=16 ycb=2362 ydist= 95239 cost=36661249   <- NEWMV
+CFULL org=(64,32) 16x32 st=3 mode=14 ycb=2792 ydist=143296 cost=25223692   <- NEARMV, MDS3
+```
+
+port:
+
+```
+NSQDBG CAND mi=(8,16) 16x32 ci=30 flr=2845 coeff_rate=161 dist=143296 full=25178207  <- NEARMV
+NSQDBG CAND mi=(8,16) 16x32 ci=33 flr=6774 coeff_rate=161 dist= 38192 full=20660324  <- NEWMV, and it WINS
+```
+
+Three things this pins.
+
+1. **The port's NEARMV is C's, to the unit.** `dist = 143296` equals C's MDS3
+   `ydist = 143296` exactly, and the full costs are 25 178 207 against
+   25 223 692 — 0.18 % apart. The distortion pipeline, the rate and the lambda
+   all agree on that candidate.
+2. **C DROPS NEWMV AT MDS1.** There is no `st=3 mode=16` line: at MDS1 NEARMV
+   is 27 427 295 against NEWMV's 36 661 249, so NEWMV never advances. C's
+   choice is made a stage earlier than the port's.
+3. **The port carries NEWMV to its final stage and it wins there**, at
+   `dist = 38192`. Whether the port's MDS1 distortion for that candidate is
+   C's 95 239 is **NOT measured** — the port's `CAND` line carries no stage,
+   and its NEARMV value aligns with C's MDS3, so 38192 is an MDS3-domain
+   number and 95239 an MDS1-domain one. **Comparing them directly would be the
+   third wrong reading of this cell.**
+
+So the next probe is the port's MDS1 stage specifically: if its MDS1 NEWMV
+distortion is C's 95 239, the candidate is dropped there and the cell closes;
+if it is not, the divergence is in the MDS1 distortion of a NEWMV candidate
+whose NEARMV sibling is already exact — a much narrower target than "the cost
+model".
+
+Both MVs are full-pel — `(32,8)` is (4,1) px and `(24,0)` is (3,0) px — on a
+`diag` sequence translated by exactly 3 px, so the TRUE motion is `(24,0)` and
+BOTH encoders measure it as the worse-distortion candidate at this block. That
+is the right-edge partial superblock: only 8 of the 16 columns are in frame, so
+the replicated margin dominates the SAD. It is not a defect on either side, and
+it is why this block is the one that keeps diverging.
