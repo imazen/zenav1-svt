@@ -858,6 +858,24 @@ Crates are not published to crates.io yet — depend by git.
   81520 -> 72624 (0.851x -> 0.758x), videokey 0.883x -> 0.708x / 0.901x ->
   0.788x. Byte-identical: `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), `video_key_matrix` 58/60 (unmoved), `fctx_gate` 96/96 fields on the reference cell and 96/97 cells over the inter grid (the one failure is the known-open `diag 128 128 20 8`, whose byte-different tile cannot save C's CDFs), `inter_decode_gate` 5/5, decode census PASS, completion scan (`SCAN_GATE=1`) 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, nextest 2526/2526, `identity_full_8bit` 1100/1100 — all on aarch64 (bash 5); cross-ISA on r7900x: spotcheck 102/102, `inter_byte_gate` PASS, nextest 2536/2536, `identity_full_8bit` 1100/1100. Records
   `benchmarks/mem_refclone_2026-09-04.{tsv,meta}`.
+- **The funnel honours C's `enable_skipping_mds1` — the MDS1 full loop is
+  skipped when ONE candidate survives the post-MDS0 prune (nic levels 8..=11;
+  product_coding_loop.c:7879), byte for byte (2026-09-04).** `evaluate_leaf`
+  called `mds1::run_mds1` unconditionally; C clears `perform_mds1` there and
+  sends the survivor straight to MDS3 (:9617-9619). MEASURED on
+  `gradient 512x512 qp40 p10` still (callgrind, r7900x): `run_mds1` 886 -> 0
+  calls (C: `perform_mds1` = 0 on 886/886 leaves), `tx_unit_inner` 3,768 ->
+  2,882 = C's `svt_aom_quantize_inv_quantize` 2,882 EXACTLY, program total
+  176.6 M -> 159.3 M Ir (-9.8 %), OBU identical to C. The NIC control table
+  gains tier 1: `svtav1_cref::mode_decision::set_nic_controls` runs the real
+  `svt_aom_set_nic_controls` and `nic_ctrls_matches_the_real_c_at_every_level`
+  pins every row field at all twelve levels. Also CLOSES perf-status's "MDS3
+  candidate count 2.307x at p10 (886 vs 384)": that edge was misjoined —
+  C's 886 MDS3 candidates split 502 `perform_dct_dct_tx` + 384
+  `perform_tx_partitioning` (:6890-6910); the whole-frame admission join
+  shows identical MDS3 sets on 886/886 blocks. Record:
+  `benchmarks/callcount_mds1skip_2026-09-04.{tsv,meta}`,
+  `docs/INTER-ENCODE-PLAN.md` §1z³⁹.
 - **The tx-type search runs C's two phases — transform + SATD screen first,
   quantize/RDOQ/cost only for the survivors — and is 1.33x faster at 512² p2,
   byte for byte.** `txt_search` committed the WHOLE `tx_unit` pipeline on every

@@ -412,6 +412,7 @@ unsafe extern "C" {
         mds2: *mut u32,
         mds3: *mut u32,
     );
+    fn ref_md_set_nic_controls(nic_level: i32, out: *mut u64) -> i32;
     #[allow(clippy::too_many_arguments)]
     fn ref_md_set_md_stage_counts(
         s1: i32,
@@ -463,6 +464,72 @@ pub fn set_nics(
         );
     }
     out
+}
+
+/// C `NicPruningCtrls` (md_process.h:466-512) plus the scaling nums and the
+/// staging mode `svt_aom_set_nic_controls` stamps next to it, as the shim
+/// reads them back off a ZEROED `ModeDecisionContext` — a field C leaves
+/// unassigned at a level reads as 0.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NicControls {
+    pub mds1_class_th: u64,
+    pub mds1_band_cnt: u8,
+    pub mds2_class_th: u64,
+    pub mds2_band_cnt: u8,
+    pub mds3_class_th: u64,
+    pub i_mds3_class_th_mult: u8,
+    pub mds3_band_cnt: u8,
+    pub mds1_cand_base_th_intra: u64,
+    pub mds1_cand_base_th_inter: u64,
+    pub mds1_cand_th_rank_factor: u16,
+    pub mds2_cand_base_th: u64,
+    pub mds2_cand_th_rank_factor: u16,
+    pub mds2_relative_dev_th: u16,
+    pub mds3_cand_base_th: u64,
+    pub enable_skipping_mds1: bool,
+    pub merge_inter_cands_mult: u8,
+    pub stage1_scaling_num: u8,
+    pub stage2_scaling_num: u8,
+    pub stage3_scaling_num: u8,
+    pub md_staging_mode: u8,
+}
+
+/// C `svt_aom_set_nic_controls` (enc_mode_config.c:4518, EXPORTED): the
+/// pruning row for `nic_level` and the NIC scaling level it returns.
+///
+/// # Panics
+/// On a level outside 0..=11 — C `assert(0)`s there.
+pub fn set_nic_controls(nic_level: u8) -> (u8, NicControls) {
+    assert!(nic_level <= 11, "nic level {nic_level} outside C's switch");
+    let mut raw = [0u64; 20];
+    let sc = unsafe { ref_md_set_nic_controls(i32::from(nic_level), raw.as_mut_ptr()) };
+    let n = |i: usize| -> u8 { u8::try_from(raw[i]).expect("u8 field") };
+    let w = |i: usize| -> u16 { u16::try_from(raw[i]).expect("u16 field") };
+    (
+        u8::try_from(sc).expect("nic scaling level"),
+        NicControls {
+            mds1_class_th: raw[0],
+            mds1_band_cnt: n(1),
+            mds2_class_th: raw[2],
+            mds2_band_cnt: n(3),
+            mds3_class_th: raw[4],
+            i_mds3_class_th_mult: n(5),
+            mds3_band_cnt: n(6),
+            mds1_cand_base_th_intra: raw[7],
+            mds1_cand_base_th_inter: raw[8],
+            mds1_cand_th_rank_factor: w(9),
+            mds2_cand_base_th: raw[10],
+            mds2_cand_th_rank_factor: w(11),
+            mds2_relative_dev_th: w(12),
+            mds3_cand_base_th: raw[13],
+            enable_skipping_mds1: raw[14] != 0,
+            merge_inter_cands_mult: n(15),
+            stage1_scaling_num: n(16),
+            stage2_scaling_num: n(17),
+            stage3_scaling_num: n(18),
+            md_staging_mode: n(19),
+        },
+    )
 }
 
 /// C `set_md_stage_counts` (product_coding_loop.c:1394, EXPORTED — the

@@ -7623,6 +7623,92 @@ REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B.
 The combined tree (this + §1z³⁹) was gated again on both ISAs; that record
 is in §1z³⁹.
 
+### 1z³⁹. The funnel honours C's `enable_skipping_mds1` — the port ran the MDS1 full loop on all 886 leaves of the p10 cell where C runs it on none; and the "2.307x MDS3 candidates" lead was a misjoined edge (2026-09-04)
+
+`docs/perf-status.md`'s callcount chunk (2026-09-04) left one p10 finding
+unattributed: the MDS3 candidate count "diverges 2.307x at p10 (886 vs
+384)". This chunk was launched to attribute it. Two things came out, and
+the second is the one that landed. Full record:
+`benchmarks/callcount_mds1skip_2026-09-04.{tsv,meta}`.
+
+#### The lead was a misjoin, proven by the whole-frame admission join
+
+C's `full_loop_core` (product_coding_loop.c:6890-6910) sends each MDS3
+candidate to ONE of two functions: `perform_dct_dct_tx` when TXS and TXT
+are both off for the block (`sq_size <= 64 && start_tx_depth == 0 &&
+end_tx_depth == 0 && search_dct_dct_only(..)`), else
+`perform_tx_partitioning`. At `gradient 512x512 qp40 p10` that is 502 + 384
+= 886 — and 886 is what the port's `mds3::eval_candidate` counts. The
+earlier record had matched the port's 886 against the 384 alone.
+§1z³⁸'s instrument settles it structurally: `SVT_FULLCOST_XY=all` +
+`mds3_admission_join.py` on this cell joins **886 blocks, 0 one-sided,
+MDS3 admitted set identical on 886/886**. There is no admission gap at p10.
+
+#### What the same join exposed, and C's line for it
+
+The join also reports C's `st=1` (MDS1) rows: **0**, on every block, with
+`pm1=0` (`ctx->perform_mds1`) on all 886. The port's `PMDS1` rows were 886
+(one per leaf, one candidate each). C `svt_aom_set_nic_controls`
+(enc_mode_config.c:4518) sets `enable_skipping_mds1 = 1` at nic levels
+8..=11 (`:4774`, `:4805`, `:4836`, `:4867`; the allintra ladder is level 11
+from M8 up) and reads it in exactly one place, the tail of
+`post_mds0_nic_pruning` (`:7879-7881`):
+
+```c
+if (pruning_ctrls.enable_skipping_mds1 && ctx->md_stage_1_total_count == 1) {
+    ctx->perform_mds1 = 0;
+}
+```
+
+With it cleared, `md_encode_block` runs no stage-1 loop (`:9551`), no
+stage-2 loop (`:9593`), neither post-MDS1/MDS2 prune (`:9577`, `:9614`),
+and sends the lone survivor to MDS3 as `mds1_best = mds0_best`
+(`:9571-9573`, `:9617-9619`). The port's funnel called `mds1::run_mds1`
+unconditionally. Defect class: a NIC control-table field
+`nic_arm::nic_ctrls` did not carry — it was recorded there as a
+`PORT-NOTE(unverified)` with this exact C line, whose open question was
+whether skipping MDS1 leaves state MDS3 reads. It does not: `run_mds1`
+writes only `full_cost` (the ind-uv gate's inter/intra minima, decided by
+`is_inter` alone with one candidate — C reads a stale buffer there too)
+and `mds1_has_coeff` (unread). MDS3 recomputes the survivor's full cost,
+so the PICK cannot move; the WORK does.
+
+#### What landed
+
+* `FunnelCfg::enable_skipping_mds1`: `true` on the still ladder's level-11
+  rows (M8+), `false` on the M6 row (level 6, enc_mode_config.c:4714);
+  stamped on the video arm from `nic_arm::NicRow::enable_skipping_mds1 =
+  level >= 8`. The `PORT-NOTE(unverified)` is gone.
+* `evaluate_leaf`: `perform_mds1 = !(cfg.enable_skipping_mds1 && n1 == 1)`;
+  when false, `run_mds1` and `nic::stage_mds1_to_mds3` are skipped and
+  `(order1, n3) = ([order[0]], 1)` with a `debug_assert` that the survivor
+  is MDS0's best (the best class cannot be class-pruned, its head cannot be
+  candidate-pruned — C's `:9617-9619`).
+* Tier 1 for the whole NIC table, which had none: shim
+  `ref_md_set_nic_controls` (mode_decision_shims.c) runs the real
+  `svt_aom_set_nic_controls` on a zeroed `ModeDecisionContext`;
+  `svtav1_cref::mode_decision::set_nic_controls` reads the pruning row, the
+  three scaling nums and `md_staging_mode` back; `nic_arm::tests::
+  nic_ctrls_matches_the_real_c_at_every_level` pins every `NicRow` field
+  at all twelve levels, with an anti-vacuity assert that the flag is set at
+  exactly four of them.
+
+#### Measured (callgrind, r7900x, gradient 512x512 qp40 still, OBU byte-identical to C before and after)
+
+| p10 | before | after | C |
+|---|---|---|---|
+| PROGRAM TOTALS (Ir) | 176,605,480 | **159,339,453** (-9.78 %) | 62,749,694 |
+| port / C | 2.814x | **2.539x** | — |
+| `run_mds1` calls (incl. Ir) | 886 (17,567,742 = 9.95 %) | **0** | 0 (`perform_mds1` = 0 on 886/886) |
+| `tx_unit_inner` calls | 3,768 | **2,882** | 2,882 (`svt_aom_quantize_inv_quantize`) — EXACT |
+| `eval_candidate` calls | 886 | 886 | 886 (`full_loop_core`) |
+
+p6 is the control (nic level 6, flag off): `run_mds1` 1,075 calls after,
+unchanged by construction. Wall clock was NOT measured (no paired A/B this
+chunk; sibling lanes were live on the Mac) — do not quote one.
+
+#### Gates, both commits together (§1z³⁸ + this), aarch64: build --all-targets clean of new warnings (the one warning, `Pd0Mode` private_interfaces at `pd0.rs:3397`, predates both and is untouched), nextest 2529/2529, `regression_spotcheck` 102/102, six still cells identical at 290/839/63/171/580/693 B, **`video_key_matrix` 59/60** (`screenrep p0` identical 2335 B; `gradient p0` 1341 C vs 1342 port — the remaining cell), `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), `identity_full_8bit` 1100/1100, `fctx_gate` PASS 96/96, `inter_decode_gate` 5/5, decode census 96/96, completion scan 64 OK / 0 REFUSED / 0 CRASH. Cross-ISA on r7900x (x86_64, oracle `3115c0c`, source md5-identical): nextest 2539/2539, spotcheck 102/102, inter byte gate PASS, `video_key_matrix` 59/60 (same cell), identity 1100/1100, p10 callgrind OBU == C's. Each ISA's chain was run four times with identical results: on the source tree before the doc/comment edits (on `a1a32ca2f`), on the documented tree, after the rebase onto `20931a0a` (the mv_err_cost dedup), and after the rebase onto `12385a4d` (the ref-clone memory fix + the dsp fold) that lands it.
+
 ## 2d. Landed after 2c — the video-arm RATE ladders (2026-09-01)
 
 Chunk `wv-rdoq`. Full record: `docs/rate-arm-port-map.md`.

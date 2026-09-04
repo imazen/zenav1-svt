@@ -595,6 +595,14 @@ pub struct FunnelCfg {
     /// `nic_ctrls.pruning_ctrls.i_mds3_class_th_mult` (50 for every
     /// palette-reachable allintra level 1/3/5/6/7).
     pub i_mds3_class_th_mult: u64,
+    /// `nic_ctrls.pruning_ctrls.enable_skipping_mds1` (1 at nic levels
+    /// 8..=11, 0 below): with it set and ONE candidate surviving the
+    /// post-MDS0 prune, C clears `perform_mds1` (product_coding_loop.c:7879)
+    /// and runs no stage-1 full loop on the block — that lone candidate goes
+    /// straight to MDS3 (:9617-9619). Work-only: the pick is the same either
+    /// way. Baked here for the still ladder (level 11 at M8+); the video arm
+    /// gets it from `nic_arm::apply`.
+    pub enable_skipping_mds1: bool,
     /// `rate_est_ctrls.update_skip_ctx_dc_sign_ctx`/`update_skip_coeff_ctx`
     /// (M6 rate_est 1: real neighbour contexts; M7/M8 rate_est 4: 0/0).
     pub real_coeff_ctx: bool,
@@ -831,6 +839,9 @@ impl FunnelCfg {
             mds3_class_th: 5,
             mds3_band_cnt: 16,
             i_mds3_class_th_mult: 50,
+            // 0 at nic level 6 (enc_mode_config.c:4714); the level-11 arms
+            // below set it.
+            enable_skipping_mds1: false,
             real_coeff_ctx: true,
             // All-intra pins SSSE_MDS3 at every preset; `intra_arm::apply`
             // overrides this for the video arm.
@@ -1154,7 +1165,8 @@ impl FunnelCfg {
             },
             // preset 8: nic_level 11 (scaling 15 -> nums 0/0/0 -> 1/1/1),
             // all cand thresholds 1, enable_skipping_mds1 (n1==1 makes it a
-            // no-op for the pick), txs_level 0. Shares M7's rate_est_level 4
+            // no-op for the PICK; it removes the MDS1 full loop's WORK, which
+            // the funnel honours since 2026-09-04), txs_level 0. Shares M7's rate_est_level 4
             // (coeff_rate_est_lvl 2) and txt_level 10 (groups 3/2, rate_th
             // 50) — the same previously-missed real-content deltas.
             8 => FunnelCfg {
@@ -1173,6 +1185,9 @@ impl FunnelCfg {
                 mds1_band_cnt: 16,
                 mds2_class_th: 0,
                 mds2_band_cnt: 10,
+                // nic level 11 (enc_mode_config.c:4867): one post-MDS0
+                // survivor skips the MDS1 full loop.
+                enable_skipping_mds1: true,
                 real_coeff_ctx: false,
                 txs_on: false,
                 coeff_rate_est_lvl: 2,
@@ -1204,6 +1219,9 @@ impl FunnelCfg {
                 mds1_band_cnt: 16,
                 mds2_class_th: 0,
                 mds2_band_cnt: 10,
+                // nic level 11 (enc_mode_config.c:4867): one post-MDS0
+                // survivor skips the MDS1 full loop.
+                enable_skipping_mds1: true,
                 real_coeff_ctx: false,
                 // eff-M9: pcs->txs_level is 0 at the picture level, but the
                 // FTR_COUPLE_VLPD0_TXS_PER_SB coupling bumps it per-SB to

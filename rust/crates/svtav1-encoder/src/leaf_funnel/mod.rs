@@ -673,29 +673,59 @@ pub(crate) fn evaluate_leaf(
     let order = &staging.order;
     let n1 = order.len();
 
+    // C `ctx->perform_mds1`: set at `:9476`, cleared by the tail of
+    // `post_mds0_nic_pruning` (product_coding_loop.c:7879-7881) when
+    // `enable_skipping_mds1` (nic levels 8..=11) and the post-prune stage-1
+    // total is ONE. `md_encode_block` then runs no stage-1 / stage-2 full
+    // loop (`:9551`, `:9593`), neither post-MDS1/MDS2 prune (`:9577`, `:9614`)
+    // and sends that survivor alone to MDS3 (`:9617-9619`). The pick cannot
+    // differ — MDS3 recomputes the one candidate's full cost — but the work
+    // does: MEASURED on `gradient 512x512 qp40 p10` (allintra nic level 11)
+    // C's `perform_mds1` is 0 on all 886 leaves and the funnel's unconditional
+    // MDS1 pass was 17.9 M of its 176.6 M Ir (callgrind, r7900x,
+    // `benchmarks/callcount_mds1skip_2026-09-04.meta`; `docs/INTER-ENCODE-PLAN.md`
+    // §1z³⁹). Nothing MDS3 reads is left unwritten: `run_mds1` writes only
+    // `full_cost` (read by the ind-uv gate's inter/intra minima, decided by
+    // `is_inter` alone when there is one candidate — C reads a stale buffer
+    // there too) and `mds1_has_coeff` (unread).
+    let perform_mds1 = !(cfg.enable_skipping_mds1 && n1 == 1);
+
     // -- MDS1: luma-only full loop -- see [`mds1`].
-    mds1::run_mds1(
-        fx,
-        &geom,
-        &bd10_rd,
-        &qt,
-        lambda,
-        y_src,
-        y_src_stride,
-        y_src_off,
-        y_recon,
-        y_stride,
-        &mut cands,
-        order,
-        n1,
-    );
+    if perform_mds1 {
+        mds1::run_mds1(
+            fx,
+            &geom,
+            &bd10_rd,
+            &qt,
+            lambda,
+            y_src,
+            y_src_stride,
+            y_src_off,
+            y_recon,
+            y_stride,
+            &mut cands,
+            order,
+            n1,
+        );
+    }
 
     // -- MDS1 -> MDS3 staging: per-class full-cost sort + the two prunes --
     // C `sort_full_cost_based_candidates` + `post_mds1_nic_pruning` +
     // `post_mds2_nic_pruning`. See [`nic`].
-    let staging3 = nic::stage_mds1_to_mds3(&cands, cfg, &staging);
-    let order1 = staging3.order1;
-    let n3 = staging3.n3;
+    let (order1, n3) = if perform_mds1 {
+        let staging3 = nic::stage_mds1_to_mds3(&cands, cfg, &staging);
+        (staging3.order1, staging3.n3)
+    } else {
+        // `:9571-9573` + `:9617-9619`: `mds1_best = mds0_best`, and
+        // `best_candidate_index_array[0]` is the head of that class — the
+        // lone survivor, which is also MDS0's best (the best class cannot be
+        // class-pruned, its head cannot be candidate-pruned).
+        debug_assert_eq!(
+            order[0], staging.mds0_best_idx,
+            "one post-MDS0 survivor must be MDS0's best"
+        );
+        (vec![order[0]], 1)
+    };
 
     // -- MDS3 + the independent-chroma search -- see [`mds3`].
     mds3::run_mds3(

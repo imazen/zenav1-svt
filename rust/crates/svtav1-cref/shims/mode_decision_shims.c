@@ -33,6 +33,7 @@
 #include "EbSvtAv1.h"
 #include "md_process.h"
 #include "mode_decision.h"
+#include "enc_mode_config.h"
 #include "inter_prediction.h"
 #include "adaptive_mv_pred.h"
 #include "pcs.h"
@@ -628,4 +629,44 @@ uint64_t ref_md_estimate_ref_frame_type_bits(
     free(blk);
     free(ctx);
     return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * The NIC control table.
+ *
+ *   svt_aom_set_nic_controls   enc_mode_config.c:4518 (EXPORTED)
+ *
+ * Runs the real switch on a zeroed ModeDecisionContext and copies the
+ * pruning row + the scaling nums it stamped back out, so the port's
+ * transcription (`nic_arm::nic_ctrls`) is pinned entry-for-entry. A
+ * zeroed context means a field C leaves UNASSIGNED at a level (the band
+ * counts at levels 0..3) reads as 0 -- the same convention the port's
+ * table uses. Returns the NIC scaling level C returns.
+ * ------------------------------------------------------------------ */
+int32_t ref_md_set_nic_controls(int32_t nic_level, uint64_t* out) {
+    ModeDecisionContext* ctx = (ModeDecisionContext*)calloc(1, sizeof(*ctx));
+    const uint8_t        sc  = svt_aom_set_nic_controls(ctx, (uint8_t)nic_level);
+    const NicPruningCtrls* p = &ctx->nic_ctrls.pruning_ctrls;
+    out[0]  = p->mds1_class_th;
+    out[1]  = p->mds1_band_cnt;
+    out[2]  = p->mds2_class_th;
+    out[3]  = p->mds2_band_cnt;
+    out[4]  = p->mds3_class_th;
+    out[5]  = p->i_mds3_class_th_mult;
+    out[6]  = p->mds3_band_cnt;
+    out[7]  = p->mds1_cand_base_th_intra;
+    out[8]  = p->mds1_cand_base_th_inter;
+    out[9]  = p->mds1_cand_th_rank_factor;
+    out[10] = p->mds2_cand_base_th;
+    out[11] = p->mds2_cand_th_rank_factor;
+    out[12] = p->mds2_relative_dev_th;
+    out[13] = p->mds3_cand_base_th;
+    out[14] = p->enable_skipping_mds1;
+    out[15] = p->merge_inter_cands_mult;
+    out[16] = ctx->nic_ctrls.scaling_ctrls.stage1_scaling_num;
+    out[17] = ctx->nic_ctrls.scaling_ctrls.stage2_scaling_num;
+    out[18] = ctx->nic_ctrls.scaling_ctrls.stage3_scaling_num;
+    out[19] = ctx->nic_ctrls.md_staging_mode;
+    free(ctx);
+    return (int32_t)sc;
 }

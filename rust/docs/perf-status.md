@@ -39,6 +39,25 @@
 > 96192 -> 87856 (0.901x -> 0.788x); `.obu` identical to C on every row.
 > Gates: `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), `video_key_matrix` 58/60 (unmoved), `fctx_gate` 96/96 fields on the reference cell and 96/97 cells over the inter grid (the one failure is the known-open `diag 128 128 20 8`, whose byte-different tile cannot save C's CDFs), `inter_decode_gate` 5/5, decode census PASS, completion scan (`SCAN_GATE=1`) 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, nextest 2526/2526, `identity_full_8bit` 1100/1100 — all on aarch64 (bash 5); re-run on the PUSHED commit `8fed0aa15` after two rebases (`2b1a74edb` mv_err_cost, `e0275930a` dsp inv-txfm): spotcheck 102/102, `inter_byte_gate` PASS, `identity_full_8bit` 1100/1100; cross-ISA on r7900x: spotcheck 102/102, `inter_byte_gate` PASS, nextest 2536/2536, `identity_full_8bit` 1100/1100.
 
+> **THE p10 "2.307x MDS3 CANDIDATES" FINDING IS CLOSED — IT WAS A MISJOINED
+> EDGE, AND THE REAL p10 EXCESS WAS THE MDS1 FULL LOOP (2026-09-04, landed).**
+> C's `full_loop_core` (product_coding_loop.c:6890-6910) routes each MDS3
+> candidate to `perform_dct_dct_tx` (TXS+TXT off: 502 at this cell) OR
+> `perform_tx_partitioning` (384); the record below matched the port's
+> `eval_candidate` 886 against the 384 alone. C's MDS3 count is
+> `full_loop_core` = 886 = the port's, and the whole-frame admission join
+> (`SVT_FULLCOST_XY=all` + `tools/perf_profile/mds3_admission_join.py`)
+> shows identical admitted sets on 886/886 blocks. What the join ALSO showed:
+> C's `perform_mds1` is 0 on all 886 leaves (`enable_skipping_mds1`, nic
+> levels 8..=11, `:7879`) while the port ran `run_mds1` on every one — the
+> "positive control" below (`run_mds1 -> tx_unit` 886 = C's quantize 886)
+> was a coincidence of counts, not a join: C's 886 commits are its MDS3 pass,
+> the port's were its MDS1 pass with 886 more at MDS3 (3,768 total). Fixed:
+> the funnel honours the flag; `run_mds1` 886 -> 0, `tx_unit_inner` 3,768 ->
+> 2,882 = C's `svt_aom_quantize_inv_quantize` 2,882 exactly, p10 total
+> 176.6 M -> 159.3 M Ir (-9.8 %, port/C 2.814x -> 2.539x), byte-identical.
+> Wall clock NOT measured. Record: `benchmarks/callcount_mds1skip_2026-09-04.
+> {tsv,meta}`, `docs/INTER-ENCODE-PLAN.md` §1z³⁹.
 > **CALL-COUNT ATTRIBUTION FOUND THE REPEATED WORK — TWO HEADLINE MECHANISMS,
 > BOTH SOURCE-LOCATED, ON r7900x/callgrind (2026-09-04).** Records
 > `benchmarks/callcount_2026-09-04.{tsv,meta}`. Self-time attribution

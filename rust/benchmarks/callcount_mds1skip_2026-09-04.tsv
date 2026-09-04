@@ -1,0 +1,26 @@
+# BEFORE/AFTER call counts for honouring C's `enable_skipping_mds1` (the MDS1
+# full loop is skipped when ONE candidate survives the post-MDS0 prune), with C
+# as the third column. Companion meta: callcount_mds1skip_2026-09-04.meta.
+#
+# Also the CLOSURE of callcount_2026-09-04's "MDS3 candidate count 2.307x at
+# p10 (886 vs 384)" finding: that edge was MISJOINED (see meta). Both sides admit
+# 886 candidates to MDS3 at this cell, with identical admitted sets on 886/886
+# blocks (tools/perf_profile/mds3_admission_join.py, this tree).
+#
+# host r7900x (x86_64-linux), valgrind-3.26.0 --tool=callgrind, gradient 512x512
+# qp40 still, warmup=0 both sides, env -u RUSTFLAGS (no target-cpu=native).
+# before = a1a32ca2f + the ind-uv fix (byte-inert at this cell: no ind-uv at p10)
+# after  = before + the mds1-skip (this commit). OBU byte-identical to C at both
+# presets, before and after (p10 6743 B sha 923d046b98312cd8; p6 5995 B).
+#
+# preset	function	before	after	C	c_function	note
+10	PROGRAM TOTALS (Ir)	176605480	159339453	62749694	-	-17266027 Ir = -9.78% of port; port/C 2.814x -> 2.539x
+10	mds1::run_mds1 (calls)	886	0	0	(MDS1 full loop; C perform_mds1=0 on 886/886)	C's `st=1` CFULL rows: 0
+10	mds1::run_mds1 (inclusive Ir)	17567742	0	0	-	9.95% of before-total
+10	tx_pipeline::tx_unit_inner (calls)	3768	2882	2882	svt_aom_quantize_inv_quantize	EXACT after; the 886 excess were MDS1's one commit per leaf
+10	mds3::eval_candidate (calls)	886	886	886	full_loop_core	C = 502 perform_dct_dct_tx + 384 perform_tx_partitioning
+10	mds3::run_mds3 (calls)	886	886	886	svt_aom_full_loop_uv	-
+10	inject::inject_candidates (calls)	886	886	886	inject_intra_candidates	-
+10	nic::stage_mds1_to_mds3 (calls)	886	0	-	(C: sort_full_cost_based_candidates + post_mds1/2 prunes skipped under !perform_mds1, :9577/:9614)	-
+6	PROGRAM TOTALS (Ir)	-	1607483753	-	-	control: no before-run at p6 in this round; p6 nic level 6 has enable_skipping_mds1=0
+6	mds1::run_mds1 (calls)	-	1075	-	-	unchanged by construction (flag is 0 below level 8)

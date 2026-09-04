@@ -1,0 +1,105 @@
+THE PORT RAN THE MDS1 FULL LOOP ON EVERY LEAF AT p10; C RUNS IT ON NONE.
+Honouring C's `enable_skipping_mds1` removes 886 `run_mds1` calls and
+17.27 M Ir (9.8 %) from the port's 512x512 p10 still, byte-identical.
+And the "2.307x MDS3 candidates at p10" lead this chunk was launched on
+was a MISJOINED callgrind edge — both sides admit 886, with identical sets.
+
+date:   2026-09-04
+host:   r7900x (x86_64-linux, AMD, 24 cores), valgrind-3.26.0
+        --tool=callgrind (Ir events, no cache/branch sim), rustc 1.97.1,
+        gcc 15.2.0. C oracle: reference/svt-av1 @ 3115c0c1, prebuilt
+        (NOT rebuilt this chunk). Port: `cargo build --release --example
+        perf_encode` under `env -u RUSTFLAGS` (no target-cpu=native).
+tree:   before = a1a32ca2f (origin/main) + the ind-uv fix (§1z³⁸; inert
+        at this cell — the independent-uv search is M0/M1 only); after =
+        before + the mds1-skip. Source-identical on both hosts (md5 of
+        every changed file compared); r7900x's checkout is an rsync of
+        the Mac jj workspace.
+grid:   gradient 512x512 qp40, STILL config, presets 10 (the finding's
+        cell) and 6 (control: nic level 6 has the flag OFF). warmup=0.
+data:   benchmarks/callcount_mds1skip_2026-09-04.tsv
+tools:  tools/perf_profile/callcount.py (per-function call totals from the
+        raw callgrind output), callgrind_annotate --tree=caller (inclusive
+        Ir per edge), tools/perf_profile/mds3_admission_join.py (NEW:
+        per-block C/port MDS1+MDS3 admission join, see §1z³⁸).
+
+=================== THE MECHANISM, WITH LINES ==============================
+
+C `svt_aom_set_nic_controls` (enc_mode_config.c:4518) sets
+`nic_pruning_ctrls->enable_skipping_mds1 = 1` at nic levels 8, 9, 10, 11
+(:4774, :4805, :4836, :4867) and 0 at every level below. The allintra
+ladder is at level 11 from M8 up. C reads the flag in exactly ONE place,
+the tail of `post_mds0_nic_pruning` (product_coding_loop.c:7879-7881):
+
+    if (pruning_ctrls.enable_skipping_mds1 && ctx->md_stage_1_total_count == 1) {
+        ctx->perform_mds1 = 0;
+    }
+
+`perform_mds1` is set to 1 per block at :9476 and, when cleared,
+`md_encode_block` runs no stage-1 full loop (:9551), no stage-2 loop
+(:9593), neither the post-MDS1 nor the post-MDS2 prune (:9577, :9614), and
+sends the lone survivor straight to MDS3 (:9617-9619:
+`md_stage_3_total_count = 1; best_candidate_index_array[0] =
+cand_buff_indices[mds1_best_class_it][0]`, with `mds1_best_* = mds0_best_*`
+from :9571-9573).
+
+The port's funnel (`leaf_funnel/mod.rs`, `evaluate_leaf`) called
+`mds1::run_mds1` unconditionally, then `nic::stage_mds1_to_mds3`. Defect
+class: a control-table field the transcription (`nic_arm::nic_ctrls`) did
+not carry — it was flagged there as `PORT-NOTE(unverified)` with the exact
+C line, and the note's own question ("does skipping MDS1 leave any
+candidate state MDS3 reads different?") is what this chunk answers: NO.
+`run_mds1` writes only `full_cost` (read by the ind-uv gate's inter/intra
+minima — decided by `is_inter` alone when there is one candidate, and C
+reads a stale buffer there too) and `mds1_has_coeff` (unread). MDS3
+recomputes the survivor's full cost either way, so the PICK cannot move;
+only the WORK does.
+
+=================== WHY THE "2.307x" LEAD WAS WRONG =======================
+
+callcount_2026-09-04 matched the port's `mds3::eval_candidate` (886) against
+C's `perform_tx_partitioning` (384) and called the ratio "MDS3 candidate
+count 2.307x". C's `full_loop_core` (:6890-6910) routes each MDS3 candidate
+to ONE of two functions: `perform_dct_dct_tx` when `sq_size <= 64 &&
+start_tx_depth == 0 && end_tx_depth == 0 && search_dct_dct_only(..)` (TXS
+off, TXT off — 502 candidates at this cell), else `perform_tx_partitioning`
+(384). C's MDS3 candidate count is `full_loop_core` itself: 886 = the
+port's 886. The whole-frame admission join (`SVT_FULLCOST_XY=all`, this
+chunk's instrument) confirms it structurally: 886 blocks joined, 0
+one-sided, MDS3 admitted SET (mode, fi, delta) identical on 886/886, C
+`st=1` rows 0 and port `PMDS1` rows 0 — i.e. C ran NO MDS1 anywhere and,
+after the fix, neither does the port.
+
+The 2026-09-04 record's "positive control" `mds1::run_mds1 -> tx_unit`
+886 = C `full_loop_core` quantize 886 was ALSO a coincidence of counts, not
+a join: C's 886 commits are its MDS3 pass; the port's 886 were its MDS1
+pass, with 886 MORE at MDS3 (tx_unit 3768 = 2882 + 886). After the fix the
+port's `tx_unit_inner` is 2882 = C's `svt_aom_quantize_inv_quantize` 2882,
+to the unit.
+
+=================== RESULT =================================================
+
+  p10 (512x512 gradient qp40 still), OBU byte-identical to C before/after:
+    PROGRAM TOTALS        176,605,480 -> 159,339,453 Ir   (-17,266,027, -9.78 %)
+    port / C              2.814x -> 2.539x                (C 62,749,694)
+    run_mds1 calls        886 -> 0                        (C perform_mds1=0 on 886/886)
+    run_mds1 incl. Ir     17,567,742 (9.95 %) -> 0
+    tx_unit_inner calls   3,768 -> 2,882                  (C 2,882: EXACT)
+    eval_candidate calls  886 = 886                       (C full_loop_core 886)
+  p6 (control, flag OFF at nic level 6): run_mds1 1,075 calls after — the
+    path is unchanged by construction below level 8; no before-run taken.
+
+  Wall clock: NOT measured this chunk (no paired A/B; the Mac had sibling
+  lanes live). Ir on r7900x is the record; do not quote a ms figure.
+
+=================== WHERE THE FLAG LIVES NOW ===============================
+
+`FunnelCfg::enable_skipping_mds1` — baked `true` on the still ladder's
+level-11 rows (M8+; `false` on the M6 row, level 6) and stamped from
+`nic_arm::NicRow::enable_skipping_mds1 = level >= 8` on the video arm.
+`svtav1_cref::mode_decision::set_nic_controls` (shim
+`ref_md_set_nic_controls`, mode_decision_shims.c) runs the real
+`svt_aom_set_nic_controls` on a zeroed `ModeDecisionContext` and
+`nic_ctrls_matches_the_real_c_at_every_level` pins EVERY NicRow field at
+all twelve levels (tier 1), with an anti-vacuity assert that the flag is
+set at exactly four levels.

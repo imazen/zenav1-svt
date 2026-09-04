@@ -6,7 +6,7 @@
 //! `svt_aom_get_nic_level_{allintra,default}` (`enc_mode_config.c:4488` /
 //! `:4451`), already ported in [`leaf`] and tier-1 gated; the control table is
 //! `svt_aom_set_nic_controls` (`:4518`), whose rows this module transcribes as
-//! the ten [`FunnelCfg`] fields the funnel reads.
+//! the [`FunnelCfg`] fields the funnel reads.
 //!
 //! On a KEY frame (`is_islice`, `is_base`) the arms pick:
 //!
@@ -30,8 +30,17 @@
 //! which is why the port had drifted to UNDER-shooting C's byte count on
 //! textured content.
 //!
-//! `enable_skipping_mds1` is the one row field with no [`FunnelCfg`] home; it
-//! is carried as a `PORT-NOTE(unverified)` on [`nic_ctrls`].
+//! `enable_skipping_mds1` (1 at levels 8..=11, 0 below) is carried as
+//! [`FunnelCfg::enable_skipping_mds1`] since 2026-09-04. C reads it in exactly
+//! one place — `post_mds0_nic_pruning` clears `ctx->perform_mds1` when the
+//! flag is set AND the post-prune stage-1 total is 1
+//! (product_coding_loop.c:7879) — and `md_encode_block` then runs NO stage-1
+//! full loop on that block (:9551). The pick cannot differ (MDS3 recomputes
+//! the one survivor's full cost either way) but the WORK does: on `gradient
+//! 512x512 qp40 p10` C's `perform_mds1` is 0 on all 886 leaves and the
+//! port's unconditional `run_mds1` was 17.9 M of its 176.6 M Ir (callgrind,
+//! r7900x, `benchmarks/callcount_mds1skip_2026-09-04.meta`). See
+//! `docs/INTER-ENCODE-PLAN.md` §1z³⁹.
 //!
 //! `mds1_class_th` / `mds2_class_th` and the INTER half of the post-MDS0
 //! candidate threshold (`mds1_cand_base_th_inter`) ARE carried, since
@@ -61,10 +70,12 @@
 //! EXPORTED and driven by `tests/c_parity_sig_deriv_leaf.rs`; the video arm is
 //! additionally read back as `pcs->nic_level` by
 //! `tests/c_parity_sig_deriv_md_config.rs`). The control table is transcribed
-//! here — `svt_aom_set_nic_controls` writes into a `ModeDecisionContext`, so a
-//! shim would have to synthesise one — and is pinned entry-for-entry against
-//! `FunnelCfg::for_preset`'s independently-derived baked rows by
-//! `allintra_flattening_matches_the_ladder`.
+//! here and is tier 1 since 2026-09-04: `svtav1_cref::mode_decision::
+//! set_nic_controls` runs the real `svt_aom_set_nic_controls` on a zeroed
+//! `ModeDecisionContext` and `nic_ctrls_matches_the_real_c_at_every_level`
+//! pins every [`NicRow`] field at all twelve levels. It is additionally
+//! pinned against `FunnelCfg::for_preset`'s independently-derived baked rows
+//! by `allintra_flattening_matches_the_ladder`.
 
 use crate::leaf_funnel::FunnelCfg;
 use crate::port_enc_mode_config::leaf;
@@ -109,6 +120,9 @@ pub(crate) struct NicRow {
     pub(crate) mds3_class_th: u64,
     pub(crate) mds3_band_cnt: u8,
     pub(crate) i_mds3_class_th_mult: u64,
+    /// `nic_pruning_ctrls->enable_skipping_mds1`: 1 at levels 8..=11
+    /// (enc_mode_config.c:4774/:4805/:4836/:4867), 0 below.
+    pub(crate) enable_skipping_mds1: bool,
 }
 
 /// `pcs->nic_level` for this arm. `enc_mode` must already be
@@ -124,18 +138,6 @@ pub(crate) fn nic_level(arm: ScArm, enc_mode: u8, is_base: bool) -> u8 {
 
 /// `svt_aom_set_nic_controls` (`enc_mode_config.c:4518`) as a [`NicRow`].
 ///
-// PORT-NOTE(unverified): `enable_skipping_mds1` (1 at levels 8..=11, 0 below)
-// is not carried. C uses it in exactly one place — `post_mds0_nic_pruning`
-// clears `ctx->perform_mds1` when the flag is set AND the post-prune stage-1
-// total is 1 (product_coding_loop.c:7879) — and the port's funnel has no
-// MDS1-skip path: it always runs the stage-1 full loop. With a single
-// candidate there is nothing for MDS1 to prune and MDS3 recomputes the full
-// cost, so the WINNER cannot differ; what is unverified is whether skipping
-// MDS1 leaves any candidate state MDS3 reads (quantized coefficients, cached
-// costs) different from having run it. Verify by dumping C's
-// `perform_mds1`/`md_stage_1_total_count` per leaf at nic_level 8 with the
-// `SVT_*_OUT` interposers (tools/ctrace-linux) on a cell where the video-arm
-// nic level is live, and comparing the MDS3 winner either way.
 ///
 /// # Panics
 /// On a level outside 0..=11 — C `assert(0)`s there.
@@ -208,6 +210,9 @@ pub(crate) fn nic_ctrls(level: u8) -> NicRow {
         mds3_class_th: m3cl,
         mds3_band_cnt: m3b,
         i_mds3_class_th_mult: imult,
+        // `enable_skipping_mds1 = 1` on cases 8..=11 (enc_mode_config.c:4774,
+        // :4805, :4836, :4867), `0` on every case below (:4534..:4744).
+        enable_skipping_mds1: level >= 8,
     }
 }
 
@@ -230,6 +235,7 @@ pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_base: bool
     cfg.mds3_class_th = r.mds3_class_th;
     cfg.mds3_band_cnt = r.mds3_band_cnt;
     cfg.i_mds3_class_th_mult = r.i_mds3_class_th_mult;
+    cfg.enable_skipping_mds1 = r.enable_skipping_mds1;
 }
 
 #[cfg(test)]
@@ -279,6 +285,7 @@ mod tests {
                     ("mds3_cand_base_th", c.mds3_cand_base_th),
                     ("mds3_band_cnt", u64::from(c.mds3_band_cnt)),
                     ("i_mds3_class_th_mult", c.i_mds3_class_th_mult),
+                    ("enable_skipping_mds1", u64::from(c.enable_skipping_mds1)),
                 ]
             };
             assert_eq!(
@@ -292,6 +299,73 @@ mod tests {
                 "allintra mds3_class_th at M{preset}"
             );
         }
+    }
+
+    /// TIER 1: every [`NicRow`] field at every level against the real
+    /// `svt_aom_set_nic_controls`, run by the cref shim on a zeroed context
+    /// (a field C leaves unassigned reads as 0 there, as it does here). The
+    /// scaling row is compared as the three stage nums C stamps, not as the
+    /// level index, so a wrong `NICS_SCAL_NUM` row would fail too.
+    #[test]
+    fn nic_ctrls_matches_the_real_c_at_every_level() {
+        let mut skipping_levels = 0usize;
+        for level in 0u8..=11 {
+            let (_sc, c) = svtav1_cref::mode_decision::set_nic_controls(level);
+            let r = nic_ctrls(level);
+            // A NAMED list, as in the ladder test: a 16-tuple is past the
+            // arity `Debug`/`PartialEq` are implemented at.
+            let want: alloc::vec::Vec<(&str, u64)> = alloc::vec![
+                ("nic_num.0", u64::from(c.stage1_scaling_num)),
+                ("nic_num.1", u64::from(c.stage2_scaling_num)),
+                ("nic_num.2", u64::from(c.stage3_scaling_num)),
+                ("mds1_cand_base_th", c.mds1_cand_base_th_intra),
+                ("mds1_cand_base_th_inter", c.mds1_cand_base_th_inter),
+                ("mds1_class_th", c.mds1_class_th),
+                ("mds1_band_cnt", u64::from(c.mds1_band_cnt)),
+                ("mds2_class_th", c.mds2_class_th),
+                ("mds2_band_cnt", u64::from(c.mds2_band_cnt)),
+                ("mds1_rank_factor", u64::from(c.mds1_cand_th_rank_factor)),
+                ("mds2_cand_base_th", c.mds2_cand_base_th),
+                ("mds2_rank_factor", u64::from(c.mds2_cand_th_rank_factor)),
+                ("mds2_rel_dev_th", u64::from(c.mds2_relative_dev_th)),
+                ("mds3_cand_base_th", c.mds3_cand_base_th),
+                ("mds3_class_th", c.mds3_class_th),
+                ("mds3_band_cnt", u64::from(c.mds3_band_cnt)),
+                ("i_mds3_class_th_mult", u64::from(c.i_mds3_class_th_mult)),
+                ("enable_skipping_mds1", u64::from(c.enable_skipping_mds1)),
+            ];
+            let got: alloc::vec::Vec<(&str, u64)> = alloc::vec![
+                ("nic_num.0", r.nic_num.0),
+                ("nic_num.1", r.nic_num.1),
+                ("nic_num.2", r.nic_num.2),
+                ("mds1_cand_base_th", r.mds1_cand_base_th),
+                ("mds1_cand_base_th_inter", r.mds1_cand_base_th_inter),
+                ("mds1_class_th", r.mds1_class_th),
+                ("mds1_band_cnt", u64::from(r.mds1_band_cnt)),
+                ("mds2_class_th", r.mds2_class_th),
+                ("mds2_band_cnt", u64::from(r.mds2_band_cnt)),
+                ("mds1_rank_factor", r.mds1_rank_factor),
+                ("mds2_cand_base_th", r.mds2_cand_base_th),
+                ("mds2_rank_factor", r.mds2_rank_factor),
+                ("mds2_rel_dev_th", r.mds2_rel_dev_th),
+                ("mds3_cand_base_th", r.mds3_cand_base_th),
+                ("mds3_class_th", r.mds3_class_th),
+                ("mds3_band_cnt", u64::from(r.mds3_band_cnt)),
+                ("i_mds3_class_th_mult", r.i_mds3_class_th_mult),
+                ("enable_skipping_mds1", u64::from(r.enable_skipping_mds1)),
+            ];
+            assert_eq!(
+                got, want,
+                "nic_ctrls vs svt_aom_set_nic_controls at level {level}"
+            );
+            skipping_levels += usize::from(c.enable_skipping_mds1);
+        }
+        // ANTI-VACUITY: the flag must be observable on both sides of the
+        // ladder, or agreement could be agreement on a constant.
+        assert_eq!(
+            skipping_levels, 4,
+            "C sets enable_skipping_mds1 at exactly levels 8..=11"
+        );
     }
 
     /// The M6 key-frame row the inter campaign stands on.
