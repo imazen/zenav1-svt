@@ -1,5 +1,46 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **ZONE 2 — THE LAST SCALAR DIRECTIONAL-INTRA KERNEL — RUNS IN NEON LANES
+> NOW, AND IT DID NOT NEED C's GATHER (2026-09-03).** Record
+> `benchmarks/z2neon_ab_2026-09-03.*`. `perf_still_attrib_2026-09-03.meta` put
+> `dr_predictor_edged` at 763 of 19,115 self samples at 512x512 p2 against C's
+> `svt_av1_dr_prediction_z2_neon` 323 / `_z3_neon` 94 / `_z1_neon` 83 — z2 is
+> C's largest directional kernel there and was the one still unported. A/B,
+> box verified quiet before AND after each run, every cell `ident=Y`:
+>
+> | arm | 256 p2 | 512 p2 | 256 p6 | 512 p6 | 256 p10 | 512 p10 |
+> |---|---|---|---|---|---|---|
+> | still (n=15) | 1.003x | **1.014x** | 1.009x | 1.005x | 0.997x | 1.002x |
+>
+> | arm | 128 p6 | 256 p6 | 512 p6 | 128 p8 | 256 p8 | 512 p8 |
+> |---|---|---|---|---|---|---|
+> | videokey (n=25) | **1.042x** | **1.028x** | **1.025x** | 1.018x | 1.011x | 1.008x |
+>
+> **All six videokey cells move with their whole p25/p75 span below 1.0**, and
+> so does 512 p2 — the still arm's worst cell. The two p10 still cells are the
+> near-control (`dr_predictor_edged` is not in the port's top twelve INTRA_PRED
+> symbols at p10) and read 1.002x / 0.997x.
+>
+> **THE STRUCTURE IS THE POINT.** C computes BOTH edges for every 16-column
+> group and selects with `vbslq_u8`, reaching the `left` half through
+> `vqtbl4q_u8` — a 64-byte table lookup — because within a ROW that half's
+> `base_y` and `shift` both vary with the column. This arm needs no gather:
+> `base_x` decreases with `r`, so the `above` region is a staircase and its
+> complement is the `left` region; pass 1 walks the first ROW-major (z1's
+> kernel, constant shift along a row) and pass 2 walks the second COLUMN-major
+> (z3's kernel, constant shift down a column, same scatter). Disjoint regions,
+> every output byte written once, no select.
+>
+> **AND THE MAGETYPES ANSWER IS ABOUT THE PIN, NOT UPSTREAM.** `Cargo.lock`
+> holds `magetypes 0.9.28`, the only published version, and archmage's
+> `v0.9.28` tag PREDATES both PR #71 (`fd66480`, uniform shifts + saturating
+> add/sub) and PR #74 (`fd3c609`, `widen_low`/`widen_high`/
+> `narrow_saturating`). Verified by grep of the published crate source: all
+> four symbols ABSENT. The deciding primitive is still `u8x16 -> u16x8`
+> widening, and two gaps would survive a bump anyway — `narrow_saturating` is
+> a SATURATING narrow where this needs a ROUNDING one, and `shl_uniform` was
+> never what this kernel lacked.
+
 > **THE STILL ARM'S MEMORY TRAFFIC IS DEAD BUFFER WORK IN THE DRIVERS, AND IT
 > IS FOUND BY ASKING WHO CALLS `memset` (2026-09-03).** Commits `ab7c5ed4`
 > (the `dq_full` elision) and `ee7a755f` (the shared level-map scratch);

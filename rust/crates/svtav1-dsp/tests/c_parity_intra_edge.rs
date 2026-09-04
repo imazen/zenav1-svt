@@ -121,7 +121,28 @@ fn dr_prediction_kernels_match_c() {
     let _tier = archmage::testing::lock_token_testing();
     let mut rng = Rng(0xd41d_ed6e_u64 ^ 0x9E3779B97F4A7C15);
     let base_angles = [45i32, 67, 90, 113, 135, 157, 203, 180];
-    let sizes = [(4usize, 4usize), (8, 8), (16, 16), (32, 32), (64, 64)];
+    // Square AND rectangular. The z2 NEON arm splits the block into an
+    // `above` region walked row-major and a `left` region walked
+    // column-major, and the staircase between them depends on bw and bh
+    // INDEPENDENTLY -- a square-only grid cannot witness that split, nor
+    // the `bw >= 16 && bh >= 16` gate's two one-sided corners.
+    let sizes = [
+        (4usize, 4usize),
+        (8, 8),
+        (16, 16),
+        (32, 32),
+        (64, 64),
+        (4, 16),
+        (16, 4),
+        (8, 16),
+        (16, 8),
+        (16, 32),
+        (32, 16),
+        (16, 64),
+        (64, 16),
+        (32, 64),
+        (64, 32),
+    ];
     for &(w, h) in &sizes {
         for &base in &base_angles {
             for delta in [-3i32, 0, 3] {
@@ -198,7 +219,28 @@ fn dr_prediction_all_tiers_match_c() {
     use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
     let mut rng = Rng(0x5EED_2A17_u64 ^ 0x9E3779B97F4A7C15);
     let base_angles = [45i32, 67, 90, 113, 135, 157, 203, 180];
-    let sizes = [(4usize, 4usize), (8, 8), (16, 16), (32, 32), (64, 64)];
+    // Square AND rectangular. The z2 NEON arm splits the block into an
+    // `above` region walked row-major and a `left` region walked
+    // column-major, and the staircase between them depends on bw and bh
+    // INDEPENDENTLY -- a square-only grid cannot witness that split, nor
+    // the `bw >= 16 && bh >= 16` gate's two one-sided corners.
+    let sizes = [
+        (4usize, 4usize),
+        (8, 8),
+        (16, 16),
+        (32, 32),
+        (64, 64),
+        (4, 16),
+        (16, 4),
+        (8, 16),
+        (16, 8),
+        (16, 32),
+        (32, 16),
+        (16, 64),
+        (64, 16),
+        (32, 64),
+        (64, 32),
+    ];
     let mut perms = 0usize;
     let mut warned = 0usize;
     let mut cells = 0usize;

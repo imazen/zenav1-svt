@@ -865,8 +865,300 @@ fn dr_z1_edged_core(
 
 /// C `svt_av1_dr_prediction_z2_c` (intra_prediction.c:386) with upsampling.
 /// Reads `above[origin - 1 - up_above ..]` and `left[origin - 1 - up_left ..]`.
+///
+/// Dispatches to a NEON arm on the NON-upsampled path, which is the one every
+/// block of 16 or more takes (`svt_aom_use_intra_edge_upsample` can only
+/// return 1 for `bw + bh <= 16`). The scalar core stays the oracle for the
+/// upsampled path and for any caller whose edge buffers are too short for a
+/// 16-lane load.
 #[allow(clippy::too_many_arguments)]
 fn dr_z2_edged(
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    upsample_above: bool,
+    upsample_left: bool,
+    dx: i32,
+    dy: i32,
+) {
+    debug_assert!(dx > 0 && dy > 0);
+    // `bw >= 16 && bh >= 16` for the reason [`dr_z1_edged`] records: below it
+    // neither pass can run a single 16-lane chunk, so the `incant!` would
+    // summon a token and cross a target-feature boundary to execute the
+    // scalar core.
+    //
+    // The load bounds. Pass 1 reads `above[origin + base_x + c ..= + 16]` with
+    // `c + 16 <= bw` and `base_x <= -1`, so its highest index is
+    // `origin + bw - 1`. Pass 2 reads `left[origin + by0 + r ..= + 16]` with
+    // `r + 16 <= bh` and `by0 <= -1`, highest `origin + bh - 1`. The `+ 16`
+    // in the guards is slack, not a requirement.
+    if bw >= 16
+        && (16..=64).contains(&bh)
+        && !upsample_above
+        && !upsample_left
+        && above.len() >= origin + bw + 16
+        && left.len() >= origin + bh + 16
+    {
+        incant!(
+            dr_z2_edged_flat(dst, dst_stride, bw, bh, above, left, origin, dx, dy),
+            [neon, scalar]
+        );
+        return;
+    }
+    dr_z2_edged_core(
+        dst,
+        dst_stride,
+        bw,
+        bh,
+        above,
+        left,
+        origin,
+        upsample_above,
+        upsample_left,
+        dx,
+        dy,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_flat_scalar(
+    _token: ScalarToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    dx: i32,
+    dy: i32,
+) {
+    dr_z2_edged_core(
+        dst, dst_stride, bw, bh, above, left, origin, false, false, dx, dy,
+    );
+}
+
+/// NEON arm of [`dr_z2_edged`], `upsample_above == upsample_left == 0`.
+///
+/// # The structure, and why it is not C's
+///
+/// Zone 2 reads BOTH edges: cell `(r, c)` interpolates along `above` when
+/// `base_x + c >= -1` and along `left` otherwise, where
+/// `base_x(r) = (-(r + 1) * dx) >> 6`. C's NEON arm
+/// (`ASM_NEON/intra_prediction_neon.c:505`, `dr_prediction_z2_WxH_neon`)
+/// computes BOTH halves for every 16-column group and selects with
+/// `vbslq_u8` over a `base_mask` table — and it reaches the left half with
+/// `vqtbl4q_u8`, a 64-byte table lookup, because within a ROW the left
+/// half's `base_y` and `shift` BOTH vary with the column.
+///
+/// This arm splits the block into the two regions instead and walks each one
+/// along the axis on which it is contiguous, so there is no gather at all:
+///
+/// * `base_x` DECREASES with `r`, so `c0(r) = max(0, -1 - base_x(r))` — the
+///   first `above` column of row `r` — is NON-DECREASING. The `above` region
+///   is therefore the staircase `{ (r, c) : c >= c0(r) }` and its complement
+///   is the `left` region.
+/// * **Pass 1** walks the `above` region ROW-major. Along a row `base_x + c`
+///   advances by one per column and `shift = ((-(r+1)*dx) & 0x3f) >> 1` is
+///   CONSTANT, which is exactly [`dr_z1_edged_flat_neon`]'s kernel.
+/// * **Pass 2** walks the `left` region COLUMN-major. `y = (r << 6) - (c+1)*dy`
+///   and `r << 6` is an exact multiple of 64, so `base_y = r + by0` with
+///   `by0 = (-(c+1)*dy) >> 6` and `shift = ((-(c+1)*dy) & 0x3f) >> 1` is
+///   CONSTANT down a column — exactly [`dr_z3_edged_flat_neon`]'s kernel,
+///   scatter and all. Because `c0` is non-decreasing, the first `left` row of
+///   column `c` is non-decreasing too, so one two-pointer walk finds every
+///   `r0(c)`.
+///
+/// The two regions are disjoint and cover the block, so every output byte is
+/// written exactly once and neither pass needs a select.
+///
+/// The interpolation itself is [`dr_z1_edged_flat_neon`]'s, verbatim, with the
+/// same exactness argument: `(a0 << 5) + (a1 - a0) * shift` is the same
+/// integer as `a0 * (32 - shift) + a1 * shift` (mod 2^16, and the true value
+/// lies in `[0, 255 * 32]`), and `vrshrn_n_u16::<5>` IS `(v + 16) >> 5`. The
+/// scalar core's `.clamp(0, 255)` can never fire for the same reason.
+///
+/// # Why this is a hand-written per-ISA arm and not `#[magetypes]`
+///
+/// Same three missing primitives [`dr_z1_edged_flat_neon`] records, re-checked
+/// against **the pinned version** rather than against `archmage`'s `main`:
+/// `Cargo.lock` holds `magetypes 0.9.28`, and 0.9.28 is the release
+/// IMMEDIATELY BEFORE archmage's `fd66480` (PR #71, uniform variable shifts +
+/// saturating add/sub) and `fd3c609` (PR #74, `widen_low` / `widen_high` /
+/// `narrow_saturating`). Verified by grep of the published crate source
+/// (`cargo read magetypes` -> 0.9.28): `shl_uniform`, `saturating_add`,
+/// `widen_low` and `narrow_saturating` are all ABSENT, and
+/// `src/simd/backends/convert_int.rs` still carries same-width bitcasts only.
+/// So the primitive that decides it is **`u8x16 -> u16x8` widening**, and the
+/// pinned crate does not have it at any version this repo can resolve.
+///
+/// Two further gaps would survive even a bump to archmage `main`:
+/// * `narrow_saturating` is a SATURATING narrow, not a ROUNDING one; this
+///   kernel needs `vrshrn_n_u16::<5>`, i.e. `(v + 16) >> 5`, which would have
+///   to be spelled as an explicit add-then-`shr_logical_const` before it;
+/// * the shift here is uniform per row / per column, so PR #71's
+///   `shl_uniform` is not what this kernel was missing in the first place.
+#[cfg(target_arch = "aarch64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_flat_neon(
+    _token: NeonToken,
+    dst: &mut [u8],
+    dst_stride: usize,
+    bw: usize,
+    bh: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    dx: i32,
+    dy: i32,
+) {
+    // `c0[r]`: the first column of row `r` that interpolates along `above`.
+    // Clamped to `bw`, which means "this row is entirely `left`".
+    let mut c0 = [0usize; 64];
+    debug_assert!(bh <= 64);
+    for (r, slot) in c0[..bh].iter_mut().enumerate() {
+        let x = -((r as i32 + 1) * dx);
+        *slot = ((-1 - (x >> 6)).max(0) as usize).min(bw);
+    }
+
+    // ---- pass 1: the `above` region, row-major. ----
+    for (r, &c_start) in c0[..bh].iter().enumerate() {
+        if c_start >= bw {
+            continue;
+        }
+        let x = -((r as i32 + 1) * dx);
+        let bi = origin as i32 + (x >> 6); // may be < 0; `bi + c >= origin - 1`
+        let shift = ((x & 0x3f) >> 1) as u16;
+        let shift_v = vdupq_n_u16(shift);
+        let drow = &mut dst[r * dst_stride..r * dst_stride + bw];
+        let mut c = c_start;
+        if bw - c_start >= 16 {
+            while c + 16 <= bw {
+                let i0 = (bi + c as i32) as usize;
+                let a0: &[u8; 16] = above[i0..i0 + 16].try_into().unwrap();
+                let a1: &[u8; 16] = above[i0 + 1..i0 + 17].try_into().unwrap();
+                let a0v = vld1q_u8(a0);
+                let a1v = vld1q_u8(a1);
+                let lo = vmlaq_u16(
+                    vshll_n_u8::<5>(vget_low_u8(a0v)),
+                    vsubl_u8(vget_low_u8(a1v), vget_low_u8(a0v)),
+                    shift_v,
+                );
+                let hi = vmlaq_u16(
+                    vshll_n_u8::<5>(vget_high_u8(a0v)),
+                    vsubl_u8(vget_high_u8(a1v), vget_high_u8(a0v)),
+                    shift_v,
+                );
+                let out = vcombine_u8(vrshrn_n_u16::<5>(lo), vrshrn_n_u16::<5>(hi));
+                let o: &mut [u8; 16] = (&mut drow[c..c + 16]).try_into().unwrap();
+                vst1q_u8(o, out);
+                c += 16;
+            }
+            if c < bw {
+                // Overlapping final chunk: `bw - 16 >= c_start` holds because
+                // the segment is at least 16 wide, so it rewrites only
+                // `above`-region columns.
+                let c2 = bw - 16;
+                let i0 = (bi + c2 as i32) as usize;
+                let a0: &[u8; 16] = above[i0..i0 + 16].try_into().unwrap();
+                let a1: &[u8; 16] = above[i0 + 1..i0 + 17].try_into().unwrap();
+                let a0v = vld1q_u8(a0);
+                let a1v = vld1q_u8(a1);
+                let lo = vmlaq_u16(
+                    vshll_n_u8::<5>(vget_low_u8(a0v)),
+                    vsubl_u8(vget_low_u8(a1v), vget_low_u8(a0v)),
+                    shift_v,
+                );
+                let hi = vmlaq_u16(
+                    vshll_n_u8::<5>(vget_high_u8(a0v)),
+                    vsubl_u8(vget_high_u8(a1v), vget_high_u8(a0v)),
+                    shift_v,
+                );
+                let out = vcombine_u8(vrshrn_n_u16::<5>(lo), vrshrn_n_u16::<5>(hi));
+                let o: &mut [u8; 16] = (&mut drow[c2..c2 + 16]).try_into().unwrap();
+                vst1q_u8(o, out);
+                c = bw;
+            }
+        }
+        let sh = shift as i32;
+        while c < bw {
+            let i0 = (bi + c as i32) as usize;
+            let v = (above[i0] as i32 * (32 - sh) + above[i0 + 1] as i32 * sh + 16) >> 5;
+            drow[c] = v as u8;
+            c += 1;
+        }
+    }
+
+    // ---- pass 2: the `left` region, column-major. ----
+    // `r0(c) = min { r : c0[r] > c }`, non-decreasing in `c`: one walk.
+    let mut r0 = 0usize;
+    let mut tmp = [0u8; 16];
+    for c in 0..bw {
+        while r0 < bh && c0[r0] <= c {
+            r0 += 1;
+        }
+        if r0 >= bh {
+            break; // and no later column has any `left` row either
+        }
+        let yv = -((c as i32 + 1) * dy);
+        let li = origin as i32 + (yv >> 6); // may be < 0; `li + r >= origin - 1`
+        let shift = ((yv & 0x3f) >> 1) as u16;
+        let shift_v = vdupq_n_u16(shift);
+        let mut r = r0;
+        if bh - r0 >= 16 {
+            loop {
+                let rr = if r + 16 <= bh {
+                    r
+                } else if r < bh {
+                    bh - 16 // overlapping final chunk, all inside the region
+                } else {
+                    break;
+                };
+                let i0 = (li + rr as i32) as usize;
+                let a0: &[u8; 16] = left[i0..i0 + 16].try_into().unwrap();
+                let a1: &[u8; 16] = left[i0 + 1..i0 + 17].try_into().unwrap();
+                let a0v = vld1q_u8(a0);
+                let a1v = vld1q_u8(a1);
+                let lo = vmlaq_u16(
+                    vshll_n_u8::<5>(vget_low_u8(a0v)),
+                    vsubl_u8(vget_low_u8(a1v), vget_low_u8(a0v)),
+                    shift_v,
+                );
+                let hi = vmlaq_u16(
+                    vshll_n_u8::<5>(vget_high_u8(a0v)),
+                    vsubl_u8(vget_high_u8(a1v), vget_high_u8(a0v)),
+                    shift_v,
+                );
+                vst1q_u8(
+                    &mut tmp,
+                    vcombine_u8(vrshrn_n_u16::<5>(lo), vrshrn_n_u16::<5>(hi)),
+                );
+                for (k, &v) in tmp.iter().enumerate() {
+                    dst[(rr + k) * dst_stride + c] = v;
+                }
+                r = rr + 16;
+            }
+        }
+        let sh = shift as i32;
+        while r < bh {
+            let i0 = (li + r as i32) as usize;
+            let v = (left[i0] as i32 * (32 - sh) + left[i0 + 1] as i32 * sh + 16) >> 5;
+            dst[r * dst_stride + c] = v as u8;
+            r += 1;
+        }
+    }
+}
+
+/// Scalar C `svt_av1_dr_prediction_z2_c` (intra_prediction.c:386) with
+/// upsampling. Reached through [`dr_z2_edged`], which routes the flat
+/// (non-upsampled) case to a NEON arm.
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_core(
     dst: &mut [u8],
     dst_stride: usize,
     bw: usize,

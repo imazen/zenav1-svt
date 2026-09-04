@@ -1,0 +1,147 @@
+ZONE 2 — THE LAST SCALAR DIRECTIONAL-INTRA KERNEL — IN NEON LANES, WITHOUT
+C's GATHER. 1.4 % AT THE STILL ARM'S WORST CELL, 2.5-4.2 % ON THE VIDEO KEY
+FRAME AT p6.
+
+date:   2026-09-03 (fourth chunk of the day)
+host:   mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores). THE BOX WAS QUIET:
+        `ps -Ao comm | grep -cE 'identity_run|capture_c_trace'` printed 0
+        IMMEDIATELY BEFORE AND IMMEDIATELY AFTER each of the two runs below,
+        and the count is in the shell transcript, not inferred. A sibling
+        workspace ran gates for the two hours before this and every timing
+        attempt was deferred until it exited (docs/perf-status.md records a
+        ~1 % contention effect; the previous chunk discarded three runs to it).
+tool:   tools/perf_ab.sh — interleaved paired rounds, order randomised per
+        round, one untimed warmup inside each sample, NEITHER SIDE NICED, no
+        -C target-cpu=native.
+base:   76fdb8026 (main tip)
+cand:   base + this commit, nothing else. Both binaries built from the same
+        toolchain in the same workspace.
+grid:   gradient qp 40. STILL arm 256/512 x p{2,6,10}, n=15. VIDEOKEY arm
+        (SVTAV1_VIDEO=1 SVT_AVIF=0, one key frame) 128/256/512 x p{6,8}, n=25.
+data:   benchmarks/z2neon_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}
+
+=================== THE MEASUREMENT — EVERY CELL ident=Y ====================
+
+  STILL (n=15)      ratio   speedup   p25/p75          verdict
+  256 p2            0.9970   1.003    0.9911/0.9989    span below 1.0
+  256 p6            0.9915   1.009    0.9883/1.0040    crosses
+  256 p10           1.0026   0.997    0.9811/1.0119    NULL
+  512 p2            0.9864   **1.014** 0.9845/0.9897   span below 1.0
+  512 p6            0.9953   1.005    0.9854/1.0014    crosses
+  512 p10           0.9981   1.002    0.9799/1.0098    crosses
+
+  VIDEOKEY (n=25)   ratio   speedup   p25/p75          verdict
+  128 p6            0.9598   **1.042** 0.9488/0.9693   span below 1.0
+  128 p8            0.9828   1.018    0.9745/0.9873    span below 1.0
+  256 p6            0.9732   **1.028** 0.9669/0.9806   span below 1.0
+  256 p8            0.9888   1.011    0.9748/0.9972    span below 1.0
+  512 p6            0.9755   **1.025** 0.9706/0.9783   span below 1.0
+  512 p8            0.9917   1.008    0.9807/0.9995    span below 1.0
+
+**All six videokey cells move with their whole p25/p75 span below 1.0**, and so
+do the two still cells that move most. `512 p2` is the still arm's worst cell
+(3.17x C) and gains 1.4 %; `perf_still_attrib_2026-09-03.meta` put
+`dr_predictor_edged` at 763 of 19,115 self samples there against C's
+`svt_av1_dr_prediction_z2_neon` 323 — a 4.0 % share paying 1.4 %, which is the
+same ratio the z1/z3 arms paid (1.016x at that cell). The two p10 still cells
+are the near-CONTROL: at p10 `dr_predictor_edged` is not in the port's top
+twelve INTRA_PRED symbols at all, and they read 1.002x / 0.997x.
+
+=================== WHY THE VIDEOKEY ARM MOVES 2-3x MORE ====================
+
+Not established, and worth someone's time: the videokey arm's p6 cells gain
+2.5-4.2 % where the still arm's p6 gains 0.5-0.9 %. Both encode ONE key frame.
+`perf_videokey_attrib_2026-09-03.tsv` and `perf_still_attrib_2026-09-03.tsv`
+are the two profiles to difference; this file does not.
+
+=================== THE STRUCTURE ==========================================
+
+Zone 2 reads BOTH edges: cell `(r, c)` interpolates along `above` when
+`base_x + c >= -1` and along `left` otherwise, with
+`base_x(r) = (-(r + 1) * dx) >> 6`. C's NEON arm
+(`ASM_NEON/intra_prediction_neon.c:505`) computes BOTH halves for every
+16-column group and selects with `vbslq_u8` over a `base_mask` table, reaching
+the left half with **`vqtbl4q_u8`, a 64-byte table lookup** — because within a
+ROW the left half's `base_y` AND `shift` both vary with the column.
+
+This arm does not need the gather. `base_x` decreases with `r`, so
+`c0(r) = max(0, -1 - base_x(r))` is non-decreasing and the `above` region is a
+staircase whose complement is the `left` region. Walk each region along the
+axis it is contiguous on:
+
+  * PASS 1, the `above` region, ROW-major: `base_x + c` advances by one per
+    column and `shift` is constant down the row — [`dr_z1_edged_flat_neon`]'s
+    kernel exactly.
+  * PASS 2, the `left` region, COLUMN-major: `y = (r << 6) - (c + 1) * dy` and
+    `r << 6` is an exact multiple of 64, so `base_y = r + by0` with
+    `by0 = (-(c+1)*dy) >> 6`, and `shift` is constant down the COLUMN —
+    [`dr_z3_edged_flat_neon`]'s kernel, scatter and all. `c0` non-decreasing
+    makes the first `left` row of each column non-decreasing too, so one
+    two-pointer walk finds every `r0(c)`.
+
+The regions are disjoint and cover the block, so every output byte is written
+once and neither pass needs a select.
+
+=================== THE MAGETYPES DECISION, AGAINST THE PINNED VERSION =====
+
+Hand-written per-ISA `#[arcane]` + `incant!`, NOT `#[magetypes]`. The deciding
+primitive is **`u8x16 -> u16x8` widening**, and the reason is the PIN, not the
+upstream state:
+
+  * `Cargo.lock` holds `magetypes 0.9.28`, which is the only published version
+    (`cargo search magetypes` -> 0.9.28).
+  * archmage's `v0.9.28` tag is `1b37a2c`, and PR #71 (`fd66480`, uniform
+    variable shifts + saturating add/sub) and PR #74 (`fd3c609`, `widen_low` /
+    `widen_high` / `narrow_saturating`) both land AFTER it on `main`.
+  * Verified by grep of the PUBLISHED source (`cargo read magetypes` ->
+    `~/.cache/cargo-read/magetypes-0.9.28`): `shl_uniform`, `saturating_add`,
+    `widen_low` and `narrow_saturating` are ALL ABSENT, and
+    `src/simd/backends/convert_int.rs` still carries same-width bitcasts only.
+
+So the brief's premise — "PR #71 merged, check what the pinned version
+provides" — resolves to: **the pinned version provides none of them**, and
+using them would mean a `[patch.crates-io]` at a sibling checkout, which the
+x86 CI host does not have.
+
+Two gaps would survive even a bump to archmage `main`:
+  1. `narrow_saturating` is a SATURATING narrow; this kernel needs a ROUNDING
+     one (`vrshrn_n_u16::<5>` == `(v + 16) >> 5`), which would have to be
+     spelled as an explicit add then `shr_logical_const`.
+  2. PR #71's `shl_uniform` is not what was missing: the shift here is uniform
+     per row / per column already, so a `vdupq_n_u16` + `vmlaq_u16` covers it.
+
+=================== EXACTNESS ==============================================
+
+The same rewrite [`dr_z1_edged_flat_neon`] documents: `(a0 << 5) +
+(a1 - a0) * shift` is the same integer as `a0 * (32 - shift) + a1 * shift`
+(everything mod 2^16, true value in `[0, 255 * 32]`), and the scalar core's
+`.clamp(0, 255)` can never fire for the same reason. Not an approximation.
+
+GATES (aarch64, this tree):
+  cargo nextest                2512 / 2512
+  regression_spotcheck          102 / 102
+  identity_full_8bit           1100 / 1100
+  inter_byte_gate                94 required, 0 failed, 3 known-open, 0 crashed
+  inter_decode_gate               5 / 5
+  fctx_gate                      96 / 96 shared fields
+  video_key_matrix               58 / 60 (unchanged: the same 2 known diffs)
+  dr_prediction_all_tiers_match_c   every archmage tier vs REAL C, with
+                                    `permutations_run >= 2` asserted
+
+The tier sweep's grid gained TEN RECTANGULAR sizes (4x16, 16x4, 8x16, 16x8,
+16x32, 32x16, 16x64, 64x16, 32x64, 64x32) alongside the five square ones,
+because the staircase between the two regions depends on `bw` and `bh`
+INDEPENDENTLY and a square-only grid cannot witness it — nor the two one-sided
+corners of the `bw >= 16 && bh >= 16` gate.
+
+POSITIVE CONTROL that the arm is REACHED (docs/WORKING-ON-THIS.md §5 — a silent
+harness and a genuine absence are indistinguishable): a `panic!` planted at the
+top of `dr_z2_edged_flat_neon` fires on `dr_prediction_kernels_match_c` at the
+first vector-eligible cell, `bw=16 bh=16`. Removed after.
+
+=================== NOT ESTABLISHED ========================================
+  * Any content but gradient, qp but 40, bit depth but 8.
+  * The x86_64 position. This arm is `#[cfg(target_arch = "aarch64")]` and x86
+    takes the scalar core, so x86 is expected NULL and is NOT measured here.
+  * Why the videokey arm gains 2-3x what the still arm does.
+  * Peak memory: measured NULL (benchmarks/mem_inter_axis_2026-09-03b.meta §4).
