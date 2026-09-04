@@ -1,0 +1,129 @@
+THE FIRST TEST OF "A MEMSET IS WORTH REAL TIME AND A MALLOC IS NOT", AND IT
+PAYS: THE RDOQ INPUT BUFFER'S RE-ZERO WAS DEAD ON ALL FOUR QUANTIZER PATHS.
+
+date:   2026-09-04 (fourth chunk of 2026-09-03)
+host:   mac (Apple M4 Pro, aarch64-apple-darwin). Box QUIET: the competing-
+        process count printed 0 immediately BEFORE and AFTER both runs.
+tool:   tools/perf_ab.sh, interleaved paired rounds, order randomised per
+        round, neither side niced, no -C target-cpu=native, gradient qp 40.
+base:   6d31be94 (main tip)
+cand:   base + this commit, nothing else. Every cell ident=Y.
+data:   benchmarks/dqzero_ab_2026-09-03.{still,videokey}.{tsv,raw.tsv}
+
+=================== HOW IT WAS FOUND =======================================
+
+Two allocation removals failed earlier in this chunk
+(benchmarks/{mds3d0,hadscratch}_null_2026-09-03.meta) and the rule that fell
+out of them was: **on this allocator a malloc/free pair is worth about nothing
+and a memset is worth real time — rank the remaining share by what it
+MEMSETS.** This is the first candidate ranked that way.
+
+`tools/perf_profile/ancestor.py` over
+`_platform_memset|__bzero|_platform_memmove|_platform_bzero|memcpy` at gradient
+512x512 preset 2, nearest named ancestor, 18,913 total self samples scaled by
+the paired 552.9 ms frame:
+
+  rank  ancestor                                  self   share   ms
+   1    tx_pipeline::tx_unit_inner                 192   25.5 %   5.61
+   2    mds3::eval_candidate                       145   19.3 %   4.24
+   3    coeff_rate::cost_coeffs_txb                 54    7.2 %   1.58
+   4    detect::SatdScratch::split                  46    6.1 %   1.35
+   5    txfm_simd::try_fwd_dct_square               41    5.4 %   1.20
+   6    predict::hadamard_satd                      40    5.3 %   1.17
+   7    drop_glue::<types::Cand>                    20    2.7 %   0.59
+   8    inject::inject_candidates                   19    2.5 %   0.56
+
+The whole family is **753 of 18,913 self samples = 22.0 ms = 4.0 % of the
+port's 512 p2 frame**, and `tx_unit` is its #1 caller.
+
+=================== WHAT WAS DEAD, AND THE PROOF ===========================
+
+`tx_unit` took its RDOQ/quantizer output buffer as
+`TxScratch::zeroed(dqcoeff_buf, pw * ph)` — a resize plus an explicit
+`fill(0)` of up to 4 KiB, on every transform unit, i.e. once per
+(candidate x tx type x tx unit). The comment on it said the zero-fill kept a
+reused buffer from leaking the previous transform unit's levels.
+
+It could not. All four quantizer paths write EVERY one of the `pw * ph`
+positions before anything reads them:
+
+  * `quant::quantize_fp` and `quant::quantize_b` reach
+    `quant_coding::quantize_{fp,b}_raster`, whose cores loop
+    `for rc in 0..min(coeffs.len(), qcoeff.len(), dqcoeff.len())` and write
+    BOTH outputs at every position — and `packed` is exactly `pw * ph` on both
+    of its branches (the 64-dim fold builds it that way, the non-fold case
+    borrows `&coeffs[..n]` with `n == pw * ph`), so that minimum IS `pw * ph`.
+  * `qm::quantize_fp_qm` and `qm::quantize_b_qm` open with their OWN
+    `qcoeff[..coeffs.len()].fill(0); dqcoeff[..coeffs.len()].fill(0)`, so on
+    the QM path the caller's fill was a **second memset of the same bytes**.
+  * `quant::optimize_b` (RDOQ) only revises positions the quantizer wrote.
+
+THE CONTROL, unconditional in a RELEASE build (the campaign's rule — a
+`debug_assertions`-only check proves nothing): replace the zero-fill with a
+POISON fill of `0x5A5A_5A5A` and run the byte gates. `0x5A5A5A5A` is 1.5e9 as
+an `i32`; if any position survived unwritten it would reach either
+`residual::sse_i32(&packed[..], &dqcoeff[..])` or the inverse transform's
+input and destroy the output.
+
+  poison (0x5A5A5A5A instead of 0):  regression_spotcheck 102 / 102
+                                     identity_full_8bit  1100 / 1100
+  shipped (grown, not zeroed):       regression_spotcheck 102 / 102
+                                     identity_full_8bit  1100 / 1100
+
+The buffer is definitely READ — `dqcoeff` feeds the spatial-SSE arm and the
+inverse-transform input by source — so a surviving poison had a path to the
+bitstream and did not take it.
+
+`TxScratch::zeroed` is KEPT and still used for `dq_full`, where the zero-fill
+IS load-bearing: on the 64-dim shapes only the `pw x ph` corner is written into
+a `w x h` buffer. The new `TxScratch::grown` is deliberately a separate helper
+with a doc comment saying so, not a flag on the old one.
+
+=================== THE MEASUREMENT — EVERY CELL ident=Y ===================
+
+  STILL (n=15)      ratio   speedup   p25/p75          verdict
+  256 p2            0.9966   1.003    0.9944/1.0006    crosses at 1.0006
+  256 p6            0.9922   1.008    0.9811/0.9933    span below 1.0
+  256 p10           0.9807   **1.020** 0.9710/0.9937   span below 1.0
+  512 p2            0.9980   1.002    0.9934/1.0013    crosses
+  512 p6            0.9920   1.008    0.9845/0.9941    span below 1.0
+  512 p10           0.9852   **1.015** 0.9684/0.9881   span below 1.0
+
+  VIDEOKEY (n=25)   ratio   speedup   p25/p75          verdict
+  128 p6            0.9958   1.004    0.9886/1.0106    crosses
+  128 p8            0.9848   **1.015** 0.9762/0.9926   span below 1.0
+  256 p6            0.9903   1.010    0.9798/0.9998    span below 1.0
+  256 p8            0.9911   1.009    0.9800/0.9989    span below 1.0
+  512 p6            0.9999   1.000    0.9886/1.0030    NULL
+  512 p8            0.9901   1.010    0.9854/1.0009    crosses at 1.0009
+
+**Ten of twelve cells gain, six with their whole p25/p75 span below 1.0, and
+the two biggest gains are the p10 STILL cells (2.0 % and 1.5 %) — the cells
+where LIBC_MEM's share of the gap is highest** (11.6 % at p10 against 8.4 % at
+p2, `perf_still_attrib_2026-09-03.tsv`). The gradient runs the right way for
+the mechanism, which is the check that separates a real cause from a
+coincidence.
+
+=================== WHAT THIS SETTLES ======================================
+
+Three memset removals have now been priced this campaign — `ab7c5ed4` (the
+`dq_full` elision), `700357e2` (four stack arrays zeroed in full then re-zeroed
+in part) and this one — and all three won. Two allocation removals have been
+priced — `mds3d0` and `hadscratch`, both this chunk — and both LOST. The rule
+holds on five data points.
+
+THE QUEUE IT LEAVES, in the ranking above and unpriced: `eval_candidate`
+19.3 % / 4.24 ms, `cost_coeffs_txb` 7.2 %, `SatdScratch::split` 6.1 %,
+`try_fwd_dct_square` 5.4 %. Ask of each what it MEMSETS and whether every byte
+of it is written before it is read.
+
+=================== NOT ESTABLISHED ========================================
+  * Any content but gradient, qp but 40, bit depth but 8. The bd10 twin of
+    `tx_unit` (tx_pipeline.rs:~1014) still uses `vec![0i32; pw * ph]` — a
+    calloc, whose zeros are free — and is UNCHANGED and unmeasured.
+  * The x86_64 CPU position. Byte gates are green on both ISAs; the timing is
+    aarch64 only.
+  * Peak memory. Unmeasured for this change; it removes traffic through an
+    already-allocated buffer, so a move would be surprising
+    (benchmarks/mem_levelscratch_2026-09-03.meta section 1 measured exactly
+    that shape as a NULL on all twelve cells).

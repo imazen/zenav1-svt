@@ -1,5 +1,43 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE MEMSET RULE'S FIRST TEST, AND IT PAYS: THE RDOQ INPUT BUFFER'S
+> RE-ZERO WAS DEAD ON ALL FOUR QUANTIZER PATHS (2026-09-03).** Record
+> `benchmarks/dqzero_ab_2026-09-03.*`. Two allocation removals had just failed
+> in the same chunk, so the next candidate was ranked by what it MEMSETS:
+> `tools/perf_profile/ancestor.py` over the `memset`/`bzero`/`memmove`/`memcpy`
+> family at 512x512 p2 makes that family **4.0 % of the port's frame** (753 of
+> 18,913 self samples, 22.0 ms of 552.9) and ranks its callers
+> `tx_unit_inner` **25.5 %** / `eval_candidate` 19.3 % / `cost_coeffs_txb`
+> 7.2 % / `SatdScratch::split` 6.1 % / `try_fwd_dct_square` 5.4 % /
+> `hadamard_satd` 5.3 %.
+>
+> `tx_unit`'s `dqcoeff` was `TxScratch::zeroed(..)` — an explicit `fill(0)` of
+> up to 4 KiB per transform unit. Dead: `quantize_{fp,b}_raster`'s cores write
+> BOTH outputs at every one of the `pw * ph` positions, and the two QM
+> quantizers open with their own `fill(0)`, so on that path the caller's was a
+> SECOND memset of the same bytes. A/B, every cell `ident=Y`:
+>
+> | arm | 256 p2 | 512 p2 | 256 p6 | 512 p6 | 256 p10 | 512 p10 |
+> |---|---|---|---|---|---|---|
+> | still (n=15) | 1.003x | 1.002x | 1.008x | 1.008x | **1.020x** | **1.015x** |
+>
+> | arm | 128 p6 | 256 p6 | 512 p6 | 128 p8 | 256 p8 | 512 p8 |
+> |---|---|---|---|---|---|---|
+> | videokey (n=25) | 1.004x | 1.010x | 1.000x | **1.015x** | 1.009x | 1.010x |
+>
+> **The two biggest gains are the p10 STILL cells** — where LIBC_MEM's share of
+> the gap is highest (11.6 % at p10 against 8.4 % at p2) — so the preset
+> gradient runs the way the mechanism predicts.
+>
+> THE CONTROL IS A POISON, UNCONDITIONAL IN RELEASE: filling the buffer with
+> `0x5A5A_5A5A` instead of zeroing it leaves `regression_spotcheck` 102/102 and
+> `identity_full_8bit` 1100/1100, and the buffer is definitely read (it feeds
+> `sse_i32` and the inverse-transform input), so a surviving poison had a path
+> to the bitstream and did not take it.
+>
+> **Five data points now: three memset removals priced, all won
+> (`ab7c5ed4`, `700357e2`, this); two allocation removals priced, both lost.**
+
 > **THE POSITION AFTER THIS CHUNK — AND A MEASURED REASON NOT TO READ A 2-3 %
 > SLOPE MOVE OUT OF TWO POSITION RUNS (2026-09-03).** Records
 > `benchmarks/perf_2026-09-03-arm9-{still,videokey,inter}.*` and

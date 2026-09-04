@@ -125,6 +125,30 @@ impl TxScratch {
         s.fill(0);
         s
     }
+
+    /// Resize `buf` to at least `n` and hand back the first `n` — WITHOUT
+    /// zeroing, for a buffer whose every element is written before it is read.
+    ///
+    /// The `s.fill(0)` in [`TxScratch::zeroed`] is a real `memset` of up to
+    /// 4 KiB per transform unit, and `tx_unit` is the hottest allocation and
+    /// memory-traffic site in the funnel — the #1 caller of the
+    /// `memset`/`memmove`/`memcpy` family on the still arm, 192 of 753 self
+    /// samples (25.5 %, 5.61 ms of a 552.9 ms frame at gradient 512x512
+    /// preset 2, `tools/perf_profile/ancestor.py`). `vec![0; n]` gets its zeros
+    /// from fresh calloc pages for free; an explicit re-zero of a recycled
+    /// buffer does not (`700357e2`'s finding, from the other direction).
+    ///
+    /// USE THIS ONLY WHERE THE FULL-WRITE IS PROVEN, and say where. It is NOT
+    /// interchangeable with [`TxScratch::zeroed`]: `dq_full`'s zero-fill IS
+    /// load-bearing on the 64-dim shapes, where only the `pw x ph` corner is
+    /// written.
+    #[inline]
+    pub(super) fn grown(buf: &mut Vec<i32>, n: usize) -> &mut [i32] {
+        if buf.len() < n {
+            buf.resize(n, 0);
+        }
+        &mut buf[..n]
+    }
 }
 
 #[cfg(feature = "std")]
@@ -413,11 +437,22 @@ pub(super) fn tx_unit_inner(
         None
     };
     let mut qcoeff = vec![0i32; pw * ph];
-    // The exact replacement for the `vec![0i32; pw * ph]` this was: resized
-    // and zeroed over the working length, so a reused buffer cannot leak the
-    // previous transform unit's dequantized levels. Only `pw * ph` of it is
-    // ever indexed, by every reader below.
-    let dqcoeff: &mut [i32] = TxScratch::zeroed(dqcoeff_buf, pw * ph);
+    // GROWN, NOT ZEROED. Only `pw * ph` of this is ever indexed, and all four
+    // quantizer paths write EVERY one of those positions before anything reads
+    // them, so the re-zero this used to do was dead:
+    //   * `quant::quantize_fp` / `quantize_b` reach
+    //     `quant_coding::quantize_{fp,b}_raster`, whose cores loop
+    //     `for rc in 0..min(coeffs.len(), qcoeff.len(), dqcoeff.len())` and
+    //     write both outputs at every position — and `packed` is exactly
+    //     `pw * ph` on both of its branches, so that minimum IS `pw * ph`;
+    //   * `qm::quantize_fp_qm` / `quantize_b_qm` open with their OWN
+    //     `dqcoeff[..coeffs.len()].fill(0)`, so on the QM path the caller's
+    //     fill was a SECOND memset of the same bytes.
+    // `optimize_b` then only revises positions the quantizer already wrote.
+    // CONTROL: poisoning this buffer with 0x5A5A5A5A instead of zeroing it,
+    // unconditionally in a release build, leaves regression_spotcheck 102/102
+    // and identity_full_8bit 1100/1100 — nothing reads an unwritten position.
+    let dqcoeff: &mut [i32] = TxScratch::grown(dqcoeff_buf, pw * ph);
     let mut eob = if do_rdoq {
         let mut e = match qm {
             Some((wt, iwt)) => crate::qm::quantize_fp_qm(
