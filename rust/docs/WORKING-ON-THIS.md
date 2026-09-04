@@ -52,9 +52,11 @@ about quality, not coverage.
 
 **MEMORY TRAFFIC IS THE STILL ARM'S CHEAPEST REMAINING WORK, AND YOU FIND IT
 WITH `ancestor.py`, NOT WITH THE CLASS TABLE (2026-09-03, CURRENT).** Two
-byte-identical commits (`ab7c5ed4`, `ee7a755f`) are together ~1.07x on a
-preset-2 still frame at 256 and 512 and ~1.02-1.03x at p6; records
-`benchmarks/{dqfull,levelscratch}_ab_2026-09-03.*`, full account at the top of
+byte-identical commits (`ab7c5ed4`, `ee7a755f`, `96083a8e`) took the still
+arm's slope ratio **2.48x -> 2.40x** (the port's own slope 37.37 -> 36.17
+ms/MP against a flat C slope) and the videokey arm's 2.66x -> 2.58x; records
+`benchmarks/{dqfull,levelscratch,mds3scratch}_ab_2026-09-03.*` and
+`benchmarks/perf_2026-09-03-arm8-still.*`, full account at the top of
 `docs/perf-status.md`. Both were dead buffer work — an inverse-transform input
 that was a byte-for-byte copy of the buffer beside it, and four copies of one
 stack array zeroed in full and then re-zeroed in part. **A class share names a

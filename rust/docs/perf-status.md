@@ -103,6 +103,17 @@
 > `TxScratch::zeroed` is right for the partially-written buffers (`dq_full`,
 > `dqcoeff`) and a waste for the fully-written ones.
 >
+> **THE STILL ARM'S SLOPE RATIO IS 2.48x -> 2.40x ACROSS THE WHOLE CHUNK**
+> (`benchmarks/perf_2026-09-03-arm8-still.*`, `perf_gate.sh`, 25 paired rounds,
+> 64/128/256/512 at preset 8, gradient qp 40, **box verified quiet** — a `ps`
+> listing, not a count). The port's own per-pixel slope is
+> **37.3748 -> 36.1673 ms/MP, -3.2 %**, against a C slope that reads 15.0751
+> at the start of the chunk and 15.0430 at the end (-0.2 %, i.e. flat), so
+> essentially all of it is real. Per cell: 0.79x / 1.37x / **2.19x** / **2.32x**
+> at 64/128/256/512, every cell `ident=Y`. The videokey arm stands at
+> **2.66x -> 2.58x** (arm7; the third commit is NULL there and it was not
+> re-positioned).
+>
 > **THE POSITION AFTER THE TWO, ALL THREE ARMS** (`perf_gate.sh`, 25 paired
 > rounds, sizes 64/128/256/512 at preset 8, gradient qp 40, box verified quiet;
 > `benchmarks/perf_2026-09-03-arm7-{still,videokey,inter}.*`). Read as POSITION,
