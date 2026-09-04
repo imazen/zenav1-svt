@@ -1,0 +1,327 @@
+CALL-COUNT ATTRIBUTION: port vs C, byte-identical still-frame encodes.
+Answers the question `perf_still_attrib_2026-09-03` could not: self-time
+ranks WHICH kernel is slow; this ranks whether the port calls it MORE
+OFTEN than C for the same output.
+
+date:   2026-09-04
+host:   r7900x (x86_64-linux, AMD, 24 cores) -- the C oracle and the port
+        both build there; this Mac (aarch64-darwin) cannot run callgrind.
+commit: c4ff4727e5e21d576775b620b058858c3cd53caa (docs-only on top of
+        a32d82e82, which is the last commit touching rust/ or reference/
+        code; c4ff4727 was an UNPUSHED local commit on r7900x at measurement
+        time -- CHANGELOG.md only, verified with `git show --stat`, does not
+        affect anything measured here). C oracle: reference/svt-av1 pinned
+        at 3115c0c1 (v1:hdr=off,apps=on,lto=off,native=off,shared=off,
+        type=Release), rebuilt fresh (cbuild-static, cmake --build, up to
+        date at measurement time). Port: `cargo build --release -p
+        zenav1-svt --example perf_encode` (env -u RUSTFLAGS, no
+        target-cpu=native; workspace profile.release.package."*" = O3).
+tool:   valgrind-3.26.0 --tool=callgrind (Ir events; no --cache-sim, no
+        --branch-sim -- pure instruction/call counting). rustc 1.97.1,
+        gcc 15.2.0.
+grid:   gradient 512x512 qp 40, presets 2 / 6 / 10, STILL config (no
+        SVTAV1_VIDEO) -- the same three cells perf_still_attrib_2026-09-03
+        uses, so these numbers join that record. warmup=0 for BOTH
+        harnesses (one init+encode cycle each; no extra warmup iteration
+        diluting the call counts).
+
+=================== WHY CALLGRIND, AND WHY r7900x ===================
+
+callgrind (part of valgrind) is the only tool in this environment that
+gives EXACT per-function invocation counts, not sampled estimates. `perf
+record -e instructions` with `--call-graph` is sample-based and would
+undercount short-lived leaf calls; a compile-time counter shim would need
+its own zero-overhead-when-off design and a second build. callgrind pays a
+~20-100x slowdown but that is affordable at these cell sizes (largest run,
+port p2, real time 40.9s under instrumentation vs ~0.55-0.68s native).
+Valgrind does not run on this Mac (Apple Silicon); r7900x is the x86 box
+this repo's docs already point cross-ISA work at (`ssh r7900x`), and both
+the C oracle and the Rust toolchain are already set up there.
+
+=================== METHOD ===================
+
+`callgrind_annotate` (upstream valgrind tool) reports Ir (instruction)
+cost per function -- NOT call counts. The raw callgrind ASCII output DOES
+carry call counts, as `calls=N <line>` lines following each `cfn=<callee>`
+header, but nothing in the standard toolchain sums them into a
+per-function total. `tools/perf_profile/callcount.py` (new, this chunk)
+parses that format directly: it resolves callgrind's interned
+function-id table, and for every `calls=N` edge it finds, adds N to the
+callee's running total. Output: one `<count>\t<demangled-name>` line per
+function, sorted descending. `--demangle` pipes through `rustfilt`
+(installed this chunk via `cargo install rustfilt`; not previously present
+on r7900x) -- C symbols pass through unchanged since they are not mangled.
+
+For CALLER-SPECIFIC edge counts (which caller invokes a shared callee how
+many times, and at what inclusive Ir cost) this uses the stock
+`callgrind_annotate --tree=caller <file>`, which prints, for every
+function, the list of `< caller (Nx)` lines above the `* function` line --
+this is where the edge-level numbers in the FINDING rows come from, and
+where the Ir%-of-total numbers are DIRECT tool output, not derived.
+
+=================== BYTE-IDENTITY (verified, all 6 runs) ===================
+
+Two independent checks, both required before any cell's call counts were
+trusted:
+  1. A non-instrumented identity pre-pass (`perf_encode` then
+     `perf_c_encode`, warmup=0, both writing the SAME `.yuv`) -- `cmp`
+     confirmed byte-identical for p2, p6, p10 before any callgrind run
+     started.
+  2. The OBU each callgrind-instrumented run itself wrote was `cmp`'d
+     against the pre-pass's verified-identical output -- confirmed
+     identical for the port at all 3 presets and for C at p6/p10 (p2's C
+     run was re-verified against the SAME pre-pass output the port's p2
+     callgrind run used, all three-way identical).
+Neither harness reorders or changes behavior under valgrind (both are
+deterministic single-threaded encodes reading a fixed .yuv), so this is
+sufficient; every number in callcount_2026-09-04.tsv is drawn from a run
+whose OWN output byte matched the paired side.
+
+=================== POSITIVE CONTROLS (do these first, per the brief) ===================
+
+Two independent controls, both exact at every preset measured:
+
+1. GEOMETRIC: `svt_aom_largest_coding_unit_ctor` (C, once per superblock,
+   unconditional) vs `pipeline::merge_sb_units` (port, same role) = 64/64
+   at p2, p6 AND p10 (512x512 / 64x64 SB = 64 SBs; pure frame geometry, no
+   algorithm content). This is the STRONGEST possible control -- if it
+   were off, the join methodology itself would be broken.
+
+2. ALGORITHMIC: the FINAL (non-search) per-candidate quantize commit. On
+   C this is `full_loop_core`'s call into `svt_aom_quantize_inv_quantize`
+   (or its `_light` twin at higher presets -- see the p10 note below); on
+   the port this is `leaf_funnel::mds1::run_mds1`'s call into
+   `tx_pipeline::tx_unit`. EXACT at every preset:
+     p2:  67,249 = 67,249
+     p6:   4,165 =  4,165
+     p10:    886 =    886
+   Same for the CHROMA final commit (`svt_aom_full_loop_uv` /
+   `leaf_funnel::chroma::eval_uv`): 35,590/35,590 (p2), 3,038/3,038 (p6),
+   1,772/1,772 (p10).
+
+Control #2's p10 note: C's `full_loop_core` calls EITHER
+`svt_aom_quantize_inv_quantize` (502x) OR `svt_aom_quantize_inv_quantize_light`
+(886x) at p10, and `full_loop_core`'s OWN total call count is 886 -- so the
+_light edge (886x, called on every invocation) is the correct comparandum,
+not the regular edge (502x, called on a subset). Verified via
+`callgrind_annotate --tree=caller` on both quantize entry points.
+
+BOTH controls pass. The join methodology (matching functions by C-comment
+citation + call-graph position, not by name alone) is sound, and the
+FINDINGS below are not measurement noise.
+
+=================== HEADLINE FINDING #1: search-time full-RD OVERCOMMIT ===================
+
+C's transform-type search (`tx_type_search`, product_coding_loop.c:4582,
+called once per (tx-depth, TXB) from `perform_tx_partitioning` at :5358)
+tries up to ~8 tx-type candidates per call through a CHEAP two-step probe:
+
+    :4729  svt_aom_estimate_transform(...)   // forward transform ONLY
+    :4742  svt_aom_satd(coeff, len)          // SATD on the COEFFICIENTS
+    :4745-4752                               // early-exit: `continue` (SKIP
+                                              //   quantize) unless this
+                                              //   candidate is competitive
+    :4757  svt_aom_quantize_inv_quantize(...)  // ONLY for survivors
+
+At p2: 488,414 cheap (transform+SATD) trials, but only 270,415 (55.4%) are
+promoted to the expensive quantize/RDOQ step. Verified via
+`callgrind_annotate --tree=caller`: the `tx_type_search -> svt_aom_satd`
+edge is 484,442 (487k transform-only calls minus a handful of `only_dct`
+short-circuits), and the `tx_type_search -> svt_aom_quantize_inv_quantize`
+edge is 270,415 -- a DIFFERENT, smaller count, confirming the promotion
+gate really does filter.
+
+The port's equivalent loop is `txt_search`
+(`crates/svtav1-encoder/src/leaf_funnel/txt.rs`, called once per
+(tx-depth, TXB) from `mds3.rs:906`, inlined into `eval_candidate` at O3).
+Its per-candidate-type loop (`txt.rs:194-243`) calls, for EVERY type that
+passes the (cheap) rate-cost gate:
+
+    txt.rs:227   tx_unit(...)   // residual + transform + quantize +
+                                 //   conditional RDOQ + cost -- THE FULL
+                                 //   PIPELINE, unconditionally
+
+and only AFTER that, `txt.rs:288-304` runs its own SATD check
+(`txb_coeff_satd` / `_hbd`) -- and the code's OWN comment at txt.rs:286-288
+says exactly what this measurement confirms:
+
+    "SATD early exit between transform and quantize in C; we apply it
+    post-hoc on the transform coefficients via a dedicated pass only when
+    the th is armed."
+
+So the port pays for the FULL RD commit on every gated candidate FIRST,
+then runs a redundant SATD-based check to decide whether to `continue`
+(discard) a result it already fully computed. Measured counts: at p2 the
+`eval_candidate -> tx_unit` edge is 488,414 calls -- matching C's cheap
+TRIAL width almost exactly (488,414 vs C's 488,414 estimate_transform
+calls, ratio 1.000x: the SEARCH BREADTH is not the problem) but 1.806x
+C's PROMOTED (expensive) count (270,415). This edge alone is **45.20% of
+the port's entire p2 Ir total** (6,961,593,623 of 15,403,051,340) --
+direct `--tree=caller` output, not estimated. At p6 the same edge is
+12.47% of total Ir; at p10, 20.98%.
+
+CONFIRMATION FROM THE COLLAPSE CASE: at p10, `only_dct_dct` is true for
+every candidate on BOTH sides (verified: the `tx_type_search -> svt_aom_satd`
+edge is ZERO at p10 in the C profile, and `txb_coeff_satd`'s residual_i32
+call count is ZERO in the port profile at p10) -- there is nothing to
+screen, one candidate per search, screen-then-commit collapses to a single
+commit on both sides, and `optimize_b`'s CALL COUNT ratio converges to
+EXACTLY 1.000x (1,110 = 1,110, see the TSV). This is strong evidence the
+mechanism identified above, not some fixed per-preset overhead, is what
+drives the p2/p6 divergence -- remove the multi-candidate case and the
+divergence disappears with it.
+
+=================== HEADLINE FINDING #2: residual re-derived per SATD trial ===================
+
+Independent of #1's depth (it holds even if you disagree with the
+"should-be" derivation above), this one needs no promotion-rate math at
+all: it is a call-graph EDGE that exists on the port and does not exist on
+C, at a WIDTH that matches C's own trial count exactly.
+
+C's per-candidate SATD (`svt_aom_satd`, product_coding_loop.c:4742) reads
+`ctx->tx_coeffs->y_buffer` -- the ALREADY-TRANSFORMED coefficients -- and
+has ZERO call-graph edges into `svt_residual_kernel8bit_avx2` anywhere
+(verified via `--tree=caller` on the residual kernel: its only callers are
+`hadamard_path`, `full_loop_core`, `perform_tx_partitioning`,
+`search_best_mds3_uv_mode`, and the two `pick_partition_pd0` variants --
+`tx_type_search` is not among them). The residual it transforms was
+computed ONCE, upstream, by `perform_tx_partitioning`'s own call into
+`svt_aom_residual_kernel` (96,754 calls at p2 -- once per (tx-depth, TXB)
+search, i.e. once per `tx_type_search` invocation, SHARED across every
+tx-type candidate that search tries).
+
+The port's `txb_coeff_satd` (`leaf_funnel/detect.rs:128-152`) is the SATD
+step described in HEADLINE #1's post-hoc check. It calls, unconditionally,
+on every invocation:
+
+    detect.rs:144   residual_i32(&src[...], ..., pred, w, w, h, residual)
+
+re-subtracting the SAME w*h source/prediction pixels the winning
+candidate's `tx_unit` call already subtracted (or will subtract). At p2
+this edge (`txb_coeff_satd::{closure#0} -> residual_i32`) fires 484,442
+times -- EXACTLY matching C's per-trial SATD width (484,442, see above) --
+at a directly-measured cost of 237,923,278 Ir, 1.54% of the p2 total. At
+p6 the same edge is 10,193 calls, again matching C's per-trial SATD width
+EXACTLY (10,193 = 10,193). At p10 both sides are zero (TXT search
+inactive, per HEADLINE #1's collapse case).
+
+This is REPEATED WORK in the sense the campaign brief asked about most
+literally: the SAME w*h subtraction, computed once by C and re-computed
+once per tx-type trial by the port -- not a slower kernel doing the same
+number of calls (that would show up as a self-time-only finding with a
+ratio-1 call count), but a call GRAPH shape that performs strictly more
+subtractions for the identical final output.
+
+=================== SUPPORTING FINDINGS ===================
+
+Everything downstream of the HEADLINE #1 overcommit inherits its ~1.5-2x
+inflation, consistent with a SINGLE root cause rather than several
+independent ones: `quant::optimize_b` (RDOQ core) 1.767x at p2, 1.271x at
+p6, EXACTLY 1.000x at p10 (converges with the collapse case);
+`cost_coeffs_txb` 1.572x; the aggregate quantizer-dispatch call count
+(`quantize_fp_raster`+`quantize_b_raster` vs C's
+`quantize_inv_quantize`+`_light`) 1.548x; `get_nz_map_contexts` 1.580x.
+These all sit downstream of `tx_unit` in the call graph, so their
+inflation is the SAME extra 218k (p2) full-pipeline invocations
+propagating through, not four separate defects.
+
+The inverse-transform dispatcher (`svt_av1_lowbd_inv_txfm2d_add_ssse3` /
+`inv_txfm2d_c_exact_bd`) is inflated 2.031x (p2), 1.658x (p6), 1.613x
+(p10) -- NOTE this one does NOT converge to 1.000x at p10, unlike
+optimize_b, so it is a SEPARATE, not-yet-attributed source of extra work
+that the search-overcommit story does not explain. Flagged for the next
+measurement chunk, not resolved here (see LIMITATIONS below).
+
+`perform_tx_partitioning`/`eval_candidate` (MDS3 candidate count) is an
+EXACT match at p2 and p6 (9,165=9,165, 1,519=1,519) but diverges 2.307x at
+p10 (886 port vs 384 C) -- the OPPOSITE preset from where HEADLINE #1/#2
+matter (those are p2/p6 phenomena that vanish at p10). This is flagged as
+an OPEN, UNEXPLAINED, preset-10-specific finding: something makes the
+port evaluate 2.3x more full-RD MD candidates than C at the fastest
+preset, for byte-identical output, and it is NOT the same mechanism as
+HEADLINE #1 (which requires multi-candidate TXT search, absent at p10).
+
+=================== PORT-ONLY OVERHEAD: the allocator ===================
+
+`malloc`+`calloc`+`free` total call count: C is FLAT across presets
+(2,523-2,600 calls total, all three presets -- consistent with one-time
+setup, essentially zero per-block allocator traffic in the timed region).
+The port scales with block/candidate count: 4,355,663 calls at p2 (1,675x
+C), 332,567 at p6 (128.8x), 102,345 at p10 (40.6x). This is the call-count
+root cause behind `perf_still_attrib_2026-09-03`'s ALLOC bucket (there
+reported as a self-time ratio: 387x at p2, 52x at p6, 25x at p10 -- the
+CALL COUNT ratio (1,675x/128.8x/40.6x) is larger than the self-time ratio
+at every preset, meaning the port's individual allocator calls are, on
+average, CHEAPER than C's rare ones (consistent with C's few calls being
+large one-time setup allocations and the port's many calls being small
+per-block scratch), not that each call is proportionally as expensive.
+Single largest identified contributor: `__rust_alloc_zeroed` (`calloc`),
+1,727,986 calls, 420,967,539 Ir (2.73% of p2 total) -- this chunk did not
+fully decompose its callers by site (out of scope; several are already
+named in existing doc comments, e.g. `detect.rs`'s `SatdScratch` and
+`tx_pipeline.rs`'s `TxScratch`, both already thread-local-scratch-backed
+per prior perf chunks, so this remaining traffic is likely OTHER call
+sites not yet moved to scratch).
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED (measured, byte-identical, cross-checked with a positive
+control that passed):
+  * The two positive controls above (SB count, final-commit-pass count)
+    are exact at every preset -- the join methodology is sound.
+  * HEADLINE #1: at p2/p6, the port's per-tx-type search runs the FULL
+    quantize/RDOQ pipeline on every gated candidate (call-count ratio
+    1.806x/measured at p2, exact edge counts given) where C only promotes
+    ~55% of its equal-width cheap trials; this converges to 1.000x at p10
+    where TXT search collapses to one candidate on both sides.
+  * HEADLINE #2: the port's post-hoc SATD screen redundantly re-derives
+    the residual once per tx-type trial (484,442/10,193/0 extra calls at
+    p2/p6/p10); C's equivalent per-trial SATD step never touches the
+    residual kernel at all, by call-graph edge count, at any preset.
+  * The allocator call-count blowup (1,675x/128.8x/40.6x) and that C's
+    allocator traffic is preset-independent.
+  * The MDS3-candidate-count divergence at p10 specifically (2.307x),
+    NOT present at p2/p6.
+
+NOT ESTABLISHED, and should not be quoted as if it were:
+  * Any ms/wall-clock conversion of these Ir shares. The paired,
+    interleaved wall-clock numbers in `perf_still_attrib_2026-09-03.*`
+    were measured on a DIFFERENT commit (d56a8ef85) and a DIFFERENT host
+    (aarch64-darwin) -- mixing them with this chunk's x86_64-linux Ir
+    percentages would misattribute cross-host/cross-commit drift as
+    cross-mechanism signal (see WORKING-ON-THIS.md's "session drift" and
+    "quoting a stale record" traps). A single UNPAIRED wall-clock sample
+    taken on r7900x during this chunk's byte-identity check (port 684ms /
+    C 245ms at p2, ratio 2.79x) is consistent in DIRECTION with the
+    existing aarch64 record (3.17x) but is not a rigorous paired
+    measurement and is not reported as one.
+  * The MECHANISM behind the inverse-transform dispatcher's 1.6-2.0x
+    inflation (does NOT converge to 1.000x at p10, so it is not the same
+    cause as HEADLINE #1/#2) -- flagged, not explained.
+  * The MECHANISM behind the p10-only MDS3-candidate-count divergence
+    (2.307x) -- flagged, not explained.
+  * Any size other than 512x512, any content other than gradient, any qp
+    other than 40, any preset other than 2/6/10.
+  * 10-bit or real content, or the inter/video path (this chunk is
+    still-picture only, matching the brief's cell selection).
+  * Whether fixing HEADLINE #1/#2 recovers a specific ms amount --
+    that requires a real code change and a paired A/B
+    (`tools/perf_ab.sh`), which is explicitly out of scope for this
+    measure-only chunk.
+
+=================== CORRECTIONS TO THE BRIEF ===================
+
+- The brief's suggested "SAD kernel for a fixed partition" positive
+  control does not apply cleanly to a still-picture intra-only cell (no
+  motion search); the SB-count and final-commit-pass controls used here
+  serve the same purpose and are stronger (one is pure geometry, the
+  other is an exact 3-preset match on real RD-search call counts).
+- `svt_fast_optimize_b` (C's third RDOQ tier, cheaper than the full
+  trellis) is called ZERO times at every preset/cell measured here --
+  `rdoq_ctrls.eob_fast_th` never triggers at this content/qp, and the
+  port's own code comment (`quant.rs`) already documents why
+  (`eob_th`/`eob_fast_th` are 255 at these rdoq levels, unreachable by a
+  `<=100` eob_perc) -- ruled out as a contributor, not a finding.
+- Two allocation-removal attempts already recorded in `perf-status.md`
+  as NEGATIVE results (`mds3d0_null`, `hadscratch_null`) are unrelated to
+  the mechanisms found here; this chunk did not re-touch either.

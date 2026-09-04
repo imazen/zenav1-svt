@@ -1,5 +1,90 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **CALL-COUNT ATTRIBUTION FOUND THE REPEATED WORK — TWO HEADLINE MECHANISMS,
+> BOTH SOURCE-LOCATED, ON r7900x/callgrind (2026-09-04).** Records
+> `benchmarks/callcount_2026-09-04.{tsv,meta}`. Self-time attribution
+> (`perf_still_attrib_2026-09-03`, above) ranks WHICH kernel is slow; it
+> cannot tell "same calls, slower body" from "more calls, same body". This
+> chunk measures calls: `valgrind --tool=callgrind` on r7900x (x86_64-linux —
+> callgrind does not run on the Mac), `tools/perf_profile/callcount.py` (new)
+> summing every `calls=N` edge in the raw callgrind output into a
+> per-function total (`callgrind_annotate` reports Ir cost, never counts),
+> `callgrind_annotate --tree=caller` for caller-specific edge counts + their
+> directly-measured inclusive Ir share. gradient 512x512 qp40, presets
+> 2/6/10, still config, byte-identical both sides at every cell (verified
+> twice per cell).
+>
+> **Two positive controls, both exact at every preset** — the join
+> methodology is sound before any finding is trusted: (1) `svt_aom_
+> largest_coding_unit_ctor` (C) / `pipeline::merge_sb_units` (port) = 64/64
+> at p2, p6, p10 (pure SB-count geometry); (2) the FINAL (non-search)
+> per-candidate quantize commit — `full_loop_core`'s always-taken quantize
+> edge (C) / `mds1::run_mds1 -> tx_pipeline::tx_unit` (port) — 67,249/67,249
+> (p2), 4,165/4,165 (p6), 886/886 (p10), and the same for the chroma commit
+> (35,590/35,590, 3,038/3,038, 1,772/1,772).
+>
+> **HEADLINE #1 — the port commits the FULL RD pipeline on every tx-type
+> trial; C commits only the survivors of a cheap pre-screen.** C's
+> `tx_type_search` (`product_coding_loop.c:4582`) tries up to ~8 tx-type
+> candidates per (tx-depth, TXB) through forward-transform +
+> coefficient-domain SATD ONLY (`:4729`/`:4742`), early-exits losers
+> (`:4745-4752`), and quantizes/RDOQs (`:4757`) only the ~55% that survive
+> (270,415 of 488,414 trials at p2). The port's `txt_search`
+> (`crates/svtav1-encoder/src/leaf_funnel/txt.rs:227`) calls `tx_unit` — the
+> WHOLE pipeline: residual, transform, quantize, conditional RDOQ, cost — on
+> EVERY gated trial (488,414 at p2, matching C's trial WIDTH almost exactly,
+> ratio 1.008x — the search breadth is not the bug), then runs its SATD
+> screen POST-HOC (`txt.rs:288-304`) to decide whether to discard a result
+> already fully computed; the code's own comment says as much ("SATD early
+> exit between transform and quantize in C; we apply it post-hoc"). This ONE
+> edge (`eval_candidate -> tx_unit`) is **45.20% of the port's entire p2 Ir
+> total** — direct tool output, not estimated. Converges to EXACTLY 1.000x at
+> p10, where `only_dct_dct` collapses BOTH sides to one candidate (nothing to
+> screen) — strong confirmation this mechanism, not a fixed overhead, drives
+> the p2/p6 gap. Everything downstream inherits the inflation: `optimize_b`
+> 1.767x (p2)/1.271x (p6)/**1.000x (p10, converges)**, `cost_coeffs_txb`
+> 1.572x, quantizer-dispatch total 1.548x, `get_nz_map_contexts` 1.580x —
+> ONE root cause, not four.
+>
+> **HEADLINE #2 — the port's post-hoc SATD screen re-derives the residual on
+> every trial; C's never touches it.** C's per-trial SATD
+> (`svt_aom_satd`, `:4742`) reads already-transformed coefficients and has
+> ZERO call-graph edges into `svt_residual_kernel8bit_avx2` at ANY preset
+> (verified via `--tree=caller`) — the residual is computed ONCE upstream
+> (`perform_tx_partitioning -> svt_aom_residual_kernel`, once per
+> tx-depth/TXB search, shared across every tx-type trial). The port's
+> `txb_coeff_satd` (`leaf_funnel/detect.rs:144`) calls `residual_i32`
+> unconditionally, re-subtracting the same w*h pixels on EVERY trial:
+> 484,442 extra calls at p2 (exactly matching C's trial width, 484,442 —
+> genuinely repeated work, not over-search), 10,193 at p6 (again exact), 0 at
+> p10 (mechanism absent exactly where TXT search is inactive on both sides).
+> Measured cost of just this edge: 237,923,278 Ir = 1.54% of p2 total.
+>
+> **Allocator call count: 1,675x C at p2, falling to 129x (p6) and 41x
+> (p10).** C's `malloc+calloc+free` total is FLAT across presets (~2,500-2,600
+> calls, one-time setup) where the port's scales with block/candidate count
+> (4.36M/333K/102K). This is the call-count root of the ALLOC bucket's
+> self-time ratio (387x/52x/25x) — the port's calls are individually CHEAPER
+> than C's rare ones, not proportionally as expensive, which is why the
+> call-count ratio exceeds the self-time ratio at every preset.
+>
+> **One preset-10-specific finding NOT explained by either headline:** MDS3
+> candidate count (`perform_tx_partitioning`/`eval_candidate`) is EXACT at p2
+> and p6 (9,165=9,165, 1,519=1,519) but diverges 2.307x at p10 (886 vs 384) —
+> the opposite preset from where headlines #1/#2 apply (TXT search is
+> inactive there). Flagged for the next chunk, not attributed. Also NOT
+> explained: the inverse-transform dispatcher's 1.6-2.0x inflation does NOT
+> converge to 1.000x at p10 (unlike optimize_b), so it is a separate,
+> unattributed source.
+>
+> **NOT MEASURED in this chunk, and do not quote it as if it were:** any
+> ms/wall-clock translation of these Ir shares (this chunk's numbers are
+> x86_64-linux/r7900x on commit `c4ff4727e`; the paired wall-clock record
+> above is aarch64-darwin on `d56a8ef85` — mixing them would misattribute
+> cross-host drift as cross-mechanism signal); the fix's actual ms payoff
+> (needs a real code change + `tools/perf_ab.sh`, out of scope for a
+> measure-only chunk); anything past still/gradient/qp40/512x512×{p2,p6,p10}.
+
 > **THE GENERIC `#[magetypes]` ROUTE IS OPEN FOR THE DIRECTIONAL-INTRA FAMILY
 > — DEMONSTRATED, NOT ASSERTED (2026-09-04). THIS SUPERSEDES THE "WHY IT IS
 > HAND-WRITTEN" PARAGRAPHS BELOW.** Those paragraphs are still CORRECT about

@@ -1,0 +1,72 @@
+# Per-function CALL COUNT comparison, port vs C, on byte-identical still-frame
+# encodes — the measurement docs/WORKING-ON-THIS.md and the campaign brief
+# asked for after perf_still_attrib_2026-09-03 found the still-path gap is
+# NOT SIMD (SIMD_GAP was the smallest bucket, 5-11%) and asked whether the
+# port is doing repeated/extra work rather than the same work more slowly.
+#
+# commit=c4ff4727e5e21d576775b620b058858c3cd53caa (rust/ code identical to
+#   a32d82e82, the last code-touching commit; c4ff4727 is docs-only)
+# host=r7900x (x86_64-linux, AMD, 24 cores), unpushed-locally commit is
+#   docs-only (CHANGELOG.md) so it does not affect anything measured here.
+# tool=valgrind-3.26.0 --tool=callgrind (Ir events), rustc 1.97.1,
+#   gcc 15.2.0, cbuild-static pinned to reference/svt-av1 @ 3115c0c1
+#   (fork-base-hdr commit svtav1/config v1:hdr=off,apps=on,lto=off,
+#   native=off,shared=off,type=Release), rust built via
+#   `cargo build --release -p zenav1-svt --example perf_encode` (workspace
+#   profile.release.package."*" opt-level=3, no target-cpu=native).
+# cells: gradient 512x512 qp 40, presets 2 / 6 / 10, STILL config
+#   (no SVTAV1_VIDEO) — the three cells perf_still_attrib_2026-09-03 uses,
+#   so these numbers join that record. warmup=0 (one init+encode cycle,
+#   both sides) so call counts are NOT diluted by an extra warmup pass.
+# byte-identity: VERIFIED for all 6 runs (3 presets x {port,C}) via
+#   `cmp` against a same-session, non-callgrind identity pre-pass AND
+#   against the callgrind-run output itself — see callcount_2026-09-04.meta.
+#
+# METHOD: callgrind_annotate does not summarize invocation counts (only Ir
+#   cost). `tools/perf_profile/callcount.py <cgfile>` parses the raw
+#   callgrind ASCII format directly and sums every `calls=N` edge into each
+#   callee, giving total times-called. Edge-level (caller->callee) counts
+#   and their inclusive Ir cost/share come from
+#   `callgrind_annotate --tree=caller <cgfile>`.
+#
+# COLUMNS:
+#   kind        POSITIVE_CONTROL | FINDING | PORT_ONLY_OVERHEAD
+#   preset      2 | 6 | 10
+#   c_site      C function (or caller->callee edge), with file:line where load-bearing
+#   c_count     C total call count (or edge call count) for this preset
+#   port_site   port function (or caller->callee edge), with file:line
+#   port_count  port total call count (or edge call count) for this preset
+#   ratio       port_count / c_count  ("no_c_edge" when C has zero calls on this edge)
+#   note        one-line interpretation
+kind	preset	c_site	c_count	port_site	port_count	ratio	note
+POSITIVE_CONTROL	2	svt_aom_largest_coding_unit_ctor	64	pipeline::merge_sb_units	64	1.000	once-per-SB geometry check (512x512/64x64=64 SBs); both sides exact at every preset measured
+POSITIVE_CONTROL	6	svt_aom_largest_coding_unit_ctor	64	pipeline::merge_sb_units	64	1.000	same
+POSITIVE_CONTROL	10	svt_aom_largest_coding_unit_ctor	64	pipeline::merge_sb_units	64	1.000	same
+POSITIVE_CONTROL	2	perform_tx_partitioning [product_coding_loop.c:5282]	9165	leaf_funnel::mds3::eval_candidate [mds3.rs]	9165	1.000	MDS3 full-RD candidate count matches exactly at p2/p6
+POSITIVE_CONTROL	6	perform_tx_partitioning	1519	leaf_funnel::mds3::eval_candidate	1519	1.000	same
+FINDING	10	perform_tx_partitioning	384	leaf_funnel::mds3::eval_candidate	886	2.307	BREAKS at p10: port evaluates 2.3x more MD candidates than C for the same byte-identical output; mechanism NOT identified in this chunk (p10 uses a lighter MD path on both sides; the C-side function driving whatever port's eval_candidate now corresponds to was not located) -- flagged for the fixing chunk, not attributed
+POSITIVE_CONTROL	2	full_loop_core -> {svt_aom_quantize_inv_quantize|_light} [product_coding_loop.c:1810-1868]	67249	leaf_funnel::mds1::run_mds1 -> tx_pipeline::tx_unit	67249	1.000	the FINAL (non-search) per-candidate luma quantize/RDOQ commit: exact at every preset
+POSITIVE_CONTROL	6	full_loop_core -> {quantize_inv_quantize|_light}	4165	mds1::run_mds1 -> tx_unit	4165	1.000	same
+POSITIVE_CONTROL	10	full_loop_core -> {quantize_inv_quantize|_light}	886	mds1::run_mds1 -> tx_unit	886	1.000	same (at p10 C always takes the _light edge; see meta)
+POSITIVE_CONTROL	2	svt_aom_full_loop_uv -> svt_aom_quantize_inv_quantize	35590	leaf_funnel::chroma::eval_uv -> tx_pipeline::tx_unit	35590	1.000	the FINAL chroma quantize commit: exact at every preset
+POSITIVE_CONTROL	6	svt_aom_full_loop_uv -> quantize_inv_quantize	3038	chroma::eval_uv -> tx_unit	3038	1.000	same
+POSITIVE_CONTROL	10	svt_aom_full_loop_uv -> quantize_inv_quantize	1772	chroma::eval_uv -> tx_unit	1772	1.000	same
+POSITIVE_CONTROL	2	svt_av1_dr_prediction_z2_avx2	68123	intra_pred::dr_z2_edged_core	68080	0.999	kernel-only gap (z2 not ported to a competitive SIMD arm) -- call count already known-correct, matches perf_still_attrib's z2 finding
+FINDING	2	tx_type_search -> svt_aom_quantize_inv_quantize [product_coding_loop.c:4757] (promoted trials only)	270415	txt.rs:227 txt_search -> tx_pipeline::tx_unit (every gated trial)	488414	1.806	HEADLINE #1: C screens tx-type candidates CHEAPLY (transform+SATD-on-coeffs, no quantize) and only promotes ~55% of trials to the expensive quantize/RDOQ commit; the port runs the FULL commit (residual+transform+quantize+conditional RDOQ+cost) on every gated trial, THEN applies its SATD screen post-hoc (detect.rs, discarding already-paid-for work). Edge is 45.20% of the port's total p2 Ir (tree=caller measurement).
+FINDING	6	tx_type_search -> quantize_inv_quantize (promoted trials only)	not_isolated	txt.rs:227 txt_search -> tx_unit	10537	na	edge = 12.47% of port's total p6 Ir; C's promoted-trial subset not cleanly isolated at this scale (see meta) but the SATD-trial width matches exactly (10193=10193, see FINDING residual row) so the same overcommit mechanism applies
+FINDING	10	n/a -- TXT search collapses to 1 candidate (only_dct_dct) on BOTH sides at p10	608	txt.rs:227 txt_search -> tx_unit	608	1.000	CONFIRMS the mechanism: with nothing to screen, port and C converge to 1.000x -- the p2/p6 divergence is specifically the multi-candidate screen-then-commit gap, not a fixed per-call overhead
+FINDING	2	tx_type_search -> svt_aom_satd [product_coding_loop.c:4742] (coeff-domain SATD; NO residual read)	484442	detect.rs:144 txb_coeff_satd -> residual::residual_i32 (post-hoc SATD; RE-derives residual)	484442	no_c_edge	HEADLINE #2: trial WIDTH matches exactly (484442=484442, so the search itself is not over-broad) but C's per-trial SATD never touches svt_residual_kernel8bit (verified: zero incoming edges from tx_type_search in the C call graph) because it works on transform coefficients from a residual computed ONCE upstream (svt_aom_residual_kernel, called from perform_tx_partitioning, 96754x at p2 -- once per TXB-search, shared across every tx-type trial). The port's residual_i32 call inside txb_coeff_satd re-subtracts the same w*h pixels on every one of its 484442 trials. Edge cost = 237,923,278 Ir = 1.54% of p2 total (tree=caller, direct measurement, not estimated).
+FINDING	6	tx_type_search -> svt_aom_satd	10193	detect.rs:144 txb_coeff_satd -> residual_i32	10193	no_c_edge	same mechanism, exact trial-width match again (10193=10193)
+FINDING	10	n/a (0 satd trials, TXT off)	0	txb_coeff_satd -> residual_i32	0	1.000	confirms: mechanism is absent exactly where TXT search is inactive on both sides
+FINDING	2	svt_av1_optimize_b.constprop.0 [full_loop.c:1868]	261827	quant::optimize_b	462758	1.767	RDOQ trellis core; matches QUANT_RDOQ bucket (perf_still_attrib_2026-09-03: 2.36x self-time ratio, 15.3% of p2 gap) -- now has a call-count cause, not just a slower-kernel cause
+FINDING	6	svt_av1_optimize_b.constprop.0	7857	quant::optimize_b	9987	1.271	same direction, smaller at p6
+POSITIVE_CONTROL	10	svt_av1_optimize_b.constprop.0	1110	quant::optimize_b	1110	1.000	CONVERGES to exact at p10 -- consistent with TXT-search collapse (see above): no multi-trial waste, no extra RDOQ calls either
+FINDING	2	svt_av1_cost_coeffs_txb [full_loop.c via svt_aom_txb_estimate_coeff_bits]	304169	leaf_funnel::coeff_rate::cost_coeffs_txb	478131	1.572	rate estimation for coefficient coding; same search-overcommit cause as HEADLINE #1 (this is called from inside the extra tx_unit trials)
+FINDING	2	svt_aom_quantize_inv_quantize + _light (total)	382172	quant_coding::quantize_fp_raster + quantize_b_raster (total)	591253	1.548	aggregate quantizer-dispatch call count; the whole-encode rollup of HEADLINE #1
+FINDING	2	svt_av1_get_nz_map_contexts_avx2	305513	entropy::coeff_c::get_nz_map_contexts	482637	1.580	coefficient-context derivation, downstream of the extra quantize/cost calls
+FINDING	2	svt_av1_lowbd_inv_txfm2d_add_ssse3 (top-level RTCD dispatch entry)	202922	inv_txfm::inv_txfm2d_c_exact_bd / txfm_dispatch::inv_txfm2d_dispatch	412186	2.031	inverse-transform dispatcher; C's own top-level entry point used as the C-side count (its "no_identity"/"h_identity"/"v_identity" sub-arms are C-internal and not a clean per-arm port match, see meta)
+FINDING	6	svt_av1_lowbd_inv_txfm2d_add_ssse3	5497	inv_txfm2d_c_exact_bd	9113	1.658	same direction
+FINDING	10	svt_av1_lowbd_inv_txfm2d_add_ssse3	688	inv_txfm2d_c_exact_bd	1110	1.613	same direction, holds even where TXT search is inactive -- a SEPARATE, not-yet-attributed source of extra inverse-transform calls
+PORT_ONLY_OVERHEAD	2	malloc+calloc+free (total libc allocator entries)	2600	malloc+calloc+free (total)	4355663	1675	ALLOC bucket's call-count root cause: C's allocator traffic is ~flat across presets (2523-2600 total calls, one-time-setup dominated); the port's scales with block/TXB/candidate count. Single largest port-only-overhead item by count. __rust_alloc_zeroed alone = 1,727,986 calls, 420,967,539 Ir (2.73% of p2 total)
+PORT_ONLY_OVERHEAD	6	malloc+calloc+free (total)	2583	malloc+calloc+free (total)	332567	128.8	same trend
+PORT_ONLY_OVERHEAD	10	malloc+calloc+free (total)	2523	malloc+calloc+free (total)	102345	40.6	same trend
