@@ -56,6 +56,19 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **A second NULL, reverted, and the rule the two of them establish.**
+  Recycling `predict::hadamard_satd`'s two fixed-bound buffers — the #3
+  allocator caller on the still arm at 11.9 % — is **~1 % SLOWER across the
+  videokey arm** in both a thread-local variant and a stack-array-for-small-
+  tiles variant. With the `d0_recon` null above, that is two measured,
+  controlled, negative allocation removals in one chunk. What separates them
+  from the two that WON (`0c70f3fc` six of six cells, `700357e2` nine of
+  twelve) is not the allocations — `coeff_contexts` removed one and `700357e2`
+  removed NONE; both removed **zeroing**. Working rule recorded in
+  `rust/docs/perf-status.md`: on this allocator a malloc/free pair is worth
+  about nothing and a memset is worth real time, so rank the remaining ALLOC
+  share by what it MEMSETS. Record
+  `rust/benchmarks/hadscratch_null_2026-09-03.meta` (ce34ec82).
 - **Zone 2 directional intra runs in NEON lanes — 1.4 % at the still arm's
   worst cell and 2.5-4.2 % on the video key frame at p6.** `dr_predictor_edged`
   was 763 of 19,115 self samples at gradient 512x512 preset 2 against C's
