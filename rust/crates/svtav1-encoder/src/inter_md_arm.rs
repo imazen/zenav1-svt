@@ -123,7 +123,7 @@ use crate::intrabc_mvp::{MvpGrid, MvpMiEntry, derive_block_ctx};
 use crate::picture::PaddedRef;
 use crate::port_entropy_inter::modes::{MotionMode, TransformationType};
 use crate::port_entropy_inter::{InterCdfs, NeighborMi, Neighbors};
-use crate::port_md::pme::{MV_VALS, MvCostTable};
+use crate::port_md::pme::MvCostTable;
 use crate::port_md::ref_frame_rate::{NeighborRefCounts, RefFrameFacBits};
 use crate::port_rd_cost::inter_cost::{
     InterBlock, InterCandidate, InterFacBits, InterFrame, inter_fast_cost,
@@ -288,27 +288,17 @@ impl InterMdFrame<'_> {
     }
 }
 
-/// Convert the IntraBC-side MV cost tables to the `port_md` shape.
-///
-/// The two types differ ONLY in how they clip a component index — see
-/// [`MvCostTable`]'s own doc — and both are built by C's single
-/// `svt_av1_build_nmv_cost_table` (md_rate_estimation.c:446). Building one
-/// from the other means there is one transcription of that function, not two.
+/// C `svt_av1_build_nmv_cost_table` (md_rate_estimation.c:446) for the MD
+/// arm — the one transcription, [`crate::intrabc::build_nmv_cost_table`].
+/// (`port_md`'s table type is that same type since 2026-09-04; this used to
+/// re-pack it into a second shape that differed only at an unreachable
+/// clip.)
 #[must_use]
 pub fn nmv_cost_table(
     nmvc: &crate::entropy::mv_coding::NmvContext,
     precision: crate::entropy::mv_coding::MvSubpelPrecision,
 ) -> MvCostTable {
-    let t = crate::intrabc::build_nmv_cost_table(nmvc, precision);
-    let comp = |i: usize| -> Vec<i32> {
-        (0..MV_VALS)
-            .map(|v| t.comp_cost[i].cost(v as i32 - crate::intrabc::MV_MAX))
-            .collect()
-    };
-    MvCostTable {
-        joint: t.joint_cost,
-        comp: [comp(0), comp(1)],
-    }
+    crate::intrabc::build_nmv_cost_table(nmvc, precision)
 }
 
 /// Build [`InterFacBits`] + [`RefFrameFacBits`] from the live CDFs.

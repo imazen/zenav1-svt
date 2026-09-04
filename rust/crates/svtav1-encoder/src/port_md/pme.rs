@@ -4,10 +4,9 @@
 //!
 //! | this module | C |
 //! |---|---|
-//! | [`MvCostType`] | `mcomp.h:29-36` |
-//! | [`MvCostParams`] | `mcomp.h:38-49` |
-//! | [`mv_err_cost`] | `mcomp.c:42-72` (`svt_mv_err_cost`, ALL six arms) |
-//! | [`fp_mv_err_cost`] | `mcomp.c:775-777` (`svt_aom_fp_mv_err_cost`) |
+//! | [`MvCostType`] / [`MvCostParams`] | `mcomp.h:29-49` — re-exported from [`crate::md_subpel`], the one transcription |
+//! | [`mv_err_cost`] | `mcomp.c:42-72` (`svt_mv_err_cost`) — a forward to [`crate::md_subpel::mv_err_cost`] |
+//! | [`fp_mv_err_cost`] | `mcomp.c:775-777` (`svt_aom_fp_mv_err_cost`) — the same forward |
 //! | [`pme_sad_loop_kernel`] | `product_coding_loop.c:1775-1826` (EXPORTED) |
 //! | [`get_fullmv_from_mv`] | `mv.h:60-63` |
 //! | [`get_sad_per_bit`] / [`SAD_PER_BIT_LUT_8`] / [`SAD_PER_BIT_LUT_10`] | `mode_decision.c:2044-2062` + `svt_av1_init_me_luts` |
@@ -43,195 +42,53 @@ use svtav1_dsp::me_sad::{block_sad_arm_v2, block_sad_neon};
 use svtav1_types::motion::Mv;
 
 // ---------------------------------------------------------------------------
-// Cost model (mcomp.h:29-49, mcomp.c:30-81)
+// Cost model (mcomp.h:29-49, mcomp.c:30-81) — ONE transcription, which lives
+// in `crate::md_subpel`
 // ---------------------------------------------------------------------------
+//
+// This module used to carry its own `MvCostType`, `MvCostParams`,
+// `MvCostTable` and a second body of `svt_mv_err_cost`, pinned to
+// `md_subpel`'s by a 576-cell sweep. `docs/WORKING-ON-THIS.md` §4: two
+// transcriptions of one C function drift. As of 2026-09-04 the mcomp.c cost
+// model has exactly one body, [`crate::md_subpel::mv_err_cost`], and every
+// name below is a re-export of, or a one-line forward to, that one. The
+// table type is [`crate::intrabc::MvCostTables`], built by the single
+// transcription of `svt_av1_build_nmv_cost_table`
+// ([`crate::intrabc::build_nmv_cost_table`]).
 
-/// C `MV_COST_TYPE` (mcomp.h:29-36).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum MvCostType {
-    /// Entropy rate of the MV (the default).
-    Entropy = 0,
-    /// L1 norm, < 480p.
-    L1LowRes = 1,
-    /// L1 norm, >= 480p.
-    L1MidRes = 2,
-    /// L1 norm, >= 720p.
-    L1HdRes = 3,
-    /// Scaled L1 norm against `error_per_bit`.
-    Opt = 4,
-    /// Always 0.
-    None = 5,
-}
+pub use crate::intrabc::{MV_MAX, MV_VALS};
+pub use crate::md_subpel::{MvCostParams, MvCostType};
 
-/// C `SSE_LAMBDA_LOWRES` / `_MIDRES` / `_HDRES` (mcomp.c:32-36).
+/// C's `mvjcost` + `mvcost[2]` triple as `svt_mv_cost` (mcomp.h:138-142)
+/// reads them — the same type the IntraBC and sub-pel searches use.
 ///
-/// Note `MIDRES` is **0** — the mid-resolution arm charges no MV cost at
-/// all. That is C's value, not an omission.
-const SSE_LAMBDA_LOWRES: i32 = 2;
-const SSE_LAMBDA_MIDRES: i32 = 0;
-const SSE_LAMBDA_HDRES: i32 = 1;
+/// C clips the component index to `CLIP3(MV_LOW, MV_UPP, v)` = `±16384` and
+/// then reads `mvcost[i][MV_MAX + v]`, which at exactly `+16384` is one past
+/// a `MV_VALS`-long row and at `-16384` one before it — out of bounds in C
+/// either way, and unreachable: `is_valid_mv_diff` (mode_decision.c:776)
+/// rejects any per-component diff past `1 << 14` before injection. The port
+/// clamps to the populated `±MV_MAX` instead
+/// ([`crate::intrabc::MvComponentCost::cost`]). The retired `port_md` table
+/// type mapped `-16384` onto the `+16383` entry, so the two copies only ever
+/// agreed there when the sign CDF was flat — one more reason for one type.
+pub type MvCostTable = crate::intrabc::MvCostTables;
 
-/// C `PIXEL_TRANSFORM_ERROR_SCALE` (mcomp.c:40).
-const PIXEL_TRANSFORM_ERROR_SCALE: u32 = 4;
-/// C `RDDIV_BITS` (rd_cost.h:34) / `AV1_PROB_COST_SHIFT`
-/// (md_rate_estimation.h:29) / `RD_EPB_SHIFT` (restoration.h:342).
-const RDDIV_BITS: u32 = 7;
-const AV1_PROB_COST_SHIFT: u32 = 9;
-const RD_EPB_SHIFT: u32 = 6;
+/// C `RD_EPB_SHIFT` (restoration.h:342).
+const RD_EPB_SHIFT: u32 = crate::intrabc::RD_EPB_SHIFT;
 
-/// The shift `svt_mv_err_cost`'s ENTROPY and OPT arms round by.
-const MV_ERR_COST_SHIFT: u32 =
-    RDDIV_BITS + AV1_PROB_COST_SHIFT - RD_EPB_SHIFT + PIXEL_TRANSFORM_ERROR_SCALE;
-
-/// C `ROUND_POWER_OF_TWO_64`.
+/// C `svt_mv_err_cost` (mcomp.c:42-72) reached through a [`MvCostParams`]
+/// — a forward to the one body, [`crate::md_subpel::mv_err_cost`].
 #[inline]
-fn round_power_of_two_64(value: i64, n: u32) -> i64 {
-    (value + (1i64 << (n - 1))) >> n
-}
-
-/// C `MV_MAX` (cabac_context_model.h:194) = `(1 << 14) - 1`.
-pub const MV_MAX: i32 = (1 << 14) - 1;
-/// C `MV_VALS` (cabac_context_model.h:195) = `(MV_MAX << 1) + 1`.
-pub const MV_VALS: usize = ((MV_MAX << 1) + 1) as usize;
-/// C `MV_LOW` / `MV_UPP` (cabac_context_model.h:198-199).
-const MV_LOW: i32 = -(1 << 14);
-const MV_UPP: i32 = 1 << 14;
-
-/// C's `mvjcost` + `mvcost[2]` triple as
-/// `svt_mv_cost` (mcomp.h:138-142) reads them.
-///
-/// Deliberately NOT [`crate::intrabc::MvCostTables`]: that type clamps the
-/// component index to `+-MV_MAX`, while `svt_mv_cost` clips to
-/// `CLIP3(MV_LOW, MV_UPP, .)` — i.e. `+-16384`, one wider. The two agree
-/// everywhere except a per-component diff of exactly `+16384`, where C
-/// indexes `nmv_costs[i][MV_MAX + 16384]` = element **32767** of a
-/// `MV_VALS = 32767`-long row, one past its end. See
-/// [`MvCostTable::comp_cost`] for what this port does there instead.
-#[derive(Debug, Clone)]
-pub struct MvCostTable {
-    /// C `mvjcost`, 4 entries (`MV_JOINTS`).
-    pub joint: [i32; 4],
-    /// C `mvcost[0]` (the ROW/y component, coded first) and `mvcost[1]`
-    /// (the column/x component), each `MV_VALS` long and indexed
-    /// `MV_MAX + value`.
-    pub comp: [Vec<i32>; 2],
-}
-
-impl MvCostTable {
-    /// C `comp_cost[i][CLIP3(MV_LOW, MV_UPP, v)]` with the index kept
-    /// inside the table.
-    ///
-    /// C's clip admits `+16384`, whose index is one past the row. The
-    /// port clamps the INDEX to the last valid element rather than
-    /// reproducing the read; the value C would get there is
-    /// `nmv_costs[1][0]` for component 0 and unrelated struct memory for
-    /// component 1, i.e. not a defined cost at all. Callers never reach
-    /// it: `is_valid_mv_diff` (mode_decision.c:776) rejects any candidate
-    /// whose per-component MV-minus-predmv exceeds `1 << 14` BEFORE
-    /// injection, and the search operates on smaller diffs still.
-    #[inline]
-    pub fn comp_cost(&self, i: usize, v: i32) -> i32 {
-        let clipped = v.clamp(MV_LOW, MV_UPP);
-        let idx = ((MV_MAX + clipped) as usize).min(MV_VALS - 1);
-        self.comp[i][idx]
-    }
-
-    /// C `svt_mv_cost` (mcomp.h:138-142). `diff` is `mv - ref_mv`.
-    #[inline]
-    pub fn mv_cost(&self, diff: Mv) -> i32 {
-        self.joint[mv_joint_index(i32::from(diff.x), i32::from(diff.y))]
-            + self.comp_cost(0, i32::from(diff.y))
-            + self.comp_cost(1, i32::from(diff.x))
-    }
-}
-
-/// C `svt_av1_get_mv_joint` (rd_cost.c:41-53).
-#[inline]
-fn mv_joint_index(diff_x: i32, diff_y: i32) -> usize {
-    if diff_y == 0 {
-        if diff_x == 0 { 0 } else { 1 }
-    } else if diff_x == 0 {
-        2
-    } else {
-        3
-    }
-}
-
-/// C `svt_mv_cost_param` (mcomp.h:38-49).
-///
-/// `mv_cost_tables` stands in for C's `mvjcost` + `mvcost[2]` triple: C
-/// tests `if (mvcost)` and returns 0 when the pointer is NULL, which is
-/// `None` here. `full_ref_mv` is carried because C stores it even though
-/// `svt_mv_err_cost` does not read it — the SAD-domain callers do.
-#[derive(Debug, Clone)]
-pub struct MvCostParams<'a> {
-    /// C `ref_mv` — eighth-pel.
-    pub ref_mv: Mv,
-    /// C `full_ref_mv` — `get_fullmv_from_mv(ref_mv)`.
-    pub full_ref_mv: Mv,
-    /// C `mv_cost_type`.
-    pub mv_cost_type: MvCostType,
-    /// C `mvjcost` + `mvcost[2]`; `None` is C's NULL `mvcost`.
-    pub mv_cost_tables: Option<&'a MvCostTable>,
-    /// C `error_per_bit`.
-    pub error_per_bit: i32,
-    /// C `early_exit_th`.
-    pub early_exit_th: i32,
-    /// C `sad_per_bit`.
-    pub sad_per_bit: i32,
-}
-
-/// C `svt_mv_err_cost` (mcomp.c:42-72, `static INLINE`).
-///
-/// All six arms. The three L1 arms shift the weighted sum right by 3
-/// AFTER the multiply, so `MID_RES`'s zero lambda makes them free and
-/// `HDRES`'s 1 makes them `(|dy| + |dx|) >> 3`.
 pub fn mv_err_cost(mv: Mv, params: &MvCostParams<'_>) -> i32 {
-    // C stores the difference into an `Mv` — int16_t fields — BEFORE
-    // anything reads it, so both the cost lookup and the `abs_diff` term
-    // see the TRUNCATED value, not a widened one.
-    let diff = Mv {
-        x: mv.x.wrapping_sub(params.ref_mv.x),
-        y: mv.y.wrapping_sub(params.ref_mv.y),
-    };
-    // C's `abs_diff` is likewise an `Mv`, so `abs(i16::MIN)` wraps back to
-    // `i16::MIN` rather than becoming 32768.
-    let abs_sum = i32::from(diff.y.wrapping_abs()) + i32::from(diff.x.wrapping_abs());
-
-    match params.mv_cost_type {
-        MvCostType::Entropy => match params.mv_cost_tables {
-            Some(t) => {
-                let cost = i64::from(t.mv_cost(diff)) * i64::from(params.error_per_bit);
-                round_power_of_two_64(cost, MV_ERR_COST_SHIFT) as i32
-            }
-            // C guards this arm with `if (mvcost)` and returns 0
-            // otherwise — but `mvcost` is `const int* mvcost[2]`, an
-            // ARRAY member, so the test is a tautology and the zero
-            // return is DEAD CODE: with NULL component pointers C
-            // dereferences them and crashes (measured: SIGSEGV driving
-            // svt_aom_fp_mv_err_cost with a zeroed svt_mv_cost_param).
-            // `None` here therefore means "no table configured", a state
-            // C's ENTROPY arm cannot survive; the port returns 0 rather
-            // than reproducing the crash.
-            None => 0,
-        },
-        MvCostType::L1LowRes => (SSE_LAMBDA_LOWRES * abs_sum) >> 3,
-        MvCostType::L1MidRes => (SSE_LAMBDA_MIDRES * abs_sum) >> 3,
-        MvCostType::L1HdRes => (SSE_LAMBDA_HDRES * abs_sum) >> 3,
-        MvCostType::Opt => {
-            let cost = i64::from(abs_sum << 8) * i64::from(params.error_per_bit);
-            round_power_of_two_64(cost, MV_ERR_COST_SHIFT) as i32
-        }
-        MvCostType::None => 0,
-    }
+    params.err_cost(mv)
 }
 
-/// C `svt_aom_fp_mv_err_cost` (mcomp.c:775-777, EXPORTED) — a thin
-/// forward to [`mv_err_cost`].
+/// C `svt_aom_fp_mv_err_cost` (mcomp.c:775-777, EXPORTED) — the same forward
+/// under the name C exports; gated against the real symbol in
+/// `tests/c_parity_md_pme.rs` and `tests/c_parity_md_subpel.rs`.
 #[inline]
 pub fn fp_mv_err_cost(mv: Mv, params: &MvCostParams<'_>) -> i32 {
-    mv_err_cost(mv, params)
+    params.err_cost(mv)
 }
 
 // ---------------------------------------------------------------------------
@@ -319,32 +176,41 @@ pub fn get_sad_per_bit(qidx: usize, is_hbd: bool) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// C `svt_init_mv_cost_params` (product_coding_loop.c:1901-1912,
-/// `static`) — **tier 4**.
+/// `static`) — **tier 4**. The ONE transcription: the MD sub-pel driver
+/// (`port_md::md_search`) and the full-pel ME cost
+/// (`inter_search_arm::full_pel_mv_cost_params`) both build their params
+/// here instead of re-deriving them.
 ///
-/// `skip_diag_refinement >= 3` picks `MV_COST_OPT`, everything else
+/// `skip_diag_refinement` is **the ME controls'** value
+/// (`ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3`, :1906) whichever
+/// search is being set up — a PME call still takes its cost TYPE from the
+/// ME controls. `>= 3` picks `MV_COST_OPT`, everything else
 /// `MV_COST_ENTROPY`; that single comparison is what decides whether the
 /// whole MD search prices MVs by entropy or by a scaled L1 norm.
+///
+/// C also stores `full_ref_mv` and `sad_per_bit` (the latter from
+/// `svt_aom_get_sad_per_bit(base_q_idx, hbd_md)`); no function in mcomp.c
+/// reads either, so [`MvCostParams`] does not carry them and this takes
+/// neither `base_q_idx` nor `hbd_md`.
 pub fn init_mv_cost_params<'a>(
     ref_mv: Mv,
     sq_size: u16,
-    skip_diag_refinement: u8,
+    me_skip_diag_refinement: u8,
     rdmult: u32,
-    base_q_idx: usize,
-    hbd_md: bool,
-    mv_cost_tables: Option<&'a MvCostTable>,
+    tables: Option<&'a MvCostTable>,
 ) -> MvCostParams<'a> {
     MvCostParams {
         ref_mv,
-        full_ref_mv: get_fullmv_from_mv(ref_mv),
-        mv_cost_type: if skip_diag_refinement >= 3 {
+        mv_cost_type: if me_skip_diag_refinement >= 3 {
             MvCostType::Opt
         } else {
             MvCostType::Entropy
         },
-        mv_cost_tables,
+        tables,
+        // C `AOMMAX(rdmult >> RD_EPB_SHIFT, 1)`.
         error_per_bit: ((rdmult >> RD_EPB_SHIFT).max(1)) as i32,
+        // C `1020 - (ctx->blk_geom->sq_size >> 2)`.
         early_exit_th: 1020 - i32::from(sq_size >> 2),
-        sad_per_bit: get_sad_per_bit(base_q_idx, hbd_md),
     }
 }
 
@@ -621,13 +487,12 @@ mod tests {
     /// TIER 4 — `svt_init_mv_cost_params` (product_coding_loop.c:1901).
     #[test]
     fn tier4_init_mv_cost_params_thresholds() {
-        let p = init_mv_cost_params(Mv { x: 8, y: -16 }, 32, 3, 1 << 10, 100, false, None);
+        let p = init_mv_cost_params(Mv { x: 8, y: -16 }, 32, 3, 1 << 10, None);
         assert_eq!(p.mv_cost_type, MvCostType::Opt);
         assert_eq!(p.early_exit_th, 1020 - 8);
         assert_eq!(p.error_per_bit, (1 << 10) >> RD_EPB_SHIFT);
-        assert_eq!(p.full_ref_mv, get_fullmv_from_mv(Mv { x: 8, y: -16 }));
 
-        let p = init_mv_cost_params(Mv::ZERO, 8, 2, 0, 0, false, None);
+        let p = init_mv_cost_params(Mv::ZERO, 8, 2, 0, None);
         assert_eq!(p.mv_cost_type, MvCostType::Entropy);
         // AOMMAX(rdmult >> 6, 1) floors at 1, never 0.
         assert_eq!(p.error_per_bit, 1);
@@ -640,12 +505,10 @@ mod tests {
     fn tier4_mv_err_cost_l1_arms() {
         let mk = |t: MvCostType| MvCostParams {
             ref_mv: Mv::ZERO,
-            full_ref_mv: Mv::ZERO,
             mv_cost_type: t,
-            mv_cost_tables: None,
+            tables: None,
             error_per_bit: 64,
             early_exit_th: 0,
-            sad_per_bit: 0,
         };
         let mv = Mv { x: 40, y: -24 };
         assert_eq!(mv_err_cost(mv, &mk(MvCostType::L1LowRes)), (2 * 64) >> 3);

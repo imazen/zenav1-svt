@@ -1111,25 +1111,19 @@ pub fn md_subpel_search(
     // stays in the signature because C passes it and a caller wiring the
     // PME/ME drivers must not have to rediscover that.
     let _ = base_q_idx;
-    let mv_cost_params = crate::md_subpel::MvCostParams {
+    // **C reads the ME controls here, not `ctrls`**
+    // (`svt_init_mv_cost_params`, product_coding_loop.c:1906:
+    // `ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3`). So a PME
+    // call, which passes `md_subpel_pme_ctrls` as `ctrls`, still takes
+    // its MV-cost TYPE from the ME controls. That is why this is a
+    // separate parameter instead of `ctrls.skip_diag_refinement`.
+    let mv_cost_params = super::pme::init_mv_cost_params(
         ref_mv,
-        // **C reads the ME controls here, not `ctrls`**
-        // (`svt_init_mv_cost_params`, product_coding_loop.c:1906:
-        // `ctx->md_subpel_me_ctrls.skip_diag_refinement >= 3`). So a PME
-        // call, which passes `md_subpel_pme_ctrls` as `ctrls`, still takes
-        // its MV-cost TYPE from the ME controls. That is why this is a
-        // separate parameter instead of `ctrls.skip_diag_refinement`.
-        mv_cost_type: if me_skip_diag_refinement >= 3 {
-            crate::md_subpel::MvCostType::Opt
-        } else {
-            crate::md_subpel::MvCostType::Entropy
-        },
-        tables: mv_cost_tables,
-        // C `AOMMAX(rdmult >> RD_EPB_SHIFT, 1)`, `RD_EPB_SHIFT` = 6.
-        error_per_bit: ((full_lambda >> 6).max(1)) as i32,
-        // C `1020 - (ctx->blk_geom->sq_size >> 2)`.
-        early_exit_th: 1020 - (i32::from(geom.sq_size) >> 2),
-    };
+        geom.sq_size,
+        me_skip_diag_refinement,
+        full_lambda,
+        mv_cost_tables,
+    );
 
     let var_params = SubpelSearchVarParams {
         src,
@@ -1823,24 +1817,16 @@ mod tests {
     }
 
     fn zero_cost() -> MvCostTable {
-        MvCostTable {
-            joint: [0; 4],
-            comp: [
-                vec![0i32; crate::port_md::pme::MV_VALS],
-                vec![0i32; crate::port_md::pme::MV_VALS],
-            ],
-        }
+        MvCostTable::zeroed()
     }
 
     fn params(t: &MvCostTable) -> MvCostParams<'_> {
         MvCostParams {
             ref_mv: Mv::ZERO,
-            full_ref_mv: Mv::ZERO,
             mv_cost_type: MvCostType::None,
-            mv_cost_tables: Some(t),
+            tables: Some(t),
             error_per_bit: 0,
             early_exit_th: 0,
-            sad_per_bit: 0,
         }
     }
 
@@ -3198,54 +3184,37 @@ mod tests {
         assert_eq!((err, mv.x, mv.y), (0, 0, 0));
     }
 
-    /// **`md_subpel::mv_err_cost` and `port_md::pme::mv_err_cost` are two
-    /// transcriptions of ONE C function** (`svt_mv_err_cost`,
-    /// mcomp.c:42-72), and `docs/WORKING-ON-THIS.md` §4 says a second
-    /// transcription must be PINNED to the first rather than left to
-    /// drift. Both are driven from the SAME cost table (the pme table is
-    /// derived from `intrabc::build_nmv_cost_table`, which is what the
-    /// mcomp side takes directly), over every cost type and a spread of
-    /// MV differences including the `i16::MIN` wrap the doc comments both
-    /// call out.
+    /// **`svt_mv_err_cost` (mcomp.c:42-72) has ONE body in this crate**,
+    /// `md_subpel::mv_err_cost`; `port_md::pme::mv_err_cost`,
+    /// `port_md::pme::fp_mv_err_cost`, `md_subpel::fp_mv_err_cost` and
+    /// `intrabc::mv_err_cost` (av1me.c's `svt_aom_mv_err_cost`, the ENTROPY
+    /// arm under an older name) are forwards to it. Until 2026-09-04 this
+    /// test pinned two independent transcriptions to each other over these
+    /// 576 cells (`docs/WORKING-ON-THIS.md` §4); the second transcription is
+    /// gone, and the sweep now guards the fold itself — if anyone re-grows
+    /// a body behind one of the forwarding names, it drifts here first.
+    /// The ENTROPY cells also cover the av1me.c spelling, which takes the
+    /// tables by reference instead of through the params struct.
     ///
-    /// TEETH, measured by mutating the pme side one arm at a time:
-    /// `L1LowRes`'s shift and the `Opt` arm's `abs_sum` each fail this
-    /// test. **`L1MidRes` does NOT** — `SSE_LAMBDA_MIDRES` is 0
-    /// (mcomp.c:33), so that arm is identically zero on both sides and no
-    /// mutation of its shift is observable. That is a statement about the
-    /// constant, not coverage: say it rather than counting the cell.
+    /// TEETH: the sweep spans every cost type, an `i16::MIN` wrap and four
+    /// `error_per_bit` values, so a re-grown body that changes any arm's
+    /// shift, `abs_sum`, or the rounding fails (`L1MidRes` excepted —
+    /// `SSE_LAMBDA_MIDRES` is 0, mcomp.c:33, so that arm is identically
+    /// zero whatever a copy does to it; a statement about the constant, not
+    /// coverage).
     #[test]
-    fn tier4_the_two_mv_err_cost_transcriptions_agree() {
+    fn tier4_every_mv_err_cost_spelling_is_the_one_body() {
         use crate::entropy::mv_coding::MvSubpelPrecision;
         let fc = crate::entropy::context::FrameContext::new_default();
         let tables = crate::intrabc::build_nmv_cost_table(&fc.nmvc, MvSubpelPrecision::High);
-        let pme_tbl = crate::inter_md_arm::nmv_cost_table(&fc.nmvc, MvSubpelPrecision::High);
 
         let types = [
-            (
-                crate::md_subpel::MvCostType::Entropy,
-                super::super::pme::MvCostType::Entropy,
-            ),
-            (
-                crate::md_subpel::MvCostType::L1LowRes,
-                super::super::pme::MvCostType::L1LowRes,
-            ),
-            (
-                crate::md_subpel::MvCostType::L1MidRes,
-                super::super::pme::MvCostType::L1MidRes,
-            ),
-            (
-                crate::md_subpel::MvCostType::L1HdRes,
-                super::super::pme::MvCostType::L1HdRes,
-            ),
-            (
-                crate::md_subpel::MvCostType::Opt,
-                super::super::pme::MvCostType::Opt,
-            ),
-            (
-                crate::md_subpel::MvCostType::None,
-                super::super::pme::MvCostType::None,
-            ),
+            crate::md_subpel::MvCostType::Entropy,
+            crate::md_subpel::MvCostType::L1LowRes,
+            crate::md_subpel::MvCostType::L1MidRes,
+            crate::md_subpel::MvCostType::L1HdRes,
+            crate::md_subpel::MvCostType::Opt,
+            crate::md_subpel::MvCostType::None,
         ];
         let mvs = [
             (0i16, 0i16),
@@ -3261,38 +3230,66 @@ mod tests {
         let epbs = [1i32, 7, 64, 4095];
 
         let mut cells = 0usize;
-        for (mt_a, mt_b) in types {
+        let mut nonzero = 0usize;
+        for mt in types {
             for (rx, ry) in refs {
                 for (mx, my) in mvs {
                     for epb in epbs {
-                        let a = crate::md_subpel::MvCostParams {
-                            ref_mv: Mv { x: rx, y: ry },
-                            mv_cost_type: mt_a,
-                            tables: Some(&tables),
-                            error_per_bit: epb,
-                            early_exit_th: 0,
-                        };
-                        let b = super::super::pme::MvCostParams {
-                            ref_mv: Mv { x: rx, y: ry },
-                            full_ref_mv: super::super::pme::get_fullmv_from_mv(Mv { x: rx, y: ry }),
-                            mv_cost_type: mt_b,
-                            mv_cost_tables: Some(&pme_tbl),
-                            error_per_bit: epb,
-                            early_exit_th: 0,
-                            sad_per_bit: 0,
-                        };
+                        let ref_mv = Mv { x: rx, y: ry };
                         let mv = Mv { x: mx, y: my };
-                        assert_eq!(
-                            a.err_cost(mv),
-                            super::super::pme::mv_err_cost(mv, &b),
-                            "mv=({mx},{my}) ref=({rx},{ry}) epb={epb} type={mt_a:?}"
+                        let params = super::super::pme::init_mv_cost_params(
+                            ref_mv,
+                            64,
+                            if mt == crate::md_subpel::MvCostType::Opt {
+                                3
+                            } else {
+                                0
+                            },
+                            (epb as u32) << 6,
+                            Some(&tables),
                         );
+                        // `init_mv_cost_params` only ever picks ENTROPY or
+                        // OPT; the other four arms are set directly.
+                        let params = crate::md_subpel::MvCostParams {
+                            mv_cost_type: mt,
+                            ..params
+                        };
+                        assert_eq!(params.error_per_bit, epb);
+                        let body =
+                            crate::md_subpel::mv_err_cost(mv, ref_mv, Some(&tables), epb, mt);
+                        let label = format!("mv=({mx},{my}) ref=({rx},{ry}) epb={epb} type={mt:?}");
+                        assert_eq!(super::super::pme::mv_err_cost(mv, &params), body, "{label}");
+                        assert_eq!(
+                            super::super::pme::fp_mv_err_cost(mv, &params),
+                            body,
+                            "{label}"
+                        );
+                        assert_eq!(
+                            crate::md_subpel::fp_mv_err_cost(mv, &params),
+                            body,
+                            "{label}"
+                        );
+                        assert_eq!(params.err_cost(mv), body, "{label}");
+                        if mt == crate::md_subpel::MvCostType::Entropy {
+                            assert_eq!(
+                                crate::intrabc::mv_err_cost(mv, ref_mv, &tables, epb),
+                                body,
+                                "{label} (av1me.c spelling)"
+                            );
+                        }
+                        if body != 0 {
+                            nonzero += 1;
+                        }
                         cells += 1;
                     }
                 }
             }
         }
         assert_eq!(cells, 6 * 3 * 8 * 4, "the sweep must not silently shrink");
+        assert!(
+            nonzero > cells / 3,
+            "positive control: only {nonzero} of {cells} non-zero"
+        );
     }
 
     /// TIER 4 — the PME extents floor at 3 AFTER the rounding division.

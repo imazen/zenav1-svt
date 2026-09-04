@@ -745,16 +745,16 @@ mod tests {
     /// unsigned arithmetic.
     #[test]
     fn tier4_update_refined_mv_fast_rate() {
+        let row = || {
+            crate::intrabc::MvComponentCost::from_table(
+                (0..super::super::pme::MV_VALS)
+                    .map(|i| (i as i32 - super::super::pme::MV_MAX).abs())
+                    .collect(),
+            )
+        };
         let t = MvCostTable {
-            joint: [0, 100, 200, 300],
-            comp: [
-                (0..super::super::pme::MV_VALS)
-                    .map(|i| (i as i32 - super::super::pme::MV_MAX).abs())
-                    .collect(),
-                (0..super::super::pme::MV_VALS)
-                    .map(|i| (i as i32 - super::super::pme::MV_MAX).abs())
-                    .collect(),
-            ],
+            joint_cost: [0, 100, 200, 300],
+            comp_cost: [row(), row()],
         };
         let base = 10_000u64;
         // A refinement toward the reference LOWERS the rate.

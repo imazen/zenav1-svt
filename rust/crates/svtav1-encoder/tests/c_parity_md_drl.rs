@@ -70,8 +70,11 @@ fn build_tables() -> Tables {
         comp1[i] = 96 + v.abs() / 4 + (i as i32 % 17);
     }
     let port = MvCostTable {
-        joint,
-        comp: [comp0.clone(), comp1.clone()],
+        joint_cost: joint,
+        comp_cost: [
+            svtav1_encoder::intrabc::MvComponentCost::from_table(comp0.clone()),
+            svtav1_encoder::intrabc::MvComponentCost::from_table(comp1.clone()),
+        ],
     };
     Tables {
         joint,

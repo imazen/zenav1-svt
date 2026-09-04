@@ -251,7 +251,18 @@ fn mv_tables(r: &mut Rng) -> (MvCostTable, [i32; 4], Vec<i32>) {
             flat[c * MV_VALS + idx] = v;
         }
     }
-    (MvCostTable { joint, comp }, joint, flat)
+    let [comp0, comp1] = comp;
+    (
+        MvCostTable {
+            joint_cost: joint,
+            comp_cost: [
+                svtav1_encoder::intrabc::MvComponentCost::from_table(comp0),
+                svtav1_encoder::intrabc::MvComponentCost::from_table(comp1),
+            ],
+        },
+        joint,
+        flat,
+    )
 }
 
 // ---------------------------------------------------------------------------

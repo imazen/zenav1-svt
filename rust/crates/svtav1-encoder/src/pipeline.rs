@@ -14249,13 +14249,7 @@ mod inter_decision_probe {
         // short-circuits before any MV is priced); a zeroed one makes that
         // explicit instead of smuggling in a rate model the cell does not
         // exercise.
-        let nmv_cost = MvCostTable {
-            joint: [0; 4],
-            comp: [
-                vec![0i32; crate::port_md::pme::MV_VALS],
-                vec![0i32; crate::port_md::pme::MV_VALS],
-            ],
-        };
+        let nmv_cost = MvCostTable::zeroed();
         let drl_ctx = ChooseDrlCtx {
             shut_fast_rate: false,
             approx_inter_rate: 0,

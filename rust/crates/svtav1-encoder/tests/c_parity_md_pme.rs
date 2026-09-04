@@ -77,8 +77,11 @@ fn build_tables(seed: u64) -> Tables {
         comp1[i] = 137 + v.abs() / 5 + (i as i32 % 11);
     }
     let port = rpme::MvCostTable {
-        joint,
-        comp: [comp0.clone(), comp1.clone()],
+        joint_cost: joint,
+        comp_cost: [
+            svtav1_encoder::intrabc::MvComponentCost::from_table(comp0.clone()),
+            svtav1_encoder::intrabc::MvComponentCost::from_table(comp1.clone()),
+        ],
     };
     Tables {
         joint,
@@ -165,12 +168,10 @@ fn fp_mv_err_cost_matches_c_across_every_cost_type() {
                 );
                 let params = rpme::MvCostParams {
                     ref_mv: rmv,
-                    full_ref_mv: rpme::get_fullmv_from_mv(rmv),
                     mv_cost_type: ct_r,
-                    mv_cost_tables: if use_tables { Some(&t.port) } else { None },
+                    tables: if use_tables { Some(&t.port) } else { None },
                     error_per_bit: epb,
                     early_exit_th: 0,
-                    sad_per_bit: 0,
                 };
                 let r = rpme::fp_mv_err_cost(mv, &params);
                 assert_eq!(
@@ -264,12 +265,10 @@ fn one_kernel_case(
 
     let params = rpme::MvCostParams {
         ref_mv,
-        full_ref_mv: rpme::get_fullmv_from_mv(ref_mv),
         mv_cost_type: port_cost_type,
-        mv_cost_tables: Some(&t.port),
+        tables: Some(&t.port),
         error_per_bit: epb,
         early_exit_th: 0,
-        sad_per_bit: 0,
     };
     let mut rbest = rpme::PmeBest {
         cost: u32::MAX,

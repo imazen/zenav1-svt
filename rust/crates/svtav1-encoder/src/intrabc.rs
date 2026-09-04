@@ -91,12 +91,6 @@ fn round_power_of_two(value: i32, n: u32) -> i32 {
     (value + ((1i32 << n) >> 1)) >> n
 }
 
-/// C `ROUND_POWER_OF_TWO_64` (definitions.h:485): same shape, `i64` domain.
-#[inline]
-fn round_power_of_two_64(value: i64, n: u32) -> i64 {
-    (value + ((1i64 << n) >> 1)) >> n
-}
-
 /// C `DIVIDE_AND_ROUND(x, y)` (utility.h:96): round-half-up for non-negative
 /// `x`/`y` (the only domain `svt_aom_get_qp_based_th_scaling_factors`'s
 /// caller uses it in).
@@ -802,6 +796,37 @@ impl MvComponentCost {
         let v = v.clamp(-MV_MAX, MV_MAX);
         self.table[(MV_MAX + v) as usize]
     }
+
+    /// One row of C's `mvcost[i]`, `MV_VALS` entries indexed `MV_MAX + v`,
+    /// supplied directly — for tests that mirror a C-side table, and for
+    /// the zero table of the `approx_inter_rate` arm.
+    pub fn from_table(table: Vec<i32>) -> Self {
+        assert_eq!(table.len(), MV_VALS, "a component cost row is MV_VALS long");
+        Self { table }
+    }
+}
+
+impl MvCostTables {
+    /// All-zero tables: every MV prices at 0. C reaches the same state by
+    /// `memset`ting `nmv_vec_cost` / `nmvcoststack` on the
+    /// `approx_inter_rate` arm.
+    pub fn zeroed() -> Self {
+        Self {
+            joint_cost: [0; crate::entropy::mv_coding::MV_JOINTS],
+            comp_cost: [
+                MvComponentCost::from_table(alloc::vec![0i32; MV_VALS]),
+                MvComponentCost::from_table(alloc::vec![0i32; MV_VALS]),
+            ],
+        }
+    }
+
+    /// C `svt_mv_cost` (mcomp.h:138-142) over a `diff` already stored into
+    /// an `Mv` — i.e. already truncated to `int16_t`, which is what every
+    /// mcomp.c / rd_cost.c caller hands it.
+    #[inline]
+    pub fn mv_cost(&self, diff: Mv) -> i32 {
+        mv_table_cost(i32::from(diff.x), i32::from(diff.y), self)
+    }
 }
 
 /// C `build_nmv_component_cost_table` (md_rate_estimation.c:387-444).
@@ -906,22 +931,28 @@ pub fn mv_table_cost(diff_x: i32, diff_y: i32, tables: &MvCostTables) -> i32 {
         + tables.comp_cost[1].cost(diff_x)
 }
 
-/// C `PIXEL_TRANSFORM_ERROR_SCALE` (av1me.c:124).
-const PIXEL_TRANSFORM_ERROR_SCALE: u32 = 4;
-
 /// C `svt_aom_mv_err_cost` (av1me.c:141-149): the search's "precise" MV
 /// rate-distortion cost, in SSD-comparable units (used only inside
 /// [`get_mvpred_var`], NOT inside the diamond/mesh SAD-domain search --
 /// see [`mvsad_err_cost`] for that one). `mv`/`ref_mv` eighth-pel.
+///
+/// av1me.c's body is, token for token, the `MV_COST_ENTROPY` arm of
+/// mcomp.c's `svt_mv_err_cost` (same `Mv diff`, same `svt_mv_cost`, same
+/// shift); C keeps two functions because av1me.c predates the mcomp.c
+/// cost-type switch. The port keeps ONE body —
+/// [`crate::md_subpel::mv_err_cost`] — and this is a forward to its
+/// ENTROPY arm. (Until 2026-09-04 this was a third transcription that
+/// took the difference in `i32` where C stores it into `int16_t` fields;
+/// equal on every legal MV pair, and now equal by construction.)
+#[inline]
 pub fn mv_err_cost(mv: Mv, ref_mv: Mv, tables: &MvCostTables, error_per_bit: i32) -> i32 {
-    let diff_x = i32::from(mv.x) - i32::from(ref_mv.x);
-    let diff_y = i32::from(mv.y) - i32::from(ref_mv.y);
-    let cost = i64::from(mv_table_cost(diff_x, diff_y, tables)) * i64::from(error_per_bit);
-    round_power_of_two_64(
-        cost,
-        7 /* RDDIV_BITS */ + 9 /* AV1_PROB_COST_SHIFT */ - RD_EPB_SHIFT
-            + PIXEL_TRANSFORM_ERROR_SCALE,
-    ) as i32
+    crate::md_subpel::mv_err_cost(
+        mv,
+        ref_mv,
+        Some(tables),
+        error_per_bit,
+        crate::md_subpel::MvCostType::Entropy,
+    )
 }
 
 /// C `svt_aom_mv_err_cost_light` (av1me.c:126-132): the `approx_inter_rate`
@@ -2753,7 +2784,6 @@ mod tests {
     fn round_power_of_two_matches_c_macro() {
         assert_eq!(round_power_of_two(10, 2), 3); // (10+2)>>2 = 3
         assert_eq!(round_power_of_two(0, 4), 0);
-        assert_eq!(round_power_of_two_64(1000, 9), (1000 + 256) / 512);
     }
 
     #[test]

@@ -183,22 +183,13 @@ pub fn wm_motion_refinement(
                 continue;
             };
             // C: `svt_aom_mv_err_cost{,_light}(&test_mv, &ref_mv, ...)`
-            // — the SSD-domain search cost, which is
-            // `super::pme::mv_err_cost`'s ENTROPY arm over the same
-            // nmv tables the DRL pick uses.
+            // — the SSD-domain search cost (av1me.c), the ENTROPY arm of
+            // the one `mv_err_cost` body, over the same nmv tables the DRL
+            // pick uses.
             let rate = if ctx.approx_inter_rate != 0 {
                 super::drl::mv_bit_cost_light(test_mv, ref_mv)
             } else {
-                let params = super::pme::MvCostParams {
-                    ref_mv,
-                    full_ref_mv: super::pme::get_fullmv_from_mv(ref_mv),
-                    mv_cost_type: super::pme::MvCostType::Entropy,
-                    mv_cost_tables: Some(ctx.drl.nmv_cost),
-                    error_per_bit: ctx.error_per_bit,
-                    early_exit_th: 0,
-                    sad_per_bit: 0,
-                };
-                super::pme::mv_err_cost(test_mv, &params)
+                crate::intrabc::mv_err_cost(test_mv, ref_mv, ctx.drl.nmv_cost, ctx.error_per_bit)
             };
             let cost = var.saturating_add(rate);
             if cost < best_cost {
@@ -398,7 +389,7 @@ pub fn obmc_motion_refinement(
 
 #[cfg(test)]
 mod tests {
-    use super::super::pme::{MV_VALS, MvCostTable};
+    use super::super::pme::MvCostTable;
     use super::*;
     use svtav1_types::motion::{CandidateMv, MAX_REF_MV_STACK_SIZE};
 
@@ -407,10 +398,7 @@ mod tests {
     }
 
     fn zero_table() -> MvCostTable {
-        MvCostTable {
-            joint: [0; 4],
-            comp: [vec![0i32; MV_VALS], vec![0i32; MV_VALS]],
-        }
+        MvCostTable::zeroed()
     }
 
     struct DrlFixture {

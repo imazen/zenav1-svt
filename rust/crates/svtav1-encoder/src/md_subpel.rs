@@ -219,7 +219,12 @@ impl MvCostParams<'_> {
     }
 }
 
-/// C `svt_mv_err_cost` (mcomp.c:42-72) — the full five-way dispatch.
+/// C `svt_mv_err_cost` (mcomp.c:42-72) — the full six-way dispatch, and
+/// **the one body in this crate**. `port_md::pme::{mv_err_cost,
+/// fp_mv_err_cost}`, [`fp_mv_err_cost`] and `intrabc::mv_err_cost` (C's
+/// av1me.c `svt_aom_mv_err_cost`, which is this function's ENTROPY arm
+/// under an older name) are all forwards here — `docs/WORKING-ON-THIS.md`
+/// §4, folded 2026-09-04 from four transcriptions.
 ///
 /// `diff` and `abs_diff` are C `Mv`s, i.e. pairs of `int16_t`, so both the
 /// difference and its absolute value truncate to 16 bits before use. That is

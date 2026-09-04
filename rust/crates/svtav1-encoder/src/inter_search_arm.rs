@@ -59,7 +59,7 @@ use crate::port_md::md_search::{
     SubpelBlockGeom, best_mvp_by_distortion, build_single_ref_mvp_list, md_subpel_search,
     pme_search_for_ref, refine_me_mv_for_ref,
 };
-use crate::port_md::pme::{MvCostParams, MvCostTable, MvCostType};
+use crate::port_md::pme::{MvCostParams, MvCostTable};
 use alloc::vec::Vec;
 use svtav1_types::motion::Mv;
 
@@ -857,22 +857,13 @@ fn full_pel_mv_cost_params<'a>(
     } else {
         b.full_lambda_8bit
     };
-    MvCostParams {
+    crate::port_md::pme::init_mv_cost_params(
         ref_mv,
-        full_ref_mv: Mv {
-            x: ref_mv.x >> 3,
-            y: ref_mv.y >> 3,
-        },
-        mv_cost_type: if cfg.md_subpel_me.skip_diag_refinement >= 3 {
-            MvCostType::Opt
-        } else {
-            MvCostType::Entropy
-        },
-        mv_cost_tables: Some(b.nmv),
-        error_per_bit: ((rdmult >> 6).max(1)) as i32,
-        early_exit_th: 1020 - (i32::from(b.sq_size) >> 2),
-        sad_per_bit: cfg.sad_per_bit,
-    }
+        b.sq_size,
+        cfg.md_subpel_me.skip_diag_refinement,
+        rdmult,
+        Some(b.nmv),
+    )
 }
 
 /// The PICTURE-level signals the frame configuration is derived from —
@@ -993,7 +984,6 @@ mod tests {
     use crate::picture::{PaddedPlane, PaddedRef};
     use crate::port_md::drl::DRL_MODE_CONTEXTS;
     use crate::port_md::md_search::PmeExit;
-    use crate::port_md::pme::MV_VALS;
 
     const W: usize = 128;
     const H: usize = 128;
@@ -1063,10 +1053,7 @@ mod tests {
     }
 
     fn zero_cost() -> MvCostTable {
-        MvCostTable {
-            joint: [0; 4],
-            comp: [alloc::vec![0i32; MV_VALS], alloc::vec![0i32; MV_VALS]],
-        }
+        MvCostTable::zeroed()
     }
 
     /// One b64 whose ONLY ME candidate is LIST 1's — C's measured shape on

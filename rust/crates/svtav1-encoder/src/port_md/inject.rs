@@ -1966,13 +1966,7 @@ mod tests {
     }
 
     fn zero_table() -> MvCostTable {
-        MvCostTable {
-            joint: [0; 4],
-            comp: [
-                vec![0i32; super::super::pme::MV_VALS],
-                vec![0i32; super::super::pme::MV_VALS],
-            ],
-        }
+        MvCostTable::zeroed()
     }
 
     fn stack_with(count: u8, mvs: &[(i16, i16, i16, i16)]) -> InterMvpStack {
