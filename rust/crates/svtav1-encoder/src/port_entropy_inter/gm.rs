@@ -285,6 +285,15 @@ pub struct SgrprojInfo {
 /// `.r[1] == 0`; the parameter table lives in `restoration.rs`, which this
 /// lane does not own, so the two flags are passed in rather than looked up.
 ///
+/// **THIS COPY IS DEAD, AND IT IS THE SECOND ONE (2026-09-04).** The writer on
+/// the live path is [`crate::entropy::lr::write_sgrproj_filter`], called from
+/// `restoration.rs:1696` and `:1722`; this function's only caller is its own
+/// trace test below. Prefer `entropy::lr` for every citation and every new
+/// call. Kept per `docs/WORKING-ON-THIS.md` §7 (a faithful translation with no
+/// caller stays translated) but recorded as a duplicate in
+/// `docs/UNWIRED-PORTED-CODE-2026-09-04.md`; if the two ever disagree, the
+/// `entropy::lr` copy is the one the bitstream came from.
+///
 /// Reachability, corrected in place: `rust/CLAUDE.md` envelope guard #5 says
 /// SGR is dead for M0..M13 — that is the ALL-INTRA arm
 /// (`svt_aom_get_sg_filter_level_allintra`, enc_mode_config.c:1431, called at

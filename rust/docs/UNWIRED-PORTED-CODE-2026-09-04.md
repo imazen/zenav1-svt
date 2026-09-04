@@ -87,7 +87,7 @@ somewhere."
 
 | # | item | crate/file | C counterpart | reachable from entry point? | C calls it on tested path? | what wiring takes | impact |
 |---|---|---|---|---|---|---|---|
-| 1 | `compute_qdelta_by_rate`, `find_qindex_by_rate` | `svtav1-encoder/src/port_rc_process.rs:209,166` | `svt_av1_compute_qdelta_by_rate` (`rc_process.c:290`), inlined into `svt_av1_frame_type_qdelta` (`rc_crf_cqp.c:157`) | **No** — zero callers outside its own tier-1 parity test | **Yes** — `crf_qindex_calc` (`rc_crf_cqp.c:193`) → `adjust_active_best_and_worst_quality` (`:168`, called at `:355`) → `svt_av1_frame_type_qdelta` (`:177`), gated only by `if (!frame_is_intra_only(ppcs))` (`:175`) — fires on **every inter frame** in CRF/CQP, the port's only supported RC mode (`WORKING-ON-THIS.md` guard #2) | Call `compute_qdelta_by_rate` from wherever the port derives `active_worst_quality`/`base_q_idx` for a non-key frame (grep `rate_control.rs` / `pipeline.rs` for where `base_q_idx` is set per-frame); pass `best_quality`/`worst_quality` from the existing qindex bounds | Every inter frame currently gets **no** rate-factor qindex adjustment — base_q_idx is wrong on every tested inter frame the moment the campaign checks bytes past frame 0 |
+| 1 ~~ranked 1~~ **FALSIFIED 2026-09-04 — see the correction below the table** | `compute_qdelta_by_rate`, `find_qindex_by_rate` | `svtav1-encoder/src/port_rc_process.rs:209,166` | `svt_av1_compute_qdelta_by_rate` (`rc_process.c:290`), inlined into `svt_av1_frame_type_qdelta` (`rc_crf_cqp.c:157`) | **No** — zero callers outside its own tier-1 parity test | **Yes** — `crf_qindex_calc` (`rc_crf_cqp.c:193`) → `adjust_active_best_and_worst_quality` (`:168`, called at `:355`) → `svt_av1_frame_type_qdelta` (`:177`), gated only by `if (!frame_is_intra_only(ppcs))` (`:175`) — fires on **every inter frame** in CRF/CQP, the port's only supported RC mode (`WORKING-ON-THIS.md` guard #2) | Call `compute_qdelta_by_rate` from wherever the port derives `active_worst_quality`/`base_q_idx` for a non-key frame (grep `rate_control.rs` / `pipeline.rs` for where `base_q_idx` is set per-frame); pass `best_quality`/`worst_quality` from the existing qindex bounds | Every inter frame currently gets **no** rate-factor qindex adjustment — base_q_idx is wrong on every tested inter frame the moment the campaign checks bytes past frame 0 |
 | 2 | Global motion: `port_ransac.rs` (RANSAC fit), `port_global_motion.rs` (`refine_integerized_param`, `convert_model_to_params`, `warp_error`), `port_enc_mode_config/leaf.rs::derive_gm_level`, `port_enc_mode_config/ctrls.rs::set_gm_controls`, `port_entropy_inter/gm.rs` (`write_global_motion`, `write_global_motion_params`) | 6 files, see above | `global_motion.c` (`determine_gm_params`), `ransac.c` (`svt_aom_ransac`), `enc_mode_config.c:180` (`svt_aom_get_gm_core_level`), `entropy_coding.c:3001,3069` | **No** — none reachable from `pipeline.rs`; `port_global_motion.rs`'s own module doc: *"global motion affects presets 0..4, inter frames only… at presets >= 5 the frame header just writes `is_global = 0`"* | **Yes at presets 0-4** — squarely in the inter campaign's tested preset band | Wire `derive_gm_level`/`set_gm_controls` into the per-frame sig-deriv pass; call the RANSAC→refine chain from wherever ME candidates are gathered for inter frames; call `write_global_motion{,_params}` from the frame-header writer instead of always signalling identity | On presets 0-4, inter frames with real camera/background motion get no global-motion model at all — wrong `is_global` bit and wrong warp params vs C whenever GM would win |
 | 3 | `port_entropy_inter/gm.rs::write_sgrproj_filter` (line 297) | same file | `write_sgrproj_filter` (`entropy_coding.c:4069`) | **No** — its only caller is its own trace test | N/A — **duplicate**, see below | Delete; the live path already exists | Doc hazard, not a byte gap (see duplicates) |
 | 4 | `port_md/motion_mode.rs` (12 of 13 fns) + `inter_me/obmc_search.rs` OBMC kernels (`obmc_sad`, `obmc_variance`, `get_obmc_mvpred_var`, `obmc_refining_search_sad`, `obmc_full_pixel_search`) | 2 files | `product_coding_loop.c:6741-6825` (`warp_refine_stage`/`obmc_refine_stage`/`opt_non_translation_motion_mode`), `:1068-1173` (`obmc_trans_face_off`), `entropy_coding.c:1159-1195` (`motion_mode_allowed`), `mode_decision.c:297-492` (`inter_intra_search`/`pick_interintra_wedge`), `av1me.c` OBMC search | **No** — only `warp_cand` (a small helper) has any non-test caller; everything else, including the whole OBMC motion-search kernel set, is dead | **Needs a preset/block-size check** — `motion_mode_allowed` gates SIMPLE/OBMC/WARPED per block in C's inter candidate generation; likely reached whenever the inter campaign exercises non-trivial motion. Not yet measured which presets in the current test matrix trip it | Call `motion_mode_allowed` + the refine-stage functions from wherever inter MD candidates are generated (leaf_funnel or port_md/md_search.rs); wire the OBMC search kernels behind it | MOTION_MODE syntax + inter-intra compound are real AV1 features the candidate set is currently missing entirely on inter frames |
@@ -97,6 +97,39 @@ somewhere."
 | 8 | `port_temporal_filtering.rs` (78 of 80 items) | same file | `temporal_filtering.c` | No | **Self-documented as correctly inert today.** The module's own header: TF is bit-affecting on the VIDEO-MODE KEY FRAME in RANDOM_ACCESS and inert in LOW_DELAY (measured 2026-08-31); the port's current inter-campaign envelope is LOW_DELAY | Wire the moment the campaign moves off LOW_DELAY | Not a bug today — listed for completeness, explicitly NOT the payload per the brief's definition (C doesn't call it on the currently-tested path) |
 | 9 | `port_pass2_gop.rs` (57 of 60 items) | same file | `Codec/pass2_strategy.c` (GOP bit allocation, 2-pass) | No | **Self-documented as out-of-envelope.** VBR/CBR 2-pass is out of scope per `WORKING-ON-THIS.md` guard #2 (stills are CQP/CRF-only); module doc explicitly says the harness to drive `STATS_BUFFER_CTX` doesn't exist yet | Build the harness first; not a missing call site | Not the payload — acknowledged gap, not a forgot-to-wire bug |
 | 10 | `port_enc_mode_config/encdec.rs` (24 of 29 warned items — the ones NOT already covered by items above, e.g. unused inter-candidate-reduction control variants) | same file | `enc_mode_config.c` sig-deriv | Partial — `md_nsq_motion_search_controls`, `md_subpel_me_controls`, `md_subpel_pme_controls`, `set_cand_reduction_ctrls`, `set_spatial_sse_full_loop_level` are live | Needs per-item check | Lower priority — the live/dead split here tracks items 4-6 above (motion-mode and NSQ controls that feed the dead consumers); likely resolves itself once items 4-6 are wired | Grouped here rather than re-investigated separately given overlap with higher-ranked items |
+
+## CORRECTION 2026-09-04 — item 1 is a NULL, measured
+
+The wiring chunk took item 1 first and it does not survive contact with a
+probe. Full account: `docs/INTER-ENCODE-PLAN.md` §1z³⁴. In short:
+
+* **"C calls it on the tested path: Yes" is wrong.** The row's citation stops
+  one gate too early. `svt_av1_frame_type_qdelta` is reached only from
+  `crf_qindex_calc`, and `svt_av1_rc_calc_qindex_crf_cqp` (`rc_crf_cqp.c:489`)
+  calls that only `if (ppcs->tpl_ctrls.enable)`. `get_tpl`
+  (`Globals/enc_handle.c:3657-3677`) returns 0 for `allintra`, for
+  `aq_mode == 0` **and** for `pred_structure == LOW_DELAY` — the port's entire
+  envelope. MEASURED with a new `-Wl,--wrap=svt_av1_compute_qdelta_by_rate`
+  interposer (`SVT_QDELTA_OUT`): **0 calls** on `gradient 64x64 q40 p8
+  frames=2 SVT_PRED_STRUCT=1` (the campaign grid's config verbatim), **1 call**
+  on the `SVT_PRED_STRUCT=2 SVT_AQ_MODE=2` positive control.
+* **The "impact" column is wrong even where C does call it.** The delta is
+  added to `active_worst_quality` only; `crf_qindex_calc` returns
+  `active_best_quality` (`:363`). The adjusted worst reaches `ppcs->top_index`
+  (`:359`), read only by the recode loop, which `enc_handle.c:3744-3749` forces
+  to `DISALLOW_RECODE` for CQP/CRF with `max_bit_rate == 0`. It cannot move
+  `base_q_idx` in this RC mode at all.
+* **The already-standing measurement said so.** 94 of the campaign's 96 cells
+  are byte-identical on frame 1, and `base_q_idx` is a frame-header field.
+
+Nothing was wired; `port_rc_process.rs` stays translated and pinned per §7 of
+`WORKING-ON-THIS.md`, with its module header corrected in place.
+
+**The method lesson, for the rest of this table:** "reachable from the entry
+point?" was answered by whole-crate reachability, which is sound. "C calls it
+on the tested path?" was answered by reading C's call chain, which is **not**
+the same evidence tier, and item 1 is what that gap looks like. Treat every
+"Yes" in that column as a hypothesis with a named probe, not a finding.
 
 ## Duplicate transcriptions spotted (beyond the seven already known)
 

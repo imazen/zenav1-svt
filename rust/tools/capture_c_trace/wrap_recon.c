@@ -88,6 +88,7 @@
 #include "me_context.h"
 #include "motion_estimation.h"
 #include "mcomp.h"
+#include "rc_process.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
 void __real_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
@@ -2007,4 +2008,55 @@ int __wrap_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, 
         fflush(f);
     }
     return rc;
+}
+
+/* ---------------------------------------------------------------------------
+ * svt_av1_compute_qdelta_by_rate — THE RATE-FACTOR QINDEX DELTA PROBE.
+ *
+ * WHY. `docs/UNWIRED-PORTED-CODE-2026-09-04.md` item 1 states that C calls
+ * this "on every inter frame in CRF/CQP, the port's only supported RC mode",
+ * and that the port therefore encodes every inter frame at the wrong
+ * `base_q_idx`. That is a claim about a CALL, so it is settled by watching the
+ * call, not by reading the ladder.
+ *
+ * Reading the ladder says it should never fire on the inter campaign's grid:
+ * `svt_av1_rc_calc_qindex_crf_cqp` (rc_crf_cqp.c:490) only reaches
+ * `crf_qindex_calc` — the sole route to `adjust_active_best_and_worst_quality`
+ * (:355) -> `svt_av1_frame_type_qdelta` (:177) -> here — when
+ * `ppcs->tpl_ctrls.enable`, and `get_tpl` (enc_handle.c:3665) returns 0 for
+ * `pred_structure == LOW_DELAY`, which is every cell of that grid.
+ *
+ * The probe exists to make that a MEASUREMENT with a positive control: a
+ * RANDOM_ACCESS run must produce lines, a LOW_DELAY run must produce none.
+ * A silent zero from a probe that never fires anywhere proves nothing
+ * (`WORKING-ON-THIS.md` §5).
+ *
+ * Env: SVT_QDELTA_OUT (file). Pure pass-through when unset.
+ * ------------------------------------------------------------------------- */
+int __real_svt_av1_compute_qdelta_by_rate(struct RATE_CONTROL* rc, FrameType frame_type, int qindex,
+                                          double rate_target_ratio, int bit_depth, int is_screen_content_type);
+
+int __wrap_svt_av1_compute_qdelta_by_rate(struct RATE_CONTROL* rc, FrameType frame_type, int qindex,
+                                          double rate_target_ratio, int bit_depth, int is_screen_content_type) {
+    const int ret = __real_svt_av1_compute_qdelta_by_rate(
+        rc, frame_type, qindex, rate_target_ratio, bit_depth, is_screen_content_type);
+    const char*  path = getenv("SVT_QDELTA_OUT");
+    static FILE* f    = NULL;
+    if (path && *path && !f) {
+        f = fopen(path, "a");
+    }
+    if (f) {
+        fprintf(f,
+                "QDELTA ft=%d q=%d ratio=%.6f bd=%d sc=%d best=%d worst=%d -> delta=%d\n",
+                (int)frame_type,
+                qindex,
+                rate_target_ratio,
+                bit_depth,
+                is_screen_content_type,
+                rc ? ((RATE_CONTROL*)rc)->best_quality : -1,
+                rc ? ((RATE_CONTROL*)rc)->worst_quality : -1,
+                ret);
+        fflush(f);
+    }
+    return ret;
 }

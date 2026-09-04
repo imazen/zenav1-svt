@@ -18,9 +18,14 @@
 //!   both live outside this lane's queue and already have counterparts in
 //!   `entropy/obu.rs`, and a second copy here would be a silently diverging
 //!   one. See [`framesize`].
-//! * `write_sgrproj_filter` (entropy_coding.c:4069) is here, but the
-//!   `RESTORE_SWITCHABLE` frame-level plumbing that would reach it lives in
-//!   `entropy/lr.rs`, which this lane does not own.
+//! * `write_sgrproj_filter` (entropy_coding.c:4069) is here, but it is a
+//!   SECOND TRANSCRIPTION and it is the DEAD one. The live writer is
+//!   [`crate::entropy::lr::write_sgrproj_filter`], called from
+//!   `restoration.rs:1696` and `:1722` since the SGR video arm landed
+//!   2026-09-01; the copy in [`gm`] has no caller but its own trace test.
+//!   Two transcriptions of one C function is the standing hazard
+//!   `docs/WORKING-ON-THIS.md` §4 names — do not pick this one up. Recorded in
+//!   `docs/UNWIRED-PORTED-CODE-2026-09-04.md`'s duplicate list (2026-09-04).
 //!
 //! # Reachability
 //!

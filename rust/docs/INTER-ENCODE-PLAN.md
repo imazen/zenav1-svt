@@ -7062,6 +7062,85 @@ prediction is withdrawn: this mechanism structurally cannot reach a key frame.
   The two later stages agree; the MDS1 cap does not. Deliberately NOT changed
   in this chunk so the class prunes are attributable on their own.
 
+### 1z³⁴. `compute_qdelta_by_rate` is a NULL on this envelope — C never calls it in CQP/CRF, and where it does the value is discarded (2026-09-04)
+
+`docs/UNWIRED-PORTED-CODE-2026-09-04.md` item 1 ranks
+`port_rc_process::compute_qdelta_by_rate` / `find_qindex_by_rate` first, on
+the claim that C "calls this on every inter frame in CRF/CQP, the port's only
+supported RC mode", and that the port therefore encodes **every** inter frame
+at the wrong `base_q_idx`. **Both halves are false on this envelope, and the
+second is false everywhere in CQP/CRF.** Nothing was wired.
+
+#### The probe came first, with a positive control
+
+`SVT_QDELTA_OUT` (`tools/capture_c_trace/wrap_recon.c`,
+`-Wl,--wrap=svt_av1_compute_qdelta_by_rate`) prints one line per call with the
+arguments, `rc->best_quality` / `rc->worst_quality` and the returned delta.
+`svt_av1_compute_qdelta_by_rate` is an exported symbol, so this is a tier-1
+observation of the real call, not a reading of the ladder.
+
+| run (`gradient 64x64 q40 p8`, `frames=2`) | QDELTA lines |
+|---|---|
+| `SVT_PRED_STRUCT=1` — the campaign's low-delay P grid, verbatim | **0** |
+| `SVT_PRED_STRUCT=2 SVT_AQ_MODE=2` — positive control | **1** (`ft=1 q=160 ratio=2.0 bd=8 sc=0 best=0 worst=255 -> delta=-39`) |
+
+A zero from a probe that fires nowhere proves nothing (§5 of
+`WORKING-ON-THIS.md`), which is why `SVT_AQ_MODE` was added to
+`capture_c_trace.c` — it is the *only* reason it exists, and absent it leaves
+`cfg.aq_mode` at the driver's 0, so no existing oracle moves.
+
+#### Gate 1 — TPL, and it is off for three independent reasons
+
+C's only CQP/CRF route to the function is
+`svt_av1_frame_type_qdelta` (`rc_crf_cqp.c:165`) <- `adjust_active_best_and_worst_quality`
+(`rc_crf_cqp.c:177`) <- `crf_qindex_calc` (`rc_crf_cqp.c:355`) <-
+`svt_av1_rc_calc_qindex_crf_cqp` (`rc_crf_cqp.c:490`). That last call is inside
+`if (ppcs->tpl_ctrls.enable)`; the `else` is `cqp_qindex_calc`, which never
+touches the rate model. `tpl_ctrls.enable` comes from `scs->tpl`
+(`initial_rc_process.c:729-730` -> `svt_aom_get_tpl_group_level:190` ->
+`svt_aom_set_tpl_group:210`, `case 0: enable = 0`), and `get_tpl`
+(`Globals/enc_handle.c:3657`) returns 0 for **`allintra`** (`:3659`), for
+**`aq_mode == 0`** (`:3662`) and for **`pred_structure == LOW_DELAY`**
+(`:3665`) — in that order. The port's whole supported envelope is CQP
+(`aq_mode == 0`) stills plus the low-delay P inter campaign, so all three fire.
+The C log says so out loud on every campaign cell: `Svt[warn]: TPL is disabled
+for aq_mode 0`.
+
+The report's "gated only by `if (!frame_is_intra_only(ppcs))` (`:175`)" is the
+error: that is the innermost of **three** gates, and it is the only one that is
+open here.
+
+#### Gate 2 — the returned delta cannot reach `base_q_idx` in CQP/CRF at all
+
+Even with TPL on, `adjust_active_best_and_worst_quality` adds the delta to
+`active_worst_quality` **only** (`:178`); `active_best_quality` is untouched by
+it, and `crf_qindex_calc` **returns `active_best_quality`** (`:363`). The
+adjusted worst goes to `ppcs->top_index` (`:359`), whose only consumer anywhere
+is `recode_loop_update_q` via `recode_loop_decision_maker`
+(`enc_dec_process.c:2013-2022`, called at `:3180`) — which runs only when
+`scs->enc_ctx->recode_loop != DISALLOW_RECODE`, and `enc_handle.c:3744-3749`
+**forces `DISALLOW_RECODE`** for `SVT_AV1_RC_MODE_CQP_OR_CRF` with
+`max_bit_rate == 0`. So in plain CQP/CRF the qdelta is computed and thrown
+away. Every other caller of the function is in `rc_vbr_cbr.c` (`:983`, `:1025`,
+`:1058`, `:1075`) or `pass2_strategy.c` — VBR/CBR and 2-pass, both out of scope
+per `WORKING-ON-THIS.md` guard #2.
+
+#### The measurement that was already on the table
+
+94 of the grid's 96 cells are byte-identical on **frame 1**, and `base_q_idx`
+is a frame-header field. An inter `base_q_idx` that was "wrong on every tested
+inter frame" could not produce a byte-identical inter frame even once.
+
+#### Disposition
+
+**NULL — not wired, and nothing to revert** (no production code was written).
+`port_rc_process.rs` keeps its tier-1 pins per §7 of `WORKING-ON-THIS.md`
+("dead-looking C stays translated"); its module header's claim that the
+function fires "on every one" of the inter frames is corrected in place, and
+so is the dead-code report's item 1. The `SVT_QDELTA_OUT` probe stays: it is
+the standing answer to "does C reach the rate model on our config", and
+re-deriving it costs a container cycle.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

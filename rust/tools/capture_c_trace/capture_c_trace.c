@@ -283,6 +283,20 @@ int main(int argc, char** argv) {
         if (avif_env && *avif_env)
             cfg.avif = atoi(avif_env) != 0;
     }
+    /* SVT_AQ_MODE forces `cfg.aq_mode`. This exists as the POSITIVE CONTROL
+       for the `SVT_QDELTA_OUT` interposer: `get_tpl` (enc_handle.c:3662)
+       returns 0 for `aq_mode == 0` BEFORE it ever looks at pred_structure, so
+       with the driver's default CQP config `ppcs->tpl_ctrls.enable` is 0 and
+       `crf_qindex_calc` — the only route to `svt_av1_compute_qdelta_by_rate` —
+       is unreachable at EVERY pred structure. A probe that reads zero
+       everywhere proves nothing (`docs/WORKING-ON-THIS.md` §5), so this knob
+       lets one run reach the call and one not. Absent => untouched (0), so no
+       existing caller's oracle moves. */
+    {
+        const char* aq_env = getenv("SVT_AQ_MODE");
+        if (aq_env && *aq_env)
+            cfg.aq_mode = (uint8_t)atoi(aq_env);
+    }
     {
         const char* ip_env = getenv("SVT_INTRA_PERIOD");
         if (ip_env && *ip_env)

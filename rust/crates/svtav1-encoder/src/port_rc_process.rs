@@ -2,14 +2,36 @@
 //! qdelta-by-rate search, the RD-multiplier frame-type arms and the boost
 //! helpers (lane `wp-ratecontrol` of the wholesale-port campaign).
 //!
-//! **Why this file exists.** The CQP/CRF qindex path already ported in
-//! [`crate::rate_control`] covers the KEY frame. Every *inter* frame in
-//! AOM_Q/CRF mode goes through `adjust_active_best_and_worst_quality`
-//! (rc_crf_cqp.c:168-186), which is guarded by `if (!frame_is_intra_only)`
-//! and calls `svt_av1_frame_type_qdelta` -> [`compute_qdelta_by_rate`] on
-//! every one of them. The returned delta moves `active_worst_quality` and
-//! therefore `base_q_idx`, so without it every inter frame is encoded at the
-//! wrong qindex and the whole frame diverges.
+//! **Why this file exists — and the correction that reverses its original
+//! claim (MEASURED 2026-09-04, `docs/INTER-ENCODE-PLAN.md` §1z³⁴).** This header
+//! used to say that `adjust_active_best_and_worst_quality` (rc_crf_cqp.c:168-186)
+//! calls `svt_av1_frame_type_qdelta` -> [`compute_qdelta_by_rate`] on every
+//! inter frame in AOM_Q/CRF, moving `active_worst_quality` and therefore
+//! `base_q_idx`. **Both halves are wrong.**
+//!
+//! * **C never reaches it on this port's envelope.** The call sits behind
+//!   `if (ppcs->tpl_ctrls.enable)` at rc_crf_cqp.c:489 (the `else` is
+//!   `cqp_qindex_calc`, which never touches the rate model), and `get_tpl`
+//!   (Globals/enc_handle.c:3657) returns 0 for `allintra`, for `aq_mode == 0`
+//!   and for `pred_structure == LOW_DELAY` — all three of which hold for the
+//!   CQP stills and the low-delay P inter campaign. MEASURED with
+//!   `SVT_QDELTA_OUT` (an exported-symbol `--wrap` interposer): **0 calls** on
+//!   the campaign's grid config, **1 call** on a `SVT_PRED_STRUCT=2
+//!   SVT_AQ_MODE=2` positive control.
+//! * **Even when it fires, the delta cannot move `base_q_idx` in CQP/CRF.**
+//!   `adjust_active_best_and_worst_quality` adds it to `active_worst_quality`
+//!   only (:178); `crf_qindex_calc` returns `active_best_quality` (:363), and
+//!   the adjusted worst lands in `ppcs->top_index` (:359) whose sole consumer
+//!   is the recode loop (`enc_dec_process.c:3180`), forced to
+//!   `DISALLOW_RECODE` for CQP/CRF with `max_bit_rate == 0`
+//!   (`enc_handle.c:3744-3749`). The live callers that DO consume it are in
+//!   `rc_vbr_cbr.c` and `pass2_strategy.c` — VBR/CBR and 2-pass, out of scope
+//!   per `docs/WORKING-ON-THIS.md` guard #2.
+//!
+//! The file is therefore KEPT UNWIRED ON PURPOSE, per §7 of
+//! `docs/WORKING-ON-THIS.md`: a faithful translation with no reachable caller
+//! stays translated, documented, and pinned — it is what VBR/CBR will need.
+//! Do not "fix" the absence of a call site without re-running the probe.
 //!
 //! **Evidence.** Everything in this file that C exports is pinned at tier 1
 //! (`WORKING-ON-THIS.md` §4) against the real symbol in
@@ -191,8 +213,11 @@ pub fn find_qindex_by_rate(
 /// unblocker for this group**.
 ///
 /// `rc_crf_cqp.c`'s `adjust_active_best_and_worst_quality` (:170-178) calls
-/// `svt_av1_frame_type_qdelta` -> this on EVERY non-intra frame in AOM_Q/CRF
-/// mode, and adds the result to `active_worst_quality`.
+/// `svt_av1_frame_type_qdelta` -> this on every non-intra frame in AOM_Q/CRF
+/// mode **that reaches `crf_qindex_calc`**, and adds the result to
+/// `active_worst_quality`. Read the module header before assuming that is any
+/// frame this port encodes: it is not, and the result is discarded in CQP/CRF
+/// regardless (measured 2026-09-04).
 ///
 /// C takes a `RATE_CONTROL*` but reads exactly two fields off it —
 /// `rc->best_quality` and `rc->worst_quality`, as the search bounds — so the

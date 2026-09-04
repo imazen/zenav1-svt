@@ -130,9 +130,17 @@ cite the source, don't re-argue them.
    this campaign runs `SVT_AVIF=0` at presets 0..3, `RESTORE_SGRPROJ` and
    `RESTORE_SWITCHABLE` become emittable and `write_sgrproj_filter` is on the live path.
    Do NOT cite #5 as "SGR is dead in this port"; it is dead only where the encode is
-   all-intra. (The port's `write_sgrproj_filter` is at
-   `svtav1_encoder::port_entropy_inter::gm`; the `RESTORE_SWITCHABLE` frame-level plumbing
-   that would reach it is not wired yet.)
+   all-intra. (**Citation corrected 2026-09-04.** This used to read "the port's
+   `write_sgrproj_filter` is at `svtav1_encoder::port_entropy_inter::gm`; the
+   `RESTORE_SWITCHABLE` frame-level plumbing that would reach it is not wired yet."
+   BOTH halves were stale. The LIVE writer is
+   `svtav1_encoder::entropy::lr::write_sgrproj_filter`, called from
+   `restoration.rs:1696` and `:1722`; the `port_entropy_inter::gm` copy is a SECOND
+   transcription whose only caller is its own trace test — see the duplicate list in
+   `docs/UNWIRED-PORTED-CODE-2026-09-04.md`. And the plumbing IS wired: SGR search,
+   the SGRPROJ/SWITCHABLE frame walks, the writer and the apply landed 2026-09-01 for
+   the video arm — see line ~1071 of this file and `docs/INTER-ENCODE-PLAN.md` §1o'.
+   Cite `entropy::lr`, not `port_entropy_inter::gm`.)
 
 5b. **All-intra clamps M10..M13 to M9 in C, and the port does NOT replicate that at
    `EncodePipeline::new`.** `Globals/enc_handle.c:4415-4419` remaps any all-intra
