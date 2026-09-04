@@ -108,20 +108,24 @@ sort "$OUT/observed.txt" >"$OUT/observed.sorted.txt"
 mapfile -t NEW  < <(comm -13 "$OUT/pinned.txt" "$OUT/observed.sorted.txt")
 mapfile -t GONE < <(comm -23 "$OUT/pinned.txt" "$OUT/observed.sorted.txt")
 
-if [[ ${#NEW[@]} -gt 0 ]]; then
+# bash 3.2 (`/bin/bash` on macOS) treats an EMPTY array as unset under `set -u`;
+# count through the `[@]+` guard so the report survives a clean run.
+n_new=${NEW[@]+${#NEW[@]}}; n_new=${n_new:-0}
+n_gone=${GONE[@]+${#GONE[@]}}; n_gone=${n_gone:-0}
+if [[ $n_new -gt 0 ]]; then
     echo "-- streams a decoder REJECTS that are NOT pinned --"
-    printf '  %s\n' "${NEW[@]}"
+    printf '  %s\n' ${NEW[@]+"${NEW[@]}"}
 fi
-if [[ ${#GONE[@]} -gt 0 ]]; then
+if [[ $n_gone -gt 0 ]]; then
     echo "-- pinned cells that now DECODE (remove them from KNOWN_UNDECODABLE) --"
-    printf '  %s\n' "${GONE[@]}"
+    printf '  %s\n' ${GONE[@]+"${GONE[@]}"}
 fi
 echo "-- known-undecodable (pinned) --"
 while read -r row; do [[ -n "$row" ]] && echo "  open  $row"; done <"$OUT/pinned.txt"
 
 echo
 echo "inter decode census: $((ok + bad)) streams, $ok decode, $bad rejected \
-($(wc -l <"$OUT/pinned.txt" | tr -d ' ') pinned, ${#NEW[@]} unexpected, ${#GONE[@]} now decoding), \
+($(wc -l <"$OUT/pinned.txt" | tr -d ' ') pinned, $n_new unexpected, $n_gone now decoding), \
 $harness harness"
 # ANTI-VACUITY: a run that produced no decodable stream at all asserts nothing.
 if [[ $ok -eq 0 ]]; then
@@ -133,8 +137,8 @@ if [[ $harness -gt 0 ]]; then
     echo "inter decode census: FAIL — $harness harness failure(s)/crash(es)." >&2
     exit 1
 fi
-if [[ ${#NEW[@]} -gt 0 || ${#GONE[@]} -gt 0 ]]; then
-    echo "inter decode census: FAIL — ${#NEW[@]} unpinned rejection(s), ${#GONE[@]} pinned" >&2
+if [[ $n_new -gt 0 || $n_gone -gt 0 ]]; then
+    echo "inter decode census: FAIL — $n_new unpinned rejection(s), $n_gone pinned" >&2
     echo "  cell(s) now decoding. The pin is EXACT: a NEW undecodable stream is a" >&2
     echo "  conformance regression, and one that starts decoding means the defect" >&2
     echo "  moved and KNOWN_UNDECODABLE must shrink in the same commit." >&2

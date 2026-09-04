@@ -78,8 +78,8 @@ verbose_flag=()
 [[ -n "${IDENTITY_VERBOSE:-}" ]] && verbose_flag=(--verbose)
 python3 "$HERE/identity_diff.py" \
     --c-obu "$OUTDIR/c.obu" --rust-obu "$OUTDIR/rs.obu" \
-    "${C_TRACE_ARGS[@]}" \
-    "${verbose_flag[@]}" \
+    ${C_TRACE_ARGS[@]+"${C_TRACE_ARGS[@]}"} \
+    ${verbose_flag[@]+"${verbose_flag[@]}"} \
     | tee "$OUTDIR/report.txt"
 rc=${PIPESTATUS[0]}
 set -e
