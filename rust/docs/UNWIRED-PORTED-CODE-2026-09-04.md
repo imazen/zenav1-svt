@@ -169,6 +169,24 @@ below means every one of those was unmoved by the fold.
    likewise has one transcription now (`port_md::pme::init_mv_cost_params`;
    `md_search` and `inter_search_arm` re-derived it inline).
 
+4. `have_newmv_in_inter_mode` / `is_motion_variation_allowed_bsize` /
+   `is_global_mv_block` — **folded, `4fb78544`, byte-inert on both ISAs
+   (r7900x x86_64: nextest 2536/2536, spotcheck 102/102, inter_byte_gate
+   96/0/1, identity_full_8bit 1100/1100).**
+   Verdict at the signature level: every copy is the SAME C function, the
+   copies differ only in argument spelling (typed enum vs. the raw byte /
+   raw index C's `mi` grid holds) — fold, nothing to record as different.
+   One body each now: `inter_mv_code::have_newmv_in_inter_mode_raw(u8)`
+   (the typed function forwards; `inter_mvp` / `intrabc_mvp` `use` it),
+   `port_entropy_inter::modes::is_motion_variation_allowed_bsize_idx(usize)`
+   and `::is_global_mv_block_idx` (the BlockSize spellings and
+   `port_md::predicates`' u8 spellings forward; `inter_mvp` `use`s them).
+   Found on the way, recorded not folded: `port_entropy_inter::modes::
+   TransformationType` is a second transcription of C's enum next to
+   `svtav1_types::motion::TransformationType` (identical discriminants;
+   seven files use the modes one) — the predicate body takes the
+   `svtav1_types` one, the writers convert via `as_motion()`.
+
 ## What this changes about the brief's seed list
 
 Of the 8 named examples in `ported-but-unwired-is-the-default-defect`, **5 are
