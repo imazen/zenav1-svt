@@ -97,6 +97,7 @@ mod chroma;
 mod coeff_rate;
 mod commit;
 mod detect;
+mod ifs;
 mod inject;
 mod mds1;
 mod mds3;

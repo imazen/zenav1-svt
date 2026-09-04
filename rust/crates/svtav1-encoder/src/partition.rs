@@ -2787,9 +2787,11 @@ fn encode_single_block(
         //   candidate: one reference, one MV, no NEAREST/NEAR/GLOBAL and no
         //   compound. `drl_index` is 0 for the same reason.
         // * `interp_filters` is `EIGHTTAP_REGULAR` in both directions
-        //   (packed 0). There is no interpolation-filter search; the frame
-        //   header signals SWITCHABLE, so the symbol IS coded and 0 is the
-        //   filter this block's prediction was actually built with.
+        //   (packed 0). This HOMEGROWN search runs no interpolation-filter
+        //   search (the funnel's MDS3 search, `leaf_funnel::ifs`, does not
+        //   run on this path); the frame header signals SWITCHABLE, so the
+        //   symbol IS coded and 0 is the filter this block's prediction was
+        //   actually built with.
         // * `motion_mode` is `SimpleTranslation` with no projected or
         //   overlappable neighbours, which is what makes
         //   `motion_mode_allowed` resolve to it — OBMC and warped motion

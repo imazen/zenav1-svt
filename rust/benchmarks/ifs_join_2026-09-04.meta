@@ -1,0 +1,23 @@
+# The interpolation-filter search at MDS3: C's decisions on the grid, and the
+# port's search joined against them per candidate (§1z³⁶)
+#
+# host:      aarch64-apple-darwin; C side through tools/ctrace-linux/run.sh
+#            (linux/arm64 container, -Wl,--wrap=svt_aom_inter_pu_prediction_av1)
+# C oracle:  reference/svt-av1 @ fix/suspected-c-bug-17 (39f909e)
+# axes:      the 96-cell grid, frames=2, shift 3, low-delay P; frame 1 only
+#
+# ifs_probe_2026-09-04.tsv -- C side alone, on the previous run's rs.yuv per
+#   cell (SVT_IFS_OUT), BEFORE the port had a search:
+#   ifs_calls_f1 = MDS3 calls with mds_do_ifs (367 total); fp = full-pel MVs
+#   (367); subpel 0; changed 0; nonreg_after 0 (C keeps 0x0 on all 367);
+#   flr_delta_gt0 = calls that added a switchable rate (367).
+#   c_bytes_match = the interposed driver's OBU equals the host driver's (all).
+#
+# ifs_join_2026-09-04.tsv -- tools/ifs_join_gate.sh on the wired tree
+#   (2e4094f3's working copy, parent ed2f655a): per cell, C candidates (c_n),
+#   port candidates (p_n), joined on (origin, size, mode, refs, MV), mismatch
+#   (joined rows whose full-pel verdict / pair after / added rate differ),
+#   c_only / p_only (candidate-SET differences), verdict.
+#   Totals: 96/96 PASS, C 367, port 351, joined 330, mismatch 0,
+#   c_only 37, p_only 21 (10 cells; partition-walk differences -- blocks one
+#   side's tree tests and the other's does not; no IFS disagreement).

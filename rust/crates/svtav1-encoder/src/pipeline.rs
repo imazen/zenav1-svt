@@ -3414,6 +3414,18 @@ impl EncodePipeline {
                          table accepts (crate::inter_search_arm::frame_cfg)",
                     ))
                 })?;
+                // `sharpness_ctrls.ifs` (enc_handle.c:3279-3285) arms the
+                // IFS smooth bias together with `pcs->ppcs->is_noise_level`
+                // (enc_inter_prediction.c:2166), which this port does not
+                // derive at the picture level. Refuse rather than guess it
+                // (docs/WORKING-ON-THIS.md §6).
+                if crate::tune::sharpness_ifs(self.hdr.tune, self.hdr.alt_ssim_tuning) {
+                    return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                        "interpolation-filter search smooth bias (tune vq / film-grain, or \
+                         alt-ssim tuning) needs `is_noise_level`, which this port does not \
+                         derive for an inter picture",
+                    )));
+                }
                 Some(crate::inter_md_arm::InterMdFrame {
                     skip_mode_flag: st.skip_mode_flag,
                     cand_reduction: *cand_red,
@@ -3482,6 +3494,17 @@ impl EncodePipeline {
                     frame_h: h,
                     sb_size,
                     gm_wmtype: st.gm_wmtype,
+                    ifs: crate::inter_md_arm::IfsFrameKnobs {
+                        smooth_bias: false, // the refusal above holds the first term off
+                        tx_bias: self.hdr.tx_bias > 0,
+                        picture_qp: self.rc_config.qp,
+                        // Inter picture, temporal layer 0 (hier_levels 0).
+                        ac_bias_eff: svtav1_dsp::ac_bias::effective_ac_bias(
+                            self.hdr.ac_bias,
+                            false,
+                            0,
+                        ),
+                    },
                     base_update_type: md_lambda_base_update_type
                         .expect("an inter frame always has a picture decision"),
                     factor_update_type: md_lambda_factor_update_type,

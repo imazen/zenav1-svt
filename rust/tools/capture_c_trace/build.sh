@@ -198,6 +198,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_motion_estimation_b64 \
     -Wl,--wrap=svt_av1_find_best_sub_pixel_tree_pruned \
     -Wl,--wrap=svt_av1_compute_qdelta_by_rate \
+    -Wl,--wrap=svt_aom_inter_pu_prediction_av1 \
     "$LIB" -lpthread -lm
 
 echo "capture_c_trace: built $OUT (SVT_HDR_MODE=$HDR_MODE, lib=$LIB)"

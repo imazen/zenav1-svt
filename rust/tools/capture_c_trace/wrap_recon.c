@@ -787,6 +787,62 @@ uint64_t __wrap_svt_aom_inter_fast_cost(PictureControlSet* pcs, ModeDecisionCont
     return rc;
 }
 
+/* ---- IFS interposer (SVT_IFS_OUT) --------------------------------------
+ * `svt_aom_inter_pu_prediction_av1` (enc_inter_prediction.c:3803, EXPORTED,
+ * reached from product_coding_loop.c through `product_prediction_fun_table`
+ * — a cross-TU call, so --wrap binds it) is the ONLY caller of the static
+ * `interpolation_filter_search` (:2058). IFS runs inside it when
+ * `ctx->mds_do_ifs && frm_hdr.interpolation_filter == SWITCHABLE &&
+ * !use_intrabc && av1_is_interp_needed_md(..)`, and its whole visible effect
+ * is `cand->block_mi.interp_filters` (written to the bitstream) plus the
+ * `switchable_rate` it adds to `cand_bf->fast_luma_rate`. Logging both
+ * BEFORE and AFTER the real call therefore observes the search's decision
+ * per candidate without touching the static function.
+ *
+ * Written 2026-09-04 for docs/UNWIRED-PORTED-CODE-2026-09-04.md item 3: the
+ * port codes EIGHTTAP_REGULAR for every inter block and pays no switchable
+ * rate, and the question is on how many MDS3 candidates C decides otherwise.
+ *
+ * `fp` is C's own full-pel test (:2077): with a full-pel MV the filter is
+ * chosen on rate ALONE and the prediction is not touched.
+ *
+ * Env: SVT_IFS_OUT (file). Unpinned on purpose — the per-frame COUNT is the
+ * point; MDS3 inter candidates number in the hundreds per 128x128 frame. */
+EbErrorType __real_svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
+                                                   ModeDecisionCandidateBuffer* cand_bf);
+
+EbErrorType __wrap_svt_aom_inter_pu_prediction_av1(uint8_t hbd_md, ModeDecisionContext* ctx, PictureControlSet* pcs,
+                                                   ModeDecisionCandidateBuffer* cand_bf) {
+    const char* path = getenv("SVT_IFS_OUT");
+    if (!(path && *path))
+        return __real_svt_aom_inter_pu_prediction_av1(hbd_md, ctx, pcs, cand_bf);
+    const ModeDecisionCandidate* cand   = cand_bf->cand;
+    const uint32_t               before = cand->block_mi.interp_filters;
+    const uint32_t               flr0   = cand_bf->fast_luma_rate;
+    const int                    sw     = pcs->ppcs->frm_hdr.interpolation_filter == SWITCHABLE;
+    const int fp = (cand->block_mi.mv[0].x % 8 == 0) && (cand->block_mi.mv[0].y % 8 == 0) &&
+        (cand->block_mi.ref_frame[1] <= INTRA_FRAME ||
+         ((cand->block_mi.mv[1].x % 8 == 0) && (cand->block_mi.mv[1].y % 8 == 0))) &&
+        pcs->ppcs->is_not_scaled;
+    const EbErrorType rc = __real_svt_aom_inter_pu_prediction_av1(hbd_md, ctx, pcs, cand_bf);
+    static FILE* f = NULL;
+    if (!f)
+        f = fopen(path, "w");
+    if (f) {
+        fprintf(f,
+                "IFS poc=%u sl=%d st=%d doifs=%d sw=%d org=(%u,%u) %ux%u mode=%d rf=%d,%d mv0=%d,%d fp=%d "
+                "mm=%d ibc=%d interp=0x%x->0x%x flr=%u->%u\n",
+                (unsigned)pcs->picture_number, (int)pcs->slice_type, (int)ctx->md_stage, (int)ctx->mds_do_ifs, sw,
+                (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, (unsigned)ctx->blk_geom->bwidth,
+                (unsigned)ctx->blk_geom->bheight, (int)cand->block_mi.mode, (int)cand->block_mi.ref_frame[0],
+                (int)cand->block_mi.ref_frame[1], (int)cand->block_mi.mv[0].y, (int)cand->block_mi.mv[0].x, fp,
+                (int)cand->block_mi.motion_mode, (int)cand->block_mi.use_intrabc, (unsigned)before,
+                (unsigned)cand->block_mi.interp_filters, (unsigned)flr0, (unsigned)cand_bf->fast_luma_rate);
+        fflush(f);
+    }
+    return rc;
+}
+
 /* ---- POST-DEBLOCK recon interposer (SVT_LFRECON_BIN / SVT_LFRECON_OUT) ---
  * `svt_av1_loop_filter_frame` is declared in deblocking_filter.h:47 and called
  * from dlf_process.c:114 — a CROSS-TU call, so --wrap reaches it. The search's

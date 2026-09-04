@@ -107,6 +107,13 @@ pub struct SearchFrameCfg {
     /// TRUE and paid `get_switchable_rate` at MDS0 where C pays nothing,
     /// 20 to 109 rate units on every inter candidate.
     pub ifs_at_mds0: bool,
+    /// `ctx->ifs_ctrls.level` (`set_interpolation_search_level_ctrls`,
+    /// enc_mode_config.c:4069-4092) — the MD stage the interpolation-filter
+    /// search runs at. On the video ladder (`:9083-9098`) a non-negative
+    /// preset yields 4 (`IFS_MDS3`) or, above M8 on a non-base picture with
+    /// a high `ref_skip_percentage`, 0 (`IFS_OFF`); 2 needs `ENC_MR`, which
+    /// is -1. Consumed by `leaf_funnel::ifs::ifs_at_mds3`.
+    pub ifs_level: crate::port_enc_mode_config::ctrls::IfsLevel,
     /// C `ctx->md_nsq_me_ctrls.enabled`.
     pub md_nsq_me_enabled: bool,
     /// C `ctx->md_nsq_me_ctrls`' search parameters — `md_nsq_motion_search`
@@ -950,6 +957,7 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         md_subpel_pme: subpel_pme,
         ifs_at_mds0: ctrls::set_interpolation_search_level_ctrls(i.interpolation_search_level)?
             == ctrls::IfsLevel::Mds0,
+        ifs_level: ctrls::set_interpolation_search_level_ctrls(i.interpolation_search_level)?,
         md_nsq_me_enabled: nsq.enabled != 0,
         md_nsq_me_dist: match nsq.dist_type {
             ctrls::DistortionType::Sad => DistortionType::Sad,
@@ -1116,6 +1124,16 @@ mod tests {
             pic_height: H as u32,
         })
         .expect("the campaign's levels are in-domain for every C control table")
+    }
+
+    /// `interpolation_search_level` 4 is `IFS_MDS3` (enc_mode_config.c:4086),
+    /// the level the video ladder assigns every preset the port accepts; the
+    /// MDS3 hook (`leaf_funnel::ifs`) keys on exactly this.
+    #[test]
+    fn campaign_ifs_level_is_mds3() {
+        use crate::port_enc_mode_config::ctrls::IfsLevel;
+        assert_eq!(cfg().ifs_level, IfsLevel::Mds3);
+        assert!(!cfg().ifs_at_mds0);
     }
 
     /// POSITIVE CONTROL — the whole point of this module, and it fails if

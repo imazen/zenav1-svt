@@ -20,6 +20,11 @@
 //! caller, so the arithmetic that decides the syntax element is expressible
 //! and testable even though the encoder plumbing is not.
 //!
+//! The caller is `svtav1_encoder::leaf_funnel::ifs::ifs_at_mds3` (wired
+//! 2026-09-04, docs/INTER-ENCODE-PLAN.md §1z³⁶): it supplies the per-pair
+//! switchable rate and, on a sub-pel MV, the luma prediction's `model_rd`,
+//! and applies the result to the candidate at MDS3 as C does.
+//!
 //! `svt_aom_simple_luma_unipred` is exported but is a five-line wrapper whose
 //! whole body is one `tf_inter_predictor` call, and THAT is tier-1 gated
 //! (`c_parity_port_subpel_params.rs`). It is ported here as the wrapper it is.

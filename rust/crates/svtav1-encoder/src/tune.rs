@@ -288,3 +288,28 @@ mod tests {
         }
     }
 }
+
+/// C `derive_vq_params` (Globals/enc_handle.c:3279-3285):
+/// `vq_ctrls.sharpness_ctrls.ifs` is 1 for `TUNE_VQ`, `TUNE_FILM_GRAIN`, and
+/// `TUNE_SSIM` with `alt_ssim_tuning`; 0 for every other tune.
+pub fn sharpness_ifs(tune: u8, alt_ssim_tuning: bool) -> bool {
+    tune == TUNE_VQ || tune == TUNE_FILM_GRAIN || (alt_ssim_tuning && tune == TUNE_SSIM)
+}
+
+#[cfg(test)]
+mod sharpness_ifs_tests {
+    use super::*;
+
+    /// enc_handle.c:3279-3285, all six tunes on both `alt_ssim_tuning` arms.
+    #[test]
+    fn matches_derive_vq_params() {
+        for alt in [false, true] {
+            assert!(sharpness_ifs(TUNE_VQ, alt));
+            assert!(sharpness_ifs(TUNE_FILM_GRAIN, alt));
+            assert!(!sharpness_ifs(TUNE_PSNR, alt));
+            assert!(!sharpness_ifs(TUNE_IQ, alt));
+            assert!(!sharpness_ifs(TUNE_MS_SSIM, alt));
+            assert_eq!(sharpness_ifs(TUNE_SSIM, alt), alt);
+        }
+    }
+}

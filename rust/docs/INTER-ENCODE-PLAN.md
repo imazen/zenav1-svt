@@ -7222,6 +7222,88 @@ base `3115c0c` = `oracle-base-hdr-fork`, measured inert against
   a census run overlapping the gate chain reported `diag 128 q55 p6` as DIFF;
   two serial re-runs and the chain's own serial grid are IDENTICAL.
 
+### 1z³⁶. The interpolation-filter search is wired at MDS3 — on the grid C picks REGULAR on all 367 candidates (every MV full-pel) and the port now pays the switchable rate it never paid (2026-09-04)
+
+The wiring brief's item 3: `svtav1-dsp/src/port_ifs.rs` (`interpolation_filter_search`,
+tier 4, 9/9 dead) and `inter_md_arm.rs`'s `interp_filters = 0u32` with a comment
+saying the port has no search. The filter is written to the bitstream per inter
+block, so the question was what C actually decides on the campaign envelope,
+before writing anything.
+
+#### The probe came first: `SVT_IFS_OUT`
+
+`interpolation_filter_search` (enc_inter_prediction.c:2058) is `static`. Its
+ONLY caller, `svt_aom_inter_pu_prediction_av1` (`:3803`), is exported and
+reached through `product_prediction_fun_table` (product_coding_loop.c:57) —
+a cross-TU call, so `-Wl,--wrap` binds it. The new interposer
+(`tools/capture_c_trace/wrap_recon.c`) logs, per call, the stage, `mds_do_ifs`,
+the header's `interpolation_filter`, the candidate (origin, size, mode, refs,
+MV), C's own full-pel test (`:2077`), and `interp_filters` and
+`fast_luma_rate` BEFORE and AFTER the real call — the search's whole visible
+effect. The interposed driver's OBU equals the host driver's on all 96 cells
+(the probe is inert).
+
+C's stage gating, from source: `mds_do_ifs` is set per stage from
+`ifs_ctrls.level` (`:1648`, `:7029`, `:7043`, `:7148`); the video ladder sets
+`interpolation_search_level` 4 = `IFS_MDS3` for every preset <= M8 and 4 above
+it unless `ref_skip_percentage` turns it off (enc_mode_config.c:9083-9098; 2 =
+`IFS_MDS1` needs `ENC_MR`, which is -1 and below the port's unsigned preset).
+So on this envelope the search runs once per MDS3 candidate inside
+`full_loop_core`'s prediction call (`:6848-6853`), and C pays NO IFS rate at
+MDS0 (rd_cost.c:977, `ifs_ctrls.level == IFS_MDS0` only).
+
+MEASURED, 96-cell grid, frame 1 (C side): **367 MDS3 candidates** reach the
+search (2236 more prediction calls are MDS0, `doifs=0`), **all 367 with a
+full-pel MV**, so the filter is chosen on rate alone and C keeps
+`EIGHTTAP_REGULAR` (`0x0`) on every one. The port's constant 0 was therefore
+byte-correct on the whole grid. What C also does, on all 367, is
+`fast_luma_rate += switchable_rate` (`:2211`) — 20 to 109 rate units per
+candidate — which the port never paid; it only reaches the inter-vs-intra
+comparison at MDS3 (every inter candidate pays it), which is why 94/96 cells
+were identical without it.
+
+#### What landed
+
+* `leaf_funnel/ifs.rs::ifs_at_mds3`, called from `mds3::eval_candidate` on
+  every inter candidate before the transform loop, under C's gates
+  (`ifs_level == Mds3`, header SWITCHABLE, not IntraBC,
+  `av1_is_interp_needed_md`). Full-pel: rate-only pick through
+  `port_ifs::interpolation_filter_search` with `get_switchable_rate` per pair.
+  Sub-pel: predict luma per pair into scratch, spatial SSE (+ the psy term
+  when the effective ac bias is on), `model_rd_for_sb` at
+  `y_dequant_qtx[base_q_idx][1]`, the two biases in C's order; a changed pair
+  rebuilds luma and chroma (`:2200-2202`, the port carries chroma with luma).
+  Then `fast_luma_rate += switchable_rate`.
+* `SearchFrameCfg::ifs_level`, `InterMdFrame::ifs` (`IfsFrameKnobs`:
+  `tx_bias`, `picture_qp`, the inter-frame `effective_ac_bias`), and
+  `tune::sharpness_ifs` (enc_handle.c:3279-3285). The smooth bias needs
+  `pcs->ppcs->is_noise_level`, which the port does not derive at the picture
+  level, so an inter frame under tune vq / film-grain / alt-ssim+ssim is
+  REFUSED (§6) rather than guessed.
+* `tools/ifs_join_gate.sh` — runs both sides on the same .yuv and joins per
+  candidate on (origin, size, mode, refs, MV); a joined candidate whose
+  full-pel verdict, filter pair after the search or added rate differ FAILS
+  the gate; a cell where C searched and nothing joined is VACUOUS and FAILS.
+  `SVTAV1_IFSDBG` is the port's dump.
+
+#### Evidence
+
+There is no tier-1 shim for the search (static, whole MD context); its inputs
+are pinned separately (`svt_aom_get_switchable_rate` in `c_parity_rd_cost.rs`,
+`model_rd_from_sse` in `c_parity_port_model_rd.rs`) and the decision structure
+in `port_ifs`'s tests. The search AS CALLED: `ifs_join_gate.sh` **96/96 PASS —
+330 candidates joined, 0 mismatches** (same full-pel verdict, same pair, same
+rate on every one); 37 C-only and 21 port-only rows on 10 cells are
+PARTITION-WALK differences — blocks one side's tree tests and the other's
+does not (C descends to 32x32 quadrants where the port evaluates the 64x64;
+the port tests 16x8 H shapes C's walk prunes) — reported, not failed. Every
+candidate on both sides of every cell is NEARESTMV or NEWMV, single
+reference, the same full-pel MV (the grid's content is a pure translation).
+The sub-pel arm is transcribed and has no cell on this envelope that reaches
+it: stated as unverified, not as verified.
+
+#### Gates, aarch64 (this tree): nextest 2524/2524, `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96 required, 0 failed, 1 known-open), grid **94 BOTH / 1 F1DIFF / 1 F0DIFF of 96 — every row identical to §1z³⁵'s grid, so paying the switchable rate moved no cell** (it is paid by every inter candidate alike), `video_key_matrix` 58/60, `fctx_gate` 96/96, `inter_decode_gate` 5/5, decode census PASS, completion scan 64 OK / 0 REFUSED / 0 CRASH, six still cells identical at 290/839/63/171/580/693 B, `identity_full_8bit` 1100/1100; frames=3 refuses frame 2 by design on every cell. Cross-ISA on r7900x (x86_64, oracle `3115c0c`): nextest 2533/2533, spotcheck 102/102, inter byte gate PASS, identity 1100/1100. Records: `benchmarks/ifs_probe_2026-09-04.tsv`, `benchmarks/ifs_join_2026-09-04.tsv` + `.meta`.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

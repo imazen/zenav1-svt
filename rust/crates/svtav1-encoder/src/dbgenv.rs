@@ -59,6 +59,9 @@ presence_flags! {
     nsqdbg => "SVTAV1_NSQDBG",
     /// `SVTAV1_CANDDBG`: per-candidate cost dump inside the leaf funnel.
     canddbg => "SVTAV1_CANDDBG",
+    /// `SVTAV1_IFSDBG`: one line per MDS3 interpolation-filter search
+    /// (`leaf_funnel::ifs`), joinable against C's `SVT_IFS_OUT`.
+    ifsdbg => "SVTAV1_IFSDBG",
     /// `SVTAV1_PALBRK`: palette-decision breakdown (per block).
     palbrk => "SVTAV1_PALBRK",
     /// `SVTAV1_IBCDBG`: intra-block-copy candidate dump (per block).

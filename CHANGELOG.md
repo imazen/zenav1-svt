@@ -56,6 +56,19 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Interpolation-filter search wired at MDS3 (2026-09-04).** C runs
+  `interpolation_filter_search` once per MDS3 inter candidate
+  (`ifs_ctrls.level == IFS_MDS3` for every video-arm preset the port accepts);
+  the port hardcoded `EIGHTTAP_REGULAR` and paid no switchable rate. New
+  `leaf_funnel::ifs::ifs_at_mds3` (full-pel: rate-only pick; sub-pel: per-pair
+  luma prediction + `model_rd_for_sb`, chroma rebuilt on a changed pair) adds
+  `fast_luma_rate += switchable_rate` as C does. New `SVT_IFS_OUT` interposer
+  on the exported caller and `tools/ifs_join_gate.sh`: 96/96 cells, 330 MDS3
+  candidates joined, 0 mismatches. On the grid every MDS3 MV is full-pel and C
+  keeps REGULAR on all 367, so the filter bytes were already right; the rate
+  is now paid. An inter frame under tune vq / film-grain / alt-ssim+ssim is
+  REFUSED (the smooth bias needs `is_noise_level`, not derived).
+  `docs/INTER-ENCODE-PLAN.md` §1z³⁶.
 - **NSQ recon-dist gate: the parent-mode threshold now reads C's unified
   `block_mi.mode` (2026-09-04).** `depth_refine::skip_by_recon_dist` modulated
   `max_part0_to_part1_dev` by the intra y_mode, which every inter winner

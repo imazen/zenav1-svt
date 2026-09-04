@@ -566,6 +566,24 @@ fn eval_candidate(
             c.fcr = fcr;
         }
     }
+    // ---- C `svt_aom_inter_pu_prediction_av1` at MDS3 (product_coding_loop.c
+    //      :6848-6853): the interpolation-filter search, BEFORE the transform
+    //      loop, on every inter candidate. See [`super::ifs`].
+    if cands[ci].inter.is_some() {
+        // C `dequants->y_dequant_qtx[base_q_idx][1]` (enc_inter_prediction.c
+        // :2027-2029); `qt` is built from `frame.base_qindex`.
+        let quantizer = i16::try_from(qt.dequant[1]).expect("y_dequant_qtx is int16_t in C");
+        super::ifs::ifs_at_mds3(
+            fx,
+            g,
+            lambda3,
+            y_src,
+            y_src_stride,
+            y_src_off,
+            quantizer,
+            &mut cands[ci],
+        );
+    }
     // ---- Luma: TX depth loop ----
     // KNOWN GAP (pinned, screen-IBC grind 2026-07-23): C's TXS depth
     // CLASS clamp keys on `is_intra_mode(cand->block_mi.mode)`

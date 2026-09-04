@@ -138,6 +138,28 @@ pub const LAST_FRAME: i8 = 1;
 /// The frame-level tables and pictures the inter branch of MD reads.
 ///
 /// Built once per inter frame, shared by every leaf.
+/// What `interpolation_filter_search` (enc_inter_prediction.c:2058) reads
+/// from the picture besides the sequence/frame-header fields
+/// [`InterMdFrame`] already carries. Built once per frame in `pipeline.rs`.
+#[derive(Debug, Clone, Copy)]
+pub struct IfsFrameKnobs {
+    /// `scs->vq_ctrls.sharpness_ctrls.ifs && pcs->ppcs->is_noise_level`
+    /// (`:2166`). The first term is `tune::sharpness_ifs`; the second is
+    /// not derived at the picture level by this port, so the pipeline
+    /// REFUSES the frame when the first is set rather than guess it.
+    pub smooth_bias: bool,
+    /// `scs->static_config.tx_bias > 0` (`:2173`).
+    pub tx_bias: bool,
+    /// `pcs->ppcs->picture_qp`, the index into `ifs_smooth_bias`.
+    pub picture_qp: u8,
+    /// `get_effective_ac_bias(ac_bias, slice_type == I_SLICE,
+    /// temporal_layer_index)` as `model_rd_for_sb` (`:1990`) evaluates it
+    /// for THIS picture — an inter frame on layer 0 (the port's video mode
+    /// is `hier_levels 0`), so `ac_bias * 0.6`, not the `* 0.3` I-slice arm
+    /// `FunnelCfg::ac_bias_eff` carries.
+    pub ac_bias_eff: f64,
+}
+
 pub struct InterMdFrame<'a> {
     /// The DPB reference with C's replicated margins — what the MC indexes.
     ///
@@ -203,6 +225,9 @@ pub struct InterMdFrame<'a> {
     pub sb_size: usize,
     /// C `ppcs->global_motion[ref].wmtype`.
     pub gm_wmtype: [TransformationType; 8],
+    /// The frame-level knobs of the MDS3 interpolation-filter search
+    /// (`leaf_funnel::ifs`) that are not already header fields above.
+    pub ifs: IfsFrameKnobs,
     /// C `ppcs->update_type` — the rdmult BASE selector of
     /// `av1_lambda_assign_md`'s chain. Carried here so PD0 can build the SAME
     /// `full_sb_lambda_md[EB_8_BIT_MD]` the funnel's `c_quant` already has,
@@ -700,11 +725,12 @@ fn predict_and_price(
     // --- The motion-compensated prediction. C does luma and both chroma
     //     planes in ONE `av1_inter_prediction_light_pd1` call under a
     //     component mask, so this is one call (see `inter_pred_arm`).
-    // C `block_mi.interp_filters` — this port runs no interpolation-filter
-    // search, so every candidate is EIGHTTAP_REGULAR in both directions,
-    // which is the packed value 0. `InterCandidate` (the injector's) carries
-    // no filter field for the same reason C's injectors never set one: the
-    // filter is decided later, by the IFS search this port does not have.
+    // C `block_mi.interp_filters` at injection: every C injector leaves it
+    // at EIGHTTAP_REGULAR in both directions (packed 0), and the filter is
+    // decided later by the interpolation-filter search at the stage
+    // `ifs_ctrls.level` names — MDS3 on this port's ladders, run by
+    // `leaf_funnel::ifs::ifs_at_mds3`. This prediction and the MDS0 rate
+    // are therefore C's PRE-search values, exactly as they are in C.
     let interp_filters = 0u32;
     // The two crates carry their own `MotionMode` (the injector's lives in
     // `port_md::predicates`, the writer's and the rate's in
@@ -830,8 +856,9 @@ fn predict_and_price(
             // against C's `svt_aom_inter_fast_cost` (`SVT_IFCOST_OUT`) on
             // `uniform 72x72 q20 p8`: 20 to 109 rate units on every inter
             // candidate, on top of the 1207 the inverted `is_inter_ctx`
-            // cost. That the port never prices the filter AT ALL is the
-            // still-open IFS gap, named in this module's header.
+            // cost. The filter is priced where C prices it — after the MDS3
+            // search, `fast_luma_rate += switchable_rate`
+            // (enc_inter_prediction.c:2211) — by `leaf_funnel::ifs`.
             ifs_at_mds0: f.search.ifs_at_mds0,
         },
         &InterCandidate {
