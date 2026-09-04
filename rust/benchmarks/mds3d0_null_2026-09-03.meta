@@ -1,0 +1,139 @@
+REMOVING AN ALLOCATION WHOSE RESULT IS NEVER READ MADE THE STILL ARM SLOWER —
+REPRODUCED, ISOLATED FROM ITS OWN PLUMBING, AND REVERTED.
+
+date:   2026-09-03 (fourth chunk of the day)
+host:   mac (Apple M4 Pro, aarch64-apple-darwin). Box QUIET: the competing-
+        process count printed 0 immediately before and after every run.
+tool:   tools/perf_ab.sh, interleaved paired rounds, order randomised per
+        round, neither side niced, no -C target-cpu=native, gradient qp 40.
+base:   76fdb802 + the z2 NEON arm (this chunk's other commit).
+cand:   base + the elision described below. Every cell ident=Y.
+data:   benchmarks/mds3d0_ab_2026-09-03.{still,repeat,paramctrl}.{tsv,raw.tsv}
+verdict: **REVERTED. Not in the tree.** This file is the whole deliverable.
+
+=================== WHAT WAS TRIED =========================================
+
+`mds3::eval_candidate` builds `d0_recon = dep_recon.clone()` at tx depth 0 —
+a `vec![0u8; w * h]` plus a `w * h` memcpy — for EVERY candidate of every leaf,
+and hands it to `cand.y_recon_d0`.
+
+That field has exactly ONE reader in the tree: `evaluate_leaf`'s `gate_y`
+(`leaf_funnel/mod.rs`), which takes it from ONE candidate,
+`cands[order1[n3 - 1]]`, and only when `cfg.bypass_encdec`. `bypass_encdec` is
+0 for preset <= 3 and 1 above, so **at the presets where ALLOC hurts most
+nothing reads it at all**, and above them exactly one candidate per leaf does.
+
+The change threaded a `need_d0_recon: bool` into `eval_candidate`, computed as
+`cfg.bypass_encdec && k + 1 == n3`, and skipped the clone otherwise. Nothing
+about the bytes can depend on it: `cargo nextest` 2512/2512, and the
+`regression_spotcheck` cells are byte-identical.
+
+Motivation, measured on this tree with `tools/perf_profile/ancestor.py` over
+`malloc|_free|calloc|realloc|xzm|_platform_bzero` at gradient 512x512 p2:
+
+  rank  ancestor                                  self   share   ms of 552.9
+   1    mds3::eval_candidate                       298   28.7 %    8.71
+   2    tx_pipeline::tx_unit_inner                 258   24.8 %    7.54
+   3    predict::hadamard_satd                     124   11.9 %    3.63
+   4    drop_glue::<types::Cand>                    60    5.8 %    1.75
+   5    inject::inject_candidates                   54    5.2 %    1.58
+
+The whole allocator family is 1,040 of 18,913 self samples = 30.4 ms = **5.5 %
+of the port's 512 p2 frame**, and `eval_candidate`'s slice of it is **1.58 %**.
+That is the ceiling on the entire item, before any of it is captured.
+
+=================== THE RESULT: A REGRESSION, REPRODUCED ===================
+
+  STILL (n=15)      ratio   speedup   p25/p75          verdict
+  256 p2            1.0059   0.994    1.0004/1.0086    span ABOVE 1.0
+  256 p6            1.0087   0.991    0.9952/1.0113    crosses
+  256 p10           1.0000   1.000    0.9891/1.0105    NULL
+  512 p2            1.0018   0.998    0.9978/1.0041    crosses
+  512 p6            1.0123   0.988    1.0005/1.0165    span ABOVE 1.0
+  512 p10           1.0171   0.983    1.0025/1.0255    span ABOVE 1.0
+
+  REPEAT (n=25, separate run)
+  512 p6            1.0131   0.987    1.0027/1.0169    span ABOVE 1.0
+  512 p10           1.0064   0.994    0.9926/1.0243    crosses
+
+Three cells lose with their whole p25/p75 span above 1.0, and the 512 p6 cell
+reproduces at 0.987-0.988x across two independent runs. **A change that removes
+an allocation and a memcpy per candidate is 1.2-1.7 % SLOWER at the two cells
+where ALLOC's share of the gap is highest** (16.4 % at p6, 20.3 % at p10 per
+`perf_still_attrib_2026-09-03.tsv`).
+
+=================== IT IS NOT (MOSTLY) THE PLUMBING — CONTROLLED ===========
+
+`eval_candidate` is a very large function and gained an argument, so the
+obvious confound is code layout / register allocation, not the elision. A
+PARAMETER-ONLY control isolates it: the same binary with the same new
+`need_d0_recon` argument threaded through both call sites, passing **`true`**
+everywhere, so the allocation is still built for every candidate.
+
+  cell        param-only (alloc kept)   full elision
+  512 p6      0.997x  (0.9983/1.0159)   0.987x  (1.0027/1.0169), twice
+  512 p10     0.994x  (0.9925/1.0177)   0.983x / 0.994x
+
+The plumbing alone is a soft null at p6 (span crosses 1.0); the ELISION adds
+another ~1.0 % of loss on top of it. So the cost is the removal itself, not the
+signature.
+
+=================== WHY (NOT ESTABLISHED) ==================================
+
+Unmeasured. The plausible mechanism is macOS libmalloc's size-class magazines:
+`d0_recon` is a `w * h` buffer in the same size class as `dep_recon` and
+`best_recon`, allocated and freed on a steady per-candidate cadence, and
+removing it may leave that class's free list colder for the buffers that
+remain. `benchmarks/mem_levelscratch_2026-09-03.meta` §3 already recorded a
+macOS allocator effect nobody could attribute (a +4 MiB RSS shift that survived
+moving the buffer out of the heap entirely). **Do not attribute this further
+without measuring.**
+
+=================== WHAT THIS ADDS TO THE CAMPAIGN'S RULES =================
+
+This is the FOURTH profile share that failed to become a win (after the chroma
+detectors through `dsp::sad`, `neighbor_scratch`, and `mdscratch_null`), and
+the first that failed in the WRONG DIRECTION while being provably dead work.
+The rule it sharpens:
+
+  **An allocation whose result is never read is not automatically free to
+  remove.** On this allocator, per-call churn in a size class is not pure cost;
+  the previous chunk learned the same shape from the other side
+  (`clear()` + `resize(n, 0)` is SLOWER than `vec![0; n]`, because `vec!` gets
+  its zeros from calloc pages for free). Price the removal, do not assume it.
+
+=================== WHAT SURVIVED, AND THE NEXT ITEM =======================
+
+Two things are kept out of this attempt:
+
+1. A comment at `leaf_funnel/mod.rs`'s `gate_y` recording that `y_recon_d0` is
+   built for every candidate ON PURPOSE, with a pointer here — so the next
+   reader does not repeat it.
+2. A PRE-EXISTING defect found while building the teeth for this change, and
+   NOT fixed (fixing it would move bytes and is out of scope): **`gate_y` can
+   be an EMPTY slice.** Found by asserting `!last.y_recon_d0.is_empty()` under
+   `cfg.bypass_encdec`; `avif::tests::lossless_is_qp0_on_420_and_refused_on_mono`
+   trips it. A coded-lossless 8x8 leaf takes `start_depth = 1` (C
+   `get_start_end_tx_depth`'s "force TX_4X4 for 8x8"), so the `depth == 0` arm
+   that fills `y_recon_d0` never runs. `depth_refine`'s quad-dist gate indexes
+   `gate_y` directly (`yrec[ry + x]`) and would PANIC on it; it does not today
+   only because that gate is not reached for those blocks.
+
+TEETH (the control that proves the buffer is load-bearing where it IS read,
+unconditional in a RELEASE build per the campaign's rule): with
+`need_d0_recon = false` for EVERY candidate, `regression_spotcheck` goes
+**81 / 102**. With the per-candidate flag restored it is 102 / 102. So the
+gating was exactly minimal — the failure above is a performance result, not a
+correctness one.
+
+THE NEXT ALLOCATION ITEM, ranked and located (nobody has priced it):
+`leaf_funnel::predict::hadamard_satd` (`predict.rs:143`) is #3 above at 11.9 %
+/ 3.63 ms, and its two buffers are FIXED-SIZE: `res` is `vec![0i16; tx * tx]`
+and `coeff` is `vec![0i32; tx * tx]` with `tx = w.min(h).min(32)`, so both are
+bounded by 1024 elements — the same shape as the `coeff_contexts` -> stack
+array that WAS a win (`0c70f3fc`, six of six cells). Neither is read before it
+is written (`residual_i16` fills all `tx * tx`, the Hadamard fills all the
+coeffs), so no zeroing is needed — which is exactly the constraint that makes a
+plain `[0i16; 1024]` the wrong shape and a caller-hoisted scratch the right
+one. Four call sites, all in `leaf_funnel/inject.rs` (:551, :918, :1308, :1468).
+**Given this file's result, price it before building it.**

@@ -1,5 +1,21 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **AN ALLOCATION NOTHING READS IS NOT FREE TO REMOVE — MEASURED, REPRODUCED,
+> REVERTED (2026-09-03).** Record `benchmarks/mds3d0_null_2026-09-03.meta`.
+> `mds3::eval_candidate`'s `d0_recon` is a `vec![0u8; w * h]` + a `w * h`
+> memcpy per CANDIDATE, and `cand.y_recon_d0` has exactly one reader —
+> `evaluate_leaf`'s `gate_y`, from ONE candidate, only at `bypass_encdec`
+> (preset >= 4). Skipping it everywhere else is byte-inert (2512/2512,
+> spotcheck 102/102) and is **1.2-1.7 % SLOWER** at 512 p6 and p10, with the
+> p25/p75 span entirely above 1.0 and 512 p6 reproduced across two runs. A
+> parameter-only control (same new argument, allocation KEPT) is a soft null,
+> so the cost is the removal itself, not the signature. Fourth profile share
+> this campaign has failed to convert, and the first to go the WRONG way while
+> being provably dead work. The measured ceiling for the whole item is small:
+> the allocator family is **5.5 % of the port's 512 p2 frame** (1,040 of
+> 18,913 self samples = 30.4 ms), `eval_candidate` is 28.7 % of that (1.58 % of
+> the frame), `tx_unit_inner` 24.8 % and `hadamard_satd` 11.9 %.
+
 > **THE aarch64 INTER MEMORY AXIS NO LONGER HOLDS — RE-MEASURED, AND IT IS
 > WORSE THAN THE ONE COMMIT THAT WAS KNOWN TO COST IT (2026-09-03).** Record
 > `benchmarks/mem_inter_axis_2026-09-03b.meta`. `mem_levelscratch_2026-09-03.meta`

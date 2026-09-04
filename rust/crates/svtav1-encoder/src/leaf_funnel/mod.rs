@@ -777,6 +777,21 @@ pub(crate) fn evaluate_leaf(
     // depth-1 recon's (744<<4).
     let (gate_y, gate_u, gate_v) = if cfg.bypass_encdec {
         let last = &cands[order1[n3 - 1]];
+        // This is the ONLY read of `y_recon_d0` in the tree, and
+        // `eval_candidate` builds it for EVERY candidate of every leaf —
+        // measured, and left that way on purpose: eliding it for the
+        // candidates nobody reads is a REGRESSION, see
+        // benchmarks/mds3d0_null_2026-09-03.meta.
+        //
+        // It can also be EMPTY here. MEASURED 2026-09-03 by asserting
+        // non-emptiness: `avif::tests::lossless_is_qp0_on_420_and_refused_on_mono`
+        // trips it. A coded-lossless 8x8 leaf takes `start_depth = 1` (C
+        // `get_start_end_tx_depth`'s "force TX_4X4 for 8x8"), so the
+        // `depth == 0` arm that fills `y_recon_d0` never runs and `gate_y` is
+        // an empty slice. `depth_refine`'s quad-dist gate indexes `gate_y`
+        // directly and would panic on it; it does not today because that gate
+        // is not reached for those blocks. UNFIXED and pre-existing — noted
+        // here so the next reader does not have to rediscover it.
         (
             last.y_recon_d0.clone(),
             last.u_recon.clone(),
