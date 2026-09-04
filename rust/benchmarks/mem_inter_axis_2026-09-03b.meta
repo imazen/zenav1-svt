@@ -1,0 +1,98 @@
+THE aarch64 INTER MEMORY AXIS NO LONGER HOLDS: 1.121x -> 1.278x AT 1280 AND
+1.257x -> 1.329x AT 2048. RE-MEASURED, AS THE LEVEL-SCRATCH RECORD ASKED.
+
+date:   2026-09-03 (fourth chunk of the day)
+what:   the obligation `benchmarks/mem_levelscratch_2026-09-03.meta` §4 left:
+        "the aarch64 inter arm is the one axis of the memory goal that was AT
+        its boundary ... whoever next works the memory axis should re-measure
+        the aarch64 inter cells". This is that measurement.
+host:   mac — Apple M4 Pro, aarch64-apple-darwin, macOS (16 KiB pages,
+        libmalloc). `/usr/bin/time -l` maximum resident set size, MEDIAN of 7
+        reps, full range in brackets. There is no heaptrack on macOS, so
+        EVERY number here is RSS, not live bytes.
+tool:   tools/mem_peak.sh, MP_SIZES="1280 2048" MP_ARMS=inter MP_REPS=7,
+        gradient qp 40 preset 13, both sides.
+tree:   76fdb8026 (main tip at the time of measurement), port
+        target/release/examples/perf_encode; C tools/perf_c_encode against the
+        SAME Bin/Release/libSvtAv1Enc.a the earlier record used.
+box:    NOT quiet — a sibling workspace was running `identity_run` cells
+        throughout. That is a wall-clock hazard, not an RSS one, and the C
+        column is the control: it reproduces the earlier record to 0.05 %.
+
+=================== 1. THE MEASUREMENT ======================================
+
+  cell          port KiB (median [min,max])     C KiB                port/C
+  1280 inter    67792  [67648, 94016]           53056 [52976,53088]  1.278
+  2048 inter   158864  [158624,184736]         119488 [119392,119536] 1.329
+
+Against `benchmarks/mem_aarch64_2026-09-03.tsv` (base `01ef6f1f1` + the
+MeCandidate packing + the perf_encode one-copy harness), same harness, same
+grid, same C library:
+
+  cell          port THEN   port NOW    delta        ratio THEN  ratio NOW
+  1280 inter    59520       67792       +8272 KiB    1.121       1.278
+  2048 inter   150080      158864       +8784 KiB    1.257       1.329
+
+**C did not move**: 53072 -> 53056 (-0.03 %) and 119424 -> 119488 (+0.05 %),
+so the whole ratio change is the port's. **Both inter cells are now OUTSIDE
+the 25 % goal**, where before the chunk one was inside it (1.121x) and the
+other was at its boundary (1.257x, over by 0.007).
+
+=================== 2. WHAT MOVED IT — PARTLY ATTRIBUTED ====================
+
+ESTABLISHED, from `mem_levelscratch_2026-09-03.meta` §2: `700357e2` (the shared
+`coeff_c::TxbScratch`) is **+4.1 MiB of the 1280 inter delta**, measured at the
+time as three interleaved pairs, 59.7 -> 63.8 MiB. That record kept the commit
+and named this re-measurement as the condition.
+
+NOT ESTABLISHED: the remaining ~4.2 MiB at 1280 and the whole 8.8 MiB at 2048.
+The commits landed between the two measurements are `4e29d8fa` (the DPB never
+received an inter frame), `813bc939` (NEARMV injection), `aa308152` (the
+frame-2 refusal's hard-coded DPB slot), `ab7c5ed4`, `96083a8e`, `8fa2d035` (the
+temporal motion field was PORTED and never WIRED) and `356f03d9` (a NULL,
+reverted). Four of those are inter CORRECTNESS fixes that give the port
+reference state it did not previously hold — a DPB that now receives inter
+frames and a wired temporal motion field are both real per-frame buffers — so a
+rise is the EXPECTED direction. **That is a hypothesis, not an attribution.**
+Nobody has taken a clean per-commit binary pair across them, and this file does
+not.
+
+Two facts that bound it. The 2048 cell's `obu_bytes` moved 139762 -> 139761
+between the two records, i.e. the encoder makes different decisions there now,
+so the two 2048 numbers are not measuring the same encode. The 1280 cell's
+`obu_bytes` is IDENTICAL (81815 both times) and still differs from C's 81837.
+
+=================== 3. THE STILL AND VIDEOKEY ARMS ARE UNTOUCHED ============
+
+Port side, 1280, 5 reps, same session (C column from
+`benchmarks/mem_aarch64_2026-09-03.tsv` — same binary, same library):
+
+  arm         port KiB    C KiB    port/C
+  still       35792       45392    0.788
+  videokey    41984       47568    0.883
+
+Both reproduce the earlier record's "after" column to within 0.4 %. **The
+user-priority arms are where they were; the regression is the inter arm only,
+on this ISA, as the level-scratch record predicted for its own share of it.**
+
+=================== 4. THE CPU COMMITS OF THIS CHUNK ARE A MEMORY NULL ======
+
+`dr_z2_edged_flat_neon` (the zone-2 directional-intra NEON arm), port side,
+1280, 5 reps, base and candidate run INTERLEAVED base/cand/base/cand:
+
+  arm         base KiB               cand KiB
+  still       35776 / 35792          35808 / 35808
+  videokey    41984 / 42016          41952 / 41936
+  inter       67776 / 67680          67696 / 68432
+
+Every pair overlaps; `obu_bytes` identical on all three arms (34293 / 81771 /
+81815). NULL, as a pure-arithmetic kernel change must be.
+
+=================== NOT ESTABLISHED =========================================
+  * Which commit(s) after `700357e2` carry the remaining rise. Hypothesis only.
+  * Any size but 1280 and 2048, preset but 13, content but gradient, qp but 40.
+  * macOS peak HEAP — heaptrack does not exist there and no substitute was
+    used. Every number in this file is RSS.
+  * The x86_64 position. `mem_levelscratch_2026-09-03.meta` measured the level
+    scratch as a Linux NULL on both RSS and peak heap; whether the inter
+    correctness commits are also a Linux null is UNMEASURED.

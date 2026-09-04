@@ -1,5 +1,31 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE aarch64 INTER MEMORY AXIS NO LONGER HOLDS — RE-MEASURED, AND IT IS
+> WORSE THAN THE ONE COMMIT THAT WAS KNOWN TO COST IT (2026-09-03).** Record
+> `benchmarks/mem_inter_axis_2026-09-03b.meta`. `mem_levelscratch_2026-09-03.meta`
+> §4 kept `700357e2` over a +4 MiB macOS inter RSS cost and made the next memory
+> chunk re-measure the arm. It is re-measured, on `76fdb802`, same harness
+> (`tools/mem_peak.sh`, `/usr/bin/time -l` max RSS, median of 7, gradient qp 40
+> p13), same C library:
+>
+> | cell | port THEN | port NOW | C NOW | ratio THEN | ratio NOW |
+> |---|---|---|---|---|---|
+> | 1280 inter | 59 520 KiB | **67 792** | 53 056 | 1.121x | **1.278x** |
+> | 2048 inter | 150 080 KiB | **158 864** | 119 488 | 1.257x | **1.329x** |
+>
+> **C did not move** (53 072 -> 53 056 and 119 424 -> 119 488, <= 0.05 %), so
+> the whole ratio change is the port's, and **both inter cells are now outside
+> the 25 % goal** where one was inside it and one was at its boundary. About
+> half the 1280 rise is `700357e2`'s known +4.1 MiB; **the rest is NOT
+> attributed** — the commits in between include four inter CORRECTNESS fixes
+> (`4e29d8fa` the DPB never received an inter frame, `813bc939` NEARMV,
+> `aa308152` the hard-coded DPB slot, `8fa2d035` the temporal motion field
+> wired), and a DPB that now holds inter frames plus a live motion field are
+> real per-frame buffers, so a rise is the expected DIRECTION. Nobody has taken
+> a clean per-commit pair across them. **The still and videokey arms did not
+> move** (1280: 35 792 / 41 984 KiB, 0.79x / 0.88x of C) — this is the inter
+> arm on one ISA, exactly the shape the level-scratch record described.
+
 > **ZONE 2 — THE LAST SCALAR DIRECTIONAL-INTRA KERNEL — RUNS IN NEON LANES
 > NOW, AND IT DID NOT NEED C's GATHER (2026-09-03).** Record
 > `benchmarks/z2neon_ab_2026-09-03.*`. `perf_still_attrib_2026-09-03.meta` put
