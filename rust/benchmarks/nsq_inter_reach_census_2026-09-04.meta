@@ -1,0 +1,17 @@
+# NSQ-gate reach on INTER frames, per grid cell (§1z³⁵)
+#
+# commit:  ed2f655a (the fixed tree)      host: aarch64-apple-darwin
+# tool:    tools/nsq_inter_reach_census.sh, run serially after the gate chain
+#          (an earlier overlapping run mis-reported one cell; see
+#          docs/WORKING-ON-THIS.md §5)
+# axes:    this file  = the 96-cell grid, frames=2, shift 3
+#          the -p5 file = {uniform,gradient,diag,screen} x {64,128} x
+#                        {q20,q40,q55} x {p5,p6,p8}, frames=2, shift 3
+# columns: SPENTRY shapes entering skip_processing_nsq on frame 1; SKIP1..4
+#          killed by gate 1 (split rate) / 2 (sq txs) / 3 (recon dist) / 4
+#          (shapes); RDENTRY entries into skip_by_recon_dist; RECONDIST past
+#          its early-outs (the parent-mode read); MODEDIFF of those, parent
+#          is inter (ymode != block_mi.mode)
+# totals:  grid: SPENTRY 304 (p6 248 / p8 56), SKIP1 302, RDENTRY 2,
+#          RECONDIST 2, MODEDIFF 2 -- both on gradient 16x16 q20 p6
+#          p5 file: SPENTRY 584, SKIP1 584, RDENTRY 0

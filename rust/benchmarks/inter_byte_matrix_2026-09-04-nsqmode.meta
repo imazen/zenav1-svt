@@ -1,0 +1,24 @@
+# The NSQ recon-dist gate's parent-mode table, before and after (§1z³⁵)
+#
+# commit (parent): 732119ce  (before = that tree in a sibling workspace;
+#                  after = ed2f655a's tree, rebased onto 708ef638)
+# host:            Apple M-series, aarch64-apple-darwin (this repo's primary)
+# C oracle:        reference/svt-av1 @ fix/suspected-c-bug-17 (39f909e), the
+#                  host driver (byte comparison only; no interposer needed)
+# sweep:           tools/inter_byte_matrix.sh, defaults
+#                  {uniform,gradient,diag,screen} x {16,64,72,128} square
+#                  x {q20,q40,q55} x {p6,p8}, frames=2, shift=3, low-delay P
+#
+# before: 94 BOTH / 1 F1DIFF / 1 F0DIFF / 0 CRASH   (inter_byte_matrix_2026-09-04-before-nsqmode.tsv)
+# after:  94 BOTH / 1 F1DIFF / 1 F0DIFF / 0 CRASH   (this file)
+#
+# Every row identical before and after (diff of the two files is empty).
+# Open cells, unchanged: diag 128x128 q20 p8 (frame 1: 26 B vs C's 25),
+# gradient 128x128 q20 p8 (frame 0, video-KEY: 7453 B vs C's 7472).
+#
+# The fix is exercised on exactly one grid cell (gradient 16x16 q20 p6, parent
+# NEWMV: threshold 73 -> 54 where the old DC arm gave 146) and the shape's
+# verdict is the same under both values -- see
+# nsq_inter_reach_census_2026-09-04.tsv (frames=2 grid) and
+# nsq_inter_reach_census_2026-09-04-p5.tsv (64/128 x q20/40/55 x p5/6/8).
+# frames=3 refuses frame 2 by design on every cell, before and after.
