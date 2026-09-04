@@ -106,17 +106,48 @@ for f in "$WORK/c.fctx" "$WORK/rs.fctx"; do
     fi
 done
 
-# Frame 0 is the one a later frame restores FROM, so it is the frame under
-# test. Frame 1's saved context can only match once the inter tile does.
+# EVERY frame's saved context is compared, not just frame 0.
+#
+# It used to be frame 0 alone, with the reason "frame 1's saved context can
+# only match once the inter tile does". That stopped being true: on the
+# campaign's cells frame 1's tile IS byte-identical, so its end-of-frame CDFs
+# are testable — and a gate that stops at frame 0 cannot see the state a THIRD
+# frame restores from.
+#
+# MEASURED 2026-09-03, and it is why this loop exists: on
+# `diag 64x64 q40 p8 frames=3` the port matches C on 96/96 shared fields at
+# frames 0 AND 1, and differs at frame 2 in exactly ONE — `skip_mode`, first
+# value 138 vs 147. A CDF that adapted on C's side and not on the port's is
+# proof C CODED that symbol, which localized the frame-2 tile divergence to
+# `skip_mode_present` in one command. See docs/INTER-ENCODE-PLAN.md 1z30.
+#
+# A frame the port did not encode (a refusal) has no line to compare, so the
+# loop compares the frames BOTH dumps carry and fails if that set is empty.
 echo "== CDF-continuation gate: $CONTENT ${W}x${H} q$QP p$PRESET frames=$FRAMES =="
 # `set -e` would abort on a nonzero exit before `rc=$?` could read it, so the
 # comparison runs in an `if` (which suspends errexit) rather than bare.
 rc=0
-if ! python3 "$HERE/fctx_diff.py" "$WORK/c.fctx" "$WORK/rs.fctx" --frame=0 --max-fields=20; then
-    rc=1
+compared=0
+for ((f = 0; f < FRAMES; f++)); do
+    # A frame with no line on EITHER side is one the port refused or the C
+    # driver never emitted; skip it rather than scoring a vacuous pass, and
+    # let the anti-vacuity check below fail if that leaves nothing.
+    if ! grep -q "^FCTX $f " "$WORK/c.fctx" || ! grep -q "^FCTX $f " "$WORK/rs.fctx"; then
+        echo "  frame $f: not present in both dumps — skipped"
+        continue
+    fi
+    compared=$((compared + 1))
+    if ! python3 "$HERE/fctx_diff.py" "$WORK/c.fctx" "$WORK/rs.fctx" --frame="$f" --max-fields=20; then
+        rc=1
+    fi
+done
+if [[ $compared -eq 0 ]]; then
+    echo "fctx gate: FAIL — no frame was present in both dumps." >&2
+    echo "           (Anti-vacuity: 0 frames compared is not a pass.)" >&2
+    exit 2
 fi
 if [[ $rc -eq 0 ]]; then
-    echo "fctx gate: PASS  ($WORK)"
+    echo "fctx gate: PASS  ($compared frame(s) compared, $WORK)"
 else
     echo "fctx gate: FAIL  ($WORK)"
 fi

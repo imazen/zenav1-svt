@@ -6669,6 +6669,82 @@ would have said so immediately.
 **58/60** (unmoved), `inter_completion_scan.sh` (`SCAN_GATE=1`) **64 OK /
 0 REFUSED / 0 CRASH**.
 
+### 1z³⁰. One CDF named the symbol frame 2 is missing — `skip_mode`, and the gate that found it (2026-09-03)
+
+With §1z²⁷–§1z²⁹ in, frame 2 of `diag 64x64 q40 p8 frames=3` is 21 B against
+C's 21 B with **no frame-header field differing at all**, and both sides code
+the SAME single block (`mode=13 NEARESTMV rf=1 mv=(0,-24)`, skip). A tile that
+differs anyway is either a different symbol SET or a different CDF state.
+
+Full record: `benchmarks/frame2_skip_mode_2026-09-03.md`.
+
+#### The instrument, and it is a gate strengthening
+
+`tools/fctx_gate.sh` compared frame 0 alone, justified by "frame 1's saved
+context can only match once the inter tile does". That stopped being true —
+frame 1's tile IS byte-identical on the campaign's cells. Extended to every
+frame both dumps carry:
+
+| frame | shared fields | identical | differ |
+|---|---|---|---|
+| 0 | 96 | 96 | 0 |
+| 1 | 96 | 96 | 0 |
+| 2 | 96 | **95** | **1 — `skip_mode`, C=138 port=147** |
+
+Frames 0 and 1 agree to the value, so frame 2 starts from the same state; 147
+is `skip_mode`'s DEFAULT. **A CDF that adapted on C's side and not on the
+port's is proof C CODED that symbol.**
+
+#### What it names
+
+`entropy_coding.c:5119` writes `encode_skip_mode_av1` in the non-intra-FRAME
+arm of `write_modes_b` whenever
+`frm_hdr->skip_mode_params.skip_mode_flag && is_comp_ref_allowed(bsize)`, and
+`pd_process.c:4958` is
+
+```c
+frm_hdr->skip_mode_params.skip_mode_flag = frm_hdr->skip_mode_params.skip_mode_allowed;
+```
+
+The port derives `skip_mode_allowed` (`port_picstruct::setup_skip_mode_allowed`
+is C's EXPORTED function at tier 1) and then writes
+`skip_mode_present = (allowed != 0).then_some(false)` with the comment
+"`skip_mode_flag` itself is left at C's initialisation value ...; nothing in
+the encoder assigns it". **`pd_process.c:4958` assigns it.** NINTH "a caller
+passes a constant where the derivation is already ported" of this campaign.
+
+Invisible before frame 2 because `skip_mode_allowed` needs two references at
+DIFFERENT order hints: at poc 1 every DPB slot still holds poc 0, so it is 0
+and the constant is right by accident; at poc 2 it is 1.
+
+#### Everything the fix needs is already ported
+
+`skip_mode_context` and `encode_skip_mode` are in
+`port_entropy_inter::modes` and **called by nothing**; `is_comp_ref_allowed` is
+tier-1-header and already used; the cost model carries
+`InterFacBits::skip_mode`, `InterFrame::skip_mode_flag` and
+`InterBlock::skip_mode_ctx` and is fed a constant `false`. The remaining chunk
+is THREE WIRES, not a port:
+
+1. `inter_hdr_arm`: `skip_mode_present = Some(skip_mode_allowed != 0)`.
+2. the pack: `encode_skip_mode` immediately before `write_skip`, gated on
+   `skip_mode_flag && is_comp_ref_allowed(bsize)` — in the non-intra-FRAME
+   arm, so intra blocks of an inter frame get it too.
+3. `inter_md_arm`: stop passing `skip_mode_flag: false`, so MD pays C's
+   skip-mode rate (`rd_cost.c:562`).
+
+**It cannot move a byte before frame 2**, which is what makes it both safe and
+untestable by any gate this repo currently runs — so it is recorded here with
+its exact three edits rather than landed unverified.
+
+#### What landed
+
+The gate. `fctx_gate.sh` compares every frame present in both dumps (2 on its
+default cell), reports the count, and fails anti-vacuity at 0. Mutation-tested:
+changing ONE value of frame 1's `skip_mode` row makes it report
+`95 identical, 1 differ` and exit 1. **Frame 1's end-of-frame CDF state had
+never been under test**, and it is the state a third frame restores from.
+
 ## 2. Chunks
 
 Ownership is per-file and strict — two chunks must never edit the same file.

@@ -737,6 +737,27 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Fixed
 
+- **`fctx_gate.sh` compares EVERY frame's end-of-frame CDF state, not just
+  frame 0** — and the first thing it found is the symbol frame 2 is missing.
+  The gate stopped at frame 0 on the reasoning that "frame 1's saved context
+  can only match once the inter tile does"; frame 1's tile is byte-identical on
+  the campaign's cells, so that state had simply never been under test even
+  though it is what a THIRD frame restores from. Extended, it reports 96/96
+  identical at frames 0 and 1 of `diag 64x64 q40 p8 frames=3` and exactly ONE
+  differing field at frame 2: `skip_mode`, C 138 against the port's 147 — the
+  DEFAULT, i.e. C adapted that CDF and the port never coded the symbol. That
+  localized the frame-2 tile divergence in one command to
+  `frm_hdr->skip_mode_params.skip_mode_flag`, which `pd_process.c:4958` assigns
+  from `skip_mode_allowed` while `inter_hdr_arm` hard-codes `false` (the ninth
+  "a caller passes a constant where the derivation is already ported" of this
+  campaign; `setup_skip_mode_allowed` is ported at tier 1 and
+  `encode_skip_mode` / `skip_mode_context` are ported and called by nothing).
+  It is inert before frame 2 because `skip_mode_allowed` needs two references
+  at different order hints. Mutation-tested: changing one value of frame 1's
+  `skip_mode` row makes the gate report `95 identical, 1 differ` and exit 1.
+  Full record `rust/benchmarks/frame2_skip_mode_2026-09-03.md`,
+  `rust/docs/INTER-ENCODE-PLAN.md` §1z³⁰.
+
 - **C's frame-2 header codes the low two bits of MINUS THREE — the CDEF-off
   gate the port never tested.** The frame-2 divergence on
   `diag 64x64 q40 p8 frames=3` looked like `cdef_damping_minus_3` (C 1,
