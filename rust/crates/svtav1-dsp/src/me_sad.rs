@@ -24,13 +24,27 @@
 //!
 //! # Why not `#[magetypes]`
 //!
-//! magetypes 0.9.28 exposes no integer-widening conversion (`u8x16 -> u16x8`),
-//! no `abs_diff`, and no pairwise-widening accumulate; `U8x16Backend`'s only
-//! reduction is `reduce_add(..) -> u8`, which wraps. A u8 SAD reducing into
-//! `u32` therefore cannot be expressed against the generic types at all — this
-//! is the documented "one tier benefits from something the generic API can't
-//! express" case, so the arms are hand-written per ISA and dispatched by
-//! `incant!`, which is also what [`crate::sad`] already does.
+//! **CORRECTED 2026-09-05 — the old reason expired, and a NEW one replaces it.**
+//! The paragraph here used to say magetypes exposes no integer widening, no
+//! `abs_diff` and no pairwise-widening accumulate. Since archmage PR #96 (the PR
+//! that closes the issue this port filed) it exposes all three, plus a FUSED
+//! `u8xN::sum_abs_diff`. The arms are still hand-written, for a different and
+//! measured reason: **`sum_abs_diff` fully REDUCES per call.** Its backends are
+//! `_mm256_sad_epu8` followed by `_mm_add_epi64` + `_mm_srli_si128` +
+//! `_mm_cvtsi128_si64` (`magetypes/src/simd/impls/x86_v3.rs:4815`) and
+//! `vaddlvq_u8(vabdq_u8(..))` (`impls/arm_neon.rs:4527`) — a CROSS-LANE
+//! reduction every 16 or 32 bytes. `block_sad_v3` and `block_sad_arm_v2`
+//! keep the whole block in `psadbw` / `vdotq_u32` lanes and reduce ONCE, which
+//! the fused API cannot express; the missing primitive is an ACCUMULATING form
+//! (`sad_accumulate(rhs, acc) -> u64xN`). Reported on archmage#96 with the
+//! backend sources; see `benchmarks/sse_madd_2026-09-05.meta` §6.
+//! **This is an instruction-sequence argument from the generated backends, NOT a
+//! wall-clock measurement** — the generic body was not built and benched, so if
+//! you want to overturn it, bench it rather than re-reading this paragraph.
+//! (What DID get benched is the sibling case: in `variance::sse` the generic
+//! `abs_diff` + `madd_adjacent` body is 1.45x-2.20x SLOWER than the hand NEON
+//! arm on an M4 Pro, so "the primitives exist now" is not by itself a reason to
+//! collapse an arm.)
 //!
 //! The `arm_v2` arm is the one that matches C: `Arm64V2Token` bundles
 //! `dotprod`, so `vabdq_u8` + `vdotq_u32` reproduces the shape of C's

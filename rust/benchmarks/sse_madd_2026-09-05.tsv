@@ -1,0 +1,101 @@
+# variance::sse — archmage PR #96 primitives (u8xN::abs_diff + i16xN::madd_adjacent)
+# See benchmarks/sse_madd_2026-09-05.meta for the full account.
+#
+# SECTION A — x86_64 frame instructions, r7900x, valgrind callgrind, photo_cid
+# 512x512 raw yuv, qp 40. Every row byte-identical to C (ident=Y, and each
+# instrumented run's own .obu cmp-clean against the uninstrumented pre-pass).
+section	build	preset	ident	obu_bytes	port_ir	c_ir	port_over_c
+A	nopatch	6	Y	45688	1511826501	705588199	2.143
+A	nopatch	2	Y	46462	45560540750	27248547155	1.672
+A	patchonly	6	Y	45688	1511715815	705588213	2.142
+A	patchonly	2	Y	46462	45561373399	27248547169	1.672
+A	cand	6	Y	45688	1492234213	705588241	2.115
+A	cand	2	Y	46462	45522215370	27248547197	1.671
+A	cand2	6	Y	45688	1482868791	705588500	2.102
+A	cand2	2	Y	46462	44686279137	27248547456	1.640
+#
+# SECTION B — x86_64 per-function SELF Ir (callgrind_annotate), same runs.
+# fn = the port's `variance::sse` family or C's spatial-full-distortion family.
+section	build	preset	fn	self_ir	pct_of_frame
+B	patchonly	6	svtav1_dsp::variance::__arcane_sse_impl_v3	51702880	3.42
+B	patchonly	6	svtav1_dsp::variance::sse	792584	0.05
+B	cand	6	svtav1_dsp::variance::__arcane_sse_impl_v3	32080468	2.15
+B	cand	6	svtav1_dsp::variance::sse	1158392	0.08
+B	cand2	6	svtav1_dsp::variance::__arcane_sse_impl_v3	18136580	1.22
+B	cand2	6	svtav1_dsp::variance::sse	1097424	0.07
+B	C	6	svt_spatial_full_distortion_kernel_avx2	7701126	1.09
+B	C	6	svt_spatial_full_distortion_kernel_facade	2757792	0.39
+B	patchonly	2	svtav1_dsp::variance::__arcane_sse_impl_v3	2357508132	5.17
+B	patchonly	2	svtav1_dsp::variance::sse	79363960	0.17
+B	cand	2	svtav1_dsp::variance::__arcane_sse_impl_v3	2283354636	5.02
+B	cand	2	svtav1_dsp::variance::sse	115993480	0.25
+B	cand2	2	svtav1_dsp::variance::__arcane_sse_impl_v3	1014769651	2.27
+B	cand2	2	svtav1_dsp::variance::sse	109888560	0.25
+B	C	2	svt_spatial_full_distortion_kernel_avx2	587406852	2.16
+B	C	2	svt_spatial_full_distortion_kernel_facade	279199300	1.02
+#
+# SECTION C — GOT-resolved static `panic_bounds_check` call-site census.
+# Naive `objdump | grep panic_bounds_check` reads ZERO on this PIE binary; the
+# calls are `call *0x..(%rip)` and the GOT slot must be resolved from its
+# R_X86_64_RELATIVE addend first.
+section	build	total_sites	optimize_b_closure0	cost_coeffs_txb_inner_closure0
+C	nopatch	2046	72	15
+C	patchonly	2046	72	15
+C	cand	2046	72	15
+C	cand2	2052	72	15
+#
+# SECTION D — aarch64 KERNEL BENCH (M4 Pro, benches/kernel_tiers.rs, three
+# alternating runs of each build, ns/call). BOTH aarch64 candidates were
+# REVERTED; the landed tree's aarch64 arms are source-identical to 7ec5b557.
+# D1 = hand NEON arm vs the all-generic #[magetypes] body.
+# D2 = hand NEON arm vs the same arm plus memory-staged row packing.
+section	comparison	case	arm	run1_ns	run2_ns	run3_ns	ci_lo_run1	ci_hi_run1
+D1	generic_vs_hand	sse_4x4	hand	13.0	12.9	12.6	12.8	13.1
+D1	generic_vs_hand	sse_4x4	generic	14.8	14.8	14.7	14.7	14.9
+D1	generic_vs_hand	sse_8x8	hand	37.8	37.7	34.1	37.2	38.5
+D1	generic_vs_hand	sse_8x8	generic	39.0	37.0	38.2	38.8	39.3
+D1	generic_vs_hand	sse_16x16	hand	21.3	22.1	20.2	20.3	22.4
+D1	generic_vs_hand	sse_16x16	generic	30.9	30.0	31.0	30.2	31.6
+D1	generic_vs_hand	sse_32x32	hand	59.0	62.5	56.2	56.3	62.2
+D1	generic_vs_hand	sse_32x32	generic	100.0	96.9	98.9	98.0	102.0
+D1	generic_vs_hand	sse_64x64	hand	186.0	200.0	189.0	181.0	192.0
+D1	generic_vs_hand	sse_64x64	generic	420.0	413.0	423.0	414.0	428.0
+D2	rowpack_vs_hand	sse_4x4	hand	12.5	12.6	13.6	12.4	12.7
+D2	rowpack_vs_hand	sse_4x4	staged	20.0	20.5	20.1	19.8	20.2
+D2	rowpack_vs_hand	sse_8x8	hand	37.3	36.7	37.4	37.0	37.5
+D2	rowpack_vs_hand	sse_8x8	staged	36.9	36.5	36.3	36.7	37.2
+D2	rowpack_vs_hand	sse_16x16	hand	20.4	21.1	21.1	19.7	21.1
+D2	rowpack_vs_hand	sse_16x16	staged	27.9	27.4	28.0	27.3	28.7
+D2	rowpack_vs_hand	sse_32x32	hand	58.2	59.1	58.9	55.7	61.4
+D2	rowpack_vs_hand	sse_32x32	staged	77.6	77.2	77.5	75.8	79.8
+D2	rowpack_vs_hand	sse_64x64	hand	194.0	183.0	196.0	187.0	202.0
+D2	rowpack_vs_hand	sse_64x64	staged	253.0	253.0	256.0	249.0	258.0
+#
+# SECTION E — memory, r7900x, tools/mem_bisect.sh round-robin, 0 refused.
+# heap = heaptrack peak LIVE malloc'd bytes (one encode, deterministic).
+# rss  = /usr/bin/time -v maximum RSS, 13 interleaved rounds.
+section	mode	arm	build	value	unit	min	max	n
+E	heap	inter	patchonly	101.78	MB	-	-	1
+E	heap	inter	cand2	101.78	MB	-	-	1
+E	heap	still	patchonly	61.07	MB	-	-	1
+E	heap	still	cand2	61.07	MB	-	-	1
+E	rss	inter	patchonly	104588	KiB	104288	105024	13
+E	rss	inter	cand2	104440	KiB	103916	104720	13
+E	rss	still	patchonly	69104	KiB	68680	69324	13
+E	rss	still	cand2	68772	KiB	68248	69176	13
+#
+# SECTION F — the LANDED tree (after the aarch64 revert) re-measured on x86,
+# to show the revert did not move the x86 result. Same driver, same cell.
+section	build	preset	ident	obu_bytes	port_ir	c_ir	port_over_c
+F	landed	6	Y	45688	1482868495	705588514	2.102
+F	landed	2	Y	46462	44686278675	27248547470	1.640
+#
+# SECTION G — wall clock, r7900x, tools/perf_ab.sh, 21 interleaved paired
+# rounds, neither side niced, quiet box (load 0.17, top process 3.2 % CPU),
+# every row ident=Y. The CONTROL is the base against a BYTE COPY of itself and
+# must be subtracted before reading the A/B.
+section	pair	size	preset	n	base_ms	cand_ms	ratio	p25	p75
+G	control_base_vs_bytecopy	512	2	21	2356.8485	2351.0355	0.9976	0.9900	1.0014
+G	control_base_vs_bytecopy	512	6	21	72.9112	72.9067	1.0009	0.9906	1.0059
+G	ab_base_vs_landed	512	2	21	2318.9838	2321.8873	0.9997	0.9964	1.0023
+G	ab_base_vs_landed	512	6	21	72.9835	72.3643	0.9911	0.9880	0.9938

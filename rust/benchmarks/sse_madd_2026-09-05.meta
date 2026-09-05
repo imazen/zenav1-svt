@@ -1,0 +1,443 @@
+`variance::sse` IS C's `madd_epi16` KERNEL **AND** C's ROW PACKING ON x86 NOW
+— THE KERNEL FAMILY'S SELF Ir FALLS **52,495,464 -> 19,234,004 (-63.4 %) AT p6
+AND 2,436,872,092 -> 1,124,658,211 (-53.9 %) AT p2**, i.e. **5.02x C's
+INSTRUCTIONS -> 1.84x** and **2.81x -> 1.30x**, AND THE WHOLE photo_cid FRAME
+FALLS **-1.916 % AT p6 AND -1.919 % AT p2** (1,511,826,501 -> 1,482,868,791 and
+45,560,540,750 -> 44,686,279,137; port/C 2.143 -> 2.102 and 1.672 -> 1.640),
+EVERY RUN BYTE-IDENTICAL — AND THE p6 WALL CLOCK IS **1.010x AGAINST ITS OWN
+SAME-BINARY CONTROL** ON A QUIET BOX, WHILE **p2 IS A WALL-CLOCK NULL DESPITE
+THE SAME -1.9 % OF INSTRUCTIONS** (§4b). AND ON aarch64 **BOTH** halves LOSE — the generic
+body by 1.45x-2.20x and the memory-staged row packing by 1.32x-1.57x — so the
+aarch64 arms here are source-identical to `main`'s and BOTH attempts are
+recorded as reverted.
+
+AND THE PREMISE THE CHUNK WAS DISPATCHED ON IS REFUTED: **archmage PR #95
+REMOVES ZERO BOUNDS CHECKS FROM THIS PORT.** The GOT-resolved
+`panic_bounds_check` census is **2,046 sites in all three builds** —
+archmage 0.9.28, the #95+#96 stack, and the stack plus this kernel — with
+`quant::optimize_b::{closure#0}` at exactly 72 and
+`coeff_rate::cost_coeffs_txb_inner::{closure#0}` at 15 in every one of them.
+The frame Ir agrees: the patch ALONE is 1,511,826,501 -> 1,511,715,815 at p6
+(-0.0073 %) and 45,560,540,750 -> 45,561,373,399 at p2 (**+**0.0018 %) — two
+opposite signs inside a hundredth of a percent, i.e. a null.
+
+date:   2026-09-05
+hosts:  x86_64 MEASUREMENT r7900x (AMD Ryzen 9 7900X, 24 threads,
+        x86_64-linux), valgrind-3.26.0 --tool=callgrind (Ir only),
+        binutils objdump/readelf/nm, rustc via ~/.cargo/bin.
+        aarch64 KERNEL BENCH this Mac (Apple M4 Pro), zenbench.
+        **SIBLING LANES WERE LIVE ON r7900x THROUGHOUT** — `zenav1-svt--v4x1`
+        running its gate chain and `zenav1-svt--lay1` running callgrind and
+        `perf_ab.sh`. Callgrind Ir is deterministic and contention-immune, so
+        every number below is an Ir or a static count. **NO x86 WALL CLOCK IS
+        CLAIMED HERE**: a wall-clock A/B was started and then KILLED, on
+        purpose, because `lay1` had a `perf_ab.sh` run in flight and a
+        microbench pinned to a core would have corrupted a sibling lane's
+        timing. See "NOT ESTABLISHED".
+base:   main@origin `7ec5b557` (the aarch64 4-wide chroma CDEF commit) — the
+        tip when the measurements were taken. **Every Ir and wall-clock pair
+        below is base-vs-candidate at THAT base, which is the correct isolation
+        for attributing THIS change and is why it is not re-taken after the
+        rebase.** The commit itself sits on `373243b77` (the sibling lane's
+        first-AVX-512-tier Wiener commit, which landed in between), so the
+        ABSOLUTE frame Ir on today's `main` is lower than the `nopatch` row
+        here for a reason that has nothing to do with this kernel. What was
+        re-run on the rebased tree is the GATE chain (§8), because that commit's
+        own `#[magetypes]` body changes codegen under the archmage bump.
+C:      reference/svt-av1 @ 3115c0c1, the PREBUILT oracle in the primary
+        r7900x checkout (`rust/tools/perf_c_encode/perf_c_encode`, 2026-09-03),
+        NOT rebuilt, passed to the driver as `CE=`.
+tools:  Ir — tools/perf_profile/callcount_cells.sh (unchanged), PRESETS="6 2"
+        QP=40, cell `photo_cid:raw:~/tmp/rc1/yuv/photo_cid.yuv:512:512`.
+        Kernel bench — crates/svtav1-dsp/benches/kernel_tiers.rs, which this
+        commit extends with `sse_4x4`, `sse_8x8` and `sse_32x32` cases
+        (it had only 16x16 and 64x64).
+        Bounds-check census — `nm` for the `core::panicking::panic_bounds_check`
+        vaddr, `readelf -r` for the R_X86_64_RELATIVE GOT slot carrying it,
+        then every `call *0x..(%rip)` in `objdump -d` whose annotated slot is
+        that one, attributed to the enclosing symbol.
+data:   benchmarks/sse_madd_2026-09-05.tsv.
+
+=================== 1. C'S SHAPE, WITH LINE NUMBERS ===================
+
+  ASM_AVX2/pic_operators_intrin_avx2.c:802  svt_spatial_full_distortion_kernel_avx2
+  ASM_AVX2/pic_operators_inline_avx2.h:111    spatial_full_distortion_kernel16_avx2_intrin
+  ASM_AVX2/pic_operators_inline_avx2.h:103    distortion_avx2_intrin
+
+and the kernel body (`pic_operators_inline_avx2.h:111-120`) is four
+instructions per sixteen samples:
+
+    in16 = _mm256_cvtepu8_epi16(input);   re16 = _mm256_cvtepu8_epi16(recon);
+    diff = _mm256_sub_epi16(in16, re16);
+    dist = _mm256_madd_epi16(diff, diff);   // d*d + d*d -> ONE i32 lane
+    sum  = _mm256_add_epi32(sum, dist);     // i32 LANES, widened only at the end
+
+Two further shapes worth naming, because the port copied neither. C's
+`leftover == 8` arm (`pic_operators_intrin_avx2.c:831-847`) packs **two rows**
+into one register — `_mm256_setr_m128i` of two `_mm_loadl_epi64` — and its
+`leftover == 4` arm (`:815-830`) does the same with two `_mm_cvtsi32_si128`.
+C never runs a narrow kernel on a narrow block; it makes the block wider.
+
+=================== 2. WHAT THE PORT WAS DOING ===================
+
+`crates/svtav1-dsp/src/variance.rs`'s x86 arm was the scalar double loop with a
+`u64` accumulator, left to auto-vectorise:
+
+    let diff = src[..] as i32 - ref_[..] as i32;
+    sse += (diff * diff) as u64;
+
+It DOES vectorise — but the `u64` accumulator forces every square into 64-bit
+lanes, so the same work costs four times the vector registers. That one line
+carried **21,363,780 Ir of `__arcane_sse_impl_v3`'s 27,915,788 self Ir** on
+photo_cid p6 in `benchmarks/stall_attrib_2026-09-05.meta` §5, which is how this
+chunk got its rank. It is the same class of finding as the CfL kernel's
+i32-vs-i16 rounding (`benchmarks/cfl_simd_kernel_2026-09-05.meta`): the port had
+the right algorithm at the wrong arithmetic width.
+
+=================== 3. WHAT LANDED ===================
+
+**Chunk 1 — C's `madd_epi16` shape as ONE `#[magetypes]` body**, on the
+primitives archmage PR #96 adds (the PR that closes issue #89, which this
+project filed): `u8x16::abs_diff` then `i16x8::madd_adjacent(self)`, summed in
+i32 lanes and widened to u64 only at a drain. `|a-b|` squares to the same
+integer as `a-b`, so `abs_diff` replaces C's two `cvtepu8` + `sub_epi16` and on
+aarch64 is the single `vabdq_u8` the hand arm already used.
+
+**Chunk 2 — C's row PACKING for widths 8 and 4**, in BOTH the generic body and
+the NEON arm. `16 / width` rows go into one 16-byte vector, so a 4x4 block is
+ONE fold instead of sixteen scalar iterations. The two 8- or 4-byte staging
+copies stand in for x86's `setr_m128i`: magetypes has no vector-concatenate.
+This is aimed at preset 2, where `sse` is 5.17 % of the frame's instructions
+against 3.42 % at p6 — because at p2 most calls are transform units of 4 or 8
+columns and a 16-lane kernel with a scalar tail degenerates to the scalar loop
+on all of them.
+
+The dev-only `[patch.crates-io]` pinning archmage/magetypes to PR #96's rev is
+in `rust/Cargo.toml` with a comment saying so. **A fresh clone needs network
+access to github.com/imazen/archmage**; when #96 merges and a release is cut,
+delete the block and bump the registry requirement.
+
+=================== 4. THE NUMBERS ===================
+
+x86_64 frame Ir, r7900x callgrind, photo_cid 512² qp 40, EVERY ROW ident=Y:
+
+  build        p6 Ir            port/C   p2 Ir             port/C
+  nopatch      1,511,826,501    2.143    45,560,540,750    1.672
+  patchonly    1,511,715,815    2.142    45,561,373,399    1.672
+  cand (ch.1)  1,492,234,213    2.115    45,522,215,370    1.671
+  cand2(ch.2)  1,482,868,791    2.102    44,686,279,137    1.640
+
+  patchonly -> cand   p6 **-19,481,602 Ir = -1.289 %**;  p2 -39,158,029 = -0.086 %
+  cand      -> cand2  p6 **-9,365,422 = -0.628 %**;   p2 **-835,936,233 = -1.836 %**
+
+  nopatch -> cand2 (what a reader of `main` sees) p6 **-28,957,710 = -1.916 %**,
+  p2 **-874,261,613 = -1.919 %**; port/C 2.143 -> 2.102 and 1.672 -> 1.640.
+
+  **The LANDED tree was re-measured after the aarch64 revert, and reproduces
+  it**: 1,482,868,495 at p6 (2.102) and 44,686,278,675 at p2 (1.640), ident=Y,
+  same obu bytes — 296 and 462 Ir from the `cand2` rows, i.e. harness-path
+  noise, not a code difference. (The revert touches only
+  `#[cfg(target_arch = "aarch64")]` bodies, which an x86 build does not
+  compile.) The census on that binary is 2,052, the same as `cand2`'s.
+
+The kernel itself, SELF Ir at p6 (`callgrind_annotate`), over 30,484 calls:
+
+  `svtav1_dsp::variance::__arcane_sse_impl_v3`
+      patchonly  51,702,880 (3.42 % of frame)  ->  cand 32,080,468 (2.15 %)
+      **-38.0 %**
+  plus the outer `variance::sse` dispatch frame 792,584 -> 1,158,392, so the
+  family is 52,495,464 -> 33,238,860, **-36.7 %**.
+  C's `svt_spatial_full_distortion_kernel_avx2` is 7,701,126 over 59,952 calls
+  (+ 2,757,792 in `svt_spatial_full_distortion_kernel_facade`).
+  **The call counts are NOT comparable** — the port's `sse` and C's kernel are
+  called at different granularities — so the ratio quoted is of TOTALS:
+  port/C for the family 52.50/10.46 = **5.02x -> 3.18x**.
+
+At p2 chunk 1 alone moves the same kernel 2,357,508,132 (5.17 %) ->
+2,283,354,636 (5.02 %), and the family 2,436,872,092 -> 2,399,348,116,
+**-1.54 %** — an order of magnitude less relief than p6 gets. **That gap IS the
+measurement that motivated chunk 2**, and chunk 2 closes it:
+
+  `variance::sse` family self Ir, base -> chunk 1 -> chunk 2, against C's
+  (`svt_spatial_full_distortion_kernel_avx2` + `_facade`):
+
+    cell  base            chunk 1         chunk 2         C             port/C
+    p6    52,495,464      33,238,860      **19,234,004**  10,458,918    5.02x -> 3.18x -> **1.84x**
+    p2    2,436,872,092   2,399,348,116   **1,124,658,211** 866,606,152 2.81x -> 2.77x -> **1.30x**
+
+  i.e. **-63.4 % at p6 and -53.9 % at p2** from base, and the kernel goes from
+  five times C's instructions to under twice at p6 and 1.3x at p2.
+
+=================== 4b. WALL CLOCK, WITH ITS OWN SAME-BINARY CONTROL ===================
+
+Run on r7900x only after the box was VERIFIABLY quiet — the script's own
+`quiet.txt` records load 0.17 (1-minute) with the top process at 3.2 % CPU, and
+a second stamp at the end (load 1.02, i.e. the runs themselves). 21 interleaved
+randomised-order paired rounds per row, one untimed warmup per sample, NEITHER
+SIDE NICED, every row `ident=Y`. `tools/perf_ab.sh`, `photo_cid` 512² raw yuv,
+qp 40.
+
+  CONTROL — `perf_encode.patchonly` against a BYTE COPY of itself:
+    512 p2  ratio 0.9976   p25 0.9900   p75 1.0014
+    512 p6  ratio 1.0009   p25 0.9906   p75 1.0059
+
+  A/B — the same base against the LANDED binary:
+    512 p2  ratio 0.9997   p25 0.9964   p75 1.0023
+    512 p6  ratio 0.9911   p25 0.9880   p75 0.9938
+
+**p6 is a real gain and is reported as 1.010x.** Corrected against its control
+(0.9911 / 1.0009) the candidate is 0.9902, i.e. **1.010x**, and the A/B's WHOLE
+interquartile span (0.9880-0.9938) sits below the control's median. **The spans
+are NOT disjoint** — they share [0.9906, 0.9938] — so this is "medians
+separated by 0.98 % with the candidate's box below the control's centre", not
+"disjoint intervals", and it is written that way on purpose.
+
+**p2 IS A NULL, and it disagrees with its own instruction count.** The A/B reads
+0.9997 against a control of 0.9976; corrected that is 1.0021, i.e. no gain and
+possibly a hair worse — against **-1.919 % of the frame's INSTRUCTIONS** at the
+same preset. That is reported rather than explained: the honest statement is
+that at p2 the removed instructions did not convert into time on this box, and
+nothing here measures why. It is also the reason the control matters — without
+it the p2 row (0.9997) would have read as a small win and the p6 row (0.9911)
+as a slightly smaller one than it is.
+
+=================== 5. aarch64: BOTH CHANGES MEASURED, BOTH REVERTED ===================
+
+This is the result the campaign's rule ("measure before assuming a generic body
+is as fast as the hand arm") exists for, and it went the way the rule warns —
+TWICE. **The aarch64 arms in this commit are source-identical to `main`'s**
+(asserted mechanically: the `sse_impl_neon` and `sse_impl_scalar` bodies were
+diffed byte-for-byte against `7ec5b557`), so no aarch64 A/B of the LANDED tree
+is needed or claimed. What follows is the record of the two things that were
+tried and thrown away.
+
+**5a. The generic `#[magetypes]` body is 1.45x-2.20x SLOWER than the hand NEON
+arm.** magetypes lowers `i16x8::madd_adjacent` on aarch64 to
+`vpaddq_s32(vmull_s16(lo, lo), vmull_high_s16(a, a))` — THREE instructions per
+eight lanes — on top of two `vmovl_u8` widenings. The hand arm's
+`vmull_u8` + `vpadalq_u16` pair squares and widens in TWO instructions with no
+separate widening step at all. Eleven vector instructions per sixteen bytes
+against five.
+
+M4 Pro, `benches/kernel_tiers.rs`, THREE alternating runs of each build, mean
+ns/call with the 95 % CI of the first run shown:
+
+  case        hand arm (3 runs)           all-generic (3 runs)        ratio
+  sse_16x16   21.3 / 22.1 / 20.2          30.9 / 30.0 / 31.0          1.45x
+              [19.6-23.6]                 [29.6-31.7]
+  sse_32x32   59.0 / 62.5 / 56.2          100.0 / 96.9 / 98.9         1.65x
+  sse_64x64   186  / 200  / 189           420  / 413  / 423           2.20x
+  sse_8x8     37.8 / 37.7 / 34.1          39.0 / 37.0 / 38.2          (overlap)
+  sse_4x4     13.0 / 12.9 / 12.6          14.8 / 14.8 / 14.7          1.15x
+
+**5b. C's row PACKING, staged through a `[u8; 16]`, is 1.32x-1.57x SLOWER here
+— and it drags the UNTOUCHED `width >= 16` path down with it.** The wide loop's
+source did not change at all between these two builds; only the two new
+narrow-width branches were added around it, so the 16/32/64 rows are a
+code-shape effect, not an arithmetic one. Same harness, same three-alternating-
+runs protocol:
+
+  case        hand arm (base)             + staged row packing        ratio
+  sse_4x4     12.5 / 12.6 / 13.6 [12.4-12.7]                    20.0 / 20.5 / 20.1 [19.8-20.2]                    **1.57x**
+  sse_8x8     37.3 / 36.7 / 37.4 [37.0-37.5]                    36.9 / 36.5 / 36.3 [36.7-37.2]                    0.98x (a null)
+  sse_16x16   20.4 / 21.1 / 21.1 [19.7-21.1]                     27.9 / 27.4 / 28.0 [27.3-28.7]                     **1.33x**
+  sse_32x32   58.2 / 59.1 / 58.9 [55.7-61.4]                     77.6 / 77.2 / 77.5 [75.8-79.8]                     **1.32x**
+  sse_64x64   194 / 183 / 196 [187-202]                     253 / 253 / 256 [249-258]                     **1.33x**
+
+**The open aarch64 item, priced and named:** the staging copies are what lost.
+C does not stage — its `leftover == 8` arm is `_mm256_setr_m128i` of two
+`_mm_loadl_epi64`, i.e. a REGISTER concatenate, and aarch64 spells that
+`vcombine_u8(vld1_u8(row0), vld1_u8(row1))` with no memory round trip at all.
+That form was NOT tried and is the next thing to bench here. On x86 the staged
+form is a large Ir win and stays; magetypes has no vector-concatenate, so the
+generic body has to stage.
+
+So the generic route is taken on x86/wasm/scalar, where it replaces a
+`u64`-accumulator scalar loop and wins, and NOT on aarch64, where it would
+replace a kernel that is already better than what magetypes can emit.
+**Reported on archmage#96.**
+
+=================== 6. WHAT WAS FED BACK TO archmage#96 ===================
+
+Three findings, all from this workspace:
+
+1. **`i16xN::madd_adjacent` on NEON costs three instructions where the
+   equivalent widening-accumulate costs two.** Numbers in §5.
+2. **`u8xN::sum_abs_diff` fully REDUCES per call, so it cannot express a SAD
+   accumulation loop.** The x86 backend is
+   `_mm256_sad_epu8` then `_mm_add_epi64` + `_mm_srli_si128` + `_mm_cvtsi128_si64`
+   (`magetypes/src/simd/impls/x86_v3.rs:4815`), and NEON is `vaddlvq_u8(vabdq_u8(..))`
+   (`impls/arm_neon.rs:4527`) — a cross-lane reduction per 16 or 32 bytes. The
+   port's `me_sad::block_sad_v3` and `block_sad_arm_v2` accumulate in
+   `psadbw` / `vdotq_u32` lanes across the WHOLE block and reduce once, which
+   the fused API cannot express. `me_sad` is therefore LEFT ALONE by this chunk,
+   and the missing primitive is an ACCUMULATING form
+   (`sad_accumulate(rhs, acc) -> u64xN`). **This is an instruction-sequence
+   argument from the generated backends, NOT a wall-clock measurement.**
+3. **There is no lane INTERLEAVE (`unpack_low` / `unpack_high` / `zip`) and no
+   byte shuffle**, so C's two other pairwise shapes cannot be built at all:
+   the Wiener vertical kernel's `_mm256_unpacklo_epi16` before `madd_epi16`
+   (`ASM_AVX2/wiener_convolve_avx2.h:162`) and the horizontal kernel's
+   `_mm256_shuffle_epi8` before `maddubs_epi16`. `madd_adjacent` is only half
+   of what those need.
+
+=================== 7. THE #95 QUESTION, ANSWERED ===================
+
+The dispatch brief expected PR #95 ("removes redundant indexing assertions and
+proves bounds-check elimination") to bear on the port's measured 2,042
+`panic_bounds_check` sites, 72 of them in `quant::optimize_b::{closure#0}`.
+**It does not, and the reason is structural:** #95 removes assertions from
+magetypes' GENERATED indexing accessors, and at `7ec5b557` the port had **zero
+magetypes generic-type call sites** — `grep -rn 'magetypes::' crates/` on the
+base tree returns nothing but doc-comment prose in `residual.rs`, `me_sad.rs`
+and `intra_pred.rs`. There was no site for #95 to act on.
+
+Measured both ways:
+
+  * the GOT-resolved census is **2,046** total in `perf_encode` for archmage
+    0.9.28, for the #95+#96 stack, and for the stack plus this kernel, with the
+    same per-function rows: `optimize_b::{closure#0}` 72,
+    `inv_txfm::idct64` 69, `fwd_txfm::fdct64` 66, `idct32` 36, `fdct32` 34,
+    `cost_coeffs_txb_inner::{closure#0}` 15. (This REPRODUCES
+    `stall_attrib_2026-09-05`'s method and BOTH of its named per-function
+    counts exactly. Its TOTAL was 2,042 against 2,046 here — four sites, and
+    the two records are at different commits, so the totals are not expected to
+    match to the unit; the per-function rows are the ones the argument rests
+    on.)
+  * the frame Ir for the patch alone is +-0.007 % with OPPOSITE SIGNS at the
+    two presets (§4), i.e. inside the noise floor of nothing changing.
+
+  **This commit ADDS six**, 2,046 -> 2,052: the row-packing staging loops
+  (`sa[k * width..(k + 1) * width].copy_from_slice(..)`) index a `[u8; 16]` by a
+  runtime product. They are off the 16-wide path entirely and the kernel is
+  38 %/63 % cheaper anyway, so they are recorded rather than chased;
+  `optimize_b::{closure#0}` is still exactly 72 and
+  `cost_coeffs_txb_inner::{closure#0}` still 15.
+
+So `optimize_b`'s 72 checks are plain Rust slice indexing in the port's own
+code. Closing them is the documented fixed-size-array boundary
+(`try_into::<&[T; N]>()` once), which is a `quant.rs` refactor and NOT something
+an archmage bump can deliver. **A NOTE FOR WHOEVER TAKES IT: a naive
+`objdump | grep panic_bounds_check` reads ZERO on this binary** — it is a PIE,
+the calls are `call *0x..(%rip)` through a GOT slot, and the slot must be
+resolved from the `R_X86_64_RELATIVE` addend before anything can be counted.
+`stall_attrib` said so; this record confirms it by getting 0 the naive way and
+2,046 the right way.
+
+=================== 8. GATES ===================
+
+**THE GATES BELOW ARE FROM THE MERGED TREE, AND THE MERGE MATTERS.** This
+commit was rebased onto `373243b77` — the sibling lane's "port's FIRST AVX-512
+tier" commit, which lands a `#[magetypes(define(i32x16), v4(cfg(avx512)), v3,
+neon, wasm128, scalar)]` Wiener convolve and turns `svtav1-dsp`'s `avx512`
+feature DEFAULT-ON. That commit was gated against **archmage 0.9.28**; this one
+moves the whole workspace to the **#95+#96 git rev**, so its generic body's
+codegen changes on BOTH ISAs, not just mine. The gate chain was therefore run
+AGAIN, in full, on the rebased tree on both hosts — the numbers below are from
+that second run, not from the pre-rebase one. (The pre-rebase chain was also
+fully green; it is simply not the tree that ships.)
+
+(filled in from the run logs; both ISAs, this tree)
+
+x86_64 (r7900x, the REBASED tree):
+  `cargo nextest run --workspace` **2557 / 2557** (0 skipped)
+  `identity_full_8bit.sh` **1100 / 1100 byte-identical** (+0 pinned, 0 harness
+    errors)
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open
+    (0 now identical), 0 crashed, 0 harness errors
+  `video_key_matrix.sh` **59 / 60** — the ONE diff is the known-open
+    `gradient p0` (C 1341 B, port 1342 B), unmoved
+  `screen_ibc_byte_gate.sh` **152 / 152** byte-identical, 0 diverging, 0 errors
+    (port IBC blocks 41,559; palette blocks 27,402; recon legs 0 bad, 2 skipped)
+  `screen_palette_gate.sh` **50 / 50** byte-identical (38 palette-coding cells)
+  `fctx_gate.sh` **PASS**, 96 / 96 shared fields identical on both frames
+  `inter_decode_gate.sh` **PASS** 5 / 5; `inter_decode_census.sh` **PASS**
+    96 streams / 96 decode / 0 rejected
+  `inter_completion_scan.sh` with `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED,
+    0 CRASH, 0 other
+  the six still reference cells, at their pinned sizes: gradient 64x64 q40 p6
+    **290 B**, q20 p3 **839 B**, q55 p0 **63 B**, 128x128 q55 p8 **171 B**,
+    64x64 q30 p13 **580 B**, screenrep 64x64 q35 p4 **693 B** — 6 OK, 0 BAD
+
+aarch64 (this Mac, M4 Pro, /opt/homebrew/bin/bash, one harness at a time; the
+REBASED tree):
+  `cargo nextest run --workspace` **2547 / 2547** (0 skipped)
+  `identity_full_8bit.sh` **1100 / 1100 byte-identical** (+0 pinned, 0 harness
+    errors)
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open
+    (0 now identical), 0 crashed, 0 harness errors
+  `video_key_matrix.sh` **59 / 60** — the same known-open `gradient p0`
+    (C 1341 B, port 1342 B) x86 reports, unmoved
+  `screen_ibc_byte_gate.sh` **152 / 152** byte-identical, 0 diverging, 0 errors
+    (port IBC blocks 41,559; palette blocks 27,402; recon legs 0 bad, 2 skipped)
+  `screen_palette_gate.sh` **50 / 50** byte-identical (38 palette-coding cells)
+  `fctx_gate.sh` **PASS**, 96 / 96 shared fields identical on both frames
+  `inter_decode_gate.sh` **PASS** 5 / 5; `inter_decode_census.sh` **PASS**
+    96 streams / 96 decode / 0 rejected
+  `inter_completion_scan.sh` with `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED, 0 CRASH, 0 other
+  the six still reference cells at their pinned sizes: gradient 64x64 q40 p6
+    **290 B**, q20 p3 **839 B**, q55 p0 **63 B**, 128x128 q55 p8 **171 B**,
+    64x64 q30 p13 **580 B**, screenrep 64x64 q35 p4 **693 B** — 6 OK, 0 BAD
+  plus, on the exact committed tree: `cargo clippy --workspace --all-targets`
+    clean of errors and of every warning in the changed files (the two
+    `type_complexity` ones the new test raised are fixed with local aliases),
+    `rustfmt --edition 2024 --check` clean, `cargo test --doc -p zenav1-svt-dsp`
+    0 tests / ok.
+
+A HARNESS TRAP THIS CHUNK PAID FOR, now written into `WORKING-ON-THIS.md` §5:
+**a `jj workspace` does not carry the C oracle, and the failure mode is a green
+-looking gate that reports a LOWER total.** `capture_c_trace` is a wrapper that
+always runs `build.sh` first, and `build.sh` needs BOTH `reference/svt-av1`
+(the submodule; a fresh workspace has an empty directory there because
+`jj restore` cannot recreate a gitlink) and the gitignored prebuilt
+`capture_c_trace.nowrap.bin`. Without them every cell fails as
+`[C oracle failed]` — `regression_spotcheck` read **39 / 104** with 65 cells
+listed under that string, which is NOT a port defect and looks nothing like
+one until you read the bracketed reason. Symlinking `reference/svt-av1` at the
+primary checkout and copying the prebuilt driver in took it straight back to
+**104 / 104** with no code change. Same shape as the corpus-root trap: **when a
+gate reports a smaller total than it does elsewhere, that difference IS the
+finding.**
+
+
+=================== 9. MEMORY (CPU was the priority; report it anyway) ===================
+
+Nothing here allocates: the kernel's only new storage is two `[u8; 16]`
+staging arrays on the stack. Measured anyway, with `tools/mem_bisect.sh`
+round-robin so box drift lands on both binaries equally, 0 refused rows, both
+sides producing the same `.obu` (139,761 B inter / 70,893 B still).
+
+x86_64 r7900x, peak HEAP (heaptrack, LIVE malloc'd bytes), one encode each:
+    2048 inter  101.78M -> 101.78M   **UNCHANGED**
+    2048 still   61.07M ->  61.07M   **UNCHANGED**
+x86_64 r7900x, peak RSS (`/usr/bin/time -v`), 13 round-robin rounds each:
+    2048 inter  median 104,588 -> 104,440 KiB (min 104,288 -> 103,916,
+                max 105,024 -> 104,720) — distributions overlap completely.
+                **A NULL** (the candidate's median is 0.14 % LOWER).
+    2048 still  median  69,104 ->  68,772 KiB (min 68,680 -> 68,248,
+                max 69,324 -> 69,176) — overlapping. **A NULL.**
+
+aarch64: **not measured, and not needed.** The aarch64 arms in this commit are
+source-identical to `7ec5b557`'s (§5), so the 2048-inter arm the memory ceiling
+is stated against is not touched by a single instruction. Nothing is pushed
+anywhere near 1.20x.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: C's kernel shape with line numbers; the x86 frame and per-function
+Ir on photo_cid at p6 and p2, byte-identical on every run; that the archmage
+patch ALONE is an Ir null and a bounds-check null; the GOT-resolved census and
+its per-function rows; that the generic body is 1.45x-2.20x slower than the
+hand NEON arm on an M4 Pro over three alternating runs with disjoint intervals.
+
+Also ESTABLISHED, after the box came free: the x86 wall clock at p6, **1.010x
+against its own same-binary control** on a verifiably quiet box (§4b).
+
+NOT ESTABLISHED: **any wall-clock gain at p2** — that row is a NULL against its
+control despite -1.919 % of the frame's instructions, and no mechanism for the
+disagreement is offered. Also not established: any preset but 6
+and 2, any qp but 40, any content but photo_cid, 10-bit (`sse` here is the
+8-bit entry; the hbd path is untouched), and whether the row-packed widths 8/4
+help at p6 as much as they help at p2.

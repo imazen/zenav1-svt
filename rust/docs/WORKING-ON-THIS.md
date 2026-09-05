@@ -570,6 +570,74 @@ BOTH generations before writing a number for "AVX-512", and when only one is
 reachable, say **"measured on Zen 4, not measured on Zen 5"** rather than
 generalising.
 
+**"WRITE IT ONCE AS A `#[magetypes]` BODY AND LET THE MACRO GENERATE EVERY ARM"
+IS NOT FREE, AND THE COUNTEREXAMPLE IS MEASURED.** MEASURED 2026-09-05
+(`benchmarks/sse_madd_2026-09-05.{tsv,meta}` §5): `variance::sse` written as ONE
+generic body on archmage PR #96's `u8xN::abs_diff` + `i16xN::madd_adjacent` is a
+LARGE win on x86 — the kernel family goes 5.02x C's instructions -> 1.84x at p6
+and 2.81x -> 1.30x at p2 — and on aarch64 the SAME body is **1.45x-2.20x SLOWER
+than the hand `vabdq_u8` + `vmull_u8` + `vpadalq_u16` arm it would have
+replaced** (M4 Pro, `benches/kernel_tiers.rs`, three alternating runs of each
+build, every 16x16 / 32x32 / 64x64 interval disjoint: 20.2-22.1 ns against
+30.0-31.0, 56.2-62.5 against 96.9-100.0, 186-200 against 413-423). The
+mechanism is in the lowering, not in the algorithm: magetypes emits
+`madd_adjacent` on NEON as `vpaddq_s32(vmull_s16(lo,lo), vmull_high_s16(a,a))`
+— three instructions per eight lanes — on top of two `vmovl_u8` widenings,
+where `vmull_u8` + `vpadalq_u16` squares AND widens in two with no widening
+step. Eleven vector instructions per sixteen bytes against five.
+**A second, independent instance in the same chunk:** C's row PACKING for
+widths 8 and 4 (`_mm256_setr_m128i` of two narrow loads) is a large Ir win on
+x86 and **1.32x-1.57x SLOWER on aarch64** when the rows are staged through a
+`[u8; 16]` — and it drags the UNTOUCHED `width >= 16` path down with it, a
+code-shape effect on a loop whose source did not change.
+Both were REVERTED; **the aarch64 arms in that commit are byte-for-byte the
+ones `main` already had**, and the generic body is `#[cfg(not(target_arch =
+"aarch64"))]`. The rule this section wants you to carry away: **a primitive
+becoming available is not a reason to collapse a hand arm — it is a reason to
+BENCH the collapse, per ISA.** The `kernel_tiers` bench is the instrument; a
+whole-frame A/B cannot resolve a kernel this size.
+
+**A MEASURED NEGATIVE ON THE OTHER HALF OF THAT ARCHMAGE STACK, so nobody
+re-runs the experiment: PR #95 ("removes redundant indexing assertions and
+proves bounds-check elimination") removes ZERO bounds checks from this port.**
+MEASURED 2026-09-05, same record §7: the GOT-resolved `panic_bounds_check`
+census is **2,046 sites on archmage 0.9.28 and 2,046 on the #95+#96 stack**,
+with `quant::optimize_b::{closure#0}` at exactly **72** and
+`coeff_rate::cost_coeffs_txb_inner::{closure#0}` at **15** in both — the two
+counts `stall_attrib_2026-09-05` §6 item 9 named — and the frame Ir for the
+patch alone moves +-0.007 % with OPPOSITE SIGNS at p6 and p2. The reason is
+structural, and it is the part worth remembering: **#95 removes assertions from
+magetypes' GENERATED indexing accessors, and before that commit the port had no
+magetypes generic-type call site at all** (`grep -rn 'magetypes::' crates/`
+returned only doc-comment prose). Item 9's 72 checks are plain Rust slice
+indexing in `quant.rs` and close only with the fixed-size-array boundary
+(`try_into::<&[T; N]>()` once) — no archmage bump will do it.
+**And the census itself has a trap: a naive `objdump -d | grep
+panic_bounds_check` reads ZERO on this binary.** It is a PIE, the calls are
+`call *0x..(%rip)`, and the GOT slot must be resolved from its
+`R_X86_64_RELATIVE` addend before anything can be counted. Believing the naive
+zero would have "proved" the port has no bounds checks at all.
+
+**A FRESH `jj workspace` DOES NOT CARRY THE C ORACLE, AND THE FAILURE LOOKS
+LIKE 65 PORT REGRESSIONS.** MEASURED 2026-09-05: `regression_spotcheck.sh` read
+**39 / 104** in a new workspace, with 65 cells listed as
+`<label> [C oracle failed]`. Nothing was wrong with the port. `capture_c_trace`
+is a wrapper that ALWAYS runs `build.sh` first (deliberately — see its header),
+and `build.sh` needs two things a fresh workspace does not have: the
+`reference/svt-av1` SUBMODULE (a workspace gets an empty directory there, and
+`jj restore` cannot recreate a gitlink — it only restores the entry, so the
+directory stays empty) and the gitignored prebuilt
+`rust/tools/capture_c_trace/capture_c_trace.nowrap.bin`. Symlinking
+`reference/svt-av1` at the primary checkout's copy and copying the prebuilt
+driver in took the same tree straight back to **104 / 104** with no code change.
+Two lessons, both already in this section in other costumes: **read the
+bracketed REASON on a failed cell before believing the count** (`[C oracle
+failed]` and `[C=NNNB port=MMMB]` are different worlds), and **when a gate
+reports a smaller total than it does elsewhere, that difference IS the
+finding**. Set up a new workspace with `reference/svt-av1`, `Bin`,
+`cbuild-static` and the prebuilt `capture_c_trace.nowrap.bin` BEFORE running
+any byte gate in it.
+
 **`tools/perf_ab.sh` DOES NOT READ 1.000 ON NO CHANGE — run a base-vs-base
 control before believing any sub-1 % ratio.** MEASURED 2026-09-05
 (`benchmarks/entropy_coder_cshape_2026-09-05`): `perf_ab.sh base base2` with

@@ -162,7 +162,14 @@ fn bench_dsp(suite: &mut Suite) {
     }
     pair!("variance_16x16", variance::variance(src, STRIDE, 16, 16));
     pair!("variance_64x64", variance::variance(src, STRIDE, 64, 64));
+    // 4x4 and 8x8 are BELOW the vector body's 16-lane step, so they measure
+    // the scalar tail and the per-call overhead, not the kernel; they are here
+    // because the transform sizes MD spends most of its calls on are small and
+    // a kernel win at 16/64 that cost anything at 4/8 would be a net loss.
+    pair!("sse_4x4", variance::sse(src, STRIDE, rf, STRIDE, 4, 4));
+    pair!("sse_8x8", variance::sse(src, STRIDE, rf, STRIDE, 8, 8));
     pair!("sse_16x16", variance::sse(src, STRIDE, rf, STRIDE, 16, 16));
+    pair!("sse_32x32", variance::sse(src, STRIDE, rf, STRIDE, 32, 32));
     pair!("sse_64x64", variance::sse(src, STRIDE, rf, STRIDE, 64, 64));
 
     // Intra prediction is THE hot path in an all-intra (AVIF) encoder.

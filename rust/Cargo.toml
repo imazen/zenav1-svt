@@ -64,3 +64,40 @@ too_many_arguments = "allow"
 needless_range_loop = "allow"
 # OBU header tests use binary literals for readability
 unusual_byte_groupings = "allow"
+
+# --- DEV-ONLY, NOT FOR RELEASE -------------------------------------------
+# archmage/magetypes PRs #95 + #96 (imazen/archmage), unmerged as of
+# 2026-09-05. #96 adds the integer primitives this port's kernels were
+# hand-writing per ISA around (`i16xN::madd_adjacent` / `msub_adjacent`,
+# `i16xN::abs_diff`, `u8xN::abs_diff` / `reduce_add_u32` / `sum_abs_diff`);
+# #95 underneath it removes the generated indexing assertions.
+# WHAT DEPENDS ON IT: `crates/svtav1-dsp/src/variance.rs`'s `sse_impl`
+# `#[magetypes]` body (x86 / wasm / scalar only) calls `u8xN::abs_diff` and
+# `i16xN::madd_adjacent`, which 0.9.28 does not have — removing this block
+# stops that file compiling. Nothing else in the tree uses the new surface,
+# and #95's half of the stack was MEASURED as a null here (zero bounds checks
+# removed, +-0.007 % frame Ir): `benchmarks/sse_madd_2026-09-05.meta` §7.
+# STACKED ABOVE IT: archmage #97 ("Complete the W512 byte-to-signed-dot path
+# with checked bitcasts", branch `feat/w512-signed-bitcasts`, head
+# `2524b0be162ca04ceb9a39906e19fe9c9255657e`) is stacked ON #96, so THAT rev
+# carries both PRs and it is the one to move to when this repo needs #97's
+# `i16x32 <-> u16x32` bitcasts. This block deliberately stays at `cc24398c`:
+# `variance.rs` uses only #96's `u8xN::abs_diff` / `i16xN::madd_adjacent`, and
+# bumping is a separate, separately-gated change. **When the block is deleted,
+# both PRs go with it** — do not assume #96 alone is what shipped.
+#
+# A fresh clone needs NETWORK ACCESS TO github.com/imazen/archmage for this
+# rev, and so does CI.
+#
+# RISK, NAMED: this is a rev on an UNMERGED PR BRANCH
+# (`feat/integer-pairwise-absdiff`), which its author can still rewrite. If that
+# branch is force-pushed or deleted before #96 merges, `cc24398c` can be
+# garbage-collected and THIS REPO STOPS BUILDING FOR EVERYONE. That is the cost
+# of the block and the reason it is temporary.
+#
+# When #96 merges and a 0.9.30 (or later) is published, DELETE this block and
+# bump the registry requirement in [workspace.dependencies].
+[patch.crates-io]
+archmage = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }
+archmage-macros = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }
+magetypes = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }

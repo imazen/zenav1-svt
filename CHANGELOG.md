@@ -55,6 +55,45 @@ Crates are not published to crates.io yet — depend by git.
   break only for out-of-crate struct literals — there are none.
 
 
+### Changed
+- **`variance::sse` is C's `madd_epi16` kernel on x86 — 5.02x C's instructions
+  -> 1.84x at preset 6 and 2.81x -> 1.30x at preset 2, whole frame -1.92 % at
+  both (2026-09-05).** Record `benchmarks/sse_madd_2026-09-05.{tsv,meta}`. The
+  x86 arm was the scalar double loop with a `u64` accumulator, which
+  auto-vectorises but forces every square into 64-bit lanes; C's
+  `svt_spatial_full_distortion_kernel_avx2` keeps them in i32 lanes
+  (`cvtepu8_epi16` / `sub_epi16` / `madd_epi16(d, d)` / `add_epi32`,
+  `ASM_AVX2/pic_operators_inline_avx2.h:111`). It is now one `#[magetypes]`
+  body on archmage PR #96's `u8xN::abs_diff` + `i16xN::madd_adjacent`, plus C's
+  row PACKING for widths 8 and 4 (`pic_operators_intrin_avx2.c:815-847`), which
+  is what preset 2 needed — `sse` was 5.17 % of the p2 frame's instructions
+  against 3.42 % at p6 because most p2 calls are 4- or 8-column transform
+  units. Kernel self Ir 52,495,464 -> 19,234,004 at p6 and 2,436,872,092 ->
+  1,124,658,211 at p2, every run byte-identical to C. **Wall clock, 21
+  interleaved paired rounds with its own same-binary control on a quiet box:
+  p6 0.9911 against a control of 1.0009, corrected 1.010x; p2 is a NULL (0.9997
+  against 0.9976) despite the same -1.9 % of instructions, which is reported
+  rather than explained.** **aarch64 is UNCHANGED,
+  source-identical to before**: the generic body measured 1.45x-2.20x SLOWER
+  than the hand NEON arm there and the memory-staged row packing 1.32x-1.57x
+  slower, both reverted. **`rust/Cargo.toml` carries a DEV-ONLY
+  `[patch.crates-io]`** pinning archmage/magetypes to `imazen/archmage`
+  `cc24398c` (PRs #95 + #96, unmerged) — a fresh clone and CI need network
+  access to that rev until #96 ships.
+- **archmage PR #95 removes ZERO bounds checks from this port, measured
+  (2026-09-05).** The GOT-resolved `panic_bounds_check` census is 2,046 sites
+  on archmage 0.9.28 and on the #95+#96 stack alike, with
+  `quant::optimize_b::{closure#0}` at 72 and
+  `coeff_rate::cost_coeffs_txb_inner::{closure#0}` at 15 in both, and the frame
+  Ir for the patch alone moves +-0.007 % with opposite signs at the two
+  presets. The port had no magetypes generic-type call site before this change,
+  so #95 had nothing to act on; `optimize_b`'s 72 are plain slice indexing and
+  need the fixed-size-array boundary in `quant.rs`. Also recorded: a naive
+  `objdump | grep panic_bounds_check` reads ZERO on this PIE binary — the calls
+  go through a GOT slot that must be resolved from its `R_X86_64_RELATIVE`
+  addend first.
+
+
 ### Fixed
 - **Four stale doc claims a new session would have acted on.**
   `WORKING-ON-THIS.md` §2 said `identity_full_8bit` is 1036 cells (it is 1100,

@@ -143,13 +143,22 @@ fn residual_i32_impl_neon(
 ///
 /// # Why this is a hand-written per-ISA arm and not `#[magetypes]`
 ///
-/// It needs a `u8x16 -> i16x8` WIDENING subtract, and magetypes 0.9.28 has no
-/// integer widening in either direction — verified by source read of the local
-/// checkout (`~/work/archmage/magetypes`):
-/// `src/simd/backends/convert_int.rs` carries only same-width bitcasts and
-/// `src/simd/generic/cross_width.rs` is f32-only. Same gap that keeps
-/// [`residual_i32`], `crate::me_sad` and the directional-intra arms
-/// hand-written.
+/// It needs a `u8x16 -> i16x8` WIDENING subtract. **This paragraph's original
+/// reason is STALE and the claim is now only that the generic body is
+/// UNMEASURED here.** It used to read "magetypes 0.9.28 has no integer widening
+/// in either direction"; that was true of the pinned version, and archmage
+/// PR #74 (`widen_low` / `widen_high` / `narrow_saturating`) plus PR #96
+/// (`abs_diff`, `madd_adjacent`) have since supplied every primitive this arm
+/// needs — `crates/svtav1-dsp/src/variance.rs` now carries a real
+/// `#[magetypes]` body against them.
+///
+/// What the same measurement showed is the reason to bench before collapsing
+/// this one: in `variance::sse` the generic body is **1.45x-2.20x SLOWER than
+/// the hand NEON arm** on an M4 Pro and a clear win on x86, so the answer is
+/// per-ISA and cannot be assumed
+/// (`benchmarks/sse_madd_2026-09-05.meta` §5). Same standing question for
+/// [`residual_i32`], `crate::me_sad` (which has its own, different and still
+/// live, reason — see that module's header) and the directional-intra arms.
 pub fn residual_i16(
     src: &[u8],
     src_stride: usize,

@@ -1,5 +1,65 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **`variance::sse` IS C's `madd_epi16` KERNEL ON x86 NOW — 5.02x C's
+> INSTRUCTIONS -> **1.84x** AT p6 AND 2.81x -> **1.30x** AT p2, WITH THE WHOLE
+> photo_cid FRAME **-1.92 % AT BOTH PRESETS**, BYTE-IDENTICAL (2026-09-05).**
+> Record `benchmarks/sse_madd_2026-09-05.{tsv,meta}`. The x86 arm was the
+> scalar double loop with a `u64` accumulator left to auto-vectorise: it DOES
+> vectorise, but the `u64` accumulator forces every square into 64-bit lanes,
+> which is why `stall_attrib_2026-09-05` §5 found 21,363,780 Ir of
+> `__arcane_sse_impl_v3`'s 27,915,788 self Ir on ONE source line. C's
+> `svt_spatial_full_distortion_kernel_avx2`
+> (`ASM_AVX2/pic_operators_intrin_avx2.c:802` ->
+> `pic_operators_inline_avx2.h:111`) keeps them in i32 lanes and widens once at
+> the end — the same class of finding as the CfL kernel's i32-vs-i16 rounding.
+> It is now ONE `#[magetypes]` body on **archmage PR #96**'s `u8xN::abs_diff` +
+> `i16xN::madd_adjacent` (the PR that closes the issue this port filed), plus
+> **C's row PACKING for widths 8 and 4** (`:815-847`, `_mm256_setr_m128i` of
+> two narrow loads), which is what preset 2 needed: `sse` was 5.17 % of the p2
+> frame's instructions against 3.42 % at p6, because at p2 most calls are 4- or
+> 8-column transform units and a 16-lane kernel with a scalar tail degenerates
+> on all of them. Kernel family self Ir 52,495,464 -> 19,234,004 (p6) and
+> 2,436,872,092 -> 1,124,658,211 (p2); frame 1,511,826,501 -> 1,482,868,791 and
+> 45,560,540,750 -> 44,686,279,137; port/C 2.143 -> 2.102 and 1.672 -> 1.640.
+> **aarch64 IS UNCHANGED AND THAT IS A MEASUREMENT, NOT AN OMISSION:** the
+> generic body is **1.45x-2.20x SLOWER** than the hand `vabdq_u8` + `vmull_u8` +
+> `vpadalq_u16` arm there (magetypes lowers `madd_adjacent` to
+> `vpaddq_s32(vmull_s16, vmull_high_s16)` — three instructions per eight lanes,
+> plus two `vmovl_u8` — against the hand form's two), and the memory-staged row
+> packing is **1.32x-1.57x slower** and drags the untouched `width >= 16` path
+> with it; three alternating runs of each build on an M4 Pro, disjoint
+> intervals, both REVERTED. The aarch64 arms in the tree are byte-for-byte
+> `main`'s. **Open aarch64 item, priced:** a row-pack with NO memory round trip
+> — `vcombine_u8(vld1_u8(row0), vld1_u8(row1))`, which is C's `setr_m128i`
+> exactly — was not tried; the staged form is what lost.
+> **NO x86 WALL CLOCK IS CLAIMED**: a paired `perf_ab.sh` A/B with its own
+> same-binary control was started and KILLED on purpose, because `lay1` held
+> the box for its own wall-clock run for the whole window. The Ir is the claim
+> and a wall-clock confirmation is OWED.
+> **DEV-ONLY DEPENDENCY PATCH:** `rust/Cargo.toml` pins archmage / magetypes to
+> `imazen/archmage` rev `cc24398c` (PRs #95 + #96, OPEN). **A fresh clone and CI
+> need network access to that rev.** Delete the block when #96 ships.
+
+> **archmage PR #95 REMOVES ZERO BOUNDS CHECKS FROM THIS PORT — MEASURED, and
+> it retires a premise (2026-09-05).** Same record. The GOT-resolved
+> `panic_bounds_check` census is **2,046 sites on archmage 0.9.28 and 2,046 on
+> the #95+#96 stack**, with `quant::optimize_b::{closure#0}` at exactly 72 and
+> `coeff_rate::cost_coeffs_txb_inner::{closure#0}` at 15 in both — the two
+> counts `stall_attrib_2026-09-05` §6 item 9 named — and the frame Ir for the
+> patch alone moves ±0.007 % with OPPOSITE SIGNS at p6 and p2. The reason is
+> structural: #95 removes assertions from magetypes' GENERATED indexing
+> accessors, and before this commit the port had **no magetypes generic-type
+> call site at all** (`grep -rn 'magetypes::' crates/` on `7ec5b557` returns
+> only doc-comment prose). So item 9's 72 checks are plain Rust slice indexing
+> in `quant.rs` and close only with the fixed-size-array boundary
+> (`try_into::<&[T; N]>()` once) — no archmage bump will do it.
+> **A TRAP THIS CHUNK PAID FOR:** a naive `objdump -d | grep panic_bounds_check`
+> reads **ZERO** on this binary. It is a PIE; the calls are
+> `call *0x..(%rip)` and the GOT slot has to be resolved from its
+> `R_X86_64_RELATIVE` addend before anything can be counted. Doing it the naive
+> way and believing the zero would have "proved" the port has no bounds checks
+> at all.
+
 > **A SECOND BASELINE ON A SECOND ISA: x86_64 ZEN 4 UNDER WSL2 (`lilith`),
 > TREE `7ec5b5572` — still 1.99x / videokey 1.91x / inter 2.25x SLOPE AT p8,
 > photo_cid 512² still 1.500x at p2 / 1.754x at p6, p2/p6 GRADIENT SLOPES
@@ -1260,7 +1320,17 @@
 > `#[magetypes]`: the shape needs a pairwise widening `i16 x i16 -> i32`
 > multiply-accumulate (`_mm256_madd_epi16` / `vmlal_s16`) that magetypes has
 > at no version — the named missing primitive is
-> `i16x16::madd_adjacent(i16x16) -> i32x8` (+ `msub`). Iterations on
+> `i16x16::madd_adjacent(i16x16) -> i32x8` (+ `msub`).
+> **THAT NAMED PRIMITIVE NOW EXISTS (2026-09-05): archmage PR #96 adds
+> `i16xN::madd_adjacent` and `msub_adjacent` at every width and backend, and
+> it closes the issue this port filed.** The paragraph above is kept because
+> it is the record of WHY the arms are hand-written; what is now stale is only
+> "at no version". Do NOT read the primitive's arrival as a reason to collapse
+> these arms — `compute_stats` is already 1.19x C by cycles and on the
+> "DO NOT FIX" list (`benchmarks/stall_attrib_2026-09-05.meta` §6), and where
+> the collapse WAS tried and measured (`variance::sse`) the generic body is
+> 1.45x-2.20x SLOWER than the hand NEON arm and a clear win only on x86
+> (`benchmarks/sse_madd_2026-09-05.meta` §5). Iterations on
 > photo_cid p6 (r7900x callgrind, all byte-identical): 746.55 M -> 18.49 M
 > (C-shape, per-load `[..16]` checks) -> 16.88 M (chunk slices via
 > `core::array::from_fn`, which is NOT inlined and hides the lengths — one

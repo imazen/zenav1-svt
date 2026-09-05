@@ -121,27 +121,6 @@ fn variance_diff_parts_impl_scalar(
     (sse, sum)
 }
 
-fn sse_impl_scalar(
-    _token: ScalarToken,
-    src: &[u8],
-    src_stride: usize,
-    ref_: &[u8],
-    ref_stride: usize,
-    width: usize,
-    height: usize,
-) -> u64 {
-    let mut sse: u64 = 0;
-    for row in 0..height {
-        let s_off = row * src_stride;
-        let r_off = row * ref_stride;
-        for col in 0..width {
-            let diff = src[s_off + col] as i32 - ref_[r_off + col] as i32;
-            sse += (diff * diff) as u64;
-        }
-    }
-    sse
-}
-
 // --- AVX2 implementations ---
 
 #[cfg(target_arch = "x86_64")]
@@ -195,29 +174,6 @@ fn variance_diff_parts_impl_v3(
         }
     }
     (sse, sum)
-}
-
-#[cfg(target_arch = "x86_64")]
-#[arcane]
-fn sse_impl_v3(
-    _token: Desktop64,
-    src: &[u8],
-    src_stride: usize,
-    ref_: &[u8],
-    ref_stride: usize,
-    width: usize,
-    height: usize,
-) -> u64 {
-    let mut sse: u64 = 0;
-    for row in 0..height {
-        let s_off = row * src_stride;
-        let r_off = row * ref_stride;
-        for col in 0..width {
-            let diff = src[s_off + col] as i32 - ref_[r_off + col] as i32;
-            sse += (diff * diff) as u64;
-        }
-    }
-    sse
 }
 
 // --- NEON implementations ---
@@ -333,6 +289,213 @@ fn variance_diff_parts_impl_neon(
     (sse, sum_a as i64 - sum_b as i64)
 }
 
+/// Scalar SSE reference. The value every tier must equal, and the oracle the
+/// tier sweep in `sse_simd_matches_scalar_exhaustively` compares against.
+///
+/// Integer squares and their sum are exact and associative, so lane order and
+/// accumulator width cannot change the result — only overflow could, and the
+/// vector body's drain schedule is sized against that below.
+#[cfg(test)]
+fn sse_core(
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    let mut sse: u64 = 0;
+    for row in 0..height {
+        let s_off = row * src_stride;
+        let r_off = row * ref_stride;
+        for col in 0..width {
+            let diff = src[s_off + col] as i32 - ref_[r_off + col] as i32;
+            sse += (diff * diff) as u64;
+        }
+    }
+    sse
+}
+
+/// SSE, ONE generic body for every tier.
+///
+/// # C's shape, and the arithmetic width that is the whole difference
+///
+/// `svt_spatial_full_distortion_kernel_avx2`
+/// (`ASM_AVX2/pic_operators_intrin_avx2.c:802`) reaches
+/// `spatial_full_distortion_kernel16_avx2_intrin`
+/// (`ASM_AVX2/pic_operators_inline_avx2.h:111`), which is four instructions
+/// per sixteen samples:
+///
+/// ```text
+///   in16 = _mm256_cvtepu8_epi16(input);      re16 = _mm256_cvtepu8_epi16(recon);
+///   diff = _mm256_sub_epi16(in16, re16);
+///   dist = _mm256_madd_epi16(diff, diff);    // d*d + d*d -> ONE i32 lane
+///   sum  = _mm256_add_epi32(sum, dist);      // i32 lanes, widened only at the end
+/// ```
+///
+/// The port's x86 arm was the scalar double loop with a `u64` accumulator
+/// (`sse += (diff * diff) as u64`), left to auto-vectorise. It does vectorise,
+/// but the `u64` accumulator forces every square to be widened to 64-bit
+/// lanes, so the same work costs four times the vector registers. That single
+/// line carried **21,363,780 Ir of `__arcane_sse_impl_v3`'s 27,915,788 self
+/// Ir** on photo_cid 512² p6 (`benchmarks/stall_attrib_2026-09-05.meta` §5) —
+/// the same class of finding as the CfL kernel's i32-vs-i16 rounding
+/// (`benchmarks/cfl_simd_kernel_2026-09-05.meta`): the port had the right
+/// algorithm at the wrong arithmetic width.
+///
+/// `i16xN::madd_adjacent` (archmage PR #96, which closes the issue this port
+/// filed) is `_mm256_madd_epi16` / `vmlal` / `i32x4.dot_i16x8_s` behind one
+/// generic name, so C's exact shape becomes expressible without a hand-written
+/// arm per ISA. `u8xN::abs_diff` from the same PR replaces the two
+/// widen-then-subtract pairs: `|a - b|` squares to the same value as `a - b`.
+///
+/// **This body is `cfg`'d OFF on aarch64 and that is a measurement, not an
+/// oversight** — see `sse_impl_neon`, which is 1.45x-2.20x faster than this
+/// body there because magetypes' NEON `madd_adjacent` costs three instructions
+/// per eight lanes on top of two widenings, against `vmull_u8` + `vpadalq_u16`
+/// doing both in two.
+///
+/// # Small widths take C's row-PACKING, not a narrow kernel
+///
+/// At preset 2 most calls are transform units of 4 or 8 columns, and a 16-lane
+/// kernel with a scalar tail degenerates to the scalar loop on all of them:
+/// measured, `variance::sse` is **5.17 % of the photo_cid p2 frame's
+/// instructions** against 3.42 % at p6. C does not run a narrow kernel there
+/// either — `svt_spatial_full_distortion_kernel_avx2`'s `leftover == 8` arm
+/// (`ASM_AVX2/pic_operators_intrin_avx2.c:831-847`) packs TWO rows into one
+/// register with `_mm256_setr_m128i` of two `_mm_loadl_epi64`, and its
+/// `leftover == 4` arm (`:815-830`) does the same with two `_mm_cvtsi32_si128`.
+/// This body packs `16 / width` rows into one 16-byte vector for widths 8 and
+/// 4, so a 4x4 block is ONE fold instead of sixteen scalar iterations. The
+/// staging copies stand in for `setr_m128i`: magetypes has no
+/// vector-concatenate.
+///
+/// # Overflow, computed rather than asserted
+///
+/// A `u8` difference squares to at most `255² = 65_025`. `drain_every` is
+/// `32_000 / width` rows (at least one), so the i32 accumulator holds at most
+/// `65_025 * width * (32_000 / width) <= 65_025 * 32_000 = 2_080_800_000`
+/// across ALL FOUR lanes before it is reduced. The row-packed path adds up to
+/// `g - 1 = 3` rows beyond the threshold before it notices, worth another
+/// `3 * 65_025 * 4 = 780_300`, for `2_081_580_300` — inside `i32::MAX`
+/// (2_147_483_647), so `reduce_add` neither wraps nor goes negative. The
+/// per-row scalar tail accumulates in `u32`: at most `65_025 * width`, which
+/// needs `width <= 66_046` to be safe and is checked by the same bound.
+#[cfg(not(target_arch = "aarch64"))]
+#[magetypes(define(u8x16, u16x8, i16x8, i32x4), v3, wasm128, scalar)]
+fn sse_impl(
+    token: Token,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    // One sixteen-byte pair folded into the i32 accumulator. Captures only the
+    // token, so it is a plain value-in / value-out closure and the borrow
+    // checker never sees `acc` inside it.
+    let fold = |acc: i32x4, a: &[u8; 16], b: &[u8; 16]| -> i32x4 {
+        let d = u8x16::load(token, a).abs_diff(u8x16::load(token, b));
+        let lo = d.widen_low().bitcast_i16x8();
+        let hi = d.widen_high().bitcast_i16x8();
+        acc + lo.madd_adjacent(lo) + hi.madd_adjacent(hi)
+    };
+    let scalar_row = |s_off: usize, r_off: usize, from: usize| -> u32 {
+        let mut t: u32 = 0;
+        for col in from..width {
+            let diff = src[s_off + col] as i32 - ref_[r_off + col] as i32;
+            t += (diff * diff) as u32;
+        }
+        t
+    };
+
+    let mut total: u64 = 0;
+    let mut acc = i32x4::splat(token, 0);
+    let drain_every = (32_000 / width.max(1)).max(1);
+    let mut since_drain = 0usize;
+
+    if width >= 16 {
+        for row in 0..height {
+            let s_off = row * src_stride;
+            let r_off = row * ref_stride;
+            let mut col = 0usize;
+            while col + 16 <= width {
+                let a: &[u8; 16] = src[s_off + col..s_off + col + 16].try_into().unwrap();
+                let b: &[u8; 16] = ref_[r_off + col..r_off + col + 16].try_into().unwrap();
+                acc = fold(acc, a, b);
+                col += 16;
+            }
+            total += u64::from(scalar_row(s_off, r_off, col));
+            since_drain += 1;
+            if since_drain >= drain_every {
+                total += u64::from(acc.reduce_add() as u32);
+                acc = i32x4::splat(token, 0);
+                since_drain = 0;
+            }
+        }
+    } else if width == 8 || width == 4 {
+        // C's `leftover == 8` / `leftover == 4` arms
+        // (`ASM_AVX2/pic_operators_intrin_avx2.c:831-847` and `:815-830`) do
+        // exactly this: they pack TWO rows (`_mm256_setr_m128i(in0, in1)` of two
+        // `_mm_loadl_epi64`) or two four-byte rows into one register rather than
+        // running a narrow kernel per row. `16 / width` rows fill one 16-byte
+        // vector here, so a `4x4` block is ONE fold instead of sixteen scalar
+        // iterations. The two 8- or 4-byte copies into the staging array are what
+        // stand in for x86's `setr_m128i`; magetypes has no vector-concatenate.
+        let g = 16 / width;
+        let mut row = 0usize;
+        while row + g <= height {
+            let mut sa = [0u8; 16];
+            let mut rb = [0u8; 16];
+            for k in 0..g {
+                let s_off = (row + k) * src_stride;
+                let r_off = (row + k) * ref_stride;
+                sa[k * width..(k + 1) * width].copy_from_slice(&src[s_off..s_off + width]);
+                rb[k * width..(k + 1) * width].copy_from_slice(&ref_[r_off..r_off + width]);
+            }
+            acc = fold(acc, &sa, &rb);
+            row += g;
+            since_drain += g;
+            if since_drain >= drain_every {
+                total += u64::from(acc.reduce_add() as u32);
+                acc = i32x4::splat(token, 0);
+                since_drain = 0;
+            }
+        }
+        while row < height {
+            total += u64::from(scalar_row(row * src_stride, row * ref_stride, 0));
+            row += 1;
+        }
+    } else {
+        for row in 0..height {
+            total += u64::from(scalar_row(row * src_stride, row * ref_stride, 0));
+        }
+    }
+    total + u64::from(acc.reduce_add() as u32)
+}
+
+/// aarch64 keeps ITS OWN arm, byte-identical to what `main` already had, and
+/// BOTH attempts to change it were MEASURED AND REVERTED.
+///
+/// 1. **The generic `#[magetypes]` body above is 1.45x-2.20x SLOWER here.**
+///    magetypes lowers `i16x8::madd_adjacent` on aarch64 to
+///    `vpaddq_s32(vmull_s16(lo, lo), vmull_high_s16(a, a))` — three
+///    instructions per eight lanes — on top of two `vmovl_u8` widenings, where
+///    the `vmull_u8` + `vpadalq_u16` pair below squares AND widens in two with
+///    no widening step at all. Eleven vector instructions per sixteen bytes
+///    against five.
+/// 2. **C's row PACKING for widths 8 and 4 is 1.32x-1.57x SLOWER here** when
+///    the rows are staged through a `[u8; 16]`, and it drags the untouched
+///    `width >= 16` path down with it (a code-shape effect; the wide loop's
+///    source did not change). It is a clear Ir win on x86, where it stays.
+///
+/// Both are in `benchmarks/sse_madd_2026-09-05.{tsv,meta}` §5 with three
+/// alternating runs of each build on an M4 Pro and disjoint intervals, and
+/// finding 1 is reported on archmage#96. **The open aarch64 item is a row-pack
+/// that does NOT stage through memory** — `vcombine_u8(vld1_u8(row0),
+/// vld1_u8(row1))` is C's `_mm256_setr_m128i` exactly and was NOT tried; the
+/// staged form is what lost.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 fn sse_impl_neon(
@@ -376,6 +539,33 @@ fn sse_impl_neon(
         }
     }
     total + tail
+}
+
+/// The plain scalar loop, kept as the aarch64 `incant!` fallback tier.
+///
+/// On x86/wasm the `#[magetypes]` body generates its own `_scalar` variant and
+/// this one is not compiled; on aarch64 the generic body is not generated at
+/// all, so the tier sweep needs a real scalar arm here.
+#[cfg(target_arch = "aarch64")]
+fn sse_impl_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    let mut sse: u64 = 0;
+    for row in 0..height {
+        let s_off = row * src_stride;
+        let r_off = row * ref_stride;
+        for col in 0..width {
+            let diff = src[s_off + col] as i32 - ref_[r_off + col] as i32;
+            sse += (diff * diff) as u64;
+        }
+    }
+    sse
 }
 
 #[cfg(test)]
@@ -533,6 +723,123 @@ mod dispatch_tests {
                 "variance mismatch at dispatch level"
             );
         });
+    }
+
+    /// EVERY archmage tier of the vector SSE == the scalar reference, over the
+    /// WHOLE per-lane input domain and at the exact accumulator bound.
+    ///
+    /// Three independent things can break in `sse_impl` and each is a case:
+    ///
+    /// * **the per-lane arithmetic** — `u8xN::abs_diff` then
+    ///   `i16xN::madd_adjacent(self)`. Case 1 is EXHAUSTIVE: a 256x256 block
+    ///   whose `src[i][j] = i` and `ref[i][j] = j` puts every one of the
+    ///   65_536 ordered `(u8, u8)` pairs through the kernel, so both `MIN-MAX`
+    ///   directions and the `|d| = 255` extreme are covered by construction,
+    ///   not by sampling;
+    /// * **the 16-lane split and the scalar tail** — case 2 walks widths
+    ///   1..=33 plus 48/64/128 against heights 1..=5, 16 and 33, so every
+    ///   `width % 16` class and every one-row/one-column shape is crossed;
+    /// * **the i32 accumulator's drain schedule** — case 3 runs the two
+    ///   shapes that fill it to the documented maximum with the maximum
+    ///   difference: `16 x 8192`, `128 x 1024`, `8 x 16384` and `4 x 32768` of
+    ///   0-against-255, whose per-drain totals are `65_025 * 32_000` (plus the
+    ///   row-packed path's up-to-three-row overshoot), i.e. the largest value
+    ///   `reduce_add` may ever see. The last two also drive the row-PACKED
+    ///   path's own drain. Every one of the four has a true SSE above
+    ///   `u32::MAX`, so a missing drain or a sign slip cannot pass.
+    ///
+    /// The `PermutationReport` is CONSUMED: `warnings.is_empty()` and
+    /// `permutations_run >= 2` are asserted, so a sweep that silently
+    /// collapses to the native tier fails instead of passing green
+    /// (`rust/CLAUDE.md`'s silent-coverage hazard).
+    #[test]
+    fn sse_simd_matches_scalar_exhaustively() {
+        use alloc::vec::Vec;
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+        // Case 1 — every ordered (u8, u8) pair, once.
+        let mut ex_src = Vec::with_capacity(256 * 256);
+        let mut ex_ref = Vec::with_capacity(256 * 256);
+        for i in 0..256usize {
+            for j in 0..256usize {
+                ex_src.push(i as u8);
+                ex_ref.push(j as u8);
+            }
+        }
+        let ex_expect = sse_core(&ex_src, 256, &ex_ref, 256, 256, 256);
+        // sum over all ordered pairs of (i - j)^2 = 2 * sum_{d=1}^{255} (256-d) d^2
+        let mut closed: u64 = 0;
+        for d in 1..=255u64 {
+            closed += 2 * (256 - d) * d * d;
+        }
+        assert_eq!(
+            ex_expect, closed,
+            "the scalar reference itself disagrees with the closed form"
+        );
+
+        // Case 2 — width/height shapes.
+        // (src_stride, ref_stride, src, ref, width, height, expected)
+        type Shape = (usize, usize, Vec<u8>, Vec<u8>, usize, usize, u64);
+        // (src, ref, width, height, expected)
+        type Big = (Vec<u8>, Vec<u8>, usize, usize, u64);
+        let widths: Vec<usize> = (1..=33).chain([48, 64, 128]).collect();
+        let heights = [1usize, 2, 3, 4, 5, 16, 33];
+        let mut shapes: Vec<Shape> = Vec::new();
+        for (wi, &w) in widths.iter().enumerate() {
+            for (hi, &h) in heights.iter().enumerate() {
+                let ss = w + 3 + wi % 5;
+                let rs = w + 1 + hi % 7;
+                let sb: Vec<u8> = (0..ss * h)
+                    .map(|i| ((i * 37 + wi * 11 + hi * 5) % 256) as u8)
+                    .collect();
+                let rb: Vec<u8> = (0..rs * h)
+                    .map(|i| ((i * 53 + wi * 7 + hi * 13) % 251) as u8)
+                    .collect();
+                let e = sse_core(&sb, ss, &rb, rs, w, h);
+                shapes.push((ss, rs, sb, rb, w, h, e));
+            }
+        }
+
+        // Case 3 — the accumulator at its documented maximum.
+        let big: [(usize, usize); 4] = [(16, 8192), (128, 1024), (8, 16384), (4, 32768)];
+        let mut bigs: Vec<Big> = Vec::new();
+        for &(w, h) in &big {
+            let sb = alloc::vec![0u8; w * h];
+            let rb = alloc::vec![255u8; w * h];
+            let e = 255u64 * 255 * (w * h) as u64;
+            assert!(e > u64::from(u32::MAX), "case 3 must exceed u32::MAX");
+            bigs.push((sb, rb, w, h, e));
+        }
+
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
+            assert_eq!(
+                sse(&ex_src, 256, &ex_ref, 256, 256, 256),
+                ex_expect,
+                "exhaustive (u8, u8) domain"
+            );
+            for (ss, rs, sb, rb, w, h, e) in &shapes {
+                assert_eq!(
+                    sse(sb, *ss, rb, *rs, *w, *h),
+                    *e,
+                    "shape w{w} h{h} src_stride{ss} ref_stride{rs}"
+                );
+            }
+            for (sb, rb, w, h, e) in &bigs {
+                assert_eq!(sse(sb, *w, rb, *w, *w, *h), *e, "drain w{w} h{h}");
+            }
+        });
+        assert!(
+            report.warnings.is_empty(),
+            "archmage excluded {} token(s) from the sweep: {:?}",
+            report.warnings.len(),
+            report.warnings
+        );
+        assert!(
+            report.permutations_run >= 2,
+            "the tier sweep ran {} permutation(s) -- only the native tier, which \
+             cannot catch a SIMD-vs-scalar divergence",
+            report.permutations_run
+        );
     }
 
     #[test]
