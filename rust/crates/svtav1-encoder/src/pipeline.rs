@@ -12035,6 +12035,25 @@ fn encode_tile_rows(
                         cfc.intra_ext_tx_cdf[52][1],
                         cfc.intra_ext_tx_cdf[52][2],
                     );
+                    // SEED2 (2026-09-05): the rows the screen-content residuals
+                    // turned on — joins line-for-line against the C
+                    // interposer's `SEED2` (wrap_recon.c, SVT_SEED_OUT).
+                    let join = |v: &[u16]| {
+                        v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+                    };
+                    eprintln!(
+                        "SEED2 sb={} kfy00=[{}] fi8=[{},{}] fim=[{}] txfmp=[{}] iext11=[{}] paly0=[{},{},{}]",
+                        sb_index,
+                        join(&fc.kf_y_mode_cdf[0][0][..13]),
+                        fc.filter_intra_cdfs[3][0],
+                        fc.filter_intra_cdfs[3][1],
+                        join(&fc.filter_intra_mode_cdf[..5]),
+                        join(&fc.txfm_partition_cdf.iter().map(|c| c[0]).collect::<Vec<_>>()),
+                        join(&cfc.inter_ext_tx_cdf[1 * 4 + 1][..16]),
+                        fc.palette_y_mode_cdf[0][0][0],
+                        fc.palette_y_mode_cdf[0][1][0],
+                        fc.palette_y_mode_cdf[0][2][0],
+                    );
                 }
                 if funnel_chain {
                     fun_rates = Some(match &chain_base {
@@ -13113,6 +13132,10 @@ fn encode_tile_rows(
                     // same quirk `cost_coeffs_txb`'s `cost_dir` remap reads.
                     // Sticky across snapshots (the struct is cloned).
                     cfc.md_side_ibc_txt_update = true;
+                    // Same class, mode side: C's MD-side context skips the
+                    // palette CDF update for non-chroma-reference blocks
+                    // (`FrameContext::md_side_chroma_gated_palette`).
+                    fc.md_side_chroma_gated_palette = true;
                     if let Some(tree) = sb_result.tree.as_ref() {
                         let se = sim_ectx.as_mut().unwrap();
                         if sb_row != sim_prev_sb_row {

@@ -132,6 +132,20 @@ pub struct FrameContext {
     /// Skip mode CDFs [SKIP_MODE_CONTEXTS][2+1]
     pub skip_mode_cdf: [[AomCdfProb; 3]; SKIP_MODE_CONTEXTS],
 
+    /// MD-SIDE QUIRK, set only by the encoder's per-SB chain simulation
+    /// (the twin of `CoeffFc::md_side_ibc_txt_update`): C's
+    /// `sum_intra_stats` (md_rate_estimation.c:760-830) reaches
+    /// `update_palette_cdf` only AFTER its `is_chroma_reference` early
+    /// return, so C's MD-side context never adapts `palette_y_mode_cdf` /
+    /// `palette_y_size_cdf` for a block that is NOT a chroma reference — a
+    /// 4x16 at an even mi_col or a 16x4 at an even mi_row — although the
+    /// bitstream codes that block's luma palette flag and its writer
+    /// (`svt_aom_write_palette_mode_info`, entropy_coding.c:4361-4366)
+    /// adapts. With this set, [`write_palette_mode_info`] codes such a
+    /// block's luma palette symbols against scratch copies so the chain's
+    /// rate seeds match C's `ec_ctx_array[sb]`. Never set on the real pack.
+    pub md_side_chroma_gated_palette: bool,
+
     /// Intra/inter flag CDFs [INTRA_INTER_CONTEXTS][2+1]
     pub intra_inter_cdf: [[AomCdfProb; 3]; INTRA_INTER_CONTEXTS],
 
@@ -571,6 +585,7 @@ impl FrameContext {
             // Was [CDF_PROB_TOP / 2, 0, 0] — a uniform placeholder, not C's
             // table. Seeded from the tier-1-gated defaults so the two cannot drift.
             skip_mode_cdf: crate::port_entropy_inter::cdfs::SKIP_MODE_CDF,
+            md_side_chroma_gated_palette: false,
             intra_inter_cdf: DEFAULT_INTRA_INTER_CDF,
             kf_y_mode_cdf: DEFAULT_KF_Y_MODE_CDF,
             y_mode_cdf: DEFAULT_Y_MODE_CDF,
@@ -1495,21 +1510,41 @@ pub fn write_palette_mode_info(
     if y_mode == 0 {
         debug_assert!(neighbor_ctx < 3);
         y_used = palette.is_some();
-        w.write_symbol(
-            usize::from(y_used),
-            &mut fc.palette_y_mode_cdf[bctx][neighbor_ctx],
-            2,
-        );
+        // FIXED 2026-09-05 (gb82-sc graph.png 512x480 q40 p2, SB(3,0)): C's
+        // MD-side context skips `update_palette_cdf` for a block that is
+        // not a chroma reference (`FrameContext::md_side_chroma_gated_
+        // palette`); the 4x16 DC leaf at mi(52,4) coded its luma flag in
+        // the chain but not in C's `ec_ctx_array`, and every later 8x8 DC
+        // candidate in the frame priced its no-palette flag 3 rate units
+        // too low (PAETH beat filter-DC at mi(66,0) in C by 1454, an
+        // exact tie here). The bitstream still codes the symbols: only
+        // their ADAPTATION is withheld, on scratch rows.
+        let md_side_skip = fc.md_side_chroma_gated_palette && !is_chroma_ref;
+        if md_side_skip {
+            let mut scratch = fc.palette_y_mode_cdf[bctx][neighbor_ctx];
+            w.write_symbol(usize::from(y_used), &mut scratch, 2);
+        } else {
+            w.write_symbol(
+                usize::from(y_used),
+                &mut fc.palette_y_mode_cdf[bctx][neighbor_ctx],
+                2,
+            );
+        }
         if let Some((colors, cache_found, out_of_cache)) = palette {
             let n = colors.len();
             debug_assert!(
                 (PALETTE_MIN_SIZE..=svtav1_types::prediction::PALETTE_MAX_SIZE).contains(&n)
             );
-            w.write_symbol(
-                n - PALETTE_MIN_SIZE,
-                &mut fc.palette_y_size_cdf[bctx],
-                PALETTE_SIZES,
-            );
+            if md_side_skip {
+                let mut scratch = fc.palette_y_size_cdf[bctx];
+                w.write_symbol(n - PALETTE_MIN_SIZE, &mut scratch, PALETTE_SIZES);
+            } else {
+                w.write_symbol(
+                    n - PALETTE_MIN_SIZE,
+                    &mut fc.palette_y_size_cdf[bctx],
+                    PALETTE_SIZES,
+                );
+            }
             write_palette_colors_y(w, n, cache_found, out_of_cache, bit_depth);
         }
     }
@@ -2512,6 +2547,39 @@ mod tests {
     /// the same block — a cheap shape lock. #71 injection now exercises this
     /// end-to-end on the EPICA cell, which is not yet byte-matched (over-
     /// picking, #71); this test guards the writer shape independent of that.
+    /// C's MD-side `sum_intra_stats` reaches `update_palette_cdf` only past
+    /// its `is_chroma_reference` return (md_rate_estimation.c:760-830): with
+    /// the chain-sim flag set, a non-chroma-reference block's luma palette
+    /// symbols leave the rows untouched; a chroma reference, or the real
+    /// pack (flag clear), adapts them. Both arms pinned, and the coded bytes
+    /// are identical either way (adaptation is withheld, not the symbols).
+    #[test]
+    fn md_side_chroma_gated_palette_withholds_adaptation_only() {
+        let base = FrameContext::new_default();
+        let coded = |flag: bool, chroma_ref: bool| {
+            let mut fc = base.clone();
+            fc.md_side_chroma_gated_palette = flag;
+            let mut w = AomWriter::new(64);
+            // 4x16 DC leaf, no palette: the luma flag is coded (allow_palette
+            // holds for 4x16) whether or not the block is a chroma reference.
+            write_palette_mode_info(&mut w, &mut fc, 4, 16, 0, 0, chroma_ref, 0, None, 8);
+            let bytes = w.done().to_vec();
+            (fc.palette_y_mode_cdf[0][0], bytes)
+        };
+        let (pack, pack_bytes) = coded(false, false);
+        let (sim_ref, sim_ref_bytes) = coded(true, true);
+        let (sim_nonref, sim_nonref_bytes) = coded(true, false);
+        assert_ne!(pack, base.palette_y_mode_cdf[0][0], "the real pack adapts");
+        assert_eq!(sim_ref, pack, "a chroma reference adapts in the chain too");
+        assert_eq!(
+            sim_nonref,
+            base.palette_y_mode_cdf[0][0],
+            "a non-chroma-reference block leaves C's MD-side row alone"
+        );
+        assert_eq!(pack_bytes, sim_ref_bytes);
+        assert_eq!(pack_bytes, sim_nonref_bytes, "only the adaptation is withheld");
+    }
+
     #[test]
     fn write_palette_mode_info_some_vs_none_arm() {
         let mut fc = FrameContext::new_default();

@@ -550,6 +550,21 @@ void __wrap_svt_aom_estimate_syntax_rate(MdRateEstimationContext* r, bool is_i_s
             fc->cfl_sign_cdf[0], fc->cfl_sign_cdf[1], fc->cfl_sign_cdf[2], fc->cfl_alpha_cdf[0][0],
             fc->cfl_alpha_cdf[0][1], fc->cfl_alpha_cdf[0][2], fc->intra_ext_tx_cdf[1][0][0][0],
             fc->intra_ext_tx_cdf[1][0][0][1], fc->intra_ext_tx_cdf[1][0][0][2]);
+    /* SEED2 (2026-09-05): the rows the screen-content residuals turned on —
+     * the full kf y_mode row for the (DC above, DC left) context, the 8x8
+     * filter-intra flag + the filter-intra mode CDF, every txfm_partition
+     * context's split probability, and the inter ext-tx set-1 8x8 row.
+     * Joins line-for-line against the port's SVTAV1_SEED_DUMP `SEED2`. */
+    fprintf(sf, "SEED2 sb=%d kfy00=[", call - 1);
+    for (int i = 0; i < INTRA_MODES; ++i) fprintf(sf, "%s%u", i ? "," : "", fc->kf_y_cdf[0][0][i]);
+    fprintf(sf, "] fi8=[%u,%u] fim=[", fc->filter_intra_cdfs[BLOCK_8X8][0], fc->filter_intra_cdfs[BLOCK_8X8][1]);
+    for (int i = 0; i < FILTER_INTRA_MODES; ++i) fprintf(sf, "%s%u", i ? "," : "", fc->filter_intra_mode_cdf[i]);
+    fprintf(sf, "] txfmp=[");
+    for (int i = 0; i < TXFM_PARTITION_CONTEXTS; ++i) fprintf(sf, "%s%u", i ? "," : "", fc->txfm_partition_cdf[i][0]);
+    fprintf(sf, "] iext11=[");
+    for (int i = 0; i < TX_TYPES; ++i) fprintf(sf, "%s%u", i ? "," : "", fc->inter_ext_tx_cdf[1][1][i]);
+    fprintf(sf, "] paly0=[%u,%u,%u]\n", fc->palette_y_mode_cdf[0][0][0], fc->palette_y_mode_cdf[0][1][0],
+            fc->palette_y_mode_cdf[0][2][0]);
     fflush(sf);
 }
 
