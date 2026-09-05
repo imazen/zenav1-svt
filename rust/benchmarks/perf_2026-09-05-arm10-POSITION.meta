@@ -147,6 +147,40 @@ TWO CELLS THAT ARE NOT RESULTS, and why:
     exit 3. So there is no p2 inter number to have, on any content, until
     global motion lands. "Not measured" is the honest entry.
 
+=================== HOW TO RE-RUN IT =======================================
+
+  jj workspace add --name pos1 ../zenav1-svt--pos1 -r main@origin
+  cd ../zenav1-svt--pos1
+  ln -sfn <primary>/reference/svt-av1 reference/svt-av1   # do NOT rebuild the C oracle
+  ln -sfn <primary>/Bin Bin ; ln -sfn <primary>/cbuild-static cbuild-static
+  export SVT_CREF_LIB_DIR=<primary>/Bin/Release SVT_CREF_SKIP_HDR=1
+  export PATH=/opt/homebrew/bin:$PATH        # gawk + nproc the harness needs
+  cd rust
+
+  # the real-content .yuv (regenerates byte-for-byte; verify the sha256 above)
+  nice -n 19 env -u RUSTFLAGS cargo build --release -p zenav1-svt \
+      --example perf_encode --example identity_run -j 8
+  ./target/release/examples/identity_run \
+      crop:<corpus>/CID22/CID22-512/training/3571065.png 512 512 40 8 \
+      ~/tmp/pos1yuv/photo_cid
+
+  # the three gradient arms (the arm9-joining grid)
+  G='PERF_SIZES="64 128 256 512" PERF_PRESETS=8 PERF_CONTENT=gradient
+     PERF_QP=40 PERF_ROUNDS=25 PERF_WARMUP=1'
+  env $G                                        tools/perf_gate.sh <d>-still
+  env $G PERF_VIDEO=1                           tools/perf_gate.sh <d>-videokey
+  env $G PERF_VIDEO=1 PERF_FRAMES=2 PERF_SHIFT=3 tools/perf_gate.sh <d>-inter
+
+  # the three photo arms (same three configs, one size, presets 2 and 6)
+  P='PERF_SIZES=512 PERF_PRESETS="2 6" PERF_QP=40 PERF_ROUNDS=25 PERF_WARMUP=1
+     PERF_CONTENT=raw:$HOME/tmp/pos1yuv/photo_cid.yuv'
+  env $P                                        tools/perf_gate.sh <d>-photo-still
+  env $P PERF_VIDEO=1                           tools/perf_gate.sh <d>-photo-videokey
+  env $P PERF_VIDEO=1 PERF_FRAMES=2 PERF_SHIFT=3 tools/perf_gate.sh <d>-photo-inter
+
+  Take a `ps` snapshot before and after each arm and every 15 s inside it, and
+  DISCARD any arm whose snapshots show a process that is not the harness's own.
+
 =================== NOT ESTABLISHED ========================================
   * ATTRIBUTION. Nothing here says which of the ~ten landings bought what. A
     position run cannot do that; only a paired A/B of two trees in one session
