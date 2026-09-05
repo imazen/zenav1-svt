@@ -58,8 +58,10 @@
 > **1.059x**, the CLIC glitter photo **1.062x**, the gb82-sc terminal crop
 > **1.040x**, gradient 256 p2 **1.055x** and 512 p2 **1.042x**, gradient 256 p6
 > 1.009x and 512 p6 1.003x. **On the OTHER ISA** (this Mac, gradient, 21 paired
-> rounds, box NOT quiet — load 2.79 — so read direction and spans): 256 p2
-> **1.049x**, 512 p2 **1.032x**, 256 p6 1.011x, 512 p6 1.008x.
+> rounds, box NOT quiet — load 2.79 / 1.80 — so read direction and spans):
+> gradient 256 p2 **1.049x**, 512 p2 **1.032x**, 256 p6 1.011x, 512 p6 1.008x,
+> and on the SAME CID22 photo the x86 rows use, 512 p2 **1.050x** and p6
+> **1.017x** — agreeing with x86's 1.059x / 1.010x on those two cells.
 > **A PRESET SWEEP on the photo at 512 names the one cell where the four are
 > NEGATIVE**: p6 1.022x, **p10 0.996x (span
 > 1.0015-1.0093 — a REAL ~0.4 % slowdown)**, p13 0.996x (span straddles 1.0, a

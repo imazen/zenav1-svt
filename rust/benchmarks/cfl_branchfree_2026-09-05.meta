@@ -147,10 +147,13 @@ against +0.054 ms at p10 on a 9.8 ms frame.
 AND ON THE OTHER ISA. Every wall-clock number above is r7900x; the four
 together were also measured on this Mac (M4 Pro, aarch64), gradient qp 40, 21
 interleaved paired rounds, ident=Y: 256 p2 **1.049x** (span 0.9459-0.9592),
-512 p2 **1.032x** (0.9616-0.9706), 256 p6 1.011x, 512 p6 1.008x. The box was
-NOT quiet (load average 2.79, four users, other agents live), which is why this
-is reported as a direction-and-span check on the second ISA rather than as a
-position number.
+512 p2 **1.032x** (0.9616-0.9706), 256 p6 1.011x, 512 p6 1.008x — and on REAL
+content, the same CID22 photo the r7900x rows use, 512 p2 **1.050x** (span
+0.9375-0.9566) and 512 p6 **1.017x** (0.9765-0.9960), which agrees with x86's
+1.059x / 1.010x on the same cells. The box was NOT quiet for either run (load
+average 2.79 and 1.80, four users, other agents live), which is why these are
+reported as direction-and-span checks on the second ISA rather than as position
+numbers.
 
 A SIZE SWEEP of the four together (gradient, qp 40, preset 2, 15 paired rounds
 each, ident=Y): 64 **1.051x**, 128 **1.051x**, 256 **1.055x**, 512 **1.043x**,

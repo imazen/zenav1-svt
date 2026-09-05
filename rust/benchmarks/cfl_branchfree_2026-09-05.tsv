@@ -75,6 +75,8 @@ abarm	gradient	256	2	21	166.3862	158.8049	0.9532	1.049	0.9459	0.9592
 abarm	gradient	256	6	21	8.6705	8.6112	0.9894	1.011	0.9776	0.9948
 abarm	gradient	512	2	21	345.8070	334.3168	0.9686	1.032	0.9616	0.9706
 abarm	gradient	512	6	21	28.4803	28.2288	0.9917	1.008	0.9797	0.9974
+abarm	photo_cid	512	2	21	1987.4632	1897.8979	0.9520	1.050	0.9375	0.9566
+abarm	photo_cid	512	6	21	70.3963	69.1856	0.9831	1.017	0.9765	0.9960
 #
 # --- 6c. ALL FOUR chunks, preset sweep on the photo at 512, 21 paired rounds.
 #         p10 is a REAL small REGRESSION (span entirely above 1.0), reported
