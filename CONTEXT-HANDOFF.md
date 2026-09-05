@@ -5,7 +5,19 @@ named below and is updated in place; anything restated here is restated only so
 a new session can orient in ten minutes. When this file and a live doc disagree,
 **the live doc wins** — and fix this one in the same change.
 
-Last updated **2026-09-05**, against `origin/main` = `84621b20d`.
+Last updated **2026-09-05 (late)**, against `origin/main` = `e96f2b392`.
+
+> **If you are a successor agent picking this up cold, read §0, then §3's
+> "CPU, stated honestly" and "The inter frame, attributed", then §6, then
+> §7b.** Those five blocks are the whole decision surface — §7b in particular
+> lists work that is scoped, traced, or half-finished but **not on main**, which
+> is where you should start rather than opening new fronts. Everything else is
+> reference.
+> Three things will mislead you if you skip them: the archmage dependency is
+> pinned to an **unmerged PR branch** (§7, and it can break the build without
+> anyone touching this repo), a green gate here is not evidence until you have
+> watched it go red (§4), and "landed" in an agent report has repeatedly meant
+> "uncommitted in a workspace" (§7).
 
 ---
 
@@ -122,9 +134,14 @@ screen band was guarded by nothing on the runner.
 
 ## 3. Where it stands — every figure dated and sourced
 
-### CI, on this exact tip (run `33978673841`, `84621b20d`, ubuntu x86-64, 2026-09-05, green)
+### CI — a dated SNAPSHOT, not the current tip (run `33978673841`, `84621b20d`, ubuntu x86-64, 2026-09-05, green)
 
-`gh run view 33978673841 --log` reproduces all of these.
+`gh run view 33978673841 --log` reproduces all of these. **`84621b20d` is no
+longer the tip** — a dozen commits landed after it on 2026-09-05 (perf chunks,
+the two CPU positions, the inter-frame attribution, the trace block). The gate
+*tallies* below have held across those, and each landing commit re-ran the chain
+on both ISAs; but if you need CI's word on the current tip, run
+`gh run list --limit 5` and read the newest, do not quote this table.
 
 | gate | tally |
 |---|---|
@@ -217,6 +234,96 @@ photo p2 inter now ENCODES (was REFUSED at arm10) but is ident=N by frame 0;
 and **gradient 512² p2 inter is ident=N at frame 1** (37 vs 38 B) — a cell
 outside the §1z⁴¹ band, previously unobserved.
 
+### The inter frame, attributed (2026-09-05, `c0ac35b98`)
+
+`rust/benchmarks/callcount_inter_2026-09-05.{meta,tsv,fns.tsv,ranked.tsv,cells.tsv}`
+is the **first per-function breakdown of the inter frame**, and it is the
+ordering to work from. Method: callgrind, **N=2 minus N=1 per symbol** (the
+instruction-count analogue of the wall-clock differencing above — and unlike
+wall clock it is deterministic, so it resolves C's side, which the ms figures
+could not: they could only say "a few ms"). All six cells byte-identical on both
+frames; per-symbol self deltas sum to the process delta exactly on all six runs.
+
+**Arm symmetry was verified from the profiles, not assumed:** the port binary
+carries `_v4` symbols but its profiles contain **zero** `_v4` rows (36–37 `_v3`);
+C's binary carries 180 `avx512` symbols and its profiles **zero** (115–123
+`_avx2`). valgrind masks the CPUID bits, so both sides priced on AVX2-class arms.
+Any future comparison here must re-verify this — if only one side falls back the
+numbers are meaningless.
+
+Whole-process inter delta, port/C: gradient 512² p8 **7.60×**, p6 **7.46×**,
+photo_cid p6 **5.14×**. That is *worse* than the 4–6× the wall-clock differencing
+suggested, against whole-sequence ratios of only 1.6–2.4×.
+
+Ranked, gradient p8 (share of the port's inter delta):
+
+| share | item | ratio | kind |
+|---|---|---|---|
+| **28 %** | open-loop **ME SAD family** (`motion_estimation_b64` 30.1×, `ext_all_sad_8x8_16x16` 52.1×, `sad_loop_kernel` 43.8×) | 30–52× at **identical call counts** | per-call |
+| 13.3 % | MD inter prediction / convolves (`convolve_x_sr` 125×/call, 2-D 217×) | 32× | per-call **+ routing defect** |
+| 10.6 % | PD0 whole SB | 4.1× at 64 = 64 | per-call |
+| 9.6 % | memset | — | **SUSPECT, do not chase** |
+| 7.8 % | MDS0 Hadamard SATD | C makes **zero** | algorithmic |
+| 6.3 % | MD subpel | 4.4× | per-call |
+| 4.4 % | screen-content detector | C is I_SLICE-only | algorithmic |
+| 3.9 % | second full-pel search | — | algorithmic |
+
+**≈19 % is work C never does (wiring); ≈81 % is per-call cost (kernels).**
+
+* The **ME SAD mechanism is already identified**: C computes these with ONE
+  FUSED AVX2 kernel at ~2.8 k Ir/call; the port's dispatch calls `block_sad`
+  **512×** at ~148 k Ir/call, at identical outer call counts. `block_sad_v3`
+  alone is **24.7 % of the whole inter delta**. Do not re-derive this.
+* The **convolve routing defect**: the port takes the 2-pass path **240×** where
+  C takes it **16×** — C routes y-only-subpel to `y_sr`.
+* **memset's 9.6 % is not real work to remove.** callgrind charges `rep stosb`
+  one Ir per byte, so a zero-fill is overstated by ~10×, and its largest caller
+  is the allocator's unnamed frame — memset and calloc rows are the same bytes
+  counted twice. A previous chunk confirmed this the expensive way: a range-coder
+  fix tripled its apparent Ir win and moved the wall clock by **nothing**.
+* Two computations are **performed and discarded**: `estimate_film_grain`
+  (3.4 M Ir/frame, `pipeline.rs:6232`) and `tpl_sb_qp_offsets` (2.3 M/frame,
+  `pipeline.rs:12148`).
+* At **p6 the top row is different**: directional intra on the inter frame, 27 %
+  — the port runs 2.2× C's breadth *on top of* a ~10× per-call kernel gap.
+* Allocator delta on the inter frame: **+31.7 k calls vs C's +17.**
+
+### Four byte hazards — the port matches C by LUCK, not construction
+
+Found by the same measurement, flagged and **not** diagnosed. Each is a latent
+identity failure that content not yet tested can trip:
+
+1. **C evaluates warped-motion candidates** (287 of 318 `warp_plane` calls at
+   p6); the port has **no warp arm at all**. Bytes match only because no warp
+   candidate has won. This is the *same* missing consumer that blocks the
+   remaining global-motion cells (`is_global_mv_block`, §6) — one piece of work
+   serving perf, identity and the inter campaign at once.
+2. **C runs the Wiener LR search on the inter frame** (`restoration_seg_search`
+   1→2, ~5.4 M Ir); the port does not (`search_restoration_still_bd` 1→1).
+   Both derive `is_not_last_layer = true`; identical only because C signalled
+   `RESTORE_NONE`.
+3. At p6 the port evaluates **fewer** MD leaves/candidates than C at identical
+   bytes (photo +64 vs +320; `predict_unit` +1,856 vs `fast_loop_core` +6,484).
+   So photo's 5.14× is per-call cost **on a narrower search**.
+4. **The screen-content detector re-detects per frame where C detects on
+   I_SLICE and copies.** `classes.sc_class5` has five inter-frame readers;
+   bytes match only because frame 1 is currently frame 0 shifted. Traced in
+   §7b — this one is the most likely of the four to break on real video, where
+   frame 1 genuinely differs from frame 0.
+
+### The allocator, and why `Cand` is the shape of the problem
+
+From `benchmarks/percall_layout_2026-09-05.*` (2026-09-05): the port makes
+**244,967 heap allocations per encode against C's 1,228 (199×)** while holding
+only **0.32× C's peak live bytes** — and **every one of C's 1,228 is a `_ctor`**,
+so C allocates *nothing* inside the encode loop. The port's structs are not
+fatter (`BlockDecision` 288 B vs `BlkStruct` 400; `MvpMiEntry` 20 vs 60);
+`leaf_funnel::Cand` is 528 B against C's 168 because **16 of its fields are
+`Vec`/`Option<Vec>`, 360 of the 528 bytes being Vec headers**. It is an
+ownership problem, not a layout one. Four hot paths were converted to stack or
+thread-local scratch (blocks −35.3 %, bytes −39.8 %, 2048² wall clock **1.155×**);
+the pattern generalises and is the most reusable lever in the tree.
+
 ---
 
 ## 4. Running the gates
@@ -296,7 +403,101 @@ trace driver until it resolves the path.
 
 ## 6. Where the next work is
 
-**Do not read a list from this file — it will rot.** The ranked queues live in:
+**The single highest-value item is the warp-prediction arm**, because it is one
+piece of work serving three axes at once: it is the named blocker for the
+remaining global-motion cells (identity), it is byte hazard #1 (the port
+currently matches C only because no warp candidate has won), and C spends
+~9–10 M Ir/frame on `warp_plane` that the port does not model at all. Nothing
+else in the tree pays off on identity *and* perf *and* the inter campaign
+simultaneously.
+
+**For CPU specifically, the inter frame is the failing axis** (§3: 7.60× / 7.46×
+/ 5.14× against whole-sequence 1.6–2.4×), and the attribution splits the work
+into two kinds that need different skills:
+
+* **Kernels, ≈81 %** — led by the **ME SAD family at 28 %** with its mechanism
+  already identified (C's one fused AVX2 kernel at 2.8 k Ir/call vs the port's
+  512-call `block_sad` dispatch at 148 k/call, at identical outer call counts),
+  then the convolves at 13.3 % including a routing defect (2-pass taken 240×
+  where C takes it 16×).
+* **Wiring, ≈19 %** — work C never does: the screen-content detector (C is
+  I_SLICE-only, the port runs it twice per frame on every frame), MDS0 Hadamard
+  SATD (C makes zero on the inter frame), a homegrown second full-pel search
+  whose `mv_map` reader was never traced, and two results computed then
+  discarded outright.
+
+#### The ME SAD arm is scoped and ready to write (2026-09-05, `e96f2b392`)
+
+The full read-against-C is a committed block at the top of `perf-status.md` §1
+("THE OPEN-LOOP ME SAD FAMILY, READ AGAINST C AND SCOPED"). **No code was
+written and nothing was measured** — but the design is derived, so a successor
+starts from a specification rather than from a profile.
+
+* **C's kernel** is `svt_ext_all_sad_calculation_8x8_16x16_avx2`
+  (`ASM_AVX2/compute_sad_intrin_avx2.c:4179`; there is **no AVX-512 variant**,
+  `rtcd.c:561`). Per 16×16 block it runs 8 row iterations of 6 loads + 3 inserts
+  + **four `_mm256_mpsadbw_epu8`** (imm 0/45/18/63) + 4 `adds_epu16`, producing
+  **8 search positions × {TL,TR,BL,BR} 8×8 at once**. One `mpsadbw` covers
+  8 positions × 4 bytes → **~6 Ir per 8×8, against the port's ~377**
+  (`block_sad_v3`: generic w/h loops, one 8-byte `_mm_sad_epu8` per row, plus a
+  slice re-borrow per call). The ~2.8 k Ir/call budget matches the measured
+  figure, so **the kernel shape is the whole cost.**
+* **The `#[arcane]` boundary is NOT the problem here** — it is already amortised
+  512:1 in `inter_me/sad.rs`. (Worth stating because it is the usual suspect.)
+* **Semantics a port arm must preserve**: winners via `_mm_minpos_epu16`
+  (lowest index on ties = `_c`'s first-wins) and a **signed** `_mm_cmplt_epi32`
+  against best — safe in-encoder because the seed is
+  `MAX_SAD_VALUE = 128*128*255`, **but `tests/c_parity_inter_me.rs` seeds
+  `u32::MAX` against the `_c` shim**, so the arm must keep unsigned/sequential
+  semantics or that test breaks.
+* **A measurement trap in the same family:** `svt_sad_loop_kernel_avx2_intrin`
+  (`:393`) is what callgrind prices, but **r7900x actually runs the AVX-512
+  variant at run time** — invisible to callgrind, which masks CPUID. So the Ir
+  ratio for that symbol understates what C does on real hardware. Its shape is
+  8 positions per `mpsadbw` group, u16 saturating accumulate with an overflow
+  fallback, leftover mask, `low_sum = 0xffffff`, strict `<` — the `_c` raster
+  first-wins the port already transcribes.
+* **aarch64 is a much smaller item and should be priced before it is worked.**
+  C dispatches the plain `_neon` ext_all (`sad_neon.c:173`; the `_neon_dotprod`
+  twin is **not** dispatched) and the port's `block_sad_arm_v2` is already within
+  a few × of that shape — so nothing like x86's 52×. **Not measured**; price it
+  with `benches/kernel_tiers.rs` first.
+* **Next step, concretely:** implement the x86 arm of
+  `ext_all_sad_calculation_8x8_16x16` in
+  `rust/crates/svtav1-encoder/src/inter_me/sad.rs` — replace the
+  `ext_all8_dispatch_v3` body with C's row loop
+  (`compute_sad_intrin_avx2.c:4179-4300`) plus four scalar unsigned strict-`<`
+  updates after `minpos`. **Mutation-prove it** against
+  `tests/c_parity_inter_me.rs::ext_all_sad_calculation_8x8_16x16_matches_c`
+  (break an imm or the tie-break, watch it go red), then re-take
+  `ext_all8_dispatch_v3` inclusive Ir with
+  `tools/perf_profile/callcount_cells.sh` on the gradient 512 p8 N=2 cell —
+  **target ~2.8 k Ir/call, from 148 k** — before touching `sad_loop_kernel`.
+  magetypes has no multi-position-SAD primitive, so this is a hand
+  `#[arcane]` + `#[rite]` arm; `_mm_mpsadbw_epu8::<IMM>` and `_mm_minpos_epu16`
+  are already safe intrinsics in the pinned archmage
+  (`tests/x86_safe_intrinsics.rs:311-314`).
+
+**Before optimising anything, know that Ir is a weak predictor of wall clock
+here.** The port's IPC is already *above* C's and its L1D misses about half —
+so removing instructions from a non-stalling path buys less than the ratio
+implies. Four chunks converted Ir wins at wildly different rates: 1.155× at
+2048², 1.029× (disjoint), ~1.010× (spans touching), and one outright **null at
+p2 despite the same −1.9 % Ir**. Claim only what a paired wall-clock A/B with
+its **own same-binary control** supports; the `perf_ab.sh` bias is
+**per-binary-pair** (measured 0.9940–1.0058, both signs), never a constant to
+import from another lane or host.
+
+**Do not assume a generic `#[magetypes]` body wins.** Measured: it beat the hand
+arm on x86 and was **1.45–2.20× SLOWER than hand `vabdq_u8` + `vmull_u8` +
+`vpadalq_u16` on aarch64** (`madd_adjacent` lowers to 11 vector instructions per
+16 B against the hand form's 5). `main` ships generic-on-x86 + hand-on-ARM for
+`variance::sse` for exactly this reason. Also, `sum_abs_diff` fully reduces per
+call, so it **cannot** express a SAD accumulation loop — which is why `me_sad`
+is hand-written. And `#[arcane]` has a real target-feature boundary cost: enter
+it **once** with the loop inside, use `#[rite]` for inner helpers.
+
+**Do not read a ranked list from this file — it will rot.** The live queues:
 
 * `rust/docs/perf-status.md` — the newest-first block stack is the CPU/memory
   record; inside it, the **cycle-ranked table** (photo_cid p6, port symbols
@@ -326,6 +527,27 @@ source string and regenerate with `tools/refusal_inventory.sh`.
 
 ## 7. Working here
 
+> ### ⚠ The archmage dependency is pinned to an UNMERGED PR branch
+>
+> `rust/Cargo.toml` carries a `[patch.crates-io]` block pinning `archmage`,
+> `archmage-macros` and `magetypes` to a **git rev on an open pull request**
+> (`imazen/archmage` #96 `feat/integer-pairwise-absdiff`, rev `cc24398c`; #97
+> `feat/w512-signed-bitcasts`, rev `2524b0be`, is **stacked on #96** so that one
+> rev carries both). It is needed because `crates/svtav1-dsp/src/variance.rs`'s
+> `#[magetypes]` body calls `u8xN::abs_diff` / `i16xN::madd_adjacent`, which the
+> published 0.9.28 does not have — remove the block and that file stops
+> compiling.
+>
+> **This means the build can break without anyone touching this repo.** If that
+> PR branch is force-pushed or deleted before merge, the rev can be GC'd and
+> `main` stops building for everyone, including CI. A fresh clone and CI both
+> need network access to `github.com/imazen/archmage`.
+>
+> **The fix is to merge #96 + #97 and publish**, then delete the block and bump
+> the registry requirement in `[workspace.dependencies]`. That is a decision for
+> the repo owner, not something to route around. The manifest comment carries
+> the same warning and the delete condition.
+
 `~/.claude/CLAUDE.md` governs. The parts that bite in this repo:
 
 * **jj on a colocated git repo, work on `main`, no feature branches.** Parallel
@@ -338,6 +560,22 @@ source string and regenerate with `tools/refusal_inventory.sh`.
 * **Rebase before pushing** (`jj git fetch && jj rebase -d main@origin`), then
   `jj bookmark set main -r @ && jj git push --bookmark main`, then verify with
   `git merge-base --is-ancestor <sha> origin/main`. Never `jj git push --change`.
+* **Two verification checks silently FAIL in this repo and report false
+  negatives.** `main@{u}` does not resolve, and **a jj workspace has no `.git`**
+  — so a verifier keyed on either reports "not pushed" for work that is pushed.
+  One lane concluded its own landed work was missing because of this. Run the
+  `merge-base` check **from the primary checkout**, against `origin/main`, and
+  **prove the verifier discriminates** by also running it on a commit you know
+  is NOT on main. A check that answers the same for both is not running.
+* **"Landed" in an agent report has repeatedly meant "uncommitted in a
+  workspace".** On 2026-09-05, three lanes in one afternoon reported landed work
+  that was still an *undescribed* working copy ("placeholder", or no description
+  at all) — one was 1,247 insertions across 10 files. Nothing was lost (jj
+  snapshots it; `jj op log` recovers it) but it was invisible to CI and to every
+  other lane. **Verify against `origin/main` before believing any completion
+  claim, including your own.** Find stray work with
+  `jj log -r 'all() & ~::main@origin & ~empty()'` and `jj status` in each
+  `zenav1-svt--<lane>` sibling.
 * Scratch goes in `~/tmp`, never `/tmp` — a mid-session wipe has already
   destroyed a measurement harness here. Anything that took real work to build
   belongs in the repo (`rust/tools/`, `rust/benchmarks/`), not in scratch.
@@ -347,10 +585,126 @@ source string and regenerate with `tools/refusal_inventory.sh`.
 
 ---
 
+## 7b. In-flight work that is NOT on main (2026-09-05 wrap-up)
+
+Left as labelled WIP in jj workspaces rather than pushed half-verified. Each is
+recoverable; none is on `main@origin`. **Verify that claim yourself** (§7) before
+acting.
+
+**Lane inventory at wrap-up** — four sibling workspaces exist; only ONE holds
+uncommitted work:
+
+| workspace | state |
+|---|---|
+| `zenav1-svt--v4x2` | **the only WIP.** Change `mqonmzpk` / `3d6f1447148c`, described `wip(lr):`, 729 insertions across 8 files, based on `d03f9735` (not the tip). Safe: in jj the working copy *is* the change, so it is snapshotted and `jj op log`-recoverable. |
+| `zenav1-svt--algo` | clean at `8fe8707f`; findings landed as docs. Pre-wired with symlinks + a prebuilt `capture_c_trace.nowrap.bin`, so **gates run there immediately** — the best place to start item 4→3→1a→2 below. |
+| `zenav1-svt--mesad` | clean (change `uwmrwwvz`); findings landed as docs at `e96f2b392`. No WIP. |
+| `zenav1-svt--mt1` | its work landed as `d03f97357`. |
+
+Note `v4x2`, `mt1` and `mesad` symlink `reference/svt-av1` to the primary
+checkout's submodule rather than carrying their own.
+
+> The `v4x2` lane was terminated mid-session by an API rate limit **after** it
+> had reported and committed. Nothing was lost, but that is why its x86 chain is
+> unfinished rather than merely unstarted.
+
+### `zenav1-svt--algo` — four traced fixes, READY TO LAND, no code written yet
+
+Workspace `~/work/zen/zenav1-svt--algo` (jj workspace `algo`) is **clean** at
+`8fe8707f`, already wired with the `reference/svt-av1` / `Bin` / `cbuild-static*`
+symlinks and a prebuilt `capture_c_trace.nowrap.bin`, so gates run there
+immediately. The source traces are done and committed as a docs block
+(`8fe8707f9`, in `perf-status.md` §1 with C line citations); **no code was
+changed, nothing was measured, no gate was run.** Land in this order, one commit
+each — **4 → 3 → 1-dedupe → 2 → 1-persist**:
+
+| # | item | what the trace found | inert? |
+|---|---|---|---|
+| 4 | `estimate_film_grain` + `tpl_sb_qp_offsets` | both **confirmed discarded** from source — `_grain_params` (`pipeline.rs:6232`) never read (FH grain comes from `hdr.noise_strength`); `sb_qp_offsets` reaches `encode_tile_rows` only to hit `let _ = (…)` at `:12148` | yes |
+| 3 | `full_pel_search` | **its output has no reader.** `mv_map`'s only readers (`RefFrameCtx::get_mv_predictor` `:225`, OBMC `:2726`) sit in `partition::encode_single_block`, reachable only via the legacy `partition_search_with_config` arm (`:13436`); `encode_tile_rows` is called **once** (`:4027`) and the map is filled **after** it returns (`:4229-4254`) | **inert by construction** — delete the fill loop but keep passing the zero map (legacy OBMC treats `Some(zeros)` ≠ `None`) |
+| 1a | sc detector, second call | pure recompute: `derive_sc` is stateless, `ScDerivation` is `Copy`, and `encode_tile_rows`' `sc_preset` param has `:11406` as its **only** reader | yes |
+| 2 | MDS0 Hadamard | **ported but unwired, one lane.** C's `fast_loop_core` (`product_coding_loop.c:1257-1307`) picks one arm for intra *and* inter; `mds0_use_hadamard_sb` is false on the video arm and the port already derives it (`encdec_arm`, pinned by `c_parity_sig_deriv_encdec.rs:484`). The intra lane honours it (`inject.rs:475`, `:558-575`); the **inter lane at `inject.rs:1465-1477` hard-codes SATD** → the 632 calls. Fix mirrors the intra lane's three-way select | **NO** — moves inter MDS0 fast costs; gates decide |
+| 1b | sc detector, per-frame re-detection | see the hazard below | **NO** |
+
+**Run the mutation for item 2 first** (scale the variance-arm result at
+`inject.rs:1476`, watch `inter_byte_gate`). **If it cannot go red, the inter fast
+cost is unobserved on the grid — and that is the finding**, more valuable than
+the optimisation.
+
+> ### ⚠ A FOURTH byte hazard, found by this trace
+>
+> C's `perform_sc_detection` (`pd_process.c:4769-4806`) detects **only on
+> I_SLICE** and then *copies* `last_i_picture_sc_class0..5` onto every other
+> picture. **The port re-runs the AA-aware detector on the inter frame's own
+> pixels.** The ladders below are already correct on non-I (`is_islice ? X : 0`,
+> `enc_mode_config.c:2033-2075`), but **`classes.sc_class5` has five inter-frame
+> readers** (`pipeline.rs:2556, 3296, 5776, 11536, 12772`). **Bytes match today
+> only because frame 1 is frame 0 shifted** — real video, where frame 1 differs
+> from frame 0, is exactly the case that breaks it. This is a correctness shape,
+> not a perf item, and it belongs with the three hazards in §3.
+
+### `zenav1-svt--v4x2` — Wiener 32-lane horizontal pass, change `3d6f1447148c`
+
+The W512 widening on archmage #97's rev, which bumps the existing pin
+`cc24398c` → `2524b0be` (**bumped, not duplicated** — one block; `variance.rs`'s
+`abs_diff`/`madd_adjacent` were rebuilt and re-tested there, 255/255 both ISAs,
+not assumed).
+
+**Why it is not on main: the x86-64 gate chain never ran on the final rebased
+tree**, and x86 is the half that matters — it is the only ISA that selects `_v4`.
+An earlier chain was deliberately killed when rebasing onto `d03f9735` (which
+changes encoder source). **Nothing was relaxed or skipped; the chain is simply
+unfinished.** aarch64 on the rebased tree is green (nextest 2547/2547,
+`identity_full_8bit` 1100/1100, `regression_spotcheck` 104/104, `inter_byte_gate`
+PASS, six still cells).
+
+Measured and green: kernel 64×64 base 3.31/3.28/3.25 µs vs candidate
+2.98/2.83/3.01 µs — **disjoint sets, 1.101× median**; kernel Ir −30.6 %
+(horizontal fill −46.5 %), **12.68× → 8.81×** C; the `_v4` arm goes 108 → 134
+`zmm`.
+
+**The frame wall clock is a NULL, measured twice** (one contended session, one
+quiet, each against its own same-binary control, every span overlapping). That
+is arithmetic, not a contradiction: **the kernel is 0.68 % of a p6 frame.**
+
+To finish: run the x86-64 chain on that tree (`identity_full_8bit`,
+`regression_spotcheck`, `inter_byte_gate`, `SCAN_GATE=1 inter_completion_scan`,
+`video_key_matrix`, `screen_ibc_byte_gate`, `screen_palette_gate`, `fctx_gate`,
+`decode_conformance`, `decode_gate_grid`) plus aarch64's remaining four; if
+green, rebase onto the tip and push.
+
+**Negative result — do not repeat it:** `madd_adjacent` **cannot** serve the
+Wiener *vertical* pass. It pairs adjacent lanes; C reaches that layout with
+`unpacklo/unpackhi_epi16` first, and magetypes exports **no interleave/zip/unpack**
+(checked in the #97 branch source). **An interleave primitive is the successor to
+the #89 archmage ask** — not filed while #96/#97 are open. The vertical fold in
+`crates/svtav1-dsp/src/restoration.rs` is blocked on it.
+
+> **The transferable lesson, now also in `WORKING-ON-THIS.md` §5: a kernel worth
+> under ~1 % of the frame cannot be judged by `perf_ab.sh` at all.** Divide the
+> kernel's self-Ir by the frame's Ir *before* spending a session on it, and add
+> the `kernel_tiers` bench case in the same commit so the kernel-level claim is
+> measurable when the frame-level one is not.
+
+---
+
 ## 8. Machine-local state a new box will NOT inherit
 
 * `Bin/Release`, `Bin/ReleaseHdr`, `cbuild-static*/` and `aom-build/` are build
   outputs — rebuild per §2. Nothing in them is a source of truth.
+* **`zenav1-svt--txt1` on r7900x is a PLAIN GIT dir, not a jj workspace** — so
+  it had **no operation-log snapshot** protecting it, unlike every other lane
+  directory. It held 3 files uncommitted since 2026-09-04 from a `txt_search`
+  restructure experiment (`leaf_funnel/{detect,tx_pipeline,txt}.rs`, 817 lines),
+  under a marker stale by over a day. Exported 2026-09-05 to
+  `zenav1-svt-dup1-stashes-r7900x-2026-09-04/txt1-uncommitted-2026-09-05.patch`
+  (mirrored on this Mac and r7900x, base commit `708ef6386`, `INDEX.txt` entry
+  added). **The working tree on r7900x was left exactly as found** — nothing was
+  applied or discarded. It is UNREVIEWED; nobody has decided whether it is live.
+  **Its `.workongoing` marker is deliberately left in place** (the rule is never
+  to clear another lane's), so you will see a claim dated 2026-09-04 on that
+  directory — it is stale by over a day and the lane is dead. Treat the
+  directory as free; the marker is not a live claim.
 * **Four exported stashes from the earlier `crash1` / `1z16` lanes** live at
   `~/work/zen/zenav1-svt-dup1-stashes-r7900x-2026-09-04/` (`INDEX.txt` +
   `stash{0..3}.patch`, exported from r7900x on 2026-09-04, mirrored on both
