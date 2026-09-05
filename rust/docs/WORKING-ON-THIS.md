@@ -550,6 +550,43 @@ equalled p4.
 incrementally; a mid-run edit corrupts the running script and killed a 300-cell
 sweep mid-flight.
 
+**A KERNEL THAT IS UNDER ~1 % OF THE FRAME CANNOT BE JUDGED BY `perf_ab.sh` —
+BENCH IT AT THE KERNEL OR DO NOT CLAIM ANYTHING.** MEASURED 2026-09-05
+(`benchmarks/wiener_h32_lanes_2026-09-05`): widening the Wiener horizontal pass
+from 16 i32 lanes to 32 i16 cut the kernel 30.6 % in Ir and **1.08-1.10x in
+time with disjoint sets over three passes a side**, and the frame wall clock was
+a flat NULL on two contents in two independent sessions, each against its own
+same-binary control. That is not a contradiction — the kernel is 0.68 % of a p6
+frame, so a 30 % cut to it is 0.2 % of the frame, which is under the harness's
+own control spread. **Before spending a session on a kernel, divide its self Ir
+by the frame Ir. If the answer is under ~1 %, `perf_ab.sh` cannot resolve any
+improvement you make to it, and the honest instrument is a `kernel_tiers` bench
+case plus the byte gates.** Add the bench case in the same commit; a kernel with
+no bench case cannot be defended later. Same shape as
+`cdef_neon_4wide_i16_2026-09-05`, and the precedent for how to report it: the
+kernel number with its interval, and the frame stated as a null.
+
+**A TIMED CELL TAKEN UNDER UNKNOWN CONTENTION IS RE-TAKEN, NOT ARGUED ABOUT —
+AND YOUR MARKER SHOULD SAY THE RUN IS TIMED.** MEASURED 2026-09-05: a kernel
+bench sweep on r7900x ran while a sibling lane had valgrind (~50x
+single-threaded load) on the same box. zenbench's `min` statistic absorbed it
+well enough that the sets still came out disjoint and the re-run agreed to
+within a few percent — which is exactly why this is a trap: the number LOOKED
+fine. It was discarded and re-taken on a box checked quiet immediately before.
+**Two habits came out of it.** Write the KIND of run into `.workongoing`
+("TIMED KERNEL BENCH IN PROGRESS — do not run timed work"), not just the topic —
+that is what let a second party notice the collision. And refresh the marker
+BEFORE each long run, not after: a marker older than five minutes reads as an
+abandoned lane, and with three lanes live that is how a workspace gets
+clobbered.
+
+**zenbench WRITES ITS RESULTS TO `/tmp/zenbench` BY DEFAULT, AND `/tmp` IS
+BANNED HERE.** Set `TMPDIR` under `~/tmp` before running any bench, or a wipe
+takes the measurements with it. This repo has already lost a parity harness AND
+its pre-fix baseline to a `/tmp` wipe, which made the before/after comparison
+impossible and forced a rebuild onto a different grid — the new numbers were not
+comparable to the old ones, so the work had to be redone from scratch.
+
 **A 512-BIT ARM MEASURED ONLY ON ZEN 4 IS HALF A MEASUREMENT — AND CALLGRIND
 CANNOT SEE IT AT ALL.** Two separate traps, both paid for on 2026-09-05 by
 `wiener_avx512_tier_2026-09-05`, the port's first `_v4` tier.

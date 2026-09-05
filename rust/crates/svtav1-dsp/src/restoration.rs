@@ -222,16 +222,17 @@ fn wiener_v_row(rows: &[&[u16]; 8], w: usize, f: &[i16; 8], out: &mut [u8]) {
     }
 }
 
-/// Ring-row width for the vector arm: a multiple of 16 (the `i32x16` lane
-/// count) that covers `WIENER_MAX_PROC_W`. Lanes past `w` hold padding and are
-/// never stored to `dst`.
+/// Ring-row width for the vector arm: a multiple of 32 (the `i16x32` lane
+/// count the horizontal pass now runs) that covers `WIENER_MAX_PROC_W`. Lanes
+/// past `w` hold padding and are never stored to `dst`.
 const WIENER_SIMD_RING_W: usize = 64;
 
-/// Widened-source scratch width for the vector arm. The horizontal window for
-/// output `x` reads `s32[x .. x + 8]`, and the last vector block starts at
-/// `x = 48` (for `w = 49..64`), so the highest index touched is
-/// `48 + 7 + 15 = 70`; 96 covers it with room for the zero tail.
-const WIENER_SIMD_SRC_W: usize = 96;
+/// Widened-source scratch, in i16 lanes. The horizontal window for output `x`
+/// reads `s16[x .. x + 8]` and the last vector block starts at `x = 32` (for
+/// `w = 33..64`), so the highest index touched is `32 + 7 + 31 = 70`. The
+/// width is 128 rather than 96 because the widening is now done by two
+/// `u8x64` loads, and 128 is what two of those cover.
+const WIENER_SIMD_SRC_W: usize = 128;
 
 /// Whether [`wiener_convolve_simd`] is legal for this call.
 ///
@@ -270,9 +271,23 @@ fn wiener_simd_applicable(hfilter: &[i16; 8], vfilter: &[i16; 8], w: usize) -> b
     {
         return false;
     }
-    let habs: i32 = hfilter.iter().map(|&f| i32::from(f).abs()).sum();
+    // The horizontal accumulator is i16 (see the type note in
+    // `wiener_convolve_simd`), so its two rails have to be checked, not
+    // assumed. `S s[x+k]*f[k]` with `s <= 255` lies in
+    // `[-255*Sf-, 255*Sf+]`, and every PREFIX of the accumulation lies in the
+    // same interval, so bounding the two ends bounds the whole reduction. The
+    // `+ 4` is the round-0 term, which is added before the shift.
+    let mut pos = 0i32;
+    let mut neg = 0i32;
+    for &f in hfilter {
+        let f = i32::from(f);
+        if f > 0 { pos += f } else { neg -= f }
+    }
+    if 255 * pos + 4 > i32::from(i16::MAX) || 255 * neg > 32768 {
+        return false;
+    }
     let vabs: i32 = vfilter.iter().map(|&f| i32::from(f).abs()).sum();
-    habs <= 4096 && vabs <= 4096
+    vabs <= 4096
 }
 
 /// Which tier the `incant!` in [`wiener_convolve_add_src`] resolves to on the
@@ -300,51 +315,71 @@ fn wiener_simd_tier() -> &'static str {
 /// The vector arm of [`wiener_convolve_add_src`] — one body, five tiers,
 /// including x86's first genuine 512-bit arm in this port.
 ///
-/// # Why `#[magetypes]` here, when the other kernels are per-ISA `#[arcane]`
+/// # Lane widths, and why they are what they are
 ///
-/// `intra_pred`, `residual` and `me_sad` each carry a "why not `#[magetypes]`"
-/// note: they need an integer WIDENING conversion, and the PUBLISHED
-/// magetypes 0.9.28 (the one in `Cargo.lock`; verified with
-/// `cargo read magetypes`, not from the local `~/work/archmage` checkout,
-/// which carries unpublished `widen_low` / `narrow_saturating_*` work that
-/// crates.io does not have) has none. That note is correct and unchanged.
+/// The horizontal pass runs **32 i16 lanes**, which is C's width. It got there
+/// on 2026-09-05 (second chunk): it ran 16 i32 lanes first, because the
+/// published magetypes 0.9.28 had no path from a `u8` load to `i16x32` at 512
+/// bits — `u8x64::widen_low` reaches `u16x32` and `u16x32` had no
+/// `bitcast_i16x32`, and `U8x32Widen` was not implemented for `X64V4Token`
+/// either, so neither the wide nor the narrow route existed. That was reported
+/// as archmage issue #89 and closed by PR #97, which generates the six
+/// `i16x32 <-> u16x32` value / shared-ref / mutable-ref methods with no new
+/// backend trait — so the chain now works on every tier that has both
+/// backends, which is all five. `rust/Cargo.toml` carries the dev-only
+/// `[patch.crates-io]` pin, with its own risk note.
 ///
-/// This kernel sidesteps it: it never converts between lane widths. Every
-/// value lives in `i32x16` from the moment the source byte is read, and the
-/// u8 -> i32 widening is a plain `for t { s32[t] = i32::from(src[..]) }` loop
-/// that LLVM lowers to `vpmovzxbd` inside each tier's `#[target_feature]`
-/// region. The only magetypes surface used is `i32x16::{splat, from_slice,
-/// store, min, max, shr_arithmetic_const}`, `Add` and `Mul<i32>` — all of them
-/// in the published crate, and all of them backed by `type Repr = __m512i`
-/// for `X64V4Token`, so the `_v4` arm really is 512 bits wide.
+/// The vertical pass still widens to `i32x16` and multiplies. C uses
+/// `_mm512_madd_epi16` there, and `madd_adjacent` DOES now exist (archmage
+/// #96) — but it pairs ADJACENT lanes, so using it needs the two rows
+/// interleaved first, and magetypes exports no interleave / unpack. Checked in
+/// the #97 branch source, not assumed: `i16x32_impl.rs` has `madd_adjacent`
+/// and `msub_adjacent` and no `interleave`/`zip`/`unpack` of any name. So the
+/// vertical fold stays four `i32` products behind the symmetry precondition,
+/// and an interleave primitive is what would close it.
 ///
-/// The cost of staying in i32 is the horizontal pass: C keeps it in i16 lanes
-/// (`maddubs` on byte-shuffled data, 32 lanes per register) where this runs 16.
-/// Closing that needs two primitives magetypes does not export —
-/// `madd_adjacent` (`_mm512_madd_epi16`) and a u8 -> i16 widen — which is
-/// archmage issue #89's list, already tracking `madd_adjacent` / `abs_diff`.
-/// Until then the i32 form is what one body can honestly deliver on five
-/// tiers, and it is the difference between a vector arm and none.
+/// The `intra_pred` / `residual` / `me_sad` "why not `#[magetypes]`" notes are
+/// about the same class of gap and remain accurate for the crates.io release.
+///
+/// # The i16 rail, and why it is CHECKED
+///
+/// An i16 horizontal accumulator is only sound inside a range, so
+/// [`wiener_simd_applicable`] checks both of its ends rather than trusting the
+/// tap search. For every filter that search can emit the margin is wide —
+/// `Sf+ = Sf- <= 128` gives `255 * 128 = 32,640` against `i16::MAX` 32,767 —
+/// but the function is public and takes an arbitrary `&[i16; 8]`, so a filter
+/// that would wrap takes the scalar path instead of producing wrong pixels.
 ///
 /// # The oracle
 ///
 /// C's `svt_av1_wiener_convolve_add_src_avx512`
-/// (`Source/Lib/ASM_AVX512/wiener_convolve_avx512.c:270`). One of its
-/// rearrangements is reproduced and one is deliberately not:
+/// (`Source/Lib/ASM_AVX512/wiener_convolve_avx512.c:270`). Two of its
+/// rearrangements are now reproduced and one is still not:
 ///
 /// * **Reproduced** — `:296` folds the `add_src` term into the coefficient
 ///   (`coeffs_y + offset_0`, a `1 << FILTER_BITS` planted at lane 3), so the
 ///   centre column is `r3 * (f[3] + 128)` rather than a separate `r3 << 7`.
-///   This arm does the same on BOTH passes, saving one multiply each. It is an
-///   exact regrouping of the scalar row's
-///   `(s[x+3] << FILTER_BITS) + S s[x+k]*f[k]`, not an approximation.
+///   Applied on the vertical pass here.
+/// * **Reproduced** — `wiener_clip_avx512` (`:27`) shifts the tap sum BEFORE
+///   adding the centre sample, which is what makes the horizontal pass fit in
+///   i16 at all. This is an exact regrouping of the scalar row's
+///   `((s[x+3] << 7) + 16384 + S s*f + 4) >> 3`, because `s[x+3] << 7` and
+///   `16384` are both multiples of 8 — it holds for every sign, and it is the
+///   change that took the pass from 16 lanes to 32.
 /// * **Not reproduced** — `calc_zero_coef` (`:274`) specialises to 3-, 5- and
-///   7-tap forms when the outer taps are zero, and `wiener_clip_avx512`
-///   (`:27`) shifts before adding the centre sample so the whole horizontal
-///   pass fits in i16. The first is a call-shape optimisation this port can
-///   revisit; the second is only needed by an i16 accumulator.
+///   7-tap forms when the outer taps are zero, and C's horizontal pass uses
+///   `maddubs` on byte-shuffled data where this one uses eight `mullo` on a
+///   pre-widened row. The first is a call-shape optimisation; the second needs
+///   a 64-byte `shuffle_epi8`, which magetypes also does not export.
 #[allow(clippy::too_many_arguments)]
-#[magetypes(define(i32x16), v4(cfg(avx512)), v3, neon, wasm128, scalar)]
+#[magetypes(
+    define(u8x64, i16x32, i32x16),
+    v4(cfg(avx512)),
+    v3,
+    neon,
+    wasm128,
+    scalar
+)]
 fn wiener_convolve_simd(
     token: Token,
     src: &[u8],
@@ -358,29 +393,20 @@ fn wiener_convolve_simd(
     w: usize,
     h: usize,
 ) {
-    const LANES: usize = 16;
+    const HLANES: usize = 32;
     let ih = h + 6;
     let n_src = w + 7;
 
-    // Horizontal coefficients with the `add_src` term folded into the centre
-    // tap: `(s[x+3] << FILTER_BITS)` IS `s[x+3] * (1 << FILTER_BITS)`.
-    let mut hc = [0i32; 8];
-    for k in 0..8 {
-        hc[k] = i32::from(hfilter[k]);
-    }
-    hc[3] += 1 << FILTER_BITS;
-
-    let zero = i32x16::splat(token, 0);
-    let hi_h = i32x16::splat(
+    let zero16 = i16x32::splat(token, 0);
+    // `WIENER_CLAMP_LIMIT(round_0, bd) - 1`, the same value C builds as
+    // `clamp_high` at wiener_convolve_avx512.c:288.
+    let hi16 = i16x32::splat(
         token,
-        (1i32 << (8 + 1 + FILTER_BITS - WIENER_ROUND0_BITS)) - 1,
+        (1i16 << (8 + 1 + FILTER_BITS - WIENER_ROUND0_BITS)) - 1,
     );
-    let hi_v = i32x16::splat(token, 255);
-    // `(1 << (bd + FILTER_BITS - 1))` seed plus the round-0 rounding term.
-    let bias_h = i32x16::splat(
-        token,
-        (1 << (8 + FILTER_BITS - 1)) + (1 << (WIENER_ROUND0_BITS - 1)),
-    );
+    let round_h0 = i16x32::splat(token, 1 << (WIENER_ROUND0_BITS - 1));
+    let round_h1 = i16x32::splat(token, 1 << (8 + FILTER_BITS - 1 - WIENER_ROUND0_BITS));
+    let byte_max = i16x32::splat(token, 255);
     // `-(1 << (bd + round_1 - 1))` seed plus the round-1 rounding term — the
     // same constant C builds as `round_v` at wiener_convolve_avx512.c:283.
     let bias_v = i32x16::splat(
@@ -392,9 +418,13 @@ fn wiener_convolve_simd(
     let vc2 = i32::from(vfilter[2]);
     let vc3 = i32::from(vfilter[3]) + (1 << FILTER_BITS);
 
-    let mut ring = [[0i32; WIENER_SIMD_RING_W]; 8];
-    let mut s32 = [0i32; WIENER_SIMD_SRC_W];
-    let mut out32 = [0i32; WIENER_SIMD_RING_W];
+    let mut ring = [[0i16; WIENER_SIMD_RING_W]; 8];
+    let mut s16 = [0i16; WIENER_SIMD_SRC_W];
+    let mut out16 = [0i16; WIENER_SIMD_RING_W];
+    // The row's source bytes, zero-padded to two `u8x64` loads. Zeroed ONCE:
+    // `n_src` does not change across rows, so every byte past it stays zero for
+    // the whole call and no stale sample can reach a lane.
+    let mut sbuf = [0u8; WIENER_SIMD_SRC_W];
 
     // C receives `src - 3 * stride` and subtracts three columns internally, so
     // intermediate row `j` is built from source row `j - 3` starting at
@@ -405,75 +435,104 @@ fn wiener_convolve_simd(
 
     // One horizontal-pass row into `out`. `j >= ih` is the row C memsets: its
     // vertical weight is zero, but the sample is read.
-    let fill =
-        |j: usize, s32: &mut [i32; WIENER_SIMD_SRC_W], out: &mut [i32; WIENER_SIMD_RING_W]| {
-            if j >= ih {
-                out.fill(0);
-                return;
-            }
-            let base = h_row_base(j);
-            // Widen the row's `w + 7` source bytes once (LLVM: `vpmovzxbd`).
-            // Zero-filling the tail is load-bearing — the last vector block reads
-            // past `n_src`, and a zero there keeps stale data from the previous
-            // row out of lanes that a narrower `w` would otherwise carry forward.
-            for t in 0..n_src {
-                s32[t] = i32::from(src[base + t]);
-            }
-            for t in n_src..WIENER_SIMD_SRC_W {
-                s32[t] = 0;
-            }
+    let fill = |j: usize,
+                sbuf: &mut [u8; WIENER_SIMD_SRC_W],
+                s16: &mut [i16; WIENER_SIMD_SRC_W],
+                out: &mut [i16; WIENER_SIMD_RING_W]| {
+        if j >= ih {
+            out.fill(0);
+            return;
+        }
+        let base = h_row_base(j);
+        // Copy the row into the padded buffer, then widen it with the W512
+        // byte-to-signed chain: `u8x64 -> u16x32 -> i16x32`. The copy exists
+        // because the load is 64 bytes wide and the block is only `w + 7`; a
+        // direct load off the plane could read past its end at the right edge.
+        sbuf[..n_src].copy_from_slice(&src[base..base + n_src]);
+        let mut t = 0;
+        while t < WIENER_SIMD_SRC_W {
+            let b = u8x64::from_slice(token, &sbuf[t..]);
+            let lo: &mut [i16; HLANES] = (&mut s16[t..t + HLANES]).try_into().unwrap();
+            b.widen_low().bitcast_i16x32().store(lo);
+            let hi: &mut [i16; HLANES] = (&mut s16[t + HLANES..t + 64]).try_into().unwrap();
+            b.widen_high().bitcast_i16x32().store(hi);
+            t += 64;
+        }
 
-            let mut x = 0;
-            while x < w {
-                let mut acc = bias_h;
-                for k in 0..8 {
-                    acc = acc + i32x16::from_slice(token, &s32[x + k..]) * hc[k];
-                }
-                let v = acc
-                    .shr_arithmetic_const::<WIENER_ROUND0_BITS>()
-                    .max(zero)
-                    .min(hi_h);
-                let slot: &mut [i32; LANES] = (&mut out[x..x + LANES]).try_into().unwrap();
-                v.store(slot);
-                x += LANES;
+        let mut x = 0;
+        while x < w {
+            let mut acc = i16x32::splat(token, 0);
+            for k in 0..8 {
+                acc = acc + i16x32::from_slice(token, &s16[x + k..]) * hfilter[k];
             }
-        };
+            // C's `wiener_clip_avx512` regrouping (wiener_convolve_avx512.c:27):
+            // shift the tap sum FIRST, then add the centre sample and the
+            // round-1 term. Equal to the scalar row's
+            // `((s[x+3] << 7) + 16384 + S s*f + 4) >> 3` because `s[x+3] << 7`
+            // and `16384` are both multiples of 8 — an exact regrouping for
+            // every sign, not an approximation — and only this order keeps
+            // every intermediate inside i16.
+            let shifted = (acc + round_h0).shr_arithmetic_const::<WIENER_ROUND0_BITS>();
+            let centre = i16x32::from_slice(token, &s16[x + 3..])
+                .shl_const::<{ FILTER_BITS - WIENER_ROUND0_BITS }>();
+            let v = (shifted + centre + round_h1).max(zero16).min(hi16);
+            let slot: &mut [i16; HLANES] = (&mut out[x..x + HLANES]).try_into().unwrap();
+            v.store(slot);
+            x += HLANES;
+        }
+    };
 
     for j in 0..8 {
-        fill(j, &mut s32, &mut ring[j % 8]);
+        fill(j, &mut sbuf, &mut s16, &mut ring[j % 8]);
     }
 
     for y in 0..h {
         let mut x = 0;
         while x < w {
-            let r0 = i32x16::from_slice(token, &ring[y % 8][x..]);
-            let r1 = i32x16::from_slice(token, &ring[(y + 1) % 8][x..]);
-            let r2 = i32x16::from_slice(token, &ring[(y + 2) % 8][x..]);
-            let r3 = i32x16::from_slice(token, &ring[(y + 3) % 8][x..]);
-            let r4 = i32x16::from_slice(token, &ring[(y + 4) % 8][x..]);
-            let r5 = i32x16::from_slice(token, &ring[(y + 5) % 8][x..]);
-            let r6 = i32x16::from_slice(token, &ring[(y + 6) % 8][x..]);
+            let r0 = i16x32::from_slice(token, &ring[y % 8][x..]);
+            let r1 = i16x32::from_slice(token, &ring[(y + 1) % 8][x..]);
+            let r2 = i16x32::from_slice(token, &ring[(y + 2) % 8][x..]);
+            let r3 = i16x32::from_slice(token, &ring[(y + 3) % 8][x..]);
+            let r4 = i16x32::from_slice(token, &ring[(y + 4) % 8][x..]);
+            let r5 = i16x32::from_slice(token, &ring[(y + 5) % 8][x..]);
+            let r6 = i16x32::from_slice(token, &ring[(y + 6) % 8][x..]);
             // Row 7's weight is zero (checked by `wiener_simd_applicable`), so
-            // it is not loaded at all.
-            let acc = bias_v + (r0 + r6) * vc0 + (r1 + r5) * vc1 + (r2 + r4) * vc2 + r3 * vc3;
-            let v = acc
-                .shr_arithmetic_const::<WIENER_ROUND1_BITS>()
-                .max(zero)
-                .min(hi_v);
-            let slot: &mut [i32; LANES] = (&mut out32[x..x + LANES]).try_into().unwrap();
+            // it is not loaded at all. Each pair sum is `<= 2 * 8191 = 16382`
+            // and stays in i16.
+            let s0 = r0 + r6;
+            let s1 = r1 + r5;
+            let s2 = r2 + r4;
+
+            let lo = bias_v
+                + s0.widen_low() * vc0
+                + s1.widen_low() * vc1
+                + s2.widen_low() * vc2
+                + r3.widen_low() * vc3;
+            let hi = bias_v
+                + s0.widen_high() * vc0
+                + s1.widen_high() * vc1
+                + s2.widen_high() * vc2
+                + r3.widen_high() * vc3;
+            let lo = lo.shr_arithmetic_const::<WIENER_ROUND1_BITS>();
+            let hi = hi.shr_arithmetic_const::<WIENER_ROUND1_BITS>();
+            // The narrow saturates to i16 and the min/max then clamps to
+            // 0..255 — the pair C writes as `packs_epi32` + `packus_epi16`.
+            // Saturation cannot change the answer: it preserves sign and both
+            // i16 rails are already outside 0..255.
+            let v = lo.narrow_saturating_i16(hi).max(zero16).min(byte_max);
+            let slot: &mut [i16; HLANES] = (&mut out16[x..x + HLANES]).try_into().unwrap();
             v.store(slot);
-            x += LANES;
+            x += HLANES;
         }
         let d = dst_origin + y * dst_stride;
         for i in 0..w {
-            dst[d + i] = out32[i] as u8;
+            dst[d + i] = out16[i] as u8;
         }
         if y + 8 <= ih {
-            fill(y + 8, &mut s32, &mut ring[(y + 8) % 8]);
+            fill(y + 8, &mut sbuf, &mut s16, &mut ring[(y + 8) % 8]);
         }
     }
 }
-
 /// C `svt_av1_wiener_convolve_add_src_c` (convolve.c:106), 8-bit.
 ///
 /// `src`/`dst` are whole padded planes; `src_origin`/`dst_origin` index the
@@ -3394,6 +3453,54 @@ mod tests {
             !wiener_simd_applicable(&f.hfilter, &tap7, 64),
             "a non-zero tap 7 is dropped by the fold and must fall back"
         );
+
+        // The i16 horizontal rail, pinned at BOTH ends and from BOTH sides.
+        // `255 * Sf+ + 4 <= 32767` means the largest admissible positive tap
+        // sum is 128 (`255 * 128 + 4 = 32,644`); 129 overflows
+        // (`255 * 129 + 4 = 32,899`). One step either side of that edge must
+        // change the verdict, or the check is not testing the boundary it
+        // names.
+        let sym = |t0: i16, t1: i16, t2: i16| -> [i16; 8] {
+            [t0, t1, t2, -2 * (t0 + t1 + t2), t2, t1, t0, 0]
+        };
+        let ok_pos = [0i16, 0, 0, 128, 0, 0, 0, 0];
+        assert!(
+            wiener_simd_applicable(&ok_pos, &f.vfilter, 64),
+            "Sf+ = 128 is the largest legal positive rail and must be ACCEPTED"
+        );
+        let over_pos = [0i16, 0, 0, 129, 0, 0, 0, 0];
+        assert!(
+            !wiener_simd_applicable(&over_pos, &f.vfilter, 64),
+            "Sf+ = 129 overflows the i16 accumulator and must be REFUSED"
+        );
+        let ok_neg = [0i16, 0, 0, -128, 0, 0, 0, 0];
+        assert!(
+            wiener_simd_applicable(&ok_neg, &f.vfilter, 64),
+            "Sf- = 128 is the largest legal negative rail and must be ACCEPTED"
+        );
+        let over_neg = [0i16, 0, 0, -129, 0, 0, 0, 0];
+        assert!(
+            !wiener_simd_applicable(&over_neg, &f.vfilter, 64),
+            "Sf- = 129 overflows the i16 accumulator and must be REFUSED"
+        );
+
+        // And the rail must not exclude anything the tap search can EMIT: all
+        // 2^3 corners of the AV1 tap ranges (restoration.h:141-147) plus the
+        // midpoint. If a future range widening pushed a legal filter over the
+        // rail, this is what would catch it — silently falling back to scalar
+        // on real encoder input is a performance bug that no byte gate sees.
+        for &t0 in &[WIENER_FILT_TAP0_MINV as i16, WIENER_FILT_TAP0_MAXV as i16] {
+            for &t1 in &[WIENER_FILT_TAP1_MINV as i16, WIENER_FILT_TAP1_MAXV as i16] {
+                for &t2 in &[WIENER_FILT_TAP2_MINV as i16, WIENER_FILT_TAP2_MAXV as i16] {
+                    let filt = sym(t0, t1, t2);
+                    assert!(
+                        wiener_simd_applicable(&filt, &filt, 64),
+                        "a filter at the corner of the AV1 tap ranges {filt:?} \
+                         falls off the vector arm"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

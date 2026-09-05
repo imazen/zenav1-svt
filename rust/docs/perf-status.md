@@ -1,5 +1,67 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **WIP, NOT ON MAIN — THE WIENER HORIZONTAL PASS AT C'S 32 i16 LANES.
+> 1.08-1.10x AT THE KERNEL WITH DISJOINT SETS, A FRAME WALL-CLOCK NULL, AND AN
+> UNFINISHED GATE CHAIN (2026-09-05).** Record
+> `benchmarks/wiener_h32_lanes_2026-09-05.{tsv,meta}`. The commit lives in the
+> `zenav1-svt--v4x2` workspace with a `wip:` message; **it is NOT on
+> `main@origin`** because the x86 gate chain never ran on the final rebased
+> tree. Read §7 of the meta before picking it up — it names exactly which gates
+> ran and which did not.
+> **WHAT IT DOES.** `wiener_convolve_simd`'s horizontal pass was 16 `i32x16`
+> lanes because published magetypes had no `u8` -> `i16x32` path at 512 bits.
+> archmage **#97** (stacked on #96) adds `u16x32::bitcast_i16x32`, so the chain
+> `u8x64::from_slice(..).widen_low().bitcast_i16x32()` now works on all five
+> tiers. The pass moves to 32 i16 lanes, which is C's width, by ALSO adopting
+> C's `wiener_clip_avx512` regrouping (`wiener_convolve_avx512.c:27` — shift the
+> tap sum BEFORE adding the centre sample; exact for every sign because
+> `s[x+3] << 7` and `16384` are both multiples of 8, and the only order that
+> keeps every intermediate inside i16).
+> **NUMBERS** (r7900x, **Zen 4**, quiet box, three passes per binary, `min` per
+> pass; the bench's x86 tier token is `X64V3Token` so this prices the **AVX2**
+> arm): 64x64 base 3.31/3.28/3.25 us vs cand 2.98/2.83/3.01 us — **sets
+> DISJOINT**, median/median **1.101x**, conservative pairing **1.080x**.
+> Callgrind (the `_v3` arm; valgrind masks AVX-512): kernel 13,906,583 ->
+> 9,657,143 Ir (**-30.6 %**), the horizontal fill alone **-46.5 %**, and
+> **12.68x C -> 8.81x C**. `objdump`: the `_v4` arm 108 -> 134 `zmm`, its
+> horizontal fill 219 -> 143 instructions.
+> **AND THE FRAME IS A NULL, TWICE, REPORTED AS ONE.** Wall clock, 21
+> interleaved paired rounds, every cell ident=Y, each A/B against its own
+> same-binary control in the same session — once contended, once on a quiet box.
+> photo_cid 512 p6: control 0.9999 (0.9933-1.0046) vs cand 1.0021
+> (0.9982-1.0058); screen_terminal p6: control 1.0032 vs cand 0.9996. **Every
+> span overlaps its control and photo_cid leans marginally NEGATIVE in both
+> passes.** `perf stat` agrees: instructions -0.16 % against a control that
+> moved +0.03 %, cycles inside the control. **This is not a contradiction of the
+> kernel number — it is arithmetic.** The kernel is 0.68 % of a p6 frame, so a
+> 30 % cut to it is 0.2 % of the frame, under this harness's floor. The same
+> shape as `cdef_neon_4wide_i16_2026-09-05`. **If you are deciding whether to
+> land this, decide on the kernel number and the byte gates, not on the frame.**
+> **THE DEPENDENCY PIN IS BUMPED, NOT DUPLICATED.** The `sse`/`percall` lane's
+> single `[patch.crates-io]` block moves from #96's `cc24398c` to #97's
+> `2524b0be` — #97 is stacked on #96 so one rev carries both. `variance.rs`'s
+> `u8xN::abs_diff` / `i16xN::madd_adjacent` were REBUILT and re-tested at the
+> bumped rev (`cargo test -p zenav1-svt-dsp --lib` 255/255 on both ISAs), not
+> assumed to survive. **Risk unchanged and restated: this pins `main` to an
+> unmerged PR rev; if that branch is force-pushed or deleted the repo stops
+> building, and the fix is to move the rev.**
+> **WHAT IS STILL MISSING, AND IT IS THE NEXT STEP:** the whole x86-64 gate
+> chain on the rebased tree, plus aarch64's `video_key_matrix`,
+> `screen_ibc_byte_gate`, `screen_palette_gate`, the tail of
+> `inter_completion_scan`, and `fctx_gate` / `decode_conformance` /
+> `decode_gate_grid` on both. x86 matters most: it is the only ISA that selects
+> the `_v4` arm.
+> **A NEGATIVE RESULT WORTH KEEPING: `madd_adjacent` cannot be used for the
+> VERTICAL pass, and it is not a magetypes oversight.** #96 landed
+> `madd_adjacent`, and C's vertical pass is built on `_mm512_madd_epi16`
+> (`convolve_avx512.h:334`) — but `madd_adjacent` pairs ADJACENT lanes and C
+> reaches that layout with `_mm512_unpacklo_epi16`/`unpackhi`, interleaving two
+> rows first. **magetypes exports no interleave / zip / unpack of any name** —
+> checked in the #97 branch source, not inferred. So the vertical fold stays
+> four `i32` products behind the symmetry precondition, and **an interleave
+> primitive is the successor to the #89 ask.** Do not re-derive this; do not
+> file it as a new issue while #96/#97 are open.
+
 > **`variance::sse` IS C's `madd_epi16` KERNEL ON x86 NOW — 5.02x C's
 > INSTRUCTIONS -> **1.84x** AT p6 AND 2.81x -> **1.30x** AT p2, WITH THE WHOLE
 > photo_cid FRAME **-1.92 % AT BOTH PRESETS**, BYTE-IDENTICAL (2026-09-05).**

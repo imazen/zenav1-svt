@@ -77,27 +77,35 @@ unusual_byte_groupings = "allow"
 # stops that file compiling. Nothing else in the tree uses the new surface,
 # and #95's half of the stack was MEASURED as a null here (zero bounds checks
 # removed, +-0.007 % frame Ir): `benchmarks/sse_madd_2026-09-05.meta` §7.
-# STACKED ABOVE IT: archmage #97 ("Complete the W512 byte-to-signed-dot path
-# with checked bitcasts", branch `feat/w512-signed-bitcasts`, head
-# `2524b0be162ca04ceb9a39906e19fe9c9255657e`) is stacked ON #96, so THAT rev
-# carries both PRs and it is the one to move to when this repo needs #97's
-# `i16x32 <-> u16x32` bitcasts. This block deliberately stays at `cc24398c`:
-# `variance.rs` uses only #96's `u8xN::abs_diff` / `i16xN::madd_adjacent`, and
-# bumping is a separate, separately-gated change. **When the block is deleted,
-# both PRs go with it** — do not assume #96 alone is what shipped.
+# BUMPED 2026-09-05 FROM #96's `cc24398c` TO #97's
+# `2524b0be162ca04ceb9a39906e19fe9c9255657e`. #97 ("Complete the W512
+# byte-to-signed-dot path with checked bitcasts", branch
+# `feat/w512-signed-bitcasts`) is STACKED ON #96, so this ONE rev carries BOTH
+# and there is still exactly one block. The note above said moving here would be
+# "a separate, separately-gated change" — this is that change, and it is gated:
+# `variance.rs`'s `u8xN::abs_diff` / `i16xN::madd_adjacent` calls were rebuilt
+# and re-gated against `2524b0be`, not assumed to survive.
+# WHAT NOW ALSO DEPENDS ON IT: `crates/svtav1-dsp/src/restoration.rs`'s
+# `wiener_convolve_simd` runs its horizontal pass in 32 i16 lanes via
+# `u8x64::widen_low().bitcast_i16x32()`. `u16x32::bitcast_i16x32` is #97's; it
+# does not exist in `cc24398c` and it does not exist in published 0.9.28.
+# **When the block is deleted, THREE PRs' worth of surface goes with it (#95,
+# #96, #97)** — do not assume #96 alone is what shipped.
 #
 # A fresh clone needs NETWORK ACCESS TO github.com/imazen/archmage for this
 # rev, and so does CI.
 #
-# RISK, NAMED: this is a rev on an UNMERGED PR BRANCH
-# (`feat/integer-pairwise-absdiff`), which its author can still rewrite. If that
-# branch is force-pushed or deleted before #96 merges, `cc24398c` can be
-# garbage-collected and THIS REPO STOPS BUILDING FOR EVERYONE. That is the cost
-# of the block and the reason it is temporary.
+# RISK, NAMED AND UNCHANGED BY THE BUMP: this is a rev on an UNMERGED PR BRANCH
+# (`feat/w512-signed-bitcasts`, itself based on `feat/integer-pairwise-absdiff`),
+# which its author can still rewrite. If either branch is force-pushed or
+# deleted before the PRs merge, `2524b0be` can be garbage-collected and THIS
+# REPO STOPS BUILDING FOR EVERYONE. That is the cost of the block and the
+# reason it is temporary. The fix if it fires is to move the rev, not to
+# redesign anything.
 #
-# When #96 merges and a 0.9.30 (or later) is published, DELETE this block and
+# When #96/#97 merge and a 0.9.30 (or later) is published, DELETE this block and
 # bump the registry requirement in [workspace.dependencies].
 [patch.crates-io]
-archmage = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }
-archmage-macros = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }
-magetypes = { git = "https://github.com/imazen/archmage", rev = "cc24398c9a9fee0251722931e295da840730704d" }
+archmage = { git = "https://github.com/imazen/archmage", rev = "2524b0be162ca04ceb9a39906e19fe9c9255657e" }
+archmage-macros = { git = "https://github.com/imazen/archmage", rev = "2524b0be162ca04ceb9a39906e19fe9c9255657e" }
+magetypes = { git = "https://github.com/imazen/archmage", rev = "2524b0be162ca04ceb9a39906e19fe9c9255657e" }

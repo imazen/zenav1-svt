@@ -287,6 +287,46 @@ fn bench_dsp(suite: &mut Suite) {
                 .collect::<Vec<u8>>()
                 .into_boxed_slice(),
         );
+        // The loop-restoration convolve, at the ONLY proc-unit shape the
+        // encoder asks for (`wiener_filter_stripe`, restoration.c:399, calls
+        // with `w = procunit_width.min((stripe_width - j + 15) & !15)`, i.e.
+        // 64 for luma). This case exists because the frame wall clock cannot
+        // see this kernel: it is ~0.7 % of a preset-6 frame, so even a perfect
+        // 2x on it is ~0.35 % of the frame — inside `perf_ab.sh`'s own
+        // same-binary control spread. A kernel that small has to be priced at
+        // the kernel or not at all.
+        {
+            const CW: usize = 64;
+            const CSTR: usize = 128;
+            const CROWS: usize = 96;
+            let plane: &'static [u8] = Box::leak(plane8(CSTR * CROWS, 0x51D3).into_boxed_slice());
+            let filt = restoration::WienerInfo::default();
+            for h in [8usize, 64] {
+                suite.compare(format!("wiener_convolve_add_src_{CW}x{h}"), move |g| {
+                    for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                        g.bench(arm, move |b| {
+                            let mut dst = vec![0u8; CSTR * CROWS];
+                            b.iter(move || {
+                                set_simd(simd);
+                                restoration::wiener_convolve_add_src(
+                                    plane,
+                                    8 * CSTR + 8,
+                                    CSTR,
+                                    &mut dst,
+                                    8 * CSTR + 8,
+                                    CSTR,
+                                    &filt.hfilter,
+                                    &filt.vfilter,
+                                    CW,
+                                    h,
+                                );
+                            })
+                        });
+                    }
+                });
+            }
+        }
+
         for win in [5usize, 7] {
             suite.compare(format!("wiener_compute_stats_win{win}_64x64"), move |g| {
                 for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {

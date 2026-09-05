@@ -1,0 +1,247 @@
+**THE WIENER HORIZONTAL PASS RUNS C'S LANE WIDTH NOW — 16 i32 LANES -> 32 i16 —
+AND THAT IS A 1.08-1.10x KERNEL WIN WITH DISJOINT SETS, WITH A FRAME-LEVEL WALL-CLOCK NULL, WHICH
+IS REPORTED AS ONE.** The predecessor commit
+(`wiener_avx512_tier_2026-09-05`) had to run 16 i32 lanes because published
+magetypes had no path from a `u8` load to `i16x32` at 512 bits. archmage PR #97
+built that path; this commit spends it. The kernel drops **30.6 % of its
+instructions** (the horizontal fill alone **-46.5 %**) and **3.25-3.31 us ->
+2.83-3.01 us** on the encoder's 64x64 proc unit, two disjoint sets over three
+passes each on a box checked quiet. The frame wall clock does not move, in two independent passes each
+against its own same-binary control — and it should not: the kernel is 0.68 %
+of a preset-6 frame, so even a perfect 2x on it is below this harness's floor.
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X, **ZEN 4**, 24
+        threads). GATES both ISAs (aarch64 = this Mac, M4 Pro).
+base:   `origin/main e032898c`.
+cand:   this commit.
+C:      reference/svt-av1 @ 3115c0c1, the PREBUILT oracle, NOT rebuilt.
+data:   benchmarks/wiener_h32_lanes_2026-09-05.tsv.
+
+=================== 1. WHAT THE PR MADE POSSIBLE, EXACTLY ===================
+
+The predecessor's doc comment named the gap precisely, and it was right:
+`u8x64::widen_low()` reached `u16x32` and `u16x32` had **no**
+`bitcast_i16x32`, while `U8x32Widen` was **not implemented for `X64V4Token`** —
+so neither the 512-bit nor the 256-bit route from a byte load to signed 16-bit
+lanes existed, and the kernel stayed in `i32x16`.
+
+archmage **PR #97** (`feat/w512-signed-bitcasts`, head
+`2524b0be162ca04ceb9a39906e19fe9c9255657e`, stacked on **#96**
+`feat/integer-pairwise-absdiff`) generates the six `i16x32 <-> u16x32` value /
+shared-ref / mutable-ref methods. Read from the fetched branch source, not from
+the PR description: the generic impl is bounded on
+`I16x32Backend + U16x32Backend` and goes through `simd_storage::cast`, so it
+needs **no new backend trait** and works on every tier that has both — all five.
+`U8x64Widen` is implemented for `X64V4Token`, `X64V4xToken`, `X64V3Token`,
+`NeonToken`, `Wasm128Token` and `ScalarToken`. The chain
+`u8x64::from_slice(..).widen_low().bitcast_i16x32()` therefore compiles and runs
+on the whole ladder.
+
+**One entry, not two.** #97 is stacked on #96, so the single rev carries both,
+and `variance.rs`'s `abs_diff` / `madd_adjacent` calls (which #96 provides) keep
+compiling against it — verified by building the workspace, not assumed.
+
+=================== 2. WHAT DID *NOT* BECOME POSSIBLE ===================
+
+`madd_adjacent` now exists, and C's vertical pass is built on it
+(`convolve16_4tap_avx512`, `convolve_avx512.h:334`). **This commit does not use
+it, and the reason is a second missing primitive.** `madd_adjacent` pairs
+ADJACENT lanes; C reaches that layout with `_mm512_unpacklo_epi16` /
+`unpackhi`, interleaving two rows. Checked in the #97 branch source rather than
+assumed: `i16x32_impl.rs` exports `madd_adjacent` and `msub_adjacent` and **no**
+`interleave`, `zip` or `unpack` of any name. So the vertical fold still widens
+to `i32x16` and multiplies, behind the symmetry precondition, and **an
+interleave / unpack primitive is the next thing that would close it.** That is
+the honest successor to the #89 ask, and it is stated here rather than filed as
+a new issue while #96/#97 are still open.
+
+Also still not reproduced: C's `calc_zero_coef` 3/5/7-tap specialisation, and
+its `maddubs`-on-byte-shuffled-data horizontal form (which needs a 64-byte
+`shuffle_epi8`, also not exported).
+
+=================== 3. WHAT LANDED ===================
+
+`crates/svtav1-dsp/src/restoration.rs`, one body, five tiers, unchanged in
+shape:
+
+  * The intermediate ring and the widened source scratch become **i16**
+    (`WIENER_SIMD_RING_W` 64 lanes of i16; `WIENER_SIMD_SRC_W` 96 -> 128,
+    because the widening is now two `u8x64` loads and 128 is what two cover).
+  * The row's bytes are copied into a zero-padded `[u8; 128]` and widened with
+    `u8x64 -> widen_low/high -> u16x32 -> bitcast_i16x32`. The copy is not
+    decoration: the load is 64 bytes wide and the block is only `w + 7`, so a
+    direct load off the plane could read past its end at the right frame edge.
+    The buffer is zeroed ONCE — `n_src` is constant across rows, so no stale
+    sample can ever reach a lane.
+  * The horizontal filter accumulates in `i16x32`: eight `mullo` and eight adds
+    per 32 outputs, where it was eight `pmulld` per 16.
+  * The vertical pass is unchanged except that its loads are now one `i16x32`
+    per 32 columns instead of two `i32x16`.
+
+**C's `wiener_clip_avx512` (wiener_convolve_avx512.c:27) is now reproduced, and
+it is what makes i16 possible at all.** It shifts the tap sum BEFORE adding the
+centre sample: `((S s*f + 4) >> 3) + (s[x+3] << 4) + 2048`. The scalar row
+computes `((s[x+3] << 7) + 16384 + S s*f + 4) >> 3`. These are the same integer
+for every sign, because `s[x+3] << 7` and `16384` are both multiples of 8 — an
+exact regrouping, not an approximation. Only the first order keeps every
+intermediate inside i16.
+
+**The i16 rail is CHECKED, not assumed.** `wiener_simd_applicable` gains both
+ends: `255 * Sf+ + 4 <= i16::MAX` and `255 * Sf- <= 32768`. Every prefix of the
+accumulation lies in the same interval as the total, so bounding the two ends
+bounds the whole reduction. For every filter the AV1 tap search can emit
+(restoration.h:141-147) `Sf+ = Sf- <= 128`, i.e. `<= 32,640` against 32,767 —
+but the function is public and takes an arbitrary `&[i16; 8]`, so a filter that
+would wrap takes the scalar path instead of producing wrong pixels.
+
+=================== 4. THE NUMBERS ===================
+
+**THE KERNEL, which is the instrument that matches this change's size.** A new
+`wiener_convolve_add_src_{64x64,64x8}` case in
+`crates/svtav1-dsp/benches/kernel_tiers.rs`. zenbench, `min` per pass, three
+passes per binary, quiet box (load 0.11-0.54, top process 3.2 % plymouthd). The
+bench's x86 tier token is `X64V3Token`, so this prices the **AVX2** arm:
+
+    64x64   base  3.31, 3.28, 3.25 us      -> set [3.25, 3.31]
+            cand  2.98, 2.83, 3.01 us      -> set [2.83, 3.01]
+            **THE SETS ARE DISJOINT.** median/median **1.101x**; the pairing
+            that most favours the base (3.25 / 3.01) is still **1.080x**.
+    64x8    base  548.9, 561.5 ns (two passes; the third and all three
+            candidate passes were cut short when the session ended) — the
+            small shape is INCOMPLETE and is reported as such. The
+            discarded first sweep read base 554.6/546.6/562.2 ns and cand
+            447.2/501.6/485.5 ns, i.e. it agreed with 64x64's direction, but
+            it is not clean data and is not a result.
+
+**THE KERNEL BY INSTRUCTION COUNT** (callgrind, and therefore the `_v3` arm —
+valgrind masks AVX-512, verified again here: the profile names
+`wiener_convolve_simd_v3` and never `_v4`):
+
+    wiener kernel total        13,906,583 -> 9,657,143   (**-30.56 %**)
+      the horizontal fill       5,377,216 -> 2,879,448   (**-46.45 %**)
+      the rest of the arm       8,476,432 -> 6,712,160   (-20.81 %)
+      the dispatch shell           52,935 ->    65,535   (+23.80 %)
+    vs C's `svt_av1_wiener_convolve_add_src_avx2` at 1,096,488:
+      **12.68x C -> 8.81x C**
+
+The horizontal fill's -46.45 % is the lane doubling landing almost exactly.
+
+**THE FRAME — A NULL, AND SAID SO.** Frame Ir moves -0.306 % (photo_cid p6) and
+-0.539 % (screen_terminal p6), which is what a 30 % cut to 0.68 % of a frame
+looks like. `perf stat` (paired warmup-delta, median of 5, `taskset -c 20`):
+photo instructions -0.156 % against a same-binary control that moved +0.030 %,
+cycles +0.124 % against a control that moved -0.138 % — **inside the control**.
+Wall clock, 21 interleaved paired rounds, every cell ident=Y, each A/B against
+its own same-binary control in the same session:
+
+    pass        cell                  CONTROL (p25-p75)        A/B (p25-p75)
+    contended   photo_cid 512 p6   1.0023 (0.9992-1.0049)  1.0055 (1.0005-1.0074)
+    contended   screen    512 p6   1.0073 (0.9811-1.0247)  1.0007 (0.9899-1.0112)
+    quiet       photo_cid 512 p6   0.9999 (0.9933-1.0046)  1.0021 (0.9982-1.0058)
+    quiet       screen    512 p6   1.0032 (0.9962-1.0101)  0.9996 (0.9881-1.0044)
+
+**Every span overlaps its control, in both passes, and photo_cid leans
+marginally NEGATIVE in both.** No frame-level wall-clock claim is made. This is
+the same shape as `cdef_neon_4wide_i16_2026-09-05` — a real kernel win that the
+frame cannot resolve — and it is reported the same way.
+
+=================== 5. THE SILICON, AGAIN ===================
+
+Everything above is **Zen 4**, where AVX-512 is double-pumped over 256-bit
+units. The kernel bench prices the **AVX2** arm specifically (zenbench's x86
+tier token is `X64V3Token`), and the `_v4` arm's evidence is the objdump census
+(134 `zmm`, up from 108; the horizontal fill 219 -> 143 instructions at 99 ->
+70 `zmm`) plus the byte gates, which on x86 all run natively with `_v4` live.
+**Zen 5 (full-width 512-bit) was NOT measured** — the Zen 5 box on this network
+is withdrawn, and the alternative quiet box is another Zen 4 part. A 512-bit
+arm that gains little on a double-pumped part can gain materially on a
+full-width one; do not extrapolate in either direction.
+
+=================== 5b. A TIMED RUN THAT WAS PERTURBED, AND RE-TAKEN ===================
+
+**The first kernel bench sweep is DISCARDED, not reported as a result.** It ran
+21:08-21:35 UTC and a sibling lane was running valgrind on the same box for part
+of that window — a ~50x single-threaded load. zenbench's `min` statistic is
+fairly robust to that and the two sets came out disjoint anyway, but "fairly
+robust" is not a measurement, and this campaign's rule is that a timed cell
+taken under unknown contention is re-taken rather than argued about. Every
+kernel number in section 4 is from the RE-RUN, on a box checked quiet
+immediately before (top process 3.2 % plymouthd) with the lane's marker
+claiming the window.
+
+The first sweep's numbers, for the record and NOT used: 64x64 base 3.28 / 3.22 /
+3.19 us, cand 2.85 / 2.86 / 2.91 us; 64x8 base 554.6 / 546.6 / 562.2 ns, cand
+447.2 / 501.6 / 485.5 ns. That they agree with the re-run is reassurance, not
+evidence.
+
+**Two process fixes came out of it.** The lane marker now says *what kind* of
+run is in flight ("TIMED ... do not run timed work"), which is what let the
+contention be caught at all; and the marker is refreshed before each long run
+rather than after. And zenbench was writing its result files to `/tmp/zenbench`
+— `/tmp` is banned in this workspace precisely because a wipe once destroyed a
+parity harness AND its pre-fix baseline. The re-run sets `TMPDIR` under `~/tmp`
+and the earlier files were copied out before they could be lost.
+
+=================== 6. THE DEPENDENCY PIN, AND ITS RISK ===================
+
+**This commit adds NO new patch block.** The `percall`/`sse` lane landed one at
+`d03f97357` pinning archmage/archmage-macros/magetypes to #96's `cc24398c`;
+this commit BUMPS that single block's rev to #97's
+`2524b0be162ca04ceb9a39906e19fe9c9255657e`. Because #97 is stacked on #96, the
+one rev carries both and there is still exactly one block — a second, competing
+block would have been the wrong shape.
+
+The existing comment said moving to `2524b0be` would be "a separate,
+separately-gated change". **This is that change, and it is gated:**
+`variance.rs`'s `u8xN::abs_diff` / `i16xN::madd_adjacent` calls — the reason
+#96 was pinned in the first place — were rebuilt and re-tested against the
+bumped rev (`cargo test -p zenav1-svt-dsp --lib`, 255/255 including the sse
+tier tests), not assumed to survive. The comment is updated to say the block
+now carries #95 + #96 + #97 and that deleting it takes all three.
+
+**RISK, unchanged by the bump and restated rather than engineered around: this
+pins `main` to an UNMERGED pull-request rev on a branch
+(`feat/w512-signed-bitcasts`, based on `feat/integer-pairwise-absdiff`) whose
+author can still rewrite it. If either branch is force-pushed or deleted before
+the PRs merge, `2524b0be` can be garbage-collected and THIS REPO STOPS BUILDING
+FOR EVERYONE.** The fix if it fires is to move the rev — one line — not to
+redesign anything. The DELETE-ON-RELEASE instruction stays.
+
+=================== 7. GATES — INCOMPLETE, AND THAT IS WHY THIS IS WIP ===================
+
+**This work is NOT on `main`. It is a `wip:` commit in the `v4x2` workspace.**
+The reason is here and nowhere else: the gate chain did not finish. Nothing was
+relaxed, nothing was skipped to make it look landable, and no gate that ran
+failed.
+
+WHAT RAN, on the REBASED tree (`main@origin d03f9735` + this change), aarch64:
+
+  cargo nextest run --workspace     2547 / 2547
+  tier witness                      ["NeonToken", "ScalarToken"]
+  identity_full_8bit.sh             1100 / 1100
+  six pinned still cells            290/839/63/171/580/693 B, all OK
+  regression_spotcheck.sh           104 / 104
+  inter_byte_gate.sh                PASS, 108 required, 0 failed, 1 known-open
+  inter_completion_scan SCAN_GATE=1 was still running when the session ended
+
+WHAT DID NOT RUN, and must before this lands:
+
+  * **x86-64 (r7900x): the ENTIRE gate chain.** An earlier chain was started
+    and then deliberately killed when the tree was rebased onto `d03f9735`
+    (the `sse`/`percall` lane's tree, which changes `variance.rs` — encoder
+    source, not just benchmarks), because gates on a superseded tree are worth
+    nothing. It was not restarted before the session ended. **The x86 column is
+    EMPTY. On x86 this change also selects the `_v4` arm, which is exactly the
+    arm no aarch64 gate can exercise, so this is the important half.**
+  * aarch64: `video_key_matrix.sh`, `screen_ibc_byte_gate.sh`,
+    `screen_palette_gate.sh`, and the tail of `inter_completion_scan.sh`.
+  * Both: `fctx_gate.sh`, `decode_conformance.sh`, `decode_gate_grid.sh`.
+    (`decode_gate_grid` is no longer a coverage gap — dav1d is installed on
+    both Linux boxes now — so it belongs in the chain and was never reached.)
+
+The dsp crate's own suite DID run against the bumped pin on both ISAs
+(`cargo test -p zenav1-svt-dsp --lib`, 255 / 255), which is what verifies that
+`variance.rs`'s `u8xN::abs_diff` / `i16xN::madd_adjacent` still compile and
+still produce the same answers at `2524b0be` — the specific thing the pin bump
+risked.

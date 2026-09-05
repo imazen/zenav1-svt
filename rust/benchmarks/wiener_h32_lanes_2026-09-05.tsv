@@ -1,0 +1,90 @@
+# The Wiener horizontal pass goes from 16 i32 lanes to 32 i16 lanes — C's width.
+# base = origin/main e032898c (the 16-lane arm this chunk's predecessor landed).
+# cand = this commit.
+# host = r7900x (AMD Ryzen 9 7900X, **ZEN 4** — AVX-512 double-pumped over
+#        256-bit units; ZEN 5 NOT MEASURED, do not extrapolate), qp 40.
+# C    = reference/svt-av1 @ 3115c0c1, the PREBUILT oracle, NOT rebuilt.
+# .yuv sha256(16): photo_cid 88142a484affd4b3, screen_terminal bd37ccf3c4a65256
+#
+# ---- 1. THE KERNEL. `cargo bench -p zenav1-svt-dsp --bench kernel_tiers
+#         --group=wiener_convolve_add_src_64x64`, a case ADDED by this commit.
+#         zenbench, 4 rounds x 76-104 calls, `min` per pass (the statistic least
+#         contaminated by scheduler noise), THREE passes per binary, on a box
+#         checked quiet immediately before (top process 3.2 % plymouthd) with
+#         the lane marker claiming the timed window. The bench's x86 tier token
+#         is X64V3Token, so this prices the **AVX2** arm.
+#         THE TWO SETS DO NOT OVERLAP.
+shape	binary	pass1_min_us	pass2_min_us	pass3_min_us	set
+64x64	base	3.31	3.28	3.25	[3.25, 3.31]
+64x64	cand	2.98	2.83	3.01	[2.83, 3.01]
+# ratio, median/median 3.28/2.98 = 1.101x
+# ratio, base best / cand worst 3.25/3.01 = 1.080x  <- conservative, still disjoint
+#
+# The 64x8 shape's clean re-run is INCOMPLETE — two base passes landed
+# (548.9, 561.5 ns) and the session ended before the third base pass and all
+# three candidate passes. It is NOT a result and is used nowhere.
+64x8	base	0.5489	0.5615	INCOMPLETE	partial (us)
+64x8	cand	NOT-RUN	NOT-RUN	NOT-RUN	NOT RUN
+#
+# A FIRST SWEEP OF THE SAME CASE IS DISCARDED, NOT AVERAGED IN: it ran
+# 21:08-21:35 UTC while a sibling lane had valgrind (~50x single-threaded load)
+# on the same box. It read base 3.28/3.22/3.19, cand 2.85/2.86/2.91 — i.e. it
+# AGREES — but a timed cell taken under unknown contention is re-taken, not
+# argued about. The agreement is reassurance; the re-run is the evidence.
+#
+# ---- 2. THE KERNEL BY INSTRUCTION COUNT. valgrind-3.26.0 callgrind, warmup=0,
+#         photo_cid 512 p6. Valgrind MASKS AVX-512, so this prices the **_v3**
+#         arm; verified, not assumed (the profile names `wiener_convolve_simd_v3`
+#         and never `_v4`).
+what	base_ir	cand_ir	delta_pct
+wiener kernel total	13906583	9657143	-30.56
+  the horizontal fill (closure#1)	5377216	2879448	-46.45
+  the rest of the arm	8476432	6712160	-20.81
+  the dispatch shell	52935	65535	+23.80
+# vs C's svt_av1_wiener_convolve_add_src_avx2 at 1,096,488: 12.68x -> 8.81x
+#
+# ---- 3. THE FRAME. Ir, and then the two instruments that can see the _v4 arm.
+cell	base_ir	cand_ir	delta_pct
+photo_cid_512_p6	1420144341	1415797763	-0.306
+screen_terminal_512_p6	806996177	802649599	-0.539
+# The kernel is 0.68 % of the p6 frame, so a 30 % kernel cut is 0.2 % of it.
+#
+# `perf stat`, paired warmup-delta, median of 5, taskset -c 20:
+cell	binary	cycles	instructions	ipc
+photo_cid_512_p6	base	388627205	1374924828	3.538
+photo_cid_512_p6	base2_control	388092190	1375337628	3.544
+photo_cid_512_p6	cand	389109327	1372785270	3.528
+screen_terminal_512_p6	base	212920046	772443119	3.628
+screen_terminal_512_p6	cand	215860660	770286702	3.568
+# photo: instructions -0.156 % against a control that moved +0.030 %; cycles
+#        +0.124 % against a control that moved -0.138 % — INSIDE the control.
+# screen: instructions -0.279 %, cycles +1.38 %.
+# READ THIS AS A FRAME-LEVEL NULL. It is not a contradiction of section 1.
+#
+# ---- 4. WALL CLOCK — A NULL, TWICE, AND REPORTED AS ONE.
+#         tools/perf_ab.sh, 21 interleaved randomised paired rounds, every cell
+#         ident=Y, each A/B paired with its OWN same-binary control in the SAME
+#         session on the SAME box. Two independent passes: one with a sibling
+#         lane's gate at 99.8 % of a core throughout, one on a verifiably quiet
+#         box. They agree.
+pass	cell	arm	ratio	p25	p75	verdict
+contended	photo_cid_512_p6	control	1.0023	0.9992	1.0049	floor
+contended	photo_cid_512_p6	candidate	1.0055	1.0005	1.0074	overlaps, leans NEGATIVE
+contended	screen_terminal_512_p6	control	1.0073	0.9811	1.0247	floor
+contended	screen_terminal_512_p6	candidate	1.0007	0.9899	1.0112	overlaps, leans positive
+quiet	photo_cid_512_p6	control	0.9999	0.9933	1.0046	floor
+quiet	photo_cid_512_p6	candidate	1.0021	0.9982	1.0058	overlaps, leans NEGATIVE
+quiet	screen_terminal_512_p6	control	1.0032	0.9962	1.0101	floor
+quiet	screen_terminal_512_p6	candidate	0.9996	0.9881	1.0044	overlaps, leans positive
+# Every span overlaps its control. NO frame-level wall-clock claim is made.
+#
+# ---- 5. THE ARMS ARE STILL THE WIDTHS THEY CLAIM. objdump of
+#         target/release/examples/perf_encode, and the same census from the
+#         predecessor commit for comparison.
+arm	base_insn	base_zmm	base_ymm	cand_insn	cand_zmm	cand_ymm
+__arcane_wiener_convolve_simd_v4	405	108	0	395	134	0
+__arcane_wiener_convolve_simd_v4::{closure#1}	219	99	0	143	70	0
+__arcane_wiener_convolve_simd_v3	435	0	89	466	0	149
+__arcane_wiener_convolve_simd_v3::{closure#1}	204	0	74	173	0	91
+# The horizontal fill is the `closure#1` row: 219 -> 143 instructions on _v4 and
+# 204 -> 173 on _v3, doing the same work over twice the lanes.
