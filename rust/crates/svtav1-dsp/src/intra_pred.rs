@@ -1719,16 +1719,51 @@ pub fn cfl_predict_lbd(
     width: usize,
     height: usize,
 ) {
+    cfl_predict_lbd_core(
+        pred_buf_q3,
+        pred,
+        pred_stride,
+        dst,
+        dst_stride,
+        alpha_q3,
+        width,
+        height,
+    )
+}
+
+/// The per-element body, BRANCH-FREE so a `target_feature` region can vectorise
+/// it.
+///
+/// `scaled_luma_q0` is C's round-half-away-from-zero by 6 bits
+/// (`cfl_c.c`'s `get_scaled_luma_q0`), which the port used to write as an
+/// `if q6 < 0 { -((-q6 + 32) >> 6) } else { (q6 + 32) >> 6 }`. The identity
+/// `s = q6 >> 31` (0 or -1), `|q6| = (q6 ^ s) - s`, result `= (((|q6| + 32) >> 6)
+/// ^ s) - s` is the same value for every `q6` except `i32::MIN`, where the
+/// negation overflows — and `q6` is `alpha_q3 * ac_q3` with `|alpha_q3| <= 16`
+/// (C `cfl_idx_to_alpha`, `CFL_ALPHABET_SIZE = 16`, magnitudes 1..=16) and
+/// `ac_q3` an `i16`, so `|q6| <= 16 * 32768 = 524,288`. Pinned over the WHOLE
+/// reachable domain by `cfl_branch_free_rounding_matches_the_branchy_form`.
+#[inline]
+fn cfl_predict_lbd_core(
+    pred_buf_q3: &[i16],
+    pred: &[u8],
+    pred_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    alpha_q3: i32,
+    width: usize,
+    height: usize,
+) {
     for j in 0..height {
-        for i in 0..width {
-            let scaled_luma_q6 = alpha_q3 * pred_buf_q3[j * CFL_BUF_LINE + i] as i32;
-            let scaled_luma_q0 = if scaled_luma_q6 < 0 {
-                -((-scaled_luma_q6 + 32) >> 6)
-            } else {
-                (scaled_luma_q6 + 32) >> 6
-            };
-            let val = scaled_luma_q0 + pred[j * pred_stride + i] as i32;
-            dst[j * dst_stride + i] = val.clamp(0, 255) as u8;
+        let ac = &pred_buf_q3[j * CFL_BUF_LINE..j * CFL_BUF_LINE + width];
+        let p = &pred[j * pred_stride..j * pred_stride + width];
+        let o = &mut dst[j * dst_stride..j * dst_stride + width];
+        for ((o, &ac), &p) in o.iter_mut().zip(ac).zip(p) {
+            let q6 = alpha_q3 * ac as i32;
+            let s = q6 >> 31;
+            let q0 = ((((q6 ^ s) - s) + 32) >> 6) ^ s;
+            let val = (q0 - s) + p as i32;
+            *o = val.clamp(0, 255) as u8;
         }
     }
 }
@@ -1738,6 +1773,30 @@ mod tests {
     use super::*;
     use alloc::vec;
     use alloc::vec::Vec;
+
+    /// The branch-free rounding in [`cfl_predict_lbd_core`] must equal the
+    /// branchy form over the WHOLE reachable domain: every `ac_q3` an `i16` can
+    /// hold, times every legal `alpha_q3` (C `cfl_idx_to_alpha`: magnitude
+    /// 1..=16 either sign, plus 0). 2,162,720 pairs, exhaustive — not sampled.
+    #[test]
+    fn cfl_branch_free_rounding_matches_the_branchy_form() {
+        for alpha_mag in 0..=16i32 {
+            for sign in [1i32, -1] {
+                let alpha_q3 = alpha_mag * sign;
+                for ac in i16::MIN..=i16::MAX {
+                    let q6 = alpha_q3 * ac as i32;
+                    let want = if q6 < 0 {
+                        -((-q6 + 32) >> 6)
+                    } else {
+                        (q6 + 32) >> 6
+                    };
+                    let s = q6 >> 31;
+                    let got = ((((q6 ^ s) - s) + 32) >> 6) ^ s;
+                    assert_eq!(got - s, want, "alpha={alpha_q3} ac={ac} q6={q6}");
+                }
+            }
+        }
+    }
 
     #[allow(dead_code)]
     fn make_test_block(width: usize, height: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, u8) {

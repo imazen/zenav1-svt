@@ -884,6 +884,22 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **CFL predict is branch-free and the alpha search is 1.99x -> 1.72x C's
+  instruction count — and the `#[arcane]` dispatch variant had FEWER
+  instructions and was slower everywhere (2026-09-05).** The port's
+  `cfl_predict_lbd` was a scalar double loop whose per-element body branched on
+  the sign for C's round-half-away-from-zero, at 12x C's AVX2 kernel per call
+  for an identical call count. The same arithmetic is now branch-free
+  (`s = q6 >> 31`; the identity is pinned exhaustively over all 2,162,720 legal
+  `(ac_q3, alpha_q3)` pairs). `md_cfl_rd_pick_alpha` inclusive 886.7 M ->
+  766.7 M against C's 444.5 M; frame instructions -1.03 % on the CLIC glitter
+  photo (port/C 1.727 -> 1.709) and -0.31 % on the CID photo; wall clock 1.016x
+  and 1.009x at 512 preset 2. Wrapping the same core in `incant!` +
+  `#[arcane]` arms was measured and REJECTED: fewer instructions on every cell,
+  slower on all four, and a real gradient regression (0.993x at 256 and 512
+  p2) — the dispatch takes the call out of the per-alpha closure's inliner.
+  Record `rust/benchmarks/cfl_branchfree_2026-09-05.{tsv,meta}`.
+
 - **Three out-of-line helpers C inlines are gone — 17.7 M calls per 512x512
   photo frame at preset 2, -0.63 % instructions, byte-identical; with the two
   entries below, a photo's preset-2 port/C instruction ratio is 1.777 -> 1.694

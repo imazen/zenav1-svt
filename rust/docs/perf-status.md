@@ -1,5 +1,66 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **CFL PREDICT IS BRANCH-FREE AND THE ALPHA SEARCH IS 1.99x -> 1.72x C's Ir —
+> AND THE `#[arcane]` DISPATCH VARIANT HAD FEWER INSTRUCTIONS AND WAS SLOWER
+> EVERYWHERE (2026-09-05).** Record `benchmarks/cfl_branchfree_2026-09-05.{tsv,meta}`.
+> `callcount_realimg_2026-09-04` item E: `intra_pred::cfl_predict_lbd` and C's
+> `svt_cfl_predict_lbd_avx2` (`ASM_AVX2/cfl_avx2.c:38`) are called the same
+> number of times (253,229 vs 253,259 at photo_cid p2) and the port's cost
+> 1,207 Ir per call against C's 99 — **12x**. It was a scalar double loop whose
+> per-element body BRANCHED on the sign for C's round-half-away-from-zero. It is
+> now the same arithmetic branch-free (`s = q6 >> 31`, `|q6| = (q6 ^ s) - s`),
+> with per-row slices so the bounds leave the inner loop; the identity holds for
+> every `i32` but `i32::MIN` and `q6` is bounded by `16 * 32768` (C
+> `cfl_idx_to_alpha`), **pinned EXHAUSTIVELY over all 2,162,720
+> (`ac_q3`, `alpha_q3`) pairs**, not sampled. `cfl::md_cfl_rd_pick_alpha`
+> inclusive 886.7 M -> 766.7 M against C's `av1_cost_calc_cfl` 444.5 M
+> (1.995x -> 1.725x); frame Ir photo_clic -1.03 % (port/C 1.727 -> 1.709),
+> photo_cid -0.31 % (1.694 -> 1.688), gradient unchanged (-0.003 %). Wall clock
+> (21 interleaved paired rounds, ident=Y): **CLIC photo 512 p2 1.016x**, CID
+> photo 1.009x. **THE VARIANT THAT WAS REJECTED, AND WHY IT MATTERS:** wrapping
+> the same core in `incant!(..., [v3, neon, scalar])` — this crate's normal
+> idiom — gave **fewer instructions on every cell** (photo_cid -0.45 % vs
+> -0.31 %, the CFL subtree 713.9 M vs 766.7 M) and was **slower on all four**,
+> including a real regression on the gradient (0.993x at 256 AND 512 p2, spans
+> entirely above 1.0). `cfl_predict_lbd` is called from inside the per-alpha
+> closure; an `#[arcane]` arm is an out-of-line `target_feature` function, so
+> the dispatch takes the call out of the inliner's reach and on small blocks the
+> call overhead is all that is left. **Ir is what this campaign ranks by, not
+> what it decides by** — take the wall clock before keeping a SIMD arm. The
+> untried next step is a hand-written intrinsics kernel that the inliner can
+> still fold into the alpha closure; the rejected variant is the evidence that
+> it must be inlinable to win.
+>
+> **THE FOUR CHUNKS TOGETHER, against the tree they branched from (41e5d8f1),
+> 21 interleaved paired rounds, ident=Y on every row:** photo_cid 512 p2
+> **1.059x**, the CLIC glitter photo **1.062x**, the gb82-sc terminal crop
+> **1.040x**, gradient 256 p2 **1.055x** and 512 p2 **1.042x**, gradient 256 p6
+> 1.009x and 512 p6 1.003x. **A PRESET SWEEP on the photo at 512 names the one
+> cell where the four are NEGATIVE**: p6 1.022x, **p10 0.996x (span
+> 1.0015-1.0093 — a REAL ~0.4 % slowdown)**, p13 0.996x (span straddles 1.0, a
+> null). p10/p13 are the `only_dct` regime where none of the four mechanisms has
+> anything to remove, and what they pay is the owned-output wrapper's extra call
+> frame; in absolute time it is +0.054 ms on a 9.8 ms frame against -137 ms at
+> p2 and -1.6 ms at p6. A SIZE SWEEP at gradient p2 (15 rounds each): 64
+> 1.051x, 128 1.051x, 256 1.055x, 512 1.043x, 1024 1.031x — roughly flat in
+> frame size, so it is not a per-frame fixed cost.
+> Instructions on photo_cid 512 p2 48.43 G -> 46.00 G
+> (**-5.02 %**, port/C **1.777 -> 1.688**), p6 1.657 G -> 1.620 G (-2.25 %,
+> port/C 2.349 -> 2.296); on the CLIC photo port/C **1.835 -> 1.709**. p10 is
+> unmoved (1.803 -> 1.802) and should be — every mechanism these four touched is
+> a p2/p6 phenomenon, since the tx-type search collapses to one candidate at p10.
+> The port/C position on the other two contents moves the same way: gradient 512
+> p2 **2.493 -> 2.408**, p6 2.769 -> 2.745, p10 2.539 -> 2.515; the gb82-sc
+> terminal crop p2 **2.294 -> 2.205**, p6 2.643 -> 2.591, p10 2.192 -> 2.188.
+> **And the memory axis MOVES THE RIGHT WAY over the four**: x86 2048 inter peak
+> RSS, interleaved `mem_bisect.sh` 15 rounds, median 109,332 -> **104,496 KiB**
+> (min 108,820 -> 103,680; the distributions do not overlap) — **-4.4 %** — with
+> peak heap unchanged throughout (2048 still 61.07 M, inter 101.78 M). It does
+> NOT all go one way, and the record says so: the same harness at x86 **1280
+> inter** reads 45,792 -> **47,000 KiB (+2.6 %)**, also non-overlapping, and
+> 2048 still is a null. Both directions are region-retention effects of a
+> changed size mix, not live bytes.
+
 > **THREE OUT-OF-LINE HELPERS C INLINES ARE GONE — 17.7 M CALLS PER 512² PHOTO
 > FRAME AT p2, -0.63 % Ir — AND WITH THE TWO BLOCKS BELOW THE PHOTO's p2 PORT/C
 > RATIO IS 1.777 -> 1.694 AND THE WHOLE-FRAME WALL CLOCK 1.056x (2026-09-05).**

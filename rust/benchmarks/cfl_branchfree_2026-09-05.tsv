@@ -1,0 +1,131 @@
+# CFL predict: the branchy round-away-from-zero made branch-free so the compiler
+# can vectorise it. Method, and the REJECTED dispatch variant: the .meta beside this.
+# base3 = main@origin 48ab246a (the txsize-tables commit)
+# cand  = this commit. Byte-identical to C on every cell.
+#
+# --- 1. instruction counts (r7900x callgrind, Ir), qp 40 preset 2
+section	cell	quantity	base3	cand	c
+ir	photo_cid_512	port_ir	46146658410	46003230997	27248547183
+ir	photo_cid_512	port_over_c	1.694	1.688	1.000
+ir	photo_clic_512	port_ir	45859756170	45385273424	26558491722
+ir	photo_clic_512	port_over_c	1.727	1.709	1.000
+ir	gradient_512	port_ir	10652711767	10652370846	4424517330
+ir	gradient_512	port_over_c	2.408	2.408	1.000
+#
+# --- 2. the CFL alpha search subtree, photo_cid 512 p2 (inclusive Ir)
+#        port `cfl::md_cfl_rd_pick_alpha` vs C `av1_cost_calc_cfl`
+sub	photo_cid_512	md_cfl_rd_pick_alpha	886684586	766747039	444506134
+sub	photo_cid_512	over_c	1.995	1.725	1.000
+#
+# --- 3. wall clock, r7900x, tools/perf_ab.sh, 21 interleaved paired rounds.
+#        ratio = cand/base (<1 = cand faster). Both variants measured against
+#        the SAME base3 binary, in the same session.
+ab	variant	content	size	preset	n	base_ms	cand_ms	ratio	speedup	p25	p75	ident
+ab	landed	photo_clic	512	2	21	2320.8271	2285.3806	0.9845	1.016	0.9792	0.9862	Y
+ab	landed	photo_cid	512	2	21	2350.4903	2326.3401	0.9908	1.009	0.9868	0.9925	Y
+ab	landed	gradient	256	2	21	199.9257	198.6721	0.9939	1.006	0.9900	0.9964	Y
+ab	landed	gradient	512	2	21	443.4830	442.8911	0.9986	1.001	0.9956	1.0000	Y
+ab	rejected_dispatch	photo_clic	512	2	21	2317.4765	2297.4581	0.9906	1.009	0.9889	0.9929	Y
+ab	rejected_dispatch	photo_cid	512	2	21	2351.8492	2340.7192	0.9954	1.005	0.9931	0.9969	Y
+ab	rejected_dispatch	gradient	256	2	21	200.0552	201.4956	1.0070	0.993	1.0045	1.0092	Y
+ab	rejected_dispatch	gradient	512	2	21	443.7206	447.4588	1.0070	0.993	1.0051	1.0103	Y
+ab	rejected_dispatch	gradient	256	6	21	10.3884	10.3948	1.0019	0.998	0.9853	1.0099	Y
+ab	rejected_dispatch	gradient	512	6	21	33.7226	33.8074	1.0025	0.997	0.9992	1.0065	Y
+#
+# --- 4. the rejected variant's Ir — LOWER than the landed one on every cell,
+#        and slower on all four. Ir is what this campaign RANKS by, not what it
+#        decides by.
+var	rejected_dispatch	photo_cid_512_ir	46146658410	45940023427	27248547183
+var	rejected_dispatch	photo_clic_512_ir	45859756170	45263967298	26558491722
+var	rejected_dispatch	md_cfl_rd_pick_alpha	886684586	713881557	444506134
+#
+# --- 5. memory: peak HEAP (heaptrack, LIVE bytes), gradient qp40 preset 13
+mem	r7900x	1280	still	rss	29508	29772	KiB
+mem	r7900x	1280	videokey	rss	34540	34500	KiB
+mem	r7900x	1280	inter	rss	46900	46940	KiB
+mem	r7900x	2048	still	rss	69120	68256	KiB
+mem	r7900x	2048	videokey	rss	77688	77668	KiB
+mem	r7900x	2048	inter	rss	104432	104432	KiB
+mem	r7900x	2048	still	heap	61.07	61.07	MiB
+mem	r7900x	2048	inter	heap	101.78	101.78	MiB
+#
+# --- 6. ALL FOUR chunks together, against main@origin 41e5d8f1 (the tree they
+#        branched from). 21 interleaved paired rounds, ident=Y on every row.
+abcum	content	size	preset	n	base_ms	cand_ms	ratio	speedup	p25	p75
+abcum	photo_cid	512	2	21	2463.5298	2325.5347	0.9442	1.059	0.9416	0.9468
+abcum	photo_clic	512	2	21	2426.5251	2286.3343	0.9413	1.062	0.9379	0.9450
+abcum	screen_terminal	512	2	21	666.3130	641.3466	0.9615	1.040	0.9573	0.9636
+abcum	gradient	256	2	21	209.5178	198.8899	0.9480	1.055	0.9445	0.9504
+abcum	gradient	512	2	21	460.9795	442.2233	0.9599	1.042	0.9574	0.9611
+abcum	gradient	256	6	21	10.4302	10.3305	0.9914	1.009	0.9683	1.0034
+abcum	gradient	512	6	21	33.8532	33.7524	0.9968	1.003	0.9919	1.0017
+#
+# --- 6b. ALL FOUR chunks, size sweep, gradient qp40 p2, 15 paired rounds
+absz	gradient	64	2	15	19.3566	18.7589	0.9519	1.051	0.9442	0.9532
+absz	gradient	128	2	15	51.2639	48.8306	0.9513	1.051	0.9483	0.9566
+absz	gradient	256	2	15	209.3778	198.4249	0.9479	1.055	0.9453	0.9491
+absz	gradient	512	2	15	461.0685	442.3384	0.9592	1.043	0.9570	0.9606
+absz	gradient	1024	2	15	1438.9221	1393.8647	0.9698	1.031	0.9686	0.9712
+#
+# --- 6c. ALL FOUR chunks, preset sweep on the photo at 512, 21 paired rounds.
+#         p10 is a REAL small REGRESSION (span entirely above 1.0), reported
+#         as one: +0.054 ms on a 9.8 ms frame against -137 ms at p2.
+abps	photo_cid	512	6	21	81.2250	79.6323	0.9782	1.022	0.9749	0.9814
+abps	photo_cid	512	10	21	9.8358	9.8901	1.0042	0.996	1.0015	1.0093
+abps	photo_cid	512	13	21	9.9002	9.9239	1.0040	0.996	0.9814	1.0100
+#
+# --- 7. ALL FOUR chunks, instruction counts on the final tree vs 41e5d8f1
+irc	photo_cid_512	2	port_ir	48432763259	46003230997	27248547183
+irc	photo_cid_512	2	port_over_c	1.777	1.688	1.000
+irc	photo_cid_512	6	port_ir	1657133167	1619794063	705588232
+irc	photo_cid_512	6	port_over_c	2.349	2.296	1.000
+irc	photo_cid_512	10	port_over_c	1.803	1.802	1.000
+irc	photo_clic_512	2	port_over_c	1.835	1.709	1.000
+irc	gradient_512	2	port_ir	11030884906	10652710195	4424517358
+irc	gradient_512	2	port_over_c	2.493	2.408	1.000
+irc	gradient_512	6	port_ir	868481651	860897015	313618063
+irc	gradient_512	6	port_over_c	2.769	2.745	1.000
+irc	gradient_512	10	port_ir	159301280	157809639	62750281
+irc	gradient_512	10	port_over_c	2.539	2.515	1.000
+irc	screen_terminal_512	2	port_ir	14572430784	14003946792	6351743152
+irc	screen_terminal_512	2	port_over_c	2.294	2.205	1.000
+irc	screen_terminal_512	6	port_ir	939452227	920920711	355384763
+irc	screen_terminal_512	6	port_over_c	2.643	2.591	1.000
+irc	screen_terminal_512	10	port_ir	137984973	137744091	62950851
+irc	screen_terminal_512	10	port_over_c	2.192	2.188	1.000
+#
+# --- 8. ALL FOUR chunks, x86 2048 inter peak RSS, INTERLEAVED mem_bisect.sh,
+#        15 rounds, one run, distributions non-overlapping.
+membis	r7900x	2048	inter	rss_median	109332	104496	KiB
+membis	r7900x	2048	inter	rss_min	108820	103680	KiB
+membis	r7900x	2048	inter	rss_max	109920	104864	KiB
+membis	r7900x	1280	inter	rss_median	45792	47000	KiB
+membis	r7900x	1280	inter	rss_min	45404	46492	KiB
+membis	r7900x	1280	inter	rss_max	46132	47276	KiB
+membis	r7900x	2048	still	rss_median	68856	68704	KiB
+membis	r7900x	2048	still	rss_min	68576	68236	KiB
+membis	r7900x	2048	still	rss_max	69140	68992	KiB
+mem	mac	1280	still	rss	-	28192	KiB
+mem	mac	1280	videokey	rss	-	33280	KiB
+mem	mac	1280	inter	rss	-	55360	KiB
+mem	mac	2048	still	rss	-	72544	KiB
+mem	mac	2048	videokey	rss	-	87712	KiB
+mem	mac	2048	inter	rss	-	142256	KiB
+#
+# --- 9. GATES (both ISAs, on this commit's tree)
+gate	host	name	result
+gate	mac	nextest	2534/2534
+gate	mac	regression_spotcheck	104/104
+gate	mac	identity_full_8bit	1100/1100 (+0 pinned, 0 harness errors)
+gate	mac	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open, 0 crashed)
+gate	mac	video_key_matrix	59/60 (the known-open gradient p0)
+gate	mac	fctx_gate	PASS (96/96 shared fields on both frames)
+gate	mac	inter_decode_gate	PASS 5/5
+gate	mac	inter_decode_census	PASS 96/96
+gate	mac	inter_completion_scan SCAN_GATE=1	PASS 64 OK / 0 REFUSED / 0 CRASH
+gate	mac	screen_palette_gate	50/50 byte-identical (38 palette-coding cells)
+gate	r7900x	nextest	2544/2544
+gate	r7900x	regression_spotcheck	104/104
+gate	r7900x	identity_full_8bit	1100/1100
+gate	r7900x	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open)
+gate	both	callgrind cells	photo_cid 46462 B, photo_clic 45529 B, gradient 5126 B, screen_terminal identical to C

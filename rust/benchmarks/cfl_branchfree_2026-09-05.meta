@@ -1,0 +1,219 @@
+CFL PREDICT: THE BRANCHY ROUND-AWAY-FROM-ZERO IS BRANCH-FREE, SO THE COMPILER
+CAN VECTORISE IT — the CFL alpha search's inclusive Ir 886.7 M -> 766.7 M
+against C's 444.5 M (1.99x -> 1.72x), -1.03 % of the whole frame on the CLIC
+glitter photo and -0.31 % on the CID photo, byte-identical. Wall clock
+**1.016x on the CLIC photo at 512 p2** and 1.009x on the CID photo.
+
+AND THE MEASUREMENT THAT DECIDED THE SHAPE: wrapping the same branch-free body
+in `incant!` + `#[arcane]` v3/neon arms — the crate's normal SIMD idiom —
+produced a LOWER instruction count on every cell (photo_cid -0.45 % against
+-0.31 %, the CFL subtree 713.9 M against 766.7 M) and a WORSE wall clock on all
+four (and a REAL REGRESSION on the gradient: 0.993x at both 256 and 512 p2,
+spans entirely above 1.0). It is not in the tree. **Ir is what this campaign
+ranks by; it is not what it decides by.**
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X), valgrind-3.26.0
+        --tool=callgrind (Ir only), rustc 1.98.1. GATES both hosts.
+base3:  main@origin 48ab246a (the txsize-tables commit), built in a sibling
+        directory whose only difference from `cand` is this one file.
+cand:   this commit. One file: `svtav1-dsp/src/intra_pred.rs`.
+C:      reference/svt-av1 @ 3115c0c1, the PREBUILT oracle, NOT rebuilt.
+tools:  tools/perf_profile/callcount_cells.sh on photo_cid, photo_clic and the
+        synthetic gradient at 512x512 qp 40 preset 2. Wall clock:
+        tools/perf_ab.sh, 21 interleaved randomised-order paired rounds, one
+        untimed warmup per sample, NEITHER SIDE NICED, box quiet. Both variants
+        were measured against the SAME baseline binary in the same session.
+data:   benchmarks/cfl_branchfree_2026-09-05.tsv.
+
+=================== WHAT IT WAS ===================
+
+`callcount_realimg_2026-09-04` item E: `intra_pred::cfl_predict_lbd` and C's
+`svt_cfl_predict_lbd_avx2` (`ASM_AVX2/cfl_avx2.c:38`) are called the SAME number
+of times — 253,229 against 253,259 at photo_cid p2 — and the port's costs 1,207
+Ir per call against C's 99, **12x per call**. It was a plain scalar double loop
+with no dispatch at all, and its per-element body branched:
+
+    let scaled_luma_q0 = if scaled_luma_q6 < 0 { -((-scaled_luma_q6 + 32) >> 6) }
+                         else { (scaled_luma_q6 + 32) >> 6 };
+
+C's kernel does the same rounding with `_mm256_mulhrs_epi16` on `|alpha| << 9`
+(`(|ac| * |alpha| * 512 + 16384) >> 15` IS `(|ac| * |alpha| + 32) >> 6`) plus
+two `_mm256_sign_epi16`s — branch-free, 16 lanes at a time.
+
+=================== WHAT IT IS ===================
+
+The same arithmetic without the branch, so the loop is a straight-line
+element-wise map the vectoriser can take:
+
+    let s  = q6 >> 31;                       // 0 or -1
+    let q0 = ((((q6 ^ s) - s) + 32) >> 6) ^ s;
+    let val = (q0 - s) + p as i32;
+
+plus per-row slices so the bounds are hoisted out of the inner loop. The
+identity `|x| = (x ^ (x >> 31)) - (x >> 31)` holds for every `i32` except
+`i32::MIN`, and `q6 = alpha_q3 * ac_q3` is bounded by `16 * 32768 = 524,288`
+(C `cfl_idx_to_alpha`: `CFL_ALPHABET_SIZE = 16`, magnitudes 1..=16 either sign).
+**Pinned EXHAUSTIVELY, not sampled**: `cfl_branch_free_rounding_matches_the_
+branchy_form` walks every `i16` `ac_q3` against every legal `alpha_q3`
+(2,162,720 pairs) and asserts the two forms agree.
+
+=================== THE VARIANT THAT WAS REJECTED ===================
+
+The obvious next step — and the crate's own idiom — is `incant!(...,
+[v3, neon, scalar])` with `#[arcane]` arms calling the same core, which is what
+`residual::recon_add_clamp` and `predict_paeth` do. It was built and measured:
+
+  Ir (base3 -> variant, and -> the landed form):
+    photo_cid  46,146,658,410 -> 45,940,023,427 (-0.45 %) -> 46,003,230,997 (-0.31 %)
+    photo_clic 45,859,756,170 -> 45,263,967,298 (-1.30 %) -> 45,385,273,424 (-1.03 %)
+    `md_cfl_rd_pick_alpha`   886.7 M -> 713.9 M          -> 766.7 M
+  Wall clock, same base, 21 paired rounds (variant / landed):
+    photo_clic 512 p2   1.009x / **1.016x**
+    photo_cid  512 p2   1.005x / **1.009x**
+    gradient   256 p2   **0.993x** (span 1.0045-1.0092) / 1.006x
+    gradient   512 p2   **0.993x** (span 1.0051-1.0103) / 1.001x
+
+The variant has ~53 M FEWER instructions in the CFL subtree and is slower
+everywhere. `cfl_predict_lbd` is called from inside
+`md_cfl_rd_pick_alpha`'s per-alpha closure; an `#[arcane]` arm is an
+out-of-line `target_feature` function, so the dispatch takes the call out of
+the closure and out of the inliner's reach, and on the gradient — where the
+alpha search is a small share and the blocks are small — the call overhead is
+all that is left. Both gradient spans sit entirely above 1.0 at both sizes,
+which is what a real regression looks like here, so the dispatch is not in the
+tree.
+
+The gradient's Ir is unchanged by EITHER form (10,652,711,767 ->
+10,652,370,846, -0.003 %), so neither gradient wall-clock reading is
+attributable to the kernel's own work; they are code-shape effects. The
+rejected variant's is reported as a regression because it is consistent in
+direction at both sizes with non-overlapping spans; the landed form's 1.006x /
+1.001x is NOT claimed as a gain.
+
+=================== THE NUMBERS ===================
+
+Ir, r7900x callgrind, qp 40 preset 2 (base3 -> cand, C):
+    photo_cid  512  46,146,658,410 -> 46,003,230,997  (-0.31 %)  C 27,248,547,183
+               port/C 1.694 -> 1.688
+    photo_clic 512  45,859,756,170 -> 45,385,273,424  (-1.03 %)  C 26,558,491,722
+               port/C 1.727 -> 1.709
+    gradient   512  10,652,711,767 -> 10,652,370,846  (-0.003 %) C  4,424,517,330
+               port/C 2.408 -> 2.408
+The CFL alpha search subtree at photo_cid 512 p2, inclusive: port
+`cfl::md_cfl_rd_pick_alpha` 886,684,586 -> 766,747,039 against C's
+`av1_cost_calc_cfl` 444,506,134 — 1.995x -> 1.725x.
+
+Wall clock, r7900x, 21 interleaved paired rounds, neither side niced, box
+quiet, every row byte-identical:
+    content    size preset  n  base_ms   cand_ms   ratio   speedup  p25     p75
+    photo_clic 512  2      21  2320.827  2285.381  0.9845  1.016x   0.9792  0.9862
+    photo_cid  512  2      21  2350.490  2326.340  0.9908  1.009x   0.9868  0.9925
+    gradient   256  2      21   199.926   198.672  0.9939  1.006x   0.9900  0.9964
+    gradient   512  2      21   443.483   442.891  0.9986  1.001x   0.9956  1.0000
+
+Memory: peak HEAP (heaptrack, LIVE bytes) 2048 still 61.07 M and inter
+101.78 M — unchanged, as it must be: this chunk allocates nothing.
+
+=================== THE FOUR CHUNKS TOGETHER ===================
+
+Against `main@origin` 41e5d8f1, the tree all four branched from — same harness,
+21 interleaved paired rounds, `ident=Y` on every row:
+
+    content         size preset  n  base_ms   cand_ms   ratio   speedup  p25     p75
+    photo_cid       512  2      21  2463.530  2325.535  0.9442  1.059x   0.9416  0.9468
+    photo_clic      512  2      21  2426.525  2286.334  0.9413  1.062x   0.9379  0.9450
+    screen_terminal 512  2      21   666.313   641.347  0.9615  1.040x   0.9573  0.9636
+    gradient        256  2      21   209.518   198.890  0.9480  1.055x   0.9445  0.9504
+    gradient        512  2      21   460.980   442.223  0.9599  1.042x   0.9574  0.9611
+    gradient        256  6      21    10.430    10.331  0.9914  1.009x   0.9683  1.0034
+    gradient        512  6      21    33.853    33.752  0.9968  1.003x   0.9919  1.0017
+
+A PRESET SWEEP on the photo at 512 (21 paired rounds each, ident=Y) —
+including the one cell where the four chunks together are NEGATIVE:
+    preset  6  1.022x  (span 0.9749-0.9814)
+    preset 10  **0.996x** (span 1.0015-1.0093 — entirely above 1.0, so this is a
+               REAL ~0.4 % slowdown, not noise)
+    preset 13  0.996x  (span 0.9814-1.0100 — straddles 1.0; a null)
+p10 and p13 are the `only_dct` regime, where the tx-type search has one
+candidate: none of the four mechanisms has anything to remove there, and what
+those presets pay is the owned-output wrapper's extra call frame and
+`grown_out`'s `is_empty` branch (`txout_cshape_2026-09-05` reported the same
+shape on the gradient and measured `#[inline]` on the wrapper as null-to-worse
+at p2 — it was NOT re-tested against this photo p10 cell, which is the open
+follow-up). In absolute time the trade is -137 ms at p2 and -1.6 ms at p6
+against +0.054 ms at p10 on a 9.8 ms frame.
+
+A SIZE SWEEP of the four together (gradient, qp 40, preset 2, 15 paired rounds
+each, ident=Y): 64 **1.051x**, 128 **1.051x**, 256 **1.055x**, 512 **1.043x**,
+1024 **1.031x** — the gain is roughly flat in frame size and does not come from
+a per-frame fixed cost.
+
+and the instruction counts on the final tree against 41e5d8f1:
+    photo_cid  512 p2  48,432,763,259 -> 46,003,230,997  (-5.02 %)  port/C 1.777 -> 1.688
+    photo_cid  512 p6   1,657,133,167 ->  1,619,794,063  (-2.25 %)  port/C 2.349 -> 2.296
+    photo_cid  512 p10                                              port/C 1.803 -> 1.802
+    photo_clic 512 p2                                               port/C 1.835 -> 1.709
+  and, measured the same way on the same oracle, the whole port/C position on
+  the other two contents (base -> cand):
+    gradient        512 p2  11.03 G -> 10.65 G  (-3.43 %)  2.493 -> 2.408
+    gradient        512 p6  868.5 M -> 860.9 M  (-0.87 %)  2.769 -> 2.745
+    gradient        512 p10 159.3 M -> 157.8 M  (-0.94 %)  2.539 -> 2.515
+    screen_terminal 512 p2  14.57 G -> 14.00 G  (-3.90 %)  2.294 -> 2.205
+    screen_terminal 512 p6  939.5 M -> 920.9 M  (-1.97 %)  2.643 -> 2.591
+    screen_terminal 512 p10 138.0 M -> 137.7 M  (-0.17 %)  2.192 -> 2.188
+p10 is unmoved, and should be: every mechanism these four chunks touched is a
+p2/p6 phenomenon (the tx-type search collapses to one candidate at p10, so
+there is no per-trial allocation or per-trial residual to remove there).
+
+And the MEMORY axis over the four, x86 2048 inter, INTERLEAVED `mem_bisect.sh`
+(both binaries round-robin in one run, 15 rounds): median 109,332 -> **104,496**
+KiB, min 108,820 -> 103,680, max 109,920 -> 104,864 — the distributions do not
+overlap, so this is a real **-4.4 %** on the arm the memory goal is stated
+against. Peak HEAP is unchanged throughout (61.07 M still / 101.78 M inter).
+
+The same harness at two more x86 cells, and it does NOT all go one way:
+    1280 inter  median 45,792 -> **47,000** KiB (min 45,404 -> 46,492, max
+                46,132 -> 47,276) — the distributions do not overlap either, so
+                this is a real **+2.6 %** (+1.2 MB) at the smaller size.
+    2048 still  median 68,856 -> 68,704 (min 68,576 -> 68,236, max 69,140 ->
+                68,992) — overlapping; a null.
+So the four chunks are -4.4 % on x86 inter at 2048 and +2.6 % at 1280, with the
+still arm flat and the heap unmoved at every cell measured. Both directions are
+region-retention effects of a changed allocation-size mix, not live bytes; the
+aarch64 inter 2048 cell — the one the memory goal is stated against — was
+measured per chunk and is flat to +0.01 % (`txout_cshape`), down 1.4 %
+(`residual_hoist`) and unmoved by the two after it.
+
+=================== GATES ===================
+
+aarch64 (this Mac, /opt/homebrew/bin/bash, one harness at a time): nextest
+  2534/2534, `regression_spotcheck` 104/104, `identity_full_8bit` 1100/1100
+  (+0 pinned, 0 harness errors), `inter_byte_gate` PASS (96 required, 0 failed,
+  1 known-open, 0 crashed), `video_key_matrix` 59/60 (the known-open
+  `gradient p0`, unmoved), `fctx_gate` PASS 96/96 on both frames,
+  `inter_decode_gate` 5/5 PASS, `inter_decode_census` 96/96 PASS,
+  `inter_completion_scan` with `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH PASS,
+  `screen_palette_gate` 50/50 byte-identical (38 palette-coding cells).
+  `mem_peak.sh` median of 5, this tree: 1280 still 28,192 / videokey 33,280 /
+  inter 55,360 KiB; 2048 still 72,544 / videokey 87,712 / inter 142,256 — each
+  inside its own run-to-run band against the 41e5d8f1 readings.
+x86_64 (r7900x, same tree): nextest 2544/2544, `regression_spotcheck` 104/104,
+  `identity_full_8bit` 1100/1100, `inter_byte_gate` PASS (96/0/1).
+Every callgrind cell: identity pre-pass `cmp`-identical AND each instrumented
+run's own .obu `cmp`'d against it, on all four contents.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: the Ir on three contents; the wall clock on the four cells listed
+at 21 paired rounds each; that the branch-free form equals the branchy one over
+its entire reachable domain; that the `#[arcane]` dispatch variant is slower
+despite fewer instructions.
+NOT ESTABLISHED: that this is as fast as C's kernel — the alpha search is still
+1.72x C's inclusive Ir, of which the per-alpha `tx_unit` half is already at
+parity (385.7 M against C's 374.2 M, `callcount_realimg_2026-09-04`), so the
+predict is still several times C's AVX2. A HAND-WRITTEN intrinsics kernel that
+the inliner can still fold into the alpha closure is the untried next step, and
+the variant above is the evidence that it must be inlinable to win. Also not
+established: any preset but 2, any qp but 40, any size but 256/512, 10-bit
+(`cfl_predict_hbd` untouched), the inter arm.
