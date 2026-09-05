@@ -1,5 +1,84 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE POSITION, RE-MEASURED ON THE TIP AFTER TEN LANDINGS — ALL THREE ARMS
+> MOVED, AND SO DID THE C ORACLE (2026-09-05).** Records
+> `benchmarks/perf_2026-09-05-arm10-{still,videokey,inter}.*`,
+> `perf_2026-09-05-arm10-photo-{still,videokey,inter}.*`,
+> `perf_2026-09-05-arm10-POSITION.meta`, quiet-box evidence in
+> `perf_2026-09-05-arm10-quiet.txt`. Tree `41e5d8f1`, mac (M4 Pro, 12 cores),
+> 25 interleaved paired rounds, preset 8, gradient qp 40, no
+> `-C target-cpu=native`, **every gradient cell of all three arms ident=Y**,
+> zero ERR. **This supersedes the arm9 table below.**
+>
+> | preset 8, port/C | 64 | 128 | 256 | 512 | slope ratio | intercept (port / C) |
+> |---|---|---|---|---|---|---|
+> | still | 0.758x | 1.287x | 2.011x | 2.208x | **2.29x** | -0.005 ms / 0.130 ms |
+> | videokey | 1.176x | 1.724x | 2.320x | 2.228x | **2.26x** | -0.414 ms / -0.044 ms |
+> | inter | 1.441x | 1.899x | 2.425x | 2.432x | **2.46x** | -0.441 ms / 0.054 ms |
+>
+> Against arm9 (2.46x / 2.60x / 2.82x) that is **-6.9 % / -13.1 % / -12.8 %**
+> on the slope ratio, and ten of the twelve cells moved by more than the ~3 %
+> session-drift band arm9 measured (the exceptions are videokey 256 at -3.3 %
+> and inter 256 at -2.5 %, which are inside it and are not results). **The
+> standing caveat is unchanged: a position run cannot resolve a chunk-sized
+> change — it resolves the CUMULATIVE change since arm9**, which is what this
+> one is for. Nothing here attributes anything to a particular landing; only a
+> paired A/B of two trees in one session can do that, and none was run.
+>
+> **THE INTERCEPT IS A SEPARATE STORY AND IT IS WHY 64x64 READS 0.758x.** On
+> the still arm C carries a real fixed per-frame cost (0.130 ms) where the
+> port's fit intercept is ~0, so **the port is FASTER than C at 64x64 still**
+> and a single "2.29x" hides that. On the two video arms both intercepts come
+> out slightly negative — the fit is not resolving a fixed cost across these
+> four sizes there, so the 64x64 cell itself (1.18x / 1.44x) is the honest
+> small-frame statement, not the intercept.
+>
+> **C DRIFTED 4-10 % FASTER ON AN UNCHANGED `libSvtAv1Enc.a`** (the prebuilt
+> 2026-08-31 oracle, never rebuilt; only the ~200-line driver was recompiled,
+> and it does no encoding). C slopes 15.0572 -> 14.0162 (-6.9 %), 62.0431 ->
+> 59.4884 (-4.1 %), 74.5633 -> 71.6416 (-3.9 %). So the port's absolute
+> -9 to -18 % per cell is **an upper bound on what the landings bought, not a
+> measurement of it** — some of it is whatever made the box faster this
+> session. Read the ratios; the milliseconds are not comparable across
+> sessions on either side.
+>
+> **REAL CONTENT, and it confirms gradient OVERSTATES the gap.** photo_cid
+> (CID22-512 `3571065.png`, native 512x512, sha256(.yuv)
+> `88142a48…3ca4a72f` — the same bytes `callcount_realimg_2026-09-04` used),
+> 512x512, n=25:
+>
+> | photo_cid 512, port/C | p2 | p6 |
+> |---|---|---|
+> | still | **1.634x** | **2.101x** |
+> | videokey | (1.571x, ident=**N** — excluded) | **1.559x** |
+> | inter | **REFUSED** (no timing) | **1.575x** |
+>
+> One size, so **no intercept/slope fit exists on this arm** and nothing is
+> extrapolated. Every comparable cell is better than the synthetic one, and the
+> video arms *invert* on real content: photo p6 videokey (1.559x) and inter
+> (1.575x) beat photo p6 still (2.101x), where on gradient the video arms are
+> worse than still.
+>
+> Two photo cells are NOT results. (1) **`photo_cid 512 p2 videokey is
+> ident=N`** — the port's video-mode key frame at p2 on this image is not
+> byte-identical to C's, so its ratio compares different work. The same image
+> at p2 in STILL mode is identical and p6 videokey is identical, so it is
+> specific to (video-mode key frame, preset 2, real content); a byte finding
+> for whoever owns that axis, not investigated here. (2) **`photo_cid 512 p2
+> inter` produces no timing at all**, 25/25 rounds — a clean REFUSAL (exit 3),
+> not a crash: *"global motion is not implemented: C `svt_aom_derive_gm_level`
+> gives an inter frame at preset <= 4 a non-zero gm_level … use preset >= 5
+> for inter frames"*. There is no p2 inter number to have, on any content,
+> until global motion lands.
+>
+> **QUIET-BOX DISCIPLINE, and it fired once.** A sibling lane (`alloc1`) was
+> A/B-ing on the same mac. The first `photo-inter` attempt caught its `rustc`,
+> `perf_encode_cand` and `perf_encode_base` on the box; that attempt was
+> **discarded, not published**, and the arm was re-run on a clean box. Both
+> logs — the discarded one and the clean one — are in
+> `perf_2026-09-05-arm10-quiet.txt` alongside a snapshot every 15 s inside
+> every other arm.
+
 > **WIENER `compute_stats` IS IN C's SHAPE ON BOTH ISAs — 127x C PER CALL ->
 > 1.35x, 746.5 M -> 7.9 M Ir per 512x512 frame, byte-identical; the p6 port/C
 > ratio on every cell drops from 3.4-5.1x to 2.3-2.8x (2026-09-04).** Record
@@ -362,7 +441,9 @@
 > **Five data points now: three memset removals priced, all won
 > (`ab7c5ed4`, `700357e2`, this); two allocation removals priced, both lost.**
 
-> **THE POSITION AFTER THIS CHUNK — AND A MEASURED REASON NOT TO READ A 2-3 %
+> **[SUPERSEDED 2026-09-05 by the arm10 position at the top of this file —
+> the table below is arm9 and no longer the position.] THE POSITION AFTER THIS
+> CHUNK — AND A MEASURED REASON NOT TO READ A 2-3 %
 > SLOPE MOVE OUT OF TWO POSITION RUNS (2026-09-03).** Records
 > `benchmarks/perf_2026-09-03-arm9-{still,videokey,inter}.*` and
 > `perf_2026-09-03-arm9-POSITION.meta`. 25 paired rounds, preset 8, gradient

@@ -1,0 +1,151 @@
+# arm10 position run — QUIET-BOX EVIDENCE (one snapshot before each arm, one
+# after, and one every 15 s in between; `ps -A` filtered to
+# cargo|rustc|ninja|SvtAv1EncApp|perf_encode|perf_c_encode|cc1|clang|cmake|identity_run|valgrind,
+# with the idle 0 %-CPU sccache daemon dropped). A line under a snapshot is a
+# process that was running; anything under .../zenav1-svt--pos1/ is THIS run's
+# own harness. `alloc1_marker` is the sibling lane's .workongoing, recorded
+# because that lane also measures on this box.
+#
+# The FIRST photo-inter attempt (06:24:06-06:26:03Z) caught the sibling lane's
+# A/B binaries (rustc, perf_encode_cand, /Users/lilith/tmp/alloc1gates/
+# perf_encode_cand5, perf_encode_base) on the box. That attempt was DISCARDED,
+# not published; the arm was re-run at 06:28:19-06:30:14Z on a clean box and
+# that is the run in perf_2026-09-05-arm10-photo-inter.*. The dirty log is kept
+# below, labelled, as the evidence for why.
+
+======== still ========
+2026-09-05T06:17:56Z	2026-09-05-arm10-still-PRE	competing=0	load=2.21 2.01 1.78
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:17:58Z	2026-09-05-arm10-still-POST	competing=0	load=2.12 2.00 1.78
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+
+======== videokey ========
+2026-09-05T06:18:43Z	2026-09-05-arm10-videokey-PRE	competing=0	load=2.25 2.06 1.81
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:18:47Z	2026-09-05-arm10-videokey-POST	competing=0	load=2.55 2.12 1.83
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+
+======== inter ========
+2026-09-05T06:18:54Z	2026-09-05-arm10-inter-PRE	competing=0	load=2.58 2.14 1.84
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:18:59Z	2026-09-05-arm10-inter-POST	competing=0	load=2.46 2.12 1.83
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+
+======== photo-still ========
+2026-09-05T06:19:05Z	2026-09-05-arm10-photo-still-PRE	competing=0	load=2.34 2.10 1.83
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:19:20Z	2026-09-05-arm10-photo-still-during	competing=1	load=2.34 2.11 1.84
+33181  27.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:19:35Z	2026-09-05-arm10-photo-still-during	competing=1	load=2.26 2.10 1.84
+33210 100.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:19:50Z	2026-09-05-arm10-photo-still-during	competing=1	load=2.13 2.08 1.83
+33245 100.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:20:05Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.88 2.03 1.82
+33276  76.3 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:20:20Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.91 2.03 1.82
+33310  89.7 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:20:35Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.77 1.99 1.81
+33339  99.4 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:20:50Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.67 1.96 1.80
+33397 100.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:21:05Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.60 1.93 1.80
+33440  98.8 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:21:20Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.68 1.93 1.80
+33472  79.3 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:21:35Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.60 1.90 1.79
+33504  85.2 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:21:50Z	2026-09-05-arm10-photo-still-during	competing=1	load=1.77 1.92 1.80
+33623   3.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:21:53Z	2026-09-05-arm10-photo-still-POST	competing=0	load=1.71 1.90 1.79
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+
+======== photo-videokey ========
+2026-09-05T06:22:05Z	2026-09-05-arm10-photo-videokey-PRE	competing=0	load=1.60 1.87 1.78
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:22:20Z	2026-09-05-arm10-photo-videokey-during	competing=1	load=1.47 1.83 1.77
+33792 100.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:22:35Z	2026-09-05-arm10-photo-videokey-during	competing=1	load=1.51 1.82 1.77
+33837  98.8 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:22:50Z	2026-09-05-arm10-photo-videokey-during	competing=1	load=1.67 1.84 1.77
+33880 100.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:23:05Z	2026-09-05-arm10-photo-videokey-during	competing=1	load=1.59 1.82 1.77
+33923   0.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:23:20Z	2026-09-05-arm10-photo-videokey-during	competing=1	load=1.52 1.79 1.76
+33967   9.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:23:36Z	2026-09-05-arm10-photo-videokey-during	competing=1	load=1.76 1.83 1.77
+34010  18.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:23:51Z	2026-09-05-arm10-photo-videokey-during	competing=1	load=1.59 1.79 1.76
+34120   9.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+2026-09-05T06:23:58Z	2026-09-05-arm10-photo-videokey-POST	competing=0	load=1.65 1.80 1.76
+alloc1_marker: 2026-09-05T06:11:58Z alloc1-agent tx_unit TxOutBufs cand2 (DCT owned arm): remeasure
+
+======== photo-inter ========
+2026-09-05T06:28:19Z	2026-09-05-arm10-photo-inter-PRE	competing=0	load=1.58 2.06 1.92
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:28:34Z	2026-09-05-arm10-photo-inter-during	competing=1	load=1.45 2.01 1.90
+36613  98.1 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:28:49Z	2026-09-05-arm10-photo-inter-during	competing=1	load=1.42 1.98 1.89
+36659  98.5 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:29:04Z	2026-09-05-arm10-photo-inter-during	competing=1	load=1.55 1.98 1.89
+36703  99.9 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:29:19Z	2026-09-05-arm10-photo-inter-during	competing=1	load=1.58 1.96 1.89
+36743  98.5 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:29:34Z	2026-09-05-arm10-photo-inter-during	competing=1	load=1.75 1.98 1.90
+36797  78.1 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:29:49Z	2026-09-05-arm10-photo-inter-during	competing=1	load=1.66 1.95 1.89
+36840  96.9 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:30:04Z	2026-09-05-arm10-photo-inter-during	competing=1	load=1.58 1.92 1.88
+36930  66.1 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+2026-09-05T06:30:14Z	2026-09-05-arm10-photo-inter-POST	competing=0	load=1.49 1.89 1.87
+alloc1_marker: 2026-09-05T06:27:34Z alloc1-agent cand6: final Ir + AB + gates
+
+======== photo-inter, FIRST attempt — DISCARDED (sibling lane on the box) ========
+# Transcribed from that run's log; the file itself was overwritten in place by
+# the clean re-run (same arm name). Every line below was captured by the same
+# sampler script, verbatim, at the timestamps shown.
+2026-09-05T06:24:06Z	2026-09-05-arm10-photo-inter-PRE	competing=0	load=1.59 1.79 1.75
+2026-09-05T06:24:21Z	2026-09-05-arm10-photo-inter-during	competing=3	load=1.90 1.84 1.77
+34311   0.0 /Users/lilith/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo
+34316 100.0 /Users/lilith/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc
+34321  95.7 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+2026-09-05T06:24:36Z	2026-09-05-arm10-photo-inter-during	competing=2	load=3.40 2.19 1.90
+34559  91.5 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+34569  90.4 (perf_encode_cand)
+2026-09-05T06:24:51Z	2026-09-05-arm10-photo-inter-during	competing=1	load=3.22 2.21 1.91
+34859  98.9 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+2026-09-05T06:25:06Z	2026-09-05-arm10-photo-inter-during	competing=2	load=3.10 2.23 1.93
+35049  82.6 /Users/lilith/tmp/alloc1gates/perf_encode_cand5
+35051   0.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/target/release/examples/perf_encode
+2026-09-05T06:25:21Z	2026-09-05-arm10-photo-inter-during	competing=1	load=2.86 2.22 1.93
+35215  99.4 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+2026-09-05T06:25:36Z	2026-09-05-arm10-photo-inter-during	competing=2	load=2.84 2.25 1.94
+35439  93.1 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+35458   6.2 /Users/lilith/tmp/alloc1gates/perf_encode_base
+2026-09-05T06:25:51Z	2026-09-05-arm10-photo-inter-during	competing=1	load=3.10 2.33 1.97
+35741   0.0 /Users/lilith/work/zen/zenav1-svt--pos1/rust/tools/perf_c_encode/perf_c_encode
+2026-09-05T06:26:03Z	2026-09-05-arm10-photo-inter-POST	competing=0	load=2.63 2.27 1.95

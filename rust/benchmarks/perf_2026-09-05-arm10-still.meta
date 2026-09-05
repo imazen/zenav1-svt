@@ -1,0 +1,18 @@
+# perf_gate fit + verdict
+date: 2026-09-05T06:17:58Z
+commit: unknown
+host: mac (12 cores)
+content: gradient
+grid: content=gradient sizes=[64 128 256 512] presets=[8] qp=40 rounds=25 warmup=1 frames=1 shift=3 video=0
+harness: interleaved paired (randomized per-round order); no target-cpu=native; setup excluded both sides
+target: <= ~1.2x C wall clock (matched preset+qp, byte-identical envelope)
+fits (ms = intercept + slope*pixels):
+  p8   port: intercept=-0.005 ms  slope=32.1050 ms/MP   |   C: intercept=0.130 ms  slope=14.0162 ms/MP   |   slope-ratio=2.29x  intercept-ratio=-0.04x
+tree: 41e5d8f1ab3adcf270b2991354e2ae5cb1eea7d2 (main@origin) -- the `commit:`
+      line above says `unknown` because the sweep ran from a `jj workspace`
+      where `git rev-parse HEAD` is empty. Sha from `jj log -r main@origin`.
+C:    PREBUILT Bin/Release/libSvtAv1Enc.a (2026-08-31), NOT rebuilt; only
+      tools/perf_c_encode's driver was recompiled. NATIVE=OFF, -O3 -DNDEBUG,
+      runtime RTCD.
+quiet-box evidence: benchmarks/perf_2026-09-05-arm10-quiet.txt
+position record:    benchmarks/perf_2026-09-05-arm10-POSITION.meta

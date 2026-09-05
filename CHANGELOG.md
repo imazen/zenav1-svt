@@ -72,6 +72,22 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **Position re-measured on the tip: 2.29x still / 2.26x videokey / 2.46x inter**
+  (measure-only, mac M4 Pro): `benchmarks/perf_2026-09-05-arm10-*` +
+  `perf_2026-09-05-arm10-POSITION.meta`. Three arms, preset 8, gradient qp 40,
+  64/128/256/512, 25 interleaved paired rounds, every gradient cell ident=Y.
+  Against arm9 (2.46x / 2.60x / 2.82x) the slope ratios fall 6.9 % / 13.1 % /
+  12.8 %. **C drifted 4-10 % faster on an unchanged `libSvtAv1Enc.a`**, so the
+  port's absolute -9 to -18 % per cell is an upper bound, not an attribution;
+  the ~3 % port-side session-drift caveat from arm9 still holds and this run
+  resolves the CUMULATIVE change since arm9, not any single landing. Adds a
+  real-content arm (photo_cid, CID22-512 `3571065.png`, 512x512): still 1.634x
+  at p2 / 2.101x at p6, videokey 1.559x and inter 1.575x at p6 — gradient
+  overstates the gap at every comparable cell. Two photo cells are not
+  results: p2 videokey is ident=N (a byte finding on the video-mode key frame
+  at preset 2 with real content), and p2 inter is REFUSED by the encoder
+  (global motion unimplemented at preset <= 4), so there is no p2 inter number
+  on any content yet.
 - **Call counts re-compared on real content** (measure-only, r7900x callgrind):
   `benchmarks/callcount_realimg_2026-09-04.{tsv,cells.tsv,meta}` — CID22 /
   CLIC photos, a gb82-sc screenshot and line-art crop, 512x512 / 500x332 /

@@ -1,0 +1,55 @@
+# perf_gate raw samples — one row per interleaved paired round
+# commit=unknown host=mac cores=12 date=2026-09-05T06:19:05Z
+# content=raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv sizes=[512] presets=[2 6] qp=40 rounds=25 warmup=1 frames=1 shift=3 video=0
+# port=svtav1/examples/perf_encode (release, no native)  C=tools/perf_c_encode (libSvtAv1Enc.a)
+content	size	preset	qp	round	port_ns	c_ns	ident
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	1	1899855459	1162310000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	2	1903878542	1163709000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	3	1904795208	1165439000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	4	1916263292	1173609000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	5	1915810500	1174241000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	6	1912874916	1171403000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	7	1921912750	1180266000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	8	1918228542	1180612000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	9	1923328250	1182012000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	10	1937327750	1180103000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	11	1934191375	1181750000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	12	1938365208	1181001000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	13	1926585958	1187488000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	14	1943409500	1181041000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	15	1971833417	1181969000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	16	1938768584	1189657000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	17	1949725750	1188300000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	18	1936899375	1194143000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	19	1948743583	1189152000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	20	1940111959	1186438000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	21	1941640958	1192512000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	22	1946589125	1185916000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	23	1947918875	1194465000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	24	1944661125	1188884000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	2	40	25	1949410917	1192848000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	1	68749625	32777000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	2	68593209	32685000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	3	69178959	32933000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	4	68498625	32723000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	5	68209041	32969000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	6	69024583	32543000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	7	68509917	32332000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	8	68214583	32830000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	9	67698041	32851000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	10	67733458	32862000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	11	68365458	32466000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	12	69321167	32670000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	13	68523125	32616000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	14	70217792	32945000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	15	68627875	33293000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	16	68637000	32623000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	17	69147875	32666000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	18	68398542	32739000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	19	68585666	32739000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	20	68297709	32478000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	21	68903375	32715000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	22	68725250	32897000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	23	68034167	32274000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	24	68001583	32731000	Y
+raw:/Users/lilith/tmp/pos1yuv/photo_cid.yuv	512	6	40	25	69086750	32513000	Y
