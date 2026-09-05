@@ -347,3 +347,38 @@ on code size and page mapping, which is what the two overlapping ranges are.
 timing or memory), so no aarch64 2048-inter figure is claimed. Peak HEAP
 (heaptrack) was not measured either; these are RSS numbers and are labelled as
 such.
+
+=================== THE QUIET-BOX RE-RUN, WHICH SETTLES BOTH QUESTIONS ===================
+
+The section above left two things open: whether the harness bias is intrinsic or
+contention-induced, and whether the p2 rows would look different without a
+sibling lane on the box. Both were re-measured after the gate chains finished,
+on a box at load 0.6-1.1 with nothing else running (`uptime` and `ps` captured
+before and after, in the run log), same binaries, same 21 interleaved paired
+rounds.
+
+  pair                        cell           ratio    speedup   p25      p75
+  CONTROL base vs base        photo_cid p2   1.0052   0.995     0.9974   1.0083
+  CONTROL base vs base        photo_cid p6   1.0043   0.996     0.9992   1.0062
+  base vs candF               photo_cid p2   1.0046   0.995     1.0009   1.0082
+  base vs candF               photo_cid p6   **0.9660**  **1.035**  0.9604   0.9690
+
+**THE BIAS IS NOT CONTENTION.** The quiet control reads 1.0052 / 1.0043 against
+the contended control's 1.0026 / 1.0048 — the same 0.3-0.5 % against the
+candidate slot either way. So `perf_ab.sh` under-reports the candidate by that
+much as a property of the harness, not of the box, and every ratio this campaign
+has ever recorded carries it. (This record does NOT claim a mechanism; it claims
+the measurement, twice, under conditions that differ in the obvious suspect.)
+
+**AND THE p2 "REGRESSION" IS THE BIAS, EXACTLY.** On a quiet box the candidate
+reads 1.0046 at p2 where the SAME BINARY reads 1.0052 — the candidate is, if
+anything, marginally faster than itself, and the two quartile spans lie on top of
+each other. There is no p2 regression to explain. What is left is the p6 row at
+0.9660 against a 1.0043 control: **3.8 % apart with non-overlapping quartiles**,
+i.e. a real ~3.9 % win once the floor is subtracted, which is the same size the
+pinned cycle counters gave (-2.96 %) plus the floor.
+
+The p2 CYCLE counter rise (+0.82 %, taken pinned, both sides, with every
+instruction/branch/mispredict count falling) is a separate observation and still
+stands as an unattributed code-placement effect; it just no longer has a
+wall-clock consequence anyone can see.

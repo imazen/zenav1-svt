@@ -996,7 +996,11 @@ Crates are not published to crates.io yet — depend by git.
   measurement finding that outlives the chunk:** a `perf_ab.sh` run with the
   SAME BINARY on both sides reads 0.997x (p2) / 0.995x (p6), quartile span
   entirely above 1.0 at p6 — every wall-clock ratio in this campaign carries a
-  bias of that size against the candidate slot. **Memory:** peak RSS
+  bias of that size against the candidate slot — and a quiet-box re-run
+  (load 0.6-1.1) reads the same 0.995x / 0.996x for the same binary, so the bias
+  is the HARNESS, not contention. On that quiet box the candidate reads 1.0046 at
+  p2 where the same binary reads 1.0052 (no regression to explain) and 0.9660 at
+  p6 against a 1.0043 control, quartiles non-overlapping. **Memory:** peak RSS
   (`/usr/bin/time -v`, x86, gradient 2048² qp40 p13, 5 reps) is a NULL on both
   arms — still 68,920 -> 68,824 KiB, inter 109,296 -> 109,568 KiB, min/max ranges
   fully overlapping — as expected from a diff that adds, removes and resizes no

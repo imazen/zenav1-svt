@@ -52,6 +52,14 @@
 > 0.995x at p6, with the p6 quartile span entirely above 1.0.** Every
 > wall-clock ratio in this campaign carries a bias of that size against the
 > candidate slot; the p6 photo wins are far outside it, the p2 rows are not.
+> **THE QUIET-BOX RE-RUN SETTLES BOTH OPEN QUESTIONS (same day, after the gate
+> chains freed the box; load 0.6-1.1, nothing else running).** The control reads
+> **1.0052 / 1.0043** quiet against **1.0026 / 1.0048** contended — so the
+> harness bias is a property of `perf_ab.sh`, NOT of the sibling lane. And at p2
+> the candidate reads **1.0046 where the SAME BINARY reads 1.0052**, quartile
+> spans on top of each other: **there is no p2 regression to explain.** The p6
+> row is 0.9660 against a 1.0043 control — **3.8 % apart, non-overlapping
+> quartiles**, a real ~3.9 % win once the floor is subtracted.
 > **MEASURED, BYTE-IDENTICAL AND REVERTED — do not retry:** C's `eob == 1`
 > writer fast path (`entropy_coding.c:414-443`) **+1,924,868 Ir** (it fires —
 > `fill_levels` self Ir 35,521,705 -> 35,099,685 — but `eob == 1` txbs are ~1 %

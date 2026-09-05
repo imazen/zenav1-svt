@@ -521,8 +521,11 @@ control before believing any sub-1 % ratio.** MEASURED 2026-09-05
 (`benchmarks/entropy_coder_cshape_2026-09-05`): `perf_ab.sh base base2` with
 `base2` a BYTE COPY of `base` reported the candidate slot **0.997x at
 photo_cid 512² p2 and 0.995x at p6**, and at p6 the p25/p75 span sat entirely
-above 1.0 — i.e. the harness (under a live sibling lane on that box) has a
-0.3-0.5 % bias against the candidate. Before that control was run, an
+above 1.0 — i.e. the harness has a 0.3-0.5 % bias against the candidate.
+**IT IS NOT CONTENTION**: re-run the same day on a QUIET box (load 0.6-1.1,
+nothing else on it) the same-binary control read 0.995x / 0.996x, matching the
+contended figures, while the real candidate went from an apparent p2 regression
+to 1.0046 against the control's 1.0052 — indistinguishable from itself. Before that control was run, an
 entirely-instruction-reducing change looked like a uniform 0.4-0.8 % p2
 REGRESSION on four different contents, and two rounds went into hunting a
 mechanism that did not exist. The counters had already said so from the other

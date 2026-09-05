@@ -135,3 +135,12 @@ MEM_RSS	base	gradient_2048_still_p13	68920	68796	69156
 MEM_RSS	candF	gradient_2048_still_p13	68824	68624	69264
 MEM_RSS	base	gradient_2048_inter_p13	109296	109216	109668
 MEM_RSS	candF	gradient_2048_inter_p13	109568	108916	109968
+#
+# AB_QUIET — the same two pairs re-run on a QUIET box (load 0.6-1.1, the sibling
+# lane finished; `uptime` + `ps` captured before and after in
+# ~/tmp/ent1/quiet.log). This is the follow-up the contended table asked for.
+section	pair	cell	ratio	speedup	p25	p75
+AB_QUIET_CONTROL	base_vs_base	photo_cid_512_p2	1.0052	0.995	0.9974	1.0083
+AB_QUIET_CONTROL	base_vs_base	photo_cid_512_p6	1.0043	0.996	0.9992	1.0062
+AB_QUIET	base_vs_candF	photo_cid_512_p2	1.0046	0.995	1.0009	1.0082
+AB_QUIET	base_vs_candF	photo_cid_512_p6	0.9660	1.035	0.9604	0.9690
