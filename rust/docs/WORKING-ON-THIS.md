@@ -967,6 +967,22 @@ the driver holding every output buffer until after the last send. Taking the
 note at face value would have left the campaign permanently two frames deep.
 Honour the "without a measurement" half; do not read the note as the answer.
 
+**`core::array::from_fn` is NOT inlined, and a SIMD kernel that builds its
+row views with it keeps one bounds check per chunk per row.** MEASURED
+2026-09-04 on the Wiener `compute_stats` rewrite (r7900x callgrind, photo
+cell, preset 6): exact-length `&[[i16; 16]]` views built by
+`core::array::from_fn(|l| cs_chunks(..))` left a `cmp QWORD PTR [rsp+..], rdi;
+je` per view per chunk in the hot loop (LLVM sees the closure result as an
+opaque slice, so `c < len` cannot be folded into `c < n`) — 16.88 M Ir.
+The same views built with a plain `let mut v = [first; W]; for l in 1..W {
+v[l] = ..}` loop: 8.37 M. Read the asm (`nm -S` for the symbol range,
+`objdump --start-address/--stop-address`, then count `cmp`/`je` and
+`[rsp+` spills inside the loop with `vpmaddwd`) — callgrind cannot split a
+`macro_rules!` body by line, and `--auto=yes` attributes every expanded
+line to "unidentified lines", so the source-level profile of a
+macro-instantiated kernel is a single number. Record:
+`benchmarks/compute_stats_cshape_2026-09-04.meta`.
+
 ## 5b. Drills you don't have to write
 
 Localizing a divergence starts with narrowing WHAT changed, not reading code.
