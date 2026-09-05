@@ -1,5 +1,109 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE INTER FRAME'S "WORK C DOES NOT DO" ITEMS, TRACED TO THEIR READERS —
+> INVESTIGATION ONLY, NO CODE CHANGED, NOTHING MEASURED (2026-09-05, the
+> `algo` lane, cut short at the coordinator's request).** Acting on
+> `callcount_inter_2026-09-05`'s five algorithmic rows (Hadamard 7.8 %, sc
+> detector 4.4 %, second full-pel search 3.9 %, film grain 3.4 M, tpl offsets
+> 2.3 M at gradient 512² p8). Every claim below is a SOURCE trace on tree
+> `c0ac35b9`, cited by line; none is a measurement and none has been
+> gate-tested. Workspace: `~/work/zen/zenav1-svt--algo` (jj workspace `algo`),
+> already wired with the `reference/svt-av1` / `Bin` / `cbuild-static*`
+> symlinks and the prebuilt `capture_c_trace.nowrap.bin` (§5's fresh-workspace
+> trap), so the next agent can run gates there at once.
+> **1. Screen-content detector — a CORRECTNESS shape, not only cost.** C's
+> `perform_sc_detection` (`pd_process.c:4769-4806`) runs the detector ONLY on
+> `slice_type == I_SLICE` and stores the result in
+> `ctx->last_i_picture_sc_class0..5`; on every other picture it COPIES those
+> six fields onto the pcs. So the inter frame's classes are the key frame's
+> by copy, never a fresh detection. The port's `derive_sc(Video{is_islice:
+> false}, ..)` at `pipeline.rs:2203` runs the AA-aware detector on the INTER
+> frame's own pixels (`sc_detect.rs:487`, `scm_auto = preset <= 8` on the
+> video arm). The two ladders below it are already right on a non-I picture —
+> `palette_level_default` / `intrabc_level_default` are `is_islice ? X : 0` in
+> every row (`enc_mode_config.c:2033-2075`), so `allow_intrabc`,
+> `palette_level` and `allow_screen_content_tools` are 0 on the inter frame
+> regardless of what the detector says — but `classes.sc_class5` IS read on
+> the inter frame at `pipeline.rs:2556`, `:3296`, `:5776` (CDEF), `:11536`
+> and `:12772`. On the campaign's cells frame 1 is frame 0 shifted 3 px, so
+> both detections agree and the bytes match; a sequence whose inter frame
+> classifies differently from its key frame would diverge from C today. The
+> SECOND call (`:11406`) is a pure recompute on identical inputs: `derive_sc`
+> holds no state, `ScDerivation` is `Copy`, and `encode_tile_rows`'
+> `sc_preset` parameter (`:11176`) has `:11406` as its ONLY reader. **Fix
+> shape:** split `derive_sc` into detection + ladder; add an `EncodePipeline`
+> field for the last I-picture's `ScClasses`, written on every I-slice
+> derivation and read on `Video{is_islice: false}` (`unwrap_or_default()` is
+> C's zero-initialised ctx); replace `encode_tile_rows`' `sc_preset: u8` with
+> the frame's `ScDerivation`. **Mutation to run:** force `sc_class5 = true`
+> on the inter frame only — the five readers above are what must move bytes
+> on `inter_byte_gate`; if nothing moves there the classes are unobserved on
+> the inter grid and the change is Ir-only. `screen_ibc_byte_gate` /
+> `screen_palette_gate` guard the dedupe (flip `tile_sc.allow_screen_content_tools`
+> and they must go red).
+> **2. MDS0 Hadamard on inter candidates — PORTED BUT UNWIRED, one lane.** C's
+> `fast_loop_core` (`product_coding_loop.c:1257-1307`) picks ONE distortion
+> arm for every candidate, intra and inter alike: `mds0_dist_type == SSD` →
+> spatial SSD; else `mds0_use_hadamard_blk` → `hadamard_path`; else
+> `svt_aom_mefn_ptr[bsize].vf` (variance) `<< 4`.
+> `mds0_use_hadamard_blk = mds0_use_hadamard_sb && fast_candidate_total_count
+> > 1` (`:9473`), and `mds0_use_hadamard_sb` is FALSE on the video arm — the
+> port already derives that (`encdec_arm::mds0_use_hadamard_sb`,
+> `port_enc_mode_config/encdec.rs:953`, pinned by
+> `c_parity_sig_deriv_encdec.rs:484`). That is why C makes zero Hadamard
+> calls on the inter frame. The port's INTRA lane honours it
+> (`leaf_funnel/inject.rs:475` derives `mds0_use_hadamard`; `:558-575` is the
+> `variance_diff` arm — the +544 calls in the record); the INTER lane at
+> `inject.rs:1465-1477` hard-codes `if frame.mds0_ssd { sse } else {
+> hadamard_satd }` and never consults the flag — those are the 632 SATDs.
+> (The palette `:926` and IBC `:1316` lanes hard-code SATD too, but cannot run
+> on an inter frame: both levels are 0 there.) **Fix shape:** mirror the intra
+> lane's three-way select in the inter lane; the existing
+> `rdcost(lambda, flr, satd << 4)` is already the variance arm's shift. **NOT
+> inert by construction** — it changes inter candidates' MDS0 fast cost, so
+> the gates decide; mutation: scale the variance-arm result and watch
+> `inter_byte_gate`. If it cannot move, the inter fast cost is unobserved on
+> the grid (both sides admit every candidate) and that is itself a finding.
+> This touches MDS0 ordering on the inter frame, i.e. it is adjacent to byte
+> hazard (c) below; a red there is the gate working.
+> **3. `motion_est::full_pel_search` — its output has NO reader; the map it
+> fills is dead.** `mv_map`'s only readers are `RefFrameCtx::get_mv_predictor`
+> (`partition.rs:225`) and the OBMC block (`:2726-2765`), both inside
+> `partition::encode_single_block`, reached only through
+> `partition_search_with_config` — the pre-funnel legacy arm at
+> `pipeline.rs:13436` (`else` of `funnel_ctx`, i.e. `!use_funnel`, `:11405`).
+> But `encode_tile_rows` is called ONCE for every tile (`:4027`) and the map
+> is filled AFTER it returns (`:4229-4254`, per SB, 16,384 `block_sad` calls
+> per frame); `mv_map` has no use after `:4254`. So the walk only ever sees
+> the ZERO-initialised map, and the values the search writes are read by
+> nothing. **Removal that is inert by construction:** delete the fill loop
+> (`:4229-4254`) and keep passing the zero map — do NOT swap `Some(mv_map)`
+> for `None` at `:12136`: the legacy OBMC block treats `Some(zeros)`
+> differently from `None` (`above_mv != me_result.mv` blends against a
+> zero-MV prediction). No mutation can prove a no-reader removal; the trace is
+> the proof, and the gates are the regression check.
+> **4. Both discards CONFIRMED from source.** `_grain_params`
+> (`pipeline.rs:6232`) is never read — the FH film-grain params at `:3174` /
+> `:3253` come from `self.hdr.noise_strength`, a different value.
+> `sb_qp_offsets` (`:3006-3014`, `tpl_sb_qp_offsets` on every inter frame)
+> reaches `encode_tile_rows` as `sb_qp_offsets: &[i8]` (`:11273`) whose only
+> use is `let _ = (sb_row, sb_col, &sb_qp_offsets)` (`:12148`); the `_lambda`
+> parameter (`:11211`) is already unused. Remove the two computations, the
+> parameter and the `let _` — inert by construction. Item 5 (`downsample_2d`,
+> `build_nmv_component_cost_table`) was not started.
+> **Order to land:** 4, 3, 1-dedupe, 2, 1-persist — cheapest and most inert
+> first; one commit per defect; full chain both ISAs per the campaign rule.
+> No lane is editing `pipeline.rs`, `inject.rs` or `partition.rs` at the time
+> of writing (mt1: `svtav1-dsp` variance/me_sad/residual; v4x2:
+> `restoration.rs`). **Hosts at 15:57 PDT:** r7900x carried `v4x2`'s "TIMED
+> KERNEL BENCH IN PROGRESS" marker (21:56 UTC) and a stale `txt1` marker
+> (2026-09-04); lilith was unclaimed at load 1.2.
+> **The three byte hazards from the same record are untouched and
+> unconfirmed here** (warp candidates with no port arm; the inter-frame
+> Wiener search C runs and the port does not; the p6 leaf-breadth gap) —
+> nothing above makes any of them newly load-bearing, and item 2 is the one
+> whose gate run could expose (c).
+
 > **THE INTER FRAME, PER FUNCTION, FOR THE FIRST TIME: callgrind N=2 MINUS N=1
 > ON BOTH SIDES, BYTE-IDENTICAL, AVX2 ARMS BOTH SIDES (2026-09-05, r7900x,
 > tree `d03f97357`).** Record `benchmarks/callcount_inter_2026-09-05.{meta,tsv,
