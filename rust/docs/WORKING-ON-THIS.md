@@ -539,6 +539,26 @@ equalled p4.
 incrementally; a mid-run edit corrupts the running script and killed a 300-cell
 sweep mid-flight.
 
+**A 512-BIT ARM MEASURED ONLY ON ZEN 4 IS HALF A MEASUREMENT — AND CALLGRIND
+CANNOT SEE IT AT ALL.** Two separate traps, both paid for on 2026-09-05 by
+`wiener_avx512_tier_2026-09-05`, the port's first `_v4` tier.
+(a) **Valgrind MASKS the AVX-512 CPUID bits.** Under callgrind
+`X64V4Token::summon()` returns None and `incant!` steps down to `_v3`, so every
+Ir number prices the AVX2 arm — verified, not assumed: the profile names
+`wiener_convolve_simd_v3` and never `_v4`. The upside is that the masking also
+makes a 512-bit tier callgrind-SAFE (no SIGILL, the ladder just degrades), so
+the campaign's tooling keeps working; the cost is that **a `_v4` arm's before/
+after MUST come from `perf stat` and wall clock, and each number must say which
+instrument produced it.**
+(b) **Zen 4 (r7900x's 7900X, and lilith's 7950X) DOUBLE-PUMPS AVX-512 over
+256-bit units; Zen 5 (9950X3D) has a full-width 512-bit datapath.** A 512-bit
+arm therefore buys instruction count and front-end width on Zen 4 and can buy
+execution width on Zen 5. A gain measured only on Zen 4 may UNDERSTATE the tier,
+and an absent gain there says nothing about Zen 5. Price a `_v4`/`_v4x` arm on
+BOTH generations before writing a number for "AVX-512", and when only one is
+reachable, say **"measured on Zen 4, not measured on Zen 5"** rather than
+generalising.
+
 **`tools/perf_ab.sh` DOES NOT READ 1.000 ON NO CHANGE — run a base-vs-base
 control before believing any sub-1 % ratio.** MEASURED 2026-09-05
 (`benchmarks/entropy_coder_cshape_2026-09-05`): `perf_ab.sh base base2` with
@@ -620,7 +640,6 @@ under valgrind, so 33.5 MB is ~2.2 % of the frame's INSTRUCTIONS and ~0.2 % of
 its CYCLES. This is the companion to "Ir ranks, wall clock decides": when the
 item at the top of an Ir ranking is `memset`/`memcpy`/`calloc`, **discount it
 before spending a chunk on it**, and never quote its Ir share as a speed-up.
-
 
 **A `until ! pgrep -f <script>` waiter MATCHES ITSELF and never exits.** The
 waiter's own command line contains the pattern, so `pgrep -f` finds it,

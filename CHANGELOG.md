@@ -119,6 +119,62 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **The port's first AVX-512 tier, and the Wiener convolve's first vector arm on
+  any ISA.** `stall_attrib_2026-09-05` found that valgrind masks AVX-512, so
+  every callgrind number in the perf campaign priced C's AVX2 arm while the
+  hardware ran `svt_av1_wiener_convolve_add_src_avx512` and five siblings — and
+  that `svtav1-dsp` contained zero `_v4` / `X64V4Token` / `avx512` occurrences.
+  `zenav1-svt-dsp` gains `default = ["avx512"]` (forwarding to
+  `archmage/avx512` + `magetypes/avx512`), which is what makes `incant!`'s and
+  `#[magetypes]`'s auto-gated `v4` tier reachable at all; the arm is COMPILED
+  everywhere and ENTERED only where `X64V4Token::summon()` says the CPU has
+  AVX-512 F/BW/CD/DQ/VL. `restoration.rs`'s `wiener_h_row` / `wiener_v_row` —
+  scalar `for` loops that cost **52.78x C's instructions**, the perf ranking's
+  row 5 at +3.16 % of a p6 frame — are replaced by one
+  `#[magetypes(define(i32x16), v4(cfg(avx512)), v3, neon, wasm128, scalar)]`
+  body, so aarch64 gains a NEON arm from the same change. The kernel goes
+  **57,872,128 -> 13,906,583 Ir (-75.97 %, 12.68x C)** and the frame
+  1,511,695,713 -> 1,467,938,755 at photo_cid 512² p6 (port/C 2.142 -> 2.080).
+  **Wall clock, each A/B against a same-binary control in the same session, all
+  spans disjoint, every cell byte-identical: 1.029x photo_cid p6, 1.051x
+  screen_terminal p6, 1.034x gradient p6, 1.013x gradient p2**; photo_cid p2 is
+  reported MARGINAL (spans touch). `perf stat`: instructions -3.27 % / -5.65 %,
+  cycles -2.81 % / -5.36 %, IPC unmoved — this removed work, it did not unblock
+  a stall. **Callgrind cannot measure the new arm** (valgrind masks the CPUID
+  bits and the ladder steps down to `_v3`); that same masking is why the tier is
+  callgrind-SAFE, verified by running the candidate to byte-identical completion
+  under it. **All numbers are Zen 4** (r7900x), where AVX-512 is double-pumped over
+  256-bit units — so the tier buys instruction count and front-end width, not
+  execution width, which is what the IPC-unmoved shape shows. **Zen 5
+  (full-width 512-bit) was NOT measured**; do not extrapolate onto it in either
+  direction. **CI coverage, stated rather than assumed:** every x86-64 job
+  COMPILES the `_v4` arm and `cargo nextest run --workspace` (ubuntu-latest)
+  RUNS the new dsp tests, but whether `_v4` is among the tiers they reach
+  depends on that runner's CPU, which GitHub does not pin — the test always
+  asserts >= 2 permutations and >= 2 distinct resolved tiers and PRINTS the
+  list, and only the `contains("X64V4Token")` assertion is guarded on
+  `X64V4Token::summon().is_some()`. The `_v4` arm's byte-identity is
+  established on r7900x. On `i686-unknown-linux-gnu` every SIMD arm is cfg'd
+  out and `_scalar` is the only tier; it is byte-identical, and its speed
+  against the hand-written scalar rows it replaces was NOT measured.
+  **Gates, both ISAs, and on x86 every one ran with the `_v4` arm live:**
+  nextest 2546/2546 (arm) / 2556/2556 (x86), `identity_full_8bit` 1100/1100
+  both, `regression_spotcheck` 104/104 both, `inter_byte_gate` PASS (108
+  required, 0 failed, 1 known-open) both, `inter_completion_scan`
+  `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH both, `video_key_matrix` 59/60
+  both, `screen_ibc_byte_gate` 152/152 both, `screen_palette_gate` 50/50 both,
+  `fctx_gate` PASS 96/96 (x86), `decode_conformance` 1260/0 (x86), six pinned
+  still cells 290/839/63/171/580/693 B both; `decode_gate_grid.sh` could NOT
+  run (`dav1d not found`) and is a recorded coverage gap, not a pass.
+  Mutation-proven: perturbing the vertical centre tap by one inside the vector
+  body fails the tier sweep on its first shape. The base moved twice during the
+  gate window (`7ec5b557`, then `ab5be1ec`); the fast gates were re-run at each
+  and `identity_full_8bit`'s 1100/1100 belongs to the `7ec5b557` tree. **Memory unchanged** — 2048²
+  still 123,536 -> 123,328 KiB and 2048² inter 170,448 -> 170,448 KiB peak RSS
+  on aarch64, port/C 1.03 and 0.89 both unmoved. Record:
+  `benchmarks/wiener_avx512_tier_2026-09-05.{tsv,meta}`,
+  `docs/perf-status.md` §1.
+
 - **`CONTEXT-HANDOFF.md` is an INDEX again, and true as of `84621b20d`.** It had
   been dated 2026-07-25 — it described the project as still-image-only, named
   none of the inter campaign, global motion, the byte gate or any performance

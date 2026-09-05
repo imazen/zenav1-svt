@@ -222,6 +222,258 @@ fn wiener_v_row(rows: &[&[u16]; 8], w: usize, f: &[i16; 8], out: &mut [u8]) {
     }
 }
 
+/// Ring-row width for the vector arm: a multiple of 16 (the `i32x16` lane
+/// count) that covers `WIENER_MAX_PROC_W`. Lanes past `w` hold padding and are
+/// never stored to `dst`.
+const WIENER_SIMD_RING_W: usize = 64;
+
+/// Widened-source scratch width for the vector arm. The horizontal window for
+/// output `x` reads `s32[x .. x + 8]`, and the last vector block starts at
+/// `x = 48` (for `w = 49..64`), so the highest index touched is
+/// `48 + 7 + 15 = 70`; 96 covers it with room for the zero tail.
+const WIENER_SIMD_SRC_W: usize = 96;
+
+/// Whether [`wiener_convolve_simd`] is legal for this call.
+///
+/// Two things are certified, and NEITHER is about rounding — the vector arm
+/// computes the same i32 expression as [`wiener_h_row`] / [`wiener_v_row`],
+/// term for term:
+///
+/// 1. **`w` fits the ring.** `wiener_filter_stripe` (restoration.c:399) asks
+///    for `procunit_width.min((stripe_width - j + 15) & !15)`, i.e. 16, 32, 48
+///    or 64 for luma and 16 or 32 for chroma — always `<= WIENER_MAX_PROC_W`.
+///    Anything wider takes the scalar path.
+/// 2. **The vertical pass may fold the symmetric taps.** C's
+///    `wiener_convolve_v_tap7_kernel_avx512` (wiener_convolve_avx512.c:191)
+///    adds `s[0]+s[6]`, `s[1]+s[5]`, `s[2]+s[4]` before multiplying, halving
+///    the multiplies. That is only equal to the unfolded sum when the filter
+///    is symmetric with `f[7] = 0`, which `finalize_sym_filter`
+///    (restoration_pick.c:1003) and `WienerInfo::default` both guarantee — but
+///    this function is public and takes an arbitrary `&[i16; 8]`, so it is
+///    CHECKED, not assumed.
+///
+/// The `S|f| <= 4096` bounds are not a rounding constraint either; they exist
+/// only so the vector arm cannot WRAP where the scalar arm would PANIC. Both
+/// accumulate in i32, but magetypes' lane arithmetic wraps while the scalar
+/// row's `i32` add traps on overflow in the debug profile that
+/// `cargo nextest` builds. Real Wiener taps sum to `S|f| <= 286`
+/// (restoration.h:141-147), so the bound is three orders of magnitude of slack
+/// and never steers an encoder call to the scalar path.
+fn wiener_simd_applicable(hfilter: &[i16; 8], vfilter: &[i16; 8], w: usize) -> bool {
+    if w == 0 || w > WIENER_MAX_PROC_W {
+        return false;
+    }
+    if vfilter[0] != vfilter[6]
+        || vfilter[1] != vfilter[5]
+        || vfilter[2] != vfilter[4]
+        || vfilter[7] != 0
+    {
+        return false;
+    }
+    let habs: i32 = hfilter.iter().map(|&f| i32::from(f).abs()).sum();
+    let vabs: i32 = vfilter.iter().map(|&f| i32::from(f).abs()).sum();
+    habs <= 4096 && vabs <= 4096
+}
+
+/// Which tier the `incant!` in [`wiener_convolve_add_src`] resolves to on the
+/// CPU running the tests.
+///
+/// This exists because "the `_v4` arm is compiled" and "the `_v4` arm RUNS"
+/// are different facts, and this repo has confused them fourteen times. The
+/// tier list here is a CHARACTER-FOR-CHARACTER copy of the dispatch list in
+/// `wiener_convolve_add_src`, so `incant!` expands to the same summon ladder
+/// and the name this returns is the arm that ladder selects.
+#[cfg(test)]
+#[magetypes(v4(cfg(avx512)), v3, neon, wasm128, scalar)]
+fn wiener_simd_tier_name(_token: Token) -> &'static str {
+    core::any::type_name::<Token>()
+}
+
+#[cfg(test)]
+fn wiener_simd_tier() -> &'static str {
+    incant!(
+        wiener_simd_tier_name(),
+        [v4(cfg(avx512)), v3, neon, wasm128, scalar]
+    )
+}
+
+/// The vector arm of [`wiener_convolve_add_src`] — one body, five tiers,
+/// including x86's first genuine 512-bit arm in this port.
+///
+/// # Why `#[magetypes]` here, when the other kernels are per-ISA `#[arcane]`
+///
+/// `intra_pred`, `residual` and `me_sad` each carry a "why not `#[magetypes]`"
+/// note: they need an integer WIDENING conversion, and the PUBLISHED
+/// magetypes 0.9.28 (the one in `Cargo.lock`; verified with
+/// `cargo read magetypes`, not from the local `~/work/archmage` checkout,
+/// which carries unpublished `widen_low` / `narrow_saturating_*` work that
+/// crates.io does not have) has none. That note is correct and unchanged.
+///
+/// This kernel sidesteps it: it never converts between lane widths. Every
+/// value lives in `i32x16` from the moment the source byte is read, and the
+/// u8 -> i32 widening is a plain `for t { s32[t] = i32::from(src[..]) }` loop
+/// that LLVM lowers to `vpmovzxbd` inside each tier's `#[target_feature]`
+/// region. The only magetypes surface used is `i32x16::{splat, from_slice,
+/// store, min, max, shr_arithmetic_const}`, `Add` and `Mul<i32>` — all of them
+/// in the published crate, and all of them backed by `type Repr = __m512i`
+/// for `X64V4Token`, so the `_v4` arm really is 512 bits wide.
+///
+/// The cost of staying in i32 is the horizontal pass: C keeps it in i16 lanes
+/// (`maddubs` on byte-shuffled data, 32 lanes per register) where this runs 16.
+/// Closing that needs two primitives magetypes does not export —
+/// `madd_adjacent` (`_mm512_madd_epi16`) and a u8 -> i16 widen — which is
+/// archmage issue #89's list, already tracking `madd_adjacent` / `abs_diff`.
+/// Until then the i32 form is what one body can honestly deliver on five
+/// tiers, and it is the difference between a vector arm and none.
+///
+/// # The oracle
+///
+/// C's `svt_av1_wiener_convolve_add_src_avx512`
+/// (`Source/Lib/ASM_AVX512/wiener_convolve_avx512.c:270`). One of its
+/// rearrangements is reproduced and one is deliberately not:
+///
+/// * **Reproduced** — `:296` folds the `add_src` term into the coefficient
+///   (`coeffs_y + offset_0`, a `1 << FILTER_BITS` planted at lane 3), so the
+///   centre column is `r3 * (f[3] + 128)` rather than a separate `r3 << 7`.
+///   This arm does the same on BOTH passes, saving one multiply each. It is an
+///   exact regrouping of the scalar row's
+///   `(s[x+3] << FILTER_BITS) + S s[x+k]*f[k]`, not an approximation.
+/// * **Not reproduced** — `calc_zero_coef` (`:274`) specialises to 3-, 5- and
+///   7-tap forms when the outer taps are zero, and `wiener_clip_avx512`
+///   (`:27`) shifts before adding the centre sample so the whole horizontal
+///   pass fits in i16. The first is a call-shape optimisation this port can
+///   revisit; the second is only needed by an i16 accumulator.
+#[allow(clippy::too_many_arguments)]
+#[magetypes(define(i32x16), v4(cfg(avx512)), v3, neon, wasm128, scalar)]
+fn wiener_convolve_simd(
+    token: Token,
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_origin: usize,
+    dst_stride: usize,
+    hfilter: &[i16; 8],
+    vfilter: &[i16; 8],
+    w: usize,
+    h: usize,
+) {
+    const LANES: usize = 16;
+    let ih = h + 6;
+    let n_src = w + 7;
+
+    // Horizontal coefficients with the `add_src` term folded into the centre
+    // tap: `(s[x+3] << FILTER_BITS)` IS `s[x+3] * (1 << FILTER_BITS)`.
+    let mut hc = [0i32; 8];
+    for k in 0..8 {
+        hc[k] = i32::from(hfilter[k]);
+    }
+    hc[3] += 1 << FILTER_BITS;
+
+    let zero = i32x16::splat(token, 0);
+    let hi_h = i32x16::splat(
+        token,
+        (1i32 << (8 + 1 + FILTER_BITS - WIENER_ROUND0_BITS)) - 1,
+    );
+    let hi_v = i32x16::splat(token, 255);
+    // `(1 << (bd + FILTER_BITS - 1))` seed plus the round-0 rounding term.
+    let bias_h = i32x16::splat(
+        token,
+        (1 << (8 + FILTER_BITS - 1)) + (1 << (WIENER_ROUND0_BITS - 1)),
+    );
+    // `-(1 << (bd + round_1 - 1))` seed plus the round-1 rounding term — the
+    // same constant C builds as `round_v` at wiener_convolve_avx512.c:283.
+    let bias_v = i32x16::splat(
+        token,
+        (1 << (WIENER_ROUND1_BITS - 1)) - (1 << (8 + WIENER_ROUND1_BITS - 1)),
+    );
+    let vc0 = i32::from(vfilter[0]);
+    let vc1 = i32::from(vfilter[1]);
+    let vc2 = i32::from(vfilter[2]);
+    let vc3 = i32::from(vfilter[3]) + (1 << FILTER_BITS);
+
+    let mut ring = [[0i32; WIENER_SIMD_RING_W]; 8];
+    let mut s32 = [0i32; WIENER_SIMD_SRC_W];
+    let mut out32 = [0i32; WIENER_SIMD_RING_W];
+
+    // C receives `src - 3 * stride` and subtracts three columns internally, so
+    // intermediate row `j` is built from source row `j - 3` starting at
+    // column -3 — the same indexing as the scalar streamed form below.
+    let h_row_base = |j: usize| -> usize {
+        ((src_origin + j * src_stride) as isize - 3 * src_stride as isize - 3) as usize
+    };
+
+    // One horizontal-pass row into `out`. `j >= ih` is the row C memsets: its
+    // vertical weight is zero, but the sample is read.
+    let fill =
+        |j: usize, s32: &mut [i32; WIENER_SIMD_SRC_W], out: &mut [i32; WIENER_SIMD_RING_W]| {
+            if j >= ih {
+                out.fill(0);
+                return;
+            }
+            let base = h_row_base(j);
+            // Widen the row's `w + 7` source bytes once (LLVM: `vpmovzxbd`).
+            // Zero-filling the tail is load-bearing — the last vector block reads
+            // past `n_src`, and a zero there keeps stale data from the previous
+            // row out of lanes that a narrower `w` would otherwise carry forward.
+            for t in 0..n_src {
+                s32[t] = i32::from(src[base + t]);
+            }
+            for t in n_src..WIENER_SIMD_SRC_W {
+                s32[t] = 0;
+            }
+
+            let mut x = 0;
+            while x < w {
+                let mut acc = bias_h;
+                for k in 0..8 {
+                    acc = acc + i32x16::from_slice(token, &s32[x + k..]) * hc[k];
+                }
+                let v = acc
+                    .shr_arithmetic_const::<WIENER_ROUND0_BITS>()
+                    .max(zero)
+                    .min(hi_h);
+                let slot: &mut [i32; LANES] = (&mut out[x..x + LANES]).try_into().unwrap();
+                v.store(slot);
+                x += LANES;
+            }
+        };
+
+    for j in 0..8 {
+        fill(j, &mut s32, &mut ring[j % 8]);
+    }
+
+    for y in 0..h {
+        let mut x = 0;
+        while x < w {
+            let r0 = i32x16::from_slice(token, &ring[y % 8][x..]);
+            let r1 = i32x16::from_slice(token, &ring[(y + 1) % 8][x..]);
+            let r2 = i32x16::from_slice(token, &ring[(y + 2) % 8][x..]);
+            let r3 = i32x16::from_slice(token, &ring[(y + 3) % 8][x..]);
+            let r4 = i32x16::from_slice(token, &ring[(y + 4) % 8][x..]);
+            let r5 = i32x16::from_slice(token, &ring[(y + 5) % 8][x..]);
+            let r6 = i32x16::from_slice(token, &ring[(y + 6) % 8][x..]);
+            // Row 7's weight is zero (checked by `wiener_simd_applicable`), so
+            // it is not loaded at all.
+            let acc = bias_v + (r0 + r6) * vc0 + (r1 + r5) * vc1 + (r2 + r4) * vc2 + r3 * vc3;
+            let v = acc
+                .shr_arithmetic_const::<WIENER_ROUND1_BITS>()
+                .max(zero)
+                .min(hi_v);
+            let slot: &mut [i32; LANES] = (&mut out32[x..x + LANES]).try_into().unwrap();
+            v.store(slot);
+            x += LANES;
+        }
+        let d = dst_origin + y * dst_stride;
+        for i in 0..w {
+            dst[d + i] = out32[i] as u8;
+        }
+        if y + 8 <= ih {
+            fill(y + 8, &mut s32, &mut ring[(y + 8) % 8]);
+        }
+    }
+}
+
 /// C `svt_av1_wiener_convolve_add_src_c` (convolve.c:106), 8-bit.
 ///
 /// `src`/`dst` are whole padded planes; `src_origin`/`dst_origin` index the
@@ -268,6 +520,15 @@ pub fn wiener_convolve_add_src(
     if w > WIENER_MAX_PROC_W {
         return wiener_convolve_add_src_materialised(
             src, src_origin, src_stride, dst, dst_origin, dst_stride, hfilter, vfilter, w, h,
+        );
+    }
+
+    if wiener_simd_applicable(hfilter, vfilter, w) {
+        return incant!(
+            wiener_convolve_simd(
+                src, src_origin, src_stride, dst, dst_origin, dst_stride, hfilter, vfilter, w, h,
+            ),
+            [v4(cfg(avx512)), v3, neon, wasm128, scalar]
         );
     }
 
@@ -2919,6 +3180,222 @@ mod tests {
     /// for, and at both loop orders. This is the pin for BOTH changes in that
     /// function: the eight-row ring that replaced the heap intermediate, and
     /// the row-major rewrite of the vertical pass.
+    /// Every legal tap set, every lane position, every proc-unit width — on
+    /// every tier archmage can reach on this host.
+    ///
+    /// Three things are being pinned, and the third is the one this program
+    /// has got wrong fourteen times:
+    ///
+    /// 1. **The vector arm equals the C-shaped reference.** Not the streamed
+    ///    scalar arm — [`wiener_convolve_add_src_materialised`], which is the
+    ///    literal transcription of `svt_av1_wiener_convolve_add_src_c`
+    ///    (convolve.c:106) and shares no code with the arm under test.
+    /// 2. **The tap domain is covered at its CORNERS, not sampled.** The AV1
+    ///    tap ranges (restoration.h:141-147) are `t0 in [-5,10]`,
+    ///    `t1 in [-23,8]`, `t2 in [-17,46]` with `f[3] = -2*(t0+t1+t2)`; all
+    ///    2^3 corner combinations run, plus the midpoint filter
+    ///    `WienerInfo::default` and the identity `[0,0,0,128,0,0,0,0]` (the one
+    ///    filter that would hide an off-by-one in the centre tap). The
+    ///    IMPULSE rounds put a single 255 at each position of the 8x8 window
+    ///    in turn, which is what pins the lane-to-tap mapping: a transposed or
+    ///    rotated shuffle survives random data far more often than it survives
+    ///    a moving impulse.
+    /// 3. **More than one tier actually ran.** `permutations_run >= 2` and
+    ///    zero archmage warnings. A `_v4` arm that is compiled but never
+    ///    entered is this repo's most-repeated defect; a one-arm sweep reports
+    ///    PASS for exactly that.
+    #[test]
+    fn wiener_simd_all_tiers_match_materialised() {
+        use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+
+        let stride = 128usize;
+        let rows = 96usize;
+        let origin = 8 * stride + 8;
+
+        // Corner + midpoint + identity filters. `sym` builds the 8-tap row the
+        // encoder codes: symmetric, `f[7] = 0`, `f[3] = -2*(t0+t1+t2)`.
+        let sym = |t0: i16, t1: i16, t2: i16| -> [i16; 8] {
+            [t0, t1, t2, -2 * (t0 + t1 + t2), t2, t1, t0, 0]
+        };
+        let mut filters: alloc::vec::Vec<[i16; 8]> = alloc::vec::Vec::new();
+        for &t0 in &[WIENER_FILT_TAP0_MINV as i16, WIENER_FILT_TAP0_MAXV as i16] {
+            for &t1 in &[WIENER_FILT_TAP1_MINV as i16, WIENER_FILT_TAP1_MAXV as i16] {
+                for &t2 in &[WIENER_FILT_TAP2_MINV as i16, WIENER_FILT_TAP2_MAXV as i16] {
+                    filters.push(sym(t0, t1, t2));
+                }
+            }
+        }
+        filters.push(WienerInfo::default().vfilter);
+        filters.push([0, 0, 0, 128, 0, 0, 0, 0]);
+
+        // Every filter must actually REACH the vector arm — otherwise this
+        // whole test is a scalar-vs-scalar tautology.
+        for f in &filters {
+            assert!(
+                wiener_simd_applicable(f, f, 64),
+                "a legal Wiener filter {f:?} was refused by the vector arm's \
+                 precondition, so the sweep below would not test it"
+            );
+        }
+
+        let shapes: [(usize, usize); 7] = [
+            (16, 8),
+            (32, 16),
+            (48, 24),
+            (64, 64),
+            (64, 1),
+            (16, 2),
+            (8, 56),
+        ];
+
+        let mut st = 0x1234_5678u32;
+        let mut next = || {
+            st ^= st << 13;
+            st ^= st >> 17;
+            st ^= st << 5;
+            st
+        };
+
+        let mut perms = 0usize;
+        let mut warned = 0usize;
+        let mut ran = 0usize;
+        let mut tiers: alloc::vec::Vec<&'static str> = alloc::vec::Vec::new();
+
+        // Round kinds: 0 = flat black, 1 = flat white, 2 = random,
+        // 3 = column ramp, 4.. = a single 255 impulse walking the window.
+        for round in 0..(5 + 64) {
+            let mut src = alloc::vec![0u8; stride * rows];
+            match round {
+                0 => {}
+                1 => src.iter_mut().for_each(|v| *v = 255),
+                2 => src.iter_mut().for_each(|v| *v = (next() >> 24) as u8),
+                3 => {
+                    for r in 0..rows {
+                        for c in 0..stride {
+                            src[r * stride + c] = ((r * 3 + c * 5) & 0xFF) as u8;
+                        }
+                    }
+                }
+                4 => src.iter_mut().for_each(|v| *v = 128),
+                _ => {
+                    // Impulse at window offset (dy, dx) in -3..=4 around the
+                    // block origin: exactly the 8x8 support of one output.
+                    let k = round - 5;
+                    let dy = (k / 8) as isize - 3;
+                    let dx = (k % 8) as isize - 3;
+                    let idx = origin as isize + dy * stride as isize + dx;
+                    src[idx as usize] = 255;
+                }
+            }
+
+            for (fi, hf) in filters.iter().enumerate() {
+                // Pair each h-filter with a different v-filter so an
+                // h/v swap cannot pass.
+                let vf = &filters[(fi + 3) % filters.len()];
+                for &(w, h) in &shapes {
+                    let mut want = alloc::vec![0u8; stride * rows];
+                    wiener_convolve_add_src_materialised(
+                        &src, origin, stride, &mut want, origin, stride, hf, vf, w, h,
+                    );
+                    let report =
+                        for_each_token_permutation(CompileTimePolicy::WarnStderr, |perm| {
+                            let tier = wiener_simd_tier();
+                            if !tiers.contains(&tier) {
+                                tiers.push(tier);
+                            }
+                            let mut got = alloc::vec![0u8; stride * rows];
+                            wiener_convolve_add_src(
+                                &src, origin, stride, &mut got, origin, stride, hf, vf, w, h,
+                            );
+                            for y in 0..h {
+                                let a = origin + y * stride;
+                                assert_eq!(
+                                    &got[a..a + w],
+                                    &want[a..a + w],
+                                    "wiener tier {perm} != C shape: round {round} \
+                                     filter {fi} {w}x{h} row {y}"
+                                );
+                            }
+                        });
+                    perms = report.permutations_run;
+                    warned = report.warnings.len();
+                    ran += 1;
+                }
+            }
+        }
+
+        assert!(ran > 0, "the sweep ran no cells");
+        assert_eq!(
+            warned, 0,
+            "archmage excluded {warned} token(s) from the sweep, so this test \
+             covered FEWER tiers than its name claims"
+        );
+        assert!(
+            perms >= 2,
+            "the tier sweep ran {perms} permutation(s) -- only the native tier. \
+             A one-arm sweep cannot catch a SIMD-vs-scalar divergence, and it \
+             is exactly how a `_v4` arm that never executes reports PASS."
+        );
+        assert!(
+            tiers.len() >= 2,
+            "the sweep resolved to ONE tier ({tiers:?}); nothing was compared \
+             across arms"
+        );
+
+        // The point of the whole chunk: on a CPU that HAS AVX-512, the arm the
+        // dispatch selects must be the 512-bit one. If this ever starts
+        // failing on a Zen 4 / Ice Lake host, the `avx512` feature has been
+        // turned off somewhere in the dependency chain and the tier is dead.
+        #[cfg(all(target_arch = "x86_64", feature = "avx512"))]
+        {
+            use archmage::{SimdToken, X64V4Token};
+            if X64V4Token::summon().is_some() {
+                assert!(
+                    tiers.iter().any(|t| t.contains("X64V4Token")),
+                    "this CPU reports AVX-512 F/BW/CD/DQ/VL, but the Wiener \
+                     dispatch never resolved to the _v4 arm -- tiers seen: \
+                     {tiers:?}"
+                );
+            }
+        }
+        // Same statement from the other side: on a host WITHOUT AVX-512 (most
+        // CI runners) the _v4 arm is compiled and simply never entered, which
+        // is correct and is what makes the default-on `avx512` feature safe.
+        extern crate std;
+        std::eprintln!("wiener vector tiers exercised: {tiers:?}");
+    }
+
+    /// The vector arm's precondition must not quietly exclude the shapes the
+    /// encoder actually asks for. `wiener_filter_stripe` (restoration.c:399)
+    /// calls with `w = procunit_width.min((stripe_width - j + 15) & !15)`, so
+    /// luma sees 16/32/48/64 and chroma 16/32; the filters are always
+    /// symmetric with `f[7] = 0`.
+    #[test]
+    fn wiener_simd_arm_covers_every_encoder_call_shape() {
+        let f = WienerInfo::default();
+        for w in [16usize, 32, 48, 64] {
+            assert!(
+                wiener_simd_applicable(&f.hfilter, &f.vfilter, w),
+                "encoder proc-unit width {w} falls off the vector arm"
+            );
+        }
+        // And it must REFUSE what it cannot compute exactly.
+        assert!(
+            !wiener_simd_applicable(&f.hfilter, &f.vfilter, 65),
+            "a width past the ring must fall back, not overrun it"
+        );
+        let asym = [1i16, 2, 3, -12, 3, 2, 9, 0];
+        assert!(
+            !wiener_simd_applicable(&f.hfilter, &asym, 64),
+            "the vertical symmetric fold is only valid on a symmetric filter"
+        );
+        let tap7 = [1i16, 2, 3, -12, 3, 2, 1, 5];
+        assert!(
+            !wiener_simd_applicable(&f.hfilter, &tap7, 64),
+            "a non-zero tap 7 is dropped by the fold and must fall back"
+        );
+    }
+
     #[test]
     fn wiener_streaming_matches_materialised() {
         let stride = 256usize;

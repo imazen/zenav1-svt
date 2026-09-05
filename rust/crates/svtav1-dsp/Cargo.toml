@@ -24,7 +24,15 @@ zenav1-svt-cref = { path = "../svtav1-cref" }
 workspace = true
 
 [features]
-default = []
+# `avx512` is DEFAULT-ON on purpose. It does not force AVX-512 on anyone: it
+# only makes archmage's `X64V4Token` exist, so `incant!`'s `v4(cfg(avx512))`
+# arm is COMPILED. Whether that arm RUNS is decided at run time by
+# `X64V4Token::summon()` (CPUID), so a binary built with this feature is
+# correct on a CPU without AVX-512 — it takes `_v3`. Turning it off would
+# silently delete the tier on the machines that have it, which is exactly the
+# "a tier that never executes" failure this repo keeps paying for.
+default = ["avx512"]
+avx512 = ["archmage/avx512", "magetypes/avx512"]
 std = ["zenav1-svt-types/std"]
 unchecked_dsp = []
 

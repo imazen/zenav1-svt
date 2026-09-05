@@ -1,0 +1,86 @@
+# The Wiener convolve gets its FIRST vector arm, and the port gets its FIRST AVX-512 tier.
+# base = origin/main 84621b20 (the cdef find_dir commit). cand = this commit.
+# host = r7900x (AMD Ryzen 9 7900X, **ZEN 4**, 24 threads, Linux 7.0.0-30), qp 40.
+#        Zen 4 double-pumps AVX-512 over 256-bit units, so a 512-bit arm buys
+#        instruction count and front-end width here, NOT execution width — which
+#        is what these numbers show (instructions -3.27/-5.65 %, IPC unmoved).
+#        ZEN 5 (full-width 512-bit datapath) WAS NOT MEASURED. Do not
+#        extrapolate these onto it in either direction.
+# C    = reference/svt-av1 @ 3115c0c1, the PREBUILT oracle
+#        rust/tools/perf_c_encode/perf_c_encode (2026-09-03) — NOT rebuilt.
+# .yuv sha256(16): photo_cid 88142a484affd4b3, screen_terminal bd37ccf3c4a65256
+#        — both reproduce callcount_realimg_2026-09-04's values exactly.
+#
+# ---- 1. WALL CLOCK. tools/perf_ab.sh, 21 interleaved randomised paired rounds,
+#         neither side niced, EVERY cell ident=Y. Each candidate A/B is paired
+#         with a SAME-BINARY control (base vs a byte copy of base) taken in the
+#         SAME session — the control is this harness's floor for that cell.
+#         `net` = control_ratio / cand_ratio.
+cell	preset	arm	n	ident	base_ms	cand_ms	ratio	p25	p75	net	verdict
+photo_cid_512	6	control	21	Y	72.6125	72.6032	0.9997	0.9965	1.0032		floor
+photo_cid_512	6	candidate	21	Y	72.7131	70.6201	0.9717	0.9672	0.9738	1.029	spans DISJOINT
+screen_terminal_512	6	control	21	Y	41.5085	41.3591	0.9985	0.9877	1.0025		floor
+screen_terminal_512	6	candidate	21	Y	41.3737	39.2648	0.9498	0.9435	0.9554	1.051	spans DISJOINT
+gradient_512	6	control	21	Y	31.9107	31.9015	0.9979	0.9889	1.0078		floor
+gradient_512	6	candidate	21	Y	31.8328	30.7413	0.9655	0.9562	0.9723	1.034	spans DISJOINT
+gradient_512	2	control	21	Y	436.2067	436.0919	0.9986	0.9963	1.0023		floor
+gradient_512	2	candidate	21	Y	436.8388	430.4758	0.9858	0.9828	0.9880	1.013	spans DISJOINT
+photo_cid_512	2	control	21	Y	2322.8781	2315.7571	0.9964	0.9938	0.9982		floor
+photo_cid_512	2	candidate	21	Y	2323.2304	2304.1389	0.9921	0.9899	0.9943	1.004	spans TOUCH at 0.9938-0.9943 - MARGINAL
+#
+# ---- 2. HARDWARE COUNTERS. `perf stat -e cycles,instructions`, paired
+#         warmup-delta ((init + 2 encodes) - (init + 1 encode) = one encode),
+#         median of 5 per leg, every run `taskset -c 20`. THIS is the only
+#         instrument that sees the _v4 arm (see section 3).
+cell	preset	binary	cycles	instructions	ipc
+photo_cid_512	6	base	410285010	1434312943	3.496
+photo_cid_512	6	base2_control	408361136	1434373192	3.513
+photo_cid_512	6	cand	398753858	1387445804	3.479
+screen_terminal_512	6	base	232309361	828707207	3.567
+screen_terminal_512	6	cand	219868664	781893249	3.556
+# photo_cid p6: instructions -3.27 % against a control that moved +0.004 %;
+#               cycles -2.81 % against a control that moved -0.47 %.
+# screen p6:    instructions -5.65 %, cycles -5.36 %.
+#
+# ---- 3. CALLGRIND (valgrind-3.26.0 --tool=callgrind, warmup=0, one
+#         init+encode). VALGRIND MASKS AVX-512 IN CPUID, so `X64V4Token::summon()`
+#         returns None under it and the port runs its **_v3** arm. Every Ir below
+#         therefore prices the AVX2 arm, NOT the AVX-512 one. Verified, not
+#         assumed: the callgrind output names `wiener_convolve_simd_v3` and never
+#         `_v4`. The same masking is why the new tier is callgrind-SAFE — no
+#         SIGILL, archmage just degrades one tier.
+cell	preset	what	base_ir	cand_ir	delta_pct	c_ir	base_over_c	cand_over_c
+photo_cid_512	6	frame	1511695713	1467938755	-2.894	705588240	2.142	2.080
+screen_terminal_512	6	frame	893944001	850187043	-4.895			
+photo_cid_512	6	wiener_convolve kernel	57872128	13906583	-75.97	1096488	52.78	12.68
+# base kernel  = wiener_convolve_add_src 20,027,200 + {closure#1} 37,844,928
+# cand kernel  = __arcane_wiener_convolve_simd_v3 8,476,432
+#                + {closure#1} 5,377,216 + the dispatch shell 52,935
+# C kernel     = svt_av1_wiener_convolve_add_src_avx2 1,096,488
+# Cross-check: the candidate's callgrind .obu is byte-identical to the REAL C
+# encoder's .obu on both p6 cells.
+#
+# ---- 4. THE TIER IS REAL, AND IT RUNS. objdump of
+#         target/release/examples/perf_encode, per-arm instruction census:
+arm	insns	zmm	ymm	xmm
+__arcane_wiener_convolve_simd_v4	405	108	0	2
+__arcane_wiener_convolve_simd_v4::{closure#1}	219	99	0	1
+__arcane_wiener_convolve_simd_v3	435	0	89	28
+__arcane_wiener_convolve_simd_v3::{closure#1}	204	0	74	1
+wiener_convolve_simd_scalar::{closure#1}	679	0	0	348
+# And the tier the dispatch SELECTS, printed by the new unit test:
+#   r7900x  ["X64V4Token", "X64V3Token", "ScalarToken"]   (3 permutations)
+#   M4 Pro  ["NeonToken", "ScalarToken"]                  (2 permutations)
+#
+# ---- 5. MEMORY. tools/mem_gate.sh, `/usr/bin/time -l` peak RSS, median of 3,
+#         aarch64 M4 Pro, gradient qp 32 preset 6. No cost either way.
+cell	frames	base_kib	cand_kib	delta_kib	c_kib	base_over_c	cand_over_c	ident
+2048x2048	1	123536	123328	-208	119536	1.03	1.03	Y
+2048x2048	2	170448	170448	0	192416	0.89	0.89	N
+# The 2-frame cell is ident=N (outside the byte-identical frontier), so read its
+# two RSS figures as absolutes, not as a ratio between equal work.
+#
+# ---- 6. MUTATION PROOF. `vc3 = vfilter[3] + (1 << FILTER_BITS)` -> `+ 1`
+#         (a one-off on the vertical centre tap, inside the vector body only):
+#         wiener_simd_all_tiers_match_materialised FAILS on the first shape
+#         (16x8, identity filter, every output byte wrong). Reverted; green again.

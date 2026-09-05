@@ -1,5 +1,130 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE PORT'S FIRST AVX-512 TIER, SPENT ON A KERNEL THAT HAD NO VECTOR ARM AT
+> ALL — 52.78x C's INSTRUCTIONS -> 12.68x, AND 1.029x / 1.051x / 1.034x WALL
+> CLOCK ON photo_cid / screen_terminal / gradient AT p6 (2026-09-05).** Record
+> `benchmarks/wiener_avx512_tier_2026-09-05.{tsv,meta}`.
+> `stall_attrib_2026-09-05` §4 found that **valgrind masks AVX-512**, so every
+> callgrind number in this campaign priced C's AVX2 arm while the hardware ran
+> `svt_av1_wiener_convolve_add_src_avx512` and five siblings — and that the port
+> had **zero** `_v4` / `X64V4Token` / `avx512` occurrences anywhere in
+> `svtav1-dsp`. **A CORRECTION TO THAT ITEM'S FRAMING:** the Wiener convolve did
+> not have an AVX2 arm waiting for an AVX-512 sibling; `wiener_h_row` /
+> `wiener_v_row` were scalar `for` loops and the kernel had **no vector arm on
+> either ISA**. So this is the kernel's first vectorisation, delivered on five
+> tiers from ONE `#[magetypes(define(i32x16), v4(cfg(avx512)), v3, neon,
+> wasm128, scalar)]` body — aarch64 gains a NEON arm from the same change.
+> **How the tier is enabled:** `zenav1-svt-dsp` gains `default = ["avx512"]`,
+> `avx512 = ["archmage/avx512", "magetypes/avx512"]`. `incant!` and
+> `#[magetypes]` auto-gate a bare `v4` on the CALLING crate's `avx512` feature
+> (`archmage-macros/src/tiers.rs:420`), which the port never had — that, not a
+> missing tier list, is why `_v4` could never have appeared. Default-ON is
+> deliberate: it makes the arm COMPILED, and `X64V4Token::summon()` decides at
+> run time whether it is ENTERED.
+> **Runtime detection is proven from three sides:** the new test prints the
+> resolved tiers as `["X64V4Token","X64V3Token","ScalarToken"]` on r7900x and
+> `["NeonToken","ScalarToken"]` on the M4 Pro; `objdump` counts **108 `zmm`** in
+> `__arcane_wiener_convolve_simd_v4` against **89 `ymm`** in `_v3`; and under
+> valgrind — which masks the CPUID bits — the profile names `_v3` and never
+> `_v4`, so a binary that emits AVX-512 runs correctly, without SIGILL, on a
+> host that reports none.
+> **THE INSTRUMENT TRAP, MEASURED: CALLGRIND CANNOT SEE THE NEW ARM.** Under
+> valgrind the ladder steps down to `_v3`, so every Ir figure below prices the
+> AVX2 arm. The AVX-512 arm is priced only by `perf stat` and wall clock. Say
+> which instrument produced which number on any x86 kernel that has a `_v4`
+> tier.
+> **Ir** (r7900x callgrind, qp 40, `_v3` arm): the kernel 57,872,128 ->
+> 13,906,583 (**-75.97 %**; **52.78x -> 12.68x** C's
+> `svt_av1_wiener_convolve_add_src_avx2` at 1,096,488), frame photo_cid 512 p6
+> 1,511,695,713 -> 1,467,938,755 (-2.894 %, port/C **2.142 -> 2.080**),
+> screen_terminal 512 p6 -4.895 %. The candidate's callgrind `.obu` is
+> byte-identical to the REAL C encoder's on both cells.
+> **`perf stat`** (paired warmup-delta, median of 5, `taskset -c 20`): photo_cid
+> p6 instructions 1,434,312,943 -> 1,387,445,804 (-3.27 %) against a
+> same-binary control that moved +0.004 %, cycles 410,285,010 -> 398,753,858
+> (-2.81 %) against a control that moved -0.47 %; screen_terminal p6 -5.65 % /
+> -5.36 %. **IPC is unmoved** (3.496 -> 3.479) — this removed WORK, it did not
+> unblock a stall, exactly as `stall_attrib` predicted.
+> **Wall clock**, 21 interleaved paired rounds, each A/B paired with a
+> SAME-BINARY control in the same session, every row ident=Y: photo_cid 512 p6
+> 0.9717 (0.9672-0.9738) against control 0.9997 (0.9965-1.0032) — **1.029x**;
+> screen_terminal p6 0.9498 (0.9435-0.9554) vs 0.9985 — **1.051x**; gradient p6
+> 0.9655 vs 0.9979 — **1.034x**; gradient p2 0.9858 vs 0.9986 — **1.013x**. All
+> four have spans DISJOINT from their controls. **photo_cid 512 p2 is reported
+> MARGINAL, not a win:** 0.9921 (0.9899-0.9943) against a control of 0.9964
+> (0.9938-0.9982) — the spans share 0.9938-0.9943, and at p2 the LR search is a
+> far smaller share of a 2.3-second frame.
+> **STILL OPEN, and it is most of what is left:** the horizontal pass runs 16
+> lanes where C runs 32, because staying in `i32x16` is what let one body serve
+> five tiers. C keeps both passes in i16 (`maddubs` + `madd`), which needs
+> `madd_adjacent` and a `u8 -> i16` widen — **archmage issue #89**, which already
+> tracks `madd_adjacent`/`abs_diff`. Two further gaps found here and added to
+> that list rather than a new issue: `u16x32` has no `bitcast_i16x32` (the x16
+> and x8 forms exist) and `U8x32Widen` is not implemented for `X64V4Token`, so
+> there is no published path from a `u8` load to `i16x32` at 512 bits. Filed as a
+> COMMENT on #89, not a new issue:
+> https://github.com/imazen/archmage/issues/89#issuecomment-5554056334 . Also
+> open: C's `calc_zero_coef` 3/5/7-tap specialisation.
+> **MUTATION-PROVEN, and the ENCODER calls it:** perturbing the vertical centre
+> tap by one inside the vector body makes the tier sweep FAIL on its first
+> shape (reverted, green again), and the callgrind profile shows the old
+> `wiener_convolve_add_src` symbol dropping from 57,872,128 self Ir to 52,935 —
+> the dispatch shell alone. **GATES both ISAs, and on x86 every one ran with the
+> `_v4` arm LIVE:** nextest 2546/2546 (arm) / 2556/2556 (x86),
+> `identity_full_8bit` 1100/1100 both, `regression_spotcheck` 104/104 both,
+> `inter_byte_gate` PASS 108 required / 0 failed / 1 known-open both,
+> `inter_completion_scan` `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH both,
+> `video_key_matrix` 59/60 both, `screen_ibc_byte_gate` 152/152 both,
+> `screen_palette_gate` 50/50 both, `fctx_gate` PASS 96/96 (x86),
+> `decode_conformance` 1260/0 (x86), six still cells 290/839/63/171/580/693 B
+> both. **`decode_gate_grid.sh` could NOT run** (`dav1d not found` on r7900x) and
+> is recorded as a coverage gap, not a pass. **MEMORY** (aarch64,
+> `tools/mem_gate.sh`, `/usr/bin/time -l` peak RSS, median of 3): 2048² still
+> 123,536 -> 123,328 KiB, port/C 1.03 unchanged; 2048² inter (2 frames)
+> 170,448 -> 170,448 KiB, port/C **0.89** unchanged and far under the ~1.20x
+> ceiling.
+> **THE SILICON THESE NUMBERS ARE FROM, AND THE ONE THEY ARE NOT:** every
+> figure here is **Zen 4** (r7900x, Ryzen 9 7900X), where AVX-512 is
+> DOUBLE-PUMPED over 256-bit units — so a 512-bit arm buys instruction count and
+> front-end width, not execution width, which is exactly the shape measured
+> (instructions -3.27 % / -5.65 %, IPC unmoved). **Zen 5 (full-width 512-bit
+> datapath) was NOT MEASURED** — the Zen 5 box on this network was unavailable
+> and the alternative quiet box is another Zen 4 part. Do not read these as the
+> tier's ceiling and do not extrapolate onto Zen 5 in either direction; a
+> 512-bit arm that gains little on a double-pumped part can gain materially on a
+> full-width one. **The same caveat binds every future `_v4`/`_v4x` arm in this
+> port: price it on both generations before claiming a number for "AVX-512".**
+> **RE-VERIFIED AFTER EACH REBASE — the base moved TWICE while these gates ran.**
+> The numbers are against `84621b20`; `main@origin` went to `7ec5b557` (aarch64
+> 4-wide chroma CDEF) and then `ab5be1ec` (`percall_layout`, encoder source, not
+> just benchmarks). At both, on both ISAs: nextest 2546/2556, the tier witness
+> unchanged, six still cells 290/839/63/171/580/693 B, `regression_spotcheck`
+> 104/104. `identity_full_8bit` read **1100/1100 on both ISAs against the
+> `7ec5b557` tree** and was NOT re-run against `ab5be1ec` — 1,100 cells takes
+> longer than the tip stays still, so that result belongs to the tree it ran on
+> and the fast gates cover the final rebase. Ir and wall clock are NOT re-taken
+> against either.
+> **WHAT CI CAN AND CANNOT EXERCISE:** the feature is default-on, so every
+> x86-64 job COMPILES the `_v4` arm and `cargo nextest run --workspace` (on
+> `ubuntu-latest`) RUNS the new dsp tests — but whether `_v4` is among the tiers
+> they reach depends on that runner's CPU, which GitHub does not pin. The test
+> handles both: it always asserts `>= 2` permutations and `>= 2` distinct
+> resolved tiers and PRINTS the list, and only the `contains("X64V4Token")`
+> assertion is guarded on `X64V4Token::summon().is_some()` — so an AVX2-only
+> runner passes on `_v3` + `_scalar` and an AVX-512 runner is REQUIRED to reach
+> `_v4`. Read the printed list in the log; do not infer it from the runner
+> label. `pure-rust` (macos-15-intel, windows-11-arm) and `pure-rust-i686` test
+> the FACADE, not the dsp crate, so `tier_invariance` covers this kernel there
+> end-to-end rather than directly; on i686 `target_arch` is `"x86"` and every
+> SIMD arm is cfg'd out, leaving `_scalar` — byte-identical, speed NOT measured.
+> **A TRAP THIS CHUNK PAID FOR:** the first version of this kernel was written
+> against `~/work/archmage/magetypes`'s `widen_low` / `narrow_saturating_i16`
+> and did not compile, because **the local checkout is AHEAD of the published
+> 0.9.28 in `Cargo.lock`** — published 0.9.28 has no `widen_narrow` backend
+> module at all. `intra_pred` / `residual` / `me_sad`'s "magetypes 0.9.28 has no
+> integer widening" notes are CORRECT and stay. Verify a dependency's API with
+> `cargo read <crate>`, not with the sibling worktree on disk.
+
 > **THE PORT MAKES 199x C's ALLOCATOR CALLS, AND A PER-SUPERBLOCK RANGE-CODER
 > BUFFER WAS SIZED TO THE WHOLE FRAME — 244,967 HEAP BLOCKS -> 158,413 (-35.3 %),
 > 106.2 MB -> 64.0 MB (-39.8 %), Ir -3.16 % / -4.84 % / -0.82 %, WALL CLOCK
