@@ -56,6 +56,21 @@ Crates are not published to crates.io yet — depend by git.
 
 
 ### Fixed
+- **Four stale doc claims a new session would have acted on.**
+  `WORKING-ON-THIS.md` §2 said `identity_full_8bit` is 1036 cells (it is 1100,
+  and CI runs a 280-cell subset); §7b still reported the inter grid as 91/4/1
+  with a 93-cell byte gate (it is **94 BOTH / 1 F1DIFF / 1 F0DIFF** and 108
+  required, and the p0..p4 band is 64/64 since global motion landed); §8/§9
+  sent readers to `STATUS.md` for "what is byte-identical" when that file is
+  dated 2026-08-04 and predates the whole inter campaign — it now carries a
+  banner saying so. `README.md`'s CI table carried 2026-08-27 tallies
+  (`regression_spotcheck` 29/29, `sb128` 18/18, `bd10_hbd_src` 100/100,
+  `coverage_combos` 16/16, `screen_ibc_gate` 22/100) and no inter rows at all;
+  every row is now the tip's CI run 33978673841, the IntraBC band is recorded
+  as closed, and an inter/video-mode table was added.
+  **Recorded, not fixed (docs-only chunk):** `pipeline.rs:1863` still tells a
+  caller the inter envelope "is 89 of 96 cells" — it is 94, and the string is
+  mirrored verbatim into the generated `REFUSED-CONFIGS.md`.
 - **C's `allow_high_precision_mv` is ZERO inside the global-motion search**, and
   a port that derived it would be wrong: `frm_hdr.allow_high_precision_mv` is
   assigned in `svt_aom_sig_deriv_mode_decision_config` (md_config_process), which
@@ -104,6 +119,19 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **`CONTEXT-HANDOFF.md` is an INDEX again, and true as of `84621b20d`.** It had
+  been dated 2026-07-25 — it described the project as still-image-only, named
+  none of the inter campaign, global motion, the byte gate or any performance
+  number, and pointed a fresh box at a picture ~40 commits out of date. It now
+  states what the project is (the inter path encodes; the public API still
+  refuses non-key frames), the four goal axes with their verdicts (bit exactness
+  close, tuning parameters closed, memory in spec, **CPU fails**), the CI tallies
+  verified against run 33978673841 on the tip, how to run the gates (including
+  `SCAN_GATE=1` and the bash >= 4 requirement), the highest-cost traps inline
+  with a pointer to `WORKING-ON-THIS.md` §5, and the two-host / oracle-branch
+  setup — and it points at the live docs for everything that changes weekly
+  instead of copying it.
+
 - **`inter_byte_gate.sh` gets its first cells BELOW preset 6** — twelve, at
   p0/p2/p3/p4, covering all three branches of C's global-motion chain (no
   search / search-fits-nothing / the multi-superblock chain-simulation band).

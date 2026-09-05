@@ -2,6 +2,16 @@
 
 Last updated: 2026-08-04 (bd10 partial superblocks) — C baseline **v4.2.0**
 
+> **2026-09-05: this file is HISTORY, not the current scoreboard.** It predates
+> the inter campaign entirely — it has nothing about inter frames, video-mode
+> key frames, global motion, the IntraBC screen band, or the CPU/memory axes,
+> and several of its tallies have since moved. The live state is:
+> `../CONTEXT-HANDOFF.md` (the index), `.github/workflows/rust-gates.yml` + the
+> root `README.md` tables (CI tallies on every push), `docs/INTER-ENCODE-PLAN.md`
+> (the §1z chunk log), `docs/perf-status.md` (CPU + memory) and
+> `docs/WORKING-ON-THIS.md` (how to work here). Read this file for how a
+> still-path result was reached, never for whether it still holds.
+
 ## 10-BIT AT ARBITRARY DIMENSIONS — the refusal is gone (2026-08-04)
 
 Until this date `bit_depth_config_error` refused **every** 10-bit encode whose

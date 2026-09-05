@@ -1,17 +1,26 @@
 # zenav1-svt
 
-A pure-Rust, still-picture (AVIF / all-intra) AV1 encoder — an
+A pure-Rust AV1 encoder — an
 algorithm-for-algorithm port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1)
 v4.2.0, verified **byte-identical** to the C encoder across its tested envelope,
 with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's
 perceptual feature set available behind a runtime switch — and *that* mode
 byte-gated too, against a `SVT_HDR_MODE=ON` build of the same C base.
 
-**`#![forbid(unsafe_code)]` · ~80k lines · 7 crates · 1056 tests (nextest, as of `1ed7db46`) · no C in the product path**
+The **shipped product surface is still-picture (AVIF / all-intra)**: the public
+`EncodePipeline` refuses non-key frames. Behind a harness-only switch, the
+**inter path is byte-gated too** — 108 asserted two-frame low-delay-P cells in
+CI, 94 of the campaign's 96-cell grid byte-identical on both frames, and the
+whole p0–p4 synthetic band since global motion landed. That campaign is
+`rust/docs/INTER-ENCODE-PLAN.md`; the index to the whole project is
+[`CONTEXT-HANDOFF.md`](CONTEXT-HANDOFF.md).
+
+**`#![forbid(unsafe_code)]` · ~80k lines · 7 crates · 2554 tests (nextest, as of `84621b20d`) · no C in the product path**
 
 > **Experimental.** The envelope below is real and gated, but it is an envelope:
-> single still frame, CQP only. Not yet a general-purpose video encoder. Crates
-> are not on crates.io yet — depend by git.
+> the shipped API is a single still frame, CQP only — not yet a general-purpose
+> video encoder, even though the inter path now encodes byte-identically under
+> the differential harness. Crates are not on crates.io yet — depend by git.
 
 The SVT-AV1 C tree is **not vendored here** — it lives in the
 [`imazen/zenav1-svt-c`](https://github.com/imazen/zenav1-svt-c) submodule at
@@ -37,8 +46,8 @@ bytes against.
 
 Verified via OBU byte comparison **plus** a full arithmetic-coder op trace
 (every range-coder call, including coder state), each line an asserted gate
-under `rust/tools/`. The first block runs in CI on every push (tallies as of `1ed7db46` (CI run 33101031800, 2026-08-27)
-— `gh run view 33101031800`); the second block needs image corpora that are
+under `rust/tools/`. The first block runs in CI on every push (tallies as of `84621b20d` (CI run 33978673841, 2026-09-05)
+— `gh run view 33978673841`); the second block needs image corpora that are
 not in-tree, so those tallies are dated local measurements with the committed
 record named:
 
@@ -47,18 +56,35 @@ record named:
 | Synthetic, **every preset 0–13**, full qp range, 4 content classes, 64 px | `identity_full_8bit` (superset of the 54-cell `identity_matrix`) | **280/280** |
 | Partial superblocks / odd dimensions (spec 5.11.4 edges) | `partial_sb_gate` | **145/145** |
 | True-vs-aligned × stride × bit depth, two oracles (bytes vs C AND recon vs `aomdec`) | `alignment_gate` | **74/74** |
-| 10-bit synthetic, presets 0–13 | `bd10_matrix` + `bd10_nonflat_gate` + `bd10_hbd_src_gate` | **36/36** + **309/309** + **100/100** |
+| 10-bit synthetic, presets 0–13 | `bd10_matrix` + `bd10_nonflat_gate` + `bd10_hbd_src_gate` | **36/36** + **309/309** + **118/118** |
 | 10-bit at non-64-aligned dims, both bd10 producers | `bd10_partial_sb_gate` | **159/159** |
-| SB128 superblocks (incl. high-qp partition depths) | `sb128_gate` | **18/18** (14 SB128 cells + 4 SB64 controls; 22 with the gb82-sc corpus) |
+| SB128 superblocks (incl. high-qp partition depths) | `sb128_gate` | **22/22** (CI fetches gb82-sc, so the corpus cells run; 18 without it) |
 | Multi-tile (rows × cols, all preset bands) | `tile_gate` | **29/29** |
-| Feature intersections: SB128×tiles, bd10×tiles | `coverage_combos_gate` (`CC_AXES="sb128 bd10"`) | 16/16 byte-exact + bd10 pins² |
+| Feature intersections: SB128×tiles, bd10×tiles | `coverage_combos_gate` (`CC_AXES="sb128 bd10"`) | **28/28**² |
 | Screen content, palette, 8- AND 10-bit | `screen_palette_bd_gate` | **60/60** |
+| Screen content, **IntraBC**, gb82-sc × presets 0–4 × qp | `screen_ibc_byte_gate` | **152/152** (41,559 IntraBC blocks, 27,402 palette)³ |
+| Screen content, luma palette, gb82-sc × preset 6 | `screen_palette_gate` | **50/50** |
+| 10-bit screen content: panic-freedom + decodability | `bd10_screen_panic_gate` | **60/60** |
 | Superres, byte-parity + decode at the upscaled size | `superres_gate` | **512/512** |
 | Encoder recon == `aomdec` output, byte-exact | `recon_parity` + `variance_boost_recon` | **432/432** + **60/60** |
 | Decode conformance (`aomdec` + `dav1d`), mono / 4:2:0 | `decode_conformance` | **1260** / **1575** streams |
 | Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **128/128** (0 refused) |
-| Regression spot-check (one cell per bug ever fixed) | `regression_spotcheck` | **29/29** |
+| Regression spot-check (one cell per bug ever fixed) | `regression_spotcheck` | **104/104** |
 | Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **112/144** byte-identical, +32 pinned, 144/144 lossless (local 2026-08-28; CI runs the 72-cell subset) |
+
+**Inter / video mode (CI, every push).** The inter path is byte-gated but the
+shipped `EncodePipeline` still refuses non-key frames — the gates drive it
+through `SVTAV1_INTER_EXPERIMENTAL`, a harness-only switch
+(`rust/docs/WORKING-ON-THIS.md` §7b). The campaign is
+`rust/docs/INTER-ENCODE-PLAN.md`.
+
+| Axis (CI, every push) | Gate | Cells |
+|---|---|---|
+| 2-frame low-delay P, **both frames** byte-identical to C | `inter_byte_gate` | **108 required, 0 failed, 1 known-open** (`diag 128x128 q20 p8`) |
+| Does the port ENCODE the cell at all (panic gate) | `inter_completion_scan` (`SCAN_GATE=1`) | **64 OK / 0 REFUSED / 0 CRASH** per content |
+| Does the port's stream DECODE, all grid cells | `inter_decode_census` | **96/96** |
+| CDF continuation · inter frame header · decode | `fctx_gate` · `inter_fh_gate` · `inter_decode_gate` | PASS · PASS · **5/5** |
+| Port's full-pel MV against C's, per block | `inter_me_join_gate` | 6 cells, 54 joined rows, **0 disagree** |
 
 | Axis (local, corpus-gated) | Gate | Cells |
 |---|---|---|
@@ -66,24 +92,25 @@ record named:
 | Real photographs, preset 0, 8-bit | `photo_p0_gate` | **8/8** (closed 2026-07-23, `rust/STATUS.md`; no committed artifact) |
 | 10-bit real photographs, presets **0–13** (CID22 + CLIC) | `bd10_photo_gate` | **191/191** (191 = the script's cell count, groups A–H; the tally is a local run recorded here 2026-07-24 with no committed 191-cell artifact — the committed record is the p0–p3 `bd10_photo_p0p3_2026-07-23.tsv`) |
 | Feature intersections: real×tiles | `coverage_combos_gate` axis 3 | 8/12 byte-exact, 4 pinned (2026-07-22, `coverage_combos_latest.tsv`) |
-| Screen content, palette, preset 6 (gb82-sc) | `screen_palette_gate` | **50/50** (recorded here 2026-07-24; no committed artifact — the CI-run 10-bit twin `screen_palette_bd_gate` is in the table above) |
-| Screen content p0–p4 with **IntraBC** | `screen_ibc_gate` | **22/100**³ |
+| Screen content p0–p4 with **IntraBC**, recon vs `decode_diff` | `screen_ibc_gate` | **100/100** (promoted 2026-09-05, `8528c3ef6`; the byte-only twin runs in CI — see above) |
 | HDR-fork mode, 10-bit byte-vs-C / 8-bit | `hdr_bd10_gate` / `hdr_fork_e2e`⁴ | **64/64** / 36/36 decode⁴ |
 
 ¹ the earlier "177/180 `real_image_matrix`" figure was a 2026-07 local run with
 no committed artifact; the committed real-corpus record is the 450-cell sweep
 above. The p0/p4 residual is real-content RD divergence at the low presets
 (pinned per cell in that TSV), not a decode issue — every cell decodes.
-² SB128×tiles 16/16 byte-exact; the bd10×tiles pinned cells are localized
-eff-M9 tile-boundary partition near-ties, self-promoting (a pin that starts
-matching fails the gate so it gets promoted). Local arm64 record:
-`rust/benchmarks/coverage_combos_2026-08-28_arm64_axes12.tsv`.
+² 28/28 over the two CI axes (`sb128 bd10`) on 2026-09-05 (run 33978673841);
+the earlier 16/16 + pins reading is superseded. The bd10×tiles pins were
+localized eff-M9 tile-boundary partition near-ties and the gate self-promotes
+(a pin that starts matching fails the gate until it is promoted). Local arm64
+record: `rust/benchmarks/coverage_combos_2026-08-28_arm64_axes12.tsv`.
 ³ IntraBC (intra block copy) is fully implemented — hash pyramid, diamond+mesh
 DV search, MVP stack, inter var-tx coding — and every stream is self-consistent
-(decodes to exactly the encoder's own reconstruction; 25k+ IBC blocks verified,
-zero desync). The 78 open cells are pinned RD near-ties, each localized; the
-gate self-promotes them as they close (the script's `BYTE_EXACT` list is the
-count of record — 22 entries).
+(decodes to exactly the encoder's own reconstruction). **The gb82-sc IntraBC
+band closed on 2026-09-05** (`8528c3ef6`): the 78 cells that had been pinned as
+RD near-ties are byte-identical, `screen_ibc_gate`'s `BYTE_EXACT` list is all
+100, and `screen_ibc_byte_gate.sh` asserts 152 cells in CI without needing the
+`decode_diff` oracle that only builds on the CI image.
 ⁴ `hdr_fork_e2e` is a liveness + `aomdec` decode witness suite (36/36 per-tune
 decode gates), not a byte-vs-C gate. The 8-bit fork's 48/48 byte-identity is a
 2026-07-19 measurement recorded in `rust/docs/HDR-ON-4.2.md` with no standing
@@ -210,8 +237,9 @@ cargo install cargo-nextest just
 cd rust
 cargo nextest run --workspace
 export SVT_CREF_LIB_DIR=$(pwd)/../Bin/Release
-./tools/identity_matrix.sh        #  54 cells
-./tools/partial_sb_gate.sh        # 101 cells
+./tools/identity_full_8bit.sh     # 1100 cells (synthetic + dims) — THE 8-bit gate
+./tools/identity_matrix.sh        #   54 cells (a scoreboard: it always exits 0)
+./tools/partial_sb_gate.sh        #  145 cells
 ./tools/bd10_photo_gate.sh        # 191 cells (needs the CID22/CLIC corpus
                                   #  paths — see the script header)
 ```

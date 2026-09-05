@@ -23,10 +23,16 @@ instead of leaving you to bisect a 2,000-cell sweep.
 ## 2. The full sweeps — when you actually need them
 
 ```bash
-tools/identity_full_8bit.sh             # ~25 min, 1036 cells, all presets
+tools/identity_full_8bit.sh             # ~25 min, 1100 cells, all presets
 IF_TIER=real tools/identity_full_8bit.sh    # ~45 min, real corpora
 python3 tools/coverage_matrix.py        # instant: what is COVERED, not what passes
 ```
+
+The default tier (synthetic + dims) is **1100 cells** and every chunk record
+since 2026-09-03 quotes `1100 / 1100` — the "1036" this line carried was a
+stale count from an earlier grid. **CI runs a 280-cell subset of it**
+(`IF_TIER=synthetic IF_SIZES=64`, to stay inside the job budget), so a green CI
+run is not the same statement as a green local sweep.
 
 Run these before landing anything that touches mode decision, partition,
 quantization or the bitstream writer. Not on every edit.
@@ -1383,17 +1389,25 @@ inter harness (`tools/identity_diff_inter.sh`, `tools/inter_fh_gate.sh`,
 DELETED once the tile is byte-identical broadly — never promoted to a feature
 flag.
 
-**Where that stands, re-measured 2026-09-02** (this paragraph used to say "the
+**Where that stands, re-measured 2026-09-05** (this paragraph used to say "the
 frame HEADER is field-exact but for two CDEF strengths, while the TILE is the
 pre-campaign homegrown path", which has been wrong since §1z; it then said
-36/59/1, which §1z¹⁵ superseded, then 55/40/1, which §1z²¹ superseded): on
+36/59/1, which §1z¹⁵ superseded, then 55/40/1, which §1z²¹ superseded, then
+91/4/1 as of §1z²⁴, which §1z³³ and §1z³⁶ superseded): on
 the campaign's 96-cell grid — `{uniform,gradient,diag,screen}` x
 `{16,64,72,128}` x `{q20,q40,q55}` x `{p6,p8}`, all `frames=2` low-delay P —
-**91 cells are byte-identical on BOTH frames**, 4 have a byte-identical
-frame 0 and a differing frame 1, and 1 still differs on frame 0 —
-**91 / 4 / 1 as of §1z²⁴**, and **all 96 streams DECODE**.
+**94 cells are byte-identical on BOTH frames**, 1 has a byte-identical
+frame 0 and a differing frame 1 (`diag 128x128 q20 p8`, 26 B vs C's 25), and
+1 differs on frame 0 (`gradient 128x128 q20 p8`, 7453 B vs C's 7472) —
+**94 / 1 / 1 as of §1z³⁶**, and **all 96 streams DECODE**.
 `tools/inter_byte_matrix.sh` is that sweep and `tools/inter_byte_gate.sh`
-asserts the 91 plus two 576x576 cells (93 required). `tools/inter_decode_census.sh` asks the OTHER question — does
+asserts the 94 plus two 576x576 cells and the twelve p0..p4 global-motion
+cells — **108 required, 1 known-open** as of `76b2764d1`, verified in CI on
+`84621b20d` (run 33978673841). Below preset 6 the picture is separate and
+newer: §1z⁴¹–§1z⁴² ported C's global-motion derivation and search, and the
+whole p0..p4 synthetic band ({uniform,gradient,diag,screen} x {16,64,128,256})
+is **64 / 64 byte-identical on both frames**.
+`tools/inter_decode_census.sh` asks the OTHER question — does
 the stream decode — of all 96, because "byte-identical" and "decodable" are
 not the same question and 22 cells once answered them differently
 (§1z¹⁸/§1z¹⁹).
@@ -1599,8 +1613,12 @@ Two things §1q proves that a reader will otherwise re-derive:
 
 ## 8. What is actually true right now
 
-`STATUS.md` leads with the measured envelope; `docs/*-port-map.md` holds
-per-feature plans. Both contain claims written by earlier sessions that
+The **live** tallies are the CI gate list (`.github/workflows/rust-gates.yml`,
+and the tables in the root `README.md` that mirror it) plus the per-chunk gate
+blocks in `docs/INTER-ENCODE-PLAN.md` and `docs/perf-status.md`. `STATUS.md` is
+CAMPAIGN HISTORY dated 2026-08-04 — it predates the whole inter campaign and
+does not mention it. `docs/*-port-map.md` holds
+per-feature plans. All of them contain claims written by earlier sessions that
 measurement has since overturned — **at least three were wrong on the day they
 were written**, and the corrections are recorded in place rather than quietly
 patched.
@@ -1612,7 +1630,8 @@ disagree, the source wins and the doc gets fixed in the same change.
 
 | you want | look at |
 |---|---|
-| what is byte-identical, and where it is not | `STATUS.md` |
+| what is byte-identical, and where it is not | the CI gate list + `../README.md`'s tables; `STATUS.md` is history (2026-08-04) |
+| the state of the whole project, as an index | `../CONTEXT-HANDOFF.md` |
 | coverage per preset per axis | `python3 tools/coverage_matrix.py` |
 | every bug we have fixed, with its reproducer | `tools/regression_spotcheck.sh` |
 | C code that looks broken | `docs/SUSPECTED-C-BUGS.md` |
