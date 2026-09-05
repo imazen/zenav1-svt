@@ -40,11 +40,18 @@
 > `photo_cid` 512 p2 **0.999x** (span 0.9998-1.0032, entirely at or above 1.0).
 > That 1.5 % is the function's own WORK (~71 Ir a call), not call overhead:
 > making it faster means changing the algorithm, not the linkage.
-> **Incidental finding worth knowing:** `screen_terminal` 512 p2 qp 40 is now
-> BYTE-IDENTICAL to C (5,003 B both sides). `callcount_realimg_2026-09-04` has
-> it as the open correctness finding at 4,991 vs 5,003; it closed between that
-> record and this one, and NOT via these four chunks (all byte-inert) — the
-> credit is the screen/IntraBC work that landed on `main` in between.
+> **INCIDENTAL, AND THE MOST USEFUL LINE HERE: both open screen-content
+> correctness cells of `callcount_realimg_2026-09-04` are now BYTE-IDENTICAL to
+> C.** That record's open finding was `screen_terminal` 512x512 p2 qp40 (port
+> 4,991 vs C 5,003) and `lineart_graph` 512x480 p2 qp40 (3,087 vs 3,098), both
+> with IntraBC live and neither a cell any screen gate runs. Re-measured with
+> the same driver and oracle: **5,003 B = 5,003 B** and **3,098 B = 3,098 B**,
+> each verified twice. They closed between that record and this one and NOT via
+> these four chunks (all byte-inert on 1,100 identity cells) — the credit is the
+> screen/IntraBC work that landed on `main` in between. Their port/C ratios read
+> 2.200 and 2.385 now; those are NOT a before/after against that record's 2.206
+> and 2.444, which were ratios over divergent output and were flagged as
+> unquotable there.
 >
 > **THE FOUR CHUNKS TOGETHER, against the tree they branched from (41e5d8f1),
 > 21 interleaved paired rounds, ident=Y on every row:** photo_cid 512 p2

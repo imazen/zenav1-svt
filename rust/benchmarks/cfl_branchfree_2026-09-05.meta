@@ -232,12 +232,23 @@ the tree. The 1.5 % that record quoted is the function's own WORK (~71 Ir per
 call), not its call overhead; making it faster means changing the algorithm, not
 the linkage.
 
-INCIDENTAL, and worth knowing: `screen_terminal` 512 p2 qp 40 is now
-BYTE-IDENTICAL to C (5,003 B both sides). `callcount_realimg_2026-09-04`
-recorded it as the open correctness finding at 4,991 vs 5,003; it closed at some
-point between that record and this one — not by anything in these four chunks,
-all of which are byte-inert, so the credit belongs to the screen/IntraBC work
-that landed on `main` in between.
+INCIDENTAL, AND THE MOST USEFUL THING IN THIS SECTION: **BOTH open
+screen-content correctness cells of `callcount_realimg_2026-09-04` are now
+BYTE-IDENTICAL to C.** That record's "Open correctness finding" was
+`screen_terminal` 512x512 p2 qp 40 at port 4,991 vs C 5,003 and `lineart_graph`
+512x480 p2 qp 40 at port 3,087 vs C 3,098, both with IntraBC live, and it noted
+that no existing screen gate runs qp 40 at p2. Re-measured here with the same
+driver and the same prebuilt oracle:
+    screen_terminal 512x512 p2 qp40   port 5,003 B = C 5,003 B   ident=Y
+    lineart_graph   512x480 p2 qp40   port 3,098 B = C 3,098 B   ident=Y
+(each verified twice — the identity pre-pass and the instrumented run's own
+`.obu`.) They closed between that record and this one and NOT via the four perf
+chunks of 2026-09-05, every one of which is byte-inert on 1,100 identity cells,
+so the credit belongs to the screen/IntraBC work that landed on `main` in
+between. Their port/C instruction ratios moved too, from that record's 2.206 and
+2.444 to **2.200** and **2.385** — but those are not comparable as
+before/after, because the earlier pair were ratios over DIVERGENT output and
+that record explicitly refused to quote them as ratios.
 
 NOT ESTABLISHED: that this is as fast as C's kernel — the alpha search is still
 1.72x C's inclusive Ir, of which the per-alpha `tx_unit` half is already at
