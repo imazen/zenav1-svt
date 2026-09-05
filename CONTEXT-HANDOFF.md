@@ -5,7 +5,7 @@ named below and is updated in place; anything restated here is restated only so
 a new session can orient in ten minutes. When this file and a live doc disagree,
 **the live doc wins** — and fix this one in the same change.
 
-Last updated **2026-09-05 (late)**, against `origin/main` = `e96f2b392`.
+Last updated **2026-09-05 (late)**, against `origin/main` = `690c5aa82`.
 
 > **If you are a successor agent picking this up cold, read §0, then §3's
 > "CPU, stated honestly" and "The inter frame, attributed", then §6, then
