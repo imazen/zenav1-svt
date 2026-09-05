@@ -1034,6 +1034,14 @@ Crates are not published to crates.io yet — depend by git.
   memory traffic and because a strictly-dead 2.10 % of the Ir ranking would
   keep drawing future chunks to it, but no wall-clock gain is claimed for it;
   the 1.018x-1.029x is changes (2)-(4). Now in `docs/WORKING-ON-THIS.md` §5.
+  **At 2048² p6 — the size where the range-coder defect was quadratic — the
+  series measures 1.155x**: gradient 2048², warmup 1, `/usr/bin/time -v`, runs
+  interleaved, base 0.97/0.96/0.97 s against final 0.84/0.84/0.84 s (every base
+  run above every final run), peak RSS 105.6 MB -> 102.9 MB, byte-identical, and
+  a same-binary control run the same way shows no separation. **aarch64 peak
+  RSS is a NULL and was measured, not argued:** `mem_bisect.sh` round-robin,
+  11 rounds, 0 refused — 2048-inter median 147,936 -> 147,472 KiB (0.997x) with
+  overlapping distributions, 512-still 11,616 -> 11,424 KiB.
 - **The entropy coefficient writer and the range coder take C's SHAPE —
   -2.285 % of the photo_cid 512² p6 frame's instructions, -2.96 % of its
   cycles, -7.96 % of its branch misses, 1.037x / 1.029x wall clock on the two

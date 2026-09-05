@@ -222,3 +222,45 @@ FIN	photo_cid 512x512 q40 (same binary, run 1)	6	n/a	1463905845	n/a	noise-floor 
 FIN	photo_cid 512x512 q40 (same binary, run 2)	6	n/a	1463903039	-2806	NOISE FLOOR = ~2,800 Ir (0.0002 %)
 FIN	photo_cid 512x512 q40	6	1463950401	1463905845	-44556	15x the floor — real, and favourable
 FIN	screen_terminal 512x512 q40	6	850717449	850717312	-137	inside the floor
+
+# ---- MEMARM: aarch64 peak RSS, tools/mem_bisect.sh round-robin -------------
+# 11 rounds per binary, interleaved, 0 refused, .obu byte-identical on both arms.
+# base = 7ec5b5572 (the series' parent); final = ab5be1ec (the series' tip).
+section	cell	arm	preset	bin	median_KiB	min_KiB	max_KiB	rounds	obu_bytes
+MEMARM	gradient 2048x2048 q40	inter	13	base	147936	140368	161120	11	139761
+MEMARM	gradient 2048x2048 q40	inter	13	final	147472	140816	159600	11	139761
+MEMARM	gradient 512x512 q40	still	6	base	11616	11472	13536	11	5995
+MEMARM	gradient 512x512 q40	still	6	final	11424	11344	13392	11	5995
+# 2048-inter ratio 147472/147936 = 0.997x — a NULL, distributions overlapping,
+# and BELOW base. The ceiling this campaign is held to is ~1.20x.
+
+# ---- ABFIN: wall clock on the COMMITTED binary, third session --------------
+# tools/perf_ab.sh, 21 interleaved paired rounds, every row ident=Y, each A/B
+# with its OWN same-binary control taken in the same session.
+section	cell	preset	ab_ratio	ab_p25	ab_p75	ctl_ratio	ctl_p25	ctl_p75	corrected	speedup	disjoint
+ABFIN	photo_cid 512x512 q40	2	0.9830	0.9804	0.9849	1.0013	0.9994	1.0043	0.9817	1.019	yes
+ABFIN	photo_cid 512x512 q40	6	0.9838	0.9774	0.9853	1.0015	0.9974	1.0058	0.9823	1.018	yes
+ABFIN	screen_terminal 512x512 q40	2	0.9870	0.9833	0.9921	1.0063	1.0029	1.0108	0.9808	1.020	yes
+ABFIN	screen_terminal 512x512 q40	6	0.9790	0.9700	0.9880	0.9987	0.9909	1.0022	0.9803	1.020	yes
+
+# ---- BIG: 2048x2048 p6, where the range-coder defect was QUADRATIC ---------
+# gradient 2048x2048 qp40 preset 6, warmup 1, /usr/bin/time -v, runs INTERLEAVED
+# base,final,base,final,base,final. Output byte-identical (cmp: IDENT_Y).
+# A same-binary control (base vs a byte copy of base) was run the same way and
+# shows NO separation, so the A/B separation below is not a harness artefact.
+section	run	bin	wall_s	peak_rss_KiB
+BIG	1	base	0.97	105612
+BIG	1	final	0.84	102804
+BIG	2	base	0.96	106004
+BIG	2	final	0.84	102864
+BIG	3	base	0.97	105688
+BIG	3	final	0.84	102944
+BIGCTL	1	base	1.04	105500
+BIGCTL	1	base2	0.97	105528
+BIGCTL	2	base	0.98	105544
+BIGCTL	2	base2	0.97	105340
+BIGCTL	3	base	0.96	105552
+BIGCTL	3	base2	0.98	104992
+# A/B: every base run (0.96-0.97 s) is above every final run (0.84 s, three
+# times) — DISJOINT, 1.155x. Control: base 0.96-1.04 vs base2 0.97-0.98, fully
+# overlapping, no separation. Peak RSS 105.6 MB -> 102.9 MB (0.974x).

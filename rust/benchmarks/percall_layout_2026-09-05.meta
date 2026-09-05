@@ -451,6 +451,56 @@ The FIN rows in the TSV are the committed binary's, and the headline is quoted
 from them. Every `.obu` from those runs was `cmp`'d against the candidate's and
 is identical.
 
+=================== 5c. THE TAIL MEASUREMENTS ================================
+
+Added after the series landed, closing three gaps the record itself named.
+
+**aarch64 peak RSS — measured, not argued.** `tools/mem_bisect.sh` round-robin,
+11 rounds per binary, 0 refused, `.obu` byte-identical on both arms:
+
+  cell                        base median   final median   ratio
+  gradient 2048x2048 inter p13  147,936 KiB   147,472 KiB   0.997x
+  gradient 512x512 still p6      11,616 KiB    11,424 KiB   0.983x
+
+Both are NULLs — base spans 140,368-161,120 and final 140,816-159,600 at 2048,
+almost complete overlap — and both sit BELOW base rather than above. **The
+2048-inter arm is 0.997x, nowhere near the ~1.20x ceiling this campaign is held
+to.** That is the expected shape: the series removes TRANSIENT churn (244,967
+heap blocks -> 158,413; 106.2 MB -> 64.0 MB of traffic) while peak LIVE bytes
+barely move (DHAT +0.099 %).
+
+**The wall clock reproduces on the COMMITTED binary, in a third session.** Fresh
+same-binary control in the same session, 21 interleaved paired rounds, every row
+ident=Y: photo_cid p2 0.9830 / control 1.0013 -> 1.019x; p6 0.9838 / 1.0015 ->
+1.018x; screen p2 0.9870 / 1.0063 -> 1.020x; screen p6 0.9790 / 0.9987 ->
+1.020x. All four spans disjoint from their controls. This lane has now measured
+SIX distinct same-binary controls on the same script and box (1.0005, 1.0013,
+1.0015, 1.0023, 1.0042, 1.0058) — the direct evidence for the §5 correction that
+**`perf_ab.sh`'s bias is per-binary-pair, not a constant of the harness.**
+
+**2048x2048 p6, where the range-coder defect was QUADRATIC — 1.155x, and it is
+the largest single result in this record.** gradient 2048x2048 qp40 preset 6,
+warmup 1, `/usr/bin/time -v`, runs INTERLEAVED base,final,base,final,...,
+output byte-identical:
+
+  base   0.97 / 0.96 / 0.97 s   peak RSS 105,612 / 106,004 / 105,688 KiB
+  final  0.84 / 0.84 / 0.84 s   peak RSS 102,804 / 102,864 / 102,944 KiB
+
+**Every base run is above every final run — disjoint, 1.155x** — and peak RSS
+falls 105.6 MB -> 102.9 MB (0.974x). A same-binary control run the same way
+shows NO separation (base 0.96-1.04 s against base2 0.97-0.98 s, fully
+overlapping), so this is not a harness artefact.
+
+ONE HONEST QUALIFICATION ON THE MECHANISM AT 2048, because the arithmetic in §3
+is an upper bound and not a measured memset: at 8,388,864 bytes per allocation
+glibc will serve the request by `mmap`, and `calloc` SKIPS the zeroing for an
+mmap'd chunk because the kernel already supplies zero pages — so the 8.59 GB
+figure bounds the work rather than describing it, and the cost actually removed
+at that size is some mix of mmap/munmap churn, page faults on first touch, and
+zeroing. **The 1.155x is measured; the 8.59 GB is arithmetic.** No callgrind run
+was taken at 2048 (a 1-second encode under callgrind is minutes), so the split
+between those mechanisms is NOT established.
+
 =================== 6. WHAT IS AND IS NOT ESTABLISHED =========================
 
 ESTABLISHED, at commit 7ec5b5572 + this change, on the cells named above:

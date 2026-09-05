@@ -3,7 +3,8 @@
 > **THE PORT MAKES 199x C's ALLOCATOR CALLS, AND A PER-SUPERBLOCK RANGE-CODER
 > BUFFER WAS SIZED TO THE WHOLE FRAME — 244,967 HEAP BLOCKS -> 158,413 (-35.3 %),
 > 106.2 MB -> 64.0 MB (-39.8 %), Ir -3.16 % / -4.84 % / -0.82 %, WALL CLOCK
-> 1.018x-1.029x ON FOUR CELLS AGAINST THEIR OWN CONTROLS (2026-09-05).** Record
+> 1.018x-1.029x ON FOUR 512² CELLS AGAINST THEIR OWN CONTROLS — AND **1.155x AT
+> 2048² p6**, WHERE THE RANGE-CODER DEFECT WAS QUADRATIC (2026-09-05).** Record
 > `benchmarks/percall_layout_2026-09-05.{tsv,meta}`.
 > **The env-var question this chunk was dispatched on is a MEASURED NULL and is
 > reported as one:** `getenv` fires **29 times in a whole photo_cid 512² p6
@@ -53,7 +54,18 @@
 > capacity was `w * h * 2 + 256` PER SB while the SB count is `w * h / sb_size²`,
 > so the per-frame zero-fill went as `w² * h²` — 33.5 MB at 512², and
 > **8.59 GB per frame at 2048² p6** (1024 SBs x 8,388,864 B). It is now linear
-> in pixels (8.6 MB at 2048²).
+> in pixels (8.6 MB at 2048²). **MEASURED AT THAT SIZE, and it is the largest
+> single result in this record: gradient 2048² p6, warmup 1,
+> `/usr/bin/time -v`, runs interleaved base,final,... — base 0.97 / 0.96 /
+> 0.97 s against final 0.84 / 0.84 / 0.84 s, every base run above every final
+> run, DISJOINT, 1.155x**, peak RSS 105.6 MB -> 102.9 MB, output
+> byte-identical. A same-binary control run the same way shows NO separation
+> (0.96-1.04 vs 0.97-0.98). **Qualification, because the 8.59 GB is arithmetic
+> and not a measured memset:** at 8,388,864 B per allocation glibc serves by
+> `mmap` and `calloc` skips the zeroing (kernel pages are already zero), so what
+> is removed at that size is some mix of mmap/munmap churn, first-touch page
+> faults and zeroing. The 1.155x is measured; the 8.59 GB bounds the work. No
+> callgrind was taken at 2048.
 > Three more sites were converted to stack/scratch storage:
 > `partition::extract_neighbors_tiled` (**44,502 blocks for 435,872 bytes — a
 > 9.8-BYTE average payload per malloc/free pair**, now a stack `NeighborEdges`
@@ -94,7 +106,12 @@
 > `docs/WORKING-ON-THIS.md` §5.
 > **Memory is a NULL and is reported as one:** DHAT peak live 6,223,973 ->
 > 6,230,148 B (**+0.099 %**) — the freed churn was transient, not resident. The
-> aarch64 2048-inter RSS arm is unmoved (see the record's MEM section).
+> **aarch64 2048-inter RSS arm is MEASURED, not argued:** `mem_bisect.sh`
+> round-robin, 11 rounds per binary, 0 refused, `.obu` byte-identical — median
+> 147,936 -> **147,472 KiB (0.997x)**, distributions almost completely
+> overlapping (base 140,368-161,120, final 140,816-159,600); 512-still p6
+> 11,616 -> 11,424 KiB. Both NULLs, both BELOW base, nowhere near the ~1.20x
+> ceiling.
 > **STILL OPEN, with measured sizes so the next chunk starts from a number:**
 > `mds3::eval_candidate` 40,223 blocks / 4.17 MB, `tx_pipeline::tx_unit_inner`
 > 26,580 / 11.38 MB (the residue is the OWNED `TxUnitOut` `Vec`s, not the
