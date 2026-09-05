@@ -630,6 +630,29 @@ else
   skip=$((skip+1)); skipped+=("ibc-outofset-txtype (no $SCREEN_DIR/graph.png)")
 fi
 
+# 2026-09-05 — the gb82-sc IntraBC band (presets 0..4) diverged on 78 of 100
+# cells since 2026-07-23 ("RD near-ties"). Three mechanisms, one cell each:
+#   * mds3.rs: C clamps an IntraBC candidate's tx-depth search with the
+#     INTRA caps (its mode is DC_PRED; product_coding_loop.c:6729-6732),
+#     depth 2 at presets 0..3 — the port used the inter cap (depth 1);
+#   * commit.rs: C's MD-side txfm-context stamp is the chosen tx dims for
+#     every winner (:232-241) — the port stored block dims for skip IBC;
+#   * context.rs: C's MD-side context skips the palette CDF update for a
+#     non-chroma-reference block (md_rate_estimation.c:760-830) — the chain
+#     sim adapted on every luma flag.
+# OBSERVED (callcount_realimg_2026-09-04): terminal.png 512^2 q40 p2 port
+# 4991B vs C 5003B (first diverging op = the depth-0 txfm_partition flag of
+# the 16x16 IBC leaf at mi(12,108)); graph.png 512x480 q40 p2 3087B vs 3098B.
+# The terminal cell needs the first two fixes (5000B with only the first);
+# the graph cell needs the third (an exact filter-DC/PAETH tie at mi(66,0)
+# where C priced the DC candidates' no-palette flag 3 units higher).
+if [ -f "$SCREEN_DIR/terminal.png" ] && [ -f "$SCREEN_DIR/graph.png" ]; then
+  byte "ibc-txdepth-intra-cap+md-txfm-stamp-terminal-p2" "crop:$SCREEN_DIR/terminal.png" 512 512 40 2
+  byte "chain-sim-chroma-gated-palette-graph-512x480-p2" "crop:$SCREEN_DIR/graph.png" 512 480 40 2
+else
+  skip=$((skip+2)); skipped+=("ibc-txdepth-intra-cap+md-txfm-stamp-terminal-p2 (no gb82-sc)" "chain-sim-chroma-gated-palette-graph-512x480-p2 (no gb82-sc)")
+fi
+
 # 2026-08-04 — extended partitions (H4/V4/HA/HB/VA/VB) panicked when a
 # STRADDLING node's tail sub-blocks fell outside the aligned frame. Such a node
 # is NOT a boundary node (has_rows && has_cols are both true) but its block

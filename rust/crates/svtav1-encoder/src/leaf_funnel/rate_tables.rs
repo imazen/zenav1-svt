@@ -654,8 +654,10 @@ pub struct FunnelCfg {
     pub txs_max_nsq: u8,
     /// `txs_ctrls.inter_class_max_depth_sq`: txs_level 2 at M0..M3 -> 1;
     /// txs_level 3 at M4..M7 -> 1 (set_txs_controls, enc_mode_config.c:
-    /// 6185-6205). The port's IBC tx-depth cap (see [`end_tx_depth_inter`]
-    /// — deliberately NOT C's mode-keyed intra clamp, pinned).
+    /// 6185-6205). The cap of a candidate whose MODE is inter
+    /// ([`end_tx_depth_inter`]); an IntraBC candidate's mode is DC_PRED and
+    /// takes the intra caps above, as C's mode-keyed clamp does
+    /// (fixed 2026-09-05).
     pub txs_inter_max_sq: u8,
     /// `txs_ctrls.inter_class_max_depth_nsq`: M0..M3 -> 1; M4..M7 -> 0.
     pub txs_inter_max_nsq: u8,

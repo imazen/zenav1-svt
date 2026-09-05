@@ -33,10 +33,14 @@ pub(super) fn end_tx_depth(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
 }
 
 /// The INTER-class twin of [`end_tx_depth`]: same bsize base, capped by
-/// `txs_ctrls.inter_class_max_depth_sq/nsq`. NOT what C applies to
-/// IntraBC (C's clamp is mode-keyed -> intra caps; see the pinned KNOWN
-/// GAP note at the depth-loop call site) — kept as the port's IBC cap so
-/// every emitted stream stays within the proven depth<=1 pack chain.
+/// `txs_ctrls.inter_class_max_depth_sq/nsq`. Applies to a candidate whose
+/// MODE is inter (NEWMV/NEARESTMV/...): C's `get_start_end_tx_depth`
+/// clamp is keyed on `is_intra_mode(cand->block_mi.mode)`
+/// (product_coding_loop.c:6729-6732), and an IntraBC candidate keeps
+/// `mode = DC_PRED` (mode_decision.c:3150), so IntraBC takes
+/// [`end_tx_depth`] — the INTRA caps — not this. (Until 2026-09-05 the
+/// port applied this to IntraBC on purpose; that was the gb82-sc p0..3
+/// divergence family, see the `mds3.rs` depth loop.)
 pub(super) fn end_tx_depth_inter(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
     let base: u8 = match (w, h) {
         (64, 64) | (32, 32) | (16, 16) => 2,
@@ -60,8 +64,9 @@ pub(super) fn end_tx_depth_inter(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
 /// sub-txbs raster within each parent (verified against the C table:
 /// exactly 6 (bsize, depth-2) cells differ from the intra raster —
 /// 16X8/16X16/32X16/32X32/64X32/64X64; vertical rects coincide).
-/// Currently unreachable at the IBC presets (inter depth caps <= 1) but
-/// kept exact for when deeper inter caps arrive.
+/// LIVE at the IBC presets since 2026-09-05: an IntraBC candidate is
+/// searched under the INTRA depth caps (2 at presets 0..3), so its depth-2
+/// txbs walk these rows in MD and in the pack alike.
 pub(crate) fn txb_org_inter(w: usize, h: usize, depth: u8, txb: usize) -> (usize, usize) {
     let (txw, txh) = txb_dims_at_depth(w, h, depth);
     if depth < 2 {

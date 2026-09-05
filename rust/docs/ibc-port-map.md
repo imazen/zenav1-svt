@@ -61,7 +61,20 @@
 >   unchanged. The sc_class5 depth-refinement fix (`4b2c0355d`,
 >   cherry-picked from parity/screen-lowpreset) rides along — screen
 >   trees at p0-p2 need it for C parity.
-> - **Chunk 10 (open):** `tools/screen_ibc_gate.sh` measures the
+> - **Chunk 10 — CLOSED 2026-09-05.** The 78 "RD near-ties" were three
+>   MD-side mechanisms, each a constant justified by a comment: an IntraBC
+>   candidate's tx-depth cap is C's INTRA cap (`is_intra_mode(DC_PRED)`,
+>   product_coding_loop.c:6729-6732; the port used the inter cap), C's MD
+>   txfm-context stamp is the chosen tx dims for every winner (:232-241; the
+>   port mirrored the pack's skip&&inter arm), and C's MD-side context skips
+>   the palette CDF update for non-chroma-reference blocks
+>   (md_rate_estimation.c:760-830; the chain sim adapted on every flag).
+>   Commits 6891708c / c19c4f2f / 6df06356; `docs/INTER-ENCODE-PLAN.md`
+>   §1z⁴⁰. gb82-sc x p0..4 x qp{20,40,48}: **150/150** byte-identical
+>   (benchmarks/screen_ibc_map_2026-09-05.txt), asserted by the byte-only
+>   `tools/screen_ibc_byte_gate.sh`; `screen_ibc_gate.sh`'s list is promoted
+>   to all 100. The paragraph below is the pre-closure record.
+> - **Chunk 10 (as it stood 2026-07-23):** `tools/screen_ibc_gate.sh` measures the
 >   port-vs-C byte map on gb82-sc × p0-p4; residuals are partition/mode
 >   RD near-ties (KB-2 family, e.g. graph p0 q20 first divergence =
 >   mi(24,48) 8x16-vs-8x8 TREE flip, no IBC block involved) — localize

@@ -84,7 +84,7 @@ for img in "${IMGS[@]}"; do
     if cmp -s "$d/rs.obu" "$d/c.obu"; then
       pass=$((pass+1)); echo "  OK       $tag ($(wc -c < "$d/rs.obu" | tr -d " ")B)"
     else
-      fdiff=$(cmp "$d/rs.obu" "$d/c.obu" 2>/dev/null | awk '{print $NF}')
+      fdiff=$(cmp "$d/rs.obu" "$d/c.obu" 2>/dev/null | awk '{print $5}' | tr -d ,)
       fail=$((fail+1)); failed+=("$tag[DIFF@${fdiff} port=$(wc -c < "$d/rs.obu" | tr -d " ")B C=$(wc -c < "$d/c.obu" | tr -d " ")B]")
       echo "  DIFF     $tag  @${fdiff}"
     fi

@@ -7789,6 +7789,134 @@ in `port_enc_mode_config::md_config` already — this is wiring, not porting, an
   first. "Ported `motion_estimation.c`" means every function or a named subset,
   never "the important parts".
 
+### 1z⁴⁰. The gb82-sc IntraBC band closes — 150/150 (2026-09-05): three MD-side constants a comment had justified, found from the callcount record's two real-screen cells
+
+**Where it started.** `benchmarks/callcount_realimg_2026-09-04.meta` found two
+cells NOT byte-identical while attributing call counts on real content:
+`terminal.png` 512² centre crop q40 p2 (port 4991 B / C 5003 B) and
+`graph.png` 512x480 crop q40 p2 (3087 / 3098) — both screen-content
+(sc_class5, IntraBC + palette live), both byte-identical at p6/p10. No gate
+ran either cell: `screen_ibc_gate.sh` sweeps qp {20, 48}, `screen_palette_gate`
+is preset 6, and the synthetic `screen`/`screenrep` contents never arm IntraBC.
+Reproduced on the Mac to the byte (the record's `.yuv` sha256s
+`bd37ccf3c4a65256` / `3a6692113815e12a`), then bracketed one axis at a time:
+both images diverged at EVERY preset 0..3 and every qp at p2, graph p4 was
+identical, terminal p4 differed at equal length — i.e. the divergence was the
+whole IBC preset band, not a qp-40 corner, and the 2026-07-23 map
+(`benchmarks/screen_ibc_map_2026-07-23.txt`, 22/100, "78 pinned RD near-ties,
+KB-2 family") was the same family under an older label.
+
+**Localization, by op trace and tree join, not by reading.** On terminal q40
+p2 `tools/ctrace-linux/diff_cell.sh` + `optrace_first_diff.py` (read the
+segment lengths: C 57274 ops, port 59613) put the FIRST diverging op at
+#11960: the same 2-symbol CDF (`icdf=[7878]`, same range), C codes 1 and the
+port 0, immediately after `use_intrabc = 1` and `mv_joint = ZERO` — the
+depth-0 `txfm_partition` flag of an IntraBC block. `tree_diff.py` on the
+`SVT_CTREE_OUT` / `SVTAV1_PACKTREE` dumps showed `txd` (tx depth) as the
+most-flipped field (83) with C DEEPER on every one, and the first flip in
+PACK order (a small script over the port's PTREE, since `tree_diff` sorts by
+mi) was `mi(12,108)`: a 16x16 IntraBC leaf, DV == dv_ref on both sides,
+C tx depth 2, port depth 0.
+
+**Mechanism 1 — the class clamp is keyed on the MODE (`6891708c`).** C's
+`get_start_end_tx_depth` (product_coding_loop.c:6729-6732) clamps with
+`is_intra_mode(cand->block_mi.mode) ? intra caps : inter caps`; an IntraBC
+candidate is injected with `mode = DC_PRED` (mode_decision.c:3150) and
+`is_intra_mode` is `mode < INTRA_MODE_END` (definitions.h:1614), so C
+searches an IntraBC block under `intra_class_max_depth_sq/nsq` — 2/2 at
+allintra `txs_level 2` (presets 0..3, enc_mode_config.c:10018) — while
+`mds3.rs` keyed the clamp on `is_inter()` and used `inter_class_max_depth`
+(1/1). At `txs_level 3` (presets 4..7) the square caps coincide (1 == 1),
+which is exactly why the family read clean at p4. The port's comment
+JUSTIFIED the deviation ("keep the inter caps so every emitted stream stays
+within the proven depth<=1 pack chain" — a 2026-07-23 self-desync finding
+that predates the z-order `txb_org_inter` walk landing on both the MD and
+pack sides). Fix: the cap follows the candidate's mode; the frame-boundary
+rule (`:6710-6717`, every class) now reaches the inter arm too. Bracket:
+1/16 -> 9/16; terminal 4991 -> 5000, graph 3087 -> 3097. Every depth-2 IBC
+stream decodes under aomdec AND dav1d to the port's own final recon.
+
+**Mechanism 2 — the MD txfm-context stamp (`c19c4f2f`).** After 1 the
+terminal residual was ONE block: the 16x16 IntraBC leaf at (32,368) picking
+depth 1 (9876040) over C's depth 2. Its per-txb coefficient bits were
+proven identical to the unit on both depths — the new `SVT_CCOST_XY` pin on
+the coefficient-bits interposer (`4dfe5e29`) gave C 9624/7642/8056 for the
+depth-1 (8,8) txb's H_DCT/H_ADST/H_FLIPADST trials, equal to the port's
+`PTXT bits`; C's MDS3 `ycb 6299` equalled the port's depth-2 6299; and
+`SVT_QLEVELS_XY` showed the same tx-type search order and eobs at every
+depth. The only term left was `tx_size_bits`, and its inputs are the MD
+txfm-context bytes: `mode_decision_update_neighbor_arrays`
+(product_coding_loop.c:232-241) stamps `tx_size_wide/high[tx_depth_to_tx_size
+[tx_depth][bsize]]` for EVERY winner — no `skip && is_inter` arm — where the
+port's `commit.rs` stored the BLOCK dims for a skip IntraBC winner, mirroring
+the PACK's `set_txfm_ctxs` (entropy_coding.c:4620-4624; also what C's encode
+pass does for the CDF-adapting context, so the pack and the chain sim keep
+that arm). The block's above-right 8x8 neighbours `mi(88,10)`/`mi(90,10)` are
+skip IntraBC winners at tx_depth 1 on BOTH trees: C's MD read 4, the port
+stored 8, the depth-1 child `txfm_partition` contexts differed. Fix:
+terminal q40 p2 byte-identical (5003), bracket 14/16.
+
+**Mechanism 3 — the chain sim adapts a palette flag C's MD context does not
+(`6df06356`).** The graph residual was `mi(66,0)`, an 8x8 at the frame's
+left edge: C PAETH 5410902 vs filter-DC 5412356; the port an EXACT tie
+(5410902 / 5410902). `NSQDBG CAND` (with `SVTAV1_NSQDBG=1` — `CANDDBG` alone
+prints nothing) and C's `CFULL` / `UVRATE` / `CFAST` interposers agreed on
+every luma coefficient bit, every chroma rate (227 / 197) and PAETH's whole
+rate; both DC-luma candidates (fi=5 and fi=0) were +3 rate units in C.
+Reconstructing the port's fast luma rate from the SB-32 seed row with
+`av1_cost_symbol` reproduced kf y_mode(DC) 380, y_mode(PAETH) 1163, the 8x8
+filter-intra flag 1470 / 109, the filter-intra mode 489 and a shared 3-unit
+`use_intrabc = 0` flag to the unit, leaving a 12-unit DC-only term: the
+no-palette flag, which C prices at 15. The paired per-SB seed dumps
+(`SVT_SEED_OUT` / `SVTAV1_SEED_DUMP`, extended with a `SEED2` line: the kf
+y_mode `[0][0]` row, the 8x8 filter-intra flag, the filter-intra mode CDF,
+every `txfm_partition` context and the `palette_y_mode` rows) then showed
+`palette_y_mode_cdf[0][0]` identical through SB 24's seed and apart from SB
+25's (C 594 / port 567). SB(3,0) has a 4x16 DC leaf at `mi(52,4)` — an even
+column, so NOT a chroma reference — and C's `sum_intra_stats`
+(md_rate_estimation.c:760-830) reaches `update_palette_cdf` only past its
+`is_chroma_reference` early return: the bitstream codes that block's luma
+palette flag, C's MD-side context never adapts on it, the port's chain sim
+(replaying the real writer) did. Fix: `FrameContext::md_side_chroma_gated_
+palette`, the twin of `CoeffFc::md_side_ibc_txt_update`, set only by the
+chain sim; `write_palette_mode_info` codes such a block's luma palette
+symbols on scratch rows (symbols written, adaptation withheld), pinned both
+ways by `md_side_chroma_gated_palette_withholds_adaptation_only`. graph q40
+p2 3098 = 3098, q40 p0 2941 = 2941.
+
+**Result.** gb82-sc x presets 0..4 x qp {20, 40, 48} at 512² bd8:
+**150 / 150 byte-identical** (`benchmarks/screen_ibc_map_2026-09-05.txt`),
+against 22/100 on 2026-07-23. All three mechanisms are the class
+`docs/WORKING-ON-THIS.md` §5 calls "a constant at a call site is a claim" —
+now three more instances, every one of them with a comment citing the C
+function that made it look faithful (the PACK's `set_txfm_ctxs`; a
+self-desync from before the z-order walk existed; the writer's own
+adaptation).
+
+**The gate hole, closed.** `tools/screen_ibc_byte_gate.sh` (byte-only — no
+`decode_diff`, so it runs off the CI image): the full 150-cell grid PLUS the
+two record cells at their exact crops (512² / 512x480) with their sizes
+(5003 / 3098) asserted, the self-promoting pinned contract, anti-vacuity on
+the port's pack-tree IntraBC AND palette censuses, and an aomdec recon leg
+on the record cells under `RS_AOMDEC`. Mutation-proven on the narrowed grid:
+PASS on the fixed tree (4/4 + record, recon legs 0 bad / 0 skipped);
+flipping the chain-sim flag off fails `graph_p2_q40` and
+`record_graph_512x480_q40_p2` (3103/3104, 3097/3098); reverting the MD txfm
+stamp fails `terminal_p2_q40` and `record_terminal_512x512_q40_p2`
+(5000/5003). `screen_ibc_gate.sh`'s BYTE_EXACT is promoted to all 100 cells
+per its contract (its decode_diff oracle cannot build here; the twin measured
+the promotion). Two `regression_spotcheck` cells: the terminal cell (needs
+mechanisms 1 AND 2 — 5000 B with 1 alone) and the graph 512x480 cell
+(mechanism 3).
+
+**Harness notes this paid for.** `cmp a b | awk '{print $NF}'` prints the
+LINE number, not the byte offset (`char 3356, line 12` -> `12`);
+`screen_palette_gate.sh`'s `fdiff` and the first cell script here both did
+it — use `$5` with the comma stripped. `SVT_CCOST_OUT` capped at 300 calls
+(the first few superblocks); `SVT_CCOST_XY` lifts the cap for one block and
+carries `tx_depth`/`txb_itr`. The port's `NSQDBG CAND` per-candidate MDS3
+cost line needs `SVTAV1_NSQDBG=1` as well as `SVTAV1_CANDDBG=1`.
+
 ## 4. A cross-lane PREREQUISITE the wiring chunk must land first (measured 2026-08-31, wp-entropy)
 
 Found by reading `entropy/context.rs::FrameContext::new_default`, not inferred:

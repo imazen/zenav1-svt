@@ -596,6 +596,12 @@ single field (`InterMdFrame.src` was the aligned plane where the
 SB-extent-padded `sb_input` was already in scope, and already read by PD0
 and by every straddling leaf's residual gather).
 
+**`cmp a b | awk '{print $NF}'` is the LINE number, not the byte.** `cmp`
+says `a b differ: char 3356, line 12`, so `$NF` is `12` — and
+`screen_palette_gate.sh`'s `DIFF ... @12` column, plus the first cell script
+of the 2026-09-05 screen chunk, reported that as an offset. Use `$5` and strip
+the comma. A wrong-but-plausible offset sends you to the sequence header.
+
 **A `cmp` "first differing byte" inside a length-prefixed container points
 at the LENGTH, not at the defect.** The 72x72 cell above reports "first
 differing byte 4" on a 22-vs-23-byte frame: byte 4 is the OBU size field
@@ -657,7 +663,15 @@ passed the whole suite. Pick inputs the transform cannot collapse, and assert
 that it does not collapse them.
 
 **A CONSTANT AT A CALL SITE IS A CLAIM, AND ITS COMMENT IS NOT EVIDENCE. This
-has now been the root cause SIX times.** The shape is always the same: a
+has now been the root cause NINE times.** (2026-09-05 added three in one day,
+all in the screen-content IntraBC lane and all with a comment citing a real C
+function: an IntraBC candidate's tx-depth cap "kept at the inter caps so every
+stream stays within the proven depth<=1 pack chain", an MD-side txfm-context
+stamp mirroring the PACK's `set_txfm_ctxs` skip&&inter arm, and a chain
+simulation replaying the writer's palette-flag adaptation that C's MD-side
+context skips for non-chroma-reference blocks — `docs/INTER-ENCODE-PLAN.md`
+§1z⁴⁰. The tell was the same each time: the comment names the C function
+that made the value LOOK faithful, not the one at the call site being ported.) The shape is always the same: a
 derivation is ported and tier-1 gated, a caller hands its consumer a
 `Default::default()` / `0` / `Some(1)` instead, and a comment beside the
 constant explains why that is C-faithful. `dlf_level = 0`, PD0's `inter`

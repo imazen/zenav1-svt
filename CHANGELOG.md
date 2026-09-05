@@ -54,6 +54,23 @@ Crates are not published to crates.io yet — depend by git.
   `ScSignal` structs gained fields (`enable_superres`, `superres`), which is a
   break only for out-of-crate struct literals — there are none.
 
+
+### Fixed
+- **Screen-content IntraBC band byte-identical: gb82-sc x presets 0..4 x
+  qp {20,40,48} 150/150 (was 22/100 on 2026-07-23).** Three MD-side
+  mechanisms, each a deviation a comment had justified: an IntraBC
+  candidate's tx-depth search takes C's INTRA caps (its mode is DC_PRED;
+  depth 2 at presets 0..3) not the inter cap (6891708c); C's MD-side
+  txfm-context stamp is the chosen tx dims for every winner, with no
+  skip&&inter arm (c19c4f2f); C's MD-side context skips the palette CDF
+  update for non-chroma-reference blocks, which the chain simulation now
+  withholds too (6df06356). Found from the two real-screen divergences of
+  `benchmarks/callcount_realimg_2026-09-04` (terminal.png 512² / graph.png
+  512x480 at p2 qp40), now asserted by the new `tools/screen_ibc_byte_gate.sh`
+  (150 cells + the two record cells, byte-only, self-promoting) and two
+  `regression_spotcheck` cells; `screen_ibc_gate.sh`'s BYTE_EXACT list is
+  promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
+
 ### Added
 - **Call counts re-compared on real content** (measure-only, r7900x callgrind):
   `benchmarks/callcount_realimg_2026-09-04.{tsv,cells.tsv,meta}` — CID22 /

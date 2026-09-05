@@ -591,59 +591,20 @@ fn eval_candidate(
         );
     }
     // ---- Luma: TX depth loop ----
-    // KNOWN GAP (pinned, screen-IBC grind 2026-07-23): C's TXS depth
-    // CLASS clamp keys on `is_intra_mode(cand->block_mi.mode)`
-    // (get_start_end_tx_depth, product_coding_loop.c:6728-6733) — an
-    // IntraBC candidate keeps mode DC_PRED, so C searches IBC txs
-    // depths under the INTRA caps (2/2 at p0..p3 txs_level 2), NOT the
-    // inter caps (1/1) used here. Widening the port to the intra caps
-    // was MEASURED to flip windows95_p0_q20 to a byte MATCH, but any
-    // cell where the port then PICKS an IBC depth-2 winner emits a
-    // stream the decode oracle reads differently (16 cells
-    // SELF-DESYNC: the depth-2 inter var-tx pack chain — txfm
-    // partition ctx / per-txb syntax — disagrees with the oracle's
-    // z-order transform_tree read somewhere past the first nonzero
-    // txb, and C streams never code depth-2 IBC on this corpus to
-    // arbitrate). Until that chain is proven, keep the inter caps:
-    // every emitted stream stays self-consistent (depth <= 1, where
-    // the inter z-order == raster).
-    // MEASURED 2026-08-04 (CID22 1028637 512x512 crop q32 p0, mi(36,16)
-    // 16x16): widening this to the intra caps is NECESSARY but NOT
-    // SUFFICIENT for the block C codes as IntraBC at tx_depth 2. With the
-    // inter cap the port's IBC candidate is capped at depth 1, picks depth
-    // 0 and costs 17_683_025; with the intra cap it reaches depth 2 and
-    // costs 16_821_993 — still beaten by the SMOOTH_H intra candidate at
-    // 16_371_896, so the block stays intra either way. At depth 2 the IBC
-    // candidate is CHEAPER in rate than that winner (68_090 vs 69_158, in
-    // 1/512-bit units) and loses purely on distortion (33_264 vs 28_208) —
-    // with the SAME DV as C (search returns exactly dv_ref = (0,-1024),
-    // which is why C codes MV_JOINT_ZERO) and an identical recon to copy
-    // from. So the second gap is in the DEPTH-2 var-tx handling of an
-    // inter-classified candidate, i.e. the same unproven chain the
-    // paragraph above pins for the PACK side. This image finally supplies
-    // cells where C itself codes depth-2 IntraBC (q32 p0 mi(36,16) 16x16;
-    // q48 p2 mi(16,0) 32x32) — which is the arbitration the earlier grind
-    // said the corpus could not provide.
-    //
-    //
-    // THE ARBITRATION CASE NOW EXISTS (found 2026-08-04 with the
-    // `SVTAV1_TXDEPTH_XY` / C `SVT_TXDEPTH_XY` depth-cost pair, on a
-    // real-C drill): gb82-sc **graph.png 512x512 q63 preset 0**, block
-    // mi(8,80) — a 32x32 IntraBC leaf at (320,32), dv (0,-2496). C's
-    // stream codes it at **tx_depth 2**, so the depth-2 IBC var-tx pack
-    // chain finally has a byte-verified oracle. MEASURED depth costs,
-    // BIT-IDENTICAL on the depths both sides search:
-    //     d=0  ycb 6790  txsz 814   dist 13648528  cost 1972278747  (both)
-    //     d=1  ycb 16003 txsz 1308  dist  8029920  cost 1540665092  (both)
-    //     d=2  ycb 31118 txsz 2316  dist  4069248  cost 1511340117  (C only)
-    // so the port loses this cell purely by never SEARCHING d=2 — every
-    // term it does compute already matches C exactly. C's coded syntax
-    // for that block (from the in-source op trace, first ops after the
-    // block marker) is 5 txfm_partition flags all = 1 (one at 32x32 +
-    // four at 16x16) — i.e. a UNIFORM 8x8 tiling, the shape the port's
-    // uniform-`depth` model already represents — then per-txb
-    // all_zero / tx_type over the 16-type inter set (`CDF nsyms=16`) /
-    // `eob_pt_64` (`CDF nsyms=7`). Widen the caps against THAT stream.
+    // RESOLVED 2026-09-05 — the "KNOWN GAP (pinned, screen-IBC grind
+    // 2026-07-23)" that stood here said C keys this clamp on
+    // `is_intra_mode(mode)` (so an IntraBC candidate gets the INTRA caps,
+    // depth 2 at presets 0..3) but kept the inter caps because widening
+    // them had produced 16 SELF-DESYNC cells "somewhere past the first
+    // nonzero txb" of the depth-2 inter var-tx chain. That chain has since
+    // gained C's z-order txb walk on BOTH the MD side (`txb_org_inter`) and
+    // the pack (pipeline.rs `write_inter_txb_coeff` order), and the widened
+    // caps now produce streams that decode under aomdec AND dav1d to the
+    // port's own final recon on every gb82-sc cell tried. The note's second
+    // half (a depth-2 IBC winner losing a cost comparison with every term
+    // already equal to C's) was the MD txfm-context stamp — `commit.rs`,
+    // same day. History: benchmarks/screen_ibc_map_2026-07-23.txt (22/100)
+    // -> benchmarks/screen_ibc_map_2026-09-05.txt (150/150).
     // FIXED 2026-09-05: C's class clamp is keyed on the candidate's MODE —
     // `is_intra_mode(cand->block_mi.mode)` (product_coding_loop.c:6729-6732,
     // `is_intra_mode` = `mode < INTRA_MODE_END`, definitions.h:1614) — and
