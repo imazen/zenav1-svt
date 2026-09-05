@@ -651,7 +651,11 @@ gate that calls `corpus_dir` is not the same as a gate that resolves —
 but *`codec-corpus` itself* to `tests/tier_invariance.rs`, so one exported value
 satisfied only one of them until the test learned to probe both shapes. **When a
 gate reports a smaller total in CI than it does locally, that difference IS the
-finding** — read the totals, not the exit code.
+finding** — read the totals, not the exit code. Proof on run 33957277464:
+`104 / 104` with no SKIPPED section, `sb128 gate: 22 / 22` (was 18), and
+`screen_ibc_byte_gate: 152 / 152 ... recon legs: 0 bad, 0 skipped` — the recon
+leg is one CI has and a Mac without `aomdec` does not, so CI is now the
+STRONGER run of that gate, not the weaker one.
 
 **`tools/decode_diff` cannot build off the CI image.** Its `Cargo.toml` has a
 literal path dependency on `/root/aom-rs/crates/aom-decode`, and Cargo path deps

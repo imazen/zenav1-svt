@@ -7948,13 +7948,42 @@ host layouts. `ZENAV1_SKIP_CORPUS_TESTS` moved from workflow scope to the two
 pure-Rust matrix jobs, so it no longer silently disables the IntraBC tier cell
 in the one job that can run it.
 
+**Proved on the runner, not assumed.** Run
+[33957277464](https://github.com/imazen/zenav1-svt/actions/runs/33957277464)
+(job `101282776418`, the first with any of this), quoting the steps' OWN output:
+
+```
+Fetch the gb82-sc screen corpus  gb82-sc PNGs fetched: 10 -> /home/runner/work/zenav1-svt/zenav1-svt/corpora/codec-corpus/gb82-sc
+screen IntraBC byte gate         OK   record_terminal_512x512_q40_p2 recon leg: decode == final recon
+screen IntraBC byte gate         OK   record_graph_512x480_q40_p2 recon leg: decode == final recon
+screen IntraBC byte gate         screen_ibc_byte_gate: 152 / 152 byte-identical, 0 diverging, 0 errors; port IBC blocks: 41559, palette blocks: 27402; recon legs: 0 bad, 0 skipped
+screen IntraBC byte gate         PASS screen_ibc_byte_gate
+screen palette byte gate         screen palette gate (preset 6 bd8): 50 / 50 byte-identical  (palette-coding cells: 38)
+bd10 screen panic-freedom        bd10 screen panic-freedom: 60 / 60 encode-without-panic + decodable
+regression spot-check            regression spot-check: 104 / 104
+SB128 identity                   sb128 gate: 22 / 22
+Workspace tests                  PASS [42.409s] zenav1-svt::tier_invariance intrabc_output_is_tier_invariant_on_real_screen_content
+```
+
+`104 / 104` with **no** "SKIPPED (corpus/tool absent)" section at all — the
+six cells that "guarded NOTHING" now guard. The 152-cell gate's `recon legs:
+0 bad, 0 skipped` beats the local run (2 skipped): CI has `aomdec`, so the
+record cells' decode-to-own-recon leg runs there and not here. x86-64 agrees
+with aarch64 to the byte on all 262 cells, which is itself the first evidence
+this band is ISA-stable.
+
 **A misconfigured corpus is RED, not green — measured, not asserted.** With
 `SCREEN_DIR` pointed at a nonexistent directory: `screen_ibc_byte_gate.sh`
 exits 3 (`ANTI-VACUITY FAIL: no IntraBC (0) or no palette (0) block coded
 anywhere`, `0 / 11`), `screen_palette_gate.sh` exits 3 (`0 / 0`), and
-`bd10_screen_panic_gate.sh` exits 1 (`corpus not found at ...`). A fetch that
+`bd10_screen_panic_gate.sh` exits 1 (`corpus not found at ...`);
+`tier_invariance` panics with the list of roots it probed. A fetch that
 half-succeeds is caught earlier still: the fetch step itself asserts exactly 10
 PNGs and fails the job otherwise.
+
+**Cost, measured** (`benchmarks/gate_wallclock_ci_2026-09-05.md`): the fetch is
+**1 s**, the three gates are **551 + 52 + 291 = 894 s**, and the job went 29m10s
+-> 41m00s against a ceiling raised 90 -> 120 minutes.
 
 **Still NOT guarded in CI, and why.** `screen_ibc_gate.sh` needs
 `tools/decode_diff`, whose `Cargo.toml` carries a literal path dependency on

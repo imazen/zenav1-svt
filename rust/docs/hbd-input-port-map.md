@@ -145,8 +145,9 @@ Two gates use it:
   strength and Wiener LR searches (docs/bd10-port-map.md group E), so it is
   where a 10-bit post-filter precision gap would show.
 - **`tools/bd10_hbd_pq_gate.sh`** — real photographic (CID22-512), 5 named
-  images x qp `{8,20,32,55}` x preset `{6,8,9}`. NOT in CI: no runner has the
-  corpora. **Presets 8 and 9 are 40/40 byte-identical on aarch64.** Preset 6
+  images x qp `{8,20,32,55}` x preset `{6,8,9}`. NOT in CI: since 2026-09-05
+  the `gates` job fetches gb82-sc (screen, 2.9 MB) but not CID22-512 (94 MB),
+  which is what this gate needs. **Presets 8 and 9 are 40/40 byte-identical on aarch64.** Preset 6
   carries 12 `uname -m`-scoped aarch64 pins.
 
 **Why those 12 are ISA-scoped rather than recorded as a 10-bit gap.** On this
