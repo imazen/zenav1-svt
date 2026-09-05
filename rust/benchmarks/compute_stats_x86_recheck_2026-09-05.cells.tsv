@@ -1,0 +1,9 @@
+# callcount_cells.sh summary — one row per (cell, preset)
+# port=/home/lilith/work/zen/zenav1-svt--csv1/rust/target/release/examples/perf_encode
+# c=/home/lilith/work/zen/zenav1-svt/rust/tools/perf_c_encode/perf_c_encode
+# valgrind=valgrind-3.26.0 qp=40 presets=[6] date=2026-09-05T11:38:08Z host=r7900x
+cell	content	width	height	preset	ident	obu_bytes	obu_sha256	port_ir	c_ir	port_over_c	port_cg_ident	c_cg_ident
+photo_cid	raw:/home/lilith/tmp/rc1/yuv/photo_cid.yuv	512	512	6	Y	45688	8d4ecc23ddb988df	1619433293	705588241	2.295	Y	Y
+screen_terminal	raw:/home/lilith/tmp/rc1/yuv/screen_terminal.yuv	512	512	6	Y	10090	0f66e1290af4cc1e	920899041	355384782	2.591	Y	Y
+lineart_graph	raw:/home/lilith/tmp/rc1/yuv/lineart_graph.yuv	512	480	6	Y	3872	1819418a48c09f56	637060088	231945302	2.747	Y	Y
+gradient	gradient	512	512	6	Y	5995	5eef4a78a80d40b6	860844019	313618021	2.745	Y	Y

@@ -1,5 +1,55 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **LOOP RESTORATION IS NO LONGER THE p6 LEVER — MEASURED, AND
+> `callcount_realimg_2026-09-04` ITEM D IS AMENDED IN PLACE (2026-09-05,
+> measure-only).** Record
+> `benchmarks/compute_stats_x86_recheck_2026-09-05.{tsv,cells.tsv,meta}`.
+> Item D's headline — Wiener `compute_stats` **127x C per call** and
+> `search_restoration_still_bd` **33.0 / 47.1 / 55.2 / 49.2 %** of the port's
+> preset-6 frame on photo_cid / screen_terminal / lineart_graph / gradient —
+> predates the C-shape rewrite (`2d9262178e72`) and had never been re-checked
+> on the four contents. Re-run on `origin/main` @ `4c6b5df90`, r7900x, the
+> same prebuilt `3115c0c1` oracle, the same `callcount_cells.sh` driver, the
+> same four `.yuv` files (sha256 re-verified), all four **byte-identical on
+> both checks**: compute_stats is **7,924,744 Ir for the same six calls =
+> 1.349x C** (per call 1,320,791 vs 978,955; the executing arm is
+> `__arcane_compute_stats_impl_v3`, the AVX2 one, and C's live kernel is
+> `compute_stats_win5_avx2.constprop.0` — no `win7` symbol in any cell), which
+> reproduces the cshape record's 7,925,038 to 0.004 %. The LR search is
+> **3.21 / 5.67 / 7.69 / 6.04 %** of the port's p6 frame against C's unmoved
+> `restoration_seg_search` at 1.16 / 2.29 / 3.32 / 2.60 % — **6.38x**, the
+> figure the cshape record predicted would be left. p6 port/C is **2.295 /
+> 2.591 / 2.747 / 2.745** (item D: 3.395 / 4.723 / 5.794 / 5.120), agreeing
+> to three digits with the CFL banner's independently-measured 2.296 / 2.591 /
+> 2.745. **Item D's counterfactual was right and is now spent:** the ratio
+> landed where it said removing the stage would put it (2.295 vs its 2.27,
+> 2.591 vs its 2.50), and removing the stage today buys only 2.247 / 2.502 /
+> 2.622 / 2.648. What is LEFT in LR is a different kernel one order of
+> magnitude smaller: the trial filter `try_restoration_unit` **37.5 M vs C's
+> `try_restoration_unit_seg` 1.34 M = 28x** on all four contents, whose kernel
+> `restoration::wiener_convolve_add_src` is **57.9 M self vs C's
+> `svt_av1_wiener_convolve_add_src_avx2` 1.1 M = 52.8x** (17,216 port calls
+> vs 216) — same shape of finding compute_stats was; plus a **port-only**
+> `apply_restoration_frame` pass (27.1 M = 1.67 % on photo_cid, 2.94 % on the
+> screenshot, 0 on the gradient) for which C's profile has no symbol at all on
+> these cells (named as the next thing to read in C, NOT diagnosed). **The
+> self-cost ranking at photo_cid p6 now** (exclusive Ir, rows do not nest;
+> port / C / x / % of the port's frame): CDEF filter block 87.6 M / 10.0 M /
+> 8.73x / 4.79 %, memset 78.1 M / 6.3 M / 12.5x / 4.44 %, entropy
+> `write_coeffs_txb_1d` 87.8 M / 16.4 M / 5.34x / 4.41 %, the LR Wiener
+> convolve 57.9 M / 1.1 M / 52.8x / 3.51 %, RDOQ `optimize_b` 260.2 M /
+> 203.7 M / 1.28x / 3.49 %, `pd0::tx_quant_core` 40.3 M / 0.44 M / 2.46 %
+> (its honest ratio is the INCLUSIVE 12.3x, not the self 91.6x — C's callees
+> are named where the port's are inlined), distortion 51.7 M / 19.8 M /
+> 2.61x / 1.97 %, nz-map contexts 4.12x / 1.86 %, `fill_levels` 6.48x /
+> 1.85 %, and **`compute_stats` last at 1.7 M excess = 0.11 %**. Two traps
+> recorded there: the memset row's largest caller is an unnamed frame under
+> the allocator (54.4 M of its 78.1 M), so the memset and calloc rows are the
+> same bytes twice; and the join's `estimate_transform` vs `tx_unit_inner`
+> edge is a COUNT edge whose two sides have different scope, so its 743.5 M
+> vs 63.5 M is NOT a like-for-like ratio. p2, p10, the CLIC cells, wall clock
+> and aarch64 were not measured.
+
 > **CFL PREDICT IS BRANCH-FREE AND THE ALPHA SEARCH IS 1.99x -> 1.72x C's Ir —
 > AND THE `#[arcane]` DISPATCH VARIANT HAD FEWER INSTRUCTIONS AND WAS SLOWER
 > EVERYWHERE (2026-09-05).** Record `benchmarks/cfl_branchfree_2026-09-05.{tsv,meta}`.
@@ -381,7 +431,10 @@
 > p2), and Wiener `compute_stats` **127x per call — 746.5 M Ir on EVERY
 > 512x512 cell including the gradient, 33-55 % of the port's p6 total on
 > every content** (C: 5.9 M); with it removed p6 is 2.3-2.5x, not
-> 3.4-5.8x. The gradient OVERSTATES p2/p10 (2.66x / 2.52x vs 1.80x / 1.80x
+> 3.4-5.8x. **[AMENDED 2026-09-05: that compute_stats sentence is STALE —
+> it is 1.349x C per call and the LR search is 3.2-7.7 % of p6 now; see the
+> banner at the top of this file and the amendment in that record. The rest
+> of this banner is un-rechecked and stands.]** The gradient OVERSTATES p2/p10 (2.66x / 2.52x vs 1.80x / 1.80x
 > on photos). Corrections: the 2026-09-04 record's "inverse-transform 2.03x,
 > not converging" was a misjoin against the ssse3 SUB-dispatch — against
 > C's `svt_aom_inv_transform_recon8bit` the port is at or BELOW C at every

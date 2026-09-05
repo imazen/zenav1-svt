@@ -1,0 +1,263 @@
+ITEM D IS STALE AND IS AMENDED: Wiener `compute_stats` is 1.349x C per call
+on x86, not 127x, and `search_restoration_still_bd` is 3.2-7.7 % of the
+port's preset-6 frame, not 33-55 %. The p6 port/C ratio on all four contents
+is 2.30-2.75x (was 3.40-5.79x), and removing the LR search now moves it by
+0.05-0.13x instead of by 1.1-3.2x. LOOP RESTORATION IS NO LONGER THE p6
+LEVER. What is left inside it is a DIFFERENT kernel: the Wiener convolve in
+the trial filter, 28x C, plus a frame-apply pass C does not run on these
+cells.
+
+date:   2026-09-05 (runs 11:38-11:45 UTC)
+host:   r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores), load 0.00 at
+        launch. valgrind-3.26.0 --tool=callgrind (Ir only, no cache/branch
+        sim), rustc 1.98.1 (48a229cea 2026-09-01), gcc 15.2.0.
+commit: 4c6b5df90dec0e274ddd38ff4d178ac7cb00e8c3 (origin/main tip at the time
+        of the run). Fresh clone at `~/work/zen/zenav1-svt--csv1`; nothing
+        was rebuilt in the primary checkout.
+port:   `env -u RUSTFLAGS cargo build --release -p zenav1-svt --example
+        perf_encode --example identity_run -j 4` (no target-cpu=native;
+        runtime archmage dispatch).
+C:      reference/svt-av1 @ 3115c0c1 — the PREBUILT oracle in the primary
+        r7900x checkout (`Bin/Release/libSvtAv1Enc.a` 2026-08-31,
+        `rust/tools/perf_c_encode/perf_c_encode` 2026-09-03), NOT rebuilt,
+        passed to the driver as `CE=`. The same binary the realimg and
+        cshape records used.
+driver: tools/perf_profile/callcount_cells.sh (unchanged) with `PRESETS=6
+        QP=40`, four cells; then callcount_join.py (unchanged) over the same
+        output dir for the 55-edge join and the positive controls.
+cells:  the four item D quoted, from the .yuv files the realimg record
+        prepared and left at r7900x:~/tmp/rc1/yuv — sha256 re-verified
+        before use, all four match that record's prefixes:
+          photo_cid       512x512  88142a484affd4b3
+          screen_terminal 512x512  bd37ccf3c4a65256
+          lineart_graph   512x480  3a6692113815e12a
+          gradient        512x512  perf_encode's synthetic control
+data:   benchmarks/compute_stats_x86_recheck_2026-09-05.tsv (per cell: the
+        compute_stats and LR rows, the two counterfactuals, and a SELF-cost
+        paired-kernel ranking) + .cells.tsv (the driver's own per-cell
+        summary: identity, OBU bytes/sha, frame Ir both sides).
+
+=================== BYTE-IDENTITY ===================
+
+All four cells `ident=Y` on both checks the driver makes: the uninstrumented
+pre-pass (port writes .yuv+.obu, C reads the same .yuv, `cmp`) AND each
+callgrind run's own .obu cmp'd against the pre-pass's (`port_cg_ident=Y`,
+`c_cg_ident=Y` on every row). OBU bytes: photo_cid 45,688; screen_terminal
+10,090; lineart_graph 3,872; gradient 5,995 — the first three are the same
+byte counts the realimg record recorded for those cells at p6.
+
+=================== POSITIVE CONTROLS (read FIRST) ===================
+
+From the join, all four cells:
+  * SB ctor `svt_aom_largest_coding_unit_ctor` = `pipeline::merge_sb_units`
+    64 = 64 on all four (512x512 and 512x480).
+  * Leaves `md_encode_block` = `leaf_funnel::evaluate_leaf`: 1177 / 1681 /
+    984 / 1075 — exact.
+  * FINAL COMMITS exact on all four: MDS1 luma `av1_quantize_b_facade_ii` =
+    `quantize_b_raster` (photo_cid 5,834 = 5,834 — the same number the
+    realimg record recorded at this cell); `full_loop_core` =
+    `eval_candidate` + `quantize_b_raster` (8,150 = 8,150); MDS3
+    `perform_tx_partitioning` = `mds3::eval_candidate` (2,316 = 2,316).
+  * MDS0 SATD `hadamard_path` = `predict::hadamard_satd` exact (5,885 /
+    10,547 / 5,990 / 5,375); PD0 recursion and PD0 quantize exact.
+  * The documented hadamard-16x16 identity still holds on all four (the
+    port's 32x32 calls the exported 16x16 four times): photo_cid
+    4,365 - 4 x 500 = 2,365 = C's 2,365; terminal 3,617 - 4 x 464 = 1,761;
+    graph 4,262 - 4 x 761 = 1,218; gradient 4,315 - 4 x 720 = 1,435.
+  * Both sides call `compute_stats` 6 times per 512x512 frame and 6 times at
+    512x480, and the LR search entry once — the counts item D used.
+Independent cross-check: `perf-status.md`'s CFL banner records p6 port/C
+2.296 (photo_cid), 2.745 (gradient), 2.591 (terminal) from a different
+chunk's runs; this record reads 2.295 / 2.745 / 2.591.
+
+=================== 1. compute_stats PER CALL, BOTH SIDES ===================
+
+Arms confirmed live, not assumed. The port's profile contains exactly two
+compute_stats symbols and no other arm: `restoration::compute_stats`
+(wrapper) and `restoration::__arcane_compute_stats_impl_v3` — the AVX2 arm,
+the same one item D measured. C's profile contains
+`svt_av1_compute_stats_avx2` -> `compute_stats_win5_avx2.constprop.0`;
+`win7` appears in NO cell (grep count 0), so the win5 kernel is the live one
+on all four, as in item D.
+
+  cell             port INCL Ir    per call    C INCL Ir    per call   port/C
+  photo_cid          7,924,744   1,320,791    5,873,732     978,955    1.349
+  screen_terminal    7,924,764   1,320,794    5,874,113     979,019    1.349
+  lineart_graph      7,473,167   1,245,528    5,516,972     919,495    1.355
+  gradient           7,924,744   1,320,791    5,873,732     978,955    1.349
+  (self/exclusive: 7,573,783 vs 5,466,492 = 1.385 on the 512x512 cells.)
+
+ITEM D SAID 746,546,988 Ir / 127.1x. It is 7,924,744 / 1.349x. The
+photo_cid figure reproduces `compute_stats_cshape_2026-09-04`'s
+"after 7,925,038" to within 294 Ir (0.004 %) and C's 5,873,732 to the unit;
+the 294 is the four commits of `main` that landed between that record's tree
+and this tip. Still content-independent on both sides, as item D said: the
+same number on the photo, the screenshot and the gradient.
+
+=================== 2. THE FOUR INCLUSIVE SHARES, BEFORE AND AFTER ===================
+
+Port `restoration::search_restoration_still_bd` inclusive as a share of the
+port's frame Ir, and C's whole `restoration_seg_search` as a share of C's,
+at preset 6, qp 40:
+
+  cell             item D (2026-09-04)   THIS RECORD          C now
+  photo_cid          790.6 M = 33.0 %    51,987,523 = 3.21 %   8,150,043 = 1.16 %
+  screen_terminal    790.6 M = 47.1 %    52,239,422 = 5.67 %   8,150,429 = 2.29 %
+  lineart_graph      790.6 M = 55.2 %    48,964,322 = 7.69 %   7,689,741 = 3.32 %
+  gradient           790.6 M = 49.2 %    51,962,636 = 6.04 %   8,147,453 = 2.60 %
+
+C's side is unmoved (item D quoted 8.15 M / 1.16 % on photo_cid; this record
+reads 8,150,043 / 1.16 %) — same binary, same input, so that is the expected
+null and it is the check that the two records are comparable.
+
+The port's LR search is now 6.38x C's (photo_cid), 6.41x, 6.37x, 6.38x —
+almost exactly the 6.4x the cshape record predicted would be left once
+compute_stats was in C's shape, on four contents instead of two.
+
+=================== 3. p6 RATIOS AND THE LR-REMOVED COUNTERFACTUAL ===================
+
+  cell             port frame Ir     C frame Ir     ratio   item D's ratio
+  photo_cid        1,619,433,293    705,588,241    2.295       3.395
+  screen_terminal    920,899,041    355,384,782    2.591       4.723
+  lineart_graph      637,060,088    231,945,302    2.747       5.794
+  gradient           860,844,019    313,618,021    2.745       5.120
+
+Counterfactual, item D's own construction (subtract the port's LR search and
+C's `restoration_seg_search` from each side):
+
+  cell             ratio now   with LR search removed   item D's counterfactual
+  photo_cid          2.295            2.247                     2.27
+  screen_terminal    2.591            2.502                     2.50
+  lineart_graph      2.747            2.622                     (not stated)
+  gradient           2.745            2.648                     (not stated)
+
+Item D's prediction was right and is now spent: the p6 ratio has landed
+almost exactly where it said removing the stage would put it (2.295 vs its
+2.27, 2.591 vs its 2.50), and removing the stage AGAIN today buys 0.05-0.13x
+instead of 1.1-3.2x. **There is no second large LR lever at p6.**
+
+Subtracting ALL of loop restoration (the search plus the port's frame-apply
+pass, against C's seg_search + corners_in_sb + save_boundary_lines + alloc)
+gives 2.209 / 2.424 / 2.557 / 2.648 — still within 0.09-0.17x of the
+measured ratio.
+
+=================== 4. WHAT IS BIGGEST AT p6 NOW ===================
+
+Two views, because inclusive edges nest and self costs do not. Ir shares are
+callgrind's, not wall clock — and this campaign has already measured one
+case (`perf-status.md`'s CFL banner) where fewer instructions were SLOWER.
+Rank by this, decide by wall clock.
+
+(a) SELF (exclusive) cost of paired kernels, photo_cid p6 — these rows do
+    not overlap each other, so they can be compared and, within this list,
+    summed:
+
+      rank  kernel pair                          port self   C self    x     excess  % frame
+       1    CDEF filter block kernels           87,564,976 10,029,632  8.73  77.5 M   4.79 %
+       2    memset (see the overlap note)       78,128,873  6,265,888 12.47  71.9 M   4.44 %
+       3    entropy write_coeffs_txb_1d         87,818,368 16,432,377  5.34  71.4 M   4.41 %
+       4    Wiener convolve (LR)                57,872,128  1,096,488 52.78  56.8 M   3.51 %
+       5    RDOQ optimize_b                    260,215,645 203,682,264 1.28  56.5 M   3.49 %
+       6    PD0 tx_quant_core vs _light         40,301,749    440,192 91.55  39.9 M   2.46 %
+       7    distortion sse vs full_distortion   51,702,880 19,780,786  2.61  31.9 M   1.97 %
+       8    nz-map contexts                     39,706,804  9,639,640  4.12  30.1 M   1.86 %
+       9    txb_init_levels / fill_levels       35,521,705  5,484,920  6.48  30.0 M   1.85 %
+      10    coeff rate cost_coeffs_txb         122,075,187 103,294,225 1.18  18.8 M   1.16 %
+      11    range coder encode_cdf_q15          25,715,682  8,400,871  3.06  17.3 M   1.07 %
+      12    CDEF find_dir                       17,186,816    851,968 20.17  16.3 M   1.01 %
+      13    hadamard 8x8                        14,397,440    597,960 24.08  13.8 M   0.85 %
+      14    Wiener compute_stats                 7,573,783  5,466,492  1.39   1.7 M   0.11 %
+      --    quantize b/fp kernels                1,771,068 19,333,487  0.09  -17.6 M  (port BELOW C)
+
+    compute_stats has gone from the top of this ranking to the bottom of it.
+    The same table for the other three cells is in the .tsv; the ordering
+    changes with content (memset is #1 on the screenshot, the line art and
+    the gradient; CDEF is #2 on the gradient at 7.10x / 7.44 % of frame).
+
+    SELF-vs-INCLUSIVE CAVEAT on row 6: a self-cost pair is only fair when
+    both sides keep the same work in the same symbol. C's
+    `svt_aom_quantize_inv_quantize_light` keeps 440,192 Ir in itself and
+    calls out for the rest (5,012,066 inclusive); the port's
+    `pd0::tx_quant_core` holds 40,301,749 in itself (61,723,857 inclusive).
+    The honest number for that pair is the INCLUSIVE 12.32x, not the self
+    91.55x. Rows 1-5 and 7-14 are kernels with no named callees on either
+    side, where self is the right comparison.
+
+    OVERLAP NOTE, do not sum rows 1-3 blindly: the memset row's largest
+    caller is an unnamed frame `0x0000000004ce7730` (6,225 calls,
+    54,437,292 Ir = 70 % of the memset self cost) which sits under the
+    allocator, so the memset row and the allocator edge below are the same
+    bytes counted two ways. Named port callers of memset are small by
+    comparison: `tx_unit_inner` 6.6 M (80,756 calls),
+    `try_fwd_dct_square_v3` 6.4 M, `cost_coeffs_txb` 1.6 M.
+
+(b) INCLUSIVE edges from the join (they NEST — `evaluate_leaf` contains
+    `eval_candidate` contains `tx_unit_inner` — so this is a "where does the
+    excess live" view, not an additive one), photo_cid p6, port minus C:
+
+      run_mds1                    105.9 M excess (6.54 %)  port-only, C has no
+                                  such call where enable_skipping_mds1
+      allocator calloc             64.9 M (4.01 %)  91.26x, 118,236 vs 782 calls
+      CDEF filter block            78.7 M (4.86 %)   8.85x, counts equal
+      LR search                    52.0 M (3.21 %)   6.38x
+      RDOQ optimize_b              69.7 M (4.31 %)   1.33x
+      PD0 recursion                63.5 M (3.92 %)   2.45x
+      coeff rate                   58.7 M (3.63 %)   1.51x
+      distortion                   42.0 M (2.60 %)   5.02x
+      MDS0 SATD                    40.4 M (2.50 %)   8.09x
+    NOT a usable row: the join's "trial width: estimate_transform vs
+    tx_unit_inner" edge reads 743.5 M vs 63.5 M. That edge was built as a
+    COUNT comparison (port 54,953 vs C 59,903 trials) and the two sides have
+    different SCOPE — C's `svt_aom_estimate_transform` is the forward
+    transform alone, the port's `tx_unit_inner` also carries quantize, rate
+    and distortion. Its Ir ratio is not a like-for-like number and must not
+    be quoted as one. (Same class of error as the inverse-transform misjoin
+    the realimg record corrected.)
+
+THE NEW LR FINDING, and it is not compute_stats. The LR search's remaining
+6.4x is now dominated by the TRIAL FILTER, not the stats:
+
+  cell             port try_restoration_unit   C try_restoration_unit_seg   x
+  photo_cid              37,470,246 (2.31 %)         1,339,554 (0.19 %)   27.97
+  screen_terminal        37,470,246 (4.07 %)         1,339,554 (0.38 %)   27.97
+  lineart_graph          35,001,246 (5.49 %)         1,252,956 (0.54 %)   27.94
+  gradient               37,470,294 (4.35 %)         1,339,554 (0.43 %)   27.97
+
+  i.e. of the port's 52.0 M LR search on photo_cid, 37.5 M is the trial
+  filter and 7.9 M is compute_stats. The kernel underneath it is
+  `restoration::wiener_convolve_add_src` (+ its `{closure#1}`), 57.9 M self
+  against C's `svt_av1_wiener_convolve_add_src_avx2` at 1.1 M — 52.8x, on
+  17,216 port calls (360 outer + 16,856 inner) against C's 216. On the line
+  art it is 43.8 M vs 1.0 M (42.7x); on the gradient 31.8 M vs 1.1 M
+  (29.0x). This is the same SHAPE of finding compute_stats was — 1:1 by
+  outer call, tens of times the Ir per call, content-independent — one order
+  of magnitude smaller. It is the largest single LR item and #4 on the
+  self-cost ranking.
+
+AND A PORT-ONLY PASS: `restoration::apply_restoration_frame` is 27,076,737
+Ir (1.67 %) on photo_cid, 27,076,774 (2.94 %) on the screenshot, 14,704,153
+(2.31 %) on the line art and ZERO on the gradient (where no unit selects a
+filter). C's profile has NO frame-apply symbol on any of these cells: its
+only `svt_av1_loop_restoration_filter_unit` calls (6) are inside
+`try_restoration_unit_seg` in the search. This record does NOT claim the
+pass is unnecessary — a single-frame still encode needs no filtered
+reference, which is the obvious hypothesis, but the C side was not traced to
+the point where its recon path is understood, and the port's output is
+byte-identical WITH the pass. It is named here as the next thing to read in
+C, not as a diagnosed defect.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: compute_stats per call both sides, with the executing arm and
+the C kernel named, on four contents at p6; the four inclusive LR shares and
+their C counterparts; the p6 frame ratios and both counterfactuals; byte
+identity of all four cells on both checks; the positive controls; the
+self-cost ranking at p6 on four contents.
+
+NOT MEASURED HERE: presets 2 and 10 (item D's p2 shares of 2.1 % / 8.5 % are
+NOT re-measured — the compute_stats Ir is content- and preset-independent so
+the kernel number carries, but the p2 SHARES and the p2 ranking do not, and
+this record does not restate them); the CLIC photo and the 500x332 cell; any
+wall clock (Ir only); the 10-bit `compute_stats_hbd` path (still scalar,
+untouched); aarch64 (this is an x86-only recheck); whether the frame-apply
+pass is required.
