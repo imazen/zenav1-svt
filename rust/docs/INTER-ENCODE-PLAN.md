@@ -8121,6 +8121,15 @@ by this chunk: the 512 photo diverges at p0/p2/p4 and `photo p0` diverges on
 FRAME 0 (a KEY frame, so upstream of everything here — `tools/photo_p0_gate.sh`
 owns it).
 
+**The arm10 blocker is measured CLOSED.** `perf_gate.sh` at 512x512 p2 with
+`PERF_FRAMES=2` on the real photo now returns three rounds and zero ERR lines
+where the position run got 25 of 25 ERR:
+`benchmarks/perf_2026-09-05-gm-photo-p2-inter.{tsv,raw.tsv,meta}`. **Read that
+`.meta` before quoting the ratio** — the cell is `ident=N` at 512 (frame 0
+117,173 B against C's 117,167), it is three rounds not twenty-five, and the box
+was not quiet, so the number is an existence proof and not a position. The
+byte-identical photo inter cells at p2 are 128 and 256.
+
 **What is still refused, and why the refusal is honest.** When the derivation
 says C would search, the frame is refused. C's model then decides
 `global_motion_params()`'s type and up to six parameters per reference AND the

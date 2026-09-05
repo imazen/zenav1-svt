@@ -1,0 +1,40 @@
+THIS IS AN EXISTENCE PROOF, NOT A POSITION NUMBER. READ THE CAVEATS.
+
+What it shows: `photo p2 inter` — the cell
+`benchmarks/perf_2026-09-05-arm10-POSITION.meta` reports as **25/25 ERR with no
+timing at all** — now produces a timing. That ERR was the global-motion
+refusal (`svt_aom_derive_gm_level` is non-zero for every inter frame at preset
+<= 4), and `docs/INTER-ENCODE-PLAN.md` §1z⁴¹/§1z⁴² lifted it. Three rounds, zero
+ERR lines.
+
+date:    2026-09-05 11:25 UTC
+host:    mac (Apple M4 Pro, aarch64-apple-darwin, 12 cores)
+tree:    the GM search commit on main
+tool:    tools/perf_gate.sh, PERF_ROUNDS=3 PERF_FRAMES=2 PERF_PRESETS=2
+         PERF_SIZES=512 PERF_QP=40
+         PERF_CONTENT=raw:<the 2-frame .yuv identity_diff_inter wrote from
+         codec-corpus/CID22/CID22-512/training/3571065.png, shift 3>
+C:       the PREBUILT oracle Bin/Release/libSvtAv1Enc.a (2026-08-31)
+
+  size preset ident  n  port_ms   c_ms    ratio
+  512   2      N     3  1225.093  741.850 1.648
+
+WHY THE NUMBER MUST NOT BE QUOTED AS A RATIO:
+
+1. **ident=N.** The port's frame 0 is 117,173 B against C's 117,167 and its
+   frame 1 is 32 B against C's 37 — the two sides are not encoding the same
+   stream at 512, so the ratio compares different work. `perf_gate.sh` says so
+   itself ("NOT byte-identical — ratio not apples-to-apples") and excludes the
+   cell from its own fit. The byte-identical photo inter cells at this preset
+   are 128x128 and 256x256, not 512.
+2. **Three rounds.** The position runs use 25 interleaved paired rounds. Three
+   cannot resolve the ~3 % between-session drift `arm10-POSITION.meta` records,
+   let alone a chunk-sized change.
+3. **The box was not quiet.** This ran immediately after a full gate sweep on
+   the same machine. `arm10` discarded and re-ran any arm that caught another
+   lane's binaries; this did not.
+
+So: the blocker is measured CLOSED (a timing exists where none could), and the
+number itself is not a result. A real `photo p2 inter` position needs the 25
+interleaved rounds on a quiet box AND a byte-identical cell — which today means
+128 or 256, and at 512 means closing the 6-byte frame-0 divergence first.

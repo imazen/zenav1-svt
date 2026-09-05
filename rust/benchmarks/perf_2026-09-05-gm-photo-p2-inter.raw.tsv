@@ -1,0 +1,8 @@
+# perf_gate raw samples — one row per interleaved paired round
+# commit=unknown host=mac cores=12 date=2026-09-05T11:25:04Z
+# content=raw:/Users/lilith/tmp/gm1/photo512.yuv sizes=[512] presets=[2] qp=40 rounds=3 warmup=1 frames=2 shift=3 video=0
+# port=svtav1/examples/perf_encode (release, no native)  C=tools/perf_c_encode (libSvtAv1Enc.a)
+content	size	preset	qp	round	port_ns	c_ns	ident
+raw:/Users/lilith/tmp/gm1/photo512.yuv	512	2	40	1	1222593416	741850000	N
+raw:/Users/lilith/tmp/gm1/photo512.yuv	512	2	40	2	1225093041	743251000	N
+raw:/Users/lilith/tmp/gm1/photo512.yuv	512	2	40	3	1227622583	741390000	N
