@@ -557,8 +557,70 @@ no change can do on merit — but the control is the cheap, direct answer.
 **Cost: one extra `cp` and one `perf_ab.sh` invocation.** Do it whenever a
 verdict turns on a ratio inside +-1 %, and record the control row next to the
 candidate rows so the reader can subtract it too.
+**CORRECTION 2026-09-05 — THE BIAS IS PER-BINARY-PAIR, NOT A PROPERTY OF THE
+HARNESS, AND IT IS NOT A CONSTANT YOU MAY SUBTRACT FROM MEMORY.** The entry
+above generalises its own measurement ("the harness has a 0.3-0.5 % bias"), and
+that generalisation is wrong. Later lanes measured their OWN same-binary
+controls on the same script and box and read **0.9992-1.0013** (the CDEF lane)
+and **1.0005 / 1.0023 / 1.0042 / 1.0058** across four cells
+(`benchmarks/percall_layout_2026-09-05`) — spanning both signs and an order of
+magnitude in size. The 0.995-0.997 figure describes ONE binary pair on ONE day.
+**Run your own control, for your own pair, in the same session as the A/B, and
+subtract THAT.** Never carry a control value forward from another record.
 
-**Never rebuild Rust while a sweep is using the binary.**
+**`| tail -N` ON A GATE CAN EAT ITS VERDICT, AND THE SUITE STILL EXITS 0.**
+MEASURED 2026-09-05: a gate-suite driver ran
+`bash tools/identity_full_8bit.sh 2>&1 | tail -3`, and the last three lines it
+captured were two progress headers plus a shell job-control line
+("Done  bash tools/identity_full_8bit.sh …") — the gate's own
+`8-bit identity: 1100 / 1100` never appeared. Every other step in the suite
+printed its verdict and the whole thing exited 0, so the run looked complete;
+the one gate whose number the record needed had silently produced nothing to
+quote. **Capture a gate's FULL output to its own file and grep the verdict line
+by name.** `tail -N` is for a human glancing at a log, never for a number you
+are going to write down. Same family as "a silent harness and a genuine absence
+are indistinguishable" at the top of this section.
+
+**WHOLE-PROCESS CALLGRIND Ir IS NOT BIT-REPRODUCIBLE, AND "THIS EDIT CANNOT
+CHANGE CODEGEN" IS NOT A MEASUREMENT.** MEASURED 2026-09-05
+(`benchmarks/percall_layout_2026-09-05`): the SAME binary run twice on the same
+cell read 1,463,905,845 and 1,463,903,039 Ir — a **~2,800-Ir noise floor**
+(0.0002 %) from process startup, not from the encode. That floor is what makes
+the next fact visible: two edits that were argued to be codegen-neutral —
+moving a `const` above a doc comment, and moving a misplaced
+`#[allow(clippy::too_many_arguments)]` back onto its function — shifted the
+frame by **44,556 Ir**, 15x the floor, in the favourable direction. Item ORDER
+feeds LLVM's inliner; a lint attribute does not, but you cannot tell which of
+two simultaneous edits did it without re-measuring. **So: re-take the Ir on the
+binary you are actually committing, and quote THAT.** Establish the floor first
+(run the same binary twice) or you cannot tell a real 0.003 % from noise.
+
+**Never rebuild Rust while a sweep is using the binary — AND THE REBUILD DOES
+NOT HAVE TO BE DELIBERATE.** MEASURED 2026-09-05
+(`benchmarks/percall_layout_2026-09-05`): a gate suite was launched, then one
+more source edit landed and was built for a quick check while
+`screen_ibc_byte_gate` was still calling `identity_run` — which runs
+`cargo build` per call. Everything printed PASS, and the verdict was worthless,
+because half the cells ran a binary built from a source state that no longer
+existed. **A gate suite started before your last edit is a MIXED-BUILD run.**
+Either freeze the tree for the duration or re-run from scratch; and if a late
+edit is provably codegen-neutral (moving a `const`, a doc comment), prove it by
+re-taking the callgrind Ir on the final binary and showing it equals the
+measured candidate's to the instruction — an argument that it "cannot change
+codegen" is not a measurement.
+
+**CALLGRIND CHARGES `rep stosb` ONE Ir PER BYTE, SO AN Ir RANKING OVERSTATES A
+ZERO-FILL BY ABOUT AN ORDER OF MAGNITUDE.** MEASURED 2026-09-05: removing
+33.5 MB of provably-dead `calloc` zero-fill per frame (a per-superblock
+range-coder buffer sized to the whole frame) TRIPLED the Ir saving at photo_cid
+512² p6 — -1.070 % to -3.162 % — and moved the wall clock by nothing,
+1.019x to 1.018x against its own control. `__memset_avx2_unaligned_erms` uses
+ERMS, which retires tens of bytes per cycle on hardware and one Ir per byte
+under valgrind, so 33.5 MB is ~2.2 % of the frame's INSTRUCTIONS and ~0.2 % of
+its CYCLES. This is the companion to "Ir ranks, wall clock decides": when the
+item at the top of an Ir ranking is `memset`/`memcpy`/`calloc`, **discount it
+before spending a chunk on it**, and never quote its Ir share as a speed-up.
+
 
 **A `until ! pgrep -f <script>` waiter MATCHES ITSELF and never exits.** The
 waiter's own command line contains the pattern, so `pgrep -f` finds it,

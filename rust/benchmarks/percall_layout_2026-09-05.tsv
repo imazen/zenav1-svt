@@ -1,0 +1,224 @@
+# percall_layout_2026-09-05 — per-call costs the port pays that C does not,
+# and the port-vs-C data-layout comparison behind them.
+# Read benchmarks/percall_layout_2026-09-05.meta before using any number here.
+#
+# SECTIONS
+#   PERCALL   the per-call-cost census, with MEASURED call counts (question A)
+#   STRUCTS   sizeof, port vs C (question B)
+#   ALLOCTOT  allocator totals per encode, port vs C
+#   SITES     ranked allocation sites: blocks / bytes / bytes-read / bytes-written
+#   IR        callgrind Ir per cell, base -> candidate
+#   AB        wall clock, each with its OWN same-binary control
+#   MEM       peak heap
+#   CSITES    where C's 1,228 allocations go (all `_ctor`; none in the loop)
+#   BSITES2   line-level allocation sites from a debug-info build
+
+# ---- PERCALL: candidate per-call costs, ranked by MEASURED call count -------
+# One photo_cid 512x512 qp40 still encode, whole process, r7900x callgrind.
+# "calls" is the exact call count; "verdict" says whether it was worth fixing.
+section	item	calls_photo_p6	calls_screen_p6	calls_photo_p2	verdict
+PERCALL	getenv (ALL sites, cached and uncached)	29	30	32	NULL — constant per process, not per block. No fix.
+PERCALL	free	243766	261198	7380024	FIXED (partially) — 174x C
+PERCALL	malloc	133020	134004	3622713	FIXED (partially) — 331x C
+PERCALL	calloc	110747	127195	3757312	FIXED (partially) — 142x C
+PERCALL	realloc	1202	4977	46678	not addressed
+PERCALL	core::fmt::write (format! machinery)	3	n/m	n/m	NULL — 3 calls per encode
+PERCALL	alloc::fmt::format::format_inner	2	n/m	n/m	NULL
+PERCALL	Mutex / RwLock lock	0	0	0	NULL — none exist in the shipped surface
+PERCALL	HashMap / BTreeMap lookup	0	0	0	NULL — no map type in svtav1-encoder or svtav1-dsp
+PERCALL	Instant::now / clock syscall	0	0	0	NULL — only in svtav1-dsp/src/bench.rs
+PERCALL	file I/O inside the encode	0	0	0	NULL
+
+# ---- PERCALL static census: every env::var / env::var_os in crates/*/src ----
+# 19 textual hits; the ones that are NOT already behind a OnceLock, with the
+# rate at which the enclosing function runs. NONE is per-superblock.
+section	file_line	var	cached	rate	action
+ENVSITE	svtav1-encoder/src/dbgenv.rs:36	(21 presence flags)	OnceLock	once per process	none needed
+ENVSITE	svtav1-encoder/src/dbgenv.rs:167	(4 value vars)	OnceLock	once per process	none needed
+ENVSITE	svtav1-encoder/src/restoration.rs:54	SVTAV1_LR_DBG	OnceLock	once per process	none needed
+ENVSITE	svtav1-encoder/src/leaf_funnel/coeff_rate.rs:36	SVTAV1_CCOSTDBG	OnceLock	once per process	none needed
+ENVSITE	svtav1-encoder/src/leaf_funnel/predict.rs:251	SVTAV1_*_XY	OnceLock	once per process	none needed — brief listed this as uncached; it is the body of `dbg_xy`'s get_or_init
+ENVSITE	svtav1-encoder/src/depth_refine.rs:1357	SVTAV1_DBG_MI	OnceLock	once per process	none needed
+ENVSITE	svtav1-encoder/src/pipeline.rs:11599	SVTAV1_SC_TOOLS	NO	once per TILE (encode_tile_rows)	NULL — 1 call per tile, not per SB
+ENVSITE	svtav1-encoder/src/pipeline.rs:11610	SVTAV1_SC_TOOLS	NO	once per TILE	NULL — 1 call per tile
+ENVSITE	svtav1-encoder/src/pipeline.rs:3087	SVTAV1_VB_DUMP	NO	once per frame (variance-boost plan)	NULL
+ENVSITE	svtav1-encoder/src/pipeline.rs:6594	SVTAV1_FHDUMP	NO	once per frame header	NULL
+ENVSITE	svtav1-encoder/src/pipeline.rs:6766	SVTAV1_FCTX_OUT	NO	once per frame	NULL
+ENVSITE	svtav1-encoder/src/pipeline.rs:8952	SVTAV1_INTERDBG	NO	per INTER block	not reached on a still/key frame; 0 calls in every cell measured
+ENVSITE	svtav1-encoder/src/deblock.rs:480	SVTAV1_RECON_BIN	NO	once per frame deblock	NULL
+ENVSITE	svtav1-encoder/src/hdr_mode.rs:264	SVT_HDR_MODE	NO	HdrForkConfig::from_env	NULL
+ENVSITE	svtav1-encoder/src/hdr_mode.rs:274	(fork knobs)	NO	HdrForkConfig::from_env	NULL
+ENVSITE	svtav1-cref/src/enc_dec_metrics.rs:36	SVT_CREF_REQUIRE_*	NO	test-support crate	out of the shipped surface
+ENVSITE	svtav1-cref/src/rc_vbr_cbr.rs:56	SVT_CREF_REQUIRE_*	NO	test-support crate	out of the shipped surface
+
+# ---- STRUCTS: sizeof, port vs C ---------------------------------------------
+# C: gcc 15.2.0 -std=gnu11 over reference/svt-av1 @ 3115c0c1 headers, x86_64
+#    linux AND aarch64 macOS — IDENTICAL on both, so no ISA qualifier is needed.
+# Port: core::mem::size_of, aarch64 macOS, commit 7ec5b5572 (pre-change).
+section	role	c_type	c_bytes	port_type	port_bytes	port_over_c	note
+STRUCTS	per-candidate MD state	ModeDecisionCandidate	168	leaf_funnel::types::Cand	528	3.14	16 of the port's fields are Vec/Option-of-Vec — 360 B of the 528 are Vec headers alone
+STRUCTS	candidate pixel/coeff storage	ModeDecisionCandidateBuffer	208	(folded into Cand's Vecs)	0	n/a	C's buffer is POINTERS into a pool allocated once per handle (md_process.c:585-601); the port OWNS its storage per candidate
+STRUCTS	per-block committed state	BlkStruct	400	partition::BlockDecision	288	0.72	port is SMALLER
+STRUCTS	MD context	ModeDecisionContext	16368	leaf_funnel::rate_tables::MdRates	17984	1.10	closest analogue; port also carries FunnelCfg 200 B separately
+STRUCTS	neighbour/xd view	MacroBlockD	184	partition::NeighborEdges	280	1.52	NEW in this commit; replaced two heap Vec<u8>. Stack-only, so the 280 B never allocates
+STRUCTS	mode-info grid cell	BlockModeInfo	36	intrabc_mvp::MvpMiEntry	20	0.56	port is SMALLER
+STRUCTS	mode-info grid cell (full)	MbModeInfo	60	intrabc_mvp::MvpMiEntry	20	0.33	port is SMALLER
+STRUCTS	MV stack entry	CandidateMv	12	(svtav1_types::motion::Mv pair)	n/m	n/a	not separately materialised in the port
+STRUCTS	per-SB entropy chain	(EntropyCoderPtr + FRAME_CONTEXT)	n/m	entropy::coeff_c::CoeffFc	13520	n/a	the port boxes one per SB
+STRUCTS	frame CDFs	(FRAME_CONTEXT)	n/m	entropy::context::FrameContext	7148	n/a
+STRUCTS	inter candidate payload	(inside ModeDecisionCandidate)	n/m	leaf_funnel::types::InterCand	80	n/a	behind Option<Box<..>>, so 8 B in Cand
+STRUCTS	leaf result	(cand_bf writeback)	n/m	leaf_funnel::types::LeafChoice	248	n/a
+STRUCTS	leaf result (full)	(cand_bf writeback)	n/m	leaf_funnel::types::LeafEval	792	n/a
+STRUCTS	partition node	(PartitionContext)	n/m	partition::PartitionTree	288	n/a
+STRUCTS	pd0 result	(per-depth cost)	n/m	pd0::Pd0Eval	32	n/a
+STRUCTS	tx unit result	(cand_bf quant_coeff slice)	n/m	tx_pipeline::TxUnitOut	64	n/a	two Vec headers + scalars
+
+# ---- ALLOCTOT: allocator totals per encode, port vs C -----------------------
+# valgrind DHAT, photo_cid 512x512 qp40 preset 6, ONE encode, whole process,
+# every run byte-identical (45,688 B, cmp'd against C's own .obu).
+section	metric	port_base	port_cand	c	port_base_over_c	port_cand_over_c
+ALLOCTOT	heap blocks (DHAT)	244967	158413	1228	199.5	129.0
+ALLOCTOT	heap bytes (DHAT)	106170317	63966573	24112240	4.40	2.65
+ALLOCTOT	peak live bytes (t-gmax)	6223973	6230148	19243442	0.32	0.32
+ALLOCTOT	peak live blocks (t-gmax)	6938	6941	1203	5.77	5.77
+ALLOCTOT	malloc calls (callgrind)	133020	n/m	402	330.9	n/m
+ALLOCTOT	calloc calls (callgrind)	110747	n/m	782	141.6	n/m
+ALLOCTOT	free calls (callgrind)	243766	n/m	1399	174.2	n/m
+ALLOCTOT	posix_memalign calls	0	n/m	44	0	n/m
+ALLOCTOT	malloc+calloc+free+realloc INCLUSIVE Ir	82254098	n/m	966326	85.1	n/m
+ALLOCTOT	.. as share of the frame	5.44%	n/m	0.14%	n/a	n/a
+ALLOCTOT	__memset_avx2 INCLUSIVE Ir (incl. calloc's own)	77885972	n/m	6265884	12.4	n/m
+
+# ---- SITES: allocation sites, ranked by BLOCKS (the per-call cost) ----------
+# Port base build, photo_cid 512x512 p6, DHAT. read/written are DHAT's own
+# byte counters for that site's blocks over their whole lifetime.
+# CAVEAT, stated rather than hidden: INLINING BLURS PER-SITE ATTRIBUTION. In the
+# release build (no line tables) `hadamard_satd`'s two allocations appear under
+# `inject_candidates` at one program point and under `hadamard_satd` at another,
+# so a row here can be off by the amount its callee was inlined into it. Only
+# the TOTALS (244,967 blocks / 106,170,317 bytes; 158,413 / 63,966,573 after)
+# and the B-rows below — taken from a `CARGO_PROFILE_RELEASE_DEBUG=1` build that
+# resolves file:line — are exact. The measured Ir deltas per change are the
+# reliable per-site quantity, not these block counts.
+section	rank	site	blocks	bytes	bytes_read	bytes_written	fixed_here
+SITES	1	partition::extract_neighbors_tiled	44502	435872	n/m	n/m	YES — stack [u8; 128] pair
+SITES	2	leaf_funnel::mds3::eval_candidate	40223	4172480	n/m	n/m	no
+SITES	3	leaf_funnel::overlay::predict_unit_overlay	30285	879601	n/m	n/m	YES — stack edge buffers
+SITES	4	leaf_funnel::tx_pipeline::tx_unit_inner	26580	11376096	n/m	n/m	no (already on TX_SCRATCH; the residue is the OWNED TxUnitOut Vecs)
+SITES	5	leaf_funnel::txt::txt_search::{closure#0}	22617	4566144	n/m	n/m	no
+SITES	6	pd0::tx_quant_core	16320	11010048	n/m	n/m	no
+SITES	7	leaf_funnel::predict::hadamard_satd	11770	7864320	n/m	n/m	YES — thread-local HadamardScratch
+SITES	8	leaf_funnel::inject::inject_candidates	9416	4460372	n/m	n/m	no
+SITES	9	pipeline::encode_block_syntax	9416	2097152	n/m	n/m	no
+SITES	10	leaf_funnel::evaluate_leaf	8239	1582216	n/m	n/m	no
+SITES	11	pd0::Pd0Ctx::lvl1_cost_from_pred	5441	4196784	n/m	n/m	no
+SITES	12	pd0::Pd0Ctx::lvl1_block_cost_rect	5440	1048576	n/m	n/m	no
+SITES	-	pipeline::encode_tile_rows::{closure#0} (ALL)	205	36158776	n/m	n/m	partly
+# By BYTES the ranking is different, and the top entry is the one that mattered:
+SITES	B1	entropy::range_coder.rs:54 OdEcEnc::new, from pipeline.rs:13504	64	33570816	2425	63233	YES — sized to the SB, not the frame
+SITES	B2	tx_pipeline.rs:144 grown_out<i32>	5834	5228288	11918820	5251624	no
+SITES	B3	slice.rs:376 to_vec<i32> under txt_search	11308	3652096	8488128	3652096	no
+SITES	B4	predict.rs:154 hadamard_satd coeff	5385	3194880	5578800	5616640	YES
+SITES	B5	quant.rs:527 build_coeff_cost_tables_from_fc	63	2378880	26514464	2378880	no
+SITES	B6	predict.rs:153 hadamard_satd res	5385	1597440	1597440	1597440	YES
+SITES	B7	mds3.rs:706	4632	1175424	1168652	1175168	no
+SITES	B8	mds3.rs:709	4632	1175424	65488	1175168	no
+SITES	B9	pd0.rs:965 tx_quant_core coeffs	4096	1048576	2113536	1048576	no
+SITES	B10	pd0.rs:726/727 quantize_b outputs	4096 ea	1048576 ea	1513660 / 1048576	347320 ea	no — the zero-fill IS read there
+
+# ---- IR: callgrind Ir per cell, base -> candidate ---------------------------
+# r7900x, valgrind-3.26.0 --tool=callgrind --cache-sim=no --branch-sim=no,
+# whole process, ONE encode (warmup 0). Every row byte-identical.
+section	cell	preset	base_ir	cand_ir	delta_ir	delta_pct	c_ir	base_over_c	cand_over_c
+IR	photo_cid 512x512 q40	6	1511752954	1463950401	-47802553	-3.162	705587663	2.1425	2.0748
+IR	screen_terminal 512x512 q40	6	893970089	850717449	-43252640	-4.838	355384264	2.5155	2.3939
+IR	photo_cid 512x512 q40	2	45564135018	45189114595	-375020423	-0.823	n/m	n/m	n/m
+# Intermediate: hadamard_satd scratch ALONE, photo_cid p6
+IR	photo_cid 512x512 q40 (hadamard only)	6	1511752954	1506218784	-5534170	-0.366	705587663	2.1425	2.1347
+
+# ---- MEM --------------------------------------------------------------------
+section	metric	base	cand	delta	verdict
+MEM	DHAT peak live bytes, photo_cid p6	6223973	6230148	+0.099%	NULL
+MEM	DHAT peak live blocks, photo_cid p6	6938	6941	+0.043%	NULL
+MEM	DHAT total bytes allocated, photo_cid p6	106170317	63966573	-39.75%	win (transient churn, not resident)
+MEM	DHAT total blocks, photo_cid p6	244967	158413	-35.33%	win
+
+# ---- AB: wall clock, tools/perf_ab.sh, 21 interleaved paired rounds ---------
+# r7900x. `ratio` = cand/base (< 1 = candidate FASTER). EVERY A/B row is paired
+# with its OWN same-binary control (base vs a byte copy of base) taken in the
+# SAME session on the SAME binary pair, because perf_ab's bias is per-pair, not
+# a constant (docs/WORKING-ON-THIS.md §5). `corrected` = ab_ratio / ctl_ratio.
+# "disjoint" = the A/B p25..p75 span does not overlap the control's.
+# A SIBLING LANE WAS LIVE (zenav1-svt--v4x1): 2 of 24 cores busy, load 2.1-2.5.
+# The control absorbs that; it is stated, not hidden.
+# ROUND 1 = the three stack/scratch changes only (no range-coder resize).
+section	round	cell	preset	ab_ratio	ab_p25	ab_p75	ctl_ratio	ctl_p25	ctl_p75	corrected	speedup	disjoint
+AB	1	photo_cid 512x512 q40	2	0.9777	0.9756	0.9820	1.0024	1.0008	1.0048	0.9753	1.025	yes
+AB	1	photo_cid 512x512 q40	6	0.9843	0.9769	0.9885	1.0032	0.9976	1.0100	0.9811	1.019	yes
+AB	1	screen_terminal 512x512 q40	2	0.9843	0.9807	0.9863	1.0060	1.0013	1.0091	0.9784	1.022	yes
+AB	1	screen_terminal 512x512 q40	6	0.9730	0.9588	0.9874	0.9932	0.9850	1.0082	0.9797	1.021	yes
+# ROUND 2 = all four changes.
+AB	2	photo_cid 512x512 q40	2	0.9776	0.9759	0.9803	1.0023	1.0007	1.0056	0.9753	1.025	yes
+AB	2	photo_cid 512x512 q40	6	0.9827	0.9790	0.9868	1.0005	0.9961	1.0019	0.9822	1.018	yes
+AB	2	screen_terminal 512x512 q40	2	0.9830	0.9819	0.9852	1.0058	1.0005	1.0102	0.9773	1.023	yes
+AB	2	screen_terminal 512x512 q40	6	0.9762	0.9648	0.9826	1.0042	0.9905	1.0148	0.9721	1.029	yes
+
+# ---- CSITES: where C's 1,228 allocations go -------------------------------
+# DHAT over the SAME cell for the C oracle. EVERY entry is a `_ctor` — C makes
+# its allocations at CONSTRUCTION and none inside the encode loop, which is the
+# direct evidence for the pool claim (md_process.c:585-601). The port's 244,967
+# are all inside the frame.
+section	blocks	bytes	c_function
+CSITES	172	1450096	picture_control_set_ctor
+CSITES	160	5632	svt_muxing_queue_ctor
+CSITES	149	7232	svt_system_resource_ctor
+CSITES	116	45760	svt_aom_neighbor_array_unit_ctor
+CSITES	73	4716	svt_av1_enc_init
+CSITES	72	208432	svt_aom_picture_parent_control_set_creator
+CSITES	55	3744	svt_aom_prediction_structure_group_ctor
+CSITES	53	1192728	svt_aom_mode_decision_context_ctor
+CSITES	47	1880	svt_create_mutex
+CSITES	25	150	svt_aom_enc_dec_segments_ctor
+CSITES	25	3902468	svt_picture_buffer_desc_ctor
+CSITES	22	68640	svt_reference_object_ctor
+CSITES	17	114328	svt_aom_encode_context_ctor
+CSITES	15	840	create_neighbor_array_units.constprop.0
+CSITES	1228	24112240	TOTAL (14 rows shown of the whole set)
+
+# ---- BSITES2: line-level sites from the CARGO_PROFILE_RELEASE_DEBUG=1 build --
+# Base build, photo_cid 512x512 p6, DHAT --num-callers=8 with line tables.
+# These are the EXACT per-line numbers; the SITES rows above are the
+# inlining-blurred function-level view. read/written are lifetime totals.
+section	blocks	bytes	bytes_read	bytes_written	site	note
+BSITES2	21718	209712	774019	209712	partition.rs:399 extract_neighbors_tiled above	FIXED
+BSITES2	21651	210248	546333	210248	partition.rs:417 extract_neighbors_tiled left	FIXED
+BSITES2	21196	10736320	68577852	20452240	tx_pipeline.rs:144 grown_out<i32> (TxUnitOut qcoeff/recon)	open — owned-Vec RETURN
+BSITES2	11308	3652096	8488128	3652096	txt.rs:490 txt_search closure	open — slice::to_vec
+BSITES2	11308	913024	913024	913024	txt.rs:491 txt_search closure	open
+BSITES2	9416	2097152	2520400	2097152	pipeline.rs:8662 closure#5	open
+BSITES2	9248	727552	137358	140096	overlay.rs:85 canvas	FIXED — 19 % of its bytes ever written
+BSITES2	9108	63720	185771	63720	overlay.rs:139 above_c	FIXED
+BSITES2	5885	1310720	3467648	1310720	inject.rs:526	open
+BSITES2	5885	2621440	2621440	2621440	predict.rs:153 hadamard res	FIXED
+BSITES2	5885	5242880	11674800	11760640	predict.rs:154 hadamard coeff	FIXED
+BSITES2	5440	1048576	1048576	1048576	pd0.rs:2294 lvl1_block_cost_rect pred	open
+BSITES2	5440	4194304	4194304	4194304	pd0.rs:2358 lvl1_cost_from_pred pred	open
+BSITES2	5440	4194304	7877888	4448256	pd0.rs:965 tx_quant_core coeffs	open
+BSITES2	5440	3407872	4978876	1177220	pd0.rs:726 quantize_b qcoeff	open — only 35 % written, the zero-fill IS read
+BSITES2	5440	3407872	3407872	1177220	pd0.rs:727 quantize_b dqcoeff	open — same
+BSITES2	5380	623392	4793232	2831632	tx_pipeline.rs:144 grown_out<u8>	open
+BSITES2	4708	1441792	0	1441792	partition.rs:1951 PartitionTree::children single-element Vec	open — READ 0 BYTES; C has a fixed tree
+BSITES2	4632	277920	2083024	303408	mds3.rs:702	open
+BSITES2	4632	23160	12160	23128	mds3.rs:703	open
+BSITES2	4632	11580	1474	11564	mds3.rs:704	open
+BSITES2	64	33570816	2425	63233	range_coder.rs:54 via pipeline.rs:13504	FIXED — 0.007 % of its bytes ever read
+
+# ---- FIN: the COMMITTED binary's Ir, and the run-to-run noise floor ---------
+# Two late edits (moving a const above a doc comment; moving a misplaced
+# #[allow] back onto its function) were argued codegen-neutral and were not.
+# The floor was established first by running the SAME binary twice.
+section	cell	preset	cand2_ir	final_ir	delta_ir	note
+FIN	photo_cid 512x512 q40 (same binary, run 1)	6	n/a	1463905845	n/a	noise-floor probe
+FIN	photo_cid 512x512 q40 (same binary, run 2)	6	n/a	1463903039	-2806	NOISE FLOOR = ~2,800 Ir (0.0002 %)
+FIN	photo_cid 512x512 q40	6	1463950401	1463905845	-44556	15x the floor — real, and favourable
+FIN	screen_terminal 512x512 q40	6	850717449	850717312	-137	inside the floor

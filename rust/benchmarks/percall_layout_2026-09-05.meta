@@ -1,0 +1,511 @@
+THE PER-CALL ENV-VAR QUESTION IS A MEASURED NULL — `getenv` fires **29 times in
+a whole photo_cid 512x512 p6 encode**, 30 on the screenshot and 32 at preset 2,
+against 133,020 `malloc`s and 110,747 `calloc`s in the same encode. The two
+uncached `std::env::var("SVTAV1_SC_TOOLS")` reads the brief named are not on the
+per-superblock path: they sit in `encode_tile_rows`, which runs **once per
+tile**. Nothing was changed for them. What IS a per-call cost the C encoder does
+not pay is the ALLOCATOR: the port made **244,967 heap allocations per encode
+against C's 1,228 (199x)**, and the whole `malloc`/`calloc`/`free`/`realloc`
+family cost **82.25 M inclusive Ir = 5.44 % of the frame against C's 0.14 %
+(85x)**. That is also the answer to the LAYOUT question — the port's hot
+structures are not materially bigger than C's field-for-field (`BlkStruct` 400 B
+vs `BlockDecision` 288 B; `MbModeInfo` 60 B vs `MvpMiEntry` 20 B; the port is
+SMALLER on both), they differ in OWNERSHIP: C's `ModeDecisionCandidate` is 168
+bytes of POD whose pixel and coefficient storage is a pool allocated once per
+encoder handle (`md_process.c:585-601`), while the port's `leaf_funnel::Cand` is
+528 bytes of which **360 are sixteen `Vec`/`Option<Vec>` headers**, each one its
+own `malloc`/`free` per candidate per block.
+
+Four sites were fixed. Together they remove **86,554 of the 244,967 blocks
+(-35.3 %) and 42.2 MB of the 106.2 MB (-39.8 %)**, for **-3.162 % Ir at
+photo_cid p6, -4.838 % on the screenshot and -0.823 % at p2**, and a wall clock
+of **1.018x-1.029x on four independent cells, every one of them with a span
+disjoint from its OWN same-binary control**. Peak heap is a NULL
+(6,223,973 -> 6,230,148 B, +0.099 %). Every cell byte-identical on both ISAs.
+
+**The single biggest one was not in any previous ranking and it is worth stating
+on its own: a per-superblock range-coder output buffer was sized to the WHOLE
+FRAME.** `pipeline.rs:13504` built the CDF-chain simulation writer with
+`AomWriter::new(w * h * 2 + 256)` — 524,544 zeroed bytes, 64 times per
+512x512 frame, **33,570,816 bytes of which DHAT measures 63,233 EVER WRITTEN and
+2,425 EVER READ** (0.19 % and 0.007 % utilisation). It was 31.79 M Ir, 2.10 % of
+the p6 frame, spent zeroing memory nothing reads. It is now sized to a
+superblock.
+
+date:   2026-09-05
+hosts:  MEASUREMENT AND WALL CLOCK on `r7900x` (x86_64-linux, AMD Ryzen 9
+        7900X, 24 cores). A SIBLING LANE WAS LIVE THROUGHOUT (`zenav1-svt--v4x1`
+        running its own gates and a callgrind): two of twenty-four cores busy,
+        load average 2.50 at the A/B launch, 1.01 at the callgrind launch.
+        Callgrind and DHAT are deterministic and contention-immune by
+        construction; the wall-clock A/B is protected instead by running its OWN
+        same-binary control in the SAME session — see AB below.
+        BYTE GATES on both: `r7900x` and the aarch64 Mac (M-series, macOS 25.5).
+        The aarch64 box also had a sibling lane live (`zenav1-svt--mt1`), which
+        is why no wall clock was taken there.
+tools:  valgrind-3.26.0 --tool=callgrind (Ir, `--cache-sim=no --branch-sim=no`)
+        and --tool=dhat (blocks / bytes / bytes-read / bytes-written per
+        allocation site, `--num-callers=8`), callgrind_annotate,
+        tools/perf_profile/{callcount.py,tree_callers.py}, tools/perf_ab.sh,
+        gcc 15.2.0 for the C `sizeof` probe, rustc 1.98.1.
+base:   `main@origin` 7ec5b5572. Candidate = that plus the four changes below.
+        Both built `env -u RUSTFLAGS` (no `target-cpu=native`), `-j 4`,
+        `nice -n 19`.
+C:      reference/svt-av1 @ 3115c0c1 — the PREBUILT oracle at
+        `rust/tools/perf_c_encode/perf_c_encode` (2026-09-03). NOT rebuilt.
+        The `sizeof` probe compiles only the HEADERS
+        (`-Wl,--unresolved-symbols=ignore-all`); it links nothing of the oracle
+        and does not touch the build.
+cells:  photo_cid 512x512 p2 and p6, screen_terminal 512x512 p6, qp 40, still,
+        from `r7900x:~/tmp/rc1/yuv` — the same .yuv files the realimg and
+        stall-attribution records used.
+data:   benchmarks/percall_layout_2026-09-05.tsv (PERCALL / ENVSITE / STRUCTS /
+        ALLOCTOT / SITES / IR / AB / MEM).
+
+=================== BYTE-IDENTITY ===================
+
+Every measured cell was `cmp`'d, and the C oracle's own .obu was `cmp`'d against
+the port's on the two p6 cells:
+  * photo_cid p6      45,688 B — port base == port candidate == C
+  * screen_terminal p6 10,090 B — port base == port candidate == C
+  * photo_cid p2      46,462 B — port base == port candidate
+Those are the same byte counts the realimg and stall-attribution records
+recorded at those cells.
+
+aarch64 (Mac) and x86_64 (r7900x) gate results are in the GATES section below.
+
+=================== 1. QUESTION A — PER-CALL COSTS, WITH CALL COUNTS ===========
+
+Method: callgrind over ONE whole encode (warmup 0), `callcount.py --demangle`
+for exact per-function call counts. The whole shipped surface
+(`crates/{svtav1-encoder,svtav1-dsp,svtav1-types,svtav1-target}/src`) was swept
+statically first; every candidate class was then priced by call count.
+
+  class                              photo p6   screen p6   photo p2   verdict
+  getenv (ALL sites)                       29          30         32   NULL
+  malloc                              133,020     134,004  3,622,713   FIXED (part)
+  calloc                              110,747     127,195  3,757,312   FIXED (part)
+  free                                243,766     261,198  7,380,024   FIXED (part)
+  realloc                               1,202       4,977     46,678   not addressed
+  core::fmt::write                          3         n/m        n/m   NULL
+  Mutex / RwLock                            0           0          0   NULL — none exist
+  HashMap / BTreeMap                        0           0          0   NULL — none exist
+  Instant::now / clock syscall              0           0          0   NULL
+  file I/O inside the encode                0           0          0   NULL
+
+**getenv is 29 calls, not 29 per block.** A 512x512 frame has 64 superblocks and
+thousands of blocks; 29 < 64 already rules out a per-superblock read, and the
+number barely moves between preset 2 (32) and preset 6 (29) — which it would
+have to if it were keyed on MD work. **The brief's premise that the two
+`SVTAV1_SC_TOOLS` reads "sit in the per-superblock funnel-config path" is
+wrong**: their enclosing function is `encode_tile_rows` (the brief's line numbers
+11213/11224 are also stale — they are 11599/11610 at this commit), which runs
+once per tile, so those two reads fire ONCE EACH on a single-tile frame. No
+change was made, `dbgenv.rs` was not extended, and the `SVTAV1_SC_TOOLS` tool
+still works exactly as before because nothing about it was touched.
+
+Two further corrections to the brief's candidate list, both from reading the
+source rather than the grep line:
+  * `leaf_funnel/predict.rs:251` is **already cached** — the `std::env::var`
+    is the body of a `OnceLock::get_or_init` closure (`leaf_funnel::predict::dbg_xy`), the
+    same shape `dbgenv.rs`'s `value_vars!` uses. So is
+    `depth_refine.rs:1357` (`SVTAV1_DBG_MI`).
+  * `pipeline.rs:8952` (`SVTAV1_INTERDBG`) IS per-block and IS uncached — but it
+    is on the INTER arm, which a still/key frame never enters, so it took **zero
+    calls in every cell measured**. It is the one env read that would be worth
+    caching the day inter frames ship; it is left alone because caching it now
+    would be an unmeasured change.
+
+`Mutex`, `RwLock`, `HashMap`, `BTreeMap` and `Instant::now` are ABSENT from the
+shipped encoder and DSP crates — that is a static fact from the sweep, not an
+inference from the profile. The only atomics on a per-call path are
+`leaf_funnel/coeff_rate.rs:40` (behind a `OnceLock` early-return) and
+`pipeline.rs:11956` (`hbd_used.store`, bd10 only). `format!`/`to_string` appear
+22+6 times in the encoder and 2+2 in the DSP, all on error/diagnostic paths, and
+the profile agrees: three `core::fmt::write` calls per encode.
+
+**So the whole of question A reduces to one class — the allocator — and the rest
+is reported as a null.**
+
+=================== 2. QUESTION B — LAYOUT, PORT vs C =========================
+
+`sizeof` is IDENTICAL on x86_64-linux (gcc 15.2.0) and aarch64-macOS for every C
+type below, so no ISA qualifier is needed.
+
+  role                       C type                        C     port type                   port   port/C
+  per-candidate MD state     ModeDecisionCandidate       168     leaf_funnel::types::Cand      528    3.14
+  candidate storage          ModeDecisionCandidateBuffer 208     (folded into Cand)              -       -
+  per-block committed state  BlkStruct                   400     partition::BlockDecision      288    0.72
+  MD context                 ModeDecisionContext      16,368     rate_tables::MdRates       17,984    1.10
+  neighbour / xd view        MacroBlockD                 184     partition::NeighborEdges      280    1.52
+  mode-info cell             BlockModeInfo                36     intrabc_mvp::MvpMiEntry        20    0.56
+  mode-info cell (full)      MbModeInfo                   60     intrabc_mvp::MvpMiEntry        20    0.33
+  MV stack entry             CandidateMv                  12     (not materialised)              -       -
+
+**The port is not systematically fatter.** It is SMALLER on the two structures
+that are stored per 4x4 cell across a whole frame (`MvpMiEntry` 20 B against
+`BlockModeInfo` 36 / `MbModeInfo` 60) and smaller on the per-block committed
+state (288 vs 400). Its MD context is within 10 % of C's. **A "port struct
+materially larger than C's costs more cache lines per block" is therefore NOT
+what is happening**, which is consistent with the stall record's finding that the
+port's L1D miss rate is HALF C's.
+
+The one big ratio is `Cand` at 3.14x, and its cause is not padding or field
+order — it is OWNERSHIP:
+
+  * **16 of `Cand`'s fields are `Vec` or `Option`-of-`Vec`** (`pred`, `pred10`,
+    `txb_q`, `txb_eob`, `txb_cul`, `txb_type`, `y_recon`, `y_recon10`,
+    `u_recon10`, `v_recon10`, `y_recon_d0`, `u_q`, `v_q`, `u_recon`, `v_recon`,
+    `palette`). Fifteen bare `Vec`s at 24 B each are **360 of the 528 bytes**
+    (68 %). C's `ModeDecisionCandidate` holds none: its pixels and coefficients
+    live in `ModeDecisionCandidateBuffer`'s POINTERS into a pool that
+    `md_process.c:585-601` allocates ONCE per encoder handle and reuses for
+    every block of every frame.
+  * **`txb_q: Vec<Vec<i32>>` is the one genuine extra INDIRECTION LEVEL.** C
+    indexes one flat `quant_coeff` buffer by a txb offset; the port does an outer
+    load then an inner load, and allocates 1 + N blocks. DHAT counts 8,705
+    `Vec<Vec<i32>>` drops per p6 encode.
+  * `inter: Option<Box<InterCand>>` is 8 B in `Cand` and one more dependent load
+    when taken — but `InterCand` is only 80 B and the box is `None` on every
+    still frame, so this is not a still-path cost.
+
+The measured consequence, and it is the whole of the layout answer:
+
+  metric (one photo_cid 512x512 p6 encode)   port base    port cand         C
+  heap blocks                                  244,967      158,413     1,228
+  heap bytes                               106,170,317   63,966,573  24,112,240
+  peak live bytes (t-gmax)                   6,223,973    6,230,148  19,243,442
+  malloc+calloc+free+realloc inclusive Ir   82,254,098          n/m     966,326
+    .. as share of the frame                    5.44 %          n/m      0.14 %
+
+**199x C's allocation COUNT while using 0.32x C's peak live BYTES.** The port is
+not using more memory; it is churning the allocator to hold less of it. Peak
+live blocks tell the same story from the other side: 6,938 against C's 1,203.
+
+And 199x understates it, because **every one of C's 1,228 allocations is a
+`_ctor`** — DHAT over the same cell attributes them to
+`picture_control_set_ctor` (172 blocks / 1.45 MB),
+`svt_muxing_queue_ctor` (160), `svt_system_resource_ctor` (149),
+`svt_aom_neighbor_array_unit_ctor` (116), `svt_av1_enc_init` (73),
+`svt_aom_picture_parent_control_set_creator` (72),
+`svt_aom_mode_decision_context_ctor` (53 / 1.19 MB),
+`svt_picture_buffer_desc_ctor` (25 / 3.90 MB) and the rest of the same shape.
+**C allocates nothing inside the encode loop.** The port's 244,967 are all
+inside the frame. That is the pool (`md_process.c:585-601`) doing exactly what
+its comment says, measured from the other end.
+
+AoS-vs-SoA: no site was found where the port uses a struct-of-fields against C's
+parallel arrays or the reverse on anything walked per block. The mode-info grid
+is AoS on both sides (`MvpMiEntry` against `BlockModeInfo`), the candidate arrays
+are AoS on both, and the coefficient planes are flat on both. **That axis is
+reported as a null.**
+
+`Option` discriminants: the stall record's `checked_sub` line (2.68 % of the p6
+frame, 20.16 M conditional branches on `core/src/num/uint_macros.rs:1052`) is
+NOT reducible to nine source sites — `crates/svtav1-encoder/src` contains 9
+`checked_sub` and **69 `saturating_sub`**, plus 3 more `saturating_sub` in the
+DSP, and both compile through the same `core` line. They cannot be separated by
+source line (callgrind attributes the inlined `core` code to the `core` source
+line, which is exactly why the stall record called that number a LOCALISATION
+and not an overhead). **The census is reported; no `Option`-to-sentinel change
+was attempted, because none of them could be priced individually.**
+
+=================== 3. WHAT WAS FIXED, AND WHY EACH IS BYTE-INERT =============
+
+All four are read-side or storage-shape changes. None touches arithmetic, a
+coding decision, or a written byte.
+
+1. **`pipeline.rs:13504` — the per-SB simulation writer is sized to a
+   superblock, not the frame.** `AomWriter::new(w * h * 2 + 256)` ->
+   `AomWriter::new(sb_size * sb_size * 2 + 256)`.
+   Evidence it is inert: `OdEcEnc::new`'s own doc says "growth happens on demand,
+   so any capacity — including 0 — is valid", and the buffer past `offs` is
+   scratch that is never READ before it is written — `normalize` re-establishes
+   `len >= offs + 8` with `resize(2 * len + 8, 0)` and then OVERWRITES eight
+   bytes with `copy_from_slice`; `done` resizes to `offs + b` and ASSIGNS each
+   byte; `propagate_carry_bwd` only touches indices strictly below `offs`.
+   Measured waste removed: 33,570,816 B/frame allocated-and-zeroed of which
+   63,233 B written and 2,425 B read.
+   **AND THE SIZE DEPENDENCE IS QUADRATIC, WHICH THE 512x512 CELL HIDES:** the
+   old capacity was `w * h * 2 + 256` per SB and the SB COUNT is also
+   `w * h / sb_size^2`, so the per-frame zero-fill went as `w^2 * h^2`. At
+   512x512 that is 33.5 MB; at 2048x2048 preset 6 it is
+   1024 SBs x 8,388,864 B = **8.59 GB of `calloc` zero-fill per frame.** The new
+   capacity is SB-sized, so the per-frame total is now linear in pixels
+   (1024 x 8,448 B = 8.6 MB at 2048). Measured at 2048: see the BIG rows in the
+   TSV.
+
+2. **`leaf_funnel/predict.rs` — `hadamard_satd` / `hadamard_satd_hbd` take their
+   residual and coefficient tiles from a thread-local `HadamardScratch`.**
+   Evidence it is inert: the two `vec![0; tx*tx]` already sat OUTSIDE the tile
+   loops and were fully overwritten by `residual_i16` / `aom_hadamard_*` on every
+   tile, so tiles 2..N already ran against stale contents. Reusing them across
+   CALLS is the same contract one level up. `try_borrow_mut` + closure hand-back
+   is `tx_pipeline::with_txt_out`'s existing shape, so a re-entrant caller gets
+   fresh buffers rather than a panic.
+   Measured alone: -5,534,170 Ir at photo_cid p6 (-0.366 %), byte-identical.
+
+3. **`partition.rs` — `extract_neighbors_tiled` returns a stack `NeighborEdges`
+   instead of two `Vec<u8>`.** 44,502 blocks per p6 encode for 435,872 bytes —
+   an average payload of **9.8 bytes per malloc/free pair**, the purest per-call
+   cost in the profile. The struct carries `[u8; 128]` twice; the bound is AV1's
+   `MAX_SB_SIZE` (128) and is stated by an `assert!` rather than a clamp,
+   because a clamp would hand the predictor fewer reference samples than it
+   indexes — the silent wrong-pixel failure the conformance mandate forbids.
+
+4. **`leaf_funnel/overlay.rs` — `predict_unit_overlay` builds its canvas edges,
+   above/left and `above_c` on the stack.** 30,285 blocks for 879,601 bytes (a
+   29-byte average). The canvas' INTERIOR was never written and never read —
+   only its top row and left column — so it is now two `[u8; 65]` arrays instead
+   of a `(txw+1) * (txh+1)` heap allocation. Bounded by `TX_64X64`, again by
+   `assert!`.
+
+Not done, and named with their measured size so the next chunk can start from a
+number rather than a guess: `mds3::eval_candidate` (40,223 blocks / 4.17 MB),
+`tx_pipeline::tx_unit_inner` (26,580 / 11.38 MB — the residue is the OWNED
+`TxUnitOut` `Vec`s, not the already-scratched interior), `txt_search::{closure#0}`
+(22,617 / 4.57 MB, mostly `slice::to_vec`), `pd0::tx_quant_core` (16,320 /
+11.01 MB, three owned `Vec`s returned per call from ONE caller), and
+`inject_candidates` / `encode_block_syntax` / `evaluate_leaf` (9,416 / 9,416 /
+8,239). Every one is the same shape: an owned-`Vec` RETURN where C writes into a
+pool buffer. `pd0::quantize_b`'s outputs (`pd0.rs:726-727`) are explicitly NOT
+in that list as a ZERO-FILL removal — DHAT shows only 1,177,220 of their
+3,407,872 bytes written, so their zero-fill IS read; a scratch there must still
+`fill(0)` and would save only the malloc/free, not the memset.
+
+THE NEXT CHUNK, SIZED: **a `Pd0Scratch` thread-local, shaped exactly like
+`tx_pipeline::TxScratch`.** The PD0 lvl-1 path allocates five buffers per call
+from ONE caller chain (`lvl1_block_cost_rect` -> `lvl1_cost_from_pred` ->
+`tx_quant_core` -> `quantize_b`), 5,440 calls per photo_cid p6 encode:
+
+  pd0.rs:2294  pred      5,440 blocks   1,048,576 B   read = written (full)
+  pd0.rs:2358  residual  5,440          4,194,304 B   read = written (full)
+  pd0.rs:965   coeffs    5,440          4,194,304 B   4,448,256 written
+  pd0.rs:726   qcoeff    5,440          3,407,872 B   1,177,220 written
+  pd0.rs:727   dqcoeff   5,440          3,407,872 B   1,177,220 written
+                        ------          -----------
+                        27,200          16,252,928 B
+
+`pred` and `residual` are FULLY overwritten before they are read (by
+`inter_pred_into`/`predict_dc` and `residual_i32` respectively), so their
+zero-fill is dead the same way `hadamard_satd`'s was. `tx_quant_core` returns
+`(u16, u64, Vec<i32>, usize, Vec<i32>)` and both `Vec`s are consumed inside
+`lvl1_cost_from_pred`, so an out-param signature is a local change — no
+consumer outside pd0.rs sees it. That is 27,200 of the remaining 158,413 blocks
+(17.2 %) behind one scratch struct and one signature change.
+
+A REFINEMENT LEFT UNMEASURED, named so it is not mistaken for an oversight:
+`NeighborEdges` is 280 bytes returned BY VALUE, of which only `width` +
+`height` are meaningful (typically 8-16 on this content, per the 9.8-byte
+average payload). LLVM returns it through an `sret` pointer, so the caller pays
+the two `[u8; 128]` arrays' zero-init on every call. The net is already measured
+as a WIN, so nothing further is claimed — but a caller-owned
+`&mut NeighborEdges` reused across a block's TX units would remove even that,
+and it is a smaller change than the pd0 scratch above.
+
+=================== 4. THE NUMBERS ============================================
+
+**Instructions** (callgrind, whole process, one encode, every cell
+byte-identical; C's own .obu `cmp`'d against the port's on the two p6 cells):
+
+  cell                       base Ir          cand Ir      delta   port/C base -> cand
+  photo_cid 512x512 p6   1,511,752,954    1,463,950,401   -3.162 %   2.1425 -> 2.0748
+  screen_terminal p6       893,970,089      850,717,449   -4.838 %   2.5155 -> 2.3939
+  photo_cid 512x512 p2  45,564,135,018   45,189,114,595   -0.823 %   n/m
+
+p2 gets only the three stack/scratch changes: the per-SB CDF-chain simulation
+writer is an M4..M6 path (`update_cdf_level` 2), so preset 2 never builds it.
+
+The `hadamard_satd` change was also measured ALONE before the others were added:
+1,511,752,954 -> 1,506,218,784, **-5,534,170 Ir (-0.366 %)**, byte-identical.
+
+**Allocations** (DHAT, photo_cid 512x512 p6, one encode):
+
+  metric                          base          cand      delta        C
+  heap blocks                  244,967       158,413    -35.33 %    1,228
+  heap bytes               106,170,317    63,966,573    -39.75 %  24,112,240
+  peak live bytes            6,223,973     6,230,148    +0.099 %  19,243,442
+  peak live blocks               6,938         6,941    +0.043 %      1,203
+
+**Wall clock** (`tools/perf_ab.sh`, 21 interleaved paired rounds, every row
+ident=Y, each A/B with its OWN same-binary control in the same session):
+
+  round  cell                 preset   A/B      control   corrected  speedup  disjoint
+    1    photo_cid 512x512      2    0.9777     1.0024      0.9753    1.025    yes
+    1    photo_cid 512x512      6    0.9843     1.0032      0.9811    1.019    yes
+    1    screen_terminal        2    0.9843     1.0060      0.9784    1.022    yes
+    1    screen_terminal        6    0.9730     0.9932      0.9797    1.021    yes
+    2    photo_cid 512x512      2    0.9776     1.0023      0.9753    1.025    yes
+    2    photo_cid 512x512      6    0.9827     1.0005      0.9822    1.018    yes
+    2    screen_terminal        2    0.9830     1.0058      0.9773    1.023    yes
+    2    screen_terminal        6    0.9762     1.0042      0.9721    1.029    yes
+
+Round 1 is the three stack/scratch changes; round 2 adds the range-coder resize.
+The p25/p75 spans are in the TSV; every A/B span is disjoint from its control's.
+
+**A RESULT THAT LOOKS WRONG AND IS NOT, STATED BECAUSE IT IS THE INTERESTING
+ONE: adding the range-coder resize TRIPLED the Ir saving at photo_cid p6
+(-1.070 % -> -3.162 %) and did NOT move the wall clock.** Round 1 -> round 2,
+per cell: photo p2 1.025 -> 1.025, photo p6 1.019 -> 1.018, screen p2
+1.022 -> 1.023, screen p6 1.021 -> 1.029. Three cells are flat; the fourth
+moves by 0.8 pp, which is inside round 1's own span there (its A/B read
+0.9588-0.9874 against a 0.9850-1.0082 control — the widest of the eight rows).
+**No cell shows the resize as a clock win, and the one that could be read that
+way is the noisiest.**
+That is exactly what should happen and it is a caution about reading Ir on
+memset-shaped work. Callgrind charges `__memset_avx2_unaligned_erms`'s
+`rep stosb` **one Ir per BYTE**; the hardware retires it at tens of bytes per
+cycle. So 33.5 MB of dead zero-fill is ~33 M Ir (2.2 % of the frame's
+instructions) but only ~1 M cycles (~0.2 % of the frame's 447.7 M cycles at
+p6, using the stall record's cycle count). **The Ir ranking overstates a
+zero-fill by roughly an order of magnitude relative to a change that removes
+real instructions.** The resize is kept anyway — it is a 33.5 MB reduction in
+per-frame memory traffic and a strictly-dead 2.10 % of the Ir ranking that
+would otherwise keep drawing future chunks to it — but **no wall-clock gain is
+claimed for it, and the honest reading is that the 1.018x-1.029x comes from the
+three stack/scratch changes.** The other direction is worth stating too: those
+three are worth ~1.07 % of Ir at p6 and read 1.019x on the clock, i.e. the
+allocator's poor IPC (2.40 against the port's 3.44 frame average, per
+`stall_attrib_2026-09-05`) makes them worth MORE in cycles than in
+instructions.
+
+=================== 5. GATES ==================================================
+
+                                                aarch64 (Mac)          x86_64 (r7900x)
+  six still cells                290/839/63/171/580/693 B   290/839/63/171/580/693 B
+  regression_spotcheck                        104 / 104              104 / 104
+  fctx_gate                       96/96 fields, PASS       96/96 fields, PASS
+  screen_ibc_byte_gate            152 / 152, 0 diverging   152 / 152, 0 diverging
+  screen_palette_gate             50 / 50 (38 palette)     50 / 50 (38 palette)
+  inter_byte_gate                 108 required, 0 failed   108 required, 0 failed
+  video_key_matrix                59 / 60 (1 known diff)   59 / 60 (1 known diff)
+  SCAN_GATE (inter_completion)    64 OK / 0 REFUSED /      64 OK / 0 REFUSED /
+                                  0 CRASH, PASS            0 CRASH, PASS
+  decode_conformance              1260 passed, 0 failed    1260 passed, 0 failed
+  identity_full_8bit              1100 / 1100, +0 pinned,  1100 / 1100, +0 pinned,
+                                  0 harness errors         0 harness errors
+  cargo nextest --workspace       2544 run, 2544 passed,   2554 run, 2554 passed,
+                                  0 skipped, 0 failed     0 skipped, 0 failed
+
+TWO EXTRA aarch64 CHECKS this change specifically needed:
+
+  * **`SVTAV1_SC_TOOLS` still works.** The question-A sweep touched none of its
+    code, and the tool is exercised rather than assumed: on
+    `crop:gb82-sc/windows95.png 512x512 q48 p4`, unset = 8,521 B,
+    `nopalette` = 12,465 B, `noibc` = 8,938 B, `none` = 14,000 B — four
+    distinct sizes in the expected ordering (turning a screen tool off costs
+    bytes), exactly as before.
+  * **`arbitrary_size_robustness`: 128 / 128 panic-free + aomdec-decodable, 0
+    refused.** This is the gate that matters for the two new `assert!`s
+    (`MAX_EDGE_PX` in `extract_neighbors_tiled`, `MAX_TX_EDGE_PX` in
+    `predict_unit_overlay`) — neither fires on any of its 128 odd geometries,
+    and `video_key_matrix`'s SB128 cells exercise the 128-px edge itself.
+
+A SECOND TRAP, worth recording: **`identity_full_8bit`'s verdict line was LOST
+on the first aarch64 pass because the driver script piped it through
+`| tail -3`, and a shell job-control line ("Done ...") landed in the last three
+lines instead of the gate's own `1100 / 1100`.** The suite exited 0 and every
+other step printed its verdict, so the run LOOKED complete. It was re-run with
+the gate's full output captured to its own file. **Never `| tail -N` a gate
+whose verdict you intend to quote** — capture the whole thing and grep for the
+verdict line by name.
+
+A NOTE ON A TRAP THIS CHUNK PAID FOR, for §5 of `docs/WORKING-ON-THIS.md`:
+**a gate suite started before the last edit is a MIXED-BUILD run and its verdict
+is worthless.** The first aarch64 pass was launched, then `pipeline.rs` was
+edited and rebuilt while `screen_ibc_byte_gate` was still calling
+`identity_run` (which runs `cargo build` per call). It was killed and re-run
+from scratch against the final tree. The existing rule ("never rebuild Rust
+while a sweep is using the binary") covers it; what is new is that the rebuild
+does not have to be deliberate — an ordinary "fix one more thing" edit is
+enough.
+
+A CAVEAT ON THE PER-SITE BLOCK COUNTS, stated rather than hidden: **inlining
+blurs DHAT's per-site attribution in a release build with no line tables.**
+`hadamard_satd`'s two allocations appear under `inject_candidates` at one
+program point and under `hadamard_satd` at another, so a SITES row can be off by
+however much its callee was inlined into it. What is exact is the TOTALS
+(244,967 blocks / 106,170,317 bytes before, 158,413 / 63,966,573 after), the
+B-rows (taken from a `CARGO_PROFILE_RELEASE_DEBUG=1` build that resolves
+file:line), and the measured Ir delta per change. Rank by the B-rows and by Ir,
+not by the SITES block counts.
+
+=================== 5b. THE Ir NUMBERS ARE THE COMMITTED BINARY'S =============
+
+The Ir table in §4 was taken on a build that predates two late edits (moving a
+`const` above a doc comment in `partition.rs`, and moving a misplaced
+`#[allow(clippy::too_many_arguments)]` off a `const` and back onto its function
+in `overlay.rs`). Both were argued to be codegen-neutral. **They were not, and
+the argument was replaced by a measurement.**
+
+First the floor: the SAME binary run twice on photo_cid p6 reads 1,463,905,845
+and 1,463,903,039 Ir — a **~2,800-Ir (0.0002 %) run-to-run noise floor** from
+process startup, not from the encode. Against that floor the committed binary
+differs from the measured candidate by **44,556 Ir on photo_cid p6** (15x the
+floor, in the FAVOURABLE direction) and by **137 Ir on screen_terminal p6**
+(inside it). Item order feeds LLVM's inliner; a lint attribute does not, and
+with two simultaneous edits there is no way to say which without another
+bisect, which was not run.
+
+The FIN rows in the TSV are the committed binary's, and the headline is quoted
+from them. Every `.obu` from those runs was `cmp`'d against the candidate's and
+is identical.
+
+=================== 6. WHAT IS AND IS NOT ESTABLISHED =========================
+
+ESTABLISHED, at commit 7ec5b5572 + this change, on the cells named above:
+  * the per-call call counts (`getenv` 29/30/32, malloc/calloc/free/realloc) and
+    the static census behind them — every `env::var` site in `crates/*/src` with
+    its cache state and the rate of its enclosing function;
+  * the ABSENCE of `Mutex`, `RwLock`, `HashMap`, `BTreeMap` and `Instant::now`
+    from `crates/{svtav1-encoder,svtav1-dsp}/src` (a static fact from the sweep);
+  * `sizeof` for eight C structures (identical on x86_64-linux and
+    aarch64-macOS) and sixteen port structures;
+  * DHAT's blocks / bytes / bytes-read / bytes-written per allocation site, for
+    the port before and after and for C;
+  * the callgrind Ir totals and the inclusive Ir of the allocator family;
+  * the wall-clock ratios and their per-pair same-binary controls;
+  * byte-identity on every cell measured and on the gate suites listed above.
+
+NOT MEASURED, and not to be inferred:
+  * any cycle counter for this change — the wall clock is the cycle evidence
+    here, and no `perf stat` run was taken. The "33.5 MB is ~0.2 % of cycles"
+    arithmetic in §4 uses `stall_attrib_2026-09-05`'s 447.7 M cycles/encode and
+    a nominal ERMS store rate; it is an ORDER-OF-MAGNITUDE argument for why the
+    Ir and the clock disagree, NOT a measurement of the resize's cycle cost;
+  * aarch64 wall clock (a sibling lane, `zenav1-svt--mt1`, was live on that box
+    the whole session). aarch64 peak RSS IS measured — see the MEM section;
+  * 10-bit, inter frames, presets other than 2 and 6, qp other than 40, and the
+    CLIC / line-art / 500x332 cells;
+  * whether the remaining owned-`Vec`-return sites (§3's "not done" list) are
+    worth their surgery — they are SIZED here, not priced against a fix;
+  * the split of the port's excess branch instructions between bounds checks and
+    loop control (unchanged from `stall_attrib_2026-09-05`: they cannot be
+    separated by source line);
+  * the `#[cfg(not(feature = "std"))]` arm of the new `with_hadamard_scratch`.
+    It follows `tx_pipeline::with_txt_out`'s existing shape exactly, but it
+    CANNOT be compiled today: `cargo check --no-default-features -p
+    zenav1-svt-encoder` fails with **60 pre-existing errors** at this commit
+    (`vec!`/`eprintln!` not in scope in `pipeline.rs:2691` and throughout
+    `port_md/*` — none of them in a file this change touches), and
+    `.github/workflows/rust-gates.yml` has no `--no-default-features` job. So
+    the no-std build was already broken before this change and is not made worse
+    by it, but the new arm is UNVERIFIED and is stated as such rather than
+    claimed;
+  * any `Option`-to-sentinel change — the 69 `saturating_sub` + 9 `checked_sub`
+    sites in the encoder all compile through one `core` line and could not be
+    priced individually, so none was attempted.
+
+A CORRECTION TO THE BRIEF, stated because two of its premises were wrong:
+  * "two `std::env::var("SVTAV1_SC_TOOLS")` calls at `pipeline.rs:11213` and
+    `:11224` ... sit in the per-superblock funnel-config path" — the line
+    numbers are stale (11599 / 11610 at this commit) and the path is per-TILE,
+    not per-superblock. Measured: 29 `getenv` calls in the whole encode.
+  * "`leaf_funnel/predict.rs:251`" is listed as an uncached candidate; it is the
+    body of a `OnceLock::get_or_init` closure and was already cached, as is
+    `depth_refine.rs:1357`.
+  * The brief also asks for `benchmarks/stall_attrib_2026-09-05.meta` as
+    required reading. **That file is not on `main@origin` and not in the primary
+    checkout** — it exists only in the live `zenav1-svt--v4x1` workspace
+    (`~/work/zen/zenav1-svt--v4x1/rust/benchmarks/`). It was read from there,
+    read-only.

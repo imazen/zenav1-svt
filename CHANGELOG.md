@@ -987,6 +987,53 @@ Crates are not published to crates.io yet — depend by git.
   divergence is the TILE: C 3 bytes, port 94.
 
 ### Changed
+- **The port makes 199x C's allocator calls, and a per-superblock range-coder
+  buffer was sized to the whole frame — 244,967 heap blocks -> 158,413
+  (-35.3 %), 106.2 MB -> 64.0 MB (-39.8 %), instructions -3.16 % (photo_cid
+  512² p6) / -4.84 % (screenshot p6) / -0.82 % (p2), wall clock 1.018x-1.029x
+  on four cells against their own same-binary controls**
+  (`benchmarks/percall_layout_2026-09-05.{tsv,meta}`). Byte-identical on both
+  ISAs; DHAT peak live heap is a NULL (+0.099 %). **The env-var question this
+  work started from is a measured null and is reported as one:** `getenv` fires
+  29 times in a whole photo_cid 512² p6 encode against 133,020 `malloc`s, the
+  two uncached `SVTAV1_SC_TOOLS` reads sit in `encode_tile_rows` (once per
+  TILE, not per superblock), and `Mutex`/`RwLock`/`HashMap`/`BTreeMap`/
+  `Instant::now` do not exist in the shipped encoder or DSP crates — nothing
+  was changed for any of them, so the `SVTAV1_SC_TOOLS` tool still behaves
+  exactly as before. What is a real per-call cost is the allocator, and it is
+  also the layout answer: the port's structs are not systematically fatter
+  (`BlockDecision` 288 B vs C's `BlkStruct` 400; `MvpMiEntry` 20 B vs
+  `MbModeInfo` 60), but `leaf_funnel::Cand` is 528 B against
+  `ModeDecisionCandidate`'s 168 because 16 of its fields are `Vec`/`Option`-of-
+  `Vec` (360 of the 528 bytes are `Vec` headers) where C's candidate points
+  into a pool allocated once per handle (`md_process.c:585-601`). Four sites
+  changed: **(1)** `pipeline.rs`'s per-SB CDF-chain simulation writer was
+  `AomWriter::new(w * h * 2 + 256)` — the FRAME size, 524,544 zeroed bytes 64
+  times per 512² frame, **33,570,816 B of which DHAT counts 63,233 ever written
+  and 2,425 ever read**, 2.10 % of the p6 frame spent zeroing memory nothing
+  reads; it is now sized to a superblock, which `OdEcEnc::new`'s own
+  growth-on-demand contract permits and the never-read-before-written scratch
+  region makes byte-inert. The size dependence was QUADRATIC and the 512² cell
+  hides it — the capacity was per-SB while the SB count also scales with pixels
+  — so the same defect was **8.59 GB of zero-fill per frame at 2048² p6**, now
+  linear in pixels (8.6 MB). **(2)** `partition::extract_neighbors_tiled` returns
+  a stack `NeighborEdges` instead of two `Vec<u8>` — 44,502 blocks per encode
+  for 435,872 bytes, a 9.8-byte average payload per malloc/free pair.
+  **(3)** `leaf_funnel::overlay::predict_unit_overlay` builds its canvas edges
+  on the stack; the canvas INTERIOR was never written and never read.
+  **(4)** `leaf_funnel::predict::hadamard_satd{,_hbd}` take their tiles from a
+  thread-local `HadamardScratch` — the two `vec![0; tx*tx]` already sat outside
+  the tile loops and were fully overwritten per tile, so reuse across calls is
+  the same contract one level up. **One honest caveat, recorded because it is
+  the useful part:** change (1) tripled the Ir saving at photo_cid p6
+  (-1.070 % -> -3.162 %) and moved the wall clock by nothing (three of the four
+  cells flat, the fourth moving 0.8 pp inside its own span) — callgrind charges
+  `rep stosb` one Ir per BYTE while the hardware retires it at tens of bytes per
+  cycle, so 33.5 MB of dead zero-fill is ~2.2 %
+  of the frame's instructions and ~0.2 % of its cycles. It is kept for the
+  memory traffic and because a strictly-dead 2.10 % of the Ir ranking would
+  keep drawing future chunks to it, but no wall-clock gain is claimed for it;
+  the 1.018x-1.029x is changes (2)-(4). Now in `docs/WORKING-ON-THIS.md` §5.
 - **The entropy coefficient writer and the range coder take C's SHAPE —
   -2.285 % of the photo_cid 512² p6 frame's instructions, -2.96 % of its
   cycles, -7.96 % of its branch misses, 1.037x / 1.029x wall clock on the two

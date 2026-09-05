@@ -1,5 +1,121 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE PORT MAKES 199x C's ALLOCATOR CALLS, AND A PER-SUPERBLOCK RANGE-CODER
+> BUFFER WAS SIZED TO THE WHOLE FRAME — 244,967 HEAP BLOCKS -> 158,413 (-35.3 %),
+> 106.2 MB -> 64.0 MB (-39.8 %), Ir -3.16 % / -4.84 % / -0.82 %, WALL CLOCK
+> 1.018x-1.029x ON FOUR CELLS AGAINST THEIR OWN CONTROLS (2026-09-05).** Record
+> `benchmarks/percall_layout_2026-09-05.{tsv,meta}`.
+> **The env-var question this chunk was dispatched on is a MEASURED NULL and is
+> reported as one:** `getenv` fires **29 times in a whole photo_cid 512² p6
+> encode** (30 on the screenshot, 32 at p2), against 133,020 `malloc`s and
+> 110,747 `calloc`s in the same encode. The two uncached
+> `std::env::var("SVTAV1_SC_TOOLS")` reads are NOT on the per-superblock path —
+> their enclosing function is `encode_tile_rows`, once per TILE — and
+> `leaf_funnel/predict.rs:251` and `depth_refine.rs:1357` were already inside a
+> `OnceLock::get_or_init`. `Mutex`, `RwLock`, `HashMap`, `BTreeMap` and
+> `Instant::now` are ABSENT from `crates/{svtav1-encoder,svtav1-dsp}/src`, and
+> `core::fmt::write` runs three times per encode. **Nothing was changed for any
+> of them**, so `SVTAV1_SC_TOOLS` still works exactly as before.
+> **What IS a per-call cost C does not pay is the ALLOCATOR**, and it is also the
+> answer to the layout question. DHAT, one photo_cid 512² p6 encode:
+> port **244,967 heap blocks against C's 1,228 (199x)** while holding **0.32x
+> C's peak live bytes** (6.22 MB vs 19.24 MB) — the port is not using more
+> memory, it is churning the allocator to hold less. `malloc`+`calloc`+`free`+
+> `realloc` inclusive Ir is 82,254,098 = **5.44 % of the frame against C's
+> 0.14 % (85x)**. **The port's structs are NOT systematically fatter**:
+> `BlockDecision` 288 B vs `BlkStruct` 400, `MvpMiEntry` 20 B vs `MbModeInfo` 60,
+> `MdRates` 17,984 vs `ModeDecisionContext` 16,368 — the port is SMALLER on the
+> two that are stored per 4×4 cell frame-wide. The one big ratio is
+> `leaf_funnel::Cand` at **528 B against `ModeDecisionCandidate`'s 168 (3.14x)**,
+> and the cause is OWNERSHIP, not padding: **16 of its fields are `Vec` or
+> `Option`-of-`Vec` and fifteen bare `Vec` headers are 360 of the 528 bytes**,
+> each its own malloc/free per candidate per block, where C's candidate is POD
+> pointing into a pool `md_process.c:585-601` allocates once per handle.
+> `txb_q: Vec<Vec<i32>>` is the one genuine extra indirection level (C indexes
+> one flat `quant_coeff`). AoS-vs-SoA is a null — no site was found where the two
+> disagree on anything walked per block. **And 199x understates it: DHAT
+> attributes EVERY ONE of C's 1,228 allocations to a `_ctor`**
+> (`picture_control_set_ctor` 172, `svt_muxing_queue_ctor` 160,
+> `svt_system_resource_ctor` 149, `svt_aom_mode_decision_context_ctor` 53 /
+> 1.19 MB, `svt_picture_buffer_desc_ctor` 25 / 3.90 MB, …) — **C allocates
+> nothing inside the encode loop**, where all 244,967 of the port's are.
+> **THE SINGLE BIGGEST ITEM WAS IN NO PREVIOUS RANKING:** `pipeline.rs:13504`
+> built the per-SB CDF-chain simulation writer with
+> `AomWriter::new(w * h * 2 + 256)` — the FRAME size, 524,544 zeroed bytes, 64
+> times per 512² frame = **33,570,816 B of which DHAT counts 63,233 EVER WRITTEN
+> and 2,425 EVER READ** (0.19 % / 0.007 % utilisation). 31.79 M Ir, **2.10 % of
+> the p6 frame spent zeroing memory nothing reads.** It is now
+> `sb_size * sb_size * 2 + 256`; `OdEcEnc::new`'s own contract says any capacity
+> is valid, and the buffer past `offs` is never READ before it is written
+> (`normalize` `copy_from_slice`s eight bytes after `resize`, `done` assigns each
+> byte, `propagate_carry_bwd` only touches below `offs`).
+> **The size dependence is QUADRATIC and the 512² cell hides it:** the old
+> capacity was `w * h * 2 + 256` PER SB while the SB count is `w * h / sb_size²`,
+> so the per-frame zero-fill went as `w² * h²` — 33.5 MB at 512², and
+> **8.59 GB per frame at 2048² p6** (1024 SBs x 8,388,864 B). It is now linear
+> in pixels (8.6 MB at 2048²).
+> Three more sites were converted to stack/scratch storage:
+> `partition::extract_neighbors_tiled` (**44,502 blocks for 435,872 bytes — a
+> 9.8-BYTE average payload per malloc/free pair**, now a stack `NeighborEdges`
+> with `[u8; 128]` edges bounded by `MAX_SB_SIZE`),
+> `leaf_funnel::overlay::predict_unit_overlay` (30,285 blocks / 29-byte average;
+> its canvas INTERIOR was never written and never read, so only the top row and
+> left column are kept), and `leaf_funnel::predict::hadamard_satd{,_hbd}` (11,770
+> blocks; its two `vec![0; tx*tx]` already sat outside the tile loops and were
+> fully overwritten per tile, so reusing them across CALLS is the same contract
+> one level up — thread-local `HadamardScratch`, `try_borrow_mut` + hand-back
+> like `with_txt_out`).
+> **Ir** (r7900x callgrind, every cell byte-identical, C's own .obu `cmp`'d on
+> the two p6 cells): photo_cid 512² p6 1,511,752,954 -> 1,463,950,401
+> (**-3.162 %**, port/C 2.1425 -> **2.0748**), screen_terminal p6 893,970,089 ->
+> 850,717,449 (**-4.838 %**, 2.516 -> **2.394**), photo_cid p2 45,564,135,018 ->
+> 45,189,114,595 (**-0.823 %** — the per-SB simulation writer is an M4..M6 path,
+> so p2 gets only the three stack/scratch changes).
+> **Wall clock**, `perf_ab.sh` 21 interleaved paired rounds, every row ident=Y,
+> **each A/B paired with its OWN same-binary control in the same session**
+> (`perf_ab`'s bias is per-pair, not a constant): photo_cid p2 0.9776 against a
+> control of 1.0023 -> **1.025x**; photo_cid p6 0.9827 against 1.0005 ->
+> **1.018x**; screen_terminal p2 0.9830 against 1.0058 -> **1.023x**;
+> screen_terminal p6 0.9762 against 1.0042 -> **1.029x**. Every A/B p25..p75
+> span is disjoint from its control's.
+> **A RESULT THAT LOOKS WRONG AND IS NOT:** adding the range-coder resize
+> TRIPLED the Ir saving at photo_cid p6 (-1.070 % -> -3.162 %) and did NOT move
+> the wall clock — round 1 -> round 2 per cell, photo p2 1.025 -> 1.025, photo
+> p6 1.019 -> 1.018, screen p2 1.022 -> 1.023, screen p6 1.021 -> 1.029 (three
+> flat; the fourth moves 0.8 pp inside round 1's own span there, the widest of
+> the eight rows). Callgrind charges `rep stosb` one Ir per
+> BYTE and the hardware retires it at tens of bytes per cycle, so 33.5 MB of
+> dead zero-fill is ~2.2 % of the frame's INSTRUCTIONS and ~0.2 % of its CYCLES.
+> **The Ir ranking overstates a zero-fill by about an order of magnitude.** The
+> resize is kept for the 33.5 MB of per-frame memory traffic it removes and
+> because a strictly-dead 2.10 % of the Ir ranking would otherwise keep drawing
+> future chunks to it, but **no wall-clock gain is claimed for it** — the
+> 1.018x-1.029x is the three stack/scratch changes. Now in
+> `docs/WORKING-ON-THIS.md` §5.
+> **Memory is a NULL and is reported as one:** DHAT peak live 6,223,973 ->
+> 6,230,148 B (**+0.099 %**) — the freed churn was transient, not resident. The
+> aarch64 2048-inter RSS arm is unmoved (see the record's MEM section).
+> **STILL OPEN, with measured sizes so the next chunk starts from a number:**
+> `mds3::eval_candidate` 40,223 blocks / 4.17 MB, `tx_pipeline::tx_unit_inner`
+> 26,580 / 11.38 MB (the residue is the OWNED `TxUnitOut` `Vec`s, not the
+> already-scratched interior), `txt_search::{closure#0}` 22,617 / 4.57 MB (mostly
+> `slice::to_vec`), `pd0::tx_quant_core` 16,320 / 11.01 MB (three owned `Vec`s
+> returned per call from ONE caller). Every one is the same shape: an owned-`Vec`
+> RETURN where C writes into a pool buffer. **THE NEXT CHUNK, SIZED: a
+> `Pd0Scratch` thread-local shaped like `tx_pipeline::TxScratch`.** The PD0
+> lvl-1 path allocates five buffers per call from ONE caller chain
+> (`lvl1_block_cost_rect` -> `lvl1_cost_from_pred` -> `tx_quant_core` ->
+> `quantize_b`), 5,440 calls per photo_cid p6 encode: `pd0.rs:2294` pred
+> (1,048,576 B), `:2358` residual (4,194,304), `:965` coeffs (4,194,304),
+> `:726` qcoeff (3,407,872), `:727` dqcoeff (3,407,872) — **27,200 blocks /
+> 16.25 MB, 17.2 % of the 158,413 that remain**. `pred` and `residual` are
+> FULLY overwritten before they are read, so their zero-fill is dead the same
+> way `hadamard_satd`'s was; `tx_quant_core`'s two returned `Vec`s are consumed
+> inside `lvl1_cost_from_pred`, so an out-param signature is local to `pd0.rs`.
+> **`quantize_b`'s two outputs are NOT a zero-fill removal** — only 1,177,220 of
+> their 3,407,872 bytes are written, so the zeros ARE read; a scratch there
+> saves the malloc/free, not the memset.
+
 > **THE aarch64 4-WIDE CHROMA CDEF ARM IS 1.6x FASTER AT THE KERNEL — 185-188 ns
 > -> 113-119 ns WITH DISJOINT INTERVALS — AND THE WHOLE-FRAME WALL CLOCK IS A
 > NULL, WHICH IS REPORTED AS ONE (2026-09-05).** Record
