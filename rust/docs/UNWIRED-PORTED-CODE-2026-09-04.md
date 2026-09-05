@@ -175,6 +175,22 @@ with a probe either, though less catastrophically than item 1. Full account:
   multi-superblock inter cell at presets 0..3 PANICKED the moment the refusal
   stopped hiding them.
 
+**AMENDED 2026-09-05 (same day, second chunk): the search itself is ported now,
+and item 2 is CLOSED except for the coding of the model.**
+`svt_aom_gm_get_params_cost` (`global_me_cost.c`, exported — **tier 1**) and
+`compute_global_motion` (`global_me.c:320`, static — tier 4, joined against a
+`SVT_GMSEARCH_OUT` interposer on its two exported callees) are in tree and
+WIRED, so the port fits C's model itself: on the 33/32-zoom photo cell it
+reproduces C's whole-frame SAD, every `params_cost`, every refined warp error
+and both ROTZOOM `wmmat` vectors exactly. `docs/INTER-ENCODE-PLAN.md` §1z⁴².
+What remains of the item is the SYNTAX and the MD side —
+`port_entropy_inter::gm::write_global_motion{,_params}` (ported, tested, still
+callerless) in place of `entropy::obu`'s seven-zero-bit loop,
+`InterMdEnv::global_motion` / `InterMdFrame::gm_wmtype` (both still
+`[Identity; 8]`), and `global_mv_injection` (a hard-coded `true` in
+`inter_md_arm` where C's is `pcs->gm_ctrls.enabled`). Those are the rows a next
+sweep should carry.
+
 **The method lesson, again.** Item 1's correction said to treat every "C calls
 it on the tested path: Yes" as a hypothesis with a named probe. Item 2 shows
 the second half of that: even when C DOES reach the code, ask what it computes

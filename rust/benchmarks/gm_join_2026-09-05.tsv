@@ -36,3 +36,45 @@ crop:CID22/3571065 512x512	2	0	9/8	2578922	2578922	9	9	64	64	1	0	ROTZOOM
 #   gradient 16x16 p2  total_me_sad=26112 avg=102 is_gm_on=0
 #   diag     16x16 p2  total_me_sad=26688 avg=104 is_gm_on=0
 #   screen   16x16 p2  total_me_sad=4788  avg=18  is_gm_on=0
+#
+# ===== CHUNK 2 (the SEARCH itself, same day) =====================
+#
+# The port now RUNS compute_global_motion. Joined against SVT_GMSEARCH_OUT (a
+# --wrap on svt_aom_gm_get_params_cost + svt_av1_refine_integerized_param, the
+# two exported leaves of C's static per-reference driver), on
+# crop:CID22/3571065 256x256 q40 p2 with a 33/32 zoom:
+#
+#   quantity                        C            port
+#   pic_sad (whole-frame SAD)       1862929      1862929
+#   TRANSLATION params_cost         7168         7168
+#   TRANSLATION refined error       2030714      2030714
+#   ROTZOOM  params_cost list0      29696        29696
+#   ROTZOOM  refined error list0    621626       621626
+#   ROTZOOM  params_cost list1      27136        27136
+#   ROTZOOM  refined error list1    623044       623044
+#   list0 model  259072,259072,63494,0,0,63494   identical
+#   list1 model  250880,250880,63558,0,0,63558   identical
+#
+# and on the 512x512 9/8-zoom cell both models likewise
+# (1850368,1851392,58276,0,0,58276 / 1846272,1862656,58172,22,-22,58172).
+#
+# C's plane geometry, from GMREFINE: r=256x256/400 d=256x256/400 — the TRUE
+# picture dims and each buffer's own padded stride. The port passes tight
+# planes (392 / 256) and gets the same numbers, because port_warp clamps every
+# sample into [0,width-1]x[0,height-1].
+#
+# C's allow_high_precision_mv argument is 0 at ME time regardless of qp
+# (GMCOST hp=0 at q10 AND q20): frm_hdr.allow_high_precision_mv is assigned in
+# md_config_process, after me_process.
+#
+# BYTE OUTCOME after the search wire, identity_diff_inter frames=2 q40 shift 3,
+# BOTH frames byte-identical to C:
+#   {uniform,gradient,diag,screen} x {16,64,128,256} x {p0,p2,p3,p4}  64 / 64
+#   crop:CID22/3571065 128 and 256 at p2 and p4                        4 / 4
+# Still open: photo p0 differs on FRAME 0 (a key frame, tools/photo_p0_gate.sh),
+# and the 512 photo diverges at p0/p2/p4.
+#
+# The three branches of C's chain and what the port does with each:
+#   avg_me_sad = 0, no search             -> encodes (is_global = 0 derived)
+#   search runs, RANSAC fits nothing      -> encodes (port's own search says so)
+#   search runs, fits a ROTZOOM           -> REFUSES (the model is uncoded)

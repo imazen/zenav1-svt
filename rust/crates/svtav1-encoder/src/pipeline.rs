@@ -1148,23 +1148,44 @@ impl EncodePipeline {
     /// the MVP environment already write.
     fn gm_search_config_error(
         gm: Option<&crate::port_global_me::GmEstimation>,
+        models: Option<&crate::port_global_me::GmModels>,
     ) -> Option<&'static str> {
-        match gm {
-            None => None,
-            Some(g) if g.all_identity() => None,
-            Some(_) if crate::dbgenv::gm_experimental() => None,
-            Some(_) => Some(
-                "global motion is not implemented: this INTER frame's ME residual puts C's \
-                 svt_aom_global_motion_estimation (global_me.c:137) past its average_me_sad \
-                 gate, so C fits a model per reference (RANSAC over the ME MVs, then \
-                 svt_av1_refine_integerized_param) and global_motion_params() codes its type \
-                 and parameters, while this port writes seven is_global = 0 bits and an \
-                 IDENTITY model. Frames whose motion C's own gate reads as global-motion-free \
-                 DO encode at preset <= 4 — this refusal is the frame's decision, not the \
-                 preset's. Use preset >= 5, or content without a global non-translational \
-                 motion [C: accepts]",
-            ),
+        // No derivation at all (a key frame, or a preset where `gm_ctrls` are
+        // disabled) — C memsets `is_global_motion` false and every model is
+        // IDENTITY, which is what the header writes.
+        let Some(g) = gm else { return None };
+        // The derivation alone proved no search runs.
+        if g.all_identity() {
+            return None;
         }
+        // The search RAN and left every reference IDENTITY. C's own
+        // `pcs->is_gm_on` is 0 there, `global_motion[]` is identity, and the
+        // header's seven zero bits are correct — so this frame encodes.
+        if models.is_some_and(|m| !m.is_gm_on) {
+            return None;
+        }
+        if crate::dbgenv::gm_experimental() {
+            return None;
+        }
+        if models.is_none() {
+            return Some(
+                "global motion is not implemented for this frame: C's \
+                 svt_aom_global_motion_estimation would search (global_me.c:190), and this \
+                 port could not run the search — the picture-analysis reference for a \
+                 (list, ref) slot the search needs is missing, or the derived downsample \
+                 level is not GM_FULL (crate::port_global_me::GmSearchError) [C: accepts]",
+            );
+        }
+        Some(
+            "global motion is not implemented: C's svt_aom_global_motion_estimation \
+             (global_me.c:137) fitted a NON-IDENTITY model for at least one reference of this \
+             INTER frame, so global_motion_params() codes its type and up to six parameters \
+             and mode decision prices GLOBALMV against it, while this port writes seven \
+             is_global = 0 bits and an IDENTITY model. The port runs C's search and refuses \
+             only when it finds something: frames whose motion the search reads as \
+             global-motion-free DO encode at preset <= 4. Use preset >= 5, or content without \
+             a global non-translational motion [C: accepts]",
+        )
     }
 
     /// Config knobs C rejects in `svt_av1_verify_settings`, refused here so
@@ -2583,6 +2604,146 @@ impl EncodePipeline {
                 },
             )
         });
+        // C's SEARCH, when the derivation above says C would run one
+        // (`global_me.c:190-300`). `None` when it would not — every reference
+        // then keeps the IDENTITY model C initialised, and no correspondence
+        // set, RANSAC fit or warp is computed, exactly as in C.
+        //
+        // The SOURCE plane is C's `input_pic` (`pcs->enhanced_pic`,
+        // `me_process.c:136`) and the REFERENCE is the PA reference's
+        // `input_padded_pic` — the same pyramid ME searched. Both are read
+        // through clamped addressing (`port_warp`'s `sample_x.clamp(0, width -
+        // 1)`) and from the picture ORIGIN, so a tightly-packed plane gives the
+        // same answer as C's bordered one; the strides differ and the pixels do
+        // not.
+        let gm_models = match gm_estimation.as_ref() {
+            Some(g) if !g.all_identity() => {
+                let me = frame_me.as_ref().expect("gm_estimation implies frame_me");
+                let ctrls = crate::port_enc_mode_config::ctrls::set_gm_controls(
+                    self.gm_level_for_frame(is_key),
+                    crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+                        self.width * self.height,
+                    ),
+                );
+                let pa_ref = self.pa_ref.as_deref();
+                match (ctrls, pa_ref) {
+                    (Some(ctrls), Some(pr)) => {
+                        // C's `me_results[b64]` arrays are one allocation per
+                        // b64; `MeResultsView` wants them flat across the
+                        // picture, which is how C's `pa_me_data` indexes them.
+                        let pu = crate::inter_me::context::SQUARE_PU_COUNT;
+                        let mut totals: alloc::vec::Vec<u8> =
+                            alloc::vec::Vec::with_capacity(me.per_b64.len() * pu);
+                        let mut cands: alloc::vec::Vec<crate::port_md::predicates::MeCandidateRef> =
+                            alloc::vec::Vec::with_capacity(me.per_b64.len() * pu * me.max_cand);
+                        let mut mvs: alloc::vec::Vec<svtav1_types::motion::Mv> =
+                            alloc::vec::Vec::with_capacity(me.per_b64.len() * pu * me.max_refs);
+                        for b in &me.per_b64 {
+                            totals.extend_from_slice(&b.total_me_candidate_index);
+                            cands.extend(b.me_candidate_array.iter().map(|c| {
+                                crate::port_md::predicates::MeCandidateRef {
+                                    direction: c.direction(),
+                                    ref_idx_l0: c.ref_idx_l0(),
+                                    ref_idx_l1: c.ref_idx_l1(),
+                                    ref0_list: c.ref0_list(),
+                                    ref1_list: c.ref1_list(),
+                                }
+                            }));
+                            mvs.extend_from_slice(&b.me_mv_array);
+                        }
+                        let view = crate::port_gm_correspondence::MeResultsView {
+                            total_me_candidate_index: &totals,
+                            me_candidate_array: &cands,
+                            me_mv_array: &mvs,
+                            pu_count: pu,
+                            max_cand: me.max_cand,
+                            max_refs: me.max_refs,
+                            max_l0: me.max_l0,
+                        };
+                        let geom = crate::port_gm_correspondence::GmPictureGeometry {
+                            aligned_width: w as u32,
+                            aligned_height: h as u32,
+                            b64_size: 64,
+                            enable_me_8x8: me.enable_me_8x8,
+                            enable_me_16x16: me.enable_me_16x16,
+                            gm_downsample_level:
+                                crate::port_gm_correspondence::GmDownsampleLevel::Full,
+                        };
+                        // `encode_input` is at stride `w` (the ALIGNED width);
+                        // `in_stride` belongs to `sb_input`, the SB-extent
+                        // padded twin, and they differ on any frame whose
+                        // aligned dims are not a multiple of 64.
+                        let src_plane = crate::port_global_me::GmPlane {
+                            buf: &encode_input,
+                            stride: w,
+                            width: self.true_width,
+                            height: self.true_height,
+                        };
+                        let rp = &pr.full;
+                        let ref_plane = crate::port_global_me::GmPlane {
+                            buf: &rp.buf[rp.org..],
+                            stride: rp.stride,
+                            width: self.true_width,
+                            height: self.true_height,
+                        };
+                        let mut sink = |a: core::fmt::Arguments<'_>| {
+                            if crate::dbgenv::gmdbg() {
+                                eprintln!("GMSEARCH poc={display_order} {a}");
+                            }
+                        };
+                        crate::port_global_me::global_motion_search(
+                            g,
+                            &ctrls,
+                            &view,
+                            &geom,
+                            src_plane,
+                            &|l, r| {
+                                if l < 2 && r == 0 {
+                                    Some(ref_plane)
+                                } else {
+                                    None
+                                }
+                            },
+                            // C's `allow_high_precision_mv` argument is
+                            // `pcs->frm_hdr.allow_high_precision_mv`
+                            // (`global_me.c:270`), and at ME time that field
+                            // is STILL ZERO: it is assigned in
+                            // `svt_aom_sig_deriv_mode_decision_config`
+                            // (md_config_process), which runs AFTER
+                            // me_process. MEASURED with `SVT_GMSEARCH_OUT` on
+                            // the 33/32-zoom photo 256 cell at q10 and q20 —
+                            // two quantizers whose final
+                            // `allow_high_precision_mv` differs — C's
+                            // `GMCOST` line reads `hp=0` in both. So this is
+                            // C's own ordering, not a value to derive.
+                            /*allow_high_precision_mv=*/
+                            false,
+                            temporal_layer,
+                            [
+                                pic_decision
+                                    .as_ref()
+                                    .map_or(0, |p| u32::from(p.ref_list0_count_try)),
+                                pic_decision
+                                    .as_ref()
+                                    .map_or(0, |p| u32::from(p.ref_list1_count_try)),
+                            ],
+                            [
+                                pic_decision
+                                    .as_ref()
+                                    .map_or(0, |p| u32::from(p.ref_list0_count)),
+                                pic_decision
+                                    .as_ref()
+                                    .map_or(0, |p| u32::from(p.ref_list1_count)),
+                            ],
+                            Some(&mut sink),
+                        )
+                        .ok()
+                    }
+                    _ => None,
+                }
+            }
+            _ => Some(crate::port_global_me::GmModels::default()),
+        };
         // Printed BEFORE the refusal below, deliberately: the frame whose
         // derivation a join gate most needs to see is exactly the one the
         // refusal stops (`tools/gm_join_gate.sh`).
@@ -2603,10 +2764,33 @@ impl EncodePipeline {
                     g.max_searches,
                     u8::from(g.all_identity()),
                 );
+                eprintln!(
+                    "GMPORTMODELS poc={display_order} searched={} is_gm_on={}",
+                    // Did C's per-reference search actually RUN, or did the
+                    // frame-level derivation short-circuit it?
+                    u8::from(!g.all_identity() && gm_models.is_some()),
+                    gm_models.as_ref().map_or(2u8, |m| u8::from(m.is_gm_on)),
+                );
+                if let Some(m) = gm_models.as_ref() {
+                    for (l, row) in m.models.iter().enumerate() {
+                        for (r, wm) in row.iter().enumerate() {
+                            if wm.wm_type != svtav1_types::motion::TransformationType::Identity {
+                                eprintln!(
+                                    "GMPORTREF poc={display_order} list={l} ref={r} wmtype={} \
+                                     wmmat={:?} is_global={}",
+                                    wm.wm_type as u8,
+                                    wm.wmmat,
+                                    u8::from(m.is_global_motion[l][r]),
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        if let Some(why) = Self::gm_search_config_error(gm_estimation.as_ref()) {
+        if let Some(why) = Self::gm_search_config_error(gm_estimation.as_ref(), gm_models.as_ref())
+        {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
         let mut c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
@@ -6223,12 +6407,13 @@ impl EncodePipeline {
                         enable_warped_motion: seq_tools.enable_warped_motion,
                     },
                     self.scs_tpl(),
-                    // C's own GM verdict for this frame, derived at
-                    // `gm_search_config_error` above — NOT `gm_level != 0`, which is
-                    // a fact about the preset.
-                    gm_estimation
-                        .as_ref()
-                        .is_none_or(crate::port_global_me::GmEstimation::all_identity),
+                    // C's own GM verdict for this frame — the SEARCH's result
+                    // when one ran, the derivation's when it did not, and NOT
+                    // `gm_level != 0`, which is a fact about the preset.
+                    // `gm_models` is `None` only when a search was needed and
+                    // could not run, which `gm_search_config_error` already
+                    // refused above.
+                    gm_models.as_ref().is_none_or(|m| !m.is_gm_on),
                 )
                 .map_err(|e| {
                     // One message per variant. These used to share one, so a

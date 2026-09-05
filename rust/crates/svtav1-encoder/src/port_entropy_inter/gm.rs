@@ -129,6 +129,25 @@ pub fn wb_write_signed_primitive_refsubexpfin(wb: &mut BitWriter, n: u16, k: u16
     wb_write_primitive_refsubexpfin(wb, scaled_n, k, r as u16, v as u16);
 }
 
+/// C `aom_count_signed_primitive_refsubexpfin` (`global_me_cost.c:17`) — the
+/// COUNT twin of [`wb_write_signed_primitive_refsubexpfin`], and the only
+/// thing `svt_aom_gm_get_params_cost` is made of.
+///
+/// It lives here rather than in `global_me_cost.c`'s port because the
+/// recentring it wraps is this file's, and a second copy of that arithmetic is
+/// exactly the duplicate-transcription hazard
+/// `docs/UNWIRED-PORTED-CODE-2026-09-04.md` catalogues. The unsigned
+/// `count_primitive_refsubexpfin` it forwards to is
+/// `crate::entropy::lr`'s, which is the live loop-restoration one — one body,
+/// two callers.
+#[must_use]
+pub fn count_signed_primitive_refsubexpfin(n: u16, k: u16, r: i16, v: i16) -> i32 {
+    let r = r.wrapping_add(n as i16).wrapping_sub(1);
+    let v = v.wrapping_add(n as i16).wrapping_sub(1);
+    let scaled_n = (n << 1).wrapping_sub(1);
+    crate::entropy::lr::count_primitive_refsubexpfin(scaled_n, k, r as u16, v as u16)
+}
+
 /// C `WarpedMotionParams`, cut down to the fields the header writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WarpParams {

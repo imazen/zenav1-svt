@@ -56,6 +56,11 @@ Crates are not published to crates.io yet — depend by git.
 
 
 ### Fixed
+- **C's `allow_high_precision_mv` is ZERO inside the global-motion search**, and
+  a port that derived it would be wrong: `frm_hdr.allow_high_precision_mv` is
+  assigned in `svt_aom_sig_deriv_mode_decision_config` (md_config_process), which
+  runs AFTER me_process. MEASURED at q10 and q20 — two quantizers whose final
+  value differs — C's `GMCOST` line reads `hp=0` in both.
 - **Every multi-superblock inter cell at presets 0..3 PANICKED, behind the
   global-motion refusal.** `encode_tile_rows`' chain simulation (`sim_ectx`)
   re-codes each superblock to evolve the per-SB frame contexts and was never
@@ -99,6 +104,22 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **C's global-motion SEARCH is ported and runs — the port fits C's ROTZOOM to
+  the last bit.** `svt_aom_gm_get_params_cost` (`global_me_cost.c:24`) is TIER 1
+  against the real exported symbol (192-cell sweep, mutation-proven);
+  `compute_global_motion` (`global_me.c:320`) and the per-list reference loop are
+  ported at tier 4 and joined against a new `SVT_GMSEARCH_OUT` interposer that
+  wraps C's two exported search leaves. On `crop:` CID22 photo 256x256 p2 with a
+  33/32 zoom the port reproduces C's whole-frame SAD (1,862,929), every
+  `params_cost` (7,168 / 29,696 / 27,136), every refined warp error (2,030,714 /
+  621,626 / 623,044) and both ROTZOOM models exactly. The refusal now fires only
+  when the SEARCH returns a non-IDENTITY model, so
+  {uniform,gradient,diag,screen} x {16,64,128,256} x {p0,p2,p3,p4} is **64 of 64
+  cells byte-identical to C on both frames** — the twelve 16x16 cells §1z⁴¹ still
+  refused conservatively are closed. `tools/gm_join_gate.sh` joins the MODEL as
+  well as the decision (10 cells, 0 mismatches, 4 models joined, 3 anti-vacuity
+  exits) and is mutation-proven both ways. Record:
+  `docs/INTER-ENCODE-PLAN.md` §1z42.
 - **Global motion is now the FRAME's decision, not the preset's — the p0..p4
   inter band opens and `photo p2 inter` encodes byte-identically for the first
   time.** `pipeline.rs` refused every inter frame at preset <= 4 because

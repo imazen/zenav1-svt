@@ -3588,6 +3588,24 @@ void ref_convert_model_to_params(const double* params6, int32_t* out7) {
     }
 }
 
+int svt_aom_gm_get_params_cost(const WarpedMotionParams* gm, const WarpedMotionParams* ref_gm, int allow_hp);
+
+/* gm/ref_gm as [wmtype, mat0..mat5]. `svt_aom_gm_get_params_cost` reads only
+   those seven fields (global_me_cost.c:24), so no shear derivation is needed
+   and no RTCD pointer is reached. */
+int32_t ref_gm_get_params_cost(const int32_t* gm7, const int32_t* ref7, int32_t allow_hp) {
+    WarpedMotionParams gm, rf;
+    memset(&gm, 0, sizeof(gm));
+    memset(&rf, 0, sizeof(rf));
+    gm.wmtype = (TransformationType)gm7[0];
+    rf.wmtype = (TransformationType)ref7[0];
+    for (int i = 0; i < 6; ++i) {
+        gm.wmmat[i] = gm7[1 + i];
+        rf.wmmat[i] = ref7[1 + i];
+    }
+    return svt_aom_gm_get_params_cost(&gm, &rf, allow_hp);
+}
+
 int32_t ref_is_enough_erroradvantage(double best_erroradvantage, int32_t params_cost, int32_t erroradv_type) {
     return svt_av1_is_enough_erroradvantage(best_erroradvantage, params_cost, erroradv_type);
 }

@@ -5790,6 +5790,7 @@ pub fn get_proj_subspace_hbd(
 
 unsafe extern "C" {
     fn ref_convert_model_to_params(params6: *const f64, out7: *mut i32);
+    fn ref_gm_get_params_cost(gm7: *const i32, ref7: *const i32, allow_hp: i32) -> i32;
     fn ref_is_enough_erroradvantage(
         best_erroradvantage: f64,
         params_cost: i32,
@@ -5841,6 +5842,13 @@ pub fn convert_model_to_params(params: &[f64; 6]) -> (i32, [i32; 6]) {
     let mut out = [0i32; 7];
     unsafe { ref_convert_model_to_params(params.as_ptr(), out.as_mut_ptr()) };
     (out[0], [out[1], out[2], out[3], out[4], out[5], out[6]])
+}
+
+/// Reference `svt_aom_gm_get_params_cost` (global_me_cost.c:24). `gm` / `ref_gm`
+/// are `[wmtype, wmmat0..wmmat5]`.
+#[must_use]
+pub fn gm_get_params_cost(gm: &[i32; 7], ref_gm: &[i32; 7], allow_hp: bool) -> i32 {
+    unsafe { ref_gm_get_params_cost(gm.as_ptr(), ref_gm.as_ptr(), i32::from(allow_hp)) }
 }
 
 /// Reference `svt_av1_is_enough_erroradvantage` (global_motion.c:30).

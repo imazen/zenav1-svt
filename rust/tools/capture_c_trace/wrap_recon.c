@@ -90,6 +90,8 @@
 #include "mcomp.h"
 #include "rc_process.h"
 #include "global_me.h"
+#include "global_me_cost.h"
+#include "enc_warped_motion.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
 void __real_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
@@ -2270,4 +2272,111 @@ void __wrap_svt_aom_global_motion_estimation(PictureParentControlSet* pcs, EbPic
         }
     }
     fflush(f);
+}
+
+/* ---------------------------------------------------------------------------
+ * SVT_GMSEARCH_OUT — every call C's per-reference global-motion search makes
+ * into the two EXPORTED leaves of the chain, with their full argument lists.
+ *
+ * WHY: `compute_global_motion` (global_me.c:320) is `static`, so the loop that
+ * drives correspondence -> RANSAC -> convert -> refine cannot be wrapped. Its
+ * two exported callees can, and between them they carry every number a port of
+ * that loop has to reproduce: the SOURCE and REFERENCE plane geometry it
+ * actually passes (which of `enhanced_pic` / `input_padded_pic`, at which
+ * stride), `ref_sad_error` (arriving as `pic_sad`), the per-candidate
+ * `params_cost`, the model going in and the model coming out, and the returned
+ * warp error the `best_warp_error` comparison uses.
+ *
+ * Env: SVT_GMSEARCH_OUT (file). Pure pass-through when unset. Appends.
+ *
+ *   GMCOST gm=<type>,<m0..m5> ref=<type>,<m0..m5> hp=<0|1> -> <cost>
+ *   GMREFINE wmtype=<t> in=<type>,<m0..m5> r=<w>x<h>/<stride> d=<w>x<h>/<stride>
+ *            steps=<n> chess=<0|1> best_in=<i64> pic_sad=<u32> cost=<i32>
+ *            -> err=<i64> out=<type>,<m0..m5> abgd=<a>,<b>,<g>,<d> invalid=<v>
+ * ------------------------------------------------------------------------- */
+static FILE* gmsearch_file(void) {
+    static FILE* f    = NULL;
+    static int   done = 0;
+    if (!done) {
+        const char* p = getenv("SVT_GMSEARCH_OUT");
+        if (p && *p) {
+            f = fopen(p, "a");
+        }
+        done = 1;
+    }
+    return f;
+}
+
+int __real_svt_aom_gm_get_params_cost(const WarpedMotionParams* gm, const WarpedMotionParams* ref_gm, int allow_hp);
+
+int __wrap_svt_aom_gm_get_params_cost(const WarpedMotionParams* gm, const WarpedMotionParams* ref_gm, int allow_hp) {
+    const int    ret = __real_svt_aom_gm_get_params_cost(gm, ref_gm, allow_hp);
+    FILE* const  f   = gmsearch_file();
+    if (f) {
+        fprintf(f,
+                "GMCOST gm=%d,%d,%d,%d,%d,%d,%d ref=%d,%d,%d,%d,%d,%d,%d hp=%d -> %d\n",
+                (int)gm->wmtype,
+                gm->wmmat[0], gm->wmmat[1], gm->wmmat[2], gm->wmmat[3], gm->wmmat[4], gm->wmmat[5],
+                (int)ref_gm->wmtype,
+                ref_gm->wmmat[0], ref_gm->wmmat[1], ref_gm->wmmat[2], ref_gm->wmmat[3],
+                ref_gm->wmmat[4], ref_gm->wmmat[5],
+                allow_hp,
+                ret);
+        fflush(f);
+    }
+    return ret;
+}
+
+int64_t __real_svt_av1_refine_integerized_param(GmControls* gm_ctrls, WarpedMotionParams* wm,
+                                                TransformationType wmtype, uint8_t* ref, int r_width, int r_height,
+                                                int r_stride, uint8_t* dst, int d_width, int d_height, int d_stride,
+                                                int n_refinements, uint8_t chess_refn, int64_t best_frame_error,
+                                                uint32_t pic_sad, int params_cost);
+
+int64_t __wrap_svt_av1_refine_integerized_param(GmControls* gm_ctrls, WarpedMotionParams* wm,
+                                                TransformationType wmtype, uint8_t* ref, int r_width, int r_height,
+                                                int r_stride, uint8_t* dst, int d_width, int d_height, int d_stride,
+                                                int n_refinements, uint8_t chess_refn, int64_t best_frame_error,
+                                                uint32_t pic_sad, int params_cost) {
+    WarpedMotionParams in = *wm;
+    const int64_t      rc = __real_svt_av1_refine_integerized_param(gm_ctrls,
+                                                               wm,
+                                                               wmtype,
+                                                               ref,
+                                                               r_width,
+                                                               r_height,
+                                                               r_stride,
+                                                               dst,
+                                                               d_width,
+                                                               d_height,
+                                                               d_stride,
+                                                               n_refinements,
+                                                               chess_refn,
+                                                               best_frame_error,
+                                                               pic_sad,
+                                                               params_cost);
+    FILE* const f = gmsearch_file();
+    if (f) {
+        fprintf(f,
+                "GMREFINE wmtype=%d in=%d,%d,%d,%d,%d,%d,%d r=%dx%d/%d d=%dx%d/%d steps=%d chess=%d"
+                " best_in=%lld pic_sad=%u cost=%d -> err=%lld out=%d,%d,%d,%d,%d,%d,%d"
+                " abgd=%d,%d,%d,%d invalid=%d\n",
+                (int)wmtype,
+                (int)in.wmtype,
+                in.wmmat[0], in.wmmat[1], in.wmmat[2], in.wmmat[3], in.wmmat[4], in.wmmat[5],
+                r_width, r_height, r_stride,
+                d_width, d_height, d_stride,
+                n_refinements,
+                (int)chess_refn,
+                (long long)best_frame_error,
+                pic_sad,
+                params_cost,
+                (long long)rc,
+                (int)wm->wmtype,
+                wm->wmmat[0], wm->wmmat[1], wm->wmmat[2], wm->wmmat[3], wm->wmmat[4], wm->wmmat[5],
+                (int)wm->alpha, (int)wm->beta, (int)wm->gamma, (int)wm->delta,
+                (int)wm->invalid);
+        fflush(f);
+    }
+    return rc;
 }

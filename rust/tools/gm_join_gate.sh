@@ -58,9 +58,18 @@ mkdir -p "$OUT"
 PHOTO_DIR=$(corpus_dir codec-corpus/CID22/CID22-512/training) || true
 PHOTO="$PHOTO_DIR/3571065.png"
 
-# The default cell list. The last two cells carry the anti-vacuity load: the
-# same real image with a 33/32 and a 9/8 zoom, where C fits a ROTZOOM.
+# The default cell list covers all THREE branches C's chain has, because the
+# refusal turns on which one a frame takes:
+#   * the search never runs (`avg_me_sad = 0`)  — the shift cells;
+#   * the search RUNS and returns IDENTITY      — the 16x16 cells, where
+#     `avg_me_sad` is 102 / 104 but RANSAC has too few correspondences to fit
+#     anything (measured: C emits no `GMCOST`/`GMREFINE` line at all there);
+#   * the search runs and FITS a model          — the two zoom cells.
+# The last of the three is the anti-vacuity load: the same real image with a
+# 33/32 and a 9/8 zoom, where C fits a ROTZOOM per list.
 DEFAULT_CELLS="\
+gradient 16 16 40 2 3 1 1
+diag 16 16 40 0 3 1 1
 gradient 64 64 40 2 3 1 1
 gradient 128 128 40 0 3 1 1
 diag 256 256 40 2 3 1 1
@@ -83,7 +92,7 @@ if [[ "$CTRACE" == 1 ]]; then
     mkdir -p "$CWORK/gmjoin"
 fi
 
-rows=0; bad=0; nonident=0
+rows=0; bad=0; nonident=0; models_joined=0; searched=0
 : > "$OUT/join.tsv"
 printf 'cell\tfield\tC\tport\n' > "$OUT/mismatch.tsv"
 
@@ -137,11 +146,41 @@ while read -r content w h qp preset shift zn zd; do
     for f in b64 total_me_sad avg_me_sad total_gm_sbs ds; do
         C[$f]=$(kv "$cline" "$f"); P[$f]=$(kv "$port" "$f")
     done
+
+    # THE MODEL ITSELF, per (list, ref). C's `GMREF` lines carry `wmtype` and
+    # `wmmat`; the port's `GMPORTREF` lines carry the same two from
+    # `port_global_me::compute_global_motion`. Only NON-IDENTITY models produce
+    # a line on either side (C skips the initialised-and-untouched majority),
+    # so the two sets must match exactly — a port that found a model C did not,
+    # or missed one C found, shows up as an unmatched key.
+    #
+    # This is the assertion the whole search port rests on: the derivation
+    # deciding "C would search" is only half the fact, and the other half is
+    # what the search RETURNS.
+    c_models=$(sed -n 's/^GMREF .*list=\([0-9]*\) ref=\([0-9]*\) wmtype=\([0-9-]*\) is_global=[0-9]* wmmat=\([^ ]*\).*/\1,\2,\3,\4/p' "$d/c.gm" | sort)
+    p_models=$(grep '^GMPORTREF ' "$d/rs.trace" 2>/dev/null |
+        sed -n 's/.*list=\([0-9]*\) ref=\([0-9]*\) wmtype=\([0-9-]*\) *wmmat=\[\([^]]*\)\].*/\1,\2,\3,\4/p' |
+        tr -d ' ' | sort)
+    if [[ "$c_models" != "$p_models" ]]; then
+        printf '%s\t%s\t%s\t%s\n' "$tag" "models" "${c_models//$'\n'/;}" "${p_models//$'\n'/;}" >> "$OUT/mismatch.tsv"
+        bad=$((bad + 1))
+    fi
+    [[ -n "$c_models" ]] && models_joined=$((models_joined + $(printf '%s\n' "$c_models" | wc -l | tr -d ' ')))
+    # C's `is_gm_on` is 1 iff some reference ended non-IDENTITY, and the port's
+    # counterpart is `GMPORTMODELS`' own `is_gm_on` — the SEARCH's verdict.
+    # NOT `GMPORT`'s `all_identity`, which is the DERIVATION's: on a cell where
+    # C runs the search and RANSAC fits nothing (the 16x16 cells) those two
+    # disagree by design, and comparing the wrong one made this gate red on a
+    # port that was right.
     c_is_gm_on=$(kv "$cline" is_gm_on)
-    p_all_ident=$(kv "$port" all_identity)
-    # C's `is_gm_on` is 1 iff some reference ended non-IDENTITY.
-    c_all_ident=$(( c_is_gm_on == 0 ? 1 : 0 ))
+    pmodels=$(grep -m1 '^GMPORTMODELS ' "$d/rs.trace" 2>/dev/null || true)
+    if [[ -z "$pmodels" ]]; then
+        echo "FATAL: no GMPORTMODELS line for $tag" >&2
+        exit 2
+    fi
+    p_is_gm_on=$(kv "$pmodels" is_gm_on)
     [[ "$c_is_gm_on" == 1 ]] && nonident=$((nonident + 1))
+    [[ "$(kv "$pmodels" searched)" == 1 ]] && searched=$((searched + 1))
 
     rows=$((rows + 1))
     printf '%s\tC:%s\tPORT:%s\n' "$tag" "$cline" "$port" >> "$OUT/join.tsv"
@@ -151,8 +190,8 @@ while read -r content w h qp preset shift zn zd; do
             bad=$((bad + 1))
         fi
     done
-    if [[ "$c_all_ident" != "$p_all_ident" ]]; then
-        printf '%s\t%s\t%s\t%s\n' "$tag" "all_identity" "$c_all_ident" "$p_all_ident" >> "$OUT/mismatch.tsv"
+    if [[ "$c_is_gm_on" != "$p_is_gm_on" ]]; then
+        printf '%s\t%s\t%s\t%s\n' "$tag" "is_gm_on" "$c_is_gm_on" "$p_is_gm_on" >> "$OUT/mismatch.tsv"
         bad=$((bad + 1))
     fi
     echo "  $tag  C[$cline]  PORT[$port]"
@@ -161,8 +200,21 @@ done <<< "$CELLS"
 echo
 echo "gm join gate: $rows cell(s) joined, $bad mismatching field(s)"
 echo "  cells where C fitted a NON-IDENTITY model: $nonident"
+echo "  non-IDENTITY (list, ref) models joined field for field: $models_joined"
+echo "  cells where the port RAN C's search: $searched"
 if [[ $rows -eq 0 ]]; then
     echo "ANTI-VACUITY FAIL: zero cells joined" >&2
+    exit 1
+fi
+if [[ $searched -eq 0 ]]; then
+    echo "ANTI-VACUITY FAIL: the port never RAN C's per-reference search on any cell —" >&2
+    echo "  every cell short-circuited at the average_me_sad gate, so compute_global_motion" >&2
+    echo "  was not exercised at all." >&2
+    exit 1
+fi
+if [[ $models_joined -eq 0 ]]; then
+    echo "ANTI-VACUITY FAIL: no non-IDENTITY model was joined; the search's OUTPUT" >&2
+    echo "  was never compared against C's, only the decision to run it." >&2
     exit 1
 fi
 if [[ $nonident -eq 0 ]]; then

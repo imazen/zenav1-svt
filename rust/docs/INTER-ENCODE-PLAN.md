@@ -8102,7 +8102,9 @@ C unless stated:
 | `crop:` CID22 photo | — | — | **p2 p4** (p0 differs on FRAME 0) | **p2 p4** (p0 differs on FRAME 0) | p0/p2/p4 differ |
 
 **The twelve 16x16 refusals are the derivation being CONSERVATIVE, and they are
-measured, not guessed.** At 16x16 the picture is 256 pixels, so
+measured, not guessed.** (**CLOSED by §1z⁴²**, which ports the search itself;
+they are byte-identical to C now. The paragraph stays because the reasoning is
+what made the refusal correct while it stood.) At 16x16 the picture is 256 pixels, so
 `sum(rc_me_distortion) / (w*h)` is 102 / 104 / 18 on gradient / diag / screen
 and C DOES run the search — and finds IDENTITY anyway (`is_gm_on=0`, dumped).
 Those twelve cells were byte-identical when measured with the refusal forced
@@ -8164,6 +8166,134 @@ C's own gate decides that the chain usually must not run at all. It also says
 fact live through a SECOND transcription (`inter_hdr_arm::gm_core_level`),
 which is the duplicate-transcription hazard the same document's §"Duplicate
 transcriptions" is about.
+
+### 1z⁴². C's global-motion SEARCH is ported and runs — the port fits C's ROTZOOM to the last bit, and the twelve conservatively-refused cells close (2026-09-05)
+
+§1z⁴¹ landed C's frame-level DERIVATION and refused whenever it said C would
+search. That was honest and it was over-broad by twelve cells: at 16x16 the
+picture is 256 pixels, so `sum(rc_me_distortion) / (w*h)` is 102 / 104 / 18 on
+gradient / diag / screen, C DOES run `compute_global_motion` — and gets
+IDENTITY back, because RANSAC needs `minpts * MINPTS_MULTIPLIER` = 5 points for
+TRANSLATION and a 16x16 picture has fewer correspondences than that. "C searched
+and found nothing" is a fact only the search can establish. This chunk
+establishes it.
+
+**The interposer came first, again.** `compute_global_motion`
+(`global_me.c:320`) is `static`, so it cannot be wrapped — but its two exported
+callees can, and between them they carry every number a port of that loop has to
+reproduce. `SVT_GMSEARCH_OUT` (`tools/capture_c_trace/wrap_recon.c`) wraps
+`svt_aom_gm_get_params_cost` and `svt_av1_refine_integerized_param` and dumps
+their full argument lists:
+
+    GMCOST   gm=<type>,<m0..m5> ref=<type>,<m0..m5> hp=<0|1> -> <cost>
+    GMREFINE wmtype=<t> in=<...> r=<w>x<h>/<stride> d=<w>x<h>/<stride> steps=<n>
+             chess=<0|1> best_in=<i64> pic_sad=<u32> cost=<i32>
+             -> err=<i64> out=<...> abgd=<...> invalid=<v>
+
+Three things that trace settled that reading the source would not have:
+
+* **`r` and `d` are both `256x256/400` on a 256x256 cell** — the TRUE picture
+  dims, and each buffer's own padded stride. The port passes tightly-packed
+  planes (`.../392` for the PA reference, `.../256` for the source) and gets
+  identical numbers, because `port_warp` clamps every sample to
+  `[0, width-1] x [0, height-1]` and `warp_error` reads the destination from the
+  origin: the stride addresses, it does not select pixels.
+* **`hp=0` at q10 AND at q20.** C's `allow_high_precision_mv` argument is
+  `pcs->frm_hdr.allow_high_precision_mv`, and at ME time that field is STILL
+  ZERO — it is assigned in `svt_aom_sig_deriv_mode_decision_config`
+  (md_config_process), which runs after me_process. Two quantizers whose FINAL
+  value differs both dump `hp=0`, so this is C's ordering, not a value to
+  derive. The port passes `false` and cites the measurement.
+* **C emits no `GMCOST`/`GMREFINE` line at all on the 16x16 cells**, which is
+  what "RANSAC fit nothing" looks like from outside.
+
+**Ported.**
+* `svt_aom_gm_get_params_cost` (`global_me_cost.c:24`) ->
+  `port_global_me::gm_get_params_cost`. **TIER 1** — the symbol is exported
+  (`nm -g` says `T`), `crates/svtav1-cref/shims/ref_shims.c` gained
+  `ref_gm_get_params_cost`, and `tests/c_parity_global_motion.rs` sweeps all
+  four `wmtype` arms x 6 x 6 `wmmat` pairs x both `allow_hp` states = 192 cells,
+  every one equal to C. Anti-vacuity: the test requires >= 3 distinct non-zero
+  costs. Mutation-proven: flipping `GM_ABS_TRANS_ONLY_BITS - !allow_hp` to `+`
+  reddens it. Its `aom_count_signed_primitive_refsubexpfin` is a two-line
+  wrapper in `port_entropy_inter::gm` over the LIVE
+  `entropy::lr::count_primitive_refsubexpfin`, so the count and the writer
+  cannot drift.
+* `compute_global_motion` (`global_me.c:320`) ->
+  `port_global_me::compute_global_motion`, and the per-list reference loop +
+  `identiy_exit` + the `is_gm_on` reduction (`global_me.c:190-300`) ->
+  `port_global_me::global_motion_search`. Tier 4 (both are `static` / take a
+  `PictureParentControlSet*`), joined against C's dump.
+* `svt_aom_upscale_wm_params` is NOT ported and asserts instead: it is a no-op
+  at `sf == 1`, which is every level `set_gm_controls` can assign (`GM_FULL`).
+
+**The join is exact, per intermediate, not just at the end.** `crop:` CID22
+photo 256x256 p2 q40 with a 33/32 zoom, C's `SVT_GMSEARCH_OUT` against the
+port's `SVTAV1_GMDBG`:
+
+| | C | port |
+|---|--:|--:|
+| `pic_sad` (whole-frame SAD) | 1,862,929 | 1,862,929 |
+| TRANSLATION `params_cost` | 7,168 | 7,168 |
+| TRANSLATION refined error | 2,030,714 | 2,030,714 |
+| ROTZOOM `params_cost` (list 0) | 29,696 | 29,696 |
+| ROTZOOM refined error (list 0) | 621,626 | 621,626 |
+| list-0 model | ROTZOOM `259072,259072,63494,0,0,63494` | identical |
+| list-1 model | ROTZOOM `250880,250880,63558,0,0,63558` | identical |
+
+and on the 512x512 9/8-zoom cell the two ROTZOOM models
+(`1850368,1851392,58276,0,0,58276` and `1846272,1862656,58172,22,-22,58172`)
+match likewise. `63494/65536 = 0.9689` against a `32/33 = 0.9697` sampling scale
+and `58276/65536 = 0.8892` against `8/9 = 0.8889` — C recovered the synthetic
+zoom to ~1e-3, and so did the port.
+
+**The refusal moved one more step toward the truth.** It now fires only when
+the SEARCH returns a non-IDENTITY model for some reference — i.e. exactly when
+`global_motion_params()` would code something this port cannot write and mode
+decision would price GLOBALMV against a model the port does not carry
+(`InterMdEnv::global_motion` and `InterMdFrame::gm_wmtype` are still
+`[Identity; 8]`). Three branches, three outcomes, all measured:
+
+| C's chain | port |
+|---|---|
+| `avg_me_sad = 0`, no search | encodes (`is_global = 0` derived) |
+| search runs, RANSAC fits nothing | encodes (`is_gm_on = 0` from the port's own search) |
+| search runs, fits a ROTZOOM | REFUSES |
+
+**Outcome: the whole p0..p4 synthetic band is byte-identical.**
+{uniform, gradient, diag, screen} x {16, 64, 128, 256} x {p0, p2, p3, p4},
+frames=2 low-delay P, q40, shift 3 — **64 of 64 cells byte-identical to C on
+BOTH frames**, where before §1z⁴¹ every one was refused and after §1z⁴¹ twelve
+still were. `crop:` CID22 photo at 128 and 256, p2 and p4, likewise. Still open:
+`photo p0` differs on FRAME 0 (a key frame, upstream of all of this —
+`tools/photo_p0_gate.sh` owns it) and the 512 photo diverges at p0/p2/p4.
+
+**The gate.** `tools/gm_join_gate.sh` now joins the MODEL as well as the
+decision: C's `GMREF list/ref/wmtype/wmmat` set against the port's `GMPORTREF`
+set, exactly, plus C's `is_gm_on` against the port's own search verdict (NOT the
+derivation's `all_identity` — on the 16x16 cells those two disagree by design,
+and comparing the wrong one made this gate red on a port that was right). Ten
+cells covering all three branches: **0 mismatching fields, 4 cells run the
+search, 4 non-IDENTITY (list, ref) models joined field for field, 2 cells reach
+a ROTZOOM.** Three separate ANTI-VACUITY exits: zero cells joined, zero cells
+that ran the search, zero non-IDENTITY models joined. Mutation-proven: swapping
+`GM_ERRORADV_TR_0` for `GM_ERRORADV_TR_2` in the keep/reject test drops list 1's
+model on the 512 cell and the gate names it. The byte side is mutation-proven
+too: with the search wire removed (the §1z⁴¹ derivation-only refusal) exactly
+the twelve 16x16 cells return `rc=3`.
+
+**What is still NOT wired**, with specifics. The MODEL is computed and thrown
+away. To code it: `entropy::obu::write_inter_frame_header`'s seven-zero-bit loop
+(`obu.rs`, the `for g in it.is_global` block) must become
+`port_entropy_inter::gm::write_global_motion` — which is ported, tested and has
+never had a caller — fed the per-reference `WarpedMotionParams`;
+`InterSyntaxState`/`InterMdEnv::global_motion` and `InterMdFrame::gm_wmtype`
+must carry them into MD so `is_global_mv_block`, `is_nontrans_global_motion` and
+the GLOBALMV candidate injection see what C sees; and
+`port_enc_mode_config::encdec`'s `global_mv_injection` (currently a hard-coded
+`true` at `inter_md_arm.rs`, where C's is `pcs->gm_ctrls.enabled`) needs the
+same derivation. None of that can be claimed without a byte gate on a cell where
+C codes a model, which is what the zoom cells are for.
 
 ## 4. A cross-lane PREREQUISITE the wiring chunk must land first (measured 2026-08-31, wp-entropy)
 

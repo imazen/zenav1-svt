@@ -1322,7 +1322,10 @@ turn out byte-identical to C, plus a PANIC at presets 0..3 that nothing could
 reach to find. When you write a refusal, ask whether its condition is the
 narrowest one that is actually true — and prefer computing the oracle's own
 predicate to naming the knob that enables it (`docs/INTER-ENCODE-PLAN.md`
-§1z⁴¹).
+§1z⁴¹). It narrowed AGAIN the same day: the derivation's "C would search" is
+still not "C codes a model", and porting the search itself (§1z⁴²) closed twelve
+more cells where C searches and RANSAC fits nothing. Each narrowing was correct
+while it stood and each was worth one more step.
 
 ## 7. Dead-looking C stays translated
 

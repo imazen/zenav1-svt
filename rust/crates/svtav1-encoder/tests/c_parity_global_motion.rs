@@ -528,3 +528,75 @@ fn refine_integerized_param_identity_is_the_force_wmtype_path() {
     // And the model really was forced all the way down.
     assert_eq!(ty_from_i32(c_io[0]), TransformationType::Identity);
 }
+
+/// `svt_aom_gm_get_params_cost` (`global_me_cost.c:24`) against the port's
+/// [`svtav1_encoder::port_global_me::gm_get_params_cost`] — **tier 1**, the
+/// real exported symbol.
+///
+/// The sweep is over every `wmtype` C's switch has an arm for (IDENTITY,
+/// TRANSLATION, ROTZOOM, AFFINE), both `allow_hp` states and a spread of
+/// `wmmat` values around the identity that includes the exact model C fitted on
+/// the measured zoom cell (`benchmarks/gm_join_2026-09-05.tsv`). Anti-vacuity:
+/// the assertion at the end requires the sweep to have produced at least three
+/// DISTINCT non-zero costs, so a function that returned a constant could not
+/// pass.
+#[test]
+fn gm_get_params_cost_matches_c() {
+    use svtav1_encoder::port_global_me::gm_get_params_cost;
+
+    let types = [
+        TransformationType::Identity,
+        TransformationType::Translation,
+        TransformationType::RotZoom,
+        TransformationType::Affine,
+    ];
+    // [wmmat0..5] candidates: identity, a small translation, C's measured
+    // ROTZOOM from the 256 zoom cell, its 512 sibling, and two hand-picked
+    // extremes near the alpha clamp.
+    let mats: [[i32; 6]; 6] = [
+        [0, 0, PREC, 0, 0, PREC],
+        [4096, -8192, PREC, 0, 0, PREC],
+        [259072, 259072, 63494, 0, 0, 63494],
+        [1850368, 1851392, 58276, 0, 0, 58276],
+        [-65536, 131072, 63558, -2, 2, 63558],
+        [1 << 20, -(1 << 20), PREC + 8192, 4096, -4096, PREC - 8192],
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut n = 0usize;
+    for &ty in &types {
+        for m in &mats {
+            for rm in &mats {
+                for &hp in &[false, true] {
+                    let wm = WarpedMotionParams {
+                        wm_type: ty,
+                        wmmat: *m,
+                        ..Default::default()
+                    };
+                    let rf = WarpedMotionParams {
+                        wm_type: ty,
+                        wmmat: *rm,
+                        ..Default::default()
+                    };
+                    let port = gm_get_params_cost(&wm, &rf, hp);
+                    let c_gm = [ty as i32, m[0], m[1], m[2], m[3], m[4], m[5]];
+                    let c_rf = [ty as i32, rm[0], rm[1], rm[2], rm[3], rm[4], rm[5]];
+                    let c = cref::gm_get_params_cost(&c_gm, &c_rf, hp);
+                    assert_eq!(
+                        port, c,
+                        "gm_get_params_cost ty={ty:?} m={m:?} ref={rm:?} hp={hp}"
+                    );
+                    if port != 0 {
+                        seen.insert(port);
+                    }
+                    n += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(n, types.len() * mats.len() * mats.len() * 2);
+    assert!(
+        seen.len() >= 3,
+        "ANTI-VACUITY: the sweep produced only {} distinct non-zero costs",
+        seen.len()
+    );
+}
