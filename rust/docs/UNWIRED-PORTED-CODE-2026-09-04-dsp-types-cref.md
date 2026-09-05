@@ -167,6 +167,25 @@ report's resolution log) plus the cross-ISA set on r7900x.
    pass: on x86_64 the AVX2 arm of `block_sad` loses to the autovectorized
    scalar arm at 8 and 16 wide and only wins from 32 wide up.
 
+
+### Final duplicate-fold summary (2026-09-04)
+
+The chunk closed five clusters across both reports — this file's items 1
+(`e0275930`) and 2 (`a2d8ac46`) plus the encoder report's items 3
+(`2b1a74ed`), 4 (`24b7027e`) and a fifth found on the way, the per-pixel
+variance about 128 (`448290c9`; three loop bodies in `port_src_ops`,
+`sc_detect` and `tune` to one). **No fold moved a byte on either ISA** —
+the full table, the per-cluster verdicts (item 4's three predicates were
+the same C function in every copy; item 4 of this file's zenbench numbers
+are repeated there), and the two duplicates deliberately left in place
+(`port_md/nic_prune.rs`, the second `TransformationType` enum) are recorded
+once, in `docs/UNWIRED-PORTED-CODE-2026-09-04.md` "Final duplicate-fold
+summary". Of this file's other listed duplicates, 3-7 (the `_8bit` CDEF
+trio, `variance()`, the `iwht` variants, `alloc_stripe_boundaries`,
+`predict_palette`) were not touched: 4 and 5 are documented design
+choices, not second bodies, and 3, 6 and 7 still need the one-file read
+their entries ask for before anyone acts on them.
+
 ## On "unregistered SIMD arms" specifically
 
 The brief asks for kernels whose ported SIMD arm the dispatch never selects.

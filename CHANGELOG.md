@@ -851,6 +851,29 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **Duplicate-transcription fold, five clusters, byte-inert (2026-09-04).**
+  The two unwired-code reports flagged C functions the port had transcribed
+  two to four times; each cluster now has ONE body and the copies are
+  forwards or gone: `svt_mv_err_cost` (`2b1a74ed`, four spellings to
+  `md_subpel::mv_err_cost`), the 64-dim inverse-transform `mod_input`
+  remap (`e0275930`; the 30 per-size `dct_dct` wrappers stay as tier-1-named
+  forwards), `have_newmv_in_inter_mode` / `is_motion_variation_allowed_bsize`
+  / `is_global_mv_block` (`24b7027e`, three copies apiece — the same C
+  function in every case), the four dead `sad_NxN` forwards (`a2d8ac46`,
+  zenbenched: the same code either side) and the per-pixel variance about
+  128 (`448290c9`, three loop bodies to `port_src_ops::variance_about_128`
+  plus `tune`'s second `get_perceptual_perpixel_variance` body). **No fold
+  moved a byte**: after every commit, on both ISAs, `identity_full_8bit`
+  1100/1100, `regression_spotcheck` 102/102, `inter_byte_gate` 96/0/1,
+  `video_key_matrix` unmoved (58/60, then 59/60 once upstream `600c5177`
+  closed `screenrep p0`; `gradient p0` is the one open cell throughout),
+  `fctx_gate` 96/96, `inter_decode_gate` 5/5, decode census 96/96,
+  `SCAN_GATE=1` completion scan 64/0/0, six still cells at
+  290/839/63/171/580/693 B, nextest (aarch64 2529, x86_64 2539). Left
+  unfolded on purpose: `port_md/nic_prune.rs` (dead; a wire-or-delete
+  decision, not a fold) and the second `TransformationType` enum in
+  `port_entropy_inter::modes` (a seven-file signature change). Full record:
+  `docs/UNWIRED-PORTED-CODE-2026-09-04.md` "Final duplicate-fold summary".
 - **The inter path no longer holds the LAST reference three times and the
   stored picture twice — aarch64 2048x2048 inter peak RSS 1.311x -> 1.189x
   of C, 1280 1.263x -> 1.042x; x86 1.185x -> 1.022x; x86 peak heap

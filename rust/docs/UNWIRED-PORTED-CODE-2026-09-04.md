@@ -143,7 +143,9 @@ the same evidence tier, and item 1 is what that gap looks like. Treat every
 Each cluster is folded to ONE body and gated on the whole grid after each
 commit — `identity_full_8bit` 1100/1100, `regression_spotcheck` 102/102,
 `inter_byte_gate` 96 required / 0 failed / 1 known-open, `video_key_matrix`
-58/60, `fctx_gate` 96/96, `inter_decode_gate` 5/5, `inter_decode_census`
+58/60 (59/60 from cluster 3's rebase onward — the upstream ind-uv fix closed
+`screenrep p0`; `gradient p0` 1341/1342 B is the one cell still open, and it
+is the SAME cell before and after every fold), `fctx_gate` 96/96, `inter_decode_gate` 5/5, `inter_decode_census`
 96/96, `SCAN_GATE=1 inter_completion_scan` 64/0/0, nextest, the six still
 cells at 290/839/63/171/580/693 B, and the cross-ISA set on r7900x (x86_64:
 nextest, spotcheck, `inter_byte_gate`, `identity_full_8bit`). "Byte-inert"
@@ -190,6 +192,80 @@ below means every one of those was unmoved by the fold.
    `svtav1_types::motion::TransformationType` (identical discriminants;
    seven files use the modes one) — the predicate body takes the
    `svtav1_types` one, the writers convert via `as_motion()`.
+
+
+5. Per-pixel variance about 128 — **folded, `448290c9`, byte-inert on both
+   ISAs (aarch64 full grid; r7900x x86_64: nextest 2539/2539, spotcheck
+   102/102, inter_byte_gate 96/0/1, identity_full_8bit 1100/1100).** Not in
+   this table — found on the way while closing items 3 and 4. C's
+   `variance_c` (C_DEFAULT/variance.c:141) read against a constant-128
+   reference is what BOTH `svt_aom_get_perpixel_variance`
+   (src_ops_process.c:2138, over `AV1_VAR_OFFS`) and
+   `svt_av1_get_sby_perpixel_variance` (pic_analysis_process.c:944, over
+   `svt_aom_eb_av1_var_offs`) reduce to before their per-pixel
+   normalisation, and the loop was transcribed three times:
+   `port_src_ops::get_perpixel_variance` (tier 1 through the exported
+   symbol — THE body, now split out as `pub(crate) variance_about_128`),
+   `sc_detect::sby_perpixel_variance_normalized` (its own copy, `sse` in
+   wrapping u32 — equal on every input a 16x16 window can produce; it keeps
+   its own normaliser shift, so the mismatched window/normaliser call that
+   reproduces C's `svt_aom_is_screen_content` quirk in
+   `docs/SUSPECTED-C-BUGS.md` is untouched) and `tune::perpixel_variance`
+   (`sse - ((sum*sum) >> log2n)` in i64 — equal to C's `/ (w*h)` because the
+   square is non-negative and `n*n` is a power of two; now a forward).
+   Alongside it, `tune::perceptual_perpixel_variance` was a second body of
+   `svt_aom_get_perceptual_perpixel_variance` (src_ops_process.c:2173) next
+   to the tier-1 `port_src_ops::get_perceptual_perpixel_variance`; the two
+   ordered the f32 conversions of `var * weight / sqrtf(var + 1)`
+   differently, but a per-pixel variance (< 2^15) times a weight (<= 256) is
+   below 2^24, so both are exact and agree on every reachable input — now a
+   forward. Verdict: the same C function in every case — fold.
+
+### Final duplicate-fold summary (2026-09-04)
+
+Five clusters, five commits, all on `main`, each gated on the whole grid on
+both ISAs before landing. **No fold moved a byte.** That is the finding to
+record either way, and it is a null: every one of `identity_full_8bit`
+(1100/1100), `regression_spotcheck` (102/102), `inter_byte_gate` (96/0/1),
+`inter_decode_gate` (5/5), `inter_decode_census` (96/96),
+`SCAN_GATE=1 inter_completion_scan` (64/0/0), `fctx_gate` (96/96 both
+frames), the six still cells (290/839/63/171/580/693 B) and the r7900x
+x86_64 set (nextest, spotcheck, `inter_byte_gate`, `identity_full_8bit`)
+read the same before and after each cluster. `video_key_matrix` went 58/60
+to 59/60 during the chunk, but that move is upstream's (`600c5177`, the
+ind-uv fix closed `screenrep p0`) and was confirmed on the rebased cluster-3
+stack before cluster 4 — `gradient p0` 1341/1342 B is the open cell before
+and after every fold. Had a retired copy differed on a reachable input, one
+of these would have moved; none did, which is what "the copies agreed on
+every input" claimed in each commit and what the grid now says.
+
+| Cluster | What folded | Commit | Verdict |
+|---|---|---|---|
+| 1 | `svt_mv_err_cost` — four transcriptions to `md_subpel::mv_err_cost` (item 3) | `2b1a74ed` | disambiguated against C: `pme`'s pair was a second full body, `intrabc`'s is C's older ENTROPY-arm name (a forward, still tier 1), `inter_mv_code`'s was already a forward; byte-inert |
+| 2 | `mod_input_64` — the 64-dim inverse-transform input remap, two bodies to one; the 30 per-size `dct_dct` wrappers KEPT as tier-1-named forwards (dsp report item 1) | `e0275930` | byte-inert |
+| 3 | `have_newmv_in_inter_mode` / `is_motion_variation_allowed_bsize` / `is_global_mv_block` — three transcriptions apiece to one body each (item 4) | `24b7027e` (gated as `4fb78544`, re-gated after the rebase onto `600c5177`) | **same C function in every case** — the copies differed only in argument spelling (typed enum vs the raw byte / index C's `mi` grid holds); fold, nothing to keep as "different"; byte-inert |
+| 4 | `sad_8x8/16x16/32x32/64x64` — four dead forwards of `sad::sad` -> `me_sad::block_sad` removed (dsp report item 2) | `a2d8ac46` | byte-inert; zenbench r7900x `kernel_tiers` v3(avx2)/scalar ns, BEFORE -> AFTER: 8x8 27.5/16.0 -> 23.9/16.4, 16x16 43.1/38.8 -> 40.5/41.1, 32x32 83.4/114.5 -> 79.7/118.0, 64x64 189/311 -> 195/309 (the same code either side, an inlined forward; `benchmarks/kernel_tiers_sad_dedup_2026-09-04*`). Side finding for a perf pass: the AVX2 arm of `block_sad` loses to the autovectorized scalar arm at 8 and 16 wide |
+| 5 | per-pixel variance about 128 — three loop bodies to `port_src_ops::variance_about_128`, plus `tune`'s second `get_perceptual_perpixel_variance` body (not in either table) | `448290c9` | same C function in every case; byte-inert |
+
+**Deliberately left unfolded**, both named so the next reader does not
+re-discover them:
+
+* `port_md/nic_prune.rs` (item 2) — the six NIC-prune functions alongside
+  the live `leaf_funnel::nic`. Dead, self-flagged by its own module doc,
+  and NOT touched by this chunk: it is a delete-or-wire decision for the
+  wiring chunk (its sole caller `run_md_stages` is also dead), not a fold,
+  and folding a dead body onto a live one proves nothing on the grid.
+* `port_entropy_inter::modes::TransformationType` vs
+  `svtav1_types::motion::TransformationType` (found during cluster 3) —
+  identical discriminants, seven files' signatures on the entropy-side
+  enum; the one predicate body takes the types-crate enum and the writers
+  convert via `as_motion()`. Folding the enum is a signature change across
+  seven files and needs an ordering on the types crate's enum first.
+
+Item 1 (`write_sgrproj_filter`: the live `entropy::lr` copy vs the dead
+`port_entropy_inter::gm` copy, plus the stale `WORKING-ON-THIS.md` guard
+#5c) was not part of this chunk's five clusters and stays open as written
+above.
 
 ## What this changes about the brief's seed list
 
