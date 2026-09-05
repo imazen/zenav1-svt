@@ -1,5 +1,86 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE INTER FRAME, PER FUNCTION, FOR THE FIRST TIME: callgrind N=2 MINUS N=1
+> ON BOTH SIDES, BYTE-IDENTICAL, AVX2 ARMS BOTH SIDES (2026-09-05, r7900x,
+> tree `d03f97357`).** Record `benchmarks/callcount_inter_2026-09-05.{meta,tsv,
+> fns.tsv,ranked.tsv,cells.tsv}`. The wall-clock differencing in
+> `perf_2026-09-05-lilith1-POSITION` said "4-6x on the inter frame alone" and
+> could not resolve C's side; the instruction count can, and it says the
+> port's inter frame costs **7.60x C at gradient 512² p8 (430.9 M vs 56.7 M Ir),
+> 7.46x at gradient p6 (977.9 M vs 131.1 M), 5.14x at photo_cid p6 (666.3 M vs
+> 129.6 M)** — 7.48x / 7.41x / 5.09x with the harness's own frame synthesis
+> (`perf_encode::translate`, 6.7 M, port-only) excluded. Every per-symbol
+> delta sums to the process delta exactly on all six runs. Arm symmetry was
+> VERIFIED, not assumed: the port profile has zero `_v4` rows (the Wiener
+> `_v4` tier is in the binary) and 36-37 `_v3` rows; C's has zero `avx512` rows
+> (180 such symbols in the binary) and 115-123 `_avx2` rows.
+> **The ranking (gradient p8; the p6 cells add one row at the top):**
+> 1. **The open-loop ME SAD kernel family, 28 % of the port's inter delta, at
+>    the SAME call counts as C** — `motion_estimation_b64` 95.2 M vs 3.16 M
+>    (30.1x, 64 = 64 calls); `ext_all_sad_calculation_8x8_16x16` 52.1x at
+>    394 = 394 (C: one fused AVX2 kernel, 2.8 k Ir/call; port: a dispatch that
+>    calls `block_sad` 512 times, 148 k Ir/call); `sad_loop_kernel` 43.8x at
+>    640 = 640. `me_sad::__arcane_block_sad_v3` alone is 106.3 M (24.7 %) over
+>    281,464 calls. **Per-call, a kernel-shape fix, not a search fix** — and
+>    the largest single item on all three cells (25.1 % on photo).
+> 2. **MD inter prediction 13.3 %, 32x** — `port_convolve::convolve_x_sr` is
+>    28.9 k Ir/call against C's `svt_av1_convolve_x_sr_avx2` at 480 (125x);
+>    2-D 217x; y 15x; PD0 inter prediction 45x at 320 = 320. Plus a ROUTING
+>    defect: the port takes the 2-pass path 240x where C takes it 16x (C sends
+>    y-only-subpel blocks to `y_sr`, 279 calls vs the port's 144).
+> 3. PD0 whole SB 10.6 %, 4.1x at 64 = 64. memset 9.6 % — **suspect** (rep
+>    stosb; largest caller is the allocator's unnamed frame, so calloc
+>    zero-fill is counted twice, here and under the allocator's +31.7 k calls).
+> 4. **MDS0 Hadamard SATD on inter candidates, 7.8 %: C makes ZERO Hadamard
+>    calls on the inter frame** (`fast_loop_core` uses `svt_aom_variance*`);
+>    the port runs 632 SATDs AND `variance_diff` (+544 calls) — both metrics.
+>    Algorithmic.
+> 5. MD subpel 6.3 % at 4.4x (272 = 272); its variance kernel 4.7x.
+> 6. **The screen-content detector on the inter frame, 4.4 %: C's
+>    `perform_sc_detection` is I_SLICE-only (`pd_process.c:4771`, 1 call in the
+>    whole 2-frame run); the port runs `derive_sc` TWICE per frame on EVERY
+>    frame (`pipeline.rs:2203`, `:11406`) at 2.4x C's cost per call.**
+>    Algorithmic.
+> 7. **A homegrown second full-pel search per SB, 3.9 %** —
+>    `motion_est::full_pel_search` (`pipeline.rs:4231`, 16,384 `block_sad`
+>    calls) runs beside the C-faithful `inter_me::b64` (64 = 64) and feeds
+>    `mv_map`; whether anything live reads `mv_map` was not traced. Algorithmic.
+> 8. `build_nmv_component_cost_table` 3.5x at 4 = 4; `downsample_2d` 23.6x at
+>    2 = 2; `film_grain::estimate_film_grain` 3.4 M/frame with its result
+>    DISCARDED (`pipeline.rs:6232`); `tpl_sb_qp_offsets` 2.3 M/frame, result
+>    DISCARDED (`pipeline.rs:12148`). The last two are free.
+> **At p6 the top row is directional intra on the INTER frame: 27 % of the
+> port's delta (265.5 M vs C 14.2 M, 18.7x), and it is BOTH kinds** — the
+> key-frame joins are exact (`dr_predictor_edged` 40,758 = C z1+z2+z3;
+> z2 20,288 = 20,288), and on the inter frame the port runs +4,346
+> directional predictions to C's +1,965 (+2,288 z2 to +1,053): 2.2x the
+> breadth on top of the ~10x per-call kernel gap `1d9e5069f` already names.
+> Which C gate narrows the inter-frame directional set is untraced. Also at
+> p6: `variance_diff_parts_impl_v3` (the MDS0 VAR kernel — NOT the
+> `variance::sse` the sse_madd chunk fixed) is 9.9 % at 13.3x, ~16 k Ir/call,
+> and the port's single largest kernel in the whole photo N=2 run (7.46 %).
+> **Verdict: ~19 % of the gradient p8 encoder delta is work C does not do at
+> all (Hadamard, sc detector, the second ME, film grain, tpl offsets,
+> allocator); ~81 % is per-call, led by the ME SAD kernels and the convolves.**
+> **Three things cut the other way and are BYTE HAZARDS for the inter
+> campaign, flagged not diagnosed:** (a) C evaluates warped-motion candidates
+> (`svt_av1_warp_plane` 287/318 calls at p6, 8.8-9.9 M) — the port has no warp
+> arm, bytes match because none won; (b) **C runs the Wiener LR search on the
+> inter frame** (`restoration_seg_search` 1→2, `search_wiener_seg` 4→8, ~5.4 M)
+> and the port does not (`search_restoration_still_bd` 1→1) although both
+> derive `is_not_last_layer = true` on this flat GOP (`pd_process.c:5560`'s
+> `&& hierarchical_levels != 0`; `pipeline.rs:5092`) — identical only because C
+> signalled RESTORE_NONE; (c) at p6 the port evaluates FEWER leaves and MDS0
+> candidates than C on the inter frame (`evaluate_leaf` +208 vs
+> `md_encode_block` +300; photo +64 vs +320; `predict_unit` +1,856 vs
+> `fast_loop_core` +6,484) at identical bytes — so the photo 5.1x is per-call
+> cost on a NARROWER search. The p8 leaf join is exact (+136 = +136).
+> **No wall clock and no cycles were measured** (r7900x went under another
+> lane's timed bench as the sweep ended; `perf stat` is owed), and no Ir share
+> here converts to ms. Tooling: `callcount_cells.sh` takes `FRAMES`/`VIDEO`,
+> checks identity per frame and dumps at `--threshold=100`; `inter_delta.py`
+> and `inter_join.py` are the N=2−N=1 and the C↔port join.
+
 > **`variance::sse` IS C's `madd_epi16` KERNEL ON x86 NOW — 5.02x C's
 > INSTRUCTIONS -> **1.84x** AT p6 AND 2.81x -> **1.30x** AT p2, WITH THE WHOLE
 > photo_cid FRAME **-1.92 % AT BOTH PRESETS**, BYTE-IDENTICAL (2026-09-05).**

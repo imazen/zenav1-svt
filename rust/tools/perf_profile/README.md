@@ -66,6 +66,32 @@ python3 tools/perf_profile/callcount_join.py ~/tmp/cg --tsv join.tsv
 python3 tools/perf_profile/tree_callers.py ~/tmp/cg/tree_c_photo_p2.txt '^svt_aom_quantize_inv_quantize$'
 ```
 
+### The INTER frame's own cost: N=2 minus N=1, per symbol
+
+`perf_gate.sh` prices the inter frame by differencing wall-clock medians and
+cannot resolve C's side (its p25/p75 spread is the size of the difference).
+Callgrind is deterministic, so the same subtraction on Ir is exact per
+function. `callcount_cells.sh` takes `FRAMES` / `VIDEO` / `SHIFT` (the same env
+`perf_gate.sh` exports) and checks identity PER FRAME; run it once per
+(FRAMES, VIDEO) with distinct cell names, then difference:
+
+```bash
+PRESETS="6 8" VIDEO=1 FRAMES=1 tools/perf_profile/callcount_cells.sh ~/tmp/cg gradient_vk:gradient:512:512
+PRESETS="6 8"         FRAMES=2 tools/perf_profile/callcount_cells.sh ~/tmp/cg gradient_n2:gradient:512:512
+python3 tools/perf_profile/inter_delta.py ~/tmp/cg --n1 gradient_vk --n2 gradient_n2 --preset 8 --side port --tsv delta_port_gradient_p8.tsv
+python3 tools/perf_profile/inter_delta.py ~/tmp/cg --n1 gradient_vk --n2 gradient_n2 --preset 8 --side c    --tsv delta_c_gradient_p8.tsv
+python3 tools/perf_profile/inter_join.py . --cells gradient_p8 --tsv join.tsv   # the C-edge -> port-edge table
+```
+
+`inter_delta.py` asserts that the per-function self deltas sum to the
+process delta (a parser that drops rows is caught); `inter_join.py` folds
+callgrind's recursion clones (`fn'2`) before matching, or a `$`-anchored
+regex sees one level only. Record: `benchmarks/callcount_inter_2026-09-05.*`.
+Two traps specific to the difference: `perf_encode::translate` is the PORT
+harness synthesising the shifted frame (C reads it from the `.yuv`) — exclude
+it; and a row present in both cells at the same count reads 0 however large it
+is, so the table is what the inter frame ADDED, not what it costs.
+
 Real-content `.yuv`s come from `identity_run crop:<png> W H qp preset prefix`
 (the byte gates' BT.601 converter) and feed `perf_encode raw:<prefix>.yuv`.
 Records: `benchmarks/callcount_2026-09-04.*` (gradient), `callcount_txtscreen_*`,

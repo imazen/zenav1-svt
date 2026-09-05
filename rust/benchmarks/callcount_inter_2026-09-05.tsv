@@ -1,0 +1,128 @@
+# inter_join.py — inter-frame (N=2 minus N=1) per-edge deltas, port vs C
+cell	edge	metric	class	c_self_d	c_incl_d	c_calls_n1	c_calls_n2	port_self_d	port_incl_d	port_calls_n1	port_calls_n2	ratio	port_share_pct	c_share_pct
+gradient_p8	CONTROL frame leaves: md_encode_block vs evaluate_leaf	incl	control	352830	35339470	928	1064	5146104	212304434	928	1064	6.01x	49.27	62.35
+gradient_p8	CONTROL RDOQ: svt_av1_optimize_b vs quant::optimize_b	self	control	3013952	3044152	15951	16010	3644061	3847915	15951	16010	1.21x	0.85	5.32
+gradient_p8	CONTROL(count only) PD0 light quant: quantize_inv_quantize_light vs pd0::tx_quant_core — Ir NOT like-for-like, C's row excludes the transform the port's includes	incl	control	25536	549959	5032	5352	7598664	18597235	5032	5352	33.82x	4.32	0.97
+gradient_p8	CONTROL residual: svt_aom_residual_kernel(8bit_avx2) vs residual_i32	self	control	664288	664288	23064	24102	2445246	2445246	23064	24154	3.68x	0.57	1.17
+gradient_p8	CONTROL 64-pt forward DCT family (parity, not a gap)	self	control	10565152	17328544	64	864	6894720	6894720	256	2944	0.65x	1.60	18.64
+gradient_p8	ME whole SB: motion_estimation_b64 (64 calls both sides)	incl	per-call	776120	3159835	0	64	6720	95204547	0	64	30.13x	22.09	5.57
+gradient_p8	ME: ext_all_sad_calculation_8x8_16x16 (C leaf kernel vs port dispatch that calls block_sad 512x)	incl	per-call	1118673	1118673	0	394	6877858	58318498	0	394	52.13x	13.53	1.97
+gradient_p8	ME: sad_loop_kernel (C leaf kernel vs port dispatch that calls block_sad per point)	incl	per-call	765783	765783	0	640	1896048	33561648	0	640	43.83x	7.79	1.35
+gradient_p8	ME: nxm_sad_kernel_helper vs ext_sad8 dispatch	incl	per-call	695856	695856	128	2360	200448	1375488	0	1152	1.98x	0.32	1.23
+gradient_p8	ME: block_sad (port SAD leaf, ALL callers) vs C's four SAD kernels	self	per-call	2580312	2580312	128	3394	106275624	106275624	0	281464	41.19x	24.66	4.55
+gradient_p8	HOMEGROWN second full-pel search per SB (motion_est.rs; no C counterpart)	incl	algorithmic	0	0	0	0	3008	16804032	0	64	port-only	3.90	0.00
+gradient_p8	ME: block_sum_sse (port) vs C variance in ME	self	per-call	0	0	0	0	6315840	6315840	0	1296	port-only	1.47	0.00
+gradient_p8	MD subpel: find_best_sub_pixel_tree_pruned	incl	per-call	515841	6188767	0	272	64872	27086156	0	272	4.38x	6.29	10.92
+gradient_p8	MD subpel variance kernel: C sub_pixel_variance{32xh,32x32,64x64} SELF vs port subpel_variance family SELF	self	per-call	5369486	10613376	0	7554	25043592	51255456	0	6972	4.66x	5.81	9.47
+gradient_p8	MVP: setup_ref_mv_list vs inter_mvp::setup_ref_mv_list_seeded	incl	per-call	476920	706850	0	408	483658	1095386	0	408	1.55x	0.25	1.25
+gradient_p8	MV rate table: build_nmv_component_cost_table (4 calls both sides)	self	per-call	2543550	2543550	2	4	8800708	9326515	0	4	3.46x	2.04	4.49
+gradient_p8	MD inter prediction, whole: svt_aom_inter_prediction vs av1_inter_prediction_light_pd1	incl	per-call	302261	1782767	0	1039	237952	57175834	0	656	32.07x	13.27	3.15
+gradient_p8	convolve x (1-D horizontal)	self	per-call	126768	126768	0	264	15864884	15864884	0	548	125.15x	3.68	0.22
+gradient_p8	convolve y (1-D vertical, incl. C's jnt y)	self	per-call	550709	838590	0	422	8440083	8440083	0	144	15.33x	1.96	0.97
+gradient_p8	convolve 2-D (both axes subpel; C 16 calls vs port 240 — routing differs)	self	per-call	64056	126352	0	64	13900000	14039664	0	240	217.00x	3.23	0.11
+gradient_p8	convolve copy (C copy kernels vs port dispatch_convolve_8 SELF, where the copy is inlined)	self	per-call	493394	493394	0	1215	9362576	47707207	0	1920	18.98x	2.17	0.87
+gradient_p8	PD0 inter prediction: inter_pu_prediction_av1_pd0 vs predict_inter_luma_pd0 (320 both)	incl	per-call	25920	147904	0	320	31360	6654944	0	320	45.00x	1.54	0.26
+gradient_p8	Warped motion candidates: svt_av1_warp_plane (C evaluates; port has no warp arm)	incl	algorithmic	0	0	0	0	0	0	0	0	both0	0.00	0.00
+gradient_p8	PD0 whole SB: pick_partition_pd0 vs pd0::pd0_pick_sb_partition* (64->128 both)	incl	per-call	157720	11020536	5032	5352	11392	45615537	64	128	4.14x	10.59	19.44
+gradient_p8	MDS0 distortion, VAR: C variance kernels vs port variance_diff kernel	self	per-call	2055486	2055486	7744	11551	8982176	8982176	11136	11680	4.37x	2.08	3.63
+gradient_p8	MDS0 distortion, SATD: Hadamard family (C makes 0 Hadamard calls on the inter frame)	self	algorithmic	0	0	0	0	33631475	154445531	0	187577	port-only	7.80	0.00
+gradient_p8	MDS0 breadth: fast_loop_core (C, per candidate) vs predict::predict_unit (port, per candidate) — COUNTS are the reading	incl	algorithmic	105699	3010324	11136	12175	47328	10801432	16704	17248	3.59x	2.51	5.31
+gradient_p8	Directional intra, ALL (self Ir): C z1+z2+z3 kernels + clones vs port dr_predictor_edged + z2 core; port wrapper count == C z1+z2+z3 count EXACTLY on the key frame; the calls column double-counts wrapper+kernel on both sides — read counts from the z2-only row	self	per-call	0	0	8419	8419	0	0	9287	9287	both0	0.00	0.00
+gradient_p8	Directional intra z2 only: C z2 kernel vs port dr_z2_edged_core (both 20,288 calls on the gradient p6 key frame; the inter-frame call deltas differ per cell — breadth AND per-call)	self	per-call	0	0	3153	3153	0	0	3153	3153	both0	0.00	0.00
+gradient_p8	Smooth predictor (32x32/64x64 C ssse3 vs port predict_smooth)	self	per-call	0	0	1400	1400	8243128	8243128	1400	1536	port-only	1.91	0.00
+gradient_p8	Paeth predictor	self	per-call	0	0	0	0	0	0	0	0	both0	0.00	0.00
+gradient_p8	tx_unit_inner vs full_loop_core (granularity differs; port per txb, C per candidate)	self	per-call	205121	21815296	1627	2073	9137885	45388170	27838	28655	44.55x	2.12	0.36
+gradient_p8	Screen-content detector (C: 1 call total, key frame only; port: 2 per frame, every frame)	incl	algorithmic	0	0	1	1	230	19126614	2	4	port-only	4.44	0.00
+gradient_p8	Wiener LR search on the inter frame (C runs it: wn=5, is_not_last_layer; port does not)	incl	algorithmic	119	5414181	1	2	0	35	1	1	0.00x	0.00	9.55
+gradient_p8	Film-grain estimate (port only, result discarded: pipeline.rs `_grain_params`)	self	algorithmic	0	0	0	0	3414082	3414082	1	2	port-only	0.79	0.00
+gradient_p8	TPL per-SB qp offsets (port only, inter frames)	self	algorithmic	0	0	0	0	2332971	2333042	0	1	port-only	0.54	0.00
+gradient_p8	Downsample 2D (2 planes/frame both sides)	self	per-call	107892	107892	2	4	2546508	2546508	2	4	23.60x	0.59	0.19
+gradient_p8	PaPlane::refill_from_plane (port padded-plane copy for ME)	incl	algorithmic	0	0	0	0	11871	523235	1	2	port-only	0.12	0.00
+gradient_p8	Harness frame synthesis: perf_encode::translate (EXCLUDE — C reads the .yuv)	self	harness	0	0	0	0	6696083	6827955	0	3	port-only	1.55	0.00
+gradient_p8	memset (SUSPECT: rep stosb is 1 Ir/byte under callgrind; largest port caller is the allocator's unnamed frame)	self	suspect	705419	705419	42076	50213	41334619	41334619	196247	226690	58.60x	9.59	1.24
+gradient_p8	memcpy	self	suspect	887549	887549	235822	274651	3541508	3541508	509574	592369	3.99x	0.82	1.57
+gradient_p8	allocator (malloc/calloc/free internals)	self	algorithmic	2234	6052	12751	12817	4704723	88322892	548084	664900	2105.96x	1.09	0.00
+gradient_p6	CONTROL frame leaves: md_encode_block vs evaluate_leaf	incl	control	797207	106310910	1728	2028	7732339	719401972	1728	1936	6.77x	73.56	81.10
+gradient_p6	CONTROL RDOQ: svt_av1_optimize_b vs quant::optimize_b	self	control	2504977	2527630	32178	32223	2976311	3124409	32178	32221	1.19x	0.30	1.91
+gradient_p6	CONTROL(count only) PD0 light quant: quantize_inv_quantize_light vs pd0::tx_quant_core — Ir NOT like-for-like, C's row excludes the transform the port's includes	incl	control	25536	550041	8148	8468	7617956	18597699	4756	5076	33.81x	1.90	0.42
+gradient_p6	CONTROL residual: svt_aom_residual_kernel(8bit_avx2) vs residual_i32	self	control	1193944	1193944	45286	47406	3376515	3376515	45286	46787	2.83x	0.35	0.91
+gradient_p6	CONTROL 64-pt forward DCT family (parity, not a gap)	self	control	13989280	23007136	64	1120	9562320	9562320	256	3984	0.68x	0.98	10.67
+gradient_p6	ME whole SB: motion_estimation_b64 (64 calls both sides)	incl	per-call	776056	3500460	0	64	6720	115208377	0	64	32.91x	11.78	2.67
+gradient_p6	ME: ext_all_sad_calculation_8x8_16x16 (C leaf kernel vs port dispatch that calls block_sad 512x)	incl	per-call	1141359	1141359	0	402	7016354	59501474	0	402	52.13x	6.08	0.87
+gradient_p6	ME: sad_loop_kernel (C leaf kernel vs port dispatch that calls block_sad per point)	incl	per-call	1082332	1082332	0	640	2960096	52374752	0	640	48.39x	5.36	0.83
+gradient_p6	ME: nxm_sad_kernel_helper vs ext_sad8 dispatch	incl	per-call	1289976	1289976	128	4820	200448	1375488	0	1152	1.07x	0.14	0.98
+gradient_p6	ME: block_sad (port SAD leaf, ALL callers) vs C's four SAD kernels	self	per-call	3513667	3513667	128	5862	127945680	127945680	0	321648	36.41x	13.08	2.68
+gradient_p6	HOMEGROWN second full-pel search per SB (motion_est.rs; no C counterpart)	incl	algorithmic	0	0	0	0	3008	16804032	0	64	port-only	1.72	0.00
+gradient_p6	ME: block_sum_sse (port) vs C variance in ME	self	per-call	0	0	0	0	9420928	9420928	0	2032	port-only	0.96	0.00
+gradient_p6	MD subpel: find_best_sub_pixel_tree_pruned	incl	per-call	1079133	11466490	0	600	99211	40774401	0	416	3.56x	4.17	8.75
+gradient_p6	MD subpel variance kernel: C sub_pixel_variance{32xh,32x32,64x64} SELF vs port subpel_variance family SELF	self	per-call	9810765	19385600	0	15166	37725812	77173744	0	10566	3.85x	3.86	7.48
+gradient_p6	MVP: setup_ref_mv_list vs inter_mvp::setup_ref_mv_list_seeded	incl	per-call	1055496	1548785	0	900	594048	1328355	0	504	0.86x	0.14	1.18
+gradient_p6	MV rate table: build_nmv_component_cost_table (4 calls both sides)	self	per-call	2543550	2543550	2	4	8800708	9326404	0	4	3.46x	0.90	1.94
+gradient_p6	MD inter prediction, whole: svt_aom_inter_prediction vs av1_inter_prediction_light_pd1	incl	per-call	678980	12142504	0	2416	363734	84175798	0	1006	6.93x	8.61	9.26
+gradient_p6	convolve x (1-D horizontal)	self	per-call	248140	248140	0	574	23400930	23400930	0	810	94.31x	2.39	0.19
+gradient_p6	convolve y (1-D vertical, incl. C's jnt y)	self	per-call	783899	1198262	0	595	11380446	11380446	0	209	14.52x	1.16	0.60
+gradient_p6	convolve 2-D (both axes subpel; C 16 calls vs port 240 — routing differs)	self	per-call	66072	128464	0	124	20435468	20681107	0	334	309.29x	2.09	0.05
+gradient_p6	convolve copy (C copy kernels vs port dispatch_convolve_8 SELF, where the copy is inlined)	self	per-call	886768	886768	0	2260	14368941	69831424	0	2934	16.20x	1.47	0.68
+gradient_p6	PD0 inter prediction: inter_pu_prediction_av1_pd0 vs predict_inter_luma_pd0 (320 both)	incl	per-call	25920	147904	0	320	31360	6654041	0	320	44.99x	0.68	0.11
+gradient_p6	Warped motion candidates: svt_av1_warp_plane (C evaluates; port has no warp arm)	incl	algorithmic	13776	8797326	0	287	0	0	0	0	C-only	0.00	6.71
+gradient_p6	PD0 whole SB: pick_partition_pd0 vs pd0::pd0_pick_sb_partition* (64->128 both)	incl	per-call	157783	11183895	4756	5076	0	0	0	0	C-only	0.00	8.53
+gradient_p6	MDS0 distortion, VAR: C variance kernels vs port variance_diff kernel	self	per-call	7291250	7291250	26576	36733	97165776	97165776	50112	56144	13.33x	9.94	5.56
+gradient_p6	MDS0 distortion, SATD: Hadamard family (C makes 0 Hadamard calls on the inter frame)	self	algorithmic	0	0	0	0	50433749	231601517	0	281299	port-only	5.16	0.00
+gradient_p6	MDS0 breadth: fast_loop_core (C, per candidate) vs predict::predict_unit (port, per candidate) — COUNTS are the reading	incl	algorithmic	623408	41367438	50112	56509	4588454	323169113	62052	68084	7.81x	33.05	31.56
+gradient_p6	Directional intra, ALL (self Ir): C z1+z2+z3 kernels + clones vs port dr_predictor_edged + z2 core; port wrapper count == C z1+z2+z3 count EXACTLY on the key frame; the calls column double-counts wrapper+kernel on both sides — read counts from the z2-only row	self	per-call	14183841	16173351	59049	61830	265516912	422885606	61046	67680	18.72x	27.15	10.82
+gradient_p6	Directional intra z2 only: C z2 kernel vs port dr_z2_edged_core (both 20,288 calls on the gradient p6 key frame; the inter-frame call deltas differ per cell — breadth AND per-call)	self	per-call	11316804	11316804	20288	21341	157368694	157368694	20288	22576	13.91x	16.09	8.63
+gradient_p6	Smooth predictor (32x32/64x64 C ssse3 vs port predict_smooth)	self	per-call	1176116	1176116	2152	2452	12111024	12111024	2812	3020	10.30x	1.24	0.90
+gradient_p6	Paeth predictor	self	per-call	551892	551892	1292	1592	14248320	14248320	2561	2769	25.82x	1.46	0.42
+gradient_p6	tx_unit_inner vs full_loop_core (granularity differs; port per txb, C per candidate)	self	per-call	569001	41650126	7050	8248	13500916	65624202	59570	60772	23.73x	1.38	0.43
+gradient_p6	Screen-content detector (C: 1 call total, key frame only; port: 2 per frame, every frame)	incl	algorithmic	0	0	1	1	230	19126614	2	4	port-only	1.96	0.00
+gradient_p6	Wiener LR search on the inter frame (C runs it: wn=5, is_not_last_layer; port does not)	incl	algorithmic	119	5414309	1	2	0	2293	1	1	0.00x	0.00	4.13
+gradient_p6	Film-grain estimate (port only, result discarded: pipeline.rs `_grain_params`)	self	algorithmic	0	0	0	0	3414082	3414082	1	2	port-only	0.35	0.00
+gradient_p6	TPL per-SB qp offsets (port only, inter frames)	self	algorithmic	0	0	0	0	2332971	2333042	0	1	port-only	0.24	0.00
+gradient_p6	Downsample 2D (2 planes/frame both sides)	self	per-call	107892	107892	2	4	2546508	2546508	2	4	23.60x	0.26	0.08
+gradient_p6	PaPlane::refill_from_plane (port padded-plane copy for ME)	incl	algorithmic	0	0	0	0	11871	523346	1	2	port-only	0.05	0.00
+gradient_p6	Harness frame synthesis: perf_encode::translate (EXCLUDE — C reads the .yuv)	self	harness	0	0	0	0	6696083	6827955	0	3	port-only	0.68	0.00
+gradient_p6	memset (SUSPECT: rep stosb is 1 Ir/byte under callgrind; largest port caller is the allocator's unnamed frame)	self	suspect	1609778	1609778	71020	92154	58644347	58644347	358916	412817	36.43x	6.00	1.23
+gradient_p6	memcpy	self	suspect	2204896	2204896	577602	667252	6328110	6328110	963282	1083868	2.87x	0.65	1.68
+gradient_p6	allocator (malloc/calloc/free internals)	self	algorithmic	2778	7190	12771	12851	9656866	145828225	1342365	1582742	3476.19x	0.99	0.00
+photo_p6	CONTROL frame leaves: md_encode_block vs evaluate_leaf	incl	control	893276	107389055	2760	3080	4987166	397837688	2760	2824	3.70x	59.71	82.88
+photo_p6	CONTROL RDOQ: svt_av1_optimize_b vs quant::optimize_b	self	control	834	882	86125	86128	657	1131	89924	89927	0.79x	0.00	0.00
+photo_p6	CONTROL(count only) PD0 light quant: quantize_inv_quantize_light vs pd0::tx_quant_core — Ir NOT like-for-like, C's row excludes the transform the port's includes	incl	control	25600	390464	10156	10476	5538560	13039719	5436	5756	33.40x	1.96	0.30
+photo_p6	CONTROL residual: svt_aom_residual_kernel(8bit_avx2) vs residual_i32	self	control	1227200	1227200	86763	89003	1754496	1754496	92851	93491	1.43x	0.26	0.95
+photo_p6	CONTROL 64-pt forward DCT family (parity, not a gap)	self	control	14282048	23299904	64	1152	8536320	8536320	256	3584	0.60x	1.28	11.02
+photo_p6	ME whole SB: motion_estimation_b64 (64 calls both sides)	incl	per-call	928266	4866029	0	64	6720	170144888	0	64	34.97x	25.53	3.76
+photo_p6	ME: ext_all_sad_calculation_8x8_16x16 (C leaf kernel vs port dispatch that calls block_sad 512x)	incl	per-call	2165809	2165809	0	762	13244222	112730942	0	762	52.05x	16.92	1.67
+photo_p6	ME: sad_loop_kernel (C leaf kernel vs port dispatch that calls block_sad per point)	incl	per-call	1077473	1077473	0	640	2959916	52368650	0	640	48.60x	7.86	0.83
+photo_p6	ME: nxm_sad_kernel_helper vs ext_sad8 dispatch	incl	per-call	57216	57216	128	320	356352	2445312	0	2048	42.74x	0.37	0.04
+photo_p6	ME: block_sad (port SAD leaf, ALL callers) vs C's four SAD kernels	self	per-call	3300498	3300498	128	1722	167061918	167061918	0	506426	50.62x	25.07	2.55
+photo_p6	HOMEGROWN second full-pel search per SB (motion_est.rs; no C counterpart)	incl	algorithmic	0	0	0	0	3008	16804032	0	64	port-only	2.52	0.00
+photo_p6	ME: block_sum_sse (port) vs C variance in ME	self	per-call	0	0	0	0	5940240	5940240	0	636	port-only	0.89	0.00
+photo_p6	MD subpel: find_best_sub_pixel_tree_pruned	incl	per-call	1019798	10854294	0	640	30592	19634176	0	128	1.81x	2.95	8.38
+photo_p6	MD subpel variance kernel: C sub_pixel_variance{32xh,32x32,64x64} SELF vs port subpel_variance family SELF	self	per-call	9215744	18208768	0	14080	18145536	37433856	0	2688	1.97x	2.72	7.11
+photo_p6	MVP: setup_ref_mv_list vs inter_mvp::setup_ref_mv_list_seeded	incl	per-call	1123530	1641658	0	960	214423	481771	0	192	0.29x	0.07	1.27
+photo_p6	MV rate table: build_nmv_component_cost_table (4 calls both sides)	self	per-call	2543550	2543550	2	4	8800708	9326393	0	4	3.46x	1.32	1.96
+photo_p6	MD inter prediction, whole: svt_aom_inter_prediction vs av1_inter_prediction_light_pd1	incl	per-call	631974	12457707	0	2284	94976	24012172	0	256	1.93x	3.60	9.62
+photo_p6	convolve x (1-D horizontal)	self	per-call	277248	277248	0	640	12721408	12721408	0	256	45.88x	1.91	0.21
+photo_p6	convolve y (1-D vertical, incl. C's jnt y)	self	per-call	0	0	0	0	0	0	0	0	both0	0.00	0.00
+photo_p6	convolve 2-D (both axes subpel; C 16 calls vs port 240 — routing differs)	self	per-call	0	0	0	0	0	0	0	0	both0	0.00	0.00
+photo_p6	convolve copy (C copy kernels vs port dispatch_convolve_8 SELF, where the copy is inlined)	self	per-call	1400979	1400979	0	2972	7572992	20294400	0	768	5.41x	1.14	1.08
+photo_p6	PD0 inter prediction: inter_pu_prediction_av1_pd0 vs predict_inter_luma_pd0 (320 both)	incl	per-call	53440	739840	0	640	31360	6654132	0	320	8.99x	1.00	0.57
+photo_p6	Warped motion candidates: svt_av1_warp_plane (C evaluates; port has no warp arm)	incl	algorithmic	15264	9946412	0	318	0	0	0	0	C-only	0.00	7.68
+photo_p6	PD0 whole SB: pick_partition_pd0 vs pd0::pd0_pick_sb_partition* (64->128 both)	incl	per-call	183744	8667648	5436	5756	0	0	0	0	C-only	0.00	6.69
+photo_p6	MDS0 distortion, VAR: C variance kernels vs port variance_diff kernel	self	per-call	8225040	8225040	35948	46716	51858496	51858496	80040	81896	6.30x	7.78	6.35
+photo_p6	MDS0 distortion, SATD: Hadamard family (C makes 0 Hadamard calls on the inter frame)	self	algorithmic	0	0	0	0	30369280	139560448	0	169216	port-only	4.56	0.00
+photo_p6	MDS0 breadth: fast_loop_core (C, per candidate) vs predict::predict_unit (port, per candidate) — COUNTS are the reading	incl	algorithmic	627291	43876612	80040	86524	1672031	211787628	104124	105980	4.83x	31.78	33.86
+photo_p6	Directional intra, ALL (self Ir): C z1+z2+z3 kernels + clones vs port dr_predictor_edged + z2 core; port wrapper count == C z1+z2+z3 count EXACTLY on the key frame; the calls column double-counts wrapper+kernel on both sides — read counts from the z2-only row	self	per-call	15571681	17677615	97888	100764	178981848	285553368	106565	108589	11.49x	26.86	12.02
+photo_p6	Directional intra z2 only: C z2 kernel vs port dr_z2_edged_core (both 20,288 calls on the gradient p6 key frame; the inter-frame call deltas differ per cell — breadth AND per-call)	self	per-call	12306159	12306159	34702	35784	106571520	106571520	36208	36912	8.66x	15.99	9.50
+photo_p6	Smooth predictor (32x32/64x64 C ssse3 vs port predict_smooth)	self	per-call	1283264	1283264	3178	3498	8208832	8208832	5584	5648	6.40x	1.23	0.99
+photo_p6	Paeth predictor	self	per-call	602688	602688	2420	2740	9656730	9656730	2784	2848	16.02x	1.45	0.47
+photo_p6	tx_unit_inner vs full_loop_core (granularity differs; port per txb, C per candidate)	self	per-call	609344	42012054	16466	17746	6185370	32660878	131678	131998	10.15x	0.93	0.47
+photo_p6	Screen-content detector (C: 1 call total, key frame only; port: 2 per frame, every frame)	incl	algorithmic	0	0	1	1	230	5142168	2	4	port-only	0.77	0.00
+photo_p6	Wiener LR search on the inter frame (C runs it: wn=5, is_not_last_layer; port does not)	incl	algorithmic	119	5043177	1	2	0	-1675	1	1	both0	-0.00	3.89
+photo_p6	Film-grain estimate (port only, result discarded: pipeline.rs `_grain_params`)	self	algorithmic	0	0	0	0	3414082	3414082	1	2	port-only	0.51	0.00
+photo_p6	TPL per-SB qp offsets (port only, inter frames)	self	algorithmic	0	0	0	0	2332971	2333042	0	1	port-only	0.35	0.00
+photo_p6	Downsample 2D (2 planes/frame both sides)	self	per-call	107892	107892	2	4	2546508	2546508	2	4	23.60x	0.38	0.08
+photo_p6	PaPlane::refill_from_plane (port padded-plane copy for ME)	incl	algorithmic	0	0	0	0	11871	523354	1	2	port-only	0.08	0.00
+photo_p6	Harness frame synthesis: perf_encode::translate (EXCLUDE — C reads the .yuv)	self	harness	0	0	0	0	6696083	6962904	0	3	port-only	1.00	0.00
+photo_p6	memset (SUSPECT: rep stosb is 1 Ir/byte under callgrind; largest port caller is the allocator's unnamed frame)	self	suspect	1617931	1617931	73692	95469	37838598	37838598	673461	696909	23.39x	5.68	1.25
+photo_p6	memcpy	self	suspect	1698020	1698020	681242	759752	3714985	3714985	1486962	1560558	2.19x	0.56	1.31
+photo_p6	allocator (malloc/calloc/free internals)	self	algorithmic	4345	11161	12858	12947	3444621	85172469	2247748	2330564	792.78x	0.52	0.00

@@ -1,0 +1,86 @@
+# every symbol each edge's regex matched (union over the cells), per side — the guarantee that a duplicate transcription cannot hide inside a sum
+edge	side	symbols
+CONTROL frame leaves: md_encode_block vs evaluate_leaf	c	md_encode_block
+CONTROL frame leaves: md_encode_block vs evaluate_leaf	port	svtav1_encoder::leaf_funnel::evaluate_leaf
+CONTROL RDOQ: svt_av1_optimize_b vs quant::optimize_b	c	svt_av1_optimize_b.constprop.0
+CONTROL RDOQ: svt_av1_optimize_b vs quant::optimize_b	port	svtav1_encoder::quant::optimize_b::{closure#0}
+CONTROL(count only) PD0 light quant: quantize_inv_quantize_light vs pd0::tx_quant_core — Ir NOT like-for-like, C's row excludes the transform the port's includes	c	svt_aom_quantize_inv_quantize_light
+CONTROL(count only) PD0 light quant: quantize_inv_quantize_light vs pd0::tx_quant_core — Ir NOT like-for-like, C's row excludes the transform the port's includes	port	svtav1_encoder::pd0::tx_quant_core
+CONTROL residual: svt_aom_residual_kernel(8bit_avx2) vs residual_i32	c	svt_residual_kernel8bit_avx2
+CONTROL residual: svt_aom_residual_kernel(8bit_avx2) vs residual_i32	port	svtav1_dsp::residual::__arcane_residual_i32_impl_v3
+CONTROL 64-pt forward DCT family (parity, not a gap)	c	av1_fdct64_new_avx2;svt_av1_fwd_txfm2d_64x64_avx2;svt_handle_transform64x64_avx2
+CONTROL 64-pt forward DCT family (parity, not a gap)	port	svtav1_dsp::txfm_simd::v3::fdct64_x8
+ME whole SB: motion_estimation_b64 (64 calls both sides)	c	svt_aom_motion_estimation_b64
+ME whole SB: motion_estimation_b64 (64 calls both sides)	port	svtav1_encoder::inter_me::b64::motion_estimation_b64
+ME: ext_all_sad_calculation_8x8_16x16 (C leaf kernel vs port dispatch that calls block_sad 512x)	c	svt_ext_all_sad_calculation_8x8_16x16_avx2
+ME: ext_all_sad_calculation_8x8_16x16 (C leaf kernel vs port dispatch that calls block_sad 512x)	port	svtav1_encoder::inter_me::sad::__arcane_ext_all8_dispatch_v3
+ME: sad_loop_kernel (C leaf kernel vs port dispatch that calls block_sad per point)	c	svt_sad_loop_kernel_avx2_intrin
+ME: sad_loop_kernel (C leaf kernel vs port dispatch that calls block_sad per point)	port	svtav1_encoder::inter_me::sad::__arcane_sad_loop_dispatch_v3
+ME: nxm_sad_kernel_helper vs ext_sad8 dispatch	c	svt_nxm_sad_kernel_helper_avx2
+ME: nxm_sad_kernel_helper vs ext_sad8 dispatch	port	svtav1_encoder::inter_me::sad::__arcane_ext_sad8_dispatch_v3
+ME: block_sad (port SAD leaf, ALL callers) vs C's four SAD kernels	c	svt_ext_all_sad_calculation_8x8_16x16_avx2;svt_nxm_sad_kernel_helper_avx2;svt_sad_loop_kernel_avx2_intrin
+ME: block_sad (port SAD leaf, ALL callers) vs C's four SAD kernels	port	svtav1_dsp::me_sad::__arcane_block_sad_v3
+HOMEGROWN second full-pel search per SB (motion_est.rs; no C counterpart)	c	
+HOMEGROWN second full-pel search per SB (motion_est.rs; no C counterpart)	port	svtav1_encoder::motion_est::full_pel_search
+ME: block_sum_sse (port) vs C variance in ME	c	
+ME: block_sum_sse (port) vs C variance in ME	port	svtav1_dsp::me_sad::__arcane_block_sum_sse_v3
+MD subpel: find_best_sub_pixel_tree_pruned	c	svt_av1_find_best_sub_pixel_tree_pruned
+MD subpel: find_best_sub_pixel_tree_pruned	port	svtav1_encoder::md_subpel::find_best_sub_pixel_tree_pruned
+MD subpel variance kernel: C sub_pixel_variance{32xh,32x32,64x64} SELF vs port subpel_variance family SELF	c	svt_aom_sub_pixel_variance32x32_avx2;svt_aom_sub_pixel_variance32xh_avx2;svt_aom_sub_pixel_variance64x64_avx2
+MD subpel variance kernel: C sub_pixel_variance{32xh,32x32,64x64} SELF vs port subpel_variance family SELF	port	svtav1_dsp::subpel_variance::__arcane_subpel_variance_dispatch_v3;svtav1_dsp::subpel_variance::sub_pixel_variance;svtav1_dsp::subpel_variance::variance_diff_sse
+MVP: setup_ref_mv_list vs inter_mvp::setup_ref_mv_list_seeded	c	setup_ref_mv_list
+MVP: setup_ref_mv_list vs inter_mvp::setup_ref_mv_list_seeded	port	svtav1_encoder::inter_mvp::setup_ref_mv_list_seeded
+MV rate table: build_nmv_component_cost_table (4 calls both sides)	c	build_nmv_component_cost_table
+MV rate table: build_nmv_component_cost_table (4 calls both sides)	port	svtav1_encoder::intrabc::build_nmv_component_cost_table
+MD inter prediction, whole: svt_aom_inter_prediction vs av1_inter_prediction_light_pd1	c	svt_aom_inter_prediction
+MD inter prediction, whole: svt_aom_inter_prediction vs av1_inter_prediction_light_pd1	port	svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1
+convolve x (1-D horizontal)	c	svt_av1_convolve_x_sr_avx2
+convolve x (1-D horizontal)	port	svtav1_dsp::port_convolve::convolve_x_sr
+convolve y (1-D vertical, incl. C's jnt y)	c	jnt_convolve_y_6tap_avx2;svt_av1_convolve_y_sr_avx2;svt_av1_jnt_convolve_y_avx2
+convolve y (1-D vertical, incl. C's jnt y)	port	svtav1_dsp::port_convolve::convolve_y_sr
+convolve 2-D (both axes subpel; C 16 calls vs port 240 — routing differs)	c	convolve_2d_sr_hor_6tap_avx2;convolve_2d_sr_ver_6tap_avx2;jnt_convolve_x_6tap_avx2;svt_av1_convolve_2d_sr_avx2;svt_av1_jnt_convolve_x_avx2
+convolve 2-D (both axes subpel; C 16 calls vs port 240 — routing differs)	port	svtav1_dsp::port_convolve::convolve_2d_sr
+convolve copy (C copy kernels vs port dispatch_convolve_8 SELF, where the copy is inlined)	c	svt_av1_convolve_2d_copy_sr_avx2;svt_av1_jnt_convolve_2d_copy_avx2
+convolve copy (C copy kernels vs port dispatch_convolve_8 SELF, where the copy is inlined)	port	svtav1_dsp::port_inter_predictor::dispatch_convolve_8
+PD0 inter prediction: inter_pu_prediction_av1_pd0 vs predict_inter_luma_pd0 (320 both)	c	svt_aom_inter_pu_prediction_av1_pd0
+PD0 inter prediction: inter_pu_prediction_av1_pd0 vs predict_inter_luma_pd0 (320 both)	port	svtav1_encoder::inter_pred_arm::predict_inter_luma_pd0
+Warped motion candidates: svt_av1_warp_plane (C evaluates; port has no warp arm)	c	svt_av1_warp_plane
+Warped motion candidates: svt_av1_warp_plane (C evaluates; port has no warp arm)	port	
+PD0 whole SB: pick_partition_pd0 vs pd0::pd0_pick_sb_partition* (64->128 both)	c	svt_aom_pick_partition_pd0
+PD0 whole SB: pick_partition_pd0 vs pd0::pd0_pick_sb_partition* (64->128 both)	port	svtav1_encoder::pd0::pd0_pick_sb_partition_video_eval
+MDS0 distortion, VAR: C variance kernels vs port variance_diff kernel	c	svt_aom_mse16x16_avx2;svt_aom_variance16x16_avx2;svt_aom_variance32x32_avx2;svt_aom_variance64x64_avx2
+MDS0 distortion, VAR: C variance kernels vs port variance_diff kernel	port	svtav1_dsp::variance::__arcane_variance_diff_parts_impl_v3
+MDS0 distortion, SATD: Hadamard family (C makes 0 Hadamard calls on the inter frame)	c	
+MDS0 distortion, SATD: Hadamard family (C makes 0 Hadamard calls on the inter frame)	port	svtav1_dsp::hadamard::__arcane_aom_hadamard_8x8_impl_v3;svtav1_dsp::hadamard::aom_hadamard_16x16;svtav1_dsp::hadamard::aom_hadamard_32x32;svtav1_dsp::hadamard::aom_hadamard_8x8_core;svtav1_dsp::hadamard::hadamard_col8;svtav1_encoder::leaf_funnel::predict::hadamard_satd_into
+MDS0 breadth: fast_loop_core (C, per candidate) vs predict::predict_unit (port, per candidate) — COUNTS are the reading	c	fast_loop_core
+MDS0 breadth: fast_loop_core (C, per candidate) vs predict::predict_unit (port, per candidate) — COUNTS are the reading	port	svtav1_encoder::leaf_funnel::predict::predict_unit
+Directional intra, ALL (self Ir): C z1+z2+z3 kernels + clones vs port dr_predictor_edged + z2 core; port wrapper count == C z1+z2+z3 count EXACTLY on the key frame; the calls column double-counts wrapper+kernel on both sides — read counts from the z2-only row	c	dr_prediction_z1_16xn_avx2;dr_prediction_z1_32xn_avx2.isra.0;dr_prediction_z1_8xn_avx2;dr_prediction_z3_16x16_avx2;dr_prediction_z3_16x32_avx2.isra.0;dr_prediction_z3_16x8_avx2;dr_prediction_z3_32x32_avx2.isra.0;dr_prediction_z3_64x64_avx2.isra.0;svt_av1_dr_prediction_z1_avx2;svt_av1_dr_prediction_z2_avx2;svt_av1_dr_prediction_z3_avx2
+Directional intra, ALL (self Ir): C z1+z2+z3 kernels + clones vs port dr_predictor_edged + z2 core; port wrapper count == C z1+z2+z3 count EXACTLY on the key frame; the calls column double-counts wrapper+kernel on both sides — read counts from the z2-only row	port	svtav1_dsp::intra_pred::dr_predictor_edged;svtav1_dsp::intra_pred::dr_z2_edged_core
+Directional intra z2 only: C z2 kernel vs port dr_z2_edged_core (both 20,288 calls on the gradient p6 key frame; the inter-frame call deltas differ per cell — breadth AND per-call)	c	svt_av1_dr_prediction_z2_avx2
+Directional intra z2 only: C z2 kernel vs port dr_z2_edged_core (both 20,288 calls on the gradient p6 key frame; the inter-frame call deltas differ per cell — breadth AND per-call)	port	svtav1_dsp::intra_pred::dr_z2_edged_core
+Smooth predictor (32x32/64x64 C ssse3 vs port predict_smooth)	c	svt_aom_smooth_predictor_16x16_ssse3;svt_aom_smooth_predictor_32x32_ssse3;svt_aom_smooth_predictor_4x4_ssse3;svt_aom_smooth_predictor_64x64_ssse3;svt_aom_smooth_predictor_8x8_ssse3
+Smooth predictor (32x32/64x64 C ssse3 vs port predict_smooth)	port	svtav1_dsp::intra_pred::predict_smooth
+Paeth predictor	c	svt_aom_paeth_predictor_16x16_avx2;svt_aom_paeth_predictor_16x32_avx2;svt_aom_paeth_predictor_16x8_avx2;svt_aom_paeth_predictor_32x32_avx2;svt_aom_paeth_predictor_64x64_avx2
+Paeth predictor	port	svtav1_dsp::intra_pred::__arcane_predict_paeth_impl_v3
+tx_unit_inner vs full_loop_core (granularity differs; port per txb, C per candidate)	c	full_loop_core
+tx_unit_inner vs full_loop_core (granularity differs; port per txb, C per candidate)	port	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner
+Screen-content detector (C: 1 call total, key frame only; port: 2 per frame, every frame)	c	svt_aom_is_screen_content_antialiasing_aware
+Screen-content detector (C: 1 call total, key frame only; port: 2 per frame, every frame)	port	svtav1_encoder::sc_detect::is_screen_content_antialiasing_aware
+Wiener LR search on the inter frame (C runs it: wn=5, is_not_last_layer; port does not)	c	restoration_seg_search
+Wiener LR search on the inter frame (C runs it: wn=5, is_not_last_layer; port does not)	port	svtav1_encoder::restoration::search_restoration_still_bd::<u8>
+Film-grain estimate (port only, result discarded: pipeline.rs `_grain_params`)	c	
+Film-grain estimate (port only, result discarded: pipeline.rs `_grain_params`)	port	svtav1_encoder::film_grain::estimate_film_grain
+TPL per-SB qp offsets (port only, inter frames)	c	
+TPL per-SB qp offsets (port only, inter frames)	port	svtav1_encoder::rate_control::tpl_sb_qp_offsets
+Downsample 2D (2 planes/frame both sides)	c	svt_aom_downsample_2d_avx2
+Downsample 2D (2 planes/frame both sides)	port	svtav1_encoder::port_preanalysis::downsample_2d
+PaPlane::refill_from_plane (port padded-plane copy for ME)	c	
+PaPlane::refill_from_plane (port padded-plane copy for ME)	port	<svtav1_encoder::inter_me_arm::PaPlane>::refill_from_plane
+Harness frame synthesis: perf_encode::translate (EXCLUDE — C reads the .yuv)	c	
+Harness frame synthesis: perf_encode::translate (EXCLUDE — C reads the .yuv)	port	perf_encode::translate
+memset (SUSPECT: rep stosb is 1 Ir/byte under callgrind; largest port caller is the allocator's unnamed frame)	c	__memset_avx2_unaligned_erms [libc.so.6]
+memset (SUSPECT: rep stosb is 1 Ir/byte under callgrind; largest port caller is the allocator's unnamed frame)	port	__memset_avx2_unaligned_erms [libc.so.6]
+memcpy	c	__memcpy_avx_unaligned_erms [libc.so.6];svt_memcpy_intrin_sse
+memcpy	port	__memcpy_avx_unaligned_erms [libc.so.6]
+allocator (malloc/calloc/free internals)	c	__libc_calloc2;__libc_calloc2 [libc.so.6];__libc_malloc2;__libc_malloc2 [libc.so.6];_int_free_chunk [libc.so.6];_int_free_maybe_trim [libc.so.6];_int_free_merge_chunk [libc.so.6];_int_malloc [libc.so.6];_int_realloc;_int_realloc [libc.so.6];calloc;calloc [libc.so.6];free;free [libc.so.6];free'2 [libc.so.6];free_sb_geoms;free_temporal_filtering_buffer;malloc [libc.so.6];realloc;realloc [libc.so.6];unlink_chunk.isra.0 [libc.so.6]
+allocator (malloc/calloc/free internals)	port	__libc_calloc2;__libc_calloc2 [libc.so.6];__libc_malloc2;__libc_malloc2 [libc.so.6];_int_free_chunk [libc.so.6];_int_free_maybe_trim [libc.so.6];_int_free_merge_chunk [libc.so.6];_int_malloc [libc.so.6];_int_realloc;_int_realloc [libc.so.6];calloc;calloc [libc.so.6];free;free [libc.so.6];free'2 [libc.so.6];malloc [libc.so.6];realloc;realloc [libc.so.6];unlink_chunk.isra.0 [libc.so.6]

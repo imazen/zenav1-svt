@@ -158,6 +158,24 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **First per-function breakdown of the INTER frame's cost, port vs C**
+  (`rust/benchmarks/callcount_inter_2026-09-05.{meta,tsv,fns.tsv,ranked.tsv,
+  cells.tsv}`, r7900x callgrind, N=2 minus N=1 per symbol, byte-identical on
+  both frames, AVX2 arms verified on both sides). The port's inter frame is
+  7.60x / 7.46x / 5.14x C's instructions (gradient 512 p8 / p6, photo_cid p6).
+  Ranked: the open-loop ME SAD kernels (28 %, 30-52x at identical call
+  counts), the inter-prediction convolves (13 %, 15-217x per call plus a
+  2-D-vs-1-D routing defect), directional intra on the inter frame at p6
+  (27 %, 2.2x C's breadth on top of the kernel gap), MDS0 Hadamard SATD that
+  C never runs on inter frames, the screen-content detector run twice per
+  frame on every frame where C runs it once on I-slices, a homegrown second
+  full-pel search per SB, and two per-frame passes whose results are
+  discarded (film-grain estimate, tpl_sb_qp_offsets). Three byte hazards
+  flagged for the inter campaign: C evaluates warp candidates the port has
+  no arm for, C runs the Wiener LR search on the inter frame and the port
+  does not, and at p6 the port evaluates fewer MD leaves than C. Tooling:
+  `callcount_cells.sh` gains `FRAMES`/`VIDEO` with per-frame identity;
+  `inter_delta.py` and `inter_join.py` are new.
 - **x86_64 Zen 4 / WSL2 (`lilith`) CPU position at `7ec5b5572` — a second
   baseline, not comparable to the aarch64 arm10 one** (change `rvxoxoqs`):
   gradient qp40 slope ratios p8 still 1.99x / videokey 1.91x / inter 2.25x

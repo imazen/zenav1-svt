@@ -13,6 +13,22 @@
 #   PE        port harness binary                (default <rs>/target/release/examples/perf_encode)
 #   CE        C harness binary                   (default <rs>/tools/perf_c_encode/perf_c_encode)
 #   VALGRIND  valgrind binary                    (default valgrind)
+#   FRAMES    frames per encode (N > 1 = an INTER cell)        (default 1)
+#   VIDEO     1 = video-mode config even at FRAMES=1 (a video-mode KEY
+#             frame — the N=1 control an inter differencing needs)    (default 0)
+#   SHIFT     px/frame horizontal translation for FRAMES > 1  (default 3)
+#
+# INTER / VIDEO cells (FRAMES > 1 or VIDEO=1) export the SAME env set
+# tools/perf_gate.sh exports (SVTAV1_FRAMES/_FRAME_SHIFT/_INTRA_PERIOD/
+# _HIER_LEVELS/_INTER_EXPERIMENTAL + SVTAV1_VIDEO on the port; SVT_FRAMES/
+# _INTRA_PERIOD/_HIER_LEVELS/_PRED_STRUCT + SVT_AVIF=0 on C), so a cell here
+# is the same encode the wall-clock harness times. Identity is then checked
+# PER FRAME (port <pfx>.obu.f<i> vs C <pfx>.c.obu.pts<i>), never on the
+# concatenation — a frame-0 length change shifts every later byte and a
+# whole-stream cmp names the wrong frame. The inter frame's OWN cost is the
+# per-symbol DIFFERENCE of two cells, FRAMES=2 minus (FRAMES=1, VIDEO=1):
+# see inter_delta.py. The env applies to every cell of one invocation, so run
+# the script once per (FRAMES, VIDEO) pair and give the cells distinct names.
 #
 # Per (cell, preset) it does, IN THIS ORDER, and stops the cell on any failure:
 #   1. identity pre-pass, NOT instrumented: port writes <yuv>+<obu>, C reads
@@ -24,8 +40,12 @@
 #      OBU the instrumented run itself wrote against the pre-pass's.
 #   3. callgrind C the same way, same check.
 #   4. callcount.py --demangle on both -> cc_{port,c}_<name>_p<preset>.tsv
-#      callgrind_annotate --inclusive=yes  -> incl_{port,c}_<name>_p<preset>.txt
-#      callgrind_annotate --tree=caller    -> tree_{port,c}_<name>_p<preset>.txt
+#      callgrind_annotate --threshold=100                 -> self_{port,c}_<name>_p<preset>.txt
+#      callgrind_annotate --inclusive=yes --threshold=100 -> incl_{port,c}_<name>_p<preset>.txt
+#      callgrind_annotate --tree=caller                   -> tree_{port,c}_<name>_p<preset>.txt
+#      (--threshold=100 keeps EVERY function; the default drops everything
+#      below the 99 % cumulative mark, which is exactly the small kernels a
+#      per-symbol difference needs.)
 # Summary row per (cell, preset) -> <outdir>/cells.tsv; progress -> progress.log;
 # the exit code lands in <outdir>/done.rc when everything has run (wait on that
 # file, never on a pgrep of this script's name — WORKING-ON-THIS.md §5).
@@ -44,6 +64,23 @@ QP="${QP:-40}"
 PE="${PE:-$RS/target/release/examples/perf_encode}"
 CE="${CE:-$RS/tools/perf_c_encode/perf_c_encode}"
 VG="${VALGRIND:-valgrind}"
+FRAMES="${FRAMES:-1}"
+VIDEO="${VIDEO:-0}"
+SHIFT="${SHIFT:-3}"
+# The matched GOP + the port's experimental-inter unlock — byte-for-byte the
+# block tools/perf_gate.sh exports, exported ONLY for video/inter cells so a
+# still invocation's environment is unchanged.
+if [[ "$FRAMES" -gt 1 || "$VIDEO" == "1" ]]; then
+    export SVTAV1_FRAMES="$FRAMES" SVTAV1_FRAME_SHIFT="$SHIFT" \
+           SVTAV1_INTRA_PERIOD="${SVTAV1_INTRA_PERIOD:-64}" \
+           SVTAV1_HIER_LEVELS="${SVTAV1_HIER_LEVELS:-0}" \
+           SVTAV1_INTER_EXPERIMENTAL=1
+    [[ "$VIDEO" == "1" ]] && export SVTAV1_VIDEO=1 SVT_AVIF=0
+    export SVT_FRAMES="$FRAMES" \
+           SVT_INTRA_PERIOD="${SVT_INTRA_PERIOD:--1}" \
+           SVT_HIER_LEVELS="${SVT_HIER_LEVELS:-0}" \
+           SVT_PRED_STRUCT="${SVT_PRED_STRUCT:-1}"
+fi
 [[ -x "$PE" ]] || { echo "no port harness at $PE" >&2; exit 1; }
 [[ -x "$CE" ]] || { echo "no C harness at $CE" >&2; exit 1; }
 command -v "$VG" >/dev/null || { echo "no valgrind" >&2; exit 1; }
@@ -59,8 +96,8 @@ if [[ ! -s "$SUM" ]]; then
         echo "# callcount_cells.sh summary — one row per (cell, preset)"
         echo "# port=$PE"
         echo "# c=$CE"
-        echo "# valgrind=$($VG --version) qp=$QP presets=[${PRESETS[*]}] date=$(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname)"
-        printf 'cell\tcontent\twidth\theight\tpreset\tident\tobu_bytes\tobu_sha256\tport_ir\tc_ir\tport_over_c\tport_cg_ident\tc_cg_ident\n'
+        echo "# valgrind=$($VG --version) qp=$QP presets=[${PRESETS[*]}] frames=$FRAMES video=$VIDEO shift=$SHIFT date=$(date -u +%Y-%m-%dT%H:%M:%SZ) host=$(hostname)"
+        printf 'cell\tcontent\twidth\theight\tpreset\tident\tobu_bytes\tobu_sha256\tport_ir\tc_ir\tport_over_c\tport_cg_ident\tc_cg_ident\tframes\tvideo\tident_frames\n'
     } >"$SUM"
 fi
 ir_total() { # <callgrind out file>
@@ -68,6 +105,27 @@ ir_total() { # <callgrind out file>
     awk '/^(summary|totals):/ { print $2; exit }' "$1"
 }
 sha() { sha256sum "$1" | cut -c1-16; }
+# Port-vs-C identity for one cell. Still cells: the whole stream. Video/inter
+# cells: PER FRAME (port <pfx>.obu.f<i> vs C <pfx>.c.obu.pts<i>), the rule
+# perf_gate.sh and identity_diff_inter.sh state. Sets `ident` (Y/N) and
+# `identf` (f0=Y,f1=N,... or `-` for a still cell); a missing per-frame file
+# is N, never "not compared".
+ident_check() { # <pfx>
+    local pfx=$1 fi
+    identf="-"; ident=Y
+    if [[ "$FRAMES" -eq 1 && "$VIDEO" != "1" ]]; then
+        cmp -s "$pfx.obu" "$pfx.c.obu" || ident=N
+        return
+    fi
+    identf=""
+    for ((fi = 0; fi < FRAMES; fi++)); do
+        local v=Y
+        if [[ ! -s "$pfx.obu.f$fi" || ! -s "$pfx.c.obu.pts$fi" ]]; then v=N
+        elif ! cmp -s "$pfx.obu.f$fi" "$pfx.c.obu.pts$fi"; then v=N; fi
+        [[ "$v" == N ]] && ident=N
+        identf+="${identf:+,}f$fi=$v"
+    done
+}
 
 rc=0
 for cell in "$@"; do
@@ -83,14 +141,15 @@ for cell in "$@"; do
     for p in "${PRESETS[@]}"; do
         pfx="$OUT/${name}_p${p}"
         say "== $name ($content ${w}x${h}) p$p: identity pre-pass"
-        rm -f "$pfx".obu "$pfx".c.obu "$pfx".cgp.obu "$pfx".cgc.obu
+        rm -f "$pfx".obu "$pfx".obu.f* "$pfx".c.obu "$pfx".c.obu.pts* \
+              "$pfx".cgp.obu "$pfx".cgp.obu.f* "$pfx".cgc.obu "$pfx".cgc.obu.pts*
         "$PE" "$content" "$w" "$h" "$QP" "$p" "$pfx" 0 >"$pfx.port.txt" 2>&1 \
             || { say "   port pre-pass FAILED (rc=$?), see $pfx.port.txt"; rc=1; continue; }
         "$CE" "$w" "$h" "$QP" "$p" "$pfx.yuv" "$pfx.c.obu" 0 >"$pfx.c.txt" 2>&1 \
             || { say "   C pre-pass FAILED (rc=$?), see $pfx.c.txt"; rc=1; continue; }
-        ident=Y; cmp -s "$pfx.obu" "$pfx.c.obu" || ident=N
+        ident_check "$pfx"
         bytes=$(stat -c %s "$pfx.obu"); osha=$(sha "$pfx.obu")
-        say "   ident=$ident port=$(stat -c %s "$pfx.obu")B C=$(stat -c %s "$pfx.c.obu")B"
+        say "   ident=$ident [$identf] port=$(stat -c %s "$pfx.obu")B C=$(stat -c %s "$pfx.c.obu")B"
 
         say "   callgrind port"
         nice -n 19 "$VG" --tool=callgrind --callgrind-out-file="$OUT/cg_port_${name}_p${p}.out" \
@@ -106,13 +165,15 @@ for cell in "$@"; do
         for side in port c; do
             cg="$OUT/cg_${side}_${name}_p${p}.out"
             python3 "$HERE/callcount.py" "$cg" --demangle >"$OUT/cc_${side}_${name}_p${p}.tsv"
-            callgrind_annotate --inclusive=yes "$cg" >"$OUT/incl_${side}_${name}_p${p}.txt" 2>/dev/null
+            callgrind_annotate --auto=no --threshold=100 "$cg" >"$OUT/self_${side}_${name}_p${p}.txt" 2>/dev/null
+            callgrind_annotate --auto=no --inclusive=yes --threshold=100 "$cg" >"$OUT/incl_${side}_${name}_p${p}.txt" 2>/dev/null
             callgrind_annotate --tree=caller "$cg" >"$OUT/tree_${side}_${name}_p${p}.txt" 2>/dev/null
         done
         pir=$(ir_total "$OUT/cg_port_${name}_p${p}.out"); cir=$(ir_total "$OUT/cg_c_${name}_p${p}.out")
         ratio=$(awk -v a="$pir" -v b="$cir" 'BEGIN { if (b > 0) printf "%.3f", a / b; else print "na" }')
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$name" "$content" "$w" "$h" "$p" "$ident" "$bytes" "$osha" "$pir" "$cir" "$ratio" "$pcg" "$ccg" >>"$SUM"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$name" "$content" "$w" "$h" "$p" "$ident" "$bytes" "$osha" "$pir" "$cir" "$ratio" "$pcg" "$ccg" \
+            "$FRAMES" "$VIDEO" "$identf" >>"$SUM"
         say "   done: Ir port=$pir C=$cir ratio=$ratio (cg-run ident port=$pcg C=$ccg)"
     done
 done
