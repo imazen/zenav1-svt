@@ -1,5 +1,97 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE CDEF FILTER IS A REAL SIMD KERNEL ON BOTH COLUMN WIDTHS NOW — 8.85x C's
+> INSTRUCTIONS -> 3.03x, AND **1.043x / 1.044x WALL CLOCK ON THE TWO PHOTOS AT
+> p6** (2026-09-05).** Record `benchmarks/cdef_i16_kernel_2026-09-05.{tsv,meta}`.
+> **The biggest fact was not in the ranking:** of the 26,816 `cdef_filter_block`
+> calls on photo_cid 512² p6, **10,752 (40 %) landed on the SCALAR
+> `cdef_filter_block_core`** — `cdef_filter_block_impl_v3` took the vector path
+> only for `cols == 8` and fell back for BLOCK_4X8 / BLOCK_4X4. Those calls cost
+> **62.7 M of the item's 88.7 M instructions** against C's
+> `svt_cdef_filter_block_4xn_8_avx2` at 2.76 M — **22.7x on 40 % of the calls**.
+> aarch64 never had this hole (`cdef_filter_cols4_neon` already existed), so it
+> is a pure x86 finding. **The oracle first:** C keeps the whole filter in i16
+> lanes and packs `16 / cols` ROWS into one 256-bit register — 2x8 in
+> `svt_cdef_filter_block_8xn_8_avx2` (`ASM_AVX2/cdef_block_avx2.c:870`,
+> `_mm256_setr_m128i` of two 128-bit loads) and 4x4 in the `4xn_8` twin (`:713`,
+> `_mm256_set_epi64x` of four 64-bit loads) — and **groups the taps by
+> coefficient**, so `sum += pri_taps[0] * (p0 + p1)` (`:922`) makes twelve taps
+> cost FOUR `_mm256_mullo_epi16` instead of twelve `_mm256_mullo_epi32`
+> (`pmulld`, 2 uops on Zen). The port carried the same values in i32 lanes, one
+> row at a time. **Same class as the CfL win: arithmetic WIDTH, not linkage.**
+> **What landed** (one file, `svtav1-dsp/src/cdef.rs`): `cdef_filter_rows_v3::<COLS>`
+> for `COLS in {8, 4}`, dispatched for both widths behind a
+> `rows % ((16 / cols) * sub) == 0` guard that every encoder shape satisfies
+> (luma BLOCK_8X8 at `sub_y = min(cfg, 4)` — **4 at preset >= 6** — and chroma
+> BLOCK_4X4 at `sub_uv = 1`). The i32 `cdef_filter_cols8_v3` STAYS: `hbd.rs:1736`
+> still uses it for the 10-bit dst16 path, which is untouched. **Ir** (base
+> `main@origin e622a99c2` -> cand, r7900x callgrind, qp 40 **p6**): photo_cid
+> 1,615,189,101 -> 1,556,889,295 (-3.61 %, port/C **2.289 -> 2.207**),
+> screen_terminal 916,275,035 -> 903,264,405 (-1.42 %, **2.578 -> 2.542**). The
+> CDEF filter kernels' self Ir, same 26,816 calls both sides: photo_cid
+> 88,718,064 -> 30,420,288 against C's 10,029,632 = **8.845x -> 3.033x**
+> (3,308.5 -> 1,134.4 Ir a call vs C's 374.0); screen_terminal 21,123,347 ->
+> 8,114,735 vs 2,627,390 = **8.040x -> 3.089x**. **Wall clock**, 21 interleaved
+> paired rounds each, box verifiably quiet (`uptime` 1.25, `ps` clean; a sibling
+> lane's own perf_ab started AFTER these finished), every row byte-identical:
+> photo_cid 512 p6 **1.043x** (0.9465-0.9663), photo_clic **1.044x**
+> (0.9552-0.9596), gradient 512 p6 **1.051x**, 256 p6 **1.038x**,
+> screen_terminal 512 p6 **1.019x**, gradient 512 p2 **1.016x**, 256 p2
+> **1.012x**, photo_cid 512 p2 1.003x, photo_clic 512 p2 1.002x. Nine of ten
+> spans sit entirely below 1.0; **screen_terminal 512 p2 is a NULL**
+> (0.9990-1.0045) and is reported as one. **A SECOND PASS with a SAME-BINARY
+> CONTROL, run together in one session on a verifiably quiet box, reproduces
+> pass 1 to within 0.001 on every cell (0.9593 vs 0.9590 photo_cid p6, 0.9819
+> vs 0.9811 screenshot p6) — and CORRECTS the generalisation in `ad8da90e`:
+> that record's 1.0043-1.0052 same-binary floor DOES NOT REPRODUCE here.
+> `perf_ab.sh base base` on these binaries reads 0.9996 / 0.9992 / 1.0001 /
+> 1.0013, all four straddling 1.0, so the numbers above are uncorrected. What
+> is established is narrower than either record alone: a same-binary control
+> is cheap, it is not always zero, and it must be measured PER BINARY PAIR
+> rather than assumed from another lane's.**
+> **THREE DELIBERATE DIVERGENCES FROM C'S KERNEL, because C's AVX2 arm disagrees
+> with C's own scalar reference on each and the port's contract is the scalar:**
+> (1) no `if (pri_strength)` tap-group guard — C skips the group's `min`/`max`
+> too, the scalar does not, and `constrain16` with `thr == 0` is already 0 in
+> every lane; (2) `_mm256_subs_epi16` + `_mm256_min_epu16` instead of
+> `sub`/`min_epi16` — same 1-uop cost, and exact over the whole u16 domain
+> because a saturated difference implies `|diff| >> shift >= 511 >` any legal
+> strength, so the tap contributes 0 exactly as the i32 scalar computes;
+> **`filter_block_sign_straddle_matches_c` FAILS without either instruction** and
+> is what forced this form; (3) `& 0xff` before `_mm256_packus_epi16` — the
+> scalar's `y as u8` TRUNCATES where `packus` SATURATES, which differ when the
+> block's centre pixel is itself the `CDEF_VERY_LARGE` sentinel. That third one
+> was **found by the new test, not reasoned to** (pattern `kind = 2`,
+> all-sentinel), for one `vpand` per 16 output pixels. Also: the sentinel leaves
+> `max` by a BLEND, not C's substitute-zero `andnot`, and the final `row + res`
+> saturates (`_mm256_adds_epi16`) — exact because the clamp to `[mn, mx]` follows
+> and `mn <= row <= mx`. **Exactness:** `cdef_filter_block_simd_matches_scalar_over_the_legal_knob_domain`
+> is EXHAUSTIVE over the knob space — 4 bsizes x 8 dirs x 16 primary x 4
+> signalled secondary x 5 dampings x 3 subsampling factors = 7,680 settings, each
+> on nine pixel patterns (flats, all-sentinel, checkerboard, a ramp over the
+> whole `0..=CDEF_VERY_LARGE` range, four pseudorandom fills with ~1-in-8
+> sentinels) = **69,120 whole-block comparisons**, inside
+> `for_each_token_permutation` with the report CONSUMED. Positive control run
+> deliberately: mutating the kernel's `+8` rounding to `+9` makes it FAIL.
+> **Memory:** nothing here allocates; the previous arm's `[i32; 64]` stack
+> scratch is gone from the x86 dst8 path, so the frame is smaller, not larger.
+> **NOT closed, and now the largest CDEF residual:** `cdef_find_dir` is
+> 17,186,816 Ir over **8,192 calls** on photo_cid p6 against C's
+> `svt_aom_cdef_find_dir_dual_avx2` at 851,968 over 4,096 blocks — **20.2x by Ir
+> and 2x by count**, two independent defects. (a) **x86 has NO vector arm at
+> all**: `cdef_find_dir` dispatches `incant!(.., [neon, scalar])`, so it runs the
+> scalar 8x8x8 accumulation at 2,140 Ir a block against C's 208. (b) **the apply
+> recomputes what the search already found**: C sets
+> `int dirinit = !(use_reference_cdef_fs || use_qp_strength)` (`enc_cdef.c:446`)
+> — 1 whenever the search ran — and `svt_cdef_filter_fb`'s
+> `if (!dirinit || !*dirinit)` (`cdef.c:367`) then skips `cdef_find_dir`
+> entirely, reading the per-picture `pcs->cdef_dir_data[fbr * nhfb + fbc]` the
+> search wrote; the port's search caches within itself
+> (`svtav1-encoder/src/cdef.rs:1079`) but `apply_cdef_frame` recomputes at
+> `:460`. Closing (b) needs the per-fb `dir`/`var` carried out of
+> `cdef_search_still` on `CdefPick`, plus C's two exceptions and the SB128
+> `dirinit = 0` reset (`enc_cdef.c:449-455`).
+
 > **THE ENTROPY WRITER AND THE RANGE CODER TAKE C'S SHAPE — -2.285 % OF THE
 > photo_cid 512² p6 FRAME'S INSTRUCTIONS, **-2.96 % OF ITS CYCLES**, -7.96 %
 > OF ITS BRANCH MISSES AND **1.037x / 1.029x WALL CLOCK ON THE TWO PHOTOS**;

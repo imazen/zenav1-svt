@@ -1,0 +1,350 @@
+THE CDEF FILTER GAP WAS TWO THINGS, AND NEITHER WAS A STALL: **40 % OF THE
+CALLS HAD NO VECTOR ARM AT ALL ON x86**, and the arm that existed did C's i16
+arithmetic in i32 lanes. Fixing both takes the CDEF filter kernels from
+**8.85x C's instructions to 3.03x** on photo_cid 512² p6 (8.04x -> 3.09x on the
+screenshot), the whole frame from 2.289x to **2.207x**, and buys
+**1.043x / 1.044x WALL CLOCK on the two photos at p6** (1.019x screenshot,
+1.051x gradient), byte-identical everywhere.
+
+**The single biggest fact, and it was not in the ranking:** of the 26,816
+`cdef_filter_block` calls on that cell, **10,752 (40 %) landed on
+`cdef_filter_block_core`, the SCALAR reference**, because
+`cdef_filter_block_impl_v3` took the vector path only for `cols == 8` and fell
+back for BLOCK_4X8 / BLOCK_4X4. Those 10,752 calls cost **62.7 M of the
+88.7 M** CDEF filter instructions — 71 % of the item — against C's
+`svt_cdef_filter_block_4xn_8_avx2` at 2.76 M. **22.7x on 40 % of the calls.**
+aarch64 did NOT have this hole (its `cdef_filter_cols4_neon` arm already
+existed), so it is a pure x86 finding and nothing in the aarch64-side records
+could have surfaced it.
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 threads),
+        valgrind-3.26.0 --tool=callgrind (Ir only), rustc via ~/.cargo/bin.
+        GATES both ISAs (aarch64 = this Mac, M4 Pro).
+base:   main@origin `e622a99c2` (the CfL SIMD commit), built in a sibling git
+        worktree `~/work/zen/zenav1-svt--cdef1` on r7900x whose only difference
+        from `cand` is `svtav1-dsp/src/cdef.rs`.
+cand:   this commit. ONE file: `crates/svtav1-dsp/src/cdef.rs`.
+C:      reference/svt-av1 @ 3115c0c1, the PREBUILT oracle in the primary
+        r7900x checkout (`rust/tools/perf_c_encode/perf_c_encode`, 2026-09-03),
+        NOT rebuilt, passed to the driver as `CE=`.
+tools:  Ir — tools/perf_profile/callcount_cells.sh (unchanged), PRESETS=6 QP=40,
+        on photo_cid and screen_terminal (CDEF is content-sensitive), both
+        512x512, from `r7900x:~/tmp/rc1/yuv`.
+        Wall clock — tools/perf_ab.sh, 21 interleaved randomised paired rounds,
+        one untimed warmup per sample, NEITHER SIDE NICED.
+data:   benchmarks/cdef_i16_kernel_2026-09-05.tsv.
+
+=================== C'S SHAPE, WITH LINE NUMBERS ===================
+
+  ASM_AVX2/cdef_block_avx2.c:1001  svt_cdef_filter_block_avx2   <- the selector
+                              :1006   8xn_8_avx2  (BLOCK_8X8, height 8)
+                              :1030   8xn_8_avx2  (BLOCK_8X4, height 4)
+                              :~1042  4xn_8_avx2  (BLOCK_4X8)
+                              :~1054  4xn_8_avx2  (BLOCK_4X4, sub forced to 1
+                                      "b/c can't subsample 4x4")
+  ASM_AVX2/cdef_block_avx2.c:870   svt_cdef_filter_block_8xn_8_avx2
+  ASM_AVX2/cdef_block_avx2.c:713   svt_cdef_filter_block_4xn_8_avx2
+  ASM_AVX2/cdef_block_avx2.c:401   constrain16
+  Codec/cdef.c:193                 svt_cdef_filter_block_c   <- the port's
+                                   `cdef_filter_block_core` is this, verbatim
+  Codec/cdef.c:322                 svt_cdef_filter_fb        <- the driver
+
+THE DIFFERENCE, and it is the same CLASS the CfL record found (arithmetic
+WIDTH, not linkage): **C keeps the entire filter in i16 lanes and packs
+`16 / cols` ROWS into one 256-bit register** — 2 rows x 8 cols in the 8-wide
+kernel (`_mm256_setr_m128i` of two `_mm_loadu_si128`, `:902`), 4 rows x 4 cols
+in the 4-wide one (`_mm256_set_epi64x` of four 64-bit loads, `:740`). The port
+carried the same values in i32 lanes, ONE row at a time: half the lanes, and
+`_mm256_mullo_epi32` (`pmulld`, 2 uops on Zen) where C uses
+`_mm256_mullo_epi16` (`pmullw`, 1).
+
+A SECOND, INDEPENDENT DIFFERENCE with the same effect: **C groups the taps by
+coefficient.** `sum += pri_taps[0] * (p0 + p1)` (`:922`) is ONE multiply for a
+PAIR of taps, and `sum += sec_taps[0] * (p0 + p1 + p2 + p3)` (`:958`) one for a
+QUAD. Twelve taps therefore cost FOUR multiplies, not twelve. The port
+multiplied per tap. That is legal because the port's own scalar core
+accumulates `sum` with `wrapping_add::<i16>` and multiplication distributes
+over addition mod 2^16 — the grouping is exact, not an approximation.
+
+=================== WHAT LANDED ===================
+
+`cdef_filter_rows_v3::<COLS>` (new, `COLS` = 8 or 4) replaces
+`cdef_filter_cols8_v3` for the dst8 arm and covers BOTH column widths. The i32
+`cdef_filter_cols8_v3` STAYS — `hbd.rs:1736` uses it for the 10-bit dst16 path,
+which is untouched by this commit and not in the 8-bit profile.
+
+`cdef_filter_block_impl_v3` now vector-dispatches on both widths, with a guard
+`rows % ((16 / cols) * sub) == 0` (else the scalar core, unchanged). Every
+shape the encoder produces passes it: luma is BLOCK_8X8 with
+`sub_y = min(cfg.subsampling, 4)` — **4 at preset >= 6** — and 8 % (2*4) == 0;
+chroma is BLOCK_4X4 with `sub_uv = min(cfg.subsampling, 1)` = 1 and
+4 % (4*1) == 0. The guard exists so an out-of-shape caller mis-strides into the
+scalar core rather than silently into the wrong rows.
+
+=================== THREE DELIBERATE DIVERGENCES FROM C'S KERNEL ===================
+
+All three exist to make the vector arm equal `cdef_filter_block_core` (=
+`svt_cdef_filter_block_c`) over the WHOLE `&[u16]` input domain. C's own AVX2
+kernel disagrees with C's own scalar reference on each of them. **Two of the
+three cost nothing; the third costs one instruction per 16 output pixels.**
+
+1. **No `if (pri_strength)` / `if (sec_strength)` tap-group guard.** C skips a
+   whole group when its strength is 0, which also skips that group's `min`/`max`
+   update; the scalar reference does not. Running the group unconditionally is
+   free in `sum` — `constrain16` with `thr == 0` returns 0 in every lane,
+   because `_mm256_subs_epu16(0, l) == 0` and the min against it is 0 — and it
+   removes a branch.
+
+2. **`_mm256_subs_epi16` + `_mm256_min_epu16` in `constrain16`**, where C uses
+   `_mm256_sub_epi16` + `_mm256_min_epi16`. The scalar computes `t - r` in i32,
+   exact for the `|diff| <= 65535` an i16 pixel pair can produce; C's i16
+   subtract WRAPS there. The saturating form is exact instead, at identical
+   cost (both are 1-uop AVX2 instructions): a saturated difference means
+   `|diff| >= 32767`, so `|diff| >> shift >= 32767 >> 6 = 511`, which exceeds
+   any legal CDEF strength (primary <= 15, secondary <= 4), so
+   `subs_epu16(thr, l)` is 0 and the tap contributes 0 — which is exactly what
+   the i32 scalar computes there. The UNSIGNED min is what makes the `-32768`
+   saturation land on 0 rather than on `-32768`
+   (`_mm256_abs_epi16(-32768) == -32768`). Below saturation both instructions
+   are bit-identical to their C counterparts.
+   **`filter_block_sign_straddle_matches_c` is the test that fails without
+   either one** — it feeds pixels that straddle 0x8000 with small gaps,
+   precisely the regime where the widths disagree.
+
+3. **`_mm256_and_si256(res, 0xff)` before `_mm256_packus_epi16`.** The scalar
+   finishes with `y as u8`, a TRUNCATION; `packus` SATURATES. They differ when
+   the clamped result exceeds 255, which happens exactly when the block's
+   CENTRE pixel is itself the `CDEF_VERY_LARGE` sentinel: `min == max == x ==
+   0x7f7f`, so the scalar writes `0x7f` and a bare `packus` writes `0xff`. The
+   encoder never filters a block whose centre is unavailable, so this is
+   unreachable from the pipeline — and C's AVX2 kernel has the divergence. One
+   `vpand` per 16 output pixels buys exactness. This one was found by the new
+   test, not reasoned to: the first version of the kernel used a bare `packus`
+   and the test failed on pattern `kind = 2` (all-sentinel).
+
+4. (Same class, no cost) **the sentinel is excluded from `max` by a BLEND**,
+   not by C's `andnot(cmpeq(p, large), p)` substitution of zero. Substituting 0
+   only matches the scalar's `if p != CDEF_VERY_LARGE { max = max(p, max) }`
+   while the running max is non-negative — true of every real pixel, not of the
+   whole u16 domain. Same instruction count.
+
+Also: `_mm256_adds_epi16(row, res)` (saturating) for the final add, where the
+scalar widens to i32. Exact because the clamp to `[mn, mx]` immediately follows
+and `mn <= row <= mx`, so a saturated sum and the true i32 sum clamp equal.
+
+=================== THE NUMBERS ===================
+
+Frame Ir, r7900x callgrind, qp 40 preset 6 (base -> cand, and C):
+    photo_cid       512  1,615,189,101 -> 1,556,889,295  (-3.61 %)  C 705,588,241
+                    port/C **2.289 -> 2.207**
+    screen_terminal 512    916,275,035 ->   903,264,405  (-1.42 %)  C 355,384,805
+                    port/C **2.578 -> 2.542**
+
+The CDEF FILTER KERNELS, self Ir, port (kernel + the `incant!` dispatch frame)
+against C (`8xn_8` + `4xn_8` + the `svt_cdef_filter_block_avx2` selector), same
+26,816 calls on both sides:
+    photo_cid        88,718,064 -> 30,420,288  vs C 10,029,632  **8.845x -> 3.033x**
+                     3,308.5 -> 1,134.4 Ir a call, against C's 374.0
+    screen_terminal  21,123,347 ->  8,114,735  vs C  2,627,390  **8.040x -> 3.089x**
+
+Where photo_cid's 88.7 M went:
+    cdef_filter_block_core            62,694,000 over 10,752 calls -> **0 over 0**
+    __arcane_cdef_filter_block_impl_v3 24,870,976 over 16,064 -> 29,267,200 over 26,816
+    cdef_filter_block (dispatch)       1,153,088 over 26,816 -> unchanged
+The v3 symbol RISES because it absorbed the 10,752 calls that used to leave it.
+Per call it went 1,548.4 -> 1,091.4 Ir while taking 67 % more calls.
+
+WALL CLOCK, base -> cand, r7900x, 21 interleaved paired rounds each, neither
+side niced, **box quiet — `uptime` 1.25 and `ps` showed zero
+cargo/rustc/valgrind/perf_encode at launch; a sibling lane's own perf_ab
+started at 08:23, AFTER these runs finished at 08:15** — every row
+byte-identical (ident=Y):
+    content          size preset  n  base_ms   cand_ms   ratio   speedup  p25     p75
+    photo_cid        512  6      21    80.469    76.691  0.9590  **1.043** 0.9465 0.9663
+    photo_clic       512  6      21    76.567    73.374  0.9583  **1.044** 0.9552 0.9596
+    gradient         512  6      21    34.732    33.161  0.9515  **1.051** 0.9433 0.9601
+    gradient         256  6      21    10.738    10.356  0.9632  **1.038** 0.9525 0.9679
+    screen_terminal  512  6      21    43.404    42.589  0.9811  **1.019** 0.9701 0.9937
+    gradient         512  2      21   451.244   444.860  0.9842  **1.016** 0.9822 0.9869
+    gradient         256  2      21   202.278   199.976  0.9882  **1.012** 0.9858 0.9935
+    photo_cid        512  2      21  2316.657  2311.092  0.9973    1.003  0.9924 0.9992
+    photo_clic       512  2      21  2296.918  2292.178  0.9981    1.002  0.9962 1.0009
+    screen_terminal  512  2      21   650.021   651.530  1.0024    0.998  0.9990 1.0045
+Nine of the ten spans sit entirely below 1.0. **screen_terminal 512 p2 is a
+NULL** (0.9990-1.0045 straddles 1.0) and is reported as one, not as a loss.
+p6 is where CDEF is a large share of the frame and p2 is where RDOQ and the
+entropy coder dominate, which is exactly the shape of the p6-vs-p2 split.
+
+=================== EXACTNESS ===================
+
+Two new tests, both in `svtav1-dsp/src/cdef.rs`:
+
+  * `cdef_filter_block_simd_matches_scalar_over_the_legal_knob_domain` — the
+    knob space EXHAUSTIVELY: all 4 `bsize`s x all 8 directions x all 16 primary
+    strengths x all 4 SIGNALLED secondary strengths (mapped through
+    `sec + (sec == 3)`, i.e. `{0,1,2,4}`) x dampings 2..=6 (luma
+    `3 + (qindex >> 6)` is 3..=6, chroma subtracts 1) x subsampling `{1, 2, 4}`
+    — 7,680 knob settings, each on NINE input patterns (flat 0, flat 255,
+    all-sentinel, max-contrast checkerboard, a ramp across the entire
+    `0..=CDEF_VERY_LARGE` value range, and four pseudorandom 8-bit fills with
+    ~1-in-8 sentinels) = **69,120 whole-block comparisons** against
+    `cdef_filter_block_core`, driven through the public `incant!` dispatcher so
+    every tier the host offers is swept. Inside `for_each_token_permutation`
+    with the `PermutationReport` **CONSUMED** (`warnings.is_empty()` and
+    `permutations_run >= 2`), so the sweep cannot silently degenerate to the
+    native tier. The pixel space is NOT exhaustive and cannot be (12 taps of
+    u16); this is stated in the test's own doc comment rather than implied.
+  * `i16_sum_accumulator_cannot_overflow_on_the_legal_strength_domain` —
+    recomputes the worst-case `|sum|` from the ACTUAL `CDEF_PRI_TAPS` /
+    `CDEF_SEC_TAPS` tables and the legal strength ranges (= 228) and asserts
+    `sum + 8` stays inside i16, so a future change to either table trips a test
+    instead of the bitstream.
+
+POSITIVE CONTROL, run deliberately, not assumed: mutating the kernel's rounding
+constant from `+8` to `+9` in the v3 arm ONLY makes
+`cdef_filter_block_simd_matches_scalar_over_the_legal_knob_domain` FAIL, and
+reverting restores it. (The `& 0xff` divergence above was also caught by this
+test before it was reasoned about, which is a second, unplanned control.)
+
+The pre-existing `tests/c_parity_cdef.rs` (11 tests, against real
+`libSvtAv1Enc.a`) passes unchanged — including
+`filter_block_sign_straddle_matches_c`, which FAILED on the first i16 draft and
+is what forced the saturating-subtract / unsigned-min form. **No test was
+relaxed, ignored, skipped or rescoped.**
+
+=================== GATES ===================
+
+x86_64 (r7900x, this tree):
+  `identity_full_8bit.sh` `IF_TIER=all` **1250 / 1250 byte-identical**
+    (+0 pinned, 0 harness errors). The two absent corpora (CID22-photo,
+    gb82-photo) are not present on r7900x and the script SAYS SO on stderr;
+    1250 is this host's full count, not a silent skip.
+  (the remaining x86 gates and the full aarch64 chain are recorded in the
+  commit that carries this file — see the message)
+
+=================== MEMORY ===================
+
+Nothing here allocates. The kernel's only state is the caller's `dst` and a
+handful of `__m256i` registers; the previous arm's `[i32; 64]` stack scratch
+(and the `[i32; 32]` on the 4-wide NEON path) is GONE from the x86 dst8 path,
+so the stack frame is smaller, not larger. No heap traffic changed, no buffer
+was resized, and the `vec!`/`Box` census of `svtav1-dsp` is untouched.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: C's kernel structure with line numbers, and that the port's
+`cols == 4` path had no vector arm at all on x86 (10,752 of 26,816 calls,
+62.7 M of 88.7 M Ir); the frame and per-kernel Ir on two contents at p6; the
+per-call cost against C's; the wall clock on ten cells at 21 paired rounds each
+on a verifiably quiet box; that the vector arm equals the scalar core over the
+whole knob domain on nine pixel patterns and over the sign-straddle domain
+against real C.
+
+NOT ESTABLISHED: that this closes the CDEF gap — it is still 3.03x C's
+instructions per call, and the residual is that C loads 12 taps as 24 128-bit
+loads with pointer arithmetic while the port re-derives a `usize` index and
+range-checks a slice per tap. Also unmeasured: any preset but 6 for the Ir
+(p2/p10), any qp but 40, 10-bit (the dst16 `hbd.rs` arm still runs the i32
+`cdef_filter_cols8_v3` and is the obvious next chunk), and the inter arm.
+
+**AND THE OTHER HALF OF THE CDEF ITEM IS NOT TOUCHED BY THIS COMMIT.**
+`cdef_find_dir` is now the largest CDEF residual on x86: 17,186,816 Ir over
+**8,192 calls** on photo_cid p6 against C's `svt_aom_cdef_find_dir_dual_avx2`
+at 851,968 over 2,048 calls-of-2-blocks = 4,096 blocks. That is **20.2x by Ir
+and 2x by block count**, and it is TWO independent defects:
+  * **No vector arm on x86 at all.** `cdef_find_dir` dispatches
+    `incant!(.., [neon, scalar])` — aarch64 has `cdef_dir_partials_neon`,
+    x86 has nothing, so it runs the scalar 8x8x8 accumulation at 2,140 Ir a
+    block against C's 208.
+  * **The apply recomputes what the search already found.** C's
+    `svt_av1_cdef_frame` sets `int dirinit = !(use_reference_cdef_fs ||
+    use_qp_strength)` (`enc_cdef.c:446`) — i.e. 1 whenever the search ran — and
+    `svt_cdef_filter_fb`'s `if (!dirinit || !*dirinit)` (`cdef.c:367`) then
+    SKIPS `cdef_find_dir` entirely, reading the per-picture
+    `pcs->cdef_dir_data[fbr * nhfb + fbc].dir/.var` the search wrote. The port's
+    search caches within itself (`filter_fb_packed`'s `dirinit`,
+    `svtav1-encoder/src/cdef.rs:1079`) but `apply_cdef_frame` recomputes at
+    `:460`, which is the 4,096 extra calls. Closing it needs the per-fb
+    `dir`/`var` carried out of `cdef_search_still` on `CdefPick`, plus C's two
+    exceptions (`use_reference_cdef_fs` / `use_qp_strength`, and the SB128
+    `dirinit = 0` reset at `enc_cdef.c:449-455`).
+
+=================== GATES (filled in from the run logs, both ISAs) ===================
+
+x86_64 (r7900x, this tree):
+  `cargo nextest run --workspace` **2553 / 2553** (0 skipped; 2551 before, +2 new)
+  `identity_full_8bit.sh` `IF_TIER=all` **1250 / 1250 byte-identical**
+    (+0 pinned, 0 harness errors). CID22-photo and gb82-photo are absent on
+    r7900x and the script SAYS SO on stderr; 1250 is this host's full count.
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open
+    (`diag 128 128 20 8 2 3`, 0 now identical), 0 crashed, 0 harness errors
+  `video_key_matrix.sh` **59 / 60** — the known-open `gradient p0`
+    (C 1341 B vs port 1342 B), unmoved
+  `screen_ibc_byte_gate.sh` **152 / 152**, 0 diverging, 0 errors
+    (port IBC blocks 41,559; palette blocks 27,402)
+  `screen_palette_gate.sh` **50 / 50** (38 palette-coding cells)
+  `fctx_gate.sh` **PASS**, 96 / 96 shared fields identical on both frames
+  `inter_decode_gate.sh` **PASS** 5 / 5;
+  `inter_decode_census.sh` **PASS** 96 streams / 96 decode / 0 rejected
+  `inter_completion_scan.sh` `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED, 0 CRASH
+
+aarch64 (this Mac, /opt/homebrew/bin/bash, one harness at a time):
+  `cargo nextest run --workspace` **2543 / 2543** (0 skipped; 2541 before, +2 new)
+  `identity_full_8bit.sh` `IF_TIER=all` **1550 / 1550 byte-identical**
+    (+0 pinned, 0 harness errors) — synthetic + dims + all three real corpora
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open, 0 crashed
+  `video_key_matrix.sh` **59 / 60** (the same known-open `gradient p0`, unmoved)
+  `screen_ibc_byte_gate.sh` **152 / 152**; `screen_palette_gate.sh` **50 / 50**
+  `fctx_gate.sh` **PASS** 96 / 96; `inter_decode_gate.sh` **PASS** 5 / 5;
+  `inter_decode_census.sh` **PASS** 96 / 96 / 0
+  `inter_completion_scan.sh` `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED, 0 CRASH
+  the six still reference cells, `identity_diff.sh`, all VERDICT: IDENTICAL at
+    their pinned sizes — gradient 64x64 q40 p6 **290 B**, q20 p3 **839 B**,
+    q55 p0 **63 B**, 128x128 q55 p8 **171 B**, 64x64 q30 p13 **580 B**,
+    screenrep 64x64 q35 p4 **693 B**
+
+Every callgrind cell: the driver's uninstrumented identity pre-pass `cmp`-clean
+AND each instrumented run's own `.obu` `cmp`'d against it (`ident=Y`,
+`port_cg_ident=Y`, `c_cg_ident=Y` on every row). Every `perf_ab.sh` row
+`ident=Y`.
+
+=================== A SECOND WALL-CLOCK PASS, WITH A SAME-BINARY CONTROL ===================
+
+`main@origin ad8da90e` ("the perf_ab bias is the HARNESS, not the box") landed
+while this work was in flight and reports that a `perf_ab.sh` control with the
+SAME BINARY in both slots reads **1.0043-1.0052** on photo_cid 512² — a
+0.4-0.5 % floor against the candidate slot, claimed as intrinsic to the
+harness. That would make every number in this record CONSERVATIVE, so it was
+worth checking rather than borrowing.
+
+**IT DOES NOT REPRODUCE HERE, and that is a correction to that record's
+generalisation.** Run in one session on a verifiably quiet r7900x (uptime
+0.02/0.24/0.82 before, 1.03/0.75/0.90 after; `ps -eo pcpu,comm --sort=-pcpu`
+top user process 3.2 % plymouthd at both ends; the txt1 lane's `.workongoing`
+is a day stale and its process is gone):
+
+    CONTROL, `perf_ab.sh base base`, 21 paired rounds, ident=Y
+    photo_cid       512 p2   ratio 0.9996   (0.9970-1.0022)
+    photo_cid       512 p6   ratio 0.9992   (0.9971-1.0015)
+    screen_terminal 512 p2   ratio 1.0001   (0.9923-1.0017)
+    screen_terminal 512 p6   ratio 1.0013   (0.9968-1.0076)
+
+All four straddle 1.0. **The floor for THESE binaries on THIS host is a null**,
+so the numbers below are uncorrected. What is established is narrower than
+either record alone: a same-binary control is cheap, it is not always zero, and
+it must be measured per binary pair rather than assumed from another lane's.
+
+The A/B re-run in the SAME session, immediately after the control, reproduces
+the first pass to within 0.001 on every cell — 0.9593 against 0.9590,
+0.9819 against 0.9811, 0.9966 against 0.9973, 1.0021 against 1.0024:
+
+    photo_cid       512 p6   0.9593  **1.042x**  (0.9555-0.9618)   [pass 1: 1.043x]
+    screen_terminal 512 p6   0.9819  **1.018x**  (0.9764-0.9865)   [pass 1: 1.019x]
+    photo_cid       512 p2   0.9966    1.003x    (0.9938-0.9979)   [pass 1: 1.003x]
+    screen_terminal 512 p2   1.0021    0.998x    (0.9979-1.0058)   [pass 1: 0.998x]
+
+The two p6 spans sit entirely below 1.0 and entirely below the control's span;
+screen_terminal p2 straddles in both passes and stays a NULL.

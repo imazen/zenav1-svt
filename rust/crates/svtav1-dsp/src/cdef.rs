@@ -1055,14 +1055,16 @@ fn cdef_filter_block_impl_neon(
     }
 }
 
-/// AVX2 dst8 filter. Byte-identical to [`cdef_filter_block_core`]: each output
-/// pixel is an independent 12-tap integer sum, so 8 columns of a row map to 8
-/// SIMD lanes with NO cross-lane reduction. The `sum` is accumulated in i32 and
-/// truncated to i16 once at the end (`(x<<16)>>16`); since two's-complement add
-/// is associative mod 2^16, that equals the scalar's per-tap `wrapping_add::<i16>`
-/// exactly (products are small, no i32 overflow across 12 taps). Only the
-/// `cols == 8` shapes (BLOCK_8X8 / BLOCK_8X4) use the vector path; the rare 4-wide
-/// chroma shapes fall back to the scalar core.
+/// AVX2 dst8 filter, in C's shape (`svt_cdef_filter_block_avx2`,
+/// `ASM_AVX2/cdef_block_avx2.c:1001`): BOTH column widths take a vector path,
+/// through [`cdef_filter_rows_v3`], which keeps the filter in i16 lanes and
+/// packs `16 / cols` rows into each 256-bit register. Byte-identical to
+/// [`cdef_filter_block_core`] — each output pixel is an independent 12-tap
+/// integer sum, so there is no cross-lane reduction anywhere.
+///
+/// Until 2026-09-05 the `cols == 4` shapes (BLOCK_4X8 / BLOCK_4X4) fell back to
+/// the scalar core; on photo_cid 512² p6 that was 10,752 of the 26,816 calls
+/// and 62.7 M of the 88.7 M CDEF filter instructions.
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
@@ -1083,11 +1085,24 @@ fn cdef_filter_block_impl_v3(
     subsampling_factor: usize,
 ) {
     let cols = if bsize == BLOCK_8X8 || bsize == BLOCK_8X4 {
-        8
+        8usize
     } else {
-        4
+        4usize
     };
-    if cols != 8 {
+    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
+        8usize
+    } else {
+        4usize
+    };
+    let sub = subsampling_factor;
+    // `cdef_filter_rows_v3` consumes `16 / cols` rows per iteration, so it can
+    // only run when the visited rows divide evenly into groups. Every shape the
+    // encoder produces does (8x8/8x4 at sub 1 or 2, 4x8 at sub 1 or 2, 4x4 at
+    // sub 1 — C's own `svt_cdef_filter_block_avx2` hard-codes sub = 1 for 4x4
+    // "b/c can't subsample 4x4"); the guard keeps the scalar core as the
+    // correct fallback for anything else rather than silently mis-striding.
+    let group = (16 / cols) * sub;
+    if sub == 0 || !rows.is_multiple_of(group) {
         cdef_filter_block_core(
             dst,
             doff,
@@ -1105,34 +1120,40 @@ fn cdef_filter_block_impl_v3(
         );
         return;
     }
-    let rows = if bsize == BLOCK_8X8 || bsize == BLOCK_4X8 {
-        8
+    if cols == 8 {
+        cdef_filter_rows_v3::<8>(
+            token,
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            coeff_shift,
+            rows,
+            sub,
+        );
     } else {
-        4
-    };
-    let mut scratch = [0i32; 64];
-    cdef_filter_cols8_v3(
-        token,
-        inb,
-        ioff,
-        pri_strength,
-        sec_strength,
-        dir,
-        pri_damping,
-        sec_damping,
-        coeff_shift,
-        rows,
-        subsampling_factor as i32,
-        &mut scratch,
-    );
-    let mut i = 0i32;
-    while i < rows {
-        let drow = doff + i as usize * dstride;
-        let srow = i as usize * 8;
-        for j in 0..8usize {
-            dst[drow + j] = scratch[srow + j] as u8;
-        }
-        i += subsampling_factor as i32;
+        cdef_filter_rows_v3::<4>(
+            token,
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            coeff_shift,
+            rows,
+            sub,
+        );
     }
 }
 
@@ -1285,6 +1306,330 @@ pub(crate) fn cdef_filter_cols8_v3(
             .unwrap();
         _mm256_storeu_si256(row_arr, y);
         i += sub;
+    }
+}
+
+// ============================ AVX2 i16 dst8 kernels ============================
+//
+// C's shape, not the port's earlier one. `svt_cdef_filter_block_8xn_8_avx2`
+// (`ASM_AVX2/cdef_block_avx2.c:870`) and `svt_cdef_filter_block_4xn_8_avx2`
+// (`:713`) both keep the WHOLE filter in i16 lanes and pack SEVERAL ROWS into
+// one 256-bit register — 16 lanes = 2 rows x 8 cols, or 4 rows x 4 cols. The
+// port's earlier `cdef_filter_cols8_v3` did the same arithmetic in i32 lanes,
+// one row at a time: half the lanes, `_mm256_mullo_epi32` (2 uops on Zen)
+// instead of `_mm256_mullo_epi16` (1), and an explicit `sub`+`max` where C's
+// `_mm256_subs_epu16` saturates in one instruction. The i32 form is still what
+// the HBD dst16 arm uses (`hbd.rs`), so it stays.
+//
+// Two DELIBERATE differences from C, both required to stay byte-identical to
+// [`cdef_filter_block_core`] (which is `svt_cdef_filter_block_c`, cdef.c:193):
+//
+//  * **No `if (pri_strength)` / `if (sec_strength)` guard.** C's AVX2 kernels
+//    skip a whole tap group when its strength is 0, which also skips that
+//    group's `min`/`max` update; the C SCALAR reference does not, and neither
+//    does the port. Running the group unconditionally is free of a branch and
+//    costs nothing in `sum`: `constrain16` with `thr == 0` returns 0 in every
+//    lane, because `_mm256_subs_epu16(0, l) == 0` and `min_epi16(|d|, 0) == 0`
+//    for the non-negative `|d|` — the exact vector image of the scalar
+//    [`constrain`]'s `threshold == 0` early return.
+//  * **`sum` stays i16 the whole way, including the `+ 8` rounding**, as C
+//    does. That is exact over the legal input domain: the taps are
+//    `{4,2}`/`{3,3}` (primary) and `{2,1}` (secondary), each `constrain` result
+//    is bounded by its strength, and 8-bit CDEF strengths are at most 15
+//    (primary, after `adjust_strength`) and 4 (secondary), so
+//    `|sum| <= 2*(4*15) + 2*(2*15) + 4*(2*4) + 4*(1*4) = 228`. `cdef_kernel_v3_matches_scalar_over_the_legal_domain`
+//    pins that bound and the equality with the scalar core.
+
+/// C `constrain16` (`ASM_AVX2/cdef_block_avx2.c:401`), i16 lanes:
+/// `sign(t - r) * min(|t - r|, max(0, thr - (|t - r| >> shift)))`.
+///
+/// `thr == 0` yields 0 in every lane, which is the scalar [`constrain`]'s
+/// `threshold == 0` early return — so a disabled tap needs no branch.
+///
+/// TWO INSTRUCTIONS DIFFER FROM C, and they buy exactness on inputs C's own
+/// AVX2 kernel gets wrong. The scalar [`constrain`] computes `t - r` in i32,
+/// so it is exact for the full `|diff| <= 65535` an `i16` pixel pair can
+/// produce; C's `_mm256_sub_epi16` WRAPS there and diverges from
+/// `svt_cdef_filter_block_c`. Using
+///
+///  * `_mm256_subs_epi16` (signed SATURATING subtract) instead of
+///    `_mm256_sub_epi16`, and
+///  * `_mm256_min_epu16` (UNSIGNED min) instead of `_mm256_min_epi16`,
+///
+/// makes the i16 form exact over the whole `u16` input domain, at identical
+/// cost (both are 1-uop AVX2 instructions). The argument: a saturated
+/// difference means `|diff| >= 32767`, hence
+/// `|diff| >> shift >= 32767 >> 6 = 511`, which exceeds any legal CDEF
+/// strength (primary <= 15, secondary <= 4 — see
+/// `i16_sum_accumulator_cannot_overflow_on_the_legal_strength_domain`), so
+/// `_mm256_subs_epu16(thr, l)` is 0 and the tap contributes 0 — which is
+/// exactly what the i32 scalar computes for such a difference. The unsigned
+/// min is what makes the `-32768` saturation case land on 0 rather than on
+/// `-32768` (`_mm256_abs_epi16(-32768) == -32768`). Below saturation both
+/// instructions are bit-identical to their non-saturating C counterparts.
+/// `filter_block_sign_straddle_matches_c` is the test that fails without
+/// either one.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cdef_constrain16_v3(
+    _token: Desktop64,
+    tap: __m256i,
+    row: __m256i,
+    thr: __m256i,
+    shift: __m128i,
+) -> __m256i {
+    let diff = _mm256_subs_epi16(tap, row);
+    let sign = _mm256_srai_epi16::<15>(diff);
+    let a = _mm256_abs_epi16(diff);
+    let l = _mm256_srl_epi16(a, shift);
+    let s = _mm256_subs_epu16(thr, l);
+    let m = _mm256_min_epu16(a, s);
+    // sign is 0 or -1: (m + sign) ^ sign == m or -m.
+    _mm256_xor_si256(_mm256_add_epi16(sign, m), sign)
+}
+
+/// Gather `COLS` pixels from each of `16 / COLS` input rows at tap offset `off`
+/// into one i16x16, in C's lane order.
+///
+/// `COLS == 8`: low 128 = row `ib[1]`, high 128 = row `ib[0]`
+/// (C's `_mm256_setr_m128i(load(i + sub), load(i))`).
+/// `COLS == 4`: lanes 0..3 = `ib[3]`, 4..7 = `ib[2]`, 8..11 = `ib[1]`,
+/// 12..15 = `ib[0]` (C's `_mm256_set_epi64x(row_i, row_i1, row_i2, row_i3)`).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cdef_load_group_v3<const COLS: usize>(
+    _token: Desktop64,
+    inb: &[u16],
+    ib: &[usize; 4],
+    off: i32,
+) -> __m256i {
+    let at = |k: usize| ib[k].wrapping_add_signed(off as isize);
+    if COLS == 8 {
+        let lo: &[u16; 8] = inb[at(1)..][..8].try_into().unwrap();
+        let hi: &[u16; 8] = inb[at(0)..][..8].try_into().unwrap();
+        _mm256_setr_m128i(_mm_loadu_si128(lo), _mm_loadu_si128(hi))
+    } else {
+        let r0: &[u16; 4] = inb[at(0)..][..4].try_into().unwrap();
+        let r1: &[u16; 4] = inb[at(1)..][..4].try_into().unwrap();
+        let r2: &[u16; 4] = inb[at(2)..][..4].try_into().unwrap();
+        let r3: &[u16; 4] = inb[at(3)..][..4].try_into().unwrap();
+        let lo = _mm_unpacklo_epi64(_mm_loadu_si64(r3), _mm_loadu_si64(r2));
+        let hi = _mm_unpacklo_epi64(_mm_loadu_si64(r1), _mm_loadu_si64(r0));
+        _mm256_setr_m128i(lo, hi)
+    }
+}
+
+/// Narrow the i16x16 result to bytes and scatter it back to the `16 / COLS`
+/// output rows — the inverse of [`cdef_load_group_v3`]'s lane order.
+///
+/// The `& 0xff` before `_mm256_packus_epi16` is NOT redundant, and C's own
+/// AVX2 kernel omits it. The scalar core finishes with `y as u8`, a
+/// TRUNCATION; `packus` SATURATES. The two differ whenever the clamped result
+/// exceeds 255, which happens exactly when the block's centre pixel is itself
+/// the [`CDEF_VERY_LARGE`] sentinel: `min == max == x == 0x7f7f`, so the
+/// scalar writes `0x7f` and a bare `packus` would write `0xff`. The encoder
+/// never filters a block whose centre is unavailable, so this is unreachable
+/// from the pipeline — and `svt_cdef_filter_block_8xn_8_avx2` disagrees with
+/// `svt_cdef_filter_block_c` there in the same way. The port does not: masking
+/// first makes the vector arm equal the scalar core over the WHOLE input
+/// domain (`cdef_filter_block_simd_matches_scalar_over_the_legal_knob_domain`
+/// covers it, pattern `kind = 2`, and FAILS without this line), for one
+/// `vpand` per 16 output pixels.
+///
+/// The mask is safe as a truncation: `res` is clamped into `[min, max]` and
+/// every pixel value — sentinel included — is non-negative, so `res >= 0` and
+/// `res & 0xff == res as u8`.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cdef_store_group_v3<const COLS: usize>(
+    _token: Desktop64,
+    dst: &mut [u8],
+    db: &[usize; 4],
+    res: __m256i,
+) {
+    let res = _mm256_and_si256(res, _mm256_set1_epi16(0xff));
+    let packed = _mm256_packus_epi16(res, res);
+    let lo = _mm256_castsi256_si128(packed);
+    let hi = _mm256_extracti128_si256::<1>(packed);
+    if COLS == 8 {
+        let d0: &mut [u8; 8] = (&mut dst[db[0]..db[0] + 8]).try_into().unwrap();
+        _mm_storeu_si64(d0, hi);
+        let d1: &mut [u8; 8] = (&mut dst[db[1]..db[1] + 8]).try_into().unwrap();
+        _mm_storeu_si64(d1, lo);
+    } else {
+        let d0: &mut [u8; 4] = (&mut dst[db[0]..db[0] + 4]).try_into().unwrap();
+        _mm_storeu_si32(d0, _mm_srli_si128::<4>(hi));
+        let d1: &mut [u8; 4] = (&mut dst[db[1]..db[1] + 4]).try_into().unwrap();
+        _mm_storeu_si32(d1, hi);
+        let d2: &mut [u8; 4] = (&mut dst[db[2]..db[2] + 4]).try_into().unwrap();
+        _mm_storeu_si32(d2, _mm_srli_si128::<4>(lo));
+        let d3: &mut [u8; 4] = (&mut dst[db[3]..db[3] + 4]).try_into().unwrap();
+        _mm_storeu_si32(d3, lo);
+    }
+}
+
+/// The AVX2 dst8 CDEF filter in C's shape: `16 / COLS` rows per 256-bit i16
+/// register, taps grouped by coefficient so the whole 12-tap sum costs FOUR
+/// `_mm256_mullo_epi16` instead of twelve `_mm256_mullo_epi32`.
+///
+/// `COLS` is 8 (`BLOCK_8X8` / `BLOCK_8X4`) or 4 (`BLOCK_4X8` / `BLOCK_4X4`).
+/// The caller guarantees `rows % ((16 / COLS) * sub) == 0`.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn cdef_filter_rows_v3<const COLS: usize>(
+    token: Desktop64,
+    dst: &mut [u8],
+    doff: usize,
+    dstride: usize,
+    inb: &[u16],
+    ioff: usize,
+    pri_strength: i32,
+    sec_strength: i32,
+    dir: i32,
+    pri_damping: i32,
+    sec_damping: i32,
+    coeff_shift: i32,
+    rows: usize,
+    sub: usize,
+) {
+    const S: usize = CDEF_BSTRIDE;
+    let nr = 16 / COLS;
+    let pri_taps = CDEF_PRI_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+    let sec_taps = CDEF_SEC_TAPS[((pri_strength >> coeff_shift) & 1) as usize];
+
+    // C: `pri_damping = AOMMAX(0, pri_damping - get_msb(pri_strength))`, guarded
+    // on a non-zero strength because `get_msb(0)` is undefined. With a zero
+    // strength the shift never affects the result (`constrain16` returns 0).
+    let pri_shift = if pri_strength != 0 {
+        (pri_damping - get_msb(pri_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let sec_shift = if sec_strength != 0 {
+        (sec_damping - get_msb(sec_strength as u32)).max(0)
+    } else {
+        0
+    };
+    let pri_shift_c = _mm_cvtsi32_si128(pri_shift);
+    let sec_shift_c = _mm_cvtsi32_si128(sec_shift);
+    let pri_thr = _mm256_set1_epi16(pri_strength as i16);
+    let sec_thr = _mm256_set1_epi16(sec_strength as i16);
+    let pri_tap0 = _mm256_set1_epi16(pri_taps[0] as i16);
+    let pri_tap1 = _mm256_set1_epi16(pri_taps[1] as i16);
+    let sec_tap0 = _mm256_set1_epi16(sec_taps[0] as i16);
+    let sec_tap1 = _mm256_set1_epi16(sec_taps[1] as i16);
+    let large = _mm256_set1_epi16(CDEF_VERY_LARGE as i16);
+    let eight = _mm256_set1_epi16(8);
+    let zero = _mm256_setzero_si256();
+
+    let po1 = cdef_direction(dir, 0);
+    let po2 = cdef_direction(dir, 1);
+    let s1o1 = cdef_direction(dir + 2, 0);
+    let s1o2 = cdef_direction(dir + 2, 1);
+    let s2o1 = cdef_direction(dir - 2, 0);
+    let s2o2 = cdef_direction(dir - 2, 1);
+
+    let mut i = 0usize;
+    while i < rows {
+        let mut ib = [0usize; 4];
+        let mut db = [0usize; 4];
+        for k in 0..4usize {
+            let r = i + (k % nr) * sub;
+            ib[k] = ioff + r * S;
+            db[k] = doff + r * dstride;
+        }
+        let row = cdef_load_group_v3::<COLS>(token, inb, &ib, 0);
+        let mut mx = row;
+        let mut mn = row;
+        let mut sum = zero;
+
+        // Primary near / far, then secondary near / far — C's grouping:
+        // `sum += tap * (p0 + p1)` costs one multiply per PAIR (or quad), not
+        // one per tap.
+        // The sentinel is EXCLUDED from `max` by a blend, not by C's
+        // `andnot(cmpeq(p, large), p)` substitution of zero. The scalar core
+        // skips the tap (`if p != CDEF_VERY_LARGE`); substituting 0 only
+        // matches that while the running max is non-negative, which is true of
+        // every real pixel but not of the whole `u16` input domain
+        // `cdef_filter_block` accepts. Same instruction count.
+        let acc_max = |mx: &mut __m256i, mn: &mut __m256i, p: __m256i| {
+            let is_sent = _mm256_cmpeq_epi16(p, large);
+            *mx = _mm256_blendv_epi8(_mm256_max_epi16(*mx, p), *mx, is_sent);
+            *mn = _mm256_min_epi16(*mn, p);
+        };
+
+        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, po1);
+        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -po1);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        let c0 = cdef_constrain16_v3(token, p0, row, pri_thr, pri_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, pri_thr, pri_shift_c);
+        sum = _mm256_add_epi16(sum, _mm256_mullo_epi16(pri_tap0, _mm256_add_epi16(c0, c1)));
+
+        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, po2);
+        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -po2);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        let c0 = cdef_constrain16_v3(token, p0, row, pri_thr, pri_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, pri_thr, pri_shift_c);
+        sum = _mm256_add_epi16(sum, _mm256_mullo_epi16(pri_tap1, _mm256_add_epi16(c0, c1)));
+
+        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, s1o1);
+        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s1o1);
+        let p2 = cdef_load_group_v3::<COLS>(token, inb, &ib, s2o1);
+        let p3 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s2o1);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        acc_max(&mut mx, &mut mn, p2);
+        acc_max(&mut mx, &mut mn, p3);
+        let c0 = cdef_constrain16_v3(token, p0, row, sec_thr, sec_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, sec_thr, sec_shift_c);
+        let c2 = cdef_constrain16_v3(token, p2, row, sec_thr, sec_shift_c);
+        let c3 = cdef_constrain16_v3(token, p3, row, sec_thr, sec_shift_c);
+        sum = _mm256_add_epi16(
+            sum,
+            _mm256_mullo_epi16(
+                sec_tap0,
+                _mm256_add_epi16(_mm256_add_epi16(c0, c1), _mm256_add_epi16(c2, c3)),
+            ),
+        );
+
+        let p0 = cdef_load_group_v3::<COLS>(token, inb, &ib, s1o2);
+        let p1 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s1o2);
+        let p2 = cdef_load_group_v3::<COLS>(token, inb, &ib, s2o2);
+        let p3 = cdef_load_group_v3::<COLS>(token, inb, &ib, -s2o2);
+        acc_max(&mut mx, &mut mn, p0);
+        acc_max(&mut mx, &mut mn, p1);
+        acc_max(&mut mx, &mut mn, p2);
+        acc_max(&mut mx, &mut mn, p3);
+        let c0 = cdef_constrain16_v3(token, p0, row, sec_thr, sec_shift_c);
+        let c1 = cdef_constrain16_v3(token, p1, row, sec_thr, sec_shift_c);
+        let c2 = cdef_constrain16_v3(token, p2, row, sec_thr, sec_shift_c);
+        let c3 = cdef_constrain16_v3(token, p3, row, sec_thr, sec_shift_c);
+        sum = _mm256_add_epi16(
+            sum,
+            _mm256_mullo_epi16(
+                sec_tap1,
+                _mm256_add_epi16(_mm256_add_epi16(c0, c1), _mm256_add_epi16(c2, c3)),
+            ),
+        );
+
+        // res = clamp(row + ((sum - (sum < 0) + 8) >> 4), mn, mx).
+        // `sum` is bounded by +-228 on the legal strength domain (see
+        // `i16_sum_accumulator_cannot_overflow_on_the_legal_strength_domain`),
+        // so `sum + 8` cannot overflow; `row` can be anywhere in `i16`, so the
+        // final add SATURATES (`_mm256_adds_epi16`) where the scalar widens to
+        // i32. That is exact: the clamp to `[mn, mx]` immediately follows and
+        // `mn <= row <= mx`, so a saturated sum and the true i32 sum clamp to
+        // the same value.
+        let sum = _mm256_add_epi16(sum, _mm256_cmpgt_epi16(zero, sum));
+        let res = _mm256_srai_epi16::<4>(_mm256_add_epi16(sum, eight));
+        let res = _mm256_adds_epi16(row, res);
+        let res = _mm256_min_epi16(_mm256_max_epi16(res, mn), mx);
+        cdef_store_group_v3::<COLS>(token, dst, &db, res);
+
+        i += nr * sub;
     }
 }
 
@@ -1585,6 +1930,162 @@ pub fn compute_cdef_dist_8bit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use alloc::vec;
+    use archmage::testing::{CompileTimePolicy, TokenPermutation, for_each_token_permutation};
+
+    /// Sweep EVERY dispatch arm and fail if the sweep degenerated to the native
+    /// tier — the silent-coverage hazard `rust/CLAUDE.md` documents: a discarded
+    /// `PermutationReport` turns an all-tiers test into a one-tier test and it
+    /// still reads green.
+    fn for_each_tier(label: &str, f: impl FnMut(&TokenPermutation)) {
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, f);
+        assert!(
+            report.warnings.is_empty(),
+            "{label}: archmage excluded {} token(s): {:?}",
+            report.warnings.len(),
+            report.warnings
+        );
+        assert!(
+            report.permutations_run >= 2,
+            "{label}: the tier sweep ran {} permutation(s) -- only the native \
+             tier, which cannot catch a SIMD-vs-scalar divergence.",
+            report.permutations_run
+        );
+    }
+
+    /// The i16 accumulator in [`cdef_filter_rows_v3`] is exact only while
+    /// `|sum|` stays inside `i16` with room for the `+ 8` rounding. This
+    /// recomputes the worst case from the ACTUAL tap tables and the legal
+    /// 8-bit strength ranges (primary `0..=CDEF_PRI_STRENGTHS-1` after
+    /// `adjust_strength`, which never raises a strength; secondary
+    /// `sec + (sec == 3)` over `sec in 0..=3`, i.e. `{0,1,2,4}`), so a future
+    /// change to either table trips this test rather than the bitstream.
+    #[test]
+    fn i16_sum_accumulator_cannot_overflow_on_the_legal_strength_domain() {
+        let max_pri = CDEF_PRI_STRENGTHS - 1; // 15
+        let max_sec = 3 + 1; // sec == 3 signals strength 4
+        let mut worst = 0i32;
+        for taps in 0..2usize {
+            // 2 primary taps of each coefficient, 4 secondary taps of each.
+            let s = 2 * CDEF_PRI_TAPS[taps][0] * max_pri
+                + 2 * CDEF_PRI_TAPS[taps][1] * max_pri
+                + 4 * CDEF_SEC_TAPS[taps][0] * max_sec
+                + 4 * CDEF_SEC_TAPS[taps][1] * max_sec;
+            worst = worst.max(s);
+        }
+        assert_eq!(worst, 228, "tap tables or strength ranges changed");
+        assert!(
+            worst + 8 <= i16::MAX as i32 && -worst > i16::MIN as i32,
+            "the i16 sum + 8 rounding can overflow: worst |sum| = {worst}"
+        );
+    }
+
+    /// A deterministic xorshift so the buffers are reproducible without a dep.
+    fn lcg(state: &mut u64) -> u32 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 32) as u32
+    }
+
+    /// Fill a padded CDEF input buffer with one of the named patterns.
+    /// `kind` 0..=4 are the extremes (flat 0, flat 255, all-sentinel,
+    /// 0/255 checkerboard, a ramp across the WHOLE `0..=CDEF_VERY_LARGE`
+    /// value range so every reachable tap difference sign and magnitude is
+    /// exercised, not just the `0..=255` an 8-bit plane can hold); 5.. are
+    /// pseudorandom 8-bit pixels with ~1 in 8 sentinels, which is what the
+    /// real frame edges look like.
+    fn fill_inbuf(buf: &mut [u16], kind: usize, seed: u64) {
+        let mut st = seed | 1;
+        for (i, v) in buf.iter_mut().enumerate() {
+            *v = match kind {
+                0 => 0,
+                1 => 255,
+                2 => CDEF_VERY_LARGE,
+                3 => {
+                    if (i + i / CDEF_BSTRIDE).is_multiple_of(2) {
+                        0
+                    } else {
+                        255
+                    }
+                }
+                4 => ((i as u32 * 4099) % (CDEF_VERY_LARGE as u32 + 1)) as u16,
+                _ => {
+                    let r = lcg(&mut st);
+                    if r.is_multiple_of(8) {
+                        CDEF_VERY_LARGE
+                    } else {
+                        (r % 256) as u16
+                    }
+                }
+            };
+        }
+    }
+
+    /// EVERY legal knob combination the encoder can hand the dst8 filter, on
+    /// nine input patterns each, compared to [`cdef_filter_block_core`] byte
+    /// for byte through the public `incant!` dispatcher — so every tier the
+    /// host offers is swept (the `for_each_tier` report is CONSUMED).
+    ///
+    /// The knob space is exhaustive: all four `bsize`s, all 8 directions, all
+    /// 16 primary strengths, all 4 SIGNALLED secondary strengths mapped
+    /// through `sec + (sec == 3)`, dampings 2..=6 (luma `3 + (qindex >> 6)`
+    /// is 3..=6 and chroma subtracts 1), and the subsampling factors the
+    /// search actually uses (`sub_y = min(cfg, 4)`, `sub_uv = 1`) plus 2.
+    /// The pixel space is NOT exhaustive — it cannot be, 12 taps of u16 — but
+    /// the patterns include the flats, the all-sentinel case, the maximum-
+    /// contrast checkerboard and a ramp over the entire `0..=CDEF_VERY_LARGE`
+    /// range, so every `constrain` branch and every sentinel path is reached.
+    #[test]
+    fn cdef_filter_block_simd_matches_scalar_over_the_legal_knob_domain() {
+        for_each_tier(
+            "cdef_filter_block_simd_matches_scalar_over_the_legal_knob_domain",
+            |_| {
+                let ioff = CDEF_VBORDER * CDEF_BSTRIDE + CDEF_HBORDER;
+                let mut inb = vec![0u16; CDEF_INBUF_SIZE];
+                let dstride = 16usize;
+                let mut got = vec![0u8; dstride * 16];
+                let mut want = vec![0u8; dstride * 16];
+                let mut checked = 0u64;
+                for kind in 0..9usize {
+                    fill_inbuf(&mut inb, kind, 0x9E37_79B9_7F4A_7C15 ^ (kind as u64));
+                    for &bsize in &[BLOCK_4X4, BLOCK_4X8, BLOCK_8X4, BLOCK_8X8] {
+                        for dir in 0..8i32 {
+                            for pri in 0..CDEF_PRI_STRENGTHS {
+                                for sec_ix in 0..CDEF_SEC_STRENGTHS {
+                                    let sec = sec_ix + i32::from(sec_ix == 3);
+                                    for damping in 2..=6i32 {
+                                        for &sub in &[1usize, 2, 4] {
+                                            got.fill(0xAA);
+                                            want.fill(0xAA);
+                                            cdef_filter_block(
+                                                &mut got, 0, dstride, &inb, ioff, pri, sec, dir,
+                                                damping, damping, bsize, 0, sub,
+                                            );
+                                            cdef_filter_block_core(
+                                                &mut want, 0, dstride, &inb, ioff, pri, sec, dir,
+                                                damping, damping, bsize, 0, sub,
+                                            );
+                                            assert_eq!(
+                                                got, want,
+                                                "kind={kind} bsize={bsize} dir={dir} \
+                                                 pri={pri} sec={sec} damping={damping} \
+                                                 sub={sub}"
+                                            );
+                                            checked += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // 9 patterns x 4 bsizes x 8 dirs x 16 pri x 4 sec x 5 damping x 3 sub
+                assert_eq!(checked, 9 * 4 * 8 * 16 * 4 * 5 * 3);
+            },
+        );
+    }
 
     /// Spec 7.15.3 Cdef_Directions cross-check: the padded table's live rows
     /// (index 2..10) decoded back to (dy, dx) must equal the spec table.

@@ -1,0 +1,62 @@
+# cdef_i16_kernel_2026-09-05 — the AVX2 dst8 CDEF filter rewritten in C's shape
+# (i16 lanes, 16/cols rows per 256-bit register, taps grouped by coefficient),
+# and the cols==4 shapes given a vector path instead of the scalar core.
+# See the companion .meta for the mechanism, the exactness argument and the traps.
+#
+# base = main@origin e622a99c2 (the CfL SIMD commit)
+# cand = this commit
+# C    = reference/svt-av1 @ 3115c0c1, PREBUILT oracle
+#        rust/tools/perf_c_encode/perf_c_encode (2026-09-03), NOT rebuilt
+# Ir   = valgrind-3.26.0 --tool=callgrind, r7900x, PRESETS=6 QP=40, 512x512,
+#        tools/perf_profile/callcount_cells.sh, generic-baseline builds both sides.
+#        Every row ident=Y (uninstrumented pre-pass AND both instrumented runs).
+#        NOTE valgrind masks AVX-512, so C's arms here are its AVX2 ones.
+# WALL = tools/perf_ab.sh, 21 interleaved randomised paired rounds, one untimed
+#        warmup per sample, NEITHER SIDE NICED, r7900x quiet (load 1.25, ps showed
+#        zero cargo/rustc/valgrind/perf_encode), 08:06-08:15 local. A sibling
+#        lane's own perf_ab started 08:23, AFTER these runs finished.
+
+section	metric	cell	base	cand	c	base_over_c	cand_over_c
+IR	frame_ir	photo_cid_512_p6	1615189101	1556889295	705588241	2.289	2.207
+IR	frame_ir	screen_terminal_512_p6	916275035	903264405	355384805	2.578	2.542
+IR	cdef_filter_total_self	photo_cid_512_p6	88718064	30420288	10029632	8.845	3.033
+IR	cdef_filter_total_self	screen_terminal_512_p6	21123347	8114735	2627390	8.040	3.089
+IR	cdef_filter_ir_per_call	photo_cid_512_p6	3308.5	1134.4	374.0	8.845	3.033
+IR	cdef_filter_calls	photo_cid_512_p6	26816	26816	26816	1.000	1.000
+IR	cdef_filter_block_core_self	photo_cid_512_p6	62694000	0	0	na	na
+IR	cdef_filter_block_core_calls	photo_cid_512_p6	10752	0	0	na	na
+IR	arcane_cdef_filter_block_impl_v3_self	photo_cid_512_p6	24870976	29267200	9069568	2.742	3.227
+IR	cdef_filter_block_dispatch_self	photo_cid_512_p6	1153088	1153088	960064	1.201	1.201
+IR	cdef_find_dir_self	photo_cid_512_p6	17186816	17186816	851968	20.173	20.173
+IR	cdef_find_dir_calls	photo_cid_512_p6	8192	8192	2048	4.000	4.000
+IR	cdef_filter_block_core_self	screen_terminal_512_p6	13575925	0	0	na	na
+IR	arcane_cdef_filter_block_impl_v3_self	screen_terminal_512_p6	7248142	7815455	2379150	3.047	3.285
+IR	cdef_filter_block_dispatch_self	screen_terminal_512_p6	299280	299280	248240	1.206	1.206
+IR	cdef_find_dir_self	screen_terminal_512_p6	4867360	4867360	244880	19.876	19.876
+
+section	content	size	preset	n	ident	base_ms	cand_ms	ratio	speedup	p25	p75
+WALL	photo_cid	512	2	21	Y	2316.6568	2311.0915	0.9973	1.003	0.9924	0.9992
+WALL	photo_cid	512	6	21	Y	80.4683	76.6912	0.9590	1.043	0.9465	0.9663
+WALL	photo_clic	512	2	21	Y	2296.9179	2292.1781	0.9981	1.002	0.9962	1.0009
+WALL	photo_clic	512	6	21	Y	76.5665	73.3736	0.9583	1.044	0.9552	0.9596
+WALL	screen_terminal	512	2	21	Y	650.0205	651.5297	1.0024	0.998	0.9990	1.0045
+WALL	screen_terminal	512	6	21	Y	43.4042	42.5886	0.9811	1.019	0.9701	0.9937
+WALL	gradient	256	2	21	Y	202.2783	199.9757	0.9882	1.012	0.9858	0.9935
+WALL	gradient	256	6	21	Y	10.7379	10.3557	0.9632	1.038	0.9525	0.9679
+WALL	gradient	512	2	21	Y	451.2436	444.8597	0.9842	1.016	0.9822	0.9869
+WALL	gradient	512	6	21	Y	34.7318	33.1612	0.9515	1.051	0.9433	0.9601
+
+# SECOND wall-clock pass + a SAME-BINARY CONTROL, taken together in one session
+# on a verifiably quiet r7900x (uptime 0.02/0.24/0.82 before, 1.03/0.75/0.90
+# after; `ps -eo pcpu,comm --sort=-pcpu` top entry 3.2 % plymouthd both times).
+# The control runs `perf_ab.sh base base` — identical binary in both slots — so
+# its ratio IS this harness's floor for these cells on this host.
+section	content	size	preset	n	ident	base_ms	cand_ms	ratio	speedup	p25	p75
+CONTROL	photo_cid	512	2	21	Y	2296.2538	2296.0928	0.9996	1.000	0.9970	1.0022
+CONTROL	photo_cid	512	6	21	Y	79.3507	79.2211	0.9992	1.001	0.9971	1.0015
+CONTROL	screen_terminal	512	2	21	Y	638.2139	637.6569	1.0001	1.000	0.9923	1.0017
+CONTROL	screen_terminal	512	6	21	Y	42.2276	42.3105	1.0013	0.999	0.9968	1.0076
+WALL2	photo_cid	512	2	21	Y	2299.8080	2291.4350	0.9966	1.003	0.9938	0.9979
+WALL2	photo_cid	512	6	21	Y	79.3476	76.0952	0.9593	1.042	0.9555	0.9618
+WALL2	screen_terminal	512	2	21	Y	638.5981	639.5167	1.0021	0.998	0.9979	1.0058
+WALL2	screen_terminal	512	6	21	Y	42.3573	41.5672	0.9819	1.018	0.9764	0.9865
