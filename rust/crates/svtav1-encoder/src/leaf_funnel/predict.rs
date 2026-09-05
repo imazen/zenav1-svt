@@ -136,6 +136,69 @@ pub(super) fn predict_unit(
     }
 }
 
+/// The per-thread Hadamard/SATD tile buffers, reused across calls.
+///
+/// MEASURED 2026-09-05 (`benchmarks/percall_layout_2026-09-05`): the two
+/// `vec![0; tx*tx]` these replace were **11,770 of the port's 244,967 heap
+/// blocks per photo_cid 512x512 p6 encode** — 7.86 MB of allocate-zero-free
+/// churn costing 4.85 M Ir (0.32 % of the frame), against a C encoder that
+/// makes 2,627 allocator calls for the whole frame. C's counterpart
+/// (`svt_aom_hadamard_path`) works out of `ctx`-owned buffers allocated once
+/// per encoder handle.
+///
+/// **The zero-fill was already known-dead by the code's own shape**: both
+/// buffers sit OUTSIDE the tile loops and are fully overwritten by
+/// `residual_i16` / `aom_hadamard_*` on every tile, so tiles 2..N already ran
+/// against stale contents. Reusing them across CALLS is the same contract one
+/// level up, which is why this is byte-inert.
+///
+/// `try_borrow_mut` + closure hand-back is `tx_pipeline::with_txt_out`'s
+/// contract: a re-entrant caller gets fresh buffers rather than a panic.
+#[cfg(feature = "std")]
+#[derive(Default)]
+struct HadamardScratch {
+    res: alloc::vec::Vec<i16>,
+    coeff: alloc::vec::Vec<i32>,
+}
+
+#[cfg(feature = "std")]
+std::thread_local! {
+    static HADAMARD: core::cell::RefCell<HadamardScratch> =
+        const { core::cell::RefCell::new(HadamardScratch {
+            res: alloc::vec::Vec::new(),
+            coeff: alloc::vec::Vec::new(),
+        }) };
+}
+
+/// Run `f` over `tx * tx`-element residual and coefficient tile buffers.
+fn with_hadamard_scratch<R>(tx: usize, f: impl FnOnce(&mut [i16], &mut [i32]) -> R) -> R {
+    let n = tx * tx;
+    #[cfg(feature = "std")]
+    {
+        let taken = HADAMARD.with(|cell| match cell.try_borrow_mut() {
+            Ok(mut sc) => {
+                if sc.res.len() < n {
+                    sc.res.resize(n, 0);
+                }
+                if sc.coeff.len() < n {
+                    sc.coeff.resize(n, 0);
+                }
+                let HadamardScratch { res, coeff } = &mut *sc;
+                Ok(f(&mut res[..n], &mut coeff[..n]))
+            }
+            Err(_) => Err(f),
+        });
+        match taken {
+            Ok(r) => r,
+            Err(f) => f(&mut alloc::vec![0i16; n], &mut alloc::vec![0i32; n]),
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        f(&mut alloc::vec![0i16; n], &mut alloc::vec![0i32; n])
+    }
+}
+
 /// C `hadamard_path` (product_coding_loop.c:1187): residual over square
 /// tiles of `MIN(TX_32X32, eb_max_txsize_lookup[bsize])` — the largest
 /// square TX fitting the block (its MIN dimension), capped at 32 — aom
@@ -148,10 +211,25 @@ pub(super) fn hadamard_satd(
     w: usize,
     h: usize,
 ) -> u64 {
+    with_hadamard_scratch(w.min(h).min(32), |res, coeff| {
+        hadamard_satd_into(src, src_stride, src_off, pred, w, h, res, coeff)
+    })
+}
+
+/// [`hadamard_satd`]'s body over caller-owned tile buffers.
+#[allow(clippy::too_many_arguments)]
+fn hadamard_satd_into(
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u8],
+    w: usize,
+    h: usize,
+    res: &mut [i16],
+    coeff: &mut [i32],
+) -> u64 {
     let tx = w.min(h).min(32);
     let mut satd: u64 = 0;
-    let mut res = vec![0i16; tx * tx];
-    let mut coeff = vec![0i32; tx * tx];
     for ty in (0..h).step_by(tx) {
         for tx_x in (0..w).step_by(tx) {
             // C `svt_residual_kernel8bit`, via the dsp kernel that already
@@ -171,16 +249,16 @@ pub(super) fn hadamard_satd(
                 w,
                 tx,
                 tx,
-                &mut res,
+                res,
             );
             match tx {
-                4 => svtav1_dsp::hadamard::aom_hadamard_4x4(&res, tx, &mut coeff),
-                8 => svtav1_dsp::hadamard::aom_hadamard_8x8(&res, tx, &mut coeff),
-                16 => svtav1_dsp::hadamard::aom_hadamard_16x16(&res, tx, &mut coeff),
-                32 => svtav1_dsp::hadamard::aom_hadamard_32x32(&res, tx, &mut coeff),
+                4 => svtav1_dsp::hadamard::aom_hadamard_4x4(res, tx, coeff),
+                8 => svtav1_dsp::hadamard::aom_hadamard_8x8(res, tx, coeff),
+                16 => svtav1_dsp::hadamard::aom_hadamard_16x16(res, tx, coeff),
+                32 => svtav1_dsp::hadamard::aom_hadamard_32x32(res, tx, coeff),
                 _ => unreachable!("hadamard tile {tx}"),
             }
-            satd += svtav1_dsp::hadamard::aom_satd(&coeff) as u64;
+            satd += svtav1_dsp::hadamard::aom_satd(coeff) as u64;
         }
     }
     satd
@@ -205,10 +283,25 @@ pub(super) fn hadamard_satd_hbd(
     w: usize,
     h: usize,
 ) -> u64 {
+    with_hadamard_scratch(w.min(h).min(32), |res, coeff| {
+        hadamard_satd_hbd_into(src, src_stride, src_off, pred, w, h, res, coeff)
+    })
+}
+
+/// [`hadamard_satd_hbd`]'s body over caller-owned tile buffers.
+#[allow(clippy::too_many_arguments)]
+fn hadamard_satd_hbd_into(
+    src: &[u16],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u16],
+    w: usize,
+    h: usize,
+    res: &mut [i16],
+    coeff: &mut [i32],
+) -> u64 {
     let tx = w.min(h).min(32);
     let mut satd: u64 = 0;
-    let mut res = vec![0i16; tx * tx];
-    let mut coeff = vec![0i32; tx * tx];
     for ty in (0..h).step_by(tx) {
         for tx_x in (0..w).step_by(tx) {
             for r in 0..tx {
@@ -219,13 +312,13 @@ pub(super) fn hadamard_satd_hbd(
                 }
             }
             match tx {
-                4 => svtav1_dsp::hadamard::aom_hadamard_4x4(&res, tx, &mut coeff),
-                8 => svtav1_dsp::hadamard::aom_hadamard_8x8(&res, tx, &mut coeff),
-                16 => svtav1_dsp::hadamard::aom_hadamard_16x16(&res, tx, &mut coeff),
-                32 => svtav1_dsp::hadamard::aom_hadamard_32x32(&res, tx, &mut coeff),
+                4 => svtav1_dsp::hadamard::aom_hadamard_4x4(res, tx, coeff),
+                8 => svtav1_dsp::hadamard::aom_hadamard_8x8(res, tx, coeff),
+                16 => svtav1_dsp::hadamard::aom_hadamard_16x16(res, tx, coeff),
+                32 => svtav1_dsp::hadamard::aom_hadamard_32x32(res, tx, coeff),
                 _ => unreachable!("hadamard tile {tx}"),
             }
-            satd += svtav1_dsp::hadamard::aom_satd(&coeff) as u64;
+            satd += svtav1_dsp::hadamard::aom_satd(coeff) as u64;
         }
     }
     satd
