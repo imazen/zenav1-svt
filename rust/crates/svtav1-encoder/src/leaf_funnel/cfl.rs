@@ -213,13 +213,19 @@ pub(super) fn md_cfl_rd_pick_alpha(
     // base + AC luma, TX/quant/recon the residual (same path the non-CFL
     // chroma uses), return (SSD residual distortion, coeff bits). Mirrors
     // av1_cost_calc_cfl (product_coding_loop.c:3445) for one component.
+    // ONE prediction buffer for the whole alpha search, not one per trial.
+    // `cfl_predict_lbd` writes every byte of it (`dst_stride == width == cw`
+    // over all `chh` rows), so a reused buffer cannot carry a stale value from
+    // the previous alpha. `callcount_realimg_2026-09-04` item B named this
+    // site: 211,831 callocs on photo_cid p2, one per alpha trial, against
+    // 20,754 calls to this function.
+    let mut cfl_pred = vec![0u8; cw * chh];
     let plane_cost = |plane: usize, alpha_q3: i32| -> (u64, i32) {
         let (src, dc, tsc, dsc) = if plane == 0 {
             (u_src, u_dc, cb_tsc, cb_dsc)
         } else {
             (v_src, v_dc, cr_tsc, cr_dsc)
         };
-        let mut cfl_pred = vec![0u8; cw * chh];
         svtav1_dsp::intra_pred::cfl_predict_lbd(
             pred_buf_q3,
             dc,
@@ -274,8 +280,88 @@ pub(super) fn md_cfl_rd_pick_alpha(
 /// — C's `av1_cost_calc_cfl` for one component, which is the ONLY place the
 /// pixel type, the quant table and the CfL predictor enter. Splitting here is
 /// what lets the u8 and bd10 arms share one provably-identical search.
+///
+/// # The tier arms below are a LAYOUT effect, and the mechanism they were built
+/// to test is REFUTED — do not cite them as evidence for it
+///
+/// `archmage/docs/PERFORMANCE.md`'s rule is "enter `#[arcane]` once from
+/// non-SIMD code and put the loop INSIDE": the alpha loop here was wrapped so
+/// `plane_cost` — which calls `cfl_predict_lbd` and `tx_unit` — would inline
+/// into one `#[target_feature]` region per tier and stop crossing the boundary
+/// per alpha. **It does not inline.** In the built binary
+/// `md_cfl_rd_pick_alpha::{closure#0}` is still its own out-of-line symbol
+/// (654.1 M inclusive Ir on photo_cid p2, 2.368 G on photo_clic), so the
+/// boundary is crossed exactly as often as before and `tx_unit` never enters
+/// the AVX2 region. The instruction count says so too: this shape is
+/// Ir-**WORSE** than the plain call (photo_clic 45,185,097,146 ->
+/// 45,191,716,532, the CFL subtree 2,445,276,387 -> 2,450,070,566).
+///
+/// It is here because the campaign decides on WALL CLOCK, and on wall clock it
+/// wins on four of five cells with non-overlapping spans (r7900x, 21 paired
+/// rounds each, quiet box, every row byte-identical): photo_clic 512 p2
+/// **1.010x**, photo_cid 512 p2 **1.008x**, gradient 512 p2 1.005x, gradient
+/// 256 p2 1.002x, gradient 512 p6 1.001x (span straddles 1.0 — a null). That
+/// is a code-layout / register-allocation effect of the extra frame, the exact
+/// mirror of `benchmarks/cfl_branchfree_2026-09-05.meta`'s rejected
+/// variant (fewer instructions, slower everywhere) and reported the same way.
+/// **And it is NOT what the inlining model predicts** — C reaches its own
+/// kernel through the RTCD FUNCTION POINTER `svt_cfl_predict_lbd`
+/// (`Codec/common_dsp_rtcd.h:73`), i.e. an indirect out-of-line call per alpha
+/// per plane, and still costs 99 Ir a call. Record:
+/// `benchmarks/cfl_simd_kernel_2026-09-05.meta`.
 pub(super) fn md_cfl_alpha_search(
-    plane_cost: impl Fn(usize, i32) -> (u64, i32),
+    plane_cost: impl FnMut(usize, i32) -> (u64, i32),
+    rates: &MdRates,
+    lambda: u64,
+    luma_mode: usize,
+    itr_th: u8,
+) -> (u8, u8, u64) {
+    archmage::incant!(
+        md_cfl_alpha_search_impl(plane_cost, rates, lambda, luma_mode, itr_th),
+        [v3, neon, scalar]
+    )
+}
+
+fn md_cfl_alpha_search_impl_scalar(
+    _t: archmage::prelude::ScalarToken,
+    plane_cost: impl FnMut(usize, i32) -> (u64, i32),
+    rates: &MdRates,
+    lambda: u64,
+    luma_mode: usize,
+    itr_th: u8,
+) -> (u8, u8, u64) {
+    md_cfl_alpha_search_core(plane_cost, rates, lambda, luma_mode, itr_th)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[archmage::arcane]
+fn md_cfl_alpha_search_impl_v3(
+    _t: archmage::prelude::Desktop64,
+    plane_cost: impl FnMut(usize, i32) -> (u64, i32),
+    rates: &MdRates,
+    lambda: u64,
+    luma_mode: usize,
+    itr_th: u8,
+) -> (u8, u8, u64) {
+    md_cfl_alpha_search_core(plane_cost, rates, lambda, luma_mode, itr_th)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[archmage::arcane]
+fn md_cfl_alpha_search_impl_neon(
+    _t: archmage::prelude::NeonToken,
+    plane_cost: impl FnMut(usize, i32) -> (u64, i32),
+    rates: &MdRates,
+    lambda: u64,
+    luma_mode: usize,
+    itr_th: u8,
+) -> (u8, u8, u64) {
+    md_cfl_alpha_search_core(plane_cost, rates, lambda, luma_mode, itr_th)
+}
+
+#[inline(always)]
+fn md_cfl_alpha_search_core(
+    mut plane_cost: impl FnMut(usize, i32) -> (u64, i32),
     rates: &MdRates,
     lambda: u64,
     luma_mode: usize,

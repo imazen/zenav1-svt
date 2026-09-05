@@ -1,0 +1,302 @@
+CFL PREDICT IS A REAL SIMD KERNEL NOW — 6.48x C PER CALL -> 4.15x, THE ALPHA
+SEARCH 1.724x -> 1.548x, AND **1.017x / 1.018x WALL CLOCK ON THE TWO PHOTOS**
+(1.010-1.013x on the gradient), byte-identical everywhere.
+
+AND THE PREMISE THIS CHUNK WAS DISPATCHED ON IS REFUTED BY THE ORACLE: **C does
+NOT inline its CfL kernel into the alpha loop.** `svt_cfl_predict_lbd` is an
+RTCD FUNCTION POINTER (`Codec/common_dsp_rtcd.h:73`, bound to
+`svt_cfl_predict_lbd_avx2` at `common_dsp_rtcd.c:494`), so
+`av1_cost_calc_cfl` (`product_coding_loop.c:3374`) pays an INDIRECT,
+OUT-OF-LINE call at `:3413` for U and `:3487` for V — once per alpha per plane
+— and the kernel still costs 99 Ir a call. The 6.5x was never linkage. It was
+that the port computed C's rounding in i32 while C computes it in i16 with
+`mulhrs`.
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 threads),
+        valgrind-3.26.0 --tool=callgrind (Ir only), rustc via ~/.cargo/bin.
+        GATES both hosts (aarch64 = this Mac, M4 Pro).
+base:   main@origin `2d75a105` (the LR re-check commit), built in a sibling
+        git worktree whose only difference from `cand` is the three files
+        below. Every callgrind and wall-clock pair in this record was taken
+        against THAT binary in the same session.
+cand:   this commit. `svtav1-dsp/src/cfl_kernel.rs` (new),
+        `svtav1-dsp/src/{lib,intra_pred}.rs` (wiring),
+        `svtav1-encoder/src/leaf_funnel/cfl.rs`.
+C:      reference/svt-av1 @ 3115c0c1, the PREBUILT oracle in the primary
+        r7900x checkout (`rust/tools/perf_c_encode/perf_c_encode`, 2026-09-03),
+        NOT rebuilt, passed to the driver as `CE=`.
+tools:  Ir — tools/perf_profile/callcount_cells.sh (unchanged), PRESETS=2
+        QP=40, on photo_cid / photo_clic (the .yuv files the realimg record
+        left at r7900x:~/tmp/rc1/yuv) and the synthetic gradient, all 512x512.
+        Wall clock — tools/perf_ab.sh, 21 interleaved randomised-order paired
+        rounds, one untimed warmup per sample, NEITHER SIDE NICED.
+data:   benchmarks/cfl_simd_kernel_2026-09-05.tsv.
+
+=================== C'S SHAPE, WITH LINE NUMBERS ===================
+
+  product_coding_loop.c:3374  av1_cost_calc_cfl(...)          <- one alpha
+  product_coding_loop.c:3413    svt_cfl_predict_lbd(...)      <- U, INDIRECT
+  product_coding_loop.c:3436    svt_aom_residual_kernel(...)
+  product_coding_loop.c:3448    svt_aom_full_loop_uv(..., 0)
+  product_coding_loop.c:3487    svt_cfl_predict_lbd(...)      <- V, INDIRECT
+  common_dsp_rtcd.h:73        RTCD_EXTERN void(*svt_cfl_predict_lbd)(...)
+  common_dsp_rtcd.c:494       SET_AVX2(svt_cfl_predict_lbd, _c, _avx2)
+  ASM_AVX2/cfl_avx2.c:38      svt_cfl_predict_lbd_avx2
+
+and the kernel body (`cfl_avx2.c:16-31`, `predict_unclipped`):
+
+    ac_sign = sign_epi16(alpha_sign, ac_q3)              // sign(a)*sign(ac)
+    mag     = mulhrs_epi16(abs_epi16(ac_q3), |alpha|<<9)
+    res     = add_epi16(sign_epi16(mag, ac_sign), dc_q0)
+    ... packus_epi16 -> u8 (the unsigned saturate IS the 0..255 clamp)
+
+`mulhrs(x, y) = (x*y + 16384) >> 15`, so with `y = |alpha| << 9` the numerator
+is `512 * (|ac|*|alpha| + 32)` and `mag = (|ac|*|alpha| + 32) >> 6` EXACTLY —
+C's round-half-away-from-zero by 6, 16 i16 lanes at a time, no i32 widening.
+Two further shapes worth naming: C's `dc_q0` is `_mm_set1_epi16(*pred)`, a
+SCALAR broadcast of `pred[0]` (`pred_stride` is `(void)`-cast unused), and it
+walks `pred_buf_q3` a whole 8- or 16-lane row at a time regardless of `width`.
+
+WHAT THE PORT WAS DOING. The landed branch-free scalar loop
+(`cfl_branchfree_2026-09-05`) computed the same value in i32, and on the
+x86-64 BASELINE that is expensive: LLVM cannot know `alpha_q3` fits in 16
+bits, so the multiply became a `pmuludq` + four `pshufd` quartet per FOUR
+lanes (14 instructions for 8 elements), then the sign/round dance in i32
+lanes, then `packssdw`+`packuswb`. Disassembled at
+`svtav1_dsp::intra_pred::cfl_predict_lbd` in the base binary: ~45 SSE2
+instructions per 8 elements plus ~20 of per-row bounds checks.
+
+=================== WHAT LANDED (three chunks, one commit) ===================
+
+1. **The kernel** (`svtav1-dsp/src/cfl_kernel.rs`, new). C's algorithm, one
+   `#[arcane]` arm per tier reached by `incant!(..., [v3, neon, scalar])`:
+   x86 `_mm256_mulhrs_epi16` (16 lanes) / `_mm_mulhrs_epi16` (8 and 4),
+   aarch64 `vqrdmulhq_s16` (which computes `sat((2ab + 0x8000) >> 16)` =
+   `(ab + 16384) >> 15`, the same value), the scalar arm = the existing
+   branch-free core verbatim. The sign is applied as `(x ^ m) - m` with
+   `m = (ac >> 15) ^ alpha_neg` rather than as C's two `sign_epi16`s: one
+   instruction more on x86, but the SAME expression on both ISAs, and NEON has
+   no `sign_epi16`. The `pred` term is loaded PER ELEMENT
+   (`_mm256_cvtepu8_epi16` / `vmovl_u8`), not broadcast from `pred[0]` as C
+   does — the port does not assume the DC base is uniform.
+   Emitted inner loop (16 lanes, verified with objdump):
+   `vmovdqu / vpsraw / vpxor / vpabsw / vpmulhrsw / vpxor / vpsubw /
+    vpmovzxbw / vpaddw / vpackuswb / vmovdqu` + LLVM's own clamp pair.
+
+2. **The per-alpha buffer hoist** (`leaf_funnel/cfl.rs`). `plane_cost` did
+   `vec![0u8; cw*chh]` on EVERY alpha trial — `callcount_realimg_2026-09-04`
+   item B names this exact site at 211,831 callocs on photo_cid p2 against
+   20,754 calls to `md_cfl_rd_pick_alpha`. One buffer per SEARCH now.
+   `cfl_predict_lbd` writes every byte of it (`dst_stride == width == cw` over
+   all `chh` rows), so reuse cannot carry a stale value; `md_cfl_alpha_search`
+   took `impl FnMut` to allow it. This is the LARGER half of the Ir win.
+
+3. **The alpha loop inside one `#[arcane]` per tier** — the chunk this task
+   was dispatched to test. **It does not do what it was meant to do, and it is
+   in the tree anyway; read the next section before citing it.**
+
+=================== THE NUMBERS ===================
+
+Frame Ir, r7900x callgrind, qp 40 preset 2 (base -> cand, and C):
+    photo_cid  512  46,003,399,185 -> 45,915,493,861  (-0.191 %)  C 27,248,547,470
+               port/C 1.688 -> 1.685
+    photo_clic 512  45,392,654,357 -> 45,186,530,995  (-0.454 %)  C 26,558,491,976
+               port/C 1.709 -> 1.701
+    gradient   512  10,653,846,575 -> 10,652,466,531  (-0.013 %)  C  4,424,517,589
+               port/C 2.408 -> 2.408 (no CfL symbol appears in the gradient
+               profile at all — see the wall-clock caveat below)
+
+The kernel itself, SELF Ir (the port's two frames summed against C's one):
+    photo_cid   162,004,942 -> 103,953,593 over 253,229 calls = 639.8 -> 410.5
+                Ir/call, against `svt_cfl_predict_lbd_avx2` 25,020,768 over
+                253,259 calls = 98.8 -> **6.48x -> 4.15x per call**
+    photo_clic  375,329,866 -> 251,415,697 over 612,289 calls = 613.0 -> 410.6,
+                against 62,245,354 over 614,173 = 101.3 -> **6.05x -> 4.05x**
+(7,850,099 of photo_cid's 103.9 M and 18,980,959 of photo_clic's 251.4 M are
+the `incant!` dispatch frame itself — 31 Ir a call. C's indirect call through
+the RTCD pointer is the same kind of cost and is inside its 99.)
+
+The alpha search subtree, INCLUSIVE Ir, against C's `av1_cost_calc_cfl`:
+    photo_cid   766,394,163 -> 688,062,356 vs 444,506,134  **1.724 -> 1.548**
+    photo_clic  2,626,097,466 -> 2,449,719,641 vs 1,658,071,013  **1.584 -> 1.478**
+
+WALL CLOCK, base -> cand, r7900x, 21 interleaved paired rounds each, neither
+side niced, box quiet (load 0.30; no cargo/rustc/valgrind live), every row
+byte-identical:
+    content    size preset  n  base_ms   cand_ms   ratio   speedup  p25     p75
+    photo_cid  512  2      21  2334.216  2297.890  0.9831  **1.017x** 0.9791 0.9864
+    photo_clic 512  2      21  2294.628  2257.217  0.9826  **1.018x** 0.9737 0.9849
+    gradient   256  2      21   201.195   198.301  0.9880  **1.012x** 0.9836 0.9902
+    gradient   256  6      21    10.460    10.325  0.9873  **1.013x** 0.9683 0.9938
+    gradient   512  2      21   447.605   443.285  0.9901  **1.010x** 0.9871 0.9939
+    gradient   512  6      21    33.880    33.664  0.9945    1.006x   0.9890 1.0032
+Five of the six spans sit ENTIRELY below 1.0. The p6 512 row straddles and is
+reported as a null, not a gain.
+
+**CAVEAT ON THE GRADIENT ROWS, stated because it is the same trap the previous
+record fell into from the other side:** the gradient's Ir moves by 0.013 % and
+no CfL symbol clears the profile threshold on it, so its 1.010-1.013x is NOT
+attributable to this kernel. It is a code-shape effect. The photo rows are the
+attributable ones.
+
+=================== THE CHUNK THAT DID NOT DO WHAT IT SAYS ===================
+
+The dispatch brief, and `archmage/docs/PERFORMANCE.md`'s rule ("enter
+`#[arcane]` once from non-SIMD code and put the loop INSIDE"; the boundary
+costs 4x on a simple add and 6.2x on DCT-8), predicted that wrapping the WHOLE
+alpha loop in one `#[arcane]` per tier would let `plane_cost` — and through it
+`cfl_predict_lbd` and `tx_unit` — inline into the `#[target_feature]` region
+and stop crossing the boundary 211,831 times a frame.
+
+**MEASURED: the closure does not inline.** In the built binary
+`svtav1_encoder::leaf_funnel::cfl::md_cfl_rd_pick_alpha::{closure#0}` is still
+its own out-of-line symbol, 654,113,773 inclusive Ir on photo_cid p2 and
+2,368,166,396 on photo_clic — i.e. the boundary is crossed exactly as often as
+before and `tx_unit` never enters the AVX2 region. `#[arcane]` did fire (three
+`__arcane_md_cfl_alpha_search_impl_v3::<...>` monomorphisations exist, one per
+closure type); LLVM simply declined to inline a body that large.
+
+And it is Ir-WORSE, on both cells, measured against the same base
+(k+hoist -> k+hoist+arcane):
+    photo_cid   45,916,743,174 -> 45,915,708,369  (-0.002 %, a null)
+                the CFL subtree 686,190,961 -> 688,062,356  (+1.9 M)
+    photo_clic  45,185,097,146 -> 45,191,716,532  (+0.015 %)
+                the CFL subtree 2,445,276,387 -> 2,450,070,566  (+4.8 M)
+
+It is in the tree because the campaign DECIDES ON WALL CLOCK, and on wall clock
+it wins, consistently, on four of five cells with non-overlapping spans
+(21 paired rounds each, ident=Y, same quiet box):
+    photo_clic 512 p2  **1.010x** (0.9863-0.9950)
+    photo_cid  512 p2  **1.008x** (0.9887-0.9932)
+    gradient   512 p2    1.005x  (0.9931-0.9978)
+    gradient   256 p2    1.002x  (0.9944-0.9994)
+    gradient   512 p6    1.001x  (0.9926-1.0029 — straddles; a null)
+
+That is a code-LAYOUT / register-allocation effect of the extra frame, and it
+is the exact MIRROR of the variant `cfl_branchfree_2026-09-05` rejected (fewer
+instructions, slower everywhere). Applying that record's own rule symmetrically
+means keeping this one. **But do not cite it as evidence for the inlining
+model** — the model predicts a large Ir DROP from removing 211,831 boundary
+crossings, and what was measured is a small Ir RISE with the crossings intact.
+
+=================== TWO CORRECTIONS TO THE STANDING RECORD ===================
+
+1. **`cfl_branchfree_2026-09-05`'s diagnosis of its own rejected variant is
+   NOT supported.** It read: "an `#[arcane]` arm is an out-of-line
+   `target_feature` function, so the dispatch takes the call out of the
+   closure and out of the inliner's reach", and it concluded "a HAND-WRITTEN
+   intrinsics kernel that the inliner can still fold into the alpha closure is
+   the untried next step ... it must be inlinable to win." The kernel that
+   landed here IS an `#[arcane]` arm behind `incant!`, is NOT inlined into the
+   closure, and wins 1.017x / 1.018x on the photos and 1.010-1.013x on the
+   gradient — where the rejected variant lost 0.993x. The variable that
+   changed is the ARITHMETIC, not the linkage. The oracle says the same: C's
+   kernel is reached through a function pointer and costs 99 Ir.
+2. The record's "12x per call" is superseded twice over: it was 6.48x on this
+   base (the branch-free scalar loop had already halved it) and is 4.15x now.
+
+=================== WHAT WAS MEASURED AND REVERTED ===================
+
+**Row-iterator slicing in the kernel — a REGRESSION, reverted, so nobody
+retries it.** Replacing `pred_buf_q3[j*CFL_BUF_LINE .. +width]` (three
+multiply-and-compare bounds checks per row) with `chunks(stride).take(height)
+.map(|r| &r[..width])` iterators, on the theory that per-row overhead dominates
+a 4x4 chroma block, made the KERNEL slower by instruction count on both cells:
+photo_cid 96,103,494 -> 111,029,393 (+15.5 %), photo_clic 232,434,738 ->
+267,887,105 (+15.3 %). The direct indexing is what LLVM hoists best here. Both
+forms are in the .tsv as `k+hoist` and `k+iter+hoist`.
+
+=================== EXACTNESS ===================
+
+Every SIMD arm is pinned against `cfl_predict_lbd_core` by TWO tests, both
+inside `for_each_token_permutation` with the `PermutationReport` CONSUMED
+(`warnings.is_empty()` + `permutations_run >= 2`, so the sweep cannot silently
+degenerate to the native tier — `rust/CLAUDE.md`'s silent-coverage hazard):
+  * `cfl_simd_matches_scalar_for_every_alpha_and_ac` — EXHAUSTIVE: all 33
+    `alpha_q3` values `cfl_idx_to_alpha` can produce (0 and magnitudes 1..=16
+    either sign) x all 65,535 `i16` `ac_q3` values except `i16::MIN`, through
+    the 16-, 8- and 4-wide paths at three `pred` values. 6.5 M comparisons.
+  * `cfl_simd_matches_scalar_over_the_reachable_domain` — every width 1..=32
+    (so every `width % 4` tail) x three heights.
+The `i16::MIN` exclusion is the ONE divergence and it is C's:
+`_mm256_abs_epi16(i16::MIN)` and `vabsq_s16(i16::MIN)` both return `i16::MIN`,
+so C's own AVX2 and NEON kernels have it too (and disagree with each other
+there). It is unreachable regardless — `cfl_luma_subsampling_420` writes
+`2 * (sum of four u8) <= 2040` and `cfl_subtract_average` subtracts a mean of
+that same buffer, so `|ac_q3| <= 2040`. Stated in the module header.
+The pre-existing exhaustive `cfl_branch_free_rounding_matches_the_branchy_form`
+(2,162,720 pairs) is untouched and still runs.
+
+=================== GATES ===================
+(filled in below from the run logs; both ISAs, this tree)
+
+aarch64 (this Mac, /opt/homebrew/bin/bash, one harness at a time):
+  `cargo nextest run --workspace` **2541 / 2541** (0 skipped)
+  `identity_full_8bit.sh` with `IF_TIER=all` **1550 / 1550 byte-identical**
+    (+0 pinned, 0 harness errors) — synthetic + dims + the three real corpora
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open
+    (`diag 128 128 20 8 2 3`, 0 now identical), 0 crashed, 0 harness errors
+  `video_key_matrix.sh` **59 / 60** (the known-open `gradient p0`, unmoved)
+  `screen_ibc_byte_gate.sh` **152 / 152** byte-identical, 0 diverging, 0 errors
+    (port IBC blocks 41,559; palette blocks 27,402)
+  `screen_palette_gate.sh` **50 / 50** byte-identical (38 palette-coding cells)
+  `fctx_gate.sh` **PASS**, 96 / 96 shared fields identical on both frames
+  `inter_decode_gate.sh` **PASS** 5 / 5, `inter_decode_census.sh` **PASS**
+    96 streams / 96 decode / 0 rejected
+  `inter_completion_scan.sh` with `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED,
+    0 CRASH
+  the six still reference cells, `identity_diff.sh`, all VERDICT: IDENTICAL at
+    their pinned sizes — gradient 64x64 q40 p6 **290 B**, q20 p3 **839 B**,
+    q55 p0 **63 B**, 128x128 q55 p8 **171 B**, 64x64 q30 p13 **580 B**,
+    screenrep 64x64 q35 p4 **693 B**
+x86_64 (r7900x, same tree):
+  `cargo nextest run --workspace` **2551 / 2551**
+  `identity_full_8bit.sh` `IF_TIER=all` **1250 / 1250** (+0 pinned, 0 errors)
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open
+Every callgrind cell: the driver's uninstrumented identity pre-pass `cmp`-clean
+AND each instrumented run's own `.obu` `cmp`'d against it (`ident=Y`,
+`port_cg_ident=Y`, `c_cg_ident=Y` on every row of every variant).
+
+=================== MEMORY (CPU was the priority; report it anyway) ===================
+
+Nothing here allocates more per frame; chunk 2 allocates ~191,000 times LESS
+and holds one <= 1 KiB buffer (`cw*chh`, at most 32x32) across a search
+instead. Measured, not argued, with `tools/mem_bisect.sh` (both binaries
+round-robin in ONE run, so box drift lands on both equally):
+
+x86_64 r7900x, peak HEAP (heaptrack, LIVE malloc'd bytes), one encode each:
+    2048 inter  101.78 M -> 101.78 M   UNCHANGED
+    2048 still   61.06 M ->  61.06 M   UNCHANGED
+x86_64 r7900x, peak RSS (`/usr/bin/time -v`), 2048 inter, 15 rounds:
+    median 104,472 -> 104,396 KiB (min 103,972 -> 104,032, max 104,740 ->
+    104,892) — the distributions overlap completely. A NULL.
+aarch64 Mac, peak RSS (`/usr/bin/time -l`), 15 rounds inter / 11 still:
+    2048 inter  median 140,224 -> 140,160 KiB (min 140,160 -> 138,560,
+                max 149,392 -> 159,008) — overlapping, and the MIN went down.
+                A NULL: **the aarch64 inter arm is not pushed anywhere**, which
+                is the arm the memory goal is stated against.
+    2048 still  median  72,640 ->  72,672 KiB (min 72,592 -> 72,624,
+                max 74,736 -> 72,768) — overlapping. A NULL.
+Every row above encoded (rc 0, obu 139,761 B inter / 70,893 B still) — no
+REFUSED cell was averaged in.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: C's call shape, with line numbers, and that it is an INDIRECT
+out-of-line call per alpha per plane; the Ir on three contents at p2; the
+kernel's per-call cost against C's on two contents; the wall clock on six cells
+at 21 paired rounds each on a quiet box; that both SIMD arms equal the scalar
+core over the whole reachable `(alpha_q3, ac_q3)` domain; that the row-iterator
+form is worse; that the arcane-alpha-loop chunk does NOT inline the closure.
+NOT ESTABLISHED: that this is as fast as C's kernel — it is still 4.15x C's Ir
+per call, and the residual is per-ROW overhead (three bounds checks and a slice
+setup per row, which on a 4x4 chroma block dwarfs the 4 elements of work) plus
+the 31-Ir `incant!` frame. C pays neither: it walks a whole 8- or 16-lane row
+regardless of `width` and indexes with pointers. Also not established: any
+preset but 2 for the Ir (p6/p10 unmeasured), any qp but 40, 10-bit
+(`cfl_predict_hbd` and the bd10 `plane_cost10` closure — which still allocates
+`vec![0u16; cw*chh]` per alpha trial — are both UNTOUCHED and are the obvious
+next chunk), and the inter arm.

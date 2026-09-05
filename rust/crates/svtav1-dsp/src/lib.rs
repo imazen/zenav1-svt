@@ -10,6 +10,7 @@ pub mod ac_bias;
 #[cfg(feature = "std")]
 pub mod bench;
 pub mod cdef;
+pub(crate) mod cfl_kernel;
 pub mod copy;
 pub mod fwd_txfm;
 pub mod fwd_txfm_pf;

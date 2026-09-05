@@ -1,0 +1,76 @@
+# CFL PREDICT SIMD KERNEL + PER-ALPHA BUFFER HOIST — 2026-09-05
+# See benchmarks/cfl_simd_kernel_2026-09-05.meta for method, hosts and provenance.
+#
+# --- INSTRUCTION COUNTS (r7900x, valgrind-3.26.0 --tool=callgrind, qp 40 preset 2) ---
+# variant: base = main@origin 2d75a105 | k = SIMD kernel only | k+iter+hoist |
+#          k+hoist (iter REVERTED) | k+hoist+arcane-alpha-loop = LANDED
+variant	cell	size	preset	ident	obu_bytes	port_ir	c_ir	port_over_c
+base	photo_cid	512	2	Y	46462	46003399185	27248547470	1.688
+base	photo_clic	512	2	Y	45529	45392654357	26558491990	1.709
+base	gradient	512	2	Y	5126	10653846575	4424517608	2.408
+k	photo_cid	512	2	Y	46462	45945601126	27248547470	1.686
+k	photo_clic	512	2	Y	45529	45269352540	26558491990	1.705
+k+iter+hoist	photo_cid	512	2	Y	46462	45931669049	27248547470	1.686
+k+iter+hoist	photo_clic	512	2	Y	45529	45220549489	26558491976	1.703
+k+hoist	photo_cid	512	2	Y	46462	45916743174	27248547470	1.685
+k+hoist	photo_clic	512	2	Y	45529	45185097146	26558491976	1.701
+k+hoist+arcane	photo_cid	512	2	Y	46462	45915493861	27248547470	1.685
+k+hoist+arcane	photo_clic	512	2	Y	45529	45186530995	26558491976	1.701
+k+hoist+arcane	gradient	512	2	Y	5126	10652466531	4424517589	2.408
+#
+# --- THE CFL KERNEL ITSELF (SELF Ir; the port's two frames summed) ---
+# port_calls == C calls to within 0.3 % on every cell (the counts were already 1:1)
+variant	cell	port_kernel_self_ir	port_calls	port_ir_per_call	c_kernel_self_ir	c_calls	c_ir_per_call	x_per_call
+base	photo_cid	162004942	253229	639.8	25020768	253259	98.8	6.48
+base	photo_clic	375329866	612289	613.0	62245354	614173	101.3	6.05
+k+hoist+arcane	photo_cid	103953593	253229	410.5	25020768	253259	98.8	4.15
+k+hoist+arcane	photo_clic	251415697	612289	410.6	62245354	614173	101.3	4.05
+#
+# --- THE ALPHA SEARCH SUBTREE (INCLUSIVE Ir) ---
+variant	cell	port_md_cfl_rd_pick_alpha	c_av1_cost_calc_cfl	port_over_c
+base	photo_cid	766394163	444506134	1.724
+base	photo_clic	2626097466	1658071013	1.584
+k	photo_cid	718067203	444506134	1.615
+k	photo_clic	2522724722	1658071013	1.521
+k+iter+hoist	photo_cid	698667754	444506134	1.572
+k+iter+hoist	photo_clic	2475001682	1658071013	1.493
+k+hoist	photo_cid	686190961	444506134	1.544
+k+hoist	photo_clic	2445276387	1658071013	1.475
+k+hoist+arcane	photo_cid	688062356	444506134	1.548
+k+hoist+arcane	photo_clic	2449719641	1658071013	1.478
+#
+# --- WALL CLOCK, base -> LANDED (r7900x, tools/perf_ab.sh, 21 interleaved
+#     randomised-order paired rounds, one untimed warmup per sample, NEITHER
+#     SIDE NICED, box quiet: load 0.30, no cargo/rustc/valgrind live) ---
+content	size	preset	n	ident	base_ms	cand_ms	ratio	speedup	p25	p75
+photo_cid	512	2	21	Y	2334.2155	2297.8895	0.9831	1.017	0.9791	0.9864
+photo_clic	512	2	21	Y	2294.6275	2257.2165	0.9826	1.018	0.9737	0.9849
+gradient	256	2	21	Y	201.1950	198.3009	0.9880	1.012	0.9836	0.9902
+gradient	256	6	21	Y	10.4597	10.3254	0.9873	1.013	0.9683	0.9938
+gradient	512	2	21	Y	447.6047	443.2846	0.9901	1.010	0.9871	0.9939
+gradient	512	6	21	Y	33.8802	33.6640	0.9945	1.006	0.9890	1.0032
+#
+# --- WALL CLOCK, the arcane-alpha-loop chunk ALONE (base = k+hoist) ---
+content	size	preset	n	ident	base_ms	cand_ms	ratio	speedup	p25	p75
+photo_clic	512	2	21	Y	2278.9762	2259.0470	0.9904	1.010	0.9863	0.9950
+photo_cid	512	2	21	Y	2316.5314	2296.0080	0.9920	1.008	0.9887	0.9932
+gradient	256	2	21	Y	198.8658	198.4442	0.9976	1.002	0.9944	0.9994
+gradient	512	2	21	Y	444.1034	442.6329	0.9950	1.005	0.9931	0.9978
+gradient	512	6	21	Y	33.6776	33.6056	0.9989	1.001	0.9926	1.0029
+#
+# --- WALL CLOCK, the SIMD kernel + buffer hoist chunk ALONE (base -> k+hoist) ---
+content	size	preset	n	ident	base_ms	cand_ms	ratio	speedup	p25	p75
+photo_cid	512	2	21	Y	2327.7124	2314.6856	0.9935	1.007	0.9818	0.9973
+photo_clic	512	2	21	Y	2292.3193	2267.5885	0.9893	1.011	0.9837	0.9907
+gradient	256	2	21	Y	199.9738	198.8214	0.9942	1.006	0.9849	0.9955
+gradient	256	6	21	Y	10.2359	10.2118	0.9954	1.005	0.9863	1.0039
+gradient	512	2	21	Y	446.9442	443.4875	0.9923	1.008	0.9868	0.9940
+gradient	512	6	21	Y	33.7717	33.6435	0.9966	1.003	0.9876	0.9996
+#
+# --- MEMORY (tools/mem_bisect.sh, both binaries round-robin in ONE run) ---
+host	mode	size	arm	rounds	base	cand	verdict
+r7900x	heap	2048	inter	1	101.78M	101.78M	unchanged
+r7900x	heap	2048	still	1	61.06M	61.06M	unchanged
+r7900x	rss_median_KiB	2048	inter	15	104472	104396	null (spans overlap)
+mac	rss_median_KiB	2048	inter	15	140224	140160	null (spans overlap)
+mac	rss_median_KiB	2048	still	11	72640	72672	null (spans overlap)

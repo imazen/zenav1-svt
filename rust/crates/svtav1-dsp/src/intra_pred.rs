@@ -1719,7 +1719,7 @@ pub fn cfl_predict_lbd(
     width: usize,
     height: usize,
 ) {
-    cfl_predict_lbd_core(
+    crate::cfl_kernel::cfl_predict_lbd_dispatch(
         pred_buf_q3,
         pred,
         pred_stride,
@@ -1744,7 +1744,7 @@ pub fn cfl_predict_lbd(
 /// `ac_q3` an `i16`, so `|q6| <= 16 * 32768 = 524,288`. Pinned over the WHOLE
 /// reachable domain by `cfl_branch_free_rounding_matches_the_branchy_form`.
 #[inline]
-fn cfl_predict_lbd_core(
+pub(crate) fn cfl_predict_lbd_core(
     pred_buf_q3: &[i16],
     pred: &[u8],
     pred_stride: usize,

@@ -1,5 +1,81 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE CFL PREDICT KERNEL IS SIMD NOW — 6.48x C PER CALL -> 4.15x, THE ALPHA
+> SEARCH 1.724x -> 1.548x, **1.017x / 1.018x WALL CLOCK ON THE TWO PHOTOS** —
+> AND C DOES NOT INLINE ITS OWN KERNEL, SO THE "IT MUST BE INLINABLE TO WIN"
+> READING OF `cfl_branchfree_2026-09-05` IS REFUTED (2026-09-05).** Record
+> `benchmarks/cfl_simd_kernel_2026-09-05.{tsv,meta}`. **The oracle first:**
+> `svt_cfl_predict_lbd` is an RTCD FUNCTION POINTER (`Codec/common_dsp_rtcd.h:73`,
+> bound to `svt_cfl_predict_lbd_avx2` at `common_dsp_rtcd.c:494`), so
+> `av1_cost_calc_cfl` (`product_coding_loop.c:3374`) pays an INDIRECT,
+> OUT-OF-LINE call at `:3413` (U) and `:3487` (V) once per alpha per plane —
+> and still costs 99 Ir a call. The gap was never linkage; it was that C does
+> the rounding in i16 with `mulhrs` on `|alpha| << 9`
+> (`(|ac|*|alpha|*512 + 16384) >> 15` IS `(|ac|*|alpha| + 32) >> 6`) while the
+> port did it in i32, where the x86-64 BASELINE has no `pmulld` and LLVM emitted
+> a `pmuludq`+4x`pshufd` quartet per four lanes. **What landed, three chunks in
+> one commit:** (1) `svtav1-dsp/src/cfl_kernel.rs`, C's algorithm as one
+> `#[arcane]` arm per tier behind `incant!` — x86 `_mm256_mulhrs_epi16` /
+> `_mm_mulhrs_epi16`, aarch64 `vqrdmulhq_s16` (identical value), sign applied as
+> `(x ^ m) - m` so both ISAs share one expression (NEON has no `sign_epi16`),
+> `pred` loaded PER ELEMENT rather than broadcast from `pred[0]` as C does;
+> (2) the per-alpha `vec![0u8; cw*chh]` hoisted to ONE buffer per search —
+> `callcount_realimg_2026-09-04` item B's 211,831 callocs on photo_cid p2 become
+> 20,754, and this is the LARGER half of the Ir win; (3) the alpha loop inside
+> one `#[arcane]` per tier — see the refutation below. **Ir** (base
+> `main@origin 2d75a105` -> cand, r7900x callgrind, qp 40 p2): photo_cid
+> 46,003,399,185 -> 45,915,493,861 (-0.191 %, port/C **1.688 -> 1.685**),
+> photo_clic 45,392,654,357 -> 45,186,530,995 (-0.454 %, **1.709 -> 1.701**),
+> gradient 10,653,846,575 -> 10,652,466,531 (-0.013 %, 2.408 unmoved — no CfL
+> symbol clears the profile threshold there at all). The KERNEL's self Ir
+> 162,004,942 -> 103,953,593 over the same 253,229 calls = 639.8 -> **410.5 Ir a
+> call** against C's 98.8 (**6.48x -> 4.15x**; photo_clic 6.05x -> 4.05x), and
+> the alpha search `md_cfl_rd_pick_alpha` 766,394,163 -> 688,062,356 against C's
+> `av1_cost_calc_cfl` 444,506,134 = **1.724 -> 1.548** (photo_clic 1.584 ->
+> 1.478). **Wall clock**, 21 interleaved paired rounds each, quiet box, every
+> row byte-identical: photo_cid 512 p2 **1.017x** (span 0.9791-0.9864),
+> photo_clic **1.018x** (0.9737-0.9849), gradient 256 p2 **1.012x**, 256 p6
+> **1.013x**, 512 p2 **1.010x**, 512 p6 1.006x (span straddles 1.0 — a null).
+> Five of six spans sit entirely below 1.0. **Read the gradient rows with the
+> same caution the earlier record earned from the other side:** the gradient's
+> Ir barely moves and CfL is not in its profile, so its gain is a code-shape
+> effect, not this kernel; the photo rows are the attributable ones.
+> **THE CHUNK THAT DID NOT DO WHAT IT SAYS, and it is in the tree anyway.**
+> `archmage/docs/PERFORMANCE.md`'s rule ("enter `#[arcane]` once, put the loop
+> INSIDE"; the boundary costs 4x on a simple add, 6.2x on DCT-8) predicted that
+> wrapping the whole alpha loop would let `plane_cost` — and through it
+> `cfl_predict_lbd` and `tx_unit` — inline into the `target_feature` region.
+> **MEASURED: the closure does not inline.** `md_cfl_rd_pick_alpha::{closure#0}`
+> is still its own out-of-line symbol (654.1 M inclusive Ir on photo_cid, 2.368 G
+> on photo_clic), so the boundary is crossed exactly as often as before and
+> `tx_unit` never enters the AVX2 region; `#[arcane]` DID fire (three
+> monomorphisations exist) — LLVM declined to inline a body that large. It is
+> Ir-WORSE on both cells (photo_clic 45,185,097,146 -> 45,191,716,532; the CFL
+> subtree 2,445,276,387 -> 2,450,070,566) and wall-clock-BETTER on four of five
+> cells with non-overlapping spans (photo_clic **1.010x**, photo_cid **1.008x**,
+> gradient 512 p2 1.005x, 256 p2 1.002x, 512 p6 a null). That is code LAYOUT,
+> the exact mirror of the variant `cfl_branchfree_2026-09-05` rejected, and
+> keeping it is that record's own rule applied symmetrically — **but it is NOT
+> evidence for the inlining model, which predicts a large Ir DROP and produced a
+> small Ir RISE with every crossing intact.** **MEASURED AND REVERTED, so nobody
+> retries it:** replacing the kernel's `pred_buf_q3[j*CFL_BUF_LINE .. +width]`
+> row indexing with `chunks(stride).take(height)` iterators — on the theory that
+> per-row bounds checks dominate a 4x4 chroma block — made the kernel
+> instruction count 15 % WORSE on both cells (photo_cid 96,103,494 ->
+> 111,029,393, photo_clic 232,434,738 -> 267,887,105). Direct indexing is what
+> LLVM hoists best here. **Exactness:** both SIMD arms are pinned against the
+> scalar core EXHAUSTIVELY — all 33 legal `alpha_q3` x all 65,535 `i16` `ac_q3`
+> except `i16::MIN`, through the 16/8/4-wide paths at three `pred` values (6.5 M
+> comparisons), plus every width 1..=32 x three heights, both inside
+> `for_each_token_permutation` with the `PermutationReport` CONSUMED. The
+> `i16::MIN` exclusion is C's own (`_mm256_abs_epi16`/`vabsq_s16` return it
+> unchanged, so C's AVX2 and NEON disagree there) and is unreachable:
+> `cfl_luma_subsampling_420` writes `2*(sum of four u8) <= 2040`. **Memory:**
+> peak HEAP (heaptrack, LIVE bytes) x86 2048 inter 101.78 M and still 61.06 M,
+> both UNCHANGED to the digit; x86 RSS 2048 inter, 15 interleaved rounds, median
+> 104,472 -> 104,396 KiB with fully overlapping min/max — a null. The hoist
+> trades ~191 k allocations for one <= 1 KiB buffer held across a search.
+
 > **THE RESIDUAL IS INSTRUCTION COUNT, NOT STALLS — THE PORT'S IPC IS HIGHER
 > THAN C'S ON EVERY CELL MEASURED (2026-09-05).** Record
 > `benchmarks/stall_attrib_2026-09-05.{tsv,meta}`. Hardware counters
