@@ -308,6 +308,7 @@ impl MdRates {
     /// `fimode_to_intradir` for filter-intra blocks; the [`INTER_TXT_DIR`]
     /// sentinel selects the `is_inter` arm (IntraBC blocks — the inter
     /// ext-tx set + `inter_tx_type_fac_bits`, no intra-dir dimension).
+    #[inline]
     pub(super) fn txt_rate(&self, c_tx_size: usize, intra_dir: usize, tx_type: usize) -> i32 {
         let is_inter = intra_dir == INTER_TXT_DIR;
         if cc::ext_tx_types(c_tx_size, is_inter, false) <= 1 {

@@ -1,5 +1,39 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THREE OUT-OF-LINE HELPERS C INLINES ARE GONE — 17.7 M CALLS PER 512² PHOTO
+> FRAME AT p2, -0.63 % Ir — AND WITH THE TWO BLOCKS BELOW THE PHOTO's p2 PORT/C
+> RATIO IS 1.777 -> 1.694 AND THE WHOLE-FRAME WALL CLOCK 1.056x (2026-09-05).**
+> Record `benchmarks/txsize_tables_2026-09-05.{tsv,meta}`.
+> `callcount_realimg_2026-09-04` item F: `MdRates::txt_rate` 5,974,663 calls /
+> 382.3 M Ir, `tx_pipeline::rs_tx_size` 6,984,051 / 167.4 M and
+> `coeff_c::tx_size_from_dims` 4,766,423 / 113.0 M — all three now read ZERO.
+> **`#[inline]` ALONE FIXES ONE OF THE THREE, and that is the transferable
+> finding**: measured as its own step, the attribute inlined `txt_rate`
+> (5,974,663 -> 0) and left `rs_tx_size` at 6,984,051 and `tx_size_from_dims` at
+> 4,762,229, because LLVM will not inline a 19-arm `match` on `(w, h)` called
+> from several sites whatever the attribute says (-0.39 % instead of -0.63 %).
+> Both mappings are now a table: `tx_size_from_dims` a 5x5 lookup indexed
+> `(log2(w) - 2) * 5 + (log2(h) - 2)` with a sentinel for the six illegal aspect
+> ratios, and `rs_tx_size` a const `TX_SIZE_FROM_C[19]` in C's `TX_SIZES_ALL`
+> order — which at `tx_unit_inner`'s two dispatch sites is indexed by the `c_tx`
+> the function was ALREADY holding, so the second 19-way branch chain per
+> transform unit disappears entirely. **Both replaced `match`es are kept in the
+> tree as `#[cfg(test)]` oracles** and three new tests assert the tables accept
+> exactly the same 19 shapes (by count, so a typo that admits a 20th fails) and
+> reject exactly the same six — stronger coverage than any encode grid, which
+> never codes most of them. Ir: p2 46.44 G -> 46.15 G (-0.63 %), p6 -0.25 %;
+> over the three commits p2 48.43 G -> 46.15 G (**-4.72 %**) and p6 -1.46 %
+> (port/C 2.349 -> 2.314). Wall clock (r7900x, 21 interleaved paired rounds,
+> ident=Y everywhere) against the previous commit: photo 512 p2 **1.012x**,
+> gradient 256 p2 1.007x, 512 p2 1.008x, every p6/p10 cell a null with its span
+> straddling 1.0. Against the tree all three chunks branched from: photo 512 p2
+> **1.056x**, gradient 256 p2 **1.054x**, 512 p2 **1.042x**, photo 512 p6
+> 1.010x, gradient 256 p6 1.012x — and on two more contents at 512 p2, the CLIC
+> glitter image **1.054x** and the gb82-sc terminal crop **1.034x**. Peak heap identical at every step (this chunk
+> allocates nothing). Still out of line and NOT touched:
+> `palette::palette_color_index_context`, 2,961,716 calls / 211.6 M Ir = 1.5 %
+> of a SCREENSHOT's p2 (C's is `static inline`).
+
 > **THE RESIDUAL IS DERIVED ONCE PER (TX-DEPTH, TXB) AGAIN, AS C DOES IT —
 > `residual_i32` 4,256,724 -> 1,307,794 CALLS PER 512² PHOTO FRAME AT p2
 > AGAINST C's 1,986,776 (port/C 2.142x -> 0.658x), -2.19 % Ir, AND WITH THE

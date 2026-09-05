@@ -88,9 +88,50 @@ pub const fn txb_high(tx_size: usize) -> usize {
     TX_SIZE_HIGH[adjusted_tx_size(tx_size)]
 }
 
+/// The 19 legal `(w, h)` shapes as a 5x5 table indexed by
+/// `(log2(w) - 2) * 5 + (log2(h) - 2)`; `INVALID_TX_DIMS` marks the six
+/// combinations AV1 has no transform for (aspect ratio beyond 4:1).
+///
+/// Row order is w = 4, 8, 16, 32, 64; column order is h = 4, 8, 16, 32, 64.
+/// `tx_size_from_dims_match` below is the readable form this replaces and is
+/// the oracle `tx_size_table_matches_the_match_form` checks it against.
+const INVALID_TX_DIMS: u8 = u8::MAX;
+#[rustfmt::skip]
+const TX_SIZE_BY_DIMS: [u8; 25] = [
+    //          h=4                h=8                 h=16                 h=32                 h=64
+    /* w= 4 */ TX_4X4   as u8, TX_4X8   as u8, TX_4X16  as u8, INVALID_TX_DIMS,   INVALID_TX_DIMS,
+    /* w= 8 */ TX_8X4   as u8, TX_8X8   as u8, TX_8X16  as u8, TX_8X32  as u8, INVALID_TX_DIMS,
+    /* w=16 */ TX_16X4  as u8, TX_16X8  as u8, TX_16X16 as u8, TX_16X32 as u8, TX_16X64 as u8,
+    /* w=32 */ INVALID_TX_DIMS,   TX_32X8  as u8, TX_32X16 as u8, TX_32X32 as u8, TX_32X64 as u8,
+    /* w=64 */ INVALID_TX_DIMS,   INVALID_TX_DIMS,   TX_64X16 as u8, TX_64X32 as u8, TX_64X64 as u8,
+];
+
 /// Map transform dimensions in pixels to the C `TxSize` index.
+///
+/// A table index, not a 19-arm `match`: this is called once per `tx_unit_inner`
+/// (4,238,186 times on a 512x512 photo at preset 2) and the branch chain was
+/// 24 Ir a call that LLVM would not inline away — 100.5 M Ir, 0.22 % of the
+/// frame, for an operation that is two shifts and a load. The `match` form is
+/// kept below as the table's test oracle.
+#[inline]
 pub fn tx_size_from_dims(w: usize, h: usize) -> usize {
-    match (w, h) {
+    let (iw, ih) = (w.trailing_zeros(), h.trailing_zeros());
+    // Rejects a non-power-of-two, anything outside 4..=64, and the six illegal
+    // aspect ratios, with the same message the `match` form panicked with.
+    if w.is_power_of_two() && h.is_power_of_two() && (2..=6).contains(&iw) && (2..=6).contains(&ih)
+    {
+        let v = TX_SIZE_BY_DIMS[(iw as usize - 2) * 5 + (ih as usize - 2)];
+        if v != INVALID_TX_DIMS {
+            return v as usize;
+        }
+    }
+    panic!("no TxSize for {w}x{h}")
+}
+
+/// The readable form of [`tx_size_from_dims`], kept as the table's oracle.
+#[cfg(test)]
+pub(crate) fn tx_size_from_dims_match(w: usize, h: usize) -> Option<usize> {
+    Some(match (w, h) {
         (4, 4) => TX_4X4,
         (8, 8) => TX_8X8,
         (16, 16) => TX_16X16,
@@ -110,8 +151,8 @@ pub fn tx_size_from_dims(w: usize, h: usize) -> usize {
         (32, 8) => TX_32X8,
         (16, 64) => TX_16X64,
         (64, 16) => TX_64X16,
-        _ => panic!("no TxSize for {w}x{h}"),
-    }
+        _ => return None,
+    })
 }
 
 /// C `get_txsize_entropy_ctx`.
@@ -1490,6 +1531,57 @@ pub fn get_txb_ctx(
     };
 
     (txb_skip_ctx, dc_sign_ctx)
+}
+
+#[cfg(test)]
+mod tx_size_table_tests {
+    use super::*;
+
+    /// The 5x5 `TX_SIZE_BY_DIMS` table must agree with the 19-arm `match` it
+    /// replaced on EVERY power-of-two pair in 4..=64, accepting exactly the
+    /// same 19 shapes and rejecting exactly the same six.
+    #[test]
+    fn tx_size_table_matches_the_match_form() {
+        let dims = [4usize, 8, 16, 32, 64];
+        let mut accepted = 0;
+        for &w in &dims {
+            for &h in &dims {
+                match tx_size_from_dims_match(w, h) {
+                    Some(want) => {
+                        assert_eq!(tx_size_from_dims(w, h), want, "tx {w}x{h}");
+                        accepted += 1;
+                    }
+                    None => {
+                        assert!(
+                            std::panic::catch_unwind(|| tx_size_from_dims(w, h)).is_err(),
+                            "tx {w}x{h} must be rejected"
+                        );
+                    }
+                }
+            }
+        }
+        assert_eq!(accepted, 19, "the table must accept exactly 19 shapes");
+    }
+
+    /// Non-power-of-two and out-of-range dimensions still panic rather than
+    /// indexing the table (the `match` form had no arm for them either).
+    #[test]
+    fn tx_size_table_rejects_illegal_dims() {
+        for (w, h) in [
+            (0usize, 4usize),
+            (4, 0),
+            (2, 4),
+            (4, 2),
+            (128, 64),
+            (64, 128),
+            (12, 4),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| tx_size_from_dims(w, h)).is_err(),
+                "tx {w}x{h} must be rejected"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

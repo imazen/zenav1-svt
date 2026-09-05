@@ -1,0 +1,85 @@
+# Three helpers C inlines and the port called out of line: `MdRates::txt_rate`,
+# `tx_pipeline::rs_tx_size`, `coeff_c::tx_size_from_dims`.
+# Method and provenance: the .meta beside this.
+# base2 = main@origin 2f59c2e0 (the residual-hoist commit — the SOLO reference)
+# base0 = main@origin 41e5d8f1 (before all three chunks — the CUMULATIVE one)
+# cand  = this commit. Byte-identical to C on every cell.
+#
+# --- 1. instruction counts (r7900x callgrind, Ir), photo_cid 512x512 qp40
+section	cell	preset	quantity	base0	base2	cand	c
+ir	photo_cid_512	2	port_ir	48432763259	46437222163	46146658410	27248547183
+ir	photo_cid_512	2	port_over_c	1.777	1.704	1.694	1.000
+ir	photo_cid_512	6	port_ir	1657133167	1636935287	1632915855	705588227
+ir	photo_cid_512	6	port_over_c	2.349	2.320	2.314	1.000
+#
+# --- 2. the three call counts, and the intermediate that shows why the tables
+#        were needed (`#[inline]` alone: only txt_rate actually inlined)
+calls	photo_cid_512	2	MdRates::txt_rate	5974663	5974663	0	-
+calls	photo_cid_512	2	tx_pipeline::rs_tx_size	6984051	6984051	0	-
+calls	photo_cid_512	2	coeff_c::tx_size_from_dims	4766423	4766423	0	-
+step	inline_attr_only	2	port_ir	-	46437222163	46257684232	-
+step	inline_attr_only	2	txt_rate_calls	-	5974663	0	-
+step	inline_attr_only	2	rs_tx_size_calls	-	6984051	6984051	-
+step	inline_attr_only	2	tx_size_from_dims_calls	-	4766423	4762229	-
+#
+# --- 3. wall clock, r7900x, tools/perf_ab.sh, 21 interleaved paired rounds,
+#        neither side niced. ratio = cand/base (<1 = cand faster).
+ab	against	content	size	preset	n	base_ms	cand_ms	ratio	speedup	p25	p75	ident
+ab	base2	photo_cid	512	2	21	2361.1179	2331.8770	0.9880	1.012	0.9862	0.9911	Y
+ab	base2	photo_cid	512	6	21	80.4414	80.4921	1.0015	0.998	0.9964	1.0053	Y
+ab	base2	gradient	256	2	21	199.7994	198.3631	0.9934	1.007	0.9892	0.9965	Y
+ab	base2	gradient	512	2	21	443.9048	441.1772	0.9925	1.008	0.9899	0.9965	Y
+ab	base2	gradient	256	6	21	10.3497	10.3319	0.9932	1.007	0.9870	1.0094	Y
+ab	base2	gradient	512	6	21	33.6329	33.7658	1.0009	0.999	0.9936	1.0093	Y
+ab	base2	gradient	256	10	21	1.3974	1.4113	1.0014	0.999	0.9910	1.0295	Y
+ab	base2	gradient	512	10	21	6.4334	6.4414	1.0025	0.997	0.9944	1.0139	Y
+ab	base0	photo_cid	512	2	21	2458.7408	2329.8414	0.9470	1.056	0.9458	0.9495	Y
+ab	base0	photo_cid	512	6	21	81.2438	80.3772	0.9900	1.010	0.9872	0.9931	Y
+ab	base0	gradient	256	2	21	209.0002	198.0244	0.9487	1.054	0.9450	0.9507	Y
+ab	base0	gradient	512	2	21	460.7146	442.2219	0.9599	1.042	0.9579	0.9819	Y
+ab	base0	gradient	256	6	21	10.4722	10.3273	0.9878	1.012	0.9691	0.9984	Y
+ab	base0	gradient	512	6	21	33.8036	33.6578	0.9978	1.002	0.9843	1.0067	Y
+ab	base0	photo_clic	512	2	21	2424.8585	2300.2921	0.9492	1.054	0.9451	0.9522	Y
+ab	base0	screen_terminal	512	2	21	666.9116	645.3246	0.9670	1.034	0.9651	0.9719	Y
+#
+# --- 4. memory (tools/mem_peak.sh median of 5; heap = heaptrack peak LIVE bytes)
+#        gradient qp40 preset 13; `.obu` identical to base on every row.
+mem	host	size	arm	quantity	base0	base2	cand	unit
+mem	r7900x	1280	still	rss	29112	29776	29508	KiB
+mem	r7900x	1280	videokey	rss	34696	34580	34540	KiB
+mem	r7900x	1280	inter	rss	45648	47032	46900	KiB
+mem	r7900x	2048	still	rss	68792	68868	69120	KiB
+mem	r7900x	2048	videokey	rss	77944	77740	77688	KiB
+mem	r7900x	2048	inter	rss	109268	104340	104432	KiB
+mem	r7900x	2048	still	heap	61.07	61.07	61.07	MiB
+mem	r7900x	2048	inter	heap	101.78	101.78	101.78	MiB
+mem	mac	1280	still	rss	28176	28224	28224	KiB
+mem	mac	1280	videokey	rss	33184	33264	33216	KiB
+mem	mac	1280	inter	rss	55328	54464	54416	KiB
+mem	mac	2048	still	rss	72480	72576	72496	KiB
+mem	mac	2048	videokey	rss	87616	87696	87728	KiB
+mem	mac	2048	inter	rss	142096	142064	142224	KiB
+#
+# --- 5. cross-content confirmation of the three chunks together: the CLIC-2025
+#        glitter cell's Ir (`callcount_realimg_2026-09-04` measured base0 at
+#        1.835; C re-measured here at 26,558,491,722 on the same oracle).
+ir	photo_clic_512	2	port_ir	-	-	45859756170	26558491722
+ir	photo_clic_512	2	port_over_c	1.835	-	1.727	1.000
+#
+# --- 6. GATES (both ISAs, on this commit's tree)
+gate	host	name	result
+gate	mac	nextest	2533/2533
+gate	mac	regression_spotcheck	104/104
+gate	mac	identity_full_8bit	1100/1100 (+0 pinned, 0 harness errors)
+gate	mac	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open, 0 crashed)
+gate	mac	video_key_matrix	59/60 (the known-open gradient p0)
+gate	mac	fctx_gate	PASS (96/96 shared fields on both frames)
+gate	mac	inter_decode_gate	PASS 5/5
+gate	mac	inter_decode_census	PASS 96/96
+gate	mac	inter_completion_scan SCAN_GATE=1	PASS 64 OK / 0 REFUSED / 0 CRASH
+gate	mac	screen_palette_gate	50/50 byte-identical (38 palette-coding cells)
+gate	r7900x	nextest	2543/2543
+gate	r7900x	regression_spotcheck	104/104
+gate	r7900x	identity_full_8bit	1100/1100
+gate	r7900x	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open)
+gate	both	callgrind cells	photo_cid p2 46462 B / p6 45688 B and photo_clic p2 45529 B identical to C

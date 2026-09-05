@@ -1151,3 +1151,27 @@ fn md_side_ibc_tx_type_update_adapts_the_intra_dc_row_like_c() {
         "32x32 MD side: no inter update"
     );
 }
+
+/// The `TX_SIZE_FROM_C` table must agree with the 19-arm `match` it replaced on
+/// EVERY power-of-two pair in 4..=64, and reject exactly the same six shapes.
+#[test]
+fn rs_tx_size_table_matches_the_match_form() {
+    use super::tx_pipeline::{rs_tx_size, rs_tx_size_match};
+    let dims = [4usize, 8, 16, 32, 64];
+    let mut accepted = 0;
+    for &w in &dims {
+        for &h in &dims {
+            match rs_tx_size_match(w, h) {
+                Some(want) => {
+                    assert_eq!(rs_tx_size(w, h), want, "tx {w}x{h}");
+                    accepted += 1;
+                }
+                None => assert!(
+                    std::panic::catch_unwind(|| rs_tx_size(w, h)).is_err(),
+                    "tx {w}x{h} must be rejected"
+                ),
+            }
+        }
+    }
+    assert_eq!(accepted, 19, "the table must accept exactly 19 shapes");
+}

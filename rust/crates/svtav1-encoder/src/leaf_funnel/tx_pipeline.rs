@@ -789,7 +789,7 @@ pub(super) fn tx_unit_inner(
             residual,
             coeffs,
             w,
-            rs_tx_size(w, h),
+            TX_SIZE_FROM_C[c_tx],
             rs_tx_type,
         );
         debug_assert!(ok, "fwd txfm {w}x{h} type {tx_type}");
@@ -1018,7 +1018,7 @@ pub(super) fn tx_unit_inner(
                 dq_src,
                 inv,
                 w,
-                rs_tx_size(w, h),
+                TX_SIZE_FROM_C[c_tx],
                 rs_tx_type,
             );
             debug_assert!(ok, "inv txfm {w}x{h} type {tx_type}");
@@ -1798,9 +1798,37 @@ pub(super) const TX_TYPE_FROM_C: [svtav1_types::transform::TxType; 16] = {
     ]
 };
 
+/// The port's `TxSize` for each C `TxSize` INDEX (`coeff_c::TX_*`, C's
+/// `TX_SIZES_ALL` order) — the two enumerations of the same 19 shapes.
+///
+/// Indexed, not matched on `(w, h)`: `tx_unit_inner` already computes the C
+/// index once as `c_tx`, and the second 19-arm branch chain was 6,984,051 calls
+/// and 167.4 M Ir (0.36 % of a 512x512 photo frame at preset 2) for a value it
+/// was holding. Pinned against `rs_tx_size_match` by
+/// `rs_tx_size_table_matches_the_match_form`.
+#[rustfmt::skip]
+pub(super) const TX_SIZE_FROM_C: [svtav1_types::transform::TxSize; 19] = {
+    use svtav1_types::transform::TxSize::*;
+    [
+        Tx4x4, Tx8x8, Tx16x16, Tx32x32, Tx64x64,
+        Tx4x8, Tx8x4, Tx8x16, Tx16x8, Tx16x32,
+        Tx32x16, Tx32x64, Tx64x32, Tx4x16, Tx16x4,
+        Tx8x32, Tx32x8, Tx16x64, Tx64x16,
+    ]
+};
+
+/// `(w, h)` -> the port's `TxSize`, for the call sites that do not already hold
+/// the C index. Prefer `TX_SIZE_FROM_C[c_tx]` where `c_tx` is in scope.
+#[inline]
 pub(super) fn rs_tx_size(w: usize, h: usize) -> svtav1_types::transform::TxSize {
+    TX_SIZE_FROM_C[cc::tx_size_from_dims(w, h)]
+}
+
+/// The readable form of [`rs_tx_size`], kept as the table's oracle.
+#[cfg(test)]
+pub(super) fn rs_tx_size_match(w: usize, h: usize) -> Option<svtav1_types::transform::TxSize> {
     use svtav1_types::transform::TxSize;
-    match (w, h) {
+    Some(match (w, h) {
         (4, 4) => TxSize::Tx4x4,
         (8, 8) => TxSize::Tx8x8,
         (16, 16) => TxSize::Tx16x16,
@@ -1820,6 +1848,6 @@ pub(super) fn rs_tx_size(w: usize, h: usize) -> svtav1_types::transform::TxSize 
         (32, 8) => TxSize::Tx32x8,
         (16, 64) => TxSize::Tx16x64,
         (64, 16) => TxSize::Tx64x16,
-        _ => unreachable!("funnel tx {w}x{h}"),
-    }
+        _ => return None,
+    })
 }

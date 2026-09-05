@@ -884,6 +884,20 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **Three out-of-line helpers C inlines are gone — 17.7 M calls per 512x512
+  photo frame at preset 2, -0.63 % instructions, byte-identical; with the two
+  entries below, a photo's preset-2 port/C instruction ratio is 1.777 -> 1.694
+  and the whole-frame wall clock 1.056x (2026-09-05).** `MdRates::txt_rate`
+  (5,974,663 calls), `tx_pipeline::rs_tx_size` (6,984,051) and
+  `coeff_c::tx_size_from_dims` (4,766,423) all read zero now. `#[inline]` alone
+  fixes only the first — LLVM will not inline a 19-arm `match` on `(w, h)`
+  called from several sites — so both dimension mappings became tables: a 5x5
+  lookup indexed `(log2(w) - 2) * 5 + (log2(h) - 2)`, and a const
+  `TX_SIZE_FROM_C[19]` that `tx_unit_inner`'s two dispatch sites index with the
+  `c_tx` they already hold. Both replaced `match`es are kept as `#[cfg(test)]`
+  oracles and three new tests pin the tables to them over all 25 power-of-two
+  shapes. Record `rust/benchmarks/txsize_tables_2026-09-05.{tsv,meta}`.
+
 - **The residual is derived once per (tx-depth, TXB) again, as C does it:
   `residual_i32` 4,256,724 -> 1,307,794 calls per 512x512 photo frame at preset
   2 against C's 1,986,776 (port/C 2.142x -> 0.658x), -2.19 % instructions,

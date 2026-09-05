@@ -1,0 +1,166 @@
+THREE HELPERS C INLINES AND THE PORT CALLED OUT OF LINE — 17.7 M CALLS PER
+512x512 PHOTO FRAME AT p2, ALL GONE, -290.6 M Ir (-0.63 %), byte-identical.
+`MdRates::txt_rate` 5,974,663 calls, `tx_pipeline::rs_tx_size` 6,984,051 and
+`coeff_c::tx_size_from_dims` 4,766,423 are all ZERO after this. Wall clock
+1.012x on a photo at 512 p2 and 1.007-1.008x on the gradient at 256 / 512 p2.
+**With the two commits before it, the photo's p2 port/C instruction ratio is
+1.777 -> 1.694 and the whole-frame wall clock is 1.056x** (gradient 1.054x at
+256 p2, 1.042x at 512 p2).
+
+AND THE PART WORTH KEEPING: `#[inline]` ALONE FIXES ONE OF THE THREE. Measured
+as its own step below — with the attribute and nothing else, `txt_rate` inlined
+(5,974,663 -> 0) but `rs_tx_size` stayed at 6,984,051 calls and
+`tx_size_from_dims` at 4,762,229, because LLVM will not inline a 19-arm
+`match` on `(w, h)` that is called from several places, whatever the attribute
+says. Turning both into a table index is what removed them.
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X), valgrind-3.26.0
+        --tool=callgrind (Ir only), rustc 1.98.1. GATES both hosts.
+base2:  main@origin 2f59c2e0 (the residual-hoist commit) — the SOLO reference,
+        built in a sibling directory whose only difference from `cand` is these
+        five files.
+base0:  main@origin 41e5d8f1 — before all three chunks; the cumulative reference.
+cand:   this commit.
+C:      reference/svt-av1 @ 3115c0c1, the PREBUILT oracle, NOT rebuilt.
+tools:  tools/perf_profile/callcount_cells.sh + callcount.py on the CID22 photo
+        (sha256 88142a48...), presets 2 and 6, qp 40, STILL. Wall clock:
+        tools/perf_ab.sh, 21 interleaved randomised-order paired rounds, one
+        untimed warmup per sample, NEITHER SIDE NICED, box quiet. Memory:
+        tools/mem_peak.sh.
+data:   benchmarks/txsize_tables_2026-09-05.tsv.
+
+=================== WHAT THESE THREE ARE ===================
+
+`callcount_realimg_2026-09-04` item F: "OUT-OF-LINE HELPERS (port only, no C
+symbol because C inlines them)" — `MdRates::txt_rate` 5,974,663 calls /
+382.3 M Ir, `tx_pipeline::rs_tx_size` 6,984,051 / 167.4 M,
+`coeff_c::tx_size_from_dims` 4,766,423 / 113.0 M at photo_cid p2, together
+~1.4 % of the frame. That 1.4 % is INCLUSIVE Ir — it counts the work the
+helpers actually do, and only the call frames and the branch chains are
+removable. This chunk removes 290.6 M of it (0.63 %); the arithmetic that
+remains is folded into the callers.
+
+  * `MdRates::txt_rate` (rate_tables.rs) — C's `av1_txt_rate_est`
+    (product_coding_loop.c:4711) is a static helper the compiler inlines into
+    `tx_type_search`. `#[inline]` is all it needed.
+  * `coeff_c::tx_size_from_dims` — a 19-arm `match (w, h)`, called once per
+    `tx_unit_inner` (4,238,186 times) plus once per `txt_search` (496,519).
+    Now a 5x5 table indexed by `(log2(w) - 2) * 5 + (log2(h) - 2)`, with a
+    sentinel for the six illegal aspect ratios; two shifts and a load.
+  * `tx_pipeline::rs_tx_size` — the SAME 19-way mapping again, into the port's
+    own `TxSize` enum, called 6,984,051 times from `tx_unit_inner` (1.65 per
+    invocation: once for the forward dispatch, once for the inverse) for a
+    value the function was already holding as `c_tx`. Now `TX_SIZE_FROM_C[c_tx]`
+    at those two sites — a const array of the 19 `TxSize`s in C's
+    `TX_SIZES_ALL` order — and a table lookup at the remaining sites.
+
+=================== BYTE IDENTITY, AND HOW THE TABLES ARE PINNED ===================
+
+Both replaced `match`es are KEPT IN THE TREE, `#[cfg(test)]`, as
+`tx_size_from_dims_match` and `rs_tx_size_match`, and two new tests assert the
+table agrees with the match on EVERY power-of-two pair in 4..=64: it must
+accept exactly the same 19 shapes (asserted by count, so a table typo that
+silently accepts a 20th fails) and reject exactly the same six, plus a
+non-power-of-two / out-of-range set. That is a stronger check than the encode
+gates, because it covers the shapes a still-picture grid never codes.
+
+  crates/svtav1-encoder/src/entropy/coeff_c.rs
+      tx_size_table_tests::tx_size_table_matches_the_match_form
+      tx_size_table_tests::tx_size_table_rejects_illegal_dims
+  crates/svtav1-encoder/src/leaf_funnel/tests.rs
+      rs_tx_size_table_matches_the_match_form
+
+=================== THE NUMBERS ===================
+
+Ir, photo_cid 512x512 qp 40, r7900x callgrind (base0 -> base2 -> cand):
+    p2  48,432,763,259 -> 46,437,222,163 -> 46,146,658,410   C 27,248,547,183
+        this chunk -290,563,753 (-0.63 %); all three -2,286,104,849 (-4.72 %)
+        port/C 1.777 -> 1.704 -> 1.694
+    p6   1,657,133,167 ->  1,636,935,287 ->  1,632,915,855   C    705,588,227
+        this chunk -0.25 %; all three -1.46 %; port/C 2.349 -> 2.320 -> 2.314
+
+Call counts at photo_cid 512 p2, and the intermediate step:
+    `MdRates::txt_rate`             5,974,663 -> 0
+    `tx_pipeline::rs_tx_size`       6,984,051 -> 0
+    `coeff_c::tx_size_from_dims`    4,766,423 -> 0
+  With `#[inline]` and NOTHING ELSE (measured, then superseded):
+    port Ir 46,257,684,232 (-0.39 %), txt_rate 0, rs_tx_size 6,984,051 (UNMOVED),
+    tx_size_from_dims 4,762,229 (UNMOVED).
+
+Wall clock, r7900x, 21 interleaved paired rounds, neither side niced, box
+quiet. ratio = cand/base, speedup = base/cand, every row byte-identical:
+
+  against base2 (THIS chunk alone):
+    content    size preset  n  base_ms   cand_ms   ratio   speedup  p25     p75
+    photo_cid  512  2      21  2361.118  2331.877  0.9880  1.012x   0.9862  0.9911
+    gradient   256  2      21   199.799   198.363  0.9934  1.007x   0.9892  0.9965
+    gradient   512  2      21   443.905   441.177  0.9925  1.008x   0.9899  0.9965
+    photo_cid  512  6      21    80.441    80.492  1.0015  0.998x   0.9964  1.0053
+    gradient   256  6      21    10.350    10.332  0.9932  1.007x   0.9870  1.0094
+    gradient   512  6      21    33.633    33.766  1.0009  0.999x   0.9936  1.0093
+    gradient   256 10      21     1.397     1.411  1.0014  0.999x   0.9910  1.0295
+    gradient   512 10      21     6.433     6.441  1.0025  0.997x   0.9944  1.0139
+  The three p2 rows have their whole span below 1.0 and are the result; the five
+  p6/p10 rows all straddle 1.0 and are NULLS, reported as such.
+
+  against base0 (ALL THREE chunks):
+    photo_cid  512  2      21  2458.741  2329.841  0.9470  1.056x   0.9458  0.9495
+    photo_cid  512  6      21    81.244    80.377  0.9900  1.010x   0.9872  0.9931
+    gradient   256  2      21   209.000   198.024  0.9487  1.054x   0.9450  0.9507
+    gradient   512  2      21   460.715   442.222  0.9599  1.042x   0.9579  0.9819
+    gradient   256  6      21    10.472    10.327  0.9878  1.012x   0.9691  0.9984
+    gradient   512  6      21    33.804    33.658  0.9978  1.002x   0.9843  1.0067
+  and on two more contents, all three chunks, 21 rounds, ident=Y:
+    photo_clic 512  2      21  2424.859  2300.292  0.9492  1.054x   0.9451  0.9522
+    screen_ter 512  2      21   666.912   645.325  0.9670  1.034x   0.9651  0.9719
+  (`photo_clic` is the CLIC-2025 glitter image and `screen_terminal` the gb82-sc
+  terminal crop the realimg record prepared; `ident=Y` here is port-vs-port, the
+  A/B harness's own check, and is independent of that record's separate finding
+  that screen_terminal p2 is not byte-identical to C.)
+
+Memory, x86_64 (`mem_peak.sh`, median of 5, base0 -> base2 -> cand):
+    1280 still 29,112 -> 29,776 -> 29,508 KiB, videokey 34,696 -> 34,580 ->
+    34,540, inter 45,648 -> 47,032 -> 46,900; 2048 still 68,792 -> 68,868 ->
+    69,120, videokey 77,944 -> 77,740 -> 77,688, inter 109,268 -> 104,340 ->
+    104,432. Peak HEAP (heaptrack, LIVE bytes) 2048 still 61.07 M and inter
+    101.78 M at every step — IDENTICAL, as it must be: this chunk allocates
+    nothing and frees nothing.
+Memory, aarch64 (`mem_peak.sh`, median of 5, base0 -> base2 -> cand): 1280
+    still 28,176 -> 28,176 -> 28,224 KiB, videokey 33,184 -> 33,264 -> 33,216,
+    inter 55,328 -> 54,464 -> 54,416; 2048 still 72,480 -> 72,576 -> 72,496,
+    videokey 87,616 -> 87,696 -> 87,728, inter 142,096 -> 142,064 -> 142,224.
+
+CROSS-CONTENT, all three chunks together: the CLIC-2025 glitter cell at 512 p2
+reads port 45,859,756,170 / C 26,558,491,722 = **1.727**, against the 1.835
+`callcount_realimg_2026-09-04` measured for base0 on the same oracle — the same
+direction and roughly the same size as the CID photo's 1.777 -> 1.694.
+
+=================== GATES ===================
+
+aarch64 (this Mac, /opt/homebrew/bin/bash, one harness at a time): nextest
+  2533/2533, `regression_spotcheck` 104/104, `identity_full_8bit` 1100/1100
+  (+0 pinned, 0 harness errors), `inter_byte_gate` PASS (96 required, 0 failed,
+  1 known-open, 0 crashed), `video_key_matrix` 59/60 (the known-open
+  `gradient p0`, unmoved), `fctx_gate` PASS 96/96 on both frames,
+  `inter_decode_gate` 5/5 PASS, `inter_decode_census` 96/96 PASS,
+  `inter_completion_scan` with `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH PASS,
+  `screen_palette_gate` 50/50 byte-identical (38 palette-coding cells).
+x86_64 (r7900x, same tree): nextest 2543/2543, `regression_spotcheck` 104/104,
+  `identity_full_8bit` 1100/1100, `inter_byte_gate` PASS (96/0/1).
+Every callgrind cell: identity pre-pass `cmp`-identical AND each instrumented
+run's own .obu `cmp`'d against it — photo_cid 46,462 B at p2 and 45,688 B at
+p6, photo_clic 45,529 B at p2, both sides.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: the Ir and call counts above on byte-identical cells; the wall
+clock on the listed cells at 21 paired rounds; that the two tables agree with
+the `match`es they replaced on all 25 power-of-two shapes; that the heap does
+not move.
+NOT ESTABLISHED: any preset but 2 / 6 / 10, any qp but 40, any size but 256 and
+512, 10-bit, the inter/video arm's wall clock. The remaining out-of-line
+helper the realimg record named is `palette::palette_color_index_context`
+(2,961,716 calls / 211.6 M Ir = 1.5 % of a SCREENSHOT's p2, C's
+`av1_fast_palette_color_index_context` being `static inline`); it is on screen
+content only and was not touched here.
