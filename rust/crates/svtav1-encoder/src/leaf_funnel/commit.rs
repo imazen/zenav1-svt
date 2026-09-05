@@ -209,15 +209,25 @@ pub(crate) fn commit_leaf(
     // (update_part_neighs); inert for the fixed-tree paths (nothing
     // reads the decision ectx's partition bytes there).
     fx.ectx.update_partition_ctx_leaf(abs_x, abs_y, w, h);
-    // set_txfm_ctxs with the CHOSEN tx dims (mode_decision_update:246-256)
-    // — the skip && is_inter arm stores the BLOCK dims instead (IntraBC
-    // skip winners; entropy_coding.c:4620-4624).
+    // C's MD-side txfm-context stamp (`mode_decision_update_neighbor_arrays`,
+    // product_coding_loop.c:232-241): under TX_MODE_SELECT EVERY winner
+    // writes `tx_size_wide/high[tx_depth_to_tx_size[tx_depth][bsize]]` —
+    // the CHOSEN tx dims — with NO `skip && is_inter` arm. The pack's
+    // `set_txfm_ctxs(.., skip && is_inter, ..)` (entropy_coding.c:4620-4624)
+    // stores the BLOCK dims for a skip inter block, and C's encode pass
+    // (`svt_aom_tx_size_bits`, coding_loop.c:1720) does the same for the
+    // CDF-adapting context — so the pack and the chain sim keep that arm;
+    // MD does not have it, and mirroring the pack here was a deviation:
+    // FIXED 2026-09-05 (terminal.png 512^2 q40 p2, 16x16 IBC leaf at
+    // (32,368)): its above-right 8x8 neighbours mi(88,10)/mi(90,10) are
+    // skip IntraBC winners at tx_depth 1 on BOTH trees, so C's MD reads
+    // above txfm bytes of 4 where this arm stored 8, the depth-1 child
+    // `txfm_partition` contexts differed, and the port picked tx depth 1
+    // (9876040) over C's depth 2 with every coefficient bit and every
+    // distortion already identical to the unit (C: CCOST 9624/7642/8056
+    // == PTXT bits; d2 ycb 6299 == 6299).
     let (txw, txh) = txb_dims_at_depth(w, h, cand.tx_depth);
-    if cand.is_inter() && skip {
-        fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, w, h);
-    } else {
-        fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, txw, txh);
-    }
+    fx.ectx.record_txfm_dims(abs_x, abs_y, w, h, txw, txh);
     // Per-txb luma cul bytes; chroma culs over the chroma span. The
     // winner's txb arrays are stored in the SEARCH walk order — the
     // inter z-order (txb_org_inter) for IntraBC winners, raster for
