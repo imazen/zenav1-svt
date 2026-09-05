@@ -1,0 +1,393 @@
+section	cell	metric	port	c	port_over_c	unit	note
+PSTAT	photo_cid_p2	instructions	45756333894	26106293236	1.7527	events/encode	
+PSTAT	photo_cid_p2	cycles	13052055418	8666419352	1.5060	events/encode	
+PSTAT	photo_cid_p2	branches	7526300395	2470438082	3.0465	events/encode	
+PSTAT	photo_cid_p2	branch-misses	91029444	84616190	1.0758	events/encode	
+PSTAT	photo_cid_p2	L1-dcache-loads	13264509700	9363020385	1.4167	events/encode	
+PSTAT	photo_cid_p2	L1-dcache-load-misses	98789820	144447284	0.6839	events/encode	
+PSTAT	photo_cid_p2	l2_cache_req_stat.ic_dc_miss_in_l2	3844830	4955284	0.7759	events/encode	
+PSTAT	photo_cid_p2	ls_any_fills_from_sys.all_dram_io	12860	71999	0.1786	events/encode	
+PSTAT	photo_cid_p2	L1-icache-load-misses	40942044	23751924	1.7237	events/encode	
+PSTAT	photo_cid_p2	op_cache_hit_miss.op_cache_miss	1427673294	806442404	1.7703	events/encode	
+PSTAT	photo_cid_p2	dTLB-load-misses	227013	33572	6.7620	events/encode	
+PSTAT	photo_cid_p2	iTLB-load-misses	20644	23474	0.8794	events/encode	
+PSTAT_DERIVED	photo_cid_p2	IPC	3.5057	3.0124	1.1638	instr/cycle	HEADLINE: port IPC vs C IPC
+PSTAT_DERIVED	photo_cid_p2	cycles_per_instruction	0.2853	0.3320	0.8593	cyc/instr	
+PSTAT_DERIVED	photo_cid_p2	branch_density	16.449	9.463	1.7382	% of instructions are branches	
+PSTAT_DERIVED	photo_cid_p2	branch_miss_rate	1.2095	3.4251	0.3531	% of branches mispredicted	
+PSTAT_DERIVED	photo_cid_p2	branch_miss_MPKI	1.9894	3.2412	0.6138	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p2	L1D_miss_MPKI	2.1590	5.5330	0.3902	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p2	L1D_load_miss_rate	0.7448	1.5427	0.4828	% of loads miss L1D	
+PSTAT_DERIVED	photo_cid_p2	L1I_miss_MPKI	0.8948	0.9098	0.9835	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p2	opcache_miss_MPKI	31.202	30.891	1.0101	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p2	DRAM_fills_PKI	0.00028	0.00276	0.1014	DRAM/IO fills per 1000 instr	both ~0; port delta is negative i.e. below the noise floor
+PSTAT	photo_cid_p6	instructions	1542313111	667616040	2.3102	events/encode	
+PSTAT	photo_cid_p6	cycles	447690666	235758658	1.8989	events/encode	
+PSTAT	photo_cid_p6	branches	249836504	61261915	4.0782	events/encode	
+PSTAT	photo_cid_p6	branch-misses	3825197	2271030	1.6843	events/encode	
+PSTAT	photo_cid_p6	L1-dcache-loads	444033692	232194557	1.9123	events/encode	
+PSTAT	photo_cid_p6	L1-dcache-load-misses	7030730	6754460	1.0409	events/encode	
+PSTAT	photo_cid_p6	l2_cache_req_stat.ic_dc_miss_in_l2	725400	529770	1.3693	events/encode	
+PSTAT	photo_cid_p6	ls_any_fills_from_sys.all_dram_io	-8246	3575	-2.3066	events/encode	median of 5 paired warmup-deltas; negative = below noise floor
+PSTAT	photo_cid_p6	L1-icache-load-misses	788677	501930	1.5713	events/encode	
+PSTAT	photo_cid_p6	op_cache_hit_miss.op_cache_miss	28481486	20304734	1.4027	events/encode	
+PSTAT	photo_cid_p6	dTLB-load-misses	5675	10468	0.5421	events/encode	
+PSTAT	photo_cid_p6	iTLB-load-misses	652	5116	0.1274	events/encode	
+PSTAT_DERIVED	photo_cid_p6	IPC	3.4450	2.8318	1.2165	instr/cycle	HEADLINE: port IPC vs C IPC
+PSTAT_DERIVED	photo_cid_p6	cycles_per_instruction	0.2903	0.3531	0.8221	cyc/instr	
+PSTAT_DERIVED	photo_cid_p6	branch_density	16.199	9.176	1.7654	% of instructions are branches	
+PSTAT_DERIVED	photo_cid_p6	branch_miss_rate	1.5311	3.7071	0.4130	% of branches mispredicted	
+PSTAT_DERIVED	photo_cid_p6	branch_miss_MPKI	2.4802	3.4017	0.7291	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p6	L1D_miss_MPKI	4.5586	10.1173	0.4506	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p6	L1D_load_miss_rate	1.5834	2.9090	0.5443	% of loads miss L1D	
+PSTAT_DERIVED	photo_cid_p6	L1I_miss_MPKI	0.5114	0.7518	0.6802	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p6	opcache_miss_MPKI	18.467	30.414	0.6072	misses per 1000 instr	
+PSTAT_DERIVED	photo_cid_p6	DRAM_fills_PKI	-0.00535	0.00535	-1.0000	DRAM/IO fills per 1000 instr	both ~0; port delta is negative i.e. below the noise floor
+PSTAT	screen_terminal_p6	instructions	855501246	334779042	2.5554	events/encode	
+PSTAT	screen_terminal_p6	cycles	238676684	123797100	1.9280	events/encode	
+PSTAT	screen_terminal_p6	branches	138947816	36751241	3.7808	events/encode	
+PSTAT	screen_terminal_p6	branch-misses	1276958	828219	1.5418	events/encode	
+PSTAT	screen_terminal_p6	L1-dcache-loads	232068345	114526283	2.0263	events/encode	
+PSTAT	screen_terminal_p6	L1-dcache-load-misses	5009394	4851608	1.0325	events/encode	
+PSTAT	screen_terminal_p6	l2_cache_req_stat.ic_dc_miss_in_l2	654899	553906	1.1823	events/encode	
+PSTAT	screen_terminal_p6	ls_any_fills_from_sys.all_dram_io	-6490	82242	-0.0789	events/encode	median of 5 paired warmup-deltas; negative = below noise floor
+PSTAT	screen_terminal_p6	L1-icache-load-misses	450464	291215	1.5468	events/encode	
+PSTAT	screen_terminal_p6	op_cache_hit_miss.op_cache_miss	18027545	12828044	1.4053	events/encode	
+PSTAT	screen_terminal_p6	dTLB-load-misses	6698	11869	0.5643	events/encode	
+PSTAT	screen_terminal_p6	iTLB-load-misses	785	1415	0.5548	events/encode	
+PSTAT_DERIVED	screen_terminal_p6	IPC	3.5844	2.7043	1.3254	instr/cycle	HEADLINE: port IPC vs C IPC
+PSTAT_DERIVED	screen_terminal_p6	cycles_per_instruction	0.2790	0.3698	0.7545	cyc/instr	
+PSTAT_DERIVED	screen_terminal_p6	branch_density	16.242	10.978	1.4795	% of instructions are branches	
+PSTAT_DERIVED	screen_terminal_p6	branch_miss_rate	0.9190	2.2536	0.4078	% of branches mispredicted	
+PSTAT_DERIVED	screen_terminal_p6	branch_miss_MPKI	1.4926	2.4739	0.6033	misses per 1000 instr	
+PSTAT_DERIVED	screen_terminal_p6	L1D_miss_MPKI	5.8555	14.4920	0.4041	misses per 1000 instr	
+PSTAT_DERIVED	screen_terminal_p6	L1D_load_miss_rate	2.1586	4.2362	0.5096	% of loads miss L1D	
+PSTAT_DERIVED	screen_terminal_p6	L1I_miss_MPKI	0.5265	0.8699	0.6052	misses per 1000 instr	
+PSTAT_DERIVED	screen_terminal_p6	opcache_miss_MPKI	21.072	38.318	0.5499	misses per 1000 instr	
+PSTAT_DERIVED	screen_terminal_p6	DRAM_fills_PKI	-0.00759	0.24566	-0.0309	DRAM/IO fills per 1000 instr	both ~0; port delta is negative i.e. below the noise floor
+CGSIM	photo_cid_p6	Ir	1619432103	705587387	2.2952	events/encode	
+CGSIM	photo_cid_p6	Dr	321536130	184722844	1.7406	events/encode	
+CGSIM	photo_cid_p6	Dw	197294129	69164955	2.8525	events/encode	
+CGSIM	photo_cid_p6	I1mr	12541020	8974232	1.3974	events/encode	
+CGSIM	photo_cid_p6	D1mr	2681044	2539684	1.0557	events/encode	
+CGSIM	photo_cid_p6	D1mw	3055647	2342538	1.3044	events/encode	
+CGSIM	photo_cid_p6	ILmr	9938	11593	0.8572	events/encode	
+CGSIM	photo_cid_p6	DLmr	10138	7784	1.3024	events/encode	
+CGSIM	photo_cid_p6	DLmw	118334	124997	0.9467	events/encode	
+CGSIM	photo_cid_p6	Bc	297331704	54970321	5.4089	events/encode	
+CGSIM	photo_cid_p6	Bcm	9231852	3369709	2.7397	events/encode	
+CGSIM	photo_cid_p6	Bi	4003589	1184918	3.3788	events/encode	
+CGSIM	photo_cid_p6	Bim	302452	84240	3.5904	events/encode	
+CGSIM_DERIVED	photo_cid_p6	D1_miss_PKI(rd+wr)	3.5424	6.9194	0.5120	per 1000 Ir	
+CGSIM_DERIVED	photo_cid_p6	LL_miss_PKI(rd+wr)	0.07933	0.18819	0.4215	per 1000 Ir	LL miss = a real DRAM trip
+CGSIM_DERIVED	photo_cid_p6	LL_miss_absolute	128472	132781	0.9675	events/encode	
+CGSIM_DERIVED	photo_cid_p6	I1_miss_PKI	7.7441	12.7188	0.6089	per 1000 Ir	callgrind's I1 model has no op-cache; see PSTAT L1I/opcache for the hardware answer
+CGSIM_DERIVED	photo_cid_p6	IL_miss_absolute	9938	11593	0.8572	events/encode	instruction misses that reach LL — negligible on both sides
+CGSIM_DERIVED	photo_cid_p6	cond_branch_density	18.360	7.791	2.3566	% of Ir	
+CGSIM_DERIVED	photo_cid_p6	cond_mispredict_rate	3.105	6.130	0.5065	% of Bc	callgrind's 2-level toy predictor, NOT Zen4's; hardware (PSTAT) is authoritative and disagrees in sign
+CGSIM_DERIVED	photo_cid_p6	indirect_mispredict_rate	7.555	7.109	1.0627	% of Bi	
+CGSIM	screen_terminal_p6	Ir	920898277	355383974	2.5913	events/encode	
+CGSIM	screen_terminal_p6	Dr	172796763	85930770	2.0109	events/encode	
+CGSIM	screen_terminal_p6	Dw	141767106	49891914	2.8415	events/encode	
+CGSIM	screen_terminal_p6	I1mr	6504508	4855520	1.3396	events/encode	
+CGSIM	screen_terminal_p6	D1mr	1806102	1904971	0.9481	events/encode	
+CGSIM	screen_terminal_p6	D1mw	2204838	1690249	1.3044	events/encode	
+CGSIM	screen_terminal_p6	ILmr	10743	12359	0.8692	events/encode	
+CGSIM	screen_terminal_p6	DLmr	10156	22551	0.4504	events/encode	
+CGSIM	screen_terminal_p6	DLmw	118440	219993	0.5384	events/encode	
+CGSIM	screen_terminal_p6	Bc	186109278	35769693	5.2030	events/encode	
+CGSIM	screen_terminal_p6	Bcm	5449888	2164844	2.5175	events/encode	
+CGSIM	screen_terminal_p6	Bi	3324207	981183	3.3880	events/encode	
+CGSIM	screen_terminal_p6	Bim	305788	52825	5.7887	events/encode	
+CGSIM_DERIVED	screen_terminal_p6	D1_miss_PKI(rd+wr)	4.3555	10.1164	0.4305	per 1000 Ir	
+CGSIM_DERIVED	screen_terminal_p6	LL_miss_PKI(rd+wr)	0.13964	0.68248	0.2046	per 1000 Ir	LL miss = a real DRAM trip
+CGSIM_DERIVED	screen_terminal_p6	LL_miss_absolute	128596	242544	0.5302	events/encode	
+CGSIM_DERIVED	screen_terminal_p6	I1_miss_PKI	7.0632	13.6627	0.5170	per 1000 Ir	callgrind's I1 model has no op-cache; see PSTAT L1I/opcache for the hardware answer
+CGSIM_DERIVED	screen_terminal_p6	IL_miss_absolute	10743	12359	0.8692	events/encode	instruction misses that reach LL — negligible on both sides
+CGSIM_DERIVED	screen_terminal_p6	cond_branch_density	20.210	10.065	2.0079	% of Ir	
+CGSIM_DERIVED	screen_terminal_p6	cond_mispredict_rate	2.928	6.052	0.4838	% of Bc	callgrind's 2-level toy predictor, NOT Zen4's; hardware (PSTAT) is authoritative and disagrees in sign
+CGSIM_DERIVED	screen_terminal_p6	indirect_mispredict_rate	9.199	5.384	1.7086	% of Bi	
+CGSIM	photo_cid_p2	Ir	46002891962	27248546356	1.6883	events/encode	
+CGSIM	photo_cid_p2	Dr	9852846843	7382836124	1.3346	events/encode	
+CGSIM	photo_cid_p2	Dw	4390456334	2730915815	1.6077	events/encode	
+CGSIM	photo_cid_p2	I1mr	718706153	368959320	1.9479	events/encode	
+CGSIM	photo_cid_p2	D1mr	45182625	50241773	0.8993	events/encode	
+CGSIM	photo_cid_p2	D1mw	28764207	46349264	0.6206	events/encode	
+CGSIM	photo_cid_p2	ILmr	12128	13301	0.9118	events/encode	
+CGSIM	photo_cid_p2	DLmr	10267	8058	1.2741	events/encode	
+CGSIM	photo_cid_p2	DLmw	128721	187947	0.6849	events/encode	
+CGSIM	photo_cid_p2	Bc	6708508663	1993559771	3.3651	events/encode	
+CGSIM	photo_cid_p2	Bcm	308190583	132425759	2.3273	events/encode	
+CGSIM	photo_cid_p2	Bi	131202652	70984488	1.8483	events/encode	
+CGSIM	photo_cid_p2	Bim	11082123	8492520	1.3049	events/encode	
+CGSIM_DERIVED	photo_cid_p2	D1_miss_PKI(rd+wr)	1.6074	3.5448	0.4535	per 1000 Ir	
+CGSIM_DERIVED	photo_cid_p2	LL_miss_PKI(rd+wr)	0.00302	0.00719	0.4200	per 1000 Ir	LL miss = a real DRAM trip
+CGSIM_DERIVED	photo_cid_p2	LL_miss_absolute	138988	196005	0.7091	events/encode	
+CGSIM_DERIVED	photo_cid_p2	I1_miss_PKI	15.6231	13.5405	1.1538	per 1000 Ir	callgrind's I1 model has no op-cache; see PSTAT L1I/opcache for the hardware answer
+CGSIM_DERIVED	photo_cid_p2	IL_miss_absolute	12128	13301	0.9118	events/encode	instruction misses that reach LL — negligible on both sides
+CGSIM_DERIVED	photo_cid_p2	cond_branch_density	14.583	7.316	1.9933	% of Ir	
+CGSIM_DERIVED	photo_cid_p2	cond_mispredict_rate	4.594	6.643	0.6916	% of Bc	callgrind's 2-level toy predictor, NOT Zen4's; hardware (PSTAT) is authoritative and disagrees in sign
+CGSIM_DERIVED	photo_cid_p2	indirect_mispredict_rate	8.447	11.964	0.7060	% of Bi	
+PAIR_TOTAL	photo_cid_p6	frame_cycles	44755755649	22583109917	1.9818	cycles (100 or 4 encodes, see meta)	
+PAIR_TOTAL	photo_cid_p6	frame_instructions	154162079084	65671803165	2.3475	instructions	
+PAIR_CYCLES	photo_cid_p6	libc memset/memcpy/alloc	2975974517	361672384	8.228	cyc%=6.649/1.602 excess%=5.841 ins=7130874067/840788836 insx=8.481 IPC=2.396/2.325	
+PAIR_CYCLES	photo_cid_p6	CDEF filter kernels	2841342560	273538211	10.387	cyc%=6.349/1.211 excess%=5.737 ins=9741694686/1375665619 insx=7.081 IPC=3.429/5.029	
+PAIR_CYCLES	photo_cid_p6	entropy coeff writer	3193825171	934709480	3.417	cyc%=7.136/4.139 excess%=5.048 ins=9114794642/2130361320 insx=4.279 IPC=2.854/2.279	
+PAIR_CYCLES	photo_cid_p6	PD0 quantize core	1771347360	20276943	87.358	cyc%=3.958/0.090 excess%=3.913 ins=3862931049/106929618 insx=36.126 IPC=2.181/5.273	SELF-vs-INCL-ARTIFACT
+PAIR_CYCLES	photo_cid_p6	range coder	2427460785	726930264	3.339	cyc%=5.424/3.219 excess%=3.800 ins=7186299466/1789379089 insx=4.016 IPC=2.960/2.462	
+PAIR_CYCLES	photo_cid_p6	Wiener convolve (LR)	1439010033	26819803	53.655	cyc%=3.215/0.119 excess%=3.155 ins=5347048511/26767587 insx=199.758 IPC=3.716/0.998	
+PAIR_CYCLES	photo_cid_p6	forward transform	2717113315	1551080088	1.752	cyc%=6.071/6.868 excess%=2.605 ins=8528327957/4118005822 insx=2.071 IPC=3.139/2.655	
+PAIR_CYCLES	photo_cid_p6	block syntax packing	1456439840	401811836	3.625	cyc%=3.254/1.779 excess%=2.356 ins=2566399054/1339888517 insx=1.915 IPC=1.762/3.335	
+PAIR_CYCLES	photo_cid_p6	RDOQ optimize_b	7483318572	6805619774	1.100	cyc%=16.720/30.136 excess%=1.514 ins=27358044201/20210452083 insx=1.354 IPC=3.656/2.970	
+PAIR_CYCLES	photo_cid_p6	txb init levels	734728466	116846819	6.288	cyc%=1.642/0.517 excess%=1.381 ins=2558214175/494509748 insx=5.173 IPC=3.482/4.232	
+PAIR_CYCLES	photo_cid_p6	hadamard / SATD	820945387	212027743	3.872	cyc%=1.834/0.939 excess%=1.361 ins=3877569631/515005503 insx=7.529 IPC=4.723/2.429	
+PAIR_CYCLES	photo_cid_p6	distortion (sse/satd dist)	1005534097	530800465	1.894	cyc%=2.247/2.350 excess%=1.061 ins=4066093290/1432223527 insx=2.839 IPC=4.044/2.698	
+PAIR_CYCLES	photo_cid_p6	CDEF find_dir	495891313	28759768	17.243	cyc%=1.108/0.127 excess%=1.044 ins=1559625694/78333950 insx=19.910 IPC=3.145/2.724	
+PAIR_CYCLES	photo_cid_p6	intra prediction	1408604811	985649746	1.429	cyc%=3.147/4.365 excess%=0.945 ins=5406079740/2886608506 insx=1.873 IPC=3.838/2.929	
+PAIR_CYCLES	photo_cid_p6	CDEF search driver	449670695	28759768	15.635	cyc%=1.005/0.127 excess%=0.940 ins=2175607238/78333950 insx=27.773 IPC=4.838/2.724	
+PAIR_CYCLES	photo_cid_p6	nz-map contexts	574234252	233101953	2.463	cyc%=1.283/1.032 excess%=0.762 ins=2748276922/1049907435 insx=2.618 IPC=4.786/4.504	
+PAIR_CYCLES	photo_cid_p6	LR other (search/apply/sse)	220968832	0		cyc%=0.494 ins=1063465029/13610117	
+PAIR_CYCLES	photo_cid_p6	screen-content detect	334071869	179423969	1.862	cyc%=0.746/0.795 excess%=0.346 ins=447724642/81263706 insx=5.510 IPC=1.340/0.453	
+PAIR_CYCLES	photo_cid_p6	Wiener compute_stats (LR)	159920341	133933138	1.194	cyc%=0.357/0.593 excess%=0.058 ins=791921889/353406811 insx=2.241 IPC=4.952/2.639	
+PAIR_CYCLES	photo_cid_p6	inverse transform	715576574	810396771	0.883	cyc%=1.599/3.589 excess%=-0.212 ins=1968891981/1583829188 insx=1.243 IPC=2.751/1.954	
+PAIR_CYCLES	photo_cid_p6	residual	54575650	260689136	0.209	cyc%=0.122/1.154 excess%=-0.461 ins=221059315/636253192 insx=0.347 IPC=4.051/2.441	
+PAIR_CYCLES	photo_cid_p6	MD quantize kernels	610968627	1061269144	0.576	cyc%=1.365/4.699 excess%=-1.006 ins=2264577242/3040796929 insx=0.745 IPC=3.707/2.865	
+PAIR_CYCLES	photo_cid_p6	coeff rate cost_coeffs_txb	2605447916	3656675159	0.713	cyc%=5.821/16.192 excess%=-2.349 ins=13073967866/12224310206 insx=1.070 IPC=5.018/3.343	
+PAIR_TOTAL	screen_terminal_p6	frame_cycles	23908353843	12015906243	1.9897	cycles (100 or 4 encodes, see meta)	
+PAIR_TOTAL	screen_terminal_p6	frame_instructions	85501420614	33270360542	2.5699	instructions	
+PAIR_CYCLES	screen_terminal_p6	libc memset/memcpy/alloc	2429588764	720477986	3.372	cyc%=10.162/5.996 excess%=7.149 ins=6746207333/1527303292 insx=4.417 IPC=2.777/2.120	
+PAIR_CYCLES	screen_terminal_p6	Wiener convolve (LR)	1423858326	16295981	87.375	cyc%=5.955/0.136 excess%=5.887 ins=5604049969/48910429 insx=114.578 IPC=3.936/3.001	
+PAIR_CYCLES	screen_terminal_p6	hadamard / SATD	922533390	218046898	4.231	cyc%=3.859/1.815 excess%=2.947 ins=4190168473/609792736 insx=6.871 IPC=4.542/2.797	
+PAIR_CYCLES	screen_terminal_p6	PD0 quantize core	622639596	4196225	148.381	cyc%=2.604/0.035 excess%=2.587 ins=2188259154/45511539 insx=48.081 IPC=3.514/10.846	SELF-vs-INCL-ARTIFACT
+PAIR_CYCLES	screen_terminal_p6	CDEF filter kernels	614818714	100307644	6.129	cyc%=2.572/0.835 excess%=2.152 ins=2413404097/344634837 insx=7.003 IPC=3.925/3.436	
+PAIR_CYCLES	screen_terminal_p6	range coder	629645930	141037688	4.464	cyc%=2.634/1.174 excess%=2.044 ins=2348252056/601426277 insx=3.904 IPC=3.729/4.264	
+PAIR_CYCLES	screen_terminal_p6	screen-content detect	527784667	189250528	2.789	cyc%=2.208/1.575 excess%=1.416 ins=2148696645/381705189 insx=5.629 IPC=4.071/2.017	
+PAIR_CYCLES	screen_terminal_p6	CDEF search driver	287410501	16726447	17.183	cyc%=1.202/0.139 excess%=1.132 ins=1291925993/12234281 insx=105.599 IPC=4.495/0.731	
+PAIR_CYCLES	screen_terminal_p6	LR other (search/apply/sse)	253939541	0		cyc%=1.062 ins=1109137826/0	UNMATCHED-C
+PAIR_CYCLES	screen_terminal_p6	intra prediction	991538093	789446669	1.256	cyc%=4.147/6.570 excess%=0.845 ins=3543285610/2163562486 insx=1.638 IPC=3.574/2.741	
+PAIR_CYCLES	screen_terminal_p6	RDOQ optimize_b	1138242895	960979991	1.184	cyc%=4.761/7.998 excess%=0.741 ins=4086167586/2702331564 insx=1.512 IPC=3.590/2.812	
+PAIR_CYCLES	screen_terminal_p6	forward transform	1007932570	839975014	1.200	cyc%=4.216/6.991 excess%=0.703 ins=3661312730/2236385541 insx=1.637 IPC=3.632/2.662	
+PAIR_CYCLES	screen_terminal_p6	CDEF find_dir	153187542	14627687	10.472	cyc%=0.641/0.122 excess%=0.580 ins=443738520/12234281 insx=36.270 IPC=2.897/0.836	
+PAIR_CYCLES	screen_terminal_p6	txb init levels	188570677	79360626	2.376	cyc%=0.789/0.660 excess%=0.457 ins=477855595/261535143 insx=1.827 IPC=2.534/3.296	
+PAIR_CYCLES	screen_terminal_p6	distortion (sse/satd dist)	339673854	255170313	1.331	cyc%=1.421/2.124 excess%=0.353 ins=1339675291/686684606 insx=1.951 IPC=3.944/2.691	
+PAIR_CYCLES	screen_terminal_p6	nz-map contexts	142656277	72967729	1.955	cyc%=0.597/0.607 excess%=0.291 ins=724724818/219261996 insx=3.305 IPC=5.080/3.005	
+PAIR_CYCLES	screen_terminal_p6	Wiener compute_stats (LR)	153153182	133682177	1.146	cyc%=0.641/1.113 excess%=0.081 ins=675506132/255694195 insx=2.642 IPC=4.411/1.913	
+PAIR_CYCLES	screen_terminal_p6	inverse transform	146724359	160059389	0.917	cyc%=0.614/1.332 excess%=-0.056 ins=311551397/332637879 insx=0.937 IPC=2.123/2.078	
+PAIR_CYCLES	screen_terminal_p6	block syntax packing	507494876	521320977	0.973	cyc%=2.123/4.339 excess%=-0.058 ins=1577915988/1604574601 insx=0.983 IPC=3.109/3.078	
+PAIR_CYCLES	screen_terminal_p6	entropy coeff writer	81799889	135860818	0.602	cyc%=0.342/1.131 excess%=-0.226 ins=263351926/388225270 insx=0.678 IPC=3.219/2.858	
+PAIR_CYCLES	screen_terminal_p6	residual	48223902	229638999	0.210	cyc%=0.202/1.911 excess%=-0.759 ins=160614698/823748229 insx=0.195 IPC=3.331/3.587	
+PAIR_CYCLES	screen_terminal_p6	MD quantize kernels	381743197	661326751	0.577	cyc%=1.597/5.504 excess%=-1.169 ins=1555097633/2233154829 insx=0.696 IPC=4.074/3.377	
+PAIR_CYCLES	screen_terminal_p6	coeff rate cost_coeffs_txb	635176539	1225818043	0.518	cyc%=2.657/10.202 excess%=-2.470 ins=2800248963/3895964314 insx=0.719 IPC=4.409/3.178	
+PAIR_TOTAL	photo_cid_p2	frame_cycles	51900674265	34659445300	1.4974	cycles (100 or 4 encodes, see meta)	
+PAIR_TOTAL	photo_cid_p2	frame_instructions	182941478845	104300431123	1.7540	instructions	
+PAIR_CYCLES	photo_cid_p2	libc memset/memcpy/alloc	3041621558	480875959	6.325	cyc%=5.860/1.387 excess%=4.934 ins=8332935177/1312914696 insx=6.347 IPC=2.740/2.730	
+PAIR_CYCLES	photo_cid_p2	forward transform	4082112088	2180872678	1.872	cyc%=7.865/6.292 excess%=3.663 ins=11594152335/5397365463 insx=2.148 IPC=2.840/2.475	
+PAIR_CYCLES	photo_cid_p2	RDOQ optimize_b	14508842218	13014984084	1.115	cyc%=27.955/37.551 excess%=2.878 ins=52438381381/41347607529 insx=1.268 IPC=3.614/3.177	
+PAIR_CYCLES	photo_cid_p2	txb init levels	1607202589	116569354	13.788	cyc%=3.097/0.336 excess%=2.872 ins=5596289347/547972346 insx=10.213 IPC=3.482/4.701	
+PAIR_CYCLES	photo_cid_p2	distortion (sse/satd dist)	2416239178	1306969272	1.849	cyc%=4.656/3.771 excess%=2.137 ins=9316580830/3322258394 insx=2.804 IPC=3.856/2.542	
+PAIR_CYCLES	photo_cid_p2	intra prediction	1963475831	1319737462	1.488	cyc%=3.783/3.808 excess%=1.240 ins=8062047558/4143514500 insx=1.946 IPC=4.106/3.140	
+PAIR_CYCLES	photo_cid_p2	nz-map contexts	1030299272	390306306	2.640	cyc%=1.985/1.126 excess%=1.233 ins=4555734934/1503818776 insx=3.029 IPC=4.422/3.853	
+PAIR_CYCLES	photo_cid_p2	CDEF filter kernels	409951937	91263398	4.492	cyc%=0.790/0.263 excess%=0.614 ins=2066552980/387350849 insx=5.335 IPC=5.041/4.244	
+PAIR_CYCLES	photo_cid_p2	Wiener convolve (LR)	288780042	4211601	68.568	cyc%=0.556/0.012 excess%=0.548 ins=1065581993/9031276 insx=117.988 IPC=3.690/2.144	
+PAIR_CYCLES	photo_cid_p2	PD0 quantize core	100719221	0		cyc%=0.194 ins=206083419/0	UNMATCHED-C
+PAIR_CYCLES	photo_cid_p2	CDEF search driver	58782526	0		cyc%=0.113 ins=265285175/9071607	
+PAIR_CYCLES	photo_cid_p2	range coder	96452591	38740762	2.490	cyc%=0.186/0.112 excess%=0.111 ins=314045137/59280743 insx=5.298 IPC=3.256/1.530	
+PAIR_CYCLES	photo_cid_p2	LR other (search/apply/sse)	31555206	0		cyc%=0.061 ins=239779676/0	UNMATCHED-C
+PAIR_CYCLES	photo_cid_p2	CDEF find_dir	21009527	0		cyc%=0.040 ins=159515371/9071607	
+PAIR_CYCLES	photo_cid_p2	screen-content detect	25682912	13452795	1.909	cyc%=0.049/0.039 excess%=0.024 ins=30156923/2221397 insx=13.576 IPC=1.174/0.165	
+PAIR_CYCLES	photo_cid_p2	Wiener compute_stats (LR)	6288963	14677127	0.428	cyc%=0.012/0.042 excess%=-0.016 ins=15916772/9326069 insx=1.707 IPC=2.531/0.635	
+PAIR_CYCLES	photo_cid_p2	inverse transform	1640516163	1678340247	0.977	cyc%=3.161/4.842 excess%=-0.073 ins=3662377068/3826035027 insx=0.957 IPC=2.232/2.280	
+PAIR_CYCLES	photo_cid_p2	residual	67147479	267751234	0.251	cyc%=0.129/0.773 excess%=-0.387 ins=206176015/791253565 insx=0.261 IPC=3.070/2.955	
+PAIR_CYCLES	photo_cid_p2	block syntax packing	71291523	319915698	0.223	cyc%=0.137/0.923 excess%=-0.479 ins=100505130/988631308 insx=0.102 IPC=1.410/3.090	
+PAIR_CYCLES	photo_cid_p2	hadamard / SATD	1217052079	1620602441	0.751	cyc%=2.345/4.676 excess%=-0.778 ins=5687793172/4795340469 insx=1.186 IPC=4.673/2.959	
+PAIR_CYCLES	photo_cid_p2	coeff rate cost_coeffs_txb	3770991203	4216064930	0.894	cyc%=7.266/12.164 excess%=-0.858 ins=16230088325/14465788413 insx=1.122 IPC=4.304/3.431	
+PAIR_CYCLES	photo_cid_p2	entropy coeff writer	129985605	818598180	0.159	cyc%=0.250/2.362 excess%=-1.327 ins=357651628/2019159382 insx=0.177 IPC=2.751/2.467	
+PAIR_CYCLES	photo_cid_p2	MD quantize kernels	694359739	1876723182	0.370	cyc%=1.338/5.415 excess%=-2.278 ins=2789050054/5604044864 insx=0.498 IPC=4.017/2.986	
+PORTFN	photo_cid_p6	svtav1_encoder::quant::optimize_b::{closure#0}	7319511903	26626044920	3.638	cyc%=16.354 bm%=27.04 l1d%=1.77	stallexc=-410461430cyc(-0.917%)
+PORTFN	photo_cid_p6	svtav1_encoder::entropy::coeff_c::write_coeffs_txb_1d	3193825171	9114794642	2.854	cyc%=7.136 bm%=13.27 l1d%=0.46	stallexc=547652233cyc(1.224%)
+PORTFN	photo_cid_p6	svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb	2352058712	11985550701	5.096	cyc%=5.255 bm%=1.57 l1d%=1.25	stallexc=-1127541341cyc(-2.519%)
+PORTFN	photo_cid_p6	svtav1_dsp::cdef::cdef_filter_block_core	2036315633	6132422008	3.012	cyc%=4.550 bm%=9.77 l1d%=0.11	stallexc=255973914cyc(0.572%)
+PORTFN	photo_cid_p6	svtav1_encoder::pd0::tx_quant_core	1771347360	3862931049	2.181	cyc%=3.958 bm%=8.73 l1d%=1.08	stallexc=649875730cyc(1.452%)
+PORTFN	photo_cid_p6	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner	1693298576	6553201675	3.870	cyc%=3.783 bm%=1.95 l1d%=3.94	stallexc=-209202315cyc(-0.467%)
+PORTFN	photo_cid_p6	svtav1_encoder::pipeline::encode_block_syntax	1261003911	1884639773	1.495	cyc%=2.818 bm%=8.07 l1d%=2.86	stallexc=713862372cyc(1.595%)
+PORTFN	photo_cid_p6	<svtav1_encoder::entropy::range_coder::OdEcEnc>::normalize	1246387434	3117097931	2.501	cyc%=2.785 bm%=4.10 l1d%=0.34	stallexc=341443273cyc(0.763%)
+PORTFN	photo_cid_p6	<svtav1_encoder::entropy::range_coder::OdEcEnc>::encode_cdf_q15	1181073351	4069201535	3.445	cyc%=2.639 bm%=4.13 l1d%=0.52	stallexc=-281952cyc(-0.001%)
+PORTFN	photo_cid_p6	svtav1_dsp::restoration::wiener_convolve_add_src::{closure#1}	974204727	3462778805	3.554	cyc%=2.177 bm%=0.00 l1d%=0.39	stallexc=-31096207cyc(-0.069%)
+PORTFN	photo_cid_p6	__memmove_avx512_unaligned_erms	938208046	2226363930	2.373	cyc%=2.096 bm%=1.22 l1d%=8.81	stallexc=291858434cyc(0.652%)
+PORTFN	photo_cid_p6	__memset_avx512_unaligned_erms	933690072	1940575413	2.078	cyc%=2.086 bm%=1.12 l1d%=17.11	stallexc=370309508cyc(0.827%)
+PORTFN	photo_cid_p6	svtav1_dsp::variance::__arcane_sse_impl_v3	917198282	3853609420	4.202	cyc%=2.049 bm%=0.10 l1d%=1.50	stallexc=-201567128cyc(-0.450%)
+PORTFN	photo_cid_p6	svtav1_encoder::entropy::coeff_simd::__arcane_fill_levels_impl_v3	734728466	2558214175	3.482	cyc%=1.642 bm%=1.23 l1d%=1.98	stallexc=-7962663cyc(-0.018%)
+PORTFN	photo_cid_p6	svtav1_dsp::txfm_simd::__arcane_try_fwd_dct_square_impl_v3	659197959	2405307958	3.649	cyc%=1.473 bm%=0.04 l1d%=4.44	stallexc=-39102011cyc(-0.087%)
+PORTFN	photo_cid_p6	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_screened_into	623194622	2210549168	3.547	cyc%=1.392 bm%=1.03 l1d%=0.67	stallexc=-18563708cyc(-0.041%)
+PORTFN	photo_cid_p6	svtav1_encoder::leaf_funnel::txt::txt_search::{closure#0}	604498461	2203703818	3.646	cyc%=1.351 bm%=0.98 l1d%=2.41	stallexc=-35272553cyc(-0.079%)
+PORTFN	photo_cid_p6	svtav1_encoder::entropy::coeff_simd::__arcane_nz_map_ctxs_impl_v3	574234252	2748276922	4.786	cyc%=1.283 bm%=0.10 l1d%=0.92	stallexc=-223635179cyc(-0.500%)
+PORTFN	photo_cid_p6	svtav1_encoder::leaf_funnel::mds3::eval_candidate	549971942	1445454149	2.628	cyc%=1.229 bm%=0.24 l1d%=2.48	stallexc=130333124cyc(0.291%)
+PORTFN	photo_cid_p6	svtav1_dsp::intra_pred::predict_filter_intra	516430668	1918569963	3.715	cyc%=1.154 bm%=0.08 l1d%=0.28	stallexc=-40561356cyc(-0.091%)
+PORTFN	photo_cid_p6	svtav1_dsp::cdef::cdef_find_dir	495891313	1559625694	3.145	cyc%=1.108 bm%=0.01 l1d%=0.11	stallexc=43106641cyc(0.096%)
+PORTFN	photo_cid_p6	svtav1_dsp::cdef::__arcane_cdef_filter_block_impl_v3	483389521	2401623063	4.968	cyc%=1.080 bm%=0.46 l1d%=0.23	stallexc=-213840664cyc(-0.478%)
+CFN	photo_cid_p6	svt_av1_optimize_b.constprop.0	6805619774	20210452083	2.970	cyc%=30.136 bm%=48.77 l1d%=6.81	stallexc=-144316711cyc(-0.639%)
+CFN	photo_cid_p6	svt_av1_cost_coeffs_txb	3078380887	10385373992	3.374	cyc%=13.631 bm%=9.64 l1d%=4.21	stallexc=-492924165cyc(-2.183%)
+CFN	photo_cid_p6	tx_type_search	681717377	1716871911	2.518	cyc%=3.019 bm%=1.81 l1d%=2.66	stallexc=91322334cyc(0.404%)
+CFN	photo_cid_p6	svt_av1_compute_cul_level_avx2	501797682	1021133677	2.035	cyc%=2.222 bm%=3.33 l1d%=0.98	stallexc=150651940cyc(0.667%)
+CFN	photo_cid_p6	svt_aom_quantize_inv_quantize	480017049	1548958473	3.227	cyc%=2.126 bm%=0.85 l1d%=3.11	stallexc=-52636202cyc(-0.233%)
+CFN	photo_cid_p6	svt_od_ec_encode_cdf_q15	444952103	1356469326	3.049	cyc%=1.970 bm%=3.12 l1d%=0.17	stallexc=-21508302cyc(-0.095%)
+CFN	photo_cid_p6	av1_write_coeffs_txb_1d	432911798	1109227643	2.562	cyc%=1.917 bm%=3.46 l1d%=0.13	stallexc=51472450cyc(0.228%)
+CFN	photo_cid_p6	svt_aom_quantize_b_avx2	345289544	842654749	2.440	cyc%=1.529 bm%=0.64 l1d%=4.74	stallexc=55518837cyc(0.246%)
+CFN	photo_cid_p6	svt_av1_predict_intra_block	290858144	872764395	3.001	cyc%=1.288 bm%=0.63 l1d%=2.38	stallexc=-9266618cyc(-0.041%)
+CFN	photo_cid_p6	svt_av1_filter_intra_predictor_sse4_1	288303733	708075522	2.456	cyc%=1.277 bm%=0.25 l1d%=0.68	stallexc=44811906cyc(0.198%)
+CFN	photo_cid_p6	svt_dav1d_inv_txfm_add_avx2	274679686	441982723	1.609	cyc%=1.216 bm%=1.49 l1d%=0.99	stallexc=122691406cyc(0.543%)
+CFN	photo_cid_p6	svt_od_ec_encode_bool_eq_q15	265740714	425728756	1.602	cyc%=1.177 bm%=3.71 l1d%=0.06	stallexc=119341821cyc(0.528%)
+CFN	photo_cid_p6	svt_spatial_full_distortion_kernel_avx512	256779017	688551528	2.681	cyc%=1.137 bm%=1.24 l1d%=1.99	stallexc=20001068cyc(0.089%)
+CFN	photo_cid_p6	svt_aom_estimate_coefficients_rate	251029654	1091179952	4.347	cyc%=1.112 bm%=0.35 l1d%=0.86	stallexc=-124203484cyc(-0.550%)
+CFN	photo_cid_p6	svt_av1_get_nz_map_contexts_avx2	233101953	1049907435	4.504	cyc%=1.032 bm%=0.22 l1d%=1.39	stallexc=-127938461cyc(-0.567%)
+PORTFN	screen_terminal_p6	svtav1_encoder::quant::optimize_b::{closure#0}	1066942603	3720327322	3.487	cyc%=4.463 bm%=9.01 l1d%=0.76	stallexc=26645244cyc(0.111%)
+PORTFN	screen_terminal_p6	svtav1_encoder::entropy::context::write_palette_map_tokens	1040817293	3380149799	3.248	cyc%=4.353 bm%=13.05 l1d%=0.12	stallexc=95642150cyc(0.400%)
+PORTFN	screen_terminal_p6	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner	1035826551	3386639905	3.270	cyc%=4.332 bm%=2.77 l1d%=3.76	stallexc=88836611cyc(0.372%)
+PORTFN	screen_terminal_p6	svtav1_dsp::restoration::wiener_convolve_add_src::{closure#1}	957523962	3601621398	3.761	cyc%=4.005 bm%=0.00 l1d%=0.71	stallexc=-49580226cyc(-0.207%)
+PORTFN	screen_terminal_p6	svtav1_encoder::palette::calc_indices_dim1	916222453	4279181717	4.670	cyc%=3.832 bm%=1.29 l1d%=0.09	stallexc=-280344691cyc(-1.173%)
+PORTFN	screen_terminal_p6	__memmove_avx512_unaligned_erms	780023520	2302452868	2.952	cyc%=3.263 bm%=2.57 l1d%=10.89	stallexc=136199622cyc(0.570%)
+PORTFN	screen_terminal_p6	svtav1_encoder::pd0::tx_quant_core	622639596	2188259154	3.514	cyc%=2.604 bm%=5.58 l1d%=0.88	stallexc=10747141cyc(0.045%)
+PORTFN	screen_terminal_p6	__memset_avx512_unaligned_erms	539052913	1093814635	2.029	cyc%=2.255 bm%=1.85 l1d%=19.54	stallexc=233194751cyc(0.975%)
+PORTFN	screen_terminal_p6	svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb	532567327	2347592230	4.408	cyc%=2.228 bm%=2.53 l1d%=0.66	stallexc=-123878675cyc(-0.518%)
+PORTFN	screen_terminal_p6	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit	486339147	1669133120	3.432	cyc%=2.034 bm%=0.94 l1d%=1.31	stallexc=19607425cyc(0.082%)
+PORTFN	screen_terminal_p6	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_screened_into	467929432	1947123108	4.161	cyc%=1.957 bm%=2.30 l1d%=0.74	stallexc=-76535302cyc(-0.320%)
+PORTFN	screen_terminal_p6	svtav1_dsp::restoration::wiener_convolve_add_src	466334364	2002428571	4.294	cyc%=1.951 bm%=0.05 l1d%=0.06	stallexc=-93595173cyc(-0.391%)
+PORTFN	screen_terminal_p6	svtav1_encoder::quant::build_coeff_cost_tables_from_fc	444378678	1653931709	3.722	cyc%=1.859 bm%=0.34 l1d%=1.95	stallexc=-18102346cyc(-0.076%)
+PORTFN	screen_terminal_p6	svtav1_encoder::palette::color_map_wavefront::<svtav1_encoder::leaf_funnel::inject::inject_candidates::{closure#6}>	406802929	1596693241	3.925	cyc%=1.702 bm%=5.80 l1d%=0.06	stallexc=-39672775cyc(-0.166%)
+PORTFN	screen_terminal_p6	svtav1_dsp::cdef::cdef_filter_block_core	394431950	1395108753	3.537	cyc%=1.650 bm%=4.99 l1d%=0.06	stallexc=4324353cyc(0.018%)
+PORTFN	screen_terminal_p6	svtav1_encoder::leaf_funnel::mds3::eval_candidate	393702326	997461352	2.534	cyc%=1.647 bm%=0.63 l1d%=1.91	stallexc=114786973cyc(0.480%)
+PORTFN	screen_terminal_p6	svtav1_dsp::hadamard::hadamard_col8	373146441	1620577021	4.343	cyc%=1.561 bm%=0.05 l1d%=0.59	stallexc=-80007771cyc(-0.335%)
+PORTFN	screen_terminal_p6	svtav1_encoder::pipeline::encode_block_syntax	362683845	1243046180	3.427	cyc%=1.517 bm%=1.25 l1d%=2.32	stallexc=15096779cyc(0.063%)
+PORTFN	screen_terminal_p6	__libc_calloc	355884561	1436668514	4.037	cyc%=1.489 bm%=0.97 l1d%=1.26	stallexc=-45844193cyc(-0.192%)
+PORTFN	screen_terminal_p6	svtav1_dsp::hadamard::aom_hadamard_8x8_core	335480050	1603531629	4.780	cyc%=1.403 bm%=0.02 l1d%=0.28	stallexc=-112907840cyc(-0.472%)
+PORTFN	screen_terminal_p6	<svtav1_encoder::entropy::range_coder::OdEcEnc>::encode_cdf_q15	331331412	1203152200	3.631	cyc%=1.386 bm%=3.53 l1d%=0.38	stallexc=-5100291cyc(-0.021%)
+PORTFN	screen_terminal_p6	svtav1_dsp::variance::__arcane_sse_impl_v3	329186426	1317866383	4.003	cyc%=1.377 bm%=0.38 l1d%=0.72	stallexc=-39322256cyc(-0.164%)
+CFN	screen_terminal_p6	svt_av1_optimize_b.constprop.0	960979991	2702331564	2.812	cyc%=7.998 bm%=16.16 l1d%=1.83	stallexc=-14992682cyc(-0.125%)
+CFN	screen_terminal_p6	svt_av1_cost_coeffs_txb	793006189	2342628340	2.954	cyc%=6.600 bm%=8.85 l1d%=1.89	stallexc=-53056253cyc(-0.442%)
+CFN	screen_terminal_p6	svt_av1_k_means_dim1_avx2	644067208	1041986429	1.618	cyc%=5.360 bm%=1.54 l1d%=0.55	stallexc=267743927cyc(2.228%)
+CFN	screen_terminal_p6	svt_av1_cost_color_map	523840487	1213720519	2.317	cyc%=4.360 bm%=15.23 l1d%=0.19	stallexc=85493811cyc(0.712%)
+CFN	screen_terminal_p6	svt_aom_quantize_inv_quantize	332520175	1075062840	3.233	cyc%=2.767 bm%=0.70 l1d%=1.86	stallexc=-55748965cyc(-0.464%)
+CFN	screen_terminal_p6	svt_memcpy_intrin_sse	305614621	607206016	1.987	cyc%=2.543 bm%=1.37 l1d%=5.74	stallexc=86316410cyc(0.718%)
+CFN	screen_terminal_p6	svt_aom_estimate_coefficients_rate	286600517	1115372761	3.892	cyc%=2.385 bm%=0.29 l1d%=0.82	stallexc=-116226934cyc(-0.967%)
+CFN	screen_terminal_p6	tx_type_search	255749839	689498783	2.696	cyc%=2.128 bm%=1.57 l1d%=1.89	stallexc=6730814cyc(0.056%)
+CFN	screen_terminal_p6	svt_av1_predict_intra_block	243315426	798379718	3.281	cyc%=2.025 bm%=1.21 l1d%=1.95	stallexc=-45026981cyc(-0.375%)
+CFN	screen_terminal_p6	svt_aom_full_loop_uv	242522490	750328273	3.094	cyc%=2.018 bm%=1.05 l1d%=1.60	stallexc=-28465682cyc(-0.237%)
+CFN	screen_terminal_p6	svt_aom_is_screen_content_antialiasing_aware	189250528	381705189	2.017	cyc%=1.575 bm%=2.70 l1d%=0.08	stallexc=51394079cyc(0.428%)
+CFN	screen_terminal_p6	full_loop_core	187198181	676847928	3.616	cyc%=1.558 bm%=0.97 l1d%=1.49	stallexc=-57251867cyc(-0.476%)
+CFN	screen_terminal_p6	svt_av1_tokenize_color_map	185598031	370482971	1.996	cyc%=1.545 bm%=4.33 l1d%=0.29	stallexc=51794592cyc(0.431%)
+CFN	screen_terminal_p6	svt_residual_kernel8bit_avx512	179465189	649376763	3.618	cyc%=1.494 bm%=0.90 l1d%=3.05	stallexc=-55063388cyc(-0.458%)
+CFN	screen_terminal_p6	svt_av1_filter_intra_predictor_sse4_1	162314862	282937496	1.743	cyc%=1.351 bm%=0.27 l1d%=0.77	stallexc=60129302cyc(0.500%)
+PORTFN	photo_cid_p2	svtav1_encoder::quant::optimize_b::{closure#0}	13686695253	49374477159	3.607	cyc%=26.371 bm%=47.25 l1d%=5.73	stallexc=-320891611cyc(-0.618%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner	4625207446	16349373529	3.535	cyc%=8.912 bm%=5.96 l1d%=3.96	stallexc=-13125617cyc(-0.025%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb	2989160233	13216632080	4.422	cyc%=5.759 bm%=1.65 l1d%=1.22	stallexc=-760411055cyc(-1.465%)
+PORTFN	photo_cid_p2	svtav1_dsp::variance::__arcane_sse_impl_v3	2235939211	8719221512	3.900	cyc%=4.308 bm%=0.43 l1d%=2.29	stallexc=-237712354cyc(-0.458%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_screened_into	2131020408	6340961268	2.976	cyc%=4.106 bm%=3.96 l1d%=1.30	stallexc=332083571cyc(0.640%)
+PORTFN	photo_cid_p2	svtav1_encoder::entropy::coeff_simd::__arcane_fill_levels_impl_v3	1607202589	5596289347	3.482	cyc%=3.097 bm%=3.38 l1d%=1.25	stallexc=19529895cyc(0.038%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::txt::txt_search::{closure#0}	1508378076	5949784384	3.944	cyc%=2.906 bm%=2.59 l1d%=2.90	stallexc=-179581501cyc(-0.346%)
+PORTFN	photo_cid_p2	__memmove_avx512_unaligned_erms	1113939928	3084976165	2.769	cyc%=2.146 bm%=1.28 l1d%=8.53	stallexc=238729210cyc(0.460%)
+PORTFN	photo_cid_p2	svtav1_encoder::entropy::coeff_simd::__arcane_nz_map_ctxs_impl_v3	1030299272	4555734934	4.422	cyc%=1.985 bm%=0.13 l1d%=0.96	stallexc=-262167129cyc(-0.505%)
+PORTFN	photo_cid_p2	svtav1_dsp::txfm_simd::__arcane_try_fwd_4dim_impl_v3	904027304	2749445706	3.041	cyc%=1.742 bm%=0.52 l1d%=1.34	stallexc=124006901cyc(0.239%)
+PORTFN	photo_cid_p2	svtav1_encoder::quant::optimize_b	822146965	3063904222	3.727	cyc%=1.584 bm%=1.04 l1d%=1.68	stallexc=-47085622cyc(-0.091%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::mds3::eval_candidate	757205277	1758354473	2.322	cyc%=1.459 bm%=0.47 l1d%=5.30	stallexc=258358414cyc(0.498%)
+PORTFN	photo_cid_p2	svtav1_dsp::intra_pred::dr_z2_edged_core	744712220	3475813564	4.667	cyc%=1.435 bm%=1.23 l1d%=0.34	stallexc=-241379446cyc(-0.465%)
+PORTFN	photo_cid_p2	svtav1_dsp::residual::__arcane_recon_add_clamp_impl_v3	744628138	2318903548	3.114	cyc%=1.435 bm%=0.80 l1d%=1.15	stallexc=86752961cyc(0.167%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb_inner::{closure#0}	733601944	2836620489	3.867	cyc%=1.413 bm%=0.10 l1d%=0.38	stallexc=-71150029cyc(-0.137%)
+PORTFN	photo_cid_p2	svtav1_dsp::inv_txfm::inv_txfm2d_c_exact_bd	690151018	1598751185	2.317	cyc%=1.330 bm%=3.42 l1d%=0.80	stallexc=236583762cyc(0.456%)
+PORTFN	photo_cid_p2	svtav1_dsp::txfm_simd::__arcane_try_inv_4dim_impl_v3	679771279	1839749468	2.706	cyc%=1.310 bm%=1.65 l1d%=0.46	stallexc=157832578cyc(0.304%)
+PORTFN	photo_cid_p2	svtav1_dsp::intra_pred::dr_predictor_edged	614642356	2625877377	4.272	cyc%=1.184 bm%=0.61 l1d%=0.34	stallexc=-130321592cyc(-0.251%)
+PORTFN	photo_cid_p2	__memset_avx512_unaligned_erms	543345020	1332598900	2.453	cyc%=1.047 bm%=1.69 l1d%=2.37	stallexc=165285425cyc(0.318%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit	524392338	2124323222	4.051	cyc%=1.010 bm%=0.34 l1d%=1.71	stallexc=-78280212cyc(-0.151%)
+PORTFN	photo_cid_p2	svtav1_encoder::leaf_funnel::evaluate_leaf	478049948	758052741	1.586	cyc%=0.921 bm%=2.43 l1d%=2.34	stallexc=262989653cyc(0.507%)
+PORTFN	photo_cid_p2	__libc_calloc	469307210	1480362750	3.154	cyc%=0.904 bm%=0.47 l1d%=1.16	stallexc=49326868cyc(0.095%)
+CFN	photo_cid_p2	svt_av1_optimize_b.constprop.0	13014984084	41347607529	3.177	cyc%=37.551 bm%=53.77 l1d%=15.31	stallexc=-724989241cyc(-2.092%)
+CFN	photo_cid_p2	svt_av1_cost_coeffs_txb	3101494850	11059533422	3.566	cyc%=8.948 bm%=2.15 l1d%=3.08	stallexc=-573631797cyc(-1.655%)
+CFN	photo_cid_p2	tx_type_search	1843724284	5458295717	2.960	cyc%=5.320 bm%=3.44 l1d%=5.31	stallexc=29911054cyc(0.086%)
+CFN	photo_cid_p2	svt_aom_satd_avx2	1530695734	4461717238	2.915	cyc%=4.416 bm%=3.91 l1d%=4.00	stallexc=48049470cyc(0.139%)
+CFN	photo_cid_p2	svt_spatial_full_distortion_kernel_avx512	1037266451	2680424540	2.584	cyc%=2.993 bm%=3.80 l1d%=7.07	stallexc=146550787cyc(0.423%)
+CFN	photo_cid_p2	svt_aom_quantize_inv_quantize	1030920816	2761148305	2.678	cyc%=2.974 bm%=1.58 l1d%=2.67	stallexc=113380326cyc(0.327%)
+CFN	photo_cid_p2	svt_av1_compute_cul_level_avx2	800297484	1965143950	2.456	cyc%=2.309 bm%=4.20 l1d%=2.12	stallexc=147272386cyc(0.425%)
+CFN	photo_cid_p2	svt_dav1d_inv_txfm_add_avx2	660721828	1395605303	2.112	cyc%=1.906 bm%=3.23 l1d%=1.19	stallexc=196956672cyc(0.568%)
+CFN	photo_cid_p2	svt_aom_txb_estimate_coeff_bits	554159219	1341058359	2.420	cyc%=1.599 bm%=1.78 l1d%=2.30	stallexc=108520228cyc(0.313%)
+CFN	photo_cid_p2	get_eob_cost	549958721	2038586257	3.707	cyc%=1.587 bm%=1.43 l1d%=2.68	stallexc=-127471546cyc(-0.368%)
+CFN	photo_cid_p2	svt_av1_quantize_fp_avx2	483101834	1741060676	3.604	cyc%=1.394 bm%=0.32 l1d%=1.67	stallexc=-95459507cyc(-0.275%)
+CFN	photo_cid_p2	build_intra_predictors	405809448	1325216994	3.266	cyc%=1.171 bm%=0.61 l1d%=1.56	stallexc=-34565394cyc(-0.100%)
+CFN	photo_cid_p2	svt_av1_predict_intra_block	397338334	1471714096	3.704	cyc%=1.146 bm%=0.53 l1d%=3.36	stallexc=-91718074cyc(-0.265%)
+CFN	photo_cid_p2	svt_av1_get_nz_map_contexts_avx2	390306306	1503818776	3.853	cyc%=1.126 bm%=0.01 l1d%=0.44	stallexc=-109418614cyc(-0.316%)
+CFN	photo_cid_p2	svt_av1_dr_prediction_z2_avx2	309555258	924394199	2.986	cyc%=0.893 bm%=0.55 l1d%=1.32	stallexc=2375414cyc(0.007%)
+BRLINE	photo_cid_p6	RUSTLIB/core/src/iter/range.rs:900	1987171	21531975	9.23	Bcm / Bc / mispredict% (callgrind model)	Ir=41203343 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/quant.rs:1127	546617	1210757	45.15	Bcm / Bc / mispredict% (callgrind model)	Ir=3013558 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/entropy/range_coder.rs:98	362060	1324770	27.33	Bcm / Bc / mispredict% (callgrind model)	Ir=3441878 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/entropy/coeff_c.rs:1424	340976	843936	40.40	Bcm / Bc / mispredict% (callgrind model)	Ir=843936 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/entropy/coeff_simd.rs:147	323330	1047512	30.87	Bcm / Bc / mispredict% (callgrind model)	Ir=3142536 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/pipeline.rs:9333	316928	1846784	17.16	Bcm / Bc / mispredict% (callgrind model)	Ir=3693568 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/pd0.rs:749	293284	1532982	19.13	Bcm / Bc / mispredict% (callgrind model)	Ir=2299473 Bi=0 Bim=0
+BRLINE	photo_cid_p6	RUSTLIB/core/src/num/uint_macros.rs:1052	280278	20163218	1.39	Bcm / Bc / mispredict% (callgrind model)	Ir=43470799 Bi=0 Bim=0
+BRLINE	photo_cid_p6	RUSTLIB/core/src/cmp.rs:1077	226285	6873220	3.29	Bcm / Bc / mispredict% (callgrind model)	Ir=58232495 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/quant.rs:1195	212772	675473	31.50	Bcm / Bc / mispredict% (callgrind model)	Ir=1849833 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/quant.rs:1143	190849	552882	34.52	Bcm / Bc / mispredict% (callgrind model)	Ir=1485234 Bi=0 Bim=0
+BRLINE	photo_cid_p6	RUSTLIB/core/src/slice/iter/macros.rs:180	160257	4464025	3.59	Bcm / Bc / mispredict% (callgrind model)	Ir=5843711 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/entropy/cdf.rs:75	121610	2056261	5.91	Bcm / Bc / mispredict% (callgrind model)	Ir=4595058 Bi=0 Bim=0
+BRLINE	photo_cid_p6	crates/svtav1-encoder/src/quant.rs:1156	112658	396627	28.40	Bcm / Bc / mispredict% (callgrind model)	Ir=1898641 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	RUSTLIB/core/src/iter/range.rs:900	1535898	19845784	7.74	Bcm / Bc / mispredict% (callgrind model)	Ir=39755639 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	RUSTLIB/core/src/num/uint_macros.rs:1052	146882	8348173	1.76	Bcm / Bc / mispredict% (callgrind model)	Ir=16218163 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	RUSTLIB/core/src/slice/iter/macros.rs:180	118265	2626419	4.50	Bcm / Bc / mispredict% (callgrind model)	Ir=3567424 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	RUSTLIB/core/src/ops/range.rs:563	89578	1927837	4.65	Bcm / Bc / mispredict% (callgrind model)	Ir=2802625 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	RUSTLIB/core/src/iter/adapters/zip.rs:300	78808	3194713	2.47	Bcm / Bc / mispredict% (callgrind model)	Ir=5169454 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	crates/svtav1-encoder/src/entropy/context.rs:1640	73108	210268	34.77	Bcm / Bc / mispredict% (callgrind model)	Ir=420536 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	RUSTLIB/alloc/src/raw_vec/mod.rs:635	73053	540114	13.53	Bcm / Bc / mispredict% (callgrind model)	Ir=1472971 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	RUSTLIB/core/src/cmp.rs:1077	72256	1931481	3.74	Bcm / Bc / mispredict% (callgrind model)	Ir=10756106 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	crates/svtav1-encoder/src/pd0.rs:749	68812	537256	12.81	Bcm / Bc / mispredict% (callgrind model)	Ir=805884 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	crates/svtav1-encoder/src/entropy/cdf.rs:75	63605	1188245	5.35	Bcm / Bc / mispredict% (callgrind model)	Ir=2673370 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	crates/svtav1-encoder/src/entropy/coeff_simd.rs:147	59255	244120	24.27	Bcm / Bc / mispredict% (callgrind model)	Ir=732360 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	./malloc/../string/bits/string_fortified.h:59	51673	2289706	2.26	Bcm / Bc / mispredict% (callgrind model)	Ir=2848452 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	crates/svtav1-encoder/src/palette.rs:569	51665	186414	27.72	Bcm / Bc / mispredict% (callgrind model)	Ir=372828 Bi=0 Bim=0
+BRLINE	screen_terminal_p6	crates/svtav1-encoder/src/leaf_funnel/coeff_rate.rs:238	50061	464578	10.78	Bcm / Bc / mispredict% (callgrind model)	Ir=929156 Bi=0 Bim=0
+BRLINE	photo_cid_p2	RUSTLIB/core/src/iter/range.rs:900	56858533	553665355	10.27	Bcm / Bc / mispredict% (callgrind model)	Ir=1164460491 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-encoder/src/quant.rs:1127	18086228	39887903	45.34	Bcm / Bc / mispredict% (callgrind model)	Ir=94205306 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-encoder/src/quant.rs:1195	15725504	36740854	42.80	Bcm / Bc / mispredict% (callgrind model)	Ir=96336499 Bi=0 Bim=0
+BRLINE	photo_cid_p2	RUSTLIB/core/src/num/uint_macros.rs:1052	14670963	542608964	2.70	Bcm / Bc / mispredict% (callgrind model)	Ir=1058221345 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-encoder/src/quant.rs:1143	8820299	21765283	40.52	Bcm / Bc / mispredict% (callgrind model)	Ir=56645111 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-encoder/src/quant.rs:320	6865179	61526102	11.16	Bcm / Bc / mispredict% (callgrind model)	Ir=184578306 Bi=0 Bim=0
+BRLINE	photo_cid_p2	RUSTLIB/core/src/slice/iter/macros.rs:180	5282554	78910056	6.69	Bcm / Bc / mispredict% (callgrind model)	Ir=153422697 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-encoder/src/quant.rs:1156	4647496	14448855	32.17	Bcm / Bc / mispredict% (callgrind model)	Ir=66230376 Bi=0 Bim=0
+BRLINE	photo_cid_p2	RUSTLIB/core/src/iter/adapters/zip.rs:300	3565872	162302877	2.20	Bcm / Bc / mispredict% (callgrind model)	Ir=259136675 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-dsp/src/txfm_simd_4dim.rs:244	3422100	48053552	7.12	Bcm / Bc / mispredict% (callgrind model)	Ir=136018599 Bi=0 Bim=0
+BRLINE	photo_cid_p2	RUSTLIB/core/src/ops/range.rs:563	3242224	174170081	1.86	Bcm / Bc / mispredict% (callgrind model)	Ir=258302164 Bi=0 Bim=0
+BRLINE	photo_cid_p2	./string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:208	3162601	14636513	21.61	Bcm / Bc / mispredict% (callgrind model)	Ir=14636513 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-encoder/src/quant.rs:1479	2852876	75623694	3.77	Bcm / Bc / mispredict% (callgrind model)	Ir=177018213 Bi=0 Bim=0
+BRLINE	photo_cid_p2	crates/svtav1-dsp/src/txfm_simd_4dim.rs:251	2852857	5622128	50.74	Bcm / Bc / mispredict% (callgrind model)	Ir=17695508 Bi=0 Bim=0
+SAFETY	perf_encode(.text)	static_insns_sites	574540			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_calls_sites	17668			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_bounds_sites	2042			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_sliceidx_sites	721			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_unwrap_sites	171			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_panic_sites	939			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_memcpy_sites	665			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_memset_sites	290			call sites (or instructions for insns)	
+SAFETY	perf_encode(.text)	static_alloc_sites	3964			call sites (or instructions for insns)	
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::leaf_funnel::mds3::eval_candidate	23	6	7	bounds/sliceidx/memcpy sites	insns=12557 calls=552 unwrap=12 alloc=190
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::inv_txfm::idct64	69	0	0	bounds/sliceidx/memcpy sites	insns=8157 calls=69 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::restoration::__arcane_compute_stats_impl_v3	2	2	6	bounds/sliceidx/memcpy sites	insns=7553 calls=30 unwrap=0 alloc=3
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::pipeline::encode_block_syntax	6	7	5	bounds/sliceidx/memcpy sites	insns=6361 calls=181 unwrap=1 alloc=33
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::quant::optimize_b::{closure#0}	72	0	1	bounds/sliceidx/memcpy sites	insns=4721 calls=100 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::fwd_txfm::fdct64	66	0	0	bounds/sliceidx/memcpy sites	insns=4361 calls=66 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::leaf_funnel::tx_pipeline::tx_unit_inner	13	18	1	bounds/sliceidx/memcpy sites	insns=2268 calls=79 unwrap=0 alloc=13
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::entropy::coeff_c::write_coeffs_txb_1d	1	0	2	bounds/sliceidx/memcpy sites	insns=1956 calls=38 unwrap=0 alloc=4
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::pd0::tx_quant_core	5	2	2	bounds/sliceidx/memcpy sites	insns=1139 calls=32 unwrap=0 alloc=9
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::restoration::wiener_convolve_add_src_hbd	1	0	0	bounds/sliceidx/memcpy sites	insns=1025 calls=6 unwrap=0 alloc=2
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::restoration::wiener_convolve_add_src_materialised	1	0	0	bounds/sliceidx/memcpy sites	insns=1002 calls=6 unwrap=0 alloc=2
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::entropy::coeff_simd::__arcane_nz_map_ctxs_impl_v3	5	26	0	bounds/sliceidx/memcpy sites	insns=832 calls=31 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb	1	1	2	bounds/sliceidx/memcpy sites	insns=761 calls=24 unwrap=0 alloc=4
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::hadamard::aom_hadamard_8x8_core	1	1	0	bounds/sliceidx/memcpy sites	insns=693 calls=10 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::restoration::wiener_convolve_add_src	1	1	0	bounds/sliceidx/memcpy sites	insns=597 calls=14 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::cdef::cdef_filter_block_core	8	0	0	bounds/sliceidx/memcpy sites	insns=458 calls=8 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::leaf_funnel::cfl::md_cfl_alpha_search::<svtav1_encoder::leaf_funnel::mds3::eval_candidate::{closure#8}>	1	0	0	bounds/sliceidx/memcpy sites	insns=395 calls=5 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::leaf_funnel::coeff_rate::cost_coeffs_txb_inner::{closure#0}	15	0	0	bounds/sliceidx/memcpy sites	insns=274 calls=15 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::leaf_funnel::mds3::eval_candidate::{closure#6}	0	0	0	bounds/sliceidx/memcpy sites	insns=221 calls=13 unwrap=3 alloc=5
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::leaf_funnel::mds3::eval_candidate::{closure#8}	0	0	0	bounds/sliceidx/memcpy sites	insns=221 calls=11 unwrap=1 alloc=5
+SAFETY_FN	perf_encode(.text)	<core::iter::adapters::filter_map::FilterMap<core::str::iter::Split<char>, svtav1_encoder::pipeline::encode_block_syntax::{closure#1}> as core::iter::traits::iterator::Iterator>::next	0	1	0	bounds/sliceidx/memcpy sites	insns=210 calls=4 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::restoration::wiener_convolve_add_src::{closure#1}	3	2	1	bounds/sliceidx/memcpy sites	insns=179 calls=6 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	svtav1_dsp::variance::__arcane_sse_impl_v3	2	0	0	bounds/sliceidx/memcpy sites	insns=174 calls=2 unwrap=0 alloc=0
+SAFETY_FN	perf_encode(.text)	<alloc::vec::Vec<alloc::string::String> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<alloc::string::String, core::iter::adapters::map::Map<core::iter::adapters::filter::Filter<core::iter::adapters::enumerate::Enumerate<core::slice::iter::Iter<i32>>, svtav1_encoder::leaf_funnel::mds3::eval_candidate::{closure#1}>, svtav1_encoder::leaf_funnel::mds3::eval_candidate::{closure#2}>>>::from_iter	0	0	0	bounds/sliceidx/memcpy sites	insns=169 calls=12 unwrap=0 alloc=4
+SAFETY_FN	perf_encode(.text)	svtav1_encoder::pipeline::encode_block_syntax::{closure#2}	0	0	0	bounds/sliceidx/memcpy sites	insns=147 calls=8 unwrap=0 alloc=5
+SAFETY_FN	perf_encode(.text)	<alloc::vec::Vec<usize> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<usize, core::iter::adapters::filter_map::FilterMap<core::str::iter::Split<char>, svtav1_encoder::pipeline::encode_block_syntax::{closure#1}>>>::from_iter	0	0	0	bounds/sliceidx/memcpy sites	insns=98 calls=8 unwrap=0 alloc=3

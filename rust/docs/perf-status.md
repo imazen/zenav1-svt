@@ -1,5 +1,116 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE RESIDUAL IS INSTRUCTION COUNT, NOT STALLS — THE PORT'S IPC IS HIGHER
+> THAN C'S ON EVERY CELL MEASURED (2026-09-05).** Record
+> `benchmarks/stall_attrib_2026-09-05.{tsv,meta}`. Hardware counters
+> (`perf stat`, paired warmup-delta, median of 5, both sides pinned to one
+> core), on three byte-identical cells at `2d75a105f`:
+>
+> | cell | instructions port/C | cycles port/C | IPC port | IPC C |
+> |---|---|---|---|---|
+> | photo_cid 512² p2 | 1.753x | **1.506x** | 3.506 | 3.012 |
+> | photo_cid 512² p6 | 2.310x | **1.899x** | 3.445 | 2.832 |
+> | screen_terminal 512² p6 | 2.555x | **1.928x** | 3.584 | 2.704 |
+>
+> **The port's real-time gap is 14-25 % SMALLER than its instruction gap**,
+> because it retires 16-33 % more instructions per cycle than C does. At
+> photo_cid p6 the port's 874,697,071 extra instructions cost 211,932,008
+> extra cycles — LESS than they would cost at the port's own average IPC. There
+> is no stall excess to attribute, and the Ir-based ranking is the honest
+> picture of the residual.
+>
+> **Three lines of investigation close at once.**
+> *Cache:* the port misses L1D per instruction at HALF C's rate (4.56 vs
+> 10.12 MPKI at photo p6; 2.16 vs 5.53 at p2), its L1I and op-cache miss rates
+> are at or below C's, and neither side is DRAM-bound — deterministic
+> simulation counts 128,472 last-level misses for the port against C's 132,781
+> on the same frame. TLB misses are noise on both sides.
+> *Branches:* the port takes 1.08-1.68x C's absolute mispredicts while
+> executing 1.75-2.56x C's instructions, so per instruction it mispredicts
+> LESS (2.48 vs 3.40 MPKI at photo p6) and by rate 2-3x less.
+> *`#[cold]`:* **no candidate is warranted.** The largest single mispredict
+> site is `pipeline.rs:9333` — a ~50/50 data-dependent `if coeffs[pos] != 0`
+> inside a forward scan of the WHOLE transform block (316,928 simulated
+> mispredicts at a 17.16 % rate, 82 % of `encode_block_syntax`'s total). A rare
+> path is what `#[cold]` is for; this is not one. The fix is the reverse scan
+> with early return already written at `quant.rs:318-324`, whose branch
+> mispredicts at 3.10 %. The same forward loop is duplicated at
+> `pipeline.rs:9410-9415`.
+>
+> **What DOES change is the ORDERING.** Ranked by CYCLES instead of Ir
+> (`perf record`, port symbols joined to C symbols), photo_cid p6:
+>
+> | rank | pair | port cyc% | C cyc% | excess | cyc x | IPC port/C |
+> |---|---|---|---|---|---|---|
+> | 1 | libc memset/memcpy/alloc | 6.65 | 1.60 | **+5.84** | 8.23 | 2.40 / 2.32 |
+> | 2 | CDEF filter kernels | 6.35 | 1.21 | +5.74 | 10.39 | 3.43 / 5.03 |
+> | 3 | entropy coeff writer | 7.14 | 4.14 | +5.05 | 3.42 | 2.85 / 2.28 |
+> | 4 | range coder | 5.42 | 3.22 | +3.80 | 3.34 | 2.96 / 2.46 |
+> | 5 | Wiener convolve (LR) | 3.22 | 0.12 | +3.16 | 53.65 | 3.72 / 1.00 |
+> | 6 | forward transform | 6.07 | 6.87 | +2.61 | 1.75 | 3.14 / 2.65 |
+> | 7 | block syntax packing | 3.25 | 1.78 | +2.36 | 3.62 | **1.76 / 3.33** |
+> | 8 | RDOQ optimize_b | 16.72 | 30.14 | +1.51 | 1.10 | 3.66 / 2.97 |
+> | — | MD quantize kernels | 1.37 | 4.70 | −1.01 | 0.58 | 3.71 / 2.87 |
+> | — | **coeff rate cost_coeffs_txb** | 5.82 | 16.19 | **−2.35** | 0.71 | 5.02 / 3.34 |
+>
+> **`cost_coeffs_txb` flips from a loss to the port's biggest win** — the Ir
+> ranking listed it at #10 with a 1.18x excess; by cycles it is 0.71x C, because
+> the port runs 1.07x C's instructions there at IPC 5.02 against C's 3.34. Do
+> not "fix" it. `MD quantize kernels`, `inverse transform` and `residual` are
+> also cheaper than C in cycles. The `PD0 quantize core` row is still NOT a
+> usable ratio (same self-vs-inclusive artifact the compute_stats recheck named).
+>
+> **`encode_block_syntax` is the ONLY genuine stall item in the port** — the
+> only pair whose IPC is materially below C's (1.76 vs 3.33; per-function 1.50
+> against the port's 3.44 frame average), 1.60 % of the frame recoverable at
+> the port's own average IPC, and 8.07 % of the port's branch misses. Its root
+> is the `pipeline.rs:9333` scan above. Content-dependent: at screen_terminal
+> p6 the same function runs at IPC 3.43, i.e. at the frame average.
+>
+> **Safe-Rust cost, localised rather than guessed.** `objdump` of the release
+> binary with GOT-indirect call targets resolved through `.rela.dyn` (a first
+> pass that read only direct `call <symbol>` found ZERO bounds checks and was
+> WRONG — the panic calls go through the GOT) counts **2,042
+> `panic_bounds_check` sites, 721 slice-index-fail, 171 `unwrap_failed`, 665
+> memcpy, 3,964 allocator** in 574,540 instructions of `.text`. The two biggest
+> cycle consumers carry the densest: `quant::optimize_b::{closure#0}` has **72
+> bounds checks in 4,721 instructions** (and is 16.35 % of the p6 frame, 27.96 %
+> of the p2 frame); `coeff_rate::cost_coeffs_txb_inner::{closure#0}` has 15 in
+> 274. `fdct64`/`idct64`/`fdct32`/`idct32` carry 66/69/34/36 — the
+> `try_into::<&[T; N]>()`-at-the-boundary pattern applies to all four.
+> Aggregate signature: the port executes one branch every 6.1 instructions
+> against C's one every 9.1-10.9, and 3.0-4.1x C's absolute branch count.
+> Inlined `core` library source carries **317,696,743 Ir — 19.6 % of the p6
+> frame** — the largest single lines being `Ord::min` (`core/src/cmp.rs:1077`,
+> 3.60 %, compiled as a BRANCH not a `cmov`), `PartialOrd::lt/le` (2.80 %),
+> `checked_sub`'s `Option` test (2.68 %) and `Range::spec_next` (2.54 %).
+> C does the same work; it is simply attributed to C's own lines. Two port
+> kernels are outright scalar where C is not:
+> `svtav1-dsp/src/restoration.rs:215-221` (the Wiener 7-tap trial filter, vs
+> C's `..._avx512`) and `svtav1-dsp/src/variance.rs:212-219` (`sse`, 21.4 M of
+> `__arcane_sse_impl_v3`'s 27.9 M self Ir on one scalar line).
+>
+> **A thing the Ir campaign structurally could not see: valgrind masks AVX-512,
+> so every callgrind number for C is C's AVX2 arm — and on this host C RUNS
+> AVX-512** (`svt_spatial_full_distortion_kernel_avx512`,
+> `svt_av1_fwd_txfm2d_16x16_avx512`, `fdct32x32_avx512`, `av1_fdct64_new_avx512`,
+> `svt_av1_txb_init_levels_avx512`, `compute_stats_win5_avx512`,
+> `svt_av1_wiener_convolve_add_src_avx512`). The port executes NO AVX-512 kernel
+> of its own. Net effect on totals is small (C's hardware instruction count is
+> 5.4 % below its callgrind Ir at p6, the port's 4.8 % below), so the Ir ranking
+> is not badly distorted overall — but per kernel it can be, and an AVX-512
+> archmage tier is unmeasured headroom no Ir number in this campaign can price.
+> The archmage dispatch boundary is NOT a stall site: the `__arcane_*_impl_v3`
+> kernels run at IPC 3.13-4.97, at or above the frame average; the out-of-line
+> dispatchers cost 0.67 % of the p6 frame in total.
+>
+> NOT MEASURED: the Zen 4 mispredict penalty in cycles (so no "branch misses
+> cost N %" figure appears anywhere above — only counts and rates); the split
+> of the port's excess branch instructions between bounds checks and loop
+> control; any A/B of a proposed fix (measure-only chunk); aarch64; 10-bit;
+> inter; presets other than 2 and 6; qp other than 40.
+
+
 > **LOOP RESTORATION IS NO LONGER THE p6 LEVER — MEASURED, AND
 > `callcount_realimg_2026-09-04` ITEM D IS AMENDED IN PLACE (2026-09-05,
 > measure-only).** Record

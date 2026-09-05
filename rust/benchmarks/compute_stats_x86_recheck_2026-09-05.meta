@@ -143,6 +143,26 @@ measured ratio.
 
 =================== 4. WHAT IS BIGGEST AT p6 NOW ===================
 
+**AMENDED 2026-09-05 (same day, stall-attribution chunk) — THIS SECTION'S
+STANDING CAVEAT ("Ir shares are callgrind's, not wall clock ... Rank by
+this, decide by wall clock") HAS NOW BEEN CASHED, and it reorders the list.**
+`benchmarks/stall_attrib_2026-09-05.{tsv,meta}` measures the same cell with
+hardware counters: the port's IPC is ABOVE C's (3.445 vs 2.832 here), so the
+cycle gap is 1.899x against this record's 2.295x Ir gap and there is no stall
+excess anywhere. Ranked by CYCLES the order becomes libc memset/memcpy/alloc
+(+5.84 % of the port frame) > CDEF filter kernels (+5.74) > entropy coeff
+writer (+5.05) > range coder (+3.80) > Wiener convolve (+3.16) > forward
+transform (+2.61) > block syntax packing (+2.36) > RDOQ optimize_b (+1.51).
+Row 10 of the table below, `coeff rate cost_coeffs_txb`, is a port WIN by
+cycles (0.71x C, IPC 5.02 vs 3.34) despite reading 1.18x by self Ir — as are
+the quantize kernels, the inverse transform and the residual. The OVERLAP
+NOTE below is confirmed by that record (54,437,292 of the 78,128,871 memset
+Ir, 70 %, sit under the unnamed allocator frame), and the row-6
+self-vs-inclusive caveat still stands. One thing this record could not see:
+valgrind masks AVX-512, so C's arms measured here are its AVX2 ones while on
+r7900x C actually runs AVX-512 in the transform, distortion, txb-init,
+compute_stats and wiener-convolve kernels.
+
 Two views, because inclusive edges nest and self costs do not. Ir shares are
 callgrind's, not wall clock — and this campaign has already measured one
 case (`perf-status.md`'s CFL banner) where fewer instructions were SLOWER.
