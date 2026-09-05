@@ -151,7 +151,10 @@ pub fn adjust_strength(strength: i32, var: i32) -> i32 {
 /// `cdef::cdef_find_dir` 0.918 ms against C's `cdef_dir_from_lines_neon`
 /// 0.069 ms at 512x512 preset 8).
 pub fn cdef_find_dir(img: &[u16], stride: usize, coeff_shift: i32) -> (u8, i32) {
-    incant!(cdef_find_dir_impl(img, stride, coeff_shift), [neon, scalar])
+    incant!(
+        cdef_find_dir_impl(img, stride, coeff_shift),
+        [v3, neon, scalar]
+    )
 }
 
 /// 840/n for n in 1..=8 (offset by 1; entry 0 unused).
@@ -475,6 +478,214 @@ fn cdef_find_dir_impl_neon(
     coeff_shift: i32,
 ) -> (u8, i32) {
     match cdef_dir_partials_neon(token, img, stride, coeff_shift) {
+        Some(p) => cdef_dir_from_partials(&p),
+        None => cdef_dir_from_partials(&cdef_dir_partials_scalar(img, stride, coeff_shift)),
+    }
+}
+
+/// AVX2 transliteration of [`cdef_dir_partials_neon`] — the same algorithm, the
+/// same 128-bit / eight-i16-lane register shapes, the same hand-unrolled row
+/// loop (so the eight direction accumulators stay in registers), and the same
+/// `> 255` bail-out to the scalar reference. Read that function's doc comment
+/// for the derivation; this one only records the intrinsic mapping, because the
+/// two bodies must stay in step:
+///
+/// | NEON | x86 |
+/// |---|---|
+/// | `vshlq_u16(v, -c)` | `_mm_srl_epi16(v, c)` |
+/// | `vmaxvq_u16(..) > 255` | `_mm_min_epu16` + `_mm_cmpeq_epi16` + `_mm_movemask_epi8` |
+/// | `vpaddq_s16(a, b)` | `_mm_hadd_epi16(a, b)` — identical lane order |
+/// | `vrev64q_s16(v)` | `_mm_shuffle_epi8(v, REV64)` |
+/// | `vextq_s16::<4>(r, r)` | `_mm_shuffle_epi32::<0x4e>(r)` — swap the 64-bit halves |
+/// | `vextq_s16::<N>(x, y)` | `_mm_alignr_epi8::<2 * N>(y, x)` |
+///
+/// Until 2026-09-05 x86 had NO vector arm here at all — `cdef_find_dir`
+/// dispatched `[neon, scalar]`, so on `r7900x` it ran the scalar 8x8x8
+/// accumulation at 2,140 Ir a block against C's
+/// `svt_aom_cdef_find_dir_dual_avx2` at 208.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cdef_dir_partials_v3(
+    _token: Desktop64,
+    img: &[u16],
+    stride: usize,
+    coeff_shift: i32,
+) -> Option<[[i32; 15]; 8]> {
+    let shift = _mm_cvtsi32_si128(coeff_shift);
+    let bias = _mm_set1_epi16(128);
+    let zero = _mm_setzero_si128();
+    // vrev64q_s16: reverse the four i16 inside each 64-bit half.
+    let rev64 = _mm_setr_epi8(6, 7, 4, 5, 2, 3, 0, 1, 14, 15, 12, 13, 10, 11, 8, 9);
+    let mut rows = [zero; 8];
+    let mut over = zero;
+    for (i, r) in rows.iter_mut().enumerate() {
+        let src: &[u16; 8] = img[i * stride..i * stride + 8].try_into().ok()?;
+        let v = _mm_srl_epi16(_mm_loadu_si128(src), shift);
+        over = _mm_max_epu16(over, v);
+        *r = _mm_sub_epi16(v, bias);
+    }
+    // Outside `[0, 255]` the i16 partials could overflow; hand those to the
+    // scalar reference rather than risk a silently different direction.
+    // `min(over, 255) == over` in every lane iff every shifted pixel fits.
+    let capped = _mm_min_epu16(over, _mm_set1_epi16(255));
+    if _mm_movemask_epi8(_mm_cmpeq_epi16(capped, over)) != 0xffff {
+        return None;
+    }
+
+    // `a[k] = [indices 0..7, indices 8..15]` for the six PLACED directions
+    // (k = 2 and k = 6 are the row and column sums and need no placement).
+    let mut a = [[zero; 2]; 8];
+    let mut colsum = zero;
+
+    macro_rules! place {
+        ($k:literal, $n:literal, $v:expr) => {{
+            a[$k][0] = _mm_add_epi16(a[$k][0], _mm_alignr_epi8::<{ 2 * $n }>($v, zero));
+            a[$k][1] = _mm_add_epi16(a[$k][1], _mm_alignr_epi8::<{ 2 * $n }>(zero, $v));
+        }};
+    }
+    macro_rules! place0 {
+        ($k:literal, $v:expr) => {{
+            a[$k][0] = _mm_add_epi16(a[$k][0], $v);
+        }};
+    }
+    macro_rules! row_prep {
+        ($v:expr) => {{
+            let v = $v;
+            let pv = _mm_hadd_epi16(v, zero);
+            let rq = _mm_shuffle_epi8(v, rev64);
+            let rv = _mm_shuffle_epi32::<0x4e>(rq);
+            let rpv = _mm_shuffle_epi8(pv, rev64);
+            (v, pv, rv, rpv)
+        }};
+    }
+
+    // row 0
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[0]);
+        colsum = _mm_add_epi16(colsum, v);
+        place0!(0, v);
+        place0!(1, pv);
+        place0!(3, rpv);
+        place0!(4, rv);
+        place!(5, 5, v);
+        place0!(7, v);
+    }
+    // row 1
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[1]);
+        colsum = _mm_add_epi16(colsum, v);
+        place!(0, 7, v);
+        place!(1, 7, pv);
+        place!(3, 7, rpv);
+        place!(4, 7, rv);
+        place!(5, 5, v);
+        place0!(7, v);
+    }
+    // row 2
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[2]);
+        colsum = _mm_add_epi16(colsum, v);
+        place!(0, 6, v);
+        place!(1, 6, pv);
+        place!(3, 6, rpv);
+        place!(4, 6, rv);
+        place!(5, 6, v);
+        place!(7, 7, v);
+    }
+    // row 3
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[3]);
+        colsum = _mm_add_epi16(colsum, v);
+        place!(0, 5, v);
+        place!(1, 5, pv);
+        place!(3, 5, rpv);
+        place!(4, 5, rv);
+        place!(5, 6, v);
+        place!(7, 7, v);
+    }
+    // row 4
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[4]);
+        colsum = _mm_add_epi16(colsum, v);
+        place!(0, 4, v);
+        place!(1, 4, pv);
+        place!(3, 4, rpv);
+        place!(4, 4, rv);
+        place!(5, 7, v);
+        place!(7, 6, v);
+    }
+    // row 5
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[5]);
+        colsum = _mm_add_epi16(colsum, v);
+        place!(0, 3, v);
+        place!(1, 3, pv);
+        place!(3, 3, rpv);
+        place!(4, 3, rv);
+        place!(5, 7, v);
+        place!(7, 6, v);
+    }
+    // row 6
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[6]);
+        colsum = _mm_add_epi16(colsum, v);
+        place!(0, 2, v);
+        place!(1, 2, pv);
+        place!(3, 2, rpv);
+        place!(4, 2, rv);
+        place0!(5, v);
+        place!(7, 5, v);
+    }
+    // row 7
+    {
+        let (v, pv, rv, rpv) = row_prep!(rows[7]);
+        colsum = _mm_add_epi16(colsum, v);
+        place!(0, 1, v);
+        place!(1, 1, pv);
+        place!(3, 1, rpv);
+        place!(4, 1, rv);
+        place0!(5, v);
+        place!(7, 5, v);
+    }
+
+    let mut partial = [[0i32; 15]; 8];
+    let mut lanes = [0i16; 8];
+    for k in [0usize, 1, 3, 4, 5, 7] {
+        _mm_storeu_si128(&mut lanes, a[k][0]);
+        for m in 0..8 {
+            partial[k][m] = lanes[m] as i32;
+        }
+        _mm_storeu_si128(&mut lanes, a[k][1]);
+        for m in 0..7 {
+            partial[k][8 + m] = lanes[m] as i32;
+        }
+    }
+    // The eight ROW sums (`partial[2]`) as a pairwise-add tree over the eight
+    // row vectors — six `_mm_hadd_epi16`, no cross-lane reduction.
+    let p01 = _mm_hadd_epi16(rows[0], rows[1]);
+    let p23 = _mm_hadd_epi16(rows[2], rows[3]);
+    let p45 = _mm_hadd_epi16(rows[4], rows[5]);
+    let p67 = _mm_hadd_epi16(rows[6], rows[7]);
+    let rowsums = _mm_hadd_epi16(_mm_hadd_epi16(p01, p23), _mm_hadd_epi16(p45, p67));
+    let mut rs = [0i16; 8];
+    _mm_storeu_si128(&mut rs, rowsums);
+    _mm_storeu_si128(&mut lanes, colsum);
+    for i in 0..8 {
+        partial[2][i] = rs[i] as i32;
+        partial[6][i] = lanes[i] as i32;
+    }
+    Some(partial)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn cdef_find_dir_impl_v3(
+    token: Desktop64,
+    img: &[u16],
+    stride: usize,
+    coeff_shift: i32,
+) -> (u8, i32) {
+    match cdef_dir_partials_v3(token, img, stride, coeff_shift) {
         Some(p) => cdef_dir_from_partials(&p),
         None => cdef_dir_from_partials(&cdef_dir_partials_scalar(img, stride, coeff_shift)),
     }
@@ -2021,6 +2232,131 @@ mod tests {
                 }
             };
         }
+    }
+
+    /// The vector `cdef_find_dir` arms against the scalar reference, over both
+    /// `coeff_shift` domains, both strides the pipeline uses, and — the part
+    /// the C-parity suite does not reach — the `> 255` BAIL-OUT BOUNDARY that
+    /// `cdef_dir_partials_v3` / `cdef_dir_partials_neon` guard their i16
+    /// partials with.
+    ///
+    /// ANTI-VACUITY: the test counts how many blocks took the vector path and
+    /// how many fell back, and FAILS if either count is zero. Without that a
+    /// content set that happens to bail on every block would exercise only the
+    /// scalar arm and still read green — the shape `WORKING-ON-THIS.md` §5
+    /// calls "a silent harness and a genuine absence are indistinguishable".
+    #[test]
+    fn cdef_find_dir_simd_matches_scalar_including_the_bailout_boundary() {
+        for_each_tier(
+            "cdef_find_dir_simd_matches_scalar_including_the_bailout_boundary",
+            |_| {
+                let mut in_domain = 0u64;
+                let mut bailed = 0u64;
+                let mut checked = 0u64;
+                for stride in [8usize, CDEF_BSTRIDE] {
+                    let mut buf = vec![0u16; stride * 8 + 16];
+                    for shift in [0i32, 2] {
+                        let mut st = 0x2545_F491_4F6C_DD1Du64 ^ (stride as u64);
+                        for kind in 0..64usize {
+                            for (n, v) in buf.iter_mut().enumerate() {
+                                let i = n / stride;
+                                let j = n % stride;
+                                *v = match kind {
+                                    // Flats and the two values that sit exactly
+                                    // ON the `<= 255 after shift` boundary.
+                                    0 => 0,
+                                    1 => (255u32 << shift) as u16,
+                                    2 => ((255u32 << shift) | ((1 << shift) - 1)) as u16,
+                                    // One pixel over the boundary -> must bail.
+                                    3 => {
+                                        if n == 3 * stride + 4 {
+                                            (256u32 << shift) as u16
+                                        } else {
+                                            128 << shift
+                                        }
+                                    }
+                                    // The eight directional ramps, so every
+                                    // `partial[k]` in turn is the winner.
+                                    4..=11 => {
+                                        // SIGNED: the loop walks the WHOLE
+                                        // padded buffer, so `j` reaches
+                                        // `stride - 1` and `7 + i - j`
+                                        // underflows a `usize`. That is
+                                        // invisible under `--release` (no
+                                        // overflow checks) and panics under
+                                        // nextest's debug profile — which is
+                                        // exactly how it was caught.
+                                        let (i, j) = (i as i64, j as i64);
+                                        let t = match kind - 4 {
+                                            0 => i + j,
+                                            1 => i + j / 2,
+                                            2 => i,
+                                            3 => 3 + i - j / 2,
+                                            4 => 7 + i - j,
+                                            5 => 3 - i / 2 + j,
+                                            6 => j,
+                                            _ => i / 2 + j,
+                                        };
+                                        (((t * 17).rem_euclid(256)) as u16) << shift
+                                    }
+                                    // Over the boundary in every pixel, so
+                                    // every block bails to the scalar arm.
+                                    //
+                                    // Capped at 320 rather than swept over the
+                                    // whole u16 range for a REASON worth
+                                    // recording: the shared cost tail
+                                    // [`cdef_dir_from_partials`] — and C's
+                                    // `svt_aom_cdef_find_dir_c`, which it is
+                                    // transcribed from — accumulates in i32,
+                                    // and `cost[0]` is bounded by roughly
+                                    // `53,760 * x^2` where `x = (px >> shift)
+                                    // - 128`. That overflows i32 for
+                                    // `|x| > ~197`, i.e. a shifted pixel above
+                                    // ~325. Real callers never get there
+                                    // (reconstructed pixels are <= 255 after
+                                    // the bit-depth shift, which is also what
+                                    // the vector arms' `> 255` bail-out
+                                    // enforces), and in release both the port
+                                    // and C simply wrap. A debug build panics,
+                                    // so a test must not drive the reference
+                                    // outside the range the reference can
+                                    // represent.
+                                    12..=15 => 256 + (lcg(&mut st) % 65) as u16,
+                                    // 8-bit noise in the shifted domain.
+                                    _ => {
+                                        (((lcg(&mut st) % 256) as u16) << shift)
+                                            | ((lcg(&mut st) as u16) & ((1 << shift) - 1))
+                                    }
+                                };
+                            }
+                            let over = (0..8usize)
+                                .any(|i| (0..8usize).any(|j| (buf[i * stride + j] >> shift) > 255));
+                            if over {
+                                bailed += 1;
+                            } else {
+                                in_domain += 1;
+                            }
+                            let want = cdef_dir_from_partials(&cdef_dir_partials_scalar(
+                                &buf, stride, shift,
+                            ));
+                            let got = cdef_find_dir(&buf, stride, shift);
+                            assert_eq!(
+                                got, want,
+                                "find_dir != scalar: stride={stride} shift={shift} kind={kind}"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+                assert_eq!(checked, 2 * 2 * 64);
+                assert!(
+                    in_domain > 0 && bailed > 0,
+                    "vacuous sweep: {in_domain} blocks took the vector path and \
+                     {bailed} fell back — both must be non-zero for this test to \
+                     have covered what its name claims"
+                );
+            },
+        );
     }
 
     /// EVERY legal knob combination the encoder can hand the dst8 filter, on

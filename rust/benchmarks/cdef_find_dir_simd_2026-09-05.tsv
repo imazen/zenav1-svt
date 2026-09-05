@@ -1,0 +1,39 @@
+# cdef_find_dir_simd_2026-09-05 — an AVX2 arm for cdef_find_dir, which x86 did
+# not have at all (`incant!(.., [neon, scalar])`). See the companion .meta.
+#
+# base = origin/main 5d0f3ba6 (the CDEF i16 filter commit)
+# cand = this commit
+# C    = reference/svt-av1 @ 3115c0c1, PREBUILT oracle
+#        rust/tools/perf_c_encode/perf_c_encode (2026-09-03), NOT rebuilt
+# Ir   = valgrind-3.26.0 --tool=callgrind, r7900x, QP=40, 512x512,
+#        tools/perf_profile/callcount_cells.sh. Every row ident=Y on the
+#        uninstrumented pre-pass AND both instrumented runs.
+# WALL = tools/perf_ab.sh, 21 interleaved randomised paired rounds, one untimed
+#        warmup per sample, NEITHER SIDE NICED, box verifiably quiet (uptime
+#        0.29/0.70/0.85 before, 1.00/0.98/0.95 after; `ps -eo pcpu,comm` top
+#        user process 3.2 % plymouthd at both ends). Each A/B is paired with a
+#        SAME-BINARY control run in the same session, which IS this harness's
+#        floor for these cells.
+
+section	metric	cell	base	cand	c	base_over_c	cand_over_c
+IR	frame_ir	photo_cid_512_p6	1556889295	1548856693	705588241	2.207	2.195
+IR	frame_ir	screen_terminal_512_p6	903264405	900889914	355384805	2.542	2.535
+IR	frame_ir	photo_cid_512_p2	45611069730	45596533394	27248547521	1.674	1.673
+IR	cdef_find_dir_self	photo_cid_512_p6	17186816	6356992	851968	20.173	7.462
+IR	cdef_find_dir_self	screen_terminal_512_p6	4867360	1800320	244880	19.876	7.352
+IR	cdef_find_dir_self	photo_cid_512_p2	17186816	6356992	na	na	na
+IR	cdef_find_dir_calls	photo_cid_512_p6	8192	8192	2048	4.000	4.000
+IR	cdef_find_dir_ir_per_block	photo_cid_512_p6	2098.0	776.0	208.0	10.087	3.731
+IR	arcane_cdef_filter_block_impl_v3_self	photo_cid_512_p6	29267200	28569920	9069568	3.227	3.150
+
+section	pair	content	size	preset	n	ident	base_ms	cand_ms	ratio	speedup	p25	p75
+WALL	CONTROL	photo_cid	512	2	21	Y	2293.6197	2295.7944	1.0010	0.999	0.9974	1.0023
+WALL	CONTROL	photo_cid	512	6	21	Y	76.1502	76.1577	1.0013	0.999	0.9984	1.0024
+WALL	CONTROL	screen_terminal	512	2	21	Y	640.1854	640.0981	1.0010	0.999	0.9982	1.0025
+WALL	CONTROL	screen_terminal	512	6	21	Y	41.6044	41.6638	1.0017	0.998	0.9987	1.0096
+WALL	AB	photo_cid	512	2	21	Y	2293.2058	2301.2415	1.0040	0.996	1.0013	1.0050
+WALL	AB	photo_cid	512	6	21	Y	76.1315	75.4458	0.9906	1.010	0.9875	0.9933
+WALL	AB	screen_terminal	512	2	21	Y	639.6641	638.0044	0.9972	1.003	0.9945	0.9989
+WALL	AB	screen_terminal	512	6	21	Y	41.5412	41.5523	0.9993	1.001	0.9962	1.0040
+WALL	CONTROL2	photo_cid	512	2	21	Y	2294.7831	2297.0142	1.0008	0.999	0.9987	1.0025
+WALL	AB2	photo_cid	512	2	21	Y	2296.7951	2301.5465	1.0015	0.998	0.9996	1.0031

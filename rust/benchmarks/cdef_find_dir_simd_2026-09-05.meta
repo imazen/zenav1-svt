@@ -1,0 +1,243 @@
+**x86 HAD NO VECTOR ARM FOR `cdef_find_dir` AT ALL.** `cdef_find_dir`
+dispatched `incant!(cdef_find_dir_impl(..), [neon, scalar])` — aarch64 got
+`cdef_dir_partials_neon`, x86 got the scalar 8x8x8 accumulation. On photo_cid
+512² p6 that was **17,186,816 Ir over 8,192 calls = 2,098 Ir a block against
+C's `svt_aom_cdef_find_dir_dual_avx2` at 208 — 10.1x per block, 20.2x in
+total.** Transliterating the NEON arm to AVX2 takes it to **6,356,992 Ir
+(-63.0 %), 7.46x C**, the frame from 2.207x to **2.195x**, and buys
+**1.010x wall clock on photo_cid p6** against a same-binary control of 1.0013
+with non-overlapping quartiles.
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 threads),
+        valgrind-3.26.0 --tool=callgrind (Ir only). GATES both ISAs
+        (aarch64 = this Mac, M4 Pro).
+base:   `origin/main 5d0f3ba6` — the CDEF i16 filter commit, immediately prior.
+cand:   this commit. ONE file: `crates/svtav1-dsp/src/cdef.rs`.
+C:      reference/svt-av1 @ 3115c0c1, the PREBUILT oracle
+        (`rust/tools/perf_c_encode/perf_c_encode`, 2026-09-03), NOT rebuilt.
+data:   benchmarks/cdef_find_dir_simd_2026-09-05.tsv.
+
+=================== THE ORACLE, AND THE TWO DEFECTS ===================
+
+  Codec/cdef.c:88             svt_aom_cdef_find_dir_c        <- the spec body
+  ASM_AVX2/cdef_block_avx2.c:337  svt_aom_cdef_find_dir_dual_avx2
+                              :100  compute_directions
+                              :236  compute_directions_dual
+                              :169  array_reverse_transpose_8x8
+  Codec/cdef.c:322            svt_cdef_filter_fb             <- the driver
+                              :367   `if (!dirinit || !*dirinit)` — the CACHE
+  Codec/enc_cdef.c:446        `int dirinit = !(use_reference_cdef_fs
+                                               || use_qp_strength);`
+                              :449-455  the SB128 `dirinit = 0` reset
+                              :274   `if (cdef_strength || !*dirinit)`
+
+The CDEF direction search is **20.2x C by instructions and 2x by call count**,
+and those are INDEPENDENT defects. This commit closes the first only.
+
+  (a) **No vector arm on x86.** Closed here.
+  (b) **The apply recomputes what the search already found.** C's
+      `svt_av1_cdef_frame` initialises `dirinit` to 1 whenever the search ran,
+      so `svt_cdef_filter_fb` SKIPS `cdef_find_dir` and reads the per-picture
+      `pcs->cdef_dir_data[fbr * nhfb + fbc].dir/.var` the search wrote. The
+      port's SEARCH caches within itself (`filter_fb_packed`'s `dirinit`,
+      `svtav1-encoder/src/cdef.rs:1079`) but `apply_cdef_frame` recomputes at
+      `:460`. Hence the port's 8,192 calls (4,096 search + 4,096 apply) against
+      C's 4,096 blocks. **STILL OPEN.** Closing it needs the per-fb `dir`/`var`
+      carried out of `cdef_search_still` on `CdefPick`, plus C's two exceptions
+      (`use_reference_cdef_fs` / `use_qp_strength`) and the SB128 reset. It is
+      encoder plumbing, not a kernel change, and it would halve what is left.
+
+=================== WHAT LANDED ===================
+
+`cdef_dir_partials_v3` — a transliteration of `cdef_dir_partials_neon`, not a
+second design. Same algorithm ("place a row-derived vector at an offset", the
+eight direction accumulators kept in registers with the row loop hand-unrolled
+so `vextq`/`alignr` gets a literal), same 128-bit / eight-i16-lane register
+shapes, same shared cost/argmax tail (`cdef_dir_from_partials`), and the same
+`> 255` bail-out to `cdef_dir_partials_scalar` that keeps the i16 partials
+provably in range. The intrinsic map is in the function's doc comment:
+
+  | NEON | x86 |
+  |---|---|
+  | `vshlq_u16(v, -c)`     | `_mm_srl_epi16(v, c)` |
+  | `vmaxvq_u16(..) > 255` | `_mm_min_epu16` + `_mm_cmpeq_epi16` + `_mm_movemask_epi8` |
+  | `vpaddq_s16(a, b)`     | `_mm_hadd_epi16(a, b)` — identical lane order |
+  | `vrev64q_s16(v)`       | `_mm_shuffle_epi8(v, REV64)` |
+  | `vextq_s16::<4>(r, r)` | `_mm_shuffle_epi32::<0x4e>(r)` |
+  | `vextq_s16::<N>(x, y)` | `_mm_alignr_epi8::<2 * N>(y, x)` |
+
+Plus one line: the tier list becomes `[v3, neon, scalar]`.
+
+=================== THE NUMBERS ===================
+
+Frame Ir (base -> cand, r7900x callgrind, qp 40), and C for scale:
+    photo_cid       512 p6  1,556,889,295 -> 1,548,856,693  (-0.516 %)
+                            port/C **2.207 -> 2.195**
+    screen_terminal 512 p6    903,264,405 ->   900,889,914  (-0.263 %)
+                            port/C **2.542 -> 2.535**
+    photo_cid       512 p2 45,611,069,730 -> 45,596,533,394 (-0.032 %)
+                            port/C 1.674 -> 1.673
+
+The KERNEL, self Ir, over the same 8,192 calls:
+    photo_cid       17,186,816 -> 6,356,992  (-63.0 %)  vs C 851,968
+                    **20.17x -> 7.46x**; per BLOCK 2,098 -> 776 Ir against
+                    C's 208 (**10.09x -> 3.73x**)
+    screen_terminal  4,867,360 -> 1,800,320  (-63.0 %)  vs C 244,880
+                    **19.88x -> 7.35x**
+(The 6,356,992 is `__arcane_cdef_find_dir_impl_v3` 6,160,384 plus the
+`incant!` dispatch frame's 196,608 = 24 Ir a call.)
+
+`__arcane_cdef_filter_block_impl_v3` also moves, 29,267,200 -> 28,569,920 at
+p6 and 227,118,635 -> 220,035,243 at p2. Nothing in it changed; that is code
+placement, and it is reported rather than attributed.
+
+WALL CLOCK. Every A/B is paired with a SAME-BINARY control taken in the SAME
+session — the control's ratio IS this harness's floor for that cell, and it is
+not assumed from another lane's (see the correction in
+`cdef_i16_kernel_2026-09-05.meta`). 21 interleaved randomised paired rounds
+each, neither side niced, every row ident=Y, box verifiably quiet (uptime
+0.29/0.70/0.85 before and 1.00/0.98/0.95 after; `ps -eo pcpu,comm
+--sort=-pcpu` top user process 3.2 % plymouthd at both ends):
+
+    cell                     CONTROL (span)              A/B (span)              verdict
+    photo_cid       512 p6   1.0013 (0.9984-1.0024)  0.9906 (0.9875-0.9933)  **1.010x, spans DISJOINT**
+    screen_terminal 512 p6   1.0017 (0.9987-1.0096)  0.9993 (0.9962-1.0040)  overlapping — NULL
+    screen_terminal 512 p2   1.0010 (0.9982-1.0025)  0.9972 (0.9945-0.9989)  marginal, ~1.004x
+    photo_cid       512 p2   1.0010 (0.9974-1.0023)  1.0040 (1.0013-1.0050)  see below
+
+**THE photo_cid p2 ROW DID NOT REPRODUCE, and it is reported as a NULL.** The
+first pass read 1.0040 against a 1.0010 control — a 0.30 % gap that looked like
+a small regression. A second pass, control and A/B again in one session, reads
+**1.0015 against a 1.0008 control, a 0.07 % gap with the spans essentially on
+top of each other** (0.9996-1.0031 vs 0.9987-1.0025). One pass is not a
+measurement. The Ir agrees with the null: at p2 the whole change is -0.032 % of
+the frame, because CDEF is ~0.5 % of a p2 frame — there is nothing there for a
+wall clock to see in either direction.
+
+So: **one real win (photo_cid p6, 1.010x, disjoint from its control), three
+nulls, no measured loss.** The item is small by construction — find_dir was
+1.10 % of the p6 frame before this — and the honest claim is that it is now
+0.41 % of it.
+
+=================== EXACTNESS ===================
+
+The pre-existing `tests/c_parity_cdef.rs::find_dir_all_tiers_match_c` forces
+EVERY archmage token permutation and asserts each equals real
+`svt_aom_cdef_find_dir_c` and equals tier 0, with the `PermutationReport`
+consumed — so adding `v3` to the tier list puts the new arm under it
+automatically. It passes, along with `find_dir_matches_c` and
+`find_dir_8bit_matches_c`.
+
+New: `cdef_find_dir_simd_matches_scalar_including_the_bailout_boundary`, which
+covers what the C-parity suite does not — the `> 255` bail-out boundary. Both
+`coeff_shift` domains x both strides the pipeline uses (8 and `CDEF_BSTRIDE`)
+x 64 content patterns: the flats, the two values that sit exactly ON the
+boundary (`255 << shift` and `(255 << shift) | ((1 << shift) - 1)`), one pixel
+one step OVER it, all eight directional ramps so each `partial[k]` wins in
+turn, full-u16 noise (every block bails), and 8-bit noise in the shifted
+domain. **It carries an ANTI-VACUITY assertion**: it counts the blocks that
+took the vector path and the blocks that fell back and FAILS if either count is
+zero, so a content set that happened to bail everywhere cannot read green while
+testing only the scalar arm.
+
+POSITIVE CONTROLS, run deliberately on BOTH arms — mutating one row's
+placement (`place!(0, 7, v)` -> `place!(0, 6, v)`) makes the tests FAIL, and
+reverting restores them: on x86 it fails `find_dir_matches_c`,
+`find_dir_8bit_matches_c` AND `find_dir_all_tiers_match_c`; on aarch64 it fails
+the new test.
+
+**THE FIRST VERSION OF THIS TEST HAD A BUG THAT ONLY A DEBUG BUILD COULD SEE,
+and the shape of it is worth keeping.** It passed `cargo test --release` on
+both ISAs and FAILED `cargo nextest run --workspace` on both, because nextest
+builds the DEBUG profile where arithmetic overflow panics and `--release`
+silently wraps. Two separate overflows, one mine and one a real property of the
+reference:
+  * the synthetic directional ramps indexed with `usize`, and the fill loop
+    walks the WHOLE padded buffer, so `7 + i - j` underflows once `j` passes 7.
+    Signed indices with `rem_euclid` fix it.
+  * the "every block bails" pattern swept the whole `u16` range, which drives
+    the SCALAR reference far outside the domain it can represent. The shared
+    cost tail [`cdef_dir_from_partials`] — and C's `svt_aom_cdef_find_dir_c`,
+    which it is transcribed from — accumulates in i32, and `cost[0]` is bounded
+    by roughly `53,760 * x^2` for `x = (px >> shift) - 128`. **That overflows
+    i32 for `|x| > ~197`, i.e. a shifted pixel above ~325.** Legal input is
+    comfortably inside it (`|x| <= 128` gives `cost[0] <= 8.8e8` against
+    `i32::MAX` 2.1e9), real callers never get there, and in release both the
+    port and C simply wrap — but a test must not drive the reference outside
+    the range the reference can represent. The bail patterns are capped at 320
+    now, which still exceeds 255 and still forces the fallback.
+**The lesson, since it nearly shipped: `cargo test --release` is NOT the gate.
+Run a new test under the debug profile (or `cargo nextest`) before believing
+it, because release turns an overflow panic into a silent wrap.**
+
+**A DEGENERATE MUTATION, RECORDED SO NOBODY USES IT AS A CONTROL:** changing
+the DC bias from `- 128` to `- 127` in the partials does **NOT** fail any of
+these tests. It is not that the arm is dead — a `panic!` probe proved the v3
+arm is entered — it is that a uniform DC offset is very nearly invisible to
+this kernel's OUTPUT: `var = best_cost - cost[(best_dir + 4) & 7]` differences
+two directions whose partials have the SAME pixel counts, so the DC
+contribution largely cancels, and `var >>= 10` discards the remainder while the
+argmax margin swamps it. A find_dir control must perturb a PLACEMENT or a
+COEFFICIENT, never the bias. (This was found by running the bias mutation
+first, seeing green, and refusing to accept it.)
+
+=================== GATES ===================
+(both ISAs, this tree — filled in from the run logs)
+
+x86_64 (r7900x):
+  `cargo nextest run --workspace` **2554 / 2554** (0 skipped; 2553 before, +1 new)
+  `identity_full_8bit.sh` `IF_TIER=all` **1250 / 1250 byte-identical**
+    (+0 pinned, 0 harness errors; CID22-photo and gb82-photo absent on this
+    host and the script says so — 1250 is its full count)
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open, 0 crashed
+  `video_key_matrix.sh` **59 / 60** — the known-open `gradient p0`
+    (C 1341 B vs port 1342 B), unmoved
+  `screen_ibc_byte_gate.sh` **152 / 152**, 0 diverging, 0 errors
+    (IBC blocks 41,559; palette blocks 27,402)
+  `screen_palette_gate.sh` **50 / 50** (38 palette-coding cells)
+  `fctx_gate.sh` **PASS** 96 / 96 shared fields on both frames
+  `inter_decode_gate.sh` **PASS** 5 / 5;
+  `inter_decode_census.sh` **PASS** 96 / 96 / 0 rejected
+  `inter_completion_scan.sh` `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED, 0 CRASH
+
+aarch64 (this Mac):
+  `cargo nextest run --workspace` **2544 / 2544** (0 skipped; 2543 before, +1 new)
+  `identity_full_8bit.sh` `IF_TIER=all` **1550 / 1550 byte-identical**
+    (+0 pinned, 0 harness errors) — synthetic + dims + all three real corpora
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open
+  `video_key_matrix.sh` **59 / 60** (same known-open `gradient p0`, unmoved)
+  `screen_ibc_byte_gate.sh` **152 / 152**; `screen_palette_gate.sh` **50 / 50**
+  `fctx_gate.sh` **PASS** 96 / 96; `inter_decode_gate.sh` **PASS** 5 / 5;
+  `inter_decode_census.sh` **PASS** 96 / 96 / 0
+  `inter_completion_scan.sh` `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED, 0 CRASH
+  the six still reference cells, `identity_diff.sh`, all VERDICT: IDENTICAL at
+    their pinned sizes — 290 / 839 / 63 / 171 / 580 / 693 B
+
+Every callgrind cell ident=Y on the uninstrumented pre-pass AND on both
+instrumented runs; every `perf_ab.sh` row ident=Y.
+
+=================== MEMORY ===================
+
+Nothing here allocates. The partials arm holds eight `__m128i` accumulators and
+a `[[i32; 15]; 8]` on the stack, exactly as the scalar and NEON arms already
+did; no heap traffic and no buffer size changed.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: that x86 had no vector arm for `cdef_find_dir` before this; the
+frame and per-kernel Ir on two contents at p6 and one at p2; the per-block cost
+against C's dual kernel; the wall clock on four cells at 21 paired rounds each
+with a matched same-binary control on a verifiably quiet box, and that the one
+apparently-negative cell does not reproduce; that every arm equals real C under
+a forced token sweep and equals the scalar core across the bail-out boundary.
+
+NOT ESTABLISHED: that this closes the direction search — it is still 7.46x C's
+instructions, and HALF of that is defect (b) above, the apply recomputing what
+the search already cached, which no kernel change can touch. Also unmeasured:
+p10, any qp but 40, 10-bit, and the inter arm. The residual per block (776 vs
+C's 208) is not decomposed between the vector partials and the shared scalar
+cost/argmax tail (`cdef_dir_from_partials`), which is common to all three arms
+and is the obvious next thing to measure before optimising further.

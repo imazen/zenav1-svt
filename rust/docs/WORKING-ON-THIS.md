@@ -507,6 +507,23 @@ which C fits as a ROTZOOM. Before writing a gate for a feature keyed on MOTION,
 ask what motion the cells actually contain, and make the gate FAIL when no cell
 reaches the interesting branch (`tools/gm_join_gate.sh`'s "ANTI-VACUITY FAIL").
 
+**`cargo test --release` IS NOT THE GATE — release turns an overflow panic into
+a silent wrap.** MEASURED 2026-09-05: a new `cdef` exactness test passed
+`cargo test --release` on BOTH ISAs and failed `cargo nextest run --workspace`
+on both, because nextest builds the DEBUG profile where arithmetic overflow
+panics. Two overflows hid behind release: `usize` index arithmetic in the test's
+own content generator (`7 + i - j` underflows once the fill loop's `j` passes
+7), and — the one worth keeping — the test drove the SCALAR reference outside
+the range the reference can represent. `cdef_dir_from_partials`, transcribed
+verbatim from C's `svt_aom_cdef_find_dir_c`, accumulates in i32 and its
+`cost[0]` is bounded by roughly `53,760 * x^2` for `x = (px >> shift) - 128`,
+so it overflows i32 above `|x| ~ 197` (a shifted pixel above ~325). Legal input
+is far inside that (`|x| <= 128` gives 8.8e8 against i32::MAX 2.1e9) and both
+the port and C wrap identically in release, but a debug build panics. **Run a
+new test under the debug profile before believing it, and do not drive a
+reference implementation outside its representable domain just because the
+vector arm under test guards that domain.**
+
 **`SVTAV1_PACKTREE` appends.** `rm -f` it before every run. A first pass at a
 per-preset IntraBC table reported preset 7 coding 3502 blocks when it codes
 zero, because the counts were cumulative. It was caught only because p7 exactly

@@ -1,5 +1,61 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **x86 HAD NO VECTOR ARM FOR `cdef_find_dir` AT ALL — 20.2x C's INSTRUCTIONS
+> -> 7.46x, AND 1.010x WALL CLOCK ON photo_cid p6 AGAINST A SAME-BINARY CONTROL
+> (2026-09-05).** Record `benchmarks/cdef_find_dir_simd_2026-09-05.{tsv,meta}`.
+> `cdef_find_dir` dispatched `incant!(.., [neon, scalar])`: aarch64 had
+> `cdef_dir_partials_neon`, x86 ran the scalar 8x8x8 accumulation at **2,098 Ir
+> a block against C's `svt_aom_cdef_find_dir_dual_avx2` at 208**. What landed is
+> a TRANSLITERATION of the NEON arm, not a second design — same algorithm, same
+> 128-bit / eight-i16-lane shapes, same hand-unrolled row loop, same shared
+> cost/argmax tail, same `> 255` bail-out to the scalar partials; the intrinsic
+> map (`vpaddq_s16` -> `_mm_hadd_epi16`, `vextq_s16::<N>(x, y)` ->
+> `_mm_alignr_epi8::<2N>(y, x)`, `vrev64q_s16` -> `_mm_shuffle_epi8`,
+> `vextq_s16::<4>(r, r)` -> `_mm_shuffle_epi32::<0x4e>`) is in the function's doc
+> comment. **Ir** (base `origin/main 5d0f3ba6` -> cand, r7900x callgrind, qp 40):
+> the kernel 17,186,816 -> 6,356,992 (**-63.0 %**, 20.17x -> **7.46x** C; per
+> block 2,098 -> 776 against C's 208), frame photo_cid p6 1,556,889,295 ->
+> 1,548,856,693 (-0.516 %, port/C **2.207 -> 2.195**), screen_terminal p6
+> -0.263 % (2.542 -> 2.535), photo_cid p2 -0.032 % (1.674 -> 1.673).
+> **Wall clock**, each A/B paired with a SAME-BINARY control in the same session
+> on a verifiably quiet box, 21 rounds each, every row ident=Y: photo_cid 512 p6
+> A/B 0.9906 (0.9875-0.9933) against control 1.0013 (0.9984-1.0024) — spans
+> DISJOINT, **1.010x**. screen_terminal p6 and p2 are nulls.
+> **The photo_cid p2 row DID NOT REPRODUCE and is reported as a null:** pass 1
+> read 1.0040 against a 1.0010 control (a 0.30 % gap that looked like a small
+> regression), pass 2 reads 1.0015 against 1.0008 with the spans on top of each
+> other. One pass is not a measurement, and the Ir agrees — at p2 the whole
+> change is 0.032 % of the frame.
+> **STILL OPEN, and it is HALF of what is left:** the port's apply recomputes
+> the direction the search already found. C's `svt_av1_cdef_frame` sets
+> `int dirinit = !(use_reference_cdef_fs || use_qp_strength)` (`enc_cdef.c:446`)
+> — 1 whenever the search ran — so `svt_cdef_filter_fb`'s
+> `if (!dirinit || !*dirinit)` (`cdef.c:367`) SKIPS `cdef_find_dir` and reads the
+> per-picture `pcs->cdef_dir_data[fbr * nhfb + fbc]` the search wrote. The port's
+> search caches within itself (`svtav1-encoder/src/cdef.rs:1079`) but
+> `apply_cdef_frame` recomputes at `:460`, so the port makes **8,192 calls where
+> C makes 4,096 blocks**. Closing it is encoder plumbing — carry the per-fb
+> `dir`/`var` out of `cdef_search_still` on `CdefPick`, plus C's two exceptions
+> and the SB128 `dirinit = 0` reset (`enc_cdef.c:449-455`).
+> **A TRAP THIS CHUNK PAID FOR, now in `WORKING-ON-THIS.md` §5: `cargo test
+> --release` is NOT the gate.** The new exactness test passed `--release` on both
+> ISAs and FAILED `cargo nextest run --workspace` on both, because nextest builds
+> the DEBUG profile where arithmetic overflow panics and release silently wraps.
+> One overflow was the test's own `usize` index arithmetic; the other is a real
+> property worth knowing — `cdef_dir_from_partials`, transcribed verbatim from
+> C's `svt_aom_cdef_find_dir_c`, accumulates in i32 and its `cost[0]` is bounded
+> by roughly `53,760 * x^2` for `x = (px >> shift) - 128`, so it overflows above
+> `|x| ~ 197` (a shifted pixel above ~325). Legal input is far inside that and
+> both sides wrap identically in release, but **a test must not drive a reference
+> outside the range the reference can represent.**
+> **AND A DEGENERATE MUTATION, so nobody uses it as a control:** changing the DC
+> bias from `- 128` to `- 127` in the partials fails NOTHING — not because the
+> arm is dead (a `panic!` probe proved it is entered) but because
+> `var = best_cost - cost[(best_dir + 4) & 7]` differences two directions with
+> the SAME pixel counts, so the DC contribution largely cancels and `var >>= 10`
+> discards the rest. A find_dir control must perturb a PLACEMENT or a
+> COEFFICIENT.
+
 > **THE CDEF FILTER IS A REAL SIMD KERNEL ON BOTH COLUMN WIDTHS NOW — 8.85x C's
 > INSTRUCTIONS -> 3.03x, AND **1.043x / 1.044x WALL CLOCK ON THE TWO PHOTOS AT
 > p6** (2026-09-05).** Record `benchmarks/cdef_i16_kernel_2026-09-05.{tsv,meta}`.
