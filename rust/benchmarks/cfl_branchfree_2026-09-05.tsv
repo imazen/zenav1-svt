@@ -67,6 +67,15 @@ absz	gradient	256	2	15	209.3778	198.4249	0.9479	1.055	0.9453	0.9491
 absz	gradient	512	2	15	461.0685	442.3384	0.9592	1.043	0.9570	0.9606
 absz	gradient	1024	2	15	1438.9221	1393.8647	0.9698	1.031	0.9686	0.9712
 #
+# --- 6d. ALL FOUR chunks on the OTHER ISA: aarch64 (this Mac, M4 Pro), gradient
+#         qp40, 21 interleaved paired rounds. Box load average 2.79 at the start
+#         (other agents live) — NOT the quiet-box condition the r7900x rows have,
+#         so read the direction and the spans, not the absolute ms.
+abarm	gradient	256	2	21	166.3862	158.8049	0.9532	1.049	0.9459	0.9592
+abarm	gradient	256	6	21	8.6705	8.6112	0.9894	1.011	0.9776	0.9948
+abarm	gradient	512	2	21	345.8070	334.3168	0.9686	1.032	0.9616	0.9706
+abarm	gradient	512	6	21	28.4803	28.2288	0.9917	1.008	0.9797	0.9974
+#
 # --- 6c. ALL FOUR chunks, preset sweep on the photo at 512, 21 paired rounds.
 #         p10 is a REAL small REGRESSION (span entirely above 1.0), reported
 #         as one: +0.054 ms on a 9.8 ms frame against -137 ms at p2.

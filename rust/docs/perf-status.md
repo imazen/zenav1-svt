@@ -35,7 +35,9 @@
 > 21 interleaved paired rounds, ident=Y on every row:** photo_cid 512 p2
 > **1.059x**, the CLIC glitter photo **1.062x**, the gb82-sc terminal crop
 > **1.040x**, gradient 256 p2 **1.055x** and 512 p2 **1.042x**, gradient 256 p6
-> 1.009x and 512 p6 1.003x. **A PRESET SWEEP on the photo at 512 names the one
+> 1.009x and 512 p6 1.003x. **On the OTHER ISA** (this Mac, gradient, 21 paired
+> rounds, box NOT quiet — load 2.79 — so read direction and spans): 256 p2
+> **1.049x**, 512 p2 **1.032x**, 256 p6 1.011x, 512 p6 1.008x. **A PRESET SWEEP on the photo at 512 names the one
 > cell where the four are NEGATIVE**: p6 1.022x, **p10 0.996x (span
 > 1.0015-1.0093 — a REAL ~0.4 % slowdown)**, p13 0.996x (span straddles 1.0, a
 > null). p10/p13 are the `only_dct` regime where none of the four mechanisms has

@@ -144,6 +144,14 @@ at p2 — it was NOT re-tested against this photo p10 cell, which is the open
 follow-up). In absolute time the trade is -137 ms at p2 and -1.6 ms at p6
 against +0.054 ms at p10 on a 9.8 ms frame.
 
+AND ON THE OTHER ISA. Every wall-clock number above is r7900x; the four
+together were also measured on this Mac (M4 Pro, aarch64), gradient qp 40, 21
+interleaved paired rounds, ident=Y: 256 p2 **1.049x** (span 0.9459-0.9592),
+512 p2 **1.032x** (0.9616-0.9706), 256 p6 1.011x, 512 p6 1.008x. The box was
+NOT quiet (load average 2.79, four users, other agents live), which is why this
+is reported as a direction-and-span check on the second ISA rather than as a
+position number.
+
 A SIZE SWEEP of the four together (gradient, qp 40, preset 2, 15 paired rounds
 each, ident=Y): 64 **1.051x**, 128 **1.051x**, 256 **1.055x**, 512 **1.043x**,
 1024 **1.031x** — the gain is roughly flat in frame size and does not come from
