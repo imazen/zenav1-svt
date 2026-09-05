@@ -8289,11 +8289,25 @@ calls `inter_mvp::gm_get_motion_vector_enc` and puts the model on the candidate
 as `wm_params_l0` / `wm_params_l1` — but **`wm_params_l0` has no consumer
 outside `port_md/inject.rs` and `port_md/motion_mode.rs`**, and the latter is
 item 4 of `docs/UNWIRED-PORTED-CODE-2026-09-04.md` (12 of 13 functions dead).
-The live inter predictor (`inter_search_arm`, `leaf_funnel`) never reads it. So
-a GLOBALMV block whose model is not a pure translation would be PREDICTED with a
-plain translation MV — wrong pixels, not just wrong syntax. Coding the model
-therefore needs the WARPED-PREDICTION consumer, which is item 4's territory, not
-a plumbing pass. Do not scope "wire the header" as the whole of it.
+The live inter predictor never reads it, and says so in its own module header:
+`inter_pred_arm.rs` — *"Warped motion and OBMC are different C entry points
+(`enc_make_inter_predictor`'s `warp` arm, `svtav1_dsp::obmc`), both ported and
+both unwired."*
+
+And the routing gate is NOT `motion_mode`. `inject_global_candidates` sets
+`motion_mode: SimpleTranslation`; C's `enc_inter_prediction.c:3276` takes the
+warp arm on
+
+    block_mi->motion_mode == WARPED_CAUSAL ||
+    is_global_mv_block(block_mi->mode, bsize, wm_params->wmtype)
+
+so a GLOBALMV block with a ROTZOOM model is warp-predicted at
+`SIMPLE_TRANSLATION`. `is_global_mv_block` is ported
+(`port_entropy_inter::modes::is_global_mv_block_idx`) and is used for the
+SYNTAX only. So the port would predict such a block with a plain translation MV
+— wrong PIXELS, not just wrong syntax. Coding the model therefore needs the
+warped-prediction consumer, which is item 4's territory, not a plumbing pass.
+Do not scope "wire the header" as the whole of it.
 
 **What is still NOT wired**, with specifics. The MODEL is computed and thrown
 away. To code it: `entropy::obu::write_inter_frame_header`'s seven-zero-bit loop
