@@ -7909,6 +7909,19 @@ the promotion). Two `regression_spotcheck` cells: the terminal cell (needs
 mechanisms 1 AND 2 — 5000 B with 1 alone) and the graph 512x480 cell
 (mechanism 3).
 
+**Where this band is actually guarded — NOT by CI.** `screen_ibc_byte_gate.sh`
+is not referenced by `.github/workflows/rust-gates.yml`, and wiring it in would
+not help: the runner has no `gb82-sc` corpus, so every cell would `SKIP-MISSING`
+and the gate would exit 3 on its own anti-vacuity. The same absence already
+shows in CI's `regression_spotcheck` — it reports `98 / 98` there against
+`104 / 104` locally, and names the six gb82-sc cells (both new ones among them)
+under "SKIPPED (corpus/tool absent — these cells guarded NOTHING this run)".
+So the whole gb82-sc IntraBC band — this gate, `screen_ibc_gate.sh`,
+`screen_palette_gate.sh` and those spotcheck cells — is guarded ONLY by a local
+pre-push run on a host that has the corpus and the C oracle. Run it before
+touching `mds3.rs`, `commit.rs`, `tx_geom.rs` or the chain sim's palette path;
+a green CI run says nothing about these three mechanisms.
+
 **Harness notes this paid for.** `cmp a b | awk '{print $NF}'` prints the
 LINE number, not the byte offset (`char 3356, line 12` -> `12`);
 `screen_palette_gate.sh`'s `fdiff` and the first cell script here both did
