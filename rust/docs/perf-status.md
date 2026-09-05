@@ -1,5 +1,45 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **WIENER `compute_stats` IS IN C's SHAPE ON BOTH ISAs — 127x C PER CALL ->
+> 1.35x, 746.5 M -> 7.9 M Ir per 512x512 frame, byte-identical; the p6 port/C
+> ratio on every cell drops from 3.4-5.1x to 2.3-2.8x (2026-09-04).** Record
+> `benchmarks/compute_stats_cshape_2026-09-04.{tsv,meta}`. The realimg record's
+> one content-independent kernel (D. below) was the port's per-pixel form:
+> gather the `win x win` window with `win2` strided scalar loads, run
+> `win2 + 1` short i32 multiply-accumulate loops over a `win2 x win2` i32
+> scratch, flush per row — 350 products and ~1,900 Ir per pixel at `win = 5`
+> against C's 66 products and ~15 Ir. It is now C's six-step kernel
+> (`compute_stats_win{5,7}_avx2`, `ASM_AVX2/pickrst_avx2.c:775/:1546`, the
+> NEON twin `pickrst_neon.c:147/:698`): full `madd` dots for `M` and the
+> first block row and column of `H` (steps 1-2), every other `H` entry
+> derived from a neighbour by an exact O(height) column-shift delta (3-4) or
+> O(width) row-shift delta (5-6). One `macro_rules! cs_kernel` body over
+> seven per-ISA `#[rite]` lane primitives (load / AND / zero / pairwise
+> madd / msub / i64 reduce / mask), instantiated per ISA and per window; the
+> column deltas run over transposed edge strips instead of C's scalar
+> `_mm256_insert_epi16` gathers; steps 1-2 drain i32 -> i64 every
+> `floor(i32::MAX / (chunks * 130050))` rows under a `CS_MAX_DIM = 32000`
+> structural guard, so every accumulator bound is computed. Not
+> `#[magetypes]`: the shape needs a pairwise widening `i16 x i16 -> i32`
+> multiply-accumulate (`_mm256_madd_epi16` / `vmlal_s16`) that magetypes has
+> at no version — the named missing primitive is
+> `i16x16::madd_adjacent(i16x16) -> i32x8` (+ `msub`). Iterations on
+> photo_cid p6 (r7900x callgrind, all byte-identical): 746.55 M -> 18.49 M
+> (C-shape, per-load `[..16]` checks) -> 16.88 M (chunk slices via
+> `core::array::from_fn`, which is NOT inlined and hides the lengths — one
+> `cmp; je` per chunk per row survived) -> 8.37 M (views built with plain
+> loops; steps 3-4 as two passes so W = 7 stops spilling) -> 7.93 M (SIMD
+> `find_average`). Frame totals: gradient p2 2.660x -> 2.493x, p6 5.120x ->
+> **2.766x**; photo_cid p2 1.805x -> 1.777x, p6 3.395x -> **2.349x**; the LR
+> search's inclusive Ir at p6 790.6 M -> 52.0 M against C's 8.15 M (the rest
+> is the tap refinement's convolve, the SGR search and `compute_score`, not
+> touched). aarch64 kernel bench (`benches/kernel_tiers.rs`, shared box, read
+> the within-run ratio to the unchanged scalar): win5 64x64 10.9x -> 24.8x,
+> win7 10.1x -> 26.3x over scalar — the row-pair arm of 2026-09-03 is
+> replaced by the same body. Gates: see the record's GATES section
+> (aarch64 chain + cross-ISA on r7900x). Wall clock: paired A/B on r7900x in
+> the record; the Mac was not quiet.
+
 > **CALL COUNTS RE-COMPARED ON REAL CONTENT (2026-09-04, measure-only): the
 > three CPU fixes HOLD on photos, a screenshot and line art — no MD-search
 > edge that read ~1.0x on the gradient reads >1.5x on textured content.**
@@ -1903,7 +1943,7 @@
 >
 > | port function | p6 share | p2 share | C counterpart |
 > |---|---|---|---|
-> | `restoration::compute_stats` (**already NEON** — quality, not coverage; **WORKED 2026-09-03, see below**) | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
+> | `restoration::compute_stats` (**already NEON** — quality, not coverage; **WORKED 2026-09-03, see below; REWORKED 2026-09-04 to C's six-step shape on both ISAs, 1.35x C per call on x86 — see the top of this file**) | **9.83 %** | 0.60 % | `svt_av1_compute_stats_neon` (5.1x) |
 >
 > **WHERE `compute_stats`'s 5.1x LIVED, AND THE FIX THAT LANDED (2026-09-03).**
 > This paragraph used to record a structural read of the port's NEON arm and a
@@ -1960,9 +2000,14 @@
 > videokey cell's span sits entirely below 1.0. Back-solving 1.074x against the
 > 9.83 % p6 frame share puts the FUNCTION at ~3.35x faster, i.e. roughly 1.5x C
 > rather than 5.1x — NOT the 9x the MAC count alone would suggest, because the
-> sub-average build, `find_average` and the H scatter are unchanged. The x86
+> sub-average build, `find_average` and the H scatter are unchanged. ~~The x86
 > `_v3` arm still uses the old per-pixel gather; the same two collapses apply
-> to it and are UNMEASURED there.
+> to it and are UNMEASURED there.~~ **SUPERSEDED 2026-09-04:** the x86 arm was
+> MEASURED at 127x C per call on real content (the realimg record), and both
+> arms — this row-pair NEON arm included — were replaced by C's six-step
+> kernel (`cs_kernel!`), 1.35x C per call on x86 and 2.3x faster than the
+> row-pair arm on the aarch64 kernel bench; record
+> `benchmarks/compute_stats_cshape_2026-09-04.meta`.
 > | `cdef::cdef_filter_block` (**already NEON** — quality) | 4.70 % | 2.73 % | 5.6x vs `cdef_filter_block_*_neon` |
 > | `restoration::wiener_convolve_add_src` | **2.68 %** | 1.17 % | `svt_av1_wiener_convolve_add_src_neon` (10.3x) |
 > | `cdef::cdef_find_dir` (**WORKED 2026-09-03 — the 15x was NOT available**) | **2.02 %** | — | `svt_aom_cdef_find_dir*_neon` (15x) |

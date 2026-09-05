@@ -1,0 +1,223 @@
+WIENER compute_stats IN C's SHAPE: the one kernel that was 127x C PER CALL
+and 31-55 % of the port's preset-6 instruction count is now 1.35x C per
+call, byte-identical on both ISAs, and the p6 port/C ratio on every 512x512
+cell falls from 3.4-5.1x to 2.3-2.8x.
+
+date:   2026-09-04/05 (runs 01:46-02:14 UTC 2026-09-05)
+host:   r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores), valgrind-3.26.0
+        --tool=callgrind (Ir only). rustc 1.98.1 (48a229cea 2026-09-01),
+        gcc 15.2.0 oracle.
+before: main@origin 448290c9 (the tree this workspace branched from),
+        built in the same directory with the same command, measured the same
+        way FIRST — the 746,546,988 / 5,873,732 numbers reproduce the
+        callcount_realimg_2026-09-04 record to the unit.
+after:  this commit's tree (the x86 `_v3` arm, the aarch64 `_neon` arm and
+        the shared `cs_kernel!` body; scalar reference untouched).
+C:      reference/svt-av1 @ 3115c0c1 — the PREBUILT oracle in the primary
+        r7900x checkout (`Bin/Release/libSvtAv1Enc.a` 2026-08-31,
+        `tools/perf_c_encode/perf_c_encode` 2026-09-03), NOT rebuilt.
+        Generic build (NATIVE=OFF, RTCD): its compute_stats is
+        `svt_av1_compute_stats_avx2` -> `compute_stats_win5_avx2` — NOT the
+        AVX-512 kernel, on a Zen 4 (RTCD picks AVX2 for this symbol in that
+        build).
+port:   `env -u RUSTFLAGS cargo build --release -p zenav1-svt --example
+        perf_encode --example identity_run -j 4` (no target-cpu=native;
+        runtime archmage dispatch; the `__arcane_compute_stats_impl_v3`
+        symbol is the AVX2 arm executing).
+driver: tools/perf_profile/callcount_cells.sh (unchanged) on two cells —
+        the synthetic gradient and the CID22 photo_cid .yuv the realimg
+        record prepared (sha 88142a484affd4b3, kept at
+        r7900x:~/tmp/rc1/yuv/photo_cid.yuv) — at presets 2 and 6, qp 40.
+data:   benchmarks/compute_stats_cshape_2026-09-04.tsv (per cell: totals,
+        the kernel both sides, the LR search both sides).
+
+=================== THE NUMBER ===================
+
+  compute_stats, 6 calls per 512x512 frame, inclusive Ir:
+    before  746,546,988   (124.4 M per call)   127.1x C
+    after     7,925,038   (  1.32 M per call)    1.349x C
+    C         5,873,732   (  0.98 M per call)
+  Content-independent on both sides, as the realimg record said: the same
+  number on the gradient and on the photo, at p2 and at p6 (the 136-Ir
+  difference between p2 and p6 is find_average's divide).
+
+  Frame totals (port / C, ratio), before -> after:
+    gradient  p2  11.77 G / 4.42 G  2.660x -> 11.03 G  2.493x
+    gradient  p6   1.61 G / 0.31 G  5.120x ->  0.87 G  2.766x
+    photo_cid p2  49.17 G / 27.25 G 1.805x -> 48.43 G  1.777x
+    photo_cid p6   2.40 G / 0.71 G  3.395x ->  1.66 G  2.349x
+  Every cell byte-identical (pre-pass cmp AND the instrumented runs' own
+  .obu cmp'd against it), before and after.
+
+  What the LR search is now, inclusive (`search_restoration_still_bd` vs C's
+  `restoration_seg_search`): p6 52.0 M vs 8.15 M (was 790.6 M) — the
+  remaining 6.4x is the REST of the search (the Wiener convolve in the tap
+  refinement, the SGR search, compute_score), which this chunk did not
+  touch. At p2 it is 265.6 M / 318.6 M vs 15.9 M / 17.7 M for the same
+  reason (compute_stats is 3 % of it now).
+
+=================== WHERE THE 127x WAS (the breakdown that was the plan) ===================
+
+callgrind's callee tree for the old `__arcane_compute_stats_impl_v3` was
+ONE self-cost node: 746,546,730 self, 3,986,376 in `__memset` (3,090 calls
+= one `h_acc` zero per region row), nothing else — `find_average`, the
+window gather and the 50 `mac_row_i32_v3` calls per pixel were all inlined,
+so there was no callee to name. Read from the source instead (the shape the
+realimg record asked for): per source pixel the arm gathered the `win x win`
+window with `win2` strided scalar loads, then ran `win2 + 1` short i32
+multiply-accumulate loops over a `win2 x win2` upper-triangular i32 scratch
+(`_mm256_mullo_epi32` on widened lanes, 8 products per instruction pair, an
+average slice length of 13 with a scalar tail), and flushed the scratch to
+i64 once per row: ~1,900 Ir per pixel for `win2 (win2 + 3) / 2` = 350
+products at win = 5. C forms 2 W^2 + (W-1)^2 = 66 products per pixel
+(`_mm256_madd_epi16`, 16 per instruction) and derives the other 284 `H`
+entries from O(width + height) edge deltas — ~15 Ir per pixel. The 127x is
+5.3x more products times ~24x more instructions per product.
+
+=================== C's STRUCTURE (cited) ===================
+
+`svt_av1_compute_stats_avx2` (ASM_AVX2/pickrst_avx2.c:2345): find_average,
+`sub_avg_block_avx2` (:202) into i16 `d` (window support, stride rounded to
+16) and `s` (source), then `compute_stats_win5_avx2` (:775) or
+`compute_stats_win7_avx2` (:1546), then `diagonal_copy_stats_avx2` (:685).
+Inside the kernel, writing H as a W x W grid of W x W blocks (block =
+column-offset pair, entry = row-offset pair):
+  Step 1 (:786) every M entry and block (0, j)'s TOP ROW, full madd dots —
+    `stats_top_win*` (:247/:271): load src and dgd once per 16-pixel chunk,
+    madd each against the W window rows, 2W register accumulators over the
+    WHOLE region (8-bit path; the high-bit-depth path drains every
+    `h_allowed` rows, :285).
+  Step 2 (:827) block (0, j)'s LEFT COLUMN, full dots — `stats_left_win*`
+    (:300/:315).
+  Step 3 (:967) diagonal blocks' top rows from the previous diagonal
+    block's, by a column-shift delta over the height (`step3_win*`,
+    `update_5_stats_avx2`).
+  Step 4 (:1185) squares' top row + left column from block (i-1, j-1)'s,
+    column-shift deltas gathered with `_mm256_insert_epi16` chains.
+  Step 5 (:1404) squares' interiors from (l-1, m-1) by a row-shift delta
+    over the width — `derive_square_win*` (:418/:458): msub the top rows,
+    madd the bottom rows, `hadd_update_4_stats_avx2` (pickrst_avx2.h:281)
+    reduces and adds into H.
+  Step 6 (:1470) triangles' interiors the same way — `derive_triangle_win*`
+    (:536/:562).
+`madd_avx2` / `msub_avx2` (pickrst_avx2.h:235/:240) are `_mm256_madd_epi16`
++ add/sub into i32 lanes; `hadd_four_32_to_64_avx2` widens lanes to i64
+BEFORE the cross-lane add. The NEON kernel (ASM_NEON/pickrst_neon.c:147 /
+:698, entry :1200) is the same six steps on `vmlal_s16` / `vmlal_high_s16`
+(pickrst_neon.h:46).
+
+=================== THE PORT'S ROUTE ===================
+
+One `macro_rules! cs_kernel` body (crates/svtav1-dsp/src/restoration.rs)
+with C's six steps, instantiated per ISA and per window size (W = 5 / 7 as
+a literal, so the accumulator arrays are register-resident), over seven
+per-ISA `#[rite]` lane primitives: a 16-lane i16 load, a lane AND, a zero
+accumulator, pairwise multiply-add and multiply-subtract into i32 lanes
+(`_mm256_madd_epi16` / `vmlal_s16`+`vmlal_high_s16`), an i64 horizontal
+reduce, and a lane mask. Two departures from C, both measured:
+  * Steps 3-4's column-shift deltas run over TRANSPOSED strips of `d` (the
+    2*hw leftmost and the 2*hw columns at `width..`), built once in
+    `cs_prepare`, so they are the same masked madd dot as everything else
+    instead of C's scalar `_mm256_insert_epi16` gathers.
+  * Steps 1-2 drain their i32 accumulators to i64 every
+    `rows_per_drain = floor(i32::MAX / (chunks * 130050))` rows (C's 8-bit
+    path never drains and relies on the unit-size bound); with the
+    `CS_MAX_DIM = 32000` structural guard every accumulator bound is a
+    computed number, not a comment.
+Row views are exact-length `&[[i16; 16]]` slices built with plain loops —
+NOT `core::array::from_fn`, which is not inlined and hid the lengths so
+LLVM kept a `cmp; je` per chunk per row (measured: 16.88 M -> 8.37 M Ir when
+replaced). The steps 3-4 top-row and left-column accumulations are two
+passes so each keeps <= W accumulators in registers (the fused form spilled
+at W = 7). `find_average` got AVX2 (`_mm256_sad_epu8`) / NEON
+(`vpaddlq_u8` -> `vpadalq_u32`) arms (8.37 M -> 7.93 M).
+
+WHY NOT `#[magetypes]`: the shape needs a pairwise widening i16 x i16 -> i32
+multiply-accumulate (`_mm256_madd_epi16` / `vmlal_s16`), which magetypes
+has at no version (0.9.28 pinned; `origin/main` has `widen_low/high` but
+no `madd`); widen + `mullo_epi32` + add is 3-6x the instructions of one
+madd and would have left the kernel at ~5x C. The missing primitive is
+`i16x16::madd_adjacent(i16x16) -> i32x8` (and its `msub`); with it the
+seven primitives collapse and this body becomes one generic
+`#[magetypes]` function.
+
+Iterations, all on photo_cid p6, all byte-identical, all
+`c_parity_wiener` 5/5 with `permutations_run >= 2`:
+  746.55 M  before (per-pixel gather + win2 + 1 = 26 mac_row calls per pixel at win 5)
+   18.49 M  C-shape, `&[i16]` loads with per-load `[..16]` checks
+   16.88 M  exact-length chunk slices via `core::array::from_fn` (not inlined)
+    8.37 M  chunk slices built inline; steps 3-4 split into two passes
+    7.93 M  + SIMD find_average                        <- landed
+
+=================== BYTE-IDENTITY ===================
+
+Every intermediate is an exact integer: products of two values in
+[-255, 255] fit i32; each madd lane holds <= 2 * chunks * 65025 products
+between drains (steps 1-2) or in total (deltas), bounded by CS_MAX_DIM;
+lanes are widened to i64 before any cross-lane add; the shift recurrences
+are exact identities. So each M/H entry is the same finite sum of the same
+products the scalar reference forms, and for exact integers a sum does not
+depend on its association. Pinned by `tests/c_parity_wiener.rs`
+(`compute_stats_matches_c`, `compute_stats_all_tiers_match_c` — 220
+iterations, widths 1..90, both windows, every tier, asserting
+`permutations_run >= 2` and no excluded token) against real C on BOTH
+ISAs: aarch64 (this Mac) 5/5, x86_64 (r7900x) 5/5.
+
+=================== aarch64 (NEON arm, kernel bench) ===================
+
+`benches/kernel_tiers.rs` on the M4 Pro — a SHARED box with another
+agent's encodes running, so absolute times moved between runs (the
+unchanged scalar reference read 715 / 703 / 325 us across three runs);
+read the neon-vs-scalar ratio within a run:
+  win5 64x64: row-pair 65.7 us vs scalar 714.9 (10.9x)  ->  C-shape 13.1 us vs scalar 324.5 (24.8x)
+  win7 64x64: row-pair 169.3 us vs scalar 1709.0 (10.1x) ->  C-shape 37.5 us vs scalar 987.9 (26.3x)
+No frame-level wall clock on the Mac (box not quiet); the r7900x paired
+A/B is in the section below.
+
+=================== WALL CLOCK (r7900x, paired A/B) ===================
+
+tools/perf_ab.sh, interleaved randomised-order paired rounds, NEITHER SIDE
+NICED, one untimed warmup per sample, gradient qp 40 STILL preset 6, 15
+rounds, box quiet (load 0.06; the gate chains had finished). Baseline =
+main@origin 448290c9 built in a sibling directory with the same command.
+Records `benchmarks/compute_stats_cshape_ab_2026-09-04.still.{tsv,raw.tsv}`
+(the raw header's `commit=` field is meaningless there: the r7900x trees are
+rsync copies, not git checkouts; the commit is this record's).
+
+  size     ident  base_ms   cand_ms   ratio   speedup  p25     p75
+  256x256  Y      16.637    10.430    0.627   1.594x   0.620   0.629
+  512x512  Y      59.024    33.958    0.575   1.741x   0.573   0.576
+
+Whole-frame wall clock at preset 6, 1.59x / 1.74x faster, every round's
+span below 0.63. Not measured: presets 2 and 10 (compute_stats is 1-2 % /
+0 % of them by Ir), any size but these two, the Mac (not quiet).
+
+=================== GATES ===================
+
+aarch64 (this Mac, bash 5, serial chain, one harness at a time), on the
+committed tree: `cargo nextest run --workspace` 2529/2529,
+`regression_spotcheck` 102/102, six still cells IDENTICAL at
+290/839/63/171/580/693 B, `identity_full_8bit` 1100/1100 (+0 pinned, 0
+harness errors), `inter_byte_gate` PASS (96 required, 0 failed, 1
+known-open, 0 crashed), `video_key_matrix` 59/60 (the one diff is the
+known-open `gradient p0`, 1341 vs 1342 B — unmoved), `fctx_gate` 96/96
+fields PASS, `inter_decode_gate` 5/5 PASS, `inter_decode_census` 96/96
+PASS, `inter_completion_scan` with `SCAN_GATE=1` 64 OK / 0 REFUSED / 0
+CRASH PASS, `c_parity_wiener` 5/5 (all-tiers sweep with
+`permutations_run >= 2`, no excluded token).
+x86_64 (r7900x, same tree rsync'd): nextest 2539/2539, `c_parity_wiener`
+5/5, `regression_spotcheck` 102/102, `inter_byte_gate` PASS (96/0/1),
+`identity_full_8bit` 1100/1100, and the four callgrind cells above
+byte-identical before and after.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: the kernel's Ir both sides on both cells at p2 and p6; byte
+identity of every measured cell and of the C-parity tier sweep on both
+ISAs; the aarch64 kernel-bench ratios.
+NOT ESTABLISHED: the remaining 1.35x's composition (callgrind attributes
+the whole arm as self cost; the asm of the hot loops is clean — 3
+instructions per madd, no spills, no per-chunk checks — so it is loop
+control, per-row view setup, the drains and `cs_prepare`); the 10-bit
+`compute_stats_hbd` path (untouched, still scalar); anything about the
+LR search's other 44 M at p6.

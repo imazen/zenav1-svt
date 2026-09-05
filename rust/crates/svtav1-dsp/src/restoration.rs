@@ -413,13 +413,14 @@ pub fn find_average(
 /// `win/2` margins around the region (the search extends the recon by 3+
 /// before calling). Coordinates are plane-relative; `origin` indexes (0,0).
 ///
-/// Runtime-dispatched (`incant!([v3, neon, scalar])`): the AVX2 (`_v3`) path
-/// accumulates each region row's M/H products in i32 SIMD lanes and flushes
-/// the row's partial sums into the i64 output once per row; the `_scalar`
-/// reference (also the aarch64 `_neon` fallback) is the verbatim C transcription.
-/// The two are byte-identical — see [`compute_stats_impl_v3`] for the proof
-/// that the i32-then-flush regrouping reproduces the scalar i64 accumulation
-/// exactly. Pinned by `tests/c_parity_wiener.rs` (`compute_stats_matches_c`
+/// Runtime-dispatched (`incant!([v3, neon, scalar])`): the AVX2 (`_v3`) and
+/// NEON arms are C's six-step kernel (`compute_stats_win{5,7}_avx2` /
+/// `_neon`) — full madd dots for `M` and the first block row/column of `H`,
+/// every other `H` entry derived from a neighbour by an exact O(width) or
+/// O(height) shift delta — written once in `cs_kernel!` over seven per-ISA
+/// lane primitives; the `_scalar` arm is the verbatim C transcription. All
+/// three are byte-identical (every intermediate is an exact integer; see the
+/// macro's doc). Pinned by `tests/c_parity_wiener.rs` (`compute_stats_matches_c`
 /// on the host tier + `compute_stats_all_tiers_match_c` forcing every tier).
 #[allow(clippy::too_many_arguments)]
 pub fn compute_stats(
@@ -469,71 +470,642 @@ fn compute_stats_impl_scalar(
     );
 }
 
-/// The largest region row this NEON path will accumulate in `i32` before
-/// draining to `i64`. Every product is `|y| * |y| <= 255 * 255 = 65025`, so a
-/// row of `W` products peaks at `W * 65025`; at `W = 32000` that is
-/// `2.081e9 < i32::MAX = 2.147e9`. Real callers are bounded by
-/// `RESTORATION_UNITPELS_HORZ_MAX` (< 512), three orders of magnitude below —
-/// the constant exists so the bound is STRUCTURAL (a wider region falls back to
-/// the scalar core) rather than a comment nobody re-checks.
-#[cfg(target_arch = "aarch64")]
-const NEON_STATS_MAX_ROW: usize = 32_000;
+// ---- AVX2 lane primitives for `cs_kernel!` ------------------------------
+//
+// One `__m256i` holds 16 `i16` (a window-row chunk) or 8 `i32` (an
+// accumulator). `cs_madd_v3` is C's `madd_avx2` (`pickrst_avx2.h:235`):
+// `_mm256_madd_epi16` forms the 16 products, sums ADJACENT pairs into 8
+// `i32` lanes, and the add accumulates — one instruction pair per 16 MACs.
 
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cs_load_v3(_t: Desktop64, a: &[i16; 16]) -> __m256i {
+    _mm256_loadu_si256(a)
+}
+
+/// Lane mask: lanes `< n` all-ones, the rest zero (`n <= 16`).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cs_mask_v3(_t: Desktop64, n: usize) -> __m256i {
+    let mut a = [0i16; 16];
+    for v in a.iter_mut().take(n) {
+        *v = -1;
+    }
+    _mm256_loadu_si256(&a)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cs_and_v3(_t: Desktop64, a: __m256i, b: __m256i) -> __m256i {
+    _mm256_and_si256(a, b)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cs_zero_v3(_t: Desktop64) -> __m256i {
+    _mm256_setzero_si256()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cs_madd_v3(_t: Desktop64, acc: __m256i, a: __m256i, b: __m256i) -> __m256i {
+    _mm256_add_epi32(acc, _mm256_madd_epi16(a, b))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cs_msub_v3(_t: Desktop64, acc: __m256i, a: __m256i, b: __m256i) -> __m256i {
+    _mm256_sub_epi32(acc, _mm256_madd_epi16(a, b))
+}
+
+/// Horizontal sum of the eight `i32` lanes, widened BEFORE adding (the
+/// lane total may exceed `i32` even though each lane cannot).
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn cs_reduce_v3(_t: Desktop64, acc: __m256i) -> i64 {
+    let mut a = [0i32; 8];
+    _mm256_storeu_si256(&mut a, acc);
+    a.iter().map(|&v| i64::from(v)).sum()
+}
+
+/// C's `find_average_avx2` (`pickrst_avx2.c:24`): the region's mean pixel,
+/// summed 32 bytes at a time with `_mm256_sad_epu8` against zero into four
+/// `u64` lanes. Exact — the same `u64` sum and truncating divide as
+/// [`find_average`], so the same `u8`.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn cs_find_average_v3(
+    _t: Desktop64,
+    src: &[u8],
+    origin: usize,
+    stride: usize,
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+) -> u8 {
+    let width = (h_end - h_start) as usize;
+    let height = (v_end - v_start) as usize;
+    let zero = _mm256_setzero_si256();
+    let mut acc = _mm256_setzero_si256();
+    let mut tail: u64 = 0;
+    for r in 0..height {
+        let base = (origin as isize
+            + (v_start as isize + r as isize) * stride as isize
+            + h_start as isize) as usize;
+        let row = &src[base..base + width];
+        let (c32, rem) = row.as_chunks::<32>();
+        for ch in c32 {
+            acc = _mm256_add_epi64(acc, _mm256_sad_epu8(_mm256_loadu_si256(ch), zero));
+        }
+        for &p in rem {
+            tail += u64::from(p);
+        }
+    }
+    let mut lanes = [0u64; 4];
+    _mm256_storeu_si256(&mut lanes, acc);
+    let sum = lanes.iter().sum::<u64>() + tail;
+    (sum / (width as u64 * height as u64)) as u8
+}
+
+// ---- NEON lane primitives for `cs_kernel!` ------------------------------
+//
+// A 16-lane `i16` chunk is two `int16x8_t`; an accumulator is two
+// `int32x4_t`. `cs_madd_neon` is C's `madd_neon` (`pickrst_neon.h:46`):
+// `vmlal_s16` / `vmlal_high_s16` widen-multiply-accumulate 4 lanes each, so
+// one accumulator lane receives TWO products per chunk, the same per-lane
+// growth as the AVX2 pairwise `madd` — the drain interval below is
+// ISA-independent.
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct CsV(int16x8_t, int16x8_t);
+
+#[cfg(target_arch = "aarch64")]
+#[derive(Clone, Copy)]
+struct CsA(int32x4_t, int32x4_t);
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cs_load_neon(_t: NeonToken, a: &[i16; 16]) -> CsV {
+    let lo: &[i16; 8] = a[..8].try_into().unwrap();
+    let hi: &[i16; 8] = a[8..].try_into().unwrap();
+    CsV(vld1q_s16(lo), vld1q_s16(hi))
+}
+
+/// Lane mask: lanes `< n` all-ones, the rest zero (`n <= 16`).
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cs_mask_neon(_t: NeonToken, n: usize) -> CsV {
+    let mut a = [0i16; 16];
+    for v in a.iter_mut().take(n) {
+        *v = -1;
+    }
+    let lo: &[i16; 8] = a[..8].try_into().unwrap();
+    let hi: &[i16; 8] = a[8..].try_into().unwrap();
+    CsV(vld1q_s16(lo), vld1q_s16(hi))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cs_and_neon(_t: NeonToken, a: CsV, b: CsV) -> CsV {
+    CsV(vandq_s16(a.0, b.0), vandq_s16(a.1, b.1))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cs_zero_neon(_t: NeonToken) -> CsA {
+    CsA(vdupq_n_s32(0), vdupq_n_s32(0))
+}
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cs_madd_neon(_t: NeonToken, acc: CsA, a: CsV, b: CsV) -> CsA {
+    let a0 = vmlal_s16(acc.0, vget_low_s16(a.0), vget_low_s16(b.0));
+    let a0 = vmlal_high_s16(a0, a.0, b.0);
+    let a1 = vmlal_s16(acc.1, vget_low_s16(a.1), vget_low_s16(b.1));
+    let a1 = vmlal_high_s16(a1, a.1, b.1);
+    CsA(a0, a1)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cs_msub_neon(_t: NeonToken, acc: CsA, a: CsV, b: CsV) -> CsA {
+    let a0 = vmlsl_s16(acc.0, vget_low_s16(a.0), vget_low_s16(b.0));
+    let a0 = vmlsl_high_s16(a0, a.0, b.0);
+    let a1 = vmlsl_s16(acc.1, vget_low_s16(a.1), vget_low_s16(b.1));
+    let a1 = vmlsl_high_s16(a1, a.1, b.1);
+    CsA(a0, a1)
+}
+
+/// Horizontal sum of the eight `i32` lanes, widening as it adds.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cs_reduce_neon(_t: NeonToken, acc: CsA) -> i64 {
+    vaddlvq_s32(acc.0) + vaddlvq_s32(acc.1)
+}
+
+/// C's `find_average_neon`: the region's mean pixel, 16 bytes at a time
+/// through the pairwise-widening adds (`u8 -> u16 -> u32 -> u64`). Exact —
+/// the same `u64` sum and truncating divide as [`find_average`].
+#[cfg(target_arch = "aarch64")]
+#[rite]
+#[allow(clippy::too_many_arguments)]
+fn cs_find_average_neon(
+    _t: NeonToken,
+    src: &[u8],
+    origin: usize,
+    stride: usize,
+    h_start: i32,
+    h_end: i32,
+    v_start: i32,
+    v_end: i32,
+) -> u8 {
+    let width = (h_end - h_start) as usize;
+    let height = (v_end - v_start) as usize;
+    let mut acc = vdupq_n_u64(0);
+    let mut tail: u64 = 0;
+    for r in 0..height {
+        let base = (origin as isize
+            + (v_start as isize + r as isize) * stride as isize
+            + h_start as isize) as usize;
+        let row = &src[base..base + width];
+        let (c16, rem) = row.as_chunks::<16>();
+        for ch in c16 {
+            acc = vpadalq_u32(acc, vpaddlq_u16(vpaddlq_u8(vld1q_u8(ch))));
+        }
+        for &p in rem {
+            tail += u64::from(p);
+        }
+    }
+    let sum = vaddvq_u64(acc) + tail;
+    (sum / (width as u64 * height as u64)) as u8
+}
+
+// ---- the shared C-shape kernel ------------------------------------------
+
+/// The largest region dimension (width OR height) the C-shape SIMD arms
+/// accept; a larger region takes the scalar reference. Every accumulator
+/// bound below is derived from this number, so it is STRUCTURAL: the
+/// row-delta and column-delta accumulators hold `2 * ceil(dim / 16)` pairwise
+/// products per lane with no drain, i.e. at most
+/// `2 * 2000 * 130_050 = 5.2e8 < i32::MAX`, and the step-1/2 accumulators
+/// drain to `i64` every `rows_per_drain` rows (computed from the width, and
+/// `>= 8` at this bound). Real callers are bounded by
+/// `RESTORATION_UNITSIZE_MAX * 3 / 2 = 384` on both axes.
+const CS_MAX_DIM: usize = 32_000;
+
+/// Which regions the C-shape arms take (the rest go to the scalar core):
+/// C's two window sizes only (`compute_stats_win{5,7}`), non-empty, and
+/// inside [`CS_MAX_DIM`] on both axes.
+fn cs_accepts(wiener_win: usize, width: usize, height: usize) -> bool {
+    (wiener_win == WIENER_WIN || wiener_win == WIENER_WIN_CHROMA)
+        && width != 0
+        && height != 0
+        && width <= CS_MAX_DIM
+        && height <= CS_MAX_DIM
+}
+
+/// Geometry of the three sub-average planes `cs_kernel!` reads (all `i16`,
+/// all with zeroed padding):
+///
+/// * `d` — the window support, `dh = height + 2*hw` rows of `dw = width +
+///   2*hw` values at row stride `ds = ceil16(width) + 2*hw`. A 16-lane load
+///   at column `x + off` with `x < ceil16(width)` and `off <= 2*hw` stays
+///   inside the row; the padding `[dw, ds)` is zero.
+/// * `s` — the source region, `height` rows of `width` at stride
+///   `ss = ceil16(width)`, zero beyond `width` (so `s` needs no lane mask).
+/// * `t` — TRANSPOSED strips of `d`: the `2*hw` leftmost columns
+///   (`0 .. 2*hw`) and the `2*hw` columns at `width .. width + 2*hw`, each
+///   laid out contiguously along the rows (`dh` values at stride
+///   `ts = ceil16(height) + 2*hw`). These are the only columns the
+///   column-shift deltas (steps 3-4) touch; transposing them once turns
+///   C's scalar `_mm256_insert_epi16` column gathers into the same masked
+///   madd dot the rest of the kernel uses.
+struct CsGeom {
+    width: usize,
+    height: usize,
+    hw: usize,
+    dw: usize,
+    dh: usize,
+    ds: usize,
+    ss: usize,
+    ts: usize,
+}
+
+impl CsGeom {
+    fn new(wiener_win: usize, width: usize, height: usize) -> Self {
+        let hw = wiener_win >> 1;
+        let up16 = |v: usize| (v + 15) & !15;
+        CsGeom {
+            width,
+            height,
+            hw,
+            dw: width + 2 * hw,
+            dh: height + 2 * hw,
+            ds: up16(width) + 2 * hw,
+            ss: up16(width),
+            ts: up16(height) + 2 * hw,
+        }
+    }
+    fn d_len(&self) -> usize {
+        self.dh * self.ds
+    }
+    fn s_len(&self) -> usize {
+        self.height * self.ss
+    }
+    fn t_len(&self) -> usize {
+        4 * self.hw * self.ts
+    }
+}
+
+/// C's `sub_avg_block_avx2` (`pickrst_avx2.c:202`) / NEON `compute_sub_avg`,
+/// plus the transposed edge strips. Plain scalar code — LLVM vectorises the
+/// subtract; it is one pass over the region against the kernel's ~134
+/// multiply-accumulates per pixel.
+#[allow(clippy::too_many_arguments)]
+fn cs_prepare(
+    g: &CsGeom,
+    avg: i16,
+    dgd: &[u8],
+    dgd_origin: usize,
+    dgd_stride: usize,
+    src: &[u8],
+    src_origin: usize,
+    src_stride: usize,
+    h_start: i32,
+    v_start: i32,
+    d: &mut [i16],
+    s: &mut [i16],
+    t: &mut [i16],
+) {
+    let hw = g.hw;
+    let d_row0 = dgd_origin as isize
+        + (v_start as isize - hw as isize) * dgd_stride as isize
+        + (h_start as isize - hw as isize);
+    for r in 0..g.dh {
+        let base = (d_row0 + r as isize * dgd_stride as isize) as usize;
+        let srcrow = &dgd[base..base + g.dw];
+        let drow = &mut d[r * g.ds..(r + 1) * g.ds];
+        for (o, &p) in drow[..g.dw].iter_mut().zip(srcrow) {
+            *o = p as i16 - avg;
+        }
+        drow[g.dw..].fill(0);
+    }
+    let s_row0 = src_origin as isize + v_start as isize * src_stride as isize + h_start as isize;
+    for r in 0..g.height {
+        let base = (s_row0 + r as isize * src_stride as isize) as usize;
+        let srcrow = &src[base..base + g.width];
+        let srow = &mut s[r * g.ss..(r + 1) * g.ss];
+        for (o, &p) in srow[..g.width].iter_mut().zip(srcrow) {
+            *o = p as i16 - avg;
+        }
+        srow[g.width..].fill(0);
+    }
+    // Strips: k < 2*hw is column k; k >= 2*hw is column width + (k - 2*hw).
+    for k in 0..4 * hw {
+        let col = if k < 2 * hw {
+            k
+        } else {
+            g.width + (k - 2 * hw)
+        };
+        let trow = &mut t[k * g.ts..(k + 1) * g.ts];
+        for (r, o) in trow[..g.dh].iter_mut().enumerate() {
+            *o = d[r * g.ds + col];
+        }
+        trow[g.dh..].fill(0);
+    }
+}
+
+/// Mirror the upper triangle of `H` into the lower — C's
+/// `diagonal_copy_stats_avx2` (`pickrst_avx2.c:685`).
+fn cs_mirror(win2: usize, h: &mut [i64]) {
+    for k in 0..win2 {
+        for l in (k + 1)..win2 {
+            h[l * win2 + k] = h[k * win2 + l];
+        }
+    }
+}
+
+/// The M/H accumulation in the shape of C's `compute_stats_win{5,7}_avx2`
+/// (`pickrst_avx2.c:775` / `:1546`; the NEON twins at `pickrst_neon.c:147` /
+/// `:698` are the same six steps). Written once; the ISA supplies seven lane
+/// primitives (a 16-lane `i16` load, a lane AND, a zero accumulator, a
+/// pairwise multiply-ADD and multiply-SUBTRACT into `i32` lanes, an
+/// `i64` horizontal reduce, and a lane mask). `$W` is a literal so the
+/// per-window accumulator arrays are register-resident.
+///
+/// **Indexing.** `H[k][t]` with `k = kk * W + l`, `t = tt * W + m`: `kk`, `tt`
+/// are window COLUMN offsets and `l`, `m` window ROW offsets (C's `idx`
+/// order). On the sub-average planes, with `d[r][c]` the window support,
+///
+/// ```text
+///   H[(kk,l)][(tt,m)] = sum_{r<height} sum_{c<width} d[r+l][c+kk] * d[r+m][c+tt]
+///   M[(kk,l)]         = sum_{r,c}                     s[r][c]      * d[r+l][c+kk]
+/// ```
+///
+/// View H as a `W x W` grid of `W x W` blocks, block `(kk, tt)`. Only blocks
+/// with `tt >= kk` are computed (and inside a diagonal block only `m >= l`);
+/// [`cs_mirror`] fills the rest.
+///
+/// **The six steps** (C's numbering):
+/// 1. Every `M` entry and block `(0, tt)`'s TOP ROW for every `tt` — full
+///    dots over the region. C's `stats_top_win*` (`pickrst_avx2.c:271`).
+/// 2. Block `(0, tt)`'s LEFT COLUMN for `tt >= 1` — full dots. C's
+///    `stats_left_win*` (`:315`).
+/// 3-4. Every other block's top row and left column, from block
+///      `(kk-1, tt-1)`'s by a COLUMN-shift delta over the height:
+///      `sum_r d[r+l][width+kk-1] * d[r+m][width+tt-1] - d[r+l][kk-1] * d[r+m][tt-1]`.
+///      C's step 3 is the diagonal blocks (`:967`), step 4 the squares
+///      (`:1185`); here both are one loop.
+/// 5-6. Every block's interior, entry `(l, m)` from `(l-1, m-1)` by a
+///      ROW-shift delta over the width:
+///      `sum_c d[height+l-1][c+kk] * d[height+m-1][c+tt] - d[l-1][c+kk] * d[m-1][c+tt]`.
+///      C's `derive_square_win*` (`:458`) / `derive_triangle_win*` (`:562`).
+///
+/// Both recurrences are exact identities (shift the summation index by one
+/// and the boundary terms are the delta), so the MAC count is
+/// `(2 W^2 + (W-1)^2) * width * height` for steps 1-2 plus `O((W^4) *
+/// (width + height))` for the deltas — 134 per pixel at `W = 7`, against the
+/// `W^2 (W^2 + 3) / 2 = 1274` of the per-pixel form this replaced.
+///
+/// **BYTE-IDENTITY.** Every quantity here is an exact integer: products of
+/// two values in `[-255, 255]` fit `i32`, the pairwise `madd` lanes are
+/// bounded by construction (see [`CS_MAX_DIM`] and `rows_per_drain` below)
+/// and are widened to `i64` before any cross-lane add, and the recurrences
+/// add exact `i64`s. So each `M`/`H` entry equals the same finite sum of the
+/// same products the scalar reference forms in `(i, j, k, l)` order — and
+/// for exact integers a sum does not depend on its association. Pinned
+/// against real C on every tier by
+/// `tests/c_parity_wiener.rs::compute_stats_all_tiers_match_c`.
+///
+/// **Tail masking.** The region width is not a multiple of 16: the last
+/// chunk's lanes `>= width` must contribute zero. `s` is zero-padded, so a
+/// dot with `s` needs nothing; every other dot ANDs ONE operand with a lane
+/// mask (the other operand's lanes there are whatever the padding holds,
+/// times zero). Same along the height for the transposed strips.
+macro_rules! cs_kernel {
+    ($tok:expr, $W:literal, $g:expr, $d:expr, $s:expr, $t:expr, $m:expr, $h:expr;
+     $load:ident, $and:ident, $zero:ident, $madd:ident, $msub:ident, $reduce:ident, $mask:ident) => {{
+        const W: usize = $W;
+        const W2: usize = W * W;
+        let tok = $tok;
+        let g: &CsGeom = $g;
+        let d: &[i16] = $d;
+        let s: &[i16] = $s;
+        let t: &[i16] = $t;
+        let m: &mut [i64] = $m;
+        let h: &mut [i64] = $h;
+        let (width, height, ds, ss, ts) = (g.width, g.height, g.ds, g.ss, g.ts);
+        // Chunk counts along the width and the height, and the lane masks
+        // for the LAST chunk of each (all-ones when the dimension is a
+        // multiple of 16). Every loop below walks whole chunks; the mask on
+        // the last one zeroes the lanes past the region.
+        let nw = width.div_ceil(16);
+        let wmask = $mask(tok, width - (nw - 1) * 16);
+        let nh = height.div_ceil(16);
+        let hmask = $mask(tok, height - (nh - 1) * 16);
+        let full = $mask(tok, 16);
+        // Each accumulator lane grows by <= 2 * 65_025 per chunk; drain to
+        // i64 before `rows_per_drain * nw` chunks could overflow it.
+        let rows_per_drain = ((i32::MAX as usize) / (nw * 130_050)).max(1);
+
+        // Row views are exact-length `[[i16; 16]]` slices (`cs_chunks`), built
+        // with plain loops (NOT `core::array::from_fn`, which is not inlined
+        // and hides the lengths), so `[c]` under `for c in 0..n` carries no
+        // bounds check.
+
+        // ---- Step 1: M, and block (0, j)'s top row, for every j.
+        for j in 0..W {
+            let mut tm = [0i64; W];
+            let mut th = [0i64; W];
+            let mut r0 = 0usize;
+            while r0 < height {
+                let r1 = (r0 + rows_per_drain).min(height);
+                let mut am = [$zero(tok); W];
+                let mut ah = [$zero(tok); W];
+                for r in r0..r1 {
+                    let srow = cs_chunks(&s[r * ss..], nw);
+                    let drow = cs_chunks(&d[r * ds..], nw);
+                    let mut dl = [srow; W];
+                    for l in 0..W {
+                        dl[l] = cs_chunks(&d[(r + l) * ds + j..], nw);
+                    }
+                    for c in 0..nw {
+                        let mk = if c + 1 == nw { wmask } else { full };
+                        let sv = $load(tok, &srow[c]);
+                        let dv = $and(tok, $load(tok, &drow[c]), mk);
+                        for l in 0..W {
+                            let v = $load(tok, &dl[l][c]);
+                            am[l] = $madd(tok, am[l], sv, v);
+                            ah[l] = $madd(tok, ah[l], dv, v);
+                        }
+                    }
+                }
+                for l in 0..W {
+                    tm[l] += $reduce(tok, am[l]);
+                    th[l] += $reduce(tok, ah[l]);
+                }
+                r0 = r1;
+            }
+            for l in 0..W {
+                m[j * W + l] = tm[l];
+                h[j * W + l] = th[l];
+            }
+        }
+
+        // ---- Step 2: block (0, j)'s left column, j >= 1.
+        for j in 1..W {
+            let mut th = [0i64; W];
+            let mut r0 = 0usize;
+            while r0 < height {
+                let r1 = (r0 + rows_per_drain).min(height);
+                let mut ah = [$zero(tok); W];
+                for r in r0..r1 {
+                    let drow = cs_chunks(&d[r * ds + j..], nw);
+                    let mut dl = [drow; W];
+                    for l in 1..W {
+                        dl[l] = cs_chunks(&d[(r + l) * ds..], nw);
+                    }
+                    for c in 0..nw {
+                        let mk = if c + 1 == nw { wmask } else { full };
+                        let dj = $and(tok, $load(tok, &drow[c]), mk);
+                        for l in 1..W {
+                            ah[l] = $madd(tok, ah[l], dj, $load(tok, &dl[l][c]));
+                        }
+                    }
+                }
+                for l in 1..W {
+                    th[l] += $reduce(tok, ah[l]);
+                }
+                r0 = r1;
+            }
+            for l in 1..W {
+                h[l * W2 + j * W] = th[l];
+            }
+        }
+
+        // ---- Steps 3-4: block (i, j)'s top row (and, off the diagonal, its
+        // left column) from block (i-1, j-1)'s, by column-shift deltas along
+        // the transposed strips. Strip k < 2*hw is column k of `d`; strip
+        // 2*hw + k is column width + k. Top row and left column are two
+        // passes so each keeps its W accumulators in registers.
+        for i in 1..W {
+            let li = (i - 1) * ts;
+            let ri = (W - 1 + i - 1) * ts;
+            for j in i..W {
+                let lj = (j - 1) * ts;
+                let rj = (W - 1 + j - 1) * ts;
+                // Offset-`o` views of the four strips, o = 0..W.
+                let ri0 = cs_chunks(&t[ri..], nh);
+                let li0 = cs_chunks(&t[li..], nh);
+                let rj0 = cs_chunks(&t[rj..], nh);
+                let lj0 = cs_chunks(&t[lj..], nh);
+                let mut rjo = [rj0; W];
+                let mut ljo = [lj0; W];
+                for o in 1..W {
+                    rjo[o] = cs_chunks(&t[rj + o..], nh);
+                    ljo[o] = cs_chunks(&t[lj + o..], nh);
+                }
+                let mut at = [$zero(tok); W];
+                for c in 0..nh {
+                    let mk = if c + 1 == nh { hmask } else { full };
+                    let a = $and(tok, $load(tok, &ri0[c]), mk);
+                    let b = $and(tok, $load(tok, &li0[c]), mk);
+                    for mm in 0..W {
+                        at[mm] = $madd(tok, at[mm], a, $load(tok, &rjo[mm][c]));
+                        at[mm] = $msub(tok, at[mm], b, $load(tok, &ljo[mm][c]));
+                    }
+                }
+                for mm in 0..W {
+                    h[(i * W) * W2 + j * W + mm] =
+                        h[((i - 1) * W) * W2 + (j - 1) * W + mm] + $reduce(tok, at[mm]);
+                }
+                if j > i {
+                    let mut rio = [ri0; W];
+                    let mut lio = [li0; W];
+                    for o in 1..W {
+                        rio[o] = cs_chunks(&t[ri + o..], nh);
+                        lio[o] = cs_chunks(&t[li + o..], nh);
+                    }
+                    let mut al = [$zero(tok); W];
+                    for c in 0..nh {
+                        let mk = if c + 1 == nh { hmask } else { full };
+                        let a = $and(tok, $load(tok, &rj0[c]), mk);
+                        let b = $and(tok, $load(tok, &lj0[c]), mk);
+                        for l in 1..W {
+                            al[l] = $madd(tok, al[l], $load(tok, &rio[l][c]), a);
+                            al[l] = $msub(tok, al[l], $load(tok, &lio[l][c]), b);
+                        }
+                    }
+                    for l in 1..W {
+                        h[(i * W + l) * W2 + j * W] =
+                            h[((i - 1) * W + l) * W2 + (j - 1) * W] + $reduce(tok, al[l]);
+                    }
+                }
+            }
+        }
+
+        // ---- Steps 5-6: every block's interior, entry (l, m) from
+        // (l-1, m-1) by a row-shift delta along the width. Diagonal blocks
+        // fill m >= l only.
+        for i in 0..W {
+            for j in i..W {
+                // Rows l' = 0..W-1 (top) and height + l' (bottom) of `d`, at
+                // column offsets i and j.
+                let t0 = cs_chunks(&d[i..], nw);
+                let mut topi = [t0; W - 1];
+                let mut boti = [t0; W - 1];
+                let mut topj = [t0; W - 1];
+                let mut botj = [t0; W - 1];
+                for o in 0..W - 1 {
+                    topi[o] = cs_chunks(&d[o * ds + i..], nw);
+                    boti[o] = cs_chunks(&d[(height + o) * ds + i..], nw);
+                    topj[o] = cs_chunks(&d[o * ds + j..], nw);
+                    botj[o] = cs_chunks(&d[(height + o) * ds + j..], nw);
+                }
+                for lp in 0..W - 1 {
+                    let m_lo = if j == i { lp } else { 0 };
+                    let mut acc = [$zero(tok); W];
+                    for c in 0..nw {
+                        let mk = if c + 1 == nw { wmask } else { full };
+                        let ab = $and(tok, $load(tok, &boti[lp][c]), mk);
+                        let atop = $and(tok, $load(tok, &topi[lp][c]), mk);
+                        for mp in m_lo..W - 1 {
+                            acc[mp] = $madd(tok, acc[mp], ab, $load(tok, &botj[mp][c]));
+                            acc[mp] = $msub(tok, acc[mp], atop, $load(tok, &topj[mp][c]));
+                        }
+                    }
+                    for mp in m_lo..W - 1 {
+                        h[(i * W + lp + 1) * W2 + j * W + mp + 1] =
+                            h[(i * W + lp) * W2 + j * W + mp] + $reduce(tok, acc[mp]);
+                    }
+                }
+            }
+        }
+    }};
+}
+
+/// The first `n` 16-lane chunks of `p`, as an exact-length slice so the
+/// kernel's `[c]` indexing under `for c in 0..n` carries no bounds check.
+#[inline(always)]
+fn cs_chunks(p: &[i16], n: usize) -> &[[i16; 16]] {
+    &p[..n * 16].as_chunks::<16>().0[..n]
+}
+
+/// NEON `compute_stats` — C's `svt_av1_compute_stats_neon` shape
+/// (`ASM_NEON/pickrst_neon.c:1200`), the same six-step [`cs_kernel!`] body
+/// the AVX2 arm runs, on NEON lane primitives. This replaced the row-pair
+/// correlation arm of 2026-09-03 (85 + 49 dot calls per row, each with its
+/// own zeroed accumulators and cross-lane reduce): the C shape does the same
+/// ~134 multiply-accumulates per pixel but keeps every accumulator in a
+/// register across the whole region and reduces once per `M`/`H` entry.
+/// Measured on the 64x64 kernel bench (`benches/kernel_tiers.rs`,
+/// `wiener_compute_stats_win{5,7}_64x64`): see `docs/perf-status.md`.
 #[cfg(target_arch = "aarch64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
-/// NEON `compute_stats` — the same sums, re-associated so the inner loop runs
-/// over PIXELS instead of over the H matrix.
-///
-/// The previous NEON arm was the AVX2 body with a 4-lane MAC: per source pixel
-/// it gathered the `win x win` window into `y` with `win2` strided scalar loads
-/// and then ran `win2` short multiply-accumulate calls over a `win2 x win2` i32
-/// scratch. That touches the whole upper triangle — 1225 i32 cells at
-/// `win = 7` — for EVERY pixel, so it moves ~10 KB of accumulator traffic per
-/// pixel and averages well under one useful multiply per instruction. It was
-/// the single most expensive function in the encoder: 22.7 % of the port's
-/// preset-6 self time at 512x512, ~26x the C reference's
-/// `svt_av1_compute_stats_neon`.
-///
-/// The reformulation. Write `k = kk * win + l` (C's index order: `kk` is the
-/// window COLUMN offset, `l` the ROW offset). Then for the pixel at
-/// `(i, j)`, `y_(i,j)[k] = dgd[(i - halfwin + l) * stride + (j - halfwin + kk)] - avg`.
-/// Hold `k` fixed and sweep `j`: that is a CONTIGUOUS run of `dgd`. So
-///
-/// ```text
-///   H[k][t] = sum_i  ( sum_j  y_(i,j)[k] * y_(i,j)[t] )
-///           = sum_i  dot( row_k(i), row_t(i), width )
-///   M[k]    = sum_i  dot( row_k(i), src_row(i), width )
-/// ```
-///
-/// — each an ordinary dot product of two contiguous `i16` arrays. Two
-/// consequences: the accumulators live in registers for a whole row instead of
-/// in a 9.6 KB scratch, and `vmlal_s16` / `vmlal_high_s16` do the widen,
-/// multiply and accumulate in ONE instruction, 8 products per two of them.
-///
-/// **A SECOND reformulation sits on top of that one**, and it is where most of
-/// the arithmetic went: the dot above depends only on the PAIR OF `d` ROWS and
-/// the pair of column offsets, so the 1_274 dots per region row collapse to 85
-/// per `d` row plus M's 49 — see the `H, by ROW-PAIR CORRELATION` comment in
-/// the body for the derivation, the sliding-window update and the
-/// byte-identity argument.
-///
-/// The `- avg` subtraction is also hoisted: it used to run `win2` times per
-/// pixel (once per gathered window element); now it runs once per source pixel,
-/// into the `d` / `s` sub-average buffers, exactly as the C NEON kernel's
-/// `compute_sub_avg` does.
-///
-/// BYTE-IDENTITY. The set of products is unchanged and every product is exact
-/// in `i32` (`|y| <= 255`, so `|y_k * y_t| <= 65025`). The grouping is
-/// unchanged too: this accumulates one REGION ROW of products in `i32` and
-/// flushes that row's partial sums into the `i64` output — the identical
-/// grouping the previous arm documented and the AVX2 arm still uses. Within a
-/// row the four vector lanes sum disjoint subsets and are horizontally added,
-/// which is a re-association of exact `i32` additions and therefore also
-/// unchanged. Pinned by
-/// `tests/c_parity_wiener.rs::compute_stats_all_tiers_match_c` (220 iterations,
-/// widths 1..90 including every SIMD-boundary case, both window sizes) against
-/// real C.
 fn compute_stats_impl_neon(
     token: NeonToken,
     wiener_win: usize,
@@ -551,232 +1123,63 @@ fn compute_stats_impl_neon(
     h: &mut [i64],
 ) {
     let win2 = wiener_win * wiener_win;
-    let halfwin = wiener_win >> 1;
     assert!(m.len() >= win2 && h.len() >= win2 * win2);
-
     let width = (h_end - h_start).max(0) as usize;
     let height = (v_end - v_start).max(0) as usize;
-    // Wider than the i32 row accumulator can hold, or degenerate: hand it to
-    // the scalar reference rather than risk a silently wrong moment matrix.
-    if width == 0 || height == 0 || width > NEON_STATS_MAX_ROW {
+    if !cs_accepts(wiener_win, width, height) {
         compute_stats_scalar_core(
             wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
             v_start, v_end, m, h,
         );
         return;
     }
-
-    let avg = find_average(dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end) as i16;
-    m[..win2].fill(0);
-    h[..win2 * win2].fill(0);
+    let avg = cs_find_average_neon(
+        token, dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end,
+    ) as i16;
+    let g = CsGeom::new(wiener_win, width, height);
+    let mut scratch = StatsScratch::take3(g.d_len(), g.s_len(), g.t_len());
+    let (d, s, t) = scratch.split3();
+    cs_prepare(
+        &g, avg, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, v_start, d, s,
+        t,
+    );
     let m = &mut m[..win2];
     let h = &mut h[..win2 * win2];
-
-    // Sub-average planes, the C NEON kernel's `compute_sub_avg` step.
-    //   `d`: (width + 2*halfwin) x (height + 2*halfwin), the dgd window support.
-    //   `s`: width x height, the source region.
-    // Both are `i16` and both are laid out tightly, which is what turns the
-    // per-pixel window gather into contiguous loads.
-    let dw = width + 2 * halfwin;
-    let dh = height + 2 * halfwin;
-    // Reused per thread: compute_stats runs once per restoration unit per
-    // filter-tap level, and a 256x256 unit needs ~137 KB of `d` plus ~131 KB of
-    // `s`. Allocating that per call put the malloc/free family back on the
-    // profile; C allocates per call too (`svt_aom_memalign` in
-    // `svt_av1_compute_stats_neon`) but that is not a reason to copy the cost.
-    // Contents are fully overwritten below before any read, so reuse cannot
-    // leak a previous unit's pixels.
-    let mut scratch = StatsScratch::take(dw * dh, width * height);
-    let (d, s) = scratch.split();
-    {
-        let d_row0 = dgd_origin as isize
-            + (v_start as isize - halfwin as isize) * dgd_stride as isize
-            + (h_start as isize - halfwin as isize);
-        for r in 0..dh {
-            let base = (d_row0 + r as isize * dgd_stride as isize) as usize;
-            let srcrow = &dgd[base..base + dw];
-            for (o, &p) in d[r * dw..r * dw + dw].iter_mut().zip(srcrow) {
-                *o = p as i16 - avg;
-            }
-        }
-        let s_row0 =
-            src_origin as isize + v_start as isize * src_stride as isize + h_start as isize;
-        for r in 0..height {
-            let base = (s_row0 + r as isize * src_stride as isize) as usize;
-            let srcrow = &src[base..base + width];
-            for (o, &p) in s[r * width..r * width + width].iter_mut().zip(srcrow) {
-                *o = p as i16 - avg;
-            }
-        }
+    if wiener_win == WIENER_WIN_CHROMA {
+        cs_kernel!(token, 5, &g, d, s, t, m, h;
+            cs_load_neon, cs_and_neon, cs_zero_neon, cs_madd_neon, cs_msub_neon, cs_reduce_neon, cs_mask_neon);
+    } else {
+        cs_kernel!(token, 7, &g, d, s, t, m, h;
+            cs_load_neon, cs_and_neon, cs_zero_neon, cs_madd_neon, cs_msub_neon, cs_reduce_neon, cs_mask_neon);
     }
-
-    // Row offset within `d` for window index k, and its column offset.
-    // k = kk * win + l  =>  row += l, col += kk.
-    let mut d_off = [0usize; WIENER_WIN * WIENER_WIN];
-    for (k, off) in d_off[..win2].iter_mut().enumerate() {
-        let (kk, l) = (k / wiener_win, k % wiener_win);
-        *off = l * dw + kk;
-    }
-
-    for i in 0..height {
-        let srow = &s[i * width..i * width + width];
-        let dbase = i * dw;
-        for k in 0..win2 {
-            let dk = &d[dbase + d_off[k]..dbase + d_off[k] + width];
-            m[k] += dot_i16_neon(token, dk, srow) as i64;
-        }
-    }
-
-    // ---- H, by ROW-PAIR CORRELATION instead of by (k, t) pair -------------
-    //
-    // The previous formulation issued one dot product per (region row, k, t)
-    // triple: `win2 * (win2 + 1) / 2` = 1_225 of them per row at `win = 7`,
-    // plus 49 for M. Most of those dots are the SAME dot product. Writing
-    // `k = (kk, ll)` and `t = (tt, mm)` (column offset, row offset — see
-    // `d_off` above),
-    //
-    // ```text
-    //   H[k][t] = sum_i dot( d[i+ll][kk .. kk+width], d[i+mm][tt .. tt+width] )
-    // ```
-    //
-    // so the dot depends only on the PAIR OF `d` ROWS `(i+ll, i+mm)` and the
-    // pair of column offsets `(kk, tt)` — not on `i`, `ll` and `mm`
-    // separately. Two reductions follow.
-    //
-    // 1. **Row-pair sharing.** Parameterise by the top row `a = min(i+ll, i+mm)`
-    //    and the row delta `dm = |mm - ll|`. Every `(k, t)` whose rows differ
-    //    by `dm` reuses the same `P[a][dm][c1][c2]`, so the 1_225 dots per
-    //    region row collapse to 322 per `d` row (`6 * 49` for `dm = 1..6`
-    //    plus `28` for the symmetric `dm = 0` half).
-    //
-    // 2. **Column sliding.** For a fixed row pair and a fixed column DELTA
-    //    `dc = c2 - c1`, the up-to-7 values of `c1` are a sliding window over
-    //    the same two rows:
-    //
-    //    ```text
-    //      P(c1+1) = P(c1) - A[c1] * B[c1+dc] + A[c1+width] * B[c1+dc+width]
-    //    ```
-    //
-    //    an exact O(1) update. That leaves 85 real dot products per `d` row
-    //    (13 column deltas x 6 row deltas, plus 7 for `dm = 0`).
-    //
-    // Together: 1_274 dots per region row become 85 per `d` row plus M's 49
-    // per region row — about **9x fewer multiply-accumulates** at
-    // `win = 7`, and 134 dot CALLS per row instead of 1_274, so the
-    // per-call zero/reduce overhead falls by the same factor. This is the
-    // same asymptotic shape C's `compute_stats_win7_neon` uses (its step 1
-    // computes ~98 products per pixel and its steps 3-4 derive the rest from
-    // O(width + height) edge deltas); the port reaches it by sharing rather
-    // than by C's delta machinery.
-    //
-    // BYTE-IDENTITY. The set of products is unchanged and the GROUPING is the
-    // one the scalar core and the AVX2 arm already document: one row of
-    // products accumulated in `i32`, flushed into the `i64` output. A `P`
-    // value is a dot of at most `NEON_STATS_MAX_ROW` products of magnitude
-    // <= 65_025, so it is exact in `i32` (see [`dot_i16_neon`]); the sliding
-    // update adds and subtracts two more such products, and every partial
-    // stays inside the same bound. The final `i64` value is the sum of the
-    // same 1_225 x width x height products in a different order, which for
-    // exact integers is the same number. No i64 drain interval is introduced
-    // — the flush boundary is still ONE ROW, exactly as before.
-    let cmax = wiener_win - 1; // largest window offset, = 2 * halfwin
-    // `hw[((dm * win + c1) * win + c2) * win + lo]` accumulates
-    // `sum_{a=lo}^{lo+height-1} P[a][dm][c1][c2]`.
-    let mut hw = [0i64; WIENER_WIN * WIENER_WIN * WIENER_WIN * WIENER_WIN];
-    for a in 0..dh {
-        for dm in 0..=cmax {
-            // `a` contributes to window `lo` iff `lo <= a <= lo + height - 1`,
-            // and `lo` ranges over `0 ..= cmax - dm` (both `lo` and `lo + dm`
-            // are window row offsets). Rows outside every window are skipped,
-            // which also keeps `a + dm` inside `d`.
-            let lo_hi = (cmax - dm).min(a);
-            let lo_lo = (a + 1).saturating_sub(height);
-            if lo_lo > lo_hi {
-                continue;
-            }
-            let arow = a * dw;
-            let brow = (a + dm) * dw;
-            // `dm == 0` is symmetric in the columns, so only `dc >= 0` is
-            // stored (the (k, t) scatter below reads that half).
-            let dc_lo = if dm == 0 { 0isize } else { -(cmax as isize) };
-            for dc in dc_lo..=cmax as isize {
-                let c1_lo = (-dc).max(0) as usize;
-                let c1_hi = (cmax as isize - dc.max(0)) as usize;
-                let c2_lo = (c1_lo as isize + dc) as usize;
-                let mut acc = dot_i16_neon(
-                    token,
-                    &d[arow + c1_lo..arow + c1_lo + width],
-                    &d[brow + c2_lo..brow + c2_lo + width],
-                );
-                let mut c1 = c1_lo;
-                let mut c2 = c2_lo;
-                loop {
-                    let base = ((dm * wiener_win + c1) * wiener_win + c2) * wiener_win;
-                    for hv in &mut hw[base + lo_lo..=base + lo_hi] {
-                        *hv += acc as i64;
-                    }
-                    if c1 == c1_hi {
-                        break;
-                    }
-                    acc = acc - d[arow + c1] as i32 * d[brow + c2] as i32
-                        + d[arow + c1 + width] as i32 * d[brow + c2 + width] as i32;
-                    c1 += 1;
-                    c2 += 1;
-                }
-            }
-        }
-    }
-
-    // Scatter the row-pair sums into H's upper triangle. The map
-    // `(k, t) -> (dm, c1, c2, lo)` is a bijection onto the accumulated set:
-    // `dm = |mm - ll|`, `lo = min(ll, mm)`, and the column offsets are taken
-    // in the order that makes the row delta non-negative.
-    for k in 0..win2 {
-        let (kk, ll) = (k / wiener_win, k % wiener_win);
-        for t in k..win2 {
-            let (tt, mm) = (t / wiener_win, t % wiener_win);
-            let (dm, c1, c2, lo) = if mm >= ll {
-                (mm - ll, kk, tt, ll)
-            } else {
-                (ll - mm, tt, kk, mm)
-            };
-            h[k * win2 + t] = hw[((dm * wiener_win + c1) * wiener_win + c2) * wiener_win + lo];
-        }
-    }
-
-    // Mirror the upper triangle to the lower (once), as the scalar does.
-    for k in 0..win2 {
-        for l in (k + 1)..win2 {
-            h[l * win2 + k] = h[k * win2 + l];
-        }
-    }
+    cs_mirror(win2, h);
 }
 
-/// Per-thread sub-average scratch for [`compute_stats_impl_neon`].
+/// Per-thread sub-average scratch for the SIMD `compute_stats` arms.
 ///
-/// One `Vec<i16>` holding `d` then `s` back to back, grown to the largest
-/// restoration unit seen and never shrunk. `take` hands out a guard so the
+/// One `Vec<i16>` holding `d`, `s` and the transposed strips `t` back to
+/// back (see [`CsGeom`]), grown to the largest restoration unit seen and
+/// never shrunk. `take3` hands out a guard so the
 /// buffer returns to the thread slot on drop even on an early return; if the
 /// slot is already borrowed (re-entrancy, which does not happen today) the
 /// guard owns a fresh allocation instead of panicking.
-#[cfg(target_arch = "aarch64")]
 struct StatsScratch {
     buf: alloc::vec::Vec<i16>,
     dlen: usize,
+    slen: usize,
     #[cfg(feature = "std")]
     pooled: bool,
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[cfg(feature = "std")]
 std::thread_local! {
     static STATS_SCRATCH: core::cell::RefCell<alloc::vec::Vec<i16>> =
         const { core::cell::RefCell::new(alloc::vec::Vec::new()) };
 }
 
-#[cfg(target_arch = "aarch64")]
 impl StatsScratch {
-    fn take(dlen: usize, slen: usize) -> Self {
-        let need = dlen + slen;
+    fn take3(dlen: usize, slen: usize, tlen: usize) -> Self {
+        let need = dlen + slen + tlen;
         #[cfg(feature = "std")]
         {
             if let Some(mut buf) = STATS_SCRATCH.with(|c| {
@@ -790,6 +1193,7 @@ impl StatsScratch {
                 return StatsScratch {
                     buf,
                     dlen,
+                    slen,
                     pooled: true,
                 };
             }
@@ -797,17 +1201,20 @@ impl StatsScratch {
         StatsScratch {
             buf: alloc::vec![0i16; need],
             dlen,
+            slen,
             #[cfg(feature = "std")]
             pooled: false,
         }
     }
 
-    fn split(&mut self) -> (&mut [i16], &mut [i16]) {
-        self.buf.split_at_mut(self.dlen)
+    fn split3(&mut self) -> (&mut [i16], &mut [i16], &mut [i16]) {
+        let (d, rest) = self.buf.split_at_mut(self.dlen);
+        let (s, t) = rest.split_at_mut(self.slen);
+        (d, s, t)
     }
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "std"))]
+#[cfg(feature = "std")]
 impl Drop for StatsScratch {
     fn drop(&mut self) {
         if self.pooled {
@@ -819,60 +1226,6 @@ impl Drop for StatsScratch {
             });
         }
     }
-}
-
-/// `sum_i a[i] * b[i]` over equal-length `i16` slices, accumulated in `i32`.
-///
-/// `vmlal_s16` / `vmlal_high_s16` widen-multiply-accumulate in one instruction,
-/// so eight products cost two of them plus two loads. Two independent
-/// accumulator pairs keep the multiply pipeline fed across the 16-element body.
-///
-/// Exactness: the caller bounds every element to `[-255, 255]` and the row
-/// length to [`NEON_STATS_MAX_ROW`], so no lane can overflow `i32` (see
-/// [`compute_stats_impl_neon`]). The horizontal add at the end and the scalar
-/// tail are exact `i32` additions of the same products, so the result does not
-/// depend on the lane split.
-#[cfg(target_arch = "aarch64")]
-#[rite]
-fn dot_i16_neon(_token: NeonToken, a: &[i16], b: &[i16]) -> i32 {
-    debug_assert_eq!(a.len(), b.len());
-    let mut acc0 = vdupq_n_s32(0);
-    let mut acc1 = vdupq_n_s32(0);
-    let mut acc2 = vdupq_n_s32(0);
-    let mut acc3 = vdupq_n_s32(0);
-    // `as_chunks` (stable since 1.88, the MSRV's clippy insists on it over
-    // `chunks_exact(CONST)`): the body reads exact `[i16; 16]` chunks with no
-    // interior bounds checks, and the equal-length remainder handles the tail
-    // 8 lanes at a time, then scalar — lane-for-lane like the vector body.
-    let (a16, a_rem) = a.as_chunks::<16>();
-    let (b16, b_rem) = b.as_chunks::<16>();
-    for (x, y) in a16.iter().zip(b16.iter()) {
-        let x0: &[i16; 8] = x[..8].try_into().unwrap();
-        let x1: &[i16; 8] = x[8..].try_into().unwrap();
-        let y0: &[i16; 8] = y[..8].try_into().unwrap();
-        let y1: &[i16; 8] = y[8..].try_into().unwrap();
-        let xv0 = vld1q_s16(x0);
-        let yv0 = vld1q_s16(y0);
-        let xv1 = vld1q_s16(x1);
-        let yv1 = vld1q_s16(y1);
-        acc0 = vmlal_s16(acc0, vget_low_s16(xv0), vget_low_s16(yv0));
-        acc1 = vmlal_high_s16(acc1, xv0, yv0);
-        acc2 = vmlal_s16(acc2, vget_low_s16(xv1), vget_low_s16(yv1));
-        acc3 = vmlal_high_s16(acc3, xv1, yv1);
-    }
-    let (a8, a_rem8) = a_rem.as_chunks::<8>();
-    let (b8, b_rem8) = b_rem.as_chunks::<8>();
-    for (xc, yc) in a8.iter().zip(b8.iter()) {
-        let xv = vld1q_s16(xc);
-        let yv = vld1q_s16(yc);
-        acc0 = vmlal_s16(acc0, vget_low_s16(xv), vget_low_s16(yv));
-        acc1 = vmlal_high_s16(acc1, xv, yv);
-    }
-    let mut sum = vaddvq_s32(vaddq_s32(vaddq_s32(acc0, acc1), vaddq_s32(acc2, acc3)));
-    for (&x, &y) in a_rem8.iter().zip(b_rem8) {
-        sum += x as i32 * y as i32;
-    }
-    sum
 }
 
 /// Scalar reference — verbatim `svt_av1_compute_stats_c`. The M and H
@@ -945,26 +1298,11 @@ fn compute_stats_scalar_core(
     }
 }
 
-/// AVX2 `compute_stats`. Byte-identical to [`compute_stats_scalar_core`].
-///
-/// The scalar accumulates, per source pixel, `M[k] += y[k]*x` and (upper
-/// triangle) `H[k*win2+l] += y[k]*y[l]` straight into the i64 output. Every
-/// product `y[k]*y[l]` / `y[k]*x` is formed from two values in `[-255, 255]`
-/// (a pixel minus the region average), so each product lies in
-/// `[-65025, 65025]` and fits `i32` exactly — the scalar's `(i32)y[k]*y[l]`
-/// is lossless, and so is this path's `_mm256_mullo_epi32` (its low 32 bits
-/// ARE the full product when it fits i32).
-///
-/// This path accumulates one **region row** of those i32 products in i32 SIMD
-/// lanes (`h_acc`/`m_acc` scratch) and then adds the row's partial sums into
-/// the i64 output. A single restoration region row is at most
-/// `RESTORATION_UNITPELS_HORZ_MAX` (< 512) pixels wide, so each i32 cell sums
-/// at most ~512 products of magnitude ≤ 65025, i.e. ≤ 3.4e7 ≪ `i32::MAX` — the
-/// i32 accumulation and `_mm256_add_epi32` never overflow. The final i64 value
-/// is therefore `Σ_rows (Σ_pixels-in-row product)` = `Σ_all-pixels product`,
-/// identical to the scalar's per-pixel i64 sum by associativity of integer
-/// addition (the products are the same set; only their grouping differs). The
-/// lower triangle is mirrored once at the end, exactly as the scalar does.
+/// AVX2 `compute_stats` — C's `svt_av1_compute_stats_avx2` shape
+/// (`ASM_AVX2/pickrst_avx2.c:2345`), shared with the NEON arm through
+/// [`cs_kernel!`]. See that macro's doc for the six steps and the exactness
+/// argument; this function is the per-ISA envelope: sub-average scratch,
+/// window-size dispatch, and the mirror.
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 #[allow(clippy::too_many_arguments)]
@@ -985,124 +1323,36 @@ fn compute_stats_impl_v3(
     h: &mut [i64],
 ) {
     let win2 = wiener_win * wiener_win;
-    let halfwin = (wiener_win >> 1) as i32;
     assert!(m.len() >= win2 && h.len() >= win2 * win2);
-    let avg = find_average(dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end) as i16;
-
-    m[..win2].fill(0);
-    h[..win2 * win2].fill(0);
+    let width = (h_end - h_start).max(0) as usize;
+    let height = (v_end - v_start).max(0) as usize;
+    if !cs_accepts(wiener_win, width, height) {
+        compute_stats_scalar_core(
+            wiener_win, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, h_end,
+            v_start, v_end, m, h,
+        );
+        return;
+    }
+    let avg = cs_find_average_v3(
+        token, dgd, dgd_origin, dgd_stride, h_start, h_end, v_start, v_end,
+    ) as i16;
+    let g = CsGeom::new(wiener_win, width, height);
+    let mut scratch = StatsScratch::take3(g.d_len(), g.s_len(), g.t_len());
+    let (d, s, t) = scratch.split3();
+    cs_prepare(
+        &g, avg, dgd, dgd_origin, dgd_stride, src, src_origin, src_stride, h_start, v_start, d, s,
+        t,
+    );
     let m = &mut m[..win2];
     let h = &mut h[..win2 * win2];
-
-    const N2MAX: usize = WIENER_WIN * WIENER_WIN;
-    // Per-region-row i32 scratch. Bounded to one row of products (see the fn
-    // doc), so the i32 sums never overflow and the flush is byte-exact.
-    let mut m_acc = [0i32; N2MAX];
-    let mut h_acc = [0i32; N2MAX * N2MAX];
-    let mut y = [0i16; N2MAX];
-
-    for i in v_start..v_end {
-        m_acc[..win2].fill(0);
-        h_acc[..win2 * win2].fill(0);
-        let stride = dgd_stride as isize;
-        let row0 = (i - halfwin) as isize; // top window row (relative to origin)
-        for j in h_start..h_end {
-            let sidx = src_origin as isize + i as isize * src_stride as isize + j as isize;
-            let x = src[sidx as usize] as i16 - avg;
-            // Gather the win x win window into `y`, column-major (k = column
-            // offset outer, l = row offset inner) — the exact C `idx` order, so
-            // every y[idx] keeps its C meaning. Exclusive ranges + an
-            // incremental `didx += stride` replace the inclusive-range double
-            // loop and its per-element `(i+l)*stride` multiply; values are
-            // unchanged.
-            let mut idx = 0usize;
-            for kk in 0..wiener_win {
-                let col = (j - halfwin) as isize + kk as isize;
-                let mut didx = dgd_origin as isize + row0 * stride + col;
-                for _ in 0..wiener_win {
-                    y[idx] = dgd[didx as usize] as i16 - avg;
-                    idx += 1;
-                    didx += stride;
-                }
-            }
-            // M[k] += y[k]*x for k in 0..win2 (full row).
-            mac_row_i32_v3(token, &mut m_acc[..win2], &y[..win2], x as i32);
-            // Upper-triangular H[k][l] += y[k]*y[l], l >= k.
-            for k in 0..win2 {
-                let yk = y[k] as i32;
-                let base = k * win2;
-                mac_row_i32_v3(token, &mut h_acc[base + k..base + win2], &y[k..win2], yk);
-            }
-        }
-        // Flush this row's i32 partial sums into the i64 output (bounds-check-free
-        // zips; same additions, so still byte-exact).
-        for (mv, &ma) in m.iter_mut().zip(m_acc[..win2].iter()) {
-            *mv += ma as i64;
-        }
-        for k in 0..win2 {
-            let base = k * win2;
-            for (hv, &ha) in h[base + k..base + win2]
-                .iter_mut()
-                .zip(h_acc[base + k..base + win2].iter())
-            {
-                *hv += ha as i64;
-            }
-        }
+    if wiener_win == WIENER_WIN_CHROMA {
+        cs_kernel!(token, 5, &g, d, s, t, m, h;
+            cs_load_v3, cs_and_v3, cs_zero_v3, cs_madd_v3, cs_msub_v3, cs_reduce_v3, cs_mask_v3);
+    } else {
+        cs_kernel!(token, 7, &g, d, s, t, m, h;
+            cs_load_v3, cs_and_v3, cs_zero_v3, cs_madd_v3, cs_msub_v3, cs_reduce_v3, cs_mask_v3);
     }
-    // Mirror the upper triangle to the lower (once), as the scalar does.
-    for k in 0..win2 {
-        for l in (k + 1)..win2 {
-            h[l * win2 + k] = h[k * win2 + l];
-        }
-    }
-}
-
-/// NEON twin of [`mac_row_i32_v3`]: `acc[i] += vals[i] as i32 * scalar`.
-///
-/// Same arithmetic in the same order, at 4 lanes instead of 8. The i16->i32
-/// widen (`vmovl_s16`) is the exact counterpart of `_mm256_cvtepi16_epi32`,
-/// and the caller's bound (one region row of products) is what keeps both the
-/// multiply and the add inside i32 — see [`compute_stats`]'s doc. Chunk width
-/// does not affect the result: every lane is an independent exact i32 add, so
-/// the 4-lane split and the 8-lane split agree bit-for-bit, and the scalar
-/// remainder handles win2 = 25/49 (neither a multiple of 4 nor 8) lane-for-lane.
-#[cfg(target_arch = "aarch64")]
-#[rite]
-fn mac_row_i32_neon(_token: NeonToken, acc: &mut [i32], vals: &[i16], scalar: i32) {
-    let s = vdupq_n_s32(scalar);
-    let (a4, a_rem) = acc.as_chunks_mut::<4>();
-    let (v4, v_rem) = vals.as_chunks::<4>();
-    for (achunk, vchunk) in a4.iter_mut().zip(v4.iter()) {
-        let v32 = vmovl_s16(vld1_s16(vchunk));
-        let sum = vaddq_s32(vld1q_s32(achunk), vmulq_s32(v32, s));
-        vst1q_s32(achunk, sum);
-    }
-    for (a, &v) in a_rem.iter_mut().zip(v_rem) {
-        *a += v as i32 * scalar;
-    }
-}
-
-/// `acc[t] += vals[t] * scalar` for all `t` (equal-length slices), 8 i32 lanes
-/// at a time. Products fit i32 and each `acc` cell is bounded to one region
-/// row's worth (see [`compute_stats_impl_v3`]), so neither the `i32` multiply
-/// nor the `_mm256_add_epi32` overflows. The scalar tail matches lane-for-lane.
-#[cfg(target_arch = "x86_64")]
-#[rite]
-fn mac_row_i32_v3(_token: Desktop64, acc: &mut [i32], vals: &[i16], scalar: i32) {
-    let s = _mm256_set1_epi32(scalar);
-    // `as_chunks` leaves no interior bounds checks: each 8-lane body reads
-    // the exact-length chunk, and the equal-length remainder handles the tail
-    // (win2 = 25/49 is not a multiple of 8) lane-for-lane like the vector body.
-    let (a8, a_rem) = acc.as_chunks_mut::<8>();
-    let (v8, v_rem) = vals.as_chunks::<8>();
-    for (achunk, vchunk) in a8.iter_mut().zip(v8.iter()) {
-        let v32 = _mm256_cvtepi16_epi32(_mm_loadu_si128(vchunk));
-        let sum = _mm256_add_epi32(_mm256_loadu_si256(achunk), _mm256_mullo_epi32(v32, s));
-        _mm256_storeu_si256(achunk, sum);
-    }
-    for (a, &v) in a_rem.iter_mut().zip(v_rem) {
-        *a += v as i32 * scalar;
-    }
+    cs_mirror(win2, h);
 }
 
 /// WIENER_TAP_SCALE_FACTOR (restoration_pick.c:31).

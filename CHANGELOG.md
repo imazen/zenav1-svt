@@ -851,6 +851,16 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **Wiener `compute_stats` (loop-restoration tap search) is C's six-step
+  kernel on both ISAs — 127x C per call -> 1.35x on x86 (746.5 M -> 7.9 M Ir
+  per 512x512 frame), byte-identical; preset-6 port/C instruction ratio
+  3.4-5.1x -> 2.3-2.8x on every 512x512 cell (2026-09-04).** One
+  `cs_kernel!` body (full madd dots for M and H's first block row/column,
+  every other H entry by an exact O(width)/O(height) shift delta) over
+  seven per-ISA lane primitives; the aarch64 row-pair arm of 2026-09-03 is
+  replaced by the same body (kernel bench 10.9x -> 24.8x over scalar at
+  win 5). Record `rust/benchmarks/compute_stats_cshape_2026-09-04.meta`.
+
 - **Duplicate-transcription fold, five clusters, byte-inert (2026-09-04).**
   The two unwired-code reports flagged C functions the port had transcribed
   two to four times; each cluster now has ONE body and the copies are
@@ -874,6 +884,7 @@ Crates are not published to crates.io yet — depend by git.
   decision, not a fold) and the second `TransformationType` enum in
   `port_entropy_inter::modes` (a seven-file signature change). Full record:
   `docs/UNWIRED-PORTED-CODE-2026-09-04.md` "Final duplicate-fold summary".
+
 - **The inter path no longer holds the LAST reference three times and the
   stored picture twice — aarch64 2048x2048 inter peak RSS 1.311x -> 1.189x
   of C, 1280 1.263x -> 1.042x; x86 1.185x -> 1.022x; x86 peak heap
