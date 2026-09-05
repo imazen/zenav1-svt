@@ -8282,6 +8282,19 @@ model on the 512 cell and the gate names it. The byte side is mutation-proven
 too: with the search wire removed (the §1z⁴¹ derivation-only refusal) exactly
 the twelve 16x16 cells return `rc=3`.
 
+**The NEXT chunk's real blocker, found by grep and named here so it is not
+re-discovered.** Coding the model is NOT just the header. `inject_global_candidates`
+(`port_md/inject.rs:1311`) is already LIVE — it reads `ctx.global_motion[frame_type]`,
+calls `inter_mvp::gm_get_motion_vector_enc` and puts the model on the candidate
+as `wm_params_l0` / `wm_params_l1` — but **`wm_params_l0` has no consumer
+outside `port_md/inject.rs` and `port_md/motion_mode.rs`**, and the latter is
+item 4 of `docs/UNWIRED-PORTED-CODE-2026-09-04.md` (12 of 13 functions dead).
+The live inter predictor (`inter_search_arm`, `leaf_funnel`) never reads it. So
+a GLOBALMV block whose model is not a pure translation would be PREDICTED with a
+plain translation MV — wrong pixels, not just wrong syntax. Coding the model
+therefore needs the WARPED-PREDICTION consumer, which is item 4's territory, not
+a plumbing pass. Do not scope "wire the header" as the whole of it.
+
 **What is still NOT wired**, with specifics. The MODEL is computed and thrown
 away. To code it: `entropy::obu::write_inter_frame_header`'s seven-zero-bit loop
 (`obu.rs`, the `for g in it.is_global` block) must become

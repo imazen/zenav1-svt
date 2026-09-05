@@ -119,6 +119,45 @@ PASS_CELLS=(
     # that distinguishes the two.
     "gradient 576 576 32 6 2 3"
     "gradient 576 576 32 8 2 3"
+    # ------------------------------------------------------------------
+    # PRESETS 0..4 — added 2026-09-05, and they are the FIRST cells this gate
+    # has had BELOW preset 6. Every cell above is p6 or p8, where
+    # `svt_aom_get_gm_core_level` is 0 and global motion does not exist. At
+    # preset <= 4 C's `gm_level` is 4 and this port REFUSED the whole band, so
+    # nothing here could see it: the GM chunks (`docs/INTER-ENCODE-PLAN.md`
+    # §1z⁴¹/§1z⁴²) opened it, and a band no gate asserts is a band that
+    # regresses silently.
+    #
+    # The twelve chosen cells cover all THREE branches of C's global-motion
+    # chain, because the refusal turns on which one a frame takes:
+    #   * 64/128/256 — `avg_me_sad = 0`, C skips the search entirely;
+    #   * 16x16      — `avg_me_sad` is 102/104/18, C RUNS the search and
+    #                  RANSAC fits nothing (fewer correspondences than
+    #                  `minpts * MINPTS_MULTIPLIER`), so the port must run it
+    #                  too to know that.
+    # They also cover BOTH sides of the chain-simulation panic §1z⁴¹ fixed:
+    # `sim_ectx` runs only when `use_funnel && update_cdf_level != 0 &&
+    # multi_sb`, and `svt_aom_get_update_cdf_level_default` is non-zero on an
+    # inter frame only at `enc_mode <= 3` — so the 128/256 p0..p3 cells enter
+    # it and the p4 and 64x64 cells do not.
+    #
+    # TEETH, measured: with the §1z⁴² search wire removed the four 16x16 cells
+    # go to ERR (the port refuses, conservatively); with the whole GM
+    # derivation removed all twelve do. With `sim_ectx`'s inter arming
+    # reverted, the 128/256 p0..p3 cells CRASH. Each is a different verdict in
+    # this gate's vocabulary, which is the point of having three.
+    "gradient 16 16 40 0 2 3"
+    "gradient 16 16 40 2 2 3"
+    "diag 16 16 40 2 2 3"
+    "screen 16 16 40 4 2 3"
+    "uniform 64 64 40 0 2 3"
+    "gradient 64 64 40 2 2 3"
+    "screen 64 64 40 4 2 3"
+    "uniform 128 128 40 2 2 3"
+    "gradient 128 128 40 0 2 3"
+    "diag 128 128 40 3 2 3"
+    "screen 128 128 40 2 2 3"
+    "diag 256 256 40 2 2 3"
     "uniform 16 16 20 6 2 3"
     "uniform 16 16 20 8 2 3"
     "uniform 16 16 40 6 2 3"

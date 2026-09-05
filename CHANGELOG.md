@@ -104,6 +104,14 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **`inter_byte_gate.sh` gets its first cells BELOW preset 6** — twelve, at
+  p0/p2/p3/p4, covering all three branches of C's global-motion chain (no
+  search / search-fits-nothing / the multi-superblock chain-simulation band).
+  The p0..p4 inter band had never been asserted by any byte gate because the
+  whole band was refused. 108 required, 0 failed. Mutation-proven three ways:
+  dropping the search verdict turns the four 16x16 cells into ERR, unarming
+  `sim_ectx` makes the five multi-SB cells CRASH, and each is a different
+  verdict in the gate's vocabulary.
 - **C's global-motion SEARCH is ported and runs — the port fits C's ROTZOOM to
   the last bit.** `svt_aom_gm_get_params_cost` (`global_me_cost.c:24`) is TIER 1
   against the real exported symbol (192-cell sweep, mutation-proven);
