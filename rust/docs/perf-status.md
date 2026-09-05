@@ -31,6 +31,21 @@
 > still fold into the alpha closure; the rejected variant is the evidence that
 > it must be inlinable to win.
 >
+> **ALSO MEASURED AND REVERTED, so nobody retries it:** `#[inline]` on
+> `palette::palette_color_index_context`, the last item-F helper (2,961,716
+> calls / 211.6 M Ir = 1.5 % of a SCREENSHOT's p2). The attribute takes — the
+> symbol goes and the screen cell's Ir reads -0.22 % (port/C 2.205 -> 2.200) —
+> but the wall clock is a wash with a sign flip by content, 21 paired rounds
+> each: `screen_terminal` 512 p2 **1.003x** (span 0.9951-0.9982) against
+> `photo_cid` 512 p2 **0.999x** (span 0.9998-1.0032, entirely at or above 1.0).
+> That 1.5 % is the function's own WORK (~71 Ir a call), not call overhead:
+> making it faster means changing the algorithm, not the linkage.
+> **Incidental finding worth knowing:** `screen_terminal` 512 p2 qp 40 is now
+> BYTE-IDENTICAL to C (5,003 B both sides). `callcount_realimg_2026-09-04` has
+> it as the open correctness finding at 4,991 vs 5,003; it closed between that
+> record and this one, and NOT via these four chunks (all byte-inert) — the
+> credit is the screen/IntraBC work that landed on `main` in between.
+>
 > **THE FOUR CHUNKS TOGETHER, against the tree they branched from (41e5d8f1),
 > 21 interleaved paired rounds, ident=Y on every row:** photo_cid 512 p2
 > **1.059x**, the CLIC glitter photo **1.062x**, the gb82-sc terminal crop
