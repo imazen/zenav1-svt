@@ -1,5 +1,117 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE OPEN-LOOP ME SAD FAMILY, READ AGAINST C AND SCOPED — NO CODE LANDED,
+> NOTHING MEASURED (2026-09-05, lane `mesad`, wrapped up by the coordinator
+> after the reading pass; workspace `~/work/zen/zenav1-svt--mesad`).** Target:
+> the top row of the block below — 28 % of the port's inter-frame Ir delta at
+> identical outer call counts (`motion_estimation_b64` 64 = 64, 30.1x;
+> `ext_all_sad_calculation_8x8_16x16` 394 = 394, 52.1x; `sad_loop_kernel`
+> 640 = 640, 43.8x; `me_sad::__arcane_block_sad_v3` 106.3 M self = 24.7 %),
+> record `benchmarks/callcount_inter_2026-09-05.*` (`c0ac35b98`). Everything
+> here is from READING source; it is what the next lane should build from,
+> not evidence of any speed-up.
+> **The C oracle's kernel, x86 (`ASM_AVX2/compute_sad_intrin_avx2.c:4179`,
+> `svt_ext_all_sad_calculation_8x8_16x16_avx2`; RTCD `aom_dsp_rtcd.c:561`
+> tops out at AVX2, there is NO AVX-512 variant of this one).** Per 16x16 block
+> in the z-order table `{0,1,4,5,2,3,6,7,8,9,12,13,10,11,14,15}`: 8 row
+> iterations (4 with `sub_sad`, stepping 2 rows, result `<< 1`), each 6 x
+> 128-bit loads (src rows r and r+8; ref rows r/r+8 at +0 and +8), 3
+> `insertf128`, then FOUR `_mm256_mpsadbw_epu8` (imm 0 / 45 / 18 / 63 = src
+> quad 0..3 / 4..7 / 8..11 / 12..15 against ref offset 0 / 4 / 0 / 4) and four
+> `adds_epu16`. That yields four `u16x8` vectors = the 8 horizontal search
+> positions of the TL / TR / BL / BR 8x8 blocks — ONE `mpsadbw` is 8 positions
+> x 4 bytes, which is why C's per-8x8 cost is ~6 Ir where the port's
+> `block_sad_v3` (8 rows x one 8-byte `_mm_sad_epu8`, generic w/h loops, a
+> slice re-borrow per call) is ~377. Winners: `_mm_minpos_epu16` per 8x8
+> (lowest index on ties == the `_c` kernel's sequential first-wins), a SIGNED
+> `_mm_cmplt_epi32` against `p_best_sad_8x8` and `blendv` of `mv + pos`
+> (16-bit lane add == `pack_mv(mvxt(mv)+idx, mvyt(mv))`); the 16x16 sum is a
+> plain `add_epi16` of the four (max 65,280, cannot saturate), widened with
+> `cvtepu16_epi32` into `p_eight_sad16x16[pos]`, then `minpos` again and a
+> scalar strict `<`. Budget: 16 x (8 x 17 + ~40) ~ 2.8 k Ir — the measured
+> per-call figure, so the kernel IS the whole cost. The signed compare is a
+> hazard only for a seed >= 2^31: the encoder seeds `MAX_SAD_VALUE =
+> 128*128*255` (`motion_estimation.h:64`, `integer.rs:357`), but
+> `tests/c_parity_inter_me.rs` seeds `u32::MAX` against the `_c` shim, so a
+> port arm MUST keep unsigned/sequential semantics, not copy the signed
+> compare. `svt_ext_eight_sad_calculation_32x32_64x64_avx2` (:4305) is
+> sixteen `add_epi32` plus a `(x<<3)|idx` unsigned-min trick — it is not in
+> the ranking and the port's scalar version can stay.
+> **`svt_sad_loop_kernel_avx2_intrin` (:393; on r7900x C actually runs the
+> AVX-512 variant, `rtcd.c:548`, which callgrind cannot see):** `switch` on
+> width 4/6/8/12/16/24/32/48/64 plus `sad_loop_kernel_generalized_avx2`
+> (:118) for the rest; 8 positions per `mpsadbw` group (`j += 8`), `u16`
+> saturating accumulators, overflow fallback when the group min reads 0xFFFF
+> (eight partial accumulators widened to 32-bit), a `leftover` lane mask for
+> `search_area_width & 7`, `low_sum = 0xffffff`, strict `<`, `minpos`'s
+> lowest index — i.e. exactly the `_c` raster first-wins the port transcribes.
+> `skip_search_line` is honoured only in the `case 16` arms with
+> `block_height <= 16` (:1294, :1380), same as `_c`. Callers
+> (`motion_estimation.c:848/941/1034/1513`, `pd_process.c:461`): sixteenth /
+> quarter / full b64 buffers, so width 16 / 32 / 64 with height halved under
+> SUB_SAD, and the partial-SB widths at frame edges.
+> **aarch64 (`ASM_NEON/sad_neon.c:173`, `_neon`; `rtcd.c:946` is `SET_NEON`
+> only, the `_neon_dotprod` twin in `ASM_NEON_DOTPROD/sad_neon_dotprod.c:140`
+> is NOT dispatched):** preload the 16 src rows ONCE (`st[8]`, `sb[8]`), then
+> per position `vabdq_u8` + `vpadalq_u8` into top/bottom `u16x8`,
+> `vpaddlq_u16` + `vpaddq_u32` -> `[TL,TR,BL,BR]` as one `u32x4`,
+> `vcltq_u32`/`vbslq_u32` update, `vaddvq_u32` for the 16x16. The loop
+> kernel (`compute_sad_neon.c:473`, dispatched neon / neon_dotprod / sve by
+> `rtcd.c:932`) does 4 positions per pass (`sad16xhx4d_neon`: 1 src + 4 ref
+> loads, 4 `vabdq` + 4 `vpadalq_u8` per row, `u16` flush every
+> `257*8/width` rows) and `update_best_sad_u32` = `vminvq` + `findposq`
+> (first-wins). **Expectation, NOT a measurement:** the port's
+> `block_sad_arm_v2` (`vabdq` + `vdotq` per 16 bytes) is already within a few
+> x of that per-8x8 shape, so the aarch64 side of this item is far smaller
+> than the x86 52x; price it with `benches/kernel_tiers.rs` before spending
+> the ARM half of the chunk. One oddity read, not measured:
+> `svt_sad_loop_kernelwxh_neon_dotprod` steps `x += 8` with two 4-groups and
+> no leftover guard — `sad_loop_kernel_rtcd_agrees_with_c` (sa 8..31) is
+> green on the Mac, so either it never disagrees or the widths in play hide
+> it; check before trusting it as a C-equivalence argument.
+> **Port mechanism, confirmed by reading (`crates/svtav1-encoder/src/inter_me/
+> sad.rs`):** `ext_all_sad_calculation_8x8_16x16_generic` -> 16 x
+> `ext_eight_sad_calculation_8x8_16x16_generic` -> 8 search positions x 4
+> closure calls into `block_sad_v3` = 512 `#[arcane]` calls per outer call,
+> each re-slicing `&rf[search_index..]` and re-running the generic w/h loop.
+> `sad_loop_kernel` is one `block_sad_v3` per (x, y). The `#[arcane]`
+> boundary is amortised 512:1 already (the comment at `sad.rs:525` is right),
+> so the 148 k vs 2.8 k is per-8x8 kernel shape, not dispatch — the brief's
+> framing holds.
+> **Design derived for the x86 arm (unwritten):** hand `#[arcane]` body +
+> `#[rite]` helpers in `inter_me/sad.rs` (magetypes has NO multi-position SAD
+> primitive — `mpsadbw` is not expressible generically — so this is a hand
+> arm by necessity; `_mm_mpsadbw_epu8::<IMM>` and `_mm_minpos_epu16` are safe
+> intrinsics in the pinned archmage, `tests/x86_safe_intrinsics.rs:311-314`
+> at `cc24398`/`2524b0b`; the 256-bit `_mm256_mpsadbw_epu8` was not verified
+> present). ext_all: C's row loop verbatim, 8x8 update as four scalar
+> unsigned strict-`<` after `minpos` (drops the signed-compare hazard for ~12
+> Ir). Loop kernel, generic width: per 8-position group, ONE `u16x16`
+> accumulator takes every `mpsadbw` (32-wide chunks 1-row/256-bit: lane0 =
+> bytes 0..15, lane1 = 16..31; 16-wide chunk packs rows k/k+1 per lane as C's
+> `>= 16` arm; 8 via imm 0/5; 4 via imm 0; `w % 4` scalar), since in every
+> layout lane0 + lane1 is the 8-position SAD; flush to `u32x8` every
+> `max(1, 65535 / (255 * W))` row-pairs (exact for W <= 128, the b64 bound);
+> mask the last group's invalid lanes to `0x1FFF_FFFF` and take the group
+> min with C's `(x << 3) | idx` trick (`val < 2^29` holds: max SAD 1,044,480);
+> strict `<` against a `u64` best seeded 0xffffff. Bounds: the 16-byte ref
+> loads reach 8-12 bytes past the last valid position exactly as C's do;
+> check ONCE per call that the furthest read is inside `rf` and route the
+> whole call to the scalar variant otherwise, rather than a branch per load.
+> **Gates for that change:** kernel level `tests/c_parity_inter_me.rs`
+> (`ext_all_sad_calculation_8x8_16x16_matches_c`, `sad_loop_kernel_matches_c`
+> sizes {8,16,32,64}^2 x sa 1..24 x 1..12 x skip, `..._rtcd_agrees_with_c`)
+> against the C `_c` shim — mutate the imm or the tie-break and watch THAT go
+> red first — then the full byte chain on both ISAs; wall clock via
+> `tools/perf_ab.sh` with its own same-binary control, Ir via
+> `tools/perf_profile/callcount_cells.sh` per the `callcount_inter` `.meta`.
+> **Workspace trap paid again:** a fresh `jj workspace` has an EMPTY
+> `reference/svt-av1`; symlink it at the primary checkout's before any
+> `cargo` touches `svtav1-cref` (the `mt1`/`v4x2` lanes do the same). The
+> submodule working tree there sits on `fix/suspected-c-bug-17` (`39f909e`)
+> while the pin is `3115c0c` — the kernel files above were read from that
+> working tree and NOT diffed against the pin.
+
 > **THE INTER FRAME'S "WORK C DOES NOT DO" ITEMS, TRACED TO THEIR READERS —
 > INVESTIGATION ONLY, NO CODE CHANGED, NOTHING MEASURED (2026-09-05, the
 > `algo` lane, cut short at the coordinator's request).** Acting on
