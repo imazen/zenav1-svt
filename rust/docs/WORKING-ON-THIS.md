@@ -516,6 +516,22 @@ equalled p4.
 incrementally; a mid-run edit corrupts the running script and killed a 300-cell
 sweep mid-flight.
 
+**`tools/perf_ab.sh` DOES NOT READ 1.000 ON NO CHANGE — run a base-vs-base
+control before believing any sub-1 % ratio.** MEASURED 2026-09-05
+(`benchmarks/entropy_coder_cshape_2026-09-05`): `perf_ab.sh base base2` with
+`base2` a BYTE COPY of `base` reported the candidate slot **0.997x at
+photo_cid 512² p2 and 0.995x at p6**, and at p6 the p25/p75 span sat entirely
+above 1.0 — i.e. the harness (under a live sibling lane on that box) has a
+0.3-0.5 % bias against the candidate. Before that control was run, an
+entirely-instruction-reducing change looked like a uniform 0.4-0.8 % p2
+REGRESSION on four different contents, and two rounds went into hunting a
+mechanism that did not exist. The counters had already said so from the other
+side — instructions, branches AND mispredicts all fell while cycles rose, which
+no change can do on merit — but the control is the cheap, direct answer.
+**Cost: one extra `cp` and one `perf_ab.sh` invocation.** Do it whenever a
+verdict turns on a ratio inside +-1 %, and record the control row next to the
+candidate rows so the reader can subtract it too.
+
 **Never rebuild Rust while a sweep is using the binary.**
 
 **A `until ! pgrep -f <script>` waiter MATCHES ITSELF and never exits.** The

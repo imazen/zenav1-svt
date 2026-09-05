@@ -1,5 +1,76 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE ENTROPY WRITER AND THE RANGE CODER TAKE C'S SHAPE — -2.285 % OF THE
+> photo_cid 512² p6 FRAME'S INSTRUCTIONS, **-2.96 % OF ITS CYCLES**, -7.96 %
+> OF ITS BRANCH MISSES AND **1.037x / 1.029x WALL CLOCK ON THE TWO PHOTOS**;
+> AND A SAME-BINARY CONTROL SHOWS `perf_ab.sh` READS 0.995x-0.997x ON NO
+> CHANGE AT ALL (2026-09-05).** Record
+> `benchmarks/entropy_coder_cshape_2026-09-05.{tsv,meta}`. Three chunks landed,
+> three were built, proven byte-identical, MEASURED WORSE and REVERTED.
+> **The oracle first, three findings, each cited:** (1) **C never recomputes
+> `eob` in the entropy path at all** — `av1_write_coeffs_txb_1d` TAKES it
+> (`entropy_coding.c:358`) and the caller passes what the quantizer stored
+> (`entropy_coding.c:592` <- `coding_loop.c:441`), while the port ran a FORWARD
+> full-block scan with a ~50/50 data-dependent branch, the site
+> `stall_attrib_2026-09-05` named as its largest mispredictor
+> (`pipeline.rs:9333`, 17.16 %). (2) **`svt_od_ec_encode_q15` DOES NOT EXIST in
+> `reference/svt-av1/Source/Lib/`** — C fuses the whole thing into
+> `svt_od_ec_encode_cdf_q15` (`bitstream_unit.c:279-301`), sharing `r >> 8` and
+> `EC_MIN_PROB * (nsyms-1-s)` and testing `s > 0` ONCE; the port carried a
+> private helper mirroring a function the oracle no longer has, which re-tested
+> the same predicate as `fl < 32768`. (3) **C's `normalize` is `static inline`
+> with the flush `NOINLINE` beside it** (`bitstream_unit.c:151` + `:110`, whose
+> own comment says "kept out-of-line to reduce icache pressure on the hot
+> (no-flush) path"); the port's single fused function was its own symbol at
+> 44,725,701 Ir — **2.77 % of the frame** — so every symbol written paid a call
+> around ~10 instructions of work. **What landed:** the pack's THREE forward eob
+> scans (the record named two; the third is the chroma writer, which runs for U
+> and V on every coded block) become the reverse-scan-with-early-return already
+> at `quant.rs:318`; `encode_cdf_q15` is fused and `encode_q15` deleted;
+> `normalize` is split `#[inline]` hot + `#[inline(never)] #[cold]` flush; and
+> the `c == eob - 1` iteration is peeled out of the backward pass as C peels it
+> (`entropy_coding.c:475-501`) instead of re-testing a loop-invariant predicate
+> per coefficient. **Ir** (r7900x callgrind, byte-identical every build):
+> photo_cid p6 1,615,400,006 -> **1,578,489,181** (-2.285 %), Bcm 9,195,187 ->
+> 8,878,357 (-3.45 %); screen_terminal p6 916,255,517 -> 909,329,723
+> (-0.756 %). Per chunk: eob scan -8,223,355; range coder **-22,676,476**; peel
+> -6,010,994. `encode_block_syntax`'s SELF Bcm falls 371,547 -> 65,239 —
+> **82.4 %, exactly the share the record attributed to `pipeline.rs:9333`.**
+> **Hardware** (`perf stat`, both sides `taskset -c 20`, paired warmup-delta,
+> median of 5), photo_cid p6 per encode: instructions -2.41 %, cycles -2.96 %,
+> branch-misses -7.96 %, IPC 3.4593 -> 3.4791. **Wall clock**, 21 interleaved
+> paired rounds each, every row byte-identical: photo_cid 512 p6 **1.037x**
+> (span 0.9593-0.9695), photo_clic 512 p6 **1.029x** (0.9654-0.9724).
+> **READ THE p2 AND SCREENSHOT ROWS WITH THE CONTROL IN HAND.** At photo_cid p2
+> the candidate executes FEWER instructions (-0.08 %), FEWER branches and FEWER
+> mispredicts and spends **MORE cycles (+0.82 %)**; screen_terminal p6 is the
+> same shape (-0.81 % instructions, **+0.30 % cycles**). Nothing this change
+> does can produce that — it is code placement, and the ceiling on merit is what
+> the entropy path IS at p2: **0.08 % of that cell's instructions.** The
+> wall-clock p2 rows (0.996x / 0.995x) sit at the harness's own floor: **a
+> base-vs-base A/B — the SAME BINARY on both sides — reads 0.997x at p2 and
+> 0.995x at p6, with the p6 quartile span entirely above 1.0.** Every
+> wall-clock ratio in this campaign carries a bias of that size against the
+> candidate slot; the p6 photo wins are far outside it, the p2 rows are not.
+> **MEASURED, BYTE-IDENTICAL AND REVERTED — do not retry:** C's `eob == 1`
+> writer fast path (`entropy_coding.c:414-443`) **+1,924,868 Ir** (it fires —
+> `fill_levels` self Ir 35,521,705 -> 35,099,685 — but `eob == 1` txbs are ~1 %
+> of this cell's writer calls); C's two-loop `update_cdf`
+> (`cabac_context_model.h:98-104`) **+17,538,820 Ir**, the largest regression
+> measured that day — LLVM already predicates the port's single `if i < val`
+> loop and two runtime-trip-count loops defeat that, so **C's hoist is right for
+> a C compiler and wrong for this one**; and wiring the writer to
+> `TxbScratch::ctx` **+1,342,196 Ir** — that field exists for exactly this
+> purpose and today has NO reader outside the debug poison while the writer
+> still declares its own `[0i8; 32*32]`, but the txbs that dominate photo_cid p6
+> are large enough that `width * height` is most of 1,024 anyway. **Memory:**
+> peak RSS (x86, gradient 2048² qp40 p13, 5 reps) is a NULL on both arms — still
+> 68,920 -> 68,824 KiB, inter 109,296 -> 109,568 KiB, ranges fully overlapping;
+> the diff adds, removes and resizes no allocation. **Named next:
+> carry the coded-scan eob out of the quantizer into the decision so the pack
+> does no scan at all, which is what C does.** Gates on both ISAs — see the
+> record.
+
 > **THE CFL PREDICT KERNEL IS SIMD NOW — 6.48x C PER CALL -> 4.15x, THE ALPHA
 > SEARCH 1.724x -> 1.548x, **1.017x / 1.018x WALL CLOCK ON THE TWO PHOTOS** —
 > AND C DOES NOT INLINE ITS OWN KERNEL, SO THE "IT MUST BE INLINABLE TO WIN"

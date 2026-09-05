@@ -8277,6 +8277,33 @@ fn use_angle_delta(width: u16, height: u16) -> bool {
     !matches!((width, height), (4, 4) | (4, 8) | (8, 4))
 }
 
+/// `eob = 1 + max{ i : coeffs[scan[i]] != 0 }`, else 0 — the scan-order
+/// end-of-block the coefficient writer codes, recovered from the finished
+/// raster `coeffs` by walking the scan BACKWARDS and returning on the first
+/// non-zero.
+///
+/// The reverse walk is not a style choice. The three pack sites below used to
+/// carry the forward form, `for (i, &pos) in scan.iter().enumerate() { if
+/// coeffs[pos] != 0 { eob = i + 1 } }`, which runs the whole transform block
+/// and takes a roughly even data-dependent branch at every position:
+/// `stall_attrib_2026-09-05` measured 316,928 simulated mispredicts at a
+/// 17.16 % rate on that one line — 82 % of `encode_block_syntax`'s total and
+/// 3.4 % of the photo_cid p6 frame's — against 3.10 % for the reverse form
+/// already written at `quant.rs:318`. This is a private twin of that helper
+/// rather than a call into it, deliberately: `quant::eob_from_qcoeff` is
+/// inlined into `quantize_fp`/`quantize_fp_hbd`, which are hot at preset 2,
+/// and adding three more call sites there would change that codegen for no
+/// reason.
+#[inline]
+fn eob_from_scan_rev(scan: &[u16], coeffs: &[i32]) -> i32 {
+    for i in (0..scan.len()).rev() {
+        if coeffs[scan[i] as usize] != 0 {
+            return i as i32 + 1;
+        }
+    }
+    0
+}
+
 /// Write one chroma plane's transform block (`uv`: 0 = U, 1 = V) with the
 /// C-exact coefficient writer, using that plane's own neighbor context
 /// arrays but the SHARED plane_type=1 CDF tables (AV1 PLANE_TYPES = 2:
@@ -8319,12 +8346,11 @@ fn write_chroma_txb(
         tx_size,
         crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[uv_tx_type] as usize,
     );
-    let mut eob = 0i32;
-    for (i, &pos) in scan.iter().enumerate() {
-        if qcoeffs[pos as usize] != 0 {
-            eob = i as i32 + 1;
-        }
-    }
+    // Reverse scan with early return — the CHROMA twin of the two luma sites
+    // in `encode_block_syntax`. `stall_attrib_2026-09-05` §3 named only those
+    // two; this one runs for U and V on every coded block and has the same
+    // ~50/50 data-dependent branch over the whole block.
+    let eob = eob_from_scan_rev(scan, qcoeffs);
     let cul_level = coeff_c::write_coeffs_txb_1d(
         coeff_fc,
         writer,
@@ -9328,12 +9354,12 @@ fn encode_block_syntax(
                 tx_size,
                 crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
             );
-            let mut eob = 0i32;
-            for (i, &pos) in scan.iter().enumerate() {
-                if coeffs[pos as usize] != 0 {
-                    eob = i as i32 + 1;
-                }
-            }
+            // Reverse-scan-and-return ([`eob_from_scan_rev`]), not the
+            // forward full-block walk this line used to carry: the forward
+            // form's ~50/50 data-dependent test was the port's single largest
+            // mispredict site — 316,928 simulated mispredicts at 17.16 %, 82 %
+            // of `encode_block_syntax`'s total (`stall_attrib_2026-09-05`).
+            let eob = eob_from_scan_rev(scan, coeffs);
             // Diagnostic aid: SVTAV1_CODED_EOB=1 prints the TRUE coded
             // scan-order eob per depth-0 leaf (the tree dump's d.eob is a
             // raster-order artifact). No output change.
@@ -9407,12 +9433,9 @@ fn encode_block_syntax(
                     tx_size,
                     crate::entropy::scan_tables::TX_TYPE_TO_SCAN_INDEX[tx_type] as usize,
                 );
-                let mut eob = 0i32;
-                for (i, &pos) in scan.iter().enumerate() {
-                    if coeffs[pos as usize] != 0 {
-                        eob = i as i32 + 1;
-                    }
-                }
+                // Reverse scan with early return — the depth>0 twin of the
+                // depth-0 site above (`stall_attrib_2026-09-05` §3).
+                let eob = eob_from_scan_rev(scan, coeffs);
                 let cul_level = coeff_c::write_coeffs_txb_1d(
                     coeff_fc,
                     writer,

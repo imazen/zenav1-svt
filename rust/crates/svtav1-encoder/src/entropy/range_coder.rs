@@ -95,8 +95,42 @@ impl OdEcEnc {
         );
         debug_assert!(s < nsyms, "symbol {s} >= nsyms {nsyms}");
         debug_assert_eq!(icdf[nsyms - 1], 0, "C layout requires icdf[nsyms-1] == 0");
-        let fl = if s > 0 { u32::from(icdf[s - 1]) } else { 32768 };
-        self.encode_q15(fl, u32::from(icdf[s]), s as i32, nsyms as i32);
+        // The `fh <= fl <= 32768` invariant the deleted `encode_q15` used to
+        // assert, restated on the icdf the fused body reads directly.
+        debug_assert!(
+            u32::from(icdf[s]) <= if s > 0 { u32::from(icdf[s - 1]) } else { 32768 },
+            "icdf must be monotonically decreasing"
+        );
+        // C's shape (bitstream_unit.c:284-296): `r_hi` and `temp` computed
+        // ONCE and shared by both interval endpoints, and the `s > 0`
+        // predicate tested ONCE. The port used to materialise
+        // `fl = if s > 0 { icdf[s-1] } else { 32768 }` and hand it to
+        // a private `encode_q15` helper (now deleted — C has no such function
+        // any more either), which re-tested the same predicate as
+        // `fl < 32768`, recomputed `r >> 8` in its `s == 0` arm and evaluated
+        // `EC_MIN_PROB * (n - (s - 1))` and `EC_MIN_PROB * (n - s)`
+        // separately. Byte-identical, arm by arm:
+        //   s > 0: C's `u` = `((r_hi * (icdf[s-1] >> 6)) >> 1) + temp + 4`
+        //          and the old `EC_MIN_PROB * (n - (s - 1))` is
+        //          `4 * (nsyms - 1 - s) + 4` = `temp + EC_MIN_PROB`; C then
+        //          sets `r = u` and subtracts the `fh` term, giving the old
+        //          `r = u - v`.
+        //   s == 0: the old `fl == 32768` arm is exactly C's fall-through,
+        //          `r -= ((r_hi * (icdf[0] >> 6)) >> 1) + temp`.
+        let mut l = self.low;
+        let mut r = u32::from(self.rng);
+        debug_assert!(r >= 32768);
+        let r_hi = r >> 8;
+        let temp = EC_MIN_PROB * (nsyms - 1 - s) as u32;
+        if s > 0 {
+            let u = ((r_hi * (u32::from(icdf[s - 1]) >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
+                + temp
+                + EC_MIN_PROB;
+            l += u64::from(r - u);
+            r = u;
+        }
+        r -= ((r_hi * (u32::from(icdf[s]) >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT)) + temp;
+        self.normalize(l, r);
     }
 
     /// Encode a single binary value (`svt_od_ec_encode_bool_q15`).
@@ -117,87 +151,90 @@ impl OdEcEnc {
         self.normalize(l, r);
     }
 
-    /// Encode a symbol given its frequency interval in Q15
-    /// (`svt_od_ec_encode_q15`).
-    ///
-    /// `fl`: 32768 minus the cumulative frequency of all symbols before the
-    /// one to be encoded (or 32768 when `s == 0`).
-    /// `fh`: 32768 minus the cumulative frequency of all symbols up to and
-    /// including the one to be encoded.
-    fn encode_q15(&mut self, fl: u32, fh: u32, s: i32, nsyms: i32) {
-        let mut l = self.low;
-        let mut r = u32::from(self.rng);
-        debug_assert!(r >= 32768);
-        debug_assert!(fh <= fl);
-        debug_assert!(fl <= 32768);
-        let n = nsyms - 1;
-        if fl < 32768 {
-            // `s > 0` here: fl == 32768 exactly when s == 0.
-            let u = (((r >> 8) * (fl >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - (s - 1)) as u32;
-            let v = (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - s) as u32;
-            l += u64::from(r - u);
-            r = u - v;
-        } else {
-            r -= (((r >> 8) * (fh >> EC_PROB_SHIFT)) >> (7 - EC_PROB_SHIFT))
-                + EC_MIN_PROB * (n - s) as u32;
-        }
-        self.normalize(l, r);
-    }
-
     /// Renormalize so that `32768 <= rng < 65536`, flushing bytes from `low`
     /// to the output buffer when the window fills
-    /// (`svt_od_ec_enc_normalize`).
-    fn normalize(&mut self, mut low: u64, rng: u32) {
-        if self.error {
-            return;
-        }
-        let mut c = i32::from(self.cnt);
+    /// (`svt_od_ec_enc_normalize`, bitstream_unit.c:151-174).
+    ///
+    /// SHAPE, from C: this is the `static inline` hot path — compute `d`, test
+    /// `c + d >= 40`, store three fields — and the flush is a separate
+    /// `NOINLINE` function (C's `od_ec_enc_flush`, bitstream_unit.c:110, whose
+    /// own comment says it is "kept out-of-line to reduce icache pressure on
+    /// the hot (no-flush) path"). The port had ONE function carrying both
+    /// paths, which LLVM then declined to inline anywhere: `normalize` was its
+    /// own symbol costing 44.7 M Ir (2.78 % of the photo_cid p6 frame,
+    /// `stall_attrib_2026-09-05` ranked the range coder #4 by cycles), so every
+    /// symbol written paid a call, a prologue and a return around ~10
+    /// instructions of work. Byte-inert: identical arithmetic, only the
+    /// function boundary moved.
+    #[inline]
+    fn normalize(&mut self, low: u64, rng: u32) {
+        let c = i32::from(self.cnt);
         debug_assert!(rng <= 65535);
         // The number of leading zeros in the 16-bit binary representation of rng.
         let d = 16 - ilog_nz(rng);
-        let mut s = c + d;
-
         // Flush whenever `low` cannot safely accommodate more data; see the C
         // source for the full derivation of the 40 == 56 - 16 threshold.
-        if s >= 40 {
-            let offs = self.offs as usize;
-            if offs + 8 > self.buf.len() {
-                // C: storage = 2 * storage + 8 (values past `offs` are scratch).
-                let new_len = 2 * self.buf.len() + 8;
-                self.buf.resize(new_len, 0);
-            }
-            // One extra byte vs. s>>3 since cnt always counts one byte short
-            // (it starts at -9).
-            let num_bytes_ready = (s >> 3) + 1;
-            // Number of non-ready bits left in `low` after extracting the
-            // ready bytes (64-bit window: 24 == 64 - 40 cushion).
-            c += 24 - (num_bytes_ready << 3);
-
-            let output = low >> c;
-            low &= (1u64 << c) - 1;
-
-            let mask = 1u64 << (num_bytes_ready << 3);
-            let carry = output & mask;
-            let output = output & (mask - 1);
-
-            // write_enc_data_to_out_buf: single big-endian 8-byte store with
-            // the ready bytes left-aligned; bytes past `offs + num_bytes_ready`
-            // are scratch and get overwritten by later flushes.
-            let reg = (output << ((8 - num_bytes_ready) << 3)).to_be_bytes();
-            self.buf[offs..offs + 8].copy_from_slice(&reg);
-            if carry != 0 {
-                debug_assert!(self.offs > 0);
-                propagate_carry_bwd(&mut self.buf, self.offs - 1);
-            }
-            self.offs += num_bytes_ready as u32;
-
-            s = c + d - 24;
+        // C spells this `EB_UNLIKELY(c + d >= 40)`.
+        if c + d >= 40 {
+            self.flush(low, rng, c, d);
+        } else {
+            self.low = low << d;
+            self.rng = (rng << d) as u16;
+            self.cnt = (c + d) as i16;
         }
+    }
+
+    /// [`Self::normalize`]'s cold arm — C `od_ec_enc_flush`
+    /// (bitstream_unit.c:110), `NOINLINE` there and `#[inline(never)]` +
+    /// `#[cold]` here for the same reason.
+    #[inline(never)]
+    #[cold]
+    fn flush(&mut self, mut low: u64, rng: u32, mut c: i32, d: i32) {
+        // `error` is never set anywhere in this file today, so this test is
+        // dead — but it guards the only buffer WRITE in the coder, which is
+        // where an error would have to be honoured, so it stays on the cold
+        // side rather than being paid once per symbol on the hot one.
+        if self.error {
+            return;
+        }
+        let s = c + d;
+        let offs = self.offs as usize;
+        if offs + 8 > self.buf.len() {
+            // C: storage = 2 * storage + 8 (values past `offs` are scratch).
+            let new_len = 2 * self.buf.len() + 8;
+            self.buf.resize(new_len, 0);
+        }
+        // One extra byte vs. s>>3 since cnt always counts one byte short
+        // (it starts at -9).
+        let num_bytes_ready = (s >> 3) + 1;
+        // Number of non-ready bits left in `low` after extracting the
+        // ready bytes (64-bit window: 24 == 64 - 40 cushion).
+        c += 24 - (num_bytes_ready << 3);
+
+        let output = low >> c;
+        low &= (1u64 << c) - 1;
+
+        let mask = 1u64 << (num_bytes_ready << 3);
+        let carry = output & mask;
+
+        // write_enc_data_to_out_buf: single big-endian 8-byte store with
+        // the ready bytes left-aligned; bytes past `offs + num_bytes_ready`
+        // are scratch and get overwritten by later flushes. The carry bit sits
+        // at bit `num_bytes_ready * 8` and the shift is by
+        // `64 - num_bytes_ready * 8`, so it lands at bit 64 and is discarded —
+        // C says the same ("Carry bit will be shifted away, no need to mask")
+        // and the port's extra `output &= mask - 1` was redundant.
+        let reg = (output << ((8 - num_bytes_ready) << 3)).to_be_bytes();
+        self.buf[offs..offs + 8].copy_from_slice(&reg);
+        if carry != 0 {
+            debug_assert!(self.offs > 0);
+            propagate_carry_bwd(&mut self.buf, self.offs - 1);
+        }
+        self.offs += num_bytes_ready as u32;
+
         self.low = low << d;
         self.rng = (rng << d) as u16;
-        self.cnt = s as i16;
+        self.cnt = (c + d - 24) as i16;
     }
 
     /// Finalize encoding and return the encoded bytes

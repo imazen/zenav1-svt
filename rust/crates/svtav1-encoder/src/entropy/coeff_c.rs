@@ -1384,33 +1384,53 @@ fn write_coeffs_txb_1d_inner(
         &mut coeff_contexts,
     );
 
-    for c in (0..eob as usize).rev() {
+    // The base-range escape, shared by the peeled `c == eob - 1` iteration and
+    // the loop below (C writes it out twice; one macro keeps it in one place
+    // and compiles to the same thing).
+    let br_txs_ctx = txs_ctx.min(TX_32X32);
+    macro_rules! write_br {
+        ($level:expr, $pos:expr) => {
+            if $level > NUM_BASE_LEVELS {
+                let base_range = $level - 1 - NUM_BASE_LEVELS;
+                let ctx = br_ctx(&levels_buf[..], $pos, bwl, tx_class);
+                let mut idx = 0i32;
+                while idx < COEFF_BASE_RANGE {
+                    let k = (base_range - idx).min(BR_CDF_SIZE as i32 - 1);
+                    let cdf = fc.coeff_br(br_txs_ctx, plane_type, ctx);
+                    w.write_symbol(k as usize, cdf, BR_CDF_SIZE);
+                    if k < BR_CDF_SIZE as i32 - 1 {
+                        break;
+                    }
+                    idx += BR_CDF_SIZE as i32 - 1;
+                }
+            }
+        };
+    }
+
+    // PEELED first iteration, `c == eob - 1`, exactly as C peels it
+    // (entropy_coding.c:477-497). The port ran one loop that re-tested
+    // `c == eob - 1` on every coefficient to pick between `coeff_base_eob_cdf`
+    // (3 symbols) and `coeff_base_cdf` (4) — a loop-invariant predicate paid
+    // per coefficient. `eob >= 1` holds here (`eob == 0` returned above).
+    // Byte-inert: same symbols, same order.
+    {
+        let c = eob as usize - 1;
         let pos = scan[c] as usize;
         let v = coeffs[pos];
         let coeff_ctx = coeff_contexts[pos] as usize;
         let level = v.abs();
-
-        if c == eob as usize - 1 {
-            let cdf = fc.coeff_base_eob(txs_ctx, plane_type, coeff_ctx);
-            w.write_symbol((level.min(3) - 1) as usize, cdf, 3);
-        } else {
-            let cdf = fc.coeff_base(txs_ctx, plane_type, coeff_ctx);
-            w.write_symbol(level.min(3) as usize, cdf, 4);
-        }
-        if level > NUM_BASE_LEVELS {
-            let base_range = level - 1 - NUM_BASE_LEVELS;
-            let ctx = br_ctx(&levels_buf[..], pos, bwl, tx_class);
-            let mut idx = 0i32;
-            while idx < COEFF_BASE_RANGE {
-                let k = (base_range - idx).min(BR_CDF_SIZE as i32 - 1);
-                let cdf = fc.coeff_br(txs_ctx.min(TX_32X32), plane_type, ctx);
-                w.write_symbol(k as usize, cdf, BR_CDF_SIZE);
-                if k < BR_CDF_SIZE as i32 - 1 {
-                    break;
-                }
-                idx += BR_CDF_SIZE as i32 - 1;
-            }
-        }
+        let cdf = fc.coeff_base_eob(txs_ctx, plane_type, coeff_ctx);
+        w.write_symbol((level.min(3) - 1) as usize, cdf, 3);
+        write_br!(level, pos);
+    }
+    for c in (0..eob as usize - 1).rev() {
+        let pos = scan[c] as usize;
+        let v = coeffs[pos];
+        let coeff_ctx = coeff_contexts[pos] as usize;
+        let level = v.abs();
+        let cdf = fc.coeff_base(txs_ctx, plane_type, coeff_ctx);
+        w.write_symbol(level.min(3) as usize, cdf, 4);
+        write_br!(level, pos);
     }
 
     // Signs and golomb residuals, forward scan order, DC sign first.

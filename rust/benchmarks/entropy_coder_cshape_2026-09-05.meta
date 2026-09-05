@@ -1,0 +1,349 @@
+THE ENTROPY WRITER'S RESIDUAL IS SHAPE, NOT ARITHMETIC — AND THE HARNESS HAS A
+BIAS THAT HAD TO BE MEASURED BEFORE ANY OF IT COULD BE READ. Three C-shape
+changes land (`A` the pack-side eob scan, `B` the range coder, `F` the peeled
+`c == eob - 1` iteration) for **-2.285 % of the photo_cid 512² p6 frame's
+instructions and -3.45 % of its conditional mispredicts on callgrind, and
+-2.41 % instructions / -2.96 % cycles / -7.96 % branch-misses on hardware**.
+Three more C-shape changes were built, proven byte-identical, MEASURED WORSE and
+REVERTED (`C` C's `eob == 1` writer fast path, `D` C's two-loop `update_cdf`,
+`E` wiring the writer to the already-existing-but-unread `TxbScratch::ctx`).
+The single most important number in this record is the CONTROL: `perf_ab.sh`
+run with the SAME BINARY on both sides reports the candidate slot 0.3-0.5 %
+SLOWER, with the p6 quartile span entirely above 1.0 — so every wall-clock
+ratio in this campaign carries a bias of that size against the candidate, and
+sub-1 % wall-clock "regressions" cannot be read as regressions without it.
+
+date:   2026-09-05
+host:   r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores).
+        A SIBLING LANE WAS LIVE FOR THE WHOLE SESSION: `zenav1-svt--cdef1` ran
+        `tools/identity_full_8bit.sh` (one core, `nice -n 19`) throughout, load
+        average 1.9-2.8. Every `perf stat` run — both sides — was pinned to
+        core 20 with `taskset -c 20`; the callgrind numbers are deterministic
+        and contention-immune by construction; the wall-clock A/B is the only
+        contended measurement, which is exactly why the base-vs-base control
+        below was run under the same conditions rather than assumed away.
+        `kernel.perf_event_paranoid` = 1, `nmi_watchdog` = 1 (four events per
+        group, no multiplexing at that width).
+tools:  perf 7.0.14, valgrind callgrind --branch-sim=yes --cache-sim=no,
+        `rust/tools/perf_ab.sh` (21 interleaved paired rounds, order randomised
+        per round, neither side niced), a `pstat.sh` paired warmup-delta
+        wrapper (median of 5 repetitions of a two-warmup-level delta, so
+        process setup / .yuv read / .obu write cancel exactly).
+base:   `main@origin` e622a99c2.
+C:      reference/svt-av1 @ 3115c0c1 — the PREBUILT oracle in the primary
+        r7900x checkout, NOT rebuilt.
+cells:  photo_cid 512x512 and screen_terminal 512x512 from
+        `r7900x:~/tmp/rc1/yuv` (the .yuv files `callcount_realimg_2026-09-04`
+        left), qp 40, still config, presets 2 and 6; plus photo_clic 512x512
+        and synthetic `gradient` 256/512 for the wall-clock grid.
+data:   benchmarks/entropy_coder_cshape_2026-09-05.tsv
+
+=================== WHAT LANDED, AND WHAT C ACTUALLY DOES ===================
+
+Every item below was found by reading C's source and citing it, not by
+micro-tuning the port's existing shape.
+
+**A. The pack recomputes `eob` with a FORWARD full-block scan; C never
+recomputes it at all.** `stall_attrib_2026-09-05` named `pipeline.rs:9333` as
+the port's largest single mispredict site — 316,928 simulated mispredicts at a
+17.16 % rate, 82 % of `encode_block_syntax`'s total — a roughly even
+data-dependent `if coeffs[pos] != 0` inside a forward scan of the whole
+transform block. The deeper fact is that **C does no work here whatsoever**:
+`av1_write_coeffs_txb_1d` (static) takes `eob` as a parameter
+(`entropy_coding.c:358`) and the caller passes `blk_ptr->eob.y[txb_itr]`
+(`entropy_coding.c:592`), the value the quantizer stored at
+`coding_loop.c:441`. The port's pack has no coded-scan eob to carry, so it
+recovers it from the coefficients. This chunk replaces the forward scan with
+the reverse-scan-and-return already written at `quant.rs:318` (whose branch
+mispredicts at 3.10 %), as a private `pipeline::eob_from_scan_rev`.
+
+  THE RECORD'S CENSUS WAS INCOMPLETE, and this is a correction to it: it named
+  two sites (`pipeline.rs:9332-9336` and `:9410-9415`, both luma inside
+  `encode_block_syntax`). There is a THIRD, identical, in the chroma writer
+  (`pipeline.rs:8322-8327` at base, inside `write_chroma_txb`), which runs for
+  U and V on every coded block. All three are converted.
+
+  MEASURED (callgrind, photo_cid p6, base -> candA): whole frame Ir
+  1,615,400,006 -> 1,607,176,651; `encode_block_syntax` SELF Ir 18,238,244 ->
+  9,910,848 and its Bcm 371,547 -> 65,194, i.e. **82.5 % of that function's
+  mispredicts removed — exactly the share the record attributed to line
+  9333.** Hardware, photo_cid p6: cycles/encode 443,735,363 -> 433,193,020
+  (**-2.376 %**) for an instruction change of only -0.540 %, and IPC
+  3.4647 -> 3.5299. This is the one place in the profile where a branch fix,
+  not an instruction-count fix, was the right lever, and it behaved like one.
+
+  SIZE THE THIRD SITE HONESTLY: `write_chroma_txb`'s self Ir moves only
+  6,356,976 -> 6,343,432 at this cell, so the two luma sites carry essentially
+  all of the win here. It is converted because it is the same defect on a path
+  that runs for U and V of every coded block, not because this cell prices it.
+
+  NOT DONE, and named for the next chunk: carrying the coded-scan eob out of
+  the quantizer into the decision so the pack does NO scan at all, which is
+  what C does.
+
+**B. The range coder had a helper C does not have, and a hot path C keeps
+inlined.** Two findings in one file:
+
+  (i) `svt_od_ec_encode_cdf_q15` (`bitstream_unit.c:279-301`) is FUSED. It
+  computes `r_hi = r >> 8` and `temp = EC_MIN_PROB * (nsyms - 1 - s)` ONCE,
+  tests `0 < s` ONCE, and subtracts the `icdf[s]` term from `r` afterwards.
+  The port materialised `fl = if s > 0 { icdf[s-1] } else { 32768 }` and passed
+  it to a private `encode_q15(fl, fh, s, nsyms)`, which re-tested the same
+  predicate as `fl < 32768`, recomputed `r >> 8` in its `s == 0` arm, and
+  evaluated `EC_MIN_PROB * (n - (s - 1))` and `EC_MIN_PROB * (n - s)`
+  separately. **`svt_od_ec_encode_q15` DOES NOT EXIST anywhere in
+  `reference/svt-av1/Source/Lib/` — grep returns nothing.** The port was
+  mirroring a function the oracle no longer has. It is deleted.
+
+  (ii) `svt_od_ec_enc_normalize` (`bitstream_unit.c:151-174`) is `static
+  inline` and contains only the hot path — compute `d`, test
+  `EB_UNLIKELY(c + d >= 40)`, store three fields. The flush is a separate
+  `static NOINLINE od_ec_enc_flush` (`bitstream_unit.c:110`) whose own comment
+  says it is "kept out-of-line to reduce icache pressure on the hot (no-flush)
+  path". The port had ONE function carrying both, and LLVM declined to inline
+  it anywhere: `OdEcEnc::normalize` was its own symbol at 44,725,701 Ir, 2.77 %
+  of the base photo_cid p6 frame, so every symbol written paid a call, a
+  prologue and a return around ~10 instructions of work. Split into `#[inline]`
+  hot + `#[inline(never)] #[cold]` flush, the symbol disappears from the
+  profile entirely (it inlines into `encode_cdf_q15`, `encode_bool_q15` and
+  through them into `write_coeffs_txb_1d`) and the cold arm shows up as its own
+  `OdEcEnc::flush` at 1,882,969 Ir — 0.12 % of the frame, which is how much of
+  that 2.77 % was ever the flush.
+
+  Two smaller things went with it. The port's `output &= mask - 1` before the
+  big-endian store is redundant — the carry bit sits at bit `num_bytes_ready*8`
+  and the store shifts left by `64 - num_bytes_ready*8`, so it falls off the
+  top; C says so at `bitstream_unit.c:132-134`. And the `if self.error { return }`
+  that ran on EVERY symbol moved to the cold side: `error` is never set to
+  `true` anywhere in the file, and the only thing it could ever guard is the
+  buffer write, which is in the flush.
+
+  MEASURED (callgrind, photo_cid p6, candA -> cand3): 1,607,176,651 ->
+  1,584,500,175, **-22,676,476 Ir (-1.41 % of the frame)**, Bcm 8,948,419 ->
+  8,650,847. This is the largest single chunk in the record.
+
+**F. C peels the `c == eob - 1` iteration out of the backward pass; the port
+re-tested it per coefficient.** C's backward pass
+(`entropy_coding.c:475-501`) writes the eob coefficient in a peeled block using
+`coeff_base_eob_cdf` (3 symbols) and then loops `for (c = eob - 2; c >= 0; --c)`
+with `coeff_base_cdf` (4 symbols). The port ran ONE loop over `(0..eob).rev()`
+with `if c == eob - 1 { .. } else { .. }` inside it — a loop-invariant predicate
+paid on every coefficient. Peeled to C's shape (the base-range escape, which C
+writes out twice, is one `macro_rules!` used from both places so it is textually
+identical in each).
+
+  MEASURED (callgrind, photo_cid p6, cand3 -> candF): 1,584,500,175 ->
+  1,578,489,181, **-6,010,994 Ir**.
+
+=================== THE THREE THAT WERE MEASURED AND REVERTED ===================
+
+All three were built, run and proven byte-identical on photo_cid p6 before
+being judged. None is "untried"; each is a null or a loss with a number.
+
+**C — C's `eob == 1` fast path in the writer, +1,924,868 Ir (cand3 -> cand4).**
+C skips `svt_av1_txb_init_levels` and `svt_av1_get_nz_map_contexts` entirely for
+a single-DC txb (`entropy_coding.c:414-443`), which is why C calls
+`txb_init_levels` only at `:452`, below the eob token. The port called it
+unconditionally at the top. Ported faithfully — including the two facts that
+make it byte-identical (`get_nz_map_contexts` already short-circuits `eob == 1`
+to `coeff_contexts[scan[0]] = 0`, and `br_ctx` reads only NEIGHBOUR levels, all
+of which are zero when the only non-zero coefficient is the DC). POSITIVE
+CONTROL that the branch fires: `__arcane_fill_levels_impl_v3` self Ir, cand3 ->
+cand4, 35,521,705 -> 35,099,685. **That is the whole prize: 422,020 Ir, or 0.026 % of the frame —
+`eob == 1` txbs are ~1 % of this cell's writer calls — and the added test and
+code cost more than that.** Reverted.
+
+**D — C's two-loop `update_cdf`, +17,538,820 Ir (cand4 -> cand2), the largest
+single regression measured today.** C splits the CDF update into two branchless
+loops (`cabac_context_model.h:98-104`): `for (; i < val; i++) cdf[i] += ...`
+then `for (; i < nsymbs - 1; i++) cdf[i] -= ...`. The port runs ONE loop with
+`if i < val` inside, and `stall_attrib_2026-09-05` charged 9,688,320 Ir of the
+frame to that line. Splitting it made things **1.09 % of the frame WORSE**.
+The reading: LLVM was already turning the port's single loop over a
+compile-time-bounded range into predicated/vectorised code, and two loops with
+runtime trip counts defeat that. **C's hoist is the right shape for a C
+compiler and the wrong shape for this one — do not retry it.**
+
+**E — wiring the writer to `TxbScratch::ctx`, +1,342,196 Ir (cand3 -> candE).**
+`TxbScratch` (coeff_c.rs:372) carries a `ctx: [i8; MAX_TXB_COEFF_AREA]` field
+whose own doc-comment says it exists for the two call sites that used a
+`[0i8; MAX_TXB_COEFF_AREA]` stack array — and **it has no reader anywhere in
+the tree except the debug poison**, while `write_coeffs_txb_1d_inner` still
+declares its own `[0i8; 32 * 32]` and zeroes all 1,024 bytes per call. That is
+the "ported but unwired" defect exactly. Wired the way `leaf_funnel::coeff_rate`
+already does it (zero `width * height`, hand `get_nz_map_contexts` exactly that
+slice), it is a LOSS on this cell: the txbs that dominate photo_cid p6 are large
+enough that `width * height` is most of 1,024 anyway, and the scratch's
+`Box` indirection is not free. Reverted. **The field is still unread; that is a
+real (small) defect and it is now measured rather than assumed to be a win.**
+
+=================== THE NUMBERS ===================
+
+**Callgrind (deterministic, contention-immune), photo_cid 512² p6, qp 40, every
+build byte-identical at 45,688 B:**
+
+  build    chunks     Ir              vs base      Bcm          vs base
+  base     -          1,615,400,006        -       9,195,187         -
+  candA    A          1,607,176,651   -0.509 %     8,948,419   -2.68 %
+  cand3    A+B        1,584,500,175   -1.913 %     8,650,847   -5.92 %
+  cand4    A+B+C      1,586,425,043   -1.794 %     8,661,443   -5.81 %
+  cand2    A+B+C+D    1,603,963,863   -0.708 %     8,903,387   -3.17 %
+  candE    A+B+E      1,585,842,371   -1.830 %     8,915,838   -3.04 %
+  candEF   A+B+E+F    1,580,728,079   -2.146 %     9,054,679   -1.53 %
+  candF    A+B+F      1,578,489,181   -2.285 %     8,878,357   -3.45 %   <- LANDED
+
+  Per-chunk deltas read off that table: A -8,223,355; B -22,676,476;
+  C +1,924,868; D +17,538,820; E +1,342,196; F -6,010,994.
+
+  screen_terminal 512² p6 (byte-identical at 10,090 B): base 916,255,517 Ir /
+  5,363,775 Bcm -> candF 909,329,723 / 5,415,816 = **-0.756 % Ir**, +0.97 % Bcm.
+
+**Hardware (`perf stat`, both sides `taskset -c 20`, paired warmup-delta,
+median of 5), normalised to ONE encode:**
+
+  cell                    metric          base            candF          delta
+  photo_cid 512² p6       instructions    1,537,468,173   1,500,453,523  -2.41 %
+                          cycles            444,423,814     431,287,427  **-2.96 %**
+                          branches          249,465,012     241,307,799  -3.27 %
+                          branch-misses       3,797,898       3,495,690  **-7.96 %**
+                          IPC                    3.4593          3.4791  +0.57 %
+  screen_terminal 512² p6 instructions      850,560,600     843,637,348  -0.81 %
+                          cycles            236,096,511     236,812,335  **+0.30 %**
+                          branch-misses       1,278,702       1,267,266  -0.89 %
+  photo_cid 512² p2       instructions   45,650,679,885  45,613,803,467  -0.08 %
+                          cycles         12,812,728,244  12,918,162,911  **+0.82 %**
+                          branch-misses      90,491,080      89,911,064  -0.64 %
+
+**READ THE TWO CYCLE RISES HONESTLY.** At photo_cid p2 and at screen_terminal
+p6 the candidate executes FEWER instructions, FEWER branches and FEWER
+mispredicts and spends MORE cycles. Nothing this change does can produce that;
+it is code placement — the landed chunks shrink `encode_block_syntax` by ~46 %
+of its instructions and dissolve the `normalize` symbol, so everything after
+them in `.text` moves. The size of the effect is bounded by what the entropy
+path IS at p2: **0.08 % of that cell's instructions**, which is all preset 2
+could ever gain or lose here on merit. The same signature was measured for
+chunk A alone (p2 instructions -0.017 %, branches -0.02 %, mispredicts -0.04 %,
+cycles +0.38 %) before B and F existed, so it is not specific to one chunk.
+
+=================== WALL CLOCK, AND THE CONTROL THAT MAKES IT READABLE ===================
+
+`tools/perf_ab.sh`, 21 interleaved paired rounds per cell, order randomised per
+round, neither side niced, every row byte-identical. `speedup = base/cand`, so
+> 1 means the candidate is faster.
+
+  cell                       speedup   ratio    p25      p75
+  CONTROL photo_cid p2        0.997    1.0026   0.9989   1.0072   <- SAME BINARY
+  CONTROL photo_cid p6        0.995    1.0048   1.0012   1.0080   <- SAME BINARY
+  photo_cid 512² p6         **1.037**  0.9642   0.9593   0.9695
+  photo_clic 512² p6        **1.029**  0.9715   0.9654   0.9724
+  gradient 512 p6           **1.012**  0.9886   0.9742   1.0018
+  screen_terminal 512² p6     1.004    0.9958   0.9817   1.0060
+  gradient 256 p6             1.001    0.9989   0.9791   1.0075
+  photo_cid 512² p2           0.996    1.0039   0.9981   1.0090
+  photo_clic 512² p2          0.995    1.0051   1.0015   1.0063
+  gradient 512 p2             0.997    1.0029   0.9980   1.0055
+  gradient 256 p2             0.996    1.0041   0.9989   1.0069
+  screen_terminal 512² p2     0.994    1.0062   1.0044   1.0094
+
+**RUN THE CONTROL. THIS IS THE FINDING WORTH CARRYING PAST THIS CHUNK.** The
+first two rows are `perf_ab.sh` comparing `perf_encode.base` against a BYTE
+COPY of itself. It reports the candidate slot **0.3 % slower at p2 and 0.5 %
+slower at p6, with the p6 quartile span entirely above 1.0.** Whatever the
+mechanism (this record does not claim one — the box had a sibling lane on it
+throughout, and no attempt was made to separate harness bias from contention),
+the consequence is arithmetic: **a sub-1 % wall-clock "regression" from this
+harness under these conditions is not evidence of a regression.**
+
+With that floor in hand the table reads cleanly. Every p2 row sits at
+1.0029-1.0062 against a p2 control of 1.0026 — nulls, and the hardware counters
+say the same thing from the other side (p2 instructions -0.08 %). The two photo
+p6 rows sit at 0.9642 / 0.9715 against a p6 control of 1.0048, with
+non-overlapping quartiles — a real win of roughly 3-4 % once the floor is
+subtracted, which is the same size the pinned cycle counters give (-2.96 %).
+
+Earlier in the day the same grid was run for chunk A ALONE, before B and F
+existed and before any control: photo_cid p6 1.021x, photo_clic p6 1.017x,
+everything else within +-0.8 % with every p2 row on the slow side. Those p2 rows
+are what prompted the control; they are recorded in the TSV rather than dropped,
+because "chunk A looked like a uniform p2 regression until a same-binary run
+showed the same sign" is the useful part.
+
+=================== BYTE IDENTITY ===================
+
+x86-64 (r7900x), the landed stack vs base, every cell `cmp`'d:
+  photo_cid p2 46,462 B, photo_cid p6 45,688 B, photo_clic p6 45,188 B,
+  screen_terminal p6 10,090 B — identical, and the same byte counts
+  `stall_attrib_2026-09-05` and `compute_stats_x86_recheck_2026-09-05` recorded.
+  Every callgrind run additionally `cmp`'d its own instrumented .obu against
+  the uninstrumented pre-pass's, for base, candA, cand3, cand4, cand2, candE,
+  candEF and candF.
+
+The six pinned still cells re-run on aarch64 at their pinned sizes: gradient
+64x64 q40 p6 **290 B**, q20 p3 **839 B**, q55 p0 **63 B**, 128x128 q55 p8
+**171 B**, 64x64 q30 p13 **580 B**, screenrep 64x64 q35 p4 **693 B**.
+
+GATES, aarch64 (`zenav1-svt--ent1` on the Mac, bash 5) — all on the FROZEN
+source, with no rebuild during the chain:
+  regression_spotcheck 104 / 104; `cargo nextest` 2541 / 2541 (0 skipped);
+  identity_full_8bit **1100 / 1100** (+0 pinned, 0 harness errors);
+  inter_byte_gate 108 required / **0 failed** / 1 known-open / 0 crashed, PASS;
+  video_key_matrix 59 / 60 (1 diff, 0 broken); screen_ibc_byte_gate
+  **152 / 152**, 0 diverging, 0 errors; screen_palette_gate **50 / 50**;
+  fctx_gate 96 / 96 fields on both frames, PASS; `SCAN_GATE=1`
+  inter_completion_scan 64 cells — **64 OK / 0 REFUSED / 0 CRASH**, PASS.
+
+GATES, x86-64 (r7900x, the same frozen source, rebuilt there):
+  regression_spotcheck 104 / 104; `cargo nextest` 2551 / 2551 (0 skipped);
+  identity_full_8bit **1100 / 1100**; inter_byte_gate 108 required /
+  **0 failed** / 1 known-open / 0 crashed, PASS; video_key_matrix 59 / 60
+  (1 diff, 0 broken); screen_ibc_byte_gate **152 / 152**;
+  screen_palette_gate **50 / 50**; fctx_gate 96 / 96 fields on both frames,
+  PASS; `SCAN_GATE=1` inter_completion_scan **64 OK / 0 REFUSED / 0 CRASH**,
+  PASS; decode_conformance **1260 passed / 0 failed**.
+  decode_conformance also ran on aarch64: **1260 passed / 0 failed**.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED, at this commit on this host: every callgrind Ir/Bc/Bcm total in the
+table above (deterministic, and each build's byte-identity re-checked from its
+own instrumented run); the per-chunk Ir deltas that table implies; the hardware
+instruction/cycle/branch-miss/IPC deltas at three cells; the twelve wall-clock
+rows and the two control rows; the C `file:line` for every structural claim.
+
+NOT MEASURED, and not to be inferred: aarch64 performance (the gates ran there,
+no timing did); 10-bit; inter frames; presets other than 2 and 6; qp other than
+40; aarch64 memory and peak HEAP anywhere (the MEMORY section gives x86 RSS at
+two 2048 arms and says what it does not cover); the MECHANISM of either the p2/
+screenshot cycle rises or the base-vs-base harness bias (both are reported as
+what they are, an unattributable placement effect and an unattributed floor);
+whether a quiet box would show a different control (the sibling lane was live
+for every wall-clock row, including the control, which is what makes the two
+comparable to each other).
+
+=================== MEMORY ===================
+
+**Peak RSS, x86-64, gradient 2048x2048 qp 40 preset 13, `/usr/bin/time -v`,
+5 repetitions, KiB:**
+
+  arm     base                             candF                          verdict
+  still   68,920 (68,796-69,156)           68,824 (68,624-69,264)         NULL
+  inter  109,296 (109,216-109,668)        109,568 (108,916-109,968)       NULL
+
+Both pairs' min/max ranges OVERLAP COMPLETELY, so both medians (-0.14 % and
++0.25 %) are inside the run-to-run spread. The inter cell's `.obu` is
+byte-identical between the two binaries at 139,761 B — a byte-identity data
+point on the 2048 inter path as well as a memory one.
+
+That is the expected result and the structural reason is worth stating so the
+next reader does not have to re-measure: **the landed diff adds, removes and
+resizes NO allocation.** `pipeline.rs` replaces a loop with a helper;
+`coeff_c.rs` peels an iteration; `range_coder.rs` moves the SAME
+`Vec::resize` call from `normalize`'s body into the `flush` it split out of it,
+on the same path with the same argument. `TxbScratch` is untouched — chunk E,
+the only change that would have moved a buffer, was reverted. RSS can still move
+on code size and page mapping, which is what the two overlapping ranges are.
+
+**aarch64 RSS was NOT measured** (the aarch64 box ran the byte gates, not
+timing or memory), so no aarch64 2048-inter figure is claimed. Peak HEAP
+(heaptrack) was not measured either; these are RSS numbers and are labelled as
+such.

@@ -1,0 +1,137 @@
+# entropy_coder_cshape_2026-09-05 — the entropy coefficient writer, the range
+# coder and the pack-side eob scan taken to C's SHAPE.
+# base = main@origin e622a99c2, host r7900x (x86_64-linux, AMD Ryzen 9 7900X).
+# Every build below writes byte-identical .obu on every cell listed.
+#
+# CHUNKS
+#   A  pipeline.rs: the three forward full-block eob scans -> reverse scan with
+#      early return (`eob_from_scan_rev`).
+#   B  range_coder.rs: `encode_cdf_q15` fused to C's single-predicate shape and
+#      `normalize` split into an `#[inline]` hot path + `#[cold]` flush.
+#   C  coeff_c.rs: C's `eob == 1` fast path in `write_coeffs_txb_1d`.  REVERTED.
+#   D  cdf.rs: `update_cdf` split into C's two branchless loops.  REVERTED.
+#   E  coeff_c.rs: the writer's `[0i8; 32*32]` -> the (unused) TxbScratch::ctx.
+#      REVERTED.
+#   F  coeff_c.rs: the `c == eob - 1` iteration peeled out of the backward loop.
+#
+section	build	chunks	cell	metric	value
+CALLGRIND	base	-	photo_cid_512_p6	Ir	1615400006
+CALLGRIND	base	-	photo_cid_512_p6	Bc	297184089
+CALLGRIND	base	-	photo_cid_512_p6	Bcm	9195187
+CALLGRIND	candA	A	photo_cid_512_p6	Ir	1607176651
+CALLGRIND	candA	A	photo_cid_512_p6	Bc	295331553
+CALLGRIND	candA	A	photo_cid_512_p6	Bcm	8948419
+CALLGRIND	cand3	A+B	photo_cid_512_p6	Ir	1584500175
+CALLGRIND	cand3	A+B	photo_cid_512_p6	Bc	293117588
+CALLGRIND	cand3	A+B	photo_cid_512_p6	Bcm	8650847
+CALLGRIND	cand4	A+B+C	photo_cid_512_p6	Ir	1586425043
+CALLGRIND	cand4	A+B+C	photo_cid_512_p6	Bc	293007674
+CALLGRIND	cand4	A+B+C	photo_cid_512_p6	Bcm	8661443
+CALLGRIND	cand2	A+B+C+D	photo_cid_512_p6	Ir	1603963863
+CALLGRIND	cand2	A+B+C+D	photo_cid_512_p6	Bc	296073272
+CALLGRIND	cand2	A+B+C+D	photo_cid_512_p6	Bcm	8903387
+CALLGRIND	candE	A+B+E	photo_cid_512_p6	Ir	1585842371
+CALLGRIND	candE	A+B+E	photo_cid_512_p6	Bc	293072956
+CALLGRIND	candE	A+B+E	photo_cid_512_p6	Bcm	8915838
+CALLGRIND	candEF	A+B+E+F	photo_cid_512_p6	Ir	1580728079
+CALLGRIND	candEF	A+B+E+F	photo_cid_512_p6	Bc	291392209
+CALLGRIND	candEF	A+B+E+F	photo_cid_512_p6	Bcm	9054679
+CALLGRIND	candF	A+B+F	photo_cid_512_p6	Ir	1578489181
+CALLGRIND	candF	A+B+F	photo_cid_512_p6	Bc	291436126
+CALLGRIND	candF	A+B+F	photo_cid_512_p6	Bcm	8878357
+CALLGRIND	base	-	screen_terminal_512_p6	Ir	916255517
+CALLGRIND	base	-	screen_terminal_512_p6	Bc	185566019
+CALLGRIND	base	-	screen_terminal_512_p6	Bcm	5363775
+CALLGRIND	candF	A+B+F	screen_terminal_512_p6	Ir	909329723
+CALLGRIND	candF	A+B+F	screen_terminal_512_p6	Bc	184928630
+CALLGRIND	candF	A+B+F	screen_terminal_512_p6	Bcm	5415816
+#
+# PSTAT — hardware counters, `perf stat -e cycles:u,instructions:u,branches:u,
+# branch-misses:u`, `taskset -c 20` on BOTH sides, paired warmup-delta (two
+# warmup levels, the delta is N encodes' worth so process setup / .yuv read /
+# .obu write cancel exactly), MEDIAN OF 5 REPETITIONS, normalised to ONE encode.
+PSTAT	base	-	photo_cid_512_p6	cycles	444423814
+PSTAT	base	-	photo_cid_512_p6	instructions	1537468173
+PSTAT	base	-	photo_cid_512_p6	branches	249465012
+PSTAT	base	-	photo_cid_512_p6	branch_misses	3797898
+PSTAT	candF	A+B+F	photo_cid_512_p6	cycles	431287427
+PSTAT	candF	A+B+F	photo_cid_512_p6	instructions	1500453523
+PSTAT	candF	A+B+F	photo_cid_512_p6	branches	241307799
+PSTAT	candF	A+B+F	photo_cid_512_p6	branch_misses	3495690
+PSTAT	base	-	screen_terminal_512_p6	cycles	236096511
+PSTAT	base	-	screen_terminal_512_p6	instructions	850560600
+PSTAT	base	-	screen_terminal_512_p6	branch_misses	1278702
+PSTAT	candF	A+B+F	screen_terminal_512_p6	cycles	236812335
+PSTAT	candF	A+B+F	screen_terminal_512_p6	instructions	843637348
+PSTAT	candF	A+B+F	screen_terminal_512_p6	branch_misses	1267266
+PSTAT	base	-	photo_cid_512_p2	cycles	12812728244
+PSTAT	base	-	photo_cid_512_p2	instructions	45650679885
+PSTAT	base	-	photo_cid_512_p2	branch_misses	90491080
+PSTAT	candF	A+B+F	photo_cid_512_p2	cycles	12918162911
+PSTAT	candF	A+B+F	photo_cid_512_p2	instructions	45613803467
+PSTAT	candF	A+B+F	photo_cid_512_p2	branch_misses	89911064
+# An EARLIER session measured chunk A ALONE against the same base (a separate
+# pair of runs; the base row is that session's own base, not the one above).
+PSTAT_A_SESSION	base	-	photo_cid_512_p6	cycles	443735363
+PSTAT_A_SESSION	base	-	photo_cid_512_p6	instructions	1537460995
+PSTAT_A_SESSION	base	-	photo_cid_512_p6	branch_misses	3793548
+PSTAT_A_SESSION	candA	A	photo_cid_512_p6	cycles	433193020
+PSTAT_A_SESSION	candA	A	photo_cid_512_p6	instructions	1529156700
+PSTAT_A_SESSION	candA	A	photo_cid_512_p6	branch_misses	3483956
+#
+# AB — `tools/perf_ab.sh`, 21 interleaved paired rounds per cell, order
+# randomised per round, NEITHER side niced, every row ident=Y. `ratio` is
+# cand/base per-frame encode time (median of the per-round paired ratios);
+# `speedup` = base/cand. The CONTROL rows run the SAME BINARY on both sides.
+section	pair	cell	ratio	speedup	p25	p75
+AB_CONTROL	base_vs_base	photo_cid_512_p2	1.0026	0.997	0.9989	1.0072
+AB_CONTROL	base_vs_base	photo_cid_512_p6	1.0048	0.995	1.0012	1.0080
+AB	base_vs_candF	photo_cid_512_p2	1.0039	0.996	0.9981	1.0090
+AB	base_vs_candF	photo_cid_512_p6	0.9642	1.037	0.9593	0.9695
+AB	base_vs_candF	photo_clic_512_p2	1.0051	0.995	1.0015	1.0063
+AB	base_vs_candF	photo_clic_512_p6	0.9715	1.029	0.9654	0.9724
+AB	base_vs_candF	screen_terminal_512_p2	1.0062	0.994	1.0044	1.0094
+AB	base_vs_candF	screen_terminal_512_p6	0.9958	1.004	0.9817	1.0060
+AB	base_vs_candF	gradient_256_p2	1.0041	0.996	0.9989	1.0069
+AB	base_vs_candF	gradient_256_p6	0.9989	1.001	0.9791	1.0075
+AB	base_vs_candF	gradient_512_p2	1.0029	0.997	0.9980	1.0055
+AB	base_vs_candF	gradient_512_p6	0.9886	1.012	0.9742	1.0018
+# An EARLIER grid measured chunk A ALONE (base vs candA) on the same host,
+# before B and F existed: photo_cid p6 0.9791/1.021, p2 1.0074/0.993;
+# photo_clic p6 0.9832/1.017, p2 1.0077/0.992; screen_terminal p6 0.9996/1.000,
+# p2 1.0062/0.994; gradient 256 p6 1.0016/0.998, p2 1.0063/0.994;
+# gradient 512 p6 1.0014/0.999, p2 1.0036/0.996. No base-vs-base control was
+# taken for that grid — its p2 rows are the reason one was run at all.
+AB_CAND2	cand3_vs_cand2	photo_cid_512_p2	1.0098	0.990	1.0059	1.0120
+AB_CAND2	cand3_vs_cand2	photo_cid_512_p6	1.0106	0.990	1.0070	1.0137
+#
+# PORTFN — per-function SELF numbers from the same callgrind runs
+# (callgrind_annotate, photo_cid 512² p6). `flush` does not exist in base/candA
+# and `normalize` does not exist in candF: that is the split, visible.
+section	build	function	Ir	Bc	Bcm
+PORTFN	base	entropy::coeff_c::write_coeffs_txb_1d	87834204	13138584	473570
+PORTFN	base	range_coder::OdEcEnc::normalize	44725701	2742118	43758
+PORTFN	base	range_coder::OdEcEnc::encode_cdf_q15	25715682	3181972	363039
+PORTFN	base	pipeline::encode_block_syntax	18238244	4052168	371547
+PORTFN	base	pipeline::write_chroma_txb	6356976	1170984	14871
+PORTFN	candA	entropy::coeff_c::write_coeffs_txb_1d	87834204	13138584	474761
+PORTFN	candA	range_coder::OdEcEnc::normalize	44725701	2742118	43015
+PORTFN	candA	range_coder::OdEcEnc::encode_cdf_q15	25715682	3181972	362936
+PORTFN	candA	pipeline::encode_block_syntax	9910848	1660684	65194
+PORTFN	candA	pipeline::write_chroma_txb	6343432	1693580	20220
+PORTFN	candF	entropy::coeff_c::write_coeffs_txb_1d	86860519	11844248	487093
+PORTFN	candF	range_coder::OdEcEnc::encode_cdf_q15	40835517	3181972	394458
+PORTFN	candF	range_coder::OdEcEnc::flush	1882969	140980	13039
+PORTFN	candF	pipeline::encode_block_syntax	9919048	1660940	58498
+PORTFN	candF	pipeline::write_chroma_txb	6343432	1693580	17919
+#
+# MEM — peak RSS (`/usr/bin/time -v` "Maximum resident set size"), x86-64
+# r7900x, gradient 2048x2048 qp 40 preset 13, 5 repetitions, KiB. The still and
+# inter cells' .obu are byte-identical between the two binaries (the inter one
+# at 139,761 B, which is also a byte-identity data point on the 2048 inter
+# path). RSS, not heap: it counts every page the allocator ever touched.
+section	build	cell	median_kib	min_kib	max_kib
+MEM_RSS	base	gradient_2048_still_p13	68920	68796	69156
+MEM_RSS	candF	gradient_2048_still_p13	68824	68624	69264
+MEM_RSS	base	gradient_2048_inter_p13	109296	109216	109668
+MEM_RSS	candF	gradient_2048_inter_p13	109568	108916	109968

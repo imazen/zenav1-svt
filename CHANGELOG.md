@@ -959,6 +959,54 @@ Crates are not published to crates.io yet — depend by git.
   divergence is the TILE: C 3 bytes, port 94.
 
 ### Changed
+- **The entropy coefficient writer and the range coder take C's SHAPE —
+  -2.285 % of the photo_cid 512² p6 frame's instructions, -2.96 % of its
+  cycles, -7.96 % of its branch misses, 1.037x / 1.029x wall clock on the two
+  photos** (`benchmarks/entropy_coder_cshape_2026-09-05.{tsv,meta}`). Three
+  chunks landed; three more were built, proven byte-identical, measured worse
+  and reverted. **(1) The pack's `eob` scan.** C never recomputes `eob` in the
+  entropy path — `av1_write_coeffs_txb_1d` takes it (`entropy_coding.c:358`)
+  and the caller passes what the quantizer stored (`entropy_coding.c:592` <-
+  `coding_loop.c:441`) — while the port ran a FORWARD full-block scan whose
+  ~50/50 data-dependent branch `stall_attrib_2026-09-05` measured as its
+  largest mispredict site (17.16 %, 82 % of `encode_block_syntax`'s total).
+  Replaced by the reverse-scan-with-early-return already at `quant.rs:318`, at
+  all THREE sites — the record named two; the third is `write_chroma_txb`,
+  which runs for U and V on every coded block. `encode_block_syntax` self Bcm
+  371,547 -> 65,239. **(2) The range coder.** `svt_od_ec_encode_q15` does not
+  exist anywhere in `reference/svt-av1/Source/Lib/`: C fuses the body into
+  `svt_od_ec_encode_cdf_q15` (`bitstream_unit.c:279-301`), sharing `r >> 8` and
+  `EC_MIN_PROB * (nsyms-1-s)` and testing `s > 0` once. The port's private
+  mirror of that deleted function re-tested the predicate as `fl < 32768`; it
+  is now fused and the helper is gone. And C's `normalize` is `static inline`
+  with the flush `NOINLINE` beside it (`bitstream_unit.c:151` + `:110`), where
+  the port's single fused function was its own symbol at 44,725,701 Ir —
+  2.77 % of the frame — so every symbol written paid a call around ~10
+  instructions of work; split `#[inline]` hot + `#[inline(never)] #[cold]`
+  flush, it leaves the profile. -22,676,476 Ir, the largest chunk.
+  **(3) The peel.** C peels the `c == eob - 1` iteration out of the backward
+  pass (`entropy_coding.c:475-501`); the port re-tested that loop-invariant
+  predicate per coefficient. -6,010,994 Ir. **Measured and REVERTED, so nobody
+  retries them:** C's `eob == 1` writer fast path (`entropy_coding.c:414-443`)
+  +1,924,868 Ir — it fires, but `eob == 1` txbs are ~1 % of that cell's writer
+  calls; C's two-loop `update_cdf` (`cabac_context_model.h:98-104`)
+  **+17,538,820 Ir**, because LLVM already predicates the port's single
+  `if i < val` loop and two runtime-trip-count loops defeat that; and wiring
+  the writer to the unread `TxbScratch::ctx` field +1,342,196 Ir. **The
+  measurement finding that outlives the chunk:** a `perf_ab.sh` run with the
+  SAME BINARY on both sides reads 0.997x (p2) / 0.995x (p6), quartile span
+  entirely above 1.0 at p6 — every wall-clock ratio in this campaign carries a
+  bias of that size against the candidate slot. **Memory:** peak RSS
+  (`/usr/bin/time -v`, x86, gradient 2048² qp40 p13, 5 reps) is a NULL on both
+  arms — still 68,920 -> 68,824 KiB, inter 109,296 -> 109,568 KiB, min/max ranges
+  fully overlapping — as expected from a diff that adds, removes and resizes no
+  allocation. **Gates, both ISAs, every one green:** regression_spotcheck
+  104/104; nextest 2541 (arm) / 2551 (x86), 0 skipped; identity_full_8bit
+  1100/1100; inter_byte_gate 108 required / 0 failed / 0 crashed PASS;
+  video_key_matrix 59/60; screen_ibc_byte_gate 152/152; screen_palette_gate
+  50/50; fctx_gate 96/96 fields PASS; `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH
+  PASS; decode_conformance 1260 passed / 0 failed. The six pinned still cells at
+  290 / 839 / 63 / 171 / 580 / 693 B.
 
 - **CFL predict is branch-free and the alpha search is 1.99x -> 1.72x C's
   instruction count — and the `#[arcane]` dispatch variant had FEWER
