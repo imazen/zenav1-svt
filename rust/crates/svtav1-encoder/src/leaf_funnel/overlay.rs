@@ -10,6 +10,10 @@
 
 use super::*;
 
+/// AV1's largest transform edge (`TX_64X64`) — the bound on
+/// [`predict_unit_overlay`]'s stack reference buffers.
+const MAX_TX_EDGE_PX: usize = 64;
+
 /// Per-txb luma prediction at depth > 0: reads the frame recon for
 /// out-of-block neighbors and this depth's partial recon inside the block.
 /// Mirrors C `av1_intra_luma_prediction` (product_coding_loop.c:4072):
@@ -82,7 +86,22 @@ pub(super) fn predict_unit_overlay(
     let ch_dim = txh + 1;
     let abs_tx_x = blk_x + tx_x;
     let abs_tx_y = blk_y + tx_y;
-    let mut canvas = vec![0u8; cw_dim * ch_dim];
+    // The canvas' INTERIOR was never written and never read — only its top row
+    // (`canvas[0..cw_dim]`) and its left column (`canvas[cy * cw_dim]`) are.
+    // MEASURED 2026-09-05 (`benchmarks/percall_layout_2026-09-05`): this
+    // function was **30,285 of the port's 244,967 heap blocks per photo_cid
+    // 512x512 p6 encode for 879,601 bytes — a 29-byte average payload per
+    // allocator call** across four `Vec`s (canvas, above, left, above_c), every
+    // one of them bounded by a TX unit's 64-px edge. AV1's largest transform is
+    // TX_64X64 (`TX_SIZES_ALL`), so `txw`/`txh` <= 64 and `cw_dim`/`ch_dim`
+    // <= 65 structurally; the assert states that rather than clamping, because
+    // a clamp would hand the predictor short reference edges.
+    assert!(
+        txw <= MAX_TX_EDGE_PX && txh <= MAX_TX_EDGE_PX,
+        "overlay TX unit {txw}x{txh} exceeds TX_64X64"
+    );
+    let mut canvas_top = [0u8; MAX_TX_EDGE_PX + 1];
+    let mut canvas_left = [0u8; MAX_TX_EDGE_PX + 1];
     let sample = |x: isize, y: isize| -> u8 {
         // (x, y) absolute plane coords.
         if x < 0 || y < 0 {
@@ -115,14 +134,15 @@ pub(super) fn predict_unit_overlay(
     let max_x = (geom.frame_w >> geom.ss).saturating_sub(1) as isize;
     let max_y = (geom.frame_h >> geom.ss).saturating_sub(1) as isize;
     // top row (incl. corner) and left col of the canvas
-    for cx in 0..cw_dim {
-        canvas[cx] = sample(
+    for (cx, dst) in canvas_top[..cw_dim].iter_mut().enumerate() {
+        *dst = sample(
             (abs_tx_x as isize + cx as isize - 1).min(max_x),
             abs_tx_y as isize - 1,
         );
     }
-    for cy in 1..ch_dim {
-        canvas[cy * cw_dim] = sample(
+    canvas_left[0] = canvas_top[0];
+    for (cy, dst) in canvas_left[..ch_dim].iter_mut().enumerate().skip(1) {
+        *dst = sample(
             abs_tx_x as isize - 1,
             (abs_tx_y as isize + cy as isize - 1).min(max_y),
         );
@@ -135,42 +155,56 @@ pub(super) fn predict_unit_overlay(
     // origin is already past the extent (reachable inside a straddling leaf).
     let has_above = abs_tx_y > geom.tile.top_px(geom.ss) && (abs_tx_x as isize) <= max_x;
     let has_left = abs_tx_x > geom.tile.left_px(geom.ss) && (abs_tx_y as isize) <= max_y;
-    let above: Vec<u8> = if has_above {
-        canvas[1..cw_dim].to_vec()
+    let mut above_fill = [0u8; MAX_TX_EDGE_PX];
+    let above: &[u8] = if has_above {
+        &canvas_top[1..cw_dim]
     } else {
-        vec![if has_left { canvas[cw_dim] } else { 127 }; txw]
+        let v = if has_left { canvas_left[1] } else { 127 };
+        above_fill[..txw].fill(v);
+        &above_fill[..txw]
     };
-    let left: Vec<u8> = if has_left {
-        (1..ch_dim).map(|cy| canvas[cy * cw_dim]).collect()
+    let mut left_fill = [0u8; MAX_TX_EDGE_PX];
+    let left: &[u8] = if has_left {
+        &canvas_left[1..ch_dim]
     } else {
-        vec![if has_above { canvas[1] } else { 129 }; txh]
+        let v = if has_above { canvas_top[1] } else { 129 };
+        left_fill[..txh].fill(v);
+        &left_fill[..txh]
     };
     let top_left = if has_above && has_left {
-        canvas[0]
+        canvas_top[0]
     } else if has_above {
-        canvas[1]
+        canvas_top[1]
     } else if has_left {
-        canvas[cw_dim]
+        canvas_left[1]
     } else {
         128
     };
     if fi != FI_NONE {
-        let mut above_c = vec![0u8; txw + 1];
+        let mut above_c = [0u8; MAX_TX_EDGE_PX + 1];
         above_c[0] = top_left;
-        above_c[1..].copy_from_slice(&above);
-        svtav1_dsp::intra_pred::predict_filter_intra(dst, txw, &above_c, &left, txw, txh, fi);
+        above_c[1..txw + 1].copy_from_slice(above);
+        svtav1_dsp::intra_pred::predict_filter_intra(
+            dst,
+            txw,
+            &above_c[..txw + 1],
+            left,
+            txw,
+            txh,
+            fi,
+        );
         return;
     }
     match mode {
-        0 => svtav1_dsp::intra_pred::predict_dc(
-            dst, txw, &above, &left, txw, txh, has_above, has_left,
-        ),
-        1 => svtav1_dsp::intra_pred::predict_v(dst, txw, &above, txw, txh),
-        2 => svtav1_dsp::intra_pred::predict_h(dst, txw, &left, txw, txh),
-        9 => svtav1_dsp::intra_pred::predict_smooth(dst, txw, &above, &left, txw, txh),
-        10 => svtav1_dsp::intra_pred::predict_smooth_v(dst, txw, &above, &left, txh, txh, txw),
-        11 => svtav1_dsp::intra_pred::predict_smooth_h(dst, txw, &above, &left, txw, txh),
-        12 => svtav1_dsp::intra_pred::predict_paeth(dst, txw, &above, &left, top_left, txw, txh),
+        0 => {
+            svtav1_dsp::intra_pred::predict_dc(dst, txw, above, left, txw, txh, has_above, has_left)
+        }
+        1 => svtav1_dsp::intra_pred::predict_v(dst, txw, above, txw, txh),
+        2 => svtav1_dsp::intra_pred::predict_h(dst, txw, left, txw, txh),
+        9 => svtav1_dsp::intra_pred::predict_smooth(dst, txw, above, left, txw, txh),
+        10 => svtav1_dsp::intra_pred::predict_smooth_v(dst, txw, above, left, txh, txh, txw),
+        11 => svtav1_dsp::intra_pred::predict_smooth_h(dst, txw, above, left, txw, txh),
+        12 => svtav1_dsp::intra_pred::predict_paeth(dst, txw, above, left, top_left, txw, txh),
         m => unreachable!("funnel mode {m}"),
     }
 }
