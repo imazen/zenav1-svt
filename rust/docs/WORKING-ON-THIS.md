@@ -479,6 +479,21 @@ Two things that will mislead you here:
 Each of these produced a confident wrong answer in a single day. They are not
 hypothetical.
 
+**`decode_gate_grid.sh` reports PASS-shaped output while checking NOTHING
+against C, if `tools/perf_c_encode/perf_c_encode` is absent.** It exits 0 and
+prints `cells=4 aomdec+dav1d OK=4 … failures=0` — which reads like a pass —
+while every row's `same_as_c` column is **`NA`** and the same line says
+`byte-identical to C=0`. Both decoders accepting a stream says the port emits
+*legal AV1*; it says nothing about whether the bytes equal C's, which is the
+actual bar. Sibling gates (`mem_peak.sh`, `unaligned_identity_scan.sh`)
+hard-fail with a build hint in that situation; this one silently degrades.
+**Read the `byte-identical to C=` count, not `failures=`**, and run
+`tools/perf_c_encode/build.sh` on any fresh checkout. Found 2026-09-05 on a
+newly provisioned i265: first run `OK=4 failures=0` with **0** cells compared;
+after building the harness, 4/4 `Y`. Related: `cargo build --release` does not
+build the examples the gates drive — use `--examples` or the gate aborts on a
+missing `target/release/examples/perf_encode`.
+
 **A silent harness and a genuine absence are indistinguishable.** An inline
 shell loop that never ran gave `grep -c` = 0, which was read as "this C rule has
 no counterpart to fix". The rule was live at preset 7. **Before you trust a

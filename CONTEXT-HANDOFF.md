@@ -96,6 +96,23 @@ cd rust && cargo build -p zenav1-svt-cref     # or just: cargo nextest run --wor
 export SVT_CREF_LIB_DIR=$(pwd)/../Bin/Release
 ```
 
+> **TRAP — `decode_gate_grid.sh` degrades SILENTLY when the C harness is
+> missing.** It needs `tools/perf_c_encode/perf_c_encode`, built by
+> `tools/perf_c_encode/build.sh`. Without it the gate still **exits 0** and
+> prints `aomdec+dav1d OK=4 … failures=0` while every row's `same_as_c` column
+> reads **`NA`** and the tally says `byte-identical to C=0` — i.e. it verified
+> that the port's streams *decode*, and **nothing at all about whether they
+> match C**. Sibling gates (`mem_peak.sh`, `unaligned_identity_scan.sh`) hard-fail
+> with a build hint in the same situation; this one does not. **Read the
+> `byte-identical to C=` count, never the `failures=` count** — and on a fresh
+> box run `tools/perf_c_encode/build.sh` before believing it. Found 2026-09-05
+> while provisioning i265, where it first reported `OK=4 failures=0` with 0 cells
+> actually compared.
+
+Note also that `cargo build --release` does **not** build the examples the gates
+drive — `perf_encode` and friends need `cargo build --release --examples`, or the
+gate aborts with `missing …/target/release/examples/perf_encode`.
+
 **A reference decoder is required** by the recon / decode / IntraBC gates — there
 is no fallback and no graceful skip. Build `aomdec` from libaom (`-b v3.12.1`,
 `-DCONFIG_AV1_ENCODER=0 -DENABLE_EXAMPLES=1`, target `aomdec`) and pass it as
@@ -109,7 +126,8 @@ boxes at `~/work/zen/codec-corpus` (`CID22/CID22-512`, `gb82`, `gb82-sc`).
 (blob-filtered sparse clone, 2.9 MB, 10 PNGs, asserted) — before 2026-09-05 the
 screen band was guarded by nothing on the runner.
 
-**Three hosts, and the split matters.**
+**Four hosts, and the split matters** — each can do something the others cannot,
+so pick by what you are measuring, not by what is free.
 
 * **This Mac** (aarch64, M4 Pro): the primary checkout, the gate chains, the
   aarch64 wall-clock and `mem_peak`/`mem_bisect` arms. `/bin/bash` here is 3.2 —
@@ -124,6 +142,23 @@ screen band was guarded by nothing on the runner.
   counters, no Ir. Its same-binary control jitters ±5 % per round on short
   cells (`benchmarks/perf_2026-09-05-lilith1-POSITION.meta` §4), so use it for
   position runs and long cells, not for chunk-sized A/Bs.
+* **`ssh i265`** (x86_64-linux, **Intel Core Ultra 7 265K**, 20 threads, 30 GiB,
+  native Linux 7.0.0-30): provisioned 2026-09-05 from scratch and **verified by
+  running the gates, not by installing packages** — `cargo nextest` **2557 /
+  2557** (matches r7900x exactly), `regression_spotcheck` **104 / 104**,
+  `inter_byte_gate` **PASS** (108 required, 0 failed). Full toolchain: rustc /
+  cargo 1.98.1, jj 0.45.1, cargo-nextest 0.9.143, cmake, nasm, ninja, valgrind,
+  heaptrack, `perf`, **dav1d + aomdec** (so the decode gates run here).
+  **Reached via `ProxyJump dev`** — a `Host i265 node-4 / ProxyJump dev` block
+  was added to `~/.ssh/config` on the Mac (`fleet-hosts.conf` is generated —
+  supply overrides in `~/.ssh/config`, never edit the generated file).
+  **This is the only x86 box that is NOT AMD Zen 4**, so it is the one place to
+  check that a kernel tuned on Zen 4 has not regressed on Intel. Verified from
+  `/proc/cpuinfo`: **zero `avx512*` flags**, with `avx2`, `avx_vnni`, `bmi2`,
+  `sse4_2` present. So `_v4` arms **cannot** run there and fall back to `_v3` —
+  which makes it a free, real-hardware check that the tier fallback is correct
+  (elsewhere that is only observable under valgrind's masked CPUID), and a
+  reason never to take a 512-bit measurement on it.
 * The oracle: the submodule is `imazen/zenav1-svt-c`; the campaign's base is the
   formerly-detached commit **`3115c0c`**, now preserved as branch
   `oracle-base-hdr-fork`. The working tree on the boxes may sit on
