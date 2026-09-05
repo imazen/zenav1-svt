@@ -1,5 +1,54 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE aarch64 4-WIDE CHROMA CDEF ARM IS 1.6x FASTER AT THE KERNEL — 185-188 ns
+> -> 113-119 ns WITH DISJOINT INTERVALS — AND THE WHOLE-FRAME WALL CLOCK IS A
+> NULL, WHICH IS REPORTED AS ONE (2026-09-05).** Record
+> `benchmarks/cdef_neon_4wide_i16_2026-09-05.{tsv,meta}`. This is the aarch64
+> mirror of the hole `cdef_i16_kernel_2026-09-05` found on x86: the 4-wide arm
+> carried ONE row of four columns per 128-bit register — a quarter of the lanes
+> doing useful work — where the 8-wide arm has always used eight biased-u16
+> lanes. `cdef_load4x2_bias_neon` (new) packs TWO rows of four columns into one
+> `uint16x8_t` (`vcombine_u16` of two `vld1_u16`, then the `^ 0x8000` bias), and
+> `cdef_filter_cols4_neon` then runs the SAME
+> `cdef_constrain8_bias_neon` / `vmulq_s16` / `vminq_u16` / `vbslq_u16` chain the
+> 8-wide arm uses. The caller gains the x86 dispatcher's shape guard
+> (`rows % (2 * sub) != 0` falls back to the scalar core). The 8-wide arm, the
+> HBD arm and every x86 arm are untouched.
+> **THERE IS NO Ir NUMBER HERE AND NONE IS CLAIMED — callgrind is Linux-only, so
+> no instruction count for an aarch64-only arm exists.** The measurement is a
+> KERNEL bench, because a whole-frame A/B provably cannot resolve a change this
+> size on this box: `perf_ab.sh` with a SAME-BINARY control on this Mac reads a
+> floor of 0.9965 at p6 with a 0.9940-1.0021 span (+-0.4 %), and the 4-wide arm
+> is ~half the CDEF filter's pixels at p6 where the whole filter is ~1.9 % of the
+> frame — so even a 40 % kernel saving is ~0.4 % of frame, AT the floor.
+> `crates/svtav1-dsp/benches/kernel_tiers.rs` had a `cdef_filter_block_8x8` case
+> and no 4-wide one; **this commit adds `cdef_filter_block_4x4`**, the shape the
+> encoder hands the filter for 4:2:0 chroma and 10,752 of the 26,816 calls on
+> photo_cid 512² p6. Three independent runs of each build, alternating: base
+> 188.5 [173-202] / 185.0 [170-200] / 187.0 [169-204] ns against cand 112.9
+> [102-123] / 118.0 [107-129] / 119.0 [108-129] — **every cand interval entirely
+> below every base interval, 1.58x-1.67x**. The untouched `cdef_filter_block_8x8`
+> case is kept as an in-run control and reads a null (base 495/351/375 against
+> cand 373/346/345; **the first base run's 495 ns with its 385-704 interval is an
+> outlier and is recorded rather than dropped — it is the reason three runs were
+> taken, not one**). **Whole frame**, 31 interleaved paired rounds, every row
+> ident=Y: A/B 0.9973 at p6 against a control of 0.9965, and 0.9992 at p2 against
+> 1.0003 — corrected, 1.0008 and 0.9989, i.e. **nothing in either direction. A
+> NULL.** **It is kept rather than reverted, and the reason is stated rather than
+> assumed:** the standing rule exists to stop code being kept on a hope, and here
+> the kernel effect is measured and well separated on the correct instrument for
+> a change of this size; the frame A/B is not evidence of no effect but evidence
+> that this box cannot resolve one, as its own same-binary control says. **No
+> frame-level or wall-clock gain is claimed.** **Memory**, `tools/mem_bisect.sh`
+> round-robin, 11 rounds each, 0 refused: aarch64 2048 inter median 140,304 ->
+> 140,176 KiB (min 138,560 -> 140,144, max 158,928 -> 159,024) and still 72,656
+> -> 72,688 KiB — **both NULLS, distributions overlapping; the 2048-inter arm the
+> memory ceiling is stated against is not pushed anywhere.** **Next, and now
+> priceable:** the 8-wide NEON arm still multiplies PER TAP where C groups by
+> coefficient (`sum += pri_taps[0] * (p0 + p1)`) — twelve `vmulq_s16` where four
+> would do, the same insight applied on x86 in `cdef_i16_kernel_2026-09-05` and
+> NOT applied here. The `cdef_filter_block_8x8` bench case now exists to price it.
+
 > **x86 HAD NO VECTOR ARM FOR `cdef_find_dir` AT ALL — 20.2x C's INSTRUCTIONS
 > -> 7.46x, AND 1.010x WALL CLOCK ON photo_cid p6 AGAINST A SAME-BINARY CONTROL
 > (2026-09-05).** Record `benchmarks/cdef_find_dir_simd_2026-09-05.{tsv,meta}`.

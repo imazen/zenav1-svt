@@ -1,0 +1,44 @@
+# cdef_neon_4wide_i16_2026-09-05 — the aarch64 4-wide chroma CDEF arm moves
+# from one i32x4 row per 128-bit register to TWO rows of four i16 columns.
+# See the companion .meta.
+#
+# base = origin/main 84621b20 (the find_dir AVX2 commit)
+# cand = this commit
+# KERNEL = cargo bench -p zenav1-svt-dsp --bench kernel_tiers, the
+#          `cdef_filter_block_4x4` case added by this commit (zenbench:
+#          interleaved round-robin, paired statistics). THREE independent runs
+#          of each build, alternating, on this Mac (M4 Pro).
+# WALL   = tools/perf_ab.sh, 31 interleaved randomised paired rounds, photo_cid
+#          512x512 qp 40, NEITHER SIDE NICED, on the same Mac — which carries
+#          ambient load (see .meta). Each A/B is paired with a SAME-BINARY
+#          control, which IS this box's floor.
+# There is NO Ir column: callgrind is Linux-only, so no instruction count for
+# an aarch64-only arm exists and none is claimed.
+
+section	case	build	run	mean_ns	ci_lo_ns	ci_hi_ns
+KERNEL	cdef_filter_block_4x4_neon	base	1	188.5	173	202
+KERNEL	cdef_filter_block_4x4_neon	base	2	185.0	170	200
+KERNEL	cdef_filter_block_4x4_neon	base	3	187.0	169	204
+KERNEL	cdef_filter_block_4x4_neon	cand	1	112.9	102	123
+KERNEL	cdef_filter_block_4x4_neon	cand	2	118.0	107	129
+KERNEL	cdef_filter_block_4x4_neon	cand	3	119.0	108	129
+KERNEL	cdef_filter_block_8x8_neon	base	1	495.5	385	704
+KERNEL	cdef_filter_block_8x8_neon	base	2	351.0	317	386
+KERNEL	cdef_filter_block_8x8_neon	base	3	375.0	339	408
+KERNEL	cdef_filter_block_8x8_neon	cand	1	373.2	334	426
+KERNEL	cdef_filter_block_8x8_neon	cand	2	346.0	314	382
+KERNEL	cdef_filter_block_8x8_neon	cand	3	345.0	318	368
+
+section	pair	content	size	preset	n	ident	base_ms	cand_ms	ratio	speedup	p25	p75
+WALL	CONTROL	photo_cid	512	2	31	Y	1859.5885	1859.9717	1.0003	1.000	0.9967	1.0032
+WALL	CONTROL	photo_cid	512	6	31	Y	64.6167	64.4300	0.9965	1.004	0.9940	1.0021
+WALL	AB	photo_cid	512	2	31	Y	1861.5468	1857.8461	0.9992	1.001	0.9956	1.0009
+WALL	AB	photo_cid	512	6	31	Y	64.4520	64.2523	0.9973	1.003	0.9931	1.0015
+
+# Peak RSS, tools/mem_bisect.sh (both binaries round-robin in ONE run), aarch64,
+# gradient 2048x2048 qp 40 preset 13, 11 rounds each, 0 refused.
+section	arm	build	median_KiB	min_KiB	max_KiB	n	refused
+MEM	inter	base	140304	138560	158928	11	0
+MEM	inter	cand	140176	140144	159024	11	0
+MEM	still	base	72656	72624	77136	11	0
+MEM	still	cand	72688	72624	78448	11	0

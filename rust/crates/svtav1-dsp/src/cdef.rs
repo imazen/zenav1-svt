@@ -941,7 +941,7 @@ pub(crate) fn cdef_filter_cols8_neon(
     let pri_thr = vdupq_n_u16(pri_strength as u16);
     let sec_thr = vdupq_n_u16(sec_strength as u16);
     // The sentinel compared in the BIASED domain, like every tap here.
-    let sentinel = vdupq_n_u16((CDEF_VERY_LARGE as u16) ^ 0x8000);
+    let sentinel = vdupq_n_u16(CDEF_VERY_LARGE ^ 0x8000);
     let eight = vdupq_n_s32(8);
 
     let p_off = [
@@ -1044,6 +1044,23 @@ pub(crate) fn cdef_filter_cols8_neon(
     }
 }
 
+/// Load 4 columns from each of TWO rows into one BIASED `uint16x8_t` — lanes
+/// 0..3 are row `i0`, lanes 4..7 are row `i1`. Same `^ 0x8000` bias, and the
+/// same reason for it, as [`cdef_load8_bias_neon`].
+///
+/// This is what lets the 4-wide chroma arm use all eight i16 lanes. The i32
+/// form it replaces carried ONE row of four columns per 128-bit register — a
+/// quarter of the register doing useful work — which is the aarch64 mirror of
+/// the hole `cdef_i16_kernel_2026-09-05` found on x86, where the 4-wide shapes
+/// had no vector arm at all.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn cdef_load4x2_bias_neon(_token: NeonToken, inb: &[u16], i0: usize, i1: usize) -> uint16x8_t {
+    let a: &[u16; 4] = inb[i0..i0 + 4].try_into().unwrap();
+    let b: &[u16; 4] = inb[i1..i1 + 4].try_into().unwrap();
+    veorq_u16(vcombine_u16(vld1_u16(a), vld1_u16(b)), vdupq_n_u16(0x8000))
+}
+
 /// 4-lane twin of [`cdef_load8_u16_neon`] for the 4-wide chroma shapes.
 /// Same SIGN-extension (the buffer is read as `int16_t`, so taps at or above
 /// 0x8000 are negative — the exact bug `filter_block_sign_straddle_matches_c`
@@ -1100,11 +1117,11 @@ pub(crate) fn cdef_filter_cols4_neon(
     } else {
         0
     };
-    let pri_shift_v = vdupq_n_s32(pri_shift);
-    let sec_shift_v = vdupq_n_s32(sec_shift);
-    let pri_thr = vdupq_n_s32(pri_strength);
-    let sec_thr = vdupq_n_s32(sec_strength);
-    let sentinel = vdupq_n_s32(CDEF_VERY_LARGE as i32);
+    let pri_nsh = vdupq_n_s16(-(pri_shift as i16));
+    let sec_nsh = vdupq_n_s16(-(sec_shift as i16));
+    let pri_thr = vdupq_n_u16(pri_strength as u16);
+    let sec_thr = vdupq_n_u16(sec_strength as u16);
+    let sentinel = vdupq_n_u16(CDEF_VERY_LARGE ^ 0x8000);
     let eight = vdupq_n_s32(8);
 
     let p_off = [
@@ -1137,46 +1154,73 @@ pub(crate) fn cdef_filter_cols4_neon(
 
     let mut i = 0i32;
     while i < rows {
-        let base = (ioff as i32 + i * s) as usize;
-        let x = cdef_load4_u16_neon(token, inb, base);
-        let mut sum = vdupq_n_s32(0);
+        let b0 = (ioff as i32 + i * s) as usize;
+        let b1 = (ioff as i32 + (i + sub) * s) as usize;
+        let x = cdef_load4x2_bias_neon(token, inb, b0, b1);
+        let mut sum = vdupq_n_s16(0);
         let mut mx = x;
         let mut mn = x;
 
         for t in 0..4usize {
-            let idx = (base as i32 + p_off[t]) as usize;
-            let tap = cdef_load4_u16_neon(token, inb, idx);
-            let cof = vdupq_n_s32(p_cof[t]);
-            let diff = vsubq_s32(tap, x);
-            let c = cdef_constrain4_neon(token, diff, pri_thr, pri_shift_v, pri_active);
-            sum = vaddq_s32(sum, vmulq_s32(c, cof));
-            let is_sent = vceqq_s32(tap, sentinel);
-            mx = vbslq_s32(is_sent, mx, vmaxq_s32(mx, tap));
-            mn = vminq_s32(mn, tap);
+            let o = p_off[t];
+            let tap = cdef_load4x2_bias_neon(
+                token,
+                inb,
+                (b0 as i32 + o) as usize,
+                (b1 as i32 + o) as usize,
+            );
+            let cof = vdupq_n_s16(p_cof[t] as i16);
+            let c = cdef_constrain8_bias_neon(token, tap, x, pri_thr, pri_nsh, pri_active);
+            sum = vaddq_s16(sum, vmulq_s16(c, cof));
+            let is_sent = vceqq_u16(tap, sentinel);
+            mx = vbslq_u16(is_sent, mx, vmaxq_u16(mx, tap));
+            mn = vminq_u16(mn, tap);
         }
         for t in 0..8usize {
-            let idx = (base as i32 + s_off[t]) as usize;
-            let tap = cdef_load4_u16_neon(token, inb, idx);
-            let cof = vdupq_n_s32(s_cof[t]);
-            let diff = vsubq_s32(tap, x);
-            let c = cdef_constrain4_neon(token, diff, sec_thr, sec_shift_v, sec_active);
-            sum = vaddq_s32(sum, vmulq_s32(c, cof));
-            let is_sent = vceqq_s32(tap, sentinel);
-            mx = vbslq_s32(is_sent, mx, vmaxq_s32(mx, tap));
-            mn = vminq_s32(mn, tap);
+            let o = s_off[t];
+            let tap = cdef_load4x2_bias_neon(
+                token,
+                inb,
+                (b0 as i32 + o) as usize,
+                (b1 as i32 + o) as usize,
+            );
+            let cof = vdupq_n_s16(s_cof[t] as i16);
+            let c = cdef_constrain8_bias_neon(token, tap, x, sec_thr, sec_nsh, sec_active);
+            sum = vaddq_s16(sum, vmulq_s16(c, cof));
+            let is_sent = vceqq_u16(tap, sentinel);
+            mx = vbslq_u16(is_sent, mx, vmaxq_u16(mx, tap));
+            mn = vminq_u16(mn, tap);
         }
 
-        // sign-extend the low 16 bits, then x + ((8 + sum - (sum<0)) >> 4)
-        let sw = vshrq_n_s32::<16>(vshlq_n_s32::<16>(sum));
-        let neg = vreinterpretq_s32_u32(vshrq_n_u32::<31>(vreinterpretq_u32_s32(sw)));
-        let adj = vshrq_n_s32::<4>(vsubq_s32(vaddq_s32(eight, sw), neg));
-        let val = vaddq_s32(x, adj);
-        let y = vminq_s32(vmaxq_s32(val, mn), mx);
-        let dst: &mut [i32; 4] = (&mut out[i as usize * 4..i as usize * 4 + 4])
-            .try_into()
-            .unwrap();
-        vst1q_s32(dst, y);
-        i += sub;
+        // Unbias back to the signed domain, then the SAME i32 tail as
+        // `cdef_filter_cols8_neon` — see its comment for why `8 + sum` is
+        // widened rather than kept in i16.
+        let bias = vdupq_n_u16(0x8000);
+        let x_s = vreinterpretq_s16_u16(veorq_u16(x, bias));
+        let mx_s = vreinterpretq_s16_u16(veorq_u16(mx, bias));
+        let mn_s = vreinterpretq_s16_u16(veorq_u16(mn, bias));
+        let sum32 = [vmovl_s16(vget_low_s16(sum)), vmovl_s16(vget_high_s16(sum))];
+        let x32 = [vmovl_s16(vget_low_s16(x_s)), vmovl_s16(vget_high_s16(x_s))];
+        let mn32 = [
+            vmovl_s16(vget_low_s16(mn_s)),
+            vmovl_s16(vget_high_s16(mn_s)),
+        ];
+        let mx32 = [
+            vmovl_s16(vget_low_s16(mx_s)),
+            vmovl_s16(vget_high_s16(mx_s)),
+        ];
+        // h = 0 is row `i` (lanes 0..3), h = 1 is row `i + sub` (lanes 4..7).
+        for h in 0..2usize {
+            let sw = sum32[h];
+            let neg = vreinterpretq_s32_u32(vshrq_n_u32::<31>(vreinterpretq_u32_s32(sw)));
+            let adj = vshrq_n_s32::<4>(vsubq_s32(vaddq_s32(eight, sw), neg));
+            let val = vaddq_s32(x32[h], adj);
+            let y = vminq_s32(vmaxq_s32(val, mn32[h]), mx32[h]);
+            let r = (i + h as i32 * sub) as usize;
+            let dst: &mut [i32; 4] = (&mut out[r * 4..r * 4 + 4]).try_into().unwrap();
+            vst1q_s32(dst, y);
+        }
+        i += 2 * sub;
     }
 }
 
@@ -1238,6 +1282,25 @@ fn cdef_filter_block_impl_neon(
             }
             i += subsampling_factor as i32;
         }
+    } else if rows % (2 * subsampling_factor as i32) != 0 {
+        // `cdef_filter_cols4_neon` consumes TWO rows per iteration; every shape
+        // the encoder produces divides evenly (BLOCK_4X4 at sub 1, BLOCK_4X8 at
+        // sub 1 or 2), and anything else falls back rather than mis-striding.
+        cdef_filter_block_core(
+            dst,
+            doff,
+            dstride,
+            inb,
+            ioff,
+            pri_strength,
+            sec_strength,
+            dir,
+            pri_damping,
+            sec_damping,
+            bsize,
+            coeff_shift,
+            subsampling_factor,
+        );
     } else {
         let mut scratch = [0i32; 32];
         cdef_filter_cols4_neon(

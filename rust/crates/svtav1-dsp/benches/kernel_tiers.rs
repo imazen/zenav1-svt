@@ -103,6 +103,37 @@ fn bench_dsp(suite: &mut Suite) {
                 .collect::<Vec<u16>>()
                 .into_boxed_slice(),
         );
+        // CDEF filter on the 4-wide chroma shape. BLOCK_4X4 is what the
+        // encoder hands the filter for 4:2:0 chroma, and on photo_cid 512² p6
+        // it is 10,752 of the 26,816 calls — see
+        // benchmarks/cdef_i16_kernel_2026-09-05.meta. A whole-frame A/B cannot
+        // resolve a change to it (its frame share is well under the 0.4 % floor
+        // a same-binary control reads on a laptop), so it needs its own case.
+        suite.compare("cdef_filter_block_4x4", |g| {
+            for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
+                g.bench(arm, move |b| {
+                    let mut dst = vec![0u8; 16];
+                    b.iter(move || {
+                        set_simd(simd);
+                        cdef::cdef_filter_block(
+                            &mut dst,
+                            0,
+                            4,
+                            inb,
+                            CDEF_IOFF,
+                            12,
+                            2,
+                            1,
+                            6,
+                            6,
+                            cdef::BLOCK_4X4,
+                            0,
+                            1,
+                        );
+                    })
+                });
+            }
+        });
         suite.compare("cdef_filter_block_8x8", |g| {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {

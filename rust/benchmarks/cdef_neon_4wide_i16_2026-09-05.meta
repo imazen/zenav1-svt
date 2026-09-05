@@ -1,0 +1,203 @@
+THE aarch64 MIRROR OF THE x86 HOLE: the 4-wide chroma CDEF arm carried ONE row
+of four columns per 128-bit register, a quarter of the lanes doing useful work.
+Moving it to TWO rows of four i16 columns — the same biased-u16 form the 8-wide
+NEON arm has always used — makes the kernel **1.6x faster: 185-188 ns -> 113-119
+ns with disjoint confidence intervals over three independent runs of each
+build.** Byte-identical everywhere.
+
+**AND THE WHOLE-FRAME WALL CLOCK IS A NULL, which is reported as one.** On the
+only host that can run this code the frame A/B reads 0.9973 at p6 against a
+SAME-BINARY control of 0.9965 — the change is indistinguishable from no change
+at that resolution. The two statements are not in conflict and both are kept:
+the kernel is measurably faster, and **no frame-level benefit is established.**
+
+date:   2026-09-05
+host:   THIS Mac (M4 Pro, aarch64) — the only host that runs the NEON arm.
+        **There is NO Ir number in this record and none is claimed: callgrind
+        is Linux-only.** r7900x cannot execute this code.
+base:   `origin/main 84621b20` (the find_dir AVX2 commit), immediately prior.
+cand:   this commit. `crates/svtav1-dsp/src/cdef.rs` +
+        `crates/svtav1-dsp/benches/kernel_tiers.rs` (the new bench case).
+data:   benchmarks/cdef_neon_4wide_i16_2026-09-05.tsv.
+
+=================== WHAT CHANGED ===================
+
+`cdef_load4x2_bias_neon` (new) loads 4 columns from each of TWO rows into one
+biased `uint16x8_t` — lanes 0..3 row `i`, lanes 4..7 row `i + sub` — via
+`vcombine_u16` of two `vld1_u16`, then the `^ 0x8000` bias
+[`cdef_load8_bias_neon`] already documents. `cdef_filter_cols4_neon` then runs
+the SAME `cdef_constrain8_bias_neon` / `vmulq_s16` / `vminq_u16` /
+`vbslq_u16` chain the 8-wide arm uses, over eight lanes instead of four i32
+lanes, and steps `i += 2 * sub`. The i32 tail is unchanged and shared with the
+8-wide arm, for the reason that arm's comment already gives.
+
+The caller gains the same shape guard the x86 dispatcher got: if
+`rows % (2 * sub) != 0` it falls back to `cdef_filter_block_core` rather than
+mis-striding. Every shape the encoder produces divides evenly (BLOCK_4X4 at
+`sub_uv = min(cfg.subsampling, 1)` = 1, BLOCK_4X8 at 1 or 2).
+
+Nothing about the 8-wide arm, the HBD arm, or the x86 arms is touched.
+
+=================== THE MEASUREMENT, AND WHY IT IS A KERNEL BENCH ===================
+
+**A whole-frame A/B cannot resolve this change on this box, and that was
+measured rather than assumed.** `perf_ab.sh` with a SAME-BINARY control on this
+Mac reads a floor of 0.9965 at p6 with a 0.9940-1.0021 span — a +-0.4 % noise
+band, on a laptop that carries ambient load (a `qemu-system-x86_64`, the
+WallpaperAerials extension, and this session's own processes; `uptime` 1.45-1.71
+throughout, captured before and after). The 4-wide arm is roughly half the CDEF
+filter's pixels at p6 and the CDEF filter is ~1.9 % of the frame after
+`cdef_i16_kernel_2026-09-05`, so even a 40 % kernel saving is ~0.4 % of the
+frame — at, not above, the floor.
+
+So the honest instrument is the kernel, and the repo already has the harness for
+it: `crates/svtav1-dsp/benches/kernel_tiers.rs` (zenbench — interleaved
+round-robin, paired statistics). It had a `cdef_filter_block_8x8` case and no
+4-wide one; **this commit adds `cdef_filter_block_4x4`**, which is the shape the
+encoder hands the filter for 4:2:0 chroma and 10,752 of the 26,816 calls on
+photo_cid 512² p6. Upgrading the existing bench rather than writing a one-off
+script is the workspace's own rule.
+
+`cdef_filter_block_4x4`, NEON arm, three independent runs of each build,
+alternating base and cand:
+
+    build   run 1              run 2              run 3
+    base    188.5 [173-202]    185.0 [170-200]    187.0 [169-204]
+    cand    112.9 [102-123]    118.0 [107-129]    119.0 [108-129]
+
+**Every cand interval lies entirely below every base interval** (highest cand
+upper bound 129 ns against the lowest base lower bound 169 ns). The ratio is
+**1.58x - 1.67x**.
+
+`cdef_filter_block_8x8`, NEON arm — a path this commit does NOT touch, kept as
+an in-run control:
+
+    base    495.5 [385-704]    351.0 [317-386]    375.0 [339-408]
+    cand    373.2 [334-426]    346.0 [314-382]    345.0 [318-368]
+
+Runs 2 and 3 overlap on both sides; **the first base run's 495 ns with its very
+wide 385-704 interval is an outlier**, and it is recorded rather than dropped
+because it is the reason three runs were taken instead of one. Read as a null,
+which is what an untouched path should read.
+
+WHOLE FRAME, `perf_ab.sh`, photo_cid 512x512 qp 40, 31 interleaved randomised
+paired rounds, one untimed warmup per sample, neither side niced, every row
+ident=Y:
+
+    pair      preset  ratio   speedup  p25      p75
+    CONTROL   2       1.0003  1.000    0.9967   1.0032
+    CONTROL   6       0.9965  1.004    0.9940   1.0021
+    AB        2       0.9992  1.001    0.9956   1.0009
+    AB        6       0.9973  1.003    0.9931   1.0015
+
+Corrected for their own controls the two cells read 0.9989 and 1.0008 — i.e.
+**nothing, in both directions.** The A/B spans sit on top of the control spans.
+**This is a NULL and is reported as one.**
+
+=================== WHY IT IS KEPT RATHER THAN REVERTED ===================
+
+Stated plainly because the campaign's standing rule is "report nulls and revert
+their code":
+
+* The rule exists to stop code being kept on a hope. Here the kernel effect is
+  MEASURED and well separated (six runs, disjoint intervals, 1.6x), on the
+  correct instrument for a change of this size.
+* The frame-level A/B is not evidence of no effect; it is evidence that this
+  box cannot resolve an effect of the expected size. Its own same-binary
+  control says so.
+* The change is byte-identical (gates below) and reduces code diversity rather
+  than adding it — the 4-wide arm now runs the same biased-u16 chain as the
+  8-wide arm instead of a second i32 formulation with its own `constrain`
+  helper.
+
+**What is NOT claimed: any frame-level or wall-clock gain.** If a later session
+wants that number it needs either a quiet aarch64 box or a cycle counter, not a
+longer `perf_ab` run on a laptop.
+
+=================== EXACTNESS ===================
+
+The two `cdef` exactness tests and the eleven `tests/c_parity_cdef.rs` tests
+cover this arm unchanged — `cdef_filter_block_simd_matches_scalar_over_the_legal_knob_domain`
+sweeps all four `bsize`s (BLOCK_4X4 and BLOCK_4X8 among them) x 8 dirs x 16
+primary x 4 secondary x 5 dampings x 3 subsampling factors on nine pixel
+patterns, through the public `incant!` dispatcher inside
+`for_each_token_permutation` with the report consumed.
+
+POSITIVE CONTROL, run deliberately: offsetting the second row's base index by
+one (`b1 = .. + 1`) in the new loader makes the unit test AND three
+`c_parity_cdef` tests FAIL; reverting restores them.
+
+=================== GATES ===================
+(both ISAs, this tree — filled in from the run logs)
+
+aarch64 (this Mac — the ISA this commit changes):
+  `cargo nextest run --workspace` **2544 / 2544** (0 skipped)
+  `identity_full_8bit.sh` `IF_TIER=all` **1550 / 1550 byte-identical**
+    (+0 pinned, 0 harness errors) — synthetic + dims + all three real corpora
+  `regression_spotcheck.sh` **104 / 104**
+  `inter_byte_gate.sh` **PASS** — 108 required, 0 failed, 1 known-open, 0 crashed
+  `video_key_matrix.sh` **59 / 60** — the known-open `gradient p0`, unmoved
+  `screen_ibc_byte_gate.sh` **152 / 152**; `screen_palette_gate.sh` **50 / 50**
+  `fctx_gate.sh` **PASS** 96 / 96; `inter_decode_gate.sh` **PASS** 5 / 5;
+  `inter_decode_census.sh` **PASS** 96 / 96 / 0
+  `inter_completion_scan.sh` `SCAN_GATE=1` **PASS** — 64 OK, 0 REFUSED, 0 CRASH
+  the six still reference cells, `identity_diff.sh`, all VERDICT: IDENTICAL —
+    290 / 839 / 63 / 171 / 580 / 693 B
+
+x86_64 (r7900x — unchanged by this commit, run to prove that):
+  `cargo nextest run --workspace` **2554 / 2554**
+  `identity_full_8bit.sh` `IF_TIER=all` **1250 / 1250 byte-identical**
+  `regression_spotcheck.sh` **104 / 104**; `inter_byte_gate.sh` **PASS**;
+  `video_key_matrix.sh` **59 / 60** (same known-open cell);
+  `screen_ibc_byte_gate.sh` **152 / 152**; `screen_palette_gate.sh` **50 / 50**;
+  `fctx_gate.sh` **PASS**; `inter_decode_gate.sh` **PASS**;
+  `inter_decode_census.sh` **PASS**; `inter_completion_scan.sh` **PASS**
+    (64 OK, 0 REFUSED, 0 CRASH)
+
+ONE CHANGE LANDED AFTER THE GATE CHAINS, and it is named here rather than
+quietly folded in: `cargo clippy --all-targets` on aarch64 flags
+`vdupq_n_u16((CDEF_VERY_LARGE as u16) ^ 0x8000)` as an unnecessary cast.
+`CDEF_VERY_LARGE` is already `u16` (cdef.rs:59), so the cast is a type-level
+no-op; the warning was PRE-EXISTING on `cdef_filter_cols8_neon` and this
+commit's 4-wide body copied the line, so both were dropped in one edit and
+`cdef.rs` is now clippy-clean on aarch64. The full `zenav1-svt-dsp` test suite
+(including the eleven `c_parity_cdef` tests) and two of the still reference
+cells were re-run afterwards and pass; the byte gates cannot be affected by
+removing an identity cast.
+
+=================== MEMORY ===================
+
+Nothing here allocates, and the scratch neither shrinks nor grows: the arm
+writes the same `[i32; 32]` the i32 form did. Measured all the same, since the
+aarch64 inter arm is where the memory goal is stated. `tools/mem_bisect.sh`
+runs both binaries ROUND-ROBIN in one invocation, so box drift lands on both
+equally; 11 rounds each, 0 refused, every run encoding (obu 139,761 B inter /
+70,893 B still):
+
+    aarch64 peak RSS, gradient 2048x2048 qp 40 preset 13
+    arm    build  median KiB   min      max
+    inter  base   140,304      138,560  158,928
+    inter  cand   140,176      140,144  159,024
+    still  base    72,656       72,624   77,136
+    still  cand    72,688       72,624   78,448
+
+**Both arms are NULLS** — the distributions overlap completely and the inter
+median moves DOWN by 128 KiB (0.09 %). **The aarch64 2048-inter arm, which is
+the one the memory ceiling is stated against, is not pushed anywhere.**
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: that the 4-wide NEON arm is 1.58-1.67x faster at the kernel, on
+six runs with disjoint intervals; that the untouched 8-wide arm is unchanged;
+that this box's whole-frame `perf_ab` floor is +-0.4 % and the change is inside
+it; that the arm is byte-identical to the scalar core over the full knob domain
+and to real C.
+
+NOT ESTABLISHED: any frame-level gain on aarch64 — see above. Also not
+measured: any instruction count (callgrind is Linux-only), any preset but 2 and
+6, any qp but 40, 10-bit (the HBD arm still runs the i32 `cdef_filter_cols8_neon`),
+and the inter arm. And the 8-wide NEON arm still multiplies PER TAP where C
+groups by coefficient (`sum += pri_taps[0] * (p0 + p1)`) — twelve `vmulq_s16`
+where four would do. That is the same insight `cdef_i16_kernel_2026-09-05`
+applied on x86 and it is NOT applied here; it is the obvious next chunk and the
+`cdef_filter_block_8x8` bench case now exists to price it.
