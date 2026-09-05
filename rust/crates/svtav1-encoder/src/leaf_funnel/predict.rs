@@ -94,7 +94,7 @@ pub(super) fn predict_unit(
     // Task #96: tile-scoped neighbour availability. `geom.tile` is the
     // whole frame for a single-tile encode, where `tile_top/left` are 0
     // and this is bit-for-bit `extract_neighbors`.
-    let (above, left, top_left, has_above, has_left) = crate::partition::extract_neighbors_tiled(
+    let nb = crate::partition::extract_neighbors_tiled(
         recon,
         stride,
         abs_x,
@@ -109,6 +109,7 @@ pub(super) fn predict_unit(
         geom.frame_w >> geom.ss,
         geom.frame_h >> geom.ss,
     );
+    let (above, left, top_left, has_above, has_left) = nb.parts();
     if fi_mode != FI_NONE {
         let mut above_c = vec![0u8; w + 1];
         above_c[0] = if has_above && has_left {

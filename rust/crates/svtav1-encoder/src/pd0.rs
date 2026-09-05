@@ -2075,7 +2075,7 @@ impl<'a> Pd0Ctx<'a> {
         // canvas — means the arrays hold PD0's own recon, and the canvas is
         // that state; the availability, `n_top_px`/`n_left_px` clamp and edge
         // replication are the same function either way.
-        let (above, left, _tl, has_above, has_left) = match self.recon_canvas.as_ref() {
+        let nb = match self.recon_canvas.as_ref() {
             None => crate::partition::extract_neighbors(
                 self.src,
                 self.stride,
@@ -2103,10 +2103,9 @@ impl<'a> Pd0Ctx<'a> {
                 )
             }
         };
+        let (above, left, _tl, has_above, has_left) = nb.parts();
         let mut pred = vec![0u8; bw * bh];
-        svtav1_dsp::intra_pred::predict_dc(
-            &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
-        );
+        svtav1_dsp::intra_pred::predict_dc(&mut pred, bw, above, left, bw, bh, has_above, has_left);
 
         // Subres safety: determined once per SB by the first (and only)
         // tested 64x64 block; blocks tested while it is undetermined use
@@ -2259,7 +2258,7 @@ impl<'a> Pd0Ctx<'a> {
             self.inter_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred);
             return self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, pred, None);
         }
-        let (above, left, _tl, has_above, has_left) = match self.recon_canvas.as_ref() {
+        let nb = match self.recon_canvas.as_ref() {
             None => crate::partition::extract_neighbors_tiled(
                 self.src,
                 self.stride,
@@ -2291,10 +2290,9 @@ impl<'a> Pd0Ctx<'a> {
                 )
             }
         };
+        let (above, left, _tl, has_above, has_left) = nb.parts();
         let mut pred = vec![0u8; bw * bh];
-        svtav1_dsp::intra_pred::predict_dc(
-            &mut pred, bw, &above, &left, bw, bh, has_above, has_left,
-        );
+        svtav1_dsp::intra_pred::predict_dc(&mut pred, bw, above, left, bw, bh, has_above, has_left);
         self.lvl1_cost_from_pred(
             bw,
             bh,
