@@ -102,6 +102,7 @@ pub(super) fn run_mds3(
     let mds3_ctx = Mds3Ctx {
         txs_active,
         end_depth,
+        in_frame,
         tsz_cat,
         tsz_ctx,
         lambda3,
@@ -387,6 +388,10 @@ struct Mds3Ctx {
     /// for a block that straddles the aligned frame edge
     /// (product_coding_loop.c:6710-6717).
     end_depth: u8,
+    /// The block lies entirely inside the aligned frame (the
+    /// product_coding_loop.c:6710-6717 boundary rule, which C applies to
+    /// EVERY candidate class before the per-class clamp).
+    in_frame: bool,
     /// tx-size category and its neighbour-derived context, for the depth rate.
     tsz_cat: usize,
     tsz_ctx: usize,
@@ -504,6 +509,7 @@ fn eval_candidate(
     let Mds3Ctx {
         txs_active,
         end_depth,
+        in_frame,
         tsz_cat,
         tsz_ctx,
         lambda3,
@@ -638,8 +644,24 @@ fn eval_candidate(
     // uniform-`depth` model already represents — then per-txb
     // all_zero / tx_type over the 16-type inter set (`CDF nsyms=16`) /
     // `eob_pt_64` (`CDF nsyms=7`). Widen the caps against THAT stream.
-    let cand_end_depth = if cands[ci].is_inter() {
-        if txs_active {
+    // FIXED 2026-09-05: C's class clamp is keyed on the candidate's MODE —
+    // `is_intra_mode(cand->block_mi.mode)` (product_coding_loop.c:6729-6732,
+    // `is_intra_mode` = `mode < INTRA_MODE_END`, definitions.h:1614) — and
+    // an IntraBC candidate is injected with `mode = DC_PRED`
+    // (mode_decision.c:3150), so C searches an IBC block's tx depths under
+    // the INTRA caps. Only a real inter MODE (NEWMV/NEARESTMV/...) takes the
+    // inter caps. The port keyed this on `is_inter()` (= `use_intrabc ||
+    // ref_frame[0] > INTRA_FRAME`, the wrong predicate for THIS site), which
+    // capped IBC at the inter depth (1) where C reaches 2 at txs_level 2
+    // (presets 0..3) — the mechanism behind every gb82-sc p0..p3 divergence
+    // that begins at an IBC block's `txfm_partition` flag (terminal /
+    // graph 512^2 q40 p2: first diverging op = the depth-0 split flag of the
+    // 16x16 IBC leaf at mi(12,108), C=1 port=0). At txs_level 3 (p4..p7)
+    // the square caps coincide (1 == 1), which is why p4 read clean.
+    // The boundary rule (`in_frame`) precedes the class clamp in C and
+    // applies to every class, so the inter arm takes it too.
+    let cand_end_depth = if cands[ci].inter.is_some() {
+        if txs_active && in_frame {
             end_tx_depth_inter(w, h, &cfg)
         } else {
             0
