@@ -1,5 +1,57 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **THE RESIDUAL IS DERIVED ONCE PER (TX-DEPTH, TXB) AGAIN, AS C DOES IT —
+> `residual_i32` 4,256,724 -> 1,307,794 CALLS PER 512² PHOTO FRAME AT p2
+> AGAINST C's 1,986,776 (port/C 2.142x -> 0.658x), -2.19 % Ir, AND WITH THE
+> BLOCK BELOW THE PHOTO's p2 PORT/C RATIO IS 1.777 -> 1.704 (2026-09-05).**
+> Record `benchmarks/residual_hoist_2026-09-05.{tsv,meta}`. C fills
+> `cand_bf->residual->y_buffer` ONCE per (tx-depth, TXB) in
+> `perform_tx_partitioning` (`svt_aom_residual_kernel`,
+> `product_coding_loop.c:5336`) and every tx-type trial transforms THAT buffer
+> (`svt_aom_estimate_transform` reads it at `:4730`); `tx_type_search` has no
+> call-graph edge into the residual kernel at any preset. The port re-subtracted
+> the same `w x h` block once per admitted TRIAL — `callcount_2026-09-04`'s
+> HEADLINE #2 and item A of `callcount_realimg_2026-09-04`'s ranked list, where
+> the ratio GREW with texture (1.383x gradient, 2.143x this photo, 2.184x a CLIC
+> glitter image) because the ratio IS the mean tx-type trial count per TXB.
+> `src`, `pred` and the dims are loop-invariant across `txt_search`'s group
+> loop, so it now fills one buffer before the loop and hands the same slice to
+> every trial through a `pre_residual: Option<&[i32]>` argument; the buffer is a
+> third field of the per-thread `TxtScratch` the previous commit introduced, so
+> it costs no allocation after warmup. `None` restores the per-call derivation
+> for every single-shot site (MDS1, chroma, CfL, the owned-output wrapper) —
+> what C's `perform_dct_dct_tx` and `full_loop_uv` do — and the hoist is applied
+> only on the multi-candidate (`!only_dct`) path, which also leaves the preset-13
+> video/inter arm untouched. **Byte identity is structural** (the same integer
+> subtraction of the same two buffers, once instead of k times) and the two
+> positive controls confirm no second-order effect: `fwd_txfm2d_dispatch`
+> 4,256,724 = 4,256,724 and `optimize_b` 2,854,762 = 2,854,762, so the search
+> breadth and the RDOQ work are the same amount of work to the unit. Ir: p2
+> 47.48 G -> 46.44 G (-2.19 %), p6 1.647 G -> 1.637 G (-0.64 %); over the two
+> commits together p2 48.43 G -> 46.44 G (**-4.12 %**, port/C 1.777 -> 1.704)
+> and p6 -1.22 % (2.349 -> 2.320). Wall clock (r7900x, `perf_ab.sh`, 15
+> interleaved paired rounds, ident=Y everywhere) against the previous commit:
+> photo 512 p2 **1.016x**, gradient 256 p2 **1.029x**, 512 p2 **1.023x**, both
+> p6 cells 1.003-1.006x, the two p10 cells null (they are the untouched
+> `only_dct` path); against the tree both chunks branched from, photo 512 p2
+> **1.042x** and p6 1.009x. Note the two mechanisms have OPPOSITE content
+> dependence — the allocator gain is bigger on the photo, the residual gain is
+> bigger on the gradient — which is why both were measured on both. Peak HEAP is
+> IDENTICAL at every step (x86 2048 still 61.07 M, inter 101.78 M); the one new
+> retained buffer is at most 16 KiB per thread and preset 13 never touches it.
+> Peak HEAP is IDENTICAL at every step and the aarch64 inter 2048 cell —
+> interleaved `mem_bisect.sh`, all three binaries round-robin in one run, 15
+> rounds — goes 142,112 -> 142,144 -> **140,080** KiB median (min 140,144 ->
+> 140,144 -> 139,968): this chunk is the first of the two to move that cell at
+> all, and it moves it DOWN. Gates green on both ISAs (aarch64 nextest
+> 2530/2530, spotcheck 104/104, `identity_full_8bit` 1100/1100, `inter_byte_gate`
+> PASS 96/0/1, `video_key_matrix` 59/60 unmoved, `fctx_gate` 96/96,
+> `inter_decode_gate` 5/5, decode census 96/96, `SCAN_GATE=1` scan 64/0/0,
+> `screen_palette_gate` 50/50; x86_64 nextest 2540/2540, spotcheck 104/104,
+> identity 1100/1100, inter byte gate PASS).
+> NOT touched: the bd10 twin `tx_unit_hbd_screened` still derives its own
+> residual per trial.
+
 > **`tx_unit`'s TWO OUTPUT BUFFERS ARE IN C's SHAPE — 24.17 M ALLOCATOR CALLS
 > PER 512² PHOTO FRAME AT p2 -> 15.14 M (9,296x C -> 5,824x), -1.97 % Ir, AND
 > THE FIRST ALLOCATION REMOVAL IN THIS CAMPAIGN TO CONVERT: 1.026x FASTER ON A

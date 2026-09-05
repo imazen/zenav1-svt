@@ -884,6 +884,21 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **The residual is derived once per (tx-depth, TXB) again, as C does it:
+  `residual_i32` 4,256,724 -> 1,307,794 calls per 512x512 photo frame at preset
+  2 against C's 1,986,776 (port/C 2.142x -> 0.658x), -2.19 % instructions,
+  1.016x-1.029x faster, byte-identical (2026-09-05).** C fills
+  `cand_bf->residual->y_buffer` once per (tx-depth, TXB) in
+  `perform_tx_partitioning` (`product_coding_loop.c:5336`) and every tx-type
+  trial transforms that buffer (`:4730`); the port re-subtracted the same block
+  per trial. `txt_search` now fills one `TxtScratch` buffer before its group
+  loop and passes it to every trial as `pre_residual`; single-shot call sites
+  keep the per-call derivation. Positive controls unmoved to the unit
+  (`fwd_txfm2d_dispatch` and `optimize_b` call counts identical), peak heap
+  identical. With the buffer-pooling entry below, a photo's preset-2 port/C
+  instruction ratio goes 1.777 -> 1.704 and the whole-frame wall clock 1.042x.
+  Record `rust/benchmarks/residual_hoist_2026-09-05.{tsv,meta}`.
+
 - **`tx_unit`'s two output buffers are in C's shape: 24.17 M allocator calls
   per 512x512 photo frame at preset 2 -> 15.14 M (9,296x C -> 5,824x), -1.97 %
   instructions, and the first allocation removal in this campaign to convert to

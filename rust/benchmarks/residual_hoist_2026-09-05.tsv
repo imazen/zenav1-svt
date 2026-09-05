@@ -1,0 +1,76 @@
+# The per-tx-type-trial residual, hoisted to C's once-per-(tx-depth, TXB) shape.
+# Method, hosts and provenance: the .meta beside this.
+# base1 = main@origin d709b0d7 (the txout_cshape commit — the SOLO reference)
+# base0 = main@origin 41e5d8f1 (before both chunks — the CUMULATIVE reference)
+# cand  = this commit. Byte-identical to C on every cell.
+#
+# --- 1. instruction counts (r7900x callgrind, Ir), photo_cid 512x512 qp40
+section	cell	preset	quantity	base0	base1	cand	c
+ir	photo_cid_512	2	port_ir	48432763259	47476521985	46437222163	27248547183
+ir	photo_cid_512	2	port_over_c	1.777	1.742	1.704	1.000
+ir	photo_cid_512	6	port_ir	1657133167	1647475456	1636935287	705588227
+ir	photo_cid_512	6	port_over_c	2.349	2.335	2.320	1.000
+#
+# --- 2. the edge this closes, and the positive controls that must NOT move
+calls	photo_cid_512	2	residual_i32 / svt_aom_residual_kernel	4256724	4256724	1307794	1986776
+calls	photo_cid_512	2	residual_port_over_c	2.142	2.142	0.658	1.000
+calls	photo_cid_512	2	fwd_txfm2d_dispatch (control)	4256724	4256724	4256724	-
+calls	photo_cid_512	2	optimize_b (control)	2854762	2854762	2854762	-
+calls	photo_cid_512	2	allocator_total (control)	24169163	15142201	15142201	2600
+calls	photo_cid_512	2	memset_avx2	18203723	18032329	18032330	1040065
+#
+# --- 3. wall clock, r7900x, tools/perf_ab.sh, 15 interleaved paired rounds,
+#        neither side niced. ratio = cand/base (<1 = cand faster).
+ab	against	content	size	preset	n	base_ms	cand_ms	ratio	speedup	p25	p75	ident
+ab	base1	photo_cid	512	2	15	2396.3490	2357.9130	0.9847	1.016	0.9803	0.9853	Y
+ab	base1	photo_cid	512	6	15	81.0032	80.3370	0.9942	1.006	0.9888	0.9956	Y
+ab	base1	gradient	256	2	15	205.6306	199.6611	0.9714	1.029	0.9688	0.9722	Y
+ab	base1	gradient	512	2	15	455.3882	444.6642	0.9773	1.023	0.9751	0.9787	Y
+ab	base1	gradient	256	6	15	10.4657	10.3439	0.9971	1.003	0.9805	1.0011	Y
+ab	base1	gradient	512	6	15	33.8705	33.7559	0.9946	1.005	0.9918	0.9979	Y
+ab	base1	gradient	256	10	15	1.3988	1.4083	1.0038	0.996	0.9864	1.0128	Y
+ab	base1	gradient	512	10	15	6.4008	6.4451	1.0065	0.994	0.9988	1.0114	Y
+ab	base0	photo_cid	512	2	15	2460.0315	2360.3694	0.9600	1.042	0.9589	0.9612	Y
+ab	base0	photo_cid	512	6	15	81.3970	80.5312	0.9908	1.009	0.9858	0.9923	Y
+#
+# --- 4. memory (tools/mem_peak.sh median of 5; heap = heaptrack peak LIVE bytes)
+#        gradient qp40 preset 13; `.obu` identical to base on every row.
+mem	host	size	arm	quantity	base0	base1	cand	unit
+mem	r7900x	1280	still	rss	29112	29612	29776	KiB
+mem	r7900x	1280	videokey	rss	34696	34700	34580	KiB
+mem	r7900x	1280	inter	rss	45648	45092	47032	KiB
+mem	r7900x	2048	still	rss	68792	68620	68868	KiB
+mem	r7900x	2048	videokey	rss	77944	77860	77740	KiB
+mem	r7900x	2048	inter	rss	109268	109584	104340	KiB
+mem	r7900x	2048	still	heap	61.07	61.07	61.07	MiB
+mem	r7900x	2048	inter	heap	101.78	101.78	101.78	MiB
+mem	mac	1280	still	rss	28176	28176	28224	KiB
+mem	mac	1280	videokey	rss	33184	33280	33264	KiB
+mem	mac	1280	inter	rss	55328	55328	54464	KiB
+mem	mac	2048	still	rss	72480	72528	72576	KiB
+mem	mac	2048	videokey	rss	87616	87760	87696	KiB
+mem	mac	2048	inter	rss	142096	142256	142064	KiB
+#
+# --- 4b. mac 2048 inter, INTERLEAVED tools/mem_bisect.sh, 15 rounds, one run,
+#         all three binaries round-robin (the honest form on this cell)
+membis	mac	2048	inter	rss_median	142112	142144	140080	KiB
+membis	mac	2048	inter	rss_min	140144	140144	139968	KiB
+membis	mac	2048	inter	rss_max	142272	160976	154640	KiB
+#
+# --- 5. GATES (both ISAs, on this commit's tree)
+gate	host	name	result
+gate	mac	nextest	2530/2530
+gate	mac	regression_spotcheck	104/104
+gate	mac	identity_full_8bit	1100/1100 (+0 pinned, 0 harness errors)
+gate	mac	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open, 0 crashed)
+gate	mac	video_key_matrix	59/60 (the known-open gradient p0, 1341 vs 1342 B)
+gate	mac	fctx_gate	PASS (96/96 shared fields on both frames)
+gate	mac	inter_decode_gate	PASS 5/5
+gate	mac	inter_decode_census	PASS 96/96
+gate	mac	inter_completion_scan SCAN_GATE=1	PASS 64 OK / 0 REFUSED / 0 CRASH
+gate	mac	screen_palette_gate	50/50 byte-identical (38 palette-coding cells)
+gate	r7900x	nextest	2540/2540
+gate	r7900x	regression_spotcheck	104/104
+gate	r7900x	identity_full_8bit	1100/1100
+gate	r7900x	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open)
+gate	both	callgrind cells	photo_cid p2 46462 B and p6 45688 B identical to C, before and after

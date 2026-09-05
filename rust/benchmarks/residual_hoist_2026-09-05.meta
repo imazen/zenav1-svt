@@ -1,0 +1,175 @@
+THE RESIDUAL IS DERIVED ONCE PER (TX-DEPTH, TXB) AGAIN, AS C DOES IT: the port
+re-subtracted the same `w x h` source/prediction block once per TX-TYPE TRIAL.
+`residual_i32` 4,256,724 calls per 512x512 photo frame at preset 2 ->
+1,307,794, against C's 1,986,776 — port/C **2.142x -> 0.658x**, -1,039 M Ir
+(-2.19 %) on top of the txout chunk, byte-identical. Wall clock on a textured
+photo at 512 p2: **1.016x** against the previous commit and **1.042x** against
+the tree both chunks branched from; on the gradient 1.029x / 1.023x at 256 /
+512 p2. The port/C instruction ratio on a photo at p2 is now **1.704**
+(1.777 before this pair of commits).
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores),
+        valgrind-3.26.0 --tool=callgrind (Ir only), rustc 1.98.1, gcc 15.2.0.
+        GATES both: r7900x and this Mac (aarch64-darwin, M4 Pro, bash 5).
+base0:  main@origin 41e5d8f1 — the tree BEFORE both allocator/residual chunks;
+        the cumulative reference, built in a sibling directory on r7900x.
+base1:  main@origin d709b0d7 — the `txout_cshape` commit; the SOLO reference
+        for this chunk, built the same way in a second sibling directory whose
+        only difference from `cand` is these two files.
+cand:   this commit. Two files: `leaf_funnel/tx_pipeline.rs`,
+        `leaf_funnel/txt.rs`.
+C:      reference/svt-av1 @ 3115c0c1 — the PREBUILT oracle in the primary
+        r7900x checkout, NOT rebuilt.
+tools:  tools/perf_profile/callcount_cells.sh + callcount.py (unchanged) on the
+        CID22 photo the realimg record prepared (sha256 88142a48...), presets 2
+        and 6, qp 40, STILL. Wall clock: tools/perf_ab.sh, 15 interleaved
+        randomised-order paired rounds, one untimed warmup per sample, NEITHER
+        SIDE NICED, box quiet (load 0.4-0.8). Memory: tools/mem_peak.sh.
+data:   benchmarks/residual_hoist_2026-09-05.tsv.
+
+=================== C's SHAPE (cited) ===================
+
+C derives the luma residual ONCE per (tx-depth, TXB), in
+`perform_tx_partitioning`:
+
+    product_coding_loop.c:5333    if (ctx->tx_depth) av1_intra_luma_prediction(...);
+    product_coding_loop.c:5336    svt_aom_residual_kernel(input_pic->y_buffer, ...,
+                                      tx_cand_bf->pred->y_buffer, ...,
+                                      (int16_t*)tx_cand_bf->residual->y_buffer, ...)
+
+and every tx-type trial inside `tx_type_search` transforms THAT buffer:
+
+    product_coding_loop.c:4730    svt_aom_estimate_transform(pcs, ctx,
+                                      &(((int16_t*)cand_bf->residual->y_buffer)[txb_origin_index]),
+                                      cand_bf->residual->y_stride, ...)
+
+`tx_type_search` has NO call-graph edge into the residual kernel at any preset
+— `callcount_2026-09-04` verified that directly with `--tree=caller` (the
+kernel's only C callers are `hadamard_path`, `full_loop_core`,
+`perform_tx_partitioning`, `search_best_mds3_uv_mode` and the two
+`pick_partition_pd0` variants). That was HEADLINE #2 of that record and item A
+of `callcount_realimg_2026-09-04`'s ranked list, where the ratio was measured
+to GROW with texture: 1.383x on the synthetic gradient, 2.143x on this photo,
+2.184x on a CLIC glitter image — because the ratio IS the mean number of
+tx-type trials per TXB.
+
+=================== THE PORT ===================
+
+`tx_unit_inner` opened by calling `residual::residual_i32` unconditionally, so
+`txt_search`'s group loop re-derived the same subtraction once per admitted
+trial. `src`, `pred`, `src_stride`, `w` and `h` are all loop-invariant across
+that loop — the residual cannot depend on `tx_type` — so the fix is exactly the
+shape the record named: `txt_search` fills one buffer before the loop and hands
+the same slice to every trial through a new `pre_residual: Option<&[i32]>`
+argument. The buffer is a third field of the per-thread `TxtScratch` that this
+chunk's predecessor introduced for the two output slots, so it costs no
+allocation after warmup; `None` restores the per-call derivation into
+`TxScratch`'s own buffer, which is what every single-shot call site wants (MDS1,
+chroma, CfL, the owned-output wrapper) and what C's `perform_dct_dct_tx` and
+`full_loop_uv` likewise do.
+
+It is applied only on the multi-candidate (`!only_dct`) path — a one-candidate
+search has nothing to share a residual WITH, and leaving that path untouched is
+also what keeps the preset-13 video/inter arm allocation-identical, for the
+reason `txout_cshape_2026-09-05` measured the hard way.
+
+BYTE IDENTITY IS STRUCTURAL, not empirical: the values written are the same
+integer subtraction of the same two buffers, computed once instead of k times.
+The two positive controls confirm no second-order effect — `fwd_txfm2d_dispatch`
+4,256,724 = 4,256,724 and `optimize_b` 2,854,762 = 2,854,762, i.e. the SEARCH
+BREADTH and the RDOQ work are bit-for-bit the same amount of work; only the
+subtractions went away.
+
+=================== THE NUMBERS ===================
+
+Ir, photo_cid 512x512 qp 40, r7900x callgrind (base0 -> base1 -> cand, C):
+    p2  48,432,763,259 -> 47,476,521,985 -> 46,437,222,163   C 27,248,547,183
+        this chunk -1,039,299,822 (-2.19 %); both chunks -1,995,541,096 (-4.12 %)
+        port/C 1.777 -> 1.742 -> 1.704
+    p6   1,657,133,167 ->  1,647,475,456 ->  1,636,935,287   C    705,588,227
+        this chunk -10,540,169 (-0.64 %); both chunks -20,197,880 (-1.22 %)
+        port/C 2.349 -> 2.335 -> 2.320
+
+The edge, photo_cid 512 p2: `residual::residual_i32` 4,256,724 -> 1,307,794
+against C's `svt_aom_residual_kernel` 1,986,776 — port/C 2.142x -> **0.658x**,
+i.e. the port now derives the residual FEWER times than C does (C reaches the
+same symbol from its chroma, MDS0-hadamard and PD0 paths, which the port does
+not route through `residual_i32`). Allocator totals and `memset` are unchanged
+from the previous commit (15,142,201 and 18.03 M), as expected: this chunk
+moves no allocation.
+
+Wall clock, r7900x, 15 interleaved paired rounds, neither side niced, box
+quiet. ratio = cand/base, speedup = base/cand, every row byte-identical:
+
+  against base1 (THIS chunk alone):
+    content    size preset  n  base_ms   cand_ms   ratio   speedup  p25     p75
+    photo_cid  512  2      15  2396.349  2357.913  0.9847  1.016x   0.9803  0.9853
+    photo_cid  512  6      15    81.003    80.337  0.9942  1.006x   0.9888  0.9956
+    gradient   256  2      15   205.631   199.661  0.9714  1.029x   0.9688  0.9722
+    gradient   512  2      15   455.388   444.664  0.9773  1.023x   0.9751  0.9787
+    gradient   256  6      15    10.466    10.344  0.9971  1.003x   0.9805  1.0011
+    gradient   512  6      15    33.871    33.756  0.9946  1.005x   0.9918  0.9979
+    gradient   256 10      15     1.399     1.408  1.0038  0.996x   0.9864  1.0128
+    gradient  512 10       15     6.401     6.445  1.0065  0.994x   0.9988  1.0114
+  against base0 (BOTH chunks):
+    photo_cid  512  2      15  2460.032  2360.369  0.9600  1.042x   0.9589  0.9612
+    photo_cid  512  6      15    81.397    80.531  0.9908  1.009x   0.9858  0.9923
+
+The two p10 rows are the `only_dct` path, which this chunk does not touch; both
+spans straddle or sit just above 1.0 and they are reported as the nulls they
+are. Note the gradient gains MORE than the photo here (1.029x / 1.023x at p2
+against 1.016x) while the allocator chunk gained LESS on the gradient — the two
+mechanisms have opposite content dependence, which is exactly what
+`callcount_realimg_2026-09-04` predicted: the allocator ratio grows with texture
+(1,339x -> 9,292x) while the residual ratio is a per-TXB trial count that is
+high on both (1.38x gradient, 2.14x photo) and cheaper to remove where the frame
+is smaller.
+
+Memory, x86_64 (r7900x, `mem_peak.sh`, median of 5, base0 -> base1 -> cand):
+    1280 still    29,112 -> 29,612 -> 29,776 KiB
+    1280 videokey 34,696 -> 34,700 -> 34,580
+    1280 inter    45,648 -> 45,092 -> 47,032
+    2048 still    68,792 -> 68,620 -> 68,868
+    2048 videokey 77,944 -> 77,860 -> 77,740
+    2048 inter   109,268 -> 109,584 -> 104,340
+  peak HEAP (heaptrack, LIVE bytes): 2048 still 61.07 -> 61.07 -> 61.07 M,
+    2048 inter 101.78 -> 101.78 -> 101.78 M — IDENTICAL at every step. The one
+    new retained buffer is the `TxtScratch` residual, at most 4,096 i32 =
+    16 KiB per thread, and it is only touched on the multi-candidate path,
+    which preset 13 never takes.
+Memory, aarch64 (this Mac, `mem_peak.sh`, median of 5, base0 -> base1 -> cand):
+    1280 still 28,176 -> 28,176 -> 28,224 KiB, videokey 33,184 -> 33,280 ->
+    33,264, inter 55,328 -> 55,328 -> 54,464; 2048 still 72,480 -> 72,528 ->
+    72,576, videokey 87,616 -> 87,760 -> 87,696, inter 142,096 -> 142,256 ->
+    142,064. And the interleaved form on the one cell whose auto-thread spread
+    is 8-15 %, `mem_bisect.sh` with all three binaries round-robin in ONE run,
+    15 rounds, 2048 inter: median 142,112 -> 142,144 -> **140,080** KiB, min
+    140,144 -> 140,144 -> 139,968. This chunk is the first of the two to move
+    that cell at all, and it moves it DOWN.
+
+=================== GATES ===================
+
+aarch64 (this Mac, /opt/homebrew/bin/bash, one harness at a time):
+  `cargo nextest run --workspace` 2530/2530, `regression_spotcheck` 104/104,
+  `identity_full_8bit` 1100/1100 (+0 pinned, 0 harness errors), `inter_byte_gate`
+  PASS (96 required, 0 failed, 1 known-open, 0 crashed), `video_key_matrix`
+  59/60 (the known-open `gradient p0`, 1341 vs 1342 B, unmoved), `fctx_gate`
+  PASS (96/96 shared fields on both frames), `inter_decode_gate` 5/5 PASS,
+  `inter_decode_census` 96/96 PASS, `inter_completion_scan` with `SCAN_GATE=1`
+  64 OK / 0 REFUSED / 0 CRASH PASS, `screen_palette_gate` 50/50 byte-identical
+  (38 palette-coding cells).
+x86_64 (r7900x, same tree): nextest 2540/2540, `regression_spotcheck` 104/104,
+  `identity_full_8bit` 1100/1100, `inter_byte_gate` PASS (96/0/1).
+Every callgrind cell: identity pre-pass `cmp`-identical AND each instrumented
+run's own .obu `cmp`'d against it — 46,462 B at p2, 45,688 B at p6, both sides.
+
+=================== WHAT IS AND IS NOT ESTABLISHED ===================
+
+ESTABLISHED: the Ir and call counts above on byte-identical cells with two
+positive controls that did not move; the wall clock on the two contents and
+sizes listed, at 15 paired rounds each; that the heap is unmoved.
+NOT ESTABLISHED: any preset but 2 / 6 / 10, any qp but 40, any size but 256 and
+512 (photo: 512 only), 10-bit (the bd10 twin `tx_unit_hbd_screened` still
+derives its own residual per trial — it is a separate buffer at a different bit
+depth and was deliberately left alone), and the inter/video arm's wall clock.

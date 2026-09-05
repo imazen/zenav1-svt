@@ -183,7 +183,12 @@ pub(super) fn txt_search(
     // `cur`, a new best swaps `cur` and `bst` (C's `best_tx_type` index), and
     // the winner is materialised into an owned `Vec` ONCE per transform unit
     // instead of once per trial.
-    tx_pipeline::with_txt_out(move |cur, bst| {
+    tx_pipeline::with_txt_out(move |txs| {
+        let tx_pipeline::TxtScratch {
+            cur,
+            bst,
+            residual: res_buf,
+        } = txs;
         // WHICH BUFFER A TRIAL WRITES INTO. C picks per tx type
         // (`product_coding_loop.c:4723-4725`): `(tx_type == DCT_DCT) ?
         // cand_bf->recon : ctx->recon_ptr[tx_type]`, and the same for
@@ -211,6 +216,27 @@ pub(super) fn txt_search(
         // the memory axis and not just tidiness. Never touched at all on the
         // pooled path, and therefore never allocated there.
         let mut owned = tx_pipeline::TxOutBufs::default();
+        // C's `cand_bf->residual->y_buffer`: `perform_tx_partitioning` fills it
+        // ONCE per (tx-depth, TXB) with `svt_aom_residual_kernel`
+        // (`product_coding_loop.c:5336`) and every tx-type trial transforms
+        // that buffer — `tx_type_search` has no call-graph edge into the
+        // residual kernel at any preset (`callcount_2026-09-04`'s HEADLINE #2).
+        // `src`, `pred` and the dims are all invariant across the group loop
+        // below, so this is the same subtraction the per-trial form did, done
+        // once. Only on the multi-candidate path: a one-candidate search has
+        // nothing to share it with, and the per-call derivation writes into the
+        // `TxScratch` buffer it already owns.
+        let shared_residual: Option<&[i32]> = if only_dct {
+            None
+        } else {
+            let n = w * h;
+            if res_buf.len() < n {
+                res_buf.resize(n, 0);
+            }
+            let r = &mut res_buf[..n];
+            svtav1_dsp::residual::residual_i32(&src[src_off..], src_stride, pred, w, w, h, r);
+            Some(&*r)
+        };
         // The bd10 twin of the SELECTED type (not of the u8-best type): when the
         // bd10 context is present the winner is chosen by the 10-bit cost, so both
         // outputs must come from the same tx_type.
@@ -375,6 +401,7 @@ pub(super) fn txt_search(
                             true,
                             rate_mode,
                             s,
+                            shared_residual,
                             target,
                         )
                     };

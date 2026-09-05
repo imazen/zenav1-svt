@@ -230,48 +230,54 @@ impl TxScratch {
     }
 }
 
-// The tx-type search's two output slots, per thread.
-//
-// C keeps `TX_TYPES` of them (`ctx->quant_coeff_ptr[]` / `recon_ptr[]`,
-// `md_process.c:585-600`) because it indexes by `txt_itr`; the port only ever
-// needs the CURRENT trial and the BEST so far, so two suffice and a
-// `mem::swap` on a new best does what C's `best_tx_type` index does.
-#[cfg(feature = "std")]
-std::thread_local! {
-    static TXT_OUT: core::cell::RefCell<(TxOutBufs, TxOutBufs)> =
-        const { core::cell::RefCell::new((
-            TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
-            TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
-        )) };
+/// The per-thread state one `txt_search` needs: the CURRENT trial's output
+/// slot, the BEST trial's, and the one residual every trial transforms.
+///
+/// C keeps `TX_TYPES` output slots (`ctx->quant_coeff_ptr[]` / `recon_ptr[]`,
+/// `md_process.c:585-600`) because it indexes by `txt_itr`; the port only ever
+/// needs the current trial and the best so far, so two suffice and a
+/// `mem::swap` on a new best does what C's `best_tx_type` index does. The
+/// residual is C's `cand_bf->residual->y_buffer`, which
+/// `perform_tx_partitioning` fills ONCE per (tx-depth, TXB) at
+/// `product_coding_loop.c:5336` and every tx-type trial then transforms
+/// (`svt_aom_estimate_transform` reads it at `:4730`).
+#[derive(Default)]
+pub(super) struct TxtScratch {
+    pub(super) cur: TxOutBufs,
+    pub(super) bst: TxOutBufs,
+    pub(super) residual: Vec<i32>,
 }
 
-/// Run `f` over the per-thread (current, best) tx-type output slots.
+#[cfg(feature = "std")]
+std::thread_local! {
+    static TXT_OUT: core::cell::RefCell<TxtScratch> =
+        const { core::cell::RefCell::new(TxtScratch {
+            cur: TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
+            bst: TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
+            residual: Vec::new(),
+        }) };
+}
+
+/// Run `f` over the per-thread [`TxtScratch`].
 ///
 /// `try_borrow_mut` + closure hand-back, the same contract as
 /// [`tx_unit_screened_into`]'s `TX_SCRATCH` borrow: a re-entrant caller gets
 /// fresh buffers rather than a panic.
-pub(super) fn with_txt_out<R>(f: impl FnOnce(&mut TxOutBufs, &mut TxOutBufs) -> R) -> R {
+pub(super) fn with_txt_out<R>(f: impl FnOnce(&mut TxtScratch) -> R) -> R {
     #[cfg(feature = "std")]
     {
         let taken = TXT_OUT.with(move |cell| match cell.try_borrow_mut() {
-            Ok(mut pair) => {
-                let (a, b) = &mut *pair;
-                Ok(f(a, b))
-            }
+            Ok(mut sc) => Ok(f(&mut sc)),
             Err(_) => Err(f),
         });
         match taken {
             Ok(r) => r,
-            Err(f) => {
-                let (mut a, mut b) = (TxOutBufs::default(), TxOutBufs::default());
-                f(&mut a, &mut b)
-            }
+            Err(f) => f(&mut TxtScratch::default()),
         }
     }
     #[cfg(not(feature = "std"))]
     {
-        let (mut a, mut b) = (TxOutBufs::default(), TxOutBufs::default());
-        f(&mut a, &mut b)
+        f(&mut TxtScratch::default())
     }
 }
 
@@ -545,6 +551,10 @@ pub(super) fn tx_unit_screened(
         need_recon,
         rate_mode,
         screen,
+        // The owned-output sites are single-shot: there is no tx-type loop
+        // above them to share a residual across, so each derives its own,
+        // exactly as C's `perform_dct_dct_tx` / `full_loop_uv` do.
+        None,
         &mut bufs,
     )?;
     // `bufs` started empty, so each buffer was allocated exactly once, at its
@@ -593,6 +603,7 @@ pub(super) fn tx_unit_screened_into(
     need_recon: bool,
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
+    pre_residual: Option<&[i32]>,
     out: &mut TxOutBufs,
 ) -> Option<TxUnitMeta> {
     // Borrow the per-thread scratch (see [`TxScratch`]). `try_borrow_mut`
@@ -631,6 +642,7 @@ pub(super) fn tx_unit_screened_into(
                 need_recon,
                 rate_mode,
                 screen,
+                pre_residual,
                 out,
             )),
             Err(_) => Err(screen),
@@ -665,6 +677,7 @@ pub(super) fn tx_unit_screened_into(
         need_recon,
         rate_mode,
         screen,
+        pre_residual,
         out,
     )
 }
@@ -694,6 +707,7 @@ pub(super) fn tx_unit_inner(
     need_recon: bool,
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
+    pre_residual: Option<&[i32]>,
     out: &mut TxOutBufs,
 ) -> Option<TxUnitMeta> {
     let (crop_w, crop_h) = crop;
@@ -715,21 +729,38 @@ pub(super) fn tx_unit_inner(
         inv,
         dqcoeff: dqcoeff_buf,
     } = sc;
-    if residual.len() < n {
-        residual.resize(n, 0);
-    }
-    let residual = &mut residual[..n];
-    // Every element is written by the kernel, so no zero-fill is needed and
-    // the reused buffer cannot leak a previous TU's values.
-    svtav1_dsp::residual::residual_i32(
-        &src[src_off..],
-        src_stride,
-        &pred[pred_off..],
-        pred_stride,
-        w,
-        h,
-        residual,
-    );
+    // C derives the residual ONCE per (tx-depth, TXB) —
+    // `perform_tx_partitioning`'s `svt_aom_residual_kernel` at
+    // `product_coding_loop.c:5336`, into `cand_bf->residual->y_buffer` — and
+    // every tx-type trial then transforms THAT buffer
+    // (`svt_aom_estimate_transform` reads it at `:4730`; `tx_type_search` has
+    // no edge into the residual kernel at all). `pre_residual` is that shared
+    // buffer: `txt_search` fills it once before its group loop and hands the
+    // same slice to every trial. `None` restores the per-call derivation, which
+    // is what a single-shot call site (MDS1, chroma, CfL, the owned-output
+    // wrapper) wants — C's `perform_dct_dct_tx` and `full_loop_uv` likewise
+    // derive their own.
+    let residual: &[i32] = match pre_residual {
+        Some(r) => &r[..n],
+        None => {
+            if residual.len() < n {
+                residual.resize(n, 0);
+            }
+            let r = &mut residual[..n];
+            // Every element is written by the kernel, so no zero-fill is needed
+            // and the reused buffer cannot leak a previous TU's values.
+            svtav1_dsp::residual::residual_i32(
+                &src[src_off..],
+                src_stride,
+                &pred[pred_off..],
+                pred_stride,
+                w,
+                h,
+                r,
+            );
+            &*r
+        }
+    };
     let coeffs = TxScratch::zeroed(coeffs, n);
     // Coded-lossless (issue #5): C `svt_av1_estimate_transform`
     // (transforms.c:3950-3963) takes the 4x4 Walsh-Hadamard instead of the
