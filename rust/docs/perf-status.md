@@ -1,5 +1,159 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **A SECOND BASELINE ON A SECOND ISA: x86_64 ZEN 4 UNDER WSL2 (`lilith`),
+> TREE `7ec5b5572` — still 1.99x / videokey 1.91x / inter 2.25x SLOPE AT p8,
+> photo_cid 512² still 1.500x at p2 / 1.754x at p6, p2/p6 GRADIENT SLOPES
+> 1.81x–2.36x, EVERY GRADIENT p8 CELL ident=Y, AND IT IS NOT COMPARABLE TO
+> THE aarch64 POSITION BELOW OR TO THE r7900x CALLGRIND RATIOS
+> (2026-09-05).** Records
+> `benchmarks/perf_2026-09-05-lilith1-{still,videokey,inter}.*`,
+> `perf_2026-09-05-lilith1-photo-{still,videokey,inter}.*`, the same-binary
+> controls `perf_2026-09-05-lilith1-ctl-{gradient,photo}.*`, the quiet-box
+> log `perf_2026-09-05-lilith1-quiet.txt`, and the assembled
+> `perf_2026-09-05-lilith1-POSITION.meta`. Driven by the new
+> `tools/perf_position.sh` (six arms + controls + sampler in one script, so
+> the arm10 hand-typed recipe is no longer the way to reproduce a position).
+> Host: AMD Ryzen 9 7950X (Zen 4, 16C/32T), kernel
+> `6.18.33.2-microsoft-standard-WSL2`, **a VM** pinned to 24 GB RAM + 8 GB
+> swap by `.wslconfig` (23 GiB visible; swap stayed at 0). 25 interleaved
+> paired rounds, gradient qp 40, no `-C target-cpu=native`, C oracle rebuilt
+> by cargo on this box from the pinned `3115c0c1b` with
+> **`ENABLE_AVX512=ON`** — so C runs AVX-512 kernels here while the port's
+> x86 tiers stop at `v4` (AVX2, 30 sites) and `v3` (124 sites) **at this
+> tree** — `373243b7`, which landed on `main` while this run was in flight,
+> adds the port's first AVX-512 tier (one LR kernel, its own A/B in the block
+> below) and is NOT measured here. On the Mac both sides run NEON; here they
+> do not share a top tier, and nothing in this block prices how much of the
+> gap that is.
+>
+> **This is a NEW baseline, not a re-measurement of arm10.** The eight-plus
+> chunks that landed between `41e5d8f1` and `7ec5b5572` have their own paired
+> A/Bs; a cross-ISA, cross-host, cross-VM comparison of two position tables
+> would attribute silicon and hypervisor differences to code, so **no "delta
+> vs arm10" is computed and none should be read off these two tables.** The
+> aarch64 position still needs its own re-run on the Mac to close the
+> "not re-measured since arm10" gap in `CONTEXT-HANDOFF.md` §3.
+>
+> | preset 8, gradient qp 40, port/C | 64 | 128 | 256 | 512 | slope ratio | intercept (port / C) |
+> |---|---|---|---|---|---|---|
+> | still | 0.409x | 0.864x | 1.691x | 1.854x | **1.99x** | 0.031 ms / 0.385 ms |
+> | videokey | 0.727x | 1.281x | 1.892x | 1.805x | **1.91x** | -0.754 ms / 0.146 ms |
+> | inter | 1.319x | 1.621x | 2.214x | 2.198x | **2.25x** | -0.641 ms / 0.192 ms |
+>
+> Slopes, `ms = intercept + slope · pixels`: still port 46.2039 / C 23.2323
+> ms/MP; videokey 200.5278 / 105.1891; inter 268.7673 / 119.2947. Per-cell
+> p25/p75 on the ratio: still 512 [1.811, 1.912], videokey 512 [1.765, 1.879],
+> inter 512 [2.172, 2.290]; the widest is videokey 256 [1.745, 1.936].
+>
+> **THE INTERCEPT STORY IS LARGER HERE THAN ON THE MAC.** C's fixed per-frame
+> cost on the still arm is **0.385 ms** (vs the port's 0.031), and at 64² the
+> port is **0.41x** of C — 2.4x faster — with 128² still under parity (0.86x).
+> On the video arms the fit again returns negative port intercepts (the four
+> sizes do not resolve a fixed cost), so the 64² cells (0.73x / 1.32x) are the
+> honest small-frame statement. A single slope number hides all of that.
+>
+> **PRESETS 2 AND 6 ON GRADIENT TOO** (`benchmarks/perf_2026-09-05-lilith1-p26-*`,
+> same grid, same rounds, run right after the p8 arms with one `s5cmd` still
+> live; every cell ident=Y except the one named below), ratio per cell and
+> the fit per preset:
+>
+> | gradient qp 40, port/C | 64 | 128 | 256 | 512 | slope ratio | intercept (port / C) |
+> |---|---|---|---|---|---|---|
+> | still p2 | 1.520x | 1.698x | 1.751x | 1.937x | **1.98x** | 46.150 ms / 30.454 ms |
+> | still p6 | 0.878x | 1.372x | 1.679x | 1.888x | **1.88x** | 0.687 ms / 0.898 ms |
+> | videokey p2 | 1.662x | 1.756x | 1.754x | 1.898x | **1.91x** | 40.945 ms / 27.864 ms |
+> | videokey p6 | 1.025x | 1.569x | 1.721x | 1.955x | **1.99x** | 1.302 ms / 2.111 ms |
+> | inter p2 | 1.845x | 1.830x | 1.811x | (1.987x, ident=**N** — excluded) | **1.81x** (3 sizes) | -12.624 ms / -7.317 ms |
+> | inter p6 | 1.475x | 1.890x | 1.997x | 2.332x | **2.36x** | 1.003 ms / 1.928 ms |
+>
+> Slopes (ms/MP, port / C): still p2 1820.5643 / 918.2591, p6 140.7615 /
+> 74.9033; videokey p2 3590.9214 / 1882.3774, p6 438.5833 / 220.0585; inter
+> p2 6049.3084 / 3347.1147 (fit over 64/128/256 only), p6 589.3731 /
+> 249.3398. **The worst slope on this box is inter p6 at 2.36x**, and the
+> inter arm is the one where the ratio still climbs with size at 512². **Read the p2 intercepts as a model failure, not a fixed
+> cost:** 64² p2 still costs 20.671 ms (port) / 13.589 ms (C) — about 5 µs/px
+> against ~1.9 µs/px at 512² — so cost per pixel falls steeply with size at
+> p2 and a straight line through four sizes lands its intercept at tens of
+> ms on BOTH sides. At p2 the port is **not** faster than C at any size
+> (1.52x at 64²); the below-parity small-frame cells exist only on the
+> p6/p8 tiers (p6 still 64² 0.878x, videokey 64² 1.025x). **New byte
+> finding: gradient 512² p2 INTER is ident=N** at `7ec5b5572` — 512 lies
+> outside the {16,64,128,256} × p0–p4 band §1z⁴¹ closed, so this is a
+> previously unobserved cell, not a regression claim. Run once more by hand
+> and compared per frame: **frame 0 IDENTICAL (19,211 B both), frame 1
+> DIFFERS — port 37 B, C 38 B.** That is an inter-frame divergence proper,
+> one byte, the same shape as the grid's `diag 128 q20 p8` F1DIFF cell; it is
+> the byte axis's to own (`tools/identity_diff_inter.sh 512 512 40 2 gradient`
+> with the inter env exported is the debugger).
+>
+> **REAL CONTENT — photo_cid 512² (CID22-512 `3571065.png`, sha256(.yuv)
+> `88142a48…3ca4a72f`, regenerated on THIS box by `identity_run crop:` and
+> `cmp`-identical to the Mac file), n=25, ratio [p25, p75]:**
+>
+> | photo_cid 512, port/C | p2 | p6 |
+> |---|---|---|
+> | still | **1.500x** [1.481, 1.507] | **1.754x** [1.699, 1.770] |
+> | videokey | (1.561x, ident=**N** — excluded) | **1.571x** [1.531, 1.601] |
+> | inter | (1.758x, ident=**N** — excluded; **ENCODES now**, was REFUSED at arm10) | **1.645x** [1.600, 1.686] |
+>
+> Absolute ms, port / C: still p2 2702.345 / 1798.326, p6 85.970 / 49.082;
+> videokey p2 1603.287 / 1022.173 (N), p6 248.843 / 160.121; inter p2
+> 1879.592 / 1072.137 (N), p6 271.069 / 163.884. Gradient overstates the gap
+> on this ISA too: photo p6 still 1.754x against gradient p8 still 1.854x at
+> the same 512², and the video arms again come out BETTER than still on real
+> content (1.571x / 1.645x vs 1.754x). One size means no fit on this arm;
+> nothing here is extrapolated to another size.
+>
+> Two cells are byte findings, not results, and both are the arm10 findings
+> re-observed on x86 at `7ec5b5572`: **photo p2 VIDEOKEY is still ident=N**
+> (the video-mode key frame at preset 2 on this image; still-mode p2 and
+> videokey p6 are identical) — and because the inter arm's per-frame compare
+> stops at the first differing frame, **photo p2 INTER is ident=N by frame 0**
+> (re-run by hand: frame 0 port 117,173 B vs C 117,167 B; frame 1 then 32 vs
+> 37 B, which says nothing on its own because it predicts from a different
+> reconstruction). What changed since arm10 is
+> that the p2 inter cell now produces a timing at all (25/25 rounds, zero
+> ERR) where arm10 recorded a clean REFUSAL — the global-motion landing
+> (§1z⁴¹–⁴²) lifted it.
+>
+> **THE INTER FRAME'S OWN COST, BY THE HARNESS'S DIFFERENCING METHOD (N=2
+> minus N=1, medians), IS WHERE THE PORT IS FURTHEST FROM C.** Gradient 512²
+> p8: port 70.230 − 52.067 = **18.16 ms** against C 31.717 − 27.934 =
+> **3.78 ms**; photo p6: port 271.069 − 248.843 = 22.23 ms against C
+> 163.884 − 160.121 = 3.76 ms. Those are differences of medians whose own
+> p25/p75 spread is of the same order as C's difference (gradient 512 p8
+> absolute ms, port videokey [49.145, 52.506] / inter [68.995, 70.649], C
+> videokey [27.095, 28.623] / inter [30.775, 32.176]), so the C-side inter
+> cost is not resolved here beyond "a few ms" — but the port's 18 ms is
+> resolved to ±~2 ms, and a 4–6x on the inter frame alone sits under the
+> 2.2x / 1.6x whole-sequence ratios. The same subtraction on the Mac arm10 record reads
+> 11.16 vs 3.30 ms. Nothing here is a projection.
+>
+> **JITTER: THIS BOX CANNOT RESOLVE A CHUNK-SIZED A/B AT p8 GRADIENT, AND IT
+> SAYS SO ITSELF.** Same-binary `perf_ab.sh` controls (port vs a byte-identical
+> copy, 21 rounds, in this session, on this box): gradient 64² p8 **0.9940
+> [0.853, 1.096]**, 512² p8 **0.9967 [0.938, 1.046]** — the familiar 0.3–0.6 %
+> floor bias against the candidate slot, but with **12 of 21 rounds outside
+> ±5 % at 512² (range 0.918–1.131) and 13 of 21 at 64² (0.648–1.291)**. The
+> Mac's same control reads ±0.4 %. Two causes are confounded and were NOT
+> separated: WSL2's hypervisor scheduling, and a sibling lane's `s5cmd` R2
+> sync (pid 42382, ~15 % of one thread, RSS wandering 1.0–2.7 GB) that ran the
+> whole session and was not killed because it was another lane's live work.
+> The long photo encodes average the jitter out — photo control p2 **1.0031
+> [0.986, 1.019]**, p6 **0.9986 [0.969, 1.008]** — so the 512² photo cells are
+> trustworthy to ~±2 %, and a 2x position is far outside any of it; but a
+> sub-5 % per-cell claim from this box needs its own control and more than
+> 21 rounds, and nothing under ~1 % should be claimed here at all.
+>
+> **NOT ESTABLISHED:** attribution of anything to any landing; any size above
+> 512; any content but gradient and photo_cid; the AVX-512 share of the gap;
+> the aarch64 position on the tip; hardware counters on this host —
+> `/usr/bin/perf` here is only Ubuntu's version-dispatch wrapper and the
+> kernel-specific `linux-tools-6.18.33.2-microsoft-standard-WSL2` binary
+> behind it does not exist, so `perf stat` cannot run at all (checked), and
+> valgrind is 3.18.1, which cannot execute AVX-512 — neither an Ir nor a
+> cycle count for C's real kernels is obtainable on this box.
+
 > **THE PORT'S FIRST AVX-512 TIER, SPENT ON A KERNEL THAT HAD NO VECTOR ARM AT
 > ALL — 52.78x C's INSTRUCTIONS -> 12.68x, AND 1.029x / 1.051x / 1.034x WALL
 > CLOCK ON photo_cid / screen_terminal / gradient AT p6 (2026-09-05).** Record

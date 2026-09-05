@@ -1,0 +1,7 @@
+# perf_gate summary — port vs C per-frame encode wall time (byte-identical envelope)
+# commit=7ec5b55  host=lilith  cores=32  date=2026-09-05T20:06:34Z
+# content=raw:/home/lilith/tmp/pos-lilith/yuv/photo_cid.yuv sizes=[512] presets=[2 6] qp=40 rounds=25 warmup=1 frames=2 shift=3 video=1
+# ratio = port/C (median of per-round paired ratios); target <= ~1.2x. ident=Y means byte-identical (apples-to-apples).
+size	preset	ident	n	port_ms	c_ms	ratio	ratio_p25	ratio_p75
+512	2	N	25	1879.592	1072.137	1.758	1.720	1.771
+512	6	Y	25	271.069	163.884	1.645	1.600	1.686

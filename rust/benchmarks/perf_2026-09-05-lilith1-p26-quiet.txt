@@ -1,0 +1,220 @@
+# perf_position quiet log — suffix=2026-09-05-lilith1-p26 host=lilith 6.18.33.2-microsoft-standard-WSL2 32 cores
+MemTotal:       24604380 kB
+MemAvailable:   22094008 kB
+model name	: AMD Ryzen 9 7950X 16-Core Processor
+--- BEFORE still  2026-09-05T20:08:26Z
+ 14:08:26 up  1:50,  1 user,  load average: 1.76, 2.85, 2.60
+    PID %CPU %MEM COMMAND
+  71978 17.6  2.2 s5cmd
+  83847  1.0  0.0 sshd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+--- DURING still  2026-09-05T20:08:41Z
+ 14:08:41 up  1:50,  1 user,  load average: 1.89, 2.82, 2.60
+    PID %CPU %MEM COMMAND
+  84682 42.0  0.0 perf_encode
+  71978 17.4  2.5 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+--- DURING still  2026-09-05T20:08:56Z
+ 14:08:56 up  1:51,  1 user,  load average: 1.91, 2.78, 2.59
+    PID %CPU %MEM COMMAND
+  85001 46.0  0.0 perf_encode
+  71978 17.3  2.9 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+--- DURING still  2026-09-05T20:09:11Z
+ 14:09:11 up  1:51,  1 user,  load average: 2.09, 2.77, 2.59
+    PID %CPU %MEM COMMAND
+  71978 17.3  3.2 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING still  2026-09-05T20:09:26Z
+ 14:09:26 up  1:51,  1 user,  load average: 2.07, 2.74, 2.58
+    PID %CPU %MEM COMMAND
+  71978 17.2  3.2 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- AFTER still  2026-09-05T20:09:37Z
+ 14:09:37 up  1:51,  1 user,  load average: 2.13, 2.72, 2.57
+    PID %CPU %MEM COMMAND
+  71978 17.2  3.3 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- BEFORE videokey  2026-09-05T20:09:37Z
+ 14:09:37 up  1:51,  1 user,  load average: 2.13, 2.72, 2.57
+    PID %CPU %MEM COMMAND
+  71978 17.2  3.3 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:09:52Z
+ 14:09:52 up  1:52,  1 user,  load average: 2.10, 2.68, 2.56
+    PID %CPU %MEM COMMAND
+  71978 17.1  3.6 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:10:07Z
+ 14:10:07 up  1:52,  1 user,  load average: 2.23, 2.68, 2.57
+    PID %CPU %MEM COMMAND
+  71978 17.0  3.9 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:10:22Z
+ 14:10:22 up  1:52,  1 user,  load average: 2.25, 2.66, 2.56
+    PID %CPU %MEM COMMAND
+  71978 17.0  4.3 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:10:37Z
+ 14:10:37 up  1:52,  1 user,  load average: 2.27, 2.65, 2.56
+    PID %CPU %MEM COMMAND
+  71978 16.9  4.6 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:10:52Z
+ 14:10:52 up  1:53,  1 user,  load average: 2.29, 2.63, 2.55
+    PID %CPU %MEM COMMAND
+  71978 16.9  4.7 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:11:07Z
+ 14:11:07 up  1:53,  1 user,  load average: 2.30, 2.62, 2.55
+    PID %CPU %MEM COMMAND
+  71978 16.9  4.7 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:11:23Z
+ 14:11:23 up  1:53,  1 user,  load average: 2.24, 2.59, 2.54
+    PID %CPU %MEM COMMAND
+  71978 16.8  4.8 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING videokey  2026-09-05T20:11:38Z
+ 14:11:38 up  1:53,  1 user,  load average: 2.34, 2.59, 2.54
+    PID %CPU %MEM COMMAND
+  71978 16.8  5.1 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- AFTER videokey  2026-09-05T20:11:46Z
+ 14:11:46 up  1:53,  1 user,  load average: 2.29, 2.57, 2.54
+    PID %CPU %MEM COMMAND
+  71978 16.7  5.3 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- BEFORE inter  2026-09-05T20:11:46Z
+ 14:11:46 up  1:53,  1 user,  load average: 2.29, 2.57, 2.54
+    PID %CPU %MEM COMMAND
+  71978 16.7  5.3 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING inter  2026-09-05T20:12:01Z
+ 14:12:01 up  1:54,  1 user,  load average: 2.22, 2.54, 2.53
+    PID %CPU %MEM COMMAND
+  71978 16.7  5.6 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING inter  2026-09-05T20:12:16Z
+ 14:12:16 up  1:54,  1 user,  load average: 2.17, 2.51, 2.52
+    PID %CPU %MEM COMMAND
+  71978 16.6  6.0 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING inter  2026-09-05T20:12:31Z
+ 14:12:31 up  1:54,  1 user,  load average: 2.13, 2.49, 2.51
+    PID %CPU %MEM COMMAND
+  71978 16.6  6.3 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING inter  2026-09-05T20:12:46Z
+ 14:12:46 up  1:54,  1 user,  load average: 2.17, 2.48, 2.51
+    PID %CPU %MEM COMMAND
+  71978 16.6  6.5 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING inter  2026-09-05T20:13:01Z
+ 14:13:01 up  1:55,  1 user,  load average: 2.13, 2.46, 2.50
+    PID %CPU %MEM COMMAND
+  88934  129  0.0 perf_encode
+  71978 16.5  6.5 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+--- DURING inter  2026-09-05T20:13:16Z
+ 14:13:16 up  1:55,  1 user,  load average: 2.10, 2.43, 2.49
+    PID %CPU %MEM COMMAND
+  71978 16.5  6.5 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- DURING inter  2026-09-05T20:13:31Z
+ 14:13:31 up  1:55,  1 user,  load average: 2.16, 2.43, 2.49
+    PID %CPU %MEM COMMAND
+  89088 91.0  0.0 perf_encode
+  71978 16.4  6.6 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+--- DURING inter  2026-09-05T20:13:46Z
+ 14:13:46 up  1:55,  1 user,  load average: 2.12, 2.41, 2.48
+    PID %CPU %MEM COMMAND
+  89240 84.0  0.1 perf_c_encode
+  71978 16.4  6.9 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+--- DURING inter  2026-09-05T20:14:01Z
+ 14:14:01 up  1:56,  1 user,  load average: 2.10, 2.39, 2.47
+    PID %CPU %MEM COMMAND
+  71978 16.4  7.2 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude
+--- AFTER inter  2026-09-05T20:14:07Z
+ 14:14:07 up  1:56,  1 user,  load average: 2.09, 2.38, 2.47
+    PID %CPU %MEM COMMAND
+  71978 16.3  7.3 s5cmd
+  15612  0.7  1.4 claude
+    411  0.5  0.3 tailscaled
+    606  0.5  0.1 moshi-hook
+  11978  0.5  1.4 claude

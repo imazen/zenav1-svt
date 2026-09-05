@@ -119,6 +119,20 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **x86_64 Zen 4 / WSL2 (`lilith`) CPU position at `7ec5b5572` — a second
+  baseline, not comparable to the aarch64 arm10 one** (change `rvxoxoqs`):
+  gradient qp40 slope ratios p8 still 1.99x / videokey 1.91x / inter 2.25x
+  (p2 1.98x / 1.91x / 1.81x; p6 1.88x / 1.99x / 2.36x), photo_cid 512 still
+  1.500x p2 / 1.754x p6, every slope failing 1.25x; the inter frame alone is
+  ~4–6x C by the harness's differencing method. New `tools/perf_position.sh`
+  runs the six arms, the same-binary controls and a quiet-box sampler in one
+  command. Records `rust/benchmarks/perf_2026-09-05-lilith1-*`, assembled in
+  `perf_2026-09-05-lilith1-POSITION.meta`. Byte findings: photo 512 p2
+  videokey still ident=N; photo 512 p2 inter now encodes (was REFUSED) but is
+  ident=N by frame 0; **gradient 512 p2 inter is ident=N at frame 1** (37 vs
+  38 B), a cell outside the §1z⁴¹ band. Host: `/usr/bin/perf` there has no
+  backing binary, valgrind 3.18.1 cannot run AVX-512, and the same-binary
+  control jitters ±5 % per round on short cells (WSL2 + a sibling `s5cmd`).
 - **The port's first AVX-512 tier, and the Wiener convolve's first vector arm on
   any ISA.** `stall_attrib_2026-09-05` found that valgrind masks AVX-512, so
   every callgrind number in the perf campaign priced C's AVX2 arm while the

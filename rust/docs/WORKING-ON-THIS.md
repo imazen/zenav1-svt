@@ -49,6 +49,17 @@ tools/mem_gate.sh 6         # peak RSS, port vs C, tiny -> large
 tools/fp_cross_isa.sh       # transcendentals, this host vs emulated x86-64
 ```
 
+**A full POSITION is one command now — `tools/perf_position.sh <suffix>
+<photo.yuv>`** (2026-09-05): the six arms (gradient 64–512 still / videokey /
+inter, photo_cid 512 p2+p6 in the same three modes), the same-binary
+`perf_ab.sh` controls, and a quiet-box sampler (uptime + top-6 before, every
+15 s during, after each arm), with `POS_GRAD_PRESETS` for extra presets and
+`POS_ARMS` to run a subset. Build under `run-heavy` first; the timed encodes
+are un-niced. The x86_64 baseline it produced on `lilith` (Zen 4 / WSL2) is
+`benchmarks/perf_2026-09-05-lilith1-POSITION.meta` and the top block of
+`docs/perf-status.md`; it is a separate baseline from the aarch64 one and the
+two must not be differenced.
+
 **Wall clock, STILL (2026-08-13, aarch64):** port/C slope 3.77x at p2, 3.22x p6,
 2.74x p10, 2.73x p13 — and the port is FASTER than C below ~64 px on the fast
 presets (0.86-0.90x fixed cost). `docs/perf-status.md` leads with the live table
@@ -640,6 +651,22 @@ under valgrind, so 33.5 MB is ~2.2 % of the frame's INSTRUCTIONS and ~0.2 % of
 its CYCLES. This is the companion to "Ir ranks, wall clock decides": when the
 item at the top of an Ir ranking is `memset`/`memcpy`/`calloc`, **discount it
 before spending a chunk on it**, and never quote its Ir share as a speed-up.
+
+**`lilith` (x86_64 Zen 4) IS A WSL2 VM, AND ITS SAME-BINARY CONTROL JITTERS
+±5 % PER ROUND ON SHORT CELLS.** MEASURED 2026-09-05
+(`benchmarks/perf_2026-09-05-lilith1-ctl-gradient.*`): `perf_ab.sh` port vs a
+byte-identical copy, 21 rounds, read 0.9967 at 512 p8 with a p25/p75 of
+[0.938, 1.046] and 12 of 21 rounds outside ±5 % (0.918–1.131); at 64 p8, 13 of
+21 (0.648–1.291). The Mac's same control is ±0.4 %. A sibling lane's `s5cmd`
+sync was live the whole session and was NOT separated from the hypervisor's
+own scheduling, so treat both as the floor until a clean control exists. Long
+cells average it out (photo 512 p2/p6 controls ±2 %), so position runs and
+real-content cells are fine there; a chunk-sized A/B is not. Three more host
+facts that will bite: `/usr/bin/perf` there is Ubuntu's wrapper with no
+`linux-tools-6.18.33.2-microsoft-standard-WSL2` behind it (`perf stat` cannot
+run), valgrind is 3.18.1 (no AVX-512, which C's oracle there DOES use —
+`ENABLE_AVX512=ON`), and `run-heavy`'s default `--mem 24G` exceeds the VM's
+whole 23 GiB, so always pass `--mem` (12G was used).
 
 **A `until ! pgrep -f <script>` waiter MATCHES ITSELF and never exits.** The
 waiter's own command line contains the pattern, so `pgrep -f` finds it,

@@ -1,0 +1,14 @@
+# perf_gate fit + verdict
+date: 2026-09-05T20:11:46Z
+commit: 7ec5b55
+host: lilith (32 cores)
+content: gradient
+grid: content=gradient sizes=[64 128 256 512] presets=[2 6] qp=40 rounds=25 warmup=1 frames=1 shift=3 video=1
+harness: interleaved paired (randomized per-round order); no target-cpu=native; setup excluded both sides
+target: <= ~1.2x C wall clock (matched preset+qp, byte-identical envelope)
+fits (ms = intercept + slope*pixels):
+  p2   port: intercept=40.945 ms  slope=3590.9214 ms/MP   |   C: intercept=27.864 ms  slope=1882.3774 ms/MP   |   slope-ratio=1.91x  intercept-ratio=1.47x
+  p6   port: intercept=1.302 ms  slope=438.5833 ms/MP   |   C: intercept=2.111 ms  slope=220.0585 ms/MP   |   slope-ratio=1.99x  intercept-ratio=0.62x
+tree: 7ec5b55729a0c25eea52ac9fd0e7815439e114fe (main@origin); host lilith = AMD Ryzen 9 7950X, WSL2 VM (24 GB RAM + 8 GB swap), C oracle ENABLE_AVX512=ON
+quiet-box evidence: benchmarks/perf_2026-09-05-lilith1-p26-quiet.txt
+position record:    benchmarks/perf_2026-09-05-lilith1-POSITION.meta

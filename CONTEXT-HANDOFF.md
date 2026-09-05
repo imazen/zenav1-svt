@@ -97,7 +97,7 @@ boxes at `~/work/zen/codec-corpus` (`CID22/CID22-512`, `gb82`, `gb82-sc`).
 (blob-filtered sparse clone, 2.9 MB, 10 PNGs, asserted) — before 2026-09-05 the
 screen band was guarded by nothing on the runner.
 
-**Two hosts, and the split matters.**
+**Three hosts, and the split matters.**
 
 * **This Mac** (aarch64, M4 Pro): the primary checkout, the gate chains, the
   aarch64 wall-clock and `mem_peak`/`mem_bisect` arms. `/bin/bash` here is 3.2 —
@@ -105,6 +105,13 @@ screen band was guarded by nothing on the runner.
 * **`ssh r7900x`** (x86_64-linux): callgrind (`Ir`), `perf stat`/`perf record`
   hardware counters, `heaptrack`, and the x86 cross-ISA gate leg. Every kernel
   claim is expected on both ISAs.
+* **`ssh lilith`** (x86_64, AMD Ryzen 9 7950X / Zen 4, **WSL2 VM** pinned to
+  24 GB RAM + 8 GB swap): the x86 wall-clock arm, brought up 2026-09-05. Its
+  `/usr/bin/perf` is a wrapper with no backing kernel-tools binary and its
+  valgrind (3.18.1) cannot run AVX-512, so it gives WALL CLOCK ONLY — no
+  counters, no Ir. Its same-binary control jitters ±5 % per round on short
+  cells (`benchmarks/perf_2026-09-05-lilith1-POSITION.meta` §4), so use it for
+  position runs and long cells, not for chunk-sized A/Bs.
 * The oracle: the submodule is `imazen/zenav1-svt-c`; the campaign's base is the
   formerly-detached commit **`3115c0c`**, now preserved as branch
   `oracle-base-hdr-fork`. The working tree on the boxes may sit on
@@ -192,6 +199,23 @@ measured a few chunks earlier and have not been re-read since. Hardware
 counters say the **cycle** gap is 14–25 % smaller than the instruction gap
 (photo p2 1.506×, p6 1.899×) because the port's IPC is *above* C's — so the
 residual is instruction count, not stalls (`benchmarks/stall_attrib_2026-09-05.*`).
+
+**A second baseline on x86_64 (2026-09-05, tree `7ec5b5572`, `lilith`, Zen 4
+under WSL2, 25 rounds, `benchmarks/perf_2026-09-05-lilith1-POSITION.meta`,
+driven by the new `tools/perf_position.sh`):** gradient slope ratios at p8
+**still 1.99× / videokey 1.91× / inter 2.25×** (p2: 1.98× / 1.91× / 1.81×;
+p6: 1.88× / 1.99× / 2.36×), photo_cid 512² still **1.500× at p2 / 1.754× at
+p6**, videokey p6 1.571×, inter p6 1.645×. Every slope fails 1.25×. **It is
+NOT comparable to the aarch64 figures above** — different ISA, host and VM,
+and the C oracle there runs AVX-512 (`ENABLE_AVX512=ON`) while the port at
+`7ec5b5572` had no AVX-512 tier (`373243b7`, landed during the run, adds the
+first, one LR kernel) — so no delta against arm10 exists; the aarch64 position on the
+tip is still unmeasured. The inter frame's own cost by the harness's
+differencing method is ~4–6× C there (gradient 512 p8: port 18.16 ms vs C
+3.78 ms). Byte findings from the run: photo p2 videokey is still ident=N;
+photo p2 inter now ENCODES (was REFUSED at arm10) but is ident=N by frame 0;
+and **gradient 512² p2 inter is ident=N at frame 1** (37 vs 38 B) — a cell
+outside the §1z⁴¹ band, previously unobserved.
 
 ---
 
