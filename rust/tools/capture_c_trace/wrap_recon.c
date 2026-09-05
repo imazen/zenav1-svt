@@ -357,14 +357,30 @@ EbErrorType __wrap_svt_aom_txb_estimate_coeff_bits(
     const char* path = getenv("SVT_CCOST_OUT");
     if (!path || !*path || allow_update_cdf)
         return ret;
+    /* SVT_CCOST_XY="x,y" pins the dump to ONE block origin (pixels) and lifts
+     * the 300-call cap for it, so a block deep in the frame is reachable — the
+     * unpinned form caps at 300 calls, which is the first few superblocks
+     * (2026-09-05: a depth-1-vs-2 IBC tx-depth flip at (32,368) of a 512x512
+     * screenshot was unreachable without it). Pinned lines carry C's
+     * `ctx->tx_depth` / `ctx->txb_itr`, which join against the port's
+     * SVTAV1_TXT_XY `PTXT ... d=<depth> tx=(x,y)` lines. */
+    const char* cost_xy = getenv("SVT_CCOST_XY");
+    int         cost_px = -1, cost_py = -1, cost_pinned = 0;
+    if (cost_xy && *cost_xy) {
+        sscanf(cost_xy, "%d,%d", &cost_px, &cost_py);
+        cost_pinned = 1;
+        if ((int)ctx->blk_org_x != cost_px || (int)ctx->blk_org_y != cost_py)
+            return ret;
+    }
     static int   nlog = 0;
     static FILE* cf   = NULL;
     if (nlog == 0)
         cf = fopen(path, "w");
-    if (cf && nlog < 300) {
+    if (cf && (cost_pinned || nlog < 300)) {
         if (y_eob > 0 && y_txb_coeff_bits)
-            fprintf(cf, "CCOST i=%d plane=0 txs=%d txt=%d eob=%u cost=%llu\n", nlog, (int)txsize, (int)tx_type, y_eob,
-                    (unsigned long long)*y_txb_coeff_bits);
+            fprintf(cf, "CCOST i=%d plane=0 txs=%d txt=%d eob=%u cost=%llu d=%d txb=%d\n", nlog, (int)txsize,
+                    (int)tx_type, y_eob, (unsigned long long)*y_txb_coeff_bits, (int)ctx->tx_depth,
+                    (int)ctx->txb_itr);
         if (cb_eob > 0 && cb_txb_coeff_bits)
             fprintf(cf, "CCOST i=%d plane=1 txs=%d txt=%d eob=%u cost=%llu\n", nlog, (int)txsize_uv, (int)tx_type_uv,
                     cb_eob, (unsigned long long)*cb_txb_coeff_bits);
