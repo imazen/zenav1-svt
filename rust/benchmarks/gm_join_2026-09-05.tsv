@@ -1,0 +1,38 @@
+# C's svt_aom_global_motion_estimation decision vs the port's port_global_me
+# derivation, joined field for field by tools/gm_join_gate.sh.
+#
+# host   : mac (Apple M4 Pro, aarch64-apple-darwin)
+# tree   : the GM-derivation commit on main (see git log for the sha)
+# C side : tools/ctrace-linux/run.sh (docker/colima arm64, generic -O3 build of
+#          reference/svt-av1, NATIVE=OFF, runtime RTCD), SVT_GM_OUT interposer
+#          on the real exported svt_aom_global_motion_estimation.
+# port   : SVTAV1_GMDBG=1, GMPORT line, printed before the refusal.
+# cells  : 2-frame low-delay P (SVT_INTRA_PERIOD=-1 HIER=0 PRED_STRUCT=1),
+#          8-bit 4:2:0, q40.
+# result : 8 cells joined, 0 mismatching fields, 2 cells where C fitted a
+#          NON-IDENTITY (ROTZOOM) model.
+#
+cell	preset	shift	zoom	c_total_me_sad	p_total_me_sad	c_avg	p_avg	c_gm_sbs	p_gm_sbs	c_is_gm_on	p_all_identity	c_wmtype
+gradient 64x64	2	3	1/1	0	0	0	0	1	1	0	1	IDENTITY
+gradient 128x128	0	3	1/1	0	0	0	0	4	4	0	1	IDENTITY
+diag 256x256	2	3	1/1	0	0	0	0	16	16	0	1	IDENTITY
+screen 128x128	4	3	1/1	0	0	0	0	4	4	0	1	IDENTITY
+crop:CID22/3571065 128x128	2	3	1/1	0	0	0	0	4	4	0	1	IDENTITY
+crop:CID22/3571065 256x256	2	3	1/1	0	0	0	0	16	16	0	1	IDENTITY
+crop:CID22/3571065 256x256	2	0	33/32	173616	173616	2	2	12	12	1	0	ROTZOOM
+crop:CID22/3571065 512x512	2	0	9/8	2578922	2578922	9	9	64	64	1	0	ROTZOOM
+#
+# C's fitted models on the two zoom cells (SVT_GM_OUT GMREF lines), recorded so
+# the search port has a target to reproduce before it is wired:
+#   256 z33/32 list0 ref0  wmtype=ROTZOOM wmmat=259072,259072,63494,0,0,63494 abgd=-2048,0,0,-2048
+#   256 z33/32 list1 ref0  wmtype=ROTZOOM wmmat=250880,250880,63558,0,0,63558 abgd=-1984,0,0,-1984
+#   512 z9/8   list0 ref0  wmtype=ROTZOOM wmmat=1850368,1851392,58276,0,0,58276 abgd=-7232,0,0,-7232
+#   512 z9/8   list1 ref0  wmtype=ROTZOOM wmmat=1846272,1862656,58172,22,-22,58172 abgd=-7360,0,0,-7360
+# 63494/65536 = 0.9689 and 58276/65536 = 0.8892; the sampling scales are 32/33 =
+# 0.9697 and 8/9 = 0.8889, so C recovered the synthetic zoom to ~1e-3.
+#
+# Cells where C RUNS the search and still returns IDENTITY (the port refuses
+# these, conservatively — they are what porting compute_global_motion closes):
+#   gradient 16x16 p2  total_me_sad=26112 avg=102 is_gm_on=0
+#   diag     16x16 p2  total_me_sad=26688 avg=104 is_gm_on=0
+#   screen   16x16 p2  total_me_sad=4788  avg=18  is_gm_on=0

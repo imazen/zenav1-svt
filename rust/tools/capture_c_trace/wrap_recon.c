@@ -89,6 +89,7 @@
 #include "motion_estimation.h"
 #include "mcomp.h"
 #include "rc_process.h"
+#include "global_me.h"
 
 void __real_svt_av1_loop_filter_init(PictureControlSet* pcs);
 void __real_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, PictureControlSet* pcs, int32_t plane_start,
@@ -2161,4 +2162,112 @@ int __wrap_svt_av1_compute_qdelta_by_rate(struct RATE_CONTROL* rc, FrameType fra
         fflush(f);
     }
     return ret;
+}
+
+/* ---------------------------------------------------------------------------
+ * SVT_GM_OUT — C's GLOBAL-MOTION decision, per frame and per reference.
+ *
+ * WHY: the port refuses every inter frame at preset <= 4 because
+ * `svt_aom_derive_gm_level` is non-zero there, and nothing had ever measured
+ * what C's search actually PRODUCES on a cell in that band. The whole GM chain
+ * below `svt_aom_global_motion_estimation` is `static` (`compute_global_motion`)
+ * or takes a `PictureParentControlSet*` (`gm_compute_correspondence`), so the
+ * only exported vantage point is the frame-level entry itself, which returns
+ * with `pcs->global_motion_estimation[][]`, `pcs->is_global_motion[][]` and
+ * `pcs->is_gm_on` all final.
+ *
+ * `me_process.c:267` calls it once per inter picture, after ME, so the inputs
+ * it keys on (`rc_me_distortion`, `rc_me_allow_gm`) are also final and are
+ * dumped alongside — a port that reproduces the OUTPUT off different INPUTS
+ * would be agreeing by luck.
+ *
+ * Env: SVT_GM_OUT (file). Pure pass-through when unset. Appends.
+ *
+ * Two line kinds per call:
+ *   GMFRAME poc=<n> b64=<count> total_me_sad=<v> avg_me_sad=<v> total_gm_sbs=<v>
+ *           ds=<gm_downsample_level> is_gm_on=<0|1>
+ *           ctrls=en/idexit/start/end/skipid/bypass/steps/dslvl/corners/chess/
+ *                 matchsz/injpsq/pp/refidx0/rfnexit/corrmethod
+ *           try=<ref_list0_count_try>/<ref_list1_count_try>
+ *   GMREF poc=<n> list=<l> ref=<r> wmtype=<0..3> is_global=<0|1>
+ *         wmmat=<m0>,<m1>,<m2>,<m3>,<m4>,<m5> abgd=<a>,<b>,<g>,<d> invalid=<v>
+ * ------------------------------------------------------------------------- */
+void __real_svt_aom_global_motion_estimation(PictureParentControlSet* pcs, EbPictureBufferDesc* input_pic);
+
+void __wrap_svt_aom_global_motion_estimation(PictureParentControlSet* pcs, EbPictureBufferDesc* input_pic) {
+    /* Snapshot the ME-derived inputs BEFORE the call — the real function does
+     * not modify them, but reading them after would not prove that. */
+    uint32_t total_me_sad = 0;
+    uint32_t total_gm_sbs = 0;
+    for (uint16_t b = 0; b < pcs->b64_total_count; ++b) {
+        total_me_sad += pcs->rc_me_distortion[b];
+        total_gm_sbs += pcs->rc_me_allow_gm[b];
+    }
+    __real_svt_aom_global_motion_estimation(pcs, input_pic);
+
+    const char*  path = getenv("SVT_GM_OUT");
+    static FILE* f    = NULL;
+    if (path && *path && !f) {
+        f = fopen(path, "a");
+    }
+    if (!f) {
+        return;
+    }
+    const uint32_t avg = total_me_sad / (input_pic->width * input_pic->height);
+    fprintf(f,
+            "GMFRAME poc=%u b64=%u total_me_sad=%u avg_me_sad=%u total_gm_sbs=%u ds=%u is_gm_on=%d"
+            " ctrls=%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u/%u try=%u/%u\n",
+            (unsigned)pcs->picture_number,
+            (unsigned)pcs->b64_total_count,
+            (unsigned)total_me_sad,
+            (unsigned)avg,
+            (unsigned)total_gm_sbs,
+            (unsigned)pcs->gm_downsample_level,
+            (int)pcs->is_gm_on,
+            (unsigned)pcs->gm_ctrls.enabled,
+            (unsigned)pcs->gm_ctrls.identiy_exit,
+            (unsigned)pcs->gm_ctrls.search_start_model,
+            (unsigned)pcs->gm_ctrls.search_end_model,
+            (unsigned)pcs->gm_ctrls.skip_identity,
+            (unsigned)pcs->gm_ctrls.bypass_based_on_me,
+            (unsigned)pcs->gm_ctrls.params_refinement_steps,
+            (unsigned)pcs->gm_ctrls.downsample_level,
+            (unsigned)pcs->gm_ctrls.corners,
+            (unsigned)pcs->gm_ctrls.chess_rfn,
+            (unsigned)pcs->gm_ctrls.match_sz,
+            (unsigned)pcs->gm_ctrls.inj_psq_glb,
+            (unsigned)pcs->gm_ctrls.pp_enabled,
+            (unsigned)pcs->gm_ctrls.ref_idx0_only,
+            (unsigned)pcs->gm_ctrls.rfn_early_exit,
+            (unsigned)pcs->gm_ctrls.correspondence_method,
+            (unsigned)pcs->ref_list0_count_try,
+            (unsigned)pcs->ref_list1_count_try);
+    for (uint32_t l = 0; l < MAX_NUM_OF_REF_PIC_LIST; ++l) {
+        for (uint32_t r = 0; r < REF_LIST_MAX_DEPTH; ++r) {
+            const WarpedMotionParams* w = &pcs->global_motion_estimation[l][r];
+            if (w->wmtype == IDENTITY && !pcs->is_global_motion[l][r]) {
+                continue; /* the initialised-and-untouched majority */
+            }
+            fprintf(f,
+                    "GMREF poc=%u list=%u ref=%u wmtype=%d is_global=%d"
+                    " wmmat=%d,%d,%d,%d,%d,%d abgd=%d,%d,%d,%d invalid=%d\n",
+                    (unsigned)pcs->picture_number,
+                    (unsigned)l,
+                    (unsigned)r,
+                    (int)w->wmtype,
+                    (int)pcs->is_global_motion[l][r],
+                    (int)w->wmmat[0],
+                    (int)w->wmmat[1],
+                    (int)w->wmmat[2],
+                    (int)w->wmmat[3],
+                    (int)w->wmmat[4],
+                    (int)w->wmmat[5],
+                    (int)w->alpha,
+                    (int)w->beta,
+                    (int)w->gamma,
+                    (int)w->delta,
+                    (int)w->invalid);
+        }
+    }
+    fflush(f);
 }

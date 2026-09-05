@@ -119,6 +119,18 @@ presence_flags! {
     /// Remove the variable — do not promote it — once the inter tile is
     /// byte-identical and the refusal can simply be deleted.
     inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
+    /// `SVTAV1_GM_EXPERIMENTAL`: lift the GLOBAL-MOTION refusal at presets
+    /// 0..4 so the harness can MEASURE what an inter frame there emits.
+    ///
+    /// Same contract as `inter_experimental` above and for the same reason: a
+    /// frame that emits is measurable and a frame that refuses is not. It is
+    /// NOT a feature flag — the shipped refusal is what the public API does.
+    gm_experimental => "SVTAV1_GM_EXPERIMENTAL",
+    /// `SVTAV1_GMDBG`: print the port's frame-level global-motion derivation
+    /// (`crate::port_global_me`) as one `GMPORT` line per inter frame, to be
+    /// joined against C's `GMFRAME` line from the `SVT_GM_OUT` interposer.
+    /// `tools/gm_join_gate.sh` is the join.
+    gmdbg => "SVTAV1_GMDBG",
     /// `SVTAV1_PD0_NOSPLIT`: a **CONTROL**, not a configuration — force the
     /// video arm's PD0 to test only the 64x64 square on an INTER frame.
     ///

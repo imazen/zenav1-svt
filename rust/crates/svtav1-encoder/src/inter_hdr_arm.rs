@@ -44,31 +44,18 @@ pub enum InterHdrError {
     /// can reach — see [`scs_tpl`]) C's own `r0_th` is 0 and the bit is a
     /// closed 0, so those levels are NOT refused.
     MfmvLevelNotDerivable(u8),
-    /// A global-motion model was selected; `global_motion_params()`'s type and
-    /// parameter coding is not implemented.
+    /// C's global-motion search ran and could have produced a model;
+    /// `global_motion_params()`'s type and parameter coding is not
+    /// implemented, so `is_global: [false; 7]` would be a claim rather than a
+    /// derivation.
     ///
-    /// C `svt_aom_derive_gm_level` (`enc_mode_config.c:194`) returns a
-    /// non-zero level only on a NON-I-slice at `enc_mode <= ENC_M4`, so this
-    /// fires exactly on an inter frame at preset <= 4. Above that C's own
-    /// `gm_level` is 0 and every reference is IDENTITY, which is what the
-    /// header and the MVP environment both write.
+    /// The caller decides this with `crate::port_global_me::GmEstimation::
+    /// all_identity`, NOT with `gm_level != 0`: a non-zero level only means C
+    /// built `gm_ctrls`, and `svt_aom_global_motion_estimation`'s own
+    /// `average_me_sad` gate is what decides whether a search happens. The
+    /// pipeline refuses at `gm_search_config_error` first; this exists so the
+    /// invariant is enforced at the writer too.
     GlobalMotionNotImplemented,
-}
-
-/// C `svt_aom_get_gm_core_level` (`enc_mode_config.c:180`).
-///
-/// `enc_mode <= ENC_MR` (-1) => 2, `<= ENC_M4` => 4, above => 0; and 0
-/// unconditionally when superres is on. `svt_aom_derive_gm_level` (`:194`)
-/// wraps it with "I_SLICE => 0".
-#[must_use]
-pub fn gm_core_level(preset: u8, super_res_off: bool) -> u8 {
-    if !super_res_off {
-        return 0;
-    }
-    // ENC_MR is -1 in C's EncMode; this port's `preset` is the 0..=13 CLI
-    // domain, so MR is unreachable here and the `<= ENC_M4` arm is the live
-    // one.
-    if preset <= 4 { 4 } else { 0 }
 }
 
 /// C `get_tpl` (`Globals/enc_handle.c:3657`) — is TPL on for this sequence?
@@ -125,18 +112,19 @@ pub fn inter_signal(
     order_hint_bits: u32,
     seq: SeqInterTools,
     tpl: bool,
-    gm_level: u8,
+    gm_all_identity: bool,
 ) -> Result<InterSignal, InterHdrError> {
     // GLOBAL MOTION, refused here as well as at the pipeline's choke point.
     //
     // Two guards for one rule is deliberate and is this file's existing habit
-    // ("Assert rather than assume", below): the pipeline's `gm_config_error`
+    // ("Assert rather than assume", below): the pipeline's `gm_search_config_error`
     // is the friendly early refusal a caller sees, and this one makes
     // `GlobalMotionNotImplemented` a variant that can actually be constructed.
     // It could not before — it existed, a comment in `inter_syntax_state`
     // claimed this function raised it, and no code anywhere in the crate ever
-    // did. `is_global: [false; 7]` below is only sound while `gm_level == 0`.
-    if gm_level != 0 {
+    // did. `is_global: [false; 7]` below is only sound while C's own search
+    // left every reference IDENTITY, which is what the caller passes here.
+    if !gm_all_identity && !crate::dbgenv::gm_experimental() {
         return Err(InterHdrError::GlobalMotionNotImplemented);
     }
     // C never sets `error_resilient_mode` on a coded picture

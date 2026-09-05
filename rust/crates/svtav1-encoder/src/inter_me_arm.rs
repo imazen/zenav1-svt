@@ -571,7 +571,34 @@ pub fn run_frame_me_into(
         similar_brightness_refs: false,
         frame_is_boosted: p.frame_is_boosted,
         frame_is_leaf: false,
-        gm_enabled: false,
+        // C `pcs->gm_ctrls.enabled` (`motion_estimation.c:2959`), which gates
+        // `perform_gm_detection` and therefore `pcs->rc_me_allow_gm[b64]`.
+        //
+        // This was hard-coded `false`, so the port's `rc_me_allow_gm` was 0 on
+        // every b64 of every frame while C's was 1 — MEASURED 2026-09-05
+        // against C's `SVT_GM_OUT` dump: `total_gm_sbs` 4/16/64 of 4/16/64 in
+        // C, 0 in the port, on the gradient/diag/screen/photo cells at preset
+        // 2. It was invisible because the ONLY reader is
+        // `svt_aom_global_motion_estimation`'s `bypass_based_on_me` clamp
+        // (`crate::port_global_me`), which had no caller. With the derivation
+        // wired the sign is dangerous: an all-zero `rc_me_allow_gm` forces
+        // `estimation_level` to 0, i.e. it would claim "C found no global
+        // motion" on a frame where C searched.
+        //
+        // `is_islice` is false because this function only runs for an INTER
+        // frame (`run_frame_me_into`'s caller gates on `!is_key`), and
+        // `super_res_off` is true for the same reason the pipeline's
+        // `gm_level_for_frame` passes it: superres and inter are mutually
+        // exclusive here.
+        gm_enabled: crate::port_enc_mode_config::ctrls::set_gm_controls(
+            crate::port_enc_mode_config::leaf::derive_gm_level(
+                i8::try_from(p.enc_mode).unwrap_or(i8::MAX),
+                /*is_islice=*/ false,
+                /*super_res_off=*/ true,
+            ),
+            input_resolution,
+        )
+        .is_some_and(|c| c.enabled != 0),
         only_l_bwd: false,
         max_cand: MAX_CAND,
         max_refs: MAX_REFS,

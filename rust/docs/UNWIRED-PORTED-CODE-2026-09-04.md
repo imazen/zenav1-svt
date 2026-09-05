@@ -131,6 +131,56 @@ on the tested path?" was answered by reading C's call chain, which is **not**
 the same evidence tier, and item 1 is what that gap looks like. Treat every
 "Yes" in that column as a hypothesis with a named probe, not a finding.
 
+## CORRECTION 2026-09-05 — item 2's file list is incomplete and its "what wiring takes" is the wrong shape
+
+The wiring chunk took item 2 (global motion) and it does not survive contact
+with a probe either, though less catastrophically than item 1. Full account:
+`docs/INTER-ENCODE-PLAN.md` §1z⁴¹. In short:
+
+* **The row omits two files, one of them the DRIVER.**
+  `crates/svtav1-encoder/src/port_gm_correspondence.rs` (the MV-arm
+  correspondence generator) is ported and also unreachable, and
+  `Codec/global_me.c` — `svt_aom_global_motion_estimation` and its static
+  `compute_global_motion` — is not in the list at all. It is not a leaf: it is
+  the function that decides whether `determine_gm_params` is ever called.
+* **"C calls it on the tested path: Yes at presets 0-4" is only half true.**
+  C builds `gm_ctrls` on every inter frame at preset <= 4, but the SEARCH is
+  gated on `average_me_sad = sum(rc_me_distortion) / (w*h) >= 1`
+  (`global_me.c:157-172`), an integer divide. MEASURED with a new
+  `-Wl,--wrap=svt_aom_global_motion_estimation` interposer (`SVT_GM_OUT`):
+  **`avg_me_sad = 0` and `is_gm_on = 0` on every cell of the existing grid** —
+  {gradient, diag, screen} x {64, 128, 256, 512} at p2 AND `crop:` CID22 photo
+  at 256/512 with shifts 3/13/37. C leaves every reference IDENTITY there, so
+  the port's seven `is_global = 0` bits are RIGHT and the refusal that stood on
+  the level alone was refusing cells C agrees with. Reaching a non-IDENTITY
+  model needed a new content mode (`SVTAV1_FRAME_ZOOM_NUM/_DEN`); with a 33/32
+  zoom C fits a ROTZOOM.
+* **The prescribed wiring is therefore the wrong shape.** "Call the
+  RANSAC->refine chain from wherever ME candidates are gathered" describes an
+  unconditional search; C's own derivation is what decides, and porting THAT
+  (`crate::port_global_me`) is what opened the p0..p4 inter band —
+  {uniform,gradient,diag,screen} x {16,64,128,256} now byte-identical to C on
+  both frames, and `crop:` photo at 128/256 p2/p4 with it.
+* **`derive_gm_level` was NOT unwired.** It was live through a SECOND
+  transcription, `inter_hdr_arm::gm_core_level` (a `u8` preset spelling that
+  dropped the `ENC_MR` arm), while the tier-1 body in
+  `port_enc_mode_config::leaf` had only its own test as a caller. That is this
+  document's own duplicate-transcription hazard, one row above the item that
+  missed it. Folded and the duplicate deleted.
+* **Two defects the probe found that no row names.** `MePicParams::gm_enabled`
+  was hard-coded `false`, so `perform_gm_detection` never ran and
+  `rc_me_allow_gm` was 0 where C's was 1 (invisible: its only reader was the
+  unwired `bypass_based_on_me`). And `encode_tile_rows`' chain-simulation
+  entropy context was never armed with the frame's inter syntax state, so every
+  multi-superblock inter cell at presets 0..3 PANICKED the moment the refusal
+  stopped hiding them.
+
+**The method lesson, again.** Item 1's correction said to treat every "C calls
+it on the tested path: Yes" as a hypothesis with a named probe. Item 2 shows
+the second half of that: even when C DOES reach the code, ask what it computes
+there. "C runs a global-motion search at preset 2" and "C codes a global-motion
+model at preset 2" are different facts, and only the second one is a port gap.
+
 ## Duplicate transcriptions spotted (beyond the seven already known)
 
 1. **`write_sgrproj_filter`** — `entropy/lr.rs:250` (LIVE, called from `restoration.rs:1696,1722`) vs `port_entropy_inter/gm.rs:297` (DEAD, only its own test calls it). **`docs/WORKING-ON-THIS.md` guard #5c is stale**: it states *"the port's `write_sgrproj_filter` is at `svtav1_encoder::port_entropy_inter::gm`"* — that is the dead copy; the live one is `entropy::lr::write_sgrproj_filter`. Needs a doc correction in the same pass as any cleanup here.

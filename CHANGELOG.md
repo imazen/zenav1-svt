@@ -56,6 +56,33 @@ Crates are not published to crates.io yet — depend by git.
 
 
 ### Fixed
+- **Every multi-superblock inter cell at presets 0..3 PANICKED, behind the
+  global-motion refusal.** `encode_tile_rows`' chain simulation (`sim_ectx`)
+  re-codes each superblock to evolve the per-SB frame contexts and was never
+  armed with the frame's `InterSyntaxState` or MVP environment, so the first
+  inter block hit `.expect("an inter block on a frame with no inter
+  frame-syntax state")`. Its gate is `use_funnel && update_cdf_level(..) != 0
+  && multi_sb`, and `svt_aom_get_update_cdf_level_default` is non-zero on an
+  inter frame only at `enc_mode <= 3` — exactly the band the global-motion
+  refusal made unreachable. Byte-neutral by construction: every cell that
+  reached the arm crashed.
+- **`MePicParams::gm_enabled` was hard-coded `false`**, so
+  `perform_gm_detection` never ran and `pcs->rc_me_allow_gm` was 0 on every b64
+  where C's was 1 (measured against `SVT_GM_OUT`: 1/4/16/4/4/16 of
+  1/4/16/4/4/16). Its only reader is `bypass_based_on_me`, which had no caller —
+  and the sign is the dangerous one, since an all-zero array claims "C found no
+  global motion" on a frame where C searched.
+- **A global-motion refusal was reported as a TPL/mfmv one.** The `map_err` at
+  the inter header assembly collapsed both `InterHdrError` variants into one
+  message. One message per variant now.
+- **`inter_hdr_arm::gm_core_level` was a SECOND transcription of
+  `svt_aom_get_gm_core_level`** — and the LIVE one, while the tier-1 body in
+  `port_enc_mode_config::leaf` had only its own test as a caller. Deleted.
+- **`tools/refusal_inventory.sh` could not see a refusal whose message comes
+  out of a `match`.** Its `UnsupportedConfig(` regex was anchored at the open
+  paren, so introducing one silently dropped the mfmv/TPL refusal from the
+  ledger — the quiet accretion the tool exists to prevent. It now walks the
+  balanced call and collects every string literal inside it.
 - **Screen-content IntraBC band byte-identical: gb82-sc x presets 0..4 x
   qp {20,40,48} 150/150 (was 22/100 on 2026-07-23).** Three MD-side
   mechanisms, each a deviation a comment had justified: an IntraBC
@@ -72,6 +99,26 @@ Crates are not published to crates.io yet — depend by git.
   promoted to all 100. Record: `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰.
 
 ### Added
+- **Global motion is now the FRAME's decision, not the preset's — the p0..p4
+  inter band opens and `photo p2 inter` encodes byte-identically for the first
+  time.** `pipeline.rs` refused every inter frame at preset <= 4 because
+  `svt_aom_derive_gm_level` is non-zero there; whether C fits a model is
+  `svt_aom_global_motion_estimation`'s own `average_me_sad` gate
+  (`global_me.c:157`), and MEASURED with a new
+  `-Wl,--wrap=svt_aom_global_motion_estimation` interposer (`SVT_GM_OUT`) that
+  gate says "no search" on the ENTIRE existing grid — {gradient,diag,screen} x
+  {64,128,256,512} and `crop:` CID22 photo at 256/512 with shifts 3/13/37, all
+  `avg_me_sad=0`, `is_gm_on=0`. `crate::port_global_me` ports that derivation
+  and the refusal now fires only when C would search.
+  {uniform,gradient,diag,screen} x {64,128,256} at p0/p2/p3/p4 and `crop:`
+  photo at 128/256 p2/p4 are byte-identical to C on both frames;
+  `benchmarks/perf_2026-09-05-arm10-POSITION.meta`'s `photo p2 inter` cell
+  (25/25 ERR, no timing obtainable) now produces a stream. `identity_run` gained
+  `SVTAV1_FRAME_ZOOM_NUM`/`_DEN` (integer-exact, no-op at the default `1/1`),
+  because a pure translation cannot reach C's search at all;
+  `tools/gm_join_gate.sh` joins the port's derivation against C's field for
+  field — 8 cells, 0 mismatches, 2 cells reaching a ROTZOOM — and FAILS if none
+  does. Record: `benchmarks/gm_join_2026-09-05.tsv`.
 - **Position re-measured on the tip: 2.29x still / 2.26x videokey / 2.46x inter**
   (measure-only, mac M4 Pro): `benchmarks/perf_2026-09-05-arm10-*` +
   `perf_2026-09-05-arm10-POSITION.meta`. Three arms, preset 8, gradient qp 40,

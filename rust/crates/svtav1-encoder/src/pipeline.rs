@@ -1102,45 +1102,69 @@ impl EncodePipeline {
         )
     }
 
-    /// GLOBAL MOTION, refused rather than assumed away.
+    /// GLOBAL MOTION — the frame's own decision, not the preset's.
     ///
-    /// C `svt_aom_derive_gm_level` (`enc_mode_config.c:194`) returns
-    /// `svt_aom_get_gm_core_level(enc_mode, super_res_off)` on any NON-I-slice,
-    /// which is 2 at `enc_mode <= ENC_MR`, 4 at `<= ENC_M4` and 0 above — so C
-    /// searches and CODES a global-motion model on an inter frame at preset
-    /// <= 4, and `global_motion_params()` then writes a type plus up to six
-    /// parameters per reference. This port codes seven `is_global = 0` bits
-    /// and an IDENTITY model for every reference unconditionally.
+    /// C `svt_aom_derive_gm_level` (`enc_mode_config.c:194`) gives a NON-I
+    /// slice `svt_aom_get_gm_core_level(enc_mode, super_res_off)`: 2 at
+    /// `enc_mode <= ENC_MR`, 4 at `<= ENC_M4`, 0 above. A non-zero level only
+    /// means C BUILDS `gm_ctrls`, though — whether it SEARCHES is
+    /// `svt_aom_global_motion_estimation`'s own derivation
+    /// (`crate::port_global_me`), and that is gated on
+    /// `average_me_sad = sum(rc_me_distortion) / (w*h) >= 1` plus
+    /// `bypass_based_on_me`.
     ///
-    /// Until now nothing refused that. A comment in `inter_syntax_state`
-    /// asserted that `inter_hdr_arm::inter_signal` "refuses a non-identity
-    /// model", and `InterHdrError::GlobalMotionNotImplemented` existed for it —
-    /// but that variant was never constructed anywhere in the crate, so an
-    /// inter frame at preset <= 4 would have emitted identity models against a
-    /// C encoder that coded real ones. The whole inter campaign measures p6+,
-    /// where C's own level is 0, which is why it never showed up. That is the
-    /// shape of gap `docs/WORKING-ON-THIS.md` §5 is about: a defect invisible
-    /// because no cell reaches it.
+    /// This site used to refuse on the LEVEL alone, i.e. on the preset, which
+    /// is wrong in both directions of usefulness: it refused every inter frame
+    /// at preset <= 4 including the ones where C provably codes seven
+    /// `is_global = 0` bits — which is exactly what this port writes. MEASURED
+    /// 2026-09-05 with `SVT_GM_OUT`: `avg_me_sad = 0` and `is_gm_on = 0` on
+    /// {gradient, diag, screen} x {64, 128, 256, 512} and on `crop:` CID22
+    /// photo at 256/512 with shifts 3/13/37 — the whole existing grid. With
+    /// the refusal replaced by this derivation those cells encode, and 26 of
+    /// them are byte-identical to C on both frames.
+    ///
+    /// When the derivation says C WOULD search, the refusal stands: the search
+    /// result decides `global_motion_params()`'s type and parameters and the MD
+    /// side's `gm_wmtype`, and neither is wired. Producing identity models
+    /// against a C encoder that coded real ones is the
+    /// plausible-but-wrong-stream outcome `docs/WORKING-ON-THIS.md` §6 rules
+    /// out, so it is refused rather than emitted.
     ///
     /// `super_res_off` is `true` at every call here: superres and inter are
     /// mutually exclusive in this port (`superres_config_error` +
     /// still-only superres wiring), and C's own `gm_level` only DROPS to 0
     /// when superres is on, so `true` is the conservative reading.
-    fn gm_config_error(&self, is_key: bool) -> Option<&'static str> {
-        if is_key {
-            // C `derive_gm_level`: I_SLICE => 0, always.
-            return None;
-        }
-        if crate::inter_hdr_arm::gm_core_level(self.speed_config.preset, true) == 0 {
-            return None;
-        }
-        Some(
-            "global motion is not implemented: C svt_aom_derive_gm_level \
-             (enc_mode_config.c:194) gives an inter frame at preset <= 4 a non-zero gm_level, so \
-             C searches a model and global_motion_params() codes its type and parameters, while \
-             this port writes seven is_global = 0 bits and an IDENTITY model — use preset >= 5 \
-             for inter frames [C: accepts]",
+    fn gm_level_for_frame(&self, is_key: bool) -> u8 {
+        crate::port_enc_mode_config::leaf::derive_gm_level(
+            i8::try_from(self.speed_config.preset).unwrap_or(i8::MAX),
+            is_key,
+            /*super_res_off=*/ true,
         )
+    }
+
+    /// The refusal itself, once the frame's ME results exist.
+    ///
+    /// `None` = every reference keeps IDENTITY, which is what the header and
+    /// the MVP environment already write.
+    fn gm_search_config_error(
+        gm: Option<&crate::port_global_me::GmEstimation>,
+    ) -> Option<&'static str> {
+        match gm {
+            None => None,
+            Some(g) if g.all_identity() => None,
+            Some(_) if crate::dbgenv::gm_experimental() => None,
+            Some(_) => Some(
+                "global motion is not implemented: this INTER frame's ME residual puts C's \
+                 svt_aom_global_motion_estimation (global_me.c:137) past its average_me_sad \
+                 gate, so C fits a model per reference (RANSAC over the ME MVs, then \
+                 svt_av1_refine_integerized_param) and global_motion_params() codes its type \
+                 and parameters, while this port writes seven is_global = 0 bits and an \
+                 IDENTITY model. Frames whose motion C's own gate reads as global-motion-free \
+                 DO encode at preset <= 4 — this refusal is the frame's decision, not the \
+                 preset's. Use preset >= 5, or content without a global non-translational \
+                 motion [C: accepts]",
+            ),
+        }
     }
 
     /// Config knobs C rejects in `svt_av1_verify_settings`, refused here so
@@ -1672,13 +1696,9 @@ impl EncodePipeline {
         if let Some(why) = self.knob_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
-        // GLOBAL MOTION. Same choke point, same rule: C codes a real model on
-        // an inter frame at preset <= 4 and this port writes IDENTITY. See
-        // `gm_config_error` — this refusal is NEW, and replaces a comment that
-        // claimed a refusal which was never constructed.
-        if let Some(why) = self.gm_config_error(self.gop.is_key_frame(display_order)) {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
-        }
+        // GLOBAL MOTION is NOT refused here: whether C searches depends on this
+        // frame's ME residual, which does not exist yet at this choke point.
+        // See `gm_search_config_error`, called immediately after `frame_me` below.
         // MULTI-FRAME IS NOT ENCODABLE — refuse it rather than emit a corrupt
         // stream. The 4:2:0 path already asserted this below; the MONOCHROME
         // path did not, so `EncodePipeline::new(w, h, preset, rc, hier,
@@ -2520,6 +2540,75 @@ impl EncodePipeline {
             _ => None,
         };
 
+        // GLOBAL MOTION, decided per FRAME (see `gm_level_for_frame` /
+        // `gm_search_config_error`). It lives here because C decides it here too:
+        // `me_process.c:264-272` calls `svt_aom_global_motion_estimation` the
+        // moment the last b64's ME lands, and every input it reads
+        // (`rc_me_distortion`, `rc_me_allow_gm`) is an ME output.
+        //
+        // `input_width`/`input_height` are C's `pcs->enhanced_pic`
+        // (`me_process.c:136`) — the SOURCE picture — so the TRUE dims, not
+        // the SB-aligned pair `frame_me` was run over. On a 64-aligned cell
+        // the two agree; on a partial-SB cell they do not, and the integer
+        // divide is what the whole decision turns on.
+        let gm_estimation = frame_me.as_ref().and_then(|me| {
+            let gm_level = self.gm_level_for_frame(is_key);
+            let ctrls = crate::port_enc_mode_config::ctrls::set_gm_controls(
+                gm_level,
+                crate::port_enc_mode_config::ResolutionRange::from_luma_area(
+                    self.width * self.height,
+                ),
+            )?;
+            let dist: alloc::vec::Vec<u32> =
+                me.per_b64.iter().map(|b| b.rc_me_distortion).collect();
+            let allow: alloc::vec::Vec<u8> = me.per_b64.iter().map(|b| b.rc_me_allow_gm).collect();
+            crate::port_global_me::global_motion_estimation(
+                &crate::port_global_me::GmEstimationInputs {
+                    gm_ctrls: ctrls,
+                    rc_me_distortion: &dist,
+                    rc_me_allow_gm: &allow,
+                    input_width: self.true_width,
+                    input_height: self.true_height,
+                    ref_list0_count_try: pic_decision
+                        .as_ref()
+                        .map_or(0, |p| u32::from(p.ref_list0_count_try)),
+                    ref_list1_count_try: pic_decision
+                        .as_ref()
+                        .map_or(0, |p| u32::from(p.ref_list1_count_try)),
+                    temporal_layer_index: temporal_layer,
+                    // `pp_enabled` is false at every level this port can
+                    // express, so this is never read; `false` is C's own
+                    // initial value.
+                    gm_pp_detected: false,
+                },
+            )
+        });
+        // Printed BEFORE the refusal below, deliberately: the frame whose
+        // derivation a join gate most needs to see is exactly the one the
+        // refusal stops (`tools/gm_join_gate.sh`).
+        if crate::dbgenv::gmdbg() {
+            if let Some(g) = gm_estimation.as_ref() {
+                eprintln!(
+                    "GMPORT poc={display_order} b64={} total_me_sad={} avg_me_sad={} \
+                     total_gm_sbs={} level={} ds={} searches={} all_identity={}",
+                    frame_me.as_ref().map_or(0, |m| m.per_b64.len()),
+                    frame_me.as_ref().map_or(0u32, |m| m
+                        .per_b64
+                        .iter()
+                        .fold(0u32, |a, b| a.wrapping_add(b.rc_me_distortion))),
+                    g.average_me_sad,
+                    g.total_gm_sbs,
+                    g.estimation_level,
+                    g.downsample_level,
+                    g.max_searches,
+                    u8::from(g.all_identity()),
+                );
+            }
+        }
+
+        if let Some(why) = Self::gm_search_config_error(gm_estimation.as_ref()) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
         let mut c_quant: Option<alloc::sync::Arc<crate::quant::CodingQuantCfg>> =
             // Task #95 chunk 2: was gated on 64-aligned dims; the padded
             // `sb_input` now lets the per-b64 walk read C's replicated border
@@ -3158,10 +3247,11 @@ impl EncodePipeline {
                 // constructed anywhere in the crate, so the "by the same rule
                 // the header is written under — not by assumption" claim was
                 // exactly the assumption it denied being. The refusal is now
-                // real and lives at the `gm_config_error` choke point (C
-                // `svt_aom_derive_gm_level`, enc_mode_config.c:194: non-zero
-                // only on a non-I-slice at enc_mode <= ENC_M4), which is why
-                // IDENTITY is safe here.
+                // real and lives at the `gm_search_config_error` choke point, which
+                // refuses the frame unless C's own
+                // `svt_aom_global_motion_estimation` derivation
+                // (`crate::port_global_me`) proves every reference keeps
+                // IDENTITY — which is why IDENTITY is safe here.
                 gm_wmtype: [crate::port_entropy_inter::modes::TransformationType::Identity; 8],
                 cur_order_hint: display_order as i32,
                 ref_order_hint,
@@ -3803,6 +3893,8 @@ impl EncodePipeline {
             // The padded twin of the plane above, from the SAME DPB slot.
             ref_padded_luma.map(|p| &p.y),
             inter_md_frame.as_ref(),
+            inter_syntax_state.as_ref(),
+            inter_mvp_env.as_ref(),
             pd0_min_sq.as_deref(),
             sb_inter_lambda.as_deref(),
             primary_ref_cdfs.as_deref(),
@@ -6131,16 +6223,34 @@ impl EncodePipeline {
                         enable_warped_motion: seq_tools.enable_warped_motion,
                     },
                     self.scs_tpl(),
-                    crate::inter_hdr_arm::gm_core_level(self.speed_config.preset, true),
+                    // C's own GM verdict for this frame, derived at
+                    // `gm_search_config_error` above — NOT `gm_level != 0`, which is
+                    // a fact about the preset.
+                    gm_estimation
+                        .as_ref()
+                        .is_none_or(crate::port_global_me::GmEstimation::all_identity),
                 )
-                .map_err(|_| {
-                    whereat::at!(EncodeError::UnsupportedConfig(
-                        "an inter frame header field is not implemented for this \
-                         configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 \
-                         and the references' own is_mfmv_used (crate::inter_hdr_arm::\
-                         InterHdrError). This port's TPL is structurally off (aq_mode 0), so \
-                         reaching this means the aq_mode refusal was lifted without porting r0 [C: accepts]",
-                    ))
+                .map_err(|e| {
+                    // One message per variant. These used to share one, so a
+                    // GLOBAL-MOTION refusal was reported as an mfmv/TPL one —
+                    // a refusal that names the wrong feature sends the next
+                    // reader to the wrong file.
+                    whereat::at!(EncodeError::UnsupportedConfig(match e {
+                        crate::inter_hdr_arm::InterHdrError::MfmvLevelNotDerivable(_) =>
+                            "an inter frame header field is not implemented for this \
+                             configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL \
+                             r0 and the references' own is_mfmv_used (crate::inter_hdr_arm::\
+                             InterHdrError). This port's TPL is structurally off (aq_mode 0), \
+                             so reaching this means the aq_mode refusal was lifted without \
+                             porting r0 [C: accepts]",
+                        crate::inter_hdr_arm::InterHdrError::GlobalMotionNotImplemented =>
+                            "global motion is not implemented: the inter frame header writer \
+                             reached global_motion_params() with a frame whose \
+                             svt_aom_global_motion_estimation derivation did not prove every \
+                             reference IDENTITY (crate::port_global_me) — see the \
+                             gm_search_config_error refusal, which is the one a caller should see \
+                             [C: accepts]",
+                    }))
                 })?,
             )
         };
@@ -10909,6 +11019,29 @@ fn encode_tile_rows(
     // motion search, the inter rate tables and the MVP environment. `None`
     // on a key frame.
     inter_md: Option<&crate::inter_md_arm::InterMdFrame<'_>>,
+    // The frame-level INTER syntax + MVP environment the CHAIN SIMULATION's
+    // entropy context needs, the same two the real pack's `EntropyCtx` is
+    // armed with in `encode_frame_impl`. `None` on a key frame.
+    //
+    // WHY THEY ARE HERE, MEASURED 2026-09-05. `sim_ectx` re-codes every
+    // superblock to evolve the per-SB frame contexts, and it reaches
+    // `encode_block_syntax`'s inter arm on any frame where the chain runs.
+    // The chain's gate is `use_funnel && update_cdf_level(..) != 0 &&
+    // multi_sb`, and `svt_aom_get_update_cdf_level_default`
+    // (`inter_mv_code::update_cdf_level_default`) is non-zero on an INTER
+    // frame only at `enc_mode <= 3` — exactly the preset band the global
+    // motion refusal used to make unreachable. So `sim_ectx` was never armed
+    // and the first inter block PANICKED ("an inter block on a frame with no
+    // inter frame-syntax state", the `.expect` at the inter arm of
+    // `encode_block_syntax`) on every multi-superblock cell at presets 0..3.
+    // Reproduced on {uniform,gradient,diag,screen} 128x128 q40 p0 and p2,
+    // frames=2; p4 does not chain (level 0 on an inter frame) and 64x64 is
+    // single-SB, which is why the p4/64x64 cells passed.
+    //
+    // Arming it cannot move a byte on any cell that encodes today: before
+    // this, every cell that reached the arm crashed.
+    sim_inter_syntax: Option<&InterSyntaxState>,
+    sim_inter_mvp_env: Option<&crate::partition::InterMdEnv>,
     // C `set_blocks_to_be_tested`'s per-SB `min_sq_size`
     // (enc_dec_process.c:1485) — what `depth_removal_ctrls` decides. Indexed
     // by RASTER superblock (`sb_row * sb_cols + sb_col`), like `all_trees`.
@@ -11531,6 +11664,14 @@ fn encode_tile_rows(
                 mi_col_start: tile_sb_col_start * sb_size / 4,
                 mi_col_end: (tile_sb_col_end * sb_size / 4).min(w / 4),
             };
+            // The two the real pack's context carries on an inter frame — see
+            // `sim_inter_syntax` in this function's parameter list for the
+            // panic this closes. Both are `None` on a key frame, where the
+            // inter arm of `encode_block_syntax` is unreachable.
+            e.inter_syntax = sim_inter_syntax.cloned();
+            if let Some(env) = sim_inter_mvp_env.cloned() {
+                e.arm_inter_mvp(env);
+            }
             Some(e)
         } else {
             None
@@ -12039,7 +12180,10 @@ fn encode_tile_rows(
                     // turned on — joins line-for-line against the C
                     // interposer's `SEED2` (wrap_recon.c, SVT_SEED_OUT).
                     let join = |v: &[u16]| {
-                        v.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",")
+                        v.iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
                     };
                     eprintln!(
                         "SEED2 sb={} kfy00=[{}] fi8=[{},{}] fim=[{}] txfmp=[{}] iext11=[{}] paly0=[{},{},{}]",
@@ -12048,7 +12192,12 @@ fn encode_tile_rows(
                         fc.filter_intra_cdfs[3][0],
                         fc.filter_intra_cdfs[3][1],
                         join(&fc.filter_intra_mode_cdf[..5]),
-                        join(&fc.txfm_partition_cdf.iter().map(|c| c[0]).collect::<Vec<_>>()),
+                        join(
+                            &fc.txfm_partition_cdf
+                                .iter()
+                                .map(|c| c[0])
+                                .collect::<Vec<_>>()
+                        ),
                         join(&cfc.inter_ext_tx_cdf[1 * 4 + 1][..16]),
                         fc.palette_y_mode_cdf[0][0][0],
                         fc.palette_y_mode_cdf[0][1][0],

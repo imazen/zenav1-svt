@@ -494,17 +494,74 @@ fn main() {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(3);
-        // Translate a plane right by `dx`, replicating the left edge.
-        let translate = |src: &[u8], pw: usize, ph: usize, dx: usize| -> Vec<u8> {
-            let mut out = vec![0u8; pw * ph];
-            for r in 0..ph {
-                for c in 0..pw {
-                    let sc = c.saturating_sub(dx);
-                    out[r * pw + c] = src[r * pw + sc];
-                }
+        // `SVTAV1_FRAME_ZOOM_NUM` / `_DEN` (default 1/1 — OFF) add a ZOOM about
+        // the frame centre on top of the translation, so a cell can present a
+        // motion field that is NOT a single global integer MV.
+        //
+        // WHY THIS EXISTS, MEASURED 2026-09-05. C gates its whole global-motion
+        // search on `average_me_sad = sum(rc_me_distortion) / (w*h) >= 1`
+        // (`global_me.c:157-172`). A pure translation is exactly what open-loop
+        // ME finds, so the residual SAD is ~0 and `average_me_sad` floors to 0:
+        // measured `avg_me_sad=0` and `is_gm_on=0` on ALL of
+        // {gradient,diag,screen} x {64,128,256,512} AND on `crop:` photo
+        // content at shifts 3/13/37 (`SVT_GM_OUT`, see
+        // `docs/INTER-ENCODE-PLAN.md`). So the pre-existing grid cannot reach
+        // C's GM search at all, and a GM gate built on it would be vacuous.
+        // A zoom leaves a per-pixel residual an integer MV cannot remove, which
+        // is what raises `average_me_sad` past the gate.
+        //
+        // The arithmetic is INTEGER throughout (no `f64`, no libm) so the two
+        // ISAs generate byte-identical .yuv files; both encoders then consume
+        // that one file exactly as before. At the default 1/1 the mapping
+        // reduces to `sc = c.saturating_sub(dx)`, i.e. the previous behaviour
+        // byte for byte — verified by regenerating the campaign cells.
+        let zoom_num: i64 = std::env::var("SVTAV1_FRAME_ZOOM_NUM")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        let zoom_den: i64 = std::env::var("SVTAV1_FRAME_ZOOM_DEN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        assert!(
+            zoom_num > 0 && zoom_den > 0 && zoom_num <= 64 && zoom_den <= 64,
+            "SVTAV1_FRAME_ZOOM_NUM/_DEN must each be 1..=64, got {zoom_num}/{zoom_den}"
+        );
+        // Round-half-away-from-zero integer division — no float, no libm.
+        let div_round = |n: i64, d: i64| -> i64 {
+            debug_assert!(d > 0);
+            if n >= 0 {
+                (2 * n + d) / (2 * d)
+            } else {
+                -((-2 * n + d) / (2 * d))
             }
-            out
         };
+        // Translate a plane right by `dx` and scale it about the plane centre
+        // by `(num/den)^f`, replicating the edges.
+        let warp =
+            |src: &[u8], pw: usize, ph: usize, dx: usize, num_pow: i64, den_pow: i64| -> Vec<u8> {
+                let mut out = vec![0u8; pw * ph];
+                // The centre in the SAME half-open convention for both axes.
+                let cx = (pw as i64 - 1) / 2;
+                let cy = (ph as i64 - 1) / 2;
+                for r in 0..ph {
+                    let sy = if num_pow == den_pow {
+                        r as i64
+                    } else {
+                        (cy + div_round((r as i64 - cy) * den_pow, num_pow)).clamp(0, ph as i64 - 1)
+                    };
+                    for c in 0..pw {
+                        let cx0 = c as i64 - dx as i64;
+                        let sx = if num_pow == den_pow {
+                            cx0.clamp(0, pw as i64 - 1)
+                        } else {
+                            (cx + div_round((cx0 - cx) * den_pow, num_pow)).clamp(0, pw as i64 - 1)
+                        };
+                        out[r * pw + c] = src[sy as usize * pw + sx as usize];
+                    }
+                }
+                out
+            };
         let mut yuv = Vec::with_capacity(n_frames * (w * h + 2 * cw * ch));
         for f in 0..n_frames {
             let dx = shift_px * f;
@@ -513,9 +570,14 @@ fn main() {
                 yuv.extend_from_slice(&u);
                 yuv.extend_from_slice(&v);
             } else {
-                yuv.extend_from_slice(&translate(&y, w, h, dx));
-                yuv.extend_from_slice(&translate(&u, cw, ch, dx / 2));
-                yuv.extend_from_slice(&translate(&v, cw, ch, dx / 2));
+                let (mut np, mut dp) = (1i64, 1i64);
+                for _ in 0..f {
+                    np *= zoom_num;
+                    dp *= zoom_den;
+                }
+                yuv.extend_from_slice(&warp(&y, w, h, dx, np, dp));
+                yuv.extend_from_slice(&warp(&u, cw, ch, dx / 2, np, dp));
+                yuv.extend_from_slice(&warp(&v, cw, ch, dx / 2, np, dp));
             }
         }
         std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");

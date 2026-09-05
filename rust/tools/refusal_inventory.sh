@@ -117,7 +117,30 @@ CAP = re.compile(
     re.I,
 )
 
-UNSUP = re.compile(r'UnsupportedConfig\(\s*"((?:[^"\\]|\\.)*)"')
+# `UnsupportedConfig(...)` — every string literal inside the BALANCED call, not
+# just one that starts it. A refusal whose message comes out of a `match` on the
+# error variant (`UnsupportedConfig(match e { A => "...", B => "..." })`) is a
+# refusal like any other, and the anchored regex this replaces silently dropped
+# BOTH arms the moment one was introduced (2026-09-05: the mfmv/TPL refusal
+# vanished from the ledger, which is exactly the quiet accretion this file
+# exists to prevent).
+STRLIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def unsupported_messages(text):
+    out = set()
+    for m in re.finditer(r"UnsupportedConfig\(", text):
+        i = m.end()
+        depth, j = 1, i
+        while j < len(text) and depth:
+            if text[j] == "(":
+                depth += 1
+            elif text[j] == ")":
+                depth -= 1
+            j += 1
+        for s in STRLIT.finditer(text[i : j - 1]):
+            out.add(s.group(1))
+    return out
 # A third construct: `EncodeError::InvalidDimensions { reason: "..." }`. Missing
 # it dropped the two real monochrome-geometry refusals from the ledger.
 REASON = re.compile(r'\breason:\s*"((?:[^"\\]|\\.)*)"')
@@ -132,7 +155,7 @@ for path in sys.argv[1:]:
     src = open(path).read()
     joined = re.sub(r"\\\s*\n\s*", " ", src)   # join Rust string continuations
 
-    found = set(m.group(1) for m in UNSUP.finditer(joined))
+    found = unsupported_messages(joined)
     found |= set(m.group(1) for m in REASON.finditer(joined))
 
     # `Some("...")` counts only inside a fn whose name ends in _config_error.

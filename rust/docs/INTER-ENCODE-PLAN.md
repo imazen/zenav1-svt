@@ -8005,6 +8005,166 @@ it — use `$5` with the comma stripped. `SVT_CCOST_OUT` capped at 300 calls
 carries `tx_depth`/`txb_itr`. The port's `NSQDBG CAND` per-candidate MDS3
 cost line needs `SVTAV1_NSQDBG=1` as well as `SVTAV1_CANDDBG=1`.
 
+### 1z⁴¹. Global motion is a decision the FRAME makes, not the preset — `p2 inter` was refused on cells where C provably codes nothing, and the whole p0..p4 inter band opens (2026-09-05)
+
+**The refusal was over-broad, and a real crash was hiding behind it.**
+`pipeline.rs::gm_config_error` refused every inter frame at preset <= 4 on the
+strength of `svt_aom_derive_gm_level` alone. That function answers a question
+about the PRESET. Whether C actually fits a model is
+`svt_aom_global_motion_estimation`'s own derivation (`global_me.c:137-190`),
+and the gate there is
+
+    average_me_sad = sum(rc_me_distortion[b64]) / (input_pic->w * input_pic->h)
+
+an INTEGER divide, with the search skipped entirely when it is 0. A pure
+translation is exactly what open-loop ME cancels, so on the campaign's grid the
+residual floors that to zero and **C leaves every reference IDENTITY** — which
+is the seven `is_global = 0` bits the port already writes.
+
+**MEASURED, not argued.** A new `-Wl,--wrap` interposer on the real
+`svt_aom_global_motion_estimation` (`SVT_GM_OUT`, `tools/capture_c_trace/
+wrap_recon.c`) dumps C's `total_me_sad`, `avg_me_sad`, `total_gm_sbs`,
+`gm_downsample_level`, `is_gm_on`, all sixteen `gm_ctrls` fields and the
+per-reference `wmtype` + `wmmat`. 2-frame low-delay P, q40:
+
+| cell | `avg_me_sad` | `is_gm_on` |
+|---|--:|--:|
+| gradient / diag / screen, 64 / 128 / 256 / 512, p2, shift 3 | 0 | 0 |
+| `crop:` CID22 512 photo, 256 and 512, p2, shifts 3 / 13 / 37 | 0 | 0 |
+| the same photo at 256 with a **33/32 zoom** | 2 | **1 — ROTZOOM** |
+| the same photo at 512 with a **9/8 zoom** | 9 | **1 — ROTZOOM** |
+
+`ctrls` is byte-identical to the port's `set_gm_controls(4, <=480p)` on every
+one: `1/1/1/2/1/1/5/0/2/1/7/1/0/1/1/3`.
+
+**The synthetic grid cannot reach C's search, and that is a finding about the
+grid.** `SVTAV1_FRAME_SHIFT` produces a pure horizontal translation, which is
+the trivial global model AND the thing ME removes; nine synthetic cells and six
+real-photo cells all read `avg_me_sad = 0`. So `identity_run` gained
+`SVTAV1_FRAME_ZOOM_NUM` / `_DEN` — an integer-exact (no `f64`, no libm, so
+byte-identical across ISAs) zoom about the frame centre, layered on the same
+translation. At the default `1/1` the mapping reduces to the previous
+`c.saturating_sub(dx)` and the generated `.yuv` is byte-identical (sha256
+checked on gradient/diag/screen at 128/256 and the 512 photo).
+
+**What was wired.**
+* `crate::port_global_me` (new) — the derivation half of
+  `svt_aom_global_motion_estimation` plus `me_process.c:266`'s enable gate.
+  Tier 4 (the C function takes a whole `PictureParentControlSet`), joined
+  against C's own dump by `tools/gm_join_gate.sh`.
+* `pipeline.rs` — `gm_config_error` is replaced by `gm_level_for_frame`
+  (through the tier-1 `port_enc_mode_config::leaf::derive_gm_level`) plus
+  `gm_search_config_error`, evaluated straight after `frame_me`, which is where C
+  decides it too (`me_process.c:264-272`, the moment the last b64's ME lands).
+  The refusal now fires only when C's derivation says a search would run.
+* `inter_hdr_arm::inter_signal` takes `gm_all_identity` instead of `gm_level`,
+  so `is_global: [false; 7]` is a derivation rather than a claim. Its
+  `map_err` had collapsed BOTH `InterHdrError` variants into the mfmv/TPL
+  message, so a global-motion refusal was reported as a TPL one; one message
+  per variant now.
+* `inter_hdr_arm::gm_core_level` — a SECOND transcription of
+  `svt_aom_get_gm_core_level`, and it was the live one while the tier-1 body in
+  `port_enc_mode_config::leaf` had no non-test caller. Deleted; the pipeline
+  calls the tier-1 body.
+
+**A defect the join found on its first run.** `MePicParams::gm_enabled` was
+hard-coded `false` (`inter_me_arm.rs`), so `perform_gm_detection` never ran and
+`pcs->rc_me_allow_gm` was 0 on every b64 where C's was 1 (C: 1/4/16/4/4/16 of
+1/4/16/4/4/16 on the six identity cells). The only reader is
+`bypass_based_on_me`, which had no caller — so it was invisible, and the sign
+is the dangerous one: an all-zero `rc_me_allow_gm` clamps `estimation_level` to
+0, i.e. it would have claimed "C found no global motion" on a frame where C
+searched. Derived from `set_gm_controls` now.
+
+**A CRASH the refusal was hiding, at presets 0..3.** With the refusal lifted,
+{uniform,gradient,diag,screen} 128x128 q40 p0 and p2 PANICKED — "an inter block
+on a frame with no inter frame-syntax state". `encode_tile_rows`' chain
+simulation (`sim_ectx`) re-codes every superblock to evolve the per-SB frame
+contexts, and it was never armed with the frame's `InterSyntaxState` or MVP
+environment. Its gate is `use_funnel && update_cdf_level(..) != 0 && multi_sb`,
+and `svt_aom_get_update_cdf_level_default` is non-zero on an INTER frame only
+at `enc_mode <= 3` — exactly the band the GM refusal made unreachable. p4 does
+not chain (level 0 there) and 64x64 is single-SB, which is why every cell that
+passed, passed. Armed from the same two values the real pack's context takes;
+it cannot move a byte on a cell that encodes today, because before this every
+cell that reached the arm crashed.
+
+**Outcome — the p0..p4 inter band now encodes, and it is byte-exact.**
+`identity_diff_inter.sh`, frames=2, q40, shift 3, BOTH frames byte-identical to
+C unless stated:
+
+| content | 16 | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|
+| uniform  | p0 p2 p3 p4 | p0 p2 p3 p4 | p0 p2 p3 p4 | p0 p2 p3 p4 | — |
+| gradient | **REFUSED** | p0 p2 p3 p4 | p0 p2 p3 p4 | p0 p2 p3 p4 | — |
+| diag     | **REFUSED** | p0 p2 p3 p4 | p0 p2 p3 p4 | p0 p2 p3 p4 | — |
+| screen   | **REFUSED** | p0 p2 p3 p4 | p0 p2 p3 p4 | p0 p2 p3 p4 | — |
+| `crop:` CID22 photo | — | — | **p2 p4** (p0 differs on FRAME 0) | **p2 p4** (p0 differs on FRAME 0) | p0/p2/p4 differ |
+
+**The twelve 16x16 refusals are the derivation being CONSERVATIVE, and they are
+measured, not guessed.** At 16x16 the picture is 256 pixels, so
+`sum(rc_me_distortion) / (w*h)` is 102 / 104 / 18 on gradient / diag / screen
+and C DOES run the search — and finds IDENTITY anyway (`is_gm_on=0`, dumped).
+Those twelve cells were byte-identical when measured with the refusal forced
+off, so they are exactly what porting `compute_global_motion` would close. The
+refusal stands until then: "C searched and found nothing" is a fact only the
+search can establish, and asserting it without one is the
+plausible-but-wrong-stream move. They were refused before this chunk too — the
+preset-level refusal covered them — so nothing regressed.
+
+**`photo p2 inter` — the cell `benchmarks/perf_2026-09-05-arm10-POSITION.meta`
+reports as 25/25 ERR with no timing at all — now encodes**, byte-identical to C
+at 128x128 (7130 / 24 B) and 256x256 (28785 / 27 B). Still open and NOT closed
+by this chunk: the 512 photo diverges at p0/p2/p4 and `photo p0` diverges on
+FRAME 0 (a KEY frame, so upstream of everything here — `tools/photo_p0_gate.sh`
+owns it).
+
+**What is still refused, and why the refusal is honest.** When the derivation
+says C would search, the frame is refused. C's model then decides
+`global_motion_params()`'s type and up to six parameters per reference AND the
+MD side's `gm_wmtype` (still `[Identity; 8]` at `pipeline.rs`, and
+`InterMdEnv::global_motion` is still `[default; 8]`); emitting identity models
+against a C encoder that coded real ones is exactly the
+plausible-but-wrong-stream outcome `docs/WORKING-ON-THIS.md` §6 rules out. The
+two zoom cells are that refusal, and `tools/gm_join_gate.sh` asserts the port
+reaches them with `all_identity=0` — the same verdict C reaches with
+`is_gm_on=1`.
+
+**The gate.** `tools/gm_join_gate.sh` joins `GMPORT` (`SVTAV1_GMDBG`) against
+`GMFRAME` (`SVT_GM_OUT`) field for field over eight cells: `b64`,
+`total_me_sad`, `avg_me_sad`, `total_gm_sbs`, `ds` and the identity verdict.
+**8 cells, 0 mismatching fields, 2 cells where C fitted a non-IDENTITY model**,
+and it FAILS with "ANTI-VACUITY FAIL" if no cell reaches one — because the
+`avg_me_sad = 0` branch is the easy half and a gate that only saw it would
+prove nothing. `total_me_sad` matches C exactly, not approximately: 173,616 on
+the 256 zoom cell and 2,578,922 on the 512 one.
+
+**What this chunk did NOT do**, named with specifics so the next one does not
+re-derive it: `compute_global_motion` (`global_me.c:320`, the per-reference
+driver: full-frame `svt_nxm_sad_kernel`, then correspondence -> RANSAC ->
+`svt_av1_convert_model_to_params` -> `svt_aom_upscale_wm_params` ->
+`svt_av1_refine_integerized_param` -> `svt_get_shear_params` ->
+`svt_av1_is_enough_erroradvantage`, per model TRANSLATION..ROTZOOM) and
+`svt_aom_gm_get_params_cost` (`global_me_cost.c:24`, 69 lines) are the only two
+pieces of the SEARCH not ported — everything else in that chain already is
+(`port_gm_correspondence`, `port_ransac`, `port_global_motion`,
+`svtav1_dsp::port_warp::get_shear_params`). Wiring the RESULT then needs
+`port_entropy_inter::gm::write_global_motion{,_params}` called from
+`entropy::obu::write_inter_frame_header` in place of its seven-zero-bit loop,
+`InterMdEnv::global_motion`, and `InterMdFrame::gm_wmtype`.
+
+**Correction to `docs/UNWIRED-PORTED-CODE-2026-09-04.md` item 2.** Its file
+list is incomplete and its "what wiring takes" is wrong in one place. It omits
+`port_gm_correspondence.rs` (the MV-arm correspondence generator, also ported
+and also unreachable) and, more importantly, `Codec/global_me.c` entirely —
+which is not a leaf but the DRIVER, and the reason "wire the RANSAC->refine
+chain from wherever ME candidates are gathered" is not the shape of the work:
+C's own gate decides that the chain usually must not run at all. It also says
+`derive_gm_level` / `set_gm_controls` are unwired; `derive_gm_level` was in
+fact live through a SECOND transcription (`inter_hdr_arm::gm_core_level`),
+which is the duplicate-transcription hazard the same document's §"Duplicate
+transcriptions" is about.
+
 ## 4. A cross-lane PREREQUISITE the wiring chunk must land first (measured 2026-08-31, wp-entropy)
 
 Found by reading `entropy/context.rs::FrameContext::new_default`, not inferred:

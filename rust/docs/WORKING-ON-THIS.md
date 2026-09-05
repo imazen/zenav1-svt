@@ -492,6 +492,21 @@ guarded now (`${ARR[@]+"${ARR[@]}"}`, and a `${ARR[@]+${#ARR[@]}}`-derived
 count); a NEW script must do the same or be run from a shell whose PATH puts
 bash >= 4.4 first.
 
+**The grid's MOTION MODEL is a pure translation, and that makes some branches
+structurally unreachable from it.** `identity_run`'s frame N is frame 0 shifted
+right by `SVTAV1_FRAME_SHIFT * N` with edge replication — the trivial global
+model, and exactly what open-loop ME cancels. MEASURED 2026-09-05: C's
+global-motion search is gated on
+`average_me_sad = sum(rc_me_distortion) / (w*h) >= 1` (`global_me.c:157`), and
+that floors to **0 on every synthetic cell at 64..512 AND on `crop:` real photo
+content at shifts 3, 13 and 37** — so a global-motion gate built on the
+existing grid would have passed while never once taking the branch it was named
+for. `SVTAV1_FRAME_ZOOM_NUM` / `_DEN` (integer-exact, byte-identical `.yuv`
+across ISAs, a no-op at the default `1/1`) adds a zoom about the frame centre,
+which C fits as a ROTZOOM. Before writing a gate for a feature keyed on MOTION,
+ask what motion the cells actually contain, and make the gate FAIL when no cell
+reaches the interesting branch (`tools/gm_join_gate.sh`'s "ANTI-VACUITY FAIL").
+
 **`SVTAV1_PACKTREE` appends.** `rm -f` it before every run. A first pass at a
 per-preset IntraBC table reported preset 7 coding 3502 blocks when it codes
 zero, because the counts were cumulative. It was caught only because p7 exactly
@@ -1293,6 +1308,21 @@ scoreboard said fine.
 `docs/REFUSED-CONFIGS.md` splits refusals into **CONTRACT** (caller misuse,
 permanent) and **CAPABILITY** (unimplemented — debt), and is CI-gated so the list
 cannot accrete quietly. **Read the CAPABILITY table as a backlog.**
+
+**A refusal that names a KNOB when the condition is per-FRAME refuses cells the
+oracle agrees with.** MEASURED 2026-09-05: the global-motion refusal fired on
+`svt_aom_derive_gm_level != 0`, which is a fact about the PRESET (non-zero on
+every inter frame at <= M4). Whether C codes a model is
+`svt_aom_global_motion_estimation`'s own `average_me_sad` gate, and on the
+ENTIRE existing grid — synthetic and real photo alike — that gate says no, so C
+wrote the same seven `is_global = 0` bits the port writes. One refusal was
+therefore hiding the whole p0..p4 inter band, in which
+{uniform,gradient,diag,screen} x {16,64,128,256} and `crop:` photo at 128/256
+turn out byte-identical to C, plus a PANIC at presets 0..3 that nothing could
+reach to find. When you write a refusal, ask whether its condition is the
+narrowest one that is actually true — and prefer computing the oracle's own
+predicate to naming the knob that enables it (`docs/INTER-ENCODE-PLAN.md`
+§1z⁴¹).
 
 ## 7. Dead-looking C stays translated
 
