@@ -1,0 +1,294 @@
+TX_UNIT'S TWO OUTPUT BUFFERS IN C's SHAPE: the port allocated a `Vec` pair per
+tx-type TRIAL where C writes into a slot it allocated once per encoder thread
+at init. 24.17 M allocator calls per 512x512 photo frame at preset 2 ->
+15.14 M (9,296x C -> 5,824x), -956 M Ir (-1.97 %), and the FIRST allocation
+removal in this campaign to convert to wall clock: **1.026x faster on a
+textured photo at 512 p2**, 1.018x / 1.012x on the gradient at 256 / 512 p2,
+byte-identical on both ISAs, and the memory axis unmoved on both quantities
+and both hosts. Four variants were measured and rejected on the way; they are
+in section 6 of the TSV and below, because two of them cost aarch64 inter peak
+RSS for the same arithmetic.
+
+date:   2026-09-05
+hosts:  MEASUREMENT r7900x (x86_64-linux, AMD Ryzen 9 7900X, 24 cores),
+        valgrind-3.26.0 --tool=callgrind (Ir only), rustc 1.98.1, gcc 15.2.0.
+        GATES both: r7900x and this Mac (aarch64-darwin, M4 Pro, bash 5 via
+        /opt/homebrew/bin/bash — every gate that uses `mapfile`/`declare -A`
+        refuses bash 3.2).
+base:   main@origin 41e5d8f1, built in a sibling directory on each host with
+        the same command and measured FIRST. It reproduces
+        `compute_stats_cshape_2026-09-04`'s AFTER row (p2 1.777, p6 2.349) and
+        `callcount_realimg_2026-09-04`'s allocator counts (24,169,163 against
+        that record's 24,169,160 — three calls of harness difference) to the
+        unit, which is the positive control that the two trees are comparable.
+cand:   this commit. Two files: `leaf_funnel/tx_pipeline.rs`, `leaf_funnel/txt.rs`.
+C:      reference/svt-av1 @ 3115c0c1 — the PREBUILT oracle in the primary
+        r7900x checkout (`Bin/Release/libSvtAv1Enc.a` 2026-08-31,
+        `tools/perf_c_encode/perf_c_encode` 2026-09-03), NOT rebuilt.
+port:   `env -u RUSTFLAGS cargo build --release -p zenav1-svt --example
+        perf_encode --example identity_run -j 4` (no target-cpu=native).
+tools:  Ir + counts: tools/perf_profile/callcount_cells.sh, callcount.py,
+        tree_callers.py (all unchanged) on the CID22 photo the realimg record
+        prepared (sha256 88142a48..., r7900x:~/tmp/rc1/yuv/photo_cid.yuv),
+        presets 2 and 6, qp 40, STILL. Wall clock: tools/perf_ab.sh, 15
+        interleaved randomised-order paired rounds, one untimed warmup per
+        sample, NEITHER SIDE NICED, box quiet (load 0.09 before the first run).
+        Memory: tools/mem_peak.sh and — on the aarch64 inter cell, whose
+        auto-thread spread is 8-15 % — tools/mem_bisect.sh, which round-robins
+        the binaries so drift lands on both equally.
+data:   benchmarks/txout_cshape_2026-09-05.tsv.
+
+=================== C's LIFETIME MODEL (cited) ===================
+
+`svt_aom_mode_decision_context_ctor` (`Source/Lib/Codec/md_process.c:214`,
+reached from `svt_aom_enc_dec_context_ctor`'s `EB_NEW` at
+`enc_dec_process.c:108`) allocates the WHOLE mode-decision scratch ONCE per
+encoder thread and reuses it for every block of every frame. The three pools
+this chunk is about:
+
+    md_process.c:585-596  svt_aom_pic_buf_desc_pool_ctor(&ctx->tx_recon_coeff_pool, ..., TX_TYPES)
+                          svt_aom_pic_buf_desc_pool_ctor(&ctx->tx_recon_pool,       ..., TX_TYPES)
+                          svt_aom_pic_buf_desc_pool_ctor(&ctx->tx_quant_coeff_pool, ..., TX_TYPES)
+    md_process.c:597-601  ctx->recon_coeff_ptr[txt_itr] = &ctx->tx_recon_coeff_pool.descs[txt_itr];
+                          ctx->recon_ptr[txt_itr]       = &ctx->tx_recon_pool.descs[txt_itr];
+                          ctx->quant_coeff_ptr[txt_itr] = &ctx->tx_quant_coeff_pool.descs[txt_itr];
+
+released once in the matching dtor (`mode_decision_context_dctor`,
+`md_process.c:35`, installed at `:231`; `svt_aom_pic_buf_desc_pool_dctor` at
+`:142-144`). The CONSUMER is the tx-type search itself:
+
+    product_coding_loop.c:4723-4725
+        EbPictureBufferDesc* recon_ptr       = (tx_type == DCT_DCT) ? cand_bf->recon : ctx->recon_ptr[tx_type];
+        EbPictureBufferDesc* quant_coeff_ptr = (tx_type == DCT_DCT) ? cand_bf->quant : ctx->quant_coeff_ptr[tx_type];
+    product_coding_loop.c:4949 / :5011      best_tx_type = tx_type;     // an INDEX; nothing is copied
+    product_coding_loop.c:5082-5084         if (best_tx_type != DCT_DCT) copy_txt_data(cand_bf, ctx, ...);
+
+So C's per-trial buffer cost is a POINTER SELECT, "keep the winner" is an index
+assignment, and the ONE copy per transform unit (`copy_txt_data`, `:4256-4283`)
+runs after the loop and only when the winner is not DCT_DCT. BOTH sides of C's
+select are themselves pooled — `cand_bf` comes out of `cand_pred_pool` /
+`cand_rec_coeff_pool` / `cand_quant_pool` (`md_process.c:640-655`, `max_nics_uv`
+slots, also once per thread) — which is why C's whole-encode allocator traffic
+is ~2,600 calls at every preset and on every content: it is one-time setup, not
+per-block work.
+
+=================== WHAT THE PORT DID, AND WHAT IT DOES NOW ===================
+
+`tx_unit_inner` built and RETURNED `TxUnitOut { qcoeff: Vec<i32>, recon:
+Vec<u8>, .. }` — `vec![0i32; pw * ph]` plus `vec![0u8; w * h]` per call, i.e.
+per (candidate x tx-type x transform unit) TRIAL. `callcount_realimg_2026-09-04`
+ranked it the port's #1 allocator caller: 6,598,459 `calloc`s at photo_cid 512
+p2, with the matching frees appearing as `mds3::eval_candidate` 6,224,725 (the
+inlined drop of the losing trials).
+
+Now `tx_unit_screened_into(..., out: &mut TxOutBufs)` writes into caller-owned
+buffers and returns a `TxUnitMeta` carrying the scalars plus each buffer's
+VALID PREFIX LENGTH — explicit, because a pooled buffer keeps the largest
+capacity it has ever been grown to, so its `len()` is not this unit's extent,
+and `recon_len == 0` is how the old empty-when-the-inverse-is-skipped `Vec`
+contract survives. `txt_search` holds two `TxOutBufs` in a per-thread `TXT_OUT`
+(C keeps `TX_TYPES` of them because it indexes by `txt_itr`; the port only ever
+needs the CURRENT trial and the BEST so far) and a new best does
+`mem::swap(cur, bst)` — C's `best_tx_type = tx_type`. The winner is
+materialised into an owned `Vec` ONCE per transform unit, where C runs
+`copy_txt_data`: measured `txt_search::{closure#0}` = 992,510 mallocs, and
+2 x C's `perform_tx_partitioning` count on the same cell (496,519) is 993,038.
+
+WHERE THE PORT DRAWS C's SELECT, AND WHY NOT WHERE C DRAWS IT. C splits on
+`tx_type == DCT_DCT` and pays nothing either way (both sides are pooled); the
+port's owned output is a REAL allocation, so it splits on `only_dct` — does
+this search have more than one candidate — instead. A one-candidate search
+(M9+, any dim > 32, and the whole video/inter arm at preset 13, where `txt_on`
+is false) has no loser to save an allocation on, so it keeps the pre-existing
+owned path byte for byte and allocation for allocation. That is not tidiness:
+pooling those searches too is variant 1 below, and it cost +5.8 % aarch64 inter
+peak RSS at 2048 for zero instruction saving.
+
+NEITHER POOLED BUFFER IS RE-ZEROED, and that is the point of the change
+(`700357e2`'s finding from the other direction: a recycled buffer that is
+re-zeroed pays a `memset` that `vec![0; n]`'s `calloc` gets for free). It is
+sound because every position is written before it is read on every path:
+  * `qcoeff` — `quant_coding::{fp_one, b_one}` (`quant_coding.rs:100-107` /
+    `:388-394`) assign `qcoeff[rc]` on BOTH arms of their `if tmp32 != 0`, for
+    every `rc` in `0..min(coeffs.len(), qcoeff.len(), dqcoeff.len())`, and the
+    slice handed in is exactly `pw * ph` (as is `packed`); the two QM paths open
+    with their own `qcoeff[..coeffs.len()].fill(0)` (`qm.rs:134`, `:195`).
+    `optimize_b` and `perform_noise_normalization` only revise positions the
+    quantizer already wrote.
+  * `recon` — `residual::recon_add_clamp` (`residual.rs:277`) writes every one
+    of `h * w`; the `eob == 0` arm copies the prediction over every row; the
+    coded-lossless arm zips all 16. When the inverse transform is skipped the
+    buffer is not touched at all and `recon_len == 0`.
+
+=================== WHY THIS IS NOT ATTEMPTS 1-3 ===================
+
+Three allocation removals are on the record as NULL or NEGATIVE, and this is a
+different object from each:
+
+  1. `alloc_bufpool_null_2026-08-13` — a thread-local Vec FREE-LIST. It hands
+     out and takes back whole `Vec`s, so there is still a `Vec` per use plus
+     pool bookkeeping, and a recycled `Vec` must be re-zeroed to reproduce
+     `vec![0; n]`: it removes the allocation and KEEPS the memset, which is the
+     half this campaign has measured to be worth nothing. Here the buffer never
+     leaves the pool during the search and is never re-zeroed.
+  2. The `extract_neighbors_tiled` hoist (2026-09-03) moved an allocation UP a
+     level — still one buffer per block, still zeroed. 18-20 % of all
+     allocations removed, null. It changed WHERE, not WHETHER.
+  3. `mds3d0_null` / `hadscratch_null` (2026-09-03, 0.983-0.992x) each removed
+     ONE small allocation per candidate / per call, 0.95 M calls at the top of
+     that pair. This removes 9.03 M calls (37 % of the frame's total) and the
+     6.6 M zero-fills with them, and it is the only one of the four that changes
+     the buffer's LIFETIME to C's.
+
+The rule those three produced — "on this allocator a malloc/free pair is worth
+about nothing and a memset is worth real time; rank by what it MEMSETs" — is
+not contradicted, it is the design input: 6.6 M `calloc`s are 6.6 M zero-fills.
+
+=================== THE NUMBERS ===================
+
+Ir, photo_cid 512x512 qp 40, r7900x callgrind (base -> cand, C):
+    p2   48,432,763,259 -> 47,476,521,985   (-956,241,274, -1.97 %)   C 27,248,547,183
+         port/C 1.777 -> 1.742
+    p6    1,657,133,167 ->  1,647,475,456   ( -9,657,711,  -0.58 %)   C    705,588,227
+         port/C 2.349 -> 2.335
+
+Allocator calls, photo_cid 512 p2 (base -> cand, C):
+    calloc  9,454,380 -> 3,948,389    (C   781)
+    malloc  2,630,202 -> 3,622,712    (C   410)
+    free   12,084,581 -> 7,571,100    (C 1,409)
+    TOTAL  24,169,163 -> 15,142,201   (C 2,600)  =  9,296x -> 5,824x C
+    memset 18,203,723 -> 18,032,329   (C 1,040,065)
+At p6: 557,691 -> 502,509 (C 2,583).
+
+Per site (callgrind --tree=caller), photo_cid 512 p2:
+    tx_pipeline::tx_unit_inner    calloc 6,598,459 -> 1,092,467
+        (what is LEFT is the owned-output and one-candidate call sites' two
+         `vec![0; n]`s, now issued from `grown_out` at the same program point)
+    txt::txt_search::{closure#0}  malloc         0 ->   992,510  (the one
+         materialisation per transform unit; 2 x C's 496,519 TXBs is 993,038)
+    mds3::eval_candidate          free   6,224,725 -> 1,356,278
+                                  malloc   844,195 ->   644,816
+UNMOVED, and therefore the queue for anything that follows: `drop_glue::<Cand>`
+1,352,714 frees + `eval_candidate`'s own 522,156 callocs / 644,816 mallocs
+(that group is C's `cand_bf_ptr_array` + `cand_pred_pool` /
+`cand_rec_coeff_pool` / `cand_quant_pool`, `md_process.c:640-655` — the same
+one-per-thread shape, ~3.9 M calls and ~370 M Ir, and the largest coherent
+block left); `hadamard_satd` 949,436 callocs + 949,436 frees;
+`extract_neighbors_tiled` 964,308 mallocs; `inject_candidates` 474,718 callocs.
+Two of those four already have measured NEGATIVE results against them
+(`hadscratch_null`, the neighbours hoist) and should not be re-attempted in the
+shape that failed. The whole remaining allocator family is ~2.0 % of the port's
+photo p2 Ir.
+
+Wall clock, r7900x, 15 interleaved paired rounds, neither side niced, box
+quiet. ratio = cand/base, speedup = base/cand, every row byte-identical:
+
+    content    size preset  n  base_ms   cand_ms   ratio   speedup  p25     p75
+    photo_cid  512  2      15  2462.406  2400.775  0.9748  1.026x   0.9718  0.9766
+    photo_cid  512  6      15    81.188    80.849  0.9968  1.003x   0.9950  0.9976
+    gradient   256  2      15   209.451   205.622  0.9823  1.018x   0.9786  0.9854
+    gradient   512  2      15   460.695   454.889  0.9886  1.012x   0.9854  0.9896
+    gradient   256  6      15    10.420    10.485  1.0062  0.994x   0.9847  1.0096
+    gradient   512  6      15    33.815    33.913  1.0047  0.995x   0.9961  1.0089
+    gradient   256 10      15     1.388     1.389  1.0071  0.993x   0.9990  1.0096
+    gradient   512 10      15     6.399     6.443  1.0023  0.998x   0.9905  1.0105
+
+READ THE p6/p10 ROWS AS WRITTEN. The four fast-preset gradient cells are
+null-to-marginally-negative — three of the four spans straddle 1.0, and
+`gradient 256 p10`'s does not (p25 0.9990), so that cell is a ~0.7 % SLOWDOWN
+of a 1.39 ms frame. Those presets are `only_dct` and therefore take the
+unchanged owned path; what they pay is the wrapper's extra call frame and
+`grown_out`'s `is_empty` branch. `#[inline]` on the wrapper was tried against
+exactly this and measured null-to-worse on all six gradient cells (256 p2
+1.014x against 1.018x without it), so it is NOT in the tree. In absolute time
+the trade is 5.8 ms/frame gained at gradient 512 p2 against 0.10 ms lost at
+512 p6 and 0.04 ms at 512 p10.
+
+The photo's -2.5 % at p2 tracks its -1.97 % Ir; the gradient is smaller because
+its allocator traffic is 7x lighter (1,339x C against the photo's 9,296x,
+`callcount_realimg_2026-09-04`), which is the whole reason this was measured on
+real content.
+
+MEMORY — the hard constraint of this chunk. Both quantities, both ISAs,
+gradient qp 40 preset 13, `.obu` identical to the baseline on every row:
+
+  aarch64 (this Mac), the inter cell, INTERLEAVED `mem_bisect.sh`, 21 rounds:
+      base  median 142,128 KiB   min 140,160   max 160,464
+      cand  median 142,144 KiB   min 140,112   max 142,384
+    +16 KiB on the median, BELOW base on the min, and a tighter distribution.
+    A `MB_THREADS=1` run (9 rounds) reads 142,128 -> 142,176.
+  aarch64 `mem_peak.sh`, median of 5 (base -> cand, KiB): 1280 still
+    28,176 -> 28,176, videokey 33,184 -> 33,280, inter 55,328 -> 55,328;
+    2048 still 72,480 -> 72,528, videokey 87,616 -> 87,760, inter
+    142,096 -> 142,256. x86_64 `mem_peak.sh`, median of 5: 1280 still
+    29,112 -> 29,612, videokey 34,696 -> 34,700, inter 45,648 -> 45,092;
+    2048 still 68,792 -> 68,620, videokey 77,944 -> 77,860, inter
+    109,268 -> 109,584. Every one inside its own run-to-run band.
+  x86_64 peak HEAP (heaptrack, LIVE bytes): 2048 still 61.07 -> 61.07 M,
+    2048 inter 101.78 -> 101.78 M — identical, because the pooled buffers are
+    only reachable on the multi-candidate path and preset 13 never takes it.
+
+=================== FOUR VARIANTS MEASURED AND REJECTED ===================
+
+Each was built, byte-checked and measured; none is in the tree. They are here
+because two of them are the same arithmetic as the landed form and still cost
+memory, which is the transferable finding.
+
+  1. POOL EVERY TRIAL (no `only_dct` gate). Best instruction count of the four:
+     p2 -2.00 % (47,462,759,437), allocator 15,142,201. But the aarch64 inter
+     2048 cell went 142,112 -> 150,336 KiB median — +5.8 %, with the
+     distributions NOT overlapping, reproduced at `MB_THREADS=1` (9 rounds) and
+     at auto threads (11 and 21 rounds). x86 RSS and x86 peak heap were flat, so
+     this is macOS `libmalloc` region retention responding to the size-class mix
+     — the same phenomenon `mem_refclone_2026-09-04` decomposed with `vmmap`
+     (~60 MiB of regions holding no live block). Cost: 0.03 pp of Ir to fix.
+  2. C's LITERAL SELECT (`tx_type == DCT_DCT` owned, everything else pooled).
+     Memory clean, but p2 only -1.42 % (47,744,675,928) and allocator
+     16,706,945: when a non-DCT type wins, this pays BOTH the DCT trial's owned
+     pair AND the winner's materialisation. Faithful to C's line, worse on the
+     port's cost model, superseded by the `only_dct` split.
+  3. PRE-SIZE THE BUFFERS IN THE CALLER (the wrapper allocates `vec![0i32;
+     pw*ph]` / `vec![0u8; w*h]` itself, using `tx_unit_inner`'s own predicates,
+     and hands them in warm). Identical sizes, identical counts, identical
+     entry points, p2 -1.97 % — and the aarch64 inter 2048 median went
+     142,128 -> 148,352 KiB (+4.4 %, 21 interleaved rounds). **The allocation
+     POINT is what moved it**: pre-sizing makes both buffers live across the
+     residual, the forward transform and the RDOQ instead of being created
+     between them, and the live-set interleaving is what macOS's region
+     retention keys on. The landed form allocates from `grown_out` at the
+     original program point, which is why it is written the way it is.
+  4. `grown_out`'s `resize` ON AN EMPTY BUFFER (instead of `vec![0; n]`).
+     `Vec::resize` from zero is `__rust_alloc` + a zeroing loop, not `calloc`:
+     +0.88 M `memset` calls and 2 M allocations moved from `calloc` to `malloc`,
+     p2 -1.89 % instead of -1.97 %.
+
+Also tried and not kept: `#[inline]` on the owned-output wrapper (above).
+
+=================== BYTE IDENTITY AND GATES ===================
+
+Every callgrind cell: identity pre-pass (port writes .yuv + .obu, C reads the
+same .yuv, `cmp`) identical, AND each instrumented run's own .obu `cmp`'d
+against it — 46,462 B at p2 and 45,688 B at p6, both sides, before and after.
+Every `perf_ab` cell reports ident=Y. Every `mem_peak` / `mem_bisect` row
+carries the same `obu_bytes` on both binaries.
+
+aarch64 (this Mac, /opt/homebrew/bin/bash, one harness at a time):
+  `cargo nextest run --workspace` 2530/2530, `regression_spotcheck` 104/104,
+  `identity_full_8bit` 1100/1100 (+0 pinned, 0 harness errors), `inter_byte_gate`
+  PASS (96 required, 0 failed, 1 known-open, 0 crashed, 0 harness errors),
+  `video_key_matrix` 59/60 (the one diff is the known-open `gradient p0`,
+  1341 vs 1342 B, unmoved), `fctx_gate` PASS (96/96 shared fields on both
+  frames), `inter_decode_gate` 5/5 PASS, `inter_decode_census` 96/96 PASS,
+  `inter_completion_scan` with `SCAN_GATE=1` 64 OK / 0 REFUSED / 0 CRASH PASS,
+  `screen_palette_gate` 50/50 byte-identical (38 palette-coding cells).
+x86_64 (r7900x, same tree): nextest 2540/2540, `regression_spotcheck` 104/104,
+  `identity_full_8bit` 1100/1100, `inter_byte_gate` PASS (96/0/1).
+
+ONE HARNESS TRAP, RECORDED BECAUSE IT COST A RED RUN: the gate chain exported
+`ZENAV1_CORPUS_ROOT=~/work/zen` for `screen_palette_gate.sh` (whose
+`lib_corpus.sh` wants the directory that CONTAINS the corpora), and
+`tier_invariance::intrabc_output_is_tier_invariant_on_real_screen_content`
+reads the same variable as the directory that contains `gb82-sc/graph.png`
+— i.e. `~/work/zen/codec-corpus`. The test asserts the file exists rather than
+skipping, so it failed loudly and correctly; the encoder was never involved.
+Two consumers, one variable, two different meanings of "root".

@@ -1,0 +1,96 @@
+# tx_unit's two output buffers in C's shape (ctx->quant_coeff_ptr[] / recon_ptr[]).
+# Method, hosts, provenance and the four REJECTED variants: the .meta beside this.
+# base = main@origin 41e5d8f1 ; cand = this commit. Byte-identical to C on every
+# cell (identity pre-pass AND each instrumented run's own .obu).
+#
+# --- 1. instruction counts (r7900x, valgrind callgrind, Ir), photo_cid 512x512 qp40
+section	cell	preset	quantity	base	cand	c	unit
+ir	photo_cid_512	2	port_ir	48432763259	47476521985	27248547183	Ir
+ir	photo_cid_512	2	port_over_c	1.777	1.742	1.000	ratio
+ir	photo_cid_512	6	port_ir	1657133167	1647475456	705588227	Ir
+ir	photo_cid_512	6	port_over_c	2.349	2.335	1.000	ratio
+#
+# --- 2. allocator call counts, photo_cid 512x512 qp40
+calls	photo_cid_512	2	alloc_zeroed_calloc	9454380	3948389	781	calls
+calls	photo_cid_512	2	alloc_malloc	2630202	3622712	410	calls
+calls	photo_cid_512	2	dealloc_free	12084581	7571100	1409	calls
+calls	photo_cid_512	2	allocator_total	24169163	15142201	2600	calls
+calls	photo_cid_512	2	allocator_over_c	9295.8	5824.0	1.0	ratio
+calls	photo_cid_512	2	memset_avx2	18203723	18032329	1040065	calls
+calls	photo_cid_512	6	allocator_total	557691	502509	2583	calls
+#
+# --- 3. per-site allocator callers, photo_cid 512x512 p2 (callgrind --tree=caller)
+site	tx_pipeline::tx_unit_inner	2	calloc	6598459	1092467	-	calls
+site	txt::txt_search::{closure#0}	2	malloc	0	992510	-	calls
+site	mds3::eval_candidate	2	free	6224725	1356278	-	calls
+site	mds3::eval_candidate	2	malloc	844195	644816	-	calls
+site	mds3::eval_candidate	2	calloc	522156	522156	-	calls
+site	drop_glue::<types::Cand>	2	free	1352714	1352714	-	calls
+site	predict::hadamard_satd	2	calloc	949436	949436	-	calls
+site	predict::hadamard_satd	2	free	949436	949436	-	calls
+site	partition::extract_neighbors_tiled	2	malloc	964308	964308	-	calls
+site	inject::inject_candidates	2	calloc	474718	474718	-	calls
+#
+# --- 4. wall clock, r7900x, tools/perf_ab.sh, 15 interleaved paired rounds,
+#        neither side niced, box quiet. ratio = cand/base (<1 = cand faster).
+ab	content	size	preset	n	base_ms	cand_ms	ratio	speedup	p25	p75	ident
+ab	photo_cid	512	2	15	2462.4063	2400.7748	0.9748	1.026	0.9718	0.9766	Y
+ab	photo_cid	512	6	15	81.1879	80.8489	0.9968	1.003	0.9950	0.9976	Y
+ab	gradient	256	2	15	209.4514	205.6217	0.9823	1.018	0.9786	0.9854	Y
+ab	gradient	512	2	15	460.6951	454.8886	0.9886	1.012	0.9854	0.9896	Y
+ab	gradient	256	6	15	10.4200	10.4847	1.0062	0.994	0.9847	1.0096	Y
+ab	gradient	512	6	15	33.8145	33.9128	1.0047	0.995	0.9961	1.0089	Y
+ab	gradient	256	10	15	1.3876	1.3888	1.0071	0.993	0.9990	1.0096	Y
+ab	gradient	512	10	15	6.3991	6.4427	1.0023	0.998	0.9905	1.0105	Y
+#
+# --- 5. memory. rss = /usr/bin/time max RSS; heap = heaptrack peak LIVE bytes.
+#        gradient qp40 preset 13. `.obu` identical to base on every row.
+#        mp = tools/mem_peak.sh, median of 5, one binary per invocation.
+#        mb = tools/mem_bisect.sh, INTERLEAVED round-robin (the honest form on
+#             the aarch64 inter cell, whose auto-thread spread is 8-15 %).
+mem	tool	host	size	arm	quantity	base	cand	unit
+mem	mb	mac	2048	inter	rss_median_21rounds	142128	142144	KiB
+mem	mb	mac	2048	inter	rss_min_21rounds	140160	140112	KiB
+mem	mb	mac	2048	inter	rss_max_21rounds	160464	142384	KiB
+mem	mp	mac	1280	still	rss	28176	28176	KiB
+mem	mp	mac	1280	videokey	rss	33184	33280	KiB
+mem	mp	mac	1280	inter	rss	55328	55328	KiB
+mem	mp	mac	2048	still	rss	72480	72528	KiB
+mem	mp	mac	2048	videokey	rss	87616	87760	KiB
+mem	mp	mac	2048	inter	rss	142096	142256	KiB
+mem	mp	r7900x	1280	still	rss	29112	29612	KiB
+mem	mp	r7900x	1280	videokey	rss	34696	34700	KiB
+mem	mp	r7900x	1280	inter	rss	45648	45092	KiB
+mem	mp	r7900x	2048	still	rss	68792	68620	KiB
+mem	mp	r7900x	2048	videokey	rss	77944	77860	KiB
+mem	mp	r7900x	2048	inter	rss	109268	109584	KiB
+mem	mp	r7900x	2048	still	heap	61.07	61.07	MiB
+mem	mp	r7900x	2048	inter	heap	101.78	101.78	MiB
+#
+# --- 6. VARIANTS MEASURED AND REJECTED (none is in the tree)
+var	name	quantity	value	note
+var	pool_every_trial	p2_ir_delta	-2.00%	best Ir of the four
+var	pool_every_trial	mac_2048_inter_rss	142112 -> 150336 KiB	+5.8%, mem_bisect threads=1 9 rounds AND auto 11/21 rounds, non-overlapping — REVERTED
+var	dct_always_owned	p2_ir_delta	-1.42%	C's literal `tx_type == DCT_DCT` select; memory clean but 0.55 pp of Ir left behind
+var	presize_in_caller	p2_ir_delta	-1.97%	identical arithmetic to the landed form
+var	presize_in_caller	mac_2048_inter_rss	142128 -> 148352 KiB	+4.4%, mem_bisect auto 21 rounds — REVERTED; allocation POINT matters, not just size
+var	grown_out_resize_on_empty	p2_ir_delta	-1.89%	+0.88 M memset calls, 2 M allocations moved calloc -> malloc — REVERTED
+var	inline_on_wrapper	grad_256_p2_speedup	1.014x vs 1.018x	null-to-negative on 6 cells — NOT KEPT
+#
+# --- 7. GATES (both ISAs, on this commit's tree)
+gate	host	name	result
+gate	mac	nextest	2530/2530
+gate	mac	regression_spotcheck	104/104
+gate	mac	identity_full_8bit	1100/1100 (+0 pinned, 0 harness errors)
+gate	mac	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open, 0 crashed)
+gate	mac	video_key_matrix	59/60 (the one diff is the known-open gradient p0, 1341 vs 1342 B)
+gate	mac	fctx_gate	PASS (96/96 shared fields on both frames)
+gate	mac	inter_decode_gate	PASS 5/5
+gate	mac	inter_decode_census	PASS 96/96
+gate	mac	inter_completion_scan SCAN_GATE=1	PASS 64 OK / 0 REFUSED / 0 CRASH
+gate	mac	screen_palette_gate	50/50 byte-identical (38 palette-coding cells)
+gate	r7900x	nextest	2540/2540
+gate	r7900x	regression_spotcheck	104/104
+gate	r7900x	identity_full_8bit	1100/1100
+gate	r7900x	inter_byte_gate	PASS (96 required, 0 failed, 1 known-open)
+gate	both	callgrind cells	photo_cid p2 46462 B and p6 45688 B identical to C, before and after

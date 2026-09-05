@@ -884,6 +884,26 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **`tx_unit`'s two output buffers are in C's shape: 24.17 M allocator calls
+  per 512x512 photo frame at preset 2 -> 15.14 M (9,296x C -> 5,824x), -1.97 %
+  instructions, and the first allocation removal in this campaign to convert to
+  wall clock — 1.026x faster on a textured photo at 512 p2, byte-identical
+  (2026-09-05).** The port allocated a `Vec` pair per tx-type TRIAL where C
+  allocates the same two buffers once per encoder thread
+  (`svt_aom_mode_decision_context_ctor`, `md_process.c:214`/`:585-601`) and its
+  tx-type search selects a slot by index (`product_coding_loop.c:4723-4725`),
+  keeps the winner by index and copies once per transform unit (`:5082-5084`).
+  `tx_unit_screened_into` now writes into caller-owned `TxOutBufs`; `txt_search`
+  keeps two per thread and swaps on a new best; neither is re-zeroed (every
+  quantizer path defines all `pw*ph` qcoeff positions, every recon path all
+  `w*h`). The split is drawn on `only_dct` rather than C's `tx_type == DCT_DCT`,
+  so one-candidate searches keep the previous owned path exactly. Four variants
+  measured and rejected, two for memory alone — pooling every trial and
+  pre-sizing the buffers in the caller each cost +4.4-5.8 % aarch64 inter peak
+  RSS at 2048 for the same arithmetic. Memory as landed is unmoved on both ISAs
+  and both quantities. Record
+  `rust/benchmarks/txout_cshape_2026-09-05.{tsv,meta}`.
+
 - **Wiener `compute_stats` (loop-restoration tap search) is C's six-step
   kernel on both ISAs — 127x C per call -> 1.35x on x86 (746.5 M -> 7.9 M Ir
   per 512x512 frame), byte-identical; preset-6 port/C instruction ratio

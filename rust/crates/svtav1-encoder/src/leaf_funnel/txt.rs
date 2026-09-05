@@ -175,120 +175,212 @@ pub(super) fn txt_search(
     let rate_mode = if only_dct { rate_mode } else { RateMode::Exact };
     debug_assert!(only_dct || rate_mode == RateMode::Exact);
 
-    let mut best: Option<TxUnitOut> = None;
-    // The bd10 twin of the SELECTED type (not of the u8-best type): when the
-    // bd10 context is present the winner is chosen by the 10-bit cost, so both
-    // outputs must come from the same tx_type.
-    let mut best10: Option<TxUnitOutHbd> = None;
-    let mut best_type = cc::DCT_DCT;
-    let mut best_cost = u64::MAX;
-    let mut dct_cost = u64::MAX;
-    // C's `best_satd_tx_search` + `satd_early_exit_th`, carried across the
-    // whole search (product_coding_loop.c:4643/:4645). `None` is C's
-    // `if (satd_early_exit_th)` being false — the screen does not exist and
-    // every gated candidate is committed, which is what `only_dct` already
-    // implies (one candidate, nothing to screen).
-    let mut screen = (satd_th > 0).then(|| SatdScreen::new(satd_th));
+    // C's `ctx->quant_coeff_ptr[txt_itr]` / `ctx->recon_ptr[txt_itr]` pools
+    // (`md_process.c:585-600`), which `svt_aom_mode_decision_context_ctor`
+    // allocates ONCE per encoder thread and reuses for every trial of every
+    // block — the reason C's whole-encode allocator traffic is ~2,600 calls.
+    // The port's twin is two per-thread `TxOutBufs`: the trial writes into
+    // `cur`, a new best swaps `cur` and `bst` (C's `best_tx_type` index), and
+    // the winner is materialised into an owned `Vec` ONCE per transform unit
+    // instead of once per trial.
+    tx_pipeline::with_txt_out(move |cur, bst| {
+        // WHICH BUFFER A TRIAL WRITES INTO. C picks per tx type
+        // (`product_coding_loop.c:4723-4725`): `(tx_type == DCT_DCT) ?
+        // cand_bf->recon : ctx->recon_ptr[tx_type]`, and the same for
+        // `quant_coeff_ptr`. Both sides of C's select are POOLED — `cand_bf` comes
+        // out of `cand_pred_pool` / `cand_rec_coeff_pool` / `cand_quant_pool`
+        // (`md_process.c:640-655`), allocated once per encoder thread — so C pays
+        // nothing either way and the split exists only to save `copy_txt_data`
+        // (`:5082-5084`) when DCT_DCT wins.
+        //
+        // The port's owned output is a REAL allocation, so the split is drawn
+        // where it pays instead: on `only_dct`, i.e. does this search have more
+        // than one candidate. A one-candidate search (M9+, any dim > 32, and the
+        // whole video/inter arm at preset 13, where `txt_on` is false) has no loser
+        // to save an allocation on, and routing it through the pool anyway measured
+        // **+4.4 % aarch64 inter peak RSS at 2048** (interleaved `mem_bisect.sh`,
+        // 11 rounds: 142,112 -> 148,352 KiB median, non-overlapping) for no
+        // instruction saving — macOS `libmalloc` keeps whole empty regions resident
+        // and the size-class mix moved. So `only_dct` takes the pre-existing owned
+        // path, byte for byte and allocation for allocation, and only a real
+        // multi-candidate search pools.
+        let mut best: Option<TxUnitMeta> = None;
+        // The one-candidate path's own buffers. EMPTY: `tx_unit_inner` fills each
+        // with the same `vec![0; n]`, at the same point in the pipeline, as
+        // before this change — see `grown_out` for why that is load-bearing on
+        // the memory axis and not just tidiness. Never touched at all on the
+        // pooled path, and therefore never allocated there.
+        let mut owned = tx_pipeline::TxOutBufs::default();
+        // The bd10 twin of the SELECTED type (not of the u8-best type): when the
+        // bd10 context is present the winner is chosen by the 10-bit cost, so both
+        // outputs must come from the same tx_type.
+        let mut best10: Option<TxUnitOutHbd> = None;
+        let mut best_type = cc::DCT_DCT;
+        let mut best_cost = u64::MAX;
+        let mut dct_cost = u64::MAX;
+        // C's `best_satd_tx_search` + `satd_early_exit_th`, carried across the
+        // whole search (product_coding_loop.c:4643/:4645). `None` is C's
+        // `if (satd_early_exit_th)` being false — the screen does not exist and
+        // every gated candidate is committed, which is what `only_dct` already
+        // implies (one candidate, nothing to screen).
+        let mut screen = (satd_th > 0).then(|| SatdScreen::new(satd_th));
 
-    'groups: for g in 0..groups as usize {
-        for &tx_type in TX_TYPE_GROUPS[g] {
-            if only_dct && tx_type != cc::DCT_DCT {
-                continue;
-            }
-            if tx_type != cc::DCT_DCT {
-                if AV1_EXT_TX_USED[set_type][tx_type] == 0 {
+        'groups: for g in 0..groups as usize {
+            for &tx_type in TX_TYPE_GROUPS[g] {
+                if only_dct && tx_type != cc::DCT_DCT {
                     continue;
                 }
-                // txt_rate_cost_th (100 at M6, 250 at M5): skip types
-                // whose signalling rate alone exceeds the DCT cost
-                // fraction (product_coding_loop.c:4710-4716).
-                //
-                // The lambda here MUST be the same one that produced
-                // `dct_cost`, or the gate compares two different scales. C
-                // uses ONE `full_lambda` for both — `ctx->hbd_md ?
-                // full_lambda_md[EB_10_BIT_MD] : full_lambda_md[EB_8_BIT_MD]`
-                // (:4590) — in the gate at :4714 AND in the cost at :4944.
-                // The port had the cost on the bd10 lambda but the gate on the
-                // u8 one, so at bd10 the left side stayed 8-bit-scaled while
-                // `dct_cost` was 10-bit-scaled: the gate under-fired and the
-                // port evaluated (and sometimes picked) tx types C prunes
-                // before it ever quantizes them. `bd10.map_or` mirrors
-                // `lambda3`, so bd8 is byte-unchanged by construction.
-                let gate_lambda = bd10.map_or(lambda, |b| b.lambda);
-                let tx_type_rate = rates.txt_rate(c_tx, intra_dir, tx_type) as u64;
-                if dct_cost != u64::MAX
-                    && rdcost(gate_lambda, tx_type_rate, 0) * 1000
-                        > dct_cost * frame.cfg.txt_rate_th
-                {
+                if tx_type != cc::DCT_DCT {
+                    if AV1_EXT_TX_USED[set_type][tx_type] == 0 {
+                        continue;
+                    }
+                    // txt_rate_cost_th (100 at M6, 250 at M5): skip types
+                    // whose signalling rate alone exceeds the DCT cost
+                    // fraction (product_coding_loop.c:4710-4716).
+                    //
+                    // The lambda here MUST be the same one that produced
+                    // `dct_cost`, or the gate compares two different scales. C
+                    // uses ONE `full_lambda` for both — `ctx->hbd_md ?
+                    // full_lambda_md[EB_10_BIT_MD] : full_lambda_md[EB_8_BIT_MD]`
+                    // (:4590) — in the gate at :4714 AND in the cost at :4944.
+                    // The port had the cost on the bd10 lambda but the gate on the
+                    // u8 one, so at bd10 the left side stayed 8-bit-scaled while
+                    // `dct_cost` was 10-bit-scaled: the gate under-fired and the
+                    // port evaluated (and sometimes picked) tx types C prunes
+                    // before it ever quantizes them. `bd10.map_or` mirrors
+                    // `lambda3`, so bd8 is byte-unchanged by construction.
+                    let gate_lambda = bd10.map_or(lambda, |b| b.lambda);
+                    let tx_type_rate = rates.txt_rate(c_tx, intra_dir, tx_type) as u64;
+                    if dct_cost != u64::MAX
+                        && rdcost(gate_lambda, tx_type_rate, 0) * 1000
+                            > dct_cost * frame.cfg.txt_rate_th
+                    {
+                        txt_dbg!(
+                            "cand txt={tx_type} SKIP rate_gate rate={tx_type_rate} dctcost={dct_cost}"
+                        );
+                        continue;
+                    }
                     txt_dbg!(
-                        "cand txt={tx_type} SKIP rate_gate rate={tx_type_rate} dctcost={dct_cost}"
+                        "cand txt={tx_type} rate_gate_pass rate={tx_type_rate} dctcost={dct_cost}"
                     );
-                    continue;
                 }
-                txt_dbg!(
-                    "cand txt={tx_type} rate_gate_pass rate={tx_type_rate} dctcost={dct_cost}"
-                );
-            }
-            // ---- C's two-phase trial (product_coding_loop.c:4729-4776) ----
-            //
-            // Phase 1, the CHEAP one, is the residual + forward transform and a
-            // SATD over the coefficients it produced; phase 2 — quantize,
-            // conditional RDOQ, inverse, distortion, coefficient rate — runs
-            // only for the trials the SATD admits. `tx_unit_screened` /
-            // `tx_unit_hbd_screened` are that single pipeline with the gate at
-            // C's position in its middle, so the transform feeds the SATD
-            // directly and neither the residual nor the transform is derived
-            // twice. Until 2026-09-04 this loop ran the WHOLE pipeline first and
-            // applied the SATD post-hoc from a `txb_coeff_satd` that re-derived
-            // both — 488,414 committed trials against C's 270,415 at gradient
-            // 512x512 qp40 preset 2, plus 484,442 redundant residual passes
-            // (`benchmarks/callcount_2026-09-04`). The ADMITTED SET is
-            // unchanged: the SATDs, their order and the running minimum are the
-            // same, and a rejected trial never reached `best`/`best_cost`/
-            // `dct_cost` under either shape — so this is byte-identical by
-            // construction, not by luck.
-            //
-            // bd10 (task #94): C's SATD reads `ctx->tx_coeffs` at the ACTIVE MD
-            // bit depth, so with the 10-bit context present the gate runs on the
-            // 10-bit transform and the u8 twin is computed only for admitted
-            // trials. Every gate around the pair (group order, ext-tx set, the
-            // rate-cost th, the SATD early exit, the non-signalable-eob rule) is
-            // bit-depth INDEPENDENT — only the residual, the quant table, the
-            // lambda and the distortion move.
-            let out10 = match bd10 {
-                Some(b) => {
-                    let o = tx_unit_hbd_screened(
-                        b.src10,
-                        b.src10_stride,
-                        b.src10_off,
-                        b.pred10,
-                        w,
-                        0,
-                        w,
-                        h,
-                        tx_type,
-                        0,
-                        txb_skip_ctx,
-                        dc_sign_ctx,
-                        b.qt,
-                        frame.rdoq_level,
-                        b.lambda,
-                        frame.sharpness,
-                        frame.rdoq_allintra_rd_mult,
-                        rates,
-                        do_rdoq,
-                        b.bd,
-                        b.qt.qm_level,
-                        Some(&TxRdArgs {
-                            spatial_dist: true, // MDS3
+                // ---- C's two-phase trial (product_coding_loop.c:4729-4776) ----
+                //
+                // Phase 1, the CHEAP one, is the residual + forward transform and a
+                // SATD over the coefficients it produced; phase 2 — quantize,
+                // conditional RDOQ, inverse, distortion, coefficient rate — runs
+                // only for the trials the SATD admits. `tx_unit_screened` /
+                // `tx_unit_hbd_screened` are that single pipeline with the gate at
+                // C's position in its middle, so the transform feeds the SATD
+                // directly and neither the residual nor the transform is derived
+                // twice. Until 2026-09-04 this loop ran the WHOLE pipeline first and
+                // applied the SATD post-hoc from a `txb_coeff_satd` that re-derived
+                // both — 488,414 committed trials against C's 270,415 at gradient
+                // 512x512 qp40 preset 2, plus 484,442 redundant residual passes
+                // (`benchmarks/callcount_2026-09-04`). The ADMITTED SET is
+                // unchanged: the SATDs, their order and the running minimum are the
+                // same, and a rejected trial never reached `best`/`best_cost`/
+                // `dct_cost` under either shape — so this is byte-identical by
+                // construction, not by luck.
+                //
+                // bd10 (task #94): C's SATD reads `ctx->tx_coeffs` at the ACTIVE MD
+                // bit depth, so with the 10-bit context present the gate runs on the
+                // 10-bit transform and the u8 twin is computed only for admitted
+                // trials. Every gate around the pair (group order, ext-tx set, the
+                // rate-cost th, the SATD early exit, the non-signalable-eob rule) is
+                // bit-depth INDEPENDENT — only the residual, the quant table, the
+                // lambda and the distortion move.
+                let out10 = match bd10 {
+                    Some(b) => {
+                        let o = tx_unit_hbd_screened(
+                            b.src10,
+                            b.src10_stride,
+                            b.src10_off,
+                            b.pred10,
+                            w,
+                            0,
+                            w,
+                            h,
+                            tx_type,
+                            0,
+                            txb_skip_ctx,
+                            dc_sign_ctx,
+                            b.qt,
+                            frame.rdoq_level,
+                            b.lambda,
+                            frame.sharpness,
+                            frame.rdoq_allintra_rd_mult,
+                            rates,
+                            do_rdoq,
+                            b.bd,
+                            b.qt.qm_level,
+                            Some(&TxRdArgs {
+                                spatial_dist: true, // MDS3
+                                intra_dir,
+                                coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
+                                tx_bias: frame.tx_bias,
+                                crop,
+                            }),
+                            screen.as_mut(),
+                        );
+                        if let Some(sc) = screen.as_ref() {
+                            let (satd, prev) = sc.last();
+                            txt_dbg!(
+                                "cand txt={tx_type} satd={satd} best_satd={prev} skip={}",
+                                i32::from(o.is_none())
+                            );
+                        }
+                        match o {
+                            Some(o) => Some(o),
+                            // C `:4753` — the trial is dropped before quantize.
+                            None => continue,
+                        }
+                    }
+                    None => None,
+                };
+                let out = {
+                    // The gate has already run on the 10-bit transform above when
+                    // bd10 is live; passing it again here would fold the same
+                    // candidate into the running minimum twice.
+                    let s = if bd10.is_some() {
+                        None
+                    } else {
+                        screen.as_mut()
+                    };
+                    // C's `(tx_type == DCT_DCT) ? cand_bf->quant :
+                    // ctx->quant_coeff_ptr[tx_type]` select, drawn on `only_dct`
+                    // — see the comment on `best` above.
+                    let target = if only_dct { &mut owned } else { &mut *cur };
+                    let o = {
+                        tx_unit_screened_into(
+                            src,
+                            src_stride,
+                            src_off,
+                            pred,
+                            w,
+                            0,
+                            w,
+                            h,
+                            tx_type,
+                            0,
+                            txb_skip_ctx,
+                            dc_sign_ctx,
                             intra_dir,
-                            coeff_rate_est_lvl: frame.cfg.coeff_rate_est_lvl,
-                            tx_bias: frame.tx_bias,
+                            qt,
+                            frame,
+                            rates,
+                            do_rdoq,
+                            true, // MDS3 spatial dist
                             crop,
-                        }),
-                        screen.as_mut(),
-                    );
-                    if let Some(sc) = screen.as_ref() {
+                            true,
+                            rate_mode,
+                            s,
+                            target,
+                        )
+                    };
+                    if bd10.is_none()
+                        && let Some(sc) = screen.as_ref()
+                    {
                         let (satd, prev) = sc.last();
                         txt_dbg!(
                             "cand txt={tx_type} satd={satd} best_satd={prev} skip={}",
@@ -296,98 +388,90 @@ pub(super) fn txt_search(
                         );
                     }
                     match o {
-                        Some(o) => Some(o),
-                        // C `:4753` — the trial is dropped before quantize.
+                        Some(o) => o,
                         None => continue,
                     }
-                }
-                None => None,
-            };
-            let out = {
-                // The gate has already run on the 10-bit transform above when
-                // bd10 is live; passing it again here would fold the same
-                // candidate into the running minimum twice.
-                let s = if bd10.is_some() {
-                    None
-                } else {
-                    screen.as_mut()
                 };
-                let o = tx_unit_screened(
-                    src,
-                    src_stride,
-                    src_off,
-                    pred,
-                    w,
-                    0,
-                    w,
-                    h,
-                    tx_type,
-                    0,
-                    txb_skip_ctx,
-                    dc_sign_ctx,
-                    intra_dir,
-                    qt,
-                    frame,
-                    rates,
-                    do_rdoq,
-                    true, // MDS3 spatial dist
-                    crop,
-                    true,
-                    rate_mode,
-                    s,
-                );
-                if bd10.is_none()
-                    && let Some(sc) = screen.as_ref()
-                {
-                    let (satd, prev) = sc.last();
+                // A non-DCT type with no coefficients is not signalable.
+                let dec_eob = out10.as_ref().map_or(out.eob, |o| o.eob);
+                txt_dbg!("cand txt={tx_type} eob={dec_eob}");
+                if dec_eob == 0 && tx_type != cc::DCT_DCT {
+                    txt_dbg!("cand txt={tx_type} SKIP eob0");
+                    continue;
+                }
+                let cost = match (&out10, bd10) {
+                    (Some(o), Some(b)) => rdcost(b.lambda, o.bits as u64, o.dist),
+                    _ => rdcost(lambda, out.bits as u64, out.dist),
+                };
+                #[cfg(feature = "std")]
+                if dbg.is_some() {
+                    let (b_, d_) = match &out10 {
+                        Some(o) => (o.bits, o.dist),
+                        None => (out.bits, out.dist),
+                    };
                     txt_dbg!(
-                        "cand txt={tx_type} satd={satd} best_satd={prev} skip={}",
-                        i32::from(o.is_none())
+                        "cand txt={tx_type} bits={b_} dist={d_} cost={cost} best={best_cost}{}",
+                        if cost < best_cost { " NEW_BEST" } else { "" }
                     );
                 }
-                match o {
-                    Some(o) => o,
-                    None => continue,
-                }
-            };
-            // A non-DCT type with no coefficients is not signalable.
-            let dec_eob = out10.as_ref().map_or(out.eob, |o| o.eob);
-            txt_dbg!("cand txt={tx_type} eob={dec_eob}");
-            if dec_eob == 0 && tx_type != cc::DCT_DCT {
-                txt_dbg!("cand txt={tx_type} SKIP eob0");
-                continue;
-            }
-            let cost = match (&out10, bd10) {
-                (Some(o), Some(b)) => rdcost(b.lambda, o.bits as u64, o.dist),
-                _ => rdcost(lambda, out.bits as u64, out.dist),
-            };
-            #[cfg(feature = "std")]
-            if dbg.is_some() {
-                let (b_, d_) = match &out10 {
-                    Some(o) => (o.bits, o.dist),
-                    None => (out.bits, out.dist),
-                };
-                txt_dbg!(
-                    "cand txt={tx_type} bits={b_} dist={d_} cost={cost} best={best_cost}{}",
-                    if cost < best_cost { " NEW_BEST" } else { "" }
-                );
-            }
-            if cost < best_cost {
-                best_cost = cost;
-                best_type = tx_type;
-                if tx_type == cc::DCT_DCT {
+                if cost < best_cost {
+                    best_cost = cost;
+                    best_type = tx_type;
+                    if tx_type == cc::DCT_DCT {
+                        dct_cost = cost;
+                    }
+                    // C's `best_tx_type = txt_itr` — the winning POOLED slot is
+                    // REMEMBERED, not copied, so the two slots trade places and the
+                    // next trial overwrites the discarded loser's buffers. The
+                    // one-candidate path has nothing to swap: `owned` is the only
+                    // buffer it ever writes.
+                    if !only_dct {
+                        core::mem::swap(cur, bst);
+                    }
+                    best = Some(out);
+                    best10 = out10;
+                } else if tx_type == cc::DCT_DCT {
                     dct_cost = cost;
                 }
-                best = Some(out);
-                best10 = out10;
-            } else if tx_type == cc::DCT_DCT {
-                dct_cost = cost;
-            }
-            if only_dct {
-                break 'groups;
+                if only_dct {
+                    break 'groups;
+                }
             }
         }
-    }
-    txt_dbg!("WINNER txt={best_type} cost={best_cost}");
-    (best.expect("DCT_DCT always evaluated"), best10, best_type)
+        txt_dbg!("WINNER txt={best_type} cost={best_cost}");
+        // C `:5082-5084`: `if (best_tx_type != DCT_DCT) copy_txt_data(...)` — the
+        // winner is copied out of its pooled slot ONCE per transform unit, and not
+        // at all on the one-candidate path (its output went into the owned buffer
+        // to begin with). `qcoeff` is stored in the block's `dep_q` and outlives this
+        // call; `recon` is copied into `dep_recon` by the caller. The slices carry
+        // the meta's lengths because a pooled buffer keeps the largest capacity it
+        // has ever held (`recon_len == 0` reproduces the old empty-when-skipped
+        // `Vec`).
+        let m = best.expect("DCT_DCT always evaluated");
+        let (qcoeff, recon) = if only_dct {
+            // Nothing was copied: the sole trial wrote into buffers this call
+            // already owned. The `truncate`s are no-ops (`owned` was sized to
+            // exactly these lengths) and are kept so the `TxUnitOut` contract holds
+            // by construction rather than by arithmetic agreement two screens
+            // apart.
+            let (mut q, mut r) = (owned.qcoeff, owned.recon);
+            q.truncate(m.q_len);
+            r.truncate(m.recon_len);
+            (q, r)
+        } else {
+            (
+                bst.qcoeff[..m.q_len].to_vec(),
+                bst.recon[..m.recon_len].to_vec(),
+            )
+        };
+        let out = TxUnitOut {
+            eob: m.eob,
+            qcoeff,
+            recon,
+            dist: m.dist,
+            bits: m.bits,
+            cul: m.cul,
+        };
+        (out, best10, best_type)
+    })
 }

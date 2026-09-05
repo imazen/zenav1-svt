@@ -1,5 +1,63 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **`tx_unit`'s TWO OUTPUT BUFFERS ARE IN C's SHAPE — 24.17 M ALLOCATOR CALLS
+> PER 512² PHOTO FRAME AT p2 -> 15.14 M (9,296x C -> 5,824x), -1.97 % Ir, AND
+> THE FIRST ALLOCATION REMOVAL IN THIS CAMPAIGN TO CONVERT: 1.026x FASTER ON A
+> TEXTURED PHOTO AT 512 p2 (2026-09-05).** Record
+> `benchmarks/txout_cshape_2026-09-05.{tsv,meta}`. `callcount_realimg_2026-09-04`
+> ranked the allocator #1 (~4.4 % of the port's photo p2 Ir) and named
+> `tx_unit_inner`'s 6.6 M `calloc`s as its biggest caller: a `vec![0i32; pw*ph]`
+> + `vec![0u8; w*h]` per (candidate x tx-type x transform unit) TRIAL, returned
+> by value. C allocates the same two buffers ONCE PER ENCODER THREAD in
+> `svt_aom_mode_decision_context_ctor` (`md_process.c:214`, from
+> `enc_dec_process.c:108`) as `TX_TYPES`-deep pools (`:585-596`,
+> `ctx->{recon,quant_coeff}_ptr[txt_itr]` at `:597-601`), the tx-type search
+> selects a slot by index (`product_coding_loop.c:4723-4725`), keeps the winner
+> by index (`best_tx_type`, `:4949`), and copies ONCE per transform unit
+> (`copy_txt_data`, `:5082-5084`) — which is why C's whole-encode traffic is
+> ~2,600 calls at every preset on every content. The port now does the same:
+> `tx_unit_screened_into(.., out: &mut TxOutBufs)` writes into caller-owned
+> buffers and returns a `TxUnitMeta` of scalars + each buffer's VALID PREFIX
+> LENGTH; `txt_search` holds two `TxOutBufs` per thread and `mem::swap`s on a
+> new best (C's `best_tx_type`); the winner is materialised once per TXB
+> (measured 992,510 mallocs against 2 x C's 496,519 `perform_tx_partitioning`).
+> **Neither buffer is re-zeroed** — every quantizer path defines all `pw*ph`
+> `qcoeff` positions (`quant_coding.rs:100-107`/`:388-394` write both arms; the
+> QM paths `fill(0)` themselves at `qm.rs:134`/`:195`) and every recon path all
+> `w*h` — which is the half of the old `calloc` that was worth real time.
+> Counts at photo_cid 512 p2 (base -> cand, C): calloc 9,454,380 -> 3,948,389
+> (781), malloc 2,630,202 -> 3,622,712 (410), free 12,084,581 -> 7,571,100
+> (1,409); memset 18.20 M -> 18.03 M. Ir p2 48.43 G -> 47.48 G (port/C
+> **1.777 -> 1.742**), p6 1.657 G -> 1.647 G (2.349 -> 2.335). Wall clock
+> (r7900x, `perf_ab.sh`, 15 interleaved paired rounds, ident=Y everywhere):
+> photo 512 p2 **1.026x** (span 0.9718-0.9766), photo 512 p6 1.003x, gradient
+> 256 p2 1.018x, 512 p2 1.012x — and gradient p6/p10 are null-to-marginally
+> negative (256 p10 is a real ~0.7 % slowdown of a 1.39 ms frame; the four fast
+> cells take the unchanged owned path and pay only the wrapper's call frame).
+> **THE SPLIT IS DRAWN ON `only_dct`, NOT ON C's `tx_type == DCT_DCT`**, because
+> both sides of C's select are themselves pooled (`cand_pred_pool` et al.,
+> `md_process.c:640-655`) and the port's owned output is a real allocation: a
+> one-candidate search has no loser to save an allocation on. **Four variants
+> were measured and REJECTED, two of them for memory alone** (record §6):
+> pooling every trial is -2.00 % Ir but **+5.8 % aarch64 inter peak RSS at 2048**
+> (142,112 -> 150,336 KiB median, non-overlapping, reproduced at threads=1 and
+> auto); pre-sizing the buffers in the CALLER is identical arithmetic and still
+> **+4.4 %** (142,128 -> 148,352) — **the allocation POINT moves macOS RSS, not
+> just the size**, so `grown_out` fills an empty buffer with `vec![0; n]` at the
+> original program point; C's literal DCT_DCT select leaves 0.55 pp of Ir behind;
+> `resize`-on-empty costs +0.88 M memsets. **Memory as landed is unmoved on both
+> quantities and both ISAs**: aarch64 inter 2048 interleaved `mem_bisect.sh` 21
+> rounds 142,128 -> 142,144 KiB median (min 140,160 -> 140,112, max 160,464 ->
+> 142,384), x86 peak heap 2048 still 61.07 -> 61.07 M and inter 101.78 -> 101.78
+> M. What is LEFT of the allocator (~2.0 % of photo p2 Ir): `drop_glue::<Cand>`
+> 1.35 M frees + `eval_candidate`'s 0.52 M callocs / 0.64 M mallocs (C's
+> `cand_bf_ptr_array` + the three candidate pools, `md_process.c:640-655` — the
+> largest coherent block left, ~3.9 M calls / ~370 M Ir), `hadamard_satd`
+> 0.95 M + 0.95 M, `extract_neighbors_tiled` 0.96 M mallocs,
+> `inject_candidates` 0.47 M callocs — the middle two already have measured
+> NEGATIVE results against them (`hadscratch_null`, the neighbours hoist) and
+> must not be re-attempted in the shape that failed.
+
 > **THE POSITION, RE-MEASURED ON THE TIP AFTER TEN LANDINGS — ALL THREE ARMS
 > MOVED, AND SO DID THE C ORACLE (2026-09-05).** Records
 > `benchmarks/perf_2026-09-05-arm10-{still,videokey,inter}.*`,

@@ -69,6 +69,85 @@ impl TxUnitOut {
     }
 }
 
+/// C's per-tx-type OUTPUT slots, `ctx->quant_coeff_ptr[txt_itr]` and
+/// `ctx->recon_ptr[txt_itr]` (`md_process.c:585-600`).
+///
+/// C allocates them ONCE per encoder thread, in
+/// `svt_aom_mode_decision_context_ctor` (`md_process.c:214`, reached from
+/// `svt_aom_enc_dec_context_ctor`'s `EB_NEW` at `enc_dec_process.c:108`), as
+/// three `TX_TYPES`-deep picture-buffer pools, and reuses them for every
+/// tx-type trial of every transform unit of every block of every frame — which
+/// is why C's whole-encode allocator traffic is ~2,600 calls at every preset
+/// and every content. `tx_type_search` writes trial `txt_itr` into slot
+/// `txt_itr` and remembers `best_tx_type`; nothing is copied and nothing is
+/// freed.
+///
+/// This is the port's equivalent: the caller owns the buffers, [`tx_unit_inner`]
+/// writes into them, and the winner is materialised into an owned `Vec` exactly
+/// once per transform unit — where C hands out its pooled `coeff_tmp` slot.
+///
+/// NEITHER BUFFER IS RE-ZEROED, and that is the point (a recycled buffer that
+/// is re-zeroed pays a `memset` that `vec![0; n]`'s `calloc` gets for free —
+/// `700357e2`'s finding from the other direction). It is sound because every
+/// position is written before it is read on every path:
+///   * `qcoeff`: `quant_coding::{fp_one, b_one}` assign `qcoeff[rc]` on BOTH
+///     arms of their `if tmp32 != 0`, for `rc` in `0..min(coeffs.len(),
+///     qcoeff.len(), dqcoeff.len())`, and `packed` is exactly `pw * ph`; the
+///     two QM paths open with their own `qcoeff[..coeffs.len()].fill(0)`
+///     (`qm.rs:134`/`:195`). `optimize_b` and `perform_noise_normalization`
+///     only revise positions the quantizer already wrote.
+///   * `recon`: `residual::recon_add_clamp` writes every `h * w`, the
+///     `eob == 0` arm copies the prediction over every row, and the
+///     coded-lossless arm zips all 16.
+#[derive(Default)]
+pub(super) struct TxOutBufs {
+    /// C `ctx->quant_coeff_ptr[txt_itr]`.
+    pub(super) qcoeff: Vec<i32>,
+    /// C `ctx->recon_ptr[txt_itr]`.
+    pub(super) recon: Vec<u8>,
+}
+
+/// What [`tx_unit_inner`] returns when its outputs live in a caller-owned
+/// [`TxOutBufs`]: the scalars, plus the VALID PREFIX LENGTH of each buffer.
+///
+/// The lengths are explicit because a pooled buffer keeps the largest capacity
+/// it has ever been grown to, so `bufs.qcoeff.len()` is NOT this unit's
+/// `pw * ph`. `recon_len == 0` reproduces [`TxUnitOut::recon`]'s empty-when-
+/// skipped contract exactly.
+pub(super) struct TxUnitMeta {
+    pub(super) eob: u16,
+    pub(super) q_len: usize,
+    pub(super) recon_len: usize,
+    pub(super) dist: u64,
+    pub(super) bits: i32,
+    pub(super) cul: u8,
+}
+
+/// Grow `buf` to at least `n` and hand back the first `n` — WITHOUT zeroing a
+/// buffer that already exists. The [`TxOutBufs`] twin of [`TxScratch::grown`];
+/// see that doc for why the re-zero is the thing being removed and
+/// [`TxOutBufs`] for the per-path proof that every returned position is written
+/// before it is read.
+///
+/// An EMPTY buffer is filled with `vec![0; n]` — the exact expression, at the
+/// exact program point, that this call site used before the buffers were lifted
+/// out of [`tx_unit_inner`]. That matters and is measured: a caller that hands
+/// in an empty `TxOutBufs` (the owned-output wrapper, and the one-candidate arm
+/// of `txt_search`) must allocate the SAME size class from the SAME allocator
+/// entry point at the SAME point in the transform pipeline, or the live-set
+/// interleaving changes — pre-sizing those two buffers in the CALLER instead,
+/// which is otherwise identical arithmetic, moved the aarch64 inter peak RSS at
+/// 2048 by +4.4 % (interleaved `mem_bisect.sh`, 21 rounds).
+#[inline]
+fn grown_out<T: Copy + Default>(buf: &mut Vec<T>, n: usize) -> &mut [T] {
+    if buf.is_empty() {
+        *buf = alloc::vec![T::default(); n];
+    } else if buf.len() < n {
+        buf.resize(n, T::default());
+    }
+    &mut buf[..n]
+}
+
 /// Reusable per-thread scratch for [`tx_unit`]'s five purely-internal buffers.
 ///
 /// `tx_unit` used to heap-allocate seven `Vec`s per transform unit, and it runs
@@ -148,6 +227,51 @@ impl TxScratch {
             buf.resize(n, 0);
         }
         &mut buf[..n]
+    }
+}
+
+// The tx-type search's two output slots, per thread.
+//
+// C keeps `TX_TYPES` of them (`ctx->quant_coeff_ptr[]` / `recon_ptr[]`,
+// `md_process.c:585-600`) because it indexes by `txt_itr`; the port only ever
+// needs the CURRENT trial and the BEST so far, so two suffice and a
+// `mem::swap` on a new best does what C's `best_tx_type` index does.
+#[cfg(feature = "std")]
+std::thread_local! {
+    static TXT_OUT: core::cell::RefCell<(TxOutBufs, TxOutBufs)> =
+        const { core::cell::RefCell::new((
+            TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
+            TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
+        )) };
+}
+
+/// Run `f` over the per-thread (current, best) tx-type output slots.
+///
+/// `try_borrow_mut` + closure hand-back, the same contract as
+/// [`tx_unit_screened_into`]'s `TX_SCRATCH` borrow: a re-entrant caller gets
+/// fresh buffers rather than a panic.
+pub(super) fn with_txt_out<R>(f: impl FnOnce(&mut TxOutBufs, &mut TxOutBufs) -> R) -> R {
+    #[cfg(feature = "std")]
+    {
+        let taken = TXT_OUT.with(move |cell| match cell.try_borrow_mut() {
+            Ok(mut pair) => {
+                let (a, b) = &mut *pair;
+                Ok(f(a, b))
+            }
+            Err(_) => Err(f),
+        });
+        match taken {
+            Ok(r) => r,
+            Err(f) => {
+                let (mut a, mut b) = (TxOutBufs::default(), TxOutBufs::default());
+                f(&mut a, &mut b)
+            }
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let (mut a, mut b) = (TxOutBufs::default(), TxOutBufs::default());
+        f(&mut a, &mut b)
     }
 }
 
@@ -357,6 +481,13 @@ pub(super) fn tx_unit(
 /// expensive phase to do it. Measured on `benchmarks/callcount_2026-09-04`:
 /// 488,414 committed trials against C's 270,415 at gradient 512x512 qp40
 /// preset 2, one edge worth 45.20 % of the port's instruction count.
+///
+/// OWNED-OUTPUT form: allocates a fresh [`TxOutBufs`] for this one call and
+/// moves it into the returned [`TxUnitOut`]. The tx-type SEARCH does not use
+/// it — `txt_search` drives [`tx_unit_screened_into`] over two pooled buffers,
+/// C's shape — but the ~19 % of call sites that consume the buffers by value
+/// (chroma, CFL, MDS1, the CFL-alpha loop) do, and their allocation count is
+/// unchanged.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tx_unit_screened(
     src: &[u8],
@@ -382,6 +513,88 @@ pub(super) fn tx_unit_screened(
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
 ) -> Option<TxUnitOut> {
+    // EMPTY, deliberately: `grown_out` then fills each buffer with the same
+    // `vec![0; n]`, of the same size, at the same point in `tx_unit_inner` as
+    // before this change — so an owned-output call site's allocation count,
+    // sizes, allocator entry points AND live-set interleaving are unchanged.
+    // Both cheaper alternatives were measured and rejected: `grown_out`'s
+    // `resize` on an empty buffer cost +0.88 M `memset` calls and moved 2 M
+    // allocations from `calloc` to `malloc`, and pre-sizing here instead moved
+    // the aarch64 inter peak RSS at 2048 by +4.4 %.
+    let mut bufs = TxOutBufs::default();
+    let m = tx_unit_screened_into(
+        src,
+        src_stride,
+        src_off,
+        pred,
+        pred_stride,
+        pred_off,
+        w,
+        h,
+        tx_type,
+        plane_type,
+        txb_skip_ctx,
+        dc_sign_ctx,
+        intra_dir,
+        qt,
+        frame,
+        rates,
+        do_rdoq,
+        spatial_dist,
+        crop,
+        need_recon,
+        rate_mode,
+        screen,
+        &mut bufs,
+    )?;
+    // `bufs` started empty, so each buffer was allocated exactly once, at its
+    // final size: the `truncate`s are no-ops on this path and only exist so a
+    // future caller that hands in a warm `TxOutBufs` still gets the exact
+    // `TxUnitOut` contract (`qcoeff` of length `pw * ph`, `recon` of length
+    // `w * h` or EMPTY).
+    let mut qcoeff = bufs.qcoeff;
+    qcoeff.truncate(m.q_len);
+    let mut recon = bufs.recon;
+    recon.truncate(m.recon_len);
+    Some(TxUnitOut {
+        eob: m.eob,
+        qcoeff,
+        recon,
+        dist: m.dist,
+        bits: m.bits,
+        cul: m.cul,
+    })
+}
+
+/// [`tx_unit_screened`] writing its two outputs into CALLER-OWNED buffers —
+/// C's `ctx->quant_coeff_ptr[txt_itr]` / `ctx->recon_ptr[txt_itr]` shape. See
+/// [`TxOutBufs`].
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tx_unit_screened_into(
+    src: &[u8],
+    src_stride: usize,
+    src_off: usize,
+    pred: &[u8],
+    pred_stride: usize,
+    pred_off: usize,
+    w: usize,
+    h: usize,
+    tx_type: usize,
+    plane_type: usize,
+    txb_skip_ctx: usize,
+    dc_sign_ctx: usize,
+    intra_dir: usize,
+    qt: &QuantTable,
+    frame: &FunnelFrame,
+    rates: &MdRates,
+    do_rdoq: bool,
+    spatial_dist: bool,
+    crop: (usize, usize),
+    need_recon: bool,
+    rate_mode: RateMode,
+    screen: Option<&mut SatdScreen>,
+    out: &mut TxOutBufs,
+) -> Option<TxUnitMeta> {
     // Borrow the per-thread scratch (see [`TxScratch`]). `try_borrow_mut`
     // rather than `borrow_mut`: tx_unit calls only DSP / quant / rate kernels
     // and never re-enters itself, but a future re-entrant caller should get a
@@ -418,11 +631,12 @@ pub(super) fn tx_unit_screened(
                 need_recon,
                 rate_mode,
                 screen,
+                out,
             )),
             Err(_) => Err(screen),
         });
         match taken {
-            Ok(out) => return out,
+            Ok(o) => return o,
             Err(screen) => screen,
         }
     };
@@ -451,6 +665,7 @@ pub(super) fn tx_unit_screened(
         need_recon,
         rate_mode,
         screen,
+        out,
     )
 }
 
@@ -479,7 +694,8 @@ pub(super) fn tx_unit_inner(
     need_recon: bool,
     rate_mode: RateMode,
     screen: Option<&mut SatdScreen>,
-) -> Option<TxUnitOut> {
+    out: &mut TxOutBufs,
+) -> Option<TxUnitMeta> {
     let (crop_w, crop_h) = crop;
     debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
     let n = w * h;
@@ -616,7 +832,13 @@ pub(super) fn tx_unit_inner(
     } else {
         None
     };
-    let mut qcoeff = vec![0i32; pw * ph];
+    // GROWN, NOT ZEROED — C's `ctx->quant_coeff_ptr[txt_itr]` slot (see
+    // [`TxOutBufs`]), which C allocates once per encoder thread and never
+    // clears between trials. The same full-write proof the `dqcoeff` comment
+    // below gives for the dequantized twin covers this buffer: every one of the
+    // four quantizer paths defines all `pw * ph` positions before anything
+    // reads them.
+    let qcoeff: &mut [i32] = grown_out(&mut out.qcoeff, pw * ph);
     // GROWN, NOT ZEROED. Only `pw * ph` of this is ever indexed, and all four
     // quantizer paths write EVERY one of those positions before anything reads
     // them, so the re-zero this used to do was dead:
@@ -635,17 +857,10 @@ pub(super) fn tx_unit_inner(
     let dqcoeff: &mut [i32] = TxScratch::grown(dqcoeff_buf, pw * ph);
     let mut eob = if do_rdoq {
         let mut e = match qm {
-            Some((wt, iwt)) => crate::qm::quantize_fp_qm(
-                packed,
-                scan,
-                qt,
-                log_scale,
-                wt,
-                iwt,
-                &mut qcoeff,
-                dqcoeff,
-            ),
-            None => crate::quant::quantize_fp(packed, scan, qt, log_scale, &mut qcoeff, dqcoeff),
+            Some((wt, iwt)) => {
+                crate::qm::quantize_fp_qm(packed, scan, qt, log_scale, wt, iwt, qcoeff, dqcoeff)
+            }
+            None => crate::quant::quantize_fp(packed, scan, qt, log_scale, qcoeff, dqcoeff),
         };
         if e != 0 {
             let (cut_off_num, cut_off_denum) = crate::quant::rdoq_cutoffs(frame.rdoq_level);
@@ -670,15 +885,15 @@ pub(super) fn tx_unit_inner(
                 cut_off_num,
                 cut_off_denum,
             };
-            crate::quant::optimize_b(packed, &mut qcoeff, dqcoeff, &mut e, scan, qt, &o);
+            crate::quant::optimize_b(packed, qcoeff, dqcoeff, &mut e, scan, qt, &o);
         }
         e
     } else {
         match qm {
             Some((wt, iwt)) => {
-                crate::qm::quantize_b_qm(packed, scan, qt, log_scale, wt, iwt, &mut qcoeff, dqcoeff)
+                crate::qm::quantize_b_qm(packed, scan, qt, log_scale, wt, iwt, qcoeff, dqcoeff)
             }
-            None => crate::quant::quantize_b(packed, scan, qt, log_scale, &mut qcoeff, dqcoeff),
+            None => crate::quant::quantize_b(packed, scan, qt, log_scale, qcoeff, dqcoeff),
         }
     };
     let _ = &mut eob;
@@ -688,7 +903,7 @@ pub(super) fn tx_unit_inner(
             &qt.dequant,
             qm.map(|(_, iwt)| iwt),
             packed,
-            &mut qcoeff,
+            qcoeff,
             dqcoeff,
             &mut eob,
             scan,
@@ -715,7 +930,17 @@ pub(super) fn tx_unit_inner(
     let do_recon = need_recon || spatial_dist;
     // Empty, not zeroed, when skipped: a consumer that appears later gets an
     // index panic rather than a plausible black block.
-    let mut recon = if do_recon { vec![0u8; n] } else { Vec::new() };
+    //
+    // C's `ctx->recon_ptr[txt_itr]` slot (see [`TxOutBufs`]): grown, never
+    // re-zeroed — every path below writes all `n` positions. `&mut []` when
+    // skipped keeps the old `Vec::new()` contract (a consumer that reads it
+    // gets an index panic, never a plausible black block), and `recon_len == 0`
+    // carries that out to the caller.
+    let recon: &mut [u8] = if do_recon {
+        grown_out(&mut out.recon, n)
+    } else {
+        &mut []
+    };
     if !do_recon {
         // C's branch is simply not taken here.
     } else if eob > 0 {
@@ -766,14 +991,7 @@ pub(super) fn tx_unit_inner(
                 rs_tx_type,
             );
             debug_assert!(ok, "inv txfm {w}x{h} type {tx_type}");
-            svtav1_dsp::residual::recon_add_clamp(
-                &pred[pred_off..],
-                pred_stride,
-                inv,
-                w,
-                h,
-                &mut recon,
-            );
+            svtav1_dsp::residual::recon_add_clamp(&pred[pred_off..], pred_stride, inv, w, h, recon);
         }
     } else {
         for r in 0..h {
@@ -788,7 +1006,7 @@ pub(super) fn tx_unit_inner(
         // keeps its full `w` stride), so a straddling boundary TX block is
         // priced only over its in-frame part.
         let mut sse: u64 =
-            svtav1_dsp::variance::sse(&src[src_off..], src_stride, &recon, w, crop_w, crop_h);
+            svtav1_dsp::variance::sse(&src[src_off..], src_stride, recon, w, crop_w, crop_h);
         // [SVT_HDR_MODE] fork tx-bias facade layer (pic_operators.c:252):
         // the spatial SSE is biased by prediction-mode class + tx size
         // BEFORE the psy add (the facade IS the SSE producer at the C call
@@ -830,7 +1048,7 @@ pub(super) fn tx_unit_inner(
                 src,
                 src_off,
                 src_stride,
-                &recon,
+                recon,
                 0,
                 w,
                 crop_w,
@@ -891,7 +1109,7 @@ pub(super) fn tx_unit_inner(
         }
         RateMode::Exact if closed_lvl2 => 6000 + eob as i32 * 1000,
         RateMode::Exact if eob > 0 => cost_coeffs_txb(
-            &qcoeff,
+            qcoeff,
             eob,
             c_tx,
             tx_type,
@@ -903,12 +1121,12 @@ pub(super) fn tx_unit_inner(
         ),
         RateMode::Exact => cost_skip_txb(c_tx, plane_type, txb_skip_ctx, rates),
     };
-    let cul = compute_cul_level(scan, &qcoeff, eob);
+    let cul = compute_cul_level(scan, qcoeff, eob);
 
-    Some(TxUnitOut {
+    Some(TxUnitMeta {
         eob,
-        qcoeff,
-        recon,
+        q_len: pw * ph,
+        recon_len: recon.len(),
         dist,
         bits,
         cul,
