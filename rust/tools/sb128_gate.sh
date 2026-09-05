@@ -169,8 +169,9 @@ SB128_BYTE_EXACT=(
 # pricing it) diverged, surfacing as a 16x16-vs-VERT flip at mi(4,24). All
 # four cells assert byte-identity now.
 #
-# The corpus is a LOCAL resource (not fetched in CI, exactly like
-# coverage_combos_gate.sh's real cells). SC_CORPUS overrides the dir; when it is
+# gb82-sc IS fetched in CI since 2026-09-05 (rust-gates.yml sparse-clones it and
+# exports $ZENAV1_CORPUS_ROOT), so these four cells run there too; before that
+# they were dropped on every CI run. SC_CORPUS overrides the dir; when it is
 # absent the cells are dropped with a LOUD warning — the corpus-presence decision
 # is made HERE at the caller, never buried inside a silently-skipping cell.
 SC_CORPUS="${SC_CORPUS:-$(corpus_dir codec-corpus/gb82-sc)}"

@@ -284,9 +284,11 @@ fn partial_superblock_output_is_tier_invariant() {
 ///
 /// SKIPPING IS CALLER-CONTROLLED, never silent. The corpus is not in-tree, so
 /// this test needs a path; absent one it FAILS with instructions rather than
-/// quietly passing. CI, which has no corpus, sets `ZENAV1_SKIP_CORPUS_TESTS=1`
-/// in the workflow — a decision visible in the chain (workflow -> env -> test),
-/// which is the only form of skip this project allows.
+/// quietly passing. The two pure-Rust matrix jobs, which have no corpus, set
+/// `ZENAV1_SKIP_CORPUS_TESTS=1` at JOB scope — a decision visible in the chain
+/// (workflow -> job env -> test), which is the only form of skip this project
+/// allows. The differential `gates` job fetches gb82-sc and does NOT set it, so
+/// this cell runs there (it was skipped on every CI run until 2026-09-05).
 #[test]
 fn intrabc_output_is_tier_invariant_on_real_screen_content() {
     if std::env::var_os("ZENAV1_SKIP_CORPUS_TESTS").is_some() {
@@ -296,22 +298,39 @@ fn intrabc_output_is_tier_invariant_on_real_screen_content() {
         );
         return;
     }
-    let root = std::env::var("ZENAV1_CORPUS_ROOT").unwrap_or_else(|_| {
-        format!(
-            "{}/work/zen/codec-corpus",
-            std::env::var("HOME").unwrap_or_default()
-        )
-    });
-    let img = format!("{root}/gb82-sc/graph.png");
+    // Probe, don't assume ONE host — the same rule `rust/tools/lib_corpus.sh`
+    // states, and for the same reason. Note the two accepted shapes for
+    // $ZENAV1_CORPUS_ROOT: the shell gates treat it as the PARENT of
+    // `codec-corpus/` while this test historically treated it as `codec-corpus`
+    // itself, so one value could not satisfy both. Accepting both layouts (and
+    // the two default host layouts) is what lets the workflow export a single
+    // ZENAV1_CORPUS_ROOT for the gate scripts AND for this test.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(root) = std::env::var("ZENAV1_CORPUS_ROOT") {
+        candidates.push(format!("{root}/gb82-sc/graph.png"));
+        candidates.push(format!("{root}/codec-corpus/gb82-sc/graph.png"));
+    }
+    candidates.push(format!("{home}/work/zen/codec-corpus/gb82-sc/graph.png"));
+    candidates.push("/root/work/codec-corpus/gb82-sc/graph.png".to_string());
+    candidates.push(format!("{home}/work/codec-corpus/gb82-sc/graph.png"));
+    let img = candidates
+        .iter()
+        .find(|c| std::path::Path::new(c).exists())
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "screen corpus not found. Probed:\n  {}\n\
+                 Set ZENAV1_CORPUS_ROOT to a tree containing gb82-sc/graph.png \
+                 (or containing codec-corpus/gb82-sc/graph.png), or set \
+                 ZENAV1_SKIP_CORPUS_TESTS=1 to skip this check DELIBERATELY. It \
+                 is not skipped by default because synthetic content never codes \
+                 an IntraBC block, so this is the only tier coverage the IBC path \
+                 has.",
+                candidates.join("\n  ")
+            )
+        });
     let path = std::path::Path::new(&img);
-    assert!(
-        path.exists(),
-        "screen corpus not found at {img}.\n\
-         Set ZENAV1_CORPUS_ROOT to a tree containing gb82-sc/graph.png, or set \
-         ZENAV1_SKIP_CORPUS_TESTS=1 to skip this check DELIBERATELY. It is not \
-         skipped by default because synthetic content never codes an IntraBC \
-         block, so this is the only tier coverage the IBC path has."
-    );
     let (y, w, h) = decode_png_luma(path);
     // 512x512 centre crop, matching what the identity gates feed.
     let (cw, ch) = (512usize.min(w), 512usize.min(h));

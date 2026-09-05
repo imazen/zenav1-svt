@@ -133,9 +133,10 @@ done
 # pattern cannot produce, and it is the distribution an HDR still actually
 # hands an encoder.
 #
-# WHY IT IS HERE and not only in the photographic gate: no CI runner has the
-# image corpora (rust-gates.yml sets ZENAV1_SKIP_CORPUS_TESTS at workflow
-# scope), so `tools/bd10_hbd_pq_gate.sh` can only ever run locally. This
+# WHY IT IS HERE and not only in the photographic gate: `bd10_hbd_pq_gate.sh`
+# needs the PHOTOGRAPHIC corpus (CID22-512, 94 MB), which rust-gates.yml still
+# does not fetch — only gb82-sc (2.9 MB) is fetched, as of 2026-09-05 — so it
+# can still only run locally. This
 # sub-grid is synthetic, therefore corpus-free, therefore the x86-64 reference
 # host does see PQ-shaped low bits at every preset band — including preset 6,
 # the only one that runs the CDEF strength and Wiener LR searches, where the

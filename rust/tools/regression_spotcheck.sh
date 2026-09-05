@@ -24,18 +24,27 @@
 # Usage: tools/regression_spotcheck.sh
 # Env:   RS_AOMDEC (aomdec path, for the decodability cells)
 #        SCREEN_DIR / CID22_DIR (real-corpus cells; skipped LOUDLY if absent)
+#        ZENAV1_CORPUS_ROOT (a tree containing codec-corpus/, see lib_corpus.sh)
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
+# shellcheck source=lib_corpus.sh
+. "$HERE/lib_corpus.sh"
 
 RUN="$HERE/identity_run"
 CT="$HERE/capture_c_trace/capture_c_trace"
 AOMDEC="${RS_AOMDEC:-$(command -v aomdec || true)}"
-SCREEN_DIR="${SCREEN_DIR:-$HOME/work/zen/codec-corpus/gb82-sc}"
-CID22_DIR="${CID22_DIR:-$HOME/work/zen/codec-corpus/CID22/CID22-512}"
+# 2026-09-05: these two hard-coded $HOME/work/zen, so they resolved on exactly
+# one host layout — the same one-host assumption `lib_corpus.sh` was written to
+# kill, and the reason CI reported `98 / 98` here (six gb82-sc cells "guarded
+# NOTHING this run") while a dev box reported `104 / 104`. Route them through
+# `corpus_dir`, which probes $ZENAV1_CORPUS_ROOT first, so a runner that fetches
+# the corpus into its workspace gets the cells.
+SCREEN_DIR="${SCREEN_DIR:-$(corpus_dir codec-corpus/gb82-sc)}"
+CID22_DIR="${CID22_DIR:-$(corpus_dir codec-corpus/CID22/CID22-512)}"
 W="${TMPDIR:-/tmp}/spotcheck.$$"
 mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT

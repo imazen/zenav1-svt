@@ -7909,18 +7909,64 @@ the promotion). Two `regression_spotcheck` cells: the terminal cell (needs
 mechanisms 1 AND 2 — 5000 B with 1 alone) and the graph 512x480 cell
 (mechanism 3).
 
-**Where this band is actually guarded — NOT by CI.** `screen_ibc_byte_gate.sh`
-is not referenced by `.github/workflows/rust-gates.yml`, and wiring it in would
-not help: the runner has no `gb82-sc` corpus, so every cell would `SKIP-MISSING`
-and the gate would exit 3 on its own anti-vacuity. The same absence already
-shows in CI's `regression_spotcheck` — it reports `98 / 98` there against
-`104 / 104` locally, and names the six gb82-sc cells (both new ones among them)
-under "SKIPPED (corpus/tool absent — these cells guarded NOTHING this run)".
-So the whole gb82-sc IntraBC band — this gate, `screen_ibc_gate.sh`,
-`screen_palette_gate.sh` and those spotcheck cells — is guarded ONLY by a local
-pre-push run on a host that has the corpus and the C oracle. Run it before
-touching `mds3.rs`, `commit.rs`, `tx_geom.rs` or the chain sim's palette path;
-a green CI run says nothing about these three mechanisms.
+**Where this band is actually guarded — CI, since 2026-09-05.**
+
+*The original entry said this, and it was WRONG:* "wiring it in would not help:
+the runner has no `gb82-sc` corpus, so every cell would `SKIP-MISSING` and the
+gate would exit 3 on its own anti-vacuity." The premise — that the corpus cannot
+be on the runner — was never checked. gb82-sc is a **public CC0 dataset**
+(`imazen/codec-corpus`, 10 screenshots, 2.9 MB); a blob-filtered sparse clone of
+that one directory measured **2.2 s / 6.9 MB on disk**. The conclusion inverted a
+missing *fetch* into an impossibility, and then used it to justify leaving three
+just-fixed bitstream defects with no CI coverage at all.
+
+What was actually missing: `tools/lib_corpus.sh::corpus_dir` only **probes**
+paths, it fetches nothing, so "gates already resolve their corpus portably" was
+never the same statement as "CI has the corpus". Nothing in
+`.github/workflows/rust-gates.yml` put an image on the runner.
+
+**Now wired** (`.github/workflows/rust-gates.yml`, job `gates`):
+
+| step | cells | was |
+|---|---|---|
+| Fetch the gb82-sc screen corpus (sparse) | 10 PNGs, ~2 s | absent |
+| `screen_ibc_byte_gate.sh` (+ `RS_AOMDEC` recon legs) | 152 | never in CI |
+| `screen_palette_gate.sh` | 50 | never in CI |
+| `bd10_screen_panic_gate.sh` (+ `AOMDEC`) | 60 | never in CI |
+| `regression_spotcheck.sh` | **104 / 104** | 98 / 98, six cells skipped |
+| `sb128_gate.sh` (`codec_wiki` cells) | 22 (was 18) | 4 cells dropped |
+| `tier_invariance` IntraBC cell | runs | skipped every run |
+
+The job exports `ZENAV1_CORPUS_ROOT=$GITHUB_WORKSPACE/corpora`, which is what
+`corpus_dir` probes first. Two resolution bugs had to be fixed for that single
+variable to work: `regression_spotcheck.sh` hard-coded `$HOME/work/zen/...`
+instead of calling `corpus_dir` (that is precisely why it reported 98 / 98), and
+`tests/tier_invariance.rs` read `$ZENAV1_CORPUS_ROOT` as *codec-corpus itself*
+where the shell gates read it as the *parent* of `codec-corpus` — one value
+could not satisfy both, so the test now probes both shapes plus the two default
+host layouts. `ZENAV1_SKIP_CORPUS_TESTS` moved from workflow scope to the two
+pure-Rust matrix jobs, so it no longer silently disables the IntraBC tier cell
+in the one job that can run it.
+
+**A misconfigured corpus is RED, not green — measured, not asserted.** With
+`SCREEN_DIR` pointed at a nonexistent directory: `screen_ibc_byte_gate.sh`
+exits 3 (`ANTI-VACUITY FAIL: no IntraBC (0) or no palette (0) block coded
+anywhere`, `0 / 11`), `screen_palette_gate.sh` exits 3 (`0 / 0`), and
+`bd10_screen_panic_gate.sh` exits 1 (`corpus not found at ...`). A fetch that
+half-succeeds is caught earlier still: the fetch step itself asserts exactly 10
+PNGs and fails the job otherwise.
+
+**Still NOT guarded in CI, and why.** `screen_ibc_gate.sh` needs
+`tools/decode_diff`, whose `Cargo.toml` carries a literal path dependency on
+`/root/aom-rs/crates/aom-decode` (Cargo path deps take no env override), so its
+decode-level pixel oracle cannot build on the runner; its 100-cell **byte**
+grid is a subset of the byte gate's 150, so only the decode-classification leg
+is uncovered. `coverage_combos_gate.sh`'s `real` axis additionally needs
+CID22-512 (94 MB / 250 images) and stays off via `CC_AXES`.
+
+Still run the gates locally before touching `mds3.rs`, `commit.rs`, `tx_geom.rs`
+or the chain sim's palette path — but a green CI run now does say something
+about these three mechanisms.
 
 **Harness notes this paid for.** `cmp a b | awk '{print $NF}'` prints the
 LINE number, not the byte offset (`char 3356, line 12` -> `12`);

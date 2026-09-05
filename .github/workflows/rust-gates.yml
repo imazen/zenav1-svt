@@ -10,21 +10,30 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # No CI runner has the image corpora (they are not in-tree), so the corpus-
-  # gated tests must skip HERE, at the workflow level, where the decision is
-  # visible in the chain (workflow -> env -> test) rather than being made inside
-  # a test body. Set at workflow scope on purpose: the same test runs from BOTH
-  # the "Workspace tests" step (`cargo nextest run --workspace`) and the
-  # dedicated tier-invariance step, and setting it on only one of them is
-  # exactly how this broke — six red builds, all of them my own test failing on
-  # a missing corpus.
-  ZENAV1_SKIP_CORPUS_TESTS: "1"
+  # NOTE (2026-09-05): `ZENAV1_SKIP_CORPUS_TESTS` used to live HERE, at workflow
+  # scope, on the premise that "no CI runner has the image corpora". That premise
+  # is now false for the `gates` job: it FETCHES gb82-sc (sparse, 2.9 MB, ~2 s —
+  # see "Fetch the gb82-sc screen corpus" below), so the corpus-gated cells RUN
+  # there. The flag survives, still visible in the chain (workflow -> job env ->
+  # test), but as a PER-JOB decision on the two pure-Rust matrix jobs, which have
+  # no C oracle and no corpus. Setting it at workflow scope would silently
+  # re-disable the IntraBC tier-invariance cell in the very job that can now run
+  # it — the class of silent skip this file has been bitten by repeatedly.
 
 jobs:
   gates:
     name: differential + conformance gates (x86-64)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 120, not 90: the three screen gates wired in 2026-09-05 (IntraBC byte,
+    # luma palette, bd10 panic-freedom) add ~25 min of real-corpus encoding to
+    # a job that ran ~29 min. Raising the ceiling is not a relaxation — no gate
+    # was made cheaper, and a timeout is a red build either way.
+    timeout-minutes: 120
+    env:
+      # `rust/tools/lib_corpus.sh`'s `corpus_dir()` probes $ZENAV1_CORPUS_ROOT/<rel>
+      # FIRST, so this one variable is what makes every `corpus_dir
+      # codec-corpus/gb82-sc` call in the gate scripts resolve on this runner.
+      ZENAV1_CORPUS_ROOT: ${{ github.workspace }}/corpora
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,6 +43,46 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q nasm cmake ninja-build dav1d
+
+      - name: Fetch the gb82-sc screen corpus (sparse checkout, 2.9 MB)
+        # THE STEP THAT WAS MISSING. Every screen-content gate in this repo
+        # resolves its corpus through `rust/tools/lib_corpus.sh::corpus_dir`,
+        # which only PROBES paths — it fetches nothing. So on this runner every
+        # screen cell hit `SKIP-MISSING` and the gates that depend on them were
+        # never wired in at all. The visible symptom, quoted in
+        # docs/INTER-ENCODE-PLAN.md §1z⁴⁰: `regression_spotcheck` reported
+        # `98 / 98` here against `104 / 104` locally, naming six gb82-sc cells
+        # under "SKIPPED (corpus/tool absent — these cells guarded NOTHING this
+        # run)" — two of them the minimal reproducers of IntraBC bugs fixed the
+        # same day. A green run said nothing about that whole class.
+        #
+        # The corpus is a PUBLIC CC0 dataset (imazen/codec-corpus, gb82-sc: 10
+        # screenshots, 2.9 MB). A blob-filtered sparse clone of just that one
+        # directory measured 2.2 s / 6.9 MB on-disk — cheaper than the cache
+        # round-trip would be, so there is no cache to go stale.
+        #
+        # It fails LOUDLY on a short fetch: a gate that silently loses its cells
+        # is exactly what this step exists to remove, so a half-fetched corpus
+        # must not be allowed to reintroduce it one image at a time.
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/corpora"
+          dest="$root/codec-corpus"
+          mkdir -p "$root"; rm -rf "$dest"
+          ok=0
+          for attempt in 1 2 3; do
+            if git clone --depth 1 --filter=blob:none --sparse \
+                 https://github.com/imazen/codec-corpus.git "$dest"; then
+              ok=1; break
+            fi
+            echo "corpus clone attempt $attempt failed; retrying" >&2
+            rm -rf "$dest"; sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "FATAL: could not clone codec-corpus" >&2; exit 1; }
+          git -C "$dest" sparse-checkout set gb82-sc
+          n=$(ls "$dest"/gb82-sc/*.png 2>/dev/null | wc -l | tr -d ' ')
+          echo "gb82-sc PNGs fetched: $n -> $dest/gb82-sc"
+          [ "$n" -eq 10 ] || { echo "FATAL: expected 10 gb82-sc PNGs, got $n" >&2; exit 1; }
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -152,10 +201,13 @@ jobs:
 
       - name: SIMD tier invariance (encoder bytes must not depend on dispatch tier)
         working-directory: rust
-        # The IntraBC tier cell needs the gb82-sc corpus, which is not in-tree;
-        # ZENAV1_SKIP_CORPUS_TESTS is set at WORKFLOW scope (top of this file)
-        # so every step that runs the suite inherits it. Dev hosts with the
-        # corpus run it by default.
+        # The IntraBC tier cell needs the gb82-sc corpus. As of 2026-09-05 this
+        # job FETCHES it (see "Fetch the gb82-sc screen corpus"), so the cell
+        # RUNS here — `ZENAV1_SKIP_CORPUS_TESTS` is no longer set on this job and
+        # the test resolves the corpus from $ZENAV1_CORPUS_ROOT. Before that it
+        # was skipped on every run, which meant the ONLY tier coverage the
+        # IntraBC path has (no synthetic content codes an IBC block) existed
+        # nowhere but a dev host.
         # Encodes real cells under EVERY archmage tier and asserts identical
         # OBUs. Every byte-parity gate here assumes the port emits one bitstream
         # per input regardless of ISA; before this test nothing checked it. It
@@ -367,6 +419,52 @@ jobs:
         run: |
           ./tools/screen_palette_bd_gate.sh
 
+      - name: screen IntraBC byte gate — gb82-sc x presets 0..4 x qp (152 cells)
+        working-directory: rust
+        # THE GATE THAT GUARDED A BAND NOTHING IN CI TOUCHED. Three real
+        # bitstream defects closed the gb82-sc IntraBC band on 2026-09-05
+        # (docs/INTER-ENCODE-PLAN.md §1z⁴⁰: the tx-depth class clamp keyed on
+        # `is_inter` instead of the candidate's mode; the MD-side txfm-context
+        # stamp storing block dims for a skip IntraBC winner; a palette CDF the
+        # chain sim adapted where C's MD context does not). 22/100 -> 150/150.
+        # None of the three had ANY CI coverage: no synthetic content arms
+        # IntraBC, so the synthetic `screen`/`screenrep` cells in every other
+        # gate leave the whole path dark.
+        #
+        # Byte-only by design — it needs no `tools/decode_diff`, so unlike
+        # `screen_ibc_gate.sh` it builds anywhere the C oracle does. Its own
+        # anti-vacuity (exit 3 when the port codes no IntraBC or no palette
+        # block anywhere) means a misconfigured corpus makes this job RED, not
+        # green: a silent skip cannot come back through this step.
+        #
+        # RS_AOMDEC adds the recon leg on the two record cells (the port's
+        # stream must decode to the port's own final recon). Without it the leg
+        # reports SKIPPED, loudly; this job has the decoder, so it runs.
+        run: RS_AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/screen_ibc_byte_gate.sh
+
+      - name: screen-content luma palette byte gate — gb82-sc x preset 6 (50 cells)
+        working-directory: rust
+        # The real-screenshot twin of `screen_palette_bd_gate.sh` above: that
+        # one is SYNTHETIC and this one is the gb82-sc corpus, which is where
+        # the two #71 palette roots (the MDS3 inter-class prune, and the
+        # palette color-index rate table the port's chain sim was adapting)
+        # were actually found. Anti-vacuity exit 3 if no cell codes a palette
+        # block, so an absent corpus is red here too.
+        run: ./tools/screen_palette_gate.sh
+
+      - name: bd10 screen panic-freedom + decodability (gb82-sc, 60 cells)
+        working-directory: rust
+        # PANIC ON THE PUBLIC API, on real screen content at 10 bits: the bd10
+        # leaf funnel does not port the luma palette search, and a surviving
+        # palette candidate reaching `tx_unit_hbd` indexed a u16 buffer with a
+        # u8 prediction (80 rs-err cells in the 2026-07-22 wider-corpus sweep,
+        # all screen + bd10). This gate PINS the fix and, like the two above,
+        # could not run in CI until the corpus was fetched — so it was never
+        # wired in at all. It asserts panic-freedom + aomdec decodability, NOT
+        # byte-identity (the bd10 palette path is unported and those streams
+        # legitimately differ); a missing corpus exits 1.
+        run: AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/bd10_screen_panic_gate.sh
+
       - name: partial-SB / odd-dimension identity (8-bit)
         working-directory: rust
         # 104 cells: partial superblocks, odd dims, straddle and both-partial
@@ -429,9 +527,10 @@ jobs:
         working-directory: rust
         # 22 cells. Each asserts the oracle really emitted a 128px superblock,
         # so a mis-sized cell fails loudly instead of silently testing SB64.
-        # The gb82-sc cells drop with a loud warning when SC_CORPUS is absent,
-        # which it is here — that decision is made in the script, not buried
-        # in a silently-skipping cell.
+        # The four gb82-sc `codec_wiki` SB128 cells dropped with a loud warning
+        # while the corpus was absent here; since 2026-09-05 this job fetches
+        # gb82-sc, so `corpus_dir` resolves and those four asserted byte-exact
+        # cells RUN (18 -> 22 cells; measured both ways with SC_CORPUS).
         run: |
           AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" ./tools/sb128_gate.sh
 
@@ -449,9 +548,12 @@ jobs:
       - name: feature-combination identity — SB128 x tiles, bd10 x tiles (8-bit + 10-bit)
         working-directory: rust
         # Issue #8 item 7 (the corpus-free gates belong in CI). The gate's
-        # third axis (real content x tiles) needs the CID22 + gb82-sc corpora,
-        # which no runner has; CC_AXES makes that a CALLER decision, visible
-        # here, rather than a silent in-script skip. Axes 1-2 are 28 cells,
+        # third axis (real content x tiles) needs BOTH the CID22 and gb82-sc
+        # corpora. gb82-sc is fetched by this job as of 2026-09-05; CID22-512 is
+        # 94 MB / 250 images and is NOT, so the `real` axis stays off and is
+        # still unguarded in CI — a documented gap, not a silent one. CC_AXES
+        # makes that a CALLER decision, visible here, rather than a silent
+        # in-script skip. Axes 1-2 are 28 cells,
         # four encodes each (port/C x tiled/single) plus aomdec on the tiled
         # stream; byte-exact cells are asserted and diverging ones are pinned
         # self-promotingly (a pinned cell that starts matching FAILS the gate

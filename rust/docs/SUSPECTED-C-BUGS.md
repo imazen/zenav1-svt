@@ -368,10 +368,10 @@ Two consequences already applied:
   pins for their specific cells (3 and 12), self-promoting as always.
 - **A corpus-free PQ tier was added to `bd10_hbd_src_gate.sh`** precisely so
   the x86-64 reference host sees PQ-shaped 10-bit low bits at preset 6 — the
-  band where the photographic PQ gate needs its pins. No CI runner has the
-  image corpora (`ZENAV1_SKIP_CORPUS_TESTS` at workflow scope), so a
-  photographic gate can never answer a question on the reference host; a
-  synthetic one can. That tier is 18/18 on aarch64 too, which is what says the
+  band where the photographic PQ gate needs its pins. CI fetches only gb82-sc
+  (screen content, 2.9 MB — added 2026-09-05); the PHOTOGRAPHIC corpus
+  (CID22-512, 94 MB) is still not on the runner, so a photographic gate still
+  cannot answer a question on the reference host; a synthetic one can. That tier is 18/18 on aarch64 too, which is what says the
   photographic p6 pins are about content, not about the low bits.
 
 **The standing recommendation from this entry — an aarch64 CI runner — is now

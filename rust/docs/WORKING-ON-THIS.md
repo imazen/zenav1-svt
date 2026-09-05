@@ -636,6 +636,23 @@ cells. They now resolve through `tools/lib_corpus.sh` (`$ZENAV1_CORPUS_ROOT`,
 then `~/work/zen`, then `/root/work`, then `~/work`). Same lesson as `ionice`
 and `-Wl,--wrap`: **probe, never assume one host.**
 
+**But probing is not fetching, and "resolves portably" is not "CI has it."**
+`corpus_dir` only looks in several places; nothing put an image on the runner,
+so until 2026-09-05 every screen gate was either absent from
+`rust-gates.yml` or silently dropping its real-content cells there —
+`regression_spotcheck` reported `98 / 98` in CI against `104 / 104` locally,
+and `docs/INTER-ENCODE-PLAN.md` §1z⁴⁰ concluded from that symptom that wiring
+the screen gates in "would not help." gb82-sc is public CC0 and a sparse clone
+of that one directory takes **2.2 s / 6.9 MB**; the `gates` job now fetches it
+and exports `ZENAV1_CORPUS_ROOT`. Two follow-on traps that fetch exposed: a
+gate that calls `corpus_dir` is not the same as a gate that resolves — 
+`regression_spotcheck.sh` still hard-coded `$HOME/work/zen/...` — and
+`$ZENAV1_CORPUS_ROOT` meant *the parent of `codec-corpus`* to the shell gates
+but *`codec-corpus` itself* to `tests/tier_invariance.rs`, so one exported value
+satisfied only one of them until the test learned to probe both shapes. **When a
+gate reports a smaller total in CI than it does locally, that difference IS the
+finding** — read the totals, not the exit code.
+
 **`tools/decode_diff` cannot build off the CI image.** Its `Cargo.toml` has a
 literal path dependency on `/root/aom-rs/crates/aom-decode`, and Cargo path deps
 take no env override, so `real_image_matrix.sh` and `screen_ibc_gate.sh` cannot
