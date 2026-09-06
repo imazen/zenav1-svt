@@ -1,0 +1,41 @@
+{
+  "host": "i265",
+  "baseline_source": "fda1ed60b7d21db60e36b409d32a7c511b902c45",
+  "method": "Standalone randomized paired function-pointer timings; 21 rounds, one warmup round; pinned CPU2. Baseline includes public dispatcher; candidate receives a held token. This is not a frame-level speedup.",
+  "cases": 2394,
+  "pairs": 525,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-probe.raw.tsv": {
+      "sha256": "8d1523a9d4226991c73335fac02aee7cfe6ef5a6251a093910bed57c13a0a617",
+      "bytes": 40576
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-probe/src/main.rs": {
+      "sha256": "09532bbad3ad6037630c9dad667ddef88e27bb4b15ae1f84ae92b70e230d1898",
+      "bytes": 2567
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-probe/src/lib.rs": {
+      "sha256": "ad53053a1757ad16a8e93a05278d1797b6633e1de7a680b4e50a2ec38b939f82",
+      "bytes": 5763
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-probe/Cargo.toml": {
+      "sha256": "20fa77f308a6cb826c305065932f5ae8a14a1af9587a19667126750ae660b332",
+      "bytes": 627
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-probe-tests.log": {
+      "sha256": "1d2936a5ffffe71874ae93fa7921b2f1517a41928b0f129013737338d897ce98",
+      "bytes": 2818
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-mutation.log": {
+      "sha256": "88075b826540eb9eb40c75a629b65c01b6748a09224a480b20cfa5dd68f01e80",
+      "bytes": 2211
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-restored.log": {
+      "sha256": "70008506bf9345706cb2e5a0d6b4f516bf496152e2c3d9266849f56d4135458a",
+      "bytes": 1297
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.dr-zone2-pinned": {
+      "sha256": "9a12ad7b25caf99fcd7e290e5d401976ffb04c57a571992e92b3919411598087",
+      "bytes": 4152112
+    }
+  }
+}

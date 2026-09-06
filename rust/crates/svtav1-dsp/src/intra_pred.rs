@@ -886,6 +886,28 @@ fn dr_z2_edged(
     dy: i32,
 ) {
     debug_assert!(dx > 0 && dy > 0);
+    #[cfg(target_arch = "x86_64")]
+    if (4..=64).contains(&bw)
+        && (4..=64).contains(&bh)
+        && let Some(token) = X64V3Token::summon()
+    {
+        dr_z2_edged_split_v3(
+            token,
+            dst,
+            dst_stride,
+            bw,
+            bh,
+            above,
+            left,
+            origin,
+            upsample_above,
+            upsample_left,
+            dx,
+            dy,
+        );
+        return;
+    }
+
     // `bw >= 16 && bh >= 16` for the reason [`dr_z1_edged`] records: below it
     // neither pass can run a single 16-lane chunk, so the `incant!` would
     // summon a token and cross a target-feature boundary to execute the
@@ -922,6 +944,85 @@ fn dr_z2_edged(
         dx,
         dy,
     );
+}
+
+/// The scalar C formula switches edges at one column per row. Hoist that
+/// boundary and the above-edge interpolation weight out of the pixel loop.
+/// The contiguous above suffix can then auto-vectorize under AVX2 without
+/// per-pixel edge selection. Specializing the two upsample flags keeps its
+/// source stride constant (one or two bytes). The prefix retains C's left
+/// indexing and rounding exactly; no gather primitive is needed.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+#[allow(clippy::too_many_arguments)]
+fn dr_z2_edged_split_v3(
+    _token: X64V3Token,
+    dst: &mut [u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    ua: bool,
+    ul: bool,
+    dx: i32,
+    dy: i32,
+) {
+    match (ua, ul) {
+        (false, false) => {
+            dr_z2_edged_split_core::<false, false>(dst, stride, above, left, origin, w, h, dx, dy)
+        }
+        (false, true) => {
+            dr_z2_edged_split_core::<false, true>(dst, stride, above, left, origin, w, h, dx, dy)
+        }
+        (true, false) => {
+            dr_z2_edged_split_core::<true, false>(dst, stride, above, left, origin, w, h, dx, dy)
+        }
+        (true, true) => {
+            dr_z2_edged_split_core::<true, true>(dst, stride, above, left, origin, w, h, dx, dy)
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn dr_z2_edged_split_core<const UA: bool, const UL: bool>(
+    dst: &mut [u8],
+    stride: usize,
+    above: &[u8],
+    left: &[u8],
+    origin: usize,
+    w: usize,
+    h: usize,
+    dx: i32,
+    dy: i32,
+) {
+    let step = 1usize << (UA as usize);
+    for r in 0..h {
+        let x = -((r as i32 + 1) * dx);
+        let base = x >> (6 - UA as u32);
+        let first =
+            ((-(step as i32) - base + step as i32 - 1) >> (UA as u32)).clamp(0, w as i32) as usize;
+        let row = &mut dst[r * stride..r * stride + w];
+        for (c, out) in row[..first].iter_mut().enumerate() {
+            let y = ((r as i32) << 6) - (c as i32 + 1) * dy;
+            let i = (origin as i32 + (y >> (6 - UL as u32))) as usize;
+            let shift = ((y << (UL as u32)) & 63) >> 1;
+            *out = ((i32::from(left[i]) * (32 - shift) + i32::from(left[i + 1]) * shift + 16) >> 5)
+                as u8;
+        }
+        if first < w {
+            let begin = (origin as i32 + base + (first * step) as i32) as usize;
+            let len = w - first;
+            let source = &above[begin..begin + (len - 1) * step + 2];
+            let shift = ((x << (UA as u32)) & 63) >> 1;
+            for (out, pair) in row[first..].iter_mut().zip(source.windows(2).step_by(step)) {
+                *out = ((i32::from(pair[0]) * (32 - shift) + i32::from(pair[1]) * shift + 16) >> 5)
+                    as u8;
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

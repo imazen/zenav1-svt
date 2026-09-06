@@ -1,0 +1,46 @@
+{
+  "host": "i265",
+  "nextest": {
+    "passed": 2560,
+    "skipped": 0
+  },
+  "spotcheck": {
+    "passed": 104,
+    "required": 104
+  },
+  "mutation": "Above-rounding +16 to +15 failed real-C all-tier test on 4x4 angle93; correct formula restored.",
+  "clippy": "New collapsible-if warning fixed; existing warnings remain outside this change.",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-final-nextest.log": {
+      "sha256": "d1edab71758fa3f886de4444e618ae497993a558e1e30b5f7430a4698f2b65fa",
+      "bytes": 289823
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-final-spotcheck.log": {
+      "sha256": "e2f94d8a1a2676020e0b5e56f99742f1fe4e5b5fba120f5d200d8ea99ba78c8c",
+      "bytes": 264
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-final-fmt.log": {
+      "sha256": "8cc1eb0a0ebd1e08906b98d5f5ab5e1980abf55053fd7d443b53208cf121e905",
+      "bytes": 183
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-final-clippy.log": {
+      "sha256": "c6d99eec4cb5a02ff3d3264526acedfa559e515e4772168ca634a1d15e54479f",
+      "bytes": 8174
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-archived-probe-test.log": {
+      "sha256": "99931a547b352e619c1b367b4ddaaf1d9754eb749aedd0c0313dd8888ebe5a82",
+      "bytes": 2736
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-mutation.log": {
+      "sha256": "88075b826540eb9eb40c75a629b65c01b6748a09224a480b20cfa5dd68f01e80",
+      "bytes": 2211
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-zone2-restored.log": {
+      "sha256": "70008506bf9345706cb2e5a0d6b4f516bf496152e2c3d9266849f56d4135458a",
+      "bytes": 1297
+    }
+  },
+  "opt3_text_after_lint": "byte-identical to timed candidate",
+  "text_sha256": "8e52e92494f125d41a063e2ea3e6b7cbfd2d2bc406c10a806bc6e17fb6eca795",
+  "final_binary_sha256": "f882f511ae5a26346b0cc1e234d947c45ccf3800436e9caa642911c94b6757db"
+}

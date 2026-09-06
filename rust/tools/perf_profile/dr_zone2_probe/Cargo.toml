@@ -1,0 +1,13 @@
+[workspace]
+[package]
+name="dr-probe"
+version="0.0.0"
+edition="2024"
+[dependencies]
+archmage="0.9.28"
+svtav1-dsp={package="zenav1-svt-dsp",path="../../../crates/svtav1-dsp"}
+svtav1-cref={package="zenav1-svt-cref",path="../../../crates/svtav1-cref"}
+[patch.crates-io]
+archmage={git="https://github.com/imazen/archmage",rev="cc24398c9a9fee0251722931e295da840730704d"}
+archmage-macros={git="https://github.com/imazen/archmage",rev="cc24398c9a9fee0251722931e295da840730704d"}
+magetypes={git="https://github.com/imazen/archmage",rev="cc24398c9a9fee0251722931e295da840730704d"}

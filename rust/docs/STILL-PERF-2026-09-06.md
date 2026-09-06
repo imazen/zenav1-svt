@@ -468,3 +468,85 @@ and zero harness errors. Source remained frozen throughout. The quantizer
 cache is absent; the new C quantizer-table test remains included. The summary
 and raw-file hashes are recorded in
 `benchmarks/still_i265_2026-09-06-sc-reuse-identity.meta.json`.
+
+
+## Thin-LTO experiment (not adopted)
+
+The same source fda1ed60 was built at opt-level3, baseline target CPU,
+16 codegen units, with CARGO_PROFILE_RELEASE_LTO=thin. The baseline also
+uses opt3 and baseline CPU, without cross-crate LTO. Build command is in
+`~/tmp/still-perf-2026-09-06/build-thin.sh`; it explicitly clears RUSTFLAGS
+and CARGO_ENCODED_RUSTFLAGS. The build took19s, peak RSS0.88GiB; this is an
+observed build duration, not a controlled clean-build compile-cost delta.
+GNU size reports text3,644,619 bytes baseline and3,671,193 bytes thin-LTO.
+
+All81 paired outputs remained byte-identical. The result is mixed: small
+CID22 gains and terminal p8 gain, but CLIC p2 regresses about1.25% and p6
+about0.57%. The release profile remains unchanged. Records:
+`benchmarks/still_i265_2026-09-06-thin-ab.*`. This is a Rust-vs-Rust
+experiment, not a comparison of LTO-enabled Rust against LTO-disabled C.
+
+The next compiler experiment may use PGO with distinct training images.
+The official rustc PGO workflow requires matching generation/use flags,
+absolute profile paths, and an explicit target to keep instrumentation out
+of build scripts: https://doc.rust-lang.org/rustc/profile-guided-optimization.html.
+LLVM BOLT's official workflow is https://github.com/llvm/llvm-project/tree/main/bolt.
+No PGO/BOLT speedup has been measured yet.
+
+## Zone-2 directional prediction: split edge runs
+
+The scalar zone-2 loop chooses above or left for every pixel. Each row
+has a single transition between those edges. The candidate computes that
+column once, evaluates the left prefix with C's scalar indexing, and
+interpolates the contiguous above suffix with slice iterators. Const
+upsampling flags keep the source step at one or two bytes. One Archmage
+V3 boundary covers the block; no new dependency APIs or raw intrinsics
+are needed. Other architectures retain their existing implementation.
+
+On i265, the production opt3 function is 3,926 bytes. Disassembly confirms
+AVX2 multiply/add/shift/pack operations on the above suffix. This does not
+mean every short row vectorizes: the emitted vector loop consumes 32
+outputs per iteration, with scalar tails. The 32-bit arithmetic also
+warrants a separate experiment with bounded 16-bit intermediates.
+
+The exploratory kernel probe covers five square sizes and five angles,
+with 21 randomized pairs each. Its candidate receives a held token while
+the baseline uses public dispatch, so it is not an abstraction-overhead
+comparison. Ratios and raw-file/source hashes are in
+`benchmarks/still_i265_2026-09-06-dr-zone2-probe.*`; its source is preserved
+in `tools/perf_profile/dr_zone2_probe/`. Its real-C test passed 2,394 cases
+including padded rows and trailing sentinels.
+
+The existing production all-tier C test was strengthened to all seven
+angle deltas and 19 shapes. It passed before the new implementation and
+afterward. Changing the above interpolation rounding from +16 to +15
+failed on 4x4 angle93 with above upsampling; restoring +16 passed again.
+
+Nine paired whole-frame rounds against `fda1ed60` at opt3, baseline target
+CPU, and CPU affinity2 produced identical output on all 81 pairs:
+
+| Image | Preset2 | Preset6 | Preset8 |
+|---|---:|---:|---:|
+| CID22 | 0.9898 | 0.9955 | 0.9993 |
+| CLIC2025 | 0.9768 | 0.9939 | 0.9942 |
+| terminal | 0.9889 | 0.9928 | 0.9990 |
+
+These are candidate/previous-Rust ratios, not port/C positions. The clearest
+frame improvement is CLIC p2 (2.32%); p8 spans overlap one. The benchmark
+wrapper completed in 120s, with peak RSS 0.03GiB for its monitored process
+and minimum available memory 26,313MiB; that RSS is not an encoder memory
+measurement. Records: `benchmarks/still_i265_2026-09-06-dr-zone2-ab.*`.
+Final workspace nextest passed 2560/2560 with zero skipped, and the
+regression spot-check passed 104/104. The DSP formatting check passed.
+Clippy completed with existing warnings elsewhere; the new dispatch
+condition was collapsed to remove its one new warning. The archived probe
+also passed its real-C test from the tracked relative-path manifest.
+
+The same-session same-binary control ran 21 pairs on each of the three
+p6 cells (63/63 identical), with ratios 0.9988/1.0026/1.0009; all
+interquartile spans contain one. This control does not independently
+price p2/p8 noise. Records: `benchmarks/still_i265_2026-09-06-dr-zone2-control.*`.
+
+After the lint-only dispatch rewrite, an opt3 rebuild produced a byte-identical
+`.text` section to the timed binary. The final binary and gate-log hashes are
+in `benchmarks/still_i265_2026-09-06-dr-zone2-validation.meta.json`.

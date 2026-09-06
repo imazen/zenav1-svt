@@ -230,10 +230,14 @@ fn dr_prediction_all_tiers_match_c() {
         (16, 16),
         (32, 32),
         (64, 64),
+        (4, 8),
+        (8, 4),
         (4, 16),
         (16, 4),
         (8, 16),
         (16, 8),
+        (8, 32),
+        (32, 8),
         (16, 32),
         (32, 16),
         (16, 64),
@@ -246,7 +250,7 @@ fn dr_prediction_all_tiers_match_c() {
     let mut cells = 0usize;
     for &(w, h) in &sizes {
         for &base in &base_angles {
-            for delta in [-3i32, 0, 3] {
+            for delta in -3i32..=3 {
                 let angle = base + delta * 3;
                 if angle <= 0 || angle >= 270 || angle == 90 || angle == 180 {
                     continue; // exact V/H route to predict_v/h (no dr kernel)
