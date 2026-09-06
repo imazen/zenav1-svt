@@ -1012,11 +1012,58 @@ pub fn aom_hadamard_32x32(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]
     }
 }
 
-/// C `svt_aom_satd_c`: plain sum of absolute int32 coefficients.
+/// C `svt_aom_satd_c` (common_dsp_rtcd.c:48): sum of absolute coefficients.
 pub fn aom_satd(coeff: &[i32]) -> i32 {
-    let mut satd: i32 = 0;
-    for &c in coeff {
-        satd += c.abs();
+    // The AVX2 vector loop consumes 32 coefficients per iteration. Keep
+    // small blocks on the original core; dispatch overhead loses at 4x4.
+    #[cfg(target_arch = "x86_64")]
+    if coeff.len() >= 32 {
+        return incant!(aom_satd_impl(coeff), [v3, scalar]);
     }
-    satd
+    aom_satd_core(coeff)
+}
+
+#[inline(always)]
+fn aom_satd_core(coeff: &[i32]) -> i32 {
+    coeff.iter().map(|&c| c.abs()).sum()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn aom_satd_impl_v3(_token: X64V3Token, coeff: &[i32]) -> i32 {
+    aom_satd_core(coeff)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn aom_satd_impl_scalar(_token: ScalarToken, coeff: &[i32]) -> i32 {
+    aom_satd_core(coeff)
+}
+
+/// Sum absolute i32 coefficients in i64, preserving values beyond C's i32 SATD.
+/// In particular, i32::MIN contributes 2^31 rather than overflowing its abs.
+pub fn sum_abs_coeffs_wide(coeff: &[i32]) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        incant!(sum_abs_coeffs_wide_impl(coeff), [v3, scalar])
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        sum_abs_coeffs_wide_core(coeff)
+    }
+}
+
+#[inline(always)]
+fn sum_abs_coeffs_wide_core(coeff: &[i32]) -> i64 {
+    coeff.iter().map(|&c| i64::from(c.unsigned_abs())).sum()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn sum_abs_coeffs_wide_impl_v3(_token: X64V3Token, coeff: &[i32]) -> i64 {
+    sum_abs_coeffs_wide_core(coeff)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn sum_abs_coeffs_wide_impl_scalar(_token: ScalarToken, coeff: &[i32]) -> i64 {
+    sum_abs_coeffs_wide_core(coeff)
 }

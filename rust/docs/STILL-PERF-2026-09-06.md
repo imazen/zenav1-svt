@@ -982,3 +982,56 @@ establish the cause of the frame regressions.
 The frozen switch probe is in `tools/perf_profile/dct64_probe`; separate
 patches reproduce the other three variants. Raw source, build and timing
 hashes are in `benchmarks/still_i265_2026-09-06-dct64-{probe,frame-ab}.*`.
+
+
+## Coefficient absolute-sum reductions
+
+The narrow C-compatible SATD and the transform screen's existing i64 sum now
+have x86 V3 dispatch around ordinary safe iterator reductions. LLVM generates
+AVX2 loops without new intrinsics or Archmage API additions. Narrow inputs
+below32 coefficients retain the scalar core: dispatch at16 regresses the
+isolated probe by75%. The wide reduction preserves unsigned absolute values,
+including i32::MIN, and the transform-screen decision arithmetic is unchanged.
+Other architectures retain the existing inline transform-screen loop.
+
+The direct test covers480 real-C cases per token permutation plus20 lengths
+with closed-form sums beyond i32, including vector boundaries and offset input.
+It passed before vectorization; deliberate narrow and wide V3 mutations each
+fail it. The restored implementation passes all2,564 workspace tests with zero
+skipped and104 regression spot-checks. The full synthetic/dimension gate
+passes1,100/1,100 with zero pinned cases and zero harness errors (257s).
+The real-image gate passes450/450, also with no pinned cases or harness
+errors. Logs and table hashes are preserved in
+`benchmarks/still_i265_2026-09-06-satd-identity.meta.json`.
+
+The isolated dispatched wide sum improves31–69%; dispatched narrow sums at32
+or more coefficients improve22–59%. The out-of-line probe baseline differs
+from the encoder's formerly inline wide sum, so these are not frame gains.
+Two16-coefficient control groups have nonzero intervals (about2% bias); all
+runs report zero resource gate waits. The production text section grows3,320
+bytes. The archived probe is `tools/perf_profile/satd_probe` and its records
+are `benchmarks/still_i265_2026-09-06-satd-probe.*`.
+
+Nine non-PGO frame pairs per11 cells all produce identical output. Median
+candidate/previous-Rust ratios range0.9799–0.9978, including NYC512/QP60/p2
+at0.9900 and wiki1024/QP60/p8 at0.9827. Fresh same-binary controls also produce99 identical pairs. Their medians
+range0.9964–1.0019; CID p6 and terminal p2 interquartile spans exclude one.
+Candidate gains of roughly1–2% support retention, while the smallest gains
+remain uncertain. Frame records are `benchmarks/still_i265_2026-09-06-satd-frame-{ab,control}.*`.
+Both full identity gates pass. The matched-PGO goal
+position remains73/135 medians at or below1.50 until a fresh sweep is run.
+
+
+### Next measured candidate: discarded film-grain estimate
+
+The earlier wiki PGO profile assigns2.25% self samples to
+`film_grain::estimate_film_grain`. The pipeline unconditionally calls this
+homegrown heuristic after restoration and drops its plain-data return value.
+Its entire body only reads source/reconstruction and builds that return value.
+The actual fork photon-noise table comes separately from `noise_gen` before
+encoding and is passed as `film_grain.as_ref()` to the header writer. C's
+`svt_aom_picture_pre_processing_operations` instead guards its real denoiser
+behind the film-grain configuration (pic_analysis_process.c:514–525).
+Removing the discarded heuristic is a candidate for a separate measured change;
+no production edit or speedup is claimed here. The module's historical claim
+that all grain signaling is absent is stale for the fork photon-noise path.

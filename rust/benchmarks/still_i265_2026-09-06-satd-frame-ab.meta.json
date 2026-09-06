@@ -1,0 +1,60 @@
+{
+  "candidate_change": "uomnxqoz",
+  "pairs": 99,
+  "identical": true,
+  "build": "opt3, baseline CPU, no PGO; core2",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-ab.raw.tsv": {
+      "sha256": "1ad047793947b402253d98029ee909b48047107f820bd5ffe9edab3b583d56b3",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-ab.meta.json": {
+      "sha256": "fb34d1989884d7517aa14edd150695a5671d6eb404309578f0e1376363f28988",
+      "bytes": 4555
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-ab.log": {
+      "sha256": "1bb5c8774f23c8977fa5f6e5f947707462655bdeffb9edcb6be5c06e6b8ecbf5",
+      "bytes": 5367
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.had-unpack": {
+      "sha256": "f70d12b24b936e7326e614dd3f0e30c9b34055930ac202f7a5c1e1d25cedadc7",
+      "bytes": 4152480
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.satd-reduce": {
+      "sha256": "59ee3911c5fae8c026d3b6afa3692d9ccea2bc1a893cb23a9e57f59b2fc27e15",
+      "bytes": 4156776
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-build.sh": {
+      "sha256": "874f0e36eb6a2a6a1956ce8ab15a9b3121488187386b7e0d610bdc82adaf7b97",
+      "bytes": 679
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-build.log": {
+      "sha256": "05ee8150f3632f131c7670d57c7138bd25ca14da1df025aadbc1167242bf07da",
+      "bytes": 2530
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-production-baseline.log": {
+      "sha256": "d9f46b233186ba0236e05f444d403e2be3adabd65d67281080f287d12dba72df",
+      "bytes": 1295
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-production-c.log": {
+      "sha256": "7460797c4dc76d62a27a673ca29d5bf42b34579007b45eefa461637c93c44146",
+      "bytes": 2353
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-wide-mutation.log": {
+      "sha256": "9744b05f122c29d56d3c2d0f5132984aa8103fcea9dc6094430402fc68d4da43",
+      "bytes": 2085
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-narrow-mutation.log": {
+      "sha256": "ca62852520cc81bd5663d769c0b60b888c8b1ef3f77c332577af030749300485",
+      "bytes": 2101
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-nextest.log": {
+      "sha256": "f4eb82a2f2acbbe84577b8810413ed7ea2883bc8261bc395954c44f30c362811",
+      "bytes": 290310
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-spotcheck.log": {
+      "sha256": "46476190bc5b66dc84fc5b85317a374b63cf43f040a9f96f694c23d81c4175c0",
+      "bytes": 274
+    }
+  }
+}

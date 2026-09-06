@@ -1,0 +1,24 @@
+{
+  "candidate_change": "uomnxqoz",
+  "pairs": 99,
+  "identical": true,
+  "build": "opt3, baseline CPU, no PGO; core2",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-control.raw.tsv": {
+      "sha256": "b568a407d0e9bd7958470f938e94e9f3dc94f99cd7c276a9807753659c1d5809",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-control.meta.json": {
+      "sha256": "a32527c58b4d09f5b8f89ff63664d9260116a968741132652792944cf833a174",
+      "bytes": 4554
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-frame-control.log": {
+      "sha256": "296e065a3c9ffa395e17de322e95c566124a0a972cc3fa181a83bf7139397e7f",
+      "bytes": 5371
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.had-unpack": {
+      "sha256": "f70d12b24b936e7326e614dd3f0e30c9b34055930ac202f7a5c1e1d25cedadc7",
+      "bytes": 4152480
+    }
+  }
+}

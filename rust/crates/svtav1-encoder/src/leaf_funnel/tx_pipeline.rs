@@ -363,20 +363,21 @@ impl SatdScreen {
 
     /// Fold one trial's coefficients in; `true` promotes it to quantize.
     ///
-    /// The sum is C `svt_aom_satd_c` (`picture_operators_c.c:330`), which
-    /// `svtav1_dsp::hadamard::aom_satd` also transcribes — differentially
-    /// fuzzed against the real C symbol in `tests/c_parity_hadamard.rs`. This
-    /// copy is NOT folded into that one because it accumulates in `i64` where
-    /// C (and therefore `aom_satd`) accumulates in `int`: the widening is the
-    /// port's existing, byte-verified choice, and narrowing it back would be a
-    /// behaviour change on any content whose coefficient sum overflows `i32`,
-    /// which no gate in this repo can currently witness. Do not "deduplicate"
-    /// these two without measuring that case first.
+    /// C's SATD is an i32 sum (common_dsp_rtcd.c:48); this screen retains
+    /// the port's wider i64 sum. Narrowing would change large-coefficient
+    /// inputs, witnessed by the DSP reduction test's closed-form edge cases.
     fn admit(&mut self, coeffs: &[i32]) -> bool {
-        let mut satd: i64 = 0;
-        for &c in coeffs.iter() {
-            satd += c.unsigned_abs() as i64;
-        }
+        #[cfg(target_arch = "x86_64")]
+        let satd = svtav1_dsp::hadamard::sum_abs_coeffs_wide(coeffs);
+        // Preserve the existing inlined reduction on other architectures.
+        #[cfg(not(target_arch = "x86_64"))]
+        let satd = {
+            let mut satd: i64 = 0;
+            for &c in coeffs.iter() {
+                satd += c.unsigned_abs() as i64;
+            }
+            satd
+        };
         self.last = (satd, self.best);
         if satd < self.best {
             self.best = satd;

@@ -1,0 +1,36 @@
+{
+  "candidate_change": "uomnxqoz",
+  "nextest_passed": 2564,
+  "nextest_skipped": 0,
+  "spotcheck_passed": 104,
+  "gates": {
+    "full": {
+      "identical": 1100,
+      "pinned": 0,
+      "errors": 0
+    },
+    "real": {
+      "identical": 450,
+      "pinned": 0,
+      "errors": 0
+    }
+  },
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-full-identity.tsv": {
+      "sha256": "cd508f024be7456ee423c87ed78a2a882cef5d5e8b5c0d6b4accc16bf4b37fcf",
+      "bytes": 41860
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-full-identity.log": {
+      "sha256": "0e502b2ebaffc3f614ab2ac558577c21b1ba413ca91c88cbd103796cfc185536",
+      "bytes": 568
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-real-identity.tsv": {
+      "sha256": "420c6640abc9d7635dc849fa12e5ae70d3ae228c52aa937ce8d041647544bc29",
+      "bytes": 45252
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/satd-real-identity.log": {
+      "sha256": "2c830cbd550e4b3ccbbcbf8c9ca0581cf41ce186760ef986c64fd53eec594f95",
+      "bytes": 587
+    }
+  }
+}
