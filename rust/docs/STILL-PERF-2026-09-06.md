@@ -793,7 +793,8 @@ The earlier broad PGO position still predates both this and the Hadamard change.
 
 ## Matched PGO after Hadamard and DC fills
 
-Fresh Rust PGO training at `e711ee08` covers the same 108 cells as the unchanged
+The resumed measurements run on Linux7.0.0-31-generic; the initial host
+record above was7.0.0-30. Fresh Rust PGO training at `e711ee08` covers the same 108 cells as the unchanged
 C PGO binary. All training outputs match C and the previous training hashes.
 The Rust profile-use build retains 105 missing-function warnings, as before;
 this experiment does not change the workspace release defaults.

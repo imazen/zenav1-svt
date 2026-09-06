@@ -319,3 +319,66 @@ fn quantizer_tables_match_c_all_rows() {
         }
     }
 }
+
+/// Sparse blocks exercise every possible EOB, including long all-zero tails.
+#[test]
+fn quantizers_sparse_every_eob_match_c() {
+    let t = quant::build_quant_table(128);
+    let row = row_from_table(&t);
+    let mut checked = 0usize;
+    for &(tx, label) in &TX_SIZES {
+        for class in 0..3 {
+            let scan = scan_tables::scan(tx, class);
+            let n = scan.len();
+            let mut coeff = vec![0; n];
+            let (mut rq, mut rd, mut cq, mut cd) = (vec![0; n], vec![0; n], vec![0; n], vec![0; n]);
+            for expected in 0..=n {
+                coeff.fill(0);
+                if expected != 0 {
+                    coeff[scan[expected - 1] as usize] =
+                        if expected % 2 == 0 { -8191 } else { 8191 };
+                }
+                for fp in [false, true] {
+                    let re = if fp {
+                        quant::quantize_fp(&coeff, scan, &t, TX_SCALE_TAB[tx], &mut rq, &mut rd)
+                    } else {
+                        quant::quantize_b(&coeff, scan, &t, TX_SCALE_TAB[tx], &mut rq, &mut rd)
+                    };
+                    for dispatch in [false, true] {
+                        let ce = if fp {
+                            cref::quantize_fp(
+                                &coeff,
+                                &row,
+                                scan,
+                                TX_SCALE_TAB[tx],
+                                dispatch,
+                                &mut cq,
+                                &mut cd,
+                            )
+                        } else {
+                            cref::quantize_b(
+                                &coeff,
+                                &row,
+                                scan,
+                                TX_SCALE_TAB[tx],
+                                dispatch,
+                                &mut cq,
+                                &mut cd,
+                            )
+                        };
+                        assert_eq!(
+                            ce as usize, expected,
+                            "oracle coverage {label} class={class} fp={fp} dispatch={dispatch}"
+                        );
+                        assert_eq!(re, ce, "{label} class={class} fp={fp} expected={expected}");
+                        assert_eq!(rq, cq);
+                        assert_eq!(rd, cd);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(checked > 50_000, "only {checked} cases");
+    eprintln!("{checked} sparse quantizer comparisons, every EOB witnessed");
+}

@@ -313,10 +313,33 @@ pub fn quantize_fp(
 
 /// `eob = 1 + max{ i : qcoeff[scan[i]] != 0 }`, else 0 — the scan-order
 /// end-of-block C's quantizers return, recovered from the finished (raster)
-/// `qcoeff` with a reverse scan walk (load + compare, no arithmetic).
+/// `qcoeff`. Zero tails are skipped eight entries at a time; a scalar reverse
+/// walk locates the last nonzero inside the first nonempty chunk.
 #[inline]
 pub(crate) fn eob_from_qcoeff(scan: &[u16], qcoeff: &[i32]) -> u16 {
-    for i in (0..scan.len()).rev() {
+    let mut end = scan.len();
+    if end == 0 {
+        return 0;
+    }
+    if qcoeff[scan[end - 1] as usize] != 0 {
+        return end as u16;
+    }
+    end -= 1;
+    // Eight independent loads share one zero-tail branch. OR cannot cancel
+    // nonzero coefficients, including negative values. Only a nonempty chunk
+    // needs the scalar reverse walk to locate its last nonzero position.
+    while end >= 8 {
+        let positions: &[u16; 8] = scan[end - 8..end].try_into().unwrap();
+        let mut any = 0i32;
+        for &position in positions {
+            any |= qcoeff[position as usize];
+        }
+        if any != 0 {
+            break;
+        }
+        end -= 8;
+    }
+    for i in (0..end).rev() {
         if qcoeff[scan[i] as usize] != 0 {
             return (i + 1) as u16;
         }
