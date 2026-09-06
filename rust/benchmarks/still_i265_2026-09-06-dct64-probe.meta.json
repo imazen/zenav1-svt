@@ -1,0 +1,93 @@
+{
+  "host": "i265",
+  "cpu": 2,
+  "production_baseline": "e1a555f4",
+  "build": "release, baseline target CPU; same held V3 token in both arms",
+  "c_cases_per_variant": 160,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-control.log": {
+      "sha256": "d640802be82568bd9b123036a53e4868cebeba97d7c3413108860002ce0e7454",
+      "bytes": 9000
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-ab.log": {
+      "sha256": "2f1ddde7cf57fd3c6dd8e2a4686c520d1ef9fa8564e5b39a7cd928c29d09af79",
+      "bytes": 8916
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-bench.log": {
+      "sha256": "b50ccdf12c790ce0d378574e9c90e9e68018ba6e0454669e919ae22941940060",
+      "bytes": 522
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-build.log": {
+      "sha256": "80b96a41e7662eea5931826f3af6bf35836ea8f8996ec70faaa7412a5a8c5513",
+      "bytes": 2370
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-fixedbuf-ab.log": {
+      "sha256": "2ffe79172bc7de93417030d21d03eed985b797d0cf6a451f391f023af5bb28c8",
+      "bytes": 8955
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-fixedbuf-build-bench.log": {
+      "sha256": "a196cbc49fc814c694a739f07967453dec53fee0f9e62347961f51b347d302f0",
+      "bytes": 2203
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-return-ab.log": {
+      "sha256": "81e5ad3256e7c3b61fde23adef0700245075bf690520f62ca8ff54ca850df2d1",
+      "bytes": 8975
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-return-build-bench.log": {
+      "sha256": "d5d8215f6f12e9165e832e9091dd8815add10aba0bdd9fafd371022a0bdc9a4e",
+      "bytes": 2201
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-switch-ab.log": {
+      "sha256": "5735867e8cd1af2d01783f82ff38aebb57a48b2fc128602423f2264e0522eab7",
+      "bytes": 8913
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-switch-build-bench.log": {
+      "sha256": "14c465f886635d33c7744be4085a65a7a015fded3c15b99940c6909b4eb9fc0e",
+      "bytes": 2201
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-symbols.txt": {
+      "sha256": "f8e228aaa4dcc4930f39455225179f699a30d3c4b7f66cbffac46959c46c5322",
+      "bytes": 290141
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/Cargo.toml": {
+      "sha256": "ec680d052c682b9375f6cf5742aa2d885e13158d8fa5953a04535ea488f31922",
+      "bytes": 679
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/Cargo.lock": {
+      "sha256": "d7861122302a5c0fd91600d02cc29ba2c7ac6c1a35f0a97497945bec1b75c20f",
+      "bytes": 15727
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/generate.py": {
+      "sha256": "4efa85bbe6390f2a256f11c763254e586e846f5b199a3a05b74425195f355809",
+      "bytes": 3315
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/src/lib.rs": {
+      "sha256": "982952ddb5a1cee3364642fa7267faf8487c8940153e28804beba153231fc5c3",
+      "bytes": 4549
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/src/main.rs": {
+      "sha256": "31386ec16ce7ec6adb993e43f8ffd78a482ebf2eb55f8daec19d3afbeed2f5b7",
+      "bytes": 864
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/src/baseline.rs": {
+      "sha256": "caae40e487eca62c070696882a33d629ec711a07b6b9c9bab1c5ed165590ae2c",
+      "bytes": 25138
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/src/specialized.rs": {
+      "sha256": "e41104af7d2fd9f7d488a342ad6fe038358b8d43c1684750eede9baaac888513",
+      "bytes": 25525
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/specialized-const.rs": {
+      "sha256": "99cd3f6e1aa9e50a4cb821a00e82de5f7b55155040d6fe06f7661ab92f20d740",
+      "bytes": 25105
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/specialized-fixedbuf.rs": {
+      "sha256": "efa8e5c9e1867cc05a0bb3056e821c3ef2018c904eb4e49c43b3b558e3c2a18b",
+      "bytes": 25216
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dct64-const-probe/specialized-return.rs": {
+      "sha256": "30b284c8a07a6f27e7cfa03afa56d068763afe9bb52352e1325702f9b20ed546",
+      "bytes": 25272
+    }
+  }
+}

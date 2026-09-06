@@ -835,6 +835,28 @@ pub(super) fn idct64_x8(
 #[cfg_attr(target_arch = "x86_64", rite(v3))]
 #[cfg_attr(target_arch = "aarch64", rite(neon))]
 pub(super) fn fdct64_x8(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 64], cos_bit: i8) {
+    // The 64x64 passes use 13/10. Specializing those two precisions folds
+    // weights and shifts without duplicating the butterfly source or adding
+    // a SIMD API. Other precisions retain the runtime implementation.
+    #[cfg(target_arch = "x86_64")]
+    match cos_bit {
+        10 => fdct64_x8_inner::<10>(t, inp, out, cos_bit),
+        13 => fdct64_x8_inner::<13>(t, inp, out, cos_bit),
+        _ => fdct64_x8_inner::<0>(t, inp, out, cos_bit),
+    }
+    #[cfg(target_arch = "aarch64")]
+    fdct64_x8_inner::<0>(t, inp, out, cos_bit);
+}
+
+#[cfg_attr(target_arch = "x86_64", rite(v3))]
+#[cfg_attr(target_arch = "aarch64", rite(neon))]
+fn fdct64_x8_inner<const FIXED_COS_BIT: i8>(
+    t: Desktop64,
+    inp: &[__m256i; 64],
+    out: &mut [__m256i; 64],
+    runtime_cos_bit: i8,
+) {
+    let cos_bit = if FIXED_COS_BIT == 0 { runtime_cos_bit } else { FIXED_COS_BIT };
     let cospi = cospi_arr(cos_bit);
     let rnd = splat(t, 1 << (cos_bit as u32 - 1));
     let sh = _mm_cvtsi32_si128(cos_bit as i32);

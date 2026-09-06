@@ -1,0 +1,28 @@
+--- a/src/specialized.rs
++++ b/src/specialized.rs
+@@ -3,10 +3,2 @@
+-pub(super) fn fdct64_x8(t: Desktop64, inp: &[__m256i;64], out: &mut [__m256i;64], cos_bit:i8) {
+-    match cos_bit {
+-        10 => fdct64_inner::<10>(t,inp,out,cos_bit),
+-        13 => fdct64_inner::<13>(t,inp,out,cos_bit),
+-        _ => fdct64_inner::<0>(t,inp,out,cos_bit),
+-    }
+-}
+-#[rite]
+-pub(super) fn fdct64_inner<const COS_BIT: i8>(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 64], runtime_cos_bit: i8) {
+-    let cos_bit = if COS_BIT == 0 {runtime_cos_bit} else {COS_BIT};
++pub(super) fn fdct64_x8<const COS_BIT: i8>(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 64]) {
++    let cos_bit = COS_BIT;
+@@ -239,3 +231,3 @@
+-            let txw = N.trailing_zeros() as usize - 2;
+-            let cos_bit_col = FWD_COS_BIT_COL[txw][txw];
+-            let cos_bit_row = FWD_COS_BIT_ROW[txw][txw];
++
++            const COL: i8 = FWD_COS_BIT_COL[4][4];
++            const ROW: i8 = FWD_COS_BIT_ROW[4][4];
+@@ -254 +246 @@
+-                fdct64_x8(t, &colin, &mut colout, cos_bit_col);
++                fdct64_x8::<COL>(t, &colin, &mut colout);
+@@ -276 +268 @@
+-                fdct64_x8(t, &pos, &mut rowout, cos_bit_row);
++                fdct64_x8::<ROW>(t, &pos, &mut rowout);
