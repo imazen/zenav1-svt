@@ -95,3 +95,7 @@ real-identity suffix="latest":
 # the decoder's prev + reduced*delta_q_res accumulator. Needs aomdec (AOMDEC=).
 variance-boost-recon outdir="target/variance_boost_recon":
     tools/variance_boost_recon.sh {{outdir}}
+
+# Paired runtime tiers; filter is a group-name substring (empty runs all).
+arm-kernel-audit filter="":
+    CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 cargo bench -p zenav1-svt-dsp --bench kernel_tiers -- --group="{{filter}}"

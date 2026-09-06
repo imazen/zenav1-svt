@@ -1,0 +1,24 @@
+   Compiling zenav1-svt-dsp v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-dsp)
+    Finished `bench` profile [optimized] target(s) in 7.51s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-9d59c30f0562a5e1)
+[kernel_tiers] comparing neon vs forced scalar
+[zenbench] calibration: int=0.40ns/iter mem_bw=80.5GiB/s mem_lat=8.2ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.47ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788735597-20de.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788735597-20de
+  git: eb56021fd89d71d53b0b85748b03352842e750c5
+═══════════════════════════════════════════════════════════════
+
+  satd_4x4  200 rounds × 62K calls
+             mean ±mad ns  95% CI vs base 
+  ├─ neon     41.6 ±4.6ns  [40.9–42.2]ns  
+  ╰─ scalar   44.7 ±4.2ns  [+5.3%–+9.5%]  
+
+  neon    ███████████████████████████████████████████████████████████ 41.6ns
+  scalar  ███████████████████████████████████████████████████████████████ 44.7ns
+
+  total: 25.0s  (3 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json

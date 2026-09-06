@@ -580,6 +580,31 @@ fn sse_impl_neon(
     width: usize,
     height: usize,
 ) -> u64 {
+    // Small transform blocks never enter the 16-byte body. Keep their
+    // vector path separate so larger blocks retain the existing row loop.
+    if width == 4 || width == 8 {
+        let mut total = 0u64;
+        for row in 0..height {
+            let s_off = row * src_stride;
+            let r_off = row * ref_stride;
+            let (a, b) = if width == 8 {
+                let a: &[u8; 8] = src[s_off..s_off + 8].try_into().unwrap();
+                let b: &[u8; 8] = ref_[r_off..r_off + 8].try_into().unwrap();
+                (vld1_u8(a), vld1_u8(b))
+            } else {
+                let a: &[u8; 4] = src[s_off..s_off + 4].try_into().unwrap();
+                let b: &[u8; 4] = ref_[r_off..r_off + 4].try_into().unwrap();
+                (
+                    vcreate_u8(u64::from(u32::from_le_bytes(*a))),
+                    vcreate_u8(u64::from(u32::from_le_bytes(*b))),
+                )
+            };
+            let d = vabd_u8(a, b);
+            total += u64::from(vaddlvq_u16(vmull_u8(d, d)));
+        }
+        return total;
+    }
+
     // |a-b| via vabdq_u8 (exact for u8), squared with vmull_u8 into u16 and
     // drained to u32 each chunk — squares reach 65025 so they must not
     // accumulate in u16. The u32 accumulator is drained to u64 per ROW, so an

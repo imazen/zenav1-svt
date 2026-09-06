@@ -100,19 +100,19 @@ fn satd_4x4_impl_neon(
     ref_: &[u8],
     ref_stride: usize,
 ) -> u32 {
-    // Residual rows. Four bytes each, so building the i16 array directly is
-    // both simpler and safer than a wider load that would over-read.
+    // Load exactly four bytes from each row, then widen/subtract in NEON.
+    // The zero upper lanes avoid reading row padding or the next row.
     let mut d = [vdup_n_s16(0); 4];
     for (row, slot) in d.iter_mut().enumerate() {
-        let s = &src[row * src_stride..row * src_stride + 4];
-        let r = &ref_[row * ref_stride..row * ref_stride + 4];
-        let arr = [
-            s[0] as i16 - r[0] as i16,
-            s[1] as i16 - r[1] as i16,
-            s[2] as i16 - r[2] as i16,
-            s[3] as i16 - r[3] as i16,
-        ];
-        *slot = vld1_s16(&arr);
+        let s: &[u8; 4] = src[row * src_stride..row * src_stride + 4]
+            .try_into()
+            .unwrap();
+        let r: &[u8; 4] = ref_[row * ref_stride..row * ref_stride + 4]
+            .try_into()
+            .unwrap();
+        let a = vcreate_u8(u64::from(u32::from_le_bytes(*s)));
+        let b = vcreate_u8(u64::from(u32::from_le_bytes(*r)));
+        *slot = vget_low_s16(vreinterpretq_s16_u16(vsubl_u8(a, b)));
     }
 
     // Pass 1: vertical butterfly, pairing rows (0,1) and (2,3) exactly as the

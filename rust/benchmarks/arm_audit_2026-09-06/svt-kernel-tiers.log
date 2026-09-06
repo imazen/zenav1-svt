@@ -1,0 +1,360 @@
+   Compiling zenav1-svt-cref v0.0.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-cref)
+   Compiling zenav1-svt-dsp v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-dsp)
+    Finished `bench` profile [optimized] target(s) in 7.78s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-9d59c30f0562a5e1)
+[kernel_tiers] comparing neon vs forced scalar
+[zenbench] calibration: int=0.41ns/iter mem_bw=86.2GiB/s mem_lat=8.1ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.42ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788734705-c49.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788734705-c49
+  git: dd9d51d47fca930bcbc5390936ab6c0f2455e9ef
+═══════════════════════════════════════════════════════════════
+
+  sad_8x8  90 rounds × 55K calls
+             mean ±mad ns  95% CI vs base   
+  ├─ neon     46.4 ±3.9ns  [45.2–47.4]ns    
+  ╰─ scalar   81.1 ±9.3ns  [+65.6%–+78.4%]  
+
+  neon    ████████████████████████████████████ 46.4ns
+  scalar  ███████████████████████████████████████████████████████████████ 81.1ns
+
+  sad_16x16  60 rounds × 21K calls
+               mean ±mad ns  95% CI vs base   
+  ├─ neon       79.7 ±6.2ns  [76.4–82.9]ns    
+  ╰─ scalar   162.4 ±15.8ns  [+84.2%–+92.2%]  
+
+  neon    ██████████████████████████████ 79.7ns
+  scalar  ██████████████████████████████████████████████████████████████ 162.4ns
+
+  sad_32x32  50 rounds × 9K calls
+             mean ±mad ns  95% CI vs base   
+  ├─ neon     182 ±22ns  [174–190]ns      
+  ╰─ scalar   331 ±32ns  [+65.0%–+71.2%]  
+
+  neon    ██████████████████████████████████ 181.9ns
+  scalar  ██████████████████████████████████████████████████████████████ 331.3ns
+
+  sad_64x64  200 rounds × 3K calls
+             mean ±mad ns  95% CI vs base   
+  ├─ neon      596 ±85ns  [578–615]ns       [1]
+  ╰─ scalar   748 ±101ns  [+17.9%–+20.1%]   [2]
+
+  neon    █████████████████████████████████████████████████ 596.3ns
+  scalar  ██████████████████████████████████████████████████████████████ 748.2ns
+  [1] CV=23%
+  [2] CV=20%
+
+  satd_4x4  200 rounds × 62K calls
+             mean ±mad ns  95% CI vs base  
+  ├─ neon     47.2 ±5.1ns  [46.0–48.4]ns   
+  ╰─ scalar   41.5 ±4.0ns  [-12.0%–-9.1%]  
+
+  scalar  ███████████████████████████████████████████████████████ 41.5ns
+  neon    ███████████████████████████████████████████████████████████████ 47.2ns
+
+  satd_8x8  30 rounds × 21K calls
+               mean ±mad ns  95% CI vs base     
+  ├─ neon       60.0 ±6.6ns  [56.6–63.4]ns      
+  ╰─ scalar   149.9 ±18.4ns  [+143.5%–+160.8%]  
+
+  neon    █████████████████████████ 60.0ns
+  scalar  ██████████████████████████████████████████████████████████████ 149.9ns
+
+  cdef_find_dir_8bit  30 rounds × 8K calls
+             mean ±mad ns  95% CI vs base   
+  ├─ neon     209 ±37ns  [191–226]ns       [1]
+  ╰─ scalar   345 ±59ns  [+59.1%–+70.7%]   [2]
+
+  neon    ██████████████████████████████████████ 209.3ns
+  scalar  ██████████████████████████████████████████████████████████████ 345.3ns
+  [1] CV=24%
+  [2] CV=22%
+
+  cdef_filter_block_4x4  30 rounds × 5K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon     144 ±16ns  [134–153]ns        
+  ╰─ scalar   641 ±93ns  [+333.0%–+365.7%]   [1]
+
+  neon    ██████████████ 143.7ns
+  scalar  ██████████████████████████████████████████████████████████████ 641.3ns
+  [1] CV=21%
+
+  cdef_filter_block_8x8  40 rounds × 1K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       347 ±80ns  [317–374]ns         [1]
+  ╰─ scalar   2221 ±384ns  [+489.0%–+589.8%]   [2]
+
+  neon    ██████████ 346.5ns
+  scalar  ██████████████████████████████████████████████████████████████ 2.22µs
+  [1] CV=27%
+  [2] CV=30%
+
+  variance_16x16  30 rounds × 11K calls
+               mean ±mad ns  95% CI vs base     
+  ├─ neon      71.4 ±10.8ns  [67.7–75.0]ns      
+  ╰─ scalar   267.6 ±25.9ns  [+269.2%–+290.9%]  
+
+  neon    █████████████████ 71.4ns
+  scalar  ██████████████████████████████████████████████████████████████ 267.6ns
+
+  variance_64x64  30 rounds × 860 calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       779 ±86ns  [737–821]ns        
+  ╰─ scalar   3771 ±525ns  [+366.4%–+416.0%]  
+
+  neon    █████████████ 778.6ns
+  scalar  ██████████████████████████████████████████████████████████████ 3.77µs
+
+  sse_4x4  200 rounds × 58K calls
+             mean ±mad ns  95% CI vs base 
+  ├─ neon     53.9 ±5.8ns  [52.6–55.1]ns  
+  ╰─ scalar   49.8 ±3.4ns  [-9.5%–-6.4%]  
+
+  scalar  ██████████████████████████████████████████████████████████ 49.8ns
+  neon    ███████████████████████████████████████████████████████████████ 53.9ns
+
+  sse_8x8  200 rounds × 28K calls
+             mean ±mad ns  95% CI vs base 
+  ├─ neon     134 ±13ns  [132–137]ns    
+  ╰─ scalar   130 ±13ns  [-5.4%–-2.0%]  
+
+  scalar  ████████████████████████████████████████████████████████████ 130.5ns
+  neon    ██████████████████████████████████████████████████████████████ 134.2ns
+
+  sse_16x16  30 rounds × 8K calls
+               mean ±mad ns  95% CI vs base     
+  ├─ neon      87.7 ±13.8ns  [81.4–93.4]ns      
+  ╰─ scalar   447.0 ±73.3ns  [+384.7%–+427.8%]   [1]
+
+  neon    ████████████ 87.7ns
+  scalar  ██████████████████████████████████████████████████████████████ 447.0ns
+  [1] CV=23%
+
+  sse_32x32  30 rounds × 2K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       198 ±23ns  [182–214]ns         [1]
+  ╰─ scalar   1471 ±183ns  [+608.2%–+682.4%]   [2]
+
+  neon    ████████ 198.0ns
+  scalar  ██████████████████████████████████████████████████████████████ 1.47µs
+  [1] CV=23%
+  [2] CV=24%
+
+  sse_64x64  30 rounds × 972 calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       637 ±80ns  [581–694]ns         [1]
+  ╰─ scalar   3425 ±308ns  [+424.9%–+449.9%]   [2]
+
+  neon    ████████████ 636.6ns
+  scalar  ██████████████████████████████████████████████████████████████ 3.42µs
+  [1] CV=25%
+  [2] CV=23%
+
+  paeth_16x16  30 rounds × 4K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon     131 ±17ns  [121–141]ns         [1]
+  ╰─ scalar   672 ±79ns  [+391.9%–+431.4%]  
+
+  neon    ████████████ 130.9ns
+  scalar  ██████████████████████████████████████████████████████████████ 671.7ns
+  [1] CV=21%
+
+  paeth_32x32  40 rounds × 1K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon      335 ±142ns  [292–378]ns         [1]
+  ╰─ scalar   2320 ±453ns  [+535.2%–+647.6%]   [2] [3]
+
+  neon    █████████ 334.9ns
+  scalar  ██████████████████████████████████████████████████████████████ 2.32µs
+  [1] CV=42%
+  [2] drift r=0.78 — later rounds slower
+  [3] CV=32%
+
+  cdef_filter_block_hbd_8x8  30 rounds × 1K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       370 ±41ns  [343–394]ns        
+  ╰─ scalar   2357 ±344ns  [+513.7%–+566.0%]   [1]
+
+  neon    ██████████ 369.7ns
+  scalar  ██████████████████████████████████████████████████████████████ 2.36µs
+  [1] CV=22%
+
+  quantize_fp_raster_1024  110 rounds × 596 calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon      759 ±102ns  [736–782]ns        
+  ╰─ scalar   6536 ±848ns  [+686.3%–+718.2%]   [1]
+
+  neon    ███████ 759.2ns
+  scalar  ██████████████████████████████████████████████████████████████ 6.54µs
+  [1] CV=46%
+
+  quantize_b_raster_1024  30 rounds × 617 calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon      829 ±118ns  [772–879]ns        
+  ╰─ scalar   5764 ±532ns  [+578.6%–+618.3%]   [1]
+
+  neon    █████████ 829.1ns
+  scalar  ██████████████████████████████████████████████████████████████ 5.76µs
+  [1] CV=20%
+
+  wiener_compute_stats_win5_64x64  30 rounds × 17 calls
+                 mean ±mad µs  95% CI vs base       
+  ├─ neon        26.2 ±5.3µs  [23.7–28.6]µs         [1]
+  ╰─ scalar   644.7 ±123.1µs  [+2141.4%–+2558.9%]   [2]
+
+  neon    ██ 26.23µs
+  scalar  ████████████████████████████████████████████████████████████ 644.74µs
+  [1] CV=26%
+  [2] CV=25%
+
+  wiener_compute_stats_win7_64x64  30 rounds × 7 calls
+                 mean ±mad µs  95% CI vs base       
+  ├─ neon       69.5 ±16.8µs  [60.4–83.3]µs         [1]
+  ╰─ scalar   1784.1 ±81.6µs  [+2389.9%–+2487.6%]  
+
+  neon    ██ 69.55µs
+  scalar  █████████████████████████████████████████████████████████████ 1.78ms
+  [1] CV=48%
+
+  block_average_64x64  30 rounds × 1K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon      687 ±153ns  [628–739]ns         [1]
+  ╰─ scalar   2662 ±399ns  [+265.5%–+301.2%]   [2]
+
+  neon    ████████████████ 686.8ns
+  scalar  ██████████████████████████████████████████████████████████████ 2.66µs
+  [1] CV=23%
+  [2] CV=24%
+
+  block_blend_64x64  30 rounds × 968 calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon      963 ±107ns  [887–1032]ns        [1]
+  ╰─ scalar   3354 ±399ns  [+238.8%–+252.4%]  
+
+  neon    ██████████████████ 963.0ns
+  scalar  ██████████████████████████████████████████████████████████████ 3.35µs
+  [1] CV=21%
+
+  convolve_horiz_64x64  40 rounds × 385 calls
+             mean ±mad µs  95% CI vs base     
+  ├─ neon     4.5 ±0.4µs  [4.2–4.8]µs         [1]
+  ╰─ scalar   9.8 ±1.2µs  [+114.2%–+122.1%]   [2]
+
+  neon    █████████████████████████████ 4.54µs
+  scalar  ██████████████████████████████████████████████████████████████ 9.77µs
+  [1] CV=20%
+  [2] CV=22%
+
+  convolve_2d_64x64  40 rounds × 172 calls
+              mean ±mad µs  95% CI vs base   
+  ├─ neon     11.5 ±1.6µs  [10.8–12.2]µs     [1]
+  ╰─ scalar   21.4 ±1.7µs  [+82.2%–+88.8%]   [2]
+
+  neon    █████████████████████████████████ 11.54µs
+  scalar  █████████████████████████████████████████████████████████████ 21.43µs
+  [1] CV=20%
+  [2] CV=22%
+
+  convolve_vert_64x64  50 rounds × 352 calls
+              mean ±mad µs  95% CI vs base   
+  ├─ neon      6.7 ±0.9µs  [6.3–7.1]µs       [1]
+  ╰─ scalar   10.6 ±1.3µs  [+56.2%–+66.7%]   [2]
+
+  neon    ██████████████████████████████████████ 6.68µs
+  scalar  █████████████████████████████████████████████████████████████ 10.64µs
+  [1] CV=21%
+  [2] CV=20%
+
+  fwd_txfm2d_4x4_dct  30 rounds × 11K calls
+               mean ±mad ns  95% CI vs base     
+  ├─ neon       74.6 ±8.0ns  [70.9–78.1]ns      
+  ╰─ scalar   301.7 ±41.4ns  [+292.6%–+325.3%]  
+
+  neon    ███████████████ 74.6ns
+  scalar  ██████████████████████████████████████████████████████████████ 301.7ns
+
+  fwd_txfm2d_8x8_dct  30 rounds × 4K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon     103 ±15ns  [96–108]ns         
+  ╰─ scalar   675 ±80ns  [+533.4%–+587.0%]  
+
+  neon    █████████ 102.7ns
+  scalar  ██████████████████████████████████████████████████████████████ 675.2ns
+
+  fwd_txfm2d_16x16_dct  40 rounds × 1K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       473 ±54ns  [435–508]ns         [1]
+  ╰─ scalar   1635 ±171ns  [+237.1%–+256.0%]   [2]
+
+  neon    ██████████████████ 473.0ns
+  scalar  ██████████████████████████████████████████████████████████████ 1.63µs
+  [1] CV=24%
+  [2] CV=26%
+
+  fwd_txfm2d_32x32_dct  30 rounds × 413 calls
+             mean ±mad µs  95% CI vs base     
+  ├─ neon     2.4 ±0.2µs  [2.2–2.6]µs        
+  ╰─ scalar   8.7 ±0.5µs  [+252.2%–+272.4%]  
+
+  neon    █████████████████ 2.42µs
+  scalar  ██████████████████████████████████████████████████████████████ 8.74µs
+
+  inv_txfm2d_8x8_dct  30 rounds × 2K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon      138 ±14ns  [130–145]ns        
+  ╰─ scalar   1111 ±81ns  [+687.6%–+735.3%]  
+
+  neon    ████████ 137.8ns
+  scalar  ██████████████████████████████████████████████████████████████ 1.11µs
+
+  inv_txfm2d_16x16_dct  30 rounds × 861 calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       692 ±69ns  [646–733]ns        
+  ╰─ scalar   3864 ±579ns  [+437.5%–+485.2%]   [1]
+
+  neon    ███████████ 692.5ns
+  scalar  ██████████████████████████████████████████████████████████████ 3.86µs
+  [1] CV=21%
+
+  inv_txfm2d_32x32_dct  30 rounds × 209 calls
+              mean ±mad µs  95% CI vs base     
+  ├─ neon      3.0 ±0.4µs  [2.8–3.2]µs         [1]
+  ╰─ scalar   15.4 ±2.3µs  [+390.2%–+428.7%]   [2]
+
+  neon    ████████████ 2.99µs
+  scalar  █████████████████████████████████████████████████████████████ 15.45µs
+  [1] CV=22%
+  [2] CV=22%
+
+  fwd_txfm2d_64x64_dct  40 rounds × 88 calls
+              mean ±mad µs  95% CI vs base     
+  ├─ neon     10.2 ±2.5µs  [9.3–11.1]µs        [1]
+  ╰─ scalar   36.4 ±9.2µs  [+231.7%–+280.1%]   [2]
+
+  neon    █████████████████ 10.22µs
+  scalar  █████████████████████████████████████████████████████████████ 36.40µs
+  [1] CV=30%
+  [2] CV=30%
+
+  inv_txfm2d_64x64_dct  30 rounds × 41 calls
+               mean ±mad µs  95% CI vs base     
+  ├─ neon      15.9 ±2.4µs  [14.8–16.8]µs      
+  ╰─ scalar   85.6 ±13.6µs  [+418.8%–+465.6%]   [1]
+
+  neon    ███████████ 15.85µs
+  scalar  █████████████████████████████████████████████████████████████ 85.64µs
+  [1] CV=21%
+
+  quantize  30 rounds × 4K calls
+                     mean ±mad ns  95% CI vs base     
+  ├─ 64_coeffs       87.1 ±13.7ns  [81.6–92.3]ns      
+  ╰─ 1024_coeffs   744.7 ±106.8ns  [+720.0%–+786.9%]  
+
+  64_coeffs    ███████ 87.1ns
+  1024_coeffs  █████████████████████████████████████████████████████████ 744.7ns
+
+  total: 286.4s  (53 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json

@@ -1,0 +1,62 @@
+   Compiling zenav1-svt-dsp v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-dsp)
+    Finished `bench` profile [optimized] target(s) in 7.71s
+     Running benches/kernel_tiers.rs (target/release/deps/kernel_tiers-9d59c30f0562a5e1)
+[kernel_tiers] comparing neon vs forced scalar
+[zenbench] calibration: int=0.41ns/iter mem_bw=81.1GiB/s mem_lat=8.2ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.43ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788735897-2c41.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788735897-2c41
+  git: eb56021fd89d71d53b0b85748b03352842e750c5
+═══════════════════════════════════════════════════════════════
+
+  sse_4x4  60 rounds × 58K calls
+             mean ±mad ns  95% CI vs base   
+  ├─ neon     31.7 ±4.4ns  [30.1–33.1]ns    
+  ╰─ scalar   50.1 ±4.4ns  [+52.8%–+63.5%]   [1]
+
+  neon    ████████████████████████████████████████ 31.7ns
+  scalar  ███████████████████████████████████████████████████████████████ 50.1ns
+  [1] CV=20%
+
+  sse_8x8  30 rounds × 28K calls
+               mean ±mad ns  95% CI vs base     
+  ├─ neon       42.7 ±4.9ns  [40.1–45.0]ns      
+  ╰─ scalar   134.0 ±14.1ns  [+212.1%–+234.9%]  
+
+  neon    ████████████████████ 42.7ns
+  scalar  ██████████████████████████████████████████████████████████████ 134.0ns
+
+  sse_16x16  30 rounds × 8K calls
+               mean ±mad ns  95% CI vs base     
+  ├─ neon      85.6 ±12.5ns  [79.2–91.7]ns       [1]
+  ╰─ scalar   424.2 ±66.8ns  [+383.4%–+419.5%]   [2]
+
+  neon    █████████████ 85.6ns
+  scalar  ██████████████████████████████████████████████████████████████ 424.2ns
+  [1] CV=21%
+  [2] CV=22%
+
+  sse_32x32  30 rounds × 2K calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       199 ±12ns  [184–211]ns        
+  ╰─ scalar   1466 ±209ns  [+581.9%–+689.5%]   [1]
+
+  neon    ████████ 198.6ns
+  scalar  ██████████████████████████████████████████████████████████████ 1.47µs
+  [1] CV=23%
+
+  sse_64x64  30 rounds × 984 calls
+             mean ±mad ns  95% CI vs base     
+  ├─ neon       637 ±97ns  [586–683]ns         [1]
+  ╰─ scalar   3430 ±466ns  [+417.8%–+451.0%]   [2]
+
+  neon    ████████████ 636.7ns
+  scalar  ██████████████████████████████████████████████████████████████ 3.43µs
+  [1] CV=21%
+  [2] CV=21%
+
+  total: 26.5s  (2 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json

@@ -1,6 +1,6 @@
 # Native ARM audit, 2026-09-06
 
-The baseline blocker is resolved by `dd9d51d4`: 2556/2556 tests and 104/104 whole-encoder regression cells pass. See [oracle-resolution.md](oracle-resolution.md) for the C scalar versus NEON decision and its measured limits. DSP measurement is now in progress. The sections below preserve the earlier baseline investigation.
+The baseline blocker is resolved by `dd9d51d4`: 2556/2556 tests and 104/104 whole-encoder regression cells pass. See [oracle-resolution.md](oracle-resolution.md) for the C scalar versus NEON decision and its measured limits. DSP measurements and the three small-block NEON improvements are recorded below. The sections below preserve the earlier baseline investigation.
 
 On Apple M4 Pro / macOS 26.5.2 / Rust 1.98, production `878dd0be`, `cargo nextest run --workspace --build-jobs 4 --test-threads 4` ran 1172 of 2550 tests: 1171 passed, one failed, and nextest cancelled the remaining 1378. The failure is `pd0::pd0_quant_parity_tests::pd0_quantize_b_matches_c_all_tiers`, qindex 0 / transform 0 / pattern 2 / C dispatch enabled. The retained excerpt has exact EOB, qcoeff and dqcoeff differences.
 
@@ -39,3 +39,31 @@ Three small-block cases lose: SATD4 native/scalar 47.2/41.5 ns, SSE4
 kernels favor NEON in this run. The final quantize group compares different
 coefficient counts; its ratio is not a SIMD comparison and must not be used
 as one. Source optimization of the three losing cases is under investigation.
+
+## Small-block NEON improvements
+
+SATD4 now loads exactly four bytes per row into packed lanes before widening
+and subtraction. SSE4/SSE8 have a separate vector path; the existing larger
+row loop remains unchanged. No over-read, public API change or unsafe code
+was introduced. All 255 DSP unit tests pass, including exhaustive SSE and
+SATD scalar/native parity. Clippy completes with 17 pre-existing library
+warnings; the benchmark has no new warnings.
+
+| Kernel | Final NEON | Scalar in same run | Paired scalar delta 95% CI |
+|---|---:|---:|---|
+| SATD4 | 41.6 ns | 44.7 ns | +5.3% to +9.5% |
+| SSE4 | 31.7 ns | 50.1 ns | +52.8% to +63.5% |
+| SSE8 | 42.7 ns | 134.0 ns | +212.1% to +234.9% |
+| SSE16 | 85.6 ns | 424.2 ns | +383.4% to +419.5% |
+| SSE32 | 198.6 ns | 1466 ns | +581.9% to +689.5% |
+| SSE64 | 636.7 ns | 3430 ns | +417.8% to +451.0% |
+
+Before/after binaries were separate builds; only within-run native/scalar
+intervals are paired. The earlier SSE experiment put extra tail branches in
+every row; the final version keeps the small-width path separate. No global
+encoder speedup is claimed from these microbenchmarks.
+
+After measurement, these changes were rebased onto `d081b8e5`. Incoming
+production edits add x86 Hadamard16/32 composition dispatch and keep ARM on
+the same core arithmetic. They do not touch SATD4 or SSE; that work belongs
+to the concurrent session. Post-rebase validation passes: 255/255 DSP tests and 104/104 whole-encoder regression cells, zero skips. See `svt-postrebase-dsp.log` and `svt-postrebase-spotcheck.log`.
