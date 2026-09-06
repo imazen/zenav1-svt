@@ -1,19 +1,6 @@
-//! Per-kernel NEON-vs-forced-scalar for the DSP inner loops.
-//!
-//! SAD and SATD run at every candidate position in motion/mode search, and
-//! CDEF's direction search runs per 8x8 block — they dominate encode time.
-//! Nothing here compares a kernel against its OWN scalar fallback, so a NEON
-//! path slower than the autovectorized scalar one would be invisible. That
-//! failure mode was real elsewhere in the 2026-07-28 aarch64 sweep: three
-//! zenfilters kernels and zenzstd's count_match all lost to their scalar
-//! tiers, and count_match lost specifically because it was an x86
-//! movemask-shaped algorithm inherited by NEON — a risk this crate shares,
-//! being a port of C code written against x86 intrinsics.
-//!
-//! NOTE: on aarch64 NEON is BASELINE, so the "scalar" arm is autovectorized
-//! too. ~1.00x means both compiled to equivalent work; BELOW 1.00 is the bug.
-//!
-//! Run: `cargo bench -p zenav1-svt-dsp --bench kernel_tiers`
+//! Interleaved DSP runtime-tier comparisons. Token mutation is untimed.
+//! AArch64 scalar fallbacks may auto-vectorize; dispatch labels alone do not
+//! establish whether a path contains vector instructions.
 
 use svtav1_dsp::{
     cdef, copy, fwd_txfm, hadamard, hbd, inter_pred, intra_pred, inv_txfm, quant, quant_coding,
@@ -53,10 +40,10 @@ fn plane8(n: usize, seed: u32) -> Vec<u8> {
 }
 
 fn bench_dsp(suite: &mut Suite) {
-    if !set_simd(true) || !set_simd(false) {
-        eprintln!("[kernel_tiers] SIMD tier not toggleable here. Skipping.");
-        return;
-    }
+    assert!(
+        set_simd(true) && set_simd(false),
+        "runtime SIMD tier must be toggleable"
+    );
     set_simd(true);
     eprintln!("[kernel_tiers] comparing {TIER_NAME} vs forced scalar");
 
@@ -67,13 +54,15 @@ fn bench_dsp(suite: &mut Suite) {
 
     macro_rules! pair {
         ($name:expr, $call:expr) => {
+            assert!(set_simd(false));
+            let scalar = $call;
+            assert!(set_simd(true));
+            assert_eq!(scalar, $call, "{}", $name);
             suite.compare($name, |g| {
                 for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                     g.bench(arm, move |b| {
-                        b.iter(move || {
-                            set_simd(simd);
-                            $call
-                        })
+                        b.with_input(move || assert!(set_simd(simd)))
+                            .run(move |_| $call)
                     });
                 }
             });
@@ -113,8 +102,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u8; 16];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         cdef::cdef_filter_block(
                             &mut dst,
                             0,
@@ -138,8 +126,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u8; 64];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         cdef::cdef_filter_block(
                             &mut dst,
                             0,
@@ -181,8 +168,7 @@ fn bench_dsp(suite: &mut Suite) {
                 for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                     g.bench(arm, move |b| {
                         let mut dst = vec![0u8; STRIDE * h];
-                        b.iter(move || {
-                            set_simd(simd);
+                        b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                             intra_pred::predict_paeth(&mut dst, STRIDE, above, left, 128, w, h);
                         })
                     });
@@ -204,8 +190,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u16; 64];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         hbd::cdef_filter_block_hbd(
                             &mut dst,
                             0,
@@ -244,8 +229,7 @@ fn bench_dsp(suite: &mut Suite) {
                     g.bench(arm, move |b| {
                         let mut q = vec![0i32; 1024];
                         let mut dq = vec![0i32; 1024];
-                        b.iter(move || {
-                            set_simd(simd);
+                        b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                             if is_fp {
                                 quant_coding::quantize_fp_raster(
                                     coeffs,
@@ -293,8 +277,7 @@ fn bench_dsp(suite: &mut Suite) {
                     g.bench(arm, move |b| {
                         let mut mm = vec![0i64; win * win];
                         let mut hh = vec![0i64; win * win * win * win];
-                        b.iter(move || {
-                            set_simd(simd);
+                        b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                             restoration::compute_stats(
                                 win,
                                 dgd,
@@ -332,8 +315,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u8; STRIDE * N];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         copy::block_average(&mut dst, STRIDE, src, STRIDE, rf, STRIDE, N, N);
                     })
                 });
@@ -343,8 +325,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u8; STRIDE * N];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         copy::block_blend(
                             &mut dst, STRIDE, src, STRIDE, rf, STRIDE, mask, STRIDE, N, N,
                         );
@@ -356,8 +337,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u8; STRIDE * N];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         inter_pred::convolve_horiz(src, STRIDE, &mut dst, STRIDE, filt, N, N);
                     })
                 });
@@ -367,8 +347,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u8; STRIDE * N];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         inter_pred::convolve_2d(src, STRIDE, &mut dst, STRIDE, filt, filt, N, N);
                     })
                 });
@@ -378,8 +357,7 @@ fn bench_dsp(suite: &mut Suite) {
             for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                 g.bench(arm, move |b| {
                     let mut dst = vec![0u8; STRIDE * N];
-                    b.iter(move || {
-                        set_simd(simd);
+                    b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                         inter_pred::convolve_vert(src, STRIDE, &mut dst, STRIDE, filt, N, N);
                     })
                 });
@@ -397,19 +375,27 @@ fn bench_dsp(suite: &mut Suite) {
         );
         macro_rules! txbench {
             ($label:expr, $n:expr, $f:path) => {
+                assert!(set_simd(false));
+                let mut scalar = vec![0i32; $n * $n];
+                $f(coef, &mut scalar, $n);
+                assert!(set_simd(true));
+                let mut native = vec![0i32; $n * $n];
+                $f(coef, &mut native, $n);
+                assert_eq!(scalar, native, "{}", $label);
                 suite.compare($label, |g| {
                     for (arm, simd) in [(TIER_NAME, true), ("scalar", false)] {
                         g.bench(arm, move |b| {
                             let mut out = vec![0i32; $n * $n];
-                            b.iter(move || {
-                                set_simd(simd);
+                            b.with_input(move || assert!(set_simd(simd))).run(move |_| {
                                 $f(coef, &mut out, $n);
+                                black_box(&out);
                             })
                         });
                     }
                 });
             };
         }
+        txbench!("fwd_txfm2d_4x4_dct", 4, fwd_txfm::fwd_txfm2d_4x4_dct_dct);
         txbench!("fwd_txfm2d_8x8_dct", 8, fwd_txfm::fwd_txfm2d_8x8_dct_dct);
         txbench!(
             "fwd_txfm2d_16x16_dct",
@@ -463,42 +449,10 @@ fn bench_dsp(suite: &mut Suite) {
                     };
                     let mut qc = vec![0i32; n];
                     let mut dqc = vec![0i32; n];
-                    b.iter(move || quant::quantize(&coeffs[..n], &qp, &mut qc, &mut dqc, n))
+                    b.with_input(|| assert!(set_simd(true)))
+                        .run(move |_| quant::quantize(&coeffs[..n], &qp, &mut qc, &mut dqc, n))
                 });
             }
-        });
-    }
-
-    // Transforms: measured to decide whether a from-scratch bit-exact NEON
-    // butterfly is warranted. All three tiers currently call the same
-    // `*_c_exact` body, so these are absolute-cost numbers, not a tier
-    // comparison.
-    {
-        let coeffs: &'static [i32] = Box::leak(
-            (0..1024)
-                .map(|i| ((i * 7919) % 4096) - 2048)
-                .collect::<Vec<i32>>()
-                .into_boxed_slice(),
-        );
-        suite.compare("fwd_txfm2d_dct_dct", |g| {
-            g.bench("4x4", move |b| {
-                let mut out = vec![0i32; 16];
-                b.iter(move || fwd_txfm::fwd_txfm2d_4x4_dct_dct(coeffs, &mut out, 4))
-            });
-            g.bench("8x8", move |b| {
-                let mut out = vec![0i32; 64];
-                b.iter(move || fwd_txfm::fwd_txfm2d_8x8_dct_dct(coeffs, &mut out, 8))
-            });
-            g.bench("16x16", move |b| {
-                let mut out = vec![0i32; 256];
-                b.iter(move || fwd_txfm::fwd_txfm2d_16x16_dct_dct(coeffs, &mut out, 16))
-            });
-        });
-        suite.compare("inv_txfm2d_dct_dct", |g| {
-            g.bench("8x8", move |b| {
-                let mut out = vec![0i32; 64];
-                b.iter(move || inv_txfm::inv_txfm2d_8x8_dct_dct(coeffs, &mut out, 8))
-            });
         });
     }
 

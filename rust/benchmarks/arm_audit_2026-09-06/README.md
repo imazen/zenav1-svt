@@ -1,6 +1,6 @@
 # Native ARM audit, 2026-09-06
 
-Performance changes are blocked by the required baseline gate. DSP measurements have not run. The later whole-encoder regression spot-check passed, as recorded below.
+The baseline blocker is resolved by `dd9d51d4`: 2556/2556 tests and 104/104 whole-encoder regression cells pass. See [oracle-resolution.md](oracle-resolution.md) for the C scalar versus NEON decision and its measured limits. DSP measurement is now in progress. The sections below preserve the earlier baseline investigation.
 
 On Apple M4 Pro / macOS 26.5.2 / Rust 1.98, production `878dd0be`, `cargo nextest run --workspace --build-jobs 4 --test-threads 4` ran 1172 of 2550 tests: 1171 passed, one failed, and nextest cancelled the remaining 1378. The failure is `pd0::pd0_quant_parity_tests::pd0_quantize_b_matches_c_all_tiers`, qindex 0 / transform 0 / pattern 2 / C dispatch enabled. The retained excerpt has exact EOB, qcoeff and dqcoeff differences.
 
@@ -25,3 +25,17 @@ This verifies those 104 encoder regression cells. It does not prove a universal 
 At production `e1a555f4`, `cargo nextest run --workspace --build-jobs 4 --test-threads 4 --no-fail-fast` ran all **2553 tests: 2552 passed, one failed, zero skipped**. The only failure is the same `pd0_quantize_b_matches_c_all_tiers` C-NEON disagreement, again qindex 0 / transform 0 / pattern 2. The completed test phase took 62.171 s; this excludes the 1m29s build and macOS test-discovery startup delays. [Summary](full_suite_summary.log).
 
 No production optimization or test-expectation change was made. This closes the untested remainder from the original fail-fast run while retaining the explicit quantizer blocker. The C source is still `39f909e0` with no working-copy changes.
+
+## Corrected kernel baseline
+
+`kernel_tiers.rs` moves 13 token-toggle sites out of timed bodies and adds
+untimed scalar/native equality checks to value kernels and nine transform
+shapes. A full run took 286.4 seconds (53 noisy rounds). Many CVs exceed 20%;
+paired intervals and raw results are retained in [svt-kernel-tiers.log](svt-kernel-tiers.log).
+
+Three small-block cases lose: SATD4 native/scalar 47.2/41.5 ns, SSE4
+53.9/49.8 ns, SSE8 134/130 ns. Their paired scalar deltas are −12.0% to
+−9.1%, −9.5% to −6.4%, and −5.4% to −2.0%, respectively. Larger vector
+kernels favor NEON in this run. The final quantize group compares different
+coefficient counts; its ratio is not a SIMD comparison and must not be used
+as one. Source optimization of the three losing cases is under investigation.
