@@ -734,8 +734,8 @@ fn aom_hadamard_8x8_impl_scalar(
 
 // C picture_operators_c.c:121-176: preserve the positional coefficient
 // permutation. Wrapping i16 addition/subtraction commutes with C's truncation
-// after each pass, including full-range i16 inputs. Fixed array transposes
-// express lane rearrangement without adding an Archmage primitive.
+// after each pass, including full-range i16 inputs. The transpose uses
+// existing safe unpack intrinsics; no new Archmage primitive is needed.
 #[cfg(target_arch = "x86_64")]
 type HadamardV3 = magetypes::simd::generic::i16x8<X64V3Token>;
 
@@ -773,8 +773,34 @@ fn hadamard_col8_vertical_v3(_token: X64V3Token, s: [HadamardV3; 8]) -> [Hadamar
 #[cfg(target_arch = "x86_64")]
 #[rite]
 fn hadamard_transpose8_v3(token: X64V3Token, v: [HadamardV3; 8]) -> [HadamardV3; 8] {
-    let rows = v.map(|r| r.to_array());
-    core::array::from_fn(|c| HadamardV3::from_array(token, core::array::from_fn(|r| rows[r][c])))
+    let x = v.map(HadamardV3::raw);
+    let a0 = _mm_unpacklo_epi16(x[0], x[1]);
+    let a1 = _mm_unpackhi_epi16(x[0], x[1]);
+    let a2 = _mm_unpacklo_epi16(x[2], x[3]);
+    let a3 = _mm_unpackhi_epi16(x[2], x[3]);
+    let a4 = _mm_unpacklo_epi16(x[4], x[5]);
+    let a5 = _mm_unpackhi_epi16(x[4], x[5]);
+    let a6 = _mm_unpacklo_epi16(x[6], x[7]);
+    let a7 = _mm_unpackhi_epi16(x[6], x[7]);
+    let b0 = _mm_unpacklo_epi32(a0, a2);
+    let b1 = _mm_unpackhi_epi32(a0, a2);
+    let b2 = _mm_unpacklo_epi32(a1, a3);
+    let b3 = _mm_unpackhi_epi32(a1, a3);
+    let b4 = _mm_unpacklo_epi32(a4, a6);
+    let b5 = _mm_unpackhi_epi32(a4, a6);
+    let b6 = _mm_unpacklo_epi32(a5, a7);
+    let b7 = _mm_unpackhi_epi32(a5, a7);
+    [
+        _mm_unpacklo_epi64(b0, b4),
+        _mm_unpackhi_epi64(b0, b4),
+        _mm_unpacklo_epi64(b1, b5),
+        _mm_unpackhi_epi64(b1, b5),
+        _mm_unpacklo_epi64(b2, b6),
+        _mm_unpackhi_epi64(b2, b6),
+        _mm_unpacklo_epi64(b3, b7),
+        _mm_unpackhi_epi64(b3, b7),
+    ]
+    .map(|r| HadamardV3::from_m128i(token, r))
 }
 
 #[cfg(target_arch = "x86_64")]

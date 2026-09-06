@@ -1,0 +1,56 @@
+{
+  "host": "i265",
+  "cpu": 2,
+  "production_baseline": "e711ee08",
+  "scope": "Standalone frozen generic transpose vs explicit unpack transpose; same held V3 token, baseline target CPU",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-control.log": {
+      "sha256": "251a35bed691c03c2783ab089f4dd628484c9a85f22658bbf9fa4115aeeb2832",
+      "bytes": 12724
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-ab.log": {
+      "sha256": "4795eb189c085c9ad133dd7f4dcbf7185e3c26845479fe3f49b9452daaccd4d7",
+      "bytes": 12173
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-bench.log": {
+      "sha256": "efbc967c5406c404ac157c4afd962708a6c4074228ef7018ccaef18cdaadd637",
+      "bytes": 498
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-build.log": {
+      "sha256": "5213f87b97f480383aabb082294fa423fe565e22d3b32745ad41b3b18c9a2be9",
+      "bytes": 2564
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-probe/Cargo.toml": {
+      "sha256": "c5d323f8e7f5f9bbfe3d105dfa36a27552f3543d65ed139b76ca9ea20b0cb742",
+      "bytes": 566
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-probe/Cargo.lock": {
+      "sha256": "d2858ca386eef2624fa2f498cdb79940d6b79a3a2e75d6f49e6ae84d8a0e1610",
+      "bytes": 15112
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-probe/src/lib.rs": {
+      "sha256": "e35a8c7ecc7bb0907d7962ecd1f3a89c76acbf3356b3a1b87ec99ff9ae4d6e11",
+      "bytes": 4383
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-probe/src/main.rs": {
+      "sha256": "556d36824d11eeb7d047f480a0a9a6e5ca71fc889410da7079758880124ce42c",
+      "bytes": 1344
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-probe/src/baseline.rs": {
+      "sha256": "8aa986cd9e9aa0522179b5b79d5ee59353b396492939ccc02e29aa94dd48cf1b",
+      "bytes": 1470
+    }
+  },
+  "archmage_prs_rechecked": {
+    "96": {
+      "state": "OPEN",
+      "head": "9981d4f9ad90b0cc57bb244e1b1c16df761bdb20"
+    },
+    "97": {
+      "state": "OPEN",
+      "head": "43f8baed6e859b393ff7f42dfad7a40f49464ee9"
+    }
+  },
+  "dependency_pin": "cc24398c9a9fee0251722931e295da840730704d",
+  "new_archmage_api": false
+}

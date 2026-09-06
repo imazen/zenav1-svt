@@ -1,0 +1,19 @@
+{
+  "pairs": 99,
+  "identical": true,
+  "scope": "Nine paired repeats of the same saved DC-fill binary on all11 candidate cells",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-unpack-frame-control.raw.tsv": {
+      "sha256": "13e693123142a3e2352d01e38d398268a86fa48b061c992b68cb55dfb8e1ce76",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-unpack-frame-control.meta.json": {
+      "sha256": "41320b9d9b99030da2ed4d05e01daad291cbceb44c2fe022b27738d0dd5b0c9b",
+      "bytes": 4485
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-unpack-frame-control.log": {
+      "sha256": "658cf7a9beeb0881ecefd2becbcadfa515f307bde81f308d4837dc1f53e8e7b9",
+      "bytes": 5371
+    }
+  }
+}

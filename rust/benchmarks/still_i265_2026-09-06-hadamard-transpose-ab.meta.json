@@ -1,0 +1,74 @@
+{
+  "candidate_change": "tzqyxuyn",
+  "pairs": 99,
+  "identical": true,
+  "build": "opt-level3, release, baseline CPU, no PGO; see preserved build script",
+  "correctness": {
+    "nextest_passed": 2563,
+    "nextest_skipped": 0,
+    "spotcheck_passed": 104,
+    "mutation": "Replacing unpacklo64(b1,b5) with unpacklo64(b1,b6) failed padded all-tier C parity at stride8 pattern9"
+  },
+  "assembly": {
+    "candidate_unpacks": 48,
+    "candidate_blends": 0,
+    "baseline_unpacks": 40,
+    "baseline_blends": 68,
+    "candidate_disassembly_lines_including_padding": 243,
+    "baseline_disassembly_lines_including_padding": 417
+  },
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-unpack-frame-ab.raw.tsv": {
+      "sha256": "11055df6d91677fb4210385bd4ca5e1587697b0e9558430229911ca80a38c9e9",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-unpack-frame-ab.meta.json": {
+      "sha256": "11d28452e07f6af8726479903a95e24ef012dbbda313e9f5a086a63636eef379",
+      "bytes": 4488
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-unpack-frame-ab.log": {
+      "sha256": "973436821b048e908aacb620efaf5f0b0dfe7559b9ce5f4dd2dffe778d21a8d2",
+      "bytes": 5369
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-production-c.log": {
+      "sha256": "9fa801f654cbdf886d69b6053ffd46253d56ed4f43ecc08badb93363d2e5527a",
+      "bytes": 2209
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-mutation.log": {
+      "sha256": "ff1461e24f1a6f6b5b9af4ff34f9a15307bacf240397c539a9cd1c12b3c7ed49",
+      "bytes": 3009
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-nextest.log": {
+      "sha256": "299a73a2d1755c7cf1c09661d515d277c156659a8a664ac0d1911c8f3d32f3ec",
+      "bytes": 290189
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-spotcheck.log": {
+      "sha256": "62374ee6be7fb3ce898fa955f2354ff8315ce2b16be4ca7baab8ff3fe6612d6c",
+      "bytes": 274
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-frame-build.log": {
+      "sha256": "c90fdc9e3caebc971d7a3245561f0a9fa313c145c20529fd9d1a2866243b9778",
+      "bytes": 2314
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-raw-frame-build.sh": {
+      "sha256": "e9afbfafd8d71c41f05c6aeb231615b77917bfb016a3f1394508d7f7422f5c9f",
+      "bytes": 694
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.had-unpack": {
+      "sha256": "f70d12b24b936e7326e614dd3f0e30c9b34055930ac202f7a5c1e1d25cedadc7",
+      "bytes": 4152480
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.dc-fill": {
+      "sha256": "6127a32912bbf537b7c0b19e1cc08a24a1289b7407d348fa8a275b6158f87544",
+      "bytes": 4156256
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-unpack.asm.had8.txt": {
+      "sha256": "6662e5c022295781255d18e7e8847a288905ab19c4e86f37da5fa7c48f0d3c07",
+      "bytes": 14827
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-fill.asm.had8.txt": {
+      "sha256": "6a17a312681013ad33dae42567f0b3ee2e8f683eb5bd06eb1bc2e6123ff867d5",
+      "bytes": 25416
+    }
+  }
+}

@@ -872,3 +872,54 @@ is preserved in local jj change `yswmwtlv` and is **not adopted**. No full
 identity sweep or new PGO training is claimed for it. The additive sparse C
 test and probe records are retained; the shipping encoder body is unchanged.
 Records: `benchmarks/still_i265_2026-09-06-eob-{probe,frame-ab}.*`.
+
+
+## Hadamard transpose: explicit safe unpacks
+
+The V3 butterfly arithmetic remains generic i16x8. Its two transposes now
+use existing safe unpack16/32/64 intrinsics, with raw/from_m128i conversions.
+No new Archmage API or dependency pin is needed. This addresses a composition
+codegen problem: the fixed-array transpose emitted many blends. The production
+kernel now has48 unpack instructions and zero blends, versus40 unpacks and68
+blends before, and its disassembly shrinks from417 to243 lines including
+padding and bounds-failure paths. There are no calls in the successful kernel
+path. This is evidence for retaining the explicit transpose here, not for
+expanding Archmage's API or claiming every generic composition is optimal.
+
+The isolated frozen generic baseline and unpack candidate share a held V3
+token and both match C on1,200 padded/full-range cases. Controls complete90
+rounds per stride8/16/32 with difference intervals containing zero; A/B groups
+complete30 each. All report zero gate waits. The candidate runs6.41–6.49ns,
+versus23.17–23.22ns for this build's baseline. Earlier generic builds measured
+15–16ns, so the isolated72% reduction is not a production gain estimate.
+
+The production all-tier C test catches a deliberate unpacklo64(b1,b6)
+substitution for unpacklo64(b1,b5) at stride8/pattern9. The correct body passes
+all2,563 workspace tests with zero skipped and104/104 regression spot-checks.
+The archived probe's C test also passes. No new full-envelope sweep is claimed
+for this DSP-only change.
+
+Nine frame pairs per11 cells compare against the saved DC-fill production
+binary, opt3 baseline CPU without PGO. All99 pairs are byte-identical:
+
+| Image/QP | Preset2 | Preset6 | Preset8 |
+|---|---:|---:|---:|
+| CID512/QP40 | 0.9968 | 0.9970 | 0.9867 |
+| CLIC512/QP40 | 0.9801 | 0.9923 | 0.9672 |
+| terminal512/QP40 | 0.9865 | 0.9907 | 0.9889 |
+| NYC512/QP60 | 0.9667 | — | — |
+| wiki1024/QP60 | — | — | 0.9398 |
+
+Ratios are candidate/previous Rust. The largest gains are3.33% on NYC and6.02%
+on wiki. CID p2/p6 are near the same-binary control noise, so no small gain is
+asserted there. The matched-PGO grid above predates this transpose change.
+Records: `benchmarks/still_i265_2026-09-06-hadamard-transpose-{probe,ab}.*`.
+
+Fresh nine-pair same-binary controls cover all11 cells, all99 pairs identical.
+Their median ratios range0.9940–1.0042. Three interquartile spans exclude one
+(CID p6, CLIC p2, terminal p6); the control is not noiseless. NYC's control
+span is0.9975–1.0150 versus the candidate's0.9653–0.9678; wiki's is0.9882–1.0098
+versus0.9361–0.9418. These support the larger frame gains despite small biases.
+The A/B and control resource logs are preserved with their metadata; control
+runtime134s, peak monitored RSS0.03GiB, minimum available memory29,188MiB.
+Control records: `benchmarks/still_i265_2026-09-06-hadamard-transpose-control.*`.
