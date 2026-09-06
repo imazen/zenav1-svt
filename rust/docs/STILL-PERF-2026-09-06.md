@@ -262,3 +262,31 @@ removed temporarily and both gates were rerun against the manifest's tracked
 passed 104/104. The local setup change was kept separately from the changes
 being shipped. Performance artifacts above retain their explicitly recorded
 local dependency and opt-level3 provenance.
+
+## PD0 quantization reuse (next change)
+
+A CLIC preset8 profile attributed 11.27% self samples to `pd0::tx_quant_core`.
+Its non-QM quantizer duplicated the scalar scan-order loop, despite the coding
+path already using `quant_coding::quantize_b_raster`. PD0 now reuses that
+existing kernel and the existing reverse-scan EOB helper. Its original loop
+is retained as a test-only reference; the QM path is unchanged.
+
+The new parity test sweeps all 256 qindices, 11 relevant DCT scan shapes,
+all-zero blocks, signed dead-zone boundaries with a zero suffix, clamp
+boundaries and a last-coefficient-only block, under dispatch permutations.
+It checks both the former body and real scalar/dispatched C. A deliberate
+EOB-minus-one mutation failed and was restored. Workspace nextest passed
+2558/2558, zero skipped; regression spot-check passed 104/104.
+
+Twenty-one direct paired opt-level3 comparisons against the dilation baseline,
+all byte-identical (126 pairs), gave these candidate/baseline median ratios:
+
+| Image | Preset 6 | Preset 8 |
+|---|---:|---:|
+| CID22 | 0.9598 | 0.8365 |
+| CLIC2025 | 0.9890 | 0.9625 |
+| terminal | 0.9815 | 0.9359 |
+
+Records: `benchmarks/still_i265_2026-09-06-pd0-quant-ab.{tsv,raw.tsv,meta.json}`.
+The default release profile has not changed. Broader identity sweeps and
+fresh C positions are still required before this change is ready to land.

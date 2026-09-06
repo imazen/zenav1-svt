@@ -718,6 +718,38 @@ fn quantize_b(
     e: &QuantEntry,
     log_scale: i32,
 ) -> (u16, Vec<i32>, Vec<i32>) {
+    let zbins = e.zbin.map(|v| (v + ((1 << log_scale) >> 1)) >> log_scale);
+    let round = e.round.map(|v| (v + ((1 << log_scale) >> 1)) >> log_scale);
+    let mut qcoeff = vec![0i32; coeffs.len()];
+    let mut dqcoeff = vec![0i32; coeffs.len()];
+    // PD0 quantizes 8-bit residuals even for a high-bit-depth input frame.
+    // Reuse the coding path's bd8 raster kernel: the prescan only excluded
+    // coefficients inside the same dead zone, and EOB is recovered in scan
+    // order after the independent per-coefficient arithmetic.
+    svtav1_dsp::quant_coding::quantize_b_raster(
+        coeffs,
+        &mut qcoeff,
+        &mut dqcoeff,
+        &zbins,
+        &round,
+        &e.quant,
+        &e.quant_shift,
+        &e.dequant,
+        log_scale,
+    );
+    let eob = crate::quant::eob_from_qcoeff(scan, &qcoeff);
+    (eob, qcoeff, dqcoeff)
+}
+
+/// The former PD0 scan-order body, retained as an independent regression
+/// reference in addition to the real scalar/dispatched C parity comparisons.
+#[cfg(test)]
+fn quantize_b_scan_reference(
+    coeffs: &[i32],
+    scan: &[u16],
+    e: &QuantEntry,
+    log_scale: i32,
+) -> (u16, Vec<i32>, Vec<i32>) {
     let n_coeffs = scan.len();
     let zbins = [
         (e.zbin[0] + ((1 << log_scale) >> 1)) >> log_scale,
@@ -760,6 +792,83 @@ fn quantize_b(
         }
     }
     ((eob + 1) as u16, qcoeff, dqcoeff)
+}
+
+#[cfg(test)]
+mod pd0_quant_parity_tests {
+    use super::*;
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    use svtav1_cref as cref;
+
+    #[test]
+    fn pd0_quantize_b_matches_c_all_tiers() {
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+            for qindex in 0..=255u8 {
+                let e = build_quant_entry(qindex);
+                let narrow = |v: [i32; 2]| v.map(|x| i16::try_from(x).unwrap());
+                let row = cref::QuantRow::new(
+                    narrow(e.zbin),
+                    narrow(e.round),
+                    narrow(e.quant),
+                    narrow(e.quant_shift),
+                    [0; 2],
+                    [0; 2],
+                    narrow(e.dequant),
+                );
+                // PD0's square and boundary-rectangle DCT scans, including
+                // packed 64-dimension transforms at all three log scales.
+                for c_tx in [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 11] {
+                    let scan = crate::entropy::scan_tables::scan(c_tx, 0);
+                    let log_scale = TX_SCALE_TAB[c_tx];
+                    for pattern in 0..4 {
+                        let mut coeff = vec![0i32; scan.len()];
+                        for (i, &rc) in scan.iter().enumerate() {
+                            let rc = usize::from(rc);
+                            let zbin = (e.zbin[usize::from(rc != 0)] + ((1 << log_scale) >> 1))
+                                >> log_scale;
+                            coeff[rc] = match pattern {
+                                0 => 0,
+                                // Threshold equality, either sign, and a
+                                // dead-zone suffix test prescan equivalence.
+                                1 if i < scan.len() / 3 => {
+                                    [zbin - 1, zbin, zbin + 1, 1 - zbin, -zbin, -zbin - 1][i % 6]
+                                }
+                                1 => 0,
+                                // Clamp boundaries and a broad, signed
+                                // coefficient range, not a smooth spectrum.
+                                2 => [
+                                    -131_072, -32_768, -32_767, -1023, 1023, 32_767, 32_768,
+                                    131_072,
+                                ][i % 8],
+                                // Only the final scan coefficient survives.
+                                _ if i + 1 == scan.len() => 32_767,
+                                _ => 0,
+                            };
+                        }
+                        let actual = quantize_b(&coeff, scan, &e, log_scale);
+                        assert_eq!(
+                            actual,
+                            quantize_b_scan_reference(&coeff, scan, &e, log_scale)
+                        );
+                        for dispatch in [false, true] {
+                            let mut q = vec![0x5555; scan.len()];
+                            let mut dq = vec![0x5555; scan.len()];
+                            let eob = cref::quantize_b(
+                                &coeff, &row, scan, log_scale, dispatch, &mut q, &mut dq,
+                            );
+                            assert_eq!(
+                                actual,
+                                (eob, q, dq),
+                                "qindex={qindex} tx={c_tx} pattern={pattern} C dispatch={dispatch}"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.permutations_run >= 2);
+    }
 }
 
 /// C `svt_av1_quantize_b_qm` — the QM arm of `svt_aom_quantize_inv_quantize_

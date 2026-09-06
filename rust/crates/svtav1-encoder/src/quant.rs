@@ -315,7 +315,7 @@ pub fn quantize_fp(
 /// end-of-block C's quantizers return, recovered from the finished (raster)
 /// `qcoeff` with a reverse scan walk (load + compare, no arithmetic).
 #[inline]
-fn eob_from_qcoeff(scan: &[u16], qcoeff: &[i32]) -> u16 {
+pub(crate) fn eob_from_qcoeff(scan: &[u16], qcoeff: &[i32]) -> u16 {
     for i in (0..scan.len()).rev() {
         if qcoeff[scan[i] as usize] != 0 {
             return (i + 1) as u16;
