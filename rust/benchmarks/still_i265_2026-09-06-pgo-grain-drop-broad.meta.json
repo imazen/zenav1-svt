@@ -1,0 +1,22 @@
+{
+  "encoder_source_commit": "136e779ccf48",
+  "cells": 135,
+  "pairs": 675,
+  "identical": 675,
+  "median_at_most_1_50": 77,
+  "p75_at_most_1_50": 77,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-grain-drop-broad.raw.tsv": {
+      "sha256": "398e13c7b0c6782258d60108ad0aecaa86d3f0ab475ba960cf0b71805326b903",
+      "bytes": 35465
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-grain-drop-broad.meta.json": {
+      "sha256": "c09ac52a20898f808cdbcd5167a569830b76b186ba11a230328533f9054cd80b",
+      "bytes": 33363
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-grain-drop-broad.log": {
+      "sha256": "ec67a18e4947ef19a61ff894c467266dba1824bbfe14859505d0b4f490cde26d",
+      "bytes": 37879
+    }
+  }
+}

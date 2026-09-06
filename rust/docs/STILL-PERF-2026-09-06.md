@@ -6,7 +6,7 @@ and runtime SIMD dispatch. It also includes installing and exercising the
 profiling tools, evaluating Archmage PRs #96 and #97 for runtime and compile
 cost, and identifying any additional operations the encoder actually needs.
 This task is in progress. Entries below follow experiment order; the newest
-position is in "Matched PGO after coefficient reductions" and still misses the target.
+position is in "Matched PGO after discarded-grain cleanup" and still misses the target.
 
 ## Source and machine
 
@@ -1097,3 +1097,18 @@ text section shrinks704 bytes. Records and raw artifact hashes:
 `benchmarks/still_i265_2026-09-06-grain-drop-frame-{ab,control}.*`.
 The current matched-PGO position still refers to coefficient reductions;
 no fresh PGO result is claimed for this cleanup yet.
+
+
+## Matched PGO after discarded-grain cleanup
+
+Encoder source `136e779c` matches all108 C training-output hashes. The fresh
+held-out sweep has675/675 identical pairs and **77/135 medians and77/135
+upper quartiles at or below1.50**, versus76/76 before cleanup.58 median cases
+still miss the goal. NYC512/QP60/p2 is1.8854 (previously1.8831), and
+wiki1024/QP60/p8 is1.7878 (previously1.7824); these do not demonstrate a
+clear PGO gain despite the non-PGO A/B improvement. Small changes and threshold
+crossings remain sensitive to run variation. Wiki p6 is1.8303.
+
+The same baseline CPU, core2, training inputs and C PGO binary are retained.
+The sweep takes412s, peak monitored RSS0.07GiB, minimum available memory
+29,179MiB. Records: `benchmarks/still_i265_2026-09-06-pgo-grain-drop-{training,broad}.*`.

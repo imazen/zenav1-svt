@@ -1,0 +1,24 @@
+{
+  "source_commit": "136e779ccf480f77fb59abb0f1dd0fb0429e7d27",
+  "raw_profiles": 108,
+  "baseline_sha256": "ef995330bffcfe4f2787e1a63a2e4f3d58672b69d56f148a7ffafd1efced1b2e",
+  "pgo_sha256": "21d0f52e7c5d27d99df2aa3c1a25411e3f7c70bfd6ae8f6a1784dd77b7a222e5",
+  "profile_sha256": "5d46f31cbb0391b59b4139a3c88c859d1964efa737d305a054fe717cbd935b7a",
+  "encoder_source_commit": "136e779ccf48",
+  "training_cells": 108,
+  "cross_c_identical": 108,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-grain-drop.log": {
+      "sha256": "1ace530d92c3b101d83a1c80d8d6833bbee54563df874be70886b5225ca53b20",
+      "bytes": 7684
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-grain-drop/meta.json": {
+      "sha256": "3982c6cb001563702f5b19ac2228991bdca09b7bc8654a43170110e36072598e",
+      "bytes": 189179
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-grain-drop/build-pgo.log": {
+      "sha256": "1a222d27e5aadea3c21bdde4583c198756aebbe057b54ce9e1e49be3c8da6422",
+      "bytes": 25163
+    }
+  }
+}
