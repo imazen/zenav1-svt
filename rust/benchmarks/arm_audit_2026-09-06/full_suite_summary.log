@@ -1,0 +1,3 @@
+        FAIL [   0.005s] (1171/2553) zenav1-svt-encoder pd0::pd0_quant_parity_tests::pd0_quantize_b_matches_c_all_tiers
+     Summary [  62.171s] 2553 tests run: 2552 passed, 1 failed, 0 skipped
+        FAIL [   0.005s] (1171/2553) zenav1-svt-encoder pd0::pd0_quant_parity_tests::pd0_quantize_b_matches_c_all_tiers

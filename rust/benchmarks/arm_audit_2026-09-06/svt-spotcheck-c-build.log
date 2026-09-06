@@ -1,0 +1,5 @@
+capture_c_trace: this linker does not support -Wl,--wrap — building the BYTE-ONLY
+                 driver. Byte-parity gates (identity_matrix, bd10_*, tile_gate,
+                 sb128_gate, partial_sb_gate, ...) work; op-level localization
+                 (identity_diff.sh's symbol trace, tile_map.sh) needs a GNU-ld host.
+capture_c_trace: built /Users/lilith/work/zen/zenav1-svt/rust/tools/capture_c_trace/capture_c_trace.nowrap.bin (byte-only, SVT_HDR_MODE=0, lib=/Users/lilith/work/zen/zenav1-svt/Bin/Release/libSvtAv1Enc.a)

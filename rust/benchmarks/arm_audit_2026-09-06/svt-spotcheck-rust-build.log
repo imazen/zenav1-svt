@@ -1,0 +1,28 @@
+   Compiling safe_unaligned_simd v0.2.5
+   Compiling archmage-macros v0.9.29 (https://github.com/imazen/archmage?rev=cc24398c9a9fee0251722931e295da840730704d#cc24398c)
+   Compiling archmage v0.9.29 (https://github.com/imazen/archmage?rev=cc24398c9a9fee0251722931e295da840730704d#cc24398c)
+   Compiling magetypes v0.9.29 (https://github.com/imazen/archmage?rev=cc24398c9a9fee0251722931e295da840730704d#cc24398c)
+   Compiling zenav1-svt-dsp v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-dsp)
+   Compiling zenav1-svt-encoder v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-encoder)
+warning: type `Pd0Mode` is more private than the item `pd0_pick_sb_partition_m6_eval`
+    --> crates/svtav1-encoder/src/pd0.rs:3546:1
+     |
+3546 | / pub fn pd0_pick_sb_partition_m6_eval(
+3547 | |     src: &[u8],
+3548 | |     stride: usize,
+3549 | |     sb_x: usize,
+...    |
+3613 | |     inter: Option<&Pd0InterRef<'_>>,
+3614 | | ) -> Pd0Eval {
+     | |____________^ function `pd0_pick_sb_partition_m6_eval` is reachable at visibility `pub`
+     |
+note: but type `Pd0Mode` is only usable at visibility `pub(crate)`
+    --> crates/svtav1-encoder/src/pd0.rs:1712:1
+     |
+1712 | pub(crate) enum Pd0Mode {
+     | ^^^^^^^^^^^^^^^^^^^^^^^
+     = note: `#[warn(private_interfaces)]` on by default
+
+   Compiling zenav1-svt v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/svtav1)
+warning: `zenav1-svt-encoder` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 16.62s
