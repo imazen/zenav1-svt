@@ -1112,3 +1112,44 @@ crossings remain sensitive to run variation. Wiki p6 is1.8303.
 The same baseline CPU, core2, training inputs and C PGO binary are retained.
 The sweep takes412s, peak monitored RSS0.07GiB, minimum available memory
 29,179MiB. Records: `benchmarks/still_i265_2026-09-06-pgo-grain-drop-{training,broad}.*`.
+
+
+## Held-token large Hadamard composition
+
+The candidate dispatches once for16x16 or32x32, carries its V3 token through
+the8x8 sub-transforms, and compiles the unchanged combine arithmetic under V3
+features. Existing scalar/non-x86 arithmetic remains the fallback. No new
+Archmage operations are required. The C AVX2 oracle is essential here: at
+high-bit-depth residuals it wraps where scalar C can retain wider values.
+
+A600-case probe checks exact coefficient positions against frozen Rust,
+coefficient multisets against real C AVX2 (which permutes positions), and
+output sentinels. The production test also runs600 cases per token permutation
+and checks scalar-C positions on bounded patterns. It passed on the original
+production body before editing. Deliberate incorrect16x16 and32x32 shifts
+both fail at constant255 inputs; restored code passes2,566 workspace tests
+with zero skipped and104 regression cases.
+
+The first probe compared against the production DSP dependency. A second
+probe freezes the baseline source to prevent future changes moving it. Its
+600 cases pass and the candidate improves roughly13–15% across six groups.
+All runs report zero gate waits and reliable timing; control biases are
+recorded in the table: had16/stride32 shows+0.73% with its interval excluding
+zero; the other five frozen control intervals contain zero. Text grows2,844
+bytes. Frozen probe: `tools/perf_profile/hadamard_compose_probe`; records:
+`benchmarks/still_i265_2026-09-06-had-compose-probe.*`.
+
+
+All99 production frame A/B pairs and99 same-binary control pairs are
+byte-identical. NYC512/QP60/p2 improves1.59%, with candidate quartiles
+0.9836–0.9868 versus control0.9978–1.0053. Wiki's1.24% median improvement
+has candidate quartiles0.9852–0.9898 overlapping control0.9860–1.0002,
+so a separate wiki gain is not established. CLIC p2/p6/p8 medians improve
+0.69%/0.66%/0.94%; the remaining improvements are below0.5% and several
+are near control variation. Control medians span0.9927–1.0061.
+
+Disassembly retains four direct calls from the V3 32x32 function to its
+held-token16x16 helper; the optimization does not inline the entire family.
+The archived frozen probe's test passes too. No full-envelope rerun is claimed
+for this DSP-only change. No matched-PGO result includes this change yet.
+Frame records: `benchmarks/still_i265_2026-09-06-had-compose-frame-{ab,control}.*`.

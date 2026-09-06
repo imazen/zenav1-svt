@@ -1,0 +1,83 @@
+{
+  "baseline_source": "136e779ccf48",
+  "frozen_cases": 600,
+  "production_cases_per_token_permutation": 600,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frozen-control.log": {
+      "sha256": "61bd3413439bca530d136a0996aeccd780147d1c2b187f6a2f8b2f53daaa0979",
+      "bytes": 23615
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frozen-ab.log": {
+      "sha256": "b215cf6056f686141e6f0f3d5c4e557dadfde0cdba4205e3af01640c6db2dcbb",
+      "bytes": 23326
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-control.log": {
+      "sha256": "f3eaa30923c6dddf8c6e33da89526b46e9de8bdcac68fd3e535d32872fdaa9d4",
+      "bytes": 23675
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-ab.log": {
+      "sha256": "2398bcf4ff6a73d6fbb145bbd423620163f57111d9583c047413c2d494daa1ef",
+      "bytes": 23333
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frozen-bench.log": {
+      "sha256": "4a244d1d63da610718361efe09a093d14708b0ad990356d689a3ab190738b66e",
+      "bytes": 1889
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-test.log": {
+      "sha256": "08047b33e4d5c7c209308251ed3293d059f213aaf8ed641fc3c9d219b86447dd",
+      "bytes": 1590
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-production-baseline.log": {
+      "sha256": "1f822518b3ccecc4c08bd4040ad86110e1e70525b6ec8fc528dc3f36834d953d",
+      "bytes": 1217
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-production-c.log": {
+      "sha256": "e5b56ef931a3faf4784036240d9d12fa05c2f1bb642f1f21b7b22d89cf78473d",
+      "bytes": 1931
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-mutation16.log": {
+      "sha256": "79bc66eb1e219e55c1f2566ad1842d5e14a8c56481948bf73e8c0b9ec0ddb52d",
+      "bytes": 3081
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-mutation32.log": {
+      "sha256": "6406e013ff97e919573d3166bb99a8a9b2875a372042da80185406aafcfeefb0",
+      "bytes": 7689
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-nextest.log": {
+      "sha256": "fa9530b7a28c19dc441776d796ef2f3ede9c7f124157a5be10438a4eaf236541",
+      "bytes": 290567
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-spotcheck.log": {
+      "sha256": "bafd8c6439bed7aae45cde90581327a1b8019f0d87765a0a03e5c68bf27af932",
+      "bytes": 274
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-original-hadamard.rs": {
+      "sha256": "8dc5523bf7a6f13163a8f2ee5449af6d8a97e35eb940e5ede24a7f1b1254a204",
+      "bytes": 38554
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-archived-formatted-test.log": {
+      "sha256": "25c32b92b6030969ce3936ea371e388440351e237279e118f761fc7fa7305f67",
+      "bytes": 1349
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-probe/src/lib.rs": {
+      "sha256": "465c48ae1bb1a8116fbc58b5f31f8d470deb5a1ac7b509f9e84bd7b024a90a1d",
+      "bytes": 7119
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-probe/src/main.rs": {
+      "sha256": "ddf7da80445b1f54a3bf2953b8d66e195058390a676525f75df831510c4e5246",
+      "bytes": 915
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-probe/src/baseline.rs": {
+      "sha256": "181e9f777eada36abf5aa1cc7d691be2d0647ce679ae1bef45b884fae6ff04d2",
+      "bytes": 15082
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-probe-first/src/lib.rs": {
+      "sha256": "b37ad37b9632517f429eabf12262ee67ee4bfe5f71c5afdc2c567613620753ce",
+      "bytes": 7149
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-probe-first/src/main.rs": {
+      "sha256": "0b695057d2448f0d55353d13e26d604b0c14bd1a3c2898aedf3197c5ccf872e3",
+      "bytes": 901
+    }
+  }
+}

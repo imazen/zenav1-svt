@@ -1,0 +1,52 @@
+{
+  "candidate_change": "wwzortop",
+  "pairs": 99,
+  "identical": 99,
+  "build": "opt3 baseline CPU, no PGO, core2",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-ab.raw.tsv": {
+      "sha256": "8b6177d8519adc399a6fe503733b681e97af6ae80d33e081d6f01d117b638e85",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-ab.meta.json": {
+      "sha256": "c4f91ce86a4ede66b47eeaef3bf3b32e45d7fd903b88f3118c237d8d964d356b",
+      "bytes": 4067
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-ab.log": {
+      "sha256": "bd5970f7a38eb1da230813c37bb9db132b566191c82035d2e198bdf69d570438",
+      "bytes": 5374
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.grain-drop": {
+      "sha256": "322507f8dcc13c68cdb072208fb25b1fe611c2677c8aa40dc2a1fe12ac0289d0",
+      "bytes": 4155592
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.had-compose": {
+      "sha256": "b5cf7e388fb95661628e9024125ea406903607489184c025fc5908d3ce3e6ed4",
+      "bytes": 4159200
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-build.sh": {
+      "sha256": "bcba34538724d37328a82bdb95b96c1bb4deb13f51e091e9c6809813e7d98ef6",
+      "bytes": 426
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-build.log": {
+      "sha256": "0899544525095d3b7d8be71e7c056475829e693d8edad96e16055465690bc1b0",
+      "bytes": 1557
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-archived-test.log": {
+      "sha256": "ddd53aebc3067ce2f0edd1293f9a39316e4fe13e9254f3f8732061d28d8131cd",
+      "bytes": 1229
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-had32-0.asm": {
+      "sha256": "c1be814df490b3ac161c18b423322d16fb84cf9c7ebb1b1aa6f41f0546eeca7e",
+      "bytes": 17498
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-had32-1.asm": {
+      "sha256": "b5f97c48072630a088a8452b65f3c91c920bb4103685a8fa24b23d42a0ed902d",
+      "bytes": 16667
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-had32-0.asm": {
+      "sha256": "40eac1eb564c2419aab2131d65463f875f22799cc5d8ae0fc8e87e6307b5d064",
+      "bytes": 15267
+    }
+  }
+}

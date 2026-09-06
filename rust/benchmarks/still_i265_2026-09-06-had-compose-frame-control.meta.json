@@ -1,0 +1,20 @@
+{
+  "candidate_change": "wwzortop",
+  "pairs": 99,
+  "identical": 99,
+  "build": "opt3 baseline CPU, no PGO, core2",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-control.raw.tsv": {
+      "sha256": "36862d3b38b9a974b6dbdf30abb41de32ab48f312adf5643336bfe528716f359",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-control.meta.json": {
+      "sha256": "3525c4640cb902d7a81fb84254a10c286d72bc672404655feb0f5a75a1f22273",
+      "bytes": 4131
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-frame-control.log": {
+      "sha256": "c6511bb312103b2f34f0e96f95e5c0c34ed366b8f686ba85dd65d737f514929b",
+      "bytes": 5378
+    }
+  }
+}

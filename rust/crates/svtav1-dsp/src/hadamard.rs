@@ -956,7 +956,60 @@ fn aom_hadamard_8x8_core(src_diff: &[i16], src_stride: usize, coeff: &mut [i32])
 /// `svt_aom_hadamard_16x16_avx2`: four 8x8 sub-transforms + a cross-combine
 /// carried in WRAPPING 16-bit lanes (`_mm256_{add,sub}_epi16`,
 /// `_mm256_srai_epi16`), widened to `int32` on store (`store_tran_low`).
-pub fn aom_hadamard_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+pub fn aom_hadamard_16x16(src: &[i16], stride: usize, coeff: &mut [i32]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        incant!(aom_hadamard_16x16_impl(src, stride, coeff), [v3, scalar]);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        aom_hadamard_16x16_core(src, stride, coeff);
+    }
+}
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn aom_hadamard_16x16_impl_v3(token: X64V3Token, src: &[i16], stride: usize, coeff: &mut [i32]) {
+    hadamard_compose16_v3(token, src, stride, coeff);
+}
+#[cfg(target_arch = "x86_64")]
+fn aom_hadamard_16x16_impl_scalar(
+    _token: ScalarToken,
+    src: &[i16],
+    stride: usize,
+    coeff: &mut [i32],
+) {
+    aom_hadamard_16x16_core(src, stride, coeff);
+}
+/// `svt_aom_hadamard_32x32_avx2`: four 16x16 sub-transforms buffered as
+/// `int16` (`is_final = 0`), then sign-extended to 32-bit for the pairwise
+/// sum/difference and `>> 2`, SATURATED back to 16-bit (`_mm256_packs_epi32`)
+/// and combined with wrapping 16-bit add/sub before the 32-bit store.
+pub fn aom_hadamard_32x32(src: &[i16], stride: usize, coeff: &mut [i32]) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        incant!(aom_hadamard_32x32_impl(src, stride, coeff), [v3, scalar]);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        aom_hadamard_32x32_core(src, stride, coeff);
+    }
+}
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn aom_hadamard_32x32_impl_v3(token: X64V3Token, src: &[i16], stride: usize, coeff: &mut [i32]) {
+    hadamard_compose32_v3(token, src, stride, coeff);
+}
+#[cfg(target_arch = "x86_64")]
+fn aom_hadamard_32x32_impl_scalar(
+    _token: ScalarToken,
+    src: &[i16],
+    stride: usize,
+    coeff: &mut [i32],
+) {
+    aom_hadamard_32x32_core(src, stride, coeff);
+}
+
+fn aom_hadamard_16x16_core(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
     for idx in 0..4usize {
         let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
         aom_hadamard_8x8(&src_diff[off..], src_stride, &mut coeff[idx * 64..]);
@@ -980,14 +1033,77 @@ pub fn aom_hadamard_16x16(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]
     }
 }
 
-/// `svt_aom_hadamard_32x32_avx2`: four 16x16 sub-transforms buffered as
-/// `int16` (`is_final = 0`), then sign-extended to 32-bit for the pairwise
-/// sum/difference and `>> 2`, SATURATED back to 16-bit (`_mm256_packs_epi32`)
-/// and combined with wrapping 16-bit add/sub before the 32-bit store.
-pub fn aom_hadamard_32x32(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
+fn aom_hadamard_32x32_core(src_diff: &[i16], src_stride: usize, coeff: &mut [i32]) {
     for idx in 0..4usize {
         let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
         aom_hadamard_16x16(&src_diff[off..], src_stride, &mut coeff[idx * 256..]);
+    }
+    for i in 0..256usize {
+        // `temp_coeff` is int16: the 16x16 stage is read back through 16-bit
+        // lanes and sign-extended (the AVX2 `sign_extend_16bit_to_32bit`).
+        let a0 = coeff[i] as i16 as i32;
+        let a1 = coeff[i + 256] as i16 as i32;
+        let a2 = coeff[i + 512] as i16 as i32;
+        let a3 = coeff[i + 768] as i16 as i32;
+        // 32-bit add/sub then arithmetic `>> 2` (`_mm256_srai_epi32`).
+        let b0 = (a0 + a1) >> 2;
+        let b1 = (a0 - a1) >> 2;
+        let b2 = (a2 + a3) >> 2;
+        let b3 = (a2 - a3) >> 2;
+        // `_mm256_packs_epi32`: SATURATING 32 -> 16 narrowing.
+        let sat = |v: i32| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        let (b0, b1, b2, b3) = (sat(b0), sat(b1), sat(b2), sat(b3));
+        // `_mm256_{add,sub}_epi16`: WRAPPING 16-bit, then sign-extended store.
+        coeff[i] = b0.wrapping_add(b2) as i32;
+        coeff[i + 256] = b1.wrapping_add(b3) as i32;
+        coeff[i + 512] = b0.wrapping_sub(b2) as i32;
+        coeff[i + 768] = b1.wrapping_sub(b3) as i32;
+    }
+}
+
+// Carry one V3 token through sub-transforms and combine at V3 features.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn hadamard_compose16_v3(
+    token: X64V3Token,
+    src_diff: &[i16],
+    src_stride: usize,
+    coeff: &mut [i32],
+) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 8 * src_stride + (idx & 1) * 8;
+        aom_hadamard_8x8_impl_v3(token, &src_diff[off..], src_stride, &mut coeff[idx * 64..]);
+    }
+    for i in 0..64usize {
+        // The 8x8 stage already produced int16-valued coefficients (C's
+        // `buffer2` / the AVX2 `temp_coeff` are both int16), so reading them
+        // back as i16 is lossless and matches the AVX2 lane width.
+        let a0 = coeff[i] as i16;
+        let a1 = coeff[i + 64] as i16;
+        let a2 = coeff[i + 128] as i16;
+        let a3 = coeff[i + 192] as i16;
+        let b0 = a0.wrapping_add(a1) >> 1;
+        let b1 = a0.wrapping_sub(a1) >> 1;
+        let b2 = a2.wrapping_add(a3) >> 1;
+        let b3 = a2.wrapping_sub(a3) >> 1;
+        coeff[i] = b0.wrapping_add(b2) as i32;
+        coeff[i + 64] = b1.wrapping_add(b3) as i32;
+        coeff[i + 128] = b0.wrapping_sub(b2) as i32;
+        coeff[i + 192] = b1.wrapping_sub(b3) as i32;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn hadamard_compose32_v3(
+    token: X64V3Token,
+    src_diff: &[i16],
+    src_stride: usize,
+    coeff: &mut [i32],
+) {
+    for idx in 0..4usize {
+        let off = (idx >> 1) * 16 * src_stride + (idx & 1) * 16;
+        hadamard_compose16_v3(token, &src_diff[off..], src_stride, &mut coeff[idx * 256..]);
     }
     for i in 0..256usize {
         // `temp_coeff` is int16: the 16x16 stage is read back through 16-bit
