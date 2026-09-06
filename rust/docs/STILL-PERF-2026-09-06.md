@@ -119,8 +119,10 @@ hardware counters work. This sysctl change is runtime-only. cargo-show-asm was r
 inspected the saved encoder's `sc_detect::dilate_block` without rebuilding it.
 Intel's official APT repository supplied VTune 2026.4.0 (build 632893), and
 Ubuntu supplied LLVM tools 22.1.2, including llvm-mca. These command versions
-were exercised. The VTune installation succeeded; a real collection is still
-required before claiming that its collectors work on this kernel.
+were exercised. The VTune hardware collection ran the target but aborted with
+`std::bad_alloc` (exit 134); its software collector refused the host's ptrace
+restriction (exit 1). Installation is complete, collector usability is not.
+`perf` remains the working hardware profiler.
 
 The requested `cargo read magetypes` and `cargo read archmage` both completed
 and fetched published 0.9.28. Their documentation and the local checkout's
@@ -156,6 +158,49 @@ these arithmetic instructions. Whether a different full-width composition is che
 Incremental compile costs of the current PR heads are recorded below.
 Do not attribute the earlier scalar-to-SIMD speedup to abstraction overhead
 removal: that experiment changed the algorithm's arithmetic width and packing.
+
+A follow-up CLIC preset8 candidate profile explicitly selects
+`cpu_core/cycles/u`, because flamegraph's default selection from the original
+hybrid-PMU recording picked only the five taskset startup samples from
+cpu_atom. That first SVG was rejected after finding no encoder symbols.
+The corrected recording/graph contains 274 encoder symbols, with 21K retained
+samples and 113 lost samples. It localizes `pd0::tx_quant_core` (11.27% self)
+and hadamard/transform work as the next leads. These whole-process shares
+remain localization evidence, not an encode-only speed claim. Files:
+`clic-port-core.perf`, `clic-port-core.svg`, `clic-p8-core-self.txt` in scratch.
+
+## First encoder change: screen-detection dilation
+
+The V3 path computes horizontal masks from original rows, unions each with
+its two neighbouring rows, and selects the dominant pixel value. It replaces
+C's eight conditional scatter stores with existing Archmage intrinsics under
+`forbid(unsafe_code)`. Shapes beyond 16 rows, widths other than 8/16, and
+overlapping destination strides retain the original scalar implementation.
+No new dependency API was needed.
+
+An initial 21-pair preset6 experiment found candidate/baseline ratios of
+0.9988 (CID22), 0.9758 (CLIC), and 0.9869 (terminal). After adding the
+overlapping-stride fallback, nine pairs across the full initial grid gave:
+
+| Image | Preset 2 | Preset 6 | Preset 8 |
+|---|---:|---:|---:|
+| CID22 | 1.0023 | 0.9992 | 0.9951 |
+| CLIC2025 | 0.9968 | 0.9737 | 0.9949 |
+| terminal | 1.0001 | 0.9901 | 0.9985 |
+
+All 81 final pairs were byte-identical. The clear improvement is preset6 on
+CLIC (~2.6%) and terminal (~1.0%); the remaining changes are small relative to
+the same-binary control variation. These are direct candidate/previous-Rust
+ratios at opt-level3, not new port/C ratios. Record:
+`benchmarks/still_i265_2026-09-06-dilate-ab.{tsv,raw.tsv,meta.json}`.
+
+The C parity test now exercises dispatch permutations, tight/padded and
+overlapping strides, thin rectangles and scalar-fallback shapes. An explicit
+8-column dominant-zero case checks that unloaded high lanes cannot spill
+into column 7. Deliberately omitting that mask failed with column 7=0 instead
+of 17; the correct mask was restored. Final workspace nextest passed 2557/2557
+with zero skipped, and regression spot-check passed 104/104. This is a small
+measured improvement, not completion of the 1.50x goal.
 
 ## Incremental compile cost of #96 and #97
 
@@ -209,3 +254,11 @@ discarded or reformatted during this measurement.
 Next: collect encode-focused profiles across the remaining cells; broaden
 size/quality/content coverage and optimize measured hot paths until the 1.50x
 goal is demonstrated. The goal remains active.
+
+Before landing the dilation change, the machine-local dependency override was
+removed temporarily and both gates were rerun against the manifest's tracked
+`cc24398c` Git pin with its tracked lockfile: `cargo nextest run --locked
+--workspace -j 4` passed 2557/2557, zero skipped; regression spot-check
+passed 104/104. The local setup change was kept separately from the changes
+being shipped. Performance artifacts above retain their explicitly recorded
+local dependency and opt-level3 provenance.

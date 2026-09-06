@@ -106,16 +106,41 @@ fn dominant_value_matches_c() {
 
 #[test]
 fn dilate_block_matches_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+        dilate_block_cases();
+    });
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(report.permutations_run >= 2);
+}
+
+fn dilate_block_cases() {
+    // For an 8-wide SIMD load, nonexistent high lanes must not become
+    // dominant-zero neighbours of column 7. Only column 4 should change.
+    let src = [0, 0, 0, 0, 17, 17, 17, 17];
+    let mut actual = [0xAA; 8];
+    let mut expected = [0xAA; 8];
+    sc_detect::dilate_block(&src, 8, &mut actual, 8, 1, 8);
+    cref::dilate_block(&src, 8, &mut expected, 8, 1, 8);
+    assert_eq!(expected, [0, 0, 0, 0, 0, 17, 17, 17]);
+    assert_eq!(actual, expected);
+
     let mut rng = Rng(0xd11a7e_0003);
-    let shapes = [(8usize, 8usize), (16, 16)];
+    let shapes = [(8usize, 8usize), (16, 16), (3, 8), (1, 16), (5, 5), (17, 8)];
     for &(rows, cols) in &shapes {
         // C call sites use src at picture stride, dilated at tight blk_w
         // stride; fuzz both tight and loose strides on both sides.
-        for &(src_stride, dst_stride) in &[(cols, cols), (cols + 11, cols), (cols + 3, cols + 7)] {
+        for &(src_stride, dst_stride) in &[
+            (cols, cols),
+            (cols + 11, cols),
+            (cols + 3, cols + 7),
+            // Overlapping destination rows retain the scalar scatter order.
+            (cols, cols - 1),
+        ] {
             let mut src = vec![0u8; rows * src_stride];
-            let mut d_r = vec![0u8; rows * dst_stride];
-            let mut d_c = vec![0u8; rows * dst_stride];
-            for ncolors in [2usize, 3, 5, 8, 12, 40] {
+            let mut d_r = vec![0u8; rows * dst_stride.max(cols)];
+            let mut d_c = vec![0u8; rows * dst_stride.max(cols)];
+            for ncolors in [1usize, 2, 3, 5, 8, 12, 40] {
                 for _ in 0..40 {
                     fill_paletted(&mut rng, &mut src, src_stride, rows, cols, ncolors);
                     d_r.fill(0xAA);

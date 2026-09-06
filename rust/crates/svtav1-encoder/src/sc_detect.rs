@@ -22,6 +22,9 @@
 //! - `find_dominant_value` keeps the FIRST scan-order value to reach the
 //!   max count (strict `>` compare) — ties do not replace.
 
+#[cfg(target_arch = "x86_64")]
+use archmage::prelude::*;
+
 /// C `svt_av1_count_colors_with_threshold` (pic_analysis_process.c:911).
 /// Returns `(within_threshold, num_colors)`; on early exit (over the
 /// threshold) `num_colors` is `threshold + 1` and the flag is `false`.
@@ -81,6 +84,22 @@ pub fn dilate_block(
     cols: usize,
 ) {
     let dominant_value = find_dominant_value(src, src_stride, rows, cols);
+    #[cfg(target_arch = "x86_64")]
+    if rows <= 16 && (cols == 8 || cols == 16) && dilated_stride >= cols {
+        if let Some(token) = X64V3Token::summon() {
+            dilate_block_v3(
+                token,
+                src,
+                src_stride,
+                dilated,
+                dilated_stride,
+                rows,
+                cols,
+                dominant_value,
+            );
+            return;
+        }
+    }
     for r in 0..rows {
         for c in 0..cols {
             dilated[r * dilated_stride + c] = src[r * src_stride + c];
@@ -120,6 +139,59 @@ pub fn dilate_block(
             if r1 && c1 {
                 dilated[(r + 1) * dilated_stride + (c + 1)] = value;
             }
+        }
+    }
+}
+
+/// The same one-pixel dilation as C, expressed as three adjacent row masks.
+/// Masks read only original pixels, so newly written dominant pixels cannot
+/// grow the region a second time. Zero sentinel rows clip the top and bottom.
+/// The 8-column path clears nonexistent lanes before shifting horizontally.
+/// This replaces eight conditional, bounds-checked stores per matching pixel
+/// in the profiled still detector; it needs no new Archmage API.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn dilate_block_v3(
+    _token: X64V3Token,
+    src: &[u8],
+    src_stride: usize,
+    dilated: &mut [u8],
+    dilated_stride: usize,
+    rows: usize,
+    cols: usize,
+    dominant_value: u8,
+) {
+    let zero = _mm_setzero_si128();
+    let dominant = _mm_set1_epi8(dominant_value as i8);
+    let mut masks = [zero; 18];
+    let mut original = [zero; 16];
+    for r in 0..rows {
+        let start = r * src_stride;
+        let pixels = if cols == 16 {
+            _mm_loadu_si128(src[start..].first_chunk::<16>().unwrap())
+        } else {
+            _mm_cvtsi64_si128(i64::from_le_bytes(
+                src[start..start + 8].try_into().unwrap(),
+            ))
+        };
+        original[r] = pixels;
+        let mut mask = _mm_cmpeq_epi8(pixels, dominant);
+        if cols == 8 {
+            mask = _mm_unpacklo_epi64(mask, zero);
+        }
+        masks[r + 1] = _mm_or_si128(
+            mask,
+            _mm_or_si128(_mm_slli_si128::<1>(mask), _mm_srli_si128::<1>(mask)),
+        );
+    }
+    for r in 0..rows {
+        let mask = _mm_or_si128(masks[r], _mm_or_si128(masks[r + 1], masks[r + 2]));
+        let pixels = _mm_blendv_epi8(original[r], dominant, mask);
+        let start = r * dilated_stride;
+        if cols == 16 {
+            _mm_storeu_si128(dilated[start..].first_chunk_mut::<16>().unwrap(), pixels);
+        } else {
+            dilated[start..start + 8].copy_from_slice(&_mm_cvtsi128_si64(pixels).to_le_bytes());
         }
     }
 }
