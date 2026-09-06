@@ -3806,3 +3806,33 @@ int32_t ref_ransac(const int32_t* pts4, int32_t npoints, int32_t type, int32_t n
     free(corr);
     return ok;
 }
+
+
+/* Real table construction, not a Rust-supplied QuantRow. Match sequence
+ * initialization's base_q_idx=31 and all delta-q values zero. */
+#include "md_config_process.h"
+void ref_build_quantizer_rows(int32_t bit_depth, int32_t sharpness, int16_t* out) {
+    SequenceControlSet* scs = calloc(1, sizeof(*scs));
+    PictureParentControlSet* pcs = calloc(1, sizeof(*pcs));
+    Quants* quants = calloc(1, sizeof(*quants));
+    Dequants* deq = calloc(1, sizeof(*deq));
+    if (!scs || !pcs || !quants || !deq) abort();
+    pcs->scs = scs;
+    pcs->frm_hdr.quantization_params.base_q_idx = 31;
+    scs->static_config.sharpness = sharpness;
+    svt_av1_build_quantizer(pcs, (EbBitDepth)bit_depth, 0, 0, 0, 0, 0, quants, deq);
+    for (int q = 0; q < 256; ++q) {
+        const int16_t* fields[7] = {
+            quants->y_zbin[q], quants->y_round[q], quants->y_quant[q],
+            quants->y_quant_shift[q], quants->y_round_fp[q],
+            quants->y_quant_fp[q], deq->y_dequant_qtx[q]
+        };
+        for (int field = 0; field < 7; ++field)
+            for (int lane = 0; lane < 8; ++lane)
+                out[(q * 7 + field) * 8 + lane] = fields[field][lane];
+    }
+    free(deq);
+    free(quants);
+    free(pcs);
+    free(scs);
+}

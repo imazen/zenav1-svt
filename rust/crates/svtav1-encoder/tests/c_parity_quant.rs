@@ -287,3 +287,35 @@ fn c_scalar_and_dispatched_agree() {
         }
     }
 }
+
+#[test]
+fn quantizer_tables_match_c_all_rows() {
+    for bd in [8, 10] {
+        for sharpness in [-7, -1, 0, 1, 7] {
+            let rows = cref::quantizer_rows(bd, sharpness);
+            assert_eq!(rows.len(), 256);
+            for (q, expected) in rows.iter().enumerate() {
+                let table = quant::build_quant_table_bd_sharp(q as u8, bd, sharpness);
+                let actual = row_from_table(&table);
+                assert_eq!(table.qm_level, 15);
+                for (name, got, want) in [
+                    ("zbin", actual.zbin, expected.zbin),
+                    ("round", actual.round, expected.round),
+                    ("quant", actual.quant, expected.quant),
+                    ("shift", actual.quant_shift, expected.quant_shift),
+                    ("round_fp", actual.round_fp, expected.round_fp),
+                    ("quant_fp", actual.quant_fp, expected.quant_fp),
+                    ("dequant", actual.dequant, expected.dequant),
+                ] {
+                    assert_eq!(got, want, "bd{bd} q{q} sharp{sharpness} {name}");
+                }
+                if bd == 8 {
+                    assert_eq!(table, quant::build_quant_table_sharp(q as u8, sharpness));
+                    if sharpness == 0 {
+                        assert_eq!(table, quant::build_quant_table(q as u8));
+                    }
+                }
+            }
+        }
+    }
+}

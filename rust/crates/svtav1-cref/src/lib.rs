@@ -3296,6 +3296,28 @@ pub struct QuantRow {
     pub dequant: [i16; 8],
 }
 
+unsafe extern "C" {
+    fn ref_build_quantizer_rows(bit_depth: i32, sharpness: i32, out: *mut i16);
+}
+
+/// All 256 luma rows from real C `svt_av1_build_quantizer`, with sequence
+/// base qindex 31 and zero delta-q. Includes C's replicated AC lanes.
+pub fn quantizer_rows(bit_depth: u8, sharpness: i8) -> Vec<QuantRow> {
+    assert!(matches!(bit_depth, 8 | 10));
+    assert_eq!(core::mem::size_of::<QuantRow>(), 7 * 8 * 2);
+    let mut rows = vec![QuantRow::default(); 256];
+    // SAFETY: C writes exactly 256 rows of seven eight-lane i16 arrays.
+    // QuantRow has that C layout, with no inter-row padding (asserted above).
+    unsafe {
+        ref_build_quantizer_rows(
+            i32::from(bit_depth),
+            i32::from(sharpness),
+            rows.as_mut_ptr().cast::<i16>(),
+        );
+    }
+    rows
+}
+
 impl QuantRow {
     /// Build a row from its (DC, AC) pair, replicating AC across lanes 1..8
     /// exactly like `svt_av1_build_quantizer`.
