@@ -6,7 +6,7 @@ and runtime SIMD dispatch. It also includes installing and exercising the
 profiling tools, evaluating Archmage PRs #96 and #97 for runtime and compile
 cost, and identifying any additional operations the encoder actually needs.
 This task is in progress. Entries below follow experiment order; the newest
-position is in "Matched PGO after the unpack transpose" and still misses the target.
+position is in "Matched PGO after coefficient reductions" and still misses the target.
 
 ## Source and machine
 
@@ -1035,3 +1035,35 @@ behind the film-grain configuration (pic_analysis_process.c:514–525).
 Removing the discarded heuristic is a candidate for a separate measured change;
 no production edit or speedup is claimed here. The module's historical claim
 that all grain signaling is absent is stale for the fork photon-noise path.
+
+
+### Follow-up Hadamard composition candidate
+
+The16x16 and32x32 Hadamard wrappers remain ordinary baseline-CPU functions,
+each recursively calling dispatched sub-transforms and then combining stored
+i32 coefficients through i16 truncation/wrapping. The earlier wiki profile
+assigns4.91% self samples to the32x32 wrapper. A held-token V3 implementation
+could avoid repeated dispatch and expose wider combine loops. Any experiment
+must preserve the explicit AVX2 high-bit-depth wrapping behavior documented
+in `hadamard.rs` and test against the AVX2 C oracle, not just scalar C over
+8-bit inputs. This is an investigation lead, with no candidate measurement yet.
+
+
+## Matched PGO after coefficient reductions
+
+Fresh baseline-CPU training of encoder source `a090303e` matches all108 C
+training-output hashes and retains105 missing-function profile warnings.
+The unchanged C PGO binary and separate held-out inputs keep the protocol
+matched; normal release defaults remain unchanged.
+
+All675 pairs across135 cases are byte-identical. **76/135 median ratios and
+76/135 upper-quartile ratios meet1.50**, compared with73/69 before this change.
+The goal remains unmet in59 median cases. NYC512/QP60/p2 remains worst at
+1.8831 (previously1.9139), while wiki1024/QP60/p8 is1.7824 (previously1.8268).
+Wiki preset6 remains1.8371. These counts describe this fresh run; individual
+threshold crossings can be sensitive to timing noise.
+
+Training takes60s and the held-out sweep412s under the shared wrapper. The
+sweep's peak monitored RSS is0.07GiB, minimum available memory29,215MiB.
+Tables and preserved artifact hashes are in
+`benchmarks/still_i265_2026-09-06-pgo-satd-{training,broad}.*`.

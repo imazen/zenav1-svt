@@ -1,0 +1,22 @@
+{
+  "encoder_source_commit": "a090303eea96f7a1cdb38f6b277cfe0593facb5f",
+  "cells": 135,
+  "pairs": 675,
+  "identical": 675,
+  "median_at_most_1_50": 76,
+  "p75_at_most_1_50": 76,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-satd-broad.raw.tsv": {
+      "sha256": "a6b9e8e5f8e3b46305dfa4fb1f46cf769c29cf8ac04f99ade0947ee4ac2eddcd",
+      "bytes": 35466
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-satd-broad.meta.json": {
+      "sha256": "a9c72a6837b6bb77a2753f672cf94c50382dce1d200f7924673f5c00d33157ff",
+      "bytes": 33357
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-satd-broad.log": {
+      "sha256": "5a98f0f42fb843c2b60f942459a5e738b91459acf3576a369b09f7569e88f78a",
+      "bytes": 37867
+    }
+  }
+}
