@@ -709,7 +709,7 @@ fn dr_z1_edged(
     if bw >= 16 && !upsample_above && above.len() > origin + bw + bh {
         incant!(
             dr_z1_edged_flat(dst, dst_stride, bw, bh, above, origin, dx),
-            [neon, scalar]
+            [v3, neon, scalar]
         );
         return;
     }
@@ -729,6 +729,52 @@ fn dr_z1_edged_flat_scalar(
     dr_z1_edged_core(dst, dst_stride, bw, bh, above, origin, false, dx);
 }
 
+// C intra_prediction.c:351–383, non-upsampled case. Splitting the valid
+// prefix removes its per-pixel boundary branch and permits AVX2 vectorization.
+// Both weights are nonnegative and sum to32: even255*32+16 fits in u16,
+// and the rounded result fits u8 without a clamp. No new SIMD API is needed.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn dr_z1_edged_flat_v3(
+    _t: X64V3Token,
+    dst: &mut [u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    edge: &[u8],
+    origin: usize,
+    dx: i32,
+) {
+    let max_base = (w + h - 1) as i32;
+    let fill = edge[origin + max_base as usize];
+    let mut x = dx;
+    for r in 0..h {
+        let base = x >> 6;
+        let shift = ((x & 63) >> 1) as u16;
+        let valid = if base >= max_base {
+            0
+        } else {
+            w.min((max_base - base) as usize)
+        };
+        let row = &mut dst[r * stride..r * stride + w];
+        if valid > 0 {
+            let bi = origin + base as usize;
+            for (out, (&a, &b)) in row[..valid].iter_mut().zip(
+                edge[bi..bi + valid]
+                    .iter()
+                    .zip(&edge[bi + 1..bi + valid + 1]),
+            ) {
+                *out = ((u16::from(a) * (32 - shift) + u16::from(b) * shift + 16) >> 5) as u8;
+            }
+        }
+        row[valid..].fill(fill);
+        x += dx;
+    }
+}
+
+/// Historical rationale for the existing NEON implementation. The x86 arm
+/// above instead uses target-feature auto-vectorization.
+///
 /// # Why this is a hand-written per-ISA arm and not `#[magetypes]`
 ///
 /// The kernel is `u8 -> u16 -> u8`: it widens two `u8x16` loads to `u16x8`

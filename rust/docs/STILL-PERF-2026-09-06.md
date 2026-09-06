@@ -251,3 +251,29 @@ Both include construction, teardown and logging; internal frame clocks remain
 the performance measurements. Tables and artifact hashes:
 `benchmarks/still_i265_2026-09-06-had-compose-{nyc,wiki}-*-profile.tsv` and
 `benchmarks/still_i265_2026-09-06-had-compose-{nyc,wiki}-profile.meta.json`.
+
+
+## Zone-one contiguous interpolation (candidate)
+
+The x86 zone-one scalar loop checks the interpolation boundary per pixel.
+The candidate adds V3 to the existing guarded non-upsampled width>=16 path,
+computes each row's valid prefix once, interpolates that contiguous prefix,
+and fills the remaining columns. Weights are nonnegative and sum to32, so
+u16 arithmetic accommodates255*32+16 and yields the same rounded u8 result
+without saturation. This uses ordinary safe loops under target features;
+no new raw intrinsics or Archmage operations are required.
+
+The frozen isolated baseline and candidate match C on2,970 padded cases.
+Nine benchmark groups cover16/32/64 squares at angles14/45/67: all control
+intervals include zero, all groups complete30 rounds, zero gate waits and no
+unreliable flag. Candidate kernel time improves roughly50–92%; these are
+isolated kernel results, not frame gains.
+
+The production test runs11,880 real-C cases per token permutation, covering
+upsampled fallbacks, smaller widths, padded strides, input origins and output
+sentinels. It passed on the previous production body before editing. A
+rounding mutation16→48 fails16x4/origin3/non-upsampled/angle3/zero-edge.
+The correct implementation passes2,567 workspace tests with zero skipped,
+104 regression cases and the archived probe test. Frame timing is pending.
+Probe and raw artifact records: `tools/perf_profile/dr_zone1_probe` and
+`benchmarks/still_i265_2026-09-06-dr-z1-probe.*`.
