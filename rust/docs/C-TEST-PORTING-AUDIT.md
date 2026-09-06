@@ -7,7 +7,23 @@ surface, and produce an honest coverage map + prioritized gap list.
 **Read-only analysis. No code was built or changed.** Generated 2026-07-24 by
 inspection of both trees at `master`.
 
-## Port scope (what "in scope" means here)
+## Current requirement and historical audit scope
+
+**2026-09-06 user requirement: all shipping C features must be ported and
+wired carefully.** The still-picture envelope below describes the original
+audit's test coverage, not the current feature scope. Historical `N/A-inter`,
+`N/A-metric`, and default-off exclusions are not evidence that a C feature may
+be omitted. They require a current implementation and wiring audit. A kernel
+differential proves that kernel's contract, not the enclosing feature's
+configuration, state lifetime, output behavior, or production reachability.
+
+Preserve C's actual supported configuration envelope: enum values rejected
+by C's shipping settings validation do not establish supported C features.
+Rust need not copy C's API shape or memory-management machinery; it must
+preserve supported behavior. The counts and conclusions below are historical,
+not a current all-feature completion scoreboard.
+
+### Original still-picture audit envelope
 
 Per `rust/README.md` + `rust/CLAUDE.md`, the port is a **still-picture / all-intra**
 reimplementation of SVT-AV1 v4.2.0, byte-identical on this envelope:
@@ -141,11 +157,15 @@ inter-frame gaps; helper parity alone does not establish feature coverage.
 
 | C test file | Kernel under test | Rust coverage | Class |
 |---|---|---|---|
-| `FilmGrainTest.cc` | grain synthesis + `denoise_and_model` | `c_parity_noise_gen.rs::noise_table_matches_c` (:57); `c_parity_noise_norm.rs` | PORTED-diff (synthesis). **denoise-analysis = MISSING** |
+| `FilmGrainTest.cc` | parameter equality, normative grain synthesis + `denoise_and_model` | Photon-noise table and noise-helper differentials cover related computations, not this test's synthesis or denoiser contracts | **MISSING** normative synthesis and denoise/model coverage; photon-noise generation is separately ported |
 | `FFTTest.cc` | FFT (denoise pre-analysis) | — | **MISSING** — denoise-analysis path not ported; fork photon-noise coverage does not cover it |
 | `noise_model_test.cc` | `flat_block_finder`, noise model fit | — | **MISSING** — denoise-analysis not ported |
 
-### 1g. Inter / motion / compound / global-motion / temporal (OUT OF SCOPE)
+### 1g. Inter / motion / compound / global-motion / temporal (historical exclusions)
+
+The following labels describe the July still-only audit. These features are
+required under the current scope; consult the newer inter implementation and
+gates before classifying any individual path as implemented or missing.
 
 | C test file | Kernel under test | Rust coverage | Class |
 |---|---|---|---|
@@ -197,7 +217,7 @@ inter-frame gaps; helper parity alone does not establish feature coverage.
 
 ---
 
-## 2. Summary counts
+## 2. Historical summary counts (not recomputed after corrections)
 
 Excluding the 3 pure-infra files (`svt_av1_test.cc`, `TestEnv.c`, `unit_test_utility.c`)
 and `warp_filter_test_util.cc` (harness support) → **65 behavioral C test files**:
@@ -310,7 +330,14 @@ run through every dispatch tier and each is compared to the exported C scalar:
 
 ---
 
-## 5. Bottom line
+## 5. Historical conclusion (superseded for current feature scope)
+
+The July conclusion below cannot establish current completeness. In particular,
+its film-grain synthesis claim was incorrect: `noise_table_matches_c` compares
+photon-noise parameters, not the reconstructed pixels from C's normative grain
+synthesis. See the [film-grain port map](film-grain-port-map.md) for the current
+required gaps. The statement about no false port claims below is historical
+and is contradicted by this correction.
 
 The **differential coverage of the DSP/transform/quant/entropy/filter kernels on the
 all-intra path is strong** (31 direct differentials, every ASM test mapped to a tier

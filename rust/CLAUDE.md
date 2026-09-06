@@ -19,6 +19,16 @@ Two companions to it:
 
 ## CONFORMANCE MANDATE
 
+**2026-09-06 scope requirement from the user:** all shipping C features must
+be ported and wired carefully, including optional/default-off features.
+Historical still-only exclusions in audits do not waive this requirement.
+Completion requires the configuration to reach the real implementation, with
+C-equivalent lifecycle, syntax and observable output, plus tests that exercise
+the feature enabled. Helper parity, placeholder code, or grain-off identity
+gates do not establish feature completion. Keep C's supported settings envelope
+distinct from dead-gated enum values and preserve Rust's own API shape.
+Film-grain gaps are tracked in `docs/film-grain-port-map.md`.
+
 **NEVER stop working while ANY conformance or parity issue remains.** If the bitstream does not decode with rav1d-safe at ALL tested sizes, the work is NOT DONE. If any differential test shows a decode failure, investigate the root cause and fix it before committing documentation, before updating handoffs, before doing anything else. Conformance failures are the #1 priority — above new features, above performance, above code cleanup. Do not describe a conformance failure as "expected" or "known" — describe it as "BLOCKING" and fix it in the same session.
 
 This applies to:
