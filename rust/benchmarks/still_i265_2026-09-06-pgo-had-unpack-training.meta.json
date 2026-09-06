@@ -1,0 +1,28 @@
+{
+  "source_commit": "e1a555f4e8bd0957350f65ae5eb7f98c6aa4b967",
+  "raw_profiles": 108,
+  "baseline_sha256": "245781e497700a722c9143c65f9efe3382b955e6ef5e6b0b4aa3b007e3a97ee3",
+  "pgo_sha256": "cff29abd30a3b38250c3162e6d541ff61a670672532c923acdb91ad2da2dcdd2",
+  "profile_sha256": "e762eed2fa0d08ee735a0de7feb7fe157d7a8cf0664feff3c28943fab762988f",
+  "training_cells": 108,
+  "cross_c_identical": 108,
+  "vtune": "Scoped root software collection encoded the image but terminated with std::bad_alloc, rc134; no usable profile claim",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-unpack.log": {
+      "sha256": "1461db63e4b839354ccaf8a38aacdd11d909d16bfcd6b2246d0ad98d02b2d91b",
+      "bytes": 7684
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-unpack/meta.json": {
+      "sha256": "9e8b131657dc96af6aaedfaeaa4081595a9bff933b9c93268cfe00ff3ab9d176",
+      "bytes": 189179
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-unpack/build-pgo.log": {
+      "sha256": "9a099b187cfab8f4b7c1398df3f02a39373d6cf0ea4cea41282be6d21a92972c",
+      "bytes": 25163
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/vtune-root-had-unpack.log": {
+      "sha256": "c0c4a917d21ac3d1f2e0081f96fbf36eb8b6f237f551c502004c85e362c1d70c",
+      "bytes": 890
+    }
+  }
+}

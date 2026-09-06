@@ -6,7 +6,7 @@ and runtime SIMD dispatch. It also includes installing and exercising the
 profiling tools, evaluating Archmage PRs #96 and #97 for runtime and compile
 cost, and identifying any additional operations the encoder actually needs.
 This task is in progress. Entries below follow experiment order; the newest
-position is in "Matched PGO after Hadamard and DC fills" and still misses the target.
+position is in "Matched PGO after the unpack transpose" and still misses the target.
 
 ## Source and machine
 
@@ -923,3 +923,29 @@ versus0.9361–0.9418. These support the larger frame gains despite small biases
 The A/B and control resource logs are preserved with their metadata; control
 runtime134s, peak monitored RSS0.03GiB, minimum available memory29,188MiB.
 Control records: `benchmarks/still_i265_2026-09-06-hadamard-transpose-control.*`.
+
+
+## Matched PGO after the unpack transpose
+
+Fresh Rust training at `e1a555f4` again matches all108 C training-output hashes.
+The build retains105 missing-function profile warnings. Baseline target CPU,
+opt3, the same separate training images, and the unchanged C PGO binary keep
+the comparison matched. The normal workspace release profile is unchanged.
+
+All675 held-out pairs across135 cells are byte-identical. **73/135 median
+ratios and69/135 upper-quartile ratios meet1.50**, versus64/63 before the
+transpose change. The goal remains unmet in62 median cases. The worst is
+NYC512/QP60/p2 at1.9139, down from1.9651. Wiki1024/QP60/p8 is1.8268, down from
+1.9085. The corresponding preset6 ratio is1.8499. These are fresh
+matched-PGO positions, separate from the non-PGO Rust/Rust A/B above.
+
+The sweep takes413s under run-heavy, peak monitored RSS0.07GiB and minimum
+available memory29,258MiB. Small tables and artifact hashes:
+`benchmarks/still_i265_2026-09-06-pgo-had-unpack-{training,broad}.*`.
+
+A scoped-root retry of VTune2026.4 software Hotspots collection passes the
+previous ptrace restriction and finishes the NYC encode, but aborts with
+`std::bad_alloc` (rc134). It also warns that p-core GP0 is in use. No usable
+VTune profile is claimed, and no security sysctl was changed. The failed
+capture directory and log remain in scratch; the training metadata records
+the log hash. Linux perf remains the working sampling profiler.

@@ -123,3 +123,8 @@ commands, hashes, and sample counts; compact self-symbol TSVs accompany the raw
 recordings. Whole-process samples include setup, teardown, and logging. Use
 `still_pairs.py` for encode timings. Recordings can be gigabytes; keep them in
 scratch storage and preserve small metadata and symbol tables in Git.
+
+The profiler records the current checkout commit separately from binary hashes.
+A prebuilt binary may come from another revision: retain its build metadata to
+identify source and compiler settings. The checkout commit is not asserted to
+be the binary's source revision.

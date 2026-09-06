@@ -1,0 +1,21 @@
+{
+  "source_commit": "e1a555f4e8bd0957350f65ae5eb7f98c6aa4b967",
+  "cells": 135,
+  "pairs": 675,
+  "median_at_most_1_5": 73,
+  "p75_at_most_1_5": 69,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-unpack-broad.raw.tsv": {
+      "sha256": "5a1617ffe5528599d1a3eb7a60a22f7d69aa048d77129146a0799d0c169156fa",
+      "bytes": 35469
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-unpack-broad.meta.json": {
+      "sha256": "d77cc6186afaf5e9866db1f9a51451b5ac7c504f7f63f4f1287280adc02397a5",
+      "bytes": 33518
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-unpack-broad.log": {
+      "sha256": "8469210e67fbbc6f70cf6742b2d8f525ee77534a2f3afb44044f1351942daf50",
+      "bytes": 37860
+    }
+  }
+}

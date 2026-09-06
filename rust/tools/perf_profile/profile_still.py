@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import subprocess
 
@@ -44,10 +45,11 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith(('SVT_', 'SVTAV1_'))}
     env['DEBUGINFOD_URLS'] = ''
     meta = {'cell': cell, 'cpu': args.cpu, 'warmups': args.warmups,
+            'host': platform.node(), 'platform': platform.platform(),
             'event': args.event, 'period': args.period, 'call_graph': 'dwarf,8192',
             'scope': 'whole process, including constructors, teardown and logging',
             'sudo_perf': args.sudo_perf,
-            'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+            'checkout_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
             'input_sha256': sha(cell['yuv']), 'arms': {}}
 
     def save():
