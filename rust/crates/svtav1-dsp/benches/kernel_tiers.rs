@@ -440,9 +440,9 @@ fn bench_dsp(suite: &mut Suite) {
                 .collect::<Vec<i32>>()
                 .into_boxed_slice(),
         );
-        suite.compare("quantize", |g| {
-            for &(label, n) in &[("64_coeffs", 64usize), ("1024_coeffs", 1024)] {
-                g.bench(label, move |b| {
+        for n in [64usize, 1024] {
+            suite.compare(format!("quantize/{n}"), move |g| {
+                g.bench("scalar_algorithm", move |b| {
                     let qp = quant::QuantParam {
                         dequant: [20, 24],
                         shift: 2,
@@ -452,8 +452,8 @@ fn bench_dsp(suite: &mut Suite) {
                     b.with_input(|| assert!(set_simd(true)))
                         .run(move |_| quant::quantize(&coeffs[..n], &qp, &mut qc, &mut dqc, n))
                 });
-            }
-        });
+            });
+        }
     }
 
     set_simd(true);

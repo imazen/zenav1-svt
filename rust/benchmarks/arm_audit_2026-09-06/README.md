@@ -1,6 +1,8 @@
 # Native ARM audit, 2026-09-06
 
-The baseline blocker is resolved by `dd9d51d4`: 2556/2556 tests and 104/104 whole-encoder regression cells pass. See [oracle-resolution.md](oracle-resolution.md) for the C scalar versus NEON decision and its measured limits. DSP measurements and the three small-block NEON improvements are recorded below. The sections below preserve the earlier baseline investigation.
+The baseline blocker is resolved by `dd9d51d4`: 2556/2556 tests and 104/104 whole-encoder regression cells pass. See [oracle-resolution.md](oracle-resolution.md) for the C scalar versus NEON decision and its measured limits. DSP measurements and the three small-block NEON improvements are recorded below. The historical sections below describe the baseline before that repair.
+
+## Historical baseline before oracle repair
 
 On Apple M4 Pro / macOS 26.5.2 / Rust 1.98, production `878dd0be`, `cargo nextest run --workspace --build-jobs 4 --test-threads 4` ran 1172 of 2550 tests: 1171 passed, one failed, and nextest cancelled the remaining 1378. The failure is `pd0::pd0_quant_parity_tests::pd0_quantize_b_matches_c_all_tiers`, qindex 0 / transform 0 / pattern 2 / C dispatch enabled. The retained excerpt has exact EOB, qcoeff and dqcoeff differences.
 
@@ -36,9 +38,10 @@ paired intervals and raw results are retained in [svt-kernel-tiers.log](svt-kern
 Three small-block cases lose: SATD4 native/scalar 47.2/41.5 ns, SSE4
 53.9/49.8 ns, SSE8 134/130 ns. Their paired scalar deltas are −12.0% to
 −9.1%, −9.5% to −6.4%, and −5.4% to −2.0%, respectively. Larger vector
-kernels favor NEON in this run. The final quantize group compares different
-coefficient counts; its ratio is not a SIMD comparison and must not be used
-as one. Source optimization of the three losing cases is under investigation.
+kernels favor NEON in this run. The baseline log’s final quantize group compares different coefficient
+counts; its ratio is not a SIMD comparison and must not be used as one.
+The benchmark now places each coefficient count in its own single-arm group.
+The three losing cases were optimized as recorded below.
 
 ## Small-block NEON improvements
 
@@ -67,3 +70,13 @@ After measurement, these changes were rebased onto `d081b8e5`. Incoming
 production edits add x86 Hadamard16/32 composition dispatch and keep ARM on
 the same core arithmetic. They do not touch SATD4 or SSE; that work belongs
 to the concurrent session. Post-rebase validation passes: 255/255 DSP tests and 104/104 whole-encoder regression cells, zero skips. See `svt-postrebase-dsp.log` and `svt-postrebase-spotcheck.log`.
+
+## Quantizer group labels
+
+The final scalar-only quantizer measurements now use separate `quantize/64`
+and `quantize/1024` groups. Each has one `scalar_algorithm` arm; no ratio between
+different coefficient counts is presented as a SIMD speedup. The focused run
+and clippy output are retained in `svt-quantize-groups*.log`. This change was
+rebased over documentation-only `81428bfb`; the production optimization CI
+[34066431136](https://github.com/imazen/zenav1-svt/actions/runs/34066431136)
+passed every job, including Windows ARM, macOS Intel and i686.

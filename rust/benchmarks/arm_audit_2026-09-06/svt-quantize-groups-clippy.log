@@ -1,0 +1,226 @@
+   Compiling zenav1-svt-cref v0.0.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-cref)
+    Checking zenav1-svt-types v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-types)
+warning: empty line after doc comment
+   --> crates/svtav1-cref/build.rs:298:1
+    |
+298 | / /// that on once the object is known to be present on its image.
+299 | |
+    | |_^
+...
+316 |   fn globalized_symbols_present(objcopy: &Path, obj: &Path, syms: &[&str]) -> Result<(), String> {
+    |   ----------------------------- the comment documents this function
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#empty_line_after_doc_comments
+    = note: `#[warn(clippy::empty_line_after_doc_comments)]` on by default
+    = help: if the empty line is unintentional, remove it
+help: if the documentation should include the empty line include it in the comment
+    |
+299 | ///
+    |
+
+    Checking zenav1-svt-dsp v0.1.0 (/Users/lilith/work/zen/zenav1-svt/rust/crates/svtav1-dsp)
+warning: `zenav1-svt-cref` (build script) generated 1 warning
+warning: unnecessary `>= y + 1` or `x - 1 >=`
+   --> crates/svtav1-cref/src/preanalysis.rs:618:13
+    |
+618 |     assert!(buf.len() >= (rows - 1) * stride + 1);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change it to: `buf.len() > (rows - 1) * stride`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#int_plus_one
+    = note: `#[warn(clippy::int_plus_one)]` on by default
+
+warning: unnecessary `>= y + 1` or `x - 1 >=`
+   --> crates/svtav1-cref/src/preanalysis.rs:629:13
+    |
+629 |     assert!(buf.len() >= (rows - 1) * stride + 1);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change it to: `buf.len() > (rows - 1) * stride`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#int_plus_one
+
+warning: unnecessary `>= y + 1` or `x - 1 >=`
+   --> crates/svtav1-cref/src/preanalysis.rs:650:13
+    |
+650 |     assert!(buf.len() >= (rows - 1) * stride + 1);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: change it to: `buf.len() > (rows - 1) * stride`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#int_plus_one
+
+warning: `zenav1-svt-cref` (lib) generated 3 warnings (run `cargo clippy --fix --lib -p zenav1-svt-cref -- ` to apply 3 suggestions)
+warning: empty lines after doc comment
+   --> crates/svtav1-dsp/src/subpel_variance.rs:114:1
+    |
+114 | / /// hand it a reference plane with a guard band rather than a tight block.
+...   |
+128 | |
+    | |_^
+...
+131 |   fn h_row_scalar(_token: ScalarToken, a: &[u8], w: usize, f0: u8, f1: u8, out: &mut [u16]) {
+    |   --------------- the comment documents this function
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#empty_line_after_doc_comments
+    = note: `#[warn(clippy::empty_line_after_doc_comments)]` on by default
+    = help: if the empty lines are unintentional, remove them
+help: if the doc comment should not document function `h_row_scalar` then comment it out
+    |
+107 ~ // /// C `svt_aom_sub_pixel_variance{W}x{H}_c` (`SUBPIX_VAR`, `variance.c:192-203`).
+108 ~ // ///
+109 ~ // /// Returns `(variance, sse)`; C returns the variance and writes `sse` through
+110 ~ // /// its out-parameter.
+111 ~ // ///
+112 ~ // /// `a_base` is the index of the block's (0, 0) inside `a`. The first pass
+113 ~ // /// reads `H + 1` rows and `W + 1` columns of `a`, which is why C's callers
+114 ~ // /// hand it a reference plane with a guard band rather than a tight block.
+    |
+
+warning: current MSRV (Minimum Supported Rust Version) is `1.89.0` but this item is stable since `1.98.0`
+   --> crates/svtav1-dsp/src/me_sad.rs:154:19
+    |
+154 |             acc = vdotq_u32(acc, vabdq_u8(vld1q_u8(a), vld1q_u8(b)), ones_q);
+    |                   ^^^^^^^^^
+    |
+    = note: you may want to conditionally increase the MSRV considered by Clippy using the `clippy::msrv` attribute
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#incompatible_msrv
+    = note: `#[warn(clippy::incompatible_msrv)]` on by default
+
+warning: current MSRV (Minimum Supported Rust Version) is `1.89.0` but this item is stable since `1.98.0`
+   --> crates/svtav1-dsp/src/me_sad.rs:160:20
+    |
+160 |             acc8 = vdot_u32(acc8, vabd_u8(vld1_u8(a), vld1_u8(b)), ones_d);
+    |                    ^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#incompatible_msrv
+
+warning: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> crates/svtav1-dsp/src/port_enc_make_pred.rs:280:5
+    |
+280 |     drop(throwaway);
+    |     ^^^^^^^^^^^^^^^
+    |
+note: argument has type `port_enc_make_pred::DstPlane<'_>`
+   --> crates/svtav1-dsp/src/port_enc_make_pred.rs:280:10
+    |
+280 |     drop(throwaway);
+    |          ^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#drop_non_drop
+    = note: `#[warn(clippy::drop_non_drop)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+  --> crates/svtav1-dsp/src/port_pack.rs:98:5
+   |
+98 |     width % 4 == 0 && height % 2 == 0
+   |     ^^^^^^^^^^^^^^ help: replace with: `width.is_multiple_of(4)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+   = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+  --> crates/svtav1-dsp/src/port_pack.rs:98:23
+   |
+98 |     width % 4 == 0 && height % 2 == 0
+   |                       ^^^^^^^^^^^^^^^ help: replace with: `height.is_multiple_of(2)`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#manual_is_multiple_of
+
+warning: manual implementation of an assign operation
+   --> crates/svtav1-dsp/src/restoration.rs:430:21
+    |
+430 |                     acc = acc + i32x16::from_slice(token, &s32[x + k..]) * hc[k];
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `acc += i32x16::from_slice(token, &s32[x + k..]) * hc[k]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#assign_op_pattern
+    = note: `#[warn(clippy::assign_op_pattern)]` on by default
+
+warning: manual implementation of an assign operation
+   --> crates/svtav1-dsp/src/restoration.rs:430:21
+    |
+430 |                     acc = acc + i32x16::from_slice(token, &s32[x + k..]) * hc[k];
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: replace it with: `acc += i32x16::from_slice(token, &s32[x + k..]) * hc[k]`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#assign_op_pattern
+
+warning: doc list item without indentation
+    --> crates/svtav1-dsp/src/restoration.rs:1118:5
+     |
+1118 | /// 3-4. Every other block's top row and left column, from block
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+     = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+     |
+1118 | ///    3-4. Every other block's top row and left column, from block
+     |     +++
+
+warning: doc list item overindented
+    --> crates/svtav1-dsp/src/restoration.rs:1119:5
+     |
+1119 | ///      `(kk-1, tt-1)`'s by a COLUMN-shift delta over the height:
+     |     ^^^^^ help: try using `   ` (3 spaces)
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_overindented_list_items
+     = note: `#[warn(clippy::doc_overindented_list_items)]` on by default
+
+warning: doc list item overindented
+    --> crates/svtav1-dsp/src/restoration.rs:1120:5
+     |
+1120 | ///      `sum_r d[r+l][width+kk-1] * d[r+m][width+tt-1] - d[r+l][kk-1] * d[r+m][tt-1]`.
+     |     ^^^^^ help: try using `   ` (3 spaces)
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_overindented_list_items
+
+warning: doc list item overindented
+    --> crates/svtav1-dsp/src/restoration.rs:1121:5
+     |
+1121 | ///      C's step 3 is the diagonal blocks (`:967`), step 4 the squares
+     |     ^^^^^ help: try using `   ` (3 spaces)
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_overindented_list_items
+
+warning: doc list item overindented
+    --> crates/svtav1-dsp/src/restoration.rs:1122:5
+     |
+1122 | ///      (`:1185`); here both are one loop.
+     |     ^^^^^ help: try using `   ` (3 spaces)
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_overindented_list_items
+
+warning: doc list item without indentation
+    --> crates/svtav1-dsp/src/restoration.rs:1123:5
+     |
+1123 | /// 5-6. Every block's interior, entry `(l, m)` from `(l-1, m-1)` by a
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1123 | ///    5-6. Every block's interior, entry `(l, m)` from `(l-1, m-1)` by a
+     |     +++
+
+warning: doc list item overindented
+    --> crates/svtav1-dsp/src/restoration.rs:1124:5
+     |
+1124 | ///      ROW-shift delta over the width:
+     |     ^^^^^ help: try using `   ` (3 spaces)
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_overindented_list_items
+
+warning: doc list item overindented
+    --> crates/svtav1-dsp/src/restoration.rs:1125:5
+     |
+1125 | ///      `sum_c d[height+l-1][c+kk] * d[height+m-1][c+tt] - d[l-1][c+kk] * d[m-1][c+tt]`.
+     |     ^^^^^ help: try using `   ` (3 spaces)
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_overindented_list_items
+
+warning: doc list item overindented
+    --> crates/svtav1-dsp/src/restoration.rs:1126:5
+     |
+1126 | ///      C's `derive_square_win*` (`:458`) / `derive_triangle_win*` (`:562`).
+     |     ^^^^^ help: try using `   ` (3 spaces)
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#doc_overindented_list_items
+
+warning: `zenav1-svt-dsp` (lib) generated 17 warnings (run `cargo clippy --fix --lib -p zenav1-svt-dsp -- ` to apply 4 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.08s
