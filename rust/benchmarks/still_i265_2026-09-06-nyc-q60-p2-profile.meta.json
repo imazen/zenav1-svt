@@ -1,0 +1,125 @@
+{
+  "cell": {
+    "name": "photo_nyc-512-q60-p2",
+    "yuv": "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/photo_nyc-512.yuv",
+    "width": "512",
+    "height": "512",
+    "qp": "60",
+    "preset": "2"
+  },
+  "cpu": 2,
+  "warmups": 20,
+  "event": "cpu_core/cycles/u",
+  "period": 200000,
+  "call_graph": "dwarf,8192",
+  "scope": "whole process, including constructors, teardown and logging",
+  "sudo_perf": true,
+  "source_commit": "e711ee0848996a3342f801cec89adf941d26f1b8",
+  "input_sha256": "e526c993de5ac7ff8990dbdc6890056ce640bc22dfaf1c20f62ff6dfc9407201",
+  "arms": {
+    "rust": {
+      "binary": "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc/perf_encode.pgo",
+      "binary_sha256": "f287f2f091e2550fb499cf9244fa998c93b6eb888b3b2183742f0ae415531a90",
+      "command": [
+        "sudo",
+        "-n",
+        "perf",
+        "record",
+        "-e",
+        "cpu_core/cycles/u",
+        "-c",
+        "200000",
+        "-g",
+        "--call-graph",
+        "dwarf,8192",
+        "-o",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/rust.perf",
+        "--",
+        "taskset",
+        "-c",
+        "2",
+        "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc/perf_encode.pgo",
+        "raw:/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/photo_nyc-512.yuv",
+        "512",
+        "512",
+        "60",
+        "2",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/rust",
+        "20"
+      ],
+      "samples": 254458,
+      "lost_samples": 0,
+      "files": {
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/rust.perf": {
+          "sha256": "84bf936db1a356efed61fcca1a4b245b348c85564c4fdbeba6b628e8ce5c1c67",
+          "bytes": 2143743736
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/rust.record.log": {
+          "sha256": "d128f436b6906ab5d0fa551c50ae66041f8d624ec759ac037ca86e33323eced8",
+          "bytes": 221
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/rust.self.txt": {
+          "sha256": "93e7ca63c09d34a7880c6985e29d1ba493652650a6999147e01ef0ded59c0fcb",
+          "bytes": 13137
+        }
+      },
+      "symbol_table": {
+        "path": "rust/benchmarks/still_i265_2026-09-06-nyc-q60-p2-rust-profile.tsv",
+        "sha256": "49274b3a5e69f5e29aa3c11dfdd55ec0f7bd358a3dfce7b8d4371f393ead1e13"
+      }
+    },
+    "c": {
+      "binary": "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+      "binary_sha256": "56154b900b9fcba4998033461054df8a198ae38b937ecd4269c63d6fd3723781",
+      "command": [
+        "sudo",
+        "-n",
+        "perf",
+        "record",
+        "-e",
+        "cpu_core/cycles/u",
+        "-c",
+        "200000",
+        "-g",
+        "--call-graph",
+        "dwarf,8192",
+        "-o",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/c.perf",
+        "--",
+        "taskset",
+        "-c",
+        "2",
+        "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+        "512",
+        "512",
+        "60",
+        "2",
+        "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/photo_nyc-512.yuv",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/c.obu",
+        "20"
+      ],
+      "samples": 128722,
+      "lost_samples": 0,
+      "files": {
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/c.perf": {
+          "sha256": "cd96cba8bf528ec3b8fb01408fd587f584ab84c97d9c6636285bce4a9725ede7",
+          "bytes": 1084518592
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/c.record.log": {
+          "sha256": "84c8bbdb1d8bf59e93ee92d31641e054a530d4e01057c8af154b031b9a430ff9",
+          "bytes": 26855
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted/c.self.txt": {
+          "sha256": "d683af2b8f18c325d7bf63edac5da6fb13fe8138e3b77449776f775a3222d15e",
+          "bytes": 45087
+        }
+      },
+      "symbol_table": {
+        "path": "rust/benchmarks/still_i265_2026-09-06-nyc-q60-p2-c-profile.tsv",
+        "sha256": "926f14482724d81548b0b9b19d400163071e75c50879035c9decc31e58b39a6c"
+      }
+    }
+  },
+  "identical": true,
+  "artifact_directory": "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-q60-p2-rooted"
+}

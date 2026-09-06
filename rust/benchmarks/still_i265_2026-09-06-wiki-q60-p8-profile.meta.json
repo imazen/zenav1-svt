@@ -1,0 +1,125 @@
+{
+  "cell": {
+    "name": "screen_wiki-1024-q60-p8",
+    "yuv": "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/screen_wiki-1024.yuv",
+    "width": "1024",
+    "height": "1024",
+    "qp": "60",
+    "preset": "8"
+  },
+  "cpu": 2,
+  "warmups": 400,
+  "event": "cpu_core/cycles/u",
+  "period": 200000,
+  "call_graph": "dwarf,8192",
+  "scope": "whole process, including constructors, teardown and logging",
+  "sudo_perf": true,
+  "source_commit": "e711ee0848996a3342f801cec89adf941d26f1b8",
+  "input_sha256": "c146ebd80ab70e56353453ed5d1b329528b2c5c158c671930aae295d2674e51e",
+  "arms": {
+    "rust": {
+      "binary": "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc/perf_encode.pgo",
+      "binary_sha256": "f287f2f091e2550fb499cf9244fa998c93b6eb888b3b2183742f0ae415531a90",
+      "command": [
+        "sudo",
+        "-n",
+        "perf",
+        "record",
+        "-e",
+        "cpu_core/cycles/u",
+        "-c",
+        "200000",
+        "-g",
+        "--call-graph",
+        "dwarf,8192",
+        "-o",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/rust.perf",
+        "--",
+        "taskset",
+        "-c",
+        "2",
+        "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc/perf_encode.pgo",
+        "raw:/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/screen_wiki-1024.yuv",
+        "1024",
+        "1024",
+        "60",
+        "8",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/rust",
+        "400"
+      ],
+      "samples": 135143,
+      "lost_samples": 0,
+      "files": {
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/rust.perf": {
+          "sha256": "1679db37ab09bbdc54a9c6400b7afc9a4f409eb0861a76a20323236d6809ba2e",
+          "bytes": 1138567184
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/rust.record.log": {
+          "sha256": "0df88e50bb906d4150ebf42c796ea33c7ed97d3ff4658b431c2dfff55c77bc06",
+          "bytes": 215
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/rust.self.txt": {
+          "sha256": "d0272f627a54330f7d69fbc764e9c786a55e241b34684939f82420577875b9c9",
+          "bytes": 33946
+        }
+      },
+      "symbol_table": {
+        "path": "rust/benchmarks/still_i265_2026-09-06-wiki-q60-p8-rust-profile.tsv",
+        "sha256": "d988e245d4bf8d5aa30182968f21ac6a91ac60b7f35cdfcaed4256fbaa87888c"
+      }
+    },
+    "c": {
+      "binary": "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+      "binary_sha256": "56154b900b9fcba4998033461054df8a198ae38b937ecd4269c63d6fd3723781",
+      "command": [
+        "sudo",
+        "-n",
+        "perf",
+        "record",
+        "-e",
+        "cpu_core/cycles/u",
+        "-c",
+        "200000",
+        "-g",
+        "--call-graph",
+        "dwarf,8192",
+        "-o",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/c.perf",
+        "--",
+        "taskset",
+        "-c",
+        "2",
+        "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+        "1024",
+        "1024",
+        "60",
+        "8",
+        "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/screen_wiki-1024.yuv",
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/c.obu",
+        "400"
+      ],
+      "samples": 74872,
+      "lost_samples": 0,
+      "files": {
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/c.perf": {
+          "sha256": "8e175bb51d164d079c01c276ca91dc577bc86422658741e75a6c3bfb4eb60359",
+          "bytes": 632106496
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/c.record.log": {
+          "sha256": "a189561b30279adfa49f18d0141a609eee157bf0e0c54d2fdc063de6d2b5a862",
+          "bytes": 555202
+        },
+        "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8/c.self.txt": {
+          "sha256": "d404b861fdc36605ff4abca211d1cb1dc19e20f8eb95b78e5c139c91633bf080",
+          "bytes": 33522
+        }
+      },
+      "symbol_table": {
+        "path": "rust/benchmarks/still_i265_2026-09-06-wiki-q60-p8-c-profile.tsv",
+        "sha256": "75c7b817b4e55cd71c3f8439cbffbdaac599325527d256ffd8337c7e98fe0722"
+      }
+    }
+  },
+  "identical": true,
+  "artifact_directory": "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-q60-p8"
+}

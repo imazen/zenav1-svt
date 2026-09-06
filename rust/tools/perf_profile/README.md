@@ -100,3 +100,26 @@ the last one hit: `callgrind_annotate` drops functions below its 99 % threshold
 (pass `--threshold=100` for small kernels); `md_stage_0` is per candidate class,
 not per leaf; C's `perform_dct_dct_tx` has no symbol at -O3; the port's 32x32
 hadamard calls its 16x16 four times.
+
+
+## Linux paired real-image capture
+
+`profile_still.py` profiles prebuilt Rust and C drivers against one row of the
+`still_pairs.py` cell manifest. Run it under the shared run-heavy wrapper:
+
+```sh
+python3 rust/tools/perf_profile/profile_still.py \
+  --port /absolute/perf_encode.pgo --reference /absolute/perf_c_encode.pgo \
+  --cells /absolute/cells.tsv --cell screen_wiki-1024-q60-p8 \
+  --cpu 2 --warmups 400 --event cpu_core/cycles/u --out /absolute/new-profile-dir
+```
+
+The output directory must be new. Add `--sudo-perf` if local perf permissions
+require it and passwordless sudo is available; this elevates perf record and
+its child driver, then returns ownership of the recording to the caller.
+It does not change system security settings. Captures require nonzero samples,
+zero reported lost samples, and byte-identical final outputs. Metadata records
+commands, hashes, and sample counts; compact self-symbol TSVs accompany the raw
+recordings. Whole-process samples include setup, teardown, and logging. Use
+`still_pairs.py` for encode timings. Recordings can be gigabytes; keep them in
+scratch storage and preserve small metadata and symbol tables in Git.

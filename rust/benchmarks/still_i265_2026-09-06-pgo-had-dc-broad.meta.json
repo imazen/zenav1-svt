@@ -1,0 +1,21 @@
+{
+  "source_commit": "e711ee084899",
+  "cells": 135,
+  "pairs": 675,
+  "median_at_most_1_5": 64,
+  "p75_at_most_1_5": 63,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc-broad.raw.tsv": {
+      "sha256": "1292b09eb85c3e99014d31985738e7db2f5fac32550241adf3d79f2008ceb7d7",
+      "bytes": 35471
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc-broad.meta.json": {
+      "sha256": "abeda0da34250d1ecd84181cbb7cc0eb02097c7150edef7d9cbbcd9b181c29eb",
+      "bytes": 33359
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc-broad.log": {
+      "sha256": "edd0d4792d5970736fc057585d17675ae37282f3493d403df10af436be5b1377",
+      "bytes": 37871
+    }
+  }
+}

@@ -6,7 +6,7 @@ and runtime SIMD dispatch. It also includes installing and exercising the
 profiling tools, evaluating Archmage PRs #96 and #97 for runtime and compile
 cost, and identifying any additional operations the encoder actually needs.
 This task is in progress. Entries below follow experiment order; the newest
-position is in "Position with both encoders trained" and still misses the target.
+position is in "Matched PGO after Hadamard and DC fills" and still misses the target.
 
 ## Source and machine
 
@@ -789,3 +789,45 @@ do not independently measure p2/p8 noise. The A/B took117s under run-heavy,
 peak monitored RSS0.03GiB and minimum available memory29,369MiB.
 Records: `benchmarks/still_i265_2026-09-06-dc-fill-{ab,control,validation}.*`.
 The earlier broad PGO position still predates both this and the Hadamard change.
+
+
+## Matched PGO after Hadamard and DC fills
+
+Fresh Rust PGO training at `e711ee08` covers the same 108 cells as the unchanged
+C PGO binary. All training outputs match C and the previous training hashes.
+The Rust profile-use build retains 105 missing-function warnings, as before;
+this experiment does not change the workspace release defaults.
+
+The held-out grid repeats 135 cells five times, alternating paired arms on
+core 2 with baseline CPU targeting. All 675 pairs are byte-identical.
+**64/135 median ratios and 63/135 upper-quartile ratios meet 1.50**, compared
+with 45 and 42 before the two kernel changes. The target remains unmet.
+The worst median is NYC512/QP60/p2 at **1.9651** (Rust446.44ms, C227.51ms).
+Wiki1024/QP60/p8 is **1.9085** (Rust12.64ms, C6.60ms), previously2.0947.
+The sweep took418s under run-heavy, peak monitored RSS0.07GiB, minimum
+available memory29,262MiB. Records:
+`benchmarks/still_i265_2026-09-06-pgo-had-dc-{training,broad}.*`.
+
+Paired Linux perf captures use these same binaries and inputs. NYC has20
+warmups plus a final encode, wiki400 plus a final encode. Both arms produce
+identical output and report zero lost samples: NYC254,458 Rust/128,722 C;
+wiki135,143 Rust/74,872 C. These are whole-process self shares, including
+initialization, teardown, and logging; they are not encode-only timings.
+With perf_event_paranoid back at4, `profile_still.py --sudo-perf` uses scoped
+`sudo -n perf record`, including its child driver, without changing sysctls.
+The unprivileged attempt failed before recording any samples.
+
+NYC's leading Rust self rows are the TXT search closure7.64%, zone-2 prediction
+7.05%, square DCT4.75%, Hadamard8 3.82%, and tx_unit3.81%. C's leading rows
+are fdct32 7.70%, fdct64 6.81%, zone-2 4.99%, optimize_b4.42%, and transform-type
+search4.24%. Inlined work can be charged to the Rust closure; its name alone
+does not identify the expensive operation.
+
+Wiki's leading Rust rows are square DCT10.05%, fdct64 9.26%, Hadamard8 6.46%,
+memset5.48%, evaluate_leaf4.99%, Hadamard32 4.91%, and idct64 4.70%.
+C's leaders are fdct64 15.48%, fdct32 5.66%, Hadamard32 4.29%, internal memcpy
+3.97%, and forward64 wrapper2.71%. These ranks suggest different optimization
+priorities across presets. Compact tables and raw-artifact hashes are in
+`benchmarks/still_i265_2026-09-06-{nyc-q60-p2,wiki-q60-p8}-*-profile.tsv`
+and the corresponding `*-profile.meta.json`. Large perf recordings remain
+outside Git in the recorded scratch directories.

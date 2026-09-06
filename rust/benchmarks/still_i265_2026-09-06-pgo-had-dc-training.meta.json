@@ -1,0 +1,27 @@
+{
+  "source_commit": "e711ee0848996a3342f801cec89adf941d26f1b8",
+  "training_cells": 108,
+  "cross_c_identical": 108,
+  "raw_profiles": 108,
+  "baseline_sha256": "f7a866469af7dbecbb584a482d58f65a2dea10ae345440e2a1cea689fde59ab4",
+  "pgo_sha256": "f287f2f091e2550fb499cf9244fa998c93b6eb888b3b2183742f0ae415531a90",
+  "profile_sha256": "46afc81fa52d67b4e9acc1f26d64d9e1c27e06f854b42efc0fc24ac4e3c9e6f7",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc.log": {
+      "sha256": "c757ec8b852ecac7b484ff5bc3b7e18f27e42e61d380a51ebcd1797c29bf8167",
+      "bytes": 7672
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc/meta.json": {
+      "sha256": "4a403ad1d0f6fb1d581313cdf4a78bda56621ba0e9365bdf244d706a2698bf23",
+      "bytes": 186139
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc/build-pgo.log": {
+      "sha256": "cf96bfbcc8a69a3ba4277d4e5348148015760d1d22d573f9053741ae21005011",
+      "bytes": 25163
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-dc/profile-counts.log": {
+      "sha256": "69080ba0c0725b410307b8d6a9243f7a46b70a39b65ad74cb17838de6ac122d6",
+      "bytes": 800695
+    }
+  }
+}
