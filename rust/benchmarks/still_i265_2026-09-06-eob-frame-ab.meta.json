@@ -1,0 +1,63 @@
+{
+  "candidate_change": "yswmwtlv",
+  "adopted": false,
+  "pairs": 99,
+  "identical": true,
+  "build": "CARGO_PROFILE_RELEASE_OPT_LEVEL=3 RUSTFLAGS empty; release, baseline CPU",
+  "correctness": {
+    "nextest_passed": 2563,
+    "nextest_skipped": 0,
+    "spotcheck_passed": 104,
+    "mutation": "Subtracting9 instead of8 failed the new sparse real-C test at TX4x4 class0 EOB7."
+  },
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-frame-ab.raw.tsv": {
+      "sha256": "8734d5ec2da19c4639d1ab07383848a4df8ea0da2dcea1f03a1b5e154f80834c",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-frame-ab.meta.json": {
+      "sha256": "cc5e73e26f496f7d882a0010401d79da4241329889b1738e0c00b3c9f5f815a0",
+      "bytes": 4271
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-frame-ab.log": {
+      "sha256": "a49879005d042345d2ee52035072e89cb63a5a69dfcf369b693bd8a8a37054c9",
+      "bytes": 5358
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-production-baseline.log": {
+      "sha256": "a8142fa3928a97a444648b3932c8197e0b07873d2333149f7e4edc05df82e514",
+      "bytes": 2103
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-production-c-parity.log": {
+      "sha256": "d031be79db36fe9f2d53d888d474b332433724e1e184b4ed16bed935920bd6d1",
+      "bytes": 2624
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-mutation.log": {
+      "sha256": "8d9636dc23578b4e89b01831e61c767adabdea1dfe229c7ac5103fae4b7c541c",
+      "bytes": 2876
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-nextest.log": {
+      "sha256": "170d330502f38a253a5b5dfaff7b9b9634a4a0b2a1342035a032e1357ba583c3",
+      "bytes": 290095
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-spotcheck.log": {
+      "sha256": "dc42c06434206fc7720f374af7f4a04525b020345f45bd70a49eb76012bd0801",
+      "bytes": 274
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-frame-build.log": {
+      "sha256": "31398ded7ed4b36f50875d4afdde338df00eb2a89b025132877093fc0256116a",
+      "bytes": 1241
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-coverage.txt": {
+      "sha256": "4108b58be8a56d4591e84a178e23adf4de6ab7b5831da38be5d4388b0c43739f",
+      "bytes": 1523
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.eob-or": {
+      "sha256": "039077454b7320d606fba6899e31f3ce4e2c7753d7a7787e0b5b725635288c90",
+      "bytes": 4175648
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.dc-fill": {
+      "sha256": "6127a32912bbf537b7c0b19e1cc08a24a1289b7407d348fa8a275b6158f87544",
+      "bytes": 4156256
+    }
+  }
+}

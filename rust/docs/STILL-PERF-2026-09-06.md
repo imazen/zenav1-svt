@@ -793,7 +793,8 @@ The earlier broad PGO position still predates both this and the Hadamard change.
 
 ## Matched PGO after Hadamard and DC fills
 
-Fresh Rust PGO training at `e711ee08` covers the same 108 cells as the unchanged
+The resumed measurements run on Linux7.0.0-31-generic; the initial host
+record above was7.0.0-30. Fresh Rust PGO training at `e711ee08` covers the same 108 cells as the unchanged
 C PGO binary. All training outputs match C and the previous training hashes.
 The Rust profile-use build retains 105 missing-function warnings, as before;
 this experiment does not change the workspace release defaults.
@@ -831,3 +832,43 @@ priorities across presets. Compact tables and raw-artifact hashes are in
 `benchmarks/still_i265_2026-09-06-{nyc-q60-p2,wiki-q60-p8}-*-profile.tsv`
 and the corresponding `*-profile.meta.json`. Large perf recordings remain
 outside Git in the recorded scratch directories.
+
+
+## EOB zero-tail batching: measured, not adopted
+
+Annotating the NYC PGO search closure assigns38.51% of its local samples to
+the backward EOB scan loop (about2.94% of whole-process samples). A separate
+coefficient-magnitude sum is also hot. The closure name had obscured these
+inlined operations.
+
+Two scalar probes batch eight scan-indexed coefficient loads. A per-lane
+nonzero bitmask and a simpler OR reduction both preserve every tested EOB
+and signed extreme. The OR form reduces long-tail kernel time by54–60%, but
+short-tail cases regress24–46%. Same-function controls have several nonzero
+difference intervals, including roughly9% and14% biases; their raw results
+are retained, so small kernel effects are not clean evidence.
+
+The production OR candidate keeps an immediate last-coefficient fast path,
+then batches zero tails and uses an inline scalar walk for the first nonempty
+chunk. Before changing the helper, a new real-C quantizer test passed every
+possible EOB for all19 transform shapes and three scan classes, both FP and
+B quantizers, against scalar and dispatched C. A subtract9-for8 mutation failed
+at TX4x4/default scan/EOB7. The correct candidate passed2,563 workspace tests
+with zero skipped and104/104 regression spot-checks.
+
+Nine paired frame repeats on11 cells are all byte-identical. Candidate/previous
+Rust ratios (opt3 baseline CPU, no PGO) are:
+
+| Image/QP | Preset2 | Preset6 | Preset8 |
+|---|---:|---:|---:|
+| CID512/QP40 | 1.0095 | 1.0018 | 1.0007 |
+| CLIC512/QP40 | 0.9896 | 1.0100 | 0.9968 |
+| terminal512/QP40 | 0.9983 | 1.0055 | 1.0059 |
+| NYC512/QP60 | 0.9780 | — | — |
+| wiki1024/QP60 | — | — | 0.9932 |
+
+CID p2 and CLIC p6 regress about1%, despite the NYC gain. The production change
+is preserved in local jj change `yswmwtlv` and is **not adopted**. No full
+identity sweep or new PGO training is claimed for it. The additive sparse C
+test and probe records are retained; the shipping encoder body is unchanged.
+Records: `benchmarks/still_i265_2026-09-06-eob-{probe,frame-ab}.*`.

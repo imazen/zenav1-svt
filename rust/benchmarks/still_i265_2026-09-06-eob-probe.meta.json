@@ -1,0 +1,67 @@
+{
+  "host": "i265",
+  "kernel": "7.0.0-31-generic",
+  "source_commit": "0d9b1a7feba9ad21f6af192048676b9c19eaca71",
+  "cpu": 2,
+  "build": "cargo build --release; baseline target CPU; no custom RUSTFLAGS",
+  "scope": "isolated frozen scalar EOB baseline vs eight-load mask and OR probes; random fixed scan permutations; no production speed claim",
+  "controls": "Several same-function difference intervals exclude zero; absolute biases retained. No claim of noise-free controls.",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-control.log": {
+      "sha256": "698f929f8c67ac1667b3812d01373ec6779d975cb5e7736de90e42dc8ee00303",
+      "bytes": 45747
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-ab.log": {
+      "sha256": "9390b8945aa6316d7bb7bdd3c1d40aec029bf65fa2400d3dcf7076d825eead85",
+      "bytes": 45067
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-or-ab.log": {
+      "sha256": "1753e6e1aef537b83b4178d7c83d3b4f93a65e7410bac628671f592c29d05953",
+      "bytes": 44778
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-probe-build.log": {
+      "sha256": "2b8b870e0739739647c3cd63a847061f1f1cf232da937f1f102902507d20bb90",
+      "bytes": 3090
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-bench.log": {
+      "sha256": "baa6da627a4f114a3b9f03d0db531d87334f9346203772e146981b7e8c41b486",
+      "bytes": 490
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-or-build-bench.log": {
+      "sha256": "8a0b5275c81863fb3aa9ef614ae53b9f5d5de1509b66060e8adeaf784971a172",
+      "bytes": 1108
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/nyc-txt-annotate.txt": {
+      "sha256": "294ab47b9019cbc1b0a71b99a4c0616e31a7daca22b7a857edde609430a9244c",
+      "bytes": 204004
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/nyc-txt-annotate.log": {
+      "sha256": "8473f8bf5dfbf79faece5ad286275511888621746208d81a33700e3700649072",
+      "bytes": 420
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-probe/Cargo.toml": {
+      "sha256": "0664ee482adb0d7f7be6ab2c18531a0f9dc40155f58032c680ed18f0b320bde9",
+      "bytes": 125
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-probe/Cargo.lock": {
+      "sha256": "0bc7a5fb6e97371de5cce36b7a413969a3c0da69c02b13cf967d36823e915e9c",
+      "bytes": 12999
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-probe/src/main.rs": {
+      "sha256": "090d6ebb86876e3371a60ec2c66995f858bb4990a16252bd055a2a0dfeb28b54",
+      "bytes": 1015
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-probe/src/lib.rs": {
+      "sha256": "4031b11d59772367f00475cbc7d51115085e87e4f3fb90b6e67005175ce4f4eb",
+      "bytes": 1578
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-probe/mask-lib.rs": {
+      "sha256": "6e0d93f70624e8c8ae1b22067249871893a68c1b2f7bd65ca825d58dc0087ad7",
+      "bytes": 1625
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/eob-archived-test.log": {
+      "sha256": "90916606abebdcb6b1bd23424855d02b52314895387afeb35db8a4c73b6062b6",
+      "bytes": 889
+    }
+  }
+}
