@@ -1,0 +1,38 @@
+{
+  "c_source": "3115c0c1b23e860dfd75c94f6740e0298182dd13",
+  "training_cells": 108,
+  "instrumented_equals_baseline": 108,
+  "rust_equals_c_training": 108,
+  "profile_files": 238,
+  "binary_hashes": {
+    "baseline_sha256": "2d42650d39880ca3c6ec24e1f2167eaa80777dd4fee2a4057ea64acce77a581e",
+    "instrumented_sha256": "f00963984d28137f23d0c4a9dc71b2d66dadc88ab753a43f780a1097ed0746c5",
+    "pgo_sha256": "56154b900b9fcba4998033461054df8a198ae38b937ecd4269c63d6fd3723781"
+  },
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/meta.json": {
+      "sha256": "72003a6830480a52aa4c4db72c165d0efa7784e92cf58359f397b75f25f67254",
+      "bytes": 256907
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/profile-counts.log": {
+      "sha256": "10ff042c833533bafabc26623a5bd0ed438ad0c824500165951b8132786f7328",
+      "bytes": 10114004
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/build-instrumented.log": {
+      "sha256": "32ffa904beafdd859d8d9e3869a00effeeb11d5613458fa988c6d5588749771e",
+      "bytes": 27858
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/build-pgo.log": {
+      "sha256": "8c4c76cda02b44f7ce07dcef1a82293dd535f393682225baec9dfe1c276567b2",
+      "bytes": 34328
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/link-pgo.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/build/CMakeCache.txt": {
+      "sha256": "e3c74dabe90f1b6547f460bc1de39ebace681649cd9d8a6fcd021bd8f13f04db",
+      "bytes": 23891
+    }
+  }
+}

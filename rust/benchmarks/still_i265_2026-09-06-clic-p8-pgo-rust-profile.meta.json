@@ -1,0 +1,28 @@
+{
+  "host": "i265",
+  "source": "878dd0be",
+  "arm": "rust",
+  "scope": "whole process: 400 warmups plus timed encode; constructors, teardown, and logging included",
+  "samples": 64767,
+  "lost_samples": 0,
+  "event": "cpu_core/cycles/u",
+  "period": 200000,
+  "affinity": [
+    2
+  ],
+  "call_graph": "dwarf,8192",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/clic-p8-pgo-rust.perf": {
+      "sha256": "d51c3b077fd196b5a1d5ac5b336950b92670a8868a7342a5c91afc8c07ecd97f",
+      "bytes": 545966648
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/clic-p8-pgo-rust.record.log": {
+      "sha256": "fb6c122973ae779c25cebb3bfb71a206c472c8f2330010bc60bc63cb6f7e39af",
+      "bytes": 204
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/clic-p8-pgo-rust.self.txt": {
+      "sha256": "2479da69a1a4342caa7a8060626a116a743744545b6bf43f098723205f7f2542",
+      "bytes": 18537
+    }
+  }
+}

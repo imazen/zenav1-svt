@@ -1,0 +1,27 @@
+{
+  "baseline_source": "878dd0be",
+  "decision": "not adopted: native microbenchmark regressions on 16/32-sized blocks despite candidate held-token advantage",
+  "method": "same 21-pair probe; production baseline now includes landed row split; candidate changes only above arithmetic i32 to u16",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-u16.raw.tsv": {
+      "sha256": "7a753b44b611e3af83895be7cddb91693c9b1100cc1a737fa6c7104a366aab4b",
+      "bytes": 40443
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-probe-u16/src/lib.rs": {
+      "sha256": "85816dc0b2d371b2178f93e2c001e151b9c4e79d67d0e0abcf0d9ad41d18c5e2",
+      "bytes": 5772
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-u16-test.log": {
+      "sha256": "fb8ed1953ce7c7e03545913d497e371de44f4d25340d2702fae30bb163165bb3",
+      "bytes": 2559
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-u16-build.log": {
+      "sha256": "df46d8b214c2e32d3196fd6b45f0c0a25448458e413c6b143c5394fab9a30c70",
+      "bytes": 1825
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-probe-u16/target/release/dr-probe": {
+      "sha256": "29e71b86151d18d2121dcf9d050a50db766d11a5103cddad046947962c36865f",
+      "bytes": 493744
+    }
+  }
+}

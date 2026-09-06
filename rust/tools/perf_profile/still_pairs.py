@@ -5,6 +5,8 @@ Cells TSV: name, yuv, width, height, qp, preset (tab-separated header).
 No build occurs here. Every sample's output is byte-compared, and failed or
 missing samples fail the run instead of disappearing from its statistics.
 Use --reference-kind port for a same-binary control or a port A/B comparison.
+Use --port-kind c --reference-kind c to measure two C drivers. The historical
+port/reference column names denote slots; metadata identifies each driver kind.
 The ratio is always port/reference; output metadata records the exact binaries.
 """
 
@@ -29,6 +31,7 @@ def sha(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", type=Path, required=True)
+    ap.add_argument("--port-kind", choices=["port", "c"], default="port")
     ap.add_argument("--reference", type=Path, required=True)
     ap.add_argument("--reference-kind", choices=["c", "port"], default="c")
     ap.add_argument("--cells", type=Path, required=True)
@@ -55,7 +58,7 @@ def main():
         "host": platform.node(), "platform": platform.platform(),
         "affinity": sorted(os.sched_getaffinity(0)), "nice": os.nice(0),
         "rounds": args.rounds, "seed": args.seed,
-        "reference_kind": args.reference_kind,
+        "port_kind": args.port_kind, "reference_kind": args.reference_kind,
         "port": str(args.port.resolve()), "port_sha256": sha(args.port),
         "reference": str(args.reference.resolve()),
         "reference_sha256": sha(args.reference),
@@ -82,7 +85,7 @@ def main():
                 ns, outputs = {}, {}
                 for arm in order:
                     prefix = work / f"{cell['name']}-{arm}"
-                    is_port = arm == "port" or args.reference_kind == "port"
+                    is_port = (args.port_kind if arm == "port" else args.reference_kind) == "port"
                     binary = args.port if arm == "port" else args.reference
                     argv = ([str(binary), "raw:" + cell["yuv"], w, h, qp, preset,
                              str(prefix), "1"] if is_port else

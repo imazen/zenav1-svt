@@ -1,0 +1,51 @@
+{
+  "date_utc": "2026-09-06T03:38:59Z",
+  "host": "i265",
+  "platform": "Linux-7.0.0-30-generic-x86_64-with-glibc2.43",
+  "affinity": [
+    2
+  ],
+  "nice": 19,
+  "rounds": 21,
+  "seed": 20260906,
+  "port_kind": "c",
+  "reference_kind": "c",
+  "port": "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+  "port_sha256": "56154b900b9fcba4998033461054df8a198ae38b937ecd4269c63d6fd3723781",
+  "reference": "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+  "reference_sha256": "56154b900b9fcba4998033461054df8a198ae38b937ecd4269c63d6fd3723781",
+  "cells": [
+    {
+      "name": "photo_cid-512-q40-p6",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_cid.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "6"
+    },
+    {
+      "name": "photo_clic-512-q40-p6",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "6"
+    },
+    {
+      "name": "screen_terminal-512-q40-p6",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/screen_terminal.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "6"
+    }
+  ],
+  "input_sha256": {
+    "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_cid.yuv": "88142a484affd4b36c36ce56ad4e1782811235958b38078e9aa0704d3ca4a72f",
+    "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv": "ff8b4aaee32c6b0646fd2d9376e23fd2db18df4d033f253c5b0e5d32a6c38218",
+    "/home/lilith/tmp/still-perf-2026-09-06/inputs/screen_terminal.yuv": "bd37ccf3c4a65256894f5f765d32e540c173938045967e19cd259b6e1474625c"
+  },
+  "timing": "driver ENCODE_NS; setup and file I/O excluded; one warmup",
+  "source_commit": "878dd0be8c650e07e0cb45d554d23a1ec977b94a",
+  "source_diff": " rust/docs/STILL-PERF-2026-09-06.md     | 67 +++++++++++++++++++++++++++++++++-\n rust/tools/perf_profile/still_pairs.py |  7 +++-\n 2 files changed, 71 insertions(+), 3 deletions(-)\n"
+}

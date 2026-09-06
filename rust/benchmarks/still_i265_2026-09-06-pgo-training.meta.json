@@ -1,0 +1,59 @@
+{
+  "source": "878dd0be8c650e07e0cb45d554d23a1ec977b94a",
+  "training_images": 4,
+  "training_crops": 12,
+  "training_cells": 108,
+  "training_identical": 108,
+  "raw_profiles": 108,
+  "profile_functions": 3279,
+  "profile_total_count": 19141257707,
+  "missing_function_warnings": 105,
+  "missing_with_instrumented_out_of_line_symbol": 9,
+  "binary_hashes": {
+    "baseline_sha256": "dc48b5736b5b190233fff0bf949f93318f879983712320b4a6a70a642bb2b425",
+    "instrumented_sha256": "97f73622b471ff8e50343fccb777c5ed7ea135b7bbe90db1f1d9b9a7f5cbee9b",
+    "pgo_sha256": "5f5bd7a76d20e967fa303978c4a9d40ec359a077fcf77230d9f9d6cd987de9fd"
+  },
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-first/meta.json": {
+      "sha256": "2dea89502c5c7b78bcd53c4704c2670e96bde412f488e592bdab8f8368617aab",
+      "bytes": 185471
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-first/merged.profdata": {
+      "sha256": "55408f7695f6205381679abfe129fad57563f0f78c24af49cb3cc4454f33187c",
+      "bytes": 1044768
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-first/profile-counts.log": {
+      "sha256": "7b6b91ef75c774af541d51fda277a17e1d1228d08df1baa296ed1c859ae5eef4",
+      "bytes": 799178
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-first/build-baseline.log": {
+      "sha256": "581de08cdcbbe19f2f2d87ba203dbdfc098538195d3eda5bb6c49c90f26ac95c",
+      "bytes": 2095
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-first/build-instrumented.log": {
+      "sha256": "d6cc0a9c9cbaaf77e142f9280026fd173464afa3f86f83381f76466bc5ab87b1",
+      "bytes": 1814
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-first/build-pgo.log": {
+      "sha256": "77e51049b1fb8152ba5bdb34d284c4ecd14eca975d0b692b5ff91d55a4fa0f0a",
+      "bytes": 25163
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-training-inputs.meta.json": {
+      "sha256": "ecf453fb57bdcec9f5854121f6a74669b1bf1a3b5a24ca4db782a3e766e22a13",
+      "bytes": 9145
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs.meta.json": {
+      "sha256": "dfdc2eef1331199008f31aca16372145e7dad5dd7c026b0c68b30d6c7939ceae",
+      "bytes": 11595
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/install-summarize.log": {
+      "sha256": "744d8ffc24dfd80c9a286373b1588f74cd3dbe06f8ecf2291b477ae45ace71c8",
+      "bytes": 3139
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/install-rust-llvm-tools.log": {
+      "sha256": "e6a6d939198886e68c514239a175c6c9b497227a3680e0616573366e053fec0b",
+      "bytes": 226
+    }
+  }
+}

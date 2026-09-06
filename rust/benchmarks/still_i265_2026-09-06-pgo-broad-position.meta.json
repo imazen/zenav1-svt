@@ -1,0 +1,35 @@
+{
+  "source": "878dd0be8c650e07e0cb45d554d23a1ec977b94a",
+  "cells": 135,
+  "pairs": 675,
+  "identical_pairs": 675,
+  "median_at_most_1_50": 45,
+  "p75_at_most_1_50": 42,
+  "method": "Five paired internally timed API rounds per cell; both Rust and C PGO trained on same separate images; baseline target CPU, core2, nice19.",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-broad-position.raw.tsv": {
+      "sha256": "e46a5eea26ee40facce1b818752e67ac1b03f3ceab5bc9523acf24cc40c06f76",
+      "bytes": 35503
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-broad-position.meta.json": {
+      "sha256": "b44c7a09b33bae3fc395e10ebcf90ce4a41223383d39f9dd18e1992ec0dac544",
+      "bytes": 33542
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-broad-position.log": {
+      "sha256": "561e4a24e39d4cd2398c93bb3a2e1586f857d50b763f7580c734b444bb064e2b",
+      "bytes": 37859
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs.meta.json": {
+      "sha256": "dfdc2eef1331199008f31aca16372145e7dad5dd7c026b0c68b30d6c7939ceae",
+      "bytes": 11595
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/reproduced-evaluation/inputs.meta.json": {
+      "sha256": "2a4f798ccfb621e610bd8eb371880b63f46c92399a64e3a806061ddc4d08d9ed",
+      "bytes": 11730
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/reproduced-training/inputs.meta.json": {
+      "sha256": "9bfea315d99269319fc8e396adf6bbeb7c6155572ee7923f2777e87c3fa01e94",
+      "bytes": 9145
+    }
+  }
+}
