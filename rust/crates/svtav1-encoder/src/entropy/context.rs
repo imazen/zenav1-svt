@@ -2572,12 +2572,14 @@ mod tests {
         assert_ne!(pack, base.palette_y_mode_cdf[0][0], "the real pack adapts");
         assert_eq!(sim_ref, pack, "a chroma reference adapts in the chain too");
         assert_eq!(
-            sim_nonref,
-            base.palette_y_mode_cdf[0][0],
+            sim_nonref, base.palette_y_mode_cdf[0][0],
             "a non-chroma-reference block leaves C's MD-side row alone"
         );
         assert_eq!(pack_bytes, sim_ref_bytes);
-        assert_eq!(pack_bytes, sim_nonref_bytes, "only the adaptation is withheld");
+        assert_eq!(
+            pack_bytes, sim_nonref_bytes,
+            "only the adaptation is withheld"
+        );
     }
 
     #[test]
