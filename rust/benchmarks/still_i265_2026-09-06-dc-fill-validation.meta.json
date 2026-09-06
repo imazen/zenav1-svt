@@ -1,0 +1,53 @@
+{
+  "host": "i265",
+  "nextest": {
+    "passed": 2562,
+    "skipped": 0
+  },
+  "spotcheck": {
+    "passed": 104,
+    "required": 104
+  },
+  "c_cases": 9728,
+  "mutation": "Tight fill dc+1 failed direct C test at 4x4 stride4 no edges; correct fill restored before full workspace and spot checks",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-baseline-test.log": {
+      "sha256": "da710969a4abee087749263f0bd36c184d8e490386d3e620fd205047509dda8e",
+      "bytes": 1423
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-mutation-test.log": {
+      "sha256": "e7ff94c21458a243bcb1292a381c6f5c4748eac8b150bbf920bb0441c1db5c90",
+      "bytes": 2376
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-nextest.log": {
+      "sha256": "39d79a8cfa8296f30c5ceef3fd9da568d6b26cf63dabd018ec079eb4474895ff",
+      "bytes": 290175
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-spotcheck.log": {
+      "sha256": "16dc98d53ddd384d33eddafca5211b8b16c3b6602df2b75c2a1acb8273ee2989",
+      "bytes": 269
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-frame-build.log": {
+      "sha256": "57b02f599fb4505b3a21fb34fd08d8b81a56205bdcb0d378115a45d886559d17",
+      "bytes": 1336
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-frame-ab.log": {
+      "sha256": "25407a3608af8797e9c9d13d2249bbf5fa1f8e0fecc5f8f765effe0549760971",
+      "bytes": 4498
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.dc-fill": {
+      "sha256": "6127a32912bbf537b7c0b19e1cc08a24a1289b7407d348fa8a275b6158f87544",
+      "bytes": 4156256
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.hadamard-v3": {
+      "sha256": "21d131ba6ced062a1e72525948c07a988f559cf37b5646b9c37402d5e6a6a5ec",
+      "bytes": 4156248
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dc-clippy.log": {
+      "sha256": "548df2db16964895d7ba44e7915e676a4c5a7dcb38b3017c0591346e42b54fe9",
+      "bytes": 43501
+    }
+  },
+  "fmt": "DSP and Cref fmt --check passed",
+  "clippy": "Workspace all-targets completed; existing warnings remain, none in new DC code"
+}

@@ -756,3 +756,36 @@ this is the wrapper's resource guard, not an encoder memory measurement.
 Records: `benchmarks/still_i265_2026-09-06-hadamard-{probe,ab,control,validation}.*`.
 The broader matched-PGO position above predates this change and must be remeasured
 with fresh training profiles before claiming progress on that grid.
+
+
+## DC prediction: fill contiguous output spans
+
+The DC predictor's mean and rounding stay the same. Tightly packed blocks now
+use one slice fill; other strides use one fill per row. Empty dimensions return
+after the existing mean calculation, preserving its validation behavior.
+Disassembly confirms one tail-call to memset on the tight path and one call per
+row on the strided path. No SIMD dispatch or Archmage API was added.
+
+Before the change, a direct C shim and test compared all19 block shapes, four
+edge choices, four strides (including overlapping rows), and32 patterns:9,728
+cases. Both input offsets and output sentinels are checked. A dc+1 mutation in
+the tight path failed at4x4/stride4/no edges; the correct body then passed2,562
+workspace nextests with zero skipped and104/104 regression spot-checks. The
+reference submodule was not modified; the shim calls its sized 8-bit functions.
+
+Nine frame pairs per initial cell compared against the saved Hadamard binary,
+with opt3 and baseline CPU. All81 pairs were byte-identical:
+
+| Image | Preset2 | Preset6 | Preset8 |
+|---|---:|---:|---:|
+| CID22 | 0.9977 | 0.9887 | 0.9672 |
+| CLIC2025 | 0.9879 | 0.9912 | 0.9709 |
+| terminal | 1.0000 | 0.9914 | 0.9715 |
+
+Ratios are candidate/previous Rust without PGO. CID22 and terminal p2 are null
+results; the other seven interquartile spans are below one. Fresh21-pair p6
+same-binary controls read0.9994/1.0003/1.0000, all spanning one. Those controls
+do not independently measure p2/p8 noise. The A/B took117s under run-heavy,
+peak monitored RSS0.03GiB and minimum available memory29,369MiB.
+Records: `benchmarks/still_i265_2026-09-06-dc-fill-{ab,control,validation}.*`.
+The earlier broad PGO position still predates both this and the Hadamard change.

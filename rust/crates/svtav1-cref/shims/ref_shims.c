@@ -3836,3 +3836,106 @@ void ref_build_quantizer_rows(int32_t bit_depth, int32_t sharpness, int16_t* out
     free(pcs);
     free(scs);
 }
+
+/* Direct 8-bit DC oracles: intra_prediction.c:1043-1104. */
+void ref_dc_intra_pred(uint8_t* dst, ptrdiff_t stride, const uint8_t* above, const uint8_t* left, int32_t w, int32_t h, int32_t has_above, int32_t has_left) {
+    switch (has_above + 2 * has_left) {
+    case 0:
+        switch (w * 1000 + h) {
+        case 4004: svt_aom_dc_128_predictor_4x4_c(dst, stride, above, left); break;
+        case 8008: svt_aom_dc_128_predictor_8x8_c(dst, stride, above, left); break;
+        case 16016: svt_aom_dc_128_predictor_16x16_c(dst, stride, above, left); break;
+        case 32032: svt_aom_dc_128_predictor_32x32_c(dst, stride, above, left); break;
+        case 64064: svt_aom_dc_128_predictor_64x64_c(dst, stride, above, left); break;
+        case 4008: svt_aom_dc_128_predictor_4x8_c(dst, stride, above, left); break;
+        case 4016: svt_aom_dc_128_predictor_4x16_c(dst, stride, above, left); break;
+        case 8004: svt_aom_dc_128_predictor_8x4_c(dst, stride, above, left); break;
+        case 8016: svt_aom_dc_128_predictor_8x16_c(dst, stride, above, left); break;
+        case 8032: svt_aom_dc_128_predictor_8x32_c(dst, stride, above, left); break;
+        case 16004: svt_aom_dc_128_predictor_16x4_c(dst, stride, above, left); break;
+        case 16008: svt_aom_dc_128_predictor_16x8_c(dst, stride, above, left); break;
+        case 16032: svt_aom_dc_128_predictor_16x32_c(dst, stride, above, left); break;
+        case 16064: svt_aom_dc_128_predictor_16x64_c(dst, stride, above, left); break;
+        case 32008: svt_aom_dc_128_predictor_32x8_c(dst, stride, above, left); break;
+        case 32016: svt_aom_dc_128_predictor_32x16_c(dst, stride, above, left); break;
+        case 32064: svt_aom_dc_128_predictor_32x64_c(dst, stride, above, left); break;
+        case 64016: svt_aom_dc_128_predictor_64x16_c(dst, stride, above, left); break;
+        case 64032: svt_aom_dc_128_predictor_64x32_c(dst, stride, above, left); break;
+        default: abort();
+        }
+        break;
+    case 1:
+        switch (w * 1000 + h) {
+        case 4004: svt_aom_dc_top_predictor_4x4_c(dst, stride, above, left); break;
+        case 8008: svt_aom_dc_top_predictor_8x8_c(dst, stride, above, left); break;
+        case 16016: svt_aom_dc_top_predictor_16x16_c(dst, stride, above, left); break;
+        case 32032: svt_aom_dc_top_predictor_32x32_c(dst, stride, above, left); break;
+        case 64064: svt_aom_dc_top_predictor_64x64_c(dst, stride, above, left); break;
+        case 4008: svt_aom_dc_top_predictor_4x8_c(dst, stride, above, left); break;
+        case 4016: svt_aom_dc_top_predictor_4x16_c(dst, stride, above, left); break;
+        case 8004: svt_aom_dc_top_predictor_8x4_c(dst, stride, above, left); break;
+        case 8016: svt_aom_dc_top_predictor_8x16_c(dst, stride, above, left); break;
+        case 8032: svt_aom_dc_top_predictor_8x32_c(dst, stride, above, left); break;
+        case 16004: svt_aom_dc_top_predictor_16x4_c(dst, stride, above, left); break;
+        case 16008: svt_aom_dc_top_predictor_16x8_c(dst, stride, above, left); break;
+        case 16032: svt_aom_dc_top_predictor_16x32_c(dst, stride, above, left); break;
+        case 16064: svt_aom_dc_top_predictor_16x64_c(dst, stride, above, left); break;
+        case 32008: svt_aom_dc_top_predictor_32x8_c(dst, stride, above, left); break;
+        case 32016: svt_aom_dc_top_predictor_32x16_c(dst, stride, above, left); break;
+        case 32064: svt_aom_dc_top_predictor_32x64_c(dst, stride, above, left); break;
+        case 64016: svt_aom_dc_top_predictor_64x16_c(dst, stride, above, left); break;
+        case 64032: svt_aom_dc_top_predictor_64x32_c(dst, stride, above, left); break;
+        default: abort();
+        }
+        break;
+    case 2:
+        switch (w * 1000 + h) {
+        case 4004: svt_aom_dc_left_predictor_4x4_c(dst, stride, above, left); break;
+        case 8008: svt_aom_dc_left_predictor_8x8_c(dst, stride, above, left); break;
+        case 16016: svt_aom_dc_left_predictor_16x16_c(dst, stride, above, left); break;
+        case 32032: svt_aom_dc_left_predictor_32x32_c(dst, stride, above, left); break;
+        case 64064: svt_aom_dc_left_predictor_64x64_c(dst, stride, above, left); break;
+        case 4008: svt_aom_dc_left_predictor_4x8_c(dst, stride, above, left); break;
+        case 4016: svt_aom_dc_left_predictor_4x16_c(dst, stride, above, left); break;
+        case 8004: svt_aom_dc_left_predictor_8x4_c(dst, stride, above, left); break;
+        case 8016: svt_aom_dc_left_predictor_8x16_c(dst, stride, above, left); break;
+        case 8032: svt_aom_dc_left_predictor_8x32_c(dst, stride, above, left); break;
+        case 16004: svt_aom_dc_left_predictor_16x4_c(dst, stride, above, left); break;
+        case 16008: svt_aom_dc_left_predictor_16x8_c(dst, stride, above, left); break;
+        case 16032: svt_aom_dc_left_predictor_16x32_c(dst, stride, above, left); break;
+        case 16064: svt_aom_dc_left_predictor_16x64_c(dst, stride, above, left); break;
+        case 32008: svt_aom_dc_left_predictor_32x8_c(dst, stride, above, left); break;
+        case 32016: svt_aom_dc_left_predictor_32x16_c(dst, stride, above, left); break;
+        case 32064: svt_aom_dc_left_predictor_32x64_c(dst, stride, above, left); break;
+        case 64016: svt_aom_dc_left_predictor_64x16_c(dst, stride, above, left); break;
+        case 64032: svt_aom_dc_left_predictor_64x32_c(dst, stride, above, left); break;
+        default: abort();
+        }
+        break;
+    case 3:
+        switch (w * 1000 + h) {
+        case 4004: svt_aom_dc_predictor_4x4_c(dst, stride, above, left); break;
+        case 8008: svt_aom_dc_predictor_8x8_c(dst, stride, above, left); break;
+        case 16016: svt_aom_dc_predictor_16x16_c(dst, stride, above, left); break;
+        case 32032: svt_aom_dc_predictor_32x32_c(dst, stride, above, left); break;
+        case 64064: svt_aom_dc_predictor_64x64_c(dst, stride, above, left); break;
+        case 4008: svt_aom_dc_predictor_4x8_c(dst, stride, above, left); break;
+        case 4016: svt_aom_dc_predictor_4x16_c(dst, stride, above, left); break;
+        case 8004: svt_aom_dc_predictor_8x4_c(dst, stride, above, left); break;
+        case 8016: svt_aom_dc_predictor_8x16_c(dst, stride, above, left); break;
+        case 8032: svt_aom_dc_predictor_8x32_c(dst, stride, above, left); break;
+        case 16004: svt_aom_dc_predictor_16x4_c(dst, stride, above, left); break;
+        case 16008: svt_aom_dc_predictor_16x8_c(dst, stride, above, left); break;
+        case 16032: svt_aom_dc_predictor_16x32_c(dst, stride, above, left); break;
+        case 16064: svt_aom_dc_predictor_16x64_c(dst, stride, above, left); break;
+        case 32008: svt_aom_dc_predictor_32x8_c(dst, stride, above, left); break;
+        case 32016: svt_aom_dc_predictor_32x16_c(dst, stride, above, left); break;
+        case 32064: svt_aom_dc_predictor_32x64_c(dst, stride, above, left); break;
+        case 64016: svt_aom_dc_predictor_64x16_c(dst, stride, above, left); break;
+        case 64032: svt_aom_dc_predictor_64x32_c(dst, stride, above, left); break;
+        default: abort();
+        }
+        break;
+    default: abort();
+    }
+}

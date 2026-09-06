@@ -6119,3 +6119,54 @@ pub fn ransac(points: &[i32], ty: i32, num_desired_motions: usize) -> (bool, Vec
         .collect();
     (ok != 0, models)
 }
+
+unsafe extern "C" {
+    fn ref_dc_intra_pred(
+        dst: *mut u8,
+        stride: isize,
+        above: *const u8,
+        left: *const u8,
+        w: i32,
+        h: i32,
+        has_above: i32,
+        has_left: i32,
+    );
+}
+
+/// Call C's sized 8-bit DC predictor, retaining padding in the caller's buffer.
+#[allow(clippy::too_many_arguments)]
+pub fn dc_intra_pred(
+    dst: &mut [u8],
+    stride: usize,
+    above: &[u8],
+    left: &[u8],
+    width: usize,
+    height: usize,
+    has_above: bool,
+    has_left: bool,
+) {
+    assert!([4usize, 8, 16, 32, 64].contains(&width) && [4usize, 8, 16, 32, 64].contains(&height));
+    assert!(width.max(height) <= 4 * width.min(height));
+    assert!(stride <= isize::MAX as usize);
+    let storage = height.checked_mul(stride).unwrap();
+    let last = (height - 1)
+        .checked_mul(stride)
+        .unwrap()
+        .checked_add(width)
+        .unwrap();
+    assert!(dst.len() >= storage.max(last));
+    assert!(!has_above || above.len() >= width);
+    assert!(!has_left || left.len() >= height);
+    unsafe {
+        ref_dc_intra_pred(
+            dst.as_mut_ptr(),
+            stride as isize,
+            above.as_ptr(),
+            left.as_ptr(),
+            width as i32,
+            height as i32,
+            has_above as i32,
+            has_left as i32,
+        );
+    }
+}

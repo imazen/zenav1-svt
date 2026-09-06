@@ -43,9 +43,14 @@ pub fn predict_dc(
         (false, false) => 128,
     };
 
-    for row in 0..height {
-        for col in 0..width {
-            dst[row * dst_stride + col] = dc;
+    if width == 0 || height == 0 {
+        return;
+    }
+    if dst_stride == width {
+        dst[..width * height].fill(dc);
+    } else {
+        for row in 0..height {
+            dst[row * dst_stride..row * dst_stride + width].fill(dc);
         }
     }
 }
