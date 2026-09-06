@@ -1,0 +1,16 @@
+--- a/src/specialized.rs
++++ b/src/specialized.rs
+@@ -3,10 +3 @@
+-pub(super) fn fdct64_x8(t: Desktop64, inp: &[__m256i;64], out: &mut [__m256i;64], cos_bit:i8) {
+-    match cos_bit {
+-        10 => fdct64_inner::<10>(t,inp,out,cos_bit),
+-        13 => fdct64_inner::<13>(t,inp,out,cos_bit),
+-        _ => fdct64_inner::<0>(t,inp,out,cos_bit),
+-    }
+-}
+-#[rite]
+-pub(super) fn fdct64_inner<const COS_BIT: i8>(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 64], runtime_cos_bit: i8) {
+-    let cos_bit = if COS_BIT == 0 {runtime_cos_bit} else {COS_BIT};
++pub(super) fn fdct64_x8(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 64], cos_bit: i8) {
+@@ -232,0 +224 @@
++    let output: &mut [i32; 4096] = (&mut output[..4096]).try_into().unwrap();

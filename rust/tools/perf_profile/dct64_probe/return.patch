@@ -1,0 +1,19 @@
+--- a/src/specialized.rs
++++ b/src/specialized.rs
+@@ -4,5 +4 @@
+-    match cos_bit {
+-        10 => fdct64_inner::<10>(t,inp,out,cos_bit),
+-        13 => fdct64_inner::<13>(t,inp,out,cos_bit),
+-        _ => fdct64_inner::<0>(t,inp,out,cos_bit),
+-    }
++    *out = fdct64_return(t,inp,cos_bit);
+@@ -11,2 +7 @@
+-pub(super) fn fdct64_inner<const COS_BIT: i8>(t: Desktop64, inp: &[__m256i; 64], out: &mut [__m256i; 64], runtime_cos_bit: i8) {
+-    let cos_bit = if COS_BIT == 0 {runtime_cos_bit} else {COS_BIT};
++pub(super) fn fdct64_return(t: Desktop64, inp: &[__m256i; 64], cos_bit: i8) -> [__m256i;64] {
+@@ -207 +202 @@
+-    *out = [
++    [
+@@ -224 +219 @@
+-    ];
++    ]

@@ -949,3 +949,36 @@ previous ptrace restriction and finishes the NYC encode, but aborts with
 VTune profile is claimed, and no security sysctl was changed. The failed
 capture directory and log remain in scratch; the training metadata records
 the log hash. Linux perf remains the working sampling profiler.
+
+
+## DCT64 precision specialization: not adopted
+
+An isolated copy of the existing64x64 driver compares four alternatives:
+constant-precision kernels called directly, a switch specializing10/13 with
+a runtime fallback, a fixed-array output view, and a returned coefficient
+array. Every variant matches the real C transform on160 blocks across
+strides64/71, input offsets and output sentinels. The two constant variants
+improve kernel time roughly6–8%; the fixed-buffer and returned-array variants
+do not improve it. Controls complete100 rounds per stride with intervals
+containing zero. All runs report zero gate waits.
+
+The production-shaped switch candidate specializes only x86 and retains the
+runtime path on ARM. Its20 C transform tests pass; deliberately using11 for
+the10 arm fails the all-tier test at64x64/pattern2. The correct candidate
+passes2,563 workspace tests with zero skipped and104 regression cases.
+Cross-compiled ARM before/after kernel instruction text matches after numeric
+label and panic-metadata normalization:4,006 instructions each. This is a
+code-generation comparison, not an ARM runtime measurement.
+
+The production binary's reported text size grows32,592 bytes (31.8KiB).
+Nine frame pairs per11 cells are all byte-identical, but the speedup does not
+carry through to encoding: NYC/QP60/p2 regresses0.89%, and wiki/QP60/p8 regresses
+1.80%. CLIC p2/p6 also regress0.64%/0.41%; CID p6 improves0.78%. The candidate
+is not adopted and is preserved in local jj change `lywlwvzz`. No PGO training
+or broad-grid result is claimed for it; the shipping encoder stays at the
+unpack-transpose implementation. The code-size observation alone does not
+establish the cause of the frame regressions.
+
+The frozen switch probe is in `tools/perf_profile/dct64_probe`; separate
+patches reproduce the other three variants. Raw source, build and timing
+hashes are in `benchmarks/still_i265_2026-09-06-dct64-{probe,frame-ab}.*`.
