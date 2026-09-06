@@ -801,6 +801,48 @@ mod pd0_quant_parity_tests {
     use svtav1_cref as cref;
 
     #[test]
+    fn pd0_energy_matches_c_all_tiers() {
+        let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+            for (w, h) in [
+                (4, 4),
+                (8, 8),
+                (16, 16),
+                (32, 32),
+                (64, 32),
+                (32, 64),
+                (64, 64),
+            ] {
+                for padding in [0, 7, 32] {
+                    for offset in [0, 1] {
+                        let stride = w + padding;
+                        // A large sentinel makes an accidental inclusion of
+                        // row padding visible, including the right quadrant.
+                        let mut coeff = vec![1_000_000; stride * h + offset];
+                        for r in 0..h {
+                            for c in 0..w {
+                                coeff[offset + r * stride + c] =
+                                    ((r * 719 + c * 997) % 262_145) as i32 - 131_072;
+                            }
+                        }
+                        let input = &coeff[offset..];
+                        let expected = cref::pic_operators::full_distortion_kernel_cbf_zero32_bits(
+                            input, stride, w, h,
+                        );
+                        assert_eq!(expected.0, expected.1);
+                        assert_eq!(
+                            energy(input, stride, w, h),
+                            expected.0,
+                            "{w}x{h} stride={stride} offset={offset}"
+                        );
+                    }
+                }
+            }
+        });
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.permutations_run >= 2);
+    }
+
+    #[test]
     fn pd0_quantize_b_matches_c_all_tiers() {
         let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
             for qindex in 0..=255u8 {
@@ -941,12 +983,16 @@ fn quantize_b_qm(
 /// C `energy_computation` (transforms.c:3095): sum of squared
 /// coefficients over an area.
 fn energy(coeff: &[i32], stride: usize, w: usize, h: usize) -> u64 {
+    if stride == w {
+        return svtav1_dsp::residual::sq_sum_i32(&coeff[..w * h]);
+    }
     let mut e = 0u64;
     for r in 0..h {
-        for c in 0..w {
-            let v = coeff[r * stride + c] as i64;
-            e += (v * v) as u64;
-        }
+        // The right 32x32 quadrant of a 64-wide transform is strided;
+        // exclude the other quadrant and any row padding from its energy.
+        e = e.wrapping_add(svtav1_dsp::residual::sq_sum_i32(
+            &coeff[r * stride..r * stride + w],
+        ));
     }
     e
 }
@@ -1135,15 +1181,11 @@ fn tx_quant_core(
 
     // svt_aom_picture_full_distortion32_bits_single: freq-domain SSE
     // (or plain coeff energy when eob == 0) over the packed region.
-    let mut dist = 0u64;
-    if eob > 0 {
-        for i in 0..coeffs.len() {
-            let d = (coeffs[i] - dqcoeff[i]) as i64;
-            dist += (d * d) as u64;
-        }
+    let mut dist = if eob > 0 {
+        svtav1_dsp::residual::sse_i32(&coeffs, &dqcoeff)
     } else {
-        dist = energy(&coeffs, packed_w, packed_w, packed_h);
-    }
+        energy(&coeffs, packed_w, packed_w, packed_h)
+    };
     dist += three_quad_energy;
     // RIGHT_SIGNED_SHIFT(dist, (MAX_TX_SCALE=1 - tx_scale) * 2) << subres
     let shift = (1 - log_scale) * 2;

@@ -288,5 +288,52 @@ all byte-identical (126 pairs), gave these candidate/baseline median ratios:
 | terminal | 0.9815 | 0.9359 |
 
 Records: `benchmarks/still_i265_2026-09-06-pd0-quant-ab.{tsv,raw.tsv,meta.json}`.
-The default release profile has not changed. Broader identity sweeps and
-fresh C positions are still required before this change is ready to land.
+The default release profile has not changed. The broader identity sweeps and fresh C positions are recorded below.
+
+## PD0 coefficient energy and distortion reuse
+
+The next change routes PD0's packed frequency-domain distortion through the
+existing `sse_i32` kernel. Its discarded-quadrant energy uses `sq_sum_i32`,
+with one call for contiguous regions and one per row for the right quadrant.
+Disassembly confirms the existing V3 energy kernel emits vector signed
+multiplications and 64-bit accumulation; PD0 previously inlined scalar i64
+multiplications. No new Archmage operation is required.
+
+A new C parity test covers energy on all relevant rectangle sizes, padded
+rows, unaligned element offsets and large padding sentinels under token
+permutations. Omitting the final row deliberately failed; the correct code
+was restored. The combined PD0 changes pass 2559/2559 workspace tests and
+104/104 regression spot-checks. The default full identity sweep passed
+1100/1100 with zero pinned cells and zero harness errors. Its summary and raw
+file hash are in `benchmarks/still_i265_2026-09-06-pd0-identity.meta.json`.
+The full real-corpus sweep also passed 450/450: six images each from CID22,
+gb82 and gb82-sc, QP 5/20/32/48/63, presets 0/4/6/10/13. There were no
+pinned cells or harness errors. With the local override removed, final checks
+against the tracked cc24398c dependency and lockfile passed: nextest
+2559/2559, zero skipped (34.274s test time), and regression spot-check
+104/104. Both run-heavy invocations exited zero; logs are
+`nextest-pinned-pd0.log` and `spotcheck-pinned-pd0.log` in the scratch directory.
+
+Twenty-one pairs against the quantization-only candidate, all byte-identical,
+gave the following incremental ratios:
+
+| Image | Preset 6 | Preset 8 |
+|---|---:|---:|
+| CID22 | 0.9947 | 0.9884 |
+| CLIC2025 | 0.9990 | 0.9862 |
+| terminal | 0.9978 | 0.9855 |
+
+Record: `benchmarks/still_i265_2026-09-06-pd0-energy-ab.{tsv,raw.tsv,meta.json}`.
+Preset 8 gains are about 1–1.5%; preset 6 changes are small or noisy.
+
+A fresh nine-pair C position, with all 81 pairs byte-identical, gives:
+
+| Image | Preset 2 | Preset 6 | Preset 8 |
+|---|---:|---:|---:|
+| CID22 | 1.3855 | 1.5603 | 1.3987 |
+| CLIC2025 | 1.7291 | 1.7440 | 1.6424 |
+| terminal | 1.6007 | 1.5396 | 1.5795 |
+
+Record: `benchmarks/still_i265_2026-09-06-pd0-position.{tsv,raw.tsv,meta.json}`.
+Two of nine initial cells now meet the target, but seven still fail. These
+512x512 QP40 results do not prove the goal across other sizes and qualities.

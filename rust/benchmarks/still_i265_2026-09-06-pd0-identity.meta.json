@@ -1,0 +1,28 @@
+{
+  "command": "TMPDIR=$HOME/tmp RS_AOMDEC=/usr/bin/aomdec ~/work/claudehints/scripts/run-heavy --mem 16G --jobs 4 -- tools/identity_full_8bit.sh <out.tsv>",
+  "host": "i265",
+  "source_changes": [
+    "omwlsnpo",
+    "lmpoukqm"
+  ],
+  "dependency": "local Archmage 2524b0be162ca04ceb9a39906e19fe9c9255657e",
+  "profile": "workspace release opt-level2, no native CPU flags",
+  "cells": 1100,
+  "identical": 1100,
+  "pinned": 0,
+  "harness_errors": 0,
+  "raw_local_path": "/home/lilith/tmp/still-perf-2026-09-06/pd0-full-identity.tsv",
+  "raw_sha256": "cd508f024be7456ee423c87ed78a2a882cef5d5e8b5c0d6b4accc16bf4b37fcf",
+  "wrapper_elapsed_s": 261,
+  "real_corpus_sweep": {
+    "command": "IF_TIER=real tools/identity_full_8bit.sh <out.tsv>, under the same run-heavy wrapper",
+    "cells": 450,
+    "identical": 450,
+    "pinned": 0,
+    "harness_errors": 0,
+    "raw_local_path": "/home/lilith/tmp/still-perf-2026-09-06/pd0-real-identity.tsv",
+    "raw_sha256": "420c6640abc9d7635dc849fa12e5ae70d3ae228c52aa937ce8d041647544bc29",
+    "wrapper_elapsed_s": 569,
+    "corpora": "six images each from CID22, gb82, gb82-sc; QP 5/20/32/48/63; presets 0/4/6/10/13; 512x512 center crops"
+  }
+}
