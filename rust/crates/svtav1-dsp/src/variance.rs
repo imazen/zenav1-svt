@@ -316,7 +316,7 @@ fn sse_core(
     sse
 }
 
-/// SSE, ONE generic body for every tier.
+/// SSE with shared row traversal and per-tier vector arithmetic.
 ///
 /// # C's shape, and the arithmetic width that is the whole difference
 ///
@@ -346,8 +346,9 @@ fn sse_core(
 /// `i16xN::madd_adjacent` (archmage PR #96, which closes the issue this port
 /// filed) is `_mm256_madd_epi16` / `vmlal` / `i32x4.dot_i16x8_s` behind one
 /// generic name, so C's exact shape becomes expressible without a hand-written
-/// arm per ISA. `u8xN::abs_diff` from the same PR replaces the two
-/// widen-then-subtract pairs: `|a - b|` squares to the same value as `a - b`.
+/// arm per ISA. The scalar/WASM body uses `u8xN::abs_diff` before widening.
+/// The x86 body below widens both byte inputs to sixteen i16 lanes before
+/// subtraction, matching AVX2's single-madd arithmetic width.
 ///
 /// **This body is `cfg`'d OFF on aarch64 and that is a measurement, not an
 /// oversight** — see `sse_impl_neon`, which is 1.45x-2.20x faster than this
@@ -375,14 +376,14 @@ fn sse_core(
 /// A `u8` difference squares to at most `255² = 65_025`. `drain_every` is
 /// `32_000 / width` rows (at least one), so the i32 accumulator holds at most
 /// `65_025 * width * (32_000 / width) <= 65_025 * 32_000 = 2_080_800_000`
-/// across ALL FOUR lanes before it is reduced. The row-packed path adds up to
+/// across all accumulator lanes before it is reduced. The row-packed path adds up to
 /// `g - 1 = 3` rows beyond the threshold before it notices, worth another
 /// `3 * 65_025 * 4 = 780_300`, for `2_081_580_300` — inside `i32::MAX`
 /// (2_147_483_647), so `reduce_add` neither wraps nor goes negative. The
 /// per-row scalar tail accumulates in `u32`: at most `65_025 * width`, which
 /// needs `width <= 66_046` to be safe and is checked by the same bound.
 #[cfg(not(target_arch = "aarch64"))]
-#[magetypes(define(u8x16, u16x8, i16x8, i32x4), v3, wasm128, scalar)]
+#[magetypes(define(u8x16, u16x8, i16x8, i32x4), wasm128, scalar)]
 fn sse_impl(
     token: Token,
     src: &[u8],
@@ -401,6 +402,78 @@ fn sse_impl(
         let hi = d.widen_high().bitcast_i16x8();
         acc + lo.madd_adjacent(lo) + hi.madd_adjacent(hi)
     };
+    sse_rows(
+        src,
+        src_stride,
+        ref_,
+        ref_stride,
+        width,
+        height,
+        i32x4::splat(token, 0),
+        fold,
+        |acc| acc.reduce_add(),
+    )
+}
+
+/// Widen bytes before subtracting so AVX2 squares sixteen differences with
+/// one 256-bit madd. The staged high half is unused and optimized away.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+fn sse_impl_v3(
+    token: X64V3Token,
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+) -> u64 {
+    use magetypes::simd::generic::{i32x8, u8x32};
+    let fold = |acc: i32x8<X64V3Token>, a: &[u8; 16], b: &[u8; 16]| {
+        let mut aa = [0u8; 32];
+        let mut bb = [0u8; 32];
+        aa[..16].copy_from_slice(a);
+        bb[..16].copy_from_slice(b);
+        let a = u8x32::from_array(token, aa).widen_low().bitcast_i16x16();
+        let b = u8x32::from_array(token, bb).widen_low().bitcast_i16x16();
+        let d = a - b;
+        acc + d.madd_adjacent(d)
+    };
+    // Keep narrow row widths constant through inlining: runtime-length
+    // copy_from_slice otherwise survives as memcpy calls for every row.
+    let run = |w| {
+        sse_rows(
+            src,
+            src_stride,
+            ref_,
+            ref_stride,
+            w,
+            height,
+            i32x8::splat(token, 0),
+            fold,
+            |acc| acc.reduce_add(),
+        )
+    };
+    match width {
+        4 => run(4),
+        8 => run(8),
+        _ => run(width),
+    }
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+fn sse_rows<A: Copy>(
+    src: &[u8],
+    src_stride: usize,
+    ref_: &[u8],
+    ref_stride: usize,
+    width: usize,
+    height: usize,
+    zero: A,
+    fold: impl Fn(A, &[u8; 16], &[u8; 16]) -> A,
+    reduce: impl Fn(A) -> i32,
+) -> u64 {
     let scalar_row = |s_off: usize, r_off: usize, from: usize| -> u32 {
         let mut t: u32 = 0;
         for col in from..width {
@@ -411,7 +484,7 @@ fn sse_impl(
     };
 
     let mut total: u64 = 0;
-    let mut acc = i32x4::splat(token, 0);
+    let mut acc = zero;
     let drain_every = (32_000 / width.max(1)).max(1);
     let mut since_drain = 0usize;
 
@@ -429,8 +502,8 @@ fn sse_impl(
             total += u64::from(scalar_row(s_off, r_off, col));
             since_drain += 1;
             if since_drain >= drain_every {
-                total += u64::from(acc.reduce_add() as u32);
-                acc = i32x4::splat(token, 0);
+                total += u64::from(reduce(acc) as u32);
+                acc = zero;
                 since_drain = 0;
             }
         }
@@ -458,8 +531,8 @@ fn sse_impl(
             row += g;
             since_drain += g;
             if since_drain >= drain_every {
-                total += u64::from(acc.reduce_add() as u32);
-                acc = i32x4::splat(token, 0);
+                total += u64::from(reduce(acc) as u32);
+                acc = zero;
                 since_drain = 0;
             }
         }
@@ -472,7 +545,7 @@ fn sse_impl(
             total += u64::from(scalar_row(row * src_stride, row * ref_stride, 0));
         }
     }
-    total + u64::from(acc.reduce_add() as u32)
+    total + u64::from(reduce(acc) as u32)
 }
 
 /// aarch64 keeps ITS OWN arm, byte-identical to what `main` already had, and

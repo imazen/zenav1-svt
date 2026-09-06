@@ -337,3 +337,70 @@ A fresh nine-pair C position, with all 81 pairs byte-identical, gives:
 Record: `benchmarks/still_i265_2026-09-06-pd0-position.{tsv,raw.tsv,meta.json}`.
 Two of nine initial cells now meet the target, but seven still fail. These
 512x512 QP40 results do not prove the goal across other sizes and qualities.
+
+
+## Full-width SSE composition experiment
+
+After PD0, a fresh CLIC 512x512 QP40 preset2 profile retained 152,810
+cpu_core/cycles/u samples and reported 758 lost samples. It covers the entire
+process (ten warmups plus the final encode), not an encode-only region.
+Self shares: optimize_b 11.56%, tx_unit_inner 8.94%, directional predictors
+4.50% and 3.77%, variance SSE 3.06%. The compact ranking and exact command
+are in `benchmarks/still_i265_2026-09-06-clic-p2-pd0-profile.{tsv,meta.json}`.
+An initial invocation with the wrong input prefix panicked and was discarded;
+the reported profile uses the required raw: input and exited zero.
+
+A standalone forbid-unsafe probe compares seven complete 16/32-byte SSE
+compositions using the current PR97 snapshot. Its tests exhaust all 65,536
+ordered constant-byte pairs plus lane-varying patterns. The 16-byte generic
+widen-before-subtract and safely zero-padded variants produce byte-for-byte
+identical 54-byte function bodies to explicit intrinsics, including reduction.
+For 32 bytes the generic signed-difference version has the same instructions
+as the intrinsic version with a different instruction ordering. The existing
+absdiff-before-widen version takes extra operations. This is consumer-shape
+evidence: no new API is necessary to express the wider arithmetic. It does
+not prove a frame speedup, nor an ARM/WASM result. Scratch sources and binary:
+`~/tmp/still-perf-2026-09-06/sse-probe/`.
+
+The experimental encoder change uses that wider composition for AVX2,
+sharing the existing row/packing/drain loop with scalar/WASM and retaining
+the separate NEON implementation. All 22 selected variance tests passed
+against the tracked cc24398c dependency (551 unrelated tests excluded by the
+explicit filter). The production disassembly contains direct 16-byte memory
+widenings and a single 256-bit madd for the full-width fold. Both comparison
+binaries were built with the same tracked dependency, opt-level3 and baseline
+target CPU. The initial nine-pair comparison completed with all 81 pairs byte-identical.
+It gives no consistent gain and includes small regressions; record
+`benchmarks/still_i265_2026-09-06-sse-wide-ab.{tsv,raw.tsv,meta.json}`.
+Production disassembly still calls memcpy in the dynamic-width narrow-row
+packing loop. The next experiment specializes widths 4 and 8 to remove
+that dynamic copying. The final change combines wider arithmetic with specialized narrow packing.
+
+
+The narrow-width candidate passes the same 22 selected variance tests. A
+width4 result-plus-one mutation was rejected by both the exhaustive shape
+comparison and the real C SSE comparison, then restored. The single
+sse_all_dispatch_levels test did not detect that mutation because its shape
+is not width4; it cannot alone validate this change. The initial wide-only
+candidate and the narrow-specialized candidate are saved as
+`perf_encode.sse-wide-pinned` and `perf_encode.sse-narrow-pinned`; the fresh
+matching baseline is `perf_encode.pd0-energy-pinned`, all in the scratch
+directory. The next paired run is `sse-narrow-ab`, nine pairs on all initial
+cells. No whole-frame gain is claimed before reading its terminal result.
+
+
+The completed narrow-width run kept all 81 pairs byte-identical. Relative to
+PD0, median ratios (p2/p6/p8) were CID22 0.9859/0.9903/0.9953,
+CLIC 0.9921/1.0007/0.9994, terminal 0.9910/0.9927/0.9819. CID22 p2/p6
+and terminal p2/p6/p8 have interquartile intervals below 1.0; the remaining
+cells are inconclusive. The same-binary control (21 pairs for each p6 cell,
+all byte-identical) reads 1.0003/0.9969/0.9996, with all intervals including
+1.0. This supports a small targeted improvement, not a general 1.5% claim.
+Records: `benchmarks/still_i265_2026-09-06-sse-narrow-ab.*` and
+`benchmarks/still_i265_2026-09-06-sse-control.*`. The arithmetic-only result
+remains a negative finding; fixed-width packing is necessary for this result.
+
+The final SSE tree passed 2559/2559 workspace nextest tests, zero skipped,
+and 104/104 regression spot-checks against the tracked dependency; both
+run-heavy invocations exited zero. Logs: `sse-nextest.log` and
+`sse-spotcheck.log` in the scratch directory.

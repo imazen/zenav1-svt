@@ -1,0 +1,11 @@
+{
+  "host": "i265",
+  "source": "2695290cec46; saved pd0-energy opt3 binary with local Archmage 2524b0be",
+  "binary_sha256": "0ba2c559b1863ea8100a595e111cb644a8f041c1f69fec05b779ca83895c5a5b",
+  "command": "run-heavy: mem-cap=16G (cgroup, hard) jobs=4/20 avail=28682MiB :: perf record -e cpu_core/cycles/u -c 200000 --call-graph dwarf,8192 -o /home/lilith/tmp/still-perf-2026-09-06/clic-p2-pd0-valid.perf -- taskset -c 2 /home/lilith/tmp/still-perf-2026-09-06/perf_encode.pd0-energy raw:/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv 512 512 40 2 /home/lilith/tmp/still-perf-2026-09-06/clic-p2-profile 10",
+  "retained_samples": 152810,
+  "lost_samples": 758,
+  "scope": "whole process, 10 warmups plus final encode; not encode-only self shares",
+  "raw_local_path": "/home/lilith/tmp/still-perf-2026-09-06/clic-p2-pd0-valid.perf",
+  "invalid_attempt": "file: prefix rejected, rc101 and three startup samples; discarded. Correct raw: run exited zero."
+}
