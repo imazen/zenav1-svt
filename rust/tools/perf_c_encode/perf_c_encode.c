@@ -66,6 +66,17 @@ static int64_t now_ns(void) {
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
+typedef struct {
+    uint8_t* data;
+    uint32_t len;
+    int64_t pts;
+} OutputPacket;
+
+static void write_bytes(FILE* file, const uint8_t* data, size_t len) {
+    if (fwrite(data, 1, len, file) != len)
+        die("cannot write output", 0);
+}
+
 /* One full init->encode->deinit cycle. TIMES ONLY the send->drain region
  * (setup excluded, matching the port's timed `encode_frame_420`). When
  * `out_path` is non-NULL the drained OBU stream is written there. Returns the
@@ -150,6 +161,16 @@ static int64_t encode_once(uint32_t w, uint32_t h, uint32_t qp, int8_t preset,
     eos_hdr.flags    = EB_BUFFERFLAG_EOS;
     eos_hdr.pic_type = EB_AV1_INVALID_PICTURE;
 
+    /* Return owned bytes, as the Rust driver does. File I/O belongs AFTER
+       the clock on both sides. Copy packets before releasing them so draining
+       never retains the encoder's finite output-buffer pool. Warmups do the
+       same copies even though their output is not written. */
+    size_t packet_capacity = (size_t)n_frames + 1;
+    size_t packet_count = 0;
+    OutputPacket* packets = calloc(packet_capacity, sizeof(*packets));
+    if (!packets)
+        die("oom allocating packet list", 0);
+
     /* ---- TIMED REGION: encode the whole sequence ---- */
     const int64_t t0 = now_ns();
     for (uint32_t f = 0; f < n_frames; ++f) {
@@ -173,7 +194,6 @@ static int64_t encode_once(uint32_t w, uint32_t h, uint32_t qp, int8_t preset,
     if (err != EB_ErrorNone)
         die("svt_av1_enc_send_picture(EOS)", err);
 
-    FILE*    fo     = out_path ? fopen(out_path, "wb") : NULL;
     uint32_t nbytes = 0;
     for (;;) {
         EbBufferHeaderType* pkt = NULL;
@@ -183,20 +203,20 @@ static int64_t encode_once(uint32_t w, uint32_t h, uint32_t qp, int8_t preset,
         if (pkt == NULL)
             break;
         if (pkt->n_filled_len) {
-            if (fo)
-                fwrite(pkt->p_buffer, 1, pkt->n_filled_len, fo);
-            /* Multi-frame only: one file per PTS, named exactly as
-               capture_c_trace names them, so the gate's per-frame byte
-               compare works against either C driver. */
-            if (video_mode && out_path) {
-                char per[4096];
-                snprintf(per, sizeof(per), "%s.pts%lld", out_path, (long long)pkt->pts);
-                FILE* pf = fopen(per, "wb");
-                if (pf) {
-                    fwrite(pkt->p_buffer, 1, pkt->n_filled_len, pf);
-                    fclose(pf);
-                }
+            if (packet_count == packet_capacity) {
+                packet_capacity *= 2;
+                OutputPacket* grown = realloc(packets, packet_capacity * sizeof(*packets));
+                if (!grown)
+                    die("oom growing packet list", 0);
+                packets = grown;
             }
+            OutputPacket* saved = &packets[packet_count++];
+            saved->len = pkt->n_filled_len;
+            saved->pts = pkt->pts;
+            saved->data = malloc(saved->len);
+            if (!saved->data)
+                die("oom copying output", 0);
+            memcpy(saved->data, pkt->p_buffer, saved->len);
             nbytes += pkt->n_filled_len;
         }
         const uint32_t last = (pkt->flags & EB_BUFFERFLAG_EOS) != 0;
@@ -207,8 +227,30 @@ static int64_t encode_once(uint32_t w, uint32_t h, uint32_t qp, int8_t preset,
     const int64_t t1 = now_ns();
     /* ---- END TIMED REGION ---- */
 
-    if (fo)
-        fclose(fo);
+    FILE* fo = out_path ? fopen(out_path, "wb") : NULL;
+    if (out_path && !fo)
+        die("cannot open output", 0);
+    for (size_t i = 0; i < packet_count; ++i) {
+        const OutputPacket* saved = &packets[i];
+        if (fo)
+            write_bytes(fo, saved->data, saved->len);
+        if (video_mode && out_path) {
+            char per[4096];
+            if (snprintf(per, sizeof(per), "%s.pts%lld", out_path,
+                         (long long)saved->pts) >= (int)sizeof(per))
+                die("output path too long", 0);
+            FILE* pf = fopen(per, "wb");
+            if (!pf)
+                die("cannot open per-frame output", 0);
+            write_bytes(pf, saved->data, saved->len);
+            if (fclose(pf) != 0)
+                die("cannot close per-frame output", 0);
+        }
+        free(saved->data);
+    }
+    free(packets);
+    if (fo && fclose(fo) != 0)
+        die("cannot close output", 0);
 
     svt_av1_enc_deinit(handle);
     svt_av1_enc_deinit_handle(handle);

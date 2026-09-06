@@ -66,6 +66,11 @@ align-gate-full:
 bench:
     cargo bench --workspace
 
+# Prebuilt API-timed drivers, explicit per-size real inputs, every sample byte-checked.
+# reference_kind=port supports same-binary controls and port A/B experiments.
+still-pairs port reference cells out cpu="2" rounds="21" reference_kind="c":
+    TMPDIR="$HOME/tmp" ~/work/claudehints/scripts/run-heavy --jobs 4 -- python3 tools/perf_profile/still_pairs.py --port "{{port}}" --reference "{{reference}}" --reference-kind "{{reference_kind}}" --cells "{{cells}}" --out "{{out}}" --cpu "{{cpu}}" --rounds "{{rounds}}"
+
 # Check for semver violations
 semver:
     cargo semver-checks check-release --workspace

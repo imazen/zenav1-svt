@@ -1,0 +1,98 @@
+{
+  "date_utc": "2026-09-06T00:52:23Z",
+  "host": "i265",
+  "platform": "Linux-7.0.0-30-generic-x86_64-with-glibc2.43",
+  "affinity": [
+    2
+  ],
+  "nice": 19,
+  "rounds": 9,
+  "seed": 20260906,
+  "reference_kind": "c",
+  "port": "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.opt3",
+  "port_sha256": "76d02f17e7f8f512451e245e3638647866efc08960d84edac234c3cbf5f2c6a8",
+  "reference": "/home/lilith/work/zen/zenav1-svt/rust/tools/perf_c_encode/perf_c_encode",
+  "reference_sha256": "2d42650d39880ca3c6ec24e1f2167eaa80777dd4fee2a4057ea64acce77a581e",
+  "cells": [
+    {
+      "name": "photo_cid-512-q40-p2",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_cid.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "2"
+    },
+    {
+      "name": "photo_cid-512-q40-p6",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_cid.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "6"
+    },
+    {
+      "name": "photo_cid-512-q40-p8",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_cid.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "8"
+    },
+    {
+      "name": "photo_clic-512-q40-p2",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "2"
+    },
+    {
+      "name": "photo_clic-512-q40-p6",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "6"
+    },
+    {
+      "name": "photo_clic-512-q40-p8",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "8"
+    },
+    {
+      "name": "screen_terminal-512-q40-p2",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/screen_terminal.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "2"
+    },
+    {
+      "name": "screen_terminal-512-q40-p6",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/screen_terminal.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "6"
+    },
+    {
+      "name": "screen_terminal-512-q40-p8",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/inputs/screen_terminal.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "40",
+      "preset": "8"
+    }
+  ],
+  "input_sha256": {
+    "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_cid.yuv": "88142a484affd4b36c36ce56ad4e1782811235958b38078e9aa0704d3ca4a72f",
+    "/home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv": "ff8b4aaee32c6b0646fd2d9376e23fd2db18df4d033f253c5b0e5d32a6c38218",
+    "/home/lilith/tmp/still-perf-2026-09-06/inputs/screen_terminal.yuv": "bd37ccf3c4a65256894f5f765d32e540c173938045967e19cd259b6e1474625c"
+  },
+  "timing": "driver ENCODE_NS; setup and file I/O excluded; one warmup",
+  "source_commit": "7bd0fe9fec5c3ec73ef50699798f44c15eea4b9c",
+  "source_diff": " rust/tools/perf_c_encode/perf_c_encode.c | 74 +++++++++++++++++++++++++-------\n 1 file changed, 58 insertions(+), 16 deletions(-)\n"
+}

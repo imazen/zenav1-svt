@@ -1,0 +1,8 @@
+{
+  "rounds": 5,
+  "seed": 20260906,
+  "scope": "archmage, magetypes and identical old-API consumer rebuilt; other dependencies warm",
+  "target_cpu": "baseline, runtime X64V3 token",
+  "incremental": false,
+  "source": "#![forbid(unsafe_code)]\nuse archmage::prelude::*;\nuse magetypes::simd::generic::f32x8;\n#[arcane]\npub fn consumer(token: X64V3Token, values: &[f32;8]) -> f32 {\n    let v = f32x8::<X64V3Token>::load(token, values);\n    (v * v).reduce_add()\n}\n"
+}

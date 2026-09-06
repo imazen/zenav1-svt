@@ -1,0 +1,11 @@
+run-heavy: mem-cap=16G (cgroup, hard) jobs=4/20 avail=28690MiB :: python3 /home/lilith/tmp/still-perf-2026-09-06/validate_timing.py
+1 old ENCODE_NS=26772961 BYTES=5544 FRAMES=1
+1 new ENCODE_NS=17489214 BYTES=5544 FRAMES=1
+old/new 1 frames byte-identical including per-PTS outputs
+2 old ENCODE_NS=105021220 BYTES=35394 FRAMES=2
+2 new ENCODE_NS=103559351 BYTES=35394 FRAMES=2
+old/new 2 frames byte-identical including per-PTS outputs
+FIFO old: internal=1998.750 ms wall=2.004s
+FIFO new: internal=17.488 ms wall=2.002s
+Runner failure control: /bin/true rejected for missing timing
+run-heavy: done rc=0 5s | peak-RSS 0.03GiB | min-avail 28653MiB | peak-load 2.00

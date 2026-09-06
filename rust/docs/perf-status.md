@@ -1,5 +1,11 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **Current i265 still-performance investigation (2026-09-06):**
+> [paired baseline, timing correction and SIMD API audit](STILL-PERF-2026-09-06.md).
+> Three real images at 512x512 QP40, presets 2/6/8: every measured output
+> matches C, but eight of nine cells exceed 1.50x C time. Same-binary controls
+> center on 1.0. This is an ongoing investigation, not a completed perf gate.
+
 > **THE OPEN-LOOP ME SAD FAMILY, READ AGAINST C AND SCOPED — NO CODE LANDED,
 > NOTHING MEASURED (2026-09-05, lane `mesad`, wrapped up by the coordinator
 > after the reading pass; workspace `~/work/zen/zenav1-svt--mesad`).** Target:

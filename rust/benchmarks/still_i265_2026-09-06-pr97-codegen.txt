@@ -1,0 +1,14 @@
+run-heavy: mem-cap=16G (cgroup, hard) jobs=4/20 avail=28623MiB :: python3 /home/lilith/tmp/still-perf-2026-09-06/archmage-pr97/xtask/codegen.py --integer-ops
+codegen adversarial self-tests passed
+Integer codegen artifacts: /home/lilith/tmp/archmage-integer-codegen-y2v91ayx
+Known composition difference: v3_128_sad_composed API 11 instructions; alternative 6
+Known composition difference: v3_256_sad_composed API 14 instructions; alternative 9
+Known composition difference: v3_512_sad_composed API 25 instructions; alternative 16
+Known composition difference: v4_512_sad_composed API 16 instructions; alternative 11
+Known composition difference: v4x_512_sad_composed API 16 instructions; alternative 11
+x86_64-unknown-linux-gnu 36 / 41 match intrinsic references (allowing commuted NEON multiply operands)
+aarch64-unknown-linux-gnu 23 / 23 match intrinsic references (allowing commuted NEON multiply operands)
+Known composition difference: wasm_512_byte_dot_low_load_extend API 32 instructions; alternative 28
+Known composition difference: wasm_512_byte_dot_high_load_extend API 32 instructions; alternative 28
+wasm32-unknown-unknown 23 / 25 match intrinsic references (allowing commuted NEON multiply operands)
+run-heavy: done rc=0 6s | peak-RSS 0.45GiB | min-avail 28320MiB | peak-load 3.10
