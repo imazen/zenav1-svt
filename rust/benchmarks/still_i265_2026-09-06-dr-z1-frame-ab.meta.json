@@ -1,0 +1,48 @@
+{
+  "candidate_change": "xsyvusrz",
+  "pairs": 99,
+  "identical": 99,
+  "variant": "V3 dispatch",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-ab.raw.tsv": {
+      "sha256": "70c23dc70510ab10a02218bc37d3bf2e1772a8b0dd13cce73b3ad244b1a369d5",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-ab.meta.json": {
+      "sha256": "176e589c1d4ff5493203090bda10f3e105aea685bd14aaf0536f618762aa62e7",
+      "bytes": 3988
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-ab.log": {
+      "sha256": "182d10de7ffb6d36d7844ef28bc03b258eeb9d6890c82185e8de0f56cf85dd9e",
+      "bytes": 5363
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.had-compose": {
+      "sha256": "b5cf7e388fb95661628e9024125ea406903607489184c025fc5908d3ce3e6ed4",
+      "bytes": 4159200
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.dr-z1": {
+      "sha256": "f9b799e9ed7cd130bc8c3789e205e1033a4bd6a15dd2ce48cc2169ac4fb0d604",
+      "bytes": 4160992
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-nextest.log": {
+      "sha256": "1de30131a9322a8d50dea878b211d821b1dd746184d1232fe7005739733b4f85",
+      "bytes": 290670
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-spotcheck.log": {
+      "sha256": "c3804e606665fc04a6f382b9b6be35d8d7477d15bf4307d51cfaaf8d8b9489f4",
+      "bytes": 274
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-build.sh": {
+      "sha256": "b93cc88f5ac7463d38e90cf26baed831e5e43ec7a3e2beeb7b630df5113fd23b",
+      "bytes": 672
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-build.log": {
+      "sha256": "81db078984b661f30aef02e02d6eb3fc927c8714c159874265bb91bcd890becc",
+      "bytes": 2525
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-production.asm": {
+      "sha256": "7f487a7753d728d025136139e574d52f3a168f59a9916dade5df6b546b1579fa",
+      "bytes": 15853
+    }
+  }
+}

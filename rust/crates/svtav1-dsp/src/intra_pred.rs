@@ -726,6 +726,38 @@ fn dr_z1_edged_flat_scalar(
     origin: usize,
     dx: i32,
 ) {
+    // Split C's valid interpolation prefix from the fill. The weighted sum
+    // is at most255*32+16, so u16 is exact. Baseline x86 auto-vectorizes
+    // this contiguous loop without an additional target-feature dispatch.
+    #[cfg(target_arch = "x86_64")]
+    {
+        let max_base = (bw + bh - 1) as i32;
+        let fill = above[origin + max_base as usize];
+        let mut x = dx;
+        for r in 0..bh {
+            let base = x >> 6;
+            let shift = ((x & 63) >> 1) as u16;
+            let valid = if base >= max_base {
+                0
+            } else {
+                bw.min((max_base - base) as usize)
+            };
+            let row = &mut dst[r * dst_stride..r * dst_stride + bw];
+            if valid > 0 {
+                let bi = origin + base as usize;
+                for (out, (&a, &b)) in row[..valid].iter_mut().zip(
+                    above[bi..bi + valid]
+                        .iter()
+                        .zip(&above[bi + 1..bi + valid + 1]),
+                ) {
+                    *out = ((u16::from(a) * (32 - shift) + u16::from(b) * shift + 16) >> 5) as u8;
+                }
+            }
+            row[valid..].fill(fill);
+            x += dx;
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
     dr_z1_edged_core(dst, dst_stride, bw, bh, above, origin, false, dx);
 }
 

@@ -1,0 +1,55 @@
+{
+  "baseline_source": "d081b8e5",
+  "probe_c_cases": 2970,
+  "production_c_cases_per_token_permutation": 11880,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-control.log": {
+      "sha256": "67339e8c155fa2330b29344bf9bff5f9f6801503f829d865a13b522dd4b4ecd8",
+      "bytes": 34550
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-ab.log": {
+      "sha256": "479a5274fbe9d1ae1d8867ebf3825978d926586f2688d72409a36b3626074e9b",
+      "bytes": 32998
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-bench.sh": {
+      "sha256": "5906b1ab40e9f5af62442c0ae95368a05d257eaf2977fe32ba61cc19efcd9e5a",
+      "bytes": 658
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-bench.log": {
+      "sha256": "07e32ce5d8bc8bdfcd50a9b7cced9d84c8c63feb9cba384ca653c693d9de342f",
+      "bytes": 875
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-probe-test.log": {
+      "sha256": "916c3ed42dbfbcf8a4f9b0e89b0d06d596629035773205397a06d6c00ce1dae3",
+      "bytes": 1488
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-production-baseline.log": {
+      "sha256": "cb6ba14e9171fe095414f62dd16a209398e3c415053b455b528a48d8202b447b",
+      "bytes": 1187
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-production-c.log": {
+      "sha256": "fefd81ea803ea5d07ab2490fa9a5f8cf5f90e45402cef338e6240bcffc430ef1",
+      "bytes": 1656
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-mutation.log": {
+      "sha256": "c731b6ebc42ea86d2ce8b33e1febae46baca72e08d47bdd7ccf18a337e7d1a8e",
+      "bytes": 1893
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-mutation-wrapper.log": {
+      "sha256": "08e2ad4e27c07fefdfb085575743577a469c457d2de3a8595532e93cb8a1e256",
+      "bytes": 238
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-original-intra-pred.rs": {
+      "sha256": "00c882a83f4cb552e05380bd7af6dc551a730a308f7b68d7144de784404368be",
+      "bytes": 81043
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-main-squares.rs": {
+      "sha256": "6d4f4ba579c26b16bc45fa4b8d6fea2a1047dff9229e73f5d73348967a30534b",
+      "bytes": 790
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-lib-v3.rs": {
+      "sha256": "ca634d63441f887ad3bcd7c1555d1f241febf482ca2768152f120b2a02286664",
+      "bytes": 3687
+    }
+  }
+}

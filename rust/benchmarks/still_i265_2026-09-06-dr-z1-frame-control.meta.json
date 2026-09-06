@@ -1,0 +1,20 @@
+{
+  "candidate_change": "xsyvusrz",
+  "pairs": 99,
+  "identical": 99,
+  "variant": "V3 dispatch",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-control.raw.tsv": {
+      "sha256": "3c913bddfdbb873fd819d45a520553be5c34101c84304ec438e0dfb5d9edaff6",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-control.meta.json": {
+      "sha256": "deb3a4560c2ea8342912470d70731ef4730482600f0f2a7b0a8315fc3e9aef5a",
+      "bytes": 4558
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/dr-z1-frame-control.log": {
+      "sha256": "e8e0de946aab13689b8a44e417d594f0eccc384c50a0a9d5bd410fa83c876de7",
+      "bytes": 5374
+    }
+  }
+}
