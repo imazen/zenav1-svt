@@ -443,3 +443,28 @@ cross-run attribution, not a precise isolated kernel speed comparison.
 The x86 zone2 source currently falls back to the scalar core; the flat-input
 SIMD specialization exists only on NEON. The compact C ranking and exact
 command are recorded beside the Rust profile.
+
+
+## Frame screen-content derivation reuse
+
+The immutable encode_input is detected at frame setup, then encode_tile_rows
+repeated the same pure derive_sc call inside each tile closure, with the same
+arm/preset/dimensions. The candidate passes the Copy ScDerivation into the
+tile walk, preserving the resolved tune-IQ detector preset and all readers.
+The inter-frame persistence question is separate; this only removes same-frame
+recomputation. It does not change which frame's pixels are classified.
+
+Nine paired opt3 rounds on the initial nine cells were all byte-identical.
+CLIC p6 improved2.22% (interquartile ratio0.9756–0.9865), terminal p6
+0.43%, and other cells were small/noisy or slightly regressed. Preset8's
+detector is disabled, so it serves as a useful negative control. Record:
+`benchmarks/still_i265_2026-09-06-sc-reuse-ab.*`. No broad speedup is claimed.
+
+Replacing the shared tile result with ScDerivation::default deliberately
+failed regression_spotcheck (exit1), including screen/qp0 and video-key
+palette cells. The correct frame_sc copy was restored. Final nextest passed2560/2560, zero skipped; regression spot-check104/104;
+full identity1100/1100 and real identity450/450, each with zero pinned cells
+and zero harness errors. Source remained frozen throughout. The quantizer
+cache is absent; the new C quantizer-table test remains included. The summary
+and raw-file hashes are recorded in
+`benchmarks/still_i265_2026-09-06-sc-reuse-identity.meta.json`.

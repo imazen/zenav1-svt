@@ -1,0 +1,40 @@
+{
+  "host": "i265",
+  "source_changes": [
+    "urvvnqqr",
+    "totxqxnu"
+  ],
+  "dependency": "tracked Archmage cc24398c9a9fee0251722931e295da840730704d, no local override",
+  "profile": "default workspace release opt-level2, baseline CPU",
+  "nextest": {
+    "passed": 2560,
+    "skipped": 0,
+    "log": "/home/lilith/tmp/still-perf-2026-09-06/sc-reuse-nextest.log"
+  },
+  "regression_spotcheck": {
+    "passed": 104,
+    "total": 104,
+    "log": "/home/lilith/tmp/still-perf-2026-09-06/sc-reuse-spotcheck.log"
+  },
+  "mutation": "default tile ScDerivation: regression 82/104, exit1; restored before final gates",
+  "full": {
+    "command": "tools/identity_full_8bit.sh <out.tsv>, under shared run-heavy --mem16G --jobs4",
+    "cells": 1100,
+    "identical": 1100,
+    "pinned": 0,
+    "harness_errors": 0,
+    "raw_local_path": "/home/lilith/tmp/still-perf-2026-09-06/sc-reuse-full-identity.tsv",
+    "sha256": "cd508f024be7456ee423c87ed78a2a882cef5d5e8b5c0d6b4accc16bf4b37fcf",
+    "wrapper_elapsed_s": 262
+  },
+  "real": {
+    "command": "IF_TIER=real tools/identity_full_8bit.sh <out.tsv>, under shared run-heavy --mem16G --jobs4",
+    "cells": 450,
+    "identical": 450,
+    "pinned": 0,
+    "harness_errors": 0,
+    "raw_local_path": "/home/lilith/tmp/still-perf-2026-09-06/sc-reuse-real-identity.tsv",
+    "sha256": "420c6640abc9d7635dc849fa12e5ae70d3ae228c52aa937ce8d041647544bc29",
+    "wrapper_elapsed_s": 568
+  }
+}

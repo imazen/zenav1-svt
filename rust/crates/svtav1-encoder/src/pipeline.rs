@@ -4053,10 +4053,8 @@ impl EncodePipeline {
                 0
             },
             self.hdr.is_fork() && self.hdr.complex_hvs == 1,
-            // The SAME resolved detector preset the frame-level derivation above
-            // used, so the MD walk and the pack cannot disagree about screen
-            // content (see the parameter's doc on `encode_tile_rows`).
-            sc_preset,
+            // Share the frame's resolved detection with every tile.
+            sc_derivation,
             sc_arm,
             self.hdr.is_fork() && self.hdr.alt_ssim_tuning,
             self.hdr.is_fork() && self.hdr.alt_lambda_factors,
@@ -11161,23 +11159,12 @@ fn encode_tile_rows(
     qm_levels: [u8; 3],
     hdr_tx_bias: u8,
     hdr_complex_hvs: bool,
-    // The preset the SCREEN-CONTENT detector runs at, resolved by the CALLER.
-    //
-    // Not `speed_config.preset`: tune-IQ forces `screen_content_mode = 3` at
-    // every preset (enc_handle.c:4914), and the port models that force by
-    // clamping the detector's preset to 7 (the highest preset where scm-3
-    // auto-detection is live, enc_handle.c:4641-4651). The frame side already
-    // did that; this side used the RAW preset, so at preset >= 8 under tune-IQ
-    // the two disagreed -- the frame header and the real pack coded per-block
-    // palette flags from the frame derivation while the funnel priced ZERO bits
-    // for them and injected no palette candidate, and both simulated CDF
-    // contexts drifted from the pack. Passing the resolved value makes the
-    // tile-side comment below ("identical inputs -> identical result") true.
-    sc_preset: u8,
-    // Which arm of `enc_mode_config.c` this frame's screen-content derivation
-    // is on (C `scs->allintra`), resolved by the CALLER for the same reason
-    // `sc_preset` is: the funnel's derivation must be bit-for-bit the frame
-    // header's, or the simulated CDF chains desync from the real pack.
+    // Reuse the frame result: derive_sc is pure and encode_input is unchanged.
+    // This also preserves the tune-IQ forced detector preset resolved by the
+    // caller. Using the raw speed preset here previously desynchronized
+    // palette rates and CDF evolution from the real pack at presets >= 8.
+    frame_sc: crate::sc_detect::ScDerivation,
+    // The arm is also needed by the other per-picture tool ladders below.
     sc_arm: crate::sc_detect::ScArm,
     hdr_alt_ssim: bool,
     hdr_alt_lambda: bool,
@@ -11399,11 +11386,9 @@ fn encode_tile_rows(
         // (see the `funnel_chain` binding below and docs/rate-arm-port-map.md).
         // eff-M9 (intra_level 8) arms the is_dc_only gate inside the funnel.
         let use_funnel = chroma_420 && chroma_src.is_some() && c_quant.is_some();
-        // Same sc derivation as the pack side (identical inputs -> identical
-        // result): the MD walk's rates + its per-SB CDF evolution must see
-        // the same allow_sct as the real pack or the chains desync on
-        // screen-content frames.
-        let tile_sc = crate::sc_detect::derive_sc(sc_arm, sc_preset, encode_input, w, w, h);
+        // The detector has already run on this immutable source for the frame.
+        // Copy its small result instead of scanning the full picture per tile.
+        let tile_sc = frame_sc;
         let mut funnel_cfg = crate::leaf_funnel::FunnelCfg::for_preset(speed_config.preset);
         // `pcs->rate_est_level` -> `set_rate_est_ctrls` (enc_mode_config.c:6428),
         // for THIS arm. `for_preset` bakes the allintra ladder (1 through M6,
