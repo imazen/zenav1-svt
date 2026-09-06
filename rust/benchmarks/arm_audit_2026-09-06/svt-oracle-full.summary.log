@@ -1,0 +1,5 @@
+        PASS [   0.005s] (1172/2556) zenav1-svt-encoder pd0::pd0_quant_parity_tests::c_neon_quantizer_wide_input_divergence_is_explicit
+        PASS [   0.007s] (1173/2556) zenav1-svt-encoder pd0::pd0_quant_parity_tests::pd0_energy_matches_c_all_tiers
+        PASS [   1.483s] (1174/2556) zenav1-svt-encoder pd0::pd0_quant_parity_tests::pd0_quantize_b_matches_c_all_tiers
+        PASS [   2.392s] (1359/2556) zenav1-svt-encoder pd0::pd0_quant_parity_tests::pd0_transform_outputs_match_both_quantizer_oracles
+     Summary [  62.349s] 2556 tests run: 2556 passed, 0 skipped
