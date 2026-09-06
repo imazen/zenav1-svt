@@ -404,3 +404,42 @@ The final SSE tree passed 2559/2559 workspace nextest tests, zero skipped,
 and 104/104 regression spot-checks against the tracked dependency; both
 run-heavy invocations exited zero. Logs: `sse-nextest.log` and
 `sse-spotcheck.log` in the scratch directory.
+
+
+## Precomputed quantizer rows (not adopted)
+
+The C builder fills all 256 rows at sequence initialization; Rust rebuilt
+rows inside transform quantization, including repeated integer divisions.
+A new differential shim calls the real svt_av1_build_quantizer with base
+qindex31 and zero delta-q. The new test compares every field and replicated
+AC lane for 256 qindices, bit depths8/10, sharpness -7/-1/0/1/7. It passed
+before the implementation change. This closes a gap in the prior quantizer
+tests, which supplied Rust-built tables to the C quantization kernels.
+
+The candidate stores two compile-time default tables and adjusts only
+zbin/round for nonzero sharpness. PD0 reuses the existing public quantizer
+row builder. The C table test and PD0 quantization parity passed afterward.
+A deliberately wrong default-row index failed the new test, then was restored
+and the test passed again. Logs: quant-tables-baseline.log,
+quant-cache-tests.log, quant-cache-mutation.log, quant-cache-restored.log.
+The identical-settings opt3 comparison against the landed SSE candidate
+completed with all 81 pairs byte-identical. CID22 p8 improved 1.27%, but
+terminal p2 regressed 0.55%, and most other cells were inconclusive. The
+production cache was not adopted: it does not demonstrate progress on the
+remaining failing cells. Its source remains recoverable as jj change
+zsyorrxr; the direct C table oracle is retained. Records:
+`benchmarks/still_i265_2026-09-06-quant-cache-ab.*`.
+
+
+A matching C CLIC p2 profile (same input/config, ten warmups plus one encode,
+performance core2) retained18,293 cpu_core/cycles/u samples, zero lost.
+C RDOQ self share is18.94% against the earlier Rust11.56%; after accounting
+for Rust's ~1.73x whole-frame time these are similar absolute costs, so the
+largest Rust symbol alone is not the right optimization priority. Directional
+prediction is a stronger lead: Rust dr_z2_edged_core4.50% plus
+ dr_predictor_edged3.77%, against C's zone2AVX2 2.74% and predictor/build
+wrappers1.27%/1.16%. These are whole-process profiles and approximate
+cross-run attribution, not a precise isolated kernel speed comparison.
+The x86 zone2 source currently falls back to the scalar core; the flat-input
+SIMD specialization exists only on NEON. The compact C ranking and exact
+command are recorded beside the Rust profile.

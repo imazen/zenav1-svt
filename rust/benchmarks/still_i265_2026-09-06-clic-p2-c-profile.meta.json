@@ -1,0 +1,10 @@
+{
+  "host": "i265",
+  "command": "run-heavy: mem-cap=16G (cgroup, hard) jobs=4/20 avail=28619MiB :: perf record -e cpu_core/cycles/u -c 1000000 --call-graph dwarf,8192 -o /home/lilith/tmp/still-perf-2026-09-06/clic-p2-c-valid.perf -- taskset -c 2 rust/tools/perf_c_encode/perf_c_encode 512 512 40 2 /home/lilith/tmp/still-perf-2026-09-06/inputs/photo_clic.yuv /home/lilith/tmp/still-perf-2026-09-06/clic-p2-c-profile 10",
+  "retained_samples": 18293,
+  "lost_samples": 0,
+  "scope": "whole process, 10 warmups plus one encode",
+  "c_submodule": "3115c0c1b23e860dfd75c94f6740e0298182dd13",
+  "binary_sha256": "2d42650d39880ca3c6ec24e1f2167eaa80777dd4fee2a4057ea64acce77a581e",
+  "raw_local_path": "/home/lilith/tmp/still-perf-2026-09-06/clic-p2-c-valid.perf"
+}
