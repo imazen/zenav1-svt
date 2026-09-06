@@ -1,0 +1,34 @@
+{
+  "host": "i265",
+  "cpu": 2,
+  "target_cpu": "baseline",
+  "production_base": "9adba9307c2e",
+  "method": "zenbench 0.1.9 with own-thread exclusion patch; interleaved fn-pointer calls, held candidate token versus runtime baseline dispatch; no frame speed claim from these rows",
+  "runs": {
+    "control": {
+      "path": "/home/lilith/tmp/still-perf-2026-09-06/had-control-fixed.log",
+      "sha256": "d586ade03e8ed19534069bc8a7a9a76b0f1562c5eb34d3caa07d170430349d1b",
+      "gate_waits": 0
+    },
+    "direct-array": {
+      "path": "/home/lilith/tmp/still-perf-2026-09-06/had-candidate-ab.log",
+      "sha256": "c8caac52025875100344fd3445ff5d466b51cef3efb9e0427fcb9555795abcd8",
+      "gate_waits": 0
+    },
+    "staged-array": {
+      "path": "/home/lilith/tmp/still-perf-2026-09-06/had-staged-ab.log",
+      "sha256": "cdcbfbbe7fed1e63447be2966ae6bd3e3b96b1485a8ce69e5ed066317d936d5f",
+      "gate_waits": 0
+    },
+    "archived-control": {
+      "path": "/home/lilith/tmp/still-perf-2026-09-06/had-archived-control.log",
+      "sha256": "788d331d1b3ab513e3c5e5a13e8ad9bc07d925fd4e33cbfdff3a8f24fe8b0542",
+      "gate_waits": 0
+    },
+    "archived-ab": {
+      "path": "/home/lilith/tmp/still-perf-2026-09-06/had-archived-ab.log",
+      "sha256": "09dd299d7aea6217110bbd323b013f6082542d382bf84395355faaf33b7585b3",
+      "gate_waits": 0
+    }
+  }
+}

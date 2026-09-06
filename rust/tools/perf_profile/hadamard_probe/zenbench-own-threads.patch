@@ -1,0 +1,20 @@
+--- a/src/gate.rs
++++ b/src/gate.rs
+@@ -271,6 +271,17 @@
+             }
+         }
+ 
++        // Linux sysinfo includes task entries. Our heartbeat is part of this
++        // benchmark, not a competing harness. Keep all other gates enabled.
++        #[cfg(target_os = "linux")]
++        if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
++            for task in tasks.flatten() {
++                if let Ok(pid) = task.file_name().to_string_lossy().parse::<usize>() {
++                    excluded_pids.push(sysinfo::Pid::from(pid));
++                }
++            }
++        }
++
+         let start = Instant::now();
+         let max_wait = Duration::from_secs(30);
+         let mut warned = false;

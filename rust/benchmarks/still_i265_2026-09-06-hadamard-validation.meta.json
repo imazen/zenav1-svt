@@ -1,0 +1,60 @@
+{
+  "host": "i265",
+  "nextest": {
+    "passed": 2561,
+    "skipped": 0
+  },
+  "spotcheck": {
+    "passed": 104,
+    "required": 104
+  },
+  "mutation": "c2-c6 changed to c2+c6 in production V3 butterfly; all-tier real-C test failed at stride8 pattern11, then passed after restoration",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-nextest.log": {
+      "sha256": "0317ec0ec971037331464dc12561fd953b920e0c5cffea664df097398ed9fb92",
+      "bytes": 289975
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-production-baseline-test.log": {
+      "sha256": "8d0ee0c2447f772175516d107a6f8f0e6b2a0dcafe23ee1f6b7395ab6d0e41d9",
+      "bytes": 1352
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-production-mutation.log": {
+      "sha256": "6faa705bf9d24c0ed5aad34e9dd5d64ab5ac3efdc139d85f6d866769585930e7",
+      "bytes": 3110
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-restored-spotcheck.log": {
+      "sha256": "4b7ea06f0a606d8cf534185c0c04d096c11e036f4bc04cffe41d76dd987eb773",
+      "bytes": 1487
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-archived-build.log": {
+      "sha256": "ec827cd4f708de243f9bc263bc4fb24cf20a89823431ec62c7ebcd6feaac03c6",
+      "bytes": 3206
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-archived-run.log": {
+      "sha256": "5415e79a567b2b0a8c7f166a5afa525a7f4798ab8d1e37c5da59256cb4304cbf",
+      "bytes": 508
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-frame-build.log": {
+      "sha256": "52dd065e172af9c07bb9fa52e244b7a31e77c544eaf977b5f52323e8b553c116",
+      "bytes": 1336
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-frame-ab.log": {
+      "sha256": "d59d22eb7d4e68e1b7f3068ebb807412ee2e9f1a1896cb92a951d8df992bb4ab",
+      "bytes": 4506
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.hadamard-v3": {
+      "sha256": "21d131ba6ced062a1e72525948c07a988f559cf37b5646b9c37402d5e6a6a5ec",
+      "bytes": 4156248
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.dr-zone2-final": {
+      "sha256": "f882f511ae5a26346b0cc1e234d947c45ccf3800436e9caa642911c94b6757db",
+      "bytes": 4136192
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-clippy.log": {
+      "sha256": "bbea7170afc86d44766be51a57199bb33d32bfbadc692ca4ea03613a0d295b17",
+      "bytes": 43855
+    }
+  },
+  "fmt": "DSP and archived probe formatted; DSP fmt --check passed",
+  "clippy": "Workspace all-targets completed; existing warnings remain, none names hadamard"
+}

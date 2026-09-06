@@ -702,3 +702,57 @@ prediction still writes each pixel through nested indexed loops. These
 are concrete next kernel experiments. The film-grain result remains
 discarded in source, but source presence alone does not establish runtime
 cost, so no gain is assumed from removing that call.
+
+
+## V3 Hadamard 8x8 vector butterflies
+
+The x86 V3 wrapper now performs both passes with the existing generic i16x8
+addition/subtraction API and fixed-array transposes. It preserves C's positional
+coefficient permutation and wrapping i16 results. No Archmage API or dependency
+pin changed. The NEON and scalar paths retain their previous implementations.
+
+A direct real-C test was added before changing the production body. It covers
+1,200 padded-buffer cases per available token permutation, including 8-bit and
+10-bit residuals, full-range i16 patterns, and output sentinels. Changing the
+V3 butterfly's c2-c6 to c2+c6 made it fail at stride8/pattern11; restoring the
+body passed. All 2,561 workspace nextests passed with zero skipped, and the
+regression spot-check passed 104/104. These are DSP correctness checks, not a
+new full-envelope identity sweep.
+
+The preserved `tools/perf_profile/hadamard_probe` contains the frozen pre-change
+algorithm, candidate, C tests, and a same-function control mode. The archived
+native comparison reduced kernel time by 53.35–54.74% on strides8/16/32, from
+33.53–34.52ns to 15.54–15.64ns. Each A/B group completed30 rounds; controls
+completed40–100 rounds and all difference intervals contained zero. The candidate
+has a held token while the baseline retains runtime dispatch, so frame measurements
+are needed. A staged 1/2/4-word interleave transpose gave no additional benefit;
+the simpler direct-array transpose was retained. Its generated code still contains
+many blends and shuffles: this is not evidence of an optimal transpose.
+
+Zenbench0.1.9's process scan on this Linux host counted its own heartbeat thread
+as a competing benchmark. The unmodified attempt was stopped without a result.
+A local copy excludes `/proc/self/task` entries; every completed probe reported
+zero gate waits and three groups with at least30 rounds. The patch and reproduction
+instructions are preserved with the probe. The original production-linked probe
+and the archived frozen-baseline probe have separate recorded rows. An attempted
+`--help` invocation also started measurements because the embedded macro does not
+implement help; it was stopped and supplies no performance evidence.
+
+Nine frame pairs per initial cell, opt3 baseline CPU, compared the production
+candidate against the saved zone-2 binary. All81 pairs were byte-identical:
+
+| Image | Preset2 | Preset6 | Preset8 |
+|---|---:|---:|---:|
+| CID22 | 0.9996 | 0.9999 | 0.9903 |
+| CLIC2025 | 0.9787 | 0.9913 | 0.9673 |
+| terminal | 0.9858 | 0.9857 | 0.9701 |
+
+Ratios are candidate/previous Rust, without PGO. CID22 p2/p6 are null results;
+the other seven interquartile spans are below one. Fresh21-pair controls on each
+p6 cell are1.0006/1.0002/1.0004, all with interquartile spans containing one.
+The control does not independently price p2/p8 noise. The A/B completed in118s
+under run-heavy, peak monitored RSS0.03GiB, minimum available memory29,368MiB;
+this is the wrapper's resource guard, not an encoder memory measurement.
+Records: `benchmarks/still_i265_2026-09-06-hadamard-{probe,ab,control,validation}.*`.
+The broader matched-PGO position above predates this change and must be remeasured
+with fresh training profiles before claiming progress on that grid.

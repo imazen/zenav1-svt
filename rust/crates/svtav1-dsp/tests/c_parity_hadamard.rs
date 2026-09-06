@@ -273,3 +273,54 @@ fn c_and_avx2_hadamard_diverge_at_bd10_range() {
         "svt_aom_hadamard_32x32_c and _avx2 no longer diverge at 10-bit residuals"
     );
 }
+
+/// Positional coefficient parity, including padded slices and i16 wrap.
+#[test]
+fn hadamard_8x8_padded_full_range_all_tiers_match_c() {
+    use archmage::testing::{CompileTimePolicy, for_each_token_permutation};
+    let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+        let mut seed = 0x9827aa65u32;
+        let mut cases = 0;
+        for stride in [8, 11, 16, 32] {
+            for pattern in 0..300 {
+                let mut source = vec![0i16; stride * 8 + 9];
+                for (i, v) in source.iter_mut().enumerate() {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    *v = match pattern {
+                        0 => 0,
+                        1 => i16::MAX,
+                        2 => i16::MIN,
+                        3 => {
+                            if i % 2 == 0 {
+                                i16::MIN
+                            } else {
+                                i16::MAX
+                            }
+                        }
+                        4..=67 => {
+                            if i == pattern - 4 {
+                                1023
+                            } else {
+                                0
+                            }
+                        }
+                        68..=99 => (seed % 511) as i16 - 255,
+                        100..=199 => (seed % 2047) as i16 - 1023,
+                        _ => seed as i16,
+                    };
+                }
+                let mut got = [123456i32; 72];
+                let mut expected = got;
+                hadamard::aom_hadamard_8x8(&source[3..], stride, &mut got[2..]);
+                cref::hadamard(8, &source[3..], stride, &mut expected[2..]);
+                assert_eq!(got, expected, "stride={stride} pattern={pattern}");
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 1200);
+    });
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(report.permutations_run >= 2);
+}

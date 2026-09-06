@@ -732,15 +732,63 @@ fn aom_hadamard_8x8_impl_scalar(
     aom_hadamard_8x8_core(src_diff, src_stride, coeff)
 }
 
+// C picture_operators_c.c:121-176: preserve the positional coefficient
+// permutation. Wrapping i16 addition/subtraction commutes with C's truncation
+// after each pass, including full-range i16 inputs. Fixed array transposes
+// express lane rearrangement without adding an Archmage primitive.
+#[cfg(target_arch = "x86_64")]
+type HadamardV3 = magetypes::simd::generic::i16x8<X64V3Token>;
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn hadamard_col8_vertical_v3(_token: X64V3Token, s: [HadamardV3; 8]) -> [HadamardV3; 8] {
+    let b0 = s[0] + s[1];
+    let b1 = s[0] - s[1];
+    let b2 = s[2] + s[3];
+    let b3 = s[2] - s[3];
+    let b4 = s[4] + s[5];
+    let b5 = s[4] - s[5];
+    let b6 = s[6] + s[7];
+    let b7 = s[6] - s[7];
+    let c0 = b0 + b2;
+    let c1 = b1 + b3;
+    let c2 = b0 - b2;
+    let c3 = b1 - b3;
+    let c4 = b4 + b6;
+    let c5 = b5 + b7;
+    let c6 = b4 - b6;
+    let c7 = b5 - b7;
+    [
+        c0 + c4,
+        c2 - c6,
+        c0 - c4,
+        c2 + c6,
+        c3 + c7,
+        c3 - c7,
+        c1 - c5,
+        c1 + c5,
+    ]
+}
+
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn hadamard_transpose8_v3(token: X64V3Token, v: [HadamardV3; 8]) -> [HadamardV3; 8] {
+    let rows = v.map(|r| r.to_array());
+    core::array::from_fn(|c| HadamardV3::from_array(token, core::array::from_fn(|r| rows[r][c])))
+}
+
 #[cfg(target_arch = "x86_64")]
 #[arcane]
-fn aom_hadamard_8x8_impl_v3(
-    _token: Desktop64,
-    src_diff: &[i16],
-    src_stride: usize,
-    coeff: &mut [i32],
-) {
-    aom_hadamard_8x8_core(src_diff, src_stride, coeff)
+fn aom_hadamard_8x8_impl_v3(token: X64V3Token, input: &[i16], stride: usize, output: &mut [i32]) {
+    let rows = core::array::from_fn(|r| {
+        HadamardV3::load(token, input[r * stride..r * stride + 8].try_into().unwrap())
+    });
+    let first = hadamard_transpose8_v3(token, hadamard_col8_vertical_v3(token, rows));
+    let result = hadamard_transpose8_v3(token, hadamard_col8_vertical_v3(token, first));
+    let output: &mut [i32; 64] = (&mut output[..64]).try_into().unwrap();
+    for (r, row) in result.into_iter().enumerate() {
+        output[r * 8..r * 8 + 8].copy_from_slice(&row.to_array().map(i32::from));
+    }
 }
 
 /// Both passes run VERTICALLY (one lane per column, no cross-lane work) with a
