@@ -62,7 +62,7 @@ pub const FAST_LAMBDA_BD10_MULT: u64 = 4;
 /// special case) and the dc-quant it resolves to. (First draft wrongly
 /// returned 64 in the else arm and lacked the q==0 case — caught by the
 /// hbd translation cross-check 2026-07-17.)
-pub fn qzbin_factor(qindex: u8, dc_quant_qtx: i32, bd: u8) -> i32 {
+pub const fn qzbin_factor(qindex: u8, dc_quant_qtx: i32, bd: u8) -> i32 {
     if qindex == 0 {
         return 64;
     }
@@ -88,10 +88,10 @@ pub fn inv_txfm_range_max(bd: u8) -> i32 {
 // svt_aom_ac_quant_qtx at EB_TEN_BIT (full range, not a spot-check).
 include!("bd10_qlookup_tables.rs");
 
-pub fn dc_qlookup_10(qindex: u8) -> i16 {
+pub const fn dc_qlookup_10(qindex: u8) -> i16 {
     DC_QLOOKUP_10[qindex as usize]
 }
-pub fn ac_qlookup_10(qindex: u8) -> i16 {
+pub const fn ac_qlookup_10(qindex: u8) -> i16 {
     AC_QLOOKUP_10[qindex as usize]
 }
 

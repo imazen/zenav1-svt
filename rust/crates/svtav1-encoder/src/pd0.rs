@@ -661,47 +661,15 @@ struct QuantEntry {
     dequant: [i32; 2],
 }
 
-/// C `svt_aom_invert_quant` (inv_transforms.c:3507).
-fn invert_quant(d: i32) -> (i32, i32) {
-    let mut t = d as u32;
-    let mut l = 0i32;
-    while t > 1 {
-        t >>= 1;
-        l += 1;
-    }
-    let m = 1i64 + (1i64 << (16 + l)) / d as i64;
-    ((m - (1 << 16)) as i32, 1 << (16 - l))
-}
-
 fn build_quant_entry(qindex: u8) -> QuantEntry {
-    let q = qindex as usize;
-    let dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[q] as i32;
-    let ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[q] as i32;
-    // svt_aom_get_qzbin_factor (inv_transforms.c:3492), 8-bit.
-    let qzbin_factor = if q == 0 {
-        64
-    } else if dc < 148 {
-        84
-    } else {
-        80
-    };
-    let qrounding_factor = if q == 0 { 64 } else { 48 };
-    let mut e = QuantEntry {
-        zbin: [0; 2],
-        round: [0; 2],
-        quant: [0; 2],
-        quant_shift: [0; 2],
-        dequant: [0; 2],
-    };
-    for (i, quant_qtx) in [dc, ac].into_iter().enumerate() {
-        let (quant, shift) = invert_quant(quant_qtx);
-        e.quant[i] = quant;
-        e.quant_shift[i] = shift;
-        e.zbin[i] = (qzbin_factor * quant_qtx + 64) >> 7; // ROUND_POWER_OF_TWO(x, 7)
-        e.round[i] = (qrounding_factor * quant_qtx) >> 7;
-        e.dequant[i] = quant_qtx;
+    let t = crate::quant::build_quant_table(qindex);
+    QuantEntry {
+        zbin: t.zbin,
+        round: t.round,
+        quant: t.quant,
+        quant_shift: t.quant_shift,
+        dequant: t.dequant,
     }
-    e
 }
 
 /// C `av1_get_tx_scale_tab[TX_SIZES_ALL]` (full_loop.c:22), indexed by the

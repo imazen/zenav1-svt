@@ -404,3 +404,23 @@ The final SSE tree passed 2559/2559 workspace nextest tests, zero skipped,
 and 104/104 regression spot-checks against the tracked dependency; both
 run-heavy invocations exited zero. Logs: `sse-nextest.log` and
 `sse-spotcheck.log` in the scratch directory.
+
+
+## Precomputed quantizer rows (in progress)
+
+The C builder fills all 256 rows at sequence initialization; Rust rebuilt
+rows inside transform quantization, including repeated integer divisions.
+A new differential shim calls the real svt_av1_build_quantizer with base
+qindex31 and zero delta-q. The new test compares every field and replicated
+AC lane for 256 qindices, bit depths8/10, sharpness -7/-1/0/1/7. It passed
+before the implementation change. This closes a gap in the prior quantizer
+tests, which supplied Rust-built tables to the C quantization kernels.
+
+The candidate stores two compile-time default tables and adjusts only
+zbin/round for nonzero sharpness. PD0 reuses the existing public quantizer
+row builder. The C table test and PD0 quantization parity passed afterward.
+A deliberately wrong default-row index failed the new test, then was restored
+and the test passed again. Logs: quant-tables-baseline.log,
+quant-cache-tests.log, quant-cache-mutation.log, quant-cache-restored.log.
+The identical-settings opt3 comparison against the landed SSE candidate is
+running as quant-cache-ab.tsv. Broader gates are still required before landing.

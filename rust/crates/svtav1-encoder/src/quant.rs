@@ -66,7 +66,7 @@ pub struct QuantTable {
 }
 
 /// C `svt_aom_invert_quant` (inv_transforms.c:3507).
-fn invert_quant(d: i32) -> (i32, i32) {
+const fn invert_quant(d: i32) -> (i32, i32) {
     let mut t = d as u32;
     let mut l = 0i32;
     while t > 1 {
@@ -129,28 +129,24 @@ fn apply_quant_sharpness_factors(qzbin: i32, qround: i32, qindex: u8, sharpness:
     }
 }
 
-pub fn build_quant_table(qindex: u8) -> QuantTable {
-    build_quant_table_sharp(qindex, 0)
-}
-
-/// [SVT_HDR_MODE] bd8 quant table with the fork sharpness adjustment
-/// (`svt_av1_build_quantizer`, md_config_process.c). `sharpness == 0` is
-/// byte-identical to [`build_quant_table`].
-pub fn build_quant_table_sharp(qindex: u8, sharpness: i8) -> QuantTable {
+// C builds the full quantizer tables once at sequence initialization.
+// Materialize the default rows at compile time instead of redoing integer
+// divisions in every transform's mode-decision/encode quantization.
+const fn default_quant_row(qindex: u8, bd: u8) -> QuantTable {
     let q = qindex as usize;
-    let dc = svtav1_dsp::quant_tables::DC_QLOOKUP_8[q] as i32;
-    let ac = svtav1_dsp::quant_tables::AC_QLOOKUP_8[q] as i32;
-    // svt_aom_get_qzbin_factor (inv_transforms.c:3492), 8-bit.
-    let qzbin_factor = if q == 0 {
-        64
-    } else if dc < 148 {
-        84
+    let (dc, ac) = if bd == 8 {
+        (
+            svtav1_dsp::quant_tables::DC_QLOOKUP_8[q] as i32,
+            svtav1_dsp::quant_tables::AC_QLOOKUP_8[q] as i32,
+        )
     } else {
-        80
+        (
+            crate::bd10::dc_qlookup_10(qindex) as i32,
+            crate::bd10::ac_qlookup_10(qindex) as i32,
+        )
     };
-    let qrounding_factor = if q == 0 { 64 } else { 48 };
-    let (qzbin_factor, qrounding_factor) =
-        apply_quant_sharpness_factors(qzbin_factor, qrounding_factor, qindex, sharpness);
+    let qzbin = crate::bd10::qzbin_factor(qindex, dc, bd);
+    let qround = if qindex == 0 { 64 } else { 48 };
     let mut t = QuantTable {
         zbin: [0; 2],
         round: [0; 2],
@@ -158,20 +154,44 @@ pub fn build_quant_table_sharp(qindex: u8, sharpness: i8) -> QuantTable {
         quant_shift: [0; 2],
         round_fp: [0; 2],
         quant_fp: [0; 2],
-        dequant: [0; 2],
+        dequant: [dc, ac],
         qm_level: 15,
     };
-    for (i, quant_qtx) in [dc, ac].into_iter().enumerate() {
-        let (quant, shift) = invert_quant(quant_qtx);
+    let mut i = 0;
+    while i < 2 {
+        let qtx = t.dequant[i];
+        let (quant, shift) = invert_quant(qtx);
         t.quant[i] = quant;
         t.quant_shift[i] = shift;
-        t.zbin[i] = (qzbin_factor * quant_qtx + 64) >> 7; // ROUND_POWER_OF_TWO(x, 7)
-        t.round[i] = (qrounding_factor * quant_qtx) >> 7;
-        t.quant_fp[i] = (1 << 16) / quant_qtx;
-        t.round_fp[i] = (64 * quant_qtx) >> 7;
-        t.dequant[i] = quant_qtx;
+        t.zbin[i] = (qzbin * qtx + 64) >> 7;
+        t.round[i] = (qround * qtx) >> 7;
+        t.quant_fp[i] = (1 << 16) / qtx;
+        t.round_fp[i] = (64 * qtx) >> 7;
+        i += 1;
     }
     t
+}
+
+const fn default_quant_rows(bd: u8) -> [QuantTable; 256] {
+    let mut rows = [default_quant_row(0, bd); 256];
+    let mut q = 1;
+    while q < 256 {
+        rows[q] = default_quant_row(q as u8, bd);
+        q += 1;
+    }
+    rows
+}
+
+static QUANT_ROWS_8: [QuantTable; 256] = default_quant_rows(8);
+static QUANT_ROWS_10: [QuantTable; 256] = default_quant_rows(10);
+
+pub fn build_quant_table(qindex: u8) -> QuantTable {
+    QUANT_ROWS_8[qindex as usize]
+}
+
+/// [SVT_HDR_MODE] bd8 row with the fork sharpness adjustment.
+pub fn build_quant_table_sharp(qindex: u8, sharpness: i8) -> QuantTable {
+    build_quant_table_bd_sharp(qindex, 8, sharpness)
 }
 
 /// Bit-depth-aware quantizer row (`svt_av1_build_quantizer` at `bd`).
@@ -193,42 +213,19 @@ pub fn build_quant_table_bd(qindex: u8, bd: u8) -> QuantTable {
 /// (`svt_av1_build_quantizer`, md_config_process.c:106-120). `sharpness == 0`
 /// is byte-identical to [`build_quant_table_bd`].
 pub fn build_quant_table_bd_sharp(qindex: u8, bd: u8, sharpness: i8) -> QuantTable {
-    let (dc, ac): (i32, i32) = match bd {
-        8 => (
-            svtav1_dsp::quant_tables::DC_QLOOKUP_8[qindex as usize] as i32,
-            svtav1_dsp::quant_tables::AC_QLOOKUP_8[qindex as usize] as i32,
-        ),
-        10 => (
-            crate::bd10::dc_qlookup_10(qindex) as i32,
-            crate::bd10::ac_qlookup_10(qindex) as i32,
-        ),
+    let mut t = match bd {
+        8 => QUANT_ROWS_8[qindex as usize],
+        10 => QUANT_ROWS_10[qindex as usize],
         _ => unreachable!("build_quant_table_bd: only bd 8/10 supported (bd12 out of scope)"),
     };
-    // svt_aom_get_qzbin_factor: q==0 -> 64; else dc < th ? 84 : 80 with
-    // th = 148 (bd8) / 592 (bd10). crate::bd10::qzbin_factor encodes both.
-    let qzbin_factor = crate::bd10::qzbin_factor(qindex, dc, bd);
-    let qrounding_factor = if qindex == 0 { 64 } else { 48 };
-    let (qzbin_factor, qrounding_factor) =
-        apply_quant_sharpness_factors(qzbin_factor, qrounding_factor, qindex, sharpness);
-    let mut t = QuantTable {
-        zbin: [0; 2],
-        round: [0; 2],
-        quant: [0; 2],
-        quant_shift: [0; 2],
-        round_fp: [0; 2],
-        quant_fp: [0; 2],
-        dequant: [0; 2],
-        qm_level: 15,
-    };
-    for (i, quant_qtx) in [dc, ac].into_iter().enumerate() {
-        let (quant, shift) = invert_quant(quant_qtx);
-        t.quant[i] = quant;
-        t.quant_shift[i] = shift;
-        t.zbin[i] = (qzbin_factor * quant_qtx + 64) >> 7;
-        t.round[i] = (qrounding_factor * quant_qtx) >> 7;
-        t.quant_fp[i] = (1 << 16) / quant_qtx;
-        t.round_fp[i] = (64 * quant_qtx) >> 7;
-        t.dequant[i] = quant_qtx;
+    if sharpness != 0 {
+        let qzbin = crate::bd10::qzbin_factor(qindex, t.dequant[0], bd);
+        let qround = if qindex == 0 { 64 } else { 48 };
+        let (qzbin, qround) = apply_quant_sharpness_factors(qzbin, qround, qindex, sharpness);
+        for i in 0..2 {
+            t.zbin[i] = (qzbin * t.dequant[i] + 64) >> 7;
+            t.round[i] = (qround * t.dequant[i]) >> 7;
+        }
     }
     t
 }
