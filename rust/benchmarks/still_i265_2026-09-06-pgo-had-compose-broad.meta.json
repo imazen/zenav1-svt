@@ -1,0 +1,22 @@
+{
+  "encoder_source_commit": "9e8a28a1eb35",
+  "cells": 135,
+  "pairs": 675,
+  "identical": 675,
+  "median_at_most_1_50": 80,
+  "p75_at_most_1_50": 80,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-compose-broad.raw.tsv": {
+      "sha256": "80f303e2b29078300aeb45e6370bf2716567989d51275b57a879785cc180ad2c",
+      "bytes": 35460
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-compose-broad.meta.json": {
+      "sha256": "d47585b326cadd940ec87031bf1eaf6469cd903b2d05846115c8ab3e78eb83a2",
+      "bytes": 33364
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-compose-broad.log": {
+      "sha256": "e63b0293d9ac29ce0f4eb120b49e1ec9772ff679174b8086eaf3c9cc55385536",
+      "bytes": 37881
+    }
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "encoder_source_commit": "9e8a28a1eb35",
+  "capture": {
+    "cell": {
+      "name": "photo_nyc-512-q60-p2",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/photo_nyc-512.yuv",
+      "width": "512",
+      "height": "512",
+      "qp": "60",
+      "preset": "2"
+    },
+    "cpu": 2,
+    "warmups": 20,
+    "host": "i265",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "event": "cpu_core/cycles/u",
+    "period": 200000,
+    "call_graph": "dwarf,8192",
+    "scope": "whole process, including constructors, teardown and logging",
+    "sudo_perf": true,
+    "checkout_commit": "9341245d9cddd8de33fa687fe17169717ae81d73",
+    "input_sha256": "e526c993de5ac7ff8990dbdc6890056ce640bc22dfaf1c20f62ff6dfc9407201",
+    "arms": {
+      "rust": {
+        "binary": "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-compose/perf_encode.pgo",
+        "binary_sha256": "7ac71e4116438bb06d5e342cfdbd7292dd50afc433e5e06d424c19fc7be7f4d3",
+        "command": [
+          "sudo",
+          "-n",
+          "perf",
+          "record",
+          "-e",
+          "cpu_core/cycles/u",
+          "-c",
+          "200000",
+          "-g",
+          "--call-graph",
+          "dwarf,8192",
+          "-o",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/rust.perf",
+          "--",
+          "taskset",
+          "-c",
+          "2",
+          "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-compose/perf_encode.pgo",
+          "raw:/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/photo_nyc-512.yuv",
+          "512",
+          "512",
+          "60",
+          "2",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/rust",
+          "20"
+        ],
+        "samples": 245086,
+        "lost_samples": 0,
+        "files": {
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/rust.perf": {
+            "sha256": "602d01853992ead90b0c0e761089a71c67fe1c95f9080dc8d2b2a73f0197e192",
+            "bytes": 2064784840
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/rust.record.log": {
+            "sha256": "24dd26ab75d5a37bbc7fa72e6c8dce12072307d31f38867d3249ee1975098c9f",
+            "bytes": 219
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/rust.self.txt": {
+            "sha256": "fa058d85886e233b5c53506c67ac8622c73d05849fe2317e3509ad54a38e781d",
+            "bytes": 41135
+          }
+        }
+      },
+      "c": {
+        "binary": "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+        "binary_sha256": "56154b900b9fcba4998033461054df8a198ae38b937ecd4269c63d6fd3723781",
+        "command": [
+          "sudo",
+          "-n",
+          "perf",
+          "record",
+          "-e",
+          "cpu_core/cycles/u",
+          "-c",
+          "200000",
+          "-g",
+          "--call-graph",
+          "dwarf,8192",
+          "-o",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/c.perf",
+          "--",
+          "taskset",
+          "-c",
+          "2",
+          "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+          "512",
+          "512",
+          "60",
+          "2",
+          "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/photo_nyc-512.yuv",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/c.obu",
+          "20"
+        ],
+        "samples": 130429,
+        "lost_samples": 0,
+        "files": {
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/c.perf": {
+            "sha256": "2c7a1fae58b98f2e91ec9dcbd9f8a425fd194070e12aaf9bb6ac1607a972d730",
+            "bytes": 1098899496
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/c.record.log": {
+            "sha256": "567f47087e5dd461b1ad04adcf1f57ffd167b8c3febad1a21bdf483081ad110a",
+            "bytes": 26853
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/c.self.txt": {
+            "sha256": "d43a6fcf20ba82089a33cfe63ce86cd10de966f7c4bdfaa52428dc6399afbc0c",
+            "bytes": 46971
+          }
+        }
+      }
+    },
+    "identical": true
+  },
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose/meta.json": {
+      "sha256": "0a24963b4641812f75782edc54f3f69cf1ab051abfb9d9801ab66e3799150870",
+      "bytes": 3909
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/profile-nyc-had-compose.log": {
+      "sha256": "b4109b63d9eede0167fcc25c6c354d619388cb7bb0f3c8017f00e5ebfaab9807",
+      "bytes": 732
+    }
+  }
+}

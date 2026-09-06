@@ -1,0 +1,131 @@
+{
+  "encoder_source_commit": "9e8a28a1eb35",
+  "capture": {
+    "cell": {
+      "name": "screen_wiki-1024-q60-p8",
+      "yuv": "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/screen_wiki-1024.yuv",
+      "width": "1024",
+      "height": "1024",
+      "qp": "60",
+      "preset": "8"
+    },
+    "cpu": 2,
+    "warmups": 400,
+    "host": "i265",
+    "platform": "Linux-7.0.0-31-generic-x86_64-with-glibc2.43",
+    "event": "cpu_core/cycles/u",
+    "period": 200000,
+    "call_graph": "dwarf,8192",
+    "scope": "whole process, including constructors, teardown and logging",
+    "sudo_perf": true,
+    "checkout_commit": "9341245d9cddd8de33fa687fe17169717ae81d73",
+    "input_sha256": "c146ebd80ab70e56353453ed5d1b329528b2c5c158c671930aae295d2674e51e",
+    "arms": {
+      "rust": {
+        "binary": "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-compose/perf_encode.pgo",
+        "binary_sha256": "7ac71e4116438bb06d5e342cfdbd7292dd50afc433e5e06d424c19fc7be7f4d3",
+        "command": [
+          "sudo",
+          "-n",
+          "perf",
+          "record",
+          "-e",
+          "cpu_core/cycles/u",
+          "-c",
+          "200000",
+          "-g",
+          "--call-graph",
+          "dwarf,8192",
+          "-o",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/rust.perf",
+          "--",
+          "taskset",
+          "-c",
+          "2",
+          "/home/lilith/tmp/still-perf-2026-09-06/pgo-had-compose/perf_encode.pgo",
+          "raw:/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/screen_wiki-1024.yuv",
+          "1024",
+          "1024",
+          "60",
+          "8",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/rust",
+          "400"
+        ],
+        "samples": 121894,
+        "lost_samples": 0,
+        "files": {
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/rust.perf": {
+            "sha256": "52bb0fe0488397b92bad38b35457e707efe99f7fab2177f9e03ee8ac09082f41",
+            "bytes": 1026950152
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/rust.record.log": {
+            "sha256": "5b697f482c946d52d4251eac82deb553a3ebfe0744ef70a00e90e51c0c1c9a62",
+            "bytes": 219
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/rust.self.txt": {
+            "sha256": "3ebc4c0c75ee5fc37b88298776b01cb0c48868418e4e934472f165c35780cdae",
+            "bytes": 33721
+          }
+        }
+      },
+      "c": {
+        "binary": "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+        "binary_sha256": "56154b900b9fcba4998033461054df8a198ae38b937ecd4269c63d6fd3723781",
+        "command": [
+          "sudo",
+          "-n",
+          "perf",
+          "record",
+          "-e",
+          "cpu_core/cycles/u",
+          "-c",
+          "200000",
+          "-g",
+          "--call-graph",
+          "dwarf,8192",
+          "-o",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/c.perf",
+          "--",
+          "taskset",
+          "-c",
+          "2",
+          "/home/lilith/tmp/still-perf-2026-09-06/c-pgo-first/perf_c_encode.pgo",
+          "1024",
+          "1024",
+          "60",
+          "8",
+          "/home/lilith/tmp/still-perf-2026-09-06/broad-inputs/screen_wiki-1024.yuv",
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/c.obu",
+          "400"
+        ],
+        "samples": 75551,
+        "lost_samples": 0,
+        "files": {
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/c.perf": {
+            "sha256": "b147708ae48520ae0c451bc72c9347dd349b821e31b725b0327129604a0c47ef",
+            "bytes": 637822736
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/c.record.log": {
+            "sha256": "14a2eaed098d67b03c0da5ce2926aefe67b4ce979378854b3d1c68f1e71fa479",
+            "bytes": 555207
+          },
+          "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/c.self.txt": {
+            "sha256": "e3751f6bb9aa1eec5938a21583e90e7036bdeed634a19ce34e8cf1d42a66ed6e",
+            "bytes": 33639
+          }
+        }
+      }
+    },
+    "identical": true
+  },
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose/meta.json": {
+      "sha256": "86da6809eec8c3a4e71bff308b21da167897d0f56ec65fea6702e3c886721b2c",
+      "bytes": 3939
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/profile-wiki-had-compose.log": {
+      "sha256": "dea8b73977b3f90b0c9b0c6977397ff2492586c94cfaaadf1c9ff5bceeb1c6db",
+      "bytes": 742
+    }
+  }
+}

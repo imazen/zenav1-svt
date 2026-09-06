@@ -1,0 +1,18 @@
+{
+  "pairs": 30,
+  "identical": 30,
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-pgo-frame-ab.raw.tsv": {
+      "sha256": "22260a3eb6037fd3a717c0f884c8354d55073dd25bec57eb554b7824b75dfe90",
+      "bytes": 1649
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-pgo-frame-ab.meta.json": {
+      "sha256": "c5bab8dac6e07f0cbf668251737484767545f0e19518fd9379594452627c3754",
+      "bytes": 1535
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/had-compose-pgo-frame-ab.log": {
+      "sha256": "1fdb9c70873b51adc466b2a0437fd944770f801f75ff4470ff3c989a7e55ba32",
+      "bytes": 1946
+    }
+  }
+}
