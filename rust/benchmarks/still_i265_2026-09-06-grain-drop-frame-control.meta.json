@@ -1,0 +1,20 @@
+{
+  "candidate_change": "vtrwwonp",
+  "pairs": 99,
+  "identical": 99,
+  "build": "opt3 baseline CPU, no PGO, core2",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-frame-control.raw.tsv": {
+      "sha256": "2af4262e749be16dacb79b95b753e666fd1f6fdd18e3b96f3c6ff86ee1cb05bb",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-frame-control.meta.json": {
+      "sha256": "c49ecfa11e16568bf55938b4ecdc06cfe06dc1faafcda6e4c3c1709b1fbb2fe6",
+      "bytes": 4157
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-frame-control.log": {
+      "sha256": "6f94a5f5d871f7d8b9508fe520fbee240b36f68eedaea8d5cbe5178a792003cb",
+      "bytes": 5379
+    }
+  }
+}

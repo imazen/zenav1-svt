@@ -1067,3 +1067,33 @@ Training takes60s and the held-out sweep412s under the shared wrapper. The
 sweep's peak monitored RSS is0.07GiB, minimum available memory29,215MiB.
 Tables and preserved artifact hashes are in
 `benchmarks/still_i265_2026-09-06-pgo-satd-{training,broad}.*`.
+
+
+## Remove the discarded film-grain estimate
+
+Removed the unconditional full-frame heuristic whose return value was dropped.
+This is not C's denoiser/model or the separately wired photon-noise table
+path. No public helper was removed. User clarification requires every C
+feature to be ported and wired; the audit in
+[film-grain port map](film-grain-port-map.md) records the actual remaining
+denoiser, supplied-table, inter-frame and recon-output gaps. They are required
+missing work, not N/A. Existing historical claims of no grain signaling were
+corrected without treating photon-noise support as full film-grain coverage.
+
+All2,564 workspace tests,104 regression cases and the three photon-noise
+decode checks pass. The decode checks compare pre-grain reconstruction with
+`aomdec --skip-film-grain`, and require normal decoding to differ. They do not
+prove C-equivalent grain-applied reconstruction output. No fresh full envelope
+sweep is claimed for deleting a discarded calculation outside mode decisions.
+
+All99 non-PGO frame A/B pairs are identical. Wiki1024/QP60/p8 improves2.31%;
+NYC512/QP60/p2 improves1.22%; CLIC512/QP40/p8 improves1.01%. Several smaller
+changes have overlapping/noisy intervals, including terminal p2's0.06%
+regression. All99 same-binary control pairs are also identical; control medians
+range0.9968–1.0058. Wiki control quartiles0.9969–1.0073 are separated from
+the candidate0.9735–0.9800. NYC control and candidate spans nearly touch,
+so its smaller gain is less decisive. The production
+text section shrinks704 bytes. Records and raw artifact hashes:
+`benchmarks/still_i265_2026-09-06-grain-drop-frame-{ab,control}.*`.
+The current matched-PGO position still refers to coefficient reductions;
+no fresh PGO result is claimed for this cleanup yet.

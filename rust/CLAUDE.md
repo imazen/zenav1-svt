@@ -1138,6 +1138,10 @@ from `mainline_v4.2.bit-affecting.diff`. cref oracles + new c_parity suites.
   bit-affecting-changed 4.1->4.2 and untracked. Inline SAD IS C-equivalent:
   tests/c_parity_motion_est.rs pins full_pel_search distortion == svt_aom_sad at
   the chosen MV. Non-normative, inter-only/dormant.
+- **2026-09-06 correction:** The following film-grain entry is historical.
+  Fork photon-noise generation and KEY-frame signaling are now wired; the
+  real C denoiser and supplied-table paths remain incomplete. Those gaps are
+  required features, not N/A. See `docs/film-grain-port-map.md`.
 - **film_grain.rs — HOMEGROWN + INERT.** estimate_film_grain output is discarded
   (pipeline `_grain_params`) and obu.rs always emits film_grain_params_present=0.
   Not a port of noise_model.c/grainSynthesis.c (bit-affecting-changed). No FH

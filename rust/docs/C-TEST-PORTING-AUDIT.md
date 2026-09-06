@@ -135,11 +135,15 @@ sweep, `search_switchable`) is a separate, still-open item.
 
 ### 1f. Film-grain / noise (HDR-fork synthesis)
 
+2026-09-06: default-off C features remain required. See
+[film-grain port map](film-grain-port-map.md) for configuration, wiring and
+inter-frame gaps; helper parity alone does not establish feature coverage.
+
 | C test file | Kernel under test | Rust coverage | Class |
 |---|---|---|---|
-| `FilmGrainTest.cc` | grain synthesis + `denoise_and_model` | `c_parity_noise_gen.rs::noise_table_matches_c` (:57); `c_parity_noise_norm.rs` | PORTED-diff (synthesis). **denoise-analysis = N/A** |
-| `FFTTest.cc` | FFT (denoise pre-analysis) | — | **N/A** — denoise-analysis path not ported (fork uses ISO-strength synthesis) |
-| `noise_model_test.cc` | `flat_block_finder`, noise model fit | — | **N/A** — same (denoise-analysis not ported) |
+| `FilmGrainTest.cc` | grain synthesis + `denoise_and_model` | `c_parity_noise_gen.rs::noise_table_matches_c` (:57); `c_parity_noise_norm.rs` | PORTED-diff (synthesis). **denoise-analysis = MISSING** |
+| `FFTTest.cc` | FFT (denoise pre-analysis) | — | **MISSING** — denoise-analysis path not ported; fork photon-noise coverage does not cover it |
+| `noise_model_test.cc` | `flat_block_finder`, noise model fit | — | **MISSING** — denoise-analysis not ported |
 
 ### 1g. Inter / motion / compound / global-motion / temporal (OUT OF SCOPE)
 

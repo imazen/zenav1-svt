@@ -6226,11 +6226,6 @@ impl EncodePipeline {
             }
         }
 
-        // Step 6b: Film grain estimation (compare source to reconstruction)
-        let _grain_params = crate::film_grain::estimate_film_grain(&encode_input, &recon, w, h, w);
-        // grain_params would be signaled in the frame header OBU
-        // and used by the decoder to re-synthesize grain
-
         // Step 7: Build OBU bitstream
         // Use full (non-reduced) sequence header for multi-frame sequences,
         // still-picture header only for single-frame mode. is_single_frame

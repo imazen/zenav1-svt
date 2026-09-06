@@ -1,0 +1,52 @@
+{
+  "candidate_change": "vtrwwonp",
+  "pairs": 99,
+  "identical": 99,
+  "build": "opt3 baseline CPU, no PGO, core2",
+  "files": {
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-frame-ab.raw.tsv": {
+      "sha256": "b0770315a02902ce7a3fc1902591ca9577bc84c920fd1ac260ee323209a855a8",
+      "bytes": 5346
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-frame-ab.meta.json": {
+      "sha256": "c284cec7c80cd1b13c5447c3377c670a9dbd442d2067e7b2bda648cd2fcbe5d9",
+      "bytes": 4035
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-frame-ab.log": {
+      "sha256": "3b87fb43f1993e79ec9e7e62c2488223387a075e0af2cc87f6dc5005efd03b00",
+      "bytes": 5373
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-nextest.log": {
+      "sha256": "27bb06b9af0f648414fc40456d5797ae55f27bb1339e320ab5924a2300213330",
+      "bytes": 290208
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-spotcheck.log": {
+      "sha256": "2b7d3f553870188fdd26b7aa4f3ea087a2f39420ff2ff123ca9e3066cdb1bdfb",
+      "bytes": 274
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-build.sh": {
+      "sha256": "e3375d8421157858ecf0d5f2a65cb33f4d723f51b66845b585970a0c9b2f1383",
+      "bytes": 425
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-build.log": {
+      "sha256": "ab8bb4bcc40d88218561497036817b2cdceed93e5769a85a50fea4137bdd7fba",
+      "bytes": 1455
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-decode.sh": {
+      "sha256": "295ec55d8ad3780c5d11442c88df5478674298fe4c9ff687ce9ded8f5621febb",
+      "bytes": 901
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/grain-drop-decode.log": {
+      "sha256": "d42b6b6904b9a96b7601841ecad0398ed9974f6103e3a735b691012dd258e082",
+      "bytes": 1510
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.satd-reduce": {
+      "sha256": "59ee3911c5fae8c026d3b6afa3692d9ccea2bc1a893cb23a9e57f59b2fc27e15",
+      "bytes": 4156776
+    },
+    "/home/lilith/tmp/still-perf-2026-09-06/perf_encode.grain-drop": {
+      "sha256": "322507f8dcc13c68cdb072208fb25b1fe611c2677c8aa40dc2a1fe12ac0289d0",
+      "bytes": 4155592
+    }
+  }
+}
