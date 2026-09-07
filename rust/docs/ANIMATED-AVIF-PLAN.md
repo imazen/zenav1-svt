@@ -26,9 +26,18 @@ Its all-feature workspace suite passes 866/866 (nine existing skips), default
 workspace passes 472 tests (ten existing ignores), explicit managed/AOM tests
 pass 7/7, and all-feature library clippy passes with warnings denied. See the
 canonical `benchmarks/legacy_decoder_2026-09-07.md` for the mutation witness
-correction and exact scope. Canonical's SVT backend is still pinned to
-`2d75a105`; integrating the newly merged encoder and exposing its expanded
-capabilities there remains required. Transparent grids remain unsupported.
+correction and exact scope.
+
+Canonical SVT integration is now pushed as `c80da30d`: it pins merged SVT
+`4e688a54` and matching SIMD revision `cc24398c`, enabling odd/partial mono
+and alpha at every speed at 8/10 bits. Former refusal tests now verify
+successful round trips at their unchanged quality floors; 18 QP-0 mono/native
+10-bit streams reconstruct source-exactly with both raw decoders. Focused
+SVT tests pass 26/26; the full all-feature workspace passes 867/867 (nine
+existing skips), default tests/doctests 472 (ten existing ignores), and
+all-feature library clippy passes with warnings denied. See canonical
+`benchmarks/svt_capabilities_2026-09-07.md`. Public canonical animation and
+explicit lossless wiring remain required; transparent grids remain unsupported.
 CI is still deferred and the full objective remains active.
 
 ## Authoritative baseline
