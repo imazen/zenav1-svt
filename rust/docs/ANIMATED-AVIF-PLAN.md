@@ -42,7 +42,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 
 | Requirement | Current state / next evidence |
 |---|---|
-| Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite-count and exact downstream timing APIs remain |
+| Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite counts now survive the canonical parser/native metadata; exact downstream timing APIs remain |
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. 8/10-bit lossless color/alpha and monochrome source pixels are verified; 12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
@@ -210,11 +210,12 @@ truncated and saturated, so it could not represent the encoded timing range.
 source harnesses both pass clippy with warnings denied. Main clippy completes
 with existing warnings. Evidence: `timing-parser-serializer.log` and
 `timing-clippy.log`. Managed/codec decoder adapters still use the legacy
-millisecond field and require follow-up wiring. A separate verified gap remains:
-canonical parser `loop_count: u32` rejects 4,294,967,296 finite playbacks, though
-the serializer writes the correct presentation duration. Libavif deliberately
-reports counts above INT_MAX as infinite; the gate independently checks exact
-box values for those cases. See canonical Known Bugs for the reproducer.
+millisecond field and require follow-up wiring. The finite-count rejection is now fixed: canonical parser and native decoder
+metadata preserve `u64` total playbacks, including 4,294,967,296. The narrower
+zencodec adapter explicitly rejects overflow; full-width shared-codec support
+remains. Libavif independently reports counts above INT_MAX as infinite, so the
+gate checks exact box values for those cases. See canonical Known Bugs for the
+before/after witness and API migration details.
 
 Before eventually landing preserved workflow change `puzrqvms`, add the new
 timing gate alongside its metadata gate. CI is still deferred; local serializer
