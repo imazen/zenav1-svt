@@ -107,3 +107,14 @@ variance-boost-recon outdir="target/variance_boost_recon":
 # Paired runtime tiers; filter is a group-name substring (empty runs all).
 arm-kernel-audit filter="":
     CARGO_BUILD_JOBS=4 RAYON_NUM_THREADS=4 OMP_NUM_THREADS=4 TMPDIR="$HOME/tmp" nice -n 19 cargo bench -p zenav1-svt-dsp --bench kernel_tiers -- --group="{{filter}}"
+
+# Old quality-program regressions and shipping-refusal inventory.
+quality-program-check:
+    cargo test -p zenav1-svt-types --no-default-features
+    cargo nextest run -p zenav1-svt-encoder -E 'test(cancellation_tests) | test(invalid_builders) | test(untileable) | test(tile_log2_blk)'
+    python3 tools/test_refusal_inventory.py
+    bash tools/refusal_inventory.sh --check
+
+# Run under the shared run-heavy wrapper, as for other benchmark recipes.
+cancel-latency preset="8" out="benchmarks/cancel_latency_local.tsv":
+    cargo run --release -p zenav1-svt --example cancel_latency -- --sizes 64,256,1024,4096 --preset {{preset}} --points 12 --reps 2 --baseline-reps 2 --out {{out}}

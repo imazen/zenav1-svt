@@ -137,6 +137,7 @@ impl BlockSize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     #[test]
     fn block_size_discriminants_match_c() {

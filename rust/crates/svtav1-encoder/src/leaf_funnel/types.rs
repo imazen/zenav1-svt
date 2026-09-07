@@ -607,15 +607,6 @@ impl LeafEval {
         &self.psq_resid10
     }
 
-    /// Winner luma recon (w x h raster).
-    ///
-    /// Kept alongside the used `psq_resid`/`psq_resid10` family so the
-    /// winner's buffers have a uniform read surface; no live caller today.
-    #[allow(dead_code)]
-    pub(crate) fn y_recon(&self) -> &[u8] {
-        &self.win.y_recon
-    }
-
     /// The walk/entropy-pass view of the winner.
     ///
     /// Takes `self` and MOVES the winner's seven owned buffers into the

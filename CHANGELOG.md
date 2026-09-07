@@ -36,6 +36,14 @@ Crates are not published to crates.io yet — depend by git.
 - Animated AVIF square-pixel aspect, rotation and mirroring metadata on color tracks and posters, with early validation and independent libavif conformance checks.
 
 - Correct partial-edge chroma reconstruction and pad native 10-bit alpha for odd frame dimensions; add decoder regression witnesses.
+- Recovered the quality-program table/error invariants, post-filter cancellation
+  regressions and cancellation latency harness; see the
+  [ten-commit audit](rust/docs/quality-program-audit-2026-09-07.md).
+- Invalid superres/SB builders and untileable frames now return encode errors;
+  8/10-bit post-filter searches and applications poll cancellation (`2f96626d4`).
+  The current 10-bit re-encode pass is isolated without changing its five
+  function bodies (`4e1302966`).
+
 - Native 10-bit animated AVIF with color and alpha; monochrome high-bit-depth reconstruction now passes through the post-filters (`ff0deb37`).
 
 - Animated AVIF metadata and repetition options, poster alpha, and an independent libavif metadata gate; serializer pinned to canonical `7b058bb8` (`b04f372a`).
@@ -43,6 +51,10 @@ Crates are not published to crates.io yet — depend by git.
 ### QUEUED BREAKING CHANGES
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->
+- **AVIF error payloads (`c9977abb8`).** `EncodeError` is non-exhaustive;
+  `InvalidDimensions` now carries `width`, `height`, and `reason`, and
+  `InvalidQuality` carries `quality`. Update matches on the former unit
+  variants and include a fallback arm for the non-exhaustive enum.
 - **Crate consolidation 6 → 4 publishable packages (issue #3, 2026-08-28).**
   `zenav1-svt-tables` is folded into `zenav1-svt-types` as
   `svtav1_types::tables::{block, interp, partition, scan, transform}` and

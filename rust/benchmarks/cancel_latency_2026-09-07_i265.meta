@@ -1,0 +1,16 @@
+Host: i265, x86-64, 30 GiB RAM, 20 logical CPUs
+Date: 2026-09-07 UTC
+Encoder source: 4e1302966 plus documentation/dead-accessor cleanup
+Harness: recovered bbaefef823fd, formatted for current workspace
+C oracle: not used by this latency benchmark
+Scheduler: run-heavy --mem 16G --jobs 8, nice 19, serialized jobs
+Worktree: zenav1-svt--quality-audit, independent rust/target
+Command for each PRESET in 6,8,13 (run from repository root):
+TMPDIR=/home/lilith/tmp ~/work/claudehints/scripts/run-heavy --mem 16G --jobs 8 -- cargo run --manifest-path rust/Cargo.toml --release -p zenav1-svt --example cancel_latency -- --sizes 64,256,1024,4096 --preset PRESET --points 12 --reps 2 --baseline-reps 2 --out rust/benchmarks/cancel_latency_pPRESET_2026-09-07_i265.tsv
+Method: 8-bit still images, QP40; timed asks at 12 fractions of a 2-run baseline;
+2 repetitions; every ask-before-return is included; missed asks are NA.
+No claim of universal latency bound or improvement against historical ARM data.
+run-heavy totals (include Cargo overhead):
+p6: 26s, peak RSS .51GiB, min available 28127MiB, peak load 1.02
+p8: 12s, peak RSS .88GiB, min available 28188MiB, peak load .60
+p13: 13s, peak RSS .88GiB, min available 27947MiB, peak load 2.84

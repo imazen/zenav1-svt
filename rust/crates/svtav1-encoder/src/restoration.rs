@@ -969,6 +969,41 @@ pub fn search_restoration_still_bd<P: LrPixel>(
     rdmult: i64,
     bit_depth: u8,
 ) -> crate::EncodeResult<FrameRestInfo> {
+    search_restoration_still_bd_with_stop(
+        wn_ctrls,
+        sg_ctrls,
+        src_y,
+        src_u,
+        src_v,
+        recon_y,
+        recon_u,
+        recon_v,
+        w,
+        h,
+        has_chroma,
+        rdmult,
+        bit_depth,
+        &enough::Unstoppable,
+    )
+}
+
+pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
+    wn_ctrls: &WnFilterCtrls,
+    sg_ctrls: &crate::port_lr_level::SgFilterCtrls,
+    src_y: &[P],
+    src_u: &[P],
+    src_v: &[P],
+    recon_y: &[P],
+    recon_u: &[P],
+    recon_v: &[P],
+    w: usize,
+    h: usize,
+    has_chroma: bool,
+    rdmult: i64,
+    bit_depth: u8,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<FrameRestInfo> {
+    crate::stop_check(stop)?;
     debug_assert!(wn_ctrls.enabled || sg_ctrls.enabled);
     let wn_luma = if wn_ctrls.filter_tap_lvl == 1 {
         WIENER_WIN
@@ -994,6 +1029,7 @@ pub fn search_restoration_still_bd<P: LrPixel>(
     let mut planes = alloc::vec::Vec::new();
 
     for plane in 0..3usize {
+        crate::stop_check(stop)?;
         let is_uv = plane > 0;
         let ss = i32::from(is_uv);
         // C whole_frame_rect (restoration.c:58-59): the plane rect is the
@@ -1049,7 +1085,16 @@ pub fn search_restoration_still_bd<P: LrPixel>(
             });
         }
 
+        let mut cancelled = None;
         foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
+            if cancelled.is_some() {
+                return;
+            }
+            if let Err(e) = crate::stop_check(stop) {
+                cancelled = Some(e);
+                return;
+            }
+
             // search_norestore_seg: SSE of the unfiltered recon vs source.
             units[unit_idx as usize].sse[RESTORE_NONE as usize] = P::sse_region(
                 src,
@@ -1070,10 +1115,22 @@ pub fn search_restoration_still_bd<P: LrPixel>(
                 units[unit_idx as usize].sse[RESTORE_NONE as usize]
             );
         });
+        if let Some(e) = cancelled {
+            return Err(e);
+        }
 
         // C: `if (cm->wn_filter_ctrls.enabled && (!plane || use_chroma))`.
         if wn_ctrls.enabled && (plane == 0 || wn_ctrls.use_chroma) {
+            let mut cancelled = None;
             foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
+                if cancelled.is_some() {
+                    return;
+                }
+                if let Err(e) = crate::stop_check(stop) {
+                    cancelled = Some(e);
+                    return;
+                }
+
                 // search_wiener_seg.
                 let win2 = wiener_win * wiener_win;
                 let mut m = [0i64; WIENER_WIN * WIENER_WIN];
@@ -1141,6 +1198,9 @@ pub fn search_restoration_still_bd<P: LrPixel>(
                 units[unit_idx as usize].sse[RESTORE_WIENER as usize] = sse;
                 units[unit_idx as usize].wiener = wi;
             });
+            if let Some(e) = cancelled {
+                return Err(e);
+            }
         }
 
         // C: `if (cm->sg_filter_ctrls.enabled && (!plane || use_chroma))` —
@@ -1148,7 +1208,16 @@ pub fn search_restoration_still_bd<P: LrPixel>(
         // all-intra arm (`sg_filter_lvl = 0` at every representable preset);
         // live in VIDEO mode at presets 0..3.
         if sg_ctrls.enabled && (plane == 0 || sg_ctrls.use_chroma) {
+            let mut cancelled = None;
             foreach_rest_unit_in_tile(&rect, hunits, unit_size, ss, |limits, unit_idx| {
+                if cancelled.is_some() {
+                    return;
+                }
+                if let Err(e) = crate::stop_check(stop) {
+                    cancelled = Some(e);
+                    return;
+                }
+
                 let sgr = P::sgr_search_unit(
                     &dgd.data,
                     dgd.origin + limits.v_start as usize * dgd.stride + limits.h_start as usize,
@@ -1181,6 +1250,9 @@ pub fn search_restoration_still_bd<P: LrPixel>(
                 units[unit_idx as usize].sse[RESTORE_SGRPROJ as usize] = sse;
                 units[unit_idx as usize].sgrproj = sgr;
             });
+            if let Some(e) = cancelled {
+                return Err(e);
+            }
         }
 
         // ---- finish phase (`rest_finish_search`, restoration_pick.c:1561) ----
@@ -1503,7 +1575,40 @@ pub fn apply_restoration_frame_bd<P: LrPixel>(
     boundaries: &[StripeBoundariesT<P>],
     bit_depth: u8,
 ) {
+    apply_restoration_frame_bd_with_stop(
+        recon_y,
+        recon_u,
+        recon_v,
+        w,
+        h,
+        stride_y,
+        stride_uv,
+        has_chroma,
+        info,
+        boundaries,
+        bit_depth,
+        &enough::Unstoppable,
+    )
+    .expect("Unstoppable cannot cancel")
+}
+
+pub(crate) fn apply_restoration_frame_bd_with_stop<P: LrPixel>(
+    recon_y: &mut [P],
+    recon_u: &mut [P],
+    recon_v: &mut [P],
+    w: usize,
+    h: usize,
+    stride_y: usize,
+    stride_uv: usize,
+    has_chroma: bool,
+    info: &FrameRestInfo,
+    boundaries: &[StripeBoundariesT<P>],
+    bit_depth: u8,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<()> {
+    crate::stop_check(stop)?;
     for plane in 0..3usize {
+        crate::stop_check(stop)?;
         let pr = &info.planes[plane];
         if pr.frame_rtype == RESTORE_NONE {
             continue;
@@ -1529,7 +1634,16 @@ pub fn apply_restoration_frame_bd<P: LrPixel>(
         extend_frame(&mut data.data, data.origin, pw, ph, data.stride, 3, 3);
         let mut dst = PaddedPlaneT::<P>::empty(pw, ph);
         let rect = plane_rect(pw as i32, ph as i32);
+        let mut cancelled = None;
         foreach_rest_unit_in_tile(&rect, pr.hunits, pr.unit_size, ss, |limits, unit_idx| {
+            if cancelled.is_some() {
+                return;
+            }
+            if let Err(e) = crate::stop_check(stop) {
+                cancelled = Some(e);
+                return;
+            }
+
             let u = &pr.units[unit_idx as usize];
             P::filter_unit_apply(
                 limits,
@@ -1546,8 +1660,13 @@ pub fn apply_restoration_frame_bd<P: LrPixel>(
                 bit_depth,
             );
         });
+        if let Some(e) = cancelled {
+            return Err(e);
+        }
         dst.copy_crop_to_strided(recon, stride);
     }
+
+    Ok(())
 }
 
 /// C `svt_av1_loop_restoration_corners_in_sb` (restoration.c:1410) —

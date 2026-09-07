@@ -14,6 +14,13 @@ verified serializer. Earlier local-path/no-push statements below are historical.
 CI remains deferred; these branch names do not match push workflow filters.
 Canonical optional-feature runtime tests are still in progress.
 
+Main synchronization: merged `74d92430` quality fixes into the animation branch,
+preserving the extracted 10-bit module and the newer lossless/context logic.
+The combined tree passes 2616 tests, 123 C regression cases, 336 native
+source-pixel comparisons and 168 native color C-byte comparisons. See
+`benchmarks/main_merge_2026-09-07.md`. Canonical optional decoder failures remain
+under investigation; CI is still deferred.
+
 ## Authoritative baseline
 
 AVIF 1.2.0: https://aomediacodec.github.io/av1-avif/v1.2.0.html

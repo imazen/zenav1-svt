@@ -1804,6 +1804,11 @@ Two things §1q proves that a reader will otherwise re-derive:
 
 ## 8. What is actually true right now
 
+The [2026-09-07 quality-program audit](quality-program-audit-2026-09-07.md)
+maps all ten old branch commits to current fixes or superseding work, with
+cancellation measurements and validation. Encoder no_std remains unsupported;
+the branch documented that limitation rather than repairing it.
+
 The **live** tallies are the CI gate list (`.github/workflows/rust-gates.yml`,
 and the tables in the root `README.md` that mirror it) plus the per-chunk gate
 blocks in `docs/INTER-ENCODE-PLAN.md` and `docs/perf-status.md`. `STATUS.md` is

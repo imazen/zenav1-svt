@@ -69,7 +69,10 @@ pub fn pick_filter_levels_key_frame(qindex: u8, bit_depth: u8) -> LfLevels {
 /// every by-q level takes the `clamp(filt_guess)` arm) and `dlf_avg` inert.
 /// `is_intra_slice` makes `me_based_dlf_skip` return before it reads
 /// `avg_me_sad`, and `frame_is_boosted` forces the search arms.
-fn key_frame_pick_inputs(qindex: u8, bit_depth: u8) -> crate::dlf_arm::DlfPickInputs<'static> {
+pub(crate) fn key_frame_pick_inputs(
+    qindex: u8,
+    bit_depth: u8,
+) -> crate::dlf_arm::DlfPickInputs<'static> {
     crate::dlf_arm::DlfPickInputs {
         // Level 1 is the lowest `enabled` row of `set_dlf_controls` and the
         // one that reads nothing: `sb_based_dlf`/`dlf_avg`/`use_ref_avg_*`/
@@ -331,7 +334,9 @@ fn search_filter_level<P: DlfPixel>(
     dir: i32,
     last_frame_filter_level: [i32; 4],
     conv_th: i32,
-) -> (i32, i64, i64) {
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<(i32, i64, i64)> {
+    crate::stop_check(stop)?;
     let min_filter_level = 0i32;
     let max_filter_level = MAX_LOOP_FILTER;
     let mut filt_direction = 0i32;
@@ -375,6 +380,7 @@ fn search_filter_level<P: DlfPixel>(
 
     let mut tot_convergence = 0i32;
     while filter_step > 0 {
+        crate::stop_check(stop)?;
         let filt_high = (filt_mid + filter_step).min(max_filter_level);
         let filt_low = (filt_mid - filter_step).max(min_filter_level);
 
@@ -427,7 +433,7 @@ fn search_filter_level<P: DlfPixel>(
         std::eprintln!("DLF_PICK plane={plane} dir={dir} level={filt_best} sse={best_err}");
     }
 
-    (filt_best, ss_err[0], best_err)
+    Ok((filt_best, ss_err[0], best_err))
 }
 
 /// C-exact `svt_av1_pick_filter_level(.., LPF_PICK_FROM_FULL_IMAGE)`
@@ -522,27 +528,45 @@ pub fn pick_filter_levels_full_image<P: DlfPixel>(
     input: &DlfSearchInput<'_, P>,
     pick: &crate::dlf_arm::DlfPickInputs<'_>,
 ) -> crate::EncodeResult<crate::dlf_arm::DlfPick> {
+    pick_filter_levels_full_image_with_stop(input, pick, &enough::Unstoppable)
+}
+
+pub(crate) fn pick_filter_levels_full_image_with_stop<P: DlfPixel>(
+    input: &DlfSearchInput<'_, P>,
+    pick: &crate::dlf_arm::DlfPickInputs<'_>,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<crate::dlf_arm::DlfPick> {
+    crate::stop_check(stop)?;
     let mut scratch: Vec<P> = svtav1_types::try_with_capacity![input.width * input.height]?;
     // Chroma filtering is unreachable on a monochrome encode: C's chroma
     // searches read planes that do not exist. Reported as a level of 0,
     // which is what the frame header then codes.
     let chroma = input.chroma_420;
-    Ok(crate::dlf_arm::pick_filter_level_full_image(
-        pick,
-        |plane, dir, last| {
-            if plane != 0 && !chroma {
-                return (0, -1, -1);
+    let mut cancelled = None;
+    let result = crate::dlf_arm::pick_filter_level_full_image(pick, |plane, dir, last| {
+        if cancelled.is_some() || (plane != 0 && !chroma) {
+            return (0, -1, -1);
+        }
+        match search_filter_level(
+            input,
+            &mut scratch,
+            plane,
+            dir,
+            last,
+            input.early_exit_convergence,
+            stop,
+        ) {
+            Ok(value) => value,
+            Err(e) => {
+                cancelled = Some(e);
+                (0, -1, -1)
             }
-            search_filter_level(
-                input,
-                &mut scratch,
-                plane,
-                dir,
-                last,
-                input.early_exit_convergence,
-            )
-        },
-    ))
+        }
+    });
+    if let Some(e) = cancelled {
+        return Err(e);
+    }
+    Ok(result)
 }
 
 /// Per-4x4 (mode-info unit) frame geometry for deblocking, recorded during
@@ -980,6 +1004,34 @@ pub fn apply_deblock_frame(
     lv: &LfLevels,
     sharpness: u8,
 ) {
+    apply_deblock_frame_with_stop(
+        y,
+        u,
+        v,
+        width,
+        height,
+        chroma_420,
+        geom,
+        lv,
+        sharpness,
+        &enough::Unstoppable,
+    )
+    .expect("Unstoppable cannot cancel")
+}
+
+pub(crate) fn apply_deblock_frame_with_stop(
+    y: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    lv: &LfLevels,
+    sharpness: u8,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<()> {
+    crate::stop_check(stop)?;
     debug_assert_eq!(geom.mi_cols, width / 4);
     debug_assert_eq!(geom.mi_rows, height / 4);
     let l = lv.levels;
@@ -987,18 +1039,23 @@ pub fn apply_deblock_frame(
     // check_planes_to_loop_filter: both luma levels zero disables ALL
     // planes; chroma planes need their own level nonzero.
     if l[0] == 0 && l[1] == 0 {
-        return;
+        return Ok(());
     }
+    crate::stop_check(stop)?;
     filter_plane(y, width, width, height, 0, 0, l[0], l[1], geom, sharpness);
     if chroma_420 {
         let (cw, ch) = (width / 2, height / 2);
         if l[2] != 0 {
+            crate::stop_check(stop)?;
             filter_plane(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness);
         }
         if l[3] != 0 {
+            crate::stop_check(stop)?;
             filter_plane(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness);
         }
     }
+
+    Ok(())
 }
 
 /// Highbd twin of [`apply_deblock_frame`] — same plane gating, same edge
@@ -1019,24 +1076,59 @@ pub fn apply_deblock_frame_hbd(
     sharpness: u8,
     bd: u8,
 ) {
+    apply_deblock_frame_hbd_with_stop(
+        y,
+        u,
+        v,
+        width,
+        height,
+        chroma_420,
+        geom,
+        lv,
+        sharpness,
+        bd,
+        &enough::Unstoppable,
+    )
+    .expect("Unstoppable cannot cancel")
+}
+
+pub(crate) fn apply_deblock_frame_hbd_with_stop(
+    y: &mut [u16],
+    u: &mut [u16],
+    v: &mut [u16],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    lv: &LfLevels,
+    sharpness: u8,
+    bd: u8,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<()> {
+    crate::stop_check(stop)?;
     debug_assert_eq!(geom.mi_cols, width / 4);
     debug_assert_eq!(geom.mi_rows, height / 4);
     let l = lv.levels;
     if l[0] == 0 && l[1] == 0 {
-        return;
+        return Ok(());
     }
+    crate::stop_check(stop)?;
     filter_plane_hbd(
         y, width, width, height, 0, 0, l[0], l[1], geom, sharpness, bd,
     );
     if chroma_420 {
         let (cw, ch) = (width / 2, height / 2);
         if l[2] != 0 {
+            crate::stop_check(stop)?;
             filter_plane_hbd(u, cw, cw, ch, 1, 1, l[2], l[2], geom, sharpness, bd);
         }
         if l[3] != 0 {
+            crate::stop_check(stop)?;
             filter_plane_hbd(v, cw, cw, ch, 2, 1, l[3], l[3], geom, sharpness, bd);
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
