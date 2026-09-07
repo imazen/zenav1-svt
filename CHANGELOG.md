@@ -11,6 +11,7 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Correct partial-edge chroma reconstruction and pad native 10-bit alpha for odd frame dimensions; add decoder regression witnesses.
 - Native 10-bit animated AVIF with color and alpha; monochrome high-bit-depth reconstruction now passes through the post-filters (`ff0deb37`).
 
 - Animated AVIF metadata and repetition options, poster alpha, and an independent libavif metadata gate; serializer pinned to canonical `7b058bb8` (`b04f372a`).

@@ -47,7 +47,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Clean aperture, rotation, mirror, pixel aspect, sequence track transformations and alpha alignment remain |
-| Format coverage | 8-bit and native 10-bit 4:2:0 APIs, including native alpha. 10-bit currently inherits pipeline alignment/preset restrictions. 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
+| Format coverage | 8-bit and native 10-bit 4:2:0 APIs, including native alpha. Native alpha currently requires preset >=9. 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
 | Robust API | Streaming/bounded memory, cancellation, fallible allocation, overflow checks and complete validation remain to be audited across encoder and serializer |
@@ -86,6 +86,37 @@ It covers qualities 40/98, two frames, variable duration, strided luma, and
 nonzero low two bits. This exposed missing monochrome 10-bit post-filter recon:
 the canvas required chroma planes and its search/apply calls hardcoded 4:2:0.
 The fix carries the monochrome canvas through those same filters.
-Remaining native restrictions (64-aligned dimensions and preset >=9 for alpha)
-are capability gaps to close, not completion claims. Evidence:
+Correction: the 64-alignment claim was stale; both native level producers
+already supported partial superblocks. The remaining native alpha preset >=9
+restriction is a capability gap to close, not a completion claim. Evidence:
 `~/tmp/animation-metadata/hbd-tests.log`. Final local verification: 2,584/2,584 workspace nextest tests, 106/106 regression cases, and 18/18 metadata cases with a locally built libavif 1.3.0 using the proposed CI recipe. Logs: `hbd-nextest-final.log`, `hbd-spotcheck.log`, `ci-recipe-metadata.log` in the same directory. Clippy completed with existing encoder warnings; changed Rust files pass rustfmt checks.
+
+Odd-size continuation (2026-09-07): native monochrome now pads the real u16
+source and its u8 mode-decision input to the same internal dimensions. The
+expanded animation tests exposed two separate reconstruction defects:
+
+- An 8-bit cached chroma block copy crossed the destination row at a partial
+  right edge. Clipping the destination while retaining the transform source
+  stride fixes it. The 65x67 speed-2 (preset-1) fixture previously differed in 656
+  unfiltered chroma bytes from dav1d.
+- C's deblock search uses truncated odd chroma bounds. Output reconstruction
+  now replays the signaled filters with ceiling bounds after encoding decisions
+  are finished, preserving the C search policy. The native 65x65 fixture
+  previously differed in 277 filtered bytes; unfiltered reconstruction was exact.
+
+The three animation tests pass with varied chroma, odd dimensions, strided input,
+8/10-bit color and alpha, and native reconstruction-output byte invariance.
+Evidence: `~/tmp/animation-metadata/odd-full-tests.log`. The final workspace
+run passes 2,586/2,586 tests with zero skips (`odd-nextest-final.log`). Two
+standalone aomdec tests reproduce the animation witnesses; removing the fixes
+makes both fail at the original first differing bytes (`odd-repro-before.log`).
+The regression spot-check now passes 108/108 with zero skips, including both
+tests (`odd-spotcheck-final.log`). The full 8-bit C identity
+sweep passes 1,100/1,100, with no pinned differences or harness errors
+(`odd-identity-full.log`, `odd-identity-full.tsv`). Independent libavif metadata
+verification passes 18/18 (`odd-metadata.log`) with a fresh release example.
+Clippy passes with the existing 1,843 encoder warnings and no animation/new-test
+warnings (`odd-clippy-final.log`); scoped rustfmt and refusal inventory checks
+pass. The output replay currently excludes superresolution; that combination
+still needs its own decoder comparison. Native monochrome mode decision still
+uses the upper 8 bits, while coded levels and filters use the full 10 bits.

@@ -151,11 +151,11 @@ Two envelope details for *consumers*: the 10-bit path is byte-gated internally,
 and the public encode API takes **native 10-bit `&[u16]` input** via
 `try_encode_frame_420_hbd` / `try_encode_frame_hbd` — the low 2 bits reach the
 mode decision, the coded levels, and the deblock/CDEF/Wiener searches
-(`tools/bd10_hbd_src_gate.sh`, 100/100 vs C). Envelope: 64-aligned dims and
-either preset ≥ 9 or a full-RD-capable preset ≤ 8; out-of-envelope configs are
+(`tools/bd10_hbd_src_gate.sh`, 100/100 vs C). Native color supports partial
+superblocks; native monochrome requires preset ≥ 9. Out-of-envelope configs are
 rejected with `UnsupportedConfig`, never silently truncated.
-Non-multiple-of-64 dimensions encode at **preset ≥ 6** (partial superblocks,
-byte-identical); presets 0–5 require multiples of 64.
+Partial-superblock support is shared with the 8-bit path; see the dimension
+gates above for the measured C-byte and decoder-reconstruction coverage.
 
 ## Production API
 
@@ -212,8 +212,7 @@ defaults. With `avif-container`, `encode_animation_yuv420` accepts 8-bit frames,
 and `encode_animation_yuv420_hbd` accepts native 10-bit `u16` frames with
 `with_bit_depth(10)`. The `_with_options` variants accept `AnimationOptions`
 for repetition, ICC, Exif, XMP, CLLI, MDCV, and premultiplied-alpha association.
-Native 10-bit currently requires 64-aligned dimensions, and alpha requires
-preset 9 or higher. [The animation plan](rust/docs/ANIMATED-AVIF-PLAN.md) lists
+Native 10-bit supports partial frame edges; alpha requires preset 9 or higher. [The animation plan](rust/docs/ANIMATED-AVIF-PLAN.md) lists
 verification and remaining format, lossless, spatial-property and video work.
 
 Rust paths use the short `svtav1_*` names; the *package* names carry

@@ -109,8 +109,8 @@ impl AvifEncoder {
     }
 
     /// Encode native 10-bit animation with container metadata and repetition.
-    /// The native pipeline currently requires 64-aligned dimensions; native
-    /// alpha also requires preset 9 or higher.
+    /// Native alpha requires preset 9 or higher. Partial frame edges are padded
+    /// internally; the container and decoded frames retain the requested dimensions.
     pub fn encode_animation_yuv420_hbd_with_options(
         &self,
         frames: &[AnimationFrame<'_, u16>],
@@ -406,11 +406,16 @@ mod tests {
 
     #[test]
     fn three_frame_alpha_sequence_decodes_with_exact_timing_and_alpha() {
-        for (w, h, has_alpha) in [(64usize, 64usize, true), (65, 67, true), (64, 64, false)] {
+        for (w, h, has_alpha, speed) in [
+            (64usize, 64usize, true, 7),
+            (65, 67, true, 7),
+            (64, 64, false, 7),
+            (65, 67, false, 2),
+        ] {
             let out =
                 std::env::temp_dir().join(format!("svt-animation-{}-{w}x{h}", std::process::id()));
             fs::create_dir_all(&out).unwrap();
-            let enc = AvifEncoder::new().with_speed(7);
+            let enc = AvifEncoder::new().with_speed(speed);
             let colors: Vec<Vec<u8>> = (0..3)
                 .map(|f| {
                     (0..w * h)
@@ -421,7 +426,9 @@ mod tests {
             let alphas: Vec<Vec<u8>> = (0..3)
                 .map(|f| (0..w * h).map(|i| ((i + f * 13) % 256) as u8).collect())
                 .collect();
-            let uv = vec![128; w.div_ceil(2) * h.div_ceil(2)];
+            let uv: Vec<u8> = (0..w.div_ceil(2) * h.div_ceil(2))
+                .map(|i| (100 + (i * 7) % 60) as u8)
+                .collect();
             let frames: Vec<_> = (0..3)
                 .map(|f| AnimationFrame {
                     y: &colors[f],
@@ -503,7 +510,20 @@ mod tests {
                     .build_pipeline(w as u32, h as u32)
                     .with_chroma_420(true)
                     .with_recon_output(true);
-                pipe.try_encode_frame_420(source, &uv, &uv, w).unwrap();
+                let raw = pipe.try_encode_frame_420(source, &uv, &uv, w).unwrap();
+                fs::write(out.join("color.obu"), raw).unwrap();
+                let mut pre = Vec::new();
+                let (py, pu, pv) = pipe.last_recon_unfiltered.as_ref().unwrap();
+                for (plane, stride, width, height) in [
+                    (py, pipe.width as usize, w, h),
+                    (pu, pipe.width as usize / 2, w.div_ceil(2), h.div_ceil(2)),
+                    (pv, pipe.width as usize / 2, w.div_ceil(2), h.div_ceil(2)),
+                ] {
+                    for row in 0..height {
+                        pre.extend_from_slice(&plane[row * stride..row * stride + width]);
+                    }
+                }
+                fs::write(out.join("color-prefilter.yuv"), pre).unwrap();
                 let (y, u, v) = pipe.last_recon.unwrap();
                 let mut expected = Vec::new();
                 for (plane, stride, width, height) in [
@@ -517,10 +537,15 @@ mod tests {
                 }
                 let decoded = fs::read(out.join(format!("frame-{i:010}.y4m"))).unwrap();
                 let start = decoded.windows(6).position(|s| s == b"FRAME\n").unwrap() + 6;
-                assert_eq!(
-                    &decoded[start..],
-                    expected,
-                    "frame {i} decoded color planes"
+                fs::write(out.join("color-final.yuv"), &expected).unwrap();
+                assert_eq!(decoded.len() - start, expected.len());
+                assert!(
+                    decoded[start..] == expected,
+                    "8-bit color frame {i}, {w}x{h}, speed {speed}, first differing byte {:?}",
+                    decoded[start..]
+                        .iter()
+                        .zip(&expected)
+                        .position(|(a, b)| a != b)
                 );
             }
             fs::remove_dir_all(out).unwrap();
@@ -529,113 +554,175 @@ mod tests {
 
     #[test]
     fn native_ten_bit_animation_matches_color_and_alpha_reconstruction() {
-        let w = 64usize;
-        let stride = w + 5;
-        let directory =
-            std::env::temp_dir().join(format!("svt-animation-hbd-{}", std::process::id()));
-        fs::create_dir_all(&directory).unwrap();
-        for quality in [40.0, 98.0] {
-            let enc = AvifEncoder::new()
-                .with_bit_depth(10)
-                .with_speed(9)
-                .with_quality(quality);
-            let colors: Vec<Vec<u16>> = (0..2)
-                .map(|f| {
-                    (0..stride * w)
-                        .map(|i| (100 + (i * 7 + f * 133) % 750) as u16)
-                        .collect()
-                })
-                .collect();
-            let alphas: Vec<Vec<u16>> = (0..2)
-                .map(|f| {
-                    (0..w * w)
-                        .map(|i| ((i * 3 + f * 47) % 1024) as u16)
-                        .collect()
-                })
-                .collect();
-            let u: Vec<u16> = (0..w * w / 4).map(|i| (480 + i % 64) as u16).collect();
-            let v: Vec<u16> = (0..w * w / 4).map(|i| (500 + i % 32) as u16).collect();
-            let frames: Vec<_> = (0..2)
-                .map(|i| AnimationFrame {
-                    y: &colors[i],
-                    u: &u,
-                    v: &v,
-                    y_stride: stride,
-                    alpha: Some(alphas[i].as_slice()),
-                    duration: [17, 29][i],
-                })
-                .collect();
-            let bytes = enc
-                .encode_animation_yuv420_hbd(
-                    &frames,
-                    w as u32,
-                    w as u32,
-                    AnimationTiming { timescale: 1000 },
-                )
-                .unwrap();
-            let input = directory.join("input.avif");
-            fs::write(&input, bytes).unwrap();
-            for extension in ["png", "y4m"] {
-                let result = Command::new("avifdec")
-                    .args(["-j", "1", "--index", "all"])
-                    .arg(&input)
-                    .arg(directory.join(format!("frame.{extension}")))
-                    .output()
-                    .unwrap();
-                assert!(
-                    result.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&result.stderr)
-                );
-            }
-            for i in 0..2 {
-                let mut pipe = enc
-                    .build_pipeline(w as u32, w as u32)
-                    .with_chroma_420(true)
-                    .with_recon_output(true);
-                pipe.try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
-                    .unwrap();
-                let (y, u, v) = pipe.last_recon10_final.unwrap();
-                let expected: Vec<u8> = y
-                    .iter()
-                    .chain(&u)
-                    .chain(&v)
-                    .flat_map(|n| n.to_le_bytes())
-                    .collect();
-                assert!(
-                    y.iter().any(|n| n & 3 != 0),
-                    "fixture must preserve native low bits"
-                );
-                let decoded = fs::read(directory.join(format!("frame-{i:010}.y4m"))).unwrap();
-                let offset = decoded.windows(6).position(|p| p == b"FRAME\n").unwrap() + 6;
-                assert_eq!(&decoded[offset..], expected, "10-bit color frame {i}");
+        for w in [64usize, 65, 72] {
+            let stride = w + 5;
+            let directory =
+                std::env::temp_dir().join(format!("svt-animation-hbd-{}", std::process::id()));
+            fs::create_dir_all(&directory).unwrap();
+            for quality in [40.0, 98.0] {
+                for (speed, has_alpha) in [(9, true), (6, false)] {
+                    let enc = AvifEncoder::new()
+                        .with_bit_depth(10)
+                        .with_speed(speed)
+                        .with_quality(quality);
+                    let colors: Vec<Vec<u16>> = (0..2)
+                        .map(|f| {
+                            (0..stride * w)
+                                .map(|i| (100 + (i * 7 + f * 133) % 750) as u16)
+                                .collect()
+                        })
+                        .collect();
+                    let alphas: Vec<Vec<u16>> = (0..2)
+                        .map(|f| {
+                            (0..w * w)
+                                .map(|i| ((i * 3 + f * 47) % 1024) as u16)
+                                .collect()
+                        })
+                        .collect();
+                    let u: Vec<u16> = (0..w.div_ceil(2).pow(2))
+                        .map(|i| (480 + i % 64) as u16)
+                        .collect();
+                    let v: Vec<u16> = (0..w.div_ceil(2).pow(2))
+                        .map(|i| (500 + i % 32) as u16)
+                        .collect();
+                    let frames: Vec<_> = (0..2)
+                        .map(|i| AnimationFrame {
+                            y: &colors[i],
+                            u: &u,
+                            v: &v,
+                            y_stride: stride,
+                            alpha: has_alpha.then_some(alphas[i].as_slice()),
+                            duration: [17, 29][i],
+                        })
+                        .collect();
+                    let bytes = enc
+                        .encode_animation_yuv420_hbd(
+                            &frames,
+                            w as u32,
+                            w as u32,
+                            AnimationTiming { timescale: 1000 },
+                        )
+                        .unwrap();
+                    let input = directory.join("input.avif");
+                    fs::write(&input, bytes).unwrap();
+                    for extension in ["png", "y4m"] {
+                        let result = Command::new("avifdec")
+                            .args(["-j", "1", "--index", "all"])
+                            .arg(&input)
+                            .arg(directory.join(format!("frame.{extension}")))
+                            .output()
+                            .unwrap();
+                        assert!(
+                            result.status.success(),
+                            "{}",
+                            String::from_utf8_lossy(&result.stderr)
+                        );
+                    }
+                    for i in 0..2 {
+                        let mut pipe = enc
+                            .build_pipeline(w as u32, w as u32)
+                            .with_chroma_420(true)
+                            .with_recon_output(true);
+                        let raw = pipe
+                            .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
+                            .unwrap();
+                        let without_recon = enc
+                            .build_pipeline(w as u32, w as u32)
+                            .with_chroma_420(true)
+                            .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
+                            .unwrap();
+                        assert_eq!(
+                            raw, without_recon,
+                            "reconstruction must not change coded bytes"
+                        );
+                        fs::write(directory.join("color.obu"), raw).unwrap();
+                        let mut pre = Vec::new();
+                        let (pu, pv) = pipe.last_recon10_uv.as_ref().unwrap();
+                        for (plane, stride, side) in [
+                            (
+                                pipe.last_recon10_y.as_ref().unwrap(),
+                                pipe.width as usize,
+                                w,
+                            ),
+                            (pu, pipe.width as usize / 2, w.div_ceil(2)),
+                            (pv, pipe.width as usize / 2, w.div_ceil(2)),
+                        ] {
+                            for row in 0..side {
+                                pre.extend(
+                                    plane[row * stride..row * stride + side]
+                                        .iter()
+                                        .flat_map(|n| n.to_le_bytes()),
+                                );
+                            }
+                        }
+                        fs::write(directory.join("color-prefilter.yuv"), pre).unwrap();
+                        let (y, u, v) = pipe.last_recon10_final.unwrap();
+                        let mut expected = Vec::new();
+                        for (plane, stride, side) in [
+                            (&y, pipe.width as usize, w),
+                            (&u, pipe.width as usize / 2, w.div_ceil(2)),
+                            (&v, pipe.width as usize / 2, w.div_ceil(2)),
+                        ] {
+                            for row in 0..side {
+                                expected.extend(
+                                    plane[row * stride..row * stride + side]
+                                        .iter()
+                                        .flat_map(|n| n.to_le_bytes()),
+                                );
+                            }
+                        }
+                        assert!(
+                            y.iter().any(|n| n & 3 != 0),
+                            "fixture must preserve native low bits"
+                        );
+                        let decoded =
+                            fs::read(directory.join(format!("frame-{i:010}.y4m"))).unwrap();
+                        let offset = decoded.windows(6).position(|p| p == b"FRAME\n").unwrap() + 6;
+                        fs::write(directory.join("color-final.yuv"), &expected).unwrap();
+                        assert_eq!(decoded.len() - offset, expected.len());
+                        assert!(
+                            decoded[offset..] == expected,
+                            "10-bit color frame {i}, side {w}, quality {quality}, first differing byte {:?}",
+                            decoded[offset..]
+                                .iter()
+                                .zip(&expected)
+                                .position(|(a, b)| a != b)
+                        );
 
-                let mut settings = enc.clone();
-                settings.full_range = true;
-                let mut pipe = settings
-                    .build_pipeline(w as u32, w as u32)
-                    .with_recon_output(true);
-                pipe.try_encode_frame_hbd(&alphas[i], w).unwrap();
-                let (alpha, _, _) = pipe.last_recon10_final.unwrap();
-                assert_eq!(alpha.len(), w * w);
-                let file = fs::File::open(directory.join(format!("frame-{i:010}.png"))).unwrap();
-                let mut reader = png::Decoder::new(std::io::BufReader::new(file))
-                    .read_info()
-                    .unwrap();
-                let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
-                let info = reader.next_frame(&mut pixels).unwrap();
-                assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
-                assert_eq!(info.color_type, png::ColorType::Rgba);
-                for (pixel, &sample) in pixels.chunks_exact(8).zip(&alpha) {
-                    let actual = u16::from_be_bytes([pixel[6], pixel[7]]);
-                    // PNG expands alpha to 16 bits. Recover the native 10-bit
-                    // integer to avoid testing the reader's expansion rounding.
-                    let native = ((u32::from(actual) * 1023 + 32767) / 65535) as u16;
-                    assert_eq!(native, sample, "10-bit alpha frame {i}");
+                        if !has_alpha {
+                            continue;
+                        }
+                        let mut settings = enc.clone();
+                        settings.full_range = true;
+                        let mut pipe = settings
+                            .build_pipeline(w as u32, w as u32)
+                            .with_recon_output(true);
+                        pipe.try_encode_frame_hbd(&alphas[i], w).unwrap();
+                        let (alpha, _, _) = pipe.last_recon10_final.unwrap();
+                        assert_eq!(alpha.len(), pipe.width as usize * pipe.height as usize);
+                        let file =
+                            fs::File::open(directory.join(format!("frame-{i:010}.png"))).unwrap();
+                        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+                            .read_info()
+                            .unwrap();
+                        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+                        let info = reader.next_frame(&mut pixels).unwrap();
+                        assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+                        assert_eq!(info.color_type, png::ColorType::Rgba);
+                        assert_eq!((info.width as usize, info.height as usize), (w, w));
+                        for (i, pixel) in pixels.as_chunks::<8>().0.iter().enumerate() {
+                            let sample = alpha[(i / w) * pipe.width as usize + i % w];
+                            let actual = u16::from_be_bytes([pixel[6], pixel[7]]);
+                            // PNG expands alpha to 16 bits. Recover the native 10-bit
+                            // integer to avoid testing the reader's expansion rounding.
+                            let native = ((u32::from(actual) * 1023 + 32767) / 65535) as u16;
+                            assert_eq!(native, sample, "10-bit alpha frame {i}");
+                        }
+                    }
                 }
             }
+            fs::remove_dir_all(directory).unwrap();
         }
-        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

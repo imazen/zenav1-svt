@@ -809,6 +809,13 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+Fixed 2026-09-07: partial-edge cached chroma writes crossed destination rows
+(65x67, speed 2/preset 1); odd chroma output deblocking used search floor bounds
+instead of decoder ceiling bounds (native 65x65). Both are pinned by
+`svtav1/tests/odd_frame_recon.rs`, with each test observed failing when its fix
+was removed. See `docs/ANIMATED-AVIF-PLAN.md` for current verification and scope.
+
+
 (none — decode conformance gate is green: 525/525 matrix streams decode
 under the AV1 reference decoder as of 2026-07-13; C baseline retargeted to
 the final v4.2.0 tag 2026-07-16 — all-intra output byte-identical to the old

@@ -1208,31 +1208,14 @@ impl EncodePipeline {
 
     /// Does this configuration actually CONSUME a native 10-bit source?
     ///
-    /// Task #6 chunk 1 threads real u16 into the bd10 MD funnel and the bd10
-    /// level re-encode post-pass. Both are gated (`bd10_full_rd_supported`,
-    /// `bd10_luma_funnel`, `bd10_postpass_runs`) on bd10 + 64-aligned dims,
-    /// and they are mutually exclusive by preset. Outside that envelope the
-    /// encode would silently truncate the caller's low bits to 8, so the hbd
-    /// entry points reject instead of emitting a quietly-8-bit stream (the
-    /// "no silent corruption" bar in `rust/CLAUDE.md`).
+    /// The full-RD color funnel and the level re-encode post-pass consume
+    /// real u16 samples, including partial superblocks. Monochrome has only
+    /// the latter consumer at preset >= 9. Reject configurations without a
+    /// consumer so the caller's low bits cannot be silently discarded.
     fn hbd_source_consumed(&self, chroma_420: bool) -> bool {
         self.bd10_levels_native(chroma_420)
     }
 
-    /// Will this configuration produce TRUE 10-bit coded levels?
-    ///
-    /// Exactly two stages can: the full-RD mode-decision funnel
-    /// ([`bd10_full_rd_supported`], preset <= 8) and the level-only u16
-    /// re-encode post-pass (preset >= 9, `bd10_postpass_runs`). BOTH require
-    /// 4:2:0 and 64-aligned dims — the funnel because `use_funnel` is gated on
-    /// `chroma_420` and `tx_unit_hbd` is not partial-SB-aware, the post-pass
-    /// because `bd10_tree_supported` cannot map an edge/straddle footprint.
-    ///
-    /// This is the single source of truth for "is bd10 real here", consumed
-    /// both by the hbd entry points (which must not silently drop the caller's
-    /// low bits) and by [`Self::bit_depth_config_error`] (which must not let a
-    /// u8-input 10-bit encode emit 8-bit-quantized levels under a 10-bit
-    /// sequence header).
     /// FH `frm_hdr->tx_mode == TX_MODE_SELECT` for this frame.
     ///
     /// ONE source for the header writer and the pack walk: the signalled mode
@@ -1254,6 +1237,8 @@ impl EncodePipeline {
         )
     }
 
+    /// Whether the full-RD color funnel or native level re-encode post-pass
+    /// produces 10-bit coded levels. Shared by native-input and bit-depth guards.
     fn bd10_levels_native(&self, chroma_420: bool) -> bool {
         if self.bit_depth != 10 {
             return false;
@@ -1736,7 +1721,7 @@ impl EncodePipeline {
         }
         if !self.hbd_source_consumed(true) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "native 10-bit input needs a bd10 consumer: 64-aligned dims and either preset \
+                "native 10-bit input needs a bd10 consumer: either preset \
                  >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see \
                  docs/hbd-input-port-map.md chunk 2",
             )));
@@ -1823,27 +1808,10 @@ impl EncodePipeline {
                 "try_encode_frame_hbd requires with_bit_depth(10)",
             )));
         }
-        if self.width != self.true_width || self.height != self.true_height {
-            return Err(whereat::at!(EncodeError::InvalidDimensions {
-                width: self.true_width,
-                height: self.true_height,
-                // The 8-BIT mono path pads TRUE -> ALIGNED as of 2026-09-03
-                // (`encode_frame_mono_core`); this is the 10-BIT one, where
-                // the padding is not the binding constraint — the bd10 level
-                // re-encode post-pass below already needs 64-aligned dims at
-                // preset >= 9, so an arbitrary-dims 10-bit mono source has no
-                // consumer at all. Say THAT rather than repeating a sentence
-                // that stopped being true on the neighbouring path.
-                reason: "10-bit monochrome requires 8-aligned dims (not implemented otherwise): the TRUE -> ALIGNED replicate \
-                         pad is wired on the 8-bit mono path and the 4:2:0 path, and this \
-                         source's only consumer (the bd10 level re-encode post-pass) needs \
-                         64-aligned dims at preset >= 9 anyway [C: no mono mode]",
-            }));
-        }
         if !self.hbd_source_consumed(false) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "native 10-bit monochrome input needs the bd10 level re-encode post-pass: \
-                 64-aligned dims at preset >= 9 — see docs/hbd-input-port-map.md chunk 2",
+                 preset >= 9 — see docs/hbd-input-port-map.md chunk 2",
             )));
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
@@ -1871,14 +1839,21 @@ impl EncodePipeline {
                 y8[r * tw + c] = (y[r * y_stride + c] >> shift) as u8;
             }
         }
-        // Mono aligned == true dims (checked above), so the hbd plane only
-        // needs tightening to stride `tw`.
+        // Match the u8 mono core's TRUE -> ALIGNED padding on both source
+        // representations; the native level producer consumes the u16 plane.
         self.hbd_source = Some(HbdSource {
-            y: pad_plane_replicate_u16(y, y_stride, tw, th, tw, th)?,
+            y: pad_plane_replicate_u16(
+                y,
+                y_stride,
+                tw,
+                th,
+                self.width as usize,
+                self.height as usize,
+            )?,
             u: alloc::vec::Vec::new(),
             v: alloc::vec::Vec::new(),
         });
-        let out = self.encode_frame_impl(&y8, tw, None);
+        let out = self.encode_frame_mono_core(&y8, tw);
         self.hbd_source = None;
         out
     }
@@ -5170,8 +5145,13 @@ impl EncodePipeline {
                 tile_size_bytes_minus_1,
             ))
         };
-        let (mut tile_data, deblock_geom, mut u_recon, mut v_recon, mut tile_size_bytes_minus_1) =
-            run_entropy_walk(None, None)?;
+        let (
+            mut tile_data,
+            mut deblock_geom,
+            mut u_recon,
+            mut v_recon,
+            mut tile_size_bytes_minus_1,
+        ) = run_entropy_walk(None, None)?;
 
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
@@ -6081,6 +6061,11 @@ impl EncodePipeline {
         // untouched — the decoder's split.
         self.last_lr_stats = ([0; 3], 0);
         let mut lr_signal = crate::entropy::obu::LrSignal::none(seq_tools.enable_restoration);
+        let decoder_chroma_recon = self.recon_output
+            && chroma.is_some()
+            && self.superres_denom.is_none()
+            && (!self.true_width.is_multiple_of(2) || !self.true_height.is_multiple_of(2));
+        let mut output_restoration = None;
         // IBC (chunk 1): unlike DLF/CDEF, C suppresses loop restoration at
         // PIPELINE EXECUTION, not signal-derivation — `if (ppcs->
         // enable_restoration && frm_hdr->allow_intrabc == 0)` gates BOTH the
@@ -6436,6 +6421,9 @@ impl EncodePipeline {
                     // equal (set_restoration_unit_size s = 0).
                     uv_size_differs: false,
                 };
+                if decoder_chroma_recon {
+                    output_restoration = Some(rest_info);
+                }
             }
         }
 
@@ -6818,6 +6806,51 @@ impl EncodePipeline {
             bs
         };
 
+        // C's deblock search truncates odd chroma dimensions. A decoder
+        // filters the ceiling-sized plane. Replay the signaled filters on
+        // the output copy after all decisions and entropy coding are complete.
+        let mut decoder_output8 = None;
+        if decoder_chroma_recon {
+            deblock_geom.use_decoder_chroma_bounds();
+            macro_rules! decoder_recon {
+                ($input:expr, $deblock:path, $cdef:path $(, $depth:expr)?) => {{
+                    let (mut y, mut u, mut v) = $input;
+                    $deblock(&mut y, &mut u, &mut v, w, h, true, &deblock_geom,
+                        &lf_levels, lf_sharp_eff $(, $depth)?);
+                    let before_cdef = output_restoration.as_ref().map(|_| (y.clone(), u.clone(), v.clone()));
+                    $cdef(&mut y, &mut u, &mut v, w, h, true, &deblock_geom,
+                        &cdef_params $(, $depth)?);
+                    if let (Some(info), Some((py, pu, pv))) = (output_restoration.as_ref(), before_cdef) {
+                        let bounds = crate::restoration::save_lr_boundaries_bd(
+                            &py, &pu, &pv, &y, &u, &v, self.true_width as usize,
+                            self.true_height as usize, w, w / 2, true);
+                        crate::restoration::apply_restoration_frame_bd(
+                            &mut y, &mut u, &mut v, self.true_width as usize,
+                            self.true_height as usize, w, w / 2, true, info, &bounds, self.bit_depth);
+                    }
+                    (y, u, v)
+                }};
+            }
+            if self.bit_depth == 10 {
+                if let (Some(y), Some((u, v))) =
+                    (self.last_recon10_y.as_ref(), self.last_recon10_uv.as_ref())
+                {
+                    recon10 = Some(decoder_recon!(
+                        (y.clone(), u.clone(), v.clone()),
+                        crate::deblock::apply_deblock_frame_hbd,
+                        crate::cdef::apply_cdef_frame_hbd,
+                        self.bit_depth
+                    ));
+                }
+            } else if let Some(unfiltered) = self.last_recon_unfiltered.as_ref() {
+                decoder_output8 = Some(decoder_recon!(
+                    unfiltered.clone(),
+                    crate::deblock::apply_deblock_frame,
+                    crate::cdef::apply_cdef_frame
+                ));
+            }
+        }
+
         // Step 7: Publish recon for the recon-parity gate, then update DPB.
         //
         // Superres chunk B.3: what a DECODER outputs is the coded-width recon
@@ -6873,7 +6906,11 @@ impl EncodePipeline {
         }
 
         if self.recon_output {
-            self.last_recon = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
+            // Output-only replay must not alter the DPB or later frame decisions.
+            self.last_recon = Some(
+                decoder_output8
+                    .unwrap_or_else(|| (recon.clone(), u_recon.clone(), v_recon.clone())),
+            );
             // Issue #13: the 10-bit final recon (deblock -> CDEF -> LR all
             // applied to the 10-bit canvas). No superres arm: bd10 + superres
             // is refused (`superres_config_error`), so the canvas is already
@@ -8934,10 +8971,15 @@ fn encode_block_syntax(
             // reconstructed both planes with the C MDS3 path — copy its
             // recon into the walk planes so the plane evolution is
             // byte-identical, and code the decided coefficients.
-            for r in 0..ch {
+            // A straddling leaf's reconstruction retains its full transform
+            // stride. Clip the destination to the aligned plane: copying the
+            // right-edge padding would otherwise wrap into the next row.
+            let copy_w = cw.min(chroma_plane_w.saturating_sub(cx));
+            let copy_h = ch.min(chroma_plane_h.saturating_sub(cy));
+            for r in 0..copy_h {
                 let dst = (cy + r) * cp.stride + cx;
-                cp.u_recon[dst..dst + cw].copy_from_slice(&u_rec[r * cw..(r + 1) * cw]);
-                cp.v_recon[dst..dst + cw].copy_from_slice(&v_rec[r * cw..(r + 1) * cw]);
+                cp.u_recon[dst..dst + copy_w].copy_from_slice(&u_rec[r * cw..r * cw + copy_w]);
+                cp.v_recon[dst..dst + copy_w].copy_from_slice(&v_rec[r * cw..r * cw + copy_w]);
             }
             (u_q.clone(), *u_eob, v_q.clone(), *v_eob)
         } else {

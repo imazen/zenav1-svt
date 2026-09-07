@@ -1646,6 +1646,19 @@ SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-zero-chroma-cast" grain 128 
 # from the true edge and overwrote C's denoised mi-grid padding. After: 156B exact.
 SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-denoised-edge-padding" grain 70 66 40 10 8
 
+# 2026-09-07 — partial cached chroma copied across destination rows (656
+# unfiltered bytes wrong at 65x67), and odd native chroma filtered with floor
+# bounds (277 post-filter bytes wrong at 65x65). These exact animation witnesses
+# also run directly against aomdec, without requiring the AVIF container tools.
+for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds; do
+  if AOMDEC="$AOMDEC" cargo test -p zenav1-svt --test odd_frame_recon "$witness" -- --exact >"$W/$witness.log" 2>&1; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); failed+=("$witness [decoder reconstruction]")
+    cat "$W/$witness.log"
+  fi
+done
+
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"

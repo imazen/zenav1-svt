@@ -1,5 +1,13 @@
 # Native 10-bit input (real u16 source) — port map (issue #6)
 
+**2026-09-07 correction:** the historical 64-alignment requirement below no
+longer describes the implementation. Both native level producers support partial
+superblocks. Native monochrome now pads both source representations consistently
+and accepts odd dimensions at preset >=9; its mode decision still uses the upper
+8 bits. Native color and alpha are exposed by the animation API; see
+[ANIMATED-AVIF-PLAN.md](ANIMATED-AVIF-PLAN.md) for current tests and open work.
+The earlier chunk records below describe their original landing state.
+
 **Status: CHUNKS 1 + 2 LANDED 2026-07-24 (35743ebd5, f319ec298); chunk 2b (PQ-shaped code values + a photographic gate) 2026-08-28. Chunk 3 (HDR metadata) open.** The port already processes at
 **true 10-bit internally** (the u16 MD/recon path exists — `leaf_funnel.rs:2130`, `pipeline.rs:4862+`),
 but **source enters as `u8` and is widened `<< 2` at ~43 sites**, so the low 2 bits of a real
