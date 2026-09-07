@@ -915,6 +915,11 @@ pub struct CoeffFc {
     /// row. The MD rate tables C rebuilds per SB therefore see a DC row that
     /// IntraBC blocks adapted. Only the encoder's chain simulation sets this.
     pub md_side_ibc_txt_update: bool,
+    /// C's MD rate estimator also adapts transform-type CDFs for lossless
+    /// luma txbs (rd_cost.c:115 has the lossless guard commented out).
+    /// Only the per-SB MD context simulation sets this; the real writer
+    /// must continue to omit transform-type symbols at base_q_idx == 0.
+    pub md_side_lossless_txt_update: bool,
 }
 
 impl CoeffFc {
@@ -939,6 +944,7 @@ impl CoeffFc {
             intra_ext_tx_cdf: [[0; 17]; 156],
             inter_ext_tx_cdf: [[0; 17]; 16],
             md_side_ibc_txt_update: false,
+            md_side_lossless_txt_update: false,
         });
         fc.txb_skip_cdf
             .copy_from_slice(d::TXB_SKIP_CDF[q].as_flattened());
@@ -1204,12 +1210,22 @@ pub fn md_update_tx_type_ibc_quirk(
     tx_size: usize,
     reduced_tx_set: bool,
 ) {
+    md_update_tx_type_intra(fc, tx_type, tx_size, reduced_tx_set, 0);
+}
+
+fn md_update_tx_type_intra(
+    fc: &mut CoeffFc,
+    tx_type: usize,
+    tx_size: usize,
+    reduced_tx_set: bool,
+    intra_dir: usize,
+) {
     if ext_tx_types(tx_size, false, reduced_tx_set) > 1 {
         let square_tx_size = TXSIZE_SQR_MAP[tx_size];
         let set_type = ext_tx_set_type(tx_size, false, reduced_tx_set);
         let eset = ext_tx_set(tx_size, false, reduced_tx_set);
         if eset > 0 {
-            let cdf = fc.intra_ext_tx(eset as usize, square_tx_size, 0 /* DC_PRED */);
+            let cdf = fc.intra_ext_tx(eset as usize, square_tx_size, intra_dir);
             crate::entropy::cdf::update_cdf(
                 cdf,
                 AV1_EXT_TX_IND[set_type][tx_type],
@@ -1314,6 +1330,8 @@ fn write_coeffs_txb_1d_inner(
             } else {
                 write_tx_type_inter(fc, w, tx_type, tx_size, base_q_idx, reduced_tx_set);
             }
+        } else if base_q_idx == 0 && fc.md_side_lossless_txt_update {
+            md_update_tx_type_intra(fc, tx_type, tx_size, reduced_tx_set, intra_dir);
         } else {
             write_tx_type_intra(
                 fc,

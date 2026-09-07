@@ -669,8 +669,8 @@ fn eval_candidate(
     // start = end = 1` (product_coding_loop.c:6734-6736), AFTER every other
     // rule — including the frame-boundary `end_tx_depth = 0` and the
     // `bypass_tx_th` shortcut — so a lossless 8x8 evaluates depth 1 only.
-    // Every lossless block IS 8x8 (max_sq_size 8, 4x4 disallowed at the
-    // presets this port reaches); the guard keeps the arm inert otherwise.
+    // Lossless 4x4 blocks already take depth 0; only the 8x8 case needs
+    // this override to force four TX_4X4 transforms.
     let (start_depth, cand_end_depth) = if frame.coded_lossless && w == 8 && h == 8 {
         (1u8, 1u8)
     } else {

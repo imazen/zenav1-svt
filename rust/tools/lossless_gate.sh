@@ -25,20 +25,9 @@
 # (all-intra clamp) but distinct port configurations. Env overrides:
 #   LL_CONTENTS, LL_DIMS ("WxH ..."), LL_PRESETS, AOMDEC.
 #
-# PINNED cells (self-promoting, same contract as screen_ibc_gate.sh): textured
-# content at presets 0..3 is LOSSLESS in both encoders (oracle 2 holds and is
-# still REQUIRED there) but not byte-identical — an RD-decision residual, not a
-# pixel defect (MEASURED 2026-08-28: gradient 64x64 p3 port 2966 B vs C 2973 B,
-# both decode to the source; see docs/REFUSED-CONFIGS.md's neighbour, the
-# CHANGELOG entry, and rust/CLAUDE.md for the root: 4x4 partitions are
-# ALLOWED at M0..M3 in all-intra (`svt_aom_get_disallow_4x4_allintra`,
-# enc_mode_config.c:8181 — exactly the failing set), so C's lossless
-# partition search decides 8x8-vs-four-4x4 per block while the port forces
-# 8x8 leaves). A pinned cell that starts byte-matching FAILS the gate so the
-# improvement gets promoted, never silently absorbed.
-#
-# Exit 0 iff every non-pinned cell passes (1) and (2), every pinned cell
-# passes (2) and still differs, and no anti-vacuity premise fails.
+# Every cell must match C and decode exactly to the source. The former
+# 32 low-preset pins were closed by the lossless PD0/PD1 and MD CDF wiring
+# corrections (2026-09-07); no expected byte differences remain.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -55,20 +44,9 @@ if ! command -v "$aomdec" >/dev/null 2>&1 && [ ! -x "$aomdec" ]; then
   exit 2
 fi
 
-# Pinned-diverging cells: "<content>_<w>x<h>_q0_p<preset>". Presets 0..3 on
-# textured content (uniform codes zero residual at every preset and is
-# byte-exact there — it must NOT be listed).
-pinned_cell() {
-  case "$1" in
-    gradient_*_p[0-3]|diag_*_p[0-3]) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 OUT="${TMPDIR:-/tmp}/lossless.$$"
 mkdir -p "$OUT"
 pass=0
-pinned=0
 fail=0
 failed=()
 vacuous=()
@@ -97,8 +75,7 @@ for content in "${CONTENTS[@]}"; do
           vacuous+=("$cell")
         fi
       fi
-      # (2) losslessness under the reference decoder — REQUIRED for every
-      #     cell, pinned or not: a byte-diverging stream must still be right.
+      # (2) losslessness under the reference decoder — required for every cell.
       rm -f "$OUT/dec.yuv"
       if ! "$aomdec" --rawvideo -o "$OUT/dec.yuv" "$OUT/rs.obu" >"$OUT/dec.log" 2>&1; then
         fail=$((fail + 1)); failed+=("$cell[aomdec-rejects]"); continue
@@ -106,27 +83,18 @@ for content in "${CONTENTS[@]}"; do
       if ! cmp -s "$OUT/dec.yuv" "$OUT/rs.yuv"; then
         fail=$((fail + 1)); failed+=("$cell[NOT-LOSSLESS: decoded != source]"); continue
       fi
-      # (1) byte-identity, or the self-promoting pin
+      # (1) byte-identity, with no exceptions.
       if cmp -s "$OUT/rs.obu" "$OUT/c.obu"; then
-        if pinned_cell "$cell"; then
-          fail=$((fail + 1)); failed+=("$cell[PROMOTE: pinned cell now byte-matches C — remove it from pinned_cell]")
-          continue
-        fi
         pass=$((pass + 1))
       else
-        if pinned_cell "$cell"; then
-          pinned=$((pinned + 1))
-          echo "  pinned   $cell (lossless in both; port $(wc -c <"$OUT/rs.obu" | tr -d ' ') B vs C $(wc -c <"$OUT/c.obu" | tr -d ' ') B)"
-        else
-          fail=$((fail + 1)); failed+=("$cell[bytes: port $(wc -c <"$OUT/rs.obu" | tr -d ' ') B vs C $(wc -c <"$OUT/c.obu" | tr -d ' ') B]")
-        fi
+        fail=$((fail + 1)); failed+=("$cell[bytes: port $(wc -c <"$OUT/rs.obu" | tr -d ' ') B vs C $(wc -c <"$OUT/c.obu" | tr -d ' ') B]")
       fi
     done
   done
 done
 
-total=$((pass + pinned + fail))
-echo "coded-lossless identity + lossless-decode: $pass / $total byte-identical (+$pinned pinned-diverging, all lossless)"
+total=$((pass + fail))
+echo "coded-lossless identity + lossless-decode: $pass / $total byte-identical, all lossless"
 if [ "$fail" -gt 0 ]; then
   printf '  FAILED: %s\n' "${failed[@]}"
 fi

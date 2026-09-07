@@ -2548,7 +2548,7 @@ impl EncodePipeline {
         // segmentation of this port's mainline path, base_q_idx 0 IS
         // CodedLossless), and the whole encode follows C's lossless rules:
         // the header writes no deblock/CDEF/LR/tx_mode bits (chunk 1,
-        // 2026-08-27), every block is an 8x8 coded at TX_4X4 with the
+        // 2026-08-27), every block is 4x4 or 8x8 coded at TX_4X4 with the
         // Walsh-Hadamard transform, no tx_size / tx_type symbols, RDOQ and
         // the tx-type search off, only DCT-chroma candidates injected, and no
         // in-loop filter runs (chunk 2, this arm's consumers below +
@@ -12864,13 +12864,10 @@ fn encode_tile_rows(
                             fun_ectx.as_mut().unwrap(),
                         )
                     } else if use_pd0 {
-                        if coded_lossless || p9_fixed_partition {
+                        // At presets 0..3 C permits 4x4 blocks and runs PD1
+                        // even for lossless. Higher presets have only 8x8 leaves.
+                        if (coded_lossless && speed_config.preset >= 4) || p9_fixed_partition {
                             let tree = if coded_lossless {
-                                // Issue #5: every square above 8x8 is forced
-                                // SPLIT and every 8x8 is a leaf
-                                // (`mimic_only_tx_4x4` -> `max_sq_size` 8,
-                                // enc_dec_process.c:1492); PD0 has nothing
-                                // left to decide, at any preset.
                                 crate::pd0::lossless_tree(x0, y0, unit_size, w, h)
                             } else if bit_depth == 10 {
                                 // C `set_pd0_ctrls` (enc_mode_config.c:5415) FORCES
@@ -13119,12 +13116,16 @@ fn encode_tile_rows(
                             // keeps the still path byte-identical by construction
                             // and lets a video key frame take the refinement C
                             // runs for it.
-                            let dr = crate::depth_refine::DrCtrls::for_arm(
-                                sc_arm,
-                                speed_config.preset,
-                                tile_sc.classes.sc_class5,
-                                cli_qp as u32,
-                            );
+                            let dr = if coded_lossless {
+                                crate::depth_refine::DrCtrls::lossless(false)
+                            } else {
+                                crate::depth_refine::DrCtrls::for_arm(
+                                    sc_arm,
+                                    speed_config.preset,
+                                    tile_sc.classes.sc_class5,
+                                    cli_qp as u32,
+                                )
+                            };
                             // C `md_ctx->fixed_partition = md_ctx->pred_depth_only &&
                             // md_ctx->md_disallow_nsq_search`
                             // (enc_dec_process.c:3054, comment: "If there is only
@@ -13180,8 +13181,17 @@ fn encode_tile_rows(
                                 // one-false node at p4/p5 and cost 29 cells --
                                 // partial-SB p4 28/36 -> 12/36 and p5 25/36 ->
                                 // 13/36. Search-off is not geometry-off.
-                                let nsq_geom_enabled =
-                                    crate::part_arm::nsq_geom_enabled(sc_arm, speed_config.preset);
+                                let nsq_geom_enabled = !coded_lossless
+                                    && crate::part_arm::nsq_geom_enabled(
+                                        sc_arm,
+                                        speed_config.preset,
+                                    );
+                                // C md_config_process.c forces lossless PD0 level 0,
+                                // but its resolved cost model uses QP offset 0 and
+                                // fast coefficient estimation 2: Rust's Lvl1 model.
+                                // The Lvl0 helper's QP+8/closed-rate model is wrong here.
+                                // C caps lossless candidate squares at 8x8.
+                                let search_max_sq = if coded_lossless { 8 } else { max_tx_size };
                                 let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
                                     // SB-EXTENT padded plane, not the raw frame:
                                     // `compute_b64_variance` reads a full 64x64
@@ -13209,9 +13219,21 @@ fn encode_tile_rows(
                                     // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
                                     // (real PD0 coeff rate). M7/M8's level-2 PD0
                                     // approximation only fires when this is >= 2.
-                                    pd0_refined_rate_lvl,
-                                    pd0_refined_mode,
-                                    pd0_refined_eexit_th,
+                                    if coded_lossless {
+                                        1
+                                    } else {
+                                        pd0_refined_rate_lvl
+                                    },
+                                    if coded_lossless {
+                                        crate::pd0::Pd0Mode::Lvl1
+                                    } else {
+                                        pd0_refined_mode
+                                    },
+                                    if coded_lossless {
+                                        1000
+                                    } else {
+                                        pd0_refined_eexit_th
+                                    },
                                     // max-block variance cap. Allintra: M8+
                                     // only (`get_max_block_size_allintra`'s
                                     // `base_var_th_cap` is `(uint16_t)~0`
@@ -13245,7 +13267,7 @@ fn encode_tile_rows(
                                     // Superres chunk B.4: this SB's STALE full-res variance entry.
                                     sb_stale_vars,
                                     // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
-                                    max_tx_size,
+                                    search_max_sq,
                                     // C `pd0_use_src_samples` (video arm: recon).
                                     pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                     // PD0's INTER arm on the REFINEMENT path.
@@ -13321,9 +13343,21 @@ fn encode_tile_rows(
                                                 ),
                                                 tables,
                                                 if dr.disallow_4x4 { 8 } else { 4 },
-                                                pd0_refined_rate_lvl,
-                                                pd0_refined_mode,
-                                                pd0_refined_eexit_th,
+                                                if coded_lossless {
+                                                    1
+                                                } else {
+                                                    pd0_refined_rate_lvl
+                                                },
+                                                if coded_lossless {
+                                                    crate::pd0::Pd0Mode::Lvl1
+                                                } else {
+                                                    pd0_refined_mode
+                                                },
+                                                if coded_lossless {
+                                                    1000
+                                                } else {
+                                                    pd0_refined_eexit_th
+                                                },
                                                 // Same cap predicate as the
                                                 // sibling call above; this
                                                 // SB128 unit loop skips
@@ -13341,7 +13375,7 @@ fn encode_tile_rows(
                                                 // Superres chunk B.4: this SB's STALE full-res variance entry.
                                                 sb_stale_vars,
                                                 // C `static_config.max_tx_size`.
-                                                max_tx_size,
+                                                search_max_sq,
                                                 // C `pd0_use_src_samples` (video arm: recon).
                                                 pd0_video_recon
                                                     .then_some((&tile_frame_recon[..], w)),
@@ -13373,7 +13407,7 @@ fn encode_tile_rows(
                                     // value already threaded into the PD0 entries
                                     // just above, and the reason `max_sq_size` is
                                     // not always 64 (enc_dec_process.c:1814-1817).
-                                    max_tx_size,
+                                    search_max_sq,
                                 );
                                 // Partition rates at the real contexts, from
                                 // the same (possibly chained) frame context as
@@ -13441,11 +13475,15 @@ fn encode_tile_rows(
                                     ibc_gate: Default::default(),
                                     full_rd10: bd10_full_rd,
                                 };
-                                let nsq = crate::depth_refine::NsqCfg::for_arm(
-                                    sc_arm,
-                                    speed_config.preset,
-                                    cli_qp as u32,
-                                );
+                                let nsq = if coded_lossless {
+                                    crate::depth_refine::NsqCfg::off()
+                                } else {
+                                    crate::depth_refine::NsqCfg::for_arm(
+                                        sc_arm,
+                                        speed_config.preset,
+                                        cli_qp as u32,
+                                    )
+                                };
                                 crate::depth_refine::decide_sb_refined(
                                     &scan,
                                     &mut fx,
@@ -13841,6 +13879,7 @@ fn encode_tile_rows(
                     // same quirk `cost_coeffs_txb`'s `cost_dir` remap reads.
                     // Sticky across snapshots (the struct is cloned).
                     cfc.md_side_ibc_txt_update = true;
+                    cfc.md_side_lossless_txt_update = coded_lossless;
                     // Same class, mode side: C's MD-side context skips the
                     // palette CDF update for non-chroma-reference blocks
                     // (`FrameContext::md_side_chroma_gated_palette`).

@@ -71,7 +71,7 @@ record named:
 | Decode conformance (`aomdec` + `dav1d`), mono / 4:2:0 | `decode_conformance` | **1260** / **1575** streams |
 | Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **128/128** (0 refused) |
 | Regression spot-check (one cell per bug ever fixed) | `regression_spotcheck` | **104/104** |
-| Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **112/144** byte-identical, +32 pinned, 144/144 lossless (local 2026-08-28; CI runs the 72-cell subset) |
+| Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **144/144** byte-identical and source-exact, no pins (local 2026-09-07; CI deferred) |
 
 **Inter / video mode (CI, every push).** The inter path is byte-gated but the
 shipped `EncodePipeline` still refuses non-key frames — the gates drive it

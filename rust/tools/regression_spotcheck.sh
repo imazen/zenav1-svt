@@ -890,6 +890,15 @@ byte "qp0-screen-p8-96x80"   screen  96 80 0 8
 refuses "qp0-screen-refused-p4" screen 64 64 0 4
 refuses "qp0-screen-refused-p5" screen 64 64 0 5
 
+# 2026-09-07: lossless low-preset partition search and MD context wiring.
+# BEFORE: forced 8x8 leaves give gradient64 p3 2966 B vs C 2973;
+# PD0 without PD1 gives 2970. Preset depth pruning gives diag64 p3
+# 1391 B vs C 1268. Without lossless MD tx-type CDF adaptation,
+# gradient128 p0 gives 9560 B vs C 9567. AFTER: byte-identical in each case.
+byte "qp0-partition-refine" gradient 64 64 0 3
+byte "qp0-depth-override" diag 64 64 0 3
+byte "qp0-md-cdf-chain" gradient 128 128 0 0
+
 # INTER frame 2 — the first frame whose list-0 reference is itself an inter
 # frame. The refusal MOVED on 2026-09-03 (docs/INTER-ENCODE-PLAN.md 1z25): the
 # coded-area statistics it used to name are carried and joined to C now, and

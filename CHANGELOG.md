@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Complete 8-bit color lossless partition parity: price 4x4 WHT candidates, run C's unrestricted lossless PD1 search, and adapt lossless transform-type probabilities in the MD context. All 144 lossless gate cases now match C and decode exactly to source; remove all 32 exception pins and add three regression witnesses.
+
 - 8-bit lossless monochrome and animated alpha: reuse 4x4 WHT kernels with per-transform prediction and coefficient contexts; verify decoded luma/alpha against source. Native 10-bit lossless remains unsupported.
 
 - Native 10-bit monochrome and alpha at every preset: carry native coefficient-sign contexts, honor the signaled edge-filter tool, and preserve VERT_A/B directional neighbor availability in the level re-encode pass. Mode decision still uses the upper eight bits.

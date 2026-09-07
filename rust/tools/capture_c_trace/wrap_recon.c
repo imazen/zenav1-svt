@@ -1594,6 +1594,15 @@ void __wrap_svt_aom_sig_deriv_enc_dec_pd0(SequenceControlSet* scs, PictureContro
     if (!f) {
         return;
     }
+    fprintf(f, "PD0REFCFG level=%u mode=%u s1=%u e1=%u s2=%u e2=%u limit=%u qscale=%u\n",
+            (unsigned)pcs->pic_block_based_depth_refinement_level,
+            (unsigned)ctx->depth_refinement_ctrls.mode,
+            (unsigned)ctx->depth_refinement_ctrls.s1_parent_to_current_th,
+            (unsigned)ctx->depth_refinement_ctrls.e1_sub_to_current_th,
+            (unsigned)ctx->depth_refinement_ctrls.s2_parent_to_current_th,
+            (unsigned)ctx->depth_refinement_ctrls.e2_sub_to_current_th,
+            (unsigned)ctx->depth_refinement_ctrls.limit_max_min_to_pd0,
+            (unsigned)scs->qp_based_th_scaling_ctrls.depths_qp_based_th_scaling);
     const B64Geom* b64 = &pcs->ppcs->b64_geom[ctx->sb_index];
     fprintf(f,
             "PD0CFG sb=%u org=(%u,%u) islice=%d lvl=%d subres=%u dev_th=%u split_th=%u exit_th=%u "

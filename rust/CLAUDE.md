@@ -289,54 +289,36 @@ arm (C stores the kernel output TRANSPOSED, transforms.c:3956; the inverse
 goes through a u16 scratch with `highbd_iwht4x4_16_add` ALWAYS — C forces
 `eob = max` because its read and write buffers differ, inv_transforms.c:3155).
 
-**Measured (`tools/lossless_gate.sh`, `benchmarks/lossless_gate_2026-08-28.md`):**
-112 / 144 byte-identical + 32 pinned, 144 / 144 decode to the source under
-aomdec. Presets 4..13 are 96/96 over {gradient, diag, uniform} x {64x64,
-128x128, 96x80, 200x136}. In-crate: `tests/lossless_fh_c_capture.rs` (full
-stream == the committed C capture, mutation-verified both ways).
+**Current, 2026-09-07:** `tools/lossless_gate.sh` is **144/144
+byte-identical to C and source-exact under aomdec, with no pins**. The former
+32 p0..p3 textured-content differences were missing translation/wiring:
 
-**The residual — presets 0..3 on textured content, pinned self-promotingly.**
-Both encoders are lossless there; the bytes differ from the FIRST coded
-symbol of the tile (gradient 64x64 p3: port 2966 B, C 2973 B; p1 == p2 on
-both sides). Root, by elimination: the port's p3 stream is byte-identical to
-its own p4 stream and to C's p4 — every funnel knob that separates p3 from
-p4 is inert at qp 0 — while C's p3 differs from C's p4. Of the all-intra
-knobs that flip at the M3 boundary (enc_mode_config.c, the
-`enc_mode <= ENC_M3` sites in `svt_aom_sig_deriv_enc_dec_allintra`), the
-only one that is LIVE under `mimic_only_tx_4x4` (nsq/txt/txs/pd0/depth
-refinement are all forced) and matters on an I-slice (update_cdf_level 1 vs
-2 differs in `update_mv` only) is **`svt_aom_get_disallow_4x4_allintra`
-(enc_mode_config.c:8181): 4x4 partitions are ALLOWED at <= M3** — exactly
-the failing set. C's lossless partition search (`pic_pd0_lvl` forced 0 =
-PD0_LVL_0, depth removal / refinement forced off, `max_sq_size` 8) therefore
-decides 8x8-vs-four-4x4 per block — at qp 0 every candidate's distortion is
-0, so it is a pure RATE comparison incl. the partition symbol — while the
-port forces 8x8 leaves (`pd0::lossless_tree`). `bypass_encdec = 0` at <= M3
-is NOT it: EncDec re-runs with the same lossless wrapper
-(`svt_aom_inv_transform_recon_wrapper`, full_loop.c:1909) and every
-`bypass_encdec` site in MD is buffer routing or an RDOQ/pf reset that is
-inert at qp 0. Next chunk: admit depths {8, 4} in `depth_refine::
-build_refined_scan_at` (dr 0 / bbdr 0) with a PD0_LVL_0 eval bounded to
-`max_sq` 8, evaluate both through the funnel (`decide_sb_refined`) at
-lossless — 4x4 leaves already code on the 4:2:0 path at these presets, and
-`tx_unit` takes the WHT for any 4x4 txb — then compare the inter-depth
-decision against C. **Tried and reverted the same day (measured, not
-argued):** a `Pd0Mode::Lvl0Lossless` pick (`max_sq` 8, `min_sq` 4, the
-8x8 candidate through the DCT-8x8 light encode at `qindex + 8`, the 4x4
-candidates through the WHT with C's transposed store, `perform_tx_pd0`'s
-`5000 + 100*eob` closed-form rate, PD1 at exactly the PD0 pick) moved
-every pinned cell WITHOUT closing one — gradient 64x64 p3 2966 -> 2979 B
-(C 2973), p1/p2 2940 -> 2969 B (C 2965), diag 64x64 p0 312 -> 558 B (C
-341): the port splits to 4x4 far more than C, so C's PD0 cost at qindex 0
-is NOT that model (the split decision is distortion-dominated there —
-`kf_full_lambda` at qindex 0 is tiny — so a small dist-model difference
-flips every block). Do not re-guess: dump C's PD0 per-block costs for the
-first 8x8 of gradient 64x64 p3 with the `SVT_*_OUT` interposers
-(`tools/ctrace-linux/`, Linux `--wrap` build) and fit the model to them.
+- C's QP-0 PD0 controls use QP offset 0 and real fast coefficient costs,
+  not the q+8/closed-form `Lvl0` model. Rust's `Lvl1` cost machinery matches
+  the resolved controls. TX_4X4 uses transposed WHT; larger PD0 txs use DCT.
+  Captured gradient64 p3 costs match all 320 candidate rows, diag64 p3 all 263.
+- `md_config_process.c:1043` forces depth-refinement level 0 (NO_RESTRICTION).
+  This still runs PD1 and compares 8x8 parents with 4x4 children. Using PD0's
+  chosen tree directly or retaining preset depth pruning is incorrect.
+- C `av1_transform_type_rate_estimation` updates lossless tx-type CDFs in
+  the MD context (its lossless guard is commented out). The bitstream writer
+  still omits the symbols. `CoeffFc::md_side_lossless_txt_update` carries this
+  difference only in per-SB MD context simulation. This closes the last two
+  multi-SB p0 cells: gradient128 went from 9560 to C's 9567 bytes.
+
+All three missing paths have byte-regression witnesses and committed C
+capture tests in `lossless_fh_c_capture.rs`. Evidence:
+`~/tmp/animation-metadata/lossless-{p3,diag,g128}-drill/` and
+`lossless-refined-c-gate-final.log` in the same animation-metadata directory.
+The 2026-08-28 attempt used the wrong PD0 cost model and omitted PD1; it
+was reverted after failing to close any pins. Its earlier claims that depth
+refinement was disabled and all candidate distortion was zero were wrong:
+PD0's 8x8 DCT candidate can have nonzero distortion even at qindex 0.
 
 **Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md): 10-bit,
-monochrome, fork mode (its chroma-q deltas leave the frame outside
-CodedLossless), screen-content tools, superres, inter frames.
+fork mode (its chroma-q deltas leave the frame outside CodedLossless), color
+screen-content tools below preset 6, superres, inter frames. 8-bit monochrome
+and alpha are implemented and source-exact; C has no monochrome oracle.
 
 ## FIXED 2026-08-27 — MONO partial SBs at preset 6 coded PARTITION_NONE at a frame edge (undecodable)
 
@@ -1253,9 +1235,9 @@ and `benchmarks/mem_2026-08-16.meta` (peak RSS). Re-measure with
    discipline: measure what crosses the boundary BEFORE cutting, prove the
    moved body verbatim AFTER. Do not reach for a line-range script.)
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
-   (LANDED 2026-08-28 anyway, issue #5 chunk 2: byte-identical to C at
-   presets 4..13, lossless under aomdec at every preset; the residual is the
-   p0..p3 pinned set — see "FIXED 2026-08-28 — coded-lossless" below.)
+   (8-bit color parity completed locally 2026-09-07: 144/144 byte-identical
+   and source-exact, including the former p0..p3 pins. Native 10-bit and
+   lower-preset color screen-content lossless still need implementation.)
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
 

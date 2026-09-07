@@ -371,3 +371,26 @@ refusal inventory is current at 48 entries. Evidence is in
 The initial full-suite failure was an old test requiring the now-supported
 legacy QP-0 API to panic; it now requires exact source reconstruction instead.
 Both repository fetches reported no changes; nothing was pushed or sent to CI.
+
+### 2026-09-07: close all 32 color lossless parity pins
+
+The lower-preset color lossless search is now wired through C's PD0 costs
+(QP offset 0, real coefficient rate, transposed 4x4 WHT) and unrestricted PD1
+8x8-versus-4x4 search. The per-superblock MD simulation adapts lossless
+transform-type CDFs, matching C's rate estimator while the real bitstream
+continues to omit those symbols. These were missing translation/wiring paths.
+The strict lossless gate passes **144/144 C-byte comparisons and 144/144
+source-pixel comparisons**, with every old exception removed. Three regression
+witnesses cover the search, the lossless depth override, and MD CDF chaining.
+Native 10-bit lossless and lower-preset color screen-content lossless remain
+open. CI remains deferred.
+
+Local verification for this change: **2,598/2,598 workspace tests, zero skips;
+115/115 regression cases; 1,100/1,100 full 8-bit C-byte comparisons, no pins or
+harness errors**. The lossless-specific gate is separately **144/144** with
+source-pixel proof. See `benchmarks/lossless_partition_2026-09-07.md` for C
+controls, captures and before/after witnesses.
+
+Workspace clippy completes with existing warnings; scoped formatting and diff
+checks pass. The refusal inventory remains at 48 entries. Both repository
+fetches reported no changes; no push or CI run was triggered.

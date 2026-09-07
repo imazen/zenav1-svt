@@ -1296,13 +1296,26 @@ fn tx_quant_core(
     let (tx_size, c_tx_size) = pd0_tx_size(sq_size, tx_h);
 
     let mut coeffs = vec![0i32; sq_size * tx_h];
-    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        residual,
-        &mut coeffs,
-        sq_size,
-        tx_size,
-        TxType::DctDct,
-    );
+    if qindex_off == 0 && sq_size == 4 && tx_h == 4 {
+        // C svt_av1_estimate_transform's lossless TX_4X4 branch, including
+        // its transposed store. Larger PD0 transforms still use DCT.
+        let res: [i16; 16] = core::array::from_fn(|i| residual[i] as i16);
+        let mut wht = [0i32; 16];
+        svtav1_dsp::fwd_txfm::fwht4x4(&res, &mut wht, 4);
+        for r in 0..4 {
+            for c in 0..4 {
+                coeffs[c * 4 + r] = wht[r * 4 + c];
+            }
+        }
+    } else {
+        svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            residual,
+            &mut coeffs,
+            sq_size,
+            tx_size,
+            TxType::DctDct,
+        );
+    }
 
     // 64-dim fold + pack (svt_handle_transform64x64 / 64x32 / 32x64).
     let mut three_quad_energy = 0u64;
@@ -1736,15 +1749,12 @@ pub enum Pd0Tree {
     Off,
 }
 
-/// The partition tree of a CODED-LOSSLESS coding unit (issue #5): C forces
-/// `max_sq_size = MIN(max_sq_size, 8)` when `mimic_only_tx_4x4` is set
-/// (enc_dec_process.c:1492-1493) and `min_sq_size` is 8 wherever 4x4 is
-/// disallowed (`svt_aom_get_disallow_4x4_default`: every preset above M2, and
-/// this port reaches the lossless envelope only there), so every square above
-/// 8x8 is never tested — only SPLIT — and every leaf is an 8x8 PARTITION_NONE
-/// (NSQ is off at these presets, `nsq_search_level = 0`). Quadrants whose
-/// origin lies at or past the ALIGNED frame extent are `Off`, exactly as
-/// `Pd0Eval::tree` produces them on a partial superblock.
+/// Fixed 8x8 leaf tree for lossless coding when 4x4 blocks are disallowed
+/// (allintra color presets >= 4), also used by the monochrome lossless path.
+/// C caps square candidates at 8x8 when `mimic_only_tx_4x4` is set
+/// (enc_dec_process.c:1492). At color presets 0..3, the pipeline instead
+/// runs PD0 and unrestricted PD1 to choose between 8x8 and 4x4 blocks.
+/// Quadrants outside the aligned frame extent are `Off`.
 pub fn lossless_tree(
     x0: usize,
     y0: usize,

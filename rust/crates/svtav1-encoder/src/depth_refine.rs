@@ -135,6 +135,12 @@ pub struct DrCtrls {
 const S2E2_ALWAYS: i64 = i64::MIN;
 
 impl DrCtrls {
+    /// C md_config_process.c: lossless overrides the preset ladder with
+    /// level 0 (NO_RESTRICTION). The candidate geometry is capped separately.
+    pub(crate) fn lossless(disallow_4x4: bool) -> Self {
+        Self::for_level(0, disallow_4x4)
+    }
+
     /// C allintra depth-refinement level derivation
     /// (enc_mode_config.c:10067-10090). The level is keyed on `sc_class5`
     /// (screen-content class 5) AND the preset — NOT the preset alone. This is
@@ -864,8 +870,9 @@ pub(crate) fn build_refined_scan_at(
     // at SB128 where units.len() > 1; at SB64 the fold equals the root's own
     // max/min, so passing it is byte-identical.
     sb_max_min: Option<(usize, usize)>,
-    // C `static_config.max_tx_size` (32 or 64; tune IQ sets 32 at qp <= 45).
-    // Caps `max_sq_size` -- see `RefineEnv::max_sq`.
+    // Effective square cap: 32/64 from max_tx_size, or 8 for lossless.
+    // The lossless cap folds in init_md_scan's final geometry filter;
+    // its NO_RESTRICTION mode does not read the deviation heuristics.
     max_tx_size: u8,
 ) -> RefScan {
     let mut max_pd0 = 0usize;
@@ -888,9 +895,9 @@ pub(crate) fn build_refined_scan_at(
         tables,
         max_pd0,
         min_pd0,
-        // C: max_block_size (64 on this still/I_SLICE path, below M8) capped
-        // to 32 when static_config.max_tx_size == 32 (enc_dec_process.c:1814).
-        max_sq: if max_tx_size == 32 { 32 } else { 64 },
+        // Includes C's lossless geometry cap (enc_dec_process.c:1492)
+        // as well as its max_tx_size cap (:1814).
+        max_sq: usize::from(max_tx_size.min(64)),
     };
     refine_depth(&env, root, None, sb_x, sb_y).0
 }
