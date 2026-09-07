@@ -400,6 +400,27 @@ int main(int argc, char** argv) {
         cfg.chroma_sample_position = (EbChromaSamplePosition)atoi(csp_env);
     }
 
+    /* Film grain translation gate: same names on the Rust identity driver. */
+    AomFilmGrain grain_table = {0};
+    if (getenv("SVT_GRAIN_TABLE")) {
+        grain_table.apply_grain=1;grain_table.scaling_shift=8;
+        grain_table.num_y_points=2;grain_table.scaling_points_y[0][0]=0;grain_table.scaling_points_y[0][1]=20;grain_table.scaling_points_y[1][0]=255;grain_table.scaling_points_y[1][1]=35;
+        grain_table.num_cb_points=grain_table.num_cr_points=2;
+        for(int i=0;i<2;i++) {grain_table.scaling_points_cb[i][0]=grain_table.scaling_points_cr[i][0]=i*255;grain_table.scaling_points_cb[i][1]=15;grain_table.scaling_points_cr[i][1]=25;}
+        grain_table.ar_coeff_lag=1;grain_table.ar_coeff_shift=7;
+        grain_table.ar_coeffs_y[0]=3;grain_table.ar_coeffs_y[3]=-4;
+        grain_table.ar_coeffs_cb[4]=8;grain_table.ar_coeffs_cr[4]=-5;
+        grain_table.cb_mult=grain_table.cr_mult=128;grain_table.cb_luma_mult=grain_table.cr_luma_mult=192;grain_table.cb_offset=grain_table.cr_offset=256;
+        grain_table.overlap_flag=1;grain_table.ignore_ref=getenv("SVT_GRAIN_IGNORE_REF")!=NULL;
+        cfg.fgs_table=&grain_table;
+    }
+    const char *fg_strength = getenv("SVT_GRAIN_STRENGTH");
+    const char *fg_apply = getenv("SVT_GRAIN_APPLY");
+    const char *fg_adaptive = getenv("SVT_GRAIN_ADAPTIVE");
+    if (fg_strength) cfg.film_grain_denoise_strength = (uint32_t)atoi(fg_strength);
+    if (fg_apply) cfg.film_grain_denoise_apply = (uint32_t)atoi(fg_apply);
+    if (fg_adaptive) cfg.adaptive_film_grain = atoi(fg_adaptive) != 0;
+
     /* Superres (superres chunk B.3): SVT_SUPERRES_KF_DENOM sets
      * `superres_mode = SUPERRES_FIXED(1)` + `superres_kf_denom = D`.
      * MEASURED: for a STILL (KEY) frame the KF denominator is the one that

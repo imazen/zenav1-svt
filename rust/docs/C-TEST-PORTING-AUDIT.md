@@ -151,15 +151,16 @@ sweep, `search_switchable`) is a separate, still-open item.
 
 ### 1f. Film-grain / noise (HDR-fork synthesis)
 
-2026-09-06: default-off C features remain required. See
-[film-grain port map](film-grain-port-map.md) for configuration, wiring and
-inter-frame gaps; helper parity alone does not establish feature coverage.
+2026-09-07: the full 8/10-bit 4:2:0 grain paths are translated and wired.
+See the [film-grain port map](film-grain-port-map.md) for exact contracts,
+live C/decode evidence and retained C edge behavior. These tests cover the C
+contracts; they are not a claim that every original C++ test case was copied.
 
 | C test file | Kernel under test | Rust coverage | Class |
 |---|---|---|---|
-| `FilmGrainTest.cc` | parameter equality, normative grain synthesis + `denoise_and_model` | Photon-noise table and noise-helper differentials cover related computations, not this test's synthesis or denoiser contracts | **MISSING** normative synthesis and denoise/model coverage; photon-noise generation is separately ported |
-| `FFTTest.cc` | FFT (denoise pre-analysis) | — | **MISSING** — denoise-analysis path not ported; fork photon-noise coverage does not cover it |
-| `noise_model_test.cc` | `flat_block_finder`, noise model fit | — | **MISSING** — denoise-analysis not ported |
+| `FilmGrainTest.cc` | parameter equality, normative grain synthesis + `denoise_and_model` | `c_parity_film_grain.rs` synthesis/model oracles, pipeline ownership/reuse tests and 15 live C/decode cells | PORTED-diff + WIRED on 8/10-bit 4:2:0 |
+| `FFTTest.cc` | FFT (denoise pre-analysis) | `c_parity_film_grain.rs::fft_inverse_and_filter_match_exported_c` | PORTED-diff; all five FFT/IFFT sizes |
+| `noise_model_test.cc` | `flat_block_finder`, noise model fit | `c_parity_film_grain.rs` flat extraction/maps, solver/LUT, Wiener output and complete model driver | PORTED-diff + WIRED |
 
 ### 1g. Inter / motion / compound / global-motion / temporal (historical exclusions)
 

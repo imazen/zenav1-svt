@@ -136,7 +136,12 @@ the identity harness (every range-coder call compared, including coder state).
 | `sc_detect` | `pic_analysis_process.c` |
 | `speed_config` | `enc_mode_config.c` |
 | `temporal_filter` | `temporal_filtering.c` |
-| `noise_gen`, `film_grain` | `noise_generation.c`, `noise_model.c` |
+| `noise_gen` | `noise_generation.c` (photon-noise tables) |
+| `film_grain_model`, `film_grain_denoise`, `port_noise_model` | `noise_model.c`, `mathutils.h`, owned denoiser/model lifecycle |
+| `film_grain_fft`, generated FFT bodies/windows | `fft.c`, `fft_common.h`, `noise_util.c`, exact C window tables |
+| `film_grain_synthesis` | `grainSynthesis.c` (8/10-bit 4:2:0 reconstruction output) |
+| `film_grain_config`, pipeline grain wiring | `pic_analysis_process.c`, `enc_handle.c`, `entropy_coding.c`, `enc_dec_process.c` |
+| `film_grain` | historical heuristic helpers; no production callers; see `rust/docs/film-grain-port-map.md` |
 | `noise_norm` | `full_loop.c` |
 | `ssim_md` | `mode_decision.c`, `product_coding_loop.c` |
 | `tx_bias` | `pic_operators.c` |

@@ -52,6 +52,48 @@
 use svtav1_encoder::pipeline::EncodePipeline;
 use svtav1_encoder::rate_control::{RcConfig, RcMode};
 
+/// Grain controls are shared with the pinned C capture driver.
+fn configure_grain(p: &mut EncodePipeline) {
+    if std::env::var_os("SVT_GRAIN_TABLE").is_some() {
+        let mut table = svtav1_encoder::entropy::obu::FilmGrainParams {
+            apply_grain: true,
+            num_y_points: 2,
+            num_cb_points: 2,
+            num_cr_points: 2,
+            scaling_shift: 8,
+            ar_coeff_lag: 1,
+            ar_coeff_shift: 7,
+            cb_mult: 128,
+            cr_mult: 128,
+            cb_luma_mult: 192,
+            cr_luma_mult: 192,
+            cb_offset: 256,
+            cr_offset: 256,
+            overlap_flag: true,
+            ..Default::default()
+        };
+        table.scaling_points_y[..2].copy_from_slice(&[[0, 20], [255, 35]]);
+        table.scaling_points_cb[..2].copy_from_slice(&[[0, 15], [255, 15]]);
+        table.scaling_points_cr[..2].copy_from_slice(&[[0, 25], [255, 25]]);
+        table.ar_coeffs_y[0] = 3;
+        table.ar_coeffs_y[3] = -4;
+        table.ar_coeffs_cb[4] = 8;
+        table.ar_coeffs_cr[4] = -5;
+        p.film_grain.table = Some(table);
+        p.film_grain.ignore_ref = std::env::var_os("SVT_GRAIN_IGNORE_REF").is_some();
+    }
+
+    if let Ok(v) = std::env::var("SVT_GRAIN_STRENGTH") {
+        p.film_grain.denoise_strength = v.parse().expect("grain strength");
+    }
+    if let Ok(v) = std::env::var("SVT_GRAIN_APPLY") {
+        p.film_grain.denoise_apply = v.parse::<u8>().expect("grain apply") != 0;
+    }
+    if let Ok(v) = std::env::var("SVT_GRAIN_ADAPTIVE") {
+        p.film_grain.adaptive = v.parse::<u8>().expect("grain adaptive") != 0;
+    }
+}
+
 fn clip8(x: i32) -> u8 {
     x.clamp(0, 255) as u8
 }
@@ -288,6 +330,13 @@ fn main() {
             for c in 0..w {
                 y[r * w + c] = match content {
                     "uniform" => 128,
+                    "grain" => {
+                        let mut z = (r * w + c + 1) as u32;
+                        z ^= z << 13;
+                        z ^= z >> 17;
+                        z ^= z << 5;
+                        (80 + (r * 80 / h) + (z as usize % 25)) as u8
+                    }
                     "gradient" => (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8),
                     // Constant along the r-c (down-right) diagonal → strong
                     // directional correlation, exercises the angled intra modes
@@ -616,6 +665,7 @@ fn main() {
         if std::env::var_os("SVTAV1_FINAL_RECON").is_some() {
             pipeline = pipeline.with_recon_output(true);
         }
+        configure_grain(&mut pipeline);
         let frame_len = w * h + 2 * cw * ch;
         let mut all = Vec::new();
         for f in 0..n_frames {
@@ -797,6 +847,7 @@ fn main() {
     // SVT_HDR_MODE / SVT_FORK_*: the SAME env names the C driver reads, so one
     // env vector configures both encoders (hdr_mode::HdrForkConfig::from_env).
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
+    configure_grain(&mut pipeline);
     pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
     // SVTAV1_TUNE=<0..5>: mainline `--tune`. The C driver reads the same value
     // from SVT_TUNE, so one env vector configures both encoders. Tune 3 (IQ)

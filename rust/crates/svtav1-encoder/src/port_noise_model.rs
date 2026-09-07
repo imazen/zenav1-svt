@@ -7,30 +7,12 @@
 //! strength solver's bin geometry and accumulation, `num_coeffs`, and the
 //! flat-block score comparator.
 //!
-//! NOT ported here, named so this module is not read as "the noise model is
-//! done" — it is a small fraction of a 45-function file:
-//! * The AR model itself: `svt_aom_noise_model_init` / `_save_latest` /
-//!   `_get_grain_parameters`, `noise_model_update`,
-//!   `svt_av1_add_block_observations_internal_c`, `add_block_observations`,
-//!   `add_noise_std_observations`, `ar_equation_system_solve`,
-//!   `set_chroma_coefficient_fallback_soln`, `noise_state_init`.
-//! * The flat-block finder: `svt_aom_flat_block_finder_init` / `_run` /
-//!   `_extract_block_c`, `get_block_mean`, `get_noise_var`.
-//! * The denoiser: `svt_aom_wiener_denoise_2d`, `svt_aom_denoise_and_model_run`,
-//!   `unpack_2d_pic`, and `get_half_cos_window` — the last of which is six
-//!   float tables totalling 5,460 literals, deliberately deferred because
-//!   nothing that reads them is ported.
-//! * The piecewise-linear fit: `svt_aom_noise_strength_solver_solve`,
-//!   `_fit_piecewise`, `update_piecewise_linear_residual`.
-//!   `equation_system_solve` is in that group too: it delegates to `linsolve`
-//!   in `mathutils.h`, which is outside this file's surface.
-//! * Allocation and lifecycle — `equation_system_init` / `_free` / `_clear` /
-//!   `_copy`, `noise_strength_solver_clear` / `_copy`,
-//!   `svt_aom_noise_strength_lut_init` / `_free`, `svt_aom_noise_model_free`,
-//!   `svt_aom_flat_block_finder_free`, `svt_aom_denoise_and_model_ctor`,
-//!   `denoise_and_model_dctor`, `denoise_and_model_realloc_if_necessary`.
-//!   These are what an owned Rust type replaces rather than translates;
-//!   [`NoiseStrengthSolver`] is that replacement for the solver's share of them.
+//! The remaining C state and callers are now translated in
+//! [`crate::film_grain_model`] (normal equations, AR model, flat-block finder,
+//! gain, strength solve and LUT fit) and [`crate::film_grain_denoise`] (owned
+//! per-picture lifecycle, exact window tables, Wiener filtering, quantization
+//! and denoise/model driver). [`crate::film_grain_fft`] supplies C's FFTs.
+//! The original eight helpers below are retained and used by those modules.
 //!
 //! ## Evidence
 //!

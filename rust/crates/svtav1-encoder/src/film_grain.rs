@@ -13,12 +13,11 @@
 //!   normative grain synthesis (`grainSynthesis.c` `add_noise_to_block` +
 //!   AR grain-block generation).
 //!
-//! The bitstream-relevant fork photon-noise path uses `noise_gen` and the
-//! separate `entropy::obu::FilmGrainParams` type, not these heuristics.
-//! Mainline mode signals grain off. `grainSynthesis.c` is bit-affecting-changed
-//! 4.1->4.2; a real port (params + normative synth) must track the v4.2 source.
-//! No C differential oracle exists for the current heuristics because they do
-//! not correspond to any single C function's contract.
+//! Production encoding uses [`crate::film_grain_denoise`],
+//! [`crate::film_grain_model`], [`crate::film_grain_synthesis`] and the canonical
+//! [`crate::entropy::obu::FilmGrainParams`]. The fork's photon-noise table
+//! generator remains [`crate::noise_gen`]. These historical heuristic helpers
+//! are retained for compatibility and have no production encoder callers.
 
 /// Film grain parameters for a frame.
 #[derive(Debug, Clone, Default)]

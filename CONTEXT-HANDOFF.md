@@ -5,7 +5,13 @@ named below and is updated in place; anything restated here is restated only so
 a new session can orient in ten minutes. When this file and a live doc disagree,
 **the live doc wins** — and fix this one in the same change.
 
-Last updated **2026-09-05 (late)**, against `origin/main` = `690c5aa82`.
+Latest continuation **2026-09-07**: film-grain translation and wiring are
+recorded in [the film-grain port map](rust/docs/film-grain-port-map.md), including
+history audit, C edge behavior and verification. The previous performance WIP
+(`nnlxmrsn`, zone1) remains separate and unlanded; do not lose or silently merge it.
+
+The older general handoff below was updated **2026-09-05 (late)** against
+`origin/main` = `690c5aa82`.
 
 > **If you are a successor agent picking this up cold, read §0, then §3's
 > "CPU, stated honestly" and "The inter frame, attributed", then §6, then

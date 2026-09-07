@@ -102,7 +102,7 @@ export WCS_CELL_TIMEOUT="${WCS_CELL_TIMEOUT:-300}"
 [ -x "$AOMDEC" ] || { echo "wider_corpus_sweep: aomdec not found (set AOMDEC=)" >&2; exit 2; }
 
 echo "priming builds (freshness check)..." >&2
-(cd "$RS_ROOT" && CARGO_BUILD_JOBS=8 $LOWPRI \
+(cd "$RS_ROOT" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
    cargo build --release -p zenav1-svt --features symtrace --example identity_run) >&2 \
    || { echo "port build failed" >&2; exit 2; }
 "$HERE/capture_c_trace/build.sh" >/dev/null 2>&1 || { echo "C driver build failed" >&2; exit 2; }

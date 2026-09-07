@@ -717,6 +717,52 @@ def decode_frame_header(payload, s, obu_type, dpb=None, upd=None):
     else:
         rd('allow_warped_motion', 1)
     rd('reduced_tx_set', 1)
+    # The current port emits identity global motion. Do not guess the length
+    # of a non-identity model; its signed-subexp coding needs reference state.
+    if not FrameIsIntra:
+        for ref in range(1, 8):
+            if rd(f'is_global[{ref}]', 1):
+                note('global_motion_parameters_unparsed', ref)
+                return o
+    if s['film_grain_params_present'] and (show_frame or showable_frame):
+        if not rd('apply_grain', 1):
+            return o
+        rd('grain_seed', 16)
+        update = rd('update_grain', 1) if frame_type == INTER_FRAME else 1
+        if not update:
+            rd('film_grain_params_ref_idx', 3)
+            return o
+        ny = rd('num_y_points', 4)
+        for i in range(ny):
+            rd(f'point_y_value[{i}]', 8)
+            rd(f'point_y_scaling[{i}]', 8)
+        cfl = rd('chroma_scaling_from_luma', 1) if s['NumPlanes'] > 1 else 0
+        counts = [0, 0]
+        if s['NumPlanes'] > 1 and not cfl and not (s['subsampling_x'] and s['subsampling_y'] and ny == 0):
+            for c, name in enumerate(['cb', 'cr']):
+                counts[c] = rd(f'num_{name}_points', 4)
+                for i in range(counts[c]):
+                    rd(f'point_{name}_value[{i}]', 8)
+                    rd(f'point_{name}_scaling[{i}]', 8)
+        rd('grain_scaling_minus_8', 2)
+        lag = rd('ar_coeff_lag', 2)
+        n = 2 * lag * (lag + 1)
+        if ny:
+            for i in range(n):
+                rd(f'ar_coeffs_y_plus_128[{i}]', 8)
+        for c, name in enumerate(['cb', 'cr']):
+            if counts[c] or cfl:
+                for i in range(n + bool(ny)):
+                    rd(f'ar_coeffs_{name}_plus_128[{i}]', 8)
+        rd('ar_coeff_shift_minus_6', 2)
+        rd('grain_scale_shift', 2)
+        for c, name in enumerate(['cb', 'cr']):
+            if counts[c]:
+                rd(f'{name}_mult', 8)
+                rd(f'{name}_luma_mult', 8)
+                rd(f'{name}_offset', 9)
+        rd('overlap_flag', 1)
+        rd('clip_to_restricted_range', 1)
     return o
 
 

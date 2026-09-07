@@ -83,6 +83,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=SVT_CREF_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SVT_CREF_SKIP_HDR");
     println!("cargo:rerun-if-env-changed=SVT_CREF_JOBS");
+    println!("cargo:rerun-if-changed=shims/film_grain_shims.c");
     println!("cargo:rerun-if-changed=shims/ref_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_mvp_shims.c");
     println!("cargo:rerun-if-changed=shims/inter_me_shims.c");
@@ -190,6 +191,7 @@ fn main() {
         shims.define("SVTAV1_CREF_ENC_DEC_STATICS", "1");
     }
     shims
+        .file(manifest.join("shims/film_grain_shims.c"))
         .file(manifest.join("shims/ref_shims.c"))
         // Inter MVP oracle (chunk C2) — its own TU so the C2 and C3 lanes
         // never share a shim file in one working copy.

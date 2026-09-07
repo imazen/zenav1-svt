@@ -1638,6 +1638,14 @@ bd10ReconEq "bd10-tile-dir-control-256x256-p2"    diag     256 256  6 2 0 0
 bd10ReconEq "bd10-tile-dir-control-256x256-p4"    gradient 256 256 12 4 0 0
 
 # ---------------------------------------------------------------------------
+# Film grain (2026-09-07): zero-noise chroma reached C's NaN conversion.
+# Before: both 128x128 streams were 153B but AR shift/coefficients differed.
+# After: exact C bytes, including ar_coeff_shift=6 and chroma correlation=-128.
+SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-zero-chroma-cast" grain 128 128 40 10 8
+# Before: 70x66 denoise/apply emitted 154B vs C156B: the SB source repadded
+# from the true edge and overwrote C's denoised mi-grid padding. After: 156B exact.
+SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-denoised-edge-padding" grain 70 66 40 10 8
+
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"

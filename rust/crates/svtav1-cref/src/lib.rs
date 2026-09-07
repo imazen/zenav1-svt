@@ -6170,3 +6170,5 @@ pub fn dc_intra_pred(
         );
     }
 }
+
+pub mod film_grain;
