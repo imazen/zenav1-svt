@@ -75,7 +75,7 @@ libavif 1.3.0. All passed, including exact metadata bytes. Serializer tests
 78/78 and all 19 parser unit tests passed using source-symlink standalone
 harnesses (the canonical workspace has an unavailable zenanalyze path dependency).
 Evidence: `~/tmp/animation-metadata/{live-gate,repetition-tests,parser-repetition-tests,svt-final-tests}.log`.
-The main manifest pins canonical serializer revision `7b058bb825f64a05ed97ac057178c80d27811853`; focused animation tests and all 18 metadata cases passed against the fetched git source. A CI job for a pinned libavif 1.3.0 reader and pixel/timing/metadata gates is preserved in jj change `puzrqvms`; its initial push lacked workflow scope. The user has since authenticated gh and requested all local checks pass before CI. Rebase and land that workflow after local verification. Full scope above remains open.
+The main manifest pins canonical serializer revision `7b058bb825f64a05ed97ac057178c80d27811853`; focused animation tests and all 18 metadata cases passed against the fetched git source. The CI job is preserved in jj change `puzrqvms`. Its pinned libavif 1.3.0 build recipe and all checks passed locally before attempting to land it, as requested. GitHub still refuses the workflow because the active gh token has repo/read:org/gist scopes but no workflow scope. Rebase that change onto main and push after `gh auth refresh -h github.com -s workflow`. Full scope above remains open.
 
 Native 10-bit continuation: `AnimationFrame<T = u8>` accepts
 `u16` through `encode_animation_yuv420_hbd[_with_options]`. Both color and alpha
