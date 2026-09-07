@@ -112,15 +112,35 @@ optional armed CLI coverage is explicitly unrun. The same 33 byte/quality rows
 plus 16 timing misses (49 total), and the same two speed inversions remain.
 See canonical `benchmarks/dual_colr_2026-09-07.md`.
 
-Next metadata audit: track spatial/Exif/XMP properties versus poster.
-read_stsd skips spatial properties, read_tkhd skips its matrix and read_trak
-skips track-local meta. Current libavif read.c parses sample-entry property
-containers and selects them for track transformations; it reads track-local
-meta for Exif/XMP. This provides an implementation reference, but independent
-runtime verification of our output is still required. Auxiliary gain-map/depth
-ICC/nclx coexistence and source-encoding detail provenance remain open too.
-The full goal and quality-envelope investigation remain active; push/CI remain
-deferred.
+Canonical `e0251f7a` (local, not pushed) retains track clap/irot/imir/pasp
+independently of poster properties. Native animation APIs expose exact spatial
+metadata and preserve coded pixels. Codec probes/output apply exact integral
+crops before orientation correction; the concrete decoder retains original
+spatial declarations. Transactional checked rational validation and fallible,
+cancellable row cropping cover invalid/extreme inputs without rounding.
+
+A real 65×67 sequence previously reported 65×67 instead of the expected 53×49.
+The regression now checks every pixel of 576 codec frames and 144 native frames
+across depth, rotation, mirror, backend, orientation policy and poster layouts.
+Libavif 1.3.0 independently reads exact track crop/rotation/mirror despite a
+conflicting poster and decodes both posterless frames. This reference check
+also corrected invalid still-image brands in earlier posterless test fixtures,
+without changing offsets or weakening assertions. Its CLI does not render
+transforms into PNG, so independent evidence is metadata/decode only.
+
+All-feature workspace nextest passes 884/884 (nine existing skips), default
+workspace tests/doctests pass 478 (ten existing ignores), final focused tests
+pass 19/19, and the crop validation unit passes. Clippy/scoped formatting,
+25 determinism legs and 56 reference conformance cells pass; optional armed
+CLI coverage is unrun. The same 33 byte/quality rows plus 16 timing misses and
+two speed inversions remain. See canonical benchmarks/animation_spatial_2026-09-07.md.
+Fresh fetch still reports main `74d92430`, already included in this branch.
+
+Remaining metadata work includes fractional aperture resampling, non-square
+pixel presentation, tkhd matrices, other orientation-policy variants, track-local
+Exif/XMP, auxiliary ICC/nclx and source-encoding provenance. read_trak still skips
+track-local meta. No quality envelopes were repinned. The full goal and quality
+investigation remain active; push/CI remain deferred.
 
 Next: canonical repetition/options/non-ms timing, mono animation, the existing
 quality-envelope drift, and the full remaining feature inventory. The full
