@@ -106,6 +106,7 @@ int main(int argc, char **argv) {
         }
         printf("crop=%u,%u,%u,%u\n", crop.x, crop.y, crop.width, crop.height);
     } else printf("crop=none\n");
+    printf("monochrome=%d\n", d->image->yuvFormat == AVIF_PIXEL_FORMAT_YUV400);
     printf("dimensions=%u,%u\n", d->image->width, d->image->height);
     bytes("icc", &d->image->icc); bytes("exif", &d->image->exif); bytes("xmp", &d->image->xmp);
     if (timing) { const int failed = timing_and_seek(d); avifDecoderDestroy(d); return failed; }

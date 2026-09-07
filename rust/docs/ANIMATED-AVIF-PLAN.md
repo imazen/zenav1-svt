@@ -47,7 +47,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
-| Format coverage | 8-bit and native 10-bit 4:2:0 APIs, including native alpha. Native alpha currently requires preset >=9. 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
+| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha currently require preset >=9; 8-bit monochrome partial SBs require preset >=6. Lower-preset monochrome, 12-bit, 4:4:4/4:2:2 and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
 | Robust API | Streaming/bounded memory, cancellation, fallible allocation, overflow checks and complete validation remain to be audited across encoder and serializer |
@@ -224,3 +224,30 @@ Final timing checkpoint: all 2,590 workspace tests pass with zero skips and all
 109 regression checks pass (`timing-local-final.log`). Scoped Rust formatting
 and whitespace checks pass. This closes the tested all-sync timing/seek cases,
 not the downstream precision gaps or the broader animation/video objective.
+
+Monochrome continuation: `MonochromeAnimationFrame<T>` and
+`encode_animation_mono[_with_options]` / `encode_animation_mono_hbd[_with_options]`
+use the real monochrome pipeline for the primary track, without caller-supplied
+or encoded chroma planes. They share the existing timing, repetition, metadata,
+spatial properties and alpha wiring. Configuration and `pixi` report one channel;
+alpha remains a separate full-range monochrome sequence without color film grain.
+All frames are validated before encoding, including a test where an invalid
+second frame is caught before the first could reach a refused pipeline shape.
+
+Independent pixel checks compare decoded Y4M luma and grayscale-alpha PNG alpha
+against final encoder reconstruction at 8/10 bits, qualities 40/98, strided input,
+64x80 and odd 65x67, plus aligned 64x64 at 8-bit preset 1. Native fixtures have
+nonzero low bits. The metadata gate now covers both monochrome and 4:2:0:
+15,120/15,120 checks pass, including exact channel properties, cropped/uncropped
+posters, alpha and spatial metadata. Timing and exact pixel-seek checks pass
+54/54 cases across both formats (`~/tmp/animation-metadata/mono-independent.log`).
+Workspace nextest passes 2,592/2,592 with zero skips and regression checks pass
+109/109 (`mono-local-final.log`). Final expanded pixel/validation tests and
+clippy are recorded in `mono-final-focused.log`; clippy has existing warnings.
+
+Underlying monochrome coding restrictions remain: 8-bit partial superblocks
+below preset 6 still use a clamped-root homegrown search rather than the PD0
+forced-edge tree, native 10-bit requires preset >=9, and lossless is unimplemented.
+These are capability gaps to implement, not reasons to call the full goal done.
+The new API documents the current ranges and does not silently change presets.
+CI remains deferred; no changes were pushed.

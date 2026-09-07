@@ -67,6 +67,17 @@ pub struct AnimationFrame<'a, T = u8> {
     pub duration: u32,
 }
 
+/// One grayscale image with optional full-resolution alpha. Use `u8` for
+/// 8-bit samples or `u16` for native 10-bit samples. Alpha is tightly packed;
+/// luma may have a larger stride. No chroma planes are required or encoded.
+pub struct MonochromeAnimationFrame<'a, T = u8> {
+    pub y: &'a [T],
+    pub y_stride: usize,
+    pub alpha: Option<&'a [T]>,
+    /// Duration in the animation's timescale ticks, strictly positive.
+    pub duration: u32,
+}
+
 /// Timing of an animated AVIF stream.
 pub struct AnimationTiming {
     /// Ticks per second, strictly positive.
@@ -102,7 +113,7 @@ impl AvifEncoder {
         timing: AnimationTiming,
         options: &AnimationOptions,
     ) -> Result<Vec<u8>, EncodeError> {
-        self.encode_animation_samples(frames, width, height, timing, options)
+        self.encode_animation_samples(frames, width, height, timing, options, true)
     }
 
     /// Encode native 10-bit color and alpha samples. Configure bit depth 10
@@ -134,7 +145,91 @@ impl AvifEncoder {
         timing: AnimationTiming,
         options: &AnimationOptions,
     ) -> Result<Vec<u8>, EncodeError> {
-        self.encode_animation_samples(frames, width, height, timing, options)
+        self.encode_animation_samples(frames, width, height, timing, options, true)
+    }
+
+    /// Encode 8-bit grayscale frames with optional alpha as a monochrome
+    /// animated AVIF. Each frame is an independently decodable sync sample.
+    /// Partial superblocks currently require preset 6 or higher (speed >= 7).
+    pub fn encode_animation_mono(
+        &self,
+        frames: &[MonochromeAnimationFrame<'_>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+    ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_animation_mono_with_options(
+            frames,
+            width,
+            height,
+            timing,
+            &AnimationOptions::default(),
+        )
+    }
+
+    /// Encode grayscale animation with metadata, spatial properties and repetition.
+    pub fn encode_animation_mono_with_options(
+        &self,
+        frames: &[MonochromeAnimationFrame<'_>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+        options: &AnimationOptions,
+    ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_monochrome_animation_samples(frames, width, height, timing, options)
+    }
+
+    /// Encode native 10-bit grayscale and optional alpha. Configure bit depth
+    /// 10 on the encoder. The native monochrome pipeline currently requires
+    /// preset 9 or higher; samples retain all ten bits.
+    pub fn encode_animation_mono_hbd(
+        &self,
+        frames: &[MonochromeAnimationFrame<'_, u16>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+    ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_animation_mono_hbd_with_options(
+            frames,
+            width,
+            height,
+            timing,
+            &AnimationOptions::default(),
+        )
+    }
+
+    /// Native 10-bit grayscale animation with metadata and repetition.
+    pub fn encode_animation_mono_hbd_with_options(
+        &self,
+        frames: &[MonochromeAnimationFrame<'_, u16>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+        options: &AnimationOptions,
+    ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_monochrome_animation_samples(frames, width, height, timing, options)
+    }
+
+    fn encode_monochrome_animation_samples<T: AnimationSample>(
+        &self,
+        frames: &[MonochromeAnimationFrame<'_, T>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+        options: &AnimationOptions,
+    ) -> Result<Vec<u8>, EncodeError> {
+        let planes: Vec<_> = frames
+            .iter()
+            .map(|frame| AnimationFrame {
+                y: frame.y,
+                u: &[],
+                v: &[],
+                y_stride: frame.y_stride,
+                alpha: frame.alpha,
+                duration: frame.duration,
+            })
+            .collect();
+        self.encode_animation_samples(&planes, width, height, timing, options, false)
     }
 
     fn encode_animation_samples<T: AnimationSample>(
@@ -144,9 +239,10 @@ impl AvifEncoder {
         height: u32,
         timing: AnimationTiming,
         options: &AnimationOptions,
+        chroma_420: bool,
     ) -> Result<Vec<u8>, EncodeError> {
         self.validate_quality()?;
-        self.validate_inert_knobs(true)?;
+        self.validate_inert_knobs(chroma_420)?;
         if self.bit_depth != T::BIT_DEPTH {
             return Err(EncodeError::UnsupportedConfig(
                 "animation input sample type must match the configured bit depth",
@@ -216,7 +312,11 @@ impl AvifEncoder {
         }
 
         let n = width as usize * height as usize;
-        let cn = (width as usize).div_ceil(2) * (height as usize).div_ceil(2);
+        let cn = if chroma_420 {
+            (width as usize).div_ceil(2) * (height as usize).div_ceil(2)
+        } else {
+            0
+        };
         // Validate the entire submission before encoding any picture.
         for frame in frames {
             if frame
@@ -245,7 +345,7 @@ impl AvifEncoder {
         }
         let mut color = self
             .build_pipeline(width, height)
-            .with_chroma_420(true)
+            .with_chroma_420(chroma_420)
             .with_image_sequence();
         // Alpha values are full-range coverage, without color grain.
         let mut alpha_settings = self.clone();
@@ -263,9 +363,13 @@ impl AvifEncoder {
         let mut colors = Vec::with_capacity(frames.len());
         let mut alphas = Vec::with_capacity(frames.len());
         for frame in frames {
-            colors.push(T::encode_color(&mut color, frame)?);
+            colors.push(if chroma_420 {
+                T::encode_color(&mut color, frame)?
+            } else {
+                T::encode_mono(&mut color, frame.y, frame.y_stride)?
+            });
             if let Some(a) = frame.alpha {
-                alphas.push(T::encode_alpha(&mut alpha, a, width as usize)?);
+                alphas.push(T::encode_mono(&mut alpha, a, width as usize)?);
             }
         }
         let color_seq = sequence_header(&colors[0])?;
@@ -276,6 +380,7 @@ impl AvifEncoder {
         };
         let mut cfg = Av1CBox::default();
         cfg.high_bitdepth = T::BIT_DEPTH > 8;
+        cfg.monochrome = !chroma_420;
         cfg.seq_level_idx_0 = svtav1_encoder::entropy::obu::compute_seq_level_idx(
             width,
             height,
@@ -369,7 +474,7 @@ trait AnimationSample: Copy {
         pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
         frame: &AnimationFrame<'_, Self>,
     ) -> Result<Vec<u8>, EncodeError>;
-    fn encode_alpha(
+    fn encode_mono(
         pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
         alpha: &[Self],
         stride: usize,
@@ -390,7 +495,7 @@ macro_rules! animation_sample {
                 pipe.$color(frame.y, frame.u, frame.v, frame.y_stride)
                     .map_err(|e| AvifEncoder::from_pipeline_error(e.error(), || e.to_string()))
             }
-            fn encode_alpha(
+            fn encode_mono(
                 pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
                 alpha: &[Self],
                 stride: usize,
@@ -771,6 +876,146 @@ mod tests {
             }
             fs::remove_dir_all(directory).unwrap();
         }
+    }
+
+    #[test]
+    fn monochrome_animation_decodes_with_exact_luma_and_alpha() {
+        fn luma_sample(i: usize, frame: usize, depth: u8) -> u32 {
+            let scale = 1u32 << (depth - 8);
+            (32 + (i * 7 + frame * 30) % 180) as u32 * scale + i as u32 % scale
+        }
+        macro_rules! exercise {
+            ($sample:ty, $depth:expr, $speed:expr, $entry:ident, $raw:ident, $sizes:expr) => {
+                for (w, h) in $sizes {
+                    for quality in [40.0, 98.0] {
+                        for has_alpha in [false, true] {
+                            let dir = std::env::temp_dir().join(format!("svt-mono-animation-{}-{}-{w}x{h}-{}-{quality}-{has_alpha}", std::process::id(), $depth, $speed));
+                            fs::create_dir_all(&dir).unwrap();
+                            let stride = w + 5;
+                            let max = (1u32 << $depth) - 1;
+                            let colors: Vec<Vec<$sample>> = (0..2).map(|f| {
+                                (0..stride*h).map(|i| luma_sample(i, f, $depth) as $sample).collect()
+                            }).collect();
+                            let alphas: Vec<Vec<$sample>> = (0..2).map(|f| {
+                                (0..w*h).map(|i| ((i*3+f*47) as u32 & max) as $sample).collect()
+                            }).collect();
+                            let frames: Vec<_> = (0..2).map(|i| MonochromeAnimationFrame {
+                                y: &colors[i], y_stride: stride,
+                                alpha: has_alpha.then_some(alphas[i].as_slice()), duration: [17, 29][i],
+                            }).collect();
+                            let enc = AvifEncoder::new().with_bit_depth($depth).with_speed($speed).with_quality(quality);
+                            let bytes = enc.$entry(&frames, w as u32, h as u32, AnimationTiming { timescale: 1000 }).unwrap();
+                            fs::write(dir.join("input.avif"), bytes).unwrap();
+                            for extension in ["y4m", "png"] {
+                                let result = Command::new("avifdec").args(["-j", "1", "--index", "all"])
+                                    .arg(dir.join("input.avif")).arg(dir.join(format!("frame.{extension}"))).output().unwrap();
+                                assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+                            }
+                            let mut color_pipe = enc.build_pipeline(w as u32, h as u32).with_image_sequence().with_recon_output(true);
+                            let mut alpha_settings = enc.clone();
+                            alpha_settings.full_range = true;
+                            let mut alpha_pipe = alpha_settings.build_pipeline(w as u32, h as u32).with_image_sequence().with_recon_output(true);
+                            color_pipe.rc_config.framerate = 1000.0 / 17.0;
+                            alpha_pipe.rc_config.framerate = 1000.0 / 17.0;
+                            for i in 0..2 {
+                                color_pipe.$raw(&colors[i], stride).unwrap();
+                                let reference: Vec<u16> = if $depth == 8 {
+                                    color_pipe.last_recon.take().unwrap().0.into_iter().map(u16::from).collect()
+                                } else { color_pipe.last_recon10_final.take().unwrap().0 };
+                                let y4m = fs::read(dir.join(format!("frame-{i:010}.y4m"))).unwrap();
+                                let header_end = y4m.iter().position(|&b| b == b'\n').unwrap();
+                                let header = std::str::from_utf8(&y4m[..header_end]).unwrap();
+                                assert!(header.contains(if $depth == 8 { "Cmono " } else { "Cmono10 " }), "{header}");
+                                assert_eq!(&y4m[header_end+1..header_end+7], b"FRAME\n");
+                                let pixels = &y4m[header_end+7..];
+                                assert_eq!(pixels.len(), w*h*if $depth == 8 { 1 } else { 2 });
+                                for y in 0..h { for x in 0..w {
+                                    let offset = y*w+x;
+                                    let actual = if $depth == 8 { u16::from(pixels[offset]) }
+                                        else { u16::from_le_bytes([pixels[2*offset], pixels[2*offset+1]]) };
+                                    assert_eq!(actual, reference[y*color_pipe.width as usize+x], "luma depth={} {w}x{h} q={quality} frame={i} ({x},{y})", $depth);
+                                }}
+                                if has_alpha {
+                                    alpha_pipe.$raw(&alphas[i], w).unwrap();
+                                    let reference: Vec<u16> = if $depth == 8 {
+                                        alpha_pipe.last_recon.take().unwrap().0.into_iter().map(u16::from).collect()
+                                    } else { alpha_pipe.last_recon10_final.take().unwrap().0 };
+                                    let mut reader = png::Decoder::new(std::io::BufReader::new(fs::File::open(dir.join(format!("frame-{i:010}.png"))).unwrap())).read_info().unwrap();
+                                    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+                                    let info = reader.next_frame(&mut pixels).unwrap();
+                                    assert_eq!(info.color_type, png::ColorType::GrayscaleAlpha);
+                                    assert_eq!(info.bit_depth, if $depth == 8 { png::BitDepth::Eight } else { png::BitDepth::Sixteen });
+                                    assert_eq!((info.width, info.height), (w as u32, h as u32));
+                                    for y in 0..h { for x in 0..w {
+                                        let pixel = y*w+x;
+                                        let actual = if $depth == 8 { u16::from(pixels[2*pixel+1]) } else {
+                                            let wide = u16::from_be_bytes([pixels[4*pixel+2], pixels[4*pixel+3]]);
+                                            ((u32::from(wide)*1023+32767)/65535) as u16
+                                        };
+                                        assert_eq!(actual, reference[y*alpha_pipe.width as usize+x], "alpha depth={} {w}x{h} q={quality} frame={i} ({x},{y})", $depth);
+                                    }}
+                                }
+                            }
+                            fs::remove_dir_all(dir).unwrap();
+                        }
+                    }
+                }
+            };
+        }
+        exercise!(
+            u8,
+            8,
+            7,
+            encode_animation_mono,
+            try_encode_frame,
+            [(64usize, 80usize), (65, 67)]
+        );
+        exercise!(
+            u8,
+            8,
+            2,
+            encode_animation_mono,
+            try_encode_frame,
+            [(64usize, 64usize)]
+        );
+        exercise!(
+            u16,
+            10,
+            9,
+            encode_animation_mono_hbd,
+            try_encode_frame_hbd,
+            [(64usize, 80usize), (65, 67)]
+        );
+    }
+
+    #[test]
+    fn validates_whole_monochrome_animation_before_encoding() {
+        let plane = vec![128; 65 * 67];
+        let frames = [
+            MonochromeAnimationFrame {
+                y: &plane,
+                y_stride: 65,
+                alpha: None,
+                duration: 1,
+            },
+            MonochromeAnimationFrame {
+                y: &plane,
+                y_stride: 65,
+                alpha: None,
+                duration: 0,
+            },
+        ];
+        // Preset 1 refuses a partial monochrome superblock if encoding starts.
+        // The invalid second frame must instead be detected during validation.
+        assert!(matches!(
+            AvifEncoder::new().with_speed(2).encode_animation_mono(
+                &frames,
+                65,
+                67,
+                AnimationTiming { timescale: 1000 }
+            ),
+            Err(EncodeError::InvalidDimensions)
+        ));
     }
 
     #[test]

@@ -75,10 +75,12 @@ def main():
     count = 0
     with tempfile.TemporaryDirectory(prefix="avif-timing-") as directory:
         output = str(Path(directory) / "timing.avif")
-        for (timescale, durations, repeat), (alpha, premultiplied) in product(
-                cases, [(False, False), (True, False), (True, True)]):
+        for (timescale, durations, repeat), (alpha, premultiplied), monochrome in product(
+                cases, [(False, False), (True, False), (True, True)], [False, True]):
             env = {k: v for k, v in os.environ.items() if not k.startswith("AVIF_")}
             env.update(AVIF_TIMESCALE=str(timescale), AVIF_DURATIONS=",".join(map(str, durations)), AVIF_REPEAT=repeat)
+            if monochrome:
+                env["AVIF_MONO"] = "1"
             if not alpha:
                 env["AVIF_NO_ALPHA"] = "1"
             if premultiplied:
@@ -87,6 +89,7 @@ def main():
             verify_boxes(Path(output).read_bytes(), timescale, durations, repeat, alpha)
             actual = dict(line.split("=", 1) for line in run([decoder, output, "timing"]).splitlines())
             assert actual["timescale"] == str(timescale) and actual["duration"] == str(sum(durations))
+            assert actual["monochrome"] == str(int(monochrome))
             assert actual["frames"] == str(len(durations)) and actual["seek"] == "exact"
             assert actual["alpha"] == str(int(alpha)) and actual["premultiplied"] == str(int(premultiplied))
             # libavif intentionally reports counts above INT_MAX as infinite.

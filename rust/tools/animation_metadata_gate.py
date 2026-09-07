@@ -65,7 +65,7 @@ def poster_properties(data):
     return result
 
 
-def verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied):
+def verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied, monochrome):
     clap = None
     if crop is not None:
         x, y, w, h = crop
@@ -101,6 +101,12 @@ def verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied)
     properties = poster_properties(data)
     assert set(properties) == ({1} | ({2} if has_alpha else set()) | ({5} if crop else set()) | ({6} if crop and has_alpha else set()))
     for item_id, props in properties.items():
+        mono = monochrome or item_id in (2, 6)
+        pixi = [value for kind, value, _ in props if kind == b"pixi"]
+        av1c = [value for kind, value, _ in props if kind == b"av1C"]
+        assert pixi == [b"\0\0\0\0" + bytes([1 if mono else 3]) + bytes([8]) * (1 if mono else 3)]
+        assert len(av1c) == 1 and bool(av1c[0][2] & 16) == mono
+
         transforms = [(kind, value) for kind, value, essential in props if kind in (b"clap", b"irot", b"imir")]
         assert all(essential for kind, _, essential in props if kind in (b"clap", b"irot", b"imir"))
         assert transforms == ([(kind, value) for kind, value in values if value is not None] if item_id == 1 else [])
@@ -159,17 +165,20 @@ def main():
     }
     count = 0
     with tempfile.TemporaryDirectory(prefix="avif-metadata-") as directory:
-        for pasp, repeat, (has_alpha, premultiplied), rotation, mirror, crop in product(
+        for pasp, repeat, (has_alpha, premultiplied), rotation, mirror, crop, monochrome in product(
             [None, "1,1", "2,2", "4294967295,4294967295"],
             ["0", "2", "infinite"],
             [(False, False), (True, False), (True, True)],
             [None, 0, 1, 2, 3], [None, 0, 1],
             [None, (0, 0, 48, 56), (8, 12, 48, 56), (1, 3, 61, 75), (63, 79, 1, 1)],
+            [False, True],
         ):
             env = os.environ.copy()
-            for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA", "AVIF_PASP", "AVIF_ROTATION", "AVIF_MIRROR", "AVIF_CROP", "AVIF_DURATIONS", "AVIF_TIMESCALE"]:
+            for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA", "AVIF_PASP", "AVIF_ROTATION", "AVIF_MIRROR", "AVIF_CROP", "AVIF_DURATIONS", "AVIF_TIMESCALE", "AVIF_MONO"]:
                 env.pop(key, None)
             env.update(AVIF_REPEAT=repeat, AVIF_METADATA="1", AVIF_ICC=profile)
+            if monochrome:
+                env["AVIF_MONO"] = "1"
             if crop is not None:
                 env["AVIF_CROP"] = ",".join(map(str, crop))
             if rotation is not None:
@@ -185,7 +194,7 @@ def main():
             output = str(Path(directory) / "animation.avif")
             subprocess.run([encoder, output], env=env, check=True, capture_output=True)
             data = Path(output).read_bytes()
-            verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied)
+            verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied, monochrome)
             mastering = metadata_boxes(data)
             expected_mdcv = struct.pack(">8H2I", 13250, 34500, 7500, 3000,
                                         34000, 16000, 15635, 16450, 10000000, 50)
@@ -210,7 +219,8 @@ def main():
                               premultiplied=str(int(premultiplied)), pasp=pasp or "none",
                               rotation="none" if rotation is None else str(rotation),
                               mirror="none" if mirror is None else str(mirror),
-                              crop=",".join(map(str, crop)) if crop else "none")
+                              crop=",".join(map(str, crop)) if crop else "none",
+                              monochrome=str(int(monochrome)))
                 if source == "secondary":
                     wanted.update(crop="none", rotation="none", mirror="none")
                 for key, value in wanted.items():

@@ -3,8 +3,8 @@ fn main() {
     use svtav1::avif::{
         AvifEncoder,
         animation::{
-            AnimationFrame, AnimationOptions, AnimationTiming, ClliBox, CropRect, MdcvBox, PaspBox,
-            RepetitionCount,
+            AnimationFrame, AnimationOptions, AnimationTiming, ClliBox, CropRect, MdcvBox,
+            MonochromeAnimationFrame, PaspBox, RepetitionCount,
         },
     };
     let w = 64;
@@ -87,16 +87,34 @@ fn main() {
             50,
         ));
     }
-    let bytes = AvifEncoder::new()
-        .with_speed(7)
-        .encode_animation_yuv420_with_options(
+    let encoder = AvifEncoder::new().with_speed(7);
+    let bytes = if std::env::var_os("AVIF_MONO").is_some() {
+        let frames: Vec<_> = frames
+            .iter()
+            .map(|frame| MonochromeAnimationFrame {
+                y: frame.y,
+                y_stride: frame.y_stride,
+                alpha: frame.alpha,
+                duration: frame.duration,
+            })
+            .collect();
+        encoder.encode_animation_mono_with_options(
             &frames,
             w as u32,
             h as u32,
             AnimationTiming { timescale },
             &options,
         )
-        .unwrap();
+    } else {
+        encoder.encode_animation_yuv420_with_options(
+            &frames,
+            w as u32,
+            h as u32,
+            AnimationTiming { timescale },
+            &options,
+        )
+    }
+    .unwrap();
     std::fs::write(std::env::args().nth(1).expect("output path"), bytes).unwrap();
 }
 #[cfg(not(feature = "avif-container"))]

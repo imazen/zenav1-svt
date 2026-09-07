@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- 8-bit and native 10-bit monochrome animated AVIF APIs with optional alpha and the shared timing, metadata and spatial-property options.
+
 - Independent animated AVIF timing and random-access gate: exact 64-bit timing, color/alpha byte comparisons after seeking and reset, and duration-table boundaries.
 
 - Animated clean-aperture cropping with an uncropped secondary poster sharing encoded color/alpha samples; preserve both posters’ metadata and alpha associations.
