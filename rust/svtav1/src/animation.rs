@@ -144,7 +144,11 @@ impl AvifEncoder {
             || width > 65535
             || height > 65535
         {
-            return Err(EncodeError::InvalidDimensions);
+            return Err(EncodeError::InvalidDimensions {
+                width,
+                height,
+                reason: "animation needs frames, a non-zero timescale and dimensions in 1..=65535",
+            });
         }
         let duration = frames
             .iter()
@@ -196,7 +200,11 @@ impl AvifEncoder {
                 ));
             }
             let stride =
-                u32::try_from(frame.y_stride).map_err(|_| EncodeError::InvalidDimensions)?;
+                u32::try_from(frame.y_stride).map_err(|_| EncodeError::InvalidDimensions {
+                    width,
+                    height,
+                    reason: "animation luma stride exceeds u32",
+                })?;
             self.validate_dimensions(frame.y.len(), width, height, stride)?;
             if frame.duration == 0
                 || frame.u.len() < cn
@@ -204,7 +212,11 @@ impl AvifEncoder {
                 || frame.alpha.is_some() != has_alpha
                 || frame.alpha.is_some_and(|a| a.len() < n)
             {
-                return Err(EncodeError::InvalidDimensions);
+                return Err(EncodeError::InvalidDimensions {
+                    width,
+                    height,
+                    reason: "animation frame needs non-zero duration, complete chroma and alpha planes, and consistent alpha presence",
+                });
             }
         }
         let mut color = self
