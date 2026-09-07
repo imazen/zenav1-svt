@@ -27,6 +27,14 @@ int main(int argc, char **argv) {
     else printf("rotation=none\n");
     if (d->image->transformFlags & AVIF_TRANSFORM_IMIR) printf("mirror=%u\n", d->image->imir.axis);
     else printf("mirror=none\n");
+    if (d->image->transformFlags & AVIF_TRANSFORM_CLAP) {
+        avifCropRect crop;
+        if (!avifCropRectFromCleanApertureBox(&crop, &d->image->clap, d->image->width, d->image->height, &d->diag)) {
+            fprintf(stderr, "invalid crop: %s\n", d->diag.error); avifDecoderDestroy(d); return 1;
+        }
+        printf("crop=%u,%u,%u,%u\n", crop.x, crop.y, crop.width, crop.height);
+    } else printf("crop=none\n");
+    printf("dimensions=%u,%u\n", d->image->width, d->image->height);
     bytes("icc", &d->image->icc); bytes("exif", &d->image->exif); bytes("xmp", &d->image->xmp);
     while ((r = avifDecoderNextImage(d)) == AVIF_RESULT_OK) {}
     avifDecoderDestroy(d);

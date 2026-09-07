@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Animated clean-aperture cropping with an uncropped secondary poster sharing encoded color/alpha samples; preserve both posters’ metadata and alpha associations.
+
 - Animated AVIF square-pixel aspect, rotation and mirroring metadata on color tracks and posters, with early validation and independent libavif conformance checks.
 
 - Correct partial-edge chroma reconstruction and pad native 10-bit alpha for odd frame dimensions; add decoder regression witnesses.

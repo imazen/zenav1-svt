@@ -3,20 +3,21 @@ fn main() {
     use svtav1::avif::{
         AvifEncoder,
         animation::{
-            AnimationFrame, AnimationOptions, AnimationTiming, ClliBox, MdcvBox, PaspBox,
+            AnimationFrame, AnimationOptions, AnimationTiming, ClliBox, CropRect, MdcvBox, PaspBox,
             RepetitionCount,
         },
     };
     let w = 64;
+    let h = 80;
     let mut colors: Vec<Vec<u8>> = (0..3)
         .map(|f| {
-            (0..w * w)
+            (0..w * h)
                 .map(|i| (32 + (i % w + f * 30) % 180) as u8)
                 .collect()
         })
         .collect();
     let alphas: Vec<Vec<u8>> = (0..3)
-        .map(|f| (0..w * w).map(|i| ((i + f * 13) % 256) as u8).collect())
+        .map(|f| (0..w * h).map(|i| ((i + f * 13) % 256) as u8).collect())
         .collect();
     if std::env::var_os("AVIF_PREMULTIPLIED").is_some() {
         for (color, alpha) in colors.iter_mut().zip(&alphas) {
@@ -25,7 +26,7 @@ fn main() {
             }
         }
     }
-    let uv = vec![128; w * w / 4];
+    let uv = vec![128; w * h / 4];
     let frames: Vec<_> = (0..3)
         .map(|f| AnimationFrame {
             y: &colors[f],
@@ -47,6 +48,13 @@ fn main() {
         } else {
             RepetitionCount::Finite(count.parse().unwrap())
         };
+    }
+    if let Ok(crop) = std::env::var("AVIF_CROP") {
+        let values: Vec<u32> = crop.split(',').map(|v| v.parse().unwrap()).collect();
+        let [x, y, width, height] = values.as_slice() else {
+            panic!("AVIF_CROP=x,y,width,height")
+        };
+        options.crop = Some(CropRect::new(*x, *y, *width, *height));
     }
     options.rotation = std::env::var("AVIF_ROTATION")
         .ok()
@@ -78,7 +86,7 @@ fn main() {
         .encode_animation_yuv420_with_options(
             &frames,
             w as u32,
-            w as u32,
+            h as u32,
             AnimationTiming { timescale: 1000 },
             &options,
         )

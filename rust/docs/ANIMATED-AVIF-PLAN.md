@@ -46,7 +46,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
-| Spatial properties | Square-pixel aspect, rotation and mirror metadata wired to color track/poster; clean aperture and displayed transformed-alpha pixel verification remain |
+| Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
 | Format coverage | 8-bit and native 10-bit 4:2:0 APIs, including native alpha. Native alpha currently requires preset >=9. 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
@@ -163,3 +163,31 @@ pixel comparison remains separate work. The audit also corrected canonical
 zenavif's reversed HEIF mirror-axis mapping, verified against all 12 combinations
 from the actual libavif C helper (see its Known Bugs entry). Both repositories
 remain local with the temporary sibling serializer dependency; CI stays deferred.
+
+Clean-aperture continuation: `AnimationOptions::crop` uses `CropRect` with
+integer coordinates before orientation, as required by MIAF. Validation rejects
+empty, overflowing or out-of-bounds crops before encoding. The canonical
+serializer writes exact rational center offsets in `clap`, then rotation and
+mirror properties. Every cropped animation includes a non-hidden uncropped
+secondary poster (item 5), meeting AVIF 1.2 section 2.2.3 for off-center crops.
+The secondary color and optional alpha items share the first frame's encoded
+extents; no additional frame is encoded. Descriptive properties and sidecars
+also describe the uncropped image, which has no transformative properties.
+
+Independent libavif verification initially exposed its single-target handling
+of `auxl`/`cdsc`: a multi-target Exif reference lost metadata on the primary
+poster (`crop-metadata.log`). Separate reference source items now retain alpha,
+Exif and XMP on both posters. Item 6 shares the first alpha extent; sidecars
+7/8 describe the secondary independently. The gate changes only `pitm` in a
+copy to decode the actual secondary through libavif's primary-item API, and
+checks shared extents, visibility, exact metadata and alpha/premultiplication.
+All 7,560 combinations pass (`crop-metadata-final.log`) across four crops
+(including odd origins/dimensions and a 1x1 corner), optional orientation, pixel
+aspect, repetition and alpha. Serializer tests pass 82/82, workspace nextest
+passes 2,590/2,590 with zero skips, and serializer clippy passes with warnings
+denied; facade clippy completes with existing warnings. Evidence under
+`~/tmp/animation-metadata/crop-{secondary-build,nextest,clippy}.log`. The
+regression gate passes 109/109 (`crop-spotcheck.log`); scoped Rust formatting
+and diff whitespace checks pass.
+CI remains deferred and the temporary sibling serializer dependency remains
+until the verified canonical commits can be landed and pinned.

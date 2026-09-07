@@ -6,7 +6,10 @@ use zenavif_serialize::{
     animated::{AnimFrame, AnimatedImage},
 };
 
-pub use zenavif_serialize::{ClliBox, MdcvBox, PaspBox, animated::RepetitionCount};
+pub use zenavif_serialize::{
+    ClliBox, MdcvBox, PaspBox,
+    animated::{CropRect, RepetitionCount},
+};
 
 /// Container metadata and playback policy. Metadata applies to the color
 /// track and its poster item. ICC bytes take display-color precedence over
@@ -23,6 +26,8 @@ pub struct AnimationOptions {
     pub mdcv: Option<MdcvBox>,
     /// Explicit square-pixel spacing. AVIF requires positive, equal values.
     pub pixel_aspect_ratio: Option<PaspBox>,
+    /// Crop in unrotated image coordinates, before rotation and mirroring.
+    pub crop: Option<CropRect>,
     /// Counter-clockwise quarter-turn code (0..=3), before mirroring.
     pub rotation: Option<u8>,
     /// Mirror after rotation: 0 swaps top/bottom, 1 swaps left/right.
@@ -41,6 +46,7 @@ impl Default for AnimationOptions {
             clli: None,
             mdcv: None,
             pixel_aspect_ratio: None,
+            crop: None,
             rotation: None,
             mirror: None,
             premultiplied_alpha: false,
@@ -171,6 +177,14 @@ impl AvifEncoder {
                     "repeated animation duration overflow",
                 ))?;
         }
+        if options
+            .crop
+            .is_some_and(|crop| crop.to_clean_aperture(width, height).is_none())
+        {
+            return Err(EncodeError::UnsupportedConfig(
+                "crop rectangle must be nonempty and within the image",
+            ));
+        }
         if options.rotation.is_some_and(|r| r > 3) || options.mirror.is_some_and(|m| m > 1) {
             return Err(EncodeError::UnsupportedConfig(
                 "rotation must be 0..=3 and mirror axis must be 0..=1",
@@ -285,6 +299,9 @@ impl AvifEncoder {
         }
         if let Some(xmp) = options.xmp.as_ref() {
             mux.set_xmp(xmp.clone());
+        }
+        if let Some(crop) = options.crop {
+            mux.set_crop(crop);
         }
         if let Some(rotation) = options.rotation {
             mux.set_rotation(rotation);
@@ -753,6 +770,46 @@ mod tests {
                 }
             }
             fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn validates_crop_before_encoding() {
+        let plane = vec![128; 64 * 80];
+        let frames = [AnimationFrame {
+            y: &plane,
+            u: &plane,
+            v: &plane,
+            y_stride: 64,
+            alpha: None,
+            duration: 1,
+        }];
+        for crop in [
+            CropRect::new(0, 0, 0, 80),
+            CropRect::new(0, 0, 64, 0),
+            CropRect::new(64, 0, 1, 1),
+            CropRect::new(0, 80, 1, 1),
+            CropRect::new(1, 0, 64, 80),
+            CropRect::new(0, 1, 64, 80),
+            CropRect::new(u32::MAX, 0, 2, 2),
+            CropRect::new(0, 0, u32::MAX, 1),
+        ] {
+            let options = AnimationOptions {
+                crop: Some(crop),
+                ..AnimationOptions::default()
+            };
+            assert!(matches!(
+                AvifEncoder::new().encode_animation_yuv420_with_options(
+                    &frames,
+                    64,
+                    80,
+                    AnimationTiming { timescale: 1000 },
+                    &options
+                ),
+                Err(EncodeError::UnsupportedConfig(
+                    "crop rectangle must be nonempty and within the image"
+                ))
+            ));
         }
     }
 
