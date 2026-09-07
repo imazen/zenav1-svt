@@ -5,6 +5,16 @@ metadata, transparency, and spec supported features. After that, complete
 video encoding support.** This objective remains active. The initial all-intra
 path is an implementation step, not the completion boundary.
 
+SVT main readiness (2026-09-07): the user authorizes merging once ready and
+then auditing every open GitHub issue. SVT review head 581546cd differs from
+the locally verified merge 4e688a54 only in this plan document. The verified
+code passes 2616/2616 tests, 123/123 C regression cases, 336/336 native
+source comparisons and 168/168 color C-byte comparisons. Fresh fetch confirms
+main 74d92430 is already an ancestor. Advance SVT main with this verified
+code; this does not merge the separate zenavif/cavif review branches, whose
+quality investigation remains open. Prior blanket main-deferral statements
+below describe earlier checkpoints. No quality threshold is changed.
+
 Push checkpoint (2026-09-07, explicitly requested): review branch
 `animation-avif-complete` in both repositories. The temporary sibling
 serializer dependency is replaced by canonical zenavif git revision
