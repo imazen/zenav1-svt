@@ -79,6 +79,15 @@ fn configure_grain(p: &mut EncodePipeline) {
         table.ar_coeffs_y[3] = -4;
         table.ar_coeffs_cb[4] = 8;
         table.ar_coeffs_cr[4] = -5;
+        match std::env::var("SVT_GRAIN_TABLE").as_deref() {
+            Ok("cfl") => {
+                table.chroma_scaling_from_luma = true;
+                table.num_cb_points = 0;
+                table.num_cr_points = 0;
+            }
+            Ok("no_y") => table.num_y_points = 0,
+            _ => {}
+        }
         p.film_grain.table = Some(table);
         p.film_grain.ignore_ref = std::env::var_os("SVT_GRAIN_IGNORE_REF").is_some();
     }

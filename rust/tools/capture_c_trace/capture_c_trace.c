@@ -412,6 +412,12 @@ int main(int argc, char** argv) {
         grain_table.ar_coeffs_cb[4]=8;grain_table.ar_coeffs_cr[4]=-5;
         grain_table.cb_mult=grain_table.cr_mult=128;grain_table.cb_luma_mult=grain_table.cr_luma_mult=192;grain_table.cb_offset=grain_table.cr_offset=256;
         grain_table.overlap_flag=1;grain_table.ignore_ref=getenv("SVT_GRAIN_IGNORE_REF")!=NULL;
+        if (!strcmp(getenv("SVT_GRAIN_TABLE"), "cfl")) {
+            grain_table.chroma_scaling_from_luma=1;
+            grain_table.num_cb_points=grain_table.num_cr_points=0;
+        } else if (!strcmp(getenv("SVT_GRAIN_TABLE"), "no_y")) {
+            grain_table.num_y_points=0;
+        }
         cfg.fgs_table=&grain_table;
     }
     const char *fg_strength = getenv("SVT_GRAIN_STRENGTH");

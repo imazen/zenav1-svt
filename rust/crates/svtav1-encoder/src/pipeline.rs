@@ -6868,7 +6868,7 @@ impl EncodePipeline {
                 };
                 if self.bit_depth == 10 {
                     if let Some((y, u, v)) = self.last_recon10_final.as_mut() {
-                        crate::film_grain_synthesis::add_grain(
+                        crate::film_grain_synthesis::add_grain_for_output(
                             fg,
                             [y, u, v],
                             [stride, stride / 2, stride / 2],
@@ -6884,7 +6884,7 @@ impl EncodePipeline {
                         v.iter().map(|&v| u16::from(v)).collect(),
                     ];
                     let [gy, gu, gv] = &mut planes;
-                    crate::film_grain_synthesis::add_grain(
+                    crate::film_grain_synthesis::add_grain_for_output(
                         fg,
                         [gy, gu, gv],
                         [stride, stride / 2, stride / 2],

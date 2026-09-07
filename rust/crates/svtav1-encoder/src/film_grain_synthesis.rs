@@ -207,6 +207,37 @@ pub fn add_grain(
     height: usize,
     depth: u8,
 ) {
+    add_grain_impl(p, planes, strides, width, height, depth, false);
+}
+
+/// Synthesize the parameters a 4:2:0 decoder receives. Keep the direct C
+/// entry point above for oracle comparisons, including C's HBD CfL omission.
+pub(crate) fn add_grain_for_output(
+    p: &FilmGrainParams,
+    planes: [&mut [u16]; 3],
+    strides: [usize; 3],
+    width: usize,
+    height: usize,
+    depth: u8,
+) {
+    let mut signaled = p.clone();
+    // write_film_grain_params omits these counts under the 4:2:0 rule.
+    if signaled.chroma_scaling_from_luma || signaled.num_y_points == 0 {
+        signaled.num_cb_points = 0;
+        signaled.num_cr_points = 0;
+    }
+    add_grain_impl(&signaled, planes, strides, width, height, depth, true);
+}
+
+fn add_grain_impl(
+    p: &FilmGrainParams,
+    planes: [&mut [u16]; 3],
+    strides: [usize; 3],
+    width: usize,
+    height: usize,
+    depth: u8,
+    decoder_chroma: bool,
+) {
     assert!(depth == 8 || depth == 10);
     if !p.apply_grain {
         return;
@@ -240,8 +271,8 @@ pub fn add_grain(
     } else {
         (0, max_sample, 0, max_sample)
     };
-    // Preserve the C HBD predicate: unlike its 8-bit arm it tests point counts
-    // alone, even with chroma_scaling_from_luma. Do not silently repair the oracle.
+    // The oracle entry preserves C's HBD point-count-only predicate.
+    // Production output also applies CfL at high bit depth, as signaled.
     for (ci, (dst, stride, count, mult, lmult, off)) in [
         (
             cb,
@@ -263,7 +294,7 @@ pub fn add_grain(
     .into_iter()
     .enumerate()
     {
-        if count == 0 && !(depth == 8 && p.chroma_scaling_from_luma) {
+        if count == 0 && !((depth == 8 || decoder_chroma) && p.chroma_scaling_from_luma) {
             continue;
         }
         let (mult, lmult, off) = if p.chroma_scaling_from_luma {

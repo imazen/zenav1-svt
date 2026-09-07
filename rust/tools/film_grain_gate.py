@@ -36,7 +36,8 @@ def case(name,w,h,depth,knobs,frames=1,c_invalid=False):
     assert (d/'decoded.yuv').read_bytes()==recon, f'{name}: decoder != grain reconstruction; {d}'
     run([DEC,'--i420','--rawvideo','--skip-film-grain',f'--output-bit-depth={depth}','-o',d/'clean.yuv',d/'rs.obu'],env,d/'decode-clean.log')
     changed=(d/'clean.yuv').read_bytes()!=recon
-    if knobs.get('SVT_GRAIN_TABLE'):assert changed, f'{name}: supplied grain had no output effect'
+    if knobs.get('SVT_GRAIN_TABLE') == 'no_y':assert not changed, f'{name}: omitted chroma points affected output'
+    elif knobs.get('SVT_GRAIN_TABLE'):assert changed, f'{name}: supplied grain had no output effect'
     print(f'PASS {name}: {len(r)}B, C={"decode failure witness" if c_invalid else "identical"}, recon decoder-exact, grain_live={changed}',flush=True)
     return changed
 live=0
@@ -68,5 +69,8 @@ for denom in [9,12,16]:
         live+=case(f'superres{denom}_table{int(table)}',128,128,8,knobs)
 live+=case('superres_partial_c_bug',70,66,8,{'SVT_GRAIN_STRENGTH':'25','SVT_GRAIN_APPLY':'1',
     'SVTAV1_SUPERRES':'12','SVT_SUPERRES_KF_DENOM':'12'},c_invalid=True)
-assert live>=20, f'not enough live grain cases: {live}'
-print(f'PASS 25 live stream cells; {live} show a grain-on/off pixel difference',flush=True)
+for depth in [8,10]:
+    for mode in ['cfl','no_y']:
+        live+=case(f'table_{mode}_d{depth}',128,128,depth,{'SVT_GRAIN_TABLE':mode})
+assert live>=27, f'not enough live grain cases: {live}'
+print(f'PASS 29 stream cells; {live} show a grain-on/off pixel difference',flush=True)

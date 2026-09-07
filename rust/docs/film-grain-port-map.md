@@ -68,9 +68,10 @@ input, failed-estimate behavior, native low-bit preservation, supplied-table
 precedence, DPB/output separation, invalid parameters and seed wraps.
 
 `tools/film_grain_gate.py <scratch-directory>` drives both real encoders on
-identical inputs. **24/24 valid C streams** are byte-identical; all **25/25**
-Rust reconstructions match aomdec sample-for-sample and differ when decoding with
-`--skip-film-grain`. One additional cell records a pinned C decode failure,
+identical inputs. **28/28 valid C streams** are byte-identical; all **29/29**
+Rust reconstructions match aomdec sample-for-sample. 27 differ when decoding with
+`--skip-film-grain`; two correctly suppress chroma points omitted by the syntax.
+One additional cell records a pinned C decode failure,
 described below. The cells include 8/10-bit adaptive/apply combinations,
 supplied tables overriding denoising, partial dimensions 70x66 and 136x72, and
 two-frame supplied-table INTER reuse versus forced updates. INTER uses the
@@ -98,8 +99,11 @@ oracle and is not claimed measured on this host.
 
 C's HBD reconstruction synthesis tests chroma point counts without its 8-bit
 `chroma_scaling_from_luma` alternative. The standalone translation preserves
-that behavior and tests it against C; for this C edge case, matching C's recon
-is not a claim of matching a decoder that applies chroma-from-luma grain.
+that behavior and tests it against C. Production reconstruction uses
+`add_grain_for_output`, which applies chroma-from-luma grain at both bit depths
+and suppresses chroma point counts omitted by the 4:2:0 frame syntax. Thus the
+raw oracle remains faithful while encoder output matches the decoder. Supplied
+tables exercising both cases are live-tested at 8 and 10 bits.
 
 Default-off behavior is checked by the broader workspace and identity gates.
 Run all verification through the shared `scripts/run-heavy` wrapper; do not
@@ -163,3 +167,21 @@ claimed. Artifacts: `~/tmp/film-grain-review/gate/` on i265.
 Follow-up checks: workspace nextest **2,580/2,580**, regression spot-check
 **106/106**, and preset-8 superres identity/conformance **128/128**. Logs are
 `~/tmp/film-grain-review/{nextest,spotcheck,superres}.log`.
+
+
+A further supplied-table review reproduced and corrected three decoder-output
+failures: 10-bit chroma-from-luma with zero chroma point counts, and 8/10-bit
+tables with zero luma points but nonzero chroma counts. The writer already
+omitted the latter counts as required; reconstruction had used the original
+table instead. The production synthesis entry now derives effective counts
+from the syntax and uses the decoder's high-bit-depth chroma predicate. Raw
+`add_grain` remains C-exact for the direct differential harness.
+
+Final expanded gate: **29/29 decoder-exact reconstructions**, **28/28 valid C
+streams byte-identical**, one hash-pinned C corrupt-stream witness; **27/29**
+show grain effects and **2/29** correctly show none because the syntax omits
+the supplied chroma points. Logs: `~/tmp/film-grain-review/gate-final.log`;
+pre-fix witnesses: `chroma-before.log` and its adjacent dump directory.
+Final workspace rerun after the chroma-output correction: **2,580/2,580 passed,
+zero skipped**, including the seven raw C grain differentials and seven pipeline
+wiring tests (`~/tmp/film-grain-review/nextest-final.log`).
