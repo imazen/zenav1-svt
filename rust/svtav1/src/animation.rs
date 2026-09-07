@@ -738,7 +738,7 @@ mod tests {
             let directory =
                 std::env::temp_dir().join(format!("svt-animation-hbd-{}", std::process::id()));
             fs::create_dir_all(&directory).unwrap();
-            for quality in [40.0, 98.0] {
+            for quality in [40.0, 98.0, 100.0] {
                 for (speed, has_alpha) in [(9, true), (6, false)] {
                     let enc = AvifEncoder::new()
                         .with_bit_depth(10)
@@ -850,6 +850,15 @@ mod tests {
                                 );
                             }
                         }
+                        if quality == 100.0 {
+                            let mut source: Vec<u8> = colors[i]
+                                .chunks_exact(stride)
+                                .flat_map(|row| row[..w].iter().flat_map(|v| v.to_le_bytes()))
+                                .collect();
+                            source.extend(frames[i].u.iter().flat_map(|v| v.to_le_bytes()));
+                            source.extend(frames[i].v.iter().flat_map(|v| v.to_le_bytes()));
+                            assert_eq!(expected, source, "native lossless color must equal source");
+                        }
                         assert!(
                             y.iter().any(|n| n & 3 != 0),
                             "fixture must preserve native low bits"
@@ -889,8 +898,15 @@ mod tests {
                         assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
                         assert_eq!(info.color_type, png::ColorType::Rgba);
                         assert_eq!((info.width as usize, info.height as usize), (w, w));
-                        for (i, pixel) in pixels.as_chunks::<8>().0.iter().enumerate() {
-                            let sample = alpha[(i / w) * pipe.width as usize + i % w];
+                        for (pixel_index, pixel) in pixels.as_chunks::<8>().0.iter().enumerate() {
+                            let sample =
+                                alpha[(pixel_index / w) * pipe.width as usize + pixel_index % w];
+                            if quality == 100.0 {
+                                assert_eq!(
+                                    sample, alphas[i][pixel_index],
+                                    "native lossless alpha must equal source"
+                                );
+                            }
                             let actual = u16::from_be_bytes([pixel[6], pixel[7]]);
                             // PNG expands alpha to 16 bits. Recover the native 10-bit
                             // integer to avoid testing the reader's expansion rounding.
@@ -913,7 +929,7 @@ mod tests {
         macro_rules! exercise {
             ($sample:ty, $depth:expr, $speed:expr, $entry:ident, $raw:ident, $sizes:expr) => {
                 for (w, h) in $sizes {
-                    for quality in if $depth == 8 { vec![40.0, 98.0, 100.0] } else { vec![40.0, 98.0] } {
+                    for quality in [40.0, 98.0, 100.0] {
                         for has_alpha in [false, true] {
                             let dir = std::env::temp_dir().join(format!("svt-mono-animation-{}-{}-{w}x{h}-{}-{quality}-{has_alpha}", std::process::id(), $depth, $speed));
                             fs::create_dir_all(&dir).unwrap();

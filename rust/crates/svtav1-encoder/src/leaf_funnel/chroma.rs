@@ -273,6 +273,7 @@ fn tx_pair_hbd(
     let (frame, rates) = (fx.frame, fx.rates);
     let (cw, chh) = (cx.cw, cx.chh);
     let u_out = tx_unit_hbd(
+        frame.coded_lossless,
         &b.u_src10,
         cw,
         0,
@@ -297,6 +298,7 @@ fn tx_pair_hbd(
         Some(&rd_args(cx, frame, 0)),
     );
     let v_out = tx_unit_hbd(
+        frame.coded_lossless,
         &b.v_src10,
         cw,
         0,

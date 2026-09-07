@@ -250,7 +250,8 @@ impl AvifEncoder {
     /// LIVE: sets `EncodePipeline::hdr.enable_qm`, which drives the frame
     /// header's `using_qmatrix` + qm levels and the quantizer itself. Off by
     /// default, matching C's mainline default. Proven to change the emitted
-    /// bytes by `qm_knob_changes_bytes` below.
+    /// bytes by `qm_knob_changes_bytes` below. Lossless encoding uses identity
+    /// matrices, as required by the decoder's lossless reconstruction.
     pub fn with_qm(mut self, enable: bool) -> Self {
         self.enable_qm = enable;
         self
@@ -275,9 +276,9 @@ impl AvifEncoder {
 
     /// Request lossless encoding.
     ///
-    /// Selects QP 0 for exact 8-bit source reconstruction on color and
-    /// monochrome stills and animations, including alpha. Native 10-bit
-    /// lossless and inter-frame lossless remain unsupported.
+    /// Selects QP 0 for exact 8-bit or native 10-bit source reconstruction on
+    /// color and monochrome stills and animations, including alpha.
+    /// Inter-frame lossless remains unsupported.
     pub fn with_lossless(mut self, lossless: bool) -> Self {
         self.lossless = lossless;
         self
@@ -340,7 +341,7 @@ impl AvifEncoder {
         let rc_config = svtav1_encoder::rate_control::RcConfig {
             mode: svtav1_encoder::rate_control::RcMode::Cqp,
             // `with_lossless(true)` IS QP 0 in AV1 (spec 5.9.12
-            // `CodedLossless`). Both 8-bit color and monochrome paths use
+            // `CodedLossless`). Both 8/10-bit color and monochrome paths use
             // WHT transforms and bypass the in-loop filters at this index.
             qp: if self.lossless {
                 0

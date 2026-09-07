@@ -325,10 +325,10 @@ removed after verification, and its rejection witnesses now require successful
 C-byte comparisons. The default lossless gate includes both screen patterns.
 Evidence: `benchmarks/lossless_screen_2026-09-07.md`.
 
-**Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md): 10-bit,
+**Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md):
 fork mode (its chroma-q deltas leave the frame outside CodedLossless),
-superres, inter frames. 8-bit monochrome
-and alpha are implemented and source-exact; C has no monochrome oracle.
+superres, inter frames. 8/10-bit monochrome and alpha are implemented and
+source-exact; C has no monochrome oracle.
 
 ## FIXED 2026-08-27 — MONO partial SBs at preset 6 coded PARTITION_NONE at a frame edge (undecodable)
 
@@ -801,6 +801,27 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed 2026-09-07 — lossless quantization options.** Matrix-on QP0 matched C
+but decoded to wrong pixels at both depths; use identity matrices in production
+as the decoder does. Variance-boost QP0 was decoder-rejected only in Rust:
+pass the raw C variance plan to coding only when delta-q can be signaled.
+144 source/byte-neutrality cases pass QM, variance boost and their combination
+at 8/10-bit, mono/color, odd dimensions and four presets. C matrix/variance
+helper translations remain intact; `SUSPECTED-C-BUGS.md` §1 and §31 record the
+different reference behavior and the corrected earlier inference.
+
+**Fixed 2026-09-07 — native 10-bit lossless.** Native WHTs, per-unit
+prediction overlays and coefficient contexts are wired through color MD and
+monochrome level production. High-preset color uses the native funnel at QP0.
+Palette MDS0 now selects the native lambda; the prior u8 lambda admitted a
+wrong candidate at screen64 p4 (1285 B vs C 1318 B). The native grid is
+168/168 C-byte and 336/336 decoded-source matches; 252 strided/odd-tiled/extreme
+source checks also pass. Native residual-bearing IntraBC also needs the lossless transform-size
+syntax/cost suppression: an extra bit caused `Invalid intrabc dv` on
+screencopy512x128 p4. Corrected output is C-identical (11349 B), source-exact,
+with 386 selected copies. Native monochrome mode decisions still use the upper
+eight bits. See `benchmarks/native_lossless_2026-09-07.md`.
+
 **Fixed 2026-09-07 — 8-bit lossless monochrome/alpha.** The monochrome
 extension now has an 8x8/four-TX_4X4 WHT leaf loop using shared C kernels,
 per-transform prediction and coefficient contexts. Both the lossless flag and
@@ -808,7 +829,7 @@ maximum quality reach it. Ninety aomdec cases equal source pixels, including
 flat/checkerboard data that exercises skip and screen-tool signaling. The
 IntraBC lossless refusal is color-only because mono never enters its search.
 Lossless color and monochrome animation alpha is verified against source.
-Native 10-bit lossless and the color gate's 32 lower-preset C-byte pins remain;
+Native 10-bit lossless and the color gate's 32 lower-preset C-byte pins were subsequently resolved;
 see docs/ANIMATED-AVIF-PLAN.md for the full active scope.
 
 **Fixed 2026-09-07 — native monochrome preset floor.** Native level
@@ -819,7 +840,7 @@ VERT_A/B children were predicted as PARTITION_NONE. The 108-case native grid
 now matches aomdec, preserves low input bits, and is byte-invariant to the recon
 output flag. Native mono/alpha animation at speed 2 also passes exact pixel
 checks. Monochrome mode decisions still use the upper eight bits; full native
-MD and native lossless remain. See ANIMATED-AVIF-PLAN.md for the wider active scope.
+MD remains; native lossless was subsequently implemented. See ANIMATED-AVIF-PLAN.md for the wider active scope.
 
 **Fixed 2026-09-07 — low-preset monochrome partial blocks.** The non-PD0
 search previously rooted at the clamped edge rectangle and was guarded to
@@ -1247,7 +1268,7 @@ and `benchmarks/mem_2026-08-16.meta` (peak RSS). Re-measure with
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
    (8-bit color parity completed locally 2026-09-07: 144/144 byte-identical
    and source-exact, including the former p0..p3 pins. Lower-preset screen
-   content is also implemented; native 10-bit lossless remains open.)
+   content and native 10-bit lossless are also implemented.)
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
 

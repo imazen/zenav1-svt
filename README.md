@@ -125,12 +125,17 @@ port maps in `rust/docs/`.
 **Envelope:** 8- and 10-bit, 4:2:0 and monochrome, all-intra encoding.
 C SVT-AV1 v4.2.0 itself rejects 4:4:4 / 4:2:2 / 12-bit at init
 (`enc_settings.c:460,470`); those formats remain part of the broader animated
-AVIF goal. **QP 0 (coded-lossless)** works for 8-bit color and monochrome,
+AVIF goal. **QP 0 (coded-lossless)** works for 8-bit and native 10-bit color and monochrome,
 including animation alpha: TX_4X4 Walsh–Hadamard transforms and no in-loop
 filters. Color, including screen content at lower presets, is
 byte-identical to C in the lossless gate with exact source reconstruction
-(`rust/tools/lossless_gate.sh`). Native 10-bit, fork-mode and superresolution
-lossless remain refused.
+(`rust/tools/lossless_gate.sh`). Native 10-bit adds 168/168 C-byte color
+comparisons and 336/336 decoded-source comparisons across color and monochrome
+(`rust/tools/native_lossless_gate.py`). Fork-mode and superresolution lossless
+remain refused. At QP 0, quantization matrices use identity weights and
+variance boost cannot signal per-superblock delta-q. These combinations retain
+exact source samples; C's nonidentity lossless matrices are documented in
+`rust/docs/SUSPECTED-C-BUGS.md` (§31).
 **Monochrome** is decode-conformance-validated (aomdec + dav1d accept it, and the
 decoder output matches the encoder's recon bit-for-bit) rather than byte-vs-C —
 C v4.2.0 can't encode mono (`EB_YUV400` is rejected at init), so no C oracle

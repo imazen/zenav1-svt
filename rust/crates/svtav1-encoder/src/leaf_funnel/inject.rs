@@ -1053,8 +1053,15 @@ pub(super) fn inject_candidates(
             if has_uv && uv == 0 {
                 fcr += pal_uv_no_y1; // [1][0]: this candidate's luma palette is on
             }
+            // C fast_loop_core selects the lambda by hbd_md for palette
+            // candidates as well as regular intra. Using the u8 lambda here
+            // changes NIC admission even when palette predictions match C.
             let fast_cost = rdcost(
-                lambda,
+                if bd10_funnel {
+                    lambda_bd10_fast
+                } else {
+                    lambda
+                },
                 flr + fcr,
                 if frame.mds0_ssd { satd } else { satd << 4 },
             );

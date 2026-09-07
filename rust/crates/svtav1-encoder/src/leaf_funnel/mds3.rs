@@ -1044,7 +1044,7 @@ fn eval_candidate(
                     // Inert at the IBC presets (quadrant_sf == 0 at
                     // txs_level 2/3) — kept faithful to
                     // svt_aom_get_tx_size_bits' inter arm regardless.
-                    if dep_has_coeff && block_signals_txsize(w, h) {
+                    if dep_has_coeff && block_signals_txsize(w, h) && !frame.coded_lossless {
                         crate::vartx::tx_size_bits_vartx(
                             &rates.txfm_partition_fac_bits,
                             fx.ectx.txfm_above_span(abs_x, w),
@@ -1078,7 +1078,7 @@ fn eval_candidate(
         // var-tx walk when the depth kept coeffs, 0 bits when skip
         // (`!(is_inter_tx && skip)`).
         let tx_size_bits = if cands[ci].is_inter() {
-            if dep_has_coeff && block_signals_txsize(w, h) {
+            if dep_has_coeff && block_signals_txsize(w, h) && !frame.coded_lossless {
                 crate::vartx::tx_size_bits_vartx(
                     &rates.txfm_partition_fac_bits,
                     fx.ectx.txfm_above_span(abs_x, w),
@@ -1747,6 +1747,7 @@ fn eval_candidate(
                     chh,
                 );
                 let o = tx_unit_hbd(
+                    frame.coded_lossless,
                     src,
                     cw,
                     0,
@@ -1814,6 +1815,7 @@ fn eval_candidate(
                     let freq10 =
                         |src: &[u16], pred: &[u16], tsc: usize, dsc: usize, qt: &QuantTable| {
                             tx_unit_hbd(
+                                frame.coded_lossless,
                                 src,
                                 cw,
                                 0,
@@ -1996,6 +1998,7 @@ fn eval_candidate(
                         chh,
                     );
                     let u10 = tx_unit_hbd(
+                        frame.coded_lossless,
                         &b.u_src10,
                         cw,
                         0,
@@ -2020,6 +2023,7 @@ fn eval_candidate(
                         Some(&rd10),
                     );
                     let v10 = tx_unit_hbd(
+                        frame.coded_lossless,
                         &b.v_src10,
                         cw,
                         0,
@@ -2471,6 +2475,7 @@ fn eval_candidate(
                             chh,
                         );
                         let o = tx_unit_hbd(
+                            frame.coded_lossless,
                             src,
                             cw,
                             0,
@@ -2547,6 +2552,7 @@ fn eval_candidate(
                             chh,
                         );
                         let u10 = tx_unit_hbd(
+                            frame.coded_lossless,
                             &b.u_src10,
                             cw,
                             0,
@@ -2571,6 +2577,7 @@ fn eval_candidate(
                             Some(&rd10),
                         );
                         let v10 = tx_unit_hbd(
+                            frame.coded_lossless,
                             &b.v_src10,
                             cw,
                             0,
@@ -2781,7 +2788,7 @@ fn eval_candidate(
         // C prices the NON-skip arm with the var-tx `tx_size` bits and the
         // skip arm with zero of them — the assert at rd_cost.c:1369 states
         // that `skip_tx_size_bits == 0` for every inter mode.
-        let non_skip_tx_bits = if block_signals_txsize(w, h) {
+        let non_skip_tx_bits = if block_signals_txsize(w, h) && !frame.coded_lossless {
             crate::vartx::tx_size_bits_vartx(
                 &rates.txfm_partition_fac_bits,
                 fx.ectx.txfm_above_span(abs_x, w),
@@ -2811,7 +2818,7 @@ fn eval_candidate(
     // var-tx walk (block_has_coeff) and skip_tx_size_bits = 0
     // (rd_cost.c:1367-1377 + the `!(is_inter_tx && skip)` gate).
     let tx_size_bits_final = if cand.is_inter() {
-        if block_has_coeff && block_signals_txsize(w, h) {
+        if block_has_coeff && block_signals_txsize(w, h) && !frame.coded_lossless {
             crate::vartx::tx_size_bits_vartx(
                 &rates.txfm_partition_fac_bits,
                 fx.ectx.txfm_above_span(abs_x, w),

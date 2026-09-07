@@ -251,6 +251,140 @@ fn native_monochrome_low_presets_match_decoder() {
 }
 
 #[test]
+fn lossless_quantization_options_match_source() {
+    for (qm_enabled, variance_boost) in [(true, false), (false, true), (true, true)] {
+        // C and the port both applied nonidentity matrices at QP0, even though
+        // the decoder ignores them in a lossless segment. Their identical bytes
+        // decoded to wrong samples at both depths (gradient64, preset 7).
+        for depth in [8, 10] {
+            for mono in [false, true] {
+                for (w, h) in [(16usize, 16usize), (65, 67), (128, 128)] {
+                    for preset in [0, 4, 9, 13] {
+                        let stride = w + 3;
+                        let max = (1usize << depth) - 1;
+                        let y: Vec<u16> = (0..stride * h)
+                            .map(|i| ((i * 37 + i / stride * 71) & max) as u16)
+                            .collect();
+                        let u: Vec<u16> = (0..w.div_ceil(2) * h.div_ceil(2))
+                            .map(|i| ((i * 17 + 71) & max) as u16)
+                            .collect();
+                        let v: Vec<u16> = u.iter().map(|v| max as u16 - v).collect();
+                        let make = || pipeline(w, h, preset, 100.0, depth).with_chroma_420(!mono);
+                        let encode = |p: &mut EncodePipeline| {
+                            if depth == 10 {
+                                if mono {
+                                    p.try_encode_frame_hbd(&y, stride).unwrap()
+                                } else {
+                                    p.try_encode_frame_420_hbd(&y, &u, &v, stride).unwrap()
+                                }
+                            } else {
+                                let y8: Vec<u8> = y.iter().map(|v| *v as u8).collect();
+                                let u8: Vec<u8> = u.iter().map(|v| *v as u8).collect();
+                                let v8: Vec<u8> = v.iter().map(|v| *v as u8).collect();
+                                if mono {
+                                    p.try_encode_frame(&y8, stride).unwrap()
+                                } else {
+                                    p.try_encode_frame_420(&y8, &u8, &v8, stride).unwrap()
+                                }
+                            }
+                        };
+                        let mut qm = make();
+                        qm.hdr.enable_qm = qm_enabled;
+                        qm.hdr.enable_variance_boost = variance_boost;
+                        let bytes = encode(&mut qm);
+                        let mut source: Vec<u16> = y
+                            .chunks_exact(stride)
+                            .flat_map(|row| row[..w].iter().copied())
+                            .collect();
+                        if !mono {
+                            source.extend_from_slice(&u);
+                            source.extend_from_slice(&v);
+                        }
+                        let expected: Vec<u8> = if depth == 8 {
+                            source.into_iter().map(|v| v as u8).collect()
+                        } else {
+                            source.into_iter().flat_map(|v| v.to_le_bytes()).collect()
+                        };
+                        decode_eq(
+                            &format!(
+                                "lossless-qm{qm_enabled}-vb{variance_boost}-{w}x{h}-p{preset}-bd{depth}-mono{mono}"
+                            ),
+                            &bytes,
+                            &expected,
+                        );
+                        assert_eq!(
+                            bytes,
+                            encode(&mut make()),
+                            "lossless quantization options must preserve identity"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn native_lossless_matches_source() {
+    // Before the native WHT wiring, QP 0 refused. Bypassing that refusal
+    // alone produced wrong pixels at preset 9 (gradient 64x64: 2699 B).
+    for (w, h, tiles) in [(16usize, 16usize, 0), (65, 67, 0), (129, 131, 1)] {
+        for preset in 0..=13 {
+            for mono in [false, true] {
+                for kind in 0..3 {
+                    let stride = w + 5;
+                    let sample = |i: usize, row_stride: usize| match kind {
+                        0 => 512 + ((i + i / row_stride) % 4) as u16,
+                        1 => {
+                            if (i + i / row_stride).is_multiple_of(2) {
+                                0
+                            } else {
+                                1023
+                            }
+                        }
+                        _ => ((i * 37 + i / row_stride * 71) % 1024) as u16,
+                    };
+                    let y: Vec<u16> = (0..stride * h).map(|i| sample(i, stride)).collect();
+                    let cw = w.div_ceil(2);
+                    let u: Vec<u16> = (0..cw * h.div_ceil(2)).map(|i| sample(i + 7, cw)).collect();
+                    let v: Vec<u16> = (0..u.len()).map(|i| sample(i + 13, cw)).collect();
+                    let make = || {
+                        pipeline(w, h, preset, 100.0, 10)
+                            .with_chroma_420(!mono)
+                            .with_tile_rows_log2(tiles)
+                            .with_tile_cols_log2(tiles)
+                    };
+                    let encode = |p: &mut EncodePipeline| {
+                        if mono {
+                            p.try_encode_frame_hbd(&y, stride).unwrap()
+                        } else {
+                            p.try_encode_frame_420_hbd(&y, &u, &v, stride).unwrap()
+                        }
+                    };
+                    let mut p = make();
+                    let bytes = encode(&mut p);
+                    assert_eq!(bytes, encode(&mut make().with_recon_output(false)));
+                    let mut source: Vec<u16> = y
+                        .chunks_exact(stride)
+                        .flat_map(|row| row[..w].iter().copied())
+                        .collect();
+                    if !mono {
+                        source.extend_from_slice(&u);
+                        source.extend_from_slice(&v);
+                    }
+                    let expected: Vec<u8> = source.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    decode_eq(
+                        &format!("native-lossless-{w}x{h}-p{preset}-mono{mono}-kind{kind}"),
+                        &bytes,
+                        &expected,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn lossless_monochrome_matches_source() {
     for (w, h, tiles) in [(16usize, 16usize, 0), (65, 67, 0), (128, 128, 1)] {
         for preset in 0..=9 {

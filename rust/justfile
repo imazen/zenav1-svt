@@ -62,6 +62,14 @@ align-gate:
 align-gate-full:
     ALIGN_GATE_MODE=full ./tools/alignment_gate.sh
 
+# Native lossless source samples and C streams, retaining every cell's artifacts.
+native-lossless-gate out:
+    TMPDIR="$HOME/tmp" ~/work/claudehints/scripts/run-heavy --mem 16G --jobs 4 -- python3 tools/native_lossless_gate.py "{{out}}"
+
+# Diagnostic integrity: palette mismatches must be visible in tree comparisons.
+tree-diff-test:
+    TMPDIR="$HOME/tmp" python3 tools/test_tree_diff.py
+
 # Run benchmarks
 bench:
     cargo bench --workspace

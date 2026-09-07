@@ -905,6 +905,7 @@ pub(crate) fn evaluate_leaf(
             let tx_type = wc.txb_type.first().copied().unwrap_or(0) as usize;
             let qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
             let out = tx_unit_hbd(
+                frame.coded_lossless,
                 &blk_src10,
                 w,
                 0,

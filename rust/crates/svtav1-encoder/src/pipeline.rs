@@ -1236,7 +1236,7 @@ impl EncodePipeline {
         if !chroma_420 {
             return true;
         }
-        preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
+        preset >= 9 || bd10_full_rd_supported(false, self.bit_depth, preset, chroma_420, w, h)
     }
 
     /// C `scs->tpl` for THIS pipeline's configuration
@@ -1529,12 +1529,6 @@ impl EncodePipeline {
                 "QP 0 (coded-lossless) in HDR-fork mode is not implemented: the fork's chroma-q \
                  deltas leave the frame outside CodedLossless (spec 5.9.2) with base_q_idx 0 — \
                  use mainline mode or QP >= 1",
-            );
-        }
-        if self.bit_depth != 8 {
-            return Some(
-                "QP 0 (coded-lossless) is 8-bit only so far: neither bd10 level producer has a \
-                 WHT / TX_4X4 arm — use QP >= 1 at 10-bit [C: accepts]",
             );
         }
         if !is_key || self.gop.intra_period > 1 {
@@ -2513,6 +2507,11 @@ impl EncodePipeline {
         if coded_lossless && let Some(why) = self.lossless_config_error(is_key) {
             return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(why)));
         }
+        // The header omits delta-q at base_q_idx 0. C's full_loop.c selects
+        // the frame qindex whenever delta_q_present is false, even if the
+        // variance planner produced positive per-SB indices. Preserve that
+        // planner, but only feed a signaled plan to MD, quantization and pack.
+        let delta_q_plan = sb_plan.as_ref().filter(|_| !coded_lossless);
 
         // C-exact coding quantizer for the still/PD1 path (quant.rs): the
         // frame-level rdoq_level from `derive_intra_coeff_level`
@@ -3174,7 +3173,7 @@ impl EncodePipeline {
         // much" without perturbing a byte-comparison run.
         #[cfg(feature = "std")]
         if let Ok(path) = std::env::var("SVTAV1_VB_DUMP") {
-            let txt = match sb_plan.as_ref() {
+            let txt = match delta_q_plan {
                 Some(p) => std::format!(
                     "base={base_qindex} res={} plan={:?}\n",
                     p.delta_q_res,
@@ -3184,7 +3183,7 @@ impl EncodePipeline {
             };
             let _ = std::fs::write(path, txt);
         }
-        let delta_q_res_signal = sb_plan.as_ref().map(|p| p.delta_q_res);
+        let delta_q_res_signal = delta_q_plan.map(|p| p.delta_q_res);
         // sharp-tx RDOQ activates only with per-SB delta-q present (C gate
         // `(use_sharpness || sharp_tx) && delta_q_present && plane==0`).
         // [SVT_HDR_MODE] tune SSIM/IQ/MS_SSIM: per-16x16 SSIM rdmult
@@ -3218,12 +3217,18 @@ impl EncodePipeline {
                 base
             }
         };
-        let sharp_tx_active = self.hdr.is_fork() && self.hdr.sharp_tx == 1 && sb_plan.is_some();
+        let sharp_tx_active =
+            self.hdr.is_fork() && self.hdr.sharp_tx == 1 && delta_q_plan.is_some();
         // [SVT_HDR_MODE] frame QM levels (svt_av1_qm_init,
         // md_config_process.c:249): the linear qindex map (default tune =
         // PSNR in the fork); chroma levels derive from base + the FH
         // chroma AC deltas. [15;3] = QM off (identity).
-        let qm_levels: [u8; 3] = if self.hdr.enable_qm {
+        // A lossless segment uses identity matrices in the decoder even when
+        // using_qmatrix is signaled. C applies nonidentity weights here at QP0
+        // and produces wrong decoded samples (SUSPECTED-C-BUGS.md #31). Keep
+        // the raw matrix helpers C-exact, but use the decoder's identity rule
+        // for lossless MD, quantization, reconstruction and header signaling.
+        let qm_levels: [u8; 3] = if self.hdr.enable_qm && !coded_lossless {
             // TUNE_IQ / TUNE_MS_SSIM use the still-image polynomial
             // (svt_av1_qm_init switch, md_config_process.c:255).
             let still = matches!(
@@ -4127,7 +4132,7 @@ impl EncodePipeline {
             qindex_u,
             qindex_v,
             ac_bias_eff,
-            sb_plan.as_ref().map(|p| p.sb_qindex.as_slice()),
+            delta_q_plan.map(|p| p.sb_qindex.as_slice()),
             (chroma_deltas.u_ac, chroma_deltas.v_ac),
             sharp_tx_active,
             if self.hdr.is_fork() {
@@ -4441,6 +4446,7 @@ impl EncodePipeline {
             // in docs/bd10-port-map.md) while removing it *conditionally* does
             // not.
             let bd10_full_rd = bd10_full_rd_supported(
+                coded_lossless,
                 self.bit_depth,
                 self.speed_config.preset,
                 chroma.is_some(),
@@ -4450,7 +4456,7 @@ impl EncodePipeline {
             let bd10_postpass_runs = !bd10_full_rd
                 && all_trees
                     .iter()
-                    .all(|t| bd10_tree_supported(t, bd10_edge_filter));
+                    .all(|t| bd10_tree_supported(t, bd10_edge_filter, coded_lossless));
             // Native luma supports real coefficient contexts. Chroma's
             // level-only pass still requires zero contexts, so full-RD color
             // levels must remain authoritative at lower presets.
@@ -4473,7 +4479,7 @@ impl EncodePipeline {
             if crate::dbgenv::bd10_postpass() {
                 let unsupported = all_trees
                     .iter()
-                    .filter(|t| !bd10_tree_supported(t, bd10_edge_filter))
+                    .filter(|t| !bd10_tree_supported(t, bd10_edge_filter, coded_lossless))
                     .count();
                 eprintln!(
                     "BD10_POSTPASS runs={bd10_postpass_runs} \
@@ -4902,7 +4908,7 @@ impl EncodePipeline {
                         // drives both the delta symbol and (via the search, which
                         // used the same plan) the coded coefficients. Chroma dequant
                         // per SB = sb_qindex + the FRAME chroma deltas.
-                        if let Some(plan) = sb_plan.as_ref() {
+                        if let Some(plan) = delta_q_plan {
                             let sbq = i32::from(plan.sb_qindex[sb_idx]);
                             ectx.delta_q_sb_qindex = sbq;
                             if let Some(cp) = chroma_pass.as_mut() {
@@ -9484,7 +9490,10 @@ fn encode_block_syntax(
             // `!(skip || w == 4 && h == 4)`; current stable does not): the form
             // mirrors C's `!(is_inter && skip)` cited two lines above.
             #[allow(clippy::nonminimal_bool)]
-            if !skip && !(w == 4 && h == 4) {
+            // C av1_code_tx_size applies its lossless gate before selecting
+            // the inter/IntraBC arm too: residual-bearing lossless IBC must
+            // not write a transform-partition symbol.
+            if ectx.tx_mode_select && base_q_idx > 0 && !skip && !(w == 4 && h == 4) {
                 writer_tx_size_vartx_bridge(writer, frame_ctx, ectx, block_x, block_y, w, h, depth);
                 let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(w, h, depth);
                 ectx.record_txfm_dims(block_x, block_y, w, h, txw, txh);
@@ -10354,44 +10363,28 @@ fn encode_partition_tree(
     }
 }
 
-/// bd10 LUMA re-encode pass (task #94) — the "M4+ bypass_encdec re-predict
-/// dance" (docs/bd10-port-map.md §5). The u8 MD funnel already produced the
-/// partition / mode / tx DECISIONS; because RD is ~16x-scale-invariant between
-/// bd8 and bd10 for `sample << 2` content (dist scales 16x, lambda x16, rate
-/// bit-depth-independent), those decisions coincide with C's true-10-bit MD.
-/// This pass recomputes ONLY the bit-depth-sensitive coded LUMA levels + the
-/// 10-bit recon that feeds neighbour prediction, mutating each leaf's
-/// `BlockDecision` in place; the (unchanged) entropy walk then codes the
-/// 10-bit levels. bd8 never calls this, so the bd8 bitstream is untouched.
+/// Check the native luma re-encode envelope before mutating the tree.
+/// Lossy monochrome and high-preset color use depth-zero transforms. Lossless
+/// monochrome uses four raster 4x4 WHTs per 8x8 leaf, predicting each unit from
+/// native reconstructed neighbors. Color lossless uses the native full-RD
+/// funnel at every preset and does not need this post-pass.
 ///
-/// SCOPE (updated 2026-07-19): the bd10 full-RD funnel now covers the DC family
-/// AND directional + filter-intra intra AND the chroma uv/CfL path. Only
-/// `tx_depth > 0` still unconditionally falls back to u8 (directional
-/// additionally when the SH edge filter is on). The `bd10_tree_supported` gate
-/// below enumerates the current envelope; an out-of-envelope leaf falls back
-/// rather than miscoding pixels. (The original scope was DC-only, tx_depth 0.)
-#[allow(clippy::too_many_arguments)]
-/// Read-only pre-pass: is every luma leaf of `tree` inside the ported bd10 u16
-/// re-encode envelope? The u16 predict/tx path (`predict_unit_hbd`,
-/// `bd10_reencode_node`) panics on the not-yet-ported cases so a loud "not
-/// ported" beats silently miscoding 10-bit pixels. As of 2026-07-19 that is
-/// ONLY `tx_depth > 0` (unconditional) plus directional intra WHEN the SH edge
-/// filter is on (filt_type would need the live per-block smooth-neighbour
-/// derivation); directional (edge filter off) and filter-intra are now ported
-/// (`dr_predict_hbd` / `predict_filter_intra_hbd`). This gate ensures
-/// `bd10_reencode_luma` runs ONLY when the whole frame is supported, so an
-/// out-of-envelope bd10 frame falls back to the (non-panicking, if not yet
-/// byte-exact) u8 output instead of crashing a public-API caller.
-fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool) -> bool {
+/// Directional prediction here requires the signaled edge filter to be off;
+/// palette and IntraBC need the full-RD funnel. An unsupported native-input
+/// tree is rejected by the caller's source-consumption check.
+fn bd10_tree_supported(
+    tree: &crate::partition::PartitionTree,
+    edge_filter: bool,
+    coded_lossless: bool,
+) -> bool {
     match tree {
         crate::partition::PartitionTree::Leaf(d) => {
             // Filter-intra IS ported (predict_filter_intra_hbd) and directional
             // intra IS ported (dr_predict_hbd) — but the re-encode passes
             // filt_type=0, valid only when the SH edge filter is off. So a
             // directional leaf is in-envelope ONLY when !edge_filter; with
-            // edge_filter on it falls back (filt_type would need the live
-            // per-block smooth-neighbour derivation — a future follow-up). Only
-            // tx_depth>0 still unconditionally falls back.
+            // edge_filter on this post-pass cannot encode the leaf (filt_type
+            // would need the live per-block smooth-neighbour derivation).
             let directional = matches!(d.intra_mode, 3..=8)
                 || (matches!(d.intra_mode, 1 | 2) && d.angle_delta != 0);
             // Chroma re-encode (task #94): the bd10 chroma pass predicts via
@@ -10424,11 +10417,15 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
             // the frame back to the u8 output, which is the same
             // fall-back-don't-miscode contract every other clause here has.
             let paletted = d.palette.is_some() || d.use_intrabc;
-            d.tx_depth == 0 && (!directional || !edge_filter) && uv_ok && !paletted
+            ((d.tx_depth == 0)
+                || (coded_lossless && d.tx_depth == 1 && d.width == 8 && d.height == 8))
+                && (!directional || !edge_filter)
+                && uv_ok
+                && !paletted
         }
-        crate::partition::PartitionTree::Split { children, .. } => {
-            children.iter().all(|c| bd10_tree_supported(c, edge_filter))
-        }
+        crate::partition::PartitionTree::Split { children, .. } => children
+            .iter()
+            .all(|c| bd10_tree_supported(c, edge_filter, coded_lossless)),
     }
 }
 
@@ -10552,6 +10549,7 @@ fn bd10_reencode_luma(
         let tile_mi = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, w, h);
         coeff_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi);
         bd10_reencode_node(
+            base_qindex == 0,
             sb_size / 4,
             tree,
             sb_col * sb_size,
@@ -10581,6 +10579,7 @@ fn bd10_reencode_luma(
 
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_node(
+    coded_lossless: bool,
     // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
     // availability tables index by `mi & (sb_mi_size - 1)` (task #91).
     sb_mi_size: usize,
@@ -10616,6 +10615,94 @@ fn bd10_reencode_node(
         Tr::Leaf(d) => {
             let bw = d.width as usize;
             let bh = d.height as usize;
+            if coded_lossless {
+                assert_eq!((bw, bh, d.tx_depth), (8, 8, 1));
+                let geom = crate::leaf_funnel::UnitGeom {
+                    mi_row: y / 4,
+                    mi_col: x / 4,
+                    bw_px: bw,
+                    bh_px: bh,
+                    sb_mi_size,
+                    ss: 0,
+                    frame_w,
+                    frame_h,
+                    tile: tile_mi,
+                };
+                let mut local = vec![0u16; 64];
+                d.eob = 0;
+                d.qcoeffs.clear();
+                d.txb_qcoeffs.clear();
+                d.txb_eobs.clear();
+                d.txb_tx_types = vec![0; 4];
+                for tx in 0..4 {
+                    let (dx, dy) = ((tx & 1) * 4, (tx >> 1) * 4);
+                    let mut pred = [0u16; 16];
+                    crate::leaf_funnel::predict_unit_overlay_hbd(
+                        recon10,
+                        stride,
+                        x,
+                        y,
+                        &local,
+                        bw,
+                        bh,
+                        dx,
+                        dy,
+                        4,
+                        4,
+                        d.intra_mode,
+                        d.angle_delta,
+                        d.filter_intra_mode,
+                        &geom,
+                        edge_filter,
+                        0,
+                        &mut pred,
+                        bd,
+                    );
+                    let (tsc, dsc) = if real_coeff_ctx {
+                        coeff_neighbors.contexts(x + dx, y + dy, 4, 4)
+                    } else {
+                        (0, 0)
+                    };
+                    let out = crate::leaf_funnel::tx_unit_hbd(
+                        true,
+                        src10,
+                        src_stride,
+                        (y + dy) * src_stride + x + dx,
+                        &pred,
+                        4,
+                        0,
+                        4,
+                        4,
+                        0,
+                        0,
+                        tsc,
+                        dsc,
+                        qt,
+                        0,
+                        lambda,
+                        0,
+                        allintra_rd_mult,
+                        rates,
+                        false,
+                        bd,
+                        qm_level,
+                        None,
+                    );
+                    coeff_neighbors.record(x + dx, y + dy, 4, 4, out.cul);
+                    d.eob += out.eob;
+                    d.txb_eobs.push(out.eob);
+                    d.txb_qcoeffs.push(out.qcoeff);
+                    for r in 0..4 {
+                        local[(dy + r) * 8 + dx..(dy + r) * 8 + dx + 4]
+                            .copy_from_slice(&out.recon[r * 4..r * 4 + 4]);
+                    }
+                }
+                for r in 0..8 {
+                    recon10[(y + r) * stride + x..(y + r) * stride + x + 8]
+                        .copy_from_slice(&local[r * 8..r * 8 + 8]);
+                }
+                return;
+            }
             assert_eq!(
                 d.tx_depth, 0,
                 "bd10 reencode: tx_depth {} not yet ported (DC-only first cell)",
@@ -10684,6 +10771,7 @@ fn bd10_reencode_node(
                 (0, 0)
             };
             let out = crate::leaf_funnel::tx_unit_hbd(
+                false, // This level-only post-pass currently accepts only lossy depth-0 trees.
                 src10,
                 src_stride,
                 src_off,
@@ -10772,6 +10860,7 @@ fn bd10_reencode_node(
             // `panic!`ed on every one of those shapes.
             let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
                 bd10_reencode_node(
+                    coded_lossless,
                     sb_mi_size,
                     child,
                     cx,
@@ -11042,6 +11131,7 @@ fn bd10_reencode_chroma_plane(
     }
     let src_off = cy * cstride + cx;
     let out = crate::leaf_funnel::tx_unit_hbd(
+        false, // This level-only post-pass currently accepts only lossy depth-0 trees.
         src10,
         cstride,
         src_off,
@@ -11365,8 +11455,7 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 /// on, `evaluate_leaf` runs the whole full-RD chain — luma depth loop with
 /// TXS/TXT, and the chroma loop — on 10-bit pixels with the bd10 quant tables
 /// and `full_lambda_md[EB_10_BIT_MD]`, and the winner's 10-bit levels ARE the
-/// coded ones (so the level-only re-encode post-pass is skipped: it hardcodes
-/// RDOQ contexts 0/0, which is only correct where `real_coeff_ctx` is off).
+/// coded ones, so the level-only re-encode post-pass is skipped.
 ///
 /// Scope, deliberately narrow:
 /// - **presets 0..=8**. p6..=8 was the MODE axis (landed first). p0..=5 take the
@@ -11381,9 +11470,9 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 ///   also run inside C's `hbd_md = 0` window (enc_dec_process.c:2965 forces 0,
 ///   :3023 restores AFTER the :3017 refinement call), so the ONLY bit-depth
 ///   input to the geometry is the PD1 leaf cost.
-///   eff-M9 (p9..p13) is CLOSED via the MDS0 funnel + post-pass and is left
-///   EXACTLY as it is; widening to it is a follow-up that must be re-verified
-///   against the whole gate.
+///   Lossy eff-M9 (p9..p13) uses the MDS0 funnel + level post-pass.
+///   Coded-lossless uses this native full-RD path at every preset, so each
+///   4x4 WHT prediction consumes the preceding unit's native reconstruction.
 /// - **any SB geometry, complete or partial** (2026-08-04). This used to be
 ///   complete-SB-only on the stated grounds that `tx_unit_hbd` is not
 ///   partial-SB-aware; that was MEASURED WRONG. `tx_unit_hbd` takes explicit
@@ -11394,14 +11483,9 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 ///   depth-refinement walk, the one-false shape injection, the SB-extent recon
 ///   canvases and `commit_leaf`'s straddle clip — is SHARED with the u8 path,
 ///   which is 36/36 at partial SB. So the bd10 full-RD funnel inherits it.
-/// - **palette off** — a palette candidate has no 10-bit prediction here.
-///
-/// CfL is handled inside `evaluate_leaf` instead of here, because whether it is
-/// reachable is a per-block runtime property (the chroma complexity detector),
-/// not a config one: under the bd10 full-RD the CfL candidate is not offered,
-/// which leaves a CfL block as a VISIBLE mode divergence rather than a
-/// mixed-domain compare. See the comment at the `cfl_gate` site.
+/// - Native palette and CfL candidates are evaluated inside the funnel.
 fn bd10_full_rd_supported(
+    coded_lossless: bool,
     bit_depth: u8,
     preset: u8,
     chroma_420: bool,
@@ -11422,7 +11506,7 @@ fn bd10_full_rd_supported(
     // a compile-time tautology that read like a screen-content precondition.
     // Palette at bd10 is now handled inside the funnel (see
     // `search_palette_luma_hbd`), so no such precondition is needed.
-    bit_depth == 10 && preset <= 8 && chroma_420
+    bit_depth == 10 && (preset <= 8 || coded_lossless) && chroma_420
 }
 
 #[allow(clippy::type_complexity)] // ported C signature: a `type` alias here would hide the shape and churn the byte-identity gate for no benefit
@@ -12215,7 +12299,14 @@ fn encode_tile_rows(
         //   - mainline tools only: ac-bias / noise-norm are fork features whose
         //     u16 psy kernels are unported (tx_unit_hbd applies neither).
         // Everything outside that envelope keeps the existing behaviour.
-        let bd10_full_rd = bd10_full_rd_supported(bit_depth, speed_config.preset, chroma_420, w, h);
+        let bd10_full_rd = bd10_full_rd_supported(
+            coded_lossless,
+            bit_depth,
+            speed_config.preset,
+            chroma_420,
+            w,
+            h,
+        );
         let bd10_luma_funnel = bd10_canvas_ok && (speed_config.preset >= 9 || bd10_full_rd);
         // Task #6 chunk 1: hand the funnel the REAL 10-bit source when the
         // caller supplied one AND a bd10 stage is armed to read it. The planes
@@ -14284,12 +14375,24 @@ mod tests {
         let (ry1, _, _) = p1.last_recon.as_ref().expect("recon_output");
         assert_ne!(&ry1[..], &y[..], "qp 1 must be lossy on this content");
 
+        // Native samples exercise the low bits, which widening u8 cannot.
+        let native = |plane: &[u8]| -> Vec<u16> {
+            plane
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (u16::from(*v) << 2) | (i as u16 & 3))
+                .collect()
+        };
+        let (y10, u10, v10) = (native(&y), native(&u), native(&v));
+        let mut p10 = mk(0).with_bit_depth(10).with_recon_output(true);
+        assert!(
+            !p10.try_encode_frame_420_hbd(&y10, &u10, &v10, 64)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(p10.last_recon10_final.as_ref().unwrap(), &(y10, u10, v10));
+
         // Out-of-envelope arms refuse with the typed error.
-        let err = mk(0)
-            .with_bit_depth(10)
-            .try_encode_frame_420(&y, &u, &v, 64)
-            .expect_err("QP 0 at 10-bit is not in the verified envelope");
-        assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
         // Fork mode WITHOUT variance boost keeps base_q_idx at 0 while the
         // fork's chroma-q deltas leave the frame outside CodedLossless: that
         // is the refused arm. (With variance boost ON the fork re-signals the

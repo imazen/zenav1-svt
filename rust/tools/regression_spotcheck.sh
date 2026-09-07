@@ -78,14 +78,30 @@ losslessIbc() {
   if [ "$pass" -gt "$prev_pass" ]; then
     if ! python3 - "$W/ibc.ptree" "$W/ibc.ctree" <<'PYIBC'
 from pathlib import Path
-import sys
+import os, re, sys
 assert all(' ibc=1' in Path(p).read_text() for p in sys.argv[1:]), "IntraBC must be selected in both encoders"
+if os.environ.get('LOSSLESS_IBC_RESIDUAL'):
+    rows = Path(sys.argv[1]).read_text().splitlines()
+    assert any(' ibc=1' in row and any(int(v) for v in re.findall(r'[yuv]eob=(\d+)', row)) for row in rows), "residual-bearing IntraBC must be selected"
+    assert any(' ibc=1' in row and ' skip=0' in row for row in Path(sys.argv[2]).read_text().splitlines()), "C must also select residual-bearing IntraBC"
 PYIBC
     then
       pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC premise failed]")
     elif ! aomdec --rawvideo -o "$W/ibc-dec.yuv" "$W/rs.obu" >"$W/ibc-dec.log" 2>&1 ||
          ! cmp -s "$W/ibc-dec.yuv" "$W/rs.yuv"; then
       pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC decode differs from source]")
+    fi
+  fi
+}
+
+# Native lossless must match both the C stream and all input samples.
+nativeLossless() {
+  local label=$1 prev_pass=$pass
+  SVTAV1_HBD_SRC=1 byte "$@" 10
+  if [ "$pass" -gt "$prev_pass" ]; then
+    if ! "$AOMDEC" --rawvideo --output-bit-depth=10 -o "$W/native.dec" "$W/rs.obu" >"$W/native-dec.log" 2>&1 ||
+       ! cmp -s "$W/native.dec" "$W/rs.yuv"; then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [native decoded pixels differ from source]")
     fi
   fi
 }
@@ -913,6 +929,26 @@ byte "qp0-screen-context-p5" screenrep 128 128 0 5
 # below selects 320 IntraBC blocks in C; require selected blocks on both sides.
 losslessIbc "qp0-screen-copy-p4" screencopy 512 128 0 4
 
+# 2026-09-07 native WHT: initially refused; the guard-only experiment at p9
+# produced wrong pixels (2699 B vs C 4527 B). Native lossless now uses four
+# 4x4 WHTs with per-transform prediction at all presets.
+nativeLossless "native-qp0-gradient-p9" gradient 64 64 0 9
+# Palette MDS0 accidentally used the u8 lambda, admitting the wrong candidates:
+# screen64 p4 was 1285 B vs C 1318 B despite decoding source-exactly.
+nativeLossless "native-qp0-screen-p4" screen 64 64 0 4
+# A residual-bearing lossless IntraBC block wrote an extra tx-partition bit:
+# aomdec rejected native screencopy512x128 p4 with "Invalid intrabc dv";
+# 11355 B vs C 11349 B, first extra arithmetic symbol at mi=(18,8).
+LOSSLESS_IBC_RESIDUAL=1 SVTAV1_HBD_SRC=1 losslessIbc "native-qp0-ibc-residual-p4" screencopy 512 128 0 4 10
+# Variance boost produced a plan even though QP0 cannot signal delta-q.
+# The port emitted delta-q and used the per-SB quantizer; aomdec rejected
+# both depths. C correctly uses the frame quantizer when delta-q is absent.
+SVT_FORK_ENABLE_VARIANCE_BOOST=1 byte "qp0-variance-p7" gradient 64 64 0 7 8
+SVT_FORK_ENABLE_VARIANCE_BOOST=1 nativeLossless "native-qp0-variance-p7" gradient 64 64 0 7
+
+
+
+
 # 2026-09-07: lossless low-preset partition search and MD context wiring.
 # BEFORE: forced 8x8 leaves give gradient64 p3 2966 B vs C 2973;
 # PD0 without PD1 gives 2970. Preset depth pruning gives diag64 p3
@@ -1687,7 +1723,7 @@ SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-denoised-edge-padding" grain
 # Monochrome low-preset edges: formerly refused; without the guard the
 # directional neighbor builder asserted on spare SB storage (16384 % 72 = 40).
 # The square edge search and bounded neighbor canvas now decode exactly.
-for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction monochrome_low_presets_partial_blocks native_monochrome_low_presets_match_decoder lossless_monochrome_matches_source; do
+for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction monochrome_low_presets_partial_blocks native_monochrome_low_presets_match_decoder lossless_monochrome_matches_source native_lossless_matches_source lossless_quantization_options_match_source; do
   if AOMDEC="$AOMDEC" cargo test -p zenav1-svt --test odd_frame_recon "$witness" -- --exact >"$W/$witness.log" 2>&1; then
     pass=$((pass+1))
   else

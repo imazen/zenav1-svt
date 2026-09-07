@@ -44,10 +44,10 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 |---|---|
 | Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite-count and exact downstream timing APIs remain |
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
-| Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. 8-bit lossless color/alpha and monochrome source pixels are verified; native 10-bit lossless, 12-bit and opaque/missing-alpha policy remain |
+| Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. 8/10-bit lossless color/alpha and monochrome source pixels are verified; 12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
-| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha and 8-bit monochrome support partial SBs at every preset. Native monochrome mode decisions still use the upper eight bits; full native MD, 12-bit, 4:4:4/4:2:2 and native lossless remain. C's rejection of some formats does not waive this broader user objective |
+| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha and 8-bit monochrome support partial SBs at every preset. Native monochrome mode decisions still use the upper eight bits; full native MD, 12-bit and 4:4:4/4:2:2 remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
 | Robust API | Streaming/bounded memory, cancellation, fallible allocation, overflow checks and complete validation remain to be audited across encoder and serializer |
@@ -421,3 +421,49 @@ the port and exact source pixels under aomdec, in addition to byte equality.
 Workspace clippy completes with existing warnings; scoped formatting and diff
 checks pass. The refusal inventory has 47 entries, including 13 capability
 refusals. No push or CI run was triggered.
+
+
+### 2026-09-07: native 10-bit lossless
+
+Native color and monochrome now code four 4x4 WHTs per 8x8 lossless leaf,
+with native prediction overlays and coefficient contexts. Color uses the full
+native funnel at every preset; monochrome retains upper-eight-bit mode
+selection and produces native levels/reconstruction. The former refusal was
+removed after source-pixel verification, including odd tiled frame edges.
+
+A guard-only experiment at preset 9 produced wrong pixels (2699 B versus
+C 4527 B). Full native lossless routing closes that defect. The expanded grid
+also exposed a palette MDS0 lambda mismatch: the palette path used the u8
+lambda while regular native candidates used C's native fast lambda. Correcting
+that choice closed all nine native screen-content byte mismatches.
+
+Measured: 168/168 color C-byte matches; 336/336 color/mono decoded-source
+matches; 252 additional extreme/low-bit-only/strided/odd-tile source cases;
+eight animation tests pass, including newly enabled native lossless color,
+monochrome and alpha decoded against the source. Broad local gates are tracked
+in `benchmarks/native_lossless_2026-09-07.md`. CI remains deferred.
+
+The native IntraBC positive control caught an additional decoder failure:
+lossless residual-bearing copies wrote a transform-partition bit C omits.
+Correcting both syntax and MD cost gates makes screencopy512x128 p4 match C
+at 11349 bytes and decode source-exactly (386 selected IntraBC blocks). The
+regression requires nonzero residuals so skip-only copies cannot mask it.
+
+Final local gates after that correction: 2599/2599 workspace tests with
+AVIF-container enabled, 120/120 regression witnesses, 1100/1100 full 8-bit
+C-byte comparisons (no pins/errors), 240/240 8-bit lossless and 336/336 native
+source cases plus 168/168 native color C-byte matches. Clippy completed with
+existing warnings; scoped formatting and refusal inventory checks pass
+(46 entries, 12 capability refusals). No push or CI run.
+
+Quantization-option follow-up: QP0 + QM reproduced a C defect (matching bytes,
+wrong decoded source samples), while QP0 + variance boost exposed a Rust-only
+syntax/quantizer mismatch. Production now uses lossless identity matrices and
+passes per-SB quantizers only when delta-q is signaled, retaining both C helper
+translations. The 144-case source test passes QM-only, boost-only and combined
+settings across both depths, mono/color, three geometries and four presets.
+Final gates after these additional fixes: 2600/2600 workspace tests,
+123/123 regression cases, 1100/1100 full 8-bit C comparisons (no pins/errors),
+and the variance-boost native grid at 336/336 source plus 168/168 C-byte
+matches. Clippy completed with existing warnings; formatting, diff and refusal
+inventory checks pass. CI remains deferred.

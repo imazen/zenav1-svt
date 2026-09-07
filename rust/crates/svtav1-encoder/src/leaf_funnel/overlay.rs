@@ -219,7 +219,7 @@ pub(crate) fn predict_unit_overlay(
 /// `{129, 127, 128}` become `{base+1, base-1, base}` with `base = 128 <<
 /// (bd - 8)`. That is the same substitution `dr_predict_hbd` already makes.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn predict_unit_overlay_hbd(
+pub(crate) fn predict_unit_overlay_hbd(
     y_recon10: &[u16],
     y_stride: usize,
     blk_x: usize,

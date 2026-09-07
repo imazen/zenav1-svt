@@ -20,28 +20,28 @@ Every entry states: the C site, why it looks wrong, whether it is
 
 ---
 
-## 1. `variance_adjust_qp` at qp 0 makes mainline C internally inconsistent
+## 1. Variance planning at QP 0 must not be confused with the coding quantizer
 
-**Status: UNREACHABLE (the port refuses qp 0) — but it poisons any future
-lossless oracle capture.**
+**Status: AVOIDED by C's coding-quantizer selection; the earlier decoder-
+inconsistency claim was not supported by the end-to-end path.**
 
-`rc_aq.c:454` (MAINLINE `svt_av1_variance_adjust_qp`) clamps every per-SB
-qindex to `>= 1` (`:504`, `:539`) but `(void)`-ignores `readjust_base_q_idx`, so
-`base_q_idx` stays 0. `md_config_process.c:1016` then derives
-`coded_lossless = !base_q_idx` = 1. The encoder therefore **quantizes at
-`blk_ptr->qindex >= 1`** (`product_coding_loop.c:10245`) while the frame header
-signals `base_q_idx = 0`, no delta-q, and `CodedLossless` — encoder and decoder
-disagree by construction.
+Mainline `variance_adjust_qp` (`rc_aq.c`) clamps per-SB indices to at least 1
+while leaving the frame base at 0. The original entry inferred that these
+indices would necessarily reach lossless quantization. They do not:
+`svt_aom_quantize_inv_quantize` (`full_loop.c:1668-1670`) selects the frame's
+`base_q_idx` whenever `delta_q_present` is false. The QP0 header cannot signal
+delta-q. On gradient64 p7, with variance boost enabled, C's 8-bit and native
+10-bit streams both decode exactly to source (2026-09-07).
 
-Reachable in C via `--tune 3` (TUNE_IQ forces `enable_variance_boost = 1`,
-`enc_handle.c:4901`) or any explicit `--enable-variance-boost`, at qp 0. Note
-`--lossless 1` forces aq-mode off but **not** variance boost, so a fork-default
-build hits it too.
+The port incorrectly treated the existence of a variance plan as proof that
+delta-q was signaled, emitted delta-q symbols and supplied positive per-SB
+quantizers. Both depths were rejected by aomdec. The pipeline now retains the
+C-exact planner but passes a plan to MD, quantization and packing only when
+it can be signaled. The direct variance-helper translation remains unchanged.
 
-**Consequence for us:** when lossless (`#4` in the backlog) is ported, any C
-oracle captured at qp 0 **must** use mainline defaults with variance boost OFF,
-or the reference itself is wrong. Write that into the lossless gate when it
-lands.
+Evidence: `~/tmp/animation-metadata/native-lossless/variance-probe/` and
+`variance-probe-full.log`; regression cases `qp0-variance-p7` and
+`native-qp0-variance-p7`.
 
 ---
 
@@ -1485,3 +1485,30 @@ at width or height 1 (fixed 2026-09-03, `entropy/obu.rs`; the port is now
 byte-identical to C at 1x1, 1x8, 1x64, 64x1, 2x2 and 3x3). The port bug and
 this C crash are independent, and the port bug was found only because these
 sizes were probed against C at all.
+
+
+## 31. Nonidentity quantization matrices at QP 0 disagree with lossless decoding
+
+**Status: AVOIDED in the production pipeline; raw matrix helpers stay C-exact.**
+
+`svt_aom_quantize_inv_quantize` (`full_loop.c:1660-1666`) selects matrix weights
+from `using_qmatrix` without excluding lossless segments. The corresponding
+matrix-level mapping (`md_config_process.c:248-280`) permits nonidentity levels
+at QP0. The [libaom decoder's segmentation dequantizer](https://aomedia.googlesource.com/aom/+/474e1e113290854d641a2e7a2992863ecf6030f6/av1/decoder/decodeframe.c)
+uses identity matrices for a lossless segment regardless of the signaled flag.
+
+Reachable through `with_lossless(true).with_qm(true)` in the AVIF API, or
+QP0 plus `SVT_FORK_ENABLE_QM=1` in the identity harness. Measured before the
+correction on gradient64 p7: Rust and C streams were byte-identical, but both
+decoded with 3716/6144 samples different from source at 8-bit, and 5866/6144
+at native 10-bit. Byte parity masked the defect.
+
+The pipeline now selects identity levels at coded-lossless, feeding the same
+choice to all MD/quantization/reconstruction paths and omitting the unused
+matrix syntax. Lossy matrix selection and all direct C matrix translations
+are preserved. The decoded-source test covers 8/10-bit color/mono, odd sizes,
+multiple presets, and the combination with variance boost.
+
+Evidence: `~/tmp/animation-metadata/native-lossless/qm-probe/`,
+`qm-probe.log`, `qm-test-before.log`, `qm-test-after.log`, and
+`quant-options-{before,after}.log`.
