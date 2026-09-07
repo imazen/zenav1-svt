@@ -529,9 +529,9 @@ pub fn write_sequence_header_ex(
     )
 }
 
-/// [SVT_HDR_MODE] FH `film_grain_params` (spec 5.9.30) — the photon-noise
-/// table the fork's `--noise*` synthesizes (svtav1-encoder::noise_gen).
-/// KEY-frame form only (update_parameters is implicit 1).
+/// Canonical AV1 film-grain parameters (spec 5.9.30), shared by C noise
+/// estimation, supplied tables, photon noise, signaling and reconstruction.
+/// INTER update/ref syntax is carried by [`InterSignal`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FilmGrainParams {
     pub apply_grain: bool,
@@ -564,18 +564,25 @@ pub struct FilmGrainParams {
     pub clip_to_restricted_range: bool,
 }
 
-/// Write FH `film_grain_params` for a KEY frame (spec 5.9.30; C
-/// `write_film_grain_params`, entropy_coding.c:3165 — the INTER
-/// update_parameters/ref_idx arm does not apply to KEY frames).
+/// Write C KEY/INTER `film_grain_params` (entropy_coding.c:3105).
+/// KEY updates implicitly; INTER either updates or reuses a reference table.
 /// 4:2:0 non-mono form: chroma points are written unless
 /// `num_y_points == 0` forces them off (the subsampling-1,1 rule) or
 /// chroma_scaling_from_luma is set.
-fn write_film_grain_params(wb: &mut BitWriter, fg: &FilmGrainParams) {
+fn write_film_grain_params(wb: &mut BitWriter, fg: &FilmGrainParams, inter: Option<&InterSignal>) {
     wb.write_bit(fg.apply_grain);
     if !fg.apply_grain {
         return;
     }
     wb.write_bits(u32::from(fg.random_seed), 16);
+    if let Some(signal) = inter {
+        wb.write_bit(signal.film_grain_ref_idx.is_none());
+        if let Some(slot) = signal.film_grain_ref_idx {
+            assert!(slot < 8 && signal.ref_frame_idx.contains(&slot));
+            wb.write_bits(u32::from(slot), 3);
+            return;
+        }
+    }
     wb.write_bits(fg.num_y_points as u32, 4);
     for p in &fg.scaling_points_y[..fg.num_y_points] {
         wb.write_bits(u32::from(p[0]), 8);
@@ -1333,6 +1340,8 @@ fn key_frame_header_bits(
 /// refusal was written against.
 #[derive(Debug, Clone, Default)]
 pub struct InterSignal {
+    /// C update_parameters=0: reuse this DPB slot with the new random seed.
+    pub film_grain_ref_idx: Option<u8>,
     /// FH `error_resilient_mode`. C derives it; the low-delay CQP GOP this
     /// port encodes writes 0, which is what makes `primary_ref_frame` present.
     pub error_resilient_mode: bool,
@@ -1866,7 +1875,7 @@ fn frame_header_bits_lr(
     // signaled film_grain_params_present && show_frame (C
     // entropy_coding.c:3698). The SH bit and this Option MUST agree.
     if let Some(fg) = fgs {
-        write_film_grain_params(&mut wb, fg);
+        write_film_grain_params(&mut wb, fg, inter);
     }
 
     // NOTE: byte_alignment() is applied by the caller

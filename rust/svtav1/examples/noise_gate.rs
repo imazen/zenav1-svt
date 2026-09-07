@@ -1,6 +1,6 @@
 //! Grain decode-gate driver: encode fork mode with --noise at several
 //! strengths/qps, write IVF + recon; caller decodes with and without
-//! --skip-film-grain (skip == recon, plain != recon proves grain applied).
+//! --skip-film-grain (plain == recon, skip != recon proves grain applied).
 use std::io::Write;
 use svtav1_encoder::hdr_mode::HdrForkConfig;
 use svtav1_encoder::pipeline::EncodePipeline;

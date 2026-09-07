@@ -216,6 +216,7 @@ pub fn inter_signal(
         .expect("order_hint_bits <= 8 in this envelope");
 
     Ok(InterSignal {
+        film_grain_ref_idx: None,
         error_resilient_mode,
         order_hint,
         primary_ref_frame,

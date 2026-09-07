@@ -95,6 +95,7 @@ pub struct AvifEncoder {
     /// recommend 3 for stills). Wired to
     /// `EncodePipeline::hdr.variance_boost_strength`.
     variance_boost_strength: u8,
+    film_grain: svtav1_encoder::film_grain_config::FilmGrainConfig,
     /// Lossless encoding mode.
     lossless: bool,
     /// CICP color primaries (1=BT.709, 9=BT.2020, 12=P3).
@@ -133,6 +134,7 @@ impl AvifEncoder {
             enable_qm: false,
             enable_variance_boost: false,
             variance_boost_strength: 2,
+            film_grain: Default::default(),
             lossless: false,
             color_primaries: 1,           // BT.709
             transfer_characteristics: 13, // sRGB
@@ -225,6 +227,16 @@ impl AvifEncoder {
     /// `None` means auto-detect based on available cores.
     pub fn with_num_threads(mut self, threads: Option<usize>) -> Self {
         self.threads = threads;
+        self
+    }
+
+    /// Configure C film-grain estimation or a supplied grain table.
+    /// Validated when encoding; supported on 8/10-bit 4:2:0 inputs.
+    pub fn with_film_grain(
+        mut self,
+        config: svtav1_encoder::film_grain_config::FilmGrainConfig,
+    ) -> Self {
+        self.film_grain = config;
         self
     }
 
@@ -350,6 +362,7 @@ impl AvifEncoder {
         // Issue #9 item 7: the two knobs that were recorded-and-ignored are
         // now the real pipeline settings. Defaults are off, so this is
         // byte-neutral for a caller that sets neither.
+        pipeline.film_grain = self.film_grain.clone();
         pipeline.hdr.enable_qm = self.enable_qm;
         pipeline.hdr.enable_variance_boost = self.enable_variance_boost;
         pipeline.hdr.variance_boost_strength = self.variance_boost_strength;

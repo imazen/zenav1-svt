@@ -28,6 +28,11 @@ pub struct EncodePipeline {
     /// Defaults to Mainline = all fork behavior off; callers opt in with
     /// `pipe.hdr = HdrForkConfig::hdr_fork()` after construction.
     pub hdr: crate::hdr_mode::HdrForkConfig,
+    /// C denoiser, supplied table, and INTER grain reuse controls.
+    pub film_grain: crate::film_grain_config::FilmGrainConfig,
+    prepared_grain: Option<crate::entropy::obu::FilmGrainParams>,
+    grain_references: [Option<crate::entropy::obu::FilmGrainParams>; 8],
+    grain_sequence_present: Option<bool>,
     /// Speed configuration.
     pub speed_config: SpeedConfig,
     /// Rate control configuration.
@@ -411,6 +416,10 @@ impl EncodePipeline {
         let (sb_size, sb128_fallback) = Self::resolve_sb_size(derived_sb, None, preset);
         Self {
             hdr: crate::hdr_mode::HdrForkConfig::default(),
+            film_grain: Default::default(),
+            prepared_grain: None,
+            grain_references: core::array::from_fn(|_| None),
+            grain_sequence_present: None,
             pd_ctx: crate::port_picstruct::PicDecisionCtx::new(),
             speed_config: SpeedConfig::from_preset(preset),
             rc_config,
@@ -858,6 +867,151 @@ impl EncodePipeline {
             .expect("encode_frame_420 is infallible on the default/trusted path")
     }
 
+    fn film_grain_seed(&self) -> u16 {
+        // The zero transition restarts at 7391, so use the actual recurrence's
+        // period rather than applying a one-frame correction after wrapping.
+        const PERIOD: u64 = 63421;
+        7391u16.wrapping_add(3381u16.wrapping_mul((self.frame_count % PERIOD) as u16))
+    }
+    fn film_grain_reference(
+        &self,
+        fg: &crate::entropy::obu::FilmGrainParams,
+        map: [u8; 7],
+        is_b: bool,
+    ) -> Option<u8> {
+        if self.film_grain.ignore_ref {
+            return None;
+        }
+        // C compares LIST_1[0] (BWDREF), but signals ALTREF's map index.
+        // Preserve entropy_coding.c:3126-3131, including its explicit TODO.
+        for (compare_kind, signal_kind) in [(0usize, 0usize), (4, 6)] {
+            if compare_kind == 4 && !is_b {
+                break;
+            }
+            let reference = self.grain_references[map[compare_kind] as usize].as_ref();
+            if reference.is_some_and(|r| crate::film_grain_config::parameters_equal(fg, r)) {
+                return Some(map[signal_kind]);
+            }
+        }
+        None
+    }
+    fn validate_film_grain(&self) -> EncodeResult<()> {
+        self.film_grain
+            .validate()
+            .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
+        let enabled =
+            self.film_grain.enabled() || (self.hdr.is_fork() && self.hdr.noise_strength > 0);
+        if enabled && (!self.chroma_420 || !matches!(self.bit_depth, 8 | 10)) {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "C film grain requires 8/10-bit 4:2:0"
+            )));
+        }
+        if self
+            .grain_sequence_present
+            .is_some_and(|present| present != enabled)
+            && !self.gop.is_key_frame(self.frame_count)
+        {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "film grain sequence presence can change only on a key frame"
+            )));
+        }
+        Ok(())
+    }
+    fn prepare_film_grain(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
+    ) -> EncodeResult<Option<([Vec<u8>; 3], usize)>> {
+        if self.film_grain.table.is_some()
+            || (self.hdr.is_fork() && self.hdr.noise_strength > 0)
+            || self.film_grain.denoise_strength == 0
+        {
+            return Ok(None);
+        }
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        let tw = self.upscaled_width as usize;
+        let th = self.true_height as usize;
+        // C pads to the mi grid before picture_pre_processing_operations.
+        let w = tw.div_ceil(8) * 8;
+        let h = th.div_ceil(8) * 8;
+        let shift = self.bit_depth - 8;
+        let strides = [w, w / 2, w / 2];
+        let source = if let Some(src) = self.hbd_source.as_ref() {
+            [src.y.clone(), src.u.clone(), src.v.clone()]
+        } else {
+            let padded = [
+                pad_plane_replicate(y, y_stride, tw, th, w, h)?,
+                pad_plane_replicate(
+                    u,
+                    tw.div_ceil(2),
+                    tw.div_ceil(2),
+                    th.div_ceil(2),
+                    w / 2,
+                    h / 2,
+                )?,
+                pad_plane_replicate(
+                    v,
+                    tw.div_ceil(2),
+                    tw.div_ceil(2),
+                    th.div_ceil(2),
+                    w / 2,
+                    h / 2,
+                )?,
+            ];
+            padded.map(|p| p.into_iter().map(|v| u16::from(v) << shift).collect())
+        };
+        let (denoised, params, _status) = crate::film_grain_denoise::denoise_and_model(
+            source.each_ref().map(Vec::as_slice),
+            w,
+            h,
+            strides,
+            self.bit_depth,
+            self.film_grain.denoise_strength,
+            self.film_grain.adaptive,
+            self.film_grain_seed(),
+        );
+        self.stop
+            .check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+        let apply = self.film_grain.denoise_apply && params.apply_grain;
+        self.prepared_grain = Some(params);
+        if !apply {
+            return Ok(None);
+        }
+        // Keep C's denoised padding for the encode; repadding a cropped
+        // denoised picture would replace actual filter output at the edges.
+        let (ow, oh) = if self.superres_denom.is_some() {
+            (tw, th)
+        } else {
+            (w, h)
+        };
+        let tight: [Vec<u8>; 3] = core::array::from_fn(|c| {
+            let sub = usize::from(c > 0);
+            let pw = ow.div_ceil(1 << sub);
+            let ph = oh.div_ceil(1 << sub);
+            let mut out = Vec::with_capacity(pw * ph);
+            for row in 0..ph {
+                out.extend(
+                    denoised[c][row * strides[c]..row * strides[c] + pw]
+                        .iter()
+                        .map(|&v| (v >> shift) as u8),
+                );
+            }
+            out
+        });
+        if self.bit_depth == 10 {
+            let [y, u, v] = denoised;
+            self.hbd_source = Some(HbdSource { y, u, v });
+        }
+        Ok(Some((tight, ow)))
+    }
+
     /// Fallible core of the 4:2:0 path (TRUE->ALIGNED padding + the shared
     /// `encode_frame_impl`). Shared by the panicking [`Self::encode_frame_420`]
     /// wrapper and the fallible [`Self::try_encode_frame_420`]; both validate
@@ -868,13 +1022,44 @@ impl EncodePipeline {
         u: &[u8],
         v: &[u8],
         y_stride: usize,
+    ) -> EncodeResult<Vec<u8>> {
+        let result = self.encode_frame_420_prepared(y, u, v, y_stride);
+        // Also clear on errors before encode_frame_impl takes these fields.
+        self.prepared_grain = None;
+        self.hbd_source = None;
+        result
+    }
+
+    fn encode_frame_420_prepared(
+        &mut self,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        y_stride: usize,
     ) -> crate::EncodeResult<Vec<u8>> {
         // Superres chunk B.3: the caller hands in FULL-width planes; the
         // encode runs at the reduced CODED width. Downscale horizontally with
         // C's `svt_av1_resize_plane_horizontal` (svtav1-dsp::resize, pinned
-        // byte-exact vs C) before anything else, then the existing
+        // byte-exact vs C) after grain preprocessing, then the existing
         // TRUE->ALIGNED padding and the whole pipeline operate on the coded
         // planes. No-op when superres is off.
+        self.validate_film_grain()?;
+        self.prepared_grain = None;
+        let prepared = self.prepare_film_grain(y, u, v, y_stride)?;
+        if self.superres_denom.is_none() {
+            if let Some((planes, stride)) = prepared.as_ref() {
+                return self.encode_frame_impl(&planes[0], *stride, Some((&planes[1], &planes[2])));
+            }
+        }
+        let (y, u, v, y_stride) = match prepared.as_ref() {
+            Some((planes, stride)) => (
+                planes[0].as_slice(),
+                planes[1].as_slice(),
+                planes[2].as_slice(),
+                *stride,
+            ),
+            None => (y, u, v, y_stride),
+        };
         let downscaled = self.superres_downscale_420(y, u, v, y_stride)?;
         let (y, u, v, y_stride) = match downscaled.as_ref() {
             Some((yd, ud, vd)) => (
@@ -1694,6 +1879,7 @@ impl EncodePipeline {
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
     ) -> crate::EncodeResult<Vec<u8>> {
+        self.validate_film_grain()?;
         let display_order = self.frame_count;
         // Superres chunk B.3: refuse any combination whose SIGNALLED geometry
         // would not match what this encoder actually produced (see
@@ -2056,8 +2242,13 @@ impl EncodePipeline {
         // variance source from it. For a 64-aligned frame the extent equals the
         // aligned extent, so no padding is needed and `encode_input` is used
         // directly at stride `w` — fully byte-neutral for every full-SB cell.
-        let dims95 =
-            crate::frame_geom::FrameDims::new(self.true_width as usize, self.true_height as usize);
+        let grain_denoised = self.film_grain.denoise_apply
+            && self.prepared_grain.as_ref().is_some_and(|p| p.apply_grain);
+        let dims95 = if grain_denoised {
+            crate::frame_geom::FrameDims::new(w, h)
+        } else {
+            crate::frame_geom::FrameDims::new(self.true_width as usize, self.true_height as usize)
+        };
         let sb95 = 64usize;
         let ext_w = w.div_ceil(sb95) * sb95;
         let ext_h = h.div_ceil(sb95) * sb95;
@@ -3171,26 +3362,25 @@ impl EncodePipeline {
         // [SVT_HDR_MODE] photon-noise film grain (--noise*): synthesize
         // the table per frame; seed 7391 + 3381*frame (C resource_
         // coordination assign_film_grain_random_seed; zero is bumped).
-        let film_grain: Option<crate::entropy::obu::FilmGrainParams> =
-            if self.hdr.is_fork() && self.hdr.noise_strength > 0 {
-                let mut fg = crate::noise_gen::generate_noise_table(
-                    self.width,
-                    self.height,
-                    u32::from(self.hdr.noise_strength),
-                    self.hdr.noise_strength_chroma,
-                    self.hdr.noise_chroma_from_luma as i8,
-                    self.hdr.noise_size,
-                    self.color_description.full_range,
-                );
-                let mut seed = 7391u16.wrapping_add(3381u16.wrapping_mul(self.frame_count as u16));
-                if seed == 0 {
-                    seed = 7391;
-                }
-                fg.random_seed = seed;
-                Some(fg)
-            } else {
-                None
-            };
+        let film_grain = if let Some(mut fg) = self.film_grain.table.clone() {
+            fg.apply_grain = true;
+            fg.random_seed = self.film_grain_seed();
+            Some(fg)
+        } else if self.hdr.is_fork() && self.hdr.noise_strength > 0 {
+            let mut fg = crate::noise_gen::generate_noise_table(
+                self.width,
+                self.height,
+                u32::from(self.hdr.noise_strength),
+                self.hdr.noise_strength_chroma,
+                self.hdr.noise_chroma_from_luma as i8,
+                self.hdr.noise_size,
+                self.color_description.full_range,
+            );
+            fg.random_seed = self.film_grain_seed();
+            Some(fg)
+        } else {
+            self.prepared_grain.take()
+        };
         // Stamp the fork RDOQ knobs onto the encode-pass quant config (C
         // reads them off static_config inside svt_av1_optimize_txb; the
         // sharp-tx gate `(use_sharpness||sharp_tx) && delta_q_present &&
@@ -3252,6 +3442,7 @@ impl EncodePipeline {
                 // Photon noise signals grain tables per frame.
                 t.film_grain_params_present = self.hdr.noise_strength > 0;
             }
+            t.film_grain_params_present |= self.film_grain.enabled();
             // enable_intra_edge_filter's C-parity surface is still/420
             // (the C matched config). The mono extension keeps 0: C cannot
             // emit mono, and the mono leaf coder predicts without edge
@@ -6254,7 +6445,7 @@ impl EncodePipeline {
         // `run_picture_decision` and the tool ladders out of
         // `svt_aom_sig_deriv_mode_decision_config_default`. See
         // `crate::inter_hdr_arm`.
-        let inter_signal: Option<crate::entropy::obu::InterSignal> = if is_key {
+        let mut inter_signal: Option<crate::entropy::obu::InterSignal> = if is_key {
             None
         } else {
             let pic = pic_decision.as_ref().ok_or_else(|| {
@@ -6432,6 +6623,13 @@ impl EncodePipeline {
                 })?,
             )
         };
+
+        if let (Some(signal), Some(fg)) = (inter_signal.as_mut(), film_grain.as_ref()) {
+            let is_b = pic_decision
+                .as_ref()
+                .is_some_and(|p| p.slice_type == crate::port_picstruct::SliceType::B);
+            signal.film_grain_ref_idx = self.film_grain_reference(fg, signal.ref_frame_idx, is_b);
+        }
 
         // The tile above coded its MVP contexts from `inter_mvp_env`, which
         // derived `use_ref_frame_mvs` from the same two rules
@@ -6637,6 +6835,45 @@ impl EncodePipeline {
             // is refused (`superres_config_error`), so the canvas is already
             // at the output geometry.
             self.last_recon10_final = recon10;
+            if let Some(fg) = film_grain.as_ref().filter(|fg| fg.apply_grain) {
+                let stride = if self.superres_denom.is_some() {
+                    self.upscaled_width as usize
+                } else {
+                    w
+                };
+                if self.bit_depth == 10 {
+                    if let Some((y, u, v)) = self.last_recon10_final.as_mut() {
+                        crate::film_grain_synthesis::add_grain(
+                            fg,
+                            [y, u, v],
+                            [stride, stride / 2, stride / 2],
+                            stride,
+                            h,
+                            10,
+                        );
+                    }
+                } else if let Some((y, u, v)) = self.last_recon.as_mut() {
+                    let mut planes = [
+                        y.iter().map(|&v| u16::from(v)).collect::<Vec<_>>(),
+                        u.iter().map(|&v| u16::from(v)).collect(),
+                        v.iter().map(|&v| u16::from(v)).collect(),
+                    ];
+                    let [gy, gu, gv] = &mut planes;
+                    crate::film_grain_synthesis::add_grain(
+                        fg,
+                        [gy, gu, gv],
+                        [stride, stride / 2, stride / 2],
+                        stride,
+                        h,
+                        8,
+                    );
+                    for (dst, src) in [y, u, v].into_iter().zip(planes) {
+                        for (d, s) in dst.iter_mut().zip(src) {
+                            *d = s as u8;
+                        }
+                    }
+                }
+            }
         }
         // C `pad_ref_and_set_flags` (enc_dec_process.c:1072-1112): the recon
         // is padded with a replicated margin BEFORE it becomes a reference,
@@ -6800,6 +7037,12 @@ impl EncodePipeline {
                 a
             },
         };
+        for slot in 0..8 {
+            if pcs.refresh_frame_flags & (1 << slot) != 0 {
+                self.grain_references[slot] = film_grain.clone();
+            }
+        }
+        self.grain_sequence_present = Some(seq_tools.film_grain_params_present);
         self.dpb.refresh(pcs.refresh_frame_flags, ref_frame);
         // The PA (picture-analysis) reference the NEXT frame's open-loop
         // motion search reads — this frame's padded SOURCE pyramid, not its
@@ -15390,3 +15633,7 @@ mod inter_decision_probe {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "film_grain_pipeline_tests.rs"]
+mod film_grain_tests;
