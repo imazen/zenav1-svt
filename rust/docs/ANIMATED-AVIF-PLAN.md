@@ -11,7 +11,11 @@ and thirteen comments were read. See
 [OPEN-ISSUES-AUDIT-2026-09-07.md](OPEN-ISSUES-AUDIT-2026-09-07.md) for current
 source findings, closure candidates and remaining gaps. SCM 0 and mainline
 VQ sharpness remain concrete wiring work; public video is still unfinished.
-The separate zenavif/cavif review branches remain unmerged.
+The separate zenavif/cavif review branches remain unmerged. Refreshed source
+and issue status is recorded in that audit: SVT main `46842091`, canonical
+review `28d08564`, cavif-rs review `7f55b540`, and zenrav1e master `1447c200`.
+Exact native/concrete-adapter timing and animation color-format forwarding
+are now verified; public video and the quality investigation remain open.
 
 SVT main readiness (2026-09-07): the user authorizes merging once ready and
 then auditing every open GitHub issue. SVT review head 581546cd differs from

@@ -6,6 +6,14 @@ six issues, thirteen comments. This is a source and existing-evidence audit;
 historical benchmark results below were not rerun merely for this report.
 No issues were closed or edited on GitHub.
 
+Refresh: main is now `46842091f22f0a66217c360786948c9c49b659cc`.
+All six issue bodies and thirteen comments are unchanged. The subsequent
+main change corrects the regression harness's configured decoder path;
+its CI passed. Canonical review `28d08564` now includes exact animation
+ticks and color-format forwarding, through cavif-rs `7f55b540` and
+zenrav1e `1447c200` (the latter merged to master after local gates passed).
+The wrapper main branches still await the separate quality investigation.
+
 The merged encoder code is identical to the tested merge `4e688a54`; intervening
 changes affect only `ANIMATED-AVIF-PLAN.md`. Local evidence remains 2616/2616
 tests, 123/123 C regression cells, 336/336 native lossless source comparisons,
@@ -55,8 +63,12 @@ config-to-config equality cannot detect this defect.
 3. **Animation implementation and consumer wiring are different scopes.**
    SVT has exact tick timing, alpha and metadata support. The separate canonical
    zenavif review branch has additional animation/decode fixes; it has not been
-   merged here. Remaining consumer work includes exact non-millisecond timing,
-   broader encoder-option forwarding and auxiliary metadata/track coverage.
+   merged here. Exact non-millisecond timing now works through the four native
+   input formats and the concrete codec adapter; the generic zencodec trait
+   still takes milliseconds. Chroma, RGB identity and range settings now
+   reach animation pixels, codec headers and container metadata. Remaining
+   consumer work includes additional encoder controls and auxiliary
+   metadata/track coverage.
    See [ANIMATED-AVIF-PLAN.md](ANIMATED-AVIF-PLAN.md).
 4. **Film grain existed in C and is now translated and wired in SVT.**
    [film-grain-port-map.md](film-grain-port-map.md) identifies the model,
