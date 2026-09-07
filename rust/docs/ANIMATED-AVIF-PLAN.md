@@ -80,9 +80,29 @@ inversions persist. See canonical `benchmarks/track_metadata_2026-09-07.md`.
 
 Fresh `jj git fetch` confirms SVT main remains `74d92430`, already an ancestor
 of this branch. No additional main integration is needed at this checkpoint.
-Next metadata audit: track dimensions, CICP/ICC and spatial properties versus
-poster. The corrections above do not establish that these other properties
-are correctly independent.
+Canonical `c4225387` (local, not pushed) now corrects track/poster geometry,
+depth/chroma and CICP/ICC source selection, including fallback matrices used
+by managed/AOM pixel conversion. Track-aware constructors apply animation
+limits to the track; codec lazy and native eager convenience entry points are
+wired. An in-limit 150×150 track is no longer rejected by a larger 10-bit poster.
+Parser primary-item absence no longer inherits track codec/color properties.
+Tests include real different-size/depth posters, both ICC-absence directions,
+and a colored matrix witness whose rendered pixels fail if poster selection
+is restored. All-feature nextest passes 880/880 (nine existing skips); default
+tests/doctests pass 475 (ten existing ignores). Final focused tests pass 16/16
+and library clippy passes after the last eager-convenience routing change.
+Formatting and whitespace checks pass. Determinism and 56 reference conformance
+cells pass; optional armed CLI coverage is explicitly unrun. Ladder retains the
+same 33 byte/quality rows plus 15 timing misses (48 total); the same two speed
+inversions persist. See canonical `benchmarks/track_color_geometry_2026-09-07.md`.
+
+Next metadata audit: coexisting ICC/nclx (the single enum loses one colr and
+can lose an unspecified-bitstream matrix hint), and track spatial/Exif/XMP
+properties versus poster. read_stsd skips spatial properties, read_tkhd skips
+its matrix and read_trak skips track-local meta. Verify serializer placement
+against the specifications and an independent decoder before claiming support.
+Source-encoding detail provenance also remains to be corrected. The full goal
+and quality-envelope investigation remain active; push/CI remain deferred.
 
 Next: canonical repetition/options/non-ms timing, mono animation, the existing
 quality-envelope drift, and the full remaining feature inventory. The full
