@@ -55,9 +55,19 @@ identical, and the same two screen/q80 speed inversions. Determinism and 56/56
 reference conformance pass both times; the absent sibling CLI's optional armed
 leg was explicitly not run. Preserve thresholds and investigate before another
 push/CI. See canonical `benchmarks/svt_animation_seam_2026-09-07.md`.
-Next integration checks: codec loop-count forwarding and MDCV unit conversion,
-canonical repetition/options/non-ms timing, mono animation, and the full
-remaining feature inventory. The full objective remains active.
+Codec loop-count forwarding and MDCV conversion are now corrected locally in
+canonical `1d704319` (not pushed). Both zenravif and SVT honor counts through
+u32::MAX without changing sample bytes, offsets, or media timing; repeated
+presentation overflow errors before mutation. Independent tests also corrected
+RGB/GBR primary ordering in both encode/decode adapters and animation's incorrect
+chromaticity/luminance scales. Full workspace nextest passes 875/875 (nine
+existing skips), default tests/doctests 472 (ten existing ignores), encode-only
+loop test 1/1, and all-feature library clippy/scoped formatting pass. Evidence:
+canonical `benchmarks/codec_playback_hdr_2026-09-07.md`.
+
+Next: canonical repetition/options/non-ms timing, mono animation, the existing
+quality-envelope drift, and the full remaining feature inventory. The full
+objective remains active.
 
 ## Authoritative baseline
 
