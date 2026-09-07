@@ -17,6 +17,17 @@ Two companions to it:
   Run it after every change. If you fix a bug and do not add a cell, the next
   person gets to rediscover it.
 
+## Open-issue audit, 2026-09-07
+
+After the verified SVT main merge `11522ed0`, all six open issues and thirteen
+comments were reconciled with source in
+`docs/OPEN-ISSUES-AUDIT-2026-09-07.md`. Known wiring gaps from #17 remain:
+`pipeline.rs` ignores SCM 0 in `sc_preset`, and gates tune-derived LF sharpness
+on fork mode although the pinned C's KEY-frame VQ branch is unconditional.
+Add enabled C-output regressions before correcting those consumers. The audit
+also distinguishes landed #18 tile fixes from unverified fleet rollout, stale
+#4/#8 checklist claims, and the remaining public-video/superres limitations.
+
 ## CONFORMANCE MANDATE
 
 **2026-09-06 scope requirement from the user:** all shipping C features must

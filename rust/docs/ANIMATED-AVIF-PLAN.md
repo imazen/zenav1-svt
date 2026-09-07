@@ -5,6 +5,14 @@ metadata, transparency, and spec supported features. After that, complete
 video encoding support.** This objective remains active. The initial all-intra
 path is an implementation step, not the completion boundary.
 
+Post-merge issue audit (2026-09-07): SVT main was pushed and independently
+verified at `11522ed068ef6d75f7abe4a5330791e62a4b8aa2`. All six open issues
+and thirteen comments were read. See
+[OPEN-ISSUES-AUDIT-2026-09-07.md](OPEN-ISSUES-AUDIT-2026-09-07.md) for current
+source findings, closure candidates and remaining gaps. SCM 0 and mainline
+VQ sharpness remain concrete wiring work; public video is still unfinished.
+The separate zenavif/cavif review branches remain unmerged.
+
 SVT main readiness (2026-09-07): the user authorizes merging once ready and
 then auditing every open GitHub issue. SVT review head 581546cd differs from
 the locally verified merge 4e688a54 only in this plan document. The verified
