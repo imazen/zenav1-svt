@@ -12,14 +12,24 @@ serializer dependency is replaced by canonical zenavif git revision
 its manifest and all nine source files are byte-identical to the locally
 verified serializer. Earlier local-path/no-push statements below are historical.
 CI remains deferred; these branch names do not match push workflow filters.
-Canonical optional-feature runtime tests are still in progress.
+Canonical optional-feature runtime verification is recorded below.
 
 Main synchronization: merged `74d92430` quality fixes into the animation branch,
 preserving the extracted 10-bit module and the newer lossless/context logic.
 The combined tree passes 2616 tests, 123 C regression cases, 336 native
 source-pixel comparisons and 168 native color C-byte comparisons. See
-`benchmarks/main_merge_2026-09-07.md`. Canonical optional decoder failures remain
-under investigation; CI is still deferred.
+`benchmarks/main_merge_2026-09-07.md`.
+
+Canonical runtime verification: zenavif `007e0246` corrects the legacy
+decoder's drain loop, alpha scaling, color conversion and color-grid handling.
+Its all-feature workspace suite passes 866/866 (nine existing skips), default
+workspace passes 472 tests (ten existing ignores), explicit managed/AOM tests
+pass 7/7, and all-feature library clippy passes with warnings denied. See the
+canonical `benchmarks/legacy_decoder_2026-09-07.md` for the mutation witness
+correction and exact scope. Canonical's SVT backend is still pinned to
+`2d75a105`; integrating the newly merged encoder and exposing its expanded
+capabilities there remains required. Transparent grids remain unsupported.
+CI is still deferred and the full objective remains active.
 
 ## Authoritative baseline
 
