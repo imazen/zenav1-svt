@@ -96,13 +96,31 @@ cells pass; optional armed CLI coverage is explicitly unrun. Ladder retains the
 same 33 byte/quality rows plus 15 timing misses (48 total); the same two speed
 inversions persist. See canonical `benchmarks/track_color_geometry_2026-09-07.md`.
 
-Next metadata audit: coexisting ICC/nclx (the single enum loses one colr and
-can lose an unspecified-bitstream matrix hint), and track spatial/Exif/XMP
-properties versus poster. read_stsd skips spatial properties, read_tkhd skips
-its matrix and read_trak skips track-local meta. Verify serializer placement
-against the specifications and an independent decoder before claiming support.
-Source-encoding detail provenance also remains to be corrected. The full goal
-and quality-envelope investigation remain active; push/CI remain deferred.
+Canonical `d9732407` (local, not pushed) corrects coexisting ICC/nclx loss.
+Primary items and color sample entries now retain both independently of box
+order; preferred-color accessors preserve ICC and new nclx accessors retain
+matrix/CICP values. Managed/AOM/legacy conversion and row streaming use nclx
+hints without dropping ICC metadata; the lightweight probe reports both.
+Borrowed/owned and no-poster parser paths are covered. Real colored fixtures
+verify rendered rows against a nclx-only control; a discard-nclx mutation fails.
+All-feature workspace nextest passes 881/881 (nine existing skips); default
+workspace passes 476 tests/doctests (ten existing ignores). Final expanded
+focused tests pass 18/18 all-feature and 2/2 default-feature tests, including
+streaming and posterless cases. Production code did not change after the full
+suite. Clippy/formatting, determinism and 56 reference conformance cells pass;
+optional armed CLI coverage is explicitly unrun. The same 33 byte/quality rows
+plus 16 timing misses (49 total), and the same two speed inversions remain.
+See canonical `benchmarks/dual_colr_2026-09-07.md`.
+
+Next metadata audit: track spatial/Exif/XMP properties versus poster.
+read_stsd skips spatial properties, read_tkhd skips its matrix and read_trak
+skips track-local meta. Current libavif read.c parses sample-entry property
+containers and selects them for track transformations; it reads track-local
+meta for Exif/XMP. This provides an implementation reference, but independent
+runtime verification of our output is still required. Auxiliary gain-map/depth
+ICC/nclx coexistence and source-encoding detail provenance remain open too.
+The full goal and quality-envelope investigation remain active; push/CI remain
+deferred.
 
 Next: canonical repetition/options/non-ms timing, mono animation, the existing
 quality-envelope drift, and the full remaining feature inventory. The full
