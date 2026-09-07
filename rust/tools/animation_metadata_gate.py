@@ -16,7 +16,7 @@ import tempfile
 def metadata_boxes(data, wanted=b"mdcv", offsets=False):
     # Walk box boundaries, including full-box and visual-sample-entry headers.
     # Never search compressed payloads for four-character strings.
-    containers = {b"moov": 0, b"trak": 0, b"mdia": 0, b"minf": 0,
+    containers = {b"edts": 0, b"moov": 0, b"trak": 0, b"mdia": 0, b"minf": 0,
                   b"stbl": 0, b"stsd": 8, b"av01": 78,
                   b"meta": 4, b"iprp": 0, b"ipco": 0, b"iinf": 6, b"iref": 4}
     def walk(start, end, path):
@@ -167,7 +167,7 @@ def main():
             [None, (0, 0, 48, 56), (8, 12, 48, 56), (1, 3, 61, 75), (63, 79, 1, 1)],
         ):
             env = os.environ.copy()
-            for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA", "AVIF_PASP", "AVIF_ROTATION", "AVIF_MIRROR", "AVIF_CROP"]:
+            for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA", "AVIF_PASP", "AVIF_ROTATION", "AVIF_MIRROR", "AVIF_CROP", "AVIF_DURATIONS", "AVIF_TIMESCALE"]:
                 env.pop(key, None)
             env.update(AVIF_REPEAT=repeat, AVIF_METADATA="1", AVIF_ICC=profile)
             if crop is not None:

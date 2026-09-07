@@ -9,14 +9,20 @@ fn main() {
     };
     let w = 64;
     let h = 80;
-    let mut colors: Vec<Vec<u8>> = (0..3)
+    let durations: Vec<u32> = std::env::var("AVIF_DURATIONS")
+        .map(|v| v.split(',').map(|v| v.parse().unwrap()).collect())
+        .unwrap_or_else(|_| vec![100, 200, 300]);
+    let timescale = std::env::var("AVIF_TIMESCALE")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(1000);
+    let mut colors: Vec<Vec<u8>> = (0..durations.len())
         .map(|f| {
             (0..w * h)
-                .map(|i| (32 + (i % w + f * 30) % 180) as u8)
+                .map(|i| (32 + (i % w + f * 30 + (i / w) * (1 + f / 6)) % 180) as u8)
                 .collect()
         })
         .collect();
-    let alphas: Vec<Vec<u8>> = (0..3)
+    let alphas: Vec<Vec<u8>> = (0..durations.len())
         .map(|f| (0..w * h).map(|i| ((i + f * 13) % 256) as u8).collect())
         .collect();
     if std::env::var_os("AVIF_PREMULTIPLIED").is_some() {
@@ -27,7 +33,7 @@ fn main() {
         }
     }
     let uv = vec![128; w * h / 4];
-    let frames: Vec<_> = (0..3)
+    let frames: Vec<_> = (0..durations.len())
         .map(|f| AnimationFrame {
             y: &colors[f],
             u: &uv,
@@ -38,7 +44,7 @@ fn main() {
             } else {
                 Some(&alphas[f])
             },
-            duration: [100, 200, 300][f],
+            duration: durations[f],
         })
         .collect();
     let mut options = AnimationOptions::default();
@@ -87,7 +93,7 @@ fn main() {
             &frames,
             w as u32,
             h as u32,
-            AnimationTiming { timescale: 1000 },
+            AnimationTiming { timescale },
             &options,
         )
         .unwrap();

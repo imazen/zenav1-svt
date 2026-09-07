@@ -42,7 +42,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 
 | Requirement | Current state / next evidence |
 |---|---|
-| Frame timing, duration, count, seeking | Initial all-sync variable-duration path verified; broader boundaries, long durations, ordering and random access still needed |
+| Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite-count and exact downstream timing APIs remain |
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
@@ -191,3 +191,36 @@ regression gate passes 109/109 (`crop-spotcheck.log`); scoped Rust formatting
 and diff whitespace checks pass.
 CI remains deferred and the temporary sibling serializer dependency remains
 until the verified canonical commits can be landed and pinned.
+
+Timing/random-access continuation: `tools/animation_timing_gate.py` verifies
+27 cases with libavif, including run-length duration tables, one-frame output,
+u32-max durations/timescales, total durations above u32, finite/infinite repeat,
+and 257-frame sequences. Structural checks compare exact 64-bit movie/track
+presentation durations, media duration, edit lists, sample timing and sync
+indexes on color and alpha. The C probe compares every plane byte after
+reverse seeks, alternating seeks and reset/replay against sequential decoding;
+all fixture frames must be distinguishable to make wrong-index seeks visible.
+All 27 cases and all 7,560 metadata cases pass on the final release example
+(`~/tmp/animation-metadata/timing-independent-final.log`).
+
+The canonical parser now exposes `frame_timing(index)` with exact ticks and
+64-bit timestamps. Its previous public frame timing was whole milliseconds,
+truncated and saturated, so it could not represent the encoded timing range.
+83 serializer tests, 19 parser tests and 5 parser doctests pass; standalone
+source harnesses both pass clippy with warnings denied. Main clippy completes
+with existing warnings. Evidence: `timing-parser-serializer.log` and
+`timing-clippy.log`. Managed/codec decoder adapters still use the legacy
+millisecond field and require follow-up wiring. A separate verified gap remains:
+canonical parser `loop_count: u32` rejects 4,294,967,296 finite playbacks, though
+the serializer writes the correct presentation duration. Libavif deliberately
+reports counts above INT_MAX as infinite; the gate independently checks exact
+box values for those cases. See canonical Known Bugs for the reproducer.
+
+Before eventually landing preserved workflow change `puzrqvms`, add the new
+timing gate alongside its metadata gate. CI is still deferred; local serializer
+path staging remains until the canonical changes can be landed and pinned.
+
+Final timing checkpoint: all 2,590 workspace tests pass with zero skips and all
+109 regression checks pass (`timing-local-final.log`). Scoped Rust formatting
+and whitespace checks pass. This closes the tested all-sync timing/seek cases,
+not the downstream precision gaps or the broader animation/video objective.

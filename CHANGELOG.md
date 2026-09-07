@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Independent animated AVIF timing and random-access gate: exact 64-bit timing, color/alpha byte comparisons after seeking and reset, and duration-table boundaries.
+
 - Animated clean-aperture cropping with an uncropped secondary poster sharing encoded color/alpha samples; preserve both posters’ metadata and alpha associations.
 
 - Animated AVIF square-pixel aspect, rotation and mirroring metadata on color tracks and posters, with early validation and independent libavif conformance checks.
