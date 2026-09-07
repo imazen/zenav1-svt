@@ -23,6 +23,10 @@ pub struct AnimationOptions {
     pub mdcv: Option<MdcvBox>,
     /// Explicit square-pixel spacing. AVIF requires positive, equal values.
     pub pixel_aspect_ratio: Option<PaspBox>,
+    /// Counter-clockwise quarter-turn code (0..=3), before mirroring.
+    pub rotation: Option<u8>,
+    /// Mirror after rotation: 0 swaps top/bottom, 1 swaps left/right.
+    pub mirror: Option<u8>,
     /// The input color planes have already been premultiplied by alpha.
     pub premultiplied_alpha: bool,
 }
@@ -37,6 +41,8 @@ impl Default for AnimationOptions {
             clli: None,
             mdcv: None,
             pixel_aspect_ratio: None,
+            rotation: None,
+            mirror: None,
             premultiplied_alpha: false,
         }
     }
@@ -165,6 +171,11 @@ impl AvifEncoder {
                     "repeated animation duration overflow",
                 ))?;
         }
+        if options.rotation.is_some_and(|r| r > 3) || options.mirror.is_some_and(|m| m > 1) {
+            return Err(EncodeError::UnsupportedConfig(
+                "rotation must be 0..=3 and mirror axis must be 0..=1",
+            ));
+        }
         if options
             .pixel_aspect_ratio
             .is_some_and(|p| p.h_spacing == 0 || p.h_spacing != p.v_spacing)
@@ -274,6 +285,12 @@ impl AvifEncoder {
         }
         if let Some(xmp) = options.xmp.as_ref() {
             mux.set_xmp(xmp.clone());
+        }
+        if let Some(rotation) = options.rotation {
+            mux.set_rotation(rotation);
+        }
+        if let Some(mirror) = options.mirror {
+            mux.set_mirror(mirror);
         }
         if let Some(pasp) = options.pixel_aspect_ratio {
             mux.set_pixel_aspect_ratio(pasp.h_spacing, pasp.v_spacing);
@@ -736,6 +753,38 @@ mod tests {
                 }
             }
             fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn validates_orientation_before_encoding() {
+        let plane = vec![128; 64 * 64];
+        let frames = [AnimationFrame {
+            y: &plane,
+            u: &plane,
+            v: &plane,
+            y_stride: 64,
+            alpha: None,
+            duration: 1,
+        }];
+        for (rotation, mirror) in [(4, 0), (255, 0), (0, 2), (0, 255)] {
+            let options = AnimationOptions {
+                rotation: Some(rotation),
+                mirror: Some(mirror),
+                ..AnimationOptions::default()
+            };
+            assert!(matches!(
+                AvifEncoder::new().encode_animation_yuv420_with_options(
+                    &frames,
+                    64,
+                    64,
+                    AnimationTiming { timescale: 1000 },
+                    &options
+                ),
+                Err(EncodeError::UnsupportedConfig(
+                    "rotation must be 0..=3 and mirror axis must be 0..=1"
+                ))
+            ));
         }
     }
 

@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Animated AVIF square-pixel aspect, rotation and mirroring metadata on color tracks and posters, with early validation and independent libavif conformance checks.
+
 - Correct partial-edge chroma reconstruction and pad native 10-bit alpha for odd frame dimensions; add decoder regression witnesses.
 - Native 10-bit animated AVIF with color and alpha; monochrome high-bit-depth reconstruction now passes through the post-filters (`ff0deb37`).
 

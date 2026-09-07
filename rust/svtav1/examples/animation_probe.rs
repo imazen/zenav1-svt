@@ -48,6 +48,12 @@ fn main() {
             RepetitionCount::Finite(count.parse().unwrap())
         };
     }
+    options.rotation = std::env::var("AVIF_ROTATION")
+        .ok()
+        .map(|v| v.parse().unwrap());
+    options.mirror = std::env::var("AVIF_MIRROR")
+        .ok()
+        .map(|v| v.parse().unwrap());
     if let Ok(spacing) = std::env::var("AVIF_PASP") {
         let (h, v) = spacing.split_once(',').expect("AVIF_PASP=h,v");
         options.pixel_aspect_ratio = Some(PaspBox::new(h.parse().unwrap(), v.parse().unwrap()));

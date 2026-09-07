@@ -46,7 +46,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
-| Spatial properties | Explicit square-pixel aspect metadata wired to color track/poster; clean aperture, rotation, mirror and transformed alpha verification remain |
+| Spatial properties | Square-pixel aspect, rotation and mirror metadata wired to color track/poster; clean aperture and displayed transformed-alpha pixel verification remain |
 | Format coverage | 8-bit and native 10-bit 4:2:0 APIs, including native alpha. Native alpha currently requires preset >=9. 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
@@ -145,3 +145,21 @@ cases, and main workspace nextest passes 2,588/2,588 with zero skips. Evidence:
 `~/tmp/animation-metadata/pasp-{serializer,metadata,nextest}.log`. The main
 manifest temporarily uses the canonical sibling path while changes remain local;
 replace it with the verified git revision when landing. CI remains deferred.
+
+Rotation/mirror continuation: the facade and canonical animated serializer now
+validate and write counter-clockwise quarter turns and HEIF mirror axes on the
+color track and primary poster. Poster transforms are essential, ordered
+rotation then mirror, and are not duplicated on associated alpha. All 15
+optional rotation/mirror combinations round-trip through the canonical parser.
+The independent libavif gate passes 1,080/1,080 cases across repetition, alpha,
+pixel aspect, orientation and track/poster selection; structural checks verify
+exact payloads, property ordering, essential bits and alpha associations.
+Workspace nextest passes 2,589/2,589 with zero skips, serializer tests pass 80/80,
+and the regression gate passes 109/109. Serializer clippy passes with warnings
+denied; facade clippy completes with existing encoder/test warnings. Evidence:
+`~/tmp/animation-metadata/rotation-{serializer,metadata,nextest,spotcheck,clippy}.log`.
+These checks establish decoded metadata and associations; displayed transformed
+pixel comparison remains separate work. The audit also corrected canonical
+zenavif's reversed HEIF mirror-axis mapping, verified against all 12 combinations
+from the actual libavif C helper (see its Known Bugs entry). Both repositories
+remain local with the temporary sibling serializer dependency; CI stays deferred.
