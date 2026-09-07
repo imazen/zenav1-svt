@@ -164,6 +164,34 @@ aperture resampling, non-square pixel presentation, tkhd matrices, other
 orientation-policy variants, auxiliary ICC/nclx and source-encoding provenance.
 The full goal and quality investigation remain active; push/CI remain deferred.
 
+Canonical `a485a934` (local, not pushed) corrects zenravif animation bit-depth
+selection and input stride. Explicit Eight/Ten selects the matching upstream
+animation method independently of RGB/RGBA8/16 storage; Auto keeps its prior
+input-depth defaults. Shared promotion/narrowing and logical-pixel staging
+exclude padding, reserve fallibly and poll cancellation. The executed depth
+regression caught requested Eight producing Ten; a restored backing-buffer
+mutation fails the pixel/file equivalence assertion.
+
+The native matrix encodes 24 two-frame files (48 color / 24 alpha samples),
+checking sequence-header/av1C depths, timing and exact file identity across
+storage width and stride. Final codec tests additionally cover both depths,
+RGBA storage widths and managed/AOM decode. Libavif 1.3.0 independently decodes
+32 frames in 16 exported files at the requested depths. Full all-feature nextest
+passes 891/891 (nine existing skips), default workspace 484 (ten existing ignores),
+final focused 2/2 all-feature and 2/2 encode-only; clippy/scoped formatting pass.
+The codec test was added after the full suite; production code did not change
+except documentation. Determinism and 56 reference conformance cells pass;
+optional armed CLI coverage is unrun. The same 33 byte/quality rows, 16 timing
+misses and two speed inversions remain. See canonical benchmarks/animation_depth_2026-09-07.md.
+
+The exact-timing audit found native millisecond-only frame types, SVT's 1000 Hz
+clock driving level selection/muxing, and pinned zenravif's hard-coded 1/1000
+time base in coding and its separate sequence-header context. A second read-only
+finding is that zenravif's assemble_animation sets codec configuration but omits
+metadata setters used for still output. Reproduce/correct that next; do not
+mistake successful decoder-side preservation for complete encoder-side wiring.
+The full AVIF/video objective remains active; push and CI remain deferred.
+
 Next: canonical repetition/options/non-ms timing, mono animation, the existing
 quality-envelope drift, and the full remaining feature inventory. The full
 objective remains active.
