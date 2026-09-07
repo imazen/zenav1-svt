@@ -20,7 +20,7 @@
 # which codes zero residual at both qps and is kept only as the all-skip
 # control (its lossless check still bites).
 #
-# Cells: 3 synthetic contents x 4 geometries (64-aligned and PARTIAL-SB,
+# Cells: 5 synthetic contents x 4 geometries (64-aligned and PARTIAL-SB,
 # 8-aligned) x the preset ladder 0..13. Presets 10..13 are M9 on the C side
 # (all-intra clamp) but distinct port configurations. Env overrides:
 #   LL_CONTENTS, LL_DIMS ("WxH ..."), LL_PRESETS, AOMDEC.
@@ -34,7 +34,7 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 . "$HERE/lib_nice.sh" 2>/dev/null || true
 
-read -r -a CONTENTS <<<"${LL_CONTENTS:-gradient diag uniform}"
+read -r -a CONTENTS <<<"${LL_CONTENTS:-gradient diag uniform screen screenrep}"
 read -r -a DIMS <<<"${LL_DIMS:-64x64 128x128 96x80 200x136}"
 read -r -a PRESETS <<<"${LL_PRESETS:-0 1 2 3 4 5 6 7 8 9 10 13}"
 

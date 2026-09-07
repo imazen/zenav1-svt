@@ -558,14 +558,19 @@ mod tests {
 
     #[test]
     fn three_frame_alpha_sequence_decodes_with_exact_timing_and_alpha() {
-        for (w, h, has_alpha, speed, lossless) in [
-            (64usize, 64usize, true, 7, false),
-            (65, 67, true, 7, false),
-            (64, 64, false, 7, false),
-            (65, 67, false, 2, false),
-            (64, 64, true, 7, true),
-            (65, 67, true, 7, true),
-            (65, 67, false, 7, true),
+        for (w, h, has_alpha, speed, lossless, screen) in [
+            (64usize, 64usize, true, 7, false, false),
+            (65, 67, true, 7, false, false),
+            (64, 64, false, 7, false, false),
+            (65, 67, false, 2, false, false),
+            (64, 64, true, 7, true, false),
+            (65, 67, true, 7, true, false),
+            (65, 67, false, 7, true, false),
+            // Lower-preset lossless screen content, including the fixed-tree
+            // p4 IntraBC source path and an odd-sized animation with alpha.
+            (64, 64, true, 2, true, true),
+            (128, 128, true, 3, true, true),
+            (65, 67, true, 2, true, true),
         ] {
             let out =
                 std::env::temp_dir().join(format!("svt-animation-{}-{w}x{h}", std::process::id()));
@@ -574,7 +579,17 @@ mod tests {
             let colors: Vec<Vec<u8>> = (0..3)
                 .map(|f| {
                     (0..w * h)
-                        .map(|i| (32 + (i % w + f * 30) % 180) as u8)
+                        .map(|i| {
+                            if screen {
+                                let (r, c) = (i / w, i % w);
+                                let panel = ((r / 24) & 1) * 2 + ((c / 32 + f) & 1);
+                                let text =
+                                    (6..12).contains(&(r % 24)) && (c / 3 + r / 24 + f) % 5 != 0;
+                                if text { 16 } else { [35, 110, 180, 235][panel] }
+                            } else {
+                                (32 + (i % w + f * 30) % 180) as u8
+                            }
+                        })
                         .collect()
                 })
                 .collect();

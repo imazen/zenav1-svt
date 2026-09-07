@@ -2071,6 +2071,7 @@ pub(crate) fn funnel_block_decision(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_fixed_tree(
+    // Full frame-origin source: IntraBC searches absolute coordinates.
     src: &[u8],
     src_stride: usize,
     recon: &mut [u8],
@@ -2094,6 +2095,7 @@ pub(crate) fn encode_fixed_tree(
 ) -> PartitionResult {
     match tree {
         crate::pd0::Pd0Tree::Leaf(leaf_size) => {
+            let src_off = abs_y * src_stride + abs_x;
             debug_assert_eq!(*leaf_size, size, "PD0 leaf size must match node size");
             // C-exact leaf funnel (presets 6/7/8/eff-M9, 4:2:0 still): the
             // MDS0/MDS1/MDS3 mode decision replaces the homegrown leaf
@@ -2147,7 +2149,7 @@ pub(crate) fn encode_fixed_tree(
                         fx,
                         src,
                         src_stride,
-                        0,
+                        src_off,
                         recon,
                         recon_stride,
                         abs_x,
@@ -2179,7 +2181,7 @@ pub(crate) fn encode_fixed_tree(
                     fx,
                     src,
                     src_stride,
-                    0,
+                    src_off,
                     recon,
                     recon_stride,
                     abs_x,
@@ -2246,7 +2248,7 @@ pub(crate) fn encode_fixed_tree(
                     )
                 };
                 let block = encode_with_neighbors(
-                    src,
+                    &src[src_off..],
                     src_stride,
                     recon,
                     recon_stride,
@@ -2277,7 +2279,7 @@ pub(crate) fn encode_fixed_tree(
                 };
             }
             encode_with_neighbors(
-                src,
+                &src[src_off..],
                 src_stride,
                 recon,
                 recon_stride,
@@ -2317,7 +2319,7 @@ pub(crate) fn encode_fixed_tree(
                 let x0 = (i & 1) * half;
                 let y0 = (i >> 1) * half;
                 let sub = encode_fixed_tree(
-                    &src[y0 * src_stride + x0..],
+                    src,
                     src_stride,
                     recon,
                     recon_stride,

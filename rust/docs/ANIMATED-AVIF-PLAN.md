@@ -394,3 +394,30 @@ controls, captures and before/after witnesses.
 Workspace clippy completes with existing warnings; scoped formatting and diff
 checks pass. The refusal inventory remains at 48 entries. Both repository
 fetches reported no changes; no push or CI run was triggered.
+
+### 2026-09-07: lower-preset lossless screen content
+
+Reproduced the preset-4 QP0 screen panic with the refusal bypassed: the fixed
+partition walk sliced the source down to each block, while IntraBC's hash
+query and motion search address pixels relative to the full frame. The walk
+now retains the full source plane, passes an explicit block offset to the
+funnel, and slices only for the older local monochrome block encoder.
+Both fixed-tree pipeline call sites and recursive children use that contract.
+
+All 96 screen/screenrep cases (four geometries, twelve presets) now match C
+bytes and decode exactly to source, including the previously divergent
+preset-5 cases. The lower-preset refusal is removed;
+its p4/p5 regression checks now require successful C-byte comparisons, with
+an additional multi-superblock repeated-content witness. The default lossless
+gate includes both screen-content patterns. Native 10-bit lossless remains
+open. CI remains deferred.
+
+Final local verification: **2,598/2,598 workspace tests, zero skips;
+116/116 regression cases; 240/240 lossless C-byte/source-pixel cases;
+1,100/1,100 full 8-bit C comparisons, no pins or harness errors**. The
+animated screen-content cases decode with exact color and alpha source pixels.
+The 512x128 `screencopy` regression requires IntraBC selections in both C and
+the port and exact source pixels under aomdec, in addition to byte equality.
+Workspace clippy completes with existing warnings; scoped formatting and diff
+checks pass. The refusal inventory has 47 entries, including 13 capability
+refusals. No push or CI run was triggered.

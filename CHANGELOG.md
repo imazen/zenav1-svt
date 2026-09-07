@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Support 8-bit lossless screen content at lower presets: retain the full source plane through fixed partition walks so IntraBC can search absolute coordinates. Replace the former preset 0–5 refusal with C-byte regression checks; include screen and repeated-screen sources in the lossless gate.
+
 - Complete 8-bit color lossless partition parity: price 4x4 WHT candidates, run C's unrestricted lossless PD1 search, and adapt lossless transform-type probabilities in the MD context. All 144 lossless gate cases now match C and decode exactly to source; remove all 32 exception pins and add three regression witnesses.
 
 - 8-bit lossless monochrome and animated alpha: reuse 4x4 WHT kernels with per-transform prediction and coefficient contexts; verify decoded luma/alpha against source. Native 10-bit lossless remains unsupported.

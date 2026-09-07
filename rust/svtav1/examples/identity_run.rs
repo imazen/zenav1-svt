@@ -372,7 +372,11 @@ fn main() {
                     // 8x8 blocks of 2..6 distinct values — inside palette's
                     // `colors <= 64` bound and well inside PALETTE_MAX_SIZE
                     // after k-means.
-                    "screen" => {
+                    // screencopy repeats panels at 256px: unlike screenrep's
+                    // high-entropy field it keeps lossless screen detection on.
+                    // At 512x128 QP0 p4, C selects 320 IntraBC blocks.
+                    "screen" | "screencopy" => {
+                        let c = if content == "screencopy" { c % 256 } else { c };
                         let panel = ((r / 24) & 1) as u8 * 2 + ((c / 32) & 1) as u8;
                         let bg = [35u8, 110, 180, 235][panel as usize];
                         let text_row = (r % 24) >= 6 && (r % 24) < 12;
@@ -398,7 +402,9 @@ fn main() {
                     // that, so it cannot win here and mask the IBC candidate —
                     // an earlier low-colour version of this content coded 68-80
                     // palette blocks and ZERO IBC blocks. Flat panel bands stay
-                    // in the top rows so the screen-content detector still arms.
+                    // in the top rows, but do not guarantee IntraBC is enabled:
+                    // C leaves it off at QP0 on 128x128/256x256. Use screencopy
+                    // for the lossless block-copy regression premise.
                     "screenrep" => {
                         if r < 32 {
                             [24u8, 96, 168, 240][((r / 8) & 1) * 2 + ((c / 32) & 1)]
@@ -411,7 +417,7 @@ fn main() {
                     other => {
                         panic!(
                             "unknown content {other:?} \
-                             (use uniform|gradient|diag|screen|screenrep|file:<png>|raw:<yuv>)"
+                             (use uniform|gradient|diag|screen|screencopy|screenrep|file:<png>|raw:<yuv>)"
                         )
                     }
                 };

@@ -289,8 +289,9 @@ arm (C stores the kernel output TRANSPOSED, transforms.c:3956; the inverse
 goes through a u16 scratch with `highbd_iwht4x4_16_add` ALWAYS — C forces
 `eob = max` because its read and write buffers differ, inv_transforms.c:3155).
 
-**Current, 2026-09-07:** `tools/lossless_gate.sh` is **144/144
-byte-identical to C and source-exact under aomdec, with no pins**. The former
+**Current, 2026-09-07:** `tools/lossless_gate.sh` is **240/240
+byte-identical to C and source-exact under aomdec, with no pins**, including
+the 96 screen-content cases added in the follow-up below. The former
 32 p0..p3 textured-content differences were missing translation/wiring:
 
 - C's QP-0 PD0 controls use QP offset 0 and real fast coefficient costs,
@@ -315,9 +316,18 @@ was reverted after failing to close any pins. Its earlier claims that depth
 refinement was disabled and all candidate distortion was zero were wrong:
 PD0's 8x8 DCT candidate can have nonzero distortion even at qindex 0.
 
+**Screen-content follow-up, 2026-09-07:** all 96 screen/screenrep lossless
+cells now byte-match C and decode to source. The fixed-tree walk passed a
+block-relative source to IntraBC's absolute-coordinate hash and motion search.
+Both pipeline call sites and recursive children now retain the full plane;
+the funnel receives an explicit source offset. The preset 0–5 refusal is
+removed after verification, and its rejection witnesses now require successful
+C-byte comparisons. The default lossless gate includes both screen patterns.
+Evidence: `benchmarks/lossless_screen_2026-09-07.md`.
+
 **Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md): 10-bit,
-fork mode (its chroma-q deltas leave the frame outside CodedLossless), color
-screen-content tools below preset 6, superres, inter frames. 8-bit monochrome
+fork mode (its chroma-q deltas leave the frame outside CodedLossless),
+superres, inter frames. 8-bit monochrome
 and alpha are implemented and source-exact; C has no monochrome oracle.
 
 ## FIXED 2026-08-27 — MONO partial SBs at preset 6 coded PARTITION_NONE at a frame edge (undecodable)
@@ -1236,8 +1246,8 @@ and `benchmarks/mem_2026-08-16.meta` (peak RSS). Re-measure with
    moved body verbatim AFTER. Do not reach for a line-range script.)
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
    (8-bit color parity completed locally 2026-09-07: 144/144 byte-identical
-   and source-exact, including the former p0..p3 pins. Native 10-bit and
-   lower-preset color screen-content lossless still need implementation.)
+   and source-exact, including the former p0..p3 pins. Lower-preset screen
+   content is also implemented; native 10-bit lossless remains open.)
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
 

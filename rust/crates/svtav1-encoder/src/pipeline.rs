@@ -1519,12 +1519,7 @@ impl EncodePipeline {
     /// Issue #5: the coded-lossless (QP 0 / `base_q_idx` 0) envelope this port
     /// has byte-verified against the C oracle, as a refusal predicate for
     /// everything outside it. Each arm names the missing piece.
-    fn lossless_config_error(
-        &self,
-        chroma_420: bool,
-        is_key: bool,
-        allow_screen_content_tools: bool,
-    ) -> Option<&'static str> {
+    fn lossless_config_error(&self, is_key: bool) -> Option<&'static str> {
         if self.hdr.is_fork() {
             // The fork's chroma-q deltas (Cb +12) put every segment's chroma
             // qindex above 0 while base_q_idx stays 0, so the frame is NOT
@@ -1546,48 +1541,6 @@ impl EncodePipeline {
             return Some(
                 "QP 0 (coded-lossless) is not implemented for inter frames — encode a single \
                  key frame [C: accepts]",
-            );
-        }
-        // SCREEN-CONTENT TOOLS AT QP 0 — the envelope is preset >= 6, and both
-        // halves of that boundary are MEASURED (2026-09-03), not assumed.
-        //
-        // The refusal used to cover EVERY preset and said the combination was
-        // "not byte-verified against C so far", which is a statement about
-        // effort rather than about the encoder. Running it says something much
-        // more useful:
-        //
-        //   presets 6..13  48 / 48 BYTE-IDENTICAL to C, over
-        //                  {screen, screenrep} x {64x64, 128x128, 96x80,
-        //                  200x136} (tools/lossless_gate.sh), and lossless
-        //                  under aomdec in every cell. This is the AVIF
-        //                  product case: `AvifEncoder`'s DEFAULT speed 6 maps
-        //                  to preset 7, so lossless AVIF of a screenshot was
-        //                  refused at the default setting for want of a
-        //                  measurement.
-        //   preset 5       DIVERGES, and only on `screenrep`: 128x128 port
-        //                  17,241 B vs C 17,242, and 200x136 17,241-shaped —
-        //                  28,926 B on both sides with different bytes. Both
-        //                  decode losslessly, so it is an RD-decision residual
-        //                  like the p0..p3 pinned set, not a pixel defect.
-        //   presets 0..4   PANIC: `intrabc_hash.rs`'s `get_block_hash_value`
-        //                  indexes past the end of the source slice
-        //                  ("the len is 0 but the index is 0"). QP-0-SPECIFIC —
-        //                  qp 1, 2, 5, 20 and 40 all encode at preset 4 — and
-        //                  IntraBC-preset-specific, which is why it has never
-        //                  been reachable in shipped code. Fixing it is its own
-        //                  chunk; refusing is correct until then, and a refusal
-        //                  that names a CRASH is worth more than one that says
-        //                  "not byte-verified".
-        // Only the color funnel enters the IntraBC hash search. Monochrome
-        // codes ordinary intra blocks (including use_intrabc=0 when signaled).
-        if chroma_420 && allow_screen_content_tools && self.speed_config.preset < 6 {
-            return Some(
-                "QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) needs \
-                 preset >= 6: at preset <= 4 the IntraBC hash search indexes past its source \
-                 slice (intrabc_hash::get_block_hash_value — QP-0-only, qp >= 1 encodes), and \
-                 preset 5 diverges from C on screenrep content. Presets 6..13 are byte-identical \
-                 to C (48/48, tools/lossless_gate.sh) — use one of those, or QP >= 1 \
-                 [C: accepts]",
             );
         }
         if self.superres_denom.is_some() {
@@ -2557,13 +2510,7 @@ impl EncodePipeline {
         // it is REFUSED rather than encoded wrong (the pre-chunk-2 measurement
         // of what "encoded wrong" looked like: ssim2 -200..-1100 vs source).
         let coded_lossless = base_qindex == 0;
-        if coded_lossless
-            && let Some(why) = self.lossless_config_error(
-                chroma.is_some(),
-                is_key,
-                sc_derivation.allow_screen_content_tools,
-            )
-        {
+        if coded_lossless && let Some(why) = self.lossless_config_error(is_key) {
             return Err(whereat::at!(crate::EncodeError::UnsupportedConfig(why)));
         }
 
@@ -13058,7 +13005,7 @@ fn encode_tile_rows(
                                 None
                             };
                             crate::partition::encode_fixed_tree(
-                                &sb_input[y0 * in_stride + x0..],
+                                sb_input,
                                 in_stride,
                                 &mut tile_frame_recon,
                                 w,
@@ -13806,7 +13753,7 @@ fn encode_tile_rows(
                                     None
                                 };
                                 crate::partition::encode_fixed_tree(
-                                    &sb_input[y0 * in_stride + x0..],
+                                    sb_input,
                                     in_stride,
                                     &mut tile_frame_recon,
                                     w,

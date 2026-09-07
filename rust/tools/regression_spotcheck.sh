@@ -70,6 +70,26 @@ byte() {
   fi
 }
 
+# A lossless byte/source witness requiring chosen IntraBC blocks on both sides.
+losslessIbc() {
+  local label=$1 prev_pass=$pass
+  rm -f "$W/ibc.ptree" "$W/ibc.ctree"
+  SVTAV1_PACKTREE="$W/ibc.ptree" SVT_CTREE_OUT="$W/ibc.ctree" byte "$@"
+  if [ "$pass" -gt "$prev_pass" ]; then
+    if ! python3 - "$W/ibc.ptree" "$W/ibc.ctree" <<'PYIBC'
+from pathlib import Path
+import sys
+assert all(' ibc=1' in Path(p).read_text() for p in sys.argv[1:]), "IntraBC must be selected in both encoders"
+PYIBC
+    then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC premise failed]")
+    elif ! aomdec --rawvideo -o "$W/ibc-dec.yuv" "$W/rs.obu" >"$W/ibc-dec.log" 2>&1 ||
+         ! cmp -s "$W/ibc-dec.yuv" "$W/rs.yuv"; then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC decode differs from source]")
+    fi
+  fi
+}
+
 # noPanic <label> <content> <w> <h> <qp> <preset> <bd>
 # Asserts the encode does not PANIC. A typed refusal (exit 3) passes: refusing an
 # out-of-envelope config is the correct behaviour, and conflating it with a
@@ -877,18 +897,21 @@ byte "sh-width-bits-control-2x2" gradient 2 2 20 7
 # encoder: ... QP 0 (coded-lossless) with screen-content tools". AFTER: 163 B,
 # byte-identical to C, lossless under aomdec.
 #
-# The refusal SURVIVES below preset 6 and now names why: presets 0..4 PANIC in
-# `intrabc_hash::get_block_hash_value` (QP-0-only — qp 1/2/5/20/40 all encode
-# at preset 4), and preset 5 diverges from C on `screenrep`. Both are pinned by
-# the `refuses` cells below, so lifting either without evidence fails here.
+# The original lower-preset refusal and its reproducer are replaced below
+# after the source-access fix and the 2026-09-07 lossless MD CDF correction.
 byte "qp0-screen-p6-64x64"   screen  64 64 0 6
 byte "qp0-screen-p7-64x64"   screen  64 64 0 7
 byte "qp0-screen-p8-96x80"   screen  96 80 0 8
-# The refusal is still LOAD-BEARING below preset 6. A cell that only asserted
-# the lift would pass just as well if the whole refusal were deleted — and
-# deleting it re-enables a PANIC.
-refuses "qp0-screen-refused-p4" screen 64 64 0 4
-refuses "qp0-screen-refused-p5" screen 64 64 0 5
+# 2026-09-07: the fixed-tree walk passed a block-relative source to
+# IntraBC's absolute-coordinate search. Without the old guard, screen64 p4
+# panicked in get_block_hash_value. Retaining the full plane fixes the
+# source contract; all 96 screen/screenrep lossless cells now match C.
+# Replace the old p4/p5 refusal witnesses with successful C comparisons.
+byte "qp0-screen-fixed-source-p4" screen 64 64 0 4
+byte "qp0-screen-context-p5" screenrep 128 128 0 5
+# screenrep128 does not enable IntraBC at QP0. The repeated-panel witness
+# below selects 320 IntraBC blocks in C; require selected blocks on both sides.
+losslessIbc "qp0-screen-copy-p4" screencopy 512 128 0 4
 
 # 2026-09-07: lossless low-preset partition search and MD context wiring.
 # BEFORE: forced 8x8 leaves give gradient64 p3 2966 B vs C 2973;

@@ -71,7 +71,7 @@ record named:
 | Decode conformance (`aomdec` + `dav1d`), mono / 4:2:0 | `decode_conformance` | **1260** / **1575** streams |
 | Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **128/128** (0 refused) |
 | Regression spot-check (one cell per bug ever fixed) | `regression_spotcheck` | **104/104** |
-| Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **144/144** byte-identical and source-exact, no pins (local 2026-09-07; CI deferred) |
+| Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **240/240** byte-identical and source-exact, including screen content, no pins (local 2026-09-07; CI deferred) |
 
 **Inter / video mode (CI, every push).** The inter path is byte-gated but the
 shipped `EncodePipeline` still refuses non-key frames — the gates drive it
@@ -127,11 +127,10 @@ C SVT-AV1 v4.2.0 itself rejects 4:4:4 / 4:2:2 / 12-bit at init
 (`enc_settings.c:460,470`); those formats remain part of the broader animated
 AVIF goal. **QP 0 (coded-lossless)** works for 8-bit color and monochrome,
 including animation alpha: TX_4X4 Walsh–Hadamard transforms and no in-loop
-filters. Color is byte-identical to C at presets 4–13; presets 0–3 retain
-pinned byte differences, with exact source reconstruction in both encoders
+filters. Color, including screen content at lower presets, is
+byte-identical to C in the lossless gate with exact source reconstruction
 (`rust/tools/lossless_gate.sh`). Native 10-bit, fork-mode and superresolution
-lossless remain refused. The color lossless screen-content path still requires
-preset >=6; monochrome does not enter that IntraBC search.
+lossless remain refused.
 **Monochrome** is decode-conformance-validated (aomdec + dav1d accept it, and the
 decoder output matches the encoder's recon bit-for-bit) rather than byte-vs-C —
 C v4.2.0 can't encode mono (`EB_YUV400` is rejected at init), so no C oracle
