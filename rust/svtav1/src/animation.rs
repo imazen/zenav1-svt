@@ -150,7 +150,6 @@ impl AvifEncoder {
 
     /// Encode 8-bit grayscale frames with optional alpha as a monochrome
     /// animated AVIF. Each frame is an independently decodable sync sample.
-    /// Partial superblocks currently require preset 6 or higher (speed >= 7).
     pub fn encode_animation_mono(
         &self,
         frames: &[MonochromeAnimationFrame<'_>],
@@ -976,7 +975,7 @@ mod tests {
             2,
             encode_animation_mono,
             try_encode_frame,
-            [(64usize, 64usize)]
+            [(64usize, 64usize), (64, 80), (65, 67)]
         );
         exercise!(
             u16,
@@ -1005,8 +1004,7 @@ mod tests {
                 duration: 0,
             },
         ];
-        // Preset 1 refuses a partial monochrome superblock if encoding starts.
-        // The invalid second frame must instead be detected during validation.
+        // Validate the whole submission, including an invalid second frame.
         assert!(matches!(
             AvifEncoder::new().with_speed(2).encode_animation_mono(
                 &frames,

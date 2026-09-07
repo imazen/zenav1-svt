@@ -47,7 +47,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
-| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha currently require preset >=9; 8-bit monochrome partial SBs require preset >=6. Lower-preset monochrome, 12-bit, 4:4:4/4:2:2 and lossless remain. C's rejection of some formats does not waive this broader user objective |
+| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha currently require preset >=9; 8-bit monochrome supports partial SBs at every preset. Lower-preset native monochrome, 12-bit, 4:4:4/4:2:2 and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
 | Robust API | Streaming/bounded memory, cancellation, fallible allocation, overflow checks and complete validation remain to be audited across encoder and serializer |
@@ -251,3 +251,42 @@ forced-edge tree, native 10-bit requires preset >=9, and lossless is unimplement
 These are capability gaps to implement, not reasons to call the full goal done.
 The new API documents the current ranges and does not silently change presets.
 CI remains deferred; no changes were pushed.
+
+Lower-preset 8-bit monochrome continuation: partial superblocks now start at a
+square coding-unit root. The new boundary search recursively visits in-frame
+quadrants in decoder order, preserves the existing search on complete squares,
+and compares a fitting legal single-edge rectangle against SPLIT. It uses the
+C-derived binary partition rates for single-edge nodes and emits no partition
+symbol for the forced corner split. Geometry splits continue past the requested
+search depth when needed to reach complete coding blocks. The old clipped-root
+restriction is removed only after wiring this path into the actual pipeline.
+
+This exposed a second defect: directional neighbor construction inferred frame
+height from spare superblock storage. At 72-wide aligned frames its buffer size
+was not even a multiple of stride (16384 % 72 = 40), causing an assertion. The
+caller now supplies only the actual aligned reconstruction canvas. The initial
+reproducer refused before the feature work (`mono-low-before.log`), then exposed
+that assertion (`mono-low-backtrace.log`). After both fixes, 144 aomdec cases
+cover eight frame shapes, presets 0–5, and qualities 40/75/98 with strided input;
+all decoded luma bytes equal final reconstruction and recon output does not
+change coded bytes. The regression gate includes this witness grid. The old
+facade refusal test now requires successful encoding with true dimensions,
+retaining its full-superblock control; animation pixel tests also cover slow
+8-bit encodes at 64x80 and 65x67 with and without alpha.
+
+All 2,593 workspace nextest tests pass with zero skips
+(`~/tmp/animation-metadata/mono-low-nextest.log`). The refusal inventory now has
+52 entries. Native 10-bit's preset floor and monochrome lossless remain open;
+this change does not alter presets or silently substitute another encoder.
+
+Final lower-preset monochrome evidence: the boundary-choice unit test confirms
+HORZ/VERT win on flat single-edge fixtures and the corner requires SPLIT
+(`mono-low-boundary-choice.log`). The final workspace run passes 2,594/2,594
+with zero skips (`mono-low-nextest-final.log`); regression passes 110/110
+(`mono-low-spotcheck.log`). The full 8-bit C sweep passes 1,100/1,100 with zero
+pinned differences and zero harness errors (`mono-low-identity.log` and `.tsv`).
+A fresh release animation example passes all 54 timing/seek cases and all
+15,120 metadata cases (`mono-low-animation-gates.log`). Final clippy completes
+with existing warnings (`mono-low-clippy-final.log`); scoped rustfmt, whitespace
+and the 52-entry refusal inventory checks pass. Both repositories were fetched;
+remote branches were unchanged. CI remains deferred and no commits were pushed.

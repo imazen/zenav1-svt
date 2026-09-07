@@ -1652,7 +1652,10 @@ SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-denoised-edge-padding" grain
 # also run directly against aomdec, without requiring the AVIF container tools.
 # Superres 65x65 / denominator 9 / preset 7 / quality 5 differed first at
 # byte 5214. Normative chroma filtering must precede output upscaling too.
-for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction; do
+# Monochrome low-preset edges: formerly refused; without the guard the
+# directional neighbor builder asserted on spare SB storage (16384 % 72 = 40).
+# The square edge search and bounded neighbor canvas now decode exactly.
+for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction monochrome_low_presets_partial_blocks; do
   if AOMDEC="$AOMDEC" cargo test -p zenav1-svt --test odd_frame_recon "$witness" -- --exact >"$W/$witness.log" 2>&1; then
     pass=$((pass+1))
   else

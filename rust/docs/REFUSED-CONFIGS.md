@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**18 CAPABILITY refusals** (unimplemented — this is DEBT) and **35
+**17 CAPABILITY refusals** (unimplemented — this is DEBT) and **35
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **13** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -56,7 +56,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
 | `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | 10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit sequence header |
 | `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — use the 4:2:0 path or QP >= 1 |
-| `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a multiple of 64 or preset >= 6 |
 | `svtav1/src/avif.rs` | no mono mode | lossless encoding is not implemented for monochrome (encode_y8); QP 0 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline mode |
 
 ## CONTRACT — caller misuse (permanent, correct)

@@ -779,22 +779,8 @@ impl EncodePipeline {
     /// `pad_input_picture`, pic_operators.c:561); for 8-aligned inputs this is
     /// a zero-copy pass-through and the emitted bytes are unchanged.
     pub fn encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> Vec<u8> {
-        // Task #95 chunk 2: partial SBs (8-aligned but not 64-aligned) are
-        // supported ONLY on the PD0 fixed-tree path (preset >= 6), which starts
-        // from a 64x64 root carrying spec-5.11.4 forced edge splits and codes
-        // the partition symbols with the edge-aware alphabets. Presets < 6 that
-        // use the homegrown search still root at the CLAMPED extent and would
-        // emit an undecodable stream, so they stay restricted to full 64x64
-        // SBs — rejecting out-of-scope dims beats mis-coding them.
-        assert!(
-            (self.width.is_multiple_of(64) && self.height.is_multiple_of(64))
-                || self.speed_config.preset >= 6,
-            "monochrome encode_frame supports partial SBs only on the PD0 path (preset >= 6); \
-             got {}x{} at preset {} — use a multiple of 64 or preset >= 6",
-            self.width,
-            self.height,
-            self.speed_config.preset
-        );
+        // The non-PD0 search now carries a square root through partial SBs
+        // and codes the same forced-edge syntax as the entropy walk.
         // Additive fallible core (Feature 1+3). This wrapper KEEPS its exact
         // signature and panicking contract: with the default `Unstoppable`
         // token and the infallible-alloc feature default, the core cannot
@@ -1122,10 +1108,8 @@ impl EncodePipeline {
     /// untouched. Internally this calls the SAME infallible
     /// `encode_frame_impl`, so it cannot change the emitted bytes.
     pub fn try_encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> EncodeResult<Vec<u8>> {
-        // (a) Validate — mirror the `encode_frame` asserts. The TRUE -> ALIGNED
-        // padding that used to be refused here is now done in
-        // `encode_frame_mono_core`, so only the partial-SB preset floor
-        // remains.
+        // (a) Validate the true input extent. Padding is performed in
+        // encode_frame_mono_core; both partition paths handle partial SBs.
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         if y_plane.len() < (th - 1) * y_stride + tw {
             return Err(whereat::at!(EncodeError::InvalidDimensions {
@@ -1133,14 +1117,6 @@ impl EncodePipeline {
                 height: self.true_height,
                 reason: "monochrome luma plane must cover the true dims at y_stride",
             }));
-        }
-        if (!self.width.is_multiple_of(64) || !self.height.is_multiple_of(64))
-            && self.speed_config.preset < 6
-        {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "monochrome encode supports partial SBs only on the PD0 path (preset >= 6); use a \
-                 multiple of 64 or preset >= 6 [C: no mono mode]",
-            )));
         }
         // (b) Feature 1 entry stop-check (frame-granular).
         self.stop
@@ -13750,13 +13726,12 @@ fn encode_tile_rows(
                             }
                         }
                     } else {
-                        crate::partition::partition_search_with_config(
+                        crate::partition::partition_search_frame_edges(
                             &encode_input[y0 * w + x0..],
                             w,
                             &mut tile_frame_recon,
                             w,
-                            cur_w,
-                            cur_h,
+                            unit_size,
                             sb_qindex,
                             sb_lambda,
                             speed_config.max_partition_depth as u32,

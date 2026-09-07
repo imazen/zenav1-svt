@@ -150,3 +150,46 @@ fn superresolution_odd_chroma_reconstruction() {
         }
     }
 }
+
+#[test]
+fn monochrome_low_presets_partial_blocks() {
+    for (w, h) in [
+        (65usize, 67usize),
+        (66, 66),
+        (64, 80),
+        (80, 64),
+        (72, 88),
+        (96, 80),
+        (80, 96),
+        (127, 129),
+    ] {
+        for preset in 0..=5 {
+            for quality in [40.0, 75.0, 98.0] {
+                let stride = w + 5;
+                let y: Vec<u8> = (0..stride * h)
+                    .map(|i| (32 + (i * 7 + i / stride * 13) % 180) as u8)
+                    .collect();
+                let mut p = pipeline(w, h, preset, quality, 8).with_chroma_420(false);
+                let obu = p.try_encode_frame(&y, stride).unwrap();
+                let expected: Vec<u8> = p
+                    .last_recon
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .chunks_exact(p.width as usize)
+                    .take(h)
+                    .flat_map(|row| row[..w].iter().copied())
+                    .collect();
+                let mut no_recon = pipeline(w, h, preset, quality, 8)
+                    .with_chroma_420(false)
+                    .with_recon_output(false);
+                assert_eq!(obu, no_recon.try_encode_frame(&y, stride).unwrap());
+                decode_eq(
+                    &format!("mono-p{preset}-{w}x{h}-q{quality}"),
+                    &obu,
+                    &expected,
+                );
+            }
+        }
+    }
+}

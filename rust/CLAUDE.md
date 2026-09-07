@@ -809,6 +809,19 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed 2026-09-07 — low-preset monochrome partial blocks.** The non-PD0
+search previously rooted at the clamped edge rectangle and was guarded to
+64-aligned frames. It now starts at the square coding-unit root, recursively
+handles partial nodes, and compares legal edge rectangles against splits with
+C-derived boundary rates. Full squares retain the previous search. The first
+unguarded probe exposed another assumption in directional prediction: spare
+SB allocation (16384 bytes at stride 72) was treated as the frame canvas.
+Passing the actual aligned canvas fixes the assertion and neighbor bounds.
+144 aomdec cases (eight shapes, presets 0–5, qualities 40/75/98) now decode to
+exact reconstruction. Evidence: `~/tmp/animation-metadata/mono-low-{before,backtrace,nextest}.log`.
+The native 10-bit preset floor and lossless monochrome are still capability gaps.
+
+
 Fixed 2026-09-07: partial-edge cached chroma writes crossed destination rows
 (65x67, speed 2/preset 1); odd chroma output deblocking used search floor bounds
 instead of decoder ceiling bounds (native 65x65). Both are pinned by

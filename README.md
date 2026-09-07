@@ -217,8 +217,8 @@ coordinates before orientation; the container preserves a full uncropped poster
 with its alpha and metadata, sharing the first frame’s compressed image bytes.
 `encode_animation_mono` and `encode_animation_mono_hbd` accept
 `MonochromeAnimationFrame` without chroma planes, with the same metadata and
-optional alpha. Eight-bit monochrome partial superblocks require preset >=6
-(speed >=7); native monochrome and native alpha require preset >=9.
+optional alpha. Eight-bit monochrome supports partial superblocks at all presets;
+native monochrome and native alpha currently require preset >=9.
 Native 10-bit supports partial frame edges. [The animation plan](rust/docs/ANIMATED-AVIF-PLAN.md) lists
 verification and remaining format, lossless, spatial-property and video work.
 

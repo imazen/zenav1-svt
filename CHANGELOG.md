@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Support partial monochrome superblocks at 8-bit presets 0–5 with square boundary partition search; correct directional neighbor bounds at partial frame edges.
+
 - 8-bit and native 10-bit monochrome animated AVIF APIs with optional alpha and the shared timing, metadata and spatial-property options.
 
 - Independent animated AVIF timing and random-access gate: exact 64-bit timing, color/alpha byte comparisons after seeking and reset, and duration-table boundaries.

@@ -417,12 +417,8 @@ impl AvifEncoder {
         // `rust/CLAUDE.md` forbids: nothing fails, the bytes decode, and the
         // container is built around a mismatched extent.
         //
-        // The one residual: below preset 6 the mono pipeline still refuses a
-        // PARTIAL SUPERBLOCK (the sub-M6 search roots at the clamped extent).
-        // That is now a typed REFUSAL rather than a silently padded encode —
-        // `examples/decode_conformance.rs`'s avif corpus already had the `Err`
-        // arm for it and a comment saying refusing is the correct behaviour;
-        // the pre-pad was what kept that arm dead.
+        // Both monochrome partition paths now carry a square root through
+        // partial superblocks, preserving the true output dimensions.
         let (w, h, st) = (width as usize, height as usize, stride as usize);
         let mut src = vec![0u8; w * h];
         for r in 0..h {
@@ -432,8 +428,7 @@ impl AvifEncoder {
 
         // Fallible entry point, NOT the infallible `encode_frame` wrapper: the
         // latter `.expect()`s on every refusal the pipeline can raise
-        // (unsupported bit depth, an out-of-envelope superres/bd10 config, a
-        // monochrome partial superblock below preset 6), turning a caller
+        // (unsupported bit depth, an out-of-envelope superres/bd10 config), turning a caller
         // mistake into a process abort inside a Result-returning API.
         let bitstream = pipeline
             .try_encode_frame(&src, w)
@@ -1069,30 +1064,22 @@ mod tests {
         );
     }
 
-    /// Below preset 6 the mono pipeline refuses a PARTIAL superblock, and
-    /// `encode_y8` now surfaces that instead of padding around it.
-    ///
-    /// This is the deliberate behaviour CHANGE that came with the fix above:
-    /// speed 1 maps to preset 0, where the sub-M6 search roots at the clamped
-    /// extent. Emitting a 64-padded stream labelled 66x66 was the alternative,
-    /// and it is the one `rust/CLAUDE.md` forbids.
+    /// Slow presets now retain square partition roots at partial edges.
+    /// Decoder/reconstruction evidence is in odd_frame_recon's preset grid.
     #[test]
-    fn encode_y8_refuses_a_partial_sb_below_preset_6_instead_of_padding() {
-        let slow = AvifEncoder::new().with_speed(1); // -> preset 0
+    fn encode_y8_accepts_partial_sb_at_slowest_preset() {
+        let slow = AvifEncoder::new().with_speed(1);
         let pixels = vec![100u8; 66 * 66];
-        assert!(
-            matches!(
-                slow.encode_y8(&pixels, 66, 66, 66),
-                Err(EncodeError::UnsupportedConfig(_))
-            ),
-            "speed 1 at 66x66 must refuse, not pad"
+        let encoded = slow.encode_y8(&pixels, 66, 66, 66).unwrap();
+        assert_eq!((encoded.width, encoded.height), (66, 66));
+        let full = slow
+            .encode_y8(&vec![100u8; 128 * 128], 128, 128, 128)
+            .unwrap();
+        assert_eq!((full.width, full.height), (128, 128));
+        assert_ne!(
+            encoded.data, full.data,
+            "partial input must not become a padded frame"
         );
-        // 128x128 is a whole number of superblocks and still works there, so
-        // the refusal is about GEOMETRY and not about preset 0 being broken.
-        let ok = AvifEncoder::new().with_speed(1);
-        assert!(ok.encode_y8(&vec![100u8; 128 * 128], 128, 128, 128).is_ok());
-        // ...and the DEFAULT speed handles 66x66 fine, which is the half of
-        // the envelope that matters for the product.
         assert!(AvifEncoder::new().encode_y8(&pixels, 66, 66, 66).is_ok());
     }
 
