@@ -1,0 +1,87 @@
+ARM pairwise widening co-development — 2026-09-07
+
+Host: Apple M4 Pro, aarch64-apple-darwin, 24 GiB installed RAM.
+Compiler: rustc 1.98.0 (88d9e12ae), LLVM 22.1.8.
+No RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS, or target-cpu=native.
+All heavy commands serialized under nice -n 19, build/Rayon/OMP jobs=4.
+The local run-heavy script requires Linux; nice/env caps were used on macOS.
+No memory or end-to-end encoder performance result is claimed.
+
+Baseline SVT: 74d92430508f80f6f4faeecef94913977dbf95f2.
+Archmage PR #96 baseline: 9981d4f9ad90b0cc57bb244e1b1c16df761bdb20.
+https://github.com/imazen/archmage/pull/96
+The previous SVT pin cc24398c has identical generated integer APIs to #96 head.
+Measured SVT source is the recoverable jj snapshot efea0bca, with the local
+archmage pairwise implementation snapshotted as 34251b99. These are LOCAL
+revisions, not remote branch names. This change retains the harness and source.
+The final from_repr spelling replaces temporary array conversions in 8-byte
+remainders; the final binary still matches the baseline NEON ME bodies exactly
+(arm_pairwise_codegen_2026-09-07.json).
+
+Method:
+- zenbench 0.1.9, randomized/interleaved paired comparisons in one binary.
+- Frozen original functions in benches/support/arm_pairwise_reference.rs.
+- Identical typed function-pointer call shape for both arms, results consumed
+  by zenbench, equality asserted before measurement, default group config.
+- 42 groups: SSE/SAD/sum+SSE, 4x4/8x8/16x16/17x9/32x32/64x64/128x128,
+  tightly packed and unequal padded strides (w+7, w+14).
+- Byte planes use fixed seeded random input; these are DSP kernel measurements,
+  not codec quality, content-corpus or fitted calibration measurements.
+- SAD is the baseline NeonToken implementation. The encoder's Arm64V2 dotprod
+  SAD dispatch arm is untouched; do not attribute this result to that path.
+
+Reproduce: cd rust; just arm-pairwise
+The initial command used --help, which zenbench's main! does not interpret.
+It ran every group. All 42 pairwise groups finished; the process was stopped
+only after it moved into unrelated existing groups. The retained raw text
+contains all 42 complete comparisons, not a selected subset.
+Raw stdout+stderr: ~/tmp/svt-arm-pairwise-bench-help.log.
+Retained paired results: arm_pairwise_2026-09-07.txt.
+
+Result:
+No meaningful throughput improvement over handwritten NEON. Larger blocks
+mostly have sub-1% paired intervals; the few percent-level differences at
+small sizes are not a basis for claiming speedup. Runs include high variance,
+which is explicitly printed in the retained output. The useful change is
+expressing the existing ARM operations through a portable, exact primitive
+without adding instructions: pairwise_widen_add on unsigned bytes/halfwords.
+Do not extrapolate this M4 Pro measurement to other ARM microarchitectures.
+
+Codegen:
+The final SAD body has 185 identical instructions through its sole return;
+sum+SSE has 231. Their total function lengths, including cold panic paths,
+are 215 and 261 instructions respectively. Local branch destinations match.
+Only cold panic-location metadata is excluded from the hot-body comparison.
+Reproduce: python3 tools/perf_profile/arm_pairwise_codegen.py <kernel_tiers-binary>
+The archmage gate checks UADDLP/UADALP at all widths, plus x86 and WASM.
+
+Additional experiment (benchmark-only):
+Register-only two-row packing: 4-byte rows combined into a u64, 8-byte rows
+combined with vcombine_u8, no staging buffer. Four same-binary comparisons
+(4x4/8x8, tight/padded) show no useful improvement; do not ship it. See
+arm_rowpack_2026-09-07.txt. Before timing, exact scalar/reference comparisons
+exercise zero/odd/large heights through 70,000 and unequal strides.
+Reproduce: just arm-rowpack
+
+Scope decision:
+Keep one new operation name: pairwise_widen_add, u8 -> u16 and u16 -> u32.
+Use existing abs_diff, widen_low/high, multiplication and addition around it.
+Do not add widening-multiply, square, MAC/MSUB, or signed-pairwise helpers for
+this consumer: the measured paths do not require them. PR #96's pre-existing
+msub_adjacent is still unused here; removing that PR API is a review decision.
+
+Validation:
+- cargo nextest run --workspace -j 4: 2587/2587 passed, 0 skipped.
+- tools/regression_spotcheck.sh: 106/106 passed.
+- Strict DSP all-target Clippy is NOT green. With --no-deps it reports
+  pre-existing doc formatting, drop_non_drop, is_multiple_of, identity_op and
+  incompatible_msrv diagnostics. In particular the existing dotprod SAD arm
+  uses vdotq_u32/vdot_u32 (stable since 1.98 per Clippy), with declared MSRV 1.89.
+  All reported source sites were compared byte-for-byte to baseline 74d92430
+  (the entire dotprod function for me_sad.rs); none are introduced here.
+  Without --no-deps the existing C-reference build/doc/argument-count/style
+  warnings also prevent the strict check. No lint/test expectation was waived.
+  DSP diagnostics are retained in arm_pairwise_clippy_2026-09-07.txt.
+- Working C reference submodule: 39f909e01 (pre-existing checkout); superproject
+  pins 3115c0c1b. The submodule was not modified by this experiment.
+- This is a local co-development change, not a merge/release certification.
