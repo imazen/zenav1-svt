@@ -70,6 +70,7 @@ dependencies = [
 [[package]]
 name = "archmage"
 version = "0.9.29"
+source = "git+https://github.com/imazen/archmage?rev=12fc6625966dbfd0a753794c78f45b3dcc5763de#12fc6625966dbfd0a753794c78f45b3dcc5763de"
 dependencies = [
  "archmage-macros",
  "safe_unaligned_simd",
@@ -79,6 +80,7 @@ dependencies = [
 [[package]]
 name = "archmage-macros"
 version = "0.9.29"
+source = "git+https://github.com/imazen/archmage?rev=12fc6625966dbfd0a753794c78f45b3dcc5763de#12fc6625966dbfd0a753794c78f45b3dcc5763de"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -252,6 +254,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 [[package]]
 name = "magetypes"
 version = "0.9.29"
+source = "git+https://github.com/imazen/archmage?rev=12fc6625966dbfd0a753794c78f45b3dcc5763de#12fc6625966dbfd0a753794c78f45b3dcc5763de"
 dependencies = [
  "archmage",
  "rustversion",

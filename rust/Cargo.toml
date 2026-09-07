@@ -65,17 +65,17 @@ needless_range_loop = "allow"
 # OBU header tests use binary literals for readability
 unusual_byte_groupings = "allow"
 
-# --- DEV-ONLY, NOT FOR RELEASE -------------------------------------------
-# Co-development with https://github.com/imazen/archmage/pull/96 at 9981d4f9
-# plus the local pairwise_widen_add change. The previous Git pin was
-# cc24398c9a9fee0251722931e295da840730704d (same emitted integer APIs).
+# --- DEVELOPMENT GIT PIN, NOT A REGISTRY RELEASE -------------------------
+# ARM co-development stacked on https://github.com/imazen/archmage/pull/96.
 # variance.rs uses abs_diff/madd_adjacent; its ARM body and me_sad.rs also
-# use pairwise_widen_add (u8 -> u16, u16 -> u32). The local patch is required
-# until that API lands; replace it with the reviewed Git revision or released
-# version before distributing this workspace. See benchmarks/arm_pairwise_2026-09-07.meta.
+# use pairwise_widen_add (u8 -> u16, u16 -> u32). Pin the reviewed source so
+# a fresh clone/CI build does not depend on a sibling checkout. Replace this
+# block with a registry version after the API lands and is released.
+# The pin is on an unmerged PR; it requires GitHub network access.
+# See benchmarks/arm_pairwise_2026-09-07.meta for measurements and limitations.
 # #95's indexing change remains a measured null for this port:
 # benchmarks/sse_madd_2026-09-05.meta section 7. #97 is not needed here.
 [patch.crates-io]
-archmage = { path = "../../../archmage" }
-archmage-macros = { path = "../../../archmage/archmage-macros" }
-magetypes = { path = "../../../archmage/magetypes" }
+archmage = { git = "https://github.com/imazen/archmage", rev = "12fc6625966dbfd0a753794c78f45b3dcc5763de" }
+archmage-macros = { git = "https://github.com/imazen/archmage", rev = "12fc6625966dbfd0a753794c78f45b3dcc5763de" }
+magetypes = { git = "https://github.com/imazen/archmage", rev = "12fc6625966dbfd0a753794c78f45b3dcc5763de" }

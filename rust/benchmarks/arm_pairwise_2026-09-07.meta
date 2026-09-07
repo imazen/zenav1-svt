@@ -85,3 +85,11 @@ Validation:
 - Working C reference submodule: 39f909e01 (pre-existing checkout); superproject
   pins 3115c0c1b. The submodule was not modified by this experiment.
 - This is a local co-development change, not a merge/release certification.
+
+PR publication follow-up:
+The development patch now uses Git revision
+12fc6625966dbfd0a753794c78f45b3dcc5763de, published for review at
+https://github.com/imazen/archmage/pull/101 (stacked on #96).
+Only the three patch sources changed in Cargo.lock; dependency versions did
+not change. A sibling archmage checkout is no longer required.
+Validation against the published Git pin: cargo nextest run -p zenav1-svt-dsp -j 4 --locked, 568/568 passed, 0 skipped.
