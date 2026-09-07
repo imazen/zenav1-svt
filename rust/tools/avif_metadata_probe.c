@@ -21,6 +21,8 @@ int main(int argc, char **argv) {
     if (r != AVIF_RESULT_OK) { fprintf(stderr, "%s: %s\n", avifResultToString(r), d->diag.error); avifDecoderDestroy(d); return 1; }
     printf("frames=%d\nrepeat=%d\nalpha=%d\npremultiplied=%d\n", d->imageCount, d->repetitionCount, d->image->alphaPlane != NULL, d->image->alphaPremultiplied);
     printf("cicp=%u,%u,%u,%u\nclli=%u,%u\n", d->image->colorPrimaries, d->image->transferCharacteristics, d->image->matrixCoefficients, d->image->yuvRange, d->image->clli.maxCLL, d->image->clli.maxPALL);
+    if (d->image->transformFlags & AVIF_TRANSFORM_PASP) printf("pasp=%u,%u\n", d->image->pasp.hSpacing, d->image->pasp.vSpacing);
+    else printf("pasp=none\n");
     bytes("icc", &d->image->icc); bytes("exif", &d->image->exif); bytes("xmp", &d->image->xmp);
     while ((r = avifDecoderNextImage(d)) == AVIF_RESULT_OK) {}
     avifDecoderDestroy(d);

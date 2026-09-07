@@ -46,7 +46,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
-| Spatial properties | Clean aperture, rotation, mirror, pixel aspect, sequence track transformations and alpha alignment remain |
+| Spatial properties | Explicit square-pixel aspect metadata wired to color track/poster; clean aperture, rotation, mirror and transformed alpha verification remain |
 | Format coverage | 8-bit and native 10-bit 4:2:0 APIs, including native alpha. Native alpha currently requires preset >=9. 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
@@ -133,3 +133,15 @@ nextest passes 2,587/2,587 with zero skips (`odd-superres-nextest.log`), the
 expanded regression gate passes 109/109 (`odd-superres-spotcheck.log`), and the
 superresolution C-byte/decode gate passes 512/512 (`odd-superres-identity.log`).
 CI remains deferred while subsequent features are implemented and checked.
+
+Pixel-aspect continuation: `AnimationOptions::pixel_aspect_ratio` and the
+canonical serializer's animation setter write `pasp` on the color track and
+poster. AVIF 1.2 section 9.1.2 requires a 1:1 ratio, so zero and non-square
+ratios are rejected before encoding. Valid explicit values are preserved,
+including 2:2 and u32::MAX:u32::MAX. Source: https://aomediacodec.github.io/av1-avif/v1.2.0.html#requirements-on-additional-image-item-related-boxes
+All 79 serializer tests pass, including a canonical-parser round trip and
+invalid-ratio checks. The independent libavif gate now passes 72/72 metadata
+cases, and main workspace nextest passes 2,588/2,588 with zero skips. Evidence:
+`~/tmp/animation-metadata/pasp-{serializer,metadata,nextest}.log`. The main
+manifest temporarily uses the canonical sibling path while changes remain local;
+replace it with the verified git revision when landing. CI remains deferred.

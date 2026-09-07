@@ -6,7 +6,7 @@ use zenavif_serialize::{
     animated::{AnimFrame, AnimatedImage},
 };
 
-pub use zenavif_serialize::{ClliBox, MdcvBox, animated::RepetitionCount};
+pub use zenavif_serialize::{ClliBox, MdcvBox, PaspBox, animated::RepetitionCount};
 
 /// Container metadata and playback policy. Metadata applies to the color
 /// track and its poster item. ICC bytes take display-color precedence over
@@ -21,6 +21,8 @@ pub struct AnimationOptions {
     pub xmp: Option<Vec<u8>>,
     pub clli: Option<ClliBox>,
     pub mdcv: Option<MdcvBox>,
+    /// Explicit square-pixel spacing. AVIF requires positive, equal values.
+    pub pixel_aspect_ratio: Option<PaspBox>,
     /// The input color planes have already been premultiplied by alpha.
     pub premultiplied_alpha: bool,
 }
@@ -34,6 +36,7 @@ impl Default for AnimationOptions {
             xmp: None,
             clli: None,
             mdcv: None,
+            pixel_aspect_ratio: None,
             premultiplied_alpha: false,
         }
     }
@@ -162,6 +165,14 @@ impl AvifEncoder {
                     "repeated animation duration overflow",
                 ))?;
         }
+        if options
+            .pixel_aspect_ratio
+            .is_some_and(|p| p.h_spacing == 0 || p.h_spacing != p.v_spacing)
+        {
+            return Err(EncodeError::UnsupportedConfig(
+                "AVIF pixel aspect ratio must be positive and 1:1",
+            ));
+        }
         let has_alpha = frames[0].alpha.is_some();
         if options.premultiplied_alpha && !has_alpha {
             return Err(EncodeError::UnsupportedConfig(
@@ -263,6 +274,9 @@ impl AvifEncoder {
         }
         if let Some(xmp) = options.xmp.as_ref() {
             mux.set_xmp(xmp.clone());
+        }
+        if let Some(pasp) = options.pixel_aspect_ratio {
+            mux.set_pixel_aspect_ratio(pasp.h_spacing, pasp.v_spacing);
         }
         if let Some(clli) = options.clli {
             mux.set_clli(clli);
@@ -722,6 +736,37 @@ mod tests {
                 }
             }
             fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn validates_pixel_aspect_ratio_before_encoding() {
+        let plane = vec![128; 64 * 64];
+        let frames = [AnimationFrame {
+            y: &plane,
+            u: &plane,
+            v: &plane,
+            y_stride: 64,
+            alpha: None,
+            duration: 1,
+        }];
+        for (h, v) in [(0, 0), (0, 1), (1, 0), (2, 1), (1, 2)] {
+            let options = AnimationOptions {
+                pixel_aspect_ratio: Some(PaspBox::new(h, v)),
+                ..AnimationOptions::default()
+            };
+            assert!(matches!(
+                AvifEncoder::new().encode_animation_yuv420_with_options(
+                    &frames,
+                    64,
+                    64,
+                    AnimationTiming { timescale: 1000 },
+                    &options
+                ),
+                Err(EncodeError::UnsupportedConfig(
+                    "AVIF pixel aspect ratio must be positive and 1:1"
+                ))
+            ));
         }
     }
 

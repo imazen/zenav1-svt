@@ -3,7 +3,8 @@ fn main() {
     use svtav1::avif::{
         AvifEncoder,
         animation::{
-            AnimationFrame, AnimationOptions, AnimationTiming, ClliBox, MdcvBox, RepetitionCount,
+            AnimationFrame, AnimationOptions, AnimationTiming, ClliBox, MdcvBox, PaspBox,
+            RepetitionCount,
         },
     };
     let w = 64;
@@ -46,6 +47,10 @@ fn main() {
         } else {
             RepetitionCount::Finite(count.parse().unwrap())
         };
+    }
+    if let Ok(spacing) = std::env::var("AVIF_PASP") {
+        let (h, v) = spacing.split_once(',').expect("AVIF_PASP=h,v");
+        options.pixel_aspect_ratio = Some(PaspBox::new(h.parse().unwrap(), v.parse().unwrap()));
     }
     options.premultiplied_alpha = std::env::var_os("AVIF_PREMULTIPLIED").is_some();
     if std::env::var_os("AVIF_METADATA").is_some() {

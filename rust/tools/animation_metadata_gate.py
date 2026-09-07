@@ -44,40 +44,43 @@ def main():
     }
     count = 0
     with tempfile.TemporaryDirectory(prefix="avif-metadata-") as directory:
-        for repeat in ["0", "2", "infinite"]:
-            for has_alpha, premultiplied in [(False, False), (True, False), (True, True)]:
-                env = os.environ.copy()
-                for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA"]:
-                    env.pop(key, None)
-                env.update(AVIF_REPEAT=repeat, AVIF_METADATA="1", AVIF_ICC=profile)
-                if not has_alpha:
-                    env["AVIF_NO_ALPHA"] = "1"
-                if premultiplied:
-                    env["AVIF_PREMULTIPLIED"] = "1"
-                output = str(Path(directory) / "animation.avif")
-                subprocess.run([encoder, output], env=env, check=True, capture_output=True)
-                mastering = metadata_boxes(Path(output).read_bytes())
-                expected_mdcv = struct.pack(">8H2I", 13250, 34500, 7500, 3000,
-                                            34000, 16000, 15635, 16450, 10000000, 50)
-                expected_paths = {
-                    (b"meta", b"iprp", b"ipco", b"mdcv"),
-                    (b"moov", b"trak", b"mdia", b"minf", b"stbl", b"stsd", b"av01", b"mdcv"),
-                }
-                if len(mastering) != 2 or {p for p, _ in mastering} != expected_paths:
-                    raise AssertionError("MDCV must appear on both color poster and track")
-                if any(payload != expected_mdcv for _, payload in mastering):
-                    raise AssertionError("MDCV payload mismatch")
-                for poster in [False, True]:
-                    args = [decoder, output] + (["poster"] if poster else [])
-                    result = subprocess.run(args, check=True, capture_output=True, text=True)
-                    actual = dict(line.split("=", 1) for line in result.stdout.splitlines())
-                    wanted = dict(expected, alpha=str(int(has_alpha)), frames="1" if poster else "3",
-                                  repeat="0" if poster else ("-1" if repeat == "infinite" else repeat),
-                                  premultiplied=str(int(premultiplied)))
-                    for key, value in wanted.items():
-                        if actual.get(key) != value:
-                            raise AssertionError(f"repeat={repeat} premultiplied={premultiplied} poster={poster}: {key} mismatch")
-                    count += 1
+        for pasp in [None, "1,1", "2,2", "4294967295,4294967295"]:
+            for repeat in ["0", "2", "infinite"]:
+                for has_alpha, premultiplied in [(False, False), (True, False), (True, True)]:
+                    env = os.environ.copy()
+                    for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA", "AVIF_PASP"]:
+                        env.pop(key, None)
+                    env.update(AVIF_REPEAT=repeat, AVIF_METADATA="1", AVIF_ICC=profile)
+                    if pasp is not None:
+                        env["AVIF_PASP"] = pasp
+                    if not has_alpha:
+                        env["AVIF_NO_ALPHA"] = "1"
+                    if premultiplied:
+                        env["AVIF_PREMULTIPLIED"] = "1"
+                    output = str(Path(directory) / "animation.avif")
+                    subprocess.run([encoder, output], env=env, check=True, capture_output=True)
+                    mastering = metadata_boxes(Path(output).read_bytes())
+                    expected_mdcv = struct.pack(">8H2I", 13250, 34500, 7500, 3000,
+                                                34000, 16000, 15635, 16450, 10000000, 50)
+                    expected_paths = {
+                        (b"meta", b"iprp", b"ipco", b"mdcv"),
+                        (b"moov", b"trak", b"mdia", b"minf", b"stbl", b"stsd", b"av01", b"mdcv"),
+                    }
+                    if len(mastering) != 2 or {p for p, _ in mastering} != expected_paths:
+                        raise AssertionError("MDCV must appear on both color poster and track")
+                    if any(payload != expected_mdcv for _, payload in mastering):
+                        raise AssertionError("MDCV payload mismatch")
+                    for poster in [False, True]:
+                        args = [decoder, output] + (["poster"] if poster else [])
+                        result = subprocess.run(args, check=True, capture_output=True, text=True)
+                        actual = dict(line.split("=", 1) for line in result.stdout.splitlines())
+                        wanted = dict(expected, alpha=str(int(has_alpha)), frames="1" if poster else "3",
+                                      repeat="0" if poster else ("-1" if repeat == "infinite" else repeat),
+                                      premultiplied=str(int(premultiplied)), pasp=pasp or "none")
+                        for key, value in wanted.items():
+                            if actual.get(key) != value:
+                                raise AssertionError(f"repeat={repeat} premultiplied={premultiplied} poster={poster}: {key} mismatch")
+                        count += 1
     print(f"animation metadata: {count}/{count} independent track/poster checks passed")
 
 
