@@ -531,7 +531,10 @@ impl AvifEncoder {
         if stride < width {
             return Err(EncodeError::InvalidDimensions);
         }
-        let needed = (height - 1) as usize * stride as usize + width as usize;
+        let needed = ((height - 1) as usize)
+            .checked_mul(stride as usize)
+            .and_then(|n| n.checked_add(width as usize))
+            .ok_or(EncodeError::InvalidDimensions)?;
         if buf_len < needed {
             return Err(EncodeError::InvalidDimensions);
         }
@@ -638,6 +641,14 @@ impl AvifEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_stride_is_invalid_on_all_pointer_widths() {
+        assert!(matches!(
+            AvifEncoder::new().validate_dimensions(64, 64, 2, u32::MAX),
+            Err(EncodeError::InvalidDimensions)
+        ));
+    }
 
     #[test]
     fn defaults() {

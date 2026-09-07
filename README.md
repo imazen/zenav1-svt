@@ -7,8 +7,9 @@ with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's
 perceptual feature set available behind a runtime switch — and *that* mode
 byte-gated too, against a `SVT_HDR_MODE=ON` build of the same C base.
 
-The **shipped product surface is still-picture (AVIF / all-intra)**: the public
-`EncodePipeline` refuses non-key frames. Behind a harness-only switch, the
+The **shipped product surface includes still images and all-intra animated AVIF**.
+The optional `avif-container` feature writes timed color and alpha tracks;
+`EncodePipeline` still refuses non-key frames. Behind a harness-only switch, the
 **inter path is byte-gated too** — 108 asserted two-frame low-delay-P cells in
 CI, 94 of the campaign's 96-cell grid byte-identical on both frames, and the
 whole p0–p4 synthetic band since global motion landed. That campaign is
@@ -18,8 +19,8 @@ whole p0–p4 synthetic band since global motion landed. That campaign is
 **`#![forbid(unsafe_code)]` · ~80k lines · 7 crates · 2554 tests (nextest, as of `84621b20d`) · no C in the product path**
 
 > **Experimental.** The envelope below is real and gated, but it is an envelope:
-> the shipped API is a single still frame, CQP only — not yet a general-purpose
-> video encoder, even though the inter path now encodes byte-identically under
+> the shipped API uses CQP and all-intra coding; general-purpose video encoding
+> remains incomplete, even though the inter path encodes byte-identically under
 > the differential harness. Crates are not on crates.io yet — depend by git.
 
 The SVT-AV1 C tree is **not vendored here** — it lives in the
@@ -207,7 +208,15 @@ let obu = p.try_encode_frame_420(&y, &u, &v, /*y stride*/ 128)?;
 ```
 
 `svtav1::avif::AvifEncoder` wraps this with quality/speed mapping and AVIF
-defaults. Rust paths use the short `svtav1_*` names; the *package* names carry
+defaults. With `avif-container`, `encode_animation_yuv420` accepts 8-bit frames,
+and `encode_animation_yuv420_hbd` accepts native 10-bit `u16` frames with
+`with_bit_depth(10)`. The `_with_options` variants accept `AnimationOptions`
+for repetition, ICC, Exif, XMP, CLLI, MDCV, and premultiplied-alpha association.
+Native 10-bit currently requires 64-aligned dimensions, and alpha requires
+preset 9 or higher. [The animation plan](rust/docs/ANIMATED-AVIF-PLAN.md) lists
+verification and remaining format, lossless, spatial-property and video work.
+
+Rust paths use the short `svtav1_*` names; the *package* names carry
 the `zenav1-svt-` prefix (see [PORTING.md](PORTING.md)).
 
 ## Testing on a fresh box

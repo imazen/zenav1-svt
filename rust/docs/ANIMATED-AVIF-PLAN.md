@@ -47,7 +47,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Clean aperture, rotation, mirror, pixel aspect, sequence track transformations and alpha alignment remain |
-| Format coverage | u8 4:2:0 initial API only. Native 10-bit, 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
+| Format coverage | 8-bit and native 10-bit 4:2:0 APIs, including native alpha. 10-bit currently inherits pipeline alignment/preset restrictions. 12-bit, 4:4:4/4:2:2, monochrome animation and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
 | Robust API | Streaming/bounded memory, cancellation, fallible allocation, overflow checks and complete validation remain to be audited across encoder and serializer |
@@ -75,4 +75,17 @@ libavif 1.3.0. All passed, including exact metadata bytes. Serializer tests
 78/78 and all 19 parser unit tests passed using source-symlink standalone
 harnesses (the canonical workspace has an unavailable zenanalyze path dependency).
 Evidence: `~/tmp/animation-metadata/{live-gate,repetition-tests,parser-repetition-tests,svt-final-tests}.log`.
-The main manifest pins canonical serializer revision `7b058bb825f64a05ed97ac057178c80d27811853`; focused animation tests and all 18 metadata cases passed against the fetched git source. CI now builds a pinned libavif 1.3.0 reader and runs the pixel/timing and metadata gates. Full scope above remains open.
+The main manifest pins canonical serializer revision `7b058bb825f64a05ed97ac057178c80d27811853`; focused animation tests and all 18 metadata cases passed against the fetched git source. A CI job for a pinned libavif 1.3.0 reader and pixel/timing/metadata gates is preserved in jj change `puzrqvms`; its initial push lacked workflow scope. The user has since authenticated gh and requested all local checks pass before CI. Rebase and land that workflow after local verification. Full scope above remains open.
+
+Native 10-bit continuation: `AnimationFrame<T = u8>` accepts
+`u16` through `encode_animation_yuv420_hbd[_with_options]`. Both color and alpha
+use native pipeline entry points and matching high-bit-depth `av1C` properties.
+A decode test checks all YUV samples against 10-bit reconstruction, then recovers
+native alpha samples from libavif's 16-bit PNG output and compares them exactly.
+It covers qualities 40/98, two frames, variable duration, strided luma, and
+nonzero low two bits. This exposed missing monochrome 10-bit post-filter recon:
+the canvas required chroma planes and its search/apply calls hardcoded 4:2:0.
+The fix carries the monochrome canvas through those same filters.
+Remaining native restrictions (64-aligned dimensions and preset >=9 for alpha)
+are capability gaps to close, not completion claims. Evidence:
+`~/tmp/animation-metadata/hbd-tests.log`. Final local verification: 2,584/2,584 workspace nextest tests, 106/106 regression cases, and 18/18 metadata cases with a locally built libavif 1.3.0 using the proposed CI recipe. Logs: `hbd-nextest-final.log`, `hbd-spotcheck.log`, `ci-recipe-metadata.log` in the same directory. Clippy completed with existing encoder warnings; changed Rust files pass rustfmt checks.

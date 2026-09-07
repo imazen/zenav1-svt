@@ -9,6 +9,10 @@ Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
+### Added
+
+- Animated AVIF metadata and repetition options, poster alpha, and an independent libavif metadata gate; serializer pinned to canonical `7b058bb8` (`b04f372a`).
+
 ### QUEUED BREAKING CHANGES
 
 <!-- Batch API breaks here; ship them in one version bump, never piecemeal. -->

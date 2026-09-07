@@ -5238,6 +5238,7 @@ impl EncodePipeline {
             (10, Some(y10), Some((u10, v10))) if chroma.is_some() => {
                 Some((y10.clone(), u10.clone(), v10.clone()))
             }
+            (10, Some(y10), _) if chroma.is_none() => Some((y10.clone(), Vec::new(), Vec::new())),
             _ => None,
         };
         // ---- deblock signal derivation inputs (C enc_mode_config.c) -----
@@ -5499,7 +5500,7 @@ impl EncodePipeline {
                             v_recon: v10,
                             width: w,
                             height: h,
-                            chroma_420: true,
+                            chroma_420: chroma.is_some(),
                             geom: &deblock_geom,
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
@@ -5589,7 +5590,7 @@ impl EncodePipeline {
                 v10,
                 w,
                 h,
-                true,
+                chroma.is_some(),
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff,
@@ -5925,7 +5926,7 @@ impl EncodePipeline {
                                 &sv10,
                                 w,
                                 h,
-                                true,
+                                chroma.is_some(),
                                 &deblock_geom,
                                 base_qindex,
                                 self.bit_depth,
@@ -6060,7 +6061,7 @@ impl EncodePipeline {
                 v10,
                 w,
                 h,
-                true,
+                chroma.is_some(),
                 &deblock_geom,
                 &cdef_params,
                 self.bit_depth,
@@ -6222,6 +6223,9 @@ impl EncodePipeline {
                         let sh = (self.bit_depth - 8) as u32;
                         let widen_tight =
                             |src: &[u8], src_stride: usize, pw: usize, ph: usize| -> Vec<u16> {
+                                if src.is_empty() {
+                                    return Vec::new();
+                                }
                                 let mut out = alloc::vec![0u16; pw * ph];
                                 for r in 0..ph {
                                     for c in 0..pw {
@@ -6232,6 +6236,9 @@ impl EncodePipeline {
                             };
                         let tight10 =
                             |src: &[u16], src_stride: usize, pw: usize, ph: usize| -> Vec<u16> {
+                                if src.is_empty() {
+                                    return Vec::new();
+                                }
                                 let mut out = alloc::vec![0u16; pw * ph];
                                 for r in 0..ph {
                                     out[r * pw..(r + 1) * pw]
@@ -6269,7 +6276,7 @@ impl EncodePipeline {
                             &tight10(v10, w / 2, lr_tcw, lr_tch),
                             lr_true_w,
                             lr_true_h,
-                            true,
+                            chroma.is_some(),
                             rdmult,
                             self.bit_depth,
                         )?
@@ -6387,7 +6394,7 @@ impl EncodePipeline {
                             lr_true_h,
                             w,
                             w / 2,
-                            true,
+                            chroma.is_some(),
                         );
                         crate::restoration::apply_restoration_frame_bd::<u16>(
                             y10,
@@ -6397,7 +6404,7 @@ impl EncodePipeline {
                             lr_true_h,
                             w,
                             w / 2,
-                            true,
+                            chroma.is_some(),
                             &rest_info,
                             &bounds10,
                             self.bit_depth,

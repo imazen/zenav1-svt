@@ -39,14 +39,15 @@ impl Default for AnimationOptions {
     }
 }
 
-/// One planar 8-bit 4:2:0 image with an optional full-resolution alpha plane.
+/// One planar 4:2:0 image with an optional full-resolution alpha plane.
+/// Use `u8` for 8-bit samples or `u16` for native 10-bit samples.
 /// Chroma and alpha are tightly packed; luma may have a larger stride.
-pub struct AnimationFrame<'a> {
-    pub y: &'a [u8],
-    pub u: &'a [u8],
-    pub v: &'a [u8],
+pub struct AnimationFrame<'a, T = u8> {
+    pub y: &'a [T],
+    pub u: &'a [T],
+    pub v: &'a [T],
     pub y_stride: usize,
-    pub alpha: Option<&'a [u8]>,
+    pub alpha: Option<&'a [T]>,
     /// Duration in the animation's timescale ticks, strictly positive.
     pub duration: u32,
 }
@@ -86,11 +87,54 @@ impl AvifEncoder {
         timing: AnimationTiming,
         options: &AnimationOptions,
     ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_animation_samples(frames, width, height, timing, options)
+    }
+
+    /// Encode native 10-bit color and alpha samples. Configure bit depth 10
+    /// on the encoder. Samples are right-aligned values in `0..=1023`.
+    pub fn encode_animation_yuv420_hbd(
+        &self,
+        frames: &[AnimationFrame<'_, u16>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+    ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_animation_yuv420_hbd_with_options(
+            frames,
+            width,
+            height,
+            timing,
+            &AnimationOptions::default(),
+        )
+    }
+
+    /// Encode native 10-bit animation with container metadata and repetition.
+    /// The native pipeline currently requires 64-aligned dimensions; native
+    /// alpha also requires preset 9 or higher.
+    pub fn encode_animation_yuv420_hbd_with_options(
+        &self,
+        frames: &[AnimationFrame<'_, u16>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+        options: &AnimationOptions,
+    ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_animation_samples(frames, width, height, timing, options)
+    }
+
+    fn encode_animation_samples<T: AnimationSample>(
+        &self,
+        frames: &[AnimationFrame<'_, T>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+        options: &AnimationOptions,
+    ) -> Result<Vec<u8>, EncodeError> {
         self.validate_quality()?;
         self.validate_inert_knobs(true)?;
-        if self.bit_depth != 8 {
+        if self.bit_depth != T::BIT_DEPTH {
             return Err(EncodeError::UnsupportedConfig(
-                "animation u8 input requires bit depth 8",
+                "animation input sample type must match the configured bit depth",
             ));
         }
         if frames.is_empty()
@@ -139,6 +183,18 @@ impl AvifEncoder {
         let cn = (width as usize).div_ceil(2) * (height as usize).div_ceil(2);
         // Validate the entire submission before encoding any picture.
         for frame in frames {
+            if frame
+                .y
+                .iter()
+                .chain(frame.u)
+                .chain(frame.v)
+                .chain(frame.alpha.unwrap_or(&[]))
+                .any(|&sample| !T::in_range(sample))
+            {
+                return Err(EncodeError::UnsupportedConfig(
+                    "animation sample exceeds the configured bit depth",
+                ));
+            }
             let stride =
                 u32::try_from(frame.y_stride).map_err(|_| EncodeError::InvalidDimensions)?;
             self.validate_dimensions(frame.y.len(), width, height, stride)?;
@@ -171,17 +227,9 @@ impl AvifEncoder {
         let mut colors = Vec::with_capacity(frames.len());
         let mut alphas = Vec::with_capacity(frames.len());
         for frame in frames {
-            colors.push(
-                color
-                    .try_encode_frame_420(frame.y, frame.u, frame.v, frame.y_stride)
-                    .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?,
-            );
+            colors.push(T::encode_color(&mut color, frame)?);
             if let Some(a) = frame.alpha {
-                alphas.push(
-                    alpha
-                        .try_encode_frame(a, width as usize)
-                        .map_err(|e| Self::from_pipeline_error(e.error(), || e.to_string()))?,
-                );
+                alphas.push(T::encode_alpha(&mut alpha, a, width as usize)?);
             }
         }
         let color_seq = sequence_header(&colors[0])?;
@@ -191,6 +239,7 @@ impl AvifEncoder {
             None
         };
         let mut cfg = Av1CBox::default();
+        cfg.high_bitdepth = T::BIT_DEPTH > 8;
         cfg.seq_level_idx_0 = svtav1_encoder::entropy::obu::compute_seq_level_idx(
             width,
             height,
@@ -224,6 +273,7 @@ impl AvifEncoder {
 
         if has_alpha {
             let mut cfg = Av1CBox::default();
+            cfg.high_bitdepth = T::BIT_DEPTH > 8;
             cfg.monochrome = true;
             cfg.seq_level_idx_0 = svtav1_encoder::entropy::obu::compute_seq_level_idx(
                 width,
@@ -264,6 +314,48 @@ impl AvifEncoder {
 
 // These are trusted encoder-produced OBUs. Still check their bounds so a
 // future writer change cannot turn a missing header into malformed av1C data.
+trait AnimationSample: Copy {
+    const BIT_DEPTH: u8;
+    fn in_range(value: Self) -> bool;
+    fn encode_color(
+        pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
+        frame: &AnimationFrame<'_, Self>,
+    ) -> Result<Vec<u8>, EncodeError>;
+    fn encode_alpha(
+        pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
+        alpha: &[Self],
+        stride: usize,
+    ) -> Result<Vec<u8>, EncodeError>;
+}
+
+macro_rules! animation_sample {
+    ($sample:ty, $depth:expr, $color:ident, $alpha:ident) => {
+        impl AnimationSample for $sample {
+            const BIT_DEPTH: u8 = $depth;
+            fn in_range(value: Self) -> bool {
+                u32::from(value) < (1u32 << $depth)
+            }
+            fn encode_color(
+                pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
+                frame: &AnimationFrame<'_, Self>,
+            ) -> Result<Vec<u8>, EncodeError> {
+                pipe.$color(frame.y, frame.u, frame.v, frame.y_stride)
+                    .map_err(|e| AvifEncoder::from_pipeline_error(e.error(), || e.to_string()))
+            }
+            fn encode_alpha(
+                pipe: &mut svtav1_encoder::pipeline::EncodePipeline,
+                alpha: &[Self],
+                stride: usize,
+            ) -> Result<Vec<u8>, EncodeError> {
+                pipe.$alpha(alpha, stride)
+                    .map_err(|e| AvifEncoder::from_pipeline_error(e.error(), || e.to_string()))
+            }
+        }
+    };
+}
+animation_sample!(u8, 8, try_encode_frame_420, try_encode_frame);
+animation_sample!(u16, 10, try_encode_frame_420_hbd, try_encode_frame_hbd);
+
 fn sequence_header(data: &[u8]) -> Result<Vec<u8>, EncodeError> {
     let mut pos = 0;
     while pos < data.len() {
@@ -433,6 +525,117 @@ mod tests {
             }
             fs::remove_dir_all(out).unwrap();
         }
+    }
+
+    #[test]
+    fn native_ten_bit_animation_matches_color_and_alpha_reconstruction() {
+        let w = 64usize;
+        let stride = w + 5;
+        let directory =
+            std::env::temp_dir().join(format!("svt-animation-hbd-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        for quality in [40.0, 98.0] {
+            let enc = AvifEncoder::new()
+                .with_bit_depth(10)
+                .with_speed(9)
+                .with_quality(quality);
+            let colors: Vec<Vec<u16>> = (0..2)
+                .map(|f| {
+                    (0..stride * w)
+                        .map(|i| (100 + (i * 7 + f * 133) % 750) as u16)
+                        .collect()
+                })
+                .collect();
+            let alphas: Vec<Vec<u16>> = (0..2)
+                .map(|f| {
+                    (0..w * w)
+                        .map(|i| ((i * 3 + f * 47) % 1024) as u16)
+                        .collect()
+                })
+                .collect();
+            let u: Vec<u16> = (0..w * w / 4).map(|i| (480 + i % 64) as u16).collect();
+            let v: Vec<u16> = (0..w * w / 4).map(|i| (500 + i % 32) as u16).collect();
+            let frames: Vec<_> = (0..2)
+                .map(|i| AnimationFrame {
+                    y: &colors[i],
+                    u: &u,
+                    v: &v,
+                    y_stride: stride,
+                    alpha: Some(alphas[i].as_slice()),
+                    duration: [17, 29][i],
+                })
+                .collect();
+            let bytes = enc
+                .encode_animation_yuv420_hbd(
+                    &frames,
+                    w as u32,
+                    w as u32,
+                    AnimationTiming { timescale: 1000 },
+                )
+                .unwrap();
+            let input = directory.join("input.avif");
+            fs::write(&input, bytes).unwrap();
+            for extension in ["png", "y4m"] {
+                let result = Command::new("avifdec")
+                    .args(["-j", "1", "--index", "all"])
+                    .arg(&input)
+                    .arg(directory.join(format!("frame.{extension}")))
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+            for i in 0..2 {
+                let mut pipe = enc
+                    .build_pipeline(w as u32, w as u32)
+                    .with_chroma_420(true)
+                    .with_recon_output(true);
+                pipe.try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
+                    .unwrap();
+                let (y, u, v) = pipe.last_recon10_final.unwrap();
+                let expected: Vec<u8> = y
+                    .iter()
+                    .chain(&u)
+                    .chain(&v)
+                    .flat_map(|n| n.to_le_bytes())
+                    .collect();
+                assert!(
+                    y.iter().any(|n| n & 3 != 0),
+                    "fixture must preserve native low bits"
+                );
+                let decoded = fs::read(directory.join(format!("frame-{i:010}.y4m"))).unwrap();
+                let offset = decoded.windows(6).position(|p| p == b"FRAME\n").unwrap() + 6;
+                assert_eq!(&decoded[offset..], expected, "10-bit color frame {i}");
+
+                let mut settings = enc.clone();
+                settings.full_range = true;
+                let mut pipe = settings
+                    .build_pipeline(w as u32, w as u32)
+                    .with_recon_output(true);
+                pipe.try_encode_frame_hbd(&alphas[i], w).unwrap();
+                let (alpha, _, _) = pipe.last_recon10_final.unwrap();
+                assert_eq!(alpha.len(), w * w);
+                let file = fs::File::open(directory.join(format!("frame-{i:010}.png"))).unwrap();
+                let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+                    .read_info()
+                    .unwrap();
+                let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+                let info = reader.next_frame(&mut pixels).unwrap();
+                assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+                assert_eq!(info.color_type, png::ColorType::Rgba);
+                for (pixel, &sample) in pixels.chunks_exact(8).zip(&alpha) {
+                    let actual = u16::from_be_bytes([pixel[6], pixel[7]]);
+                    // PNG expands alpha to 16 bits. Recover the native 10-bit
+                    // integer to avoid testing the reader's expansion rounding.
+                    let native = ((u32::from(actual) * 1023 + 32767) / 65535) as u16;
+                    assert_eq!(native, sample, "10-bit alpha frame {i}");
+                }
+            }
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
