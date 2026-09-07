@@ -65,6 +65,25 @@ existing skips), default tests/doctests 472 (ten existing ignores), encode-only
 loop test 1/1, and all-feature library clippy/scoped formatting pass. Evidence:
 canonical `benchmarks/codec_playback_hdr_2026-09-07.md`.
 
+Canonical track/poster metadata correction is saved locally as `3ec2d45f`
+(not pushed). Animation codec probes and frame info use track HDR, including
+its absence. Track alpha premultiplication is retained independently of item
+references and drives managed/AOM frame conversion. Valid no-poster sequences
+probe their first sample. Tests cover conflicting poster/track declarations,
+absent HDR, no poster, both alpha directions and 8/10-bit decoded pixels.
+All-feature nextest passes 877/877 (nine existing skips); default tests/doctests
+pass 473 (ten existing ignores); focused final tests pass 13/13; clippy and
+scoped formatting pass. Determinism and 56 reference conformance cells pass;
+optional armed CLI leg remains explicitly unrun. Ladder has the identical 33
+byte/quality mismatch rows plus 15 timing misses (48 total); the same two speed
+inversions persist. See canonical `benchmarks/track_metadata_2026-09-07.md`.
+
+Fresh `jj git fetch` confirms SVT main remains `74d92430`, already an ancestor
+of this branch. No additional main integration is needed at this checkpoint.
+Next metadata audit: track dimensions, CICP/ICC and spatial properties versus
+poster. The corrections above do not establish that these other properties
+are correctly independent.
+
 Next: canonical repetition/options/non-ms timing, mono animation, the existing
 quality-envelope drift, and the full remaining feature inventory. The full
 objective remains active.
