@@ -378,12 +378,38 @@ pub fn apply_cdef_frame(
     geom: &DeblockGeom,
     params: &CdefPick,
 ) -> CdefStats {
+    apply_cdef_frame_with_stop(
+        y,
+        u,
+        v,
+        width,
+        height,
+        chroma_420,
+        geom,
+        params,
+        &enough::Unstoppable,
+    )
+    .expect("Unstoppable cannot cancel")
+}
+
+pub(crate) fn apply_cdef_frame_with_stop(
+    y: &mut [u8],
+    u: &mut [u8],
+    v: &mut [u8],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    params: &CdefPick,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<CdefStats> {
+    crate::stop_check(stop)?;
     let mut stats = CdefStats::default();
     // Decoder's frame-level gate (libaom decodeframe.c:5417 do_cdef):
     // `cdef_bits || strengths[0]` — with bits > 0 the pass runs even when
     // set 0 is zero (other sets may filter).
     if !params.any(!chroma_420) {
-        return stats;
+        return Ok(stats);
     }
     assert!(
         width.is_multiple_of(8) && height.is_multiple_of(8),
@@ -408,6 +434,7 @@ pub fn apply_cdef_frame(
     let mut var = [[0i32; 8]; 8];
 
     for fbr in 0..nvfb {
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64); // nvb << 2 in C mi units
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);
@@ -530,7 +557,7 @@ pub fn apply_cdef_frame(
             }
         }
     }
-    stats
+    Ok(stats)
 }
 
 /// Build one plane's padded fb source: `src[r][c]` = snapshot pixel when
@@ -592,8 +619,36 @@ pub fn apply_cdef_frame_hbd(
     params: &CdefPick,
     bit_depth: u8,
 ) {
+    apply_cdef_frame_hbd_with_stop(
+        y,
+        u,
+        v,
+        width,
+        height,
+        chroma_420,
+        geom,
+        params,
+        bit_depth,
+        &enough::Unstoppable,
+    )
+    .expect("Unstoppable cannot cancel")
+}
+
+pub(crate) fn apply_cdef_frame_hbd_with_stop(
+    y: &mut [u16],
+    u: &mut [u16],
+    v: &mut [u16],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    params: &CdefPick,
+    bit_depth: u8,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<()> {
+    crate::stop_check(stop)?;
     if !params.any(!chroma_420) {
-        return;
+        return Ok(());
     }
     assert!(
         width.is_multiple_of(8) && height.is_multiple_of(8),
@@ -618,6 +673,7 @@ pub fn apply_cdef_frame_hbd(
     let mut var = [[0i32; 8]; 8];
 
     for fbr in 0..nvfb {
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64);
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);
@@ -733,6 +789,8 @@ pub fn apply_cdef_frame_hbd(
             }
         }
     }
+
+    Ok(())
 }
 
 /// Run the C-exact block kernel into `buf` and account evidence counters.
@@ -1264,6 +1322,39 @@ pub fn cdef_search_still(
     geom: &DeblockGeom,
     qindex: u8,
 ) -> crate::EncodeResult<CdefSearchPick> {
+    cdef_search_still_with_stop(
+        cfg,
+        recon_y,
+        recon_u,
+        recon_v,
+        src_y,
+        src_u,
+        src_v,
+        width,
+        height,
+        chroma_420,
+        geom,
+        qindex,
+        &enough::Unstoppable,
+    )
+}
+
+pub(crate) fn cdef_search_still_with_stop(
+    cfg: &CdefSearchCfg,
+    recon_y: &[u8],
+    recon_u: &[u8],
+    recon_v: &[u8],
+    src_y: &[u8],
+    src_u: &[u8],
+    src_v: &[u8],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    qindex: u8,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<CdefSearchPick> {
+    crate::stop_check(stop)?;
     assert!(
         width.is_multiple_of(8) && height.is_multiple_of(8),
         "8-aligned frames only"
@@ -1284,6 +1375,7 @@ pub fn cdef_search_still(
     let mut dlist: Vec<(usize, usize)> = Vec::with_capacity(64);
 
     for fbr in 0..nvfb {
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64);
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);
@@ -1474,6 +1566,41 @@ pub fn cdef_search_still_hbd(
     qindex: u8,
     bit_depth: u8,
 ) -> crate::EncodeResult<CdefSearchPick> {
+    cdef_search_still_hbd_with_stop(
+        cfg,
+        recon_y,
+        recon_u,
+        recon_v,
+        src_y,
+        src_u,
+        src_v,
+        width,
+        height,
+        chroma_420,
+        geom,
+        qindex,
+        bit_depth,
+        &enough::Unstoppable,
+    )
+}
+
+pub(crate) fn cdef_search_still_hbd_with_stop(
+    cfg: &CdefSearchCfg,
+    recon_y: &[u16],
+    recon_u: &[u16],
+    recon_v: &[u16],
+    src_y: &[u16],
+    src_u: &[u16],
+    src_v: &[u16],
+    width: usize,
+    height: usize,
+    chroma_420: bool,
+    geom: &DeblockGeom,
+    qindex: u8,
+    bit_depth: u8,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<CdefSearchPick> {
+    crate::stop_check(stop)?;
     assert!(
         width.is_multiple_of(8) && height.is_multiple_of(8),
         "8-aligned frames only"
@@ -1495,6 +1622,7 @@ pub fn cdef_search_still_hbd(
     let mut dlist_byx: Vec<(u8, u8)> = Vec::with_capacity(64);
 
     for fbr in 0..nvfb {
+        crate::stop_check(stop)?;
         let vsize = 64.min(height - fbr * 64);
         for fbc in 0..nhfb {
             let hsize = 64.min(width - fbc * 64);

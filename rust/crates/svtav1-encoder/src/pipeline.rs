@@ -595,7 +595,9 @@ impl EncodePipeline {
     }
 
     fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: u8) -> (usize, bool) {
-        let want = override_.unwrap_or(derived);
+        let want = override_
+            .filter(|n| matches!(n, 64 | 128))
+            .unwrap_or(derived);
         debug_assert!(
             want == 64 || want == 128,
             "sb_size must be 64 or 128, got {want}"
@@ -664,10 +666,12 @@ impl EncodePipeline {
     /// encode dims and the superblock size from the CODED width, exactly as
     /// [`Self::new`] would have for a frame of that width.
     pub fn with_superres(mut self, denom: u8) -> Self {
-        assert!(
-            (9..=16).contains(&denom),
-            "SuperresDenom must be 9..=16 (8 = unscaled = no superres); got {denom}"
-        );
+        // Preserve an invalid request for the fallible encode entry point;
+        // do not divide by it or let it change the working geometry.
+        if !(9..=16).contains(&denom) {
+            self.superres_denom = Some(denom);
+            return self;
+        }
         let coded = u32::from(svtav1_dsp::superres::scaled_size(
             self.upscaled_width as u16,
             denom,
@@ -1652,6 +1656,13 @@ impl EncodePipeline {
         None
     }
 
+    fn sb_size_config_error(&self) -> Option<&'static str> {
+        match self.sb_size_override {
+            None | Some(64 | 128) => None,
+            Some(_) => Some("superblock size override must be 64 or 128"),
+        }
+    }
+
     fn superres_config_error(&self) -> Option<&'static str> {
         let denom = self.superres_denom?;
         if !(9..=16).contains(&denom) {
@@ -1891,6 +1902,19 @@ impl EncodePipeline {
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
     ) -> crate::EncodeResult<Vec<u8>> {
+        if let Some(why) = self.sb_size_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        if let Some(reason) =
+            crate::entropy::obu::TileLimits::for_frame(self.width, self.height, self.sb_size as u32)
+                .untileable_reason(self.tile_cols_log2)
+        {
+            return Err(whereat::at!(EncodeError::InvalidDimensions {
+                width: self.true_width,
+                height: self.true_height,
+                reason,
+            }));
+        }
         self.validate_film_grain()?;
         let display_order = self.frame_count;
         // Superres chunk B.3: refuse any combination whose SIGNALLED geometry
@@ -4066,6 +4090,7 @@ impl EncodePipeline {
                     let mut out = Vec::with_capacity(sb_cols * sb_rows);
                     for sb_row in 0..sb_rows {
                         for sb_col in 0..sb_cols {
+                            crate::stop_check(&stop)?;
                             let sb_idx = sb_row * sb_cols + sb_col;
                             let me_q = crate::port_md_rate_estimation::get_me_qindex(
                                 &map,
@@ -4139,6 +4164,7 @@ impl EncodePipeline {
                 let mut out = Vec::with_capacity(sb_cols * sb_rows);
                 for sb_row in 0..sb_rows {
                     for sb_col in 0..sb_cols {
+                        crate::stop_check(&stop)?;
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let (x0, y0) = (sb_col * sb_size, sb_row * sb_size);
                         let b = me.per_b64.get(sb_idx);
@@ -4407,6 +4433,7 @@ impl EncodePipeline {
                         .map_err(whereat::at)?;
                 }
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
+                    crate::stop_check(&stop)?;
                     tree_slots[sb_row * sb_cols + sb_col] = tile_trees.next();
                 }
             }
@@ -4419,6 +4446,7 @@ impl EncodePipeline {
                         .map_err(whereat::at)?;
                 }
                 for sb_col in tile_sb_col_start..tile_sb_col_end {
+                    crate::stop_check(&stop)?;
                     let x0 = sb_col * sb_size;
                     let y0 = sb_row * sb_size;
                     let cur_w = sb_size.min(w - x0);
@@ -4475,6 +4503,8 @@ impl EncodePipeline {
             .iter()
             .map(|t| u8::try_from(t.min_sq_size(sb_size)).unwrap_or(u8::MAX))
             .collect();
+
+        crate::stop_check(&stop)?;
 
         // Step 4c: bd10 LUMA re-encode (task #94, the u16 MD path). The u8
         // funnel above produced C's partition/mode/tx decisions (RD is
@@ -4735,6 +4765,8 @@ impl EncodePipeline {
             }
         }
 
+        crate::stop_check(&stop)?;
+
         // Step 5: Post-reconstruction filters.
         //
         // Deblocking is SIGNALED and applied decoder-exactly further down
@@ -4750,6 +4782,8 @@ impl EncodePipeline {
         // filter pass. sgrproj is never searched on the ALL-INTRA arm
         // (sg_filter_lvl = 0 — C enc_mode_config.c:2000); the VIDEO arm
         // searches it at M0..M3 and the chain below carries it.
+
+        crate::stop_check(&stop)?;
 
         // Step 6: Entropy coding — recursive partition tree encoding.
         // Walk each SB's partition tree in spec order (depth-first),
@@ -5024,6 +5058,7 @@ impl EncodePipeline {
                             .map_err(whereat::at)?;
                     }
                     for sb_col in tile_sb_col_start..tile_sb_col_end {
+                        crate::stop_check(&stop)?;
                         let sb_idx = sb_row * sb_cols + sb_col;
                         let tree = &all_trees[sb_idx];
                         // [SVT_HDR_MODE] per-SB delta-q: the SB's planned qindex
@@ -5172,6 +5207,8 @@ impl EncodePipeline {
         };
         let (mut tile_data, deblock_geom, mut u_recon, mut v_recon, mut tile_size_bytes_minus_1) =
             run_entropy_walk(None, None)?;
+
+        crate::stop_check(&stop)?;
 
         // Step 6a: Deblocking — pick the levels the frame header will
         // signal (C svt_av1_pick_filter_level_by_q closed form) and apply
@@ -5505,7 +5542,11 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_image(&input, &dlf_pick_inputs)?
+                        crate::deblock::pick_filter_levels_full_image_with_stop(
+                            &input,
+                            &dlf_pick_inputs,
+                            &stop,
+                        )?
                     }
                     None => {
                         let input = crate::deblock::DlfSearchInput::<u8> {
@@ -5523,7 +5564,11 @@ impl EncodePipeline {
                             early_exit_convergence,
                             bit_depth: self.bit_depth,
                         };
-                        crate::deblock::pick_filter_levels_full_image(&input, &dlf_pick_inputs)?
+                        crate::deblock::pick_filter_levels_full_image_with_stop(
+                            &input,
+                            &dlf_pick_inputs,
+                            &stop,
+                        )?
                     }
                 };
                 dlf_full_image_ran = true;
@@ -5584,7 +5629,7 @@ impl EncodePipeline {
             && lf_levels.any()
             && postfilter_consumed
         {
-            crate::deblock::apply_deblock_frame_hbd(
+            crate::deblock::apply_deblock_frame_hbd_with_stop(
                 y10,
                 u10,
                 v10,
@@ -5595,10 +5640,11 @@ impl EncodePipeline {
                 &lf_levels,
                 lf_sharp_eff,
                 self.bit_depth,
-            );
+                &stop,
+            )?;
         }
         if lf_levels.any() && postfilter_consumed {
-            crate::deblock::apply_deblock_frame(
+            crate::deblock::apply_deblock_frame_with_stop(
                 &mut recon,
                 &mut u_recon,
                 &mut v_recon,
@@ -5608,7 +5654,8 @@ impl EncodePipeline {
                 &deblock_geom,
                 &lf_levels,
                 lf_sharp_eff, // = signaled loop_filter_sharpness
-            );
+                &stop,
+            )?;
             // C `dlf_process.c:114-117`: the FILTERED SSE, measured after
             // `svt_av1_loop_filter_frame`, when the search did not leave one.
             if dlf_full_image_ran && dlf_best_filt_sse == -1 {
@@ -5625,6 +5672,8 @@ impl EncodePipeline {
         } else {
             -1
         };
+
+        crate::stop_check(&stop)?;
 
         // Step 6a': CDEF — decoder order is deblock -> CDEF (-> restoration,
         // unported). Key frames signal the qp-picked strengths
@@ -5916,7 +5965,7 @@ impl EncodePipeline {
                                 }
                                 None => (widen(&encode_input), widen(su), widen(sv)),
                             };
-                            crate::cdef::cdef_search_still_hbd(
+                            crate::cdef::cdef_search_still_hbd_with_stop(
                                 &cfg,
                                 y10,
                                 u10,
@@ -5930,9 +5979,10 @@ impl EncodePipeline {
                                 &deblock_geom,
                                 base_qindex,
                                 self.bit_depth,
+                                &stop,
                             )?
                         }
-                        None => crate::cdef::cdef_search_still(
+                        None => crate::cdef::cdef_search_still_with_stop(
                             &cfg,
                             &recon,
                             &u_recon,
@@ -5945,6 +5995,7 @@ impl EncodePipeline {
                             chroma.is_some(),
                             &deblock_geom,
                             base_qindex,
+                            &stop,
                         )?,
                     };
                     match searched {
@@ -6028,7 +6079,7 @@ impl EncodePipeline {
             self.last_recon_pre_cdef = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
         }
         if postfilter_consumed {
-            self.last_cdef_stats = crate::cdef::apply_cdef_frame(
+            self.last_cdef_stats = crate::cdef::apply_cdef_frame_with_stop(
                 &mut recon,
                 &mut u_recon,
                 &mut v_recon,
@@ -6037,7 +6088,8 @@ impl EncodePipeline {
                 chroma.is_some(),
                 &deblock_geom,
                 &cdef_params,
-            );
+                &stop,
+            )?;
         }
         // bd10: the post-deblock / pre-CDEF 10-bit planes are the `after_cdef
         // = 0` stripe-boundary context for the 10-bit LR apply (issue #13) —
@@ -6055,7 +6107,7 @@ impl EncodePipeline {
         // one (C: rest_process runs after cdef_process on the same 16-bit
         // recon picture CDEF just filtered in place).
         if let (Some((y10, u10, v10)), true) = (recon10.as_mut(), postfilter_consumed) {
-            crate::cdef::apply_cdef_frame_hbd(
+            crate::cdef::apply_cdef_frame_hbd_with_stop(
                 y10,
                 u10,
                 v10,
@@ -6065,8 +6117,11 @@ impl EncodePipeline {
                 &deblock_geom,
                 &cdef_params,
                 self.bit_depth,
-            );
+                &stop,
+            )?;
         }
+
+        crate::stop_check(&stop)?;
 
         // Step 6a'': Wiener loop restoration — C order deblock -> CDEF ->
         // LR. The C-exact search (restoration_seg_search +
@@ -6265,7 +6320,7 @@ impl EncodePipeline {
                                 widen_tight(sv, cw, lr_tcw, lr_tch),
                             ),
                         };
-                        crate::restoration::search_restoration_still_bd(
+                        crate::restoration::search_restoration_still_bd_with_stop(
                             &ctrls,
                             &sg_ctrls,
                             &lr_sy10,
@@ -6279,9 +6334,10 @@ impl EncodePipeline {
                             chroma.is_some(),
                             rdmult,
                             self.bit_depth,
+                            &stop,
                         )?
                     }
-                    None => crate::restoration::search_restoration_still_bd::<u8>(
+                    None => crate::restoration::search_restoration_still_bd_with_stop::<u8>(
                         &ctrls,
                         &sg_ctrls,
                         &lr_src_y,
@@ -6295,6 +6351,7 @@ impl EncodePipeline {
                         chroma.is_some(),
                         rdmult,
                         8,
+                        &stop,
                     )?,
                 };
                 #[cfg(feature = "std")]
@@ -6358,7 +6415,7 @@ impl EncodePipeline {
                         cw,
                         chroma.is_some(),
                     );
-                    crate::restoration::apply_restoration_frame(
+                    crate::restoration::apply_restoration_frame_bd_with_stop(
                         &mut recon,
                         &mut u_recon,
                         &mut v_recon,
@@ -6369,7 +6426,9 @@ impl EncodePipeline {
                         chroma.is_some(),
                         &rest_info,
                         &bounds,
-                    );
+                        8,
+                        &stop,
+                    )?;
                     // Issue #13: the 10-bit canvas gets the SAME apply. The
                     // search above picked these taps on the 10-bit recon and
                     // the frame header signals them, so a decoder applies
@@ -6396,7 +6455,7 @@ impl EncodePipeline {
                             w / 2,
                             chroma.is_some(),
                         );
-                        crate::restoration::apply_restoration_frame_bd::<u16>(
+                        crate::restoration::apply_restoration_frame_bd_with_stop::<u16>(
                             y10,
                             u10,
                             v10,
@@ -6408,7 +6467,8 @@ impl EncodePipeline {
                             &rest_info,
                             &bounds10,
                             self.bit_depth,
-                        );
+                            &stop,
+                        )?;
                     }
                 }
                 self.last_lr_stats = (
@@ -6438,6 +6498,8 @@ impl EncodePipeline {
                 };
             }
         }
+
+        crate::stop_check(&stop)?;
 
         // Step 7: Build OBU bitstream
         // Use full (non-reduced) sequence header for multi-frame sequences,
@@ -6818,6 +6880,8 @@ impl EncodePipeline {
             bs
         };
 
+        crate::stop_check(&stop)?;
+
         // Step 7: Publish recon for the recon-parity gate, then update DPB.
         //
         // Superres chunk B.3: what a DECODER outputs is the coded-width recon
@@ -7101,6 +7165,8 @@ impl EncodePipeline {
         // This frame's ME results have been consumed by mode decision and the
         // pack; keep the allocation for the next frame's search.
         self.me_scratch = frame_me;
+
+        crate::stop_check(&stop)?;
 
         // Step 8: Update rate control state
         update_rc_state(&mut self.rc_state, bitstream.len() as u64 * 8, pcs.qp);
@@ -12291,6 +12357,7 @@ fn encode_tile_rows(
                     .map_err(whereat::at)?;
             }
             for sb_col in tile_sb_col_start..tile_sb_col_end {
+                crate::stop_check(&stop)?;
                 let sb_x0 = sb_col * sb_size;
                 let sb_y0 = sb_row * sb_size;
                 let sb_cur_w = sb_size.min(w - sb_x0);
@@ -13919,6 +13986,74 @@ mod tests {
     use super::*;
     use crate::rate_control::RcMode;
     use alloc::vec;
+
+    #[test]
+    fn invalid_builders_return_errors_instead_of_panicking() {
+        let make = || {
+            EncodePipeline::new(
+                128,
+                128,
+                8,
+                RcConfig {
+                    qp: 40,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+        };
+        let y = vec![128; 128 * 128];
+        let uv = vec![128; 64 * 64];
+        for size in [0, 1, 32, 96, 127, 256, usize::MAX] {
+            let mut p = make().with_sb_size(Some(size)).with_superres(16);
+            let e = p.try_encode_frame_420(&y, &uv, &uv, 128).unwrap_err();
+            assert!(matches!(e.error(), EncodeError::UnsupportedConfig(_)));
+            assert!(e.to_string().contains("64 or 128"), "{e}");
+        }
+        for denom in [0, 1, 8, 17, 255] {
+            let mut p = make().with_superres(denom);
+            let e = p.try_encode_frame_420(&y, &uv, &uv, 128).unwrap_err();
+            assert!(matches!(e.error(), EncodeError::UnsupportedConfig(_)));
+            assert!(e.to_string().contains("9..=16"), "{e}");
+        }
+        for size in [64, 128] {
+            let out = make()
+                .with_sb_size(Some(size))
+                .try_encode_frame_420(&y, &uv, &uv, 128)
+                .unwrap();
+            assert!(!out.is_empty());
+        }
+        let out = make()
+            .with_superres(16)
+            .try_encode_frame_420(&y, &uv, &uv, 128)
+            .unwrap();
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn untileable_frames_are_rejected_before_frame_work() {
+        use crate::entropy::obu::{TileGrid, TileLimits};
+        for sb in [64, 128] {
+            // Layout limit, independent of the sequence header's dimension limit.
+            assert!(
+                TileLimits::for_frame(262_144, 64, sb)
+                    .untileable_reason(0)
+                    .is_none()
+            );
+            assert_eq!(TileGrid::resolve(262_144, 64, sb, 0, 0).tile_cols, 64);
+            for width in [262_208, 262_272, 524_288] {
+                let mut p = EncodePipeline::new(width, 64, 8, RcConfig::default(), 0, 1)
+                    .with_sb_size(Some(sb as usize));
+                let e = p.encode_frame_impl(&[], 0, None).unwrap_err();
+                assert!(matches!(e.error(), EncodeError::InvalidDimensions { .. }));
+                assert!(e.to_string().contains("262144"), "{e}");
+            }
+            let limits = TileLimits::for_frame(4096, 64 * 2304 + 128, sb);
+            assert!(limits.untileable_reason(0).is_some());
+            assert!(limits.untileable_reason(1).is_none());
+        }
+    }
 
     #[test]
     fn pipeline_encode_single_frame() {

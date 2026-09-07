@@ -125,3 +125,17 @@ pub mod tx_bias;
 pub(crate) mod txs_arm;
 pub mod var_boost;
 pub mod vartx;
+
+/// Check a potentially stoppable token without touching encoder state.
+#[inline]
+pub(crate) fn stop_check(stop: &dyn enough::Stop) -> EncodeResult<()> {
+    if stop.may_stop() {
+        stop.check()
+            .map_err(EncodeError::from)
+            .map_err(whereat::at)?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod cancellation_tests;
