@@ -6,6 +6,39 @@ use zenavif_serialize::{
     animated::{AnimFrame, AnimatedImage},
 };
 
+pub use zenavif_serialize::{ClliBox, MdcvBox, animated::RepetitionCount};
+
+/// Container metadata and playback policy. Metadata applies to the color
+/// track and its poster item. ICC bytes take display-color precedence over
+/// CICP; CICP still describes the encoded YUV samples.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct AnimationOptions {
+    pub repetition: RepetitionCount,
+    pub icc: Option<Vec<u8>>,
+    /// Raw TIFF bytes or an already-framed HEIF Exif item.
+    pub exif: Option<Vec<u8>>,
+    pub xmp: Option<Vec<u8>>,
+    pub clli: Option<ClliBox>,
+    pub mdcv: Option<MdcvBox>,
+    /// The input color planes have already been premultiplied by alpha.
+    pub premultiplied_alpha: bool,
+}
+
+impl Default for AnimationOptions {
+    fn default() -> Self {
+        Self {
+            repetition: RepetitionCount::Infinite,
+            icc: None,
+            exif: None,
+            xmp: None,
+            clli: None,
+            mdcv: None,
+            premultiplied_alpha: false,
+        }
+    }
+}
+
 /// One planar 8-bit 4:2:0 image with an optional full-resolution alpha plane.
 /// Chroma and alpha are tightly packed; luma may have a larger stride.
 pub struct AnimationFrame<'a> {
@@ -35,6 +68,24 @@ impl AvifEncoder {
         height: u32,
         timing: AnimationTiming,
     ) -> Result<Vec<u8>, EncodeError> {
+        self.encode_animation_yuv420_with_options(
+            frames,
+            width,
+            height,
+            timing,
+            &AnimationOptions::default(),
+        )
+    }
+
+    /// Encode timed color and alpha samples with metadata and repetition.
+    pub fn encode_animation_yuv420_with_options(
+        &self,
+        frames: &[AnimationFrame<'_>],
+        width: u32,
+        height: u32,
+        timing: AnimationTiming,
+        options: &AnimationOptions,
+    ) -> Result<Vec<u8>, EncodeError> {
         self.validate_quality()?;
         self.validate_inert_knobs(true)?;
         if self.bit_depth != 8 {
@@ -51,7 +102,39 @@ impl AvifEncoder {
         {
             return Err(EncodeError::InvalidDimensions);
         }
+        let duration = frames
+            .iter()
+            .try_fold(0u64, |sum, frame| {
+                sum.checked_add(u64::from(frame.duration))
+            })
+            .ok_or(EncodeError::UnsupportedConfig(
+                "animation duration overflow",
+            ))?;
+        if let RepetitionCount::Finite(count) = options.repetition {
+            duration
+                .checked_mul(u64::from(count) + 1)
+                .filter(|&value| value != u64::MAX)
+                .ok_or(EncodeError::UnsupportedConfig(
+                    "repeated animation duration overflow",
+                ))?;
+        }
         let has_alpha = frames[0].alpha.is_some();
+        if options.premultiplied_alpha && !has_alpha {
+            return Err(EncodeError::UnsupportedConfig(
+                "premultiplied animation requires alpha",
+            ));
+        }
+        for bytes in [&options.icc, &options.exif, &options.xmp]
+            .into_iter()
+            .flatten()
+        {
+            if bytes.is_empty() {
+                return Err(EncodeError::EncodeFailed(
+                    "metadata payload must not be empty".into(),
+                ));
+            }
+        }
+
         let n = width as usize * height as usize;
         let cn = (width as usize).div_ceil(2) * (height as usize).div_ceil(2);
         // Validate the entire submission before encoding any picture.
@@ -115,6 +198,30 @@ impl AvifEncoder {
         );
         let mut mux = AnimatedImage::new();
         mux.set_timescale(timing.timescale).set_color_config(cfg);
+        mux.set_repetition_count(options.repetition)
+            .set_color_description(
+                u16::from(self.color_primaries),
+                u16::from(self.transfer_characteristics),
+                u16::from(self.matrix_coefficients),
+                self.full_range,
+            )
+            .set_premultiplied_alpha(options.premultiplied_alpha);
+        if let Some(icc) = options.icc.as_ref() {
+            mux.set_icc_profile(icc.clone());
+        }
+        if let Some(exif) = options.exif.as_ref() {
+            mux.set_exif(exif.clone());
+        }
+        if let Some(xmp) = options.xmp.as_ref() {
+            mux.set_xmp(xmp.clone());
+        }
+        if let Some(clli) = options.clli {
+            mux.set_clli(clli);
+        }
+        if let Some(mdcv) = options.mdcv {
+            mux.set_mdcv(mdcv);
+        }
+
         if has_alpha {
             let mut cfg = Av1CBox::default();
             cfg.monochrome = true;
@@ -150,7 +257,8 @@ impl AvifEncoder {
                 }
             })
             .collect();
-        Ok(mux.serialize(width, height, &samples, &color_seq, alpha_seq.as_deref()))
+        mux.try_serialize(width, height, &samples, &color_seq, alpha_seq.as_deref())
+            .map_err(|e| EncodeError::EncodeFailed(e.to_string()))
     }
 }
 

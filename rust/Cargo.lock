@@ -707,11 +707,11 @@ dependencies = [
 
 [[package]]
 name = "zenavif-serialize"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbc63468f1ad230080baa8f87b0bf1b6aad9987f85e533566337181e0a5349c6"
+version = "0.2.0"
+source = "git+https://github.com/imazen/zenavif?rev=7b058bb825f64a05ed97ac057178c80d27811853#7b058bb825f64a05ed97ac057178c80d27811853"
 dependencies = [
  "arrayvec",
+ "whereat",
 ]
 
 [[package]]

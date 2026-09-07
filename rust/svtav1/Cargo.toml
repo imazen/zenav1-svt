@@ -17,7 +17,7 @@ zenav1-svt-encoder = { workspace = true }
 
 # Container support requires Rust 1.93 through the serializer; the default
 # raw-AV1 build retains the workspace's Rust 1.89 minimum.
-zenavif-serialize = { version = "0.1.4", optional = true }
+zenavif-serialize = { version = "0.2.0", git = "https://github.com/imazen/zenavif", rev = "7b058bb825f64a05ed97ac057178c80d27811853", optional = true }
 
 [dev-dependencies]
 # PNG decode for the real-image identity harness (examples/identity_run.rs
