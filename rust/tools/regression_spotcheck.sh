@@ -1650,7 +1650,9 @@ SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-denoised-edge-padding" grain
 # unfiltered bytes wrong at 65x67), and odd native chroma filtered with floor
 # bounds (277 post-filter bytes wrong at 65x65). These exact animation witnesses
 # also run directly against aomdec, without requiring the AVIF container tools.
-for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds; do
+# Superres 65x65 / denominator 9 / preset 7 / quality 5 differed first at
+# byte 5214. Normative chroma filtering must precede output upscaling too.
+for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction; do
   if AOMDEC="$AOMDEC" cargo test -p zenav1-svt --test odd_frame_recon "$witness" -- --exact >"$W/$witness.log" 2>&1; then
     pass=$((pass+1))
   else

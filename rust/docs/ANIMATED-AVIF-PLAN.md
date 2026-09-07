@@ -117,6 +117,19 @@ sweep passes 1,100/1,100, with no pinned differences or harness errors
 verification passes 18/18 (`odd-metadata.log`) with a fresh release example.
 Clippy passes with the existing 1,843 encoder warnings and no animation/new-test
 warnings (`odd-clippy-final.log`); scoped rustfmt and refusal inventory checks
-pass. The output replay currently excludes superresolution; that combination
-still needs its own decoder comparison. Native monochrome mode decision still
+pass. Native monochrome mode decision still
 uses the upper 8 bits, while coded levels and filters use the full 10 bits.
+
+Superresolution continuation: the initial six odd-size cases passed, but a
+216-case decoder grid (widths 65/66/72, heights 65/67/72, denominators 9/12/16,
+presets 7/9, qualities 5/40/75/98) exposed the same chroma filter-bound defect
+before upscaling. The 65x65 / denominator 9 / preset 7 / quality 5 witness first
+differed at byte 5214. Output reconstruction now uses normative filter bounds
+before the shared upscale stage, separately from the reference-picture canvas.
+All 216 comparisons pass after the change (`odd-superres-after.log`); the
+regression gate includes the witness grid. The identity driver's final-recon
+dump now uses ceiling chroma stride at odd upscaled widths. Local workspace
+nextest passes 2,587/2,587 with zero skips (`odd-superres-nextest.log`), the
+expanded regression gate passes 109/109 (`odd-superres-spotcheck.log`), and the
+superresolution C-byte/decode gate passes 512/512 (`odd-superres-identity.log`).
+CI remains deferred while subsequent features are implemented and checked.

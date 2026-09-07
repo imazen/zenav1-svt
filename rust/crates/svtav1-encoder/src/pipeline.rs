@@ -6063,7 +6063,6 @@ impl EncodePipeline {
         let mut lr_signal = crate::entropy::obu::LrSignal::none(seq_tools.enable_restoration);
         let decoder_chroma_recon = self.recon_output
             && chroma.is_some()
-            && self.superres_denom.is_none()
             && (!self.true_width.is_multiple_of(2) || !self.true_height.is_multiple_of(2));
         let mut output_restoration = None;
         // IBC (chunk 1): unlike DLF/CDEF, C suppresses loop restoration at
@@ -6890,18 +6889,26 @@ impl EncodePipeline {
                     );
                 }
             };
-            let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
-            upscale(&recon, cw, self.true_width as usize, &mut y_up, uw, hh);
-            recon = y_up;
-            if chroma.is_some() {
-                let (ccw, cuw, chh) = (cw / 2, uw.div_ceil(2), hh / 2);
-                let coded = (self.true_width as usize).div_ceil(2);
-                let mut u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
-                let mut v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
-                upscale(&u_recon, ccw, coded, &mut u_up, cuw, chh);
-                upscale(&v_recon, ccw, coded, &mut v_up, cuw, chh);
-                u_recon = u_up;
-                v_recon = v_up;
+            let upscale_frame =
+                |y: &mut Vec<u8>, u: &mut Vec<u8>, v: &mut Vec<u8>| -> EncodeResult<()> {
+                    let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
+                    upscale(y, cw, self.true_width as usize, &mut y_up, uw, hh);
+                    *y = y_up;
+                    if chroma.is_some() {
+                        let (ccw, cuw, chh) = (cw / 2, uw.div_ceil(2), hh / 2);
+                        let coded = (self.true_width as usize).div_ceil(2);
+                        let mut u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
+                        let mut v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
+                        upscale(u, ccw, coded, &mut u_up, cuw, chh);
+                        upscale(v, ccw, coded, &mut v_up, cuw, chh);
+                        *u = u_up;
+                        *v = v_up;
+                    }
+                    Ok(())
+                };
+            upscale_frame(&mut recon, &mut u_recon, &mut v_recon)?;
+            if let Some((y, u, v)) = decoder_output8.as_mut() {
+                upscale_frame(y, u, v)?;
             }
         }
 

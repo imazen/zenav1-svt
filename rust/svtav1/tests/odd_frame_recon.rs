@@ -29,8 +29,8 @@ fn crop<T: Copy>(planes: &(Vec<T>, Vec<T>, Vec<T>), stride: usize, w: usize, h: 
     let mut out = Vec::new();
     for (p, s, cols, rows) in [
         (&planes.0, stride, w, h),
-        (&planes.1, stride / 2, w.div_ceil(2), h.div_ceil(2)),
-        (&planes.2, stride / 2, w.div_ceil(2), h.div_ceil(2)),
+        (&planes.1, stride.div_ceil(2), w.div_ceil(2), h.div_ceil(2)),
+        (&planes.2, stride.div_ceil(2), w.div_ceil(2), h.div_ceil(2)),
     ] {
         for r in 0..rows {
             out.extend_from_slice(&p[r * s..r * s + cols]);
@@ -119,4 +119,34 @@ fn native_odd_chroma_filter_bounds() {
             .unwrap()
     );
     decode_eq("native-chroma", &obu, &expected);
+}
+
+#[test]
+fn superresolution_odd_chroma_reconstruction() {
+    for w in [65usize, 66, 72] {
+        for h in [65usize, 67, 72] {
+            let y: Vec<u8> = (0..w * h).map(|i| (32 + (i * 7) % 180) as u8).collect();
+            let uv: Vec<u8> = (0..w.div_ceil(2) * h.div_ceil(2))
+                .map(|i| (100 + i * 7 % 60) as u8)
+                .collect();
+            for denom in [9, 12, 16] {
+                for preset in [7, 9] {
+                    for quality in [5.0, 40.0, 75.0, 98.0] {
+                        let mut p = pipeline(w, h, preset, quality, 8).with_superres(denom);
+                        let obu = p.try_encode_frame_420(&y, &uv, &uv, w).unwrap();
+                        let expected = crop(p.last_recon.as_ref().unwrap(), w, w, h);
+                        let mut no_recon = pipeline(w, h, preset, quality, 8)
+                            .with_superres(denom)
+                            .with_recon_output(false);
+                        assert_eq!(obu, no_recon.try_encode_frame_420(&y, &uv, &uv, w).unwrap());
+                        decode_eq(
+                            &format!("superres-{w}x{h}-{denom}-p{preset}-q{quality}"),
+                            &obu,
+                            &expected,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

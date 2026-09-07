@@ -709,7 +709,7 @@ fn main() {
                         let aw = pipeline.width as usize;
                         let (tw2, th2) =
                             (pipeline.true_width as usize, pipeline.true_height as usize);
-                        let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
+                        let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
                         let crop = |p: &[u8], stride: usize, cw: usize, chh: usize| -> Vec<u8> {
                             let mut o = Vec::with_capacity(cw * chh);
                             for r in 0..chh {
@@ -1008,7 +1008,7 @@ fn main() {
             (pipeline.width as usize, pipeline.true_width as usize)
         };
         let th2 = pipeline.true_height as usize;
-        let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
+        let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
         fn crop<T: Copy>(p: &[T], stride: usize, cw: usize, chh: usize) -> Vec<T> {
             let mut o = Vec::with_capacity(cw * chh);
             for r in 0..chh {
