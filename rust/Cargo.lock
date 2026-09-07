@@ -88,6 +88,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayvec"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
+
+[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -656,6 +662,7 @@ dependencies = [
  "zenav1-svt-dsp",
  "zenav1-svt-encoder",
  "zenav1-svt-types",
+ "zenavif-serialize",
 ]
 
 [[package]]
@@ -696,6 +703,15 @@ version = "0.1.0"
 dependencies = [
  "enough",
  "whereat",
+]
+
+[[package]]
+name = "zenavif-serialize"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbc63468f1ad230080baa8f87b0bf1b6aad9987f85e533566337181e0a5349c6"
+dependencies = [
+ "arrayvec",
 ]
 
 [[package]]

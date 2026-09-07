@@ -19,6 +19,11 @@
 //! assert!(!result.data.is_empty());
 //! ```
 
+/// Animated AVIF container encoding (requires Rust 1.93).
+#[cfg(feature = "avif-container")]
+#[path = "animation.rs"]
+pub mod animation;
+
 /// Chroma subsampling format for AVIF encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaSubsampling {

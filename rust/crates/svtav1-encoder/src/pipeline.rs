@@ -74,6 +74,9 @@ pub struct EncodePipeline {
     /// unscaled) otherwise. Off by default, exactly like C
     /// (`superres_mode = SUPERRES_NONE`, enc_settings.c:1095).
     pub superres_denom: Option<u8>,
+    /// Emit non-still sequence/frame headers for an all-intra image sequence.
+    /// This changes syntax, independently of the all-intra coding policy.
+    image_sequence: bool,
     /// Superres chunk B.3: the FULL-RESOLUTION luma the caller handed in,
     /// stashed by the downscale so the frame-level PICTURE STATISTICS can be
     /// derived from it.
@@ -434,6 +437,7 @@ impl EncodePipeline {
             bit_depth: 8,
             upscaled_width: width,
             superres_denom: None,
+            image_sequence: false,
             superres_stats_luma: None,
             hbd_source: None,
             pa_ref: None,
@@ -692,6 +696,14 @@ impl EncodePipeline {
         );
         self.sb_size = sb_size;
         self.sb128_fallback = fell_back;
+        self
+    }
+
+    /// Use full AV1 headers for an animated image sequence. All-intra coding
+    /// remains selected by the GOP configuration. An all-intra GOP produces
+    /// a sync sample for each picture.
+    pub fn with_image_sequence(mut self) -> Self {
+        self.image_sequence = true;
         self
     }
 
@@ -6675,7 +6687,7 @@ impl EncodePipeline {
                     // the reduced `true_width`. Equal when superres is off.
                     self.upscaled_width,
                     self.true_height,
-                    is_single_frame,
+                    is_single_frame && !self.image_sequence,
                     self.bit_depth,
                     &self.color_description,
                     chroma.is_none(), // mono_chrome unless the 4:2:0 path is active
@@ -6692,7 +6704,7 @@ impl EncodePipeline {
                 self.width,
                 self.height,
                 base_qindex,
-                is_single_frame,
+                is_single_frame && !self.image_sequence,
                 chroma.is_none(),
                 // The levels applied to the output recon above — signaling
                 // and application MUST agree or the recon desyncs from

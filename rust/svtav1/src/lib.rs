@@ -20,7 +20,8 @@
 //! # Usage
 //!
 //! The encoder is [`svtav1_encoder::pipeline::EncodePipeline`] (raw AV1 OBUs)
-//! or [`avif::AvifEncoder`] (a complete AVIF file):
+//! or [`avif::AvifEncoder`] (still-image AV1 OBUs). With `avif-container`,
+//! `AvifEncoder::encode_animation_yuv420` writes animated AVIF files:
 //!
 //! ```no_run
 //! use svtav1::encoder::pipeline::EncodePipeline;

@@ -15,6 +15,10 @@ zenav1-svt-types = { workspace = true, features = ["std"] }
 zenav1-svt-dsp = { workspace = true, features = ["std"] }
 zenav1-svt-encoder = { workspace = true }
 
+# Container support requires Rust 1.93 through the serializer; the default
+# raw-AV1 build retains the workspace's Rust 1.89 minimum.
+zenavif-serialize = { version = "0.1.4", optional = true }
+
 [dev-dependencies]
 # PNG decode for the real-image identity harness (examples/identity_run.rs
 # `file:<path.png>` content). Example-only — not linked into the library.
@@ -33,6 +37,7 @@ workspace = true
 
 [features]
 default = ["std"]
+avif-container = ["dep:zenavif-serialize"]
 std = []
 unsafe_encoding = ["zenav1-svt-encoder/unsafe_encoding"]
 # Per-symbol arithmetic-coder trace on stderr (identity harness:

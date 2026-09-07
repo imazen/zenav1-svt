@@ -5,7 +5,13 @@ named below and is updated in place; anything restated here is restated only so
 a new session can orient in ten minutes. When this file and a live doc disagree,
 **the live doc wins** — and fix this one in the same change.
 
-Latest continuation **2026-09-07**: film-grain translation and wiring are
+Active user goal **2026-09-07**: complete animated AVIF (all metadata,
+transparency and specification features), then complete video encoding.
+[Animated AVIF plan](rust/docs/ANIMATED-AVIF-PLAN.md) records current code,
+independent decode evidence and the remaining full scope. The initial timed
+all-intra/alpha container path is a first step, not goal completion.
+
+Latest film-grain continuation **2026-09-07**: film-grain translation and wiring are
 recorded in [the film-grain port map](rust/docs/film-grain-port-map.md), including
 history audit, C edge behavior and verification. The previous performance WIP
 (`nnlxmrsn`, zone1) remains separate and unlanded; do not lose or silently merge it.
