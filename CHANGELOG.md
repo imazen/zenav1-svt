@@ -9,6 +9,10 @@ Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
+### Fixed
+
+- Lossless IntraBC regression checks honor the configured reference decoder outside PATH, request the coded output depth, and report decoder invocation failures separately from pixel mismatches.
+
 ### Added
 
 - Animated AVIF `AnimationOptions::amve` and `cclv`, including validated ambient illuminance, signed content primaries, optional luminance fields, and metadata on the color track/poster/uncropped secondary. Alpha retains its own metadata. The independent metadata gate now covers 8- and 10-bit output.

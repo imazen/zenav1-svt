@@ -87,8 +87,12 @@ if os.environ.get('LOSSLESS_IBC_RESIDUAL'):
 PYIBC
     then
       pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC premise failed]")
-    elif ! aomdec --rawvideo -o "$W/ibc-dec.yuv" "$W/rs.obu" >"$W/ibc-dec.log" 2>&1 ||
-         ! cmp -s "$W/ibc-dec.yuv" "$W/rs.yuv"; then
+    # CI supplies a decoder outside PATH via RS_AOMDEC. Match the other
+    # decode witnesses, and request the coded depth for exact source bytes.
+    elif ! "$AOMDEC" --rawvideo --output-bit-depth="${7:-8}" -o "$W/ibc-dec.yuv" "$W/rs.obu" >"$W/ibc-dec.log" 2>&1; then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC decoder failed: $AOMDEC]")
+      cat "$W/ibc-dec.log" >&2
+    elif ! cmp -s "$W/ibc-dec.yuv" "$W/rs.yuv"; then
       pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC decode differs from source]")
     fi
   fi

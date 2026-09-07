@@ -812,6 +812,15 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed 2026-09-07 — configured decoder ignored by lossless IntraBC gate.**
+CI run 34138303485 failed two cases because `losslessIbc` invoked PATH's aomdec
+instead of the supplied RS_AOMDEC. A local failing PATH decoder reproduces the
+exact 121/123 tally; the corrected helper passes 123/123 under the same setup.
+It requests coded output depth and distinguishes decoder failure from sample
+mismatch. Encoder source and every pixel/byte assertion are unchanged. See
+`benchmarks/ci_decoder_routing_2026-09-07.md`.
+
+
 **Fixed 2026-09-07 — animation HDR track metadata omission in canonical parser.**
 AMVE/CCLV are now wired through animation options, serializer and native decode
 metadata; the canonical track parser also retains previously discarded CLLI/MDCV.
