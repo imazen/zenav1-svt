@@ -47,7 +47,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
-| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha currently require preset >=9; 8-bit monochrome supports partial SBs at every preset. Lower-preset native monochrome, 12-bit, 4:4:4/4:2:2 and lossless remain. C's rejection of some formats does not waive this broader user objective |
+| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha and 8-bit monochrome support partial SBs at every preset. Native monochrome mode decisions still use the upper eight bits; full native MD, 12-bit, 4:4:4/4:2:2 and lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
 | Robust API | Streaming/bounded memory, cancellation, fallible allocation, overflow checks and complete validation remain to be audited across encoder and serializer |
@@ -290,3 +290,43 @@ A fresh release animation example passes all 54 timing/seek cases and all
 with existing warnings (`mono-low-clippy-final.log`); scoped rustfmt, whitespace
 and the 52-entry refusal inventory checks pass. Both repositories were fetched;
 remote branches were unchanged. CI remains deferred and no commits were pushed.
+
+## Native monochrome at lower presets (2026-09-07 continuation)
+
+The native level pass now derives RDOQ contexts from the ten-bit quantizer's
+coefficient neighbor bytes, with tile-boundary resets. Faster presets retain
+C's zero-context arm. It reads the actual sequence-header edge-filter flag
+(monochrome disables it), and carries the parent partition into directional
+prediction. Only after this wiring and decoder verification was the native
+monochrome preset floor removed. Both monochrome animations and color
+animations' native alpha use this pipeline without remapping speed.
+
+Removing the floor alone exposed a real decoder mismatch: preset 0, 64x64,
+quality 98 first differed at (55,24). Dav1d with in-loop filters disabled
+localized 19 wrong samples before filtering. The native predictor passed
+PARTITION_NONE for a VERT_A/B child, reading unavailable top-right samples.
+Threading the parent partition fixes that witness. The same directional kernels
+and C-derived availability tables remain in use; no prediction mode was removed.
+
+`native_monochrome_low_presets_match_decoder` covers 108 cases: presets 0–8,
+qualities 40/98, four single-tile dimensions and two dimensions with four tiles,
+including odd boundaries. Every decoded aomdec luma sample equals native final
+reconstruction, low input bits change coded output, and enabling reconstruction
+output does not change bytes. Native monochrome animation additionally verifies
+luma and alpha through libavif at speed 2, including 65x67.
+
+This closes the preset restriction, not full native mode decision: monochrome
+still selects modes from the upper eight input bits. Full ten-bit mode decision,
+lossless monochrome/alpha, and the other format/video rows above remain open.
+CI remains deferred; the serializer dependency is still the temporary local
+path pending canonical landing and a verified git pin.
+
+Final local verification for this continuation: **2,596/2,596 workspace tests,
+zero skipped; 111/111 regression cases; 1,100/1,100 8-bit C-byte comparisons,
+zero pins and zero harness errors.** Clippy completes with existing warnings;
+scoped rustfmt, diff checks, and the 51-entry refusal inventory pass. Logs are
+`~/tmp/animation-metadata/native-mono-{nextest-final,spotcheck-final,identity,clippy}.log`;
+the failure and localization logs use `native-mono-low-*`. The last edit only
+moves the pre-existing recon-canvas doc comment back onto its function after
+inserting the neighbor-state type. Both canonical and main repo fetches reported
+no remote changes. No push or CI run occurred.

@@ -1239,38 +1239,18 @@ mod tests {
         }
     }
 
-    /// 10-bit through the u8 entry points only produces TRUE 10-bit coded
-    /// levels inside a narrow envelope (4:2:0 + 64-aligned + a bd10 producer
-    /// for that preset). `AvifEncoder` is monochrome and pads to 64, so no
-    /// bd10 producer exists below preset 9: the whole encode ran with the Q8
-    /// tables while the sequence header advertised `high_bitdepth = 1`, and
-    /// the decoder dequantized it with Q10. That stream is decodable and
-    /// indistinguishable from success at the seam — the exact
-    /// "plausible-but-wrong bitstream" class the project bans. Anti-vacuity:
-    /// without `bit_depth_config_error` this returns `Ok` with corrupt bytes.
+    /// The native level pass now supplies true Q10 levels at every preset,
+    /// including for widened input through the legacy monochrome API.
     #[test]
-    fn bit_depth_10_refuses_where_no_bd10_stage_runs() {
+    fn bit_depth_10_monochrome_encodes_at_every_speed() {
         let pixels = vec![100u8; 64 * 64];
-        // Speeds 1-6 map to presets 0,1,3,4,6,7 — all below 9, all broken.
-        for speed in [1u8, 2, 3, 4, 5, 6] {
-            let err = AvifEncoder::new()
+        for speed in 1..=10 {
+            let bytes = AvifEncoder::new()
                 .with_bit_depth(10)
                 .with_speed(speed)
                 .encode_y8(&pixels, 64, 64, 64)
-                .expect_err("10-bit mono below preset 9 has no bd10 producer");
-            assert!(
-                matches!(err, EncodeError::UnsupportedConfig(_)),
-                "speed {speed}: expected UnsupportedConfig, got {err:?}"
-            );
+                .unwrap();
+            assert!(!bytes.data.is_empty(), "speed {speed}");
         }
-        // Speeds 7-10 all clamp to preset 9, where the level post-pass runs.
-        assert!(
-            AvifEncoder::new()
-                .with_bit_depth(10)
-                .with_speed(10)
-                .encode_y8(&pixels, 64, 64, 64)
-                .is_ok(),
-            "preset 9 has a real bd10 producer and must still encode"
-        );
     }
 }

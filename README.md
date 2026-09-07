@@ -150,9 +150,10 @@ separate video-scale future.
 Two envelope details for *consumers*: the 10-bit path is byte-gated internally,
 and the public encode API takes **native 10-bit `&[u16]` input** via
 `try_encode_frame_420_hbd` / `try_encode_frame_hbd` — the low 2 bits reach the
-mode decision, the coded levels, and the deblock/CDEF/Wiener searches
-(`tools/bd10_hbd_src_gate.sh`, 100/100 vs C). Native color supports partial
-superblocks; native monochrome requires preset ≥ 9. Out-of-envelope configs are
+color mode decision, the coded levels, and the deblock/CDEF/Wiener searches
+(`tools/bd10_hbd_src_gate.sh`, 100/100 vs C). Native color and monochrome support
+partial superblocks at every preset. Monochrome mode decision still uses the
+upper eight bits, while its coded levels retain all ten. Out-of-envelope configs are
 rejected with `UnsupportedConfig`, never silently truncated.
 Partial-superblock support is shared with the 8-bit path; see the dimension
 gates above for the measured C-byte and decoder-reconstruction coverage.
@@ -218,7 +219,8 @@ with its alpha and metadata, sharing the first frame’s compressed image bytes.
 `encode_animation_mono` and `encode_animation_mono_hbd` accept
 `MonochromeAnimationFrame` without chroma planes, with the same metadata and
 optional alpha. Eight-bit monochrome supports partial superblocks at all presets;
-native monochrome and native alpha currently require preset >=9.
+native monochrome and native alpha also support every preset, with ten-bit
+coded levels and currently eight-bit mode decisions.
 Native 10-bit supports partial frame edges. [The animation plan](rust/docs/ANIMATED-AVIF-PLAN.md) lists
 verification and remaining format, lossless, spatial-property and video work.
 

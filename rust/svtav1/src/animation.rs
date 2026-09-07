@@ -179,8 +179,8 @@ impl AvifEncoder {
     }
 
     /// Encode native 10-bit grayscale and optional alpha. Configure bit depth
-    /// 10 on the encoder. The native monochrome pipeline currently requires
-    /// preset 9 or higher; samples retain all ten bits.
+    /// 10 on the encoder. Coded levels retain all ten bits at every speed;
+    /// mode decisions currently use the upper eight bits.
     pub fn encode_animation_mono_hbd(
         &self,
         frames: &[MonochromeAnimationFrame<'_, u16>],
@@ -981,6 +981,14 @@ mod tests {
             u16,
             10,
             9,
+            encode_animation_mono_hbd,
+            try_encode_frame_hbd,
+            [(64usize, 80usize), (65, 67)]
+        );
+        exercise!(
+            u16,
+            10,
+            2,
             encode_animation_mono_hbd,
             try_encode_frame_hbd,
             [(64usize, 80usize), (65, 67)]

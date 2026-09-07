@@ -1206,6 +1206,45 @@ pub(crate) fn predict_unit_hbd(
     dst: &mut [u16],
     bd: u8,
 ) {
+    predict_unit_hbd_partition(
+        recon,
+        stride,
+        abs_x,
+        abs_y,
+        w,
+        h,
+        mode,
+        delta,
+        fi_mode,
+        geom,
+        edge_filter,
+        filt_type,
+        dst,
+        bd,
+        svtav1_types::partition::PartitionType::None,
+    );
+}
+
+/// Native post-pass prediction carries the coded parent partition: VERT_A/B
+/// change top-right and bottom-left availability for their square children.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_unit_hbd_partition(
+    recon: &[u16],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    w: usize,
+    h: usize,
+    mode: u8,
+    delta: i8,
+    fi_mode: u8,
+    geom: &UnitGeom,
+    edge_filter: bool,
+    filt_type: i32,
+    dst: &mut [u16],
+    bd: u8,
+    partition: svtav1_types::partition::PartitionType,
+) {
     use svtav1_dsp::hbd as hp;
     // Directional: modes D45..D203 (3..=8) OR V/H with a nonzero angle delta.
     // Mirrors the u8 `predict_unit` directional arm: same DrGeom, routed to the
@@ -1236,7 +1275,7 @@ pub(crate) fn predict_unit_hbd(
             p_angle,
             edge_filter,
             filt_type,
-            svtav1_types::partition::PartitionType::None,
+            partition,
             dst,
             bd,
         );

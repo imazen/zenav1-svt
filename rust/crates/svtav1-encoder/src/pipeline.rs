@@ -1186,7 +1186,7 @@ impl EncodePipeline {
     ///
     /// The full-RD color funnel and the level re-encode post-pass consume
     /// real u16 samples, including partial superblocks. Monochrome has only
-    /// the latter consumer at preset >= 9. Reject configurations without a
+    /// the latter consumer at every preset. Reject configurations without a
     /// consumer so the caller's low bits cannot be silently discarded.
     fn hbd_source_consumed(&self, chroma_420: bool) -> bool {
         self.bd10_levels_native(chroma_420)
@@ -1221,10 +1221,10 @@ impl EncodePipeline {
         }
         let (w, h) = (self.width as usize, self.height as usize);
         // Monochrome builds no funnel (`use_funnel` requires 4:2:0). The
-        // post-pass cannot stand in for it below preset 9 either: it hardcodes
-        // the RDOQ txb_skip/dc_sign contexts to 0/0, which is correct only
-        // where `real_coeff_ctx` is off — i.e. only in the eff-M9 band. So
-        // mono bd10 is faithful at preset >= 9 and nowhere else.
+        // native level pass carries real coefficient contexts and the coded
+        // parent partition's directional availability at every preset. The
+        // sequence header disables mono edge filtering. Mode decision still
+        // uses the upper eight bits; coded levels use all ten.
         let preset = self.speed_config.preset;
         // NO GEOMETRY TERM (2026-08-04). Both bd10 level producers are now
         // partial-SB aware: the full-RD funnel (preset <= 8) rides the shared,
@@ -1234,7 +1234,7 @@ impl EncodePipeline {
         // skip-off-frame-quadrant child walk. Both are gated per-CELL below
         // rather than by dimension.
         if !chroma_420 {
-            return preset >= 9;
+            return true;
         }
         preset >= 9 || bd10_full_rd_supported(self.bit_depth, preset, chroma_420, w, h)
     }
@@ -1429,8 +1429,8 @@ impl EncodePipeline {
     ///    That output is decodable and looks like a successful encode at the
     ///    integration seam, which is exactly the class `rust/CLAUDE.md`
     ///    ("Refuse out-of-envelope configs; never emit a plausible-but-wrong
-    ///    stream") forbids. Reachable today from `AvifEncoder::with_bit_depth(10)`
-    ///    at every speed whose preset is <= 8, including the DEFAULT speed.
+    ///    stream") forbids. The native producers now cover both formats at
+    ///    every preset; retain the defensive check for future configuration gaps.
     fn bit_depth_config_error(&self, chroma_420: bool) -> Option<&'static str> {
         match self.bit_depth {
             8 => return None,
@@ -1458,17 +1458,8 @@ impl EncodePipeline {
         if self.bd10_levels_native(chroma_420) {
             return None;
         }
-        if !chroma_420 && self.speed_config.preset < 9 {
-            return Some(
-                "10-bit monochrome needs preset >= 9: below that neither bd10 producer runs (the \
-                 full-RD funnel requires 4:2:0, and the level-only post-pass would miscode with \
-                 its 0/0 RDOQ contexts), so the encode would be 8-bit-quantized under a 10-bit \
-                 sequence header [C: no mono mode]",
-            );
-        }
-        // DEFENSIVE, AND PROVEN UNREACHABLE TODAY. `bd10_levels_native` is
-        // `preset >= 9` for mono (the arm above covers its complement) and
-        // `preset >= 9 || preset <= 8` for 4:2:0, i.e. a tautology — so no
+        // DEFENSIVE, AND PROVEN UNREACHABLE TODAY. Native mono levels cover
+        // all presets; color has `preset >= 9 || preset <= 8`, so no
         // caller can land here. It is kept because the alternative is an
         // implicit `None` that would let a FUTURE bd10 gap encode 8-bit
         // levels under a 10-bit sequence header, which is the exact failure
@@ -1763,7 +1754,7 @@ impl EncodePipeline {
     /// [`Self::try_encode_frame_420_hbd`] (task #6 chunk 1).
     ///
     /// Monochrome builds no MD funnel, so the only consumer of the real u16
-    /// samples is the bd10 level re-encode post-pass (preset >= 9): the coded
+    /// samples is the bd10 level re-encode post-pass (every preset): the coded
     /// LEVELS are computed at true 10 bits, while the mode decision itself
     /// still runs on the MSB-truncated plane. Rejects any config where even
     /// that consumer is absent.
@@ -1786,8 +1777,7 @@ impl EncodePipeline {
         }
         if !self.hbd_source_consumed(false) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "native 10-bit monochrome input needs the bd10 level re-encode post-pass: \
-                 preset >= 9 — see docs/hbd-input-port-map.md chunk 2",
+                "native 10-bit monochrome input requires a native level producer (defensive check; all current presets are supported)",
             )));
         }
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
@@ -4453,21 +4443,11 @@ impl EncodePipeline {
             self.last_recon10_uv = Some((cu, cv));
         }
         if self.bit_depth == 10 {
-            // Run the u16 re-encode ONLY on frames within the ported bd10
-            // envelope (every luma leaf tx_depth 0, non-directional,
-            // non-filter-intra). Outside it, fall back to the (non-panicking)
-            // u8 output rather than crash the public encode_frame_420 API —
-            // predict_unit_hbd / bd10_reencode_node panic loudly on unported
-            // modes/tx_depth (task #94 follow-ups: dr_predict_hbd,
-            // predict_filter_intra_hbd, tx_depth>0 re-encode). The supported
-            // subset (currently the DC-family first cell) is exact; the rest is
-            // WIP, so this keeps the encoder panic-free while the port grows.
-            // SH intra edge filter for this frame (the FunnelCfg the u8 tree was
-            // searched with). Directional bd10 leaves are only in-envelope when
-            // it is off (the re-encode passes filt_type=0); for {M3,M6,M10,M13}
-            // it is false, for M5 (4:2:0 still) true.
-            let bd10_edge_filter =
-                crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset).edge_filter;
+            // The native level pass accepts depth-zero transforms, including
+            // filter-intra and directional prediction without edge filtering.
+            // Use the actual sequence-header tool value. Monochrome disables
+            // edge filtering; color's full-RD funnel handles lower presets.
+            let bd10_edge_filter = seq_tools.enable_intra_edge_filter;
             // PARTIAL SB (2026-08-04): this used to be gated on
             // `w % 64 == 0 && h % 64 == 0` with the rationale that
             // "`tx_unit_hbd` is not partial-SB-aware". That named the wrong
@@ -4482,7 +4462,8 @@ impl EncodePipeline {
             // zipping a fixed `(type, len)` offset table that a pruned child
             // list does not satisfy. See `bd10_reencode_luma` /
             // `bd10_reencode_node`.
-            // NOTE (measured, task #94): the bd10 FULL-RD funnel now also
+            // HISTORICAL MEASUREMENT (task #94, before native luma context
+            // wiring below): the bd10 FULL-RD funnel also
             // produces 10-bit coded levels, computed with each txb's REAL
             // entropy contexts — whereas this post-pass hardcodes the RDOQ
             // contexts to 0/0 (only correct where `real_coeff_ctx` is off).
@@ -4495,11 +4476,12 @@ impl EncodePipeline {
             // still live where the post-pass does not reach: the neighbour
             // `cul` bytes that drive later blocks' coefficient contexts, and
             // the u8 chroma recon the CDEF/LR searches read.
-            // Where the FULL-RD funnel ran, it ALREADY produced this frame's
+            // The resulting gate remains: where the FULL-RD funnel ran, it
+            // ALREADY produced this frame's
             // coded 10-bit levels and the committed 10-bit recon, computed
             // with each txb's REAL entropy contexts. This level-only post-pass
-            // hardcodes the RDOQ contexts to 0/0 — correct only where
-            // `real_coeff_ctx` is off — so letting it run on top REPLACES
+            // originally hardcoded RDOQ contexts to 0/0 — correct only where
+            // `real_coeff_ctx` is off — so letting it run on top REPLACED
             // correct levels with ones quantized under the wrong contexts, and
             // the recon it writes then disagrees with the bitstream the funnel
             // decided. That is exactly the invariant `bd10_full_rd_supported`
@@ -4527,21 +4509,16 @@ impl EncodePipeline {
                 && all_trees
                     .iter()
                     .all(|t| bd10_tree_supported(t, bd10_edge_filter));
-            // INVARIANT (D4): the level-only post-pass hardcodes the RDOQ
-            // txb_skip_ctx / dc_sign_ctx to 0/0 (leaf_funnel.rs), which is
-            // correct ONLY where `real_coeff_ctx` is false — the eff-M9 band
-            // (preset >= 9), the only band where `bd10_full_rd` is false for an
-            // aligned frame. Enforce that coupling so it cannot silently re-open
-            // if `bd10_full_rd_supported` is ever widened downward (e.g. a
-            // preset <= 6 aligned bd10 SCREEN frame turns `bd10_full_rd` off via
-            // palette_level != 0, where `real_coeff_ctx` is TRUE — the post-pass
-            // must NOT run there). Debug-only; the reachable envelope satisfies it.
+            // Native luma supports real coefficient contexts. Chroma's
+            // level-only pass still requires zero contexts, so full-RD color
+            // levels must remain authoritative at lower presets.
             debug_assert!(
                 !bd10_postpass_runs
+                    || !self.chroma_420
                     || !crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset)
                         .real_coeff_ctx,
                 "bd10 level-only post-pass would run where real_coeff_ctx is true \
-                 (preset {}): its 0/0 RDOQ contexts would miscode the levels",
+                 (preset {}): chroma post-pass requires zero contexts",
                 self.speed_config.preset
             );
             // Diagnostic: which 10-bit canvas the post-filter searches (DLF
@@ -4606,6 +4583,8 @@ impl EncodePipeline {
                     cq.rdoq_level,
                     lambda_bd10,
                     cq.allintra_rd_mult,
+                    crate::leaf_funnel::FunnelCfg::for_preset(self.speed_config.preset)
+                        .real_coeff_ctx,
                     bd10_edge_filter,
                     self.bit_depth,
                     qm_levels[0],
@@ -10494,12 +10473,11 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
             // DC-based levels under palette syntax — a decoder desync, not a
             // quality loss.
             //
-            // This is unreachable today (the post-pass runs only at preset >= 9,
-            // where `sc_detect` yields palette_level = 0 and intrabc_level = 0
-            // unconditionally), and it was unreachable BEFORE for a second
-            // reason too: palette was gated out of the bd10 funnel entirely.
-            // That second reason is now gone — palette is ported at bd10 — so
-            // the invariant rests on the sc_detect preset table alone. Enforce
+            // The color post-pass runs only at preset >= 9, where `sc_detect`
+            // yields palette_level = 0 and intrabc_level = 0. Monochrome's
+            // legacy search does not inject these tools. Historically palette
+            // was also gated out of the bd10 funnel; that gate is gone now.
+            // Enforce
             // it structurally instead: a leaf the post-pass cannot code drops
             // the frame back to the u8 output, which is the same
             // fall-back-don't-miscode contract every other clause here has.
@@ -10509,6 +10487,55 @@ fn bd10_tree_supported(tree: &crate::partition::PartitionTree, edge_filter: bool
         crate::partition::PartitionTree::Split { children, .. } => {
             children.iter().all(|c| bd10_tree_supported(c, edge_filter))
         }
+    }
+}
+
+/// Coefficient neighbors for the native level pass. Keep the bytes produced
+/// by the 10-bit quantizer, never the provisional 8-bit mode-search levels.
+/// SB raster order preserves in-tile neighbors; each tile boundary clears only
+/// the entering SB span so adjacent tiles cannot contribute coefficient signs.
+struct Bd10CoeffNeighbors {
+    above: Vec<u8>,
+    left: Vec<u8>,
+}
+
+impl Bd10CoeffNeighbors {
+    fn new(w: usize, h: usize) -> crate::EncodeResult<Self> {
+        Ok(Self {
+            above: svtav1_types::try_vec![0u8; w.div_ceil(4)]?,
+            left: svtav1_types::try_vec![0u8; h.div_ceil(4)]?,
+        })
+    }
+
+    fn enter_sb(&mut self, x: usize, y: usize, size: usize, tile: crate::intra_edge::TileMi) {
+        let (mx, my) = (x / 4, y / 4);
+        if my == tile.mi_row_start {
+            let end = (mx + size / 4).min(self.above.len());
+            self.above[mx..end].fill(0);
+        }
+        if mx == tile.mi_col_start {
+            let end = (my + size / 4).min(self.left.len());
+            self.left[my..end].fill(0);
+        }
+    }
+
+    fn contexts(&self, x: usize, y: usize, w: usize, h: usize) -> (usize, usize) {
+        let (mx, my) = (x / 4, y / 4);
+        crate::entropy::coeff_c::get_txb_ctx(
+            0,
+            &self.above[mx..(mx + w / 4).min(self.above.len())],
+            &self.left[my..(my + h / 4).min(self.left.len())],
+            true, // one transform spans the whole luma block
+            false,
+        )
+    }
+
+    fn record(&mut self, x: usize, y: usize, w: usize, h: usize, cul: u8) {
+        let (mx, my) = (x / 4, y / 4);
+        let right = (mx + w / 4).min(self.above.len());
+        let bottom = (my + h / 4).min(self.left.len());
+        self.above[mx..right].fill(cul);
+        self.left[my..bottom].fill(cul);
     }
 }
 
@@ -10547,6 +10574,7 @@ fn bd10_reencode_luma(
     // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
+    real_coeff_ctx: bool,
     edge_filter: bool,
     bd: u8,
     qm_level: u8,
@@ -10575,10 +10603,12 @@ fn bd10_reencode_luma(
     // does. (rust/CLAUDE.md: dead-looking translations stay, with the
     // measurement written down.)
     let mut recon10 = svtav1_types::try_vec![(128u16 << (bd - 8)); ext_w * ext_h]?;
+    let mut coeff_neighbors = Bd10CoeffNeighbors::new(w, h)?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
         let tile_mi = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, w, h);
+        coeff_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi);
         bd10_reencode_node(
             sb_size / 4,
             tree,
@@ -10593,12 +10623,15 @@ fn bd10_reencode_luma(
             lambda_bd10,
             allintra_rd_mult,
             &rates,
+            real_coeff_ctx,
+            &mut coeff_neighbors,
             edge_filter,
             w,
             h,
             bd,
             qm_level,
             tile_mi,
+            svtav1_types::partition::PartitionType::None,
         );
     }
     Ok(recon10)
@@ -10623,6 +10656,8 @@ fn bd10_reencode_node(
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
     rates: &crate::leaf_funnel::MdRates,
+    real_coeff_ctx: bool,
+    coeff_neighbors: &mut Bd10CoeffNeighbors,
     edge_filter: bool,
     frame_w: usize,
     frame_h: usize,
@@ -10631,6 +10666,7 @@ fn bd10_reencode_node(
     // ISSUE #18: the tile CONTAINING this superblock, from
     // `TileGrid::tile_mi_for_sb`. Was `TileMi::whole_frame`.
     tile_mi: crate::intra_edge::TileMi,
+    parent_partition: svtav1_types::partition::PartitionType,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -10680,7 +10716,7 @@ fn bd10_reencode_node(
                 // all, which is why that measurement did not catch this.
                 tile: tile_mi,
             };
-            crate::leaf_funnel::predict_unit_hbd(
+            crate::leaf_funnel::predict_unit_hbd_partition(
                 recon10,
                 stride,
                 x,
@@ -10695,9 +10731,16 @@ fn bd10_reencode_node(
                 0,
                 &mut pred,
                 bd,
+                parent_partition,
             );
             let src_off = y * src_stride + x;
-            // RDOQ contexts are 0/0 at eff-M9 (rate_est_level 0).
+            // C disables context updates at the faster presets. Otherwise
+            // derive contexts from the native levels committed in decode order.
+            let (txb_skip_ctx, dc_sign_ctx) = if real_coeff_ctx {
+                coeff_neighbors.contexts(x, y, bw, bh)
+            } else {
+                (0, 0)
+            };
             let out = crate::leaf_funnel::tx_unit_hbd(
                 src10,
                 src_stride,
@@ -10709,8 +10752,8 @@ fn bd10_reencode_node(
                 bh,
                 d.tx_type as usize,
                 0, // luma plane
-                0, // txb_skip_ctx
-                0, // dc_sign_ctx
+                txb_skip_ctx,
+                dc_sign_ctx,
                 qt,
                 rdoq_level,
                 lambda,
@@ -10739,6 +10782,7 @@ fn bd10_reencode_node(
             }
             d.qcoeffs = full;
             d.eob = out.eob;
+            coeff_neighbors.record(x, y, bw, bh, out.cul);
             // Write the 10-bit recon back for neighbour prediction of the next
             // block in decode order.
             //
@@ -10799,6 +10843,8 @@ fn bd10_reencode_node(
                     lambda,
                     allintra_rd_mult,
                     rates,
+                    real_coeff_ctx,
+                    coeff_neighbors,
                     edge_filter,
                     frame_w,
                     frame_h,
@@ -10807,6 +10853,11 @@ fn bd10_reencode_node(
                     // Children are inside the same superblock, hence the same
                     // tile (issue #18).
                     tile_mi,
+                    match partition_type {
+                        PT::VertA => svtav1_types::partition::PartitionType::VertA,
+                        PT::VertB => svtav1_types::partition::PartitionType::VertB,
+                        _ => svtav1_types::partition::PartitionType::None,
+                    },
                 );
             };
             match *partition_type {
@@ -13940,6 +13991,44 @@ fn encode_tile_rows(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_coeff_neighbors_preserve_in_tile_signs_and_reset_tile_edges() {
+        use super::Bd10CoeffNeighbors;
+        use crate::intra_edge::TileMi;
+        let mut neighbors = Bd10CoeffNeighbors::new(136, 136).unwrap();
+        let tile = TileMi::whole_frame(136, 136);
+        neighbors.enter_sb(0, 0, 64, tile);
+        assert_eq!(neighbors.contexts(0, 0, 8, 8), (0, 0));
+        neighbors.record(0, 0, 8, 16, 64 | 7); // negative DC
+        assert_eq!(neighbors.contexts(8, 0, 8, 16), (0, 1));
+        neighbors.record(8, 0, 8, 16, 128 | 2); // positive DC
+        assert_eq!(neighbors.contexts(16, 0, 8, 16), (0, 2));
+        neighbors.record(0, 0, 64, 64, 64 | 3);
+        neighbors.enter_sb(64, 0, 64, tile);
+        assert_eq!(neighbors.contexts(64, 0, 8, 8), (0, 1));
+        neighbors.enter_sb(0, 64, 64, tile);
+        assert_eq!(neighbors.contexts(0, 64, 8, 8), (0, 1));
+
+        let right_tile = TileMi {
+            mi_col_start: 16,
+            ..tile
+        };
+        neighbors.enter_sb(64, 0, 64, right_tile);
+        assert_eq!(neighbors.contexts(64, 0, 8, 8), (0, 0));
+        let bottom_tile = TileMi {
+            mi_row_start: 16,
+            ..tile
+        };
+        neighbors.enter_sb(0, 64, 64, bottom_tile);
+        assert_eq!(neighbors.contexts(0, 64, 8, 8), (0, 0));
+
+        // A legal straddling leaf records only the visible frame spans.
+        neighbors.record(128, 128, 16, 16, 128 | 1);
+        assert_eq!(neighbors.contexts(128, 128, 16, 16), (0, 2));
+        neighbors.record(128, 128, 16, 16, 0);
+        assert_eq!(neighbors.contexts(128, 128, 16, 16), (0, 0));
+    }
+
     use super::*;
     use crate::rate_control::RcMode;
     use alloc::vec;

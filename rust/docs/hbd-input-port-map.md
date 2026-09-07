@@ -3,8 +3,9 @@
 **2026-09-07 correction:** the historical 64-alignment requirement below no
 longer describes the implementation. Both native level producers support partial
 superblocks. Native monochrome now pads both source representations consistently
-and accepts odd dimensions at preset >=9; its mode decision still uses the upper
-8 bits. Native color and alpha are exposed by the animation API; see
+and accepts odd dimensions at every preset; its mode decision still uses the
+upper 8 bits. The native level pass carries coefficient neighbors with tile
+resets and the coded parent partition for directional availability. Native color and alpha are exposed by the animation API; see
 [ANIMATED-AVIF-PLAN.md](ANIMATED-AVIF-PLAN.md) for current tests and open work.
 The earlier chunk records below describe their original landing state.
 

@@ -193,3 +193,59 @@ fn monochrome_low_presets_partial_blocks() {
         }
     }
 }
+
+#[test]
+fn native_monochrome_low_presets_match_decoder() {
+    for (w, h, tiles) in [
+        (64usize, 64usize, 0),
+        (65, 67, 0),
+        (64, 80, 0),
+        (127, 129, 0),
+        (128, 128, 1),
+        (129, 131, 1),
+    ] {
+        for preset in 0..=8 {
+            for quality in [40.0, 98.0] {
+                let stride = w + 5;
+                let y: Vec<u16> = (0..stride * h)
+                    .map(|i| (100 + (i * 7 + i / stride * 13) % 750) as u16)
+                    .collect();
+                let mut p = pipeline(w, h, preset, quality, 10)
+                    .with_chroma_420(false)
+                    .with_tile_rows_log2(tiles)
+                    .with_tile_cols_log2(tiles);
+                let obu = p.try_encode_frame_hbd(&y, stride).unwrap();
+                let expected: Vec<u8> = p
+                    .last_recon10_final
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .chunks_exact(p.width as usize)
+                    .take(h)
+                    .flat_map(|row| row[..w].iter().flat_map(|v| v.to_le_bytes()))
+                    .collect();
+                decode_eq(
+                    &format!("native-mono-p{preset}-{w}x{h}-q{quality}-tiles{tiles}"),
+                    &obu,
+                    &expected,
+                );
+                let mut no_recon = pipeline(w, h, preset, quality, 10)
+                    .with_chroma_420(false)
+                    .with_tile_rows_log2(tiles)
+                    .with_tile_cols_log2(tiles)
+                    .with_recon_output(false);
+                assert_eq!(obu, no_recon.try_encode_frame_hbd(&y, stride).unwrap());
+                let msb: Vec<u16> = y.iter().map(|v| v & !3).collect();
+                let mut truncated = pipeline(w, h, preset, quality, 10)
+                    .with_chroma_420(false)
+                    .with_tile_rows_log2(tiles)
+                    .with_tile_cols_log2(tiles);
+                assert_ne!(
+                    obu,
+                    truncated.try_encode_frame_hbd(&msb, stride).unwrap(),
+                    "native low bits must change coded output"
+                );
+            }
+        }
+    }
+}

@@ -809,6 +809,16 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed 2026-09-07 — native monochrome preset floor.** Native level
+re-encoding now carries coefficient-sign neighbors with tile resets and the
+coded parent partition into directional prediction. Removing the floor before
+partition wiring exposed 19 wrong prefilter samples (p0,64x64,q98,first55/24):
+VERT_A/B children were predicted as PARTITION_NONE. The 108-case native grid
+now matches aomdec, preserves low input bits, and is byte-invariant to the recon
+output flag. Native mono/alpha animation at speed 2 also passes exact pixel
+checks. Monochrome mode decisions still use the upper eight bits; full native
+MD and lossless remain. See ANIMATED-AVIF-PLAN.md for the wider active scope.
+
 **Fixed 2026-09-07 — low-preset monochrome partial blocks.** The non-PD0
 search previously rooted at the clamped edge rectangle and was guarded to
 64-aligned frames. It now starts at the square coding-unit root, recursively
@@ -819,7 +829,7 @@ SB allocation (16384 bytes at stride 72) was treated as the frame canvas.
 Passing the actual aligned canvas fixes the assertion and neighbor bounds.
 144 aomdec cases (eight shapes, presets 0–5, qualities 40/75/98) now decode to
 exact reconstruction. Evidence: `~/tmp/animation-metadata/mono-low-{before,backtrace,nextest}.log`.
-The native 10-bit preset floor and lossless monochrome are still capability gaps.
+The native 10-bit preset floor is resolved by the continuation below; lossless monochrome remains.
 
 
 Fixed 2026-09-07: partial-edge cached chroma writes crossed destination rows

@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Native 10-bit monochrome and alpha at every preset: carry native coefficient-sign contexts, honor the signaled edge-filter tool, and preserve VERT_A/B directional neighbor availability in the level re-encode pass. Mode decision still uses the upper eight bits.
+
 - Support partial monochrome superblocks at 8-bit presets 0–5 with square boundary partition search; correct directional neighbor bounds at partial frame edges.
 
 - 8-bit and native 10-bit monochrome animated AVIF APIs with optional alpha and the shared timing, metadata and spatial-property options.
