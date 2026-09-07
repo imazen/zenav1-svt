@@ -291,7 +291,7 @@ std::thread_local! {
 }
 
 /// C `svt_av1_compute_cul_level` (full_loop.c:1356).
-pub(super) fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
+pub(crate) fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
     let mut cul: u32 = 0;
     for c in 0..eob as usize {
         cul += qcoeff[scan[c] as usize].unsigned_abs();

@@ -275,10 +275,9 @@ impl AvifEncoder {
 
     /// Request lossless encoding.
     ///
-    /// CURRENTLY INERT AND REJECTED: the encode entry points return
-    /// [`EncodeError::UnsupportedConfig`] when this is set, because the
-    /// encoder would otherwise silently produce a LOSSY stream. Setting it
-    /// back to `false` clears the rejection.
+    /// Selects QP 0 for exact 8-bit source reconstruction on color and
+    /// monochrome stills and animations, including alpha. Native 10-bit
+    /// lossless and inter-frame lossless remain unsupported.
     pub fn with_lossless(mut self, lossless: bool) -> Self {
         self.lossless = lossless;
         self
@@ -341,9 +340,8 @@ impl AvifEncoder {
         let rc_config = svtav1_encoder::rate_control::RcConfig {
             mode: svtav1_encoder::rate_control::RcMode::Cqp,
             // `with_lossless(true)` IS QP 0 in AV1 (spec 5.9.12
-            // `CodedLossless`), which the 4:2:0 path implements
-            // byte-identically to C (issue #5). The monochrome path refuses
-            // the knob in `validate_inert_knobs` before reaching here.
+            // `CodedLossless`). Both 8-bit color and monochrome paths use
+            // WHT transforms and bypass the in-loop filters at this index.
             qp: if self.lossless {
                 0
             } else {
@@ -581,22 +579,8 @@ impl AvifEncoder {
     /// encoder is unconditionally still-image: one KEY frame, temporal tools
     /// forced off for all-intra exactly as C does).
     ///
-    /// `chroma_420` says which entry point is asking. It matters for the two
-    /// lossless refusals: coded-lossless (QP 0) IS implemented on the 4:2:0
-    /// still path (issue #5, byte-identical to C under
-    /// `tools/lossless_gate.sh`) and is NOT implemented on the monochrome
-    /// leaf coder.
-    fn validate_inert_knobs(&self, chroma_420: bool) -> Result<(), EncodeError> {
-        if self.lossless && !chroma_420 {
-            // Issue #5 chunk 2 landed coded-lossless (QP 0) on the 4:2:0
-            // still path only; the monochrome leaf coder has no lossless arm,
-            // so on THIS path the knob would silently return a lossy stream.
-            return Err(EncodeError::UnsupportedConfig(
-                "lossless encoding is not implemented for monochrome (encode_y8); QP 0 \
-                 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline \
-                 mode [C: no mono mode]",
-            ));
-        }
+    /// Format-independent checks; capability guards remain in the pipeline.
+    fn validate_inert_knobs(&self, _chroma_420: bool) -> Result<(), EncodeError> {
         if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
             return Err(EncodeError::UnsupportedConfig(
                 "only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only)",
@@ -612,21 +596,6 @@ impl AvifEncoder {
         if !matches!(self.bit_depth, 8 | 10) {
             return Err(EncodeError::UnsupportedConfig(
                 "bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init)",
-            ));
-        }
-        // Quality > ~99.21 maps to QP 0, which is LOSSLESS in AV1 — the WHT
-        // transform path, the forced-off loop filters and the frame-header
-        // omissions are all unported, so the pipeline refuses qp 0. It used to
-        // refuse it from inside the INFALLIBLE `EncodePipeline::encode_frame`,
-        // whose `.expect()` then aborted the caller's process: the most obvious
-        // "maximum quality" input panicked through a Result-returning API.
-        // Reject it here, as a typed error, at the same place the other
-        // unsupported knobs are caught.
-        if Self::quality_to_qp(self.quality) == 0 && !chroma_420 {
-            return Err(EncodeError::UnsupportedConfig(
-                "quality > 99.2 maps to QP 0, which is coded-lossless AV1 (WHT transform + \
-                 lossless header signalling); the monochrome leaf coder has no lossless arm — use \
-                 a lower quality, or encode_yuv420 for a coded-lossless 4:2:0 still",
             ));
         }
         Ok(())
@@ -876,10 +845,9 @@ mod tests {
         (y, u, v)
     }
 
-    /// Item 7: `with_lossless(true)` is QP 0 on the 4:2:0 path (issue #5) and
-    /// a typed refusal on the monochrome one — never a silently lossy stream.
+    /// The lossless flag selects QP 0 for both color and monochrome.
     #[test]
-    fn lossless_is_qp0_on_420_and_refused_on_mono() {
+    fn lossless_is_qp0_on_color_and_monochrome() {
         let enc = AvifEncoder::new().with_speed(8).with_lossless(true);
         let (y, u, v) = yuv420(64);
         let ll = enc
@@ -893,10 +861,21 @@ mod tests {
             ll.len(),
             lossy.len()
         );
-        assert!(matches!(
-            enc.encode_y8(&y, 64, 64, 64),
-            Err(EncodeError::UnsupportedConfig(_))
-        ));
+        let mono = enc.encode_y8(&y, 64, 64, 64).unwrap();
+        let q0 = AvifEncoder::new()
+            .with_speed(8)
+            .with_quality(100.0)
+            .encode_y8(&y, 64, 64, 64)
+            .unwrap();
+        assert_eq!(mono.data, q0.data);
+        assert_ne!(
+            mono.data,
+            AvifEncoder::new()
+                .with_speed(8)
+                .encode_y8(&y, 64, 64, 64)
+                .unwrap()
+                .data
+        );
     }
 
     #[test]
@@ -1155,38 +1134,23 @@ mod tests {
         );
     }
 
-    /// `quality_to_qp` maps everything above ~99.21 to QP 0, which is LOSSLESS
-    /// AV1 — a mode this port does not implement. The refusal used to live
-    /// inside the INFALLIBLE `EncodePipeline::encode_frame`, whose `.expect()`
-    /// aborted the process, so the most obvious "maximum quality" call panicked
-    /// out of a `Result`-returning API. Anti-vacuity: this test PANICS (not
-    /// fails) without the `validate_inert_knobs` q0 arm.
+    /// Maximum quality selects coded-lossless monochrome, just like the flag.
     #[test]
-    fn max_quality_is_a_typed_error_not_a_panic() {
-        let pixels = vec![100u8; 16 * 16];
+    fn max_quality_matches_explicit_lossless() {
+        let pixels: Vec<u8> = (0..16 * 16).map(|i| (i * 17) as u8).collect();
+        let expected = AvifEncoder::new()
+            .with_lossless(true)
+            .encode_y8(&pixels, 16, 16, 16)
+            .unwrap();
         for q in [100.0f32, 99.9, 99.5] {
-            assert_eq!(
-                AvifEncoder::quality_to_qp_static(q),
-                0,
-                "q{q} must map to qp 0"
-            );
-            let err = AvifEncoder::new()
+            assert_eq!(AvifEncoder::quality_to_qp_static(q), 0);
+            let actual = AvifEncoder::new()
                 .with_quality(q)
                 .encode_y8(&pixels, 16, 16, 16)
-                .expect_err("qp 0 (lossless) must be refused, not encoded");
-            assert!(
-                matches!(err, EncodeError::UnsupportedConfig(_)),
-                "expected UnsupportedConfig, got {err:?}"
-            );
+                .unwrap();
+            assert_eq!(actual.data, expected.data);
         }
-        // The first quality that still maps off qp 0 must keep working.
         assert!(AvifEncoder::quality_to_qp_static(99.0) > 0);
-        assert!(
-            AvifEncoder::new()
-                .with_quality(99.0)
-                .encode_y8(&pixels, 16, 16, 16)
-                .is_ok()
-        );
     }
 
     /// `with_bit_depth` whitelisted 12, which no code path can encode:

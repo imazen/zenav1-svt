@@ -558,16 +558,19 @@ mod tests {
 
     #[test]
     fn three_frame_alpha_sequence_decodes_with_exact_timing_and_alpha() {
-        for (w, h, has_alpha, speed) in [
-            (64usize, 64usize, true, 7),
-            (65, 67, true, 7),
-            (64, 64, false, 7),
-            (65, 67, false, 2),
+        for (w, h, has_alpha, speed, lossless) in [
+            (64usize, 64usize, true, 7, false),
+            (65, 67, true, 7, false),
+            (64, 64, false, 7, false),
+            (65, 67, false, 2, false),
+            (64, 64, true, 7, true),
+            (65, 67, true, 7, true),
+            (65, 67, false, 7, true),
         ] {
             let out =
                 std::env::temp_dir().join(format!("svt-animation-{}-{w}x{h}", std::process::id()));
             fs::create_dir_all(&out).unwrap();
-            let enc = AvifEncoder::new().with_speed(speed);
+            let enc = AvifEncoder::new().with_speed(speed).with_lossless(lossless);
             let colors: Vec<Vec<u8>> = (0..3)
                 .map(|f| {
                     (0..w * h)
@@ -638,6 +641,9 @@ mod tests {
                 assert_eq!((image.width, image.height), (w as u32, h as u32));
                 for y in 0..h {
                     for x in 0..w {
+                        if lossless {
+                            assert_eq!(pixels[(y * w + x) * 4 + 3], alpha[y * w + x]);
+                        }
                         assert_eq!(
                             pixels[(y * w + x) * 4 + 3],
                             reference[y * pipe.width as usize + x],
@@ -686,6 +692,12 @@ mod tests {
                     for row in 0..height {
                         expected.extend_from_slice(&plane[row * stride..row * stride + width]);
                     }
+                }
+                if lossless {
+                    assert_eq!(
+                        expected,
+                        [source.as_slice(), uv.as_slice(), uv.as_slice()].concat()
+                    );
                 }
                 let decoded = fs::read(out.join(format!("frame-{i:010}.y4m"))).unwrap();
                 let start = decoded.windows(6).position(|s| s == b"FRAME\n").unwrap() + 6;
@@ -886,7 +898,7 @@ mod tests {
         macro_rules! exercise {
             ($sample:ty, $depth:expr, $speed:expr, $entry:ident, $raw:ident, $sizes:expr) => {
                 for (w, h) in $sizes {
-                    for quality in [40.0, 98.0] {
+                    for quality in if $depth == 8 { vec![40.0, 98.0, 100.0] } else { vec![40.0, 98.0] } {
                         for has_alpha in [false, true] {
                             let dir = std::env::temp_dir().join(format!("svt-mono-animation-{}-{}-{w}x{h}-{}-{quality}-{has_alpha}", std::process::id(), $depth, $speed));
                             fs::create_dir_all(&dir).unwrap();
@@ -932,6 +944,7 @@ mod tests {
                                     let offset = y*w+x;
                                     let actual = if $depth == 8 { u16::from(pixels[offset]) }
                                         else { u16::from_le_bytes([pixels[2*offset], pixels[2*offset+1]]) };
+                                    if quality == 100.0 { assert_eq!(actual, colors[i][y*stride+x] as u16, "lossless luma must equal source"); }
                                     assert_eq!(actual, reference[y*color_pipe.width as usize+x], "luma depth={} {w}x{h} q={quality} frame={i} ({x},{y})", $depth);
                                 }}
                                 if has_alpha {
@@ -951,6 +964,7 @@ mod tests {
                                             let wide = u16::from_be_bytes([pixels[4*pixel+2], pixels[4*pixel+3]]);
                                             ((u32::from(wide)*1023+32767)/65535) as u16
                                         };
+                                        if quality == 100.0 { assert_eq!(actual, alphas[i][y*w+x] as u16, "lossless alpha must equal source"); }
                                         assert_eq!(actual, reference[y*alpha_pipe.width as usize+x], "alpha depth={} {w}x{h} q={quality} frame={i} ({x},{y})", $depth);
                                     }}
                                 }

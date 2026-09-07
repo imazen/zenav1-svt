@@ -249,3 +249,57 @@ fn native_monochrome_low_presets_match_decoder() {
         }
     }
 }
+
+#[test]
+fn lossless_monochrome_matches_source() {
+    for (w, h, tiles) in [(16usize, 16usize, 0), (65, 67, 0), (128, 128, 1)] {
+        for preset in 0..=9 {
+            for kind in 0..3 {
+                let stride = w + 5;
+                let y: Vec<u8> = (0..stride * h)
+                    .map(|i| match kind {
+                        0 => 128,
+                        1 => {
+                            if (i + i / stride) % 2 == 0 {
+                                0
+                            } else {
+                                255
+                            }
+                        }
+                        _ => (i * 37 + i / stride * 71) as u8,
+                    })
+                    .collect();
+                let mut p = pipeline(w, h, preset, 100.0, 8)
+                    .with_chroma_420(false)
+                    .with_tile_rows_log2(tiles)
+                    .with_tile_cols_log2(tiles);
+                let bytes = p.try_encode_frame(&y, stride).unwrap();
+                let mut no_recon = pipeline(w, h, preset, 100.0, 8)
+                    .with_chroma_420(false)
+                    .with_tile_rows_log2(tiles)
+                    .with_tile_cols_log2(tiles)
+                    .with_recon_output(false);
+                assert_eq!(bytes, no_recon.try_encode_frame(&y, stride).unwrap());
+                let source: Vec<u8> = y
+                    .chunks_exact(stride)
+                    .flat_map(|r| r[..w].iter().copied())
+                    .collect();
+                let recon: Vec<u8> = p
+                    .last_recon
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .chunks_exact(p.width as usize)
+                    .take(h)
+                    .flat_map(|r| r[..w].iter().copied())
+                    .collect();
+                assert_eq!(source, recon, "lossless internal reconstruction");
+                decode_eq(
+                    &format!("lossless-mono-{w}x{h}-p{preset}-kind{kind}"),
+                    &bytes,
+                    &source,
+                );
+            }
+        }
+    }
+}

@@ -1536,13 +1536,6 @@ impl EncodePipeline {
                  use mainline mode or QP >= 1",
             );
         }
-        if !chroma_420 {
-            return Some(
-                "QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf \
-                 coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — \
-                 use the 4:2:0 path or QP >= 1 [C: no mono mode]",
-            );
-        }
         if self.bit_depth != 8 {
             return Some(
                 "QP 0 (coded-lossless) is 8-bit only so far: neither bd10 level producer has a \
@@ -1585,7 +1578,9 @@ impl EncodePipeline {
         //                  chunk; refusing is correct until then, and a refusal
         //                  that names a CRASH is worth more than one that says
         //                  "not byte-verified".
-        if allow_screen_content_tools && self.speed_config.preset < 6 {
+        // Only the color funnel enters the IntraBC hash search. Monochrome
+        // codes ordinary intra blocks (including use_intrabc=0 when signaled).
+        if chroma_420 && allow_screen_content_tools && self.speed_config.preset < 6 {
             return Some(
                 "QP 0 (coded-lossless) with screen-content tools (palette / IntraBC) needs \
                  preset >= 6: at preset <= 4 the IntraBC hash search indexes past its source \
@@ -11970,11 +11965,11 @@ fn encode_tile_rows(
         let ext_cbuf = (ext_w / 2) * (ext_h / 2); // chroma buffer capacity at `cwid` stride
         let mut fun_u_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
         let mut fun_v_recon = svtav1_types::try_vec![128u8; if use_funnel { ext_cbuf } else { 0 }]?;
-        let mut fun_ectx = if use_funnel {
+        let mut fun_ectx = if use_funnel || coded_lossless {
             let mut e = EntropyCtx::new(
                 w / 4,
                 h / 4,
-                true,
+                chroma_420,
                 walk_tx_mode_select,
                 tile_sc.allow_screen_content_tools,
                 bit_depth,
@@ -11996,7 +11991,7 @@ fn encode_tile_rows(
         } else {
             None
         };
-        let fun_rates = if use_funnel {
+        let fun_rates = if use_funnel || coded_lossless {
             // §1s item 8: C's `init_frame_rate_tables` (md_config_process.c:292)
             // seeds `md_frame_context` from the primary reference's SAVED
             // end-of-frame CDFs when the header names one, and only otherwise
@@ -12853,7 +12848,22 @@ fn encode_tile_rows(
                                 u32::from(cli_qp),
                             )
                             .enabled);
-                    let sb_result = if use_pd0 {
+                    let sb_result = if coded_lossless && !use_funnel {
+                        let tree = crate::pd0::lossless_tree(x0, y0, unit_size, w, h);
+                        crate::lossless_mono::encode_tree(
+                            &sb_input[y0 * in_stride + x0..],
+                            in_stride,
+                            &mut tile_frame_recon,
+                            w,
+                            &tree,
+                            x0,
+                            y0,
+                            unit_size,
+                            &part_config,
+                            fun_rates.as_ref().unwrap(),
+                            fun_ectx.as_mut().unwrap(),
+                        )
+                    } else if use_pd0 {
                         if coded_lossless || p9_fixed_partition {
                             let tree = if coded_lossless {
                                 // Issue #5: every square above 8x8 is forced
@@ -14308,12 +14318,9 @@ mod tests {
         assert!(matches!(err.error(), EncodeError::UnsupportedConfig(_)));
     }
 
-    /// Issue #5, legacy surface: the MONOCHROME path has no lossless arm (and
-    /// no C oracle), so the panicking `encode_frame` contract turns its QP-0
-    /// refusal into a panic (never a silently-corrupt bitstream).
+    /// The legacy monochrome entry point now honors QP 0 losslessly.
     #[test]
-    #[should_panic(expected = "coded-lossless")]
-    fn qp0_legacy_mono_encode_panics() {
+    fn qp0_legacy_mono_encode_matches_source() {
         let mut pipeline = EncodePipeline::new(
             64,
             64,
@@ -14325,9 +14332,12 @@ mod tests {
             },
             0,
             1,
-        );
-        let y_plane = vec![128u8; 64 * 64];
-        let _ = pipeline.encode_frame(&y_plane, 64);
+        )
+        .with_recon_output(true);
+        let y_plane: Vec<u8> = (0..64 * 64).map(|i| (i * 17 + i / 64 * 7) as u8).collect();
+        let encoded = pipeline.encode_frame(&y_plane, 64);
+        assert!(!encoded.is_empty());
+        assert_eq!(pipeline.last_recon.unwrap().0, y_plane);
     }
 
     /// Feature 1: a cooperative stop token that fires mid-frame makes

@@ -126,7 +126,7 @@ pub(crate) use commit::*;
 // `pub(crate)` glob over them would warn (it re-exports nothing), which is the
 // same visibility trap as `build_md_rates` above, seen from the other side.
 use detect::*;
-use overlay::*;
+pub(crate) use overlay::*;
 pub(crate) use predict::*;
 pub use rate_tables::build_md_rates;
 pub(crate) use rate_tables::*;

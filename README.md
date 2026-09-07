@@ -122,16 +122,16 @@ matches the encoder's own reconstruction byte-for-byte. Known open gaps are
 tracked, not hidden — the pinned-cell maps live in `rust/benchmarks/` and the
 port maps in `rust/docs/`.
 
-**Envelope:** 8- and 10-bit, 4:2:0 (and luma-only/monochrome), single frame.
-4:4:4 / 4:2:2 / 12-bit are **not port gaps** — C SVT-AV1 v4.2.0 itself rejects
-them at init (`enc_settings.c:460` permits only 8/10-bit; `:470` "Only support
-420 now"), so the port already matches C's shipping *format* envelope exactly;
-the 422/444/12-bit code in the C tree is dead-gated behind those lines. **QP 0
-(coded-lossless)** is implemented on the 8-bit 4:2:0 still path (issue #5):
-TX_4X4 Walsh-Hadamard txbs, no in-loop filters, byte-identical to C at presets
-4–13 and lossless under `aomdec` at every preset (`rust/tools/lossless_gate.sh`);
-presets 0–3 are pinned byte-diverging (lossless in both encoders). 10-bit, mono,
-fork-mode, screen-content and superres at QP 0 are refused with a typed error.
+**Envelope:** 8- and 10-bit, 4:2:0 and monochrome, all-intra encoding.
+C SVT-AV1 v4.2.0 itself rejects 4:4:4 / 4:2:2 / 12-bit at init
+(`enc_settings.c:460,470`); those formats remain part of the broader animated
+AVIF goal. **QP 0 (coded-lossless)** works for 8-bit color and monochrome,
+including animation alpha: TX_4X4 Walsh–Hadamard transforms and no in-loop
+filters. Color is byte-identical to C at presets 4–13; presets 0–3 retain
+pinned byte differences, with exact source reconstruction in both encoders
+(`rust/tools/lossless_gate.sh`). Native 10-bit, fork-mode and superresolution
+lossless remain refused. The color lossless screen-content path still requires
+preset >=6; monochrome does not enter that IntraBC search.
 **Monochrome** is decode-conformance-validated (aomdec + dav1d accept it, and the
 decoder output matches the encoder's recon bit-for-bit) rather than byte-vs-C —
 C v4.2.0 can't encode mono (`EB_YUV400` is rejected at init), so no C oracle

@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- 8-bit lossless monochrome and animated alpha: reuse 4x4 WHT kernels with per-transform prediction and coefficient contexts; verify decoded luma/alpha against source. Native 10-bit lossless remains unsupported.
+
 - Native 10-bit monochrome and alpha at every preset: carry native coefficient-sign contexts, honor the signaled edge-filter tool, and preserve VERT_A/B directional neighbor availability in the level re-encode pass. Mode decision still uses the upper eight bits.
 
 - Support partial monochrome superblocks at 8-bit presets 0–5 with square boundary partition search; correct directional neighbor bounds at partial frame edges.

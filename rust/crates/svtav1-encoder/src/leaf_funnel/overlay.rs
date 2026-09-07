@@ -21,7 +21,7 @@ const MAX_TX_EDGE_PX: usize = 64;
 /// tx-search neighbor arrays (block interior = this depth's recon so
 /// far, exterior = frame recon).
 #[allow(clippy::too_many_arguments)]
-pub(super) fn predict_unit_overlay(
+pub(crate) fn predict_unit_overlay(
     y_recon: &[u8],
     y_stride: usize,
     blk_x: usize,

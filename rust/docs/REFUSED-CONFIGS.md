@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**16 CAPABILITY refusals** (unimplemented — this is DEBT) and **35
+**14 CAPABILITY refusals** (unimplemented — this is DEBT) and **34
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **13** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -54,8 +54,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres is 8-bit only so far (the u16 source downscale is unported) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
-| `crates/svtav1-encoder/src/pipeline.rs` | no mono mode | QP 0 (coded-lossless) is not implemented on the monochrome path (the mono leaf coder has no WHT / TX_4X4 arm and C v4.2.0 cannot produce a mono oracle) — use the 4:2:0 path or QP >= 1 |
-| `svtav1/src/avif.rs` | no mono mode | lossless encoding is not implemented for monochrome (encode_y8); QP 0 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline mode |
 
 ## CONTRACT — caller misuse (permanent, correct)
 
@@ -95,4 +93,3 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
-| `svtav1/src/avif.rs` | quality > 99.2 maps to QP 0, which is coded-lossless AV1 (WHT transform + lossless header signalling); the monochrome leaf coder has no lossless arm — use a lower quality, or encode_yuv420 for a coded-lossless 4:2:0 still |

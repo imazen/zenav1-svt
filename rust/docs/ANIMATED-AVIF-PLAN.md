@@ -44,10 +44,10 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 |---|---|
 | Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite-count and exact downstream timing APIs remain |
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
-| Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. Lossless coverage, 10/12-bit and opaque/missing-alpha policy remain |
+| Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. 8-bit lossless color/alpha and monochrome source pixels are verified; native 10-bit lossless, 12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
-| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha and 8-bit monochrome support partial SBs at every preset. Native monochrome mode decisions still use the upper eight bits; full native MD, 12-bit, 4:4:4/4:2:2 and lossless remain. C's rejection of some formats does not waive this broader user objective |
+| Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha and 8-bit monochrome support partial SBs at every preset. Native monochrome mode decisions still use the upper eight bits; full native MD, 12-bit, 4:4:4/4:2:2 and native lossless remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
 | Inter-picture compression | Still gated in the pipeline; all-sync animation does not close this requirement |
 | Robust API | Streaming/bounded memory, cancellation, fallible allocation, overflow checks and complete validation remain to be audited across encoder and serializer |
@@ -330,3 +330,44 @@ the failure and localization logs use `native-mono-low-*`. The last edit only
 moves the pre-existing recon-canvas doc comment back onto its function after
 inserting the neighbor-state type. Both canonical and main repo fetches reported
 no remote changes. No push or CI run occurred.
+
+
+## Lossless monochrome and alpha (2026-09-07 continuation)
+
+The monochrome path now consumes the existing lossless 8x8 tree and codes each
+leaf as four raster-order 4x4 transforms. `lossless_mono.rs` reuses the luma
+prediction overlay, C-derived WHT forward/inverse kernels, QP-0 quantizer and
+coefficient-rate estimator. Every transform predicts from its predecessors'
+reconstruction. Candidate-local coefficient contexts are committed only for the
+winner; block-skip rates omit transform syntax when the whole block is skipped.
+No chroma plane is synthesized. Preset candidate limits still control search.
+
+The monochrome lossless guard and facade flag/maximum-quality refusals were
+removed after source-pixel verification. Flat fixtures then exposed a separate
+color-only IntraBC guard applied to mono: `ibc_state` requires `use_funnel`, so
+mono never reaches that hash search. The guard now applies to color only. When
+screen tools are signaled, the existing entropy walk codes `use_intrabc=0` for
+these ordinary intra blocks. All 90 decoder cases pass: ten presets, 16x16 /
+65x67 / four-tile 128x128, uniform mid-gray / 0–255 checkerboard / textured
+sources. Each checks exact source reconstruction and recon-flag byte invariance.
+
+The animation tests now verify lossless monochrome luma and alpha directly
+against source values, including odd dimensions and speed 2. Color animations
+also exercise `with_lossless(true)` with and without alpha, including odd edges;
+all decoded Y/U/V and alpha samples equal their respective source planes.
+
+Native 10-bit WHT/TX_4X4 lossless, full native monochrome mode decisions, and
+lower-preset color lossless 4x4 partition search remain open. The existing color
+lossless gate passes 112/144 C-byte comparisons with 32 documented pins; all
+144 decode exactly to source. These pins remain parity debt, not newly fixed
+cells or decoder failures. CI remains deferred; no push occurred.
+
+Verification: **2,597/2,597 workspace tests, zero skips; 112/112 regression
+cases; 90/90 monochrome source-pixel cases.** The existing color lossless gate
+reports **112/144 byte-identical +32 pinned, 144/144 source-exact**. Clippy
+completes with existing warnings, scoped rustfmt and diff checks pass, and the
+refusal inventory is current at 48 entries. Evidence is in
+`~/tmp/animation-metadata/lossless-mono-{nextest-final,extremes,c-gate,clippy,spotcheck}.log`.
+The initial full-suite failure was an old test requiring the now-supported
+legacy QP-0 API to panic; it now requires exact source reconstruction instead.
+Both repository fetches reported no changes; nothing was pushed or sent to CI.
