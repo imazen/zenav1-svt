@@ -14,6 +14,30 @@ verified serializer. Earlier local-path/no-push statements below are historical.
 CI remains deferred; these branch names do not match push workflow filters.
 Canonical optional-feature runtime verification is recorded below.
 
+Latest publication checkpoint (2026-09-07): canonical zenavif review branch
+is now `cafe9f3f0075283ca511026f11cb5a68d1e1a344`, including the previously
+local animation corrections recorded below. Its upstream zenravif dependency
+is published cavif-rs review commit `6974b5a8dd5ed38d416ee4455a2b990692c3d4d8`,
+based on cavif-rs main `a7e9fcc5`. Animation now preserves ICC, Exif, XMP,
+rotation, mirror, CLLI and MDCV, validates spatial metadata, and multiplies
+color by alpha before coding when premultiplication is requested. Executed
+regressions failed before the fixes; a signaling-only mutation also failed
+the decoded-pixel check. Independent libavif verifies ten files / 22 frames,
+exact sidecars and premultiplied pixels. Still-image alpha conversion remains
+a separate suspected defect requiring reproduction and correction.
+
+Verification against the published Git dependency: 895/895 all-feature tests
+(nine existing skips), 484 default tests/doctests (ten existing ignores),
+3/3 encode-only integration tests, and all-feature library clippy pass.
+Determinism passes all 25 legs and reference conformance all 56 cells.
+The quality ladder retains the same 33 byte/quality failures plus 16 timing
+misses, and the same two speed inversions remain. No thresholds changed.
+See canonical `benchmarks/animation_encode_metadata_2026-09-07.md`.
+The user's review-branch push request is honored independently of CI;
+CI remains deferred. Earlier statements withholding pushes or describing
+ancestor commits as local are historical and superseded by this checkpoint.
+Fresh fetch confirms SVT main remains `74d92430`, already merged.
+
 Main synchronization: merged `74d92430` quality fixes into the animation branch,
 preserving the extracted 10-bit module and the newer lossless/context logic.
 The combined tree passes 2616 tests, 123 C regression cases, 336 native
