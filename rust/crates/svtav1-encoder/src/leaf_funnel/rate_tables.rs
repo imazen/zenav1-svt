@@ -812,8 +812,8 @@ pub struct FunnelCfg {
 
 impl FunnelCfg {
     /// C-exact per-preset derivation for the still/420 allintra path.
-    /// Presets 6/7/8/9+ (the funnel scope); other presets never construct
-    /// one. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
+    /// All presets construct one; explicit arms cover 0..=8 and the tail
+    /// covers 9+. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
     pub fn for_preset(preset: u8) -> Self {
         // M6+ common tail (intra_level 6/7/8: mode_end SMOOTH, angular
         // level 4, txt groups 5/4 satd 10 rate 100, uv follows luma, no

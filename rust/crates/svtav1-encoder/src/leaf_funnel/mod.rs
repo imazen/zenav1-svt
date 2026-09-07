@@ -1,4 +1,4 @@
-//! C-exact leaf intra-mode decision funnel (allintra presets 4..=10,
+//! C-exact leaf intra-mode decision funnel (all allintra presets,
 //! still/PD1 fixed-tree path).
 //!
 //! Per-preset configuration lives in [`FunnelCfg::for_preset`]; the M5
@@ -47,9 +47,9 @@
 //!   CHROMA full loop (CHROMA_MODE_1: uv follows luma;
 //!   `svt_aom_full_loop_uv` full_loop.c:2161) with the
 //!   chroma-complexity detector (:6095) gating CFL (cfl level 4,
-//!   cplx_th 10 — CFL is only *evaluated* when the detector fires;
-//!   flat-chroma content never fires it; if it fires we currently keep
-//!   the non-CFL uv mode, documented as a residual gap), full cost =
+//!   cplx_th 10 — CFL is evaluated when the detector fires and competes
+//!   through the alpha search in `mds3`; a winning candidate sets
+//!   `uv_mode_final = UV_CFL_PRED_IDX`), full cost =
 //!   `svt_aom_full_cost` (rd_cost.c:1357).
 //! - Winner: lowest full cost, first-in-order ties
 //!   (`svt_aom_product_full_mode_decision`, mode_decision.c:3869).

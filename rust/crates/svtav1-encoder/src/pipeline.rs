@@ -262,11 +262,10 @@ pub struct EncodePipeline {
     pub sb_size_override: Option<usize>,
     /// What C's rule alone asked for, BEFORE the override and the
     /// capability fallback. Stored rather than recovered from `sb_size` +
-    /// `sb128_fallback`: once `sb128_encode_supported` stops being a
-    /// constant false, `(sb_size, fallback)` no longer determines the
-    /// derived value (an explicit `Some(128)` on a supported preset would
-    /// be indistinguishable from a derived 128), and a later
-    /// `with_sb_size(None)` would silently resolve to the wrong grid.
+    /// `sb128_fallback`: an explicit `Some(128)` is indistinguishable from
+    /// a derived 128 once the override is applied. Keeping the derived value
+    /// lets `with_sb_size(None)` restore the original grid. The current
+    /// `sb128_encode_supported` returns true, so no capability fallback runs.
     pub derived_sb_size: usize,
     /// True when [`Self::sb_size`] was forced back to 64 because the C rule
     /// asked for 128 on a cell the SB128 encode path does not support yet.
@@ -496,14 +495,13 @@ impl EncodePipeline {
     /// `merge_sb_units` and `sb128_geom::sb_coding_units`. Everything below
     /// the root is the byte-proven per-64 path.
     ///
-    /// STILL UNPORTED, so still gated (see `sb128_root_always_split`):
+    /// STILL UNPORTED (the supported path below uses forced SPLIT):
     /// a genuine 128-level NONE/HORZ/VERT RD search (this path is
     /// forced-SPLIT), the b64<->sb stat bridges (`get_sb128_variance` /
     /// `get_sb128_me_data`), and the CDEF 4-quadrant three-phase contract.
     fn sb128_encode_supported(preset: u8) -> bool {
-        // Preset gate only; the CONTENT gate (forced-SPLIT validity) is
-        // applied per-frame in `encode_frame_internal`, which can see the
-        // pixels. Presets 0/1 are the only ones C ever codes at 128 in
+        // All presets are admitted; no content gate is applied here.
+        // Presets 0/1 are the only ones C ever codes at 128 in
         // allintra (`derive_super_block_size`), so anything else reaching
         // here is an `SVTAV1_SB=128` override — honour it, the walk is
         // preset-agnostic.
@@ -1126,8 +1124,8 @@ impl EncodePipeline {
     /// purely at the boundary: the legacy `assert!`s become typed
     /// [`EncodeError`]s, and the cooperative cancellation token
     /// ([`Self::stop`]) is checked once at entry. The legacy method is left
-    /// untouched. Internally this calls the SAME infallible
-    /// `encode_frame_impl`, so it cannot change the emitted bytes.
+    /// untouched. Internally this calls the same fallible `encode_frame_impl`;
+    /// its configuration, allocation and cancellation errors propagate.
     pub fn try_encode_frame(&mut self, y_plane: &[u8], y_stride: usize) -> EncodeResult<Vec<u8>> {
         // (a) Validate — mirror the `encode_frame` asserts. The TRUE -> ALIGNED
         // padding that used to be refused here is now done in
@@ -1165,9 +1163,8 @@ impl EncodePipeline {
     /// Byte-identical to [`Self::encode_frame_420`] on success. The legacy
     /// `assert!`s (chroma flag, u/v plane sizes, still/key-only) become typed
     /// [`EncodeError`]s and the cancellation token is checked at entry;
-    /// otherwise it delegates to the untouched infallible method (which
-    /// performs the TRUE->ALIGNED padding and calls `encode_frame_impl`), so
-    /// the emitted bytes are unchanged.
+    /// otherwise it delegates to the fallible core, which pads the true
+    /// dimensions to the aligned canvas and calls `encode_frame_impl`.
     pub fn try_encode_frame_420(
         &mut self,
         y: &[u8],
@@ -1691,7 +1688,9 @@ impl EncodePipeline {
             )
         {
             return Some(
-                "superres with loop restoration enabled (allintra preset <= 6) is not wired yet                  — C runs LR on the UPSCALED frame; use preset >= 7",
+                "superres is not wired for frames that run loop restoration (allintra preset <= 6, \
+                 except small frames where restoration is disabled) — C runs LR on the \
+                 UPSCALED frame; use preset >= 7",
             );
         }
         if self.bit_depth != 8 {

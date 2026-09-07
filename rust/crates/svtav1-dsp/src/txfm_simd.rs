@@ -1,4 +1,4 @@
-//! Archmage SIMD (AVX2 `v3`) fast paths for the hot square DCT-DCT 2D
+//! Archmage SIMD (AVX2 `v3` and NEON) fast paths for the hot square DCT-DCT 2D
 //! transforms, **byte-exact** with the scalar reference.
 //!
 //! The AV1 integer transforms are fixed-point butterfly networks: every stage
@@ -27,9 +27,9 @@
 //! for every size, under every archmage dispatch tier — so a range violation
 //! would fail the build, not ship a wrong pixel.
 //!
-//! Only the AVX2 (`v3`) arm is vectorized; the `neon`/`scalar` arms report
-//! "not handled" and the caller falls through to the scalar core (the CDEF /
-//! `txb_init_levels` pattern). Additive — no scalar path is modified.
+//! The AVX2 and NEON arms vectorize the shared kernels. NEON supports
+//! dimensions through `NEON_FWD_MAX_DIM` / `NEON_INV_MAX_DIM` (both 64).
+//! Unsupported shapes fall through to the scalar core.
 
 #![allow(clippy::too_many_arguments)]
 

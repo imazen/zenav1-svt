@@ -93,7 +93,7 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
 DOC=docs/REFUSED-CONFIGS.md
-SRC=(crates/svtav1-encoder/src/pipeline.rs svtav1/src/avif.rs)
+SRC=(crates/svtav1-encoder/src/pipeline.rs crates/svtav1-encoder/src/entropy/obu.rs svtav1/src/avif.rs)
 
 # A refusal message spanning continuation lines is joined before matching, so a
 # wrapped string cannot hide its own keywords.
@@ -151,17 +151,19 @@ CMARK = re.compile(r"\[C:\s*([^\]]*)\]")
 SOMES = re.compile(r'\bSome\(\s*"((?:[^"\\]|\\.)*)"\s*(?:\.to_string\(\))?\s*,?\s*\)')
 FNDEF = re.compile(r"\n\s*(?:pub(?:\(crate\))?\s+)?fn\s+([a-z_0-9]+)")
 
+from tools.lib_rust_source import strip_test_modules
+
 for path in sys.argv[1:]:
-    src = open(path).read()
+    src = strip_test_modules(open(path).read())
     joined = re.sub(r"\\\s*\n\s*", " ", src)   # join Rust string continuations
 
     found = unsupported_messages(joined)
     found |= set(m.group(1) for m in REASON.finditer(joined))
 
-    # `Some("...")` counts only inside a fn whose name ends in _config_error.
+    # `Some("...")` counts inside configuration predicates and tile validation.
     bounds = [(m.start(), m.group(1)) for m in FNDEF.finditer(joined)]
     for i, (pos, name) in enumerate(bounds):
-        if not name.endswith("_config_error"):
+        if not name.endswith("_config_error") and name != "untileable_reason":
             continue
         stop = bounds[i + 1][0] if i + 1 < len(bounds) else len(joined)
         for m in SOMES.finditer(joined[pos:stop]):

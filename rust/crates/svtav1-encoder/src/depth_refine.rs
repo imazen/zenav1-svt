@@ -826,9 +826,9 @@ fn refine_depth(
 }
 
 /// C `perform_pred_depth_refinement` (enc_dec_process.c:1985).
-#[allow(dead_code)] // faithful C port with no live caller today. rust/CLAUDE.md
-// "DEAD-LOOKING C STAYS TRANSLATED AND DOCUMENTED — never reverted": the
-// reachability analysis has been wrong before and upstream can re-enable the path.
+// Production uses `build_refined_scan_at`; the C-shaped wrapper is also
+// exercised directly by the capture tests in this module.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_refined_scan(
     root: &Pd0Eval,
     ctrls: &DrCtrls,

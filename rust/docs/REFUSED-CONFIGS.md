@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**19 CAPABILITY refusals** (unimplemented — this is DEBT) and **33
+**19 CAPABILITY refusals** (unimplemented — this is DEBT) and **45
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **13** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -64,6 +64,9 @@ itself and verified by `tools/c_envelope_probe.sh`:
 
 | where | refusal |
 |---|---|
+| `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too large to tile: MAX_TILE_AREA forces more tiles than MAX_TILE_ROWS (64) tile rows can supply at this width |
+| `crates/svtav1-encoder/src/entropy/obu.rs` | frame is too wide to tile: AV1 caps a tile at MAX_TILE_WIDTH (4096 px) and a frame at MAX_TILE_COLS (64) tile columns, so the widest encodable frame is 64 * 4096 = 262144 px |
+| `crates/svtav1-encoder/src/pipeline.rs` | C film grain requires 8/10-bit 4:2:0 |
 | `crates/svtav1-encoder/src/pipeline.rs` | SuperresDenom must be 9..=16 |
 | `crates/svtav1-encoder/src/pipeline.rs` | a picture-level MD search level is outside the range its C control table accepts (crate::inter_search_arm::frame_cfg) |
 | `crates/svtav1-encoder/src/pipeline.rs` | aq_mode must be 0: C's aq-mode deltaq is TPL-gated and therefore INERT for a single still (rc_aq.c:899), so C's own default of 2 changes nothing there, while this port's non-zero aq_mode runs a homegrown frame-level VAQ/TPL qindex shift that is a port of nothing — see issue #9 item 8 |
@@ -75,6 +78,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | dlf level outside svt_aom_set_dlf_controls' 0..=7 |
 | `crates/svtav1-encoder/src/pipeline.rs` | encode_frame_420 requires the pipeline to be built with with_chroma_420(true) |
 | `crates/svtav1-encoder/src/pipeline.rs` | extended_crf_qindex_offset must be 0..=3 (a quarter-step fractional CRF) or, at qp 63, at most 28 (CRF 70) — C verify_settings, enc_settings.c:270 |
+| `crates/svtav1-encoder/src/pipeline.rs` | film grain sequence presence can change only on a key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd luma plane must cover the true dims at y_stride |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd planes must cover the true dims (y at y_stride, u/v at true_w/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | hbd source carries a sample above the configured bit depth |
@@ -84,7 +88,8 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit input needs a bd10 consumer: 64-aligned dims and either preset >= 9 or a full-RD-capable preset <= 8 (non-screen content) — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit monochrome input needs the bd10 level re-encode post-pass: 64-aligned dims at preset >= 9 — see docs/hbd-input-port-map.md chunk 2 |
 | `crates/svtav1-encoder/src/pipeline.rs` | native 10-bit source went unconsumed (the bd10 level re-encode was skipped for this frame's partition trees) — the encode would have silently truncated to 8 bits; see docs/hbd-input-port-map.md chunk 2 |
-| `crates/svtav1-encoder/src/pipeline.rs` | superres with loop restoration enabled (allintra preset <= 6) is not wired yet — C runs LR on the UPSCALED frame; use preset >= 7 |
+| `crates/svtav1-encoder/src/pipeline.rs` | superblock size override must be 64 or 128 |
+| `crates/svtav1-encoder/src/pipeline.rs` | superres is not wired for frames that run loop restoration (allintra preset <= 6, except small frames where restoration is disabled) — C runs LR on the UPSCALED frame; use preset >= 7 |
 | `crates/svtav1-encoder/src/pipeline.rs` | the frame header names a primary_ref_frame, but the DPB slot it resolves to carries no saved CDF state — the referenced frame's entropy walk never ran (crate::port_frame_cdf) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires the pipeline to be built with with_chroma_420(true) |
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_420_hbd requires with_bit_depth(10) (8-bit sources use encode_frame_420; 12-bit is outside C's shipping envelope) |
@@ -94,6 +99,13 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's RECON to agree, and it does not yet. The temporal motion field is WIRED now (setup_motion_field over the DPB, copy_frame_mvs in the walk) and carries C's own candidate: at poc 2 of diag 64x64 q40 p8 frames=3 the port's NEARESTMV is C's (0,-24) off a stack of 1 where it used to be (0,0) off an empty one, and SIX of eight frames=3 cells now match C's frame-2 byte COUNT. NONE is byte-identical: the first diverging frame-header field on that cell is cdef_damping_minus_3 (C 1, port 2), a CDEF SEARCH output and therefore downstream of the recon, and on two other cells no header field differs at all and the whole divergence is in the tile payload. Measured with the refusal lifted, diag 64x64 q40 p8 frames=3: C codes frame 2 as NEARESTMV mv=(0,-24) off a stack with ZERO spatial matches, the port reports refmvcnt=0 and NEARESTMV (0,0). Faithful at two frames, where C's own projection returns 0 for a KEY-frame reference. Encode at most two frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
+| `svtav1/src/avif.rs` | 4:2:0 needs even width and height |
+| `svtav1/src/avif.rs` | a chroma plane is shorter than (height/2) * (width/2) |
 | `svtav1/src/avif.rs` | bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init) |
+| `svtav1/src/avif.rs` | chroma plane size overflows usize |
 | `svtav1/src/avif.rs` | only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only) |
+| `svtav1/src/avif.rs` | pixel buffer is shorter than (height - 1) * stride + width |
 | `svtav1/src/avif.rs` | quality > 99.2 maps to QP 0, which is coded-lossless AV1 (WHT transform + lossless header signalling); the monochrome leaf coder has no lossless arm — use a lower quality, or encode_yuv420 for a coded-lossless 4:2:0 still |
+| `svtav1/src/avif.rs` | stride is smaller than the width (rows would overlap) |
+| `svtav1/src/avif.rs` | strided pixel buffer size overflows usize |
+| `svtav1/src/avif.rs` | width and height must both be non-zero |
