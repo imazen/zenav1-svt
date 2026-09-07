@@ -658,6 +658,7 @@ name = "zenav1-svt"
 version = "0.1.0"
 dependencies = [
  "archmage",
+ "enough",
  "png",
  "zenav1-svt-dsp",
  "zenav1-svt-encoder",
