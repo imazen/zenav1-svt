@@ -216,7 +216,8 @@ let obu = p.try_encode_frame_420(&y, &u, &v, /*y stride*/ 128)?;
 defaults. With `avif-container`, `encode_animation_yuv420` accepts 8-bit frames,
 and `encode_animation_yuv420_hbd` accepts native 10-bit `u16` frames with
 `with_bit_depth(10)`. The `_with_options` variants accept `AnimationOptions`
-for repetition, ICC, Exif, XMP, CLLI, MDCV, square-pixel aspect, cropping, rotation,
+for repetition, ICC, Exif, XMP, CLLI, MDCV, ambient viewing (`amve`), content
+colour volume (`cclv`), square-pixel aspect, cropping, rotation,
 mirroring, and premultiplied-alpha association. `CropRect` uses integer pixel
 coordinates before orientation; the container preserves a full uncropped poster
 with its alpha and metadata, sharing the first frame’s compressed image bytes.

@@ -11,6 +11,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- Animated AVIF `AnimationOptions::amve` and `cclv`, including validated ambient illuminance, signed content primaries, optional luminance fields, and metadata on the color track/poster/uncropped secondary. Alpha retains its own metadata. The independent metadata gate now covers 8- and 10-bit output.
+
 - Preserve lossless samples when quantization matrices or variance boost are enabled: use identity matrix weights and restrict per-superblock quantizers to signaled delta-q. Keep the C matrix and variance-planning helpers intact.
 
 - Native 10-bit lossless color, monochrome and animated alpha: wire 4x4 WHT prediction and reconstruction, route high-preset color through native mode decision, and correct the native palette fast-cost lambda. Verify C bytes and decoded source pixels, including low-bit-only inputs and odd tiled frames.

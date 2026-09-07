@@ -45,7 +45,7 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 | Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite counts and exact ticks survive canonical native decode; shared codec trait precision remains |
 | Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser/native metadata preserves full-width finite counts; the shared codec u32 boundary is checked explicitly. Local serializer dependency still needs a final verified git pin before landing |
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. 8/10-bit lossless color/alpha and monochrome source pixels are verified; 12-bit and opaque/missing-alpha policy remain |
-| Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
+| Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV/AMVE/CCLV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. AMVE/CCLV byte layout and track/item placement are independently checked; REVE/NDWT, camera metadata and the broader audit remain |
 | Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
 | Format coverage | 8-bit and native 10-bit 4:2:0 and monochrome APIs, including native alpha. Native monochrome/alpha and 8-bit monochrome support partial SBs at every preset. Native monochrome mode decisions still use the upper eight bits; full native MD, 12-bit and 4:4:4/4:2:2 remain. C's rejection of some formats does not waive this broader user objective |
 | AVIF specification features | Audit item/track brands and configuration, poster/primary item, auxiliary/depth tracks, collections, grids, layered/progressive items, gain maps/tone maps, sample transforms and entity groups against the full requested scope |
@@ -482,3 +482,21 @@ including 548 eager/lazy decodes with unchanged pixels across six timelines.
 Managed-source lib/tests clippy passes with warnings denied. Optional AOM wiring
 is present but that feature and the canonical full workspace were not tested by
 the isolated default-feature harness. CI remains deferred.
+
+
+### AMVE/CCLV metadata completion (2026-09-07)
+
+`AnimationOptions::amve` / `cclv` reach the color sample entry, poster and full
+uncropped secondary, with shared semantic validation before encoding. The
+canonical parser now preserves all four static HDR properties from color tracks
+in `AnimationHdrMetadata`, independently of poster metadata. Native animation
+info carries it through actual eager/lazy decode with unchanged pixels.
+
+The expanded independent gate passes 30,240/30,240 checks across 8/10-bit,
+color/mono, straight/premultiplied/no alpha and spatial/playback combinations.
+It checks raw AMVE/CCLV bytes and exact associations in addition to libavif decode
+because libavif ignores these two properties. Serializer 89/89, parser 20/20
+plus 6 doctests, native integration 7/7, encoder nextest 2600/2600 and regression
+spotcheck 123/123 pass. Evidence and constraints are in
+`benchmarks/animation_hdr_2026-09-07.md`. REVE/NDWT, camera metadata and the other
+requirements in the inventory remain open. CI stays deferred.

@@ -7,7 +7,7 @@ use zenavif_serialize::{
 };
 
 pub use zenavif_serialize::{
-    ClliBox, MdcvBox, PaspBox,
+    AmveBox, CclvBox, ClliBox, MdcvBox, PaspBox,
     animated::{CropRect, RepetitionCount},
 };
 
@@ -24,6 +24,8 @@ pub struct AnimationOptions {
     pub xmp: Option<Vec<u8>>,
     pub clli: Option<ClliBox>,
     pub mdcv: Option<MdcvBox>,
+    pub amve: Option<AmveBox>,
+    pub cclv: Option<CclvBox>,
     /// Explicit square-pixel spacing. AVIF requires positive, equal values.
     pub pixel_aspect_ratio: Option<PaspBox>,
     /// Crop in unrotated image coordinates, before rotation and mirroring.
@@ -45,6 +47,8 @@ impl Default for AnimationOptions {
             xmp: None,
             clli: None,
             mdcv: None,
+            amve: None,
+            cclv: None,
             pixel_aspect_ratio: None,
             crop: None,
             rotation: None,
@@ -135,7 +139,7 @@ impl AvifEncoder {
     }
 
     /// Encode native 10-bit animation with container metadata and repetition.
-    /// Native alpha requires preset 9 or higher. Partial frame edges are padded
+    /// Partial frame edges are padded
     /// internally; the container and decoded frames retain the requested dimensions.
     pub fn encode_animation_yuv420_hbd_with_options(
         &self,
@@ -293,6 +297,16 @@ impl AvifEncoder {
                 "AVIF pixel aspect ratio must be positive and 1:1",
             ));
         }
+        if options.amve.is_some_and(|v| !v.is_valid()) {
+            return Err(EncodeError::UnsupportedConfig(
+                "amve needs nonzero illuminance and chromaticities in 0..=50000",
+            ));
+        }
+        if options.cclv.is_some_and(|v| !v.is_valid()) {
+            return Err(EncodeError::UnsupportedConfig(
+                "cclv needs a field, primaries in -5000000..=5000000, and min <= avg <= max",
+            ));
+        }
         let has_alpha = frames[0].alpha.is_some();
         if options.premultiplied_alpha && !has_alpha {
             return Err(EncodeError::UnsupportedConfig(
@@ -421,6 +435,12 @@ impl AvifEncoder {
         }
         if let Some(mdcv) = options.mdcv {
             mux.set_mdcv(mdcv);
+        }
+        if let Some(amve) = options.amve {
+            mux.set_amve(amve);
+        }
+        if let Some(cclv) = options.cclv {
+            mux.set_cclv(cclv);
         }
 
         if has_alpha {

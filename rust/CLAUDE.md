@@ -801,6 +801,16 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed 2026-09-07 — animation HDR track metadata omission in canonical parser.**
+AMVE/CCLV are now wired through animation options, serializer and native decode
+metadata; the canonical track parser also retains previously discarded CLLI/MDCV.
+A no-poster witness exposed the omission. Independent metadata/association/decode
+gates pass 30,240/30,240 across 8/10-bit color/mono and alpha modes, with exact
+AMVE/CCLV payload checks because libavif does not expose those values. Final
+nextest 2600/2600 and regression spotcheck 123/123 pass. See
+`benchmarks/animation_hdr_2026-09-07.md` for sources, tests and remaining scope.
+
+
 **Fixed 2026-09-07 — lossless quantization options.** Matrix-on QP0 matched C
 but decoded to wrong pixels at both depths; use identity matrices in production
 as the decoder does. Variance-boost QP0 was decoder-rejected only in Rust:

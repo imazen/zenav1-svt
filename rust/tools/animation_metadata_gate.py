@@ -65,7 +65,7 @@ def poster_properties(data):
     return result
 
 
-def verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied, monochrome):
+def verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied, monochrome, bit_depth=8):
     clap = None
     if crop is not None:
         x, y, w, h = crop
@@ -104,8 +104,9 @@ def verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied,
         mono = monochrome or item_id in (2, 6)
         pixi = [value for kind, value, _ in props if kind == b"pixi"]
         av1c = [value for kind, value, _ in props if kind == b"av1C"]
-        assert pixi == [b"\0\0\0\0" + bytes([1 if mono else 3]) + bytes([8]) * (1 if mono else 3)]
+        assert pixi == [b"\0\0\0\0" + bytes([1 if mono else 3]) + bytes([bit_depth]) * (1 if mono else 3)]
         assert len(av1c) == 1 and bool(av1c[0][2] & 16) == mono
+        assert bool(av1c[0][2] & 64) == (bit_depth > 8) and not (av1c[0][2] & 32)
 
         transforms = [(kind, value) for kind, value, essential in props if kind in (b"clap", b"irot", b"imir")]
         assert all(essential for kind, _, essential in props if kind in (b"clap", b"irot", b"imir"))
@@ -143,6 +144,33 @@ def verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied,
         assert references == expected, (kind, references, expected)
 
 
+def verify_extended_hdr(data, crop):
+    expected = {
+        b"amve": struct.pack(">I2H", 100_000, 15635, 16450),
+        # Two leading and two trailing reserved bits zero; four presence bits set.
+        b"cclv": bytes([0x3c]) + struct.pack(">6i3I", -1234, 45678, 7500, 3000,
+                                          34000, 16000, 0, 10_000_000, 1_000_000),
+    }
+    properties = poster_properties(data)
+    for kind, value in expected.items():
+        boxes = metadata_boxes(data, kind)
+        paths = {(b"meta", b"iprp", b"ipco", kind),
+                 (b"moov", b"trak", b"mdia", b"minf", b"stbl", b"stsd", b"av01", kind)}
+        assert len(boxes) == (3 if crop else 2) and {p for p, _ in boxes} == paths
+        assert all(payload == value for _, payload in boxes)
+        for item_id, props in properties.items():
+            actual = [(payload, essential) for prop, payload, essential in props if prop == kind]
+            assert actual == ([] if item_id in (2, 6) else [(value, False)])
+        for _, entry in metadata_boxes(data, b"av01"):
+            cursor, children = 78, {}
+            while cursor < len(entry):
+                size, child = struct.unpack_from(">I4s", entry, cursor)
+                assert size >= 8 and cursor + size <= len(entry)
+                children.setdefault(child, []).append(entry[cursor + 8:cursor + size])
+                cursor += size
+            assert children.get(kind, []) == ([] if b"auxi" in children else [value])
+
+
 def select_uncropped_poster(data):
     # Only change which real item is selected as primary, so libavif can decode
     # the independently serialized secondary through its primary-item API.
@@ -165,18 +193,18 @@ def main():
     }
     count = 0
     with tempfile.TemporaryDirectory(prefix="avif-metadata-") as directory:
-        for pasp, repeat, (has_alpha, premultiplied), rotation, mirror, crop, monochrome in product(
+        for pasp, repeat, (has_alpha, premultiplied), rotation, mirror, crop, monochrome, bit_depth in product(
             [None, "1,1", "2,2", "4294967295,4294967295"],
             ["0", "2", "infinite"],
             [(False, False), (True, False), (True, True)],
             [None, 0, 1, 2, 3], [None, 0, 1],
             [None, (0, 0, 48, 56), (8, 12, 48, 56), (1, 3, 61, 75), (63, 79, 1, 1)],
-            [False, True],
+            [False, True], [8, 10],
         ):
             env = os.environ.copy()
-            for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA", "AVIF_PASP", "AVIF_ROTATION", "AVIF_MIRROR", "AVIF_CROP", "AVIF_DURATIONS", "AVIF_TIMESCALE", "AVIF_MONO"]:
+            for key in ["AVIF_REPEAT", "AVIF_PREMULTIPLIED", "AVIF_METADATA", "AVIF_ICC", "AVIF_NO_ALPHA", "AVIF_PASP", "AVIF_ROTATION", "AVIF_MIRROR", "AVIF_CROP", "AVIF_DURATIONS", "AVIF_TIMESCALE", "AVIF_MONO", "AVIF_BIT_DEPTH"]:
                 env.pop(key, None)
-            env.update(AVIF_REPEAT=repeat, AVIF_METADATA="1", AVIF_ICC=profile)
+            env.update(AVIF_REPEAT=repeat, AVIF_METADATA="1", AVIF_ICC=profile, AVIF_BIT_DEPTH=str(bit_depth))
             if monochrome:
                 env["AVIF_MONO"] = "1"
             if crop is not None:
@@ -194,7 +222,8 @@ def main():
             output = str(Path(directory) / "animation.avif")
             subprocess.run([encoder, output], env=env, check=True, capture_output=True)
             data = Path(output).read_bytes()
-            verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied, monochrome)
+            verify_spatial_boxes(data, crop, rotation, mirror, has_alpha, premultiplied, monochrome, bit_depth)
+            verify_extended_hdr(data, crop)
             mastering = metadata_boxes(data)
             expected_mdcv = struct.pack(">8H2I", 13250, 34500, 7500, 3000,
                                         34000, 16000, 15635, 16450, 10000000, 50)
@@ -214,7 +243,7 @@ def main():
                 args = [decoder, secondary_output if source == "secondary" else output] + (["poster"] if poster else [])
                 result = subprocess.run(args, check=True, capture_output=True, text=True)
                 actual = dict(line.split("=", 1) for line in result.stdout.splitlines())
-                wanted = dict(expected, alpha=str(int(has_alpha)), frames="1" if poster else "3",
+                wanted = dict(expected, depth=str(bit_depth), alpha=str(int(has_alpha)), frames="1" if poster else "3",
                               repeat="0" if poster else ("-1" if repeat == "infinite" else repeat),
                               premultiplied=str(int(premultiplied)), pasp=pasp or "none",
                               rotation="none" if rotation is None else str(rotation),
