@@ -14,6 +14,31 @@ verified serializer. Earlier local-path/no-push statements below are historical.
 CI remains deferred; these branch names do not match push workflow filters.
 Canonical optional-feature runtime verification is recorded below.
 
+Still alpha follow-up publication (2026-09-07): canonical zenavif
+`abcd16c8b9f35a17aceee5aa3f67eb74c661877e` pins cavif-rs
+`9585c67a6be5f32418924610084ca7cc8e91c449`. The suspected still-alpha defect
+was reproduced: RGBA8 made opaque pixels transparent and divided partial-alpha
+color. The owner now multiplies color and preserves alpha. Canonical RGBA16
+also now performs the missing multiplication before raw-plane coding. AOM
+identity-color decode now allocates RGBA storage when alpha is present.
+Executed regressions and a conversion-disabling mutation detect these defects.
+
+Published-Git nextest passes 897/897 (nine existing skips), default local-source
+tests/doctests 484 (ten existing ignores), and clippy passes against both sources.
+The final two focused tests additionally require the alpha-association flag.
+Libavif independently verifies all twelve exported files / 12,288 pixels at
+both storage and coded depths; maximum visible RGB error is 3/255, alpha exact.
+Determinism passes 25 legs, reference conformance 56 cells. The same 33 byte/quality
+failures, 16 timing misses and two speed inversions remain; no thresholds changed.
+See canonical `benchmarks/still_premultiplication_2026-09-07.md`.
+
+The user now authorizes merging main once ready, then reading all open GitHub
+issues and reconciling remaining gaps. Main and CI remain deferred while the
+local quality gates fail. The next priority is investigating that RGB-only
+ladder drift; alpha correctness alone does not establish merge readiness.
+Review pushes remain authorized and excluded by CI branch filters. The full
+animation/video objective remains active; prior checkpoint text is historical.
+
 Latest publication checkpoint (2026-09-07): canonical zenavif review branch
 is now `cafe9f3f0075283ca511026f11cb5a68d1e1a344`, including the previously
 local animation corrections recorded below. Its upstream zenravif dependency
