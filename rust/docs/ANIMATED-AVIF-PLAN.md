@@ -136,11 +136,33 @@ CLI coverage is unrun. The same 33 byte/quality rows plus 16 timing misses and
 two speed inversions remain. See canonical benchmarks/animation_spatial_2026-09-07.md.
 Fresh fetch still reports main `74d92430`, already included in this branch.
 
-Remaining metadata work includes fractional aperture resampling, non-square
-pixel presentation, tkhd matrices, other orientation-policy variants, track-local
-Exif/XMP, auxiliary ICC/nclx and source-encoding provenance. read_trak still skips
-track-local meta. No quality envelopes were repinned. The full goal and quality
-investigation remain active; push/CI remain deferred.
+Canonical `ea5e1139` (local, not pushed) now parses color-track Exif/XMP
+without requiring a primary item in track-local meta. Track extents/idat stay
+independent of the poster. File-backed payloads and Exif padding offsets are
+resolved exactly; arbitrary MIME items no longer become XMP. Parser accessors,
+native eager/lazy info, managed/AOM conversion and codec metadata retain sidecars
+and propagate malformed-payload errors. Deprecated eager parsing/conversion
+retain sidecars too; an executed regression also corrected its pre-existing
+posterless early return that discarded the entire animation.
+
+Six layouts cover conflicting posters, absent posters/track metadata, non-XMP
+MIME, file extents and padded Exif. Exact metadata and frame rows are checked
+across borrowed/owned parsing and native/codec APIs. Extent units check ordering,
+missing storage and invalid ranges. Libavif 1.3.0 independently decodes both
+frames and exports exact 14-byte Exif and 37-byte XMP into PNG chunks, verified
+byte-for-byte with valid CRCs. The source-generated 1501-byte parser fixture has
+recorded provenance and SHA-256. Final all-feature nextest passes 890/890 (nine
+existing skips); default tests/doctests pass 484 (ten existing ignores); clippy
+and scoped formatting pass. See canonical benchmarks/animation_sidecars_2026-09-07.md.
+
+Determinism and 56 reference conformance cells pass; optional armed CLI coverage
+is unrun. The same 33 byte/quality rows plus 16 timing misses and two speed
+inversions remain. Those broader gates precede the final deprecated-eager-only
+correction; no encoder production code changed. No thresholds were repinned.
+Remaining metadata work includes additional forms/associations, fractional
+aperture resampling, non-square pixel presentation, tkhd matrices, other
+orientation-policy variants, auxiliary ICC/nclx and source-encoding provenance.
+The full goal and quality investigation remain active; push/CI remain deferred.
 
 Next: canonical repetition/options/non-ms timing, mono animation, the existing
 quality-envelope drift, and the full remaining feature inventory. The full
