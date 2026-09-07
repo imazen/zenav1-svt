@@ -47,6 +47,17 @@ verification. They use the actual source files and normal required dependencies.
 The local serializer dependency must still become a verified git pin before
 landing. No CI or push was run.
 
+Subsequent canonical workspace verification restored the missing zenanalyze
+checkout and pinned corpora. The real default workspace all-target check and
+all-feature/all-target check pass; the latter required correcting stale
+non-exhaustive depth matches in the optional `encode_sweep` example. The
+default workspace test run plus a rerun after restoring one missing 12-bit
+fixture accounts for 472 passes and ten existing ignores. The seven animation
+integration tests also pass in the real workspace. Optional-feature runtime
+tests remain outstanding. See the canonical repository's
+`benchmarks/animation_workspace_2026-09-07.md`; these checks still use its
+manifest-pinned SVT backend, not this unpublished encoder working copy.
+
 Artifacts: `~/tmp/animation-metadata/hdr-*.log`, especially
 `hdr-depth-metadata.log`, `hdr-serializer-final.log`, `hdr-native-final.log`,
 `hdr-parser.log` and the clippy logs. Encoder final nextest (2600/2600) and regression (123/123) logs
