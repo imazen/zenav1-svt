@@ -68,9 +68,10 @@ input, failed-estimate behavior, native low-bit preservation, supplied-table
 precedence, DPB/output separation, invalid parameters and seed wraps.
 
 `tools/film_grain_gate.py <scratch-directory>` drives both real encoders on
-identical inputs. **15/15** cases are byte-identical to C and reconstruction
-matches aomdec sample-for-sample; **15/15** differ when decoding with
-`--skip-film-grain`. The cells include 8/10-bit adaptive/apply combinations,
+identical inputs. **24/24 valid C streams** are byte-identical; all **25/25**
+Rust reconstructions match aomdec sample-for-sample and differ when decoding with
+`--skip-film-grain`. One additional cell records a pinned C decode failure,
+described below. The cells include 8/10-bit adaptive/apply combinations,
 supplied tables overriding denoising, partial dimensions 70x66 and 136x72, and
 two-frame supplied-table INTER reuse versus forced updates. INTER uses the
 existing preset-8 parity envelope. A preset-10 probe encountered the pre-existing
@@ -119,7 +120,8 @@ BWDREF/ALTREF divergence outside the existing INTER envelope.
   presets 2/6/10, QPs 20/40/55, 8-bit), using `wider_corpus_sweep.sh` with four
   workers. The older `real_image_matrix.sh` could not build its hard-coded
   `/root/aom-rs` decoder dependency on this host; no result is claimed from it.
-* Final grain differentials: **7/7**; final live grain stream gate: **15/15**.
+* Initial grain differentials: **7/7**; initial live grain stream gate: **15/15**
+  (expanded by the follow-up below).
 
 Artifacts: `~/tmp/film-grain-2026-09-07/` on i265. Reproduce the live gate with
 `tools/film_grain_gate.py <scratch-directory>` under the shared heavy-job wrapper.
@@ -127,3 +129,37 @@ Scoreboard SHA-256:
 
 * `full8.tsv`: `cd508f024be7456ee423c87ed78a2a882cef5d5e8b5c0d6b4accc16bf4b37fcf`
 * `real450.tsv`: `4a18f11a223be0cf185d8224be956f522ab0dea4c2e56dbc46eab5bcb9212e07`
+
+
+## Follow-up verification and corrections
+
+The expanded live gate has **25 cells**: all 25 reconstructions equal aomdec,
+all 25 have a grain-on/off pixel difference, and **24/24 valid C streams**
+match byte-for-byte. Added native 10-bit partial sizes, an odd-size supplied
+table, and estimated/supplied grain with superres denominators 9/12/16.
+
+This review found and corrected three concrete defects:
+
+* The identity driver's final-recon dump used the reduced width/stride after
+  superres. It now dumps the full output geometry.
+* Reconstruction upscaling incorrectly derived its sampling phase from the
+  padded width. Phase now uses the coded width; the sampling rectangle still
+  includes reconstructed padding through `mi_col_end`, as C and libaom do.
+  Clamping at the coded edge instead left a two-pixel mismatch in the estimated
+  grain witness. Both estimator and supplied-table outputs now match exactly.
+* The picture-average variance walk read complete 64x64 blocks from a tight
+  original superres source, panicking on 70x66. It now reuses the already-built
+  full-resolution, border-padded variance array.
+
+The 25th cell, 70x66 / preset 10 / QP 40 / grain strength 25 / apply 1 /
+superres denominator 12, exposes a pinned-C failure: aomdec rejects C's 156-byte
+stream as `Corrupt frame detected`. Rust's 154-byte stream decodes and its
+6,930 reconstruction bytes match exactly. This is explicitly a decoder check,
+**not C byte parity**; the gate asserts the C decode failure remains reproducible.
+C witness SHA-256: `ea2bb35d34557b7b77299957744fafee7953876da8942224304592d0fb87f52f`.
+The underlying C corruption has not been localized; no reference-source fix is
+claimed. Artifacts: `~/tmp/film-grain-review/gate/` on i265.
+
+Follow-up checks: workspace nextest **2,580/2,580**, regression spot-check
+**106/106**, and preset-8 superres identity/conformance **128/128**. Logs are
+`~/tmp/film-grain-review/{nextest,spotcheck,superres}.log`.

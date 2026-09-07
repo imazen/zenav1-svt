@@ -2996,22 +2996,25 @@ impl EncodePipeline {
                 // is derived from the FULL-RESOLUTION picture. Walk that grid
                 // when a superres source was stashed; otherwise this is the
                 // unchanged coded-source walk.
-                let (stat_src, stat_stride, stat_w, stat_h) = match stats_src.as_ref() {
-                    Some((orig, ow, oh)) => (orig.as_slice(), *ow, *ow, *oh),
-                    None => (sb_input, in_stride, w, h),
-                };
-                let mut tot: u64 = 0;
-                let mut cnt: u64 = 0;
-                for sy in (0..stat_h).step_by(64) {
-                    for sx in (0..stat_w).step_by(64) {
-                        tot += crate::pd0::compute_b64_variance(
-                            stat_src, stat_stride, sx, sy,
-                        )
-                        .0[0] as u64;
-                        cnt += 1;
+                let pic_avg_variance = if let Some(vars) = stale_vars.as_ref() {
+                    // Reuse the full-resolution, border-padded statistics.
+                    // The tight pre-scaling source cannot serve a full b64
+                    // read when either original dimension is partial.
+                    (vars.iter().map(|v| u64::from(v.0[0])).sum::<u64>()
+                        / vars.len() as u64) as u16
+                } else {
+                    let mut tot = 0u64;
+                    let mut cnt = 0u64;
+                    for sy in (0..h).step_by(64) {
+                        for sx in (0..w).step_by(64) {
+                            tot += u64::from(crate::pd0::compute_b64_variance(
+                                sb_input, in_stride, sx, sy,
+                            ).0[0]);
+                            cnt += 1;
+                        }
                     }
-                }
-                let pic_avg_variance = (tot / cnt) as u16;
+                    (tot / cnt) as u16
+                };
                 let coeff_lvl = crate::quant::derive_intra_coeff_level(
                     pic_avg_variance,
                     tpl_adjusted_qp as u32,
@@ -6811,23 +6814,45 @@ impl EncodePipeline {
                 self.upscaled_width as usize,
                 self.height as usize,
             );
+            // Phase uses the coded plane width, while the tile rectangle
+            // extends to mi_col_end. Its reconstructed padding participates
+            // in the final taps (C av1_upscale_normative_rows).
+            let upscale = |src: &[u8],
+                           stride: usize,
+                           coded: usize,
+                           dst: &mut [u8],
+                           out: usize,
+                           rows: usize| {
+                let step = svtav1_dsp::superres::upscale_convolve_step(coded as i32, out as i32);
+                let x0 = svtav1_dsp::superres::upscale_convolve_x0(coded as i32, out as i32, step);
+                for r in 0..rows {
+                    svtav1_dsp::superres::upscale_normative_row(
+                        &src[r * stride..],
+                        0,
+                        stride,
+                        &mut dst[r * out..],
+                        out,
+                        step,
+                        x0,
+                        svtav1_dsp::superres::TileColPad::FRAME,
+                    );
+                }
+            };
             let mut y_up = svtav1_types::try_vec![0u8; uw * hh]?;
-            svtav1_dsp::superres::upscale_normative_plane(&recon, cw, cw, &mut y_up, uw, uw, hh);
+            upscale(&recon, cw, self.true_width as usize, &mut y_up, uw, hh);
             recon = y_up;
             if chroma.is_some() {
                 let (ccw, cuw, chh) = (cw / 2, uw.div_ceil(2), hh / 2);
+                let coded = (self.true_width as usize).div_ceil(2);
                 let mut u_up = svtav1_types::try_vec![0u8; cuw * chh]?;
                 let mut v_up = svtav1_types::try_vec![0u8; cuw * chh]?;
-                svtav1_dsp::superres::upscale_normative_plane(
-                    &u_recon, ccw, ccw, &mut u_up, cuw, cuw, chh,
-                );
-                svtav1_dsp::superres::upscale_normative_plane(
-                    &v_recon, ccw, ccw, &mut v_up, cuw, cuw, chh,
-                );
+                upscale(&u_recon, ccw, coded, &mut u_up, cuw, chh);
+                upscale(&v_recon, ccw, coded, &mut v_up, cuw, chh);
                 u_recon = u_up;
                 v_recon = v_up;
             }
         }
+
         if self.recon_output {
             self.last_recon = Some((recon.clone(), u_recon.clone(), v_recon.clone()));
             // Issue #13: the 10-bit final recon (deblock -> CDEF -> LR all

@@ -6,13 +6,13 @@ Existing INTER limitations remain in force; the two-frame probe explicitly uses
 its established experimental switch and requires identity on that exact cell.
 """
 from pathlib import Path
-import os, subprocess, sys
+import hashlib, os, subprocess, sys
 HERE=Path(__file__).resolve().parent
 OUT=Path(sys.argv[1]).resolve();OUT.mkdir(parents=True,exist_ok=True)
 DEC=os.environ.get('AOMDEC','aomdec')
 def run(args,env,log):
     with log.open('wb') as f: subprocess.run([str(a) for a in args],env=env,stdout=f,stderr=subprocess.STDOUT,check=True)
-def case(name,w,h,depth,knobs,frames=1):
+def case(name,w,h,depth,knobs,frames=1,c_invalid=False):
     d=OUT/name;d.mkdir(exist_ok=True)
     env=dict(os.environ,SVTAV1_BD=str(depth),SVTAV1_FINAL_RECON=str(d/'recon'),**knobs)
     if frames>1:env.update(SVTAV1_FRAMES=str(frames),SVT_FRAMES=str(frames),SVTAV1_INTER_EXPERIMENTAL='1',SVTAV1_INTRA_PERIOD='64',SVTAV1_HIER_LEVELS='0',SVT_INTRA_PERIOD='-1',SVT_HIER_LEVELS='0',SVT_PRED_STRUCT='1')
@@ -21,7 +21,14 @@ def case(name,w,h,depth,knobs,frames=1):
     run([HERE/'identity_run',content,w,h,40,preset,d/'rs'],env,d/'rs.log')
     run([HERE/'capture_c_trace/capture_c_trace',w,h,40,preset,d/'rs.yuv',d/'c.obu',depth],env,d/'c.log')
     r=(d/'rs.obu').read_bytes();c=(d/'c.obu').read_bytes()
-    if r!=c:
+    if c_invalid:
+        assert hashlib.sha256(c).hexdigest() == 'ea2bb35d34557b7b77299957744fafee7953876da8942224304592d0fb87f52f', f'{name}: C witness changed; review before updating'
+        # Pinned C emits an undecodable stream for this non-mi-aligned
+        # superres cell. Preserve the witness; require valid Rust output below.
+        with (d/'c-decode.log').open('wb') as f:
+            decoded=subprocess.run([DEC,'--i420','--rawvideo','-o',str(d/'c-decoded.yuv'),str(d/'c.obu')],stdout=f,stderr=f)
+        assert decoded.returncode != 0 and b'Corrupt frame detected' in (d/'c-decode.log').read_bytes(), f'{name}: C failure expectation is stale'
+    elif r!=c:
         subprocess.run([sys.executable,str(HERE/'fh_fields.py'),str(d/'c.obu'),str(d/'rs.obu')],stdout=(d/'fields.txt').open('w'))
         raise AssertionError(f'{name}: C {len(c)}B != Rust {len(r)}B; {d}')
     run([DEC,'--i420','--rawvideo',f'--output-bit-depth={depth}','-o',d/'decoded.yuv',d/'rs.obu'],env,d/'decode.log')
@@ -30,7 +37,7 @@ def case(name,w,h,depth,knobs,frames=1):
     run([DEC,'--i420','--rawvideo','--skip-film-grain',f'--output-bit-depth={depth}','-o',d/'clean.yuv',d/'rs.obu'],env,d/'decode-clean.log')
     changed=(d/'clean.yuv').read_bytes()!=recon
     if knobs.get('SVT_GRAIN_TABLE'):assert changed, f'{name}: supplied grain had no output effect'
-    print(f'PASS {name}: {len(r)}B C-identical, recon decoder-exact, grain_live={changed}',flush=True)
+    print(f'PASS {name}: {len(r)}B, C={"decode failure witness" if c_invalid else "identical"}, recon decoder-exact, grain_live={changed}',flush=True)
     return changed
 live=0
 for depth in [8,10]:
@@ -50,5 +57,16 @@ for ignore in [False,True]:
     fields=(OUT/name/'inter-fields.txt').read_text()
     assert 'update_grain' in fields
     assert ('film_grain_params_ref_idx' in fields) != ignore, f'{name}: reuse branch not reached'
-assert live>=10, f'not enough live grain cases: {live}'
-print(f'PASS 15 live stream cells; {live} show a grain-on/off pixel difference',flush=True)
+for w,h in [(70,66),(136,72)]:
+    live+=case(f'partial10_{w}x{h}',w,h,10,{'SVT_GRAIN_STRENGTH':'25','SVT_GRAIN_APPLY':'1'})
+live+=case('odd_table',71,67,8,{'SVT_GRAIN_TABLE':'1'})
+for denom in [9,12,16]:
+    for table in [False,True]:
+        knobs={'SVT_GRAIN_STRENGTH':'25','SVT_GRAIN_APPLY':'1',
+               'SVTAV1_SUPERRES':str(denom),'SVT_SUPERRES_KF_DENOM':str(denom)}
+        if table:knobs['SVT_GRAIN_TABLE']='1'
+        live+=case(f'superres{denom}_table{int(table)}',128,128,8,knobs)
+live+=case('superres_partial_c_bug',70,66,8,{'SVT_GRAIN_STRENGTH':'25','SVT_GRAIN_APPLY':'1',
+    'SVTAV1_SUPERRES':'12','SVT_SUPERRES_KF_DENOM':'12'},c_invalid=True)
+assert live>=20, f'not enough live grain cases: {live}'
+print(f'PASS 25 live stream cells; {live} show a grain-on/off pixel difference',flush=True)

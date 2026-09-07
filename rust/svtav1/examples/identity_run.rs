@@ -989,8 +989,16 @@ fn main() {
     // error rather than a silent fallback to the u8 chain's recon, which is
     // NOT what a 10-bit decoder outputs.
     if let Ok(path) = std::env::var("SVTAV1_FINAL_RECON") {
-        let aw = pipeline.width as usize;
-        let (tw2, th2) = (pipeline.true_width as usize, pipeline.true_height as usize);
+        // Superres reconstruction is already upscaled to the output width.
+        let (aw, tw2) = if pipeline.superres_denom.is_some() {
+            (
+                pipeline.upscaled_width as usize,
+                pipeline.upscaled_width as usize,
+            )
+        } else {
+            (pipeline.width as usize, pipeline.true_width as usize)
+        };
+        let th2 = pipeline.true_height as usize;
         let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
         fn crop<T: Copy>(p: &[T], stride: usize, cw: usize, chh: usize) -> Vec<T> {
             let mut o = Vec::with_capacity(cw * chh);
