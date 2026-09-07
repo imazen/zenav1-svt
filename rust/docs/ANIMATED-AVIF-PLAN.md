@@ -14,6 +14,40 @@ verified serializer. Earlier local-path/no-push statements below are historical.
 CI remains deferred; these branch names do not match push workflow filters.
 Canonical optional-feature runtime verification is recorded below.
 
+Quality-gate investigation publication (2026-09-07): canonical zenavif
+`d0cab26aed87879be75ecfc9dbb0141c6fee583f` pins cavif-rs
+`176ad8ee5686fcadff36d1a28478d7c61c3f9442`. The original July envelope's
+27 file sizes are reproduced with owner adb88ddc and registry zenrav1e 0.1.4;
+current decoder score drift is at most 0.077. A four-preset-switch diagnostic
+is byte-identical in all 27 files to an old-wrapper/new-backend arm, locating
+the drift in preset/backend changes rather than the animation integration.
+
+A real fast-preset quality defect is corrected: restoring the full intra-mode
+budget at speeds 9/10 changes photo/q35 from 1165 B / SSIM2 53.312 to
+1016 B / 59.913. CDEF/transform choices and the backend's explicit budget knob
+remain. All 35 GB82/GB82-SC curves improve at each speed, over nine quality
+points: median matched-score rate reductions 3.332% (speed 10) and 5.202%
+(speed 9), with single-pass encode-time ratios 1.233 and 1.493. These are
+8-bit SDR inputs reduced to at most a 512-pixel long edge, not HDR or full-size
+proof. The time cost is substantial and is recorded rather than hidden.
+
+The original photo budget test fails before and passes after. Both local-source
+and published-Git workspace nextest pass 898/898 (nine existing skips), clippy
+passes, determinism passes 25 legs, and conformance 56 cells (optional armed CLI
+unrun). Independent libavif decodes all 1381 investigation files. See canonical
+`benchmarks/quality_drift_2026-09-07/README.md` and its raw tables/probe/analysis.
+The owner also passes 86 tests/doctests (five existing ignores) and clippy.
+
+Final gates still fail without threshold changes: 32 non-timing ladder changes
+plus 20 timing misses; six monotonicity inversions. The ladder flags improvements
+too. Four new photo inversions are slower presets dominated by the improved
+speed 10 (s6/s7/s8 at q40, s5 at q80); the two existing screen/q80 speed-6 cases
+remain. Investigate those slower-preset gaps next. Reverting a demonstrated
+quality improvement solely to reduce the inversion count is not a correction.
+Main merge and CI remain deferred. The user's conditional main merge and
+subsequent complete open-issue audit remain authorized and pending. The full
+animation/video objective is active; earlier checkpoints below are historical.
+
 Still alpha follow-up publication (2026-09-07): canonical zenavif
 `abcd16c8b9f35a17aceee5aa3f67eb74c661877e` pins cavif-rs
 `9585c67a6be5f32418924610084ca7cc8e91c449`. The suspected still-alpha defect
