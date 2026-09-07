@@ -42,8 +42,8 @@ unsupported options and tests expecting refusal do not satisfy the goal.
 
 | Requirement | Current state / next evidence |
 |---|---|
-| Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite counts now survive the canonical parser/native metadata; exact downstream timing APIs remain |
-| Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser derives finite play count from track/edit duration; serializer pinned to `7b058bb8` |
+| Frame timing, duration, count, seeking | All-sync timing verified through u32-max sample durations, totals above 32 bits and 257 frames; reverse/alternating seeks and reset replay preserve all color/alpha bytes. Full finite counts and exact ticks survive canonical native decode; shared codec trait precision remains |
+| Finite/infinite repetition | Writes edit lists and finite/infinite presentation durations; 18 libavif track/poster checks pass. Canonical parser/native metadata preserves full-width finite counts; the shared codec u32 boundary is checked explicitly. Local serializer dependency still needs a final verified git pin before landing |
 | Alpha | 8-bit straight/premultiplied associations and poster alpha verified, alongside color-only output. 8/10-bit lossless color/alpha and monochrome source pixels are verified; 12-bit and opaque/missing-alpha policy remain |
 | Metadata | ICC/Exif/XMP/CICP/CLLI/MDCV wiring covers color track and poster. Libavif verifies exact ICC/Exif/XMP plus CICP/CLLI; independent box traversal verifies MDCV values/placement. Precedence and broader metadata audit remain |
 | Spatial properties | Square-pixel aspect, clean aperture, rotation and mirror metadata wired to color track/poster; uncropped secondary shares encoded samples and retains alpha/metadata. Displayed transformed-alpha pixel verification remains |
@@ -209,8 +209,8 @@ truncated and saturated, so it could not represent the encoded timing range.
 83 serializer tests, 19 parser tests and 5 parser doctests pass; standalone
 source harnesses both pass clippy with warnings denied. Main clippy completes
 with existing warnings. Evidence: `timing-parser-serializer.log` and
-`timing-clippy.log`. Managed/codec decoder adapters still use the legacy
-millisecond field and require follow-up wiring. The finite-count rejection is now fixed: canonical parser and native decoder
+`timing-clippy.log`. At this stage, managed/codec adapters still used legacy milliseconds; the native
+wiring and exact limit accounting were subsequently completed below. The finite-count rejection is now fixed: canonical parser and native decoder
 metadata preserve `u64` total playbacks, including 4,294,967,296. The narrower
 zencodec adapter explicitly rejects overflow; full-width shared-codec support
 remains. Libavif independently reports counts above INT_MAX as infinite, so the
@@ -468,3 +468,17 @@ Final gates after these additional fixes: 2600/2600 workspace tests,
 and the variance-boost native grid at 336/336 source plus 168/168 C-byte
 matches. Clippy completed with existing warnings; formatting, diff and refusal
 inventory checks pass. CI remains deferred.
+
+
+### Native decoded timing and limit verification (2026-09-07)
+
+Canonical zenavif now carries exact media ticks into eager and lazy decoded
+frames and exposes timing through native and concrete codec decoder accessors.
+The shared zencodec frame type retains its u32 millisecond limit; the native API
+is required for full precision. Two real adapter limit bypasses (fractional
+milliseconds counted as zero, and long durations saturated) were reproduced and
+fixed using exact cumulative ticks. Six actual-source integration tests pass,
+including 548 eager/lazy decodes with unchanged pixels across six timelines.
+Managed-source lib/tests clippy passes with warnings denied. Optional AOM wiring
+is present but that feature and the canonical full workspace were not tested by
+the isolated default-feature harness. CI remains deferred.
