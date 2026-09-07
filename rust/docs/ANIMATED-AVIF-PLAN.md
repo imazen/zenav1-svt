@@ -5,6 +5,15 @@ metadata, transparency, and spec supported features. After that, complete
 video encoding support.** This objective remains active. The initial all-intra
 path is an implementation step, not the completion boundary.
 
+Push checkpoint (2026-09-07, explicitly requested): review branch
+`animation-avif-complete` in both repositories. The temporary sibling
+serializer dependency is replaced by canonical zenavif git revision
+`98c8a5011e1ac573770a8889a8b5a4a68587de90`. Cargo resolves the fetched package;
+its manifest and all nine source files are byte-identical to the locally
+verified serializer. Earlier local-path/no-push statements below are historical.
+CI remains deferred; these branch names do not match push workflow filters.
+Canonical optional-feature runtime tests are still in progress.
+
 ## Authoritative baseline
 
 AVIF 1.2.0: https://aomediacodec.github.io/av1-avif/v1.2.0.html
