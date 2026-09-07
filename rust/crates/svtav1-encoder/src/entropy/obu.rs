@@ -1896,7 +1896,7 @@ fn byte_align_zero(wb: &mut BitWriter) {
 /// The single-arg [`tile_log2`] above is this with `blk_size = 1`.
 fn tile_log2_blk(blk_size: u32, target: u32) -> u32 {
     let mut k = 0u32;
-    while (blk_size << k) < target {
+    while (u64::from(blk_size) << k) < u64::from(target) {
         k += 1;
     }
     k
@@ -2907,6 +2907,15 @@ mod tests {
         assert_eq!(tile_log2_blk(64, 2), 0); // 64 already >= 2
         assert_eq!(tile_log2_blk(2304, 4), 0); // MAX_TILE_AREA_SB-scale, tiny target
         assert_eq!(tile_log2_blk(1, 5), 3); // matches tile_log2(5) == 3
+        // Rejection must terminate even when the next power exceeds u32.
+        assert_eq!(tile_log2_blk(2304, u32::MAX), 21);
+        for sb_size in [64, 128] {
+            assert!(
+                TileLimits::for_frame(4096, u32::MAX, sb_size)
+                    .untileable_reason(0)
+                    .is_some()
+            );
+        }
     }
 
     /// Mono SH/FH byte goldens. Originally captured before the 4:2:0 work
