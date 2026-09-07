@@ -40,6 +40,25 @@ all-feature library clippy passes with warnings denied. See canonical
 explicit lossless wiring remain required; transparent grids remain unsupported.
 CI is still deferred and the full objective remains active.
 
+Canonical animation integration is now implemented locally in `8bcfb62a`
+(not pushed): RGB8/RGBA8/RGB16/RGBA16 entry points and codec traits share the
+still pixel-coding path, emit full headers and preserve millisecond timing,
+metadata and alpha. Premultiplied-alpha signaling is corrected in still and
+animated output. Four animation tests plus 26 still tests pass; 108 coded
+sample pairs agree through both raw decoders. Full all-feature workspace
+nextest passes 871/871 (nine existing skips); default tests/doctests pass 472
+(ten existing ignores); clippy and scoped formatting pass.
+
+The required before/after broader gates exposed existing zenravif envelope
+drift: 49 ladder tolerance failures both times, with all 33 byte/quality rows
+identical, and the same two screen/q80 speed inversions. Determinism and 56/56
+reference conformance pass both times; the absent sibling CLI's optional armed
+leg was explicitly not run. Preserve thresholds and investigate before another
+push/CI. See canonical `benchmarks/svt_animation_seam_2026-09-07.md`.
+Next integration checks: codec loop-count forwarding and MDCV unit conversion,
+canonical repetition/options/non-ms timing, mono animation, and the full
+remaining feature inventory. The full objective remains active.
+
 ## Authoritative baseline
 
 AVIF 1.2.0: https://aomediacodec.github.io/av1-avif/v1.2.0.html
