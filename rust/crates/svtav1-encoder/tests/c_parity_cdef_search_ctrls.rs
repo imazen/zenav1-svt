@@ -164,6 +164,17 @@ fn compare(c: &Case, out: &[i64; cdef_out::COUNT], port: &CdefSearchControls, ar
         i64::from(port.use_qp_strength),
         "{arm} use_qp_strength {c:?}"
     );
+    // Verify the projection actually consumed by the 8/10-bit search, not
+    // just the full translated control table. MR keeps the second UV pass.
+    let search = svtav1_encoder::cdef::cdef_search_cfg_from_ctrls(port, 0);
+    let expected_uv: Vec<bool> = (0..g(cdef_out::FIRST_NUM) as usize)
+        .map(|k| g(cdef_out::FIRST_FS_UV + k) != -1)
+        .chain((0..g(cdef_out::SECOND_NUM) as usize).map(|k| g(cdef_out::SECOND_FS_UV + k) != -1))
+        .collect();
+    assert_eq!(
+        search.chroma_search, expected_uv,
+        "{arm} search UV mask {c:?}"
+    );
     // The four candidate arrays, ALL 64 entries each — C's untouched slots
     // are zero on a freshly allocated control set and the port's Default is
     // too, so a partial write on either side shows up.

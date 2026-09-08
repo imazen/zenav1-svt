@@ -852,10 +852,12 @@ pub struct CdefSearchCfg {
     /// Candidate strengths in C slot order: `default_first_pass_fs[..n]`
     /// then `default_second_pass_fs[..m]` (gi domain: pri*4 + sec-code).
     pub fs: Vec<i32>,
-    /// Number of first-pass entries == the slots whose UV row is real
-    /// (every ported level sets `default_first_pass_fs_uv = first_pass_fs`
-    /// and all-(-1) second-pass uv).
+    /// Number of first-pass entries, before the second-pass slots.
     pub first_pass_num: usize,
+    /// C's per-slot UV mask: `default_*_pass_fs_uv != -1`.
+    /// Research mode searches chroma in both passes. Strengths still come
+    /// from `fs`, as in C; the UV arrays are masks, not alternate strengths.
+    pub chroma_search: Vec<bool>,
     /// `subsampling_factor` (row subsampling for the mse; per-plane caps
     /// applied at use: BLOCK_8X8 -> min(.,4), BLOCK_4X4 -> min(.,1),
     /// cdef_process.c:467-486).
@@ -906,9 +908,15 @@ pub fn cdef_search_cfg_from_ctrls(
             .iter()
             .map(|&v| i32::from(v)),
     );
+    let chroma_search = ctrls.default_first_pass_fs_uv[..first_pass_num]
+        .iter()
+        .chain(ctrls.default_second_pass_fs_uv[..ctrls.default_second_pass_fs_num as usize].iter())
+        .map(|&v| v != -1)
+        .collect();
     CdefSearchCfg {
         fs,
         first_pass_num,
+        chroma_search,
         subsampling: ctrls.subsampling_factor as usize,
         zero_fs_cost_bias,
     }
@@ -1363,6 +1371,7 @@ pub(crate) fn cdef_search_still_with_stop(
     let nvfb = height.div_ceil(64);
     let nhfb = width.div_ceil(64);
     let n_cand = cfg.fs.len();
+    assert_eq!(cfg.chroma_search.len(), n_cand, "CDEF chroma mask length");
     // Per-plane caps (cdef_process.c:467-486): BLOCK_8X8 -> min(., 4),
     // BLOCK_4X4 -> min(., 1).
     let sub_y = cfg.subsampling.min(4);
@@ -1426,8 +1435,10 @@ pub(crate) fn cdef_search_still_with_stop(
             // ---- Chroma: U then V ACCUMULATE into the joint uv row.
             if chroma_420 {
                 let (cw, ch) = (width / 2, height / 2);
-                for gi in cfg.first_pass_num..n_cand {
-                    row[1][gi] = DEFAULT_MSE_UV * 64;
+                for (gi, &enabled) in cfg.chroma_search.iter().enumerate() {
+                    if !enabled {
+                        row[1][gi] = DEFAULT_MSE_UV * 64;
+                    }
                 }
                 for (rec_c, src_c) in [(recon_u, src_u), (recon_v, src_v)] {
                     build_src(
@@ -1440,7 +1451,12 @@ pub(crate) fn cdef_search_still_with_stop(
                         vsize / 2,
                         hsize / 2,
                     );
-                    for (gi, &fs) in cfg.fs.iter().enumerate().take(cfg.first_pass_num) {
+                    for (gi, &fs) in cfg
+                        .fs
+                        .iter()
+                        .enumerate()
+                        .filter(|(gi, _)| cfg.chroma_search[*gi])
+                    {
                         filter_fb_packed(
                             &mut tmp,
                             &src_pad,
@@ -1611,6 +1627,7 @@ pub(crate) fn cdef_search_still_hbd_with_stop(
     let nvfb = height.div_ceil(64);
     let nhfb = width.div_ceil(64);
     let n_cand = cfg.fs.len();
+    assert_eq!(cfg.chroma_search.len(), n_cand, "CDEF chroma mask length");
     let sub_y = cfg.subsampling.min(4);
     let sub_uv = cfg.subsampling.min(1);
 
@@ -1685,8 +1702,10 @@ pub(crate) fn cdef_search_still_hbd_with_stop(
             // ---- Chroma: U then V ACCUMULATE into the joint uv row.
             if chroma_420 {
                 let (cw, ch) = (width / 2, height / 2);
-                for gi in cfg.first_pass_num..n_cand {
-                    row[1][gi] = DEFAULT_MSE_UV * 64;
+                for (gi, &enabled) in cfg.chroma_search.iter().enumerate() {
+                    if !enabled {
+                        row[1][gi] = DEFAULT_MSE_UV * 64;
+                    }
                 }
                 for (rec_c, src_c) in [(recon_u, src_u), (recon_v, src_v)] {
                     build_src(
@@ -1699,7 +1718,12 @@ pub(crate) fn cdef_search_still_hbd_with_stop(
                         vsize / 2,
                         hsize / 2,
                     );
-                    for (gi, &fs) in cfg.fs.iter().enumerate().take(cfg.first_pass_num) {
+                    for (gi, &fs) in cfg
+                        .fs
+                        .iter()
+                        .enumerate()
+                        .filter(|(gi, _)| cfg.chroma_search[*gi])
+                    {
                         filter_fb_packed_hbd(
                             &mut tmp,
                             &src_pad,
@@ -1811,9 +1835,11 @@ mod tests {
                 fs.push(i32::from(PF_GI[i]) + d);
             }
         }
+        let chroma_search = (0..fs.len()).map(|i| i < first_pass_num).collect();
         CdefSearchCfg {
             fs,
             first_pass_num,
+            chroma_search,
             // This helper reproduces the SEARCH-candidate flattening only;
             // the recon-controls bias is asserted separately.
             zero_fs_cost_bias: 0,

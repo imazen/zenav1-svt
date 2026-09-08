@@ -67,6 +67,7 @@ fn cdef_apply_and_search_cancel_within_frame_at_both_depths() {
     let cfg = cdef::CdefSearchCfg {
         fs: vec![0, 20],
         first_pass_num: 2,
+        chroma_search: vec![true, true],
         subsampling: 1,
         zero_fs_cost_bias: 0,
     };
