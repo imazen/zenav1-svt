@@ -1694,16 +1694,37 @@ pub fn exhaustive_mesh_search(
             } else {
                 (end_col - c).max(0)
             };
-            for i in 0..n {
-                let mx = fcx + c + i;
-                let my = fcy + r;
-                let sad = svtav1_dsp::sad::sad(
+            // C uses sdx4df only for a complete four-position group. Keep
+            // its scalar remainder and sequential strict-< winner updates.
+            let batch = if n == 4 {
+                Some(svtav1_dsp::me_sad::block_sad_x4(
                     what,
                     stride,
-                    window(pic, stride, block_origin, mx, my),
+                    core::array::from_fn(|i| {
+                        window(pic, stride, block_origin, fcx + c + i as i32, fcy + r)
+                    }),
                     stride,
                     bw,
                     bh,
+                ))
+            } else {
+                None
+            };
+            for i in 0..n {
+                let mx = fcx + c + i;
+                let my = fcy + r;
+                let sad = batch.map_or_else(
+                    || {
+                        svtav1_dsp::sad::sad(
+                            what,
+                            stride,
+                            window(pic, stride, block_origin, mx, my),
+                            stride,
+                            bw,
+                            bh,
+                        )
+                    },
+                    |values| values[i as usize],
                 ) as i32;
                 if sad < best_sad {
                     let sad2 = sad

@@ -420,6 +420,115 @@ pub fn block_sad(
     )
 }
 
+/// Four independent SADs with a shared source, in caller-supplied order.
+/// Mirrors C's `sdx4df` contract used by IntraBC mesh search. Other architectures
+/// retain their existing SIMD SAD dispatch until a batched arm is available.
+pub fn block_sad_x4(
+    src: &[u8],
+    src_stride: usize,
+    refs: [&[u8]; 4],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> [u32; 4] {
+    incant!(
+        block_sad_x4(src, src_stride, refs, ref_stride, w, h),
+        [v3, scalar]
+    )
+}
+
+pub fn block_sad_x4_scalar(
+    _token: ScalarToken,
+    src: &[u8],
+    src_stride: usize,
+    refs: [&[u8]; 4],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> [u32; 4] {
+    core::array::from_fn(|i| block_sad(src, src_stride, refs[i], ref_stride, w, h))
+}
+
+/// C's four-candidate SAD: reuse each source load across four references and
+/// accumulate in independent lanes. Narrow loads never cross the block edge.
+#[cfg(target_arch = "x86_64")]
+#[arcane]
+pub fn block_sad_x4_v3(
+    _token: Desktop64,
+    src: &[u8],
+    src_stride: usize,
+    refs: [&[u8]; 4],
+    ref_stride: usize,
+    w: usize,
+    h: usize,
+) -> [u32; 4] {
+    let mut wide = [_mm256_setzero_si256(); 4];
+    let mut narrow = [_mm_setzero_si128(); 4];
+    let mut tail = [0u32; 4];
+    for y in 0..h {
+        let so = y * src_stride;
+        let ro = y * ref_stride;
+        let mut x = 0;
+        while x + 32 <= w {
+            let a = _mm256_loadu_si256::<[u8; 32]>(src[so + x..so + x + 32].try_into().unwrap());
+            for i in 0..4 {
+                let b = _mm256_loadu_si256::<[u8; 32]>(
+                    refs[i][ro + x..ro + x + 32].try_into().unwrap(),
+                );
+                wide[i] = _mm256_add_epi64(wide[i], _mm256_sad_epu8(a, b));
+            }
+            x += 32;
+        }
+        if x + 16 <= w {
+            let a = _mm_loadu_si128::<[u8; 16]>(src[so + x..so + x + 16].try_into().unwrap());
+            for i in 0..4 {
+                let b =
+                    _mm_loadu_si128::<[u8; 16]>(refs[i][ro + x..ro + x + 16].try_into().unwrap());
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            x += 16;
+        }
+        if x + 8 <= w {
+            let a = _mm_loadu_si64::<[u8; 8]>(src[so + x..so + x + 8].try_into().unwrap());
+            for i in 0..4 {
+                let b = _mm_loadu_si64::<[u8; 8]>(refs[i][ro + x..ro + x + 8].try_into().unwrap());
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            x += 8;
+        }
+        if x + 4 <= w {
+            let a = _mm_cvtsi32_si128(i32::from_le_bytes(
+                src[so + x..so + x + 4].try_into().unwrap(),
+            ));
+            for i in 0..4 {
+                let b = _mm_cvtsi32_si128(i32::from_le_bytes(
+                    refs[i][ro + x..ro + x + 4].try_into().unwrap(),
+                ));
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            x += 4;
+        }
+        while x < w {
+            for i in 0..4 {
+                tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+            }
+            x += 1;
+        }
+    }
+    for i in 0..4 {
+        let s = _mm_add_epi64(
+            narrow[i],
+            _mm_add_epi64(
+                _mm256_castsi256_si128(wide[i]),
+                _mm256_extracti128_si256::<1>(wide[i]),
+            ),
+        );
+        let s = _mm_add_epi64(s, _mm_srli_si128::<8>(s));
+        tail[i] += _mm_cvtsi128_si64(s) as u32;
+    }
+    tail
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +563,32 @@ mod tests {
         (20, 3),
         (5, 7),
     ];
+
+    #[test]
+    fn four_candidate_sad_matches_independent_sums_all_tiers() {
+        for &(w, h) in SIZES
+            .iter()
+            .chain(&[(4, 128), (128, 128), (1, 1), (7, 13), (31, 9)])
+        {
+            let ss = w + 7;
+            let rs = w + 11;
+            // The last row has exactly w samples: catch SIMD overreads.
+            let src = plane(71, ss * (h - 1) + w);
+            let refs: [Vec<u8>; 4] =
+                core::array::from_fn(|i| plane(99 + i as u32, rs * (h - 1) + w));
+            let refs = refs.each_ref().map(|v| v.as_slice());
+            let expected: [u32; 4] = core::array::from_fn(|i| {
+                (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (y, x)))
+                    .map(|(y, x)| u32::from(src[y * ss + x].abs_diff(refs[i][y * rs + x])))
+                    .sum()
+            });
+            let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_| {
+                assert_eq!(block_sad_x4(&src, ss, refs, rs, w, h), expected, "{w}x{h}");
+            });
+            assert!(report.warnings.is_empty(), "{report:?}");
+        }
+    }
 
     #[test]
     fn me_sad_all_tiers_agree() {
