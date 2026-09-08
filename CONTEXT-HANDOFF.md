@@ -9,16 +9,23 @@ User-directed policy goal **2026-09-08**: [ENCODER-POLICY-GOAL.md](ENCODER-POLIC
 defines the continuous-effort/adaptive API, strict `SvtParity`, complete research
 preset -1, preserved HDR-fork features, imazen-26/native-HDR calibration and
 actual backend-owned zenavif routing, with local validation and main-integration
-completion gates. This is a written goal; the thread goal tracker still holds
-the unfinished, usage-limited animated-AVIF/video goal and refused a second goal.
+completion gates. The thread goal tracker now targets completion of this document.
+The separate animated-AVIF/video objective remains unfinished.
+
+Research implementation status: [live port map](rust/docs/research-preset-port-map.md).
+Signed native transport, SGR controls and depth branches are committed locally
+in `902cf3d9`; 2,612 tests and 127/127 normal-preset byte regressions passed.
+The next local change wires research lambda weights (2,613 tests and 127/127
+normal-preset byte regressions passed). Full -1 remains unverified: asymmetric partition search and
+coefficient-class wiring are required before the research identity matrix.
 
 Latest still-backend comparison **2026-09-08**: the [measured RD/time report](../zenmetrics/benchmarks/av1_compare_2026-09-08/README.md)
 and [AOM adoption audit](../zenmetrics/benchmarks/av1_compare_2026-09-08/AOM_ADOPTION.md)
 record the completed C/Rust SVT/AOM preset 0..9 fill, C research preset -1,
 and successful 20-job zenfleet supplement. Prefer their dense time-budget
-curves over the earlier coarse preset-6 estimates. Rust's unsigned preset
-API still cannot express -1; C's -2/-3 enum names are rejected by its public
-validator in this build. New real-image parity witnesses remain open.
+curves over the earlier coarse preset-6 estimates. The new low-level signed constructor can express -1, but the high-level AVIF
+wrapper and full research parity are pending. C's -2/-3 enum names are rejected
+by its public validator in this build. New real-image parity witnesses remain open.
 The static harness and reports are local zenmetrics changes; production
 routing remains query-only, and the previously identified wrapper-quality,
 translation-parity and broad local lint gates are not closed by these sweeps.

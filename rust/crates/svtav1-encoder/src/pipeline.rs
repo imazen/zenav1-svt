@@ -3012,7 +3012,7 @@ impl EncodePipeline {
                     // allintra block does (enc_mode_config.c:10093-10115):
                     // the tune-IQ curve OR the PSNR ladder, then the
                     // extended-CRF bump. Both key on `picture_qp`.
-                    Some(crate::pd0::frame_lambda_weight(
+                    Some(crate::pd0::frame_lambda_weight_for_preset(self.speed_config.preset,
                         picture_qp as u32,
                         self.hdr.tune == crate::tune::TUNE_IQ,
                         lw_bump,
@@ -3072,7 +3072,7 @@ impl EncodePipeline {
                     md_lambda_factor_update_type,
                     md_alt_lambda_factors,
                     0,
-                    crate::pd0::frame_lambda_weight(
+                    crate::pd0::frame_lambda_weight_for_preset(self.speed_config.preset,
                         picture_qp as u32,
                         self.hdr.tune == crate::tune::TUNE_IQ,
                         lw_bump,
@@ -4005,7 +4005,8 @@ impl EncodePipeline {
                         i32::from(base_qindex),
                         /*is_islice=*/ false,
                     );
-                    let lw = crate::pd0::frame_lambda_weight(
+                    let lw = crate::pd0::frame_lambda_weight_for_preset(
+                        self.speed_config.preset,
                         picture_qp as u32,
                         self.hdr.tune == crate::tune::TUNE_IQ,
                         lw_bump,
@@ -4230,8 +4231,13 @@ impl EncodePipeline {
             sc_arm,
             self.hdr.is_fork() && self.hdr.alt_ssim_tuning,
             self.hdr.is_fork() && self.hdr.alt_lambda_factors,
-            (self.hdr.tune == crate::tune::TUNE_IQ)
-                .then(|| crate::tune::iq_lambda_weight(picture_qp as u32)),
+            if self.hdr.tune == crate::tune::TUNE_IQ {
+                Some(crate::tune::iq_lambda_weight(picture_qp as u32))
+            } else if self.speed_config.preset == -1 {
+                Some(0)
+            } else {
+                None
+            },
             ssim_factors.as_ref(),
             base_qindex,
             frame_tx_mode_select,
@@ -11685,7 +11691,8 @@ fn encode_tile_rows(
                             match (hdr_iq_lambda_weight, lw_bump) {
                                 (Some(w), b) => Some(w + b),
                                 (None, 0) => None,
-                                (None, b) => Some(crate::pd0::frame_lambda_weight(
+                                (None, b) => Some(crate::pd0::frame_lambda_weight_for_preset(
+                                    speed_config.preset,
                                     u32::from(crate::rate_control::qindex_to_qp(sbq)),
                                     false,
                                     b,
@@ -12120,7 +12127,8 @@ fn encode_tile_rows(
                                     // bump (pd0::frame_lambda_weight). Identical to the
                                     // old `kf_full_lambda_8bit(qindex, cli_qp)` ladder
                                     // whenever the CRF offset is 0.
-                                    crate::pd0::frame_lambda_weight(
+                                    crate::pd0::frame_lambda_weight_for_preset(
+                                        speed_config.preset,
                                         u32::from(picture_qp),
                                         tune_iq,
                                         lw_bump,
@@ -12162,7 +12170,8 @@ fn encode_tile_rows(
                                     y0,
                                     u32::from(cli_qp),
                                     sb_qindex,
-                                    crate::pd0::frame_lambda_weight(
+                                    crate::pd0::frame_lambda_weight_for_preset(
+                                        speed_config.preset,
                                         u32::from(picture_qp),
                                         tune_iq,
                                         lw_bump,
@@ -12206,7 +12215,8 @@ fn encode_tile_rows(
                                     // bump (pd0::frame_lambda_weight). Identical to the
                                     // old `kf_full_lambda_8bit(qindex, cli_qp)` ladder
                                     // whenever the CRF offset is 0.
-                                    crate::pd0::frame_lambda_weight(
+                                    crate::pd0::frame_lambda_weight_for_preset(
+                                        speed_config.preset,
                                         u32::from(picture_qp),
                                         tune_iq,
                                         lw_bump,
@@ -12440,7 +12450,8 @@ fn encode_tile_rows(
                                     sb_qindex,
                                     // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
                                     // ladder on `picture_qp` + the extended-CRF bump.
-                                    crate::pd0::frame_lambda_weight(
+                                    crate::pd0::frame_lambda_weight_for_preset(
+                                        speed_config.preset,
                                         u32::from(picture_qp),
                                         tune_iq,
                                         lw_bump,
@@ -12567,7 +12578,8 @@ fn encode_tile_rows(
                                                 sb_qindex,
                                                 // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
                                                 // ladder on `picture_qp` + the extended-CRF bump.
-                                                crate::pd0::frame_lambda_weight(
+                                                crate::pd0::frame_lambda_weight_for_preset(
+                                                    speed_config.preset,
                                                     u32::from(picture_qp),
                                                     false,
                                                     lw_bump,
@@ -12827,7 +12839,8 @@ fn encode_tile_rows(
                                             y0,
                                             cli_qp as u32,
                                             sb_qindex,
-                                            crate::pd0::frame_lambda_weight(
+                                            crate::pd0::frame_lambda_weight_for_preset(
+                                                speed_config.preset,
                                                 u32::from(picture_qp),
                                                 tune_iq,
                                                 lw_bump,
@@ -12865,7 +12878,8 @@ fn encode_tile_rows(
                                             sb_qindex,
                                             // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
                                             // ladder on `picture_qp` + the extended-CRF bump.
-                                            crate::pd0::frame_lambda_weight(
+                                            crate::pd0::frame_lambda_weight_for_preset(
+                                                speed_config.preset,
                                                 u32::from(picture_qp),
                                                 tune_iq,
                                                 lw_bump,

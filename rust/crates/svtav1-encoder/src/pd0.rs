@@ -260,6 +260,45 @@ pub(crate) fn frame_lambda_weight(picture_qp: u32, tune_iq: bool, extended_crf_b
     ladder + extended_crf_bump
 }
 
+/// Research mode omits the QP ladder for tune 0–2 in both C derivation arms
+/// (`enc_mode_config.c:9450,10101`). IQ and the extended-CRF bump remain live.
+pub(crate) fn frame_lambda_weight_for_preset(
+    preset: i8,
+    picture_qp: u32,
+    tune_iq: bool,
+    extended_crf_bump: u32,
+) -> u32 {
+    if preset <= -1 && !tune_iq {
+        extended_crf_bump
+    } else {
+        frame_lambda_weight(picture_qp, tune_iq, extended_crf_bump)
+    }
+}
+
+#[cfg(test)]
+mod research_lambda_tests {
+    use super::*;
+
+    #[test]
+    fn research_omits_normal_weight_but_preserves_iq_and_extended_crf() {
+        for qp in 0..=63 {
+            for bump in [0, 28, 784] {
+                assert_eq!(frame_lambda_weight_for_preset(-1, qp, false, bump), bump);
+                assert_eq!(
+                    frame_lambda_weight_for_preset(-1, qp, true, bump),
+                    crate::tune::iq_lambda_weight(qp) + bump
+                );
+                for preset in 0..=13 {
+                    assert_eq!(
+                        frame_lambda_weight_for_preset(preset, qp, false, bump),
+                        frame_lambda_weight(qp, false, bump)
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// [`kf_full_lambda_8bit`] with the frame `lambda_weight` supplied directly
 /// (already resolved by [`frame_lambda_weight`]) instead of re-derived from a
 /// qp. Used wherever the caller knows the frame weight — which is the only way

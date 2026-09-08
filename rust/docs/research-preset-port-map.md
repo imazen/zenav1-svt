@@ -33,7 +33,7 @@ that normal-preset suite.
 | Depth refinement | All-intra screen level 1; nonscreen research level 3 instead of level 6 | Signed research branches added to the live depth configuration |
 | Partition geometry | `get_nsq_geom_level_allintra(-1)` selects level 1, enabling HA/HB/VA/VB | **Missing:** `depth_refine::shapes_for_size` and `shape_children` only generate N/H/V/H4/V4; trace geometry, search, entropy costs, coding and reconstruction before claiming support |
 | Partition search | Low/VLow coefficients reduce the research NSQ search level | **Missing wiring:** `part_arm::nsq_search_level` still passes Normal; carry the real frame coefficient class to all `NsqCfg` consumers |
-| Lambda weighting | At -1, tune 0–2 omit the normal QP-dependent weight; IQ curve and extended-CRF bump still apply | **Missing wiring:** `pd0::frame_lambda_weight` has no preset argument; update all main and per-SB consumers consistently |
+| Lambda weighting | At -1, tune 0–2 omit the normal QP-dependent weight; IQ curve and extended-CRF bump still apply | Signed `frame_lambda_weight_for_preset` now reaches main and per-SB consumers; the tile override preserves zero research weight instead of falling back to normal defaults. 2,613 workspace tests and 127/127 normal-preset byte regressions pass; enabled research output gate pending |
 | Video derivations | Research branches affect additional prediction/search tools | Signed carriers alone are insufficient; audit the full default arm before video parity claims |
 | Public wrappers/query | Research must be reachable and report verified support | High-level AVIF speed mapping remains unchanged; research wrapper support is pending full implementation |
 
@@ -53,3 +53,27 @@ Read and pin the manifests and variant registry before declaring scouting jobs.
 Existing K-sized diversity-cluster subsets are not the requested minimum
 RD/RD-speed-zone set. The selection and validation requirements are in section 5
 of the policy goal. No reduced RD-zone set has been measured yet.
+
+Canonical metadata snapshot: commit `187fbf338ce08e8e6654db7f04ddae58d5263da2`,
+local `/home/lilith/tmp/svt-tracking/imazen26-canonical/provenance.json` with file
+hashes. Parsed coverage: train 1,084 origins (1,082 SDR URLs, 38 HDR URLs),
+validate 658 (657 SDR, 20 HDR), test 418 (418 SDR, 18 HDR). Missing SDR renders
+are raw DNG origins 1444/1458 (train) and 1455 (validate); do not silently omit
+them from a full-corpus claim. URL presence is not a download/decode check.
+The split documentation also identifies related patent scans, brochures and
+website viewports across IDs; account for that leakage when fitting policies.
+
+Additional source-audit finding: the C video default arm assigns lambda weight
+300 to non-I frames at QP >= 62 (normal presets), while the shared Rust helper
+currently assigns 175. Preserve this as a separate enabled-witness investigation;
+research mode correctly omits both normal weights.
+
+Asymmetric-shape follow-up must port the whole decision path: C iteration
+order is N/H/V/H4/V4/HA/HB/VA/VB; incomplete blocks inject only H/V, size 8
+excludes the asymmetric shapes, and size 128 excludes H4/V4. Besides geometry,
+`product_coding_loop.c` needs the HA/HB/VA/VB arms of reconstruction/transform
+pruning, `update_skip_nsq_shapes` (-10 coefficient-free aggressive offset),
+and `update_redundant` (HB←H, VB←V, VA←HA first-child reuse). Merely generating
+the three children is not full C search parity. The existing packer already
+has asymmetric partition context/offset arms; validate those with chosen
+asymmetric blocks rather than assuming source presence is sufficient.
