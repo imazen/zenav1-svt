@@ -1,3 +1,11 @@
+> **Historical acceptance baseline, not the current work queue.** The complete
+> current objective is [ENCODER-POLICY-GOAL.md](../../ENCODER-POLICY-GOAL.md),
+> including native −1, preserved mono/Zen extensions, routing and broader C
+> feature wiring. Historical “mono out of scope”, still-only and priority-order
+> statements below were superseded by later user instructions. The ~1.2× C
+> target is an aspiration, not measured current performance. Implementation
+> status and allowed native10 revisit cells are in [the handoff](../../CONTEXT-HANDOFF.md).
+
 # Acceptance criteria — what "done" means for zenav1-svt
 
 ## The criterion

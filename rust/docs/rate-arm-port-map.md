@@ -1,3 +1,12 @@
+> **Historical source/campaign reference, classified at handoff `0cbd1279`.**
+> Use [the current handoff](../../CONTEXT-HANDOFF.md) and
+> [support/identity audit](API-SUPPORT-AUDIT-2026-09-08.md) for live status.
+> “Current”, “next”, “unported”, line numbers and counts below belong to their
+> recorded revisions; they are not current completion claims. Where no source
+> or retained artifact was recorded, the measurement is unverified historical
+> prose. Preserve it, but do not use it as a merge gate or new performance claim.
+> Re-locate code by symbol and the named C reference before changing behavior.
+
 # The `scs->allintra` fork for the three RATE ladders
 
 `rdoq_level`, `rate_est_level` and `update_cdf_level` — wired 2026-09-01,

@@ -12,8 +12,8 @@ The coverage gate is green when every row is `tested`.
 > config API — which the port **deliberately does not do** (it exposes its own
 > `RcConfig` / `HdrForkConfig` / `EncodePipeline` builders instead of a 1:1 struct
 > clone). So `tested: 0` does **NOT** mean "0 features implemented" — the port is
-> byte-identical to C across its still-image envelope (see the top-level README
-> gate table). For actual capability status use README / STATUS.md / issue #7,
+> byte-gated in its documented envelope, with four native10 cells still open
+> (see the current handoff). For actual capability status use README / STATUS.md / issue #21,
 > never this field count.
 
 **121 fields** — tested: 0, mapped: 4, unmapped: 117

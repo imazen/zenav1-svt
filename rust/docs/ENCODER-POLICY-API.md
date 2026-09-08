@@ -4,6 +4,16 @@ User priority, 2026-09-08: land verified work, then settle and wire API/routing.
 Known parity cells may remain explicitly tracked; no feature or experiment is
 abandoned. This contract separates interface stability from calibration coverage.
 
+## Delivery checkpoint
+
+SVT policy/reference/effort APIs and zenavif execution routing are on main.
+The follow-up at zenavif `dba8f5ee` includes Gray8 input identity, complete JSON
+replay and SHA-256 cache keys with caller-supplied immutable build identity and
+pinned threads. Main `aae9d98d` additionally contains the newer AOM format,
+alpha and lossless support. Do not reimplement these delivered portions.
+Backend measured suitability and adaptive fractional budgets remain uncalibrated;
+the requirements below distinguish the full target from current bucketed effort.
+
 ## Ordinary request
 
 The ordinary caller sets quality, a checked `Effort` in [0, 1], and policy.

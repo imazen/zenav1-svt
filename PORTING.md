@@ -1,16 +1,20 @@
 # PORTING.md — the C → Rust map
 
 Which C file each Rust module ports, and how to run the differential gate that
-proves it. This is a navigation aid; `rust/STATUS.md` is the module-progress
-source of truth and `rust/docs/IDENTITY-STATUS.md` is the full divergence map.
+proves it. This is a symbol navigation aid; current support and open cells are indexed
+in `CONTEXT-HANDOFF.md`. Historical line numbers and campaign counts are
+source-specific, not current completion claims.
+
+The workspace also contains the dev-only `zenav1-svt-cref` oracle and
+`svtav1-target` research harness; check their manifests for publication status.
 
 ## Layout
 
 ```
 reference/svt-av1/  the SVT-AV1 v4.2.0 C fork (git SUBMODULE) — READ-ONLY reference + differential oracle
-  Lib/Codec/       encoder core (the bulk of what is ported)
-  Lib/C_DEFAULT/   scalar reference kernels (what the port's DSP is compared against)
-  API/             EbSvtAv1Enc.h — the config surface the coverage gate tracks
+  Source/Lib/Codec/       encoder core (the bulk of what is ported)
+  Source/Lib/C_DEFAULT/   scalar reference kernels (what the port's DSP is compared against)
+  Source/API/             EbSvtAv1Enc.h — the config surface the coverage gate tracks
 rust/            the Rust port
   crates/          the library crates (dir names keep the `svtav1-` prefix; see below)
   svtav1/          the `zenav1-svt` facade — public API, AVIF backend, examples
@@ -18,7 +22,7 @@ rust/            the Rust port
   docs/            port maps and the identity campaign history
 ```
 
-Package names carry the `zenav1-svt-` prefix; each crate pins a **short
+The four core library packages carry the `zenav1-svt` prefix; each crate pins a **short
 `[lib] name`** so Rust paths stay `use svtav1_encoder::…`. Crate *directories*
 still read `crates/svtav1-*` — the port maps and bug log reference those paths,
 and issue #3 (consolidation 8 → 4, completed 2026-08-28: `tables` folded into `types::tables`, `entropy` into `encoder::entropy`) kept them.

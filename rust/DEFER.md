@@ -10,4 +10,4 @@ crates/svtav1-encoder/src` shows the allocation sites, and the stop checks sit
 inside the superblock-row loops in `pipeline.rs`.
 
 Kept as a stub so links to it do not 404. Do not add new deferrals here — use
-`rust/docs/*-port-map.md` (per-feature plans) or the queue in `rust/CLAUDE.md`.
+the current `CONTEXT-HANDOFF.md`, `ENCODER-POLICY-GOAL.md` and issue #21.

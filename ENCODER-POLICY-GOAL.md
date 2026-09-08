@@ -1,8 +1,7 @@
 # Goal: simple effort, strict parity, HDR and adaptive AVIF routing
 
 User-directed workstream, 2026-09-08. This document defines work to complete;
-it does not claim the APIs, research preset or adaptive enhancements already
-exist. It complements the separate animated-AVIF/video objective rather than
+its remaining criteria must be read alongside the implementation checkpoint below. It complements the separate animated-AVIF/video objective rather than
 declaring that objective complete.
 
 ## Outcome
@@ -14,103 +13,20 @@ and implement measured content-adaptive search and actual backend routing.
 Complete the experiments and report size, perceptual quality and time before
 choosing defaults. Land the ready implementation after required local checks.
 
-## Latest API/support implementation — 2026-09-08
+## Current handoff checkpoint — 2026-09-08
 
-The API and execution routing base landed on main in SVT `bb069a7c` and
-zenavif `2e8ff511`. The follow-up API/support audit is recorded in
-[rust/docs/API-SUPPORT-AUDIT-2026-09-08.md](rust/docs/API-SUPPORT-AUDIT-2026-09-08.md).
-It adds format-aware raw support validation and corrects the legacy streaming
-API's false acceptance. The zenavif companion adds explicit Gray8 routing,
-complete versioned JSON replay/cache identities, primary-color grain wiring,
-and fixes metadata/range/query mismatches. Its support table and reproduction
-commands live in `zenavif/docs/BACKEND_ROUTING_API.md`.
+Policy/reference/−1 APIs, checked bucketed effort, support queries, actual
+zenavif routing, Gray8, serialized replay/cache identity and film-grain wiring
+are on main. SVT implementation `0cbd1279`; zenavif API landing `dba8f5ee`.
+Read [CONTEXT-HANDOFF.md](CONTEXT-HANDOFF.md) for observed current consumer/AOM
+pins and the remaining ordered work. Earlier “local/not merged” checkpoints
+are [archived](rust/docs/history/2026-09-08/ENCODER-POLICY-GOAL.md).
 
-The earlier checkpoints below are historical. Remaining implementation work
-includes the four native10 cells, video/superres/HDR wrapper coverage and broad
-calibration/adaptive search; this API work does not close those criteria.
-
-## Current priority — resumed 2026-09-08
-
-The user subsequently requested: land current work, then settle API and routing
-first. Known cells may be marked for later revisit; nothing is abandoned.
-The prior wrap-up remains historical evidence, not an instruction to stop this
-resumed work. See [the API contract](rust/docs/ENCODER-POLICY-API.md) and
-[the explicit native10 revisit cells](rust/docs/deferred-native10-parity.json).
-The unproven depth-refine precision experiment is preserved in the pushed
-handoff history and excluded from the landing tip pending a demonstrated fix.
-
-## Wrap-up checkpoint — 2026-09-08
-
-Implementation paused at the user's wrap-up request. The full goal below remains
-incomplete; this checkpoint does not narrow its acceptance criteria.
-
-Completed for safe transfer: all three current handoff branches are on origin;
-AOM was rebased onto `a7b1ab13`, and its query integration tests pass 2/2.
-[AOM tracking issue #16](https://github.com/imazen/zenav1-aom/issues/16) includes
-open PRs #13 then #12, remaining functionality, support tables, RD/size/time
-metrics, fleet recovery and retrievable source/evidence archives. AOM
-implementation belongs to the other machine. No main merge or new CI run was
-initiated. One historical SVT workflow branch was rejected for missing OAuth
-`workflow` scope; its inert workflow/patch archive is linked from issue #16.
-
-SVT corrected all 53 historical eight-bit witnesses (168/168 exact replay
-pairs). The later native10 boundary matrix remains 16/20, with four real
-failures. [The parity handoff](rust/docs/HANDOFF-2026-09-08-PARITY.md) identifies
-the first coding-order divergence and separates the validated eight-bit fixes
-from subsequent unvalidated native10 edits. [The archive receipt](rust/docs/native10-handoff-receipt.json)
-preserves inputs, output streams, traces and logs off this machine.
-
-Deferred work, in dependency order:
-
-1. Resolve four native10 parity failures and run affected local gates on the
-   final source; enabled optional/video/HDR/film-grain coverage remains separate.
-2. Have the AOM owner integrate/review the existing PR stack and remaining
-   still parity/format/runtime support; keep dependency pins coordinated.
-3. Recover durable fleet accounting and inspect dev's unpushed work once SSH
-   access is restored; resume the full training scout and broaden formats/sizes.
-4. Implement strict policy, checked continuous effort, resolved plans/replay,
-   backend-owned suitability and actual zenavif execution routing.
-5. Validate representative selection and matched-time decisions on the full
-   required corpus; only then enable evidence-backed adaptive defaults.
-6. Run full local landing gates, allow CI, and merge independently ready work.
-
-Do not spend another turn rediscovering these states or rerunning unaffected
-historical gates. Start from the saved first-difference witness or the assigned
-AOM issue. The existing source hashes and artifact identities delimit what each
-measurement actually proves.
-
-## Execution checkpoint — 2026-09-08
-
-The full scope and completion gates below remain active. Work is local; no
-main landing or CI completion is claimed. Resume from this index and inspect
-only the evidence for the next change, rather than replaying historical notes.
-
-| Workstream | Current evidence / next acceptance gate |
-| --- | --- |
-| Native -1, explicit references | Implemented; [reference audit](rust/docs/PARITY-REFERENCE-AUDIT-2026-09-08.md) records covered gates. Historical real-image regressions and the full optional/HDR envelope remain open. |
-| Zen adoption | Intra-edge and restoration-unit search are wired and opt-in. [Port map](rust/docs/research-preset-port-map.md) and [completed measurements](../zenmetrics/benchmarks/av1_compare_2026-09-08/README.md) record effects; no automatic bundle is justified yet. |
-| Local landing | Reconcile historical real-image witnesses against current named references; resolve actual failures before claiming parity. Complete affected local integration and lint checks, then push/merge and verify remote ancestry. |
-| Policy API | Implement strict policy, checked continuous effort, versioned resolution/fingerprints and replay through actual wrappers. Existing reference and enhancement enums alone do not satisfy this. |
-| Execution routing | Consume backend-owned support in actual zenavif execution; preserve required format, precision, metadata and alpha, with tested refusals. Query-only code is insufficient. |
-| Calibration | Complete canonical scouting, RD/RD-speed zone selection with bounds, and full held-out evaluation. Two-origin ablations are not representative-set calibration. |
-
-Local `cargo clippy --workspace --all-targets --message-format=json` completed
-successfully at source `6b6e145f`, with 683 distinct compiler diagnostics, all
-warnings; 588 are `clippy::excessive_precision`. This is not warning-free
-Clippy. Raw diagnostics and class counts are retained at
-`~/tmp/svt-tracking/landing-clippy{.jsonl,-summary.json}`. Review numerical
-constants separately rather than mechanically rewriting reference literals.
-The subsequent visibility-only fix `fe49eb53` restricts the PD0 helper to its
-existing crate-private argument type. Workspace all-target compile checks,
-2,627/2,627 nextest tests (zero skipped), and 136/136 regression spot-checks
-pass. Logs: `~/tmp/svt-tracking/landing-private-interface-check.log` and
-`landing-visibility-{nextest,spotcheck}.log` in that same directory. Encoding
-logic is unchanged; this does not close the historical real-image failures.
-
-Cost controls: finish one acceptance gate at a time; reuse source-matched
-verification; rerun broad gates only for affected behavior; automate fleet
-collection and refinement; keep hardware cohorts and held-out splits separate.
-These controls change execution order and repetition, not the required scope.
+The full goal remains incomplete: four native10 cells, fractional adaptive
+budgets, broad imazen-26/held-out calibration, backend-owned measured optimality,
+remaining C video/HDR/superres wiring and useful alternate-backend formats.
+Requirements below define the final target; already landed portions must not
+be reimplemented just because the original checklist uses future tense.
 
 ## 1. Establish the actual feature and reference inventory
 

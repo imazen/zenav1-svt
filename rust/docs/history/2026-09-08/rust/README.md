@@ -1,0 +1,212 @@
+> Historical document from `rust/README.md` at SVT `0cbd1279`. Original text follows unchanged. Status and priorities here are superseded by [the current handoff](https://github.com/imazen/zenav1-svt/blob/main/CONTEXT-HANDOFF.md). Original relative links and line numbers refer to the original location/revision.
+
+# zenav1-svt — the Rust port
+
+*(Repo-root overview: [`../README.md`](../README.md). C → Rust map:
+[`../PORTING.md`](../PORTING.md).)*
+
+A pure-Rust, still-picture (AVIF/all-intra) port of [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) v4.2.0, verified **byte-identical** to the C encoder on its tested envelope, with the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork's perceptual feature set available behind a runtime switch.
+
+**~87k lines | 7 crates | 1056 tests (nextest, as of `1ed7db46`) | `#![forbid(unsafe_code)]` | AGPL-3.0 or commercial**
+
+## Two modes, two verification bars
+
+The encoder runs in one of two modes, selected at runtime via `EncodePipeline.hdr`:
+
+| Mode | What it is | Verification bar |
+|---|---|---|
+| **Mainline** (default) | Stock SVT-AV1 v4.2.0-final behavior | **Byte-identical bitstreams** vs the real C library at matched configs (see envelope below) |
+| **HdrFork** (`HdrForkConfig::hdr_fork()`) | The svt-av1-hdr fork's feature set: psychovisual RD, quant matrices, photon-noise synthesis, variance boost, six tune policies | **Byte-identical bitstreams** vs a `SVT_HDR_MODE=ON` build of the same C base at **10-bit** (`tools/hdr_bd10_gate.sh`, 64/64, standing gate). At **8-bit**: 48/48 byte-identical as measured 2026-07-19 (`docs/HDR-ON-4.2.md`) with **no standing gate script**, so the standing 8-bit bar is functional — per-kernel differentials against the exported C functions, per-knob liveness witnesses, and `aomdec` decode gates (encoder recon == reference-decoder output) |
+
+That distinction is the honest summary of the whole project: mainline mode is a drop-in bit-exact reimplementation on the envelope we have tested; fork mode is a faithful port whose every kernel is differentially tested against real C code and whose end-to-end bytes ARE compared against a C twin — the `SVT_HDR_MODE=ON` build of the same v4.2.0 base we rebased the fork onto (see `docs/HDR-ON-4.2.md`) — but only the 10-bit side of that comparison is a standing, CI-runnable gate; the 8-bit 48/48 is a recorded measurement.
+
+## What IS bit-identical (mainline mode)
+
+Verified against the in-tree C build of SVT-AV1 **v4.2.0 final** (`Bin/Release/libSvtAv1Enc.a`), still-picture/AVIF, CQP, `--lp 1`, 8-bit 4:2:0, via an OBU-level differ plus a full arithmetic-coder op trace (every range-coder call compared, including coder state):
+
+- **The synthetic identity matrix**: the default `tools/identity_matrix.sh` grid is **54 cells, 54/54** (CI runs its superset, `identity_full_8bit.sh`, every preset 0–13 at 64 px). The wider 132-cell sweep — {uniform, gradient} × {64, 128} px × qp {20, 40, 55} × presets 0–10 — was **132/132 as of 2026-07-16** (`benchmarks/identity_matrix_132_full_2026-07-16.tsv`) and is not a standing gate. Presets 11–13 are covered implicitly on the C side: the C library clamps all-intra presets above M9 down to M9 (the port does not, so `identity_full_8bit.sh` sweeps them as distinct configurations).
+- **Real-content regression spots**: 7/7 identical at the tracked configs.
+- **Tile rows**: frame header + tile group byte-identical to C (multi-tile-row phase 1).
+
+Every stream additionally decodes with the reference decoder (`aomdec`), and the decoder's output matches our encoder's own reconstruction byte-for-byte.
+
+### Known open identity gaps (tracked, not hidden)
+
+- **SB128 superblocks**: landed (C enables 128-px superblocks above 240p at ≤M1) — `tools/sb128_gate.sh` 18/18 (14 SB128 cells + 4 SB64 controls). Residual low-preset real-content divergences are RD near-ties; port map: `docs/sb128-port-map.md` (task #91).
+- **Envelope limits**: 8- and 10-bit input (native `&[u16]` entry points, CI-gated), single frame (still), CQP-only rate control. Dimensions are arbitrary at BOTH bit depths — no configuration is refused on dimension grounds any more (`tools/bd10_partial_sb_gate.sh` 157/157 at 10-bit non-64-aligned dims; `tools/arbitrary_size_robustness.sh` 128/128 with 0 refused). 8-bit partial-SB byte-matches at preset ≥ 6 and 64-aligned at all presets; at 10-bit the non-flat gap has since closed on x86 — `tools/bd10_nonflat_gate.sh` is **309/309** in CI (as of `1ed7db46`, run 33101031800) and `tools/bd10_partial_sb_gate.sh` **159/159**; the same non-flat gate measures 197/309 when run on an **arm64** host, which is a C-side ISA dependence of the oracle, not a port gap (`STATUS.md` "Measurement caveat for arm64 hosts"). The 2026-08-04 controls are in `benchmarks/bd10_partial_sb_2026-08-04.tsv`. Encoding is **deterministic tile-parallel** (`with_thread_count`; byte-identical at any thread count), NOT single-threaded. CQP is not a stub: for a single still it is byte-identical to SVT-AV1's default CRF (`benchmarks/crf_cqp_equivalence_2026-07-24.md`). Superres is opt-in and gated; HDR static metadata ([#7](https://github.com/imazen/zenav1-svt/issues/7)) is the next priority — maps in `docs/bd10-port-map.md` and `docs/arbitrary-dims-port-map.md`.
+
+- **Coded-lossless (QP 0)**: landed 2026-08-28 (issue #5) on the 8-bit 4:2:0 still path — TX_4X4 WHT txbs, no tx_size / tx_type symbols, no in-loop filters, DC/PAETH-only injection, mirroring C's `mimic_only_tx_4x4` envelope. `tools/lossless_gate.sh`: **112/144 byte-identical** (presets 4–13 all 96/96, incl. partial superblocks) + 32 pinned cells (presets 0–3 on textured content, lossless in both encoders, RD-decision residual — leads in `CLAUDE.md`), and **144/144 decode to the source** under `aomdec`. Refused at QP 0: 10-bit, monochrome, fork mode, screen-content tools, superres (`docs/REFUSED-CONFIGS.md`).
+
+`docs/IDENTITY-STATUS.md` is the full divergence map and campaign history.
+
+## What fork mode gives you (the advantages)
+
+Fork mode turns this into a **full-pareto still-image encoder**: 6 tune policies × presets 0–13 × qp 0–63 × an orthogonal perceptual knob set, all in safe Rust. Every feature below is live (flips bytes, gated) as of 2026-07-17:
+
+| Feature | Knob(s) | What it does |
+|---|---|---|
+| Tune policies 0–5 | `tune` | VQ / PSNR (default) / SSIM / IQ / MS-SSIM / Film-Grain — per-16×16 SSIM rdmult lambda scaling (SSIM family), IQ lambda-weight curve, per-tune chroma-q boosts, per-tune loop-filter sharpness ladders, IQ/MS-SSIM still-image QM curve |
+| Quant matrices (QM) | `qm_*` (fork default ON) | AV1 quantization matrices, luma 6..10 / chroma 8..15; tables transcribed from C and validated through the exported C quantize kernels (13,680-cell differential) |
+| Photon-noise synthesis | `noise_strength`, `noise_strength_chroma`, `noise_strength_cfl`, `noise_size` | Film-grain table generation (ISO-strength model); the decoder synthesizes grain from our table — proven by an `aomdec --skip-film-grain` gate (1,440-cell differential vs the exported C generator) |
+| Per-SB delta-q + variance boost | `variance_boost_strength`, `variance_boost_curve` | Per-superblock qindex from source variance, curves 0–3 + PQ dark-region attenuation |
+| Sharp transforms | `sharp_tx` | RDOQ rate-weight 0 + eob-shortening disable — retains more AC detail |
+| Noise normalization | `noise_norm_strength` | AC coefficient boost preserving noise energy after quantization |
+| Psychovisual distortion | `ac_bias` | AC-energy-aware distortion in mode decision (Hadamard-domain psy cost) |
+| MDS0 tx-bias facade | `tx_bias` | Transform-size/class distortion biases in the fast mode-decision stage |
+| Complex-HVS mode | `complex_hvs` | MDS0 fast-loop distortion switches Hadamard SATD → whole-block spatial SSD |
+| Alt lambda factors | `alt_lambda_factors` (fork default ON) | KF lambda factor 140 vs 150 + per-SB qdiff-stats lambda modulation |
+| Alt SSIM tuning | `alt_ssim_tuning` | Block-SSIM distortion at final mode decision + two-pass SSD-envelope→SSIM winner re-pick (reachable on stills, unlike mainline's tune=SSIM arm) |
+| CDEF scaling | `cdef_scaling` | Post-search CDEF strength rescale |
+| Chroma-q path | (fork defaults) | Fork chroma qindex boosts, Cb +12, per-plane dequant, `separate_uv_delta_q` signaling |
+| Loop-filter sharpness | `sharpness` | Search + signal + application, consistent |
+
+Verification per feature is itemized in the status table at the bottom of `docs/HDR-ON-4.2.md`. The standing gates: per-knob liveness witnesses (`svtav1/tests/hdr_fork_e2e.rs` — every knob must actually change the bitstream, which catches "dormant knob" wiring bugs), per-tune `aomdec` decode gates (36/36), and the kernel differentials in `crates/svtav1-encoder/tests/c_parity_*.rs`.
+
+## What we deliberately did NOT bring from the fork
+
+For transparency, everything in svt-av1-hdr that is absent here, and why:
+
+1. **The fork's preset re-tuning ladder** (~25 hunks re-assigning feature levels per preset). We keep mainline v4.2.0 preset semantics so mainline-mode byte-identity holds; fork features are strictly additive/opt-in.
+2. **Research presets −2/−3** and the fork's changed default preset (4). Preset selection is explicit here.
+3. **Post-"Chromedome" fork commits** (newer than our rebase base): noise chroma auto-strength adjustment (`4889de3`), dampened MDS0 ac-bias strength (`ce5178a`), sharpness default → 1 (`981fe12`), allow complex-HVS for all-intra (`80b48b9` — our wiring already reaches it on stills), LPD1 skip-inter-tx (`5caa3e3`).
+4. **Temporal-filter knobs** — `kf_tf_strength`, `tf_strength`, `noise_adaptive_filtering`: config fields exist but are dormant; a single still frame has no temporal window. Unblocks with multi-frame support.
+5. **`qp_scale_compress_strength`**: dormant — its only C consumer is the CRF rate-control qp-scale path (`rc_process.c`); this port is CQP-only.
+6. **The FORK's high-bit-depth paths** (`hbd_mds`, HBD noise tables) are unported. The MAINLINE 10-bit path — including native `&[u16]` input — is ported and CI-gated.
+7. **TUNE_VQ's `vq_ctrls` video machinery**: video-sequence heuristics, out of scope for stills. Tune 0 selects VQ's still-reachable policies only.
+8. **Mainline TUNE_VMAF**: the fork replaces tune slot 5 with FILM_GRAIN; we follow the fork's numbering.
+9. **LPD1 psychovisual rate**: the kernel is ported (`svtav1-dsp::ac_bias`), but the port has no LPD1 fast-decision path (all-intra never takes it in C either).
+
+## Quick start
+
+```rust
+use svtav1_encoder::hdr_mode::HdrForkConfig;
+use svtav1_encoder::pipeline::EncodePipeline;
+use svtav1_encoder::rate_control::{RcConfig, RcMode};
+
+let (w, h) = (128u32, 128u32);
+let rc = RcConfig { mode: RcMode::Cqp, qp: 40, ..RcConfig::default() };
+let mut p = EncodePipeline::new(w, h, /*preset*/ 6, rc, 4, 1);
+p.chroma_420 = true;
+
+// Fork mode (optional — default is mainline, byte-identical to C):
+p.hdr = HdrForkConfig::hdr_fork();
+p.hdr.tune = 3; // 0=VQ 1=PSNR 2=SSIM 3=IQ 4=MS_SSIM 5=FilmGrain
+
+let obu_stream = p.encode_frame_420(&y_plane, &u_plane, &v_plane, /*y stride*/ 128);
+```
+
+The higher-level `svtav1::avif::AvifEncoder` wrapper provides quality/speed mapping and AVIF-oriented defaults.
+
+## Architecture
+
+Five packages (four publishable + the test-only C shim), minimal external dependencies (archmage for SIMD dispatch):
+
+```
+zenav1-svt                  Public API, AVIF backend
+  zenav1-svt-encoder        Pipeline, PD0/partition, mode-decision funnel, RDOQ,
+                            QM, tunes, fork features, rate control
+                            + `entropy/`: range coder, CDF tables, OBU/FH/SH serialization
+    zenav1-svt-dsp          SIMD transforms, prediction, filtering, psy kernels
+    zenav1-svt-types        Core AV1 type definitions + `tables/` const lookup tables, scan orders
+  zenav1-svt-cref           Test-only FFI shims to the real C library (differentials)
+```
+
+Those are the **package** names. Each crate pins a short `[lib] name`, so Rust
+paths stay `use svtav1_encoder::…` / `use svtav1_dsp::…`, and the crate
+directories keep their `crates/svtav1-*` names (the port maps and bug log
+reference those paths). See [`../PORTING.md`](../PORTING.md) for the full table.
+
+## Working on this port
+
+**Read [`docs/WORKING-ON-THIS.md`](docs/WORKING-ON-THIS.md) first.** It is the
+one-page orientation: the fast inner loop (`cargo nextest` +
+`tools/regression_spotcheck.sh`, ~90s), when the 25-45 minute sweeps are
+actually needed, the evidence tiers, and the harness traps that have each
+produced a confident wrong answer. Companion files:
+[`docs/SUSPECTED-C-BUGS.md`](docs/SUSPECTED-C-BUGS.md) (upstream defects we
+reproduce on purpose — a C bug is still the oracle) and
+`python3 tools/coverage_matrix.py` (what is *covered*, not what passes).
+
+## How verification works
+
+Three layers, strongest first:
+
+1. **Byte-identity harness** (`tools/identity_diff.sh`, `tools/capture_c_trace/`): drives the real C library through its public API with `--wrap`ed range-coder entry points, then compares OBU bytes field-by-field AND every arithmetic-coder operation (symbol, CDF, coder range state) against the Rust `symtrace` output. Exit 0 iff streams are byte-identical.
+2. **Kernel differentials** (`svtav1-cref` + `tests/c_parity_*.rs`): Rust kernels vs the exported C functions from the in-tree static library — quantizers, QM, noise generation, SSIM distortion, variance boost, ac-bias, and more, across randomized/gridded inputs.
+3. **Decode gates** (`aomdec`): every gated stream must decode, and the decoder's output must equal the encoder's own reconstruction byte-for-byte — the AV1-conformance floor that holds in both modes, including for streams no C twin exists for.
+
+```bash
+cargo nextest run --workspace    # 1056 tests as of 1ed7db46 (nextest, NOT cargo test — see CLAUDE.md)
+just identity 64 64 40 6 gradient  # one identity cell vs the C library
+```
+
+Building the C reference (needed for differentials and identity runs): see `docs/HDR-ON-4.2.md` § Reproduce.
+
+## Building
+
+Requires Rust 1.89+ (2024 edition) — `rust-version` in `Cargo.toml`, and CI
+checks that floor rather than merely declaring it (see `CLAUDE.md` "MSRV").
+
+```bash
+cargo build --workspace
+cargo clippy --workspace        # 0 warnings
+cargo nextest run --workspace
+```
+
+`Cargo.lock` is **committed** (since 2026-08-28, issue #8). This project's
+product is a byte-identical bitstream, and the SIMD dispatch crate (`archmage`)
+is a normal semver dependency — an unpinned resolve on a fresh box could pick a
+different minor and change codegen under the gates. The lock pins what CI
+measured; `cargo update` deliberately, in its own commit, and re-run the gates.
+
+## Safety
+
+Every crate uses `#![forbid(unsafe_code)]` except the test-only `zenav1-svt-cref` (FFI to the C reference library, never shipped — dev-dependency only, so no published crate carries a `build.rs` or needs a C toolchain). SIMD goes through archmage's safe token-based dispatch.
+
+## License
+
+Dual-licensed: [AGPL-3.0](LICENSE-AGPL3) or [commercial](LICENSE-COMMERCIAL).
+
+I've maintained and developed open-source image server software — and the 40+
+library ecosystem it depends on — full-time since 2011. Fifteen years of
+continual maintenance, backwards compatibility, support, and the (very rare)
+security patch. That kind of stability requires sustainable funding, and
+dual-licensing is how we make it work without venture capital or rug-pulls.
+Support sustainable and secure software; swap patch tuesday for patch leap-year.
+
+[Our open-source products](https://www.imazen.io/open-source)
+
+**Your options:**
+
+- **Startup license** — $1 if your company has under $1M revenue and fewer
+  than 5 employees. [Get a key →](https://www.imazen.io/pricing)
+- **Commercial subscription** — Governed by the Imazen Site-wide Subscription
+  License v1.1 or later. Apache 2.0-like terms, no source-sharing requirement.
+  Sliding scale by company size.
+  [Pricing & 60-day free trial →](https://www.imazen.io/pricing)
+- **AGPL v3** — Free and open. Share your source if you distribute.
+
+See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.
+
+Upstream C code from [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) — and
+the [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) fork whose
+feature set is ported in fork mode — is BSD-3-Clause-Clear with the Alliance
+for Open Media Patent License 1.0; see `LICENSE.md` and `PATENTS.md`
+inside the `reference/svt-av1` submodule (the repository root carries
+`LICENSE-AGPL3` and `LICENSE-COMMERCIAL` for this port itself). Those terms continue to
+cover the upstream work this port derives from. This dual license applies to
+the Rust port in `rust/`; the C tree in the rest of the repository keeps
+the upstream licenses.
+
+### Path to MIT
+
+If someone covers Imazen's 2026 AI + server costs, we'll release this port
+under MIT — or under the original upstream license (BSD-3-Clause-Clear + AOM
+Patent License 1.0). Contact support@imazen.io.
+
+## Acknowledgments
+
+- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (Intel / Alliance for Open Media) — the battle-tested C encoder this port is built on
+- [svt-av1-hdr](https://github.com/juliobbv-p/svt-av1-hdr) (juliobbv-p) — the perceptual/HDR feature set ported in fork mode
+- [rav1d-safe](https://github.com/memorysafety/rav1d) — safe Rust AV1 decoder; DisjointMut pattern adapted
+- [archmage](https://github.com/imazen/archmage) — safe SIMD dispatch via CPU feature tokens

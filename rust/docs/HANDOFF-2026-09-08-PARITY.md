@@ -1,10 +1,10 @@
-# WIP push checkpoint, 2026-09-08
+# Native10 first-difference witness — current open cells, 2026-09-08
 
-User requested preservation/push of all three codec repositories for work transfer. This is not a main-ready parity claim. See ENCODER-POLICY-GOAL.md for the full goal and the AOM handoff issue for cross-backend work. CI remains deferred.
+The validated eight-bit fixes are on main. The four native10 cells below remain open. The later unproven depth-refine edit is excluded from main and retained in the handoff archive. See ../../ENCODER-POLICY-GOAL.md for the full goal; latest implementation and validation are indexed in ../../CONTEXT-HANDOFF.md. The diagnostic measurements below retain their original source checkpoint.
 
 Two eight-bit defects fixed in pipeline.rs: partial-edge chroma source reads now use SB-wide edge-replicated source/MD canvases; whole-SB128 depth-limit folding now includes partial 64x64 quadrants. All 53 historical mismatches on the 376x512 photo are fixed, with 168/168 fresh C/Rust byte-identical replays. Fixture and three regression witnesses are committed under rust/tools/fixtures and regression_spotcheck.sh.
 
-Before the subsequent native10 source/debug edits, local gates passed: 2627/2627 workspace nextest, 139/139 spotchecks, 1100/1100 matrix. Evidence lives under ~/tmp/svt-tracking/{chroma-stride-nextest.log,chroma-stride-final-spotcheck.log,chroma-stride-full1100.log,chroma-parity-replay/summary.json}. These counts do not validate the latest tip.
+Before the subsequent native10 source/debug edits, local gates passed: 2627/2627 workspace nextest, 139/139 spotchecks, 1100/1100 matrix. Evidence lives under ~/tmp/svt-tracking/{chroma-stride-nextest.log,chroma-stride-final-spotcheck.log,chroma-stride-full1100.log,chroma-parity-replay/summary.json}. These historical counts describe that checkpoint. Current main separately passed 2631/2631 workspace tests; the four byte divergences are still not passing cells.
 
 Expanded real-photo matrix is 16/20: eight-bit10/10, genuine native10 (SVTAV1_HBD_SRC=1) 6/10. Failures p1q10, p4q10, p4q30, p5q10. p-1 and p0 pass both QPs/depths. This is native10 SDR-derived input, not an HDR corpus claim.
 

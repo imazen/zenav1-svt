@@ -9,6 +9,10 @@ Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
+### Changed
+
+- Reconcile handoff documentation and GitHub issue scope against implementation `0cbd1279`; preserve original reports and campaign evidence in the dated history archive, and distinguish remaining parity, calibration and deployment work.
+
 ### Fixed
 
 - Lossless IntraBC regression checks honor the configured reference decoder outside PATH, request the coded output depth, and report decoder invocation failures separately from pixel mismatches.
