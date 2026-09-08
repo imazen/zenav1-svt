@@ -518,6 +518,28 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
     return ret;
 }
 
+/* Actual MD adaptation input, distinct from the final selected PC_TREE.
+ * SVT_MDSTATS_OUT records the MbModeInfo that update_stats consumes. This
+ * exposes stale/reused geometry or mode records without changing C behavior. */
+void __real_svt_aom_update_stats(PictureControlSet* pcs, BlkStruct* blk, int mi_row, int mi_col);
+void __wrap_svt_aom_update_stats(PictureControlSet* pcs, BlkStruct* blk, int mi_row, int mi_col) {
+    const char* path = getenv("SVT_MDSTATS_OUT");
+    if (path && *path) {
+        static FILE* f = NULL;
+        if (!f) f = fopen(path, "w");
+        if (f) {
+            const MbModeInfo* mb = blk->av1xd->mi[0];
+            const BlockModeInfo* m = &mb->block_mi;
+            fprintf(f, "MDSTATS mi=(%d,%d) bsize=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d skip=%d\n",
+                    mi_row, mi_col, (int)mb->bsize, (int)m->mode, (int)m->uv_mode,
+                    (int)m->filter_intra_mode, (int)m->angle_delta[0], (int)m->angle_delta[1],
+                    (int)m->tx_depth, (int)m->skip);
+            fflush(f);
+        }
+    }
+    __real_svt_aom_update_stats(pcs, blk, mi_row, mi_col);
+}
+
 /* ---- per-SB syntax-rate SEED interposer --------------------------------
  * svt_aom_estimate_syntax_rate (md_rate_estimation.h:175) is called once per
  * SB from enc_dec_process.c:2933/3026 with the averaged FRAME_CONTEXT that
