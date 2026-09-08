@@ -1,18 +1,17 @@
-Latest research checkpoint (2026-09-08): current zplqukkq fixes VertA/B
-directional neighbor availability. Workspace 2,615/2,615; regression 131/131;
-repeated dims8 matrix 120/120 plus independent decode of all 120 pairs pass.
-Native10 geometry: 117/120. Failures all screen QP48: 256x256 C540/R537,
-384x256 C569/R573, 512x512 C1012/R1012 but unequal bytes. Canonical imazen26
-smoke: 8/8, train1000 photo and8100 screenshot,512 center crops,QP5/12/20/48.
-All processes terminal; no live heavy job. Native10 smallest failure retained
-in ~/tmp/svt-tracking/research-screen256-q48/: IntraBC16x16 at(192,144) selects
-txd1 in C vs0 in Rust. C actual MDSTATS now includes ibc; C diagnostic output
-is byte-neutral. Rust rs-cand.log / C c-fullcost.log record winner costs.
-Next: compare corresponding transform-depth evaluations, not different winners;
-Rust SVTAV1_TXDEPTH_XY=192,144 enables PTXDEPTH. C per-depth instrumentation
-may be needed. See research-preset-port-map.md. Issue21 updated with local
-progress; jj git fetch found no new changes. No push/CI. Full corpus reduction,
-AOM continuation, public policy/wrappers and routing remain open.
+Latest research checkpoint (2026-09-08): current vlsuktxv fixes native10
+IntraBC vector-cost lambda. C searches8-bit pixels/SAD but errorperbit uses
+full_lambda_md[hbd_md]; Rust used8-bit lambda. Earliest vector difference
+is pixel(128,96), before later transform-depth changes. Smallest witness
+screen256x256/QP48/-1 now540B /18,355ops exact. All 2,615 tests pass.
+Heavy session 21894 runs 132-cell regression then 120-cell native10 geometry
+repeat. Poll before any heavy work. Evidence ~/tmp/svt-tracking/research-
+ibc-native-lambda-* and research-dims10-fixed*. Previous10-bit grid117/120;
+8-bit geometry120/120 independently decoded; imazen26 smoke8/8 (photo1000
+and screenshot8100,512 crops,QP5/12/20/48). These are not RD representatives.
+See research-preset-port-map.md. Open issues freshly listed:4,7,8,17,18,19,21;
+no new issue numbers. No push/CI. Next: verify the full10-bit correction,
+normal native10 IBC controls, wrapper reachability and tile/real coverage;
+AOM adoption/policy/router/corpus goal remains open.
 
 # zenav1-svt — handoff
 

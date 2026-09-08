@@ -195,3 +195,15 @@ choices have different costs/distortions; compare matching candidate/depth
 evaluations before attributing this to distortion scaling. C full-cost logs
 and Rust candidate logs are retained. No fix for these three native10 screen
 failures is claimed yet.
+
+Native10 screen root cause found: the first actual difference is the copy
+vector at pixel(128,96), C(-768,-384) versus Rust(-768,-504), in eighth-pixel
+units. This precedes the transform-depth difference at(192,144). C's
+`mode_decision.c::intra_bc_search` forces 8-bit search pixels and SAD LUT,
+but derives `errorperbit` from `full_lambda_md[hbd_md]`. Rust retained the
+8-bit frame lambda for that vector-cost term. Local vlsuktxv now uses the
+native10 lambda at the search consumer. The 256x256/QP48 witness is **540B /
+18,355 tile ops exact** and all 2,615 workspace tests pass. A measured
+regression cell is added; the 132-cell spot-check and 120-cell native10 geometry
+repeat are running. Do not change the pixel/SAD domain to 10-bit: C explicitly
+keeps those 8-bit. Fresh evidence uses `research-dims10-fixed*`.

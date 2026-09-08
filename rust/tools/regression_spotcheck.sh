@@ -1764,6 +1764,11 @@ byte "research-native10-lambda-weight" gradient 64 64 40 -1 10
 # After parent-partition wiring: byte/op exact (zplqukkq).
 byte "research-vertical-asym-neighbors" gradient 192 192 12 -1 8
 byte "research-sb128-asym-neighbors" gradient 512 512 48 -1 8
+# 2026-09-08 — native10 IBC searched 8-bit pixels (correct) but also priced
+# vectors with the 8-bit lambda (wrong: C uses full_lambda_md[hbd_md]). The
+# first differing DV at (128,96) changed later TX choices. Before: Rust537B /
+# C540B. After native-depth errorperbit:540B /18355 ops exact (vlsuktxv).
+byte "native10-ibc-vector-lambda" screen 256 256 48 -1 10
 
 total=$((pass + fail))
 echo

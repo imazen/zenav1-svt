@@ -1254,7 +1254,20 @@ pub(super) fn inject_candidates(
                 &ibc.sites,
                 &ibc.ctrls,
                 ibc.sad_per_bit,
-                ibc.error_per_bit,
+                // C intra_bc_search forces the search pixels/SAD LUT to
+                // 8-bit, but derives errorperbit from full_lambda_md[hbd_md].
+                // Using the 8-bit frame lambda here changes hash/mesh vector
+                // ranking before the native-depth mode/transform decisions.
+                if bd10_funnel {
+                    (u64::from(crate::pd0::kf_full_lambda_bd10(
+                        frame.base_qindex,
+                        frame.cli_qp,
+                        frame.native_preset,
+                    )) >> crate::intrabc::RD_EPB_SHIFT)
+                        .max(1) as i32
+                } else {
+                    ibc.error_per_bit
+                },
                 false, // approx_inter_rate: structurally 0 on allintra
                 &ibc.search_tables,
                 buckets,
