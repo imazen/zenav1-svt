@@ -615,6 +615,7 @@ pub struct DeblockGeom {
     true_w: usize,
     /// TRUE (unpadded, coded) LUMA frame height — see [`Self::true_w`].
     true_h: usize,
+    decoder_chroma_bounds: bool,
     /// `mbmi->skip_txfm && is_inter_block(mbmi)`: intra blocks are never
     /// "skipped" for deblocking purposes.
     skip_inter: Vec<bool>,
@@ -625,6 +626,12 @@ pub struct DeblockGeom {
 }
 
 impl DeblockGeom {
+    /// Use ceiling chroma dimensions for normative output reconstruction.
+    /// Search retains C's truncating bounds so this does not change decisions.
+    pub(crate) fn use_decoder_chroma_bounds(&mut self) {
+        self.decoder_chroma_bounds = true;
+    }
+
     /// `width`/`height` are the ALIGNED (mi-grid) dims; `true_w`/`true_h` are
     /// the CODED dims the frame header signals, which the spec-7.14.5
     /// `onScreen` guard is measured against (see [`Self::true_w`]). They are
@@ -640,6 +647,7 @@ impl DeblockGeom {
             mi_rows,
             true_w,
             true_h,
+            decoder_chroma_bounds: false,
             block_id: alloc::vec![u32::MAX; n],
             bw: alloc::vec![0; n],
             bh: alloc::vec![0; n],
@@ -757,7 +765,11 @@ fn lpf_params(
     // returns TX_4X4 with `filter_length = 0`, so the caller advances by ONE
     // mi unit and filters nothing. Chroma bound is `true >> ss`, C's own
     // truncating shift (deblocking_filter.c:166), not a ceiling.
-    let (true_pw, true_ph) = (geom.true_w >> ss, geom.true_h >> ss);
+    let (true_pw, true_ph) = if geom.decoder_chroma_bounds {
+        (geom.true_w.div_ceil(1 << ss), geom.true_h.div_ceil(1 << ss))
+    } else {
+        (geom.true_w >> ss, geom.true_h >> ss)
+    };
     if x >= true_pw || y >= true_ph {
         return (1, None);
     }

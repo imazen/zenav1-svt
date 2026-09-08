@@ -110,8 +110,8 @@ pub(crate) fn set_mds0_controls(mds0_level: u8) -> Mds0Ctrls {
 /// `pcs->mds0_level` for this arm. `enc_mode` must already be
 /// [`crate::rate_arm::eff_enc_mode`]-clamped.
 #[must_use]
-pub(crate) fn mds0_level(arm: ScArm, enc_mode: u8, is_base: bool, is_islice: bool) -> u8 {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+pub(crate) fn mds0_level(arm: ScArm, enc_mode: i8, is_base: bool, is_islice: bool) -> u8 {
+    let m = enc_mode;
     match arm {
         ScArm::Allintra => md_config::mds0_level_allintra(m),
         ScArm::Video { .. } => md_config::mds0_level_default(m, is_base, is_islice),
@@ -133,7 +133,7 @@ pub(crate) fn mds0_level(arm: ScArm, enc_mode: u8, is_base: bool, is_islice: boo
 /// that is neither C's nor a refusal, which
 /// `docs/WORKING-ON-THIS.md` §6 forbids. `level_1_is_unreachable_on_every_
 /// key_frame_preset` pins the reachability claim.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_base: bool, is_islice: bool) {
+pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_base: bool, is_islice: bool) {
     let ctrls = set_mds0_controls(mds0_level(arm, enc_mode, is_base, is_islice));
     cfg.mds0_dist_to_cost_th = match ctrls.pruning_method_th {
         0 => None,
@@ -154,7 +154,7 @@ mod tests {
     /// `pruning_method_th = 0` — no prune, exactly what shipped.
     #[test]
     fn the_allintra_arm_prunes_nothing_at_every_preset() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let mut cfg = FunnelCfg::for_preset(preset);
             apply(&mut cfg, ScArm::Allintra, preset, true, true);
             assert_eq!(
@@ -170,7 +170,7 @@ mod tests {
     /// would still pass.
     #[test]
     fn the_video_arm_prunes_only_above_m10_on_a_key_frame() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let mut cfg = FunnelCfg::for_preset(preset);
             apply(
                 &mut cfg,
@@ -191,7 +191,7 @@ mod tests {
     /// either arm, at any preset, reaches level 1.
     #[test]
     fn level_1_is_unreachable_on_every_key_frame_preset() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             for arm in [ScArm::Allintra, ScArm::Video { is_islice: true }] {
                 assert_ne!(
                     mds0_level(arm, preset, true, true),

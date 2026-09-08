@@ -1,5 +1,38 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **Corrected intra-edge ablation (2026-09-08, local):**
+> [Completed canonical size/quality/time report](../../../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_INTRA_EDGE.md).
+> 120 encodes / 40 deterministic cells; all 20 SVT cells reproduce exact
+> measured bytes and match decoder reconstruction. Enabling intra-edge at
+> pristine native −1 costs about 1.4%/1.7% more bytes at the bracketed
+> photo70/screenshot80 SSIM2 targets, with extra time. Remains opt-in. The
+> superseded pre-fix photo gain disappeared after correcting UV neighbor
+> ownership across 4x4 luma splits. Full current normal8/research parity
+> refresh and 2,626 workspace / 136 regression checks pass; this is a
+> two-source pilot, not a calibrated routing policy.
+
+
+> **Batched IntraBC SAD, local continuation (2026-09-08):** `d78559a2`
+> shares source loads across the four mesh candidates and vectorizes width4.
+> Three-round canonical screenshot QP20 repeat: **13.528s→6.106s**, unchanged
+> **14,292B /84.101 SSIM2**; C control **2.504s→2.503s**. The photo control
+> is essentially unchanged. All2,619 tests and133/133 regression checks pass.
+> This precedes the subsequent published archmage0.9.29 migration; that graph
+> passes the same checks plus 1,100/1,100 default synthetic+dims C identity
+> cells (zero pinned exceptions or harness errors); its18-encode repeat also preserves every byte, with
+> screenshotMR6.114s and C2.507s. See the linked RD report below for scope,
+> remaining gap and artifacts.
+
+> **Research preset -1 canonical screenshot (2026-09-08, local unlanded):**
+> [RD baseline and profiling](../../../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESEARCH_BASELINE.md).
+> At 512×320 QP20, C/Rust -1 emit identical14,292B at84.101 SSIM2,
+> but Rust takes13.53s vsC2.50s (three-round medians). A separate perf profile
+> puts78.22% of Rust core cycles in `me_sad::__arcane_block_sad_v3`.
+> The IntraBC exhaustive mesh calls SAD individually; C `av1me.c` batches
+> four via `sdx4df`. Four-pixel widths also hit Rust's scalar tail. These are
+> measured attribution plus source-level optimization leads, **not a speedup**.
+> Preserve native -1 search, traversal and tie semantics; do not disable mesh.
+
 > **Current i265 still-performance investigation (2026-09-06):**
 > [paired baseline, timing correction and SIMD API audit](STILL-PERF-2026-09-06.md).
 > Three real images at 512x512 QP40, presets 2/6/8: every measured output

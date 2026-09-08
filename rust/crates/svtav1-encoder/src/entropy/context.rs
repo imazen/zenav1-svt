@@ -501,6 +501,15 @@ pub fn partition_alike_split_symbol_cost(width: usize, bottom_edge: bool, is_128
     partition_alike_split_cost(row, bottom_edge, is_128)
 }
 
+/// Both binary edge-partition costs from the default context-zero row:
+/// `[rectangle, split]`, in 1/512-bit units. Uses the same C gather as the writer.
+pub fn partition_alike_symbol_costs(width: usize, bottom_edge: bool) -> [u32; 2] {
+    debug_assert!((8..=128).contains(&width) && width.is_power_of_two());
+    let bsl = width.ilog2() as usize - 3;
+    let row = &DEFAULT_PARTITION_CDF[(bsl * 4).min(PARTITION_CONTEXTS - 1)];
+    partition_alike_costs(row, bottom_edge, width == 128)
+}
+
 /// Default skip CDFs.
 static DEFAULT_SKIP_CDF: [[AomCdfProb; 3]; SKIP_CONTEXTS] =
     [[1097, 0, 0], [16253, 0, 0], [28192, 0, 0]];

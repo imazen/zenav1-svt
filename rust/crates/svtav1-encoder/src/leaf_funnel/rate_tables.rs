@@ -362,6 +362,11 @@ impl MdRates {
 
 /// Frame-constant funnel parameters.
 pub struct FunnelFrame {
+    /// Source-specific chroma presort: pristine variance versus hybrid SAD.
+    pub reference: crate::reference::SvtReference,
+    /// Signed native preset, including research -1, for bit-depth-specific
+    /// lambda derivation. Research omits the normal frame weight at both depths.
+    pub native_preset: i8,
     /// Superblock size in MI (4px) units — C `seq_header.sb_mi_size`, 16 at
     /// SB64 and 32 at SB128 (task #91). Feeds the intra availability tables
     /// (`intra_edge::has_top_right` / `has_bottom_left`), whose
@@ -814,7 +819,7 @@ impl FunnelCfg {
     /// C-exact per-preset derivation for the still/420 allintra path.
     /// All presets construct one; explicit arms cover 0..=8 and the tail
     /// covers 9+. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
-    pub fn for_preset(preset: u8) -> Self {
+    pub fn for_preset(preset: i8) -> Self {
         // M6+ common tail (intra_level 6/7/8: mode_end SMOOTH, angular
         // level 4, txt groups 5/4 satd 10 rate 100, uv follows luma, no
         // SH edge filter bit).
@@ -927,7 +932,7 @@ impl FunnelCfg {
             // - nsq_search level 3 vs M1's 10 (NsqCfg::for_preset_qp).
             // pd0_lvl 0, txt_level 2, txs_level 2, intra_level 1, dr_level 6
             // are all shared with M1.
-            0 => FunnelCfg {
+            -1 | 0 => FunnelCfg {
                 mode_end: 12,
                 angular_level: 1,
                 nic_num: (20, 20, 20),
@@ -1374,6 +1379,33 @@ pub(super) fn residual_sad(
         }
     }
     sad
+}
+
+/// Pristine C `svt_aom_highbd_10_variance{W}x{H}_c` (svt_psnr.c).
+/// Normalize SSE and the signed residual sum separately, before subtracting.
+/// C's UV call order is prediction minus source; the signed rounding makes
+/// reversing those operands observably different for some residuals.
+pub(super) fn residual_variance_hbd(
+    src: &[u16],
+    src_stride: usize,
+    sx: usize,
+    sy: usize,
+    pred: &[u16],
+    w: usize,
+    h: usize,
+) -> u64 {
+    let mut sum = 0i64;
+    let mut sse = 0i64;
+    for r in 0..h {
+        for c in 0..w {
+            let diff = i64::from(pred[r * w + c]) - i64::from(src[(sy + r) * src_stride + sx + c]);
+            sum += diff;
+            sse += diff * diff;
+        }
+    }
+    let sum = (sum + 2) >> 2;
+    let sse = (sse + 8) >> 4;
+    (sse - sum * sum / (w * h) as i64).max(0) as u64
 }
 
 /// C `sad_16b_kernel` (svt_aom_sad_16b_kernel_c) — the plain 16-bit SAD (sum of

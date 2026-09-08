@@ -188,7 +188,7 @@ fn has_tr_table_vert(bw: usize, bh: usize) -> Option<&'static [u8]> {
 }
 
 /// C `get_has_tr_table()`. Panics where the C code would assert (a NULL
-/// table entry) — unreachable for the partition types this encoder emits.
+/// table entry for geometry incompatible with the supplied partition).
 fn get_has_tr_table(partition: PartitionType, bw: usize, bh: usize) -> &'static [u8] {
     let ret = if partition == PartitionType::VertA || partition == PartitionType::VertB {
         has_tr_table_vert(bw, bh)
@@ -562,8 +562,8 @@ pub enum DirEdges {
 /// tile, 64x64 superblocks, `disable_edge_filter`.
 ///
 /// `partition` is the partition type the block will be signaled under
-/// (only PARTITION_VERT_A/B select different availability tables; this
-/// encoder never emits those, so callers pass `PartitionType::None`).
+/// (only PARTITION_VERT_A/B select different availability tables). Research
+/// search emits those partitions, so its callers must carry the parent shape.
 #[allow(clippy::too_many_arguments)]
 pub fn build_directional_edges(
     recon: &[u8],
@@ -580,8 +580,8 @@ pub fn build_directional_edges(
     let frame_w = stride;
     let frame_h = recon.len() / stride;
     // C av1_set_mb_mi: mi dims are the frame dims aligned up to 8 px.
-    // All pipeline frames are 64-aligned; the debug_assert documents that
-    // unaligned dims would need the decoder's padded-recon semantics.
+    // The caller supplies the actual 8-aligned frame canvas, excluding any
+    // spare superblock allocation beyond the decoded frame.
     debug_assert_eq!(recon.len() % stride, 0);
     debug_assert!(frame_w.is_multiple_of(8) && frame_h.is_multiple_of(8));
     let mi_cols = 2 * ((frame_w + 7) >> 3);

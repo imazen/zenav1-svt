@@ -155,23 +155,17 @@ pub(super) fn inject_candidates(
             }
         }
 
-        // 2. Fast loop: SAD (u + v) per candidate, NO rate at this stage
-        //    (product_coding_loop.c:7604-7674). C's `mds0_dist_type` is
-        //    zero-initialized = SAD (never assigned in `Source/Lib`), so BOTH
-        //    bit depths score plain SAD — bd8 `svt_nxm_sad_kernel`, bd10
-        //    `sad_16b_kernel` — NOT the `vf` variance. The sort order (which
-        //    candidates enter the full loop) is decided HERE, so the metric
-        //    must match C's SAD or a different candidate SET is admitted.
-        // bd10 (task #94, root #1): C runs this fast loop at `hbd_md` too — the
-        // 10-bit prediction scored by `sad_16b_kernel` on the 10-bit source.
+        // Pristine v4.2.0 ranks by variance; hybrid3115 MODE0/MODE1 ranks
+        // by SAD because its added mds0_dist_type stays zero-initialized.
+        // This fast loop admits the candidates for full RD evaluation, so
+        // changing the metric changes the search set (no rate term here).
+        // See docs/PARITY-REFERENCE-AUDIT-2026-09-08.md.
         let mut u_pred = alloc::vec![0u8; cw * chh];
         let mut v_pred = alloc::vec![0u8; cw * chh];
         let mut u_pred10 = alloc::vec![0u16; cw * chh];
         let mut v_pred10 = alloc::vec![0u16; cw * chh];
         let mut fast: Vec<(u64, usize)> = Vec::with_capacity(uv_cands.len());
         for (idx, &(uvm, uvd)) in uv_cands.iter().enumerate() {
-            // Both bit depths score SAD (`mds0_dist_type` default 0 = SAD);
-            // it is the fast-loop sort key below.
             let fast_dist = match bd10_rd.as_ref() {
                 Some(b) => {
                     predict_unit_hbd(
@@ -206,8 +200,13 @@ pub(super) fn inject_candidates(
                         &mut v_pred10,
                         b.bd,
                     );
-                    residual_sad_hbd(&b.u_src10, cw, 0, 0, &u_pred10, cw, chh)
-                        + residual_sad_hbd(&b.v_src10, cw, 0, 0, &v_pred10, cw, chh)
+                    if frame.reference == crate::reference::SvtReference::Mainline420 {
+                        residual_variance_hbd(&b.u_src10, cw, 0, 0, &u_pred10, cw, chh)
+                            + residual_variance_hbd(&b.v_src10, cw, 0, 0, &v_pred10, cw, chh)
+                    } else {
+                        residual_sad_hbd(&b.u_src10, cw, 0, 0, &u_pred10, cw, chh)
+                            + residual_sad_hbd(&b.v_src10, cw, 0, 0, &v_pred10, cw, chh)
+                    }
                 }
                 None => {
                     predict_unit(
@@ -240,8 +239,27 @@ pub(super) fn inject_candidates(
                         filt_type_uv,
                         &mut v_pred,
                     );
-                    residual_sad(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
-                        + residual_sad(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh)
+                    if frame.reference == crate::reference::SvtReference::Mainline420 {
+                        let offset = ccy * fx.c_stride + ccx;
+                        u64::from(svtav1_dsp::variance::variance_diff(
+                            &u_pred,
+                            cw,
+                            &fx.u_src[offset..],
+                            fx.c_stride,
+                            cw,
+                            chh,
+                        )) + u64::from(svtav1_dsp::variance::variance_diff(
+                            &v_pred,
+                            cw,
+                            &fx.v_src[offset..],
+                            fx.c_stride,
+                            cw,
+                            chh,
+                        ))
+                    } else {
+                        residual_sad(fx.u_src, fx.c_stride, ccx, ccy, &u_pred, cw, chh)
+                            + residual_sad(fx.v_src, fx.c_stride, ccx, ccy, &v_pred, cw, chh)
+                    }
                 }
             };
             fast.push((fast_dist, idx));
@@ -1053,8 +1071,15 @@ pub(super) fn inject_candidates(
             if has_uv && uv == 0 {
                 fcr += pal_uv_no_y1; // [1][0]: this candidate's luma palette is on
             }
+            // C fast_loop_core selects the lambda by hbd_md for palette
+            // candidates as well as regular intra. Using the u8 lambda here
+            // changes NIC admission even when palette predictions match C.
             let fast_cost = rdcost(
-                lambda,
+                if bd10_funnel {
+                    lambda_bd10_fast
+                } else {
+                    lambda
+                },
                 flr + fcr,
                 if frame.mds0_ssd { satd } else { satd << 4 },
             );
@@ -1247,7 +1272,20 @@ pub(super) fn inject_candidates(
                 &ibc.sites,
                 &ibc.ctrls,
                 ibc.sad_per_bit,
-                ibc.error_per_bit,
+                // C intra_bc_search forces the search pixels/SAD LUT to
+                // 8-bit, but derives errorperbit from full_lambda_md[hbd_md].
+                // Using the 8-bit frame lambda here changes hash/mesh vector
+                // ranking before the native-depth mode/transform decisions.
+                if bd10_funnel {
+                    (u64::from(crate::pd0::kf_full_lambda_bd10(
+                        frame.base_qindex,
+                        frame.cli_qp,
+                        frame.native_preset,
+                    )) >> crate::intrabc::RD_EPB_SHIFT)
+                        .max(1) as i32
+                } else {
+                    ibc.error_per_bit
+                },
                 false, // approx_inter_rate: structurally 0 on allintra
                 &ibc.search_tables,
                 buckets,

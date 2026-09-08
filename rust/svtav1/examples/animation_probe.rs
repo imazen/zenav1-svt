@@ -3,19 +3,27 @@ fn main() {
     use svtav1::avif::{
         AvifEncoder,
         animation::{
-            AnimationFrame, AnimationOptions, AnimationTiming, ClliBox, MdcvBox, RepetitionCount,
+            AmveBox, AnimationFrame, AnimationOptions, AnimationTiming, CclvBox, ClliBox, CropRect,
+            MdcvBox, MonochromeAnimationFrame, PaspBox, RepetitionCount,
         },
     };
     let w = 64;
-    let mut colors: Vec<Vec<u8>> = (0..3)
+    let h = 80;
+    let durations: Vec<u32> = std::env::var("AVIF_DURATIONS")
+        .map(|v| v.split(',').map(|v| v.parse().unwrap()).collect())
+        .unwrap_or_else(|_| vec![100, 200, 300]);
+    let timescale = std::env::var("AVIF_TIMESCALE")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(1000);
+    let mut colors: Vec<Vec<u8>> = (0..durations.len())
         .map(|f| {
-            (0..w * w)
-                .map(|i| (32 + (i % w + f * 30) % 180) as u8)
+            (0..w * h)
+                .map(|i| (32 + (i % w + f * 30 + (i / w) * (1 + f / 6)) % 180) as u8)
                 .collect()
         })
         .collect();
-    let alphas: Vec<Vec<u8>> = (0..3)
-        .map(|f| (0..w * w).map(|i| ((i + f * 13) % 256) as u8).collect())
+    let alphas: Vec<Vec<u8>> = (0..durations.len())
+        .map(|f| (0..w * h).map(|i| ((i + f * 13) % 256) as u8).collect())
         .collect();
     if std::env::var_os("AVIF_PREMULTIPLIED").is_some() {
         for (color, alpha) in colors.iter_mut().zip(&alphas) {
@@ -24,8 +32,8 @@ fn main() {
             }
         }
     }
-    let uv = vec![128; w * w / 4];
-    let frames: Vec<_> = (0..3)
+    let uv = vec![128; w * h / 4];
+    let frames: Vec<_> = (0..durations.len())
         .map(|f| AnimationFrame {
             y: &colors[f],
             u: &uv,
@@ -36,7 +44,7 @@ fn main() {
             } else {
                 Some(&alphas[f])
             },
-            duration: [100, 200, 300][f],
+            duration: durations[f],
         })
         .collect();
     let mut options = AnimationOptions::default();
@@ -47,6 +55,23 @@ fn main() {
             RepetitionCount::Finite(count.parse().unwrap())
         };
     }
+    if let Ok(crop) = std::env::var("AVIF_CROP") {
+        let values: Vec<u32> = crop.split(',').map(|v| v.parse().unwrap()).collect();
+        let [x, y, width, height] = values.as_slice() else {
+            panic!("AVIF_CROP=x,y,width,height")
+        };
+        options.crop = Some(CropRect::new(*x, *y, *width, *height));
+    }
+    options.rotation = std::env::var("AVIF_ROTATION")
+        .ok()
+        .map(|v| v.parse().unwrap());
+    options.mirror = std::env::var("AVIF_MIRROR")
+        .ok()
+        .map(|v| v.parse().unwrap());
+    if let Ok(spacing) = std::env::var("AVIF_PASP") {
+        let (h, v) = spacing.split_once(',').expect("AVIF_PASP=h,v");
+        options.pixel_aspect_ratio = Some(PaspBox::new(h.parse().unwrap(), v.parse().unwrap()));
+    }
     options.premultiplied_alpha = std::env::var_os("AVIF_PREMULTIPLIED").is_some();
     if std::env::var_os("AVIF_METADATA").is_some() {
         options.icc = Some(std::fs::read(std::env::var("AVIF_ICC").expect("AVIF_ICC")).unwrap());
@@ -54,6 +79,13 @@ fn main() {
         options.xmp = Some(
             b"<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><probe>animation</probe></x:xmpmeta>".to_vec(),
         );
+        options.amve = Some(AmveBox::new(100_000, 15635, 16450));
+        let mut cclv = CclvBox::new();
+        cclv.primaries = Some([(-1234, 45678), (7500, 3000), (34000, 16000)]);
+        cclv.min_luminance = Some(0);
+        cclv.max_luminance = Some(10_000_000);
+        cclv.avg_luminance = Some(1_000_000);
+        options.cclv = Some(cclv);
         options.clli = Some(ClliBox::new(1000, 400));
         options.mdcv = Some(MdcvBox::new(
             [(13250, 34500), (7500, 3000), (34000, 16000)],
@@ -62,16 +94,91 @@ fn main() {
             50,
         ));
     }
-    let bytes = AvifEncoder::new()
-        .with_speed(7)
-        .encode_animation_yuv420_with_options(
+    let depth: u8 = std::env::var("AVIF_BIT_DEPTH")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(8);
+    assert!(matches!(depth, 8 | 10));
+    let encoder = AvifEncoder::new().with_speed(7).with_bit_depth(depth);
+    let bytes = if depth == 10 {
+        let colors: Vec<Vec<u16>> = colors
+            .iter()
+            .map(|p| p.iter().map(|&v| u16::from(v) << 2).collect())
+            .collect();
+        let alphas: Vec<Vec<u16>> = alphas
+            .iter()
+            .map(|p| {
+                p.iter()
+                    .map(|&v| (u16::from(v) * 1023 + 127) / 255)
+                    .collect()
+            })
+            .collect();
+        let uv = vec![512u16; w * h / 4];
+        if std::env::var_os("AVIF_MONO").is_some() {
+            let frames: Vec<_> = frames
+                .iter()
+                .enumerate()
+                .map(|(i, f)| MonochromeAnimationFrame {
+                    y: &colors[i],
+                    y_stride: w,
+                    alpha: f.alpha.map(|_| alphas[i].as_slice()),
+                    duration: f.duration,
+                })
+                .collect();
+            encoder.encode_animation_mono_hbd_with_options(
+                &frames,
+                w as u32,
+                h as u32,
+                AnimationTiming { timescale },
+                &options,
+            )
+        } else {
+            let frames: Vec<_> = frames
+                .iter()
+                .enumerate()
+                .map(|(i, f)| AnimationFrame {
+                    y: &colors[i],
+                    u: &uv,
+                    v: &uv,
+                    y_stride: w,
+                    alpha: f.alpha.map(|_| alphas[i].as_slice()),
+                    duration: f.duration,
+                })
+                .collect();
+            encoder.encode_animation_yuv420_hbd_with_options(
+                &frames,
+                w as u32,
+                h as u32,
+                AnimationTiming { timescale },
+                &options,
+            )
+        }
+    } else if std::env::var_os("AVIF_MONO").is_some() {
+        let frames: Vec<_> = frames
+            .iter()
+            .map(|frame| MonochromeAnimationFrame {
+                y: frame.y,
+                y_stride: frame.y_stride,
+                alpha: frame.alpha,
+                duration: frame.duration,
+            })
+            .collect();
+        encoder.encode_animation_mono_with_options(
             &frames,
             w as u32,
-            w as u32,
-            AnimationTiming { timescale: 1000 },
+            h as u32,
+            AnimationTiming { timescale },
             &options,
         )
-        .unwrap();
+    } else {
+        encoder.encode_animation_yuv420_with_options(
+            &frames,
+            w as u32,
+            h as u32,
+            AnimationTiming { timescale },
+            &options,
+        )
+    }
+    .unwrap();
     std::fs::write(std::env::args().nth(1).expect("output path"), bytes).unwrap();
 }
 #[cfg(not(feature = "avif-container"))]

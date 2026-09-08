@@ -198,6 +198,70 @@ fn residual_sad_hbd_matches_c_sad_16b_kernel() {
     }
 }
 
+#[test]
+fn pristine_chroma_variance_matches_sized_c_at_both_depths() {
+    let mut seed = 0x42u64;
+    let mut next = || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed & 1023) as u16
+    };
+    for (w, h) in [
+        (4, 4),
+        (4, 8),
+        (4, 16),
+        (8, 4),
+        (8, 8),
+        (8, 16),
+        (8, 32),
+        (16, 4),
+        (16, 8),
+        (16, 16),
+        (16, 32),
+        (16, 64),
+        (32, 8),
+        (32, 16),
+        (32, 32),
+        (32, 64),
+        (64, 16),
+        (64, 32),
+        (64, 64),
+    ] {
+        let stride = w + 5;
+        for _ in 0..30 {
+            let src: Vec<u16> = (0..stride * (h + 1)).map(|_| next()).collect();
+            let pred: Vec<u16> = (0..w * h).map(|_| next()).collect();
+            let offset = stride + 2;
+            let got = residual_variance_hbd(&src, stride, 2, 1, &pred, w, h);
+            let expected = svtav1_cref::chroma_variance10(&pred, w, &src[offset..], stride, w, h);
+            assert_eq!(got, u64::from(expected), "10-bit {w}x{h}");
+            let src8: Vec<u8> = src.iter().map(|x| (x >> 2) as u8).collect();
+            let pred8: Vec<u8> = pred.iter().map(|x| (x >> 2) as u8).collect();
+            assert_eq!(
+                svtav1_dsp::variance::variance_diff(&pred8, w, &src8[offset..], stride, w, h),
+                svtav1_cref::variance(w, h, &pred8, 0, w, &src8, offset, stride).0
+            );
+        }
+    }
+    // Signed rounding is asymmetric. Pin an actual witness in BOTH orders.
+    let mut pred = [0u16; 16];
+    pred[0] = 6;
+    pred[1] = 8;
+    let src = [0u16; 16];
+    let forward = residual_variance_hbd(&src, 4, 0, 0, &pred, 4, 4);
+    let reverse = residual_variance_hbd(&pred, 4, 0, 0, &src, 4, 4);
+    assert_eq!(
+        forward,
+        u64::from(svtav1_cref::chroma_variance10(&pred, 4, &src, 4, 4, 4))
+    );
+    assert_eq!(
+        reverse,
+        u64::from(svtav1_cref::chroma_variance10(&src, 4, &pred, 4, 4, 4))
+    );
+    assert_ne!(forward, reverse);
+}
+
 /// The bd10 CfL AC luma has TWO producers that must agree: the in-search
 /// [`cfl_ac_subsample_hbd`], which overlays the block's *uncommitted*
 /// winner recon onto the frame's ROUND_UV pair, and the re-encode
@@ -607,7 +671,7 @@ fn m2_m3_funnel_cfg_matches_capture() {
     // lines 12-13): txt satd 20, groups 6/6, rate 250; txs 2/2 with
     // d1/d2 offsets 0; M2 nic case 3 (scal 12, mds1 1200/rank 0,
     // mds2 30/rank 0/rel 0, mds3 25); M3 nic case 5 == M4.
-    for p in [2u8, 3] {
+    for p in [2i8, 3] {
         let c = FunnelCfg::for_preset(p);
         assert_eq!(c.txt_satd_th, 20, "p{p}");
         assert_eq!((c.txt_group_lt16, c.txt_group_ge16), (6, 6));
@@ -662,6 +726,8 @@ fn uv_tx_type_m6_subset_matches_c() {
 /// `tx_bias == 0 && ac_bias == 0`.
 fn test_frame(base_qindex: u8, frame_w_px: usize, frame_h_px: usize) -> FunnelFrame {
     FunnelFrame {
+        native_preset: 0,
+        reference: crate::reference::SvtReference::Hybrid3115,
         // Key-frame fixture: no inter search reads this.
         inter_fast_lambda: 0,
         sb_mi_size: 16,

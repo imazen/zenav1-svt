@@ -70,6 +70,46 @@ byte() {
   fi
 }
 
+# A lossless byte/source witness requiring chosen IntraBC blocks on both sides.
+losslessIbc() {
+  local label=$1 prev_pass=$pass
+  rm -f "$W/ibc.ptree" "$W/ibc.ctree"
+  SVTAV1_PACKTREE="$W/ibc.ptree" SVT_CTREE_OUT="$W/ibc.ctree" byte "$@"
+  if [ "$pass" -gt "$prev_pass" ]; then
+    if ! python3 - "$W/ibc.ptree" "$W/ibc.ctree" <<'PYIBC'
+from pathlib import Path
+import os, re, sys
+assert all(' ibc=1' in Path(p).read_text() for p in sys.argv[1:]), "IntraBC must be selected in both encoders"
+if os.environ.get('LOSSLESS_IBC_RESIDUAL'):
+    rows = Path(sys.argv[1]).read_text().splitlines()
+    assert any(' ibc=1' in row and any(int(v) for v in re.findall(r'[yuv]eob=(\d+)', row)) for row in rows), "residual-bearing IntraBC must be selected"
+    assert any(' ibc=1' in row and ' skip=0' in row for row in Path(sys.argv[2]).read_text().splitlines()), "C must also select residual-bearing IntraBC"
+PYIBC
+    then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC premise failed]")
+    # CI supplies a decoder outside PATH via RS_AOMDEC. Match the other
+    # decode witnesses, and request the coded depth for exact source bytes.
+    elif ! "$AOMDEC" --rawvideo --output-bit-depth="${7:-8}" -o "$W/ibc-dec.yuv" "$W/rs.obu" >"$W/ibc-dec.log" 2>&1; then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC decoder failed: $AOMDEC]")
+      cat "$W/ibc-dec.log" >&2
+    elif ! cmp -s "$W/ibc-dec.yuv" "$W/rs.yuv"; then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [IntraBC decode differs from source]")
+    fi
+  fi
+}
+
+# Native lossless must match both the C stream and all input samples.
+nativeLossless() {
+  local label=$1 prev_pass=$pass
+  SVTAV1_HBD_SRC=1 byte "$@" 10
+  if [ "$pass" -gt "$prev_pass" ]; then
+    if ! "$AOMDEC" --rawvideo --output-bit-depth=10 -o "$W/native.dec" "$W/rs.obu" >"$W/native-dec.log" 2>&1 ||
+       ! cmp -s "$W/native.dec" "$W/rs.yuv"; then
+      pass=$((pass-1)); fail=$((fail+1)); failed+=("$label [native decoded pixels differ from source]")
+    fi
+  fi
+}
+
 # noPanic <label> <content> <w> <h> <qp> <preset> <bd>
 # Asserts the encode does not PANIC. A typed refusal (exit 3) passes: refusing an
 # out-of-envelope config is the correct behaviour, and conflating it with a
@@ -486,6 +526,18 @@ byte "lr-align-cross-383x512-bd8"  gradient 383 512 40 6 8
 byte "lr-align-cross-383x512-bd10" gradient 383 512 40 6 10
 byte "lr-align-cross-chroma-766"   gradient 766 128 40 6 8
 
+# Issue #17: mainline VQ key-frame sharpness was incorrectly fork-gated.
+# Before: gradient72x88/q40/p8 produced 289 B in both encoders but different
+# streams; tune=1 matched C. The enabled tune=0 cell must match C as well.
+SVTAV1_TUNE=0 SVT_TUNE=0 byte tune0-mainline-sharpness gradient 72 88 40 8 8
+
+# Issue #17 forced screen classifications. Before SCM0 screen/p6: 204 B
+# versus C 482 B; SCM1 gradient/p6 and /p8: same sizes (279/289 B) but
+# different bytes. Force all six classes and retain the actual tool preset.
+SVTAV1_SCM=0 SVT_SCM=0 byte scm0-screen-p6 screen 72 88 40 6 8
+SVTAV1_SCM=1 SVT_SCM=1 byte scm1-gradient-p6 gradient 72 88 40 6 8
+SVTAV1_SCM=1 SVT_SCM=1 byte scm1-gradient-p8 gradient 72 88 40 8 8
+
 # ---------------------------------------------------------------------------
 # 2026-08-03 — bd10 PALETTE was gated out of the mode-decision funnel entirely.
 # 12801d936. The port coded ZERO palette blocks at 10 bits where C codes
@@ -877,18 +929,50 @@ byte "sh-width-bits-control-2x2" gradient 2 2 20 7
 # encoder: ... QP 0 (coded-lossless) with screen-content tools". AFTER: 163 B,
 # byte-identical to C, lossless under aomdec.
 #
-# The refusal SURVIVES below preset 6 and now names why: presets 0..4 PANIC in
-# `intrabc_hash::get_block_hash_value` (QP-0-only — qp 1/2/5/20/40 all encode
-# at preset 4), and preset 5 diverges from C on `screenrep`. Both are pinned by
-# the `refuses` cells below, so lifting either without evidence fails here.
+# The original lower-preset refusal and its reproducer are replaced below
+# after the source-access fix and the 2026-09-07 lossless MD CDF correction.
 byte "qp0-screen-p6-64x64"   screen  64 64 0 6
 byte "qp0-screen-p7-64x64"   screen  64 64 0 7
 byte "qp0-screen-p8-96x80"   screen  96 80 0 8
-# The refusal is still LOAD-BEARING below preset 6. A cell that only asserted
-# the lift would pass just as well if the whole refusal were deleted — and
-# deleting it re-enables a PANIC.
-refuses "qp0-screen-refused-p4" screen 64 64 0 4
-refuses "qp0-screen-refused-p5" screen 64 64 0 5
+# 2026-09-07: the fixed-tree walk passed a block-relative source to
+# IntraBC's absolute-coordinate search. Without the old guard, screen64 p4
+# panicked in get_block_hash_value. Retaining the full plane fixes the
+# source contract; all 96 screen/screenrep lossless cells now match C.
+# Replace the old p4/p5 refusal witnesses with successful C comparisons.
+byte "qp0-screen-fixed-source-p4" screen 64 64 0 4
+byte "qp0-screen-context-p5" screenrep 128 128 0 5
+# screenrep128 does not enable IntraBC at QP0. The repeated-panel witness
+# below selects 320 IntraBC blocks in C; require selected blocks on both sides.
+losslessIbc "qp0-screen-copy-p4" screencopy 512 128 0 4
+
+# 2026-09-07 native WHT: initially refused; the guard-only experiment at p9
+# produced wrong pixels (2699 B vs C 4527 B). Native lossless now uses four
+# 4x4 WHTs with per-transform prediction at all presets.
+nativeLossless "native-qp0-gradient-p9" gradient 64 64 0 9
+# Palette MDS0 accidentally used the u8 lambda, admitting the wrong candidates:
+# screen64 p4 was 1285 B vs C 1318 B despite decoding source-exactly.
+nativeLossless "native-qp0-screen-p4" screen 64 64 0 4
+# A residual-bearing lossless IntraBC block wrote an extra tx-partition bit:
+# aomdec rejected native screencopy512x128 p4 with "Invalid intrabc dv";
+# 11355 B vs C 11349 B, first extra arithmetic symbol at mi=(18,8).
+LOSSLESS_IBC_RESIDUAL=1 SVTAV1_HBD_SRC=1 losslessIbc "native-qp0-ibc-residual-p4" screencopy 512 128 0 4 10
+# Variance boost produced a plan even though QP0 cannot signal delta-q.
+# The port emitted delta-q and used the per-SB quantizer; aomdec rejected
+# both depths. C correctly uses the frame quantizer when delta-q is absent.
+SVT_FORK_ENABLE_VARIANCE_BOOST=1 byte "qp0-variance-p7" gradient 64 64 0 7 8
+SVT_FORK_ENABLE_VARIANCE_BOOST=1 nativeLossless "native-qp0-variance-p7" gradient 64 64 0 7
+
+
+
+
+# 2026-09-07: lossless low-preset partition search and MD context wiring.
+# BEFORE: forced 8x8 leaves give gradient64 p3 2966 B vs C 2973;
+# PD0 without PD1 gives 2970. Preset depth pruning gives diag64 p3
+# 1391 B vs C 1268. Without lossless MD tx-type CDF adaptation,
+# gradient128 p0 gives 9560 B vs C 9567. AFTER: byte-identical in each case.
+byte "qp0-partition-refine" gradient 64 64 0 3
+byte "qp0-depth-override" diag 64 64 0 3
+byte "qp0-md-cdf-chain" gradient 128 128 0 0
 
 # INTER frame 2 — the first frame whose list-0 reference is itself an inter
 # frame. The refusal MOVED on 2026-09-03 (docs/INTER-ENCODE-PLAN.md 1z25): the
@@ -1645,6 +1729,91 @@ SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-zero-chroma-cast" grain 128 
 # Before: 70x66 denoise/apply emitted 154B vs C156B: the SB source repadded
 # from the true edge and overwrote C's denoised mi-grid padding. After: 156B exact.
 SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-denoised-edge-padding" grain 70 66 40 10 8
+
+# 2026-09-07 — partial cached chroma copied across destination rows (656
+# unfiltered bytes wrong at 65x67), and odd native chroma filtered with floor
+# bounds (277 post-filter bytes wrong at 65x65). These exact animation witnesses
+# also run directly against aomdec, without requiring the AVIF container tools.
+# Superres 65x65 / denominator 9 / preset 7 / quality 5 differed first at
+# byte 5214. Normative chroma filtering must precede output upscaling too.
+# Monochrome low-preset edges: formerly refused; without the guard the
+# directional neighbor builder asserted on spare SB storage (16384 % 72 = 40).
+# The square edge search and bounded neighbor canvas now decode exactly.
+# Public research wrapper formerly rejected the valid 65x67 input before
+# encoding. This witness verifies rounded-up chroma and independent decoding.
+# Pristine reference: diag64 QP48 p0 formerly used hybrid SAD (71B),
+# differing from pristine variance (72B). Pins both sources and depths.
+# Zen intra-edge UV ownership: before the fix, 128x128 bd8 q20/two rows
+# differed from decoded recon at byte17397; the 36-cell off/on matrix now passes.
+for witness in zen_intra_edges_at_partial_frames_and_tiles zen_research_intra_edges_match_decoder pristine_and_hybrid_chroma_reference_matches_c research_wrapper_partial_frame_matches_decoder cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction monochrome_low_presets_partial_blocks native_monochrome_low_presets_match_decoder lossless_monochrome_matches_source native_lossless_matches_source lossless_quantization_options_match_source; do
+  if AOMDEC="$AOMDEC" cargo test -p zenav1-svt --test odd_frame_recon "$witness" -- --exact >"$W/$witness.log" 2>&1; then
+    pass=$((pass+1))
+  else
+    fail=$((fail+1)); failed+=("$witness [decoder reconstruction]")
+    cat "$W/$witness.log"
+  fi
+done
+
+# Shared input/grain support checks and explicit refusal of the legacy streaming
+# scaffold. Both regressions also run in the workspace nextest gate.
+if cargo test -p zenav1-svt --test still_policy support_query_matches_real_grain_mono_and_reference_refusals -- --exact >"$W/still-support-query.log" 2>&1; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); failed+=("still-support-query [API agreement]")
+  cat "$W/still-support-query.log"
+fi
+if cargo test -p zenav1-svt --lib tests::unsupported_streaming_api_never_accepts_or_counts_frames -- --exact >"$W/streaming-refusal.log" 2>&1; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); failed+=("streaming-refusal [false acceptance]")
+  cat "$W/streaming-refusal.log"
+fi
+
+# Partial right-edge chroma formerly wrapped into the next source row.
+# The same source also exposed omission of partial quadrants from SB128's
+# PD0 depth limits: p1 tested larger blocks than C. Exact measured input is
+# retained so this gate does not depend on corpus availability or conversion.
+# Before / C bytes: q10p1 9524/9542, q30p4 2842/2842 (different payload),
+# q30p5 2906/2907. All three now match the pinned C reference byte-for-byte.
+if python3 - "$HERE/fixtures" "$W/partial-chroma.yuv" <<'PYCHROMA'
+import gzip, hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+data = gzip.decompress((root / 'partial-chroma-376x512.i420.gz').read_bytes())
+meta = json.loads((root / 'partial-chroma-376x512.json').read_text())
+assert len(data) == meta['bytes']
+assert hashlib.sha256(data).hexdigest() == meta['input_sha256']
+Path(sys.argv[2]).write_bytes(data)
+PYCHROMA
+then
+  byte "partial-chroma-source-stride-p4" "raw:$W/partial-chroma.yuv" 376 512 30 4 8
+  byte "partial-chroma-source-stride-p5" "raw:$W/partial-chroma.yuv" 376 512 30 5 8
+  byte "partial-sb128-depth-limits-p1" "raw:$W/partial-chroma.yuv" 376 512 10 1 8
+else
+  fail=$((fail+1)); failed+=("partial-chroma fixture integrity")
+fi
+
+# 2026-09-08 — research -1 bypassed the full partition-search path because
+# its live dispatch matched only 0..=5. Before: Rust 299B / C 283B, different
+# reconstruction and restoration. After extending the gate to -1..=5:
+# 283B and all 2690 tile operations identical (myzskwqo).
+byte "research-full-partition-dispatch" gradient 64 64 40 -1 8
+# The native 10-bit cost builders separately retained the normal frame lambda
+# weight: Rust 265B / C 277B at this cell. Carrying the signed preset through
+# leaf, partition and re-encode costs makes it 277B byte-identical (smqxvntu).
+byte "research-native10-lambda-weight" gradient 64 64 40 -1 10
+# 2026-09-08 — VertA/B children used PART_NONE directional availability in
+# whole-block and transform-overlay prediction. The changed partition at
+# mi=(36,4) of the first cell left identical pixels but different adaptation,
+# then changed the following SB. Before: 6516/6480 and 3334/3349 Rust/C bytes.
+# After parent-partition wiring: byte/op exact (zplqukkq).
+byte "research-vertical-asym-neighbors" gradient 192 192 12 -1 8
+byte "research-sb128-asym-neighbors" gradient 512 512 48 -1 8
+# 2026-09-08 — native10 IBC searched 8-bit pixels (correct) but also priced
+# vectors with the 8-bit lambda (wrong: C uses full_lambda_md[hbd_md]). The
+# first differing DV at (128,96) changed later TX choices. Before: Rust537B /
+# C540B. After native-depth errorperbit:540B /18355 ops exact (vlsuktxv).
+byte "native10-ibc-vector-lambda" screen 256 256 48 -1 10
 
 total=$((pass + fail))
 echo

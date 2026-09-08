@@ -66,7 +66,7 @@ pub(crate) const VIDEO_ISLICE_COEFF_LVL: InputCoeffLvl = InputCoeffLvl::Normal;
 ///
 /// `full_sb` is C's `sb_geom->width >= sb_size && sb_geom->height >= sb_size`.
 #[must_use]
-pub(crate) fn max_block_cap_active(arm: ScArm, preset: u8, full_sb: bool) -> bool {
+pub(crate) fn max_block_cap_active(arm: ScArm, preset: i8, full_sb: bool) -> bool {
     if !full_sb {
         return false;
     }
@@ -94,7 +94,7 @@ pub(crate) fn max_block_cap_active(arm: ScArm, preset: u8, full_sb: bool) -> boo
 /// ladder at an unclamped `enc_mode` is the defect §1n names, not because a
 /// cell needs it.
 #[must_use]
-pub(crate) fn disallow_4x4(arm: ScArm, preset: u8) -> bool {
+pub(crate) fn disallow_4x4(arm: ScArm, preset: i8) -> bool {
     let m = i8::try_from(crate::rate_arm::eff_enc_mode(arm, preset)).unwrap_or(i8::MAX);
     match arm {
         ScArm::Allintra => leaf::get_disallow_4x4_allintra(m),
@@ -105,7 +105,7 @@ pub(crate) fn disallow_4x4(arm: ScArm, preset: u8) -> bool {
 /// `pcs->nsq_geom_level` for this arm — the level itself, so callers that
 /// need `allow_HV4` / `min_nsq_block_size` (not just `enabled`) can ask.
 #[must_use]
-pub(crate) fn nsq_geom_level(arm: ScArm, preset: u8) -> u8 {
+pub(crate) fn nsq_geom_level(arm: ScArm, preset: i8) -> u8 {
     let m = i8::try_from(preset).unwrap_or(i8::MAX);
     match arm {
         ScArm::Allintra => leaf::get_nsq_geom_level_allintra(m),
@@ -118,19 +118,15 @@ pub(crate) fn nsq_geom_level(arm: ScArm, preset: u8) -> u8 {
 /// This is the predicate a ONE-FALSE boundary node consults: with geometry on
 /// it keeps its single injected edge shape, with geometry off it force-splits.
 #[must_use]
-pub(crate) fn nsq_geom_enabled(arm: ScArm, preset: u8) -> bool {
+pub(crate) fn nsq_geom_enabled(arm: ScArm, preset: i8) -> bool {
     nsq_geom_level(arm, preset) != 0
 }
 
 /// `svt_aom_set_nsq_geom_ctrls` (`:8180`) — the `(allow_HV4, min_nsq_block_size)`
 /// pair the funnel's `shapes_for_size` consumes, per geom level.
 ///
-/// Level 1 also sets `allow_HVA_HVB = 1`, which the funnel cannot search: it
-/// has no HorzA/HorzB/VertA/VertB candidate and `shape_children` is
-/// `unreachable!` on them. Level 1 is reachable ONLY on the video arm at
-/// preset 0 (`get_nsq_geom_level_default`, non-HIGH coeff_lvl), so that one
-/// cell searches level 2's shape set. Named, not silent — see
-/// `docs/nsq-port-map.md`.
+/// Level 1 additionally enables asymmetric shapes. `NsqCfg` carries that
+/// flag separately and searches their geometry, pruning and redundant blocks.
 #[must_use]
 pub(crate) fn nsq_geom_shape_ctrls(level: u8) -> (bool, usize) {
     match level {
@@ -152,13 +148,12 @@ pub(crate) fn nsq_geom_shape_ctrls(level: u8) -> (bool, usize) {
 ///   0 from M4), so the still path is always unscaled — which is what the
 ///   flattened tail assumed.
 /// - **video** (`set_qp_based_th_scaling_ctrls_default`, `:3788-3817`): 0 at
-///   MR, 1 everywhere else. `MR` is unreachable from a `u8` preset, so it is
-///   always 1 here.
+///   MR, 1 everywhere else.
 #[must_use]
-pub(crate) fn nsq_qp_based_th_scaling(arm: ScArm, preset: u8) -> bool {
+pub(crate) fn nsq_qp_based_th_scaling(arm: ScArm, preset: i8) -> bool {
     match arm {
         ScArm::Allintra => preset > 3,
-        ScArm::Video { .. } => true,
+        ScArm::Video { .. } => preset > -1,
     }
 }
 
@@ -173,15 +168,27 @@ pub(crate) fn nsq_qp_based_th_scaling(arm: ScArm, preset: u8) -> bool {
 /// entered. If a RANDOM_ACCESS envelope is ever wired, this is the input to
 /// revisit first.
 #[must_use]
-pub(crate) fn nsq_search_level(arm: ScArm, preset: u8, cli_qp: u32) -> u8 {
+#[cfg(test)]
+pub(crate) fn nsq_search_level(arm: ScArm, preset: i8, cli_qp: u32) -> u8 {
+    nsq_search_level_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal)
+}
+
+pub(crate) fn nsq_search_level_with_coeff(
+    arm: ScArm,
+    preset: i8,
+    cli_qp: u32,
+    coeff_level: crate::quant::CoeffLvl,
+) -> u8 {
+    let coeff = match coeff_level {
+        crate::quant::CoeffLvl::VLow => InputCoeffLvl::VLow,
+        crate::quant::CoeffLvl::Low => InputCoeffLvl::Low,
+        crate::quant::CoeffLvl::Normal => InputCoeffLvl::Normal,
+        crate::quant::CoeffLvl::High => InputCoeffLvl::High,
+    };
     let m = i8::try_from(preset).unwrap_or(i8::MAX);
     match arm {
-        // `coeff_lvl` cannot matter on this arm: its only use is the
-        // `enc_mode <= ENC_MR` clause, and MR is -1, structurally unreachable
-        // from a `u8` preset (`rust/CLAUDE.md` envelope guard 5).
-        ScArm::Allintra => {
-            leaf::get_nsq_search_level_allintra(m, cli_qp, InputCoeffLvl::Normal, SEQ_QP_MOD)
-        }
+        // Research mode reads the actual picture coefficient class here.
+        ScArm::Allintra => leaf::get_nsq_search_level_allintra(m, cli_qp, coeff, SEQ_QP_MOD),
         ScArm::Video { is_islice } => leaf::get_nsq_search_level_default(
             m,
             VIDEO_ISLICE_COEFF_LVL,
@@ -202,18 +209,18 @@ mod tests {
 
     /// The predicate `pipeline.rs` carried inline before this module existed,
     /// kept VERBATIM as the regression oracle for the still path.
-    fn old_flattened_cap(preset: u8, full_sb: bool) -> bool {
+    fn old_flattened_cap(preset: i8, full_sb: bool) -> bool {
         preset >= 8 && full_sb
     }
 
     /// Ditto for the NSQ-geometry predicate (two sites, same expression).
-    fn old_flattened_geom_enabled(preset: u8) -> bool {
+    fn old_flattened_geom_enabled(preset: i8) -> bool {
         preset <= 6
     }
 
     /// Ditto for `NsqCfg::for_preset_qp`'s level derivation — the base table
     /// plus the seq-qp-mod offsets, transcribed from the function as it stood.
-    fn old_flattened_search_level(preset: u8, cli_qp: u32) -> u8 {
+    fn old_flattened_search_level(preset: i8, cli_qp: u32) -> u8 {
         let base: i32 = match preset {
             0 => 3,
             1 => 10,
@@ -239,7 +246,7 @@ mod tests {
 
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             for full_sb in [false, true] {
                 assert_eq!(
                     max_block_cap_active(ScArm::Allintra, preset, full_sb),
@@ -278,14 +285,14 @@ mod tests {
     /// 3 at 4..=6, 0 above.
     #[test]
     fn allintra_geom_ctrls_match_the_hardcoded_pair() {
-        for preset in 0u8..=3 {
+        for preset in 0i8..=3 {
             assert_eq!(nsq_geom_level(ScArm::Allintra, preset), 2);
             assert_eq!(nsq_geom_shape_ctrls(2), (true, 0));
         }
-        for preset in 4u8..=6 {
+        for preset in 4i8..=6 {
             assert_eq!(nsq_geom_level(ScArm::Allintra, preset), 3);
         }
-        for preset in 7u8..=13 {
+        for preset in 7i8..=13 {
             assert_eq!(nsq_geom_level(ScArm::Allintra, preset), 0);
         }
     }
@@ -297,7 +304,7 @@ mod tests {
     fn video_arm_departs_where_expected() {
         let v = ScArm::Video { is_islice: true };
         // max_block_size: the still arm caps at M8+, the video arm never caps.
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             assert!(
                 !max_block_cap_active(v, preset, true),
                 "video cap p{preset}"
@@ -307,7 +314,7 @@ mod tests {
 
         // NSQ geometry: the still arm switches OFF above M6, the video arm
         // never does (`get_nsq_geom_level_default` returns 1/2/3 only).
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             assert!(nsq_geom_enabled(v, preset), "video geom p{preset}");
         }
         assert!(!nsq_geom_enabled(ScArm::Allintra, 7));
@@ -315,7 +322,7 @@ mod tests {
         // NSQ search: the still arm is OFF from M4 up at EVERY qp (the
         // allintra base table is 0 there and the offsets short-circuit on 0),
         // while the video arm keeps searching.
-        for preset in 4u8..=13 {
+        for preset in 4i8..=13 {
             for qp in 0u32..=63 {
                 assert_eq!(
                     nsq_search_level(ScArm::Allintra, preset, qp),
@@ -328,11 +335,11 @@ mod tests {
         // base 18 and M8+'s 19 over 19 and back to 0 — NSQ search off. That is
         // C's own saturation rule (`level + 2 > 19 ? 0 : ...`), not a port
         // shortcut, so the departure shows at 4..=6 here...
-        for preset in 4u8..=6 {
+        for preset in 4i8..=6 {
             assert_ne!(nsq_search_level(v, preset, 40), 0, "video search p{preset}");
         }
         // ...and at q55, where no offset applies, it extends to the top.
-        for preset in 4u8..=13 {
+        for preset in 4i8..=13 {
             assert_ne!(
                 nsq_search_level(v, preset, 55),
                 0,
@@ -356,7 +363,7 @@ mod tests {
         let v = ScArm::Video { is_islice: true };
         let expect = [4u8, 9, 9, 11, 14, 17, 17, 0, 0, 0, 0, 0, 0, 0];
         for (preset, want) in expect.iter().enumerate() {
-            assert_eq!(nsq_search_level(v, preset as u8, 40), *want, "p{preset}");
+            assert_eq!(nsq_search_level(v, preset as i8, 40), *want, "p{preset}");
         }
     }
 
@@ -368,7 +375,7 @@ mod tests {
         let v = ScArm::Video { is_islice: true };
         let expect = [2u8, 7, 7, 9, 12, 15, 15, 18, 19, 19, 19, 19, 19, 19];
         for (preset, want) in expect.iter().enumerate() {
-            assert_eq!(nsq_search_level(v, preset as u8, 55), *want, "p{preset}");
+            assert_eq!(nsq_search_level(v, preset as i8, 55), *want, "p{preset}");
         }
     }
 
@@ -441,12 +448,12 @@ pub(crate) enum VideoPic {
 
 #[must_use]
 pub(crate) fn video_pd0_params(
-    enc_mode: u8,
+    enc_mode: i8,
     cli_qp: u32,
     luma_pixels: usize,
     pic: VideoPic,
 ) -> (u8, u8, bool) {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+    let m = enc_mode;
     let is_islice = pic == VideoPic::IntraSlice;
     let pic_pd0_lvl = leaf::set_pic_pd0_lvl_default(
         m,
@@ -572,7 +579,7 @@ pub(crate) fn video_pd0_params(
 #[must_use]
 pub(crate) fn refined_pd0_model(
     arm: ScArm,
-    enc_mode: u8,
+    enc_mode: i8,
     cli_qp: u32,
     luma_pixels: usize,
     pred_depth_only: bool,

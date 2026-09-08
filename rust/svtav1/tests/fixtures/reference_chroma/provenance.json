@@ -1,0 +1,168 @@
+{
+  "mainline_revision": "9292ec8e32bce26f781f277ec8739b53426c4300",
+  "hybrid_revision": "3115c0c1b23e860dfd75c94f6740e0298182dd13",
+  "hybrid_hdr_mode": 0,
+  "input_description": "identity_run diag64; native10 = (sample8 << 2) + ((sample_index * 3) % 4)",
+  "rows": [
+    {
+      "depth": 8,
+      "preset": -1,
+      "qp": 48,
+      "reference": "mainline",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-mainline",
+        "64",
+        "64",
+        "48",
+        "-1",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8-p-1-mainline.obu",
+        "8"
+      ],
+      "input_sha256": "21d928a59895d21829767ba38d623b5333fba6f08e43397f8912e1ac34ba18e7",
+      "output_sha256": "b50a0a7e5cfe192393112869eabeb446cb8ddeede16e2048af22361367aa6ff8",
+      "bytes": 76,
+      "app_sha256": "c5fa38bc5297d1181be8968c8d62ecba7cb3a5e44829b8ee3288cafc49860657"
+    },
+    {
+      "depth": 8,
+      "preset": -1,
+      "qp": 48,
+      "reference": "hybrid",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-hybrid-nowrap",
+        "64",
+        "64",
+        "48",
+        "-1",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8-p-1-hybrid.obu",
+        "8"
+      ],
+      "input_sha256": "21d928a59895d21829767ba38d623b5333fba6f08e43397f8912e1ac34ba18e7",
+      "output_sha256": "b50a0a7e5cfe192393112869eabeb446cb8ddeede16e2048af22361367aa6ff8",
+      "bytes": 76,
+      "app_sha256": "985945f0b9097fc1bb96e9e6e27c29224c888a58418ca40936d8cb0ee32ab468"
+    },
+    {
+      "depth": 8,
+      "preset": 0,
+      "qp": 48,
+      "reference": "mainline",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-mainline",
+        "64",
+        "64",
+        "48",
+        "0",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8-p0-mainline.obu",
+        "8"
+      ],
+      "input_sha256": "21d928a59895d21829767ba38d623b5333fba6f08e43397f8912e1ac34ba18e7",
+      "output_sha256": "01bc386159a1f08988b619ddf714d43807957fec2e9b38c419f96ae593b7cbce",
+      "bytes": 72,
+      "app_sha256": "c5fa38bc5297d1181be8968c8d62ecba7cb3a5e44829b8ee3288cafc49860657"
+    },
+    {
+      "depth": 8,
+      "preset": 0,
+      "qp": 48,
+      "reference": "hybrid",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-hybrid-nowrap",
+        "64",
+        "64",
+        "48",
+        "0",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-8-p0-hybrid.obu",
+        "8"
+      ],
+      "input_sha256": "21d928a59895d21829767ba38d623b5333fba6f08e43397f8912e1ac34ba18e7",
+      "output_sha256": "6cd32ff4586c3a2037014960fedb6b06cb20bdeecbfe356c4ecd8cbbfdd9434c",
+      "bytes": 71,
+      "app_sha256": "985945f0b9097fc1bb96e9e6e27c29224c888a58418ca40936d8cb0ee32ab468"
+    },
+    {
+      "depth": 10,
+      "preset": -1,
+      "qp": 48,
+      "reference": "mainline",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-mainline",
+        "64",
+        "64",
+        "48",
+        "-1",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10-p-1-mainline.obu",
+        "10"
+      ],
+      "input_sha256": "0719969664c7adc01fbe2aaecbb4d0b1d471be015946c5573bc67eb8cfd25ce7",
+      "output_sha256": "7522bb407b6414f5b3ef3c3379c445763a65b95b98ebb3a5574e1c7eb07d3b0a",
+      "bytes": 72,
+      "app_sha256": "c5fa38bc5297d1181be8968c8d62ecba7cb3a5e44829b8ee3288cafc49860657"
+    },
+    {
+      "depth": 10,
+      "preset": -1,
+      "qp": 48,
+      "reference": "hybrid",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-hybrid-nowrap",
+        "64",
+        "64",
+        "48",
+        "-1",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10-p-1-hybrid.obu",
+        "10"
+      ],
+      "input_sha256": "0719969664c7adc01fbe2aaecbb4d0b1d471be015946c5573bc67eb8cfd25ce7",
+      "output_sha256": "7522bb407b6414f5b3ef3c3379c445763a65b95b98ebb3a5574e1c7eb07d3b0a",
+      "bytes": 72,
+      "app_sha256": "985945f0b9097fc1bb96e9e6e27c29224c888a58418ca40936d8cb0ee32ab468"
+    },
+    {
+      "depth": 10,
+      "preset": 0,
+      "qp": 48,
+      "reference": "mainline",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-mainline",
+        "64",
+        "64",
+        "48",
+        "0",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10-p0-mainline.obu",
+        "10"
+      ],
+      "input_sha256": "0719969664c7adc01fbe2aaecbb4d0b1d471be015946c5573bc67eb8cfd25ce7",
+      "output_sha256": "2e112ab6370462328db8624e16891104dd1d4097e1d2979eb76ee59147ea0bf2",
+      "bytes": 74,
+      "app_sha256": "c5fa38bc5297d1181be8968c8d62ecba7cb3a5e44829b8ee3288cafc49860657"
+    },
+    {
+      "depth": 10,
+      "preset": 0,
+      "qp": 48,
+      "reference": "hybrid",
+      "argv": [
+        "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/capture-hybrid-nowrap",
+        "64",
+        "64",
+        "48",
+        "0",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10.yuv",
+        "/home/lilith/work/zen/zenav1-svt/rust/svtav1/tests/fixtures/reference_chroma/diag64-10-p0-hybrid.obu",
+        "10"
+      ],
+      "input_sha256": "0719969664c7adc01fbe2aaecbb4d0b1d471be015946c5573bc67eb8cfd25ce7",
+      "output_sha256": "18cca72ca10db59e9f2a59a419c69ade6261590377d005471456c932ca966e5d",
+      "bytes": 74,
+      "app_sha256": "985945f0b9097fc1bb96e9e6e27c29224c888a58418ca40936d8cb0ee32ab468"
+    }
+  ]
+}

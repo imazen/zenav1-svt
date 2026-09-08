@@ -126,7 +126,7 @@ pub(crate) use commit::*;
 // `pub(crate)` glob over them would warn (it re-exports nothing), which is the
 // same visibility trap as `build_md_rates` above, seen from the other side.
 use detect::*;
-use overlay::*;
+pub(crate) use overlay::*;
 pub(crate) use predict::*;
 pub use rate_tables::build_md_rates;
 pub(crate) use rate_tables::*;
@@ -294,6 +294,7 @@ pub(crate) fn evaluate_leaf(
         let lf = u64::from(crate::pd0::kf_full_lambda_bd10(
             frame.base_qindex,
             frame.cli_qp,
+            frame.native_preset,
         ));
         // MDS0 fast cost lambda. C's fast loop calls `av1_intra_fast_cost(...,
         // fast_lambda_md[1], satd<<4)`, and the port's `rdcost(λ, rate, satd<<4)`
@@ -403,6 +404,11 @@ pub(crate) fn evaluate_leaf(
     // ALIGNED extent. Byte-neutral on any frame where the two agree — every
     // 64-aligned one.
     let y_geom = UnitGeom {
+        partition: match fx.ibc_gate.partition {
+            6 => svtav1_types::partition::PartitionType::VertA,
+            7 => svtav1_types::partition::PartitionType::VertB,
+            _ => svtav1_types::partition::PartitionType::None,
+        },
         mi_row: abs_y >> 2,
         mi_col: abs_x >> 2,
         bw_px: w,
@@ -905,6 +911,7 @@ pub(crate) fn evaluate_leaf(
             let tx_type = wc.txb_type.first().copied().unwrap_or(0) as usize;
             let qt10 = crate::quant::build_quant_table_bd(frame.base_qindex, frame.bit_depth);
             let out = tx_unit_hbd(
+                frame.coded_lossless,
                 &blk_src10,
                 w,
                 0,

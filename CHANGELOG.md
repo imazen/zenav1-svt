@@ -9,8 +9,39 @@ Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
+### Fixed
+
+- Lossless IntraBC regression checks honor the configured reference decoder outside PATH, request the coded output depth, and report decoder invocation failures separately from pixel mismatches.
+
 ### Added
 
+- PR #20 (`a9eeb58e`): express baseline NEON SAD, sum/SSE and wide SSE through released magetypes 0.9.29 pairwise widening. Preserve strides, tails, accumulation order, the frozen ARM benchmark references and row-packing research. Main's registry-only archmage dependencies remain in place; no throughput gain is claimed. See `rust/benchmarks/arm_pairwise_release_2026-09-08.md`.
+
+- Animated AVIF `AnimationOptions::amve` and `cclv`, including validated ambient illuminance, signed content primaries, optional luminance fields, and metadata on the color track/poster/uncropped secondary. Alpha retains its own metadata. The independent metadata gate now covers 8- and 10-bit output.
+
+- Preserve lossless samples when quantization matrices or variance boost are enabled: use identity matrix weights and restrict per-superblock quantizers to signaled delta-q. Keep the C matrix and variance-planning helpers intact.
+
+- Native 10-bit lossless color, monochrome and animated alpha: wire 4x4 WHT prediction and reconstruction, route high-preset color through native mode decision, and correct the native palette fast-cost lambda. Verify C bytes and decoded source pixels, including low-bit-only inputs and odd tiled frames.
+
+- Support 8-bit lossless screen content at lower presets: retain the full source plane through fixed partition walks so IntraBC can search absolute coordinates. Replace the former preset 0–5 refusal with C-byte regression checks; include screen and repeated-screen sources in the lossless gate.
+
+- Complete 8-bit color lossless partition parity: price 4x4 WHT candidates, run C's unrestricted lossless PD1 search, and adapt lossless transform-type probabilities in the MD context. All 144 lossless gate cases now match C and decode exactly to source; remove all 32 exception pins and add three regression witnesses.
+
+- 8-bit lossless monochrome and animated alpha: reuse 4x4 WHT kernels with per-transform prediction and coefficient contexts; verify decoded luma/alpha against source.
+
+- Native 10-bit monochrome and alpha at every preset: carry native coefficient-sign contexts, honor the signaled edge-filter tool, and preserve VERT_A/B directional neighbor availability in the level re-encode pass. Mode decision still uses the upper eight bits.
+
+- Support partial monochrome superblocks at 8-bit presets 0–5 with square boundary partition search; correct directional neighbor bounds at partial frame edges.
+
+- 8-bit and native 10-bit monochrome animated AVIF APIs with optional alpha and the shared timing, metadata and spatial-property options.
+
+- Independent animated AVIF timing and random-access gate: exact 64-bit timing, color/alpha byte comparisons after seeking and reset, and duration-table boundaries.
+
+- Animated clean-aperture cropping with an uncropped secondary poster sharing encoded color/alpha samples; preserve both posters’ metadata and alpha associations.
+
+- Animated AVIF square-pixel aspect, rotation and mirroring metadata on color tracks and posters, with early validation and independent libavif conformance checks.
+
+- Correct partial-edge chroma reconstruction and pad native 10-bit alpha for odd frame dimensions; add decoder regression witnesses.
 - Recovered the quality-program table/error invariants, post-filter cancellation
   regressions and cancellation latency harness; see the
   [ten-commit audit](rust/docs/quality-program-audit-2026-09-07.md).

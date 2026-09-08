@@ -772,7 +772,7 @@ fn ibc_ctrls_level_table_transcription_lock() {
     }
     // The allintra level derivation (enc_mode_config.c:2344-2371).
     for (preset, level) in [
-        (0u8, 3u8),
+        (0i8, 3u8),
         (1, 4),
         (2, 5),
         (3, 6),

@@ -319,6 +319,7 @@ pub(super) fn txt_search(
                 let out10 = match bd10 {
                     Some(b) => {
                         let o = tx_unit_hbd_screened(
+                            frame.coded_lossless,
                             b.src10,
                             b.src10_stride,
                             b.src10_off,

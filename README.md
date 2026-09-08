@@ -71,7 +71,7 @@ record named:
 | Decode conformance (`aomdec` + `dav1d`), mono / 4:2:0 | `decode_conformance` | **1260** / **1575** streams |
 | Arbitrary dimensions: panic-free + decodable, every preset | `arbitrary_size_robustness` | **128/128** (0 refused) |
 | Regression spot-check (one cell per bug ever fixed) | `regression_spotcheck` | **104/104** |
-| Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **112/144** byte-identical, +32 pinned, 144/144 lossless (local 2026-08-28; CI runs the 72-cell subset) |
+| Coded-lossless (QP 0): bytes vs C AND `aomdec` output == source | `lossless_gate` | **240/240** byte-identical and source-exact, including screen content, no pins (local 2026-09-07; CI deferred) |
 
 **Inter / video mode (CI, every push).** The inter path is byte-gated but the
 shipped `EncodePipeline` still refuses non-key frames — the gates drive it
@@ -122,16 +122,20 @@ matches the encoder's own reconstruction byte-for-byte. Known open gaps are
 tracked, not hidden — the pinned-cell maps live in `rust/benchmarks/` and the
 port maps in `rust/docs/`.
 
-**Envelope:** 8- and 10-bit, 4:2:0 (and luma-only/monochrome), single frame.
-4:4:4 / 4:2:2 / 12-bit are **not port gaps** — C SVT-AV1 v4.2.0 itself rejects
-them at init (`enc_settings.c:460` permits only 8/10-bit; `:470` "Only support
-420 now"), so the port already matches C's shipping *format* envelope exactly;
-the 422/444/12-bit code in the C tree is dead-gated behind those lines. **QP 0
-(coded-lossless)** is implemented on the 8-bit 4:2:0 still path (issue #5):
-TX_4X4 Walsh-Hadamard txbs, no in-loop filters, byte-identical to C at presets
-4–13 and lossless under `aomdec` at every preset (`rust/tools/lossless_gate.sh`);
-presets 0–3 are pinned byte-diverging (lossless in both encoders). 10-bit, mono,
-fork-mode, screen-content and superres at QP 0 are refused with a typed error.
+**Envelope:** 8- and 10-bit, 4:2:0 and monochrome, all-intra encoding.
+C SVT-AV1 v4.2.0 itself rejects 4:4:4 / 4:2:2 / 12-bit at init
+(`enc_settings.c:460,470`); those formats remain part of the broader animated
+AVIF goal. **QP 0 (coded-lossless)** works for 8-bit and native 10-bit color and monochrome,
+including animation alpha: TX_4X4 Walsh–Hadamard transforms and no in-loop
+filters. Color, including screen content at lower presets, is
+byte-identical to C in the lossless gate with exact source reconstruction
+(`rust/tools/lossless_gate.sh`). Native 10-bit adds 168/168 C-byte color
+comparisons and 336/336 decoded-source comparisons across color and monochrome
+(`rust/tools/native_lossless_gate.py`). Fork-mode and superresolution lossless
+remain refused. At QP 0, quantization matrices use identity weights and
+variance boost cannot signal per-superblock delta-q. These combinations retain
+exact source samples; C's nonidentity lossless matrices are documented in
+`rust/docs/SUSPECTED-C-BUGS.md` (§31).
 **Monochrome** is decode-conformance-validated (aomdec + dav1d accept it, and the
 decoder output matches the encoder's recon bit-for-bit) rather than byte-vs-C —
 C v4.2.0 can't encode mono (`EB_YUV400` is rejected at init), so no C oracle
@@ -150,12 +154,13 @@ separate video-scale future.
 Two envelope details for *consumers*: the 10-bit path is byte-gated internally,
 and the public encode API takes **native 10-bit `&[u16]` input** via
 `try_encode_frame_420_hbd` / `try_encode_frame_hbd` — the low 2 bits reach the
-mode decision, the coded levels, and the deblock/CDEF/Wiener searches
-(`tools/bd10_hbd_src_gate.sh`, 100/100 vs C). Envelope: 64-aligned dims and
-either preset ≥ 9 or a full-RD-capable preset ≤ 8; out-of-envelope configs are
+color mode decision, the coded levels, and the deblock/CDEF/Wiener searches
+(`tools/bd10_hbd_src_gate.sh`, 100/100 vs C). Native color and monochrome support
+partial superblocks at every preset. Monochrome mode decision still uses the
+upper eight bits, while its coded levels retain all ten. Out-of-envelope configs are
 rejected with `UnsupportedConfig`, never silently truncated.
-Non-multiple-of-64 dimensions encode at **preset ≥ 6** (partial superblocks,
-byte-identical); presets 0–5 require multiples of 64.
+Partial-superblock support is shared with the 8-bit path; see the dimension
+gates above for the measured C-byte and decoder-reconstruction coverage.
 
 ## Production API
 
@@ -211,9 +216,17 @@ let obu = p.try_encode_frame_420(&y, &u, &v, /*y stride*/ 128)?;
 defaults. With `avif-container`, `encode_animation_yuv420` accepts 8-bit frames,
 and `encode_animation_yuv420_hbd` accepts native 10-bit `u16` frames with
 `with_bit_depth(10)`. The `_with_options` variants accept `AnimationOptions`
-for repetition, ICC, Exif, XMP, CLLI, MDCV, and premultiplied-alpha association.
-Native 10-bit currently requires 64-aligned dimensions, and alpha requires
-preset 9 or higher. [The animation plan](rust/docs/ANIMATED-AVIF-PLAN.md) lists
+for repetition, ICC, Exif, XMP, CLLI, MDCV, ambient viewing (`amve`), content
+colour volume (`cclv`), square-pixel aspect, cropping, rotation,
+mirroring, and premultiplied-alpha association. `CropRect` uses integer pixel
+coordinates before orientation; the container preserves a full uncropped poster
+with its alpha and metadata, sharing the first frame’s compressed image bytes.
+`encode_animation_mono` and `encode_animation_mono_hbd` accept
+`MonochromeAnimationFrame` without chroma planes, with the same metadata and
+optional alpha. Eight-bit monochrome supports partial superblocks at all presets;
+native monochrome and native alpha also support every preset, with ten-bit
+coded levels and currently eight-bit mode decisions.
+Native 10-bit supports partial frame edges. [The animation plan](rust/docs/ANIMATED-AVIF-PLAN.md) lists
 verification and remaining format, lossless, spatial-property and video work.
 
 Rust paths use the short `svtav1_*` names; the *package* names carry

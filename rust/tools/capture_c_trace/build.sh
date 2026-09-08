@@ -188,6 +188,7 @@ cc -O2 -g -o "$OUT" \
     -Wl,--wrap=svt_aom_intra_fast_cost \
     -Wl,--wrap=svt_aom_inter_fast_cost \
     -Wl,--wrap=svt_aom_update_mi_map \
+    -Wl,--wrap=svt_aom_update_stats \
     -Wl,--wrap=svt_aom_full_loop_uv \
     -Wl,--wrap=svt_aom_get_intra_uv_fast_rate \
     -Wl,--wrap=svt_aom_full_cost \

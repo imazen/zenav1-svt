@@ -291,7 +291,7 @@ std::thread_local! {
 }
 
 /// C `svt_av1_compute_cul_level` (full_loop.c:1356).
-pub(super) fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
+pub(crate) fn compute_cul_level(scan: &[u16], qcoeff: &[i32], eob: u16) -> u8 {
     let mut cul: u32 = 0;
     for c in 0..eob as usize {
         cul += qcoeff[scan[c] as usize].unsigned_abs();
@@ -1206,6 +1206,45 @@ pub(crate) fn predict_unit_hbd(
     dst: &mut [u16],
     bd: u8,
 ) {
+    predict_unit_hbd_partition(
+        recon,
+        stride,
+        abs_x,
+        abs_y,
+        w,
+        h,
+        mode,
+        delta,
+        fi_mode,
+        geom,
+        edge_filter,
+        filt_type,
+        dst,
+        bd,
+        geom.partition,
+    );
+}
+
+/// Native post-pass prediction carries the coded parent partition: VERT_A/B
+/// change top-right and bottom-left availability for their square children.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_unit_hbd_partition(
+    recon: &[u16],
+    stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    w: usize,
+    h: usize,
+    mode: u8,
+    delta: i8,
+    fi_mode: u8,
+    geom: &UnitGeom,
+    edge_filter: bool,
+    filt_type: i32,
+    dst: &mut [u16],
+    bd: u8,
+    partition: svtav1_types::partition::PartitionType,
+) {
     use svtav1_dsp::hbd as hp;
     // Directional: modes D45..D203 (3..=8) OR V/H with a nonzero angle delta.
     // Mirrors the u8 `predict_unit` directional arm: same DrGeom, routed to the
@@ -1236,7 +1275,7 @@ pub(crate) fn predict_unit_hbd(
             p_angle,
             edge_filter,
             filt_type,
-            svtav1_types::partition::PartitionType::None,
+            partition,
             dst,
             bd,
         );
@@ -1387,6 +1426,7 @@ pub(super) struct Bd10Rd {
 /// rate_est_level 0) and, when `rd` is set, also the coeff-rate contexts.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tx_unit_hbd(
+    coded_lossless: bool,
     src: &[u16],
     src_stride: usize,
     src_off: usize,
@@ -1411,6 +1451,7 @@ pub(crate) fn tx_unit_hbd(
     rd: Option<&TxRdArgs>,
 ) -> TxUnitOutHbd {
     tx_unit_hbd_screened(
+        coded_lossless,
         src,
         src_stride,
         src_off,
@@ -1449,6 +1490,7 @@ pub(crate) fn tx_unit_hbd(
 /// screens here first and only computes the u8 unit for admitted trials.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tx_unit_hbd_screened(
+    coded_lossless: bool,
     src: &[u16],
     src_stride: usize,
     src_off: usize,
@@ -1492,14 +1534,27 @@ pub(super) fn tx_unit_hbd_screened(
         }
     }
     let mut coeffs = vec![0i32; n];
-    let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        &residual,
-        &mut coeffs,
-        w,
-        rs_tx_size(w, h),
-        rs_tx_type,
-    );
-    debug_assert!(ok, "bd10 fwd txfm {w}x{h} type {tx_type}");
+    let lossless_wht = coded_lossless && w == 4 && h == 4;
+    if lossless_wht {
+        debug_assert_eq!(tx_type, cc::DCT_DCT);
+        let res: [i16; 16] = core::array::from_fn(|i| residual[i] as i16);
+        let mut wht = [0i32; 16];
+        svtav1_dsp::fwd_txfm::fwht4x4(&res, &mut wht, 4);
+        for r in 0..4 {
+            for c in 0..4 {
+                coeffs[c * 4 + r] = wht[r * 4 + c];
+            }
+        }
+    } else {
+        let ok = svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            &residual,
+            &mut coeffs,
+            w,
+            rs_tx_size(w, h),
+            rs_tx_type,
+        );
+        debug_assert!(ok, "bd10 fwd txfm {w}x{h} type {tx_type}");
+    }
 
     // C's SATD early exit, at C's position — see [`tx_unit_screened`]'s
     // comment at the same point in the u8 pipeline.
@@ -1563,7 +1618,7 @@ pub(super) fn tx_unit_hbd_screened(
     } else {
         None
     };
-    let eob = if do_rdoq {
+    let eob = if do_rdoq && !coded_lossless {
         let mut e = match qm {
             Some((wt, iwt)) => crate::qm::quantize_fp_hbd_qm(
                 &packed,
@@ -1644,21 +1699,34 @@ pub(super) fn tx_unit_hbd_screened(
         for r in 0..ph {
             dq_full[r * w..r * w + pw].copy_from_slice(&dqcoeff[r * pw..(r + 1) * pw]);
         }
-        let mut inv = vec![0i32; n];
-        let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(
-            &dq_full,
-            &mut inv,
-            w,
-            rs_tx_size(w, h),
-            rs_tx_type,
-            bd,
-        );
-        debug_assert!(ok, "bd10 inv txfm {w}x{h} type {tx_type}");
-        let maxv = (1i32 << bd) - 1;
-        for r in 0..h {
-            let prow = pred_off + r * pred_stride;
-            for c in 0..w {
-                recon[r * w + c] = (pred[prow + c] as i32 + inv[r * w + c]).clamp(0, maxv) as u16;
+        if lossless_wht {
+            // C forces the full inverse when prediction and output differ.
+            svtav1_dsp::inv_txfm::highbd_iwht4x4_16_add(
+                &dq_full,
+                &pred[pred_off..],
+                pred_stride,
+                &mut recon,
+                w,
+                bd,
+            );
+        } else {
+            let mut inv = vec![0i32; n];
+            let ok = svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(
+                &dq_full,
+                &mut inv,
+                w,
+                rs_tx_size(w, h),
+                rs_tx_type,
+                bd,
+            );
+            debug_assert!(ok, "bd10 inv txfm {w}x{h} type {tx_type}");
+            let maxv = (1i32 << bd) - 1;
+            for r in 0..h {
+                let prow = pred_off + r * pred_stride;
+                for c in 0..w {
+                    recon[r * w + c] =
+                        (pred[prow + c] as i32 + inv[r * w + c]).clamp(0, maxv) as u16;
+                }
             }
         }
     } else {

@@ -160,7 +160,26 @@ pub(super) fn run_mds1(
         // but keeping it keeps the bd8 expression untouched and the two
         // domains directly comparable under SVTAV1_CANDDBG.
         let out10 = bd10_rd.as_ref().map(|b| {
+            if frame.coded_lossless && w == 8 && h == 8 {
+                return lossless_mds1_txbs_hbd(
+                    fx,
+                    b,
+                    y_stride,
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    cand,
+                    intra_dir,
+                    txb_skip_ctx,
+                    dc_sign_ctx,
+                    &y_geom,
+                    filt_type_y,
+                    &aligned_dims,
+                );
+            }
             tx_unit_hbd(
+                frame.coded_lossless,
                 &b.y_src10,
                 w,
                 0,
@@ -211,7 +230,7 @@ pub(super) fn run_mds1(
         // `!(is_inter_tx && skip)` gate) — svt_aom_full_cost prices exactly
         // that pair at MDS1 too.
         let coeff_rate = if cand.is_inter() {
-            let vartx_bits = if has && block_signals_txsize(w, h) {
+            let vartx_bits = if has && block_signals_txsize(w, h) && !frame.coded_lossless {
                 crate::vartx::tx_size_bits_vartx(
                     &rates.txfm_partition_fac_bits,
                     fx.ectx.txfm_above_span(abs_x, w),
@@ -385,6 +404,135 @@ fn lossless_mds1_txbs(
         }
     }
     TxUnitOut {
+        eob: eob_total.min(u32::from(u16::MAX)) as u16,
+        qcoeff: Vec::new(),
+        recon: Vec::new(),
+        dist: dist_total,
+        bits: bits_total as i32,
+        cul: 0,
+    }
+}
+
+// Native counterpart: prediction and coefficient contexts advance after each WHT.
+#[allow(clippy::too_many_arguments)]
+fn lossless_mds1_txbs_hbd(
+    fx: &FunnelCtx<'_>,
+    b: &Bd10Rd,
+    y_stride: usize,
+    abs_x: usize,
+    abs_y: usize,
+    w: usize,
+    h: usize,
+    cand: &Cand,
+    intra_dir: usize,
+    blk_txb_skip_ctx: usize,
+    blk_dc_sign_ctx: usize,
+    y_geom: &UnitGeom,
+    filt_type_y: i32,
+    aligned_dims: &crate::frame_geom::FrameDims,
+) -> TxUnitOutHbd {
+    let frame = fx.frame;
+    let rates = fx.rates;
+    let cfg = frame.cfg;
+    let (txw, txh) = txb_dims_at_depth(w, h, 1);
+    let cols = w / txw;
+    let txbs = cols * (h / txh);
+    let mut loc_above = fx.ectx.above_coeff_span(abs_x, w).to_vec();
+    let mut loc_left = fx.ectx.left_coeff_span(abs_y, h).to_vec();
+    let mut dep_recon = vec![0u16; w * h];
+    let mut eob_total: u32 = 0;
+    let mut bits_total: i64 = 0;
+    let mut dist_total: u64 = 0;
+    for txb in 0..txbs {
+        let (tx_x, tx_y) = ((txb % cols) * txw, (txb / cols) * txh);
+        let mut txb_pred = vec![0u16; txw * txh];
+        if cand.palette.is_some() || cand.is_inter() {
+            for r in 0..txh {
+                let src0 = (tx_y + r) * w + tx_x;
+                txb_pred[r * txw..(r + 1) * txw].copy_from_slice(&cand.pred10[src0..src0 + txw]);
+            }
+        } else {
+            predict_unit_overlay_hbd(
+                fx.y_recon10
+                    .as_deref()
+                    .expect("native lossless reconstruction"),
+                y_stride,
+                abs_x,
+                abs_y,
+                &dep_recon,
+                w,
+                h,
+                tx_x,
+                tx_y,
+                txw,
+                txh,
+                cand.mode,
+                cand.delta,
+                cand.fi,
+                y_geom,
+                cfg.edge_filter,
+                filt_type_y,
+                &mut txb_pred,
+                b.bd,
+            );
+        }
+        let (tsc, dsc) = if cfg.real_coeff_ctx {
+            txb_ctx_from_spans(&loc_above, &loc_left, tx_x, tx_y, txw, txh, false)
+        } else {
+            (blk_txb_skip_ctx, blk_dc_sign_ctx)
+        };
+        let txb_crop =
+            crate::frame_geom::cropped_tx_dims(aligned_dims, abs_x + tx_x, abs_y + tx_y, txw, txh);
+        let out = tx_unit_hbd(
+            true,
+            &b.y_src10,
+            w,
+            tx_y * w + tx_x,
+            &txb_pred,
+            txw,
+            0,
+            txw,
+            txh,
+            cc::DCT_DCT,
+            0,
+            tsc,
+            dsc,
+            &b.qt,
+            frame.rdoq_level,
+            b.lambda,
+            frame.sharpness,
+            frame.rdoq_allintra_rd_mult,
+            rates,
+            false,
+            b.bd,
+            b.qt.qm_level,
+            Some(&TxRdArgs {
+                spatial_dist: cfg.spatial_sse_mds1,
+                intra_dir,
+                coeff_rate_est_lvl: cfg.coeff_rate_est_lvl,
+                tx_bias: frame.tx_bias,
+                crop: txb_crop,
+            }),
+        );
+        eob_total += u32::from(out.eob);
+        bits_total += i64::from(out.bits);
+        dist_total += out.dist;
+        let a0 = (tx_x / 4).min(loc_above.len());
+        let a1 = (a0 + txw / 4).min(loc_above.len());
+        for v in loc_above[a0..a1].iter_mut() {
+            *v = out.cul;
+        }
+        let l0 = (tx_y / 4).min(loc_left.len());
+        let l1 = (l0 + txh / 4).min(loc_left.len());
+        for v in loc_left[l0..l1].iter_mut() {
+            *v = out.cul;
+        }
+        for r in 0..txh {
+            let dst = (tx_y + r) * w + tx_x;
+            dep_recon[dst..dst + txw].copy_from_slice(&out.recon[r * txw..(r + 1) * txw]);
+        }
+    }
+    TxUnitOutHbd {
         eob: eob_total.min(u32::from(u16::MAX)) as u16,
         qcoeff: Vec::new(),
         recon: Vec::new(),

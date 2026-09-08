@@ -2636,6 +2636,14 @@ pub fn filter_intra_edge(p: &mut [u8], start: usize, sz: usize, strength: i32) {
 
 unsafe extern "C" {
     fn ref_sad(w: i32, h: i32, src: *const u8, ss: i32, r: *const u8, rs: i32) -> u32;
+    fn ref_chroma_variance10(
+        pred: *const u16,
+        ps: i32,
+        src: *const u16,
+        ss: i32,
+        w: i32,
+        h: i32,
+    ) -> u32;
     fn ref_variance(
         w: i32,
         h: i32,
@@ -2692,6 +2700,33 @@ pub fn sad(
     };
     assert_ne!(out, 0xFFFF_FFFF, "cref: unsupported SAD size {w}x{h}");
     out
+}
+
+/// The actual sized 10-bit variance used by pristine independent UV search.
+/// Argument order is prediction first, source second (signed rounding matters).
+pub fn chroma_variance10(
+    pred: &[u16],
+    ps: usize,
+    src: &[u16],
+    ss: usize,
+    w: usize,
+    h: usize,
+) -> u32 {
+    assert!(w > 0 && h > 0 && w <= 64 && h <= 64);
+    assert!((h - 1) * ps + w <= pred.len());
+    assert!((h - 1) * ss + w <= src.len());
+    let result = unsafe {
+        ref_chroma_variance10(
+            pred.as_ptr(),
+            ps as i32,
+            src.as_ptr(),
+            ss as i32,
+            w as i32,
+            h as i32,
+        )
+    };
+    assert_ne!(result, u32::MAX, "unsupported chroma variance geometry");
+    result
 }
 
 /// Reference `svt_aom_variance{w}x{h}_c`: returns `(variance, sse)` where

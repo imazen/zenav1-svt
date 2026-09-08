@@ -54,8 +54,8 @@ const SEQ_QP_MOD: u8 = crate::part_arm::SEQ_QP_MOD;
 ///
 /// `enc_mode` must already be [`crate::rate_arm::eff_enc_mode`]-clamped.
 #[must_use]
-pub(crate) fn txs_level(arm: ScArm, enc_mode: u8, is_base: bool, cli_qp: u32) -> u8 {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+pub(crate) fn txs_level(arm: ScArm, enc_mode: i8, is_base: bool, cli_qp: u32) -> u8 {
+    let m = enc_mode;
     match arm {
         // enc_mode_config.c:10017. No qp banding on this arm.
         ScArm::Allintra => {
@@ -90,7 +90,7 @@ pub(crate) fn txs_level(arm: ScArm, enc_mode: u8, is_base: bool, cli_qp: u32) ->
 ///
 /// Allintra: always (`:10025`). Video: `txs_level != 0` (`:9194`).
 #[must_use]
-pub(crate) fn tx_mode_select(arm: ScArm, enc_mode: u8, is_base: bool, cli_qp: u32) -> bool {
+pub(crate) fn tx_mode_select(arm: ScArm, enc_mode: i8, is_base: bool, cli_qp: u32) -> bool {
     match arm {
         ScArm::Allintra => true,
         ScArm::Video { .. } => txs_level(arm, enc_mode, is_base, cli_qp) != 0,
@@ -197,7 +197,7 @@ pub(crate) fn txs_ctrls(level: u8) -> TxsRow {
 /// `_ =>` row encodes the VLPD0 per-SB promotion (`txs_lvl6_gate`), which is
 /// not expressible as a picture-level row. Every non-zero allintra level is
 /// stamped and pinned against the baked value.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_base: bool, cli_qp: u32) {
+pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_base: bool, cli_qp: u32) {
     let lvl = txs_level(arm, enc_mode, is_base, cli_qp);
     if matches!(arm, ScArm::Allintra) && lvl == 0 {
         return;
@@ -228,7 +228,7 @@ mod tests {
     /// no-op by construction, so only the LEVEL is asserted there.
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             for cli_qp in [0u32, 20, 40, 55, 59, 63] {
                 let baked = FunnelCfg::for_preset(preset);
                 let mut walked = baked;

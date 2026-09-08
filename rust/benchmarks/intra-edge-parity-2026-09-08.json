@@ -1,0 +1,80 @@
+{
+  "full": {
+    "cells": 1100,
+    "verdicts": {
+      "IDENTICAL": 1100
+    },
+    "bit_depths": {
+      "8": 1100
+    },
+    "provenance": {
+      "schema": 1,
+      "app": "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/source/Bin/Release/SvtAv1EncApp",
+      "app_sha256": "a6cc889478edebd5cc46f89f888224e4572eb47e9dfb7d2394c25039cacba09f",
+      "artifacts": "/home/lilith/tmp/svt-tracking/zen-edge-hybrid-full/artifacts",
+      "cells": 1100,
+      "scope": "default still CQP 420; no unrecorded coding overrides",
+      "timing_claim": false,
+      "rust_runner": "/home/lilith/work/zen/zenav1-svt/rust/tools/identity_run",
+      "rust_reference": "svt-mainline-4.2.0-9292ec8e32bce26f781f277ec8739b53426c4300",
+      "rust_binary_sha256": "d19274f6b98d1b5e6041d3f4f8ef5307c2437949d46c30dca189ccd605d7e702"
+    }
+  },
+  "research": {
+    "cells": 320,
+    "verdicts": {
+      "IDENTICAL": 320
+    },
+    "bit_depths": {
+      "10": 160,
+      "8": 160
+    },
+    "provenance": {
+      "schema": 1,
+      "app": "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/source/Bin/Release/SvtAv1EncApp",
+      "app_sha256": "a6cc889478edebd5cc46f89f888224e4572eb47e9dfb7d2394c25039cacba09f",
+      "artifacts": "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/research-inputs",
+      "cells": 320,
+      "scope": "default still CQP 420; no unrecorded coding overrides",
+      "timing_claim": false,
+      "rust_runner": "/home/lilith/work/zen/zenav1-svt/rust/tools/identity_run",
+      "rust_reference": "svt-mainline-4.2.0-9292ec8e32bce26f781f277ec8739b53426c4300",
+      "rust_binary_sha256": "d19274f6b98d1b5e6041d3f4f8ef5307c2437949d46c30dca189ccd605d7e702"
+    }
+  },
+  "hybrid_default": {
+    "cells": 1100,
+    "byte_identical": 1100,
+    "pinned_exceptions": 0,
+    "harness_errors": 0
+  },
+  "workspace_tests": 2626,
+  "regression_checks": 136,
+  "static_comparator_tests": 6,
+  "enhancement_geometry_recon_cells": 36,
+  "measured_svt_reconstruction_replays": 20,
+  "measurement_cells": 40,
+  "measurement_rounds": 3,
+  "artifact": {
+    "store_kind": "lan",
+    "bucket": "zentrain",
+    "key": "benchmarks/av1-compare/2026-09-08/intra-edge-corrected/evidence-3a644bc6f4c30fc3da0d3342632cc7a1325ea7695537965159d5ea75dd9197e4.tar.gz",
+    "uri": "s3://zentrain/benchmarks/av1-compare/2026-09-08/intra-edge-corrected/evidence-3a644bc6f4c30fc3da0d3342632cc7a1325ea7695537965159d5ea75dd9197e4.tar.gz",
+    "bytes": 709384601,
+    "sha256": "3a644bc6f4c30fc3da0d3342632cc7a1325ea7695537965159d5ea75dd9197e4",
+    "download_sha256_verified": true,
+    "measured_source_files": {
+      "zenav1-svt": 664,
+      "zenmetrics": 882,
+      "zenav1-aom": 638,
+      "zenrav1e": 175
+    }
+  },
+  "scope": "default8 synthetic+dims under both pinned references; pristine research8/10; two training-source enhanced RD ablation, not full real-image/HDR/video parity or calibrated routing",
+  "decoder_evidence_reuse": {
+    "unique_streams": 846,
+    "identical_to_previously_decoded_mainline_set": true,
+    "prior_evidence": "rust/benchmarks/pristine-reference-wiring-2026-09-08.json",
+    "new_experimental_streams": "verified separately by36 off/on geometry encodes and20 measured-cell reconstruction replays"
+  }
+}

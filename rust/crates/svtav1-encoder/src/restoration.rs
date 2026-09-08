@@ -103,7 +103,7 @@ impl From<crate::port_lr_level::WnFilterCtrlsFull> for WnFilterCtrls {
 /// C `svt_aom_get_wn_filter_level_allintra` + `svt_aom_set_wn_filter_ctrls`
 /// (enc_mode_config.c:1928 / :1758): level 3 for presets <= 3, level 4 for
 /// 4..=6, disabled above.
-pub fn wn_filter_ctrls_allintra(preset: u8) -> WnFilterCtrls {
+pub fn wn_filter_ctrls_allintra(preset: i8) -> WnFilterCtrls {
     if preset <= 3 {
         WnFilterCtrls {
             enabled: true,
@@ -1003,6 +1003,110 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
     bit_depth: u8,
     stop: &dyn enough::Stop,
 ) -> crate::EncodeResult<FrameRestInfo> {
+    search_restoration_unit_size_with_stop(
+        wn_ctrls,
+        sg_ctrls,
+        src_y,
+        src_u,
+        src_v,
+        recon_y,
+        recon_u,
+        recon_v,
+        w,
+        h,
+        has_chroma,
+        rdmult,
+        bit_depth,
+        RESTORATION_UNITSIZE_MAX,
+        stop,
+    )
+    .map(|(info, _, _)| info)
+}
+
+/// Opt-in AOM-style descending restoration-unit search. The native path still
+/// evaluates only 256. Candidate filters and costs use SVT's own search, including
+/// its native-depth SSE and lambda; AOM's normalized cost is not transplanted.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn search_restoration_still_configured_with_stop<P: LrPixel>(
+    wn_ctrls: &WnFilterCtrls,
+    sg_ctrls: &crate::port_lr_level::SgFilterCtrls,
+    src_y: &[P],
+    src_u: &[P],
+    src_v: &[P],
+    recon_y: &[P],
+    recon_u: &[P],
+    recon_v: &[P],
+    w: usize,
+    h: usize,
+    has_chroma: bool,
+    rdmult: i64,
+    bit_depth: u8,
+    search_sizes: bool,
+    sb_size: usize,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<FrameRestInfo> {
+    if !search_sizes {
+        return search_restoration_still_bd_with_stop(
+            wn_ctrls, sg_ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma,
+            rdmult, bit_depth, stop,
+        );
+    }
+    debug_assert!(matches!(sb_size, 64 | 128));
+    let mut best: Option<(FrameRestInfo, f64)> = None;
+    for size in [256, 128, 64] {
+        if size < sb_size as i32 {
+            continue;
+        }
+        let (info, bits, sse) = search_restoration_unit_size_with_stop(
+            wn_ctrls, sg_ctrls, src_y, src_u, src_v, recon_y, recon_u, recon_v, w, h, has_chroma,
+            rdmult, bit_depth, size, stop,
+        )?;
+        // Frame type is a fixed two bits per plane. Unit-size and UV-shift
+        // bits exist only when the corresponding planes restore (lr_params).
+        let header_bits = restoration_header_bits(&info, has_chroma, sb_size);
+        let rate = bits + (header_bits << AV1_PROB_COST_SHIFT);
+        let cost = rdcost_dbl(rdmult, rate >> 4, sse);
+        if best.as_ref().is_none_or(|(_, old)| cost < *old) {
+            best = Some((info, cost));
+        }
+    }
+    Ok(best.expect("256 is legal for both AV1 superblock sizes").0)
+}
+
+fn restoration_header_bits(info: &FrameRestInfo, has_chroma: bool, sb_size: usize) -> i64 {
+    let mut bits = if has_chroma { 6 } else { 2 };
+    if info.any_non_none() {
+        bits += i64::from(sb_size == 64);
+        bits += i64::from(info.planes[0].unit_size > 64);
+    }
+    if has_chroma
+        && info.planes[1..]
+            .iter()
+            .any(|p| p.frame_rtype != RESTORE_NONE)
+    {
+        bits += 1;
+    }
+    bits
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_restoration_unit_size_with_stop<P: LrPixel>(
+    wn_ctrls: &WnFilterCtrls,
+    sg_ctrls: &crate::port_lr_level::SgFilterCtrls,
+    src_y: &[P],
+    src_u: &[P],
+    src_v: &[P],
+    recon_y: &[P],
+    recon_u: &[P],
+    recon_v: &[P],
+    w: usize,
+    h: usize,
+    has_chroma: bool,
+    rdmult: i64,
+    bit_depth: u8,
+    unit_size: i32,
+    stop: &dyn enough::Stop,
+) -> crate::EncodeResult<(FrameRestInfo, i64, i64)> {
     crate::stop_check(stop)?;
     debug_assert!(wn_ctrls.enabled || sg_ctrls.enabled);
     let wn_luma = if wn_ctrls.filter_tap_lvl == 1 {
@@ -1014,8 +1118,7 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
     let sgrproj_restore_cost = sgrproj_restore_cost();
     let switchable_restore_cost = switchable_restore_cost();
 
-    // set_restoration_unit_size (pcs.c:30): 256 for all planes (s = 0).
-    let unit_size = RESTORATION_UNITSIZE_MAX;
+    // A single size is shared across planes (UV shift 0). Native C uses 256.
 
     // C `plane_end` (restoration_pick.c:1573): PLANE_V iff EITHER filter is
     // enabled with chroma. `has_chroma` is the port's monochrome guard.
@@ -1027,6 +1130,8 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
         0
     };
     let mut planes = alloc::vec::Vec::new();
+    let mut total_bits = 0i64;
+    let mut total_sse = 0i64;
 
     for plane in 0..3usize {
         crate::stop_check(stop)?;
@@ -1288,6 +1393,8 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
         let mut best_rtype_sgr = alloc::vec![RESTORE_NONE; nunits];
 
         let mut best_cost = 0.0f64;
+        let mut best_bits = 0i64;
+        let mut best_sse = 0i64;
         let mut best_rtype = RESTORE_NONE;
         let mut best_picks = alloc::vec![RESTORE_NONE; nunits];
 
@@ -1416,11 +1523,15 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
             lr_dbg!("LRFINISH plane={plane} r={r} bits={bits_frame} sse={sse_frame} cost={cost}");
             if r == RESTORE_NONE || cost < best_cost {
                 best_cost = cost;
+                best_bits = bits_frame;
+                best_sse = sse_frame;
                 best_rtype = r;
                 best_picks = picks;
             }
         }
 
+        total_bits += best_bits;
+        total_sse += best_sse;
         let frame_rtype = best_rtype;
         let mut out_units: alloc::vec::Vec<RestUnit> = svtav1_types::try_with_capacity![nunits]?;
         for (idx, u) in units.iter().enumerate() {
@@ -1445,7 +1556,7 @@ pub(crate) fn search_restoration_still_bd_with_stop<P: LrPixel>(
         });
     }
 
-    Ok(FrameRestInfo { planes })
+    Ok((FrameRestInfo { planes }, total_bits, total_sse))
 }
 
 /// Build the stripe-boundary line buffers exactly like the C pipeline:

@@ -66,8 +66,8 @@ use crate::sc_detect::ScArm;
 /// `pcs->pic_filter_intra_level` for this arm. `enc_mode` must already be
 /// [`crate::rate_arm::eff_enc_mode`]-clamped.
 #[must_use]
-pub(crate) fn filter_intra_level(arm: ScArm, enc_mode: u8) -> u8 {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+pub(crate) fn filter_intra_level(arm: ScArm, enc_mode: i8) -> u8 {
+    let m = enc_mode;
     match arm {
         // C `get_filter_intra_level_allintra` (:8790): 1 at M0, 2 through M6,
         // 0 above. Not ported as a standalone function anywhere else — the
@@ -111,12 +111,12 @@ pub(crate) fn filter_intra_ctrls(level: u8) -> (bool, u8) {
 #[must_use]
 pub(crate) fn intra_mode_levels(
     arm: ScArm,
-    enc_mode: u8,
+    enc_mode: i8,
     is_islice: bool,
     is_base: bool,
     transition_present: bool,
 ) -> (u8, u8) {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+    let m = enc_mode;
     match arm {
         ScArm::Allintra => {
             let (lvl, ang) = leaf::get_intra_mode_levels_allintra(m);
@@ -194,7 +194,7 @@ pub(crate) fn intra_ctrls(level: u8) -> (u8, u8, bool, bool) {
 /// funnel's prediction read this one function, because the bug this fixes was
 /// exactly the two disagreeing.
 #[must_use]
-pub(crate) fn intra_edge_filter(arm: ScArm, enc_mode: u8) -> bool {
+pub(crate) fn intra_edge_filter(arm: ScArm, enc_mode: i8) -> bool {
     match arm {
         ScArm::Video { .. } => true,
         ScArm::Allintra => {
@@ -215,7 +215,7 @@ pub(crate) fn intra_edge_filter(arm: ScArm, enc_mode: u8) -> bool {
 /// domain. The video arm (`:9161-9165`) is `enc_mode <= ENC_M2 ? 1 : 3`, and
 /// level 1 is `SSSE_MDS1`: spatial SSE from MD stage 1 onward.
 #[must_use]
-pub(crate) fn spatial_sse_full_loop_level(arm: ScArm, enc_mode: u8) -> u8 {
+pub(crate) fn spatial_sse_full_loop_level(arm: ScArm, enc_mode: i8) -> u8 {
     match arm {
         ScArm::Allintra => 3,
         ScArm::Video { .. } => {
@@ -233,7 +233,7 @@ pub(crate) fn spatial_sse_full_loop_level(arm: ScArm, enc_mode: u8) -> u8 {
 ///
 /// On the allintra arm this is a no-op by construction (the pin below proves
 /// it entry-for-entry); on the video arm it is the whole point.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_islice: bool, is_base: bool) {
+pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_islice: bool, is_base: bool) {
     let (fi_on, fi_max) = filter_intra_ctrls(filter_intra_level(arm, enc_mode));
     cfg.filter_intra = fi_on;
     cfg.fi_max = fi_max;
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn spatial_sse_ladder_forks_only_at_m0_to_m2() {
         let vid = ScArm::Video { is_islice: true };
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let eff_a = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);
             let eff_v = crate::rate_arm::eff_enc_mode(vid, preset);
             assert_eq!(
@@ -299,13 +299,13 @@ mod tests {
         }
         // The arms DISAGREE at M0..M2 and AGREE from M3 — the shape the
         // 128x128 video matrix measured (p0/p1/p2 diff, p3+ identical).
-        for preset in 0u8..=2 {
+        for preset in 0i8..=2 {
             assert_ne!(
                 spatial_sse_full_loop_level(ScArm::Allintra, preset),
                 spatial_sse_full_loop_level(vid, preset)
             );
         }
-        for preset in 3u8..=8 {
+        for preset in 3i8..=8 {
             assert_eq!(
                 spatial_sse_full_loop_level(ScArm::Allintra, preset),
                 spatial_sse_full_loop_level(vid, preset)
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let baked = FunnelCfg::for_preset(preset);
             let mut walked = baked;
             let eff = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);

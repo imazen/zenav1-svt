@@ -260,6 +260,45 @@ pub(crate) fn frame_lambda_weight(picture_qp: u32, tune_iq: bool, extended_crf_b
     ladder + extended_crf_bump
 }
 
+/// Research mode omits the QP ladder for tune 0–2 in both C derivation arms
+/// (`enc_mode_config.c:9450,10101`). IQ and the extended-CRF bump remain live.
+pub(crate) fn frame_lambda_weight_for_preset(
+    preset: i8,
+    picture_qp: u32,
+    tune_iq: bool,
+    extended_crf_bump: u32,
+) -> u32 {
+    if preset <= -1 && !tune_iq {
+        extended_crf_bump
+    } else {
+        frame_lambda_weight(picture_qp, tune_iq, extended_crf_bump)
+    }
+}
+
+#[cfg(test)]
+mod research_lambda_tests {
+    use super::*;
+
+    #[test]
+    fn research_omits_normal_weight_but_preserves_iq_and_extended_crf() {
+        for qp in 0..=63 {
+            for bump in [0, 28, 784] {
+                assert_eq!(frame_lambda_weight_for_preset(-1, qp, false, bump), bump);
+                assert_eq!(
+                    frame_lambda_weight_for_preset(-1, qp, true, bump),
+                    crate::tune::iq_lambda_weight(qp) + bump
+                );
+                for preset in 0..=13 {
+                    assert_eq!(
+                        frame_lambda_weight_for_preset(preset, qp, false, bump),
+                        frame_lambda_weight(qp, false, bump)
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// [`kf_full_lambda_8bit`] with the frame `lambda_weight` supplied directly
 /// (already resolved by [`frame_lambda_weight`]) instead of re-derived from a
 /// qp. Used wherever the caller knows the frame weight — which is the only way
@@ -439,13 +478,13 @@ pub(crate) fn inter_full_lambda_8bit(
 /// - then the same `lambda_weight` ladder and `full_lambda_md[1] *= 16`
 ///   (md_process.c:753). Intra-scaling (temporal_layer>0) and scale_factor
 ///   (128) are no-ops on the KF still path — same as the bd8 builder.
-pub(crate) fn kf_full_lambda_bd10(qindex: u8, picture_qp: u32) -> u32 {
+pub(crate) fn kf_full_lambda_bd10(qindex: u8, picture_qp: u32, preset: i8) -> u32 {
     let q = crate::bd10::dc_qlookup_10(qindex) as i64;
     let mut rdmult = ((3.3 + 0.0015 * q as f64) * q as f64 * q as f64) as i64;
     rdmult = (rdmult + 8) >> 4; // ROUND_POWER_OF_TWO(_, 4) — bd10
     rdmult = (rdmult * 128) >> 7; // rd_frame_type_factor[1][KF_UPDATE] = 128
     let mut lambda = rdmult as u32;
-    let lambda_weight: u32 = frame_lambda_weight(picture_qp, false, 0);
+    let lambda_weight: u32 = frame_lambda_weight_for_preset(preset, picture_qp, false, 0);
     if lambda_weight != 0 {
         lambda = ((lambda as u64 * lambda_weight as u64) >> 7) as u32;
     }
@@ -1296,13 +1335,26 @@ fn tx_quant_core(
     let (tx_size, c_tx_size) = pd0_tx_size(sq_size, tx_h);
 
     let mut coeffs = vec![0i32; sq_size * tx_h];
-    svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-        residual,
-        &mut coeffs,
-        sq_size,
-        tx_size,
-        TxType::DctDct,
-    );
+    if qindex_off == 0 && sq_size == 4 && tx_h == 4 {
+        // C svt_av1_estimate_transform's lossless TX_4X4 branch, including
+        // its transposed store. Larger PD0 transforms still use DCT.
+        let res: [i16; 16] = core::array::from_fn(|i| residual[i] as i16);
+        let mut wht = [0i32; 16];
+        svtav1_dsp::fwd_txfm::fwht4x4(&res, &mut wht, 4);
+        for r in 0..4 {
+            for c in 0..4 {
+                coeffs[c * 4 + r] = wht[r * 4 + c];
+            }
+        }
+    } else {
+        svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
+            residual,
+            &mut coeffs,
+            sq_size,
+            tx_size,
+            TxType::DctDct,
+        );
+    }
 
     // 64-dim fold + pack (svt_handle_transform64x64 / 64x32 / 32x64).
     let mut three_quad_energy = 0u64;
@@ -1736,15 +1788,12 @@ pub enum Pd0Tree {
     Off,
 }
 
-/// The partition tree of a CODED-LOSSLESS coding unit (issue #5): C forces
-/// `max_sq_size = MIN(max_sq_size, 8)` when `mimic_only_tx_4x4` is set
-/// (enc_dec_process.c:1492-1493) and `min_sq_size` is 8 wherever 4x4 is
-/// disallowed (`svt_aom_get_disallow_4x4_default`: every preset above M2, and
-/// this port reaches the lossless envelope only there), so every square above
-/// 8x8 is never tested — only SPLIT — and every leaf is an 8x8 PARTITION_NONE
-/// (NSQ is off at these presets, `nsq_search_level = 0`). Quadrants whose
-/// origin lies at or past the ALIGNED frame extent are `Off`, exactly as
-/// `Pd0Eval::tree` produces them on a partial superblock.
+/// Fixed 8x8 leaf tree for lossless coding when 4x4 blocks are disallowed
+/// (allintra color presets >= 4), also used by the monochrome lossless path.
+/// C caps square candidates at 8x8 when `mimic_only_tx_4x4` is set
+/// (enc_dec_process.c:1492). At color presets 0..3, the pipeline instead
+/// runs PD0 and unrestricted PD1 to choose between 8x8 and 4x4 blocks.
+/// Quadrants outside the aligned frame extent are `Off`.
 pub fn lossless_tree(
     x0: usize,
     y0: usize,
@@ -3721,7 +3770,7 @@ fn pd0_frame_lambda_and_min_sq(
 /// on the allintra still path, `ctx->disallow_4x4 ? 8 : 4`); the PD0B
 /// capture rows confirm C's LPD0 evaluates 4x4 blocks at M2/M3.
 #[allow(clippy::too_many_arguments)]
-pub fn pd0_pick_sb_partition_m6_eval(
+pub(crate) fn pd0_pick_sb_partition_m6_eval(
     src: &[u8],
     stride: usize,
     sb_x: usize,

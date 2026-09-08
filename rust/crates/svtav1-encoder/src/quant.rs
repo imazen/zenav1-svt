@@ -1693,7 +1693,7 @@ mod inter_coeff_level_tests {
 
 /// C allintra RDOQ policy (enc_mode_config.c:14931), `OPT_APPROX_COEFF_RATE`
 /// branch: presets <= M5 always level 1; above, by coeff_lvl.
-pub fn rdoq_level_allintra(eff_enc_mode: u8, coeff_lvl: CoeffLvl) -> u8 {
+pub fn rdoq_level_allintra(eff_enc_mode: i8, coeff_lvl: CoeffLvl) -> u8 {
     if eff_enc_mode <= 5 {
         1
     } else {
@@ -1719,6 +1719,8 @@ pub fn rdoq_cutoffs(rdoq_level: u8) -> (u32, u32) {
 
 /// Frame-level C-exact coding-quantizer configuration for the still path.
 pub struct CodingQuantCfg {
+    /// Picture coefficient class shared with research partition search.
+    pub(crate) input_coeff_level: CoeffLvl,
     /// 0 = quantize_b (no RDOQ); >= 1 = quantize_fp + optimize_b.
     pub rdoq_level: u8,
     /// SVT_HDR_MODE: fork behaviors (light-RDOQ) may fire when true.
@@ -1761,6 +1763,7 @@ impl core::fmt::Debug for CodingQuantCfg {
 impl CodingQuantCfg {
     pub fn new(rdoq_level: u8, lambda: u32, base_qindex: u8) -> Self {
         Self {
+            input_coeff_level: CoeffLvl::Normal,
             rdoq_level,
             hdr_fork: false,
             sharpness: 0,

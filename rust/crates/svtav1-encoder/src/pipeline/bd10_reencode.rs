@@ -1,5 +1,7 @@
 //! The 10-bit level re-encode pass, kept beside its pipeline caller.
 
+use super::Bd10CoeffNeighbors;
+
 /// Returns the frame's 10-bit luma recon as an **SB-extent-sized, ALIGNED-
 /// strided** canvas — the same shape the funnel's `tile_frame_recon10` has, and
 /// for the same reason: a boundary leaf may STRADDLE the aligned extent, and
@@ -35,6 +37,7 @@ pub(super) fn bd10_reencode_luma(
     // C `scs->allintra || scs->static_config.rtc` — the RDOQ plane rate
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
+    real_coeff_ctx: bool,
     edge_filter: bool,
     bd: u8,
     qm_level: u8,
@@ -63,11 +66,14 @@ pub(super) fn bd10_reencode_luma(
     // does. (rust/CLAUDE.md: dead-looking translations stay, with the
     // measurement written down.)
     let mut recon10 = svtav1_types::try_vec![(128u16 << (bd - 8)); ext_w * ext_h]?;
+    let mut coeff_neighbors = Bd10CoeffNeighbors::new(w, h)?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
         let tile_mi = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, w, h);
+        coeff_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi);
         bd10_reencode_node(
+            base_qindex == 0,
             sb_size / 4,
             tree,
             sb_col * sb_size,
@@ -81,12 +87,15 @@ pub(super) fn bd10_reencode_luma(
             lambda_bd10,
             allintra_rd_mult,
             &rates,
+            real_coeff_ctx,
+            &mut coeff_neighbors,
             edge_filter,
             w,
             h,
             bd,
             qm_level,
             tile_mi,
+            svtav1_types::partition::PartitionType::None,
         );
     }
     Ok(recon10)
@@ -94,6 +103,7 @@ pub(super) fn bd10_reencode_luma(
 
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_node(
+    coded_lossless: bool,
     // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128) — the intra
     // availability tables index by `mi & (sb_mi_size - 1)` (task #91).
     sb_mi_size: usize,
@@ -111,6 +121,8 @@ fn bd10_reencode_node(
     // weight arm (`crate::quant::PLANE_RD_MULT`). FALSE on a video frame.
     allintra_rd_mult: bool,
     rates: &crate::leaf_funnel::MdRates,
+    real_coeff_ctx: bool,
+    coeff_neighbors: &mut Bd10CoeffNeighbors,
     edge_filter: bool,
     frame_w: usize,
     frame_h: usize,
@@ -119,6 +131,7 @@ fn bd10_reencode_node(
     // ISSUE #18: the tile CONTAINING this superblock, from
     // `TileGrid::tile_mi_for_sb`. Was `TileMi::whole_frame`.
     tile_mi: crate::intra_edge::TileMi,
+    parent_partition: svtav1_types::partition::PartitionType,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -126,6 +139,95 @@ fn bd10_reencode_node(
         Tr::Leaf(d) => {
             let bw = d.width as usize;
             let bh = d.height as usize;
+            if coded_lossless {
+                assert_eq!((bw, bh, d.tx_depth), (8, 8, 1));
+                let geom = crate::leaf_funnel::UnitGeom {
+                    partition: parent_partition,
+                    mi_row: y / 4,
+                    mi_col: x / 4,
+                    bw_px: bw,
+                    bh_px: bh,
+                    sb_mi_size,
+                    ss: 0,
+                    frame_w,
+                    frame_h,
+                    tile: tile_mi,
+                };
+                let mut local = vec![0u16; 64];
+                d.eob = 0;
+                d.qcoeffs.clear();
+                d.txb_qcoeffs.clear();
+                d.txb_eobs.clear();
+                d.txb_tx_types = vec![0; 4];
+                for tx in 0..4 {
+                    let (dx, dy) = ((tx & 1) * 4, (tx >> 1) * 4);
+                    let mut pred = [0u16; 16];
+                    crate::leaf_funnel::predict_unit_overlay_hbd(
+                        recon10,
+                        stride,
+                        x,
+                        y,
+                        &local,
+                        bw,
+                        bh,
+                        dx,
+                        dy,
+                        4,
+                        4,
+                        d.intra_mode,
+                        d.angle_delta,
+                        d.filter_intra_mode,
+                        &geom,
+                        edge_filter,
+                        0,
+                        &mut pred,
+                        bd,
+                    );
+                    let (tsc, dsc) = if real_coeff_ctx {
+                        coeff_neighbors.contexts(x + dx, y + dy, 4, 4)
+                    } else {
+                        (0, 0)
+                    };
+                    let out = crate::leaf_funnel::tx_unit_hbd(
+                        true,
+                        src10,
+                        src_stride,
+                        (y + dy) * src_stride + x + dx,
+                        &pred,
+                        4,
+                        0,
+                        4,
+                        4,
+                        0,
+                        0,
+                        tsc,
+                        dsc,
+                        qt,
+                        0,
+                        lambda,
+                        0,
+                        allintra_rd_mult,
+                        rates,
+                        false,
+                        bd,
+                        qm_level,
+                        None,
+                    );
+                    coeff_neighbors.record(x + dx, y + dy, 4, 4, out.cul);
+                    d.eob += out.eob;
+                    d.txb_eobs.push(out.eob);
+                    d.txb_qcoeffs.push(out.qcoeff);
+                    for r in 0..4 {
+                        local[(dy + r) * 8 + dx..(dy + r) * 8 + dx + 4]
+                            .copy_from_slice(&out.recon[r * 4..r * 4 + 4]);
+                    }
+                }
+                for r in 0..8 {
+                    recon10[(y + r) * stride + x..(y + r) * stride + x + 8]
+                        .copy_from_slice(&local[r * 8..r * 8 + 8]);
+                }
+                return;
+            }
             assert_eq!(
                 d.tx_depth, 0,
                 "bd10 reencode: tx_depth {} not yet ported (DC-only first cell)",
@@ -138,6 +240,7 @@ fn bd10_reencode_node(
             // set, and the gate (`bd10_tree_supported`) admits directional leaves
             // ONLY when edge_filter is false — so 0 is inert here.
             let geom = crate::leaf_funnel::UnitGeom {
+                partition: parent_partition,
                 mi_row: y >> 2,
                 mi_col: x >> 2,
                 bw_px: bw,
@@ -168,7 +271,7 @@ fn bd10_reencode_node(
                 // all, which is why that measurement did not catch this.
                 tile: tile_mi,
             };
-            crate::leaf_funnel::predict_unit_hbd(
+            crate::leaf_funnel::predict_unit_hbd_partition(
                 recon10,
                 stride,
                 x,
@@ -183,10 +286,18 @@ fn bd10_reencode_node(
                 0,
                 &mut pred,
                 bd,
+                parent_partition,
             );
             let src_off = y * src_stride + x;
-            // RDOQ contexts are 0/0 at eff-M9 (rate_est_level 0).
+            // C disables context updates at the faster presets. Otherwise
+            // derive contexts from the native levels committed in decode order.
+            let (txb_skip_ctx, dc_sign_ctx) = if real_coeff_ctx {
+                coeff_neighbors.contexts(x, y, bw, bh)
+            } else {
+                (0, 0)
+            };
             let out = crate::leaf_funnel::tx_unit_hbd(
+                false, // This level-only post-pass currently accepts only lossy depth-0 trees.
                 src10,
                 src_stride,
                 src_off,
@@ -197,8 +308,8 @@ fn bd10_reencode_node(
                 bh,
                 d.tx_type as usize,
                 0, // luma plane
-                0, // txb_skip_ctx
-                0, // dc_sign_ctx
+                txb_skip_ctx,
+                dc_sign_ctx,
                 qt,
                 rdoq_level,
                 lambda,
@@ -227,6 +338,7 @@ fn bd10_reencode_node(
             }
             d.qcoeffs = full;
             d.eob = out.eob;
+            coeff_neighbors.record(x, y, bw, bh, out.cul);
             // Write the 10-bit recon back for neighbour prediction of the next
             // block in decode order.
             //
@@ -274,6 +386,7 @@ fn bd10_reencode_node(
             // `panic!`ed on every one of those shapes.
             let mut recurse = |child: &mut crate::partition::PartitionTree, cx, cy| {
                 bd10_reencode_node(
+                    coded_lossless,
                     sb_mi_size,
                     child,
                     cx,
@@ -287,6 +400,8 @@ fn bd10_reencode_node(
                     lambda,
                     allintra_rd_mult,
                     rates,
+                    real_coeff_ctx,
+                    coeff_neighbors,
                     edge_filter,
                     frame_w,
                     frame_h,
@@ -295,6 +410,11 @@ fn bd10_reencode_node(
                     // Children are inside the same superblock, hence the same
                     // tile (issue #18).
                     tile_mi,
+                    match partition_type {
+                        PT::VertA => svtav1_types::partition::PartitionType::VertA,
+                        PT::VertB => svtav1_types::partition::PartitionType::VertB,
+                        _ => svtav1_types::partition::PartitionType::None,
+                    },
                 );
             };
             match *partition_type {
@@ -537,6 +657,7 @@ fn bd10_reencode_chroma_plane(
     }
     let src_off = cy * cstride + cx;
     let out = crate::leaf_funnel::tx_unit_hbd(
+        false, // This level-only post-pass currently accepts only lossy depth-0 trees.
         src10,
         cstride,
         src_off,
@@ -658,6 +779,7 @@ fn bd10_reencode_chroma_node(
                 )
             });
             let geom = crate::leaf_funnel::UnitGeom {
+                partition: svtav1_types::partition::PartitionType::None,
                 mi_row: cy >> 2,
                 mi_col: cx >> 2,
                 bw_px: cw,

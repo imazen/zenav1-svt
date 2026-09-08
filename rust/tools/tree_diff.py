@@ -9,8 +9,7 @@ Token-frugal contract: bounded output (default 12 flip lines + a 4-line
 summary), no full-tree dumps — pipe-friendly for drill_cell.sh and agents.
 
 Comparable fields: bsize, mode, uv, fi, ady, aduv, txd, cflidx, cflsgn,
-pal (port side has no palette yet -> a C pal>0 row is reported as a
-palette flip, not a field mismatch), and skip (C dumps the all-plane skip
+pal (luma palette size), and skip (C dumps the all-plane skip
 bit; the port dumps yeob/ueob/veob — skip flips only when definite:
 C skip=1 with any port eob>0, or C skip=0 with all port eobs 0).
 `part` is contextual (stamped from the parent split) and compared but
@@ -87,7 +86,7 @@ def main():
     field_counts = {}
     for k in both:
         cf, rf = c[k], r[k]
-        checks = [("bsize", True), ("mode", True), ("uv", True), ("fi", True), ("txd", True)]
+        checks = [("bsize", True), ("mode", True), ("uv", True), ("fi", True), ("txd", True), ("pal", True)]
         # angle deltas: only coded for directional modes (1..=8).
         checks.append(("ady", 1 <= cf.get("mode", 0) <= 8))
         checks.append(("aduv", 1 <= cf.get("uv", 0) <= 8))
@@ -132,7 +131,7 @@ def main():
     for k, cs, ye, ue, ve in skip_flips[:4]:
         print(f"  SKIPFLIP mi={k} C_skip={cs} port eobs y={ye} u={ue} v={ve}")
     if pal_blocks:
-        print(f"  C palette blocks (port codes none): first {pal_blocks[:6]}")
+        print(f"  C palette blocks: first {pal_blocks[:6]}")
     sys.exit(0 if not flips and not only_r and not skip_flips else 1)
 
 

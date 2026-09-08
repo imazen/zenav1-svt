@@ -8,11 +8,41 @@
 //!
 //! Ported from SVT-AV1's enc_mode_config.c.
 
+/// A native preset accepted by the pinned mainline C validator.
+///
+/// Research mode is -1. C's named -2/-3 modes are outside that validator's
+/// supported range; Zen enhancements must use a separate policy coordinate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NativePreset(i8);
+
+impl core::fmt::Display for NativePreset {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl NativePreset {
+    pub const RESEARCH: Self = Self(-1);
+
+    /// Return `None` outside the reference range -1 through 13.
+    pub const fn new(value: i8) -> Option<Self> {
+        if value >= -1 && value <= 13 {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    pub const fn value(self) -> i8 {
+        self.0
+    }
+}
+
 /// Speed configuration derived from a preset number.
 #[derive(Debug, Clone)]
 pub struct SpeedConfig {
-    /// Preset number (0-13).
-    pub preset: u8,
+    /// Signed native preset (-1 through 13); -1 is research mode.
+    pub preset: i8,
     /// Maximum partition depth (0 = 128x128 only, 4 = down to 4x4).
     pub max_partition_depth: u8,
     /// Whether to enable ADST transform types.
@@ -32,14 +62,19 @@ pub struct SpeedConfig {
 impl SpeedConfig {
     /// Create a speed configuration from a preset number (0-13).
     pub fn from_preset(preset: u8) -> Self {
-        let p = preset.min(13);
+        Self::from_native_preset(NativePreset::new(preset.min(13) as i8).unwrap())
+    }
+
+    /// Derive controls without flattening the signed research preset.
+    pub fn from_native_preset(preset: NativePreset) -> Self {
+        let p = preset.value();
         Self {
             preset: p,
             max_partition_depth: match p {
-                0..=3 => 4, // Full depth
-                4..=6 => 3, // Skip smallest
-                7..=9 => 2, // Medium depth
-                _ => 1,     // Shallow
+                -1..=3 => 4, // Full depth
+                4..=6 => 3,  // Skip smallest
+                7..=9 => 2,  // Medium depth
+                _ => 1,      // Shallow
             },
             enable_adst: p <= 10,
             enable_directional_modes: p <= 10,
@@ -47,10 +82,10 @@ impl SpeedConfig {
             enable_temporal_filter: p <= 12,
             rdo_tx_decision: p <= 6,
             max_intra_candidates: match p {
-                0..=3 => 13, // All modes
-                4..=6 => 7,  // Non-directional + some directional
-                7..=9 => 4,  // DC, V, H, smooth
-                _ => 2,      // DC, V only
+                -1..=3 => 13, // All modes
+                4..=6 => 7,   // Non-directional + some directional
+                7..=9 => 4,   // DC, V, H, smooth
+                _ => 2,       // DC, V only
             },
         }
     }
@@ -60,7 +95,7 @@ impl SpeedConfig {
     /// use higher lambda to favor rate over distortion.
     pub fn lambda_scale(&self) -> f64 {
         match self.preset {
-            0..=3 => 1.0,
+            -1..=3 => 1.0,
             4..=6 => 1.1,
             7..=9 => 1.2,
             _ => 1.4,
@@ -93,7 +128,7 @@ impl SpeedConfig {
 ///   else 0) and
 ///   sg = `svt_aom_get_sg_filter_level_allintra`
 ///   (enc_mode_config.c:2000-2009: <=ENC_MR -> 1, else 0; ENC_MR = -1,
-///   EbSvtAv1Enc.h:45, unreachable from the u8 preset domain).
+///   EbSvtAv1Enc.h:45).
 ///   Assigned to `scs->seq_header.enable_restoration` at
 ///   enc_mode_config.c:4056-4058.
 ///
@@ -112,7 +147,7 @@ impl SpeedConfig {
 /// derivations take no resolution argument at all, so every still cell
 /// ignores it.
 pub fn seq_tools_for_preset(
-    preset: u8,
+    preset: i8,
     allintra: bool,
     luma_pixels: usize,
 ) -> crate::entropy::obu::SeqTools {
@@ -120,7 +155,7 @@ pub fn seq_tools_for_preset(
         return seq_tools_video(preset, luma_pixels);
     }
     // get_filter_intra_level_allintra (enc_mode_config.c:12679).
-    let filter_intra_level: u8 = if preset == 0 {
+    let filter_intra_level: u8 = if preset <= 0 {
         1
     } else if preset <= 6 {
         2
@@ -136,8 +171,8 @@ pub fn seq_tools_for_preset(
         0
     };
     // svt_aom_get_sg_filter_level_allintra (enc_mode_config.c:2000):
-    // 1 only for ENC_MR (-1) — not representable as a u8 preset.
-    let sg: u8 = 0;
+    // 1 only for ENC_MR (-1), carried through the native preset path.
+    let sg = crate::port_enc_mode_config::leaf::get_sg_filter_level_allintra(preset);
     // enable_intra_edge_filter (svt_aom_sig_deriv_pre_analysis_scs,
     // enc_mode_config.c:4036-4048): allintra sets it iff
     // `dist_based_ang_intra_level >= 1 || angular_pred_level[intra_level]
@@ -218,7 +253,7 @@ pub fn seq_tools_for_preset(
 /// per-block INTER syntax those bits gate is still unported, which is why
 /// `pipeline.rs` continues to refuse an actual inter frame.
 #[must_use]
-pub fn seq_tools_video(preset: u8, luma_pixels: usize) -> crate::entropy::obu::SeqTools {
+pub fn seq_tools_video(preset: i8, luma_pixels: usize) -> crate::entropy::obu::SeqTools {
     let res_class = crate::pd0::input_resolution_class(luma_pixels);
     const RES_8K: u8 = 6; // INPUT_SIZE_8K_RANGE (definitions.h:1830)
 
@@ -339,7 +374,7 @@ mod tests {
     /// already-byte-identical configs and must stay all-off.
     #[test]
     fn seq_tools_allintra_c_table() {
-        for p in 0..=13u8 {
+        for p in 0..=13i8 {
             let t = seq_tools_for_preset(p, true, 64 * 64);
             let expect_on = p <= 6;
             assert_eq!(t.enable_filter_intra, expect_on, "filter_intra M{p}");
@@ -350,7 +385,7 @@ mod tests {
         // "both off at every preset until the default-path derivations + inter
         // syntax land" — they have now landed, so the table below is C's, from
         // `svt_aom_sig_deriv_pre_analysis_scs` (enc_mode_config.c:2780).
-        for p in 0..=13u8 {
+        for p in 0..=13i8 {
             let t = seq_tools_for_preset(p, false, 64 * 64);
             // `get_filter_intra_level_default` (:8771): nonzero at <= M5.
             assert_eq!(t.enable_filter_intra, p <= 5, "video filter_intra M{p}");

@@ -257,7 +257,10 @@ fn main() {
     let w: usize = args[2].parse().expect("width");
     let h: usize = args[3].parse().expect("height");
     let qp: u8 = args[4].parse().expect("cli_qp");
-    let preset: u8 = args[5].parse().expect("preset");
+    let preset = svtav1_encoder::speed_config::NativePreset::new(
+        args[5].parse::<i8>().expect("signed preset"),
+    )
+    .expect("native preset must be -1..=13");
     let prefix = &args[6];
     // I420 chroma dims: AV1 4:2:0 uses CEILING rounding for odd luma dims
     // ((w+1)/2), matching the port's `encode_frame_420` (which takes ceiling
@@ -373,7 +376,11 @@ fn main() {
                     // 8x8 blocks of 2..6 distinct values — inside palette's
                     // `colors <= 64` bound and well inside PALETTE_MAX_SIZE
                     // after k-means.
-                    "screen" => {
+                    // screencopy repeats panels at 256px: unlike screenrep's
+                    // high-entropy field it keeps lossless screen detection on.
+                    // At 512x128 QP0 p4, C selects 320 IntraBC blocks.
+                    "screen" | "screencopy" => {
+                        let c = if content == "screencopy" { c % 256 } else { c };
                         let panel = ((r / 24) & 1) as u8 * 2 + ((c / 32) & 1) as u8;
                         let bg = [35u8, 110, 180, 235][panel as usize];
                         let text_row = (r % 24) >= 6 && (r % 24) < 12;
@@ -399,7 +406,9 @@ fn main() {
                     // that, so it cannot win here and mask the IBC candidate —
                     // an earlier low-colour version of this content coded 68-80
                     // palette blocks and ZERO IBC blocks. Flat panel bands stay
-                    // in the top rows so the screen-content detector still arms.
+                    // in the top rows, but do not guarantee IntraBC is enabled:
+                    // C leaves it off at QP0 on 128x128/256x256. Use screencopy
+                    // for the lossless block-copy regression premise.
                     "screenrep" => {
                         if r < 32 {
                             [24u8, 96, 168, 240][((r / 8) & 1) * 2 + ((c / 32) & 1)]
@@ -412,7 +421,7 @@ fn main() {
                     other => {
                         panic!(
                             "unknown content {other:?} \
-                             (use uniform|gradient|diag|screen|screenrep|file:<png>|raw:<yuv>)"
+                             (use uniform|gradient|diag|screen|screencopy|screenrep|file:<png>|raw:<yuv>)"
                         )
                     }
                 };
@@ -661,8 +670,9 @@ fn main() {
         // this block returns before that line, and duplicating one env read is
         // cheaper than hoisting a binding the still path depends on.
         let mono = std::env::var_os("SVTAV1_MONO").is_some();
-        let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, hier, intra_period)
-            .with_bit_depth(bd);
+        let mut pipeline =
+            EncodePipeline::new_with_preset(w as u32, h as u32, preset, rc, hier, intra_period)
+                .with_bit_depth(bd);
         if !mono {
             pipeline = pipeline.with_chroma_420(true);
         }
@@ -710,7 +720,7 @@ fn main() {
                         let aw = pipeline.width as usize;
                         let (tw2, th2) =
                             (pipeline.true_width as usize, pipeline.true_height as usize);
-                        let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
+                        let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
                         let crop = |p: &[u8], stride: usize, cw: usize, chh: usize| -> Vec<u8> {
                             let mut o = Vec::with_capacity(cw * chh);
                             for r in 0..chh {
@@ -814,7 +824,7 @@ fn main() {
     let superres_denom: Option<u8> = std::env::var("SVTAV1_SUPERRES")
         .ok()
         .and_then(|v| v.parse().ok());
-    let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
+    let mut pipeline = EncodePipeline::new_with_preset(w as u32, h as u32, preset, rc, 0, 1)
         .with_tile_rows_log2(tile_rows_log2)
         .with_tile_cols_log2(tile_cols_log2)
         .with_bit_depth(bd)
@@ -859,6 +869,24 @@ fn main() {
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
     configure_grain(&mut pipeline);
     pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
+    if let Ok(value) = std::env::var("SVTAV1_ZEN_INTRA_EDGE_FILTER") {
+        match value.as_str() {
+            "0" => {}
+            "1" => {
+                pipeline.enhancements = pipeline
+                    .enhancements
+                    .with(svtav1_encoder::enhancements::ZenEnhancement::AomIntraEdgeFilter);
+                eprintln!("SVTAV1_ENHANCEMENT=aom-intra-edge-filter-v1");
+            }
+            _ => panic!("SVTAV1_ZEN_INTRA_EDGE_FILTER must be 0 or 1"),
+        }
+    }
+    if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
+        pipeline.reference = reference
+            .parse()
+            .expect("SVTAV1_REFERENCE must be a pinned source id");
+        eprintln!("SVTAV1_REFERENCE={}", pipeline.reference.id());
+    }
     // SVTAV1_TUNE=<0..5>: mainline `--tune`. The C driver reads the same value
     // from SVT_TUNE, so one env vector configures both encoders. Tune 3 (IQ)
     // and 4 (MS_SSIM) pull in C's whole override block (qm, sharpness,
@@ -869,6 +897,10 @@ fn main() {
         && let Ok(v) = t.parse::<u8>()
     {
         pipeline.hdr.tune = v;
+    }
+    // Forced C screen classification, used by the enabled issue-17 gate.
+    if let Ok(t) = std::env::var("SVTAV1_SCM") {
+        pipeline.hdr.screen_content_mode = Some(t.parse().expect("SVTAV1_SCM must be a u8"));
     }
     // Issue #9 items 3-5 — the port-side twins of the C driver's
     // SVT_MAX_TX_SIZE / SVT_CRF_OFFSET / SVT_CSP (one env vector, both
@@ -1009,7 +1041,7 @@ fn main() {
             (pipeline.width as usize, pipeline.true_width as usize)
         };
         let th2 = pipeline.true_height as usize;
-        let (acw, tcw2, tch2) = (aw / 2, tw2.div_ceil(2), th2.div_ceil(2));
+        let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
         fn crop<T: Copy>(p: &[T], stride: usize, cw: usize, chh: usize) -> Vec<T> {
             let mut o = Vec::with_capacity(cw * chh);
             for r in 0..chh {

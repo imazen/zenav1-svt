@@ -24,6 +24,7 @@ pub mod dist_facade;
 pub mod dlf_arm;
 pub(crate) mod encdec_arm;
 pub mod encode_loop;
+pub mod enhancements;
 pub mod entropy;
 pub mod film_grain;
 pub mod film_grain_config;
@@ -112,6 +113,7 @@ pub mod qm_tables;
 pub mod quant;
 pub(crate) mod rate_arm;
 pub mod rate_control;
+pub mod reference;
 pub mod restoration;
 pub mod sb128_geom;
 pub mod sb_qindex;
@@ -125,6 +127,8 @@ pub mod tx_bias;
 pub(crate) mod txs_arm;
 pub mod var_boost;
 pub mod vartx;
+
+mod lossless_mono;
 
 /// Check a potentially stoppable token without touching encoder state.
 #[inline]

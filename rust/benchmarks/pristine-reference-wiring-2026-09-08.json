@@ -1,0 +1,64 @@
+{
+  "rust-mainline-full": {
+    "cells": 1100,
+    "verdicts": {
+      "IDENTICAL": 1100
+    },
+    "bit_depths": {
+      "8": 1100
+    },
+    "different_from_hybrid": 5,
+    "provenance": {
+      "schema": 1,
+      "app": "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/source/Bin/Release/SvtAv1EncApp",
+      "app_sha256": "a6cc889478edebd5cc46f89f888224e4572eb47e9dfb7d2394c25039cacba09f",
+      "artifacts": "/home/lilith/tmp/svt-tracking/post-sad4-full/artifacts",
+      "cells": 1100,
+      "scope": "default still CQP 420; no unrecorded coding overrides",
+      "timing_claim": false,
+      "rust_runner": "/home/lilith/work/zen/zenav1-svt/rust/tools/identity_run",
+      "rust_reference": "svt-mainline-4.2.0-9292ec8e32bce26f781f277ec8739b53426c4300",
+      "rust_binary_sha256": "b1555394e874e93237b34188a85c79a57bc4e11da4223d063acd79b9942f3ec0",
+      "rust_binary_hash_capture": "after completed run; no codec source changes during run"
+    }
+  },
+  "rust-mainline-research": {
+    "cells": 320,
+    "verdicts": {
+      "IDENTICAL": 320
+    },
+    "bit_depths": {
+      "10": 160,
+      "8": 160
+    },
+    "different_from_hybrid": 32,
+    "provenance": {
+      "schema": 1,
+      "app": "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/source/Bin/Release/SvtAv1EncApp",
+      "app_sha256": "a6cc889478edebd5cc46f89f888224e4572eb47e9dfb7d2394c25039cacba09f",
+      "artifacts": "/home/lilith/tmp/svt-tracking/pristine-v4.2.0/research-inputs",
+      "cells": 320,
+      "scope": "default still CQP 420; no unrecorded coding overrides",
+      "timing_claim": false,
+      "rust_runner": "/home/lilith/work/zen/zenav1-svt/rust/tools/identity_run",
+      "rust_reference": "svt-mainline-4.2.0-9292ec8e32bce26f781f277ec8739b53426c4300",
+      "rust_binary_sha256": "b1555394e874e93237b34188a85c79a57bc4e11da4223d063acd79b9942f3ec0"
+    }
+  },
+  "independent_decode": {
+    "cells_covered_by_byte_identity": 1420,
+    "unique_streams_decoded": 846,
+    "failures": 0,
+    "decoder_sha256": "3dbbba50642a77b2dbe09dbba52293db3db1860e56927766832bac5f004975ef"
+  },
+  "workspace_tests": 2622,
+  "regression_spotcheck": 134,
+  "scope": "8-bit normal synthetic+dims and native8/10 research synthetic+dims; not universal C parity",
+  "hybrid_compatibility": {
+    "cells": 1100,
+    "byte_identical": 1100,
+    "pinned_exceptions": 0,
+    "harness_errors": 0,
+    "scoreboard": "/home/lilith/tmp/svt-tracking/mainline-reference-hybrid-full.tsv"
+  }
+}

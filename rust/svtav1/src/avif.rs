@@ -24,6 +24,14 @@
 #[path = "animation.rs"]
 pub mod animation;
 
+pub use crate::policy::{Effort, EncodingPolicy, ResolvedStillPolicy, StillSuitability};
+/// Explicit, uncalibrated Zen experiments for the region beyond native −1.
+pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
+/// Pinned C source identity, separate from speed and policy.
+pub use svtav1_encoder::reference::SvtReference;
+/// Checked C preset domain, including research -1.
+pub use svtav1_encoder::speed_config::NativePreset;
+
 /// Chroma subsampling format for AVIF encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaSubsampling {
@@ -31,6 +39,13 @@ pub enum ChromaSubsampling {
     Yuv420,
     /// 4:4:4 no subsampling (higher quality chroma).
     Yuv444,
+}
+
+/// Actual raw-plane input path for allocation-free support queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StillInputFormat {
+    Monochrome,
+    Yuv420,
 }
 
 /// Result of encoding a still image to AV1.
@@ -97,8 +112,13 @@ impl core::fmt::Display for EncodeError {
 pub struct AvifEncoder {
     /// Quality level (1.0-100.0). Higher = better quality, larger file.
     quality: f32,
-    /// Speed preset (1-10). Mapped to svtav1 presets 0-13.
+    /// Speed (1-10), mapped to still-image presets 0-9.
     speed: u8,
+    native_preset: Option<NativePreset>,
+    policy: Option<EncodingPolicy>,
+    effort: Option<Effort>,
+    reference: SvtReference,
+    enhancements: ZenEnhancements,
     /// Bit depth (8, 10, or 12).
     bit_depth: u8,
     /// Chroma subsampling format.
@@ -144,6 +164,11 @@ impl AvifEncoder {
         Self {
             quality: 75.0,
             speed: 6,
+            native_preset: None,
+            policy: None,
+            effort: None,
+            reference: SvtReference::Hybrid3115,
+            enhancements: ZenEnhancements::default(),
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
             threads: None,
@@ -221,10 +246,102 @@ impl AvifEncoder {
 
     /// Set the speed preset (1-10).
     ///
-    /// Maps to svtav1 presets: 1 -> preset 0 (slowest), 10 -> preset 13 (fastest).
+    /// Maps to still-image presets: 1 -> preset 0, 10 -> preset 9.
+    /// Replaces an earlier [`Self::with_native_preset`] selection.
     pub fn with_speed(mut self, speed: u8) -> Self {
         self.speed = speed.clamp(1, 10);
+        self.native_preset = None;
+        self.effort = None;
         self
+    }
+
+    /// Select a native preset, including [`NativePreset::RESEARCH`] (-1).
+    ///
+    /// Replaces the speed mapping. As in C's all-intra configuration, native
+    /// presets above 9 resolve to 9. [`Self::resolved_native_preset`] reports
+    /// the preset used by every encoding entry point.
+    ///
+    /// This selects native search controls; it does not enable Zen enhancements
+    /// or establish a strict parity guarantee for every input and setting.
+    ///
+    /// ```
+    /// use svtav1::avif::{AvifEncoder, NativePreset};
+    /// let encoder = AvifEncoder::new().with_native_preset(NativePreset::RESEARCH);
+    /// assert_eq!(encoder.resolved_native_preset().value(), -1);
+    /// ```
+    pub fn with_native_preset(mut self, preset: NativePreset) -> Self {
+        self.native_preset = Some(preset);
+        self.effort = None;
+        self
+    }
+
+    /// Apply an explicit policy. Later conflicting reference/experiment setters
+    /// are rejected by the same validator used by encoding.
+    pub fn with_policy(mut self, policy: EncodingPolicy) -> Self {
+        if let EncodingPolicy::SvtParity(reference) = policy {
+            self.reference = reference;
+        }
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Resolve checked effort through the versioned native bucket table.
+    /// Replaces a previous speed/native selection; no adaptive bundle is implied.
+    pub fn with_effort(mut self, effort: Effort) -> Self {
+        self.effort = Some(effort);
+        self.native_preset = None;
+        self
+    }
+
+    /// Query effective policy and calibration availability without encoding.
+    pub fn resolve_still_policy(&self) -> Result<ResolvedStillPolicy, EncodeError> {
+        self.validate_configuration()?;
+        Ok(ResolvedStillPolicy {
+            version: 1,
+            policy: self.policy,
+            reference: self.reference,
+            requested_effort: self.effort,
+            native_preset: self.resolved_native_preset(),
+            enhancements: self.enhancements,
+            suitability: StillSuitability::Uncalibrated,
+        })
+    }
+
+    /// Select a pinned C source. Existing constructors retain Hybrid3115.
+    /// Mainline420 uses pristine chroma ranking and refuses monochrome output.
+    /// This selects decisions, not a certification of all-setting parity.
+    pub fn with_reference(mut self, reference: SvtReference) -> Self {
+        self.reference = reference;
+        self
+    }
+
+    /// The source identity that encoding will use.
+    pub fn reference(&self) -> SvtReference {
+        self.reference
+    }
+
+    /// Enable an explicit experiment beyond native −1. No automatic selection
+    /// or quality improvement is implied; other native presets are refused.
+    pub fn with_enhancement(mut self, enhancement: ZenEnhancement) -> Self {
+        self.enhancements = self.enhancements.with(enhancement);
+        self
+    }
+
+    /// Inspect the exact experiment set used by encoding.
+    pub fn enhancements(&self) -> ZenEnhancements {
+        self.enhancements
+    }
+
+    /// The effective native preset after still-image canonicalization.
+    pub fn resolved_native_preset(&self) -> NativePreset {
+        if let Some(effort) = self.effort {
+            return effort.native_preset();
+        }
+        let value = self.native_preset.map_or_else(
+            || Self::speed_to_preset(self.speed) as i8,
+            NativePreset::value,
+        );
+        NativePreset::new(value.min(9)).expect("checked preset remains in -1..=9")
     }
 
     /// Set the bit depth. **8 and 10 are the only encodable depths**; every
@@ -267,7 +384,8 @@ impl AvifEncoder {
     /// LIVE: sets `EncodePipeline::hdr.enable_qm`, which drives the frame
     /// header's `using_qmatrix` + qm levels and the quantizer itself. Off by
     /// default, matching C's mainline default. Proven to change the emitted
-    /// bytes by `qm_knob_changes_bytes` below.
+    /// bytes by `qm_knob_changes_bytes` below. Lossless encoding uses identity
+    /// matrices, as required by the decoder's lossless reconstruction.
     pub fn with_qm(mut self, enable: bool) -> Self {
         self.enable_qm = enable;
         self
@@ -292,10 +410,9 @@ impl AvifEncoder {
 
     /// Request lossless encoding.
     ///
-    /// CURRENTLY INERT AND REJECTED: the encode entry points return
-    /// [`EncodeError::UnsupportedConfig`] when this is set, because the
-    /// encoder would otherwise silently produce a LOSSY stream. Setting it
-    /// back to `false` clears the rejection.
+    /// Selects QP 0 for exact 8-bit or native 10-bit source reconstruction on
+    /// color and monochrome stills and animations, including alpha.
+    /// Inter-frame lossless remains unsupported.
     pub fn with_lossless(mut self, lossless: bool) -> Self {
         self.lossless = lossless;
         self
@@ -358,9 +475,8 @@ impl AvifEncoder {
         let rc_config = svtav1_encoder::rate_control::RcConfig {
             mode: svtav1_encoder::rate_control::RcMode::Cqp,
             // `with_lossless(true)` IS QP 0 in AV1 (spec 5.9.12
-            // `CodedLossless`), which the 4:2:0 path implements
-            // byte-identically to C (issue #5). The monochrome path refuses
-            // the knob in `validate_inert_knobs` before reaching here.
+            // `CodedLossless`). Both 8/10-bit color and monochrome paths use
+            // WHT transforms and bypass the in-loop filters at this index.
             qp: if self.lossless {
                 0
             } else {
@@ -368,10 +484,10 @@ impl AvifEncoder {
             },
             ..svtav1_encoder::rate_control::RcConfig::default()
         };
-        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new_with_preset(
             width,
             height,
-            Self::speed_to_preset(self.speed),
+            self.resolved_native_preset(),
             rc_config,
             0,
             1,
@@ -380,6 +496,8 @@ impl AvifEncoder {
         // encode (`None`/`Some(0)` = auto). Byte-neutral at any value.
         .with_thread_count(self.threads.unwrap_or(0));
         pipeline.bit_depth = self.bit_depth;
+        pipeline.reference = self.reference;
+        pipeline.enhancements = self.enhancements;
         pipeline.color_description = self.color_description();
         // Issue #9 item 7: the two knobs that were recorded-and-ignored are
         // now the real pipeline settings. Defaults are off, so this is
@@ -413,8 +531,7 @@ impl AvifEncoder {
         stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(pixels.len(), width, height, stride)?;
-        self.validate_quality()?;
-        self.validate_inert_knobs(false)?;
+        self.validate_configuration_for_input(width, height, StillInputFormat::Monochrome)?;
 
         // MONOCHROME NO LONGER NEEDS PRE-PADDING. `EncodePipeline`'s
         // TRUE -> ALIGNED replicate-pad is wired on the mono path too
@@ -434,12 +551,8 @@ impl AvifEncoder {
         // `rust/CLAUDE.md` forbids: nothing fails, the bytes decode, and the
         // container is built around a mismatched extent.
         //
-        // The one residual: below preset 6 the mono pipeline still refuses a
-        // PARTIAL SUPERBLOCK (the sub-M6 search roots at the clamped extent).
-        // That is now a typed REFUSAL rather than a silently padded encode —
-        // `examples/decode_conformance.rs`'s avif corpus already had the `Err`
-        // arm for it and a comment saying refusing is the correct behaviour;
-        // the pre-pad was what kept that arm dead.
+        // Both monochrome partition paths now carry a square root through
+        // partial superblocks, preserving the true output dimensions.
         let (w, h, st) = (width as usize, height as usize, stride as usize);
         let mut src = vec![0u8; w * h];
         for r in 0..h {
@@ -449,8 +562,7 @@ impl AvifEncoder {
 
         // Fallible entry point, NOT the infallible `encode_frame` wrapper: the
         // latter `.expect()`s on every refusal the pipeline can raise
-        // (unsupported bit depth, an out-of-envelope superres/bd10 config, a
-        // monochrome partial superblock below preset 6), turning a caller
+        // (unsupported bit depth, an out-of-envelope superres/bd10 config), turning a caller
         // mistake into a process abort inside a Result-returning API.
         let bitstream = pipeline
             .try_encode_frame(&src, w)
@@ -492,11 +604,9 @@ impl AvifEncoder {
     /// nothing in the return type said so (issue #9 item 6). That output
     /// contract is gone.
     ///
-    /// `y` is read at `y_stride`; `u` and `v` are read TIGHT at
-    /// `(width / 2) x (height / 2)`, which is the 4:2:0 plane layout of a
-    /// planar I420 buffer. Dimensions must be even (the pipeline itself
-    /// handles arbitrary — including non-64-multiple — even sizes by padding
-    /// internally and signalling the true size).
+    /// `y` is read at `y_stride`; `u` and `v` are tightly packed at
+    /// `ceil(width / 2) x ceil(height / 2)`. The pipeline handles odd and
+    /// partial sizes by padding internally and signalling the true size.
     pub fn encode_yuv420(
         &self,
         y: &[u8],
@@ -506,17 +616,10 @@ impl AvifEncoder {
         height: u32,
         y_stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
-        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-            return Err(EncodeError::InvalidDimensions {
-                width,
-                height,
-                reason: "4:2:0 needs even width and height",
-            });
-        }
         self.validate_dimensions(y.len(), width, height, y_stride)?;
 
-        let chroma_w = width / 2;
-        let chroma_h = height / 2;
+        let chroma_w = width.div_ceil(2);
+        let chroma_h = height.div_ceil(2);
         let chroma_len_needed = (chroma_w as usize).checked_mul(chroma_h as usize).ok_or(
             EncodeError::InvalidDimensions {
                 width,
@@ -528,12 +631,11 @@ impl AvifEncoder {
             return Err(EncodeError::InvalidDimensions {
                 width,
                 height,
-                reason: "a chroma plane is shorter than (height/2) * (width/2)",
+                reason: "a chroma plane is shorter than ceil(height/2) * ceil(width/2)",
             });
         }
 
-        self.validate_quality()?;
-        self.validate_inert_knobs(true)?;
+        self.validate_configuration_for_input(width, height, StillInputFormat::Yuv420)?;
 
         let mut pipeline = self.build_pipeline(width, height).with_chroma_420(true);
         let bitstream = pipeline
@@ -622,6 +724,76 @@ impl AvifEncoder {
         }
     }
 
+    /// Query still-image configuration support without encoding or allocating
+    /// image planes. Uses the same format and quality checks as encoding.
+    /// Source dimensions, strides and buffer lengths are validated separately.
+    /// Check the exact entry point without allocating source or pipeline buffers.
+    /// Bit depth and tools are taken from this encoder's configuration.
+    pub fn validate_configuration_for_input(
+        &self,
+        width: u32,
+        height: u32,
+        format: StillInputFormat,
+    ) -> Result<(), EncodeError> {
+        self.validate_configuration()?;
+        // The same overflow/geometry guard used by actual raw-plane entry points.
+        self.validate_dimensions(usize::MAX, width, height, width)?;
+        if format == StillInputFormat::Monochrome {
+            if matches!(self.policy, Some(EncodingPolicy::SvtParity(_)))
+                || self.reference == SvtReference::Mainline420
+            {
+                return Err(EncodeError::UnsupportedConfig(
+                    "pristine C SVT supports 4:2:0 only; monochrome is a Rust extension",
+                ));
+            }
+            if self.film_grain.enabled() {
+                return Err(EncodeError::UnsupportedConfig(
+                    "C film grain requires 8/10-bit 4:2:0",
+                ));
+            }
+            self.enhancements
+                .validate(self.resolved_native_preset().value(), true, false)
+                .map_err(EncodeError::UnsupportedConfig)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_configuration(&self) -> Result<(), EncodeError> {
+        if let Some(EncodingPolicy::SvtParity(reference)) = self.policy {
+            if self.reference != reference {
+                return Err(EncodeError::UnsupportedConfig(
+                    "parity policy conflicts with selected reference",
+                ));
+            }
+            if !self.enhancements.is_empty() {
+                return Err(EncodeError::UnsupportedConfig(
+                    "SvtParity forbids Zen enhancements",
+                ));
+            }
+        }
+        self.validate_quality()?;
+        self.film_grain
+            .validate()
+            .map_err(EncodeError::UnsupportedConfig)?;
+        let hdr = svtav1_encoder::hdr_mode::HdrForkConfig {
+            enable_qm: self.enable_qm,
+            enable_variance_boost: self.enable_variance_boost,
+            variance_boost_strength: self.variance_boost_strength,
+            ..Default::default()
+        };
+        self.reference
+            .validate_hdr_config(&hdr)
+            .map_err(EncodeError::UnsupportedConfig)?;
+        self.enhancements
+            .validate(
+                self.resolved_native_preset().value(),
+                true,
+                self.chroma_subsampling == ChromaSubsampling::Yuv420,
+            )
+            .map_err(EncodeError::UnsupportedConfig)?;
+        self.validate_inert_knobs(true)
+    }
+
     /// Validate quality range.
     fn validate_quality(&self) -> Result<(), EncodeError> {
         if !(1.0..=100.0).contains(&self.quality) {
@@ -643,22 +815,8 @@ impl AvifEncoder {
     /// encoder is unconditionally still-image: one KEY frame, temporal tools
     /// forced off for all-intra exactly as C does).
     ///
-    /// `chroma_420` says which entry point is asking. It matters for the two
-    /// lossless refusals: coded-lossless (QP 0) IS implemented on the 4:2:0
-    /// still path (issue #5, byte-identical to C under
-    /// `tools/lossless_gate.sh`) and is NOT implemented on the monochrome
-    /// leaf coder.
-    fn validate_inert_knobs(&self, chroma_420: bool) -> Result<(), EncodeError> {
-        if self.lossless && !chroma_420 {
-            // Issue #5 chunk 2 landed coded-lossless (QP 0) on the 4:2:0
-            // still path only; the monochrome leaf coder has no lossless arm,
-            // so on THIS path the knob would silently return a lossy stream.
-            return Err(EncodeError::UnsupportedConfig(
-                "lossless encoding is not implemented for monochrome (encode_y8); QP 0 \
-                 (coded-lossless) is available on encode_yuv420 — 8-bit 4:2:0 stills, mainline \
-                 mode [C: no mono mode]",
-            ));
-        }
+    /// Format-independent checks; capability guards remain in the pipeline.
+    fn validate_inert_knobs(&self, _chroma_420: bool) -> Result<(), EncodeError> {
         if self.chroma_subsampling != ChromaSubsampling::Yuv420 {
             return Err(EncodeError::UnsupportedConfig(
                 "only 4:2:0 chroma is implemented (and C v4.2.0 ships 420 only)",
@@ -674,21 +832,6 @@ impl AvifEncoder {
         if !matches!(self.bit_depth, 8 | 10) {
             return Err(EncodeError::UnsupportedConfig(
                 "bit depth must be 8 or 10 (C v4.2.0 rejects every other depth at encoder init)",
-            ));
-        }
-        // Quality > ~99.21 maps to QP 0, which is LOSSLESS in AV1 — the WHT
-        // transform path, the forced-off loop filters and the frame-header
-        // omissions are all unported, so the pipeline refuses qp 0. It used to
-        // refuse it from inside the INFALLIBLE `EncodePipeline::encode_frame`,
-        // whose `.expect()` then aborted the caller's process: the most obvious
-        // "maximum quality" input panicked through a Result-returning API.
-        // Reject it here, as a typed error, at the same place the other
-        // unsupported knobs are caught.
-        if Self::quality_to_qp(self.quality) == 0 && !chroma_420 {
-            return Err(EncodeError::UnsupportedConfig(
-                "quality > 99.2 maps to QP 0, which is coded-lossless AV1 (WHT transform + \
-                 lossless header signalling); the monochrome leaf coder has no lossless arm — use \
-                 a lower quality, or encode_yuv420 for a coded-lossless 4:2:0 still",
             ));
         }
         Ok(())
@@ -938,10 +1081,9 @@ mod tests {
         (y, u, v)
     }
 
-    /// Item 7: `with_lossless(true)` is QP 0 on the 4:2:0 path (issue #5) and
-    /// a typed refusal on the monochrome one — never a silently lossy stream.
+    /// The lossless flag selects QP 0 for both color and monochrome.
     #[test]
-    fn lossless_is_qp0_on_420_and_refused_on_mono() {
+    fn lossless_is_qp0_on_color_and_monochrome() {
         let enc = AvifEncoder::new().with_speed(8).with_lossless(true);
         let (y, u, v) = yuv420(64);
         let ll = enc
@@ -955,10 +1097,21 @@ mod tests {
             ll.len(),
             lossy.len()
         );
-        assert!(matches!(
-            enc.encode_y8(&y, 64, 64, 64),
-            Err(EncodeError::UnsupportedConfig(_))
-        ));
+        let mono = enc.encode_y8(&y, 64, 64, 64).unwrap();
+        let q0 = AvifEncoder::new()
+            .with_speed(8)
+            .with_quality(100.0)
+            .encode_y8(&y, 64, 64, 64)
+            .unwrap();
+        assert_eq!(mono.data, q0.data);
+        assert_ne!(
+            mono.data,
+            AvifEncoder::new()
+                .with_speed(8)
+                .encode_y8(&y, 64, 64, 64)
+                .unwrap()
+                .data
+        );
     }
 
     #[test]
@@ -1028,6 +1181,57 @@ mod tests {
         assert_eq!(AvifEncoder::speed_to_preset(10), 9);
         // The slow half of the range is unaffected.
         assert_eq!(AvifEncoder::speed_to_preset(5), 6);
+    }
+
+    #[test]
+    fn native_preset_resolution_and_builder_precedence() {
+        let research = AvifEncoder::new().with_native_preset(NativePreset::RESEARCH);
+        assert_eq!(research.resolved_native_preset().value(), -1);
+        assert_eq!(research.with_speed(1).resolved_native_preset().value(), 0);
+        for preset in -1..=13 {
+            let enc = AvifEncoder::new()
+                .with_speed(10)
+                .with_native_preset(NativePreset::new(preset).unwrap());
+            assert_eq!(enc.resolved_native_preset().value(), preset.min(9));
+        }
+    }
+
+    #[test]
+    fn research_wrapper_reaches_native_pipeline_and_changes_output() {
+        let (y, u, v) = yuv420(64);
+        for bit_depth in [8, 10] {
+            let enc = AvifEncoder::new()
+                .with_quality(40.0)
+                .with_bit_depth(bit_depth)
+                .with_native_preset(NativePreset::RESEARCH);
+            let wrapped = enc.encode_yuv420(&y, &u, &v, 64, 64, 64).unwrap();
+            let rc = svtav1_encoder::rate_control::RcConfig {
+                mode: svtav1_encoder::rate_control::RcMode::Cqp,
+                qp: AvifEncoder::quality_to_qp(40.0),
+                ..Default::default()
+            };
+            let mut direct = svtav1_encoder::pipeline::EncodePipeline::new_with_preset(
+                64,
+                64,
+                NativePreset::RESEARCH,
+                rc,
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_bit_depth(bit_depth)
+            .with_thread_count(0);
+            direct.color_description = enc.color_description();
+            assert_eq!(wrapped.data, direct.encode_frame_420(&y, &u, &v, 64));
+            let normal = enc
+                .with_speed(1)
+                .encode_yuv420(&y, &u, &v, 64, 64, 64)
+                .unwrap();
+            assert_ne!(
+                wrapped.data, normal.data,
+                "research must not alias preset 0"
+            );
+        }
     }
 
     #[test]
@@ -1126,30 +1330,22 @@ mod tests {
         );
     }
 
-    /// Below preset 6 the mono pipeline refuses a PARTIAL superblock, and
-    /// `encode_y8` now surfaces that instead of padding around it.
-    ///
-    /// This is the deliberate behaviour CHANGE that came with the fix above:
-    /// speed 1 maps to preset 0, where the sub-M6 search roots at the clamped
-    /// extent. Emitting a 64-padded stream labelled 66x66 was the alternative,
-    /// and it is the one `rust/CLAUDE.md` forbids.
+    /// Slow presets now retain square partition roots at partial edges.
+    /// Decoder/reconstruction evidence is in odd_frame_recon's preset grid.
     #[test]
-    fn encode_y8_refuses_a_partial_sb_below_preset_6_instead_of_padding() {
-        let slow = AvifEncoder::new().with_speed(1); // -> preset 0
+    fn encode_y8_accepts_partial_sb_at_slowest_preset() {
+        let slow = AvifEncoder::new().with_speed(1);
         let pixels = vec![100u8; 66 * 66];
-        assert!(
-            matches!(
-                slow.encode_y8(&pixels, 66, 66, 66),
-                Err(EncodeError::UnsupportedConfig(_))
-            ),
-            "speed 1 at 66x66 must refuse, not pad"
+        let encoded = slow.encode_y8(&pixels, 66, 66, 66).unwrap();
+        assert_eq!((encoded.width, encoded.height), (66, 66));
+        let full = slow
+            .encode_y8(&vec![100u8; 128 * 128], 128, 128, 128)
+            .unwrap();
+        assert_eq!((full.width, full.height), (128, 128));
+        assert_ne!(
+            encoded.data, full.data,
+            "partial input must not become a padded frame"
         );
-        // 128x128 is a whole number of superblocks and still works there, so
-        // the refusal is about GEOMETRY and not about preset 0 being broken.
-        let ok = AvifEncoder::new().with_speed(1);
-        assert!(ok.encode_y8(&vec![100u8; 128 * 128], 128, 128, 128).is_ok());
-        // ...and the DEFAULT speed handles 66x66 fine, which is the half of
-        // the envelope that matters for the product.
         assert!(AvifEncoder::new().encode_y8(&pixels, 66, 66, 66).is_ok());
     }
 
@@ -1190,15 +1386,17 @@ mod tests {
     }
 
     #[test]
-    fn encode_yuv420_rejects_odd_dimensions() {
+    fn encode_yuv420_validates_rounded_up_chroma_for_odd_dimensions() {
         let enc = AvifEncoder::new();
         let y = vec![0u8; 15 * 16];
         let u = vec![0u8; 8 * 8];
         let v = vec![0u8; 8 * 8];
         assert!(matches!(
-            enc.encode_yuv420(&y, &u, &v, 15, 16, 15),
+            enc.encode_yuv420(&y, &u[..7 * 8], &v, 15, 16, 15),
             Err(EncodeError::InvalidDimensions { .. })
         ));
+        let out = enc.encode_yuv420(&y, &u, &v, 15, 16, 15).unwrap();
+        assert_eq!((out.width, out.height), (15, 16));
     }
 
     #[test]
@@ -1225,38 +1423,23 @@ mod tests {
         );
     }
 
-    /// `quality_to_qp` maps everything above ~99.21 to QP 0, which is LOSSLESS
-    /// AV1 — a mode this port does not implement. The refusal used to live
-    /// inside the INFALLIBLE `EncodePipeline::encode_frame`, whose `.expect()`
-    /// aborted the process, so the most obvious "maximum quality" call panicked
-    /// out of a `Result`-returning API. Anti-vacuity: this test PANICS (not
-    /// fails) without the `validate_inert_knobs` q0 arm.
+    /// Maximum quality selects coded-lossless monochrome, just like the flag.
     #[test]
-    fn max_quality_is_a_typed_error_not_a_panic() {
-        let pixels = vec![100u8; 16 * 16];
+    fn max_quality_matches_explicit_lossless() {
+        let pixels: Vec<u8> = (0..16 * 16).map(|i| (i * 17) as u8).collect();
+        let expected = AvifEncoder::new()
+            .with_lossless(true)
+            .encode_y8(&pixels, 16, 16, 16)
+            .unwrap();
         for q in [100.0f32, 99.9, 99.5] {
-            assert_eq!(
-                AvifEncoder::quality_to_qp_static(q),
-                0,
-                "q{q} must map to qp 0"
-            );
-            let err = AvifEncoder::new()
+            assert_eq!(AvifEncoder::quality_to_qp_static(q), 0);
+            let actual = AvifEncoder::new()
                 .with_quality(q)
                 .encode_y8(&pixels, 16, 16, 16)
-                .expect_err("qp 0 (lossless) must be refused, not encoded");
-            assert!(
-                matches!(err, EncodeError::UnsupportedConfig(_)),
-                "expected UnsupportedConfig, got {err:?}"
-            );
+                .unwrap();
+            assert_eq!(actual.data, expected.data);
         }
-        // The first quality that still maps off qp 0 must keep working.
         assert!(AvifEncoder::quality_to_qp_static(99.0) > 0);
-        assert!(
-            AvifEncoder::new()
-                .with_quality(99.0)
-                .encode_y8(&pixels, 16, 16, 16)
-                .is_ok()
-        );
     }
 
     /// `with_bit_depth` whitelisted 12, which no code path can encode:
@@ -1309,39 +1492,19 @@ mod tests {
         }
     }
 
-    /// 10-bit through the u8 entry points only produces TRUE 10-bit coded
-    /// levels inside a narrow envelope (4:2:0 + 64-aligned + a bd10 producer
-    /// for that preset). `AvifEncoder` is monochrome and pads to 64, so no
-    /// bd10 producer exists below preset 9: the whole encode ran with the Q8
-    /// tables while the sequence header advertised `high_bitdepth = 1`, and
-    /// the decoder dequantized it with Q10. That stream is decodable and
-    /// indistinguishable from success at the seam — the exact
-    /// "plausible-but-wrong bitstream" class the project bans. Anti-vacuity:
-    /// without `bit_depth_config_error` this returns `Ok` with corrupt bytes.
+    /// The native level pass now supplies true Q10 levels at every preset,
+    /// including for widened input through the legacy monochrome API.
     #[test]
-    fn bit_depth_10_refuses_where_no_bd10_stage_runs() {
+    fn bit_depth_10_monochrome_encodes_at_every_speed() {
         let pixels = vec![100u8; 64 * 64];
-        // Speeds 1-6 map to presets 0,1,3,4,6,7 — all below 9, all broken.
-        for speed in [1u8, 2, 3, 4, 5, 6] {
-            let err = AvifEncoder::new()
+        for speed in 1..=10 {
+            let bytes = AvifEncoder::new()
                 .with_bit_depth(10)
                 .with_speed(speed)
                 .encode_y8(&pixels, 64, 64, 64)
-                .expect_err("10-bit mono below preset 9 has no bd10 producer");
-            assert!(
-                matches!(err, EncodeError::UnsupportedConfig(_)),
-                "speed {speed}: expected UnsupportedConfig, got {err:?}"
-            );
+                .unwrap();
+            assert!(!bytes.data.is_empty(), "speed {speed}");
         }
-        // Speeds 7-10 all clamp to preset 9, where the level post-pass runs.
-        assert!(
-            AvifEncoder::new()
-                .with_bit_depth(10)
-                .with_speed(10)
-                .encode_y8(&pixels, 64, 64, 64)
-                .is_ok(),
-            "preset 9 has a real bd10 producer and must still encode"
-        );
     }
     /// Every geometry rejection must name the rule it broke AND echo the
     /// geometry back. `InvalidDimensions` used to be a payload-free unit
@@ -1368,11 +1531,6 @@ mod tests {
             (
                 "short luma buffer",
                 enc.encode_y8(&buf[..10], 16, 16, 16).unwrap_err(),
-            ),
-            (
-                "odd dims on the 4:2:0 path",
-                enc.encode_yuv420(&buf, &chroma, &chroma, 15, 16, 15)
-                    .unwrap_err(),
             ),
             (
                 "short chroma plane",

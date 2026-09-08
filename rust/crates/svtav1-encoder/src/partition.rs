@@ -962,6 +962,175 @@ pub fn partition_search(
     )
 }
 
+/// Search a square coding unit against the frame's aligned extent. Complete
+/// squares retain the existing search. At a partial square, compare SPLIT
+/// against the legal single-edge rectangle when that rectangle fits. Nodes
+/// with both lower halves absent must split without coding a partition bit.
+/// Only complete prediction/transform blocks enter the leaf search; geometry
+/// splits continue past the configured search depth when the frame requires it.
+#[allow(clippy::too_many_arguments)]
+pub fn partition_search_frame_edges(
+    src: &[u8],
+    src_stride: usize,
+    recon: &mut [u8],
+    recon_stride: usize,
+    size: usize,
+    qindex: u8,
+    lambda: u64,
+    max_depth: u32,
+    config: &PartitionSearchConfig,
+    abs_x: usize,
+    abs_y: usize,
+    ref_ctx: Option<&RefFrameCtx>,
+) -> PartitionResult {
+    let visible_w = size.min(config.aligned_w.saturating_sub(abs_x));
+    let visible_h = size.min(config.aligned_h.saturating_sub(abs_y));
+    assert!(visible_w > 0 && visible_h > 0 && size.is_power_of_two());
+    if visible_w == size && visible_h == size {
+        return partition_search_with_config(
+            src,
+            src_stride,
+            recon,
+            recon_stride,
+            size,
+            size,
+            qindex,
+            lambda,
+            max_depth,
+            config,
+            abs_x,
+            abs_y,
+            ref_ctx,
+        );
+    }
+    // Pipeline extents are multiples of eight, so an intersecting 8x8 square
+    // is always complete. Do not invent smaller non-power-of-two transforms.
+    assert!(size > 8, "partial monochrome node below aligned frame grid");
+    let half = size / 2;
+    let has_rows = visible_h > half;
+    let has_cols = visible_w > half;
+    let rates = if has_rows && has_cols {
+        [0, partition_rate_256(size, PartitionType::Split)]
+    } else if !has_rows && !has_cols {
+        [0, 0] // AV1 5.11.4: forced SPLIT, no partition symbol
+    } else {
+        crate::entropy::context::partition_alike_symbol_costs(size, !has_rows).map(|r| (r + 1) >> 1)
+    };
+    let baseline = save_region(recon, recon_stride, abs_x, abs_y, visible_w, visible_h);
+    let mut best = PartitionResult {
+        partition_type: PartitionType::Split,
+        rd_cost: 0,
+        distortion: 0,
+        rate: rates[1],
+        num_blocks: 0,
+        decisions: alloc::vec::Vec::new(),
+        tree: None,
+    };
+    let mut children = alloc::vec::Vec::new();
+    for quadrant in 0..4 {
+        let x = (quadrant & 1) * half;
+        let y = (quadrant >> 1) * half;
+        if x >= visible_w || y >= visible_h {
+            continue;
+        }
+        let child = partition_search_frame_edges(
+            &src[y * src_stride + x..],
+            src_stride,
+            recon,
+            recon_stride,
+            half,
+            qindex,
+            lambda,
+            max_depth.saturating_sub(1),
+            config,
+            abs_x + x,
+            abs_y + y,
+            ref_ctx,
+        );
+        best.distortion += child.distortion;
+        best.rate += child.rate;
+        best.num_blocks += child.num_blocks;
+        best.decisions.extend(child.decisions);
+        if let Some(tree) = child.tree {
+            children.push(tree);
+        }
+    }
+    best.tree = Some(PartitionTree::Split {
+        partition_type: PartitionType::Split,
+        width: size as u16,
+        height: size as u16,
+        children,
+    });
+    best.rd_cost = best.distortion + ((lambda * u64::from(best.rate)) >> 8);
+    let rectangle = if !has_rows && has_cols && visible_w == size && visible_h == half {
+        Some((
+            size,
+            half,
+            PartitionType::Horz,
+            svtav1_types::partition::PartitionType::Horz,
+        ))
+    } else if has_rows && !has_cols && visible_w == half && visible_h == size {
+        Some((
+            half,
+            size,
+            PartitionType::Vert,
+            svtav1_types::partition::PartitionType::Vert,
+        ))
+    } else {
+        None
+    };
+    if let Some((bw, bh, kind, leaf_kind)) = rectangle {
+        let split_recon = save_region(recon, recon_stride, abs_x, abs_y, visible_w, visible_h);
+        restore_region(
+            recon,
+            recon_stride,
+            abs_x,
+            abs_y,
+            visible_w,
+            visible_h,
+            &baseline,
+        );
+        let mut rect = encode_with_neighbors(
+            src,
+            src_stride,
+            recon,
+            recon_stride,
+            bw,
+            bh,
+            qindex,
+            config,
+            abs_x,
+            abs_y,
+            ref_ctx,
+            leaf_kind,
+            false,
+        );
+        rect.partition_type = kind;
+        rect.rate += rates[0];
+        rect.rd_cost = rect.distortion + ((lambda * u64::from(rect.rate)) >> 8);
+        rect.tree = Some(PartitionTree::Split {
+            partition_type: kind,
+            width: size as u16,
+            height: size as u16,
+            children: rect.tree.into_iter().collect(),
+        });
+        if rect.rd_cost < best.rd_cost {
+            best = rect;
+        } else {
+            restore_region(
+                recon,
+                recon_stride,
+                abs_x,
+                abs_y,
+                visible_w,
+                visible_h,
+                &split_recon,
+            );
+        }
+    }
+    best
+}
+
 /// Encode a superblock with recursive partition search using explicit config.
 ///
 /// Tries PARTITION_NONE at the current size, then optionally tries HORZ, VERT,
@@ -1902,6 +2071,7 @@ pub(crate) fn funnel_block_decision(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn encode_fixed_tree(
+    // Full frame-origin source: IntraBC searches absolute coordinates.
     src: &[u8],
     src_stride: usize,
     recon: &mut [u8],
@@ -1925,6 +2095,7 @@ pub(crate) fn encode_fixed_tree(
 ) -> PartitionResult {
     match tree {
         crate::pd0::Pd0Tree::Leaf(leaf_size) => {
+            let src_off = abs_y * src_stride + abs_x;
             debug_assert_eq!(*leaf_size, size, "PD0 leaf size must match node size");
             // C-exact leaf funnel (presets 6/7/8/eff-M9, 4:2:0 still): the
             // MDS0/MDS1/MDS3 mode decision replaces the homegrown leaf
@@ -1978,7 +2149,7 @@ pub(crate) fn encode_fixed_tree(
                         fx,
                         src,
                         src_stride,
-                        0,
+                        src_off,
                         recon,
                         recon_stride,
                         abs_x,
@@ -2010,7 +2181,7 @@ pub(crate) fn encode_fixed_tree(
                     fx,
                     src,
                     src_stride,
-                    0,
+                    src_off,
                     recon,
                     recon_stride,
                     abs_x,
@@ -2077,7 +2248,7 @@ pub(crate) fn encode_fixed_tree(
                     )
                 };
                 let block = encode_with_neighbors(
-                    src,
+                    &src[src_off..],
                     src_stride,
                     recon,
                     recon_stride,
@@ -2108,7 +2279,7 @@ pub(crate) fn encode_fixed_tree(
                 };
             }
             encode_with_neighbors(
-                src,
+                &src[src_off..],
                 src_stride,
                 recon,
                 recon_stride,
@@ -2148,7 +2319,7 @@ pub(crate) fn encode_fixed_tree(
                 let x0 = (i & 1) * half;
                 let y0 = (i >> 1) * half;
                 let sub = encode_fixed_tree(
-                    &src[y0 * src_stride + x0..],
+                    src,
                     src_stride,
                     recon,
                     recon_stride,
@@ -2560,8 +2731,11 @@ fn encode_single_block(
                 // D-mode children against above-right/bottom-left pixels
                 // the decoder never has (recon-parity failures at
                 // qindex >= 80 where ext partitions start winning).
+                // The allocation includes spare superblock rows; those are
+                // not decoded neighbors. Present the actual aligned canvas.
+                let frame_rows = config.aligned_h.min(recon.len() / recon_stride);
                 match crate::intra_edge::build_directional_edges(
-                    recon,
+                    &recon[..frame_rows * recon_stride],
                     recon_stride,
                     abs_x,
                     abs_y,
@@ -2892,6 +3066,37 @@ fn encode_single_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_search_compares_boundary_rectangles_and_forced_corner_split() {
+        for (w, h, expected) in [
+            (64, 32, PartitionType::Horz),
+            (32, 64, PartitionType::Vert),
+            (32, 32, PartitionType::Split),
+        ] {
+            let source = alloc::vec![128u8; w * h];
+            let mut recon = alloc::vec![128u8; w * h];
+            let mut config = PartitionSearchConfig::full();
+            config.aligned_w = w;
+            config.aligned_h = h;
+            let result = partition_search_frame_edges(
+                &source, w, &mut recon, w, 64, 100, 1000, 4, &config, 0, 0, None,
+            );
+            assert_eq!(result.partition_type, expected, "{w}x{h}");
+            let Some(PartitionTree::Split {
+                width,
+                height,
+                children,
+                ..
+            }) = result.tree
+            else {
+                panic!("edge needs a square parent")
+            };
+            assert_eq!((width, height, children.len()), (64, 64, 1));
+            assert_eq!(recon, source);
+        }
+    }
+
     use alloc::vec;
 
     #[test]

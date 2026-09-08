@@ -93,3 +93,14 @@ https://github.com/imazen/archmage/pull/101 (stacked on #96).
 Only the three patch sources changed in Cargo.lock; dependency versions did
 not change. A sibling archmage checkout is no longer required.
 Validation against the published Git pin: cargo nextest run -p zenav1-svt-dsp -j 4 --locked, 568/568 passed, 0 skipped.
+
+Release integration follow-up — 2026-09-08:
+PR #20 is integrated with main 25708931 using registry archmage,
+archmage-macros and magetypes 0.9.29. No Git or sibling-workspace patch is
+needed. Published u8x16 exposes abs_diff, sum_abs_diff and pairwise_widen_add;
+u16x8 exposes pairwise_widen_add. The PR uses unsigned widening to preserve
+lane accumulators, rather than reducing every chunk through sum_abs_diff.
+The original Apple measurements above remain historical; the new checks are
+correctness/build checks, not new speed or code-generation measurements.
+
+Current release validation is recorded in arm_pairwise_release_2026-09-08.md.

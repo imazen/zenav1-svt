@@ -17,6 +17,26 @@ Two companions to it:
   Run it after every change. If you fix a bug and do not add a cell, the next
   person gets to rediscover it.
 
+## Current API/support audit — 2026-09-08
+
+Read `docs/API-SUPPORT-AUDIT-2026-09-08.md` for the current source-backed
+support inventory. Earlier issue snapshots below are historical: forced SCM
+0/1 and mainline tune-0 sharpness are fixed, film grain has enabled C gates,
+and policy/routing are on main. The four native10 cells remain open. The
+legacy streaming API now explicitly refuses calls instead of accepting and
+discarding frames.
+
+## Open-issue audit, 2026-09-07
+
+After the verified SVT main merge `11522ed0`, all six open issues and thirteen
+comments were reconciled with source in
+`docs/OPEN-ISSUES-AUDIT-2026-09-07.md`. Known wiring gaps from #17 remain:
+`pipeline.rs` ignores SCM 0 in `sc_preset`, and gates tune-derived LF sharpness
+on fork mode although the pinned C's KEY-frame VQ branch is unconditional.
+Add enabled C-output regressions before correcting those consumers. The audit
+also distinguishes landed #18 tile fixes from unverified fleet rollout, stale
+#4/#8 checklist claims, and the remaining public-video/superres limitations.
+
 ## CONFORMANCE MANDATE
 
 **2026-09-06 scope requirement from the user:** all shipping C features must
@@ -289,54 +309,46 @@ arm (C stores the kernel output TRANSPOSED, transforms.c:3956; the inverse
 goes through a u16 scratch with `highbd_iwht4x4_16_add` ALWAYS — C forces
 `eob = max` because its read and write buffers differ, inv_transforms.c:3155).
 
-**Measured (`tools/lossless_gate.sh`, `benchmarks/lossless_gate_2026-08-28.md`):**
-112 / 144 byte-identical + 32 pinned, 144 / 144 decode to the source under
-aomdec. Presets 4..13 are 96/96 over {gradient, diag, uniform} x {64x64,
-128x128, 96x80, 200x136}. In-crate: `tests/lossless_fh_c_capture.rs` (full
-stream == the committed C capture, mutation-verified both ways).
+**Current, 2026-09-07:** `tools/lossless_gate.sh` is **240/240
+byte-identical to C and source-exact under aomdec, with no pins**, including
+the 96 screen-content cases added in the follow-up below. The former
+32 p0..p3 textured-content differences were missing translation/wiring:
 
-**The residual — presets 0..3 on textured content, pinned self-promotingly.**
-Both encoders are lossless there; the bytes differ from the FIRST coded
-symbol of the tile (gradient 64x64 p3: port 2966 B, C 2973 B; p1 == p2 on
-both sides). Root, by elimination: the port's p3 stream is byte-identical to
-its own p4 stream and to C's p4 — every funnel knob that separates p3 from
-p4 is inert at qp 0 — while C's p3 differs from C's p4. Of the all-intra
-knobs that flip at the M3 boundary (enc_mode_config.c, the
-`enc_mode <= ENC_M3` sites in `svt_aom_sig_deriv_enc_dec_allintra`), the
-only one that is LIVE under `mimic_only_tx_4x4` (nsq/txt/txs/pd0/depth
-refinement are all forced) and matters on an I-slice (update_cdf_level 1 vs
-2 differs in `update_mv` only) is **`svt_aom_get_disallow_4x4_allintra`
-(enc_mode_config.c:8181): 4x4 partitions are ALLOWED at <= M3** — exactly
-the failing set. C's lossless partition search (`pic_pd0_lvl` forced 0 =
-PD0_LVL_0, depth removal / refinement forced off, `max_sq_size` 8) therefore
-decides 8x8-vs-four-4x4 per block — at qp 0 every candidate's distortion is
-0, so it is a pure RATE comparison incl. the partition symbol — while the
-port forces 8x8 leaves (`pd0::lossless_tree`). `bypass_encdec = 0` at <= M3
-is NOT it: EncDec re-runs with the same lossless wrapper
-(`svt_aom_inv_transform_recon_wrapper`, full_loop.c:1909) and every
-`bypass_encdec` site in MD is buffer routing or an RDOQ/pf reset that is
-inert at qp 0. Next chunk: admit depths {8, 4} in `depth_refine::
-build_refined_scan_at` (dr 0 / bbdr 0) with a PD0_LVL_0 eval bounded to
-`max_sq` 8, evaluate both through the funnel (`decide_sb_refined`) at
-lossless — 4x4 leaves already code on the 4:2:0 path at these presets, and
-`tx_unit` takes the WHT for any 4x4 txb — then compare the inter-depth
-decision against C. **Tried and reverted the same day (measured, not
-argued):** a `Pd0Mode::Lvl0Lossless` pick (`max_sq` 8, `min_sq` 4, the
-8x8 candidate through the DCT-8x8 light encode at `qindex + 8`, the 4x4
-candidates through the WHT with C's transposed store, `perform_tx_pd0`'s
-`5000 + 100*eob` closed-form rate, PD1 at exactly the PD0 pick) moved
-every pinned cell WITHOUT closing one — gradient 64x64 p3 2966 -> 2979 B
-(C 2973), p1/p2 2940 -> 2969 B (C 2965), diag 64x64 p0 312 -> 558 B (C
-341): the port splits to 4x4 far more than C, so C's PD0 cost at qindex 0
-is NOT that model (the split decision is distortion-dominated there —
-`kf_full_lambda` at qindex 0 is tiny — so a small dist-model difference
-flips every block). Do not re-guess: dump C's PD0 per-block costs for the
-first 8x8 of gradient 64x64 p3 with the `SVT_*_OUT` interposers
-(`tools/ctrace-linux/`, Linux `--wrap` build) and fit the model to them.
+- C's QP-0 PD0 controls use QP offset 0 and real fast coefficient costs,
+  not the q+8/closed-form `Lvl0` model. Rust's `Lvl1` cost machinery matches
+  the resolved controls. TX_4X4 uses transposed WHT; larger PD0 txs use DCT.
+  Captured gradient64 p3 costs match all 320 candidate rows, diag64 p3 all 263.
+- `md_config_process.c:1043` forces depth-refinement level 0 (NO_RESTRICTION).
+  This still runs PD1 and compares 8x8 parents with 4x4 children. Using PD0's
+  chosen tree directly or retaining preset depth pruning is incorrect.
+- C `av1_transform_type_rate_estimation` updates lossless tx-type CDFs in
+  the MD context (its lossless guard is commented out). The bitstream writer
+  still omits the symbols. `CoeffFc::md_side_lossless_txt_update` carries this
+  difference only in per-SB MD context simulation. This closes the last two
+  multi-SB p0 cells: gradient128 went from 9560 to C's 9567 bytes.
 
-**Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md): 10-bit,
-monochrome, fork mode (its chroma-q deltas leave the frame outside
-CodedLossless), screen-content tools, superres, inter frames.
+All three missing paths have byte-regression witnesses and committed C
+capture tests in `lossless_fh_c_capture.rs`. Evidence:
+`~/tmp/animation-metadata/lossless-{p3,diag,g128}-drill/` and
+`lossless-refined-c-gate-final.log` in the same animation-metadata directory.
+The 2026-08-28 attempt used the wrong PD0 cost model and omitted PD1; it
+was reverted after failing to close any pins. Its earlier claims that depth
+refinement was disabled and all candidate distortion was zero were wrong:
+PD0's 8x8 DCT candidate can have nonzero distortion even at qindex 0.
+
+**Screen-content follow-up, 2026-09-07:** all 96 screen/screenrep lossless
+cells now byte-match C and decode to source. The fixed-tree walk passed a
+block-relative source to IntraBC's absolute-coordinate hash and motion search.
+Both pipeline call sites and recursive children now retain the full plane;
+the funnel receives an explicit source offset. The preset 0–5 refusal is
+removed after verification, and its rejection witnesses now require successful
+C-byte comparisons. The default lossless gate includes both screen patterns.
+Evidence: `benchmarks/lossless_screen_2026-09-07.md`.
+
+**Refused at QP 0** (typed, ledgered in docs/REFUSED-CONFIGS.md):
+fork mode (its chroma-q deltas leave the frame outside CodedLossless),
+superres, inter frames. 8/10-bit monochrome and alpha are implemented and
+source-exact; C has no monochrome oracle.
 
 ## FIXED 2026-08-27 — MONO partial SBs at preset 6 coded PARTITION_NONE at a frame edge (undecodable)
 
@@ -809,6 +821,105 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed locally 2026-09-08 — forced SCM 0/1 (#17).** Both public values
+previously fell through to preset-based auto detection. They now set all six
+screen classes before deriving tools at the real preset. Three previously
+C-different 8-bit witnesses and three native 10-bit witnesses match C exactly.
+See `benchmarks/screen_controls_2026-09-08.md`; higher-level control exposure
+and broader video coverage remain tracked in #21.
+
+
+**Fixed locally 2026-09-08 — mainline tune-0 sharpness (#17).** The pipeline
+now applies C's key-frame VQ/FILM_GRAIN sharpness adjustment in mainline as
+well as HDR mode, retaining the frame-type guard and IQ/MS_SSIM caps.
+The previously C-different 289-byte witness now matches; workspace 2616/2616
+and regression spotcheck 124/124 pass. Screen-content overrides remain open.
+See `benchmarks/tune_sharpness_2026-09-08.md`.
+
+
+**Fixed 2026-09-07 — configured decoder ignored by lossless IntraBC gate.**
+CI run 34138303485 failed two cases because `losslessIbc` invoked PATH's aomdec
+instead of the supplied RS_AOMDEC. A local failing PATH decoder reproduces the
+exact 121/123 tally; the corrected helper passes 123/123 under the same setup.
+It requests coded output depth and distinguishes decoder failure from sample
+mismatch. Encoder source and every pixel/byte assertion are unchanged. See
+`benchmarks/ci_decoder_routing_2026-09-07.md`.
+
+
+**Fixed 2026-09-07 — animation HDR track metadata omission in canonical parser.**
+AMVE/CCLV are now wired through animation options, serializer and native decode
+metadata; the canonical track parser also retains previously discarded CLLI/MDCV.
+A no-poster witness exposed the omission. Independent metadata/association/decode
+gates pass 30,240/30,240 across 8/10-bit color/mono and alpha modes, with exact
+AMVE/CCLV payload checks because libavif does not expose those values. Final
+nextest 2600/2600 and regression spotcheck 123/123 pass. See
+`benchmarks/animation_hdr_2026-09-07.md` for sources, tests and remaining scope.
+
+
+**Fixed 2026-09-07 — lossless quantization options.** Matrix-on QP0 matched C
+but decoded to wrong pixels at both depths; use identity matrices in production
+as the decoder does. Variance-boost QP0 was decoder-rejected only in Rust:
+pass the raw C variance plan to coding only when delta-q can be signaled.
+144 source/byte-neutrality cases pass QM, variance boost and their combination
+at 8/10-bit, mono/color, odd dimensions and four presets. C matrix/variance
+helper translations remain intact; `SUSPECTED-C-BUGS.md` §1 and §31 record the
+different reference behavior and the corrected earlier inference.
+
+**Fixed 2026-09-07 — native 10-bit lossless.** Native WHTs, per-unit
+prediction overlays and coefficient contexts are wired through color MD and
+monochrome level production. High-preset color uses the native funnel at QP0.
+Palette MDS0 now selects the native lambda; the prior u8 lambda admitted a
+wrong candidate at screen64 p4 (1285 B vs C 1318 B). The native grid is
+168/168 C-byte and 336/336 decoded-source matches; 252 strided/odd-tiled/extreme
+source checks also pass. Native residual-bearing IntraBC also needs the lossless transform-size
+syntax/cost suppression: an extra bit caused `Invalid intrabc dv` on
+screencopy512x128 p4. Corrected output is C-identical (11349 B), source-exact,
+with 386 selected copies. Native monochrome mode decisions still use the upper
+eight bits. See `benchmarks/native_lossless_2026-09-07.md`.
+
+**Fixed 2026-09-07 — 8-bit lossless monochrome/alpha.** The monochrome
+extension now has an 8x8/four-TX_4X4 WHT leaf loop using shared C kernels,
+per-transform prediction and coefficient contexts. Both the lossless flag and
+maximum quality reach it. Ninety aomdec cases equal source pixels, including
+flat/checkerboard data that exercises skip and screen-tool signaling. The
+IntraBC lossless refusal is color-only because mono never enters its search.
+Lossless color and monochrome animation alpha is verified against source.
+Native 10-bit lossless and the color gate's 32 lower-preset C-byte pins were subsequently resolved;
+see docs/ANIMATED-AVIF-PLAN.md for the full active scope.
+
+**Fixed 2026-09-07 — native monochrome preset floor.** Native level
+re-encoding now carries coefficient-sign neighbors with tile resets and the
+coded parent partition into directional prediction. Removing the floor before
+partition wiring exposed 19 wrong prefilter samples (p0,64x64,q98,first55/24):
+VERT_A/B children were predicted as PARTITION_NONE. The 108-case native grid
+now matches aomdec, preserves low input bits, and is byte-invariant to the recon
+output flag. Native mono/alpha animation at speed 2 also passes exact pixel
+checks. Monochrome mode decisions still use the upper eight bits; full native
+MD remains; native lossless was subsequently implemented. See ANIMATED-AVIF-PLAN.md for the wider active scope.
+
+**Fixed 2026-09-07 — low-preset monochrome partial blocks.** The non-PD0
+search previously rooted at the clamped edge rectangle and was guarded to
+64-aligned frames. It now starts at the square coding-unit root, recursively
+handles partial nodes, and compares legal edge rectangles against splits with
+C-derived boundary rates. Full squares retain the previous search. The first
+unguarded probe exposed another assumption in directional prediction: spare
+SB allocation (16384 bytes at stride 72) was treated as the frame canvas.
+Passing the actual aligned canvas fixes the assertion and neighbor bounds.
+144 aomdec cases (eight shapes, presets 0–5, qualities 40/75/98) now decode to
+exact reconstruction. Evidence: `~/tmp/animation-metadata/mono-low-{before,backtrace,nextest}.log`.
+The native 10-bit preset floor and 8-bit lossless monochrome are resolved by the continuations above.
+
+
+Fixed 2026-09-07: partial-edge cached chroma writes crossed destination rows
+(65x67, speed 2/preset 1); odd chroma output deblocking used search floor bounds
+instead of decoder ceiling bounds (native 65x65). Both are pinned by
+`svtav1/tests/odd_frame_recon.rs`, with each test observed failing when its fix
+was removed. The same filter-bound error also affected superresolution output
+(65x65 / denominator 9 / preset 7 / quality 5, first differing byte 5214);
+normative output filtering now precedes upscaling there too. See
+`docs/ANIMATED-AVIF-PLAN.md` for current verification and scope.
+
+
 (none — decode conformance gate is green: 525/525 matrix streams decode
 under the AV1 reference decoder as of 2026-07-13; C baseline retargeted to
 the final v4.2.0 tag 2026-07-16 — all-intra output byte-identical to the old
@@ -1158,10 +1269,10 @@ from `mainline_v4.2.bit-affecting.diff`. cref oracles + new c_parity suites.
   bit-affecting-changed 4.1->4.2 and untracked. Inline SAD IS C-equivalent:
   tests/c_parity_motion_est.rs pins full_pel_search distortion == svt_aom_sad at
   the chosen MV. Non-normative, inter-only/dormant.
-- **2026-09-06 correction:** The following film-grain entry is historical.
-  Fork photon-noise generation and KEY-frame signaling are now wired; the
-  real C denoiser and supplied-table paths remain incomplete. Those gaps are
-  required features, not N/A. See `docs/film-grain-port-map.md`.
+- **2026-09-08 correction:** The following July film-grain entry is historical.
+  The C model, denoiser, FFTs, supplied tables and synthesis are now translated
+  and wired, with enabled C/decoder gates. See `docs/film-grain-port-map.md`
+  and `docs/API-SUPPORT-AUDIT-2026-09-08.md` for scope and remaining boundaries.
 - **film_grain.rs — HOMEGROWN + INERT.** estimate_film_grain output is discarded
   (pipeline `_grain_params`) and obu.rs always emits film_grain_params_present=0.
   Not a port of noise_model.c/grainSynthesis.c (bit-affecting-changed). No FH
@@ -1220,9 +1331,9 @@ and `benchmarks/mem_2026-08-16.meta` (peak RSS). Re-measure with
    discipline: measure what crosses the boundary BEFORE cutting, prove the
    moved body verbatim AFTER. Do not reach for a line-range script.)
 3. **Lossless (q0)**: LESS important — do not prioritize over the above.
-   (LANDED 2026-08-28 anyway, issue #5 chunk 2: byte-identical to C at
-   presets 4..13, lossless under aomdec at every preset; the residual is the
-   p0..p3 pinned set — see "FIXED 2026-08-28 — coded-lossless" below.)
+   (8-bit color parity completed locally 2026-09-07: 144/144 byte-identical
+   and source-exact, including the former p0..p3 pins. Lower-preset screen
+   content and native 10-bit lossless are also implemented.)
 4. **Performance (#93)**: LAST. Algorithmic/allocation work before SIMD
    when it does happen.
 

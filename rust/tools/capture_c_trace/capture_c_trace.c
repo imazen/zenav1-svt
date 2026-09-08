@@ -377,6 +377,12 @@ int main(int argc, char** argv) {
         cfg.tune = (uint8_t)atoi(tune_env);
     }
 
+    /* Forced screen-content modes 0/1 survive C's all-intra normalization. */
+    const char* scm_env = getenv("SVT_SCM");
+    if (scm_env) {
+        cfg.screen_content_mode = (uint32_t)atoi(scm_env);
+    }
+
     /* Issue #9 items 3-5 — three MAINLINE config knobs, each absent => the
      * library default => every pre-existing cell unchanged.
      *   SVT_MAX_TX_SIZE=32|64  -> cfg.max_tx_size (default 64,

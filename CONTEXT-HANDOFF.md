@@ -1,9 +1,207 @@
+Current completed chunk (2026-09-08): opt-in AOM restoration-unit search,
+automatic measurement reconstruction gates, fully static fleet tools, and a
+completed canonical fleet ablation. No workers or local heavy jobs remain live.
+
+Primary records:
+- rust/docs/research-preset-port-map.md (implementation and remaining scope)
+- ../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESTORATION_UNITS.md
+- its imazen26_restoration_provenance.json (all durable artifacts and checks)
+- ENCODER-POLICY-GOAL.md (the unbounded active goal; far from complete)
+
+SVT local a7f31485 adds ZenEnhancement::AomRestorationUnitSearch and shared
+256/128/64 search bounded by the actual SB size, with SVT filter/unit RD costs
+and frame header costs. Native C behavior remains fixed 256. Both depths,
+syntax, reconstruction and generic public wrapper enhancement transport work.
+Ten enabled geometry/depth cases include odd/tile/SB128 boundaries; unit64 and
+unit128 actually win. Local4c445267 adds public AVIF-wrapper equality/refusal.
+Workspace2627/2627, regression136/136, fresh hybrid normal8 C1100/1100,
+fresh pristine research320/320 (160 each native8/10). No gate was weakened.
+
+Fleet av1-restoration-unit-ablation-20260908 completed2/2 jobs,144/144 encodes,
+48 deterministic cells,24 exact automatic SVT reconstruction verifications.
+Later telemetry replay reproduced all24 original input/OBU hashes and every
+reconstructed sample. Both Nomad allocations are complete and the job stopped.
+The separate remote smoke also passed21 encodes/6 reconstruction cells and
+was stopped. Canonical claims, ledgers and blob stores were used throughout.
+
+Two canonical TRAIN origins,1000 photo (512x384 on Ryzen3500) and8100 screen
+(512x320 on Ryzen7900X), six QPs5/12/20/32/48/60, native SVT-1 off/on and
+libaom0/Rust AOM0, three interleaved rounds. Photo QP5/12 chose128 units but
+added14/5 bytes, lost0.0010/0.0652 SSIM2 and took4.28%/3.60% longer. Other
+photo QPs retained256. Screenshot restoration was BYPASSED at every QP;
+its identical outputs are not an active smaller-unit RD result. Keep opt-in.
+QP20 photo native27489B/1.1185bpp/71.084/6235.6ms; unit search same output,
+6393.7ms. Screen native14327B/.6996bpp/84.057/7236.9ms; search7240.2ms.
+Matched QP20..32 estimates: photo SSIM2=70 native26333B/6335ms versus
+libaom26808B/5518ms; screen SSIM2=80 native11434B/7586ms versus libaom
+11259B/3803ms and Rust AOM12705B/3139ms. No faster presets in this ablation.
+These two origins are NOT minimum representatives or held-out calibration.
+
+Measured fully static binary e9538ef62986cf4605dedbbe059728ae1c3f6e9b123a3ec787e811a82e6b4d19.
+Telemetry verifier b0199023c45d841a4945ebc7f4b40dc62ccd4c364db6428fdd7f691e51acdc55.
+Local artifacts ~/tmp/av1-restoration-fleet; durable source/executor/analysis
+archives and per-job output/ledger URIs are in the provenance record. All were
+downloaded and SHA-verified. All30 overlapping native SVT/libaom/Rust AOM
+controls equal the earlier corrected intra-edge outputs across builds/CPUs;
+do not pool their times. Earlier intra-edge timed/verifier binaries f858/b97d
+had static CODEC libraries but dynamic SYSTEM dependencies; report corrected.
+
+Comparator v3 now automatically replays SVT after every timed round completes,
+requires exact original OBU plus all reconstructed samples, writes validation
+only on success, and retains failure evidence via canonical local/S3 stores.
+The real S3 failure upload was downloaded and verified. build-static.sh verifies
+all3 executables have no dynamic NEEDED entries; smoke-jobexec.py verifies
+actual declaration, execution, worker/ledger outcomes and preserved artifacts.
+Latest comparator tests7 lib +5 binary pass. Per-row hardware/worker cohort
+hashes prevent cross-machine timing pooling. The SDR measurement path now
+rejects high-depth sources and nonopaque alpha instead of silently reducing
+precision/dropping alpha; native HDR/alpha measurement remains open.
+
+Issue21 body updated and verified2026-09-08T09:42:05Z. No CI/main push started.
+Latest fetch: SVT unchanged; zenmetrics master advanced to3ab5f791 (GPU-only
+changes). The local zenmetrics stack rebased successfully onto it; working
+copy f31167e3 is empty, parent1c1b6998. Historical measured source hashes above
+remain the identities of the actual builds. For the current workstream order
+and remaining acceptance gates, read ENCODER-POLICY-GOAL.md's execution checkpoint.
+Next real work: canonical full-population RD/RD-speed scouting and measured
+minimum representatives; strict policy/continuous effort/resolution/replay;
+actual zenavif routing and native HDR/format preservation; older real-image
+parity witnesses and broader source-envelope/lint/main integration. Do not
+conflate successful normal/research gates with closure of the historical gaps.
+
+Earlier intra-edge chunk: corrected120 encodes/40 cells with native/edge/AOM
+arms; feature remains opt-in. See IMAZEN26_INTRA_EDGE.md and
+rust/benchmarks/intra-edge-parity-2026-09-08.json. Durable709384601-byte archive:
+s3://zentrain/benchmarks/av1-compare/2026-09-08/intra-edge-corrected/evidence-3a644bc6f4c30fc3da0d3342632cc7a1325ea7695537965159d5ea75dd9197e4.tar.gz
+It preserves the superseded pre-fix run and corrected chroma-owner fix evidence.
+
+Historical reference-work summary (superseded where noted above):
+Latest implementation: local kmmkunzl wires SvtReference::{Mainline420,
+Hybrid3115} through EncodePipeline and AvifEncoder into independent chroma
+ranking. Legacy constructors retain hybrid SAD; explicit Mainline420 uses
+variance, including separately rounded native10 SSE/signed sum (C svt_psnr.c).
+Mainline refuses hybrid-only controls/HDR mode and monochrome extensions;
+full SvtParity/effort/resolved-policy API remains open. C oracle pin unchanged.
+Checks:2622/2622 workspace,134/134 spotchecks, pristine normal8 1100/1100,
+pristine native-1 synthetic+dims320/320 (160 each depth), and legacy hybrid
+normal8 compatibility1100/1100 (zero pinned/errors).846 unique streams cover
+all1420 pristine cells and independently decode at correct depth/dimensions.
+Research has32 source-dependent outputs, plus5 normal outputs; all match
+explicit targets. Committed dual-reference goldens cover8/10,-1/0, public
+wrapper reachability at8 and reconstruction; test added to spotcheck.
+Evidence: rust/benchmarks/pristine-reference-wiring-2026-09-08.json;
+~/tmp/svt-tracking/mainline-reference-* logs; full raw runs under
+~/tmp/svt-tracking/pristine-v4.2.0/{rust-mainline-full,rust-mainline-research,
+mainline-decode}; legacy run mainline-reference-hybrid-full/artifacts.
+Issue21 updated and verified with source distinction, completed native-1
+coverage, canonical size/quality/time SAD results, and archmage029 migration.
+Main fetch found no changes. All jobs terminal; no push/CI. Next work:
+complete strict policy/effort/replay and reference envelope; isolated AOM
+intra-edge/restoration experiments immediately beyond-1; actual zenavif
+routing and canonical fleet RD-zone scouting/minimum representatives. Old
+real-image mismatches remain open. coverage_matrix.py still scans only old
+committed TSVs and normal presets: its table does not include these explicit
+reference JSONL runs or research-1; don't treat it as this build's scoreboard.
+
+Latest reference audit: see rust/docs/PARITY-REFERENCE-AUDIT-2026-09-08.md.
+Pristine v4.2.0 9292ec8e vs hybrid3115 MODE0 differs in FIVE of the1100
+default cells, while Rust matches hybrid1100/1100. Root cause isolated:
+independent-chroma candidate presort uses variance in pristine, SAD in hybrid
+(mds0_dist_type zero-initialized, never assigned). One branch change in a
+scratch hybrid makes all1100 outputs match pristine; source pin untouched.
+Native API/CLI and nowrap controls rule out driver differences. Shipping Rust
+still uses hybrid SAD; next fix must wire explicit reference-specific metric,
+then validate native8/10 and -1 without conflating the reference targets.
+All jobs terminal. Audit outputs~/tmp/svt-tracking/pristine-v4.2.0; summary
+rust/benchmarks/pristine-reference-2026-09-08.json. No push/CI.
+
+Latest continuation: local svupxuyl/d78559a2 batches four IntraBC mesh SAD
+candidates with shared source loads and SIMD for width4. Preserves C traversal,
+strict ties and remainder behavior.2619 workspace tests and133/133 regression
+checks passed before the dependency update. Canonical QP20 three-round repeat
+completes18/18, all OBU hashes unchanged. Screenshot RustMR13.528s→6.106s,
+C control2.504→2.503s; photoRustMR3.160→3.146s. Data~/tmp/av1-imazen26-sad4-2026-09-08.
+User then requested archmage0.9.29: new local ntyrrqtu replaces the temporary
+Git patches with registry archmage/macro/magetypes0.9.29; SVT requirement now
+0.9.29. Same migration in zenmetrics ruxnukwz and zenavif wtpwpuxu (other patches
+preserved). All3 lockfiles verified exact registry0.9.29, no old Git package.
+Published0.9.29 now passes2619/2619 workspace nextest and133/133 spotchecks.
+Comparator5tests, zenavif27backend/roundtrip tests and all6 standalone probe
+all-target builds pass on published0.9.29. Probe manifests/locks also migrated,
+no old Git pins remain in repository Cargo manifests/locks. Rebuilt static
+comparator and completed18/18 canonical QP20 repeat on published0.9.29: all
+output hashes unchanged; screenshotMR6.114s, C2.507s, Rust0 1.672s; photoMR3.153s.
+New binary SHA1a65ccad0407dda48f8643cc23e09ae992237a35c1fed4257b83f6632981d9f2.
+Logs~/tmp/svt-tracking/archmage029-*; rows~/tmp/av1-imazen26-sad4-archmage029-2026-09-08.
+Post-migration default synthetic+dims identity sweep completed: 1100/1100
+byte-identical, zero pinned exceptions and zero harness errors. Evidence:
+~/tmp/svt-tracking/post-sad4-full.tsv and post-sad4-full.log; retained artifacts
+in post-sad4-full/artifacts. This checks the pinned hybrid C MODE0 reference,
+not an independently built pristine v4.2.0 oracle or the remaining real tier.
+All heavy jobs terminal. No push/CI. Next: continue full policy goal—native-1
+remaining coverage/main gates, Zen AOM adoption just beyond-1, canonical fleet
+RD-speed scouting/minimum representatives, and actual backend routing.
+
+Latest research checkpoint (2026-09-08): native10 IntraBC fix passes132/132
+regression checks and120/120 native10 geometry. AvifEncoder research/odd-size
+support passes2618 workspace tests,3 doctests and132/132 spotchecks. The new
+odd-size decoder witness is now in regression_spotcheck (next total133).
+Research tile sweeps pass18/18 each at8/10bits, independently decodable;
+all16 nonzero tile-grid cells per depth differ from untiled C controls.
+See research-preset-port-map.md and ~/tmp/svt-tracking/research-tiles{8,10}*.
+Zenmetrics rules read in full; local oylkovtk wires checked Rust research -1
+through comparator, with native8/10 C/Rust differential test; all5 tests pass.
+Fresh static-binary canonical baseline completed150/150 encodes (50 cells,
+three rounds), all decode/deterministic. C/RustSVT-1 match10/10 distinct cells;
+C/RustAOM0 differ onall5 screenshot cells. Report:
+../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESEARCH_BASELINE.md.
+Raw~/tmp/av1-imazen26-research-baseline-2026-09-08. Updated spotcheck133/133passes.
+At matchedSSIM80 screenshot: RustSVT-1 11494B/14280ms, RustSVT0 11819B/1932ms.
+MeasuredQP20 C/RustSVT-1 identical14292B/84.101score but2504ms/13528ms.
+C/Rust profiling completed (2 encodes each, separate from reported timings).
+Rust78.22% self cycles in me_sad::__arcane_block_sad_v3; exhaustive_mesh_search
+calls SAD individually where C av1me.c uses sdx4df for4 candidates. Rust4-wide
+blocks also fall through scalar tails. Profile evidence~/tmp/svt-tracking/
+research-screen-{rust,c}.perf*; no lost samples. Next bounded performance task:
+port/wire batched SAD preserving candidate order/ties, prove bit identity and
+remeasure this actual screenshot before claiming improvement. No optimization
+implemented yet. Comparator scoped Clippy passes. No heavy job remains live.
+No push/CI; full goal remains open. Next: comparator tests and fresh RD baseline,
+AOM continuation and canonical imazen26 RD scout/reduction, plus remaining
+normal real-image parity and prelanding gates. Check live jobs before heavy work.
+
 # zenav1-svt — handoff
 
 **This file is an INDEX, not a record.** Everything durable lives in the docs
 named below and is updated in place; anything restated here is restated only so
 a new session can orient in ten minutes. When this file and a live doc disagree,
 **the live doc wins** — and fix this one in the same change.
+
+User-directed policy goal **2026-09-08**: [ENCODER-POLICY-GOAL.md](ENCODER-POLICY-GOAL.md)
+defines the continuous-effort/adaptive API, strict `SvtParity`, complete research
+preset -1, preserved HDR-fork features, imazen-26/native-HDR calibration and
+actual backend-owned zenavif routing, with local validation and main-integration
+completion gates. The thread goal tracker now targets completion of this document.
+The separate animated-AVIF/video objective remains unfinished.
+
+Research implementation status: [live port map](rust/docs/research-preset-port-map.md).
+Signed native transport, asymmetric partition search, coefficient-class wiring,
+CDEF masks, research dispatch, directional availability and native-depth lambda
+fixes are implemented locally. Research geometry passes120/120 per depth and
+tiles18/18 per depth. Full -1 parity across formats/content and all wrappers
+remains unclaimed; follow the live port map for exact tested domains.
+
+Latest still-backend comparison **2026-09-08**: the [measured RD/time report](../zenmetrics/benchmarks/av1_compare_2026-09-08/README.md)
+and [AOM adoption audit](../zenmetrics/benchmarks/av1_compare_2026-09-08/AOM_ADOPTION.md)
+record the completed C/Rust SVT/AOM preset 0..9 fill, C research preset -1,
+and successful 20-job zenfleet supplement. Prefer their dense time-budget
+curves over the earlier coarse preset-6 estimates. The pipeline and high-level AvifEncoder can express -1; benchmark reachability
+is being validated. Full research parity remains pending. C's -2/-3 enum names are rejected
+by its public validator in this build. New real-image parity witnesses remain open.
+The static harness and reports are local zenmetrics changes; production
+routing remains query-only, and the previously identified wrapper-quality,
+translation-parity and broad local lint gates are not closed by these sweeps.
+The user still requires local checks before CI/main integration.
 
 Active user goal **2026-09-07**: complete animated AVIF (all metadata,
 transparency and specification features), then complete video encoding.

@@ -18,10 +18,8 @@
 //! with variance boost ON is internally inconsistent; the mainline default is
 //! off, and the lossless decode is the proof.
 //!
-//! What this does NOT cover (the tile half, still refused by
-//! `encode_frame_impl`): TX_4X4-only coding with no tx_size / tx_type symbols
-//! and WHT residuals. Until that is ported and byte-verified, `EncodePipeline`
-//! keeps returning `UnsupportedConfig` for QP 0.
+//! Stream tests also cover TX_4X4 WHT coding and the preset-3 lossless
+//! partition search against a C capture, including PD1 depth refinement.
 
 use svtav1_encoder::cdef::pick_cdef_params_key_frame;
 use svtav1_encoder::deblock::pick_filter_levels_key_frame;
@@ -246,5 +244,57 @@ fn qp0_coded_lossless_stream_matches_c_capture() {
             &obu[first.saturating_sub(8)..(first + 8).min(obu.len())],
             &C_QP0[first.saturating_sub(8)..(first + 8).min(C_QP0.len())]
         );
+    }
+}
+
+/// C captures for three distinct missing lossless paths: 4x4 PD0 WHT and
+/// PD1 search, lossless depth-control overrides, and per-SB MD CDF updates.
+/// Each capture was independently decoded and compared with its source.
+#[test]
+fn qp0_low_preset_partition_search_matches_c_captures() {
+    use svtav1_encoder::pipeline::EncodePipeline;
+    use svtav1_encoder::rate_control::{RcConfig, RcMode};
+    let cases: &[(usize, u8, bool, &[u8])] = &[
+        (64, 3, false, include_bytes!("data/c_gradient64_p3_qp0.obu")),
+        (64, 3, true, include_bytes!("data/c_diag64_p3_qp0.obu")),
+        (
+            128,
+            0,
+            false,
+            include_bytes!("data/c_gradient128_p0_qp0.obu"),
+        ),
+    ];
+    for &(w, preset, diag, capture) in cases {
+        let mut p = EncodePipeline::new(
+            w as u32,
+            w as u32,
+            preset,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 0,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        )
+        .with_chroma_420(true)
+        .with_recon_output(true);
+        let y: Vec<u8> = (0..w * w)
+            .map(|i| {
+                let (r, c) = (i / w, i % w);
+                if diag {
+                    ((r as i32 - c as i32).rem_euclid(64) * 4) as u8
+                } else {
+                    ((r * 255 / w) ^ ((c * 3) & 0x3f)) as u8
+                }
+            })
+            .collect();
+        let uv = vec![128; w * w / 4];
+        let obu = p.try_encode_frame_420(&y, &uv, &uv, w).unwrap();
+        assert_eq!(obu.as_slice(), capture, "{w}x{w} p{preset} diag={diag}");
+        let (ry, ru, rv) = p.last_recon.as_ref().unwrap();
+        assert_eq!(ry, &y);
+        assert_eq!(ru, &uv);
+        assert_eq!(rv, &uv);
     }
 }

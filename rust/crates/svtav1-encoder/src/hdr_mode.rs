@@ -5,9 +5,11 @@
 //! module is the Rust-side equivalent, as a RUNTIME config so one binary
 //! can target either C oracle:
 //!
-//! - [`SvtHdrMode::Mainline`]  → byte-identity target = stock v4.2.0-final
-//!   (`cmake -DSVT_HDR_MODE=OFF`). All fork fields sit at their NEUTRAL
-//!   values and every fork code path in this crate is skipped.
+//! - [`SvtHdrMode::Mainline`] → the pinned hybrid's MODE0 path
+//!   (`cmake -DSVT_HDR_MODE=OFF`). Despite the historical name, this differs
+//!   from pristine v4.2.0 in independent-chroma candidate ranking. See
+//!   `docs/PARITY-REFERENCE-AUDIT-2026-09-08.md`; this switch alone is not a
+//!   strict mainline parity policy.
 //! - [`SvtHdrMode::HdrFork`]   → byte-identity target = the hybrid's MODE1
 //!   lib (`cmake -DSVT_HDR_MODE=ON`), i.e. fork semantics on the v4.2 base.
 //!
@@ -26,7 +28,7 @@
 /// Which C oracle this encode targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SvtHdrMode {
-    /// Mainline SVT-AV1 v4.2.0 semantics (the port's primary target).
+    /// Historical name for hybrid MODE0; not unrestricted pristine v4.2.0 parity.
     #[default]
     Mainline,
     /// svt-av1-hdr fork semantics on the v4.2 base (hybrid MODE1).
@@ -99,7 +101,8 @@ pub struct HdrForkConfig {
     /// qp <= 45.
     pub max_tx_size: u8,
     /// C `static_config.screen_content_mode`. `None` = derive from the preset
-    /// exactly as C's allintra rule does; `Some(3)` = force the auto-detector
+    /// exactly as C's allintra rule does; `Some(0)` forces every class off,
+    /// `Some(1)` forces every class on; `Some(3)` = force the auto-detector
     /// on, which is what tune IQ does regardless of preset.
     pub screen_content_mode: Option<u8>,
     pub enable_qm: bool,
@@ -120,7 +123,7 @@ impl Default for HdrForkConfig {
 impl HdrForkConfig {
     /// Mainline v4.2.0 defaults — every fork feature neutral/off.
     /// Matches `enc_settings.c` `svt_av1_set_default_params` at
-    /// `SVT_HDR_MODE=0` (and therefore stock v4.2.0-final).
+    /// `SVT_HDR_MODE=0`. Reference-specific search is selected separately.
     pub fn mainline() -> Self {
         Self {
             mode: SvtHdrMode::Mainline,

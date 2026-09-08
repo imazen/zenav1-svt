@@ -29,7 +29,9 @@
 # Env:    IF_TIER, IF_PRESETS, IF_QPS, IF_SIZES, IF_CONTENTS,
 #         IF_REAL_N (images per real corpus, default 6),
 #         CID22_DIR / GB82_DIR / SCREEN_DIR (real-tier corpora),
-#         IF_CELL_TIMEOUT (default 180s)
+#         IF_CELL_TIMEOUT (default 180s),
+#         IF_ARTIFACT_DIR (retain input, streams, logs and settings per cell),
+#         IF_BIT_DEPTH (8 default, or native 10; applied to BOTH encoders)
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -41,6 +43,13 @@ OUT="${1:-$RS_ROOT/benchmarks/identity_full_8bit_latest.tsv}"
 TIER="${IF_TIER:-synthetic dims}"
 CELL_TIMEOUT="${IF_CELL_TIMEOUT:-180}"
 REAL_N="${IF_REAL_N:-6}"
+BIT_DEPTH="${IF_BIT_DEPTH:-8}"
+case "$BIT_DEPTH" in 8|10) ;; *) echo 'IF_BIT_DEPTH must be 8 or 10' >&2; exit 2 ;; esac
+ARTIFACT_DIR="${IF_ARTIFACT_DIR:-}"
+if [[ -n "$ARTIFACT_DIR" ]]; then
+  mkdir -p "$ARTIFACT_DIR"
+  ARTIFACT_DIR=$(cd "$ARTIFACT_DIR" && pwd)
+fi
 CID22_DIR="${CID22_DIR:-$HOME/work/zen/codec-corpus/CID22/CID22-512}"
 GB82_DIR="${GB82_DIR:-$HOME/work/zen/codec-corpus/gb82}"
 SCREEN_DIR="${SCREEN_DIR:-$HOME/work/zen/codec-corpus/gb82-sc}"
@@ -62,8 +71,8 @@ trap 'rm -rf "$W"' EXIT
 # Warming here collapses the per-cell build to a no-op stat check and makes the
 # race window a single serialized step instead of one per cell.
 echo "== warming the port and C drivers (freshness check runs per invocation) ==" >&2
-$LOWPRI "$RUN" uniform 64 64 40 13 "$W/warm" >/dev/null 2>&1 || true
-SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" 64 64 40 13 "$W/warm.yuv" "$W/warm.obu" 8 >/dev/null 2>&1 || true
+SVTAV1_BD="$BIT_DEPTH" $LOWPRI "$RUN" uniform 64 64 40 13 "$W/warm" >/dev/null 2>&1 || true
+SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" 64 64 40 13 "$W/warm.yuv" "$W/warm.obu" "$BIT_DEPTH" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
 # KNOWN-DIVERGING cells. Format: "<content> <w> <h> <qp> <preset>".
@@ -121,10 +130,21 @@ printf 'content\twidth\theight\tqp\tpreset\tc_bytes\tport_bytes\tverdict\n' >"$O
 cell() {
   local content=$1 w=$2 h=$3 qp=$4 p=$5
   local name="$content $w $h $qp $p"
-  if ! timeout "$CELL_TIMEOUT" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
-       >/dev/null 2>&1 &&
-     ! timeout "$CELL_TIMEOUT" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
-       >/dev/null 2>&1; then
+  # A fresh directory per invocation also preserves failed attempts without
+  # stale outputs from an earlier cell being mistaken for this one's output.
+  # The local W shadows the disposable sweep scratch only in this function;
+  # the EXIT trap still removes the outer scratch, never retained evidence.
+  local W="$W"
+  if [[ -n "$ARTIFACT_DIR" ]]; then
+    W=$(mktemp -d "$ARTIFACT_DIR/cell.XXXXXXXX") || exit 2
+    printf 'content=%s\nwidth=%s\nheight=%s\nqp=%s\npreset=%s\nbit_depth=%s\n' \
+      "$content" "$w" "$h" "$qp" "$p" "$BIT_DEPTH" >"$W/settings.txt"
+    printf '%s\t%s\n' "$W" "$name" >>"$ARTIFACT_DIR/index.tsv"
+  fi
+  if ! SVTAV1_BD="$BIT_DEPTH" timeout "$CELL_TIMEOUT" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
+       >"$W/rs.log" 2>&1 &&
+     ! SVTAV1_BD="$BIT_DEPTH" timeout "$CELL_TIMEOUT" $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
+       >>"$W/rs.log" 2>&1; then
     errs=$((errs+1)); err_cells+=("$name[rs]")
     printf '%s\t%s\t%s\t%s\t%s\t-\t-\tRS_ERR\n' "$content" "$w" "$h" "$qp" "$p" >>"$OUT"
     return
@@ -132,9 +152,9 @@ cell() {
   # Retried ONCE: the only observed harness error was a transient driver-build
   # race. A genuine failure reproduces, and still fails the gate.
   if ! timeout "$CELL_TIMEOUT" env SVT_TRACE_OUT=/dev/null $LOWPRI \
-       "$CT" "$w" "$h" "$qp" "$p" "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1 &&
+       "$CT" "$w" "$h" "$qp" "$p" "$W/rs.yuv" "$W/c.obu" "$BIT_DEPTH" >"$W/c.log" 2>&1 &&
      ! timeout "$CELL_TIMEOUT" env SVT_TRACE_OUT=/dev/null $LOWPRI \
-       "$CT" "$w" "$h" "$qp" "$p" "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1; then
+       "$CT" "$w" "$h" "$qp" "$p" "$W/rs.yuv" "$W/c.obu" "$BIT_DEPTH" >>"$W/c.log" 2>&1; then
     errs=$((errs+1)); err_cells+=("$name[c]")
     printf '%s\t%s\t%s\t%s\t%s\t-\t-\tC_ERR\n' "$content" "$w" "$h" "$qp" "$p" >>"$OUT"
     return
@@ -154,6 +174,7 @@ cell() {
     fail=$((fail+1)); failed+=("$name [C=$cb port=$pb]"); v=DIFFERS
   fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$content" "$w" "$h" "$qp" "$p" "$cb" "$pb" "$v" >>"$OUT"
+  printf '%s\n' "$v" >"$W/verdict.txt"
 }
 
 # --- TIER: synthetic -------------------------------------------------------
@@ -262,7 +283,7 @@ fi
 
 total=$((pass + fail + promoted))
 echo
-echo "8-bit identity: $pass / $total byte-identical  (+$pinned pinned, $errs harness errors)"
+echo "$BIT_DEPTH-bit identity: $pass / $total byte-identical  (+$pinned pinned, $errs harness errors)"
 echo "scoreboard: $OUT"
 
 if ((errs)); then

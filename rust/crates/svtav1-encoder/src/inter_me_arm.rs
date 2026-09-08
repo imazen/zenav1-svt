@@ -453,7 +453,7 @@ impl FrameMe {
 #[derive(Clone, Copy, Debug)]
 pub struct FrameMeParams {
     /// C `enc_mode`.
-    pub enc_mode: u8,
+    pub enc_mode: i8,
     /// CLI qp 0..63 (C `pcs->picture_qp`, which `sig_deriv_me`'s qp-based
     /// threshold scaling reads).
     pub qp: u8,
