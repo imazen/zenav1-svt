@@ -1748,6 +1748,12 @@ for witness in cached_chroma_at_partial_right_edge native_odd_chroma_filter_boun
   fi
 done
 
+# 2026-09-08 — research -1 bypassed the full partition-search path because
+# its live dispatch matched only 0..=5. Before: Rust 299B / C 283B, different
+# reconstruction and restoration. After extending the gate to -1..=5:
+# 283B and all 2690 tile operations identical (myzskwqo).
+byte "research-full-partition-dispatch" gradient 64 64 40 -1 8
+
 total=$((pass + fail))
 echo
 echo "regression spot-check: $pass / $total"

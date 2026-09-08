@@ -100,3 +100,12 @@ Retained input, streams, decoded planes, traces and verbose report:
 `/home/lilith/tmp/svt-tracking/research-screen-spotcheck.log`; workspace log:
 `/home/lilith/tmp/svt-tracking/research-screen-nextest.log`. Full research matrix
 and full pre-landing identity sweep remain outstanding.
+
+The first witness is now fixed (local jj `myzskwqo`): the live `use_pd0`
+dispatch still matched only presets 0..=5, sending -1 through the old fallback
+partition recursion. Extending it to -1..=5 makes the witness **283 bytes and
+all 2,690 tile operations identical**. Independent aomdec output also matches
+C byte-for-byte. All 2,615 workspace tests pass; a before/after witness is now
+in `regression_spotcheck.sh`. This is one enabled witness, not the full matrix.
+The suite’s new `IF_ARTIFACT_DIR` option retains each cell’s source, encoded
+streams, settings and logs, indexed in `index.tsv`, for expanded research work.

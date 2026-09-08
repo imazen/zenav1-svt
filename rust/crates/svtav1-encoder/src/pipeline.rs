@@ -11776,7 +11776,7 @@ fn encode_tile_rows(
                 // was built to replace. They are gone; the funnel's inter
                 // candidate (item 1b) is what makes taking them off pay.
                 let use_pd0 = speed_config.preset >= 6
-                    || (matches!(speed_config.preset, 0..=5) && use_funnel);
+                    || (matches!(speed_config.preset, -1..=5) && use_funnel);
                 // CLI-qp-calibrated lambda via the exact inverse mapping
                 // (see qp_to_lambda's domain note). On the PD0 fixed-tree
                 // path the leaf funnel must be preset-INDEPENDENT like
