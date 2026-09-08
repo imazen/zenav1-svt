@@ -129,6 +129,179 @@ fn pristine_and_hybrid_chroma_reference_matches_c() {
     );
 }
 
+#[test]
+fn zen_research_intra_edges_match_decoder() {
+    use svtav1::avif::{AvifEncoder, NativePreset, SvtReference, ZenEnhancement};
+    let raw8 = include_bytes!("fixtures/reference_chroma/diag64-8.yuv");
+    let raw10: Vec<u16> = include_bytes!("fixtures/reference_chroma/diag64-10.yuv")
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    for depth in [8, 10] {
+        let mut p = EncodePipeline::new_with_preset(
+            64,
+            64,
+            NativePreset::RESEARCH,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: 48,
+                ..RcConfig::default()
+            },
+            0,
+            1,
+        )
+        .with_chroma_420(true)
+        .with_bit_depth(depth)
+        .with_recon_output(true);
+        p.reference = SvtReference::Mainline420;
+        // A sequence-header flag alone changes bytes. Require an actual pixel
+        // effect as well, with the same native -1 configuration and source.
+        let native_recon: Vec<u8> = if depth == 8 {
+            p.try_encode_frame_420(&raw8[..4096], &raw8[4096..5120], &raw8[5120..], 64)
+                .unwrap();
+            crop(p.last_recon.as_ref().unwrap(), 64, 64, 64)
+        } else {
+            p.try_encode_frame_420_hbd(&raw10[..4096], &raw10[4096..5120], &raw10[5120..], 64)
+                .unwrap();
+            crop(p.last_recon10_final.as_ref().unwrap(), 64, 64, 64)
+                .into_iter()
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        };
+        p.enhancements = p.enhancements.with(ZenEnhancement::AomIntraEdgeFilter);
+        let (obu, expected) = if depth == 8 {
+            let obu = p
+                .try_encode_frame_420(&raw8[..4096], &raw8[4096..5120], &raw8[5120..], 64)
+                .unwrap();
+            (obu, crop(p.last_recon.as_ref().unwrap(), 64, 64, 64))
+        } else {
+            let obu = p
+                .try_encode_frame_420_hbd(&raw10[..4096], &raw10[4096..5120], &raw10[5120..], 64)
+                .unwrap();
+            (
+                obu,
+                crop(p.last_recon10_final.as_ref().unwrap(), 64, 64, 64)
+                    .into_iter()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+            )
+        };
+        let native: &[u8] = if depth == 8 {
+            include_bytes!("fixtures/reference_chroma/diag64-8-p-1-mainline.obu")
+        } else {
+            include_bytes!("fixtures/reference_chroma/diag64-10-p-1-mainline.obu")
+        };
+        assert_ne!(obu, native, "experiment must change the encoded policy");
+        assert_ne!(
+            expected, native_recon,
+            "intra-edge filtering must affect pixels at depth {depth}"
+        );
+        decode_eq(&format!("zen-intra-edge-{depth}"), &obu, &expected);
+        if depth == 8 {
+            let enc = AvifEncoder::new()
+                .with_quality(24.57)
+                .with_native_preset(NativePreset::RESEARCH)
+                .with_reference(SvtReference::Mainline420)
+                .with_color_space(2, 2, 2, false)
+                .with_enhancement(ZenEnhancement::AomIntraEdgeFilter);
+            assert!(
+                enc.enhancements()
+                    .contains(ZenEnhancement::AomIntraEdgeFilter)
+            );
+            assert_eq!(
+                enc.encode_yuv420(&raw8[..4096], &raw8[4096..5120], &raw8[5120..], 64, 64, 64)
+                    .unwrap()
+                    .data,
+                obu
+            );
+            assert!(enc.with_speed(1).validate_configuration().is_err());
+        }
+    }
+}
+
+#[test]
+fn zen_intra_edges_at_partial_frames_and_tiles() {
+    use svtav1::avif::{NativePreset, SvtReference, ZenEnhancement};
+    use svtav1_encoder::entropy::obu::TileGrid;
+    for enabled in [false, true] {
+        for (w, h, rows, cols) in [(65usize, 67usize, 0, 0), (128, 128, 1, 0), (128, 128, 0, 1)] {
+            for depth in [8, 10] {
+                for qp in [0, 20, 48] {
+                    let mut p = EncodePipeline::new_with_preset(
+                        w as u32,
+                        h as u32,
+                        NativePreset::RESEARCH,
+                        RcConfig {
+                            mode: RcMode::Cqp,
+                            qp,
+                            ..Default::default()
+                        },
+                        0,
+                        1,
+                    )
+                    .with_bit_depth(depth)
+                    .with_chroma_420(true)
+                    .with_recon_output(true)
+                    .with_tile_rows_log2(rows)
+                    .with_tile_cols_log2(cols);
+                    p.reference = SvtReference::Mainline420;
+                    if enabled {
+                        p.enhancements = p.enhancements.with(ZenEnhancement::AomIntraEdgeFilter);
+                    }
+                    let grid = TileGrid::resolve(p.width, p.height, p.sb_size as u32, rows, cols);
+                    assert_eq!(
+                        (grid.tile_rows_log2, grid.tile_cols_log2),
+                        (rows, cols),
+                        "tile witness must not clamp away"
+                    );
+                    let y: Vec<u8> = (0..w * h)
+                        .map(|i| {
+                            ((i % w * 3 + i / w * 5 + (i % w > i / w) as usize * 64) % 256) as u8
+                        })
+                        .collect();
+                    let c = w.div_ceil(2) * h.div_ceil(2);
+                    let u: Vec<u8> = (0..c).map(|i| (80 + i * 7 % 90) as u8).collect();
+                    let v: Vec<u8> = (0..c).map(|i| (90 + i * 11 % 100) as u8).collect();
+                    let (obu, expected) = if depth == 8 {
+                        let obu = p.try_encode_frame_420(&y, &u, &v, w).unwrap();
+                        (
+                            obu,
+                            crop(p.last_recon.as_ref().unwrap(), p.width as usize, w, h),
+                        )
+                    } else {
+                        let native = |s: &[u8]| {
+                            s.iter()
+                                .enumerate()
+                                .map(|(i, &v)| (u16::from(v) << 2) + (i % 4) as u16)
+                                .collect::<Vec<_>>()
+                        };
+                        let obu = p
+                            .try_encode_frame_420_hbd(&native(&y), &native(&u), &native(&v), w)
+                            .unwrap();
+                        let recon = crop(
+                            p.last_recon10_final.as_ref().unwrap(),
+                            p.width as usize,
+                            w,
+                            h,
+                        )
+                        .into_iter()
+                        .flat_map(u16::to_le_bytes)
+                        .collect();
+                        (obu, recon)
+                    };
+                    decode_eq(
+                        &format!(
+                            "zen-edge-enabled{enabled}-{w}x{h}-d{depth}-q{qp}-tiles{rows}-{cols}"
+                        ),
+                        &obu,
+                        &expected,
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn pipeline(w: usize, h: usize, preset: u8, quality: f32, depth: u8) -> EncodePipeline {
     EncodePipeline::new(
         w as u32,
@@ -181,6 +354,9 @@ fn decode_eq(name: &str, obu: &[u8], expected: &[u8]) {
         String::from_utf8_lossy(&output.stderr)
     );
     let decoded = fs::read(dir.join("decoded.yuv")).unwrap();
+    if decoded != expected {
+        fs::write(dir.join("expected.yuv"), expected).unwrap();
+    }
     assert_eq!(decoded.len(), expected.len());
     assert!(
         decoded == expected,

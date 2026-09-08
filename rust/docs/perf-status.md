@@ -1,5 +1,17 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **Corrected intra-edge ablation (2026-09-08, local):**
+> [Completed canonical size/quality/time report](../../../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_INTRA_EDGE.md).
+> 120 encodes / 40 deterministic cells; all 20 SVT cells reproduce exact
+> measured bytes and match decoder reconstruction. Enabling intra-edge at
+> pristine native −1 costs about 1.4%/1.7% more bytes at the bracketed
+> photo70/screenshot80 SSIM2 targets, with extra time. Remains opt-in. The
+> superseded pre-fix photo gain disappeared after correcting UV neighbor
+> ownership across 4x4 luma splits. Full current normal8/research parity
+> refresh and 2,626 workspace / 136 regression checks pass; this is a
+> two-source pilot, not a calibrated routing policy.
+
+
 > **Batched IntraBC SAD, local continuation (2026-09-08):** `d78559a2`
 > shares source loads across the four mesh candidates and vectorizes width4.
 > Three-round canonical screenshot QP20 repeat: **13.528s→6.106s**, unchanged

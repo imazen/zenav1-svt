@@ -24,6 +24,8 @@
 #[path = "animation.rs"]
 pub mod animation;
 
+/// Explicit, uncalibrated Zen experiments for the region beyond native −1.
+pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
 /// Pinned C source identity, separate from speed and policy.
 pub use svtav1_encoder::reference::SvtReference;
 /// Checked C preset domain, including research -1.
@@ -106,6 +108,7 @@ pub struct AvifEncoder {
     speed: u8,
     native_preset: Option<NativePreset>,
     reference: SvtReference,
+    enhancements: ZenEnhancements,
     /// Bit depth (8, 10, or 12).
     bit_depth: u8,
     /// Chroma subsampling format.
@@ -153,6 +156,7 @@ impl AvifEncoder {
             speed: 6,
             native_preset: None,
             reference: SvtReference::Hybrid3115,
+            enhancements: ZenEnhancements::default(),
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
             threads: None,
@@ -268,6 +272,18 @@ impl AvifEncoder {
     /// The source identity that encoding will use.
     pub fn reference(&self) -> SvtReference {
         self.reference
+    }
+
+    /// Enable an explicit experiment beyond native −1. No automatic selection
+    /// or quality improvement is implied; other native presets are refused.
+    pub fn with_enhancement(mut self, enhancement: ZenEnhancement) -> Self {
+        self.enhancements = self.enhancements.with(enhancement);
+        self
+    }
+
+    /// Inspect the exact experiment set used by encoding.
+    pub fn enhancements(&self) -> ZenEnhancements {
+        self.enhancements
     }
 
     /// The effective native preset after still-image canonicalization.
@@ -432,6 +448,7 @@ impl AvifEncoder {
         .with_thread_count(self.threads.unwrap_or(0));
         pipeline.bit_depth = self.bit_depth;
         pipeline.reference = self.reference;
+        pipeline.enhancements = self.enhancements;
         pipeline.color_description = self.color_description();
         // Issue #9 item 7: the two knobs that were recorded-and-ignored are
         // now the real pipeline settings. Defaults are off, so this is
@@ -663,6 +680,13 @@ impl AvifEncoder {
     /// Source dimensions, strides and buffer lengths are validated separately.
     pub fn validate_configuration(&self) -> Result<(), EncodeError> {
         self.validate_quality()?;
+        self.enhancements
+            .validate(
+                self.resolved_native_preset().value(),
+                true,
+                self.chroma_subsampling == ChromaSubsampling::Yuv420,
+            )
+            .map_err(EncodeError::UnsupportedConfig)?;
         self.validate_inert_knobs(true)
     }
 

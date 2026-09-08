@@ -259,3 +259,50 @@ for size/quality/time, conversion ceilings and exact source/build provenance.
 The screenshot's Rust -1 is5.4xC time atQP20 despite byte identity; profiling
 is in progress. All five libaom/Rust AOM screenshot cells differ, recorded
 separately. Neither observation licenses disabling SVT's research tools.
+
+## Zen continuation: explicit AOM intra-edge experiment (2026-09-08)
+
+`ZenEnhancement::AomIntraEdgeFilter` (`aom-intra-edge-filter-v1`) is now
+available through `AvifEncoder::with_enhancement` and `EncodePipeline.enhancements`.
+It requires native -1, all-intra and 420, and defaults off. It is an isolated
+experiment on top of the named reference, not C parity or a calibrated effort
+bundle. The override reaches both sequence signaling and the funnel after
+`intra_arm::apply`, including native10 prediction. The identity runner accepts
+`SVTAV1_ZEN_INTRA_EDGE_FILTER=1`; the static comparator records the explicit
+reference and override and verifies serialized settings replay the same output.
+
+Enabled geometry coverage exposed a real chroma reconstruction defect:
+128x128, QP20, native8, two tile rows differed at final UV byte17397. Luma
+was exact, and dav1d with filters disabled showed the first coding-order error
+in chroma prediction for the 8x16 luma block at (24,32). The above 8x8 group
+was split into 4x4 luma blocks: the (28,28) chroma owner had smooth UV mode9,
+but `filt_type_uv` read the non-owner at (24,28), mode2. Choosing the correct
+column alone fixed QP20 but still failed QP48: luma-only children overwrote
+the UV neighbor maps before their group's owner predicted chroma.
+
+The correction records UV modes only for chroma owners, across their complete
+8x8 luma group, selects bottom-right owner coordinates and excludes unavailable
+neighbors at rounded chroma tile boundaries. This follows
+`adaptive_mv_pred.c::svt_aom_init_xd` and `enc_intra_prediction.c::get_filt_type`.
+No angular modes, partition shapes or assertions were disabled.
+
+Checks after the correction: 2,626/2,626 workspace tests, zero skipped;
+136/136 regression spotchecks.
+`zen_intra_edges_at_partial_frames_and_tiles` checks 36 off/on encodes across
+8/native10, QP0/20/48, odd65x67 and128x128 row/column tile boundaries; all
+independently decoded pixels equal encoder reconstruction. A separate64x64
+witness proves the enabled option actually changes reconstructed pixels and
+is reachable through the public wrapper. Both are in regression_spotcheck.
+Refreshed parity passes1,100 hybrid normal8,1,100 pristine normal8 and320
+pristine research cells (160 per native depth).
+
+The first120-encode canonical photo/screenshot ablation completed on the
+PRE-FIX encoder, so it does not establish the corrected implementation's RD
+tradeoff. Its corrected120-encode replacement is complete; all20 SVT cells
+also pass exact-byte/encoder-reconstruction replay. At bracketed SSIM2 targets
+70/photo and80/screenshot, filtering costs1.4%/1.7% more bytes and extra time.
+Keep it opt-in. Results and durable artifact location:
+`../../../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_INTRA_EDGE.md`. Artifacts: ~/tmp/av1-imazen26-intra-edge-2026-09-08;
+logs: ~/tmp/svt-tracking/zen-edge-{mismatch-trace,chroma-owner-map-fix,
+owner-final-nextest,owner-spotcheck}.log. The larger policy/routing/corpus goal
+remains open.

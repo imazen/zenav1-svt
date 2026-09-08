@@ -1,3 +1,48 @@
+Latest completed chunk: opt-in AOM intra-edge at native-1, with chroma-owner
+prediction fixed and corrected RD measurements collected. All jobs terminal.
+Workspace2626/2626; regression136/136; comparator6/6. Refreshed C byte gates:
+hybrid normal8 1100/1100, pristine normal8 1100/1100, pristine research320/320
+(160 each native8/10). Their846 unique streams equal the previously decoded
+set exactly. New off/on geometry36/36 and measured SVT replay20/20 separately
+match all decoder reconstruction samples. No settings/gates were disabled.
+Evidence: rust/benchmarks/intra-edge-parity-2026-09-08.json.
+
+Corrected measurement completed120 encodes/40 cells/3 rounds, timed binary
+f8581baed256acc7bd30f638b063b5a47a651be4c0d620ceb126de61c2bfefb6.
+Separate untimed comparator verify-measurement (verifier b97d592f...) checks
+prepared input hashes, exact original OBU replay and all reconstructed samples;
+it has NOT yet been made automatic in measure/fleet execution. Important next
+harness work before broader scouts: wire untimed verification after timing,
+with retained failure artifacts through the existing zenfleet contracts.
+
+Matched-quality QP20..32 estimates: photoSSIM2=70 native26333B/3236ms versus
+intra-edge26701B/3388ms; screenshotSSIM2=80 native11434B/6490ms versus
+intra-edge11629B/6557ms. The corrected feature remains opt-in, not a selected
+automatic default. Tiny photoQP5/12 gains remain bounded pilot observations.
+The PRE-FIX apparent photoQP20 quality gain is superseded. Complete report:
+../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_INTRA_EDGE.md.
+
+Durable LAN-store archive, uploaded and downloaded SHA256-verified:
+s3://zentrain/benchmarks/av1-compare/2026-09-08/intra-edge-corrected/evidence-3a644bc6f4c30fc3da0d3342632cc7a1325ea7695537965159d5ea75dd9197e4.tar.gz
+709384601 bytes; contains corrected and superseded raw measurements, all fresh
+parity runs, measured/verifier binaries, pinned C sources and2359 exact measured
+source files recovered to match provenance hashes. Local artifact root:
+~/tmp/av1-imazen26-intra-edge-corrected-2026-09-08. Archive/upload script/log:
+~/tmp/svt-tracking/{archive-intra-edge.py,intra-edge-archive-upload.log}.
+Issue21 body updated and verified2026-09-08T08:21:35Z; main fetch unchanged.
+No push or CI. Policy/effort/replay, actual zenavif routing, canonical fleet
+RD-zone scouting/minimum representatives and old real-image parity remain.
+
+Next AOM candidate audited, not implemented: restoration unit-size search
+64/128/256. restoration.rs::search_restoration_still_bd_with_stop fixes256;
+it computes per-plane best RD but discards the cost in FrameRestInfo. A Zen
+search must compare legal unit sizes with actual header/unit signaling cost,
+retain default C behavior, and reach both native depths and header unit_size.
+pipeline.rs calls it around6302/6319 and signals rest_info around6473. Unit
+mapping tests already cover64/128/256 but do not prove size SEARCH or output
+reconstruction. Do not merely change the constant or header field.
+
+Historical reference-work summary (superseded where noted above):
 Latest implementation: local kmmkunzl wires SvtReference::{Mainline420,
 Hybrid3115} through EncodePipeline and AvifEncoder into independent chroma
 ranking. Legacy constructors retain hybrid SAD; explicit Mainline420 uses

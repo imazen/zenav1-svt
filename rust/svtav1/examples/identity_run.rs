@@ -869,6 +869,18 @@ fn main() {
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
     configure_grain(&mut pipeline);
     pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
+    if let Ok(value) = std::env::var("SVTAV1_ZEN_INTRA_EDGE_FILTER") {
+        match value.as_str() {
+            "0" => {}
+            "1" => {
+                pipeline.enhancements = pipeline
+                    .enhancements
+                    .with(svtav1_encoder::enhancements::ZenEnhancement::AomIntraEdgeFilter);
+                eprintln!("SVTAV1_ENHANCEMENT=aom-intra-edge-filter-v1");
+            }
+            _ => panic!("SVTAV1_ZEN_INTRA_EDGE_FILTER must be 0 or 1"),
+        }
+    }
     if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
         pipeline.reference = reference
             .parse()

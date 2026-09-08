@@ -24,6 +24,7 @@ pub mod dist_facade;
 pub mod dlf_arm;
 pub(crate) mod encdec_arm;
 pub mod encode_loop;
+pub mod enhancements;
 pub mod entropy;
 pub mod film_grain;
 pub mod film_grain_config;

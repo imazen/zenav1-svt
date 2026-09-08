@@ -29,6 +29,9 @@ pub struct EncodePipeline {
     /// Pinned source identity, independent of HDR mode. Legacy constructors
     /// retain Hybrid3115; select Mainline420 for pristine chroma ranking.
     pub reference: crate::reference::SvtReference,
+    /// Explicit Zen experiments, separate from the reference identity.
+    /// Empty by default. Nonempty settings do not claim C parity.
+    pub enhancements: crate::enhancements::ZenEnhancements,
     /// SVT_HDR_MODE mirror and fork knobs, separate from the source identity.
     /// Defaults to Mainline = all fork behavior off; callers opt in with
     /// `pipe.hdr = HdrForkConfig::hdr_fork()` after construction.
@@ -447,6 +450,7 @@ impl EncodePipeline {
         Self {
             hdr: crate::hdr_mode::HdrForkConfig::default(),
             reference: crate::reference::SvtReference::Hybrid3115,
+            enhancements: crate::enhancements::ZenEnhancements::default(),
             film_grain: Default::default(),
             prepared_grain: None,
             grain_references: core::array::from_fn(|_| None),
@@ -1815,6 +1819,16 @@ impl EncodePipeline {
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
     ) -> crate::EncodeResult<Vec<u8>> {
+        self.enhancements
+            .validate(
+                self.speed_config.preset,
+                self.gop.intra_period <= 1,
+                chroma.is_some(),
+            )
+            .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
+        let zen_intra_edge_filter = self
+            .enhancements
+            .contains(crate::enhancements::ZenEnhancement::AomIntraEdgeFilter);
         self.reference
             .validate_hdr_config(&self.hdr)
             .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
@@ -3440,6 +3454,7 @@ impl EncodePipeline {
             // filtering — signaling 0 keeps our recon decoder-exact on
             // that self-consistent surface.
             t.enable_intra_edge_filter &= self.chroma_420;
+            t.enable_intra_edge_filter |= zen_intra_edge_filter;
             // Small-frame implementation limit (enc_settings.c:214-232):
             // when the TRUE source width OR height is < 64, C force-clears
             // enable_restoration_filtering (and aq_mode, already off on the
@@ -4296,6 +4311,7 @@ impl EncodePipeline {
             self.hdr.max_tx_size,
             coded_lossless,
             self.reference,
+            zen_intra_edge_filter,
             self.thread_count,
             &stop,
         )?;
@@ -7324,9 +7340,9 @@ pub(crate) struct EntropyCtx {
     left_mode: Vec<u8>,
     /// Above/left UV modes (4x4 granularity) — C's chroma_above/left_mbmi
     /// uv_mode inputs to `get_filt_type(xd, plane > 0)` (the intra edge
-    /// filter's smooth-neighbour strength selector). With min-8x8 blocks
-    /// every mi of a neighbour block carries the same uv mode, so the
-    /// luma-granular arrays reproduce C's bottom-right-of-group pick.
+    /// filter's smooth-neighbour strength selector). Only chroma owners
+    /// update these maps; their mode covers the full 8x8 luma group even
+    /// when the coded owner itself is a 4x4 leaf.
     above_uv_mode: Vec<u8>,
     left_uv_mode: Vec<u8>,
     /// Above row skip flags.
@@ -8321,14 +8337,26 @@ impl EntropyCtx {
         // Fill above row with this block's mode
         for i in x4..(x4 + w4).min(self.above_mode.len()) {
             self.above_mode[i] = mode;
-            self.above_uv_mode[i] = uv_mode;
             self.above_skip[i] = skip;
         }
         // Fill left column with this block's mode
         for i in y4..(y4 + h4).min(self.left_mode.len()) {
             self.left_mode[i] = mode;
-            self.left_uv_mode[i] = uv_mode;
             self.left_skip[i] = skip;
+        }
+        // Keep chroma ownership separately from the luma mode maps. Three
+        // luma-only children of a split 8x8 must not overwrite the previous
+        // group's coded UV mode while the fourth child is predicting chroma.
+        let chroma_ref = (x4 & 1 != 0 || w4 & 1 == 0) && (y4 & 1 != 0 || h4 & 1 == 0);
+        if chroma_ref {
+            let cx = x4 & !1;
+            let cy = y4 & !1;
+            for i in cx..(cx + w4.max(2)).min(self.above_uv_mode.len()) {
+                self.above_uv_mode[i] = uv_mode;
+            }
+            for i in cy..(cy + h4.max(2)).min(self.left_uv_mode.len()) {
+                self.left_uv_mode[i] = uv_mode;
+            }
         }
     }
 
@@ -8434,13 +8462,14 @@ impl EntropyCtx {
         i32::from(ab || le)
     }
 
-    /// C `get_filt_type(xd, plane > 0)`: same over the neighbours' UV
-    /// modes (chroma_above/left_mbmi; min-8x8 blocks make the +1-mi
-    /// group offsets land in the same neighbour block).
+    /// C `get_filt_type(xd, plane > 0)` reads the CHROMA reference
+    /// neighbours selected by `svt_aom_init_xd`: round to the 8x8 luma
+    /// group, then choose its bottom-right 4x4 owner. An adjacent 4x4
+    /// luma-only block can carry a different, uncoded UV mode.
     pub(crate) fn filt_type_uv(&self, x: usize, y: usize) -> i32 {
         let smooth = |m: u8| matches!(m, 9..=11);
-        let ab = y > 0 && smooth(self.above_uv_mode[x / 4]);
-        let le = x > self.tile_left_px && smooth(self.left_uv_mode[y / 4]);
+        let ab = (y & !7) > self.tile_top_px && smooth(self.above_uv_mode[(x / 4) | 1]);
+        let le = (x & !7) > self.tile_left_px && smooth(self.left_uv_mode[(y / 4) | 1]);
         i32::from(ab || le)
     }
 
@@ -10888,6 +10917,7 @@ fn encode_tile_rows(
     // `FunnelCfg::apply_coded_lossless`).
     coded_lossless: bool,
     reference: crate::reference::SvtReference,
+    zen_intra_edge_filter: bool,
     // Feature 4 (bounded threading): the maximum number of OS threads the
     // tile loop below may run at once (0 = auto via `available_parallelism`).
     // Bounds CONCURRENCY only — tiles are always joined and appended in
@@ -11023,6 +11053,9 @@ fn encode_tile_rows(
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
             true,
         );
+        // Same explicit override as the sequence bit. All funnel prediction
+        // stages and the native10 final pass must see the decoder's policy.
+        funnel_cfg.edge_filter |= zen_intra_edge_filter;
         // `pcs->txs_level` -> `set_txs_controls`, for THIS arm
         // (`crate::txs_arm`). The arms agree at M4..M7 and diverge at M8/M9,
         // where the video ladder keeps the tx-size search on (level 3 / 4)
@@ -13320,6 +13353,32 @@ fn encode_tile_rows(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chroma_edge_filter_keeps_group_owner_across_luma_only_children() {
+        let mut above = super::EntropyCtx::new(8, 8, false, true, false, 8);
+        above.record_block(0, 0, 8, 8, 0, 9, false);
+        for (x, y) in [(0, 8), (4, 8), (0, 12)] {
+            above.record_block(x, y, 4, 4, 0, 0, false);
+        }
+        assert_eq!(above.filt_type_uv(4, 12), 1);
+        above.tile_top_px = 8;
+        assert_eq!(above.filt_type_uv(4, 12), 0);
+        above.tile_top_px = 0;
+        above.record_block(4, 12, 4, 4, 0, 0, false);
+        assert_eq!(above.filt_type_uv(0, 16), 0);
+
+        let mut left = super::EntropyCtx::new(8, 8, false, true, false, 8);
+        left.record_block(0, 0, 8, 8, 0, 10, false);
+        for (x, y) in [(8, 0), (12, 0), (8, 4)] {
+            left.record_block(x, y, 4, 4, 0, 0, false);
+        }
+        assert_eq!(left.filt_type_uv(12, 4), 1);
+        left.tile_left_px = 8;
+        assert_eq!(left.filt_type_uv(12, 4), 0);
+        left.tile_left_px = 0;
+        left.record_block(12, 4, 4, 4, 0, 0, false);
+        assert_eq!(left.filt_type_uv(16, 0), 0);
+    }
     #[test]
     fn native_coeff_neighbors_preserve_in_tile_signs_and_reset_tile_edges() {
         use super::Bd10CoeffNeighbors;
