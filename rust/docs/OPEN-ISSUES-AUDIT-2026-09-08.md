@@ -47,3 +47,19 @@ attributed history and should not override the current body.
 The [current handoff](../../CONTEXT-HANDOFF.md), [support table](API-SUPPORT-AUDIT-2026-09-08.md)
 and [documentation index](DOCUMENTATION-INDEX.md) replace the older competing
 status queues. Historical measurements and source/trace receipts were preserved.
+
+## Publication and documentation checks
+
+The cleanup landed on main as `7e971a75`. GitHub read-back verified all 15
+SVT issue bodies, titles and final states; five remain open (#4, #8, #18, #19,
+#21). [AOM owner handoff #16](https://github.com/imazen/zenav1-aom/issues/16)
+was corrected for current PR/pin/routing state, with its original requirements
+and evidence retained verbatim. This was not a full AOM source/issue audit.
+
+The index covers 359 owned Markdown/metadata documents; 421 current-document
+relative file links resolve. All ten archived repository originals match
+`0cbd1279` exactly after their provenance header. All 15 original issue bodies
+and 13 open-issue comments are preserved. Source-generated PORT-NOTE/refusal
+checks pass. Current-document whitespace checks pass; exact historical captures
+retain their original trailing whitespace. Only Markdown files changed; no
+codec tests or CI were rerun for this documentation-only cleanup.
