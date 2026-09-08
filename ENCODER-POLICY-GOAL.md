@@ -14,6 +14,16 @@ and implement measured content-adaptive search and actual backend routing.
 Complete the experiments and report size, perceptual quality and time before
 choosing defaults. Land the ready implementation after required local checks.
 
+## Current priority — resumed 2026-09-08
+
+The user subsequently requested: land current work, then settle API and routing
+first. Known cells may be marked for later revisit; nothing is abandoned.
+The prior wrap-up remains historical evidence, not an instruction to stop this
+resumed work. See [the API contract](rust/docs/ENCODER-POLICY-API.md) and
+[the explicit native10 revisit cells](rust/docs/deferred-native10-parity.json).
+The unproven depth-refine precision experiment is preserved in the pushed
+handoff history and excluded from the landing tip pending a demonstrated fix.
+
 ## Wrap-up checkpoint — 2026-09-08
 
 Implementation paused at the user's wrap-up request. The full goal below remains

@@ -1,0 +1,66 @@
+{
+  "input_fixture": "rust/tools/fixtures/partial-chroma-376x512.i420.gz",
+  "input_sha256": "35ff155ee7ca50fffdebcc4218ee684057d1794c93ce43e105222cc619d4e6c2",
+  "input_mode": "SVTAV1_BD=10 SVTAV1_HBD_SRC=1; identity_run derives native low bits from the exact 8-bit fixture",
+  "authorization": "User 2026-09-08 prioritizes landing current work then API/routing; permits marking cells for later revisit. These are failures, not passing or ignored gates.",
+  "evidence_receipt": "native10-handoff-receipt.json",
+  "preserved_precision_experiment": "554412d9: rust/crates/svtav1-encoder/src/depth_refine.rs; unproven precision edit excluded from landing tip, preserved in handoff history/archive",
+  "cells": [
+    {
+      "id": "partial-chroma-native10-p1-q10",
+      "width": 376,
+      "height": 512,
+      "bit_depth": 10,
+      "preset": 1,
+      "qp": 10,
+      "status": "open-parity-divergence",
+      "c_sha256": "1956b0c6f686c68b7b541845248a5d221a30471d1bcf5d162ca51ada66627b59",
+      "rust_sha256": "5b75358bd74d04acfd8c44ddd345ba0e087fc2a8bfbb16a293e499e540acd0d2",
+      "c_bytes": 11465,
+      "rust_bytes": 11462,
+      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+    },
+    {
+      "id": "partial-chroma-native10-p4-q10",
+      "width": 376,
+      "height": 512,
+      "bit_depth": 10,
+      "preset": 4,
+      "qp": 10,
+      "status": "open-parity-divergence",
+      "c_sha256": "6b5dafbc3fd33a18278cb02221809318a30157a64368cd363ba947ecf253d65e",
+      "rust_sha256": "26db6384dad23210def0ceb1fd2d9248bc61f7f2d0509784d92830aaf47b642d",
+      "c_bytes": 11752,
+      "rust_bytes": 11718,
+      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+    },
+    {
+      "id": "partial-chroma-native10-p4-q30",
+      "width": 376,
+      "height": 512,
+      "bit_depth": 10,
+      "preset": 4,
+      "qp": 30,
+      "status": "open-parity-divergence",
+      "c_sha256": "b350c835c279f1682b91ae27c34ac41709ffc2cc792161f511b7ec76a6784090",
+      "rust_sha256": "0afdf28a7bc12fe26cae85822cf38812cbac2f250de235743e6743b68ba77e72",
+      "c_bytes": 2827,
+      "rust_bytes": 2831,
+      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+    },
+    {
+      "id": "partial-chroma-native10-p5-q10",
+      "width": 376,
+      "height": 512,
+      "bit_depth": 10,
+      "preset": 5,
+      "qp": 10,
+      "status": "open-parity-divergence",
+      "c_sha256": "4d615964092720c9cb6e324d8afacb41b0c93ed33ed704a4b9861361c9ed56dc",
+      "rust_sha256": "fa7c8439b5830b709c54baeb314b34040268b5d36f54437f18435aa4781160c4",
+      "c_bytes": 11913,
+      "rust_bytes": 11913,
+      "independent_decode": "C and stored Rust streams accepted by system aomdec; does not close byte-parity failure"
+    }
+  ]
+}
