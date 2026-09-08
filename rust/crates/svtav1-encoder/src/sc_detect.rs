@@ -557,7 +557,7 @@ pub fn derive_sc(
     // scm mode (enc_handle.c:4638-4670): the CLI default (2) is overridden on
     // both arms — allintra <= M7 / video <= M8 auto-detect with the AA-aware
     // detector (3), above that detection is forced off (0). (User-forced 0/1
-    // and TUNE_IQ are not exposed by this encoder's config surface yet.)
+    // and TUNE_IQ are resolved by the pipeline before the coding walk.)
     let scm_auto = match arm {
         ScArm::Allintra => preset <= 7,
         ScArm::Video { .. } => preset <= 8,
@@ -576,6 +576,17 @@ pub fn derive_sc(
         ScClasses::default()
     };
 
+    derive_sc_classes(arm, preset, classes)
+}
+
+/// Derive coding tools from the resolved picture classes. Forced SCM 0/1
+/// sets all six classes before these preset-dependent ladders in C
+/// (`perform_sc_detection`, pd_process.c:4773). It does not change the preset.
+pub(crate) fn derive_sc_classes(
+    arm: ScArm,
+    preset: u8,
+    classes: ScClasses,
+) -> ScDerivation {
     // C has a PAIR of palette ladders and the two arms take different rows:
     // allintra `:2374-2390` (2/3/4/5/7 over M0..M7, off from M8) against video
     // `:2056-2075` (1/2/4/5/6/8 over M0..M10, off from M11). The video one

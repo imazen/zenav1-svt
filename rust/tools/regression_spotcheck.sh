@@ -531,6 +531,13 @@ byte "lr-align-cross-chroma-766"   gradient 766 128 40 6 8
 # streams; tune=1 matched C. The enabled tune=0 cell must match C as well.
 SVTAV1_TUNE=0 SVT_TUNE=0 byte tune0-mainline-sharpness gradient 72 88 40 8 8
 
+# Issue #17 forced screen classifications. Before SCM0 screen/p6: 204 B
+# versus C 482 B; SCM1 gradient/p6 and /p8: same sizes (279/289 B) but
+# different bytes. Force all six classes and retain the actual tool preset.
+SVTAV1_SCM=0 SVT_SCM=0 byte scm0-screen-p6 screen 72 88 40 6 8
+SVTAV1_SCM=1 SVT_SCM=1 byte scm1-gradient-p6 gradient 72 88 40 6 8
+SVTAV1_SCM=1 SVT_SCM=1 byte scm1-gradient-p8 gradient 72 88 40 8 8
+
 # ---------------------------------------------------------------------------
 # 2026-08-03 — bd10 PALETTE was gated out of the mode-decision funnel entirely.
 # 12801d936. The port coded ZERO palette blocks at 10 bits where C codes

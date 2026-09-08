@@ -99,7 +99,8 @@ pub struct HdrForkConfig {
     /// qp <= 45.
     pub max_tx_size: u8,
     /// C `static_config.screen_content_mode`. `None` = derive from the preset
-    /// exactly as C's allintra rule does; `Some(3)` = force the auto-detector
+    /// exactly as C's allintra rule does; `Some(0)` forces every class off,
+    /// `Some(1)` forces every class on; `Some(3)` = force the auto-detector
     /// on, which is what tune IQ does regardless of preset.
     pub screen_content_mode: Option<u8>,
     pub enable_qm: bool,

@@ -2312,7 +2312,26 @@ impl EncodePipeline {
         } else {
             crate::sc_detect::ScArm::Video { is_islice: is_key }
         };
-        let sc_derivation = crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h);
+        let sc_derivation = match self.hdr.screen_content_mode {
+            Some(mode @ 0..=1) => {
+                // C forces every classification, not just the header flag.
+                // Keep the real preset for palette/IntraBC tool selection.
+                let forced = mode == 1;
+                crate::sc_detect::derive_sc_classes(
+                    sc_arm,
+                    self.speed_config.preset,
+                    crate::sc_detect::ScClasses {
+                        sc_class0: forced,
+                        sc_class1: forced,
+                        sc_class2: forced,
+                        sc_class3: forced,
+                        sc_class4: forced,
+                        sc_class5: forced,
+                    },
+                )
+            }
+            _ => crate::sc_detect::derive_sc(sc_arm, sc_preset, &encode_input, w, w, h),
+        };
         // Hoisted out of the walk: `&self` is borrowed across the pack loop, and
         // this is a frame-constant. One value for the header writer and the
         // walk (see `EntropyCtx::tx_mode_select`).

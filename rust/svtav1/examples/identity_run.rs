@@ -876,6 +876,10 @@ fn main() {
     {
         pipeline.hdr.tune = v;
     }
+    // Forced C screen classification, used by the enabled issue-17 gate.
+    if let Ok(t) = std::env::var("SVTAV1_SCM") {
+        pipeline.hdr.screen_content_mode = Some(t.parse().expect("SVTAV1_SCM must be a u8"));
+    }
     // Issue #9 items 3-5 — the port-side twins of the C driver's
     // SVT_MAX_TX_SIZE / SVT_CRF_OFFSET / SVT_CSP (one env vector, both
     // encoders). Unset => defaults => every pre-existing cell unchanged.

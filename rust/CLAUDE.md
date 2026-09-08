@@ -812,6 +812,14 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed locally 2026-09-08 — forced SCM 0/1 (#17).** Both public values
+previously fell through to preset-based auto detection. They now set all six
+screen classes before deriving tools at the real preset. Three previously
+C-different 8-bit witnesses and three native 10-bit witnesses match C exactly.
+See `benchmarks/screen_controls_2026-09-08.md`; higher-level control exposure
+and broader video coverage remain tracked in #21.
+
+
 **Fixed locally 2026-09-08 — mainline tune-0 sharpness (#17).** The pipeline
 now applies C's key-frame VQ/FILM_GRAIN sharpness adjustment in mainline as
 well as HDR mode, retaining the frame-type guard and IQ/MS_SSIM caps.
