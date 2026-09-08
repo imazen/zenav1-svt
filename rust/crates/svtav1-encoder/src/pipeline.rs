@@ -11315,9 +11315,11 @@ fn encode_tile_rows(
             && funnel_cfg.allow_intrabc
         {
             let mut ctrls = crate::intrabc::IbcCtrls::for_level(tile_sc.intrabc_level);
-            // scs->qp_based_th_scaling_ctrls.intra_bc_mesh_qp_scaling is
-            // true on the allintra path (scale_mesh_patterns_by_qp doc).
-            crate::intrabc::scale_mesh_patterns_by_qp(&mut ctrls, true, cli_qp as u32);
+            // enc_handle.c:3841: all-intra MR disables this sequence flag;
+            // the default/video arm keeps it enabled even at MR.
+            let mesh_qp_scaling =
+                !matches!(sc_arm, crate::sc_detect::ScArm::Allintra) || speed_config.preset > -1;
+            crate::intrabc::scale_mesh_patterns_by_qp(&mut ctrls, mesh_qp_scaling, cli_qp as u32);
             let hash = crate::intrabc_hash::generate_ibc_data(
                 encode_input,
                 w,

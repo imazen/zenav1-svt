@@ -599,7 +599,7 @@ pub(crate) fn derive_sc_classes(arm: ScArm, preset: i8, classes: ScClasses) -> S
         ScArm::Allintra => {
             if classes.sc_class5 {
                 match preset {
-                    0..=2 => 2,
+                    -1..=2 => 2,
                     3 => 3,
                     4..=5 => 4,
                     6 => 5,

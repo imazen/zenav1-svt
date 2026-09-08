@@ -353,15 +353,14 @@ impl IbcCtrls {
 
 /// C `svt_aom_sig_deriv_multi_processes_allintra`'s intra-BC level table
 /// (enc_mode_config.c:2337-2360), sc_class5-gated. `preset` is the allintra
-/// enc_mode (M0..=M4 reachable; M5+ and !sc_class5 both yield level 0 =
-/// disabled). MR tier (level 1) is not reachable from this port's `u8`
-/// preset surface (mirrors `sc_detect.rs::derive_allintra_sc`'s identical
-/// `palette_level` table shape and its same MR-unreachable note).
+/// enc_mode (-1..=M4 reachable; M5+ and !sc_class5 yield level 0).
+/// Research uses level 1: full mesh search without the normal pruning hints.
 pub fn allintra_intrabc_level(preset: i8, sc_class5: bool, enable_intrabc: bool) -> u8 {
     if !enable_intrabc || !sc_class5 {
         return 0;
     }
     match preset {
+        -1 => 1,
         0 => 3,
         1 => 4,
         2 => 5,

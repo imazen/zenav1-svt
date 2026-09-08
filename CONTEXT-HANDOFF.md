@@ -1,3 +1,12 @@
+Latest research checkpoint (2026-09-08): signed transport, lambda weighting,
+asymmetric partition/pruning/reuse and CDEF UV masks are in local jj ancestors.
+Current screen-tool wiring passes 2,615 tests and 127/127 normal byte regressions.
+First native -1 gradient 64x64 QP40 witness independently decodes but mismatches:
+Rust 299B, C 283B. Retained traces/report in ~/tmp/svt-tracking/research-first/.
+No heavy job remains live. Continue root-cause diagnosis; do not claim research
+parity, push/CI readiness, or a measured imazen-26 subset. See the durable
+research-preset-port-map.md for specifics.
+
 # zenav1-svt — handoff
 
 **This file is an INDEX, not a record.** Everything durable lives in the docs

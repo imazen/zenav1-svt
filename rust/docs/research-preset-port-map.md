@@ -79,7 +79,24 @@ has asymmetric partition context/offset arms; validate those with chosen
 asymmetric blocks rather than assuming source presence is sufficient.
 
 Screen-tool audit found two additional signed-ladder omissions: the live
-all-intra palette match excludes -1 (C uses level 2), and the IntraBC match
-excludes -1 (C uses level 1). The sequence-level IntraBC mesh scaling flag is
-false at all-intra MR. These consumers must be wired before screening research
-output; their control tables already exist.
+all-intra palette match excluded -1 (C uses level 2), and the IntraBC match
+excluded -1 (C uses level 1). Both live ladders are now wired. The sequence-level
+IntraBC mesh scaling flag is now false at all-intra MR, preserving the video
+arm’s true flag. The revision passes 2,615 workspace tests and 127/127 normal
+byte regression checks.
+
+## First retained research output witness
+
+`gradient 64x64 QP40 preset -1`, native 8-bit, reference HDR mode 0:
+Rust 299 bytes, C 283 bytes. Both streams independently decode with aomdec.
+They are **not byte-identical**. Sequence headers agree; the first parsed frame
+header difference is luma loop filter 9 in Rust versus 0 in C. CDEF and tile
+payload also differ. The first canonical tile operation difference lies in the
+SGR restoration literal run; this is localization, not a proven root cause.
+Do not disable restoration or asymmetric search to make this witness pass.
+
+Retained input, streams, decoded planes, traces and verbose report:
+`/home/lilith/tmp/svt-tracking/research-first/`. Normal spot-check log:
+`/home/lilith/tmp/svt-tracking/research-screen-spotcheck.log`; workspace log:
+`/home/lilith/tmp/svt-tracking/research-screen-nextest.log`. Full research matrix
+and full pre-landing identity sweep remain outstanding.
