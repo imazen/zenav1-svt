@@ -231,6 +231,8 @@ pub struct EncodePipeline {
     /// frame types (0 NONE / 1 WIENER) + the number of RUs that signaled
     /// wiener. Zeroed when the search does not run.
     pub last_lr_stats: ([u8; 3], usize),
+    /// Selected restoration unit size; None when the restoration search did not run.
+    pub last_lr_unit_size: Option<usize>,
     /// Requested `TileRowsLog2` (C `static_config.tile_rows` —
     /// EbSvtAv1Enc.h:607-611: "0 means no tiling, 1 means split into 2").
     /// Default 0 = single tile row (unchanged pre-task-#86 behavior).
@@ -496,6 +498,7 @@ impl EncodePipeline {
             last_cdef_stats: crate::cdef::CdefStats::default(),
             last_cdef_signaled: None,
             last_lr_stats: ([0; 3], 0),
+            last_lr_unit_size: None,
             tile_rows_log2: 0,
             tile_cols_log2: 0,
             sb_size,
@@ -6106,6 +6109,7 @@ impl EncodePipeline {
         // (svt_av1_loop_restoration_filter_frame). Prediction sources are
         // untouched — the decoder's split.
         self.last_lr_stats = ([0; 3], 0);
+        self.last_lr_unit_size = None;
         let mut lr_signal = crate::entropy::obu::LrSignal::none(seq_tools.enable_restoration);
         let decoder_chroma_recon = self.recon_output
             && chroma.is_some()
@@ -6299,7 +6303,7 @@ impl EncodePipeline {
                                 widen_tight(sv, cw, lr_tcw, lr_tch),
                             ),
                         };
-                        crate::restoration::search_restoration_still_bd_with_stop(
+                        crate::restoration::search_restoration_still_configured_with_stop(
                             &ctrls,
                             &sg_ctrls,
                             &lr_sy10,
@@ -6313,25 +6317,35 @@ impl EncodePipeline {
                             chroma.is_some(),
                             rdmult,
                             self.bit_depth,
+                            self.enhancements.contains(
+                                crate::enhancements::ZenEnhancement::AomRestorationUnitSearch,
+                            ),
+                            self.sb_size,
                             &stop,
                         )?
                     }
-                    None => crate::restoration::search_restoration_still_bd_with_stop::<u8>(
-                        &ctrls,
-                        &sg_ctrls,
-                        &lr_src_y,
-                        &lr_src_u,
-                        &lr_src_v,
-                        &lr_rec_y,
-                        &lr_rec_u,
-                        &lr_rec_v,
-                        lr_true_w,
-                        lr_true_h,
-                        chroma.is_some(),
-                        rdmult,
-                        8,
-                        &stop,
-                    )?,
+                    None => {
+                        crate::restoration::search_restoration_still_configured_with_stop::<u8>(
+                            &ctrls,
+                            &sg_ctrls,
+                            &lr_src_y,
+                            &lr_src_u,
+                            &lr_src_v,
+                            &lr_rec_y,
+                            &lr_rec_u,
+                            &lr_rec_v,
+                            lr_true_w,
+                            lr_true_h,
+                            chroma.is_some(),
+                            rdmult,
+                            8,
+                            self.enhancements.contains(
+                                crate::enhancements::ZenEnhancement::AomRestorationUnitSearch,
+                            ),
+                            self.sb_size,
+                            &stop,
+                        )?
+                    }
                 };
                 #[cfg(feature = "std")]
                 if crate::dbgenv::dump_lr() {
@@ -6450,6 +6464,7 @@ impl EncodePipeline {
                         )?;
                     }
                 }
+                self.last_lr_unit_size = Some(rest_info.planes[0].unit_size as usize);
                 self.last_lr_stats = (
                     [
                         rest_info.planes[0].frame_rtype,

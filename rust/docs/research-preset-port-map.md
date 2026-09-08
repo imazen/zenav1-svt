@@ -8,6 +8,33 @@ Reference inspected: `reference/svt-av1` commit
 `3115c0c1b23e860dfd75c94f6740e0298182dd13`. The reference tree contains the
 conditional HDR hybrid; record its build mode as well as this source identity.
 
+## Opt-in restoration-unit search (2026-09-08, local)
+
+`ZenEnhancement::AomRestorationUnitSearch` (`aom-restoration-unit-search-v1`)
+now reaches both native 8-bit and 10-bit restoration searches through the
+pipeline and the existing `AvifEncoder::with_enhancement` set. It is restricted
+to native research -1, all-intra 420, and disabled by default.
+
+The AOM inspiration is `av1/encoder/pickrst.c`'s descending legal unit-size
+loop. The implementation evaluates 256, 128 and 64, excludes sizes below the
+actual superblock, and uses SVT's Wiener/SGR searches, per-unit coefficient/type
+rate estimates, native-depth distortion and lambda. It includes the frame's
+restoration type, size and UV-shift header bits in the cross-size comparison.
+All planes share one selected size (UV shift 0); it does not enumerate an
+independent chroma-size axis or copy AOM's normalized lambda. Ties retain the
+larger size. Unlike AOM's all-NONE heuristic, it still evaluates smaller sizes
+when the 256-pixel search chooses no restoration.
+
+The C path continues to evaluate only 256. The public last-frame evidence
+`last_lr_unit_size` records the selected size or None if search did not run.
+Ten enabled reconstruction cases cover native8/10, odd dimensions, tile rows,
+tile columns and SB128. Smaller units actually win and restore pixels at both
+depths; all outputs match independent libaom reconstruction. The full workspace
+suite passes 2,627/2,627, and regression spot-checks pass 136/136. Fresh
+experiment-off byte gates pass 1,100/1,100 hybrid normal8 and 320/320 pristine
+research cells (160 each native8/10). RD/time ablation is still pending; this
+is not a calibrated default or a claim of universal RD gain.
+
 ## Transport and current validation
 
 `speed_config::NativePreset` checks -1 through 13. `EncodePipeline::new_with_preset`

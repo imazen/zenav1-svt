@@ -302,6 +302,118 @@ fn zen_intra_edges_at_partial_frames_and_tiles() {
     }
 }
 
+#[test]
+fn zen_restoration_unit_search_reconstructs_at_unit_and_tile_boundaries() {
+    use svtav1::avif::{NativePreset, SvtReference, ZenEnhancement};
+    let mut selected_smaller = [false; 2];
+    for (depth_index, depth) in [8, 10].into_iter().enumerate() {
+        for (w, h, rows, cols, sb) in [
+            (192usize, 160usize, 0, 0, 64),
+            (193, 161, 0, 0, 64),
+            (192, 160, 1, 0, 64),
+            (192, 160, 0, 1, 64),
+            (256, 256, 0, 0, 128),
+        ] {
+            let mut p = EncodePipeline::new_with_preset(
+                w as u32,
+                h as u32,
+                NativePreset::RESEARCH,
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 32,
+                    ..Default::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_bit_depth(depth)
+            .with_recon_output(true)
+            .with_tile_rows_log2(rows)
+            .with_tile_cols_log2(cols)
+            .with_sb_size(Some(sb));
+            assert_eq!(p.sb_size, sb);
+            let grid = svtav1_encoder::entropy::obu::TileGrid::resolve(
+                p.width,
+                p.height,
+                p.sb_size as u32,
+                rows,
+                cols,
+            );
+            assert_eq!((grid.tile_rows_log2, grid.tile_cols_log2), (rows, cols));
+            p.reference = SvtReference::Mainline420;
+            p.hdr.screen_content_mode = Some(0);
+            p.enhancements = p
+                .enhancements
+                .with(ZenEnhancement::AomRestorationUnitSearch);
+            // Correctness witness with spatially varying texture: smaller units
+            // must actually win, restore pixels, and survive independent decode.
+            let plane = |pw: usize, ph: usize, seed: usize| -> Vec<u8> {
+                (0..pw * ph)
+                    .map(|i| {
+                        let (x, y) = (i % pw, i / pw);
+                        let base = 60 + (x * 3 + y * 2 + seed) % 128;
+                        let noise = if x > pw / 2 {
+                            (x * 71 + y * 113 + x * y * 7 + seed) % 37
+                        } else {
+                            0
+                        };
+                        (base + noise) as u8
+                    })
+                    .collect()
+            };
+            let y = plane(w, h, 0);
+            let u = plane(w.div_ceil(2), h.div_ceil(2), 23);
+            let v = plane(w.div_ceil(2), h.div_ceil(2), 71);
+            let (obu, expected) = if depth == 8 {
+                let obu = p.try_encode_frame_420(&y, &u, &v, w).unwrap();
+                (
+                    obu,
+                    crop(p.last_recon.as_ref().unwrap(), p.width as usize, w, h),
+                )
+            } else {
+                let native = |s: &[u8]| {
+                    s.iter()
+                        .enumerate()
+                        .map(|(i, &v)| (u16::from(v) << 2) + (i % 4) as u16)
+                        .collect::<Vec<_>>()
+                };
+                let obu = p
+                    .try_encode_frame_420_hbd(&native(&y), &native(&u), &native(&v), w)
+                    .unwrap();
+                (
+                    obu,
+                    crop(
+                        p.last_recon10_final.as_ref().unwrap(),
+                        p.width as usize,
+                        w,
+                        h,
+                    )
+                    .into_iter()
+                    .flat_map(u16::to_le_bytes)
+                    .collect(),
+                )
+            };
+            let size = p.last_lr_unit_size.expect("restoration search must run");
+            assert!(size >= p.sb_size && [64, 128, 256].contains(&size));
+            selected_smaller[depth_index] |= size < 256 && p.last_lr_stats.0 != [0; 3];
+            eprintln!(
+                "Zen LR: {w}x{h} depth={depth} tiles={rows},{cols} unit={size} types={:?}",
+                p.last_lr_stats.0
+            );
+            decode_eq(
+                &format!("zen-lr-{w}x{h}-d{depth}-tiles{rows}-{cols}"),
+                &obu,
+                &expected,
+            );
+        }
+    }
+    assert_eq!(
+        selected_smaller, [true; 2],
+        "must enable smaller restoration units at both native depths"
+    );
+}
+
 fn pipeline(w: usize, h: usize, preset: u8, quality: f32, depth: u8) -> EncodePipeline {
     EncodePipeline::new(
         w as u32,
