@@ -77,3 +77,52 @@ fn effort_resolution_reaches_the_actual_encoder_and_legacy_setters_replace_it() 
         );
     }
 }
+
+#[test]
+fn support_query_matches_real_grain_mono_and_reference_refusals() {
+    use svtav1::avif::StillInputFormat;
+    use svtav1::encoder::film_grain_config::FilmGrainConfig;
+    let y: Vec<u8> = (0..17 * 19)
+        .map(|i| ((i * 29 + i / 17) % 256) as u8)
+        .collect();
+    let uv = vec![128u8; 9 * 10];
+    for encoder in [
+        AvifEncoder::new().with_speed(10),
+        AvifEncoder::new()
+            .with_speed(10)
+            .with_reference(SvtReference::Mainline420),
+        AvifEncoder::new()
+            .with_speed(10)
+            .with_film_grain(FilmGrainConfig {
+                denoise_strength: 51,
+                ..Default::default()
+            }),
+        AvifEncoder::new()
+            .with_speed(10)
+            .with_film_grain(FilmGrainConfig {
+                denoise_strength: 25,
+                ..Default::default()
+            }),
+        AvifEncoder::new()
+            .with_native_preset(NativePreset::RESEARCH)
+            .with_enhancement(ZenEnhancement::AomIntraEdgeFilter),
+    ] {
+        for format in [StillInputFormat::Monochrome, StillInputFormat::Yuv420] {
+            let query = encoder.validate_configuration_for_input(17, 19, format);
+            let actual = match format {
+                StillInputFormat::Monochrome => encoder.encode_y8(&y, 17, 19, 17),
+                StillInputFormat::Yuv420 => encoder.encode_yuv420(&y, &uv, &uv, 17, 19, 17),
+            };
+            assert_eq!(
+                query.is_ok(),
+                actual.is_ok(),
+                "{encoder:?} {format:?}: {query:?} {actual:?}"
+            );
+        }
+        assert!(
+            encoder
+                .validate_configuration_for_input(0, 19, StillInputFormat::Yuv420)
+                .is_err()
+        );
+    }
+}

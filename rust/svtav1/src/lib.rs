@@ -37,8 +37,8 @@
 //!
 //! NOTE: the `Encoder` / `EncoderConfig` / `Frame` / `Packet` types below are
 //! an UNIMPLEMENTED scaffold from an early sketch — `Encoder::send_frame`
-//! discards its input and `Encoder::receive_packet` always returns
-//! `NotReady`. Do not build on them; use the two APIs above.
+//! and `Encoder::receive_packet` return an explicit unimplemented error.
+//! They never report a frame as accepted. Use the two working APIs above.
 //!
 //! # Safety
 //!
@@ -251,27 +251,23 @@ impl Encoder {
         })
     }
 
-    /// Send a frame to the encoder for encoding.
-    ///
-    /// Frames must be sent in display order. Send `None` to signal
-    /// end of stream and flush remaining packets.
-    pub fn send_frame(&mut self, frame: Option<Frame>) -> Result<(), EncoderError> {
-        if let Some(_frame) = frame {
-            self.frame_count += 1;
-            Ok(())
-        } else {
-            // Flush signal
-            Ok(())
-        }
+    /// The public streaming video API is not implemented. Returns an explicit
+    /// error for both frames and flush requests, without advancing counters.
+    /// Use `avif::AvifEncoder` or the supported `EncodePipeline` entry points.
+    pub fn send_frame(&mut self, _frame: Option<Frame>) -> Result<(), EncoderError> {
+        Err(EncoderError::EncodeFailed(
+            "public streaming video API is not implemented; use AvifEncoder or EncodePipeline"
+                .into(),
+        ))
     }
 
-    /// Receive an encoded packet from the encoder.
-    ///
-    /// Returns `Err(EncoderError::NotReady)` if no packet is available yet.
-    /// Returns `Err(EncoderError::Eof)` when all packets have been flushed.
+    /// The public streaming video API is not implemented. This is a permanent
+    /// refusal, not `NotReady` (which would invite callers to poll forever).
     pub fn receive_packet(&mut self) -> Result<Packet, EncoderError> {
-        // Placeholder — real implementation would encode queued frames
-        Err(EncoderError::NotReady)
+        Err(EncoderError::EncodeFailed(
+            "public streaming video API is not implemented; use AvifEncoder or EncodePipeline"
+                .into(),
+        ))
     }
 
     /// Get the current encoder configuration.
@@ -345,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn send_frame() {
+    fn unsupported_streaming_api_never_accepts_or_counts_frames() {
         let config = EncoderConfig::new(8);
         let mut encoder = Encoder::new(config).unwrap();
         let frame = Frame {
@@ -357,7 +353,18 @@ mod tests {
             v_stride: 960,
             pts: 0,
         };
-        encoder.send_frame(Some(frame)).unwrap();
-        assert_eq!(encoder.frame_count(), 1);
+        assert!(matches!(
+            encoder.send_frame(Some(frame)),
+            Err(EncoderError::EncodeFailed(_))
+        ));
+        assert_eq!(encoder.frame_count(), 0);
+        assert!(matches!(
+            encoder.send_frame(None),
+            Err(EncoderError::EncodeFailed(_))
+        ));
+        assert!(matches!(
+            encoder.receive_packet(),
+            Err(EncoderError::EncodeFailed(_))
+        ));
     }
 }

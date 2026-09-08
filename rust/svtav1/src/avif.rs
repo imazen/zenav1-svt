@@ -41,6 +41,13 @@ pub enum ChromaSubsampling {
     Yuv444,
 }
 
+/// Actual raw-plane input path for allocation-free support queries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StillInputFormat {
+    Monochrome,
+    Yuv420,
+}
+
 /// Result of encoding a still image to AV1.
 #[derive(Debug, Clone)]
 pub struct EncodedAvif {
@@ -524,12 +531,7 @@ impl AvifEncoder {
         stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(pixels.len(), width, height, stride)?;
-        self.validate_configuration()?;
-        if matches!(self.policy, Some(EncodingPolicy::SvtParity(_))) {
-            return Err(EncodeError::UnsupportedConfig(
-                "SvtParity requires the C 4:2:0 format; monochrome is a Rust extension",
-            ));
-        }
+        self.validate_configuration_for_input(width, height, StillInputFormat::Monochrome)?;
 
         // MONOCHROME NO LONGER NEEDS PRE-PADDING. `EncodePipeline`'s
         // TRUE -> ALIGNED replicate-pad is wired on the mono path too
@@ -633,7 +635,7 @@ impl AvifEncoder {
             });
         }
 
-        self.validate_configuration()?;
+        self.validate_configuration_for_input(width, height, StillInputFormat::Yuv420)?;
 
         let mut pipeline = self.build_pipeline(width, height).with_chroma_420(true);
         let bitstream = pipeline
@@ -725,6 +727,37 @@ impl AvifEncoder {
     /// Query still-image configuration support without encoding or allocating
     /// image planes. Uses the same format and quality checks as encoding.
     /// Source dimensions, strides and buffer lengths are validated separately.
+    /// Check the exact entry point without allocating source or pipeline buffers.
+    /// Bit depth and tools are taken from this encoder's configuration.
+    pub fn validate_configuration_for_input(
+        &self,
+        width: u32,
+        height: u32,
+        format: StillInputFormat,
+    ) -> Result<(), EncodeError> {
+        self.validate_configuration()?;
+        // The same overflow/geometry guard used by actual raw-plane entry points.
+        self.validate_dimensions(usize::MAX, width, height, width)?;
+        if format == StillInputFormat::Monochrome {
+            if matches!(self.policy, Some(EncodingPolicy::SvtParity(_)))
+                || self.reference == SvtReference::Mainline420
+            {
+                return Err(EncodeError::UnsupportedConfig(
+                    "pristine C SVT supports 4:2:0 only; monochrome is a Rust extension",
+                ));
+            }
+            if self.film_grain.enabled() {
+                return Err(EncodeError::UnsupportedConfig(
+                    "C film grain requires 8/10-bit 4:2:0",
+                ));
+            }
+            self.enhancements
+                .validate(self.resolved_native_preset().value(), true, false)
+                .map_err(EncodeError::UnsupportedConfig)?;
+        }
+        Ok(())
+    }
+
     pub fn validate_configuration(&self) -> Result<(), EncodeError> {
         if let Some(EncodingPolicy::SvtParity(reference)) = self.policy {
             if self.reference != reference {
@@ -739,6 +772,18 @@ impl AvifEncoder {
             }
         }
         self.validate_quality()?;
+        self.film_grain
+            .validate()
+            .map_err(EncodeError::UnsupportedConfig)?;
+        let hdr = svtav1_encoder::hdr_mode::HdrForkConfig {
+            enable_qm: self.enable_qm,
+            enable_variance_boost: self.enable_variance_boost,
+            variance_boost_strength: self.variance_boost_strength,
+            ..Default::default()
+        };
+        self.reference
+            .validate_hdr_config(&hdr)
+            .map_err(EncodeError::UnsupportedConfig)?;
         self.enhancements
             .validate(
                 self.resolved_native_preset().value(),

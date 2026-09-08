@@ -14,6 +14,21 @@ and implement measured content-adaptive search and actual backend routing.
 Complete the experiments and report size, perceptual quality and time before
 choosing defaults. Land the ready implementation after required local checks.
 
+## Latest API/support implementation — 2026-09-08
+
+The API and execution routing base landed on main in SVT `bb069a7c` and
+zenavif `2e8ff511`. The follow-up API/support audit is recorded in
+[rust/docs/API-SUPPORT-AUDIT-2026-09-08.md](rust/docs/API-SUPPORT-AUDIT-2026-09-08.md).
+It adds format-aware raw support validation and corrects the legacy streaming
+API's false acceptance. The zenavif companion adds explicit Gray8 routing,
+complete versioned JSON replay/cache identities, primary-color grain wiring,
+and fixes metadata/range/query mismatches. Its support table and reproduction
+commands live in `zenavif/docs/BACKEND_ROUTING_API.md`.
+
+The earlier checkpoints below are historical. Remaining implementation work
+includes the four native10 cells, video/superres/HDR wrapper coverage and broad
+calibration/adaptive search; this API work does not close those criteria.
+
 ## Current priority — resumed 2026-09-08
 
 The user subsequently requested: land current work, then settle API and routing

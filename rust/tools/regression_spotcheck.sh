@@ -1754,6 +1754,21 @@ for witness in zen_intra_edges_at_partial_frames_and_tiles zen_research_intra_ed
   fi
 done
 
+# Shared input/grain support checks and explicit refusal of the legacy streaming
+# scaffold. Both regressions also run in the workspace nextest gate.
+if cargo test -p zenav1-svt --test still_policy support_query_matches_real_grain_mono_and_reference_refusals -- --exact >"$W/still-support-query.log" 2>&1; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); failed+=("still-support-query [API agreement]")
+  cat "$W/still-support-query.log"
+fi
+if cargo test -p zenav1-svt --lib tests::unsupported_streaming_api_never_accepts_or_counts_frames -- --exact >"$W/streaming-refusal.log" 2>&1; then
+  pass=$((pass+1))
+else
+  fail=$((fail+1)); failed+=("streaming-refusal [false acceptance]")
+  cat "$W/streaming-refusal.log"
+fi
+
 # Partial right-edge chroma formerly wrapped into the next source row.
 # The same source also exposed omission of partial quadrants from SB128's
 # PD0 depth limits: p1 tested larger blocks than C. Exact measured input is

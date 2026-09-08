@@ -17,6 +17,15 @@ Two companions to it:
   Run it after every change. If you fix a bug and do not add a cell, the next
   person gets to rediscover it.
 
+## Current API/support audit — 2026-09-08
+
+Read `docs/API-SUPPORT-AUDIT-2026-09-08.md` for the current source-backed
+support inventory. Earlier issue snapshots below are historical: forced SCM
+0/1 and mainline tune-0 sharpness are fixed, film grain has enabled C gates,
+and policy/routing are on main. The four native10 cells remain open. The
+legacy streaming API now explicitly refuses calls instead of accepting and
+discarding frames.
+
 ## Open-issue audit, 2026-09-07
 
 After the verified SVT main merge `11522ed0`, all six open issues and thirteen
@@ -1250,10 +1259,10 @@ from `mainline_v4.2.bit-affecting.diff`. cref oracles + new c_parity suites.
   bit-affecting-changed 4.1->4.2 and untracked. Inline SAD IS C-equivalent:
   tests/c_parity_motion_est.rs pins full_pel_search distortion == svt_aom_sad at
   the chosen MV. Non-normative, inter-only/dormant.
-- **2026-09-06 correction:** The following film-grain entry is historical.
-  Fork photon-noise generation and KEY-frame signaling are now wired; the
-  real C denoiser and supplied-table paths remain incomplete. Those gaps are
-  required features, not N/A. See `docs/film-grain-port-map.md`.
+- **2026-09-08 correction:** The following July film-grain entry is historical.
+  The C model, denoiser, FFTs, supplied tables and synthesis are now translated
+  and wired, with enabled C/decoder gates. See `docs/film-grain-port-map.md`
+  and `docs/API-SUPPORT-AUDIT-2026-09-08.md` for scope and remaining boundaries.
 - **film_grain.rs — HOMEGROWN + INERT.** estimate_film_grain output is discarded
   (pipeline `_grain_params`) and obu.rs always emits film_grain_params_present=0.
   Not a port of noise_model.c/grainSynthesis.c (bit-affecting-changed). No FH
