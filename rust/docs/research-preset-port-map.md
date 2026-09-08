@@ -225,3 +225,37 @@ pipeline reconstruction at8/10bits; shortened odd-width chroma still errors.
 All **2,618 workspace tests pass**. Doctests and the final wrapper spot-check
 are running. No parity expectations were loosened; the former odd-size
 refusal test now checks rounded-up chroma bounds and successful encoding.
+
+Research wrapper validation completes: **3/3 doctests and132/132 regression
+checks pass**. The65x67 wrapper decoder witness is now retained by the regular
+spot-check loop (next total133).
+
+Research tile coverage completes **18/18 at8-bit and18/18 at10-bit**, all with
+successful independent aomdec decoding. Geometry512x384, QP12/48, tile rows and
+columns log2=0/1/2. Each depth has16 nonzero-grid cells whose C output differs
+from its untiled control; the two0/0 cells are baseline controls. These test
+ragged tile rows as well as multiple columns. Evidence:
+`~/tmp/svt-tracking/research-tiles{8,10}.tsv` and corresponding artifact trees.
+`tile_map.sh` now accepts preset/QP/depth overrides and optional per-cell
+artifact retention, while preserving its existing default grid and scoreboard
+semantics. Shell exit alone is not the parity gate: inspect every verdict,
+decode result and anti-vacuity control.
+
+All120 retained native10 geometry pairs also independently decode to identical
+native10 samples (`research-dims10-independent-decode.json`). This closes the
+previously pending decode comparison for that grid.
+The static comparator in sibling zenmetrics now accepts checked Rust -1;
+its five library tests pass, including C/Rust byte identity with actual10-bit
+samples containing nonzero low bits. Static PIE/no dynamic NEEDED entries
+was rechecked on the rebuilt measurement binary. Broader real RD/parity
+measurements are separate from these correctness witnesses.
+
+The updated spot-check completes **133/133**, including the public odd-size
+research wrapper witness. Canonical imazen26 RD baseline completes150/150
+encodes (50cells, three rounds); native -1 matches C on10/10 distinct cells
+and30/30 repeated pairs, using full-image resizes of training1000/8100.
+See sibling zenmetrics `benchmarks/av1_compare_2026-09-08/IMAZEN26_RESEARCH_BASELINE.md`
+for size/quality/time, conversion ceilings and exact source/build provenance.
+The screenshot's Rust -1 is5.4xC time atQP20 despite byte identity; profiling
+is in progress. All five libaom/Rust AOM screenshot cells differ, recorded
+separately. Neither observation licenses disabling SVT's research tools.

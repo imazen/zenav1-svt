@@ -19,12 +19,23 @@
 #
 # Usage: tile_map.sh [out.tsv]
 # Env:   TILE_MAP_QUICK=1  — the small grid (smoke); default is the full sweep.
+#        TILE_MAP_PRESETS / TILE_MAP_QPS override the selected grid.
+#        TILE_MAP_BIT_DEPTH=8|10 applies to both encoders.
+#        TILE_MAP_ARTIFACT_DIR retains separate per-cell inputs and traces.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 OUT="${TMPDIR:-/tmp}/tilemap.$$"
 mkdir -p "$OUT"
+SCRATCH="$OUT"
+ARTIFACT_DIR="${TILE_MAP_ARTIFACT_DIR:-}"
+BIT_DEPTH="${TILE_MAP_BIT_DEPTH:-8}"
+case "$BIT_DEPTH" in 8|10) ;; *) echo 'TILE_MAP_BIT_DEPTH must be 8 or 10' >&2; exit 2 ;; esac
+if [[ -n "$ARTIFACT_DIR" ]]; then
+  mkdir -p "$ARTIFACT_DIR"
+  ARTIFACT_DIR=$(cd "$ARTIFACT_DIR" && pwd)
+fi
 TSV="${1:-$RS_ROOT/benchmarks/tile_map_latest.tsv}"
 
 aomdec="${AOMDEC:-aomdec}"
@@ -48,6 +59,8 @@ CONTENT=gradient
 if [ -n "${TILE_MAP_QUICK:-}" ]; then
   SIZES=("512 384"); QPS=(45); PRESETS=(6)
 fi
+if [[ -n "${TILE_MAP_PRESETS:-}" ]]; then read -r -a PRESETS <<<"$TILE_MAP_PRESETS"; fi
+if [[ -n "${TILE_MAP_QPS:-}" ]]; then read -r -a QPS <<<"$TILE_MAP_QPS"; fi
 
 printf 'size\tr\tc\tqp\tpreset\tc_bytes\trs_bytes\tverdict\tdecode\tc_vs_c0\tstage\n' >"$TSV"
 
@@ -60,16 +73,20 @@ for sz in "${SIZES[@]}"; do
         for p in "${PRESETS[@]}"; do
           n=$((n + 1))
           tag="${w}x${h}_r${r}c${c}_q${qp}_p${p}"
+          if [[ -n "$ARTIFACT_DIR" ]]; then
+            OUT=$(mktemp -d "$ARTIFACT_DIR/${tag}_bd${BIT_DEPTH}.XXXXXXXX") || exit 2
+            printf '%s\t%s\t%s\n' "$OUT" "$tag" "$BIT_DEPTH" >>"$ARTIFACT_DIR/index.tsv"
+          fi
           rsb=-1; cb=-1; verdict=DIFF; dec=n/a; cvc0=-; stage=-
 
-          if ! SVTAV1_TILE_ROWS_LOG2=$r SVTAV1_TILE_COLS_LOG2=$c \
+          if ! SVTAV1_BD=$BIT_DEPTH SVTAV1_TILE_ROWS_LOG2=$r SVTAV1_TILE_COLS_LOG2=$c \
                "$HERE/identity_run" "$CONTENT" "$w" "$h" "$qp" "$p" "$OUT/rs" \
                >"$OUT/rs.log" 2>"$OUT/rs.trace"; then
             verdict=rs-err
           elif ! SVT_TILE_ROWS=$r SVT_TILE_COLUMNS=$c \
                  SVT_TRACE_OUT="$OUT/c.trace" \
                  "$HERE/capture_c_trace/capture_c_trace" \
-                 "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" \
+                 "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" "$BIT_DEPTH" \
                  >"$OUT/c.log" 2>"$OUT/c.stderr"; then
             verdict=c-err
           else
@@ -78,7 +95,7 @@ for sz in "${SIZES[@]}"; do
             # Anti-vacuity reference: the SAME input at rows=cols=0.
             if SVT_TILE_ROWS=0 SVT_TILE_COLUMNS=0 SVT_TRACE_OUT=/dev/null \
                "$HERE/capture_c_trace/capture_c_trace" \
-               "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c0.obu" \
+               "$w" "$h" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c0.obu" "$BIT_DEPTH" \
                >/dev/null 2>&1; then
               if cmp -s "$OUT/c.obu" "$OUT/c0.obu"; then cvc0=SAME; else cvc0=DIFFER; fi
             fi
@@ -112,7 +129,7 @@ for sz in "${SIZES[@]}"; do
   done
 done
 
-rm -rf "$OUT"
+rm -rf "$SCRATCH"
 echo
 echo "cells: $n   tsv: $TSV"
 awk -F'\t' 'NR>1{v[$8]++; d[$9]++} END {

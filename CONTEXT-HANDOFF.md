@@ -1,19 +1,30 @@
-Latest research checkpoint (2026-09-08): native10 IntraBC lambda fix now
-passes 132/132 regression checks and 120/120 native10 geometry. Current wmspwnxx
-adds AvifEncoder::with_native_preset(RESEARCH) and resolved_native_preset();
-normal speed mapping preserved, native10..13 canonicalized to9. Also removes
-stale odd-size wrapper refusal with rounded-up chroma bounds. All 2,618 tests
-pass, including 65x67 independent decoder/reconstruction at8/10 output bits.
-Heavy session 26589 runs doctests then regression_spotcheck, logs
-~/tmp/svt-tracking/research-wrapper-{doctest,spotcheck}.log. Poll before heavy
-work. Add research_wrapper_partial_frame_matches_decoder to the existing
-odd_frame_recon loop in regression_spotcheck.sh after this running check; its
-pre-fix wrapper failure is recorded. See research-preset-port-map.md. Next: comparator signed -1 exposure,
-normal native10 IBC regression coverage, native research tile/real/HDR audits,
-policy and actual zenavif routing, AOM continuation and imazen26 RD scout.
-Zenmetrics CLAUDE.md is1152lines and must be read before changing that repo;
-comparator's src/lib.rs rejects Svt speed-1 and constructs pipeline viau8cast.
-No push/CI; full goal remains open.
+Latest research checkpoint (2026-09-08): native10 IntraBC fix passes132/132
+regression checks and120/120 native10 geometry. AvifEncoder research/odd-size
+support passes2618 workspace tests,3 doctests and132/132 spotchecks. The new
+odd-size decoder witness is now in regression_spotcheck (next total133).
+Research tile sweeps pass18/18 each at8/10bits, independently decodable;
+all16 nonzero tile-grid cells per depth differ from untiled C controls.
+See research-preset-port-map.md and ~/tmp/svt-tracking/research-tiles{8,10}*.
+Zenmetrics rules read in full; local oylkovtk wires checked Rust research -1
+through comparator, with native8/10 C/Rust differential test; all5 tests pass.
+Fresh static-binary canonical baseline completed150/150 encodes (50 cells,
+three rounds), all decode/deterministic. C/RustSVT-1 match10/10 distinct cells;
+C/RustAOM0 differ onall5 screenshot cells. Report:
+../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESEARCH_BASELINE.md.
+Raw~/tmp/av1-imazen26-research-baseline-2026-09-08. Updated spotcheck133/133passes.
+At matchedSSIM80 screenshot: RustSVT-1 11494B/14280ms, RustSVT0 11819B/1932ms.
+MeasuredQP20 C/RustSVT-1 identical14292B/84.101score but2504ms/13528ms.
+C/Rust profiling completed (2 encodes each, separate from reported timings).
+Rust78.22% self cycles in me_sad::__arcane_block_sad_v3; exhaustive_mesh_search
+calls SAD individually where C av1me.c uses sdx4df for4 candidates. Rust4-wide
+blocks also fall through scalar tails. Profile evidence~/tmp/svt-tracking/
+research-screen-{rust,c}.perf*; no lost samples. Next bounded performance task:
+port/wire batched SAD preserving candidate order/ties, prove bit identity and
+remeasure this actual screenshot before claiming improvement. No optimization
+implemented yet. Comparator scoped Clippy passes. No heavy job remains live.
+No push/CI; full goal remains open. Next: comparator tests and fresh RD baseline,
+AOM continuation and canonical imazen26 RD scout/reduction, plus remaining
+normal real-image parity and prelanding gates. Check live jobs before heavy work.
 
 # zenav1-svt — handoff
 
@@ -30,18 +41,18 @@ completion gates. The thread goal tracker now targets completion of this documen
 The separate animated-AVIF/video objective remains unfinished.
 
 Research implementation status: [live port map](rust/docs/research-preset-port-map.md).
-Signed native transport, SGR controls and depth branches are committed locally
-in `902cf3d9`; 2,612 tests and 127/127 normal-preset byte regressions passed.
-The next local change wires research lambda weights (2,613 tests and 127/127
-normal-preset byte regressions passed). Full -1 remains unverified: asymmetric partition search and
-coefficient-class wiring are required before the research identity matrix.
+Signed native transport, asymmetric partition search, coefficient-class wiring,
+CDEF masks, research dispatch, directional availability and native-depth lambda
+fixes are implemented locally. Research geometry passes120/120 per depth and
+tiles18/18 per depth. Full -1 parity across formats/content and all wrappers
+remains unclaimed; follow the live port map for exact tested domains.
 
 Latest still-backend comparison **2026-09-08**: the [measured RD/time report](../zenmetrics/benchmarks/av1_compare_2026-09-08/README.md)
 and [AOM adoption audit](../zenmetrics/benchmarks/av1_compare_2026-09-08/AOM_ADOPTION.md)
 record the completed C/Rust SVT/AOM preset 0..9 fill, C research preset -1,
 and successful 20-job zenfleet supplement. Prefer their dense time-budget
-curves over the earlier coarse preset-6 estimates. The new low-level signed constructor can express -1, but the high-level AVIF
-wrapper and full research parity are pending. C's -2/-3 enum names are rejected
+curves over the earlier coarse preset-6 estimates. The pipeline and high-level AvifEncoder can express -1; benchmark reachability
+is being validated. Full research parity remains pending. C's -2/-3 enum names are rejected
 by its public validator in this build. New real-image parity witnesses remain open.
 The static harness and reports are local zenmetrics changes; production
 routing remains query-only, and the previously identified wrapper-quality,

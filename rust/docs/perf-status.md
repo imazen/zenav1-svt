@@ -1,5 +1,15 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **Research preset -1 canonical screenshot (2026-09-08, local unlanded):**
+> [RD baseline and profiling](../../../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESEARCH_BASELINE.md).
+> At 512×320 QP20, C/Rust -1 emit identical14,292B at84.101 SSIM2,
+> but Rust takes13.53s vsC2.50s (three-round medians). A separate perf profile
+> puts78.22% of Rust core cycles in `me_sad::__arcane_block_sad_v3`.
+> The IntraBC exhaustive mesh calls SAD individually; C `av1me.c` batches
+> four via `sdx4df`. Four-pixel widths also hit Rust's scalar tail. These are
+> measured attribution plus source-level optimization leads, **not a speedup**.
+> Preserve native -1 search, traversal and tie semantics; do not disable mesh.
+
 > **Current i265 still-performance investigation (2026-09-06):**
 > [paired baseline, timing correction and SIMD API audit](STILL-PERF-2026-09-06.md).
 > Three real images at 512x512 QP40, presets 2/6/8: every measured output
