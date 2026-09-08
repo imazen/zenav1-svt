@@ -1753,6 +1753,10 @@ done
 # reconstruction and restoration. After extending the gate to -1..=5:
 # 283B and all 2690 tile operations identical (myzskwqo).
 byte "research-full-partition-dispatch" gradient 64 64 40 -1 8
+# The native 10-bit cost builders separately retained the normal frame lambda
+# weight: Rust 265B / C 277B at this cell. Carrying the signed preset through
+# leaf, partition and re-encode costs makes it 277B byte-identical (smqxvntu).
+byte "research-native10-lambda-weight" gradient 64 64 40 -1 10
 
 total=$((pass + fail))
 echo

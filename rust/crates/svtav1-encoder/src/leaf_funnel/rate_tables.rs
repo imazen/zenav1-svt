@@ -362,6 +362,9 @@ impl MdRates {
 
 /// Frame-constant funnel parameters.
 pub struct FunnelFrame {
+    /// Signed native preset, including research -1, for bit-depth-specific
+    /// lambda derivation. Research omits the normal frame weight at both depths.
+    pub native_preset: i8,
     /// Superblock size in MI (4px) units — C `seq_header.sb_mi_size`, 16 at
     /// SB64 and 32 at SB128 (task #91). Feeds the intra availability tables
     /// (`intra_edge::has_top_right` / `has_bottom_left`), whose

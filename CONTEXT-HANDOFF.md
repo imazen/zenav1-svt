@@ -1,11 +1,14 @@
-Latest research checkpoint (2026-09-08): signed transport, lambda weighting,
-asymmetric partition/pruning/reuse and CDEF UV masks are in local jj ancestors.
-Current screen-tool wiring passes 2,615 tests and 127/127 normal byte regressions.
-First native -1 gradient 64x64 QP40 witness independently decodes but mismatches:
-Rust 299B, C 283B. Retained traces/report in ~/tmp/svt-tracking/research-first/.
-No heavy job remains live. Continue root-cause diagnosis; do not claim research
-parity, push/CI readiness, or a measured imazen-26 subset. See the durable
-research-preset-port-map.md for specifics.
+Latest research checkpoint (2026-09-08): native -1 partition dispatch fixed.
+The first gradient witness matches C (283B / 2690 tile operations). Expanded
+synthetic matrices: 40/40 at 8-bit; 10-bit went from 26/40 to 40/40 after
+carrying the signed preset into every 10-bit lambda consumer. All 2,615 tests
+pass. Current jj smqxvntu contains the 10-bit fix plus a measured regression
+witness. Parent myzskwqo contains dispatch fix and optional retained-artifact /
+native-depth support in identity_full_8bit.sh. Artifacts: ~/tmp/svt-tracking/.
+Heavy session 78738 independently decodes all 80 pairs then runs the enlarged
+129-cell spot-check. Poll before another heavy job. See research-preset-port-map.md.
+Next: partial/odd frame, larger SB and real-image research matrices; full local
+pre-landing gates remain. No corpus reduction, push/CI or full parity claim.
 
 # zenav1-svt — handoff
 

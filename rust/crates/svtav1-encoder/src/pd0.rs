@@ -478,13 +478,13 @@ pub(crate) fn inter_full_lambda_8bit(
 /// - then the same `lambda_weight` ladder and `full_lambda_md[1] *= 16`
 ///   (md_process.c:753). Intra-scaling (temporal_layer>0) and scale_factor
 ///   (128) are no-ops on the KF still path — same as the bd8 builder.
-pub(crate) fn kf_full_lambda_bd10(qindex: u8, picture_qp: u32) -> u32 {
+pub(crate) fn kf_full_lambda_bd10(qindex: u8, picture_qp: u32, preset: i8) -> u32 {
     let q = crate::bd10::dc_qlookup_10(qindex) as i64;
     let mut rdmult = ((3.3 + 0.0015 * q as f64) * q as f64 * q as f64) as i64;
     rdmult = (rdmult + 8) >> 4; // ROUND_POWER_OF_TWO(_, 4) — bd10
     rdmult = (rdmult * 128) >> 7; // rd_frame_type_factor[1][KF_UPDATE] = 128
     let mut lambda = rdmult as u32;
-    let lambda_weight: u32 = frame_lambda_weight(picture_qp, false, 0);
+    let lambda_weight: u32 = frame_lambda_weight_for_preset(preset, picture_qp, false, 0);
     if lambda_weight != 0 {
         lambda = ((lambda as u64 * lambda_weight as u64) >> 7) as u32;
     }

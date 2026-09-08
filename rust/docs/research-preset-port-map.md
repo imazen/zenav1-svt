@@ -109,3 +109,26 @@ C byte-for-byte. All 2,615 workspace tests pass; a before/after witness is now
 in `regression_spotcheck.sh`. This is one enabled witness, not the full matrix.
 The suite’s new `IF_ARTIFACT_DIR` option retains each cell’s source, encoded
 streams, settings and logs, indexed in `index.tsv`, for expanded research work.
+
+Expanded research sweep after the dispatch fix: **40/40 native 8-bit cells
+byte-identical** (uniform/gradient/diag/screen, 64/128, QP5/12/20/40/63).
+`research-matrix.tsv` and its artifacts under `~/tmp/svt-tracking/` retain all
+40 inputs and both outputs; `artifacts/manifest.json` verifies file hashes.
+The normal spot-check plus new research witness passes **128/128**.
+
+The same native 10-bit grid initially passes **26/40**; 14 mismatches remain
+in `research-matrix10.tsv` with retained artifacts. The 10-bit lambda builder
+still used the normal frame weight with no preset input. A separate local
+revision carries the signed preset into all three consumers (leaf funnel,
+partition search and re-encode) and suppresses that weight for research. Its
+validation is pending; do not infer 10-bit parity from the 8-bit matrix.
+
+The native 10-bit lambda fix now passes the same **40/40** research grid,
+including all 14 previously failing cells. All 2,615 workspace tests pass.
+The native10 gradient64 QP40 failure (265B Rust / 277B C before, 277B exact
+after) is added to the regression gate. Independent decode validation of the
+80 retained pairs is recorded in `research-independent-decode.json` and its
+log; the enlarged spot-check is running in `research-bd10-lambda-spotcheck.log`.
+The coverage tool’s historical normal-preset matrix still contains real-image
+and partial-frame divergences; these research synthetic successes do not
+supersede that evidence or satisfy the full pre-landing gates.

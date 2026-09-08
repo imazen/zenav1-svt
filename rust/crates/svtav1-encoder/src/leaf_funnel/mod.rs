@@ -294,6 +294,7 @@ pub(crate) fn evaluate_leaf(
         let lf = u64::from(crate::pd0::kf_full_lambda_bd10(
             frame.base_qindex,
             frame.cli_qp,
+            frame.native_preset,
         ));
         // MDS0 fast cost lambda. C's fast loop calls `av1_intra_fast_cost(...,
         // fast_lambda_md[1], satd<<4)`, and the port's `rdcost(λ, rate, satd<<4)`

@@ -4606,6 +4606,7 @@ impl EncodePipeline {
                 let lambda_bd10 = u64::from(crate::pd0::kf_full_lambda_bd10(
                     base_qindex,
                     picture_qp as u32,
+                    self.speed_config.preset,
                 ));
                 let recon10 = bd10_reencode_luma(
                     &mut all_trees,
@@ -11249,6 +11250,7 @@ fn encode_tile_rows(
         let mut fun_frame = if use_funnel {
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
+                native_preset: speed_config.preset,
                 // C `pcs->slice_type != I_SLICE`.
                 // `ref_frame_data` is `Some` exactly on a non-key frame
                 // (`encode_frame_impl`'s `if !is_key` binding).
@@ -12770,6 +12772,7 @@ fn encode_tile_rows(
                                         u64::from(crate::pd0::kf_full_lambda_bd10(
                                             base_qindex,
                                             cli_qp as u32,
+                                            speed_config.preset,
                                         ))
                                     } else {
                                         sb_md_full_lambda
