@@ -15,6 +15,8 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- PR #20 (`a9eeb58e`): express baseline NEON SAD, sum/SSE and wide SSE through released magetypes 0.9.29 pairwise widening. Preserve strides, tails, accumulation order, the frozen ARM benchmark references and row-packing research. Main's registry-only archmage dependencies remain in place; no throughput gain is claimed. See `rust/benchmarks/arm_pairwise_release_2026-09-08.md`.
+
 - Animated AVIF `AnimationOptions::amve` and `cclv`, including validated ambient illuminance, signed content primaries, optional luminance fields, and metadata on the color track/poster/uncropped secondary. Alpha retains its own metadata. The independent metadata gate now covers 8- and 10-bit output.
 
 - Preserve lossless samples when quantization matrices or variance boost are enabled: use identity matrix weights and restrict per-superblock quantizers to signaled delta-q. Keep the C matrix and variance-planning helpers intact.

@@ -565,14 +565,15 @@ fn sse_rows<A: Copy>(
 ///
 /// Both are in `benchmarks/sse_madd_2026-09-05.{tsv,meta}` §5 with three
 /// alternating runs of each build on an M4 Pro and disjoint intervals, and
-/// finding 1 is reported on archmage#96. **The open aarch64 item is a row-pack
-/// that does NOT stage through memory** — `vcombine_u8(vld1_u8(row0),
-/// vld1_u8(row1))` is C's `_mm256_setr_m128i` exactly and was NOT tried; the
-/// staged form is what lost.
+/// finding 1 is reported on archmage#96. A register-only two-row packing
+/// experiment was subsequently measured on M4 Pro at 4x4/8x8, with tight and
+/// padded unequal strides. It showed no useful gain and remains benchmark-only:
+/// `benchmarks/arm_rowpack_2026-09-07.txt`. The wide NEON body below now uses
+/// magetypes pairwise widening with unchanged accumulation order.
 #[cfg(target_arch = "aarch64")]
-#[arcane]
-fn sse_impl_neon(
-    _token: NeonToken,
+#[magetypes(define(u8x16, u32x4), neon, -scalar)]
+fn sse_impl(
+    token: Token,
     src: &[u8],
     src_stride: usize,
     ref_: &[u8],
@@ -616,19 +617,19 @@ fn sse_impl_neon(
         let s_off = row * src_stride;
         let r_off = row * ref_stride;
         let mut col = 0;
-        let mut acc = vdupq_n_u32(0);
+        let mut acc = u32x4::splat(token, 0);
 
         while col + 16 <= width {
             let a: &[u8; 16] = src[s_off + col..s_off + col + 16].try_into().unwrap();
             let b: &[u8; 16] = ref_[r_off + col..r_off + col + 16].try_into().unwrap();
-            let d = vabdq_u8(vld1q_u8(a), vld1q_u8(b));
-            let lo = vget_low_u8(d);
-            let hi = vget_high_u8(d);
-            acc = vpadalq_u16(acc, vmull_u8(lo, lo));
-            acc = vpadalq_u16(acc, vmull_u8(hi, hi));
+            let d = u8x16::load(token, a).abs_diff(u8x16::load(token, b));
+            let lo = d.widen_low();
+            let hi = d.widen_high();
+            acc += (lo * lo).pairwise_widen_add();
+            acc += (hi * hi).pairwise_widen_add();
             col += 16;
         }
-        total += vaddvq_u32(acc) as u64;
+        total += u64::from(acc.reduce_add());
 
         while col < width {
             let diff = src[s_off + col] as i32 - ref_[r_off + col] as i32;

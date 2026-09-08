@@ -1,0 +1,51 @@
+[kernel_tiers] comparing neon vs forced scalar
+[zenbench] calibration: int=0.31ns/iter mem_bw=104.6GiB/s mem_lat=8.7ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.25ns/iter, TSC: 1.000 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788777333-1bcd.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788777333-1bcd
+  git: 74d92430508f80f6f4faeecef94913977dbf95f2
+═══════════════════════════════════════════════════════════════
+
+  arm_rowpack_sse_4x4_pad0  200 rounds × 58K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   32.0 ±5.9ns  [31.2–32.8]ns  
+  ╰─ rowpack     32.4 ±6.1ns  [-0.1%–+2.8%]   [1]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 32.0ns
+  rowpack    ████████████████████████████████████████████████████████████ 32.4ns
+  [1] CI crosses zero
+
+  arm_rowpack_sse_4x4_pad7  200 rounds × 62K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   27.3 ±8.1ns  [26.1–28.5]ns   [1]
+  ╰─ rowpack     27.8 ±8.9ns  [+0.1%–+2.6%]   [2] [3]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 27.3ns
+  rowpack    ████████████████████████████████████████████████████████████ 27.8ns
+  [1] CV=32%
+  [2] CI crosses zero
+  [3] CV=32%
+
+  arm_rowpack_sse_8x8_pad0  200 rounds × 58K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   38.0 ±3.5ns  [37.2–38.8]ns  
+  ╰─ rowpack     38.5 ±4.9ns  [-0.5%–+2.4%]   [1]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 38.0ns
+  rowpack    ████████████████████████████████████████████████████████████ 38.5ns
+  [1] CI crosses zero
+
+  arm_rowpack_sse_8x8_pad7  200 rounds × 58K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   39.4 ±4.9ns  [38.8–40.1]ns  
+  ╰─ rowpack     39.3 ±4.3ns  [-1.8%–+1.1%]   [1]
+
+  rowpack    ████████████████████████████████████████████████████████████ 39.3ns
+  hand_neon  ████████████████████████████████████████████████████████████ 39.4ns
+  [1] CI crosses zero
+
+  total: 93.5s  (38 noisy rounds)
+═══════════════════════════════════════════════════════════════
+  filter: cargo bench -- --group=NAME  format: --format=llm|csv|md|json

@@ -22,13 +22,13 @@
 //! regardless of lane order or accumulator width**. `me_sad_all_tiers_agree`
 //! pins that across every archmage token permutation.
 //!
-//! # Why not `#[magetypes]`
+//! # Which tiers use `#[magetypes]`
 //!
 //! **CORRECTED 2026-09-05 — the old reason expired, and a NEW one replaces it.**
 //! The paragraph here used to say magetypes exposes no integer widening, no
 //! `abs_diff` and no pairwise-widening accumulate. Since archmage PR #96 (the PR
 //! that closes the issue this port filed) it exposes all three, plus a FUSED
-//! `u8xN::sum_abs_diff`. The arms are still hand-written, for a different and
+//! `u8xN::sum_abs_diff`. The x86 and dotprod arms stay handwritten for a
 //! measured reason: **`sum_abs_diff` fully REDUCES per call.** Its backends are
 //! `_mm256_sad_epu8` followed by `_mm_add_epi64` + `_mm_srli_si128` +
 //! `_mm_cvtsi128_si64` (`magetypes/src/simd/impls/x86_v3.rs:4815`) and
@@ -45,6 +45,12 @@
 //! `abs_diff` + `madd_adjacent` body is 1.45x-2.20x SLOWER than the hand NEON
 //! arm on an M4 Pro, so "the primitives exist now" is not by itself a reason to
 //! collapse an arm.)
+//!
+//! The baseline NEON SAD and sum/SSE arms now use the unsigned
+//! `pairwise_widen_add` API released in magetypes 0.9.29. This retains
+//! lane accumulation and the final reduction; historical M4 Pro measurements
+//! found identical ME instruction bodies and no meaningful speed change.
+//! See `benchmarks/arm_pairwise_2026-09-07.meta`.
 //!
 //! The `arm_v2` arm is the one that matches C: `Arm64V2Token` bundles
 //! `dotprod`, so `vabdq_u8` + `vdotq_u32` reproduces the shape of C's
@@ -83,9 +89,9 @@ pub fn block_sad_scalar(
 /// at most `2 * 255 = 510` to a lane, and the widest row here is 128 px
 /// (8 chunks, `4080`), plus at most `255` from the 8-wide remainder.
 #[cfg(target_arch = "aarch64")]
-#[arcane]
-pub fn block_sad_neon(
-    _token: NeonToken,
+#[magetypes(define(u8x16, u16x8, u32x4), neon, -scalar)]
+pub fn block_sad(
+    token: Token,
     src: &[u8],
     src_stride: usize,
     rf: &[u8],
@@ -93,32 +99,35 @@ pub fn block_sad_neon(
     w: usize,
     h: usize,
 ) -> u32 {
-    let mut acc = vdupq_n_u32(0);
+    let mut acc = u32x4::splat(token, 0);
     let mut tail = 0u32;
     for y in 0..h {
         let so = y * src_stride;
         let ro = y * ref_stride;
         let mut c = 0usize;
-        let mut racc = vdupq_n_u16(0);
+        let mut racc = u16x8::splat(token, 0);
         while c + 16 <= w {
             let a: &[u8; 16] = src[so + c..so + c + 16].try_into().unwrap();
             let b: &[u8; 16] = rf[ro + c..ro + c + 16].try_into().unwrap();
-            racc = vpadalq_u8(racc, vabdq_u8(vld1q_u8(a), vld1q_u8(b)));
+            racc += u8x16::load(token, a)
+                .abs_diff(u8x16::load(token, b))
+                .pairwise_widen_add();
             c += 16;
         }
         if c + 8 <= w {
             let a: &[u8; 8] = src[so + c..so + c + 8].try_into().unwrap();
             let b: &[u8; 8] = rf[ro + c..ro + c + 8].try_into().unwrap();
-            racc = vaddq_u16(racc, vmovl_u8(vabd_u8(vld1_u8(a), vld1_u8(b))));
+            let d = vabd_u8(vld1_u8(a), vld1_u8(b));
+            racc += u16x8::from_repr(token, vmovl_u8(d));
             c += 8;
         }
-        acc = vpadalq_u16(acc, racc);
+        acc += racc.pairwise_widen_add();
         while c < w {
             tail += u32::from(src[so + c].abs_diff(rf[ro + c]));
             c += 1;
         }
     }
-    vaddvq_u32(acc) + tail
+    acc.reduce_add() + tail
 }
 
 // --- AArch64 with dotprod (Arm64V2Token bundles `dotprod`) ---
@@ -264,9 +273,9 @@ pub fn block_sum_sse_scalar(
 }
 
 #[cfg(target_arch = "aarch64")]
-#[arcane]
-pub fn block_sum_sse_neon(
-    _token: NeonToken,
+#[magetypes(define(u8x16, u16x8, u32x4), neon, -scalar)]
+pub fn block_sum_sse(
+    token: Token,
     a: &[u8],
     a_stride: usize,
     b: &[u8],
@@ -274,29 +283,31 @@ pub fn block_sum_sse_neon(
     w: usize,
     h: usize,
 ) -> (i32, u32) {
-    let mut acc_a = vdupq_n_u32(0);
-    let mut acc_b = vdupq_n_u32(0);
-    let mut acc_sse = vdupq_n_u32(0);
+    let mut acc_a = u32x4::splat(token, 0);
+    let mut acc_b = u32x4::splat(token, 0);
+    let mut acc_sse = u32x4::splat(token, 0);
     let mut tail_sum: i32 = 0;
     let mut tail_sse: u32 = 0;
     for y in 0..h {
         let ao = y * a_stride;
         let bo = y * b_stride;
         let mut c = 0usize;
-        let mut ra = vdupq_n_u16(0);
-        let mut rb = vdupq_n_u16(0);
+        let mut ra = u16x8::splat(token, 0);
+        let mut rb = u16x8::splat(token, 0);
         while c + 16 <= w {
             let av: &[u8; 16] = a[ao + c..ao + c + 16].try_into().unwrap();
             let bv: &[u8; 16] = b[bo + c..bo + c + 16].try_into().unwrap();
-            let va = vld1q_u8(av);
-            let vb = vld1q_u8(bv);
-            ra = vpadalq_u8(ra, va);
-            rb = vpadalq_u8(rb, vb);
-            let d = vabdq_u8(va, vb);
+            let va = u8x16::load(token, av);
+            let vb = u8x16::load(token, bv);
+            ra += va.pairwise_widen_add();
+            rb += vb.pairwise_widen_add();
+            let d = va.abs_diff(vb);
             // |d| <= 255 so d*d <= 65025, inside u16; the widening pairwise
             // accumulate then drains into u32.
-            acc_sse = vpadalq_u16(acc_sse, vmull_u8(vget_low_u8(d), vget_low_u8(d)));
-            acc_sse = vpadalq_u16(acc_sse, vmull_high_u8(d, d));
+            let lo = d.widen_low();
+            let hi = d.widen_high();
+            acc_sse += (lo * lo).pairwise_widen_add();
+            acc_sse += (hi * hi).pairwise_widen_add();
             c += 16;
         }
         if c + 8 <= w {
@@ -304,14 +315,14 @@ pub fn block_sum_sse_neon(
             let bv: &[u8; 8] = b[bo + c..bo + c + 8].try_into().unwrap();
             let va = vld1_u8(av);
             let vb = vld1_u8(bv);
-            ra = vaddq_u16(ra, vmovl_u8(va));
-            rb = vaddq_u16(rb, vmovl_u8(vb));
+            ra += u16x8::from_repr(token, vmovl_u8(va));
+            rb += u16x8::from_repr(token, vmovl_u8(vb));
             let d = vabd_u8(va, vb);
-            acc_sse = vpadalq_u16(acc_sse, vmull_u8(d, d));
+            acc_sse += u16x8::from_repr(token, vmull_u8(d, d)).pairwise_widen_add();
             c += 8;
         }
-        acc_a = vpadalq_u16(acc_a, ra);
-        acc_b = vpadalq_u16(acc_b, rb);
+        acc_a += ra.pairwise_widen_add();
+        acc_b += rb.pairwise_widen_add();
         while c < w {
             let d = i32::from(a[ao + c]) - i32::from(b[bo + c]);
             tail_sum += d;
@@ -319,8 +330,8 @@ pub fn block_sum_sse_neon(
             c += 1;
         }
     }
-    let sum = (vaddvq_u32(acc_a) as i32) - (vaddvq_u32(acc_b) as i32) + tail_sum;
-    (sum, vaddvq_u32(acc_sse) + tail_sse)
+    let sum = (acc_a.reduce_add() as i32) - (acc_b.reduce_add() as i32) + tail_sum;
+    (sum, acc_sse.reduce_add() + tail_sse)
 }
 
 #[cfg(target_arch = "x86_64")]

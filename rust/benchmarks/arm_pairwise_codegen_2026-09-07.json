@@ -1,0 +1,17 @@
+{
+  "binary": "/Users/lilith/work/zen/zenav1-svt/rust/target/release/deps/kernel_tiers-74094c5a71b73b15",
+  "comparisons": [
+    {
+      "kernel": "block_sad_neon",
+      "total_instructions_each": 215,
+      "hot_instructions_each": 185,
+      "hot_bodies_identical": true
+    },
+    {
+      "kernel": "block_sum_sse_neon",
+      "total_instructions_each": 261,
+      "hot_instructions_each": 231,
+      "hot_bodies_identical": true
+    }
+  ]
+}

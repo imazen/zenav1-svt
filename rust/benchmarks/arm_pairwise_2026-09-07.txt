@@ -1,0 +1,398 @@
+[kernel_tiers] comparing neon vs forced scalar
+[zenbench] calibration: int=0.31ns/iter mem_bw=101.9GiB/s mem_lat=8.6ns
+[zenbench] timer resolution: 41ns, loop overhead: 0.25ns/iter, TSC: 0.999 ticks/ns (invariant)
+[zenbench] results → /Users/lilith/tmp/zenbench/zenbench-1788776529-f7d.txt
+
+═══════════════════════════════════════════════════════════════
+  zenbench  1788776529-f7d
+  git: 74d92430508f80f6f4faeecef94913977dbf95f2
+═══════════════════════════════════════════════════════════════
+
+  arm_pairwise_sse_4x4_pad0  200 rounds × 29K calls
+                 mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   25.0 ±12.5ns  [23.7–26.2]ns   [1]
+  ╰─ magetypes   25.1 ±11.0ns  [-0.3%–+0.6%]   [2] [3]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 25.0ns
+  magetypes  ████████████████████████████████████████████████████████████ 25.1ns
+  [1] CV=36%
+  [2] CI crosses zero
+  [3] CV=35%
+
+  arm_pairwise_sad_4x4_pad0  200 rounds × 55K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   32.4 ±2.4ns  [30.4–34.5]ns   [1]
+  ╰─ magetypes   31.5 ±2.7ns  [-2.3%–-1.3%]   [2]
+
+  magetypes  ██████████████████████████████████████████████████████████ 31.5ns
+  hand_neon  ████████████████████████████████████████████████████████████ 32.4ns
+  [1] CV=45%
+  [2] CV=44%
+
+  arm_pairwise_sum_sse_4x4_pad0  40 rounds × 52K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   20.5 ±0.2ns  [20.4–20.7]ns  
+  ╰─ magetypes   20.6 ±0.2ns  [-0.6%–+1.0%]   [1]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 20.5ns
+  magetypes  ████████████████████████████████████████████████████████████ 20.6ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_4x4_pad7  30 rounds × 62K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   16.0 ±0.4ns  [14.9–17.5]ns   [1]
+  ╰─ magetypes   16.3 ±0.4ns  [+0.7%–+2.5%]   [2] [3]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 16.0ns
+  magetypes  ████████████████████████████████████████████████████████████ 16.3ns
+  [1] CV=24%
+  [2] CI crosses zero
+  [3] CV=23%
+
+  arm_pairwise_sad_4x4_pad7  30 rounds × 55K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   19.6 ±0.4ns  [19.3–19.8]ns  
+  ╰─ magetypes   19.0 ±0.2ns  [-3.5%–-2.1%]  
+
+  magetypes  ██████████████████████████████████████████████████████████ 19.0ns
+  hand_neon  ████████████████████████████████████████████████████████████ 19.6ns
+
+  arm_pairwise_sum_sse_4x4_pad7  200 rounds × 52K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   48.4 ±5.6ns  [47.2–49.4]ns  
+  ╰─ magetypes   48.3 ±5.5ns  [-1.4%–+1.4%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 48.3ns
+  hand_neon  ████████████████████████████████████████████████████████████ 48.4ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_8x8_pad0  200 rounds × 55K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   39.5 ±3.6ns  [38.8–40.1]ns  
+  ╰─ magetypes   39.1 ±4.3ns  [-2.0%–+0.9%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 39.1ns
+  hand_neon  ████████████████████████████████████████████████████████████ 39.5ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_8x8_pad0  200 rounds × 58K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   45.6 ±4.7ns  [44.9–46.4]ns  
+  ╰─ magetypes   45.3 ±3.9ns  [-1.9%–+1.5%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 45.3ns
+  hand_neon  ████████████████████████████████████████████████████████████ 45.6ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_8x8_pad0  200 rounds × 58K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   48.9 ±4.3ns  [48.0–49.7]ns  
+  ╰─ magetypes   49.0 ±4.9ns  [-1.2%–+2.0%]   [1]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 48.9ns
+  magetypes  ████████████████████████████████████████████████████████████ 49.0ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_8x8_pad7  200 rounds × 55K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   38.5 ±5.0ns  [37.6–39.4]ns  
+  ╰─ magetypes   38.3 ±4.1ns  [-1.7%–+1.0%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 38.3ns
+  hand_neon  ████████████████████████████████████████████████████████████ 38.5ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_8x8_pad7  200 rounds × 55K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   45.4 ±5.1ns  [44.8–46.1]ns  
+  ╰─ magetypes   45.4 ±5.1ns  [-1.4%–+1.7%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 45.4ns
+  hand_neon  ████████████████████████████████████████████████████████████ 45.4ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_8x8_pad7  200 rounds × 58K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   48.9 ±3.6ns  [48.2–49.6]ns  
+  ╰─ magetypes   49.5 ±3.8ns  [-0.4%–+2.8%]   [1]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 48.9ns
+  magetypes  ████████████████████████████████████████████████████████████ 49.5ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_16x16_pad0  200 rounds × 47K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   72.4 ±6.7ns  [71.4–73.2]ns  
+  ╰─ magetypes   72.4 ±7.8ns  [-1.5%–+1.5%]   [1]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 72.4ns
+  magetypes  ████████████████████████████████████████████████████████████ 72.4ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_16x16_pad0  200 rounds × 50K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   69.2 ±8.1ns  [67.7–70.7]ns  
+  ╰─ magetypes   68.7 ±7.4ns  [-2.3%–+1.1%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 68.7ns
+  hand_neon  ████████████████████████████████████████████████████████████ 69.2ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_16x16_pad0  200 rounds × 47K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   81.9 ±7.7ns  [80.3–83.4]ns  
+  ╰─ magetypes   82.1 ±7.0ns  [-1.5%–+2.1%]   [1]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 81.9ns
+  magetypes  ████████████████████████████████████████████████████████████ 82.1ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_16x16_pad7  200 rounds × 50K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   70.0 ±5.9ns  [68.9–71.0]ns  
+  ╰─ magetypes   69.8 ±6.4ns  [-1.8%–+1.4%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 69.8ns
+  hand_neon  ████████████████████████████████████████████████████████████ 70.0ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_16x16_pad7  200 rounds × 50K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   46.0 ±6.8ns  [43.2–49.0]ns   [1]
+  ╰─ magetypes   45.9 ±6.7ns  [-0.3%–+1.5%]   [2] [3]
+
+  magetypes  ████████████████████████████████████████████████████████████ 45.9ns
+  hand_neon  ████████████████████████████████████████████████████████████ 46.0ns
+  [1] CV=45%
+  [2] CI crosses zero
+  [3] CV=45%
+
+  arm_pairwise_sum_sse_16x16_pad7  50 rounds × 45K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   34.3 ±2.2ns  [33.8–34.8]ns  
+  ╰─ magetypes   34.5 ±2.6ns  [-0.2%–+1.2%]   [1]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 34.3ns
+  magetypes  ████████████████████████████████████████████████████████████ 34.5ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_17x9_pad0  50 rounds × 45K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   29.8 ±1.6ns  [29.4–30.2]ns  
+  ╰─ magetypes   29.7 ±2.0ns  [-1.0%–+0.7%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 29.7ns
+  hand_neon  ████████████████████████████████████████████████████████████ 29.8ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_17x9_pad0  60 rounds × 43K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   29.1 ±1.3ns  [28.8–29.4]ns  
+  ╰─ magetypes   28.4 ±1.4ns  [-3.4%–-1.5%]  
+
+  magetypes  ███████████████████████████████████████████████████████████ 28.4ns
+  hand_neon  ████████████████████████████████████████████████████████████ 29.1ns
+
+  arm_pairwise_sum_sse_17x9_pad0  50 rounds × 43K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   30.0 ±1.5ns  [29.6–30.3]ns  
+  ╰─ magetypes   29.8 ±2.5ns  [-1.0%–+0.7%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 29.8ns
+  hand_neon  ████████████████████████████████████████████████████████████ 30.0ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_17x9_pad7  40 rounds × 47K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   29.9 ±1.4ns  [29.4–30.4]ns  
+  ╰─ magetypes   29.9 ±1.1ns  [-1.1%–+0.1%]   [1]
+
+  magetypes  ████████████████████████████████████████████████████████████ 29.9ns
+  hand_neon  ████████████████████████████████████████████████████████████ 29.9ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_17x9_pad7  90 rounds × 43K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   29.3 ±2.0ns  [29.0–29.6]ns  
+  ╰─ magetypes   28.4 ±1.5ns  [-4.0%–-2.1%]  
+
+  magetypes  ██████████████████████████████████████████████████████████ 28.4ns
+  hand_neon  ████████████████████████████████████████████████████████████ 29.3ns
+
+  arm_pairwise_sum_sse_17x9_pad7  30 rounds × 43K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   30.2 ±0.5ns  [29.7–30.7]ns  
+  ╰─ magetypes   30.5 ±0.4ns  [-0.0%–+1.6%]   [1]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 30.2ns
+  magetypes  ████████████████████████████████████████████████████████████ 30.5ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_32x32_pad0  60 rounds × 17K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   64.4 ±1.7ns  [63.8–65.0]ns  
+  ╰─ magetypes   63.3 ±2.3ns  [-2.8%–-0.9%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 63.3ns
+  hand_neon  ████████████████████████████████████████████████████████████ 64.4ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_32x32_pad0  100 rounds × 17K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   60.9 ±1.6ns  [60.3–61.5]ns  
+  ╰─ magetypes   61.6 ±2.2ns  [+0.7%–+2.0%]   [1]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 60.9ns
+  magetypes  ████████████████████████████████████████████████████████████ 61.6ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_32x32_pad0  80 rounds × 11K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   106 ±3ns  [104–107]ns    
+  ╰─ magetypes   106 ±4ns  [-0.4%–+1.5%]   [1]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 105.7ns
+  magetypes  ███████████████████████████████████████████████████████████ 106.3ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_32x32_pad7  30 rounds × 17K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   64.8 ±2.1ns  [64.0–65.6]ns  
+  ╰─ magetypes   64.0 ±1.3ns  [-2.3%–-0.4%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 64.0ns
+  hand_neon  ████████████████████████████████████████████████████████████ 64.8ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_32x32_pad7  50 rounds × 16K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   61.0 ±2.0ns  [60.3–61.6]ns  
+  ╰─ magetypes   61.3 ±1.9ns  [-0.7%–+1.1%]   [1]
+
+  hand_neon  ████████████████████████████████████████████████████████████ 61.0ns
+  magetypes  ████████████████████████████████████████████████████████████ 61.3ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_32x32_pad7  200 rounds × 11K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   217 ±35ns  [209–224]ns     [1]
+  ╰─ magetypes   216 ±35ns  [-0.7%–+0.8%]   [2] [3]
+
+  magetypes  ███████████████████████████████████████████████████████████ 216.0ns
+  hand_neon  ███████████████████████████████████████████████████████████ 216.6ns
+  [1] CV=24%
+  [2] CI crosses zero
+  [3] CV=24%
+
+  arm_pairwise_sse_64x64_pad0  150 rounds × 5K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   528 ±50ns  [516–538]ns    
+  ╰─ magetypes   526 ±58ns  [-0.8%–+0.1%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 526.1ns
+  hand_neon  ███████████████████████████████████████████████████████████ 527.7ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_64x64_pad0  200 rounds × 5K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   276 ±12ns  [256–297]ns     [1]
+  ╰─ magetypes   275 ±13ns  [-0.2%–+0.5%]   [2] [3]
+
+  magetypes  ███████████████████████████████████████████████████████████ 275.5ns
+  hand_neon  ███████████████████████████████████████████████████████████ 276.4ns
+  [1] CV=53%
+  [2] CI crosses zero
+  [3] CV=53%
+
+  arm_pairwise_sum_sse_64x64_pad0  80 rounds × 2K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   411 ±9ns  [399–428]ns    
+  ╰─ magetypes   410 ±8ns  [-0.8%–+0.8%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 410.2ns
+  hand_neon  ███████████████████████████████████████████████████████████ 411.1ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_64x64_pad7  200 rounds × 5K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   382 ±214ns  [357–407]ns     [1]
+  ╰─ magetypes   382 ±226ns  [-0.8%–+0.1%]   [2] [3]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 381.8ns
+  magetypes  ███████████████████████████████████████████████████████████ 382.0ns
+  [1] CV=47%
+  [2] CI crosses zero
+  [3] CV=48%
+
+  arm_pairwise_sad_64x64_pad7  200 rounds × 5K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   174 ±4ns  [173–176]ns    
+  ╰─ magetypes   175 ±4ns  [-0.2%–+0.4%]   [1]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 174.4ns
+  magetypes  ███████████████████████████████████████████████████████████ 174.7ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_64x64_pad7  40 rounds × 2K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   398 ±4ns  [393–402]ns    
+  ╰─ magetypes   397 ±4ns  [-0.4%–+0.8%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 396.7ns
+  hand_neon  ███████████████████████████████████████████████████████████ 397.5ns
+  [1] CI crosses zero
+
+  arm_pairwise_sse_128x128_pad0  30 rounds × 1K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   652 ±13ns  [646–659]ns    
+  ╰─ magetypes    646 ±7ns  [-1.6%–-0.5%]   [1]
+
+  magetypes  ██████████████████████████████████████████████████████████ 646.2ns
+  hand_neon  ███████████████████████████████████████████████████████████ 652.3ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_128x128_pad0  110 rounds × 1K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   600 ±11ns  [595–605]ns    
+  ╰─ magetypes   598 ±12ns  [-0.4%–+0.6%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 598.3ns
+  hand_neon  ███████████████████████████████████████████████████████████ 599.8ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_128x128_pad0  30 rounds × 657 calls
+                mean ±mad µs  95% CI vs base 
+  ├─ hand_neon   1.5 ±0.0µs  [1.5–1.6]µs    
+  ╰─ magetypes   1.5 ±0.0µs  [-0.1%–+0.8%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 1.54µs
+  hand_neon  ███████████████████████████████████████████████████████████ 1.54µs
+  [1] CI crosses zero
+
+  arm_pairwise_sse_128x128_pad7  30 rounds × 1K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   659 ±5ns  [657–662]ns    
+  ╰─ magetypes   657 ±4ns  [-1.3%–-0.3%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 656.9ns
+  hand_neon  ███████████████████████████████████████████████████████████ 659.4ns
+  [1] CI crosses zero
+
+  arm_pairwise_sad_128x128_pad7  90 rounds × 1K calls
+                mean ±mad ns  95% CI vs base 
+  ├─ hand_neon   596 ±7ns  [593–600]ns    
+  ╰─ magetypes   597 ±8ns  [-0.5%–-0.1%]   [1]
+
+  hand_neon  ███████████████████████████████████████████████████████████ 596.2ns
+  magetypes  ███████████████████████████████████████████████████████████ 596.6ns
+  [1] CI crosses zero
+
+  arm_pairwise_sum_sse_128x128_pad7  60 rounds × 657 calls
+                mean ±mad µs  95% CI vs base 
+  ├─ hand_neon   1.6 ±0.0µs  [1.5–1.6]µs    
+  ╰─ magetypes   1.5 ±0.0µs  [-0.8%–+0.4%]   [1]
+
+  magetypes  ███████████████████████████████████████████████████████████ 1.55µs
+  hand_neon  ███████████████████████████████████████████████████████████ 1.55µs
+  [1] CI crosses zero
+

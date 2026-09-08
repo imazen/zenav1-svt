@@ -925,6 +925,16 @@ under the AV1 reference decoder as of 2026-07-13; C baseline retargeted to
 the final v4.2.0 tag 2026-07-16 — all-intra output byte-identical to the old
 v4.2.0-rc pin, so all gates carried over unchanged)
 
+### ARM build floor discrepancy (2026-09-07)
+
+`me_sad::block_sad_arm_v2` uses `vdotq_u32` and `vdot_u32`, which
+Clippy 1.98 reports as stable since Rust 1.98, while `rust/Cargo.toml`
+declares Rust 1.89. The function was verified unchanged from `74d92430`.
+The ARM pairwise co-development passes current-toolchain correctness tests
+but does not resolve this older-toolchain build issue. Strict Clippy output
+is retained in `benchmarks/arm_pairwise_clippy_2026-09-07.txt`; see
+`benchmarks/arm_pairwise_2026-09-07.meta` for the other baseline diagnostics.
+
 ### Next structural gaps toward C bit-identity (not decode blockers)
 
 > **Identity harness live (2026-07-13):** `tools/identity_diff.sh <w> <h>

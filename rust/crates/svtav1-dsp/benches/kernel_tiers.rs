@@ -2,6 +2,10 @@
 //! AArch64 scalar fallbacks may auto-vectorize; dispatch labels alone do not
 //! establish whether a path contains vector instructions.
 
+#[cfg(target_arch = "aarch64")]
+#[path = "support/arm_pairwise_reference.rs"]
+mod arm_pairwise_reference;
+
 use svtav1_dsp::{
     cdef, copy, fwd_txfm, hadamard, hbd, inter_pred, intra_pred, inv_txfm, quant, quant_coding,
     restoration, sad, variance,
@@ -46,6 +50,8 @@ fn bench_dsp(suite: &mut Suite) {
     );
     set_simd(true);
     eprintln!("[kernel_tiers] comparing {TIER_NAME} vs forced scalar");
+    #[cfg(target_arch = "aarch64")]
+    bench_arm_pairwise(suite);
 
     // 64-wide planes so every block size below has stride room.
     const STRIDE: usize = 128;
@@ -457,6 +463,101 @@ fn bench_dsp(suite: &mut Suite) {
     }
 
     set_simd(true);
+}
+
+// Same-binary comparison with the frozen pre-change ARM implementation.
+#[cfg(target_arch = "aarch64")]
+fn bench_arm_pairwise(suite: &mut Suite) {
+    use archmage::{NeonToken, SimdToken};
+    use svtav1_dsp::me_sad;
+    let token = NeonToken::summon().expect("ARM benchmark requires NEON");
+    type Sse = fn(&[u8], usize, &[u8], usize, usize, usize) -> u64;
+    type Sad = fn(NeonToken, &[u8], usize, &[u8], usize, usize, usize) -> u32;
+    type SumSse = fn(NeonToken, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32);
+    for (w, h) in [
+        (4, 4),
+        (8, 8),
+        (16, 16),
+        (17, 9),
+        (32, 32),
+        (64, 64),
+        (128, 128),
+    ] {
+        for padding in [0, 7] {
+            let ss = w + padding;
+            let rs = w + padding * 2;
+            let src: &'static [u8] = Box::leak(plane8(ss * h, 3).into_boxed_slice());
+            let rf: &'static [u8] = Box::leak(plane8(rs * h, 7).into_boxed_slice());
+            let tag = format!("{w}x{h}_pad{padding}");
+            assert_eq!(
+                arm_pairwise_reference::sse(src, ss, rf, rs, w, h),
+                variance::sse(src, ss, rf, rs, w, h)
+            );
+            if w == 4 || w == 8 {
+                // Validate odd heights, maximum differences and unequal strides
+                // before measuring the register-only row-packing experiment.
+                for height in [0, 1, 3, 5, 9, 33, 128, 70_000] {
+                    let a = plane8(ss * height, 13);
+                    let b = vec![255; rs * height];
+                    assert_eq!(
+                        arm_pairwise_reference::sse_rowpack(&a, ss, &b, rs, w, height),
+                        arm_pairwise_reference::sse(&a, ss, &b, rs, w, height)
+                    );
+                }
+                suite.compare(format!("arm_rowpack_sse_{tag}"), |g| {
+                    for (name, f) in [
+                        ("hand_neon", arm_pairwise_reference::sse as Sse),
+                        ("rowpack", arm_pairwise_reference::sse_rowpack as Sse),
+                    ] {
+                        g.bench(name, move |b| {
+                            b.with_input(|| ()).run(|_| f(src, ss, rf, rs, w, h))
+                        });
+                    }
+                });
+            }
+            suite.compare(format!("arm_pairwise_sse_{tag}"), |g| {
+                for (name, f) in [
+                    ("hand_neon", arm_pairwise_reference::sse as Sse),
+                    ("magetypes", variance::sse as Sse),
+                ] {
+                    g.bench(name, move |b| {
+                        b.with_input(|| ()).run(|_| f(src, ss, rf, rs, w, h))
+                    });
+                }
+            });
+            assert_eq!(
+                arm_pairwise_reference::block_sad_neon(token, src, ss, rf, rs, w, h),
+                me_sad::block_sad_neon(token, src, ss, rf, rs, w, h)
+            );
+            suite.compare(format!("arm_pairwise_sad_{tag}"), |g| {
+                for (name, f) in [
+                    ("hand_neon", arm_pairwise_reference::block_sad_neon as Sad),
+                    ("magetypes", me_sad::block_sad_neon as Sad),
+                ] {
+                    g.bench(name, move |b| {
+                        b.with_input(|| ()).run(|_| f(token, src, ss, rf, rs, w, h))
+                    });
+                }
+            });
+            assert_eq!(
+                arm_pairwise_reference::block_sum_sse_neon(token, src, ss, rf, rs, w, h),
+                me_sad::block_sum_sse_neon(token, src, ss, rf, rs, w, h)
+            );
+            suite.compare(format!("arm_pairwise_sum_sse_{tag}"), |g| {
+                for (name, f) in [
+                    (
+                        "hand_neon",
+                        arm_pairwise_reference::block_sum_sse_neon as SumSse,
+                    ),
+                    ("magetypes", me_sad::block_sum_sse_neon as SumSse),
+                ] {
+                    g.bench(name, move |b| {
+                        b.with_input(|| ()).run(|_| f(token, src, ss, rf, rs, w, h))
+                    });
+                }
+            });
+        }
+    }
 }
 
 zenbench::main!(bench_dsp);
