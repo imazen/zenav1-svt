@@ -1,0 +1,41 @@
+{
+  "source": "CLIC2025 training/097cb426910ba8ce2525dd8bb7fb1777.png",
+  "source_sha256": "7995fc6c3653a0cfa9cfa6ee207983532f2c52d430262243cc917fd214ae186c",
+  "preparation": "zenmetrics-av1-compare: Lanczos3 maximum edge512, shared BT709 limited-range planar conversion",
+  "width": 376,
+  "height": 512,
+  "bit_depth": 8,
+  "chroma": "420",
+  "input_sha256": "35ff155ee7ca50fffdebcc4218ee684057d1794c93ce43e105222cc619d4e6c2",
+  "bytes": 288768,
+  "failures": [
+    {
+      "qp": 10,
+      "preset": 1,
+      "before_bytes": 9524,
+      "c_bytes": 9542,
+      "defects": [
+        "chroma source row wrap",
+        "partial-SB128 depth-limit omission"
+      ]
+    },
+    {
+      "qp": 30,
+      "preset": 4,
+      "before_bytes": 2842,
+      "c_bytes": 2842,
+      "defects": [
+        "chroma source row wrap; bytes equal in length but different payload"
+      ]
+    },
+    {
+      "qp": 30,
+      "preset": 5,
+      "before_bytes": 2906,
+      "c_bytes": 2907,
+      "defects": [
+        "chroma source row wrap"
+      ]
+    }
+  ]
+}

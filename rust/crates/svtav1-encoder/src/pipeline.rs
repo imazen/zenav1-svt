@@ -5223,6 +5223,18 @@ impl EncodePipeline {
                 chroma.is_some(),
             );
         }
+        #[cfg(feature = "std")]
+        if let Ok(prefix) = std::env::var("SVTAV1_RECON10_BIN") {
+            if let (Some(y), Some((u, v))) =
+                (self.last_recon10_y.as_ref(), self.last_recon10_uv.as_ref())
+            {
+                for (plane, samples) in [y, u, v].into_iter().enumerate() {
+                    let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+                    std::fs::write(format!("{prefix}.p{plane}"), bytes)
+                        .expect("write native pre-filter reconstruction");
+                }
+            }
+        }
         // ---- bd10 post-filter canvas ------------------------------------
         // At 10 bits C runs the WHOLE post-MD filter chain on the 16-bit
         // recon against the 16-bit source, and the THREE SEARCHES in that
@@ -10959,6 +10971,37 @@ fn encode_tile_rows(
         Option<(Vec<u16>, Vec<u16>, Vec<u16>)>,
     )>,
 > {
+    // Mode-decision chroma blocks can cross the aligned right edge. Give
+    // sources and reconstruction canvases a real SB-wide stride; extra rows
+    // alone let right-edge reads wrap into unrelated samples in the next row.
+    let md_cw = w.div_ceil(sb_size) * sb_size / 2;
+    let md_ch = h.div_ceil(sb_size) * sb_size / 2;
+    let padded_chroma = chroma_src
+        .filter(|_| md_cw != w / 2)
+        .map(|(u, v)| {
+            Ok::<_, whereat::At<crate::EncodeError>>((
+                pad_plane_replicate(u, w / 2, w / 2, h / 2, md_cw, md_ch)?,
+                pad_plane_replicate(v, w / 2, w / 2, h / 2, md_cw, md_ch)?,
+            ))
+        })
+        .transpose()?;
+    let chroma_src = padded_chroma
+        .as_ref()
+        .map(|(u, v)| (u.as_slice(), v.as_slice()))
+        .or(chroma_src);
+    let padded_chroma10 = hbd_src
+        .filter(|(_, u, _)| md_cw != w / 2 && !u.is_empty())
+        .map(|(_, u, v)| {
+            Ok::<_, whereat::At<crate::EncodeError>>((
+                pad_plane_replicate_u16(u, w / 2, w / 2, h / 2, md_cw, md_ch)?,
+                pad_plane_replicate_u16(v, w / 2, w / 2, h / 2, md_cw, md_ch)?,
+            ))
+        })
+        .transpose()?;
+    let hbd_src = hbd_src.map(|(y, u, v)| match padded_chroma10.as_ref() {
+        Some((pu, pv)) => (y, pu.as_slice(), pv.as_slice()),
+        None => (y, u, v),
+    });
     let encode_one_tile = |tile_idx: usize| -> crate::EncodeResult<(
         Vec<u8>,
         Vec<crate::partition::PartitionTree>,
@@ -11241,17 +11284,11 @@ fn encode_tile_rows(
             Ok("noibc") | Ok("none") => funnel_cfg.allow_intrabc = false,
             _ => {}
         }
-        let cwid = w / 2;
-        // SB extent (task #95 chunk 2): a boundary block whose square (or edge)
-        // block STRADDLES the aligned extent writes past aligned into the
-        // SB-extent pad (C codes such blocks). The recon working buffers KEEP
-        // the aligned stride (`w` luma / `cwid` chroma) but are sized to the SB
-        // extent PRODUCT (`ext_w * ext_h`), so a straddling write past the
-        // aligned right/bottom lands in the slack rows rather than out of
-        // bounds (a right-straddle write wraps down into the next stride row —
-        // hence the full product, not just extra rows). For a 64-aligned frame
-        // `ext_w == w` and `ext_h == h`, so the buffers are the same size as
-        // before — byte-neutral.
+        let cwid = md_cw;
+        // Chroma reconstruction uses an SB-wide stride, matching the padded
+        // mode-decision source. A right-straddling candidate must not overwrite
+        // the beginning of the next visible row. Luma keeps its existing
+        // aligned-stride canvas layout.
         let ext_w = w.div_ceil(sb_size) * sb_size;
         let ext_h = h.div_ceil(sb_size) * sb_size;
         let ext_cbuf = (ext_w / 2) * (ext_h / 2); // chroma buffer capacity at `cwid` stride
@@ -11578,8 +11615,8 @@ fn encode_tile_rows(
         // arrive already SB-extent-padded when the frame has a partial SB
         // (`hbd_sb_owned`), so the LUMA stride is `in_stride` — the same stride
         // the u8 `sb_input` gather uses — and a block's `(abs_x, abs_y)` indexes
-        // them identically. Chroma keeps the ALIGNED stride `w/2` with extra
-        // rows, matching `sb_chroma_owned`.
+        // them identically. Chroma was repadded above to the SB-wide `cwid`
+        // stride, matching the mode-decision reconstruction canvases.
         let funnel_src10 = hbd_src.filter(|_| bd10_luma_funnel).map(|(y10, u10, v10)| {
             debug_assert!(
                 y10.len() >= in_stride * h,
@@ -11590,7 +11627,7 @@ fn encode_tile_rows(
                 y_stride: in_stride,
                 u: u10,
                 v: v10,
-                c_stride: w / 2,
+                c_stride: cwid,
             }
         });
         if funnel_src10.is_some() {
@@ -12633,19 +12670,11 @@ fn encode_tile_rows(
                                         let mut mx = 0usize;
                                         let mut mn = 255usize;
                                         for &(ux, uy) in units.iter() {
-                                            // Only fold FULL 64x64 units: the m6 PD0
-                                            // eval reads a whole 64x64 source block,
-                                            // so a partial edge unit (non-64-aligned
-                                            // frame) would read out of bounds. Every
-                                            // SB128 gate cell is 64-aligned → all
-                                            // units full → this never skips. A
-                                            // non-64-aligned SB128 frame needs the
-                                            // partial-SB (#95) treatment anyway
-                                            // (partial units take the fixed-tree
-                                            // path, not this refined one).
-                                            if ux + unit_size > w || uy + unit_size > h {
-                                                continue;
-                                            }
+                                            // Include partial edge units: C folds the whole
+                                            // superblock's chosen PD0 tree. The evaluator
+                                            // receives padded source planes and aligned
+                                            // frame bounds, so its partial-node handling
+                                            // applies here exactly as in the main walk.
                                             crate::pd0::pd0_pick_sb_partition_m6_eval(
                                                 sb_input,
                                                 in_stride,
@@ -13298,6 +13327,15 @@ fn encode_tile_rows(
         // band (p9..p13) allocates the LUMA canvas without the chroma ones,
         // so the complete 3-plane canvas exists exactly at `bd10_full_rd`.
         let tile_canvas10 = if bd10_full_rd {
+            // The frame merger consumes aligned-stride canvases. Compact
+            // only visible chroma rows after all mode decisions are complete.
+            if cwid != w / 2 {
+                for plane in [&mut tile_frame_u_recon10, &mut tile_frame_v_recon10] {
+                    for row in 0..h / 2 {
+                        plane.copy_within(row * cwid..row * cwid + w / 2, row * (w / 2));
+                    }
+                }
+            }
             Some((
                 tile_frame_recon10,
                 tile_frame_u_recon10,

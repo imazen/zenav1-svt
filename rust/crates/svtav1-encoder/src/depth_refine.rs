@@ -1535,7 +1535,12 @@ impl DepthWalk<'_, '_> {
                     let ry = (r * quad + y) * sq + c * quad;
                     for x in 0..quad {
                         let diff = if bd10 {
-                            ((self.y_src[sy + x] as i64) << 2) - yrec10[ry + x] as i64
+                            let source = self.fx.src10.as_ref().map_or_else(
+                                || (self.y_src[sy + x] as i64) << 2,
+                                |src| src.y[(ev.abs_y + r * quad + y) * src.y_stride
+                                    + ev.abs_x + c * quad + x] as i64,
+                            );
+                            source - yrec10[ry + x] as i64
                         } else {
                             self.y_src[sy + x] as i64 - yrec[ry + x] as i64
                         };
@@ -1553,10 +1558,15 @@ impl DepthWalk<'_, '_> {
                         let ry = (r * cq + y) * cw + c * cq;
                         for x in 0..cq {
                             let (du, dv) = if bd10 {
-                                (
-                                    ((self.fx.u_src[sy + x] as i64) << 2) - urec10[ry + x] as i64,
-                                    ((self.fx.v_src[sy + x] as i64) << 2) - vrec10[ry + x] as i64,
-                                )
+                                let (su, sv) = self.fx.src10.as_ref().map_or_else(
+                                    || ((self.fx.u_src[sy + x] as i64) << 2,
+                                        (self.fx.v_src[sy + x] as i64) << 2),
+                                    |src| {
+                                        let off = (ccy + y) * src.c_stride + ccx + x;
+                                        (src.u[off] as i64, src.v[off] as i64)
+                                    },
+                                );
+                                (su - urec10[ry + x] as i64, sv - vrec10[ry + x] as i64)
                             } else {
                                 (
                                     self.fx.u_src[sy + x] as i64 - urec[ry + x] as i64,

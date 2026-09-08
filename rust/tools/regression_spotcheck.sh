@@ -1754,6 +1754,30 @@ for witness in zen_intra_edges_at_partial_frames_and_tiles zen_research_intra_ed
   fi
 done
 
+# Partial right-edge chroma formerly wrapped into the next source row.
+# The same source also exposed omission of partial quadrants from SB128's
+# PD0 depth limits: p1 tested larger blocks than C. Exact measured input is
+# retained so this gate does not depend on corpus availability or conversion.
+# Before / C bytes: q10p1 9524/9542, q30p4 2842/2842 (different payload),
+# q30p5 2906/2907. All three now match the pinned C reference byte-for-byte.
+if python3 - "$HERE/fixtures" "$W/partial-chroma.yuv" <<'PYCHROMA'
+import gzip, hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+data = gzip.decompress((root / 'partial-chroma-376x512.i420.gz').read_bytes())
+meta = json.loads((root / 'partial-chroma-376x512.json').read_text())
+assert len(data) == meta['bytes']
+assert hashlib.sha256(data).hexdigest() == meta['input_sha256']
+Path(sys.argv[2]).write_bytes(data)
+PYCHROMA
+then
+  byte "partial-chroma-source-stride-p4" "raw:$W/partial-chroma.yuv" 376 512 30 4 8
+  byte "partial-chroma-source-stride-p5" "raw:$W/partial-chroma.yuv" 376 512 30 5 8
+  byte "partial-sb128-depth-limits-p1" "raw:$W/partial-chroma.yuv" 376 512 10 1 8
+else
+  fail=$((fail+1)); failed+=("partial-chroma fixture integrity")
+fi
+
 # 2026-09-08 — research -1 bypassed the full partition-search path because
 # its live dispatch matched only 0..=5. Before: Rust 299B / C 283B, different
 # reconstruction and restoration. After extending the gate to -1..=5:

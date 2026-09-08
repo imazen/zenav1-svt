@@ -225,9 +225,28 @@ static void dump_pd0_tree(FILE* f, const PC_TREE* t, unsigned poc, int islice) {
     }
 }
 
+static void dump_pd0_costs(FILE* f, const PC_TREE* t) {
+    if (!t)
+        return;
+    if (t->tested_blk[PART_N][0] && t->block_data[PART_N][0])
+        fprintf(f, "PD0SQ mi=(%d,%d) bsize=%d cost=%llu\n", t->mi_row, t->mi_col,
+                (int)t->bsize, (unsigned long long)t->block_data[PART_N][0]->cost);
+    if (block_size_wide[t->bsize] > 4)
+        for (int i = 0; i < 4; ++i)
+            dump_pd0_costs(f, t->split[i]);
+}
+
 bool __wrap_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
                                        MdScan* mds, PC_TREE* pc_tree, int mi_row, int mi_col) {
     const bool  r    = __real_svt_aom_pick_partition_pd0(scs, pcs, ctx, mds, pc_tree, mi_row, mi_col);
+    const char* all_path = getenv("SVT_PD0_ALL_OUT");
+    if (all_path && *all_path) {
+        FILE* all_file = fopen(all_path, "a");
+        if (all_file) {
+            dump_pd0_costs(all_file, pc_tree);
+            fclose(all_file);
+        }
+    }
     const char* path = getenv("SVT_PICKPART0_OUT");
     if (!path || !*path) {
         return r;
@@ -993,6 +1012,36 @@ void __wrap_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, Picture
 
 void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
     __real_svt_av1_loop_filter_init(pcs);
+
+    /* Snapshot the completed grid, excluding tentative search stamps from
+     * SVT_CTREE_OUT. Emit each coded block once at its top-left mi. */
+    const char* final_path = getenv("SVT_FINAL_MI_OUT");
+    if (final_path && *final_path) {
+        FILE* final_file = fopen(final_path, "w");
+        if (final_file) {
+            const int rows = pcs->ppcs->aligned_height / 4;
+            const int cols = pcs->ppcs->aligned_width / 4;
+            for (int r = 0; r < rows; ++r) {
+                for (int c = 0; c < cols; ++c) {
+                    const int off = r * pcs->mi_stride + c;
+                    const MbModeInfo* mi = pcs->mi_grid_base[off];
+                    if (!mi || (c && pcs->mi_grid_base[off - 1] == mi) ||
+                        (r && pcs->mi_grid_base[off - pcs->mi_stride] == mi))
+                        continue;
+                    const BlockModeInfo* m = &mi->block_mi;
+                    fprintf(final_file,
+                            "CTREE mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d cflsgn=%d ibc=%d\n",
+                            r, c, (int)mi->bsize, (int)mi->partition, (int)m->mode,
+                            (int)m->uv_mode, (int)m->filter_intra_mode,
+                            (int)m->angle_delta[0], (int)m->angle_delta[1],
+                            (int)m->tx_depth, (int)mi->palette_mode_info.palette_size,
+                            (int)m->skip, (int)m->cfl_alpha_idx,
+                            (int)m->cfl_alpha_signs, (int)m->use_intrabc);
+                }
+            }
+            fclose(final_file);
+        }
+    }
 
     const char* path = getenv("SVT_RECON_OUT");
     if (!path || !*path)
