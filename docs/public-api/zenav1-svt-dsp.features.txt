@@ -1,0 +1,43 @@
+# zenav1-svt-dsp public API — additions from non-default features
+# features: avx512,std,unchecked_dsp
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   pub modules                                 1
+#   pub types (struct/enum/trait/alias)         1
+#   free functions                              5
+#   struct fields                               5
+#   trait roster entries (type × trait)         2
+#   auto-trait-complete types                   1
+#
+# per-module pub lines:
+#   svtav1_dsp                       12
+
+## items (12 lines)
+
+pub mod svtav1_dsp::bench
+pub struct svtav1_dsp::bench::BenchResult
+pub svtav1_dsp::bench::BenchResult::iterations: u64
+pub svtav1_dsp::bench::BenchResult::mpix_per_sec: core::option::Option<f64>
+pub svtav1_dsp::bench::BenchResult::name: alloc::string::String
+pub svtav1_dsp::bench::BenchResult::ns_per_iter: u64
+pub svtav1_dsp::bench::BenchResult::total_ns: u64
+pub fn svtav1_dsp::bench::bench_fwd_txfm_throughput() -> alloc::vec::Vec<svtav1_dsp::bench::BenchResult>
+pub fn svtav1_dsp::bench::bench_sad_throughput() -> alloc::vec::Vec<svtav1_dsp::bench::BenchResult>
+pub fn svtav1_dsp::bench::generate_test_image(usize, usize, u8) -> alloc::vec::Vec<u8>
+pub fn svtav1_dsp::bench::generate_test_image_pair(usize, usize, i32, i32) -> (alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)
+pub fn svtav1_dsp::bench::print_bench_results(&[svtav1_dsp::bench::BenchResult])
+
+## trait impls (1 types)
+
+svtav1_dsp::bench::BenchResult: Clone, Debug
+
+## auto traits
+
+1 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe

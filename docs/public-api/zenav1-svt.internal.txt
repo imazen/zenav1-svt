@@ -1,0 +1,26 @@
+# zenav1-svt public API — doc(hidden) items and excluded-feature surface
+# excluded features: (none)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   inherent methods                            2
+#   trait roster entries (type × trait)         2
+#
+# per-module pub lines:
+#   svtav1                            2
+
+## items (2 lines)
+
+pub fn svtav1::ChromaFormat::assert_fields_are_eq(&self)
+pub fn svtav1::avif::ChromaSubsampling::assert_fields_are_eq(&self)
+
+## trait impls (2 types)
+
+svtav1::ChromaFormat: TrivialClone
+svtav1::avif::ChromaSubsampling: TrivialClone

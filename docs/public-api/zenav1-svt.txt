@@ -1,0 +1,139 @@
+# zenav1-svt public API — supported surface (default features)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+#
+# files: zenav1-svt.txt 105 lines (supported surface) | zenav1-svt.features.txt 48 added (features: avif-container,fallible-alloc,std,symtrace,unsafe_encoding) | zenav1-svt.internal.txt 4 lines (4 hidden + 0 excluded-feature)
+# arch-unique surface: (none — portable on every target)
+
+## summary
+#
+#   pub modules                                 2
+#   pub types (struct/enum/trait/alias)        10
+#   inherent methods                           30
+#   struct fields                              29
+#   enum variants                              14
+#   re-exports                                 10
+#   trait roster entries (type × trait)        25
+#   auto-trait-complete types                  10
+#
+# per-module pub lines:
+#   (root)                            1
+#   svtav1                           94
+
+## items (95 lines)
+
+pub mod svtav1
+pub use svtav1::BlockSize
+pub use svtav1::FrameType
+pub use svtav1::PredictionMode
+pub use svtav1::TxSize
+pub use svtav1::TxType
+pub use svtav1::dsp
+pub use svtav1::encoder
+pub use svtav1::entropy
+pub use svtav1::tables
+pub use svtav1::types
+pub mod svtav1::avif
+pub enum svtav1::avif::ChromaSubsampling
+pub svtav1::avif::ChromaSubsampling::Yuv420
+pub svtav1::avif::ChromaSubsampling::Yuv444
+#[non_exhaustive] pub enum svtav1::avif::EncodeError
+pub svtav1::avif::EncodeError::EncodeFailed(alloc::string::String)
+pub svtav1::avif::EncodeError::InvalidDimensions
+pub svtav1::avif::EncodeError::InvalidDimensions::height: u32
+pub svtav1::avif::EncodeError::InvalidDimensions::reason: &'static str
+pub svtav1::avif::EncodeError::InvalidDimensions::width: u32
+pub svtav1::avif::EncodeError::InvalidQuality
+pub svtav1::avif::EncodeError::InvalidQuality::quality: f32
+pub svtav1::avif::EncodeError::UnsupportedConfig(&'static str)
+pub struct svtav1::avif::AvifEncoder
+pub fn svtav1::avif::AvifEncoder::chroma_subsampling(&self) -> svtav1::avif::ChromaSubsampling
+pub fn svtav1::avif::AvifEncoder::encode_to_av1_obu(&self, &[u8], u32, u32, u32) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_y8(&self, &[u8], u32, u32, u32) -> core::result::Result<svtav1::avif::EncodedAvif, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_yuv420(&self, &[u8], &[u8], &[u8], u32, u32, u32) -> core::result::Result<svtav1::avif::EncodedAvif, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::new() -> Self
+pub fn svtav1::avif::AvifEncoder::quality_to_qp_static(f32) -> u8
+pub fn svtav1::avif::AvifEncoder::with_bit_depth(self, u8) -> Self
+pub fn svtav1::avif::AvifEncoder::with_bt2020_hlg(self) -> Self
+pub fn svtav1::avif::AvifEncoder::with_bt2020_pq(self) -> Self
+pub fn svtav1::avif::AvifEncoder::with_chroma_subsampling(self, svtav1::avif::ChromaSubsampling) -> Self
+pub fn svtav1::avif::AvifEncoder::with_color_space(self, u8, u8, u8, bool) -> Self
+pub fn svtav1::avif::AvifEncoder::with_display_p3(self) -> Self
+pub fn svtav1::avif::AvifEncoder::with_film_grain(self, svtav1_encoder::film_grain_config::FilmGrainConfig) -> Self
+pub fn svtav1::avif::AvifEncoder::with_lossless(self, bool) -> Self
+pub fn svtav1::avif::AvifEncoder::with_num_threads(self, core::option::Option<usize>) -> Self
+pub fn svtav1::avif::AvifEncoder::with_qm(self, bool) -> Self
+pub fn svtav1::avif::AvifEncoder::with_quality(self, f32) -> Self
+pub fn svtav1::avif::AvifEncoder::with_speed(self, u8) -> Self
+pub fn svtav1::avif::AvifEncoder::with_variance_boost(self, bool, u8) -> Self
+pub struct svtav1::avif::EncodedAvif
+pub svtav1::avif::EncodedAvif::bit_depth: u8
+pub svtav1::avif::EncodedAvif::data: alloc::vec::Vec<u8>
+pub svtav1::avif::EncodedAvif::height: u32
+pub svtav1::avif::EncodedAvif::width: u32
+pub enum svtav1::ChromaFormat
+pub svtav1::ChromaFormat::Yuv400
+pub svtav1::ChromaFormat::Yuv420
+pub svtav1::ChromaFormat::Yuv422
+pub svtav1::ChromaFormat::Yuv444
+pub enum svtav1::EncoderError
+pub svtav1::EncoderError::EncodeFailed(alloc::string::String)
+pub svtav1::EncoderError::Eof
+pub svtav1::EncoderError::InvalidConfig(alloc::string::String)
+pub svtav1::EncoderError::NotReady
+pub struct svtav1::Encoder
+pub svtav1::Encoder::rc_state: svtav1_encoder::rate_control::RcState
+pub fn svtav1::Encoder::config(&self) -> &svtav1::EncoderConfig
+pub fn svtav1::Encoder::frame_count(&self) -> u64
+pub fn svtav1::Encoder::new(svtav1::EncoderConfig) -> core::result::Result<Self, svtav1::EncoderError>
+pub fn svtav1::Encoder::receive_packet(&mut self) -> core::result::Result<svtav1::Packet, svtav1::EncoderError>
+pub fn svtav1::Encoder::send_frame(&mut self, core::option::Option<svtav1::Frame>) -> core::result::Result<(), svtav1::EncoderError>
+pub struct svtav1::EncoderConfig
+pub svtav1::EncoderConfig::bit_depth: u8
+pub svtav1::EncoderConfig::chroma_format: svtav1::ChromaFormat
+pub svtav1::EncoderConfig::height: u32
+pub svtav1::EncoderConfig::hierarchical_levels: u8
+pub svtav1::EncoderConfig::preset: u8
+pub svtav1::EncoderConfig::rc: svtav1_encoder::rate_control::RcConfig
+pub svtav1::EncoderConfig::threads: u32
+pub svtav1::EncoderConfig::use_128x128_sb: bool
+pub svtav1::EncoderConfig::width: u32
+pub fn svtav1::EncoderConfig::new(u8) -> Self
+pub fn svtav1::EncoderConfig::with_bit_depth(self, u8) -> Self
+pub fn svtav1::EncoderConfig::with_cbr(self, u32) -> Self
+pub fn svtav1::EncoderConfig::with_crf(self, u8) -> Self
+pub fn svtav1::EncoderConfig::with_resolution(self, u32, u32) -> Self
+pub fn svtav1::EncoderConfig::with_vbr(self, u32) -> Self
+pub struct svtav1::Frame
+pub svtav1::Frame::pts: u64
+pub svtav1::Frame::u: alloc::vec::Vec<u8>
+pub svtav1::Frame::u_stride: usize
+pub svtav1::Frame::v: alloc::vec::Vec<u8>
+pub svtav1::Frame::v_stride: usize
+pub svtav1::Frame::y: alloc::vec::Vec<u8>
+pub svtav1::Frame::y_stride: usize
+pub struct svtav1::Packet
+pub svtav1::Packet::data: alloc::vec::Vec<u8>
+pub svtav1::Packet::frame_type: svtav1_types::frame::FrameType
+pub svtav1::Packet::pts: u64
+pub svtav1::Packet::size: usize
+
+## trait impls (9 types)
+
+svtav1::ChromaFormat: Clone, Copy, Debug, Eq, PartialEq
+svtav1::EncoderConfig: Clone, Debug
+svtav1::EncoderError: Clone, Debug, Display
+svtav1::Frame: Debug
+svtav1::Packet: Debug
+svtav1::avif::AvifEncoder: Clone, Debug, Default
+svtav1::avif::ChromaSubsampling: Clone, Copy, Debug, Eq, PartialEq
+svtav1::avif::EncodeError: Clone, Debug, Display
+svtav1::avif::EncodedAvif: Clone, Debug
+
+## auto traits
+
+10 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe

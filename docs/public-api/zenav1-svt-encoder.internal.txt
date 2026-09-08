@@ -1,0 +1,776 @@
+# zenav1-svt-encoder public API — doc(hidden) items and excluded-feature surface
+# excluded features: (none)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   inherent methods                          299
+#   trait roster entries (type × trait)       455
+#
+# per-module pub lines:
+#   svtav1_encoder                  299
+
+## items (299 lines)
+
+pub fn svtav1_encoder::cdef::CdefFrameParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::cdef::CdefPick::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::cdef::CdefStats::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::chroma_q::ChromaQDeltas::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::deblock::LfLevels::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::dlf_arm::DlfPick::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::dlf_arm::RefDlfState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::context::SegIdPosition::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::mv_coding::MvJointType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::mv_coding::MvSubpelPrecision::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::obu::ChromaQSignal::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::obu::FilmGrainParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::obu::ObuType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::obu::SeqTools::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::obu::SuperresParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::entropy::obu::TileGrid::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::film_grain_config::FilmGrainConfig::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::film_grain_model::NoiseStatus::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::frame_geom::FrameDims::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::hdr_mode::SvtHdrMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_hdr_arm::InterHdrError::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_me::context::MeCandidate::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_me::context::MeType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_me::context::SearchArea::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_me::obmc_search::ObmcSubpelResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_me::sad::SadLoopResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_mv_code::MvCodePlan::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_mvp::DrlMvPred::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::inter_mvp::MvRef::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::intra_edge::TileMi::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::intra_open_loop::OpenLoopError::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::intrabc::IntrabcMotionDirection::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::intrabc::MeshPattern::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::intrabc_hash::BlockHash::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::lf_levels::EdgeDir::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::lf_levels::LoopFilterLevels::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::lf_levels::LoopFilterParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::lf_levels::SbDeltaLf::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::md_subpel::MvCostType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::md_subpel::SubpelMvLimits::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::md_subpel::SubpelState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::palette::DeltaEncodeStep::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::partition::PartitionType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::pd0::Pd0Tree::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_dec_cdf::AvgCdfPlan::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_dec_cdf::MvRateTable::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_dec_cdf::SbCdfSource::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_dec_metrics::RecodeDecision::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_dec_metrics::SsimSums::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::InputCoeffLvl::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ResolutionRange::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::cdef_search::CdefSearchControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::cdef_search::RefCdefStrengths::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::cdef_search::RefCdefUpdate::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::common::CommonSignals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::common::DepthRemovalCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::common::DepthRemovalResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::common::Lpd1Ctrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::common::Lpd1Row::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::Bipred3x3Controls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::DistortionType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::DlfCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::GmControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::IfsLevel::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::InterCompCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::InterIntraCompCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::MdPmeCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::ObmcControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::RefPruningControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::ctrls::WmCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::CandEliminationCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::CandReductionCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::CoeffShavingCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::DepthEarlyExitCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultDerivedLevels::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultSignals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::Lpd1TxCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::Lpd1TxSkipDecisionCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::MdNsqMotionSearchCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::MdSqMotionSearchCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::MdSubPelSearchCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::NearCountCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::PfCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::RedundantCandCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::SkipSubDepthCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::SpatialSseCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::SpatialSseLevel::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::SubresCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::TxCoeffShape::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::encdec::TxShortcutCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::leaf::PreAnalysisPcs::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::light_pd1::LightPd1Signals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::md_config::CdfControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::HmeSearchParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::Me8x8VarCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::MeHmeRefPruneCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::MeSignals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::MeSrCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::MeTfSignals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::MvBasedSearchAdj::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::PreHmeCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::SearchArea::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::SearchAreaMinMax::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::me::TfMeHmeParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::multi_processes::MultiProcessesSignals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::pd0::MdRateEstCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::pd0::Pd0Signals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::tail::CdefReconControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::tail::SbTplIntraStats::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_enc_mode_config::tail::SgFilterCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::block::InterModeInfoEmitted::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::compound::CompoundType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::compound::InterIntraMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::gm::SgrprojInfo::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::gm::WarpParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::metadata::MetadataError::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::metadata::MetadataType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::modes::MotionMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::modes::TransformationType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::neighbors::BlockGeometry::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::refframe::CompReferenceType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_entropy_inter::refframe::ReferenceMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_frame_update::FrameUpdateType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_full_loop_md::ChromaCoeffBits::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_full_loop_md::CoeffShavingCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_full_loop_md::MdReconInputs::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_global_me::GmEstimation::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_global_me::GmSearchError::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_gm_correspondence::CorrespondenceError::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_gm_correspondence::CorrespondenceMethod::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_gm_correspondence::GmDownsampleLevel::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_lr_level::SgFilterCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_lr_level::WnFilterCtrlsFull::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::coding_loop::MeOffsets::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1::ChromaEnergyOutcome::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1::ChromaState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1::ComponentType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1::SkipLumaOutcome::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::CandEliminationCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::ChromaPlan::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::EliminationReason::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::FastLoopOutcome::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::FastScore::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::LumaTxSkipped::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::MdMeDist::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::Mds0Best::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::Mds0LightResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::Mds3LightSettings::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::lpd1_loop::NoChromaEpilogue::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::md_search::DistortionType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::md_search::PmeExit::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::md_search::PmeSearchOut::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::md_stages::MdStageResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::md_stages::NotEnoughCandBuffers::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::md_stages::StageCounts::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::motion_mode::Buf2D::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::motion_mode::InterIntraResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::motion_mode::MdStage::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::motion_mode::Pd0CandPlan::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::motion_mode::RefinementOutcome::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::mv_refine::ObmcRefineResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::mv_refine::SingleMotionSearchPlan::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::mv_refine::WmRefineResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nic_prune::CandClass::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nic_prune::Mds0Prune::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nic_prune::NicPruningCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nic_prune::StageWinner::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nics::MdStageCounts::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nics::MdStagePlan::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nics::MdStagingMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nsq_skip::NsqFasterSettings::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nsq_skip::NsqPsqTxsCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nsq_skip::NsqSearchCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nsq_skip::NsqSkipReason::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::nsq_skip::Part::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::pme::PmeBest::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::predicates::InterCandGroup::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::predicates::MdCompType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::predicates::MeCandidateRef::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::predicates::MotionMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::ref_frame_rate::NeighborMi::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::ref_frame_rate::NeighborRefCounts::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::tx_gates::TxsControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::tx_gates::TxtControls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md::tx_gates::TxtRateSource::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md_lambda::Lambdas::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md_winner::CandidateCost::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_md_winner::WinnerSignals::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_noise_model::NoiseShape::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pass2_gop::DriftStateOwner::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pass2_gop::FirstFrameSeed::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pass2_gop::ProcessRcStatResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pass2_gop::StatStruct::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pcs_geom::B64Geom::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pcs_geom::SbGeom::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pd0_detector::NormalisedVariance::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pd0_detector::Pd0Level::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pd_gop::GfAssignment::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pd_gop::GfGroupMember::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pd_gop::GfPic::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_pd_gop::StartupState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::Av1RpsNode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::DgDetectorMetrics::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::DpbEntry::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::EarlyHmeResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::EncCtxPicParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::ExtGroupPic::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::FrameUpdateType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::LowDelayTfRing::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::MctfFrameDecision::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::MctfStStep::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::MiniGopMap::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::MiniGopStats::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::MrpCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::PicDecisionCtx::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::PicParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::PredStructure::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::RcMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::ReferenceMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::RpsBranchUnsupported::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::RpsError::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::ScClasses::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::SceneChangeOutcome::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::SceneDetectState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::SkipModeInfo::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::SliceType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::TfParamsChoice::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::TfWindowArm::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::TfWindowCounts::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::TfWindowCtrls::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::TplGroup::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct::TplPicParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct_ra::Slot::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_picstruct_ra::SlotIdx::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_preanalysis::PreProcessingArm::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_ransac::Correspondence::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_ransac::RansacModel::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::AomRcMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::FrameStatsOutput::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::FrameUpdateType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::PpcsRcParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::RateFactorLevel::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::RcIntervalParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::SbQindexSteps::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::SetRcParamOutput::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::SliceType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_process::SvtAv1RcMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr::MinqFamily::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_qpick::ActiveQuality::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_qpick::RefList::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_state::AomRcMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_state::FrameSizeBounds::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_state::FrameType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_state::RecodeLoop::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_state::ResizeAction::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_state::ResizeState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_update::RecodeState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_update::ResizePendingParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rc_vbr_cbr_update::RtResizeMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::full_cost::BlockContexts::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::full_cost::ComponentType::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::full_cost::FullCostResult::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::full_cost::TxbCoeffBits::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::inter_cost::FastCost::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::inter_cost::FastRate::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::intra_cost::IntraFastCost::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_rd_cost::intra_cost::PaletteSizes::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_ref_mgmt::RefMgmtDiag::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_ref_mgmt::RefMgmtEvents::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_ref_mgmt::RefMgmtReport::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_ref_mgmt::heapless_diags::Diags::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_sframe::SFrameMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_sgr_search::SgrprojFinish::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_sgr_search::SgrprojInfo::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_sgr_search::SwitchableChoice::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_src_ops::OverlapCorner::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_superres_decision::ResizeEvent::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_superres_decision::ResizeMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_superres_decision::SuperresAutoSearch::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_superres_decision::SuperresDecision::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_superres_decision::SuperresMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_superres_decision::SuperresParams::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::MbEdges::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::SavedSrcPicPlan::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::SearchAreaMinMax::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::SrcSaveChoice::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::TfBlockGrid::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::TfBlockOffsets::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::TfPredictionRequest::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_temporal_filtering::TfShiftDecision::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::port_tune_vmaf::VmafPreprocess::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::quant::CoeffLvl::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::quant::QuantTable::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::rate_control::RcMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::sb128_geom::ResolutionRange::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::sc_detect::ScAaCounts::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::sc_detect::ScArm::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::sc_detect::ScClasses::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::tx_bias::BiasModeClass::assert_fields_are_eq(&self)
+
+## trait impls (455 types)
+
+svtav1_encoder::cdef::CdefFrameParams: TrivialClone
+svtav1_encoder::cdef::CdefStats: TrivialClone
+svtav1_encoder::chroma_q::ChromaQDeltas: TrivialClone
+svtav1_encoder::deblock::LfLevels: TrivialClone
+svtav1_encoder::depth_refine::DrCtrls: TrivialClone
+svtav1_encoder::dist_facade::FacadeMode: TrivialClone
+svtav1_encoder::dlf_arm::DlfPick: TrivialClone
+svtav1_encoder::dlf_arm::DlfPickInputs<'a>: TrivialClone
+svtav1_encoder::dlf_arm::RefDlfState: TrivialClone
+svtav1_encoder::entropy::context::SegIdPosition: TrivialClone
+svtav1_encoder::entropy::mv_coding::MvJointType: TrivialClone
+svtav1_encoder::entropy::mv_coding::MvSubpelPrecision: TrivialClone
+svtav1_encoder::entropy::obu::ChromaQSignal: TrivialClone
+svtav1_encoder::entropy::obu::ColorDescription: TrivialClone
+svtav1_encoder::entropy::obu::LrSignal: TrivialClone
+svtav1_encoder::entropy::obu::ObuType: TrivialClone
+svtav1_encoder::entropy::obu::ScSignal: TrivialClone
+svtav1_encoder::entropy::obu::SeqTools: TrivialClone
+svtav1_encoder::entropy::obu::SuperresParams: TrivialClone
+svtav1_encoder::entropy::obu::TileGrid: TrivialClone
+svtav1_encoder::film_grain_model::NoiseStatus: TrivialClone
+svtav1_encoder::frame_geom::FrameDims: TrivialClone
+svtav1_encoder::hdr_mode::SvtHdrMode: TrivialClone
+svtav1_encoder::inter_hdr_arm::InterHdrError: TrivialClone
+svtav1_encoder::inter_hdr_arm::SeqInterTools: TrivialClone
+svtav1_encoder::inter_md_arm::IfsFrameKnobs: TrivialClone
+svtav1_encoder::inter_md_arm::OrderHints: TrivialClone
+svtav1_encoder::inter_me::context::Me8x8VarCtrls: TrivialClone
+svtav1_encoder::inter_me::context::MeCandidate: TrivialClone
+svtav1_encoder::inter_me::context::MeDsRef<'a>: TrivialClone
+svtav1_encoder::inter_me::context::MeHmeRefPruneCtrls: TrivialClone
+svtav1_encoder::inter_me::context::MePicParams: TrivialClone
+svtav1_encoder::inter_me::context::MeRefs<'a>: TrivialClone
+svtav1_encoder::inter_me::context::MeSrCtrls: TrivialClone
+svtav1_encoder::inter_me::context::MeSrcBufs<'a>: TrivialClone
+svtav1_encoder::inter_me::context::MeType: TrivialClone
+svtav1_encoder::inter_me::context::MvBasedSearchAdj: TrivialClone
+svtav1_encoder::inter_me::context::Plane<'a>: TrivialClone
+svtav1_encoder::inter_me::context::PreHmeCtrls: TrivialClone
+svtav1_encoder::inter_me::context::SearchArea: TrivialClone
+svtav1_encoder::inter_me::context::SearchAreaMinMax: TrivialClone
+svtav1_encoder::inter_me::context::SearchInfo: TrivialClone
+svtav1_encoder::inter_me::context::SearchResults: TrivialClone
+svtav1_encoder::inter_me::obmc_search::ObmcSubpelResult: TrivialClone
+svtav1_encoder::inter_me::sad::SadLoopResult: TrivialClone
+svtav1_encoder::inter_me_arm::FrameMeParams: TrivialClone
+svtav1_encoder::inter_mv_code::MvCodePlan: TrivialClone
+svtav1_encoder::inter_mvp::DrlMvPred: TrivialClone
+svtav1_encoder::inter_mvp::InterMvpEnv<'a>: TrivialClone
+svtav1_encoder::inter_mvp::MvRef: TrivialClone
+svtav1_encoder::inter_mvp::OrderHintInfo: TrivialClone
+svtav1_encoder::inter_mvp::TplMvRef: TrivialClone
+svtav1_encoder::inter_search_arm::SqMeState: TrivialClone
+svtav1_encoder::intra_edge::TileMi: TrivialClone
+svtav1_encoder::intra_open_loop::Neighbours<'a>: TrivialClone
+svtav1_encoder::intra_open_loop::OpenLoopError: TrivialClone
+svtav1_encoder::intrabc::BlockHashEntry: TrivialClone
+svtav1_encoder::intrabc::IbcCandidate: TrivialClone
+svtav1_encoder::intrabc::IbcCtrls: TrivialClone
+svtav1_encoder::intrabc::IntrabcMotionDirection: TrivialClone
+svtav1_encoder::intrabc::MeshPattern: TrivialClone
+svtav1_encoder::intrabc::SearchSite: TrivialClone
+svtav1_encoder::intrabc::TileMiBounds: TrivialClone
+svtav1_encoder::intrabc_hash::BlockHash: TrivialClone
+svtav1_encoder::intrabc_mvp::MvpBlockCtx: TrivialClone
+svtav1_encoder::intrabc_mvp::MvpMiEntry: TrivialClone
+svtav1_encoder::lf_levels::EdgeDir: TrivialClone
+svtav1_encoder::lf_levels::LoopFilterParams: TrivialClone
+svtav1_encoder::lf_levels::SbDeltaLf: TrivialClone
+svtav1_encoder::md_subpel::MvCostParams<'a>: TrivialClone
+svtav1_encoder::md_subpel::MvCostType: TrivialClone
+svtav1_encoder::md_subpel::SubpelMdContext: TrivialClone
+svtav1_encoder::md_subpel::SubpelMvLimits: TrivialClone
+svtav1_encoder::md_subpel::SubpelSearchParams: TrivialClone
+svtav1_encoder::md_subpel::SubpelState: TrivialClone
+svtav1_encoder::mode_decision::MdCandidate: TrivialClone
+svtav1_encoder::motion_est::MeResult: TrivialClone
+svtav1_encoder::motion_est::MeSearchParams: TrivialClone
+svtav1_encoder::palette::DeltaEncodeStep: TrivialClone
+svtav1_encoder::palette::PaletteCtrls: TrivialClone
+svtav1_encoder::partition::PartitionType: TrivialClone
+svtav1_encoder::partition::RefFrameCtx<'a>: TrivialClone
+svtav1_encoder::pd0::Pd0InterRef<'a>: TrivialClone
+svtav1_encoder::pd0::SbVariance: TrivialClone
+svtav1_encoder::pd0::TxTypeRatesDc: TrivialClone
+svtav1_encoder::port_enc_dec_cdf::AvgCdfPlan: TrivialClone
+svtav1_encoder::port_enc_dec_cdf::MvRateTable: TrivialClone
+svtav1_encoder::port_enc_dec_cdf::SbCdfConfig: TrivialClone
+svtav1_encoder::port_enc_dec_cdf::SbCdfSource: TrivialClone
+svtav1_encoder::port_enc_dec_metrics::RecodeDecision: TrivialClone
+svtav1_encoder::port_enc_dec_metrics::SsimSums: TrivialClone
+svtav1_encoder::port_enc_mode_config::InputCoeffLvl: TrivialClone
+svtav1_encoder::port_enc_mode_config::ResolutionRange: TrivialClone
+svtav1_encoder::port_enc_mode_config::cdef_search::CdefSearchControls: TrivialClone
+svtav1_encoder::port_enc_mode_config::cdef_search::RefCdefStrengths: TrivialClone
+svtav1_encoder::port_enc_mode_config::cdef_search::RefCdefUpdate: TrivialClone
+svtav1_encoder::port_enc_mode_config::common::CommonInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::common::CommonSignals: TrivialClone
+svtav1_encoder::port_enc_mode_config::common::DepthRemovalCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::common::DepthRemovalInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::common::DepthRemovalResult: TrivialClone
+svtav1_encoder::port_enc_mode_config::common::Lpd1Ctrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::common::Lpd1Row: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::Bipred3x3Controls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::DistortionType: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::DlfCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::GmControls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::IfsLevel: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::InterCompCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::InterIntraCompCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::MdPmeCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::ObmcControls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::RefPruningControls: TrivialClone
+svtav1_encoder::port_enc_mode_config::ctrls::WmCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::CandEliminationCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::CandReductionCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::CandReductionInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::CoeffShavingCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::DepthEarlyExitCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultDerivedLevels: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultSignals: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::Lpd1TxCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::Lpd1TxSkipDecisionCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::MdNsqMotionSearchCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::MdSqMotionSearchCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::MdSubPelSearchCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::NearCountCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::PfCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::RedundantCandCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::SkipSubDepthCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::SpatialSseCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::SpatialSseLevel: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::SubresCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::TxCoeffShape: TrivialClone
+svtav1_encoder::port_enc_mode_config::encdec::TxShortcutCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::leaf::PreAnalysisPcs: TrivialClone
+svtav1_encoder::port_enc_mode_config::light_pd1::LightPd1Inputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::light_pd1::LightPd1Signals: TrivialClone
+svtav1_encoder::port_enc_mode_config::md_config::CdfControls: TrivialClone
+svtav1_encoder::port_enc_mode_config::md_config::MdConfigInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::md_config::MdConfigSignals: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::HmeSearchParams: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::Me8x8VarCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::MeDerivInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::MeHmeRefPruneCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::MeSignals: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::MeSrCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::MeTfSignals: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::MvBasedSearchAdj: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::PreHmeCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::SearchArea: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::SearchAreaMinMax: TrivialClone
+svtav1_encoder::port_enc_mode_config::me::TfMeHmeParams: TrivialClone
+svtav1_encoder::port_enc_mode_config::multi_processes::MultiProcessesInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::multi_processes::MultiProcessesSignals: TrivialClone
+svtav1_encoder::port_enc_mode_config::pd0::MdRateEstCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::pd0::Pd0Inputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::pd0::Pd0Signals: TrivialClone
+svtav1_encoder::port_enc_mode_config::tail::CdefReconControls: TrivialClone
+svtav1_encoder::port_enc_mode_config::tail::MfmvInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::tail::SbTplIntraStats: TrivialClone
+svtav1_encoder::port_enc_mode_config::tail::SgFilterCtrls: TrivialClone
+svtav1_encoder::port_enc_mode_config::tail::TplIntraStatsInputs: TrivialClone
+svtav1_encoder::port_enc_mode_config::tail::TplSrcBlock: TrivialClone
+svtav1_encoder::port_entropy_inter::NeighborMi: TrivialClone
+svtav1_encoder::port_entropy_inter::Neighbors: TrivialClone
+svtav1_encoder::port_entropy_inter::block::InterFrameSyntax<'a>: TrivialClone
+svtav1_encoder::port_entropy_inter::block::InterModeInfoEmitted: TrivialClone
+svtav1_encoder::port_entropy_inter::compound::CompGroup: TrivialClone
+svtav1_encoder::port_entropy_inter::compound::CompoundType: TrivialClone
+svtav1_encoder::port_entropy_inter::compound::InterInterComp: TrivialClone
+svtav1_encoder::port_entropy_inter::compound::InterIntraInfo: TrivialClone
+svtav1_encoder::port_entropy_inter::compound::InterIntraMode: TrivialClone
+svtav1_encoder::port_entropy_inter::framesize::FrameSizeRefs<'a>: TrivialClone
+svtav1_encoder::port_entropy_inter::framesize::RefPic: TrivialClone
+svtav1_encoder::port_entropy_inter::gm::SgrprojInfo: TrivialClone
+svtav1_encoder::port_entropy_inter::gm::WarpParams: TrivialClone
+svtav1_encoder::port_entropy_inter::metadata::Metadata<'a>: TrivialClone
+svtav1_encoder::port_entropy_inter::metadata::MetadataError: TrivialClone
+svtav1_encoder::port_entropy_inter::metadata::MetadataType: TrivialClone
+svtav1_encoder::port_entropy_inter::modes::DrlBlock: TrivialClone
+svtav1_encoder::port_entropy_inter::modes::MotionMode: TrivialClone
+svtav1_encoder::port_entropy_inter::modes::TransformationType: TrivialClone
+svtav1_encoder::port_entropy_inter::neighbors::BlockGeometry: TrivialClone
+svtav1_encoder::port_entropy_inter::neighbors::TileBounds: TrivialClone
+svtav1_encoder::port_entropy_inter::refframe::CompReferenceType: TrivialClone
+svtav1_encoder::port_entropy_inter::refframe::RefFrameBlock: TrivialClone
+svtav1_encoder::port_entropy_inter::refframe::ReferenceMode: TrivialClone
+svtav1_encoder::port_frame_update::FrameUpdateType: TrivialClone
+svtav1_encoder::port_full_loop_md::ChromaCoeffBits: TrivialClone
+svtav1_encoder::port_full_loop_md::CoeffShavingCtrls: TrivialClone
+svtav1_encoder::port_full_loop_md::MdReconInputs: TrivialClone
+svtav1_encoder::port_global_me::GmEstimation: TrivialClone
+svtav1_encoder::port_global_me::GmEstimationInputs<'a>: TrivialClone
+svtav1_encoder::port_global_me::GmModels: TrivialClone
+svtav1_encoder::port_global_me::GmPlane<'a>: TrivialClone
+svtav1_encoder::port_global_me::GmSearchError: TrivialClone
+svtav1_encoder::port_global_motion::GmRefineCtrls: TrivialClone
+svtav1_encoder::port_gm_correspondence::CorrespondenceError: TrivialClone
+svtav1_encoder::port_gm_correspondence::CorrespondenceMethod: TrivialClone
+svtav1_encoder::port_gm_correspondence::GmDownsampleLevel: TrivialClone
+svtav1_encoder::port_gm_correspondence::GmPictureGeometry: TrivialClone
+svtav1_encoder::port_lr_level::SgFilterCtrls: TrivialClone
+svtav1_encoder::port_lr_level::WnFilterCtrlsFull: TrivialClone
+svtav1_encoder::port_md::coding_loop::Lpd0MeCand: TrivialClone
+svtav1_encoder::port_md::coding_loop::MeOffsets: TrivialClone
+svtav1_encoder::port_md::inject::Bipred3x3Ctrls: TrivialClone
+svtav1_encoder::port_md::inject::InterCandidate: TrivialClone
+svtav1_encoder::port_md::inject::InterCompCtrls: TrivialClone
+svtav1_encoder::port_md::inject::InterIntraCompCtrls: TrivialClone
+svtav1_encoder::port_md::inject::NearCountCtrls: TrivialClone
+svtav1_encoder::port_md::inject::NoRefinement: TrivialClone
+svtav1_encoder::port_md::inject::ObmcCtrls: TrivialClone
+svtav1_encoder::port_md::inject::WmCtrls: TrivialClone
+svtav1_encoder::port_md::lpd1::BlockPlanes<'a>: TrivialClone
+svtav1_encoder::port_md::lpd1::ChromaEnergyOutcome: TrivialClone
+svtav1_encoder::port_md::lpd1::ChromaState: TrivialClone
+svtav1_encoder::port_md::lpd1::ComponentType: TrivialClone
+svtav1_encoder::port_md::lpd1::Neighbours: TrivialClone
+svtav1_encoder::port_md::lpd1::Plane<'a>: TrivialClone
+svtav1_encoder::port_md::lpd1::SkipLumaOutcome: TrivialClone
+svtav1_encoder::port_md::lpd1::SkipRdInputs: TrivialClone
+svtav1_encoder::port_md::lpd1::UvGeom: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::CandEliminationCtrls: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::ChromaPlan: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::EliminationReason: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::FastLoopOutcome: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::FastScore: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::LumaTxSkipped: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::MdMeDist: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::Mds0Best: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::Mds0LightResult: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::Mds3LightSettings: TrivialClone
+svtav1_encoder::port_md::lpd1_loop::NoChromaEpilogue: TrivialClone
+svtav1_encoder::port_md::md_search::DistortionType: TrivialClone
+svtav1_encoder::port_md::md_search::FullPelCtx: TrivialClone
+svtav1_encoder::port_md::md_search::MdPmeCtrls: TrivialClone
+svtav1_encoder::port_md::md_search::MdSqMeCtrls: TrivialClone
+svtav1_encoder::port_md::md_search::MdSubpelCtrls: TrivialClone
+svtav1_encoder::port_md::md_search::PmeExit: TrivialClone
+svtav1_encoder::port_md::md_search::PmeSearchOut: TrivialClone
+svtav1_encoder::port_md::md_search::RefPicGeom: TrivialClone
+svtav1_encoder::port_md::md_search::RefineMeIn: TrivialClone
+svtav1_encoder::port_md::md_search::RefineMeOut: TrivialClone
+svtav1_encoder::port_md::md_search::SearchWindow: TrivialClone
+svtav1_encoder::port_md::md_search::SubpelBlockGeom: TrivialClone
+svtav1_encoder::port_md::md_stages::MdStageConfig: TrivialClone
+svtav1_encoder::port_md::md_stages::NotEnoughCandBuffers: TrivialClone
+svtav1_encoder::port_md::md_stages::StageCounts: TrivialClone
+svtav1_encoder::port_md::motion_mode::Buf2D: TrivialClone
+svtav1_encoder::port_md::motion_mode::InterIntraResult: TrivialClone
+svtav1_encoder::port_md::motion_mode::MdStage: TrivialClone
+svtav1_encoder::port_md::motion_mode::Pd0CandPlan: TrivialClone
+svtav1_encoder::port_md::motion_mode::RefinementOutcome: TrivialClone
+svtav1_encoder::port_md::motion_mode::RefinementSnapshot: TrivialClone
+svtav1_encoder::port_md::mv_refine::ObmcRefineResult: TrivialClone
+svtav1_encoder::port_md::mv_refine::SingleMotionSearchPlan: TrivialClone
+svtav1_encoder::port_md::mv_refine::WmRefineResult: TrivialClone
+svtav1_encoder::port_md::nic_prune::CandClass: TrivialClone
+svtav1_encoder::port_md::nic_prune::Mds0Prune: TrivialClone
+svtav1_encoder::port_md::nic_prune::NicPruningCtrls: TrivialClone
+svtav1_encoder::port_md::nic_prune::StageWinner: TrivialClone
+svtav1_encoder::port_md::nics::MdStageCounts: TrivialClone
+svtav1_encoder::port_md::nics::MdStagePlan: TrivialClone
+svtav1_encoder::port_md::nics::MdStagingMode: TrivialClone
+svtav1_encoder::port_md::nics::NicScalingCtrls: TrivialClone
+svtav1_encoder::port_md::nsq_skip::NsqFasterSettings: TrivialClone
+svtav1_encoder::port_md::nsq_skip::NsqPsqTxsCtrls: TrivialClone
+svtav1_encoder::port_md::nsq_skip::NsqSearchCtrls: TrivialClone
+svtav1_encoder::port_md::nsq_skip::NsqSkipReason: TrivialClone
+svtav1_encoder::port_md::nsq_skip::ParentSquare: TrivialClone
+svtav1_encoder::port_md::nsq_skip::Part: TrivialClone
+svtav1_encoder::port_md::nsq_skip::RectHalves: TrivialClone
+svtav1_encoder::port_md::nsq_skip::SkipSubDepthCtrls: TrivialClone
+svtav1_encoder::port_md::pme::PmeBest: TrivialClone
+svtav1_encoder::port_md::predicates::InterCandGroup: TrivialClone
+svtav1_encoder::port_md::predicates::MdCompType: TrivialClone
+svtav1_encoder::port_md::predicates::MeCandidateRef: TrivialClone
+svtav1_encoder::port_md::predicates::MotionMode: TrivialClone
+svtav1_encoder::port_md::predicates::MotionModeCtx: TrivialClone
+svtav1_encoder::port_md::predicates::RedundantCandCtrls: TrivialClone
+svtav1_encoder::port_md::ref_frame_rate::NeighborMi: TrivialClone
+svtav1_encoder::port_md::ref_frame_rate::NeighborRefCounts: TrivialClone
+svtav1_encoder::port_md::tx_gates::TxShortcutState: TrivialClone
+svtav1_encoder::port_md::tx_gates::TxsControls: TrivialClone
+svtav1_encoder::port_md::tx_gates::TxtControls: TrivialClone
+svtav1_encoder::port_md::tx_gates::TxtRateSource: TrivialClone
+svtav1_encoder::port_md_lambda::Lambdas: TrivialClone
+svtav1_encoder::port_md_lambda::TplLambdaGeom: TrivialClone
+svtav1_encoder::port_md_winner::CandidateCost: TrivialClone
+svtav1_encoder::port_md_winner::WinnerInputs<'a>: TrivialClone
+svtav1_encoder::port_md_winner::WinnerSignals: TrivialClone
+svtav1_encoder::port_noise_model::NoiseShape: TrivialClone
+svtav1_encoder::port_pass2_gop::DriftStateOwner: TrivialClone
+svtav1_encoder::port_pass2_gop::FirstFrameSeed: TrivialClone
+svtav1_encoder::port_pass2_gop::FirstPassStats: TrivialClone
+svtav1_encoder::port_pass2_gop::GfGroupFrame: TrivialClone
+svtav1_encoder::port_pass2_gop::GfGroupStats: TrivialClone
+svtav1_encoder::port_pass2_gop::GfStatsResult: TrivialClone
+svtav1_encoder::port_pass2_gop::GroupRateInput: TrivialClone
+svtav1_encoder::port_pass2_gop::ProcessRcStatResult: TrivialClone
+svtav1_encoder::port_pass2_gop::StatStruct: TrivialClone
+svtav1_encoder::port_pass2_gop::StatsCursor<'a>: TrivialClone
+svtav1_encoder::port_pass2_gop::TwoPassCfg: TrivialClone
+svtav1_encoder::port_pass2_gop::TwoPassState: TrivialClone
+svtav1_encoder::port_pcs_geom::B64Geom: TrivialClone
+svtav1_encoder::port_pcs_geom::SbGeom: TrivialClone
+svtav1_encoder::port_pd0_detector::NormalisedVariance: TrivialClone
+svtav1_encoder::port_pd0_detector::Pd0Ctrls: TrivialClone
+svtav1_encoder::port_pd0_detector::Pd0Level: TrivialClone
+svtav1_encoder::port_pd0_detector::Pd0SbInput: TrivialClone
+svtav1_encoder::port_pd0_detector::QpThScaling: TrivialClone
+svtav1_encoder::port_pd0_detector::RefSbInfo: TrivialClone
+svtav1_encoder::port_pd0_detector::SbVariance: TrivialClone
+svtav1_encoder::port_pd_gop::GfGroupMember: TrivialClone
+svtav1_encoder::port_pd_gop::GfPic: TrivialClone
+svtav1_encoder::port_pd_gop::StartupState: TrivialClone
+svtav1_encoder::port_picstruct::Av1RpsNode: TrivialClone
+svtav1_encoder::port_picstruct::DgDetectorMetrics: TrivialClone
+svtav1_encoder::port_picstruct::DpbEntry: TrivialClone
+svtav1_encoder::port_picstruct::DsPlane<'a>: TrivialClone
+svtav1_encoder::port_picstruct::EarlyHmeResult: TrivialClone
+svtav1_encoder::port_picstruct::EncCtxPicParams: TrivialClone
+svtav1_encoder::port_picstruct::ExtGroupPic: TrivialClone
+svtav1_encoder::port_picstruct::FrameUpdateType: TrivialClone
+svtav1_encoder::port_picstruct::MctfFrameDecision: TrivialClone
+svtav1_encoder::port_picstruct::MctfStStep: TrivialClone
+svtav1_encoder::port_picstruct::MiniGopStats: TrivialClone
+svtav1_encoder::port_picstruct::MrpCtrls: TrivialClone
+svtav1_encoder::port_picstruct::PredStructure: TrivialClone
+svtav1_encoder::port_picstruct::RcMode: TrivialClone
+svtav1_encoder::port_picstruct::RefBinding: TrivialClone
+svtav1_encoder::port_picstruct::RefQueueEntry: TrivialClone
+svtav1_encoder::port_picstruct::ReferenceMode: TrivialClone
+svtav1_encoder::port_picstruct::RpsBranchUnsupported: TrivialClone
+svtav1_encoder::port_picstruct::RpsError: TrivialClone
+svtav1_encoder::port_picstruct::ScClasses: TrivialClone
+svtav1_encoder::port_picstruct::SceneChangeOutcome: TrivialClone
+svtav1_encoder::port_picstruct::SeqPicParams: TrivialClone
+svtav1_encoder::port_picstruct::SkipModeInfo: TrivialClone
+svtav1_encoder::port_picstruct::SliceType: TrivialClone
+svtav1_encoder::port_picstruct::TfParamsChoice: TrivialClone
+svtav1_encoder::port_picstruct::TfWindowArm: TrivialClone
+svtav1_encoder::port_picstruct::TfWindowCounts: TrivialClone
+svtav1_encoder::port_picstruct::TfWindowCtrls: TrivialClone
+svtav1_encoder::port_picstruct::TplControls: TrivialClone
+svtav1_encoder::port_picstruct::TplPicParams: TrivialClone
+svtav1_encoder::port_picstruct_ra::Slot: TrivialClone
+svtav1_encoder::port_picstruct_ra::SlotIdx: TrivialClone
+svtav1_encoder::port_preanalysis::HmeEnables: TrivialClone
+svtav1_encoder::port_preanalysis::PreProcessingArm: TrivialClone
+svtav1_encoder::port_ransac::Correspondence: TrivialClone
+svtav1_encoder::port_ransac::RansacModel: TrivialClone
+svtav1_encoder::port_rc_process::AomRcMode: TrivialClone
+svtav1_encoder::port_rc_process::FrameStatsInput<'a>: TrivialClone
+svtav1_encoder::port_rc_process::FrameStatsOutput: TrivialClone
+svtav1_encoder::port_rc_process::FrameUpdateType: TrivialClone
+svtav1_encoder::port_rc_process::FramerateBandwidth: TrivialClone
+svtav1_encoder::port_rc_process::LambdaContext: TrivialClone
+svtav1_encoder::port_rc_process::PpcsRcParams: TrivialClone
+svtav1_encoder::port_rc_process::RateFactorLevel: TrivialClone
+svtav1_encoder::port_rc_process::RcInitInput: TrivialClone
+svtav1_encoder::port_rc_process::RcInitOutput: TrivialClone
+svtav1_encoder::port_rc_process::RcIntervalParams: TrivialClone
+svtav1_encoder::port_rc_process::RefObjStats: TrivialClone
+svtav1_encoder::port_rc_process::SbQindexSteps: TrivialClone
+svtav1_encoder::port_rc_process::SetRcParamInput: TrivialClone
+svtav1_encoder::port_rc_process::SetRcParamOutput: TrivialClone
+svtav1_encoder::port_rc_process::SliceType: TrivialClone
+svtav1_encoder::port_rc_process::SvtAv1RcMode: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr::MinqFamily: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_qpick::ActiveQuality: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_qpick::MeDistortion<'a>: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_qpick::RefList: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_qpick::RefLists<'a>: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_qpick::RefPicRc: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_qpick::TplCtrlsRc: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_qpick::TwoPassRc: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::AomRcMode: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::CyclicRefresh: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::FrameRc: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::FrameSizeBounds: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::FrameType: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::RateControlCfg: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::RecodeLoop: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::ResizeAction: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::ResizeState: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_state::SeqRc: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_update::RcIntervalParams: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_update::RecodeState: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_update::ResizePendingParams: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_update::RtResizeMode: TrivialClone
+svtav1_encoder::port_rc_vbr_cbr_update::TwoPassRestored: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::BlockContexts: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::ComponentType: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::FullCostInputs: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::FullCostResult: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::FullDist: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::PlaneDist: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::SkipFacBits: TrivialClone
+svtav1_encoder::port_rd_cost::full_cost::TxbCoeffBits: TrivialClone
+svtav1_encoder::port_rd_cost::inter_cost::FastCost: TrivialClone
+svtav1_encoder::port_rd_cost::inter_cost::FastRate: TrivialClone
+svtav1_encoder::port_rd_cost::inter_cost::InterBlock<'a>: TrivialClone
+svtav1_encoder::port_rd_cost::inter_cost::InterCandidate: TrivialClone
+svtav1_encoder::port_rd_cost::inter_cost::InterFrame<'a>: TrivialClone
+svtav1_encoder::port_rd_cost::intra_cost::IntraBlock: TrivialClone
+svtav1_encoder::port_rd_cost::intra_cost::IntraCandidate: TrivialClone
+svtav1_encoder::port_rd_cost::intra_cost::IntraFastCost: TrivialClone
+svtav1_encoder::port_rd_cost::intra_cost::PaletteSizes: TrivialClone
+svtav1_encoder::port_ref_mgmt::RefMgmtDiag: TrivialClone
+svtav1_encoder::port_ref_mgmt::RefMgmtEvents: TrivialClone
+svtav1_encoder::port_ref_mgmt::heapless_diags::Diags: TrivialClone
+svtav1_encoder::port_sframe::SFrameConfig<'a>: TrivialClone
+svtav1_encoder::port_sframe::SFrameMode: TrivialClone
+svtav1_encoder::port_sframe::SFramePositions<'a>: TrivialClone
+svtav1_encoder::port_sgr_search::SgrprojFinish: TrivialClone
+svtav1_encoder::port_sgr_search::SgrprojInfo: TrivialClone
+svtav1_encoder::port_sgr_search::SwitchableChoice: TrivialClone
+svtav1_encoder::port_src_ops::OverlapCorner: TrivialClone
+svtav1_encoder::port_superres_decision::ResizeConfig: TrivialClone
+svtav1_encoder::port_superres_decision::ResizeEvent: TrivialClone
+svtav1_encoder::port_superres_decision::ResizeMode: TrivialClone
+svtav1_encoder::port_superres_decision::SuperresAutoSearch: TrivialClone
+svtav1_encoder::port_superres_decision::SuperresConfig: TrivialClone
+svtav1_encoder::port_superres_decision::SuperresDecision: TrivialClone
+svtav1_encoder::port_superres_decision::SuperresMode: TrivialClone
+svtav1_encoder::port_superres_decision::SuperresParams: TrivialClone
+svtav1_encoder::port_superres_decision::SuperresPicInput: TrivialClone
+svtav1_encoder::port_temporal_filtering::MbEdges: TrivialClone
+svtav1_encoder::port_temporal_filtering::SavedSrcPicPlan: TrivialClone
+svtav1_encoder::port_temporal_filtering::SearchAreaMinMax: TrivialClone
+svtav1_encoder::port_temporal_filtering::SrcSaveChoice: TrivialClone
+svtav1_encoder::port_temporal_filtering::TfBlockGrid: TrivialClone
+svtav1_encoder::port_temporal_filtering::TfBlockOffsets: TrivialClone
+svtav1_encoder::port_temporal_filtering::TfPredictionRequest: TrivialClone
+svtav1_encoder::port_temporal_filtering::TfSearchCtrls: TrivialClone
+svtav1_encoder::port_temporal_filtering::TfShiftDecision: TrivialClone
+svtav1_encoder::port_temporal_filtering::TfSubpelSearchParams: TrivialClone
+svtav1_encoder::port_tune_vmaf::VmafPreprocess: TrivialClone
+svtav1_encoder::quant::CoeffLvl: TrivialClone
+svtav1_encoder::quant::EobCosts: TrivialClone
+svtav1_encoder::quant::QuantTable: TrivialClone
+svtav1_encoder::rate_control::RcMode: TrivialClone
+svtav1_encoder::restoration::RestUnit: TrivialClone
+svtav1_encoder::restoration::WnFilterCtrls: TrivialClone
+svtav1_encoder::sb128_geom::ResolutionRange: TrivialClone
+svtav1_encoder::sb128_geom::SbSizeInputs: TrivialClone
+svtav1_encoder::sc_detect::ScAaCounts: TrivialClone
+svtav1_encoder::sc_detect::ScArm: TrivialClone
+svtav1_encoder::sc_detect::ScClasses: TrivialClone
+svtav1_encoder::sc_detect::ScDerivation: TrivialClone
+svtav1_encoder::segmentation::RoiMapEvt<'a>: TrivialClone
+svtav1_encoder::tx_bias::BiasModeClass: TrivialClone

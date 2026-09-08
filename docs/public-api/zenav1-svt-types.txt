@@ -1,0 +1,915 @@
+# zenav1-svt-types public API — supported surface (default features)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+#
+# files: zenav1-svt-types.txt 880 lines (supported surface) | zenav1-svt-types.features.txt 2 added (features: fallible-alloc,std) | zenav1-svt-types.internal.txt 115 lines (115 hidden + 0 excluded-feature)
+# arch-unique surface: (none — portable on every target)
+
+## summary
+#
+#   pub modules                                23
+#   pub types (struct/enum/trait/alias)        79
+#   pub consts/statics                        225
+#   pub macros                                  2
+#   inherent methods                            3
+#   struct fields                             209
+#   enum variants                             268
+#   trait roster entries (type × trait)       384
+#   auto-trait-complete types                  73
+#
+# per-module pub lines:
+#   (root)                           24
+#   svtav1_types                    785
+
+## items (806 lines)
+
+pub mod svtav1_types
+pub mod svtav1_types::alloc_util
+pub mod svtav1_types::bitstream
+#[repr(u8)] pub enum svtav1_types::bitstream::ObuType
+pub svtav1_types::bitstream::ObuType::Frame = 6
+pub svtav1_types::bitstream::ObuType::FrameHeader = 3
+pub svtav1_types::bitstream::ObuType::Metadata = 5
+pub svtav1_types::bitstream::ObuType::Padding = 15
+pub svtav1_types::bitstream::ObuType::RedundantFrameHeader = 7
+pub svtav1_types::bitstream::ObuType::SequenceHeader = 1
+pub svtav1_types::bitstream::ObuType::TemporalDelimiter = 2
+pub svtav1_types::bitstream::ObuType::TileGroup = 4
+pub struct svtav1_types::bitstream::DecoderModelInfo
+pub svtav1_types::bitstream::DecoderModelInfo::buffer_delay_length_minus_1: u8
+pub svtav1_types::bitstream::DecoderModelInfo::buffer_removal_time_length_minus_1: u8
+pub svtav1_types::bitstream::DecoderModelInfo::frame_presentation_time_length_minus_1: u8
+pub svtav1_types::bitstream::DecoderModelInfo::num_units_in_decoding_tick: u32
+pub struct svtav1_types::bitstream::DeltaLfParams
+pub svtav1_types::bitstream::DeltaLfParams::delta_lf_multi: bool
+pub svtav1_types::bitstream::DeltaLfParams::delta_lf_present: bool
+pub svtav1_types::bitstream::DeltaLfParams::delta_lf_res: u8
+pub struct svtav1_types::bitstream::DeltaQParams
+pub svtav1_types::bitstream::DeltaQParams::delta_q_present: bool
+pub svtav1_types::bitstream::DeltaQParams::delta_q_res: u8
+pub struct svtav1_types::bitstream::FrameSize
+pub svtav1_types::bitstream::FrameSize::frame_height: u16
+pub svtav1_types::bitstream::FrameSize::frame_width: u16
+pub svtav1_types::bitstream::FrameSize::render_height: u16
+pub svtav1_types::bitstream::FrameSize::render_width: u16
+pub svtav1_types::bitstream::FrameSize::superres_denominator: u8
+pub svtav1_types::bitstream::FrameSize::superres_upscaled_height: u16
+pub svtav1_types::bitstream::FrameSize::superres_upscaled_width: u16
+pub struct svtav1_types::bitstream::GlobalMotionParams
+pub svtav1_types::bitstream::GlobalMotionParams::gm_params: [i32; 6]
+pub svtav1_types::bitstream::GlobalMotionParams::gm_type: svtav1_types::motion::TransformationType
+pub struct svtav1_types::bitstream::LrParams
+pub svtav1_types::bitstream::LrParams::frame_restoration_type: u8
+pub svtav1_types::bitstream::LrParams::loop_restoration_size: u16
+pub svtav1_types::bitstream::LrParams::lr_size_log2: u8
+pub struct svtav1_types::bitstream::ObuHeader
+pub svtav1_types::bitstream::ObuHeader::obu_extension_flag: u8
+pub svtav1_types::bitstream::ObuHeader::obu_forbidden_bit: u8
+pub svtav1_types::bitstream::ObuHeader::obu_has_size_field: u8
+pub svtav1_types::bitstream::ObuHeader::obu_type: u8
+pub svtav1_types::bitstream::ObuHeader::payload_size: usize
+pub svtav1_types::bitstream::ObuHeader::size: usize
+pub svtav1_types::bitstream::ObuHeader::spatial_id: u8
+pub svtav1_types::bitstream::ObuHeader::temporal_id: u8
+pub struct svtav1_types::bitstream::OrderHintInfo
+pub svtav1_types::bitstream::OrderHintInfo::enable_jnt_comp: bool
+pub svtav1_types::bitstream::OrderHintInfo::enable_order_hint: bool
+pub svtav1_types::bitstream::OrderHintInfo::enable_ref_frame_mvs: bool
+pub svtav1_types::bitstream::OrderHintInfo::order_hint_bits: u8
+pub struct svtav1_types::bitstream::SeqHeader
+pub svtav1_types::bitstream::SeqHeader::cdef_level: u8
+pub svtav1_types::bitstream::SeqHeader::color_config: svtav1_types::frame::ColorConfig
+pub svtav1_types::bitstream::SeqHeader::decoder_model_info: svtav1_types::bitstream::DecoderModelInfo
+pub svtav1_types::bitstream::SeqHeader::decoder_model_info_present_flag: bool
+pub svtav1_types::bitstream::SeqHeader::delta_frame_id_length: u8
+pub svtav1_types::bitstream::SeqHeader::enable_dual_filter: bool
+pub svtav1_types::bitstream::SeqHeader::enable_interintra_compound: bool
+pub svtav1_types::bitstream::SeqHeader::enable_intra_angle_delta_filter: bool
+pub svtav1_types::bitstream::SeqHeader::enable_intra_edge_filter: bool
+pub svtav1_types::bitstream::SeqHeader::enable_masked_compound: bool
+pub svtav1_types::bitstream::SeqHeader::enable_restoration: bool
+pub svtav1_types::bitstream::SeqHeader::enable_superres: bool
+pub svtav1_types::bitstream::SeqHeader::enable_warped_motion: bool
+pub svtav1_types::bitstream::SeqHeader::film_grain_params_present: bool
+pub svtav1_types::bitstream::SeqHeader::filter_intra_level: u8
+pub svtav1_types::bitstream::SeqHeader::frame_height_bits: u8
+pub svtav1_types::bitstream::SeqHeader::frame_id_length: u8
+pub svtav1_types::bitstream::SeqHeader::frame_id_numbers_present_flag: bool
+pub svtav1_types::bitstream::SeqHeader::frame_width_bits: u8
+pub svtav1_types::bitstream::SeqHeader::initial_display_delay_present_flag: bool
+pub svtav1_types::bitstream::SeqHeader::max_frame_height: u16
+pub svtav1_types::bitstream::SeqHeader::max_frame_width: u16
+pub svtav1_types::bitstream::SeqHeader::operating_points_cnt_minus_1: u8
+pub svtav1_types::bitstream::SeqHeader::order_hint_info: svtav1_types::bitstream::OrderHintInfo
+pub svtav1_types::bitstream::SeqHeader::reduced_still_picture_header: bool
+pub svtav1_types::bitstream::SeqHeader::sb_mi_size: u8
+pub svtav1_types::bitstream::SeqHeader::sb_size: svtav1_types::block::BlockSize
+pub svtav1_types::bitstream::SeqHeader::sb_size_log2: u8
+pub svtav1_types::bitstream::SeqHeader::seq_force_integer_mv: u8
+pub svtav1_types::bitstream::SeqHeader::seq_force_screen_content_tools: u8
+pub svtav1_types::bitstream::SeqHeader::seq_profile: u8
+pub svtav1_types::bitstream::SeqHeader::still_picture: bool
+pub svtav1_types::bitstream::SeqHeader::timing_info: svtav1_types::bitstream::TimingInfo
+pub svtav1_types::bitstream::SeqHeader::use_128x128_superblock: bool
+pub struct svtav1_types::bitstream::SkipModeInfo
+pub svtav1_types::bitstream::SkipModeInfo::ref_frame_idx_0: i32
+pub svtav1_types::bitstream::SkipModeInfo::ref_frame_idx_1: i32
+pub svtav1_types::bitstream::SkipModeInfo::skip_mode_allowed: bool
+pub svtav1_types::bitstream::SkipModeInfo::skip_mode_flag: bool
+pub struct svtav1_types::bitstream::TileInfo
+pub svtav1_types::bitstream::TileInfo::mi_col_end: i32
+pub svtav1_types::bitstream::TileInfo::mi_col_start: i32
+pub svtav1_types::bitstream::TileInfo::mi_row_end: i32
+pub svtav1_types::bitstream::TileInfo::mi_row_start: i32
+pub svtav1_types::bitstream::TileInfo::tg_horz_boundary: i32
+pub svtav1_types::bitstream::TileInfo::tile_col: i32
+pub svtav1_types::bitstream::TileInfo::tile_row: i32
+pub svtav1_types::bitstream::TileInfo::tile_rs_index: i32
+pub struct svtav1_types::bitstream::TilesInfo
+pub svtav1_types::bitstream::TilesInfo::context_update_tile_id: u16
+pub svtav1_types::bitstream::TilesInfo::max_log2_tile_cols: u8
+pub svtav1_types::bitstream::TilesInfo::max_log2_tile_rows: u8
+pub svtav1_types::bitstream::TilesInfo::max_tile_height_sb: u16
+pub svtav1_types::bitstream::TilesInfo::max_tile_width_sb: u16
+pub svtav1_types::bitstream::TilesInfo::min_log2_tile_cols: u8
+pub svtav1_types::bitstream::TilesInfo::min_log2_tile_rows: u8
+pub svtav1_types::bitstream::TilesInfo::min_log2_tiles: u8
+pub svtav1_types::bitstream::TilesInfo::tile_col_start_mi: [u16; 65]
+pub svtav1_types::bitstream::TilesInfo::tile_cols: u8
+pub svtav1_types::bitstream::TilesInfo::tile_cols_log2: u8
+pub svtav1_types::bitstream::TilesInfo::tile_row_start_mi: [u16; 65]
+pub svtav1_types::bitstream::TilesInfo::tile_rows: u8
+pub svtav1_types::bitstream::TilesInfo::tile_rows_log2: u8
+pub svtav1_types::bitstream::TilesInfo::tile_size_bytes: u8
+pub svtav1_types::bitstream::TilesInfo::uniform_tile_spacing_flag: bool
+pub struct svtav1_types::bitstream::TimingInfo
+pub svtav1_types::bitstream::TimingInfo::equal_picture_interval: bool
+pub svtav1_types::bitstream::TimingInfo::num_ticks_per_picture: u32
+pub svtav1_types::bitstream::TimingInfo::num_units_in_display_tick: u32
+pub svtav1_types::bitstream::TimingInfo::time_scale: u32
+pub svtav1_types::bitstream::TimingInfo::timing_info_present: bool
+pub const svtav1_types::bitstream::MAX_NUM_OPERATING_POINTS: usize [also: svtav1_types::constants]
+pub const svtav1_types::bitstream::MAX_TILE_AREA: usize
+pub const svtav1_types::bitstream::MAX_TILE_COLS: usize
+pub const svtav1_types::bitstream::MAX_TILE_ROWS: usize
+pub const svtav1_types::bitstream::MAX_TILE_WIDTH: usize
+pub mod svtav1_types::block
+#[repr(u8)] pub enum svtav1_types::block::BlockSize
+pub svtav1_types::block::BlockSize::Block128x128 = 15
+pub svtav1_types::block::BlockSize::Block128x64 = 14
+pub svtav1_types::block::BlockSize::Block16x16 = 6
+pub svtav1_types::block::BlockSize::Block16x32 = 7
+pub svtav1_types::block::BlockSize::Block16x4 = 17
+pub svtav1_types::block::BlockSize::Block16x64 = 20
+pub svtav1_types::block::BlockSize::Block16x8 = 5
+pub svtav1_types::block::BlockSize::Block32x16 = 8
+pub svtav1_types::block::BlockSize::Block32x32 = 9
+pub svtav1_types::block::BlockSize::Block32x64 = 10
+pub svtav1_types::block::BlockSize::Block32x8 = 19
+pub svtav1_types::block::BlockSize::Block4x16 = 16
+pub svtav1_types::block::BlockSize::Block4x4 = 0
+pub svtav1_types::block::BlockSize::Block4x8 = 1
+pub svtav1_types::block::BlockSize::Block64x128 = 13
+pub svtav1_types::block::BlockSize::Block64x16 = 21
+pub svtav1_types::block::BlockSize::Block64x32 = 11
+pub svtav1_types::block::BlockSize::Block64x64 = 12
+pub svtav1_types::block::BlockSize::Block8x16 = 4
+pub svtav1_types::block::BlockSize::Block8x32 = 18
+pub svtav1_types::block::BlockSize::Block8x4 = 2
+pub svtav1_types::block::BlockSize::Block8x8 = 3
+pub const svtav1_types::block::BlockSize::ALL: [Self; 22]
+pub const svtav1_types::block::BlockSize::INVALID_RAW: u8
+pub const svtav1_types::block::BlockSize::LARGEST: Self
+pub const svtav1_types::block::BlockSize::MAX_NUM_BLOCKS_ALLOC: usize
+pub const svtav1_types::block::BlockSize::SIZES: usize
+pub const svtav1_types::block::BlockSize::SIZES_ALL: usize
+pub const fn svtav1_types::block::BlockSize::as_index(self) -> usize
+pub const fn svtav1_types::block::BlockSize::from_u8(u8) -> core::option::Option<Self>
+pub const fn svtav1_types::block::BlockSize::is_square(self) -> bool
+pub mod svtav1_types::block_mode
+pub struct svtav1_types::block_mode::BlockModeInfo
+pub svtav1_types::block_mode::BlockModeInfo::angle_delta: [i8; 2]
+pub svtav1_types::block_mode::BlockModeInfo::cfl_alpha_idx: u8
+pub svtav1_types::block_mode::BlockModeInfo::cfl_alpha_signs: u8
+pub svtav1_types::block_mode::BlockModeInfo::comp_group_idx: bool
+pub svtav1_types::block_mode::BlockModeInfo::compound_idx: bool
+pub svtav1_types::block_mode::BlockModeInfo::filter_intra_mode: u8
+pub svtav1_types::block_mode::BlockModeInfo::interinter_comp: svtav1_types::prediction::InterInterCompoundData
+pub svtav1_types::block_mode::BlockModeInfo::interintra_mode: svtav1_types::prediction::InterIntraMode
+pub svtav1_types::block_mode::BlockModeInfo::interintra_wedge_index: i8
+pub svtav1_types::block_mode::BlockModeInfo::interp_filters: u32
+pub svtav1_types::block_mode::BlockModeInfo::is_interintra_used: bool
+pub svtav1_types::block_mode::BlockModeInfo::mode: svtav1_types::prediction::PredictionMode
+pub svtav1_types::block_mode::BlockModeInfo::motion_mode: svtav1_types::prediction::MotionMode
+pub svtav1_types::block_mode::BlockModeInfo::mv: [svtav1_types::motion::Mv; 2]
+pub svtav1_types::block_mode::BlockModeInfo::num_proj_ref: u8
+pub svtav1_types::block_mode::BlockModeInfo::ref_frame: [i8; 2]
+pub svtav1_types::block_mode::BlockModeInfo::skip: bool
+pub svtav1_types::block_mode::BlockModeInfo::skip_mode: bool
+pub svtav1_types::block_mode::BlockModeInfo::tx_depth: u8
+pub svtav1_types::block_mode::BlockModeInfo::use_intrabc: bool
+pub svtav1_types::block_mode::BlockModeInfo::use_wedge_interintra: bool
+pub svtav1_types::block_mode::BlockModeInfo::uv_mode: svtav1_types::prediction::UvPredictionMode
+pub const fn svtav1_types::block_mode::BlockModeInfo::has_second_ref(&self) -> bool
+pub const fn svtav1_types::block_mode::BlockModeInfo::is_inter_block(&self) -> bool
+pub struct svtav1_types::block_mode::MbModeInfo
+pub svtav1_types::block_mode::MbModeInfo::block_mi: svtav1_types::block_mode::BlockModeInfo
+pub svtav1_types::block_mode::MbModeInfo::bsize: svtav1_types::block::BlockSize
+pub svtav1_types::block_mode::MbModeInfo::cdef_strength: i8
+pub svtav1_types::block_mode::MbModeInfo::palette_mode_info: svtav1_types::block_mode::PaletteLumaModeInfo
+pub svtav1_types::block_mode::MbModeInfo::partition: svtav1_types::partition::PartitionType
+pub svtav1_types::block_mode::MbModeInfo::segment_id: u8
+pub struct svtav1_types::block_mode::PaletteLumaModeInfo
+pub svtav1_types::block_mode::PaletteLumaModeInfo::palette_colors: [u16; 8]
+pub svtav1_types::block_mode::PaletteLumaModeInfo::palette_size: u8
+pub mod svtav1_types::constants
+pub const svtav1_types::constants::BLOCK_SIZE_64: u32
+pub const svtav1_types::constants::EB_HME_SEARCH_AREA_COLUMN_MAX_COUNT: usize
+pub const svtav1_types::constants::EB_HME_SEARCH_AREA_ROW_MAX_COUNT: usize
+pub const svtav1_types::constants::INVALID_IDX: i32
+pub const svtav1_types::constants::LOG_MIN_BLOCK_SIZE: u32
+pub const svtav1_types::constants::MAX_NUM_BLOCKS_ALLOC: usize
+pub const svtav1_types::constants::MAX_NUM_OF_REF_PIC_LIST: usize
+pub const svtav1_types::constants::MAX_NUM_SPATIAL_LAYERS: usize
+pub const svtav1_types::constants::MAX_NUM_TEMPORAL_LAYERS_AV1: usize
+pub const svtav1_types::constants::MAX_REF_IDX: usize
+pub const svtav1_types::constants::MAX_TEMPORAL_LAYERS: usize
+pub const svtav1_types::constants::MAX_TILE_CNTS: usize
+pub const svtav1_types::constants::MAX_TPL_GROUP_SIZE: usize
+pub const svtav1_types::constants::ME_FILTER_TAP: usize
+pub const svtav1_types::constants::MIN_BLOCK_SIZE: u32
+pub const svtav1_types::constants::PRIMARY_REF_BITS: usize
+pub const svtav1_types::constants::PRIMARY_REF_NONE: usize
+pub const fn svtav1_types::constants::bitstream_buffer_size(usize) -> usize
+pub mod svtav1_types::error
+pub svtav1_types::error::EncodeError::AllocFailed
+pub svtav1_types::error::EncodeError::AllocFailed::context: &'static str
+pub svtav1_types::error::EncodeError::AllocFailed::requested_bytes: u64
+pub svtav1_types::error::EncodeError::Cancelled(enough::reason::StopReason)
+pub svtav1_types::error::EncodeError::InvalidDimensions
+pub svtav1_types::error::EncodeError::InvalidDimensions::height: u32
+pub svtav1_types::error::EncodeError::InvalidDimensions::reason: &'static str
+pub svtav1_types::error::EncodeError::InvalidDimensions::width: u32
+pub svtav1_types::error::EncodeError::UnsupportedConfig(&'static str)
+pub mod svtav1_types::frame
+#[repr(u8)] pub enum svtav1_types::frame::BitstreamProfile
+pub svtav1_types::frame::BitstreamProfile::Profile0 = 0
+pub svtav1_types::frame::BitstreamProfile::Profile1 = 1
+pub svtav1_types::frame::BitstreamProfile::Profile2 = 2
+pub const svtav1_types::frame::BitstreamProfile::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::frame::FrameContextIndex
+pub svtav1_types::frame::FrameContextIndex::Arf = 1
+pub svtav1_types::frame::FrameContextIndex::Brf = 4
+pub svtav1_types::frame::FrameContextIndex::ExtArf = 5
+pub svtav1_types::frame::FrameContextIndex::Golden = 3
+pub svtav1_types::frame::FrameContextIndex::Overlay = 2
+pub svtav1_types::frame::FrameContextIndex::Regular = 0
+pub const svtav1_types::frame::FrameContextIndex::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::frame::FrameType
+pub svtav1_types::frame::FrameType::Inter = 1
+pub svtav1_types::frame::FrameType::IntraOnly = 2
+pub svtav1_types::frame::FrameType::Key = 0
+pub svtav1_types::frame::FrameType::Switch = 3
+pub const svtav1_types::frame::FrameType::COUNT: usize
+pub const fn svtav1_types::frame::FrameType::is_intra(self) -> bool
+#[repr(u8)] pub enum svtav1_types::frame::MdBitDepthMode
+pub svtav1_types::frame::MdBitDepthMode::Bit10 = 1
+pub svtav1_types::frame::MdBitDepthMode::Bit8 = 0
+pub svtav1_types::frame::MdBitDepthMode::Dual = 2
+#[repr(u8)] pub enum svtav1_types::frame::Plane
+pub svtav1_types::frame::Plane::U = 1
+pub svtav1_types::frame::Plane::V = 2
+pub svtav1_types::frame::Plane::Y = 0
+#[repr(u8)] pub enum svtav1_types::frame::PlaneType
+pub svtav1_types::frame::PlaneType::Uv = 1
+pub svtav1_types::frame::PlaneType::Y = 0
+#[repr(u8)] pub enum svtav1_types::frame::PredStructure
+pub svtav1_types::frame::PredStructure::LowDelay = 1
+pub svtav1_types::frame::PredStructure::RandomAccess = 2
+#[repr(u8)] pub enum svtav1_types::frame::RefreshFrameContextMode
+pub svtav1_types::frame::RefreshFrameContextMode::Backward = 1
+pub svtav1_types::frame::RefreshFrameContextMode::Disabled = 0
+#[repr(u8)] pub enum svtav1_types::frame::ResolutionRange
+pub svtav1_types::frame::ResolutionRange::Range1080p = 4
+pub svtav1_types::frame::ResolutionRange::Range240p = 0
+pub svtav1_types::frame::ResolutionRange::Range360p = 1
+pub svtav1_types::frame::ResolutionRange::Range480p = 2
+pub svtav1_types::frame::ResolutionRange::Range4K = 5
+pub svtav1_types::frame::ResolutionRange::Range720p = 3
+pub svtav1_types::frame::ResolutionRange::Range8K = 6
+pub const svtav1_types::frame::ResolutionRange::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::frame::SliceType
+pub svtav1_types::frame::SliceType::B = 0
+pub svtav1_types::frame::SliceType::I = 1
+pub const svtav1_types::frame::SliceType::INVALID_RAW: u8
+#[repr(u8)] pub enum svtav1_types::frame::Tune
+pub svtav1_types::frame::Tune::Iq = 3
+pub svtav1_types::frame::Tune::MsSsim = 4
+pub svtav1_types::frame::Tune::Psnr = 1
+pub svtav1_types::frame::Tune::Ssim = 2
+pub svtav1_types::frame::Tune::Vq = 0
+pub struct svtav1_types::frame::ColorConfig
+pub svtav1_types::frame::ColorConfig::bit_depth: u8
+pub svtav1_types::frame::ColorConfig::chroma_sample_position: u8
+pub svtav1_types::frame::ColorConfig::color_primaries: u8
+pub svtav1_types::frame::ColorConfig::full_color_range: bool
+pub svtav1_types::frame::ColorConfig::matrix_coefficients: u8
+pub svtav1_types::frame::ColorConfig::mono_chrome: bool
+pub svtav1_types::frame::ColorConfig::separate_uv_delta_q: bool
+pub svtav1_types::frame::ColorConfig::subsampling_x: u8
+pub svtav1_types::frame::ColorConfig::subsampling_y: u8
+pub svtav1_types::frame::ColorConfig::transfer_characteristics: u8
+pub const svtav1_types::frame::INPUT_SIZE_1080P_TH: u32
+pub const svtav1_types::frame::INPUT_SIZE_240P_TH: u32
+pub const svtav1_types::frame::INPUT_SIZE_360P_TH: u32
+pub const svtav1_types::frame::INPUT_SIZE_480P_TH: u32
+pub const svtav1_types::frame::INPUT_SIZE_4K_TH: u32
+pub const svtav1_types::frame::INPUT_SIZE_720P_TH: u32
+pub const svtav1_types::frame::INPUT_SIZE_8K_TH: u32
+pub const svtav1_types::frame::MAX_PLANES: usize
+pub const svtav1_types::frame::PLANE_TYPES: usize
+pub mod svtav1_types::interp
+#[repr(u8)] pub enum svtav1_types::interp::InterpFilter
+pub svtav1_types::interp::InterpFilter::Bilinear = 3
+pub svtav1_types::interp::InterpFilter::EightTapRegular = 0
+pub svtav1_types::interp::InterpFilter::EightTapSmooth = 1
+pub svtav1_types::interp::InterpFilter::MultiTapSharp = 2
+pub const svtav1_types::interp::InterpFilter::ALL_COUNT: usize
+pub const svtav1_types::interp::InterpFilter::SWITCHABLE: u8
+pub const svtav1_types::interp::InterpFilter::SWITCHABLE_FILTERS: usize
+#[repr(u8)] pub enum svtav1_types::interp::SubpelForceStop
+pub svtav1_types::interp::SubpelForceStop::EighthPel = 0
+pub svtav1_types::interp::SubpelForceStop::FullPel = 3
+pub svtav1_types::interp::SubpelForceStop::HalfPel = 2
+pub svtav1_types::interp::SubpelForceStop::QuarterPel = 1
+#[repr(u8)] pub enum svtav1_types::interp::SubpelSearchMethod
+pub svtav1_types::interp::SubpelSearchMethod::Tree = 0
+pub svtav1_types::interp::SubpelSearchMethod::TreePruned = 1
+#[repr(u8)] pub enum svtav1_types::interp::SubpelSearchType
+pub svtav1_types::interp::SubpelSearchType::Use2Taps = 1
+pub svtav1_types::interp::SubpelSearchType::Use2TapsOrig = 0
+pub svtav1_types::interp::SubpelSearchType::Use4Taps = 2
+pub svtav1_types::interp::SubpelSearchType::Use8Taps = 3
+#[repr(u8)] pub enum svtav1_types::interp::SubpelStage
+pub svtav1_types::interp::SubpelStage::Me = 0
+pub svtav1_types::interp::SubpelStage::Pme = 1
+pub const svtav1_types::interp::AOM_INTERP_EXTEND: usize
+pub mod svtav1_types::motion
+#[repr(u8)] pub enum svtav1_types::motion::TransformationType
+pub svtav1_types::motion::TransformationType::Affine = 3
+pub svtav1_types::motion::TransformationType::Identity = 0
+pub svtav1_types::motion::TransformationType::RotZoom = 2
+pub svtav1_types::motion::TransformationType::Translation = 1
+pub const svtav1_types::motion::TransformationType::COUNT: usize
+pub struct svtav1_types::motion::CandidateMv
+pub svtav1_types::motion::CandidateMv::comp_mv: svtav1_types::motion::Mv
+pub svtav1_types::motion::CandidateMv::this_mv: svtav1_types::motion::Mv
+pub svtav1_types::motion::CandidateMv::weight: i32
+pub struct svtav1_types::motion::FullMvLimits
+pub svtav1_types::motion::FullMvLimits::col_max: i32
+pub svtav1_types::motion::FullMvLimits::col_min: i32
+pub svtav1_types::motion::FullMvLimits::row_max: i32
+pub svtav1_types::motion::FullMvLimits::row_min: i32
+#[repr(C)] pub struct svtav1_types::motion::Mv
+pub svtav1_types::motion::Mv::x: i16
+pub svtav1_types::motion::Mv::y: i16
+pub const svtav1_types::motion::Mv::INVALID: Self
+pub const svtav1_types::motion::Mv::ZERO: Self
+pub const fn svtav1_types::motion::Mv::as_int(self) -> u32
+pub fn svtav1_types::motion::Mv::clamp(self, i16, i16, i16, i16) -> Self
+pub const fn svtav1_types::motion::Mv::from_int(u32) -> Self
+pub const fn svtav1_types::motion::Mv::to_fullpel(self) -> Self
+pub const fn svtav1_types::motion::Mv::to_subpel(self) -> Self
+pub struct svtav1_types::motion::SubpelMvLimits
+pub svtav1_types::motion::SubpelMvLimits::col_max: i32
+pub svtav1_types::motion::SubpelMvLimits::col_min: i32
+pub svtav1_types::motion::SubpelMvLimits::row_max: i32
+pub svtav1_types::motion::SubpelMvLimits::row_min: i32
+pub struct svtav1_types::motion::WarpedMotionParams
+pub svtav1_types::motion::WarpedMotionParams::alpha: i16
+pub svtav1_types::motion::WarpedMotionParams::beta: i16
+pub svtav1_types::motion::WarpedMotionParams::delta: i16
+pub svtav1_types::motion::WarpedMotionParams::gamma: i16
+pub svtav1_types::motion::WarpedMotionParams::invalid: bool
+pub svtav1_types::motion::WarpedMotionParams::wm_type: svtav1_types::motion::TransformationType
+pub svtav1_types::motion::WarpedMotionParams::wmmat: [i32; 6]
+pub const svtav1_types::motion::GM_ABS_ALPHA_BITS: u32
+pub const svtav1_types::motion::GM_ABS_TRANS_BITS: u32
+pub const svtav1_types::motion::GM_ALPHA_PREC_BITS: u32
+pub const svtav1_types::motion::GM_ALPHA_PREC_DIFF: u32
+pub const svtav1_types::motion::GM_TRANS_PREC_BITS: u32
+pub const svtav1_types::motion::GM_TRANS_PREC_DIFF: u32
+pub const svtav1_types::motion::MAX_MV_REF_CANDIDATES: usize
+pub const svtav1_types::motion::MAX_PARAMDIM: usize
+pub const svtav1_types::motion::MAX_REF_MV_STACK_SIZE: usize
+pub const svtav1_types::motion::WARPEDMODEL_PREC_BITS: u32
+pub const fn svtav1_types::motion::get_mv_rawpel(i16) -> i16
+pub const fn svtav1_types::motion::get_mv_subpel(i16) -> i16
+pub mod svtav1_types::partition
+#[repr(u8)] pub enum svtav1_types::partition::Part
+pub svtav1_types::partition::Part::H = 1
+pub svtav1_types::partition::Part::H4 = 3
+pub svtav1_types::partition::Part::Ha = 5
+pub svtav1_types::partition::Part::Hb = 6
+pub svtav1_types::partition::Part::N = 0
+pub svtav1_types::partition::Part::S = 9
+pub svtav1_types::partition::Part::V = 2
+pub svtav1_types::partition::Part::V4 = 4
+pub svtav1_types::partition::Part::Va = 7
+pub svtav1_types::partition::Part::Vb = 8
+#[repr(u8)] pub enum svtav1_types::partition::PartitionType
+pub svtav1_types::partition::PartitionType::Horz = 1
+pub svtav1_types::partition::PartitionType::Horz4 = 8
+pub svtav1_types::partition::PartitionType::HorzA = 4
+pub svtav1_types::partition::PartitionType::HorzB = 5
+pub svtav1_types::partition::PartitionType::None = 0
+pub svtav1_types::partition::PartitionType::Split = 3
+pub svtav1_types::partition::PartitionType::Vert = 2
+pub svtav1_types::partition::PartitionType::Vert4 = 9
+pub svtav1_types::partition::PartitionType::VertA = 6
+pub svtav1_types::partition::PartitionType::VertB = 7
+pub const svtav1_types::partition::PartitionType::BASIC_TYPES: usize
+pub const svtav1_types::partition::PartitionType::EXT_TYPES: usize
+pub const svtav1_types::partition::PartitionType::INVALID_RAW: u8
+pub const svtav1_types::partition::PARTITION_BLOCK_SIZES: usize
+pub const svtav1_types::partition::PARTITION_CONTEXTS: usize
+pub const svtav1_types::partition::PARTITION_PLOFFSET: usize
+pub mod svtav1_types::prediction
+#[repr(u8)] pub enum svtav1_types::prediction::CompoundType
+pub svtav1_types::prediction::CompoundType::Average = 0
+pub svtav1_types::prediction::CompoundType::DiffWtd = 3
+pub svtav1_types::prediction::CompoundType::DistWtd = 1
+pub svtav1_types::prediction::CompoundType::Wedge = 2
+pub const svtav1_types::prediction::CompoundType::COUNT: usize
+pub const svtav1_types::prediction::CompoundType::MASKED_TYPES: usize
+#[repr(u8)] pub enum svtav1_types::prediction::FilterIntraMode
+pub svtav1_types::prediction::FilterIntraMode::FilterD157Pred = 3
+pub svtav1_types::prediction::FilterIntraMode::FilterDcPred = 0
+pub svtav1_types::prediction::FilterIntraMode::FilterHPred = 2
+pub svtav1_types::prediction::FilterIntraMode::FilterPaethPred = 4
+pub svtav1_types::prediction::FilterIntraMode::FilterVPred = 1
+pub const svtav1_types::prediction::FilterIntraMode::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::prediction::InterIntraMode
+pub svtav1_types::prediction::InterIntraMode::IiDcPred = 0
+pub svtav1_types::prediction::InterIntraMode::IiHPred = 2
+pub svtav1_types::prediction::InterIntraMode::IiSmoothPred = 3
+pub svtav1_types::prediction::InterIntraMode::IiVPred = 1
+pub const svtav1_types::prediction::InterIntraMode::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::prediction::MotionMode
+pub svtav1_types::prediction::MotionMode::ObmcCausal = 1
+pub svtav1_types::prediction::MotionMode::SimpleTranslation = 0
+pub svtav1_types::prediction::MotionMode::WarpedCausal = 2
+pub const svtav1_types::prediction::MotionMode::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::prediction::PaletteSize
+pub svtav1_types::prediction::PaletteSize::EightColors = 6
+pub svtav1_types::prediction::PaletteSize::FiveColors = 3
+pub svtav1_types::prediction::PaletteSize::FourColors = 2
+pub svtav1_types::prediction::PaletteSize::SevenColors = 5
+pub svtav1_types::prediction::PaletteSize::SixColors = 4
+pub svtav1_types::prediction::PaletteSize::ThreeColors = 1
+pub svtav1_types::prediction::PaletteSize::TwoColors = 0
+pub const svtav1_types::prediction::PaletteSize::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::prediction::PredictionMode
+pub svtav1_types::prediction::PredictionMode::D113Pred = 5
+pub svtav1_types::prediction::PredictionMode::D135Pred = 4
+pub svtav1_types::prediction::PredictionMode::D157Pred = 6
+pub svtav1_types::prediction::PredictionMode::D203Pred = 7
+pub svtav1_types::prediction::PredictionMode::D45Pred = 3
+pub svtav1_types::prediction::PredictionMode::D67Pred = 8
+pub svtav1_types::prediction::PredictionMode::DcPred = 0
+pub svtav1_types::prediction::PredictionMode::GlobalGlobalMv = 23
+pub svtav1_types::prediction::PredictionMode::GlobalMv = 15
+pub svtav1_types::prediction::PredictionMode::HPred = 2
+pub svtav1_types::prediction::PredictionMode::NearMv = 14
+pub svtav1_types::prediction::PredictionMode::NearNearMv = 18
+pub svtav1_types::prediction::PredictionMode::NearNewMv = 21
+pub svtav1_types::prediction::PredictionMode::NearestMv = 13
+pub svtav1_types::prediction::PredictionMode::NearestNearestMv = 17
+pub svtav1_types::prediction::PredictionMode::NearestNewMv = 19
+pub svtav1_types::prediction::PredictionMode::NewMv = 16
+pub svtav1_types::prediction::PredictionMode::NewNearMv = 22
+pub svtav1_types::prediction::PredictionMode::NewNearestMv = 20
+pub svtav1_types::prediction::PredictionMode::NewNewMv = 24
+pub svtav1_types::prediction::PredictionMode::PaethPred = 12
+pub svtav1_types::prediction::PredictionMode::SmoothHPred = 11
+pub svtav1_types::prediction::PredictionMode::SmoothPred = 9
+pub svtav1_types::prediction::PredictionMode::SmoothVPred = 10
+pub svtav1_types::prediction::PredictionMode::VPred = 1
+pub const svtav1_types::prediction::PredictionMode::COMP_INTER_MODE_END: u8
+pub const svtav1_types::prediction::PredictionMode::COMP_INTER_MODE_START: u8
+pub const svtav1_types::prediction::PredictionMode::COUNT: usize
+pub const svtav1_types::prediction::PredictionMode::INTRA_INVALID_RAW: u8
+pub const svtav1_types::prediction::PredictionMode::INTRA_MODES: usize
+pub const svtav1_types::prediction::PredictionMode::INTRA_MODE_END: u8
+pub const svtav1_types::prediction::PredictionMode::INTRA_MODE_START: u8
+pub const svtav1_types::prediction::PredictionMode::SINGLE_INTER_MODE_END: u8
+pub const svtav1_types::prediction::PredictionMode::SINGLE_INTER_MODE_START: u8
+pub const fn svtav1_types::prediction::PredictionMode::is_compound(self) -> bool
+pub const fn svtav1_types::prediction::PredictionMode::is_inter(self) -> bool
+pub const fn svtav1_types::prediction::PredictionMode::is_intra(self) -> bool
+pub const fn svtav1_types::prediction::PredictionMode::is_single_ref(self) -> bool
+#[repr(u8)] pub enum svtav1_types::prediction::UvPredictionMode
+pub svtav1_types::prediction::UvPredictionMode::UvCflPred = 13
+pub svtav1_types::prediction::UvPredictionMode::UvD113Pred = 5
+pub svtav1_types::prediction::UvPredictionMode::UvD135Pred = 4
+pub svtav1_types::prediction::UvPredictionMode::UvD157Pred = 6
+pub svtav1_types::prediction::UvPredictionMode::UvD203Pred = 7
+pub svtav1_types::prediction::UvPredictionMode::UvD45Pred = 3
+pub svtav1_types::prediction::UvPredictionMode::UvD67Pred = 8
+pub svtav1_types::prediction::UvPredictionMode::UvDcPred = 0
+pub svtav1_types::prediction::UvPredictionMode::UvHPred = 2
+pub svtav1_types::prediction::UvPredictionMode::UvPaethPred = 12
+pub svtav1_types::prediction::UvPredictionMode::UvSmoothHPred = 11
+pub svtav1_types::prediction::UvPredictionMode::UvSmoothPred = 9
+pub svtav1_types::prediction::UvPredictionMode::UvSmoothVPred = 10
+pub svtav1_types::prediction::UvPredictionMode::UvVPred = 1
+pub const svtav1_types::prediction::UvPredictionMode::COUNT: usize
+pub const svtav1_types::prediction::UvPredictionMode::INVALID_RAW: u8
+pub struct svtav1_types::prediction::InterInterCompoundData
+pub svtav1_types::prediction::InterInterCompoundData::compound_type: u8
+pub svtav1_types::prediction::InterInterCompoundData::mask_type: u8
+pub svtav1_types::prediction::InterInterCompoundData::wedge_index: u8
+pub svtav1_types::prediction::InterInterCompoundData::wedge_sign: u8
+pub const svtav1_types::prediction::ANGLE_STEP: u8
+pub const svtav1_types::prediction::AOM_BLEND_A64_MAX_ALPHA: u32
+pub const svtav1_types::prediction::AOM_BLEND_A64_ROUND_BITS: u32
+pub const svtav1_types::prediction::CFL_ALPHABET_SIZE: usize
+pub const svtav1_types::prediction::CFL_ALPHABET_SIZE_LOG2: usize
+pub const svtav1_types::prediction::CFL_JOINT_SIGNS: usize
+pub const svtav1_types::prediction::DIRECTIONAL_MODES: usize
+pub const svtav1_types::prediction::FIMODE_TO_INTRAMODE: [svtav1_types::prediction::PredictionMode; 5]
+pub const svtav1_types::prediction::INTER_COMPOUND_MODES: usize
+pub const svtav1_types::prediction::INTER_MODES: usize
+pub const svtav1_types::prediction::MAX_ANGLE_DELTA: i8
+pub const svtav1_types::prediction::MAX_WEDGE_SIZE: usize
+pub const svtav1_types::prediction::MAX_WEDGE_SIZE_LOG2: usize
+pub const svtav1_types::prediction::MAX_WEDGE_TYPES: usize
+pub const svtav1_types::prediction::PALETTE_MAX_SIZE: usize
+pub mod svtav1_types::quantization
+#[repr(u8)] pub enum svtav1_types::quantization::DistortionType
+pub svtav1_types::quantization::DistortionType::Sad = 0
+pub svtav1_types::quantization::DistortionType::Ssd = 2
+pub svtav1_types::quantization::DistortionType::Var = 1
+pub const svtav1_types::quantization::DistortionType::COUNT: usize
+pub struct svtav1_types::quantization::QuantizationParams
+pub svtav1_types::quantization::QuantizationParams::base_q_idx: u8
+pub svtav1_types::quantization::QuantizationParams::delta_q_ac: [i8; 3]
+pub svtav1_types::quantization::QuantizationParams::delta_q_dc: [i8; 3]
+pub svtav1_types::quantization::QuantizationParams::qm: [u8; 3]
+pub svtav1_types::quantization::QuantizationParams::using_qmatrix: bool
+pub const svtav1_types::quantization::DEFAULT_DELTA_Q_RES: u8
+pub const svtav1_types::quantization::DELTA_LF_SMALL: usize
+pub const svtav1_types::quantization::DELTA_Q_SMALL: usize
+pub const svtav1_types::quantization::MAX_Q: u8
+pub const svtav1_types::quantization::MAX_QP_VALUE: u8
+pub const svtav1_types::quantization::MIN_Q: u8
+pub const svtav1_types::quantization::MIN_QP_VALUE: u8
+pub const svtav1_types::quantization::NUM_QM_LEVELS: usize
+pub const svtav1_types::quantization::QINDEX_BITS: usize
+pub const svtav1_types::quantization::QINDEX_RANGE: usize
+pub const svtav1_types::quantization::QM_LEVEL_BITS: usize
+pub mod svtav1_types::reference
+#[repr(u8)] pub enum svtav1_types::reference::CompReferenceType
+pub svtav1_types::reference::CompReferenceType::Bidir = 1
+pub svtav1_types::reference::CompReferenceType::Unidir = 0
+#[repr(u8)] pub enum svtav1_types::reference::PredDirection
+pub svtav1_types::reference::PredDirection::BiPred = 2
+pub svtav1_types::reference::PredDirection::UniPredList0 = 0
+pub svtav1_types::reference::PredDirection::UniPredList1 = 1
+#[repr(u8)] pub enum svtav1_types::reference::RefList
+pub svtav1_types::reference::RefList::List0 = 0
+pub svtav1_types::reference::RefList::List1 = 1
+#[repr(i8)] pub enum svtav1_types::reference::ReferenceFrame
+pub svtav1_types::reference::ReferenceFrame::AltRef = 7
+pub svtav1_types::reference::ReferenceFrame::AltRef2 = 6
+pub svtav1_types::reference::ReferenceFrame::BwdRef = 5
+pub svtav1_types::reference::ReferenceFrame::Golden = 4
+pub svtav1_types::reference::ReferenceFrame::Intra = 0
+pub svtav1_types::reference::ReferenceFrame::Last = 1
+pub svtav1_types::reference::ReferenceFrame::Last2 = 2
+pub svtav1_types::reference::ReferenceFrame::Last3 = 3
+pub svtav1_types::reference::ReferenceFrame::None = -1
+pub const fn svtav1_types::reference::ReferenceFrame::as_i8(self) -> i8
+#[repr(u8)] pub enum svtav1_types::reference::ReferenceMode
+pub svtav1_types::reference::ReferenceMode::Compound = 1
+pub svtav1_types::reference::ReferenceMode::Select = 2
+pub svtav1_types::reference::ReferenceMode::Single = 0
+pub const svtav1_types::reference::ReferenceMode::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::reference::UniDirCompRef
+pub svtav1_types::reference::UniDirCompRef::AltRef2AltRef = 8
+pub svtav1_types::reference::UniDirCompRef::BwdRefAltRef = 3
+pub svtav1_types::reference::UniDirCompRef::BwdRefAltRef2 = 7
+pub svtav1_types::reference::UniDirCompRef::Last2Golden = 5
+pub svtav1_types::reference::UniDirCompRef::Last2Last3 = 4
+pub svtav1_types::reference::UniDirCompRef::Last3Golden = 6
+pub svtav1_types::reference::UniDirCompRef::LastGolden = 2
+pub svtav1_types::reference::UniDirCompRef::LastLast2 = 0
+pub svtav1_types::reference::UniDirCompRef::LastLast3 = 1
+pub const svtav1_types::reference::BWD_REFS: usize
+pub const svtav1_types::reference::COMP_GROUP_IDX_CONTEXTS: usize
+pub const svtav1_types::reference::COMP_INDEX_CONTEXTS: usize
+pub const svtav1_types::reference::COMP_INTER_CONTEXTS: usize
+pub const svtav1_types::reference::COMP_REFS: usize
+pub const svtav1_types::reference::COMP_REF_TYPE_CONTEXTS: usize
+pub const svtav1_types::reference::DRL_MODE_CONTEXTS: usize
+pub const svtav1_types::reference::FWD_REFS: usize
+pub const svtav1_types::reference::GLOBALMV_MODE_CONTEXTS: usize
+pub const svtav1_types::reference::INTER_MODE_CONTEXTS: usize
+pub const svtav1_types::reference::INTER_REFS_PER_FRAME: usize
+pub const svtav1_types::reference::INTRA_INTER_CONTEXTS: usize
+pub const svtav1_types::reference::MODE_CTX_REF_FRAMES: usize
+pub const svtav1_types::reference::NEWMV_MODE_CONTEXTS: usize
+pub const svtav1_types::reference::REFMV_MODE_CONTEXTS: usize
+pub const svtav1_types::reference::REFS_PER_FRAME: usize
+pub const svtav1_types::reference::REF_CONTEXTS: usize
+pub const svtav1_types::reference::REF_FRAMES: usize
+pub const svtav1_types::reference::REF_FRAMES_LOG2: usize
+pub const svtav1_types::reference::SINGLE_REFS: usize
+pub const svtav1_types::reference::SKIP_CONTEXTS: usize
+pub const svtav1_types::reference::SKIP_MODE_CONTEXTS: usize
+pub const svtav1_types::reference::TOTAL_COMP_REFS: usize
+pub const svtav1_types::reference::TOTAL_NUM_OF_REF_LISTS: usize
+pub const svtav1_types::reference::TOTAL_REFS_PER_FRAME: usize
+pub const svtav1_types::reference::TOTAL_UNIDIR_COMP_REFS: usize
+pub const svtav1_types::reference::UNIDIR_COMP_REFS: usize
+pub const svtav1_types::reference::UNI_COMP_REF_CONTEXTS: usize
+pub mod svtav1_types::restoration
+#[repr(u8)] pub enum svtav1_types::restoration::RestorationType
+pub svtav1_types::restoration::RestorationType::None = 0
+pub svtav1_types::restoration::RestorationType::SgrProj = 2
+pub svtav1_types::restoration::RestorationType::Switchable = 3
+pub svtav1_types::restoration::RestorationType::Wiener = 1
+pub const svtav1_types::restoration::RestorationType::SWITCHABLE_TYPES: usize
+pub const svtav1_types::restoration::RestorationType::TOTAL_TYPES: usize
+pub struct svtav1_types::restoration::CdefParams
+pub svtav1_types::restoration::CdefParams::bits: u8
+pub svtav1_types::restoration::CdefParams::damping: u8
+pub svtav1_types::restoration::CdefParams::uv_strength: [u8; 16]
+pub svtav1_types::restoration::CdefParams::y_strength: [u8; 16]
+pub struct svtav1_types::restoration::LoopFilter
+pub svtav1_types::restoration::LoopFilter::filter_level: [i32; 2]
+pub svtav1_types::restoration::LoopFilter::filter_level_u: i32
+pub svtav1_types::restoration::LoopFilter::filter_level_v: i32
+pub svtav1_types::restoration::LoopFilter::mode_deltas: [i8; 2]
+pub svtav1_types::restoration::LoopFilter::mode_ref_delta_enabled: bool
+pub svtav1_types::restoration::LoopFilter::mode_ref_delta_update: bool
+pub svtav1_types::restoration::LoopFilter::ref_deltas: [i8; 8]
+pub svtav1_types::restoration::LoopFilter::sharpness_level: i32
+pub struct svtav1_types::restoration::SgrParams
+pub svtav1_types::restoration::SgrParams::r: [i32; 2]
+pub svtav1_types::restoration::SgrParams::s: [i32; 2]
+pub const svtav1_types::restoration::CDEF_MAX_STRENGTHS: usize
+pub const svtav1_types::restoration::CDEF_PRI_STRENGTHS: usize
+pub const svtav1_types::restoration::CDEF_SEC_STRENGTHS: usize
+pub const svtav1_types::restoration::MAX_LOOP_FILTER: usize
+pub const svtav1_types::restoration::MAX_MODE_LF_DELTAS: usize
+pub const svtav1_types::restoration::MAX_SEGMENTS: usize
+pub const svtav1_types::restoration::MAX_SUPERRES_DENOM: usize
+pub const svtav1_types::restoration::MIN_SUPERRES_DENOM: usize
+pub const svtav1_types::restoration::NUM_RESIZE_SCALES: usize
+pub const svtav1_types::restoration::NUM_SR_SCALES: usize
+pub const svtav1_types::restoration::SCALE_NUMERATOR: usize
+pub const svtav1_types::restoration::SUPERRES_SCALE_BITS: usize
+pub mod svtav1_types::segmentation
+pub struct svtav1_types::segmentation::SegmentationParams
+pub svtav1_types::segmentation::SegmentationParams::feature_data: [[i16; 8]; 8]
+pub svtav1_types::segmentation::SegmentationParams::feature_enabled: [[i16; 8]; 8]
+pub svtav1_types::segmentation::SegmentationParams::last_active_seg_id: u8
+pub svtav1_types::segmentation::SegmentationParams::seg_id_pre_skip: u8
+pub svtav1_types::segmentation::SegmentationParams::segmentation_enabled: bool
+pub svtav1_types::segmentation::SegmentationParams::segmentation_temporal_update: bool
+pub svtav1_types::segmentation::SegmentationParams::segmentation_update_data: bool
+pub svtav1_types::segmentation::SegmentationParams::segmentation_update_map: bool
+pub svtav1_types::segmentation::SegmentationParams::variance_bin_edge: [i16; 8]
+pub fn svtav1_types::segmentation::SegmentationParams::feature_active(&self, usize, usize) -> bool
+pub fn svtav1_types::segmentation::SegmentationParams::seg_data(&self, usize, usize) -> i32
+pub const svtav1_types::segmentation::MAXQ: i32
+pub const svtav1_types::segmentation::SEGMENTATION_FEATURE_BITS: [i32; 8]
+pub const svtav1_types::segmentation::SEGMENTATION_FEATURE_MAX: [i32; 8]
+pub const svtav1_types::segmentation::SEGMENTATION_FEATURE_SIGNED: [i32; 8]
+pub const svtav1_types::segmentation::SEG_LVL_ALT_LF_U: usize
+pub const svtav1_types::segmentation::SEG_LVL_ALT_LF_V: usize
+pub const svtav1_types::segmentation::SEG_LVL_ALT_LF_Y_H: usize
+pub const svtav1_types::segmentation::SEG_LVL_ALT_LF_Y_V: usize
+pub const svtav1_types::segmentation::SEG_LVL_ALT_Q: usize
+pub const svtav1_types::segmentation::SEG_LVL_GLOBALMV: usize
+pub const svtav1_types::segmentation::SEG_LVL_LF_LUT: [[usize; 2]; 3]
+pub const svtav1_types::segmentation::SEG_LVL_MAX: usize
+pub const svtav1_types::segmentation::SEG_LVL_REF_FRAME: usize
+pub const svtav1_types::segmentation::SEG_LVL_SKIP: usize
+pub mod svtav1_types::tables
+pub mod svtav1_types::tables::block
+pub const svtav1_types::tables::block::BLOCK_SIZE_HIGH: [u8; 22]
+pub const svtav1_types::tables::block::BLOCK_SIZE_HIGH_LOG2: [u8; 22]
+pub const svtav1_types::tables::block::BLOCK_SIZE_WIDE: [u8; 22]
+pub const svtav1_types::tables::block::BLOCK_SIZE_WIDE_LOG2: [u8; 22]
+pub const svtav1_types::tables::block::NUM_4X4_BLOCKS_HIGH: [u8; 22]
+pub const svtav1_types::tables::block::NUM_4X4_BLOCKS_WIDE: [u8; 22]
+pub const svtav1_types::tables::block::PARTITION_CONTEXT_LOOKUP: [(i8, i8); 22]
+pub mod svtav1_types::tables::interp
+pub const svtav1_types::tables::interp::BILINEAR_FILTERS: [svtav1_types::tables::interp::InterpKernel; 16]
+pub const svtav1_types::tables::interp::SUBPEL_SHIFTS: usize
+pub const svtav1_types::tables::interp::SUB_PEL_FILTERS_8: [svtav1_types::tables::interp::InterpKernel; 16]
+pub const svtav1_types::tables::interp::SUB_PEL_FILTERS_8SHARP: [svtav1_types::tables::interp::InterpKernel; 16]
+pub const svtav1_types::tables::interp::SUB_PEL_FILTERS_8SMOOTH: [svtav1_types::tables::interp::InterpKernel; 16]
+pub type svtav1_types::tables::interp::InterpKernel = [i16; 8]
+pub mod svtav1_types::tables::partition
+pub mod svtav1_types::tables::scan
+#[repr(u8)] pub enum svtav1_types::tables::scan::ScanType
+pub svtav1_types::tables::scan::ScanType::Col = 2
+pub svtav1_types::tables::scan::ScanType::Default = 0
+pub svtav1_types::tables::scan::ScanType::Row = 1
+pub const svtav1_types::tables::scan::ScanType::COUNT: usize
+pub const svtav1_types::tables::scan::DEFAULT_SCAN_4X4: [i16; 16]
+pub const svtav1_types::tables::scan::DEFAULT_SCAN_8X8: [i16; 64]
+pub const svtav1_types::tables::scan::MCOL_SCAN_4X4: [i16; 16]
+pub const svtav1_types::tables::scan::MCOL_SCAN_8X8: [i16; 64]
+pub const svtav1_types::tables::scan::MROW_SCAN_4X4: [i16; 16]
+pub const svtav1_types::tables::scan::MROW_SCAN_8X8: [i16; 64]
+pub mod svtav1_types::tables::transform
+pub const svtav1_types::tables::transform::TX_SIZE_HIGH: [u8; 19]
+pub const svtav1_types::tables::transform::TX_SIZE_HIGH_LOG2: [u8; 19]
+pub const svtav1_types::tables::transform::TX_SIZE_WIDE: [u8; 19]
+pub const svtav1_types::tables::transform::TX_SIZE_WIDE_LOG2: [u8; 19]
+pub const svtav1_types::tables::transform::TX_TYPE_TO_1D: [(svtav1_types::transform::TxType1D, svtav1_types::transform::TxType1D); 16]
+pub mod svtav1_types::transform
+#[repr(u8)] pub enum svtav1_types::transform::TxClass
+pub svtav1_types::transform::TxClass::Horiz = 1
+pub svtav1_types::transform::TxClass::TwoD = 0
+pub svtav1_types::transform::TxClass::Vert = 2
+pub const svtav1_types::transform::TxClass::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::transform::TxMode
+pub svtav1_types::transform::TxMode::Largest = 1
+pub svtav1_types::transform::TxMode::Only4x4 = 0
+pub svtav1_types::transform::TxMode::Select = 2
+pub const svtav1_types::transform::TxMode::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::transform::TxSetType
+pub svtav1_types::transform::TxSetType::All16 = 5
+pub svtav1_types::transform::TxSetType::DctIdtx = 1
+pub svtav1_types::transform::TxSetType::DctOnly = 0
+pub svtav1_types::transform::TxSetType::Dtt4Idtx = 2
+pub svtav1_types::transform::TxSetType::Dtt4Idtx1dDct = 3
+pub svtav1_types::transform::TxSetType::Dtt9Idtx1dDct = 4
+pub const svtav1_types::transform::TxSetType::COUNT: usize
+#[repr(u8)] pub enum svtav1_types::transform::TxSize
+pub svtav1_types::transform::TxSize::Tx16x16 = 2
+pub svtav1_types::transform::TxSize::Tx16x32 = 9
+pub svtav1_types::transform::TxSize::Tx16x4 = 14
+pub svtav1_types::transform::TxSize::Tx16x64 = 17
+pub svtav1_types::transform::TxSize::Tx16x8 = 8
+pub svtav1_types::transform::TxSize::Tx32x16 = 10
+pub svtav1_types::transform::TxSize::Tx32x32 = 3
+pub svtav1_types::transform::TxSize::Tx32x64 = 11
+pub svtav1_types::transform::TxSize::Tx32x8 = 16
+pub svtav1_types::transform::TxSize::Tx4x16 = 13
+pub svtav1_types::transform::TxSize::Tx4x4 = 0
+pub svtav1_types::transform::TxSize::Tx4x8 = 5
+pub svtav1_types::transform::TxSize::Tx64x16 = 18
+pub svtav1_types::transform::TxSize::Tx64x32 = 12
+pub svtav1_types::transform::TxSize::Tx64x64 = 4
+pub svtav1_types::transform::TxSize::Tx8x16 = 7
+pub svtav1_types::transform::TxSize::Tx8x32 = 15
+pub svtav1_types::transform::TxSize::Tx8x4 = 6
+pub svtav1_types::transform::TxSize::Tx8x8 = 1
+pub const svtav1_types::transform::TxSize::INVALID_RAW: u8
+pub const svtav1_types::transform::TxSize::LARGEST: Self
+pub const svtav1_types::transform::TxSize::SIZES_ALL: usize
+pub const svtav1_types::transform::TxSize::SIZES_SQUARE: usize
+pub const fn svtav1_types::transform::TxSize::as_index(self) -> usize
+pub const fn svtav1_types::transform::TxSize::from_u8(u8) -> core::option::Option<Self>
+#[repr(u8)] pub enum svtav1_types::transform::TxType
+pub svtav1_types::transform::TxType::AdstAdst = 3
+pub svtav1_types::transform::TxType::AdstDct = 1
+pub svtav1_types::transform::TxType::AdstFlipAdst = 7
+pub svtav1_types::transform::TxType::DctAdst = 2
+pub svtav1_types::transform::TxType::DctDct = 0
+pub svtav1_types::transform::TxType::DctFlipAdst = 5
+pub svtav1_types::transform::TxType::FlipAdstAdst = 8
+pub svtav1_types::transform::TxType::FlipAdstDct = 4
+pub svtav1_types::transform::TxType::FlipAdstFlipAdst = 6
+pub svtav1_types::transform::TxType::HAdst = 13
+pub svtav1_types::transform::TxType::HDct = 11
+pub svtav1_types::transform::TxType::HFlipAdst = 15
+pub svtav1_types::transform::TxType::Idtx = 9
+pub svtav1_types::transform::TxType::VAdst = 12
+pub svtav1_types::transform::TxType::VDct = 10
+pub svtav1_types::transform::TxType::VFlipAdst = 14
+pub const svtav1_types::transform::TxType::COUNT: usize
+pub const svtav1_types::transform::TxType::INVALID_RAW: u8
+pub const fn svtav1_types::transform::TxType::is_2d(self) -> bool
+#[repr(u8)] pub enum svtav1_types::transform::TxType1D
+pub svtav1_types::transform::TxType1D::Adst = 1
+pub svtav1_types::transform::TxType1D::Dct = 0
+pub svtav1_types::transform::TxType1D::FlipAdst = 2
+pub svtav1_types::transform::TxType1D::Identity = 3
+pub const svtav1_types::transform::TxType1D::COUNT: usize
+pub struct svtav1_types::transform::TxfmParam
+pub svtav1_types::transform::TxfmParam::bd: u8
+pub svtav1_types::transform::TxfmParam::eob: i32
+pub svtav1_types::transform::TxfmParam::is_hbd: bool
+pub svtav1_types::transform::TxfmParam::lossless: bool
+pub svtav1_types::transform::TxfmParam::tx_set_type: svtav1_types::transform::TxSetType
+pub svtav1_types::transform::TxfmParam::tx_size: svtav1_types::transform::TxSize
+pub svtav1_types::transform::TxfmParam::tx_type: svtav1_types::transform::TxType
+pub const svtav1_types::transform::EXT_TX_SETS_INTER: usize
+pub const svtav1_types::transform::EXT_TX_SETS_INTRA: usize
+pub const svtav1_types::transform::EXT_TX_SIZES: usize
+pub type svtav1_types::transform::QmVal = u8
+pub type svtav1_types::transform::TranLow = i32
+pub macro svtav1_types::try_vec!
+pub macro svtav1_types::try_with_capacity!
+#[non_exhaustive] pub enum svtav1_types::EncodeError [also: svtav1_types::error]
+pub svtav1_types::EncodeError::AllocFailed
+pub svtav1_types::EncodeError::AllocFailed::context: &'static str
+pub svtav1_types::EncodeError::AllocFailed::requested_bytes: u64
+pub svtav1_types::EncodeError::Cancelled(enough::reason::StopReason)
+pub svtav1_types::EncodeError::InvalidDimensions
+pub svtav1_types::EncodeError::InvalidDimensions::height: u32
+pub svtav1_types::EncodeError::InvalidDimensions::reason: &'static str
+pub svtav1_types::EncodeError::InvalidDimensions::width: u32
+pub svtav1_types::EncodeError::UnsupportedConfig(&'static str)
+pub type svtav1_types::EncodeResult<T> = core::result::Result<T, whereat::at::At<svtav1_types::error::EncodeError>> [also: svtav1_types::error]
+
+## trait impls (73 types)
+
+svtav1_types::bitstream::DecoderModelInfo: Clone, Copy, Debug, Default
+svtav1_types::bitstream::DeltaLfParams: Clone, Copy, Debug, Default
+svtav1_types::bitstream::DeltaQParams: Clone, Copy, Debug, Default
+svtav1_types::bitstream::FrameSize: Clone, Copy, Debug, Default
+svtav1_types::bitstream::GlobalMotionParams: Clone, Copy, Debug, Default
+svtav1_types::bitstream::LrParams: Clone, Copy, Debug, Default
+svtav1_types::bitstream::ObuHeader: Clone, Copy, Debug, Default
+svtav1_types::bitstream::ObuType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::bitstream::OrderHintInfo: Clone, Copy, Debug, Default
+svtav1_types::bitstream::SeqHeader: Clone, Debug
+svtav1_types::bitstream::SkipModeInfo: Clone, Copy, Debug, Default
+svtav1_types::bitstream::TileInfo: Clone, Copy, Debug, Default
+svtav1_types::bitstream::TilesInfo: Clone, Debug
+svtav1_types::bitstream::TimingInfo: Clone, Copy, Debug, Default
+svtav1_types::block::BlockSize: Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd
+svtav1_types::block_mode::BlockModeInfo: Clone, Copy, Debug, Default
+svtav1_types::block_mode::MbModeInfo: Clone, Copy, Debug, Default
+svtav1_types::block_mode::PaletteLumaModeInfo: Clone, Copy, Debug, Default
+svtav1_types::error::EncodeError: Debug, Display, Error, From<enough::reason::StopReason>
+svtav1_types::frame::BitstreamProfile: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::ColorConfig: Clone, Copy, Debug, Default
+svtav1_types::frame::FrameContextIndex: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::FrameType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::MdBitDepthMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::Plane: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::PlaneType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::PredStructure: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::RefreshFrameContextMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::ResolutionRange: Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd
+svtav1_types::frame::SliceType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::frame::Tune: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::interp::InterpFilter: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::interp::SubpelForceStop: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::interp::SubpelSearchMethod: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::interp::SubpelSearchType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::interp::SubpelStage: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::motion::CandidateMv: Clone, Copy, Debug, Default
+svtav1_types::motion::FullMvLimits: Clone, Copy, Debug, Default
+svtav1_types::motion::Mv: Clone, Copy, Debug, Default, Eq, Hash, PartialEq
+svtav1_types::motion::SubpelMvLimits: Clone, Copy, Debug, Default
+svtav1_types::motion::TransformationType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::motion::WarpedMotionParams: Clone, Copy, Debug, Default
+svtav1_types::partition::Part: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::partition::PartitionType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::prediction::CompoundType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::prediction::FilterIntraMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::prediction::InterInterCompoundData: Clone, Copy, Debug, Default
+svtav1_types::prediction::InterIntraMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::prediction::MotionMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::prediction::PaletteSize: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::prediction::PredictionMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::prediction::UvPredictionMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::quantization::DistortionType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::quantization::QuantizationParams: Clone, Copy, Debug, Default
+svtav1_types::reference::CompReferenceType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::reference::PredDirection: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::reference::RefList: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::reference::ReferenceFrame: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::reference::ReferenceMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::reference::UniDirCompRef: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::restoration::CdefParams: Clone, Copy, Debug, Default
+svtav1_types::restoration::LoopFilter: Clone, Copy, Debug, Default
+svtav1_types::restoration::RestorationType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::restoration::SgrParams: Clone, Copy, Debug, Default
+svtav1_types::segmentation::SegmentationParams: Clone, Copy, Debug, Default, Eq, PartialEq
+svtav1_types::tables::scan::ScanType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::transform::TxClass: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::transform::TxMode: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::transform::TxSetType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::transform::TxSize: Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd
+svtav1_types::transform::TxType: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::transform::TxType1D: Clone, Copy, Debug, Eq, Hash, PartialEq
+svtav1_types::transform::TxfmParam: Clone, Copy, Debug
+
+## auto traits
+
+73 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe

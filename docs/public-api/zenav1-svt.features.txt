@@ -1,0 +1,79 @@
+# zenav1-svt public API — additions from non-default features
+# features: avif-container,fallible-alloc,std,symtrace,unsafe_encoding
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   pub modules                                 1
+#   pub types (struct/enum/trait/alias)         4
+#   inherent methods                            8
+#   struct fields                              24
+#   re-exports                                  7
+#   trait roster entries (type × trait)         3
+#   auto-trait-complete types                   2
+#   auto-trait exceptions                       2
+#
+# per-module pub lines:
+#   svtav1                           44
+
+## items (44 lines)
+
+pub mod svtav1::avif::animation
+pub use svtav1::avif::animation::AmveBox
+pub use svtav1::avif::animation::CclvBox
+pub use svtav1::avif::animation::ClliBox
+pub use svtav1::avif::animation::CropRect
+pub use svtav1::avif::animation::MdcvBox
+pub use svtav1::avif::animation::PaspBox
+pub use svtav1::avif::animation::RepetitionCount
+pub struct svtav1::avif::animation::AnimationFrame<'a, T>
+pub svtav1::avif::animation::AnimationFrame::alpha: core::option::Option<&'a [T]>
+pub svtav1::avif::animation::AnimationFrame::duration: u32
+pub svtav1::avif::animation::AnimationFrame::u: &'a [T]
+pub svtav1::avif::animation::AnimationFrame::v: &'a [T]
+pub svtav1::avif::animation::AnimationFrame::y: &'a [T]
+pub svtav1::avif::animation::AnimationFrame::y_stride: usize
+#[non_exhaustive] pub struct svtav1::avif::animation::AnimationOptions
+pub svtav1::avif::animation::AnimationOptions::amve: core::option::Option<zenavif_serialize::boxes::AmveBox>
+pub svtav1::avif::animation::AnimationOptions::cclv: core::option::Option<zenavif_serialize::boxes::CclvBox>
+pub svtav1::avif::animation::AnimationOptions::clli: core::option::Option<zenavif_serialize::boxes::ClliBox>
+pub svtav1::avif::animation::AnimationOptions::crop: core::option::Option<zenavif_serialize::animated::CropRect>
+pub svtav1::avif::animation::AnimationOptions::exif: core::option::Option<alloc::vec::Vec<u8>>
+pub svtav1::avif::animation::AnimationOptions::icc: core::option::Option<alloc::vec::Vec<u8>>
+pub svtav1::avif::animation::AnimationOptions::mdcv: core::option::Option<zenavif_serialize::boxes::MdcvBox>
+pub svtav1::avif::animation::AnimationOptions::mirror: core::option::Option<u8>
+pub svtav1::avif::animation::AnimationOptions::pixel_aspect_ratio: core::option::Option<zenavif_serialize::boxes::PaspBox>
+pub svtav1::avif::animation::AnimationOptions::premultiplied_alpha: bool
+pub svtav1::avif::animation::AnimationOptions::repetition: zenavif_serialize::animated::RepetitionCount
+pub svtav1::avif::animation::AnimationOptions::rotation: core::option::Option<u8>
+pub svtav1::avif::animation::AnimationOptions::xmp: core::option::Option<alloc::vec::Vec<u8>>
+pub struct svtav1::avif::animation::AnimationTiming
+pub svtav1::avif::animation::AnimationTiming::timescale: u32
+pub struct svtav1::avif::animation::MonochromeAnimationFrame<'a, T>
+pub svtav1::avif::animation::MonochromeAnimationFrame::alpha: core::option::Option<&'a [T]>
+pub svtav1::avif::animation::MonochromeAnimationFrame::duration: u32
+pub svtav1::avif::animation::MonochromeAnimationFrame::y: &'a [T]
+pub svtav1::avif::animation::MonochromeAnimationFrame::y_stride: usize
+pub fn svtav1::avif::AvifEncoder::encode_animation_mono(&self, &[svtav1::avif::animation::MonochromeAnimationFrame<'_>], u32, u32, svtav1::avif::animation::AnimationTiming) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_animation_mono_hbd(&self, &[svtav1::avif::animation::MonochromeAnimationFrame<'_, u16>], u32, u32, svtav1::avif::animation::AnimationTiming) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_animation_mono_hbd_with_options(&self, &[svtav1::avif::animation::MonochromeAnimationFrame<'_, u16>], u32, u32, svtav1::avif::animation::AnimationTiming, &svtav1::avif::animation::AnimationOptions) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_animation_mono_with_options(&self, &[svtav1::avif::animation::MonochromeAnimationFrame<'_>], u32, u32, svtav1::avif::animation::AnimationTiming, &svtav1::avif::animation::AnimationOptions) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_animation_yuv420(&self, &[svtav1::avif::animation::AnimationFrame<'_>], u32, u32, svtav1::avif::animation::AnimationTiming) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_animation_yuv420_hbd(&self, &[svtav1::avif::animation::AnimationFrame<'_, u16>], u32, u32, svtav1::avif::animation::AnimationTiming) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_animation_yuv420_hbd_with_options(&self, &[svtav1::avif::animation::AnimationFrame<'_, u16>], u32, u32, svtav1::avif::animation::AnimationTiming, &svtav1::avif::animation::AnimationOptions) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::encode_animation_yuv420_with_options(&self, &[svtav1::avif::animation::AnimationFrame<'_>], u32, u32, svtav1::avif::animation::AnimationTiming, &svtav1::avif::animation::AnimationOptions) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
+
+## trait impls (1 types)
+
+svtav1::avif::animation::AnimationOptions: Clone, Debug, Default
+
+## auto traits
+
+2 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+svtav1::avif::animation::AnimationFrame<'a, T>: !RefUnwindSafe !Send !Sync !UnwindSafe
+svtav1::avif::animation::MonochromeAnimationFrame<'a, T>: !RefUnwindSafe !Send !Sync !UnwindSafe

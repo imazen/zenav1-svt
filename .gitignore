@@ -40,3 +40,7 @@ cbuild-static-hdr-config.log
 # glob would take it along.
 __pycache__/
 *.pyc
+
+# apidoc/ snapshot-runner package: commit its lockfile, ignore its build dir
+!apidoc/Cargo.lock
+apidoc/target/

@@ -1,0 +1,20 @@
+# zenav1-svt-types public API — additions from non-default features
+# features: fallible-alloc,std
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   free functions                              2
+#
+# per-module pub lines:
+#   svtav1_types                      2
+
+## items (2 lines)
+
+pub fn svtav1_types::alloc_util::alloc_vec_fallible<T: core::clone::Clone>(usize, T) -> core::result::Result<alloc::vec::Vec<T>, svtav1_types::error::EncodeError>
+pub fn svtav1_types::alloc_util::with_capacity_fallible<T>(usize) -> core::result::Result<alloc::vec::Vec<T>, svtav1_types::error::EncodeError>

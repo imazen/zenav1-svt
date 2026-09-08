@@ -1,0 +1,137 @@
+# zenav1-svt-types public API — doc(hidden) items and excluded-feature surface
+# excluded features: (none)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   inherent methods                           45
+#   trait roster entries (type × trait)        70
+#
+# per-module pub lines:
+#   svtav1_types                     45
+
+## items (45 lines)
+
+pub fn svtav1_types::bitstream::ObuType::assert_fields_are_eq(&self)
+pub fn svtav1_types::block::BlockSize::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::BitstreamProfile::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::FrameContextIndex::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::FrameType::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::MdBitDepthMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::Plane::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::PlaneType::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::PredStructure::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::RefreshFrameContextMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::ResolutionRange::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::SliceType::assert_fields_are_eq(&self)
+pub fn svtav1_types::frame::Tune::assert_fields_are_eq(&self)
+pub fn svtav1_types::interp::InterpFilter::assert_fields_are_eq(&self)
+pub fn svtav1_types::interp::SubpelForceStop::assert_fields_are_eq(&self)
+pub fn svtav1_types::interp::SubpelSearchMethod::assert_fields_are_eq(&self)
+pub fn svtav1_types::interp::SubpelSearchType::assert_fields_are_eq(&self)
+pub fn svtav1_types::interp::SubpelStage::assert_fields_are_eq(&self)
+pub fn svtav1_types::motion::Mv::assert_fields_are_eq(&self)
+pub fn svtav1_types::motion::TransformationType::assert_fields_are_eq(&self)
+pub fn svtav1_types::partition::Part::assert_fields_are_eq(&self)
+pub fn svtav1_types::partition::PartitionType::assert_fields_are_eq(&self)
+pub fn svtav1_types::prediction::CompoundType::assert_fields_are_eq(&self)
+pub fn svtav1_types::prediction::FilterIntraMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::prediction::InterIntraMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::prediction::MotionMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::prediction::PaletteSize::assert_fields_are_eq(&self)
+pub fn svtav1_types::prediction::PredictionMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::prediction::UvPredictionMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::quantization::DistortionType::assert_fields_are_eq(&self)
+pub fn svtav1_types::reference::CompReferenceType::assert_fields_are_eq(&self)
+pub fn svtav1_types::reference::PredDirection::assert_fields_are_eq(&self)
+pub fn svtav1_types::reference::RefList::assert_fields_are_eq(&self)
+pub fn svtav1_types::reference::ReferenceFrame::assert_fields_are_eq(&self)
+pub fn svtav1_types::reference::ReferenceMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::reference::UniDirCompRef::assert_fields_are_eq(&self)
+pub fn svtav1_types::restoration::RestorationType::assert_fields_are_eq(&self)
+pub fn svtav1_types::segmentation::SegmentationParams::assert_fields_are_eq(&self)
+pub fn svtav1_types::tables::scan::ScanType::assert_fields_are_eq(&self)
+pub fn svtav1_types::transform::TxClass::assert_fields_are_eq(&self)
+pub fn svtav1_types::transform::TxMode::assert_fields_are_eq(&self)
+pub fn svtav1_types::transform::TxSetType::assert_fields_are_eq(&self)
+pub fn svtav1_types::transform::TxSize::assert_fields_are_eq(&self)
+pub fn svtav1_types::transform::TxType1D::assert_fields_are_eq(&self)
+pub fn svtav1_types::transform::TxType::assert_fields_are_eq(&self)
+
+## trait impls (70 types)
+
+svtav1_types::bitstream::DecoderModelInfo: TrivialClone
+svtav1_types::bitstream::DeltaLfParams: TrivialClone
+svtav1_types::bitstream::DeltaQParams: TrivialClone
+svtav1_types::bitstream::FrameSize: TrivialClone
+svtav1_types::bitstream::GlobalMotionParams: TrivialClone
+svtav1_types::bitstream::LrParams: TrivialClone
+svtav1_types::bitstream::ObuHeader: TrivialClone
+svtav1_types::bitstream::ObuType: TrivialClone
+svtav1_types::bitstream::OrderHintInfo: TrivialClone
+svtav1_types::bitstream::SkipModeInfo: TrivialClone
+svtav1_types::bitstream::TileInfo: TrivialClone
+svtav1_types::bitstream::TimingInfo: TrivialClone
+svtav1_types::block::BlockSize: TrivialClone
+svtav1_types::block_mode::BlockModeInfo: TrivialClone
+svtav1_types::block_mode::MbModeInfo: TrivialClone
+svtav1_types::block_mode::PaletteLumaModeInfo: TrivialClone
+svtav1_types::frame::BitstreamProfile: TrivialClone
+svtav1_types::frame::ColorConfig: TrivialClone
+svtav1_types::frame::FrameContextIndex: TrivialClone
+svtav1_types::frame::FrameType: TrivialClone
+svtav1_types::frame::MdBitDepthMode: TrivialClone
+svtav1_types::frame::Plane: TrivialClone
+svtav1_types::frame::PlaneType: TrivialClone
+svtav1_types::frame::PredStructure: TrivialClone
+svtav1_types::frame::RefreshFrameContextMode: TrivialClone
+svtav1_types::frame::ResolutionRange: TrivialClone
+svtav1_types::frame::SliceType: TrivialClone
+svtav1_types::frame::Tune: TrivialClone
+svtav1_types::interp::InterpFilter: TrivialClone
+svtav1_types::interp::SubpelForceStop: TrivialClone
+svtav1_types::interp::SubpelSearchMethod: TrivialClone
+svtav1_types::interp::SubpelSearchType: TrivialClone
+svtav1_types::interp::SubpelStage: TrivialClone
+svtav1_types::motion::CandidateMv: TrivialClone
+svtav1_types::motion::FullMvLimits: TrivialClone
+svtav1_types::motion::Mv: TrivialClone
+svtav1_types::motion::SubpelMvLimits: TrivialClone
+svtav1_types::motion::TransformationType: TrivialClone
+svtav1_types::motion::WarpedMotionParams: TrivialClone
+svtav1_types::partition::Part: TrivialClone
+svtav1_types::partition::PartitionType: TrivialClone
+svtav1_types::prediction::CompoundType: TrivialClone
+svtav1_types::prediction::FilterIntraMode: TrivialClone
+svtav1_types::prediction::InterInterCompoundData: TrivialClone
+svtav1_types::prediction::InterIntraMode: TrivialClone
+svtav1_types::prediction::MotionMode: TrivialClone
+svtav1_types::prediction::PaletteSize: TrivialClone
+svtav1_types::prediction::PredictionMode: TrivialClone
+svtav1_types::prediction::UvPredictionMode: TrivialClone
+svtav1_types::quantization::DistortionType: TrivialClone
+svtav1_types::quantization::QuantizationParams: TrivialClone
+svtav1_types::reference::CompReferenceType: TrivialClone
+svtav1_types::reference::PredDirection: TrivialClone
+svtav1_types::reference::RefList: TrivialClone
+svtav1_types::reference::ReferenceFrame: TrivialClone
+svtav1_types::reference::ReferenceMode: TrivialClone
+svtav1_types::reference::UniDirCompRef: TrivialClone
+svtav1_types::restoration::CdefParams: TrivialClone
+svtav1_types::restoration::LoopFilter: TrivialClone
+svtav1_types::restoration::RestorationType: TrivialClone
+svtav1_types::restoration::SgrParams: TrivialClone
+svtav1_types::segmentation::SegmentationParams: TrivialClone
+svtav1_types::tables::scan::ScanType: TrivialClone
+svtav1_types::transform::TxClass: TrivialClone
+svtav1_types::transform::TxMode: TrivialClone
+svtav1_types::transform::TxSetType: TrivialClone
+svtav1_types::transform::TxSize: TrivialClone
+svtav1_types::transform::TxType: TrivialClone
+svtav1_types::transform::TxType1D: TrivialClone
+svtav1_types::transform::TxfmParam: TrivialClone

@@ -1,0 +1,91 @@
+# svtav1-target public API — supported surface (default features)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+#
+# files: svtav1-target.txt 53 lines (supported surface) | svtav1-target.features.txt 0 added (features: none) | svtav1-target.internal.txt 2 lines (2 hidden + 0 excluded-feature)
+# arch-unique surface: (none — portable on every target)
+
+## summary
+#
+#   pub modules                                 4
+#   pub types (struct/enum/trait/alias)         8
+#   pub consts/statics                          1
+#   free functions                              5
+#   inherent methods                            2
+#   struct fields                              28
+#   enum variants                               6
+#   trait roster entries (type × trait)         8
+#   auto-trait-complete types                   3
+#   auto-trait exceptions                       1
+#
+# per-module pub lines:
+#   (root)                           27
+#   search                           14
+#   seed                              2
+#   trial                            11
+
+## items (48 lines)
+
+pub mod svtav1_target
+pub mod search
+pub search::TargetOptions::max_encodes: u8
+pub search::TargetOptions::max_qp: u8
+pub search::TargetOptions::min_qp: u8
+pub search::TargetOptions::qp_start: core::option::Option<u8>
+pub search::TargetOptions::tolerance: f64
+pub fn search::TargetOptions::seeded(f64) -> Self
+pub search::TargetSearchResult::converged: bool
+pub search::TargetSearchResult::encodes_used: u8
+pub search::TargetSearchResult::qp: u8
+pub search::TargetSearchResult::score: f64
+pub mod seed
+pub const seed::S1_ANCHORS: [(f64, u8); 3]
+pub fn seed::s1_qp_start(f64) -> core::option::Option<u8>
+pub mod trial
+pub trial::TargetError::Encode(alloc::string::String)
+pub trial::TargetError::Judge(E)
+pub trial::TargetError::ReconMissing
+pub trial::TargetError::ReconMissing::qp: u8
+pub trial::TrialOutput::aligned_w: usize
+pub trial::TrialOutput::bytes: alloc::vec::Vec<u8>
+pub trial::TrialOutput::qp: u8
+pub trial::TrialOutput::recon10: (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)
+pub enum TargetError<E> [also: trial]
+pub TargetError::Encode(alloc::string::String)
+pub TargetError::Judge(E)
+pub TargetError::ReconMissing
+pub TargetError::ReconMissing::qp: u8
+pub struct TargetOptions [also: search]
+pub TargetOptions::max_encodes: u8
+pub TargetOptions::max_qp: u8
+pub TargetOptions::min_qp: u8
+pub TargetOptions::qp_start: core::option::Option<u8>
+pub TargetOptions::tolerance: f64
+pub fn search::TargetOptions::seeded(f64) -> Self
+pub struct TargetSearchResult [also: search]
+pub TargetSearchResult::converged: bool
+pub TargetSearchResult::encodes_used: u8
+pub TargetSearchResult::qp: u8
+pub TargetSearchResult::score: f64
+pub struct TrialOutput [also: trial]
+pub TrialOutput::aligned_w: usize
+pub TrialOutput::bytes: alloc::vec::Vec<u8>
+pub TrialOutput::qp: u8
+pub TrialOutput::recon10: (alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)
+pub fn encode_to_target<J, E>(&[u16], &[u16], &[u16], usize, usize, u8, f64, &search::TargetOptions, J) -> core::result::Result<(search::TargetSearchResult, trial::TrialOutput), trial::TargetError<E>> where J: core::ops::function::FnMut(&trial::TrialOutput) -> core::result::Result<f64, E> [also: trial]
+pub fn search_target_qp<E, Err>(f64, &search::TargetOptions, E) -> core::result::Result<search::TargetSearchResult, Err> where E: core::ops::function::FnMut(u8) -> core::result::Result<f64, Err> [also: search]
+
+## trait impls (3 types)
+
+search::TargetOptions: Clone, Copy, Debug, Default
+search::TargetSearchResult: Clone, Copy, Debug
+trial::TargetError<E>: Debug
+
+## auto traits
+
+3 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+trial::TargetError<E>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe

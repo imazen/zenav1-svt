@@ -1,0 +1,119 @@
+# zenav1-svt-dsp public API — doc(hidden) items and excluded-feature surface
+# excluded features: (none)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+
+## summary
+#
+#   inherent methods                           36
+#   trait roster entries (type × trait)        61
+#
+# per-module pub lines:
+#   svtav1_dsp                       36
+
+## items (36 lines)
+
+pub fn svtav1_dsp::fwd_txfm_pf::HandleTransform::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::fwd_txfm_pf::TxCoeffShape::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::fwd_txfm_pf::TxfmType::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::loop_filter::LfThresh::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::pic_operators::FullDistortion::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_compound_prep::CmpStoreSlot::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_compound_prep::UnipredOverride::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_convolve::InterpFilterKind::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_convolve_hbd::HbdKernel::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_enc_make_pred::MakePredError::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_full_pd1_pred::PostPasses::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_ifs::IfsResult::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_interintra::InterIntraMode::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_make_pred::MakePredLeaf::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_make_pred::MaskedPredScratch::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_make_pred::PackedSrcGeom::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_masked_compound::CompoundType::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_masked_compound::DiffwtdMaskType::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_obmc_build::NbPredGeom::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_obmc_nb_pred::NbSide::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_obmc_pred::PredEdges::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_obmc_pred::VisitedNb::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_scale_factors::DistWtdWeights::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_scale_factors::SubpelParams::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_sgr::SgrParamsType::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_subpel_params::Mv::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_tf_pred::TfDepthMismatch::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_warp::WarpConvolveParams::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_wedge_masks::WedgeDirection::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::port_wedge_search::PickedMask::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::restoration::RestUnitParams::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::restoration::WienerInfo::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::superres::TileColPad::assert_fields_are_eq(&self)
+pub fn svtav1_dsp::txfm_dispatch::InvReconError::assert_fields_are_eq(&self)
+
+## trait impls (61 types)
+
+svtav1_dsp::fwd_txfm_pf::HandleTransform: TrivialClone
+svtav1_dsp::fwd_txfm_pf::TxCoeffShape: TrivialClone
+svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg: TrivialClone
+svtav1_dsp::fwd_txfm_pf::TxfmType: TrivialClone
+svtav1_dsp::loop_filter::LfThresh: TrivialClone
+svtav1_dsp::pic_operators::FullDistortion: TrivialClone
+svtav1_dsp::port_compound_prep::CmpStoreSlot: TrivialClone
+svtav1_dsp::port_compound_prep::UnipredOverride: TrivialClone
+svtav1_dsp::port_convolve::ConvolveParams: TrivialClone
+svtav1_dsp::port_convolve::FilterParams: TrivialClone
+svtav1_dsp::port_convolve::InterpFilterKind: TrivialClone
+svtav1_dsp::port_convolve::SrcView<'a>: TrivialClone
+svtav1_dsp::port_convolve_hbd::HbdKernel: TrivialClone
+svtav1_dsp::port_convolve_hbd::SrcView16<'a>: TrivialClone
+svtav1_dsp::port_enc_make_pred::MakePredError: TrivialClone
+svtav1_dsp::port_enc_make_pred::SrcPlanes<'a>: TrivialClone
+svtav1_dsp::port_full_pd1_pred::PostPasses: TrivialClone
+svtav1_dsp::port_ifs::IfsCandidateCost: TrivialClone
+svtav1_dsp::port_ifs::IfsCtrls: TrivialClone
+svtav1_dsp::port_ifs::IfsResult: TrivialClone
+svtav1_dsp::port_interintra::InterIntraMode: TrivialClone
+svtav1_dsp::port_make_pred::MakePredLeaf: TrivialClone
+svtav1_dsp::port_make_pred::MaskedPredScratch: TrivialClone
+svtav1_dsp::port_make_pred::PackedSrcGeom: TrivialClone
+svtav1_dsp::port_masked_blend::InterInterCompoundData: TrivialClone
+svtav1_dsp::port_masked_compound::CompoundType: TrivialClone
+svtav1_dsp::port_masked_compound::DiffwtdMaskType: TrivialClone
+svtav1_dsp::port_model_rd::PlaneRd: TrivialClone
+svtav1_dsp::port_obmc_build::NbPredGeom: TrivialClone
+svtav1_dsp::port_obmc_data::Neighbour: TrivialClone
+svtav1_dsp::port_obmc_nb_pred::NbSide: TrivialClone
+svtav1_dsp::port_obmc_nb_pred::Neighbour: TrivialClone
+svtav1_dsp::port_obmc_pred::NbMi: TrivialClone
+svtav1_dsp::port_obmc_pred::PredEdges: TrivialClone
+svtav1_dsp::port_obmc_pred::VisitedNb: TrivialClone
+svtav1_dsp::port_obmc_single_pred::ObmcPicDims: TrivialClone
+svtav1_dsp::port_pd_pred::BlkGeom: TrivialClone
+svtav1_dsp::port_scale_factors::DistWtdWeights: TrivialClone
+svtav1_dsp::port_scale_factors::ScaleFactors: TrivialClone
+svtav1_dsp::port_scale_factors::SubpelParams: TrivialClone
+svtav1_dsp::port_sgr::SgrParamsType: TrivialClone
+svtav1_dsp::port_sgr::SgrSrc<'a>: TrivialClone
+svtav1_dsp::port_subpel_params::MbEdges: TrivialClone
+svtav1_dsp::port_subpel_params::Mv: TrivialClone
+svtav1_dsp::port_subpel_params::RefGeometry: TrivialClone
+svtav1_dsp::port_tf_pred::TfDepthMismatch: TrivialClone
+svtav1_dsp::port_tf_pred::TfSrc<'a>: TrivialClone
+svtav1_dsp::port_warp::HbdWarpRef<'a>: TrivialClone
+svtav1_dsp::port_warp::WarpConvolveParams: TrivialClone
+svtav1_dsp::port_wedge_masks::WedgeCode: TrivialClone
+svtav1_dsp::port_wedge_masks::WedgeDirection: TrivialClone
+svtav1_dsp::port_wedge_search::PickedMask: TrivialClone
+svtav1_dsp::port_wedge_search::SearchCtx: TrivialClone
+svtav1_dsp::quant::QuantParam: TrivialClone
+svtav1_dsp::restoration::PixelRect: TrivialClone
+svtav1_dsp::restoration::RestUnitParams: TrivialClone
+svtav1_dsp::restoration::TileLimits: TrivialClone
+svtav1_dsp::restoration::WienerInfo: TrivialClone
+svtav1_dsp::scale::ScaleFactors: TrivialClone
+svtav1_dsp::superres::TileColPad: TrivialClone
+svtav1_dsp::txfm_dispatch::InvReconError: TrivialClone

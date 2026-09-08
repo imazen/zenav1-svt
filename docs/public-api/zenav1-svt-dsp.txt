@@ -1,0 +1,1307 @@
+# zenav1-svt-dsp public API — supported surface (default features)
+# (regenerated on every `cargo test` by zenutils-apidoc; ZEN_API_DOC=check verifies, =off skips).
+# Encodings: crate-name prefix stripped; auto traits collapse to a
+# count + exceptions; trait impls collapse to one roster line per
+# type (method signatures live at the trait definition); blanket
+# impls omitted; re-export duplicates annotated `[also: path]`.
+# DO NOT EDIT BY HAND — commit regenerated changes with the code.
+#
+# files: zenav1-svt-dsp.txt 1246 lines (supported surface) | zenav1-svt-dsp.features.txt 14 added (features: avx512,std,unchecked_dsp) | zenav1-svt-dsp.internal.txt 97 lines (97 hidden + 0 excluded-feature)
+# arch-unique surface: aarch64 10
+
+## summary
+#
+#   pub modules                                60
+#   pub types (struct/enum/trait/alias)        83
+#   pub consts/statics                        225
+#   free functions                            494
+#   inherent methods                           29
+#   struct fields                             212
+#   enum variants                              84
+#   trait roster entries (type × trait)       269
+#   auto-trait-complete types                  67
+#   auto-trait exceptions                      12
+#
+# per-module pub lines:
+#   (root)                            5
+#   svtav1_dsp                     1182
+
+## items (1165 lines)
+
+pub mod svtav1_dsp
+pub mod svtav1_dsp::ac_bias
+pub fn svtav1_dsp::ac_bias::effective_ac_bias(f64, bool, u8) -> f64
+pub fn svtav1_dsp::ac_bias::psy_adjust_rate_light(&[i32], u64, usize, usize, f64) -> u64
+pub fn svtav1_dsp::ac_bias::psy_distortion(&[u8], usize, &[u8], usize, usize, usize) -> u64
+pub fn svtav1_dsp::ac_bias::psy_full_dist(&[u8], usize, usize, &[u8], usize, usize, usize, usize, f64) -> u64
+pub mod svtav1_dsp::cdef
+pub const svtav1_dsp::cdef::BLOCK_4X4: i32
+pub const svtav1_dsp::cdef::BLOCK_4X8: i32
+pub const svtav1_dsp::cdef::BLOCK_8X4: i32
+pub const svtav1_dsp::cdef::BLOCK_8X8: i32
+pub const svtav1_dsp::cdef::CDEF_BSTRIDE: usize
+pub const svtav1_dsp::cdef::CDEF_HBORDER: usize
+pub const svtav1_dsp::cdef::CDEF_INBUF_SIZE: usize
+pub const svtav1_dsp::cdef::CDEF_PRI_STRENGTHS: i32
+pub const svtav1_dsp::cdef::CDEF_SEC_STRENGTHS: i32
+pub const svtav1_dsp::cdef::CDEF_STRENGTH_BITS: u32
+pub const svtav1_dsp::cdef::CDEF_VBORDER: usize
+pub const svtav1_dsp::cdef::CDEF_VERY_LARGE: u16
+pub fn svtav1_dsp::cdef::adjust_strength(i32, i32) -> i32
+pub fn svtav1_dsp::cdef::cdef_filter_block(&mut [u8], usize, usize, &[u16], usize, i32, i32, i32, i32, i32, i32, i32, usize)
+pub fn svtav1_dsp::cdef::cdef_filter_block_8bit(&mut [u8], usize, usize, &[u8], usize, i32, i32, i32, i32, i32, i32, usize)
+pub fn svtav1_dsp::cdef::cdef_find_dir(&[u16], usize, i32) -> (u8, i32)
+pub fn svtav1_dsp::cdef::cdef_find_dir_8bit(&[u8], usize, i32) -> (u8, i32)
+pub fn svtav1_dsp::cdef::compute_cdef_dist_16bit(&[u16], usize, usize, &[u16], &[(u8, u8)], i32, i32, usize) -> u64
+pub fn svtav1_dsp::cdef::compute_cdef_dist_8bit(&[u8], usize, usize, &[u8], &[(u8, u8)], i32, i32, usize) -> u64
+pub mod svtav1_dsp::copy
+pub fn svtav1_dsp::copy::block_average(&mut [u8], usize, &[u8], usize, &[u8], usize, usize, usize)
+pub fn svtav1_dsp::copy::block_blend(&mut [u8], usize, &[u8], usize, &[u8], usize, &[u8], usize, usize, usize)
+pub fn svtav1_dsp::copy::block_copy(&mut [u8], usize, &[u8], usize, usize, usize)
+pub fn svtav1_dsp::copy::block_dist_wtd_blend(&mut [u8], usize, &[u8], usize, &[u8], usize, u32, u32, usize, usize)
+pub mod svtav1_dsp::fwd_txfm
+pub const svtav1_dsp::fwd_txfm::COSPI: [i32; 64]
+pub const svtav1_dsp::fwd_txfm::COSPI_ARR_DATA: [[i32; 64]; 7]
+pub const svtav1_dsp::fwd_txfm::COS_BIT: u32
+pub const svtav1_dsp::fwd_txfm::COS_BIT_MIN: i8
+pub const svtav1_dsp::fwd_txfm::FWD_COS_BIT_COL: [[i8; 5]; 5]
+pub const svtav1_dsp::fwd_txfm::FWD_COS_BIT_ROW: [[i8; 5]; 5]
+pub const svtav1_dsp::fwd_txfm::NEW_SQRT2: i32
+pub const svtav1_dsp::fwd_txfm::NEW_SQRT2_BITS: u32
+pub const svtav1_dsp::fwd_txfm::SINPI: [i32; 5]
+pub const svtav1_dsp::fwd_txfm::SINPI_ARR_DATA: [[i32; 5]; 7]
+pub const svtav1_dsp::fwd_txfm::UNIT_QUANT_FACTOR: i64
+pub const svtav1_dsp::fwd_txfm::UNIT_QUANT_SHIFT: u32
+pub fn svtav1_dsp::fwd_txfm::cospi_arr(i8) -> &'static [i32; 64]
+pub fn svtav1_dsp::fwd_txfm::fadst16(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fadst32(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fadst4(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fadst8(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fdct16(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fdct32(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fdct4(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fdct64(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fdct8(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fidentity16(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fidentity32(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fidentity4(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fidentity64(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fidentity8(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_16x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_16x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_16x4_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_16x64_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_16x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_32x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_32x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_32x64_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_32x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_4x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_4x4_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_4x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_64x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_64x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_64x64_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_8x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_8x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_8x4_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_8x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_c_exact(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, bool, bool) -> bool
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm2d_core(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, usize, usize, svtav1_dsp::fwd_txfm::TxfmFunc, svtav1_dsp::fwd_txfm::TxfmFunc, i8, i8, [i8; 3], bool, bool)
+pub fn svtav1_dsp::fwd_txfm::fwd_txfm_shift(usize, usize) -> [i8; 3]
+pub fn svtav1_dsp::fwd_txfm::fwht4x4(&[i16], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::fwd_txfm::get_fwd_txfm_func(u8, usize) -> core::option::Option<svtav1_dsp::fwd_txfm::TxfmFunc>
+pub fn svtav1_dsp::fwd_txfm::half_btf(i32, i32, i32, i32, u32) -> i32
+pub fn svtav1_dsp::fwd_txfm::round_shift(i32, u32) -> i32
+pub fn svtav1_dsp::fwd_txfm::round_shift_array(&mut [i32], i32)
+pub fn svtav1_dsp::fwd_txfm::round_shift_i64(i64, u32) -> i32
+pub fn svtav1_dsp::fwd_txfm::sinpi_arr(i8) -> &'static [i32; 5]
+pub type svtav1_dsp::fwd_txfm::TxfmFunc = fn(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub mod svtav1_dsp::fwd_txfm_pf
+pub enum svtav1_dsp::fwd_txfm_pf::HandleTransform
+pub svtav1_dsp::fwd_txfm_pf::HandleTransform::T16x64
+pub svtav1_dsp::fwd_txfm_pf::HandleTransform::T32x64
+pub svtav1_dsp::fwd_txfm_pf::HandleTransform::T64x16
+pub svtav1_dsp::fwd_txfm_pf::HandleTransform::T64x32
+pub svtav1_dsp::fwd_txfm_pf::HandleTransform::T64x64
+pub enum svtav1_dsp::fwd_txfm_pf::TxCoeffShape
+pub svtav1_dsp::fwd_txfm_pf::TxCoeffShape::Default
+pub svtav1_dsp::fwd_txfm_pf::TxCoeffShape::N2
+pub svtav1_dsp::fwd_txfm_pf::TxCoeffShape::N4
+pub svtav1_dsp::fwd_txfm_pf::TxCoeffShape::OnlyDc
+#[repr(u8)] pub enum svtav1_dsp::fwd_txfm_pf::TxfmType
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Adst16 = 7
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Adst32 = 8
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Adst4 = 5
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Adst8 = 6
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Dct16 = 2
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Dct32 = 3
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Dct4 = 0
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Dct64 = 4
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Dct8 = 1
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Identity16 = 11
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Identity32 = 12
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Identity4 = 9
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Identity64 = 13
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Identity8 = 10
+pub svtav1_dsp::fwd_txfm_pf::TxfmType::Invalid = 15
+pub struct svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::cos_bit_col: i8
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::cos_bit_row: i8
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::lr_flip: bool
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::shift: [i8; 3]
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::stage_num_col: i32
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::stage_num_row: i32
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::stage_range_col: [i8; 12]
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::stage_range_row: [i8; 12]
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::tx_size: svtav1_types::transform::TxSize
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::txfm_type_col: svtav1_dsp::fwd_txfm_pf::TxfmType
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::txfm_type_row: svtav1_dsp::fwd_txfm_pf::TxfmType
+pub svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg::ud_flip: bool
+pub const svtav1_dsp::fwd_txfm_pf::INV_COS_BIT: i8
+pub const svtav1_dsp::fwd_txfm_pf::MAX_TXFM_STAGE_NUM: usize
+pub fn svtav1_dsp::fwd_txfm_pf::estimate_transform(&[i16], usize, &mut [i32], svtav1_types::transform::TxSize, svtav1_types::transform::TxType, svtav1_dsp::fwd_txfm_pf::TxCoeffShape, &mut u64, bool) -> bool
+pub fn svtav1_dsp::fwd_txfm_pf::fadst16_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fadst16_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fadst4_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fadst4_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fadst8_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fadst8_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct16_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct16_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct32_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct32_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct4_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct4_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct64_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct64_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct8_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fdct8_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity16_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity16_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity32_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity32_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity4_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity4_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity64_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity64_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity8_n2(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fidentity8_n4(&[i32], &mut [i32], i8)
+pub fn svtav1_dsp::fwd_txfm_pf::fwd_txfm2d_pf(&[i16], &mut [i32], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType, svtav1_dsp::fwd_txfm_pf::TxCoeffShape) -> bool
+pub fn svtav1_dsp::fwd_txfm_pf::fwd_txfm_type_to_func_default(svtav1_dsp::fwd_txfm_pf::TxfmType) -> core::option::Option<fn(&[i32], &mut [i32], i8)>
+pub fn svtav1_dsp::fwd_txfm_pf::fwd_txfm_type_to_func_n2(svtav1_dsp::fwd_txfm_pf::TxfmType) -> core::option::Option<fn(&[i32], &mut [i32], i8)>
+pub fn svtav1_dsp::fwd_txfm_pf::fwd_txfm_type_to_func_n4(svtav1_dsp::fwd_txfm_pf::TxfmType) -> core::option::Option<fn(&[i32], &mut [i32], i8)>
+pub fn svtav1_dsp::fwd_txfm_pf::gen_fwd_stage_range(&svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg, i32) -> ([i8; 12], [i8; 12])
+pub fn svtav1_dsp::fwd_txfm_pf::gen_inv_stage_range(&svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg, i32) -> ([i8; 12], [i8; 12])
+pub const fn svtav1_dsp::fwd_txfm_pf::get_flip_cfg(svtav1_types::transform::TxType) -> (bool, bool)
+pub fn svtav1_dsp::fwd_txfm_pf::get_inv_txfm_cfg(svtav1_types::transform::TxType, svtav1_types::transform::TxSize) -> svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg
+pub fn svtav1_dsp::fwd_txfm_pf::handle_transform(svtav1_dsp::fwd_txfm_pf::HandleTransform, bool, &mut [i32]) -> u64
+pub fn svtav1_dsp::fwd_txfm_pf::highbd_entry_shape(svtav1_dsp::fwd_txfm_pf::TxCoeffShape, svtav1_types::transform::TxSize) -> core::option::Option<svtav1_dsp::fwd_txfm_pf::TxCoeffShape>
+pub fn svtav1_dsp::fwd_txfm_pf::highbd_fwd_txfm(&[i16], &mut [i32], usize, svtav1_types::transform::TxType, svtav1_types::transform::TxSize, svtav1_dsp::fwd_txfm_pf::TxCoeffShape) -> bool
+pub fn svtav1_dsp::fwd_txfm_pf::transform_config(svtav1_types::transform::TxType, svtav1_types::transform::TxSize) -> svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg
+pub const fn svtav1_dsp::fwd_txfm_pf::tx_size_dims(svtav1_types::transform::TxSize) -> (usize, usize)
+pub fn svtav1_dsp::fwd_txfm_pf::wht_fwd_txfm(&[i16], usize, &mut [i32], svtav1_types::transform::TxSize, svtav1_dsp::fwd_txfm_pf::TxCoeffShape, i32, bool) -> bool
+pub mod svtav1_dsp::hadamard
+pub fn svtav1_dsp::hadamard::aom_hadamard_16x16(&[i16], usize, &mut [i32])
+pub fn svtav1_dsp::hadamard::aom_hadamard_32x32(&[i16], usize, &mut [i32])
+pub fn svtav1_dsp::hadamard::aom_hadamard_4x4(&[i16], usize, &mut [i32])
+pub fn svtav1_dsp::hadamard::aom_hadamard_8x8(&[i16], usize, &mut [i32])
+pub fn svtav1_dsp::hadamard::aom_satd(&[i32]) -> i32
+pub fn svtav1_dsp::hadamard::satd_4x4(&[u8], usize, &[u8], usize) -> u32
+pub fn svtav1_dsp::hadamard::satd_8x8(&[u8], usize, &[u8], usize) -> u32
+pub fn svtav1_dsp::hadamard::sum_abs_coeffs_wide(&[i32]) -> i64
+pub mod svtav1_dsp::hbd
+pub fn svtav1_dsp::hbd::ac_qlookup_10(u8) -> i16
+pub fn svtav1_dsp::hbd::ac_qlookup_12(u8) -> i16
+pub fn svtav1_dsp::hbd::ac_quant_qtx(i32, i32, u8) -> i16
+pub fn svtav1_dsp::hbd::cdef_filter_block_hbd(&mut [u16], usize, usize, &[u16], usize, i32, i32, i32, i32, i32, i32, i32, usize)
+pub fn svtav1_dsp::hbd::cfl_luma_subsampling_420_hbd(&[u16], usize, &mut [i16], usize, usize)
+pub fn svtav1_dsp::hbd::cfl_predict_hbd(&[i16], &[u16], usize, &mut [u16], usize, i32, u8, usize, usize)
+pub fn svtav1_dsp::hbd::check_range(i64, u8) -> i64
+pub fn svtav1_dsp::hbd::clip_pixel_highbd(i32, u8) -> u16
+pub fn svtav1_dsp::hbd::dc_qlookup_10(u8) -> i16
+pub fn svtav1_dsp::hbd::dc_qlookup_12(u8) -> i16
+pub fn svtav1_dsp::hbd::dc_quant_qtx(i32, i32, u8) -> i16
+pub fn svtav1_dsp::hbd::dr_predictor_edged_hbd(&mut [u16], usize, &[u16], &[u16], usize, bool, bool, usize, usize, i32, u8)
+pub fn svtav1_dsp::hbd::filter_intra_edge_corner_high(&mut [u16], &mut [u16], usize)
+pub fn svtav1_dsp::hbd::filter_intra_edge_high(&mut [u16], usize, usize, i32)
+pub fn svtav1_dsp::hbd::full_distortion_kernel16_bits(&[u16], usize, usize, &[u16], usize, usize, usize, usize) -> u64
+pub fn svtav1_dsp::hbd::highbd_clip_pixel_add(u16, i64, u8) -> u16
+pub fn svtav1_dsp::hbd::highbd_sad_kernel(&[u16], usize, &[u16], usize, usize, usize) -> u32
+pub fn svtav1_dsp::hbd::highbd_variance(&[u16], usize, &[u16], usize, usize, usize) -> (u32, u32)
+pub fn svtav1_dsp::hbd::highbd_wraplow(i64, u8) -> i32
+pub fn svtav1_dsp::hbd::lpf_horizontal_14_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::lpf_horizontal_4_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::lpf_horizontal_6_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::lpf_horizontal_8_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::lpf_vertical_14_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::lpf_vertical_4_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::lpf_vertical_6_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::lpf_vertical_8_hbd(&mut [u16], usize, usize, svtav1_dsp::loop_filter::LfThresh, u8)
+pub fn svtav1_dsp::hbd::predict_dc_hbd(&mut [u16], usize, &[u16], &[u16], usize, usize, bool, bool, u8)
+pub fn svtav1_dsp::hbd::predict_filter_intra_hbd(&mut [u16], usize, &[u16], &[u16], usize, usize, u8, u8)
+pub fn svtav1_dsp::hbd::predict_h_hbd(&mut [u16], usize, &[u16], usize, usize)
+pub fn svtav1_dsp::hbd::predict_paeth_hbd(&mut [u16], usize, &[u16], &[u16], u16, usize, usize)
+pub fn svtav1_dsp::hbd::predict_smooth_h_hbd(&mut [u16], usize, &[u16], &[u16], usize, usize)
+pub fn svtav1_dsp::hbd::predict_smooth_hbd(&mut [u16], usize, &[u16], &[u16], usize, usize)
+pub fn svtav1_dsp::hbd::predict_smooth_v_hbd(&mut [u16], usize, &[u16], &[u16], usize, usize)
+pub fn svtav1_dsp::hbd::predict_v_hbd(&mut [u16], usize, &[u16], usize, usize)
+pub fn svtav1_dsp::hbd::upsample_intra_edge_high(&mut [u16], usize, usize, u8)
+pub mod svtav1_dsp::inter_pred
+pub const svtav1_dsp::inter_pred::FILTER_CENTER: usize
+pub fn svtav1_dsp::inter_pred::convolve_2d(&[u8], usize, &mut [u8], usize, &[i16; 8], &[i16; 8], usize, usize)
+pub fn svtav1_dsp::inter_pred::convolve_copy(&[u8], usize, &mut [u8], usize, usize, usize)
+pub fn svtav1_dsp::inter_pred::convolve_horiz(&[u8], usize, &mut [u8], usize, &[i16; 8], usize, usize)
+pub fn svtav1_dsp::inter_pred::convolve_vert(&[u8], usize, &mut [u8], usize, &[i16; 8], usize, usize)
+pub mod svtav1_dsp::intra_pred
+pub const svtav1_dsp::intra_pred::CFL_BUF_LINE: usize
+pub const svtav1_dsp::intra_pred::EDGE_BUF_LEN: usize
+pub const svtav1_dsp::intra_pred::EDGE_ORIGIN: usize
+pub const svtav1_dsp::intra_pred::MODE_TO_ANGLE: [i32; 8]
+pub fn svtav1_dsp::intra_pred::cfl_luma_subsampling_420(&[u8], usize, &mut [i16], usize, usize)
+pub fn svtav1_dsp::intra_pred::cfl_predict_lbd(&[i16], &[u8], usize, &mut [u8], usize, i32, usize, usize)
+pub fn svtav1_dsp::intra_pred::cfl_subtract_average(&mut [i16], usize, usize)
+pub fn svtav1_dsp::intra_pred::dr_predictor_edged(&mut [u8], usize, &[u8], &[u8], usize, bool, bool, usize, usize, i32)
+pub fn svtav1_dsp::intra_pred::filter_intra_edge(&mut [u8], usize, usize, i32)
+pub fn svtav1_dsp::intra_pred::filter_intra_edge_corner(&mut [u8], &mut [u8], usize)
+pub fn svtav1_dsp::intra_pred::intra_edge_filter_strength(i32, i32, i32, i32) -> i32
+pub fn svtav1_dsp::intra_pred::predict_dc(&mut [u8], usize, &[u8], &[u8], usize, usize, bool, bool)
+pub fn svtav1_dsp::intra_pred::predict_directional(&mut [u8], usize, &[u8], &[u8], u8, usize, usize, i32)
+pub fn svtav1_dsp::intra_pred::predict_filter_intra(&mut [u8], usize, &[u8], &[u8], usize, usize, u8)
+pub fn svtav1_dsp::intra_pred::predict_h(&mut [u8], usize, &[u8], usize, usize)
+pub fn svtav1_dsp::intra_pred::predict_paeth(&mut [u8], usize, &[u8], &[u8], u8, usize, usize)
+pub fn svtav1_dsp::intra_pred::predict_palette(&mut [u8], usize, &[u8], usize, &[u8], usize, usize)
+pub fn svtav1_dsp::intra_pred::predict_smooth(&mut [u8], usize, &[u8], &[u8], usize, usize)
+pub fn svtav1_dsp::intra_pred::predict_smooth_h(&mut [u8], usize, &[u8], &[u8], usize, usize)
+pub fn svtav1_dsp::intra_pred::predict_smooth_v(&mut [u8], usize, &[u8], &[u8], usize, usize, usize)
+pub fn svtav1_dsp::intra_pred::predict_v(&mut [u8], usize, &[u8], usize, usize)
+pub fn svtav1_dsp::intra_pred::upsample_intra_edge(&mut [u8], usize, usize)
+pub fn svtav1_dsp::intra_pred::use_intra_edge_upsample(i32, i32, i32, i32) -> bool
+pub mod svtav1_dsp::inv_txfm
+pub const svtav1_dsp::inv_txfm::NEW_INV_SQRT2: i32
+pub fn svtav1_dsp::inv_txfm::clamp_value(i32, i8) -> i32
+pub fn svtav1_dsp::inv_txfm::get_inv_txfm_func(u8, usize) -> core::option::Option<svtav1_dsp::inv_txfm::InvTxfmFunc>
+pub fn svtav1_dsp::inv_txfm::highbd_iwht4x4_16_add(&[svtav1_types::transform::TranLow], &[u16], usize, &mut [u16], usize, u8)
+pub fn svtav1_dsp::inv_txfm::highbd_iwht4x4_1_add(&[svtav1_types::transform::TranLow], &[u16], usize, &mut [u16], usize, u8)
+pub fn svtav1_dsp::inv_txfm::highbd_iwht4x4_add(&[svtav1_types::transform::TranLow], &[u16], usize, &mut [u16], usize, i32, u8)
+pub fn svtav1_dsp::inv_txfm::iadst16(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iadst32(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iadst4(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iadst8(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::idct16(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::idct32(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::idct4(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::idct64(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::idct8(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iidentity16(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iidentity32(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iidentity4(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iidentity64(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::iidentity8(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_16x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_16x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_16x4_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_16x64_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_16x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_32x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_32x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_32x64_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_32x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_4x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_4x4_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_4x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_64x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_64x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_64x64_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_8x16_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_8x32_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_8x4_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_8x8_dct_dct(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_c_exact(&[svtav1_types::transform::TranLow], usize, &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, bool, bool) -> bool
+pub fn svtav1_dsp::inv_txfm::inv_txfm2d_c_exact_bd(&[svtav1_types::transform::TranLow], usize, &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, bool, bool, u8) -> bool
+pub fn svtav1_dsp::inv_txfm::inv_txfm_shift(usize, usize) -> [i8; 2]
+pub type svtav1_dsp::inv_txfm::InvTxfmFunc = fn(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], i8)
+pub mod svtav1_dsp::loop_filter
+pub struct svtav1_dsp::loop_filter::LfThresh
+pub svtav1_dsp::loop_filter::LfThresh::hev_thr: u8
+pub svtav1_dsp::loop_filter::LfThresh::lim: u8
+pub svtav1_dsp::loop_filter::LfThresh::mblim: u8
+pub fn svtav1_dsp::loop_filter::lf_thresholds(u8, u8) -> svtav1_dsp::loop_filter::LfThresh
+pub fn svtav1_dsp::loop_filter::lpf_horizontal_14(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub fn svtav1_dsp::loop_filter::lpf_horizontal_4(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub fn svtav1_dsp::loop_filter::lpf_horizontal_6(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub fn svtav1_dsp::loop_filter::lpf_horizontal_8(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub fn svtav1_dsp::loop_filter::lpf_vertical_14(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub fn svtav1_dsp::loop_filter::lpf_vertical_4(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub fn svtav1_dsp::loop_filter::lpf_vertical_6(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub fn svtav1_dsp::loop_filter::lpf_vertical_8(&mut [u8], usize, usize, svtav1_dsp::loop_filter::LfThresh)
+pub mod svtav1_dsp::me_sad
+pub fn svtav1_dsp::me_sad::block_sad(&[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn svtav1_dsp::me_sad::block_sad_scalar(archmage::tokens::ScalarToken, &[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn svtav1_dsp::me_sad::block_sum_sse_scalar(archmage::tokens::ScalarToken, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+pub mod svtav1_dsp::obmc
+pub fn svtav1_dsp::obmc::obmc_blend_above(&mut [u8], usize, &[u8], usize, usize, usize, usize)
+pub fn svtav1_dsp::obmc::obmc_blend_left(&mut [u8], usize, &[u8], usize, usize, usize, usize)
+pub mod svtav1_dsp::pic_operators
+pub struct svtav1_dsp::pic_operators::FullDistortion
+pub svtav1_dsp::pic_operators::FullDistortion::prediction: u64
+pub svtav1_dsp::pic_operators::FullDistortion::residual: u64
+pub fn svtav1_dsp::pic_operators::convert_8bit_to_16bit(&[u8], usize, &mut [u16], usize, usize, usize)
+pub fn svtav1_dsp::pic_operators::full_distortion_kernel32_bits(&[i32], &[i32], usize, usize, usize) -> svtav1_dsp::pic_operators::FullDistortion
+pub fn svtav1_dsp::pic_operators::full_distortion_kernel_cbf_zero32_bits(&[i32], usize, usize, usize) -> svtav1_dsp::pic_operators::FullDistortion
+pub fn svtav1_dsp::pic_operators::generate_padding_16bit(&mut [u16], usize, usize, usize, usize, usize, usize)
+pub fn svtav1_dsp::pic_operators::pad_input_picture_16bit(&mut [u16], usize, usize, usize, usize, usize)
+pub fn svtav1_dsp::pic_operators::picture_full_distortion32_bits_single(&[i32], &[i32], usize, usize, usize, bool) -> svtav1_dsp::pic_operators::FullDistortion
+pub fn svtav1_dsp::pic_operators::residual_kernel_16bit(&[u16], usize, &[u16], usize, &mut [i16], usize, usize, usize)
+pub fn svtav1_dsp::pic_operators::residual_kernel_8bit(&[u8], usize, &[u8], usize, &mut [i16], usize, usize, usize)
+pub fn svtav1_dsp::pic_operators::spatial_full_distortion_kernel(&[u8], usize, usize, &[u8], usize, usize, usize, usize) -> u64
+pub fn svtav1_dsp::pic_operators::yv12_copy_plane<T: core::marker::Copy>(&[T], usize, &mut [T], usize, usize, usize)
+pub mod svtav1_dsp::port_compound_prep
+pub struct svtav1_dsp::port_compound_prep::CmpStoreSlot
+pub svtav1_dsp::port_compound_prep::CmpStoreSlot::found: bool
+pub svtav1_dsp::port_compound_prep::CmpStoreSlot::index: usize
+pub struct svtav1_dsp::port_compound_prep::UnipredOverride
+pub svtav1_dsp::port_compound_prep::UnipredOverride::interp_filters: u32
+pub svtav1_dsp::port_compound_prep::UnipredOverride::is_global: bool
+pub svtav1_dsp::port_compound_prep::UnipredOverride::is_interintra_used: bool
+pub svtav1_dsp::port_compound_prep::UnipredOverride::mv0: u32
+pub svtav1_dsp::port_compound_prep::UnipredOverride::ref0: i8
+pub svtav1_dsp::port_compound_prep::UnipredOverride::ref1: i8
+pub const svtav1_dsp::port_compound_prep::CMP_STORE_CAPACITY: usize
+pub const svtav1_dsp::port_compound_prep::NONE_FRAME: i8
+pub fn svtav1_dsp::port_compound_prep::cmp_store_lookup(&mut alloc::vec::Vec<u32>, u32) -> core::option::Option<svtav1_dsp::port_compound_prep::CmpStoreSlot>
+pub fn svtav1_dsp::port_compound_prep::compound_residuals(&mut [i16], &mut [i16], &[u8], usize, &[u8], &[u8], usize, usize)
+pub fn svtav1_dsp::port_compound_prep::compound_residuals_hbd(&mut [i16], &mut [i16], &[u16], usize, &[u16], &[u16], usize, usize)
+pub fn svtav1_dsp::port_compound_prep::exit_compound_prep(u32, usize, usize, u32) -> bool
+pub fn svtav1_dsp::port_compound_prep::unipred_override_l0(u32, i8, bool) -> svtav1_dsp::port_compound_prep::UnipredOverride
+pub fn svtav1_dsp::port_compound_prep::unipred_override_l1(u32, i8, bool) -> svtav1_dsp::port_compound_prep::UnipredOverride
+pub mod svtav1_dsp::port_convolve
+#[repr(u8)] pub enum svtav1_dsp::port_convolve::InterpFilterKind
+pub svtav1_dsp::port_convolve::InterpFilterKind::Bilinear = 3
+pub svtav1_dsp::port_convolve::InterpFilterKind::EightTapRegular = 0
+pub svtav1_dsp::port_convolve::InterpFilterKind::EightTapSmooth = 1
+pub svtav1_dsp::port_convolve::InterpFilterKind::MultiTapSharp = 2
+pub struct svtav1_dsp::port_convolve::ConvolveParams
+pub svtav1_dsp::port_convolve::ConvolveParams::bck_offset: i32
+pub svtav1_dsp::port_convolve::ConvolveParams::do_average: bool
+pub svtav1_dsp::port_convolve::ConvolveParams::dst_stride: usize
+pub svtav1_dsp::port_convolve::ConvolveParams::fwd_offset: i32
+pub svtav1_dsp::port_convolve::ConvolveParams::is_compound: bool
+pub svtav1_dsp::port_convolve::ConvolveParams::round_0: i32
+pub svtav1_dsp::port_convolve::ConvolveParams::round_1: i32
+pub svtav1_dsp::port_convolve::ConvolveParams::use_jnt_comp_avg: bool
+pub fn svtav1_dsp::port_convolve::ConvolveParams::no_round(bool, usize, bool, i32) -> Self
+pub fn svtav1_dsp::port_convolve::ConvolveParams::single(bool, i32) -> Self
+pub struct svtav1_dsp::port_convolve::FilterParams
+pub svtav1_dsp::port_convolve::FilterParams::kernels: &'static [svtav1_types::tables::interp::InterpKernel; 16]
+pub fn svtav1_dsp::port_convolve::FilterParams::subpel_kernel(&self, i32) -> &'static svtav1_types::tables::interp::InterpKernel
+pub struct svtav1_dsp::port_convolve::SrcView<'a>
+pub fn svtav1_dsp::port_convolve::SrcView<'a>::new(&'a [u8], usize, usize) -> Self
+pub const svtav1_dsp::port_convolve::DIST_PRECISION_BITS: i32
+pub const svtav1_dsp::port_convolve::SUBPEL_MASK: i32 [also: svtav1_dsp::port_subpel_params]
+pub const svtav1_dsp::port_convolve::SUB_PEL_FILTERS_4: [svtav1_types::tables::interp::InterpKernel; 16]
+pub const svtav1_dsp::port_convolve::SUB_PEL_FILTERS_4SMOOTH: [svtav1_types::tables::interp::InterpKernel; 16]
+pub fn svtav1_dsp::port_convolve::convolve_2d_copy_sr(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, usize, usize)
+pub fn svtav1_dsp::port_convolve::convolve_2d_sr(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, usize, usize, &svtav1_dsp::port_convolve::FilterParams, &svtav1_dsp::port_convolve::FilterParams, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_convolve::convolve_x_sr(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_convolve::convolve_y_sr(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32)
+pub fn svtav1_dsp::port_convolve::interp_filter_params_list(svtav1_dsp::port_convolve::InterpFilterKind) -> svtav1_dsp::port_convolve::FilterParams
+pub fn svtav1_dsp::port_convolve::interp_filter_params_with_block_size(svtav1_dsp::port_convolve::InterpFilterKind, i32) -> svtav1_dsp::port_convolve::FilterParams
+pub fn svtav1_dsp::port_convolve::jnt_convolve_2d(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, &svtav1_dsp::port_convolve::FilterParams, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_convolve::jnt_convolve_2d_copy(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_convolve::jnt_convolve_x(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_convolve::jnt_convolve_y(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32, &svtav1_dsp::port_convolve::ConvolveParams)
+pub mod svtav1_dsp::port_convolve_hbd
+pub enum svtav1_dsp::port_convolve_hbd::HbdKernel
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::Copy2d
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::Jnt2d
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::JntCopy2d
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::JntX
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::JntY
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::Sr2d
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::X
+pub svtav1_dsp::port_convolve_hbd::HbdKernel::Y
+pub struct svtav1_dsp::port_convolve_hbd::SrcView16<'a>
+pub fn svtav1_dsp::port_convolve_hbd::SrcView16<'a>::new(&'a [u16], usize, usize) -> Self
+pub fn svtav1_dsp::port_convolve_hbd::hbd_kernel_for(bool, bool, bool) -> svtav1_dsp::port_convolve_hbd::HbdKernel
+pub fn svtav1_dsp::port_convolve_hbd::highbd_convolve_2d_copy_sr(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, usize, usize)
+pub fn svtav1_dsp::port_convolve_hbd::highbd_convolve_2d_sr(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, usize, usize, &svtav1_dsp::port_convolve::FilterParams, &svtav1_dsp::port_convolve::FilterParams, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_convolve_hbd::highbd_convolve_x_sr(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_convolve_hbd::highbd_convolve_y_sr(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32, i32)
+pub fn svtav1_dsp::port_convolve_hbd::highbd_jnt_convolve_2d(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, &svtav1_dsp::port_convolve::FilterParams, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_convolve_hbd::highbd_jnt_convolve_2d_copy(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_convolve_hbd::highbd_jnt_convolve_x(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_convolve_hbd::highbd_jnt_convolve_y(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, i32, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub mod svtav1_dsp::port_convolve_scale
+pub fn svtav1_dsp::port_convolve_scale::convolve_2d_scale(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, &svtav1_dsp::port_convolve::FilterParams, i32, i32, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_convolve_scale::highbd_convolve_2d_scale(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, &mut [u16], usize, usize, &svtav1_dsp::port_convolve::FilterParams, &svtav1_dsp::port_convolve::FilterParams, i32, i32, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_convolve_scale::scale_im_h(usize, i32, i32) -> usize
+pub mod svtav1_dsp::port_diffwtd_d16
+pub fn svtav1_dsp::port_diffwtd_d16::build_compound_diffwtd_mask_d16(&mut [u8], svtav1_dsp::port_masked_compound::DiffwtdMaskType, &[u16], usize, &[u16], usize, usize, usize, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_diffwtd_d16::d16_diff_round(&svtav1_dsp::port_convolve::ConvolveParams, i32) -> i32
+pub mod svtav1_dsp::port_enc_make_pred
+pub enum svtav1_dsp::port_enc_make_pred::DstPlane<'a>
+pub svtav1_dsp::port_enc_make_pred::DstPlane::Hbd(&'a mut [u16])
+pub svtav1_dsp::port_enc_make_pred::DstPlane::Lbd(&'a mut [u8])
+pub enum svtav1_dsp::port_enc_make_pred::MakePredError
+pub svtav1_dsp::port_enc_make_pred::MakePredError::DepthMismatch
+pub svtav1_dsp::port_enc_make_pred::MakePredError::WarpParamsMissing(svtav1_dsp::port_make_pred::MakePredLeaf)
+pub enum svtav1_dsp::port_enc_make_pred::SrcPlanes<'a>
+pub svtav1_dsp::port_enc_make_pred::SrcPlanes::Hbd(&'a [u16])
+pub svtav1_dsp::port_enc_make_pred::SrcPlanes::Lbd(&'a [u8])
+pub svtav1_dsp::port_enc_make_pred::SrcPlanes::Split
+pub svtav1_dsp::port_enc_make_pred::SrcPlanes::Split::lsb: &'a [u8]
+pub svtav1_dsp::port_enc_make_pred::SrcPlanes::Split::msb: &'a [u8]
+pub fn svtav1_dsp::port_enc_make_pred::SrcPlanes<'_>::is16bit(&self) -> bool
+pub struct svtav1_dsp::port_enc_make_pred::MaskedCompound<'a>
+pub svtav1_dsp::port_enc_make_pred::MaskedCompound::bsize: usize
+pub svtav1_dsp::port_enc_make_pred::MaskedCompound::comp: &'a svtav1_dsp::port_masked_blend::InterInterCompoundData
+pub svtav1_dsp::port_enc_make_pred::MaskedCompound::mask_type: svtav1_dsp::port_masked_compound::DiffwtdMaskType
+pub svtav1_dsp::port_enc_make_pred::MaskedCompound::seg_mask: &'a mut [u8]
+pub svtav1_dsp::port_enc_make_pred::MaskedCompound::wedge: &'a svtav1_dsp::port_wedge_masks::WedgeMasks
+pub const svtav1_dsp::port_enc_make_pred::TMP_BUF_STRIDE: usize
+pub fn svtav1_dsp::port_enc_make_pred::enc_make_inter_predictor(svtav1_dsp::port_enc_make_pred::SrcPlanes<'_>, usize, usize, svtav1_dsp::port_enc_make_pred::DstPlane<'_>, usize, &mut [u16], i32, i32, svtav1_dsp::port_subpel_params::Mv, &svtav1_dsp::port_scale_factors::ScaleFactors, &svtav1_dsp::port_convolve::ConvolveParams, svtav1_dsp::port_inter_predictor::InterpFilters, core::option::Option<svtav1_dsp::port_enc_make_pred::MaskedCompound<'_>>, core::option::Option<&mut svtav1_types::motion::WarpedMotionParams>, svtav1_dsp::port_subpel_params::RefGeometry, usize, usize, &svtav1_dsp::port_subpel_params::MbEdges, usize, i32, i32, i32, bool, bool) -> core::result::Result<(), svtav1_dsp::port_enc_make_pred::MakePredError>
+pub mod svtav1_dsp::port_full_pd1_pred
+pub struct svtav1_dsp::port_full_pd1_pred::PostPasses
+pub svtav1_dsp::port_full_pd1_pred::PostPasses::inter_intra: bool
+pub svtav1_dsp::port_full_pd1_pred::PostPasses::obmc: bool
+pub const svtav1_dsp::port_full_pd1_pred::FULL_MASK: u32
+pub const svtav1_dsp::port_full_pd1_pred::SEG_MASK_LEN: usize
+pub const svtav1_dsp::port_full_pd1_pred::TMP_DST_CB_OFFSET: usize
+pub const svtav1_dsp::port_full_pd1_pred::TMP_DST_CR_OFFSET: usize
+pub const svtav1_dsp::port_full_pd1_pred::TMP_DST_Y_OFFSET: usize
+pub fn svtav1_dsp::port_full_pd1_pred::ii_chroma_origins(u32, u32) -> (u32, u32)
+pub fn svtav1_dsp::port_full_pd1_pred::ii_left_multiplier(usize, usize, usize) -> usize
+pub fn svtav1_dsp::port_full_pd1_pred::inter_intra_plane_range(u32) -> (usize, usize)
+pub fn svtav1_dsp::port_full_pd1_pred::intra_pred_strides(usize) -> (usize, usize, usize)
+pub fn svtav1_dsp::port_full_pd1_pred::per_ref_is_masked(usize, svtav1_dsp::port_masked_compound::CompoundType) -> bool
+pub fn svtav1_dsp::port_full_pd1_pred::post_pass_order(svtav1_dsp::port_full_pd1_pred::PostPasses) -> alloc::vec::Vec<&'static str>
+pub fn svtav1_dsp::port_full_pd1_pred::pu_component_mask(bool, bool, bool, bool, bool, svtav1_dsp::port_masked_compound::CompoundType) -> u32
+pub fn svtav1_dsp::port_full_pd1_pred::runs_ifs(bool, bool, bool, bool) -> bool
+pub fn svtav1_dsp::port_full_pd1_pred::sub8x8_inter(usize, usize, usize, usize, bool) -> bool
+pub fn svtav1_dsp::port_full_pd1_pred::sub8x8_window(usize, usize, usize, usize) -> (i32, i32)
+pub mod svtav1_dsp::port_ifs
+pub struct svtav1_dsp::port_ifs::IfsCandidateCost
+pub svtav1_dsp::port_ifs::IfsCandidateCost::dist: i64
+pub svtav1_dsp::port_ifs::IfsCandidateCost::rate: i32
+pub svtav1_dsp::port_ifs::IfsCandidateCost::switchable_rate: i32
+pub struct svtav1_dsp::port_ifs::IfsCtrls
+pub svtav1_dsp::port_ifs::IfsCtrls::enable_dual_filter: bool
+pub svtav1_dsp::port_ifs::IfsCtrls::full_lambda: u32
+pub svtav1_dsp::port_ifs::IfsCtrls::picture_qp: usize
+pub svtav1_dsp::port_ifs::IfsCtrls::smooth_bias: bool
+pub svtav1_dsp::port_ifs::IfsCtrls::tx_bias: bool
+pub struct svtav1_dsp::port_ifs::IfsResult
+pub svtav1_dsp::port_ifs::IfsResult::best_filters: svtav1_dsp::port_inter_predictor::InterpFilters
+pub svtav1_dsp::port_ifs::IfsResult::invalidates_luma_pred: bool
+pub svtav1_dsp::port_ifs::IfsResult::switchable_rate: i32
+pub struct svtav1_dsp::port_ifs::SimpleLumaUnipred
+pub svtav1_dsp::port_ifs::SimpleLumaUnipred::conv_buf_stride: usize
+pub svtav1_dsp::port_ifs::SimpleLumaUnipred::is_compound: bool
+pub fn svtav1_dsp::port_ifs::SimpleLumaUnipred::dst_offset(usize, usize, usize, bool) -> usize
+pub const fn svtav1_dsp::port_ifs::SimpleLumaUnipred::new() -> Self
+pub const svtav1_dsp::port_ifs::DUAL_FILTER_SET_SIZE: usize
+pub const svtav1_dsp::port_ifs::FILTER_SETS: [[usize; 2]; 9]
+pub const svtav1_dsp::port_ifs::IFS_SMOOTH_BIAS: [u32; 64]
+pub fn svtav1_dsp::port_ifs::interpolation_filter_search<F>(&svtav1_dsp::port_ifs::IfsCtrls, svtav1_dsp::port_inter_predictor::InterpFilters, bool, F) -> svtav1_dsp::port_ifs::IfsResult where F: core::ops::function::FnMut(usize, svtav1_dsp::port_inter_predictor::InterpFilters) -> svtav1_dsp::port_ifs::IfsCandidateCost
+pub fn svtav1_dsp::port_ifs::is_full_pel((i32, i32), core::option::Option<(i32, i32)>, bool) -> bool
+pub mod svtav1_dsp::port_inter_predictor
+pub fn svtav1_dsp::port_inter_predictor::broadcast_interp_filter(svtav1_dsp::port_convolve::InterpFilterKind) -> svtav1_dsp::port_inter_predictor::InterpFilters
+pub fn svtav1_dsp::port_inter_predictor::convolve_2d_for_intrabc(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, usize, usize, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_inter_predictor::extract_interp_filter(svtav1_dsp::port_inter_predictor::InterpFilters, bool) -> svtav1_dsp::port_convolve::InterpFilterKind
+pub fn svtav1_dsp::port_inter_predictor::get_convolve_filter_params(svtav1_dsp::port_inter_predictor::InterpFilters, i32, i32) -> (svtav1_dsp::port_convolve::FilterParams, svtav1_dsp::port_convolve::FilterParams)
+pub fn svtav1_dsp::port_inter_predictor::highbd_convolve_2d_for_intrabc(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, usize, usize, i32, i32, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_inter_predictor::highbd_inter_predictor(svtav1_dsp::port_convolve_hbd::SrcView16<'_>, &mut [u16], usize, &mut [u16], &svtav1_dsp::port_scale_factors::SubpelParams, usize, usize, &svtav1_dsp::port_convolve::ConvolveParams, svtav1_dsp::port_inter_predictor::InterpFilters, bool, i32)
+pub fn svtav1_dsp::port_inter_predictor::inter_predictor(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], &svtav1_dsp::port_scale_factors::SubpelParams, usize, usize, &svtav1_dsp::port_convolve::ConvolveParams, svtav1_dsp::port_inter_predictor::InterpFilters, bool)
+pub fn svtav1_dsp::port_inter_predictor::inter_predictor_light_pd1_8bit(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], usize, usize, svtav1_dsp::port_inter_predictor::InterpFilters, &svtav1_dsp::port_scale_factors::SubpelParams, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_inter_predictor::inter_predictor_light_pd1_hbd(&[u8], &[u8], usize, usize, &mut [u16], usize, &mut [u16], usize, usize, svtav1_dsp::port_inter_predictor::InterpFilters, &svtav1_dsp::port_scale_factors::SubpelParams, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_inter_predictor::inter_predictor_pd0(svtav1_dsp::port_convolve::SrcView<'_>, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_scale_factors::SubpelParams, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_inter_predictor::make_interp_filters(svtav1_dsp::port_convolve::InterpFilterKind, svtav1_dsp::port_convolve::InterpFilterKind) -> svtav1_dsp::port_inter_predictor::InterpFilters
+pub type svtav1_dsp::port_inter_predictor::InterpFilters = u32
+pub mod svtav1_dsp::port_interintra
+#[repr(u8)] pub enum svtav1_dsp::port_interintra::InterIntraMode
+pub svtav1_dsp::port_interintra::InterIntraMode::DcPred = 0
+pub svtav1_dsp::port_interintra::InterIntraMode::HPred = 2
+pub svtav1_dsp::port_interintra::InterIntraMode::SmoothPred = 3
+pub svtav1_dsp::port_interintra::InterIntraMode::VPred = 1
+pub const svtav1_dsp::port_interintra::InterIntraMode::ALL: [Self; 4]
+pub struct svtav1_dsp::port_interintra::IiMasks
+pub fn svtav1_dsp::port_interintra::IiMasks::get(&self, usize, svtav1_dsp::port_interintra::InterIntraMode) -> core::option::Option<&[u8]>
+pub fn svtav1_dsp::port_interintra::IiMasks::new() -> Self
+pub const svtav1_dsp::port_interintra::BLOCK_32X32: usize
+pub const svtav1_dsp::port_interintra::II_SIZE_SCALES: [usize; 22]
+pub const svtav1_dsp::port_interintra::II_WEIGHTS_1D: [u8; 128]
+pub const svtav1_dsp::port_interintra::INTERINTRA_MODES: usize
+pub const svtav1_dsp::port_interintra::MAX_INTERINTRA_SB_SQUARE: usize
+pub fn svtav1_dsp::port_interintra::blend_a64_mask(&mut [u8], usize, &[u8], usize, &[u8], usize, &[u8], usize, usize, usize, bool, bool)
+pub fn svtav1_dsp::port_interintra::build_smooth_interintra_mask(&mut [u8], usize, usize, svtav1_dsp::port_interintra::InterIntraMode)
+pub fn svtav1_dsp::port_interintra::combine_interintra(&svtav1_dsp::port_interintra::IiMasks, &svtav1_dsp::port_wedge_masks::WedgeMasks, svtav1_dsp::port_interintra::InterIntraMode, bool, usize, usize, usize, usize, &mut [u8], usize, &[u8], usize, &[u8], usize)
+pub fn svtav1_dsp::port_interintra::combine_interintra_highbd(&svtav1_dsp::port_interintra::IiMasks, &svtav1_dsp::port_wedge_masks::WedgeMasks, svtav1_dsp::port_interintra::InterIntraMode, bool, usize, usize, usize, usize, &mut [u16], usize, &[u16], usize, &[u16], usize)
+pub fn svtav1_dsp::port_interintra::highbd_blend_a64_mask(&mut [u16], usize, &[u16], usize, &[u16], usize, &[u8], usize, usize, usize, bool, bool)
+pub mod svtav1_dsp::port_make_pred
+pub enum svtav1_dsp::port_make_pred::MakePredLeaf
+pub svtav1_dsp::port_make_pred::MakePredLeaf::HighbdInter
+pub svtav1_dsp::port_make_pred::MakePredLeaf::Inter
+pub svtav1_dsp::port_make_pred::MakePredLeaf::MaskedScaled
+pub svtav1_dsp::port_make_pred::MakePredLeaf::MaskedWarp
+pub svtav1_dsp::port_make_pred::MakePredLeaf::Warp
+pub struct svtav1_dsp::port_make_pred::MaskedPredScratch
+pub svtav1_dsp::port_make_pred::MaskedPredScratch::saved_dst_stride: usize
+pub svtav1_dsp::port_make_pred::MaskedPredScratch::stride: usize
+pub const svtav1_dsp::port_make_pred::MaskedPredScratch::MAX_SB_SIZE: usize
+pub fn svtav1_dsp::port_make_pred::MaskedPredScratch::redirect(usize) -> Self
+pub struct svtav1_dsp::port_make_pred::PackedSrcGeom
+pub svtav1_dsp::port_make_pred::PackedSrcGeom::height: usize
+pub svtav1_dsp::port_make_pred::PackedSrcGeom::origin: usize
+pub svtav1_dsp::port_make_pred::PackedSrcGeom::stride: usize
+pub svtav1_dsp::port_make_pred::PackedSrcGeom::width: usize
+pub fn svtav1_dsp::port_make_pred::make_pred_leaf(bool, bool, bool) -> svtav1_dsp::port_make_pred::MakePredLeaf
+pub fn svtav1_dsp::port_make_pred::masked_arm_clears_do_average(svtav1_dsp::port_make_pred::MakePredLeaf) -> bool
+pub fn svtav1_dsp::port_make_pred::packed_src_geom(usize, usize, &svtav1_dsp::port_scale_factors::ScaleFactors) -> svtav1_dsp::port_make_pred::PackedSrcGeom
+pub fn svtav1_dsp::port_make_pred::src_offset(i32, i32, usize, bool, bool) -> isize
+pub fn svtav1_dsp::port_make_pred::warp_plane_extents(usize, usize, usize, usize) -> (usize, usize)
+pub mod svtav1_dsp::port_masked_blend
+pub struct svtav1_dsp::port_masked_blend::InterInterCompoundData
+pub svtav1_dsp::port_masked_blend::InterInterCompoundData::compound_type: svtav1_dsp::port_masked_compound::CompoundType
+pub svtav1_dsp::port_masked_blend::InterInterCompoundData::wedge_index: usize
+pub svtav1_dsp::port_masked_blend::InterInterCompoundData::wedge_sign: usize
+pub fn svtav1_dsp::port_masked_blend::build_masked_compound_no_round(&mut [u8], usize, &[u16], usize, &[u16], usize, &svtav1_dsp::port_masked_blend::InterInterCompoundData, &[u8], &svtav1_dsp::port_wedge_masks::WedgeMasks, usize, usize, usize, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_masked_blend::build_masked_compound_no_round_hbd(&mut [u16], usize, &[u16], usize, &[u16], usize, &svtav1_dsp::port_masked_blend::InterInterCompoundData, &[u8], &svtav1_dsp::port_wedge_masks::WedgeMasks, usize, usize, usize, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_masked_blend::get_compound_type_mask<'a>(&svtav1_dsp::port_masked_blend::InterInterCompoundData, &'a [u8], &'a svtav1_dsp::port_wedge_masks::WedgeMasks, usize) -> &'a [u8]
+pub fn svtav1_dsp::port_masked_blend::highbd_blend_a64_d16_mask(&mut [u16], usize, &[u16], usize, &[u16], usize, &[u8], usize, usize, usize, bool, bool, &svtav1_dsp::port_convolve::ConvolveParams, i32)
+pub fn svtav1_dsp::port_masked_blend::lowbd_blend_a64_d16_mask(&mut [u8], usize, &[u16], usize, &[u16], usize, &[u8], usize, usize, usize, bool, bool, &svtav1_dsp::port_convolve::ConvolveParams)
+pub mod svtav1_dsp::port_masked_compound
+#[repr(u8)] pub enum svtav1_dsp::port_masked_compound::CompoundType
+pub svtav1_dsp::port_masked_compound::CompoundType::Average = 0
+pub svtav1_dsp::port_masked_compound::CompoundType::DiffWtd = 3
+pub svtav1_dsp::port_masked_compound::CompoundType::DistWtd = 1
+pub svtav1_dsp::port_masked_compound::CompoundType::Wedge = 2
+#[repr(u8)] pub enum svtav1_dsp::port_masked_compound::DiffwtdMaskType
+pub svtav1_dsp::port_masked_compound::DiffwtdMaskType::D38 = 0
+pub svtav1_dsp::port_masked_compound::DiffwtdMaskType::D38Inv = 1
+pub const svtav1_dsp::port_masked_compound::DIFF_FACTOR: i32
+pub const svtav1_dsp::port_masked_compound::DIFF_FACTOR_LOG2: i32
+pub const svtav1_dsp::port_masked_compound::MAX_MASK_VALUE: i32
+pub const svtav1_dsp::port_masked_compound::WEDGE_WEIGHT_BITS: u32
+pub fn svtav1_dsp::port_masked_compound::aom_blend_a64(i32, i32, i32) -> i32
+pub fn svtav1_dsp::port_masked_compound::build_compound_diffwtd_mask(&mut [u8], svtav1_dsp::port_masked_compound::DiffwtdMaskType, &[u8], usize, &[u8], usize, usize, usize)
+pub fn svtav1_dsp::port_masked_compound::build_compound_diffwtd_mask_highbd(&mut [u8], svtav1_dsp::port_masked_compound::DiffwtdMaskType, &[u16], usize, &[u16], usize, usize, usize, u32)
+pub fn svtav1_dsp::port_masked_compound::diffwtd_mask(&mut [u8], bool, i32, &[u8], usize, &[u8], usize, usize, usize)
+pub fn svtav1_dsp::port_masked_compound::diffwtd_mask_highbd(&mut [u8], bool, i32, &[u16], usize, &[u16], usize, usize, usize, u32)
+pub fn svtav1_dsp::port_masked_compound::highbd_blend_a64_hmask_16bit(&mut [u16], usize, &[u16], usize, &[u16], usize, &[u8], usize, usize)
+pub fn svtav1_dsp::port_masked_compound::highbd_subtract_block(usize, usize, &mut [i16], usize, &[u16], usize, &[u16], usize)
+pub fn svtav1_dsp::port_masked_compound::is_masked_compound_type(svtav1_dsp::port_masked_compound::CompoundType) -> bool
+pub fn svtav1_dsp::port_masked_compound::subtract_block(usize, usize, &mut [i16], usize, &[u8], usize, &[u8], usize)
+pub fn svtav1_dsp::port_masked_compound::sum_squares_i16(&[i16], usize) -> u64
+pub fn svtav1_dsp::port_masked_compound::wedge_compute_delta_squares(&mut [i16], &[i16], &[i16], usize)
+pub fn svtav1_dsp::port_masked_compound::wedge_sign_from_residuals(&[i16], &[u8], usize, i64) -> bool
+pub fn svtav1_dsp::port_masked_compound::wedge_sse_from_residuals(&[i16], &[i16], &[u8], usize) -> u64
+pub mod svtav1_dsp::port_model_rd
+pub struct svtav1_dsp::port_model_rd::PlaneRd
+pub svtav1_dsp::port_model_rd::PlaneRd::dist: i64
+pub svtav1_dsp::port_model_rd::PlaneRd::rate: i32
+pub const svtav1_dsp::port_model_rd::AV1_PROB_COST_SHIFT: u32
+pub const svtav1_dsp::port_model_rd::BSIZE_CURVFIT_MODEL_CAT_LOOKUP: [usize; 22]
+pub const svtav1_dsp::port_model_rd::INTERP_DGRID_CURV: [[f64; 65]; 2]
+pub const svtav1_dsp::port_model_rd::INTERP_RGRID_CURV: [[f64; 65]; 4]
+pub const svtav1_dsp::port_model_rd::MAX_XSQ_Q10: u64
+pub const svtav1_dsp::port_model_rd::NUM_PELS_LOG2_LOOKUP: [u32; 22]
+pub const svtav1_dsp::port_model_rd::RDDIV_BITS: u32
+pub fn svtav1_dsp::port_model_rd::get_msb(u32) -> i32
+pub fn svtav1_dsp::port_model_rd::log2f_safe(u32) -> i32
+pub fn svtav1_dsp::port_model_rd::model_rd_curvfit(svtav1_types::block::BlockSize, f64, f64) -> (f64, f64)
+pub fn svtav1_dsp::port_model_rd::model_rd_for_sb(&[svtav1_types::block::BlockSize], &[u64], usize, usize, i16, u8) -> (i32, u64)
+pub fn svtav1_dsp::port_model_rd::model_rd_for_sb_with_curvfit(svtav1_types::block::BlockSize, usize, usize, &[u8], usize, &[u16], &[u8], usize, &[u16], usize, usize, bool, i16, u32, core::option::Option<&mut [svtav1_dsp::port_model_rd::PlaneRd]>) -> (i32, i64)
+pub fn svtav1_dsp::port_model_rd::model_rd_from_var_lapndz(i64, u32, u32) -> (i32, i64)
+pub fn svtav1_dsp::port_model_rd::model_rd_norm(i32) -> (i32, i32)
+pub fn svtav1_dsp::port_model_rd::model_rd_with_curvfit(svtav1_types::block::BlockSize, i64, i32, i16, u32) -> (i32, i64)
+pub fn svtav1_dsp::port_model_rd::rdcost(u32, i64, i64) -> i64
+pub fn svtav1_dsp::port_model_rd::sse_norm_curvfit_model_cat_lookup(f64) -> usize
+pub mod svtav1_dsp::port_obmc_build
+pub struct svtav1_dsp::port_obmc_build::NbPredGeom
+pub svtav1_dsp::port_obmc_build::NbPredGeom::bh: usize
+pub svtav1_dsp::port_obmc_build::NbPredGeom::bw: usize
+pub svtav1_dsp::port_obmc_build::NbPredGeom::dst_origin_x: usize
+pub svtav1_dsp::port_obmc_build::NbPredGeom::dst_origin_y: usize
+pub svtav1_dsp::port_obmc_build::NbPredGeom::mi_x: i32
+pub svtav1_dsp::port_obmc_build::NbPredGeom::mi_y: i32
+pub svtav1_dsp::port_obmc_build::NbPredGeom::plane: usize
+pub const svtav1_dsp::port_obmc_build::MI_SIZE_LOG2: u32
+pub fn svtav1_dsp::port_obmc_build::above_preds_edge_adjust(i32) -> i32
+pub fn svtav1_dsp::port_obmc_build::build_plane_range(u32) -> (usize, usize)
+pub fn svtav1_dsp::port_obmc_build::build_prediction_by_above_pred_geom(svtav1_types::block::BlockSize, i32, i32, usize, usize, usize, usize, u32) -> alloc::vec::Vec<svtav1_dsp::port_obmc_build::NbPredGeom>
+pub fn svtav1_dsp::port_obmc_build::build_prediction_by_left_pred_geom(svtav1_types::block::BlockSize, i32, i32, usize, usize, usize, usize, u32) -> alloc::vec::Vec<svtav1_dsp::port_obmc_build::NbPredGeom>
+pub fn svtav1_dsp::port_obmc_build::left_preds_edge_adjust(i32) -> i32
+pub fn svtav1_dsp::port_obmc_build::obmc_buffer_plane_offsets(usize, usize, bool) -> [usize; 3]
+pub fn svtav1_dsp::port_obmc_build::obmc_chroma_pu_origin(u32, u32, usize, usize) -> (u32, u32)
+pub fn svtav1_dsp::port_obmc_build::obmc_conv_buf_stride(usize, usize, usize) -> usize
+pub fn svtav1_dsp::port_obmc_build::obmc_final_dst_offsets(u32, u32, usize, usize, usize, bool) -> [usize; 3]
+pub fn svtav1_dsp::port_obmc_build::restore_edges_after_above_preds(&mut svtav1_dsp::port_obmc_pred::PredEdges, i32, i32, i32)
+pub fn svtav1_dsp::port_obmc_build::restore_edges_after_left_preds(&mut svtav1_dsp::port_obmc_pred::PredEdges, i32, i32, i32)
+pub fn svtav1_dsp::port_obmc_build::round_uv(u32) -> u32
+pub mod svtav1_dsp::port_obmc_data
+pub struct svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt<'a>
+pub svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt::mask_buf: &'a mut [i32]
+pub svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt::overlap: usize
+pub svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt::tmp: &'a [u8]
+pub svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt::tmp_stride: usize
+pub svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt::wsrc_buf: &'a mut [i32]
+pub struct svtav1_dsp::port_obmc_data::Neighbour [also: svtav1_dsp::port_obmc_nb_pred]
+pub svtav1_dsp::port_obmc_data::Neighbour::nb_mi: usize
+pub svtav1_dsp::port_obmc_data::Neighbour::rel_mi: usize
+pub const svtav1_dsp::port_obmc_data::AOM_BLEND_A64_MAX_ALPHA: i32 [also: svtav1_dsp::port_masked_compound]
+pub const svtav1_dsp::port_obmc_data::AOM_BLEND_A64_ROUND_BITS: i32 [also: svtav1_dsp::port_masked_compound]
+pub const svtav1_dsp::port_obmc_data::MI_SIZE: usize
+pub fn svtav1_dsp::port_obmc_data::block_size_high(svtav1_types::block::BlockSize) -> usize
+pub fn svtav1_dsp::port_obmc_data::block_size_wide(svtav1_types::block::BlockSize) -> usize
+pub fn svtav1_dsp::port_obmc_data::calc_target_weighted_pred(svtav1_types::block::BlockSize, usize, usize, &mut [i32], &mut [i32], &[svtav1_dsp::port_obmc_data::Neighbour], &[u8], usize, &[svtav1_dsp::port_obmc_data::Neighbour], &[u8], usize, &[u8], usize)
+pub fn svtav1_dsp::port_obmc_data::calc_target_weighted_pred_above(&mut svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt<'_>, usize, usize, usize)
+pub fn svtav1_dsp::port_obmc_data::calc_target_weighted_pred_left(&mut svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt<'_>, usize, usize, usize)
+pub fn svtav1_dsp::port_obmc_data::get_plane_block_size(svtav1_types::block::BlockSize, usize, usize) -> core::option::Option<svtav1_types::block::BlockSize>
+pub fn svtav1_dsp::port_obmc_data::skip_u4x4_pred_in_obmc(svtav1_types::block::BlockSize, i32, usize, usize) -> i32
+pub mod svtav1_dsp::port_obmc_nb_pred
+pub enum svtav1_dsp::port_obmc_nb_pred::NbSide
+pub svtav1_dsp::port_obmc_nb_pred::NbSide::Above
+pub svtav1_dsp::port_obmc_nb_pred::NbSide::Left
+pub svtav1_dsp::port_obmc_nb_pred::Neighbour::extent_mi: usize
+pub svtav1_dsp::port_obmc_nb_pred::Neighbour::interp_filters: svtav1_dsp::port_inter_predictor::InterpFilters
+pub svtav1_dsp::port_obmc_nb_pred::Neighbour::mv: svtav1_dsp::port_subpel_params::Mv
+pub svtav1_dsp::port_obmc_nb_pred::Neighbour::rel_mi: usize
+pub struct svtav1_dsp::port_obmc_nb_pred::ObmcRefPic<'a>
+pub svtav1_dsp::port_obmc_nb_pred::ObmcRefPic::dims: (i32, i32)
+pub svtav1_dsp::port_obmc_nb_pred::ObmcRefPic::stride: [usize; 3]
+pub svtav1_dsp::port_obmc_nb_pred::ObmcRefPic::u: svtav1_dsp::port_enc_make_pred::SrcPlanes<'a>
+pub svtav1_dsp::port_obmc_nb_pred::ObmcRefPic::v: svtav1_dsp::port_enc_make_pred::SrcPlanes<'a>
+pub svtav1_dsp::port_obmc_nb_pred::ObmcRefPic::y: svtav1_dsp::port_enc_make_pred::SrcPlanes<'a>
+pub struct svtav1_dsp::port_obmc_nb_pred::ObmcScratch<'a>
+pub svtav1_dsp::port_obmc_nb_pred::ObmcScratch::stride: [usize; 3]
+pub svtav1_dsp::port_obmc_nb_pred::ObmcScratch::u: svtav1_dsp::port_enc_make_pred::DstPlane<'a>
+pub svtav1_dsp::port_obmc_nb_pred::ObmcScratch::v: svtav1_dsp::port_enc_make_pred::DstPlane<'a>
+pub svtav1_dsp::port_obmc_nb_pred::ObmcScratch::y: svtav1_dsp::port_enc_make_pred::DstPlane<'a>
+pub fn svtav1_dsp::port_obmc_nb_pred::build_prediction_by_nb_pred(svtav1_dsp::port_obmc_nb_pred::NbSide, svtav1_dsp::port_obmc_nb_pred::ObmcRefPic<'_>, [usize; 3], svtav1_dsp::port_obmc_nb_pred::ObmcScratch<'_>, (i32, i32), usize, svtav1_types::block::BlockSize, i32, i32, svtav1_dsp::port_obmc_nb_pred::Neighbour, &svtav1_dsp::port_subpel_params::MbEdges, i32, i32, u32, &mut [u16], i32) -> core::result::Result<(), svtav1_dsp::port_enc_make_pred::MakePredError>
+pub fn svtav1_dsp::port_obmc_nb_pred::nb_pred_geometry(svtav1_dsp::port_obmc_nb_pred::NbSide, svtav1_types::block::BlockSize, i32, i32, svtav1_dsp::port_obmc_nb_pred::Neighbour, usize, usize, u32) -> alloc::vec::Vec<svtav1_dsp::port_obmc_build::NbPredGeom>
+pub mod svtav1_dsp::port_obmc_pred
+pub struct svtav1_dsp::port_obmc_pred::NbMi
+pub svtav1_dsp::port_obmc_pred::NbMi::bsize: svtav1_types::block::BlockSize
+pub svtav1_dsp::port_obmc_pred::NbMi::overlappable: bool
+pub struct svtav1_dsp::port_obmc_pred::ObmcAdjacent<'a>
+pub svtav1_dsp::port_obmc_pred::ObmcAdjacent::plane: [&'a [u8]; 3]
+pub svtav1_dsp::port_obmc_pred::ObmcAdjacent::stride: [usize; 3]
+pub struct svtav1_dsp::port_obmc_pred::ObmcPlanes<'a>
+pub svtav1_dsp::port_obmc_pred::ObmcPlanes::dst: [&'a mut [u8]; 3]
+pub svtav1_dsp::port_obmc_pred::ObmcPlanes::dst_stride: [usize; 3]
+pub struct svtav1_dsp::port_obmc_pred::PredEdges
+pub svtav1_dsp::port_obmc_pred::PredEdges::to_bottom: i32
+pub svtav1_dsp::port_obmc_pred::PredEdges::to_left: i32
+pub svtav1_dsp::port_obmc_pred::PredEdges::to_right: i32
+pub svtav1_dsp::port_obmc_pred::PredEdges::to_top: i32
+pub struct svtav1_dsp::port_obmc_pred::VisitedNb
+pub svtav1_dsp::port_obmc_pred::VisitedNb::nb_mi_size: usize
+pub svtav1_dsp::port_obmc_pred::VisitedNb::rel_mi: usize
+pub const svtav1_dsp::port_obmc_pred::COMPONENT_CHROMA: u32
+pub const svtav1_dsp::port_obmc_pred::COMPONENT_LUMA: u32
+pub const svtav1_dsp::port_obmc_pred::MAX_NEIGHBOR_OBMC: [usize; 6]
+pub const svtav1_dsp::port_obmc_pred::MI_SIZE_HIGH: [usize; 22]
+pub const svtav1_dsp::port_obmc_pred::MI_SIZE_HIGH_LOG2: [usize; 22]
+pub const svtav1_dsp::port_obmc_pred::MI_SIZE_WIDE: [usize; 22]
+pub const svtav1_dsp::port_obmc_pred::MI_SIZE_WIDE_LOG2: [usize; 22]
+pub fn svtav1_dsp::port_obmc_pred::build_obmc_inter_pred_above(&mut svtav1_dsp::port_obmc_pred::ObmcPlanes<'_>, &svtav1_dsp::port_obmc_pred::ObmcAdjacent<'_>, svtav1_types::block::BlockSize, usize, usize, u32)
+pub fn svtav1_dsp::port_obmc_pred::build_obmc_inter_pred_left(&mut svtav1_dsp::port_obmc_pred::ObmcPlanes<'_>, &svtav1_dsp::port_obmc_pred::ObmcAdjacent<'_>, svtav1_types::block::BlockSize, usize, usize, u32)
+pub fn svtav1_dsp::port_obmc_pred::build_obmc_inter_pred_left_hbd(&mut [u16], usize, &[u16], usize, svtav1_types::block::BlockSize, usize, usize, usize, &[u8])
+pub fn svtav1_dsp::port_obmc_pred::build_obmc_inter_prediction(&mut svtav1_dsp::port_obmc_pred::ObmcPlanes<'_>, &svtav1_dsp::port_obmc_pred::ObmcAdjacent<'_>, &[svtav1_dsp::port_obmc_pred::VisitedNb], &svtav1_dsp::port_obmc_pred::ObmcAdjacent<'_>, &[svtav1_dsp::port_obmc_pred::VisitedNb], svtav1_types::block::BlockSize, u32)
+pub fn svtav1_dsp::port_obmc_pred::foreach_overlappable_nb_above(bool, &[svtav1_dsp::port_obmc_pred::NbMi], usize, usize, usize, usize) -> alloc::vec::Vec<svtav1_dsp::port_obmc_pred::VisitedNb>
+pub fn svtav1_dsp::port_obmc_pred::foreach_overlappable_nb_left(bool, &[svtav1_dsp::port_obmc_pred::NbMi], usize, usize, usize, usize) -> alloc::vec::Vec<svtav1_dsp::port_obmc_pred::VisitedNb>
+pub fn svtav1_dsp::port_obmc_pred::nb_max_above(svtav1_types::block::BlockSize) -> usize
+pub fn svtav1_dsp::port_obmc_pred::nb_max_left(svtav1_types::block::BlockSize) -> usize
+pub fn svtav1_dsp::port_obmc_pred::setup_build_prediction_by_above_pred(&mut svtav1_dsp::port_obmc_pred::PredEdges, i32, i32, i32, i32, i32)
+pub fn svtav1_dsp::port_obmc_pred::setup_build_prediction_by_left_pred(&mut svtav1_dsp::port_obmc_pred::PredEdges, i32, i32, i32, i32, i32)
+pub mod svtav1_dsp::port_obmc_single_pred
+pub struct svtav1_dsp::port_obmc_single_pred::ObmcPicDims
+pub svtav1_dsp::port_obmc_single_pred::ObmcPicDims::prediction: (i32, i32)
+pub svtav1_dsp::port_obmc_single_pred::ObmcPicDims::reference: (i32, i32)
+pub svtav1_dsp::port_obmc_single_pred::ObmcPicDims::sb_size: usize
+pub struct svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo<'a>
+pub svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo::dst_stride: usize
+pub svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo::prediction: svtav1_dsp::port_enc_make_pred::DstPlane<'a>
+pub svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo::reference: svtav1_dsp::port_enc_make_pred::SrcPlanes<'a>
+pub svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo::src_stride: usize
+pub fn svtav1_dsp::port_obmc_single_pred::get_single_prediction_for_obmc_chroma_plane(svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo<'_>, usize, svtav1_dsp::port_obmc_single_pred::ObmcPicDims, usize, svtav1_dsp::port_inter_predictor::InterpFilters, svtav1_dsp::port_subpel_params::Mv, u32, u32, u32, u32, usize, usize, &svtav1_dsp::port_subpel_params::MbEdges, i32, i32, &mut [u16], i32) -> core::result::Result<(), svtav1_dsp::port_enc_make_pred::MakePredError>
+pub fn svtav1_dsp::port_obmc_single_pred::get_single_prediction_for_obmc_luma(svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo<'_>, usize, svtav1_dsp::port_obmc_single_pred::ObmcPicDims, svtav1_dsp::port_inter_predictor::InterpFilters, svtav1_dsp::port_subpel_params::Mv, u32, u32, u32, u32, usize, usize, &svtav1_dsp::port_subpel_params::MbEdges, &mut [u16], i32) -> core::result::Result<(), svtav1_dsp::port_enc_make_pred::MakePredError>
+pub mod svtav1_dsp::port_pack
+pub const svtav1_dsp::port_pack::INTERPOLATION_OFFSET: usize [also: svtav1_dsp::port_make_pred]
+pub fn svtav1_dsp::port_pack::pack2d_src(&[u8], usize, &[u8], usize, &mut [u16], usize, usize, usize)
+pub fn svtav1_dsp::port_pack::pack2d_takes_simd_arm(usize, usize) -> bool
+pub fn svtav1_dsp::port_pack::pack_block(&[u8], usize, &[u8], usize, &mut [u16], usize, usize, usize)
+pub mod svtav1_dsp::port_pd_pred
+pub struct svtav1_dsp::port_pd_pred::BlkGeom
+pub svtav1_dsp::port_pd_pred::BlkGeom::bheight: usize
+pub svtav1_dsp::port_pd_pred::BlkGeom::bheight_uv: usize
+pub svtav1_dsp::port_pd_pred::BlkGeom::bwidth: usize
+pub svtav1_dsp::port_pd_pred::BlkGeom::bwidth_uv: usize
+pub svtav1_dsp::port_pd_pred::BlkGeom::org_x: i32
+pub svtav1_dsp::port_pd_pred::BlkGeom::org_y: i32
+pub svtav1_dsp::port_pd_pred::BlkGeom::super_block_size: i32
+pub struct svtav1_dsp::port_pd_pred::PredPlanes<'a>
+pub svtav1_dsp::port_pd_pred::PredPlanes::u: &'a mut [u8]
+pub svtav1_dsp::port_pd_pred::PredPlanes::u_stride: usize
+pub svtav1_dsp::port_pd_pred::PredPlanes::v: &'a mut [u8]
+pub svtav1_dsp::port_pd_pred::PredPlanes::v_stride: usize
+pub svtav1_dsp::port_pd_pred::PredPlanes::y: &'a mut [u8]
+pub svtav1_dsp::port_pd_pred::PredPlanes::y_stride: usize
+pub struct svtav1_dsp::port_pd_pred::RefPlane<'a>
+pub svtav1_dsp::port_pd_pred::RefPlane::buf: &'a [u8]
+pub svtav1_dsp::port_pd_pred::RefPlane::height: i32
+pub svtav1_dsp::port_pd_pred::RefPlane::origin: usize
+pub svtav1_dsp::port_pd_pred::RefPlane::stride: usize
+pub svtav1_dsp::port_pd_pred::RefPlane::width: i32
+pub const svtav1_dsp::port_pd_pred::CB_FLAG: u32
+pub const svtav1_dsp::port_pd_pred::CHROMA_MASK: u32
+pub const svtav1_dsp::port_pd_pred::CR_FLAG: u32
+pub const svtav1_dsp::port_pd_pred::LUMA_MASK: u32
+pub fn svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1(&svtav1_dsp::port_pd_pred::BlkGeom, &[svtav1_dsp::port_subpel_params::Mv], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_scale_factors::ScaleFactors], &svtav1_dsp::port_subpel_params::MbEdges, svtav1_dsp::port_inter_predictor::InterpFilters, &mut svtav1_dsp::port_pd_pred::PredPlanes<'_>, u32)
+pub fn svtav1_dsp::port_pd_pred::av1_inter_prediction_pd0(&svtav1_dsp::port_pd_pred::BlkGeom, &[svtav1_dsp::port_subpel_params::Mv], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_scale_factors::ScaleFactors], &svtav1_dsp::port_subpel_params::MbEdges, &mut [u8], usize)
+pub fn svtav1_dsp::port_pd_pred::enc_make_inter_predictor_pd0(&[u8], usize, usize, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_scale_factors::SubpelParams, &svtav1_dsp::port_convolve::ConvolveParams)
+pub fn svtav1_dsp::port_pd_pred::setup_ref_scale_factors(bool, bool, i32, i32, i32, i32, svtav1_dsp::port_scale_factors::ScaleFactors) -> svtav1_dsp::port_scale_factors::ScaleFactors
+pub mod svtav1_dsp::port_resize_hbd
+pub fn svtav1_dsp::port_resize_hbd::highbd_down2_symeven(&[u16], usize, &mut [u16], i32)
+pub fn svtav1_dsp::port_resize_hbd::highbd_down2_symodd(&[u16], usize, &mut [u16], i32)
+pub fn svtav1_dsp::port_resize_hbd::highbd_fill_arr_to_col(&mut [u16], usize, usize, &[u16])
+pub fn svtav1_dsp::port_resize_hbd::highbd_fill_col_to_arr(&[u16], usize, usize, &mut [u16])
+pub fn svtav1_dsp::port_resize_hbd::highbd_interpolate(&[u16], usize, &mut [u16], usize, i32)
+pub fn svtav1_dsp::port_resize_hbd::highbd_interpolate_core(&[u16], usize, &mut [u16], usize, i32, &[[i16; 8]; 64])
+pub fn svtav1_dsp::port_resize_hbd::highbd_resize_multistep(&[u16], usize, &mut [u16], usize, i32)
+pub fn svtav1_dsp::port_resize_hbd::highbd_resize_plane(&[u16], usize, usize, usize, &mut [u16], usize, usize, usize, i32)
+pub fn svtav1_dsp::port_resize_hbd::highbd_resize_plane_horizontal(&[u16], usize, usize, usize, &mut [u16], usize, usize, i32)
+pub mod svtav1_dsp::port_scale_factors
+pub struct svtav1_dsp::port_scale_factors::DistWtdWeights
+pub svtav1_dsp::port_scale_factors::DistWtdWeights::bck_offset: i32
+pub svtav1_dsp::port_scale_factors::DistWtdWeights::fwd_offset: i32
+pub svtav1_dsp::port_scale_factors::DistWtdWeights::use_dist_wtd_comp_avg: i32
+pub svtav1_dsp::port_scale_factors::ScaleFactors::x_scale_fp: i32
+pub svtav1_dsp::port_scale_factors::ScaleFactors::x_step_q4: i32
+pub svtav1_dsp::port_scale_factors::ScaleFactors::y_scale_fp: i32
+pub svtav1_dsp::port_scale_factors::ScaleFactors::y_step_q4: i32
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::is_scaled(&self) -> bool
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::is_valid_scale(&self) -> bool
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::scale_value_x(&self, i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::scale_value_y(&self, i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::scaled_x(&self, i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::scaled_y(&self, i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::setup_for_frame(i32, i32, i32, i32) -> Self
+pub fn svtav1_dsp::port_scale_factors::ScaleFactors::setup_for_frame_with_sentinel(i32, i32, i32, i32, i32) -> Self
+pub struct svtav1_dsp::port_scale_factors::SubpelParams
+pub svtav1_dsp::port_scale_factors::SubpelParams::subpel_x: i32
+pub svtav1_dsp::port_scale_factors::SubpelParams::subpel_y: i32
+pub svtav1_dsp::port_scale_factors::SubpelParams::xs: i32
+pub svtav1_dsp::port_scale_factors::SubpelParams::ys: i32
+pub const svtav1_dsp::port_scale_factors::MAX_FRAME_DISTANCE: i32
+pub const svtav1_dsp::port_scale_factors::REF_INVALID_SCALE: i32
+pub const svtav1_dsp::port_scale_factors::REF_NO_SCALE: i32
+pub const svtav1_dsp::port_scale_factors::REF_SCALE_SHIFT: i32
+pub const svtav1_dsp::port_scale_factors::SCALE_EXTRA_BITS: i32 [also: svtav1_dsp::port_convolve_scale]
+pub const svtav1_dsp::port_scale_factors::SCALE_SUBPEL_BITS: i32 [also: svtav1_dsp::port_convolve_scale]
+pub const svtav1_dsp::port_scale_factors::SCALE_SUBPEL_SHIFTS: i32
+pub const svtav1_dsp::port_scale_factors::SUBPEL_BITS: i32 [also: svtav1_dsp::port_subpel_params]
+pub const svtav1_dsp::port_scale_factors::SUBPEL_SHIFTS: i32 [also: svtav1_dsp::port_subpel_params]
+pub fn svtav1_dsp::port_scale_factors::dist_wtd_comp_weight_assign(bool, i32, i32, i32, i32, i32, usize, bool, svtav1_dsp::port_scale_factors::DistWtdWeights) -> svtav1_dsp::port_scale_factors::DistWtdWeights
+pub fn svtav1_dsp::port_scale_factors::fixed_point_scale_to_coarse_point_scale(i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::get_fixed_point_scale_factor(i32, i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::get_relative_dist_enc(bool, i32, i32, i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::has_scale(i32, i32) -> bool
+pub fn svtav1_dsp::port_scale_factors::revert_scale_extra_bits(&mut svtav1_dsp::port_scale_factors::SubpelParams)
+pub fn svtav1_dsp::port_scale_factors::unscaled_value(i32) -> i32
+pub fn svtav1_dsp::port_scale_factors::valid_ref_frame_size(i32, i32, i32, i32) -> bool
+pub mod svtav1_dsp::port_sgr
+pub mod svtav1_dsp::port_sgr::tables
+pub enum svtav1_dsp::port_sgr::SgrDst<'a>
+pub svtav1_dsp::port_sgr::SgrDst::Highbd(&'a mut [u16])
+pub svtav1_dsp::port_sgr::SgrDst::Lowbd(&'a mut [u8])
+pub enum svtav1_dsp::port_sgr::SgrSrc<'a>
+pub svtav1_dsp::port_sgr::SgrSrc::Highbd(&'a [u16])
+pub svtav1_dsp::port_sgr::SgrSrc::Lowbd(&'a [u8])
+pub struct svtav1_dsp::port_sgr::SgrParamsType
+pub svtav1_dsp::port_sgr::SgrParamsType::r: [i32; 2]
+pub svtav1_dsp::port_sgr::SgrParamsType::s: [i32; 2]
+pub const svtav1_dsp::port_sgr::MAX_RADIUS: i32
+pub const svtav1_dsp::port_sgr::ONE_BY_X: [i32; 25] [also: svtav1_dsp::port_sgr::tables]
+pub const svtav1_dsp::port_sgr::RESTORATION_BORDER_HORZ: i32
+pub const svtav1_dsp::port_sgr::RESTORATION_BORDER_VERT: i32
+pub const svtav1_dsp::port_sgr::RESTORATION_PADDING: i32
+pub const svtav1_dsp::port_sgr::RESTORATION_PROC_UNIT_PELS: usize
+pub const svtav1_dsp::port_sgr::RESTORATION_PROC_UNIT_SIZE: i32 [also: svtav1_dsp::restoration]
+pub const svtav1_dsp::port_sgr::RESTORATION_UNITPELS_HORZ_MAX: i32
+pub const svtav1_dsp::port_sgr::RESTORATION_UNITPELS_MAX: usize
+pub const svtav1_dsp::port_sgr::RESTORATION_UNITPELS_VERT_MAX: i32
+pub const svtav1_dsp::port_sgr::RESTORATION_UNITSIZE_MAX: i32 [also: svtav1_dsp::restoration]
+pub const svtav1_dsp::port_sgr::RESTORATION_UNIT_OFFSET: i32 [also: svtav1_dsp::restoration]
+pub const svtav1_dsp::port_sgr::SGRPROJ_BITS: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_BORDER_HORZ: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_BORDER_VERT: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_MTABLE_BITS: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_PARAMS: usize
+pub const svtav1_dsp::port_sgr::SGRPROJ_PARAMS_BITS: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_PRJ_BITS: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_PRJ_MAX0: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_PRJ_MAX1: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_PRJ_MIN0: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_PRJ_MIN1: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_PRJ_SUBEXP_K: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_RECIP_BITS: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_RST_BITS: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_SGR: i32
+pub const svtav1_dsp::port_sgr::SGRPROJ_SGR_BITS: i32
+pub const svtav1_dsp::port_sgr::SGR_PARAMS: [svtav1_dsp::port_sgr::SgrParamsType; 16] [also: svtav1_dsp::port_sgr::tables]
+pub const svtav1_dsp::port_sgr::X_BY_XPLUS1: [i32; 256] [also: svtav1_dsp::port_sgr::tables]
+pub fn svtav1_dsp::port_sgr::apply_selfguided_restoration(svtav1_dsp::port_sgr::SgrSrc<'_>, usize, i32, i32, usize, usize, &[i32; 2], &mut svtav1_dsp::port_sgr::SgrDst<'_>, usize, usize, i32)
+pub fn svtav1_dsp::port_sgr::boxsum(&[i32], usize, i32, i32, usize, i32, bool, &mut [i32], usize, usize)
+pub fn svtav1_dsp::port_sgr::boxsum1(&[i32], usize, i32, i32, usize, bool, &mut [i32], usize, usize)
+pub fn svtav1_dsp::port_sgr::boxsum2(&[i32], usize, i32, i32, usize, bool, &mut [i32], usize, usize)
+pub fn svtav1_dsp::port_sgr::decode_xq(&[i32; 2], &svtav1_dsp::port_sgr::SgrParamsType) -> [i32; 2]
+pub fn svtav1_dsp::port_sgr::selfguided_restoration(svtav1_dsp::port_sgr::SgrSrc<'_>, usize, i32, i32, usize, &mut [i32], &mut [i32], usize, usize, i32)
+pub fn svtav1_dsp::port_sgr::sgrproj_filter_stripe(usize, &[i32; 2], i32, i32, i32, &[u8], usize, usize, &mut [u8], usize, usize)
+pub fn svtav1_dsp::port_sgr::sgrproj_filter_stripe_highbd(usize, &[i32; 2], i32, i32, i32, &[u16], usize, usize, &mut [u16], usize, usize, i32)
+pub mod svtav1_dsp::port_subpel_params
+pub struct svtav1_dsp::port_subpel_params::MbEdges
+pub svtav1_dsp::port_subpel_params::MbEdges::to_bottom: i32
+pub svtav1_dsp::port_subpel_params::MbEdges::to_left: i32
+pub svtav1_dsp::port_subpel_params::MbEdges::to_right: i32
+pub svtav1_dsp::port_subpel_params::MbEdges::to_top: i32
+pub struct svtav1_dsp::port_subpel_params::Mv
+pub svtav1_dsp::port_subpel_params::Mv::x: i16
+pub svtav1_dsp::port_subpel_params::Mv::y: i16
+pub struct svtav1_dsp::port_subpel_params::RefGeometry
+pub svtav1_dsp::port_subpel_params::RefGeometry::frame_height: i32
+pub svtav1_dsp::port_subpel_params::RefGeometry::frame_width: i32
+pub svtav1_dsp::port_subpel_params::RefGeometry::super_block_size: i32
+pub const svtav1_dsp::port_subpel_params::AOM_INTERP_EXTEND: i32
+pub const svtav1_dsp::port_subpel_params::INTERPOLATION_OFFSET: i32
+pub const svtav1_dsp::port_subpel_params::SCALE_EXTRA_OFF: i32
+pub const svtav1_dsp::port_subpel_params::SCALE_SUBPEL_MASK: i32 [also: svtav1_dsp::port_convolve_scale]
+pub fn svtav1_dsp::port_subpel_params::clamp_mv(&mut svtav1_dsp::port_subpel_params::Mv, i32, i32, i32, i32)
+pub fn svtav1_dsp::port_subpel_params::clamp_mv_to_umv_border_sb(&svtav1_dsp::port_subpel_params::MbEdges, svtav1_dsp::port_subpel_params::Mv, i32, i32, i32, i32) -> svtav1_dsp::port_subpel_params::Mv
+pub fn svtav1_dsp::port_subpel_params::compute_subpel_params(svtav1_dsp::port_subpel_params::RefGeometry, i32, i32, svtav1_dsp::port_subpel_params::Mv, &svtav1_dsp::port_scale_factors::ScaleFactors, i32, i32, &svtav1_dsp::port_subpel_params::MbEdges, i32, i32) -> (svtav1_dsp::port_scale_factors::SubpelParams, i32, i32)
+pub mod svtav1_dsp::port_tf_pred
+pub enum svtav1_dsp::port_tf_pred::TfDst<'a>
+pub svtav1_dsp::port_tf_pred::TfDst::Hbd(&'a mut [u16])
+pub svtav1_dsp::port_tf_pred::TfDst::Lbd(&'a mut [u8])
+pub enum svtav1_dsp::port_tf_pred::TfSrc<'a>
+pub svtav1_dsp::port_tf_pred::TfSrc::Hbd(&'a [u16])
+pub svtav1_dsp::port_tf_pred::TfSrc::Lbd(&'a [u8])
+pub struct svtav1_dsp::port_tf_pred::TfDepthMismatch
+pub const svtav1_dsp::port_tf_pred::SIMPLE_UNIPRED_CONV_STRIDE: usize
+pub fn svtav1_dsp::port_tf_pred::simple_luma_unipred(svtav1_dsp::port_tf_pred::TfSrc<'_>, usize, svtav1_dsp::port_tf_pred::TfDst<'_>, usize, usize, usize, svtav1_dsp::port_subpel_params::Mv, svtav1_dsp::port_inter_predictor::InterpFilters, svtav1_dsp::port_subpel_params::RefGeometry, i32, i32, i32, i32, usize, usize, &svtav1_dsp::port_subpel_params::MbEdges, i32, u32) -> core::result::Result<(), svtav1_dsp::port_tf_pred::TfDepthMismatch>
+pub fn svtav1_dsp::port_tf_pred::tf_inter_predictor(svtav1_dsp::port_tf_pred::TfSrc<'_>, usize, usize, svtav1_dsp::port_tf_pred::TfDst<'_>, usize, &mut [u16], i32, i32, svtav1_dsp::port_subpel_params::Mv, &svtav1_dsp::port_scale_factors::ScaleFactors, &svtav1_dsp::port_convolve::ConvolveParams, svtav1_dsp::port_inter_predictor::InterpFilters, svtav1_dsp::port_subpel_params::RefGeometry, usize, usize, &svtav1_dsp::port_subpel_params::MbEdges, i32, u32) -> core::result::Result<(), svtav1_dsp::port_tf_pred::TfDepthMismatch>
+pub mod svtav1_dsp::port_warp
+pub mod svtav1_dsp::port_warp::tables
+pub const svtav1_dsp::port_warp::tables::DIV_LUT: [u16; 257]
+pub const svtav1_dsp::port_warp::tables::WARPED_FILTER: [[i16; 8]; 193]
+pub enum svtav1_dsp::port_warp::HbdWarpRef<'a>
+pub svtav1_dsp::port_warp::HbdWarpRef::Split
+pub svtav1_dsp::port_warp::HbdWarpRef::Split::lsb: &'a [u8]
+pub svtav1_dsp::port_warp::HbdWarpRef::Split::msb: &'a [u8]
+pub svtav1_dsp::port_warp::HbdWarpRef::Split::stride2b: usize
+pub svtav1_dsp::port_warp::HbdWarpRef::Split::stride8b: usize
+pub svtav1_dsp::port_warp::HbdWarpRef::Unpacked
+pub svtav1_dsp::port_warp::HbdWarpRef::Unpacked::plane: &'a [u16]
+pub svtav1_dsp::port_warp::HbdWarpRef::Unpacked::stride: usize
+pub enum svtav1_dsp::port_warp::WarpPlaneIo<'a>
+pub svtav1_dsp::port_warp::WarpPlaneIo::Highbd
+pub svtav1_dsp::port_warp::WarpPlaneIo::Highbd::bd: i32
+pub svtav1_dsp::port_warp::WarpPlaneIo::Highbd::pred: &'a mut [u16]
+pub svtav1_dsp::port_warp::WarpPlaneIo::Highbd::reference: &'a [u16]
+pub svtav1_dsp::port_warp::WarpPlaneIo::HighbdSplit
+pub svtav1_dsp::port_warp::WarpPlaneIo::HighbdSplit::bd: i32
+pub svtav1_dsp::port_warp::WarpPlaneIo::HighbdSplit::lsb: &'a [u8]
+pub svtav1_dsp::port_warp::WarpPlaneIo::HighbdSplit::msb: &'a [u8]
+pub svtav1_dsp::port_warp::WarpPlaneIo::HighbdSplit::pred: &'a mut [u16]
+pub svtav1_dsp::port_warp::WarpPlaneIo::Lowbd
+pub svtav1_dsp::port_warp::WarpPlaneIo::Lowbd::pred: &'a mut [u8]
+pub svtav1_dsp::port_warp::WarpPlaneIo::Lowbd::reference: &'a [u8]
+pub struct svtav1_dsp::port_warp::WarpConvolveParams
+pub svtav1_dsp::port_warp::WarpConvolveParams::bck_offset: i32
+pub svtav1_dsp::port_warp::WarpConvolveParams::do_average: bool
+pub svtav1_dsp::port_warp::WarpConvolveParams::dst_stride: usize
+pub svtav1_dsp::port_warp::WarpConvolveParams::fwd_offset: i32
+pub svtav1_dsp::port_warp::WarpConvolveParams::is_compound: bool
+pub svtav1_dsp::port_warp::WarpConvolveParams::round_0: i32
+pub svtav1_dsp::port_warp::WarpConvolveParams::round_1: i32
+pub svtav1_dsp::port_warp::WarpConvolveParams::use_jnt_comp_avg: bool
+pub fn svtav1_dsp::port_warp::WarpConvolveParams::no_round(bool, usize, bool, i32) -> Self
+pub fn svtav1_dsp::port_warp::WarpConvolveParams::simple(bool, i32) -> Self
+pub const svtav1_dsp::port_warp::COMPOUND_ROUND1_BITS: i32 [also: svtav1_dsp::port_convolve]
+pub const svtav1_dsp::port_warp::FILTER_BITS: i32 [also: svtav1_dsp::port_convolve, svtav1_dsp::restoration]
+pub const svtav1_dsp::port_warp::ROUND0_BITS: i32 [also: svtav1_dsp::port_convolve]
+pub const svtav1_dsp::port_warp::WARPEDDIFF_PREC_BITS: i32
+pub const svtav1_dsp::port_warp::WARPEDMODEL_NONDIAGAFFINE_CLAMP: i32
+pub const svtav1_dsp::port_warp::WARPEDMODEL_PREC_BITS: i32
+pub const svtav1_dsp::port_warp::WARPEDMODEL_TRANS_CLAMP: i32
+pub const svtav1_dsp::port_warp::WARPEDPIXEL_PREC_BITS: i32
+pub const svtav1_dsp::port_warp::WARPEDPIXEL_PREC_SHIFTS: i32
+pub const svtav1_dsp::port_warp::WARP_PARAM_REDUCE_BITS: i32
+pub fn svtav1_dsp::port_warp::av1_warp_plane(&mut svtav1_types::motion::WarpedMotionParams, svtav1_dsp::port_warp::WarpPlaneIo<'_>, i32, i32, usize, core::option::Option<&mut [u16]>, i32, i32, i32, i32, usize, i32, i32, &svtav1_dsp::port_warp::WarpConvolveParams)
+pub fn svtav1_dsp::port_warp::find_projection(usize, &[i32], &[i32], svtav1_types::block::BlockSize, svtav1_types::motion::Mv, &mut svtav1_types::motion::WarpedMotionParams, i32, i32) -> bool
+pub fn svtav1_dsp::port_warp::get_shear_params(&mut svtav1_types::motion::WarpedMotionParams) -> bool
+pub fn svtav1_dsp::port_warp::highbd_warp_affine(&[i32; 6], &[u16], i32, i32, usize, &mut [u16], core::option::Option<&mut [u16]>, i32, i32, i32, i32, usize, i32, i32, i32, &svtav1_dsp::port_warp::WarpConvolveParams, i16, i16, i16, i16)
+pub fn svtav1_dsp::port_warp::highbd_warp_affine_ref(&[i32; 6], svtav1_dsp::port_warp::HbdWarpRef<'_>, i32, i32, &mut [u16], core::option::Option<&mut [u16]>, i32, i32, i32, i32, usize, i32, i32, i32, &svtav1_dsp::port_warp::WarpConvolveParams, i16, i16, i16, i16)
+pub fn svtav1_dsp::port_warp::highbd_warp_plane(&mut svtav1_types::motion::WarpedMotionParams, &[u16], i32, i32, usize, &mut [u16], core::option::Option<&mut [u16]>, i32, i32, i32, i32, usize, i32, i32, i32, &svtav1_dsp::port_warp::WarpConvolveParams)
+pub fn svtav1_dsp::port_warp::highbd_warp_plane_ref(&mut svtav1_types::motion::WarpedMotionParams, svtav1_dsp::port_warp::HbdWarpRef<'_>, i32, i32, &mut [u16], core::option::Option<&mut [u16]>, i32, i32, i32, i32, usize, i32, i32, i32, &svtav1_dsp::port_warp::WarpConvolveParams)
+pub fn svtav1_dsp::port_warp::is_affine_shear_allowed(i16, i16, i16, i16) -> bool
+pub fn svtav1_dsp::port_warp::is_affine_valid(&svtav1_types::motion::WarpedMotionParams) -> bool
+pub fn svtav1_dsp::port_warp::resolve_divisor_32(u32) -> (i16, i16)
+pub fn svtav1_dsp::port_warp::resolve_divisor_64(u64) -> (i16, i16)
+pub fn svtav1_dsp::port_warp::select_samples(svtav1_types::motion::Mv, &mut [i32], &mut [i32], usize, svtav1_types::block::BlockSize) -> u8
+pub fn svtav1_dsp::port_warp::warp_affine(&[i32; 6], &[u8], i32, i32, usize, &mut [u8], core::option::Option<&mut [u16]>, i32, i32, i32, i32, usize, i32, i32, &svtav1_dsp::port_warp::WarpConvolveParams, i16, i16, i16, i16)
+pub fn svtav1_dsp::port_warp::warp_plane(&mut svtav1_types::motion::WarpedMotionParams, &[u8], i32, i32, usize, &mut [u8], core::option::Option<&mut [u16]>, i32, i32, i32, i32, usize, i32, i32, &svtav1_dsp::port_warp::WarpConvolveParams)
+pub mod svtav1_dsp::port_wedge_masks
+#[repr(u8)] pub enum svtav1_dsp::port_wedge_masks::WedgeDirection
+pub svtav1_dsp::port_wedge_masks::WedgeDirection::Horizontal = 0
+pub svtav1_dsp::port_wedge_masks::WedgeDirection::Oblique117 = 4
+pub svtav1_dsp::port_wedge_masks::WedgeDirection::Oblique153 = 5
+pub svtav1_dsp::port_wedge_masks::WedgeDirection::Oblique27 = 2
+pub svtav1_dsp::port_wedge_masks::WedgeDirection::Oblique63 = 3
+pub svtav1_dsp::port_wedge_masks::WedgeDirection::Vertical = 1
+pub struct svtav1_dsp::port_wedge_masks::WedgeCode
+pub svtav1_dsp::port_wedge_masks::WedgeCode::direction: svtav1_dsp::port_wedge_masks::WedgeDirection
+pub svtav1_dsp::port_wedge_masks::WedgeCode::x_offset: i32
+pub svtav1_dsp::port_wedge_masks::WedgeCode::y_offset: i32
+pub struct svtav1_dsp::port_wedge_masks::WedgeMasks
+pub fn svtav1_dsp::port_wedge_masks::WedgeMasks::contiguous_soft_mask(&self, usize, usize, usize) -> &[u8]
+pub fn svtav1_dsp::port_wedge_masks::WedgeMasks::new() -> Self
+pub const svtav1_dsp::port_wedge_masks::BLOCK_SIZES_ALL: usize
+pub const svtav1_dsp::port_wedge_masks::MASK_PRIMARY_SIZE: usize
+pub const svtav1_dsp::port_wedge_masks::MASK_PRIMARY_STRIDE: usize
+pub const svtav1_dsp::port_wedge_masks::MAX_WEDGE_SIZE: usize
+pub const svtav1_dsp::port_wedge_masks::MAX_WEDGE_SIZE_LOG2: usize
+pub const svtav1_dsp::port_wedge_masks::MAX_WEDGE_TYPES: usize
+pub const svtav1_dsp::port_wedge_masks::WEDGE_BITS_LOOKUP: [i32; 22]
+pub const svtav1_dsp::port_wedge_masks::WEDGE_CODEBOOK_16_HEQW: [svtav1_dsp::port_wedge_masks::WedgeCode; 16]
+pub const svtav1_dsp::port_wedge_masks::WEDGE_CODEBOOK_16_HGTW: [svtav1_dsp::port_wedge_masks::WedgeCode; 16]
+pub const svtav1_dsp::port_wedge_masks::WEDGE_CODEBOOK_16_HLTW: [svtav1_dsp::port_wedge_masks::WedgeCode; 16]
+pub const svtav1_dsp::port_wedge_masks::WEDGE_SIGNFLIP_LOOKUP: [[u8; 16]; 22]
+pub const svtav1_dsp::port_wedge_masks::WEDGE_WEIGHT_BITS: usize
+pub fn svtav1_dsp::port_wedge_masks::codebook_for(usize) -> core::option::Option<&'static [svtav1_dsp::port_wedge_masks::WedgeCode; 16]>
+pub fn svtav1_dsp::port_wedge_masks::get_wedge_bits_lookup(usize) -> i32
+pub fn svtav1_dsp::port_wedge_masks::get_wedge_params_bits(usize) -> i32
+pub fn svtav1_dsp::port_wedge_masks::is_interintra_wedge_used(usize) -> bool
+pub fn svtav1_dsp::port_wedge_masks::shift_copy(&[u8], &mut [u8], i32, usize)
+pub mod svtav1_dsp::port_wedge_search
+pub enum svtav1_dsp::port_wedge_search::PickedMask
+pub svtav1_dsp::port_wedge_search::PickedMask::Seg(svtav1_dsp::port_masked_compound::DiffwtdMaskType)
+pub svtav1_dsp::port_wedge_search::PickedMask::Wedge
+pub svtav1_dsp::port_wedge_search::PickedMask::Wedge::index: i32
+pub svtav1_dsp::port_wedge_search::PickedMask::Wedge::sign: usize
+pub struct svtav1_dsp::port_wedge_search::SearchCtx
+pub svtav1_dsp::port_wedge_search::SearchCtx::full_lambda: u32
+pub svtav1_dsp::port_wedge_search::SearchCtx::hbd: bool
+pub svtav1_dsp::port_wedge_search::SearchCtx::quantizer: i16
+pub svtav1_dsp::port_wedge_search::SearchCtx::use_rate: bool
+pub fn svtav1_dsp::port_wedge_search::pick_interinter_mask(&svtav1_dsp::port_wedge_masks::WedgeMasks, &svtav1_dsp::port_wedge_search::SearchCtx, svtav1_dsp::port_masked_compound::CompoundType, svtav1_types::block::BlockSize, &[u8], &[u16], usize, &[u8], &[u8], &[u16], &[u16], &[i16], &[i16]) -> core::option::Option<svtav1_dsp::port_wedge_search::PickedMask>
+pub fn svtav1_dsp::port_wedge_search::pick_interinter_seg(&svtav1_dsp::port_wedge_search::SearchCtx, svtav1_types::block::BlockSize, &[u8], &[u8], &[u16], &[u16], &[i16], &[i16]) -> svtav1_dsp::port_masked_compound::DiffwtdMaskType
+pub fn svtav1_dsp::port_wedge_search::pick_interinter_wedge(&svtav1_dsp::port_wedge_masks::WedgeMasks, &svtav1_dsp::port_wedge_search::SearchCtx, svtav1_types::block::BlockSize, &[u8], &[u16], usize, &[u8], &[u16], &[i16], &[i16]) -> svtav1_dsp::port_wedge_search::PickedMask
+pub fn svtav1_dsp::port_wedge_search::pick_wedge(&svtav1_dsp::port_wedge_masks::WedgeMasks, &svtav1_dsp::port_wedge_search::SearchCtx, svtav1_types::block::BlockSize, &[u8], &[u16], usize, &[u8], &[u16], &[i16], &[i16]) -> (usize, i32)
+pub fn svtav1_dsp::port_wedge_search::pick_wedge_fixed_sign(&svtav1_dsp::port_wedge_masks::WedgeMasks, &svtav1_dsp::port_wedge_search::SearchCtx, svtav1_types::block::BlockSize, &[i16], &[i16], usize, &[i32]) -> (i64, i32)
+pub mod svtav1_dsp::quant
+pub struct svtav1_dsp::quant::QuantParam
+pub svtav1_dsp::quant::QuantParam::dequant: [i32; 2]
+pub svtav1_dsp::quant::QuantParam::shift: i32
+pub fn svtav1_dsp::quant::dequantize(&[svtav1_types::transform::TranLow], &[i32; 2], &mut [svtav1_types::transform::TranLow], usize)
+pub fn svtav1_dsp::quant::quantize(&[svtav1_types::transform::TranLow], &svtav1_dsp::quant::QuantParam, &mut [svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize) -> usize
+pub mod svtav1_dsp::quant_coding
+pub fn svtav1_dsp::quant_coding::quantize_b_raster(&[i32], &mut [i32], &mut [i32], &[i32; 2], &[i32; 2], &[i32; 2], &[i32; 2], &[i32; 2], i32)
+pub fn svtav1_dsp::quant_coding::quantize_fp_raster(&[i32], &mut [i32], &mut [i32], &[i32; 2], &[i32; 2], &[i32; 2], i32)
+pub mod svtav1_dsp::quant_tables
+pub static svtav1_dsp::quant_tables::AC_QLOOKUP_8: [i16; 256]
+pub static svtav1_dsp::quant_tables::DC_QLOOKUP_8: [i16; 256]
+pub mod svtav1_dsp::residual
+pub fn svtav1_dsp::residual::recon_add_clamp(&[u8], usize, &[i32], usize, usize, &mut [u8])
+pub fn svtav1_dsp::residual::residual_i16(&[u8], usize, &[u8], usize, usize, usize, &mut [i16])
+pub fn svtav1_dsp::residual::residual_i32(&[u8], usize, &[u8], usize, usize, usize, &mut [i32])
+pub fn svtav1_dsp::residual::sq_sum_i32(&[i32]) -> u64
+pub fn svtav1_dsp::residual::sse_i32(&[i32], &[i32]) -> u64
+pub mod svtav1_dsp::resize
+pub struct svtav1_dsp::resize::FramePlane<'a>
+pub svtav1_dsp::resize::FramePlane::dst: &'a mut [u8]
+pub svtav1_dsp::resize::FramePlane::dst_stride: usize
+pub svtav1_dsp::resize::FramePlane::src: &'a [u8]
+pub svtav1_dsp::resize::FramePlane::src_stride: usize
+pub const svtav1_dsp::resize::SUBPEL_TAPS: usize [also: svtav1_dsp::port_convolve]
+pub static svtav1_dsp::resize::DOWN2_SYMEVEN_HALF_FILTER: [i16; 4]
+pub static svtav1_dsp::resize::DOWN2_SYMODD_HALF_FILTER: [i16; 4]
+pub static svtav1_dsp::resize::FILTEREDINTERP_FILTERS500: [[i16; 8]; 64]
+pub static svtav1_dsp::resize::FILTEREDINTERP_FILTERS625: [[i16; 8]; 64]
+pub static svtav1_dsp::resize::FILTEREDINTERP_FILTERS750: [[i16; 8]; 64]
+pub static svtav1_dsp::resize::FILTEREDINTERP_FILTERS875: [[i16; 8]; 64]
+pub fn svtav1_dsp::resize::choose_interp_filter(i32, i32) -> &'static [[i16; 8]; 64]
+pub fn svtav1_dsp::resize::down2_length(usize, usize) -> usize
+pub fn svtav1_dsp::resize::down2_steps(usize, usize) -> usize
+pub fn svtav1_dsp::resize::down2_symeven(&[u8], usize, &mut [u8])
+pub fn svtav1_dsp::resize::down2_symodd(&[u8], usize, &mut [u8])
+pub fn svtav1_dsp::resize::fill_arr_to_col(&mut [u8], usize, usize, &[u8])
+pub fn svtav1_dsp::resize::fill_col_to_arr(&[u8], usize, usize, &mut [u8])
+pub fn svtav1_dsp::resize::interpolate_core(&[u8], usize, &mut [u8], usize, &[[i16; 8]; 64])
+pub fn svtav1_dsp::resize::plane_dims(usize, usize, usize, u32, u32) -> (usize, usize)
+pub fn svtav1_dsp::resize::resize_frame(&mut [svtav1_dsp::resize::FramePlane<'_>], usize, usize, usize, usize, u32, u32)
+pub fn svtav1_dsp::resize::resize_multistep(&[u8], usize, &mut [u8], usize)
+pub fn svtav1_dsp::resize::resize_plane(&[u8], usize, usize, usize, &mut [u8], usize, usize, usize)
+pub fn svtav1_dsp::resize::resize_plane_auto(bool, &[u8], usize, usize, usize, &mut [u8], usize, usize, usize)
+pub fn svtav1_dsp::resize::resize_plane_horizontal(&[u8], usize, usize, usize, &mut [u8], usize, usize)
+pub mod svtav1_dsp::restoration
+pub struct svtav1_dsp::restoration::PixelRect
+pub svtav1_dsp::restoration::PixelRect::bottom: i32
+pub svtav1_dsp::restoration::PixelRect::left: i32
+pub svtav1_dsp::restoration::PixelRect::right: i32
+pub svtav1_dsp::restoration::PixelRect::top: i32
+pub struct svtav1_dsp::restoration::RestUnitParams
+pub svtav1_dsp::restoration::RestUnitParams::rtype: u8
+pub svtav1_dsp::restoration::RestUnitParams::sgr_ep: usize
+pub svtav1_dsp::restoration::RestUnitParams::sgr_xqd: [i32; 2]
+pub svtav1_dsp::restoration::RestUnitParams::wiener: svtav1_dsp::restoration::WienerInfo
+pub fn svtav1_dsp::restoration::RestUnitParams::none() -> Self
+pub fn svtav1_dsp::restoration::RestUnitParams::sgrproj(usize, [i32; 2]) -> Self
+pub fn svtav1_dsp::restoration::RestUnitParams::wiener(svtav1_dsp::restoration::WienerInfo) -> Self
+pub struct svtav1_dsp::restoration::StripeBoundariesT<T>
+pub svtav1_dsp::restoration::StripeBoundariesT::above: alloc::vec::Vec<T>
+pub svtav1_dsp::restoration::StripeBoundariesT::below: alloc::vec::Vec<T>
+pub svtav1_dsp::restoration::StripeBoundariesT::stride: usize
+pub struct svtav1_dsp::restoration::TileLimits
+pub svtav1_dsp::restoration::TileLimits::h_end: i32
+pub svtav1_dsp::restoration::TileLimits::h_start: i32
+pub svtav1_dsp::restoration::TileLimits::v_end: i32
+pub svtav1_dsp::restoration::TileLimits::v_start: i32
+pub struct svtav1_dsp::restoration::WienerInfo
+pub svtav1_dsp::restoration::WienerInfo::hfilter: [i16; 8]
+pub svtav1_dsp::restoration::WienerInfo::vfilter: [i16; 8]
+pub const svtav1_dsp::restoration::DEFAULT_SGRPROJ_XQD: [i32; 2]
+pub const svtav1_dsp::restoration::RESTORATION_BORDER: i32
+pub const svtav1_dsp::restoration::RESTORATION_CTX_VERT: i32
+pub const svtav1_dsp::restoration::RESTORATION_EXTRA_HORZ: i32
+pub const svtav1_dsp::restoration::RESTORE_NONE: u8
+pub const svtav1_dsp::restoration::RESTORE_SGRPROJ: u8
+pub const svtav1_dsp::restoration::RESTORE_SWITCHABLE: u8
+pub const svtav1_dsp::restoration::RESTORE_WIENER: u8
+pub const svtav1_dsp::restoration::WIENER_FILT_STEP: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP0_BITS: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP0_MAXV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP0_MIDV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP0_MINV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP0_SUBEXP_K: u16
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP1_BITS: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP1_MAXV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP1_MIDV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP1_MINV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP1_SUBEXP_K: u16
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP2_BITS: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP2_MAXV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP2_MIDV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP2_MINV: i32
+pub const svtav1_dsp::restoration::WIENER_FILT_TAP2_SUBEXP_K: u16
+pub const svtav1_dsp::restoration::WIENER_HALFWIN: usize
+pub const svtav1_dsp::restoration::WIENER_ROUND0_BITS: i32
+pub const svtav1_dsp::restoration::WIENER_ROUND1_BITS: i32
+pub const svtav1_dsp::restoration::WIENER_WIN: usize
+pub const svtav1_dsp::restoration::WIENER_WIN_CHROMA: usize
+pub fn svtav1_dsp::restoration::alloc_stripe_boundaries(i32, i32, i32) -> svtav1_dsp::restoration::StripeBoundaries
+pub fn svtav1_dsp::restoration::alloc_stripe_boundaries_t<T: core::marker::Copy + core::default::Default>(i32, i32, i32) -> svtav1_dsp::restoration::StripeBoundariesT<T>
+pub fn svtav1_dsp::restoration::compute_score(usize, &[i64], &[i64], &[i16; 8], &[i16; 8]) -> i64
+pub fn svtav1_dsp::restoration::compute_stats(usize, &[u8], usize, usize, &[u8], usize, usize, i32, i32, i32, i32, &mut [i64], &mut [i64])
+pub fn svtav1_dsp::restoration::compute_stats_hbd(usize, &[u16], usize, usize, &[u16], usize, usize, i32, i32, i32, i32, &mut [i64], &mut [i64], u8)
+pub fn svtav1_dsp::restoration::count_units_in_tile(i32, i32) -> i32
+pub fn svtav1_dsp::restoration::extend_frame<T: core::marker::Copy>(&mut [T], usize, usize, usize, usize, usize, usize)
+pub fn svtav1_dsp::restoration::finalize_sym_filter(usize, &[i32], &mut [i16; 8])
+pub fn svtav1_dsp::restoration::find_average(&[u8], usize, usize, i32, i32, i32, i32) -> u8
+pub fn svtav1_dsp::restoration::find_average_hbd(&[u16], usize, usize, i32, i32, i32, i32) -> u16
+pub fn svtav1_dsp::restoration::foreach_rest_unit_in_tile(&svtav1_dsp::restoration::PixelRect, i32, i32, i32, impl core::ops::function::FnMut(&svtav1_dsp::restoration::TileLimits, i32))
+pub fn svtav1_dsp::restoration::loop_restoration_filter_unit(bool, &svtav1_dsp::restoration::TileLimits, &svtav1_dsp::restoration::RestUnitParams, &svtav1_dsp::restoration::StripeBoundaries, &svtav1_dsp::restoration::PixelRect, i32, i32, i32, &mut [u8], usize, usize, &mut [u8], usize, usize)
+pub fn svtav1_dsp::restoration::loop_restoration_filter_unit_hbd(bool, &svtav1_dsp::restoration::TileLimits, &svtav1_dsp::restoration::RestUnitParams, &svtav1_dsp::restoration::StripeBoundariesT<u16>, &svtav1_dsp::restoration::PixelRect, i32, i32, i32, &mut [u16], usize, usize, &mut [u16], usize, usize, i32)
+pub fn svtav1_dsp::restoration::loop_restoration_filter_unit_search_hbd(&svtav1_dsp::restoration::TileLimits, &svtav1_dsp::restoration::RestUnitParams, &svtav1_dsp::restoration::PixelRect, i32, i32, i32, &[u16], usize, usize, &mut [u16], usize, usize, i32)
+pub fn svtav1_dsp::restoration::save_tile_row_boundary_lines<T: core::marker::Copy>(&[T], usize, usize, i32, i32, i32, bool, &mut svtav1_dsp::restoration::StripeBoundariesT<T>)
+pub fn svtav1_dsp::restoration::sse_region(&[u8], usize, usize, &[u8], usize, usize, usize, usize) -> i64
+pub fn svtav1_dsp::restoration::sse_region_hbd(&[u16], usize, usize, &[u16], usize, usize, usize, usize) -> i64
+pub fn svtav1_dsp::restoration::wiener_convolve_add_src(&[u8], usize, usize, &mut [u8], usize, usize, &[i16; 8], &[i16; 8], usize, usize)
+pub fn svtav1_dsp::restoration::wiener_convolve_add_src_hbd(&[u16], usize, usize, &mut [u16], usize, usize, &[i16; 8], &[i16; 8], usize, usize, i32)
+pub fn svtav1_dsp::restoration::wiener_convolve_add_src_materialised(&[u8], usize, usize, &mut [u8], usize, usize, &[i16; 8], &[i16; 8], usize, usize)
+pub fn svtav1_dsp::restoration::wiener_decompose_sep_sym(usize, &[i64], &[i64], &mut [i32], &mut [i32])
+pub type svtav1_dsp::restoration::StripeBoundaries = svtav1_dsp::restoration::StripeBoundariesT<u8>
+pub mod svtav1_dsp::sad
+pub fn svtav1_dsp::sad::sad(&[u8], usize, &[u8], usize, usize, usize) -> u32
+pub mod svtav1_dsp::scale
+pub struct svtav1_dsp::scale::ScaleFactors [also: svtav1_dsp::port_scale_factors]
+pub svtav1_dsp::scale::ScaleFactors::x_scale: i32
+pub svtav1_dsp::scale::ScaleFactors::y_scale: i32
+pub fn svtav1_dsp::scale::ScaleFactors::is_scaled(&self) -> bool
+pub fn svtav1_dsp::scale::ScaleFactors::new(u32, u32, u32, u32) -> Self
+pub fn svtav1_dsp::scale::ScaleFactors::scale_x(&self, i32) -> i32
+pub fn svtav1_dsp::scale::ScaleFactors::scale_y(&self, i32) -> i32
+pub fn svtav1_dsp::scale::scaled_prediction(&[u8], usize, &mut [u8], usize, i32, i32, usize, usize, &svtav1_dsp::scale::ScaleFactors, usize, usize)
+pub mod svtav1_dsp::subpel_variance
+pub const svtav1_dsp::subpel_variance::BILINEAR_FILTERS_2T: [[u8; 2]; 8]
+pub fn svtav1_dsp::subpel_variance::sub_pixel_variance(&[u8], usize, usize, usize, usize, &[u8], usize, usize, usize, usize) -> (u32, u32)
+pub fn svtav1_dsp::subpel_variance::sub_pixel_variance_materialised(&[u8], usize, usize, usize, usize, &[u8], usize, usize, usize, usize) -> (u32, u32)
+pub fn svtav1_dsp::subpel_variance::var_filter_block2d_bil_first_pass(&[u8], usize, &mut [u16], usize, usize, usize, usize, &[u8; 2])
+pub fn svtav1_dsp::subpel_variance::var_filter_block2d_bil_second_pass(&[u16], &mut [u8], usize, usize, usize, usize, &[u8; 2])
+pub mod svtav1_dsp::superres
+pub struct svtav1_dsp::superres::TileColPad
+pub svtav1_dsp::superres::TileColPad::left: bool
+pub svtav1_dsp::superres::TileColPad::right: bool
+pub const svtav1_dsp::superres::TileColPad::FRAME: Self
+pub const svtav1_dsp::superres::RS_SCALE_EXTRA_BITS: u32
+pub const svtav1_dsp::superres::RS_SCALE_EXTRA_OFF: i32
+pub const svtav1_dsp::superres::RS_SCALE_SUBPEL_BITS: u32
+pub const svtav1_dsp::superres::RS_SCALE_SUBPEL_MASK: i32
+pub const svtav1_dsp::superres::RS_SUBPEL_BITS: u32
+pub const svtav1_dsp::superres::RS_SUBPEL_MASK: i32
+pub const svtav1_dsp::superres::SCALE_NUMERATOR: u32
+pub const svtav1_dsp::superres::UPSCALE_BORDER_COLS: usize
+pub const svtav1_dsp::superres::UPSCALE_NORMATIVE_TAPS: usize
+pub static svtav1_dsp::superres::RESIZE_FILTER_NORMATIVE: [[i16; 8]; 64]
+pub fn svtav1_dsp::superres::scaled_size(u16, u8) -> u16
+pub fn svtav1_dsp::superres::upscale_convolve_step(i32, i32) -> i32
+pub fn svtav1_dsp::superres::upscale_convolve_x0(i32, i32, i32) -> i32
+pub fn svtav1_dsp::superres::upscale_normative_plane(&[u8], usize, usize, &mut [u8], usize, usize, usize)
+pub fn svtav1_dsp::superres::upscale_normative_row(&[u8], usize, usize, &mut [u8], usize, i32, i32, svtav1_dsp::superres::TileColPad)
+pub mod svtav1_dsp::txfm_dispatch
+pub enum svtav1_dsp::txfm_dispatch::InvReconError
+pub svtav1_dsp::txfm_dispatch::InvReconError::NoKernel(svtav1_types::transform::TxSize, svtav1_types::transform::TxType)
+pub svtav1_dsp::txfm_dispatch::InvReconError::UnsupportedType32x32(svtav1_types::transform::TxType)
+pub svtav1_dsp::txfm_dispatch::InvReconError::UnsupportedType64x64(svtav1_types::transform::TxType)
+pub fn svtav1_dsp::txfm_dispatch::flip_cfg(svtav1_types::transform::TxType) -> (bool, bool)
+pub fn svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType) -> bool
+pub fn svtav1_dsp::txfm_dispatch::highbd_inv_txfm_add(&[svtav1_types::transform::TranLow], usize, &[u16], usize, &mut [u16], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType, u32, bool, u8) -> core::result::Result<(), svtav1_dsp::txfm_dispatch::InvReconError>
+pub fn svtav1_dsp::txfm_dispatch::inv_transform_recon(&[svtav1_types::transform::TranLow], usize, &[u16], usize, &mut [u16], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType, bool, u8) -> core::result::Result<(), svtav1_dsp::txfm_dispatch::InvReconError>
+pub fn svtav1_dsp::txfm_dispatch::inv_transform_recon8bit(&[svtav1_types::transform::TranLow], usize, &[u8], usize, &mut [u8], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType, bool) -> core::result::Result<(), svtav1_dsp::txfm_dispatch::InvReconError>
+pub fn svtav1_dsp::txfm_dispatch::inv_transform_recon8bit_in_place(&[svtav1_types::transform::TranLow], usize, &mut [u8], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType, u32, bool) -> core::result::Result<(), svtav1_dsp::txfm_dispatch::InvReconError>
+pub fn svtav1_dsp::txfm_dispatch::inv_transform_recon_in_place(&[svtav1_types::transform::TranLow], usize, &mut [u16], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType, u32, bool, u8) -> core::result::Result<(), svtav1_dsp::txfm_dispatch::InvReconError>
+pub fn svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType) -> bool
+pub fn svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch_bd(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, svtav1_types::transform::TxSize, svtav1_types::transform::TxType, u8) -> bool
+pub const fn svtav1_dsp::txfm_dispatch::max_eob(svtav1_types::transform::TxSize) -> u32
+pub mod svtav1_dsp::txfm_simd
+pub fn svtav1_dsp::txfm_simd::try_fwd_4dim(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, bool, bool) -> bool
+pub fn svtav1_dsp::txfm_simd::try_fwd_adst(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8) -> bool
+pub fn svtav1_dsp::txfm_simd::try_fwd_dct_rect(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, usize, usize) -> bool
+pub fn svtav1_dsp::txfm_simd::try_fwd_dct_square(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, usize) -> bool
+pub fn svtav1_dsp::txfm_simd::try_fwd_ext(&[svtav1_types::transform::TranLow], &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, bool, bool) -> bool
+pub fn svtav1_dsp::txfm_simd::try_inv_4dim(&[svtav1_types::transform::TranLow], usize, &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, bool, bool, u8) -> bool
+pub fn svtav1_dsp::txfm_simd::try_inv_adst(&[svtav1_types::transform::TranLow], usize, &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, u8) -> bool
+pub fn svtav1_dsp::txfm_simd::try_inv_dct_rect(&[svtav1_types::transform::TranLow], usize, &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8) -> bool
+pub fn svtav1_dsp::txfm_simd::try_inv_dct_square(&[svtav1_types::transform::TranLow], usize, &mut [svtav1_types::transform::TranLow], usize, usize, u8) -> bool
+pub fn svtav1_dsp::txfm_simd::try_inv_ext(&[svtav1_types::transform::TranLow], usize, &mut [svtav1_types::transform::TranLow], usize, usize, usize, u8, u8, bool, bool, u8) -> bool
+pub mod svtav1_dsp::variance
+pub fn svtav1_dsp::variance::variance(&[u8], usize, usize, usize) -> (u64, u32)
+pub fn svtav1_dsp::variance::variance_diff(&[u8], usize, &[u8], usize, usize, usize) -> u32
+pub mod svtav1_dsp::warp
+pub const svtav1_dsp::warp::WARPEDMODEL_PREC_BITS: u32
+pub const svtav1_dsp::warp::WARP_PARAM_REDUCE_BITS: u32
+pub fn svtav1_dsp::warp::count_warp_samples(core::option::Option<(i16, i16)>, core::option::Option<(i16, i16)>, core::option::Option<(i16, i16)>, core::option::Option<(i16, i16)>) -> u8
+pub fn svtav1_dsp::warp::warp_prediction(&[u8], usize, &mut [u8], usize, &svtav1_types::motion::WarpedMotionParams, i32, i32, usize, usize, usize, usize)
+
+## trait impls (68 types)
+
+svtav1_dsp::fwd_txfm_pf::HandleTransform: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::fwd_txfm_pf::TxCoeffShape: Clone, Copy, Debug, Default, Eq, PartialEq
+svtav1_dsp::fwd_txfm_pf::Txfm2dFlipCfg: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::fwd_txfm_pf::TxfmType: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::loop_filter::LfThresh: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::pic_operators::FullDistortion: Clone, Copy, Debug, Default, Eq, PartialEq
+svtav1_dsp::port_compound_prep::CmpStoreSlot: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_compound_prep::UnipredOverride: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_convolve::ConvolveParams: Clone, Copy, Debug
+svtav1_dsp::port_convolve::FilterParams: Clone, Copy, Debug
+svtav1_dsp::port_convolve::InterpFilterKind: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_convolve::SrcView<'a>: Clone, Copy
+svtav1_dsp::port_convolve_hbd::HbdKernel: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_convolve_hbd::SrcView16<'a>: Clone, Copy
+svtav1_dsp::port_enc_make_pred::DstPlane<'a>: Debug
+svtav1_dsp::port_enc_make_pred::MakePredError: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_enc_make_pred::SrcPlanes<'a>: Clone, Copy, Debug
+svtav1_dsp::port_full_pd1_pred::PostPasses: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_ifs::IfsCandidateCost: Clone, Copy, Debug
+svtav1_dsp::port_ifs::IfsCtrls: Clone, Copy, Debug
+svtav1_dsp::port_ifs::IfsResult: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_ifs::SimpleLumaUnipred: Default
+svtav1_dsp::port_interintra::IiMasks: Default
+svtav1_dsp::port_interintra::InterIntraMode: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_make_pred::MakePredLeaf: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_make_pred::MaskedPredScratch: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_make_pred::PackedSrcGeom: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_masked_blend::InterInterCompoundData: Clone, Copy, Debug
+svtav1_dsp::port_masked_compound::CompoundType: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_masked_compound::DiffwtdMaskType: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_model_rd::PlaneRd: Clone, Copy, Debug, Default
+svtav1_dsp::port_obmc_build::NbPredGeom: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_obmc_data::Neighbour: Clone, Copy, Debug
+svtav1_dsp::port_obmc_nb_pred::NbSide: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_obmc_nb_pred::Neighbour: Clone, Copy, Debug
+svtav1_dsp::port_obmc_pred::NbMi: Clone, Copy, Debug
+svtav1_dsp::port_obmc_pred::PredEdges: Clone, Copy, Debug, Default, Eq, PartialEq
+svtav1_dsp::port_obmc_pred::VisitedNb: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_obmc_single_pred::ObmcPicDims: Clone, Copy, Debug
+svtav1_dsp::port_pd_pred::BlkGeom: Clone, Copy, Debug
+svtav1_dsp::port_scale_factors::DistWtdWeights: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_scale_factors::ScaleFactors: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_scale_factors::SubpelParams: Clone, Copy, Debug, Default, Eq, PartialEq
+svtav1_dsp::port_sgr::SgrDst<'a>: Debug
+svtav1_dsp::port_sgr::SgrParamsType: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_sgr::SgrSrc<'a>: Clone, Copy, Debug
+svtav1_dsp::port_subpel_params::MbEdges: Clone, Copy, Debug
+svtav1_dsp::port_subpel_params::Mv: Clone, Copy, Debug, Default, Eq, PartialEq
+svtav1_dsp::port_subpel_params::RefGeometry: Clone, Copy, Debug
+svtav1_dsp::port_tf_pred::TfDepthMismatch: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_tf_pred::TfDst<'a>: Debug
+svtav1_dsp::port_tf_pred::TfSrc<'a>: Clone, Copy, Debug
+svtav1_dsp::port_warp::HbdWarpRef<'a>: Clone, Copy, Debug
+svtav1_dsp::port_warp::WarpConvolveParams: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_wedge_masks::WedgeCode: Clone, Copy, Debug
+svtav1_dsp::port_wedge_masks::WedgeDirection: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_wedge_masks::WedgeMasks: Default
+svtav1_dsp::port_wedge_search::PickedMask: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::port_wedge_search::SearchCtx: Clone, Copy, Debug
+svtav1_dsp::quant::QuantParam: Clone, Copy, Debug
+svtav1_dsp::restoration::PixelRect: Clone, Copy, Debug
+svtav1_dsp::restoration::RestUnitParams: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::restoration::StripeBoundariesT<T>: Clone, Debug, Default
+svtav1_dsp::restoration::TileLimits: Clone, Copy, Debug
+svtav1_dsp::restoration::WienerInfo: Clone, Copy, Debug, Default, Eq, PartialEq
+svtav1_dsp::scale::ScaleFactors: Clone, Copy, Debug
+svtav1_dsp::superres::TileColPad: Clone, Copy, Debug, Eq, PartialEq
+svtav1_dsp::txfm_dispatch::InvReconError: Clone, Copy, Debug, Eq, PartialEq
+
+## auto traits
+
+67 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+svtav1_dsp::port_enc_make_pred::DstPlane<'a>: !UnwindSafe
+svtav1_dsp::port_enc_make_pred::MaskedCompound<'a>: !UnwindSafe
+svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt<'a>: !UnwindSafe
+svtav1_dsp::port_obmc_nb_pred::ObmcScratch<'a>: !UnwindSafe
+svtav1_dsp::port_obmc_pred::ObmcPlanes<'a>: !UnwindSafe
+svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo<'a>: !UnwindSafe
+svtav1_dsp::port_pd_pred::PredPlanes<'a>: !UnwindSafe
+svtav1_dsp::port_sgr::SgrDst<'a>: !UnwindSafe
+svtav1_dsp::port_tf_pred::TfDst<'a>: !UnwindSafe
+svtav1_dsp::port_warp::WarpPlaneIo<'a>: !UnwindSafe
+svtav1_dsp::resize::FramePlane<'a>: !UnwindSafe
+svtav1_dsp::restoration::StripeBoundariesT<T>: !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
+## arch shapes (10 shapes: 10 on every recorded arch, 0 arch-unique)
+
+[aarch64] pub fn svtav1_dsp::me_sad::block_sad_<tier>(archmage::tokens::generated::<arch>::<ArchToken>, &[u8], usize, &[u8], usize, usize, usize) -> u32
+[aarch64] pub fn svtav1_dsp::me_sad::block_sad_arm_<tier>(archmage::tokens::generated::<arch>::<ArchToken>, &[u8], usize, &[u8], usize, usize, usize) -> u32
+[aarch64] pub fn svtav1_dsp::me_sad::block_sum_<tier>(&[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+[aarch64] pub fn svtav1_dsp::me_sad::block_sum_sse_<tier>(archmage::tokens::generated::<arch>::<ArchToken>, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+[aarch64] pub fn svtav1_dsp::port_masked_compound::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> i64
+[aarch64] pub fn svtav1_dsp::port_masked_compound::highbd_<tier>(&[u16], usize, &[u16], usize, usize, usize) -> i64
+[aarch64] pub fn svtav1_dsp::port_model_rd::model_rd_from_<tier>(svtav1_types::block::BlockSize, i16, u8, u64, bool) -> (u32, u64)
+[aarch64] pub fn svtav1_dsp::subpel_variance::variance_diff_<tier>(&[u8], usize, usize, &[u8], usize, usize, usize, usize) -> (u32, u32)
+[aarch64] pub fn svtav1_dsp::variance::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> u64
+[aarch64] pub svtav1_dsp::port_model_rd::PlaneRd::<tier>: i64
+
+## arch surface: aarch64 (10 lines)
+
+pub fn svtav1_dsp::me_sad::block_sad_arm_v2(archmage::tokens::generated::arm::Arm64V2Token, &[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn svtav1_dsp::me_sad::block_sad_neon(archmage::tokens::generated::arm::NeonToken, &[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn svtav1_dsp::me_sad::block_sum_sse(&[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+pub fn svtav1_dsp::me_sad::block_sum_sse_neon(archmage::tokens::generated::arm::NeonToken, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+pub fn svtav1_dsp::port_masked_compound::highbd_sse(&[u16], usize, &[u16], usize, usize, usize) -> i64
+pub fn svtav1_dsp::port_masked_compound::sse(&[u8], usize, &[u8], usize, usize, usize) -> i64
+pub fn svtav1_dsp::port_model_rd::model_rd_from_sse(svtav1_types::block::BlockSize, i16, u8, u64, bool) -> (u32, u64)
+pub fn svtav1_dsp::subpel_variance::variance_diff_sse(&[u8], usize, usize, &[u8], usize, usize, usize, usize) -> (u32, u32)
+pub fn svtav1_dsp::variance::sse(&[u8], usize, &[u8], usize, usize, usize) -> u64
+pub svtav1_dsp::port_model_rd::PlaneRd::sse: i64
