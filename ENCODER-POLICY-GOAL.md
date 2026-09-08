@@ -14,6 +14,39 @@ and implement measured content-adaptive search and actual backend routing.
 Complete the experiments and report size, perceptual quality and time before
 choosing defaults. Land the ready implementation after required local checks.
 
+## Execution checkpoint — 2026-09-08
+
+The full scope and completion gates below remain active. Work is local; no
+main landing or CI completion is claimed. Resume from this index and inspect
+only the evidence for the next change, rather than replaying historical notes.
+
+| Workstream | Current evidence / next acceptance gate |
+| --- | --- |
+| Native -1, explicit references | Implemented; [reference audit](rust/docs/PARITY-REFERENCE-AUDIT-2026-09-08.md) records covered gates. Historical real-image regressions and the full optional/HDR envelope remain open. |
+| Zen adoption | Intra-edge and restoration-unit search are wired and opt-in. [Port map](rust/docs/research-preset-port-map.md) and [completed measurements](../zenmetrics/benchmarks/av1_compare_2026-09-08/README.md) record effects; no automatic bundle is justified yet. |
+| Local landing | Reconcile historical real-image witnesses against current named references; resolve actual failures before claiming parity. Complete affected local integration and lint checks, then push/merge and verify remote ancestry. |
+| Policy API | Implement strict policy, checked continuous effort, versioned resolution/fingerprints and replay through actual wrappers. Existing reference and enhancement enums alone do not satisfy this. |
+| Execution routing | Consume backend-owned support in actual zenavif execution; preserve required format, precision, metadata and alpha, with tested refusals. Query-only code is insufficient. |
+| Calibration | Complete canonical scouting, RD/RD-speed zone selection with bounds, and full held-out evaluation. Two-origin ablations are not representative-set calibration. |
+
+Local `cargo clippy --workspace --all-targets --message-format=json` completed
+successfully at source `6b6e145f`, with 683 distinct compiler diagnostics, all
+warnings; 588 are `clippy::excessive_precision`. This is not warning-free
+Clippy. Raw diagnostics and class counts are retained at
+`~/tmp/svt-tracking/landing-clippy{.jsonl,-summary.json}`. Review numerical
+constants separately rather than mechanically rewriting reference literals.
+The subsequent visibility-only fix `fe49eb53` restricts the PD0 helper to its
+existing crate-private argument type. Workspace all-target compile checks,
+2,627/2,627 nextest tests (zero skipped), and 136/136 regression spot-checks
+pass. Logs: `~/tmp/svt-tracking/landing-private-interface-check.log` and
+`landing-visibility-{nextest,spotcheck}.log` in that same directory. Encoding
+logic is unchanged; this does not close the historical real-image failures.
+
+Cost controls: finish one acceptance gate at a time; reuse source-matched
+verification; rerun broad gates only for affected behavior; automate fleet
+collection and refinement; keep hardware cohorts and held-out splits separate.
+These controls change execution order and repetition, not the required scope.
+
 ## 1. Establish the actual feature and reference inventory
 
 - Reconcile current main, local work, open issues and the existing C/HDR port

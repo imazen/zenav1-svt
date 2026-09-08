@@ -59,7 +59,10 @@ precision/dropping alpha; native HDR/alpha measurement remains open.
 
 Issue21 body updated and verified2026-09-08T09:42:05Z. No CI/main push started.
 Latest fetch: SVT unchanged; zenmetrics master advanced to3ab5f791 (GPU-only
-changes); reconcile this incoming change before landing the local stack.
+changes). The local zenmetrics stack rebased successfully onto it; working
+copy f31167e3 is empty, parent1c1b6998. Historical measured source hashes above
+remain the identities of the actual builds. For the current workstream order
+and remaining acceptance gates, read ENCODER-POLICY-GOAL.md's execution checkpoint.
 Next real work: canonical full-population RD/RD-speed scouting and measured
 minimum representatives; strict policy/continuous effort/resolution/replay;
 actual zenavif routing and native HDR/format preservation; older real-image
