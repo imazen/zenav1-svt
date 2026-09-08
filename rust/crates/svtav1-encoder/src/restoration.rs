@@ -103,7 +103,7 @@ impl From<crate::port_lr_level::WnFilterCtrlsFull> for WnFilterCtrls {
 /// C `svt_aom_get_wn_filter_level_allintra` + `svt_aom_set_wn_filter_ctrls`
 /// (enc_mode_config.c:1928 / :1758): level 3 for presets <= 3, level 4 for
 /// 4..=6, disabled above.
-pub fn wn_filter_ctrls_allintra(preset: u8) -> WnFilterCtrls {
+pub fn wn_filter_ctrls_allintra(preset: i8) -> WnFilterCtrls {
     if preset <= 3 {
         WnFilterCtrls {
             enabled: true,

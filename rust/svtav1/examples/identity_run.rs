@@ -257,7 +257,10 @@ fn main() {
     let w: usize = args[2].parse().expect("width");
     let h: usize = args[3].parse().expect("height");
     let qp: u8 = args[4].parse().expect("cli_qp");
-    let preset: u8 = args[5].parse().expect("preset");
+    let preset = svtav1_encoder::speed_config::NativePreset::new(
+        args[5].parse::<i8>().expect("signed preset"),
+    )
+    .expect("native preset must be -1..=13");
     let prefix = &args[6];
     // I420 chroma dims: AV1 4:2:0 uses CEILING rounding for odd luma dims
     // ((w+1)/2), matching the port's `encode_frame_420` (which takes ceiling
@@ -667,8 +670,9 @@ fn main() {
         // this block returns before that line, and duplicating one env read is
         // cheaper than hoisting a binding the still path depends on.
         let mono = std::env::var_os("SVTAV1_MONO").is_some();
-        let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, hier, intra_period)
-            .with_bit_depth(bd);
+        let mut pipeline =
+            EncodePipeline::new_with_preset(w as u32, h as u32, preset, rc, hier, intra_period)
+                .with_bit_depth(bd);
         if !mono {
             pipeline = pipeline.with_chroma_420(true);
         }
@@ -820,7 +824,7 @@ fn main() {
     let superres_denom: Option<u8> = std::env::var("SVTAV1_SUPERRES")
         .ok()
         .and_then(|v| v.parse().ok());
-    let mut pipeline = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
+    let mut pipeline = EncodePipeline::new_with_preset(w as u32, h as u32, preset, rc, 0, 1)
         .with_tile_rows_log2(tile_rows_log2)
         .with_tile_cols_log2(tile_cols_log2)
         .with_bit_depth(bd)

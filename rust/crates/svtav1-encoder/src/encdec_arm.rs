@@ -91,7 +91,7 @@ mod tests {
     /// `FunnelCfg::for_preset` baked stays.
     #[test]
     fn the_allintra_arm_leaves_every_preset_untouched() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let baked = FunnelCfg::for_preset(preset);
             let mut walked = baked;
             apply(&mut walked, ScArm::Allintra);

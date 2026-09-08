@@ -357,7 +357,7 @@ impl IbcCtrls {
 /// disabled). MR tier (level 1) is not reachable from this port's `u8`
 /// preset surface (mirrors `sc_detect.rs::derive_allintra_sc`'s identical
 /// `palette_level` table shape and its same MR-unreachable note).
-pub fn allintra_intrabc_level(preset: u8, sc_class5: bool, enable_intrabc: bool) -> u8 {
+pub fn allintra_intrabc_level(preset: i8, sc_class5: bool, enable_intrabc: bool) -> u8 {
     if !enable_intrabc || !sc_class5 {
         return 0;
     }

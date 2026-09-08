@@ -156,10 +156,10 @@ impl DrCtrls {
     /// (!sc_class5) reports 6/6/6/6/6/9 — the port previously used the
     /// !sc_class5 row for every image, over-pruning the depth descent on
     /// screen content at M0-M2 (e1 15 instead of 200/30).
-    pub fn for_preset_sc(preset: u8, sc_class5: bool) -> Self {
+    pub fn for_preset_sc(preset: i8, sc_class5: bool) -> Self {
         let level: u8 = if sc_class5 {
             match preset {
-                0 | 1 => 1,
+                -1..=1 => 1,
                 2 => 5,
                 3 | 4 => 6,
                 5 => 9,
@@ -167,6 +167,7 @@ impl DrCtrls {
             }
         } else {
             match preset {
+                -1 => 3,
                 0..=4 => 6,
                 5 => 9,
                 _ => 10,
@@ -180,7 +181,7 @@ impl DrCtrls {
 
     /// Pre-fix entry: the !sc_class5 row (level 6 at M0-M4, 9 at M5, 10 at M6+).
     /// Retained for the unit tests, which assert the non-screen behaviour.
-    pub fn for_preset(preset: u8) -> Self {
+    pub fn for_preset(preset: i8) -> Self {
         Self::for_preset_sc(preset, false)
     }
 
@@ -222,13 +223,13 @@ impl DrCtrls {
     /// the oracle. Only `e1_th` / `e2_th` are pre-scaled, and the `i64::MIN`
     /// sentinel is preserved through the scale exactly as C's
     /// `(uint8_t)~0 -> MIN_SIGNED_VALUE` mapping does.
-    pub fn for_arm(arm: crate::sc_detect::ScArm, preset: u8, sc_class5: bool, cli_qp: u32) -> Self {
+    pub fn for_arm(arm: crate::sc_detect::ScArm, preset: i8, sc_class5: bool, cli_qp: u32) -> Self {
         match arm {
             crate::sc_detect::ScArm::Allintra => Self::for_preset_sc(preset, sc_class5),
             crate::sc_detect::ScArm::Video { is_islice } => {
                 let level: u8 = if sc_class5 {
                     match preset {
-                        0..=2 => 0,
+                        -1..=2 => 0,
                         3 => u8::from(!is_islice),
                         4 => 1,
                         5 => {
@@ -245,7 +246,7 @@ impl DrCtrls {
                     }
                 } else {
                     match preset {
-                        0 => 0,
+                        -1 | 0 => 0,
                         1..=3 => 3,
                         4..=6 => 6,
                         7 => 8,
@@ -1055,7 +1056,7 @@ impl NsqCfg {
     /// `me_dist_mod` (:6497-6506) is 0 on an I-slice, so the `+1` ME-distortion
     /// bump never applies to any frame this port encodes — key frames are the
     /// only ones it emits.
-    pub(crate) fn for_arm(arm: crate::sc_detect::ScArm, preset: u8, cli_qp: u32) -> Self {
+    pub(crate) fn for_arm(arm: crate::sc_detect::ScArm, preset: i8, cli_qp: u32) -> Self {
         Self::for_levels(
             crate::part_arm::nsq_search_level(arm, preset, cli_qp),
             crate::part_arm::nsq_geom_level(arm, preset),
@@ -2721,7 +2722,7 @@ mod tests {
         //   codec_wiki (!sc):   p0..p4 -> lvl6, p5 -> lvl9
         // sc_class5 M0/M1 = level 1: s1=e1=200, s2=e2=0 (NOT the sentinel),
         // split_rate_th=0, limit=0.
-        for p in [0u8, 1] {
+        for p in [0i8, 1] {
             let c = DrCtrls::for_preset_sc(p, true);
             assert!(c.adaptive);
             assert_eq!((c.s1_th, c.e1_th), (200, 200));
@@ -2735,7 +2736,7 @@ mod tests {
         assert_eq!((c.s2_th, c.e2_th), (i64::MIN, i64::MIN));
         assert_eq!((c.lower_split_th, c.limit_to_pd0), (10, 2));
         // sc_class5 M3/M4 = level 6, same as the !sc row.
-        for p in [3u8, 4] {
+        for p in [3i8, 4] {
             let sc = DrCtrls::for_preset_sc(p, true);
             assert_eq!((sc.s1_th, sc.e1_th), (15, 15));
             assert_eq!((sc.limit_to_pd0, sc.lower_split_th), (1, 20));
@@ -2746,7 +2747,7 @@ mod tests {
         assert_eq!((sc5.s1_th, sc5.e1_th), (10, 10));
         // !sc_class5 keeps the pre-fix per-preset row for every preset, so the
         // whole non-screen envelope (every mainline gate) is byte-identical.
-        for p in 0..=6u8 {
+        for p in 0..=6i8 {
             let a = DrCtrls::for_preset_sc(p, false);
             let b = DrCtrls::for_preset(p);
             assert_eq!(
@@ -2759,7 +2760,7 @@ mod tests {
             );
         }
         // The screen and non-screen rows differ exactly at M0/M1/M2.
-        for p in [0u8, 1, 2] {
+        for p in [0i8, 1, 2] {
             assert_ne!(
                 DrCtrls::for_preset_sc(p, true).e1_th,
                 DrCtrls::for_preset_sc(p, false).e1_th,

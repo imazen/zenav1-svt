@@ -1693,7 +1693,7 @@ mod inter_coeff_level_tests {
 
 /// C allintra RDOQ policy (enc_mode_config.c:14931), `OPT_APPROX_COEFF_RATE`
 /// branch: presets <= M5 always level 1; above, by coeff_lvl.
-pub fn rdoq_level_allintra(eff_enc_mode: u8, coeff_lvl: CoeffLvl) -> u8 {
+pub fn rdoq_level_allintra(eff_enc_mode: i8, coeff_lvl: CoeffLvl) -> u8 {
     if eff_enc_mode <= 5 {
         1
     } else {

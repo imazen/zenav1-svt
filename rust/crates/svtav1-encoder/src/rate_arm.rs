@@ -49,7 +49,7 @@
 //!   fields back, which upgrades `quant::rdoq_level_allintra` (previously a
 //!   hand-transcription with unit tests only) to tier 1.
 
-use crate::port_enc_mode_config::enc_mode::{M9, M10, M11};
+use crate::port_enc_mode_config::enc_mode::{M9, M11};
 use crate::port_enc_mode_config::{leaf, md_config};
 use crate::quant::CoeffLvl;
 use crate::sc_detect::ScArm;
@@ -69,10 +69,10 @@ use crate::sc_detect::ScArm;
 /// `pred_structure == RANDOM_ACCESS`, and the port's video envelope is
 /// LOW_DELAY.
 #[must_use]
-pub(crate) fn eff_enc_mode(arm: ScArm, preset: u8) -> u8 {
+pub(crate) fn eff_enc_mode(arm: ScArm, preset: i8) -> i8 {
     match arm {
-        ScArm::Allintra => preset.min(M9 as u8),
-        ScArm::Video { .. } => preset.min(M11 as u8),
+        ScArm::Allintra => preset.min(M9),
+        ScArm::Video { .. } => preset.min(M11),
     }
 }
 
@@ -85,10 +85,10 @@ pub(crate) fn eff_enc_mode(arm: ScArm, preset: u8) -> u8 {
 /// `scs->allintra`), which is sound precisely because this arm's ladder never
 /// reads it.
 #[must_use]
-pub(crate) fn rdoq_level(arm: ScArm, enc_mode: u8, coeff_lvl: CoeffLvl) -> u8 {
+pub(crate) fn rdoq_level(arm: ScArm, enc_mode: i8, coeff_lvl: CoeffLvl) -> u8 {
     match arm {
         ScArm::Allintra => crate::quant::rdoq_level_allintra(enc_mode, coeff_lvl),
-        ScArm::Video { .. } => md_config::rdoq_level_default(i8::try_from(enc_mode).unwrap_or(M10)),
+        ScArm::Video { .. } => md_config::rdoq_level_default(enc_mode),
     }
 }
 
@@ -98,7 +98,7 @@ pub(crate) fn rdoq_level(arm: ScArm, enc_mode: u8, coeff_lvl: CoeffLvl) -> u8 {
 /// allintra (`enc_mode_config.c:9917`): 1 through M6, 4 at M7/M8, 0 above.
 /// video (`:8942`): 1, unconditionally.
 #[must_use]
-pub(crate) fn rate_est_level(arm: ScArm, enc_mode: u8) -> u8 {
+pub(crate) fn rate_est_level(arm: ScArm, enc_mode: i8) -> u8 {
     match arm {
         ScArm::Allintra => {
             if enc_mode <= 6 {
@@ -122,8 +122,8 @@ pub(crate) fn rate_est_level(arm: ScArm, enc_mode: u8) -> u8 {
 /// `update_mv = 0`), so no I-slice outcome depends on it. Threaded rather
 /// than assumed so the derivation stays right when non-key video frames land.
 #[must_use]
-pub(crate) fn update_cdf_level(arm: ScArm, enc_mode: u8, is_base: bool) -> u8 {
-    let m = i8::try_from(enc_mode).unwrap_or(M11);
+pub(crate) fn update_cdf_level(arm: ScArm, enc_mode: i8, is_base: bool) -> u8 {
+    let m = enc_mode;
     match arm {
         ScArm::Allintra => leaf::get_update_cdf_level_allintra(m),
         ScArm::Video { is_islice } => leaf::get_update_cdf_level_default(m, is_islice, is_base),
@@ -160,17 +160,17 @@ mod tests {
 
     /// The predicate `pipeline.rs` carried inline before this module existed,
     /// kept VERBATIM as the regression oracle for the still path.
-    fn old_flattened_eff_mode(preset: u8) -> u8 {
+    fn old_flattened_eff_mode(preset: i8) -> i8 {
         preset.min(9)
     }
 
     /// Ditto for the per-SB CDF-chain gate.
-    fn old_flattened_chain_gate(preset: u8) -> bool {
+    fn old_flattened_chain_gate(preset: i8) -> bool {
         matches!(preset, 0..=6)
     }
 
     /// Ditto for `FunnelCfg::for_preset`'s baked rate-estimation pair.
-    fn old_flattened_rate_est_pair(preset: u8) -> (u8, bool) {
+    fn old_flattened_rate_est_pair(preset: i8) -> (u8, bool) {
         match preset {
             0..=6 => (1, true),
             7 | 8 => (2, false),
@@ -183,7 +183,7 @@ mod tests {
     /// at every preset the port accepts.
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let eff = eff_enc_mode(ScArm::Allintra, preset);
             assert_eq!(eff, old_flattened_eff_mode(preset), "eff mode p{preset}");
             assert_eq!(
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn video_arm_ladders() {
         let arm = ScArm::Video { is_islice: true };
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let eff = eff_enc_mode(arm, preset);
             assert_eq!(eff, preset.min(11), "eff mode p{preset}");
             // rdoq is coeff_lvl-independent on this arm.
@@ -246,7 +246,7 @@ mod tests {
     fn the_arms_actually_differ() {
         let vid = ScArm::Video { is_islice: true };
         // update_cdf: the still arm is OFF at 7/8, the video arm is ON.
-        for preset in [7u8, 8] {
+        for preset in [7i8, 8] {
             let ea = eff_enc_mode(ScArm::Allintra, preset);
             let ev = eff_enc_mode(vid, preset);
             assert_eq!(update_cdf_level(ScArm::Allintra, ea, true), 0);
@@ -258,7 +258,7 @@ mod tests {
             assert_eq!(rate_est_ctrls(rate_est_level(vid, ev)), (1, true));
         }
         // rdoq: the still arm's M6+ band is coeff-driven and never 1.
-        for preset in 6u8..=13 {
+        for preset in 6i8..=13 {
             let ea = eff_enc_mode(ScArm::Allintra, preset);
             assert_eq!(rdoq_level(ScArm::Allintra, ea, CoeffLvl::Normal), 3);
             assert_eq!(rdoq_level(ScArm::Allintra, ea, CoeffLvl::High), 0);

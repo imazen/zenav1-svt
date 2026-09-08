@@ -1567,7 +1567,7 @@ pub struct SbQindexSteps {
 /// `enc_mode` is `static_config.enc_mode`, the CLI preset, NOT the
 /// screen-content-clamped `eff_enc_mode`.
 #[must_use]
-pub fn stats_based_sb_lambda_modulation(enc_mode: u8, rtc: bool) -> bool {
+pub fn stats_based_sb_lambda_modulation(enc_mode: i8, rtc: bool) -> bool {
     enc_mode <= if rtc { 10 } else { 11 }
 }
 

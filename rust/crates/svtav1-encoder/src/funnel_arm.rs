@@ -59,8 +59,8 @@ use crate::sc_detect::ScArm;
 /// `pcs->txt_level` for this arm. `enc_mode` must already be
 /// [`crate::rate_arm::eff_enc_mode`]-clamped.
 #[must_use]
-pub(crate) fn txt_level(arm: ScArm, enc_mode: u8, is_base: bool) -> u8 {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+pub(crate) fn txt_level(arm: ScArm, enc_mode: i8, is_base: bool) -> u8 {
+    let m = enc_mode;
     match arm {
         ScArm::Allintra => md_config::txt_level_allintra(m),
         ScArm::Video { .. } => md_config::txt_level_default(m, is_base),
@@ -103,8 +103,8 @@ pub(crate) fn txt_ctrls(level: u8) -> (bool, i32, i32, u64, u64) {
 /// `pcs->cfl_level` for this arm. `enc_mode` must already be
 /// [`crate::rate_arm::eff_enc_mode`]-clamped.
 #[must_use]
-pub(crate) fn cfl_level(arm: ScArm, enc_mode: u8, is_base: bool, is_islice: bool) -> u8 {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+pub(crate) fn cfl_level(arm: ScArm, enc_mode: i8, is_base: bool, is_islice: bool) -> u8 {
+    let m = enc_mode;
     match arm {
         ScArm::Allintra => md_config::cfl_level_allintra(m),
         ScArm::Video { .. } => md_config::cfl_level_default(m, is_base, is_islice),
@@ -144,7 +144,7 @@ pub(crate) fn cfl_ctrls(level: u8) -> (bool, Option<(u8, u32)>) {
 
 /// Stamp both ladders' results onto a [`FunnelCfg`], replacing the values
 /// `FunnelCfg::for_preset` baked from the allintra arm.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_islice: bool, is_base: bool) {
+pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_islice: bool, is_base: bool) {
     let (txt_on, lt16, ge16, satd_th, rate_th) = txt_ctrls(txt_level(arm, enc_mode, is_base));
     cfg.txt_on = txt_on;
     cfg.txt_group_lt16 = lt16;
@@ -188,7 +188,7 @@ mod tests {
     /// transcription.
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let baked = FunnelCfg::for_preset(preset);
             let mut walked = baked;
             let eff = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);

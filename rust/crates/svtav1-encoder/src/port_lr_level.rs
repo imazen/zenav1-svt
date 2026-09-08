@@ -4,7 +4,7 @@
 //!
 //! `restoration.rs::wn_filter_ctrls_allintra` ports
 //! `svt_aom_get_wn_filter_level_allintra` + `svt_aom_set_wn_filter_ctrls`, and
-//! `svt_aom_get_sg_filter_level_allintra` is 0 for every representable preset,
+//! `svt_aom_get_sg_filter_level_allintra` is 0 for normal presets 0 through 13,
 //! so the port has only ever had the ALL-INTRA level table.
 //!
 //! That is not the only selector. `pd_process.c:4935-4938` is
@@ -28,7 +28,7 @@
 //!   at all. That is a byte difference on a one-frame video-mode cell with no
 //!   new algorithm required.
 //! * SGR (`svt_aom_get_sg_filter_level_default`, `:1402`): 3 at `<= M3`, 0
-//!   above (1 at `<= ENC_MR`, unreachable). Level 3 turns on the whole SGR
+//!   above (1 at `<= ENC_MR`). Level 3 turns on the whole SGR
 //!   search — see `svtav1_dsp::port_sgr`'s module doc.
 //!
 //! # Evidence: TIER 4, and here is exactly why
@@ -97,7 +97,7 @@ pub const INPUT_SIZE_360P_RANGE: u8 = 1;
 ///
 /// `is_not_last_layer` is the load-bearing argument the all-intra variant does
 /// not have: on the highest temporal layer Wiener is OFF entirely.
-pub fn wn_filter_level_default(enc_mode: u8, input_resolution: u8, is_not_last_layer: bool) -> u8 {
+pub fn wn_filter_level_default(enc_mode: i8, input_resolution: u8, is_not_last_layer: bool) -> u8 {
     let mut lvl = if enc_mode <= 3 {
         if is_not_last_layer { 4 } else { 0 }
     } else if enc_mode <= 8 {
@@ -121,7 +121,7 @@ pub fn wn_filter_level_default(enc_mode: u8, input_resolution: u8, is_not_last_l
 /// the clause here would have disabled Wiener at 8K all-intra, where C keeps
 /// it on. Inert until now because nothing called this function.
 #[must_use]
-pub fn wn_filter_level_allintra(enc_mode: u8) -> u8 {
+pub fn wn_filter_level_allintra(enc_mode: i8) -> u8 {
     if enc_mode <= 3 {
         3
     } else if enc_mode <= 6 {
@@ -133,20 +133,13 @@ pub fn wn_filter_level_allintra(enc_mode: u8) -> u8 {
 
 /// Port of `svt_aom_get_sg_filter_level_default` (`enc_mode_config.c:1402`).
 ///
-/// The `enc_mode <= ENC_MR` arm (level 1) is unreachable from this port —
-/// `ENC_MR` is -1 and the preset is a `u8` — so it is written as the
-/// `enc_mode <= 3 -> 3` arm plus a documented note, not as a branch that can
-/// never be taken.
-pub fn sg_filter_level_default(enc_mode: u8, input_resolution: u8, fast_decode: bool) -> u8 {
-    // C: `if (enc_mode <= ENC_MR) 1;` — ENC_MR is -1, structurally unreachable
-    // from a u8 preset (CLAUDE.md envelope guard 5).
-    let mut lvl = if enc_mode <= 3 { 3 } else { 0 };
-    if input_resolution >= INPUT_SIZE_8K_RANGE
-        || (fast_decode && input_resolution > INPUT_SIZE_360P_RANGE)
-    {
-        lvl = 0;
-    }
-    lvl
+/// Keep the signed research branch in the shared C translation.
+pub fn sg_filter_level_default(enc_mode: i8, input_resolution: u8, fast_decode: bool) -> u8 {
+    crate::port_enc_mode_config::leaf::get_sg_filter_level_default(
+        enc_mode,
+        input_resolution,
+        u8::from(fast_decode),
+    )
 }
 
 /// Port of `svt_aom_get_sg_filter_level_rtc` (`enc_mode_config.c:1420`) —
@@ -269,7 +262,7 @@ mod tests {
     fn video_mode_wiener_differs_from_allintra_where_the_gap_was_claimed() {
         // Preset 4..=6: allintra level 4 (chroma ON) vs default level 5
         // (chroma OFF) on a non-last layer.
-        for preset in 4..=6u8 {
+        for preset in 4..=6i8 {
             let ai = set_wn_filter_ctrls(wn_filter_level_allintra(preset));
             let vid = set_wn_filter_ctrls(wn_filter_level_default(preset, 1, true));
             assert!(ai.use_chroma, "allintra preset {preset} should use chroma");
@@ -280,12 +273,12 @@ mod tests {
             assert!(ai.enabled && vid.enabled);
         }
         // Presets 7..=8: allintra is OFF entirely, video mode is ON (level 5).
-        for preset in 7..=8u8 {
+        for preset in 7..=8i8 {
             assert_eq!(wn_filter_level_allintra(preset), 0);
             assert_eq!(wn_filter_level_default(preset, 1, true), 5);
         }
         // Last temporal layer: video-mode Wiener is off at every preset.
-        for preset in 0..=13u8 {
+        for preset in 0..=13i8 {
             assert_eq!(
                 wn_filter_level_default(preset, 1, false),
                 0,
@@ -296,7 +289,7 @@ mod tests {
 
     #[test]
     fn video_mode_sgr_is_on_at_presets_0_to_3_only() {
-        for preset in 0..=3u8 {
+        for preset in 0..=3i8 {
             let c = set_sg_filter_ctrls(sg_filter_level_default(preset, 1, false));
             assert!(c.enabled, "preset {preset} should enable SGR in video mode");
             assert!(c.use_chroma);
@@ -305,14 +298,14 @@ mod tests {
             assert_eq!(c.ep_inc, [8, 1]);
             assert_eq!(c.refine, [true, false]);
         }
-        for preset in 4..=13u8 {
+        for preset in 4..=13i8 {
             assert_eq!(sg_filter_level_default(preset, 1, false), 0);
         }
     }
 
     #[test]
     fn eight_k_and_fast_decode_force_both_filters_off() {
-        for preset in 0..=13u8 {
+        for preset in 0..=13i8 {
             assert_eq!(
                 wn_filter_level_default(preset, INPUT_SIZE_8K_RANGE, true),
                 0
@@ -328,7 +321,7 @@ mod tests {
             // "above 360p", which is exactly the constant corrected above.
             assert_eq!(sg_filter_level_default(preset, 2, true), 0);
         }
-        for preset in 0..=3u8 {
+        for preset in 0..=3i8 {
             assert_eq!(
                 sg_filter_level_default(preset, INPUT_SIZE_360P_RANGE, true),
                 3,

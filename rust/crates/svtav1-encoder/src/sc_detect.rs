@@ -517,7 +517,7 @@ pub enum ScArm {
 /// Kept as the still path's entry point with its exact previous behaviour;
 /// [`derive_sc`] is the arm-aware generalization.
 pub fn derive_allintra_sc(
-    preset: u8,
+    preset: i8,
     y: &[u8],
     y_stride: usize,
     width: usize,
@@ -548,7 +548,7 @@ pub fn derive_allintra_sc(
 #[must_use]
 pub fn derive_sc(
     arm: ScArm,
-    preset: u8,
+    preset: i8,
     y: &[u8],
     y_stride: usize,
     width: usize,
@@ -582,11 +582,7 @@ pub fn derive_sc(
 /// Derive coding tools from the resolved picture classes. Forced SCM 0/1
 /// sets all six classes before these preset-dependent ladders in C
 /// (`perform_sc_detection`, pd_process.c:4773). It does not change the preset.
-pub(crate) fn derive_sc_classes(
-    arm: ScArm,
-    preset: u8,
-    classes: ScClasses,
-) -> ScDerivation {
+pub(crate) fn derive_sc_classes(arm: ScArm, preset: i8, classes: ScClasses) -> ScDerivation {
     // C has a PAIR of palette ladders and the two arms take different rows:
     // allintra `:2374-2390` (2/3/4/5/7 over M0..M7, off from M8) against video
     // `:2056-2075` (1/2/4/5/6/8 over M0..M10, off from M11). The video one
@@ -809,7 +805,7 @@ mod arm_tests {
     /// produced with. Kept verbatim as the regression oracle for
     /// [`allintra_flattening_matches_the_ladder`]; deleting it would delete
     /// the only independent statement of what the still path used to do.
-    fn allintra_intrabc_level_flattened(preset: u8, sc_class5: bool) -> u8 {
+    fn allintra_intrabc_level_flattened(preset: i8, sc_class5: bool) -> u8 {
         if sc_class5 {
             match preset {
                 0 => 3,
@@ -831,7 +827,7 @@ mod arm_tests {
     /// path by construction; the byte gates then confirm it end to end.
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0..=13u8 {
+        for preset in 0..=13i8 {
             for sc5 in [false, true] {
                 assert_eq!(
                     crate::intrabc::allintra_intrabc_level(preset, sc5, true),
@@ -907,7 +903,7 @@ mod arm_tests {
     #[test]
     fn video_allow_sct_is_arm_correct_without_the_palette_ladder() {
         use crate::port_enc_mode_config::multi_processes::intrabc_level_default;
-        for preset in 0..=13u8 {
+        for preset in 0..=13i8 {
             // The scm gate (enc_handle.c:4638-4670) zeroes every class above
             // M8 on the video arm, so sc_class5 can only be set at 0..=8.
             let sc5 = preset <= 8;

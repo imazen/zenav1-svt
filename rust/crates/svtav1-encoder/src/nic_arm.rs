@@ -128,8 +128,8 @@ pub(crate) struct NicRow {
 /// `pcs->nic_level` for this arm. `enc_mode` must already be
 /// [`crate::rate_arm::eff_enc_mode`]-clamped.
 #[must_use]
-pub(crate) fn nic_level(arm: ScArm, enc_mode: u8, is_base: bool) -> u8 {
-    let m = i8::try_from(enc_mode).unwrap_or(i8::MAX);
+pub(crate) fn nic_level(arm: ScArm, enc_mode: i8, is_base: bool) -> u8 {
+    let m = enc_mode;
     match arm {
         ScArm::Allintra => leaf::get_nic_level_allintra(m),
         ScArm::Video { .. } => leaf::get_nic_level_default(m, is_base),
@@ -218,7 +218,7 @@ pub(crate) fn nic_ctrls(level: u8) -> NicRow {
 
 /// Stamp the row onto a [`FunnelCfg`], replacing what
 /// `FunnelCfg::for_preset` baked from the allintra arm.
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: u8, is_base: bool) {
+pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_base: bool) {
     let r = nic_ctrls(nic_level(arm, enc_mode, is_base));
     cfg.nic_num = r.nic_num;
     cfg.mds1_cand_base_th = r.mds1_cand_base_th;
@@ -259,7 +259,7 @@ mod tests {
     /// is re-measured rather than assumed.
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0u8..=13 {
+        for preset in 0i8..=13 {
             let baked = FunnelCfg::for_preset(preset);
             let mut walked = baked;
             let eff = crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset);

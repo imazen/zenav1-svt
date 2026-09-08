@@ -535,10 +535,10 @@ fn generate_sb_qindex_skips_normalize_at_delta_q_res_one() {
 fn stats_based_sb_lambda_modulation_is_off_above_m11() {
     use svtav1_encoder::port_rc_process::stats_based_sb_lambda_modulation as f;
     // Non-RTC: `enc_mode <= ENC_M11`.
-    for m in 0..=11u8 {
+    for m in 0..=11i8 {
         assert!(f(m, false), "preset {m} must have modulation ON");
     }
-    for m in 12..=13u8 {
+    for m in 12..=13i8 {
         assert!(!f(m, false), "preset {m} must have modulation OFF");
     }
     // RTC drops the boundary to ENC_M10.

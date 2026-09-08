@@ -607,7 +607,7 @@ fn m2_m3_funnel_cfg_matches_capture() {
     // lines 12-13): txt satd 20, groups 6/6, rate 250; txs 2/2 with
     // d1/d2 offsets 0; M2 nic case 3 (scal 12, mds1 1200/rank 0,
     // mds2 30/rank 0/rel 0, mds3 25); M3 nic case 5 == M4.
-    for p in [2u8, 3] {
+    for p in [2i8, 3] {
         let c = FunnelCfg::for_preset(p);
         assert_eq!(c.txt_satd_th, 20, "p{p}");
         assert_eq!((c.txt_group_lt16, c.txt_group_ge16), (6, 6));

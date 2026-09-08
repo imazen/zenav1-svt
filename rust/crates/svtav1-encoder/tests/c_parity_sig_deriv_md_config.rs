@@ -694,7 +694,7 @@ fn allintra_rdoq_ladder_matches_c() {
             // pins that the `<= ENC_M5` arm covers it.
             if enc_mode >= 0 {
                 let port = svtav1_encoder::quant::rdoq_level_allintra(
-                    enc_mode as u8,
+                    enc_mode as i8,
                     match lvl {
                         InputCoeffLvl::VLow => svtav1_encoder::quant::CoeffLvl::VLow,
                         InputCoeffLvl::Low => svtav1_encoder::quant::CoeffLvl::Low,

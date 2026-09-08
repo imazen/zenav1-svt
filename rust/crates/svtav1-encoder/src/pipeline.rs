@@ -393,6 +393,29 @@ impl EncodePipeline {
         hierarchical_levels: u8,
         intra_period: u32,
     ) -> Self {
+        Self::new_with_preset(
+            width,
+            height,
+            crate::speed_config::NativePreset::new(preset.min(13) as i8).unwrap(),
+            rc_config,
+            hierarchical_levels,
+            intra_period,
+        )
+    }
+
+    /// Construct with a checked native C preset, including research mode -1.
+    ///
+    /// Research-mode translation is in progress; accepting -1 is not a parity
+    /// guarantee. See `docs/research-preset-port-map.md` for missing consumers.
+    pub fn new_with_preset(
+        width: u32,
+        height: u32,
+        preset: crate::speed_config::NativePreset,
+        rc_config: RcConfig,
+        hierarchical_levels: u8,
+        intra_period: u32,
+    ) -> Self {
+        let preset = preset.value();
         // TWO boundary systems (frame_geom::FrameDims): the caller passes
         // TRUE dims; the encode runs on ALIGNED (8-rounded) dims. The
         // full-SB (aligned % 64 == 0) scope constraint is enforced on the
@@ -426,7 +449,9 @@ impl EncodePipeline {
             grain_references: core::array::from_fn(|_| None),
             grain_sequence_present: None,
             pd_ctx: crate::port_picstruct::PicDecisionCtx::new(),
-            speed_config: SpeedConfig::from_preset(preset),
+            speed_config: SpeedConfig::from_native_preset(
+                crate::speed_config::NativePreset::new(preset).unwrap(),
+            ),
             rc_config,
             rc_state: RcState::default(),
             dpb: DecodedPictureBuffer::new(),
@@ -499,7 +524,7 @@ impl EncodePipeline {
     /// a genuine 128-level NONE/HORZ/VERT RD search (this path is
     /// forced-SPLIT), the b64<->sb stat bridges (`get_sb128_variance` /
     /// `get_sb128_me_data`), and the CDEF 4-quadrant three-phase contract.
-    fn sb128_encode_supported(preset: u8) -> bool {
+    fn sb128_encode_supported(preset: i8) -> bool {
         // All presets are admitted; no content gate is applied here.
         // Presets 0/1 are the only ones C ever codes at 128 in
         // allintra (`derive_super_block_size`), so anything else reaching
@@ -595,7 +620,7 @@ impl EncodePipeline {
         Ok(pic)
     }
 
-    fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: u8) -> (usize, bool) {
+    fn resolve_sb_size(derived: usize, override_: Option<usize>, preset: i8) -> (usize, bool) {
         let want = override_
             .filter(|n| matches!(n, 64 | 128))
             .unwrap_or(derived);
@@ -6064,7 +6089,7 @@ impl EncodePipeline {
             // deblock ladder and the rate ladders already take.
             //
             // The all-intra arm is `wn_filter_level_allintra` (3 / 4 / off) with
-            // `sg_filter_level_allintra` == 0 at every representable preset,
+            // `sg_filter_level_allintra` == 0 at normal presets 0 through 13,
             // which is why the port has only ever run Wiener. The VIDEO arm is
             // `_default`: Wiener 4 at <= M3 and 5 at <= M8 on a non-last layer
             // (level 5 is LUMA-ONLY), and SGR level 3 at <= M3 — so a video-mode
@@ -6090,7 +6115,11 @@ impl EncodePipeline {
             let (ctrls, sg_ctrls) = match sc_arm {
                 crate::sc_detect::ScArm::Allintra => (
                     crate::restoration::wn_filter_ctrls_allintra(self.speed_config.preset),
-                    crate::port_lr_level::SgFilterCtrls::default(),
+                    crate::port_lr_level::set_sg_filter_ctrls(
+                        crate::port_enc_mode_config::leaf::get_sg_filter_level_allintra(
+                            lr_enc_mode,
+                        ),
+                    ),
                 ),
                 crate::sc_detect::ScArm::Video { .. } => {
                     let wn = crate::port_lr_level::wn_filter_level_default(
@@ -10650,7 +10679,7 @@ fn dump_tree_leaves(tree: &crate::partition::PartitionTree, x: usize, y: usize) 
 fn bd10_full_rd_supported(
     coded_lossless: bool,
     bit_depth: u8,
-    preset: u8,
+    preset: i8,
     chroma_420: bool,
     _w: usize,
     _h: usize,

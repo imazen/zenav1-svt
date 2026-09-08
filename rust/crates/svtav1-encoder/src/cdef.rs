@@ -273,7 +273,7 @@ pub fn scale_strengths(pick: &mut CdefPick, scaling: u8) {
     }
 }
 
-pub fn allintra_preset_uses_cdef_search(preset: u8) -> bool {
+pub fn allintra_preset_uses_cdef_search(preset: i8) -> bool {
     preset <= 6
 }
 
@@ -1797,7 +1797,7 @@ mod tests {
     /// Kept as the regression oracle for
     /// [`allintra_flattening_matches_the_ladder`] — deleting it would delete
     /// the only independent statement of what the still path used to do.
-    fn allintra_cfg_for_preset_flattened(preset: u8) -> CdefSearchCfg {
+    fn allintra_cfg_for_preset_flattened(preset: i8) -> CdefSearchCfg {
         let (first, extra): (&[usize], &[i32]) = match preset {
             0 => (&[0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14], &[1, 2, 3]),
             1..=3 => (&[0, 4, 8, 12, 15], &[1, 2, 3]),
@@ -1829,7 +1829,7 @@ mod tests {
     /// then confirm it end to end.
     #[test]
     fn allintra_flattening_matches_the_ladder() {
-        for preset in 0..=6u8 {
+        for preset in 0..=6i8 {
             let level = cdef_search_level_allintra(
                 preset as i8,
                 0,
@@ -1851,7 +1851,7 @@ mod tests {
         }
         // 7+ takes the qp fast path, which is the other half of the old
         // `allintra_preset_uses_cdef_search` predicate.
-        for preset in 7..=13u8 {
+        for preset in 7..=13i8 {
             let level = cdef_search_level_allintra(
                 preset as i8,
                 0,

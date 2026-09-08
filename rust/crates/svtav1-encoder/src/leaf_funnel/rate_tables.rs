@@ -814,7 +814,7 @@ impl FunnelCfg {
     /// C-exact per-preset derivation for the still/420 allintra path.
     /// All presets construct one; explicit arms cover 0..=8 and the tail
     /// covers 9+. Presets >= 9 clamp to eff-M9 (enc_handle.c:4634).
-    pub fn for_preset(preset: u8) -> Self {
+    pub fn for_preset(preset: i8) -> Self {
         // M6+ common tail (intra_level 6/7/8: mode_end SMOOTH, angular
         // level 4, txt groups 5/4 satd 10 rate 100, uv follows luma, no
         // SH edge filter bit).
@@ -927,7 +927,7 @@ impl FunnelCfg {
             // - nsq_search level 3 vs M1's 10 (NsqCfg::for_preset_qp).
             // pd0_lvl 0, txt_level 2, txs_level 2, intra_level 1, dr_level 6
             // are all shared with M1.
-            0 => FunnelCfg {
+            -1 | 0 => FunnelCfg {
                 mode_end: 12,
                 angular_level: 1,
                 nic_num: (20, 20, 20),

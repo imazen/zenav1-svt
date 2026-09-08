@@ -101,7 +101,7 @@ pub fn ac_qlookup_10(qindex: u8) -> i16 {
 ///   streams), 1 = true 10-bit, 2 = DUAL (== 1 for intra; IntraBC
 ///   compensation searches at 8-bit).
 ///   --hbd-mds is NEVER consulted on the allintra path (map §2).
-pub fn allintra_hbd_md(encoder_bit_depth: u8, _preset: u8) -> u8 {
+pub fn allintra_hbd_md(encoder_bit_depth: u8, _preset: i8) -> u8 {
     if encoder_bit_depth <= 8 {
         0
     } else {
