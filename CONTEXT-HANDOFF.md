@@ -1,3 +1,30 @@
+Latest continuation: local svupxuyl/d78559a2 batches four IntraBC mesh SAD
+candidates with shared source loads and SIMD for width4. Preserves C traversal,
+strict ties and remainder behavior.2619 workspace tests and133/133 regression
+checks passed before the dependency update. Canonical QP20 three-round repeat
+completes18/18, all OBU hashes unchanged. Screenshot RustMR13.528s→6.106s,
+C control2.504→2.503s; photoRustMR3.160→3.146s. Data~/tmp/av1-imazen26-sad4-2026-09-08.
+User then requested archmage0.9.29: new local ntyrrqtu replaces the temporary
+Git patches with registry archmage/macro/magetypes0.9.29; SVT requirement now
+0.9.29. Same migration in zenmetrics ruxnukwz and zenavif wtpwpuxu (other patches
+preserved). All3 lockfiles verified exact registry0.9.29, no old Git package.
+Published0.9.29 now passes2619/2619 workspace nextest and133/133 spotchecks.
+Comparator5tests, zenavif27backend/roundtrip tests and all6 standalone probe
+all-target builds pass on published0.9.29. Probe manifests/locks also migrated,
+no old Git pins remain in repository Cargo manifests/locks. Rebuilt static
+comparator and completed18/18 canonical QP20 repeat on published0.9.29: all
+output hashes unchanged; screenshotMR6.114s, C2.507s, Rust0 1.672s; photoMR3.153s.
+New binary SHA1a65ccad0407dda48f8643cc23e09ae992237a35c1fed4257b83f6632981d9f2.
+Logs~/tmp/svt-tracking/archmage029-*; rows~/tmp/av1-imazen26-sad4-archmage029-2026-09-08.
+Post-migration default synthetic+dims identity sweep completed: 1100/1100
+byte-identical, zero pinned exceptions and zero harness errors. Evidence:
+~/tmp/svt-tracking/post-sad4-full.tsv and post-sad4-full.log; retained artifacts
+in post-sad4-full/artifacts. This checks the pinned hybrid C MODE0 reference,
+not an independently built pristine v4.2.0 oracle or the remaining real tier.
+All heavy jobs terminal. No push/CI. Next: continue full policy goal—native-1
+remaining coverage/main gates, Zen AOM adoption just beyond-1, canonical fleet
+RD-speed scouting/minimum representatives, and actual backend routing.
+
 Latest research checkpoint (2026-09-08): native10 IntraBC fix passes132/132
 regression checks and120/120 native10 geometry. AvifEncoder research/odd-size
 support passes2618 workspace tests,3 doctests and132/132 spotchecks. The new

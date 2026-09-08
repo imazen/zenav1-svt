@@ -55,7 +55,8 @@ dependencies = [
 [[package]]
 name = "archmage"
 version = "0.9.29"
-source = "git+https://github.com/imazen/archmage?rev=cc24398c9a9fee0251722931e295da840730704d#cc24398c9a9fee0251722931e295da840730704d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e3a17fc8196cce2902db52de7a21d4407971d080c01a0256037fcd3fc6e536e"
 dependencies = [
  "archmage-macros",
  "safe_unaligned_simd",
@@ -65,7 +66,8 @@ dependencies = [
 [[package]]
 name = "archmage-macros"
 version = "0.9.29"
-source = "git+https://github.com/imazen/archmage?rev=cc24398c9a9fee0251722931e295da840730704d#cc24398c9a9fee0251722931e295da840730704d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d0c10fb756a60ff9418d3e5dcd2b665c5914e32391d2523995d2c2c09237ac6"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -193,7 +195,8 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 [[package]]
 name = "magetypes"
 version = "0.9.29"
-source = "git+https://github.com/imazen/archmage?rev=cc24398c9a9fee0251722931e295da840730704d#cc24398c9a9fee0251722931e295da840730704d"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb20fe6c3852ae9d38e328f9da0a77bdb6d2837f7c8cad0bda1b9bcf77c4e251"
 dependencies = [
  "archmage",
  "rustversion",
@@ -569,6 +572,8 @@ dependencies = [
 [[package]]
 name = "zenbench"
 version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4f7f6d55a1c1121b07981a891b2ca311ebec953ccc9be2f87586224fb2eb0e0"
 dependencies = [
  "clap",
  "fs4",

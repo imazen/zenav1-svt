@@ -1,5 +1,16 @@
 # Performance status — G4 baseline (port vs C wall clock)
 
+> **Batched IntraBC SAD, local continuation (2026-09-08):** `d78559a2`
+> shares source loads across the four mesh candidates and vectorizes width4.
+> Three-round canonical screenshot QP20 repeat: **13.528s→6.106s**, unchanged
+> **14,292B /84.101 SSIM2**; C control **2.504s→2.503s**. The photo control
+> is essentially unchanged. All2,619 tests and133/133 regression checks pass.
+> This precedes the subsequent published archmage0.9.29 migration; that graph
+> passes the same checks plus 1,100/1,100 default synthetic+dims C identity
+> cells (zero pinned exceptions or harness errors); its18-encode repeat also preserves every byte, with
+> screenshotMR6.114s and C2.507s. See the linked RD report below for scope,
+> remaining gap and artifacts.
+
 > **Research preset -1 canonical screenshot (2026-09-08, local unlanded):**
 > [RD baseline and profiling](../../../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESEARCH_BASELINE.md).
 > At 512×320 QP20, C/Rust -1 emit identical14,292B at84.101 SSIM2,
