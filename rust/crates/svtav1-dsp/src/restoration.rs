@@ -427,7 +427,7 @@ fn wiener_convolve_simd(
             while x < w {
                 let mut acc = bias_h;
                 for k in 0..8 {
-                    acc = acc + i32x16::from_slice(token, &s32[x + k..]) * hc[k];
+                    acc += i32x16::from_slice(token, &s32[x + k..]) * hc[k];
                 }
                 let v = acc
                     .shr_arithmetic_const::<WIENER_ROUND0_BITS>()
@@ -1111,19 +1111,19 @@ fn cs_mirror(win2: usize, h: &mut [i64]) {
 /// [`cs_mirror`] fills the rest.
 ///
 /// **The six steps** (C's numbering):
-/// 1. Every `M` entry and block `(0, tt)`'s TOP ROW for every `tt` — full
-///    dots over the region. C's `stats_top_win*` (`pickrst_avx2.c:271`).
-/// 2. Block `(0, tt)`'s LEFT COLUMN for `tt >= 1` — full dots. C's
-///    `stats_left_win*` (`:315`).
-/// 3-4. Every other block's top row and left column, from block
-///      `(kk-1, tt-1)`'s by a COLUMN-shift delta over the height:
-///      `sum_r d[r+l][width+kk-1] * d[r+m][width+tt-1] - d[r+l][kk-1] * d[r+m][tt-1]`.
-///      C's step 3 is the diagonal blocks (`:967`), step 4 the squares
-///      (`:1185`); here both are one loop.
-/// 5-6. Every block's interior, entry `(l, m)` from `(l-1, m-1)` by a
-///      ROW-shift delta over the width:
-///      `sum_c d[height+l-1][c+kk] * d[height+m-1][c+tt] - d[l-1][c+kk] * d[m-1][c+tt]`.
-///      C's `derive_square_win*` (`:458`) / `derive_triangle_win*` (`:562`).
+/// - Step 1: Every `M` entry and block `(0, tt)`'s TOP ROW for every `tt` — full
+///   dots over the region. C's `stats_top_win*` (`pickrst_avx2.c:271`).
+/// - Step 2: Block `(0, tt)`'s LEFT COLUMN for `tt >= 1` — full dots. C's
+///   `stats_left_win*` (`:315`).
+/// - Steps 3–4: Every other block's top row and left column, from block
+///   `(kk-1, tt-1)`'s by a COLUMN-shift delta over the height:
+///   `sum_r d[r+l][width+kk-1] * d[r+m][width+tt-1] - d[r+l][kk-1] * d[r+m][tt-1]`.
+///   C's step 3 is the diagonal blocks (`:967`), step 4 the squares
+///   (`:1185`); here both are one loop.
+/// - Steps 5–6: Every block's interior, entry `(l, m)` from `(l-1, m-1)` by a
+///   ROW-shift delta over the width:
+///   `sum_c d[height+l-1][c+kk] * d[height+m-1][c+tt] - d[l-1][c+kk] * d[m-1][c+tt]`.
+///   C's `derive_square_win*` (`:458`) / `derive_triangle_win*` (`:562`).
 ///
 /// Both recurrences are exact identities (shift the summation index by one
 /// and the boundary terms are the delta), so the MAC count is

@@ -104,15 +104,6 @@ pub fn var_filter_block2d_bil_second_pass(
     }
 }
 
-/// C `svt_aom_sub_pixel_variance{W}x{H}_c` (`SUBPIX_VAR`, `variance.c:192-203`).
-///
-/// Returns `(variance, sse)`; C returns the variance and writes `sse` through
-/// its out-parameter.
-///
-/// `a_base` is the index of the block's (0, 0) inside `a`. The first pass
-/// reads `H + 1` rows and `W + 1` columns of `a`, which is why C's callers
-/// hand it a reference plane with a guard band rather than a tight block.
-
 // ---------------------------------------------------------------------------
 // The two row kernels the streaming form is built from, one per archmage tier.
 //
@@ -466,6 +457,14 @@ const MAX_SUBPEL_W: usize = 128;
 /// `w > MAX_SUBPEL_W` cannot happen for any size C instantiates, but rather
 /// than panic on one it falls back to the materialised path.
 #[allow(clippy::too_many_arguments)]
+/// C `svt_aom_sub_pixel_variance{W}x{H}_c` (`SUBPIX_VAR`, `variance.c:192-203`).
+///
+/// Returns `(variance, sse)`; C returns the variance and writes `sse` through
+/// its out-parameter.
+///
+/// `a_base` is the index of the block's (0, 0) inside `a`. The first pass
+/// reads `H + 1` rows and `W + 1` columns of `a`, which is why C's callers
+/// hand it a reference plane with a guard band rather than a tight block.
 pub fn sub_pixel_variance(
     a: &[u8],
     a_base: usize,

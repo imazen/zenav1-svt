@@ -615,7 +615,7 @@ unsafe extern "C" {
 /// these take any block size rather than the two the screen-content detectors
 /// use.
 pub fn sops_get_perpixel_variance(buf: &[u8], stride: usize, block_size: i32, rows: usize) -> u32 {
-    assert!(buf.len() >= (rows - 1) * stride + 1);
+    assert!(buf.len() > (rows - 1) * stride);
     unsafe { ref_sops_get_perpixel_variance(buf.as_ptr(), stride as u32, block_size) }
 }
 
@@ -626,7 +626,7 @@ pub fn sops_get_mean_and_perpixel_variance(
     block_size: i32,
     rows: usize,
 ) -> (u32, u32) {
-    assert!(buf.len() >= (rows - 1) * stride + 1);
+    assert!(buf.len() > (rows - 1) * stride);
     let (mut var, mut mean) = (0u32, 0u32);
     unsafe {
         ref_sops_get_mean_and_perpixel_variance(
@@ -647,7 +647,7 @@ pub fn sops_get_perceptual_perpixel_variance(
     block_size: i32,
     rows: usize,
 ) -> u32 {
-    assert!(buf.len() >= (rows - 1) * stride + 1);
+    assert!(buf.len() > (rows - 1) * stride);
     unsafe { ref_sops_get_perceptual_perpixel_variance(buf.as_ptr(), stride as u32, block_size) }
 }
 

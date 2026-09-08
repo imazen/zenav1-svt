@@ -201,6 +201,7 @@ pub fn synthesis(
         );
     }
 }
+#[allow(clippy::too_many_arguments)] // Preserve the C oracle parameter mapping.
 pub fn flat(
     data: &[u16],
     w: usize,
@@ -280,6 +281,7 @@ pub fn wiener(
     );
     out
 }
+#[allow(clippy::too_many_arguments)] // Preserve the C oracle parameter mapping.
 pub fn model(
     data: [&[u16]; 3],
     w: usize,
@@ -291,7 +293,7 @@ pub fn model(
     seed: u16,
 ) -> ([Vec<u16>; 3], Grain) {
     validate(data, w, h, strides, depth);
-    assert!(w % 2 == 0 && h % 2 == 0);
+    assert!(w.is_multiple_of(2) && h.is_multiple_of(2));
     let mut out: [Vec<u16>; 3] =
         core::array::from_fn(|c| vec![0; strides[c] * h.div_ceil(if c == 0 { 1 } else { 2 })]);
     let [y, u, v] = &mut out;

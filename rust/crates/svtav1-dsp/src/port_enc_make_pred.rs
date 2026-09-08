@@ -277,7 +277,6 @@ pub fn enc_make_inter_predictor(
         }
     };
     predict_one(&ctx, &mut tmp_buf16, &mut throwaway);
-    drop(throwaway);
 
     // DIFFWTD's mask is derived from the two CONV_BUFs, on plane 0 only.
     if plane == 0 && m.comp.compound_type == CompoundType::DiffWtd {

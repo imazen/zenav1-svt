@@ -19,7 +19,7 @@
 //! # Why there is ONE implementation here and TWO in C
 //!
 //! `svt_aom_pack2d_src` picks `svt_pack2d_16_bit_src_mul4` (an RTCD SIMD
-//! kernel) when `width % 4 == 0 && height % 2 == 0`, and the scalar
+//! kernel) when `width.is_multiple_of(4) && height.is_multiple_of(2)`, and the scalar
 //! `svt_enc_msb_pack2_d` otherwise. That is a SPEED dispatch: both arms are
 //! required to produce the same bytes, and the parity test drives C's real
 //! `svt_aom_pack_block` on widths/heights that select each arm, so the single
@@ -95,7 +95,7 @@ pub fn pack_block(
 /// The port has one implementation, so this changes nothing about its output;
 /// it exists so a test can SAY which C arm a cell drives instead of assuming.
 pub fn pack2d_takes_simd_arm(width: usize, height: usize) -> bool {
-    width % 4 == 0 && height % 2 == 0
+    width.is_multiple_of(4) && height.is_multiple_of(2)
 }
 
 #[cfg(test)]

@@ -269,36 +269,6 @@ fn out_dir_path() -> PathBuf {
     PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is always set for a build script"))
 }
 
-/// Make `set_ref_list_counts` and `set_all_ref_frame_type` linkable.
-///
-/// Both are `static` in `Codec/pd_process.c`, so `nm -g` on
-/// `libSvtAv1Enc.a` does not find them and a differential against the real C
-/// code would be impossible — the port would be stuck at evidence tier 4 for
-/// two of the highest-value functions in the picture-decision group
-/// (`docs/WORKING-ON-THIS.md` §4). They DO survive in the CMake object file as
-/// local (`t`) symbols, so `llvm-objcopy --globalize-symbol` on a PRIVATE COPY
-/// of that object promotes them without touching the C tree or the archive.
-///
-/// Linking the promoted object alongside the archive does NOT produce
-/// duplicate symbols: the object supplies every symbol `pd_process.c.o` would
-/// have, so the archive member is never pulled in. Verified on macOS arm64
-/// before this was wired up (a standalone `cc probe.c globalized.o
-/// libSvtAv1Enc.a` links and the three addresses resolve).
-///
-/// **This is best-effort and MUST stay best-effort.** The object exists only
-/// after the C library has been built into `<repo>/cbuild-static`, which does
-/// not happen when the caller points `SVT_CREF_LIB_DIR` at a prebuilt archive,
-/// and `llvm-objcopy` is not on every host. When either is missing this
-/// function emits a `cargo:warning` naming exactly what is unavailable and
-/// returns; the `picstruct_statics` cfg stays off and the tier-1 tests that
-/// need it do not compile.
-///
-/// That is a skip, so per the project's no-silent-skip rule the DECISION is
-/// the caller's, not the test's: set
-/// `SVT_CREF_REQUIRE_PICSTRUCT_STATICS=1` and
-/// `picstruct_statics_oracle_is_available` fails loudly instead. CI can turn
-/// that on once the object is known to be present on its image.
-
 /// Verify that `objcopy --globalize-symbol` ACTUALLY promoted each name.
 ///
 /// **`objcopy` exits 0 when it matches nothing.** Reading its exit status as
@@ -361,6 +331,35 @@ fn globalized_symbols_present(objcopy: &Path, obj: &Path, syms: &[&str]) -> Resu
 }
 
 #[must_use]
+/// Make `set_ref_list_counts` and `set_all_ref_frame_type` linkable.
+///
+/// Both are `static` in `Codec/pd_process.c`, so `nm -g` on
+/// `libSvtAv1Enc.a` does not find them and a differential against the real C
+/// code would be impossible — the port would be stuck at evidence tier 4 for
+/// two of the highest-value functions in the picture-decision group
+/// (`docs/WORKING-ON-THIS.md` §4). They DO survive in the CMake object file as
+/// local (`t`) symbols, so `llvm-objcopy --globalize-symbol` on a PRIVATE COPY
+/// of that object promotes them without touching the C tree or the archive.
+///
+/// Linking the promoted object alongside the archive does NOT produce
+/// duplicate symbols: the object supplies every symbol `pd_process.c.o` would
+/// have, so the archive member is never pulled in. Verified on macOS arm64
+/// before this was wired up (a standalone `cc probe.c globalized.o
+/// libSvtAv1Enc.a` links and the three addresses resolve).
+///
+/// **This is best-effort and MUST stay best-effort.** The object exists only
+/// after the C library has been built into `<repo>/cbuild-static`, which does
+/// not happen when the caller points `SVT_CREF_LIB_DIR` at a prebuilt archive,
+/// and `llvm-objcopy` is not on every host. When either is missing this
+/// function emits a `cargo:warning` naming exactly what is unavailable and
+/// returns; the `picstruct_statics` cfg stays off and the tier-1 tests that
+/// need it do not compile.
+///
+/// That is a skip, so per the project's no-silent-skip rule the DECISION is
+/// the caller's, not the test's: set
+/// `SVT_CREF_REQUIRE_PICSTRUCT_STATICS=1` and
+/// `picstruct_statics_oracle_is_available` fails loudly instead. CI can turn
+/// that on once the object is known to be present on its image.
 fn link_globalized_pd_statics(repo_root: &Path, out_dir: &Path) -> bool {
     println!("cargo:rustc-check-cfg=cfg(picstruct_statics)");
     println!("cargo:rerun-if-env-changed=SVT_CREF_REQUIRE_PICSTRUCT_STATICS");

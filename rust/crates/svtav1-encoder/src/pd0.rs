@@ -3731,7 +3731,7 @@ fn pd0_frame_lambda_and_min_sq(
 /// on the allintra still path, `ctx->disallow_4x4 ? 8 : 4`); the PD0B
 /// capture rows confirm C's LPD0 evaluates 4x4 blocks at M2/M3.
 #[allow(clippy::too_many_arguments)]
-pub fn pd0_pick_sb_partition_m6_eval(
+pub(crate) fn pd0_pick_sb_partition_m6_eval(
     src: &[u8],
     stride: usize,
     sb_x: usize,
