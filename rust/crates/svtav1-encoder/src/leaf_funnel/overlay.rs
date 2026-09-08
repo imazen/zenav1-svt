@@ -73,7 +73,7 @@ pub(crate) fn predict_unit_overlay(
             p_angle,
             edge_filter,
             filt_type,
-            svtav1_types::partition::PartitionType::None,
+            geom.partition,
             dst,
         );
         return;
@@ -274,7 +274,7 @@ pub(crate) fn predict_unit_overlay_hbd(
             p_angle,
             edge_filter,
             filt_type,
-            svtav1_types::partition::PartitionType::None,
+            geom.partition,
             dst,
             bd,
         );

@@ -530,10 +530,10 @@ void __wrap_svt_aom_update_stats(PictureControlSet* pcs, BlkStruct* blk, int mi_
         if (f) {
             const MbModeInfo* mb = blk->av1xd->mi[0];
             const BlockModeInfo* m = &mb->block_mi;
-            fprintf(f, "MDSTATS mi=(%d,%d) bsize=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d skip=%d\n",
+            fprintf(f, "MDSTATS mi=(%d,%d) bsize=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d skip=%d ibc=%d dvr=%d dvc=%d\n",
                     mi_row, mi_col, (int)mb->bsize, (int)m->mode, (int)m->uv_mode,
                     (int)m->filter_intra_mode, (int)m->angle_delta[0], (int)m->angle_delta[1],
-                    (int)m->tx_depth, (int)m->skip);
+                    (int)m->tx_depth, (int)m->skip, (int)m->use_intrabc, (int)m->mv[0].y, (int)m->mv[0].x);
             fflush(f);
         }
     }

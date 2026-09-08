@@ -132,3 +132,66 @@ log; the enlarged spot-check is running in `research-bd10-lambda-spotcheck.log`.
 The coverage tool’s historical normal-preset matrix still contains real-image
 and partial-frame divergences; these research synthetic successes do not
 supersede that evidence or satisfy the full pre-landing gates.
+
+Geometry expansion: **118/120** native 8-bit cells match (15 dimensions,
+gradient/screen, QP5/12/20/48). Failures: gradient192x192 QP12 (C6480B/Rust6516B)
+and gradient512x512 QP48 (C3349B/Rust3334B). Artifacts and rows are under
+`~/tmp/svt-tracking/research-dims8*`. The enlarged regression suite passed
+129/129 before these new changes.
+
+The 192x192 witness has byte-identical unfiltered reconstruction through SB5.
+In SB6, C chooses VertA at mi=(36,4), Rust chooses Vert; reconstruction remains
+identical but syntax adaptation differs and changes SB7 decisions. C's actual
+`update_stats` inputs were captured with the new `SVT_MDSTATS_OUT` interposer
+(the stream remains byte-identical to the uninstrumented C stream). This
+corrects the initial apparent first divergence at SB7: matching reconstructed
+pixels alone does not establish matching partition/mode decisions.
+
+Source audit found directional prediction consumers passing PART_NONE to
+neighbor-availability tables even for VertA/B children. Current revision
+threads `UnitGeom.partition` through whole-block and transform-overlay
+prediction at both bit depths. In the failing VertA node, child0 costs agree
+exactly and child1 costs diverge; the vertical-specific availability tables
+are relevant there. Validation of this correction is running; do not yet
+claim it resolves either geometry witness.
+
+Canonical imazen-26 smoke inputs downloaded: train IDs1000 (photo4032x3024)
+and8100 (screenshot1440x900), authoritative PNG-v3 SDR URLs. Download SHA256,
+metadata commit and dimensions are in `~/tmp/svt-tracking/imazen26-smoke/manifest.json`.
+These two inputs are pipeline smoke tests, not a measured representative set.
+
+The directional-availability correction resolves both retained geometry
+failures: 192x192 QP12 is 6,480B / 51,825 tile ops exact; 512x512 QP48 is 3,349B
+/ 41,859 tile ops exact. All 2,615 workspace tests pass. Both failures are now
+explicit regression cells; the 131-cell spot-check and full 120-cell dims8
+repeat are running. Fresh outputs use `*-fixed` artifact paths.
+
+The directional fix passes the enlarged regression suite **131/131** and the
+full repeated 8-bit geometry grid **120/120**. All 120 retained C/Rust stream
+pairs independently decode identically (`research-dims8-independent-decode.json`).
+Native10 geometry and the initial canonical imazen26 smoke encodes are now
+running serially. Tracking issue21 was updated with local progress and the
+remaining API/policy/routing/corpus requirements; no new remote commits were
+found by `jj git fetch`, and no push or CI was started.
+
+Native10 geometry finishes **117/120**, with three screen QP48 differences:
+256x256 C540B/Rust537B,384x256 C569B/Rust573B,512x512 both1012B but different
+bytes. All have retained artifacts under `research-dims10/artifacts`; the
+smallest witness is `cell.0oNapxbn`, whose parsed headers agree and tile payload
+is C511B/Rust508B. Do not infer identity from equal byte counts. Canonical
+imazen26 smoke encodes continue in the same serialized job after this sweep.
+
+The first canonical imazen26 smoke grid passes **8/8 C-byte comparisons**:
+train1000 photo and8100 screenshot,512x512 center crops, QP5/12/20/48.
+Rows and retained streams: `research-imazen26-smoke*`. This verifies only two
+real inputs; it is neither a representative subset nor an RD/performance study.
+
+The smallest native10 screen failure is localized further in
+`research-screen256-q48/`. Both encoders choose IntraBC at pixel(192,144),
+16x16, but C chooses transform depth1 and Rust depth0. C MDSTATS instrumentation
+now records the actual IntraBC flag as well as mode/geometry; instrumented C
+output remains byte-identical to the original C output. The two selected
+choices have different costs/distortions; compare matching candidate/depth
+evaluations before attributing this to distortion scaling. C full-cost logs
+and Rust candidate logs are retained. No fix for these three native10 screen
+failures is claimed yet.

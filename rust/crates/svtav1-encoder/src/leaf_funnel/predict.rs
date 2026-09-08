@@ -15,6 +15,8 @@ use super::*;
 /// the plane subsampling, and the LUMA frame dims.
 #[derive(Clone, Copy)]
 pub(crate) struct UnitGeom {
+    /// Parent partition selects vertical A/B neighbor-availability tables.
+    pub partition: svtav1_types::partition::PartitionType,
     pub mi_row: usize,
     pub mi_col: usize,
     pub bw_px: usize,
@@ -86,7 +88,7 @@ pub(super) fn predict_unit(
             p_angle,
             edge_filter,
             filt_type,
-            svtav1_types::partition::PartitionType::None,
+            geom.partition,
             dst,
         );
         return;

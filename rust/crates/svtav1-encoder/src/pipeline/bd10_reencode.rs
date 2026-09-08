@@ -142,6 +142,7 @@ fn bd10_reencode_node(
             if coded_lossless {
                 assert_eq!((bw, bh, d.tx_depth), (8, 8, 1));
                 let geom = crate::leaf_funnel::UnitGeom {
+                    partition: parent_partition,
                     mi_row: y / 4,
                     mi_col: x / 4,
                     bw_px: bw,
@@ -239,6 +240,7 @@ fn bd10_reencode_node(
             // set, and the gate (`bd10_tree_supported`) admits directional leaves
             // ONLY when edge_filter is false — so 0 is inert here.
             let geom = crate::leaf_funnel::UnitGeom {
+                partition: parent_partition,
                 mi_row: y >> 2,
                 mi_col: x >> 2,
                 bw_px: bw,
@@ -777,6 +779,7 @@ fn bd10_reencode_chroma_node(
                 )
             });
             let geom = crate::leaf_funnel::UnitGeom {
+                partition: svtav1_types::partition::PartitionType::None,
                 mi_row: cy >> 2,
                 mi_col: cx >> 2,
                 bw_px: cw,

@@ -97,6 +97,7 @@ fn encode_leaf(
     ectx: &mut EntropyCtx,
 ) -> (BlockDecision, u32) {
     let geom = UnitGeom {
+        partition: svtav1_types::partition::PartitionType::None,
         mi_row: y / 4,
         mi_col: x / 4,
         bw_px: 8,

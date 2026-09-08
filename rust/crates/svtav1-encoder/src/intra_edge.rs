@@ -188,7 +188,7 @@ fn has_tr_table_vert(bw: usize, bh: usize) -> Option<&'static [u8]> {
 }
 
 /// C `get_has_tr_table()`. Panics where the C code would assert (a NULL
-/// table entry) — unreachable for the partition types this encoder emits.
+/// table entry for geometry incompatible with the supplied partition).
 fn get_has_tr_table(partition: PartitionType, bw: usize, bh: usize) -> &'static [u8] {
     let ret = if partition == PartitionType::VertA || partition == PartitionType::VertB {
         has_tr_table_vert(bw, bh)
@@ -562,8 +562,8 @@ pub enum DirEdges {
 /// tile, 64x64 superblocks, `disable_edge_filter`.
 ///
 /// `partition` is the partition type the block will be signaled under
-/// (only PARTITION_VERT_A/B select different availability tables; this
-/// encoder never emits those, so callers pass `PartitionType::None`).
+/// (only PARTITION_VERT_A/B select different availability tables). Research
+/// search emits those partitions, so its callers must carry the parent shape.
 #[allow(clippy::too_many_arguments)]
 pub fn build_directional_edges(
     recon: &[u8],

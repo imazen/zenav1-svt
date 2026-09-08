@@ -1221,7 +1221,7 @@ pub(crate) fn predict_unit_hbd(
         filt_type,
         dst,
         bd,
-        svtav1_types::partition::PartitionType::None,
+        geom.partition,
     );
 }
 

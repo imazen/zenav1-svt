@@ -404,6 +404,11 @@ pub(crate) fn evaluate_leaf(
     // ALIGNED extent. Byte-neutral on any frame where the two agree — every
     // 64-aligned one.
     let y_geom = UnitGeom {
+        partition: match fx.ibc_gate.partition {
+            6 => svtav1_types::partition::PartitionType::VertA,
+            7 => svtav1_types::partition::PartitionType::VertB,
+            _ => svtav1_types::partition::PartitionType::None,
+        },
         mi_row: abs_y >> 2,
         mi_col: abs_x >> 2,
         bw_px: w,

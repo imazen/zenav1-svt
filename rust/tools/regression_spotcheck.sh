@@ -1757,6 +1757,13 @@ byte "research-full-partition-dispatch" gradient 64 64 40 -1 8
 # weight: Rust 265B / C 277B at this cell. Carrying the signed preset through
 # leaf, partition and re-encode costs makes it 277B byte-identical (smqxvntu).
 byte "research-native10-lambda-weight" gradient 64 64 40 -1 10
+# 2026-09-08 — VertA/B children used PART_NONE directional availability in
+# whole-block and transform-overlay prediction. The changed partition at
+# mi=(36,4) of the first cell left identical pixels but different adaptation,
+# then changed the following SB. Before: 6516/6480 and 3334/3349 Rust/C bytes.
+# After parent-partition wiring: byte/op exact (zplqukkq).
+byte "research-vertical-asym-neighbors" gradient 192 192 12 -1 8
+byte "research-sb128-asym-neighbors" gradient 512 512 48 -1 8
 
 total=$((pass + fail))
 echo
