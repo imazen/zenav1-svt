@@ -14,6 +14,46 @@ and implement measured content-adaptive search and actual backend routing.
 Complete the experiments and report size, perceptual quality and time before
 choosing defaults. Land the ready implementation after required local checks.
 
+## Wrap-up checkpoint — 2026-09-08
+
+Implementation paused at the user's wrap-up request. The full goal below remains
+incomplete; this checkpoint does not narrow its acceptance criteria.
+
+Completed for safe transfer: all three current handoff branches are on origin;
+AOM was rebased onto `a7b1ab13`, and its query integration tests pass 2/2.
+[AOM tracking issue #16](https://github.com/imazen/zenav1-aom/issues/16) includes
+open PRs #13 then #12, remaining functionality, support tables, RD/size/time
+metrics, fleet recovery and retrievable source/evidence archives. AOM
+implementation belongs to the other machine. No main merge or new CI run was
+initiated. One historical SVT workflow branch was rejected for missing OAuth
+`workflow` scope; its inert workflow/patch archive is linked from issue #16.
+
+SVT corrected all 53 historical eight-bit witnesses (168/168 exact replay
+pairs). The later native10 boundary matrix remains 16/20, with four real
+failures. [The parity handoff](rust/docs/HANDOFF-2026-09-08-PARITY.md) identifies
+the first coding-order divergence and separates the validated eight-bit fixes
+from subsequent unvalidated native10 edits. [The archive receipt](rust/docs/native10-handoff-receipt.json)
+preserves inputs, output streams, traces and logs off this machine.
+
+Deferred work, in dependency order:
+
+1. Resolve four native10 parity failures and run affected local gates on the
+   final source; enabled optional/video/HDR/film-grain coverage remains separate.
+2. Have the AOM owner integrate/review the existing PR stack and remaining
+   still parity/format/runtime support; keep dependency pins coordinated.
+3. Recover durable fleet accounting and inspect dev's unpushed work once SSH
+   access is restored; resume the full training scout and broaden formats/sizes.
+4. Implement strict policy, checked continuous effort, resolved plans/replay,
+   backend-owned suitability and actual zenavif execution routing.
+5. Validate representative selection and matched-time decisions on the full
+   required corpus; only then enable evidence-backed adaptive defaults.
+6. Run full local landing gates, allow CI, and merge independently ready work.
+
+Do not spend another turn rediscovering these states or rerunning unaffected
+historical gates. Start from the saved first-difference witness or the assigned
+AOM issue. The existing source hashes and artifact identities delimit what each
+measurement actually proves.
+
 ## Execution checkpoint — 2026-09-08
 
 The full scope and completion gates below remain active. Work is local; no

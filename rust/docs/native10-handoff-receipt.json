@@ -1,0 +1,9 @@
+{
+  "uri": "s3://zentrain/handoffs/av1-2026-09-08/svt-native10-4a3f43933cb1a941a5fbbb21935b11505a8740585d7379625238050726d74482.tar.gz",
+  "sha256": "4a3f43933cb1a941a5fbbb21935b11505a8740585d7379625238050726d74482",
+  "archive_bytes": 78145432,
+  "download_verified": true,
+  "source_checkpoint": "554412d9d4f5b61ee781de770e83b845520bd8fe",
+  "input_sha256": "35ff155ee7ca50fffdebcc4218ee684057d1794c93ce43e105222cc619d4e6c2",
+  "note": "Contains historical successful 8-bit gate logs and current known native10 failures. Earlier full gates do not validate subsequent native10 source/debug edits. Native-source-fix remains a failed witness, not a fix claim. Stored script uses old absolute paths; substitute extracted input/output paths."
+}
