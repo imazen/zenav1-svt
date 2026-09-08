@@ -26,8 +26,10 @@ use enough::Stop;
 
 /// Encoder pipeline state.
 pub struct EncodePipeline {
-    /// SVT_HDR_MODE mirror: which C oracle this encode targets (mainline
-    /// v4.2.0 vs the svt-av1-hdr fork hybrid MODE1) + the fork knobs.
+    /// Pinned source identity, independent of HDR mode. Legacy constructors
+    /// retain Hybrid3115; select Mainline420 for pristine chroma ranking.
+    pub reference: crate::reference::SvtReference,
+    /// SVT_HDR_MODE mirror and fork knobs, separate from the source identity.
     /// Defaults to Mainline = all fork behavior off; callers opt in with
     /// `pipe.hdr = HdrForkConfig::hdr_fork()` after construction.
     pub hdr: crate::hdr_mode::HdrForkConfig,
@@ -444,6 +446,7 @@ impl EncodePipeline {
         let (sb_size, sb128_fallback) = Self::resolve_sb_size(derived_sb, None, preset);
         Self {
             hdr: crate::hdr_mode::HdrForkConfig::default(),
+            reference: crate::reference::SvtReference::Hybrid3115,
             film_grain: Default::default(),
             prepared_grain: None,
             grain_references: core::array::from_fn(|_| None),
@@ -1812,6 +1815,14 @@ impl EncodePipeline {
         y_stride: usize,
         chroma: Option<(&[u8], &[u8])>,
     ) -> crate::EncodeResult<Vec<u8>> {
+        self.reference
+            .validate_hdr_config(&self.hdr)
+            .map_err(|why| whereat::at!(EncodeError::UnsupportedConfig(why)))?;
+        if self.reference == crate::reference::SvtReference::Mainline420 && chroma.is_none() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "pristine mainline SVT supports 4:2:0 only; monochrome is a Rust extension",
+            )));
+        }
         if let Some(why) = self.sb_size_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
@@ -4284,6 +4295,7 @@ impl EncodePipeline {
             stale_vars.as_deref(),
             self.hdr.max_tx_size,
             coded_lossless,
+            self.reference,
             self.thread_count,
             &stop,
         )?;
@@ -10875,6 +10887,7 @@ fn encode_tile_rows(
     // funnel's lossless arms (`FunnelFrame::coded_lossless`,
     // `FunnelCfg::apply_coded_lossless`).
     coded_lossless: bool,
+    reference: crate::reference::SvtReference,
     // Feature 4 (bounded threading): the maximum number of OS threads the
     // tile loop below may run at once (0 = auto via `available_parallelism`).
     // Bounds CONCURRENCY only — tiles are always joined and appended in
@@ -11251,6 +11264,7 @@ fn encode_tile_rows(
             let cq = c_quant.as_ref().unwrap();
             Some(crate::leaf_funnel::FunnelFrame {
                 native_preset: speed_config.preset,
+                reference,
                 // C `pcs->slice_type != I_SLICE`.
                 // `ref_frame_data` is `Some` exactly on a non-key frame
                 // (`encode_frame_impl`'s `if !is_key` binding).

@@ -7,6 +7,128 @@ use svtav1_encoder::{
     rate_control::{RcConfig, RcMode},
 };
 
+#[test]
+fn pristine_and_hybrid_chroma_reference_matches_c() {
+    use svtav1::avif::{AvifEncoder, NativePreset, SvtReference};
+    // Before the reference-specific presort, both selections emitted the
+    // hybrid's 71-byte bd8 p0 stream instead of pristine C's 72-byte stream.
+    // The native10 p0 witnesses have equal lengths but different bytes.
+    let raw8 = include_bytes!("fixtures/reference_chroma/diag64-8.yuv");
+    let raw10: Vec<u16> = include_bytes!("fixtures/reference_chroma/diag64-10.yuv")
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    let cases: [(u8, i8, &[u8], &[u8]); 4] = [
+        (
+            8,
+            -1,
+            include_bytes!("fixtures/reference_chroma/diag64-8-p-1-mainline.obu"),
+            include_bytes!("fixtures/reference_chroma/diag64-8-p-1-hybrid.obu"),
+        ),
+        (
+            8,
+            0,
+            include_bytes!("fixtures/reference_chroma/diag64-8-p0-mainline.obu"),
+            include_bytes!("fixtures/reference_chroma/diag64-8-p0-hybrid.obu"),
+        ),
+        (
+            10,
+            -1,
+            include_bytes!("fixtures/reference_chroma/diag64-10-p-1-mainline.obu"),
+            include_bytes!("fixtures/reference_chroma/diag64-10-p-1-hybrid.obu"),
+        ),
+        (
+            10,
+            0,
+            include_bytes!("fixtures/reference_chroma/diag64-10-p0-mainline.obu"),
+            include_bytes!("fixtures/reference_chroma/diag64-10-p0-hybrid.obu"),
+        ),
+    ];
+    for (depth, preset, pristine, hybrid) in cases {
+        if preset == 0 {
+            assert_ne!(pristine, hybrid, "enabled metric witness at depth {depth}");
+        }
+        for (reference, golden) in [
+            (SvtReference::Mainline420, pristine),
+            (SvtReference::Hybrid3115, hybrid),
+        ] {
+            let mut p = EncodePipeline::new_with_preset(
+                64,
+                64,
+                NativePreset::new(preset).unwrap(),
+                RcConfig {
+                    mode: RcMode::Cqp,
+                    qp: 48,
+                    ..RcConfig::default()
+                },
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_bit_depth(depth)
+            .with_recon_output(true);
+            p.reference = reference;
+            let (obu, expected) = if depth == 8 {
+                let obu = p
+                    .try_encode_frame_420(&raw8[..4096], &raw8[4096..5120], &raw8[5120..], 64)
+                    .unwrap();
+                (obu, crop(p.last_recon.as_ref().unwrap(), 64, 64, 64))
+            } else {
+                let obu = p
+                    .try_encode_frame_420_hbd(
+                        &raw10[..4096],
+                        &raw10[4096..5120],
+                        &raw10[5120..],
+                        64,
+                    )
+                    .unwrap();
+                let recon = crop(p.last_recon10_final.as_ref().unwrap(), 64, 64, 64)
+                    .into_iter()
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                (obu, recon)
+            };
+            assert_eq!(obu, golden, "{reference:?} depth{depth} preset{preset}");
+            decode_eq(
+                &format!("reference-{reference:?}-{depth}-{preset}"),
+                &obu,
+                &expected,
+            );
+            if depth == 8 {
+                let encoder = AvifEncoder::new()
+                    .with_quality(24.57)
+                    .with_native_preset(NativePreset::new(preset).unwrap())
+                    .with_reference(reference)
+                    .with_color_space(2, 2, 2, false);
+                assert_eq!(AvifEncoder::quality_to_qp_static(24.57), 48);
+                assert_eq!(encoder.reference(), reference);
+                assert_eq!(
+                    encoder
+                        .encode_yuv420(&raw8[..4096], &raw8[4096..5120], &raw8[5120..], 64, 64, 64)
+                        .unwrap()
+                        .data,
+                    golden
+                );
+            }
+        }
+    }
+    let gray = [128u8; 64 * 64];
+    assert!(
+        AvifEncoder::new()
+            .with_reference(SvtReference::Mainline420)
+            .encode_y8(&gray, 64, 64, 64)
+            .is_err()
+    );
+    let mut incompatible = pipeline(64, 64, 0, 24.57, 8);
+    incompatible.reference = SvtReference::Mainline420;
+    incompatible.hdr.tx_bias = 1;
+    assert!(
+        incompatible
+            .try_encode_frame_420(&gray, &gray[..1024], &gray[..1024], 64)
+            .is_err()
+    );
+}
+
 fn pipeline(w: usize, h: usize, preset: u8, quality: f32, depth: u8) -> EncodePipeline {
     EncodePipeline::new(
         w as u32,

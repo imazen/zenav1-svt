@@ -72,23 +72,13 @@
 //!   from the hbd C function and intentionally does NOT share
 //!   `dr_z2_edged`'s incremental shape. z1 and z3 hbd DO share their lbd
 //!   siblings' incremental shape (verified line-for-line).
-//! - The sized `svt_aom_highbd_10_variance{W}x{H}_c` family that
-//!   `av1me.c`'s `vf_hbd_10` function-pointer table binds
-//!   (`av1me.c:24-33`) is declared (`aom_dsp_rtcd.h:582+`) with `_sse2`/
-//!   `_avx2`/`_neon`/`_sve` bodies, but repo-wide text search found NO `_c`
-//!   scalar body anywhere in this checkout (only `test/HbdVarianceTest.cc`
-//!   references). `CONFIG_ENABLE_HIGH_BIT_DEPTH` defaults to **1** in a
-//!   normal (non-`RTC_BUILD`) build (`EbConfigMacros.h:89-91`,
-//!   `CMakeLists.txt:76` — `RTC_BUILD` defaults `OFF`), and the sizes with
-//!   no ASM fallback (4x4/4x8/4x16/8x4) are wired via `SET_ONLY_C` — i.e.
-//!   the missing `_c` body would fail to link in a normal build, if this
-//!   checkout is actually built standalone. This was NOT verified by an
-//!   actual C build/link (read-only source per task scope), so treat as an
-//!   open question, not a settled "dead code" claim. [`highbd_variance`]
-//!   below ports the one GENERIC (non-sized) highbd variance kernel that
-//!   DOES have a real body, `svt_aom_variance_highbd_c`
-//!   (C_DEFAULT/variance.c:162-181), and is shift-table-equivalent to the
-//!   sized family's math (see that function's doc for the derivation).
+//! - The sized `svt_aom_highbd_10_variance{W}x{H}_c` family is generated
+//!   by `HIGHBD_VAR` in `Codec/svt_psnr.c:155`, and is live through
+//!   `av1me.c`'s `vf_hbd_10` table. It rounds SSE by four bits and the
+//!   signed residual sum by two bits BEFORE subtracting the DC term.
+//!   [`highbd_variance`] is the distinct generic, unnormalized function;
+//!   it cannot substitute for the sized 10-bit family. The encoder's
+//!   pristine chroma presort has a differential test against that family.
 
 // =============================================================================
 // 1. Recon add + clip (docs/bd10-port-map.md item 2)
@@ -955,20 +945,10 @@ pub fn full_distortion_kernel16_bits(
     sse_distortion
 }
 
-/// C `svt_aom_variance_highbd_c` (C_DEFAULT/variance.c:162-181): the one
-/// GENERIC (non-sized) highbd variance kernel with a discoverable C body in
-/// this checkout — see the module doc "Findings" for the sized
-/// `svt_aom_highbd_10_variance{W}x{H}_c` family that `av1me.c`'s
-/// `vf_hbd_10` function-pointer table (`av1me.c:24-33`, only wired under
-/// `CONFIG_ENABLE_HIGH_BIT_DEPTH`) actually binds.
-///
-/// This generic form's math IS shift-table-equivalent to that sized
-/// family: the `_sse2` implementation (`ASM_SSE2/highbd_variance_sse2.c:
-/// 54-75`, `VAR_FN` macro) computes `var = sse - ((sum*sum) >> shift)` with
-/// `shift = log2(w*h)` for every listed block size, and `(sum*sum) >>
-/// shift == (int64_t)sad*sad / (w*h)` for any non-negative `sad*sad` and
-/// power-of-two `w*h` (always true for AV1 block sizes) — so this fn
-/// should be safe to bind to `vf_hbd_10` once that path is exercised.
+/// C `svt_aom_variance_highbd_c` (C_DEFAULT/variance.c): generic,
+/// unnormalized high-bit-depth variance. This is NOT interchangeable with
+/// `svt_aom_highbd_10_variance{W}x{H}_c` (Codec/svt_psnr.c), which rounds
+/// SSE and the signed residual sum to the 8-bit scale first.
 ///
 /// C accumulates BOTH `sad` (as `int`) and `*sse` (as `uint32_t`, via `+=
 /// diff*diff` where `diff*diff` is `int` arithmetic) — `sad` cannot

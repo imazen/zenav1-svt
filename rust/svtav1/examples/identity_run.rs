@@ -869,6 +869,12 @@ fn main() {
     // Unset => mainline, i.e. every pre-existing invocation is unchanged.
     configure_grain(&mut pipeline);
     pipeline.hdr = svtav1_encoder::hdr_mode::HdrForkConfig::from_env();
+    if let Ok(reference) = std::env::var("SVTAV1_REFERENCE") {
+        pipeline.reference = reference
+            .parse()
+            .expect("SVTAV1_REFERENCE must be a pinned source id");
+        eprintln!("SVTAV1_REFERENCE={}", pipeline.reference.id());
+    }
     // SVTAV1_TUNE=<0..5>: mainline `--tune`. The C driver reads the same value
     // from SVT_TUNE, so one env vector configures both encoders. Tune 3 (IQ)
     // and 4 (MS_SSIM) pull in C's whole override block (qm, sharpness,

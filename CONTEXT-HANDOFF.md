@@ -1,3 +1,30 @@
+Latest implementation: local kmmkunzl wires SvtReference::{Mainline420,
+Hybrid3115} through EncodePipeline and AvifEncoder into independent chroma
+ranking. Legacy constructors retain hybrid SAD; explicit Mainline420 uses
+variance, including separately rounded native10 SSE/signed sum (C svt_psnr.c).
+Mainline refuses hybrid-only controls/HDR mode and monochrome extensions;
+full SvtParity/effort/resolved-policy API remains open. C oracle pin unchanged.
+Checks:2622/2622 workspace,134/134 spotchecks, pristine normal8 1100/1100,
+pristine native-1 synthetic+dims320/320 (160 each depth), and legacy hybrid
+normal8 compatibility1100/1100 (zero pinned/errors).846 unique streams cover
+all1420 pristine cells and independently decode at correct depth/dimensions.
+Research has32 source-dependent outputs, plus5 normal outputs; all match
+explicit targets. Committed dual-reference goldens cover8/10,-1/0, public
+wrapper reachability at8 and reconstruction; test added to spotcheck.
+Evidence: rust/benchmarks/pristine-reference-wiring-2026-09-08.json;
+~/tmp/svt-tracking/mainline-reference-* logs; full raw runs under
+~/tmp/svt-tracking/pristine-v4.2.0/{rust-mainline-full,rust-mainline-research,
+mainline-decode}; legacy run mainline-reference-hybrid-full/artifacts.
+Issue21 updated and verified with source distinction, completed native-1
+coverage, canonical size/quality/time SAD results, and archmage029 migration.
+Main fetch found no changes. All jobs terminal; no push/CI. Next work:
+complete strict policy/effort/replay and reference envelope; isolated AOM
+intra-edge/restoration experiments immediately beyond-1; actual zenavif
+routing and canonical fleet RD-zone scouting/minimum representatives. Old
+real-image mismatches remain open. coverage_matrix.py still scans only old
+committed TSVs and normal presets: its table does not include these explicit
+reference JSONL runs or research-1; don't treat it as this build's scoreboard.
+
 Latest reference audit: see rust/docs/PARITY-REFERENCE-AUDIT-2026-09-08.md.
 Pristine v4.2.0 9292ec8e vs hybrid3115 MODE0 differs in FIVE of the1100
 default cells, while Rust matches hybrid1100/1100. Root cause isolated:

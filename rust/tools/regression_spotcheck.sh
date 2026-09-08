@@ -1741,7 +1741,9 @@ SVT_GRAIN_STRENGTH=25 SVT_GRAIN_APPLY=1 byte "grain-denoised-edge-padding" grain
 # The square edge search and bounded neighbor canvas now decode exactly.
 # Public research wrapper formerly rejected the valid 65x67 input before
 # encoding. This witness verifies rounded-up chroma and independent decoding.
-for witness in research_wrapper_partial_frame_matches_decoder cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction monochrome_low_presets_partial_blocks native_monochrome_low_presets_match_decoder lossless_monochrome_matches_source native_lossless_matches_source lossless_quantization_options_match_source; do
+# Pristine reference: diag64 QP48 p0 formerly used hybrid SAD (71B),
+# differing from pristine variance (72B). Pins both sources and depths.
+for witness in pristine_and_hybrid_chroma_reference_matches_c research_wrapper_partial_frame_matches_decoder cached_chroma_at_partial_right_edge native_odd_chroma_filter_bounds superresolution_odd_chroma_reconstruction monochrome_low_presets_partial_blocks native_monochrome_low_presets_match_decoder lossless_monochrome_matches_source native_lossless_matches_source lossless_quantization_options_match_source; do
   if AOMDEC="$AOMDEC" cargo test -p zenav1-svt --test odd_frame_recon "$witness" -- --exact >"$W/$witness.log" 2>&1; then
     pass=$((pass+1))
   else

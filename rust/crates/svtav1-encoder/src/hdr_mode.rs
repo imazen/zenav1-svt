@@ -123,7 +123,7 @@ impl Default for HdrForkConfig {
 impl HdrForkConfig {
     /// Mainline v4.2.0 defaults — every fork feature neutral/off.
     /// Matches `enc_settings.c` `svt_av1_set_default_params` at
-    /// `SVT_HDR_MODE=0` (and therefore stock v4.2.0-final).
+    /// `SVT_HDR_MODE=0`. Reference-specific search is selected separately.
     pub fn mainline() -> Self {
         Self {
             mode: SvtHdrMode::Mainline,

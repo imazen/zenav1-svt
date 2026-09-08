@@ -53,11 +53,64 @@ Experiments, each keeping the original pinned oracle untouched:
    All other tracked source files were verified byte-equal to the hybrid pin.
 
 This isolates the default-path discrepancy. It does not establish that this is
-the only difference across the full supported domain. The shipping Rust metric
-has not yet been changed: the next implementation must wire the pristine choice
-under an explicit reference identity while preserving the named hybrid target,
-then verify both 8/10-bit and research paths. Changing the oracle or its expected
-outputs without identifying the reference would conceal the problem.
+the only difference across the full supported domain. The implementation below
+selects the metric by reference identity; neither the pinned C oracle nor its
+expected outputs were changed.
+
+## Implemented source selection and validation
+
+`SvtReference::{Mainline420, Hybrid3115}` now reaches the pipeline, tile workers,
+and independent-chroma candidate scoring. Each source has an exact revision ID
+with checked string round trips. `EncodePipeline::reference` exposes the source;
+the AVIF wrapper exposes `with_reference` and `reference`. Existing constructors
+explicitly retain Hybrid3115 for byte compatibility. The reference enum's default
+is Mainline420 for the forthcoming strict policy API; the HDR build mode remains
+a separate setting.
+
+```rust
+use svtav1::avif::{AvifEncoder, NativePreset, SvtReference};
+let encoder = AvifEncoder::new()
+    .with_native_preset(NativePreset::RESEARCH)
+    .with_reference(SvtReference::Mainline420);
+```
+
+The mainline selection rejects HDR mode, hybrid-only overrides, curve3,
+tune6, fractional/out-of-range QP scale compression, and monochrome output.
+Mainline-owned QM, variance boost, AC bias and film-grain controls are preserved.
+This is source-specific validation and wiring, **not yet the complete strict
+`SvtParity` policy or its full supported-setting inventory**.
+
+Pristine native10 variance uses the actual sized family from `svt_psnr.c`:
+round SSE by four bits and signed residual sum by two bits before subtraction,
+then clamp negative results to zero. Prediction precedes source in the C call;
+reversing them can change rounding. A new differential test checks both depths
+against C across 19 chroma geometries and pins an asymmetric rounding witness.
+The generic unnormalized highbd variance helper is not substituted here; its
+previous incorrect equivalence/source-absence comments have been corrected.
+
+Completed local checks:
+
+| Check | Result |
+|---|---:|
+| Workspace tests | 2,622 passed, zero skipped |
+| Regression spotcheck | 134 / 134 |
+| Pristine normal 8-bit synthetic+dims | 1,100 / 1,100 byte-identical |
+| Pristine native −1 synthetic+dims | 320 / 320; 160 per bit depth |
+| Legacy hybrid normal8 compatibility | 1,100 / 1,100; zero pinned exceptions/errors |
+| Independent decoder | 846 unique streams covering all 1,420 cells; zero failures |
+
+The research grid contains 32 streams that differ from the retained hybrid
+output. Every regenerated input was hash-checked against its retained input.
+The public-wrapper/native-pipeline regression uses independently captured C
+goldens for both references, native8/10 and −1/0, checks decoder reconstruction,
+and proves the reference changes output at preset0 for both depths. Its fixtures
+and provenance are committed with the test; wrapper comparison uses its u8 API.
+
+[Wiring evidence summary](../benchmarks/pristine-reference-wiring-2026-09-08.json)
+records the measured scope, executable hashes and decoder identity. These results
+do not close the older real-image regressions, optional-setting/HDR combinations,
+or video reference audit. No performance or RD improvement is claimed for changing
+the reference metric.
 
 ## Other reference-envelope differences
 
@@ -105,3 +158,8 @@ python3 tools/pristine_reference_compare.py \
 Run each heavy command through the shared `run-heavy` wrapper. The retained
 input gate must have used no additional coding-setting environment overrides;
 its six-axis settings file does not record such overrides.
+
+Add `--rust-runner tools/identity_run` to regenerate and encode each cell with
+the explicit pristine reference. That mode compares pristine C with new Rust
+outputs, records the original hybrid hash separately, checks regenerated input
+hashes, and rejects a changing Rust executable during the run.

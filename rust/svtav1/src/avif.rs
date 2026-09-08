@@ -24,6 +24,8 @@
 #[path = "animation.rs"]
 pub mod animation;
 
+/// Pinned C source identity, separate from speed and policy.
+pub use svtav1_encoder::reference::SvtReference;
 /// Checked C preset domain, including research -1.
 pub use svtav1_encoder::speed_config::NativePreset;
 
@@ -103,6 +105,7 @@ pub struct AvifEncoder {
     /// Speed (1-10), mapped to still-image presets 0-9.
     speed: u8,
     native_preset: Option<NativePreset>,
+    reference: SvtReference,
     /// Bit depth (8, 10, or 12).
     bit_depth: u8,
     /// Chroma subsampling format.
@@ -149,6 +152,7 @@ impl AvifEncoder {
             quality: 75.0,
             speed: 6,
             native_preset: None,
+            reference: SvtReference::Hybrid3115,
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
             threads: None,
@@ -251,6 +255,19 @@ impl AvifEncoder {
     pub fn with_native_preset(mut self, preset: NativePreset) -> Self {
         self.native_preset = Some(preset);
         self
+    }
+
+    /// Select a pinned C source. Existing constructors retain Hybrid3115.
+    /// Mainline420 uses pristine chroma ranking and refuses monochrome output.
+    /// This selects decisions, not a certification of all-setting parity.
+    pub fn with_reference(mut self, reference: SvtReference) -> Self {
+        self.reference = reference;
+        self
+    }
+
+    /// The source identity that encoding will use.
+    pub fn reference(&self) -> SvtReference {
+        self.reference
     }
 
     /// The effective native preset after still-image canonicalization.
@@ -414,6 +431,7 @@ impl AvifEncoder {
         // encode (`None`/`Some(0)` = auto). Byte-neutral at any value.
         .with_thread_count(self.threads.unwrap_or(0));
         pipeline.bit_depth = self.bit_depth;
+        pipeline.reference = self.reference;
         pipeline.color_description = self.color_description();
         // Issue #9 item 7: the two knobs that were recorded-and-ignored are
         // now the real pipeline settings. Defaults are off, so this is

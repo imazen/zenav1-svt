@@ -112,6 +112,7 @@ pub mod qm_tables;
 pub mod quant;
 pub(crate) mod rate_arm;
 pub mod rate_control;
+pub mod reference;
 pub mod restoration;
 pub mod sb128_geom;
 pub mod sb_qindex;

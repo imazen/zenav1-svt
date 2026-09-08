@@ -531,6 +531,41 @@ uint32_t ref_variance_highbd(const uint16_t* a, int a_stride, const uint16_t* b,
     return svt_aom_variance_highbd_c(a, a_stride, b, b_stride, w, h, sse_out);
 }
 
+/* The sized 10-bit family in svt_psnr.c normalizes SSE and signed sum
+   separately. The generic highbd function above does NOT implement that
+   normalization. Pass prediction first to match independent UV search. */
+uint32_t ref_chroma_variance10(const uint16_t* pred, int ps, const uint16_t* src, int ss, int w, int h) {
+    uint32_t sse;
+#define CHROMA_VAR_CASE(W, H) \
+    case W * 1000 + H: { \
+        extern uint32_t svt_aom_highbd_10_variance##W##x##H##_c(const uint8_t*, int, const uint8_t*, int, uint32_t*); \
+        return svt_aom_highbd_10_variance##W##x##H##_c(CONVERT_TO_BYTEPTR(pred), ps, CONVERT_TO_BYTEPTR(src), ss, &sse); \
+    }
+    switch (w * 1000 + h) {
+        CHROMA_VAR_CASE(4, 4)
+        CHROMA_VAR_CASE(4, 8)
+        CHROMA_VAR_CASE(4, 16)
+        CHROMA_VAR_CASE(8, 4)
+        CHROMA_VAR_CASE(8, 8)
+        CHROMA_VAR_CASE(8, 16)
+        CHROMA_VAR_CASE(8, 32)
+        CHROMA_VAR_CASE(16, 4)
+        CHROMA_VAR_CASE(16, 8)
+        CHROMA_VAR_CASE(16, 16)
+        CHROMA_VAR_CASE(16, 32)
+        CHROMA_VAR_CASE(16, 64)
+        CHROMA_VAR_CASE(32, 8)
+        CHROMA_VAR_CASE(32, 16)
+        CHROMA_VAR_CASE(32, 32)
+        CHROMA_VAR_CASE(32, 64)
+        CHROMA_VAR_CASE(64, 16)
+        CHROMA_VAR_CASE(64, 32)
+        CHROMA_VAR_CASE(64, 64)
+        default: return UINT32_MAX;
+    }
+#undef CHROMA_VAR_CASE
+}
+
 /* C parameter order is (src, src_stride, ref, ref_stride, HEIGHT, WIDTH). */
 uint32_t ref_sad_16b_kernel(uint16_t* src, uint32_t src_stride, uint16_t* ref, uint32_t ref_stride, uint32_t height,
                             uint32_t width) {

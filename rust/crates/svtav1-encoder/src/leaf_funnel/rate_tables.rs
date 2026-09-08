@@ -362,6 +362,8 @@ impl MdRates {
 
 /// Frame-constant funnel parameters.
 pub struct FunnelFrame {
+    /// Source-specific chroma presort: pristine variance versus hybrid SAD.
+    pub reference: crate::reference::SvtReference,
     /// Signed native preset, including research -1, for bit-depth-specific
     /// lambda derivation. Research omits the normal frame weight at both depths.
     pub native_preset: i8,
@@ -1377,6 +1379,33 @@ pub(super) fn residual_sad(
         }
     }
     sad
+}
+
+/// Pristine C `svt_aom_highbd_10_variance{W}x{H}_c` (svt_psnr.c).
+/// Normalize SSE and the signed residual sum separately, before subtracting.
+/// C's UV call order is prediction minus source; the signed rounding makes
+/// reversing those operands observably different for some residuals.
+pub(super) fn residual_variance_hbd(
+    src: &[u16],
+    src_stride: usize,
+    sx: usize,
+    sy: usize,
+    pred: &[u16],
+    w: usize,
+    h: usize,
+) -> u64 {
+    let mut sum = 0i64;
+    let mut sse = 0i64;
+    for r in 0..h {
+        for c in 0..w {
+            let diff = i64::from(pred[r * w + c]) - i64::from(src[(sy + r) * src_stride + sx + c]);
+            sum += diff;
+            sse += diff * diff;
+        }
+    }
+    let sum = (sum + 2) >> 2;
+    let sse = (sse + 8) >> 4;
+    (sse - sum * sum / (w * h) as i64).max(0) as u64
 }
 
 /// C `sad_16b_kernel` (svt_aom_sad_16b_kernel_c) — the plain 16-bit SAD (sum of
