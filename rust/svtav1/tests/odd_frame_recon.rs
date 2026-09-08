@@ -406,6 +406,28 @@ fn zen_restoration_unit_search_reconstructs_at_unit_and_tile_boundaries() {
                 &obu,
                 &expected,
             );
+            if depth == 8 && (w, h, rows, cols) == (192, 160, 0, 0) {
+                // Match the public wrapper's automatic screen/SB settings and
+                // prove the enhancement survives its builder-to-pipeline path.
+                p.hdr.screen_content_mode = None;
+                p = p.with_sb_size(None);
+                let direct = p.try_encode_frame_420(&y, &u, &v, w).unwrap();
+                let wrapper = svtav1::avif::AvifEncoder::new()
+                    .with_quality(50.0)
+                    .with_native_preset(NativePreset::RESEARCH)
+                    .with_reference(SvtReference::Mainline420)
+                    .with_color_space(2, 2, 2, false)
+                    .with_enhancement(ZenEnhancement::AomRestorationUnitSearch);
+                assert_eq!(
+                    wrapper
+                        .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
+                        .unwrap()
+                        .data,
+                    direct,
+                    "public AVIF wrapper must execute the same enhanced search"
+                );
+                assert!(wrapper.with_speed(1).validate_configuration().is_err());
+            }
         }
     }
     assert_eq!(
