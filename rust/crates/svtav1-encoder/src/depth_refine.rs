@@ -1014,6 +1014,7 @@ pub(crate) struct NsqCfg {
     pub enabled: bool,
     pub min_nsq: usize,
     pub allow_hv4: bool,
+    pub allow_hva_hvb: bool,
     pub sq_weight: u64,
     pub hv_weight: u64,
     pub max_part0_to_part1_dev: u64,
@@ -1035,6 +1036,7 @@ impl NsqCfg {
             enabled: false,
             min_nsq: 0,
             allow_hv4: false,
+            allow_hva_hvb: false,
             sq_weight: u64::MAX,
             hv_weight: u64::MAX,
             max_part0_to_part1_dev: 0,
@@ -1056,9 +1058,19 @@ impl NsqCfg {
     /// `me_dist_mod` (:6497-6506) is 0 on an I-slice, so the `+1` ME-distortion
     /// bump never applies to any frame this port encodes — key frames are the
     /// only ones it emits.
+    #[cfg(test)]
     pub(crate) fn for_arm(arm: crate::sc_detect::ScArm, preset: i8, cli_qp: u32) -> Self {
+        Self::for_arm_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal)
+    }
+
+    pub(crate) fn for_arm_with_coeff(
+        arm: crate::sc_detect::ScArm,
+        preset: i8,
+        cli_qp: u32,
+        coeff_level: crate::quant::CoeffLvl,
+    ) -> Self {
         Self::for_levels(
-            crate::part_arm::nsq_search_level(arm, preset, cli_qp),
+            crate::part_arm::nsq_search_level_with_coeff(arm, preset, cli_qp, coeff_level),
             crate::part_arm::nsq_geom_level(arm, preset),
             crate::part_arm::nsq_qp_based_th_scaling(arm, preset),
             cli_qp,
@@ -1131,6 +1143,7 @@ impl NsqCfg {
             enabled: true,
             min_nsq,
             allow_hv4,
+            allow_hva_hvb: geom_level == 1,
             sq_weight: row.0,
             max_part0_to_part1_dev: dev,
             nsq_split_cost_th: scale(row.2),
@@ -1145,10 +1158,8 @@ impl NsqCfg {
     }
 }
 
-/// The d1 shapes tested at a SQ node, in the C Part-enum iteration order
-/// (`set_blocks_to_test`, enc_dec_process.c:1403: N, H, V, H4, V4 —
-/// HA/HB/VA/VB filtered by `allow_HVA_HVB = 0` at every geom level 2/3
-/// preset; H4/V4 by `allow_HV4` and never at sq 8 or 128).
+/// C `set_blocks_to_test`: normal shapes followed by HA/HB/VA/VB at
+/// geometry level 1. The caller applies incomplete-frame restrictions.
 fn shapes_for_size(size: usize, nsq: &NsqCfg) -> &'static [PartitionType] {
     const N_ONLY: [PartitionType; 1] = [PartitionType::None];
     const NHV: [PartitionType; 3] = [
@@ -1163,9 +1174,38 @@ fn shapes_for_size(size: usize, nsq: &NsqCfg) -> &'static [PartitionType] {
         PartitionType::Horz4,
         PartitionType::Vert4,
     ];
+    const NHV_AB: [PartitionType; 7] = [
+        PartitionType::None,
+        PartitionType::Horz,
+        PartitionType::Vert,
+        PartitionType::HorzA,
+        PartitionType::HorzB,
+        PartitionType::VertA,
+        PartitionType::VertB,
+    ];
+    // C Part order differs from the coded AV1 PartitionType discriminants.
+    const ALL: [PartitionType; 9] = [
+        PartitionType::None,
+        PartitionType::Horz,
+        PartitionType::Vert,
+        PartitionType::Horz4,
+        PartitionType::Vert4,
+        PartitionType::HorzA,
+        PartitionType::HorzB,
+        PartitionType::VertA,
+        PartitionType::VertB,
+    ];
     if !nsq.enabled || size <= nsq.min_nsq || size == 4 {
         &N_ONLY
-    } else if size == 8 || !nsq.allow_hv4 || size == 128 {
+    } else if size == 8 {
+        &NHV
+    } else if nsq.allow_hva_hvb {
+        if !nsq.allow_hv4 || size == 128 {
+            &NHV_AB
+        } else {
+            &ALL
+        }
+    } else if !nsq.allow_hv4 || size == 128 {
         &NHV
     } else {
         &NHV4
@@ -1183,6 +1223,26 @@ fn shape_children(size: usize, p: PartitionType) -> Vec<(usize, usize, usize, us
         PartitionType::Vert => alloc::vec![(0, 0, half, size), (half, 0, half, size)],
         PartitionType::Horz4 => (0..4).map(|i| (0, i * quarter, size, quarter)).collect(),
         PartitionType::Vert4 => (0..4).map(|i| (i * quarter, 0, quarter, size)).collect(),
+        PartitionType::HorzA => alloc::vec![
+            (0, 0, half, half),
+            (half, 0, half, half),
+            (0, half, size, half)
+        ],
+        PartitionType::HorzB => alloc::vec![
+            (0, 0, size, half),
+            (0, half, half, half),
+            (half, half, half, half)
+        ],
+        PartitionType::VertA => alloc::vec![
+            (0, 0, half, half),
+            (0, half, half, half),
+            (half, 0, half, size)
+        ],
+        PartitionType::VertB => alloc::vec![
+            (0, 0, half, size),
+            (half, 0, half, half),
+            (half, half, half, half)
+        ],
         other => unreachable!("funnel shape {other:?}"),
     }
 }
@@ -1399,6 +1459,10 @@ fn c_part(p: PartitionType) -> u32 {
         PartitionType::Vert => 2,
         PartitionType::Horz4 => 3,
         PartitionType::Vert4 => 4,
+        PartitionType::HorzA => 5,
+        PartitionType::HorzB => 6,
+        PartitionType::VertA => 7,
+        PartitionType::VertB => 8,
         _ => 255,
     }
 }
@@ -1765,14 +1829,24 @@ impl DepthWalk<'_, '_> {
         if cnt_h_best >= cnt_nz * hv_to_sq_th / 100 && cnt_v_best >= cnt_nz * hv_to_sq_th / 100 {
             return true;
         }
-        if matches!(shape, PartitionType::Horz | PartitionType::Horz4)
-            && cnt_v_best <= cnt_h_best
+        if matches!(
+            shape,
+            PartitionType::Horz
+                | PartitionType::Horz4
+                | PartitionType::HorzA
+                | PartitionType::HorzB
+        ) && cnt_v_best <= cnt_h_best
             && cnt_h_best >= cnt_nz * h_to_v_th / 100
         {
             return true;
         }
-        if matches!(shape, PartitionType::Vert | PartitionType::Vert4)
-            && cnt_h_best <= cnt_v_best
+        if matches!(
+            shape,
+            PartitionType::Vert
+                | PartitionType::Vert4
+                | PartitionType::VertA
+                | PartitionType::VertB
+        ) && cnt_h_best <= cnt_v_best
             && cnt_v_best >= cnt_nz * h_to_v_th / 100
         {
             return true;
@@ -1895,7 +1969,13 @@ impl DepthWalk<'_, '_> {
             quad[2].max(1),
             quad[3].max(1),
         ];
-        if matches!(shape, PartitionType::Horz | PartitionType::Horz4) {
+        if matches!(
+            shape,
+            PartitionType::Horz
+                | PartitionType::Horz4
+                | PartitionType::HorzA
+                | PartitionType::HorzB
+        ) {
             // V/D67/D113/D45/D135 -> x4; H -> 0.
             if matches!(mode, 1 | 8 | 5 | 3 | 4) {
                 max_dev <<= 2;
@@ -1922,7 +2002,13 @@ impl DepthWalk<'_, '_> {
                 return true;
             }
         }
-        if matches!(shape, PartitionType::Vert | PartitionType::Vert4) {
+        if matches!(
+            shape,
+            PartitionType::Vert
+                | PartitionType::Vert4
+                | PartitionType::VertA
+                | PartitionType::VertB
+        ) {
             // H/D157/D203/D45/D135 -> x4; V -> 0.
             if matches!(mode, 2 | 6 | 7 | 3 | 4) {
                 max_dev <<= 2;
@@ -1953,7 +2039,7 @@ impl DepthWalk<'_, '_> {
     }
 
     /// C `update_skip_nsq_shapes` (:10454): SQ-vs-H/V relative-cost skip
-    /// for the non-HV shapes (H4/V4 here; HA/HB/VA/VB are geometry-off).
+    /// for H4/V4 and the asymmetric HA/HB/VA/VB shapes.
     fn skip_by_shapes(
         &self,
         shape: PartitionType,
@@ -1969,9 +2055,16 @@ impl DepthWalk<'_, '_> {
             sq_weight += Self::CONSERVATIVE_OFFSET_0;
         }
         let sq_cost = sq.ev.block_cost();
-        if shape == PartitionType::Horz4
-            && let Some(h) = h_children
+        if matches!(
+            shape,
+            PartitionType::Horz4 | PartitionType::HorzA | PartitionType::HorzB
+        ) && let Some(h) = h_children
         {
+            if (shape == PartitionType::HorzA && !h[0].1)
+                || (shape == PartitionType::HorzB && !h[1].1)
+            {
+                sq_weight -= 10; // C AGGRESSIVE_OFFSET_1
+            }
             let h_cost = h[0].0 + h[1].0;
             let mut skip = h_cost > (sq_cost * sq_weight) / 100;
             if !skip && let Some(v) = v_children {
@@ -1980,9 +2073,16 @@ impl DepthWalk<'_, '_> {
             }
             return skip;
         }
-        if shape == PartitionType::Vert4
-            && let Some(v) = v_children
+        if matches!(
+            shape,
+            PartitionType::Vert4 | PartitionType::VertA | PartitionType::VertB
+        ) && let Some(v) = v_children
         {
+            if (shape == PartitionType::VertA && !v[0].1)
+                || (shape == PartitionType::VertB && !v[1].1)
+            {
+                sq_weight -= 10; // C AGGRESSIVE_OFFSET_1
+            }
             let v_cost = v[0].0 + v[1].0;
             let mut skip = v_cost > (sq_cost * sq_weight) / 100;
             if !skip && let Some(h) = h_children {
@@ -2097,6 +2197,9 @@ impl DepthWalk<'_, '_> {
         let mut sq_info: Option<SqInfo> = None;
         let mut h_children: Option<[(u64, bool); 2]> = None;
         let mut v_children: Option<[(u64, bool); 2]> = None;
+        // C update_redundant: first-child reuse HB<-H, VB<-V, VA<-HA.
+        // Keep only the three candidates needed by those future shapes.
+        let mut redundant: [Option<LeafEval>; 3] = [None, None, None];
         let mut snap: Option<NodeSnap> = None;
         let mut committed_since_snap = false;
 
@@ -2215,22 +2318,45 @@ impl DepthWalk<'_, '_> {
                             None => (false, false),
                         },
                     };
-                    let ev = evaluate_leaf(
-                        self.fx,
-                        self.y_src,
-                        self.y_src_stride,
-                        cy * self.y_src_stride + cx,
-                        self.y_recon,
-                        self.y_stride,
-                        cx,
-                        cy,
-                        cw,
-                        ch,
-                        false, // is_dc_only gate: eff-M9 only
-                        // sb_is_lvl6: ignored here (txs_lvl6_gate is false for
-                        // every preset that reaches the depth-refine walk).
-                        true,
-                    );
+                    let reuse = if nsi == 0 {
+                        match shape {
+                            PartitionType::HorzB => redundant[0].take(),
+                            PartitionType::VertB => redundant[1].take(),
+                            PartitionType::VertA => redundant[2].take(),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let ev = reuse.unwrap_or_else(|| {
+                        evaluate_leaf(
+                            self.fx,
+                            self.y_src,
+                            self.y_src_stride,
+                            cy * self.y_src_stride + cx,
+                            self.y_recon,
+                            self.y_stride,
+                            cx,
+                            cy,
+                            cw,
+                            ch,
+                            false, // is_dc_only gate: eff-M9 only
+                            // sb_is_lvl6: ignored here (txs_lvl6_gate is false for
+                            // every preset that reaches the depth-refine walk).
+                            true,
+                        )
+                    });
+                    if self.nsq.allow_hva_hvb && nsi == 0 {
+                        let slot = match shape {
+                            PartitionType::Horz => Some(0),
+                            PartitionType::Vert => Some(1),
+                            PartitionType::HorzA => Some(2),
+                            _ => None,
+                        };
+                        if let Some(slot) = slot {
+                            redundant[slot] = Some(ev.clone());
+                        }
+                    }
                     #[cfg(feature = "std")]
                     if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
@@ -2649,6 +2775,65 @@ pub(crate) fn decide_sb_refined(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asymmetric_children_cover_the_parent_without_overlap() {
+        for size in [16, 32, 64, 128] {
+            for shape in [
+                PartitionType::HorzA,
+                PartitionType::HorzB,
+                PartitionType::VertA,
+                PartitionType::VertB,
+            ] {
+                let children = shape_children(size, shape);
+                assert_eq!(children.len(), 3);
+                let mut coverage = vec![0u8; size * size];
+                for (x, y, w, h) in children {
+                    assert!(x + w <= size && y + h <= size);
+                    for row in y..y + h {
+                        for col in x..x + w {
+                            coverage[row * size + col] += 1;
+                        }
+                    }
+                }
+                assert!(coverage.iter().all(|&n| n == 1), "{size} {shape:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn research_shapes_obey_size_and_edge_constraints() {
+        let cfg = NsqCfg::for_arm(crate::sc_detect::ScArm::Allintra, -1, 40);
+        assert_eq!(
+            shapes_for_size(16, &cfg),
+            &[
+                PartitionType::None,
+                PartitionType::Horz,
+                PartitionType::Vert,
+                PartitionType::Horz4,
+                PartitionType::Vert4,
+                PartitionType::HorzA,
+                PartitionType::HorzB,
+                PartitionType::VertA,
+                PartitionType::VertB
+            ]
+        );
+        assert_eq!(shapes_for_size(8, &cfg).len(), 3);
+        assert_eq!(shapes_for_size(4, &cfg), &[PartitionType::None]);
+        let large = shapes_for_size(128, &cfg);
+        assert_eq!(large.len(), 7);
+        assert!(!large.contains(&PartitionType::Horz4));
+        assert!(!large.contains(&PartitionType::Vert4));
+        assert_eq!(
+            shapes_at_edge(64, &cfg, true, false, true),
+            &[PartitionType::Horz]
+        );
+        assert_eq!(
+            shapes_at_edge(64, &cfg, true, true, false),
+            &[PartitionType::Vert]
+        );
+        assert!(shapes_at_edge(64, &cfg, true, false, false).is_empty());
+    }
 
     #[test]
     fn nsq_cfg_matches_instrumented_captures() {

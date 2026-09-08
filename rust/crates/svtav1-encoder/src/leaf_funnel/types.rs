@@ -20,6 +20,7 @@ use super::*;
 /// NIC staging pins state a candidate as the two costs and the lane that
 /// decide its fate, instead of forty fields of noise.
 #[cfg_attr(test, derive(Default))]
+#[derive(Clone)]
 pub(super) struct Cand {
     pub(super) mode: u8,
     /// Luma angle delta (directional modes only; C ANGLE_STEP units).
@@ -397,6 +398,7 @@ pub struct IbcFrameState {
 /// `md_encode_block` output before `md_update_all_neighbour_arrays`
 /// commits it. The PD1 depth walk evaluates parent and child depths and
 /// only commits the depth that wins the inter-depth compare.
+#[derive(Clone)]
 pub(crate) struct LeafEval {
     pub abs_x: usize,
     pub abs_y: usize,

@@ -125,12 +125,8 @@ pub(crate) fn nsq_geom_enabled(arm: ScArm, preset: i8) -> bool {
 /// `svt_aom_set_nsq_geom_ctrls` (`:8180`) — the `(allow_HV4, min_nsq_block_size)`
 /// pair the funnel's `shapes_for_size` consumes, per geom level.
 ///
-/// Level 1 also sets `allow_HVA_HVB = 1`, which the funnel cannot search: it
-/// has no HorzA/HorzB/VertA/VertB candidate and `shape_children` is
-/// `unreachable!` on them. Level 1 is reachable ONLY on the video arm at
-/// preset 0 (`get_nsq_geom_level_default`, non-HIGH coeff_lvl), so that one
-/// cell searches level 2's shape set. Named, not silent — see
-/// `docs/nsq-port-map.md`.
+/// Level 1 additionally enables asymmetric shapes. `NsqCfg` carries that
+/// flag separately and searches their geometry, pruning and redundant blocks.
 #[must_use]
 pub(crate) fn nsq_geom_shape_ctrls(level: u8) -> (bool, usize) {
     match level {
@@ -152,13 +148,12 @@ pub(crate) fn nsq_geom_shape_ctrls(level: u8) -> (bool, usize) {
 ///   0 from M4), so the still path is always unscaled — which is what the
 ///   flattened tail assumed.
 /// - **video** (`set_qp_based_th_scaling_ctrls_default`, `:3788-3817`): 0 at
-///   MR, 1 everywhere else. `MR` is unreachable from a `u8` preset, so it is
-///   always 1 here.
+///   MR, 1 everywhere else.
 #[must_use]
 pub(crate) fn nsq_qp_based_th_scaling(arm: ScArm, preset: i8) -> bool {
     match arm {
         ScArm::Allintra => preset > 3,
-        ScArm::Video { .. } => true,
+        ScArm::Video { .. } => preset > -1,
     }
 }
 
@@ -173,15 +168,27 @@ pub(crate) fn nsq_qp_based_th_scaling(arm: ScArm, preset: i8) -> bool {
 /// entered. If a RANDOM_ACCESS envelope is ever wired, this is the input to
 /// revisit first.
 #[must_use]
+#[cfg(test)]
 pub(crate) fn nsq_search_level(arm: ScArm, preset: i8, cli_qp: u32) -> u8 {
+    nsq_search_level_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal)
+}
+
+pub(crate) fn nsq_search_level_with_coeff(
+    arm: ScArm,
+    preset: i8,
+    cli_qp: u32,
+    coeff_level: crate::quant::CoeffLvl,
+) -> u8 {
+    let coeff = match coeff_level {
+        crate::quant::CoeffLvl::VLow => InputCoeffLvl::VLow,
+        crate::quant::CoeffLvl::Low => InputCoeffLvl::Low,
+        crate::quant::CoeffLvl::Normal => InputCoeffLvl::Normal,
+        crate::quant::CoeffLvl::High => InputCoeffLvl::High,
+    };
     let m = i8::try_from(preset).unwrap_or(i8::MAX);
     match arm {
-        // `coeff_lvl` cannot matter on this arm: its only use is the
-        // `enc_mode <= ENC_MR` clause, and MR is -1, structurally unreachable
-        // from a `u8` preset (`rust/CLAUDE.md` envelope guard 5).
-        ScArm::Allintra => {
-            leaf::get_nsq_search_level_allintra(m, cli_qp, InputCoeffLvl::Normal, SEQ_QP_MOD)
-        }
+        // Research mode reads the actual picture coefficient class here.
+        ScArm::Allintra => leaf::get_nsq_search_level_allintra(m, cli_qp, coeff, SEQ_QP_MOD),
         ScArm::Video { is_islice } => leaf::get_nsq_search_level_default(
             m,
             VIDEO_ISLICE_COEFF_LVL,

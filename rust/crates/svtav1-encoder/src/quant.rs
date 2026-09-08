@@ -1719,6 +1719,8 @@ pub fn rdoq_cutoffs(rdoq_level: u8) -> (u32, u32) {
 
 /// Frame-level C-exact coding-quantizer configuration for the still path.
 pub struct CodingQuantCfg {
+    /// Picture coefficient class shared with research partition search.
+    pub(crate) input_coeff_level: CoeffLvl,
     /// 0 = quantize_b (no RDOQ); >= 1 = quantize_fp + optimize_b.
     pub rdoq_level: u8,
     /// SVT_HDR_MODE: fork behaviors (light-RDOQ) may fire when true.
@@ -1761,6 +1763,7 @@ impl core::fmt::Debug for CodingQuantCfg {
 impl CodingQuantCfg {
     pub fn new(rdoq_level: u8, lambda: u32, base_qindex: u8) -> Self {
         Self {
+            input_coeff_level: CoeffLvl::Normal,
             rdoq_level,
             hdr_fork: false,
             sharpness: 0,

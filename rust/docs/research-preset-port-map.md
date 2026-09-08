@@ -29,10 +29,10 @@ that normal-preset suite.
 |---|---|---|
 | SGR restoration | `get_sg_filter_level_allintra` returns level 1 at -1: both lanes search all 16 entries with refinement | Signed selector now reaches all-intra search controls; full enabled-output validation pending |
 | Wiener restoration | All-intra -1 and 0 both use level 3 | Existing controls retained |
-| CDEF | Research level differs from normal preset 0 | Existing signed level helper is reached; audit all search consumers and chroma passes |
+| CDEF | Research level differs from normal preset 0 | Confirmed live omission: 8/10-bit search loops only compute first-pass UV rows, despite level 1 enabling both passes. Fix the per-slot chroma mask before the research identity matrix |
 | Depth refinement | All-intra screen level 1; nonscreen research level 3 instead of level 6 | Signed research branches added to the live depth configuration |
-| Partition geometry | `get_nsq_geom_level_allintra(-1)` selects level 1, enabling HA/HB/VA/VB | **Missing:** `depth_refine::shapes_for_size` and `shape_children` only generate N/H/V/H4/V4; trace geometry, search, entropy costs, coding and reconstruction before claiming support |
-| Partition search | Low/VLow coefficients reduce the research NSQ search level | **Missing wiring:** `part_arm::nsq_search_level` still passes Normal; carry the real frame coefficient class to all `NsqCfg` consumers |
+| Partition geometry | `get_nsq_geom_level_allintra(-1)` selects level 1, enabling HA/HB/VA/VB | HA/HB/VA/VB generation, pruning, first-child reuse and picture coefficient-class transport added; geometry/unit tests and normal byte regressions pass. Chosen-asymmetric C-output and independent-decoder witnesses pending |
+| Partition search | Low/VLow coefficients reduce the research NSQ search level | Frame coefficient class now travels through `CodingQuantCfg` to all three pipeline `NsqCfg` consumers; research Low/VLow branches are reached |
 | Lambda weighting | At -1, tune 0–2 omit the normal QP-dependent weight; IQ curve and extended-CRF bump still apply | Signed `frame_lambda_weight_for_preset` now reaches main and per-SB consumers; the tile override preserves zero research weight instead of falling back to normal defaults. 2,613 workspace tests and 127/127 normal-preset byte regressions pass; enabled research output gate pending |
 | Video derivations | Research branches affect additional prediction/search tools | Signed carriers alone are insufficient; audit the full default arm before video parity claims |
 | Public wrappers/query | Research must be reachable and report verified support | High-level AVIF speed mapping remains unchanged; research wrapper support is pending full implementation |
@@ -68,11 +68,11 @@ Additional source-audit finding: the C video default arm assigns lambda weight
 currently assigns 175. Preserve this as a separate enabled-witness investigation;
 research mode correctly omits both normal weights.
 
-Asymmetric-shape follow-up must port the whole decision path: C iteration
+Asymmetric-shape implementation now follows the whole decision path: C iteration
 order is N/H/V/H4/V4/HA/HB/VA/VB; incomplete blocks inject only H/V, size 8
 excludes the asymmetric shapes, and size 128 excludes H4/V4. Besides geometry,
-`product_coding_loop.c` needs the HA/HB/VA/VB arms of reconstruction/transform
-pruning, `update_skip_nsq_shapes` (-10 coefficient-free aggressive offset),
+the port now carries the HA/HB/VA/VB arms of reconstruction/transform
+pruning from `product_coding_loop.c`, `update_skip_nsq_shapes` (-10 coefficient-free aggressive offset),
 and `update_redundant` (HB←H, VB←V, VA←HA first-child reuse). Merely generating
 the three children is not full C search parity. The existing packer already
 has asymmetric partition context/offset arms; validate those with chosen

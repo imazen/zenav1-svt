@@ -3023,6 +3023,7 @@ impl EncodePipeline {
                     lambda,
                     base_qindex,
                 );
+                cq.input_coeff_level = coeff_lvl;
                 // C `svt_av1_optimize_b`'s `allintra || rtc` (full_loop.c:1046)
                 // — the first index of `PLANE_RD_MULT`. `scs->allintra` is set
                 // only for `intra_period_length == 0 || avif` (enc_handle.c:518),
@@ -12080,10 +12081,15 @@ fn encode_tile_rows(
                     // widening it blind would trade a green gate for a guess.
                     let p9_fixed_partition = speed_config.preset >= 9
                         && (bit_depth == 10
-                            || !crate::depth_refine::NsqCfg::for_arm(
+                            || !crate::depth_refine::NsqCfg::for_arm_with_coeff(
                                 sc_arm,
                                 speed_config.preset,
                                 u32::from(cli_qp),
+                                c_quant
+                                    .as_ref()
+                                    .map_or(crate::quant::CoeffLvl::Normal, |q| {
+                                        q.input_coeff_level
+                                    }),
                             )
                             .enabled);
                     let sb_result = if coded_lossless && !use_funnel {
@@ -12378,10 +12384,15 @@ fn encode_tile_rows(
                             // pred-depth-only but still SEARCHES NSQ shapes took
                             // the fixed-tree path and coded squares where C codes
                             // an H/V/4-way shape at the same depth.
-                            let nsq_search_on = crate::depth_refine::NsqCfg::for_arm(
+                            let nsq_search_on = crate::depth_refine::NsqCfg::for_arm_with_coeff(
                                 sc_arm,
                                 speed_config.preset,
                                 cli_qp as u32,
+                                c_quant
+                                    .as_ref()
+                                    .map_or(crate::quant::CoeffLvl::Normal, |q| {
+                                        q.input_coeff_level
+                                    }),
                             )
                             .enabled;
                             let refined = use_funnel && (dr.adaptive || nsq_search_on);
@@ -12721,10 +12732,15 @@ fn encode_tile_rows(
                                 let nsq = if coded_lossless {
                                     crate::depth_refine::NsqCfg::off()
                                 } else {
-                                    crate::depth_refine::NsqCfg::for_arm(
+                                    crate::depth_refine::NsqCfg::for_arm_with_coeff(
                                         sc_arm,
                                         speed_config.preset,
                                         cli_qp as u32,
+                                        c_quant
+                                            .as_ref()
+                                            .map_or(crate::quant::CoeffLvl::Normal, |q| {
+                                                q.input_coeff_level
+                                            }),
                                     )
                                 };
                                 crate::depth_refine::decide_sb_refined(
