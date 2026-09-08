@@ -412,8 +412,7 @@ impl AvifEncoder {
         stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(pixels.len(), width, height, stride)?;
-        self.validate_quality()?;
-        self.validate_inert_knobs(false)?;
+        self.validate_configuration()?;
 
         // MONOCHROME NO LONGER NEEDS PRE-PADDING. `EncodePipeline`'s
         // TRUE -> ALIGNED replicate-pad is wired on the mono path too
@@ -526,8 +525,7 @@ impl AvifEncoder {
             });
         }
 
-        self.validate_quality()?;
-        self.validate_inert_knobs(true)?;
+        self.validate_configuration()?;
 
         let mut pipeline = self.build_pipeline(width, height).with_chroma_420(true);
         let bitstream = pipeline
@@ -614,6 +612,14 @@ impl AvifEncoder {
             // surfacing verbatim; `#[non_exhaustive]` keeps this wildcard.
             _ => EncodeError::EncodeFailed(rendered()),
         }
+    }
+
+    /// Query still-image configuration support without encoding or allocating
+    /// image planes. Uses the same format and quality checks as encoding.
+    /// Source dimensions, strides and buffer lengths are validated separately.
+    pub fn validate_configuration(&self) -> Result<(), EncodeError> {
+        self.validate_quality()?;
+        self.validate_inert_knobs(true)
     }
 
     /// Validate quality range.
