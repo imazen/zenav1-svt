@@ -32,8 +32,14 @@ tile columns and SB128. Smaller units actually win and restore pixels at both
 depths; all outputs match independent libaom reconstruction. The full workspace
 suite passes 2,627/2,627, and regression spot-checks pass 136/136. Fresh
 experiment-off byte gates pass 1,100/1,100 hybrid normal8 and 320/320 pristine
-research cells (160 each native8/10). RD/time ablation is still pending; this
-is not a calibrated default or a claim of universal RD gain.
+research cells (160 each native8/10). The completed
+[144-encode canonical fleet ablation](../../../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESTORATION_UNITS.md)
+found no measured RD gain on the two training origins. Photo QP5/12 selected
+128-pixel units but became slightly larger and scored slightly lower; other
+photo QPs retained 256. Screenshot search was bypassed. Keep the experiment
+opt-in; this is not full-corpus calibration. A subsequent public-wrapper
+equality/refusal test passed, and all 24 measured SVT cells replayed exactly
+with independently matching reconstruction and recorded restoration decisions.
 
 ## Transport and current validation
 

@@ -1,46 +1,76 @@
-Latest completed chunk: opt-in AOM intra-edge at native-1, with chroma-owner
-prediction fixed and corrected RD measurements collected. All jobs terminal.
-Workspace2626/2626; regression136/136; comparator6/6. Refreshed C byte gates:
-hybrid normal8 1100/1100, pristine normal8 1100/1100, pristine research320/320
-(160 each native8/10). Their846 unique streams equal the previously decoded
-set exactly. New off/on geometry36/36 and measured SVT replay20/20 separately
-match all decoder reconstruction samples. No settings/gates were disabled.
-Evidence: rust/benchmarks/intra-edge-parity-2026-09-08.json.
+Current completed chunk (2026-09-08): opt-in AOM restoration-unit search,
+automatic measurement reconstruction gates, fully static fleet tools, and a
+completed canonical fleet ablation. No workers or local heavy jobs remain live.
 
-Corrected measurement completed120 encodes/40 cells/3 rounds, timed binary
-f8581baed256acc7bd30f638b063b5a47a651be4c0d620ceb126de61c2bfefb6.
-Separate untimed comparator verify-measurement (verifier b97d592f...) checks
-prepared input hashes, exact original OBU replay and all reconstructed samples;
-it has NOT yet been made automatic in measure/fleet execution. Important next
-harness work before broader scouts: wire untimed verification after timing,
-with retained failure artifacts through the existing zenfleet contracts.
+Primary records:
+- rust/docs/research-preset-port-map.md (implementation and remaining scope)
+- ../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_RESTORATION_UNITS.md
+- its imazen26_restoration_provenance.json (all durable artifacts and checks)
+- ENCODER-POLICY-GOAL.md (the unbounded active goal; far from complete)
 
-Matched-quality QP20..32 estimates: photoSSIM2=70 native26333B/3236ms versus
-intra-edge26701B/3388ms; screenshotSSIM2=80 native11434B/6490ms versus
-intra-edge11629B/6557ms. The corrected feature remains opt-in, not a selected
-automatic default. Tiny photoQP5/12 gains remain bounded pilot observations.
-The PRE-FIX apparent photoQP20 quality gain is superseded. Complete report:
-../zenmetrics/benchmarks/av1_compare_2026-09-08/IMAZEN26_INTRA_EDGE.md.
+SVT local a7f31485 adds ZenEnhancement::AomRestorationUnitSearch and shared
+256/128/64 search bounded by the actual SB size, with SVT filter/unit RD costs
+and frame header costs. Native C behavior remains fixed 256. Both depths,
+syntax, reconstruction and generic public wrapper enhancement transport work.
+Ten enabled geometry/depth cases include odd/tile/SB128 boundaries; unit64 and
+unit128 actually win. Local4c445267 adds public AVIF-wrapper equality/refusal.
+Workspace2627/2627, regression136/136, fresh hybrid normal8 C1100/1100,
+fresh pristine research320/320 (160 each native8/10). No gate was weakened.
 
-Durable LAN-store archive, uploaded and downloaded SHA256-verified:
+Fleet av1-restoration-unit-ablation-20260908 completed2/2 jobs,144/144 encodes,
+48 deterministic cells,24 exact automatic SVT reconstruction verifications.
+Later telemetry replay reproduced all24 original input/OBU hashes and every
+reconstructed sample. Both Nomad allocations are complete and the job stopped.
+The separate remote smoke also passed21 encodes/6 reconstruction cells and
+was stopped. Canonical claims, ledgers and blob stores were used throughout.
+
+Two canonical TRAIN origins,1000 photo (512x384 on Ryzen3500) and8100 screen
+(512x320 on Ryzen7900X), six QPs5/12/20/32/48/60, native SVT-1 off/on and
+libaom0/Rust AOM0, three interleaved rounds. Photo QP5/12 chose128 units but
+added14/5 bytes, lost0.0010/0.0652 SSIM2 and took4.28%/3.60% longer. Other
+photo QPs retained256. Screenshot restoration was BYPASSED at every QP;
+its identical outputs are not an active smaller-unit RD result. Keep opt-in.
+QP20 photo native27489B/1.1185bpp/71.084/6235.6ms; unit search same output,
+6393.7ms. Screen native14327B/.6996bpp/84.057/7236.9ms; search7240.2ms.
+Matched QP20..32 estimates: photo SSIM2=70 native26333B/6335ms versus
+libaom26808B/5518ms; screen SSIM2=80 native11434B/7586ms versus libaom
+11259B/3803ms and Rust AOM12705B/3139ms. No faster presets in this ablation.
+These two origins are NOT minimum representatives or held-out calibration.
+
+Measured fully static binary e9538ef62986cf4605dedbbe059728ae1c3f6e9b123a3ec787e811a82e6b4d19.
+Telemetry verifier b0199023c45d841a4945ebc7f4b40dc62ccd4c364db6428fdd7f691e51acdc55.
+Local artifacts ~/tmp/av1-restoration-fleet; durable source/executor/analysis
+archives and per-job output/ledger URIs are in the provenance record. All were
+downloaded and SHA-verified. All30 overlapping native SVT/libaom/Rust AOM
+controls equal the earlier corrected intra-edge outputs across builds/CPUs;
+do not pool their times. Earlier intra-edge timed/verifier binaries f858/b97d
+had static CODEC libraries but dynamic SYSTEM dependencies; report corrected.
+
+Comparator v3 now automatically replays SVT after every timed round completes,
+requires exact original OBU plus all reconstructed samples, writes validation
+only on success, and retains failure evidence via canonical local/S3 stores.
+The real S3 failure upload was downloaded and verified. build-static.sh verifies
+all3 executables have no dynamic NEEDED entries; smoke-jobexec.py verifies
+actual declaration, execution, worker/ledger outcomes and preserved artifacts.
+Latest comparator tests7 lib +5 binary pass. Per-row hardware/worker cohort
+hashes prevent cross-machine timing pooling. The SDR measurement path now
+rejects high-depth sources and nonopaque alpha instead of silently reducing
+precision/dropping alpha; native HDR/alpha measurement remains open.
+
+Issue21 body updated and verified2026-09-08T09:42:05Z. No CI/main push started.
+Latest fetch: SVT unchanged; zenmetrics master advanced to3ab5f791 (GPU-only
+changes); reconcile this incoming change before landing the local stack.
+Next real work: canonical full-population RD/RD-speed scouting and measured
+minimum representatives; strict policy/continuous effort/resolution/replay;
+actual zenavif routing and native HDR/format preservation; older real-image
+parity witnesses and broader source-envelope/lint/main integration. Do not
+conflate successful normal/research gates with closure of the historical gaps.
+
+Earlier intra-edge chunk: corrected120 encodes/40 cells with native/edge/AOM
+arms; feature remains opt-in. See IMAZEN26_INTRA_EDGE.md and
+rust/benchmarks/intra-edge-parity-2026-09-08.json. Durable709384601-byte archive:
 s3://zentrain/benchmarks/av1-compare/2026-09-08/intra-edge-corrected/evidence-3a644bc6f4c30fc3da0d3342632cc7a1325ea7695537965159d5ea75dd9197e4.tar.gz
-709384601 bytes; contains corrected and superseded raw measurements, all fresh
-parity runs, measured/verifier binaries, pinned C sources and2359 exact measured
-source files recovered to match provenance hashes. Local artifact root:
-~/tmp/av1-imazen26-intra-edge-corrected-2026-09-08. Archive/upload script/log:
-~/tmp/svt-tracking/{archive-intra-edge.py,intra-edge-archive-upload.log}.
-Issue21 body updated and verified2026-09-08T08:21:35Z; main fetch unchanged.
-No push or CI. Policy/effort/replay, actual zenavif routing, canonical fleet
-RD-zone scouting/minimum representatives and old real-image parity remain.
-
-Next AOM candidate audited, not implemented: restoration unit-size search
-64/128/256. restoration.rs::search_restoration_still_bd_with_stop fixes256;
-it computes per-plane best RD but discards the cost in FrameRestInfo. A Zen
-search must compare legal unit sizes with actual header/unit signaling cost,
-retain default C behavior, and reach both native depths and header unit_size.
-pipeline.rs calls it around6302/6319 and signals rest_info around6473. Unit
-mapping tests already cover64/128/256 but do not prove size SEARCH or output
-reconstruction. Do not merely change the constant or header field.
+It preserves the superseded pre-fix run and corrected chroma-owner fix evidence.
 
 Historical reference-work summary (superseded where noted above):
 Latest implementation: local kmmkunzl wires SvtReference::{Mainline420,
