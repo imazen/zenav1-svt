@@ -5,6 +5,25 @@ named below and is updated in place; anything restated here is restated only so
 a new session can orient in ten minutes. When this file and a live doc disagree,
 **the live doc wins** — and fix this one in the same change.
 
+User-directed policy goal **2026-09-08**: [ENCODER-POLICY-GOAL.md](ENCODER-POLICY-GOAL.md)
+defines the continuous-effort/adaptive API, strict `SvtParity`, complete research
+preset -1, preserved HDR-fork features, imazen-26/native-HDR calibration and
+actual backend-owned zenavif routing, with local validation and main-integration
+completion gates. This is a written goal; the thread goal tracker still holds
+the unfinished, usage-limited animated-AVIF/video goal and refused a second goal.
+
+Latest still-backend comparison **2026-09-08**: the [measured RD/time report](../zenmetrics/benchmarks/av1_compare_2026-09-08/README.md)
+and [AOM adoption audit](../zenmetrics/benchmarks/av1_compare_2026-09-08/AOM_ADOPTION.md)
+record the completed C/Rust SVT/AOM preset 0..9 fill, C research preset -1,
+and successful 20-job zenfleet supplement. Prefer their dense time-budget
+curves over the earlier coarse preset-6 estimates. Rust's unsigned preset
+API still cannot express -1; C's -2/-3 enum names are rejected by its public
+validator in this build. New real-image parity witnesses remain open.
+The static harness and reports are local zenmetrics changes; production
+routing remains query-only, and the previously identified wrapper-quality,
+translation-parity and broad local lint gates are not closed by these sweeps.
+The user still requires local checks before CI/main integration.
+
 Active user goal **2026-09-07**: complete animated AVIF (all metadata,
 transparency and specification features), then complete video encoding.
 [Animated AVIF plan](rust/docs/ANIMATED-AVIF-PLAN.md) records current code,
