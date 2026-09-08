@@ -24,6 +24,7 @@
 #[path = "animation.rs"]
 pub mod animation;
 
+pub use crate::policy::{Effort, EncodingPolicy, ResolvedStillPolicy, StillSuitability};
 /// Explicit, uncalibrated Zen experiments for the region beyond native −1.
 pub use svtav1_encoder::enhancements::{ZenEnhancement, ZenEnhancements};
 /// Pinned C source identity, separate from speed and policy.
@@ -107,6 +108,8 @@ pub struct AvifEncoder {
     /// Speed (1-10), mapped to still-image presets 0-9.
     speed: u8,
     native_preset: Option<NativePreset>,
+    policy: Option<EncodingPolicy>,
+    effort: Option<Effort>,
     reference: SvtReference,
     enhancements: ZenEnhancements,
     /// Bit depth (8, 10, or 12).
@@ -155,6 +158,8 @@ impl AvifEncoder {
             quality: 75.0,
             speed: 6,
             native_preset: None,
+            policy: None,
+            effort: None,
             reference: SvtReference::Hybrid3115,
             enhancements: ZenEnhancements::default(),
             bit_depth: 8,
@@ -239,6 +244,7 @@ impl AvifEncoder {
     pub fn with_speed(mut self, speed: u8) -> Self {
         self.speed = speed.clamp(1, 10);
         self.native_preset = None;
+        self.effort = None;
         self
     }
 
@@ -258,7 +264,40 @@ impl AvifEncoder {
     /// ```
     pub fn with_native_preset(mut self, preset: NativePreset) -> Self {
         self.native_preset = Some(preset);
+        self.effort = None;
         self
+    }
+
+    /// Apply an explicit policy. Later conflicting reference/experiment setters
+    /// are rejected by the same validator used by encoding.
+    pub fn with_policy(mut self, policy: EncodingPolicy) -> Self {
+        if let EncodingPolicy::SvtParity(reference) = policy {
+            self.reference = reference;
+        }
+        self.policy = Some(policy);
+        self
+    }
+
+    /// Resolve checked effort through the versioned native bucket table.
+    /// Replaces a previous speed/native selection; no adaptive bundle is implied.
+    pub fn with_effort(mut self, effort: Effort) -> Self {
+        self.effort = Some(effort);
+        self.native_preset = None;
+        self
+    }
+
+    /// Query effective policy and calibration availability without encoding.
+    pub fn resolve_still_policy(&self) -> Result<ResolvedStillPolicy, EncodeError> {
+        self.validate_configuration()?;
+        Ok(ResolvedStillPolicy {
+            version: 1,
+            policy: self.policy,
+            reference: self.reference,
+            requested_effort: self.effort,
+            native_preset: self.resolved_native_preset(),
+            enhancements: self.enhancements,
+            suitability: StillSuitability::Uncalibrated,
+        })
     }
 
     /// Select a pinned C source. Existing constructors retain Hybrid3115.
@@ -288,6 +327,9 @@ impl AvifEncoder {
 
     /// The effective native preset after still-image canonicalization.
     pub fn resolved_native_preset(&self) -> NativePreset {
+        if let Some(effort) = self.effort {
+            return effort.native_preset();
+        }
         let value = self.native_preset.map_or_else(
             || Self::speed_to_preset(self.speed) as i8,
             NativePreset::value,
@@ -483,6 +525,11 @@ impl AvifEncoder {
     ) -> Result<EncodedAvif, EncodeError> {
         self.validate_dimensions(pixels.len(), width, height, stride)?;
         self.validate_configuration()?;
+        if matches!(self.policy, Some(EncodingPolicy::SvtParity(_))) {
+            return Err(EncodeError::UnsupportedConfig(
+                "SvtParity requires the C 4:2:0 format; monochrome is a Rust extension",
+            ));
+        }
 
         // MONOCHROME NO LONGER NEEDS PRE-PADDING. `EncodePipeline`'s
         // TRUE -> ALIGNED replicate-pad is wired on the mono path too
@@ -679,6 +726,18 @@ impl AvifEncoder {
     /// image planes. Uses the same format and quality checks as encoding.
     /// Source dimensions, strides and buffer lengths are validated separately.
     pub fn validate_configuration(&self) -> Result<(), EncodeError> {
+        if let Some(EncodingPolicy::SvtParity(reference)) = self.policy {
+            if self.reference != reference {
+                return Err(EncodeError::UnsupportedConfig(
+                    "parity policy conflicts with selected reference",
+                ));
+            }
+            if !self.enhancements.is_empty() {
+                return Err(EncodeError::UnsupportedConfig(
+                    "SvtParity forbids Zen enhancements",
+                ));
+            }
+        }
         self.validate_quality()?;
         self.enhancements
             .validate(

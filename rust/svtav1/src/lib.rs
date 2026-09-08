@@ -48,6 +48,7 @@
 #![forbid(unsafe_code)]
 
 pub mod avif;
+pub mod policy;
 
 pub use svtav1_dsp as dsp;
 pub use svtav1_encoder as encoder;
