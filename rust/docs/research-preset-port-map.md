@@ -35,7 +35,7 @@ that normal-preset suite.
 | Partition search | Low/VLow coefficients reduce the research NSQ search level | Frame coefficient class now travels through `CodingQuantCfg` to all three pipeline `NsqCfg` consumers; research Low/VLow branches are reached |
 | Lambda weighting | At -1, tune 0–2 omit the normal QP-dependent weight; IQ curve and extended-CRF bump still apply | Signed `frame_lambda_weight_for_preset` now reaches main and per-SB consumers; the tile override preserves zero research weight instead of falling back to normal defaults. 2,613 workspace tests and 127/127 normal-preset byte regressions pass; enabled research output gate pending |
 | Video derivations | Research branches affect additional prediction/search tools | Signed carriers alone are insufficient; audit the full default arm before video parity claims |
-| Public wrappers/query | Research must be reachable and report verified support | High-level AVIF speed mapping remains unchanged; research wrapper support is pending full implementation |
+| Public wrappers/query | Research must be reachable and report verified support | AvifEncoder now exposes checked with_native_preset and resolved_native_preset; with_speed retains compatibility and replaces a native override. Zenavif routing/effort query wiring remains pending |
 
 Do not alias research to preset 0, suppress its asymmetric shapes, weaken an
 identity expectation, or label this table complete based on accepting -1.
@@ -207,3 +207,21 @@ native10 lambda at the search consumer. The 256x256/QP48 witness is **540B /
 regression cell is added; the 132-cell spot-check and 120-cell native10 geometry
 repeat are running. Do not change the pixel/SAD domain to 10-bit: C explicitly
 keeps those 8-bit. Fresh evidence uses `research-dims10-fixed*`.
+
+Native10 vector-cost fix passes **132/132** regression checks and the repeated
+**120/120** native10 geometry grid, including all three former failures.
+
+Public AvifEncoder now accepts `with_native_preset(NativePreset::RESEARCH)`
+and reports `resolved_native_preset()`. Its normal speed mapping is preserved;
+last preset/speed selection wins, and native presets10..13 canonicalize to9
+as in C all-intra. Tests verify research output equals direct signed-pipeline
+output and differs from preset0 at both output depths. The wrapper's existing
+u8 input is widened for10-bit output; nativeu16 input remains a pipeline API.
+
+A new partial-frame decoder witness exposed a stale wrapper-only refusal of
+odd dimensions. The wrapper now validates tightly packed chroma with rounded-up
+half dimensions and accepts65x67. Independent aomdec output agrees with
+pipeline reconstruction at8/10bits; shortened odd-width chroma still errors.
+All **2,618 workspace tests pass**. Doctests and the final wrapper spot-check
+are running. No parity expectations were loosened; the former odd-size
+refusal test now checks rounded-up chroma bounds and successful encoding.

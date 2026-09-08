@@ -1,17 +1,19 @@
-Latest research checkpoint (2026-09-08): current vlsuktxv fixes native10
-IntraBC vector-cost lambda. C searches8-bit pixels/SAD but errorperbit uses
-full_lambda_md[hbd_md]; Rust used8-bit lambda. Earliest vector difference
-is pixel(128,96), before later transform-depth changes. Smallest witness
-screen256x256/QP48/-1 now540B /18,355ops exact. All 2,615 tests pass.
-Heavy session 21894 runs 132-cell regression then 120-cell native10 geometry
-repeat. Poll before any heavy work. Evidence ~/tmp/svt-tracking/research-
-ibc-native-lambda-* and research-dims10-fixed*. Previous10-bit grid117/120;
-8-bit geometry120/120 independently decoded; imazen26 smoke8/8 (photo1000
-and screenshot8100,512 crops,QP5/12/20/48). These are not RD representatives.
-See research-preset-port-map.md. Open issues freshly listed:4,7,8,17,18,19,21;
-no new issue numbers. No push/CI. Next: verify the full10-bit correction,
-normal native10 IBC controls, wrapper reachability and tile/real coverage;
-AOM adoption/policy/router/corpus goal remains open.
+Latest research checkpoint (2026-09-08): native10 IntraBC lambda fix now
+passes 132/132 regression checks and 120/120 native10 geometry. Current wmspwnxx
+adds AvifEncoder::with_native_preset(RESEARCH) and resolved_native_preset();
+normal speed mapping preserved, native10..13 canonicalized to9. Also removes
+stale odd-size wrapper refusal with rounded-up chroma bounds. All 2,618 tests
+pass, including 65x67 independent decoder/reconstruction at8/10 output bits.
+Heavy session 26589 runs doctests then regression_spotcheck, logs
+~/tmp/svt-tracking/research-wrapper-{doctest,spotcheck}.log. Poll before heavy
+work. Add research_wrapper_partial_frame_matches_decoder to the existing
+odd_frame_recon loop in regression_spotcheck.sh after this running check; its
+pre-fix wrapper failure is recorded. See research-preset-port-map.md. Next: comparator signed -1 exposure,
+normal native10 IBC regression coverage, native research tile/real/HDR audits,
+policy and actual zenavif routing, AOM continuation and imazen26 RD scout.
+Zenmetrics CLAUDE.md is1152lines and must be read before changing that repo;
+comparator's src/lib.rs rejects Svt speed-1 and constructs pipeline viau8cast.
+No push/CI; full goal remains open.
 
 # zenav1-svt — handoff
 

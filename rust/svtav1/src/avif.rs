@@ -24,6 +24,9 @@
 #[path = "animation.rs"]
 pub mod animation;
 
+/// Checked C preset domain, including research -1.
+pub use svtav1_encoder::speed_config::NativePreset;
+
 /// Chroma subsampling format for AVIF encoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromaSubsampling {
@@ -97,8 +100,9 @@ impl core::fmt::Display for EncodeError {
 pub struct AvifEncoder {
     /// Quality level (1.0-100.0). Higher = better quality, larger file.
     quality: f32,
-    /// Speed preset (1-10). Mapped to svtav1 presets 0-13.
+    /// Speed (1-10), mapped to still-image presets 0-9.
     speed: u8,
+    native_preset: Option<NativePreset>,
     /// Bit depth (8, 10, or 12).
     bit_depth: u8,
     /// Chroma subsampling format.
@@ -144,6 +148,7 @@ impl AvifEncoder {
         Self {
             quality: 75.0,
             speed: 6,
+            native_preset: None,
             bit_depth: 8,
             chroma_subsampling: ChromaSubsampling::Yuv420,
             threads: None,
@@ -221,10 +226,40 @@ impl AvifEncoder {
 
     /// Set the speed preset (1-10).
     ///
-    /// Maps to svtav1 presets: 1 -> preset 0 (slowest), 10 -> preset 13 (fastest).
+    /// Maps to still-image presets: 1 -> preset 0, 10 -> preset 9.
+    /// Replaces an earlier [`Self::with_native_preset`] selection.
     pub fn with_speed(mut self, speed: u8) -> Self {
         self.speed = speed.clamp(1, 10);
+        self.native_preset = None;
         self
+    }
+
+    /// Select a native preset, including [`NativePreset::RESEARCH`] (-1).
+    ///
+    /// Replaces the speed mapping. As in C's all-intra configuration, native
+    /// presets above 9 resolve to 9. [`Self::resolved_native_preset`] reports
+    /// the preset used by every encoding entry point.
+    ///
+    /// This selects native search controls; it does not enable Zen enhancements
+    /// or establish a strict parity guarantee for every input and setting.
+    ///
+    /// ```
+    /// use svtav1::avif::{AvifEncoder, NativePreset};
+    /// let encoder = AvifEncoder::new().with_native_preset(NativePreset::RESEARCH);
+    /// assert_eq!(encoder.resolved_native_preset().value(), -1);
+    /// ```
+    pub fn with_native_preset(mut self, preset: NativePreset) -> Self {
+        self.native_preset = Some(preset);
+        self
+    }
+
+    /// The effective native preset after still-image canonicalization.
+    pub fn resolved_native_preset(&self) -> NativePreset {
+        let value = self.native_preset.map_or_else(
+            || Self::speed_to_preset(self.speed) as i8,
+            NativePreset::value,
+        );
+        NativePreset::new(value.min(9)).expect("checked preset remains in -1..=9")
     }
 
     /// Set the bit depth. **8 and 10 are the only encodable depths**; every
@@ -367,10 +402,10 @@ impl AvifEncoder {
             },
             ..svtav1_encoder::rate_control::RcConfig::default()
         };
-        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new(
+        let mut pipeline = svtav1_encoder::pipeline::EncodePipeline::new_with_preset(
             width,
             height,
-            Self::speed_to_preset(self.speed),
+            self.resolved_native_preset(),
             rc_config,
             0,
             1,
@@ -485,11 +520,9 @@ impl AvifEncoder {
     /// nothing in the return type said so (issue #9 item 6). That output
     /// contract is gone.
     ///
-    /// `y` is read at `y_stride`; `u` and `v` are read TIGHT at
-    /// `(width / 2) x (height / 2)`, which is the 4:2:0 plane layout of a
-    /// planar I420 buffer. Dimensions must be even (the pipeline itself
-    /// handles arbitrary — including non-64-multiple — even sizes by padding
-    /// internally and signalling the true size).
+    /// `y` is read at `y_stride`; `u` and `v` are tightly packed at
+    /// `ceil(width / 2) x ceil(height / 2)`. The pipeline handles odd and
+    /// partial sizes by padding internally and signalling the true size.
     pub fn encode_yuv420(
         &self,
         y: &[u8],
@@ -499,17 +532,10 @@ impl AvifEncoder {
         height: u32,
         y_stride: u32,
     ) -> Result<EncodedAvif, EncodeError> {
-        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-            return Err(EncodeError::InvalidDimensions {
-                width,
-                height,
-                reason: "4:2:0 needs even width and height",
-            });
-        }
         self.validate_dimensions(y.len(), width, height, y_stride)?;
 
-        let chroma_w = width / 2;
-        let chroma_h = height / 2;
+        let chroma_w = width.div_ceil(2);
+        let chroma_h = height.div_ceil(2);
         let chroma_len_needed = (chroma_w as usize).checked_mul(chroma_h as usize).ok_or(
             EncodeError::InvalidDimensions {
                 width,
@@ -521,7 +547,7 @@ impl AvifEncoder {
             return Err(EncodeError::InvalidDimensions {
                 width,
                 height,
-                reason: "a chroma plane is shorter than (height/2) * (width/2)",
+                reason: "a chroma plane is shorter than ceil(height/2) * ceil(width/2)",
             });
         }
 
@@ -1012,6 +1038,57 @@ mod tests {
     }
 
     #[test]
+    fn native_preset_resolution_and_builder_precedence() {
+        let research = AvifEncoder::new().with_native_preset(NativePreset::RESEARCH);
+        assert_eq!(research.resolved_native_preset().value(), -1);
+        assert_eq!(research.with_speed(1).resolved_native_preset().value(), 0);
+        for preset in -1..=13 {
+            let enc = AvifEncoder::new()
+                .with_speed(10)
+                .with_native_preset(NativePreset::new(preset).unwrap());
+            assert_eq!(enc.resolved_native_preset().value(), preset.min(9));
+        }
+    }
+
+    #[test]
+    fn research_wrapper_reaches_native_pipeline_and_changes_output() {
+        let (y, u, v) = yuv420(64);
+        for bit_depth in [8, 10] {
+            let enc = AvifEncoder::new()
+                .with_quality(40.0)
+                .with_bit_depth(bit_depth)
+                .with_native_preset(NativePreset::RESEARCH);
+            let wrapped = enc.encode_yuv420(&y, &u, &v, 64, 64, 64).unwrap();
+            let rc = svtav1_encoder::rate_control::RcConfig {
+                mode: svtav1_encoder::rate_control::RcMode::Cqp,
+                qp: AvifEncoder::quality_to_qp(40.0),
+                ..Default::default()
+            };
+            let mut direct = svtav1_encoder::pipeline::EncodePipeline::new_with_preset(
+                64,
+                64,
+                NativePreset::RESEARCH,
+                rc,
+                0,
+                1,
+            )
+            .with_chroma_420(true)
+            .with_bit_depth(bit_depth)
+            .with_thread_count(0);
+            direct.color_description = enc.color_description();
+            assert_eq!(wrapped.data, direct.encode_frame_420(&y, &u, &v, 64));
+            let normal = enc
+                .with_speed(1)
+                .encode_yuv420(&y, &u, &v, 64, 64, 64)
+                .unwrap();
+            assert_ne!(
+                wrapped.data, normal.data,
+                "research must not alias preset 0"
+            );
+        }
+    }
+
+    #[test]
     fn encode_y8_16x16() {
         let enc = AvifEncoder::new().with_quality(50.0).with_speed(8);
         let pixels = vec![128u8; 16 * 16];
@@ -1163,15 +1240,17 @@ mod tests {
     }
 
     #[test]
-    fn encode_yuv420_rejects_odd_dimensions() {
+    fn encode_yuv420_validates_rounded_up_chroma_for_odd_dimensions() {
         let enc = AvifEncoder::new();
         let y = vec![0u8; 15 * 16];
         let u = vec![0u8; 8 * 8];
         let v = vec![0u8; 8 * 8];
         assert!(matches!(
-            enc.encode_yuv420(&y, &u, &v, 15, 16, 15),
+            enc.encode_yuv420(&y, &u[..7 * 8], &v, 15, 16, 15),
             Err(EncodeError::InvalidDimensions { .. })
         ));
+        let out = enc.encode_yuv420(&y, &u, &v, 15, 16, 15).unwrap();
+        assert_eq!((out.width, out.height), (15, 16));
     }
 
     #[test]
@@ -1306,11 +1385,6 @@ mod tests {
             (
                 "short luma buffer",
                 enc.encode_y8(&buf[..10], 16, 16, 16).unwrap_err(),
-            ),
-            (
-                "odd dims on the 4:2:0 path",
-                enc.encode_yuv420(&buf, &chroma, &chroma, 15, 16, 15)
-                    .unwrap_err(),
             ),
             (
                 "short chroma plane",

@@ -437,3 +437,68 @@ fn lossless_monochrome_matches_source() {
         }
     }
 }
+
+/// Exercise the public native-preset selector through a partial-frame encode
+/// and independent decoder. The wrapper's u8 input is widened at depth 10;
+/// native u16 source precision is covered by the pipeline witnesses above.
+#[test]
+fn research_wrapper_partial_frame_matches_decoder() {
+    use svtav1::avif::{AvifEncoder, NativePreset};
+    let (w, h) = (65usize, 67usize);
+    let y: Vec<u8> = (0..w * h)
+        .map(|i| ((i * 17 + i / w * 7) % 256) as u8)
+        .collect();
+    let u = vec![117u8; w.div_ceil(2) * h.div_ceil(2)];
+    let v = vec![139u8; u.len()];
+    for depth in [8, 10] {
+        let enc = AvifEncoder::new()
+            .with_quality(40.0)
+            .with_bit_depth(depth)
+            .with_native_preset(NativePreset::RESEARCH);
+        let obu = enc
+            .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
+            .unwrap()
+            .data;
+        let mut direct = EncodePipeline::new_with_preset(
+            w as u32,
+            h as u32,
+            NativePreset::RESEARCH,
+            RcConfig {
+                mode: RcMode::Cqp,
+                qp: AvifEncoder::quality_to_qp_static(40.0),
+                ..Default::default()
+            },
+            0,
+            1,
+        )
+        .with_bit_depth(depth)
+        .with_chroma_420(true)
+        .with_recon_output(true);
+        direct.color_description = svtav1::encoder::entropy::obu::ColorDescription {
+            color_primaries: 1,
+            transfer_characteristics: 13,
+            matrix_coefficients: 1,
+            full_range: false,
+        };
+        assert_eq!(obu, direct.try_encode_frame_420(&y, &u, &v, w).unwrap());
+        let expected = if depth == 8 {
+            crop(
+                direct.last_recon.as_ref().unwrap(),
+                direct.width as usize,
+                w,
+                h,
+            )
+        } else {
+            crop(
+                direct.last_recon10_final.as_ref().unwrap(),
+                direct.width as usize,
+                w,
+                h,
+            )
+            .into_iter()
+            .flat_map(u16::to_le_bytes)
+            .collect()
+        };
+        decode_eq(&format!("research-wrapper-{depth}"), &obu, &expected);
+    }
+}
