@@ -812,6 +812,14 @@ difference is 2 doctests, which nextest does not run.
 
 ## Known Bugs — BLOCKING
 
+**Fixed locally 2026-09-08 — mainline tune-0 sharpness (#17).** The pipeline
+now applies C's key-frame VQ/FILM_GRAIN sharpness adjustment in mainline as
+well as HDR mode, retaining the frame-type guard and IQ/MS_SSIM caps.
+The previously C-different 289-byte witness now matches; workspace 2616/2616
+and regression spotcheck 124/124 pass. Screen-content overrides remain open.
+See `benchmarks/tune_sharpness_2026-09-08.md`.
+
+
 **Fixed 2026-09-07 — configured decoder ignored by lossless IntraBC gate.**
 CI run 34138303485 failed two cases because `losslessIbc` invoked PATH's aomdec
 instead of the supplied RS_AOMDEC. A local failing PATH decoder reproduces the

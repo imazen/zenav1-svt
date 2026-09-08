@@ -526,6 +526,11 @@ byte "lr-align-cross-383x512-bd8"  gradient 383 512 40 6 8
 byte "lr-align-cross-383x512-bd10" gradient 383 512 40 6 10
 byte "lr-align-cross-chroma-766"   gradient 766 128 40 6 8
 
+# Issue #17: mainline VQ key-frame sharpness was incorrectly fork-gated.
+# Before: gradient72x88/q40/p8 produced 289 B in both encoders but different
+# streams; tune=1 matched C. The enabled tune=0 cell must match C as well.
+SVTAV1_TUNE=0 SVT_TUNE=0 byte tune0-mainline-sharpness gradient 72 88 40 8 8
+
 # ---------------------------------------------------------------------------
 # 2026-08-03 — bd10 PALETTE was gated out of the mode-decision funnel entirely.
 # 12801d936. The port coded ZERO palette blocks at 10 bits where C codes

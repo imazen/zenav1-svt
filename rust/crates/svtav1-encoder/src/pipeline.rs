@@ -3231,16 +3231,22 @@ impl EncodePipeline {
             } else {
                 None
             };
-        // [SVT_HDR_MODE] per-tune LF sharpness (deblocking_filter.c:1157,
-        // KEY frames): VQ/FILM_GRAIN +2 (min 7); IQ/MS_SSIM qindex cap.
+        // Per-tune LF sharpness (deblocking_filter.c:1120): this is live
+        // in mainline and the HDR fork. KEY VQ/FILM_GRAIN adds 2 (max 7);
+        // IQ/MS_SSIM caps by qindex on every frame type.
         // Applied to the SEARCH input, the SIGNALED bits, and the walk's
         // application consistently (one effective value).
         let lf_sharp_eff: u8 = {
             let base = self.hdr.sharpness.clamp(0, 7) as u8;
-            if self.hdr.is_fork() {
-                crate::tune::lf_sharpness_for_tune(base, self.hdr.tune, base_qindex)
-            } else {
+            if !is_key
+                && matches!(
+                    self.hdr.tune,
+                    crate::tune::TUNE_VQ | crate::tune::TUNE_FILM_GRAIN
+                )
+            {
                 base
+            } else {
+                crate::tune::lf_sharpness_for_tune(base, self.hdr.tune, base_qindex)
             }
         };
         let sharp_tx_active =
