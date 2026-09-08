@@ -155,6 +155,9 @@ pub(super) fn inject_candidates(
             }
         }
 
+        // Reference distinction: this matches hybrid3115 MODE0/MODE1.
+        // Pristine v4.2.0 instead uses variance here; see the 2026-09-08
+        // parity-reference audit. Do not infer pristine parity from this path.
         // 2. Fast loop: SAD (u + v) per candidate, NO rate at this stage
         //    (product_coding_loop.c:7604-7674). C's `mds0_dist_type` is
         //    zero-initialized = SAD (never assigned in `Source/Lib`), so BOTH

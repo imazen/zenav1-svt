@@ -1,3 +1,15 @@
+Latest reference audit: see rust/docs/PARITY-REFERENCE-AUDIT-2026-09-08.md.
+Pristine v4.2.0 9292ec8e vs hybrid3115 MODE0 differs in FIVE of the1100
+default cells, while Rust matches hybrid1100/1100. Root cause isolated:
+independent-chroma candidate presort uses variance in pristine, SAD in hybrid
+(mds0_dist_type zero-initialized, never assigned). One branch change in a
+scratch hybrid makes all1100 outputs match pristine; source pin untouched.
+Native API/CLI and nowrap controls rule out driver differences. Shipping Rust
+still uses hybrid SAD; next fix must wire explicit reference-specific metric,
+then validate native8/10 and -1 without conflating the reference targets.
+All jobs terminal. Audit outputs~/tmp/svt-tracking/pristine-v4.2.0; summary
+rust/benchmarks/pristine-reference-2026-09-08.json. No push/CI.
+
 Latest continuation: local svupxuyl/d78559a2 batches four IntraBC mesh SAD
 candidates with shared source loads and SIMD for width4. Preserves C traversal,
 strict ties and remainder behavior.2619 workspace tests and133/133 regression

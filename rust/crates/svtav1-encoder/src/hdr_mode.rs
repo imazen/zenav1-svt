@@ -5,9 +5,11 @@
 //! module is the Rust-side equivalent, as a RUNTIME config so one binary
 //! can target either C oracle:
 //!
-//! - [`SvtHdrMode::Mainline`]  → byte-identity target = stock v4.2.0-final
-//!   (`cmake -DSVT_HDR_MODE=OFF`). All fork fields sit at their NEUTRAL
-//!   values and every fork code path in this crate is skipped.
+//! - [`SvtHdrMode::Mainline`] → the pinned hybrid's MODE0 path
+//!   (`cmake -DSVT_HDR_MODE=OFF`). Despite the historical name, this differs
+//!   from pristine v4.2.0 in independent-chroma candidate ranking. See
+//!   `docs/PARITY-REFERENCE-AUDIT-2026-09-08.md`; this switch alone is not a
+//!   strict mainline parity policy.
 //! - [`SvtHdrMode::HdrFork`]   → byte-identity target = the hybrid's MODE1
 //!   lib (`cmake -DSVT_HDR_MODE=ON`), i.e. fork semantics on the v4.2 base.
 //!
@@ -26,7 +28,7 @@
 /// Which C oracle this encode targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SvtHdrMode {
-    /// Mainline SVT-AV1 v4.2.0 semantics (the port's primary target).
+    /// Historical name for hybrid MODE0; not unrestricted pristine v4.2.0 parity.
     #[default]
     Mainline,
     /// svt-av1-hdr fork semantics on the v4.2 base (hybrid MODE1).

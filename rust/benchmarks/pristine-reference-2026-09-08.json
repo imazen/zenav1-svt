@@ -1,0 +1,117 @@
+{
+  "schema": 1,
+  "mainline_commit": "9292ec8e32bce26f781f277ec8739b53426c4300",
+  "hybrid_commit": "3115c0c1b23e860dfd75c94f6740e0298182dd13",
+  "hybrid_mode": 0,
+  "mainline_app_sha256": "a6cc889478edebd5cc46f89f888224e4572eb47e9dfb7d2394c25039cacba09f",
+  "mainline_source_archive_sha256": "fb9548003d40f2f48f960cbaa31b226be0376ad94c4843ff8513fd83085b8dfc",
+  "build": {
+    "compiler": "GCC 15.2.0",
+    "type": "Release",
+    "shared": false,
+    "lto": false,
+    "native": false
+  },
+  "cells": 1100,
+  "pristine_hybrid_identical": 1095,
+  "hybrid_rust_identical": 1100,
+  "single_branch_ablation_matches_pristine": 1100,
+  "ablation_source_differences": [
+    "Source/Lib/Codec/product_coding_loop.c"
+  ],
+  "ablation": "In search_best_independent_uv_mode only, force the existing VAR branch instead of testing zero-initialized mds0_dist_type. All other tracked hybrid source files unchanged.",
+  "failures": [
+    {
+      "bytes": 150,
+      "cell": "cell.NX1v4wlq",
+      "exit_code": 0,
+      "hybrid_sha256": "8a49f9183e2eab51e3ff957635ac878efbde2f10420d4905cfaf57b4639998d1",
+      "input_sha256": "09d7ad61bd82113816d2e156b4c33936cd8c3dba24620b58a3d65181d97bf8e7",
+      "pristine_sha256": "49cddcad5949ba198b3141e52f15d7830678e2bf1003ea685e2844cfdb99cb50",
+      "rust_sha256": "8a49f9183e2eab51e3ff957635ac878efbde2f10420d4905cfaf57b4639998d1",
+      "settings": {
+        "bit_depth": "8",
+        "content": "diag",
+        "height": "128",
+        "preset": "0",
+        "qp": "48",
+        "width": "128"
+      },
+      "verdict": "DIFF"
+    },
+    {
+      "bytes": 149,
+      "cell": "cell.OmMrCOp8",
+      "exit_code": 0,
+      "hybrid_sha256": "70671ff36bf22da95ed7e4c24c813778dab3a90ef60a5f93804cae0de0a81ac8",
+      "input_sha256": "09d7ad61bd82113816d2e156b4c33936cd8c3dba24620b58a3d65181d97bf8e7",
+      "pristine_sha256": "8af185c07dc81a77d04f88499deadb496ec6cfca9a1c2175904e80c2d71443c3",
+      "rust_sha256": "70671ff36bf22da95ed7e4c24c813778dab3a90ef60a5f93804cae0de0a81ac8",
+      "settings": {
+        "bit_depth": "8",
+        "content": "diag",
+        "height": "128",
+        "preset": "1",
+        "qp": "48",
+        "width": "128"
+      },
+      "verdict": "DIFF"
+    },
+    {
+      "bytes": 76,
+      "cell": "cell.WIg8gHPn",
+      "exit_code": 0,
+      "hybrid_sha256": "2c95a872ac590e3b5e599fddd40f5d154e247a66f9ac7fed28eb812231b1ad0e",
+      "input_sha256": "21d928a59895d21829767ba38d623b5333fba6f08e43397f8912e1ac34ba18e7",
+      "pristine_sha256": "f95ffb3fb1d7dc18be5960eec4cb03be669569275fbef2ddb07bb97914439454",
+      "rust_sha256": "2c95a872ac590e3b5e599fddd40f5d154e247a66f9ac7fed28eb812231b1ad0e",
+      "settings": {
+        "bit_depth": "8",
+        "content": "diag",
+        "height": "64",
+        "preset": "1",
+        "qp": "48",
+        "width": "64"
+      },
+      "verdict": "DIFF"
+    },
+    {
+      "bytes": 2501,
+      "cell": "cell.a14bWrTN",
+      "exit_code": 0,
+      "hybrid_sha256": "58930a49669a7f156131c469c1ecd8121c33908291cb241070cdf93dcf192add",
+      "input_sha256": "04eabc2300dd8b95176b1ef5af66b7ced606e49a17e35de6010def4caa610fd6",
+      "pristine_sha256": "ef43c2a812a9b2c10ef1d795f99905411eac9dc44139e645ef629df83f5a7eb9",
+      "rust_sha256": "58930a49669a7f156131c469c1ecd8121c33908291cb241070cdf93dcf192add",
+      "settings": {
+        "bit_depth": "8",
+        "content": "gradient",
+        "height": "128",
+        "preset": "0",
+        "qp": "20",
+        "width": "128"
+      },
+      "verdict": "DIFF"
+    },
+    {
+      "bytes": 72,
+      "cell": "cell.hTu9rAzq",
+      "exit_code": 0,
+      "hybrid_sha256": "6cd32ff4586c3a2037014960fedb6b06cb20bdeecbfe356c4ecd8cbbfdd9434c",
+      "input_sha256": "21d928a59895d21829767ba38d623b5333fba6f08e43397f8912e1ac34ba18e7",
+      "pristine_sha256": "01bc386159a1f08988b619ddf714d43807957fec2e9b38c419f96ae593b7cbce",
+      "rust_sha256": "6cd32ff4586c3a2037014960fedb6b06cb20bdeecbfe356c4ecd8cbbfdd9434c",
+      "settings": {
+        "bit_depth": "8",
+        "content": "diag",
+        "height": "64",
+        "preset": "0",
+        "qp": "48",
+        "width": "64"
+      },
+      "verdict": "DIFF"
+    }
+  ],
+  "artifact_root": "/home/lilith/tmp/svt-tracking/pristine-v4.2.0",
+  "performance_claim": false
+}

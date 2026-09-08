@@ -1,3 +1,9 @@
+> **2026-09-08 correction:** MODE0 is not generally byte-identical to pristine
+> v4.2.0. A fresh 1,100-cell comparison found five differences, isolated to
+> independent-chroma presorting (pristine variance vs hybrid SAD). See the
+> [reference audit](PARITY-REFERENCE-AUDIT-2026-09-08.md). The historical
+> 108-cell result below does not establish parity outside those cells.
+
 > **Re-ported onto v4.2.0-FINAL in the port monorepo (branch `hdr-hybrid`, 2026-07-16).**
 > This document was written for the standalone rc-based hybrid repo
 > (`/root/svt-av1-hdr-on-4.2`); the C-side changes now live in THIS repo's `Source/`
