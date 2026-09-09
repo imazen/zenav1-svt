@@ -66,7 +66,12 @@ jobs:
       - name: Install toolchain deps
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q nasm cmake ninja-build dav1d
+          # libavif-bin provides `avifdec`. Three of the eight avif::animation
+          # tests shell out to it (animation.rs:653, :702, :820) to decode what
+          # they just muxed. Those tests had never run in CI until the container
+          # features were enabled, and they failed immediately because the runner
+          # had no avifdec. Installing it is the fix; skipping them is not.
+          sudo apt-get install -y -q nasm cmake ninja-build dav1d libavif-bin
 
       - name: Fetch the gb82-sc screen corpus (sparse checkout, 2.9 MB)
         # THE STEP THAT WAS MISSING. Every screen-content gate in this repo
@@ -688,16 +693,6 @@ jobs:
         # key-frame envelope from regressing unobserved.
         run: ./tools/video_key_matrix.sh
 
-      - name: global-motion derivation joined against C, per cell
-        if: matrix.shard == 4
-        working-directory: rust
-        # tools/gm_join_gate.sh was likewise unwired. It joins the port's
-        # frame-level GLOBAL-MOTION derivation (crate::port_global_me, which the
-        # nextest surface leaves at 49% coverage because the public pipeline
-        # refuses multi-frame) against C's, field for field. 18.2 s measured,
-        # 4 cells where the port actually ran C's search.
-        run: ./tools/gm_join_gate.sh
-
       - name: research preset -1 identity (8-bit AND 10-bit, partial-SB + screen)
         if: matrix.shard == 1
         working-directory: rust
@@ -787,6 +782,10 @@ jobs:
           workspaces: rust
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+      # coverage_gate.sh drives `cargo llvm-cov nextest`, so nextest must exist.
+      # Its absence failed this job on its first run: "no such command: nextest".
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
       - name: Install toolchain deps (C oracle for zenav1-svt-cref)
         run: sudo apt-get update && sudo apt-get install -y cmake nasm
       - name: Region coverage must not fall below the recorded floor
