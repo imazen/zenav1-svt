@@ -28,10 +28,32 @@ test:
     cargo nextest run --workspace
     cargo test --workspace --doc
 
-# Run tests with all features
+# Run tests with all features EXCEPT `symtrace`.
+#
+# `symtrace` puts an unbuffered `std::eprintln!` on the arithmetic coder's
+# PER-SYMBOL path (crates/svtav1-encoder/src/entropy/range_coder.rs). Enabling it
+# for the test suite costs a measured 16.9x with zero verification value:
+#
+#   --all-features            287.4 s   2650 tests   (2026-09-09, i265)
+#   all-except-symtrace        17.3 s   2650 tests
+#
+#   ...one test alone, issue18_bd10_forced_by_area_portrait_recon_matches_aomdec,
+#   goes 9.4 s -> 284.8 s purely from the per-symbol writes.
+#
+# The SAME 2650 tests run either way: the 11 tests that `--all-features` adds over
+# the default set come from `avif-container` and `fallible-alloc`, not `symtrace`
+# (verified by diffing the two nextest test lists). No `#[test]` anywhere is gated
+# on `symtrace`; its only consumers are the eight gate scripts that build
+# `--example identity_run --features symtrace` to diff the trace against C.
+#
+# `symtrace-check` below still COMPILES it, so the feature cannot bit-rot.
 test-all:
-    cargo nextest run --workspace --all-features
-    cargo test --workspace --all-features --doc
+    cargo nextest run --workspace --features zenav1-svt/avif-container,zenav1-svt/fallible-alloc,zenav1-svt/unsafe_encoding,zenav1-svt-dsp/avx512,zenav1-svt-dsp/unchecked_dsp,zenav1-svt-encoder/unchecked_entropy
+    cargo test --workspace --features zenav1-svt/avif-container,zenav1-svt/fallible-alloc,zenav1-svt/unsafe_encoding --doc
+
+# Compile-only guard so `symtrace` cannot rot while it is kept out of test-all.
+symtrace-check:
+    cargo check --workspace --all-features --all-targets
 
 # Run tests with no default features
 test-minimal:
@@ -46,7 +68,7 @@ clippy:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # Local CI sanity check
-ci: fmt clippy test test-all test-minimal
+ci: fmt clippy test test-all test-minimal symtrace-check
 
 # Alignment / stride gate — the CI subset (74 cells, ~4 min).
 # true-vs-aligned on each axis at every residue mod 8, dims straddling 64,
