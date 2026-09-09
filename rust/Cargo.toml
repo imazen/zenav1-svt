@@ -47,6 +47,14 @@ opt-level = 2
 
 [profile.test]
 opt-level = 2
+# Test binaries were 76-97% DWARF: one 60.1 MB binary held 9.8 MB of .text and
+# 45.8 MB of .debug_*, re-emitted into each of the 182 test executables (5.62 GB
+# per clean build, measured 2026-09-09). "line-tables-only" keeps .debug_line, so
+# panic backtraces still carry file:line, and drops .debug_info/_loc/_str/_ranges.
+# Safe for this repo's tooling: every profiler it documents (tools/mem_gate.sh,
+# tools/mem_peak.sh, tools/perf_gate.sh, tools/perf_profile/*) builds --release,
+# not the test profile, so none of them reads this DWARF.
+debug = "line-tables-only"
 
 [profile.test.package."*"]
 opt-level = 3
