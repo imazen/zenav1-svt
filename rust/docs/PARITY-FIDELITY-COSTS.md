@@ -100,11 +100,29 @@ the gates are green, and we still think C left something on the table.**
 
 ## Provenance
 
-Entries 1-4 came from a bounded review of the repo's own source comments and of
-the Claude/Codex session transcripts (2026-09-09), then each was spot-checked
-against source before being recorded here. The two smaller Codex transcripts
-(2026-09-05, 2026-09-07) yielded nothing in this category — their content is
-correctness-parity investigation, perf benchmarking and feature work.
+Entries 1-4 came from a bounded review (2026-09-09) of the repo's own source
+comments and of every Claude and Codex session transcript for this project, then
+each was spot-checked against source before being recorded here.
+
+**The transcripts were a dead end, and that is worth recording so nobody repeats
+the search.** Three reviewers covered roughly 165 MB:
+
+| corpus | result |
+|---|---|
+| Codex 2026-09-06 (156 MB) | nothing in scope |
+| Codex 2026-09-05 + 09-07 (8.8 MB) | nothing in scope |
+| Claude transcripts + repo source | the four entries above — **all from source comments** |
+
+The near-misses are instructive about what this category is NOT. In the Codex
+material every hit that had the right *shape* — "suboptimal", "worse RD",
+"redundant", RD-gap analysis — turned out to be one of: another repository's work
+(zenrav1e/zenavif RD-gap docs comparing against libaom, not against SVT-AV1 C); a
+correctness defect already tracked in `SUSPECTED-C-BUGS.md`; a **port-side**
+performance bug in our own harness rather than a claim about C's algorithm; or a
+case where the port was wrong and C was right. None of those belong here.
+
+The productive channel was the port's own comments. This codebase already noticed
+these things while translating them — it simply had nowhere to file them.
 
 Notably, the richest source was the port's own comments: this codebase already
 *noticed* these things while translating them, it just had nowhere to file them.
