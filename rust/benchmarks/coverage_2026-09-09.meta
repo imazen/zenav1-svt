@@ -1,0 +1,52 @@
+# FIRST code-coverage measurement of this workspace.
+#
+# Nothing had ever measured coverage here, so nothing defended it: a change could
+# delete a test, or add a large untested module, and every gate would stay green.
+# tools/coverage_gate.sh now pins this as a floor.
+#
+commit   = f372d2fc05b25581ceb4934bf171bf60451d0632
+host     = i265 (Core Ultra 7 265K, 20 threads, 30 GiB, x86_64 Linux)
+date     = 2026-09-09
+tool     = cargo-llvm-cov 0.9.1, cargo 1.98.1
+command  = cargo llvm-cov nextest --workspace --locked --no-fail-fast --summary-only \
+             --ignore-filename-regex '(tests?/|examples/|benches/)'
+wall     = 216 s (run-heavy --mem 20G --jobs 10; peak RSS 1.12 GiB)
+
+regions  = 173483 total, 14168 missed -> 91.83%
+lines    = 126235 total, 10935 missed -> 91.34%
+functions=   6896 total,   573 missed -> 91.69%
+
+per crate (lines):
+  svtav1           1068   40 uncovered   96.25%
+  svtav1-cref     10716  407 uncovered   96.20%
+  svtav1-dsp      25012 1094 uncovered   95.63%
+  svtav1-encoder  88649 9329 uncovered   89.48%
+  svtav1-target     297   36 uncovered   87.88%
+  svtav1-types      493   29 uncovered   94.12%
+
+# WHAT THIS NUMBER EXCLUDES — more important than the number itself.
+#
+# This is the `cargo nextest` surface ONLY. The 32 CI gate scripts, which are
+# where the differential-vs-C verification actually lives, are NOT included.
+#
+# That is why the inter/video path reads as uncovered:
+#   crates/svtav1-encoder/src/inter_md_arm.rs        434 lines   0.00%
+#   crates/svtav1-encoder/src/leaf_funnel/ifs.rs     199 lines   0.00%
+#   crates/svtav1-encoder/src/port_global_me.rs      204 uncov  49.25%
+#   crates/svtav1-encoder/src/port_md/inject.rs      551 uncov  69.54%
+#   crates/svtav1-encoder/src/inter_me/hme.rs        229 uncov  79.39%
+# SVTAV1_INTER_EXPERIMENTAL is set by TEN gate scripts and by ZERO tests, because
+# the public pipeline refuses multi-frame. Those lines are verified against C in
+# CI, just not here. Likewise port_rc_vbr_cbr_update.rs (66%) and port_pass2_gop.rs
+# (88%) are the deliberately-unwired rate control tracked by issue #22.
+#
+# Do NOT close that gap by flipping the env var in a test: dbgenv.rs resolves it
+# once per process into a OnceLock, its own docs say it is not a feature flag and
+# not for callers, and the stream it produces is known to diverge from C past the
+# frame header. The honest reading is that the STILL-image surface is ~92% covered
+# by fast local tests and the video surface is covered by C-differential gates.
+
+# ANTI-VACUITY of the gate that pins this (measured, not asserted):
+#   full suite                          91.83%
+#   with the encoder_parity target gone 78.68%   (-13.15 points)
+# The gate's slack is 0.50, so losing a single test target trips it loudly.

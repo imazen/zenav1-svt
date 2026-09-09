@@ -696,6 +696,39 @@ jobs:
           python3 -m pip install --quiet pyyaml
           python3 rust/tools/ci_shard_check.py
 
+  # Coverage floor. Runs in PARALLEL with the gates shards and takes ~4 min
+  # against their ~12 min critical path, so it adds no wall time.
+  #
+  # It defends against silent test loss, which no other gate can see: every
+  # existing gate would stay green if a test simply stopped running. MEASURED
+  # anti-vacuity -- dropping one test target takes the workspace from 91.83% to
+  # 78.68% region coverage, and the gate's slack is 0.50 points.
+  #
+  # Scope caveat is recorded in rust/benchmarks/coverage_2026-09-09.meta: this is
+  # the nextest surface only. The inter/video path is covered by the differential
+  # gate scripts, not by this number.
+  coverage:
+    name: coverage floor (nextest surface)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install toolchain deps (C oracle for zenav1-svt-cref)
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+      - name: Region coverage must not fall below the recorded floor
+        working-directory: rust
+        run: ./tools/coverage_gate.sh
+
   pure-rust:
     name: pure-Rust tier (${{ matrix.name }})
     # Issue #4 phase 4: the product crates carry no C, so they must build and
