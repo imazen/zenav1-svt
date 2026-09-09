@@ -123,7 +123,3 @@ case where the port was wrong and C was right. None of those belong here.
 
 The productive channel was the port's own comments. This codebase already noticed
 these things while translating them — it simply had nowhere to file them.
-
-Notably, the richest source was the port's own comments: this codebase already
-*noticed* these things while translating them, it just had nowhere to file them.
-That is what this file fixes.
