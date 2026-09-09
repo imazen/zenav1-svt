@@ -44,3 +44,4 @@ __pycache__/
 # apidoc/ snapshot-runner package: commit its lockfile, ignore its build dir
 !apidoc/Cargo.lock
 apidoc/target/
+rust/anim.log
