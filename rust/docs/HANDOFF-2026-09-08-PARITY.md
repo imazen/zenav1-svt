@@ -1,6 +1,31 @@
 # Native10 first-difference witness — current open cells, 2026-09-08
 
-The validated eight-bit fixes are on main. The four native10 cells below remain open. The later unproven depth-refine edit is excluded from main and retained in the handoff archive. See ../../ENCODER-POLICY-GOAL.md for the full goal; latest implementation and validation are indexed in ../../CONTEXT-HANDOFF.md. The diagnostic measurements below retain their original source checkpoint.
+The validated eight-bit fixes are on main. The four native10 cells below remain open. The later unproven depth-refine edit is excluded from main's *tip* but not from main's history: it is commit `554412d9d`, an ancestor of main, reverted by `3522cd856`, so main's `depth_refine.rs` equals the pre-experiment file. Recover it with `git show 554412d9d -- rust/crates/svtav1-encoder/src/depth_refine.rs`. It is additionally byte-inert on p1q10 and structurally dead at preset >= 4, because its `bd10` arm (depth_refine.rs:1527) requires `!bypass_encdec` while leaf_funnel/rate_tables.rs:1254 sets `bypass_encdec = preset >= 4`. See ../../ENCODER-POLICY-GOAL.md for the full goal; latest implementation and validation are indexed in ../../CONTEXT-HANDOFF.md. The diagnostic measurements below retain their original source checkpoint.
+
+## The four cells do not share one root cause (measured 2026-09-09, host i265)
+
+Re-running the retained traces with `--verbose` recovers the first-divergence op index that the concise report suppresses (identity_diff.py:857 prints the `ALSO: tile-op` line only when the stage is not already `tile`, and the FRAME-OBU payload walk sets `stage="tile"` first for two of these cells):
+
+```sh
+cd rust
+for c in bd10-p1-q10 bd10-p4-q10 bd10-p4-q30 bd10-p5-q10 bd10-p1-q30; do
+  D=$HOME/tmp/svt-tracking/chroma-native-boundary/$c
+  python3 tools/identity_diff.py --c-obu $D/c.obu --rust-obu $D/rs.obu \
+    --c-trace $D/c.trace --rust-trace $D/rs.trace --verbose > ~/tmp/native10/$c-verbose.txt 2>&1
+done
+```
+
+| cell | first divergent op | op-class |
+|---|---|---|
+| p1q10 | 0 | `lr-taps` (wiener_restore + literal run) |
+| p4q10 | 0 | `lr-taps` (wiener_restore + literal run) |
+| p4q30 | 11758 | cdf, `icdf0=16384`, unrecognized family |
+| p5q10 | 67328 | cdf, `icdf0=20785`, unrecognized family |
+| p1q30 (control) | none | traces identical for all 18413 ops incl. rng state |
+
+The p1q30 control makes this anti-vacuous. **Op 0 is emitted before any SB3 block data**, so the `mi(48,8)` CfL witness recorded below cannot be the first divergence for p1q10 and p4q10. Either that CfL flip changes reconstruction and therefore the loop-restoration search (op 0 is a downstream symptom), or there is an independent native-10 LR search divergence that no CfL fix will touch. The discriminator is a pre-filter recon plane comparison: C via `SVT_LFRECON_BIN`/`SVT_RECON_BIN` (tools/capture_c_trace/wrap_recon.c) against Rust `SVTAV1_RECON10_BIN` (pipeline.rs:5227). Byte-identical pre-filter planes with differing taps refutes the CfL hypothesis for that cell.
+
+p4q30 and p5q10 are separate investigations in unrelated families; identity_diff.py reports "unrecognized family" for both, so identifying which syntax element the `nsyms=14` CDF at p5q10 op 67328 belongs to is a source-reading sub-step. Do not assume a p1 fix moves them.
 
 Two eight-bit defects fixed in pipeline.rs: partial-edge chroma source reads now use SB-wide edge-replicated source/MD canvases; whole-SB128 depth-limit folding now includes partial 64x64 quadrants. All 53 historical mismatches on the 376x512 photo are fixed, with 168/168 fresh C/Rust byte-identical replays. Fixture and three regression witnesses are committed under rust/tools/fixtures and regression_spotcheck.sh.
 
@@ -8,10 +33,23 @@ Before the subsequent native10 source/debug edits, local gates passed: 2627/2627
 
 Expanded real-photo matrix is 16/20: eight-bit10/10, genuine native10 (SVTAV1_HBD_SRC=1) 6/10. Failures p1q10, p4q10, p4q30, p5q10. p-1 and p0 pass both QPs/depths. This is native10 SDR-derived input, not an HDR corpus claim.
 
-Native p1q10 remains C11465B/Rust11462B after depth_refine.rs quad_rec_dists was corrected to read actual fx.src10 rather than widened u8. That change has no demonstrated fixing witness yet and remains WIP.
+Native p1q10 remains C11465B/Rust11462B after depth_refine.rs quad_rec_dists was corrected to read actual fx.src10 rather than widened u8. That change is byte-inert here and was reverted; see the depth-refine note in the header above. It is not WIP and not a pending fix.
 
-Correct first coding-order divergence: SB3 origin(0,128), block mi(48,8), first luma pixel(33,192). The previously noted raster-first mi(32,36) is a downstream SB4 difference. Seed CDFs agree through SB3; remove C's initial extra seed dump before comparing. First real seed drift is SB4.
+First divergence in BLOCK coding order (not entropy-op order — see the op table above, where p1q10/p4q10 diverge at op 0): SB3 origin(0,128), block mi(48,8), first luma pixel(33,192). The previously noted raster-first mi(32,36) is a downstream SB4 difference. Seed CDFs agree through SB3; remove C's initial extra seed dump before comparing. First real seed drift is SB4.
 
-At mi(48,8), square32 and square16 costs match exactly. First HORZ16x8 child differs in UV choice: C mode7 UV2 txdepth2 rate68246 dist32752 cost13362812; Rust mode7 UV13 CfL txdepth2 rate64525 dist32256 cost12799315. HORZ4's four child costs all match C; Rust's cheaper HORZ wins instead. Investigate native CfL versus independent-UV arbitration/detector precision in leaf_funnel/mds3.rs, not downstream loop-filter levels. Prove against actual C before changing candidate decisions.
+At mi(48,8), square32 (146471172) and square16 (34068505) costs match exactly. Four children then differ, not one — re-read from c.pickpart:389-393 and rs.log on 2026-09-09:
+
+| child | C uv / cost | Rust uv / cost |
+|---|---|---|
+| HORZ nsi=0 | 2 / 13362812 | **13 (CfL)** / 12799315 |
+| HORZ nsi=1 | 3 / 19008564 | 11 / 18589550 |
+| VERT nsi=0 | **13 (CfL)** / 15223893 | 0 / 15512721 |
+| VERT nsi=1 | 7 / 17533764 | 9 / 17631632 |
+
+HORZ4's four child costs and uv modes all match C exactly (3162666/10412626/8337602/10114308, sum 32027202), which is why C's PARTITION_HORZ_4 beats Rust's cheaper HORZ sum 31559790.
+
+Two consequences the earlier note missed. **CfL flips in both directions** — Rust chooses CfL where C does not at HORZ nsi=0, and C chooses CfL where Rust does not at VERT nsi=0 — so this is a near-tie precision problem, not a one-sided gate-polarity bug. And **the independent-UV search is not at fault**: rs.log's `NSQDBG UVTAB mi=(48,8) 16x8` index 7 is `(2,0)` = UV_H_PRED, exactly C's uv=2. Only the CfL-versus-independent arbitration diverges (leaf_funnel/mds3.rs, C `check_best_indepedant_cfl`), not the table feeding it.
+
+The structural suspect is precision, not logic: `try_encode_frame_420_hbd` (pipeline.rs:1710-1735) stores the real u16 planes but drives the core with MSB-truncated `>> 2` u8 planes, and any bd10 stage not yet threaded re-widens `<< 2`. Three such sites sit on the CfL decision path. Investigate there, not downstream loop-filter levels. Prove against actual C before changing candidate decisions.
 
 Local diagnostics: ~/tmp/svt-tracking/chroma-native-boundary/native10-sb3/{c.pickpart,rs.log}, native10-prefilter, native10-seeds and summary.json. New env-off diagnostic hooks: SVTAV1_RECON10_BIN (Rust native prefilter planes), SVT_FINAL_MI_OUT (C completed MI grid), SVT_PD0_ALL_OUT (C all PD0 candidate costs). All local heavy jobs were terminal at handoff.

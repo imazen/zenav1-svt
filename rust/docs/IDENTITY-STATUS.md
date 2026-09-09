@@ -24,6 +24,11 @@ compiler and ISA belong in each parity record.
 The stored C and Rust streams all decode independently. These are byte
 mismatches, not demonstrated decoder failures. Hashes, exact fixture and
 retained unproven experiment: [deferred manifest](deferred-native10-parity.json).
+
+**These four cells do not share one root cause** (measured 2026-09-09): p1q10 and
+p4q10 first diverge at arithmetic-coder op 0 in the `lr-taps` class, p4q30 at op
+11758 and p5q10 at op 67328, both in unrelated CDF families, with p1q30 identical
+across all 18413 ops as the control. A fix for one is not evidence for the others.
 Start at [the coding-order witness](HANDOFF-2026-09-08-PARITY.md), not downstream
 loop filters or the old raster-first pixel. Archive retrieval:
 [native10 receipt](native10-handoff-receipt.json).
