@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "zenav1-svt"
 version = "0.1.0"
 description = "Safe Rust AV1 encoder — algorithm-for-algorithm port of SVT-AV1"
@@ -47,3 +48,19 @@ symtrace = ["zenav1-svt-encoder/symtrace"]
 # Feature 3: forward fallible allocation down to the encoder/types so the
 # gates (e.g. golden_parity) can be run with `--features fallible-alloc`.
 fallible-alloc = ["zenav1-svt-encoder/fallible-alloc"]
+
+[[test]]
+name = "svtav1_suite"
+path = "tests/svtav1_suite.rs"
+
+[[test]]
+name = "odd_frame_recon"
+path = "tests/odd_frame_recon.rs"
+
+[[test]]
+name = "still_policy"
+path = "tests/still_policy.rs"
+
+[[test]]
+name = "tier_invariance"
+path = "tests/tier_invariance.rs"

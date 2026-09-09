@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "zenav1-svt-encoder"
 version = "0.1.0"
 description = "Mode decision, rate control, encoding loop, and pipeline for SVT-AV1 Rust port"
@@ -45,3 +46,19 @@ symtrace = ["std"]
 # Feature 3: forward fallible allocation to svtav1-types (parallels the
 # unconditional std forwarding above).
 fallible-alloc = ["zenav1-svt-types/fallible-alloc"]
+
+[[test]]
+name = "encoder_parity"
+path = "tests/encoder_parity.rs"
+
+[[test]]
+name = "c_parity_entropy"
+path = "tests/c_parity_entropy.rs"
+
+[[test]]
+name = "c_parity_sc_detect"
+path = "tests/c_parity_sc_detect.rs"
+
+[[test]]
+name = "fp_determinism"
+path = "tests/fp_determinism.rs"

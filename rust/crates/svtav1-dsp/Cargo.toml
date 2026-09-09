@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "zenav1-svt-dsp"
 version = "0.1.0"
 description = "Transforms, prediction, filtering — SIMD hot path for SVT-AV1 Rust port"
@@ -47,3 +48,59 @@ required-features = ["std"]
 [[bench]]
 name = "kernel_tiers"
 harness = false
+
+[[test]]
+name = "dsp_parity"
+path = "tests/dsp_parity.rs"
+
+[[test]]
+name = "c_parity_cdef"
+path = "tests/c_parity_cdef.rs"
+
+[[test]]
+name = "c_parity_filter_intra"
+path = "tests/c_parity_filter_intra.rs"
+
+[[test]]
+name = "c_parity_hadamard"
+path = "tests/c_parity_hadamard.rs"
+
+[[test]]
+name = "c_parity_hadamard_compose"
+path = "tests/c_parity_hadamard_compose.rs"
+
+[[test]]
+name = "c_parity_hbd_distortion"
+path = "tests/c_parity_hbd_distortion.rs"
+
+[[test]]
+name = "c_parity_inter_pred"
+path = "tests/c_parity_inter_pred.rs"
+
+[[test]]
+name = "c_parity_intra_edge"
+path = "tests/c_parity_intra_edge.rs"
+
+[[test]]
+name = "c_parity_sad"
+path = "tests/c_parity_sad.rs"
+
+[[test]]
+name = "c_parity_satd_sum"
+path = "tests/c_parity_satd_sum.rs"
+
+[[test]]
+name = "c_parity_txfm"
+path = "tests/c_parity_txfm.rs"
+
+[[test]]
+name = "c_parity_variance"
+path = "tests/c_parity_variance.rs"
+
+[[test]]
+name = "c_parity_wiener"
+path = "tests/c_parity_wiener.rs"
+
+[[test]]
+name = "c_parity_wiener_hbd"
+path = "tests/c_parity_wiener_hbd.rs"
