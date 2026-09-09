@@ -183,11 +183,11 @@ echo "priming builds..." >&2
 ( cd "$HERE/decode_diff" && CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}" $LOWPRI \
     cargo build --release ) >&2 || {
     echo "decode-diff build FAILED." >&2
-    echo "  Most likely cause: tools/decode_diff/Cargo.toml has a hard-coded" >&2
-    echo "  path dependency on /root/aom-rs/crates/aom-decode, which exists" >&2
-    echo "  only on the Linux CI image. There is no env override -- Cargo" >&2
-    echo "  path deps are literal -- so on another host this gate cannot build" >&2
-    echo "  its pixel-classification oracle." >&2
+    echo "  Most likely cause: tools/decode_diff/Cargo.toml takes a relative" >&2
+    echo "  path dependency on ../../../../zenav1-aom/crates/aom-decode, i.e." >&2
+    echo "  a zenav1-aom checkout sitting beside zenav1-svt. There is no env" >&2
+    echo "  override -- Cargo path deps are literal -- so without that sibling" >&2
+    echo "  this gate cannot build its pixel-classification oracle." >&2
     echo "  This is a HARNESS portability failure, NOT a parity result: no" >&2
     echo "  conclusion about the port may be drawn from it." >&2
     exit 2

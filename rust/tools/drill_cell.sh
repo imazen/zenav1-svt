@@ -28,9 +28,17 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # anything else is a PNG path.
 case "$IMG" in
 uniform | gradient) CONTENT=$IMG NAME=$IMG ;;
+# identity_run's own prefixes (identity_run.rs:278 raw:, :302 file:, :313 crop:)
+# must pass through verbatim; wrapping them produced "file:raw:..." and a
+# guaranteed load failure.
+raw:*) CONTENT=$IMG NAME=$(basename "${IMG#raw:}" .yuv) ;;
+file:*) CONTENT=$IMG NAME=$(basename "${IMG#file:}" .png) ;;
+crop:*) CONTENT=$IMG NAME=$(basename "${IMG#crop:}" .png) ;;
 *) CONTENT="file:$IMG" NAME=$(basename "$IMG" .png) ;;
 esac
-D="${6:-$HERE/../target/drill/${NAME}_${W}x${H}_q${QP}_p${P}}"
+# The bit depth is part of the cell identity: without it a bd8 and a bd10 drill
+# of the same cell collide in one directory.
+D="${6:-$HERE/../target/drill/${NAME}_${W}x${H}_q${QP}_p${P}_bd${SVTAV1_BD:-8}}"
 mkdir -p "$D"
 
 # 1+2: encodes with recon dumps (wrappers force freshness). The port's stderr
@@ -40,7 +48,8 @@ rm -f "$D/rs.ptree" # PACKTREE appends; stale rows would poison the join
 SVTAV1_RECONDBG=1 SVTAV1_RECON_BIN="$D/p" SVTAV1_PACKTREE="$D/rs.ptree" \
     "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$P" "$D/rs" >/dev/null 2>"$D/rs.trace"
 SVT_RECON_OUT="$D/c.sse" SVT_RECON_BIN="$D/c" SVT_TRACE_OUT="$D/c.trace" SVT_CTREE_OUT="$D/c.ctree" \
-    "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" >/dev/null 2>"$D/c.log"
+    "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" \
+    "${SVTAV1_BD:-8}" >/dev/null 2>"$D/c.log"
 
 # 3: byte compare.
 if cmp -s "$D/rs.obu" "$D/c.obu"; then
@@ -75,14 +84,10 @@ if [[ $rc -eq 0 ]]; then
     echo "identity_diff.sh / the op differ."
     exit 3
 fi
-if [[ $rc -eq 3 ]]; then
-    echo "$DIFFOUT"
-    echo "oracle unusable on this stream (Wiener-active) — falling back to the"
-    echo "final-tree diff below for decision-level localization; the raw recon"
-    echo "dump compare (p.p*/c.p*) is valid at presets <= M5."
-    MIROW=0
-    MICOL=0
-elif [[ $rc -ne 1 ]]; then
+# decode_diff exits only 0, 1 or 2 (decode_diff/src/main.rs) -- the former
+# rc==3 "oracle unusable (Wiener-active)" branch here was unreachable, and its
+# MIROW/MICOL=0 assignment was overwritten unconditionally two lines later.
+if [[ $rc -ne 1 ]]; then
     echo "decode-diff failed (rc $rc):"
     echo "$DIFFOUT"
     exit 2
@@ -97,7 +102,8 @@ SVTAV1_NSQDBG=1 SVTAV1_DBG_MI="$MIROW,$MICOL" \
     "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$P" "$D/rs2" >/dev/null 2>"$D/rs.nsqraw"
 grep -E 'NSQDBG (TS|BLK|SHAPE|SKIP|TSX)' "$D/rs.nsqraw" >"$D/rs.sbdump" || true
 SVT_PICKPART_OUT="$D/c.pickpart" SVT_PICKPART_MIROW="$MIROW" SVT_PICKPART_MICOL="$MICOL" \
-    "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" >/dev/null 2>&1
+    "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" \
+    "${SVTAV1_BD:-8}" >/dev/null 2>&1
 
 # 6: FINAL-TREE diff (every preset; C side = the update_mi_map wrap) —
 # flips-only, bounded output. The most direct decision-level localizer.

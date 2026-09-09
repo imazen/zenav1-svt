@@ -27,6 +27,30 @@ The p1q30 control makes this anti-vacuous. **Op 0 is emitted before any SB3 bloc
 
 p4q30 and p5q10 are separate investigations in unrelated families; identity_diff.py reports "unrecognized family" for both, so identifying which syntax element the `nsyms=14` CDF at p5q10 op 67328 belongs to is a source-reading sub-step. Do not assume a p1 fix moves them.
 
+### Decoded-pixel localization (2026-09-09, first run on any host)
+
+`tools/decode_diff` had been unbuildable everywhere since its manifest hard-coded `/root/aom-rs`; repointed at the sibling zenav1-aom checkout it now runs. Decoding both stored streams of each cell gives:
+
+| cell | first differing pixel | SB | differing luma px | share of 192512 |
+|---|---|---|---|---|
+| p1q10 | plane0 (64,0) c=132 r=133 | mi(0,16) | 89825 | 47% |
+| p4q10 | plane1 (61,53) c=529 r=530 | mi(16,16) | 58139 | 30% |
+| p4q30 | plane0 (51,248) c=247 r=246 | mi(48,0) | 39569 | 21% |
+| p5q10 | plane1 (30,216) c=518 r=519 | mi(96,0) | 9684 | 5% |
+| p1q30 (control) | — | — | 0 | IDENTICAL decoded output |
+
+This **corroborates the op-class split and further undercuts the single-CfL story**. The two op-0 `lr-taps` cells have by far the largest pixel divergence and p1q10's first differing pixel is at (64,0) — the first superblock row, *earlier in raster order* than the SB3 origin(0,128) witness below. A loop-restoration tap difference is applied frame-wide, so both the early first-pixel and the ~47%/30% spread are what an LR-class divergence looks like, and the "first differing pixel" is a weak localizer for those two cells: read the NDIFF magnitude instead. p5q10's 5% is the genuinely localized one.
+
+Reproduce (instant, no encode — the stored OBUs are enough):
+
+```sh
+DD=rust/tools/decode_diff/target/release/decode-diff
+for c in bd10-p1-q10 bd10-p4-q10 bd10-p4-q30 bd10-p5-q10 bd10-p1-q30; do
+  P=$HOME/tmp/svt-tracking/chroma-native-boundary/$c
+  echo "== $c"; "$DD" "$P/c.obu" "$P/rs.obu"
+done
+```
+
 Two eight-bit defects fixed in pipeline.rs: partial-edge chroma source reads now use SB-wide edge-replicated source/MD canvases; whole-SB128 depth-limit folding now includes partial 64x64 quadrants. All 53 historical mismatches on the 376x512 photo are fixed, with 168/168 fresh C/Rust byte-identical replays. Fixture and three regression witnesses are committed under rust/tools/fixtures and regression_spotcheck.sh.
 
 Before the subsequent native10 source/debug edits, local gates passed: 2627/2627 workspace nextest, 139/139 spotchecks, 1100/1100 matrix. Evidence lives under ~/tmp/svt-tracking/{chroma-stride-nextest.log,chroma-stride-final-spotcheck.log,chroma-stride-full1100.log,chroma-parity-replay/summary.json}. These historical counts describe that checkpoint. Current main separately passed 2631/2631 workspace tests; the four byte divergences are still not passing cells.

@@ -19,4 +19,13 @@ publish = false
 # The sibling crate was renamed to `zenav1-aom-decode` (lib name still
 # `aom_decode`), so pin the package explicitly; the dep key stays `aom-decode`
 # so `use aom_decode::...` in main.rs is unchanged.
-aom-decode = { package = "zenav1-aom-decode", path = "/root/aom-rs/crates/aom-decode" }
+#
+# The path is RELATIVE to this manifest and resolves to the zenav1-aom checkout
+# sitting beside zenav1-svt (../../../.. from tools/decode_diff is ~/work/zen).
+# It was previously the absolute /root/aom-rs/..., which exists only on the old
+# Linux CI image and is permission-denied elsewhere -- that is why every gate
+# depending on this binary (real_image_matrix.sh, drill_cell.sh,
+# screen_ibc_gate.sh) could not build its oracle off that one host. Cargo path
+# deps are literal, so host-independence beyond "sibling checkout adjacent"
+# needs a [patch]/paths entry in .cargo/config.toml, not an env var.
+aom-decode = { package = "zenav1-aom-decode", path = "../../../../zenav1-aom/crates/aom-decode" }
