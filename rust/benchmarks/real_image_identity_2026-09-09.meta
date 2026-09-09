@@ -1,0 +1,25 @@
+# Real-image byte-identity matrix — first current-source run since the
+# "53 real-image parity cases fixed" claim (2026-09-08).
+#
+# WHY THERE WAS NO EARLIER NUMBER: tools/real_image_matrix.sh could not build its
+# pixel-classification oracle on ANY host. tools/decode_diff/Cargo.toml hard-coded
+# a path dependency on /root/aom-rs/crates/aom-decode, which exists only on a
+# retired CI image, so the gate exited 2 everywhere. Repaired in a046e68b
+# (repointed at the sibling zenav1-aom checkout).
+#
+# RESULT: 180 / 180 byte-identical. Zero diverging cells, so the first-divergence
+# histogram and the Rust/C size-ratio table are both empty.
+#
+commit          = 4c20cc87a9c19aac5bb4d6866802e30c9f627333
+host            = i265 (Core Ultra 7 265K, 20 threads, 30 GiB, native Linux x86_64)
+date            = 2026-09-09
+command         = tools/real_image_matrix.sh   (all defaults)
+corpus          = codec-corpus/CID22/CID22-512/training  (209 PNGs; 20 sampled, evenly spaced)
+grid            = 20 images x presets {2,6,10} x cli_qp {20,40,55} = 180 cells
+oracle          = C reference, static build, SVT_HDR_MODE=OFF, submodule 3115c0c1b
+wall            = 345 s   (run-heavy --mem 16G --jobs 8; peak RSS 0.88 GiB)
+verdict         = 180/180 IDENTICAL
+#
+# SCOPE: 8-bit 4:2:0 still/KEY frames at 512x512, three presets, three quantizers,
+# on ONE x86-64 host. This is not a claim about native10, other geometries, other
+# presets, other content classes, or another ISA.

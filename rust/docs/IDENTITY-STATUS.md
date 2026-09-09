@@ -4,6 +4,13 @@ Implementation snapshot: main `0cbd1279`. Historical campaigns, pins and old
 first-difference investigations are [preserved verbatim](history/2026-09-08/rust/docs/IDENTITY-STATUS.md).
 Use them as source-matched evidence, not as current open-bug lists.
 
+Real-image byte identity, measured 2026-09-09 on current source: **180/180**
+over 20 CID22-512 photos x presets {2,6,10} x cli_qp {20,40,55}
+([record](../benchmarks/real_image_identity_2026-09-09.meta)). This is the
+first such number since the "53 real-image parity cases fixed" claim, because
+`tools/real_image_matrix.sh` could not build its oracle on any host until
+`a046e68b`. Scope: 8-bit 4:2:0 512x512 stills on one x86-64 host.
+
 The latest preceding eight-bit landing matrix was 1100/1100; the partial-chroma
 and SB128 fixes also resolved all 53 historical witnesses in 168/168 replay
 pairs. Neither result closes native10 or every optional/inter/HDR combination.

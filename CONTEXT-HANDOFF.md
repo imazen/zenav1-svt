@@ -159,8 +159,14 @@ submodule HEAD) are both present and current.
    C encode; both now pass `${SVTAV1_BD:-8}`. Its unreachable `rc == 3` branch was
    removed and its content-prefix handling fixed.
 
-   **Still to do here:** run `real_image_matrix.sh` for the first current-source
-   real-image parity number since the "53 cases fixed" claim. heavy.
+   ~~**Still to do here:** run `real_image_matrix.sh`.~~ **DONE 2026-09-09:
+   180/180 byte-identical**, the first current-source real-image parity number
+   since the "53 cases fixed" claim. 20 CID22-512 photos x presets {2,6,10} x
+   cli_qp {20,40,55}, 345 s on i265. Zero diverging cells, so the
+   first-divergence histogram is empty. Record:
+   [rust/benchmarks/real_image_identity_2026-09-09.{tsv,meta}](rust/benchmarks/real_image_identity_2026-09-09.meta).
+   Scope: 8-bit 4:2:0 512x512 still frames on one x86-64 host — not a claim about
+   native10, other geometries or another ISA.
 
 ### 2. Gates that do not exist — the largest gap the old handoff never named
 
@@ -180,9 +186,11 @@ of them appear in any pass count.
   `~/tmp/svt-tracking/pristine-v4.2.0/`** and has no gate;
   `tools/pristine_reference_compare.py` is committed but not in CI. Archive and
   pointer-file it before a scratch wipe takes it.
-- **`real_image_matrix.sh` cannot run on any machine today** (the `decode_diff`
-  path above), so the "53 real-image parity cases fixed" claim currently has no
-  re-runnable witness. Chain a run onto item 1.4.
+- ~~**`real_image_matrix.sh` cannot run on any machine.**~~ **RESOLVED
+  2026-09-09.** The `decode_diff` repair (`a046e68b`) made it runnable and it
+  passes **180/180 byte-identical** (`4c20cc87`+; record in
+  `rust/benchmarks/real_image_identity_2026-09-09.meta`). The "53 real-image
+  parity cases fixed" claim now has a re-runnable witness.
 - **No clippy, rustfmt, MSRV-floor or semver job exists in CI at all**; all three
   toolchain steps use `stable`, so the declared 1.98 floor is never exercised.
   Platform coverage *is* compliant (windows-11-arm, macos-15-intel, i686 via cross).
