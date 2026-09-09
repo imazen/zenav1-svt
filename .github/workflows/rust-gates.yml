@@ -746,6 +746,43 @@ jobs:
         working-directory: rust
         run: ./tools/coverage_gate.sh
 
+  # Lint / format / MSRV. Runs in PARALLEL with the gates shards, so it costs no
+  # wall time as long as it stays under their ~12 min critical path.
+  #
+  # Pinned to 1.98 rather than `stable`: that toolchain choice IS the MSRV proof.
+  # The workspace declares rust-version 1.98 (the aarch64 dotprod intrinsics
+  # require it) and every other CI job uses `stable`, so before this job nothing
+  # ever exercised the declared floor.
+  #
+  # clippy is a PINNED PER-LINT INVENTORY, not `-D warnings`: the workspace
+  # carries 39 pre-existing occurrences across 25 lints, so `-D warnings` cannot
+  # land green, and `|| true` / continue-on-error would be a check that cannot
+  # fail. See tools/clippy_inventory.sh for why it must touch the crate roots
+  # first (cargo does not re-emit warnings for crates it did not recompile, so a
+  # naive `cargo clippy` on a warm cache reports ZERO and is vacuously green).
+  lint:
+    name: fmt + clippy inventory + MSRV floor (1.98)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.98
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install toolchain deps (the cref dev-dependency builds C)
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm
+      - name: cargo fmt --check
+        working-directory: rust
+        run: cargo fmt --all --check
+      - name: clippy inventory has not drifted
+        working-directory: rust
+        run: ./tools/clippy_inventory.sh --check
+
   pure-rust:
     name: pure-Rust tier (${{ matrix.name }})
     # Issue #4 phase 4: the product crates carry no C, so they must build and
