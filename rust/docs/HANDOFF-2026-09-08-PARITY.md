@@ -49,7 +49,39 @@ DOWNSTREAM SYMPTOM — the restoration search is fed a different reconstruction 
 therefore picks different taps, and those taps happen to be written early in the
 bitstream. Do not chase the loop-restoration code for this cell.
 
-**A NEW open question this raises.** The first differing luma sample (144,128) is
+### RESOLVED 2026-09-09 — the first divergence is mi(32,36), not mi(48,8)
+
+The question below was settled by re-capturing the recon planes AND the decision
+tree from ONE run (`tools/drill_cell.sh`, bd10, p1q10). Three localizations now
+reconcile:
+
+| measurement | first difference | what it means |
+|---|---|---|
+| pre-filter recon planes (u16 both sides) | **(144,128)** = mi(32,36), SB128 idx 4, C=779 port=792, 88488 luma samples | the real coding divergence |
+| decision-tree join, first FIELD FLIP | **mi(32,36)** — the same block | C bsize=3 mode=8 uv=9 ady=2 vs port bsize=1 mode=0 uv=0 ady=0 |
+| decoded output (decode_diff) | (64,0) | post-filter symptom: loop restoration spreads it frame-wide |
+| arithmetic-coder trace | op 0, `lr-taps` | post-filter symptom, same cause |
+
+So **mi(32,36) is the block to investigate**, and the divergence there is a
+PARTITION-SIZE flip (bsize 3 vs 1) carrying mode/uv/ady with it — a more
+fundamental disagreement than the CfL arbitration the old note pointed at.
+`mi(48,8)` is downstream of it and should not be the starting point.
+
+Caveats kept honest: the tree also shows 904 C-only and 85 port-only blocks with
+the first C-only at mi(0,8), i.e. C splits in the first SB row where the port does
+not — but those splits reconstruct identically, since no luma sample before
+(144,128) differs. And this is p1q10 only; **p4q10, the other op-0 cell, has not
+had this same-run drill run**.
+
+TOOL DEFECT FOUND AND FIXED while doing this: `drill_cell.sh` dumped the port's
+recon with `SVTAV1_RECON_BIN`, which writes EIGHT-BIT planes (192512 B), while the
+C side writes u16 (385024 B). At bd10 the two dumps were therefore incomparable
+and `p.p*` was unusable — the script now selects `SVTAV1_RECON10_BIN`
+(pipeline.rs:5283) whenever `SVTAV1_BD != 8`. Note this did NOT corrupt the
+script's own SB localization, which comes from `decode_diff` on the OBUs, not from
+these planes; it silently produced useless recon dumps for every bd10 drill.
+
+**Superseded open question (kept for provenance).** The first differing luma sample (144,128) is
 in SB4 under SB128 (origin 128,128; the docs' "SB3 origin(0,128)" only indexes as
 3 with SB128, 3 SBs per row at width 376). But the recorded mode-decision witness
 `mi(48,8)` = pixel (32,192) lies inside SB3, which is coded BEFORE SB4 — and no

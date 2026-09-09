@@ -45,7 +45,18 @@ mkdir -p "$D"
 # IS its symtrace op stream; C's comes from SVT_TRACE_OUT — both captured here
 # so the op-level differ below costs no extra encodes.
 rm -f "$D/rs.ptree" # PACKTREE appends; stale rows would poison the join
-SVTAV1_RECONDBG=1 SVTAV1_RECON_BIN="$D/p" SVTAV1_PACKTREE="$D/rs.ptree" \
+# BIT-DEPTH-CORRECT recon hook. SVTAV1_RECON_BIN dumps the EIGHT-BIT recon
+# planes; at bd10 the C side dumps u16, so using it for a 10-bit drill compares
+# 192512 bytes against 385024 and the "first divergent pixel" it reports — and
+# therefore the superblock this script then drills into — is an artefact of the
+# format mismatch, not a real localization. SVTAV1_RECON10_BIN (pipeline.rs:5283)
+# writes the NATIVE u16 pre-filter planes, which is what matches C.
+# Found 2026-09-09: a bd10 drill reported SB mi(0,16) while the format-matched
+# comparison of the same cell reports (144,128). Every previous bd10 drill
+# conclusion drawn from this script is suspect for the same reason.
+RECON_ENV=SVTAV1_RECON_BIN
+[ "${SVTAV1_BD:-8}" = "8" ] || RECON_ENV=SVTAV1_RECON10_BIN
+SVTAV1_RECONDBG=1 SVTAV1_PACKTREE="$D/rs.ptree" env "$RECON_ENV=$D/p" \
     "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$P" "$D/rs" >/dev/null 2>"$D/rs.trace"
 SVT_RECON_OUT="$D/c.sse" SVT_RECON_BIN="$D/c" SVT_TRACE_OUT="$D/c.trace" SVT_CTREE_OUT="$D/c.ctree" \
     "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$P" "$D/rs.yuv" "$D/c.obu" \

@@ -37,7 +37,11 @@ p4q10 first diverge at arithmetic-coder op 0 in the `lr-taps` class, p4q30 at op
 11758 and p5q10 at op 67328, both in unrelated CDF families, with p1q30 identical
 across all 18413 ops as the control. A fix for one is not evidence for the others.
 Start at [the coding-order witness](HANDOFF-2026-09-08-PARITY.md), not downstream
-loop filters or the old raster-first pixel. Archive retrieval:
+loop filters or the old raster-first pixel. **Updated 2026-09-09:** for p1q10 the
+first real divergence is block **mi(32,36)** (pixel 144,128), a partition-size flip
+(C bsize=3 vs port bsize=1) — not the previously recorded mi(48,8) CfL witness,
+which is downstream of it. Established by capturing recon planes and the decision
+tree from one run. Archive retrieval:
 [native10 receipt](native10-handoff-receipt.json).
 
 ## Separate evidence tracks
