@@ -155,6 +155,27 @@ fn decode_png_rgb(path: &str) -> (Vec<u8>, usize, usize) {
 /// Edge-replicate an RGB buffer from (pw,ph) up to (w,h) — the same
 /// bottom/right pixel-extend padding decode_conformance / AvifEncoder use to
 /// reach 64-aligned encode dims. No-op when the image already fills (w,h).
+/// Fail loudly when a crop meant to carry screen content is a flat colour.
+///
+/// Issue #23: a vacuous crop makes a gate PASS while exercising nothing. This is
+/// caller-controlled, never silent -- it only fires under `SVTAV1_ASSERT_NONFLAT`,
+/// which the three screen-content gates set, so synthetic uniform cells (which
+/// are legitimately flat) are unaffected.
+fn assert_non_flat(rgb: &[u8], path: &str, ox: usize, oy: usize) {
+    if std::env::var_os("SVTAV1_ASSERT_NONFLAT").is_none() {
+        return;
+    }
+    let first = &rgb[0..3];
+    if rgb.chunks_exact(3).all(|px| px == first) {
+        panic!(
+            "SVTAV1_ASSERT_NONFLAT: the crop at ({ox},{oy}) of {path} is a single \
+             colour {first:02x?}. A screen-content gate cannot reach palette or \
+             IntraBC on a constant plane, so this cell would pass while testing \
+             nothing (issue #23). Re-aim the crop."
+        );
+    }
+}
+
 fn pad_rgb_replicate(rgb: &[u8], pw: usize, ph: usize, w: usize, h: usize) -> Vec<u8> {
     if pw == w && ph == h {
         return rgb.to_vec();
@@ -309,6 +330,44 @@ fn main() {
             "requested {w}x{h} is smaller than image {pw}x{ph} — caller must round up to >= image"
         );
         let rgb = pad_rgb_replicate(&rgb, pw, ph, w, h);
+        rgb_to_i420_bt601(&rgb, w, h)
+    } else if let Some(rest) = content.strip_prefix("crop@") {
+        // `crop@X,Y:path` -- an EXPLICIT crop origin instead of the centre.
+        //
+        // Why this exists (issue #23): `crop:` takes the CENTRE window, and for
+        // gb82-sc/gmessages.png the centre 512x512 is a single flat colour
+        // (0x0d141c, all 262144 px). A palette block needs >= 2 colours and
+        // IntraBC cannot beat exact DC on a constant plane, so 26 cells across
+        // the three screen-content gates were passing while structurally unable
+        // to reach the paths those gates exist to guard. MEASURED at 512x512
+        // q20 p0: centre 46 B / 382 tile ops, content window 5524 B / 60118 ops.
+        //
+        // Plain `crop:` is UNCHANGED, so no existing cell's bytes move.
+        let (spec, path) = rest
+            .split_once(':')
+            .unwrap_or_else(|| panic!("crop@ needs X,Y:path, got {rest:?}"));
+        let (sx, sy) = spec
+            .split_once(',')
+            .unwrap_or_else(|| panic!("crop@ needs X,Y, got {spec:?}"));
+        let ox: usize = sx.parse().expect("crop@ X must be a number");
+        let oy: usize = sy.parse().expect("crop@ Y must be a number");
+        let (rgb, pw, ph) = decode_png_rgb(path);
+        let cwp = w.min(pw);
+        let chp = h.min(ph);
+        assert!(
+            ox + cwp <= pw && oy + chp <= ph,
+            "crop@{ox},{oy} of {cwp}x{chp} does not fit in {pw}x{ph} ({path})"
+        );
+        let mut cropped = vec![0u8; cwp * chp * 3];
+        for r in 0..chp {
+            for c in 0..cwp {
+                let si = ((oy + r) * pw + (ox + c)) * 3;
+                let di = (r * cwp + c) * 3;
+                cropped[di..di + 3].copy_from_slice(&rgb[si..si + 3]);
+            }
+        }
+        assert_non_flat(&cropped, path, ox, oy);
+        let rgb = pad_rgb_replicate(&cropped, cwp, chp, w, h);
         rgb_to_i420_bt601(&rgb, w, h)
     } else if let Some(path) = content.strip_prefix("crop:") {
         // Real content CENTER-CROPPED to (w,h). Unlike `file:` (which pads a

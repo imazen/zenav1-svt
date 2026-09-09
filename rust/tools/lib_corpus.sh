@@ -38,3 +38,28 @@ corpus_dir() {
     printf '%s\n' "${ZENAV1_CORPUS_ROOT:-$HOME/work/zen}/$rel"
     return 1
 }
+
+# ---------------------------------------------------------------------------
+# screen_crop_spec <png-path>
+#
+# The identity_run content argument for a SCREEN-CONTENT cell.
+#
+# Defaults to `crop:` (the centre window). gb82-sc/gmessages.png is the one
+# exception: its centre 512x512 is a single flat colour (0x0d141c, all 262144
+# px), so a palette block cannot exist there and IntraBC cannot beat exact DC.
+# 26 cells across screen_ibc_byte_gate, screen_palette_gate and
+# bd10_screen_panic_gate were passing while structurally unable to reach the
+# code paths those gates exist to guard -- MEASURED at 512x512 q20 p0: the
+# centre window codes 46 B / 382 tile ops, a content-bearing window of the same
+# image codes 5524 B / 60118 ops. Both are byte-identical to C, so this is a
+# coverage fix, not a parity change (issue #23).
+#
+# Callers should also export SVTAV1_ASSERT_NONFLAT=1 so a future re-aim onto
+# flat chrome fails loudly instead of silently passing.
+screen_crop_spec() {
+    local png="$1"
+    case "$(basename "$png")" in
+        gmessages.png) printf 'crop@384,384:%s' "$png" ;;
+        *)             printf 'crop:%s' "$png" ;;
+    esac
+}

@@ -29,6 +29,10 @@ set -uo pipefail
 [[ ${BASH_VERSINFO[0]} -ge 4 ]] || { echo "FATAL: needs bash >= 4 (got $BASH_VERSION); run under a newer bash" >&2; exit 2; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/lib_corpus.sh"
+# Issue #23: a flat crop makes these gates pass while reaching neither
+# palette nor IntraBC. Fail loudly instead of silently (identity_run only
+# honours this when set, so synthetic uniform cells are unaffected).
+export SVTAV1_ASSERT_NONFLAT=1
 RS_ROOT=$(cd "$HERE/.." && pwd)
 cd "$RS_ROOT"
 
@@ -63,7 +67,7 @@ for png in "${IMAGES[@]}"; do
     for p in "${PRESETS[@]}"; do
         for qp in "${QPS[@]}"; do
             tag="${stem}_bd10_p${p}_q${qp}"
-            if ! SVTAV1_BD=10 "$HERE/identity_run" "crop:$png" 512 512 "$qp" "$p" "$OUT/rs" \
+            if ! SVTAV1_BD=10 "$HERE/identity_run" "$(screen_crop_spec "$png")" 512 512 "$qp" "$p" "$OUT/rs" \
                     >/dev/null 2>"$OUT/err"; then
                 fail=$((fail + 1)); failed+=("${tag}[PANIC: $(grep -oE 'panicked at [^ ]+' "$OUT/err" | head -1)]"); continue
             fi

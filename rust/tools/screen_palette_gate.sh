@@ -36,6 +36,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
 . "$(dirname "$0")/lib_corpus.sh"
+# Issue #23: a flat crop makes these gates pass while reaching neither
+# palette nor IntraBC. Fail loudly instead of silently (identity_run only
+# honours this when set, so synthetic uniform cells are unaffected).
+export SVTAV1_ASSERT_NONFLAT=1
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -70,7 +74,7 @@ for img in "${IMGS[@]}"; do
     d="$OUT/$tag"; mkdir -p "$d"
     rm -f "$d/rs.ptree"
     if ! SVTAV1_PACKTREE="$d/rs.ptree" SVTAV1_BD=8 $LOWPRI \
-          "$RUN_BIN" "crop:$png" "$DIM" "$DIM" "$qp" "$PRESET" "$d/rs" >/dev/null 2>/dev/null; then
+          "$RUN_BIN" "$(screen_crop_spec "$png")" "$DIM" "$DIM" "$qp" "$PRESET" "$d/rs" >/dev/null 2>/dev/null; then
       fail=$((fail+1)); failed+=("$tag[port-encode-error]"); echo "  RS-ERR   $tag"; continue
     fi
     if ! SVT_NO_AUTO_CMAKE=1 $LOWPRI \

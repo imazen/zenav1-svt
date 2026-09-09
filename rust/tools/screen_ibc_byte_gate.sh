@@ -54,6 +54,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib_nice.sh
 . "$HERE/lib_nice.sh"
 . "$(dirname "$0")/lib_corpus.sh"
+# Issue #23: a flat crop makes these gates pass while reaching neither
+# palette nor IntraBC. Fail loudly instead of silently (identity_run only
+# honours this when set, so synthetic uniform cells are unaffected).
+export SVTAV1_ASSERT_NONFLAT=1
 RS_ROOT=$(cd "$HERE/.." && pwd)
 
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
@@ -103,7 +107,7 @@ cell() {
   local tag=$1 png=$2 w=$3 h=$4 qp=$5 p=$6 expect=${7:-}
   local d="$OUT/$tag"; mkdir -p "$d"; rm -f "$d/rs.ptree"
   if ! SVTAV1_PACKTREE="$d/rs.ptree" SVTAV1_BD=8 $LOWPRI \
-        "$RUN_BIN" "crop:$png" "$w" "$h" "$qp" "$p" "$d/rs" >/dev/null 2>/dev/null; then
+        "$RUN_BIN" "$(screen_crop_spec "$png")" "$w" "$h" "$qp" "$p" "$d/rs" >/dev/null 2>/dev/null; then
     errs=$((errs+1)); map_lines+=("$tag PORT-ENCODE-ERR"); echo "ERR  $tag port-encode"; return
   fi
   if ! SVT_NO_AUTO_CMAKE=1 $LOWPRI \
@@ -143,7 +147,7 @@ recon_leg() {
     recon_skipped=$((recon_skipped+1)); echo "SKIP $tag recon leg (no RS_AOMDEC)"; return
   fi
   SVTAV1_FINAL_RECON="$d/rs.recon" SVTAV1_BD=8 $LOWPRI \
-    "$RUN_BIN" "crop:$png" "$w" "$h" "$qp" "$p" "$d/rs2" >/dev/null 2>/dev/null || { recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: port re-encode failed"; return; }
+    "$RUN_BIN" "$(screen_crop_spec "$png")" "$w" "$h" "$qp" "$p" "$d/rs2" >/dev/null 2>/dev/null || { recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: port re-encode failed"; return; }
   cmp -s "$d/rs.obu" "$d/rs2.obu" || { recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: re-encode not byte-stable"; return; }
   "$AOMDEC" "$d/rs2.obu" -o "$d/rs.y4m" >/dev/null 2>&1 || { recon_fail=$((recon_fail+1)); echo "BAD  $tag recon leg: aomdec refused the stream"; return; }
   local verdict
