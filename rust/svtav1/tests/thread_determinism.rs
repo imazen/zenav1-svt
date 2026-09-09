@@ -85,3 +85,92 @@ fn multitile_gate_is_not_vacuous() {
         "tiles are not active — the determinism test would be vacuous"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Widened axes (2026-09-09).
+//
+// The cell above is 256x64 with tile_cols_log2=2 -> 4 tiles, exercised at
+// thread_count {1,2,4,0}. Every one of those is a DIVISOR of 4, so the wave loop
+// never runs a SHORT final wave; it also never varies the geometry, never uses
+// tile ROWS, and never runs at 10 bits, where an extra per-tile `tile_canvas10`
+// assembly exists that the 8-bit path does not have.
+// ---------------------------------------------------------------------------
+
+/// Deterministic content at an arbitrary size, same shape as `make_420`.
+fn make_420_at(w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let mut y = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            y[r * w + c] = (((r * 255) / h) as u8) ^ (((c * 3) & 0x3f) as u8);
+        }
+    }
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let mut u = vec![0u8; cw * ch];
+    let mut v = vec![0u8; cw * ch];
+    for r in 0..ch {
+        for c in 0..cw {
+            u[r * cw + c] = (64 + ((r * 5) & 0x3f)) as u8;
+            v[r * cw + c] = (64 + ((c * 7) & 0x3f)) as u8;
+        }
+    }
+    (y, u, v)
+}
+
+fn encode_at(
+    w: usize,
+    h: usize,
+    preset: u8,
+    rows_log2: u8,
+    cols_log2: u8,
+    thread_count: usize,
+) -> Vec<u8> {
+    let rc = RcConfig {
+        mode: RcMode::Cqp,
+        qp: 40,
+        ..RcConfig::default()
+    };
+    let mut p = EncodePipeline::new(w as u32, h as u32, preset, rc, 0, 1)
+        .with_chroma_420(true)
+        .with_tile_rows_log2(rows_log2)
+        .with_tile_cols_log2(cols_log2)
+        .with_thread_count(thread_count);
+    let (y, u, v) = make_420_at(w, h);
+    p.encode_frame_420(&y, &u, &v, w)
+}
+
+/// NON-DIVISOR thread counts, tile ROWS, and a larger grid.
+///
+/// 3, 5 and 7 against a 16-tile grid all leave a short final wave, which the
+/// original {1,2,4} over 4 tiles never produced.
+#[test]
+fn tile_grid_is_thread_count_invariant_including_short_final_waves() {
+    for (w, h, rows_log2, cols_log2) in [
+        (256usize, 256usize, 2u8, 2u8),
+        (256, 256, 2, 0),
+        (256, 256, 0, 2),
+    ] {
+        let baseline = encode_at(w, h, 6, rows_log2, cols_log2, 1);
+        assert!(!baseline.is_empty());
+
+        // ANTI-VACUITY, per geometry: a tiled encode must differ from the
+        // single-tile encode of the same content. Tile boundaries reset entropy
+        // contexts and add tile-group syntax, so if these match, the grid
+        // collapsed to one tile and the invariance below proves nothing.
+        let single = encode_at(w, h, 6, 0, 0, 1);
+        assert_ne!(
+            single, baseline,
+            "{w}x{h} r{rows_log2}c{cols_log2}: tiled output equals single-tile \
+             output, so the grid collapsed and this cell is vacuous"
+        );
+
+        for tc in [2usize, 3, 5, 7, 16, 0] {
+            assert_eq!(
+                encode_at(w, h, 6, rows_log2, cols_log2, tc),
+                baseline,
+                "{w}x{h} r{rows_log2}c{cols_log2}: output changed at \
+                 thread_count={tc}; tile-parallel encoding must be bit-exact \
+                 regardless of how the waves are scheduled"
+            );
+        }
+    }
+}
