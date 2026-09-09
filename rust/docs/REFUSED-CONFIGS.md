@@ -2,9 +2,9 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **48
+**13 CAPABILITY refusals** (unimplemented — this is DEBT) and **48
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
-refusals, **11** name a configuration C v4.2.0 actually encodes — the
+refusals, **12** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
 `[C: ...]` marker at all.
 
@@ -45,6 +45,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | QP 0 (coded-lossless) with superres is not implemented (the frame is not AllLossless at the upscaled size) — use QP >= 1 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame header field is not implemented for this configuration: use_ref_frame_mvs at mfmv_level >= 2 needs the TPL r0 and the references' own is_mfmv_used (crate::inter_hdr_arm:: InterHdrError). This port's TPL is structurally off (aq_mode 0), so reaching this means the aq_mode refusal was lifted without porting r0 |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | bitrate-targeted rate control (VBR/CBR) is not implemented: target_bitrate is read nowhere on the encode path and assign_picture_qp's VBR/CBR arm starts from RcState::default().qp = 30 instead of the caller's qp, so the frame's base_q_idx would come from qp 30 while every qp-keyed level derivation still reads rc_config.qp — a mixed-qp stream. The C ports exist but are unwired: port_rc_vbr_cbr, port_rc_vbr_cbr_qpick, port_rc_vbr_cbr_state, port_rc_vbr_cbr_update, port_rc_rtc_cbr, port_pass2_gop. Use RcMode::Cqp or RcMode::Crf |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented for this frame: C's svt_aom_global_motion_estimation would search (global_me.c:190), and this port could not run the search — the picture-analysis reference for a (list, ref) slot the search needs is missing, or the derived downsample level is not GM_FULL (crate::port_global_me::GmSearchError) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: C's svt_aom_global_motion_estimation (global_me.c:137) fitted a NON-IDENTITY model for at least one reference of this INTER frame, so global_motion_params() codes its type and up to six parameters and mode decision prices GLOBALMV against it, while this port writes seven is_global = 0 bits and an IDENTITY model. The port runs C's search and refuses only when it finds something: frames whose motion the search reads as global-motion-free DO encode at preset <= 4. Use preset >= 5, or content without a global non-translational motion |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: the inter frame header writer reached global_motion_params() with a frame whose svt_aom_global_motion_estimation derivation did not prove every reference IDENTITY (crate::port_global_me) — see the gm_search_config_error refusal, which is the one a caller should see |

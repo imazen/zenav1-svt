@@ -827,8 +827,20 @@ impl EncodePipeline {
         // return `Err` on the trusted path, so `.expect()` never fires and the
         // emitted bytes are unchanged. Callers wanting graceful OOM /
         // cancellation use `try_encode_frame`.
+        //
+        // "Trusted path" EXCLUDES an unsupported configuration. Since issue #22
+        // this refuses `RcMode::Vbr`/`Cbr` at the config choke point, so a caller
+        // that builds the pipeline with one and then uses this infallible wrapper
+        // panics HERE instead of silently receiving a qp-30 stream. That is the
+        // intended trade — a panic is loud, a mixed-qp bitstream is not — but the
+        // message must say so rather than claim infallibility.
         self.encode_frame_mono_core(y_plane, y_stride)
-            .expect("encode_frame is infallible on the default/trusted path")
+            .expect(
+                "encode_frame is infallible on the default/trusted path; an \
+                 UnsupportedConfig here means the pipeline was built with a \
+                 configuration this port refuses (e.g. RcMode::Vbr/Cbr, issue \
+                 #22) — use try_encode_frame to handle it as an error",
+            )
     }
 
     /// Fallible core of the MONOCHROME path: the same TRUE -> ALIGNED edge
@@ -900,9 +912,16 @@ impl EncodePipeline {
         // Additive fallible core (Feature 1+3), shared with `try_encode_frame_420`.
         // KEEPS the exact panicking contract: on the default/trusted path the
         // core cannot return `Err`, so `.expect()` never fires and the bytes are
-        // unchanged.
+        // unchanged. "Trusted path" EXCLUDES an unsupported configuration — see
+        // the note on `encode_frame`; since issue #22 a `RcMode::Vbr`/`Cbr`
+        // pipeline panics here rather than emitting a qp-30 stream.
         self.encode_frame_420_core(y, u, v, y_stride)
-            .expect("encode_frame_420 is infallible on the default/trusted path")
+            .expect(
+                "encode_frame_420 is infallible on the default/trusted path; an \
+                 UnsupportedConfig here means the pipeline was built with a \
+                 configuration this port refuses (e.g. RcMode::Vbr/Cbr, issue \
+                 #22) — use try_encode_frame_420 to handle it as an error",
+            )
     }
 
     fn film_grain_seed(&self) -> u16 {
@@ -1592,6 +1611,41 @@ impl EncodePipeline {
         }
     }
 
+    /// BITRATE-TARGETED RATE CONTROL IS NOT WIRED — refuse it rather than emit
+    /// a plausible-but-wrong stream.
+    ///
+    /// `assign_picture_qp`'s Vbr/Cbr arm (rate_control.rs) starts from
+    /// `state.qp`, i.e. `RcState::default().qp` = 30, and NEVER reads
+    /// `config.qp`. For a single still frame `state.total_frames` is 0, so the
+    /// buffer-fullness delta is 0 and the picture QP is exactly `30 +
+    /// temporal_layer_delta` no matter what the caller asked for. Meanwhile ten
+    /// other sites in this file still derive from `self.rc_config.qp`, so the
+    /// result is not even uniformly wrong: the picture QP and the qp-keyed
+    /// derivations disagree, which is a MIXED-QP stream.
+    ///
+    /// `target_bitrate` is read nowhere on the encode path outside that arm, so
+    /// nothing actually targets a bitrate either. C's real ports exist in-tree
+    /// and are C-parity tested (`port_rc_vbr_cbr*`, `port_rc_rtc_cbr`,
+    /// `port_pass2_gop`) but are wired to nothing here; bitrate targeting is
+    /// also inherently multi-frame, and this pipeline refuses a third frame
+    /// anyway. See issue #22.
+    fn rate_control_config_error(&self) -> Option<&'static str> {
+        match self.rc_config.mode {
+            crate::rate_control::RcMode::Cqp | crate::rate_control::RcMode::Crf => None,
+            crate::rate_control::RcMode::Vbr | crate::rate_control::RcMode::Cbr => Some(
+                "bitrate-targeted rate control (VBR/CBR) is not implemented: \
+                 target_bitrate is read nowhere on the encode path and \
+                 assign_picture_qp's VBR/CBR arm starts from RcState::default().qp \
+                 = 30 instead of the caller's qp, so the frame's base_q_idx would \
+                 come from qp 30 while every qp-keyed level derivation still reads \
+                 rc_config.qp — a mixed-qp stream. The C ports exist but are \
+                 unwired: port_rc_vbr_cbr, port_rc_vbr_cbr_qpick, \
+                 port_rc_vbr_cbr_state, port_rc_vbr_cbr_update, port_rc_rtc_cbr, \
+                 port_pass2_gop. Use RcMode::Cqp or RcMode::Crf [C: accepts]",
+            ),
+        }
+    }
+
     fn superres_config_error(&self) -> Option<&'static str> {
         let denom = self.superres_denom?;
         if !(9..=16).contains(&denom) {
@@ -1875,6 +1929,10 @@ impl EncodePipeline {
         // (`svt_av1_verify_settings`) and this port therefore refuses at the
         // same choke point rather than encoding something C would never emit.
         if let Some(why) = self.knob_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
+        // Issue #22: VBR/CBR were ACCEPTED here and silently encoded at qp 30.
+        if let Some(why) = self.rate_control_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
         // GLOBAL MOTION is NOT refused here: whether C searches depends on this
@@ -13939,6 +13997,71 @@ mod tests {
             matches!(err.error(), EncodeError::AllocFailed { .. }),
             "expected EncodeError::AllocFailed, got {err:?}"
         );
+    }
+
+    /// Issue #22: VBR/CBR were ACCEPTED and silently encoded at qp 30.
+    ///
+    /// ANTI-VACUITY. The mono `try_encode_frame` path is used deliberately:
+    /// `try_encode_frame_420` returns `UnsupportedConfig` for a default-built
+    /// pipeline anyway (`EncodePipeline::new` leaves `chroma_420 = false`), so a
+    /// 4:2:0 version of this test would pass for the wrong reason both before
+    /// and after the fix. The Crf control below encodes successfully through the
+    /// very same call, which is what proves the Vbr/Cbr refusal is doing the
+    /// work rather than some unrelated guard.
+    #[test]
+    fn vbr_and_cbr_are_refused_and_do_not_advance_the_frame_counters() {
+        let y = vec![100u8; 64 * 64];
+
+        for mode in [
+            crate::rate_control::RcMode::Vbr,
+            crate::rate_control::RcMode::Cbr,
+        ] {
+            let mut p = EncodePipeline::new(
+                64,
+                64,
+                10,
+                RcConfig {
+                    mode,
+                    qp: 20,
+                    target_bitrate: 5000,
+                    ..RcConfig::default()
+                },
+                3,
+                1,
+            );
+            let err = p
+                .try_encode_frame(&y, 64)
+                .expect_err("bitrate-targeted rate control must be refused");
+            match err.error() {
+                crate::EncodeError::UnsupportedConfig(why) => assert!(
+                    why.contains("VBR/CBR"),
+                    "{mode:?}: refusal should name the mode, got {why:?}"
+                ),
+                other => panic!("{mode:?}: expected UnsupportedConfig, got {other:?}"),
+            }
+            assert_eq!(p.frame_count, 0, "{mode:?}: a refused frame must not count");
+            assert_eq!(p.rc_state.total_frames, 0);
+        }
+
+        // CONTROL: the identical call with Crf still encodes. Without this the
+        // test above could pass because the pipeline refuses everything.
+        let mut ok = EncodePipeline::new(
+            64,
+            64,
+            10,
+            RcConfig {
+                mode: crate::rate_control::RcMode::Crf,
+                qp: 20,
+                ..RcConfig::default()
+            },
+            3,
+            1,
+        );
+        let bytes = ok
+            .try_encode_frame(&y, 64)
+            .expect("Crf must still encode through the same path");
+        assert!(!bytes.is_empty());
+        assert_eq!(ok.frame_count, 1);
     }
 
     #[test]
