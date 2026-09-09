@@ -3,6 +3,8 @@
 This is the current entry point. It replaces the 2026-09-08 handoff, whose
 remaining-work queue was re-derived against source on 2026-09-09 and found to be
 correct in scope but wrong in three specific technical claims (see *Corrections*).
+Work landed on 2026-09-09 is marked **DONE** inline with its commit; treat every
+unmarked item as open.
 The chronological 964-line original is
 [preserved](rust/docs/history/2026-09-08/CONTEXT-HANDOFF.md).
 Do not treat old "local", "next", "blocked", worker state or CI claims as current.
@@ -13,14 +15,30 @@ Every byte-parity result in this document is therefore x86-64 / `i265`-scoped, a
 several artifacts named in older docs live on the WSL `lilith` box instead. Name
 the host in any new measurement record. On `i265` size heavy jobs `--mem 16G`.
 
+`lilith.lan` (192.168.50.159, the WSL box: 32 threads, 23 GiB, `/mnt/v` present)
+is reachable by key from `i265` as of 2026-09-09, so `/mnt/v`-resident corpora and
+sources can be fetched rather than declared missing. Size heavy jobs there
+`--mem 12G`, not 16G — its VM ceiling is 23 GiB.
+
+**`/mnt/tower` on `lilith` is a stale NFS handle.** The mount entry is present
+(`tower:/mnt/user/coefficient`, 192.168.50.170) but every access returns "Stale
+file handle" — mounted but dead. Anything treating Tower as the durable mirror is
+silently writing nowhere. Remount before relying on it as a backup target.
+
 ## Verified source and ownership
 
 | Repository | Remote main/master observed 2026-09-09 | What that establishes |
 |---|---|---|
 | zenav1-svt | `66e68993` | PR #20 merged; policy, signed −1, reference selection, support audit and ARM widening landed. `66e68993` adds root `apidoc/` and `docs/public-api/` from a concurrent session |
-| zenavif | local main `dba8f5ee` | The 2026-09-08 audit's `aae9d98d` is **not in the local object store**; fetch before quoting it. Pins SVT `25708931`, five commits behind SVT main |
-| zenav1-aom | local main `93d12c35` | The audit's `fbea6b47` is likewise not local. Separate owner |
-| zenmetrics | master `3ab5f791`; local HEAD `769bdf33` **detached, 20 commits, on no branch** | The RD harness and every measured RD result exist only off-branch. The audit's `3dfee42d` is not in the local repo |
+| zenavif | remote main `4c33eeb8`; local main `dba8f5ee` is **5 commits BEHIND** | Local remote-tracking refs are stale here: `git status` reports the wrong direction. Still pins SVT `25708931` |
+| zenav1-aom | remote main `1ee19571`; local main `496d2496` is **57 commits BEHIND** | Same stale-ref trap, much larger. Separate owner. A force-push of local main would destroy 57 unrecoverable remote commits |
+| zenmetrics | master `6b7990d3` | **DONE 2026-09-09**: the 20-commit av1-compare RD harness was rebased onto `3dfee42d` (zero conflicts) and pushed. `benchmarks/av1-compare` and `benchmarks/av1_compare_2026-09-08` are now on master |
+
+**Stale-ref warning.** Six repos here carry local remote-tracking refs whose true
+remote head is absent from the local object DB, so any ahead/behind computed from
+`@{u}`, `git status` or `origin/*` is wrong until a fetch. Use `git ls-remote`.
+Verified 2026-09-09: only zenmetrics was genuinely ahead; zenavif (−5),
+zenav1-aom (−57), claudehints (−3), cavif-rs (−1) and homefleet (−1) are behind.
 
 These are observed commits, not eternal pins. Fetch before new work.
 
@@ -71,11 +89,14 @@ given so the next session can re-check rather than trust this text.
    `bd10` arm (`depth_refine.rs:1527`) requires `!bypass_encdec` while
    `leaf_funnel/rate_tables.rs:1254` sets `bypass_encdec = preset >= 4`.
 
-3. **Main has never been CI-tested.** The last `rust gates` run is `34150341118`
-   (2026-09-07T18:07:06Z, headSha `8e6f9af4c`). Every commit since carries
-   `[skip ci]`. `workflow_dispatch` is enabled, so a run costs one command.
-   Separately, the `gh` token holds `gist, read:org, repo` and **not** `workflow`,
-   so `.github/workflows/**` cannot be pushed from this machine.
+3. ~~**Main has never been CI-tested.**~~ **RESOLVED 2026-09-09.** It had not
+   been: the last green run was `34150341118` (2026-09-07, headSha `8e6f9af4c`)
+   and the 12 commits after it all carried `[skip ci]`. Main is now green —
+   `34296694287` (`b3e1d37b`, the MSRV bump) passed all four legs including
+   `windows-11-arm`, `macos-15-intel` and `i686-unknown-linux-gnu` via cross, and
+   `34295564928` (`a046e68b`) and `34295373919`/`34295381305` (`208b89139`) also
+   passed. The `gh` token now also carries `workflow`, so `.github/workflows/**`
+   is pushable again.
 
 ## Remaining work, ordered
 
@@ -83,18 +104,18 @@ Ordering is by *evidence value per unit cost*, not by section number in the goal
 Anchors are `file:line` on `66e68993`. "heavy" means it must be serialized through
 `~/work/claudehints/scripts/run-heavy` — one at a time, `--mem 16G` on `i265`.
 
-### 0. Immediate, no build
+### 0. Immediate, no build — **ALL DONE 2026-09-09**
 
-- Land these corrections and the plan (this commit).
-- `rust/crates/svtav1-target/Cargo.toml` is the one workspace member declaring no
-  `rust-version`; with `resolver = "3"` its subtree is unconstrained on the next
-  `cargo update`, and it is the sole member built on windows-11-arm, macos-15-intel
-  and i686. Give it `edition.workspace = true` + `rust-version.workspace = true`.
-  Leave its divergent `license` alone — that is a user decision.
-  Witness: `cargo metadata --offline --no-deps` prints the workspace floor and
-  `2024` for all six. DONE 2026-09-09 (`208b8913`).
-- **Trigger CI on current main.** Nine-plus untested commits is the single largest
-  unquantified risk in this repo, and the fix is one `workflow_dispatch`.
+- ~~Land these corrections and the plan.~~ `8f6f442e`.
+- ~~Give `svtav1-target` the workspace edition and MSRV.~~ `208b8913`. It was the
+  one member declaring no `rust-version`, and under `resolver = "3"` its subtree
+  was unconstrained on the next `cargo update`.
+- ~~Trigger CI on current main.~~ Green — see correction 3. This retired the
+  repo's largest unquantified risk; 12 commits had never been tested.
+- ~~Raise the MSRV floor to 1.98.~~ `b3e1d37b`. See the decisions section for the
+  measurement that justified it.
+- ~~Adopt `AGENTS.md` onto main.~~ `0872673b`. It had existed on exactly one ref,
+  a branch that was then deleted.
 
 ### 1. Native10 parity — four cells, at least three root causes
 
@@ -128,14 +149,18 @@ submodule HEAD) are both present and current.
    that `try_encode_frame_420_hbd` (`pipeline.rs:1710-1735`) stores real u16 planes
    but drives the core with `>> 2` u8 proxies, and unthreaded bd10 stages re-widen
    `<< 2`; three such sites sit on the CfL decision path.
-4. **Repair `tools/decode_diff`** — `Cargo.toml:22` hard-codes
-   `path = "/root/aom-rs/crates/aom-decode"`, which is permission-denied here.
-   Repoint at `../../../../zenav1-aom/crates/aom-decode` (verified to resolve).
-   This unblocks `drill_cell.sh`, `real_image_matrix.sh` **and**
-   `screen_ibc_gate.sh`. While open: `drill_cell.sh` has *two* `capture_c_trace`
-   call sites (`:43` and `:100`) and neither forwards the bit depth as argv[7], so
-   its step-5 pickpart dump encodes C at bd8 while the port ran bd10 — silently
-   wrong, no error. heavy (cold release build of ~83k LOC).
+4. ~~**Repair `tools/decode_diff`.**~~ **DONE 2026-09-09 (`a046e68b`).** Its
+   manifest had hard-coded `/root/aom-rs/crates/aom-decode`, so the pixel oracle
+   was unbuildable on every host and `real_image_matrix.sh`, `drill_cell.sh` and
+   `screen_ibc_gate.sh` all exited 2 — the real-image parity axis had no runnable
+   witness anywhere. Repointed at the sibling checkout; builds in 8 s.
+   `drill_cell.sh` also had two `capture_c_trace` sites (`:43`, `:100`) that never
+   forwarded the bit depth, so every bd10 drill silently compared against an 8-bit
+   C encode; both now pass `${SVTAV1_BD:-8}`. Its unreachable `rc == 3` branch was
+   removed and its content-prefix handling fixed.
+
+   **Still to do here:** run `real_image_matrix.sh` for the first current-source
+   real-image parity number since the "53 cases fixed" claim. heavy.
 
 ### 2. Gates that do not exist — the largest gap the old handoff never named
 
@@ -258,8 +283,15 @@ of them appear in any pass count.
   22.71→22.10, bytes 621→607. The quality→QP map (`avif.rs:443-447` with zenavif's
   `.max(1)`) gives 63 distinct QPs over 101 quality values — 38 duplicates, and it
   reproduces the issue's named collisions exactly, so the saturation observation is
-  structural, not an artifact. Blocked only on the source image, which lives at
-  `/mnt/v/input/zensim/sources/…` — i.e. on the WSL box, not `i265`.
+  structural, not an artifact. **No longer blocked** (2026-09-09): the source
+  image was retrieved from the WSL box to `~/tmp/issue19/090d19695a8b43c2_512sq.png`
+  on `i265`, sha256 `bb3d6c3519d341e9720057d0a6303b13f624977f9378bcfef95f816c69a3146f`
+  verified identical on both hosts. `zensim` is also properly checked out on
+  `lilith` at `~/work/zen/zensim` (`65dd0c8c`); `i265` has only a pinned cargo
+  checkout. The ladder-instrument parquet the older docs name
+  (`/mnt/v/output/zensim/ladder-2026-09-05/instruments/dial_grid_372col_ladder.parquet`)
+  **does not exist** — there is no `ladder-*` directory under `/mnt/v/output/zensim`
+  at all. That path is stale; the image is what the repro needs.
 - The **"58 missing-vector failures"** were reported against zenavif `aae9d98d`,
   which is not in the local object store. On the local tree every vector reachable
   from a non-ignored test is present; the missing ones are all behind `#[ignore]`
@@ -295,24 +327,60 @@ These change what gets built and are not derivable from prior instructions.
 3. ~~**VBR/CBR**~~ **RESOLVED 2026-09-09: tracked, not wired.** Filed as a
    sub-issue of #21 with the ~4,300-line wireup as its todo; the silent
    qp-30 mis-encode is documented there as the interim hazard.
-4. **Push the zenmetrics av1-compare stack to master?** Twenty unreviewed off-branch
-   commits adding a benchmark crate with C build dependencies. Every calibration
-   step depends on it, and it is currently reachable only from `refs/jj/keep/*`.
+4. ~~**Push the zenmetrics av1-compare stack to master?**~~ **RESOLVED
+   2026-09-09: pushed.** Rebased onto `3dfee42d`, zero conflicts, now
+   `6b7990d3` on zenmetrics master. It is 39 files / 8,338 insertions of
+   AI-authored harness and result TSVs that nobody has audited — treat its
+   "verified"/"measured" prose accordingly.
 5. **Compute budget for the population scout**: ≈180 core-hours for all 1078 train
    origins on the idle LAN fleet, versus a K≈24-origin local scout first, versus a
    reduced arm set.
 6. **May the two zenmetrics fixes be made** (CI pin off the pre-#18-fix rev; a fleet
    image carrying `avif-svt` at current SVT)? Sibling repo, and it holds a stale
    `codex-root` marker.
-7. **Bump zenavif's SVT pin** from `257089314` to `66e68993`, and does the public
-   API grow by 11 `AvifEncoder::with_*` HDR setters or one `with_svt_tuning`?
-8. **Eleven `preserve/2026-09-08-*` bookmarks** need disposition; four are provably
-   empty, and `preserve/2026-09-08-9292ec8e32bc` is 5,097 commits of unrelated
-   upstream C history with no merge-base against main. Deleting remote branches is
-   externally visible.
+7. **Bump zenavif's SVT pin** from `257089314` to current SVT main, and does the
+   public API grow by 11 `AvifEncoder::with_*` HDR setters or one
+   `with_svt_tuning`? Note the local zenavif checkout is 5 commits behind its
+   remote (`4c33eeb8`), so fetch and coordinate against *that*, not `dba8f5ee`.
+8. ~~**Preserve bookmarks need disposition.**~~ **RESOLVED 2026-09-09: origin
+   went from 23 branches to 2.** The count in the previous handoff was wrong —
+   there were 13 local / 12 remote preserve bookmarks, not eleven. Deleted: 8
+   strict ancestors of main (re-verified `0 unique` commits each), 4 provably
+   empty preserves, the 5,097-commit upstream C import (all still reachable from
+   tag `v4.2.0`; the `mirror-svt-av1` workflow was confirmed to target the
+   separate repo `imazen/zenav1-svt-c`, so nothing broke), and 7 branches whose
+   unique content was first archived as tags.
+
+   **Surviving refs:** `main`, and `preserve/2026-09-08-86adc9495b17` — kept
+   deliberately because its 33-line `animation-metadata` CI job exists nowhere
+   else and is not yet on main. Seven `archive/*` tags hold every rejected
+   experiment: `z1-baseline-cpu`, `z1-v3-arcane`, `dct64-cosine-bits`,
+   `eob-zero-tails`, `quant-row-cache`, `eng-quality-program`,
+   `lint-repairs-2026-09-08`. `v4.2.0` is load-bearing — it is now the only ref
+   keeping 5,096 upstream C commits reachable, and it is the named pristine
+   parity reference. Do not delete it.
 
 ## Evidence boundaries and resumption
 
+- **The ARM dotprod arm has never been measured — do not claim it helped.**
+  Verified 2026-09-09 by reading every ARM artifact in the repo. Three separate
+  things get conflated here: (a) PR #20 / the "ARM pairwise widening" is a
+  *correctness and maintainability* refactor of the plain-NEON arm, measured on
+  real Apple M4 Pro hardware with an interleaved randomized paired harness, and
+  its measured result is explicitly **no speedup** (42 paired groups, a wash);
+  `rust/benchmarks/arm_pairwise_2026-09-07.meta:30` states verbatim that the
+  Arm64V2 dotprod dispatch arm is untouched and the result must not be attributed
+  to it. (b) `benchmarks/me_sad_ab_2026-09-02.*` (1.018–1.058×) is the only
+  end-to-end measurement that involved the dotprod arm at all, but its baseline
+  `884f94e8f` had a **pure scalar** ME SAD, so it measures scalar→SIMD confounded
+  with token-hoisting and a new 8-wide remainder arm. (c) **No benchmark in the
+  repo ever executes `block_sad_arm_v2`** — `crates/svtav1-dsp/benches/kernel_tiers.rs`
+  summons `NeonToken` only. `rust/docs/perf-status.md:110-113` already labels the
+  dotprod position "Expectation, NOT a measurement". Consequence: the 1.98 MSRV
+  floor is a **manifest-honesty fix, not a perf tradeoff** — `vdotq_u32`/`vdot_u32`
+  (`me_sad.rs:163`/`:169`) stabilized in 1.98, so the crate provably could not
+  compile on aarch64 at its declared 1.89 floor. Pricing dotprod against plain
+  NEON remains unmeasured work.
 - SVT `0cbd1279`: 2631/2631 native workspace tests; 19/19 selected ARM tests under
   QEMU. Strict ARM Clippy was 17 diagnostics; only **2** were ARM-specific
   (`incompatible_msrv` on the dotprod arm) and the 1.98 floor bump cleared both,
