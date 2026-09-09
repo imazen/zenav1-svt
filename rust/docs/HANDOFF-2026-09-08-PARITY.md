@@ -23,9 +23,42 @@ done
 | p5q10 | 67328 | cdf, `icdf0=20785`, unrecognized family |
 | p1q30 (control) | none | traces identical for all 18413 ops incl. rng state |
 
-The p1q30 control makes this anti-vacuous. **Op 0 is emitted before any SB3 block data**, so the `mi(48,8)` CfL witness recorded below cannot be the first divergence for p1q10 and p4q10. Either that CfL flip changes reconstruction and therefore the loop-restoration search (op 0 is a downstream symptom), or there is an independent native-10 LR search divergence that no CfL fix will touch. The discriminator is a pre-filter recon plane comparison: C via `SVT_LFRECON_BIN`/`SVT_RECON_BIN` (tools/capture_c_trace/wrap_recon.c) against Rust `SVTAV1_RECON10_BIN` (pipeline.rs:5227). Byte-identical pre-filter planes with differing taps refutes the CfL hypothesis for that cell.
+The p1q30 control makes this anti-vacuous. **Op 0 is emitted before any SB3 block data**, so the `mi(48,8)` CfL witness recorded below cannot be the first divergence for p1q10 and p4q10. That discriminator has now been RUN for p1q10 (next section): the pre-filter recon planes DIFFER, so op 0 is a downstream symptom and the loop-restoration search is not the root cause. The same comparison has NOT yet been run for p4q10, the other op-0 cell — do that before assuming it behaves the same way.
 
 p4q30 and p5q10 are separate investigations in unrelated families; identity_diff.py reports "unrecognized family" for both, so identifying which syntax element the `nsyms=14` CDF at p5q10 op 67328 belongs to is a source-reading sub-step. Do not assume a p1 fix moves them.
+
+### Pre-filter reconstruction comparison, p1q10 (2026-09-09) — the LR-only reading is REFUTED
+
+The op-0 `lr-taps` classification invited a tempting conclusion: that p1q10 is
+purely a loop-restoration tap disagreement. It is not.
+
+The retained pre-filter recon planes under
+`~/tmp/svt-tracking/chroma-native-boundary/native10-prefilter/` (c.obu 11465 B,
+rs.obu 11462 B, i.e. exactly this cell) were byte-compared, and independently
+re-decoded from the raw u16-LE planes to avoid trusting the stored summary:
+
+| plane | dims | differing samples | first difference |
+|---|---|---|---|
+| 0 (Y) | 376x512 | 88488 | (x=144, y=128), C=779 Rust=792 |
+| 1 (U) | 188x256 | 17106 | (x=82, y=64), C=456 Rust=455 |
+| 2 (V) | 188x256 | 16094 | (x=96, y=64), C=586 Rust=583 |
+
+**Reconstruction differs before any loop filter runs.** So the block-level coding
+decisions genuinely diverge, and the op-0 wiener_restore difference is a
+DOWNSTREAM SYMPTOM — the restoration search is fed a different reconstruction and
+therefore picks different taps, and those taps happen to be written early in the
+bitstream. Do not chase the loop-restoration code for this cell.
+
+**A NEW open question this raises.** The first differing luma sample (144,128) is
+in SB4 under SB128 (origin 128,128; the docs' "SB3 origin(0,128)" only indexes as
+3 with SB128, 3 SBs per row at width 376). But the recorded mode-decision witness
+`mi(48,8)` = pixel (32,192) lies inside SB3, which is coded BEFORE SB4 — and no
+luma sample inside SB3 differs at all. If the mi(48,8) UV/partition divergence
+were the root cause, SB3's own reconstruction should differ. Either the
+`native10-sb3/` drill was captured under a different configuration than this
+prefilter run, or that candidate-cost divergence did not change SB3's final
+reconstruction. Resolve that before spending more time on the CfL arbitration:
+re-capture the SB3 drill and the prefilter planes from the SAME run.
 
 ### Decoded-pixel localization (2026-09-09, first run on any host)
 
