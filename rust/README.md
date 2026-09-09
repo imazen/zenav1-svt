@@ -29,8 +29,8 @@ Use [WORKING-ON-THIS.md](docs/WORKING-ON-THIS.md) for prerequisites, corpus
 controls, serialized heavy-job commands and validation scope. The canonical
 runner is `cargo nextest run --workspace --locked`; doctests are separate.
 At implementation `0cbd1279`, the native suite passed 2631/2631. Strict ARM
-Clippy is not clean; the declared 1.89 floor has an unresolved dotprod mismatch.
-Use the tested Rust 1.98 toolchain until the floor is verified and corrected.
+Clippy has 15 pre-existing architecture-independent diagnostics. The declared
+floor is 1.98, which is what the aarch64 dotprod intrinsics require.
 
 [Identity status](docs/IDENTITY-STATUS.md) records the four deferred native10
 cells. [HDR history](docs/HDR-ON-4.2.md) retains feature/kernel evidence, not a

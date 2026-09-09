@@ -34,8 +34,8 @@ uses x86 assembly. `zenav1-svt-cref/build.rs` owns mainline/HDR builds and cache
 stamps; do not replace a source-matched oracle with an arbitrary local library.
 See its documented `SVT_CREF_LIB_DIR`, `SVT_CREF_SKIP_HDR`, `SVT_CREF_JOBS` and
 strict object-capture options. An explicitly skipped HDR oracle is not HDR
-coverage. The manifest floor is 1.89 but ARM dotprod currently requires 1.98;
-use the verified 1.98 toolchain pending the tracked floor repair.
+coverage. The manifest floor is 1.98, which is what the ARM dotprod intrinsics
+require; build with 1.98 or newer.
 
 `just` is an optional recipe runner; underlying scripts/commands are visible in
 `justfile`. Some gates need `tools/decode_diff` and independently installed

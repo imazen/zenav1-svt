@@ -91,7 +91,8 @@ Anchors are `file:line` on `66e68993`. "heavy" means it must be serialized throu
   `cargo update`, and it is the sole member built on windows-11-arm, macos-15-intel
   and i686. Give it `edition.workspace = true` + `rust-version.workspace = true`.
   Leave its divergent `license` alone — that is a user decision.
-  Witness: `cargo metadata --offline --no-deps` prints `1.89 2024` for all six.
+  Witness: `cargo metadata --offline --no-deps` prints the workspace floor and
+  `2024` for all six. DONE 2026-09-09 (`208b8913`).
 - **Trigger CI on current main.** Nine-plus untested commits is the single largest
   unquantified risk in this repo, and the fix is one `workflow_dispatch`.
 
@@ -158,7 +159,7 @@ of them appear in any pass count.
   path above), so the "53 real-image parity cases fixed" claim currently has no
   re-runnable witness. Chain a run onto item 1.4.
 - **No clippy, rustfmt, MSRV-floor or semver job exists in CI at all**; all three
-  toolchain steps use `stable`, so the declared 1.89 floor is never exercised.
+  toolchain steps use `stable`, so the declared 1.98 floor is never exercised.
   Platform coverage *is* compliant (windows-11-arm, macos-15-intel, i686 via cross).
 - **No fuzz infrastructure exists in this repo** — no `fuzz/`, no targets, no
   regression harness — and there is no determinism-across-thread-count gate, though
@@ -283,19 +284,17 @@ answer; leaving it undecided is not.
 
 These change what gets built and are not derivable from prior instructions.
 
-1. **MSRV.** Bump the workspace floor 1.89 → 1.98 (matches all testing evidence and
-   what `README.md:33` already tells users to install), or keep 1.89 honest with a
-   `build.rs` compiler-version probe that cfg's the aarch64 dotprod arm off below
-   1.98 and falls back to plain NEON? Suppressing the lint is not an option — the
-   code genuinely does not compile at 1.89 on aarch64. Precedent: the last floor
-   correction surfaced 79 previously-hidden lints.
-2. **`gh auth refresh -s workflow`?** Without it no CI workflow change can be
-   pushed, and the local-only branch `preserve/2026-09-08-86adc9495b17` (an
-   animation-metadata CI gate) is structurally unpushable. This is a credential
-   change on the user's account.
-3. **VBR/CBR**: refuse now (hours, stops a silent wrong-output path, but is an
-   externally visible behaviour change for any current Vbr caller), or wire the
-   ~4,300 already-C-parity-tested lines (multi-day, near-zero still-image value)?
+1. ~~**MSRV.**~~ **RESOLVED 2026-09-09: floor bumped to 1.98.** The feared lint
+   wave did not materialise — measured, x86-64 workspace `clippy --all-targets` is
+   byte-for-byte the same lint set at 1.89 and 1.98 (38 occurrences either way).
+   On aarch64 the bump *removes* debt: `-p zenav1-svt-dsp --lib` goes 17 → 15
+   diagnostics with both `incompatible_msrv` gone, leaving only
+   architecture-independent lints.
+2. ~~**`gh auth refresh -s workflow`?**~~ **RESOLVED 2026-09-09: the token now
+   carries `workflow`.** CI workflow changes are pushable again.
+3. ~~**VBR/CBR**~~ **RESOLVED 2026-09-09: tracked, not wired.** Filed as a
+   sub-issue of #21 with the ~4,300-line wireup as its todo; the silent
+   qp-30 mis-encode is documented there as the interim hazard.
 4. **Push the zenmetrics av1-compare stack to master?** Twenty unreviewed off-branch
    commits adding a benchmark crate with C build dependencies. Every calibration
    step depends on it, and it is currently reachable only from `refs/jj/keep/*`.
@@ -315,11 +314,11 @@ These change what gets built and are not derivable from prior instructions.
 ## Evidence boundaries and resumption
 
 - SVT `0cbd1279`: 2631/2631 native workspace tests; 19/19 selected ARM tests under
-  QEMU. Strict ARM Clippy retains 17 diagnostics — but only **2** are ARM-specific
-  (`incompatible_msrv` on the dotprod arm); the other 15 are
-  architecture-independent lints that also fire on x86-64, and 12 collapse to three
-  trivial edit sites. The 17 is scoped to `-p zenav1-svt-dsp --lib`; the full
-  workspace has additional pre-existing warnings.
+  QEMU. Strict ARM Clippy was 17 diagnostics; only **2** were ARM-specific
+  (`incompatible_msrv` on the dotprod arm) and the 1.98 floor bump cleared both,
+  leaving 15 architecture-independent lints that also fire on x86-64, 12 of which
+  collapse to three trivial edit sites. Scoped to `-p zenav1-svt-dsp --lib`; the
+  full workspace has additional pre-existing warnings.
   [PR20 record](rust/benchmarks/arm_pairwise_release_2026-09-08.md).
 - Earlier eight-bit landing matrix: 1100/1100; four native10 cells remain open.
 - The C baseline in every av1-compare table is the **hybrid** submodule `3115c0c1b`

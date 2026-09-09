@@ -23,8 +23,10 @@ Use [the support table](docs/API-SUPPORT-AUDIT-2026-09-08.md) and
 native10 parity cells, broader C video/GOP/temporal/superres combinations,
 remaining wrapper controls and broad corpus calibration. #18 deployment/output
 replacement is unverified; #19 remains a historical quality-ladder observation.
-Strict ARM Clippy has 17 pre-existing diagnostics, including the 1.89/1.98
-MSRV discrepancy in unchanged dotprod intrinsics. PR20 did not waive those.
+The MSRV floor is 1.98, matching what the aarch64 dotprod intrinsics
+(`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require. Strict ARM Clippy
+is down to 15 pre-existing diagnostics, all architecture-independent; the two
+`incompatible_msrv` ones are gone. PR20 waived nothing.
 
 ## Correctness and porting
 
