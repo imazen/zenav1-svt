@@ -302,11 +302,10 @@ fn zen_intra_edges_at_partial_frames_and_tiles() {
     }
 }
 
-#[test]
-fn zen_restoration_unit_search_reconstructs_at_unit_and_tile_boundaries() {
+fn zen_restoration_unit_search_at_depth(depth: u8) {
     use svtav1::avif::{NativePreset, SvtReference, ZenEnhancement};
-    let mut selected_smaller = [false; 2];
-    for (depth_index, depth) in [8, 10].into_iter().enumerate() {
+    let mut selected_smaller = false;
+    {
         for (w, h, rows, cols, sb) in [
             (192usize, 160usize, 0, 0, 64),
             (193, 161, 0, 0, 64),
@@ -396,7 +395,7 @@ fn zen_restoration_unit_search_reconstructs_at_unit_and_tile_boundaries() {
             };
             let size = p.last_lr_unit_size.expect("restoration search must run");
             assert!(size >= p.sb_size && [64, 128, 256].contains(&size));
-            selected_smaller[depth_index] |= size < 256 && p.last_lr_stats.0 != [0; 3];
+            selected_smaller |= size < 256 && p.last_lr_stats.0 != [0; 3];
             eprintln!(
                 "Zen LR: {w}x{h} depth={depth} tiles={rows},{cols} unit={size} types={:?}",
                 p.last_lr_stats.0
@@ -431,9 +430,23 @@ fn zen_restoration_unit_search_reconstructs_at_unit_and_tile_boundaries() {
         }
     }
     assert_eq!(
-        selected_smaller, [true; 2],
-        "must enable smaller restoration units at both native depths"
+        selected_smaller, true,
+        "must enable smaller restoration units at native depth {depth}"
     );
+}
+
+/// Sharded by native bit depth so the two depths run concurrently under
+/// nextest. The old single test accumulated `selected_smaller` as one flag per
+/// depth and asserted `[true; 2]` at the end; each shard now asserts its own
+/// depth's flag, which is the same requirement stated per depth.
+#[test]
+fn zen_restoration_unit_search_reconstructs_at_unit_and_tile_boundaries_bd8() {
+    zen_restoration_unit_search_at_depth(8);
+}
+
+#[test]
+fn zen_restoration_unit_search_reconstructs_at_unit_and_tile_boundaries_bd10() {
+    zen_restoration_unit_search_at_depth(10);
 }
 
 fn pipeline(w: usize, h: usize, preset: u8, quality: f32, depth: u8) -> EncodePipeline {

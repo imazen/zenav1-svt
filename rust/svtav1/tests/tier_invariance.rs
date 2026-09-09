@@ -211,66 +211,109 @@ fn bd10_screen_q55_p7_is_tier_invariant() {
 /// kernel these two cells happen not to reach still gets caught. Presets are
 /// chosen to span the distinct search paths: 0 (full search), 6 (leaf funnel),
 /// 7/8 (LVL_1, NSQ disabled), 10 (LPD0).
-#[test]
-fn encoder_output_is_tier_invariant_across_the_matrix() {
-    for &(w, h) in &[(64usize, 64usize), (128, 128)] {
-        for &qp in &[20u8, 55] {
-            for &preset in &[0u8, 6, 7, 10] {
-                assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd8"), || {
-                    encode_8bit(&gradient_plane, w, h, qp, preset)
-                });
-                assert_tier_invariant(&format!("screen {w}x{h} q{qp} p{preset} bd8"), || {
-                    encode_8bit(&screen_plane, w, h, qp, preset)
-                });
-                assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd10"), || {
-                    encode_10bit(&gradient_plane, w, h, qp, preset)
-                });
-                assert_tier_invariant(&format!("screen {w}x{h} q{qp} p{preset} bd10"), || {
-                    encode_10bit(&screen_plane, w, h, qp, preset)
-                });
-            }
+fn tier_invariant_matrix_at(w: usize, h: usize, qp: u8) {
+    {
+        for &preset in &[0u8, 6, 7, 10] {
+            assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd8"), || {
+                encode_8bit(&gradient_plane, w, h, qp, preset)
+            });
+            assert_tier_invariant(&format!("screen {w}x{h} q{qp} p{preset} bd8"), || {
+                encode_8bit(&screen_plane, w, h, qp, preset)
+            });
+            assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd10"), || {
+                encode_10bit(&gradient_plane, w, h, qp, preset)
+            });
+            assert_tier_invariant(&format!("screen {w}x{h} q{qp} p{preset} bd10"), || {
+                encode_10bit(&screen_plane, w, h, qp, preset)
+            });
         }
     }
 }
 
+/// Sharded by geometry so the two sizes run concurrently under nextest; every
+/// (size, qp, preset, content, depth) cell and label is preserved exactly.
+#[test]
+fn encoder_output_is_tier_invariant_across_the_matrix_64x64_q20() {
+    tier_invariant_matrix_at(64, 64, 20);
+}
+
+#[test]
+fn encoder_output_is_tier_invariant_across_the_matrix_64x64_q55() {
+    tier_invariant_matrix_at(64, 64, 55);
+}
+
+#[test]
+fn encoder_output_is_tier_invariant_across_the_matrix_128x128_q20() {
+    tier_invariant_matrix_at(128, 128, 20);
+}
+
+#[test]
+fn encoder_output_is_tier_invariant_across_the_matrix_128x128_q55() {
+    tier_invariant_matrix_at(128, 128, 55);
+}
+
 /// Partial-superblock geometry: the edge rules run different code than the
 /// aligned path, and a tier bug there would be invisible to the cells above.
-#[test]
-fn partial_superblock_output_is_tier_invariant() {
-    // Presets 0..5 run the EDGE-AWARE PD1 REFINEMENT WALK on a partial SB — a
-    // path that did not exist until 2026-08-04 and had no tier coverage. It is
-    // also where a cross-host disagreement showed up: `gradient 96x80 q48 p0`
-    // byte-matches C on aarch64 and fails the same gate on the x86-64 runner.
-    // Either the port is tier-dependent there (a shipping bug) or C is (entry
-    // #9 of docs/SUSPECTED-C-BUGS.md), and only this gate can tell them apart
-    // without a machine of the other architecture.
-    for &(w, h) in &[
-        (96usize, 80usize),
-        (65, 65),
-        (120, 104),
-        (72, 88),
-        (104, 72),
-    ] {
-        for &preset in &[0u8, 1, 2, 3, 4, 5, 6, 7] {
-            for &qp in &[32u8, 48] {
-                assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd8"), || {
-                    encode_8bit(&gradient_plane, w, h, qp, preset)
-                });
-            }
-            // bd10 AT PARTIAL-SB GEOMETRY had no tier coverage until the
-            // 64-alignment refusal was lifted (2026-08-04) -- the configs
-            // simply could not run. It is also where three pinned cells
-            // disagree between the aarch64 dev host and the x86-64 runner, so
-            // this is the gate that says whether the port or C is the variable
-            // side. Without it, "C is ISA-dependent again" would be an
-            // assumption dressed as a conclusion.
-            for &qp in &[20u8, 32] {
-                assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd10"), || {
-                    encode_10bit(&gradient_plane, w, h, qp, preset)
-                });
-            }
+/// Presets 0..5 run the EDGE-AWARE PD1 REFINEMENT WALK on a partial SB — a
+/// path that did not exist until 2026-08-04 and had no tier coverage. It is
+/// also where a cross-host disagreement showed up: `gradient 96x80 q48 p0`
+/// byte-matches C on aarch64 and fails the same gate on the x86-64 runner.
+/// Either the port is tier-dependent there (a shipping bug) or C is (entry
+/// #9 of docs/SUSPECTED-C-BUGS.md), and only this gate can tell them apart
+/// without a machine of the other architecture.
+///
+/// SHARDED BY GEOMETRY, not reduced. The five sizes below were one `#[test]`
+/// running 5 x 8 presets x 4 (qp, depth) = 160 encodes serially, which made
+/// this single function the critical path of the whole workspace suite (30.9 s
+/// of a 31.4 s wall on 2026-09-09). nextest runs each `#[test]` in its own
+/// process, so splitting the outer loop lets the geometries run concurrently.
+/// Every (size, preset, qp, depth) cell and every label is preserved exactly —
+/// this is a scheduling change, not a coverage change.
+fn partial_sb_tier_invariant_at(w: usize, h: usize) {
+    for &preset in &[0u8, 1, 2, 3, 4, 5, 6, 7] {
+        for &qp in &[32u8, 48] {
+            assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd8"), || {
+                encode_8bit(&gradient_plane, w, h, qp, preset)
+            });
+        }
+        // bd10 AT PARTIAL-SB GEOMETRY had no tier coverage until the
+        // 64-alignment refusal was lifted (2026-08-04) -- the configs
+        // simply could not run. It is also where three pinned cells
+        // disagree between the aarch64 dev host and the x86-64 runner, so
+        // this is the gate that says whether the port or C is the variable
+        // side. Without it, "C is ISA-dependent again" would be an
+        // assumption dressed as a conclusion.
+        for &qp in &[20u8, 32] {
+            assert_tier_invariant(&format!("gradient {w}x{h} q{qp} p{preset} bd10"), || {
+                encode_10bit(&gradient_plane, w, h, qp, preset)
+            });
         }
     }
+}
+
+#[test]
+fn partial_superblock_output_is_tier_invariant_96x80() {
+    partial_sb_tier_invariant_at(96, 80);
+}
+
+#[test]
+fn partial_superblock_output_is_tier_invariant_65x65() {
+    partial_sb_tier_invariant_at(65, 65);
+}
+
+#[test]
+fn partial_superblock_output_is_tier_invariant_120x104() {
+    partial_sb_tier_invariant_at(120, 104);
+}
+
+#[test]
+fn partial_superblock_output_is_tier_invariant_72x88() {
+    partial_sb_tier_invariant_at(72, 88);
+}
+
+#[test]
+fn partial_superblock_output_is_tier_invariant_104x72() {
+    partial_sb_tier_invariant_at(104, 72);
 }
 
 /// The REAL screen corpus, because synthetic content cannot reach IntraBC.
