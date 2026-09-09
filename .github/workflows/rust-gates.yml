@@ -193,6 +193,19 @@ jobs:
         run: |
           cargo nextest run --workspace --no-fail-fast
           cargo test --workspace --doc
+          # CONTAINER/ALPHA FEATURES. Until 2026-09-09 no CI step anywhere enabled
+          # `avif-container` or `--all-features`, so the EIGHT avif::animation
+          # tests -- including the three-frame alpha-timing sequence, the
+          # monochrome decode and the native-10-bit colour+alpha reconstruction --
+          # had NEVER run in CI. They exist, they pass, and nothing was executing
+          # them. `fallible-alloc` rides along for the same reason (its two
+          # alloc-failure tests are also default-off).
+          #
+          # `symtrace` is deliberately NOT enabled here: it puts an unbuffered
+          # eprintln! on the arithmetic coder's per-symbol path and costs 17x for
+          # zero extra tests (measured: 287.4 s vs 16.7 s, identical test set).
+          cargo nextest run --workspace --no-fail-fast \
+            --features zenav1-svt/avif-container,zenav1-svt/fallible-alloc
 
       - name: Decode conformance — mono (aomdec + dav1d)
         if: matrix.shard == 2
@@ -650,6 +663,25 @@ jobs:
             LL_DIMS="64x64 96x80" \
             AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
             ./tools/lossless_gate.sh
+
+      - name: VIDEO-mode key-frame identity matrix (inter campaign scoreboard)
+        if: matrix.shard == 2
+        working-directory: rust
+        # tools/video_key_matrix.sh existed but was in NO CI step. It is the
+        # inter campaign's key-frame scoreboard: 60 cells, all IDENTICAL, 11.6 s
+        # measured on i265. Wiring it costs nothing and stops the video-mode
+        # key-frame envelope from regressing unobserved.
+        run: ./tools/video_key_matrix.sh
+
+      - name: global-motion derivation joined against C, per cell
+        if: matrix.shard == 4
+        working-directory: rust
+        # tools/gm_join_gate.sh was likewise unwired. It joins the port's
+        # frame-level GLOBAL-MOTION derivation (crate::port_global_me, which the
+        # nextest surface leaves at 49% coverage because the public pipeline
+        # refuses multi-frame) against C's, field for field. 18.2 s measured,
+        # 4 cells where the port actually ran C's search.
+        run: ./tools/gm_join_gate.sh
 
       - name: research preset -1 identity (8-bit AND 10-bit, partial-SB + screen)
         if: matrix.shard == 1
