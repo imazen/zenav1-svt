@@ -575,21 +575,28 @@ jobs:
         # 200x136 twins are local (`tools/lossless_gate.sh`, 144 cells,
         # benchmarks/lossless_gate_2026-08-28.md).
         #
-        # SCREEN CONTENT is a SECOND invocation with a narrower preset range,
-        # not an extra content in the first. Added 2026-09-03 with the lift of
-        # the blanket "QP 0 with screen-content tools" refusal: presets 6..13
-        # are byte-identical to C (48/48 locally over {screen, screenrep} x
-        # {64x64, 128x128, 96x80, 200x136}), preset 5 diverges on `screenrep`,
-        # and presets 0..4 PANIC in intrabc_hash at QP 0 — so the refusal
-        # survives below 6 and is pinned from the other side by
-        # `regression_spotcheck.sh`'s two `qp0-screen-refused-*` cells. Folding
-        # screen into the first run's preset ladder would just fail on the
-        # refused cells; asserting the refusal is the gate for those.
+        # SCREEN CONTENT used to need a SECOND invocation with a narrower
+        # preset range, because presets 0..4 panicked in intrabc_hash at QP 0
+        # and preset 5 diverged on `screenrep`. That was fixed on 2026-09-07 by
+        # 9a9c4d9aa ("enable lower-preset lossless screen content"), which also
+        # widened the script's own LL_CONTENTS default from
+        # "gradient diag uniform" to "gradient diag uniform screen screenrep".
+        # This workflow was last edited 2026-09-05, i.e. BEFORE that widening,
+        # so its second invocation had silently become a strict subset of the
+        # first: {screen,screenrep} x {6,7,8,9,10,13} x {64x64,96x80} = 24 cells
+        # all already covered by the first run's 5 x 12 x 2 = 120. Removed
+        # 2026-09-09 (24 duplicate cells, each a full C encode + port encode +
+        # aomdec decode).
+        #
+        # The grid is now PINNED here rather than inherited from the script's
+        # defaults, so a future change to those defaults cannot silently shrink
+        # CI coverage the way it silently widened it. The QP-0 screen refusal
+        # below preset 6 remains pinned from the other side by
+        # `regression_spotcheck.sh`'s two `qp0-screen-refused-*` cells.
         run: |
-          LL_DIMS="64x64 96x80" AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
-            ./tools/lossless_gate.sh
-          LL_CONTENTS="screen screenrep" LL_DIMS="64x64 96x80" \
-            LL_PRESETS="6 7 8 9 10 13" \
+          LL_CONTENTS="gradient diag uniform screen screenrep" \
+            LL_PRESETS="0 1 2 3 4 5 6 7 8 9 10 13" \
+            LL_DIMS="64x64 96x80" \
             AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
             ./tools/lossless_gate.sh
 

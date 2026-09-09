@@ -76,8 +76,24 @@ for content in "${CONTENTS[@]}"; do
   for sz in "${SIZES[@]}"; do
     for qp in "${QPS[@]}"; do
       for p in "${PRESETS[@]}"; do
+        # (3) anti-vacuity baseline: the same cell WITHOUT superres. This encode
+        # does NOT depend on $d, so it is hoisted out of the denominator loop --
+        # it was being recomputed once per denominator, i.e. 448 of 512 runs were
+        # identical repeats (measured 2026-09-09). Each cell below still compares
+        # against the very same bytes it would have recomputed; identity_run is
+        # deterministic and takes no denominator argument here.
+        ns_ok=1
+        if ! "$HERE/identity_run" "$content" "$sz" "$sz" "$qp" "$p" "$OUT/ns" \
+             >/dev/null 2>&1; then
+          ns_ok=0
+        fi
         for d in "${DENOMS[@]}"; do
           cell="${content}_${sz}_q${qp}_p${p}_d${d}"
+          if [ "$ns_ok" -eq 0 ]; then
+            # Fail every denominator of this tuple, exactly as the per-cell
+            # version did when its own ns encode failed.
+            fail=$((fail + 1)); failed+=("$cell[ns-err]"); continue
+          fi
           if ! SVTAV1_SUPERRES="$d" "$HERE/identity_run" \
                "$content" "$sz" "$sz" "$qp" "$p" "$OUT/rs" >/dev/null 2>&1; then
             fail=$((fail + 1)); failed+=("$cell[rs-err]"); continue
@@ -86,11 +102,6 @@ for content in "${CONTENTS[@]}"; do
                "$HERE/capture_c_trace/capture_c_trace" \
                "$sz" "$sz" "$qp" "$p" "$OUT/rs.yuv" "$OUT/c.obu" 8 >/dev/null 2>&1; then
             fail=$((fail + 1)); failed+=("$cell[c-err]"); continue
-          fi
-          # (3) anti-vacuity: the same cell WITHOUT superres.
-          if ! "$HERE/identity_run" "$content" "$sz" "$sz" "$qp" "$p" "$OUT/ns" \
-               >/dev/null 2>&1; then
-            fail=$((fail + 1)); failed+=("$cell[ns-err]"); continue
           fi
           if cmp -s "$OUT/rs.obu" "$OUT/ns.obu"; then
             vac+=("$cell")
