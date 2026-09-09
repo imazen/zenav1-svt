@@ -39,6 +39,37 @@ FRAMES=${IJG_FRAMES:-2}
 export CTRACE_WORK=${CTRACE_WORK:-$HOME/tmp/zenav1-ctrace}
 W=$CTRACE_WORK/ifs-join; mkdir -p "$W" "$OUT"
 TSV=$OUT/ifs_join.tsv
+# HOST DRIVER SELECTION — the same trap fctx_gate.sh documents and already fixed.
+#
+# This gate called tools/ctrace-linux/run.sh UNCONDITIONALLY. That script exists
+# only for hosts whose linker has no -Wl,--wrap (Apple ld64); it runs the trace
+# driver in a container. On THIS Linux host the native driver works, and going
+# through the container produced c_n=0 IFS records and non-inert C bytes, so all
+# 96 cells reported PROBE_NOT_INERT and the gate had never been wired into CI.
+#
+# MEASURED 2026-09-09: the native driver emits 7 IFS records for a 2-frame 16x16
+# inter cell where the container path emitted none.
+probe=$(mktemp -d)
+printf 'void __wrap_probe_fn(void){} int probe_fn(void); int main(void){return 0;}\n' \
+    >"$probe/p.c"
+if cc -o "$probe/p" "$probe/p.c" -Wl,--wrap=probe_fn >/dev/null 2>&1; then
+    HOST_WRAP=1
+else
+    HOST_WRAP=0
+fi
+rm -rf "$probe"
+if [[ $HOST_WRAP -eq 1 ]]; then
+    C_DRIVER="$HERE/capture_c_trace/capture_c_trace"
+else
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "ifs join gate: FAIL — this linker has no -Wl,--wrap and there is no" >&2
+        echo "               docker to run tools/ctrace-linux in. Harness failure," >&2
+        echo "               not a parity result." >&2
+        exit 2
+    fi
+    C_DRIVER="$HERE/ctrace-linux/run.sh"
+fi
+
 printf 'cell\tc_bytes_match\tc_n\tp_n\tjoined\tmismatch\tc_only\tp_only\tverdict\n' > "$TSV"
 fail=0; cells=0
 for c in $CONTENT; do for s in $SIZES; do for q in $QPS; do for p in $PRESETS; do
@@ -46,7 +77,7 @@ for c in $CONTENT; do for s in $SIZES; do for q in $QPS; do for p in $PRESETS; d
     SVTAV1_IFSDBG=1 SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="${IJG_SHIFT:-3}" "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$c" "$d" > "$d.report" 2>&1
     cp "$d/rs.yuv" "$W/$n.yuv"
     SVT_FRAMES=$FRAMES SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 SVT_IFS_OUT="$W/$n.ifs" \
-        "$HERE/ctrace-linux/run.sh" "$s" "$s" "$q" "$p" "$W/$n.yuv" "$W/$n.obu" 8 > "$W/$n.log" 2>&1
+        "$C_DRIVER" "$s" "$s" "$q" "$p" "$W/$n.yuv" "$W/$n.obu" 8 > "$W/$n.log" 2>&1
     match=$(cmp -s "$W/$n.obu" "$d/c.obu" && echo yes || echo NO)
     [ -f "$W/$n.ifs" ] || : > "$W/$n.ifs"
     line=$(python3 - "$d/rs.trace" "$W/$n.ifs" <<'PY'

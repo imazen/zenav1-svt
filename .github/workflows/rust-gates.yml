@@ -664,6 +664,21 @@ jobs:
             AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
             ./tools/lossless_gate.sh
 
+      - name: IFS join — the port MDS3 interpolation-filter search against C
+        if: matrix.shard == 5
+        working-directory: rust
+        # 96 cells, 26 s measured. This gate had never been wired because it
+        # failed 96/96 with PROBE_NOT_INERT: it called tools/ctrace-linux/run.sh
+        # unconditionally, and that script exists only for hosts whose linker has
+        # no -Wl,--wrap (Apple ld64). On a --wrap-capable host the container path
+        # emitted ZERO IFS records and non-inert C bytes. It now probes the linker
+        # and uses the native driver when it can, exactly as fctx_gate.sh does.
+        #
+        # Worth having: leaf_funnel/ifs.rs is 0% covered on the nextest surface,
+        # because interpolation-filter search is an INTER feature and the public
+        # pipeline refuses multi-frame. Only this gate reaches it.
+        run: ./tools/ifs_join_gate.sh
+
       - name: VIDEO-mode key-frame identity matrix (inter campaign scoreboard)
         if: matrix.shard == 2
         working-directory: rust
