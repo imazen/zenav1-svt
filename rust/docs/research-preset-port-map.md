@@ -9,7 +9,13 @@
 
 # Native research preset -1: live wiring audit
 
-Work in progress, 2026-09-08. Native -1 is not yet a verified parity mode.
+Work in progress. **Native -1 IS a verified parity mode as of 2026-09-09**, in a
+stated envelope: 88/88 byte-identical over both bit depths, four content classes
+and geometries including partial-superblock and odd (ceiling-chroma) dimensions
+([record](../benchmarks/research_matrix_2026-09-09.meta)), now gated by
+`tools/research_matrix.sh` in CI. That envelope is still/KEY, 4:2:0, SINGLE TILE,
+one x86-64 host — it says nothing about tiles (tile_gate.sh does not run -1), the
+HDR fork, or the Zen enhancements gated to preset == -1.
 The next effort region is the Zen-only AOM-technique continuation specified in
 [the encoder policy goal](../../ENCODER-POLICY-GOAL.md), after native -1 works.
 

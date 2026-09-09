@@ -834,13 +834,12 @@ impl EncodePipeline {
         // panics HERE instead of silently receiving a qp-30 stream. That is the
         // intended trade — a panic is loud, a mixed-qp bitstream is not — but the
         // message must say so rather than claim infallibility.
-        self.encode_frame_mono_core(y_plane, y_stride)
-            .expect(
-                "encode_frame is infallible on the default/trusted path; an \
+        self.encode_frame_mono_core(y_plane, y_stride).expect(
+            "encode_frame is infallible on the default/trusted path; an \
                  UnsupportedConfig here means the pipeline was built with a \
                  configuration this port refuses (e.g. RcMode::Vbr/Cbr, issue \
                  #22) — use try_encode_frame to handle it as an error",
-            )
+        )
     }
 
     /// Fallible core of the MONOCHROME path: the same TRUE -> ALIGNED edge
@@ -915,13 +914,12 @@ impl EncodePipeline {
         // unchanged. "Trusted path" EXCLUDES an unsupported configuration — see
         // the note on `encode_frame`; since issue #22 a `RcMode::Vbr`/`Cbr`
         // pipeline panics here rather than emitting a qp-30 stream.
-        self.encode_frame_420_core(y, u, v, y_stride)
-            .expect(
-                "encode_frame_420 is infallible on the default/trusted path; an \
+        self.encode_frame_420_core(y, u, v, y_stride).expect(
+            "encode_frame_420 is infallible on the default/trusted path; an \
                  UnsupportedConfig here means the pipeline was built with a \
                  configuration this port refuses (e.g. RcMode::Vbr/Cbr, issue \
                  #22) — use try_encode_frame_420 to handle it as an error",
-            )
+        )
     }
 
     fn film_grain_seed(&self) -> u16 {

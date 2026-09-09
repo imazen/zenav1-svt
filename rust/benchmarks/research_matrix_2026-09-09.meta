@@ -1,0 +1,35 @@
+# FIRST byte-identity measurement of C's RESEARCH preset -1 across a grid.
+#
+# Before this, -1 had NO parity gate anywhere: grepping .github/workflows/rust-gates.yml
+# for 'research' or 'preset -1' returned zero hits, identity_full_8bit.sh and
+# bd10_matrix.sh never emit -1, and the only coverage was 7 cells in
+# regression_spotcheck.sh. docs/research-preset-port-map.md stated outright that
+# "-1 is not yet a verified parity mode". It now is, in this envelope.
+#
+commit = 6b81b380906e5321666f4f3cd830fbb93ed2d3ad
+host   = i265 (Core Ultra 7 265K, 20 threads, 30 GiB, x86_64 Linux)
+date   = 2026-09-09
+oracle = C reference, static build, SVT_HDR_MODE=OFF, submodule 3115c0c1b
+tool   = tools/identity_diff.sh per cell (both encoders consume one shared .yuv)
+
+RESULT: 88 / 88 byte-identical, in two runs.
+
+  run A (24 cells): contents {uniform, gradient} x dims {64x64, 96x96}
+                    x cli_qp {20, 40, 55} x bit depth {8, 10}      -> 24/24
+  run B (64 cells): contents {uniform, gradient, diag, screen}
+                    x dims {65x67, 120x104, 128x128, 200x136}
+                    x cli_qp {20, 55} x bit depth {8, 10}          -> 64/64
+
+Run B is the interesting half: 65x67 and 120x104 are partial-superblock and odd
+(ceiling-chroma) geometries, and it includes screen content, so -1 is byte-exact
+through the research-mode partition/transform paths at boundaries, not just on
+aligned synthetic frames.
+
+COMMITTED GATE: tools/research_matrix.sh, wired into CI shard 1. Its default grid
+is run B's 64 cells and takes 34 s measured (run-heavy --mem 16G --jobs 8), which
+is negligible against the 5-shard ~12 min CI wall.
+
+SCOPE, so this is not over-read: still/KEY frames, 4:2:0, SINGLE TILE, one x86-64
+host. Tile settings are NOT swept -- tile_gate.sh owns that axis and does not run
+-1; extending it to -1 is follow-up work. Says nothing about HDR-fork mode or the
+Zen enhancements that are gated to preset == -1.

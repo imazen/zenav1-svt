@@ -651,6 +651,23 @@ jobs:
             AOMDEC="$GITHUB_WORKSPACE/aom-build/aomdec" \
             ./tools/lossless_gate.sh
 
+      - name: research preset -1 identity (8-bit AND 10-bit, partial-SB + screen)
+        if: matrix.shard == 1
+        working-directory: rust
+        # ENCODER-POLICY-GOAL.md section 3 requires proving -1 parity across
+        # quality levels, content classes, native 8/10-bit input and boundaries,
+        # and completion gate 2 requires research behaviour to have ENABLED-feature
+        # tests. Until 2026-09-09 no such gate existed anywhere: grepping this file
+        # for 'research' or 'preset -1' returned ZERO hits, identity_full_8bit.sh
+        # and bd10_matrix.sh never emit -1, and the only -1 coverage was 7 cells in
+        # regression_spotcheck.sh while docs/research-preset-port-map.md said "-1 is
+        # not yet a verified parity mode".
+        #
+        # First measurement: 88/88 byte-identical across a wider grid than this one
+        # (benchmarks/research_matrix_2026-09-09.meta). The committed default grid
+        # is 64 cells and takes 34 s measured on i265, so it is nearly free here.
+        run: ./tools/research_matrix.sh
+
       - name: superres identity + conformance (chunk B.3)
         if: matrix.shard == 3
         working-directory: rust
