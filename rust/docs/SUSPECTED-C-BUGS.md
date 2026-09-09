@@ -21,6 +21,12 @@ intentional behaviour. Kept separate from the port maps for one reason:
 Every entry states: the C site, why it looks wrong, whether it is
 **reachable** in the still-image/AVIF envelope, and what the port does about it.
 
+> **Not the same as a fidelity cost.** This file is for C behaviour that looks
+> like a DEFECT. C behaviour that is correct but *suboptimal* — an RD decision
+> that costs bytes, a redundant search, a skewed rate model — which we reproduce
+> byte-exactly anyway, belongs in [PARITY-FIDELITY-COSTS.md](PARITY-FIDELITY-COSTS.md).
+> That file is the post-parity revisit list; this one is the WTF list.
+
 **Status vocabulary**
 - `REPRODUCED` — the port copies the behaviour bug-for-bug on purpose.
 - `UNREACHABLE` — real in C, but no config this port accepts can reach it.

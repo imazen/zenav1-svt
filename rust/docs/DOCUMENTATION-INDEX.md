@@ -293,6 +293,7 @@ The C submodule owns its own upstream documentation and is outside this cleanup.
 | [rust/docs/STILL-PERF-2026-09-06-history-2.md](STILL-PERF-2026-09-06-history-2.md) | Historical reference |
 | [rust/docs/STILL-PERF-2026-09-06-history-3.md](STILL-PERF-2026-09-06-history-3.md) | Historical reference |
 | [rust/docs/STILL-PERF-2026-09-06.md](STILL-PERF-2026-09-06.md) | Historical reference |
+| [rust/docs/PARITY-FIDELITY-COSTS.md](PARITY-FIDELITY-COSTS.md) | Current |
 | [rust/docs/SUSPECTED-C-BUGS.md](SUSPECTED-C-BUGS.md) | Historical reference |
 | [rust/docs/UNWIRED-PORTED-CODE-2026-09-04-dsp-types-cref.md](UNWIRED-PORTED-CODE-2026-09-04-dsp-types-cref.md) | Historical reference |
 | [rust/docs/UNWIRED-PORTED-CODE-2026-09-04.md](UNWIRED-PORTED-CODE-2026-09-04.md) | Historical reference |
