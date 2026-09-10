@@ -25,6 +25,94 @@ sources can be fetched rather than declared missing. Size heavy jobs there
 file handle" — mounted but dead. Anything treating Tower as the durable mirror is
 silently writing nowhere. Remount before relying on it as a backup target.
 
+## STATE AS OF 2026-09-10 — read this section first
+
+Everything below this block predates 2026-09-10 unless it says otherwise. This
+session's work is on `main@origin`; the per-item records are in
+`rust/benchmarks/*_2026-09-10.meta`, which are the primary sources — this is a
+summary, not a substitute.
+
+### Video encodes and reconstructs correctly
+
+Multi-frame video was refused past frame 1 and is now measurable and correct.
+**17 of 18 cells** (six public-domain clips x qp {20,40,55}, 8 frames) have the
+encoder's reconstruction byte-identical to `aomdec` on every frame; cross-checked
+on `dav1d`. Five additional content classes (portrait camera, landscape camera,
+screen content *in motion*, 200x120 non-64-aligned, 576x448 past R360p) are also
+clean.
+
+Three defects were found and fixed, each with its own meta file:
+
+1. `deblock_skipinter_txsize_2026-09-10.meta` — a SKIP inter block's deblock
+   transform size is the block MAX, not its searched `tx_depth`. C reads the
+   var-tx grid only for `is_inter && !skip`.
+2. `chroma_subpel_inter_2026-09-10.meta` — the interpolation-filter search
+   signalled a filter pair it never used for CHROMA, because it rebuilt only
+   when luma was invalidated and the search predicts luma only.
+3. `mfmv_sq_geom_fix_2026-09-10.meta` — **the big one.**
+   `ctx->sb64_sq_no4xn_geom` was gated on `sb_size == 64` alone, though its name
+   states three conditions (64x64 SB, SQUARE, no 4xN). The simplified MFMV walk
+   it selects uses the WIDTH as the row bound, so a 16x32 block scanned four
+   rows instead of eight and missed half its temporal candidates.
+   NEARESTMV/NEARMV derive their MV from that stack, so encoder and decoder
+   chose different motion vectors.
+
+**Two experiment flags exist and are diagnostics, never features:**
+`SVTAV1_INTER_CHAIN_EXPERIMENTAL` lifts the byte-parity refusal on an inter
+frame whose LIST-0 reference is itself inter (everything past frame 1);
+`SVTAV1_MFMV_OFF` builds the ref-MV stack spatially and signals
+`use_ref_frame_mvs = 0` to match. A run with either set is NOT byte-comparable
+with C.
+
+### Still open, and correctly labelled
+
+- **vidyo1 at qp20 fails to decode from f4.** It failed with MFMV off too, so it
+  is NOT the MFMV defect and never was. Only failing cell of eighteen.
+- **10-bit VIDEO is refused** by the encoder: "chroma_420 pipeline supports
+  still/key frames only". Honest capability gap; the harness now lets the
+  encoder answer instead of asserting first.
+- **Hierarchical (random-access) GOP is refused** — it used to PANIC. See
+  `video_coverage_2026-09-10.meta`.
+
+### The "unwired ported modules" question is settled — see the audit
+
+`unwired_modules_audit_2026-09-10.meta` is the answer, and it matters because
+"wire them up" is the obvious wrong move. Only `tx_gates` was a real wiring gap
+(duplicate of live inline code; now wired, byte-neutral). The rest are blocked
+UNDERNEATH:
+
+- `ssim_hbd` needs high-bit-depth mode decision. `hbd_md` is hardcoded
+  `false`/`0` at every site — MD always runs 8-bit, 10-bit is a post-pass.
+- `mv_refine`, `motion_mode` need OBMC / warped motion. No such candidate is
+  ever injected; `warped_motion_mode_allowed` is a tested predicate with no
+  producer.
+- `md_stages` is an alternative driver for the MD loop the leaf funnel already
+  runs byte-identically.
+
+If C selected these tools in the tested envelope the bytes would already differ,
+and they do not — so this is RD in a wider envelope, not correctness here.
+
+### Performance
+
+`sad_narrow_pack_2026-09-10.meta`: **-19.8 %** on the worst cell
+(gb82-sc/windows.png 512x320 qp20 preset -1), byte-identical. Found by profiling
+C on the SAME cell first — its whole SAD family is ~0.48 s against the port's
+~3.7 s, so the 53 %-of-profile symbol was genuinely slow rather than a
+denominator artifact. C's kernel NAMES gave the fix: every top kernel is width
+4/8/16, and the port had one generic kernel doing 4-byte SIMD ops.
+
+**The first attempt was 2.3x SLOWER** (staging rows through a `[u8;16]` buffer);
+only direct loads into `_mm_setr_epi32` / `_mm256_setr_epi64x` win. Measure with
+rotated interleaved arms and a same-binary null, and sha256 every arm.
+
+### Test infrastructure — 162 files were silently disabled
+
+Three crates set `autotests = false` and hand-list `[[test]]` targets; the lists
+had fallen far behind. **162 integration-test files existed, compiled, and had
+never run**, including most `c_parity_*` differentials. All are declared now and
+all pass (dsp 828, encoder 2551, facade 187). A test that cannot run is
+indistinguishable from a test that passes.
+
 ## Verified source and ownership
 
 | Repository | Remote main/master observed 2026-09-09 | What that establishes |
