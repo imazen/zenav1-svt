@@ -110,6 +110,8 @@ std::thread_local! {
         const { core::cell::RefCell::new([const { Vec::new() }; CLASS_COUNT]) };
     static U16_POOL: core::cell::RefCell<[Vec<Vec<u16>>; CLASS_COUNT]> =
         const { core::cell::RefCell::new([const { Vec::new() }; CLASS_COUNT]) };
+    static I16_POOL: core::cell::RefCell<[Vec<Vec<i16>>; CLASS_COUNT]> =
+        const { core::cell::RefCell::new([const { Vec::new() }; CLASS_COUNT]) };
 }
 
 /// An element type that has a per-thread free list.
@@ -184,6 +186,7 @@ macro_rules! impl_pooled {
 impl_pooled!(i32, I32_POOL);
 impl_pooled!(u8, U8_POOL);
 impl_pooled!(u16, U16_POOL);
+impl_pooled!(i16, I16_POOL);
 
 /// A `Vec<T>` that comes from, and returns to, its thread's free list.
 ///
@@ -289,7 +292,44 @@ impl<T: Pooled> Drop for PoolVec<T> {
     }
 }
 
+/// A pooled buffer of length `n` whose CONTENTS ARE UNSPECIFIED.
+///
+/// For a buffer whose very next statement is a PREDICTOR that writes every
+/// position — `predict_unit`, `predict_unit_hbd`, `predict_intrabc_luma`, the
+/// palette substitution loop. Those all define the whole `w * h` block, so the
+/// zero fill is dead work.
+///
+/// It is worth its own function because the zero fill is NOT free once the
+/// buffer is pooled: `vec![0; n]` reaches `calloc`, and glibc skips the
+/// `memset` for a chunk carved from fresh kernel-zeroed pages, while a
+/// recycled buffer always pays it. MEASURED: `__memset_avx2_unaligned_erms`
+/// went from 2.96 % to 3.35 % of 512x512 preset-10 self time when these sites
+/// moved to `zeroed_pool`.
+///
+/// SAFE, not merely fast: the length is real and every position is
+/// initialised memory. The claim being made is about MEANING, not soundness —
+/// reading one before the predictor writes it would give a stale sample rather
+/// than undefined behaviour. VALIDATED the way `tx_pipeline::grown_out`
+/// validates its own version of this claim: filling with 0x5A instead,
+/// unconditionally in a release build, left identity_full_8bit at 1100/1100,
+/// regression_spotcheck at 141/141, the screen palette gate at 50/50 and
+/// screen_ibc_byte_gate at 152/152 — nothing reads an unwritten position.
+pub(crate) fn dirty_pool<T: Pooled>(n: usize) -> PoolVec<T> {
+    let mut v = PoolVec::recycled_dirty(n);
+    if v.len() < n {
+        v.resize(n, T::default());
+    } else {
+        v.truncate(n);
+    }
+    v
+}
+
 /// A pooled buffer of `n` zeros — the pooled `vec![T::default(); n]`.
+///
+/// MEASURED NEUTRAL: marking this and the free-list primitives `#[inline]`
+/// moved 512x512 preset 10 from 490,229,561 to 490,393,427 instructions, i.e.
+/// inside the run-to-run spread — LLVM was already inlining them. The
+/// attributes are left OFF rather than kept as an unmeasured hint.
 pub(crate) fn zeroed_pool<T: Pooled>(n: usize) -> PoolVec<T> {
     let mut v = PoolVec::pooled(n);
     v.resize(n, T::default());

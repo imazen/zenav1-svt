@@ -19,7 +19,7 @@
 //! moved code needed no edits.
 
 use super::*;
-use crate::vecpool::zeroed_pool;
+use crate::vecpool::{dirty_pool, zeroed_pool};
 
 /// Run the independent-chroma search (when C would) and then the MDS3 full
 /// loop over `order1[..n3]`, writing each candidate's `mds3_cost` and winner
@@ -700,6 +700,12 @@ fn eval_candidate(
         let loc_left = &mut sc.loc_left;
         let mut dep_bits: u64 = 0;
         let mut dep_dist: u64 = 0;
+        // MEASURED NOT worth hoisting out of the depth loop. Doing that, with
+        // `best_txb_q.clear(); best_txb_q.extend(dep_q.drain(..))` on a new
+        // best, moved the allocation rather than removing it -- `best_txb_q`
+        // starts empty per candidate, so the `extend` allocates exactly where
+        // the move below did not. 1,311,342 -> 1,344,182 on the canonical alloc
+        // cell. The MOVE is already the cheap form.
         let mut dep_q: Vec<crate::vecpool::PoolVec<i32>> = Vec::with_capacity(txbs);
         let mut dep_eob: smallvec::SmallVec<[u16; 16]> = smallvec::SmallVec::with_capacity(txbs);
         let mut dep_cul: smallvec::SmallVec<[u8; 16]> = smallvec::SmallVec::with_capacity(txbs);
@@ -1225,8 +1231,8 @@ fn eval_candidate(
         // luma winner's txb-0 type when the chroma ext set allows it,
         // else DCT (tx_type_search, product_coding_loop.c:5087-5096).
         // No CfL, no ind-uv, no detector (all intra-only).
-        let mut u_pred = zeroed_pool::<u8>(cw * chh);
-        let mut v_pred = zeroed_pool::<u8>(cw * chh);
+        let mut u_pred = dirty_pool::<u8>(cw * chh);
+        let mut v_pred = dirty_pool::<u8>(cw * chh);
         let frame_ch = frame.frame_h_px / 2;
         crate::intrabc_pred::predict_intrabc_chroma(
             fx.u_recon,
@@ -1376,8 +1382,8 @@ fn eval_candidate(
         // COMPONENT_CHROMA iff the SAD arm (cb/cr pred SAD > 2x luma
         // pred SAD) OR the variance arm (per-pixel source variance >
         // cplx_th) fires. Uses the candidate's uv PREDICTION.
-        let mut u_pred = zeroed_pool::<u8>(cw * chh);
-        let mut v_pred = zeroed_pool::<u8>(cw * chh);
+        let mut u_pred = dirty_pool::<u8>(cw * chh);
+        let mut v_pred = dirty_pool::<u8>(cw * chh);
         predict_unit(
             fx.u_recon,
             fx.c_stride,
@@ -1644,7 +1650,11 @@ fn eval_candidate(
             );
             // compute_cfl_ac_components: subsample the winning luma recon
             // (whole block, origin 0) and subtract its DC.
-            let mut pred_buf_q3 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
+            // Pooled: the CfL scratch is rebuilt for every candidate that
+            // reaches the CfL arm -- 43,214 allocating calls on the canonical
+            // alloc cell, with the DC pair below another 86,428.
+            let mut pred_buf_q3 =
+                zeroed_pool::<i16>(svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1));
             cfl_ac_subsample(
                 y_recon,
                 y_stride,
@@ -1658,8 +1668,8 @@ fn eval_candidate(
             svtav1_dsp::intra_pred::cfl_subtract_average(&mut pred_buf_q3, cw, chh);
             // CfL base is the DC chroma prediction (C regenerates it when
             // the non-CFL uv mode != DC).
-            let mut u_dc = vec![0u8; cw * chh];
-            let mut v_dc = vec![0u8; cw * chh];
+            let mut u_dc = dirty_pool::<u8>(cw * chh);
+            let mut v_dc = dirty_pool::<u8>(cw * chh);
             predict_unit(
                 fx.u_recon,
                 fx.c_stride,
@@ -1695,44 +1705,46 @@ fn eval_candidate(
             // `hbd_md != 0`) and the 10-bit DC chroma base. Hoisted out of
             // the compare below because the chosen-alpha chroma TX needs
             // them again once CfL wins.
-            let cfl10: Option<(Vec<i16>, Vec<u16>, Vec<u16>)> = bd10_rd.as_ref().map(|b| {
-                let mut ac10 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
-                cfl_ac_subsample_hbd(
-                    fx.y_recon10.as_deref().unwrap(),
-                    y_stride,
-                    &best_recon10,
-                    abs_x,
-                    abs_y,
-                    w,
-                    h,
-                    &mut ac10,
-                );
-                svtav1_dsp::intra_pred::cfl_subtract_average(&mut ac10, cw, chh);
-                let mut u_dc10 = vec![0u16; cw * chh];
-                let mut v_dc10 = vec![0u16; cw * chh];
-                for (plane_recon, dst) in [
-                    (fx.u_recon10.as_deref().unwrap(), &mut u_dc10),
-                    (fx.v_recon10.as_deref().unwrap(), &mut v_dc10),
-                ] {
-                    predict_unit_hbd(
-                        plane_recon,
-                        fx.c_stride,
-                        ccx,
-                        ccy,
-                        cw,
-                        chh,
-                        0, // UV_DC_PRED — CfL's base
-                        0,
-                        FI_NONE,
-                        &uv_geom,
-                        cfg.edge_filter,
-                        filt_type_uv,
-                        dst,
-                        b.bd,
+            let cfl10: Option<(crate::vecpool::PoolVec<i16>, Vec<u16>, Vec<u16>)> =
+                bd10_rd.as_ref().map(|b| {
+                    let mut ac10 =
+                        zeroed_pool::<i16>(svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1));
+                    cfl_ac_subsample_hbd(
+                        fx.y_recon10.as_deref().unwrap(),
+                        y_stride,
+                        &best_recon10,
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        &mut ac10,
                     );
-                }
-                (ac10, u_dc10, v_dc10)
-            });
+                    svtav1_dsp::intra_pred::cfl_subtract_average(&mut ac10, cw, chh);
+                    let mut u_dc10 = vec![0u16; cw * chh];
+                    let mut v_dc10 = vec![0u16; cw * chh];
+                    for (plane_recon, dst) in [
+                        (fx.u_recon10.as_deref().unwrap(), &mut u_dc10),
+                        (fx.v_recon10.as_deref().unwrap(), &mut v_dc10),
+                    ] {
+                        predict_unit_hbd(
+                            plane_recon,
+                            fx.c_stride,
+                            ccx,
+                            ccy,
+                            cw,
+                            chh,
+                            0, // UV_DC_PRED — CfL's base
+                            0,
+                            FI_NONE,
+                            &uv_geom,
+                            cfg.edge_filter,
+                            filt_type_uv,
+                            dst,
+                            b.bd,
+                        );
+                    }
+                    (ac10, u_dc10, v_dc10)
+                });
             // SVTAV1_UVDC: the bd10 CfL DC base, one line per (block,
             // candidate). Mirrors the C `--wrap svt_aom_full_loop_uv`
             // `pu=/pv=` readout (cand_bf->pred origin at the CfL-search
@@ -1926,8 +1938,8 @@ fn eval_candidate(
                 // for the full TX path, and swap in the CFL mode + rate.
                 let alpha_cb = cfl_idx_to_alpha(cfl_idx, cfl_signs, 0);
                 let alpha_cr = cfl_idx_to_alpha(cfl_idx, cfl_signs, 1);
-                let mut u_cfl = vec![0u8; cw * chh];
-                let mut v_cfl = vec![0u8; cw * chh];
+                let mut u_cfl = zeroed_pool::<u8>(cw * chh);
+                let mut v_cfl = zeroed_pool::<u8>(cw * chh);
                 svtav1_dsp::intra_pred::cfl_predict_lbd(
                     &pred_buf_q3,
                     &u_dc,
@@ -2140,7 +2152,8 @@ fn eval_candidate(
             // recon; the DC chroma base. Shared by both depths — at bd10
             // the u8 chroma canvas still follows the CfL decision (carried
             // for the pre-filter searches), so it is rebuilt from these.
-            let mut pred_buf_q3 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
+            let mut pred_buf_q3 =
+                zeroed_pool::<i16>(svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1));
             cfl_ac_subsample(
                 y_recon,
                 y_stride,
@@ -2154,8 +2167,8 @@ fn eval_candidate(
             svtav1_dsp::intra_pred::cfl_subtract_average(&mut pred_buf_q3, cw, chh);
             // CfL base is the DC chroma prediction (C regenerates DC pred
             // when the non-CFL uv mode != DC — we always compute it fresh).
-            let mut u_dc = vec![0u8; cw * chh];
-            let mut v_dc = vec![0u8; cw * chh];
+            let mut u_dc = dirty_pool::<u8>(cw * chh);
+            let mut v_dc = dirty_pool::<u8>(cw * chh);
             predict_unit(
                 fx.u_recon,
                 fx.c_stride,
@@ -2264,8 +2277,8 @@ fn eval_candidate(
                         // MDS3 SPATIAL domain + the accurate CfL uv fast rate.
                         let alpha_cb = cfl_idx_to_alpha(cfl_idx, cfl_signs, 0);
                         let alpha_cr = cfl_idx_to_alpha(cfl_idx, cfl_signs, 1);
-                        let mut u_cfl = vec![0u8; cw * chh];
-                        let mut v_cfl = vec![0u8; cw * chh];
+                        let mut u_cfl = zeroed_pool::<u8>(cw * chh);
+                        let mut v_cfl = zeroed_pool::<u8>(cw * chh);
                         svtav1_dsp::intra_pred::cfl_predict_lbd(
                             &pred_buf_q3,
                             &u_dc,
@@ -2454,7 +2467,8 @@ fn eval_candidate(
                     };
                     // compute_cfl_ac_components at hbd: AC from the winning
                     // 10-bit luma recon + the 10-bit DC chroma base.
-                    let mut ac10 = vec![0i16; svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1)];
+                    let mut ac10 =
+                        zeroed_pool::<i16>(svtav1_dsp::intra_pred::CFL_BUF_LINE * chh.max(1));
                     cfl_ac_subsample_hbd(
                         fx.y_recon10.as_deref().unwrap(),
                         y_stride,
@@ -2673,8 +2687,8 @@ fn eval_candidate(
                         if !(best_uv_adj < cfl_uv_cost) {
                             // u8 chroma canvas follows the decision (the
                             // pre-filter searches read it at bd10).
-                            let mut u_cfl = vec![0u8; cw * chh];
-                            let mut v_cfl = vec![0u8; cw * chh];
+                            let mut u_cfl = zeroed_pool::<u8>(cw * chh);
+                            let mut v_cfl = zeroed_pool::<u8>(cw * chh);
                             svtav1_dsp::intra_pred::cfl_predict_lbd(
                                 &pred_buf_q3,
                                 &u_dc,

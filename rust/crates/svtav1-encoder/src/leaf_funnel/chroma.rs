@@ -79,8 +79,8 @@ pub(super) fn eval_uv(
     let (cw, chh, ccx, ccy) = (cx.cw, cx.chh, cx.ccx, cx.ccy);
     // Pooled: `eval_uv` runs per UV candidate per leaf, 548,918 allocating
     // calls on the canonical alloc cell.
-    let mut u_pred = crate::vecpool::zeroed_pool::<u8>(cw * chh);
-    let mut v_pred = crate::vecpool::zeroed_pool::<u8>(cw * chh);
+    let mut u_pred = crate::vecpool::dirty_pool::<u8>(cw * chh);
+    let mut v_pred = crate::vecpool::dirty_pool::<u8>(cw * chh);
     predict_unit(
         fx.u_recon,
         fx.c_stride,

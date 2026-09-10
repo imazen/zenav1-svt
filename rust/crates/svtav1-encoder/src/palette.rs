@@ -192,22 +192,45 @@ pub fn delta_encode_steps(
     bit_depth: u32,
     min_val: u32,
 ) -> alloc::vec::Vec<DeltaEncodeStep> {
-    let mut steps = alloc::vec::Vec::new();
+    // `num + 1` is the exact count the walk emits for `num >= 2` (the first
+    // literal, the bits-per-delta marker, then one per delta), so this
+    // allocates ONCE instead of growing.
+    let mut steps = alloc::vec::Vec::with_capacity(colors.len() + 1);
+    delta_encode_walk(colors, bit_depth, min_val, |s| steps.push(s));
+    steps
+}
+
+/// The one body [`delta_encode_steps`] and [`delta_encode_bits`] share.
+///
+/// It exists so the COST estimate does not have to materialise the step list:
+/// `delta_encode_bits` is called per palette candidate per block and was
+/// 44,568 allocating calls on the canonical alloc cell purely to sum a field.
+/// Keeping one body is also what stops the estimate drifting from the writer,
+/// which is the reason `delta_encode_bits` called `delta_encode_steps` to
+/// begin with.
+fn delta_encode_walk(
+    colors: &[u16],
+    bit_depth: u32,
+    min_val: u32,
+    mut emit: impl FnMut(DeltaEncodeStep),
+) {
     let num = colors.len();
     if num == 0 {
-        return steps;
+        return;
     }
-    steps.push(DeltaEncodeStep {
+    emit(DeltaEncodeStep {
         value: colors[0] as u32,
         bits: bit_depth,
     });
     if num == 1 {
-        return steps;
+        return;
     }
     let min_val = min_val as i32;
     let min_bits = bit_depth as i32 - 3;
     let mut max_delta = 0i32;
-    let mut deltas = alloc::vec::Vec::with_capacity(num - 1);
+    // A palette holds at most `PALETTE_MAX_SIZE` = 8 colours, so this never
+    // spills to the heap.
+    let mut deltas: smallvec::SmallVec<[i32; 8]> = smallvec::SmallVec::new();
     for i in 1..num {
         let delta = colors[i] as i32 - colors[i - 1] as i32;
         debug_assert!(
@@ -219,20 +242,19 @@ pub fn delta_encode_steps(
     }
     let mut bits_per_delta = ceil_log2(max_delta + 1 - min_val).max(min_bits);
     debug_assert!(bits_per_delta <= bit_depth as i32);
-    steps.push(DeltaEncodeStep {
+    emit(DeltaEncodeStep {
         value: (bits_per_delta - min_bits) as u32,
         bits: 2,
     });
     let mut range = (1i32 << bit_depth) - colors[0] as i32 - min_val;
     for delta in deltas {
-        steps.push(DeltaEncodeStep {
+        emit(DeltaEncodeStep {
             value: (delta - min_val) as u32,
             bits: bits_per_delta as u32,
         });
         range -= delta;
         bits_per_delta = bits_per_delta.min(ceil_log2(range));
     }
-    steps
 }
 
 /// C `delta_encode_cost` (palette.c:80-109): total bit count to
@@ -242,10 +264,9 @@ pub fn delta_encode_steps(
 // PORT-NOTE(unverified): see delta_encode_steps above — same static-C
 // caveat applies (this is a thin sum over the same steps).
 pub fn delta_encode_bits(colors: &[u16], bit_depth: u32, min_val: u32) -> u32 {
-    delta_encode_steps(colors, bit_depth, min_val)
-        .iter()
-        .map(|s| s.bits)
-        .sum()
+    let mut total = 0u32;
+    delta_encode_walk(colors, bit_depth, min_val, |s| total += s.bits);
+    total
 }
 
 /// C `DIVIDE_AND_ROUND` (utility.h:96): `(x + (y >> 1)) / y`, round-half-up
@@ -854,7 +875,8 @@ fn cache_based_centroid_refinement(
         sse
     };
     let baseline_sse = sse_of(centroids, color_idx_map);
-    let mut temp_map = alloc::vec![0u8; total];
+    // Pooled: this scratch is rebuilt for every centroid refinement pass.
+    let mut temp_map = crate::vecpool::zeroed_pool::<u8>(total);
 
     for c in 0..n {
         let original = centroids[c];
@@ -1028,7 +1050,8 @@ pub fn search_palette_luma_hbd(
     }
     // C's `count_buf` is `int[1 << 12]` (palette.c:405) — sized for the widest
     // depth, indexed to `1 << bit_depth`.
-    let mut count_buf = alloc::vec![0i32; 1usize << 12];
+    // Pooled: 16 KiB per call, once per palette search per block.
+    let mut count_buf = crate::vecpool::zeroed_pool::<i32>(1usize << 12);
     let colors = count_colors_highbd(src, stride, rows, cols, bit_depth, &mut count_buf) as usize;
     search_palette_core(
         |r, c| i32::from(src[r * stride + c]),
@@ -1075,7 +1098,7 @@ fn search_palette_core(
     // data[] + lb/ub (palette.c:421-439). C seeds lb=ub=src[0] BEFORE the
     // loop; the loop then min/maxes every pixel including [0] — plain
     // min/max over the block.
-    let mut data = alloc::vec![0i32; rows * cols];
+    let mut data = crate::vecpool::zeroed_pool::<i32>(rows * cols);
     let mut lb = read(0, 0);
     let mut ub = lb;
     for r in 0..rows {
@@ -1134,7 +1157,7 @@ fn search_palette_core(
 
     // B) K-means candidates (palette.c:480-529).
     if ctrls.kmean_color_step != 0xFF {
-        let mut indices = alloc::vec![0u8; rows * cols];
+        let mut indices = crate::vecpool::zeroed_pool::<u8>(rows * cols);
         let mut n = max_n as i32;
         while n >= min_n as i32 {
             let nn = n as usize;

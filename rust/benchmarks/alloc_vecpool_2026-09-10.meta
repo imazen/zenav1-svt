@@ -44,6 +44,9 @@ allocation result, so the hash is printed by the harness on every run.
     + SIZE-CLASSED free lists                  2,191,999        -68.0 %     25.57 M
     + byte-budgeted per-class depth            1,696,200        -75.2 %     25.95 M
     + the last chroma/palette scratch          1,527,403        -77.7 %     25.95 M
+    + the CfL scratch (all six sites)          1,311,342        -80.9 %     25.95 M
+    + palette delta-cost, walked not built     1,184,307        -82.7 %     25.95 M
+    + the palette search scratch               1,172,553        -82.9 %     25.97 M
     ------------------------------------------------------------------------------
     C reference                                  466,395                    69.43 M
 
@@ -137,6 +140,32 @@ instruction count above.
   measured too, in case their `resize` memset was the cost: 489,304,613 vs
   488,528,562 on 512x512 preset 10, i.e. pooling them is slightly BETTER. The
   residual cost is the tx-pipeline bookkeeping, not the zero fill.
+
+## THE ZERO FILL IS NOT FREE ONCE THE BUFFER IS POOLED
+
+`vec![0; n]` reaches `calloc`, and glibc SKIPS the `memset` for a chunk carved
+from fresh kernel-zeroed pages; a recycled buffer always pays it. MEASURED:
+`__memset_avx2_unaligned_erms` went from 2.96 % to 3.35 % of 512x512 preset-10
+self time as these sites moved into the pool.
+
+`vecpool::dirty_pool` is the answer for the buffers whose very next statement
+is a PREDICTOR that defines every position (`predict_unit`,
+`predict_unit_hbd`, `predict_intrabc_luma`, the palette substitution loop): it
+returns a real length over initialised memory with unspecified CONTENTS, so
+the fill is skipped. 512x512 preset 10 went from +1.61 % to +1.47 %.
+
+VALIDATED BY A POISONING CONTROL, the same way `tx_pipeline::grown_out`
+validates its own version of this claim: filling with 0x5A instead of zero,
+unconditionally in a release build, left
+
+    identity_full_8bit      1100 / 1100
+    regression_spotcheck     141 / 141
+    screen palette gate       50 / 50
+    screen_ibc_byte_gate     152 / 152
+
+i.e. nothing reads an unwritten position. `dep_recon` / `dep_pred` are
+deliberately NOT converted: the MDS3 depth loop can abort early, so a partial
+block is reachable there and the zero fill is load-bearing.
 
 ## STILL OPEN
 

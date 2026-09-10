@@ -1686,7 +1686,13 @@ impl DepthWalk<'_, '_> {
     }
 
     fn restore_snap(&mut self, snap: &NodeSnap, abs_x: usize, abs_y: usize, size: usize) {
-        *self.fx.ectx = snap.ectx.clone();
+        // `clone_from`, not `= clone()`: the derived `clone_from` is field-wise
+        // and `Vec::clone_from` REUSES the destination's allocation, so the
+        // restore costs nothing where `= clone()` allocated all sixteen of
+        // `EntropyCtx`'s vectors and freed the sixteen it replaced. 67,872
+        // allocating calls on the canonical alloc cell were this line and its
+        // `take_snap` twin.
+        self.fx.ectx.clone_from(&snap.ectx);
         let yw = Self::clip_span(self.y_stride, abs_x, size);
         for r in 0..size {
             let dst = (abs_y + r) * self.y_stride + abs_x;

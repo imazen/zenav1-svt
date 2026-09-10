@@ -15,7 +15,7 @@
 //! original line range.
 
 use super::*;
-use crate::vecpool::zeroed_pool;
+use crate::vecpool::{dirty_pool, zeroed_pool};
 
 /// Inject every candidate class and score each one's MDS0 fast cost.
 ///
@@ -168,10 +168,10 @@ pub(super) fn inject_candidates(
         // Pooled: this fast loop runs once per leaf per UV candidate and was
         // 660,053 allocating calls on the canonical alloc cell, the largest
         // site left after the tx-pipeline buffers were pooled.
-        let mut u_pred = zeroed_pool::<u8>(cw * chh);
-        let mut v_pred = zeroed_pool::<u8>(cw * chh);
-        let mut u_pred10 = zeroed_pool::<u16>(cw * chh);
-        let mut v_pred10 = zeroed_pool::<u16>(cw * chh);
+        let mut u_pred = dirty_pool::<u8>(cw * chh);
+        let mut v_pred = dirty_pool::<u8>(cw * chh);
+        let mut u_pred10 = dirty_pool::<u16>(cw * chh);
+        let mut v_pred10 = dirty_pool::<u16>(cw * chh);
         let mut fast: Vec<(u64, usize)> = Vec::with_capacity(uv_cands.len());
         for (idx, &(uvm, uvd)) in uv_cands.iter().enumerate() {
             let fast_dist = match bd10_rd.as_ref() {
@@ -551,7 +551,7 @@ pub(super) fn inject_candidates(
         };
         // Pooled: one per injected candidate, 643,485 allocating calls on the
         // canonical alloc cell after the tx-pipeline buffers were pooled.
-        let mut pred = zeroed_pool::<u8>(w * h);
+        let mut pred = dirty_pool::<u8>(w * h);
         predict_unit(
             y_recon,
             y_stride,
@@ -929,7 +929,7 @@ pub(super) fn inject_candidates(
             // colours are 10-bit, so `pred10` is the authoritative prediction
             // and the u8 `pred` is its MSB-truncated twin, kept because the
             // MDS1/MDS3 u8 stages and `commit_leaf` still read `cand.pred`.
-            let mut pred = zeroed_pool::<u8>(w * h);
+            let mut pred = dirty_pool::<u8>(w * h);
             let mut pred10 = if bd10_funnel {
                 zeroed_pool::<u16>(w * h)
             } else {
@@ -1330,7 +1330,7 @@ pub(super) fn inject_candidates(
             for dv in dvs {
                 // Prediction: the RECON-domain block copy (the ONE
                 // search-vs-predict asymmetry — map §A.6).
-                let mut pred = zeroed_pool::<u8>(w * h);
+                let mut pred = dirty_pool::<u8>(w * h);
                 crate::intrabc_pred::predict_intrabc_luma(
                     y_recon, y_stride, abs_x, abs_y, w, h, dv, &mut pred,
                 );
