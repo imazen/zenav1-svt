@@ -48,6 +48,14 @@ Crates are not published to crates.io yet — depend by git.
   The MDS1 warp MV refinement is still missing, so it is not yet byte-identical
   to C.
 
+- **10-bit VIDEO runs C's own structure** (`4a3d23e4`). C's `hbd_md` is 0 on
+  every non-I frame at preset 6 and above — its mode decision is 8-bit there —
+  and the port's bd10 gate had no frame-type term at all. Switching it on
+  needed three gaps closed in the level re-encode post-pass: no inter arm, a
+  hardcoded `filt_type`, and `tx_depth > 0` being an assert. All 24 gated
+  cells encode and decode, and the frame-1 sizes moved onto C's. The bd10
+  still gates are unmoved.
+
 - **10-bit VIDEO encodes and decodes** (`a377e896`). It was previously
   unreachable in three stacked ways: the hbd entry point refused every non-key
   frame with no experimental lift, then `tx_unit_hbd` panicked because an inter

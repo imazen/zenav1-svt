@@ -99,18 +99,29 @@ the whole table: stills are all I-slices and match 16/16; every video frame
 diverges; and presets 9/10 diverge more because the term would not apply there
 anyway.
 
-**The term is documented but NOT switched on, and that is measured.** Applying
-it makes a 10-bit inter frame fall to the level re-encode post-pass, which has
-no INTER arm at all (`bd10_reencode_node` predicts every leaf with
-`predict_unit_hbd`): johnny and vidyo3 128x128 at presets 6/8 REFUSE frame 1,
-and fourpeople/kristenandsara code it at 753/867 bytes against C's 24. Trading
-a decodable stream for no stream is the wrong move, so the term is threaded and
-documented in `bd10_full_rd_supported` instead.
+**The term is now ON, and switching it on took closing three gaps in the level
+re-encode post-pass** (`4a3d23e4`), each found by measuring rather than reading:
 
-**Closing it is now bounded:** give the post-pass an inter arm.
-`predict_inter_yuv_hbd` exists; what is missing is the leaf's MV / reference /
-interpolation filters reaching `bd10_reencode_node`, and the DPB's 10-bit
-reference reaching the post-pass.
+1. **No INTER arm** — `bd10_reencode_node` predicted every leaf with
+   `predict_unit_hbd`. Closed by `predict_inter_leaf_hbd`, which dispatches on
+   the committed motion mode so a WARPED leaf rebuilds through the warp kernel;
+   `InterDecision::wm_params` carries the affine model, because it is not in
+   the bitstream.
+2. **`filt_type` was a hardcoded 0** — correct only with the sequence header's
+   intra edge filter off, and on a video frame at preset 6 it is ON, so the
+   frame gate rejected every directional leaf and ONE such leaf dropped the
+   whole frame. Closed by `Bd10ModeNeighbors`.
+3. **`tx_depth > 0` was an `assert_eq!`** — the transform-size search is on at
+   preset 6, so one depth-1 leaf did the same. Closed by
+   `bd10_reencode_leaf_txs`.
+
+**The port now runs C's own structure on a 10-bit inter frame**, and the
+frame-1 sizes moved onto C's (johnny p6 41 vs 37, vidyo3 p6 107 vs 108,
+kristenandsara p6 24 vs 24). The remaining gap is the SAME 8-bit
+mode-decision parity the 8-bit video gate measures — the bd10 axis is no longer
+a separate unknown. The bd10 STILL gates are unmoved, which is the check that
+the frame-type term is scoped right: every frame of an all-intra encode is an
+I-slice.
 
 ### A bd10 chroma-recon regression from 2026-08-03, found by bisect
 
