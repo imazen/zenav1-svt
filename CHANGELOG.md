@@ -38,6 +38,16 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Added
 
+- **Warped motion is wired** (`ddbfa257`). Every piece was already ported and
+  tested with no producer; `inter_md_arm` passed a disabled `WmCtrls` and a
+  no-op hook set, so the arm was dead. A census of C's own per-block record
+  (`209ef65d`) measured C coding **88 of 1158** inter blocks `WARPED_CAUSAL`
+  over the video gate — refuting the handoff claim that C selected none. The
+  port now selects it where C does, and its reconstruction is byte-identical to
+  dav1d on 8/8 frames of every gated cell (`rust/tools/warped_motion_gate.sh`).
+  The MDS1 warp MV refinement is still missing, so it is not yet byte-identical
+  to C.
+
 - **10-bit VIDEO encodes and decodes** (`a377e896`). It was previously
   unreachable in three stacked ways: the hbd entry point refused every non-key
   frame with no experimental lift, then `tx_unit_hbd` panicked because an inter

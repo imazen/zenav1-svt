@@ -156,9 +156,21 @@ UNDERNEATH:
   `inter_hdr_arm.rs:452`, `inter_search_arm.rs:434` and `:602` are the port's
   hardcoded sites — and establish what C actually derives for a video frame
   before changing anything.
-- `mv_refine`, `motion_mode` need OBMC / warped motion. No such candidate is
+- ~~`mv_refine`, `motion_mode` need OBMC / warped motion. No such candidate is
   ever injected; `warped_motion_mode_allowed` is a tested predicate with no
-  producer.
+  producer.~~ **WARPED MOTION IS WIRED as of 2026-09-10** (`ddbfa257`,
+  `benchmarks/warped_motion_2026-09-10.meta`, `tools/warped_motion_gate.sh`).
+  The port selects it where C selects it — 497 warped blocks on
+  vidyo3 256x256 p6, zero on every cell where C's own gate is closed — and its
+  RECONSTRUCTION is byte-identical to dav1d on 8/8 frames of every gated cell.
+  That recon check is the load-bearing one: warp parameters are not in the
+  bitstream, so a wrong derivation shows up there and in no size comparison.
+  `real_video_inter_gate` is unchanged at 24/24, neither regressed nor
+  promoted. STILL MISSING: the MDS1 warp MV refinement (wm_level 3 ->
+  refine_level 1), so the candidates carry the unrefined MV — that is the next
+  chunk, and `port_md::mv_refine` is already ported. OBMC is still unwired; the
+  census found C selecting it on zero blocks at these presets, but treat that
+  as unproven rather than settled.
 - `md_stages` is an alternative driver for the MD loop the leaf funnel already
   runs byte-identically.
 
