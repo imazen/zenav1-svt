@@ -140,12 +140,25 @@ finding): at these presets C's own mode decision is 8-bit, so C's chroma recon
 is the u8 quantizer's — the same open question the 10-bit video divergence
 raises.
 
-### Allocator traffic is down 77.7 %, and part of the rest is AT PARITY
+### Allocator traffic is down 84.6 %, and part of the rest is AT PARITY
 
 `benchmarks/alloc_vecpool_2026-09-10.meta`. heaptrack vs C said the deficit is
 not peak heap (the port's is a third of C's) but allocator CALL COUNT:
 
-    base 6,851,798  ->  1,527,403        C reference 466,395
+    base 6,851,798  ->  1,055,233        C reference 466,395
+    excluding the intrabc_hash site that is AT PARITY (207,457 both sides):
+         port 847,776  vs  C 258,938     — 3.3x, from 26x
+
+**Two traps worth carrying forward.** `#[derive(Clone)]` does NOT override
+`clone_from`: the trait default is `*self = source.clone()`, so switching a
+call site to `clone_from` on a derived type changes nothing. Reaching
+`Vec::clone_from` (which DOES reuse its destination) needs a field-wise body —
+`EntropyCtx::restore_from` is one, and it was worth 114,144 calls. And the zero
+fill is not free once a buffer is pooled: `vec![0; n]` reaches `calloc`, which
+skips the `memset` for fresh kernel-zeroed pages, so `vecpool::dirty_pool`
+exists for buffers a predictor immediately overwrites — guarded by a 0x5A
+poisoning control across five byte gates, which must be RE-RUN when a call site
+is added.
 
 `crate::vecpool::PoolVec` is a `Vec` that takes from and returns to a
 per-thread, SIZE-CLASSED free list on `Drop` — the port's equivalent of C's
@@ -158,9 +171,10 @@ per-bucket Vec, and C spends EXACTLY the same 207,457 there** — it is the
 largest single entry in C's own profile. Leave it alone. Excluding it the port
 is ~1.32 M against C's ~259 K.
 
-Runtime cost, against a stated 1 % budget: +0.28 % to +1.35 % instructions
-pinned to one P-core. The 512x512 preset 10 cell is 0.35 points OVER and is
-reported that way.
+Runtime cost, against a stated 1 % budget: +0.49 % to +1.44 % instructions
+pinned to one P-core. The 512x512 preset 10 cell is over and is reported that
+way — it is the cheapest preset measured, so the free-list bookkeeping is the
+largest share of the smallest total.
 
 ### Still open, and correctly labelled
 

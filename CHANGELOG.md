@@ -11,8 +11,10 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
-- **Allocator traffic is down 77.7 %**, 6,851,798 calls to 1,527,403 against C's
-  466,395 on the canonical alloc cell (`b9916d2f`, `f4bc651b`). `crate::vecpool::PoolVec`
+- **Allocator traffic is down 84.6 %**, 6,851,798 calls to 1,055,233 against C's
+  466,395 on the canonical alloc cell (`b9916d2f`, `f4bc651b`, `178323b8`,
+  `cb62752f`). Excluding the `intrabc_hash` site that is at parity with C
+  (207,457 on both sides) the gap is 3.3x, from 26x. `crate::vecpool::PoolVec`
   is a `Vec` that takes from and returns to a per-thread, size-classed free
   list on `Drop` — the port's equivalent of C's pooled `ctx->quant_coeff_ptr[]`
   / `recon_ptr[]`. 207,457 of what remains is `intrabc_hash` bucket growth,
