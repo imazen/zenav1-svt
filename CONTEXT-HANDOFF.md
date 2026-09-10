@@ -1,4 +1,4 @@
-# Claude handoff — 2026-09-09
+# Claude handoff — 2026-09-10
 
 This is the current entry point. It replaces the 2026-09-08 handoff, whose
 remaining-work queue was re-derived against source on 2026-09-09 and found to be
@@ -172,6 +172,26 @@ submodule HEAD) are both present and current.
 
 Every item here is a *missing witness*, not a known-failing one, which is why none
 of them appear in any pass count.
+
+**Three of these closed on 2026-09-10, and the mechanism generalises: the missing
+witnesses were mostly missing *inputs*.** CI now fetches supporting assets from
+the public `codec-corpus` R2 bucket anonymously (`tools/fetch_r2_assets.sh`, no
+secret). The split that matters: still corpora — gb82-sc, CID22, clic2025 — are
+plain git-tracked in `imazen/codec-corpus` (not LFS) and stay on their sparse
+clone; R2 carries only what has no home in git.
+
+- ~~**Every inter/video gate encodes synthetic content.**~~ **CLOSED.**
+  `tools/real_video_inter_gate.sh` runs 24 cells on public-domain derf clips
+  (R2 `video/pd-derf-720p/`). First measurement: frame 0 **18/24**, frame 1
+  **7/24** — see `rust/docs/IDENTITY-STATUS.md`. The control is the finding:
+  synthetic `gradient` is byte-identical at the same cell shape because frame 1
+  is a 24-byte skip.
+- ~~**`imazen26_gate.sh` has never run anywhere.**~~ **CLOSED.** Its corpus
+  existed on no reachable host and the script was mode 0644. First run:
+  **40/40 byte-identical**, on 20 images centre-cropped to 512×512 (R2
+  `imazen26-k300-512/`, 290 MiB → 6.1 MiB, equivalence measured both ways).
+- ~~**Animation tests are entirely procedural.**~~ **CLOSED.** A real-motion
+  animated-AVIF round trip now asserts that consecutive *decoded* frames differ.
 
 - **Research preset −1 has no parity matrix anywhere.** `grep -n 'research\|preset -1'
   .github/workflows/rust-gates.yml` returns zero hits; `identity_full_8bit.sh:190`
