@@ -1644,6 +1644,33 @@ impl EncodePipeline {
         }
     }
 
+    /// A HIERARCHICAL (random-access) GOP is not wired, and until now it
+    /// PANICKED instead of saying so.
+    ///
+    /// `hierarchical_levels > 0` makes the picture-decision layer produce a
+    /// pyramid whose pictures name BWDREF / ALTREF, but only the flat
+    /// low-delay-P path fills `padded_by_ref`, so `build_inter_candidates`
+    /// reached a candidate whose reference had no DPB picture and panicked:
+    /// "an inter candidate names reference N with no DPB picture --
+    /// `ref_frame_type_arr` and `padded_by_ref` disagree" (inter_md_arm.rs).
+    /// That is a caller-visible configuration, so it owes an explicit error;
+    /// `docs/WORKING-ON-THIS.md` §6 forbids exactly this shape of failure.
+    ///
+    /// Found by coverage: `port_picstruct_ra.rs` (612 regions, the RA picture
+    /// structure) sat at 0.00 % after forty video encodes, because every one of
+    /// them was flat. Probing the uncovered path is what surfaced the panic.
+    ///
+    /// The RA structure IS ported -- this refusal names an unwired feature, not
+    /// a missing one.
+    fn gop_config_error(&self) -> Option<&'static str> {
+        if self.gop.hierarchical_levels > 0 {
+            return Some(
+                "a hierarchical (random-access) GOP is not wired:                  hierarchical_levels > 0 makes picture decision name BWDREF/ALTREF                  references that only the flat low-delay-P path fills, so inter                  candidate injection would reach a reference with no DPB picture.                  The RA picture structure is ported (port_picstruct_ra) but not                  connected to the reference-buffer table. Use hierarchical_levels                  = 0 [C: accepts]",
+            );
+        }
+        None
+    }
+
     fn superres_config_error(&self) -> Option<&'static str> {
         let denom = self.superres_denom?;
         if !(9..=16).contains(&denom) {
@@ -1930,6 +1957,9 @@ impl EncodePipeline {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
         // Issue #22: VBR/CBR were ACCEPTED here and silently encoded at qp 30.
+        if let Some(why) = self.gop_config_error() {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
+        }
         if let Some(why) = self.rate_control_config_error() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }

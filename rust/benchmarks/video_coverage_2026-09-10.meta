@@ -1,0 +1,56 @@
+Runtime code coverage of the VIDEO path — 2026-09-10
+
+METHOD  `cargo llvm-cov run --no-report` accumulated over 40 instrumented
+        encodes: 5 sequences x presets {0,6,8,13} x cli_qp {20,55}, then one
+        `cargo llvm-cov report`. Sequences are the varied set in
+        video_varied_content_2026-09-10.meta (camera portrait/landscape, screen
+        content in motion, 200x120 non-64-aligned, 576x448 past R360p).
+
+HEADLINE  36.84 % region coverage (123,508 regions, 78,008 missed) from video
+        alone, against the workspace test suite's 91.83 % floor. That gap is
+        EXPECTED and is not a defect: video exercises one arm of an encoder that
+        also carries stills, HDR, mono, alpha, 10-bit, superres and tiles. The
+        number is useful only as a map of which VIDEO code is cold.
+
+COLDEST INTER/VIDEO MODULES (region coverage, after 40 video encodes):
+
+  0.00 %   612 regions  port_picstruct_ra.rs        random-access GOP structure
+  0.00 %   415          port_md/nsq_skip.rs
+  0.00 %   353          port_md/lpd1.rs
+  0.00 %   347          port_md/nic_prune.rs
+  0.00 %   285          port_md/md_stages.rs
+  0.00 %   265          port_md/motion_mode.rs
+  0.00 %   214          port_md/ssim_hbd.rs
+  0.00 %   208          port_md/lpd1_loop.rs
+  0.00 %   175          port_md/mv_refine.rs
+  0.00 %   147          svtav1-dsp/src/inter_pred.rs
+  0.00 %   127          port_md/tx_gates.rs
+  4.52 %   354          port_md/coding_loop.rs
+ 15.26 %   793          inter_me/obmc_search.rs
+ 17.64 %   567          port_inter_predictor.rs
+ 25.12 %  2361          port_picstruct.rs
+
+The `port_md/*` cluster is C mode-decision logic that is ported but not wired
+into this pipeline -- their own module docs say so (lpd1_loop.rs: "PARTIAL ...
+decisions only"). A 0 % row there means unwired, not untested, and the
+distinction matters before anyone "fixes" the coverage.
+
+WHAT THE COLD ROWS BOUGHT: A PANIC, NOW A REFUSAL
+`port_picstruct_ra.rs` is the random-access picture structure and sat at 0.00 %
+because all 40 encodes were FLAT (hierarchical_levels = 0). Probing the
+uncovered path:
+
+    SVTAV1_HIER_LEVELS=1  ->  rc=101, thread 'main' panicked at
+    inter_md_arm.rs:747: "an inter candidate names reference N with no DPB
+    picture -- ref_frame_type_arr and padded_by_ref disagree"
+
+A hierarchical GOP makes picture decision name BWDREF/ALTREF references that
+only the flat low-delay-P path fills. That is a caller-visible configuration
+failing by PANIC, which docs/WORKING-ON-THIS.md §6 forbids outright. Now a
+`gop_config_error` refusal (exit 3) naming the unwired wiring; the refusal
+inventory goes 61 -> 62.
+
+STILL UNPROBED, and each is a candidate for the same treatment: 10-bit video
+(SVTAV1_BD=10 on the inter path), tiles on video, superres on video, and
+intra_period 2/4 (both of which DO encode -- verified -- and were simply not in
+the coverage grid).
