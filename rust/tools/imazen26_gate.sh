@@ -50,6 +50,11 @@ if [ ! -d "$IM26_DIR" ] || [ -z "$(ls -A "$IM26_DIR" 2>/dev/null)" ]; then
   "$HERE/fetch_r2_assets.sh" imazen26-k300-512/ "$IM26_DIR" || {
     echo "imazen26 gate: could not obtain the K300 images" >&2; exit 2; }
 fi
+# Declared for the sweep's contract; THIS gate never reads it (the cell list
+# below carries its own basenames), which is why the published asset set is 20
+# images and no K300.tsv, and why the gate runs 40/40 without one. The full
+# 273-image K300 plus its TSV is what tools/imazen26_sweep.sh needs, and that
+# discovery sweep is not in CI.
 IM26_MANIFEST="${IM26_MANIFEST:-$(dirname "$IM26_DIR")/K300.tsv}"
 : "${SVT_CREF_LIB_DIR:=$(cd "$RS_ROOT/.." && pwd)/Bin/Release}"
 export SVT_CREF_LIB_DIR
