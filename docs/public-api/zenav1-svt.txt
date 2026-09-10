@@ -6,25 +6,26 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-svt.txt 105 lines (supported surface) | zenav1-svt.features.txt 48 added (features: avif-container,fallible-alloc,std,symtrace,unsafe_encoding) | zenav1-svt.internal.txt 4 lines (4 hidden + 0 excluded-feature)
+# files: zenav1-svt.txt 159 lines (supported surface) | zenav1-svt.features.txt 48 added (features: avif-container,fallible-alloc,std,symtrace,unsafe_encoding) | zenav1-svt.internal.txt 12 lines (12 hidden + 0 excluded-feature)
 # arch-unique surface: (none — portable on every target)
 
 ## summary
 #
-#   pub modules                                 2
-#   pub types (struct/enum/trait/alias)        10
-#   inherent methods                           30
-#   struct fields                              29
-#   enum variants                              14
-#   re-exports                                 10
-#   trait roster entries (type × trait)        25
-#   auto-trait-complete types                  10
+#   pub modules                                 3
+#   pub types (struct/enum/trait/alias)        19
+#   pub consts/statics                          4
+#   inherent methods                           45
+#   struct fields                              43
+#   enum variants                              22
+#   re-exports                                 14
+#   trait roster entries (type × trait)        48
+#   auto-trait-complete types                  15
 #
 # per-module pub lines:
-#   (root)                            1
-#   svtav1                           94
+#   (root)                            5
+#   svtav1                          145
 
-## items (95 lines)
+## items (144 lines)
 
 pub mod svtav1
 pub use svtav1::BlockSize
@@ -38,6 +39,10 @@ pub use svtav1::entropy
 pub use svtav1::tables
 pub use svtav1::types
 pub mod svtav1::avif
+pub use svtav1::avif::NativePreset
+pub use svtav1::avif::SvtReference
+pub use svtav1::avif::ZenEnhancement
+pub use svtav1::avif::ZenEnhancements
 pub enum svtav1::avif::ChromaSubsampling
 pub svtav1::avif::ChromaSubsampling::Yuv420
 pub svtav1::avif::ChromaSubsampling::Yuv444
@@ -50,31 +55,76 @@ pub svtav1::avif::EncodeError::InvalidDimensions::width: u32
 pub svtav1::avif::EncodeError::InvalidQuality
 pub svtav1::avif::EncodeError::InvalidQuality::quality: f32
 pub svtav1::avif::EncodeError::UnsupportedConfig(&'static str)
+pub enum svtav1::avif::EncodingPolicy [also: svtav1::policy]
+pub svtav1::avif::EncodingPolicy::SvtParity(svtav1_encoder::reference::SvtReference)
+pub svtav1::avif::EncodingPolicy::Zen
+pub const fn svtav1::policy::EncodingPolicy::svt_parity() -> Self [also: (root)]
+pub enum svtav1::avif::StillInputFormat
+pub svtav1::avif::StillInputFormat::Monochrome
+pub svtav1::avif::StillInputFormat::Yuv420
+pub enum svtav1::avif::StillSuitability [also: svtav1::policy]
+pub svtav1::avif::StillSuitability::Uncalibrated
 pub struct svtav1::avif::AvifEncoder
 pub fn svtav1::avif::AvifEncoder::chroma_subsampling(&self) -> svtav1::avif::ChromaSubsampling
 pub fn svtav1::avif::AvifEncoder::encode_to_av1_obu(&self, &[u8], u32, u32, u32) -> core::result::Result<alloc::vec::Vec<u8>, svtav1::avif::EncodeError>
 pub fn svtav1::avif::AvifEncoder::encode_y8(&self, &[u8], u32, u32, u32) -> core::result::Result<svtav1::avif::EncodedAvif, svtav1::avif::EncodeError>
 pub fn svtav1::avif::AvifEncoder::encode_yuv420(&self, &[u8], &[u8], &[u8], u32, u32, u32) -> core::result::Result<svtav1::avif::EncodedAvif, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::enhancements(&self) -> svtav1_encoder::enhancements::ZenEnhancements
 pub fn svtav1::avif::AvifEncoder::new() -> Self
 pub fn svtav1::avif::AvifEncoder::quality_to_qp_static(f32) -> u8
+pub fn svtav1::avif::AvifEncoder::reference(&self) -> svtav1_encoder::reference::SvtReference
+pub fn svtav1::avif::AvifEncoder::resolve_still_policy(&self) -> core::result::Result<svtav1::policy::ResolvedStillPolicy, svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::resolved_native_preset(&self) -> svtav1_encoder::speed_config::NativePreset
+pub fn svtav1::avif::AvifEncoder::validate_configuration(&self) -> core::result::Result<(), svtav1::avif::EncodeError>
+pub fn svtav1::avif::AvifEncoder::validate_configuration_for_input(&self, u32, u32, svtav1::avif::StillInputFormat) -> core::result::Result<(), svtav1::avif::EncodeError>
 pub fn svtav1::avif::AvifEncoder::with_bit_depth(self, u8) -> Self
 pub fn svtav1::avif::AvifEncoder::with_bt2020_hlg(self) -> Self
 pub fn svtav1::avif::AvifEncoder::with_bt2020_pq(self) -> Self
 pub fn svtav1::avif::AvifEncoder::with_chroma_subsampling(self, svtav1::avif::ChromaSubsampling) -> Self
 pub fn svtav1::avif::AvifEncoder::with_color_space(self, u8, u8, u8, bool) -> Self
 pub fn svtav1::avif::AvifEncoder::with_display_p3(self) -> Self
+pub fn svtav1::avif::AvifEncoder::with_effort(self, svtav1::policy::Effort) -> Self
+pub fn svtav1::avif::AvifEncoder::with_enhancement(self, svtav1_encoder::enhancements::ZenEnhancement) -> Self
 pub fn svtav1::avif::AvifEncoder::with_film_grain(self, svtav1_encoder::film_grain_config::FilmGrainConfig) -> Self
 pub fn svtav1::avif::AvifEncoder::with_lossless(self, bool) -> Self
+pub fn svtav1::avif::AvifEncoder::with_native_preset(self, svtav1_encoder::speed_config::NativePreset) -> Self
 pub fn svtav1::avif::AvifEncoder::with_num_threads(self, core::option::Option<usize>) -> Self
+pub fn svtav1::avif::AvifEncoder::with_policy(self, svtav1::policy::EncodingPolicy) -> Self
 pub fn svtav1::avif::AvifEncoder::with_qm(self, bool) -> Self
 pub fn svtav1::avif::AvifEncoder::with_quality(self, f32) -> Self
+pub fn svtav1::avif::AvifEncoder::with_reference(self, svtav1_encoder::reference::SvtReference) -> Self
 pub fn svtav1::avif::AvifEncoder::with_speed(self, u8) -> Self
 pub fn svtav1::avif::AvifEncoder::with_variance_boost(self, bool, u8) -> Self
+pub struct svtav1::avif::Effort(_) [also: svtav1::policy]
+pub fn svtav1::policy::Effort::native_preset(self) -> svtav1_encoder::speed_config::NativePreset
+pub fn svtav1::policy::Effort::new(f32) -> core::result::Result<Self, &'static str>
+pub const fn svtav1::policy::Effort::value(self) -> f32 [also: (root)]
 pub struct svtav1::avif::EncodedAvif
 pub svtav1::avif::EncodedAvif::bit_depth: u8
 pub svtav1::avif::EncodedAvif::data: alloc::vec::Vec<u8>
 pub svtav1::avif::EncodedAvif::height: u32
 pub svtav1::avif::EncodedAvif::width: u32
+pub struct svtav1::avif::ResolvedStillPolicy [also: svtav1::policy]
+pub svtav1::avif::ResolvedStillPolicy::enhancements: svtav1_encoder::enhancements::ZenEnhancements
+pub svtav1::avif::ResolvedStillPolicy::native_preset: svtav1_encoder::speed_config::NativePreset
+pub svtav1::avif::ResolvedStillPolicy::policy: core::option::Option<svtav1::policy::EncodingPolicy>
+pub svtav1::avif::ResolvedStillPolicy::reference: svtav1_encoder::reference::SvtReference
+pub svtav1::avif::ResolvedStillPolicy::requested_effort: core::option::Option<svtav1::policy::Effort>
+pub svtav1::avif::ResolvedStillPolicy::suitability: svtav1::policy::StillSuitability
+pub svtav1::avif::ResolvedStillPolicy::version: u32
+pub mod svtav1::policy
+pub svtav1::policy::EncodingPolicy::SvtParity(svtav1_encoder::reference::SvtReference)
+pub svtav1::policy::EncodingPolicy::Zen
+pub svtav1::policy::StillSuitability::Uncalibrated
+pub fn svtav1::policy::Effort::native_preset(self) -> svtav1_encoder::speed_config::NativePreset
+pub fn svtav1::policy::Effort::new(f32) -> core::result::Result<Self, &'static str>
+pub svtav1::policy::ResolvedStillPolicy::enhancements: svtav1_encoder::enhancements::ZenEnhancements
+pub svtav1::policy::ResolvedStillPolicy::native_preset: svtav1_encoder::speed_config::NativePreset
+pub svtav1::policy::ResolvedStillPolicy::policy: core::option::Option<svtav1::policy::EncodingPolicy>
+pub svtav1::policy::ResolvedStillPolicy::reference: svtav1_encoder::reference::SvtReference
+pub svtav1::policy::ResolvedStillPolicy::requested_effort: core::option::Option<svtav1::policy::Effort>
+pub svtav1::policy::ResolvedStillPolicy::suitability: svtav1::policy::StillSuitability
+pub svtav1::policy::ResolvedStillPolicy::version: u32
 pub enum svtav1::ChromaFormat
 pub svtav1::ChromaFormat::Yuv400
 pub svtav1::ChromaFormat::Yuv420
@@ -122,7 +172,7 @@ pub svtav1::Packet::frame_type: svtav1_types::frame::FrameType
 pub svtav1::Packet::pts: u64
 pub svtav1::Packet::size: usize
 
-## trait impls (9 types)
+## trait impls (14 types)
 
 svtav1::ChromaFormat: Clone, Copy, Debug, Eq, PartialEq
 svtav1::EncoderConfig: Clone, Debug
@@ -133,7 +183,12 @@ svtav1::avif::AvifEncoder: Clone, Debug, Default
 svtav1::avif::ChromaSubsampling: Clone, Copy, Debug, Eq, PartialEq
 svtav1::avif::EncodeError: Clone, Debug, Display
 svtav1::avif::EncodedAvif: Clone, Debug
+svtav1::avif::StillInputFormat: Clone, Copy, Debug, Eq, PartialEq
+svtav1::policy::Effort: Clone, Copy, Debug, PartialEq
+svtav1::policy::EncodingPolicy: Clone, Copy, Debug, Eq, PartialEq
+svtav1::policy::ResolvedStillPolicy: Clone, Copy, Debug, PartialEq
+svtav1::policy::StillSuitability: Clone, Copy, Debug, Eq, PartialEq
 
 ## auto traits
 
-10 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+15 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe

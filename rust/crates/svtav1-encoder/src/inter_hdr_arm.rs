@@ -49,12 +49,12 @@ pub enum InterHdrError {
     /// implemented, so `is_global: [false; 7]` would be a claim rather than a
     /// derivation.
     ///
-    /// The caller decides this with `crate::port_global_me::GmEstimation::
-    /// all_identity`, NOT with `gm_level != 0`: a non-zero level only means C
-    /// built `gm_ctrls`, and `svt_aom_global_motion_estimation`'s own
-    /// `average_me_sad` gate is what decides whether a search happens. The
-    /// pipeline refuses at `gm_search_config_error` first; this exists so the
-    /// invariant is enforced at the writer too.
+    /// RETIRED 2026-09-10 and no longer constructed: global motion IS
+    /// implemented. The caller fills `InterSignal::global_motion` /
+    /// `ref_global_motion` from `crate::port_global_me::set_global_motion_field`
+    /// and `crate::port_entropy_inter::gm::write_global_motion` codes them.
+    /// The variant is kept because it is public API; the pipeline still has
+    /// its `match` arm so a future reintroduction has somewhere to land.
     GlobalMotionNotImplemented,
 }
 
@@ -114,19 +114,13 @@ pub fn inter_signal(
     tpl: bool,
     gm_all_identity: bool,
 ) -> Result<InterSignal, InterHdrError> {
-    // GLOBAL MOTION, refused here as well as at the pipeline's choke point.
-    //
-    // Two guards for one rule is deliberate and is this file's existing habit
-    // ("Assert rather than assume", below): the pipeline's `gm_search_config_error`
-    // is the friendly early refusal a caller sees, and this one makes
-    // `GlobalMotionNotImplemented` a variant that can actually be constructed.
-    // It could not before — it existed, a comment in `inter_syntax_state`
-    // claimed this function raised it, and no code anywhere in the crate ever
-    // did. `is_global: [false; 7]` below is only sound while C's own search
-    // left every reference IDENTITY, which is what the caller passes here.
-    if !gm_all_identity && !crate::dbgenv::gm_experimental() {
-        return Err(InterHdrError::GlobalMotionNotImplemented);
-    }
+    // GLOBAL MOTION is implemented: the caller fills `global_motion` /
+    // `ref_global_motion` on the returned signal from
+    // `port_global_me::set_global_motion_field`, and the header writer codes
+    // them through `port_entropy_inter::gm::write_global_motion`. This
+    // parameter is kept because it is C's own `is_gm_on` verdict and a future
+    // reader needs to see that the decision was threaded, not dropped.
+    let _ = gm_all_identity;
     // C never sets `error_resilient_mode` on a coded picture
     // (`resource_coordination_process.c:418` writes 0; only the S-frame path
     // at `pd_process.c:1727` sets 1, and S-frames are outside this envelope).
@@ -219,6 +213,9 @@ pub fn inter_signal(
         .expect("order_hint_bits <= 8 in this envelope");
 
     Ok(InterSignal {
+        // The caller fills `global_motion` / `ref_global_motion` and then calls
+        // `sync_is_global`; this function has no access to the search.
+        is_global: [false; 7],
         film_grain_ref_idx: None,
         error_resilient_mode,
         order_hint,
@@ -241,7 +238,11 @@ pub fn inter_signal(
         allow_warped_motion,
         // Global motion is not searched on this path; C writes seven
         // `is_global = 0` bits when `gm_ctrls` produce no model.
-        is_global: [false; 7],
+        // Filled by the caller from `port_global_me::set_global_motion_field`
+        // and the primary reference's saved models; IDENTITY here is the value
+        // a frame with no search result keeps.
+        global_motion: [crate::port_entropy_inter::gm::WarpParams::IDENTITY; 8],
+        ref_global_motion: [crate::port_entropy_inter::gm::WarpParams::IDENTITY; 8],
     })
 }
 

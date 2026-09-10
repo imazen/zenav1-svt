@@ -9,18 +9,26 @@
 
 ## summary
 #
-#   inherent methods                            2
-#   trait roster entries (type × trait)         2
+#   inherent methods                            5
+#   trait roster entries (type × trait)         7
 #
 # per-module pub lines:
-#   svtav1                            2
+#   svtav1                            5
 
-## items (2 lines)
+## items (5 lines)
 
 pub fn svtav1::ChromaFormat::assert_fields_are_eq(&self)
 pub fn svtav1::avif::ChromaSubsampling::assert_fields_are_eq(&self)
+pub fn svtav1::avif::StillInputFormat::assert_fields_are_eq(&self)
+pub fn svtav1::policy::EncodingPolicy::assert_fields_are_eq(&self)
+pub fn svtav1::policy::StillSuitability::assert_fields_are_eq(&self)
 
-## trait impls (2 types)
+## trait impls (7 types)
 
 svtav1::ChromaFormat: TrivialClone
 svtav1::avif::ChromaSubsampling: TrivialClone
+svtav1::avif::StillInputFormat: TrivialClone
+svtav1::policy::Effort: TrivialClone
+svtav1::policy::EncodingPolicy: TrivialClone
+svtav1::policy::ResolvedStillPolicy: TrivialClone
+svtav1::policy::StillSuitability: TrivialClone

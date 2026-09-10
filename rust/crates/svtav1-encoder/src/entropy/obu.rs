@@ -1374,12 +1374,44 @@ pub struct InterSignal {
     /// FH `allow_warped_motion` — `None` when `error_resilient_mode ||
     /// !enable_warped_motion`, where the decoder reads no bit.
     pub allow_warped_motion: Option<bool>,
-    /// `global_motion_params()`: `is_global[ref]` for LAST..ALTREF.
+    /// `global_motion_params()`: this frame's warp model per reference,
+    /// indexed by `MvReferenceFrame` (entry 0, INTRA_FRAME, is unused).
     ///
-    /// Only the all-false row is emittable today: a `true` entry needs the
-    /// type / parameter coding this writer does not have, so it is a
-    /// `debug_assert` rather than a silently-wrong bit.
+    /// C `pcs->ppcs->global_motion[]`, built by
+    /// `port_global_me::set_global_motion_field` from the search's own verdict.
+    /// This used to be seven `is_global` BITS with a `debug_assert` that they
+    /// were all false, and the pipeline refused any frame where C's search had
+    /// found a model — see `gm_search_config_error`.
+    pub global_motion: [crate::port_entropy_inter::gm::WarpParams; 8],
+    /// C `pcs->child_pcs->ref_global_motion[]` — the PRIMARY-REF picture's own
+    /// saved models, which each parameter is delta-coded against. IDENTITY
+    /// throughout when `primary_ref_frame == PRIMARY_REF_NONE` or when that
+    /// picture was an I_SLICE (`pic_manager_process.c:831`).
+    pub ref_global_motion: [crate::port_entropy_inter::gm::WarpParams; 8],
+    /// `is_global[ref]` for LAST..ALTREF, i.e. `global_motion[ref + 1].wmtype
+    /// != IDENTITY`.
+    ///
+    /// READ-ONLY MIRROR, kept because it is public API: this used to be the
+    /// whole of the port's `global_motion_params()` and the writer no longer
+    /// reads it. Setting it changes no bit — [`Self::global_motion`] is what
+    /// gets coded, and `is_global` is the first bit of each model's own
+    /// encoding. [`Self::sync_is_global`] refreshes it after the models are
+    /// filled.
     pub is_global: [bool; 7],
+}
+
+impl InterSignal {
+    /// Refresh the [`Self::is_global`] mirror from [`Self::global_motion`].
+    ///
+    /// Called once the pipeline has filled the models. The mirror exists only
+    /// so the field this struct used to carry keeps answering truthfully; no
+    /// coded bit depends on it.
+    pub fn sync_is_global(&mut self) {
+        for (i, flag) in self.is_global.iter_mut().enumerate() {
+            *flag = self.global_motion[i + 1].wmtype
+                != crate::port_entropy_inter::modes::TransformationType::Identity;
+        }
+    }
 }
 
 /// Body of [`write_key_frame_header_full_lr`] (see the compat wrapper above).
@@ -1858,17 +1890,22 @@ fn frame_header_bits_lr(
 
     // ---- global_motion_params() (spec 5.9.24) ----
     // Intra frames write nothing. For an inter frame, one `is_global` bit per
-    // reference; a set bit is followed by the type and the parameter coding,
-    // which this writer does not have — so a `true` entry is an assertion
-    // rather than a bit that would desync the decoder.
+    // reference, and a set bit is followed by the type and up to six
+    // parameters, each delta-coded against the primary reference picture's own
+    // model. This used to write seven zero bits under a `debug_assert` that
+    // the frame had no model, with the pipeline refusing any frame where C's
+    // search found one; `port_entropy_inter::gm::write_global_motion` is that
+    // coding, and `tools/global_motion_gate.sh` pins the result against dav1d.
     if let Some(it) = inter {
-        for g in it.is_global {
-            debug_assert!(
-                !g,
-                "global_motion_params() type/parameter coding is not implemented"
-            );
-            wb.write_bit(g);
-        }
+        crate::port_entropy_inter::gm::write_global_motion(
+            &mut wb,
+            &it.global_motion,
+            &it.ref_global_motion,
+            // C `write_global_motion` reads `pcs->ppcs->frm_hdr.primary_ref_frame`
+            // to choose between the reference models and IDENTITY.
+            it.primary_ref_frame,
+            it.allow_high_precision_mv,
+        );
     }
 
     // ---- film_grain_params() (spec 5.9.30) ---- read only when the SH

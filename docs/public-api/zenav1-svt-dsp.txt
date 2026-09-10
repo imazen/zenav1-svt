@@ -6,27 +6,27 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-svt-dsp.txt 1246 lines (supported surface) | zenav1-svt-dsp.features.txt 14 added (features: avx512,std,unchecked_dsp) | zenav1-svt-dsp.internal.txt 97 lines (97 hidden + 0 excluded-feature)
-# arch-unique surface: aarch64 10
+# files: zenav1-svt-dsp.txt 1264 lines (supported surface) | zenav1-svt-dsp.features.txt 14 added (features: avx512,std,unchecked_dsp) | zenav1-svt-dsp.internal.txt 98 lines (98 hidden + 0 excluded-feature)
+# arch-unique surface: aarch64 10 | x86_64 10
 
 ## summary
 #
 #   pub modules                                60
-#   pub types (struct/enum/trait/alias)        83
+#   pub types (struct/enum/trait/alias)        85
 #   pub consts/statics                        225
-#   free functions                            494
+#   free functions                            497
 #   inherent methods                           29
-#   struct fields                             212
+#   struct fields                             223
 #   enum variants                              84
-#   trait roster entries (type × trait)       269
-#   auto-trait-complete types                  67
-#   auto-trait exceptions                      12
+#   trait roster entries (type × trait)       272
+#   auto-trait-complete types                  68
+#   auto-trait exceptions                      13
 #
 # per-module pub lines:
 #   (root)                            5
-#   svtav1_dsp                     1182
+#   svtav1_dsp                     1198
 
-## items (1165 lines)
+## items (1181 lines)
 
 pub mod svtav1_dsp
 pub mod svtav1_dsp::ac_bias
@@ -338,6 +338,8 @@ pub fn svtav1_dsp::loop_filter::lpf_vertical_8(&mut [u8], usize, usize, svtav1_d
 pub mod svtav1_dsp::me_sad
 pub fn svtav1_dsp::me_sad::block_sad(&[u8], usize, &[u8], usize, usize, usize) -> u32
 pub fn svtav1_dsp::me_sad::block_sad_scalar(archmage::tokens::ScalarToken, &[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn svtav1_dsp::me_sad::block_sad_x4(&[u8], usize, [&[u8]; 4], usize, usize, usize) -> [u32; 4]
+pub fn svtav1_dsp::me_sad::block_sad_x4_scalar(archmage::tokens::ScalarToken, &[u8], usize, [&[u8]; 4], usize, usize, usize) -> [u32; 4]
 pub fn svtav1_dsp::me_sad::block_sum_sse_scalar(archmage::tokens::ScalarToken, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
 pub mod svtav1_dsp::obmc
 pub fn svtav1_dsp::obmc::obmc_blend_above(&mut [u8], usize, &[u8], usize, usize, usize, usize)
@@ -748,17 +750,31 @@ pub svtav1_dsp::port_pd_pred::PredPlanes::v: &'a mut [u8]
 pub svtav1_dsp::port_pd_pred::PredPlanes::v_stride: usize
 pub svtav1_dsp::port_pd_pred::PredPlanes::y: &'a mut [u8]
 pub svtav1_dsp::port_pd_pred::PredPlanes::y_stride: usize
+pub struct svtav1_dsp::port_pd_pred::PredPlanes16<'a>
+pub svtav1_dsp::port_pd_pred::PredPlanes16::u: &'a mut [u16]
+pub svtav1_dsp::port_pd_pred::PredPlanes16::u_stride: usize
+pub svtav1_dsp::port_pd_pred::PredPlanes16::v: &'a mut [u16]
+pub svtav1_dsp::port_pd_pred::PredPlanes16::v_stride: usize
+pub svtav1_dsp::port_pd_pred::PredPlanes16::y: &'a mut [u16]
+pub svtav1_dsp::port_pd_pred::PredPlanes16::y_stride: usize
 pub struct svtav1_dsp::port_pd_pred::RefPlane<'a>
 pub svtav1_dsp::port_pd_pred::RefPlane::buf: &'a [u8]
 pub svtav1_dsp::port_pd_pred::RefPlane::height: i32
 pub svtav1_dsp::port_pd_pred::RefPlane::origin: usize
 pub svtav1_dsp::port_pd_pred::RefPlane::stride: usize
 pub svtav1_dsp::port_pd_pred::RefPlane::width: i32
+pub struct svtav1_dsp::port_pd_pred::RefPlane16<'a>
+pub svtav1_dsp::port_pd_pred::RefPlane16::buf: &'a [u16]
+pub svtav1_dsp::port_pd_pred::RefPlane16::height: i32
+pub svtav1_dsp::port_pd_pred::RefPlane16::origin: usize
+pub svtav1_dsp::port_pd_pred::RefPlane16::stride: usize
+pub svtav1_dsp::port_pd_pred::RefPlane16::width: i32
 pub const svtav1_dsp::port_pd_pred::CB_FLAG: u32
 pub const svtav1_dsp::port_pd_pred::CHROMA_MASK: u32
 pub const svtav1_dsp::port_pd_pred::CR_FLAG: u32
 pub const svtav1_dsp::port_pd_pred::LUMA_MASK: u32
 pub fn svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1(&svtav1_dsp::port_pd_pred::BlkGeom, &[svtav1_dsp::port_subpel_params::Mv], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_scale_factors::ScaleFactors], &svtav1_dsp::port_subpel_params::MbEdges, svtav1_dsp::port_inter_predictor::InterpFilters, &mut svtav1_dsp::port_pd_pred::PredPlanes<'_>, u32)
+pub fn svtav1_dsp::port_pd_pred::av1_inter_prediction_light_pd1_hbd(&svtav1_dsp::port_pd_pred::BlkGeom, &[svtav1_dsp::port_subpel_params::Mv], &[svtav1_dsp::port_pd_pred::RefPlane16<'_>], &[svtav1_dsp::port_pd_pred::RefPlane16<'_>], &[svtav1_dsp::port_pd_pred::RefPlane16<'_>], &[svtav1_dsp::port_scale_factors::ScaleFactors], &svtav1_dsp::port_subpel_params::MbEdges, svtav1_dsp::port_inter_predictor::InterpFilters, &mut svtav1_dsp::port_pd_pred::PredPlanes16<'_>, u32, i32)
 pub fn svtav1_dsp::port_pd_pred::av1_inter_prediction_pd0(&svtav1_dsp::port_pd_pred::BlkGeom, &[svtav1_dsp::port_subpel_params::Mv], &[svtav1_dsp::port_pd_pred::RefPlane<'_>], &[svtav1_dsp::port_scale_factors::ScaleFactors], &svtav1_dsp::port_subpel_params::MbEdges, &mut [u8], usize)
 pub fn svtav1_dsp::port_pd_pred::enc_make_inter_predictor_pd0(&[u8], usize, usize, &mut [u8], usize, &mut [u16], usize, usize, &svtav1_dsp::port_scale_factors::SubpelParams, &svtav1_dsp::port_convolve::ConvolveParams)
 pub fn svtav1_dsp::port_pd_pred::setup_ref_scale_factors(bool, bool, i32, i32, i32, i32, svtav1_dsp::port_scale_factors::ScaleFactors) -> svtav1_dsp::port_scale_factors::ScaleFactors
@@ -1194,7 +1210,7 @@ pub const svtav1_dsp::warp::WARP_PARAM_REDUCE_BITS: u32
 pub fn svtav1_dsp::warp::count_warp_samples(core::option::Option<(i16, i16)>, core::option::Option<(i16, i16)>, core::option::Option<(i16, i16)>, core::option::Option<(i16, i16)>) -> u8
 pub fn svtav1_dsp::warp::warp_prediction(&[u8], usize, &mut [u8], usize, &svtav1_types::motion::WarpedMotionParams, i32, i32, usize, usize, usize, usize)
 
-## trait impls (68 types)
+## trait impls (69 types)
 
 svtav1_dsp::fwd_txfm_pf::HandleTransform: Clone, Copy, Debug, Eq, PartialEq
 svtav1_dsp::fwd_txfm_pf::TxCoeffShape: Clone, Copy, Debug, Default, Eq, PartialEq
@@ -1236,6 +1252,7 @@ svtav1_dsp::port_obmc_pred::PredEdges: Clone, Copy, Debug, Default, Eq, PartialE
 svtav1_dsp::port_obmc_pred::VisitedNb: Clone, Copy, Debug, Eq, PartialEq
 svtav1_dsp::port_obmc_single_pred::ObmcPicDims: Clone, Copy, Debug
 svtav1_dsp::port_pd_pred::BlkGeom: Clone, Copy, Debug
+svtav1_dsp::port_pd_pred::RefPlane16<'a>: Clone, Copy, Debug
 svtav1_dsp::port_scale_factors::DistWtdWeights: Clone, Copy, Debug, Eq, PartialEq
 svtav1_dsp::port_scale_factors::ScaleFactors: Clone, Copy, Debug, Eq, PartialEq
 svtav1_dsp::port_scale_factors::SubpelParams: Clone, Copy, Debug, Default, Eq, PartialEq
@@ -1267,31 +1284,35 @@ svtav1_dsp::txfm_dispatch::InvReconError: Clone, Copy, Debug, Eq, PartialEq
 
 ## auto traits
 
-67 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+68 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
 svtav1_dsp::port_enc_make_pred::DstPlane<'a>: !UnwindSafe
 svtav1_dsp::port_enc_make_pred::MaskedCompound<'a>: !UnwindSafe
 svtav1_dsp::port_obmc_data::CalcTargetWeightedPredCtxt<'a>: !UnwindSafe
 svtav1_dsp::port_obmc_nb_pred::ObmcScratch<'a>: !UnwindSafe
 svtav1_dsp::port_obmc_pred::ObmcPlanes<'a>: !UnwindSafe
 svtav1_dsp::port_obmc_single_pred::ObmcPlaneIo<'a>: !UnwindSafe
+svtav1_dsp::port_pd_pred::PredPlanes16<'a>: !UnwindSafe
 svtav1_dsp::port_pd_pred::PredPlanes<'a>: !UnwindSafe
 svtav1_dsp::port_sgr::SgrDst<'a>: !UnwindSafe
 svtav1_dsp::port_tf_pred::TfDst<'a>: !UnwindSafe
 svtav1_dsp::port_warp::WarpPlaneIo<'a>: !UnwindSafe
 svtav1_dsp::resize::FramePlane<'a>: !UnwindSafe
-svtav1_dsp::restoration::StripeBoundariesT<T>: !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
-## arch shapes (10 shapes: 10 on every recorded arch, 0 arch-unique)
+svtav1_dsp::restoration::StripeBoundariesT<T>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
+## arch shapes (13 shapes: 7 on every recorded arch, 6 arch-unique)
 
 [aarch64] pub fn svtav1_dsp::me_sad::block_sad_<tier>(archmage::tokens::generated::<arch>::<ArchToken>, &[u8], usize, &[u8], usize, usize, usize) -> u32
+[x86_64] pub fn svtav1_dsp::me_sad::block_sad_<tier>(archmage::tokens::generated::<arch>::Desktop64, &[u8], usize, &[u8], usize, usize, usize) -> u32
 [aarch64] pub fn svtav1_dsp::me_sad::block_sad_arm_<tier>(archmage::tokens::generated::<arch>::<ArchToken>, &[u8], usize, &[u8], usize, usize, usize) -> u32
-[aarch64] pub fn svtav1_dsp::me_sad::block_sum_<tier>(&[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+[x86_64] pub fn svtav1_dsp::me_sad::block_sad_x4_<tier>(archmage::tokens::generated::<arch>::Desktop64, &[u8], usize, [&[u8]; 4], usize, usize, usize) -> [u32; 4]
+[all] pub fn svtav1_dsp::me_sad::block_sum_<tier>(&[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
 [aarch64] pub fn svtav1_dsp::me_sad::block_sum_sse_<tier>(archmage::tokens::generated::<arch>::<ArchToken>, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
-[aarch64] pub fn svtav1_dsp::port_masked_compound::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> i64
-[aarch64] pub fn svtav1_dsp::port_masked_compound::highbd_<tier>(&[u16], usize, &[u16], usize, usize, usize) -> i64
-[aarch64] pub fn svtav1_dsp::port_model_rd::model_rd_from_<tier>(svtav1_types::block::BlockSize, i16, u8, u64, bool) -> (u32, u64)
-[aarch64] pub fn svtav1_dsp::subpel_variance::variance_diff_<tier>(&[u8], usize, usize, &[u8], usize, usize, usize, usize) -> (u32, u32)
-[aarch64] pub fn svtav1_dsp::variance::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> u64
-[aarch64] pub svtav1_dsp::port_model_rd::PlaneRd::<tier>: i64
+[x86_64] pub fn svtav1_dsp::me_sad::block_sum_sse_<tier>(archmage::tokens::generated::<arch>::Desktop64, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+[all] pub fn svtav1_dsp::port_masked_compound::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> i64
+[all] pub fn svtav1_dsp::port_masked_compound::highbd_<tier>(&[u16], usize, &[u16], usize, usize, usize) -> i64
+[all] pub fn svtav1_dsp::port_model_rd::model_rd_from_<tier>(svtav1_types::block::BlockSize, i16, u8, u64, bool) -> (u32, u64)
+[all] pub fn svtav1_dsp::subpel_variance::variance_diff_<tier>(&[u8], usize, usize, &[u8], usize, usize, usize, usize) -> (u32, u32)
+[all] pub fn svtav1_dsp::variance::<tier>(&[u8], usize, &[u8], usize, usize, usize) -> u64
+[all] pub svtav1_dsp::port_model_rd::PlaneRd::<tier>: i64
 
 ## arch surface: aarch64 (10 lines)
 
@@ -1299,6 +1320,19 @@ pub fn svtav1_dsp::me_sad::block_sad_arm_v2(archmage::tokens::generated::arm::Ar
 pub fn svtav1_dsp::me_sad::block_sad_neon(archmage::tokens::generated::arm::NeonToken, &[u8], usize, &[u8], usize, usize, usize) -> u32
 pub fn svtav1_dsp::me_sad::block_sum_sse(&[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
 pub fn svtav1_dsp::me_sad::block_sum_sse_neon(archmage::tokens::generated::arm::NeonToken, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+pub fn svtav1_dsp::port_masked_compound::highbd_sse(&[u16], usize, &[u16], usize, usize, usize) -> i64
+pub fn svtav1_dsp::port_masked_compound::sse(&[u8], usize, &[u8], usize, usize, usize) -> i64
+pub fn svtav1_dsp::port_model_rd::model_rd_from_sse(svtav1_types::block::BlockSize, i16, u8, u64, bool) -> (u32, u64)
+pub fn svtav1_dsp::subpel_variance::variance_diff_sse(&[u8], usize, usize, &[u8], usize, usize, usize, usize) -> (u32, u32)
+pub fn svtav1_dsp::variance::sse(&[u8], usize, &[u8], usize, usize, usize) -> u64
+pub svtav1_dsp::port_model_rd::PlaneRd::sse: i64
+
+## arch surface: x86_64 (10 lines)
+
+pub fn svtav1_dsp::me_sad::block_sad_v3(archmage::tokens::generated::x86::Desktop64, &[u8], usize, &[u8], usize, usize, usize) -> u32
+pub fn svtav1_dsp::me_sad::block_sad_x4_v3(archmage::tokens::generated::x86::Desktop64, &[u8], usize, [&[u8]; 4], usize, usize, usize) -> [u32; 4]
+pub fn svtav1_dsp::me_sad::block_sum_sse(&[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
+pub fn svtav1_dsp::me_sad::block_sum_sse_v3(archmage::tokens::generated::x86::Desktop64, &[u8], usize, &[u8], usize, usize, usize) -> (i32, u32)
 pub fn svtav1_dsp::port_masked_compound::highbd_sse(&[u16], usize, &[u16], usize, usize, usize) -> i64
 pub fn svtav1_dsp::port_masked_compound::sse(&[u8], usize, &[u8], usize, usize, usize) -> i64
 pub fn svtav1_dsp::port_model_rd::model_rd_from_sse(svtav1_types::block::BlockSize, i16, u8, u64, bool) -> (u32, u64)

@@ -241,6 +241,15 @@ pub struct ReferenceFrame {
     /// (`update_cdef_filters_on_ref_info`), so a DPB that does not carry them
     /// cannot reproduce C's inter-frame CDEF at all.
     pub cdef_y_strengths: Vec<u8>,
+    /// C `EbReferenceObject::global_motion[TOTAL_REFS_PER_FRAME]`
+    /// (`reference_object.h:40`).
+    ///
+    /// A later frame that names this picture in `primary_ref_frame` delta-codes
+    /// its OWN global-motion parameters against these
+    /// (`pic_manager_process.c:831` -> `write_global_motion`), so a DPB that
+    /// does not carry them cannot reproduce C's header at all. IDENTITY
+    /// throughout for an I_SLICE, which is what C substitutes there anyway.
+    pub global_motion: [svtav1_types::motion::WarpedMotionParams; 8],
     /// C `EbReferenceObject::frame_context` (`reference_object.h:39`), written
     /// at `packetization_process.c:741-744` — the END-OF-FRAME entropy state,
     /// counters already reset.
@@ -526,6 +535,7 @@ mod tests {
         assert_eq!(dpb.occupied_slots(), 0);
 
         let frame = ReferenceFrame {
+            global_motion: [svtav1_types::motion::WarpedMotionParams::default(); 8],
             padded: None,
             mvs: alloc::vec![],
             ref_order_hint: [0; 7],
@@ -559,6 +569,7 @@ mod tests {
     fn dpb_refresh() {
         let mut dpb = DecodedPictureBuffer::new();
         let frame = ReferenceFrame {
+            global_motion: [svtav1_types::motion::WarpedMotionParams::default(); 8],
             padded: None,
             mvs: alloc::vec![],
             ref_order_hint: [0; 7],

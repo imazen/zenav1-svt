@@ -2,9 +2,9 @@
 
 # Configs this encoder refuses
 
-**13 CAPABILITY refusals** (unimplemented — this is DEBT) and **49
+**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **49
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
-refusals, **12** name a configuration C v4.2.0 actually encodes — the
+refusals, **11** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
 `[C: ...]` marker at all.
 
@@ -47,8 +47,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | an inter frame needs the picture decision, which this port so far runs only when a GOP is configured (intra_period > 1) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | bitrate-targeted rate control (VBR/CBR) is not implemented: target_bitrate is read nowhere on the encode path and assign_picture_qp's VBR/CBR arm starts from RcState::default().qp = 30 instead of the caller's qp, so the frame's base_q_idx would come from qp 30 while every qp-keyed level derivation still reads rc_config.qp — a mixed-qp stream. The C ports exist but are unwired: port_rc_vbr_cbr, port_rc_vbr_cbr_qpick, port_rc_vbr_cbr_state, port_rc_vbr_cbr_update, port_rc_rtc_cbr, port_pass2_gop. Use RcMode::Cqp or RcMode::Crf |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented for this frame: C's svt_aom_global_motion_estimation would search (global_me.c:190), and this port could not run the search — the picture-analysis reference for a (list, ref) slot the search needs is missing, or the derived downsample level is not GM_FULL (crate::port_global_me::GmSearchError) |
-| `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: C's svt_aom_global_motion_estimation (global_me.c:137) fitted a NON-IDENTITY model for at least one reference of this INTER frame, so global_motion_params() codes its type and up to six parameters and mode decision prices GLOBALMV against it, while this port writes seven is_global = 0 bits and an IDENTITY model. The port runs C's search and refuses only when it finds something: frames whose motion the search reads as global-motion-free DO encode at preset <= 4. Use preset >= 5, or content without a global non-translational motion |
-| `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: the inter frame header writer reached global_motion_params() with a frame whose svt_aom_global_motion_estimation derivation did not prove every reference IDENTITY (crate::port_global_me) — see the gm_search_config_error refusal, which is the one a caller should see |
+| `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: the inter frame header writer reached global_motion_params() with a model it could not code. This refusal is RETIRED — `port_entropy_inter::gm:: write_global_motion` codes the frame's real models — and reaching it means a caller constructed the variant by hand |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | inter frames are not implemented for the public API — not because the machinery is missing, but because its ENVELOPE is 89 of 96 cells. CDF continuation, the inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, frames=2 low-delay P) 89 cells are byte-identical to C on BOTH frames, 6 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be right on the closed cells and silently wrong elsewhere, which is exactly the outcome docs/WORKING-ON-THIS.md section 6 refuses. See docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: encode a single key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres is 8-bit only so far (the u16 source downscale is unported) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |

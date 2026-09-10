@@ -31,10 +31,12 @@
 //! DERIVED result, not an assumption, and it is what lets the pipeline encode
 //! those cells instead of refusing them.
 //!
-//! The SEARCH itself is still not wired: when this derivation says C would run
-//! one, the pipeline refuses. Lifting that needs `compute_global_motion` +
-//! `svt_aom_gm_get_params_cost` and byte-parity evidence for the model coding,
-//! neither of which exists yet.
+//! The SEARCH is wired too (2026-09-10): when this derivation says C would run
+//! one, the pipeline runs it, [`set_global_motion_field`] publishes the
+//! frame's `global_motion[8]`, and `port_entropy_inter::gm` codes it. Only a
+//! frame whose search cannot RUN — a missing picture-analysis reference, or a
+//! downsample level whose `svt_aom_upscale_wm_params` is unported — is still
+//! refused. `tools/global_motion_gate.sh` pins the result against dav1d.
 //!
 //! # Evidence: TIER 4, joined against a frame-level C dump
 //!
@@ -687,6 +689,63 @@ impl Default for GmModels {
 /// harness gap rather than a picture-decision outcome — the caller must refuse
 /// rather than silently treat it as IDENTITY.
 pub type RefPlaneLookup<'a> = dyn Fn(usize, usize) -> Option<GmPlane<'a>> + 'a;
+
+/// C `set_global_motion_field` (md_config_process.c:37-96) — the per-frame
+/// `global_motion[INTRA_FRAME..=ALTREF_FRAME]` array the HEADER writes and
+/// mode decision prices against.
+///
+/// It is the missing link between [`global_motion_search`]'s per-`(list, ref)`
+/// result and everything downstream: the port ran the search and then threw
+/// its models away, hardcoding IDENTITY at four sites and refusing any frame
+/// where C had found something.
+///
+/// Three details C makes easy to lose:
+///
+/// * The array is indexed by `MvReferenceFrame` (LAST..ALTREF), NOT by
+///   `(list, ref)`; the mapping is `get_list_idx` / `get_ref_frame_idx`.
+/// * A model is copied ONLY when `is_global_motion[list][ref]` — the search's
+///   own verdict. Every other entry stays IDENTITY.
+/// * The TRANSLATION arm rewrites the model twice. First
+///   `convert_to_trans_prec` + `<< GM_TRANS_ONLY_PREC_DIFF`, because the
+///   translation offset is coded at a different precision; then it SWAPS
+///   `wmmat[0]` and `wmmat[1]`, because the AV1 spec accidentally reversed the
+///   x/y assignment in `gm_get_motion_vector` and C reproduces the spec bug
+///   deliberately (crbug.com/aomedia/3328). Getting either half wrong moves
+///   every GLOBALMV block's motion vector.
+///
+/// `svt_aom_upscale_wm_params` is a no-op at the GM_FULL downsample level and
+/// is not ported; [`global_motion_search`] refuses any other level, so this
+/// takes no scale factor rather than taking one it would assert on.
+#[must_use]
+pub fn set_global_motion_field(
+    models: &GmModels,
+    allow_high_precision_mv: bool,
+) -> [WarpedMotionParams; 8] {
+    let mut out = [WarpedMotionParams::default(); 8];
+    for (frame_index, slot) in out.iter_mut().enumerate() {
+        let list = crate::inter_mvp::get_list_idx(frame_index as i8);
+        let idx = crate::inter_mvp::get_ref_frame_idx(frame_index as i8);
+        if list >= MAX_NUM_OF_REF_PIC_LIST
+            || idx >= REF_LIST_MAX_DEPTH
+            || !models.is_global_motion[list][idx]
+        {
+            continue;
+        }
+        let mut m = models.models[list][idx];
+        if m.wm_type == svtav1_types::motion::TransformationType::Translation {
+            let x = crate::inter_mvp::convert_to_trans_prec(allow_high_precision_mv, m.wmmat[0])
+                << crate::inter_mvp::GM_TRANS_ONLY_PREC_DIFF;
+            let y = crate::inter_mvp::convert_to_trans_prec(allow_high_precision_mv, m.wmmat[1])
+                << crate::inter_mvp::GM_TRANS_ONLY_PREC_DIFF;
+            // The spec's reversed assignment, kept verbatim: the model was
+            // fitted with wmmat[0] as x and wmmat[1] as y.
+            m.wmmat[0] = y;
+            m.wmmat[1] = x;
+        }
+        *slot = m;
+    }
+    out
+}
 
 /// Port of the SEARCH half of `svt_aom_global_motion_estimation`
 /// (`global_me.c:190-300`) — the per-list reference loop, the `identiy_exit`

@@ -1340,12 +1340,13 @@ impl EncodePipeline {
     /// the refusal replaced by this derivation those cells encode, and 26 of
     /// them are byte-identical to C on both frames.
     ///
-    /// When the derivation says C WOULD search, the refusal stands: the search
-    /// result decides `global_motion_params()`'s type and parameters and the MD
-    /// side's `gm_wmtype`, and neither is wired. Producing identity models
-    /// against a C encoder that coded real ones is the
-    /// plausible-but-wrong-stream outcome `docs/WORKING-ON-THIS.md` §6 rules
-    /// out, so it is refused rather than emitted.
+    /// When the derivation says C WOULD search, the port now RUNS the search
+    /// and codes its result: `port_global_me::set_global_motion_field` builds
+    /// the frame's `global_motion[]`, `port_entropy_inter::gm` writes
+    /// `global_motion_params()`, and the same array feeds the MVP walk's
+    /// `gm_mv`, the injector's GLOBALMV candidates and the prediction's
+    /// `is_wm`. Only a frame whose search cannot RUN is still refused. See
+    /// `tools/global_motion_gate.sh`.
     ///
     /// `super_res_off` is `true` at every call here: superres and inter are
     /// mutually exclusive in this port (`superres_config_error` +
@@ -1384,6 +1385,16 @@ impl EncodePipeline {
         if crate::dbgenv::gm_experimental() {
             return None;
         }
+        // THE SEARCH FINDING A MODEL IS NO LONGER A REFUSAL. `global_motion[]`
+        // is built by `port_global_me::set_global_motion_field`, the header
+        // codes it through `port_entropy_inter::gm::write_global_motion`, and
+        // mode decision prices GLOBALMV against it — see the wiring below.
+        //
+        // What remains refused is the SEARCH not running at all, which is a
+        // harness gap (a missing picture-analysis reference, or a downsample
+        // level whose `svt_aom_upscale_wm_params` is unported) rather than a
+        // picture-decision outcome. Treating it as IDENTITY would claim C found
+        // nothing when the port simply did not look.
         if models.is_none() {
             return Some(
                 "global motion is not implemented for this frame: C's \
@@ -1393,16 +1404,7 @@ impl EncodePipeline {
                  level is not GM_FULL (crate::port_global_me::GmSearchError) [C: accepts]",
             );
         }
-        Some(
-            "global motion is not implemented: C's svt_aom_global_motion_estimation \
-             (global_me.c:137) fitted a NON-IDENTITY model for at least one reference of this \
-             INTER frame, so global_motion_params() codes its type and up to six parameters \
-             and mode decision prices GLOBALMV against it, while this port writes seven \
-             is_global = 0 bits and an IDENTITY model. The port runs C's search and refuses \
-             only when it finds something: frames whose motion the search reads as \
-             global-motion-free DO encode at preset <= 4. Use preset >= 5, or content without \
-             a global non-translational motion [C: accepts]",
-        )
+        None
     }
 
     /// Config knobs C rejects in `svt_av1_verify_settings`, refused here so
@@ -3644,6 +3646,51 @@ impl EncodePipeline {
             .and_then(
                 crate::port_enc_mode_config::md_config::sig_deriv_mode_decision_config_default,
             );
+        // C `set_global_motion_field` (md_config_process.c:37): the frame's
+        // `global_motion[LAST..ALTREF]`, built from the search's own verdict.
+        // It lives HERE, after the mode-decision signal derivation, because the
+        // TRANSLATION arm reads `frm_hdr.allow_high_precision_mv` — which C
+        // assigns in `svt_aom_sig_deriv_mode_decision_config`, i.e. AFTER the
+        // ME-time search that used a hardcoded 0 (see the search call above).
+        //
+        // IDENTITY throughout on a key frame and wherever the search declined,
+        // which is exactly what the header wrote unconditionally before.
+        let gm_field: [svtav1_types::motion::WarpedMotionParams; 8] =
+            match (gm_models.as_ref(), md_config_signals.as_ref()) {
+                (Some(m), Some(sigs)) => crate::port_global_me::set_global_motion_field(
+                    m,
+                    sigs.allow_high_precision_mv != 0,
+                ),
+                _ => [svtav1_types::motion::WarpedMotionParams::default(); 8],
+            };
+        // C `pcs->ppcs->gm_ctrls.skip_identity` — `svt_aom_set_gm_controls`
+        // sets it ONLY at gm_level 4. The injector reads it to decide whether
+        // an IDENTITY reference still gets a GLOBALMV candidate.
+        let gm_skip_identity = crate::port_enc_mode_config::ctrls::set_gm_controls(
+            self.gm_level_for_frame(is_key),
+            crate::port_enc_mode_config::ResolutionRange::from_luma_area(self.width * self.height),
+        )
+        .is_some_and(|c| c.skip_identity != 0);
+        // C `pcs->child_pcs->ref_global_motion[]` (pic_manager_process.c:831):
+        // the PRIMARY-REF picture's own saved models, which every parameter is
+        // delta-coded against. An I_SLICE reference contributes IDENTITY, and
+        // so does `PRIMARY_REF_NONE` — the same slot the CDF continuation
+        // resolves, so the two cannot disagree about which picture this frame
+        // is coded against.
+        let ref_gm_field: [svtav1_types::motion::WarpedMotionParams; 8] =
+            if primary_ref_frame_for_cdf == crate::port_picstruct::PRIMARY_REF_NONE {
+                [svtav1_types::motion::WarpedMotionParams::default(); 8]
+            } else {
+                pic_decision
+                    .as_ref()
+                    .map(|p| p.rps.ref_dpb_index[primary_ref_frame_for_cdf as usize] as usize)
+                    .and_then(|slot| self.dpb.get(slot))
+                    .map_or(
+                        [svtav1_types::motion::WarpedMotionParams::default(); 8],
+                        |rf| rf.global_motion,
+                    )
+            };
+
         // C `svt_aom_sig_deriv_enc_dec_default` (`enc_mode_config.c:7826`) —
         // the per-superblock EncDec derivation, of which the injector reads
         // `cand_reduction_ctrls`. It is derived here beside the picture-level
@@ -3726,21 +3773,15 @@ impl EncodePipeline {
                 // from the same place rather than from a signal that has no
                 // such field.
                 force_integer_mv: false,
-                // Global-motion PARAMETER coding is unported, so every
-                // reference is IDENTITY here.
-                //
-                // THIS COMMENT USED TO SAY `inter_hdr_arm::inter_signal`
-                // REFUSES A NON-IDENTITY MODEL. It did not, and could not:
-                // `InterHdrError::GlobalMotionNotImplemented` was never
-                // constructed anywhere in the crate, so the "by the same rule
-                // the header is written under — not by assumption" claim was
-                // exactly the assumption it denied being. The refusal is now
-                // real and lives at the `gm_search_config_error` choke point, which
-                // refuses the frame unless C's own
-                // `svt_aom_global_motion_estimation` derivation
-                // (`crate::port_global_me`) proves every reference keeps
-                // IDENTITY — which is why IDENTITY is safe here.
-                gm_wmtype: [crate::port_entropy_inter::modes::TransformationType::Identity; 8],
+                // C `pcs->ppcs->global_motion[ref].wmtype`, read by the
+                // entropy walk to decide whether a block's mode is a GLOBALMV
+                // that codes no MV. It is the SAME array the frame header
+                // wrote (`gm_field`, above), converted through the one
+                // `WarpParams` conversion, so the header and the per-block
+                // walk cannot disagree about a reference's model.
+                gm_wmtype: core::array::from_fn(|i| {
+                    crate::port_entropy_inter::gm::WarpParams::from(gm_field[i]).wmtype
+                }),
                 cur_order_hint: display_order as i32,
                 ref_order_hint,
                 // C `mfmv_controls` (enc_mode_config.c:8853) for the VALUE
@@ -3811,7 +3852,7 @@ impl EncodePipeline {
                         mi_row_end: mi_rows,
                     },
                     sb_mi_size: (sb_size / 4) as i32,
-                    global_motion: [svtav1_types::motion::WarpedMotionParams::default(); 8],
+                    global_motion: gm_field,
                     allow_high_precision_mv: st.allow_high_precision_mv,
                     force_integer_mv: st.force_integer_mv,
                     use_ref_frame_mvs: st.use_ref_frame_mvs,
@@ -4115,6 +4156,8 @@ impl EncodePipeline {
                     frame_h: h,
                     sb_size,
                     gm_wmtype: st.gm_wmtype,
+                    global_motion: gm_field,
+                    gm_skip_identity,
                     ifs: crate::inter_md_arm::IfsFrameKnobs {
                         smooth_bias: false, // the refusal above holds the first term off
                         tx_bias: self.hdr.tx_bias > 0,
@@ -6835,12 +6878,10 @@ impl EncodePipeline {
                         enable_warped_motion: seq_tools.enable_warped_motion,
                     },
                     self.scs_tpl(),
-                    // C's own GM verdict for this frame — the SEARCH's result
-                    // when one ran, the derivation's when it did not, and NOT
-                    // `gm_level != 0`, which is a fact about the preset.
-                    // `gm_models` is `None` only when a search was needed and
-                    // could not run, which `gm_search_config_error` already
-                    // refused above.
+                    // Retained as an ASSERTION input, not a refusal: the
+                    // header now codes the real models. `gm_models` is `None`
+                    // only when a search was needed and could not run, which
+                    // `gm_search_config_error` still refuses above.
                     gm_models.as_ref().is_none_or(|m| !m.is_gm_on),
                 )
                 .map_err(|e| {
@@ -6856,17 +6897,32 @@ impl EncodePipeline {
                              InterHdrError). This port's TPL is structurally off (aq_mode 0), \
                              so reaching this means the aq_mode refusal was lifted without \
                              porting r0 [C: accepts]",
+                        // RETIRED: `inter_signal` no longer raises this — global
+                        // motion is coded. The arm stays because the variant is
+                        // public API and a `match` must be total.
                         crate::inter_hdr_arm::InterHdrError::GlobalMotionNotImplemented =>
                             "global motion is not implemented: the inter frame header writer \
-                             reached global_motion_params() with a frame whose \
-                             svt_aom_global_motion_estimation derivation did not prove every \
-                             reference IDENTITY (crate::port_global_me) — see the \
-                             gm_search_config_error refusal, which is the one a caller should see \
-                             [C: accepts]",
+                             reached global_motion_params() with a model it could not code. \
+                             This refusal is RETIRED — `port_entropy_inter::gm::\
+                             write_global_motion` codes the frame's real models — and reaching \
+                             it means a caller constructed the variant by hand [C: accepts]",
                     }))
                 })?,
             )
         };
+
+        // The header's `global_motion_params()`. `inter_signal` leaves both
+        // arrays IDENTITY (it has no access to the search); they are filled
+        // here from the same two values the tile's mode decision uses, so the
+        // header and the pack cannot disagree about the model a GLOBALMV block
+        // was priced against.
+        if let Some(signal) = inter_signal.as_mut() {
+            for i in 0..8 {
+                signal.global_motion[i] = gm_field[i].into();
+                signal.ref_global_motion[i] = ref_gm_field[i].into();
+            }
+            signal.sync_is_global();
+        }
 
         if let (Some(signal), Some(fg)) = (inter_signal.as_mut(), film_grain.as_ref()) {
             let is_b = pic_decision
@@ -7301,6 +7357,17 @@ impl EncodePipeline {
         }
         let ref_frame = ReferenceFrame {
             padded: Some(padded_ref),
+            // C `EbReferenceObject::global_motion` — what a later frame that
+            // names this picture in `primary_ref_frame` delta-codes against.
+            // C substitutes IDENTITY for an I_SLICE reference at READ time
+            // (pic_manager_process.c:833); this stores IDENTITY for a key frame
+            // at WRITE time, which is the same value with one fewer place to
+            // get the slice type wrong.
+            global_motion: if is_key {
+                [svtav1_types::motion::WarpedMotionParams::default(); 8]
+            } else {
+                gm_field
+            },
             y_plane: recon,
             // 4:2:0 chroma recon, empty on the monochrome path. Inter
             // prediction needs all three planes; see `ReferenceFrame::u_plane`.
@@ -8246,17 +8313,24 @@ impl EntropyCtx {
             stride: env.mi_stride,
             base: mi_row * env.mi_stride + mi_col,
         };
-        // C `svt_aom_generate_av1_mvp_table`'s `gm_mv` for an IDENTITY
-        // global-motion model is the zero MV; the header refuses any other
-        // model (`inter_hdr_arm::inter_signal`), so this is the model the
-        // frame actually signalled rather than an assumption.
-        let stack = crate::inter_mvp::setup_ref_mv_list(
-            &grid,
-            &ctx,
-            &env.mvp_env(),
-            crate::inter_mvp::av1_ref_frame_type(d.ref_frame),
-            [svtav1_types::motion::Mv::ZERO; 2],
-        );
+        // C `svt_aom_generate_av1_mvp_table`'s `gm_mv` — the block-centre
+        // projection of THIS reference's global-motion model
+        // (adaptive_mv_pred.c:1372-1394).
+        //
+        // This was a hardcoded ZERO with a comment saying the header refuses
+        // any non-identity model. The header no longer refuses one, and a
+        // zero here is not a conservative default: `setup_ref_mv_list` FILLS
+        // the tail of the stack with `gm_mv[0]` (:1310), so a frame with a
+        // real model differences every under-populated block's MV against a
+        // predictor the DECODER does not share. MEASURED on `crop:` CID22 256
+        // at a 33/32 zoom, preset 2: block mi(0,0) coded `pmv=(0,0)` where the
+        // decoder rebuilds (30,30), and 1557 of 4096 mi units diverged.
+        let ref_frame_type = crate::inter_mvp::av1_ref_frame_type(d.ref_frame);
+        let mvp_env = env.mvp_env();
+        let gm_mv =
+            crate::inter_mvp::gm_mv_candidates_for(&mvp_env, ref_frame_type, bsize, mi_col, mi_row);
+        let stack =
+            crate::inter_mvp::setup_ref_mv_list(&grid, &ctx, &mvp_env, ref_frame_type, gm_mv);
         let pred = crate::inter_mvp::get_av1_mv_pred_drl(
             &stack,
             d.ref_frame[1] > 0,
@@ -9565,10 +9639,11 @@ fn encode_block_syntax(
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_INTERDBG").is_some() {
             std::eprintln!(
-                "IDBG mi=({},{}) bs={:?} mm={:?} npr={} mv=({},{}) pmv=({},{}) imc={} drl={:?} nb_up={} nb_left={} nbA={:?} nbL={:?}",
+                "IDBG mi=({},{}) bs={:?} mode={:?} mm={:?} npr={} mv=({},{}) pmv=({},{}) imc={} drl={:?} nb_up={} nb_left={} nbA={:?} nbL={:?}",
                 block_y / 4,
                 block_x / 4,
                 info.bsize,
+                info.mode,
                 info.motion_mode,
                 info.num_proj_ref,
                 info.mv[0].y,
@@ -10858,10 +10933,23 @@ fn bd10_tree_supported(
                 }
             }
             let intra_ok = match d.inter.as_deref() {
-                Some(ic) => !matches!(
-                    ic.motion_mode,
-                    crate::port_entropy_inter::modes::MotionMode::ObmcCausal
-                ),
+                Some(ic) => {
+                    // A SUB-8 inter leaf's chroma covers the parent 8x8 and C
+                    // stitches it from the covered cells' own MVs
+                    // (`inter_chroma_4xn_pred`). The 8-bit arm ports that
+                    // (`inter_md_arm::predict_inter_chroma_sub8`); the 10-bit
+                    // post-pass has no mi grid to walk, so it would predict
+                    // the whole area from THIS block's MV — the right samples
+                    // in the wrong places wherever the sibling chose a
+                    // different vector. Dropping the frame back to the u8
+                    // output is the same fall-back-don't-miscode contract
+                    // every other clause here has.
+                    let sub8_chroma = d.width < 8 || d.height < 8;
+                    !matches!(
+                        ic.motion_mode,
+                        crate::port_entropy_inter::modes::MotionMode::ObmcCausal
+                    ) && !sub8_chroma
+                }
                 None => true,
             };
             intra_ok && !paletted

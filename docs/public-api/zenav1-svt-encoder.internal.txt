@@ -9,13 +9,13 @@
 
 ## summary
 #
-#   inherent methods                          299
-#   trait roster entries (type × trait)       455
+#   inherent methods                          303
+#   trait roster entries (type × trait)       461
 #
 # per-module pub lines:
-#   svtav1_encoder                  299
+#   svtav1_encoder                  303
 
-## items (299 lines)
+## items (303 lines)
 
 pub fn svtav1_encoder::cdef::CdefFrameParams::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::cdef::CdefPick::assert_fields_are_eq(&self)
@@ -24,6 +24,8 @@ pub fn svtav1_encoder::chroma_q::ChromaQDeltas::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::deblock::LfLevels::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::dlf_arm::DlfPick::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::dlf_arm::RefDlfState::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::enhancements::ZenEnhancement::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::enhancements::ZenEnhancements::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::entropy::context::SegIdPosition::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::entropy::mv_coding::MvJointType::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::entropy::mv_coding::MvSubpelPrecision::assert_fields_are_eq(&self)
@@ -311,13 +313,15 @@ pub fn svtav1_encoder::port_tune_vmaf::VmafPreprocess::assert_fields_are_eq(&sel
 pub fn svtav1_encoder::quant::CoeffLvl::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::quant::QuantTable::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::rate_control::RcMode::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::reference::SvtReference::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::sb128_geom::ResolutionRange::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::sc_detect::ScAaCounts::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::sc_detect::ScArm::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::sc_detect::ScClasses::assert_fields_are_eq(&self)
+pub fn svtav1_encoder::speed_config::NativePreset::assert_fields_are_eq(&self)
 pub fn svtav1_encoder::tx_bias::BiasModeClass::assert_fields_are_eq(&self)
 
-## trait impls (455 types)
+## trait impls (461 types)
 
 svtav1_encoder::cdef::CdefFrameParams: TrivialClone
 svtav1_encoder::cdef::CdefStats: TrivialClone
@@ -328,6 +332,8 @@ svtav1_encoder::dist_facade::FacadeMode: TrivialClone
 svtav1_encoder::dlf_arm::DlfPick: TrivialClone
 svtav1_encoder::dlf_arm::DlfPickInputs<'a>: TrivialClone
 svtav1_encoder::dlf_arm::RefDlfState: TrivialClone
+svtav1_encoder::enhancements::ZenEnhancement: TrivialClone
+svtav1_encoder::enhancements::ZenEnhancements: TrivialClone
 svtav1_encoder::entropy::context::SegIdPosition: TrivialClone
 svtav1_encoder::entropy::mv_coding::MvJointType: TrivialClone
 svtav1_encoder::entropy::mv_coding::MvSubpelPrecision: TrivialClone
@@ -346,6 +352,7 @@ svtav1_encoder::inter_hdr_arm::InterHdrError: TrivialClone
 svtav1_encoder::inter_hdr_arm::SeqInterTools: TrivialClone
 svtav1_encoder::inter_md_arm::IfsFrameKnobs: TrivialClone
 svtav1_encoder::inter_md_arm::OrderHints: TrivialClone
+svtav1_encoder::inter_md_arm::WarpSamples: TrivialClone
 svtav1_encoder::inter_me::context::Me8x8VarCtrls: TrivialClone
 svtav1_encoder::inter_me::context::MeCandidate: TrivialClone
 svtav1_encoder::inter_me::context::MeDsRef<'a>: TrivialClone
@@ -371,6 +378,7 @@ svtav1_encoder::inter_mvp::InterMvpEnv<'a>: TrivialClone
 svtav1_encoder::inter_mvp::MvRef: TrivialClone
 svtav1_encoder::inter_mvp::OrderHintInfo: TrivialClone
 svtav1_encoder::inter_mvp::TplMvRef: TrivialClone
+svtav1_encoder::inter_pred_arm::Sub8ChromaMi: TrivialClone
 svtav1_encoder::inter_search_arm::SqMeState: TrivialClone
 svtav1_encoder::intra_edge::TileMi: TrivialClone
 svtav1_encoder::intra_open_loop::Neighbours<'a>: TrivialClone
@@ -764,6 +772,7 @@ svtav1_encoder::quant::CoeffLvl: TrivialClone
 svtav1_encoder::quant::EobCosts: TrivialClone
 svtav1_encoder::quant::QuantTable: TrivialClone
 svtav1_encoder::rate_control::RcMode: TrivialClone
+svtav1_encoder::reference::SvtReference: TrivialClone
 svtav1_encoder::restoration::RestUnit: TrivialClone
 svtav1_encoder::restoration::WnFilterCtrls: TrivialClone
 svtav1_encoder::sb128_geom::ResolutionRange: TrivialClone
@@ -773,4 +782,5 @@ svtav1_encoder::sc_detect::ScArm: TrivialClone
 svtav1_encoder::sc_detect::ScClasses: TrivialClone
 svtav1_encoder::sc_detect::ScDerivation: TrivialClone
 svtav1_encoder::segmentation::RoiMapEvt<'a>: TrivialClone
+svtav1_encoder::speed_config::NativePreset: TrivialClone
 svtav1_encoder::tx_bias::BiasModeClass: TrivialClone

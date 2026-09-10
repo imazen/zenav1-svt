@@ -273,7 +273,15 @@ pub(super) fn ifs_at_mds3(
         // follows the search (:3838) rebuilds luma and, with `mds_do_chroma`
         // at MDS3, both chroma planes with the new pair. The port carries
         // chroma with luma (§1s item 6), so both are rebuilt here.
-        match (g.has_uv, padded.uv.as_ref()) {
+        // C `blk_geom->bwidth_uv` is `MAX(4, bwidth >> 1)`, and a sub-8 block's
+        // chroma is stitched from the covered cells rather than predicted from
+        // this block's MV — see `inter_md_arm::predict_inter_chroma_sub8`. This
+        // arm used to rebuild every block's chroma as `w / 2` at stride
+        // `w / 2`, which on a 4xN leaf wrote the right samples into the wrong
+        // places inside a buffer the funnel reads at stride `max(w, 8) / 2`.
+        let sub8 = w < 8 || h < 8;
+        let cw = w.max(8) / 2;
+        match (g.has_uv && !sub8, padded.uv.as_ref()) {
             (true, Some((refu, refv))) => crate::inter_pred_arm::predict_inter_yuv(
                 (&padded.y, refu, refv),
                 abs_x,
@@ -289,7 +297,7 @@ pub(super) fn ifs_at_mds3(
                 w,
                 &mut ic.u_pred,
                 &mut ic.v_pred,
-                w / 2,
+                cw,
             ),
             _ => crate::inter_pred_arm::predict_inter_luma(
                 &padded.y,
@@ -305,6 +313,26 @@ pub(super) fn ifs_at_mds3(
                 pred,
                 w,
             ),
+        }
+        if g.has_uv && sub8 {
+            crate::inter_md_arm::predict_inter_chroma_sub8(
+                &im.padded_by_ref,
+                grid,
+                im.mi_cols,
+                abs_x,
+                abs_y,
+                w,
+                h,
+                ic.ref_frame[0],
+                ic.mv[0],
+                ic.interp_filters,
+                im.sb_size,
+                im.frame_w,
+                im.frame_h,
+                &mut ic.u_pred,
+                &mut ic.v_pred,
+                cw,
+            );
         }
     }
     // :2205-2208 withdraws `skip_mode_allowed` when the pair is non-zero.

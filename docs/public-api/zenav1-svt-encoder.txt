@@ -6,28 +6,28 @@
 # impls omitted; re-export duplicates annotated `[also: path]`.
 # DO NOT EDIT BY HAND — commit regenerated changes with the code.
 #
-# files: zenav1-svt-encoder.txt 7961 lines (supported surface) | zenav1-svt-encoder.features.txt 0 added (features: fallible-alloc,std,symtrace,unchecked_entropy,unsafe_encoding) | zenav1-svt-encoder.internal.txt 754 lines (754 hidden + 0 excluded-feature)
-# arch-unique surface: aarch64 12
+# files: zenav1-svt-encoder.txt 8051 lines (supported surface) | zenav1-svt-encoder.features.txt 0 added (features: fallible-alloc,std,symtrace,unchecked_entropy,unsafe_encoding) | zenav1-svt-encoder.internal.txt 764 lines (764 hidden + 0 excluded-feature)
+# arch-unique surface: aarch64 12 | x86_64 12
 
 ## summary
 #
-#   pub modules                               183
-#   pub types (struct/enum/trait/alias)       625
-#   pub consts/statics                        973
-#   free functions                           1403
-#   inherent methods                          322
-#   struct fields                            3698
-#   enum variants                             423
+#   pub modules                               185
+#   pub types (struct/enum/trait/alias)       635
+#   pub consts/statics                        982
+#   free functions                           1414
+#   inherent methods                          328
+#   struct fields                            3739
+#   enum variants                             427
 #   re-exports                                  2
-#   trait roster entries (type × trait)      2430
-#   auto-trait-complete types                 585
-#   auto-trait exceptions                       6
+#   trait roster entries (type × trait)      2469
+#   auto-trait-complete types                 592
+#   auto-trait exceptions                       7
 #
 # per-module pub lines:
-#   (root)                           46
-#   svtav1_encoder                 7583
+#   (root)                           53
+#   svtav1_encoder                 7659
 
-## items (7401 lines)
+## items (7482 lines)
 
 pub mod svtav1_encoder
 pub use svtav1_encoder::EncodeError
@@ -38,7 +38,7 @@ pub const svtav1_encoder::bd10::FULL_LAMBDA_BD10_MULT: u64
 pub static svtav1_encoder::bd10::AC_QLOOKUP_10: [i16; 256]
 pub static svtav1_encoder::bd10::DC_QLOOKUP_10: [i16; 256]
 pub fn svtav1_encoder::bd10::ac_qlookup_10(u8) -> i16
-pub fn svtav1_encoder::bd10::allintra_hbd_md(u8, u8) -> u8
+pub fn svtav1_encoder::bd10::allintra_hbd_md(u8, i8) -> u8
 pub fn svtav1_encoder::bd10::clip_pixel_highbd(i32, u8) -> u16
 pub fn svtav1_encoder::bd10::dc_qlookup_10(u8) -> i16
 pub fn svtav1_encoder::bd10::inv_txfm_range_max(u8) -> i32
@@ -66,6 +66,7 @@ pub fn svtav1_encoder::cdef::CdefPick::fb_strengths(&self, usize, usize) -> (u8,
 pub fn svtav1_encoder::cdef::CdefPick::signal(&self) -> svtav1_encoder::entropy::obu::CdefSignal
 pub fn svtav1_encoder::cdef::CdefPick::single(svtav1_encoder::cdef::CdefFrameParams) -> Self
 pub struct svtav1_encoder::cdef::CdefSearchCfg
+pub svtav1_encoder::cdef::CdefSearchCfg::chroma_search: alloc::vec::Vec<bool>
 pub svtav1_encoder::cdef::CdefSearchCfg::first_pass_num: usize
 pub svtav1_encoder::cdef::CdefSearchCfg::fs: alloc::vec::Vec<i32>
 pub svtav1_encoder::cdef::CdefSearchCfg::subsampling: usize
@@ -73,7 +74,7 @@ pub svtav1_encoder::cdef::CdefSearchCfg::zero_fs_cost_bias: u16
 pub struct svtav1_encoder::cdef::CdefStats
 pub svtav1_encoder::cdef::CdefStats::changed_px: u64
 pub svtav1_encoder::cdef::CdefStats::filtered_px: u64
-pub fn svtav1_encoder::cdef::allintra_preset_uses_cdef_search(u8) -> bool
+pub fn svtav1_encoder::cdef::allintra_preset_uses_cdef_search(i8) -> bool
 pub fn svtav1_encoder::cdef::apply_cdef_frame(&mut [u8], &mut [u8], &mut [u8], usize, usize, bool, &svtav1_encoder::deblock::DeblockGeom, &svtav1_encoder::cdef::CdefPick) -> svtav1_encoder::cdef::CdefStats
 pub fn svtav1_encoder::cdef::apply_cdef_frame_hbd(&mut [u16], &mut [u16], &mut [u16], usize, usize, bool, &svtav1_encoder::deblock::DeblockGeom, &svtav1_encoder::cdef::CdefPick, u8)
 pub fn svtav1_encoder::cdef::cdef_search_cfg_from_ctrls(&svtav1_encoder::port_enc_mode_config::cdef_search::CdefSearchControls, u16) -> svtav1_encoder::cdef::CdefSearchCfg
@@ -146,9 +147,9 @@ pub svtav1_encoder::depth_refine::DrCtrls::s1_th: i64
 pub svtav1_encoder::depth_refine::DrCtrls::s2_th: i64
 pub svtav1_encoder::depth_refine::DrCtrls::split_rate_th: u64
 pub svtav1_encoder::depth_refine::DrCtrls::unavail_mode: u8
-pub fn svtav1_encoder::depth_refine::DrCtrls::for_arm(svtav1_encoder::sc_detect::ScArm, u8, bool, u32) -> Self
-pub fn svtav1_encoder::depth_refine::DrCtrls::for_preset(u8) -> Self
-pub fn svtav1_encoder::depth_refine::DrCtrls::for_preset_sc(u8, bool) -> Self
+pub fn svtav1_encoder::depth_refine::DrCtrls::for_arm(svtav1_encoder::sc_detect::ScArm, i8, bool, u32) -> Self
+pub fn svtav1_encoder::depth_refine::DrCtrls::for_preset(i8) -> Self
+pub fn svtav1_encoder::depth_refine::DrCtrls::for_preset_sc(i8, bool) -> Self
 pub struct svtav1_encoder::depth_refine::RefScan
 pub svtav1_encoder::depth_refine::RefScan::children: core::option::Option<alloc::boxed::Box<[svtav1_encoder::depth_refine::RefScan; 4]>>
 pub svtav1_encoder::depth_refine::RefScan::split_flag: bool
@@ -197,6 +198,16 @@ pub svtav1_encoder::encode_loop::EncodeBlockResult::recon: alloc::vec::Vec<u8>
 pub fn svtav1_encoder::encode_loop::encode_block(&[u8], usize, &[u8], usize, usize, usize, u8) -> svtav1_encoder::encode_loop::EncodeBlockResult
 pub fn svtav1_encoder::encode_loop::encode_block_tx(&[u8], usize, &[u8], usize, usize, usize, u8, svtav1_types::transform::TxType) -> svtav1_encoder::encode_loop::EncodeBlockResult
 pub fn svtav1_encoder::encode_loop::encode_block_tx_cq(&[u8], usize, &[u8], usize, usize, usize, u8, svtav1_types::transform::TxType, core::option::Option<&svtav1_encoder::quant::CodingQuantCfg>, usize, u8) -> svtav1_encoder::encode_loop::EncodeBlockResult
+pub mod svtav1_encoder::enhancements
+pub enum svtav1_encoder::enhancements::ZenEnhancement
+pub svtav1_encoder::enhancements::ZenEnhancement::AomIntraEdgeFilter
+pub svtav1_encoder::enhancements::ZenEnhancement::AomRestorationUnitSearch
+pub const fn svtav1_encoder::enhancements::ZenEnhancement::id(self) -> &'static str
+pub struct svtav1_encoder::enhancements::ZenEnhancements
+pub const fn svtav1_encoder::enhancements::ZenEnhancements::contains(self, svtav1_encoder::enhancements::ZenEnhancement) -> bool
+pub const fn svtav1_encoder::enhancements::ZenEnhancements::is_empty(self) -> bool
+pub fn svtav1_encoder::enhancements::ZenEnhancements::validate(self, i8, bool, bool) -> core::result::Result<(), &'static str>
+pub const fn svtav1_encoder::enhancements::ZenEnhancements::with(self, svtav1_encoder::enhancements::ZenEnhancement) -> Self
 pub mod svtav1_encoder::entropy
 pub mod svtav1_encoder::entropy::cdf
 pub const svtav1_encoder::entropy::cdf::CDF_INIT_TOP: u16
@@ -696,16 +707,19 @@ pub svtav1_encoder::entropy::obu::InterSignal::allow_high_precision_mv: bool
 pub svtav1_encoder::entropy::obu::InterSignal::allow_warped_motion: core::option::Option<bool>
 pub svtav1_encoder::entropy::obu::InterSignal::error_resilient_mode: bool
 pub svtav1_encoder::entropy::obu::InterSignal::film_grain_ref_idx: core::option::Option<u8>
+pub svtav1_encoder::entropy::obu::InterSignal::global_motion: [svtav1_encoder::port_entropy_inter::gm::WarpParams; 8]
 pub svtav1_encoder::entropy::obu::InterSignal::interpolation_filter: core::option::Option<u8>
 pub svtav1_encoder::entropy::obu::InterSignal::is_global: [bool; 7]
 pub svtav1_encoder::entropy::obu::InterSignal::is_motion_mode_switchable: bool
 pub svtav1_encoder::entropy::obu::InterSignal::order_hint: u8
 pub svtav1_encoder::entropy::obu::InterSignal::primary_ref_frame: u8
 pub svtav1_encoder::entropy::obu::InterSignal::ref_frame_idx: [u8; 7]
+pub svtav1_encoder::entropy::obu::InterSignal::ref_global_motion: [svtav1_encoder::port_entropy_inter::gm::WarpParams; 8]
 pub svtav1_encoder::entropy::obu::InterSignal::reference_select: bool
 pub svtav1_encoder::entropy::obu::InterSignal::refresh_frame_flags: u8
 pub svtav1_encoder::entropy::obu::InterSignal::skip_mode_present: core::option::Option<bool>
 pub svtav1_encoder::entropy::obu::InterSignal::use_ref_frame_mvs: core::option::Option<bool>
+pub fn svtav1_encoder::entropy::obu::InterSignal::sync_is_global(&mut self)
 pub struct svtav1_encoder::entropy::obu::LrSignal
 pub svtav1_encoder::entropy::obu::LrSignal::enabled: bool
 pub svtav1_encoder::entropy::obu::LrSignal::frame_types: [u8; 3]
@@ -1038,14 +1052,19 @@ pub svtav1_encoder::inter_md_arm::InterCandOut::num_proj_ref: u8
 pub svtav1_encoder::inter_md_arm::InterCandOut::pred_mv: [svtav1_types::motion::Mv; 2]
 pub svtav1_encoder::inter_md_arm::InterCandOut::ref_frame: [i8; 2]
 pub svtav1_encoder::inter_md_arm::InterCandOut::u_pred: alloc::vec::Vec<u8>
+pub svtav1_encoder::inter_md_arm::InterCandOut::u_pred10: alloc::vec::Vec<u16>
 pub svtav1_encoder::inter_md_arm::InterCandOut::v_pred: alloc::vec::Vec<u8>
+pub svtav1_encoder::inter_md_arm::InterCandOut::v_pred10: alloc::vec::Vec<u16>
+pub svtav1_encoder::inter_md_arm::InterCandOut::wm_params_l0: svtav1_types::motion::WarpedMotionParams
 pub svtav1_encoder::inter_md_arm::InterCandOut::y_pred: alloc::vec::Vec<u8>
+pub svtav1_encoder::inter_md_arm::InterCandOut::y_pred10: alloc::vec::Vec<u16>
 pub struct svtav1_encoder::inter_md_arm::InterMdFrame<'a>
 pub svtav1_encoder::inter_md_arm::InterMdFrame::allow_high_precision_mv: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::allow_screen_content_tools: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::allow_warped_motion: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::alt_lambda_factors: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::base_update_type: svtav1_encoder::port_rc_process::FrameUpdateType
+pub svtav1_encoder::inter_md_arm::InterMdFrame::bit_depth: u8
 pub svtav1_encoder::inter_md_arm::InterMdFrame::cand_reduction: svtav1_encoder::port_enc_mode_config::encdec::CandReductionCtrls
 pub svtav1_encoder::inter_md_arm::InterMdFrame::enable_dual_filter: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::enable_interintra_compound: bool
@@ -1056,6 +1075,8 @@ pub svtav1_encoder::inter_md_arm::InterMdFrame::factor_update_type: svtav1_encod
 pub svtav1_encoder::inter_md_arm::InterMdFrame::force_integer_mv: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::frame_h: usize
 pub svtav1_encoder::inter_md_arm::InterMdFrame::frame_w: usize
+pub svtav1_encoder::inter_md_arm::InterMdFrame::global_motion: [svtav1_types::motion::WarpedMotionParams; 8]
+pub svtav1_encoder::inter_md_arm::InterMdFrame::gm_skip_identity: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::gm_wmtype: [svtav1_encoder::port_entropy_inter::modes::TransformationType; 8]
 pub svtav1_encoder::inter_md_arm::InterMdFrame::ifs: svtav1_encoder::inter_md_arm::IfsFrameKnobs
 pub svtav1_encoder::inter_md_arm::InterMdFrame::interpolation_filter: u8
@@ -1079,12 +1100,34 @@ pub svtav1_encoder::inter_md_arm::InterMdFrame::skip_mode_flag: bool
 pub svtav1_encoder::inter_md_arm::InterMdFrame::src: &'a [u8]
 pub svtav1_encoder::inter_md_arm::InterMdFrame::src_stride: usize
 pub svtav1_encoder::inter_md_arm::InterMdFrame::tile: svtav1_encoder::intrabc::TileMiBounds
+pub svtav1_encoder::inter_md_arm::InterMdFrame::wm_level: u8
 pub struct svtav1_encoder::inter_md_arm::OrderHints
 pub svtav1_encoder::inter_md_arm::OrderHints::cur_order_hint: i32
 pub svtav1_encoder::inter_md_arm::OrderHints::enable_order_hint: bool
 pub svtav1_encoder::inter_md_arm::OrderHints::order_hint_bits: u32
 pub svtav1_encoder::inter_md_arm::OrderHints::ref_order_hint: [i32; 7]
-pub fn svtav1_encoder::inter_md_arm::build_inter_candidates(&svtav1_encoder::inter_md_arm::InterMdFrame<'_>, &mut svtav1_encoder::inter_md_arm::InterBlockCtx<'_>, u64, u32) -> alloc::vec::Vec<svtav1_encoder::inter_md_arm::InterCandOut>
+pub struct svtav1_encoder::inter_md_arm::WarpRefineBlock
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::bheight: usize
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::bsize: svtav1_types::block::BlockSize
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::bwidth: usize
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::enabled: bool
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::lower_band_th: u16
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::mi_col: i32
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::mi_row: i32
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::ref_mv_count: [u8; 8]
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::refine_diag: bool
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::refine_level: u8
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::refinement_iterations: u8
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::samples: [svtav1_encoder::inter_md_arm::WarpSamples; 8]
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::shut_approx_if_not_mds0: bool
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::stacks: alloc::vec::Vec<svtav1_encoder::inter_mvp::InterMvpStack>
+pub svtav1_encoder::inter_md_arm::WarpRefineBlock::upper_band_th: u16
+pub fn svtav1_encoder::inter_md_arm::WarpRefineBlock::warp_params_for(&self, i8, svtav1_types::motion::Mv, bool, &mut svtav1_types::motion::WarpedMotionParams) -> core::option::Option<u8>
+pub struct svtav1_encoder::inter_md_arm::WarpSamples
+pub svtav1_encoder::inter_md_arm::WarpSamples::n: u8
+pub svtav1_encoder::inter_md_arm::WarpSamples::pts: [[i32; 2]; 8]
+pub svtav1_encoder::inter_md_arm::WarpSamples::pts_inref: [[i32; 2]; 8]
+pub fn svtav1_encoder::inter_md_arm::build_inter_candidates(&svtav1_encoder::inter_md_arm::InterMdFrame<'_>, &mut svtav1_encoder::inter_md_arm::InterBlockCtx<'_>, u64, u32, &mut svtav1_encoder::inter_md_arm::WarpRefineBlock) -> alloc::vec::Vec<svtav1_encoder::inter_md_arm::InterCandOut>
 pub fn svtav1_encoder::inter_md_arm::build_inter_rates(&svtav1_encoder::entropy::context::FrameContext, &svtav1_encoder::port_entropy_inter::InterCdfs) -> (svtav1_encoder::port_rd_cost::inter_cost::InterFacBits, svtav1_encoder::port_md::ref_frame_rate::RefFrameFacBits)
 pub fn svtav1_encoder::inter_md_arm::neighbors_from_grid(&[svtav1_encoder::intrabc_mvp::MvpMiEntry], i32, i32, i32, svtav1_encoder::intrabc::TileMiBounds) -> svtav1_encoder::port_entropy_inter::Neighbors
 pub fn svtav1_encoder::inter_md_arm::nmv_cost_table(&svtav1_encoder::entropy::mv_coding::NmvContext, svtav1_encoder::entropy::mv_coding::MvSubpelPrecision) -> svtav1_encoder::port_md::pme::MvCostTable
@@ -1541,7 +1584,7 @@ pub fn svtav1_encoder::inter_me_arm::FrameMe::mv_for(&self, usize, usize, u8, us
 pub fn svtav1_encoder::inter_me_arm::FrameMe::me_data_present_at_pu(&self, usize, usize, usize, usize, usize) -> bool
 pub fn svtav1_encoder::inter_me_arm::FrameMe::mv_at_pu(&self, usize, usize, usize, usize, usize) -> core::option::Option<svtav1_types::motion::Mv>
 pub struct svtav1_encoder::inter_me_arm::FrameMeParams
-pub svtav1_encoder::inter_me_arm::FrameMeParams::enc_mode: u8
+pub svtav1_encoder::inter_me_arm::FrameMeParams::enc_mode: i8
 pub svtav1_encoder::inter_me_arm::FrameMeParams::frame_is_boosted: bool
 pub svtav1_encoder::inter_me_arm::FrameMeParams::height: usize
 pub svtav1_encoder::inter_me_arm::FrameMeParams::hierarchical_levels: u8
@@ -1657,6 +1700,7 @@ pub const svtav1_encoder::inter_mvp::ALTREF_FRAME: i8 [also: svtav1_encoder::por
 pub const svtav1_encoder::inter_mvp::BWDREF_FRAME: i8 [also: svtav1_encoder::port_entropy_inter::refframe, svtav1_encoder::port_md::ref_frame_rate, svtav1_encoder::port_picstruct]
 pub const svtav1_encoder::inter_mvp::GLOBALMV: u8 [also: svtav1_encoder::port_entropy_inter::modes]
 pub const svtav1_encoder::inter_mvp::GLOBAL_GLOBALMV: u8 [also: svtav1_encoder::port_entropy_inter::modes]
+pub const svtav1_encoder::inter_mvp::GM_TRANS_ONLY_PREC_DIFF: u32 [also: svtav1_encoder::port_entropy_inter::gm]
 pub const svtav1_encoder::inter_mvp::GOLDEN_FRAME: i8 [also: svtav1_encoder::port_entropy_inter::refframe, svtav1_encoder::port_md::ref_frame_rate, svtav1_encoder::port_picstruct]
 pub const svtav1_encoder::inter_mvp::INTER_REFS_PER_FRAME: usize [also: svtav1_encoder::port_picstruct]
 pub const svtav1_encoder::inter_mvp::INTRA_FRAME: i8 [also: svtav1_encoder::port_coding_loop, svtav1_encoder::port_entropy_inter::refframe, svtav1_encoder::port_md::inject, svtav1_encoder::port_md::predicates, svtav1_encoder::port_md::ref_frame_rate]
@@ -1683,6 +1727,7 @@ pub fn svtav1_encoder::inter_mvp::check_sb_border(i32, i32, i32, i32) -> bool
 pub fn svtav1_encoder::inter_mvp::compound_ref0_mode(u8) -> u8
 pub fn svtav1_encoder::inter_mvp::compound_ref1_mode(u8) -> u8
 pub fn svtav1_encoder::inter_mvp::compute_inter_mode_ctx_light(&svtav1_encoder::intrabc_mvp::MvpGrid<'_>, &svtav1_encoder::intrabc_mvp::MvpBlockCtx, i8) -> i16
+pub fn svtav1_encoder::inter_mvp::convert_to_trans_prec(bool, i32) -> i32
 pub fn svtav1_encoder::inter_mvp::count_overlappable_neighbors(&svtav1_encoder::intrabc_mvp::MvpGrid<'_>, &svtav1_encoder::intrabc_mvp::MvpBlockCtx, usize) -> u32
 pub fn svtav1_encoder::inter_mvp::find_best_ref_mvs_from_stack(&svtav1_encoder::inter_mvp::InterMvpStack, i8, bool, bool) -> (svtav1_types::motion::Mv, svtav1_types::motion::Mv)
 pub fn svtav1_encoder::inter_mvp::find_warp_samples(&svtav1_encoder::intrabc_mvp::MvpGrid<'_>, &svtav1_encoder::intrabc_mvp::MvpBlockCtx, i8) -> (u8, [[i32; 2]; 8], [[i32; 2]; 8])
@@ -1706,9 +1751,22 @@ pub fn svtav1_encoder::inter_mvp::setup_ref_mv_list_seeded(&svtav1_encoder::intr
 pub fn svtav1_encoder::inter_mvp::symmetric_refs_gate(u8, bool, &[i8]) -> bool
 pub type svtav1_encoder::inter_mvp::RefFrameSide = [i8; 8]
 pub mod svtav1_encoder::inter_pred_arm
+pub struct svtav1_encoder::inter_pred_arm::Sub8ChromaMi
+pub svtav1_encoder::inter_pred_arm::Sub8ChromaMi::interp_filters: u32
+pub svtav1_encoder::inter_pred_arm::Sub8ChromaMi::is_inter: bool
+pub svtav1_encoder::inter_pred_arm::Sub8ChromaMi::mv: svtav1_types::motion::Mv
+pub svtav1_encoder::inter_pred_arm::Sub8ChromaMi::ref_frame: i8
+pub fn svtav1_encoder::inter_pred_arm::inter_pred_uses_warp(svtav1_encoder::port_entropy_inter::modes::MotionMode, u8, usize, usize, &svtav1_types::motion::WarpedMotionParams) -> bool
+pub fn svtav1_encoder::inter_pred_arm::predict_inter_chroma_sub8x8(&[core::option::Option<(&svtav1_encoder::picture::PaddedPlane, &svtav1_encoder::picture::PaddedPlane)>; 8], &[[svtav1_encoder::inter_pred_arm::Sub8ChromaMi; 2]; 2], usize, usize, usize, usize, usize, usize, usize, &mut [u8], &mut [u8], usize) -> bool
+pub fn svtav1_encoder::inter_pred_arm::predict_inter_chroma_whole(&svtav1_encoder::picture::PaddedPlane, &svtav1_encoder::picture::PaddedPlane, usize, usize, usize, usize, svtav1_types::motion::Mv, u32, usize, usize, usize, &mut [u8], &mut [u8], usize)
+pub fn svtav1_encoder::inter_pred_arm::predict_inter_leaf_hbd(&svtav1_encoder::picture::PaddedPlaneHbd, core::option::Option<(&svtav1_encoder::picture::PaddedPlaneHbd, &svtav1_encoder::picture::PaddedPlaneHbd)>, svtav1_encoder::port_entropy_inter::modes::MotionMode, bool, svtav1_types::motion::WarpedMotionParams, usize, usize, usize, usize, svtav1_types::motion::Mv, u32, usize, usize, usize, u8, &mut [u16], usize, &mut [u16], &mut [u16], usize)
 pub fn svtav1_encoder::inter_pred_arm::predict_inter_luma(&svtav1_encoder::picture::PaddedPlane, usize, usize, usize, usize, svtav1_types::motion::Mv, u32, usize, usize, usize, &mut [u8], usize)
 pub fn svtav1_encoder::inter_pred_arm::predict_inter_luma_pd0(&svtav1_encoder::picture::PaddedPlane, usize, usize, usize, usize, svtav1_types::motion::Mv, usize, usize, usize, &mut [u8], usize)
 pub fn svtav1_encoder::inter_pred_arm::predict_inter_yuv((&svtav1_encoder::picture::PaddedPlane, &svtav1_encoder::picture::PaddedPlane, &svtav1_encoder::picture::PaddedPlane), usize, usize, usize, usize, svtav1_types::motion::Mv, u32, usize, usize, usize, &mut [u8], usize, &mut [u8], &mut [u8], usize)
+pub fn svtav1_encoder::inter_pred_arm::predict_inter_yuv_hbd(&svtav1_encoder::picture::PaddedPlaneHbd, core::option::Option<(&svtav1_encoder::picture::PaddedPlaneHbd, &svtav1_encoder::picture::PaddedPlaneHbd)>, usize, usize, usize, usize, svtav1_types::motion::Mv, u32, usize, usize, usize, u8, &mut [u16], usize, &mut [u16], &mut [u16], usize)
+pub fn svtav1_encoder::inter_pred_arm::predict_inter_yuv_warped((&svtav1_encoder::picture::PaddedPlane, core::option::Option<(&svtav1_encoder::picture::PaddedPlane, &svtav1_encoder::picture::PaddedPlane)>), &mut svtav1_types::motion::WarpedMotionParams, usize, usize, usize, usize, svtav1_types::motion::Mv, u32, usize, usize, usize, &mut [u8], usize, &mut [u8], &mut [u8], usize)
+pub fn svtav1_encoder::inter_pred_arm::predict_inter_yuv_warped_hbd(&svtav1_encoder::picture::PaddedPlaneHbd, core::option::Option<(&svtav1_encoder::picture::PaddedPlaneHbd, &svtav1_encoder::picture::PaddedPlaneHbd)>, &mut svtav1_types::motion::WarpedMotionParams, usize, usize, usize, usize, svtav1_types::motion::Mv, u32, usize, usize, usize, u8, &mut [u16], usize, &mut [u16], &mut [u16], usize)
+pub fn svtav1_encoder::inter_pred_arm::round_uv_half(usize) -> usize
 pub mod svtav1_encoder::inter_search_arm
 pub struct svtav1_encoder::inter_search_arm::BlockSearchIn<'a>
 pub svtav1_encoder::inter_search_arm::BlockSearchIn::bh: usize
@@ -1911,7 +1969,7 @@ pub const svtav1_encoder::intrabc::MV_UPP: i32
 pub const svtav1_encoder::intrabc::MV_VALS: usize [also: svtav1_encoder::port_md::pme]
 pub const svtav1_encoder::intrabc::RD_EPB_SHIFT: u32 [also: svtav1_encoder::port_md::mv_refine]
 pub static svtav1_encoder::intrabc::INTRABC_DEFAULT_CDF: [svtav1_encoder::entropy::cdf::AomCdfProb; 3]
-pub fn svtav1_encoder::intrabc::allintra_intrabc_level(u8, bool, bool) -> u8
+pub fn svtav1_encoder::intrabc::allintra_intrabc_level(i8, bool, bool) -> u8
 pub fn svtav1_encoder::intrabc::allow_intrabc_frame(bool, bool, bool) -> bool
 pub fn svtav1_encoder::intrabc::build_dv_cost_tables(&svtav1_encoder::entropy::mv_coding::NmvContext, bool, bool) -> core::option::Option<svtav1_encoder::intrabc::MvCostTables>
 pub fn svtav1_encoder::intrabc::build_intra_bc_candidate(svtav1_types::motion::Mv, svtav1_types::motion::Mv) -> svtav1_encoder::intrabc::IbcCandidate
@@ -2332,6 +2390,7 @@ pub svtav1_encoder::partition::InterDecision::num_proj_ref: u16
 pub svtav1_encoder::partition::InterDecision::overlappable_neighbors: u32
 pub svtav1_encoder::partition::InterDecision::ref_frame: [i8; 2]
 pub svtav1_encoder::partition::InterDecision::skip_mode: bool
+pub svtav1_encoder::partition::InterDecision::wm_params: svtav1_types::motion::WarpedMotionParams
 pub struct svtav1_encoder::partition::InterMdEnv
 pub svtav1_encoder::partition::InterMdEnv::allow_high_precision_mv: bool
 pub svtav1_encoder::partition::InterMdEnv::cur_order_hint: i32
@@ -2427,7 +2486,6 @@ pub fn svtav1_encoder::pd0::lossless_tree(usize, usize, usize, usize, usize) -> 
 pub fn svtav1_encoder::pd0::pd0_pick_sb_partition(&[u8], usize, usize, usize, u32, u8, u32, u64, usize, usize, core::option::Option<&svtav1_encoder::pd0::SbVariance>, u8) -> svtav1_encoder::pd0::Pd0Tree
 pub fn svtav1_encoder::pd0::pd0_pick_sb_partition_lvl0(&[u8], usize, usize, usize, u32, u8, u32, u8, u64, usize, usize, core::option::Option<&svtav1_encoder::pd0::SbVariance>, u8) -> svtav1_encoder::pd0::Pd0Tree
 pub fn svtav1_encoder::pd0::pd0_pick_sb_partition_m6(&[u8], usize, usize, usize, u32, u8, u32, &svtav1_encoder::pd0::M6Pd0Tables, u8, bool, usize, usize, core::option::Option<&svtav1_encoder::pd0::SbVariance>, u8) -> svtav1_encoder::pd0::Pd0Tree
-pub fn svtav1_encoder::pd0::pd0_pick_sb_partition_m6_eval(&[u8], usize, usize, usize, u32, u8, u32, &svtav1_encoder::pd0::M6Pd0Tables, usize, u8, Pd0Mode, u128, bool, bool, usize, usize, usize, usize, core::option::Option<&svtav1_encoder::pd0::SbVariance>, u8, core::option::Option<(&[u8], usize)>, core::option::Option<&svtav1_encoder::pd0::Pd0InterRef<'_>>) -> svtav1_encoder::pd0::Pd0Eval
 pub fn svtav1_encoder::pd0::pd0_pick_sb_partition_video(&[u8], usize, usize, usize, u32, u8, u32, &svtav1_encoder::pd0::M6Pd0Tables, u8, u8, bool, bool, bool, u64, usize, usize, usize, usize, core::option::Option<&svtav1_encoder::pd0::SbVariance>, u8, core::option::Option<(&[u8], usize)>, core::option::Option<&svtav1_encoder::pd0::Pd0InterRef<'_>>) -> svtav1_encoder::pd0::Pd0Tree
 pub fn svtav1_encoder::pd0::pd0_pick_sb_partition_video_eval(&[u8], usize, usize, usize, u32, u8, u32, &svtav1_encoder::pd0::M6Pd0Tables, u8, u8, bool, bool, bool, u64, usize, usize, usize, usize, core::option::Option<&svtav1_encoder::pd0::SbVariance>, u8, core::option::Option<(&[u8], usize)>, bool, core::option::Option<&svtav1_encoder::pd0::Pd0InterRef<'_>>) -> svtav1_encoder::pd0::Pd0Eval
 pub mod svtav1_encoder::perceptual
@@ -2468,18 +2526,22 @@ pub svtav1_encoder::picture::GopStructure::mini_gop_size: u32
 pub fn svtav1_encoder::picture::GopStructure::get_temporal_layer(&self, u32) -> u8
 pub fn svtav1_encoder::picture::GopStructure::is_key_frame(&self, u64) -> bool
 pub fn svtav1_encoder::picture::GopStructure::new(u8, u32) -> Self
-pub struct svtav1_encoder::picture::PaddedPlane
-pub svtav1_encoder::picture::PaddedPlane::border: usize
-pub svtav1_encoder::picture::PaddedPlane::buf: alloc::vec::Vec<u8>
-pub svtav1_encoder::picture::PaddedPlane::height: usize
-pub svtav1_encoder::picture::PaddedPlane::origin: usize
-pub svtav1_encoder::picture::PaddedPlane::stride: usize
-pub svtav1_encoder::picture::PaddedPlane::width: usize
-pub fn svtav1_encoder::picture::PaddedPlane::at(&self, isize, isize) -> u8
-pub fn svtav1_encoder::picture::PaddedPlane::from_plane(&[u8], usize, usize, usize) -> Self
+pub struct svtav1_encoder::picture::PaddedPlaneT<T> [also: svtav1_encoder::restoration]
+pub svtav1_encoder::picture::PaddedPlaneT::border: usize
+pub svtav1_encoder::picture::PaddedPlaneT::buf: alloc::vec::Vec<T>
+pub svtav1_encoder::picture::PaddedPlaneT::height: usize
+pub svtav1_encoder::picture::PaddedPlaneT::origin: usize
+pub svtav1_encoder::picture::PaddedPlaneT::stride: usize
+pub svtav1_encoder::picture::PaddedPlaneT::width: usize
+pub fn svtav1_encoder::picture::PaddedPlaneT<T>::at(&self, isize, isize) -> T
+pub fn svtav1_encoder::picture::PaddedPlaneT<T>::from_plane(&[T], usize, usize, usize) -> Self
 pub struct svtav1_encoder::picture::PaddedRef
+pub svtav1_encoder::picture::PaddedRef::hbd: core::option::Option<svtav1_encoder::picture::PaddedRefHbd>
 pub svtav1_encoder::picture::PaddedRef::uv: core::option::Option<(svtav1_encoder::picture::PaddedPlane, svtav1_encoder::picture::PaddedPlane)>
 pub svtav1_encoder::picture::PaddedRef::y: svtav1_encoder::picture::PaddedPlane
+pub struct svtav1_encoder::picture::PaddedRefHbd
+pub svtav1_encoder::picture::PaddedRefHbd::uv: core::option::Option<(svtav1_encoder::picture::PaddedPlaneHbd, svtav1_encoder::picture::PaddedPlaneHbd)>
+pub svtav1_encoder::picture::PaddedRefHbd::y: svtav1_encoder::picture::PaddedPlaneHbd
 pub struct svtav1_encoder::picture::PictureControlSet
 pub svtav1_encoder::picture::PictureControlSet::decode_order: u64
 pub svtav1_encoder::picture::PictureControlSet::display_order: u64
@@ -2500,6 +2562,7 @@ pub svtav1_encoder::picture::ReferenceFrame::cdef_y_strengths: alloc::vec::Vec<u
 pub svtav1_encoder::picture::ReferenceFrame::display_order: u64
 pub svtav1_encoder::picture::ReferenceFrame::dlf_dist_dev: i32
 pub svtav1_encoder::picture::ReferenceFrame::frame_cdfs: core::option::Option<alloc::sync::Arc<svtav1_encoder::port_frame_cdf::FrameCdfs>>
+pub svtav1_encoder::picture::ReferenceFrame::global_motion: [svtav1_types::motion::WarpedMotionParams; 8]
 pub svtav1_encoder::picture::ReferenceFrame::height: u32
 pub svtav1_encoder::picture::ReferenceFrame::hp_coded_area: u8
 pub svtav1_encoder::picture::ReferenceFrame::intra_coded_area: u8
@@ -2518,6 +2581,8 @@ pub svtav1_encoder::picture::ReferenceFrame::v_plane: alloc::vec::Vec<u8>
 pub svtav1_encoder::picture::ReferenceFrame::width: u32
 pub svtav1_encoder::picture::ReferenceFrame::y_plane: alloc::vec::Vec<u8>
 pub const svtav1_encoder::picture::REF_BORDER: usize
+pub type svtav1_encoder::picture::PaddedPlane = svtav1_encoder::picture::PaddedPlaneT<u8>
+pub type svtav1_encoder::picture::PaddedPlaneHbd = svtav1_encoder::picture::PaddedPlaneT<u16>
 pub mod svtav1_encoder::pipeline
 pub struct svtav1_encoder::pipeline::EncodePipeline
 pub svtav1_encoder::pipeline::EncodePipeline::bit_depth: u8
@@ -2526,6 +2591,7 @@ pub svtav1_encoder::pipeline::EncodePipeline::chroma_sample_position: u8
 pub svtav1_encoder::pipeline::EncodePipeline::color_description: svtav1_encoder::entropy::obu::ColorDescription
 pub svtav1_encoder::pipeline::EncodePipeline::derived_sb_size: usize
 pub svtav1_encoder::pipeline::EncodePipeline::dpb: svtav1_encoder::picture::DecodedPictureBuffer
+pub svtav1_encoder::pipeline::EncodePipeline::enhancements: svtav1_encoder::enhancements::ZenEnhancements
 pub svtav1_encoder::pipeline::EncodePipeline::film_grain: svtav1_encoder::film_grain_config::FilmGrainConfig
 pub svtav1_encoder::pipeline::EncodePipeline::frame_count: u64
 pub svtav1_encoder::pipeline::EncodePipeline::gop: svtav1_encoder::picture::GopStructure
@@ -2534,6 +2600,7 @@ pub svtav1_encoder::pipeline::EncodePipeline::height: u32
 pub svtav1_encoder::pipeline::EncodePipeline::last_cdef_signaled: core::option::Option<svtav1_encoder::cdef::CdefFrameParams>
 pub svtav1_encoder::pipeline::EncodePipeline::last_cdef_stats: svtav1_encoder::cdef::CdefStats
 pub svtav1_encoder::pipeline::EncodePipeline::last_lr_stats: ([u8; 3], usize)
+pub svtav1_encoder::pipeline::EncodePipeline::last_lr_unit_size: core::option::Option<usize>
 pub svtav1_encoder::pipeline::EncodePipeline::last_recon: core::option::Option<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>
 pub svtav1_encoder::pipeline::EncodePipeline::last_recon10_final: core::option::Option<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)>
 pub svtav1_encoder::pipeline::EncodePipeline::last_recon10_uv: core::option::Option<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)>
@@ -2542,6 +2609,7 @@ pub svtav1_encoder::pipeline::EncodePipeline::last_recon_pre_cdef: core::option:
 pub svtav1_encoder::pipeline::EncodePipeline::last_recon_unfiltered: core::option::Option<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>
 pub svtav1_encoder::pipeline::EncodePipeline::rc_config: svtav1_encoder::rate_control::RcConfig
 pub svtav1_encoder::pipeline::EncodePipeline::rc_state: svtav1_encoder::rate_control::RcState
+pub svtav1_encoder::pipeline::EncodePipeline::reference: svtav1_encoder::reference::SvtReference
 pub svtav1_encoder::pipeline::EncodePipeline::sb128_fallback: bool
 pub svtav1_encoder::pipeline::EncodePipeline::sb_size: usize
 pub svtav1_encoder::pipeline::EncodePipeline::sb_size_override: core::option::Option<usize>
@@ -2558,6 +2626,7 @@ pub svtav1_encoder::pipeline::EncodePipeline::width: u32
 pub fn svtav1_encoder::pipeline::EncodePipeline::encode_frame(&mut self, &[u8], usize) -> alloc::vec::Vec<u8>
 pub fn svtav1_encoder::pipeline::EncodePipeline::encode_frame_420(&mut self, &[u8], &[u8], &[u8], usize) -> alloc::vec::Vec<u8>
 pub fn svtav1_encoder::pipeline::EncodePipeline::new(u32, u32, u8, svtav1_encoder::rate_control::RcConfig, u8, u32) -> Self
+pub fn svtav1_encoder::pipeline::EncodePipeline::new_with_preset(u32, u32, svtav1_encoder::speed_config::NativePreset, svtav1_encoder::rate_control::RcConfig, u8, u32) -> Self
 pub fn svtav1_encoder::pipeline::EncodePipeline::try_encode_frame(&mut self, &[u8], usize) -> svtav1_types::error::EncodeResult<alloc::vec::Vec<u8>>
 pub fn svtav1_encoder::pipeline::EncodePipeline::try_encode_frame_420(&mut self, &[u8], &[u8], &[u8], usize) -> svtav1_types::error::EncodeResult<alloc::vec::Vec<u8>>
 pub fn svtav1_encoder::pipeline::EncodePipeline::try_encode_frame_420_hbd(&mut self, &[u16], &[u16], &[u16], usize) -> svtav1_types::error::EncodeResult<alloc::vec::Vec<u8>>
@@ -3774,7 +3843,6 @@ pub const svtav1_encoder::port_entropy_inter::gm::GM_ABS_TRANS_ONLY_BITS: i32
 pub const svtav1_encoder::port_entropy_inter::gm::GM_ALPHA_MAX: u16
 pub const svtav1_encoder::port_entropy_inter::gm::GM_ALPHA_PREC_BITS: u32
 pub const svtav1_encoder::port_entropy_inter::gm::GM_ALPHA_PREC_DIFF: u32
-pub const svtav1_encoder::port_entropy_inter::gm::GM_TRANS_ONLY_PREC_DIFF: u32
 pub const svtav1_encoder::port_entropy_inter::gm::GM_TRANS_PREC_BITS: u32
 pub const svtav1_encoder::port_entropy_inter::gm::GM_TRANS_PREC_DIFF: u32
 pub const svtav1_encoder::port_entropy_inter::gm::SGRPROJ_PARAMS_BITS: u32
@@ -3852,6 +3920,7 @@ pub fn svtav1_encoder::port_entropy_inter::modes::get_relative_dist(bool, u32, i
 pub const fn svtav1_encoder::port_entropy_inter::modes::have_nearmv_in_inter_mode(u8) -> bool
 pub const fn svtav1_encoder::port_entropy_inter::modes::is_directional_mode(u8) -> bool
 pub fn svtav1_encoder::port_entropy_inter::modes::is_global_mv_block(u8, svtav1_types::block::BlockSize, svtav1_encoder::port_entropy_inter::modes::TransformationType) -> bool
+pub fn svtav1_encoder::port_entropy_inter::modes::is_global_mv_block_dims(u8, usize, usize, svtav1_types::motion::TransformationType) -> bool
 pub fn svtav1_encoder::port_entropy_inter::modes::is_global_mv_block_idx(u8, usize, svtav1_types::motion::TransformationType) -> bool
 pub const fn svtav1_encoder::port_entropy_inter::modes::is_inter_compound_mode(u8) -> bool
 pub const fn svtav1_encoder::port_entropy_inter::modes::is_inter_singleref_mode(u8) -> bool
@@ -4074,6 +4143,7 @@ pub fn svtav1_encoder::port_global_me::compute_global_motion(&svtav1_encoder::po
 pub fn svtav1_encoder::port_global_me::global_motion_estimation(&svtav1_encoder::port_global_me::GmEstimationInputs<'_>) -> core::option::Option<svtav1_encoder::port_global_me::GmEstimation>
 pub fn svtav1_encoder::port_global_me::global_motion_search(&svtav1_encoder::port_global_me::GmEstimation, &svtav1_encoder::port_enc_mode_config::ctrls::GmControls, &svtav1_encoder::port_gm_correspondence::MeResultsView<'_>, &svtav1_encoder::port_gm_correspondence::GmPictureGeometry, svtav1_encoder::port_global_me::GmPlane<'_>, &svtav1_encoder::port_global_me::RefPlaneLookup<'_>, bool, u8, [u32; 2], [u32; 2], core::option::Option<&mut dyn core::ops::function::FnMut(core::fmt::Arguments<'_>)>) -> core::result::Result<svtav1_encoder::port_global_me::GmModels, svtav1_encoder::port_global_me::GmSearchError>
 pub fn svtav1_encoder::port_global_me::gm_get_params_cost(&svtav1_types::motion::WarpedMotionParams, &svtav1_types::motion::WarpedMotionParams, bool) -> i32
+pub fn svtav1_encoder::port_global_me::set_global_motion_field(&svtav1_encoder::port_global_me::GmModels, bool) -> [svtav1_types::motion::WarpedMotionParams; 8]
 pub type svtav1_encoder::port_global_me::RefPlaneLookup<'a> = (dyn core::ops::function::Fn(usize, usize) -> core::option::Option<svtav1_encoder::port_global_me::GmPlane<'a>> + 'a)
 pub mod svtav1_encoder::port_global_motion
 pub struct svtav1_encoder::port_global_motion::GmRefineCtrls
@@ -4156,10 +4226,10 @@ pub const svtav1_encoder::port_lr_level::INPUT_SIZE_360P_RANGE: u8 [also: svtav1
 pub const svtav1_encoder::port_lr_level::INPUT_SIZE_8K_RANGE: u8
 pub fn svtav1_encoder::port_lr_level::set_sg_filter_ctrls(u8) -> svtav1_encoder::port_lr_level::SgFilterCtrls
 pub fn svtav1_encoder::port_lr_level::set_wn_filter_ctrls(u8) -> svtav1_encoder::port_lr_level::WnFilterCtrlsFull
-pub fn svtav1_encoder::port_lr_level::sg_filter_level_default(u8, u8, bool) -> u8
+pub fn svtav1_encoder::port_lr_level::sg_filter_level_default(i8, u8, bool) -> u8
 pub fn svtav1_encoder::port_lr_level::sg_filter_level_rtc(u8, bool) -> u8
-pub fn svtav1_encoder::port_lr_level::wn_filter_level_allintra(u8) -> u8
-pub fn svtav1_encoder::port_lr_level::wn_filter_level_default(u8, u8, bool) -> u8
+pub fn svtav1_encoder::port_lr_level::wn_filter_level_allintra(i8) -> u8
+pub fn svtav1_encoder::port_lr_level::wn_filter_level_default(i8, u8, bool) -> u8
 pub mod svtav1_encoder::port_md
 pub mod svtav1_encoder::port_md::coding_loop
 pub struct svtav1_encoder::port_md::coding_loop::Lpd0MeCand
@@ -5891,6 +5961,7 @@ pub fn svtav1_encoder::port_preanalysis::downsample_2d(&[u8], usize, usize, usiz
 pub fn svtav1_encoder::port_preanalysis::downsample_filtering_input_picture(&svtav1_encoder::port_preanalysis::HmeEnables, &svtav1_encoder::port_preanalysis::Plane<'_>, &mut svtav1_encoder::port_preanalysis::Plane<'_>, &mut svtav1_encoder::port_preanalysis::Plane<'_>)
 pub fn svtav1_encoder::port_preanalysis::gathering_picture_statistics(bool, bool, usize, usize, bool, &[u8], usize, usize, usize, core::option::Option<(u64, u16)>, &mut svtav1_encoder::port_preanalysis::PictureStatistics)
 pub fn svtav1_encoder::port_preanalysis::generate_padding(&mut [u8], usize, usize, usize, usize, usize, usize)
+pub fn svtav1_encoder::port_preanalysis::generate_padding_t<T: core::marker::Copy>(&mut [T], usize, usize, usize, usize, usize, usize)
 pub fn svtav1_encoder::port_preanalysis::is_input_luma_dominant(u32, usize, usize, &[u8], usize, &[u8], usize) -> bool
 pub fn svtav1_encoder::port_preanalysis::pad_2b_compressed_input_picture(&mut [u8], usize, usize, usize, usize, usize) -> bool
 pub fn svtav1_encoder::port_preanalysis::pad_input_picture(&mut [u8], usize, usize, usize, usize, usize)
@@ -6128,7 +6199,7 @@ pub fn svtav1_encoder::port_rc_process::rc_init(&svtav1_encoder::port_rc_process
 pub fn svtav1_encoder::port_rc_process::rc_init_frame_stats(&svtav1_encoder::port_rc_process::FrameStatsInput<'_>) -> svtav1_encoder::port_rc_process::FrameStatsOutput
 pub fn svtav1_encoder::port_rc_process::reset_rc_param() -> svtav1_encoder::port_rc_process::PpcsRcParams
 pub fn svtav1_encoder::port_rc_process::set_rc_param(&svtav1_encoder::port_rc_process::SetRcParamInput) -> svtav1_encoder::port_rc_process::SetRcParamOutput
-pub fn svtav1_encoder::port_rc_process::stats_based_sb_lambda_modulation(u8, bool) -> bool
+pub fn svtav1_encoder::port_rc_process::stats_based_sb_lambda_modulation(i8, bool) -> bool
 pub fn svtav1_encoder::port_rc_process::update_lambda(&svtav1_encoder::port_rc_process::LambdaContext, u8, u8, u8, i64) -> u32
 pub fn svtav1_encoder::port_rc_process::update_rc_counts(bool, bool, i32, i32, i32) -> (i32, i32, i32)
 pub fn svtav1_encoder::port_rc_process::use_rtc_cbr_path(i32, bool) -> bool
@@ -7169,7 +7240,7 @@ pub fn svtav1_encoder::quant::quantize_fp(&[i32], &[u16], &svtav1_encoder::quant
 pub fn svtav1_encoder::quant::quantize_fp_hbd(&[i32], &[u16], &svtav1_encoder::quant::QuantTable, i32, &mut [i32], &mut [i32]) -> u16
 pub fn svtav1_encoder::quant::quantize_inv_quantize_still(&svtav1_encoder::quant::CodingQuantCfg, &[i32], &mut [i32], &mut [i32], &[u16], u8, usize, usize, usize, u32, bool, u8) -> u16
 pub fn svtav1_encoder::quant::rdoq_cutoffs(u8) -> (u32, u32)
-pub fn svtav1_encoder::quant::rdoq_level_allintra(u8, svtav1_encoder::quant::CoeffLvl) -> u8
+pub fn svtav1_encoder::quant::rdoq_level_allintra(i8, svtav1_encoder::quant::CoeffLvl) -> u8
 pub fn svtav1_encoder::quant::rdoq_rdmult(u32, usize) -> i64
 pub fn svtav1_encoder::quant::rdoq_rdmult_full(u32, usize, i8, bool, bool, bool) -> i64
 pub fn svtav1_encoder::quant::rdoq_rdmult_sharp(u32, usize, i8, bool) -> i64
@@ -7213,6 +7284,12 @@ pub fn svtav1_encoder::rate_control::qp_to_qindex_with_offset(u8, u8) -> u8
 pub fn svtav1_encoder::rate_control::tpl_qp_adjustment(&[u8], &[u8], usize, usize, usize) -> i8
 pub fn svtav1_encoder::rate_control::tpl_sb_qp_offsets(&[u8], &[u8], usize, usize, usize, usize) -> alloc::vec::Vec<i8>
 pub fn svtav1_encoder::rate_control::update_rc_state(&mut svtav1_encoder::rate_control::RcState, u64, u8)
+pub mod svtav1_encoder::reference
+pub enum svtav1_encoder::reference::SvtReference
+pub svtav1_encoder::reference::SvtReference::Hybrid3115
+pub svtav1_encoder::reference::SvtReference::Mainline420
+pub const fn svtav1_encoder::reference::SvtReference::id(self) -> &'static str
+pub fn svtav1_encoder::reference::SvtReference::validate_hdr_config(self, &svtav1_encoder::hdr_mode::HdrForkConfig) -> core::result::Result<(), &'static str>
 pub mod svtav1_encoder::restoration
 pub struct svtav1_encoder::restoration::FrameRestInfo
 pub svtav1_encoder::restoration::FrameRestInfo::planes: alloc::vec::Vec<svtav1_encoder::restoration::PlaneRest>
@@ -7220,7 +7297,6 @@ pub fn svtav1_encoder::restoration::FrameRestInfo::any_non_none(&self) -> bool
 pub struct svtav1_encoder::restoration::LrWalkRefs
 pub svtav1_encoder::restoration::LrWalkRefs::sgrproj: [svtav1_encoder::port_sgr_search::SgrprojInfo; 3]
 pub svtav1_encoder::restoration::LrWalkRefs::wiener: [svtav1_dsp::restoration::WienerInfo; 3]
-pub struct svtav1_encoder::restoration::PaddedPlaneT<T>
 pub svtav1_encoder::restoration::PaddedPlaneT::data: alloc::vec::Vec<T>
 pub svtav1_encoder::restoration::PaddedPlaneT::h: usize
 pub svtav1_encoder::restoration::PaddedPlaneT::origin: usize
@@ -7258,7 +7334,7 @@ pub fn svtav1_encoder::restoration::save_lr_boundaries(&[u8], &[u8], &[u8], &[u8
 pub fn svtav1_encoder::restoration::save_lr_boundaries_bd<P: svtav1_encoder::restoration::LrPixel>(&[P], &[P], &[P], &[P], &[P], &[P], usize, usize, usize, usize, bool) -> alloc::vec::Vec<svtav1_dsp::restoration::StripeBoundariesT<P>>
 pub fn svtav1_encoder::restoration::search_restoration_still(&svtav1_encoder::restoration::WnFilterCtrls, &[u8], &[u8], &[u8], &[u8], &[u8], &[u8], usize, usize, bool, i64) -> svtav1_types::error::EncodeResult<svtav1_encoder::restoration::FrameRestInfo>
 pub fn svtav1_encoder::restoration::search_restoration_still_bd<P: svtav1_encoder::restoration::LrPixel>(&svtav1_encoder::restoration::WnFilterCtrls, &svtav1_encoder::port_lr_level::SgFilterCtrls, &[P], &[P], &[P], &[P], &[P], &[P], usize, usize, bool, i64, u8) -> svtav1_types::error::EncodeResult<svtav1_encoder::restoration::FrameRestInfo>
-pub fn svtav1_encoder::restoration::wn_filter_ctrls_allintra(u8) -> svtav1_encoder::restoration::WnFilterCtrls
+pub fn svtav1_encoder::restoration::wn_filter_ctrls_allintra(i8) -> svtav1_encoder::restoration::WnFilterCtrls
 pub fn svtav1_encoder::restoration::write_lr_for_sb(&mut svtav1_encoder::entropy::writer::AomWriter, &mut svtav1_encoder::entropy::context::FrameContext, &svtav1_encoder::restoration::FrameRestInfo, &mut svtav1_encoder::restoration::LrWalkRefs, i32, i32, i32, usize, usize, bool, core::option::Option<u8>)
 pub type svtav1_encoder::restoration::PaddedPlane = svtav1_encoder::restoration::PaddedPlaneT<u8>
 pub mod svtav1_encoder::sb128_geom
@@ -7333,8 +7409,8 @@ pub svtav1_encoder::sc_detect::ScDerivation::classes: svtav1_encoder::sc_detect:
 pub svtav1_encoder::sc_detect::ScDerivation::intrabc_level: u8
 pub svtav1_encoder::sc_detect::ScDerivation::palette_level: u8
 pub fn svtav1_encoder::sc_detect::count_colors_with_threshold(&[u8], usize, usize, usize, i32) -> (bool, i32)
-pub fn svtav1_encoder::sc_detect::derive_allintra_sc(u8, &[u8], usize, usize, usize) -> svtav1_encoder::sc_detect::ScDerivation
-pub fn svtav1_encoder::sc_detect::derive_sc(svtav1_encoder::sc_detect::ScArm, u8, &[u8], usize, usize, usize) -> svtav1_encoder::sc_detect::ScDerivation
+pub fn svtav1_encoder::sc_detect::derive_allintra_sc(i8, &[u8], usize, usize, usize) -> svtav1_encoder::sc_detect::ScDerivation
+pub fn svtav1_encoder::sc_detect::derive_sc(svtav1_encoder::sc_detect::ScArm, i8, &[u8], usize, usize, usize) -> svtav1_encoder::sc_detect::ScDerivation
 pub fn svtav1_encoder::sc_detect::dilate_block(&[u8], usize, &mut [u8], usize, usize, usize)
 pub fn svtav1_encoder::sc_detect::find_dominant_value(&[u8], usize, usize, usize) -> u8
 pub fn svtav1_encoder::sc_detect::is_screen_content(&[u8], usize, usize, usize) -> svtav1_encoder::sc_detect::ScClasses
@@ -7368,6 +7444,10 @@ pub fn svtav1_encoder::segmentation::seg_qp_offset(&svtav1_types::segmentation::
 pub fn svtav1_encoder::segmentation::segment_filter_level(&svtav1_types::segmentation::SegmentationParams, usize, usize, i32, usize) -> i32
 pub fn svtav1_encoder::segmentation::setup_segmentation(&mut svtav1_types::segmentation::SegmentationParams, u8, &[[u16; 85]], u32)
 pub mod svtav1_encoder::speed_config
+pub struct svtav1_encoder::speed_config::NativePreset(_)
+pub const svtav1_encoder::speed_config::NativePreset::RESEARCH: Self
+pub const fn svtav1_encoder::speed_config::NativePreset::new(i8) -> core::option::Option<Self>
+pub const fn svtav1_encoder::speed_config::NativePreset::value(self) -> i8
 pub struct svtav1_encoder::speed_config::SpeedConfig
 pub svtav1_encoder::speed_config::SpeedConfig::enable_adst: bool
 pub svtav1_encoder::speed_config::SpeedConfig::enable_directional_modes: bool
@@ -7375,12 +7455,13 @@ pub svtav1_encoder::speed_config::SpeedConfig::enable_filter_intra: bool
 pub svtav1_encoder::speed_config::SpeedConfig::enable_temporal_filter: bool
 pub svtav1_encoder::speed_config::SpeedConfig::max_intra_candidates: u8
 pub svtav1_encoder::speed_config::SpeedConfig::max_partition_depth: u8
-pub svtav1_encoder::speed_config::SpeedConfig::preset: u8
+pub svtav1_encoder::speed_config::SpeedConfig::preset: i8
 pub svtav1_encoder::speed_config::SpeedConfig::rdo_tx_decision: bool
+pub fn svtav1_encoder::speed_config::SpeedConfig::from_native_preset(svtav1_encoder::speed_config::NativePreset) -> Self
 pub fn svtav1_encoder::speed_config::SpeedConfig::from_preset(u8) -> Self
 pub fn svtav1_encoder::speed_config::SpeedConfig::lambda_scale(&self) -> f64
-pub fn svtav1_encoder::speed_config::seq_tools_for_preset(u8, bool, usize) -> svtav1_encoder::entropy::obu::SeqTools
-pub fn svtav1_encoder::speed_config::seq_tools_video(u8, usize) -> svtav1_encoder::entropy::obu::SeqTools
+pub fn svtav1_encoder::speed_config::seq_tools_for_preset(i8, bool, usize) -> svtav1_encoder::entropy::obu::SeqTools
+pub fn svtav1_encoder::speed_config::seq_tools_video(i8, usize) -> svtav1_encoder::entropy::obu::SeqTools
 pub mod svtav1_encoder::ssim_md
 pub fn svtav1_encoder::ssim_md::spatial_full_distortion_ssim(&[u8], usize, usize, &[u8], usize, usize, usize, usize, f64) -> u64
 pub fn svtav1_encoder::ssim_md::ssim_blocks(&[u8], usize, &[u8], usize, usize, usize) -> f64
@@ -7431,7 +7512,7 @@ pub fn svtav1_encoder::var_boost::fork_variance_store(u64) -> f64
 pub mod svtav1_encoder::vartx
 pub const svtav1_encoder::vartx::MAX_VARTX_DEPTH: u8
 
-## trait impls (553 types)
+## trait impls (561 types)
 
 svtav1_encoder::cdef::CdefFrameParams: Clone, Copy, Debug, Default, Eq, PartialEq
 svtav1_encoder::cdef::CdefPick: Clone, Debug, Eq, PartialEq
@@ -7445,6 +7526,8 @@ svtav1_encoder::dlf_arm::DlfPick: Clone, Copy, Debug, Eq, PartialEq
 svtav1_encoder::dlf_arm::DlfPickInputs<'a>: Clone, Copy, Debug
 svtav1_encoder::dlf_arm::RefDlfState: Clone, Copy, Debug, Eq, PartialEq
 svtav1_encoder::encode_loop::EncodeBlockResult: Clone, Debug
+svtav1_encoder::enhancements::ZenEnhancement: Clone, Copy, Debug, Eq, PartialEq
+svtav1_encoder::enhancements::ZenEnhancements: Clone, Copy, Debug, Default, Eq, PartialEq
 svtav1_encoder::entropy::coeff::CdfCoefCtx: Clone
 svtav1_encoder::entropy::coeff::CoeffContext: Clone, Debug, Default
 svtav1_encoder::entropy::coeff_c::CoeffFc: Clone
@@ -7483,6 +7566,8 @@ svtav1_encoder::inter_hdr_arm::PipelineMdInputs: Clone, Debug
 svtav1_encoder::inter_hdr_arm::SeqInterTools: Clone, Copy, Debug
 svtav1_encoder::inter_md_arm::IfsFrameKnobs: Clone, Copy, Debug
 svtav1_encoder::inter_md_arm::OrderHints: Clone, Copy, Debug
+svtav1_encoder::inter_md_arm::WarpRefineBlock: Default
+svtav1_encoder::inter_md_arm::WarpSamples: Clone, Copy, Default
 svtav1_encoder::inter_me::context::Me8x8VarCtrls: Clone, Copy, Debug, Default
 svtav1_encoder::inter_me::context::MeB64Output: Clone, Debug, Default
 svtav1_encoder::inter_me::context::MeCandidate: Clone, Copy, Debug, Default, Eq, PartialEq
@@ -7515,6 +7600,7 @@ svtav1_encoder::inter_mvp::InterMvpStack: Clone, Debug, Default
 svtav1_encoder::inter_mvp::MvRef: Clone, Copy, Debug, Default, Eq, PartialEq
 svtav1_encoder::inter_mvp::OrderHintInfo: Clone, Copy, Debug, Default
 svtav1_encoder::inter_mvp::TplMvRef: Clone, Copy, Debug, Default
+svtav1_encoder::inter_pred_arm::Sub8ChromaMi: Clone, Copy, Debug, Default
 svtav1_encoder::inter_search_arm::BlockSearchOut: Clone, Debug, Default
 svtav1_encoder::inter_search_arm::SqMeState: Clone, Copy, Debug, Default
 svtav1_encoder::intra_edge::TileMi: Clone, Copy, Debug, Default, Eq, PartialEq
@@ -7570,8 +7656,9 @@ svtav1_encoder::pd0::TxTypeRatesDc: Clone, Copy, Debug
 svtav1_encoder::perceptual::StillImageConfig: Clone, Debug, Default
 svtav1_encoder::picture::DecodedPictureBuffer: Debug, Default
 svtav1_encoder::picture::GopStructure: Clone, Debug
-svtav1_encoder::picture::PaddedPlane: Clone, Debug
+svtav1_encoder::picture::PaddedPlaneT<T>: Clone, Debug
 svtav1_encoder::picture::PaddedRef: Clone, Debug
+svtav1_encoder::picture::PaddedRefHbd: Clone, Debug
 svtav1_encoder::picture::PictureControlSet: Debug
 svtav1_encoder::picture::ReferenceFrame: Clone, Debug
 svtav1_encoder::port_enc_dec_cdf::AvgCdfPlan: Clone, Copy, Debug, Eq, PartialEq
@@ -7668,7 +7755,7 @@ svtav1_encoder::port_entropy_inter::compound::InterIntraMode: Clone, Copy, Debug
 svtav1_encoder::port_entropy_inter::framesize::FrameSizeRefs<'a>: Clone, Copy, Debug
 svtav1_encoder::port_entropy_inter::framesize::RefPic: Clone, Copy, Debug, Default
 svtav1_encoder::port_entropy_inter::gm::SgrprojInfo: Clone, Copy, Debug, Default, Eq, PartialEq
-svtav1_encoder::port_entropy_inter::gm::WarpParams: Clone, Copy, Debug, Eq, PartialEq
+svtav1_encoder::port_entropy_inter::gm::WarpParams: Clone, Copy, Debug, Default, Eq, From<svtav1_types::motion::WarpedMotionParams>, PartialEq
 svtav1_encoder::port_entropy_inter::metadata::Metadata<'a>: Clone, Copy, Debug
 svtav1_encoder::port_entropy_inter::metadata::MetadataError: Clone, Copy, Debug, Eq, PartialEq
 svtav1_encoder::port_entropy_inter::metadata::MetadataType: Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd
@@ -7965,6 +8052,7 @@ svtav1_encoder::quant::TxbCosts: Clone
 svtav1_encoder::rate_control::RcConfig: Clone, Debug, Default
 svtav1_encoder::rate_control::RcMode: Clone, Copy, Debug, Eq, PartialEq
 svtav1_encoder::rate_control::RcState: Clone, Debug, Default
+svtav1_encoder::reference::SvtReference: Clone, Copy, Debug, Default, Eq, FromStr, PartialEq
 svtav1_encoder::restoration::FrameRestInfo: Clone, Debug
 svtav1_encoder::restoration::LrWalkRefs: Clone, Debug, Default
 svtav1_encoder::restoration::PlaneRest: Clone, Debug
@@ -7980,6 +8068,7 @@ svtav1_encoder::sc_detect::ScArm: Clone, Copy, Debug, Eq, PartialEq
 svtav1_encoder::sc_detect::ScClasses: Clone, Copy, Debug, Default, Eq, PartialEq
 svtav1_encoder::sc_detect::ScDerivation: Clone, Copy, Debug, Default
 svtav1_encoder::segmentation::RoiMapEvt<'a>: Clone, Copy, Debug
+svtav1_encoder::speed_config::NativePreset: Clone, Copy, Debug, Display, Eq, Hash, Ord, PartialEq, PartialOrd
 svtav1_encoder::speed_config::SpeedConfig: Clone, Debug
 svtav1_encoder::temporal_filter::TfConfig: Clone, Debug, Default
 svtav1_encoder::temporal_filter::TfResult: Debug
@@ -7989,29 +8078,45 @@ u8: svtav1_encoder::deblock::DlfPixel, svtav1_encoder::intrabc_pred::ReconSample
 
 ## auto traits
 
-585 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
-svtav1_encoder::deblock::DlfSearchInput<'a, P>: !RefUnwindSafe !Send !Sync !UnwindSafe
+592 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
+svtav1_encoder::deblock::DlfSearchInput<'a, P>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
 svtav1_encoder::inter_md_arm::InterBlockCtx<'a>: !UnwindSafe
+svtav1_encoder::picture::PaddedPlaneT<T>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
 svtav1_encoder::pipeline::EncodePipeline: !RefUnwindSafe !UnwindSafe
 svtav1_encoder::port_picstruct::SFrameHooks<'cfg, 'ctx>: !UnwindSafe
 svtav1_encoder::port_preanalysis::Plane<'a>: !UnwindSafe
-svtav1_encoder::restoration::PaddedPlaneT<T>: !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
+svtav1_encoder::restoration::PaddedPlaneT<T>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
 ## arch shapes (12 shapes: 12 on every recorded arch, 0 arch-unique)
 
-[aarch64] pub fn svtav1_encoder::deblock::DlfPixel::plane_<tier>(&[Self], &[Self], usize, usize) -> i64
-[aarch64] pub fn svtav1_encoder::deblock::plane_<tier>(&[u8], &[u8], usize, usize) -> i64
-[aarch64] pub fn svtav1_encoder::entropy::coeff::write_coefficients_<tier>(&mut svtav1_encoder::entropy::writer::AomWriter, &[i32], usize, usize, usize, usize, usize, u8, &mut svtav1_encoder::entropy::coeff::CdfCoefCtx)
-[aarch64] pub fn svtav1_encoder::md_subpel::second_level_check_<tier>(svtav1_types::motion::Mv, svtav1_types::motion::Mv, &mut svtav1_encoder::md_subpel::SubpelState, &svtav1_encoder::md_subpel::SubpelMvLimits, &svtav1_encoder::md_subpel::SubpelSearchVarParams<'_>, &svtav1_encoder::md_subpel::MvCostParams<'_>)
-[aarch64] pub fn u16::plane_<tier>(&[u16], &[u16], usize, usize) -> i64
-[aarch64] pub fn u8::plane_<tier>(&[u8], &[u8], usize, usize) -> i64
-[aarch64] pub svtav1_encoder::dlf_arm::DlfPick::best_filt_<tier>: i64
-[aarch64] pub svtav1_encoder::dlf_arm::DlfPick::zero_filt_<tier>: i64
-[aarch64] pub svtav1_encoder::inter_me::obmc_search::ObmcSubpelResult::<tier>: u32
-[aarch64] pub svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultSignals::spatial_<tier>: svtav1_encoder::port_enc_mode_config::encdec::SpatialSseCtrls
-[aarch64] pub svtav1_encoder::port_sgr_search::SgrprojFinish::<tier>: i64
-[aarch64] pub svtav1_encoder::port_sgr_search::SwitchableChoice::<tier>: i64
+[all] pub fn svtav1_encoder::deblock::DlfPixel::plane_<tier>(&[Self], &[Self], usize, usize) -> i64
+[all] pub fn svtav1_encoder::deblock::plane_<tier>(&[u8], &[u8], usize, usize) -> i64
+[all] pub fn svtav1_encoder::entropy::coeff::write_coefficients_<tier>(&mut svtav1_encoder::entropy::writer::AomWriter, &[i32], usize, usize, usize, usize, usize, u8, &mut svtav1_encoder::entropy::coeff::CdfCoefCtx)
+[all] pub fn svtav1_encoder::md_subpel::second_level_check_<tier>(svtav1_types::motion::Mv, svtav1_types::motion::Mv, &mut svtav1_encoder::md_subpel::SubpelState, &svtav1_encoder::md_subpel::SubpelMvLimits, &svtav1_encoder::md_subpel::SubpelSearchVarParams<'_>, &svtav1_encoder::md_subpel::MvCostParams<'_>)
+[all] pub fn u16::plane_<tier>(&[u16], &[u16], usize, usize) -> i64
+[all] pub fn u8::plane_<tier>(&[u8], &[u8], usize, usize) -> i64
+[all] pub svtav1_encoder::dlf_arm::DlfPick::best_filt_<tier>: i64
+[all] pub svtav1_encoder::dlf_arm::DlfPick::zero_filt_<tier>: i64
+[all] pub svtav1_encoder::inter_me::obmc_search::ObmcSubpelResult::<tier>: u32
+[all] pub svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultSignals::spatial_<tier>: svtav1_encoder::port_enc_mode_config::encdec::SpatialSseCtrls
+[all] pub svtav1_encoder::port_sgr_search::SgrprojFinish::<tier>: i64
+[all] pub svtav1_encoder::port_sgr_search::SwitchableChoice::<tier>: i64
 
 ## arch surface: aarch64 (12 lines)
+
+pub fn svtav1_encoder::deblock::DlfPixel::plane_sse(&[Self], &[Self], usize, usize) -> i64
+pub fn svtav1_encoder::deblock::plane_sse(&[u8], &[u8], usize, usize) -> i64
+pub fn svtav1_encoder::entropy::coeff::write_coefficients_v2(&mut svtav1_encoder::entropy::writer::AomWriter, &[i32], usize, usize, usize, usize, usize, u8, &mut svtav1_encoder::entropy::coeff::CdfCoefCtx)
+pub fn svtav1_encoder::md_subpel::second_level_check_v2(svtav1_types::motion::Mv, svtav1_types::motion::Mv, &mut svtav1_encoder::md_subpel::SubpelState, &svtav1_encoder::md_subpel::SubpelMvLimits, &svtav1_encoder::md_subpel::SubpelSearchVarParams<'_>, &svtav1_encoder::md_subpel::MvCostParams<'_>)
+pub fn u16::plane_sse(&[u16], &[u16], usize, usize) -> i64
+pub fn u8::plane_sse(&[u8], &[u8], usize, usize) -> i64
+pub svtav1_encoder::dlf_arm::DlfPick::best_filt_sse: i64
+pub svtav1_encoder::dlf_arm::DlfPick::zero_filt_sse: i64
+pub svtav1_encoder::inter_me::obmc_search::ObmcSubpelResult::sse: u32
+pub svtav1_encoder::port_enc_mode_config::encdec::EncDecDefaultSignals::spatial_sse: svtav1_encoder::port_enc_mode_config::encdec::SpatialSseCtrls
+pub svtav1_encoder::port_sgr_search::SgrprojFinish::sse: i64
+pub svtav1_encoder::port_sgr_search::SwitchableChoice::sse: i64
+
+## arch surface: x86_64 (12 lines)
 
 pub fn svtav1_encoder::deblock::DlfPixel::plane_sse(&[Self], &[Self], usize, usize) -> i64
 pub fn svtav1_encoder::deblock::plane_sse(&[u8], &[u8], usize, usize) -> i64

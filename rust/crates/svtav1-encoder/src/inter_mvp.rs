@@ -79,7 +79,7 @@ const MAX_FRAME_DISTANCE: i32 = 31;
 const MV_UPP: i32 = 1 << 14;
 const MV_LOW: i32 = -(1 << 14);
 /// C `GM_TRANS_ONLY_PREC_DIFF` (definitions.h:1741) = `WARPEDMODEL_PREC_BITS - 3`.
-const GM_TRANS_ONLY_PREC_DIFF: u32 = 16 - 3;
+pub const GM_TRANS_ONLY_PREC_DIFF: u32 = 16 - 3;
 /// C `WARPEDMODEL_PREC_BITS` (definitions.h).
 const WARPEDMODEL_PREC_BITS: u32 = 16;
 /// C `MAX_OFFSET_WIDTH` / `MAX_OFFSET_HEIGHT` (md_config_process.c:33-34).
@@ -440,8 +440,12 @@ pub fn get_relative_dist(oh: OrderHintInfo, a: i32, b: i32) -> i32 {
 }
 
 /// C `convert_to_trans_prec` (utility.h:234-240).
+///
+/// EXPORTED because `port_global_me::set_global_motion_field` applies the same
+/// rounding to a TRANSLATION model before the header codes it.
 #[inline]
-fn convert_to_trans_prec(allow_hp: bool, coor: i32) -> i32 {
+#[must_use]
+pub fn convert_to_trans_prec(allow_hp: bool, coor: i32) -> i32 {
     if allow_hp {
         round_power_of_two_signed(coor, WARPEDMODEL_PREC_BITS - 3)
     } else {

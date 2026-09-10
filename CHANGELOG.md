@@ -9,6 +9,32 @@ Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
+### Added
+
+- **Global motion is implemented** — an inter frame whose
+  `svt_aom_global_motion_estimation` fits a non-identity model now ENCODES
+  instead of refusing. `port_global_me::set_global_motion_field` (C
+  `md_config_process.c:37`) publishes the frame's `global_motion[8]`;
+  `port_entropy_inter::gm::write_global_motion` codes
+  `global_motion_params()`, delta-coded against the primary reference
+  picture's own saved models (which the DPB now carries); and the SAME array
+  feeds the MVP walk's `gm_mv`, the injector's GLOBALMV candidates, the
+  entropy walk's `gm_wmtype` and the predictor's `is_wm`. Reconstruction is
+  byte-identical to dav1d on every frame of the new
+  `rust/tools/global_motion_gate.sh`, whose zoom cells are the anti-vacuity
+  load: a zoom about the frame centre is a ROTZOOM no integer MV cancels, and
+  C fits one there. This closes three of `docs/REFUSED-CONFIGS.md`'s entries.
+
+- **Sub-8 inter chroma (`inter_chroma_4xn_pred`, C
+  `enc_inter_prediction.c:3023`)**. A 4xN / Nx4 block's chroma covers the
+  parent 8x8, so C stitches it from the covered mode-info cells' own
+  references, MVs and filters rather than predicting it from this block's MV.
+  The port sized that chroma `bwidth / 2` — 2 samples wide on a 4-wide block,
+  against C's `MAX(4, bwidth >> 1)` — so a 4xN inter leaf with chroma indexed
+  past the end of its own prediction. Now ported, including the
+  `!sub8x8_inter` fallback and the ROUND_UV origin, in both MDS0 and the MDS3
+  interpolation-filter rebuild.
+
 ### Changed
 
 - **Allocator traffic is down 84.6 %**, 6,851,798 calls to 1,055,233 against C's
@@ -24,6 +50,15 @@ Crates are not published to crates.io yet — depend by git.
   `rust/tools/heaptrack_alloc_cell.sh`.
 
 ### Fixed
+
+- **The pack's MV predictor ignored global motion**. `EncodePipeline`'s
+  per-block `setup_ref_mv_list` passed a hardcoded zero `gm_mv` with a comment
+  saying the header refuses any non-identity model. `setup_ref_mv_list` FILLS
+  the tail of every block's MV stack with `gm_mv[0]`, so on a frame with a real
+  model the pack differenced every under-populated block's MV against a
+  predictor the decoder does not share. Measured on `crop:` CID22 256 at a
+  33/32 zoom, preset 2: block `mi(0,0)` coded `pmv=(0,0)` where the decoder
+  rebuilds `(30,30)`, and 1557 of 4096 mi units diverged from dav1d.
 
 - **A hierarchical GOP no longer refuses KEY frames** (`c6b1cd158`). The
   `hierarchical_levels > 0` refusal added in `a64cfdd10` was unconditional, so a

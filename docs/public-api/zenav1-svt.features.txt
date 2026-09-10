@@ -75,5 +75,5 @@ svtav1::avif::animation::AnimationOptions: Clone, Debug, Default
 ## auto traits
 
 2 types implement all of: Freeze, RefUnwindSafe, Send, Sync, Unpin, UnwindSafe
-svtav1::avif::animation::AnimationFrame<'a, T>: !RefUnwindSafe !Send !Sync !UnwindSafe
-svtav1::avif::animation::MonochromeAnimationFrame<'a, T>: !RefUnwindSafe !Send !Sync !UnwindSafe
+svtav1::avif::animation::AnimationFrame<'a, T>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe
+svtav1::avif::animation::MonochromeAnimationFrame<'a, T>: !Freeze !RefUnwindSafe !Send !Sync !Unpin !UnwindSafe

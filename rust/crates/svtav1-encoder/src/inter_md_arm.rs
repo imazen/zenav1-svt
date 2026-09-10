@@ -233,6 +233,13 @@ pub struct InterMdFrame<'a> {
     pub bit_depth: u8,
     /// C `ppcs->global_motion[ref].wmtype`.
     pub gm_wmtype: [TransformationType; 8],
+    /// C `pcs->ppcs->global_motion[TOTAL_REFS_PER_FRAME]` — the models
+    /// `svt_aom_global_motion_estimation` fitted, as
+    /// `set_global_motion_field` published them. The injector prices GLOBALMV
+    /// against these and `gm_mv_candidates_for` projects them per block.
+    pub global_motion: [svtav1_types::motion::WarpedMotionParams; 8],
+    /// C `pcs->ppcs->gm_ctrls.skip_identity` (`set_gm_controls`, level 4 only).
+    pub gm_skip_identity: bool,
     /// The frame-level knobs of the MDS3 interpolation-filter search
     /// (`leaf_funnel::ifs`) that are not already header fields above.
     pub ifs: IfsFrameKnobs,
@@ -694,13 +701,25 @@ pub fn build_inter_candidates(
         stride: b.grid_stride,
         base: (b.org_y / 4) as i32 * b.grid_stride + (b.org_x / 4) as i32,
     };
-    // C `svt_aom_generate_av1_mvp_table`'s `gm_mv` for an IDENTITY global
-    // motion model is the zero MV; this port signals no global motion.
+    // C `svt_aom_generate_av1_mvp_table`'s `gm_mv`
+    // (adaptive_mv_pred.c:1372-1394): the block-centre projection of THIS
+    // reference's global-motion model. It is the zero MV for an IDENTITY
+    // model, which is what this used to hardcode; with the search's real
+    // models threaded through `InterMdFrame::global_motion` it is the value
+    // `setup_ref_mv_list` substitutes for a GLOBALMV neighbour, so a wrong
+    // one desyncs the DRL against the decoder's own scan.
     let mut stacks = alloc::vec![crate::inter_mvp::InterMvpStack::default(); 8];
     let mut ref_mv_count = [0u8; 8];
     for &rt in f.ref_frame_type_arr {
         let i = rt.max(0) as usize;
-        stacks[i] = setup_ref_mv_list(&grid, &ctx, &f.mvp_env, rt, [Mv::ZERO; 2]);
+        let gm_mv = crate::inter_mvp::gm_mv_candidates_for(
+            &f.mvp_env,
+            rt,
+            b.bsize as usize,
+            (b.org_x / 4) as i32,
+            (b.org_y / 4) as i32,
+        );
+        stacks[i] = setup_ref_mv_list(&grid, &ctx, &f.mvp_env, rt, gm_mv);
         ref_mv_count[i] = stacks[i].count;
     }
 
@@ -778,7 +797,6 @@ pub fn build_inter_candidates(
     let me_totals = [me_cands.len() as u8];
     let sb_me_mv = search.sb_me_mv;
 
-    let gm = [svtav1_types::motion::WarpedMotionParams::default(); 8];
     let ref_pruning = RefPruningState::default();
     // C `svt_aom_init_wm_samples` (adaptive_mv_pred.c:1752) -> the injector's
     // `num_proj_ref`. This was `[0u8; 8]`, and a zero here is not a
@@ -870,11 +888,13 @@ pub fn build_inter_candidates(
         skip_mode_ref_frame_idx_1: -1,
         is_lossless_segment: false,
         ref_frame_type_arr: f.ref_frame_type_arr,
-        global_motion: &gm,
-        // C `gm_ctrls.skip_identity`: with it set and every model IDENTITY,
-        // `inject_global_candidates` `continue`s — which is why no GLOBALMV
-        // candidate appears even though the injector runs.
-        gm_skip_identity: true,
+        global_motion: &f.global_motion,
+        // C `pcs->ppcs->gm_ctrls.skip_identity`, which
+        // `svt_aom_set_gm_controls` sets ONLY at gm_level 4: with it set and a
+        // reference's model IDENTITY, `inject_global_candidates` `continue`s.
+        // This was hardcoded `true`, which suppressed the GLOBALMV candidate C
+        // injects at every other level.
+        gm_skip_identity: f.gm_skip_identity,
         wm_sample_num: &wm_sample_num,
         ref_mv_stack: &stacks,
         ref_mv_count: &ref_mv_count,
@@ -1015,6 +1035,108 @@ pub fn build_inter_candidates(
     out
 }
 
+/// C's SUB-8 chroma arm of `av1_inter_prediction` (`enc_inter_prediction.c:3374`),
+/// for one committed-or-candidate 4xN / Nx4 block.
+///
+/// A sub-8 luma block's chroma covers the PARENT 8x8, so C does not predict it
+/// with one MV: `inter_chroma_4xn_pred` stitches it from the covered mode-info
+/// cells' own references, MVs and filters, and falls back to this block's own
+/// MV over the whole area when one of those cells is INTRA.
+///
+/// It lives here rather than in `inter_pred_arm` because it needs both the mi
+/// grid and the per-reference DPB table, and it is shared by MDS0's candidate
+/// prediction and the MDS3 interpolation-filter rebuild — which used to size
+/// chroma as `w / 2` and so wrote a 4xN block's chroma at the wrong stride.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_inter_chroma_sub8(
+    padded_by_ref: &[Option<&crate::picture::PaddedRef>; 8],
+    grid: &[crate::intrabc_mvp::MvpMiEntry],
+    grid_stride: i32,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    ref_frame: i8,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) {
+    let padded = padded_by_ref[ref_frame.max(0) as usize]
+        .expect("a sub-8 inter block names a reference with no DPB picture");
+    let Some((refu, refv)) = padded.uv.as_ref() else {
+        return;
+    };
+    let mut refs_by_frame: [Option<(&crate::picture::PaddedPlane, _)>; 8] = [None; 8];
+    for (i, slot) in refs_by_frame.iter_mut().enumerate() {
+        *slot = padded_by_ref[i].and_then(|p| p.uv.as_ref().map(|(u, v)| (u, v)));
+    }
+    // C fills `xd->mi[0]` from the block being predicted (:3036-3043); every
+    // other covered cell comes from the mi grid. Only the cells C's
+    // `row_start` / `col_start` walk reaches are read — a (-1, *) cell for a
+    // block that is not 4 HIGH would index above the frame on the first mi row.
+    let mut mis = [[crate::inter_pred_arm::Sub8ChromaMi::default(); 2]; 2];
+    let row_start: i32 = if bh == 4 { -1 } else { 0 };
+    let col_start: i32 = if bw == 4 { -1 } else { 0 };
+    for dr in row_start..=0 {
+        for dc in col_start..=0 {
+            mis[(dr + 1) as usize][(dc + 1) as usize] = if dr == 0 && dc == 0 {
+                crate::inter_pred_arm::Sub8ChromaMi {
+                    is_inter: true,
+                    ref_frame,
+                    mv,
+                    interp_filters,
+                }
+            } else {
+                let idx = ((org_y / 4) as i32 + dr) * grid_stride + (org_x / 4) as i32 + dc;
+                let e = &grid[idx as usize];
+                crate::inter_pred_arm::Sub8ChromaMi {
+                    is_inter: e.use_intrabc || e.ref_frame[0] > 0,
+                    ref_frame: e.ref_frame[0],
+                    mv: e.mv[0],
+                    interp_filters: e.interp_filters,
+                }
+            };
+        }
+    }
+    let stitched = crate::inter_pred_arm::predict_inter_chroma_sub8x8(
+        &refs_by_frame,
+        &mis,
+        org_x,
+        org_y,
+        bw,
+        bh,
+        sb_size,
+        frame_w,
+        frame_h,
+        u_out,
+        v_out,
+        uv_stride,
+    );
+    if !stitched {
+        crate::inter_pred_arm::predict_inter_chroma_whole(
+            refu,
+            refv,
+            org_x,
+            org_y,
+            bw,
+            bh,
+            mv,
+            interp_filters,
+            sb_size,
+            frame_w,
+            frame_h,
+            u_out,
+            v_out,
+            uv_stride,
+        );
+    }
+}
+
 /// One injected candidate -> its prediction and C's MDS0 rate.
 fn predict_and_price(
     f: &InterMdFrame<'_>,
@@ -1045,7 +1167,12 @@ fn predict_and_price(
         crate::port_md::predicates::MotionMode::WarpedCausal => MotionMode::WarpedCausal,
     };
     let mut y_pred = alloc::vec![0u8; b.bw * b.bh];
-    let (cw, chh) = (b.bw / 2, b.bh / 2);
+    // C `blk_geom->bwidth_uv` = `MAX(4, bwidth >> 1)` (utility.c:274), which
+    // at 4:2:0 is the same extent as `get_plane_block_size(bsize, 1, 1)` and
+    // as the funnel's own `cw`/`chh`. It was `b.bw / 2`, which is 2 on a
+    // 4-wide block — half the chroma the funnel then reads, and the reason a
+    // 4xN inter leaf indexed past the end of its own prediction.
+    let (cw, chh) = (b.bw.max(8) / 2, b.bh.max(8) / 2);
     let (mut u_pred, mut v_pred) = if b.has_uv {
         (alloc::vec![0u8; cw * chh], alloc::vec![0u8; cw * chh])
     } else {
@@ -1062,11 +1189,17 @@ fn predict_and_price(
             c.ref_frame[0]
         )
     });
-    // WARPED_CAUSAL takes a DIFFERENT C driver — `av1_inter_prediction`'s
+    // The WARP driver takes a DIFFERENT C path — `av1_inter_prediction`'s
     // `is_wm` arm, not `av1_inter_prediction_light_pd1` — so it is dispatched
     // here rather than flagged inside the translation adapter. See
     // `inter_pred_arm::predict_inter_yuv_warped`.
-    if mm == MotionMode::WarpedCausal {
+    //
+    // `is_wm` is C's OWN two-term condition, not just the motion mode: a
+    // GLOBALMV candidate is injected as SIMPLE_TRANSLATION, and with a model
+    // above TRANSLATION the decoder still warps it.
+    let is_wm =
+        crate::inter_pred_arm::inter_pred_uses_warp(mm, c.mode as u8, b.bw, b.bh, &c.wm_params_l0);
+    if is_wm {
         let mut wm = c.wm_params_l0;
         crate::inter_pred_arm::predict_inter_yuv_warped(
             (
@@ -1090,7 +1223,8 @@ fn predict_and_price(
             cw,
         );
     } else {
-        match (b.has_uv, padded.uv.as_ref()) {
+        let sub8 = b.bw < 8 || b.bh < 8;
+        match (b.has_uv && !sub8, padded.uv.as_ref()) {
             (true, Some((refu, refv))) => crate::inter_pred_arm::predict_inter_yuv(
                 (&padded.y, refu, refv),
                 b.org_x,
@@ -1123,6 +1257,32 @@ fn predict_and_price(
                 b.bw,
             ),
         }
+        // C `av1_inter_prediction`'s SUB-8 chroma arm: a 4xN / Nx4 block's
+        // chroma covers the parent 8x8, so C stitches it from the covered
+        // cells' own MVs (`inter_chroma_4xn_pred`) and falls back to this
+        // block's MV over the whole area when one of them is intra. Neither
+        // is what the luma-shaped `predict_inter_yuv` above does, which is why
+        // the sub-8 case is split out of it rather than folded in.
+        if b.has_uv && sub8 {
+            predict_inter_chroma_sub8(
+                &f.padded_by_ref,
+                b.grid,
+                b.grid_stride,
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                c.ref_frame[0],
+                c.mv[0],
+                interp_filters,
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                &mut u_pred,
+                &mut v_pred,
+                cw,
+            );
+        }
     }
 
     // The SAME prediction at true 10 bits, when the DPB carries a 10-bit twin
@@ -1138,13 +1298,16 @@ fn predict_and_price(
             u_pred10 = alloc::vec![0u16; cw * chh];
             v_pred10 = alloc::vec![0u16; cw * chh];
         }
-        crate::inter_pred_arm::predict_inter_yuv_hbd(
+        crate::inter_pred_arm::predict_inter_leaf_hbd(
             &hbd.y,
             if want_uv {
                 hbd.uv.as_ref().map(|(u, v)| (u, v))
             } else {
                 None
             },
+            mm,
+            is_wm,
+            c.wm_params_l0,
             b.org_x,
             b.org_y,
             b.bw,

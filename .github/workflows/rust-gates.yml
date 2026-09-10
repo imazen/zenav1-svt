@@ -472,6 +472,31 @@ jobs:
         # does an improvement, which must land as a table update.
         run: ./tools/real_video_inter_gate.sh
 
+      - name: warped motion, 10-bit video and global motion
+        if: matrix.shard == 3
+        working-directory: rust
+        # THE THREE GATES THAT GUARD THE INTER TOOLS WIRED IN 2026-09-10, none
+        # of which any other job asks about:
+        #
+        #   * `warped_motion_gate.sh` — the port SELECTS warped motion where C
+        #     does (a positive control: a wiring that injects the candidate but
+        #     never wins with it passes every byte gate in this repo unchanged)
+        #     and its recon is byte-identical to dav1d, which is the only place
+        #     a wrong warp derivation can show up because the parameters are
+        #     NOT in the bitstream.
+        #   * `bd10_video_gate.sh` — 10-bit inter video encodes AND decodes.
+        #   * `global_motion_gate.sh` — an inter frame whose search fits a
+        #     non-identity model codes it, and the frame reconstructs exactly
+        #     as dav1d does. Its zoom cells are the anti-vacuity load; the gate
+        #     FAILS if no cell reached a non-identity model.
+        #
+        # ~25 s for all three locally, on the same fetched derf assets the job
+        # above already has.
+        run: |
+          ./tools/warped_motion_gate.sh
+          ./tools/bd10_video_gate.sh
+          ./tools/global_motion_gate.sh
+
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         if: matrix.shard == 5
         working-directory: rust

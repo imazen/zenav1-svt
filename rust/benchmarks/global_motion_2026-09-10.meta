@@ -1,0 +1,43 @@
+# GLOBAL MOTION — the port codes C's fitted model (2026-09-10)
+#
+# host        i265 (Core Ultra 7 265K, 20 threads, 30 GiB, native Linux)
+# gate        rust/tools/global_motion_gate.sh
+# decoder     dav1d (system)
+# content     codec-corpus/CID22/CID22-512/training/3571065.png, cropped
+# encoder     SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0
+#             SVTAV1_INTER_EXPERIMENTAL=1, cli_qp 40, preset 2
+#
+# WHY THE ZOOM CELLS. A pure translation is exactly what open-loop ME cancels,
+# so `average_me_sad` floors to 0 and C's search never runs — measured on
+# {gradient, diag, screen} x {64..512} and on `crop:` CID22 at shifts 3/13/37
+# (docs/UNWIRED-PORTED-CODE-2026-09-04.md, the 2026-09-05 correction). A ZOOM
+# about the frame centre is a ROTZOOM no integer MV cancels, and C fits one.
+#
+# MEASURED, per cell: whether the search left IDENTITY, how many blocks the
+# port codes GLOBALMV, and how many frames reconstruct byte-identically to
+# dav1d.
+#
+# size      preset  zoom    all_identity=0   GLOBALMV blocks   recon vs dav1d
+# 256x256   2       33/32   yes              24                2/2
+# 512x512   2       9/8     yes              4098              2/2
+# 256x256   2       none    no               0                 2/2
+# 128x128   2       none    no               0                 2/2
+#
+# The two zoom models the search fitted on the 256 cell, from SVTAV1_GMDBG:
+#   list=0 ref=0 wmtype=2 wmmat=[259072, 259072, 63494, 0, 0, 63494] is_global=1
+#   list=1 ref=0 wmtype=2 wmmat=[250880, 250880, 63558, 0, 0, 63558] is_global=1
+# Both survive `write_global_motion` exactly: 259072 is a multiple of
+# 1 << GM_TRANS_PREC_DIFF (1024) and 63494 of 1 << GM_ALPHA_PREC_DIFF (2), so
+# the decoder rebuilds the same matrix the encoder priced against.
+#
+# TWO DEFECTS THIS WIRING EXPOSED, both measured on the 256 cell:
+#
+#  1. The pack's `setup_ref_mv_list` passed a hardcoded zero `gm_mv`.
+#     `setup_ref_mv_list` fills the tail of every block's MV stack with
+#     `gm_mv[0]`, so block mi(0,0) coded `pmv=(0,0)` where the decoder
+#     rebuilds (30,30). 1557 of 4096 mi units diverged from dav1d.
+#  2. Sub-8 inter chroma was sized `bwidth / 2` (2 samples on a 4-wide block)
+#     against C's `MAX(4, bwidth >> 1)`, and was not stitched from the covered
+#     cells at all (C `inter_chroma_4xn_pred`). 41 chroma samples diverged
+#     after (1) was fixed; 1062 with the stitch replaced by the whole-area
+#     fallback, which is the anti-vacuity control for the stitch itself.

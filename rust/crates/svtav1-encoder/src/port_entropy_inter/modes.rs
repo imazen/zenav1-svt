@@ -190,6 +190,27 @@ pub fn is_global_mv_block(mode: u8, bsize: BlockSize, ty: TransformationType) ->
     is_global_mv_block_idx(mode, bsize.as_index(), ty.as_motion())
 }
 
+/// C `is_global_mv_block` for a caller that holds the block's DIMENSIONS
+/// rather than its `BlockSize` index.
+///
+/// `is_motion_variation_allowed_bsize` reads `block_size_wide[bsize]` and
+/// `block_size_high[bsize]`, which ARE those dimensions, so this is the same
+/// predicate with the table lookup already done rather than a second rule.
+/// `is_global_mv_block_dims_matches_the_index_form` asserts that over every
+/// `BlockSize`.
+#[inline]
+pub fn is_global_mv_block_dims(
+    mode: u8,
+    bw: usize,
+    bh: usize,
+    ty: svtav1_types::motion::TransformationType,
+) -> bool {
+    (mode == GLOBALMV || mode == GLOBAL_GLOBALMV)
+        && (ty as u8) > (svtav1_types::motion::TransformationType::Translation as u8)
+        && bw >= 8
+        && bh >= 8
+}
+
 // ---- 1. write_is_inter (entropy_coding.c:1147) ----
 
 /// C `write_is_inter` — the `intra_inter` symbol every block in a non-intra
@@ -540,4 +561,38 @@ pub fn comp_group_idx_context(nb: &Neighbors) -> usize {
         }
     };
     (ctx_of(&nb.above) + ctx_of(&nb.left)).min(5)
+}
+
+#[cfg(test)]
+mod is_global_mv_block_tests {
+    use super::{GLOBALMV, is_global_mv_block_dims, is_global_mv_block_idx};
+    use svtav1_types::motion::TransformationType as T;
+    use svtav1_types::tables::block::{BLOCK_SIZE_HIGH, BLOCK_SIZE_WIDE};
+
+    /// The dims form is the index form with the two table lookups already
+    /// done, not a second rule — asserted over every `BlockSize` and every
+    /// transformation type so a future edit to one has to move the other.
+    #[test]
+    fn is_global_mv_block_dims_matches_the_index_form() {
+        for bsize in 0..BLOCK_SIZE_WIDE.len() {
+            let (bw, bh) = (
+                usize::from(BLOCK_SIZE_WIDE[bsize]),
+                usize::from(BLOCK_SIZE_HIGH[bsize]),
+            );
+            for ty in [T::Identity, T::Translation, T::RotZoom, T::Affine] {
+                for mode in 0..32u8 {
+                    assert_eq!(
+                        is_global_mv_block_idx(mode, bsize, ty),
+                        is_global_mv_block_dims(mode, bw, bh, ty),
+                        "bsize {bsize} ({bw}x{bh}) ty {ty:?} mode {mode}"
+                    );
+                }
+            }
+        }
+        // A live witness rather than only the equivalence: an AFFINE model on
+        // a 16x16 GLOBALMV block warps; the same model on an 8x4 one does not.
+        assert!(is_global_mv_block_dims(GLOBALMV, 16, 16, T::Affine));
+        assert!(!is_global_mv_block_dims(GLOBALMV, 8, 4, T::Affine));
+        assert!(!is_global_mv_block_dims(GLOBALMV, 16, 16, T::Translation));
+    }
 }

@@ -171,9 +171,9 @@ pub struct InterMdEnv {
     pub tile: crate::intrabc::TileMiBounds,
     /// `mi_size_wide[seq_header.sb_size]` (16 at SB64, 32 at SB128).
     pub sb_mi_size: i32,
-    /// C `pcs->ppcs->global_motion` — IDENTITY for every reference until
-    /// global-motion parameter coding lands (the frame header refuses a
-    /// non-identity model, `inter_hdr_arm::inter_signal`).
+    /// C `pcs->ppcs->global_motion` — the models
+    /// `crate::port_global_me::set_global_motion_field` published for this
+    /// frame, the same array the frame header codes.
     pub global_motion: [svtav1_types::motion::WarpedMotionParams; 8],
     pub allow_high_precision_mv: bool,
     pub force_integer_mv: bool,

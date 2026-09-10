@@ -10,7 +10,7 @@
 ## summary
 #
 #   inherent methods                           36
-#   trait roster entries (type × trait)        61
+#   trait roster entries (type × trait)        62
 #
 # per-module pub lines:
 #   svtav1_dsp                       36
@@ -54,7 +54,7 @@ pub fn svtav1_dsp::restoration::WienerInfo::assert_fields_are_eq(&self)
 pub fn svtav1_dsp::superres::TileColPad::assert_fields_are_eq(&self)
 pub fn svtav1_dsp::txfm_dispatch::InvReconError::assert_fields_are_eq(&self)
 
-## trait impls (61 types)
+## trait impls (62 types)
 
 svtav1_dsp::fwd_txfm_pf::HandleTransform: TrivialClone
 svtav1_dsp::fwd_txfm_pf::TxCoeffShape: TrivialClone
@@ -93,6 +93,7 @@ svtav1_dsp::port_obmc_pred::PredEdges: TrivialClone
 svtav1_dsp::port_obmc_pred::VisitedNb: TrivialClone
 svtav1_dsp::port_obmc_single_pred::ObmcPicDims: TrivialClone
 svtav1_dsp::port_pd_pred::BlkGeom: TrivialClone
+svtav1_dsp::port_pd_pred::RefPlane16<'a>: TrivialClone
 svtav1_dsp::port_scale_factors::DistWtdWeights: TrivialClone
 svtav1_dsp::port_scale_factors::ScaleFactors: TrivialClone
 svtav1_dsp::port_scale_factors::SubpelParams: TrivialClone

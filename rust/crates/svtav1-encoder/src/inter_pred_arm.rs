@@ -111,6 +111,12 @@ pub fn predict_inter_luma(
             org_y: org_y as i32,
             bwidth: bw,
             bheight: bh,
+            // C `blk_geom->bwidth_uv` is `MAX(4, bwidth >> 1)` (utility.c:274),
+            // which differs from this only below 8. A sub-8 block never
+            // reaches here: its chroma covers the parent 8x8 and is stitched
+            // from the covered cells' own MVs, which is a different C function
+            // (`inter_chroma_4xn_pred`) — see
+            // `inter_md_arm::predict_inter_chroma_sub8`.
             bwidth_uv: bw / 2,
             bheight_uv: bh / 2,
             super_block_size: sb_size as i32,
@@ -185,6 +191,12 @@ pub fn predict_inter_luma_pd0(
             // PD0 is luma-only; C `av1_inter_prediction_pd0` never reads the
             // chroma dims. They are filled with the real 4:2:0 values rather
             // than zeros so a future chroma arm cannot inherit a lie.
+            // C `blk_geom->bwidth_uv` is `MAX(4, bwidth >> 1)` (utility.c:274),
+            // which differs from this only below 8. A sub-8 block never
+            // reaches here: its chroma covers the parent 8x8 and is stitched
+            // from the covered cells' own MVs, which is a different C function
+            // (`inter_chroma_4xn_pred`) — see
+            // `inter_md_arm::predict_inter_chroma_sub8`.
             bwidth_uv: bw / 2,
             bheight_uv: bh / 2,
             super_block_size: sb_size as i32,
@@ -257,6 +269,12 @@ pub fn predict_inter_yuv(
             org_y: org_y as i32,
             bwidth: bw,
             bheight: bh,
+            // C `blk_geom->bwidth_uv` is `MAX(4, bwidth >> 1)` (utility.c:274),
+            // which differs from this only below 8. A sub-8 block never
+            // reaches here: its chroma covers the parent 8x8 and is stitched
+            // from the covered cells' own MVs, which is a different C function
+            // (`inter_chroma_4xn_pred`) — see
+            // `inter_md_arm::predict_inter_chroma_sub8`.
             bwidth_uv: bw / 2,
             bheight_uv: bh / 2,
             super_block_size: sb_size as i32,
@@ -365,6 +383,12 @@ pub fn predict_inter_yuv_hbd(
             org_y: org_y as i32,
             bwidth: bw,
             bheight: bh,
+            // C `blk_geom->bwidth_uv` is `MAX(4, bwidth >> 1)` (utility.c:274),
+            // which differs from this only below 8. A sub-8 block never
+            // reaches here: its chroma covers the parent 8x8 and is stitched
+            // from the covered cells' own MVs, which is a different C function
+            // (`inter_chroma_4xn_pred`) — see
+            // `inter_md_arm::predict_inter_chroma_sub8`.
             bwidth_uv: bw / 2,
             bheight_uv: bh / 2,
             super_block_size: sb_size as i32,
@@ -628,6 +652,275 @@ pub fn predict_inter_yuv_warped_hbd(
     }
 }
 
+/// One mode-info cell of the parent 8x8, as C's `xd->mi[row * mi_stride + col]`
+/// hands it to `inter_chroma_4xn_pred`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Sub8ChromaMi {
+    /// C `is_inter_block(&this_mbmi->block_mi)`.
+    pub is_inter: bool,
+    /// C `this_mbmi->block_mi.ref_frame[0]`. Bipred is disallowed below 8, so
+    /// there is never a second one.
+    pub ref_frame: i8,
+    /// C `this_mbmi->block_mi.mv[0]`.
+    pub mv: Mv,
+    /// C `this_mbmi->block_mi.interp_filters`.
+    pub interp_filters: u32,
+}
+
+/// C `ROUND_UV(x) / 2` (`definitions.h:348`) — the chroma origin of a block's
+/// chroma REFERENCE area, which for a sub-8 block is the parent 8x8's, not the
+/// block's own halved origin.
+#[inline]
+#[must_use]
+pub fn round_uv_half(x: usize) -> usize {
+    ((x >> 3) << 3) / 2
+}
+
+/// One chroma plane of one rectangle, through C's `svt_aom_enc_make_inter_predictor`.
+#[allow(clippy::too_many_arguments)]
+fn chroma_unit(
+    r: &PaddedPlane,
+    plane: usize,
+    cx: usize,
+    cy: usize,
+    cwidth: usize,
+    cheight: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sf: &ScaleFactors,
+    geom: RefGeometry,
+    edges: &svtav1_dsp::port_subpel_params::MbEdges,
+    conv_buf: &mut [u16],
+    dst: &mut [u8],
+    dst_stride: usize,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
+    let cp = ConvolveParams::no_round(false, 64, false, 8);
+    enc_make_inter_predictor(
+        SrcPlanes::Lbd(&r.buf),
+        r.origin,
+        r.stride,
+        DstPlane::Lbd(dst),
+        dst_stride,
+        conv_buf,
+        cy as i32,
+        cx as i32,
+        DspMv { x: mv.x, y: mv.y },
+        sf,
+        &cp,
+        interp_filters,
+        None,
+        None,
+        geom,
+        cwidth,
+        cheight,
+        edges,
+        plane,
+        1,
+        1,
+        8,
+        false,
+        false,
+    )
+    .expect("the chroma unit takes an 8-bit plane into an 8-bit destination");
+}
+
+/// C `inter_chroma_4xn_pred` (`enc_inter_prediction.c:3023-3200`) — the chroma
+/// of a 4xN / Nx4 inter block.
+///
+/// A sub-8 luma block's chroma covers MORE than that block: at 4:2:0 the
+/// chroma reference area is the PARENT 8x8's, so it spans the 4xN block and
+/// its sibling. C therefore does not predict it with one MV — it walks the
+/// covered mode-info cells and predicts each `b4_w x b4_h` piece with THAT
+/// cell's own reference, MV and interpolation filters. Predicting the whole
+/// area with the current block's MV is wrong pixels wherever the sibling
+/// chose a different one, and no decoder reproduces them.
+///
+/// `mis` is indexed `[row + 1][col + 1]` for C's `row`/`col` in `-1..=0`;
+/// `mis[1][1]` is the CURRENT block, which C fills from the candidate being
+/// predicted (`:3036-3043`) rather than from the grid.
+///
+/// Returns `false` exactly where C returns 0 — the block is not sub-8, or one
+/// of the covered cells is INTRA — and the caller then predicts the chroma
+/// area the ordinary way, with this block's own MV (`:3374`, `!sub8x8_inter`).
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn predict_inter_chroma_sub8x8(
+    refs_by_frame: &[Option<(&PaddedPlane, &PaddedPlane)>; 8],
+    mis: &[[Sub8ChromaMi; 2]; 2],
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) -> bool {
+    // C `sub8x8_inter` (:3045) at ss_x = ss_y = 1.
+    if bw >= 8 && bh >= 8 {
+        return false;
+    }
+    // C :3055-3056.
+    let row_start: i32 = if bh == 4 { -1 } else { 0 };
+    let col_start: i32 = if bw == 4 { -1 } else { 0 };
+    // C :3058-3065 — ANY covered cell being intra abandons the whole path.
+    for row in row_start..=0 {
+        for col in col_start..=0 {
+            if !mis[(row + 1) as usize][(col + 1) as usize].is_inter {
+                return false;
+            }
+        }
+    }
+    // C :3069-3074. `svt_aom_scale_chroma_bsize` at 4:2:0 raises each
+    // dimension to at least 8, so `b8_*` is the chroma extent the funnel
+    // already calls `cw`/`chh`.
+    let (b4_w, b4_h) = (bw >> 1, bh >> 1);
+    let (b8_w, b8_h) = (bw.max(8) >> 1, bh.max(8) >> 1);
+    let (cx, cy) = (round_uv_half(org_x), round_uv_half(org_y));
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    // C passes the CURRENT block's `xd`, so the clamp edges are the block's.
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+
+    let mut row = row_start;
+    let mut y = 0;
+    while y < b8_h {
+        let mut col = col_start;
+        let mut x = 0;
+        while x < b8_w {
+            let mi = mis[(row + 1) as usize][(col + 1) as usize];
+            let Some((uref, vref)) = refs_by_frame[mi.ref_frame.max(0) as usize] else {
+                // The grid named a reference this frame does not carry. C
+                // cannot reach this (`ref_frame_type_arr` is the same table
+                // both sides read), so it is a wiring bug, not a fallback.
+                panic!(
+                    "a sub-8 chroma neighbour names reference {} with no DPB picture",
+                    mi.ref_frame
+                );
+            };
+            for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
+                chroma_unit(
+                    r,
+                    plane,
+                    cx + x,
+                    cy + y,
+                    b4_w,
+                    b4_h,
+                    mi.mv,
+                    mi.interp_filters,
+                    &sf,
+                    geom,
+                    &edges,
+                    &mut conv_buf,
+                    &mut dst[y * uv_stride + x..],
+                    uv_stride,
+                );
+            }
+            col += 1;
+            x += b4_w;
+        }
+        row += 1;
+        y += b4_h;
+    }
+    true
+}
+
+/// The `!sub8x8_inter` chroma arm of `svt_aom_inter_prediction` (`:3374`):
+/// the whole chroma reference area, at the ROUND_UV origin, with THIS block's
+/// own MV. For a block 8x8 or larger this is just "the block's chroma"; for a
+/// sub-8 one it is the parent 8x8's chroma predicted from one MV, which is
+/// what C falls back to when a covered cell is intra.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_chroma_whole(
+    uref: &PaddedPlane,
+    vref: &PaddedPlane,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) {
+    let (cw, chh) = (bw.max(8) >> 1, bh.max(8) >> 1);
+    let (cx, cy) = (round_uv_half(org_x), round_uv_half(org_y));
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    let mut conv_buf = alloc::vec![0u16; 64 * 64];
+    for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
+        chroma_unit(
+            r,
+            plane,
+            cx,
+            cy,
+            cw,
+            chh,
+            mv,
+            interp_filters,
+            &sf,
+            geom,
+            &edges,
+            &mut conv_buf,
+            dst,
+            uv_stride,
+        );
+    }
+}
+
+/// C's `is_wm` (`enc_inter_prediction.c:3276-3277`, and again at `:3382` for
+/// chroma): a block goes through the WARP driver when its motion mode says so
+/// **or** when it is a GLOBALMV block whose reference carries a model above
+/// TRANSLATION.
+///
+/// The second term is the one that is easy to miss. A GLOBALMV candidate is
+/// injected with `motion_mode = SIMPLE_TRANSLATION`
+/// (`mode_decision.c:2639`) and an MV from `gm_get_motion_vector_enc`, so it
+/// LOOKS like a translation; but with a ROTZOOM or AFFINE model the decoder
+/// warps it, and predicting it as a translation is wrong pixels that no
+/// decoder reproduces. The MV is still passed — the warp driver reads it for
+/// the reference block's position.
+#[must_use]
+pub fn inter_pred_uses_warp(
+    motion_mode: crate::port_entropy_inter::modes::MotionMode,
+    mode: u8,
+    bw: usize,
+    bh: usize,
+    wm: &svtav1_types::motion::WarpedMotionParams,
+) -> bool {
+    motion_mode == crate::port_entropy_inter::modes::MotionMode::WarpedCausal
+        || crate::port_entropy_inter::modes::is_global_mv_block_dims(mode, bw, bh, wm.wm_type)
+}
+
 /// One inter-predicted block at TRUE 10 BITS, dispatching on its motion mode.
 ///
 /// The bd10 level re-encode's entry: it rebuilds a COMMITTED leaf's prediction
@@ -641,6 +934,8 @@ pub fn predict_inter_leaf_hbd(
         &crate::picture::PaddedPlaneHbd,
     )>,
     motion_mode: crate::port_entropy_inter::modes::MotionMode,
+    // C's `is_wm` for this block — `inter_pred_uses_warp`.
+    is_wm: bool,
     wm_params: svtav1_types::motion::WarpedMotionParams,
     org_x: usize,
     org_y: usize,
@@ -659,37 +954,37 @@ pub fn predict_inter_leaf_hbd(
     uv_stride: usize,
 ) {
     use crate::port_entropy_inter::modes::MotionMode;
-    match motion_mode {
-        MotionMode::WarpedCausal => {
-            let mut wm = wm_params;
-            predict_inter_yuv_warped_hbd(
-                y_ref,
-                chroma,
-                &mut wm,
-                org_x,
-                org_y,
-                bw,
-                bh,
-                mv,
-                interp_filters,
-                sb_size,
-                frame_w,
-                frame_h,
-                bit_depth,
-                y_out,
-                y_stride,
-                u_out,
-                v_out,
-                uv_stride,
-            );
-        }
-        // OBMC is unwired; a committed leaf cannot carry it, and REFUSING is
-        // the only honest answer if one ever does — silently predicting it as a
-        // plain translation is wrong pixels a decoder will not reproduce.
-        MotionMode::ObmcCausal => {
-            unreachable!("no OBMC candidate is injected, so no leaf can commit one")
-        }
-        MotionMode::SimpleTranslation => predict_inter_yuv_hbd(
+    // OBMC is unwired; a committed leaf cannot carry it, and REFUSING is the
+    // only honest answer if one ever does — silently predicting it as a plain
+    // translation is wrong pixels a decoder will not reproduce.
+    assert!(
+        motion_mode != MotionMode::ObmcCausal,
+        "no OBMC candidate is injected, so no leaf can commit one"
+    );
+    if is_wm {
+        let mut wm = wm_params;
+        predict_inter_yuv_warped_hbd(
+            y_ref,
+            chroma,
+            &mut wm,
+            org_x,
+            org_y,
+            bw,
+            bh,
+            mv,
+            interp_filters,
+            sb_size,
+            frame_w,
+            frame_h,
+            bit_depth,
+            y_out,
+            y_stride,
+            u_out,
+            v_out,
+            uv_stride,
+        );
+    } else {
+        predict_inter_yuv_hbd(
             y_ref,
             chroma,
             org_x,
@@ -707,7 +1002,7 @@ pub fn predict_inter_leaf_hbd(
             u_out,
             v_out,
             uv_stride,
-        ),
+        );
     }
 }
 

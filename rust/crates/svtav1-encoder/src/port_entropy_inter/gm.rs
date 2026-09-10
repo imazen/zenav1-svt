@@ -157,6 +157,35 @@ pub struct WarpParams {
     pub wmmat: [i32; 6],
 }
 
+impl Default for WarpParams {
+    /// C `default_warp_params` — the value every `global_motion[]` entry is
+    /// initialised to (`set_global_motion_field`, md_config_process.c:40).
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl From<svtav1_types::motion::WarpedMotionParams> for WarpParams {
+    /// The header only writes the type and the six matrix entries; the shear
+    /// parameters and `invalid` are derived state the decoder recomputes.
+    fn from(w: svtav1_types::motion::WarpedMotionParams) -> Self {
+        use crate::port_entropy_inter::modes::TransformationType as W;
+        use svtav1_types::motion::TransformationType as T;
+        // Two enums, same C discriminants: `port_entropy_inter::modes` carries
+        // the writer's and `svtav1_types::motion` the DSP's. Matched rather
+        // than transmuted so a future divergence is a compile error.
+        Self {
+            wmtype: match w.wm_type {
+                T::Identity => W::Identity,
+                T::Translation => W::Translation,
+                T::RotZoom => W::RotZoom,
+                T::Affine => W::Affine,
+            },
+            wmmat: w.wmmat,
+        }
+    }
+}
+
 impl WarpParams {
     /// C `default_warp_params` (definitions.h:1789) — IDENTITY with the two
     /// diagonal entries at `1 << WARPEDMODEL_PREC_BITS`.

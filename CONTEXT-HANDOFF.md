@@ -235,8 +235,16 @@ phenomenon, and it tracks the gate's pinned table almost exactly — every cell
 with a warped block has frame 1 diverging (vidyo3 256x256 p6 has 56 of them),
 and the cells with none are the ones that are byte-identical.
 
-So warped motion is a CORRECTNESS gap in the tested envelope, not RD in a wider
-one, and it is the best-prepared one in the repo: `find_warp_samples`,
+**WIRED 2026-09-10** — `inter_md_arm` now injects the WARPED_CAUSAL candidate,
+`leaf_funnel::warp_refine` runs C's MDS1 MV refinement, and
+`tools/warped_motion_gate.sh` asserts both that the port SELECTS warped motion
+where C does and that its recon is byte-identical to dav1d. GLOBAL motion
+landed the same day (`tools/global_motion_gate.sh`). OBMC is still unwired, and
+the census above measured C selecting it on ZERO blocks at presets 6/8 — a
+census at preset <= 4, now reachable, is the next thing to run.
+
+The rest of this section is kept as the record of why it was a CORRECTNESS gap
+in the tested envelope, not RD in a wider one, and of how well prepared it was: `find_warp_samples`,
 `select_samples`, `find_projection`, `get_shear_params`, `warp_affine` /
 `warp_plane` and both `motion_mode_allowed` predicates are all ported and
 tested. What is missing is the WIRING — `inter_md_arm` never injects a
