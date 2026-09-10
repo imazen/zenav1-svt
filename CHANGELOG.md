@@ -37,6 +37,16 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **OBMC is a correctness gap at presets -1/0/1, not "never selected"**
+  (`benchmarks/obmc_census_2026-09-10.meta`, `rust/tools/motion_mode_census.sh`).
+  The preset-6/8 census was being carried in `inter_md_arm.rs` as a general
+  fact about OBMC; asked at the presets global motion made reachable, C codes
+  OBMC on 22.5 % of every coded inter block at preset 0, 22.2 % at MR and
+  27.0 % at preset 1, and exactly zero from preset 2 up — the
+  `svt_aom_get_obmc_level` level 3 -> 5 step. The new census validates itself
+  against the pinned preset-6 warped counts before reporting, because the
+  ad-hoc version produced a clean-looking page of zeros twice.
+
 - **Allocator traffic is down 84.6 %**, 6,851,798 calls to 1,055,233 against C's
   466,395 on the canonical alloc cell (`b9916d2f`, `f4bc651b`, `178323b8`,
   `cb62752f`). Excluding the `intrabc_hash` site that is at parity with C

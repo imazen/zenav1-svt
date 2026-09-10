@@ -1,0 +1,87 @@
+== harness validation against the pinned 2026-09-10 preset-6 census ==
+  ok   johnny   p6 warped=6 (pinned 5)
+  ok   vidyo1   p6 warped=20 (pinned 18)
+  ok   vidyo3   p6 warped=57 (pinned 56)
+
+clip	size	preset	blocks	simple	obmc	warped
+fourpeople	128x128	-1	105	87	15	3
+fourpeople	128x128	0	78	60	15	3
+fourpeople	128x128	1	36	20	15	1
+fourpeople	128x128	2	34	30	0	4
+fourpeople	128x128	4	10	10	0	0
+fourpeople	128x128	6	10	10	0	0
+fourpeople	256x256	-1	406	341	63	2
+fourpeople	256x256	0	253	204	45	4
+fourpeople	256x256	1	96	68	26	2
+fourpeople	256x256	2	100	82	0	18
+fourpeople	256x256	4	49	49	0	0
+fourpeople	256x256	6	52	52	0	0
+johnny	128x128	-1	302	218	69	15
+johnny	128x128	0	189	160	24	5
+johnny	128x128	1	81	63	14	4
+johnny	128x128	2	67	55	0	12
+johnny	128x128	4	42	41	0	1
+johnny	128x128	6	29	29	0	0
+johnny	256x256	-1	876	697	136	43
+johnny	256x256	0	528	435	77	16
+johnny	256x256	1	191	156	20	15
+johnny	256x256	2	184	162	0	22
+johnny	256x256	4	103	95	0	8
+johnny	256x256	6	80	74	0	6
+kristenandsara	128x128	-1	125	97	25	3
+kristenandsara	128x128	0	99	73	22	4
+kristenandsara	128x128	1	39	18	18	3
+kristenandsara	128x128	2	38	30	0	8
+kristenandsara	128x128	4	16	16	0	0
+kristenandsara	128x128	6	16	16	0	0
+kristenandsara	256x256	-1	441	363	72	6
+kristenandsara	256x256	0	321	253	64	4
+kristenandsara	256x256	1	125	68	52	5
+kristenandsara	256x256	2	121	95	0	26
+kristenandsara	256x256	4	52	52	0	0
+kristenandsara	256x256	6	49	49	0	0
+vidyo1	128x128	-1	117	104	11	2
+vidyo1	128x128	0	103	89	11	3
+vidyo1	128x128	1	39	27	10	2
+vidyo1	128x128	2	28	24	0	4
+vidyo1	128x128	4	9	9	0	0
+vidyo1	128x128	6	10	10	0	0
+vidyo1	256x256	-1	1093	767	271	55
+vidyo1	256x256	0	802	526	230	46
+vidyo1	256x256	1	392	251	110	31
+vidyo1	256x256	2	367	269	0	98
+vidyo1	256x256	4	198	163	0	35
+vidyo1	256x256	6	120	100	0	20
+vidyo3	128x128	-1	492	246	175	71
+vidyo3	128x128	0	323	164	108	51
+vidyo3	128x128	1	164	52	59	53
+vidyo3	128x128	2	140	69	0	71
+vidyo3	128x128	4	88	69	0	19
+vidyo3	128x128	6	54	46	0	8
+vidyo3	256x256	-1	1204	515	391	298
+vidyo3	256x256	0	959	417	292	250
+vidyo3	256x256	1	462	183	142	137
+vidyo3	256x256	2	431	195	0	236
+vidyo3	256x256	4	242	143	0	99
+vidyo3	256x256	6	165	108	0	57
+vidyo4	128x128	-1	256	210	40	6
+vidyo4	128x128	0	206	173	28	5
+vidyo4	128x128	1	114	88	25	1
+vidyo4	128x128	2	108	79	0	29
+vidyo4	128x128	4	25	25	0	0
+vidyo4	128x128	6	21	21	0	0
+vidyo4	256x256	-1	708	599	93	16
+vidyo4	256x256	0	521	438	71	12
+vidyo4	256x256	1	263	201	49	13
+vidyo4	256x256	2	225	163	0	62
+vidyo4	256x256	4	99	96	0	3
+vidyo4	256x256	6	75	74	0	1
+
+== totals per preset ==
+preset -1  blocks=6125   simple=4244   OBMC=1361  ( 22.2%)  warped=520   (  8.5%)
+preset 0   blocks=4382   simple=2992   OBMC=987   ( 22.5%)  warped=403   (  9.2%)
+preset 1   blocks=2002   simple=1195   OBMC=540   ( 27.0%)  warped=267   ( 13.3%)
+preset 2   blocks=1843   simple=1253   OBMC=0     (  0.0%)  warped=590   ( 32.0%)
+preset 4   blocks=933    simple=768    OBMC=0     (  0.0%)  warped=165   ( 17.7%)
+preset 6   blocks=681    simple=589    OBMC=0     (  0.0%)  warped=92    ( 13.5%)
+motion mode census: OK

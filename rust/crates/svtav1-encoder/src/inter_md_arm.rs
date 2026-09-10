@@ -645,9 +645,20 @@ impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
     }
 
     /// OBMC is not wired. The injector never asks: `obmc_ctrls` is
-    /// `Default::default()` (disabled) on this arm, and the census that
-    /// motivated the warp wiring found C selecting OBMC on ZERO blocks at
-    /// these presets.
+    /// `Default::default()` (disabled) on this arm.
+    ///
+    /// THE JUSTIFICATION THAT USED TO BE HERE WAS AN OVER-READ. It said "the
+    /// census that motivated the warp wiring found C selecting OBMC on ZERO
+    /// blocks at these presets" — true of presets 6 and 8, which is all that
+    /// census measured, and read ever since as a fact about OBMC.
+    /// `benchmarks/obmc_census_2026-09-10.meta` asked the question at the
+    /// presets global motion made reachable: C codes OBMC on **22.5 % of every
+    /// coded inter block at preset 0** (987 of 4382 over twelve real-video
+    /// cells), 22.2 % at MR and 27.0 % at preset 1, and EXACTLY ZERO at preset
+    /// 2 and above. The cutoff is `svt_aom_get_obmc_level`'s level 3 -> 5 step.
+    ///
+    /// So this is a CORRECTNESS gap at presets -1/0/1, not RD in a wider
+    /// envelope. `tools/motion_mode_census.sh` re-measures it.
     fn obmc_motion_refinement(
         &mut self,
         _cand: &mut crate::port_md::inject::InterCandidate,

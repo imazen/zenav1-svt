@@ -1,0 +1,95 @@
+# OBMC IS SELECTED — at presets -1, 0 and 1, and NOWHERE ELSE (2026-09-10)
+
+commit:  (this change, on top of 1c0c59eee "implement global motion")
+host:    i265 (Core Ultra 7 265K, 20 threads, 30 GiB, native Linux)
+tool:    rust/tools/motion_mode_census.sh   (raw rows: obmc_census_2026-09-10.tsv)
+driver:  tools/capture_c_trace/capture_c_trace + SVT_CINTER_OUT
+         (wrap_recon.c's __wrap_svt_aom_update_mi_map — C's COMMITTED per-block
+         inter record, one line per coded inter block)
+cells:   six public-domain derf clips x {128x128, 256x256} x presets
+         {-1, 0, 1, 2, 4, 6}, cli_qp 40, SVT_FRAMES=2,
+         SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 (the port's flat low-delay P)
+
+## WHY THIS WAS MEASURED
+
+`c_motion_mode_census_2026-09-10.meta` measured presets 6 and 8 and wrote:
+
+> OBMC is never selected at these presets; WARPED is.
+
+That is true of presets 6 and 8. It was then carried in `inter_md_arm.rs` as
+
+> OBMC is not wired. The injector never asks ... the census that motivated the
+> warp wiring found C selecting OBMC on ZERO blocks at these presets.
+
+which reads as a fact about OBMC rather than about two presets. Presets <= 4
+became REACHABLE on 2026-09-10 when global motion landed, and the question had
+never been asked there.
+
+## RESULT — OBMC is 22-27 % of coded inter blocks at presets -1, 0, 1
+
+    preset  obmc_level  blocks  simple   OBMC          warped
+    -1      1            6125    4244    1361 (22.2%)   520 ( 8.5%)
+     0      3            4382    2992     987 (22.5%)   403 ( 9.2%)
+     1      3            2002    1195     540 (27.0%)   267 (13.3%)
+     2      5            1843    1253       0 ( 0.0%)   590 (32.0%)
+     4      5             933     768       0 ( 0.0%)   165 (17.7%)
+     6      6             681     589       0 ( 0.0%)    92 (13.5%)
+
+The cutoff is EXACT and it is the `svt_aom_get_obmc_level` ladder
+(`enc_mode_config.c:8815`, ported as `port_enc_mode_config::leaf::get_obmc_level`):
+
+    enc_mode <= MR  -> 1 |  <= M1 -> 3 |  <= M5 -> 5 |  <= M8 -> 6 | else 0
+
+Levels 1 and 3 select OBMC on every clip; level 5 selects it on NONE. Verified
+per clip at 256x256 rather than only in aggregate, so the boundary is not an
+averaging artefact:
+
+    clip     p=-1 (lvl 1)  p=0 (lvl 3)  p=1 (lvl 3)  p=2 (lvl 5)
+    vidyo3    391 / 1204    292 / 959    142 / 462     0 / 431
+    vidyo1    271 / 1093    230 / 802    110 / 392     0 / 367
+    johnny    136 /  876     77 / 528     20 / 191     0 / 184
+
+So OBMC is a CORRECTNESS gap at presets -1/0/1, not RD in a wider envelope —
+the same shape of finding the warped-motion census made for preset 6, and now
+in a preset band the port encodes.
+
+## THE HARNESS PRODUCED ALL-ZEROS TWICE BEFORE IT PRODUCED THIS
+
+Both failures looked exactly like a clean measurement — 48 rows of `0` — and
+neither failed loudly. They are why `motion_mode_census.sh` validates itself
+against the pinned preset-6 warped counts before reporting anything, and dies
+on an empty dump:
+
+  1. `tools/capture_c_trace` is a DIRECTORY. The driver is
+     `tools/capture_c_trace/capture_c_trace`. `nice tools/capture_c_trace ...`
+     fails EACCES, no dump is written, every count reads 0.
+  2. Without `SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0` C encodes a different
+     prediction structure than the port's, so the counts describe a
+     configuration this encoder never emits. (Block counts differ ~40 %:
+     fourpeople 256x256 p6 gives 31 blocks that way and 52 the right way.)
+
+VALIDATION, run every time the script runs: johnny/vidyo1/vidyo3 at 256x256 p6
+must reproduce the pinned warped counts 5/18/56 within a band. Measured here:
+6/20/57. The small offsets are real and expected — the 2026-09-10 census fed C
+the port's own `rs.yuv`, this one feeds the original `.i420`.
+
+## WHAT IS ALREADY PORTED FOR OBMC, AND WHAT IS NOT
+
+Ported and c-parity tested, with no producer:
+  * `svtav1_dsp::port_obmc_pred`, `port_obmc_nb_pred`, `port_obmc_build`,
+    `port_obmc_data`, `obmc` (tests: `c_parity_obmc.rs`,
+    `c_parity_port_obmc_single_pred.rs`)
+  * `port_md::motion_mode::{opt_non_translation_motion_mode_obmc,
+    obmc_refine_stage, obmc_trans_face_off, obmc_face_off_rate_terms,
+    obmc_face_off_lambda, obmc_face_off_var_cost, motion_mode_allowed}`
+  * `inter_me::obmc_search` (the MV refinement kernels)
+  * the writer's motion-mode alphabet already handles all three modes
+    (`port_entropy_inter::modes::motion_mode_allowed`)
+
+NOT wired, and this is the whole gap:
+  * `inter_md_arm`'s `InjectCtx::obmc_ctrls` is `Default::default()` (disabled)
+    instead of `set_obmc_controls(pic_obmc_level, ...)`;
+  * its `obmc_motion_refinement` hook returns `true` without refining;
+  * `inter_pred_arm` has no OBMC prediction arm (C
+    `svt_aom_inter_pu_prediction_av1_obmc` / `av1_inter_prediction_obmc`), so
+    `predict_inter_leaf_hbd` asserts on an OBMC leaf rather than predicting it.
