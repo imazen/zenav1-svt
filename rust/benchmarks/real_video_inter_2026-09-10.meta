@@ -1,0 +1,31 @@
+Two-frame differential vs the C oracle on REAL public-domain video.
+
+commit:   ebd3d09f5
+host:     i265 x86_64, 20 threads
+date:     2026-09-10
+command:  tools/real_video_inter_gate.sh   (sweep form: identity_diff_inter.sh
+          <w> <h> 40 <preset> 2 rawseq:<asset> with SVTAV1_INTER_EXPERIMENTAL=1
+          and SVTAV1_FRAME_SHIFT/_ZOOM_* cleared)
+assets:   R2 video/pd-derf-720p/ -- 6 clips x {128x128,256x256} x 8 frames,
+          cut by tools/mk_video_assets.py from the six Xiph derf sequences
+          whose index entry reads "public domain".
+grid:     6 clips x 2 sizes x presets {6,8} x cli_qp 40 = 24 cells
+
+RESULT    frame 0 (key) byte-identical: 18/24
+          frame 1 (inter) byte-identical:  7/24
+
+Frame 0's six failures are ALL preset 6; preset 8 key frames are 12/12. This is
+a still divergence reached through the video configuration, and it is a
+different surface from real_image_matrix.sh's 180/180 (CID22-512, all-intra,
+512x512, presets {2,6,10}).
+
+CONTROL, same cell shape (128x128 q40 p6 frames=2): synthetic `gradient` is
+byte-identical on BOTH frames, with frame 1 at 24 bytes -- a skip. The synthetic
+inter surface was green because it was asserting a skip frame.
+
+VACUITY NOTE. The first extraction pass scored vidyo3 at mean motion 20.4 and
+produced a cell where |f1-f0| was exactly 0.00: all six clips are 30 fps
+material published at 60, so every frame is doubled. C and the port both coded
+that frame to an identical 24 bytes. mk_video_assets.py now decimates
+duplicates and scores motion as the MINIMUM over consecutive pairs, so a
+repeated frame cannot be mistaken for parity.

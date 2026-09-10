@@ -296,7 +296,49 @@ fn main() {
     // aligned/8-round + partial-SB edge coding; this only adds odd true dims.
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
 
-    let (y, u, v) = if let Some(path) = content.strip_prefix("raw:") {
+    // `rawseq:` content stashes the WHOLE sequence here; the multi-frame block
+    // below then uses these real frames instead of warping frame 0. `None` for
+    // every other content mode, so nothing else changes by a byte.
+    let mut rawseq: Option<Vec<u8>> = None;
+
+    let (y, u, v) = if let Some(path) = content.strip_prefix("rawseq:") {
+        // A REAL multi-frame I420 8-bit sequence: `SVTAV1_FRAMES` frames of
+        // (w*h luma + 2*(w/2)*(h/2) chroma) concatenated, as produced by
+        // `tools/mk_video_assets.py` from a public-domain y4m.
+        //
+        // WHY THIS IS NOT `raw:` + the warp. The multi-frame path below
+        // synthesises later frames by translating frame 0 by a global integer
+        // offset. Open-loop ME finds that offset exactly, so the residual SAD
+        // floors to zero — measured `avg_me_sad=0` and `is_gm_on=0` across
+        // {gradient,diag,screen} x {64,128,256,512} (INTER-ENCODE-PLAN.md).
+        // Every inter cell in this repo is therefore encoding a motion field
+        // that C's search never has to work for. Real frames have occlusion,
+        // lighting change, non-rigid motion and noise, none of which an
+        // integer translation of one frame can present.
+        //
+        // Both encoders still consume the ONE shared `.yuv` this writes, so
+        // the differential stays exact.
+        assert!(
+            w.is_multiple_of(2) && h.is_multiple_of(2),
+            "rawseq: I420 harness requires even dims; got {w}x{h}"
+        );
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read rawseq {path}: {e}"));
+        let frame_len = w * h + 2 * (w / 2) * (h / 2);
+        assert!(
+            bytes.len().is_multiple_of(frame_len) && !bytes.is_empty(),
+            "rawseq {path}: {} bytes is not a whole number of {w}x{h} I420 frames ({frame_len} B each)",
+            bytes.len()
+        );
+        let ysz = w * h;
+        let csz = (w / 2) * (h / 2);
+        let planes = (
+            bytes[..ysz].to_vec(),
+            bytes[ysz..ysz + csz].to_vec(),
+            bytes[ysz + csz..ysz + 2 * csz].to_vec(),
+        );
+        rawseq = Some(bytes);
+        planes
+    } else if let Some(path) = content.strip_prefix("raw:") {
         // Raw I420 8-bit YUV file (w*h luma + 2*(w/2)*(h/2) chroma), used to
         // drive the identity/decode-both harness with EXACT content — e.g. the
         // decode_conformance failure cases (replicated-border padded content)
@@ -689,22 +731,45 @@ fn main() {
                 }
                 out
             };
-        let mut yuv = Vec::with_capacity(n_frames * (w * h + 2 * cw * ch));
-        for f in 0..n_frames {
-            let dx = shift_px * f;
-            if f == 0 {
-                yuv.extend_from_slice(&y);
-                yuv.extend_from_slice(&u);
-                yuv.extend_from_slice(&v);
-            } else {
-                let (mut np, mut dp) = (1i64, 1i64);
-                for _ in 0..f {
-                    np *= zoom_num;
-                    dp *= zoom_den;
+        let frame_len_in = w * h + 2 * cw * ch;
+        let mut yuv = Vec::with_capacity(n_frames * frame_len_in);
+        if let Some(seq) = &rawseq {
+            // Real footage: take the frames as they are. The warp, the shift
+            // and the zoom are all bypassed — `SVTAV1_FRAME_SHIFT` /
+            // `_ZOOM_NUM` / `_ZOOM_DEN` describe a synthetic motion model and
+            // silently applying one on top of real motion would make the cell
+            // describe neither. A caller that sets both is asking for two
+            // different things, so say so instead of picking one.
+            assert!(
+                std::env::var_os("SVTAV1_FRAME_SHIFT").is_none()
+                    && std::env::var_os("SVTAV1_FRAME_ZOOM_NUM").is_none()
+                    && std::env::var_os("SVTAV1_FRAME_ZOOM_DEN").is_none(),
+                "rawseq: carries its own motion; SVTAV1_FRAME_SHIFT/_ZOOM_NUM/_ZOOM_DEN \
+                 apply only to the synthetic warp"
+            );
+            let have = seq.len() / frame_len_in;
+            assert!(
+                have >= n_frames,
+                "rawseq has {have} frames, SVTAV1_FRAMES asks for {n_frames}"
+            );
+            yuv.extend_from_slice(&seq[..n_frames * frame_len_in]);
+        } else {
+            for f in 0..n_frames {
+                let dx = shift_px * f;
+                if f == 0 {
+                    yuv.extend_from_slice(&y);
+                    yuv.extend_from_slice(&u);
+                    yuv.extend_from_slice(&v);
+                } else {
+                    let (mut np, mut dp) = (1i64, 1i64);
+                    for _ in 0..f {
+                        np *= zoom_num;
+                        dp *= zoom_den;
+                    }
+                    yuv.extend_from_slice(&warp(&y, w, h, dx, np, dp));
+                    yuv.extend_from_slice(&warp(&u, cw, ch, dx / 2, np, dp));
+                    yuv.extend_from_slice(&warp(&v, cw, ch, dx / 2, np, dp));
                 }
-                yuv.extend_from_slice(&warp(&y, w, h, dx, np, dp));
-                yuv.extend_from_slice(&warp(&u, cw, ch, dx / 2, np, dp));
-                yuv.extend_from_slice(&warp(&v, cw, ch, dx / 2, np, dp));
             }
         }
         std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
