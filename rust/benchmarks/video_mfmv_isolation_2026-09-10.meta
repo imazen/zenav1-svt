@@ -1,0 +1,53 @@
+The remaining multi-frame video defect is the TEMPORAL MOTION-VECTOR FIELD
+— isolated 2026-09-10
+
+`SVTAV1_MFMV_OFF` (new, default-off, measurement only) builds the ref-MV stack
+from spatial candidates ONLY and signals `use_ref_frame_mvs = 0` to match, so
+encoder and decoder agree. Both halves must move together: gating only the
+header desynchronises from frame 0, because the port builds the field
+unconditionally. That mistake was made first, and it produced 0-of-8 decoded
+streams which briefly looked like evidence AGAINST the hypothesis. It was not
+evidence of anything.
+
+MEASURED, encoder recon (SVTAV1_FINAL_RECON) vs aomdec, 256x256 p6, 8 frames:
+
+  qp40           MFMV ON                       MFMV OFF
+  fourpeople     ALL 8 CLEAN                   ALL 8 CLEAN
+  kristenandsara ALL 8 CLEAN                   ALL 8 CLEAN
+  johnny         ALL 8 CLEAN                   ALL 8 CLEAN
+  vidyo3         8/8 decoded, drift f3         ALL 8 CLEAN
+  vidyo1         6/8 decoded, drift f4         ALL 8 CLEAN
+  vidyo4         4/8 decoded                   ALL 8 CLEAN
+
+  qp20           vidyo3 4/8 -> ALL 8 CLEAN, johnny drift f2 -> ALL 8 CLEAN,
+                 vidyo4 2/8 -> ALL 8 CLEAN, vidyo1 2/8 -> STILL FAILS at f2
+  qp55           all four clips ALL 8 CLEAN both ways
+
+15 of 16 clip x qp cells reconstruct byte-identically to the decoder for EVERY
+frame with the temporal field off. So the temporal MV field accounts for
+essentially all of the remaining multi-frame defect, and everything else in the
+video path -- prediction, residual, entropy, references, deblock, CDEF -- is
+correct.
+
+WHY IT HAS THIS SHAPE. Modes NEARESTMV and NEARMV do not signal an MV; they
+DERIVE it from the reference-MV stack. Frame 1 is immune because its reference
+is the key frame and the projection returns nothing for it (C aborts on
+`start_frame_buf->frame_type == KEY_FRAME`, md_config_process.c:441), which is
+why f0 and f1 were always clean. From the first frame whose reference is itself
+an inter frame, the field is live; if the port's projection differs from the
+decoder's, the two derive DIFFERENT MVs for the same block and the prediction
+diverges wholesale -- which matches the observed signature (large luma deltas,
+up to 34, over a whole block, spreading into neighbouring intra blocks that
+predict from it).
+
+This is exactly what the original inter-chain refusal named, so its diagnosis
+was right; what was missing was any way to measure it.
+
+ONE RESIDUAL, and it is NOT this defect: vidyo1 at qp20 still fails to decode
+from f2 with MFMV off. That is a separate, narrower bug and it now has a clean
+reproducer -- the only failing cell out of sixteen.
+
+NEXT: compare the port's `setup_motion_field` / `motion_field_projection` output
+against the decoder's derivation for one block of vidyo3 f3, which is the
+smallest failing case (530 luma px in a 16-wide column, blocks mi=(36,44) and
+(40,44), both mode 14 = NEARMV with mv=(-4,-52)).

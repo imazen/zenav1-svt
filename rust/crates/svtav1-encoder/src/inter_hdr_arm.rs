@@ -166,6 +166,9 @@ pub fn inter_signal(
         != 0;
     // ...and its PRESENCE — C `frame_might_allow_ref_frame_mvs`
     // (entropy_coding.h:71).
+    // Kept in lockstep with the MVP env's own gate: signalling one value while
+    // building the stack from another is a decoder desync, not an experiment.
+    let use_ref_frame_mvs_value = use_ref_frame_mvs_value && !crate::dbgenv::mfmv_off();
     let use_ref_frame_mvs =
         (!error_resilient_mode && seq.enable_ref_frame_mvs && seq.enable_order_hint)
             .then_some(use_ref_frame_mvs_value);

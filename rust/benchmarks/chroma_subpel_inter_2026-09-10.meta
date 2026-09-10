@@ -55,3 +55,52 @@ recomputes the phase from the luma MV instead of reusing the chroma SubpelParams
 The third block of the class does not show a differing pixel; a half-pel filter
 over a locally flat chroma region can equal the copy, so that is expected and
 not evidence against the signature.
+
+================================================================
+ROOT CAUSE FOUND AND FIXED, same day
+================================================================
+
+The interpolation-filter search picks a filter pair, assigns it to the
+candidate (so it is SIGNALLED), and then rebuilds the prediction only when
+`res.invalidates_luma_pred` is true. But THE SEARCH PREDICTS LUMA ONLY, so the
+chroma buffers still hold the prediction made with the filters the injector set
+-- packed 0, EIGHTTAP_REGULAR both ways -- no matter which pair wins.
+`invalidates_luma_pred` answers a different question: whether the LUMA buffer
+happens to already hold the winning pair's prediction because it was tried last.
+Gating the chroma rebuild on it leaves chroma predicted with a filter the
+bitstream does not name.
+
+INSTRUMENTED PROOF, block (16,160) 16x16 of vidyo3 256x256 p6 qp34 frame 1:
+    ZZIFS best_filters=0x10001 was=0x0 invalidates_luma=false has_uv=true
+0x10001 is SMOOTH/SMOOTH; 0x0 is REGULAR/REGULAR. Nothing was rebuilt, so the
+recon kept REGULAR chroma while the header said SMOOTH. A probe of the actual
+predicted row confirmed it:
+    port pred row0 = [126,126,126,127,123,119,119,120]  (filters=0x0)
+    decoder row0   = [126,126,126,125,123,120,119,119]
+
+WHY IT HID FOR SO LONG. It needs the LUMA phase to be zero -- an integer luma MV
+applies no filter at all, so luma is right whichever pair is used -- while the
+CHROMA phase is non-zero. At 4:2:0 that is exactly an mv component that is an
+odd multiple of 8. Every ordinary sub-pel block rebuilds or is unaffected, which
+is why 107 of them were perfect and only the 3-block class failed.
+
+FIX: rebuild when `invalidates_luma_pred || (has_uv && best_filters != org)`.
+Safe for luma: with `invalidates_luma_pred` false the luma buffer already holds
+this pair's prediction, so re-running it is idempotent.
+
+RESULT (8 frames, encoder recon vs aomdec, all six clips):
+                    qp40 before          qp40 after
+  johnny            drift f2 (9 px)      ALL 8 CLEAN
+  fourpeople        ALL 8 CLEAN          ALL 8 CLEAN
+  kristenandsara    ALL 8 CLEAN          ALL 8 CLEAN
+  vidyo1            drift f1             drift f4   (3 frames further)
+  vidyo3            drift f3             drift f3
+  vidyo4            4/8 decoded          4/8 decoded
+
+Three of six clips now reconstruct byte-identically to the decoder for all eight
+frames. NO REGRESSION: inter_byte_gate 108/108, ifs_join_gate 96/96 (the port's
+MDS3 filter search against C's, the gate that covers this exact code),
+real_video_inter_gate 24/24.
+
+STILL OPEN: vidyo3 f3, vidyo1 f4, vidyo4 f4, and at qp20 several clips drift at
+f2. Those are separate defects -- this one is closed.

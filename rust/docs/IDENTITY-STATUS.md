@@ -165,14 +165,52 @@ reference is the byte-identical key frame, `loop_filter_level[0]` is 0 so no
 filter stage runs on either side, luma is byte-identical, and only U and V
 differ by ±1..2.
 
-Ruled out by reading source: the sub-pel derivation
-(`clamp_mv_to_umv_border_sb` does `mv * (1 << (1 - ss_x))`, giving phase 8), the
-chroma call site (passes `ss=1,1`), and the convolve dispatch (keys on each
-plane's own phase). Also ruled out empirically: the loop filter, `skip_inter`
-(forcing it off changes nothing), and CDEF (vidyo3 drifts with CDEF 0
-throughout; vidyo4 is clean *with* a CDEF transition). Since the MD path is
-correct at every audited layer, the final recon chroma is likely produced by a
-different route — that is where to look next.
+**Root cause found and FIXED.** The interpolation-filter search assigns its
+winning pair to the candidate — so it is *signalled* — but rebuilds the
+prediction only when `res.invalidates_luma_pred`. The search predicts **luma
+only**, so chroma still holds the prediction made with the injector's filters
+(packed 0, REGULAR both ways) whatever wins; `invalidates_luma_pred` answers a
+different question, namely whether the *luma* buffer already holds the winner
+because it was tried last. Instrumented proof on the failing block:
+`best_filters=0x10001` (SMOOTH/SMOOTH), `was=0x0`, `invalidates_luma=false` —
+nothing rebuilt, so the recon carried REGULAR chroma while the header said
+SMOOTH. The fix rebuilds when `invalidates_luma_pred || (has_uv &&
+best_filters != org)`; that is idempotent for luma, which already holds the
+winning pair's prediction whenever the flag is false.
+
+This is why it needed the odd-multiple-of-8 MV to show at all: an integer luma
+MV applies no filter, so luma is right under either pair, while chroma's
+non-zero phase exposes the wrong one.
+
+**After the fix**, `johnny` joins the clean set: `johnny`, `fourpeople` and
+`kristenandsara` all reconstruct byte-identically for all 8 frames, and `vidyo1`
+moves from f1 to f4.
+
+### What is left is the temporal motion-vector field, and only that
+
+`SVTAV1_MFMV_OFF` (default-off, measurement only) builds the ref-MV stack from
+spatial candidates alone and signals `use_ref_frame_mvs = 0` to match. With it,
+**15 of 16 clip × qp cells reconstruct byte-identically to the decoder for every
+frame** ([record](../benchmarks/video_mfmv_isolation_2026-09-10.meta)) — every
+clip that drifted or stopped decoding becomes clean. So prediction, residual,
+entropy, references, deblock and CDEF are all correct, and the temporal field
+accounts for essentially the whole remaining defect.
+
+The shape follows: `NEARESTMV`/`NEARMV` do not signal an MV, they **derive** it
+from the ref-MV stack. Frame 1 is immune because its reference is the key frame
+and C's projection returns nothing for it, which is why f0/f1 were always clean;
+from the first frame whose reference is itself inter, a projection mismatch makes
+encoder and decoder derive *different* MVs for the same block. That matches the
+observed signature — large whole-block luma deltas spreading into neighbouring
+intra blocks. It is what the original inter-chain refusal always named; what was
+missing was a way to measure it.
+
+Both halves of the flag must move together: gating only the header
+desynchronises from frame 0, which produced 0-of-8 decoded streams that briefly
+looked like evidence against the hypothesis and were evidence of nothing.
+
+**One residual is not this defect:** `vidyo1` at qp20 still fails from f2 with
+MFMV off — the only failing cell of sixteen, and now a clean reproducer.
 
 ## imazen26 K300 production corpus (re-run after 48 days, 2026-09-10)
 

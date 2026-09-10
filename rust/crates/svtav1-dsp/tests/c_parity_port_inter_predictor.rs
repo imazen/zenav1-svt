@@ -555,7 +555,7 @@ fn inter_predictor_light_pd1_8bit_matches_c() {
         for (xi, xk) in FILTERS {
             let filters = make_interp_filters(yk, xk);
             for (w, h) in SIZES {
-                for (sx, sy) in [(0, 0), (3, 0), (0, 9), (15, 15)] {
+                for (sx, sy) in [(0, 0), (3, 0), (0, 9), (15, 15), (8, 0), (0, 8), (8, 8)] {
                     for is_compound in [false, true] {
                         let cb_stride = w + 1;
                         let (sp, csp) = unscaled(sx, sy);

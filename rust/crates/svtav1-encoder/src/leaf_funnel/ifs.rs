@@ -242,7 +242,33 @@ pub(super) fn ifs_at_mds3(
         }
     });
     ic.interp_filters = res.best_filters;
-    if res.invalidates_luma_pred {
+    // CHROMA IS STALE WHENEVER THE PAIR CHANGED, even when luma is not.
+    //
+    // The search predicts LUMA ONLY, so the chroma buffers still hold the
+    // prediction made with the filters the injector set (packed 0,
+    // EIGHTTAP_REGULAR both ways) no matter which pair wins.
+    // `invalidates_luma_pred` answers a different question -- whether the
+    // LUMA buffer happens to hold the winning pair's prediction because it
+    // was tried last -- and gating the rebuild on it alone leaves chroma
+    // predicted with a filter the bitstream does not name.
+    //
+    // MEASURED (vidyo3 256x256 p6 qp34 frames=2, benchmarks/
+    // chroma_subpel_inter_2026-09-10.meta): block (16,160) 16x16 picked
+    // best_filters=0x10001 (SMOOTH/SMOOTH) over was=0x0 with
+    // invalidates_luma_pred=false, so nothing was rebuilt and the recon kept
+    // REGULAR chroma while the header said SMOOTH.
+    //
+    // It stayed invisible because it needs the luma phase to be ZERO -- an
+    // integer luma MV applies no filter at all, so luma is right either way --
+    // while the chroma phase is non-zero. At 4:2:0 that is exactly an mv
+    // component that is an ODD MULTIPLE OF 8: integer in luma, half-pel in
+    // chroma.
+    //
+    // Rebuilding when only the pair changed is safe for luma: with
+    // `invalidates_luma_pred` false the buffer already holds this pair's
+    // prediction, so re-running it is idempotent.
+    let chroma_pred_is_stale = g.has_uv && res.best_filters != org;
+    if res.invalidates_luma_pred || chroma_pred_is_stale {
         // :2200-2202 `valid_luma_pred = false` -> the prediction call that
         // follows the search (:3838) rebuilds luma and, with `mds_do_chroma`
         // at MDS3, both chroma planes with the new pair. The port carries

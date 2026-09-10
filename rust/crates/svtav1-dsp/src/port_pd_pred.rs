@@ -316,6 +316,47 @@ pub fn av1_inter_prediction_light_pd1(
                 1,
                 1,
             );
+            #[cfg(feature = "std")]
+            if std::env::var_os("ZZ_CHROMA_ROW").is_some()
+                && geom.org_x == 16
+                && geom.org_y == 160
+                && mv.x == -8
+                && mv.y == 0
+            {
+                // Predict first, then show the row this call produced.
+                let rp = &u_refs[i];
+                let origin = (rp.origin as isize
+                    + pos_x as isize
+                    + pos_y as isize * rp.stride as isize) as usize;
+                let mut probe = alloc::vec![0u8; geom.bwidth_uv * geom.bheight_uv];
+                let mut pb = alloc::vec![0u16; 32 * 32];
+                let cpp = ConvolveParams::no_round(false, 32, is_compound, 8);
+                inter_predictor_light_pd1_8bit(
+                    crate::port_convolve::SrcView::new(rp.buf, origin, rp.stride),
+                    &mut probe,
+                    geom.bwidth_uv,
+                    &mut pb,
+                    geom.bwidth_uv,
+                    geom.bheight_uv,
+                    interp_filters,
+                    &sp,
+                    &cpp,
+                );
+                std::eprintln!(
+                    "ZZROW U pred row0 = {:?}  (subpel_x={}, filters=0x{:x})",
+                    &probe[..geom.bwidth_uv],
+                    sp.subpel_x,
+                    interp_filters
+                );
+            }
+            #[cfg(feature = "std")]
+            if std::env::var_os("ZZ_CHROMA_DBG").is_some() {
+                std::eprintln!(
+                    "ZZCHROMA org=({},{}) bwuv={}x{} mv=({},{}) -> pos=({},{}) subpel=({},{}) xs={} ys={}",
+                    geom.org_x, geom.org_y, geom.bwidth_uv, geom.bheight_uv,
+                    mv.y, mv.x, pos_x, pos_y, sp.subpel_x, sp.subpel_y, sp.xs, sp.ys
+                );
+            }
             if component_mask & CB_FLAG != 0 {
                 let rp = &u_refs[i];
                 let origin = (rp.origin as isize

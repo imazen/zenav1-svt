@@ -137,6 +137,28 @@ presence_flags! {
     /// it produces is known to diverge from C, so it must not be presented as
     /// a parity result.
     inter_chain_experimental => "SVTAV1_INTER_CHAIN_EXPERIMENTAL",
+    /// `SVTAV1_MFMV_OFF`: build the ref-MV stack from SPATIAL candidates only,
+    /// and signal `use_ref_frame_mvs = 0` to match, so encoder and decoder
+    /// agree.
+    ///
+    /// This is the ISOLATION SWITCH for the temporal motion-vector field, and
+    /// it is what identified that field as the whole of the remaining
+    /// multi-frame defect. MEASURED 2026-09-10 over the six public-domain
+    /// clips at 256x256 p6, 8 frames: with MFMV on, four clips drift from the
+    /// encoder's own reconstruction and two stop decoding; with it off,
+    /// **15 of 16 clip x qp cells reconstruct byte-identically to aomdec for
+    /// every frame** (benchmarks/video_mfmv_isolation_2026-09-10.meta).
+    ///
+    /// Both halves must move together or the experiment is worthless: gating
+    /// only the header desynchronises from frame 0, because the port builds
+    /// the field unconditionally. That mistake was made first and is recorded
+    /// so it is not repeated.
+    ///
+    /// **Not a feature flag.** C signals `use_ref_frame_mvs = 1` here, so a
+    /// run with this set is NOT byte-comparable with C and must never be
+    /// presented as a parity result. It exists to separate "the temporal MV
+    /// field is wrong" from "something else is wrong".
+    mfmv_off => "SVTAV1_MFMV_OFF",
     /// `SVTAV1_GM_EXPERIMENTAL`: lift the GLOBAL-MOTION refusal at presets
     /// 0..4 so the harness can MEASURE what an inter frame there emits.
     ///

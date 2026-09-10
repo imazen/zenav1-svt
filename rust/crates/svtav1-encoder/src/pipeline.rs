@@ -3709,7 +3709,8 @@ impl EncodePipeline {
                 // level 2 was allowed it would have been a silent
                 // disagreement in a bit that moves a `newmv` CDF row. It now
                 // calls the same shared port the header does.
-                use_ref_frame_mvs: seq_tools.enable_ref_frame_mvs
+                use_ref_frame_mvs: !crate::dbgenv::mfmv_off()
+                    && seq_tools.enable_ref_frame_mvs
                     && seq_tools.enable_order_hint
                     && crate::port_enc_mode_config::tail::mfmv_controls(
                         crate::port_enc_mode_config::tail::MfmvInputs {
