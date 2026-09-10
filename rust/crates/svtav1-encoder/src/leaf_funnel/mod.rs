@@ -109,6 +109,7 @@ mod tx_geom;
 mod tx_pipeline;
 mod txt;
 mod types;
+mod warp_refine;
 
 #[cfg(test)]
 mod tests;
@@ -650,6 +651,9 @@ pub(crate) fn evaluate_leaf(
     // C `generate_md_stage_0_cand`: regular intra, filter-intra, palette, then
     // IntraBC, each scored with the Hadamard SATD fast cost. The returned order
     // is C's PROCESSING order and the MDS0 pool below depends on it.
+    // C keeps this on `ModeDecisionContext`; the port produces it in the inter
+    // injector and consumes it at MDS1, so it is a local that travels.
+    let mut warp_blk = crate::inter_md_arm::WarpRefineBlock::default();
     let mut cands = inject::inject_candidates(
         fx,
         &geom,
@@ -664,6 +668,7 @@ pub(crate) fn evaluate_leaf(
         y_stride,
         dc_only,
         &mut ind_uv,
+        &mut warp_blk,
     );
 
     // -- MDS0 -> MDS1 staging: replacement pool, per-class sort, dev-prune --
@@ -712,6 +717,7 @@ pub(crate) fn evaluate_leaf(
             &mut cands,
             order,
             n1,
+            &warp_blk,
         );
     }
 

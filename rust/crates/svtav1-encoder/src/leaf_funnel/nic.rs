@@ -772,6 +772,7 @@ mod nic_class_prune_tests {
                     v_pred: alloc::vec::Vec::new(),
                     u_pred10: alloc::vec::Vec::new(),
                     v_pred10: alloc::vec::Vec::new(),
+                    wm_params: Default::default(),
                 }));
             }
             _ => {}

@@ -68,6 +68,10 @@ pub(super) fn inject_candidates(
     y_stride: usize,
     dc_only: bool,
     ind_uv: &mut Option<[(u8, i8); 13]>,
+    // The block-scoped inputs the MDS1 warp MV refinement needs. Threaded as
+    // an out-param for the same reason `ind_uv` is: it is produced HERE, by
+    // the inter injector, and consumed one stage later.
+    warp_blk: &mut crate::inter_md_arm::WarpRefineBlock,
 ) -> Vec<Cand> {
     // Destructure the carriers back into the names the moved body uses, so the
     // body itself is byte-for-byte what it was inside `evaluate_leaf`.
@@ -1506,6 +1510,7 @@ pub(super) fn inject_candidates(
             },
             lambda,
             frame.inter_fast_lambda,
+            warp_blk,
         );
         for c in built {
             // MDS0's distortion is the same SATD every intra candidate is
@@ -1618,6 +1623,7 @@ pub(super) fn inject_candidates(
                     v_pred: c.v_pred,
                     u_pred10: c.u_pred10,
                     v_pred10: c.v_pred10,
+                    wm_params: c.wm_params_l0,
                 })),
                 mds3_cost: u64::MAX,
                 block_has_coeff: false,

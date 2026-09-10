@@ -399,7 +399,7 @@ pub struct InterBlockCtx<'a> {
 /// mapping lives here rather than as a new public constructor on the shared
 /// types crate. `None` is a value outside AV1's 25 modes, which is a caller
 /// bug rather than a neighbour state.
-fn mode_from_u8(v: u8) -> Option<PredictionMode> {
+pub(crate) fn mode_from_u8(v: u8) -> Option<PredictionMode> {
     use PredictionMode as M;
     Some(match v {
         0 => M::DcPred,
@@ -438,9 +438,9 @@ fn mode_from_u8(v: u8) -> Option<PredictionMode> {
 /// `svt_aom_init_wm_samples` and read by every candidate's warp derivation.
 #[derive(Clone, Copy)]
 pub struct WarpSamples {
-    n: u8,
-    pts: [[i32; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
-    pts_inref: [[i32; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
+    pub n: u8,
+    pub pts: [[i32; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
+    pub pts_inref: [[i32; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
 }
 
 impl Default for WarpSamples {
@@ -453,19 +453,137 @@ impl Default for WarpSamples {
     }
 }
 
+/// Everything the MDS1 warp MV refinement needs that is PER BLOCK.
+///
+/// C keeps all of it on `ModeDecisionContext` and `svt_aom_wm_motion_refinement`
+/// reads it there. The port builds the candidate list in this module and runs
+/// MDS1 in the leaf funnel, so the block-scoped half has to travel; the
+/// frame-scoped half (`nmv`, `fac.drl_mode`, `allow_high_precision_mv`) stays
+/// on [`InterMdFrame`] and is read through `fx.inter`.
+pub struct WarpRefineBlock {
+    /// False when this block can produce no warped candidate at all, which
+    /// makes the refinement a no-op without the caller having to know why.
+    pub enabled: bool,
+    /// C `ctx->wm_ctrls`, the fields the refinement reads.
+    pub refinement_iterations: u8,
+    pub refine_diag: bool,
+    pub shut_approx_if_not_mds0: bool,
+    pub lower_band_th: u16,
+    pub upper_band_th: u16,
+    /// C `svt_aom_set_wm_controls`'s `refine_level`: 1 -> MDS1, 2 -> MDS3.
+    pub refine_level: u8,
+    /// C `ctx->wm_sample_info[ref]`.
+    pub samples: [WarpSamples; 8],
+    /// C `ctx->ref_mv_stack[ref]` and `xd->ref_mv_count[ref]`, for the DRL
+    /// re-pick the refinement ends with.
+    pub stacks: alloc::vec::Vec<crate::inter_mvp::InterMvpStack>,
+    pub ref_mv_count: [u8; 8],
+    pub mi_row: i32,
+    pub mi_col: i32,
+    pub bsize: svtav1_types::block::BlockSize,
+    pub bwidth: usize,
+    pub bheight: usize,
+}
+
+impl Default for WarpRefineBlock {
+    fn default() -> Self {
+        WarpRefineBlock {
+            enabled: false,
+            refinement_iterations: 0,
+            refine_diag: false,
+            shut_approx_if_not_mds0: false,
+            lower_band_th: 0,
+            upper_band_th: 0,
+            refine_level: 0,
+            samples: Default::default(),
+            stacks: alloc::vec::Vec::new(),
+            ref_mv_count: [0; 8],
+            mi_row: 0,
+            mi_col: 0,
+            bsize: svtav1_types::block::BlockSize::Block8x8,
+            bwidth: 0,
+            bheight: 0,
+        }
+    }
+}
+
+impl WarpRefineBlock {
+    /// C `svt_aom_warped_motion_parameters` (adaptive_mv_pred.c:1776) for an
+    /// arbitrary test MV — the SAME derivation the injector's hook runs, which
+    /// is why it lives here rather than being duplicated in the funnel.
+    ///
+    /// `shut_approx` skips the band gate; C passes
+    /// `ctx->wm_ctrls.shut_approx_if_not_mds0` inside the search and a literal
+    /// 1 for the final re-derivation, with `lower`/`upper` forced to 0 there
+    /// ("this call is not part of a search, so disable the shortcuts").
+    #[must_use]
+    pub fn warp_params_for(
+        &self,
+        ref_frame: i8,
+        mv: svtav1_types::motion::Mv,
+        shut_approx: bool,
+        wm: &mut svtav1_types::motion::WarpedMotionParams,
+    ) -> Option<u8> {
+        use svtav1_dsp::port_warp::{find_projection, select_samples};
+        if self.bwidth < 8 || self.bheight < 8 {
+            return None;
+        }
+        let s = &self.samples[ref_frame.max(0) as usize];
+        if s.n == 0 {
+            return None;
+        }
+        let mut pts = [0i32; 2 * crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX];
+        let mut pts_inref = [0i32; 2 * crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX];
+        for i in 0..usize::from(s.n) {
+            pts[2 * i] = s.pts[i][0];
+            pts[2 * i + 1] = s.pts[i][1];
+            pts_inref[2 * i] = s.pts_inref[i][0];
+            pts_inref[2 * i + 1] = s.pts_inref[i][1];
+        }
+        let mut nsamples = s.n;
+        if nsamples > 1 {
+            nsamples = select_samples(
+                mv,
+                &mut pts,
+                &mut pts_inref,
+                usize::from(nsamples),
+                self.bsize,
+            );
+        }
+        let mut apply = !find_projection(
+            usize::from(nsamples),
+            &pts,
+            &pts_inref,
+            self.bsize,
+            mv,
+            wm,
+            self.mi_row,
+            self.mi_col,
+        );
+        if apply && !shut_approx {
+            let (a, b) = (i32::from(wm.alpha).abs(), i32::from(wm.beta).abs());
+            let (g, d) = (i32::from(wm.gamma).abs(), i32::from(wm.delta).abs());
+            let lo = i32::from(self.lower_band_th);
+            let hi = i32::from(self.upper_band_th);
+            if a + b < lo && g + d < lo {
+                apply = false;
+            }
+            if 4 * a + 7 * b > hi && 4 * g + 4 * d > hi {
+                apply = false;
+            }
+        }
+        // C assigns `*num_samples` regardless of the projection's success, so
+        // the count is returned even when the model is rejected.
+        if apply { Some(nsamples) } else { None }
+    }
+}
+
 /// The injector's [`InjectHooks`] with the WARP derivation wired.
 ///
 /// Every other hook is the `NoRefinement` answer, and each is that way for a
 /// stated reason rather than by omission — see the impl.
 struct WarpHooks<'a> {
-    bsize: svtav1_types::block::BlockSize,
-    bwidth: usize,
-    bheight: usize,
-    mi_row: i32,
-    mi_col: i32,
-    samples: &'a [WarpSamples; 8],
-    lower_band_th: u16,
-    upper_band_th: u16,
+    blk: &'a WarpRefineBlock,
 }
 
 impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
@@ -495,69 +613,28 @@ impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
         &mut self,
         cand: &mut crate::port_md::inject::InterCandidate,
     ) -> bool {
-        use svtav1_dsp::port_warp::{find_projection, select_samples};
+        // C assigns `*num_samples = 0` on every early return, so a rejected
+        // candidate leaves the count zeroed rather than stale.
         cand.num_proj_ref = 0;
-        // C: `if (blk_geom->bwidth < 8 || blk_geom->bheight < 8) return false`.
-        // The spec's 7.11.3.1 rule, and what makes the luma `is_wm` in the
-        // predictor need no size guard of its own.
-        if self.bwidth < 8 || self.bheight < 8 {
-            return false;
-        }
-        let slot = cand.ref_frame[0].max(0) as usize;
-        let s = &self.samples[slot];
-        if s.n == 0 {
-            return false;
-        }
-        // C keeps `pts` / `pts_inref` as flat `int[2 * n]`; `select_samples`
-        // COMPACTS survivors in place, so they must be flat here too.
-        let mut pts = [0i32; 2 * crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX];
-        let mut pts_inref = [0i32; 2 * crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX];
-        for i in 0..usize::from(s.n) {
-            pts[2 * i] = s.pts[i][0];
-            pts[2 * i + 1] = s.pts[i][1];
-            pts_inref[2 * i] = s.pts_inref[i][0];
-            pts_inref[2 * i + 1] = s.pts_inref[i][1];
-        }
-        let mut nsamples = s.n;
-        if nsamples > 1 {
-            nsamples = select_samples(
-                cand.mv[0],
-                &mut pts,
-                &mut pts_inref,
-                usize::from(nsamples),
-                self.bsize,
-            );
-        }
-        // C assigns `*num_samples` BEFORE `svt_find_projection`, so a block
-        // whose projection FAILS still reports its sample count. That count is
-        // `block_mi.num_proj_ref`, which the writer reads to pick the
-        // motion-mode ALPHABET — getting it wrong is an arithmetic-coder
-        // desync, not a quality choice.
-        cand.num_proj_ref = nsamples;
-        let mut apply = !find_projection(
-            usize::from(nsamples),
-            &pts,
-            &pts_inref,
-            self.bsize,
+        match self.blk.warp_params_for(
+            cand.ref_frame[0],
             cand.mv[0],
+            // `shut_approx` is a literal 0 at C's injection call site
+            // (mode_decision.c:936), so the band gate is LIVE here -- at
+            // wm_level 3 `lower_band_th` is 1 << 10, which is what rejects a
+            // warp too weak to be worth its own motion mode.
+            false,
             &mut cand.wm_params_l0,
-            self.mi_row,
-            self.mi_col,
-        );
-        if apply {
-            let wm = &cand.wm_params_l0;
-            let (a, b) = (i32::from(wm.alpha).abs(), i32::from(wm.beta).abs());
-            let (g, d) = (i32::from(wm.gamma).abs(), i32::from(wm.delta).abs());
-            let lo = i32::from(self.lower_band_th);
-            let hi = i32::from(self.upper_band_th);
-            if a + b < lo && g + d < lo {
-                apply = false;
+        ) {
+            Some(n) => {
+                // The count is `block_mi.num_proj_ref`, which the WRITER reads
+                // to pick the motion-mode ALPHABET. Getting it wrong is an
+                // arithmetic-coder desync, not a quality choice.
+                cand.num_proj_ref = n;
+                true
             }
-            if 4 * a + 7 * b > hi && 4 * g + 4 * d > hi {
-                apply = false;
-            }
+            None => false,
         }
-        apply
     }
 
     /// OBMC is not wired. The injector never asks: `obmc_ctrls` is
@@ -594,6 +671,7 @@ pub fn build_inter_candidates(
     b: &mut InterBlockCtx<'_>,
     lambda: u64,
     fast_lambda: u32,
+    warp_out: &mut WarpRefineBlock,
 ) -> Vec<InterCandOut> {
     use crate::port_md::inject::{CandArray, InjectCtx, WmCtrls, inject_inter_candidates};
     use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef, RefPruningState};
@@ -883,17 +961,29 @@ pub fn build_inter_candidates(
 
     let mut cands = CandArray::new(64);
     let mut log = InjectedMvLog::default();
-    let mut hooks = WarpHooks {
+    // The block-scoped half of what the MDS1 refinement needs, filled here
+    // because this is where the samples, the stacks and the derived controls
+    // already exist. `enabled` false makes the refinement a no-op without the
+    // funnel having to know why.
+    *warp_out = WarpRefineBlock {
+        enabled: wm_injection_wired,
+        refinement_iterations: wmc.refinement_iterations,
+        refine_diag: wmc.refine_diag != 0,
+        shut_approx_if_not_mds0: wmc.shut_approx_if_not_mds0 != 0,
+        lower_band_th: wmc.lower_band_th,
+        upper_band_th: wmc.upper_band_th,
+        refine_level: wmc.refine_level,
+        samples: wm_samples,
+        stacks: stacks.clone(),
+        ref_mv_count,
+        mi_row: (b.org_y / 4) as i32,
+        mi_col: (b.org_x / 4) as i32,
         bsize: svtav1_types::block::BlockSize::from_u8(b.bsize)
             .expect("an injected inter block must have a real BlockSize"),
         bwidth: b.bw,
         bheight: b.bh,
-        mi_row: (b.org_y / 4) as i32,
-        mi_col: (b.org_x / 4) as i32,
-        samples: &wm_samples,
-        lower_band_th: wmc.lower_band_th,
-        upper_band_th: wmc.upper_band_th,
     };
+    let mut hooks = WarpHooks { blk: warp_out };
     inject_inter_candidates(&inj, &mut cands, &mut log, &mut hooks);
 
     let mut out = Vec::new();

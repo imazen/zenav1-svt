@@ -74,14 +74,39 @@ no cell was promoted. The cells C codes without warp were byte-identical
 before and still are, which is the check that the injection did not widen the
 candidate set where C's gate is closed.
 
-## WHAT IS STILL MISSING, PRECISELY
+## THE MDS1 MV REFINEMENT — LANDED, and what it moved
 
-* **The MDS1 warp MV refinement.** At wm_level 3 `refine_level` is 1, so C
-  runs `svt_aom_wm_motion_refinement` at MD stage 1
-  (`opt_non_translation_motion_mode_warp`, product_coding_loop.c:6762-6796).
-  The port's warp candidates carry the UNREFINED MV. `port_md::mv_refine`
-  is ported; the closure it needs (warp derivation + prediction + variance)
-  and the `ChooseDrlCtx` plumbing are not.
+At wm_level 3 `refine_level` is 1, so C runs `svt_aom_wm_motion_refinement` at
+MD stage 1 (`opt_non_translation_motion_mode`, product_coding_loop.c:6757-6796)
+over the MDS0 survivors. Both halves were ported with no caller;
+`leaf_funnel::warp_refine` is the adapter that supplies the two closures.
+
+It must run at MDS1 and not at injection, and C defers it deliberately: only
+survivors pay for it, and refining earlier would change the MDS0 fast cost and
+therefore the survivor set — a byte difference, not an optimisation.
+
+MEASURED on vidyo3 256x256 preset 6 (frames = 2), joining the port's per-block
+record to C's `SVT_CINTER_OUT`:
+
+    before the refinement   29 blocks warped on both sides   19 same MV, 10 different
+    after                   25 blocks warped on both sides   20 same MV,  5 different
+
+i.e. the MV mismatch rate on jointly-warped blocks went from 34 % to 20 %, and
+frame 1 moved from 218 bytes to 190 against C's 200. Every remaining mismatch
+is a SINGLE step in the y component (the step is 2 at this frame's MV
+precision), so what is left is a cost-tie detail inside the search rather than
+a missing stage:
+
+    mi(8,24)   C (-4,-16)  port (-2,-16)
+    mi(32,0)   C ( 0,  0)  port ( 0, -2)
+    mi(48,8)   C (-2,-10)  port ( 0,-10)
+    mi(48,24)  C (-2,-18)  port ( 0,-18)
+    mi(56,8)   C (-2,-10)  port ( 0,-10)
+
+The warped-block COUNT also rose (vidyo3 256x256 p6: 497 -> 598 over 8 frames),
+which is expected — a refined warp wins more often.
+
+## WHAT IS STILL MISSING, PRECISELY
 * **Injection-time refinement** (`refine_level == 0`, i.e. wm_level 1, presets
   M0..M1) is deliberately NOT enabled: `wm_ctrls.enabled` is forced false
   there, so those presets keep their previous behaviour rather than getting a

@@ -172,6 +172,10 @@ pub struct InterCand {
     /// `Cand::pred10`. EMPTY unless the DPB carried a 10-bit reference.
     pub u_pred10: alloc::vec::Vec<u16>,
     pub v_pred10: alloc::vec::Vec<u16>,
+    /// C `cand->wm_params_l0` — the local-warp affine model. Identity unless
+    /// `motion_mode == WarpedCausal`, and carried because the MDS1 refinement
+    /// re-derives it and the rebuilt prediction needs it.
+    pub wm_params: svtav1_types::motion::WarpedMotionParams,
 }
 
 /// The chosen leaf coding, consumed by the fixed-tree walk + the entropy

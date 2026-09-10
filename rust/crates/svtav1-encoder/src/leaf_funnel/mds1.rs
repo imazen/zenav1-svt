@@ -33,6 +33,12 @@ pub(super) fn run_mds1(
     cands: &mut [Cand],
     order: &[usize],
     n1: usize,
+    // C `opt_non_translation_motion_mode`'s block-scoped inputs. MDS1 is where
+    // C runs the warp MV refinement at `wm_ctrls.refine_level == 1`, and it is
+    // deliberately here rather than at injection: only MDS0 SURVIVORS pay for
+    // it, and refining earlier would change the MDS0 fast cost and therefore
+    // this very survivor set.
+    warp_blk: &crate::inter_md_arm::WarpRefineBlock,
 ) {
     // Destructure the carriers back into the names the moved body uses, so the
     // body itself is byte-for-byte what it was inside `evaluate_leaf`.
@@ -55,6 +61,18 @@ pub(super) fn run_mds1(
     // -- MDS1: luma-only full loop (freq dist, quantize_b, DCT, depth 0) --
     for &ci in order.iter().take(n1) {
         let cand = &mut cands[ci];
+        // C `full_loop_core`'s FIRST act on an inter candidate
+        // (product_coding_loop.c:6849), before the prediction and the residual.
+        super::warp_refine::refine_at_mds1(
+            fx,
+            g,
+            warp_blk,
+            lambda,
+            y_src,
+            y_src_stride,
+            y_src_off,
+            cand,
+        );
         let (txb_skip_ctx, dc_sign_ctx) = if cfg.real_coeff_ctx {
             let (above, left) = fx.ectx.coeff_neighbors(abs_x, abs_y, w, h);
             cc::get_txb_ctx(0, above, left, true, false)
