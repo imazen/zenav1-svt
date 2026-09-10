@@ -1,0 +1,57 @@
+Frame 0 of a MULTI-FRAME encode diverges from C at presets 2-7 — 2026-09-10
+
+A key frame that is byte-identical to C when encoded alone stops being
+byte-identical when a second frame follows it. Presets 2-7 only.
+
+REPRODUCER (minimal)
+  tools/identity_diff_inter.sh 256 256 40 6 2 rawseq:johnny_256x256_8f.i420
+  with SVTAV1_INTER_EXPERIMENTAL=1 and SVTAV1_FRAME_SHIFT/_ZOOM_* unset.
+  Asset: R2 video/pd-derf-720p/johnny_256x256_8f.i420
+
+PRESET BRACKET (johnny 256x256, cli_qp 40, frames=2, frame 0 vs C)
+  p0   OK
+  p2   DIFF   C=4857  rs=4824
+  p4   DIFF   C=4870  rs=4870     <- same byte COUNT, different bytes
+  p5   DIFF   C=4919  rs=4894
+  p6   DIFF   C=5053  rs=5048
+  p7   DIFF   C=5254  rs=5232
+  p8   OK
+  p10  OK
+Clean at the slowest preset AND at the fast ones; dirty only in the middle.
+
+THE CONTROL THAT MAKES THIS A FINDING. Same pixels, same preset, frames=1:
+byte-identical on all six cells that fail at frames=2 (fourpeople_256,
+johnny_256, kristenandsara_128, kristenandsara_256, vidyo3_256, vidyo4_256).
+So it is not the content, not the crop size, and not the still path.
+
+RULED OUT — the harness. identity_diff_inter.sh hands the two encoders
+different GOP settings (C: SVT_INTRA_PERIOD=-1; port: SVTAV1_INTRA_PERIOD=64),
+which is exactly the kind of mismatch that would invalidate the result. It does
+not explain it: matching them in either direction, and setting both to 255,
+leaves the bytes UNCHANGED at 5053/5048.
+
+  asis (C=-1, port=64)      DIFF  C=5053 rs=5048
+  SVT_INTRA_PERIOD=64       DIFF  C=5053 rs=5048
+  SVTAV1_INTRA_PERIOD=-1    DIFF  C=5053 rs=5048
+  both=255                  DIFF  C=5053 rs=5048
+
+SEPARATE from the 180/180 stills result. real_image_matrix.sh drives
+identity_diff.sh, which passes NO GOP configuration at all. CID22 1001682 at
+512x512 q40 p6 through that harness is identical at 10720 B, and stays identical
+here at frames=1.
+
+LEAD, not yet tested. identity_run.rs records that `recon_output` reaches the
+encode through `postfilter_consumed` (pipeline.rs), "which a multi-frame run
+already forces true via `!is_single_frame` — a later frame may predict from this
+recon, so the filters run either way". So frame 0's post-filters (deblock / CDEF
+/ restoration) RUN in a multi-frame encode and are skipped in a single-frame one.
+If the port's filter DECISIONS differ from C's in that mode, frame 0 diverges,
+and the p0-clean / p8-clean bracket would point at a mid-preset search shortcut
+rather than the filters themselves. Test that before assuming it.
+
+METHOD NOTE, because it nearly produced a wrong answer. At frames=1 this harness
+writes c.obu / rs.obu; only a multi-frame run writes the per-frame c.obu.pts<N> /
+rs.obu.f<N>. A first pass compared the per-frame names at frames=1, found them
+missing, and `cmp -s` on two absent files reports "differ" — which read as a
+divergence on every cell and pointed at content rather than the GOP, the exact
+opposite of the truth. Check that the artifacts exist before comparing them.

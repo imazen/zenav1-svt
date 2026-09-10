@@ -68,9 +68,17 @@ anonymously. MEASURED 2026-09-10, 6 clips × {128×128, 256×256} × presets {6,
 Two things this says that the synthetic grid could not:
 
 - **Frame 0's six failures are all preset 6**; preset 8 key frames are 12/12.
-  That is a *still* divergence reached through the video configuration, and it
-  is a different surface from `real_image_matrix.sh`'s 180/180, which runs the
-  all-intra path at 512×512 on CID22-512.
+  Drilled 2026-09-10 into a specific open bug
+  ([record](../benchmarks/multiframe_keyframe_p2p7_2026-09-10.meta)): a key
+  frame that is byte-identical to C **alone** stops being identical **when a
+  second frame follows it**, at presets **2–7** only (p0, p8 and p10 are clean).
+  The control is what makes it a finding — the same pixels at `frames=1` are
+  byte-identical on all six cells, so it is not the content, the crop size or
+  the still path. The harness is ruled out too: it hands the encoders different
+  intra periods (C `-1`, port `64`), and matching them in either direction, or
+  setting both to 255, leaves the bytes unchanged at 5053/5048. Minimal
+  reproducer: `identity_diff_inter.sh 256 256 40 6 2
+  rawseq:johnny_256x256_8f.i420`.
 - **The control makes the gap explicit.** At the identical cell shape
   (128×128 q40 p6 frames=2) synthetic `gradient` is byte-identical on *both*
   frames, with frame 1 coding to 24 bytes — a skip. Real video at that shape
