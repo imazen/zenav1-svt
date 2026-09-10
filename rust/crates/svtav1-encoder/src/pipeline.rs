@@ -6690,7 +6690,11 @@ impl EncodePipeline {
                     pic.rps.refresh_frame_mask,
                 );
             }
+            // `SVTAV1_INTER_CHAIN_EXPERIMENTAL` lifts this for MEASUREMENT
+            // only (`crate::dbgenv::inter_chain_experimental`). Default-off, so
+            // every caller still gets the refusal; see that flag's doc.
             if pic.ref_list0_count_try > 0
+                && !crate::dbgenv::inter_chain_experimental()
                 && self
                     .dpb
                     .get(pic.rps.ref_dpb_index[0] as usize)

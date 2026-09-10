@@ -1,0 +1,71 @@
+Multi-frame video: what works, and the defect that stops it — 2026-09-10
+
+Until now nothing could answer "does a longer encode produce a decodable
+stream?", because the port refused every frame past frame 1. Two refusals stack:
+SVTAV1_INTER_EXPERIMENTAL lifts the first (any inter frame); the second fires on
+an inter frame whose LIST-0 reference is itself an inter frame, i.e. frame 2 and
+beyond, and had NO escape at all. That second one is a BYTE-PARITY guard, not a
+correctness guard -- its own text records what the port emits with it lifted.
+SVTAV1_INTER_CHAIN_EXPERIMENTAL (new, default-off) makes the emitted state
+measurable. The refusal still fires for every caller.
+
+WHAT WORKS. vidyo3 256x256 q40 p6, low-delay P, SVTAV1_HIER_LEVELS=0:
+  N=2,3,4,5,6   aomdec and dav1d BOTH decode every frame, and the two decoders'
+                output is byte-identical to each other.
+  N=7,8         aomdec: "Failed to decode frame 7: Corrupt frame detected /
+                Failed to decode tile data". 6 frames decode, f6 does not.
+C on the SAME .yuv encodes 8 frames and decodes 8/8, so this is port-side.
+
+NOT A FIXED LIMIT -- content and rate dependent, in the SAME preset band as the
+frame-0 divergence (benchmarks/multiframe_keyframe_p2p7_2026-09-10.meta):
+  vidyo3     256x256 p6 q40   6 of 8      (highest-motion clip in the set)
+  johnny     256x256 p6 q40   8 of 8 OK
+  fourpeople 256x256 p6 q40   8 of 8 OK
+  vidyo3     128x128 p6 q40   8 of 8 OK
+  vidyo3     256x256 p8 q40   8 of 8 OK   <- preset 8 clean, as with frame 0
+  vidyo3     256x256 p6 q20   4 of 8      <- lower q fails EARLIER
+
+THE DEFECT: the encoder's reference is not what a decoder reconstructs, and the
+error compounds. SVTAV1_FINAL_RECON per frame vs aomdec output, vidyo3 256 p6 q40:
+
+  f0  IDENTICAL (98304 B)
+  f1  33 px differ, max delta 1
+  f2  86 px, max delta 6
+  f3  851 px, max delta 34
+  f4  1098 px, max delta 37
+  f5  1298 px, max delta 35
+  f6  decoder never produces it
+
+Frame 0 -- the key frame -- is exact. Drift begins on the FIRST inter frame and
+grows monotonically. identity_run.rs already predicted this shape: "an INTER
+frame PREDICTS from this buffer: a reference that is not what a decoder
+reconstructs makes every inter mode decision score a prediction the stream does
+not describe" (docs/INTER-ENCODE-PLAN.md 1y).
+
+WHERE THE FIRST DRIFT IS. Frame 1, 33 pixels, deltas {+1: 22, -1: 11}:
+  LUMA ONLY -- both chroma planes are byte-identical.
+  x range 27..49, y range 49..113, superblocks (0,0) and (1,0).
+  Vertical runs at fixed x: x=49 for y=49..53, x=48 for y=61..64, x=32..33 at
+  y=93. Those are BLOCK BOUNDARIES, so this is an edge filter, not prediction.
+
+RULED OUT, both by reading source rather than assumption:
+- Loop-filter ref/mode deltas. `ref_deltas` is all-zero in the port and nothing
+  outside lf_levels.rs writes it, which looked like the bug (spec default is
+  {1,0,0,0,-1,0,-1,-1} and a level delta of 1 gives exactly +-1 pixels). It is
+  not: lf_levels.rs documents that C's encoder assigns mode_ref_delta_enabled = 0
+  and never re-assigns it (resource_coordination_process.c:389), so the deltas
+  are multiplied by zero-gated code in C too and the port matches.
+- The harness's intra-period mismatch. See the frame-0 meta: matching C and the
+  port in either direction leaves the bytes unchanged.
+
+OPEN QUESTION, stated as a hypothesis and NOT established: a +-1 pixel drift
+cannot by itself make a stream unparseable -- entropy decoding does not depend on
+pixel values. So either the drift makes the encoder DERIVE an out-of-range
+syntax value at f6 (a CDEF strength, a filter level, a segment id), or there is a
+second, independent entropy defect. "Failed to decode TILE DATA" is a parse
+failure, so whichever it is, it is a syntax element and not the pixels
+themselves. Do not assume the drift explains the desync until one is traced.
+
+NEXT: localise the f1 edge difference. It is 33 pixels on one frame at known
+coordinates with a byte-exact reference (aomdec's output), which is the smallest
+reproducer this defect will ever have.

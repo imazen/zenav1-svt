@@ -96,6 +96,42 @@ video while asserting only that two encoders agree a repeated frame is a skip.
 `tools/mk_video_assets.py` now decimates duplicates and scores motion as the
 **minimum** over consecutive pairs, never the mean.
 
+## Multi-frame video: works to 6 frames, then self-desyncs (2026-09-10)
+
+The port refused every frame past frame 1, so "does a longer encode decode?" was
+unanswerable. `SVTAV1_INTER_CHAIN_EXPERIMENTAL` (default-off, measurement only)
+lifts the second refusal — the byte-parity guard on an inter frame whose LIST-0
+reference is itself inter — and makes the answer measurable
+([record](../benchmarks/video_multiframe_2026-09-10.meta)).
+
+**It works.** On `vidyo3 256×256 q40 p6`, low-delay P: 2, 3, 4, 5 and 6 frames
+decode completely under **both** `aomdec` and `dav1d`, and the two decoders'
+output is byte-identical to each other. At 7+ frames aomdec reports *"Failed to
+decode tile data"* on f6. C encodes and decodes 8/8 on the same `.yuv`, so the
+defect is port-side. The limit is not fixed — `johnny` and `fourpeople` do 8/8,
+`vidyo3` at q20 fails *earlier* (f5), and preset 8 is clean, the **same
+preset 2–7 band** as the frame-0 divergence above.
+
+**The defect is reference drift.** Encoder recon vs decoder output, per frame:
+
+| f0 | f1 | f2 | f3 | f4 | f5 | f6 |
+|---|---|---|---|---|---|---|
+| identical | 33 px, Δ1 | 86 px, Δ6 | 851 px, Δ34 | 1098 px, Δ37 | 1298 px, Δ35 | not produced |
+
+The key frame is exact; drift starts on the first inter frame and compounds. The
+first difference is **luma only** (both chroma planes identical), 33 pixels of
+±1, in vertical runs at x=48/49 and x=32/33 — block boundaries, so an edge
+filter rather than prediction.
+
+Ruled out by reading source: loop-filter ref/mode deltas (C assigns
+`mode_ref_delta_enabled = 0` and never re-assigns it, so the port's all-zero
+`ref_deltas` are faithful), and the harness's intra-period mismatch.
+
+**Not yet established:** a ±1 pixel drift cannot by itself make a stream
+unparseable, since entropy decoding does not read pixels. Either the drift makes
+the encoder derive an out-of-range syntax value at f6, or there is a second,
+independent entropy defect. Do not assume the first explains the second.
+
 ## imazen26 K300 production corpus (re-run after 48 days, 2026-09-10)
 
 `tools/imazen26_gate.sh` asserts 40 cells over 20 images and covers content

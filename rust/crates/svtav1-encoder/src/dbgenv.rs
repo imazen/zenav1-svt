@@ -119,6 +119,24 @@ presence_flags! {
     /// Remove the variable — do not promote it — once the inter tile is
     /// byte-identical and the refusal can simply be deleted.
     inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
+    /// `SVTAV1_INTER_CHAIN_EXPERIMENTAL`: lift the *second* inter refusal —
+    /// the one on an inter frame whose LIST-0 reference is itself an inter
+    /// frame (`pipeline.rs`), i.e. everything past frame 1.
+    ///
+    /// `inter_experimental` alone gets you a two-frame encode and no further,
+    /// because frame 2 is the first frame that predicts from a non-key
+    /// reference. That refusal is a BYTE-PARITY guard, not a correctness one:
+    /// its own text records what the port emits with it lifted (six of eight
+    /// `frames=3` cells matching C's frame-2 byte count). So "does a longer
+    /// encode produce a DECODABLE stream?" was a question nothing could even
+    /// ask, because the frame never emitted.
+    ///
+    /// Same contract as the two flags above, and the same warning: **not a
+    /// feature flag, not for callers.** The refusal still fires for every
+    /// caller by default; this only makes the emitted state measurable. What
+    /// it produces is known to diverge from C, so it must not be presented as
+    /// a parity result.
+    inter_chain_experimental => "SVTAV1_INTER_CHAIN_EXPERIMENTAL",
     /// `SVTAV1_GM_EXPERIMENTAL`: lift the GLOBAL-MOTION refusal at presets
     /// 0..4 so the harness can MEASURE what an inter frame there emits.
     ///
