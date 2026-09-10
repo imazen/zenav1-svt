@@ -261,6 +261,28 @@ pub(super) fn eval_uv_ibc_hbd(
     tx_pair_hbd(cx, fx, b, &u_pred, &v_pred, tt)
 }
 
+/// The bd10 chroma full loop's INTER arm.
+///
+/// It is deliberately NOT a prediction: like the 8-bit inter chroma arm in
+/// `mds3`, the motion-compensated chroma was produced with the luma in ONE
+/// `av1_inter_prediction_light_pd1_hbd` call at injection, because C's chroma
+/// arm reuses the LUMA block's `compute_subpel_params` result at a halved
+/// origin. Predicting it here would be different arithmetic, not a refactor —
+/// which is exactly why this takes the carried pair rather than an MV.
+///
+/// The tx type is the caller's, and it is the INTER rule (`tx_type_search`,
+/// product_coding_loop.c:5087) — the same one the IntraBC arm uses.
+pub(super) fn eval_uv_inter_hbd(
+    cx: &ChromaCtx,
+    fx: &FunnelCtx<'_>,
+    b: &Bd10Rd,
+    u_pred10: &[u16],
+    v_pred10: &[u16],
+    tt: usize,
+) -> (TxUnitOutHbd, TxUnitOutHbd) {
+    tx_pair_hbd(cx, fx, b, u_pred10, v_pred10, tt)
+}
+
 /// The shared 10-bit tail of both hbd arms: given a Cb/Cr prediction pair and
 /// a tx type, run each plane through the 10-bit transform pipeline. The two
 /// arms differ ONLY in how `u_pred`/`v_pred` were produced.

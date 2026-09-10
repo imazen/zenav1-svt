@@ -120,9 +120,9 @@ pub const REF_BORDER: usize = 64 + 4;
 /// (`svt_aom_generate_padding`, driven from `pad_ref_and_set_flags`,
 /// enc_dec_process.c:1088-1112).
 #[derive(Debug, Clone)]
-pub struct PaddedPlane {
-    /// The whole allocation, `stride * (height + 2 * border)` bytes.
-    pub buf: alloc::vec::Vec<u8>,
+pub struct PaddedPlaneT<T> {
+    /// The whole allocation, `stride * (height + 2 * border)` samples.
+    pub buf: alloc::vec::Vec<T>,
     /// Index of pixel (0, 0) — C's `y_buffer - buffer_y`.
     pub origin: usize,
     pub stride: usize,
@@ -132,7 +132,15 @@ pub struct PaddedPlane {
     pub border: usize,
 }
 
-impl PaddedPlane {
+/// The 8-bit reference plane — what every non-hbd path means by a padded plane.
+pub type PaddedPlane = PaddedPlaneT<u8>;
+
+/// The TRUE 10-bit reference plane. C keeps the same picture at `bit_depth > 8`
+/// and pads it with `svt_aom_generate_padding16_bit` from the same
+/// `pad_ref_and_set_flags` call, so this is the same object at a wider sample.
+pub type PaddedPlaneHbd = PaddedPlaneT<u16>;
+
+impl<T: Copy + Default> PaddedPlaneT<T> {
     /// Copy a bare `width x height` plane into a bordered allocation and
     /// replicate its edges, exactly as C pads a reference picture.
     ///
@@ -140,15 +148,15 @@ impl PaddedPlane {
     /// 4:2:0 chroma — C's `(ref_pic_ptr->border + ss_x) >> ss_x`
     /// (enc_dec_process.c:1098-1112).
     #[must_use]
-    pub fn from_plane(src: &[u8], width: usize, height: usize, border: usize) -> Self {
+    pub fn from_plane(src: &[T], width: usize, height: usize, border: usize) -> Self {
         let stride = width + 2 * border;
         let origin = border * stride + border;
-        let mut buf = alloc::vec![0u8; stride * (height + 2 * border)];
+        let mut buf = alloc::vec![T::default(); stride * (height + 2 * border)];
         for r in 0..height {
             buf[origin + r * stride..origin + r * stride + width]
                 .copy_from_slice(&src[r * width..r * width + width]);
         }
-        crate::port_preanalysis::generate_padding(
+        crate::port_preanalysis::generate_padding_t(
             &mut buf, origin, stride, width, height, border, border,
         );
         Self {
@@ -169,7 +177,7 @@ impl PaddedPlane {
     /// for), so silently clamping would hide an MV-clamp defect as a
     /// pixel divergence.
     #[must_use]
-    pub fn at(&self, x: isize, y: isize) -> u8 {
+    pub fn at(&self, x: isize, y: isize) -> T {
         let b = self.border as isize;
         assert!(
             x >= -b
@@ -188,6 +196,24 @@ pub struct PaddedRef {
     pub y: PaddedPlane,
     /// 4:2:0 chroma. `None` on a monochrome encode, where there is none.
     pub uv: Option<(PaddedPlane, PaddedPlane)>,
+    /// THE SAME PICTURE AT TRUE 10 BITS, when the encode reconstructed one.
+    ///
+    /// C does not keep two copies: at `bit_depth > 8` the reference picture IS
+    /// 16-bit and every predictor reads it through the highbd convolve. The
+    /// port reaches 10-bit inter prediction from an 8-bit-shaped pipeline, so
+    /// the 8-bit planes above stay authoritative for the u8 mode-decision
+    /// stages and this carries the 10-bit twin the bd10 full-RD funnel needs.
+    /// `None` on every 8-bit encode, and on a 10-bit encode whose frame never
+    /// built a 10-bit canvas.
+    pub hbd: Option<PaddedRefHbd>,
+}
+
+/// The 10-bit twin of [`PaddedRef`].
+#[derive(Debug, Clone)]
+pub struct PaddedRefHbd {
+    pub y: PaddedPlaneHbd,
+    /// 4:2:0 chroma, `None` on the monochrome path exactly as in [`PaddedRef`].
+    pub uv: Option<(PaddedPlaneHbd, PaddedPlaneHbd)>,
 }
 
 /// A reference frame stored in the DPB.

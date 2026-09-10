@@ -40,7 +40,8 @@
 
 use crate::picture::PaddedPlane;
 use svtav1_dsp::port_pd_pred::{
-    BlkGeom, CHROMA_MASK, LUMA_MASK, PredPlanes, RefPlane, av1_inter_prediction_light_pd1,
+    BlkGeom, CHROMA_MASK, LUMA_MASK, PredPlanes, PredPlanes16, RefPlane, RefPlane16,
+    av1_inter_prediction_light_pd1, av1_inter_prediction_light_pd1_hbd,
 };
 use svtav1_dsp::port_scale_factors::ScaleFactors;
 use svtav1_dsp::port_subpel_params::{MbEdges, Mv as DspMv};
@@ -269,6 +270,115 @@ pub fn predict_inter_yuv(
         interp_filters,
         &mut pred,
         LUMA_MASK | CHROMA_MASK,
+    );
+}
+
+/// [`predict_inter_yuv`] against a TRUE 10-BIT reference.
+///
+/// The bd10 full-RD funnel residuals every candidate against a 10-bit
+/// prediction (`Cand::pred10`). An INTRA candidate gets one from
+/// `predict_unit_hbd` off the 10-bit recon canvas; an inter candidate had NO
+/// producer at all, so `cand.pred10` stayed empty and `tx_unit_hbd` indexed a
+/// zero-length slice — the panic that made 10-bit video unreachable.
+///
+/// The geometry is byte-for-byte [`predict_inter_yuv`]'s: same
+/// `ScaleFactors`, same `MbEdges`, same `BlkGeom`, same single-MV slice. Only
+/// the sample type and the convolve entry differ, which is the same split C
+/// makes inside `svt_inter_predictor_light_pd1` on `bd`.
+///
+/// `chroma` is `None` on a monochrome block, exactly as
+/// [`crate::picture::PaddedRefHbd::uv`] is.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_hbd(
+    y_ref: &crate::picture::PaddedPlaneHbd,
+    chroma: Option<(
+        &crate::picture::PaddedPlaneHbd,
+        &crate::picture::PaddedPlaneHbd,
+    )>,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    fn plane(p: &crate::picture::PaddedPlaneHbd) -> RefPlane16<'_> {
+        RefPlane16 {
+            buf: &p.buf,
+            origin: p.origin,
+            stride: p.stride,
+            width: p.width as i32,
+            height: p.height as i32,
+        }
+    }
+    // Same contract as `predict_inter_luma`'s scratch: the chroma planes are
+    // unread under `LUMA_MASK`, but the driver takes them by slice, so hand it
+    // something indexable rather than an empty slice.
+    let mut u_scratch = [0u16; 1];
+    let mut v_scratch = [0u16; 1];
+    let mask = if chroma.is_some() {
+        LUMA_MASK | CHROMA_MASK
+    } else {
+        LUMA_MASK
+    };
+    let (u_dst, u_dst_stride): (&mut [u16], usize) = if chroma.is_some() {
+        (u_out, uv_stride)
+    } else {
+        (&mut u_scratch, 1)
+    };
+    let (v_dst, v_dst_stride): (&mut [u16], usize) = if chroma.is_some() {
+        (v_out, uv_stride)
+    } else {
+        (&mut v_scratch, 1)
+    };
+    let mut pred = PredPlanes16 {
+        y: y_out,
+        y_stride,
+        u: u_dst,
+        u_stride: u_dst_stride,
+        v: v_dst,
+        v_stride: v_dst_stride,
+    };
+    let (uref, vref) = match chroma {
+        Some((u, v)) => (plane(u), plane(v)),
+        None => (plane(y_ref), plane(y_ref)),
+    };
+    av1_inter_prediction_light_pd1_hbd(
+        &BlkGeom {
+            org_x: org_x as i32,
+            org_y: org_y as i32,
+            bwidth: bw,
+            bheight: bh,
+            bwidth_uv: bw / 2,
+            bheight_uv: bh / 2,
+            super_block_size: sb_size as i32,
+        },
+        &[DspMv { x: mv.x, y: mv.y }],
+        &[plane(y_ref)],
+        &[uref],
+        &[vref],
+        &[sf],
+        &edges,
+        interp_filters,
+        &mut pred,
+        mask,
+        i32::from(bit_depth),
     );
 }
 

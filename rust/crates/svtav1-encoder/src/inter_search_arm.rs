@@ -1145,6 +1145,9 @@ mod tests {
         let refp = PaddedRef {
             y: PaddedPlane::from_plane(&reference(), W, H, 64),
             uv: None,
+            // 8-bit fixture: no 10-bit twin, which is what every u8 encode
+            // puts in the DPB.
+            hbd: None,
         };
         let padded_by_ref: [Option<&PaddedRef>; 8] =
             [None, Some(&refp), None, None, None, Some(&refp), None, None];

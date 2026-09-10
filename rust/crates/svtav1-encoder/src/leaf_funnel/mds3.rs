@@ -1315,13 +1315,43 @@ fn eval_candidate(
     };
     // bd10 chroma full loop — the decision terms for this candidate.
     let mut uv_out10 = match (&bd10_rd, has_uv) {
-        (Some(_), true) if cand.inter.is_some() => panic!(
-            "the bd10 chroma full loop has no INTER arm: an inter candidate's \
-             10-bit chroma prediction is not built (docs/INTER-ENCODE-PLAN.md \
-             §1s item 6). Refusing rather than scoring chroma from the intra \
-             predictor, which would decide the block on a prediction the \
-             stream does not describe."
-        ),
+        // The INTER arm. It used to be a `panic!` saying the 10-bit chroma
+        // prediction "is not built" — true at the time, and the reason a
+        // 10-bit VIDEO frame was unreachable. `inter_md_arm` now produces it
+        // with the luma in one `av1_inter_prediction_light_pd1_hbd` call, so
+        // the arm scores C's own motion-compensated chroma rather than the
+        // intra predictor's.
+        //
+        // The tx type is the same INTER rule the 8-bit arm above derives:
+        // the luma winner if the chroma ext-tx set admits it, else DCT_DCT.
+        // A candidate whose 10-bit chroma is EMPTY (no 10-bit reference in
+        // the DPB) still refuses rather than scoring a prediction it does
+        // not have.
+        (Some(b), true) if cand.inter.is_some() => {
+            let ic = cand.inter.as_ref().expect("matched inter");
+            assert!(
+                !ic.u_pred10.is_empty() && !ic.v_pred10.is_empty(),
+                "the bd10 chroma full loop needs the inter candidate's 10-bit \
+                 chroma prediction; it is empty, which means the DPB carried no \
+                 10-bit twin of this reference"
+            );
+            let luma_tt = best_txb_type.first().copied().unwrap_or(0) as usize;
+            let uv_tx = cc::adjusted_tx_size(cc::tx_size_from_dims(cw, chh));
+            let uv_set = cc::ext_tx_set_type(uv_tx, true, false);
+            let tt = if AV1_EXT_TX_USED[uv_set][luma_tt] != 0 {
+                luma_tt
+            } else {
+                cc::DCT_DCT
+            };
+            Some(chroma::eval_uv_inter_hbd(
+                cx,
+                fx,
+                b,
+                &ic.u_pred10,
+                &ic.v_pred10,
+                tt,
+            ))
+        }
         (Some(b), true) => Some(match (cand.ibc, ibc_uv_tt) {
             // IBC: the DV copy at 10 bits, with the inter tx-type rule.
             (Some((dv, _)), Some(tt)) => chroma::eval_uv_ibc_hbd(cx, fx, b, dv, tt),

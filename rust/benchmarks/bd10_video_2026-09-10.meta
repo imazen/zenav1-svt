@@ -1,0 +1,88 @@
+# bd10_video_2026-09-10 — 10-bit INTER frames, from unreachable to encodable
+
+commit:  (this change)
+host:    i265 (Core Ultra 7 265K), x86_64-unknown-linux-gnu
+gate:    tools/bd10_video_gate.sh   (24 cells, pinned)
+harness: tools/identity_diff_inter.sh with the new IDI_BD axis
+assets:  video/pd-derf-720p/ — twelve I420 sequences cut from six Xiph Derf
+         clips marked public domain, fetched anonymously from R2
+
+## WHAT WAS ACTUALLY BROKEN — three stacked blockers, in the order they fired
+
+1. `try_encode_frame_420_hbd` refused every non-key frame with no
+   `SVTAV1_INTER_EXPERIMENTAL` lift, where the 8-bit `try_encode_frame_420` has
+   had one for the differential harness all along. So a 10-bit inter frame
+   could not be produced AT ALL and the surface was unmeasurable rather than
+   merely unshipped.
+
+2. Past that: `tx_unit_hbd` panicked with "index out of bounds: the len is 0
+   but the index is 0" (tx_pipeline.rs:1565). The bd10 full-RD funnel
+   residuals every candidate against `Cand::pred10`; an INTRA candidate gets
+   one from `predict_unit_hbd` off the 10-bit recon canvas, and an INTER
+   candidate had NO PRODUCER, because the DPB stored 8-bit reference planes
+   only (`ReferenceFrame`/`PaddedRef` were `Vec<u8>` end to end).
+
+3. Past THAT: the bd10 chroma full loop was a literal `panic!` reading "the
+   bd10 chroma full loop has no INTER arm".
+
+## WHAT CLOSED THEM
+
+* `PaddedPlane` became `PaddedPlaneT<T>` (the 8-bit name is now an alias, so no
+  existing call site moved) and `PaddedRef` gained `hbd: Option<PaddedRefHbd>`.
+  The pipeline builds it from `recon10` — the frame's TRUE 10-bit recon, with
+  deblock, CDEF and loop restoration all already applied to the 10-bit canvas
+  — BEFORE the `recon_output` block, because that block moves `recon10` out AND
+  applies film grain, which is an output-only transform that must never reach
+  the DPB.
+* `av1_inter_prediction_light_pd1_hbd` (port_pd_pred.rs) is the 10-bit twin of
+  the light-PD1 driver. Everything above the convolve is line-for-line the
+  8-bit driver; the convolve entry is `highbd_inter_predictor`, which on this
+  path reaches the identical `dispatch_convolve_hbd` call that C's
+  `inter_predictor_light_pd1_hbd` reaches after `pack_block` — the pack exists
+  only to materialise SVT's 8-bit + 2-bit reference into `u16`, which this
+  port's reference already is.
+* `inter_md_arm` produces `y_pred10`/`u_pred10`/`v_pred10` in ONE call with the
+  luma, whenever the reference has a 10-bit twin, and `chroma::eval_uv_inter_hbd`
+  scores the chroma pair with the INTER tx-type rule.
+
+## MEASURED, 24 cells, qp 40, frames = 2, bit depth 10
+
+    encodes:    24 / 24     (was: 0 -- refused, then panicked)
+    decodes:    24 / 24     dav1d 1.5.3
+    identical:   1 / 48 frames
+
+The one identical frame is kristenandsara 128x128 preset 6 frame 1.
+
+## WHERE THE DIVERGENCE IS **NOT** — this is the useful part
+
+* NOT a still defect. bd10 STILLS on the SAME content and geometry are
+  **16/16 byte-identical to C**: johnny and vidyo3, 128x128 and 256x256,
+  presets 6, 8, 9 and 10, each `identity_run` vs
+  `capture_c_trace <...> 10`.
+* NOT the video plumbing. The 8-bit VIDEO key frame of the very same cell is
+  byte-identical: johnny 128x128 q40 p6 frame 0 is 1176 bytes on BOTH sides.
+* NOT the `bd10_full_rd` gate. That gate is ON at presets <= 8 and OFF at >= 9.
+  If it were the cause, presets 9 and 10 would agree with C. They diverge MORE:
+
+      johnny p6   C 1215  port 1200      johnny p9   C 1279  port 1234
+      johnny p8   C 1275  port 1270      johnny p10  C 1290  port 1220
+      vidyo3 p6   C 2304  port 2291      vidyo3 p9   C 2316  port 2214
+      fourpeople p6 C 2201 port 2202     fourpeople p10 C 2262 port 2211
+
+So the remaining work is bd10 MODE DECISION under the VIDEO configuration —
+C's `hbd_md` derivation, the bd10 lambda/update-type chain on a non-all-intra
+frame, and the bd10 qindex path — not the 10-bit prediction this change added.
+That is the next chunk, and it is the same surface as the unwired `ssim_hbd`
+module (blocked on `hbd_md` being hardcoded false at inter_hdr_arm.rs:452 and
+inter_search_arm.rs:434/:602).
+
+## SHIPPING STATUS UNCHANGED
+
+The public entry points still REFUSE an inter frame at both depths. Everything
+above is reachable only under `SVTAV1_INTER_EXPERIMENTAL`, which
+`crate::dbgenv` documents as a diagnostic and never a feature.
+
+REPRODUCE:
+    tools/bd10_video_gate.sh
+    IDI_BD=10 SVTAV1_INTER_EXPERIMENTAL=1 tools/identity_diff_inter.sh \
+        128 128 40 6 2 rawseq:<clip>.i420 <outdir>

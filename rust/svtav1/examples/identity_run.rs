@@ -777,7 +777,33 @@ fn main() {
                 }
             }
         }
-        std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+        // The `.yuv` a differential harness hands to the C driver must be the
+        // SAMPLES THIS ENCODER SAW, not the 8-bit planes they were built from.
+        // At `bd > 8` the loop below widens each frame with `low_bits`, so
+        // writing the u8 buffer here would have given C a different source and
+        // called the resulting divergence a port defect. 16-bit little-endian,
+        // which is what `capture_c_trace <...> <bit_depth>` reads.
+        if bd > 8 {
+            let sh = (bd - 8) as u32;
+            let mut wide_yuv: Vec<u8> = Vec::with_capacity(yuv.len() * 2);
+            for f in 0..n_frames {
+                let base = f * frame_len_in;
+                let planes: [(usize, usize, usize); 3] = [
+                    (base, w * h, w),
+                    (base + w * h, cw * ch, cw),
+                    (base + w * h + cw * ch, cw * ch, cw),
+                ];
+                for (off, len, pw) in planes {
+                    for (i, &s) in yuv[off..off + len].iter().enumerate() {
+                        let v = ((s as u16) << sh) | low_bits(s as usize, i / pw, i % pw);
+                        wide_yuv.extend_from_slice(&v.to_le_bytes());
+                    }
+                }
+            }
+            std::fs::write(format!("{prefix}.yuv"), &wide_yuv).expect("write .yuv");
+        } else {
+            std::fs::write(format!("{prefix}.yuv"), &yuv).expect("write .yuv");
+        }
 
         // The GOP: only frame 0 is a key frame unless the caller says
         // otherwise, matching the C driver's SVT_INTRA_PERIOD/-1 default for

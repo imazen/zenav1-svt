@@ -51,8 +51,16 @@ mkdir -p "$OUTDIR"
 
 # 1. Rust side: writes <out>.yuv (N frames), <out>.obu (concatenated) and
 #    <out>.obu.f<i> per frame. Exit 3 = the encoder refused a frame.
+#
+# IDI_BD selects the ENCODER bit depth for BOTH sides (8 default, or 10). The
+# port widens its 8-bit source into 10-bit samples and writes THOSE to
+# `rs.yuv`, and the C driver is handed the same file plus the matching
+# `bit_depth` argument — so the two encoders see identical samples and any
+# divergence is the encoder's, not the source's.
+BD="${IDI_BD:-8}"
 rs_status=0
 SVTAV1_FRAMES="$FRAMES" \
+SVTAV1_BD="$BD" \
 SVTAV1_INTRA_PERIOD="${SVTAV1_INTRA_PERIOD:-64}" \
 SVTAV1_HIER_LEVELS="${SVTAV1_HIER_LEVELS:-0}" \
     "$HERE/identity_run" "$CONTENT" "$W" "$H" "$QP" "$PRESET" "$OUTDIR/rs" \
@@ -67,10 +75,10 @@ SVT_HIER_LEVELS="${SVT_HIER_LEVELS:-0}" \
 SVT_PRED_STRUCT="${SVT_PRED_STRUCT:-1}" \
 SVT_TRACE_OUT="${SVT_TRACE_OUT:-/dev/null}" \
     "$HERE/capture_c_trace/capture_c_trace" "$W" "$H" "$QP" "$PRESET" \
-    "$OUTDIR/rs.yuv" "$OUTDIR/c.obu" 2>"$OUTDIR/c.stderr"
+    "$OUTDIR/rs.yuv" "$OUTDIR/c.obu" "$BD" 2>"$OUTDIR/c.stderr"
 
 {
-    echo "cell: ${CONTENT} ${W}x${H} q${QP} p${PRESET} frames=${FRAMES}"
+    echo "cell: ${CONTENT} ${W}x${H} q${QP} p${PRESET} frames=${FRAMES} bd${BD}"
     echo "gop:  low-delay P, flat, key frame 0 only"
     echo
 } > "$OUTDIR/report.txt"

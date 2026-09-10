@@ -405,6 +405,196 @@ pub fn av1_inter_prediction_light_pd1(
     }
 }
 
+/// A 10-bit reference plane — [`RefPlane`] at a wider sample.
+#[derive(Debug, Clone, Copy)]
+pub struct RefPlane16<'a> {
+    /// The plane samples, TRUE 10-bit (not SVT's 8-bit + 2-bit pair).
+    pub buf: &'a [u16],
+    /// Index of (0, 0) inside `buf`; the driver indexes negative offsets from
+    /// it, so the caller must supply the reference's padding margin.
+    pub origin: usize,
+    /// Row stride.
+    pub stride: usize,
+    /// `ref_pic->width` / `->height`.
+    pub width: i32,
+    /// See [`Self::width`].
+    pub height: i32,
+}
+
+/// The three 10-bit prediction planes — [`PredPlanes`] at a wider sample.
+pub struct PredPlanes16<'a> {
+    /// Y.
+    pub y: &'a mut [u16],
+    /// Y stride.
+    pub y_stride: usize,
+    /// Cb.
+    pub u: &'a mut [u16],
+    /// Cb stride.
+    pub u_stride: usize,
+    /// Cr.
+    pub v: &'a mut [u16],
+    /// Cr stride.
+    pub v_stride: usize,
+}
+
+/// [`av1_inter_prediction_light_pd1`] at `bd > EB_EIGHT_BIT`.
+///
+/// C has ONE `av1_inter_prediction_light_pd1` and branches inside
+/// `svt_inter_predictor_light_pd1` on `bd`; the split here is the same one
+/// `port_inter_predictor` already makes between
+/// [`inter_predictor_light_pd1_8bit`] and `inter_predictor_light_pd1_hbd`,
+/// because the SOURCE TYPES differ and safe Rust spells that as two
+/// signatures. Everything above the convolve -- `compute_subpel_params`, the
+/// per-reference origin arithmetic, the chroma `ss_x`/`ss_y` and halved
+/// origin, the compound `do_average` sequencing -- is line-for-line the
+/// 8-bit driver above, deliberately, so the two cannot drift.
+///
+/// The convolve entry is [`highbd_inter_predictor`] with `is_intrabc = false`
+/// rather than `inter_predictor_light_pd1_hbd`. They are the SAME kernel on
+/// this path: `light_pd1_hbd` exists only to materialise SVT's 8-bit + 2-bit
+/// reference into a `u16` window with `pack_block` before calling
+/// `dispatch_convolve_hbd`; this port's 10-bit reference is already `u16`, so
+/// the pack is a copy of what the caller already has. Both functions then run
+/// `revert_scale_extra_bits` and hand the identical arguments to
+/// `dispatch_convolve_hbd`.
+#[allow(clippy::too_many_arguments)]
+pub fn av1_inter_prediction_light_pd1_hbd(
+    geom: &BlkGeom,
+    mvs: &[Mv],
+    y_refs: &[RefPlane16<'_>],
+    u_refs: &[RefPlane16<'_>],
+    v_refs: &[RefPlane16<'_>],
+    sfs: &[ScaleFactors],
+    edges: &MbEdges,
+    interp_filters: InterpFilters,
+    pred: &mut PredPlanes16<'_>,
+    component_mask: u32,
+    bd: i32,
+) {
+    use crate::port_convolve_hbd::SrcView16;
+    use crate::port_inter_predictor::highbd_inter_predictor;
+    let is_compound = mvs.len() > 1;
+
+    if component_mask & LUMA_MASK != 0 {
+        let mut conv_buf = vec![0u16; 64 * 64];
+        let mut cp = ConvolveParams::no_round(false, 64, is_compound, bd);
+        for (i, mv) in mvs.iter().enumerate() {
+            let rp = &y_refs[i];
+            let (sp, pos_y, pos_x) = compute_subpel_params(
+                RefGeometry {
+                    super_block_size: geom.super_block_size,
+                    frame_width: rp.width,
+                    frame_height: rp.height,
+                },
+                geom.org_y,
+                geom.org_x,
+                *mv,
+                &sfs[i],
+                geom.bwidth as i32,
+                geom.bheight as i32,
+                edges,
+                0,
+                0,
+            );
+            if i != 0 {
+                cp.do_average = true;
+                cp.use_jnt_comp_avg = false;
+            }
+            let origin = (rp.origin as isize + pos_x as isize + pos_y as isize * rp.stride as isize)
+                as usize;
+            highbd_inter_predictor(
+                SrcView16::new(rp.buf, origin, rp.stride),
+                pred.y,
+                pred.y_stride,
+                &mut conv_buf,
+                &sp,
+                geom.bwidth,
+                geom.bheight,
+                &cp,
+                interp_filters,
+                false,
+                bd,
+            );
+        }
+    }
+
+    if component_mask & CHROMA_MASK != 0 {
+        let mut conv_buf_cb = vec![0u16; 32 * 32];
+        let mut conv_buf_cr = vec![0u16; 32 * 32];
+        let mut cp_cb = ConvolveParams::no_round(false, 32, is_compound, bd);
+        let mut cp_cr = ConvolveParams::no_round(false, 32, is_compound, bd);
+        let org_y_c = geom.org_y / 2;
+        let org_x_c = geom.org_x / 2;
+
+        for (i, mv) in mvs.iter().enumerate() {
+            if i != 0 {
+                cp_cb.do_average = true;
+                cp_cr.do_average = true;
+                cp_cb.use_jnt_comp_avg = false;
+                cp_cr.use_jnt_comp_avg = false;
+            }
+            // The luma bwidth/bheight, exactly as in the 8-bit driver: the
+            // clamp is against the LUMA block and only the ss flags and the
+            // halved origin make it chroma.
+            let rp0 = &u_refs[i];
+            let (sp, pos_y, pos_x) = compute_subpel_params(
+                RefGeometry {
+                    super_block_size: geom.super_block_size,
+                    frame_width: rp0.width,
+                    frame_height: rp0.height,
+                },
+                org_y_c,
+                org_x_c,
+                *mv,
+                &sfs[i],
+                geom.bwidth as i32,
+                geom.bheight as i32,
+                edges,
+                1,
+                1,
+            );
+            if component_mask & CB_FLAG != 0 {
+                let rp = &u_refs[i];
+                let origin = (rp.origin as isize
+                    + pos_x as isize
+                    + pos_y as isize * rp.stride as isize) as usize;
+                highbd_inter_predictor(
+                    SrcView16::new(rp.buf, origin, rp.stride),
+                    pred.u,
+                    pred.u_stride,
+                    &mut conv_buf_cb,
+                    &sp,
+                    geom.bwidth_uv,
+                    geom.bheight_uv,
+                    &cp_cb,
+                    interp_filters,
+                    false,
+                    bd,
+                );
+            }
+            if component_mask & CR_FLAG != 0 {
+                let rp = &v_refs[i];
+                let origin = (rp.origin as isize
+                    + pos_x as isize
+                    + pos_y as isize * rp.stride as isize) as usize;
+                highbd_inter_predictor(
+                    SrcView16::new(rp.buf, origin, rp.stride),
+                    pred.v,
+                    pred.v_stride,
+                    &mut conv_buf_cr,
+                    &sp,
+                    geom.bwidth_uv,
+                    geom.bheight_uv,
+                    &cp_cr,
+                    interp_filters,
+                    false,
+                    bd,
+                );
+            }
+        }
+    }
+}
+
 /// The scale-factor setup both MD entry points do
 /// (`svt_aom_inter_pu_prediction_av1_pd0` :3722,
 /// `svt_aom_inter_pu_prediction_av1_light_pd1` :3763).

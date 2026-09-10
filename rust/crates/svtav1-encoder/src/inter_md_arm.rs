@@ -223,6 +223,10 @@ pub struct InterMdFrame<'a> {
     pub frame_w: usize,
     pub frame_h: usize,
     pub sb_size: usize,
+    /// The sequence bit depth. 8 on every u8 encode; 10 is what makes
+    /// [`InterCandOut::y_pred10`] reachable, and the highbd convolve reads it
+    /// as C's `bd` (the rounding and the clamp both depend on it).
+    pub bit_depth: u8,
     /// C `ppcs->global_motion[ref].wmtype`.
     pub gm_wmtype: [TransformationType; 8],
     /// The frame-level knobs of the MDS3 interpolation-filter search
@@ -327,6 +331,18 @@ pub struct InterCandOut {
     pub y_pred: Vec<u8>,
     pub u_pred: Vec<u8>,
     pub v_pred: Vec<u8>,
+    /// THE SAME PREDICTION AT TRUE 10 BITS — C's `bd > EB_EIGHT_BIT` arm of
+    /// `svt_inter_predictor_light_pd1`, run against the 10-bit reference the
+    /// DPB carries ([`crate::picture::PaddedRef::hbd`]).
+    ///
+    /// EMPTY unless this frame's reference has a 10-bit twin. The bd10 full-RD
+    /// funnel residuals every candidate against `Cand::pred10`; an inter
+    /// candidate had no producer for it at all, so the funnel indexed an empty
+    /// slice and panicked, which is what kept 10-bit VIDEO unreachable while
+    /// 10-bit stills worked.
+    pub y_pred10: Vec<u16>,
+    pub u_pred10: Vec<u16>,
+    pub v_pred10: Vec<u16>,
     /// C `cand_bf->fast_luma_rate`.
     pub fast_luma_rate: u32,
     /// C `cand->block_mi.num_proj_ref` — the warped-motion SAMPLE COUNT, which
@@ -784,6 +800,44 @@ fn predict_and_price(
         ),
     }
 
+    // The SAME prediction at true 10 bits, when the DPB carries a 10-bit twin
+    // of this reference. C does not do this twice — at `bd > EB_EIGHT_BIT` its
+    // reference IS the 16-bit picture and the 8-bit call above does not exist.
+    // The port keeps both because its u8 mode-decision stages still read
+    // `y_pred`, and the bd10 full-RD funnel reads `y_pred10`.
+    let (mut y_pred10, mut u_pred10, mut v_pred10) = (Vec::new(), Vec::new(), Vec::new());
+    if let Some(hbd) = padded.hbd.as_ref() {
+        y_pred10 = alloc::vec![0u16; b.bw * b.bh];
+        let want_uv = b.has_uv && hbd.uv.is_some();
+        if want_uv {
+            u_pred10 = alloc::vec![0u16; cw * chh];
+            v_pred10 = alloc::vec![0u16; cw * chh];
+        }
+        crate::inter_pred_arm::predict_inter_yuv_hbd(
+            &hbd.y,
+            if want_uv {
+                hbd.uv.as_ref().map(|(u, v)| (u, v))
+            } else {
+                None
+            },
+            b.org_x,
+            b.org_y,
+            b.bw,
+            b.bh,
+            c.mv[0],
+            interp_filters,
+            f.sb_size,
+            f.frame_w,
+            f.frame_h,
+            f.bit_depth,
+            &mut y_pred10,
+            b.bw,
+            &mut u_pred10,
+            &mut v_pred10,
+            cw,
+        );
+    }
+
     // --- C's real MDS0 rate, `svt_aom_inter_fast_cost` (rd_cost.c:1005).
     //
     // `ref_frame_rate` carries its own two-field `NeighborMi` (only
@@ -929,6 +983,9 @@ fn predict_and_price(
         y_pred,
         u_pred,
         v_pred,
+        y_pred10,
+        u_pred10,
+        v_pred10,
         fast_luma_rate: cost.rate.luma,
         num_proj_ref: c.num_proj_ref,
     }

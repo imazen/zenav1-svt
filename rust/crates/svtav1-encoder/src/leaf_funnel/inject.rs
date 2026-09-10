@@ -1563,7 +1563,12 @@ pub(super) fn inject_candidates(
                 uv: 0,
                 uv_delta: 0,
                 pred: crate::vecpool::PoolVec::from_slice(&c.y_pred),
-                pred10: crate::vecpool::PoolVec::new(),
+                // The bd10 full-RD funnel residuals against this. It was
+                // unconditionally EMPTY for an inter candidate, which is the
+                // index-out-of-bounds `tx_unit_hbd` hit on the first 10-bit
+                // inter frame; `inter_md_arm` now fills it whenever the DPB
+                // carries a 10-bit twin of the reference.
+                pred10: crate::vecpool::PoolVec::from_slice(&c.y_pred10),
                 flr,
                 fcr: 0,
                 fast_cost,
@@ -1611,6 +1616,8 @@ pub(super) fn inject_candidates(
                     overlappable_neighbors: overlappable.min(255) as u8,
                     u_pred: c.u_pred,
                     v_pred: c.v_pred,
+                    u_pred10: c.u_pred10,
+                    v_pred10: c.v_pred10,
                 })),
                 mds3_cost: u64::MAX,
                 block_has_coeff: false,

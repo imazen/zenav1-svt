@@ -144,6 +144,29 @@ pub fn generate_padding(
     padding_width: usize,
     padding_height: usize,
 ) {
+    generate_padding_t(
+        buf,
+        origin,
+        src_stride,
+        original_src_width,
+        original_src_height,
+        padding_width,
+        padding_height,
+    );
+}
+
+/// [`generate_padding`] over any sample type — the 10-bit reference planes are
+/// `u16` and pad by exactly the same rule (C runs the same
+/// `svt_aom_generate_padding16_bit` from the same `pad_ref_and_set_flags`).
+pub fn generate_padding_t<T: Copy>(
+    buf: &mut [T],
+    origin: usize,
+    src_stride: usize,
+    original_src_width: usize,
+    original_src_height: usize,
+    padding_width: usize,
+    padding_height: usize,
+) {
     assert!(original_src_width > 0 && original_src_height > 0);
     let row_bytes = src_stride;
 

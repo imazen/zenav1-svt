@@ -770,6 +770,8 @@ mod nic_class_prune_tests {
                     overlappable_neighbors: 0,
                     u_pred: alloc::vec::Vec::new(),
                     v_pred: alloc::vec::Vec::new(),
+                    u_pred10: alloc::vec::Vec::new(),
+                    v_pred10: alloc::vec::Vec::new(),
                 }));
             }
             _ => {}

@@ -167,6 +167,11 @@ pub struct InterCand {
     /// arithmetic, not a refactor.
     pub u_pred: alloc::vec::Vec<u8>,
     pub v_pred: alloc::vec::Vec<u8>,
+    /// The SAME chroma prediction at TRUE 10 bits, from the same single
+    /// `av1_inter_prediction_light_pd1_hbd` call that produced the luma
+    /// `Cand::pred10`. EMPTY unless the DPB carried a 10-bit reference.
+    pub u_pred10: alloc::vec::Vec<u16>,
+    pub v_pred10: alloc::vec::Vec<u16>,
 }
 
 /// The chosen leaf coding, consumed by the fixed-tree walk + the entropy

@@ -1771,7 +1771,13 @@ impl EncodePipeline {
                  docs/hbd-input-port-map.md chunk 2",
             )));
         }
-        if !self.gop.is_key_frame(self.frame_count) {
+        // Same refusal, and the same experimental lift, as the 8-bit
+        // `try_encode_frame_420` above: `SVTAV1_INTER_EXPERIMENTAL` opens the
+        // inter path for the differential harness ONLY, and the refusal stays
+        // the shipped behaviour until the inter tile is byte-identical. Without
+        // the lift here there was no way to drive a 10-bit inter frame at all,
+        // so the bd10 video surface was unmeasurable rather than merely unshipped.
+        if !self.gop.is_key_frame(self.frame_count) && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "chroma_420 pipeline supports still/key frames only (intra_period <= 1)",
             )));
@@ -4039,6 +4045,7 @@ impl EncodePipeline {
                 Some(crate::inter_md_arm::InterMdFrame {
                     skip_mode_flag: st.skip_mode_flag,
                     cand_reduction: *cand_red,
+                    bit_depth: self.bit_depth,
                     padded,
                     padded_by_ref: inter_padded_by_ref,
                     // The SB-EXTENT-padded source, NOT `encode_input` at
@@ -7132,6 +7139,28 @@ impl EncodePipeline {
             }
         }
 
+        // C `pad_ref_and_set_flags` again, on the 16-bit picture: at
+        // `bit_depth > 8` C's reference IS the 10-bit buffer and
+        // `svt_aom_generate_padding16_bit` pads it from the same call site
+        // (enc_dec_process.c:1088-1112). Built HERE, before the `recon_output`
+        // block, for two reasons: that block MOVES `recon10` into
+        // `last_recon10_final`, and it also applies FILM GRAIN, which is an
+        // output-only transform that must never reach the DPB.
+        let padded_ref_hbd = recon10.as_ref().map(|(y10, u10, v10)| {
+            let y =
+                crate::picture::PaddedPlaneHbd::from_plane(y10, w, h, crate::picture::REF_BORDER);
+            let uv = if chroma.is_some() {
+                let cb = (crate::picture::REF_BORDER + 1) >> 1;
+                Some((
+                    crate::picture::PaddedPlaneHbd::from_plane(u10, w / 2, h / 2, cb),
+                    crate::picture::PaddedPlaneHbd::from_plane(v10, w / 2, h / 2, cb),
+                ))
+            } else {
+                None
+            };
+            crate::picture::PaddedRefHbd { y, uv }
+        });
+
         if self.recon_output {
             // Output-only replay must not alter the DPB or later frame decisions.
             self.last_recon = Some(
@@ -7201,7 +7230,11 @@ impl EncodePipeline {
             } else {
                 None
             };
-            alloc::boxed::Box::new(crate::picture::PaddedRef { y, uv })
+            alloc::boxed::Box::new(crate::picture::PaddedRef {
+                y,
+                uv,
+                hbd: padded_ref_hbd,
+            })
         };
         // C `rest_process.c:347-349`, run on EVERY coded picture (the RC
         // reads them even for a non-reference frame) — `intra_coded_area` is
