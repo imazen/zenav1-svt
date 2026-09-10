@@ -12,6 +12,22 @@ unrelated new task automatically.
 
 ## Current state and known gaps
 
+**2026-09-10 additions, ahead of the paragraph below.** Read
+[the handoff](../CONTEXT-HANDOFF.md)'s "STATE AS OF 2026-09-10" block first;
+these three are the ones most likely to be re-derived wrongly:
+
+- **10-bit VIDEO now encodes and decodes but is NOT byte-identical** (24 cells,
+  1/48 frames identical, `tools/bd10_video_gate.sh`). It was previously
+  refused, then panicking. Do not report it as either working or missing.
+- **`hbd_md` is the next real question.** Two independent measurements point at
+  it: the 10-bit video divergence (10-bit STILLS on the same content are 16/16
+  identical) and the bd10 chroma-recon bisect (C's chroma recon matches the u8
+  quantizer's). Establish what C derives before changing it.
+- **Allocation work is done through `crate::vecpool`.** Do not "simplify" the
+  size classes or the byte-budgeted depth away — both were measured, and the
+  meta records what each was worth. `intrabc_hash`'s bucket growth is AT PARITY
+  with C and must not be "fixed".
+
 Main implementation `0cbd1279`: policy/reference/−1 APIs and ARM pairwise work
 are merged. Film grain, forced SCM 0/1 and mainline tune-0 sharpness are wired.
 Public streaming `Encoder` refuses calls explicitly. Raw pipeline errors,

@@ -11,6 +11,46 @@ Crates are not published to crates.io yet — depend by git.
 
 ### Changed
 
+- **Allocator traffic is down 77.7 %**, 6,851,798 calls to 1,527,403 against C's
+  466,395 on the canonical alloc cell (`b9916d2f`, `f4bc651b`). `crate::vecpool::PoolVec`
+  is a `Vec` that takes from and returns to a per-thread, size-classed free
+  list on `Drop` — the port's equivalent of C's pooled `ctx->quant_coeff_ptr[]`
+  / `recon_ptr[]`. 207,457 of what remains is `intrabc_hash` bucket growth,
+  where C spends exactly the same count, so it is left alone. Runtime cost
+  +0.28 % to +1.35 % instructions against a 1 % budget; every arm byte-identical
+  to C. See `rust/benchmarks/alloc_vecpool_2026-09-10.meta` and
+  `rust/tools/heaptrack_alloc_cell.sh`.
+
+### Fixed
+
+- **A hierarchical GOP no longer refuses KEY frames** (`c6b1cd158`). The
+  `hierarchical_levels > 0` refusal added in `a64cfdd10` was unconditional, so a
+  caller encoding a single key frame with a non-zero `hierarchical_levels` — an
+  ordinary way to construct the pipeline, and one that cannot reach the unwired
+  RA reference table — was rejected. 13 tests failed on it. Narrowed to
+  non-key frames, with a witness pinning both halves.
+
+- **bd10 chroma recon: restore the u8-quantizer assignment** (`acd62f9c`).
+  `3d8f5c517` made the truncated-10-bit proxy live; measured against C on
+  CID22-512 `1484678` at bd10 q32 preset 5 the port emits 9505 B that way and
+  9501 B — C's own size, byte-identical — the original way. `bd10_photo_gate`
+  is back to 191/191.
+
+### Added
+
+- **10-bit VIDEO encodes and decodes** (`a377e896`). It was previously
+  unreachable in three stacked ways: the hbd entry point refused every non-key
+  frame with no experimental lift, then `tx_unit_hbd` panicked because an inter
+  candidate had no 10-bit prediction (the DPB stored 8-bit planes only), then
+  the bd10 chroma full loop was a literal `panic!`. `PaddedRef` now carries a
+  10-bit twin and `av1_inter_prediction_light_pd1_hbd` produces the 10-bit luma
+  and chroma in one call. 24/24 cells encode, 24/24 decode, **1/48 frames is
+  byte-identical to C** — `rust/tools/bd10_video_gate.sh` pins that table.
+  Shipping behaviour is unchanged: the public entry points still refuse an
+  inter frame at both depths.
+
+### Changed
+
 - Reconcile handoff documentation and GitHub issue scope against implementation `0cbd1279`; preserve original reports and campaign evidence in the dated history archive, and distinguish remaining parity, calibration and deployment work.
 
 ### Fixed

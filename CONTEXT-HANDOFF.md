@@ -64,15 +64,80 @@ frame whose LIST-0 reference is itself inter (everything past frame 1);
 `use_ref_frame_mvs = 0` to match. A run with either set is NOT byte-comparable
 with C.
 
+### 10-bit VIDEO now encodes and decodes — and is NOT byte-identical
+
+Superseding the earlier "10-bit VIDEO is refused" line below. Three stacked
+blockers were closed (`benchmarks/bd10_video_2026-09-10.meta`,
+`tools/bd10_video_gate.sh`):
+
+1. `try_encode_frame_420_hbd` refused every non-key frame with no
+   `SVTAV1_INTER_EXPERIMENTAL` lift, so the surface was **unmeasurable**, not
+   merely unshipped.
+2. `tx_unit_hbd` then panicked on a zero-length slice: an inter candidate's
+   `Cand::pred10` had NO producer, because the DPB stored 8-bit reference
+   planes only.
+3. The bd10 chroma full loop was a literal `panic!` reading "has no INTER arm".
+
+`PaddedRef` now carries a 10-bit twin built from the frame's `recon10` (deblock
++ CDEF + LR already applied at 10 bits), `av1_inter_prediction_light_pd1_hbd`
+produces the 10-bit luma AND chroma in one call, and `chroma::eval_uv_inter_hbd`
+scores it. **24/24 cells encode, 24/24 decode on dav1d, 1/48 frames is
+byte-identical to C.** The gate pins that table.
+
+Where the divergence is NOT — this is the useful part, and it is measured:
+bd10 STILLS on the same content and geometry are 16/16 identical; the 8-bit
+video key frame of the same cell IS identical (1176 B both sides); and it does
+not track `bd10_full_rd` (presets 9/10, where that gate is off, diverge MORE).
+What is left is bd10 MODE DECISION under the video configuration.
+
+### A bd10 chroma-recon regression from 2026-08-03, found by bisect
+
+`bd10_photo_gate.sh` was 190/191 on `main`. The failing cell (CID22-512
+`1484678` q32 preset 5) bisects to `3d8f5c517`, whose item 2 moved the
+unconditional u8 chroma-recon assignment into the `None` arm on the reasoning
+that the stored proxy must represent the CODED levels. That commit recorded,
+honestly, that it was byte-inert on every cell it could measure — the p5
+photographic group did not exist yet. It is not inert:
+
+    truncated-10-bit proxy   port 9505 B   C 9501 B   DIVERGES
+    u8-quantizer recon       port 9501 B   C 9501 B   IDENTICAL
+
+The unconditional assignment is restored. The hypothesis this points at (not a
+finding): at these presets C's own mode decision is 8-bit, so C's chroma recon
+is the u8 quantizer's — the same open question the 10-bit video divergence
+raises.
+
+### Allocator traffic is down 77.7 %, and part of the rest is AT PARITY
+
+`benchmarks/alloc_vecpool_2026-09-10.meta`. heaptrack vs C said the deficit is
+not peak heap (the port's is a third of C's) but allocator CALL COUNT:
+
+    base 6,851,798  ->  1,527,403        C reference 466,395
+
+`crate::vecpool::PoolVec` is a `Vec` that takes from and returns to a
+per-thread, SIZE-CLASSED free list on `Drop` — the port's equivalent of C's
+pooled `ctx->quant_coeff_ptr[]` / `recon_ptr[]`. Size classes and a
+BYTE-budgeted per-class depth are both load-bearing and both measured; a flat
+free list converted allocations into `realloc`s instead of removing them.
+
+**207,457 of what remains is `intrabc_hash::HashTable::add` growing its
+per-bucket Vec, and C spends EXACTLY the same 207,457 there** — it is the
+largest single entry in C's own profile. Leave it alone. Excluding it the port
+is ~1.32 M against C's ~259 K.
+
+Runtime cost, against a stated 1 % budget: +0.28 % to +1.35 % instructions
+pinned to one P-core. The 512x512 preset 10 cell is 0.35 points OVER and is
+reported that way.
+
 ### Still open, and correctly labelled
 
 - **vidyo1 at qp20 fails to decode from f4.** It failed with MFMV off too, so it
   is NOT the MFMV defect and never was. Only failing cell of eighteen.
-- **10-bit VIDEO is refused** by the encoder: "chroma_420 pipeline supports
-  still/key frames only". Honest capability gap; the harness now lets the
-  encoder answer instead of asserting first.
-- **Hierarchical (random-access) GOP is refused** — it used to PANIC. See
-  `video_coverage_2026-09-10.meta`.
+- **10-bit video is not byte-identical to C** (see above). It encodes and
+  decodes; parity is bd10 mode decision under the video configuration.
+- **Hierarchical (random-access) GOP is refused on INTER frames only** — it used
+  to PANIC, then briefly refused KEY frames too (`c6b1cd158` narrowed it; the
+  over-broad guard failed 13 tests). See `video_coverage_2026-09-10.meta`.
 
 ### The "unwired ported modules" question is settled — see the audit
 
@@ -83,6 +148,14 @@ UNDERNEATH:
 
 - `ssim_hbd` needs high-bit-depth mode decision. `hbd_md` is hardcoded
   `false`/`0` at every site — MD always runs 8-bit, 10-bit is a post-pass.
+  **Two independent 2026-09-10 measurements now point at this same gap** as the
+  next thing worth doing: the 10-bit VIDEO divergence (24 cells, none
+  byte-identical, while 10-bit STILLS on the same content are 16/16) and the
+  bd10 chroma-recon bisect (C's chroma recon matches the U8 quantizer's, which
+  is what an 8-bit `hbd_md` would produce). Read `hbd_md` in C first —
+  `inter_hdr_arm.rs:452`, `inter_search_arm.rs:434` and `:602` are the port's
+  hardcoded sites — and establish what C actually derives for a video frame
+  before changing anything.
 - `mv_refine`, `motion_mode` need OBMC / warped motion. No such candidate is
   ever injected; `warped_motion_mode_allowed` is a tested predicate with no
   producer.

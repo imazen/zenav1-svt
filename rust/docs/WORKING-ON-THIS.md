@@ -26,6 +26,33 @@ token permutations; doctests run separately. Never relax expectations or
 turn missing fixtures into passing cells. Push each locally verified coherent
 change to main, and verify remote ancestry. Do not wait on CI unless requested.
 
+## The three measurement harnesses added 2026-09-10
+
+Each is a committed script, not a scratch one-liner, because the numbers they
+produce end up in commit messages and `benchmarks/*.meta`.
+
+- `tools/heaptrack_alloc_cell.sh <arm>` — allocator CALL COUNT and peak heap on
+  the canonical alloc cell, with `--c` for the C reference. It prints the sha256
+  of the emitted bitstream on every run, so an arm whose allocations moved
+  because its OUTPUT moved can never be reported as an allocation win. For
+  file:line inside the inlining, rebuild with
+  `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only CARGO_TARGET_DIR=target-heapdbg`
+  — the stripped release binary gives mangled names and nothing else.
+- `tools/bd10_video_gate.sh` — 10-bit two-frame differential on real
+  public-domain clips. Asserts ENCODES and DECODES hard, and pins the
+  byte-identity table exactly as `real_video_inter_gate.sh` does.
+- `tools/identity_diff_inter.sh` grew an `IDI_BD` axis (8 or 10) that drives
+  BOTH sides: the port writes the widened 16-bit samples it actually encoded to
+  `rs.yuv` and the C driver reads that same file at the matching depth, so a
+  divergence cannot be the source.
+
+**Measure runtime with `perf stat -e instructions` PINNED to one P-core**
+(`taskset -c 2`). This fleet's `i265` is a hybrid Core Ultra 7 265K; unpinned
+wall clock moves several percent on core placement alone, and a same-binary
+null arm through `tools/perf_ab.sh` is what tells you whether a wall-clock
+delta is real (measured null spread on that host: ratio 0.9996, p25/p75
+0.9970/1.0017).
+
 ## Build and corpus prerequisites
 
 Product dependencies need Rust, not C. Test oracles require the
