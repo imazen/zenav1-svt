@@ -654,10 +654,15 @@ fn main() {
         "SVTAV1_FRAMES must be 1..256, got {n_frames}"
     );
     if n_frames > 1 {
+        // 10-bit multi-frame is reached by SHIFTING each 8-bit frame up, the
+        // same widening the single-frame bd10 path uses. `SVTAV1_HBD_SRC`
+        // (true 10-bit source) still has no multi-frame producer here, so it
+        // keeps its guard; plain `SVTAV1_BD=10` no longer does, because that
+        // left 10-bit VIDEO with no coverage at all.
         assert!(
-            bd == 8 && !hbd_src,
-            "SVTAV1_FRAMES>1 is 8-bit only for now (the bd10 entry points take one \
-             frame at a time); got bd={bd} hbd_src={hbd_src}"
+            !hbd_src,
+            "SVTAV1_FRAMES>1 with SVTAV1_HBD_SRC has no multi-frame 10-bit source \
+             producer; use SVTAV1_BD=10 alone to widen the 8-bit frames"
         );
         let shift_px: usize = std::env::var("SVTAV1_FRAME_SHIFT")
             .ok()
@@ -817,7 +822,24 @@ fn main() {
             let fy = &yuv[base..base + w * h];
             let fu = &yuv[base + w * h..base + w * h + cw * ch];
             let fv = &yuv[base + w * h + cw * ch..base + frame_len];
-            let r = if mono {
+            let r = if bd > 8 {
+                // Widen exactly as the single-frame bd10 path does, so a
+                // multi-frame 10-bit cell differs from its 8-bit twin only in
+                // depth.
+                let sh = (bd - 8) as u32;
+                let wide = |p: &[u8], pw: usize| -> Vec<u16> {
+                    p.iter()
+                        .enumerate()
+                        .map(|(i, &s)| ((s as u16) << sh) | low_bits(s as usize, i / pw, i % pw))
+                        .collect()
+                };
+                let (y16, u16v, v16) = (wide(fy, w), wide(fu, cw), wide(fv, cw));
+                if mono {
+                    pipeline.try_encode_frame_hbd(&y16, w)
+                } else {
+                    pipeline.try_encode_frame_420_hbd(&y16, &u16v, &v16, w)
+                }
+            } else if mono {
                 pipeline.try_encode_frame(fy, w)
             } else {
                 pipeline.try_encode_frame_420(fy, fu, fv, w)
