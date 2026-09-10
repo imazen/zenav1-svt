@@ -1,0 +1,33 @@
+imazen26 K300 production-corpus byte-identity — FIRST RUN EVER.
+
+commit:   0094ec03b
+host:     i265 x86_64, 20 threads
+date:     2026-09-10
+command:  tools/imazen26_gate.sh   (IM26_DIM=512, cli_qp 32)
+grid:     20 images x {preset,bd} = 40 cells
+
+RESULT    40 / 40 byte-identical, from BOTH asset sets (see below). 61 s.
+
+WHY THIS IS THE FIRST RUN. The gate's corpus was never committed and existed on
+no host reachable from this repo, so `corpus_dir imazen26-cache/K300` resolved
+to an absent path and every cell reported MISSING. The script was also mode
+0644 — not executable — which is independent proof nothing had ever invoked it.
+The gate itself was correct; it had no input.
+
+ASSETS. Published at the R2 prefix imazen26-k300-512/ as the 20 images
+CENTRE-CROPPED to 512x512, which is all the gate ever encodes (it feeds
+`crop:<png>` at IM26_DIM). Originals 290 MiB, crops 6.1 MiB.
+
+EQUIVALENCE, MEASURED not argued. The gate was run against the 290 MiB
+originals and against the 6.1 MiB crops. Both produced 40/40 and the SAME byte
+count for every one of the 40 cells (diff of the two cell lists is empty).
+examples/crop_png.rs reuses identity_run's own decode (png EXPAND | STRIP_16,
+same RGB conversion) and the same centre arithmetic as the `crop:` branch, so
+`crop:` on a crop is the identity map — but the check is what makes it a fact.
+
+PROVENANCE GOTCHA. Images were resolved from imazen/imazen-26's
+variant-sets/png-v3-index.tsv by numeric `id`, NOT by filename. Two of the
+twenty (1225, 1421) carry transposed dimensions in the gate's cell names —
+3000x4000 where the index says 4000x3000 — the known transposed-dimension
+defect ACCESS.md records for 196 of 2,160 images. Filename matching misses
+exactly those two.

@@ -575,6 +575,34 @@ jobs:
         run: |
           ./tools/bd10_partial_sb_gate.sh
 
+      - name: imazen26 K300 production-corpus identity (assets from R2)
+        if: matrix.shard == 2
+        working-directory: rust
+        # A GATE THAT HAS NEVER RUN ANYWHERE. `imazen26_gate.sh` asserts 40
+        # cells over 20 images, and it covers content classes no other corpus in
+        # this repo has: bilevel patent scans, government document pages,
+        # synthetic plots, AI clipart/illustration/product renders, manuscript
+        # scans. Its corpus was never committed and existed on no host reachable
+        # from here, so `corpus_dir imazen26-cache/K300` resolved to an absent
+        # path and every cell reported MISSING. The file was not even executable
+        # (mode 0644), which is its own proof nothing ever invoked it.
+        #
+        # MEASURED 2026-09-10, first run ever: 40 / 40 byte-identical. The gate
+        # was correct all along; it just had no input.
+        #
+        # The assets are the 20 images CENTRE-CROPPED to 512x512 — all the gate
+        # ever encodes, since it feeds `crop:<png>` at IM26_DIM=512. Originals
+        # are 290 MiB; the crops are 6.1 MiB, fetched anonymously from the R2
+        # prefix `imazen26-k300-512/`. The substitution is bit-exact by
+        # construction (examples/crop_png.rs reuses identity_run's own decode
+        # and centre arithmetic) and was CHECKED: the gate produced the same
+        # byte counts and the same 40/40 verdict from both sets.
+        #
+        # 61 s including the fetch, into shard 2 (the lightest at 578 s).
+        run: |
+          IM26_DIR="$GITHUB_WORKSPACE/corpora/imazen26-cache/K300" \
+            ./tools/imazen26_gate.sh
+
       - name: Alignment / stride gate (true-vs-aligned x stride x bit depth)
         if: matrix.shard == 4
         working-directory: rust

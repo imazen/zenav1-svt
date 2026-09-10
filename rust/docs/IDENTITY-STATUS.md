@@ -88,6 +88,32 @@ video while asserting only that two encoders agree a repeated frame is a skip.
 `tools/mk_video_assets.py` now decimates duplicates and scores motion as the
 **minimum** over consecutive pairs, never the mean.
 
+## imazen26 K300 production corpus (first run, 2026-09-10)
+
+`tools/imazen26_gate.sh` asserts 40 cells over 20 images and covers content
+classes no other corpus here reaches — bilevel patent scans, government document
+pages, synthetic plots, AI clipart/illustration/product renders, manuscript
+scans. **It had never run anywhere.** Its corpus was never committed and existed
+on no reachable host, so `corpus_dir imazen26-cache/K300` resolved to an absent
+path and every cell reported `MISSING`; the script was also mode 0644, which is
+independent proof nothing had invoked it.
+
+First run, 2026-09-10: **40 / 40 byte-identical**, 61 s
+([record](../benchmarks/imazen26_k300_2026-09-10.meta)). The gate was correct
+all along — it had no input.
+
+The assets are the 20 images centre-cropped to 512×512 (all the gate encodes,
+since it feeds `crop:<png>` at `IM26_DIM=512`), published at the R2 prefix
+`imazen26-k300-512/`: 290 MiB of originals down to 6.1 MiB. The substitution was
+**measured**, not argued — the gate produced the same byte count for all 40
+cells from both sets.
+
+**Provenance gotcha worth keeping.** Images resolve from imazen-26's
+`variant-sets/png-v3-index.tsv` by numeric `id`, never by filename: two of the
+twenty carry transposed dimensions in the gate's own cell names (`3000x4000`
+where the index says `4000x3000`), the defect `ACCESS.md` records for 196 of
+2,160 images. Filename matching misses exactly those two.
+
 ## Separate evidence tracks
 
 - [Named-reference audit](PARITY-REFERENCE-AUDIT-2026-09-08.md): pristine and hybrid

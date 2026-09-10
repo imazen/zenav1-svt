@@ -35,6 +35,21 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
 CT_BIN="$HERE/capture_c_trace/capture_c_trace.bin"
 IM26_DIR="${IM26_DIR:-$(corpus_dir imazen26-cache/K300)}"
+# NO SILENT SKIP. This corpus is not committed and, until 2026-09-10, existed on
+# no host reachable from this repo -- so `corpus_dir` resolved to a path that was
+# simply absent and every cell below reported MISSING. Fetch it instead.
+#
+# The published set is the twenty gate images CENTRE-CROPPED to 512x512, which is
+# all the gate ever encodes (`IM26_DIM`, below). The originals are 290 MiB; the
+# crops are 6.1 MiB. That substitution is bit-exact by construction
+# (`examples/crop_png.rs` reuses identity_run's own decode and centre
+# arithmetic) and was MEASURED: the gate produced the same byte counts and the
+# same 40/40 verdict from both. See the prefix's README.md.
+if [ ! -d "$IM26_DIR" ] || [ -z "$(ls -A "$IM26_DIR" 2>/dev/null)" ]; then
+  echo "== fetching imazen26 K300 gate images -> $IM26_DIR"
+  "$HERE/fetch_r2_assets.sh" imazen26-k300-512/ "$IM26_DIR" || {
+    echo "imazen26 gate: could not obtain the K300 images" >&2; exit 2; }
+fi
 IM26_MANIFEST="${IM26_MANIFEST:-$(dirname "$IM26_DIR")/K300.tsv}"
 : "${SVT_CREF_LIB_DIR:=$(cd "$RS_ROOT/.." && pwd)/Bin/Release}"
 export SVT_CREF_LIB_DIR
