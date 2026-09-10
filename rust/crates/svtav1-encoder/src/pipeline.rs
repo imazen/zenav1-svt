@@ -1662,8 +1662,17 @@ impl EncodePipeline {
     ///
     /// The RA structure IS ported -- this refusal names an unwired feature, not
     /// a missing one.
-    fn gop_config_error(&self) -> Option<&'static str> {
-        if self.gop.hierarchical_levels > 0 {
+    ///
+    /// `is_key` NARROWS IT, and that is load-bearing. The failure is an INTER
+    /// candidate naming a reference the DPB never filled; a key frame has no
+    /// references, injects no inter candidates and never reaches the RA
+    /// reference table, so `hierarchical_levels > 0` on a key frame is not the
+    /// unwired configuration this refuses. Refusing it anyway rejected every
+    /// single-frame caller that had passed a non-zero `hierarchical_levels` to
+    /// `EncodePipeline::new` — 13 `hdr_fork_e2e` / `pipeline` tests, which is
+    /// how the over-broad guard was caught.
+    fn gop_config_error(&self, is_key: bool) -> Option<&'static str> {
+        if !is_key && self.gop.hierarchical_levels > 0 {
             return Some(
                 "a hierarchical (random-access) GOP is not wired:                  hierarchical_levels > 0 makes picture decision name BWDREF/ALTREF                  references that only the flat low-delay-P path fills, so inter                  candidate injection would reach a reference with no DPB picture.                  The RA picture structure is ported (port_picstruct_ra) but not                  connected to the reference-buffer table. Use hierarchical_levels                  = 0 [C: accepts]",
             );
@@ -1957,7 +1966,7 @@ impl EncodePipeline {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
         // Issue #22: VBR/CBR were ACCEPTED here and silently encoded at qp 30.
-        if let Some(why) = self.gop_config_error() {
+        if let Some(why) = self.gop_config_error(self.gop.is_key_frame(display_order)) {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(why)));
         }
         if let Some(why) = self.rate_control_config_error() {

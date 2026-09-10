@@ -968,6 +968,75 @@ fn inter_frames_are_refused_not_corrupted() {
     );
 }
 
+/// The hierarchical-GOP refusal is scoped to frames that can actually reach the
+/// unwired RA reference table — i.e. INTER frames.
+///
+/// `gop_config_error` first refused `hierarchical_levels > 0` unconditionally,
+/// at the choke point every entry point funnels through. That rejected callers
+/// encoding a SINGLE key frame with a non-zero `hierarchical_levels`, which is
+/// a perfectly ordinary way to construct the pipeline and has nothing to do
+/// with the reference table: a key frame has no references and injects no inter
+/// candidates. Thirteen tests failed on it. This pins both halves so the guard
+/// cannot widen back.
+#[test]
+fn a_hierarchical_gop_refuses_the_inter_frame_but_not_the_key_frame() {
+    use svtav1_encoder::EncodeError;
+    let mk = |intra_period: u32| {
+        let mut p = svtav1_encoder::pipeline::EncodePipeline::new(
+            64,
+            64,
+            8,
+            svtav1_encoder::rate_control::RcConfig::default(),
+            // hierarchical_levels = 4: the RA structure the port has not wired.
+            4,
+            intra_period,
+        );
+        p.chroma_420 = true;
+        p
+    };
+    let (y, u, v) = (
+        make_gradient(64, 64),
+        vec![128u8; 32 * 32],
+        vec![128u8; 32 * 32],
+    );
+
+    // All-intra: EVERY frame is a key frame, so the refusal must never fire.
+    let mut still = mk(1);
+    for i in 0..3 {
+        let bytes = still
+            .try_encode_frame_420(&y, &u, &v, 64)
+            .unwrap_or_else(|e| {
+                panic!("key frame {i} at hierarchical_levels=4 was refused: {e:?}")
+            });
+        assert!(!bytes.is_empty(), "key frame {i} produced no bytes");
+    }
+
+    // A real GOP: frame 0 is still the key frame and still encodes; frame 1 is
+    // the inter frame the refusal exists for. MONOCHROME, because the 4:2:0
+    // entry point refuses multi-frame earlier, with its own message, and would
+    // hide which guard fired.
+    let mut gop = svtav1_encoder::pipeline::EncodePipeline::new(
+        64,
+        64,
+        8,
+        svtav1_encoder::rate_control::RcConfig::default(),
+        4,
+        64,
+    );
+    gop.try_encode_frame(&y, 64)
+        .expect("the key frame of a hierarchical GOP must still encode");
+    let err = gop
+        .try_encode_frame(&y, 64)
+        .expect_err("an inter frame under a hierarchical GOP must be refused");
+    let EncodeError::UnsupportedConfig(why) = err.error() else {
+        panic!("expected UnsupportedConfig, got {err:?}");
+    };
+    assert!(
+        why.contains("hierarchical"),
+        "the refusal must name the hierarchical GOP, got: {why}"
+    );
+}
+
 // =============================================================================
 // Differential quality and speed tests (zenavif backend validation)
 // =============================================================================
