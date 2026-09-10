@@ -162,8 +162,24 @@ UNDERNEATH:
 - `md_stages` is an alternative driver for the MD loop the leaf funnel already
   runs byte-identically.
 
-If C selected these tools in the tested envelope the bytes would already differ,
-and they do not — so this is RD in a wider envelope, not correctness here.
+~~If C selected these tools in the tested envelope the bytes would already
+differ, and they do not — so this is RD in a wider envelope, not correctness
+here.~~ **THAT CLAIM IS FALSE AND WAS MEASURED FALSE ON 2026-09-10.** The
+premise was checkable in one command and nobody had run it.
+`benchmarks/c_motion_mode_census_2026-09-10.meta`: over the 24
+`real_video_inter_gate.sh` cells, C's own committed per-block record
+(`SVT_CINTER_OUT`) says **88 of 1158 coded inter blocks are WARPED_CAUSAL**
+(7.6 %); OBMC is never selected at these presets. It is a PRESET 6
+phenomenon, and it tracks the gate's pinned table almost exactly — every cell
+with a warped block has frame 1 diverging (vidyo3 256x256 p6 has 56 of them),
+and the cells with none are the ones that are byte-identical.
+
+So warped motion is a CORRECTNESS gap in the tested envelope, not RD in a wider
+one, and it is the best-prepared one in the repo: `find_warp_samples`,
+`select_samples`, `find_projection`, `get_shear_params`, `warp_affine` /
+`warp_plane` and both `motion_mode_allowed` predicates are all ported and
+tested. What is missing is the WIRING — `inter_md_arm` never injects a
+candidate whose `motion_mode != SimpleTranslation`.
 
 ### Performance
 

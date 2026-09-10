@@ -1,0 +1,97 @@
+# c_motion_mode_census_2026-09-10 — C SELECTS WARPED MOTION in the tested envelope
+
+commit:  (this change)
+host:    i265 (Core Ultra 7 265K), x86_64-unknown-linux-gnu
+tool:    SVT_CINTER_OUT (tools/capture_c_trace/wrap_recon.c:1304) — C's committed
+         per-block inter record, one line per coded inter block
+cells:   the 24 `real_video_inter_gate.sh` cells: six public-domain derf clips
+         x {128x128, 256x256} x presets {6, 8}, cli_qp 40, frames = 2, flat
+         low-delay P
+source:  the SAME `rs.yuv` the port encodes, so the census is of C's decisions
+         on the port's exact input
+
+## WHY THIS WAS MEASURED
+
+`CONTEXT-HANDOFF.md` said, of the unwired `motion_mode` / `mv_refine` modules:
+
+> If C selected these tools in the tested envelope the bytes would already
+> differ, and they do not — so this is RD in a wider envelope, not correctness
+> here.
+
+The premise is checkable in one command, and it is FALSE.
+
+## RESULT — 88 of 1158 coded inter blocks are WARPED_CAUSAL
+
+    mm=0  SimpleTranslation   1070
+    mm=1  ObmcCausal             0
+    mm=2  WarpedCausal          88     (7.6 %)
+
+The port injects no non-translation candidate at all and its writer always
+emits SimpleTranslation, so every one of those 88 blocks is a block C codes
+differently. OBMC is never selected at these presets; WARPED is.
+
+## PER CELL — it is a PRESET 6 phenomenon, and it tracks the gate exactly
+
+    cell                        blocks   simple   warped
+    fourpeople     128x128 p6       10       10        0
+    fourpeople     128x128 p8        4        4        0
+    fourpeople     256x256 p6       52       52        0
+    fourpeople     256x256 p8       16       16        0
+    johnny         128x128 p6       32       32        0
+    johnny         128x128 p8       25       25        0
+    johnny         256x256 p6       83       78        5
+    johnny         256x256 p8       76       76        0
+    kristenandsara 128x128 p6       16       16        0
+    kristenandsara 128x128 p8        4        4        0
+    kristenandsara 256x256 p6       52       52        0
+    kristenandsara 256x256 p8       16       16        0
+    vidyo1         128x128 p6       10       10        0
+    vidyo1         128x128 p8        4        4        0
+    vidyo1         256x256 p6      120      102       18
+    vidyo1         256x256 p8       87       87        0
+    vidyo3         128x128 p6       54       46        8
+    vidyo3         128x128 p8       43       43        0
+    vidyo3         256x256 p6      166      110       56
+    vidyo3         256x256 p8      127      127        0
+    vidyo4         128x128 p6       21       21        0
+    vidyo4         128x128 p8       22       22        0
+    vidyo4         256x256 p6       75       74        1
+    vidyo4         256x256 p8       43       43        0
+
+Every cell that codes a warped block has frame 1 DIVERGING in
+`real_video_inter_gate.sh`'s pinned table, and no cell without one diverges for
+this reason:
+
+    vidyo3 256x256 p6   56 warped   pinned 0/0
+    vidyo1 256x256 p6   18 warped   pinned 1/0
+    vidyo3 128x128 p6    8 warped   pinned 1/0
+    johnny 256x256 p6    5 warped   pinned 0/0
+    vidyo4 256x256 p6    1 warped   pinned 0/0
+    fourpeople 128x128 p6 0 warped  pinned 1/1   (both frames identical)
+    vidyo1 128x128 p6     0 warped  pinned 1/1
+
+`johnny 128x128 p6` is pinned 1/0 with ZERO warped blocks, so warped motion is
+not the only frame-1 divergence — but it is a primary one, and it is the only
+one in this list that is a MISSING FEATURE rather than a numeric mismatch.
+
+## WHAT IS ALREADY PORTED, AND WHAT IS NOT
+
+Ported and tested, with no producer:
+  * `inter_mvp::find_warp_samples`      (C `svt_aom_find_warp_samples`)
+  * `port_warp::{select_samples, find_projection, get_shear_params,
+     is_affine_valid, is_affine_shear_allowed}`
+  * `port_warp::{warp_affine, warp_plane, av1_warp_plane}` + the highbd twins
+  * `port_md::motion_mode::{motion_mode_allowed,
+     opt_non_translation_motion_mode_warp, update_refined_mv_fast_rate}`
+  * `port_entropy_inter::modes::motion_mode_allowed` and the writer's
+     three-symbol alphabet (`InterCand::num_proj_ref` is already carried
+     precisely because the alphabet depends on it)
+
+NOT ported: the WIRING. `inter_md_arm` never injects a candidate whose
+`motion_mode != SimpleTranslation`.
+
+REPRODUCE:
+    SVT_CINTER_OUT=<file> SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 \
+      SVT_PRED_STRUCT=1 SVT_TRACE_OUT=/dev/null \
+      tools/capture_c_trace/capture_c_trace <w> <h> 40 6 <rs.yuv> <c.obu>
+    grep -o 'mm=[0-9]*' <file> | sort | uniq -c
