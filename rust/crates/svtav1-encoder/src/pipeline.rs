@@ -3839,10 +3839,44 @@ impl EncodePipeline {
                             st.use_ref_frame_mvs,
                             &refs,
                         );
+                        #[cfg(feature = "std")]
+                        if std::env::var_os("ZZ_TPL").is_some() {
+                            let valid = tpl
+                                .iter()
+                                .filter(|t| t.ref_frame_offset != 0)
+                                .count();
+                            std::eprintln!(
+                                "ZZTPL poc={display_order} cells={} valid={} use_mvs={} refs_present={}",
+                                tpl.len(),
+                                valid,
+                                st.use_ref_frame_mvs,
+                                refs.refs.iter().filter(|r| r.is_some()).count(),
+                            );
+                        }
                         tpl
                     },
                     tpl_stride,
-                    sb64_sq_no4xn_geom: sb_size == 64,
+                    // C `ctx->sb64_sq_no4xn_geom` selects the SIMPLIFIED MFMV
+                    // block walk, and it means all three of its parts: a 64x64
+                    // superblock, SQUARE-only shapes, and no 4xN. This was set
+                    // from `sb_size == 64` ALONE, which is true at every preset
+                    // this port ships, so the simplified walk ran even where
+                    // rectangular blocks exist.
+                    //
+                    // The simplified walk uses `n4_w` for BOTH the row and the
+                    // column extent (`inter_mvp.rs`, the `sb64_sq_no4xn_geom`
+                    // arm). On a square block that is the same number; on a
+                    // 16x32 it scans four rows instead of eight and never sees
+                    // the lower half's temporal candidates. NEARESTMV/NEARMV
+                    // derive their MV from that stack, so the encoder and a
+                    // decoder pick DIFFERENT motion vectors for the same block.
+                    //
+                    // MEASURED: with this corrected, vidyo1/vidyo3/vidyo4 all go
+                    // from drifting (or failing to decode) to 8 of 8 frames
+                    // byte-identical to aomdec.
+                    sb64_sq_no4xn_geom: sb_size == 64
+                        && !crate::part_arm::nsq_geom_enabled(sc_arm, sc_preset)
+                        && crate::part_arm::disallow_4x4(sc_arm, sc_preset),
                 }
             });
 

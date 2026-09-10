@@ -1,0 +1,68 @@
+ROOT CAUSE AND FIX: `sb64_sq_no4xn_geom` was gated on SB size alone
+2026-09-10 — video now reconstructs byte-identically to the decoder
+
+THE BUG. `ctx->sb64_sq_no4xn_geom` selects the SIMPLIFIED MFMV block walk, and
+its name states all three conditions: a 64x64 superblock, SQUARE-only shapes,
+and no 4xN. The port set it from `sb_size == 64` ALONE -- true at every preset
+this port ships -- so the simplified walk ran wherever rectangular blocks exist,
+which at preset 6 is everywhere (the packtree carries 16x32, 32x16, 8x16, 16x8).
+
+The simplified arm uses `n4_w` for BOTH the row and the column extent:
+
+    blk_row_end = n4_w;     // <- width, used as the ROW bound
+    blk_col_end = n4_w;
+
+On a square block those are the same number and nothing is wrong. On a 16x32
+(n4_w=4, n4_h=8) it scans FOUR rows instead of eight and never sees the lower
+half's temporal candidates. NEARESTMV and NEARMV do not signal an MV -- they
+DERIVE it from that stack -- so encoder and decoder pick different motion
+vectors for the same block, and the reconstructions diverge wholesale.
+
+FIX: derive the flag from its actual conditions.
+
+    sb64_sq_no4xn_geom = sb_size == 64
+        && !part_arm::nsq_geom_enabled(sc_arm, sc_preset)
+        && part_arm::disallow_4x4(sc_arm, sc_preset)
+
+(With NSQ off, "no 4xN" reduces to "no 4x4", since 4x8/4x16 are non-square.)
+
+RESULT -- 18 cells, six public-domain clips x qp {20,40,55}, 8 frames,
+encoder recon (SVTAV1_FINAL_RECON) vs aomdec, MFMV fully ON:
+
+                   qp20            qp40            qp55
+  vidyo3           ALL 8 CLEAN     ALL 8 CLEAN     ALL 8 CLEAN
+  johnny           ALL 8 CLEAN     ALL 8 CLEAN     ALL 8 CLEAN
+  fourpeople       ALL 8 CLEAN     ALL 8 CLEAN     ALL 8 CLEAN
+  kristenandsara   ALL 8 CLEAN     ALL 8 CLEAN     ALL 8 CLEAN
+  vidyo1           f4 NOTDEC       ALL 8 CLEAN     ALL 8 CLEAN
+  vidyo4           ALL 8 CLEAN     ALL 8 CLEAN     ALL 8 CLEAN
+
+17 of 18. Cross-checked with dav1d at qp32: vidyo3 and vidyo4 both ALL CLEAN,
+so this is not an aomdec artifact.
+
+Before this fix, at qp40: vidyo3 drifted at f3, vidyo1 decoded 6/8 and drifted
+at f4, vidyo4 decoded only 4/8.
+
+NOTHING IS DISABLED. The temporal motion-vector field stays ON and
+`use_ref_frame_mvs` is still signalled as C signals it, so C's RD is intact.
+The earlier `SVTAV1_MFMV_OFF` isolation switch remains a diagnostic only.
+
+HOW IT WAS FOUND, after three refuted hypotheses (recorded in
+video_mfmv_isolation_2026-09-10.meta):
+1. `SVTAV1_MFMV_OFF` proved the whole remaining defect lived in the temporal
+   field: 15 of 16 cells went clean with it off.
+2. A skip block whose FILTER-FREE INTERIOR differs isolates a pure prediction
+   difference -- deblock only touches block edges and CDEF skips all-skip 8x8
+   units, so a 16x16 skip block's centre is prediction and nothing else.
+   vidyo1 qp40 f4 mi=(32,12) and (36,12) both had the port deriving
+   NEARESTMV = (0,0) where the decoder derived a SUB-PEL MV: the empty-stack
+   signature.
+3. `tpl_mvs` was NOT empty (a probe counted ~980-1020 valid cells of 1536 from
+   poc 2 on, and 0 at poc 1 where the reference is the key frame -- correct),
+   and the projection's reference ORDER matched C (LAST, BWDREF, ALTREF2,
+   ALTREF, LAST2). So the field was fine and the consumer was not.
+4. Reading the consumer, the simplified-walk arm used the width as the row
+   bound; the flag selecting it was gated on SB size alone.
+
+SEPARATE, STILL OPEN: vidyo1 at qp20 fails to decode from f4. It also failed
+with MFMV off, so it is not this defect and never was.
