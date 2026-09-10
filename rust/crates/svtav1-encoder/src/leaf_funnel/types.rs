@@ -31,12 +31,12 @@ pub(super) struct Cand {
     /// ind-uv MDS3 update at chroma_level 4).
     pub(super) uv_delta: i8,
     /// Whole-block depth-0 luma prediction (w x h).
-    pub(super) pred: Vec<u8>,
+    pub(super) pred: crate::vecpool::PoolVec<u8>,
     /// The SAME prediction at TRUE 10 bits, from the bd10 recon canvas
     /// (task #94). MDS0 already computes this to score the fast cost and
     /// used to throw it away; MDS1/MDS3 need it as their depth-0 predictor.
     /// Empty unless the bd10 full-RD funnel is active.
-    pub(super) pred10: Vec<u16>,
+    pub(super) pred10: crate::vecpool::PoolVec<u16>,
     pub(super) flr: u64,
     pub(super) fcr: u64,
     pub(super) fast_cost: u64,

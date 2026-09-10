@@ -168,8 +168,11 @@ pub(super) struct TxUnitMeta {
 /// means only the buffers a call actually uses reach the free list.
 #[inline]
 fn grown_out<T: crate::vecpool::Pooled>(buf: &mut PoolVec<T>, n: usize) -> &mut [T] {
-    if buf.capacity() == 0 {
-        *buf = PoolVec::recycled_dirty();
+    if buf.capacity() < n {
+        // Assigning DROPS the undersized buffer, which parks it in its own
+        // size class rather than freeing it. Growing it in place would
+        // `realloc` on every call whose transform unit is bigger than the last.
+        *buf = PoolVec::recycled_dirty(n);
     }
     if buf.len() < n {
         buf.resize(n, T::default());

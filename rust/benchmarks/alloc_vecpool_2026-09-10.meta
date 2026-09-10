@@ -40,11 +40,29 @@ allocation result, so the hash is printed by the harness on every run.
     smallvec on txb_eob/cul/type + MDS3 locals 6,353,616         -7.3 %     25.44 M
     + PoolVec on the tx pipeline's outputs     3,420,176        -50.1 %     27.78 M
     + PoolVec on the MD scratch buffers        2,504,946        -63.4 %     27.69 M
+    + PoolVec on cand.pred / cand.pred10       2,123,200        -69.0 %     27.38 M
+    + SIZE-CLASSED free lists                  2,191,999        -68.0 %     25.57 M
+    + byte-budgeted per-class depth            1,696,200        -75.2 %     25.95 M
+    + the last chroma/palette scratch          1,527,403        -77.7 %     25.95 M
     ------------------------------------------------------------------------------
     C reference                                  466,395                    69.43 M
 
-Peak heap rose 2.25 M (+8.8 %) and stays at 40 % of C's. That is the free
-lists holding their buffers: POOL_DEPTH (64) per element type per thread.
+Peak heap ends 0.51 M (+2.0 %) above the baseline and at 37 % of C's. The size
+classes are what kept it there: with ONE undifferentiated free list the peak was
+27.78 M, because a request for a block-sized buffer was served a coefficient-row
+one and `realloc`ed it.
+
+## HOW MUCH OF THE REMAINING GAP IS ACTUALLY C-SHAPED
+
+207,457 of the port's remaining 1,527,403 are `intrabc_hash::HashTable::add`
+growing its per-bucket `Vec`. C spends EXACTLY THE SAME 207,457 there --
+`svt_aom_vector_setup`, reached from
+`svt_aom_rtime_alloc_svt_av1_add_to_hash_map_by_row_with_precal_data`, and it is
+the single largest entry in C's own profile (16.55 M peak). So that site is
+already at parity and is deliberately left alone; reserving per bucket would
+diverge from C's growth pattern AND multiply the table's live bytes.
+
+Excluding it, the port is at ~1.32 M against C's ~259 K.
 
 ## WHAT WAS TRIED AND REJECTED
 
@@ -79,11 +97,16 @@ Baseline binary built from 6a784743 in a sibling extraction; both are
 
     cell                base            candidate       delta
     ---------------------------------------------------------
-    256x256 preset 2    14,529,697,574  14,592,064,246  +0.43 %
-    512x512 preset 6     2,411,255,071   2,428,499,075  +0.72 %
-    1024x1024 preset 8   2,534,652,799   2,554,722,601  +0.79 %
-    256x256 preset 6       704,868,621     710,891,895  +0.85 %
-    512x512 preset 10      482,579,555     488,528,562  +1.23 %
+    256x256 preset 2    14,529,748,536  14,570,562,728  +0.28 %
+    512x512 preset 6     2,411,132,937   2,430,202,271  +0.79 %
+    256x256 preset 6       704,869,925     711,837,624  +0.99 %
+    1024x1024 preset 8   2,534,541,743   2,559,268,532  +0.98 %
+    512x512 preset 10      482,827,055     489,322,047  +1.35 %
+
+512x512 preset 10 is 0.35 points OVER the stated 1 % budget and is reported
+that way rather than dropped. It is the cheapest preset measured, so the
+free-list bookkeeping is the largest share of a much smaller total; every
+other cell is inside the budget.
 
 The cost rises as the preset gets FASTER, which is the expected shape: at
 preset 10 there is less mode-decision work per pooled buffer, so the free-list
@@ -107,6 +130,9 @@ instruction count above.
   taking both buffers eagerly: 1.02 % -> 0.83 % on 256x256 preset 6. Most calls
   pass `need_recon == false` and never touch `recon`, so an eager take paid a
   thread-local round trip per call for a buffer nobody used.
+* Shifts instead of a runtime divide in `pool_depth`: MEASURED NEUTRAL
+  (490,156,038 vs 489,322,047 on 512x512 preset 10, inside the spread). Kept as
+  the honest form of the arithmetic, not as a win.
 * Bypassing the pool for the ZEROED scratch sites (`vec![0; n]` again) was
   measured too, in case their `resize` memset was the cost: 489,304,613 vs
   488,528,562 on 512x512 preset 10, i.e. pooling them is slightly BETTER. The

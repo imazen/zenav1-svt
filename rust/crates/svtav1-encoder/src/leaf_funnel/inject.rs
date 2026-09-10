@@ -545,7 +545,9 @@ pub(super) fn inject_candidates(
             Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[map_mode as usize],
             _ => (uv_from_y(map_mode), if fi != FI_NONE { 0 } else { delta }),
         };
-        let mut pred = vec![0u8; w * h];
+        // Pooled: one per injected candidate, 643,485 allocating calls on the
+        // canonical alloc cell after the tx-pipeline buffers were pooled.
+        let mut pred = zeroed_pool::<u8>(w * h);
         predict_unit(
             y_recon,
             y_stride,
@@ -653,10 +655,10 @@ pub(super) fn inject_candidates(
         // The 10-bit prediction is RETAINED (`cand.pred10`) — MDS1/MDS3 need it
         // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
         // It used to be dropped here because only MDS0 ran at bd10.
-        let mut pred10: Vec<u16> = Vec::new();
+        let mut pred10 = crate::vecpool::PoolVec::<u16>::new();
         let (fast_cost, distortion_cost) = match fx.y_recon10.as_deref() {
             Some(canvas10) => {
-                pred10 = vec![0u16; w * h];
+                pred10 = zeroed_pool::<u16>(w * h);
                 predict_unit_hbd(
                     canvas10,
                     y_stride,
@@ -923,11 +925,11 @@ pub(super) fn inject_candidates(
             // colours are 10-bit, so `pred10` is the authoritative prediction
             // and the u8 `pred` is its MSB-truncated twin, kept because the
             // MDS1/MDS3 u8 stages and `commit_leaf` still read `cand.pred`.
-            let mut pred = vec![0u8; w * h];
-            let mut pred10: Vec<u16> = if bd10_funnel {
-                vec![0u16; w * h]
+            let mut pred = zeroed_pool::<u8>(w * h);
+            let mut pred10 = if bd10_funnel {
+                zeroed_pool::<u16>(w * h)
             } else {
-                Vec::new()
+                crate::vecpool::PoolVec::<u16>::new()
             };
             let shift = u32::from(frame.bit_depth - 8);
             for (o, &idx) in pc.idx_map.iter().enumerate().take(w * h) {
@@ -971,8 +973,14 @@ pub(super) fn inject_candidates(
             // whole total by 9. index_color_cache splits pc.colors on the
             // neighbour cache — at n_cache==0 out == pc.colors, so this is
             // bit-identical to the former empty-cache all-colours cost.
-            let mut pal_found = alloc::vec![false; pal_cache.len()];
-            let mut pal_out = alloc::vec![0u16; pc.colors.len()];
+            // The neighbour colour cache is at most 2 * PALETTE_MAX_SIZE = 16
+            // entries and a palette at most 8 colours, so neither of these ever
+            // spills. They were 57,128 allocating calls each on the canonical
+            // alloc cell.
+            let mut pal_found: smallvec::SmallVec<[bool; 16]> =
+                smallvec::smallvec![false; pal_cache.len()];
+            let mut pal_out: smallvec::SmallVec<[u16; 8]> =
+                smallvec::smallvec![0u16; pc.colors.len()];
             let n_out = crate::palette::index_color_cache(
                 &pal_cache,
                 &pc.colors,
@@ -1318,7 +1326,7 @@ pub(super) fn inject_candidates(
             for dv in dvs {
                 // Prediction: the RECON-domain block copy (the ONE
                 // search-vs-predict asymmetry — map §A.6).
-                let mut pred = vec![0u8; w * h];
+                let mut pred = zeroed_pool::<u8>(w * h);
                 crate::intrabc_pred::predict_intrabc_luma(
                     y_recon, y_stride, abs_x, abs_y, w, h, dv, &mut pred,
                 );
@@ -1326,9 +1334,9 @@ pub(super) fn inject_candidates(
                 // prediction `tx_unit_hbd` residuals against; leaving it
                 // empty is what made an IBC candidate unrepresentable at
                 // bd10 (and is why the injection was gated out).
-                let mut pred10: Vec<u16> = Vec::new();
+                let mut pred10 = crate::vecpool::PoolVec::<u16>::new();
                 if bd10_funnel {
-                    pred10 = vec![0u16; w * h];
+                    pred10 = zeroed_pool::<u16>(w * h);
                     crate::intrabc_pred::predict_intrabc_luma(
                         fx.y_recon10.as_deref().unwrap(),
                         y_stride,
@@ -1554,8 +1562,8 @@ pub(super) fn inject_candidates(
                 fi: FI_NONE,
                 uv: 0,
                 uv_delta: 0,
-                pred: c.y_pred,
-                pred10: Vec::new(),
+                pred: crate::vecpool::PoolVec::from_slice(&c.y_pred),
+                pred10: crate::vecpool::PoolVec::new(),
                 flr,
                 fcr: 0,
                 fast_cost,

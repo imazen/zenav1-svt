@@ -1225,8 +1225,8 @@ fn eval_candidate(
         // luma winner's txb-0 type when the chroma ext set allows it,
         // else DCT (tx_type_search, product_coding_loop.c:5087-5096).
         // No CfL, no ind-uv, no detector (all intra-only).
-        let mut u_pred = vec![0u8; cw * chh];
-        let mut v_pred = vec![0u8; cw * chh];
+        let mut u_pred = zeroed_pool::<u8>(cw * chh);
+        let mut v_pred = zeroed_pool::<u8>(cw * chh);
         let frame_ch = frame.frame_h_px / 2;
         crate::intrabc_pred::predict_intrabc_chroma(
             fx.u_recon,
@@ -1346,8 +1346,8 @@ fn eval_candidate(
         // COMPONENT_CHROMA iff the SAD arm (cb/cr pred SAD > 2x luma
         // pred SAD) OR the variance arm (per-pixel source variance >
         // cplx_th) fires. Uses the candidate's uv PREDICTION.
-        let mut u_pred = vec![0u8; cw * chh];
-        let mut v_pred = vec![0u8; cw * chh];
+        let mut u_pred = zeroed_pool::<u8>(cw * chh);
+        let mut v_pred = zeroed_pool::<u8>(cw * chh);
         predict_unit(
             fx.u_recon,
             fx.c_stride,

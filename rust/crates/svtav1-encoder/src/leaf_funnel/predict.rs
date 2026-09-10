@@ -113,7 +113,9 @@ pub(super) fn predict_unit(
     );
     let (above, left, top_left, has_above, has_left) = nb.parts();
     if fi_mode != FI_NONE {
-        let mut above_c = vec![0u8; w + 1];
+        // `w` is a TX width, at most 64, so this never spills. It was 60,685
+        // allocating calls on the canonical alloc cell.
+        let mut above_c: smallvec::SmallVec<[u8; 65]> = smallvec::smallvec![0u8; w + 1];
         above_c[0] = if has_above && has_left {
             top_left
         } else if has_above {
