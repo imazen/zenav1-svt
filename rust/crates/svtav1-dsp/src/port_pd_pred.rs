@@ -353,8 +353,18 @@ pub fn av1_inter_prediction_light_pd1(
             if std::env::var_os("ZZ_CHROMA_DBG").is_some() {
                 std::eprintln!(
                     "ZZCHROMA org=({},{}) bwuv={}x{} mv=({},{}) -> pos=({},{}) subpel=({},{}) xs={} ys={}",
-                    geom.org_x, geom.org_y, geom.bwidth_uv, geom.bheight_uv,
-                    mv.y, mv.x, pos_x, pos_y, sp.subpel_x, sp.subpel_y, sp.xs, sp.ys
+                    geom.org_x,
+                    geom.org_y,
+                    geom.bwidth_uv,
+                    geom.bheight_uv,
+                    mv.y,
+                    mv.x,
+                    pos_x,
+                    pos_y,
+                    sp.subpel_x,
+                    sp.subpel_y,
+                    sp.xs,
+                    sp.ys
                 );
             }
             if component_mask & CB_FLAG != 0 {

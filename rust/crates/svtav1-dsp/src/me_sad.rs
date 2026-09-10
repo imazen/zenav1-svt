@@ -476,6 +476,106 @@ pub fn block_sad_x4_v3(
     let mut wide = [_mm256_setzero_si256(); 4];
     let mut narrow = [_mm_setzero_si128(); 4];
     let mut tail = [0u32; 4];
+
+    // WIDTH-4 ROW PACKING. The generic row loop below issues one 4-BYTE
+    // `_mm_sad_epu8` per row per reference -- a 128-bit register doing four
+    // bytes of work -- and 4x4 blocks are among the most-called sizes in this
+    // encoder (a C profile of the same cell ranks sad4x8x4d and sad4x16x4d in
+    // its top SAD kernels, alongside the 8-wide ones).
+    //
+    // Four rows of 4 bytes are exactly one 16-byte vector, assembled with
+    // `_mm_setr_epi32` from four direct loads -- no staging buffer. Per four
+    // rows that is 4 `setr` + 4 `sad` + 4 `add` against the generic path's
+    // 16 `cvtsi32` + 16 `sad` + 16 `add`.
+    //
+    // `_mm_sad_epu8` sums each 8-byte half into its own lane and the reduction
+    // adds both, so packing rows only reorders an integer sum: bit-identical.
+    if w == 4 {
+        let ld = |p: &[u8], o: usize| i32::from_le_bytes(p[o..o + 4].try_into().unwrap());
+        let mut y = 0;
+        while y + 4 <= h {
+            let (s0, s1, s2, s3) = (
+                y * src_stride,
+                (y + 1) * src_stride,
+                (y + 2) * src_stride,
+                (y + 3) * src_stride,
+            );
+            let a = _mm_setr_epi32(ld(src, s0), ld(src, s1), ld(src, s2), ld(src, s3));
+            let (r0, r1, r2, r3) = (
+                y * ref_stride,
+                (y + 1) * ref_stride,
+                (y + 2) * ref_stride,
+                (y + 3) * ref_stride,
+            );
+            for i in 0..4 {
+                let rp = refs[i];
+                let b = _mm_setr_epi32(ld(rp, r0), ld(rp, r1), ld(rp, r2), ld(rp, r3));
+                narrow[i] = _mm_add_epi64(narrow[i], _mm_sad_epu8(a, b));
+            }
+            y += 4;
+        }
+        while y < h {
+            let (so, ro) = (y * src_stride, y * ref_stride);
+            for x in 0..w {
+                for i in 0..4 {
+                    tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+                }
+            }
+            y += 1;
+        }
+        for i in 0..4 {
+            let sw = _mm_add_epi64(narrow[i], _mm_srli_si128::<8>(narrow[i]));
+            tail[i] += _mm_cvtsi128_si64(sw) as u32;
+        }
+        return tail;
+    }
+
+    // WIDTH-8 ROW PACKING, the same argument one size up: four rows of 8 bytes
+    // fill one 256-bit vector, so a 8xN block costs one `_mm256_sad_epu8` per
+    // four rows instead of four `_mm_sad_epu8`. C's sad8x8x4d / sad8x16x4d /
+    // sad8x4x4d are among its most-called kernels on this content.
+    if w == 8 {
+        let ld = |p: &[u8], o: usize| i64::from_le_bytes(p[o..o + 8].try_into().unwrap());
+        let mut y = 0;
+        while y + 4 <= h {
+            let a = _mm256_setr_epi64x(
+                ld(src, y * src_stride),
+                ld(src, (y + 1) * src_stride),
+                ld(src, (y + 2) * src_stride),
+                ld(src, (y + 3) * src_stride),
+            );
+            for i in 0..4 {
+                let rp = refs[i];
+                let b = _mm256_setr_epi64x(
+                    ld(rp, y * ref_stride),
+                    ld(rp, (y + 1) * ref_stride),
+                    ld(rp, (y + 2) * ref_stride),
+                    ld(rp, (y + 3) * ref_stride),
+                );
+                wide[i] = _mm256_add_epi64(wide[i], _mm256_sad_epu8(a, b));
+            }
+            y += 4;
+        }
+        while y < h {
+            let (so, ro) = (y * src_stride, y * ref_stride);
+            for x in 0..w {
+                for i in 0..4 {
+                    tail[i] += u32::from(src[so + x].abs_diff(refs[i][ro + x]));
+                }
+            }
+            y += 1;
+        }
+        for i in 0..4 {
+            let sw = _mm_add_epi64(
+                _mm256_castsi256_si128(wide[i]),
+                _mm256_extracti128_si256::<1>(wide[i]),
+            );
+            let sw = _mm_add_epi64(sw, _mm_srli_si128::<8>(sw));
+            tail[i] += _mm_cvtsi128_si64(sw) as u32;
+        }
+        return tail;
+    }
+
     for y in 0..h {
         let so = y * src_stride;
         let ro = y * ref_stride;

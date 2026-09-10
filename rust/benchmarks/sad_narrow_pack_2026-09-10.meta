@@ -1,0 +1,59 @@
+SAD narrow-width row packing: -19.8 % on the worst cell, byte-identical
+2026-09-10
+
+CELL      gb82-sc/windows.png, crop 512x320, cli_qp 20, preset -1 (research)
+          14,871 bytes, BYTE-IDENTICAL to C before and after.
+HOST      i265 (Core Ultra 7 265K, hybrid P/E), pinned `taskset -c 2`.
+METHOD    Rotated interleaved arms (base / new / baseB, order rotating each
+          round), 6 rounds, per-arm median, plus a SAME-BINARY NULL arm.
+          All three arms sha256'd before the band: base and baseB identical,
+          new distinct.
+
+RESULT
+  base   median 6.065 s   [6.05 6.06 6.06 6.07 6.08 6.09]
+  baseB  median 6.075 s   [6.05 6.05 6.07 6.08 6.09 6.11]   <- null arm
+  new    median 4.865 s   [4.83 4.84 4.86 4.87 4.88 4.88]
+
+  -19.8 %. Six of six rounds faster; the distributions do not overlap
+  (new max 4.88 < base min 6.05). The null arm differs from base by 0.010 s,
+  so the harness floor is ~0.2 % and the effect is 100x it.
+
+HOW IT WAS FOUND, and the order matters (issue #25 §1, §9)
+1. `perf record` flat, no call graph: the top symbol is
+   `me_sad::__arcane_block_sad_x4_v3` at 53.40 %.
+2. §9 -- IS it actually slow? Profiled C on the SAME cell. C's SAD family
+   (sad8x16x4d 3.29 %, sad8x8x4d 3.19 %, sad4x16x4d 2.67 %, sad16x16x4d 2.58 %,
+   sad4x8x4d 2.40 %, sad16x8x4d 1.74 %, sad8x4x4d 1.38 %, plus sub-1 % rows) is
+   about 17 % of 2.77 s ~= 0.48 s, against the port's 53.4 % of 6.95 s ~= 3.7 s.
+   About 7.7x in ABSOLUTE terms, so a real lever rather than a denominator
+   artifact.
+3. C's kernel NAMES carried the diagnosis: every top kernel is width 4, 8 or
+   16. The port had ONE generic kernel walking a single row at a time, so a
+   4-wide block issued a 4-BYTE `_mm_sad_epu8` -- a 128-bit register doing four
+   bytes of work.
+
+THE FIX. Pack rows into full vectors for the narrow widths:
+  w == 4: four rows of 4 bytes -> one 128-bit `_mm_setr_epi32`, one
+          `_mm_sad_epu8` per four rows instead of four.
+  w == 8: four rows of 8 bytes -> one 256-bit `_mm256_setr_epi64x`, one
+          `_mm256_sad_epu8` per four rows.
+`_mm_sad_epu8` sums each 8-byte half into its own lane and the reduction adds
+both, so packing rows only REORDERS an integer sum. Bit-identical by
+construction, not approximately.
+
+THE ATTEMPT THAT FAILED, recorded because the lesson is the transferable part
+(issue #25 §8: "the obvious fix made it slower"). The first version staged the
+rows into a `[u8; 16]` with `copy_from_slice` and loaded that. It measured
+13.82 s against base 6.06 s -- 2.3x SLOWER, with the null arm at 6.08 s proving
+the harness was sound and the regression real. Building a staging buffer costs
+more than the four 4-byte loads it replaces. The win needs DIRECT loads into
+`setr` with no buffer. Had this been measured only against itself, or without a
+null, "packed rows" would have been recorded as a dead end rather than a
+technique with one wrong implementation.
+
+SCOPE. Only `w == 4` and `w == 8` take the new path; every other width keeps the
+existing generic loop untouched. Odd heights fall to the same scalar remainder
+as before.
+
+VERIFIED: dsp suite 828/828, me_sad cross-tier agreement (the test that would
+catch a wrong sum) included.
