@@ -135,10 +135,22 @@ time, which isolated the deblock without needing any new instrumentation; the
 diff footprint (six pixels each side of the edge) then named the filter length,
 and `SVTAV1_PACKTREE` named the blocks as `inter=1 yeob=0 txd=1`.
 
-**A second, different defect remains**, now that the first is gone. f3's residual
-is not this bug's signature: 530 luma pixels in a tight 16-wide column
-(x=176–191, y=159–193) with large deltas (−9..+7), plus co-located chroma. That
-is a block reconstructed from a different prediction, not a filter difference.
+**Two of the six clips now produce fully correct video** — `fourpeople` and
+`kristenandsara` reconstruct byte-identically to the decoder for all 8 frames,
+at both qp 20 and qp 40.
+
+**A second defect remains, in the prediction path.** At qp 20 the signalled
+`loop_filter_level[0]` is 0, so no filter stage runs on either side and any
+mismatch is purely prediction + residual + reference. Four clips still drift
+there, and **every one first drifts at f2 — the first frame whose reference is
+itself an inter frame.** That is exactly the condition the original refusal
+named, so its framing was right; what was missing was a way to measure it. f0
+and f1 are correct on every clip at every qp tested.
+
+Best reproducer: qp 20, `johnny 256×256 p6 frames=3` — 407 px at f2 with a
+byte-exact f1 reference on both sides and no filter in the path. `fourpeople`
+and `kristenandsara` are the controls: same harness, byte-exact throughout, so
+the defect is reachable only by some mode or motion class those two never code.
 
 ## imazen26 K300 production corpus (re-run after 48 days, 2026-09-10)
 

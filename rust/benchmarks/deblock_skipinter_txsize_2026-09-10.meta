@@ -60,3 +60,39 @@ residual is not this bug's signature: 530 luma px in a tight 16-wide column
 (U 91 px, V 61 px at x=88..96). Edge-localised +-1 it is not -- that is a block
 reconstructed from a different prediction, not a filter difference. Localise it
 the same way: it is one block, on one frame, with a byte-exact reference.
+
+================================================================
+FOLLOW-UP, same day: scope after the fix, and the next defect
+================================================================
+
+ALL SIX public-domain clips, 256x256 p6, 8 frames, encoder recon vs aomdec:
+
+  qp 40 (deblock ON, luma level ~8-20)      qp 20 (deblock OFF, level 0)
+  fourpeople      ALL 8 CLEAN               ALL 8 CLEAN
+  kristenandsara  ALL 8 CLEAN               ALL 8 CLEAN
+  johnny          8/8 dec, drift f2 (9 px)  8/8 dec, drift f2 (407 px)
+  vidyo3          8/8 dec, drift f3         4/8 dec, drift f2 (176 px)
+  vidyo1          6/8 dec, drift f1         4/8 dec, drift f2 (1060 px)
+  vidyo4          4/8 dec                   2/8 dec
+
+TWO CLIPS NOW PRODUCE FULLY CORRECT VIDEO: fourpeople and kristenandsara
+reconstruct byte-identically to the decoder for all 8 frames at both qps.
+
+THE REMAINING DEFECT IS IN THE PREDICTION PATH, NOT A FILTER. At qp 20 the
+signalled loop_filter_level[0] is 0, so no deblocking runs on either side and
+CDEF/LR are already off -- any recon mismatch there is purely prediction +
+residual + reference. Four clips still drift, and every one of them first
+drifts at f2.
+
+f2 IS THE FIRST FRAME WHOSE REFERENCE IS ITSELF AN INTER FRAME. That is exactly
+the condition the original refusal named ("an inter frame whose LIST-0 REFERENCE
+is itself an inter frame needs C's RECON to agree, and it does not yet"), so the
+refusal's framing was right; what was missing was a way to measure it. f0 (key)
+and f1 (references the key frame) are correct on every clip at every qp tested.
+
+BEST REPRODUCER for the next chunk: qp 20, filters off, johnny 256x256 p6
+frames=3 -- 407 px at f2 with a byte-exact f1 reference on both sides, and no
+filter stage in the path to confound it. fourpeople and kristenandsara are the
+CONTROLS: same harness, same settings, byte-exact throughout, so whatever the
+defect is, it is reachable only by some mode or motion class those two never
+code.
