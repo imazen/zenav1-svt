@@ -46,6 +46,21 @@ per crate (lines):
 # frame header. The honest reading is that the STILL-image surface is ~92% covered
 # by fast local tests and the video surface is covered by C-differential gates.
 
+# WHERE IT RUNS, and why not on push. MEASURED on the runner: the instrumented
+# test run takes 1371 s (23 min) versus 216 s uninstrumented here -- llvm-cov is
+# roughly 6x. The gates shards are the ~12 min critical path, so putting this on
+# every push would take CI from ~12 min to ~23 and make coverage the critical
+# path. It therefore runs NIGHTLY, on pull requests, and on demand. A push to main
+# that deletes a test is caught by the next nightly, not immediately -- the
+# deliberate trade for keeping the push path fast.
+#
+# The job also fetches the gb82-sc corpus (2.9 MB) and builds aomdec, because this
+# floor was measured on a host where both resolve. Without the corpus,
+# intrabc_output_is_tier_invariant_on_real_screen_content fails LOUDLY by design
+# and the run aborts in 0.005 s; without aomdec the issue18_repro cells fail.
+# Setting ZENAV1_SKIP_CORPUS_TESTS/ZENAV1_SKIP_DECODER_TESTS instead would make the
+# measured number incomparable to the floor it is checked against.
+
 # ANTI-VACUITY of the gate that pins this (measured, not asserted):
 #   full suite                          91.83%
 #   with the encoder_parity target gone 78.68%   (-13.15 points)

@@ -2,6 +2,11 @@ name: rust gates
 
 on:
   workflow_dispatch: {}
+  # Nightly, for the coverage floor only — see the `coverage` job. Instrumented
+  # test runs cost ~23 min against a ~12 min gates critical path, so running them
+  # on every push would nearly double CI wall time.
+  schedule:
+    - cron: "17 4 * * *"
   push:
     branches: ["wave2/**", "main"]
     paths: ["rust/**", "reference/**", ".gitmodules", ".github/workflows/rust-gates.yml"]
@@ -755,8 +760,28 @@ jobs:
   # gate scripts, not by this number.
   coverage:
     name: coverage floor (nextest surface)
+    # NOT on push. MEASURED: the instrumented run takes 1371 s (23 min) on the
+    # runner versus 216 s uninstrumented here -- llvm-cov roughly 6x. The gates
+    # shards are the ~12 min critical path, so running this on every push would
+    # take CI from ~12 min to ~23 and make coverage the critical path. That is a
+    # real regression, and the point of this job is to catch silent test loss, not
+    # to be instant.
+    #
+    # So it runs nightly, on pull requests, and on demand. A push to main that
+    # deletes a test is caught by the next nightly rather than immediately; that
+    # is the deliberate trade for keeping the push path fast.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      # The recorded floor was measured on a host where the gb82-sc corpus
+      # resolves, so this job must resolve it too. Without it
+      # intrabc_output_is_tier_invariant_on_real_screen_content fails LOUDLY by
+      # design (it refuses to pass without content) and the instrumented run
+      # aborts -- which is what failed this job, in 0.005 s, before any encode.
+      # Fetching 2.9 MB is the honest fix; setting ZENAV1_SKIP_CORPUS_TESTS would
+      # make the coverage number incomparable to the floor it is checked against.
+      ZENAV1_CORPUS_ROOT: ${{ github.workspace }}/corpora
     steps:
       - uses: actions/checkout@v7
         with:
@@ -773,6 +798,27 @@ jobs:
       # Its absence failed this job on its first run: "no such command: nextest".
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
+      - name: Fetch the gb82-sc screen corpus (sparse checkout, 2.9 MB)
+        run: |
+          set -euo pipefail
+          root="$GITHUB_WORKSPACE/corpora"
+          dest="$root/codec-corpus"
+          mkdir -p "$root"; rm -rf "$dest"
+          ok=0
+          for attempt in 1 2 3; do
+            if git clone --depth 1 --filter=blob:none --sparse \
+                 https://github.com/imazen/codec-corpus.git "$dest"; then
+              ok=1; break
+            fi
+            echo "corpus clone attempt $attempt failed; retrying" >&2
+            rm -rf "$dest"; sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "FATAL: could not clone codec-corpus" >&2; exit 1; }
+          git -C "$dest" sparse-checkout set gb82-sc
+          n=$(ls "$dest"/gb82-sc/*.png 2>/dev/null | wc -l | tr -d ' ')
+          echo "gb82-sc PNGs fetched: $n -> $dest/gb82-sc"
+          [ "$n" -eq 10 ] || { echo "FATAL: expected 10 gb82-sc PNGs, got $n" >&2; exit 1; }
+
       - name: Install toolchain deps (C oracle for zenav1-svt-cref)
         run: sudo apt-get update && sudo apt-get install -y cmake nasm ninja-build
       # The recorded floor was measured on a host WITH a decoder, so this job
