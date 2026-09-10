@@ -1,0 +1,98 @@
+# warped_motion_2026-09-10 — WARPED_CAUSAL is wired, selected, and decoder-exact
+
+commit:  (this change)
+host:    i265 (Core Ultra 7 265K), x86_64-unknown-linux-gnu
+gate:    tools/warped_motion_gate.sh  (8 cells, pinned)
+premise: benchmarks/c_motion_mode_census_2026-09-10.meta — C codes 88 of 1158
+         inter blocks WARPED_CAUSAL over the 24-cell video gate, all at preset 6
+
+## WHAT WAS MISSING — the wiring, and only the wiring
+
+Every piece was already ported and tested with no producer:
+`inter_mvp::find_warp_samples`, `port_warp::{select_samples, find_projection,
+get_shear_params, warp_affine, warp_plane, av1_warp_plane}`,
+`port_md::inject`'s WARP arm, both `motion_mode_allowed` predicates, and the
+writer's three-symbol alphabet. `inter_md_arm` passed `WmCtrls::default()`
+(disabled) and `NoRefinement`, so the arm was dead.
+
+Four changes:
+
+1. `InterMdFrame::wm_level` — C's `pcs->wm_level`, which the WIRED
+   picture-level `sig_deriv_mode_decision_config_default` had been computing
+   and this arm had been discarding. `svt_aom_set_wm_controls` turns it into
+   `ctx->wm_ctrls`.
+2. The warp neighbour SAMPLES are kept, not just their count — C's
+   `ctx->wm_sample_info[ref]`, filled once per block and read by every
+   candidate's derivation.
+3. `WarpHooks::warped_motion_parameters` — C `svt_aom_warped_motion_parameters`
+   (adaptive_mv_pred.c:1776), including the band gate that `shut_approx == 0`
+   leaves live at the injection call site.
+4. `inter_pred_arm::predict_inter_yuv_warped` — C's `av1_inter_prediction`
+   `is_wm` arm (enc_inter_prediction.c:3275), NOT the light-PD1 driver the
+   translation path uses. There is no `compute_subpel_params` on that path and
+   the MV is unused: the affine model IS the motion.
+
+## THE DERIVATION PREDICTS THE CENSUS, WHICH IS THE FIRST CONFIRMATION
+
+`wm_level` is 3 at M6 and 0 at M8 for a flat GOP at <= 720p — and C selects
+warped motion at preset 6 and never at preset 8. That agreement was not
+arranged; the census was taken before the derivation was read.
+
+## MEASURED — selection AND decoder-exact reconstruction
+
+8 cells, qp 40, 8 frames, `SVTAV1_INTER_CHAIN_EXPERIMENTAL` so frames 2+ can
+reference an inter picture:
+
+    clip            size     p   warped blocks   recon vs dav1d
+    vidyo3          256x256  6         497           8/8
+    vidyo1          256x256  6         109           8/8
+    vidyo3          128x128  6         131           8/8
+    johnny          256x256  6          44           8/8
+    fourpeople      128x128  6           0           8/8
+    kristenandsara  128x128  8           0           8/8
+    vidyo3          256x256  8           0           8/8
+    vidyo1          128x128  8           0           8/8
+
+**The recon column is the load-bearing one.** The warp parameters are NOT in
+the bitstream — a decoder re-derives them from the same neighbour scan — so a
+wrong sample set, a wrong projection, a wrong band gate or a wrong chroma
+fallback would show up as a decoded-pixel mismatch and in NO size comparison.
+8/8 on every cell, including one where 497 of the coded blocks are warped.
+
+The zero rows are the negative control: where C's own gate is closed the port
+must code no warped block either, and it codes none.
+
+Per-block agreement on the single cell where the two can be compared directly
+(vidyo3 256x256 p6, frames = 2): C 110 simple / 56 warped, port 67 simple /
+43 warped. The totals differ because once a block's decision diverges the
+partition tree does too.
+
+## NO REGRESSION
+
+`real_video_inter_gate.sh` is 24/24 exactly as pinned — no cell regressed and
+no cell was promoted. The cells C codes without warp were byte-identical
+before and still are, which is the check that the injection did not widen the
+candidate set where C's gate is closed.
+
+## WHAT IS STILL MISSING, PRECISELY
+
+* **The MDS1 warp MV refinement.** At wm_level 3 `refine_level` is 1, so C
+  runs `svt_aom_wm_motion_refinement` at MD stage 1
+  (`opt_non_translation_motion_mode_warp`, product_coding_loop.c:6762-6796).
+  The port's warp candidates carry the UNREFINED MV. `port_md::mv_refine`
+  is ported; the closure it needs (warp derivation + prediction + variance)
+  and the `ChooseDrlCtx` plumbing are not.
+* **Injection-time refinement** (`refine_level == 0`, i.e. wm_level 1, presets
+  M0..M1) is deliberately NOT enabled: `wm_ctrls.enabled` is forced false
+  there, so those presets keep their previous behaviour rather than getting a
+  candidate C never evaluates. The hook says so with an `unreachable!`.
+* **OBMC** stays unwired. The census found C selecting it on ZERO blocks at
+  these presets, so it is a wider-envelope question — which is what the warp
+  claim was assumed to be, and was not, so treat that as unproven rather than
+  settled.
+
+REPRODUCE:
+    tools/warped_motion_gate.sh
+    SVTAV1_INTERDBG=1 SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 \
+      target/release/examples/identity_run rawseq:<clip>.i420 256 256 40 6 <out>
+    # then: grep -c 'mm=WarpedCausal'

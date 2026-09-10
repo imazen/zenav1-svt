@@ -44,7 +44,7 @@ use svtav1_dsp::port_pd_pred::{
     av1_inter_prediction_light_pd1, av1_inter_prediction_light_pd1_hbd,
 };
 use svtav1_dsp::port_scale_factors::ScaleFactors;
-use svtav1_dsp::port_subpel_params::{MbEdges, Mv as DspMv};
+use svtav1_dsp::port_subpel_params::{MbEdges, Mv as DspMv, RefGeometry};
 use svtav1_types::motion::Mv;
 
 /// One inter-predicted LUMA block, exactly as C reconstructs it.
@@ -380,6 +380,137 @@ pub fn predict_inter_yuv_hbd(
         mask,
         i32::from(bit_depth),
     );
+}
+
+/// One WARPED-CAUSAL block, luma + chroma, exactly as C reconstructs it.
+///
+/// This is NOT [`predict_inter_yuv`] with a flag. C reaches warp through a
+/// DIFFERENT driver: `av1_inter_prediction` (enc_inter_prediction.c:3205), not
+/// `av1_inter_prediction_light_pd1`, and inside it `is_wm` routes each plane
+/// to `svt_av1_warp_plane` instead of the convolve — there is no
+/// `compute_subpel_params` on that path at all, and **the motion vector is
+/// unused**: the affine model IS the motion.
+///
+/// Two things C makes easy to get wrong, both reproduced here:
+///
+/// * **The reference extent handed to the warp is PLANE-LOCAL** — `width >>
+///   ss_x`, `height >> ss_y` — with the block's position as `p_col` / `p_row`.
+/// * **Chroma falls back to TRANSLATION when it would be smaller than 8x8**
+///   (`is_wm = ... && bwidth_uv >= 8 && bheight_uv >= 8`, :3382-3385, which is
+///   spec 7.11.3.1). A 8x8 luma block warps its luma and CONVOLVES its chroma.
+///   Getting this wrong is wrong pixels on every small warped block.
+///
+/// The luma `is_wm` needs no such guard because the injector cannot produce a
+/// warped candidate below 8x8 (`svt_aom_warped_motion_parameters` returns
+/// false for `bwidth < 8 || bheight < 8`), which C asserts at :3279.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_warped(
+    refs: (&PaddedPlane, Option<(&PaddedPlane, &PaddedPlane)>),
+    wm: &mut svtav1_types::motion::WarpedMotionParams,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    y_out: &mut [u8],
+    y_stride: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    // C `get_conv_params_no_round(0, tmp_dst_y, 128, is_compound, bit_depth)`
+    // for luma and stride 64 for chroma. Not compound here — this port injects
+    // no compound candidate — so the conv buffer is never read; it is sized
+    // rather than elided so that wiring compound later is a call-site change.
+    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    let cp_y = ConvolveParams::no_round(false, 128, false, 8);
+    let cp_uv = ConvolveParams::no_round(false, 64, false, 8);
+
+    enc_make_inter_predictor(
+        SrcPlanes::Lbd(&refs.0.buf),
+        refs.0.origin,
+        refs.0.stride,
+        DstPlane::Lbd(y_out),
+        y_stride,
+        &mut conv_buf,
+        org_y as i32,
+        org_x as i32,
+        DspMv { x: mv.x, y: mv.y },
+        &sf,
+        &cp_y,
+        interp_filters,
+        None,
+        Some(wm),
+        geom,
+        bw,
+        bh,
+        &edges,
+        0,
+        0,
+        0,
+        8,
+        false,
+        true,
+    )
+    .expect("the luma warp leaf takes an 8-bit plane into an 8-bit destination");
+
+    let Some((uref, vref)) = refs.1 else {
+        return;
+    };
+    let (cw, chh) = (bw / 2, bh / 2);
+    // Spec 7.11.3.1 / C :3382-3385.
+    let uv_is_wm = cw >= 8 && chh >= 8;
+    // C `ROUND_UV(x) / 2` — the chroma origin of the block, which for a 4:2:0
+    // plane is the luma origin rounded DOWN to even and halved.
+    let (cx, cy) = ((org_x & !1) / 2, (org_y & !1) / 2);
+    for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
+        enc_make_inter_predictor(
+            SrcPlanes::Lbd(&r.buf),
+            r.origin,
+            r.stride,
+            DstPlane::Lbd(dst),
+            uv_stride,
+            &mut conv_buf,
+            cy as i32,
+            cx as i32,
+            DspMv { x: mv.x, y: mv.y },
+            &sf,
+            &cp_uv,
+            interp_filters,
+            None,
+            Some(wm),
+            geom,
+            cw,
+            chh,
+            &edges,
+            plane,
+            1,
+            1,
+            8,
+            false,
+            uv_is_wm,
+        )
+        .expect("the chroma leaf takes an 8-bit plane into an 8-bit destination");
+    }
 }
 
 /// C `xd->mb_to_*_edge` (`svt_aom_init_xd`, adaptive_mv_pred.c:1054-1057), in

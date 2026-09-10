@@ -4045,6 +4045,7 @@ impl EncodePipeline {
                 Some(crate::inter_md_arm::InterMdFrame {
                     skip_mode_flag: st.skip_mode_flag,
                     cand_reduction: *cand_red,
+                    wm_level: sigs.wm_level,
                     bit_depth: self.bit_depth,
                     padded,
                     padded_by_ref: inter_padded_by_ref,
@@ -9555,10 +9556,12 @@ fn encode_block_syntax(
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_INTERDBG").is_some() {
             std::eprintln!(
-                "IDBG mi=({},{}) bs={:?} mv=({},{}) pmv=({},{}) imc={} drl={:?} nb_up={} nb_left={} nbA={:?} nbL={:?}",
+                "IDBG mi=({},{}) bs={:?} mm={:?} npr={} mv=({},{}) pmv=({},{}) imc={} drl={:?} nb_up={} nb_left={} nbA={:?} nbL={:?}",
                 block_y / 4,
                 block_x / 4,
                 info.bsize,
+                info.motion_mode,
+                info.num_proj_ref,
                 info.mv[0].y,
                 info.mv[0].x,
                 info.pred_mv[0].y,

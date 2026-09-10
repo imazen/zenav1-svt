@@ -223,6 +223,10 @@ pub struct InterMdFrame<'a> {
     pub frame_w: usize,
     pub frame_h: usize,
     pub sb_size: usize,
+    /// C `pcs->wm_level` — the warped-motion ladder, derived by the wired
+    /// picture-level `sig_deriv_mode_decision_config_default` and, until
+    /// 2026-09-10, thrown away here.
+    pub wm_level: u8,
     /// The sequence bit depth. 8 on every u8 encode; 10 is what makes
     /// [`InterCandOut::y_pred10`] reachable, and the highbd convolve reads it
     /// as C's `bd` (the rounding and the clamp both depend on it).
@@ -343,6 +347,11 @@ pub struct InterCandOut {
     pub y_pred10: Vec<u16>,
     pub u_pred10: Vec<u16>,
     pub v_pred10: Vec<u16>,
+    /// C `cand->wm_params_l0` — the local-warp affine model. Meaningful only
+    /// when `motion_mode == WarpedCausal`; the reconstruction and the writer
+    /// both need it, and the model IS the motion there (the MV is unused by
+    /// the warp kernel).
+    pub wm_params_l0: svtav1_types::motion::WarpedMotionParams,
     /// C `cand_bf->fast_luma_rate`.
     pub fast_luma_rate: u32,
     /// C `cand->block_mi.num_proj_ref` — the warped-motion SAMPLE COUNT, which
@@ -424,6 +433,155 @@ fn mode_from_u8(v: u8) -> Option<PredictionMode> {
 
 /// Build this block's INTER candidate set, exactly as C composes it.
 ///
+/// One reference's precomputed local-warp neighbour samples — C's
+/// `ctx->wm_sample_info[ref]`, filled once per block by
+/// `svt_aom_init_wm_samples` and read by every candidate's warp derivation.
+#[derive(Clone, Copy)]
+pub struct WarpSamples {
+    n: u8,
+    pts: [[i32; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
+    pts_inref: [[i32; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
+}
+
+impl Default for WarpSamples {
+    fn default() -> Self {
+        WarpSamples {
+            n: 0,
+            pts: [[0; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
+            pts_inref: [[0; 2]; crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX],
+        }
+    }
+}
+
+/// The injector's [`InjectHooks`] with the WARP derivation wired.
+///
+/// Every other hook is the `NoRefinement` answer, and each is that way for a
+/// stated reason rather than by omission — see the impl.
+struct WarpHooks<'a> {
+    bsize: svtav1_types::block::BlockSize,
+    bwidth: usize,
+    bheight: usize,
+    mi_row: i32,
+    mi_col: i32,
+    samples: &'a [WarpSamples; 8],
+    lower_band_th: u16,
+    upper_band_th: u16,
+}
+
+impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
+    /// Inter-intra is unported; the injector never asks (`enable_ii` reaches
+    /// this only through `is_interintra_allowed`, whose `ctrls.enabled` is
+    /// `Default::default()` == false on this arm).
+    fn inter_intra_search(&mut self, _cand: &mut crate::port_md::inject::InterCandidate) {}
+
+    /// `svt_aom_wm_motion_refinement` at INJECTION time. Unreachable on this
+    /// arm: `wm_ctrls.enabled` is forced false whenever `refine_level == 0`,
+    /// which is the only condition under which the injector calls this.
+    /// Returning `true` here would inject an UNREFINED warp candidate — one C
+    /// never evaluates — so it says so instead.
+    fn wm_motion_refinement(&mut self, _cand: &mut crate::port_md::inject::InterCandidate) -> bool {
+        unreachable!(
+            "injection-time warp MV refinement is not wired; `wm_ctrls.enabled` is              forced false when `refine_level == 0`, which is the only path that calls this"
+        )
+    }
+
+    /// C `svt_aom_warped_motion_parameters` (adaptive_mv_pred.c:1776).
+    ///
+    /// `shut_approx` is FALSE at the injection call site (`mode_decision.c:936`
+    /// passes a literal 0), so the band gate below is live — and at wm_level 3
+    /// `lower_band_th` is `1 << 10`, which is what rejects a warp too weak to
+    /// be worth its own motion mode.
+    fn warped_motion_parameters(
+        &mut self,
+        cand: &mut crate::port_md::inject::InterCandidate,
+    ) -> bool {
+        use svtav1_dsp::port_warp::{find_projection, select_samples};
+        cand.num_proj_ref = 0;
+        // C: `if (blk_geom->bwidth < 8 || blk_geom->bheight < 8) return false`.
+        // The spec's 7.11.3.1 rule, and what makes the luma `is_wm` in the
+        // predictor need no size guard of its own.
+        if self.bwidth < 8 || self.bheight < 8 {
+            return false;
+        }
+        let slot = cand.ref_frame[0].max(0) as usize;
+        let s = &self.samples[slot];
+        if s.n == 0 {
+            return false;
+        }
+        // C keeps `pts` / `pts_inref` as flat `int[2 * n]`; `select_samples`
+        // COMPACTS survivors in place, so they must be flat here too.
+        let mut pts = [0i32; 2 * crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX];
+        let mut pts_inref = [0i32; 2 * crate::inter_mvp::LEAST_SQUARES_SAMPLES_MAX];
+        for i in 0..usize::from(s.n) {
+            pts[2 * i] = s.pts[i][0];
+            pts[2 * i + 1] = s.pts[i][1];
+            pts_inref[2 * i] = s.pts_inref[i][0];
+            pts_inref[2 * i + 1] = s.pts_inref[i][1];
+        }
+        let mut nsamples = s.n;
+        if nsamples > 1 {
+            nsamples = select_samples(
+                cand.mv[0],
+                &mut pts,
+                &mut pts_inref,
+                usize::from(nsamples),
+                self.bsize,
+            );
+        }
+        // C assigns `*num_samples` BEFORE `svt_find_projection`, so a block
+        // whose projection FAILS still reports its sample count. That count is
+        // `block_mi.num_proj_ref`, which the writer reads to pick the
+        // motion-mode ALPHABET — getting it wrong is an arithmetic-coder
+        // desync, not a quality choice.
+        cand.num_proj_ref = nsamples;
+        let mut apply = !find_projection(
+            usize::from(nsamples),
+            &pts,
+            &pts_inref,
+            self.bsize,
+            cand.mv[0],
+            &mut cand.wm_params_l0,
+            self.mi_row,
+            self.mi_col,
+        );
+        if apply {
+            let wm = &cand.wm_params_l0;
+            let (a, b) = (i32::from(wm.alpha).abs(), i32::from(wm.beta).abs());
+            let (g, d) = (i32::from(wm.gamma).abs(), i32::from(wm.delta).abs());
+            let lo = i32::from(self.lower_band_th);
+            let hi = i32::from(self.upper_band_th);
+            if a + b < lo && g + d < lo {
+                apply = false;
+            }
+            if 4 * a + 7 * b > hi && 4 * g + 4 * d > hi {
+                apply = false;
+            }
+        }
+        apply
+    }
+
+    /// OBMC is not wired. The injector never asks: `obmc_ctrls` is
+    /// `Default::default()` (disabled) on this arm, and the census that
+    /// motivated the warp wiring found C selecting OBMC on ZERO blocks at
+    /// these presets.
+    fn obmc_motion_refinement(
+        &mut self,
+        _cand: &mut crate::port_md::inject::InterCandidate,
+    ) -> bool {
+        true
+    }
+
+    /// Compound is suppressed at the source (`allow_bipred` is false), so no
+    /// masked-compound candidate reaches these two.
+    fn calc_pred_masked_compound(
+        &mut self,
+        _cand: &crate::port_md::inject::InterCandidate,
+    ) -> bool {
+        false
+    }
+    fn search_compound_diff_wedge(&mut self, _cand: &mut crate::port_md::inject::InterCandidate) {}
+}
+
 /// `port_md::inject::inject_inter_candidates` (C `mode_decision.c:2836`)
 /// decides WHICH candidates exist; this fills its `InjectCtx` and turns each
 /// one into a motion-compensated prediction plus C's real
@@ -437,9 +595,7 @@ pub fn build_inter_candidates(
     lambda: u64,
     fast_lambda: u32,
 ) -> Vec<InterCandOut> {
-    use crate::port_md::inject::{
-        CandArray, InjectCtx, NoRefinement, WmCtrls, inject_inter_candidates,
-    };
+    use crate::port_md::inject::{CandArray, InjectCtx, WmCtrls, inject_inter_candidates};
     use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef, RefPruningState};
 
     // --- The reference-MV stack, PER REFERENCE TYPE. C calls
@@ -560,7 +716,15 @@ pub fn build_inter_candidates(
     // C's three-part gate is reproduced exactly; the `else` arm zeroes every
     // entry, which is what the old constant happened to be right about on the
     // frames where the gate is false.
+    //
+    // The SAMPLES are kept, not only the count: C's
+    // `svt_aom_init_wm_samples` precomputes both once per block into
+    // `ctx->wm_sample_info[ref]`, and `svt_aom_warped_motion_parameters`
+    // reads them for EVERY candidate MV rather than re-scanning. Discarding
+    // them here would have meant a second, partial transcription of the same
+    // four-way scan at every warp derivation.
     let mut wm_sample_num = [0u8; 8];
+    let mut wm_samples: [WarpSamples; 8] = Default::default();
     if f.allow_warped_motion
         && crate::port_entropy_inter::modes::is_motion_variation_allowed_bsize(
             svtav1_types::block::BlockSize::from_u8(b.bsize)
@@ -573,10 +737,29 @@ pub fn build_inter_candidates(
             if rf[1] != NONE_FRAME {
                 continue;
             }
-            let (n, _pts, _pts_inref) = crate::inter_mvp::find_warp_samples(&grid, &ctx, rf[0]);
-            wm_sample_num[rf[0].max(0) as usize] = n;
+            let (n, pts, pts_inref) = crate::inter_mvp::find_warp_samples(&grid, &ctx, rf[0]);
+            let slot = rf[0].max(0) as usize;
+            wm_sample_num[slot] = n;
+            wm_samples[slot] = WarpSamples { n, pts, pts_inref };
         }
     }
+    // C `ctx->wm_ctrls` = `svt_aom_set_wm_controls(pcs->wm_level)`
+    // (enc_mode_config.c:4397). The port derived `wm_level` in the wired
+    // picture-level sig-deriv all along and threw it away here.
+    //
+    // MEASURED (benchmarks/c_motion_mode_census_2026-09-10.meta): C codes 88
+    // of 1158 inter blocks WARPED_CAUSAL over the 24-cell video gate, all at
+    // preset 6 and none at preset 8 -- which is exactly what this derivation
+    // predicts (`wm_level` is 3 at M6 and 0 at M8 for a flat GOP at <= 720p).
+    let wmc = crate::port_enc_mode_config::ctrls::set_wm_controls(f.wm_level)
+        .expect("set_wm_controls answers None only for a level outside C's switch");
+    // `refine_level == 0` means C refines the MV AT INJECTION
+    // (`svt_aom_wm_motion_refinement` inside `inj_non_simple_modes`), which is
+    // wm_level 1, i.e. presets M0..M1. That refinement is NOT wired, so this
+    // arm keeps those presets at their previous behaviour -- no warp candidate
+    // -- rather than injecting an UNREFINED one, which would be a candidate C
+    // never evaluates and would move bytes with nothing saying so.
+    let wm_injection_wired = wmc.enabled != 0 && wmc.refine_level != 0;
     let inj = InjectCtx {
         bsize: b.bsize,
         bwidth: b.bw as u16,
@@ -648,7 +831,12 @@ pub fn build_inter_candidates(
         // have suppressed.
         inter_comp_ctrls: Default::default(),
         inter_intra_comp_ctrls: Default::default(),
-        wm_ctrls: WmCtrls::default(),
+        wm_ctrls: WmCtrls {
+            enabled: wm_injection_wired,
+            use_wm_for_mvp: wm_injection_wired && wmc.use_wm_for_mvp != 0,
+            refinement_iterations: wmc.refinement_iterations,
+            refine_level: wmc.refine_level,
+        },
         obmc_ctrls: Default::default(),
         // C `ctx->cand_reduction_ctrls.near_count_ctrls`, and the ONE field
         // of that struct this envelope is not inert in: it is
@@ -695,13 +883,31 @@ pub fn build_inter_candidates(
 
     let mut cands = CandArray::new(64);
     let mut log = InjectedMvLog::default();
-    inject_inter_candidates(&inj, &mut cands, &mut log, &mut NoRefinement);
+    let mut hooks = WarpHooks {
+        bsize: svtav1_types::block::BlockSize::from_u8(b.bsize)
+            .expect("an injected inter block must have a real BlockSize"),
+        bwidth: b.bw,
+        bheight: b.bh,
+        mi_row: (b.org_y / 4) as i32,
+        mi_col: (b.org_x / 4) as i32,
+        samples: &wm_samples,
+        lower_band_th: wmc.lower_band_th,
+        upper_band_th: wmc.upper_band_th,
+    };
+    inject_inter_candidates(&inj, &mut cands, &mut log, &mut hooks);
 
     let mut out = Vec::new();
     for c in cands.as_slice() {
+        // WARPED_CAUSAL is now predictable (`predict_inter_yuv_warped`); OBMC
+        // and inter-intra are not, and compound is suppressed at the source.
+        // The assertion stays because a silently dropped candidate is a mode
+        // decision nobody made.
         assert!(
-            c.motion_mode == crate::port_md::predicates::MotionMode::SimpleTranslation
-                && !c.is_interintra_used
+            matches!(
+                c.motion_mode,
+                crate::port_md::predicates::MotionMode::SimpleTranslation
+                    | crate::port_md::predicates::MotionMode::WarpedCausal
+            ) && !c.is_interintra_used
                 && c.ref_frame[1] == NONE_FRAME,
             "the inter candidate set produced a candidate this port cannot PREDICT \
              (motion_mode {:?}, interintra {}, ref_frame {:?}). Its control was supposed \
@@ -766,9 +972,18 @@ fn predict_and_price(
             c.ref_frame[0]
         )
     });
-    match (b.has_uv, padded.uv.as_ref()) {
-        (true, Some((refu, refv))) => crate::inter_pred_arm::predict_inter_yuv(
-            (&padded.y, refu, refv),
+    // WARPED_CAUSAL takes a DIFFERENT C driver — `av1_inter_prediction`'s
+    // `is_wm` arm, not `av1_inter_prediction_light_pd1` — so it is dispatched
+    // here rather than flagged inside the translation adapter. See
+    // `inter_pred_arm::predict_inter_yuv_warped`.
+    if mm == MotionMode::WarpedCausal {
+        let mut wm = c.wm_params_l0;
+        crate::inter_pred_arm::predict_inter_yuv_warped(
+            (
+                &padded.y,
+                padded.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| b.has_uv),
+            ),
+            &mut wm,
             b.org_x,
             b.org_y,
             b.bw,
@@ -783,21 +998,41 @@ fn predict_and_price(
             &mut u_pred,
             &mut v_pred,
             cw,
-        ),
-        _ => crate::inter_pred_arm::predict_inter_luma(
-            &padded.y,
-            b.org_x,
-            b.org_y,
-            b.bw,
-            b.bh,
-            c.mv[0],
-            interp_filters,
-            f.sb_size,
-            f.frame_w,
-            f.frame_h,
-            &mut y_pred,
-            b.bw,
-        ),
+        );
+    } else {
+        match (b.has_uv, padded.uv.as_ref()) {
+            (true, Some((refu, refv))) => crate::inter_pred_arm::predict_inter_yuv(
+                (&padded.y, refu, refv),
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                c.mv[0],
+                interp_filters,
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                &mut y_pred,
+                b.bw,
+                &mut u_pred,
+                &mut v_pred,
+                cw,
+            ),
+            _ => crate::inter_pred_arm::predict_inter_luma(
+                &padded.y,
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                c.mv[0],
+                interp_filters,
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                &mut y_pred,
+                b.bw,
+            ),
+        }
     }
 
     // The SAME prediction at true 10 bits, when the DPB carries a 10-bit twin
@@ -986,6 +1221,7 @@ fn predict_and_price(
         y_pred10,
         u_pred10,
         v_pred10,
+        wm_params_l0: c.wm_params_l0,
         fast_luma_rate: cost.rate.luma,
         num_proj_ref: c.num_proj_ref,
     }
