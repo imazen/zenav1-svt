@@ -1,0 +1,57 @@
+OPEN DEFECT: chroma inter prediction when the LUMA mv is integer-pel but the
+CHROMA mv is half-pel — 2026-09-10
+
+SIGNATURE, and it is exact. At 4:2:0 a motion vector is eighth-pel for luma and
+effectively sixteenth-pel for chroma:
+    luma   phase = (mv.col * 2) & 15
+    chroma phase =  mv.col      & 15
+So an mv.col that is an ODD multiple of 8 is INTEGER in luma and HALF-PEL in
+chroma. The port gets luma right and chroma wrong in exactly that case.
+
+MEASURED, vidyo3 256x256 p6 qp34 frames=2, frame 1, every inter block in the
+frame classified:
+
+  luma_integer  chroma_subpel   blocks   containing a differing pixel
+  ------------------------------------------------------------------
+  false         true              107     0
+  true          false              16     0
+  true          true                3     2
+
+107 ordinary sub-pel blocks are perfect and 16 fully-integer blocks are perfect;
+only the 3-block class fails. The two failing blocks are 16x16 with
+mv=(0,-8): luma phase (-16 & 15) = 0, chroma phase (-8 & 15) = 8.
+
+WHY THIS IS A CLEAN REPRODUCER
+- Frame 1's reference is the KEY frame, which is byte-identical on both sides.
+- At qp34 this cell signals loop_filter_level[0] = 0. Both libaom
+  (check_planes_to_loop_filter BREAKS when both luma levels are zero) and the
+  port skip ALL planes, so no filter stage runs on either side.
+- LUMA is byte-identical; only U and V differ, by +-1..2.
+So: same reference, same MV, no filters, luma right, chroma wrong.
+
+RULED OUT by reading source, each one a plausible candidate first:
+- The sub-pel derivation. port_subpel_params::clamp_mv_to_umv_border_sb does
+  `src_mv.x * (1 << (1 - ss_x))`, so ss_x=1 yields phase 8. Correct.
+- The chroma call site. port_pd_pred.rs's CHROMA_MASK branch passes ss_y=1,
+  ss_x=1 to compute_subpel_params, with the LUMA bw/bh for the clamp (which is
+  what C does) and the halved origin. Correct.
+- The convolve dispatch. dispatch_convolve_8 keys on (subpel_x != 0,
+  subpel_y != 0) per plane, so a chroma phase of 8 selects convolve_x, not the
+  copy path. Correct.
+- The loop filter, per the qp34 evidence above.
+- skip_inter: forcing it false changes the chroma result NOT AT ALL.
+- CDEF: refuted outright — vidyo3 drifts with CDEF 0 on every frame, vidyo1
+  drifts BEFORE CDEF turns on, and vidyo4 is clean WITH a CDEF transition.
+- MFMV as the sole cause: disabling it only in the header desynchronises from
+  frame 0 (the port builds the field unconditionally), so that experiment was
+  invalid rather than confirming.
+
+WHERE TO LOOK NEXT. The MD path (inter_md_arm -> predict_inter_yuv ->
+av1_inter_prediction_light_pd1) is correct at every layer checked above, so the
+final RECON chroma is likely produced by a different route than the one audited.
+Find what writes the reconstructed chroma for an inter leaf and check whether it
+recomputes the phase from the luma MV instead of reusing the chroma SubpelParams.
+
+The third block of the class does not show a differing pixel; a half-pel filter
+over a locally flat chroma region can equal the copy, so that is expected and
+not evidence against the signature.

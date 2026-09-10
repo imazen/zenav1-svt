@@ -147,10 +147,32 @@ itself an inter frame.** That is exactly the condition the original refusal
 named, so its framing was right; what was missing was a way to measure it. f0
 and f1 are correct on every clip at every qp tested.
 
-Best reproducer: qp 20, `johnny 256×256 p6 frames=3` — 407 px at f2 with a
-byte-exact f1 reference on both sides and no filter in the path. `fourpeople`
-and `kristenandsara` are the controls: same harness, byte-exact throughout, so
-the defect is reachable only by some mode or motion class those two never code.
+**Narrowed 2026-09-10 to an exact signature**
+([record](../benchmarks/chroma_subpel_inter_2026-09-10.meta)). At 4:2:0 a motion
+vector is eighth-pel for luma and sixteenth-pel for chroma, so `mv.col` an **odd
+multiple of 8** is integer in luma (`(mv*2) & 15 = 0`) and **half-pel in chroma**
+(`mv & 15 = 8`). Classifying every inter block of one frame:
+
+| luma integer | chroma sub-pel | blocks | contain a differing pixel |
+|---|---|---|---|
+| no | yes | 107 | 0 |
+| yes | no | 16 | 0 |
+| **yes** | **yes** | **3** | **2** |
+
+107 ordinary sub-pel blocks and 16 fully-integer blocks are perfect; only that
+class fails. Reproducer `vidyo3 256×256 p6 qp34 frames=2`, frame 1: the
+reference is the byte-identical key frame, `loop_filter_level[0]` is 0 so no
+filter stage runs on either side, luma is byte-identical, and only U and V
+differ by ±1..2.
+
+Ruled out by reading source: the sub-pel derivation
+(`clamp_mv_to_umv_border_sb` does `mv * (1 << (1 - ss_x))`, giving phase 8), the
+chroma call site (passes `ss=1,1`), and the convolve dispatch (keys on each
+plane's own phase). Also ruled out empirically: the loop filter, `skip_inter`
+(forcing it off changes nothing), and CDEF (vidyo3 drifts with CDEF 0
+throughout; vidyo4 is clean *with* a CDEF transition). Since the MD path is
+correct at every audited layer, the final recon chroma is likely produced by a
+different route — that is where to look next.
 
 ## imazen26 K300 production corpus (re-run after 48 days, 2026-09-10)
 
