@@ -104,3 +104,203 @@ path = "tests/c_parity_wiener.rs"
 [[test]]
 name = "c_parity_wiener_hbd"
 path = "tests/c_parity_wiener_hbd.rs"
+
+[[test]]
+name = "c_parity_ac_bias"
+path = "tests/c_parity_ac_bias.rs"
+
+[[test]]
+name = "c_parity_adst32"
+path = "tests/c_parity_adst32.rs"
+
+[[test]]
+name = "c_parity_dc"
+path = "tests/c_parity_dc.rs"
+
+[[test]]
+name = "c_parity_estimate_transform"
+path = "tests/c_parity_estimate_transform.rs"
+
+[[test]]
+name = "c_parity_intra_pred_hbd"
+path = "tests/c_parity_intra_pred_hbd.rs"
+
+[[test]]
+name = "c_parity_inv_recon"
+path = "tests/c_parity_inv_recon.rs"
+
+[[test]]
+name = "c_parity_lpf"
+path = "tests/c_parity_lpf.rs"
+
+[[test]]
+name = "c_parity_lpf_hbd"
+path = "tests/c_parity_lpf_hbd.rs"
+
+[[test]]
+name = "c_parity_obmc"
+path = "tests/c_parity_obmc.rs"
+
+[[test]]
+name = "c_parity_pic_operators"
+path = "tests/c_parity_pic_operators.rs"
+
+[[test]]
+name = "c_parity_pic_operators_hbd"
+path = "tests/c_parity_pic_operators_hbd.rs"
+
+[[test]]
+name = "c_parity_port_convolve"
+path = "tests/c_parity_port_convolve.rs"
+
+[[test]]
+name = "c_parity_port_convolve_hbd"
+path = "tests/c_parity_port_convolve_hbd.rs"
+
+[[test]]
+name = "c_parity_port_convolve_scale"
+path = "tests/c_parity_port_convolve_scale.rs"
+
+[[test]]
+name = "c_parity_port_diffwtd_d16"
+path = "tests/c_parity_port_diffwtd_d16.rs"
+
+[[test]]
+name = "c_parity_port_enc_make_pred"
+path = "tests/c_parity_port_enc_make_pred.rs"
+
+[[test]]
+name = "c_parity_port_inter_predictor"
+path = "tests/c_parity_port_inter_predictor.rs"
+
+[[test]]
+name = "c_parity_port_interintra"
+path = "tests/c_parity_port_interintra.rs"
+
+[[test]]
+name = "c_parity_port_light_pd1_hbd"
+path = "tests/c_parity_port_light_pd1_hbd.rs"
+
+[[test]]
+name = "c_parity_port_masked_blend"
+path = "tests/c_parity_port_masked_blend.rs"
+
+[[test]]
+name = "c_parity_port_masked_compound"
+path = "tests/c_parity_port_masked_compound.rs"
+
+[[test]]
+name = "c_parity_port_model_rd"
+path = "tests/c_parity_port_model_rd.rs"
+
+[[test]]
+name = "c_parity_port_obmc_data"
+path = "tests/c_parity_port_obmc_data.rs"
+
+[[test]]
+name = "c_parity_port_obmc_nb_pred"
+path = "tests/c_parity_port_obmc_nb_pred.rs"
+
+[[test]]
+name = "c_parity_port_obmc_single_pred"
+path = "tests/c_parity_port_obmc_single_pred.rs"
+
+[[test]]
+name = "c_parity_port_pack"
+path = "tests/c_parity_port_pack.rs"
+
+[[test]]
+name = "c_parity_port_scale_factors"
+path = "tests/c_parity_port_scale_factors.rs"
+
+[[test]]
+name = "c_parity_port_subpel_params"
+path = "tests/c_parity_port_subpel_params.rs"
+
+[[test]]
+name = "c_parity_port_tf_pred"
+path = "tests/c_parity_port_tf_pred.rs"
+
+[[test]]
+name = "c_parity_port_wedge_masks"
+path = "tests/c_parity_port_wedge_masks.rs"
+
+[[test]]
+name = "c_parity_port_wedge_search"
+path = "tests/c_parity_port_wedge_search.rs"
+
+[[test]]
+name = "c_parity_resize"
+path = "tests/c_parity_resize.rs"
+
+[[test]]
+name = "c_parity_resize_avx2_divergence"
+path = "tests/c_parity_resize_avx2_divergence.rs"
+
+[[test]]
+name = "c_parity_resize_hbd"
+path = "tests/c_parity_resize_hbd.rs"
+
+[[test]]
+name = "c_parity_resize_plane_2d"
+path = "tests/c_parity_resize_plane_2d.rs"
+
+[[test]]
+name = "c_parity_scale"
+path = "tests/c_parity_scale.rs"
+
+[[test]]
+name = "c_parity_sgr"
+path = "tests/c_parity_sgr.rs"
+
+[[test]]
+name = "c_parity_subpel_variance"
+path = "tests/c_parity_subpel_variance.rs"
+
+[[test]]
+name = "c_parity_superres"
+path = "tests/c_parity_superres.rs"
+
+[[test]]
+name = "c_parity_txfm_pf"
+path = "tests/c_parity_txfm_pf.rs"
+
+[[test]]
+name = "c_parity_txfm_pf_2d"
+path = "tests/c_parity_txfm_pf_2d.rs"
+
+[[test]]
+name = "c_parity_txfm_pf_entry"
+path = "tests/c_parity_txfm_pf_entry.rs"
+
+[[test]]
+name = "c_parity_warp"
+path = "tests/c_parity_warp.rs"
+
+[[test]]
+name = "c_parity_warp_model"
+path = "tests/c_parity_warp_model.rs"
+
+[[test]]
+name = "c_parity_wht"
+path = "tests/c_parity_wht.rs"
+
+[[test]]
+name = "paeth_neon_parity"
+path = "tests/paeth_neon_parity.rs"
+
+[[test]]
+name = "quantize_neon_parity"
+path = "tests/quantize_neon_parity.rs"
+
+[[test]]
+name = "sad_neon_parity"
+path = "tests/sad_neon_parity.rs"
+
+[[test]]
+name = "satd_neon_parity"
+path = "tests/satd_neon_parity.rs"
+
+[[test]]
+name = "variance_neon_parity"
+path = "tests/variance_neon_parity.rs"

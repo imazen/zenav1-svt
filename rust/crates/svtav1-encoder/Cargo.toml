@@ -62,3 +62,411 @@ path = "tests/c_parity_sc_detect.rs"
 [[test]]
 name = "fp_determinism"
 path = "tests/fp_determinism.rs"
+
+[[test]]
+name = "c_parity_bd10_quant"
+path = "tests/c_parity_bd10_quant.rs"
+
+[[test]]
+name = "c_parity_cdef_pick"
+path = "tests/c_parity_cdef_pick.rs"
+
+[[test]]
+name = "c_parity_cdef_search_ctrls"
+path = "tests/c_parity_cdef_search_ctrls.rs"
+
+[[test]]
+name = "c_parity_dist_facade"
+path = "tests/c_parity_dist_facade.rs"
+
+[[test]]
+name = "c_parity_dlf_ctrls"
+path = "tests/c_parity_dlf_ctrls.rs"
+
+[[test]]
+name = "c_parity_enc_dec_metrics"
+path = "tests/c_parity_enc_dec_metrics.rs"
+
+[[test]]
+name = "c_parity_entropy_block"
+path = "tests/c_parity_entropy_block.rs"
+
+[[test]]
+name = "c_parity_entropy_compound"
+path = "tests/c_parity_entropy_compound.rs"
+
+[[test]]
+name = "c_parity_entropy_inter"
+path = "tests/c_parity_entropy_inter.rs"
+
+[[test]]
+name = "c_parity_film_grain"
+path = "tests/c_parity_film_grain.rs"
+
+[[test]]
+name = "c_parity_frame_cdf"
+path = "tests/c_parity_frame_cdf.rs"
+
+[[test]]
+name = "c_parity_frame_update"
+path = "tests/c_parity_frame_update.rs"
+
+[[test]]
+name = "c_parity_full_loop_md"
+path = "tests/c_parity_full_loop_md.rs"
+
+[[test]]
+name = "c_parity_global_motion"
+path = "tests/c_parity_global_motion.rs"
+
+[[test]]
+name = "c_parity_inter_me"
+path = "tests/c_parity_inter_me.rs"
+
+[[test]]
+name = "c_parity_inter_mvp"
+path = "tests/c_parity_inter_mvp.rs"
+
+[[test]]
+name = "c_parity_intra_open_loop"
+path = "tests/c_parity_intra_open_loop.rs"
+
+[[test]]
+name = "c_parity_intrabc"
+path = "tests/c_parity_intrabc.rs"
+
+[[test]]
+name = "c_parity_intrabc_hash"
+path = "tests/c_parity_intrabc_hash.rs"
+
+[[test]]
+name = "c_parity_intrabc_mvp"
+path = "tests/c_parity_intrabc_mvp.rs"
+
+[[test]]
+name = "c_parity_intrabc_search"
+path = "tests/c_parity_intrabc_search.rs"
+
+[[test]]
+name = "c_parity_lf_levels"
+path = "tests/c_parity_lf_levels.rs"
+
+[[test]]
+name = "c_parity_lr_syntax"
+path = "tests/c_parity_lr_syntax.rs"
+
+[[test]]
+name = "c_parity_md_drl"
+path = "tests/c_parity_md_drl.rs"
+
+[[test]]
+name = "c_parity_md_lambda"
+path = "tests/c_parity_md_lambda.rs"
+
+[[test]]
+name = "c_parity_md_nics"
+path = "tests/c_parity_md_nics.rs"
+
+[[test]]
+name = "c_parity_md_pme"
+path = "tests/c_parity_md_pme.rs"
+
+[[test]]
+name = "c_parity_md_predicates"
+path = "tests/c_parity_md_predicates.rs"
+
+[[test]]
+name = "c_parity_md_rate_estimation"
+path = "tests/c_parity_md_rate_estimation.rs"
+
+[[test]]
+name = "c_parity_md_ref_rate"
+path = "tests/c_parity_md_ref_rate.rs"
+
+[[test]]
+name = "c_parity_md_ssim_hbd"
+path = "tests/c_parity_md_ssim_hbd.rs"
+
+[[test]]
+name = "c_parity_md_subpel"
+path = "tests/c_parity_md_subpel.rs"
+
+[[test]]
+name = "c_parity_md_winner"
+path = "tests/c_parity_md_winner.rs"
+
+[[test]]
+name = "c_parity_motion_est"
+path = "tests/c_parity_motion_est.rs"
+
+[[test]]
+name = "c_parity_mv"
+path = "tests/c_parity_mv.rs"
+
+[[test]]
+name = "c_parity_mv_code"
+path = "tests/c_parity_mv_code.rs"
+
+[[test]]
+name = "c_parity_noise_gen"
+path = "tests/c_parity_noise_gen.rs"
+
+[[test]]
+name = "c_parity_noise_model"
+path = "tests/c_parity_noise_model.rs"
+
+[[test]]
+name = "c_parity_noise_norm"
+path = "tests/c_parity_noise_norm.rs"
+
+[[test]]
+name = "c_parity_obmc_search"
+path = "tests/c_parity_obmc_search.rs"
+
+[[test]]
+name = "c_parity_palette"
+path = "tests/c_parity_palette.rs"
+
+[[test]]
+name = "c_parity_pass2_gop"
+path = "tests/c_parity_pass2_gop.rs"
+
+[[test]]
+name = "c_parity_pcl_lpd1"
+path = "tests/c_parity_pcl_lpd1.rs"
+
+[[test]]
+name = "c_parity_pcl_nic"
+path = "tests/c_parity_pcl_nic.rs"
+
+[[test]]
+name = "c_parity_pcs_geom"
+path = "tests/c_parity_pcs_geom.rs"
+
+[[test]]
+name = "c_parity_picstruct"
+path = "tests/c_parity_picstruct.rs"
+
+[[test]]
+name = "c_parity_picstruct_dg"
+path = "tests/c_parity_picstruct_dg.rs"
+
+[[test]]
+name = "c_parity_picstruct_ra_rps"
+path = "tests/c_parity_picstruct_ra_rps.rs"
+
+[[test]]
+name = "c_parity_picstruct_ref_mgmt"
+path = "tests/c_parity_picstruct_ref_mgmt.rs"
+
+[[test]]
+name = "c_parity_picstruct_statics"
+path = "tests/c_parity_picstruct_statics.rs"
+
+[[test]]
+name = "c_parity_picstruct_tpl"
+path = "tests/c_parity_picstruct_tpl.rs"
+
+[[test]]
+name = "c_parity_preanalysis"
+path = "tests/c_parity_preanalysis.rs"
+
+[[test]]
+name = "c_parity_qm"
+path = "tests/c_parity_qm.rs"
+
+[[test]]
+name = "c_parity_quant"
+path = "tests/c_parity_quant.rs"
+
+[[test]]
+name = "c_parity_ransac"
+path = "tests/c_parity_ransac.rs"
+
+[[test]]
+name = "c_parity_rc_process"
+path = "tests/c_parity_rc_process.rs"
+
+[[test]]
+name = "c_parity_rc_qindex"
+path = "tests/c_parity_rc_qindex.rs"
+
+[[test]]
+name = "c_parity_rc_vbr_cbr_qpick"
+path = "tests/c_parity_rc_vbr_cbr_qpick.rs"
+
+[[test]]
+name = "c_parity_rc_vbr_cbr_state"
+path = "tests/c_parity_rc_vbr_cbr_state.rs"
+
+[[test]]
+name = "c_parity_rc_vbr_cbr_update"
+path = "tests/c_parity_rc_vbr_cbr_update.rs"
+
+[[test]]
+name = "c_parity_rd_cost"
+path = "tests/c_parity_rd_cost.rs"
+
+[[test]]
+name = "c_parity_sb_qindex"
+path = "tests/c_parity_sb_qindex.rs"
+
+[[test]]
+name = "c_parity_segmentation"
+path = "tests/c_parity_segmentation.rs"
+
+[[test]]
+name = "c_parity_sgr_search"
+path = "tests/c_parity_sgr_search.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_common"
+path = "tests/c_parity_sig_deriv_common.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_ctrls"
+path = "tests/c_parity_sig_deriv_ctrls.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_encdec"
+path = "tests/c_parity_sig_deriv_encdec.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_leaf"
+path = "tests/c_parity_sig_deriv_leaf.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_light_pd1"
+path = "tests/c_parity_sig_deriv_light_pd1.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_md_config"
+path = "tests/c_parity_sig_deriv_md_config.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_me"
+path = "tests/c_parity_sig_deriv_me.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_multi_processes"
+path = "tests/c_parity_sig_deriv_multi_processes.rs"
+
+[[test]]
+name = "c_parity_sig_deriv_pd0"
+path = "tests/c_parity_sig_deriv_pd0.rs"
+
+[[test]]
+name = "c_parity_src_ops"
+path = "tests/c_parity_src_ops.rs"
+
+[[test]]
+name = "c_parity_ssim_md"
+path = "tests/c_parity_ssim_md.rs"
+
+[[test]]
+name = "c_parity_subres_carry"
+path = "tests/c_parity_subres_carry.rs"
+
+[[test]]
+name = "c_parity_superres_decision"
+path = "tests/c_parity_superres_decision.rs"
+
+[[test]]
+name = "c_parity_temporal"
+path = "tests/c_parity_temporal.rs"
+
+[[test]]
+name = "c_parity_temporal_filtering"
+path = "tests/c_parity_temporal_filtering.rs"
+
+[[test]]
+name = "c_parity_tune_vmaf"
+path = "tests/c_parity_tune_vmaf.rs"
+
+[[test]]
+name = "c_parity_tx_bias"
+path = "tests/c_parity_tx_bias.rs"
+
+[[test]]
+name = "c_parity_var_boost"
+path = "tests/c_parity_var_boost.rs"
+
+[[test]]
+name = "cdef_screen_arm_reachability"
+path = "tests/cdef_screen_arm_reachability.rs"
+
+[[test]]
+name = "entropy_inter_writers_traced"
+path = "tests/entropy_inter_writers_traced.rs"
+
+[[test]]
+name = "hbd_input_chunk1"
+path = "tests/hbd_input_chunk1.rs"
+
+[[test]]
+name = "inter_me_traced"
+path = "tests/inter_me_traced.rs"
+
+[[test]]
+name = "inter_mvp_motion_field"
+path = "tests/inter_mvp_motion_field.rs"
+
+[[test]]
+name = "lossless_fh_c_capture"
+path = "tests/lossless_fh_c_capture.rs"
+
+[[test]]
+name = "lr_search_c_capture"
+path = "tests/lr_search_c_capture.rs"
+
+[[test]]
+name = "native_preset"
+path = "tests/native_preset.rs"
+
+[[test]]
+name = "pass2_strategy_scalars"
+path = "tests/pass2_strategy_scalars.rs"
+
+[[test]]
+name = "port_pd_gop_traced"
+path = "tests/port_pd_gop_traced.rs"
+
+[[test]]
+name = "port_picstruct_ra_traced"
+path = "tests/port_picstruct_ra_traced.rs"
+
+[[test]]
+name = "port_picstruct_traced"
+path = "tests/port_picstruct_traced.rs"
+
+[[test]]
+name = "port_sframe_traced"
+path = "tests/port_sframe_traced.rs"
+
+[[test]]
+name = "rc_rtc_cbr_scalars"
+path = "tests/rc_rtc_cbr_scalars.rs"
+
+[[test]]
+name = "rc_vbr_cbr_tables_and_scalars"
+path = "tests/rc_vbr_cbr_tables_and_scalars.rs"
+
+[[test]]
+name = "sig_deriv_dlf_traced"
+path = "tests/sig_deriv_dlf_traced.rs"
+
+[[test]]
+name = "sig_deriv_tail_traced"
+path = "tests/sig_deriv_tail_traced.rs"
+
+[[test]]
+name = "superres_header"
+path = "tests/superres_header.rs"
+
+[[test]]
+name = "tf_traced"
+path = "tests/tf_traced.rs"
+
+[[test]]
+name = "traced_rc_ref_stats"
+path = "tests/traced_rc_ref_stats.rs"

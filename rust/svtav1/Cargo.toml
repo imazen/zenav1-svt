@@ -64,3 +64,43 @@ path = "tests/still_policy.rs"
 [[test]]
 name = "tier_invariance"
 path = "tests/tier_invariance.rs"
+
+[[test]]
+name = "configuration_support"
+path = "tests/configuration_support.rs"
+
+[[test]]
+name = "e2e_correctness"
+path = "tests/e2e_correctness.rs"
+
+[[test]]
+name = "golden_parity"
+path = "tests/golden_parity.rs"
+
+[[test]]
+name = "hdr_fork_e2e"
+path = "tests/hdr_fork_e2e.rs"
+
+[[test]]
+name = "issue11_repro"
+path = "tests/issue11_repro.rs"
+
+[[test]]
+name = "issue13_repro"
+path = "tests/issue13_repro.rs"
+
+[[test]]
+name = "issue18_repro"
+path = "tests/issue18_repro.rs"
+
+[[test]]
+name = "issue9_repro"
+path = "tests/issue9_repro.rs"
+
+[[test]]
+name = "real_encode"
+path = "tests/real_encode.rs"
+
+[[test]]
+name = "thread_determinism"
+path = "tests/thread_determinism.rs"
