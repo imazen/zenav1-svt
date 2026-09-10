@@ -97,21 +97,52 @@ That single fact explains the whole shape of the divergence table:
  * presets 9 and 10 diverge MORE, because there the port is already on the
    MDS0 + post-pass path and the frame-type term would not have applied.
 
-## AND WHY THE TERM IS DOCUMENTED RATHER THAN SWITCHED ON
+## SWITCHING THE TERM ON TOOK THREE GAPS IN THE POST-PASS
 
-Applying `&& (preset <= 5 || is_islice)` was TRIED and MEASURED. A 10-bit inter
-frame then falls to the level re-encode post-pass, and that post-pass has NO
-INTER ARM: `bd10_reencode_node` predicts every leaf with `predict_unit_hbd`.
-johnny and vidyo3 128x128 at presets 6 and 8 REFUSE frame 1 outright ("native
-10-bit source went unconsumed"); fourpeople and kristenandsara code it at 753
-and 867 bytes against C's 24. So the rule trades a decodable non-identical
-stream for no stream, and the term is threaded and documented in
-`bd10_full_rd_supported` instead.
+Applying `&& (preset <= 5 || is_islice)` sends a 10-bit inter frame to the level
+re-encode post-pass, and that post-pass could not code one. Three separate
+refusals, each found by measuring rather than reading:
 
-CLOSING IT is now a named, bounded piece of work: give the post-pass an inter
-arm. `predict_inter_yuv_hbd` exists as of this change; what is missing is the
-leaf's MV / reference / interpolation filters reaching `bd10_reencode_node`,
-and the DPB's 10-bit reference reaching the post-pass.
+1. **No INTER arm.** `bd10_reencode_node` predicted every leaf with
+   `predict_unit_hbd`. johnny / vidyo3 128x128 at presets 6 and 8 REFUSED frame
+   1 ("native 10-bit source went unconsumed"); fourpeople / kristenandsara
+   coded it at 753 / 867 bytes against C's 24. Closed by
+   `predict_inter_leaf_hbd` plus the DPB's 10-bit reference reaching the pass.
+2. **`filt_type` was a hardcoded 0.** Correct only with the sequence header's
+   intra edge filter OFF — which is why the frame gate rejected every
+   directional leaf when it is on, and on a VIDEO frame at preset 6 it IS on.
+   One directional intra leaf in one superblock dropped the whole frame.
+   Closed by `Bd10ModeNeighbors`, the mode-grid twin of the pass's existing
+   coefficient-neighbour grid, deriving C's `get_filt_type` per block.
+3. **`tx_depth > 0` was an `assert_eq!`.** The transform-size search is on at
+   preset 6, so a single depth-1 leaf did the same thing. Closed by
+   `bd10_reencode_leaf_txs` — C `perform_tx_partitioning` at a committed depth,
+   levels only, with the intra per-TXB recon feedback and the inter
+   predict-once shape C uses.
+
+## RESULT — all 24 cells encode and decode through C's own structure
+
+    encodes    24 / 24     decodes 24 / 24     identical 1 / 48 frames
+
+The frame-1 SIZES moved onto C's, which is the visible sign that the port is
+now running the same 8-bit-MD-plus-10-bit-re-encode path C runs:
+
+    clip            p   C     port      (before this change)
+    johnny          6    37     41       -
+    vidyo3          6   108    107       -
+    fourpeople      6    24     25       -
+    kristenandsara  6    24     24  ==   -
+    vidyo1          6    24     26       -
+    vidyo4          6    40     47       -
+
+Byte identity is not there yet, and the remaining gap is now the SAME 8-bit
+mode-decision parity the 8-bit video gate measures — not a bit-depth question
+at all. That is the useful change: the bd10 axis is no longer a separate
+unknown.
+
+The bd10 STILL gates are unmoved by all of it — photo 191/191, non-flat
+309/309, partial-SB 159/159, recon parity 13/13 — because every frame of an
+all-intra encode is an I-slice, so the frame-type term does not apply there.
 
 This is also the same `hbd_md` that blocks the unwired `ssim_hbd` module
 (hardcoded false at inter_hdr_arm.rs:452 and inter_search_arm.rs:434/:602).

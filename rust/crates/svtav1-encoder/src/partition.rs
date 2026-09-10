@@ -2063,6 +2063,7 @@ pub(crate) fn funnel_block_decision(
                 // The port writes `skip_mode_present = 0` on every frame, so
                 // no candidate can be a skip-mode one.
                 skip_mode: false,
+                wm_params: i.wm_params,
             })
         }),
         ..Default::default()
@@ -3041,6 +3042,7 @@ fn encode_single_block(
                 num_proj_ref: 0,
                 overlappable_neighbors: 0,
                 skip_mode: false,
+                wm_params: Default::default(),
             })
         }),
         qcoeffs: enc.qcoeffs.to_vec(),
@@ -3492,4 +3494,10 @@ pub struct InterDecision {
     pub overlappable_neighbors: u32,
     /// C `block_mi.skip_mode`.
     pub skip_mode: bool,
+    /// C `cand->wm_params_l0` — the local-warp affine model. Identity unless
+    /// `motion_mode == WarpedCausal`, and carried on the DECISION because the
+    /// bd10 level re-encode has to rebuild this leaf's prediction from it: the
+    /// warp parameters are not in the bitstream, and re-deriving them there
+    /// would be a second transcription of the neighbour scan.
+    pub wm_params: svtav1_types::motion::WarpedMotionParams,
 }

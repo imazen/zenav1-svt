@@ -513,6 +513,204 @@ pub fn predict_inter_yuv_warped(
     }
 }
 
+/// [`predict_inter_yuv_warped`] against a TRUE 10-BIT reference.
+///
+/// The 10-bit twin of the warp arm, for the bd10 level re-encode. Same driver
+/// (`enc_make_inter_predictor` with `is_wm`), same plane-local extent, same
+/// spec-7.11.3.1 chroma fallback below 8x8 — only the sample type differs, and
+/// C makes the same split inside `svt_av1_warp_plane`.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_warped_hbd(
+    y_ref: &crate::picture::PaddedPlaneHbd,
+    chroma: Option<(
+        &crate::picture::PaddedPlaneHbd,
+        &crate::picture::PaddedPlaneHbd,
+    )>,
+    wm: &mut svtav1_types::motion::WarpedMotionParams,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    let bd = i32::from(bit_depth);
+    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    let cp_y = ConvolveParams::no_round(false, 128, false, bd);
+    let cp_uv = ConvolveParams::no_round(false, 64, false, bd);
+
+    enc_make_inter_predictor(
+        SrcPlanes::Hbd(&y_ref.buf),
+        y_ref.origin,
+        y_ref.stride,
+        DstPlane::Hbd(y_out),
+        y_stride,
+        &mut conv_buf,
+        org_y as i32,
+        org_x as i32,
+        DspMv { x: mv.x, y: mv.y },
+        &sf,
+        &cp_y,
+        interp_filters,
+        None,
+        Some(wm),
+        geom,
+        bw,
+        bh,
+        &edges,
+        0,
+        0,
+        0,
+        bd,
+        false,
+        true,
+    )
+    .expect("the hbd warp leaf takes a u16 plane into a u16 destination");
+
+    let Some((uref, vref)) = chroma else {
+        return;
+    };
+    let (cw, chh) = (bw / 2, bh / 2);
+    let uv_is_wm = cw >= 8 && chh >= 8;
+    let (cx, cy) = ((org_x & !1) / 2, (org_y & !1) / 2);
+    for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
+        enc_make_inter_predictor(
+            SrcPlanes::Hbd(&r.buf),
+            r.origin,
+            r.stride,
+            DstPlane::Hbd(dst),
+            uv_stride,
+            &mut conv_buf,
+            cy as i32,
+            cx as i32,
+            DspMv { x: mv.x, y: mv.y },
+            &sf,
+            &cp_uv,
+            interp_filters,
+            None,
+            Some(wm),
+            geom,
+            cw,
+            chh,
+            &edges,
+            plane,
+            1,
+            1,
+            bd,
+            false,
+            uv_is_wm,
+        )
+        .expect("the hbd chroma leaf takes a u16 plane into a u16 destination");
+    }
+}
+
+/// One inter-predicted block at TRUE 10 BITS, dispatching on its motion mode.
+///
+/// The bd10 level re-encode's entry: it rebuilds a COMMITTED leaf's prediction
+/// rather than searching, so it takes the decision's own motion mode and warp
+/// model instead of deriving either.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_leaf_hbd(
+    y_ref: &crate::picture::PaddedPlaneHbd,
+    chroma: Option<(
+        &crate::picture::PaddedPlaneHbd,
+        &crate::picture::PaddedPlaneHbd,
+    )>,
+    motion_mode: crate::port_entropy_inter::modes::MotionMode,
+    wm_params: svtav1_types::motion::WarpedMotionParams,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mv: Mv,
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    use crate::port_entropy_inter::modes::MotionMode;
+    match motion_mode {
+        MotionMode::WarpedCausal => {
+            let mut wm = wm_params;
+            predict_inter_yuv_warped_hbd(
+                y_ref,
+                chroma,
+                &mut wm,
+                org_x,
+                org_y,
+                bw,
+                bh,
+                mv,
+                interp_filters,
+                sb_size,
+                frame_w,
+                frame_h,
+                bit_depth,
+                y_out,
+                y_stride,
+                u_out,
+                v_out,
+                uv_stride,
+            );
+        }
+        // OBMC is unwired; a committed leaf cannot carry it, and REFUSING is
+        // the only honest answer if one ever does — silently predicting it as a
+        // plain translation is wrong pixels a decoder will not reproduce.
+        MotionMode::ObmcCausal => {
+            unreachable!("no OBMC candidate is injected, so no leaf can commit one")
+        }
+        MotionMode::SimpleTranslation => predict_inter_yuv_hbd(
+            y_ref,
+            chroma,
+            org_x,
+            org_y,
+            bw,
+            bh,
+            mv,
+            interp_filters,
+            sb_size,
+            frame_w,
+            frame_h,
+            bit_depth,
+            y_out,
+            y_stride,
+            u_out,
+            v_out,
+            uv_stride,
+        ),
+    }
+}
+
 /// C `xd->mb_to_*_edge` (`svt_aom_init_xd`, adaptive_mv_pred.c:1054-1057), in
 /// EIGHTH-pel: `-((mi_col * MI_SIZE) * 8)` and
 /// `((mi_cols - bw_mi - mi_col) * MI_SIZE) * 8`. They bound the MV clamp, so

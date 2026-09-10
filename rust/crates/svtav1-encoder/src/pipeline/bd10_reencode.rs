@@ -1,6 +1,6 @@
 //! The 10-bit level re-encode pass, kept beside its pipeline caller.
 
-use super::Bd10CoeffNeighbors;
+use super::{Bd10CoeffNeighbors, Bd10ModeNeighbors};
 
 /// Returns the frame's 10-bit luma recon as an **SB-extent-sized, ALIGNED-
 /// strided** canvas — the same shape the funnel's `tile_frame_recon10` has, and
@@ -44,6 +44,9 @@ pub(super) fn bd10_reencode_luma(
     // [SVT_HDR_MODE] fork loop_filter_sharpness (static_config.sharpness). 0 in
     // mainline → the quant table is byte-identical to build_quant_table_bd.
     sharpness: i8,
+    // The DPB's reference pictures, whose `hbd` twin the INTER arm predicts
+    // from. `None` on a key frame.
+    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
 ) -> crate::EncodeResult<alloc::vec::Vec<u16>> {
     let fc = crate::entropy::context::FrameContext::new_default();
     let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(base_qindex);
@@ -67,11 +70,17 @@ pub(super) fn bd10_reencode_luma(
     // measurement written down.)
     let mut recon10 = svtav1_types::try_vec![(128u16 << (bd - 8)); ext_w * ext_h]?;
     let mut coeff_neighbors = Bd10CoeffNeighbors::new(w, h)?;
+    // C `get_filt_type` needs the neighbour MODES, which this pass used to
+    // ignore (it passed `filt_type = 0`) -- correct only with the sequence
+    // header's intra edge filter off, which is why the frame gate rejected
+    // every directional leaf when it is on. See [`Bd10ModeNeighbors`].
+    let mut mode_neighbors = Bd10ModeNeighbors::new(w, h)?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
         let tile_mi = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, w, h);
         coeff_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi);
+        mode_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi);
         bd10_reencode_node(
             base_qindex == 0,
             sb_size / 4,
@@ -96,6 +105,8 @@ pub(super) fn bd10_reencode_luma(
             qm_level,
             tile_mi,
             svtav1_types::partition::PartitionType::None,
+            inter_refs,
+            &mut mode_neighbors,
         );
     }
     Ok(recon10)
@@ -132,6 +143,11 @@ fn bd10_reencode_node(
     // `TileGrid::tile_mi_for_sb`. Was `TileMi::whole_frame`.
     tile_mi: crate::intra_edge::TileMi,
     parent_partition: svtav1_types::partition::PartitionType,
+    // The DPB's 10-bit reference pictures, for the INTER arm. `None` on a key
+    // frame, where no leaf can be inter.
+    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    // The neighbour MODE grid `get_filt_type` reads. See [`Bd10ModeNeighbors`].
+    mode_neighbors: &mut Bd10ModeNeighbors,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -179,7 +195,7 @@ fn bd10_reencode_node(
                         d.filter_intra_mode,
                         &geom,
                         edge_filter,
-                        0,
+                        mode_neighbors.filt_type_y(x, y),
                         &mut pred,
                         bd,
                     );
@@ -226,13 +242,46 @@ fn bd10_reencode_node(
                     recon10[(y + r) * stride + x..(y + r) * stride + x + 8]
                         .copy_from_slice(&local[r * 8..r * 8 + 8]);
                 }
+                mode_neighbors.record(x, y, bw, bh, d.intra_mode, d.uv_mode);
                 return;
             }
-            assert_eq!(
-                d.tx_depth, 0,
-                "bd10 reencode: tx_depth {} not yet ported (DC-only first cell)",
-                d.tx_depth
-            );
+            if d.tx_depth > 0 {
+                bd10_reencode_leaf_txs(
+                    d,
+                    x,
+                    y,
+                    recon10,
+                    stride,
+                    src10,
+                    src_stride,
+                    qt,
+                    rdoq_level,
+                    lambda,
+                    allintra_rd_mult,
+                    rates,
+                    real_coeff_ctx,
+                    coeff_neighbors,
+                    edge_filter,
+                    frame_w,
+                    frame_h,
+                    bd,
+                    qm_level,
+                    tile_mi,
+                    parent_partition,
+                    sb_mi_size,
+                    inter_refs,
+                    mode_neighbors,
+                );
+                mode_neighbors.record(
+                    x,
+                    y,
+                    bw,
+                    bh,
+                    if d.inter.is_some() { 0 } else { d.intra_mode },
+                    if d.inter.is_some() { 0 } else { d.uv_mode },
+                );
+                return;
+            }
             // Predict luma at 10-bit from the running 10-bit recon plane.
             let mut pred = alloc::vec![0u16; bw * bh];
             // Luma geom for directional prediction (ss=0; tx_depth 0 ⇒ tx==block,
@@ -271,22 +320,79 @@ fn bd10_reencode_node(
                 // all, which is why that measurement did not catch this.
                 tile: tile_mi,
             };
-            crate::leaf_funnel::predict_unit_hbd_partition(
-                recon10,
-                stride,
+            // THE INTER ARM. C at `hbd_md == 0` runs its mode decision at 8
+            // bits and then rebuilds the 10-bit prediction in EncDec before the
+            // residual — which is exactly what this pass models. Predicting an
+            // inter leaf with `predict_unit_hbd_partition` instead would code
+            // DC-based levels under inter syntax: a decoder desync, which is
+            // why the gate used to reject the whole frame rather than let that
+            // happen.
+            match d.inter.as_deref() {
+                Some(ic) => {
+                    let hbd = inter_refs
+                        .and_then(|r| r[ic.ref_frame[0].max(0) as usize])
+                        .and_then(|p| p.hbd.as_ref())
+                        .expect(
+                            "an inter leaf reached the bd10 re-encode with no 10-bit reference \
+                             in the DPB; `bd10_tree_supported` is supposed to have refused the \
+                             frame before this point",
+                        );
+                    crate::inter_pred_arm::predict_inter_leaf_hbd(
+                        &hbd.y,
+                        None,
+                        ic.motion_mode,
+                        ic.wm_params,
+                        x,
+                        y,
+                        bw,
+                        bh,
+                        ic.mv[0],
+                        ic.interp_filters,
+                        sb_mi_size * 4,
+                        frame_w,
+                        frame_h,
+                        bd,
+                        &mut pred,
+                        bw,
+                        &mut [],
+                        &mut [],
+                        0,
+                    );
+                }
+                None => crate::leaf_funnel::predict_unit_hbd_partition(
+                    recon10,
+                    stride,
+                    x,
+                    y,
+                    bw,
+                    bh,
+                    d.intra_mode,
+                    d.angle_delta,
+                    d.filter_intra_mode,
+                    &geom,
+                    edge_filter,
+                    // C `get_filt_type(xd, 0)`. Was a hardcoded 0, which is
+                    // only right with the edge filter off -- and that is
+                    // exactly why the frame gate had to reject every
+                    // directional leaf when it is on.
+                    mode_neighbors.filt_type_y(x, y),
+                    &mut pred,
+                    bd,
+                    parent_partition,
+                ),
+            }
+            // Stamp this leaf into the neighbour grid, in decode order, so the
+            // NEXT block's `get_filt_type` reads what a decoder reads. An inter
+            // leaf codes no intra mode: C's `svt_aom_is_smooth` is false for
+            // one, and 0 (DC_PRED) is the non-smooth value the grid is seeded
+            // with, so it is the faithful stamp rather than a claim about DC.
+            mode_neighbors.record(
                 x,
                 y,
                 bw,
                 bh,
-                d.intra_mode,
-                d.angle_delta,
-                d.filter_intra_mode,
-                &geom,
-                edge_filter,
-                0,
-                &mut pred,
-                bd,
-                parent_partition,
+                if d.inter.is_some() { 0 } else { d.intra_mode },
+                if d.inter.is_some() { 0 } else { d.uv_mode },
             );
             let src_off = y * src_stride + x;
             // C disables context updates at the faster presets. Otherwise
@@ -415,6 +521,8 @@ fn bd10_reencode_node(
                         PT::VertB => svtav1_types::partition::PartitionType::VertB,
                         _ => svtav1_types::partition::PartitionType::None,
                     },
+                    inter_refs,
+                    mode_neighbors,
                 );
             };
             match *partition_type {
@@ -544,6 +652,9 @@ pub(super) fn bd10_reencode_chroma(
     // mainline → byte-identical to build_quant_table_bd. C applies the same
     // qzbin/qround sharpening to the chroma quantizer rows (u/v_zbin/round).
     sharpness: i8,
+    // The DPB's reference pictures, whose 10-bit twin the INTER arm predicts
+    // from. `None` on a key frame.
+    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
 ) -> crate::EncodeResult<(alloc::vec::Vec<u16>, alloc::vec::Vec<u16>)> {
     let fc = crate::entropy::context::FrameContext::new_default();
     let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(chroma_qindex);
@@ -563,10 +674,20 @@ pub(super) fn bd10_reencode_chroma(
     let seed: u16 = 128u16 << (bd - 8);
     let mut recon10_u = svtav1_types::try_vec![seed; ext_cbuf]?;
     let mut recon10_v = svtav1_types::try_vec![seed; ext_cbuf]?;
+    // The chroma twin of the luma pass's grid: `get_filt_type(xd, 1)` reads the
+    // neighbour UV modes, and this pass passed a hardcoded 0 for the same
+    // reason and with the same consequence -- a directional UV leaf under the
+    // sequence header's edge filter dropped the whole frame out of the
+    // re-encode. Sized on LUMA coordinates because the walk carries those.
+    let mut mode_neighbors = Bd10ModeNeighbors::new(cframe_w * 2, cframe_h * 2)?;
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
         let tile_mi_c = tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size / 2, cframe_w, cframe_h);
+        // The grid is LUMA-indexed, so it takes the LUMA tile bounds.
+        let tile_mi_l =
+            tile_grid.tile_mi_for_sb(sb_row, sb_col, sb_size, cframe_w * 2, cframe_h * 2);
+        mode_neighbors.enter_sb(sb_col * sb_size, sb_row * sb_size, sb_size, tile_mi_l);
         bd10_reencode_chroma_node(
             sb_size / 4,
             tree,
@@ -591,6 +712,8 @@ pub(super) fn bd10_reencode_chroma(
             bd,
             qm_uv,
             tile_mi_c,
+            inter_refs,
+            &mut mode_neighbors,
         );
     }
     // The frame's true 10-bit CHROMA recon — the post-MD canvas the bd10
@@ -619,6 +742,9 @@ fn bd10_reencode_chroma_plane(
     uv_tt: usize,
     geom: &crate::leaf_funnel::UnitGeom,
     edge_filter: bool,
+    // C `get_filt_type(xd, 1)`. Was a hardcoded 0 — only right with the edge
+    // filter off, which is why the frame gate rejected directional UV leaves.
+    filt_type: i32,
     qt: &crate::quant::QuantTable,
     rdoq_level: u8,
     lambda: u64,
@@ -633,27 +759,39 @@ fn bd10_reencode_chroma_plane(
     // (`cfl_prediction` regenerates DC at :3798-3801 before calling), so the
     // mode passed to `predict_unit_hbd` is forced to UV_DC_PRED here.
     cfl: Option<(&[i16], i32)>,
+    // An INTER leaf's motion-compensated chroma prediction, already built by
+    // the caller from the 10-bit reference. `Some` replaces the intra
+    // prediction entirely — C codes no intra `uv_mode` on an inter block, so
+    // running the intra predictor here would price and reconstruct a mode the
+    // stream does not describe.
+    inter_pred: Option<&[u16]>,
 ) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
     let mut pred = alloc::vec![0u16; cw * ch];
-    crate::leaf_funnel::predict_unit_hbd(
-        recon10,
-        cstride,
-        cx,
-        cy,
-        cw,
-        ch,
-        if cfl.is_some() { 0 } else { uv_mode },
-        if cfl.is_some() { 0 } else { uv_angle_delta },
-        crate::leaf_funnel::FI_NONE,
-        geom,
-        edge_filter,
-        0,
-        &mut pred,
-        bd,
-    );
-    if let Some((ac, alpha_q3)) = cfl {
-        let dc = pred.clone();
-        svtav1_dsp::hbd::cfl_predict_hbd(ac, &dc, cw, &mut pred, cw, alpha_q3, bd, cw, ch);
+    if let Some(p) = inter_pred {
+        // An INTER leaf: the caller already motion-compensated this plane from
+        // the 10-bit reference. Everything below the prediction is shared.
+        pred.copy_from_slice(&p[..cw * ch]);
+    } else {
+        crate::leaf_funnel::predict_unit_hbd(
+            recon10,
+            cstride,
+            cx,
+            cy,
+            cw,
+            ch,
+            if cfl.is_some() { 0 } else { uv_mode },
+            if cfl.is_some() { 0 } else { uv_angle_delta },
+            crate::leaf_funnel::FI_NONE,
+            geom,
+            edge_filter,
+            filt_type,
+            &mut pred,
+            bd,
+        );
+        if let Some((ac, alpha_q3)) = cfl {
+            let dc = pred.clone();
+            svtav1_dsp::hbd::cfl_predict_hbd(ac, &dc, cw, &mut pred, cw, alpha_q3, bd, cw, ch);
+        }
     }
     let src_off = cy * cstride + cx;
     let out = crate::leaf_funnel::tx_unit_hbd(
@@ -730,6 +868,10 @@ fn bd10_reencode_chroma_node(
     // domain (the geom below is `ss: 0` over `cframe_*`). Was
     // `TileMi::whole_frame(cframe_w, cframe_h)`.
     tile_mi_c: crate::intra_edge::TileMi,
+    // The DPB's reference pictures, for the INTER arm. `None` on a key frame.
+    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    // The neighbour MODE grid `get_filt_type(xd, 1)` reads.
+    mode_neighbors: &mut Bd10ModeNeighbors,
 ) {
     use crate::partition::PartitionTree as Tr;
     use crate::partition::PartitionType as PT;
@@ -792,6 +934,52 @@ fn bd10_reencode_chroma_node(
                 // `TileMi::whole_frame(cframe_w, cframe_h)`.
                 tile: tile_mi_c,
             };
+            // THE INTER ARM, chroma half. Built once for both planes because
+            // C's chroma prediction is one call with a halved origin over the
+            // LUMA block's subpel result — predicting each plane separately
+            // would be different arithmetic (see `predict_inter_yuv_hbd`).
+            let (inter_u, inter_v) = match d.inter.as_deref() {
+                Some(ic) => {
+                    let r = inter_refs
+                        .and_then(|r| r[ic.ref_frame[0].max(0) as usize])
+                        .expect(
+                            "an inter leaf reached the bd10 chroma re-encode with no DPB picture",
+                        );
+                    let hbd = r.hbd.as_ref().expect(
+                        "an inter leaf reached the bd10 chroma re-encode with no 10-bit reference",
+                    );
+                    let (bw, bh) = (d.width as usize, d.height as usize);
+                    // A scratch luma destination: the driver predicts luma and
+                    // chroma together, and only the chroma halves are read here
+                    // (the luma pass already wrote its own).
+                    let mut y_scratch = alloc::vec![0u16; bw * bh];
+                    let mut u = alloc::vec![0u16; cw * ch];
+                    let mut v = alloc::vec![0u16; cw * ch];
+                    crate::inter_pred_arm::predict_inter_leaf_hbd(
+                        &hbd.y,
+                        hbd.uv.as_ref().map(|(u, v)| (u, v)),
+                        ic.motion_mode,
+                        ic.wm_params,
+                        x,
+                        y,
+                        bw,
+                        bh,
+                        ic.mv[0],
+                        ic.interp_filters,
+                        sb_mi_size * 4,
+                        cframe_w * 2,
+                        cframe_h * 2,
+                        bd,
+                        &mut y_scratch,
+                        bw,
+                        &mut u,
+                        &mut v,
+                        cw,
+                    );
+                    (Some(u), Some(v))
+                }
+                None => (None, None),
+            };
             let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
                 recon10_u,
                 u_src10,
@@ -805,6 +993,7 @@ fn bd10_reencode_chroma_node(
                 uv_tt,
                 &geom,
                 edge_filter,
+                mode_neighbors.filt_type_uv(x, y),
                 qt_u,
                 rdoq_level,
                 lambda,
@@ -813,6 +1002,7 @@ fn bd10_reencode_chroma_node(
                 bd,
                 qm_uv[0],
                 cfl_u,
+                inter_u.as_deref(),
             );
             let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
                 recon10_v,
@@ -827,6 +1017,7 @@ fn bd10_reencode_chroma_node(
                 uv_tt,
                 &geom,
                 edge_filter,
+                mode_neighbors.filt_type_uv(x, y),
                 qt_v,
                 rdoq_level,
                 lambda,
@@ -835,8 +1026,17 @@ fn bd10_reencode_chroma_node(
                 bd,
                 qm_uv[1],
                 cfl_v,
+                inter_v.as_deref(),
             );
             d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
+            mode_neighbors.record(
+                x,
+                y,
+                bw,
+                bh,
+                if d.inter.is_some() { 0 } else { d.intra_mode },
+                if d.inter.is_some() { 0 } else { d.uv_mode },
+            );
         }
         Tr::Split {
             partition_type,
@@ -881,6 +1081,8 @@ fn bd10_reencode_chroma_node(
                     qm_uv,
                     // Children share the superblock, hence the tile (issue #18).
                     tile_mi_c,
+                    inter_refs,
+                    mode_neighbors,
                 );
             };
             match *partition_type {
@@ -931,6 +1133,188 @@ fn bd10_reencode_chroma_node(
                     }
                 }
             }
+        }
+    }
+}
+
+/// The `tx_depth > 0` arm of the luma re-encode — C `perform_tx_partitioning`
+/// (product_coding_loop.c:5282-5420) at a committed depth, levels only.
+///
+/// It used to be an `assert_eq!(d.tx_depth, 0)`, and that assert is what kept a
+/// 10-bit VIDEO frame out of the post-pass: the transform-size search is on at
+/// preset 6, so a single depth-1 leaf in one superblock dropped the whole frame.
+///
+/// Two things it does that the depth-0 arm does not:
+///
+/// * **INTRA feeds back.** Each TXB predicts from the recon of the TXBs before
+///   it inside this block (`predict_unit_overlay_hbd` over a running
+///   `dep_recon`), which is why the loop is sequential and why the block's
+///   recon is written out only at the end.
+/// * **INTER does not.** C predicts the whole block once and every TXB
+///   residuals against the same buffer; there is no per-TXB re-prediction.
+///
+/// The per-TXB tx TYPES are the committed ones (`d.txb_tx_types`) — this pass
+/// re-quantizes, it does not re-decide.
+#[allow(clippy::too_many_arguments)]
+fn bd10_reencode_leaf_txs(
+    d: &mut crate::partition::BlockDecision,
+    x: usize,
+    y: usize,
+    recon10: &mut [u16],
+    stride: usize,
+    src10: &[u16],
+    src_stride: usize,
+    qt: &crate::quant::QuantTable,
+    rdoq_level: u8,
+    lambda: u64,
+    allintra_rd_mult: bool,
+    rates: &crate::leaf_funnel::MdRates,
+    real_coeff_ctx: bool,
+    coeff_neighbors: &mut Bd10CoeffNeighbors,
+    edge_filter: bool,
+    frame_w: usize,
+    frame_h: usize,
+    bd: u8,
+    qm_level: u8,
+    tile_mi: crate::intra_edge::TileMi,
+    parent_partition: svtav1_types::partition::PartitionType,
+    sb_mi_size: usize,
+    inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    mode_neighbors: &Bd10ModeNeighbors,
+) {
+    let bw = d.width as usize;
+    let bh = d.height as usize;
+    let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(bw, bh, d.tx_depth);
+    let cols = bw / txw;
+    let txbs = cols * (bh / txh);
+    let geom = crate::leaf_funnel::UnitGeom {
+        partition: parent_partition,
+        mi_row: y >> 2,
+        mi_col: x >> 2,
+        bw_px: bw,
+        bh_px: bh,
+        sb_mi_size,
+        ss: 0,
+        frame_w,
+        frame_h,
+        tile: tile_mi,
+    };
+    let filt_type = mode_neighbors.filt_type_y(x, y);
+    // The INTER whole-block prediction, built once (C does the same).
+    let inter_pred: Option<alloc::vec::Vec<u16>> = d.inter.as_deref().map(|ic| {
+        let hbd = inter_refs
+            .and_then(|r| r[ic.ref_frame[0].max(0) as usize])
+            .and_then(|p| p.hbd.as_ref())
+            .expect("an inter leaf reached the bd10 TXS re-encode with no 10-bit reference");
+        let mut p = alloc::vec![0u16; bw * bh];
+        crate::inter_pred_arm::predict_inter_leaf_hbd(
+            &hbd.y,
+            None,
+            ic.motion_mode,
+            ic.wm_params,
+            x,
+            y,
+            bw,
+            bh,
+            ic.mv[0],
+            ic.interp_filters,
+            sb_mi_size * 4,
+            frame_w,
+            frame_h,
+            bd,
+            &mut p,
+            bw,
+            &mut [],
+            &mut [],
+            0,
+        );
+        p
+    });
+    let mut dep_recon = alloc::vec![0u16; bw * bh];
+    d.eob = 0;
+    d.qcoeffs.clear();
+    d.txb_qcoeffs.clear();
+    d.txb_eobs.clear();
+    let committed_types = core::mem::take(&mut d.txb_tx_types);
+    d.txb_tx_types = committed_types.clone();
+    for txb in 0..txbs {
+        let (tx_x, tx_y) = ((txb % cols) * txw, (txb / cols) * txh);
+        let mut pred = alloc::vec![0u16; txw * txh];
+        match inter_pred.as_ref() {
+            Some(p) => {
+                for r in 0..txh {
+                    let src0 = (tx_y + r) * bw + tx_x;
+                    pred[r * txw..(r + 1) * txw].copy_from_slice(&p[src0..src0 + txw]);
+                }
+            }
+            None => crate::leaf_funnel::predict_unit_overlay_hbd(
+                recon10,
+                stride,
+                x,
+                y,
+                &dep_recon,
+                bw,
+                bh,
+                tx_x,
+                tx_y,
+                txw,
+                txh,
+                d.intra_mode,
+                d.angle_delta,
+                d.filter_intra_mode,
+                &geom,
+                edge_filter,
+                filt_type,
+                &mut pred,
+                bd,
+            ),
+        }
+        let (tsc, dsc) = if real_coeff_ctx {
+            coeff_neighbors.contexts(x + tx_x, y + tx_y, txw, txh)
+        } else {
+            (0, 0)
+        };
+        let tt = committed_types.get(txb).copied().unwrap_or(0) as usize;
+        let out = crate::leaf_funnel::tx_unit_hbd(
+            false,
+            src10,
+            src_stride,
+            (y + tx_y) * src_stride + x + tx_x,
+            &pred,
+            txw,
+            0,
+            txw,
+            txh,
+            tt,
+            0,
+            tsc,
+            dsc,
+            qt,
+            rdoq_level,
+            lambda,
+            0,
+            allintra_rd_mult,
+            rates,
+            rdoq_level != 0,
+            bd,
+            qm_level,
+            None,
+        );
+        coeff_neighbors.record(x + tx_x, y + tx_y, txw, txh, out.cul);
+        d.eob += out.eob;
+        d.txb_eobs.push(out.eob);
+        d.txb_qcoeffs.push(out.qcoeff);
+        for r in 0..txh {
+            let dst = (tx_y + r) * bw + tx_x;
+            dep_recon[dst..dst + txw].copy_from_slice(&out.recon[r * txw..r * txw + txw]);
+        }
+    }
+    // Straddle clip, exactly as the depth-0 arm does.
+    let bwr = bw.min(stride.saturating_sub(x));
+    for r in 0..bh {
+        let drow = (y + r) * stride + x;
+        if drow + bwr <= recon10.len() {
+            recon10[drow..drow + bwr].copy_from_slice(&dep_recon[r * bw..r * bw + bwr]);
         }
     }
 }

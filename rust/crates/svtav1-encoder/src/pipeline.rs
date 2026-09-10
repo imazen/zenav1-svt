@@ -4800,6 +4800,10 @@ impl EncodePipeline {
                     self.bit_depth,
                     qm_levels[0],
                     self.hdr.sharpness,
+                    // The DPB's reference pictures, whose 10-bit twin the INTER
+                    // arm predicts from. `None` on a key frame, where no leaf
+                    // can be inter.
+                    inter_md_frame.as_ref().map(|f| &f.padded_by_ref),
                 )?;
                 // bd10 CHROMA re-encode (task #94): recompute chroma levels at
                 // bd10 too — the luma pass above leaves chroma at the u8 MD
@@ -4863,6 +4867,7 @@ impl EncodePipeline {
                         self.bit_depth,
                         [qm_levels[1], qm_levels[2]],
                         self.hdr.sharpness,
+                        inter_md_frame.as_ref().map(|f| &f.padded_by_ref),
                     )?;
                     // Crop the SB-extent canvases to the in-frame planes every
                     // downstream consumer expects (the bd10 deblock-level /
@@ -10771,7 +10776,12 @@ fn encode_partition_tree(
 fn bd10_tree_supported(
     tree: &crate::partition::PartitionTree,
     edge_filter: bool,
-    coded_lossless: bool,
+    // No leaf clause reads this any more: the depth-1 8x8 lossless special
+    // case it used to admit is subsumed by general `tx_depth` support
+    // (`bd10_reencode_leaf_txs`). Kept on the signature because the recursion
+    // passes it down and because a future clause that needs it should not have
+    // to re-thread it.
+    #[allow(unused_variables)] coded_lossless: bool,
 ) -> bool {
     match tree {
         crate::partition::PartitionTree::Leaf(d) => {
@@ -10813,11 +10823,48 @@ fn bd10_tree_supported(
             // the frame back to the u8 output, which is the same
             // fall-back-don't-miscode contract every other clause here has.
             let paletted = d.palette.is_some() || d.use_intrabc;
-            ((d.tx_depth == 0)
-                || (coded_lossless && d.tx_depth == 1 && d.width == 8 && d.height == 8))
-                && (!directional || !edge_filter)
-                && uv_ok
-                && !paletted
+            // `tx_depth > 0` IS supported now (`bd10_reencode_leaf_txs`), and
+            // it had to be: the transform-size search is on at preset 6, so a
+            // single depth-1 leaf in one superblock dropped a whole 10-bit
+            // VIDEO frame out of the re-encode.
+            // AN INTER LEAF codes no intra `y_mode` and no `uv_mode` at all
+            // (docs/INTER-ENCODE-PLAN.md §1x defects 2 and 6), so the two
+            // directional clauses above are about a mode it does not carry.
+            // What it needs instead is a motion mode the post-pass can rebuild:
+            // `predict_inter_leaf_hbd` handles SimpleTranslation and
+            // WarpedCausal, and OBMC is never injected.
+            //
+            // `edge_filter` NO LONGER REJECTS A DIRECTIONAL LEAF. The post-pass
+            // now derives `get_filt_type` per block from a neighbour mode grid
+            // (`Bd10ModeNeighbors`) instead of passing 0, so the condition the
+            // two clauses were guarding is gone. `directional` / `uv_directional`
+            // are kept as bindings because the ARGUMENT is what the next reader
+            // needs: it was never that directional prediction is unported, only
+            // that its `filt_type` input was faked.
+            let _ = (directional, uv_ok);
+            #[cfg(feature = "std")]
+            if crate::dbgenv::bd10_postpass() {
+                let ok = !paletted;
+                if !ok {
+                    eprintln!(
+                        "BD10_TREE reject {}x{} tx_depth={} palette={} ibc={} inter={}",
+                        d.width,
+                        d.height,
+                        d.tx_depth,
+                        d.palette.is_some(),
+                        d.use_intrabc,
+                        d.inter.is_some()
+                    );
+                }
+            }
+            let intra_ok = match d.inter.as_deref() {
+                Some(ic) => !matches!(
+                    ic.motion_mode,
+                    crate::port_entropy_inter::modes::MotionMode::ObmcCausal
+                ),
+                None => true,
+            };
+            intra_ok && !paletted
         }
         crate::partition::PartitionTree::Split { children, .. } => children
             .iter()
@@ -10871,6 +10918,94 @@ impl Bd10CoeffNeighbors {
         let bottom = (my + h / 4).min(self.left.len());
         self.above[mx..right].fill(cul);
         self.left[my..bottom].fill(cul);
+    }
+}
+
+/// The bd10 re-encode's LUMA/CHROMA neighbour MODE grid — the twin of
+/// [`Bd10CoeffNeighbors`], for `get_filt_type`.
+///
+/// The post-pass used to pass `filt_type = 0` unconditionally, which is only
+/// correct when the sequence header's intra edge filter is OFF; the frame gate
+/// therefore rejected any directional leaf whenever it was on, and that
+/// rejection drops the WHOLE FRAME out of the re-encode. On a VIDEO frame the
+/// edge filter is on at preset 6, so one directional intra leaf in one
+/// superblock was enough to make a 10-bit inter frame unencodable.
+///
+/// C `get_filt_type(xd, plane > 0)` (intra_prediction.c) is
+/// `is_smooth(above) || is_smooth(left)` over the 4x4 neighbour grid, with the
+/// tile edges reading as unavailable — the same derivation `EntropyCtx::
+/// filt_type_y` / `filt_type_uv` already do for the real encode. This
+/// reproduces it from the committed decisions the post-pass is walking.
+pub(crate) struct Bd10ModeNeighbors {
+    above: Vec<u8>,
+    left: Vec<u8>,
+    above_uv: Vec<u8>,
+    left_uv: Vec<u8>,
+    tile_top_px: usize,
+    tile_left_px: usize,
+}
+
+impl Bd10ModeNeighbors {
+    fn new(w: usize, h: usize) -> crate::EncodeResult<Self> {
+        Ok(Self {
+            above: svtav1_types::try_vec![0u8; w.div_ceil(4)]?,
+            left: svtav1_types::try_vec![0u8; h.div_ceil(4)]?,
+            above_uv: svtav1_types::try_vec![0u8; w.div_ceil(4)]?,
+            left_uv: svtav1_types::try_vec![0u8; h.div_ceil(4)]?,
+            tile_top_px: 0,
+            tile_left_px: 0,
+        })
+    }
+
+    /// Same contract as [`Bd10CoeffNeighbors::enter_sb`]: a tile's own first
+    /// SB row / column clears the span it is entering, so no neighbour is read
+    /// across a tile edge a decoder cannot see.
+    fn enter_sb(&mut self, x: usize, y: usize, size: usize, tile: crate::intra_edge::TileMi) {
+        self.tile_top_px = tile.mi_row_start * 4;
+        self.tile_left_px = tile.mi_col_start * 4;
+        let (mx, my) = (x / 4, y / 4);
+        if my == tile.mi_row_start {
+            let end = (mx + size / 4).min(self.above.len());
+            self.above[mx..end].fill(0);
+            self.above_uv[mx..end].fill(0);
+        }
+        if mx == tile.mi_col_start {
+            let end = (my + size / 4).min(self.left.len());
+            self.left[my..end].fill(0);
+            self.left_uv[my..end].fill(0);
+        }
+    }
+
+    /// C `get_filt_type(xd, 0)` — `EntropyCtx::filt_type_y`'s derivation.
+    fn filt_type_y(&self, x: usize, y: usize) -> i32 {
+        let smooth = |m: u8| matches!(m, 9..=11);
+        let ab = y > self.tile_top_px && smooth(self.above[(x / 4).min(self.above.len() - 1)]);
+        let le = x > self.tile_left_px && smooth(self.left[(y / 4).min(self.left.len() - 1)]);
+        i32::from(ab || le)
+    }
+
+    /// C `get_filt_type(xd, 1)` — `EntropyCtx::filt_type_uv`'s derivation,
+    /// including its 8x8-group rounding and bottom-right-owner selection.
+    fn filt_type_uv(&self, x: usize, y: usize) -> i32 {
+        let smooth = |m: u8| matches!(m, 9..=11);
+        let ai = ((x / 4) | 1).min(self.above_uv.len() - 1);
+        let li = ((y / 4) | 1).min(self.left_uv.len() - 1);
+        let ab = (y & !7) > self.tile_top_px && smooth(self.above_uv[ai]);
+        let le = (x & !7) > self.tile_left_px && smooth(self.left_uv[li]);
+        i32::from(ab || le)
+    }
+
+    /// Stamp a committed leaf. An INTER leaf codes no intra `y_mode` and no
+    /// `uv_mode`, and C's `svt_aom_is_smooth` answers false for both on one —
+    /// so a non-smooth sentinel is the faithful stamp, not a lie about DC.
+    fn record(&mut self, x: usize, y: usize, w: usize, h: usize, mode: u8, uv_mode: u8) {
+        let (mx, my) = (x / 4, y / 4);
+        let right = (mx + w / 4).min(self.above.len());
+        let bottom = (my + h / 4).min(self.left.len());
+        self.above[mx..right].fill(mode);
+        self.left[my..bottom].fill(mode);
+        self.above_uv[mx..right].fill(uv_mode);
+        self.left_uv[my..bottom].fill(uv_mode);
     }
 }
 
@@ -10998,26 +11133,12 @@ fn bd10_full_rd_supported(
     // The `preset <= 8` bound is the PORT's, not C's: C's `hbd_md` is non-zero
     // for an I-slice at every preset, and the port serves presets >= 9 with the
     // MDS0 funnel plus the level re-encode post-pass instead of full RD.
-    // NOT APPLIED, and that is a measured decision rather than an oversight.
-    // Adding `&& (preset <= 5 || is_islice)` here is what C does, and it makes
-    // a 10-bit INTER frame fall to the level re-encode post-pass — which
-    // REFUSES it, because `bd10_reencode_node` predicts every leaf with
-    // `predict_unit_hbd` and has no INTER arm at all
-    // ("native 10-bit source went unconsumed"). Applying the rule therefore
-    // trades a decodable non-identical stream for no stream, so the term is
-    // documented and threaded rather than switched on.
-    //
-    // MEASURED 2026-09-10: with the term applied, johnny / vidyo3 128x128
-    // preset 6 and 8 at bd10 REFUSE frame 1 outright, and fourpeople /
-    // kristenandsara code it at 753 / 867 bytes against C's 24 -- the
-    // post-pass path is not merely absent, it is wrong where it does run.
-    //
-    // CLOSING IT needs the post-pass to gain an inter arm:
-    // `predict_inter_yuv_hbd` now exists (a377e896), so what is missing is the
-    // leaf's MV / reference / filters reaching `bd10_reencode_node` and the
-    // 10-bit DPB reference reaching the post-pass.
-    let _hbd_md_nonzero = preset <= 5 || is_islice;
-    bit_depth == 10 && (preset <= 8 || coded_lossless) && chroma_420
+    // `is_base` does not appear because it is ALWAYS TRUE on this port: a
+    // hierarchical GOP is refused (`gop_config_error`), so every picture is
+    // temporal layer 0. When that refusal lifts, the `<= ENC_M5` arm needs the
+    // real `is_base`.
+    let hbd_md_nonzero = preset <= 5 || is_islice;
+    bit_depth == 10 && (preset <= 8 || coded_lossless) && chroma_420 && hbd_md_nonzero
 }
 
 #[allow(clippy::type_complexity)] // ported C signature: a `type` alias here would hide the shape and churn the byte-identity gate for no benefit
@@ -15325,6 +15446,7 @@ mod inter_decision_probe {
                 num_proj_ref: 0,
                 overlappable_neighbors: 0,
                 skip_mode: false,
+                wm_params: Default::default(),
             })),
             ..Default::default()
         };
