@@ -1625,17 +1625,41 @@ Two things to try next, in order:
    `SVT_FULLCOST_OUT`/`SVT_FASTCOST_OUT` + the port's `SVTAV1_CANDDBG` and
    compare H_PRED vs SMOOTH directly.
 
-### Incidental finding — NOT fixed, do not "fix" it blind
+### Incidental finding — RESOLVED BY MEASUREMENT 2026-09-10, and the answer is "the dead stores were right"
 
-`leaf_funnel.rs:5706-5707` writes the truncated 10-bit chroma recon into
-`cand.u_recon`/`cand.v_recon` (with a comment explaining why the u8 proxy must
-represent the CODED levels), and :5718-5719 then **unconditionally overwrites
-both with the u8-quantizer recon** — the stores are dead. The 10-bit path is
-unaffected (`cand.u_recon10` at :5721 is separate), but the u8 canvas is what
-the chroma-complexity detector, the u8 CfL arm and the post-filter searches
-read at bd10. Current behaviour is what 130 photo + 180 non-flat cells are
-byte-exact WITH, so the dead stores are not obviously the intended semantics
-winning — resolve this by measurement, with a gate run, not by deleting a line.
+**Original entry, preserved because the warning it gave was correct and was
+then ignored:** `leaf_funnel.rs:5706-5707` writes the truncated 10-bit chroma
+recon into `cand.u_recon`/`cand.v_recon` (with a comment explaining why the u8
+proxy must represent the CODED levels), and :5718-5719 then **unconditionally
+overwrites both with the u8-quantizer recon** — the stores are dead. The 10-bit
+path is unaffected (`cand.u_recon10` at :5721 is separate), but the u8 canvas
+is what the chroma-complexity detector, the u8 CfL arm and the post-filter
+searches read at bd10. Current behaviour is what 130 photo + 180 non-flat cells
+are byte-exact WITH, so the dead stores are not obviously the intended
+semantics winning — *resolve this by measurement, with a gate run, not by
+deleting a line.*
+
+**What happened.** `3d8f5c517` (2026-08-03) deleted the line, moving the
+unconditional pair into the `None` arm so the truncated-10-bit assignment
+became live. It ran the gates it had and recorded, honestly, that the change
+was byte-inert on every cell it could measure. The p5 photographic band
+(`bd10_photo_gate.sh` group F) did not exist yet.
+
+**The measurement, 2026-09-10.** CID22-512 `1484678` at bd10 q32 preset 5:
+
+    truncated-10-bit proxy   port 9505 B   C 9501 B   DIVERGES
+    u8-quantizer recon       port 9501 B   C 9501 B   IDENTICAL
+
+Bisected to `3d8f5c517` over the 1062 commits since group F's parent, one build
+and one cell per step. The unconditional u8-quantizer assignment is restored and
+`bd10_photo_gate.sh` is back to 191/191.
+
+**The hypothesis it points at, stated as a hypothesis.** C's chroma recon here
+is the u8 quantizer's, which is what an 8-bit `hbd_md` would produce. If C's
+mode decision at these presets is 8-bit, then the port's bd10 full-RD funnel is
+a 10-bit MD that C is not running — the same open question the 10-bit VIDEO
+divergence raises (`benchmarks/bd10_video_2026-09-10.meta`). Establish what C
+derives for `hbd_md` before changing more of this.
 
 ### Chunk 2 — the hbd SAD arm of the chroma-complexity detector (2026-07-19)
 

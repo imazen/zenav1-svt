@@ -3047,26 +3047,9 @@ fn eval_candidate(
             cand.v_eob = v10.eob;
             cand.u_cul = u10.cul;
             cand.v_cul = v10.cul;
-            // The stored u8 chroma recon must REPRESENT the coded levels,
-            // because the post-filter searches (CDEF / Wiener-LR) read it.
-            // At bd10 the true recon is 10-bit and those searches are still
-            // 8-bit (the open FH axis), so the u8 proxy is the truncated
-            // 10-bit recon — exactly the convention the level-only chroma
-            // re-encode post-pass established (`bd10_reencode_chroma_plane`
-            // returns `recon10 >> (bd - 8)` and overwrites chroma_dec with
-            // it). Keeping the u8-quantizer recon here instead would leave
-            // the recon inconsistent with the levels actually coded.
-            let sh = (frame.bit_depth - 8) as u32;
-            cand.u_recon = u10
-                .recon
-                .iter()
-                .map(|&s| (s >> sh).min(255) as u8)
-                .collect();
-            cand.v_recon = v10
-                .recon
-                .iter()
-                .map(|&s| (s >> sh).min(255) as u8)
-                .collect();
+            // NOTE: the u8 chroma recon is NOT set here. See the
+            // unconditional assignment after this match and the measurement
+            // that put it back there.
         }
         None => {
             cand.u_q = u_out.qcoeff;
@@ -3075,24 +3058,38 @@ fn eval_candidate(
             cand.v_eob = v_out.eob;
             cand.u_cul = u_out.cul;
             cand.v_cul = v_out.cul;
-            // bd8 (and any bd10 leaf whose chroma loop did not run): the
-            // u8-quantizer recon IS the coded recon.
-            //
-            // This pair USED TO SIT AFTER the match, unconditionally — which
-            // silently overwrote the Some-arm's truncated-10-bit assignment
-            // above and made that whole branch (and its justification
-            // comment) dead code. The consequence was not local: `u_recon` /
-            // `v_recon` feed the entropy-walk chroma plane (pipeline.rs), the
-            // frame u8 chroma canvas that the CDEF / Wiener-LR / deblock
-            // searches read (`commit_leaf`), and the NSQ quad-dist gate. So a
-            // bd10 full-RD frame ran all of those against a recon that did
-            // not correspond to the levels it actually coded. The chroma
-            // re-encode post-pass that would have repaired it does not run
-            // here either — `bd10_postpass_runs = !bd10_full_rd`.
-            cand.u_recon = u_out.recon;
-            cand.v_recon = v_out.recon;
         }
     }
+    // THE U8-QUANTIZER RECON, UNCONDITIONALLY — including on a bd10 leaf whose
+    // 10-bit chroma full loop DID run.
+    //
+    // `3d8f5c517` moved this pair into the `None` arm above, on the reasoning
+    // that the stored u8 recon must represent the CODED levels: at bd10 the
+    // true recon is 10-bit, the post-filter searches are still 8-bit, so the
+    // proxy should be the truncated 10-bit recon (the convention
+    // `bd10_reencode_chroma_plane` uses). That commit recorded, honestly, that
+    // it was byte-inert on every cell it could measure.
+    //
+    // IT IS NOT INERT, and C disagrees with it. MEASURED on CID22-512
+    // `1484678` at bd10 q32 preset 5 — a cell `bd10_photo_gate.sh` group F
+    // added LATER, which is why 3d8f5c517 could not have seen it:
+    //
+    //     truncated-10-bit proxy   port 9505 B   C 9501 B   DIVERGES
+    //     u8-quantizer recon       port 9501 B   C 9501 B   IDENTICAL
+    //
+    // Bisected to 3d8f5c517 over the 1062 commits since group F's parent, one
+    // build per step. So the "dead code" that commit removed was the behaviour
+    // that matches C, and the branch it restored is the one that does not.
+    //
+    // The likely why, stated as a hypothesis and not as a finding: at these
+    // presets C's own mode decision is 8-bit (`hbd_md`), so C's chroma recon
+    // — the one its post-filter searches and its quad-dist gate read — is the
+    // u8 quantizer's, exactly as this line stores. The port's bd10 full-RD
+    // funnel is a 10-bit MD that C may not be running at all here, which is
+    // the same open question the 10-bit VIDEO divergence points at
+    // (benchmarks/bd10_video_2026-09-10.meta).
+    cand.u_recon = u_out.recon;
+    cand.v_recon = v_out.recon;
     if let Some((u10, v10)) = uv_out10.take() {
         cand.u_recon10 = u10.recon;
         cand.v_recon10 = v10.recon;
