@@ -7149,7 +7149,7 @@ impl EncodePipeline {
             let acc = frame_coded_area.borrow();
             std::eprintln!(
                 "PORTREFSTATS poc={display_order} slice={} intra={i_pct} skip={s_pct} hp={h_pct} \
-                 mfmv={}/{} sbintra=[{}] sbskip=[{}]",
+                 mfmv={}/{} none={} sbintra=[{}] sbskip=[{}]",
                 u8::from(is_key),
                 // The MFMV writeback's census: cells naming a real reference,
                 // out of the field's length. It is the positive control that
@@ -7162,6 +7162,13 @@ impl EncodePipeline {
                     .filter(|m| m.ref_frame > crate::port_coding_loop::INTRA_FRAME)
                     .count()),
                 acc.as_ref().map_or(0, |a| a.mvs.len()),
+                // NONE cells: an intra block must reset its cells so a later
+                // frame does not project stale motion through them.
+                acc.as_ref().map_or(0, |a| a
+                    .mvs
+                    .iter()
+                    .filter(|m| m.ref_frame <= crate::port_coding_loop::INTRA_FRAME)
+                    .count()),
                 acc.as_ref().map_or(alloc::string::String::new(), |a| a
                     .sb_intra
                     .iter()

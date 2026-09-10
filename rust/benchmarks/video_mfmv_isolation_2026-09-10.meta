@@ -51,3 +51,46 @@ NEXT: compare the port's `setup_motion_field` / `motion_field_projection` output
 against the decoder's derivation for one block of vidyo3 f3, which is the
 smallest failing case (530 luma px in a 16-wide column, blocks mi=(36,44) and
 (40,44), both mode 14 = NEARMV with mv=(-4,-52)).
+
+================================================================
+HYPOTHESES TESTED AND REFUTED while hunting the projection bug
+================================================================
+
+Recorded so the next session does not re-run them.
+
+1. STALE MV GRID / intra blocks not resetting their cells. The writeback census
+   reports `mfmv=1024/1024` on every inter frame -- every 8x8 cell naming a real
+   reference -- which looks exactly like intra blocks failing to reset theirs,
+   the thing that would make a later frame project motion through a block that
+   has none. It is not: segmenting the packtree by its byte-offset resets shows
+   the final pass of each inter frame on this cell commits 121/195/195/180
+   blocks and ZERO of them are intra. `none=0` is therefore correct. The census
+   now prints `none=` alongside `mfmv=` so this is one glance instead of an
+   investigation.
+
+   Watch the trap in the middle of that check: a naive census over the whole
+   packtree counted 528 intra commits and 83,776 px of coded area against a
+   65,536 px frame -- it was summing every MD pass, not the final decisions.
+   Segment on the `off=` resets before drawing any per-frame conclusion.
+
+2. C AS THE ORACLE FOR FRAME 2. Comparing the port's frame 2 against C's does
+   not isolate this: on real video at 256x256 p6 the two already differ at f0
+   (7389 vs 7374 B) and f1 (200 vs 234 B), which the real-video gate records as
+   its own open surface. `fh_fields.py` on frame 2 names loop_filter_level as
+   the first differing field, and that is a deblock SEARCH output -- downstream
+   of a recon that already differs. The clean oracle is the DECODER, via
+   encoder-recon-vs-decode self-consistency, not C.
+
+3. NO C INTERPOSER IS AVAILABLE for the temporal field. `av1_setup_motion_field`
+   and its projection helpers are `static` in md_config_process.c, so
+   `-Wl,--wrap` cannot reach them; that is why capture_c_trace has no
+   SVT_MFMV_OUT to join against. Getting C's tpl_mvs needs a source-level
+   instrumentation build, not an interposer.
+
+WHAT WOULD ACTUALLY LOCALISE IT. For a SKIP block (yeob=ueob=veob=0) the
+decoder's reconstruction IS its prediction, so the MV the decoder derived can be
+recovered by searching which MV reproduces that block from the byte-identical
+reference. The failing blocks on vidyo3 f3 all carry residual, so pick a cell
+that puts a skip block in the drifting region first -- or difference the two
+reconstructions, since both sides decode the SAME residual and
+`decoder_recon - port_recon` is exactly `decoder_pred - port_pred`.
