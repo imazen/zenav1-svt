@@ -44,6 +44,50 @@ which is downstream of it. Established by capturing recon planes and the decisio
 tree from one run. Archive retrieval:
 [native10 receipt](native10-handoff-receipt.json).
 
+## Inter identity on REAL video (new surface, 2026-09-10)
+
+Until now every inter cell in this repo encoded synthetic content, and the
+multi-frame path built later frames by translating frame 0 by a global integer
+offset — which open-loop ME finds exactly, so the residual SAD floors to zero
+(`avg_me_sad=0`, `is_gm_on=0` across {gradient,diag,screen} × {64,128,256,512}).
+The inter surface was being asserted against a motion field C's search never has
+to work for.
+
+`tools/real_video_inter_gate.sh` runs the two-frame differential on twelve I420
+sequences cut from the six Xiph derf clips whose index entry reads *public
+domain*, published at the R2 prefix `video/pd-derf-720p/` and fetched
+anonymously. MEASURED 2026-09-10, 6 clips × {128×128, 256×256} × presets {6,8}
+× cli_qp 40, 24 cells
+([record](../benchmarks/real_video_inter_2026-09-10.meta)):
+
+| frame | byte-identical |
+|---|---|
+| 0 (key) | **18 / 24** |
+| 1 (inter) | **7 / 24** |
+
+Two things this says that the synthetic grid could not:
+
+- **Frame 0's six failures are all preset 6**; preset 8 key frames are 12/12.
+  That is a *still* divergence reached through the video configuration, and it
+  is a different surface from `real_image_matrix.sh`'s 180/180, which runs the
+  all-intra path at 512×512 on CID22-512.
+- **The control makes the gap explicit.** At the identical cell shape
+  (128×128 q40 p6 frames=2) synthetic `gradient` is byte-identical on *both*
+  frames, with frame 1 coding to 24 bytes — a skip. Real video at that shape
+  diverges (`johnny` 33 B in C against the port's 36; `vidyo3` 113 against 101).
+
+The pinned table in the gate is a measurement: a cell that regresses fails, and
+a cell that improves fails too, as `PROMOTED`, so the table cannot silently go
+stale.
+
+**Vacuity note worth keeping.** All six clips are 30 fps material published at
+60, so every frame is doubled. The first extraction scored `vidyo3` at mean
+motion 20.4 while `|f1-f0|` was exactly 0.00, and both encoders coded that frame
+to an identical 24 bytes — a cell that would have read as inter parity on real
+video while asserting only that two encoders agree a repeated frame is a skip.
+`tools/mk_video_assets.py` now decimates duplicates and scores motion as the
+**minimum** over consecutive pairs, never the mean.
+
 ## Separate evidence tracks
 
 - [Named-reference audit](PARITY-REFERENCE-AUDIT-2026-09-08.md): pristine and hybrid

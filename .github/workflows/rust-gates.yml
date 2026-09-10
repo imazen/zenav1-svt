@@ -440,6 +440,37 @@ jobs:
           ./tools/inter_fh_gate.sh
           ./tools/inter_decode_gate.sh "$GITHUB_WORKSPACE/aom-build/aomdec"
 
+      - name: REAL-video inter gate (public-domain derf clips, assets from R2)
+        if: matrix.shard == 3
+        working-directory: rust
+        # THE INTER SURFACE WAS ALL SYNTHETIC UNTIL THIS STEP. Every cell in
+        # the three gates above encodes {uniform,gradient,diag,screen}, and the
+        # multi-frame path builds later frames by translating frame 0 by a
+        # global integer offset — which open-loop ME finds exactly, so the
+        # residual SAD floors to zero (`avg_me_sad=0`, `is_gm_on=0` across
+        # {gradient,diag,screen} x {64,128,256,512}, INTER-ENCODE-PLAN.md).
+        #
+        # MEASURED 2026-09-10 at one identical cell shape (128x128 q40 p6
+        # frames=2): synthetic `gradient` is byte-identical on BOTH frames with
+        # frame 1 at 24 bytes — a skip. Real video at that shape diverges
+        # (`johnny` 33 B in C against the port's 36, `vidyo3` 113 against 101).
+        # The synthetic cells were green because they asserted a skip frame.
+        #
+        # The assets are NOT in git and deliberately so: twelve I420 sequences
+        # cut from the six Xiph derf clips whose index entry reads "public
+        # domain", published at the R2 prefix `video/pd-derf-720p/` (5.7 MB).
+        # The gate fetches them itself, anonymously — the bucket has a public
+        # custom domain, so this needs no secrets. Contrast the still corpora
+        # (gb82-sc, CID22, clic2025), which are plain git-tracked in
+        # imazen/codec-corpus and stay on their sparse clone; see
+        # `tools/fetch_r2_assets.sh` for why the two are kept apart.
+        #
+        # 12 s for 24 cells locally, so it lands in shard 3 (the lightest at
+        # 595 s) without moving the wall clock. It pins the exact measured
+        # (frame0, frame1) identity pair per cell: a regression fails, and so
+        # does an improvement, which must land as a table update.
+        run: ./tools/real_video_inter_gate.sh
+
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         if: matrix.shard == 5
         working-directory: rust
