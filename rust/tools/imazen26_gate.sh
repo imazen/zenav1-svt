@@ -35,9 +35,29 @@ RS_ROOT=$(cd "$HERE/.." && pwd)
 RUN_BIN="$RS_ROOT/target/release/examples/identity_run"
 CT_BIN="$HERE/capture_c_trace/capture_c_trace.bin"
 IM26_DIR="${IM26_DIR:-$(corpus_dir imazen26-cache/K300)}"
-# NO SILENT SKIP. This corpus is not committed and, until 2026-09-10, existed on
-# no host reachable from this repo -- so `corpus_dir` resolved to a path that was
-# simply absent and every cell below reported MISSING. Fetch it instead.
+# NO SILENT SKIP. This corpus is not committed and, until 2026-09-10, was not
+# materialised on any host reachable from this repo -- so `corpus_dir` resolved
+# to a path that was simply absent and every cell below reported MISSING.
+#
+# WHERE K300 COMES FROM, so nobody has to do this archaeology again. The
+# selection is GIT-TRACKED in imazen/codec-corpus at
+#   imazen-26/manifests/imazen26_representatives_K300_2026-06-14.tsv
+# -- 300 rows, columns `url  crop_label  content_class  cluster_id
+# cluster_size`, a k-means representative pick over imazen-26's 2,160 images
+# covering all 20 content classes. Every `url` points at
+# https://codec-corpus.r2.imazen.org/imazen-26-png-v3/..., which is public. So
+# the whole corpus is reconstructible from that one file with no credentials;
+# only the MATERIALISED cache (/root/work/imazen26-cache/K300 on the retired
+# `dev-32gb` box) was ever lost, and a derived cache whose recipe is versioned
+# is not lost data.
+#
+# CAVEAT, unresolved: that manifest assigns a PER-IMAGE crop region
+# (`crop_label`: c50_bl, c50_center, c25_tl, full, ...). This gate centre-crops
+# every image instead, via `crop:` at IM26_DIM. The 40 cells below were measured
+# byte-identical under the centre crop and are self-consistent, but they are not
+# the regions the representative selection chose.
+#
+# Fetch the published crops instead.
 #
 # The published set is the twenty gate images CENTRE-CROPPED to 512x512, which is
 # all the gate ever encodes (`IM26_DIM`, below). The originals are 290 MiB; the

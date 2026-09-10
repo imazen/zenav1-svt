@@ -187,11 +187,14 @@ clone; R2 carries only what has no home in git.
   synthetic `gradient` is byte-identical at the same cell shape because frame 1
   is a 24-byte skip.
 - ~~**`imazen26_gate.sh` has not run since the day it was written.**~~
-  **CLOSED.** It ran once, 40/40, in `304c5832c` (2026-07-24) against a corpus
+  **CLOSED.** It ran once, 40/40, in `304c5832c` (2026-07-24) against a cache
   on the rented box `dev-32gb`, which was then torn down; nothing persistent
-  ever held it, and it had never run in CI. Re-run 2026-09-10: **40/40
-  byte-identical**, on 20 images centre-cropped to 512×512 (R2
-  `imazen26-k300-512/`, 290 MiB → 6.1 MiB, equivalence measured both ways).
+  held that cache, and it had never run in CI. The corpus was never actually
+  lost — K300's selection is git-tracked at
+  `imazen-26/manifests/imazen26_representatives_K300_2026-06-14.tsv` (300 rows
+  of public R2 URLs). Re-run 2026-09-10: **40/40 byte-identical**, on 20 images
+  centre-cropped to 512×512 (R2 `imazen26-k300-512/`, 290 MiB → 6.1 MiB,
+  equivalence measured both ways).
 - ~~**Animation tests are entirely procedural.**~~ **CLOSED.** A real-motion
   animated-AVIF round trip now asserts that consecutive *decoded* frames differ.
 

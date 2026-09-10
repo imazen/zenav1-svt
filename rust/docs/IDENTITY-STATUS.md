@@ -94,12 +94,30 @@ video while asserting only that two encoders agree a repeated frame is a skip.
 classes no other corpus here reaches — bilevel patent scans, government document
 pages, synthetic plots, AI clipart/illustration/product renders, manuscript
 scans. **It had not run since the day it was written.** It ran once, 40/40, in
-the commit that created it (`304c5832c`, 2026-07-24), on a corpus that lived at
-`/root/work/imazen26-cache/K300` on `dev-32gb` — a rented fleet box, which the
-sweep's own meta records as having ended the run at its "box-lifetime limit".
-The corpus was never committed and never copied to a persistent host, so from
-that point `corpus_dir imazen26-cache/K300` resolved to an absent path and every
-cell reported `MISSING`. It has never run in CI.
+the commit that created it (`304c5832c`, 2026-07-24), against a *materialised*
+cache at `/root/work/imazen26-cache/K300` on `dev-32gb` — a rented fleet box,
+which the sweep's own meta records as having ended the run at its "box-lifetime
+limit". That cache was never copied anywhere persistent (the box's migration
+bundle, `~/work/hetzner-backup-dev-32gb` on lilith, deliberately excludes
+re-downloadable corpora), so from that point `corpus_dir imazen26-cache/K300`
+resolved to an absent path and every cell reported `MISSING`. It had never run
+in CI.
+
+**The corpus itself was never at risk, and that is the part worth knowing.**
+K300's *selection* is git-tracked in imazen/codec-corpus at
+`imazen-26/manifests/imazen26_representatives_K300_2026-06-14.tsv`: 300 rows of
+`url  crop_label  content_class  cluster_id  cluster_size`, a k-means
+representative pick over imazen-26's 2,160 images spanning all 20 content
+classes, with every `url` pointing at the public
+`codec-corpus.r2.imazen.org/imazen-26-png-v3/` prefix. All 20 of this gate's
+images are in it. A derived cache whose recipe is versioned is not lost data —
+only the materialisation was.
+
+**Open discrepancy.** That manifest assigns a per-image crop region
+(`crop_label`: `c50_bl`, `c50_center`, `c25_tl`, `full`, …). The gate
+centre-crops every image via `crop:` at `IM26_DIM`. The 40 cells are
+self-consistent and measured byte-identical that way, but they are not the
+regions the representative selection chose.
 
 Re-run 2026-09-10, first time in 48 days and first time ever in CI:
 **40 / 40 byte-identical**, 61 s

@@ -586,14 +586,21 @@ jobs:
         # clipart/illustration/product renders, manuscript scans.
         #
         # It ran once, 40/40, in the commit that created it (304c5832c,
-        # 2026-07-24). Its corpus lived at /root/work/imazen26-cache/K300 on
-        # `dev-32gb` — a RENTED FLEET BOX, whose teardown is visible in that
-        # campaign's own meta ("sweep stopped by box-lifetime limit mid-p10").
-        # Nothing persistent ever held the corpus, so from then on
-        # `corpus_dir imazen26-cache/K300` resolved to an absent path and every
-        # cell reported MISSING. That is the generalisable lesson: a gate whose
-        # only corpus lives on an ephemeral box dies with the box, silently,
-        # because a gate that cannot run looks exactly like a gate that passes.
+        # 2026-07-24), against a MATERIALISED cache at
+        # /root/work/imazen26-cache/K300 on `dev-32gb` — a rented fleet box,
+        # whose teardown is visible in that campaign's own meta ("sweep stopped
+        # by box-lifetime limit mid-p10"). Nothing persistent held that cache,
+        # so from then on `corpus_dir imazen26-cache/K300` resolved to an absent
+        # path and every cell reported MISSING.
+        #
+        # The generalisable lesson is NOT "the data was lost" — it wasn't. K300's
+        # selection is git-tracked in imazen/codec-corpus at
+        # imazen-26/manifests/imazen26_representatives_K300_2026-06-14.tsv, 300
+        # rows of public R2 URLs. What was missing was a materialisation step
+        # anyone could run. A gate whose corpus has a versioned recipe but no
+        # fetch path fails exactly like one whose data is gone, and it fails
+        # SILENTLY, because a gate that cannot run looks like a gate that passes.
+        # This step is that fetch path.
         #
         # MEASURED 2026-09-10: 40 / 40 byte-identical. The gate was correct all
         # along; it just had no input.
