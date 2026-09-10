@@ -1262,6 +1262,18 @@ struct SkipSubCtrls {
 }
 
 pub(crate) struct DepthWalk<'a, 'b> {
+    /// One reusable [`NodeSnap`] per node SIZE — 8, 16, 32, 64, 128 — indexed
+    /// by `size.trailing_zeros()`.
+    ///
+    /// The walk takes at most one snapshot per node and the recursion visits
+    /// one node per size at a time, so a slot per size is exactly enough. It
+    /// exists because `take_snap` used to build a fresh `NodeSnap` every time:
+    /// `EntropyCtx` alone is SIXTEEN frame-width vectors, and that was 67,872
+    /// allocating calls on the canonical alloc cell — the largest site left
+    /// after the mode-decision buffers were pooled. Reusing the slot lets the
+    /// fill be `clone_from` / `resize` + copy, which allocates nothing after
+    /// the first node of each size.
+    pub snaps: alloc::vec::Vec<NodeSnap>,
     pub fx: &'a mut FunnelCtx<'b>,
     /// Full luma source plane (absolute coordinates).
     pub y_src: &'a [u8],
@@ -1388,7 +1400,8 @@ enum SplitOut {
 /// `svt_aom_copy_neighbour_arrays` [0] <-> [1] save/restore around NSQ
 /// shape evaluation, expressed on our full-plane model: the whole
 /// EntropyCtx (cheap: per-frame line buffers) + the node's recon rects.
-struct NodeSnap {
+#[derive(Default)]
+pub(crate) struct NodeSnap {
     ectx: crate::pipeline::EntropyCtx,
     y: Vec<u8>,
     u: Vec<u8>,
@@ -1660,39 +1673,44 @@ impl DepthWalk<'_, '_> {
         span.min(stride.saturating_sub(abs))
     }
 
-    fn take_snap(&self, abs_x: usize, abs_y: usize, size: usize) -> NodeSnap {
+    /// Fill this node size's reusable snapshot slot, IN PLACE.
+    ///
+    /// `clone_from` and `resize` rather than fresh vectors: the derived
+    /// `clone_from` is field-wise and `Vec::clone_from` reuses the
+    /// destination's allocation, so after the first node of a given size this
+    /// allocates nothing. See [`DepthWalk::snaps`].
+    fn take_snap(&mut self, abs_x: usize, abs_y: usize, size: usize) {
+        let slot = size.trailing_zeros() as usize;
+        let mut snap = core::mem::take(&mut self.snaps[slot]);
         let yw = Self::clip_span(self.y_stride, abs_x, size);
-        let mut y = alloc::vec![0u8; size * size];
+        snap.y.clear();
+        snap.y.resize(size * size, 0);
         for r in 0..size {
             let src = (abs_y + r) * self.y_stride + abs_x;
-            y[r * size..r * size + yw].copy_from_slice(&self.y_recon[src..src + yw]);
+            snap.y[r * size..r * size + yw].copy_from_slice(&self.y_recon[src..src + yw]);
         }
         let half = size / 2;
         let (cx, cy) = (abs_x / 2, abs_y / 2);
         let cwid = Self::clip_span(self.fx.c_stride, cx, half);
-        let mut u = alloc::vec![0u8; half * half];
-        let mut v = alloc::vec![0u8; half * half];
+        snap.u.clear();
+        snap.u.resize(half * half, 0);
+        snap.v.clear();
+        snap.v.resize(half * half, 0);
         for r in 0..half {
             let src = (cy + r) * self.fx.c_stride + cx;
-            u[r * half..r * half + cwid].copy_from_slice(&self.fx.u_recon[src..src + cwid]);
-            v[r * half..r * half + cwid].copy_from_slice(&self.fx.v_recon[src..src + cwid]);
+            snap.u[r * half..r * half + cwid].copy_from_slice(&self.fx.u_recon[src..src + cwid]);
+            snap.v[r * half..r * half + cwid].copy_from_slice(&self.fx.v_recon[src..src + cwid]);
         }
-        NodeSnap {
-            ectx: self.fx.ectx.clone(),
-            y,
-            u,
-            v,
-        }
+        snap.ectx.restore_from(self.fx.ectx);
+        self.snaps[slot] = snap;
     }
 
     fn restore_snap(&mut self, snap: &NodeSnap, abs_x: usize, abs_y: usize, size: usize) {
-        // `clone_from`, not `= clone()`: the derived `clone_from` is field-wise
-        // and `Vec::clone_from` REUSES the destination's allocation, so the
-        // restore costs nothing where `= clone()` allocated all sixteen of
-        // `EntropyCtx`'s vectors and freed the sixteen it replaced. 67,872
-        // allocating calls on the canonical alloc cell were this line and its
-        // `take_snap` twin.
-        self.fx.ectx.clone_from(&snap.ectx);
+        // `restore_from`, NOT `= clone()` and not `Clone::clone_from`:
+        // `#[derive(Clone)]` does not override `clone_from`, so the trait
+        // default is `*self = source.clone()` and allocates every vector.
+        // See `EntropyCtx::restore_from`.
+        self.fx.ectx.restore_from(&snap.ectx);
         let yw = Self::clip_span(self.y_stride, abs_x, size);
         for r in 0..size {
             let dst = (abs_y + r) * self.y_stride + abs_x;
@@ -2206,7 +2224,11 @@ impl DepthWalk<'_, '_> {
         // C update_redundant: first-child reuse HB<-H, VB<-V, VA<-HA.
         // Keep only the three candidates needed by those future shapes.
         let mut redundant: [Option<LeafEval>; 3] = [None, None, None];
-        let mut snap: Option<NodeSnap> = None;
+        // Whether this node's reusable snapshot slot (see [`DepthWalk::snaps`])
+        // currently holds a valid save. It used to be an `Option<NodeSnap>`
+        // that OWNED the snapshot, which meant a fresh one per node.
+        let snap_slot = size.trailing_zeros() as usize;
+        let mut snap_taken = false;
         let mut committed_since_snap = false;
 
         let shapes = self.shapes_at(size, has_rows, has_cols);
@@ -2219,9 +2241,13 @@ impl DepthWalk<'_, '_> {
             for &shape in shapes {
                 // Restore the pre-shape state (C: copy [1] -> [0] at
                 // nsi == 0 when a previous shape saved it).
-                if committed_since_snap && let Some(sn) = snap.take() {
+                if committed_since_snap && snap_taken {
+                    // Move the slot out and back so the restore can borrow it
+                    // while `self` is borrowed mutably; the slot is this node's
+                    // alone for the whole call.
+                    let sn = core::mem::take(&mut self.snaps[snap_slot]);
                     self.restore_snap(&sn, abs_x, abs_y, size);
-                    snap = Some(sn);
+                    self.snaps[snap_slot] = sn;
                     committed_since_snap = false;
                 }
 
@@ -2414,8 +2440,9 @@ impl DepthWalk<'_, '_> {
                     }
 
                     if nsi + 1 < children.len() {
-                        if snap.is_none() {
-                            snap = Some(self.take_snap(abs_x, abs_y, size));
+                        if !snap_taken {
+                            self.take_snap(abs_x, abs_y, size);
+                            snap_taken = true;
                         }
                         committed_since_snap = true;
                         let ev = evals.last().unwrap();
@@ -2530,12 +2557,10 @@ impl DepthWalk<'_, '_> {
             }
 
             // C: restore [1] -> [0] before the sub-depth walk.
-            if committed_since_snap
-                && split_flag
-                && let Some(sn) = snap.take()
-            {
+            if committed_since_snap && split_flag && snap_taken {
+                let sn = core::mem::take(&mut self.snaps[snap_slot]);
                 self.restore_snap(&sn, abs_x, abs_y, size);
-                snap = Some(sn);
+                self.snaps[snap_slot] = sn;
                 committed_since_snap = false;
             }
         }
@@ -2556,8 +2581,10 @@ impl DepthWalk<'_, '_> {
         // shape's partial commits are still live, restore first —
         // equivalent to C's winner-overwrite since every write spans
         // exactly the block.
-        if committed_since_snap && let Some(sn) = snap.take() {
+        if committed_since_snap && snap_taken {
+            let sn = core::mem::take(&mut self.snaps[snap_slot]);
             self.restore_snap(&sn, abs_x, abs_y, size);
+            self.snaps[snap_slot] = sn;
         }
         // C `svt_aom_pick_partition` returns `pc_tree->rdc.valid` — 0 when the
         // node tested no shape AND its SPLIT was invalid. Reachable only on a
@@ -2745,6 +2772,8 @@ pub(crate) fn decide_sb_refined(
     nsq_geom_enabled: bool,
 ) -> crate::partition::PartitionResult {
     let mut walk = DepthWalk {
+        // 8 slots covers sizes 1..=128 by `trailing_zeros`; only 3..=7 are used.
+        snaps: (0..8).map(|_| NodeSnap::default()).collect(),
         fx,
         y_src,
         y_src_stride,

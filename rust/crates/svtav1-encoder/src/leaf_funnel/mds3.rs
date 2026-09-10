@@ -710,10 +710,17 @@ fn eval_candidate(
         let mut dep_eob: smallvec::SmallVec<[u16; 16]> = smallvec::SmallVec::with_capacity(txbs);
         let mut dep_cul: smallvec::SmallVec<[u8; 16]> = smallvec::SmallVec::with_capacity(txbs);
         let mut dep_type: smallvec::SmallVec<[u8; 16]> = smallvec::SmallVec::with_capacity(txbs);
-        let mut dep_recon = zeroed_pool::<u8>(w * h);
+        // DIRTY, not zeroed. Every position is written before it is read:
+        // the TXB loop below covers the whole block, and the only exit that
+        // leaves it partial is `if aborted && depth > 0 { continue; }`, which
+        // discards the depth without touching `best_recon`. Depth 0 never
+        // aborts (the guard is `depth > 0`), so the `d0_recon` copy always sees
+        // a complete block. Validated by the 0x5A poisoning control recorded on
+        // `vecpool::dirty_pool`.
+        let mut dep_recon = dirty_pool::<u8>(w * h);
         // This depth's assembled whole-block luma prediction (see
         // `best_pred`); mirrors what C leaves in `cand_bf->pred->y_buffer`.
-        let mut dep_pred = zeroed_pool::<u8>(w * h);
+        let mut dep_pred = dirty_pool::<u8>(w * h);
         // Its 10-bit twin, assembled from the same per-txb predictions.
         let mut dep_pred10 = if bd10_rd.is_some() {
             zeroed_pool::<u16>(w * h)

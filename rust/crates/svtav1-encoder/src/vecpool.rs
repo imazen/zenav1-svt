@@ -312,8 +312,11 @@ impl<T: Pooled> Drop for PoolVec<T> {
 /// than undefined behaviour. VALIDATED the way `tx_pipeline::grown_out`
 /// validates its own version of this claim: filling with 0x5A instead,
 /// unconditionally in a release build, left identity_full_8bit at 1100/1100,
-/// regression_spotcheck at 141/141, the screen palette gate at 50/50 and
-/// screen_ibc_byte_gate at 152/152 — nothing reads an unwritten position.
+/// regression_spotcheck at 141/141, the screen palette gate at 50/50,
+/// screen_ibc_byte_gate at 152/152 and inter_byte_gate PASSING — nothing reads
+/// an unwritten position. RE-RUN THE CONTROL when adding a call site; it is
+/// five gates and twenty minutes, and it is the only thing standing between
+/// this function and silently wrong pixels.
 pub(crate) fn dirty_pool<T: Pooled>(n: usize) -> PoolVec<T> {
     let mut v = PoolVec::recycled_dirty(n);
     if v.len() < n {

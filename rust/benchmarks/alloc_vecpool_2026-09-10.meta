@@ -47,8 +47,12 @@ allocation result, so the hash is printed by the harness on every run.
     + the CfL scratch (all six sites)          1,311,342        -80.9 %     25.95 M
     + palette delta-cost, walked not built     1,184,307        -82.7 %     25.95 M
     + the palette search scratch               1,172,553        -82.9 %     25.97 M
+    + a real field-wise `EntropyCtx` restore    1,055,233        -84.6 %     25.99 M
     ------------------------------------------------------------------------------
     C reference                                  466,395                    69.43 M
+
+Excluding the `intrabc_hash` site that is AT PARITY with C (207,457 on both
+sides), the port is at 847,776 against C's 258,938 — a 3.3x gap, from 26x.
 
 Peak heap ends 0.51 M (+2.0 %) above the baseline and at 37 % of C's. The size
 classes are what kept it there: with ONE undifferentiated free list the peak was
@@ -141,6 +145,21 @@ instruction count above.
   488,528,562 on 512x512 preset 10, i.e. pooling them is slightly BETTER. The
   residual cost is the tx-pipeline bookkeeping, not the zero fill.
 
+## `#[derive(Clone)]` DOES NOT OVERRIDE `clone_from`
+
+This one is worth stating plainly because it cost two measurements to find.
+`EntropyCtx` is twenty-three vectors, and the NSQ walk's snapshot restore was
+67,872 allocating calls. Switching the call site from `*dst = src.clone()` to
+`dst.clone_from(&src)` moved NOTHING — because the derive does not implement
+`clone_from`, so the trait's DEFAULT body runs, and that default is literally
+`*self = source.clone()`. `Vec::clone_from` does reuse its destination; you
+just have to reach it field by field. `EntropyCtx::restore_from` does, and the
+site went to zero: 1,169,377 -> 1,055,233.
+
+The reusable-snapshot change that preceded it (`DepthWalk::snaps`, one slot per
+node size) was worth only 3,176 on its own for the same reason — it made the
+FILL reuse its allocations, but the fill was `clone_from` too.
+
 ## THE ZERO FILL IS NOT FREE ONCE THE BUFFER IS POOLED
 
 `vec![0; n]` reaches `calloc`, and glibc SKIPS the `memset` for a chunk carved
@@ -163,9 +182,16 @@ unconditionally in a release build, left
     screen palette gate       50 / 50
     screen_ibc_byte_gate     152 / 152
 
-i.e. nothing reads an unwritten position. `dep_recon` / `dep_pred` are
-deliberately NOT converted: the MDS3 depth loop can abort early, so a partial
-block is reachable there and the zero fill is load-bearing.
+    inter_byte_gate         PASS
+
+i.e. nothing reads an unwritten position.
+
+`dep_recon` / `dep_pred` ARE converted, and the argument is worth writing down
+because the first pass of this work assumed the opposite. The MDS3 depth loop
+can leave them partial, but only through `if aborted && depth > 0 { continue; }`
+— which discards the depth without touching `best_recon`. Depth 0 never aborts
+(the guard is `depth > 0`), so the `d0_recon` copy always sees a complete
+block. 512x512 preset 10 went from +1.55 % to +1.44 % instructions.
 
 ## STILL OPEN
 

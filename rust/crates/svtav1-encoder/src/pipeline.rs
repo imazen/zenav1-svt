@@ -7542,7 +7542,7 @@ pub(crate) fn palette_cache(
 /// Also tracks partition context at 8x8 granularity, matching the rav1d
 /// decoder's `BlockContext.partition` arrays. This is essential for multi-SB
 /// frames where the partition context of one SB depends on its neighbors.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct EntropyCtx {
     /// Above row modes (at 4x4 granularity), indexed by column in 4x4 units.
     /// Updated after each block is encoded.
@@ -10918,6 +10918,60 @@ impl Bd10CoeffNeighbors {
         let bottom = (my + h / 4).min(self.left.len());
         self.above[mx..right].fill(cul);
         self.left[my..bottom].fill(cul);
+    }
+}
+
+impl EntropyCtx {
+    /// Overwrite `self` with `src`, REUSING every vector's allocation.
+    ///
+    /// NOT `*self = src.clone()`, and not `Clone::clone_from` either:
+    /// `#[derive(Clone)]` does NOT override `clone_from`, so the trait's
+    /// default body is literally `*self = source.clone()` — which allocates all
+    /// twenty-three of this struct's vectors and frees the twenty-three it
+    /// replaces. MEASURED: the NSQ walk's snapshot restore was 67,872
+    /// allocating calls on the canonical alloc cell, and switching the call
+    /// from `= clone()` to `clone_from` moved NOTHING, which is what exposed
+    /// the derive's behaviour. `Vec::clone_from` DOES reuse its destination,
+    /// so doing it field by field is the version that pays.
+    pub(crate) fn restore_from(&mut self, src: &Self) {
+        self.above_mode.clone_from(&src.above_mode);
+        self.left_mode.clone_from(&src.left_mode);
+        self.above_uv_mode.clone_from(&src.above_uv_mode);
+        self.left_uv_mode.clone_from(&src.left_uv_mode);
+        self.above_skip.clone_from(&src.above_skip);
+        self.left_skip.clone_from(&src.left_skip);
+        self.above_partition.clone_from(&src.above_partition);
+        self.left_partition.clone_from(&src.left_partition);
+        self.above_coeff.clone_from(&src.above_coeff);
+        self.left_coeff.clone_from(&src.left_coeff);
+        self.above_txfm.clone_from(&src.above_txfm);
+        self.above_inter_bw.clone_from(&src.above_inter_bw);
+        self.left_txfm.clone_from(&src.left_txfm);
+        self.left_inter_bh.clone_from(&src.left_inter_bh);
+        self.above_palette.clone_from(&src.above_palette);
+        self.left_palette.clone_from(&src.left_palette);
+        self.above_palette_colors
+            .clone_from(&src.above_palette_colors);
+        self.left_palette_colors
+            .clone_from(&src.left_palette_colors);
+        self.above_nmi.clone_from(&src.above_nmi);
+        self.left_nmi.clone_from(&src.left_nmi);
+        self.mvp_grid.clone_from(&src.mvp_grid);
+        self.above_coeff_uv[0].clone_from(&src.above_coeff_uv[0]);
+        self.above_coeff_uv[1].clone_from(&src.above_coeff_uv[1]);
+        self.left_coeff_uv[0].clone_from(&src.left_coeff_uv[0]);
+        self.left_coeff_uv[1].clone_from(&src.left_coeff_uv[1]);
+        self.seq_filter_intra = src.seq_filter_intra;
+        self.tx_mode_select = src.tx_mode_select;
+        self.allow_sct = src.allow_sct;
+        self.allow_intrabc = src.allow_intrabc;
+        self.aligned_w_px = src.aligned_w_px;
+        self.aligned_h_px = src.aligned_h_px;
+        self.bit_depth = src.bit_depth;
+        self.cdef_sb = src.cdef_sb;
+        self.tile_top_px = src.tile_top_px;
+        self.tile_left_px = src.tile_left_px;
+        self.tile_mi = src.tile_mi;
     }
 }
 
