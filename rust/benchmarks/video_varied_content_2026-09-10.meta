@@ -1,0 +1,34 @@
+Independent validation of the MFMV fix on content it was never tuned against
+2026-09-10
+
+The fix (sb64_sq_no4xn_geom) was found and verified on the six Xiph derf
+conference clips. These five sequences are deliberately DIFFERENT classes, built
+after the fix, and none of them informed it:
+
+  portrait   256x256  real phone camera footage, PORTRAIT source (540x960),
+                      min-pair-motion 21.94 -- the highest-motion content tested
+  land       256x256  landscape camera footage, 960x540 source, motion 0.89
+  screenpan  256x256  gb82-sc/windows.png PANNED -- screen content IN MOTION,
+                      which exercises palette / IntraBC on INTER frames; every
+                      existing screen gate is a still
+  oddsz      200x120  NON-64-ALIGNED both ways -> partial superblocks
+  big        576x448  past the R360p threshold, where mfmv_level becomes 2
+
+Encoder recon (SVTAV1_FINAL_RECON) vs aomdec, preset 6 cli_qp 40, MFMV ON:
+
+  portrait   8/8 frames  ALL CLEAN
+  land       8/8 frames  ALL CLEAN
+  screenpan  8/8 frames  ALL CLEAN
+  oddsz      8/8 frames  ALL CLEAN
+  big        6/6 frames  ALL CLEAN
+
+Sources: the two mp4s are on lilith.lan at /mnt/v/test-videos and are
+Pexels/Pixabay-licensed -- royalty-free without attribution, but NOT public
+domain, so they are validation inputs only and are NOT published to R2 with the
+derf set. screenpan derives from gb82-sc, which is CC0 and git-tracked.
+
+Built with tools/mk_video_assets.py, whose anti-vacuity floors did real work
+here: it REJECTED three of my first crops (portrait texture 0.33, big texture
+1.85, and a screen pan that ffmpeg had emitted with every 4th frame duplicated,
+caught as decimate=4). Feeding the tool full frames and letting it choose the
+window is the right usage; pre-cropping by hand defeats its selection.
