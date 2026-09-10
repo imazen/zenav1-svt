@@ -71,9 +71,9 @@ jobs:
       - name: Install toolchain deps
         run: |
           sudo apt-get update -q
-          # libavif-bin provides `avifdec`. Three of the eight avif::animation
-          # tests shell out to it (animation.rs:653, :702, :820) to decode what
-          # they just muxed. Those tests had never run in CI until the container
+          # libavif-bin provides `avifdec`. Four of the nine avif::animation
+          # tests shell out to it to decode what they just muxed (the three
+          # synthetic ones plus the real-video round trip added 2026-09-10). Those tests had never run in CI until the container
           # features were enabled, and they failed immediately because the runner
           # had no avifdec. Installing it is the fix; skipping them is not.
           sudo apt-get install -y -q nasm cmake ninja-build dav1d libavif-bin
@@ -959,22 +959,38 @@ jobs:
           avifdec --version | head -1
           avifdec --version | head -1 | grep -q '1\.3\.0' \
             || { echo "expected the pinned libavif 1.3.0 on PATH" >&2; exit 1; }
+      - name: Fetch the public-domain video assets from R2
+        # Every OTHER animation test in this module builds its frames from an
+        # arithmetic expression over the pixel index -- smooth, noiseless, and
+        # moving by a fixed offset. `three_frame_real_video_sequence_...` is
+        # the only real motion the animation path sees, and it FAILS rather
+        # than skips when the asset is missing, so this step is load-bearing.
+        #
+        # Anonymous: the codec-corpus bucket has a public custom domain, so no
+        # secret is needed. 5.7 MB. The still corpora are NOT fetched this way
+        # -- they are git-tracked in imazen/codec-corpus and come from a sparse
+        # clone; see rust/tools/fetch_r2_assets.sh for why the two are split.
+        run: |
+          rust/tools/fetch_r2_assets.sh video/pd-derf-720p/ \
+            "$GITHUB_WORKSPACE/corpora/video/pd-derf-720p"
+          echo "ZENAV1_VIDEO_ASSETS=$GITHUB_WORKSPACE/corpora/video/pd-derf-720p" >> "$GITHUB_ENV"
       - name: Animation tests (container + alpha features)
         working-directory: rust
         # ANTI-VACUITY. `cargo test <filter>` exits 0 when the filter matches
         # NOTHING, so if avif::animation ever moves this job would run zero tests
         # and still report success -- the exact silent-green failure this repo
         # keeps getting bitten by. Assert the count instead of trusting the exit
-        # code. There are 8 animation tests today; the check is >= 8 so adding one
-        # does not fail the build, while losing one does.
+        # code. There are 9 animation tests today (8 synthetic + the real-video
+        # round trip added 2026-09-10); the check is >= 9 so adding one does not
+        # fail the build, while losing one does.
         run: |
           set -o pipefail
           cargo test -p zenav1-svt --features avif-container animation::tests 2>&1 | tee anim.log
           passed=$(grep -oE 'test result: ok\. [0-9]+ passed' anim.log \
                    | grep -oE '[0-9]+' | paste -sd+ - | bc)
           echo "animation tests passed: ${passed:-0}"
-          if [ "${passed:-0}" -lt 8 ]; then
-            echo "::error::expected at least 8 avif::animation tests to RUN, saw ${passed:-0}." >&2
+          if [ "${passed:-0}" -lt 9 ]; then
+            echo "::error::expected at least 9 avif::animation tests to RUN, saw ${passed:-0}." >&2
             echo "The filter matched (almost) nothing — did the module move?" >&2
             exit 1
           fi

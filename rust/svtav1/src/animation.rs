@@ -588,6 +588,154 @@ mod tests {
     use super::*;
     use std::{fs, process::Command};
 
+    /// Where the public-domain video assets live, probing the same way
+    /// `tools/lib_corpus.sh` and `tests/tier_invariance.rs` do rather than
+    /// assuming one host. Returns the resolved path or panics with the list.
+    fn pd_video_asset(name: &str) -> std::path::PathBuf {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut candidates: Vec<String> = Vec::new();
+        if let Ok(dir) = std::env::var("ZENAV1_VIDEO_ASSETS") {
+            candidates.push(format!("{dir}/{name}"));
+        }
+        if let Ok(root) = std::env::var("ZENAV1_CORPUS_ROOT") {
+            candidates.push(format!("{root}/video/pd-derf-720p/{name}"));
+        }
+        candidates.push(format!("{home}/work/zen/video/pd-derf-720p/{name}"));
+        candidates.push(format!("/root/work/video/pd-derf-720p/{name}"));
+        candidates
+            .iter()
+            .find(|c| std::path::Path::new(c).exists())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                panic!(
+                    "public-domain video asset {name} not found. Probed:\n  {}\n\
+                     Fetch it with `tools/fetch_r2_assets.sh video/pd-derf-720p/ <dir>` \
+                     and point ZENAV1_VIDEO_ASSETS at <dir>, or set \
+                     ZENAV1_SKIP_CORPUS_TESTS=1 to skip DELIBERATELY. It is not \
+                     skipped by default because every other animation test in \
+                     this file synthesises its frames, so this is the only real \
+                     motion the animation path ever sees.",
+                    candidates.join("\n  ")
+                )
+            })
+    }
+
+    /// Animated AVIF over REAL motion, not a procedural gradient.
+    ///
+    /// Every other test in this module builds its frames from an arithmetic
+    /// expression over the pixel index. Those frames are smooth, noiseless and
+    /// move by a fixed offset, which is exactly the content an encoder finds
+    /// easiest — the same blind spot the inter gates had until
+    /// `tools/real_video_inter_gate.sh` (`docs/IDENTITY-STATUS.md`). This one
+    /// muxes three consecutive frames of a public-domain 720p clip.
+    ///
+    /// The load-bearing assertion is the LAST one: the decoded frames must
+    /// differ from each other. A sequence that round-trips to three identical
+    /// images would satisfy the frame count, the timing and the dimensions
+    /// while proving nothing about the animation path, and that is not a
+    /// hypothetical — the source clips are 30 fps material published at 60, so
+    /// consecutive frames of the undecimated original ARE byte-identical and
+    /// both encoders code the second one to 24 bytes.
+    #[test]
+    fn three_frame_real_video_sequence_round_trips_with_motion_intact() {
+        if std::env::var_os("ZENAV1_SKIP_CORPUS_TESTS").is_some() {
+            eprintln!(
+                "animation: SKIPPED by ZENAV1_SKIP_CORPUS_TESTS — the real-video \
+                 animation round trip did NOT run in this invocation"
+            );
+            return;
+        }
+        let (w, h) = (128usize, 128usize);
+        let (cw, ch) = (w / 2, h / 2);
+        let frame_len = w * h + 2 * cw * ch;
+        let path = pd_video_asset("vidyo3_128x128_8f.i420");
+        let bytes = fs::read(&path).unwrap();
+        assert!(
+            bytes.len() >= 3 * frame_len,
+            "{}: {} bytes, need at least 3 frames of {frame_len}",
+            path.display(),
+            bytes.len()
+        );
+        let plane = |f: usize, off: usize, len: usize| {
+            bytes[f * frame_len + off..f * frame_len + off + len].to_vec()
+        };
+        let ys: Vec<Vec<u8>> = (0..3).map(|f| plane(f, 0, w * h)).collect();
+        let us: Vec<Vec<u8>> = (0..3).map(|f| plane(f, w * h, cw * ch)).collect();
+        let vs: Vec<Vec<u8>> = (0..3).map(|f| plane(f, w * h + cw * ch, cw * ch)).collect();
+        for i in 1..3 {
+            assert_ne!(
+                ys[i - 1],
+                ys[i],
+                "source frames {} and {i} are identical — this asset cannot \
+                 exercise the animation path (regenerate with \
+                 tools/mk_video_assets.py, which decimates duplicated frames)",
+                i - 1
+            );
+        }
+
+        let out = std::env::temp_dir().join(format!("svt-animation-real-{}", std::process::id()));
+        fs::create_dir_all(&out).unwrap();
+        let enc = AvifEncoder::new().with_speed(7);
+        let frames: Vec<_> = (0..3)
+            .map(|f| AnimationFrame {
+                y: &ys[f],
+                u: &us[f],
+                v: &vs[f],
+                y_stride: w,
+                alpha: None,
+                duration: [100, 200, 300][f],
+            })
+            .collect();
+        let avif = enc
+            .encode_animation_yuv420(
+                &frames,
+                w as u32,
+                h as u32,
+                AnimationTiming { timescale: 1000 },
+            )
+            .unwrap();
+        fs::write(out.join("real.avif"), &avif).unwrap();
+
+        let result = Command::new("avifdec")
+            .args(["-j", "1", "--index", "all"])
+            .arg(out.join("real.avif"))
+            .arg(out.join("frame.png"))
+            .output()
+            .expect("avifdec required for animated AVIF conformance");
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let info = String::from_utf8_lossy(&result.stdout);
+        assert!(info.contains("3 frames"), "{info}");
+        for duration in [100, 200, 300] {
+            assert!(info.contains(&format!("({duration} timescales)")), "{info}");
+        }
+
+        let mut decoded: Vec<Vec<u8>> = Vec::new();
+        for i in 0..3 {
+            let file = fs::File::open(out.join(format!("frame-{i:010}.png"))).unwrap();
+            let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+                .read_info()
+                .unwrap();
+            let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+            let image = reader.next_frame(&mut pixels).unwrap();
+            assert_eq!((image.width, image.height), (w as u32, h as u32));
+            pixels.truncate(image.buffer_size());
+            decoded.push(pixels);
+        }
+        for i in 1..3 {
+            assert_ne!(
+                decoded[i - 1],
+                decoded[i],
+                "decoded frames {} and {i} are identical — the animation \
+                 round-tripped real motion into a still",
+                i - 1
+            );
+        }
+    }
+
     #[test]
     fn three_frame_alpha_sequence_decodes_with_exact_timing_and_alpha() {
         for (w, h, has_alpha, speed, lossless, screen) in [
