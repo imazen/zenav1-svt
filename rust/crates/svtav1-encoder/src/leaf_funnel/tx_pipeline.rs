@@ -5,6 +5,7 @@
 //! visibility (file-private became `pub(super)`, the same scope).
 
 use super::*;
+use crate::vecpool::PoolVec;
 
 // ---------------------------------------------------------------------------
 // TX pipeline for one transform unit
@@ -36,14 +37,17 @@ pub(super) enum RateMode {
 pub(super) struct TxUnitOut {
     pub(super) eob: u16,
     /// Packed (32-capped) quantized levels.
-    pub(super) qcoeff: Vec<i32>,
-    /// Reconstructed pixels (w x h raster).
+    ///
+    /// Pooled, not freshly allocated: see [`crate::vecpool`] for why this is
+    /// the port's equivalent of C's per-thread `ctx->quant_coeff_ptr[]`.
+    pub(super) qcoeff: PoolVec<i32>,
+    /// Reconstructed pixels (w x h raster), pooled like `qcoeff`.
     ///
     /// EMPTY when the call passed `need_recon == false` — C skips the inverse
     /// transform entirely at those stages (`product_coding_loop.c:4783-4784`).
     /// Empty rather than zeroed deliberately: a caller that starts reading it
     /// gets an index panic, never silently wrong pixels.
-    pub(super) recon: Vec<u8>,
+    pub(super) recon: PoolVec<u8>,
     /// Frequency-domain RESIDUAL distortion (MDS1 path) or spatial SSE
     /// << 4 (MDS3 path), already shifted like C.
     pub(super) dist: u64,
@@ -60,8 +64,10 @@ impl TxUnitOut {
     pub(super) fn absent() -> Self {
         TxUnitOut {
             eob: 0,
-            qcoeff: Vec::new(),
-            recon: Vec::new(),
+            // `new()`, not `pooled()`: the absent placeholder never grows, so
+            // taking a parked buffer for it would only shuffle the free list.
+            qcoeff: PoolVec::new(),
+            recon: PoolVec::new(),
             dist: 0,
             bits: 0,
             cul: 0,
@@ -99,12 +105,23 @@ impl TxUnitOut {
 ///   * `recon`: `residual::recon_add_clamp` writes every `h * w`, the
 ///     `eob == 0` arm copies the prediction over every row, and the
 ///     coded-lossless arm zips all 16.
-#[derive(Default)]
 pub(super) struct TxOutBufs {
     /// C `ctx->quant_coeff_ptr[txt_itr]`.
-    pub(super) qcoeff: Vec<i32>,
+    pub(super) qcoeff: PoolVec<i32>,
     /// C `ctx->recon_ptr[txt_itr]`.
-    pub(super) recon: Vec<u8>,
+    pub(super) recon: PoolVec<u8>,
+}
+
+impl Default for TxOutBufs {
+    /// EMPTY, and deliberately not pooled here: [`grown_out`] takes from the
+    /// free list lazily, so the `recon` of a `need_recon == false` call — the
+    /// majority — never touches a thread-local at all.
+    fn default() -> Self {
+        TxOutBufs {
+            qcoeff: PoolVec::new(),
+            recon: PoolVec::new(),
+        }
+    }
 }
 
 /// What [`tx_unit_inner`] returns when its outputs live in a caller-owned
@@ -129,20 +146,32 @@ pub(super) struct TxUnitMeta {
 /// [`TxOutBufs`] for the per-path proof that every returned position is written
 /// before it is read.
 ///
-/// An EMPTY buffer is filled with `vec![0; n]` — the exact expression, at the
-/// exact program point, that this call site used before the buffers were lifted
-/// out of [`tx_unit_inner`]. That matters and is measured: a caller that hands
-/// in an empty `TxOutBufs` (the owned-output wrapper, and the one-candidate arm
-/// of `txt_search`) must allocate the SAME size class from the SAME allocator
-/// entry point at the SAME point in the transform pipeline, or the live-set
-/// interleaving changes — pre-sizing those two buffers in the CALLER instead,
-/// which is otherwise identical arithmetic, moved the aarch64 inter peak RSS at
-/// 2048 by +4.4 % (interleaved `mem_bisect.sh`, 21 rounds).
+/// This used to special-case an EMPTY buffer with `vec![0; n]`, because an
+/// empty `TxOutBufs` was what the owned-output wrapper and the one-candidate
+/// arm of `txt_search` handed in on EVERY call, and `resize`-from-empty was
+/// measured to cost +0.88 M `memset` calls while moving 2 M allocations from
+/// `calloc` to `malloc`. Both halves of that trade-off are gone now that the
+/// buffers are [`crate::vecpool::PoolVec`]s: an empty pooled buffer arrives
+/// with the capacity its last user grew it to, so `resize` allocates NOTHING
+/// after warmup and its zero-fill is the same fill `calloc` was doing. On the
+/// canonical alloc cell this site went from 1,661,174 allocating calls to
+/// effectively none.
+///
+/// The zero-fill itself is belt-and-braces, not load-bearing: see
+/// [`TxOutBufs`] for the per-path proof that every returned position is written
+/// before it is read.
+///
+/// It also does the POOL TAKE, lazily, rather than [`TxOutBufs::default`] doing
+/// it eagerly for both buffers. That matters because most calls pass
+/// `need_recon == false` and never grow `recon` at all: an eager take would pay
+/// a thread-local round trip per call for a buffer nobody touches. Taking here
+/// means only the buffers a call actually uses reach the free list.
 #[inline]
-fn grown_out<T: Copy + Default>(buf: &mut Vec<T>, n: usize) -> &mut [T] {
-    if buf.is_empty() {
-        *buf = alloc::vec![T::default(); n];
-    } else if buf.len() < n {
+fn grown_out<T: crate::vecpool::Pooled>(buf: &mut PoolVec<T>, n: usize) -> &mut [T] {
+    if buf.capacity() == 0 {
+        *buf = PoolVec::recycled_dirty();
+    }
+    if buf.len() < n {
         buf.resize(n, T::default());
     }
     &mut buf[..n]
@@ -252,8 +281,8 @@ pub(super) struct TxtScratch {
 std::thread_local! {
     static TXT_OUT: core::cell::RefCell<TxtScratch> =
         const { core::cell::RefCell::new(TxtScratch {
-            cur: TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
-            bst: TxOutBufs { qcoeff: Vec::new(), recon: Vec::new() },
+            cur: TxOutBufs { qcoeff: PoolVec::new(), recon: PoolVec::new() },
+            bst: TxOutBufs { qcoeff: PoolVec::new(), recon: PoolVec::new() },
             residual: Vec::new(),
         }) };
 }

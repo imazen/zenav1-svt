@@ -405,8 +405,8 @@ fn lossless_mds1_txbs(
     }
     TxUnitOut {
         eob: eob_total.min(u32::from(u16::MAX)) as u16,
-        qcoeff: Vec::new(),
-        recon: Vec::new(),
+        qcoeff: crate::vecpool::PoolVec::new(),
+        recon: crate::vecpool::PoolVec::new(),
         dist: dist_total,
         bits: bits_total as i32,
         cul: 0,

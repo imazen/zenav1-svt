@@ -47,11 +47,21 @@ pub(super) struct Cand {
     pub(super) mds1_has_coeff: bool,
     // MDS3 winner data:
     pub(super) tx_depth: u8,
-    pub(super) txb_q: Vec<Vec<i32>>,
-    pub(super) txb_eob: Vec<u16>,
-    pub(super) txb_cul: Vec<u8>,
-    pub(super) txb_type: Vec<u8>,
-    pub(super) y_recon: Vec<u8>,
+    // MEASURED NOT worth a SmallVec: inline 16 covers only a 4x4 TXB, and the
+    // 8x8/16x16 majority spill to the heap AND pay a copy. Converting it moved
+    // the allocation count the wrong way, 6,353,616 -> 6,492,430 on the
+    // canonical cell. Pooling is what these want instead — the buffer is
+    // MOVED here out of the tx pipeline and dropped with the candidate, so a
+    // free list recycles it with no copy at all (see [`crate::vecpool`]).
+    pub(super) txb_q: alloc::vec::Vec<crate::vecpool::PoolVec<i32>>,
+    // Per-TXB, so at most 16 entries (depth 2 of a 64x64). heaptrack on the
+    // canonical cell showed these three among the 16 B / 32 B allocation
+    // classes that together make up ~2.1 M of the port's 6.85 M allocations;
+    // inline storage removes the allocation for every real block size.
+    pub(super) txb_eob: smallvec::SmallVec<[u16; 16]>,
+    pub(super) txb_cul: smallvec::SmallVec<[u8; 16]>,
+    pub(super) txb_type: smallvec::SmallVec<[u8; 16]>,
+    pub(super) y_recon: crate::vecpool::PoolVec<u8>,
     /// The winner's TRUE 10-bit LUMA recon (w*h), from the winning tx depth
     /// of the bd10 MDS3 loop. Empty unless the bd10 full-RD funnel is active.
     pub(super) y_recon10: Vec<u16>,
@@ -65,17 +75,17 @@ pub(super) struct Cand {
     /// The tx_depth-0 luma recon (C's shared `cand_bf->recon` state after the
     /// TX loop — deeper depths reconstruct in aux buffers and are never
     /// copied back, so the quad-dist gates measure THIS, not `y_recon`).
-    pub(super) y_recon_d0: Vec<u8>,
+    pub(super) y_recon_d0: crate::vecpool::PoolVec<u8>,
     pub(super) y_bits: u64,
     pub(super) y_dist: u64,
-    pub(super) u_q: Vec<i32>,
-    pub(super) v_q: Vec<i32>,
+    pub(super) u_q: crate::vecpool::PoolVec<i32>,
+    pub(super) v_q: crate::vecpool::PoolVec<i32>,
     pub(super) u_eob: u16,
     pub(super) v_eob: u16,
     pub(super) u_cul: u8,
     pub(super) v_cul: u8,
-    pub(super) u_recon: Vec<u8>,
-    pub(super) v_recon: Vec<u8>,
+    pub(super) u_recon: crate::vecpool::PoolVec<u8>,
+    pub(super) v_recon: crate::vecpool::PoolVec<u8>,
     /// CfL alpha idx/signs when the MDS3 chroma decision picked
     /// UV_CFL_PRED (uv == 13); both 0 otherwise (C block_mi.cfl_alpha_*).
     pub(super) cfl_alpha_idx: u8,
@@ -418,9 +428,9 @@ pub(crate) struct LeafEval {
     /// -> the winner rebuild (== winner final recon+chroma); bypass=1 ->
     /// the LAST MDS3 candidate's depth-0 luma recon + its chroma (the
     /// rebuild is redirected away and never reaches the shared buffer).
-    pub(super) gate_y: Vec<u8>,
-    pub(super) gate_u: Vec<u8>,
-    pub(super) gate_v: Vec<u8>,
+    pub(super) gate_y: crate::vecpool::PoolVec<u8>,
+    pub(super) gate_u: crate::vecpool::PoolVec<u8>,
+    pub(super) gate_v: crate::vecpool::PoolVec<u8>,
     /// C `cand_bf->residual` content at `non_normative_txs` time: ALL
     /// MDS3 candidates share ONE residual workspace (verified by buffer-
     /// pointer instrumentation — docs/captures/nsq_m2m3), so the buffer
@@ -627,15 +637,19 @@ impl LeafEval {
             uv_mode: cand.uv,
             uv_angle_delta: cand.uv_delta,
             tx_depth: cand.tx_depth,
-            txb_qcoeffs: cand.txb_q,
-            txb_eobs: cand.txb_eob,
-            txb_tx_types: cand.txb_type,
-            u_qcoeffs: cand.u_q,
-            v_qcoeffs: cand.v_q,
+            txb_qcoeffs: cand
+                .txb_q
+                .into_iter()
+                .map(crate::vecpool::PoolVec::into_vec)
+                .collect(),
+            txb_eobs: cand.txb_eob.into_vec(),
+            txb_tx_types: cand.txb_type.into_vec(),
+            u_qcoeffs: cand.u_q.into_vec(),
+            v_qcoeffs: cand.v_q.into_vec(),
             u_eob: cand.u_eob,
             v_eob: cand.v_eob,
-            u_recon: cand.u_recon,
-            v_recon: cand.v_recon,
+            u_recon: cand.u_recon.into_vec(),
+            v_recon: cand.v_recon.into_vec(),
             cfl_alpha_idx: cand.cfl_alpha_idx,
             cfl_alpha_signs: cand.cfl_alpha_signs,
             palette: cand.palette,

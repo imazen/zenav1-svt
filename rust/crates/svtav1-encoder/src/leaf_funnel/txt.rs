@@ -488,8 +488,8 @@ pub(super) fn txt_search(
             (q, r)
         } else {
             (
-                bst.qcoeff[..m.q_len].to_vec(),
-                bst.recon[..m.recon_len].to_vec(),
+                crate::vecpool::PoolVec::from_slice(&bst.qcoeff[..m.q_len]),
+                crate::vecpool::PoolVec::from_slice(&bst.recon[..m.recon_len]),
             )
         };
         let out = TxUnitOut {

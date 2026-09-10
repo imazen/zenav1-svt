@@ -127,6 +127,7 @@ pub mod tx_bias;
 pub(crate) mod txs_arm;
 pub mod var_boost;
 pub mod vartx;
+pub(crate) mod vecpool;
 
 mod lossless_mono;
 

@@ -24,6 +24,7 @@ magetypes = { workspace = true }
 enough = { workspace = true }
 almost-enough = { workspace = true }
 whereat = { workspace = true }
+smallvec = { workspace = true }
 
 [dev-dependencies]
 zenav1-svt-cref = { path = "../svtav1-cref" }

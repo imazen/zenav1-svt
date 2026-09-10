@@ -1,0 +1,124 @@
+# alloc_vecpool_2026-09-10 — allocator-call reduction, port vs C
+
+commit:  (this change)
+host:    lilith (WSL2, Ryzen 9 7950X, 23 GiB), x86_64-unknown-linux-gnu
+tool:    heaptrack + heaptrack_print, via tools/heaptrack_alloc_cell.sh
+cell:    identity_run crop:codec-corpus/gb82-sc/windows.png 512 320 qp20 preset -1
+         (screen-content still; the whole MD funnel runs, and it is small enough
+         to heaptrack in seconds)
+C arm:   tools/capture_c_trace/capture_c_trace.bin 512 320 20 -1 p.yuv c.obu
+
+## WHY this cell and this metric
+
+The user's instruction was "heaptrack vs C and fix our memory model deficits
+that are amplifying allocs". The deficit is NOT peak heap — the port's peak is
+a THIRD of C's. It is allocator CALL COUNT, where the port was 14.7x C:
+
+    port  6,851,798 calls    peak heap 25.44 M
+    C       466,395 calls    peak heap 69.43 M
+
+C is low because it allocates its mode-decision working set ONCE per encoder
+thread in `svt_aom_mode_decision_context_ctor` (md_process.c:214) and reuses it
+for every tx-type trial of every transform unit of every block of every frame.
+The port allocated the same buffers per call.
+
+## EVERY ARM IS BYTE-IDENTICAL
+
+Every number below was taken with the emitted bitstream hashed. All arms, and
+the C reference, produce the SAME 14,871-byte OBU:
+
+    sha256(first 16) = 00c327d57ee3fc1d
+
+An arm whose allocation count moved but whose bytes moved too is not an
+allocation result, so the hash is printed by the harness on every run.
+
+## RESULTS
+
+    arm                                            calls        vs base   peak heap
+    ------------------------------------------------------------------------------
+    base (6a784743)                            6,851,798             --     25.44 M
+    smallvec on txb_eob/cul/type + MDS3 locals 6,353,616         -7.3 %     25.44 M
+    + PoolVec on the tx pipeline's outputs     3,420,176        -50.1 %     27.78 M
+    + PoolVec on the MD scratch buffers        2,504,946        -63.4 %     27.69 M
+    ------------------------------------------------------------------------------
+    C reference                                  466,395                    69.43 M
+
+Peak heap rose 2.25 M (+8.8 %) and stays at 40 % of C's. That is the free
+lists holding their buffers: POOL_DEPTH (64) per element type per thread.
+
+## WHAT WAS TRIED AND REJECTED
+
+`SmallVec<[i32; 16]>` for `Cand::txb_q` (the per-TXB coefficient rows).
+MEASURED WORSE: 6,353,616 -> 6,492,430. Inline 16 covers only a 4x4 TXB; the
+8x8-and-larger majority spill to the heap AND pay a copy, because the value
+stored there is MOVED out of the tx scratch today rather than copied. Reverted;
+the field is pooled instead, which keeps the move. The comment on the field
+records this so it is not re-attempted.
+
+## SITES, IN THE ORDER heaptrack RANKED THEM
+
+Taken with CARGO_PROFILE_RELEASE_DEBUG=line-tables-only into a separate
+target dir, so the frames carry file:line through the inlining.
+
+    1,661,174  tx_pipeline.rs:873  grown_out(&mut out.qcoeff, pw*ph)
+                 spread over txt_search, chroma::eval_uv, inject_candidates,
+                 mds3, md_cfl_rd_pick_alpha and run_mds1 -- no single caller
+                 dominated, which is why the fix is at the Vec level
+      660,053  inject.rs:163       u_pred/v_pred/u_pred10/v_pred10
+      548,918  chroma.rs:80        eval_uv's u_pred/v_pred
+      452,676  mds3.rs:707         dep_recon / dep_pred / dep_pred10
+       72,392  mds3.rs:1128        d0_recon = dep_recon.clone()
+
+## RUNTIME COST — the budget was 1 %, MEASURED at 0.43-1.23 %
+
+Instruction counts, `perf stat -e instructions`, PINNED to one P-core
+(`taskset -c 2`) because this host (i265) is a hybrid P/E-core Core Ultra 7
+265K and unpinned wall clock moves several percent with core placement alone.
+Baseline binary built from 6a784743 in a sibling extraction; both are
+`examples/perf_encode gradient <n> <n> 40 <preset>`, 3 frames.
+
+    cell                base            candidate       delta
+    ---------------------------------------------------------
+    256x256 preset 2    14,529,697,574  14,592,064,246  +0.43 %
+    512x512 preset 6     2,411,255,071   2,428,499,075  +0.72 %
+    1024x1024 preset 8   2,534,652,799   2,554,722,601  +0.79 %
+    256x256 preset 6       704,868,621     710,891,895  +0.85 %
+    512x512 preset 10      482,579,555     488,528,562  +1.23 %
+
+The cost rises as the preset gets FASTER, which is the expected shape: at
+preset 10 there is less mode-decision work per pooled buffer, so the free-list
+bookkeeping is a larger share. `_int_malloc` drops out of the profile entirely
+(2.45 % of preset-6 self time in the baseline, below the 1 % cut in the
+candidate).
+
+Wall clock agrees but is much noisier on this host. Interleaved paired rounds
+(`tools/perf_ab.sh`, 11 rounds, order randomised per round), all cells
+byte-identical, worst cell 256x256 preset 6 at ratio 1.0156. The SAME-BINARY
+null arm on that cell is ratio 0.9996 with p25/p75 0.9970/1.0017, so the wall
+clock difference is real and not drift -- it is just a worse estimator than the
+instruction count above.
+
+## TWO MICRO-DECISIONS, BOTH MEASURED
+
+* `Cell<Vec<Vec<T>>>` (take / pop / set) INSTEAD of `RefCell`: SLOWER.
+  489,282,103 vs 488,528,562 instructions on 512x512 preset 10. The borrow flag
+  is cheaper than moving the list header twice. The `RefCell` stays.
+* `grown_out` takes from the free list LAZILY rather than `TxOutBufs::default`
+  taking both buffers eagerly: 1.02 % -> 0.83 % on 256x256 preset 6. Most calls
+  pass `need_recon == false` and never touch `recon`, so an eager take paid a
+  thread-local round trip per call for a buffer nobody used.
+* Bypassing the pool for the ZEROED scratch sites (`vec![0; n]` again) was
+  measured too, in case their `resize` memset was the cost: 489,304,613 vs
+  488,528,562 on 512x512 preset 10, i.e. pooling them is slightly BETTER. The
+  residual cost is the tx-pipeline bookkeeping, not the zero fill.
+
+## STILL OPEN
+
+    343,527  finish_grow (Vec growth: 207,457 of it from grow_one, i.e. push
+             into a Vec that has no capacity reserved)
+    259,411  finish_grow/realloc
+    132,181  mds3.rs:703  dep_q's OUTER Vec::with_capacity(txbs)
+
+REPRODUCE:
+    tools/heaptrack_alloc_cell.sh <arm>          # port
+    tools/heaptrack_alloc_cell.sh --c c          # C reference

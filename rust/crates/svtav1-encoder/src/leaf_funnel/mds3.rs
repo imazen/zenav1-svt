@@ -19,6 +19,7 @@
 //! moved code needed no edits.
 
 use super::*;
+use crate::vecpool::zeroed_pool;
 
 /// Run the independent-chroma search (when C would) and then the MDS3 full
 /// loop over `order1[..n3]`, writing each candidate's `mds3_cost` and winner
@@ -634,11 +635,11 @@ fn eval_candidate(
     let mut best_cost = u64::MAX;
     let mut best_bits: u64 = 0;
     let mut best_dist: u64 = 0;
-    let mut best_txb_q: Vec<Vec<i32>> = Vec::new();
-    let mut best_txb_eob: Vec<u16> = Vec::new();
-    let mut best_txb_cul: Vec<u8> = Vec::new();
-    let mut best_txb_type: Vec<u8> = Vec::new();
-    let mut best_recon: Vec<u8> = Vec::new();
+    let mut best_txb_q: Vec<crate::vecpool::PoolVec<i32>> = Vec::new();
+    let mut best_txb_eob: smallvec::SmallVec<[u16; 16]> = smallvec::SmallVec::new();
+    let mut best_txb_cul: smallvec::SmallVec<[u8; 16]> = smallvec::SmallVec::new();
+    let mut best_txb_type: smallvec::SmallVec<[u8; 16]> = smallvec::SmallVec::new();
+    let mut best_recon: crate::vecpool::PoolVec<u8> = crate::vecpool::PoolVec::new();
     // The winning depth's TRUE 10-bit luma recon (bd10 full-RD only) —
     // the 10-bit twin of `best_recon`.
     let mut best_recon10: Vec<u16> = Vec::new();
@@ -646,7 +647,7 @@ fn eval_candidate(
     // as it stands once the TX loop returns. NOT the same as `cand.pred`
     // (the MDS0 whole-block pred) whenever the winning depth > 0 — see the
     // detector call below for why the difference is observable.
-    let mut best_pred: Vec<u8> = Vec::new();
+    let mut best_pred: crate::vecpool::PoolVec<u8> = crate::vecpool::PoolVec::new();
     // The bd10 twin of `best_pred` — C's `cand_bf->pred->y_buffer` at
     // `hbd_md`, which is what `chroma_complexity_check_pred`'s SAD arm
     // reads (product_coding_loop.c:6049). Empty on every u8 path.
@@ -661,7 +662,7 @@ fn eval_candidate(
     // Proven on 1147124 q20 p4 (76,96): C fill luma quads sum 971<<4 ==
     // C's OWN depth-0 dist 15536, while the winning depth-1 dist is
     // 11904 (== this port's winner recon SSE).
-    let mut d0_recon: Vec<u8> = Vec::new();
+    let mut d0_recon: crate::vecpool::PoolVec<u8> = crate::vecpool::PoolVec::new();
     let mut best_coeff_count = u32::MAX;
 
     // Coded-lossless: C `get_start_end_tx_depth` ends with "Force the use of
@@ -699,19 +700,19 @@ fn eval_candidate(
         let loc_left = &mut sc.loc_left;
         let mut dep_bits: u64 = 0;
         let mut dep_dist: u64 = 0;
-        let mut dep_q: Vec<Vec<i32>> = Vec::with_capacity(txbs);
-        let mut dep_eob: Vec<u16> = Vec::with_capacity(txbs);
-        let mut dep_cul: Vec<u8> = Vec::with_capacity(txbs);
-        let mut dep_type: Vec<u8> = Vec::with_capacity(txbs);
-        let mut dep_recon = vec![0u8; w * h];
+        let mut dep_q: Vec<crate::vecpool::PoolVec<i32>> = Vec::with_capacity(txbs);
+        let mut dep_eob: smallvec::SmallVec<[u16; 16]> = smallvec::SmallVec::with_capacity(txbs);
+        let mut dep_cul: smallvec::SmallVec<[u8; 16]> = smallvec::SmallVec::with_capacity(txbs);
+        let mut dep_type: smallvec::SmallVec<[u8; 16]> = smallvec::SmallVec::with_capacity(txbs);
+        let mut dep_recon = zeroed_pool::<u8>(w * h);
         // This depth's assembled whole-block luma prediction (see
         // `best_pred`); mirrors what C leaves in `cand_bf->pred->y_buffer`.
-        let mut dep_pred = vec![0u8; w * h];
+        let mut dep_pred = zeroed_pool::<u8>(w * h);
         // Its 10-bit twin, assembled from the same per-txb predictions.
         let mut dep_pred10 = if bd10_rd.is_some() {
-            vec![0u16; w * h]
+            zeroed_pool::<u16>(w * h)
         } else {
-            Vec::new()
+            crate::vecpool::PoolVec::new()
         };
         let mut dep_has_coeff = false;
         let mut aborted = false;
@@ -1018,7 +1019,11 @@ fn eval_candidate(
             // forms are the same packed (32-capped) pw*ph layout the
             // entropy walk re-expands (partition.rs funnel_block_decision).
             dep_q.push(match out10 {
-                Some(o) => o.qcoeff,
+                // The bd10 chain's `TxUnitOutHbd` is still a plain `Vec`
+                // (its `recon: Vec<u16>` has no free list yet), so the 10-bit
+                // arm pays one copy into the pool here. The 8-bit arm MOVES,
+                // which is the hot path and the one heaptrack measured.
+                Some(o) => crate::vecpool::PoolVec::from_slice(&o.qcoeff),
                 None => out.qcoeff,
             });
             dep_eob.push(dec_eob);
@@ -2966,22 +2971,22 @@ fn eval_candidate(
         cand.cfl_alpha_idx = 0;
         cand.cfl_alpha_signs = 0;
         cand.tx_depth = 0;
-        cand.txb_q = alloc::vec![alloc::vec![0i32; w * h]];
-        cand.txb_eob = alloc::vec![0u16];
-        cand.txb_cul = alloc::vec![0u8];
-        cand.txb_type = alloc::vec![cc::DCT_DCT as u8];
-        cand.y_recon = pred.clone();
-        cand.y_recon_d0 = pred;
+        cand.txb_q = alloc::vec![zeroed_pool::<i32>(w * h)];
+        cand.txb_eob = smallvec::smallvec![0u16];
+        cand.txb_cul = smallvec::smallvec![0u8];
+        cand.txb_type = smallvec::smallvec![cc::DCT_DCT as u8];
+        cand.y_recon = crate::vecpool::PoolVec::from_slice(&pred);
+        cand.y_recon_d0 = crate::vecpool::PoolVec::from_slice(&pred);
         cand.y_bits = 0;
         cand.y_dist = skip_y;
-        cand.u_q = alloc::vec![0i32; cw * chh];
-        cand.v_q = alloc::vec![0i32; cw * chh];
+        cand.u_q = zeroed_pool::<i32>(cw * chh);
+        cand.v_q = zeroed_pool::<i32>(cw * chh);
         cand.u_eob = 0;
         cand.v_eob = 0;
         cand.u_cul = 0;
         cand.v_cul = 0;
-        cand.u_recon = u_pred;
-        cand.v_recon = v_pred;
+        cand.u_recon = crate::vecpool::PoolVec::from_slice(&u_pred);
+        cand.v_recon = crate::vecpool::PoolVec::from_slice(&v_pred);
         cand.block_has_coeff = false;
         return;
     }
@@ -3006,8 +3011,8 @@ fn eval_candidate(
     // chroma full loop ran, for the same reason as luma above.
     match &uv_out10 {
         Some((u10, v10)) => {
-            cand.u_q = u10.qcoeff.clone();
-            cand.v_q = v10.qcoeff.clone();
+            cand.u_q = crate::vecpool::PoolVec::from_slice(&u10.qcoeff);
+            cand.v_q = crate::vecpool::PoolVec::from_slice(&v10.qcoeff);
             cand.u_eob = u10.eob;
             cand.v_eob = v10.eob;
             cand.u_cul = u10.cul;
