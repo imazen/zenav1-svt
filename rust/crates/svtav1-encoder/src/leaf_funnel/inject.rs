@@ -1571,9 +1571,21 @@ pub(super) fn inject_candidates(
                 // The bd10 full-RD funnel residuals against this. It was
                 // unconditionally EMPTY for an inter candidate, which is the
                 // index-out-of-bounds `tx_unit_hbd` hit on the first 10-bit
-                // inter frame; `inter_md_arm` now fills it whenever the DPB
-                // carries a 10-bit twin of the reference.
-                pred10: crate::vecpool::PoolVec::from_slice(&c.y_pred10),
+                // inter frame; `inter_md_arm` fills it whenever the DPB carries
+                // a 10-bit twin of the reference.
+                //
+                // GATED ON THE FUNNEL, not merely on the reference. The
+                // invariant every consumer relies on is "`pred10` non-empty IFF
+                // a bd10 stage will read it" — an intra candidate gets one only
+                // when `fx.y_recon10` exists, and an inter candidate must match
+                // that or `evaluate_leaf`'s `psq_resid10` indexes an empty
+                // 10-bit source. C has no such split: at `hbd_md == 0` it makes
+                // no 10-bit prediction at all.
+                pred10: if bd10_funnel {
+                    crate::vecpool::PoolVec::from_slice(&c.y_pred10)
+                } else {
+                    crate::vecpool::PoolVec::new()
+                },
                 flr,
                 fcr: 0,
                 fast_cost,
@@ -1621,8 +1633,16 @@ pub(super) fn inject_candidates(
                     overlappable_neighbors: overlappable.min(255) as u8,
                     u_pred: c.u_pred,
                     v_pred: c.v_pred,
-                    u_pred10: c.u_pred10,
-                    v_pred10: c.v_pred10,
+                    u_pred10: if bd10_funnel {
+                        c.u_pred10
+                    } else {
+                        alloc::vec::Vec::new()
+                    },
+                    v_pred10: if bd10_funnel {
+                        c.v_pred10
+                    } else {
+                        alloc::vec::Vec::new()
+                    },
                     wm_params: c.wm_params_l0,
                 })),
                 mds3_cost: u64::MAX,

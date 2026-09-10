@@ -70,11 +70,51 @@ The one identical frame is kristenandsara 128x128 preset 6 frame 1.
       fourpeople p6 C 2201 port 2202     fourpeople p10 C 2262 port 2211
 
 So the remaining work is bd10 MODE DECISION under the VIDEO configuration —
-C's `hbd_md` derivation, the bd10 lambda/update-type chain on a non-all-intra
-frame, and the bd10 qindex path — not the 10-bit prediction this change added.
-That is the next chunk, and it is the same surface as the unwired `ssim_hbd`
-module (blocked on `hbd_md` being hardcoded false at inter_hdr_arm.rs:452 and
-inter_search_arm.rs:434/:602).
+not the 10-bit prediction this change added.
+
+## ROOT CAUSE FOUND, SAME DAY — C's mode decision is 8-BIT on a 10-bit INTER frame
+
+`svt_aom_sig_deriv_multi_processes_default` (enc_mode_config.c:2151-2164),
+which this port ALREADY has ported verbatim in
+`port_enc_mode_config::multi_processes`:
+
+    encoder_bit_depth == 8   ->  hbd_md = 0
+    enc_mode <= ENC_MR       ->  hbd_md = 1
+    enc_mode <= ENC_M5       ->  hbd_md = is_base  ? 2 : 0
+    else                     ->  hbd_md = is_islice ? 2 : 0
+
+At preset 6 and above, **C's `hbd_md` is 0 on every non-I frame** — its mode
+decision runs at 8 bits and only the reconstruction is 10-bit. The port's
+`bd10_full_rd_supported` had NO frame-type term at all, so a 10-bit INTER frame
+ran the port's 10-bit full-RD funnel against C's 8-bit MD.
+
+That single fact explains the whole shape of the divergence table:
+ * bd10 STILLS are 16/16 identical — every frame is an I-slice, `hbd_md = 2`,
+   and the port's full-RD funnel is the right approximation;
+ * every bd10 VIDEO frame diverges — including frame 0, whose I-slice status
+   makes `hbd_md = 2` correct, because a key frame in a GOP still inherits the
+   video RC/lambda chain;
+ * presets 9 and 10 diverge MORE, because there the port is already on the
+   MDS0 + post-pass path and the frame-type term would not have applied.
+
+## AND WHY THE TERM IS DOCUMENTED RATHER THAN SWITCHED ON
+
+Applying `&& (preset <= 5 || is_islice)` was TRIED and MEASURED. A 10-bit inter
+frame then falls to the level re-encode post-pass, and that post-pass has NO
+INTER ARM: `bd10_reencode_node` predicts every leaf with `predict_unit_hbd`.
+johnny and vidyo3 128x128 at presets 6 and 8 REFUSE frame 1 outright ("native
+10-bit source went unconsumed"); fourpeople and kristenandsara code it at 753
+and 867 bytes against C's 24. So the rule trades a decodable non-identical
+stream for no stream, and the term is threaded and documented in
+`bd10_full_rd_supported` instead.
+
+CLOSING IT is now a named, bounded piece of work: give the post-pass an inter
+arm. `predict_inter_yuv_hbd` exists as of this change; what is missing is the
+leaf's MV / reference / interpolation filters reaching `bd10_reencode_node`,
+and the DPB's 10-bit reference reaching the post-pass.
+
+This is also the same `hbd_md` that blocks the unwired `ssim_hbd` module
+(hardcoded false at inter_hdr_arm.rs:452 and inter_search_arm.rs:434/:602).
 
 ## SHIPPING STATUS UNCHANGED
 

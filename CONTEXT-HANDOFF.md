@@ -84,11 +84,33 @@ produces the 10-bit luma AND chroma in one call, and `chroma::eval_uv_inter_hbd`
 scores it. **24/24 cells encode, 24/24 decode on dav1d, 1/48 frames is
 byte-identical to C.** The gate pins that table.
 
-Where the divergence is NOT — this is the useful part, and it is measured:
-bd10 STILLS on the same content and geometry are 16/16 identical; the 8-bit
-video key frame of the same cell IS identical (1176 B both sides); and it does
-not track `bd10_full_rd` (presets 9/10, where that gate is off, diverge MORE).
-What is left is bd10 MODE DECISION under the video configuration.
+**ROOT CAUSE FOUND, same day.** `svt_aom_sig_deriv_multi_processes_default`
+(enc_mode_config.c:2151-2164), which this port already has ported verbatim in
+`port_enc_mode_config::multi_processes`, sets
+
+    enc_mode <= ENC_MR   ->  hbd_md = 1
+    enc_mode <= ENC_M5   ->  hbd_md = is_base  ? 2 : 0
+    else                 ->  hbd_md = is_islice ? 2 : 0
+
+so **at preset 6 and above C's mode decision is 8-BIT on every non-I frame**.
+`bd10_full_rd_supported` had NO frame-type term, so a 10-bit inter frame ran
+the port's 10-bit full-RD funnel against C's 8-bit MD. That one fact explains
+the whole table: stills are all I-slices and match 16/16; every video frame
+diverges; and presets 9/10 diverge more because the term would not apply there
+anyway.
+
+**The term is documented but NOT switched on, and that is measured.** Applying
+it makes a 10-bit inter frame fall to the level re-encode post-pass, which has
+no INTER arm at all (`bd10_reencode_node` predicts every leaf with
+`predict_unit_hbd`): johnny and vidyo3 128x128 at presets 6/8 REFUSE frame 1,
+and fourpeople/kristenandsara code it at 753/867 bytes against C's 24. Trading
+a decodable stream for no stream is the wrong move, so the term is threaded and
+documented in `bd10_full_rd_supported` instead.
+
+**Closing it is now bounded:** give the post-pass an inter arm.
+`predict_inter_yuv_hbd` exists; what is missing is the leaf's MV / reference /
+interpolation filters reaching `bd10_reencode_node`, and the DPB's 10-bit
+reference reaching the post-pass.
 
 ### A bd10 chroma-recon regression from 2026-08-03, found by bisect
 
@@ -148,14 +170,16 @@ UNDERNEATH:
 
 - `ssim_hbd` needs high-bit-depth mode decision. `hbd_md` is hardcoded
   `false`/`0` at every site — MD always runs 8-bit, 10-bit is a post-pass.
-  **Two independent 2026-09-10 measurements now point at this same gap** as the
-  next thing worth doing: the 10-bit VIDEO divergence (24 cells, none
-  byte-identical, while 10-bit STILLS on the same content are 16/16) and the
-  bd10 chroma-recon bisect (C's chroma recon matches the U8 quantizer's, which
-  is what an 8-bit `hbd_md` would produce). Read `hbd_md` in C first —
-  `inter_hdr_arm.rs:452`, `inter_search_arm.rs:434` and `:602` are the port's
-  hardcoded sites — and establish what C actually derives for a video frame
-  before changing anything.
+  **The derivation was read on 2026-09-10 and it is already ported** —
+  `port_enc_mode_config::multi_processes` transcribes
+  `svt_aom_sig_deriv_multi_processes_default` (enc_mode_config.c:2151-2164)
+  verbatim. At preset 6+ C's `hbd_md` is 0 on every non-I frame, which is what
+  the two independent measurements were pointing at: the 10-bit VIDEO
+  divergence (stills 16/16 identical, video 0/48) and the bd10 chroma-recon
+  bisect (C's chroma recon matches the U8 quantizer's — what an 8-bit `hbd_md`
+  produces). The blocker is NOT the derivation; it is that the port's
+  8-bit-MD-plus-10-bit-re-encode path has no INTER arm. See the bd10 video
+  meta.
 - ~~`mv_refine`, `motion_mode` need OBMC / warped motion. No such candidate is
   ever injected; `warped_motion_mode_allowed` is a tested predicate with no
   producer.~~ **WARPED MOTION IS WIRED as of 2026-09-10** (`ddbfa257`,

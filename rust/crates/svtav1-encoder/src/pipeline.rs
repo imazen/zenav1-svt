@@ -1292,7 +1292,10 @@ impl EncodePipeline {
         if !chroma_420 {
             return true;
         }
-        preset >= 9 || bd10_full_rd_supported(false, self.bit_depth, preset, chroma_420, w, h)
+        // A capability QUERY, not a per-frame decision: it answers "can this
+        // configuration serve 10-bit at all", so it asks the I-slice arm --
+        // which is the one an all-intra caller takes on every frame.
+        preset >= 9 || bd10_full_rd_supported(false, self.bit_depth, preset, chroma_420, true, w, h)
     }
 
     /// C `scs->tpl` for THIS pipeline's configuration
@@ -4708,6 +4711,7 @@ impl EncodePipeline {
                 self.bit_depth,
                 self.speed_config.preset,
                 chroma.is_some(),
+                is_key,
                 w,
                 h,
             );
@@ -10951,6 +10955,9 @@ fn bd10_full_rd_supported(
     bit_depth: u8,
     preset: i8,
     chroma_420: bool,
+    // C `pcs->slice_type == I_SLICE`. It is the term this gate was MISSING,
+    // and the reason 10-bit VIDEO diverged while 10-bit stills did not.
+    is_islice: bool,
     _w: usize,
     _h: usize,
 ) -> bool {
@@ -10968,6 +10975,48 @@ fn bd10_full_rd_supported(
     // a compile-time tautology that read like a screen-content precondition.
     // Palette at bd10 is now handled inside the funnel (see
     // `search_palette_luma_hbd`), so no such precondition is needed.
+    //
+    // THE FRAME-TYPE TERM. C derives `pcs->hbd_md` in
+    // `svt_aom_sig_deriv_multi_processes_default` (enc_mode_config.c:2151-2164):
+    //
+    //     enc_mode <= ENC_MR  ->  1
+    //     enc_mode <= ENC_M5  ->  is_base ? 2 : 0
+    //     else                ->  is_islice ? 2 : 0
+    //
+    // so at preset 6 and above C's mode decision is **8-BIT on every non-I
+    // frame**. This gate had no frame-type term at all, so a 10-bit INTER
+    // frame ran the port's 10-bit full-RD funnel where C runs 8-bit MD — which
+    // is why bd10 STILLS on real content are 16/16 byte-identical while every
+    // one of the 24 bd10 VIDEO cells diverged
+    // (benchmarks/bd10_video_2026-09-10.meta).
+    //
+    // `is_base` does not appear because it is ALWAYS TRUE on this port: a
+    // hierarchical GOP is refused (`gop_config_error`), so every picture is
+    // temporal layer 0. When that refusal lifts, this line needs the real
+    // `is_base` for the `<= ENC_M5` arm.
+    //
+    // The `preset <= 8` bound is the PORT's, not C's: C's `hbd_md` is non-zero
+    // for an I-slice at every preset, and the port serves presets >= 9 with the
+    // MDS0 funnel plus the level re-encode post-pass instead of full RD.
+    // NOT APPLIED, and that is a measured decision rather than an oversight.
+    // Adding `&& (preset <= 5 || is_islice)` here is what C does, and it makes
+    // a 10-bit INTER frame fall to the level re-encode post-pass — which
+    // REFUSES it, because `bd10_reencode_node` predicts every leaf with
+    // `predict_unit_hbd` and has no INTER arm at all
+    // ("native 10-bit source went unconsumed"). Applying the rule therefore
+    // trades a decodable non-identical stream for no stream, so the term is
+    // documented and threaded rather than switched on.
+    //
+    // MEASURED 2026-09-10: with the term applied, johnny / vidyo3 128x128
+    // preset 6 and 8 at bd10 REFUSE frame 1 outright, and fourpeople /
+    // kristenandsara code it at 753 / 867 bytes against C's 24 -- the
+    // post-pass path is not merely absent, it is wrong where it does run.
+    //
+    // CLOSING IT needs the post-pass to gain an inter arm:
+    // `predict_inter_yuv_hbd` now exists (a377e896), so what is missing is the
+    // leaf's MV / reference / filters reaching `bd10_reencode_node` and the
+    // 10-bit DPB reference reaching the post-pass.
+    let _hbd_md_nonzero = preset <= 5 || is_islice;
     bit_depth == 10 && (preset <= 8 || coded_lossless) && chroma_420
 }
 
@@ -11800,6 +11849,10 @@ fn encode_tile_rows(
             bit_depth,
             speed_config.preset,
             chroma_420,
+            // C `pcs->slice_type == I_SLICE`. `inter_md` is `Some` on exactly
+            // the frames that carry a reference, so its absence IS the I-slice
+            // test at this layer.
+            inter_md.is_none(),
             w,
             h,
         );
