@@ -16,14 +16,12 @@ use super::*;
 /// shape == PART_N <=> w == h — HVA/HVB shapes with square children are
 /// geometry-disabled at every funnel preset).
 pub(super) fn end_tx_depth(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
-    let base: u8 = match (w, h) {
-        // 2-depth blocks (the bsize list at :4173-4176).
-        (64, 64) | (32, 32) | (16, 16) => 2,
-        (64, 32) | (32, 64) | (32, 16) | (16, 32) | (16, 8) | (8, 16) => 2,
-        (64, 16) | (16, 64) | (32, 8) | (8, 32) | (16, 4) | (4, 16) => 2,
-        (8, 8) => 1,
-        _ => 0, // 8x4, 4x8, 4x4
-    };
+    // The bsize table is `port_md::tx_gates::get_end_tx_depth`, C's
+    // `get_end_tx_depth` itself. It used to be duplicated here verbatim; two
+    // ports of one C function is a divergence waiting to happen, so this now
+    // calls the ported module and keeps only the CAP, which is the part
+    // `get_start_end_tx_depth`'s class clamp contributes.
+    let base: u8 = crate::port_md::tx_gates::get_end_tx_depth(w, h);
     let cap = if w == h {
         cfg.txs_max_sq
     } else {
@@ -42,13 +40,7 @@ pub(super) fn end_tx_depth(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
 /// port applied this to IntraBC on purpose; that was the gb82-sc p0..3
 /// divergence family, see the `mds3.rs` depth loop.)
 pub(super) fn end_tx_depth_inter(w: usize, h: usize, cfg: &FunnelCfg) -> u8 {
-    let base: u8 = match (w, h) {
-        (64, 64) | (32, 32) | (16, 16) => 2,
-        (64, 32) | (32, 64) | (32, 16) | (16, 32) | (16, 8) | (8, 16) => 2,
-        (64, 16) | (16, 64) | (32, 8) | (8, 32) | (16, 4) | (4, 16) => 2,
-        (8, 8) => 1,
-        _ => 0,
-    };
+    let base: u8 = crate::port_md::tx_gates::get_end_tx_depth(w, h);
     let cap = if w == h {
         cfg.txs_inter_max_sq
     } else {

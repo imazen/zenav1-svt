@@ -1,0 +1,61 @@
+Audit: what "ported but unwired" actually means here — 2026-09-10
+
+Video coverage showed five port_md modules at 0.00 %. Counting PRODUCTION
+callers (excluding tests) separates two very different situations:
+
+  module                regions  prod callers  what it really is
+  ------------------------------------------------------------------------
+  tx_gates                 127        0        DUPLICATE of live inline code
+  mv_refine                175        0        blocked on OBMC/warped motion
+  motion_mode              265        0        blocked on OBMC/warped motion
+  ssim_hbd                 214        0        blocked on hbd MODE DECISION
+  md_stages                285        0        alternative MD-stage driver
+
+1. tx_gates -- WIRED, and it was duplication, not a gap.
+   `leaf_funnel/tx_geom.rs::end_tx_depth{,_inter}` carried a byte-for-byte copy
+   of the same bsize table. Two ports of one C function is a divergence waiting
+   to happen, so the live path now calls
+   `port_md::tx_gates::get_end_tx_depth` and keeps only the class CAP, which is
+   the part `get_start_end_tx_depth` contributes. Byte-neutral by construction
+   (identical tables) and by measurement: identity 1100/1100,
+   regression_spotcheck 141/141, inter_byte 108/108, screen_palette 50/50,
+   real_video 24/24.
+
+   tx_gates additionally implements C's frame-OVERHANG pin (a block crossing the
+   aligned frame is forced to depth 0, `:6711-6717`), which tx_geom never had.
+   It is unreachable here because blocks tile the ALIGNED frame, so this changes
+   nothing today -- but it is now present for when that stops holding.
+
+2. ssim_hbd -- NOT a wiring gap. C branches the tune-SSIM MD distortion on
+   `ctx->hbd_md`; the port calls the 8-bit arm unconditionally
+   (`mds3.rs:3077`, on `cand.y_recon`, with `cand.y_recon10` sitting right
+   above). The module's own doc names this. But `hbd_md` is hardcoded `false`/`0`
+   at EVERY site in the port (inter_hdr_arm.rs:452, inter_search_arm.rs:434 and
+   :602): there is no high-bit-depth mode-decision path at all. Mode decision
+   always runs 8-bit and 10-bit is a post-pass. So ssim_hbd cannot be wired
+   until hbd MD exists; wiring it now would be adding a branch nothing can take.
+
+3/4. mv_refine + motion_mode -- blocked on a FEATURE, not wiring. Both serve
+   WARPED_CAUSAL / OBMC_CAUSAL, and no such candidate is ever injected
+   (inter_md_arm.rs asserts only SimpleTranslation reaches the predictor).
+   `warped_motion_mode_allowed` exists as a tested predicate with no producer.
+   Making these active means implementing OBMC and warped motion end to end --
+   candidate injection, the refinement searches, the rate, and C parity for
+   each -- not connecting a call.
+
+5. md_stages -- an alternative COMPLETE port of the MDS0..MDS3 class loop that
+   `leaf_funnel` already drives its own way. Switching drivers is a refactor of
+   working, byte-identical code; the payoff is one implementation instead of
+   two, and the risk is a behaviour change in the single hottest path in the
+   encoder. Worth doing deliberately, not opportunistically.
+
+WHY THE PORT IS STILL BYTE-IDENTICAL WITHOUT THEM. If C used OBMC, warped
+motion or hbd MD in the configurations under test, the bytes would already
+differ -- and they do not (1100/1100 stills, 108/108 inter). So C is not
+selecting those tools in this envelope either. The gap they represent is
+RD-in-a-wider-envelope, not correctness here.
+
+HONEST SCOPE: "wire everything" reduces to two features -- high-bit-depth mode
+decision, and OBMC + warped motion -- plus one deliberate driver refactor. Each
+needs its own C-parity campaign. One of the five was genuinely just duplication
+and is now closed.
