@@ -73,9 +73,10 @@ jobs:
           sudo apt-get update -q
           # libavif-bin provides `avifdec`. Four of the nine avif::animation
           # tests shell out to it to decode what they just muxed (the three
-          # synthetic ones plus the real-video round trip added 2026-09-10). Those tests had never run in CI until the container
-          # features were enabled, and they failed immediately because the runner
-          # had no avifdec. Installing it is the fix; skipping them is not.
+          # synthetic ones plus the real-video round trip added 2026-09-10).
+          # Those tests had never run in CI until the container features were
+          # enabled, and they failed immediately because the runner had no
+          # avifdec. Installing it is the fix; skipping them is not.
           sudo apt-get install -y -q nasm cmake ninja-build dav1d libavif-bin
 
       - name: Fetch the gb82-sc screen corpus (sparse checkout, 2.9 MB)
@@ -578,17 +579,24 @@ jobs:
       - name: imazen26 K300 production-corpus identity (assets from R2)
         if: matrix.shard == 2
         working-directory: rust
-        # A GATE THAT HAS NEVER RUN ANYWHERE. `imazen26_gate.sh` asserts 40
-        # cells over 20 images, and it covers content classes no other corpus in
-        # this repo has: bilevel patent scans, government document pages,
-        # synthetic plots, AI clipart/illustration/product renders, manuscript
-        # scans. Its corpus was never committed and existed on no host reachable
-        # from here, so `corpus_dir imazen26-cache/K300` resolved to an absent
-        # path and every cell reported MISSING. The file was not even executable
-        # (mode 0644), which is its own proof nothing ever invoked it.
+        # A GATE THAT HAD NOT RUN SINCE THE DAY IT WAS WRITTEN, and had never
+        # run in CI. `imazen26_gate.sh` asserts 40 cells over 20 images and
+        # covers content classes no other corpus in this repo has: bilevel
+        # patent scans, government document pages, synthetic plots, AI
+        # clipart/illustration/product renders, manuscript scans.
         #
-        # MEASURED 2026-09-10, first run ever: 40 / 40 byte-identical. The gate
-        # was correct all along; it just had no input.
+        # It ran once, 40/40, in the commit that created it (304c5832c,
+        # 2026-07-24). Its corpus lived at /root/work/imazen26-cache/K300 on
+        # `dev-32gb` — a RENTED FLEET BOX, whose teardown is visible in that
+        # campaign's own meta ("sweep stopped by box-lifetime limit mid-p10").
+        # Nothing persistent ever held the corpus, so from then on
+        # `corpus_dir imazen26-cache/K300` resolved to an absent path and every
+        # cell reported MISSING. That is the generalisable lesson: a gate whose
+        # only corpus lives on an ephemeral box dies with the box, silently,
+        # because a gate that cannot run looks exactly like a gate that passes.
+        #
+        # MEASURED 2026-09-10: 40 / 40 byte-identical. The gate was correct all
+        # along; it just had no input.
         #
         # The assets are the 20 images CENTRE-CROPPED to 512x512 — all the gate
         # ever encodes, since it feeds `crop:<png>` at IM26_DIM=512. Originals

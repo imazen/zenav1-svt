@@ -88,17 +88,21 @@ video while asserting only that two encoders agree a repeated frame is a skip.
 `tools/mk_video_assets.py` now decimates duplicates and scores motion as the
 **minimum** over consecutive pairs, never the mean.
 
-## imazen26 K300 production corpus (first run, 2026-09-10)
+## imazen26 K300 production corpus (re-run after 48 days, 2026-09-10)
 
 `tools/imazen26_gate.sh` asserts 40 cells over 20 images and covers content
 classes no other corpus here reaches — bilevel patent scans, government document
 pages, synthetic plots, AI clipart/illustration/product renders, manuscript
-scans. **It had never run anywhere.** Its corpus was never committed and existed
-on no reachable host, so `corpus_dir imazen26-cache/K300` resolved to an absent
-path and every cell reported `MISSING`; the script was also mode 0644, which is
-independent proof nothing had invoked it.
+scans. **It had not run since the day it was written.** It ran once, 40/40, in
+the commit that created it (`304c5832c`, 2026-07-24), on a corpus that lived at
+`/root/work/imazen26-cache/K300` on `dev-32gb` — a rented fleet box, which the
+sweep's own meta records as having ended the run at its "box-lifetime limit".
+The corpus was never committed and never copied to a persistent host, so from
+that point `corpus_dir imazen26-cache/K300` resolved to an absent path and every
+cell reported `MISSING`. It has never run in CI.
 
-First run, 2026-09-10: **40 / 40 byte-identical**, 61 s
+Re-run 2026-09-10, first time in 48 days and first time ever in CI:
+**40 / 40 byte-identical**, 61 s
 ([record](../benchmarks/imazen26_k300_2026-09-10.meta)). The gate was correct
 all along — it had no input.
 

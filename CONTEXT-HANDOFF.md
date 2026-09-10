@@ -186,9 +186,11 @@ clone; R2 carries only what has no home in git.
   **7/24** — see `rust/docs/IDENTITY-STATUS.md`. The control is the finding:
   synthetic `gradient` is byte-identical at the same cell shape because frame 1
   is a 24-byte skip.
-- ~~**`imazen26_gate.sh` has never run anywhere.**~~ **CLOSED.** Its corpus
-  existed on no reachable host and the script was mode 0644. First run:
-  **40/40 byte-identical**, on 20 images centre-cropped to 512×512 (R2
+- ~~**`imazen26_gate.sh` has not run since the day it was written.**~~
+  **CLOSED.** It ran once, 40/40, in `304c5832c` (2026-07-24) against a corpus
+  on the rented box `dev-32gb`, which was then torn down; nothing persistent
+  ever held it, and it had never run in CI. Re-run 2026-09-10: **40/40
+  byte-identical**, on 20 images centre-cropped to 512×512 (R2
   `imazen26-k300-512/`, 290 MiB → 6.1 MiB, equivalence measured both ways).
 - ~~**Animation tests are entirely procedural.**~~ **CLOSED.** A real-motion
   animated-AVIF round trip now asserts that consecutive *decoded* frames differ.

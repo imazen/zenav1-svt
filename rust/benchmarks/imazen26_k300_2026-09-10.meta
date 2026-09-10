@@ -8,11 +8,20 @@ grid:     20 images x {preset,bd} = 40 cells
 
 RESULT    40 / 40 byte-identical, from BOTH asset sets (see below). 61 s.
 
-WHY THIS IS THE FIRST RUN. The gate's corpus was never committed and existed on
-no host reachable from this repo, so `corpus_dir imazen26-cache/K300` resolved
-to an absent path and every cell reported MISSING. The script was also mode
-0644 — not executable — which is independent proof nothing had ever invoked it.
-The gate itself was correct; it had no input.
+WHY THIS IS THE FIRST RUN IN 48 DAYS, AND THE FIRST EVER IN CI. The gate ran
+once before, 40/40, in the commit that created it (304c5832c, 2026-07-24). Its
+corpus lived at /root/work/imazen26-cache/K300 on `dev-32gb`, a rented fleet
+box — imazen26_sweep_2026-07-24.meta records that campaign ending at the
+"box-lifetime limit". The corpus was never committed and never copied anywhere
+persistent, so from then on `corpus_dir imazen26-cache/K300` resolved to an
+absent path and every cell reported MISSING. The gate itself was correct; it
+had no input.
+
+CORRECTION to an earlier version of this file, which claimed the gate had never
+run anywhere and cited its mode 0644 as proof. Both were wrong. The mode was an
+accident at creation — the same campaign added imazen26_sweep.sh as 100755 and
+imazen26_gate.sh as 100644 — so it was invoked as `bash tools/...`. File mode is
+not evidence about whether a script has ever run.
 
 ASSETS. Published at the R2 prefix imazen26-k300-512/ as the 20 images
 CENTRE-CROPPED to 512x512, which is all the gate ever encodes (it feeds
