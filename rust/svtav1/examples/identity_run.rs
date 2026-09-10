@@ -864,6 +864,42 @@ fn main() {
                         std::fs::write(format!("{path}.f{f}"), &b)
                             .expect("write SVTAV1_FINAL_RECON");
                     }
+                    // SVTAV1_RECON_STAGES=<pfx> on a MULTI-frame run writes
+                    // `<pfx>.f<i>.pre.bin` (pre-deblock) beside the final
+                    // recon, cropped and packed identically.
+                    //
+                    // This is the split that localises an encoder/decoder recon
+                    // mismatch. `dav1d --inloopfilters none` reconstructs
+                    // prediction + residual and stops; if THAT equals this
+                    // dump, the prediction, the residual and the reference are
+                    // all correct and the divergence is entirely in the filter
+                    // stages. If it does not, the filters are innocent. The
+                    // single-frame path has had `SVTAV1_RECON_DUMP` for this
+                    // forever; a multi-frame run deliberately returned before
+                    // reaching it, which is exactly the case that needs it —
+                    // drift only compounds when a frame is referenced.
+                    if let Ok(path) = std::env::var("SVTAV1_RECON_STAGES")
+                        && let Some((py, pu, pv)) = pipeline.last_recon_unfiltered.as_ref()
+                    {
+                        let aw = pipeline.width as usize;
+                        let (tw2, th2) =
+                            (pipeline.true_width as usize, pipeline.true_height as usize);
+                        let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
+                        let crop = |p: &[u8], stride: usize, cw: usize, chh: usize| -> Vec<u8> {
+                            let mut o = Vec::with_capacity(cw * chh);
+                            for r in 0..chh {
+                                o.extend_from_slice(&p[r * stride..r * stride + cw]);
+                            }
+                            o
+                        };
+                        let mut b = crop(py, aw, tw2, th2);
+                        if !pu.is_empty() {
+                            b.extend_from_slice(&crop(pu, acw, tcw2, tch2));
+                            b.extend_from_slice(&crop(pv, acw, tcw2, tch2));
+                        }
+                        std::fs::write(format!("{path}.f{f}.pre.bin"), &b)
+                            .expect("write SVTAV1_RECON_STAGES");
+                    }
                     all.extend_from_slice(&bytes);
                 }
                 Err(e) => {

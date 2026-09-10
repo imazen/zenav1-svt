@@ -10165,7 +10165,24 @@ fn encode_block_syntax(
         decision.is_inter,
         skip,
     );
-    if decision.tx_depth > 0 {
+    // A SKIP INTER block's tx_depth is meaningless to the DEBLOCK, and
+    // applying it here was a decoder mismatch. libaom's `get_transform_size`
+    // takes the per-TU var-tx size only for `is_inter_block(mbmi) &&
+    // !mbmi->skip_txfm`; a skip inter block falls through to `mbmi->tx_size`,
+    // which for that case is the block's MAX tx size — it codes no residual,
+    // so the searched depth never reached the bitstream and a decoder cannot
+    // know about it. `record_block` already stored the block dims, which are
+    // that max size for every bsize this port codes, so the fix is to leave
+    // them alone.
+    //
+    // MEASURED (vidyo3 256x256 q40 p6 frames=2, docs/IDENTITY-STATUS.md): the
+    // failing edges were all `inter=1 yeob=0 txd=1` 16x16 blocks. The decoder
+    // read tx 16 and filtered 14-tap; the port read tx 8 (depth 1) and
+    // filtered 8-tap, so encoder and decoder reconstructions disagreed by +-1
+    // over the 14-tap footprint. An INTRA block never takes this branch, which
+    // is why the key frame was always exact and only inter frames drifted.
+    let deblock_tx_is_block_max = decision.is_inter && skip;
+    if decision.tx_depth > 0 && !deblock_tx_is_block_max {
         let (txw, txh) = crate::leaf_funnel::txb_dims_at_depth(
             decision.width as usize,
             decision.height as usize,

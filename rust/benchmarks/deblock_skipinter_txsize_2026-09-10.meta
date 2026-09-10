@@ -1,0 +1,62 @@
+FIX: a skip INTER block's deblock transform size is the block max, not its
+searched tx_depth — 2026-09-10
+
+SYMPTOM. A multi-frame encode's reconstruction drifted from every decoder's,
+starting on the FIRST inter frame and compounding until the stream stopped
+decoding at f6 ("Failed to decode tile data", aomdec).
+See benchmarks/video_multiframe_2026-09-10.meta for the original measurement.
+
+LOCALISATION, in order, each step ruling something out by measurement:
+
+1. Encoder recon vs decoder output: f0 IDENTICAL, f1 33 px at max delta 1,
+   growing to 1298 px by f5. So the KEY frame is exact and the first inter
+   frame is where it starts.
+2. The 33 px are LUMA ONLY (both chroma planes byte-identical), +-1, in
+   vertical runs at fixed x — block boundaries, so an edge filter.
+3. qp sweep: at qp 5/10/16/20/32 the signalled loop_filter_level[0] is 0 (no
+   deblocking) and the recon is IDENTICAL to the decoder's every time. Only at
+   qp 40, level 20, do the 33 px appear. That isolates the DEBLOCK: prediction,
+   residual, reference and entropy are all correct.
+4. fh_fields.py on frame 1: CDEF strengths all 0, lr_type all 0,
+   loop_filter_delta_enabled 0. Deblock is the only active filter.
+5. Forcing skip_inter=false made it WORSE (33 -> 527 px), so the port was not
+   over-skipping; the skip rule itself is right.
+6. Diff geometry: around the x=32 edge the differing pixels span x=27..37 --
+   six pixels each side, the 14-TAP footprint. A filter-LENGTH mismatch.
+7. SVTAV1_PACKTREE at that edge: left block px=(0,96) 32x32 txd=0 (tx 32);
+   right block px=(32,96) 16x16 txd=1 (tx 8). Port took min(32,8)=8 -> 8-tap.
+   Every block at every failing edge was `inter=1 yeob=0 txd=1`, i.e. SKIP.
+
+ROOT CAUSE. libaom `get_transform_size` reads the per-TU var-tx size only for
+`is_inter_block(mbmi) && !mbmi->skip_txfm`. A SKIP inter block falls through to
+`mbmi->tx_size`, which for that case is the block's MAX tx size. The searched
+tx_depth of a skip block never reaches the bitstream -- it codes no residual --
+so a decoder cannot know about it. The port applied its tx_depth override
+regardless of skip, so at the x=32 edge the decoder read tx 16 and filtered
+14-tap while the port read tx 8 and filtered 8-tap.
+
+An INTRA block never takes that branch, which is exactly why the key frame was
+always byte-exact and only inter frames drifted.
+
+FIX. pipeline.rs: skip the `record_tx_dims` override when
+`decision.is_inter && skip`. `record_block` has already stored the block dims,
+which are the max tx size for every bsize this port codes.
+
+RESULT, vidyo3 256x256 q40 p6, 8 frames:
+                        BEFORE            AFTER
+  frames decoded        6 of 8            8 of 8
+  f0                    identical         identical
+  f1                    33 px, max 1      IDENTICAL
+  f2                    86 px, max 6      IDENTICAL
+  f3                    851 px, max 34    682 px, max 34
+  f6                    not produced      1020 px, max 36
+
+NO REGRESSION: inter_byte_gate 108/108, real_video_inter_gate 24/24,
+screen_palette_gate 50/50, regression_spotcheck 141/141.
+
+WHAT REMAINS -- a SECOND, different defect, now the first one is gone. f3's
+residual is not this bug's signature: 530 luma px in a tight 16-wide column
+(x=176..191, y=159..193) with LARGE deltas (-9..+7), plus the co-located chroma
+(U 91 px, V 61 px at x=88..96). Edge-localised +-1 it is not -- that is a block
+reconstructed from a different prediction, not a filter difference. Localise it
+the same way: it is one block, on one frame, with a byte-exact reference.

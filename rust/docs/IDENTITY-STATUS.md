@@ -112,25 +112,33 @@ defect is port-side. The limit is not fixed — `johnny` and `fourpeople` do 8/8
 `vidyo3` at q20 fails *earlier* (f5), and preset 8 is clean, the **same
 preset 2–7 band** as the frame-0 divergence above.
 
-**The defect is reference drift.** Encoder recon vs decoder output, per frame:
+**Root cause found and FIXED 2026-09-10**
+([record](../benchmarks/deblock_skipinter_txsize_2026-09-10.meta)): a **skip
+inter block's deblock transform size is the block's max, not its searched
+`tx_depth`.** libaom's `get_transform_size` reads the per-TU var-tx size only
+for `is_inter_block(mbmi) && !mbmi->skip_txfm`; a skip inter block falls through
+to `mbmi->tx_size` = the block max, because a block that codes no residual never
+puts its searched depth in the bitstream and a decoder cannot know it. The port
+applied its `tx_depth` override regardless, so at the failing edges the decoder
+read tx 16 and filtered 14-tap while the port read tx 8 and filtered 8-tap. An
+intra block never takes that branch — which is precisely why the key frame was
+always exact and only inter frames drifted.
 
-| f0 | f1 | f2 | f3 | f4 | f5 | f6 |
+| | f0 | f1 | f2 | f3 | f6 | decoded |
 |---|---|---|---|---|---|---|
-| identical | 33 px, Δ1 | 86 px, Δ6 | 851 px, Δ34 | 1098 px, Δ37 | 1298 px, Δ35 | not produced |
+| before | identical | 33 px Δ1 | 86 px Δ6 | 851 px Δ34 | not produced | 6 of 8 |
+| after | identical | **identical** | **identical** | 682 px Δ34 | 1020 px Δ36 | **8 of 8** |
 
-The key frame is exact; drift starts on the first inter frame and compounds. The
-first difference is **luma only** (both chroma planes identical), 33 pixels of
-±1, in vertical runs at x=48/49 and x=32/33 — block boundaries, so an edge
-filter rather than prediction.
+The localisation is worth reusing: a qp sweep found that at qp 5–32 the signalled
+`loop_filter_level[0]` is 0 and the recon is identical to the decoder's every
+time, which isolated the deblock without needing any new instrumentation; the
+diff footprint (six pixels each side of the edge) then named the filter length,
+and `SVTAV1_PACKTREE` named the blocks as `inter=1 yeob=0 txd=1`.
 
-Ruled out by reading source: loop-filter ref/mode deltas (C assigns
-`mode_ref_delta_enabled = 0` and never re-assigns it, so the port's all-zero
-`ref_deltas` are faithful), and the harness's intra-period mismatch.
-
-**Not yet established:** a ±1 pixel drift cannot by itself make a stream
-unparseable, since entropy decoding does not read pixels. Either the drift makes
-the encoder derive an out-of-range syntax value at f6, or there is a second,
-independent entropy defect. Do not assume the first explains the second.
+**A second, different defect remains**, now that the first is gone. f3's residual
+is not this bug's signature: 530 luma pixels in a tight 16-wide column
+(x=176–191, y=159–193) with large deltas (−9..+7), plus co-located chroma. That
+is a block reconstructed from a different prediction, not a filter difference.
 
 ## imazen26 K300 production corpus (re-run after 48 days, 2026-09-10)
 
