@@ -1,0 +1,567 @@
+/*
+ * capture_c_trace — minimal public-API driver for the in-tree C SVT-AV1
+ * static library, used by the bitstream-identity harness
+ * (rust/tools/identity_diff.sh).
+ *
+ * Encodes exactly ONE raw I420 8-bit frame from a .yuv file in
+ * still-picture/AVIF CQP mode at a matched config (the same knob set the
+ * repo's perf/parity gates use for SvtAv1EncApp: --rc 0 --aq-mode 0
+ * --qp Q --avif 1 --lp 1 -n 1) and writes the raw OBU stream (concatenated
+ * output-packet payloads: TD + SH + Frame OBU) to the output path.
+ *
+ * When linked with tools/capture_c_trace/build.sh, every arithmetic-coder
+ * operation the library performs is intercepted via -Wl,--wrap= and logged
+ * to the file named by $SVT_TRACE_OUT (see wrap_odec.c). Header bits
+ * (sequence/frame header) go through the AomWriteBitBuffer path, NOT the
+ * od_ec coder — those are compared at the byte level by identity_diff.py.
+ *
+ * Usage: capture_c_trace <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu>
+ * Env: SVT_TILE_ROWS (default: unset -> library default, 0 tile rows) —
+ *      direct passthrough to cfg.tile_rows, i.e. TileRowsLog2 (task #86;
+ *      same log2 units as the Rust driver's SVTAV1_TILE_ROWS_LOG2 —
+ *      EbSvtAv1Enc.h:607-611 documents the field as "Log 2 Tile Rows").
+ *
+ * Env: SVT_TILE_COLUMNS (default: unset -> library default, 0 tile cols) —
+ *      the column analogue, cfg.tile_columns / TileColsLog2 (task #96;
+ *      Rust driver: SVTAV1_TILE_COLS_LOG2).
+ *
+ *      SVT_HDR_MODE=1 selects the FORK oracle. That is a BUILD-TIME switch,
+ *      handled by build.sh/the wrapper (different lib + different binary);
+ *      this file is compiled unchanged for both. What it does add is the
+ *      SVT_FORK_* knob passthrough below.
+ *
+ *      SVT_FORK_<FIELD> (all optional): explicit override for a fork /
+ *      fork-defaulted config field. ABSENT means "leave at whatever
+ *      svt_av1_enc_init_handle loaded", so with none set this driver is
+ *      byte-for-byte its previous self in mainline mode, and in fork mode it
+ *      reproduces the MODE1 library defaults. Needed because the fork's
+ *      feature knobs (ac_bias, sharp_tx, noise_norm_strength, ...) are NOT
+ *      inside `#if SVT_HDR_MODE` in enc_settings.c — they are neutralized
+ *      unconditionally (enc_settings.c:1181-1203) — so MODE1-by-default is
+ *      only the fork's UNCONDITIONAL deltas plus the six defaults the fork
+ *      does flip (bit depth, preset, QM on 6..10, variance boost on,
+ *      tf_strength 1, sharpness 1). Exercising a fork FEATURE against the C
+ *      oracle requires setting it here and to the identical value on the Rust
+ *      side. Names match the EbSvtAv1EncConfiguration fields, upper-cased:
+ *      SVT_FORK_AC_BIAS, SVT_FORK_SHARP_TX, SVT_FORK_TX_BIAS,
+ *      SVT_FORK_COMPLEX_HVS, SVT_FORK_NOISE_NORM_STRENGTH,
+ *      SVT_FORK_ALT_LAMBDA_FACTORS, SVT_FORK_ALT_SSIM_TUNING, SVT_FORK_TUNE,
+ *      SVT_FORK_CDEF_SCALING, SVT_FORK_NOISE_ADAPTIVE_FILTERING,
+ *      SVT_FORK_NOISE_STRENGTH, SVT_FORK_NOISE_STRENGTH_CHROMA,
+ *      SVT_FORK_NOISE_CHROMA_FROM_LUMA, SVT_FORK_NOISE_SIZE,
+ *      SVT_FORK_KF_TF_STRENGTH, SVT_FORK_TF_STRENGTH, SVT_FORK_SHARPNESS,
+ *      SVT_FORK_QP_SCALE_COMPRESS_STRENGTH, SVT_FORK_ENABLE_QM,
+ *      SVT_FORK_MIN_QM_LEVEL, SVT_FORK_MAX_QM_LEVEL,
+ *      SVT_FORK_MIN_CHROMA_QM_LEVEL, SVT_FORK_MAX_CHROMA_QM_LEVEL,
+ *      SVT_FORK_ENABLE_VARIANCE_BOOST, SVT_FORK_VARIANCE_BOOST_STRENGTH,
+ *      SVT_FORK_VARIANCE_OCTILE, SVT_FORK_VARIANCE_BOOST_CURVE,
+ *      SVT_FORK_HBD_MDS.
+ *
+ * NOT part of the cargo workspace build — compiled on demand by build.sh.
+ */
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "EbSvtAv1.h"
+#include "EbSvtAv1Enc.h"
+
+static void die(const char* msg, int32_t err) {
+    fprintf(stderr, "capture_c_trace: %s (err=0x%x)\n", msg, (unsigned)err);
+    exit(1);
+}
+
+/* Append one packet's payload to the concatenated stream and, on a multi-frame
+ * run, ALSO write it on its own named by PTS — so a differ compares one frame
+ * instead of a concatenation whose first divergence would just be "frame 0's
+ * length changed" (docs/WORKING-ON-THIS.md section 5: a `cmp` offset inside a
+ * length-prefixed container points at the LENGTH, not at the defect).
+ * Single-frame runs write nothing extra.
+ *
+ * Hoisted out of the drain loop for the interleaved drain in main(); a packet
+ * with no payload (the EOS marker) is counted by neither counter, exactly as
+ * before. */
+static void emit_pkt(EbBufferHeaderType* pkt, FILE* fo, const char* out, uint32_t n_frames,
+                     uint32_t* npkt, uint32_t* nbytes) {
+    if (!pkt->n_filled_len)
+        return;
+    fwrite(pkt->p_buffer, 1, pkt->n_filled_len, fo);
+    *nbytes += pkt->n_filled_len;
+    (*npkt)++;
+    if (n_frames > 1) {
+        char per[4096];
+        snprintf(per, sizeof(per), "%s.pts%lld", out, (long long)pkt->pts);
+        FILE* pf = fopen(per, "wb");
+        if (!pf)
+            die("cannot open per-frame output", 0);
+        fwrite(pkt->p_buffer, 1, pkt->n_filled_len, pf);
+        fclose(pf);
+    }
+    fprintf(stderr, "capture_c_trace: packet %u: %u bytes, pts=%lld, flags=0x%x\n", *npkt,
+            pkt->n_filled_len, (long long)pkt->pts, pkt->flags);
+}
+
+/* ---- SVT_FORK_* knob passthrough (see the header comment) ---------------- *
+ * Each setter is a no-op when its env var is absent, so the config the library
+ * loaded stays untouched. Applied AFTER the still-picture/CQP config block and
+ * BEFORE svt_av1_enc_set_parameter, and echoed to stderr so a gate log records
+ * exactly which fork config produced the bytes. */
+
+/* Every override is echoed; the caller's log is then self-describing.
+ * The env NAME is spelled out rather than stringified from `field`, so the
+ * documented upper-case spelling is what is actually looked up (a `#field`
+ * form silently searches the lower-case name and every override is ignored —
+ * which is both silent and indistinguishable from "the knob has no effect"). */
+#define FORK_SET(envname, field, conv)                                           \
+    do {                                                                         \
+        const char* _v = getenv(envname);                                        \
+        if (_v) {                                                                \
+            cfg.field = conv(_v);                                                \
+            fprintf(stderr, "capture_c_trace: fork knob %s=%s\n", envname, _v);  \
+        }                                                                        \
+    } while (0)
+
+#define FORK_I(s)   ((int)atoi(s))
+#define FORK_U8(s)  ((uint8_t)atoi(s))
+#define FORK_I8(s)  ((int8_t)atoi(s))
+#define FORK_I32(s) ((int32_t)atoi(s))
+#define FORK_B(s)   ((bool)(atoi(s) != 0))
+#define FORK_D(s)   (atof(s))
+
+int main(int argc, char** argv) {
+    if (argc != 7 && argc != 8) {
+        fprintf(stderr,
+                "usage: %s <width> <height> <cli_qp 0..63> <preset> <in.yuv> <out.obu> [bit_depth=8|10]\n"
+                "  env: SVT_FRAMES=N (1..256, default 1; N>1 clears avif/still-picture and needs N frames in the .yuv;\n"
+                "                     N>2 drains packets between sends -- see the comment on n_frames),\n"
+                "       SVT_INTRA_PERIOD, SVT_HIER_LEVELS, SVT_PRED_STRUCT\n",
+                argv[0]);
+        return 2;
+    }
+#ifdef SVT_NO_WRAP_TRACE
+    /* This driver was linked WITHOUT the `ld --wrap` interposers because the
+       platform linker does not support them (Apple ld64). It still drives the
+       real encoder and writes real OBU bytes, so every byte-parity gate works;
+       what it cannot produce is the arithmetic-coder op trace that
+       identity_diff.py uses to localize a divergence to a symbol.
+
+       Refuse loudly rather than write an empty trace: a differ comparing an
+       empty C trace against a full Rust one would report a bogus first
+       divergence, and one comparing "no trace either side" would report
+       agreement it never checked. Both are the gate-passes-for-the-wrong-reason
+       defect this repo bans. `SVT_TRACE_OUT=/dev/null` (what every byte-only
+       gate passes) is explicitly allowed. */
+    {
+        const char* trace_out = getenv("SVT_TRACE_OUT");
+        if (trace_out && *trace_out && strcmp(trace_out, "/dev/null") != 0) {
+            fprintf(stderr,
+                    "capture_c_trace: built WITHOUT --wrap support (this platform's linker lacks\n"
+                    "                 it), so no arithmetic-coder op trace can be produced, but\n"
+                    "                 SVT_TRACE_OUT=%s asked for one. Byte-parity gates work here;\n"
+                    "                 op-level localization (identity_diff.sh, tile_map.sh) needs\n"
+                    "                 a GNU-ld host. Refusing rather than emitting an empty trace.\n",
+                    trace_out);
+            return 3;
+        }
+    }
+#endif
+    const uint32_t w      = (uint32_t)atoi(argv[1]);
+    const uint32_t h      = (uint32_t)atoi(argv[2]);
+    const uint32_t qp     = (uint32_t)atoi(argv[3]);
+    const int8_t   preset = (int8_t)atoi(argv[4]);
+    const char*    in_yuv = argv[5];
+    const char*    out    = argv[6];
+    /* Optional 8th arg = encoder bit depth (default 8, so every existing
+       6-arg caller is byte-identical). At bd10 the input .yuv is PACKED u16
+       little-endian (2 bytes/sample), matching this fork's packed-u16 intake. */
+    const uint32_t bit_depth   = (argc == 8) ? (uint32_t)atoi(argv[7]) : 8;
+    const size_t   sample_size = (bit_depth > 8) ? 2 : 1;
+
+    const size_t ysz = (size_t)w * h;
+    /* AV1 4:2:0 CEILING chroma dims ((w+1)/2). The .yuv the Rust harness
+       writes is laid out ceiling-strided, matching the port's ceiling chroma
+       intake; for EVEN dims ceiling == floor, so every pre-existing caller is
+       byte-identical. Task #95 goal 1 (odd true dims, e.g. 65x65): the C
+       library internally reads FLOOR chroma (luma_width>>1) columns/rows from
+       this ceiling-strided buffer (resource_coordination_process.c:491) — for
+       the flat u=v=128 synthetic chroma the ignored last ceiling col/row are
+       128 too, so both encoders see identical chroma content. */
+    const size_t cw = ((size_t)w + 1) / 2;
+    const size_t ch = ((size_t)h + 1) / 2;
+    const size_t csz = cw * ch;
+    const size_t frame_bytes = (ysz + 2 * csz) * sample_size;
+
+    /* INTER campaign chunk C0: SVT_FRAMES=N reads and encodes N frames instead
+       of one. Absent (or =1) every byte of the pre-existing single-frame path
+       is unchanged — same malloc size, same single send, same avif=true still
+       config — so no existing cell moves.
+
+       N>1 REQUIRES N full frames in the .yuv and dies on a short read. It does
+       NOT repeat the last frame to fill: a silently-repeated frame is a
+       zero-motion cell wearing a motion cell's name, and this repo's harness
+       rules ban a probe whose absence is indistinguishable from its result.
+
+       N > 2 WORKS AS OF 2026-09-02 AND DID NOT BEFORE, and the limit was this
+       driver's, not the encoder's — see the interleaved drain in the send loop
+       below. Every inter measurement in this repo predating that date stops at
+       two frames because SVT_FRAMES=3 died with
+       "ST mode: empty object pool exhausted after pumping dispatcher" and
+       wrote zero packets. MEASURED after the fix: `gradient 64x64 q32 p8`
+       codes 1480 / 22 / 21 bytes at SVT_FRAMES=3 and the concatenation decodes
+       in both aomdec and dav1d (3/3 frames, 18432 raw bytes).
+
+       The PORT still refuses frame 2 — `md_config_inputs` declines any
+       `ref_hp_percentage` other than the -1 "reference was an I_SLICE"
+       sentinel, because `EbReferenceObject::hp_coded_area` /
+       `skip_coded_area` / `intra_coded_area` (accumulated per block in C's
+       `update_b`, coding_loop.c:1605-1638) are unported. That refusal is
+       independent of this driver; what changed here is that when it is lifted
+       there will be an oracle to check the result against. */
+    uint32_t n_frames = 1;
+    {
+        const char* frames_env = getenv("SVT_FRAMES");
+        if (frames_env && *frames_env) {
+            int v = atoi(frames_env);
+            if (v < 1 || v > 256)
+                die("SVT_FRAMES must be 1..256", EB_ErrorBadParameter);
+            n_frames = (uint32_t)v;
+        }
+    }
+
+    uint8_t* yuv = malloc(frame_bytes * (size_t)n_frames);
+    if (!yuv)
+        die("oom", 0);
+    FILE* fi = fopen(in_yuv, "rb");
+    if (!fi)
+        die("cannot open input .yuv", 0);
+    if (fread(yuv, 1, frame_bytes * (size_t)n_frames, fi) != frame_bytes * (size_t)n_frames)
+        die("short read (need SVT_FRAMES * w*h*3/2 * sample_size bytes of I420)", 0);
+    fclose(fi);
+
+    /* STEP 1: handle + library defaults. */
+    EbComponentType*         handle = NULL;
+    EbSvtAv1EncConfiguration cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    EbErrorType err = svt_av1_enc_init_handle(&handle, &cfg);
+    if (err != EB_ErrorNone)
+        die("svt_av1_enc_init_handle", err);
+
+    /* STEP 2: matched still-picture/AVIF CQP config; everything else stays
+     * at the library defaults loaded by init_handle. */
+    cfg.source_width           = w;
+    cfg.source_height          = h;
+    cfg.enc_mode               = preset;
+    cfg.rate_control_mode      = 0;   /* CQP/CRF */
+    cfg.aq_mode                = 0;   /* rc 0 + aq 0 == CQP */
+    cfg.qp                     = qp;  /* CLI domain 0..63 */
+    cfg.avif                   = true; /* still_picture=1 + reduced_still_picture_header=1 */
+    /* INTER campaign chunk C0. `avif = true` sets still_picture=1 +
+       reduced_still_picture_header=1, which forbids anything but a single
+       KEY frame — so a multi-frame run MUST clear it, and that is the only
+       reason it is cleared. Single-frame runs never reach this branch.
+
+       The GOP shape is chosen by the caller, because the smallest demoable
+       inter cell and the eventual full envelope want different ones:
+         SVT_INTRA_PERIOD  -> cfg.intra_period_length (frames between key
+                              frames; -1 = only frame 0 is key)
+         SVT_HIER_LEVELS   -> cfg.hierarchical_levels (0 = flat, no pyramid)
+         SVT_PRED_STRUCT   -> cfg.pred_structure (1 = LOW_DELAY, P-only, the
+                              simplest inter structure to reach byte-parity on;
+                              2 = RANDOM_ACCESS, the library default)
+       Each is applied only when its env var is set, so a caller that sets only
+       SVT_FRAMES gets the library's own defaults for the rest. */
+    if (n_frames > 1)
+        cfg.avif = false;
+    /* SVT_AVIF=0 forces video mode at ANY frame count. This exists as a
+       CONTROL: it separates "still vs video configuration" from "one frame vs
+       many", which are two different variables that a multi-frame run changes
+       at once. Without it, a frame-0 divergence in a 2-frame cell cannot be
+       attributed. Absent => untouched. */
+    {
+        const char* avif_env = getenv("SVT_AVIF");
+        if (avif_env && *avif_env)
+            cfg.avif = atoi(avif_env) != 0;
+    }
+    /* SVT_AQ_MODE forces `cfg.aq_mode`. This exists as the POSITIVE CONTROL
+       for the `SVT_QDELTA_OUT` interposer: `get_tpl` (enc_handle.c:3662)
+       returns 0 for `aq_mode == 0` BEFORE it ever looks at pred_structure, so
+       with the driver's default CQP config `ppcs->tpl_ctrls.enable` is 0 and
+       `crf_qindex_calc` — the only route to `svt_av1_compute_qdelta_by_rate` —
+       is unreachable at EVERY pred structure. A probe that reads zero
+       everywhere proves nothing (`docs/WORKING-ON-THIS.md` §5), so this knob
+       lets one run reach the call and one not. Absent => untouched (0), so no
+       existing caller's oracle moves. */
+    {
+        const char* aq_env = getenv("SVT_AQ_MODE");
+        if (aq_env && *aq_env)
+            cfg.aq_mode = (uint8_t)atoi(aq_env);
+    }
+    {
+        const char* ip_env = getenv("SVT_INTRA_PERIOD");
+        if (ip_env && *ip_env)
+            cfg.intra_period_length = atoi(ip_env);
+        const char* hl_env = getenv("SVT_HIER_LEVELS");
+        if (hl_env && *hl_env)
+            cfg.hierarchical_levels = (uint32_t)atoi(hl_env);
+        const char* ps_env = getenv("SVT_PRED_STRUCT");
+        if (ps_env && *ps_env)
+            cfg.pred_structure = (PredStructure)atoi(ps_env);
+    }
+    cfg.level_of_parallelism   = 1;   /* --lp 1 */
+    cfg.encoder_bit_depth      = bit_depth;
+    cfg.encoder_color_format   = EB_YUV420;
+    cfg.frame_rate_numerator   = 30; /* matches the F30:1 y4m the perf gate feeds the app */
+    /* SVT_CPU_FLAGS (optional): pin the C encoder's RTCD dispatch level.
+     * Absent => library default EB_CPU_FLAGS_ALL, i.e. the fastest kernels the
+     * host supports -- which is what every existing gate has always measured,
+     * so the baseline is untouched.
+     *
+     * WHY THIS EXISTS. C's `_c` and SIMD kernels are not always equivalent --
+     * `svt_aom_hadamard_32x32_c` and `_avx2` genuinely disagree at bd10
+     * magnitudes (pinned in c_parity_hadamard.rs, see docs/SUSPECTED-C-BUGS.md
+     * #6). So "byte-identical to C" can be a function of WHICH C kernels the
+     * host dispatched, and a cell that matches on an AVX2 runner while
+     * differing on a Neon one is not necessarily a port bug at all. Without a
+     * way to pin the level there is no way to tell those apart, and the honest
+     * answer is a coin flip dressed up as a measurement.
+     *
+     * Usage: SVT_CPU_FLAGS=0 forces the pure-C kernels on any host. The bit
+     * values are ARCH-SPECIFIC (EbSvtAv1.h:434-470) -- x86 bit 8 is AVX2,
+     * aarch64 bit 0 is Neon -- so 0 is the only value that means the same
+     * thing everywhere, and it is the one worth reaching for first. */
+    {
+        const char* cpu_flags_env = getenv("SVT_CPU_FLAGS");
+        if (cpu_flags_env && *cpu_flags_env) {
+            char*             end = NULL;
+            unsigned long long v  = strtoull(cpu_flags_env, &end, 0);
+            if (end == cpu_flags_env || *end != '\0')
+                die("SVT_CPU_FLAGS is not a number", EB_ErrorBadParameter);
+            cfg.use_cpu_flags = (EbCpuFlags)v;
+            fprintf(stderr, "capture_c_trace: use_cpu_flags pinned to 0x%llx\n", v);
+        }
+    }
+    cfg.frame_rate_denominator = 1;
+    /* task #86: tile rows, log2 domain — direct passthrough into
+     * cfg.tile_rows, which the public API documents as "Log 2 Tile Rows...
+     * 0 means no tiling, 1 means split into 2" (EbSvtAv1Enc.h:607-611).
+     * Absent the env var, cfg.tile_rows stays at the DEFAULT sentinel
+     * (-1) that svt_av1_enc_init_handle populated, resolving to 0 tiles
+     * exactly like today (enc_handle.c:4520-4522) — the regression
+     * baseline is untouched. */
+    const char* tile_rows_env = getenv("SVT_TILE_ROWS");
+    if (tile_rows_env) {
+        cfg.tile_rows = atoi(tile_rows_env);
+    }
+    /* task #96: tile COLUMNS, same log2 domain (EbSvtAv1Enc.h:610-611
+     * "int32_t tile_columns"). Validation (enc_settings.c:373,377):
+     * log2 <= 6, (1<<rows)*(1<<cols) <= 128, and tile_columns <= 4.
+     * Absent the env var, cfg.tile_columns keeps the DEFAULT sentinel
+     * (-1); DEFAULT on BOTH fields resolves to 0/0 (enc_handle.c:4520),
+     * and DEFAULT on one with the other set resolves that one to 0
+     * (:4525-4530) — so setting only SVT_TILE_ROWS is still exactly the
+     * pre-existing single-column encode. */
+    const char* tile_cols_env = getenv("SVT_TILE_COLUMNS");
+    if (tile_cols_env) {
+        cfg.tile_columns = atoi(tile_cols_env);
+    }
+
+    /* Tune (mainline v4.2.0): SVT_TUNE selects `--tune`. Tune 3 (IQ, "still
+     * image only") and 4 (MS_SSIM) make `svt_av1_enc_set_parameter` rewrite
+     * qm/sharpness/variance-boost — and, for IQ, max_tx_size + screen content
+     * (enc_handle.c:4889-4915) — so this one env var exercises the whole
+     * override block. Absent, cfg.tune keeps the library default (1 = PSNR)
+     * and every pre-existing cell is unchanged. */
+    const char* tune_env = getenv("SVT_TUNE");
+    if (tune_env) {
+        cfg.tune = (uint8_t)atoi(tune_env);
+    }
+
+    /* Forced screen-content modes 0/1 survive C's all-intra normalization. */
+    const char* scm_env = getenv("SVT_SCM");
+    if (scm_env) {
+        cfg.screen_content_mode = (uint32_t)atoi(scm_env);
+    }
+
+    /* Issue #9 items 3-5 — three MAINLINE config knobs, each absent => the
+     * library default => every pre-existing cell unchanged.
+     *   SVT_MAX_TX_SIZE=32|64  -> cfg.max_tx_size (default 64,
+     *       enc_settings.c:1179; consumed enc_dec_process.c:1494-1500/:1815).
+     *   SVT_CRF_OFFSET=<0..3>  -> cfg.extended_crf_qindex_offset, the
+     *       quarter-step remainder of a fractional --crf (str_to_crf,
+     *       enc_settings.c:1662-1669; consumed rc_crf_cqp.c:471). `--crf 35.25`
+     *       == qp 35 + offset 1.
+     *   SVT_CSP=<0..2>         -> cfg.chroma_sample_position (default
+     *       EB_CSP_UNKNOWN, enc_settings.c:1112; written entropy_coding.c:2743). */
+    const char* max_tx_env = getenv("SVT_MAX_TX_SIZE");
+    if (max_tx_env) {
+        cfg.max_tx_size = (uint8_t)atoi(max_tx_env);
+    }
+    const char* crf_off_env = getenv("SVT_CRF_OFFSET");
+    if (crf_off_env) {
+        cfg.extended_crf_qindex_offset = (uint8_t)atoi(crf_off_env);
+    }
+    const char* csp_env = getenv("SVT_CSP");
+    if (csp_env) {
+        cfg.chroma_sample_position = (EbChromaSamplePosition)atoi(csp_env);
+    }
+
+    /* Film grain translation gate: same names on the Rust identity driver. */
+    AomFilmGrain grain_table = {0};
+    if (getenv("SVT_GRAIN_TABLE")) {
+        grain_table.apply_grain=1;grain_table.scaling_shift=8;
+        grain_table.num_y_points=2;grain_table.scaling_points_y[0][0]=0;grain_table.scaling_points_y[0][1]=20;grain_table.scaling_points_y[1][0]=255;grain_table.scaling_points_y[1][1]=35;
+        grain_table.num_cb_points=grain_table.num_cr_points=2;
+        for(int i=0;i<2;i++) {grain_table.scaling_points_cb[i][0]=grain_table.scaling_points_cr[i][0]=i*255;grain_table.scaling_points_cb[i][1]=15;grain_table.scaling_points_cr[i][1]=25;}
+        grain_table.ar_coeff_lag=1;grain_table.ar_coeff_shift=7;
+        grain_table.ar_coeffs_y[0]=3;grain_table.ar_coeffs_y[3]=-4;
+        grain_table.ar_coeffs_cb[4]=8;grain_table.ar_coeffs_cr[4]=-5;
+        grain_table.cb_mult=grain_table.cr_mult=128;grain_table.cb_luma_mult=grain_table.cr_luma_mult=192;grain_table.cb_offset=grain_table.cr_offset=256;
+        grain_table.overlap_flag=1;grain_table.ignore_ref=getenv("SVT_GRAIN_IGNORE_REF")!=NULL;
+        if (!strcmp(getenv("SVT_GRAIN_TABLE"), "cfl")) {
+            grain_table.chroma_scaling_from_luma=1;
+            grain_table.num_cb_points=grain_table.num_cr_points=0;
+        } else if (!strcmp(getenv("SVT_GRAIN_TABLE"), "no_y")) {
+            grain_table.num_y_points=0;
+        }
+        cfg.fgs_table=&grain_table;
+    }
+    const char *fg_strength = getenv("SVT_GRAIN_STRENGTH");
+    const char *fg_apply = getenv("SVT_GRAIN_APPLY");
+    const char *fg_adaptive = getenv("SVT_GRAIN_ADAPTIVE");
+    if (fg_strength) cfg.film_grain_denoise_strength = (uint32_t)atoi(fg_strength);
+    if (fg_apply) cfg.film_grain_denoise_apply = (uint32_t)atoi(fg_apply);
+    if (fg_adaptive) cfg.adaptive_film_grain = atoi(fg_adaptive) != 0;
+
+    /* Superres (superres chunk B.3): SVT_SUPERRES_KF_DENOM sets
+     * `superres_mode = SUPERRES_FIXED(1)` + `superres_kf_denom = D`.
+     * MEASURED: for a STILL (KEY) frame the KF denominator is the one that
+     * takes effect — `superres_denom` alone leaves `use_superres = 0` on the
+     * key frame (denom 12 and 16 then produce byte-identical streams). Absent
+     * the env var nothing is touched, so every pre-existing cell is unchanged
+     * (`superres_mode` stays SUPERRES_NONE, enc_settings.c:1095). */
+    const char* superres_env = getenv("SVT_SUPERRES_KF_DENOM");
+    if (superres_env) {
+        cfg.superres_mode      = 1; /* SUPERRES_FIXED */
+        cfg.superres_kf_denom  = (uint8_t)atoi(superres_env);
+        cfg.superres_denom     = (uint8_t)atoi(superres_env);
+    }
+
+    /* Fork / fork-defaulted knobs. Types per EbSvtAv1Enc.h; absent env var =
+     * untouched, so this whole block is inert for every pre-existing caller. */
+
+    err = svt_av1_enc_set_parameter(handle, &cfg);
+    if (err != EB_ErrorNone)
+        die("svt_av1_enc_set_parameter", err);
+
+    /* STEP 3 */
+    err = svt_av1_enc_init(handle);
+    if (err != EB_ErrorNone)
+        die("svt_av1_enc_init", err);
+
+    /* STEP 4: one frame, then EOS (app_process_cmd.c pattern). */
+    EbSvtIOFormat io;
+    memset(&io, 0, sizeof(io));
+    io.luma      = yuv;
+    io.cb        = yuv + ysz * sample_size;
+    io.cr        = yuv + (ysz + csz) * sample_size;
+    io.y_stride  = w; /* strides are in SAMPLES (pixels), not bytes */
+    io.cb_stride = (uint32_t)cw; /* ceiling chroma stride (matches the .yuv layout) */
+    io.cr_stride = (uint32_t)cw;
+
+    /* STEP 4b: the output file is opened BEFORE the send loop because a
+       multi-frame run has to drain packets WHILE it sends them — see
+       `emit_pkt` and the `n_frames > 2` arm below. */
+    FILE* fo = fopen(out, "wb");
+    if (!fo)
+        die("cannot open output", 0);
+    uint32_t npkt = 0, nbytes = 0;
+
+    for (uint32_t f = 0; f < n_frames; ++f) {
+        uint8_t* base = yuv + (size_t)f * frame_bytes;
+        io.luma       = base;
+        io.cb         = base + ysz * sample_size;
+        io.cr         = base + (ysz + csz) * sample_size;
+
+        EbBufferHeaderType in_hdr;
+        memset(&in_hdr, 0, sizeof(in_hdr));
+        in_hdr.size         = sizeof(EbBufferHeaderType);
+        in_hdr.p_buffer     = (uint8_t*)&io;
+        in_hdr.n_filled_len = (uint32_t)frame_bytes;
+        in_hdr.pts          = (int64_t)f;
+        in_hdr.pic_type     = EB_AV1_INVALID_PICTURE; /* encoder decides; frame 0 is a key frame */
+        err                 = svt_av1_enc_send_picture(handle, &in_hdr);
+        if (err != EB_ErrorNone)
+            die("svt_av1_enc_send_picture", err);
+
+        /* DRAIN AS WE GO, above two frames. The library's output-stream buffer
+           pool is finite; holding every packet until after the last send runs
+           it dry, and in CONFIG_SINGLE_THREAD_KERNEL builds that is FATAL, not
+           a stall:
+
+             Svt[fatal]: ST mode: empty object pool exhausted after pumping
+                         dispatcher            (sys_resource_manager.c:791)
+
+           MEASURED 2026-09-02: SVT_FRAMES=3 died there with ZERO packets
+           written, which is why every inter measurement in this repo stops at
+           two frames — not because the encoder cannot code a third, but
+           because this driver could not collect it. With the drain below the
+           same call codes 1480 / 22 / 21 bytes for `gradient 64x64 q32 p8`.
+
+           WHY ONE BLOCKING GET IS SAFE HERE, and it is only safe here: in ST
+           mode `svt_av1_enc_send_picture` runs the WHOLE pipeline
+           synchronously before returning (enc_handle.c:5805), so this frame's
+           packet is already in the full fifo. `svt_get_full_object`'s ST arm
+           is a DIRECT POP with no emptiness check (sys_resource_manager.c:869)
+           and would dereference NULL on an empty fifo, so do not move this
+           call anywhere the pipeline has not just run, and do not pass
+           pic_send_done=1 before EOS (enc_handle.c:5852 asserts on that).
+
+           GATED ON `n_frames > 2` so the 1- and 2-frame runs every existing
+           gate uses take byte-identical code and write their packets in the
+           same order as before. */
+        if (n_frames > 2) {
+            EbBufferHeaderType* pkt = NULL;
+            err                     = svt_av1_enc_get_packet(handle, &pkt, 0);
+            if (err == EB_ErrorMax)
+                die("encode error from svt_av1_enc_get_packet (interleaved)", err);
+            if (pkt) {
+                emit_pkt(pkt, fo, out, n_frames, &npkt, &nbytes);
+                svt_av1_enc_release_out_buffer(&pkt);
+            }
+        }
+    }
+
+    EbBufferHeaderType eos_hdr;
+    memset(&eos_hdr, 0, sizeof(eos_hdr));
+    eos_hdr.size     = sizeof(EbBufferHeaderType);
+    eos_hdr.flags    = EB_BUFFERFLAG_EOS;
+    eos_hdr.pic_type = EB_AV1_INVALID_PICTURE;
+    err              = svt_av1_enc_send_picture(handle, &eos_hdr);
+    if (err != EB_ErrorNone)
+        die("svt_av1_enc_send_picture(EOS)", err);
+
+    /* STEP 5: drain the remaining packets; concatenated payloads == raw OBU
+       stream. On an `n_frames > 2` run the frame packets were already taken
+       above and this loop collects only the EOS one. */
+    for (;;) {
+        EbBufferHeaderType* pkt = NULL;
+        err                     = svt_av1_enc_get_packet(handle, &pkt, 1 /* pic_send_done */);
+        if (err == EB_ErrorMax)
+            die("encode error from svt_av1_enc_get_packet", err);
+        if (pkt == NULL)
+            break;
+        emit_pkt(pkt, fo, out, n_frames, &npkt, &nbytes);
+        const uint32_t last = (pkt->flags & EB_BUFFERFLAG_EOS) != 0;
+        svt_av1_enc_release_out_buffer(&pkt);
+        if (last)
+            break;
+    }
+    fclose(fo);
+    fprintf(stderr, "capture_c_trace: wrote %u bytes (%u packets) to %s\n", nbytes, npkt, out);
+
+    svt_av1_enc_deinit(handle);
+    svt_av1_enc_deinit_handle(handle);
+    free(yuv);
+    return 0;
+}

@@ -207,10 +207,16 @@ clone; R2 carries only what has no home in git.
   compares against the `SVT_HDR_MODE=ON` oracle and is absent from the 33-gate CI
   list; its own header records ~10 open cells. ACCEPTANCE G2 needs both witnesses
   per fork feature. heavy.
-- **The pristine-mainline oracle — the *default* `SvtParity` target — exists only in
-  `~/tmp/svt-tracking/pristine-v4.2.0/`** and has no gate;
-  `tools/pristine_reference_compare.py` is committed but not in CI. Archive and
-  pointer-file it before a scratch wipe takes it.
+- ~~**The pristine-mainline oracle exists only in `~/tmp/svt-tracking/`.**~~
+  **PARTLY RESOLVED 2026-09-10.** Its irreplaceable half — `capture-mainline.c`,
+  the fixture generator, the decode driver, and 22 other investigation scripts
+  that existed nowhere else — is committed at `rust/tools/tracking/` with the
+  cmake recipe. The 2.0 GB build is reproducible and was not archived; the
+  `hybrid-ablation` C files turned out byte-identical to the submodule and were
+  dropped. **Still open:** 24 of the 25 hardcode absolute scratch paths, so none
+  of them runs off that one box yet (the `decode_diff` / `lib_corpus.sh` failure
+  class), and `tools/pristine_reference_compare.py` still has no CI gate. The
+  default `SvtParity` target is therefore preserved but still ungated.
 - ~~**`real_image_matrix.sh` cannot run on any machine.**~~ **RESOLVED
   2026-09-09.** The `decode_diff` repair (`a046e68b`) made it runnable and it
   passes **180/180 byte-identical** (`4c20cc87`+; record in
