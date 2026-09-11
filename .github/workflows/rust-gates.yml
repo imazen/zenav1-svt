@@ -514,8 +514,13 @@ jobs:
         # field was fixed: NEARESTMV/NEARMV DERIVE their MV from a stack partly
         # projected from motion saved in earlier frames, and that projection is
         # inert until frame 2 (C aborts it when the start frame is a KEY
-        # frame). Eight frames gives it six live ones. 21 s for 18 cells
-        # locally, on the derf assets the two jobs above already fetched.
+        # frame). Eight frames gives it six live ones.
+        #
+        # It sweeps the WHOLE SHIPPED PRESET RANGE (6..13), because the range is
+        # what the gate defines: `encode_frame_impl` refuses an inter frame
+        # below preset 6, and this is the measurement that drew that line.
+        # 102 s for 144 cells locally, on the derf assets the two jobs above
+        # already fetched.
         run: ./tools/video_selfcheck_gate.sh
 
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes

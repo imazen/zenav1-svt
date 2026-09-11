@@ -1,14 +1,17 @@
 # zenav1-svt
 
-Experimental pure-Rust port of SVT-AV1 v4.2.0, with explicit C-reference
-selection and opt-in HDR-fork/Zen extensions. The product supports 8/10-bit
-4:2:0 still encoding and all-intra animated AVIF, plus Rust monochrome/alpha
-extensions. General public streaming video is unfinished and refuses calls.
-There is no C dependency in the product library path.
+Pure-Rust port of SVT-AV1 v4.2.0 — `#![forbid(unsafe_code)]`, no C in the
+product library path — with explicit C-reference selection and opt-in
+HDR-fork/Zen extensions.
 
-Start with [the current handoff](CONTEXT-HANDOFF.md),
-[the feature/support table](rust/docs/API-SUPPORT-AUDIT-2026-09-08.md), and
-[the remaining-work tracker](https://github.com/imazen/zenav1-svt/issues/21).
+It encodes 8/10-bit 4:2:0 stills and animated AVIF, and **video in a measured
+envelope: 8-bit 4:2:0, presets 6..13**. Outside that envelope an inter frame is
+refused rather than approximated. Monochrome and alpha are Rust extensions
+beyond C's envelope.
+
+**The support tables below are the answer to "does it do X?"** — every row
+names the gate that backs it, and every gate runs in CI. Remaining work is
+tracked in [issue 21](https://github.com/imazen/zenav1-svt/issues/21).
 
 ## References, policy and coverage
 
@@ -93,14 +96,16 @@ CAPABILITY (debt) and CONTRACT (permanent caller misuse).
 | Tiles, SB128, lossless | **Validated** | `tile_gate.sh`, `sb128_gate.sh`, `lossless_gate.sh` |
 | Superres | **Partial** | 8-bit only — the u16 source downscale is unported; `superres_gate.sh` |
 | Film grain | **Supported** | 8/10-bit 4:2:0 only (C's own limit) |
+| Animated AVIF, inter-coded | **Validated** | `AnimationOptions::keyframes` defaults to one key frame every 120 pictures; only key frames are marked `stss`. MEASURED on eight 256x256 frames of `fourpeople` at quality 70: 58,823 B all-intra against 21,104 B as one closed GOP. Monochrome, lossless, 10-bit and sub-preset-6 animations fall back to all-intra rather than failing |
 | All-intra animated AVIF | **Validated** | CI `animation` job with a PINNED decoder (libavif 1.3.0): 9 in-module tests plus `tests/animation_e2e.rs`, which re-parses the written file with an independent container parser and checks frame count, per-frame durations, the alpha-track decision and that frames differ |
 | Monochrome / alpha | **Supported** | Rust extension beyond C's envelope |
 
 ### Inter / video — experimental, and gated behind `SvtParity`
 
-Inter frames ship as of 2026-09-11: `EncodePipeline`'s 4:2:0 entry points
-encode video for every caller, and the `SVTAV1_INTER_EXPERIMENTAL` /
-`SVTAV1_INTER_CHAIN_EXPERIMENTAL` variables that used to gate them are deleted.
+**Inter frames ship, in a measured envelope: 8-bit 4:2:0, presets 6..13.**
+`EncodePipeline`'s 4:2:0 entry points encode video for every caller inside it.
+Outside it — preset below 6, bit depth above 8, monochrome — an inter frame is
+REFUSED, and each refusal carries the measurement that drew the line.
 
 **The guarantee is different from the still one, and the difference is the
 point.** Still images are byte-identical to C. Video is verified against a
@@ -111,11 +116,12 @@ content. Both claims are measured below; neither is inferred from the other.
 
 | Feature | Status | Evidence / limit |
 |---|---|---|
-| Inter frame coding, low-delay P | **Validated** | `video_selfcheck_gate.sh` — 18/18 cells (six derf clips x qp {20,40,55}), all 8 frames of each byte-identical to `aomdec`'s reconstruction |
+| Inter frame coding, low-delay P, 8-bit, presets 6..13 | **Validated** | `video_selfcheck_gate.sh` — 144/144 cells (six derf clips x qp {20,40,55} x presets 6..13), all 8 frames of each byte-identical to `aomdec`'s reconstruction |
+| Inter frames below preset 6 | **Not supported** | Refused. MEASURED 2026-09-11: preset 0 loses two of 18 cells, presets 1 and 2 lose two and one, preset 5 loses one. `SVTAV1_MFMV_OFF` returns every failing cell to 8/8 — but turning the temporal field off is not the fix either (151 of 163 against 156), so there are two defects, not one |
+| 10-bit inter video | **Not supported** | Refused. MEASURED 2026-09-11: 8 of 18 cells reconstruct as `aomdec` does; the rest drift from frame 1, 2 or 3. `bd10_video_gate.sh` 24/24 asserts only that the stream PARSES — see its header |
 | Byte-identity to C on inter frames | **Partial** | `inter_byte_gate.sh` 108/108 on its curated grid. On the 96-cell frontier grid at frames=4 (MEASURED 2026-09-11): f0 95, f1 95, f2 60, f3 58 identical. The chain gap concentrates in 72x72 (a partial superblock — 17 of 24 differ at f2) and `gradient` content (19 of 24); `uniform` is 24/24 on every frame |
 | Real-video inter (derf clips) | **Validated** | `real_video_inter_gate.sh` 24/24 against a pinned per-cell table |
-| Decoder conformance of inter streams | **Validated** | `inter_decode_gate.sh`, and every inter gate below checks recon against dav1d |
-| 10-bit inter video | **Validated** | `bd10_video_gate.sh` 24/24 encode + decode |
+| Decoder conformance of inter streams | **Validated** | `inter_decode_gate.sh`; the warped/global-motion/OBMC gates below each compare RECON against dav1d, which is stronger than parsing |
 | **Global motion** | **Validated** | `global_motion_gate.sh` — recon byte-identical to dav1d on every frame; anti-vacuity: fails if no cell fits a non-identity model |
 | **Warped motion** | **Validated** | `warped_motion_gate.sh` 8/8 — selects it where C does, recon matches dav1d. MDS1 MV refinement wired |
 | **OBMC** | **Validated** | `obmc_gate.sh` 6/6 — selects it where C does (22 % of blocks at preset 0), recon matches dav1d. MD-stage MV refinement wired; the injection-time one (preset MR only) is not |

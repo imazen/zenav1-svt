@@ -1,5 +1,11 @@
 # GitHub issue handoff audit — 2026-09-08
 
+> **SNAPSHOT — an open-issues audit, dated in its own filename.** It describes the day it was written, not the current state. Current support is in
+> [README.md](../../README.md), current parity in
+> [IDENTITY-STATUS.md](IDENTITY-STATUS.md), and current refusals in
+> [REFUSED-CONFIGS.md](REFUSED-CONFIGS.md). Re-derive anything here against
+> source before acting on it.
+
 Audited all 15 SVT issue bodies/states, all 13 comments on the seven initially
 open issues, current source and main ancestry. Implementation main: `0cbd1279`.
 The original reports and open-issue comments are [preserved](history/2026-09-08/github/issue-21.md)

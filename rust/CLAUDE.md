@@ -2,47 +2,64 @@
 
 ## Start here
 
-Read [the current handoff](../CONTEXT-HANDOFF.md) and
-[working guide](docs/WORKING-ON-THIS.md). They supersede dated status and priority
-statements in the [archived instruction/history document](docs/history/2026-09-08/rust/CLAUDE.md).
-This cleanup preserves the enduring rules below while removing obsolete active
-queues. Historical user attribution remains in that archive. The full scope is
-[ENCODER-POLICY-GOAL.md](../ENCODER-POLICY-GOAL.md), not a command to expand an
-unrelated new task automatically.
+Read [the working guide](docs/WORKING-ON-THIS.md) for the workflow and the
+gates. Read [README.md](../README.md) for what is supported and which gate
+backs each row, and [docs/IDENTITY-STATUS.md](docs/IDENTITY-STATUS.md) for what
+is byte-identical to C versus verified against a decoder. The full scope is
+[ENCODER-POLICY-GOAL.md](../ENCODER-POLICY-GOAL.md) — a description of the
+destination, not a licence to expand an unrelated task.
+
+There is no handoff document. [CONTEXT-HANDOFF.md](../CONTEXT-HANDOFF.md) is a
+one-page router from a question to the document that answers it, and it says
+why the 697-line version that used to live there was removed.
+
+## What to trust, and what will mislead you
+
+- **A dated filename is a snapshot.** `docs/*-2026-MM-DD.md`, everything under
+  `docs/history/`, and every `benchmarks/` record describe the day they were
+  written. Grep surfaces them beside live documents; the first line of each
+  says which kind it is. Never infer a current pass count from one.
+- **Gate output and refusal text are the ledger.** `docs/REFUSED-CONFIGS.md` is
+  generated from the refusal strings, so it cannot drift from them, and the
+  strings carry their own measurement and date. Move a number only by
+  re-measuring it in the same change.
+- **Read what a gate ASSERTS, not what its name suggests.** `bd10_video_gate.sh`
+  says "decodes", and its decode leg only checks that the stream PARSES — it
+  does not compare reconstructions, and 10-bit inter recon is in fact 8 of 18.
+  Every gate header states its own limit; that is the contract.
+- **A tool that can report a confidently wrong number is a defect.** The
+  multi-frame `SVTAV1_FINAL_RECON` dump wrote the 8-bit canvas whatever the bit
+  depth, which made a 10-bit comparison read as a total mismatch from frame 0.
+  Fix such a tool in the change that finds it, and prefer a tool that refuses
+  over one that substitutes.
 
 ## Current state and known gaps
 
-**2026-09-10 additions, ahead of the paragraph below.** Read
-[the handoff](../CONTEXT-HANDOFF.md)'s "STATE AS OF 2026-09-10" block first;
-these three are the ones most likely to be re-derived wrongly:
+Everything here is kept short on purpose; the tables it points at are the
+detail, and they are regenerated or gated rather than narrated.
 
-- **10-bit VIDEO now encodes and decodes but is NOT byte-identical** (24 cells,
-  1/48 frames identical, `tools/bd10_video_gate.sh`). It was previously
-  refused, then panicking. Do not report it as either working or missing.
-- **`hbd_md` is the next real question.** Two independent measurements point at
-  it: the 10-bit video divergence (10-bit STILLS on the same content are 16/16
-  identical) and the bd10 chroma-recon bisect (C's chroma recon matches the u8
-  quantizer's). Establish what C derives before changing it.
-- **Allocation work is done through `crate::vecpool`.** Do not "simplify" the
-  size classes or the byte-budgeted depth away — both were measured, and the
-  meta records what each was worth. `intrabc_hash`'s bucket growth is AT PARITY
-  with C and must not be "fixed".
-
-Main implementation `0cbd1279`: policy/reference/−1 APIs and ARM pairwise work
-are merged. Film grain, forced SCM 0/1 and mainline tune-0 sharpness are wired.
-Public streaming `Encoder` refuses calls explicitly. Raw pipeline errors,
-fallible allocation and cancellation are implemented; they are not new work
-merely because a July note calls them absent.
-
-Use [the support table](docs/API-SUPPORT-AUDIT-2026-09-08.md) and
-[issue audit](docs/OPEN-ISSUES-AUDIT-2026-09-08.md). Open work includes four
-native10 parity cells, broader C video/GOP/temporal/superres combinations,
-remaining wrapper controls and broad corpus calibration. #18 deployment/output
-replacement is unverified; #19 remains a historical quality-ladder observation.
-The MSRV floor is 1.98, matching what the aarch64 dotprod intrinsics
-(`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require. Strict ARM Clippy
-is down to 15 pre-existing diagnostics, all architecture-independent; the two
-`incompatible_msrv` ones are gone. PR20 waived nothing.
+- **Stills are the byte-identical surface** — 8-bit `identity_full_8bit.sh`
+  1100/1100, 10-bit `bd10_photo_gate.sh` 191/191 and `bd10_nonflat_gate.sh`
+  309/309.
+- **Video ships in a measured envelope: 8-bit 4:2:0, presets 6..13**, verified
+  against a DECODER rather than against C's bytes
+  (`tools/video_selfcheck_gate.sh`, 144/144 cells). Below preset 6, above 8
+  bits, and monochrome are REFUSED, each with its measurement in the refusal
+  text. Do not report video as either "working" or "missing".
+- **`hbd_md` is the open question behind 10-bit video.** Two independent
+  measurements point at it: 10-bit STILLS on the same content are 16/16
+  identical, and the bd10 chroma-recon bisect found C's chroma recon matching
+  the u8 quantizer's. Establish what C derives before changing it.
+- **Allocation work goes through `crate::vecpool`.** Do not "simplify" the size
+  classes or the byte-budgeted depth away — both were measured and the meta
+  records what each was worth. `intrabc_hash`'s bucket growth is AT PARITY with
+  C and must not be "fixed".
+- Public streaming `Encoder::send_frame` / `receive_packet` are an unimplemented
+  scaffold and say so; use `EncodePipeline` or `AvifEncoder`.
+- Open work: hierarchical (random-access) GOPs, compound/bipred and inter-intra,
+  temporal filtering, VBR/CBR rate control, and the two inter defects below
+  preset 6. The MSRV floor is 1.98, matching what the aarch64 dotprod intrinsics
+  (`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require.
 
 ## Correctness and porting
 

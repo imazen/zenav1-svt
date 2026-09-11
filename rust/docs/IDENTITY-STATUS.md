@@ -1,4 +1,18 @@
-# Current identity status — 2026-09-08
+# Identity status — what is byte-identical, what is decoder-verified
+
+This is the live parity document: read it for what the port matches today and
+what it does not. It grows by section, each dated and each naming its
+measurement — the heading date below is the section's, not the file's, and a
+section without a date is older than the ones that have one.
+
+**The two guarantees are not interchangeable.** Still images are byte-identical
+to the C encoder. Inter/video is verified against a DECODER instead — the
+encoder's own reconstruction must equal `aomdec`'s, frame for frame — because
+that is the property a wrong stream actually violates and because the port's
+inter search does not track C's bytes on all content. Never infer one from the
+other.
+
+## Still identity — 2026-09-08
 
 Implementation snapshot: main `0cbd1279`. Historical campaigns, pins and old
 first-difference investigations are [preserved verbatim](history/2026-09-08/rust/docs/IDENTITY-STATUS.md).
@@ -96,7 +110,24 @@ video while asserting only that two encoders agree a repeated frame is a skip.
 `tools/mk_video_assets.py` now decimates duplicates and scores motion as the
 **minimum** over consecutive pairs, never the mean.
 
-## Multi-frame video: SHIPPED, and gated against a decoder (2026-09-11)
+## Multi-frame video: SHIPPED in a measured envelope, gated against a decoder (2026-09-11)
+
+**The envelope is 8-bit 4:2:0, presets 6..13.** Inside it,
+`tools/video_selfcheck_gate.sh` is 144 of 144 cells (six public-domain derf
+clips x qp {20,40,55} x presets 6..13) whose every frame of an 8-frame encode
+reconstructs byte-identically to `aomdec`. Outside it an inter frame is
+refused, not approximated, and each refusal carries its measurement:
+
+| Refused | What was measured, 2026-09-11 |
+|---|---|
+| preset < 6 | preset 0 loses two of 18 cells, presets 1 and 2 lose two and one, preset 5 loses one. `SVTAV1_MFMV_OFF` returns every failing cell to 8/8, naming the temporal MV field — but signalling `use_ref_frame_mvs = 0` scores 151 of 163 against 156 with the field on, so the spatial-only stack has a second defect. Neither arm is shippable there |
+| bit depth > 8 | three clips x qp {20,40} x presets {6,8,10} x 4 frames: 8 of 18 cells reconstruct as `aomdec` does, the rest drifting from frame 1, 2 or 3. `bd10_video_gate.sh` does NOT cover this — its decode leg asserts only that the stream parses |
+| monochrome | no inter gate in this repo is monochrome, and a mono inter frame previously produced a stream both `aomdec` and `dav1d` rejected |
+
+`SVTAV1_INTER_EXPERIMENTAL` lifts the preset and bit-depth floors for the
+harnesses that must reach a low-preset tool. It is not a feature flag.
+
+## How the envelope came to be (2026-09-11)
 
 The heading below is the 2026-09-10 state and is kept because the trail is
 useful; read this paragraph first. Both inter refusals are GONE, and so are the

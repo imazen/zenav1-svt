@@ -3,7 +3,7 @@
 The [root README](../README.md) describes the supported product surface,
 reference selection, installation and licensing. The current source-backed
 [support table](docs/API-SUPPORT-AUDIT-2026-09-08.md) supersedes old port-map
-completion claims. Start a handoff with [CONTEXT-HANDOFF.md](../CONTEXT-HANDOFF.md).
+completion claims. Start with [the working guide](docs/WORKING-ON-THIS.md); [CONTEXT-HANDOFF.md](../CONTEXT-HANDOFF.md) routes a question to the document that answers it.
 
 The workspace has **six members**: four core libraries (`zenav1-svt`,
 `zenav1-svt-encoder`, `zenav1-svt-dsp`, `zenav1-svt-types`), the dev-only

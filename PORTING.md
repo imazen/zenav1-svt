@@ -2,7 +2,7 @@
 
 Which C file each Rust module ports, and how to run the differential gate that
 proves it. This is a symbol navigation aid; current support and open cells are indexed
-in `CONTEXT-HANDOFF.md`. Historical line numbers and campaign counts are
+in `README.md`'s support tables and `rust/docs/IDENTITY-STATUS.md`. Historical line numbers and campaign counts are
 source-specific, not current completion claims.
 
 The workspace also contains the dev-only `zenav1-svt-cref` oracle and

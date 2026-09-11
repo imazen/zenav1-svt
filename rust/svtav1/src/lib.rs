@@ -6,15 +6,19 @@
 //! v4.2.0. Still pictures (AVIF / all-intra) are verified BYTE-IDENTICAL to
 //! the C encoder across a broad tested envelope.
 //!
-//! INTER (video) frames also encode, on the 4:2:0 entry points, in a flat
-//! low-delay-P GOP. That path carries a different guarantee and the difference
-//! matters: it is verified against a DECODER rather than against C's bytes —
-//! `tools/video_selfcheck_gate.sh` requires the encoder's own reconstruction
-//! to be byte-identical to `aomdec`'s on every frame of an 8-frame encode
-//! (18 of 18 clip x qp cells). Byte-identity to C holds on most of the
-//! synthetic frontier grid but not all of it; the README's video table has the
-//! measured numbers. Monochrome inter, hierarchical (random-access) GOPs,
-//! compound prediction and VBR/CBR rate control are refused, not approximated.
+//! INTER (video) frames also encode, in a measured envelope: **8-bit 4:2:0,
+//! presets 6..13**, in a flat low-delay-P GOP. That path carries a different
+//! guarantee and the difference matters: it is verified against a DECODER
+//! rather than against C's bytes — `tools/video_selfcheck_gate.sh` requires the
+//! encoder's own reconstruction to be byte-identical to `aomdec`'s on every
+//! frame of an 8-frame encode, 144 of 144 clip x qp x preset cells.
+//! Byte-identity to C holds on most of the synthetic frontier grid but not all
+//! of it; the README's video table has the measured numbers.
+//!
+//! Outside that envelope an inter frame is REFUSED, with the measurement in
+//! the refusal text: preset below 6, bit depth above 8, and monochrome. So are
+//! hierarchical (random-access) GOPs, compound prediction and VBR/CBR rate
+//! control. Nothing there is approximated.
 //!
 //! There is no GPU acceleration and no built-in H.264/H.265 input; see
 //! `examples/mp4_to_avif.rs` for a pure-Rust decode front end.

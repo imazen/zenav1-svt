@@ -4,9 +4,9 @@
 # WHY THIS GATE EXISTS. Until 2026-09-10 a 10-bit INTER frame was not merely
 # non-identical, it was UNREACHABLE, in three stacked ways:
 #
-#   1. `try_encode_frame_420_hbd` refused every non-key frame outright, with no
-#      the (now deleted) inter refusal — so the 8-bit differential harness had
-#      no 10-bit counterpart and the surface could not be measured at all.
+#   1. `try_encode_frame_420_hbd` refused every non-key frame outright, and the
+#      refusal had no 10-bit counterpart in the 8-bit differential harness, so
+#      the surface could not be measured at all.
 #   2. Past that, `tx_unit_hbd` indexed a zero-length slice: an inter
 #      candidate's `Cand::pred10` had NO producer. The bd10 full-RD funnel
 #      residuals every candidate against a 10-bit prediction, an intra
@@ -26,6 +26,28 @@
 # in the repo rather than in a commit message:
 #
 #     0 of 48 frames byte-identical, 24 of 24 streams decodable (2026-09-10)
+#
+# WHAT "DECODES" MEANS HERE, AND WHAT IT DOES NOT. The decode leg runs
+# `dav1d -o /dev/null` and asserts only that the stream PARSES. It does NOT
+# compare the port's reconstruction with the decoder's, and the difference is
+# not academic: an inter frame predicts from the previous frame's recon, so an
+# encoder can emit a parseable stream while holding a canvas the decoder never
+# rebuilds, and the error then compounds down the GOP invisibly to this gate.
+# Read the pass line as "24 streams parsed", never as "24 streams reconstruct".
+#
+# THAT GAP IS MEASURED AND IT IS REAL. 2026-09-11, `SVTAV1_FINAL_RECON` against
+# `aomdec` over three of these clips x qp {20,40} x presets {6,8,10} x 4
+# frames: only 8 of 18 cells reconstruct identically, the rest drifting from
+# frame 1, 2 or 3. That is why `encode_frame_impl` REFUSES a 10-bit inter frame
+# for callers and why `AvifEncoder` codes a 10-bit animation all-intra; this
+# gate reaches the surface only through `SVTAV1_INTER_EXPERIMENTAL`. Closing it
+# means adding a recon leg here with a pinned per-cell table, exactly as
+# `video_selfcheck_gate.sh` does for 8 bits.
+#
+# (The first attempt at that measurement read 0 of 18, from frame 0 onward,
+# because `identity_run`'s MULTI-frame `SVTAV1_FINAL_RECON` wrote the 8-BIT
+# canvas whatever the depth. It now refuses that substitution. A tool that can
+# report a confidently wrong number is a defect like any other.)
 #
 # WHERE THE DIVERGENCE IS NOT. bd10 STILLS on this same content and geometry
 # are 16/16 byte-identical to C (johnny + vidyo3 x {128,256} x presets

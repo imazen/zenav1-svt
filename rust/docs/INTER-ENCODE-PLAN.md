@@ -1,6 +1,10 @@
-> **Historical source/campaign reference, classified at handoff `0cbd1279`.**
-> Use [the current handoff](../../CONTEXT-HANDOFF.md) and
-> [support/identity audit](API-SUPPORT-AUDIT-2026-09-08.md) for live status.
+> **CHRONOLOGY, NOT STATUS — 8,500 lines of what the inter campaign tried, in
+> the order it tried it.** Read it to find out how something came to be, or
+> which hypotheses were already refuted. Do NOT read it to find out what works
+> today: current support is [README.md](../../README.md), current parity is
+> [IDENTITY-STATUS.md](IDENTITY-STATUS.md), and current refusals are
+> [REFUSED-CONFIGS.md](REFUSED-CONFIGS.md), which is generated from the refusal
+> strings themselves. Classified at handoff `0cbd1279`.
 > “Current”, “next”, “unported”, line numbers and counts below belong to their
 > recorded revisions; they are not current completion claims. Where no source
 > or retained artifact was recorded, the measurement is unverified historical

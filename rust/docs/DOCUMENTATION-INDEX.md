@@ -1,9 +1,17 @@
-# Documentation index — handoff audit, 2026-09-08
+# Documentation index — a classification, not a reading list
 
-Start with [CONTEXT-HANDOFF.md](../../CONTEXT-HANDOFF.md). This index classifies
-every owned tracked Markdown/metadata document; it does not claim every
-historical experiment was rerun or every old external link remains available.
-The C submodule owns its own upstream documentation and is outside this cleanup.
+**You probably do not want this file.** It is an exhaustive table of every
+tracked Markdown and metadata document with a one-word role, built by an audit
+on 2026-09-08 and useful for one thing: deciding whether a document you have
+already found is current, a snapshot, or evidence. To find the document you
+need in the first place, use the router in
+[CONTEXT-HANDOFF.md](../../CONTEXT-HANDOFF.md) or the read order in
+[AGENTS.md](../../AGENTS.md).
+
+The roles below are stable, but individual rows date from 2026-09-08 and a
+document's role can have changed since. The first line of the document itself
+wins over this table. The C submodule owns its own upstream documentation and
+is outside this cleanup.
 
 - **Current**: source-reviewed API, handoff, support, workflow or remaining requirements.
 - **Historical reference**: old port maps, campaigns and superseded state. Their new

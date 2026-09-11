@@ -1,6 +1,6 @@
 # Current status — implementation main 0cbd1279
 
-The current [handoff](../CONTEXT-HANDOFF.md),
+The support tables in [README.md](../README.md), [IDENTITY-STATUS.md](docs/IDENTITY-STATUS.md),
 [source-backed support table](docs/API-SUPPORT-AUDIT-2026-09-08.md),
 [identity status](docs/IDENTITY-STATUS.md), and
 [issue audit](docs/OPEN-ISSUES-AUDIT-2026-09-08.md) are the status sources.

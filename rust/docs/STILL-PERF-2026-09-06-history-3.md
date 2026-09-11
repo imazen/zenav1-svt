@@ -1,3 +1,9 @@
+> **SNAPSHOT — a performance record, dated in its own filename.** It describes the day it was written, not the current state. Current support is in
+> [README.md](../../README.md), current parity in
+> [IDENTITY-STATUS.md](IDENTITY-STATUS.md), and current refusals in
+> [REFUSED-CONFIGS.md](REFUSED-CONFIGS.md). Re-derive anything here against
+> source before acting on it.
+
 > **Historical source/campaign reference, classified at handoff `0cbd1279`.**
 > Use [the current handoff](../../CONTEXT-HANDOFF.md) and
 > [support/identity audit](API-SUPPORT-AUDIT-2026-09-08.md) for live status.

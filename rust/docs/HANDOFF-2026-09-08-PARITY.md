@@ -1,5 +1,11 @@
 # Native10 first-difference witness — current open cells, 2026-09-08
 
+> **SNAPSHOT — a handoff, of the kind this project no longer writes, dated in its own filename.** It describes the day it was written, not the current state. Current support is in
+> [README.md](../../README.md), current parity in
+> [IDENTITY-STATUS.md](IDENTITY-STATUS.md), and current refusals in
+> [REFUSED-CONFIGS.md](REFUSED-CONFIGS.md). Re-derive anything here against
+> source before acting on it.
+
 The validated eight-bit fixes are on main. The four native10 cells below remain open. The later unproven depth-refine edit is excluded from main's *tip* but not from main's history: it is commit `554412d9d`, an ancestor of main, reverted by `3522cd856`, so main's `depth_refine.rs` equals the pre-experiment file. Recover it with `git show 554412d9d -- rust/crates/svtav1-encoder/src/depth_refine.rs`. It is additionally byte-inert on p1q10 and structurally dead at preset >= 4, because its `bd10` arm (depth_refine.rs:1527) requires `!bypass_encdec` while leaf_funnel/rate_tables.rs:1254 sets `bypass_encdec = preset >= 4`. See ../../ENCODER-POLICY-GOAL.md for the full goal; latest implementation and validation are indexed in ../../CONTEXT-HANDOFF.md. The diagnostic measurements below retain their original source checkpoint.
 
 ## The four cells do not share one root cause (measured 2026-09-09, host i265)

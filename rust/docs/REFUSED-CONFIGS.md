@@ -2,7 +2,7 @@
 
 # Configs this encoder refuses
 
-**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **48
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **49
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
 refusals, **10** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
@@ -90,6 +90,7 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | a hierarchical (random-access) GOP is not wired: hierarchical_levels > 0 makes picture decision name BWDREF/ALTREF references that only the flat low-delay-P path fills, so inter candidate injection would reach a reference with no DPB picture. The RA picture structure is ported (port_picstruct_ra) but not connected to the reference-buffer table. Use hierarchical_levels = 0 |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
+| `crates/svtav1-encoder/src/pipeline.rs` | inter frames are shipped for 8-BIT 4:2:0 at presets 6..13, and this frame is outside that. Both halves are measured against a DECODER, because that is what a wrong stream actually violates. PRESETS, MEASURED 2026-09-11 (encoder reconstruction vs aomdec, six public-domain derf clips x qp {20,40,55} x 8 frames at 256x256): presets 6..13 are 144 of 144 cells decoding every frame (tools/video_selfcheck_gate.sh), while preset 0 loses two cells, presets 1 and 2 lose two and one, and preset 5 loses one; SVTAV1_MFMV_OFF returns every failing cell to 8 of 8, but signalling use_ref_frame_mvs = 0 is not a fix either -- 151 of 163 against 156 -- because the spatial-only stack has a defect of its own. BIT DEPTH, measured the same day on three of those clips x qp {20,40} x presets {6,8,10} x 4 frames at bit depth 10: only 8 of 18 cells reconstruct as aomdec does, the rest drifting from frame 1, 2 or 3. Encode video as 8-bit 4:2:0 at preset >= 6, or a single key frame at any depth and preset |
 | `crates/svtav1-encoder/src/pipeline.rs` | inter frames need the 4:2:0 path: the MONOCHROME arm has no inter coverage. Every inter gate in this repo is 4:2:0 (inter_byte_gate.sh, video_selfcheck_gate.sh, bd10_video_gate.sh, warped_motion_gate.sh, global_motion_gate.sh, obmc_gate.sh), and a mono inter frame previously produced a stream aomdec and dav1d both rejected. Encode monochrome as still/key frames, or use the 4:2:0 entry points for video |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `svtav1/src/avif.rs` | C film grain requires 8/10-bit 4:2:0 |

@@ -18,7 +18,7 @@ choosing defaults. Land the ready implementation after required local checks.
 Policy/reference/−1 APIs, checked bucketed effort, support queries, actual
 zenavif routing, Gray8, serialized replay/cache identity and film-grain wiring
 are on main. SVT implementation `0cbd1279`; zenavif API landing `dba8f5ee`.
-Read [CONTEXT-HANDOFF.md](CONTEXT-HANDOFF.md) for observed current consumer/AOM
+Read [README.md](README.md)'s support tables for observed current consumer/AOM
 pins and the remaining ordered work. Earlier “local/not merged” checkpoints
 are [archived](rust/docs/history/2026-09-08/ENCODER-POLICY-GOAL.md).
 
@@ -281,5 +281,5 @@ Existing evidence and starting points:
 - [Completed comparison and time-budget curves](../zenmetrics/benchmarks/av1_compare_2026-09-08/README.md)
 - [AOM adoption audit](../zenmetrics/benchmarks/av1_compare_2026-09-08/AOM_ADOPTION.md)
 - [HDR hybrid history and oracle caveats](rust/docs/HDR-ON-4.2.md)
-- [Current work index](CONTEXT-HANDOFF.md)
+- [Where to look for what](CONTEXT-HANDOFF.md)
 - [Remaining-gaps tracking issue](https://github.com/imazen/zenav1-svt/issues/21)
