@@ -25,6 +25,10 @@ enough = { workspace = true }
 # PNG decode for the real-image identity harness (examples/identity_run.rs
 # `file:<path.png>` content). Example-only — not linked into the library.
 png = "0.18.1"
+# GIF decode for the `gif_to_avif` example: pure Rust, forbids unsafe, and
+# composites disposal/transparency itself so the example does not have to.
+# Example-only -- not linked into the library.
+zengif = { version = "0.7.3", default-features = false, features = ["std"] }
 # `testable_dispatch` exposes for_each_token_permutation, which tests/
 # tier_invariance.rs uses to walk EVERY SIMD tier and assert the encoder emits
 # identical bytes on each. Cargo unifies the feature across the graph, so this
@@ -104,3 +108,10 @@ path = "tests/real_encode.rs"
 [[test]]
 name = "thread_determinism"
 path = "tests/thread_determinism.rs"
+
+# The GIF -> animated AVIF example needs the container muxer; without the
+# feature the `rgba` module and `encode_rgba_animation` are compiled out, so a
+# default-feature workspace build must skip the example rather than fail on it.
+[[example]]
+name = "gif_to_avif"
+required-features = ["avif-container"]

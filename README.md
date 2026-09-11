@@ -38,6 +38,33 @@ without a corresponding retained standing gate. Per-reference, per-ISA and
 corpus boundaries matter. No universal C parity or calibrated RD/time routing
 is claimed.
 
+## Convert a GIF to an animated AVIF
+
+```rust
+use svtav1::{avif::AvifEncoder, rgba::RgbaFrame};
+
+let (meta, gif, _) = zengif::decode_gif(&bytes, Default::default(), &zengif::Unstoppable)?;
+let frames: Vec<RgbaFrame> = /* full-canvas RGBA + duration_ms per frame */;
+let avif = AvifEncoder::new()
+    .with_quality(70.0)
+    .encode_rgba_animation(&frames, meta.width.into(), meta.height.into())?;
+std::fs::write("out.avif", &avif)?;
+```
+
+Runnable end to end, decode included:
+
+```sh
+cargo run --release --features avif-container --example gif_to_avif -- in.gif out.avif 70
+```
+
+`encode_rgba_animation` does the BT.601 conversion, the 4:2:0 subsampling, the
+alpha-plane decision (a plane is written only if some pixel is non-opaque) and
+the container muxing. The output carries a still poster image and a timed AV1
+sequence track, and decodes in `avifdec`, `dav1d` and `ffmpeg`.
+
+MP4 input and true inter-frame AV1 output are not wired yet — see the table
+below.
+
 ## Support status
 
 The four columns mean exactly this, and the distinction is the point:

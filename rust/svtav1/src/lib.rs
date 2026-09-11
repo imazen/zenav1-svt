@@ -49,6 +49,9 @@
 
 pub mod avif;
 pub mod policy;
+/// RGBA convenience: decoded pixels in, animated AVIF out.
+#[cfg(feature = "avif-container")]
+pub mod rgba;
 
 pub use svtav1_dsp as dsp;
 pub use svtav1_encoder as encoder;
