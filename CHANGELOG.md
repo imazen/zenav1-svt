@@ -1,15 +1,71 @@
 # Changelog
 
-All notable changes to `zenav1-svt` (the pure-Rust SVT-AV1 still-image encoder
-port). The project's unit of progress is **byte-identity with the C reference**,
-so entries state what became byte-identical and under which gate, not just what
-code was added.
+All notable changes to `zenav1-svt` (the pure-Rust SVT-AV1 encoder port).
+The project's unit of progress is **evidence**, so entries state what became
+verified and under which gate, not just what code was added. Two kinds of
+evidence, and they are not interchangeable: stills are **byte-identical to the
+C reference**, while inter/video is **verified against a decoder** — the
+encoder's own reconstruction must equal `aomdec`'s, frame for frame.
 
 Crates are not published to crates.io yet — depend by git.
 
 ## [Unreleased]
 
 ### Added
+
+- **Inter (video) frames ship, in a measured envelope: 8-bit 4:2:0, presets
+  6..13** (`df614665`, `a33b9873`). The blanket "inter frames are not
+  implemented for the public API" refusal, the chain refusal on a frame whose
+  list-0 reference is itself inter, and the `SVTAV1_INTER_CHAIN_EXPERIMENTAL`
+  variable are all gone. The new gate `tools/video_selfcheck_gate.sh` is what
+  replaced them: 144 of 144 cells (six public-domain derf clips x qp
+  {20,40,55} x presets 6..13), every frame of an 8-frame encode byte-identical
+  to `aomdec`'s reconstruction. Outside the envelope — preset below 6, bit
+  depth above 8, monochrome — an inter frame is REFUSED, each refusal carrying
+  the measurement that drew the line.
+- **Animated AVIF is inter-coded** (`df614665`). `AnimationOptions::keyframes`
+  defaults to one key frame every 120 pictures and only key frames are marked
+  `stss`. MEASURED on eight 256x256 frames of `fourpeople` at quality 70:
+  58,823 B all-intra against 21,104 B as one closed GOP. Monochrome, lossless,
+  10-bit and sub-preset-6 animations fall back to all-intra rather than
+  failing.
+- **MP4 (H.264) and GIF converters** (`9f57496d`, `41d9a379`).
+  `svtav1/examples/mp4_to_avif.rs` demuxes with `re_mp4`, decodes with
+  `rusty_h264` and encodes here; `gif_to_avif.rs` does the same through
+  `zengif`. MEASURED: an x264 `-crf 23` MP4 of `fourpeople` 256x256 x 8 frames
+  goes 8,674 B -> 17,985 B at 50.7 dB luma PSNR against its own decode; a
+  128x128 8-frame GIF goes 91,948 B -> 8,964 B. Both dependencies are dev-only,
+  so the product library path stays unsafe-free.
+- `set_intra_ctrls`' `skip_angular_delta*_th` (`df614665`) — MDS0 splits into
+  two iterations on an inter frame from preset 3 up, replacing the
+  `debug_assert` that said the port needed it. Byte-inert on every still:
+  `identity_full_8bit.sh` 1100/1100.
+
+### Fixed
+
+- **The temporal motion-vector field's block-geometry flag was picture-level**
+  (`df614665`). C sets `ctx->sb64_sq_no4xn_geom` PER BLOCK
+  (`product_coding_loop.c:10256`); the port derived it once per frame from the
+  preset ladders, which is wrong on any picture that mixes block shapes.
+- **The global-motion search could only reach the nearest reference**
+  (`df614665`). C resolves `pa_ref_pic_ptr_array[list][ref]` for every
+  reference in `ref_list<N>_count_try`; the port held one previous-frame
+  pyramid, so `gradient 72x72 q40 p2` encoded two frames and REFUSED the third.
+  The PA pictures now sit in a DPB-shaped store.
+- **`identity_run`'s multi-frame recon dump ignored the bit depth**
+  (`df614665`) — it wrote the 8-bit canvas whatever the depth, so every
+  multi-frame 10-bit comparison against a decoder read as a total mismatch from
+  frame 0. It now refuses that substitution, as the single-frame path always
+  has.
+
+### Changed
+
+- **Documentation is routed, not narrated** (`ba4729e2`). The 697-line
+  `CONTEXT-HANDOFF.md` is a 39-line router; thirteen dated snapshots and the
+  `docs/history/` archive carry a first line saying what they are;
+  `INTER-ENCODE-PLAN.md` is headed chronology-not-status; and
+  `bd10_video_gate.sh` now states that its decode leg asserts PARSING, not
+  reconstruction, with the 8-of-18 recon measurement it does not make.
 
 - **Global motion is implemented** — an inter frame whose
   `svt_aom_global_motion_estimation` fits a non-identity model now ENCODES
