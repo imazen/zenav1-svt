@@ -498,6 +498,26 @@ jobs:
           ./tools/global_motion_gate.sh
           ./tools/obmc_gate.sh
 
+      - name: video self-consistency — port recon == aomdec, 8 frames, real clips
+        if: matrix.shard == 3
+        working-directory: rust
+        env:
+          AOMDEC: ${{ github.workspace }}/aom-build/aomdec
+        # THE ONLY GATE THAT CAN SEE AN ENCODER/DECODER MISMATCH ACROSS A GOP.
+        # Byte-identity to C cannot: both encoders can agree on a stream that
+        # neither describes. An inter frame predicts from the previous frame's
+        # RECONSTRUCTION, so a reference that is not what a decoder rebuilds
+        # makes every later mode decision score a prediction the stream does
+        # not carry, and the error compounds down the GOP in silence.
+        #
+        # It covers the surface that had none until the temporal motion-vector
+        # field was fixed: NEARESTMV/NEARMV DERIVE their MV from a stack partly
+        # projected from motion saved in earlier frames, and that projection is
+        # inert until frame 2 (C aborts it when the start frame is a KEY
+        # frame). Eight frames gives it six live ones. 21 s for 18 cells
+        # locally, on the derf assets the two jobs above already fetched.
+        run: ./tools/video_selfcheck_gate.sh
+
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         if: matrix.shard == 5
         working-directory: rust

@@ -1,3 +1,38 @@
+SUPERSEDED 2026-09-11 -- THE DEFECT THIS FILE ISOLATES IS FIXED.
+
+Read this header before anything below it. The measurements below are a
+correct record of the state on 2026-09-10 and the isolation they describe is
+what LED to the fix, but the "MFMV ON" column no longer describes the port.
+
+WHAT THE DEFECT WAS. `sb64_sq_no4xn_geom` -- C's `ctx->sb64_sq_no4xn_geom`,
+which selects the SIMPLIFIED MFMV block walk -- was set from `sb_size == 64`
+ALONE. That is true at every preset this port ships, so the simplified walk ran
+even where rectangular blocks exist, and it uses `n4_w` for BOTH the row and
+the column extent: on a 16x32 it scans four rows instead of eight and the lower
+half never contributes a temporal candidate. NEARESTMV and NEARMV derive their
+MV from that stack, so encoder and decoder picked different motion vectors for
+the same block -- exactly the signature recorded below. The condition now also
+requires `!nsq_geom_enabled` and `disallow_4x4`, as C's does.
+
+RE-MEASURED 2026-09-11, same harness, MFMV **ON**, 256x256 p6, 8 frames:
+ALL 18 cells (six clips x qp {20,40,55}) reconstruct byte-identically to
+`aomdec` for EVERY frame, including the vidyo1 qp20 cell this file names as a
+separate residual bug. There is no remaining cell in this matrix where the
+port's own reconstruction differs from a decoder's.
+
+That result is now GATED by `tools/video_selfcheck_gate.sh`, so it cannot
+regress silently. The gate has teeth: reverting the `sb64_sq_no4xn_geom`
+condition to `sb_size == 64` alone turns 11 of its 18 cells into RECON MISMATCH
+or UNDECODABLE -- measured 2026-09-11, which is also the evidence that the
+condition is what fixed it.
+
+`SVTAV1_MFMV_OFF` is kept as the isolation switch; it is still not a feature
+flag, because C signals `use_ref_frame_mvs = 1`.
+
+================================================================
+ORIGINAL 2026-09-10 RECORD FOLLOWS
+================================================================
+
 The remaining multi-frame video defect is the TEMPORAL MOTION-VECTOR FIELD
 — isolated 2026-09-10
 
