@@ -93,7 +93,7 @@ CAPABILITY (debt) and CONTRACT (permanent caller misuse).
 | Tiles, SB128, lossless | **Validated** | `tile_gate.sh`, `sb128_gate.sh`, `lossless_gate.sh` |
 | Superres | **Partial** | 8-bit only — the u16 source downscale is unported; `superres_gate.sh` |
 | Film grain | **Supported** | 8/10-bit 4:2:0 only (C's own limit) |
-| All-intra animated AVIF | **Supported** | Exercised end-to-end; no per-feature gate |
+| All-intra animated AVIF | **Validated** | CI `animation` job with a PINNED decoder (libavif 1.3.0): 9 in-module tests plus `tests/animation_e2e.rs`, which re-parses the written file with an independent container parser and checks frame count, per-frame durations, the alpha-track decision and that frames differ |
 | Monochrome / alpha | **Supported** | Rust extension beyond C's envelope |
 
 ### Inter / video — experimental, and gated behind `SvtParity`

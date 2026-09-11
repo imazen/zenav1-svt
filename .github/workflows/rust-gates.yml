@@ -1051,15 +1051,24 @@ jobs:
         # keeps getting bitten by. Assert the count instead of trusting the exit
         # code. There are 9 animation tests today (8 synthetic + the real-video
         # round trip added 2026-09-10); the check is >= 9 so adding one does not
-        # fail the build, while losing one does.
+        # fail the build, while losing one does. Raised to 14 on 2026-09-11 when
+        # tests/animation_e2e.rs added five end-to-end cases.
         run: |
           set -o pipefail
           cargo test -p zenav1-svt --features avif-container animation::tests 2>&1 | tee anim.log
+          # The END-TO-END leg, added 2026-09-11: encode an animation and parse
+          # the file back with an INDEPENDENT container parser
+          # (`zenavif-parse`), asserting frame count, per-frame durations, the
+          # alpha-track decision and that the coded frames actually differ. The
+          # in-module tests above check the encoder against itself; this checks
+          # the artefact. It also covers `rgba::encode_rgba_animation`, which
+          # the in-module tests do not reach.
+          cargo test -p zenav1-svt --features avif-container --test animation_e2e 2>&1 | tee -a anim.log
           passed=$(grep -oE 'test result: ok\. [0-9]+ passed' anim.log \
                    | grep -oE '[0-9]+' | paste -sd+ - | bc)
           echo "animation tests passed: ${passed:-0}"
-          if [ "${passed:-0}" -lt 9 ]; then
-            echo "::error::expected at least 9 avif::animation tests to RUN, saw ${passed:-0}." >&2
+          if [ "${passed:-0}" -lt 14 ]; then
+            echo "::error::expected at least 14 animation tests to RUN (9 in-module + 5 end-to-end), saw ${passed:-0}." >&2
             echo "The filter matched (almost) nothing — did the module move?" >&2
             exit 1
           fi

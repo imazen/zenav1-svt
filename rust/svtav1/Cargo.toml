@@ -29,6 +29,10 @@ png = "0.18.1"
 # composites disposal/transparency itself so the example does not have to.
 # Example-only -- not linked into the library.
 zengif = { version = "0.7.3", default-features = false, features = ["std"] }
+# Container parser for `tests/animation_e2e.rs`: the animated-AVIF assertions
+# parse the file this crate just wrote with an INDEPENDENT parser rather than
+# inspecting the encoder's own state. Dev-only.
+zenavif-parse = { version = "0.6.2", features = ["eager"] }
 # `testable_dispatch` exposes for_each_token_permutation, which tests/
 # tier_invariance.rs uses to walk EVERY SIMD tier and assert the encoder emits
 # identical bytes on each. Cargo unifies the feature across the graph, so this
@@ -52,6 +56,12 @@ symtrace = ["zenav1-svt-encoder/symtrace"]
 # Feature 3: forward fallible allocation down to the encoder/types so the
 # gates (e.g. golden_parity) can be run with `--features fallible-alloc`.
 fallible-alloc = ["zenav1-svt-encoder/fallible-alloc"]
+
+[[test]]
+# Animated AVIF had no test anywhere in the workspace until 2026-09-11; this
+# encodes and then PARSES THE RESULT BACK with an independent container parser.
+name = "animation_e2e"
+path = "tests/animation_e2e.rs"
 
 [[test]]
 name = "svtav1_suite"
