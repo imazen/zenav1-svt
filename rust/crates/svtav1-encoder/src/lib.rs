@@ -60,6 +60,7 @@ pub mod multipass;
 pub(crate) mod nic_arm;
 pub mod noise_gen;
 pub mod noise_norm;
+pub(crate) mod obmc_pred_arm;
 pub mod palette;
 pub(crate) mod part_arm;
 pub mod partition;

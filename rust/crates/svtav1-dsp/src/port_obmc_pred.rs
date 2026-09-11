@@ -78,6 +78,109 @@ pub struct VisitedNb {
     pub rel_mi: usize,
     /// `AOMMIN(xd->n4_w, mi_step)`, or the `n4_h` twin.
     pub nb_mi_size: usize,
+    /// The index INTO THE WALKED SPAN of the cell whose `MbModeInfo` C hands
+    /// the visitor — `*above_mi` / `*left_mi`.
+    ///
+    /// This is NOT always [`Self::rel_mi`], and the difference is the 4-wide
+    /// pairing rule: for a neighbour one mi wide C rewinds `above_mi_col` to
+    /// the start of the pair (which is what `rel_mi` reports, and what the
+    /// GEOMETRY uses) but takes the mode info from the pair's SECOND block,
+    /// `prev_row_mi + above_mi_col + 1`, because that is the half that carries
+    /// chroma. Reading the motion from `rel_mi` instead predicts a 4-wide
+    /// neighbour with the wrong vector.
+    pub mi_index: usize,
+}
+
+/// The most neighbours either walk can visit: `MAX_NEIGHBOR_OBMC`'s largest
+/// entry. C bounds both walks by it (`nb_count < nb_max`), so a caller never
+/// needs a growable list — which is why the `_into` forms below exist and are
+/// what the encoder uses.
+pub const MAX_VISITED_NB: usize = 4;
+
+/// `foreach_overlappable_nb_above` (enc_inter_prediction.c:708) into a
+/// CALLER-OWNED array, returning how many entries were filled.
+///
+/// C's form is a callback and allocates nothing. This is the shape that
+/// matches it: `nb_max` is at most [`MAX_VISITED_NB`], so the whole walk fits
+/// in a fixed array and the OBMC predictor — which runs per candidate per
+/// block — does no allocation at all. [`foreach_overlappable_nb_above`] is the
+/// `Vec` convenience wrapper over this.
+pub fn foreach_overlappable_nb_above_into(
+    up_available: bool,
+    row: &[NbMi],
+    mi_col: usize,
+    n4_w: usize,
+    mi_cols: usize,
+    nb_max: usize,
+    out: &mut [VisitedNb; MAX_VISITED_NB],
+) -> usize {
+    let mut n = 0usize;
+    if !up_available {
+        return 0;
+    }
+    let end_col = (mi_col + n4_w).min(mi_cols);
+    let mut nb_count = 0usize;
+    let mut above_mi_col = mi_col;
+    while above_mi_col < end_col && nb_count < nb_max && n < MAX_VISITED_NB {
+        let mut idx = above_mi_col - mi_col;
+        let mut mi_step = MI_SIZE_WIDE[row[idx].bsize as usize].min(MI_SIZE_64X64);
+        if mi_step == 1 {
+            above_mi_col &= !1usize;
+            idx = above_mi_col - mi_col + 1;
+            mi_step = 2;
+        }
+        if row[idx].overlappable {
+            nb_count += 1;
+            out[n] = VisitedNb {
+                rel_mi: above_mi_col - mi_col,
+                nb_mi_size: n4_w.min(mi_step),
+                mi_index: idx,
+            };
+            n += 1;
+        }
+        above_mi_col += mi_step;
+    }
+    n
+}
+
+/// `foreach_overlappable_nb_left` (enc_inter_prediction.c:741) into a
+/// caller-owned array. See [`foreach_overlappable_nb_above_into`].
+pub fn foreach_overlappable_nb_left_into(
+    left_available: bool,
+    col: &[NbMi],
+    mi_row: usize,
+    n4_h: usize,
+    mi_rows: usize,
+    nb_max: usize,
+    out: &mut [VisitedNb; MAX_VISITED_NB],
+) -> usize {
+    let mut n = 0usize;
+    if !left_available {
+        return 0;
+    }
+    let end_row = (mi_row + n4_h).min(mi_rows);
+    let mut nb_count = 0usize;
+    let mut left_mi_row = mi_row;
+    while left_mi_row < end_row && nb_count < nb_max && n < MAX_VISITED_NB {
+        let mut idx = left_mi_row - mi_row;
+        let mut mi_step = MI_SIZE_HIGH[col[idx].bsize as usize].min(MI_SIZE_64X64);
+        if mi_step == 1 {
+            left_mi_row &= !1usize;
+            idx = left_mi_row - mi_row + 1;
+            mi_step = 2;
+        }
+        if col[idx].overlappable {
+            nb_count += 1;
+            out[n] = VisitedNb {
+                rel_mi: left_mi_row - mi_row,
+                nb_mi_size: n4_h.min(mi_step),
+                mi_index: idx,
+            };
+            n += 1;
+        }
+        left_mi_row += mi_step;
+    }
+    n
 }
 
 /// `foreach_overlappable_nb_above` (enc_inter_prediction.c:708), as an
@@ -115,6 +218,7 @@ pub fn foreach_overlappable_nb_above(
             out.push(VisitedNb {
                 rel_mi: above_mi_col - mi_col,
                 nb_mi_size: n4_w.min(mi_step),
+                mi_index: idx,
             });
         }
         above_mi_col += mi_step;
@@ -153,6 +257,7 @@ pub fn foreach_overlappable_nb_left(
             out.push(VisitedNb {
                 rel_mi: left_mi_row - mi_row,
                 nb_mi_size: n4_h.min(mi_step),
+                mi_index: idx,
             });
         }
         left_mi_row += mi_step;
@@ -429,21 +534,28 @@ mod tests {
         assert_eq!(
             got,
             alloc::vec![
+                // `mi_index` is the pair's SECOND cell — the half C takes the
+                // mode info from — while `rel_mi` is the pair's start, which
+                // is what the geometry uses.
                 VisitedNb {
                     rel_mi: 0,
-                    nb_mi_size: 2
+                    nb_mi_size: 2,
+                    mi_index: 1
                 },
                 VisitedNb {
                     rel_mi: 2,
-                    nb_mi_size: 2
+                    nb_mi_size: 2,
+                    mi_index: 3
                 },
                 VisitedNb {
                     rel_mi: 4,
-                    nb_mi_size: 2
+                    nb_mi_size: 2,
+                    mi_index: 5
                 },
                 VisitedNb {
                     rel_mi: 6,
-                    nb_mi_size: 2
+                    nb_mi_size: 2,
+                    mi_index: 7
                 },
             ]
         );
@@ -495,5 +607,92 @@ mod tests {
         setup_build_prediction_by_left_pred(&mut e, 4, 2, 2, 8, 1024);
         assert_eq!(e.to_top, 8 * 4 * -(4 + 2));
         assert_eq!(e.to_bottom, 1024 + (8 - 2 - 2) * 4 * 8);
+    }
+}
+
+#[cfg(test)]
+mod alloc_free_walk_tests {
+    use super::*;
+    use svtav1_types::block::BlockSize;
+
+    fn row(pattern: &[(BlockSize, bool)]) -> Vec<NbMi> {
+        pattern
+            .iter()
+            .map(|&(bsize, overlappable)| NbMi {
+                bsize,
+                overlappable,
+            })
+            .collect()
+    }
+
+    /// The `_into` walks are the SAME walk as the `Vec` ones, not a second
+    /// transcription. C's form is a callback that allocates nothing, and the
+    /// OBMC predictor runs per candidate per block, so the encoder uses the
+    /// array form — this is what stops the two drifting apart.
+    #[test]
+    fn into_walks_match_the_vec_walks() {
+        let sizes = [
+            BlockSize::Block4x4,
+            BlockSize::Block8x8,
+            BlockSize::Block16x16,
+            BlockSize::Block32x32,
+            BlockSize::Block8x16,
+            BlockSize::Block16x8,
+        ];
+        let mut checked = 0usize;
+        for &a in &sizes {
+            for &b in &sizes {
+                for mask in 0u8..4 {
+                    let cells = row(&[
+                        (a, mask & 1 != 0),
+                        (b, mask & 2 != 0),
+                        (a, true),
+                        (b, false),
+                        (a, true),
+                        (b, true),
+                        (a, false),
+                        (b, true),
+                    ]);
+                    for &n4 in &[1usize, 2, 4] {
+                        for &nb_max in &[1usize, 2, 4] {
+                            let want =
+                                foreach_overlappable_nb_above(true, &cells, 0, n4, 64, nb_max);
+                            let mut got = [VisitedNb {
+                                rel_mi: 0,
+                                nb_mi_size: 0,
+                                mi_index: 0,
+                            }; MAX_VISITED_NB];
+                            let n = foreach_overlappable_nb_above_into(
+                                true, &cells, 0, n4, 64, nb_max, &mut got,
+                            );
+                            assert_eq!(&got[..n], &want[..], "above {a:?}/{b:?} n4={n4}");
+
+                            let want =
+                                foreach_overlappable_nb_left(true, &cells, 0, n4, 64, nb_max);
+                            let n = foreach_overlappable_nb_left_into(
+                                true, &cells, 0, n4, 64, nb_max, &mut got,
+                            );
+                            assert_eq!(&got[..n], &want[..], "left {a:?}/{b:?} n4={n4}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // Anti-vacuity: the loop above must actually have compared something,
+        // and at least one case must have found a neighbour.
+        assert!(checked >= 300, "only {checked} comparisons");
+        let cells = row(&[(BlockSize::Block8x8, true); 8]);
+        let mut got = [VisitedNb {
+            rel_mi: 0,
+            nb_mi_size: 0,
+            mi_index: 0,
+        }; MAX_VISITED_NB];
+        assert!(foreach_overlappable_nb_above_into(true, &cells, 0, 4, 64, 4, &mut got) > 0);
+        assert_eq!(
+            foreach_overlappable_nb_above_into(false, &cells, 0, 4, 64, 4, &mut got),
+            0,
+            "an unavailable edge visits nothing"
+        );
     }
 }

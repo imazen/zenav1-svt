@@ -38,6 +38,81 @@ without a corresponding retained standing gate. Per-reference, per-ISA and
 corpus boundaries matter. No universal C parity or calibrated RD/time routing
 is claimed.
 
+## Support status
+
+The four columns mean exactly this, and the distinction is the point:
+
+| status | meaning |
+|---|---|
+| **Validated** | Implemented AND held by a standing gate that would fail if it broke. The gate is named. |
+| **Supported** | Implemented and exercised, but without a gate that isolates *this* feature — a regression could hide inside a broader byte-identity run. |
+| **Partial** | Implemented for part of its envelope. The rest REFUSES rather than emitting a guess; the limit is named. |
+| **Not supported** | Refused at the API with a message naming the gap. Some of it is ported but unwired — that is listed too, because "the code exists" and "the encoder uses it" are different facts. |
+
+A refusal is a deliberate design choice in this port: an out-of-envelope
+configuration is rejected rather than encoded as a plausible-but-wrong stream.
+`rust/docs/REFUSED-CONFIGS.md` is the generated inventory, split into
+CAPABILITY (debt) and CONTRACT (permanent caller misuse).
+
+### Still image — the product path
+
+| Feature | Status | Evidence / limit |
+|---|---|---|
+| 8-bit 4:2:0 still, presets −1…13, full qp range | **Validated** | `identity_full_8bit.sh` — 1100/1100 byte-identical to C |
+| 10-bit 4:2:0 still (photographic) | **Validated** | `bd10_photo_gate.sh` 191/191, `bd10_nonflat_gate.sh` 309/309 |
+| Non-64-aligned / partial superblocks | **Validated** | `bd10_partial_sb_gate.sh` 159/159, `partial_sb_gate.sh`, `alignment_gate.sh` |
+| Palette (screen content) | **Validated** | `screen_palette_gate.sh` 50/50, `screen_palette_bd_gate.sh` |
+| Intra block copy | **Validated** | `screen_ibc_byte_gate.sh` 152/152 |
+| Tiles, SB128, lossless | **Validated** | `tile_gate.sh`, `sb128_gate.sh`, `lossless_gate.sh` |
+| Superres | **Partial** | 8-bit only — the u16 source downscale is unported; `superres_gate.sh` |
+| Film grain | **Supported** | 8/10-bit 4:2:0 only (C's own limit) |
+| All-intra animated AVIF | **Supported** | Exercised end-to-end; no per-feature gate |
+| Monochrome / alpha | **Supported** | Rust extension beyond C's envelope |
+
+### Inter / video — experimental, and gated behind `SvtParity`
+
+General streaming video is **not** a shipping product path: the public API
+refuses inter frames. What follows is the state of the machinery behind that
+refusal, because it is most of the encoder.
+
+| Feature | Status | Evidence / limit |
+|---|---|---|
+| Inter frame coding, low-delay P | **Partial** | `inter_byte_gate.sh` 108/108 byte-identical to C; the public API still refuses — the envelope is not the whole grid |
+| Real-video inter (derf clips) | **Validated** | `real_video_inter_gate.sh` 24/24 against a pinned per-cell table |
+| Decoder conformance of inter streams | **Validated** | `inter_decode_gate.sh`, and every inter gate below checks recon against dav1d |
+| 10-bit inter video | **Validated** | `bd10_video_gate.sh` 24/24 encode + decode |
+| **Global motion** | **Validated** | `global_motion_gate.sh` — recon byte-identical to dav1d on every frame; anti-vacuity: fails if no cell fits a non-identity model |
+| **Warped motion** | **Validated** | `warped_motion_gate.sh` 8/8 — selects it where C does, recon matches dav1d. MDS1 MV refinement wired |
+| **OBMC** | **Validated** | `obmc_gate.sh` 6/6 — selects it where C does (22 % of blocks at preset 0), recon matches dav1d |
+| Interpolation-filter search | **Validated** | `ifs_join_gate.sh` |
+| Motion estimation / MVP | **Validated** | `inter_me_join_gate.sh`, `fctx_gate.sh` |
+| Sub-8 inter chroma (`inter_chroma_4xn_pred`) | **Supported** | Ported 2026-09-10; covered by the inter recon gates, no isolating gate |
+| Compound / bipred / inter-intra | **Not supported** | `allow_bipred` suppressed — `inter_pred_arm` has no two-reference path. Masked-compound and inter-intra DSP are ported and unwired |
+| Hierarchical (random-access) GOP | **Not supported** | `generate_rps_info` translates 4 of C's 8 branches; `port_picstruct_ra` ported, not connected to the reference-buffer table |
+| Temporal filtering | **Not supported** | `port_temporal_filtering.rs` ported (78 of 80 items), becomes live only with an RA GOP |
+| Scene change / adaptive GOP | **Not supported** | `port_picstruct.rs`, ~85 of 119 items unwired |
+| VBR / CBR rate control | **Not supported** | Refused at the API. The C ports all exist and are unwired (`port_rc_vbr_cbr*`, `port_rc_rtc_cbr`, `port_pass2_gop`); use CQP or CRF |
+| `aq_mode != 0`, TPL r0 | **Not supported** | TPL is structurally off; `use_ref_frame_mvs` at `mfmv_level >= 2` refuses |
+| QP 0 (coded-lossless) on inter | **Not supported** | Refused; still-image lossless IS supported |
+| 10-bit OBMC | **Not supported** | `bd10_tree_supported` drops such a frame back to the 8-bit output rather than miscoding it |
+
+### Outside the envelope by design
+
+4:2:2 / 4:4:4 and 12-bit are rejected by C SVT v4.2.0 itself, so they are not
+missing translations — they are alternate-backend work. Wider chroma, 12-bit
+and fractional adaptive effort are all rejected at the API.
+
+### How to read a "Validated" row
+
+Every gate named above is run in CI (`.github/workflows/rust-gates.yml`) and
+asserts one of two things: **byte-identity with the C reference**, or, where
+the port deliberately diverges from C's search, **reconstruction identical to
+an independent decoder** (dav1d/aomdec). The second is not weaker for the
+tools it covers — a motion-mode blend depends on neighbour state that is never
+re-transmitted, so only a decoder comparison can catch a wrong derivation.
+Gates that could pass vacuously carry an explicit anti-vacuity check and fail
+if they measured nothing.
+
 ## Use
 
 The crates are not published to crates.io. Pin a reviewed Git revision:

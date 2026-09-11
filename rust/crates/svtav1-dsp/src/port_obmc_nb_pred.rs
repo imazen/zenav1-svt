@@ -131,8 +131,21 @@ pub fn build_prediction_by_nb_pred(
     obmc_conv_buf: &mut [u16],
     bit_depth: i32,
 ) -> Result<(), MakePredError> {
-    let geoms = match side {
-        NbSide::Above => build_prediction_by_above_pred_geom(
+    // C predicts each plane inside its own loop and builds no list, so the
+    // geometry lives in a fixed array here rather than a `Vec`: this runs per
+    // NEIGHBOUR per candidate per block, and an allocation there is one C
+    // never makes. `geom_into_matches_the_vec_form` pins the two equal.
+    let mut geom_buf = [crate::port_obmc_build::NbPredGeom {
+        plane: 0,
+        bw: 0,
+        bh: 0,
+        dst_origin_x: 0,
+        dst_origin_y: 0,
+        mi_x: 0,
+        mi_y: 0,
+    }; crate::port_obmc_build::MAX_NB_PRED_GEOM];
+    let n_geom = match side {
+        NbSide::Above => crate::port_obmc_build::build_prediction_by_above_pred_geom_into(
             bsize,
             mi_row,
             mi_col,
@@ -141,8 +154,9 @@ pub fn build_prediction_by_nb_pred(
             ss_x as usize,
             ss_y as usize,
             component_mask,
+            &mut geom_buf,
         ),
-        NbSide::Left => build_prediction_by_left_pred_geom(
+        NbSide::Left => crate::port_obmc_build::build_prediction_by_left_pred_geom_into(
             bsize,
             mi_row,
             mi_col,
@@ -151,8 +165,10 @@ pub fn build_prediction_by_nb_pred(
             ss_x as usize,
             ss_y as usize,
             component_mask,
+            &mut geom_buf,
         ),
     };
+    let geoms = &geom_buf[..n_geom];
     let ObmcRefPic {
         y,
         u,

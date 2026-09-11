@@ -897,6 +897,22 @@ pub fn predict_inter_chroma_whole(
     }
 }
 
+/// The block's `MacroBlockD` clamp edges, for callers outside this module.
+///
+/// `obmc_pred_arm` needs the block's own edges before either OBMC walk
+/// rewrites a pair of them (`av1_setup_build_prediction_by_*_pred`).
+#[must_use]
+pub fn block_mb_edges(
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    frame_w: usize,
+    frame_h: usize,
+) -> svtav1_dsp::port_subpel_params::MbEdges {
+    mb_edges(org_x, org_y, bw, bh, frame_w, frame_h)
+}
+
 /// C's `is_wm` (`enc_inter_prediction.c:3276-3277`, and again at `:3382` for
 /// chroma): a block goes through the WARP driver when its motion mode says so
 /// **or** when it is a GLOBALMV block whose reference carries a model above
@@ -954,12 +970,17 @@ pub fn predict_inter_leaf_hbd(
     uv_stride: usize,
 ) {
     use crate::port_entropy_inter::modes::MotionMode;
-    // OBMC is unwired; a committed leaf cannot carry it, and REFUSING is the
-    // only honest answer if one ever does — silently predicting it as a plain
-    // translation is wrong pixels a decoder will not reproduce.
+    // OBMC has an 8-bit arm (`obmc_pred_arm`) but no 10-bit one yet: the
+    // neighbour predictions would have to be built from the 10-bit DPB twin
+    // into a u16 scratch, which is C's `hbd_md` sizing of `obmc_buff_*`.
+    // REFUSING is the only honest answer until that lands — predicting an OBMC
+    // leaf as a plain translation is wrong pixels a decoder will not
+    // reproduce. `bd10_tree_supported` drops such a frame back to the u8
+    // output before it can reach here.
     assert!(
         motion_mode != MotionMode::ObmcCausal,
-        "no OBMC candidate is injected, so no leaf can commit one"
+        "the bd10 re-encode has no OBMC arm; `bd10_tree_supported` is supposed \
+         to have refused this frame"
     );
     if is_wm {
         let mut wm = wm_params;

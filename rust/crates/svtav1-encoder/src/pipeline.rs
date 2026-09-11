@@ -4158,6 +4158,11 @@ impl EncodePipeline {
                     gm_wmtype: st.gm_wmtype,
                     global_motion: gm_field,
                     gm_skip_identity,
+                    // C `ppcs->pic_obmc_level`, straight off the mode-decision
+                    // signal derivation that already computes it.
+                    pic_obmc_level: md_config_signals
+                        .as_ref()
+                        .map_or(0, |sigs| sigs.pic_obmc_level),
                     ifs: crate::inter_md_arm::IfsFrameKnobs {
                         smooth_bias: false, // the refusal above holds the first term off
                         tx_bias: self.hdr.tx_bias > 0,

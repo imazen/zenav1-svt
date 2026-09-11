@@ -240,6 +240,14 @@ pub struct InterMdFrame<'a> {
     pub global_motion: [svtav1_types::motion::WarpedMotionParams; 8],
     /// C `pcs->ppcs->gm_ctrls.skip_identity` (`set_gm_controls`, level 4 only).
     pub gm_skip_identity: bool,
+    /// C `pcs->ppcs->pic_obmc_level` (`svt_aom_get_obmc_level`,
+    /// enc_mode_config.c:8815) — the ladder `set_obmc_controls` expands.
+    ///
+    /// It was `Default::default()` (disabled) until 2026-09-11 on the strength
+    /// of a census that only ran at presets 6 and 8. C codes OBMC on 22.5 % of
+    /// every coded inter block at preset 0; see
+    /// `benchmarks/obmc_census_2026-09-10.meta`.
+    pub pic_obmc_level: u8,
     /// The frame-level knobs of the MDS3 interpolation-filter search
     /// (`leaf_funnel::ifs`) that are not already header fields above.
     pub ifs: IfsFrameKnobs,
@@ -946,7 +954,18 @@ pub fn build_inter_candidates(
             refinement_iterations: wmc.refinement_iterations,
             refine_level: wmc.refine_level,
         },
-        obmc_ctrls: Default::default(),
+        // C `ctx->obmc_ctrls`, as `svt_aom_set_obmc_controls` expands
+        // `pcs->ppcs->pic_obmc_level`. The injector reads `refine_level` (which
+        // MD stage refines the MV, if any) and `enabled`.
+        obmc_ctrls: {
+            let c = crate::port_enc_mode_config::ctrls::set_obmc_controls(f.pic_obmc_level);
+            crate::port_md::inject::ObmcCtrls {
+                enabled: c.enabled != 0,
+                max_blk_size: c.max_blk_size,
+                trans_face_off: c.trans_face_off != 0,
+                refine_level: c.refine_level,
+            }
+        },
         // C `ctx->cand_reduction_ctrls.near_count_ctrls`, and the ONE field
         // of that struct this envelope is not inert in: it is
         // `{enabled 1, near_count 3, near_near_count 3}` at every level the
@@ -1028,6 +1047,7 @@ pub fn build_inter_candidates(
                 c.motion_mode,
                 crate::port_md::predicates::MotionMode::SimpleTranslation
                     | crate::port_md::predicates::MotionMode::WarpedCausal
+                    | crate::port_md::predicates::MotionMode::ObmcCausal
             ) && !c.is_interintra_used
                 && c.ref_frame[1] == NONE_FRAME,
             "the inter candidate set produced a candidate this port cannot PREDICT \
@@ -1146,6 +1166,92 @@ pub(crate) fn predict_inter_chroma_sub8(
             uv_stride,
         );
     }
+}
+
+/// The ABOVE row and LEFT column the OBMC walk reads, projected out of the mi
+/// grid into caller-owned arrays.
+///
+/// C reads `xd->mi` in place; this is the same span, copied so the borrow is
+/// local. Both are bounded by one superblock edge in mi units plus the cell
+/// the 4-wide pairing rule reaches past it, so neither allocates.
+pub(crate) struct ObmcNbSpans {
+    pub above: [crate::obmc_pred_arm::ObmcNbCell; OBMC_NB_SPAN],
+    pub n_above: usize,
+    pub left: [crate::obmc_pred_arm::ObmcNbCell; OBMC_NB_SPAN],
+    pub n_left: usize,
+}
+
+/// One superblock edge in mi units (128 / 4) plus the pairing cell.
+pub(crate) const OBMC_NB_SPAN: usize = 33;
+
+const OBMC_NB_INTRA: crate::obmc_pred_arm::ObmcNbCell = crate::obmc_pred_arm::ObmcNbCell {
+    bsize: svtav1_types::block::BlockSize::Block4x4,
+    overlappable: false,
+    ref_frame: 0,
+    mv: Mv::ZERO,
+    interp_filters: 0,
+};
+
+/// Project the two mi spans the OBMC walks read.
+///
+/// `mi_row == 0` has no ABOVE row and `mi_col == 0` no LEFT column; C gates
+/// those with `xd->up_available` / `left_available`, which the caller passes
+/// on rather than inferring from an empty span.
+pub(crate) fn obmc_nb_spans(
+    grid: &[crate::intrabc_mvp::MvpMiEntry],
+    grid_stride: i32,
+    mi_rows: i32,
+    mi_cols: i32,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+) -> ObmcNbSpans {
+    let (mi_row, mi_col) = ((org_y / 4) as i32, (org_x / 4) as i32);
+    let (n4_w, n4_h) = (bw / 4, bh / 4);
+    let mut out = ObmcNbSpans {
+        above: [OBMC_NB_INTRA; OBMC_NB_SPAN],
+        n_above: 0,
+        left: [OBMC_NB_INTRA; OBMC_NB_SPAN],
+        n_left: 0,
+    };
+    let cell = |idx: i32| -> crate::obmc_pred_arm::ObmcNbCell {
+        let e = &grid[idx as usize];
+        crate::obmc_pred_arm::ObmcNbCell {
+            bsize: svtav1_types::block::BlockSize::from_u8(e.bsize)
+                .unwrap_or(svtav1_types::block::BlockSize::Block4x4),
+            // C `is_neighbor_overlappable`: `ref_frame[0] > INTRA_FRAME`.
+            // IntraBC is NOT overlappable — its `ref_frame[0]` is INTRA_FRAME.
+            overlappable: e.ref_frame[0] > 0,
+            ref_frame: e.ref_frame[0],
+            mv: e.mv[0],
+            interp_filters: e.interp_filters,
+        }
+    };
+    if mi_row > 0 {
+        // One past `n4_w`, because the pairing rule can read `idx + 1`.
+        let n = ((n4_w + 1).min(OBMC_NB_SPAN)).min((mi_cols - mi_col).max(0) as usize + 1);
+        for k in 0..n {
+            let c = mi_col + k as i32;
+            if c >= mi_cols {
+                break;
+            }
+            out.above[k] = cell((mi_row - 1) * grid_stride + c);
+            out.n_above = k + 1;
+        }
+    }
+    if mi_col > 0 {
+        let n = ((n4_h + 1).min(OBMC_NB_SPAN)).min((mi_rows - mi_row).max(0) as usize + 1);
+        for k in 0..n {
+            let r = mi_row + k as i32;
+            if r >= mi_rows {
+                break;
+            }
+            out.left[k] = cell(r * grid_stride + mi_col - 1);
+            out.n_left = k + 1;
+        }
+    }
+    out
 }
 
 /// One injected candidate -> its prediction and C's MDS0 rate.
@@ -1294,6 +1400,52 @@ fn predict_and_price(
                 cw,
             );
         }
+    }
+
+    // ---- OBMC, C `svt_aom_inter_prediction`'s tail (:3511) ----
+    // The blend runs AFTER the block's own prediction and rewrites its edges
+    // in place, so it sits here rather than as a third arm of the dispatch
+    // above. It is re-applied wherever the prediction is rebuilt -- see
+    // `leaf_funnel::ifs`.
+    if mm == MotionMode::ObmcCausal {
+        let spans = obmc_nb_spans(
+            b.grid,
+            b.grid_stride,
+            f.mi_rows,
+            f.mi_cols,
+            b.org_x,
+            b.org_y,
+            b.bw,
+            b.bh,
+        );
+        crate::obmc_pred_arm::predict_obmc_in_place(
+            &crate::obmc_pred_arm::ObmcCtx {
+                padded_by_ref: &f.padded_by_ref,
+                above_row: &spans.above[..spans.n_above],
+                left_col: &spans.left[..spans.n_left],
+                up_available: b.org_y > 0,
+                left_available: b.org_x > 0,
+                mi_cols: f.mi_cols.max(0) as usize,
+                mi_rows: f.mi_rows.max(0) as usize,
+                sb_size: f.sb_size,
+                frame_w: f.frame_w,
+                frame_h: f.frame_h,
+                edges: crate::inter_pred_arm::block_mb_edges(
+                    b.org_x, b.org_y, b.bw, b.bh, f.frame_w, f.frame_h,
+                ),
+            },
+            svtav1_types::block::BlockSize::from_u8(b.bsize)
+                .expect("an injected inter block must have a real BlockSize"),
+            b.org_x,
+            b.org_y,
+            b.bw,
+            b.bh,
+            &mut y_pred,
+            b.bw,
+            &mut u_pred,
+            &mut v_pred,
+            cw,
+        );
     }
 
     // The SAME prediction at true 10 bits, when the DPB carries a 10-bit twin

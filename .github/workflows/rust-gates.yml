@@ -496,6 +496,7 @@ jobs:
           ./tools/warped_motion_gate.sh
           ./tools/bd10_video_gate.sh
           ./tools/global_motion_gate.sh
+          ./tools/obmc_gate.sh
 
       - name: 8-bit identity — EVERY preset 0..13, full qp range, 4 content classes
         if: matrix.shard == 5

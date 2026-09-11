@@ -1,0 +1,98 @@
+# OBMC WIRED — selected where C selects it, recon byte-identical to dav1d
+#
+# commit:  (this change, on top of 59becc5a4 "OBMC is 22 % of blocks at preset 0")
+# host:    i265 (Core Ultra 7 265K, 20 threads, 30 GiB, native Linux)
+# gate:    rust/tools/obmc_gate.sh
+# decoder: dav1d (system)
+# cells:   public-domain derf clips, cli_qp 40, 2 frames, flat low-delay P
+#
+# ## RESULT
+#
+#     clip     size     preset  OBMC blocks  recon vs dav1d
+#     vidyo3   256x256  0       186          2/2
+#     vidyo1   256x256  0        76          2/2
+#     johnny   256x256  0        12          2/2
+#     vidyo3   128x128  0        54          2/2
+#     vidyo3   256x256  2         0          2/2
+#     vidyo1   256x256  2         0          2/2
+#
+# Preset 2 codes ZERO, which is `svt_aom_get_obmc_level`'s level-5 arm and
+# matches the census exactly: the injection cannot have widened the candidate
+# set where C's own ladder closes it.
+#
+# ## THE BUG THE RECON CHECK CAUGHT, AND NOTHING ELSE WOULD HAVE
+#
+# First wiring: 180 OBMC blocks selected, stream decodable, and **120 luma
+# samples wrong** on vidyo3 256x256 p0 (chroma clean, magnitudes +/-1..3, in a
+# band across the OBMC blocks at mi row 8).
+#
+# Cause: the 4-wide pairing rule in `foreach_overlappable_nb_above`
+# (enc_inter_prediction.c:721-726). For a neighbour one mi wide C rewinds
+# `above_mi_col` to the start of the pair -- which is what `rel_mi_col`, and so
+# the prediction GEOMETRY, uses -- but takes the mode info from the pair's
+# SECOND block, `prev_row_mi + above_mi_col + 1`, because that is the half
+# carrying chroma. The port's `VisitedNb` recorded only `rel_mi`, so the
+# neighbour's MOTION was read from the wrong cell of every 4-wide pair.
+#
+# `VisitedNb::mi_index` now carries C's index and
+# `four_wide_neighbours_are_paired` pins it. After the fix: 0 differing samples
+# on both frames of every cell.
+#
+# This is exactly why the gate asserts RECON against an independent decoder and
+# not sizes: the blend depends on the neighbours' motion, which is never
+# re-transmitted, so a wrong neighbour is invisible to every byte-count check.
+#
+# ## MEMORY MODEL — C'S, MEASURED
+#
+# C allocates the OBMC scratch ONCE per `ModeDecisionContext` (per MD thread),
+# sized by SUPERBLOCK, and only when `obmc_allowed` (`md_process.c:374-381`):
+#
+#     obmc_buff_0 / _1 : sb_size * sb_size * bits * MAX_PLANES   bytes
+#     obmc_conv_buf    : sb_size * sb_size                        u16
+#
+# `obmc_pred_arm::ObmcBuffers` is that, as a thread-local grown on first use,
+# pinned by `scratch_is_superblock_sized_and_grown_once`. Nothing in the OBMC
+# path allocates per block or per candidate:
+#
+#   * the two neighbour walks fill a fixed `[VisitedNb; MAX_VISITED_NB]`
+#     (C's `nb_max` is at most 4) instead of returning a `Vec`;
+#   * the per-neighbour plane geometry fills `[NbPredGeom; MAX_NB_PRED_GEOM]`
+#     instead of returning a `Vec` (C builds no list at all -- it predicts
+#     inside the loop);
+#   * the two mi spans the walks read are projected into fixed arrays.
+#
+# The `_into` forms are pinned equal to the `Vec` forms they replace by
+# `into_walks_match_the_vec_walks` and `geom_into_matches_the_vec_form`, so the
+# allocation-free path cannot drift from the transcription it came from.
+#
+# MEASURED with heaptrack on vidyo3 256x256 p0, 2 frames
+# (`CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`):
+#
+#     calls to allocation functions : 863,166
+#     peak heap memory consumption  : 6.26M
+#     allocating frames inside obmc_pred_arm : 0
+#
+# The zero is the point: the scratch does not appear in the profile at all
+# because it is allocated once per thread and reused, which is what makes this
+# C's memory model rather than a per-block allocation wearing a thread-local's
+# clothes. A regression to per-block buffers would still pass every byte gate,
+# which is why the sizing and the reuse are pinned by unit tests.
+#
+# ## WHAT IS STILL NOT WIRED
+#
+# The OBMC MV refinement. `obmc_ctrls.refine_level` is 1 at levels 2/3 (MD
+# stage 1) and 4 at levels 5/6 (stage 3), and level 1 (preset MR) refines at
+# INJECTION. `port_md::motion_mode::opt_non_translation_motion_mode_obmc` and
+# `inter_me::obmc_search` are both ported and c-parity tested; neither has a
+# caller, so the port's OBMC candidates carry the UNREFINED MV. That is the
+# same state warped motion shipped in, and it is why this gate asserts recon
+# against dav1d rather than byte-identity with C.
+#
+# `obmc_trans_face_off` is also unwired and inert at the presets that matter:
+# `set_obmc_controls` gives `trans_face_off = 0` at levels 1 and 3, i.e. at
+# presets MR / 0 / 1, the only band where C selects OBMC at all.
+#
+# The 10-bit arm is absent: C sizes `obmc_buff_*` for `hbd_md ? 2 : 1` and the
+# neighbour predictions would come from the 10-bit DPB twin.
+# `bd10_tree_supported` refuses an OBMC leaf, so a 10-bit frame that picks one
+# drops back to the u8 output rather than miscoding it.

@@ -77,6 +77,91 @@ pub fn build_plane_range(component_mask: u32) -> (usize, usize) {
     (start, end)
 }
 
+/// The most plane geometries either builder emits: one per plane.
+/// `build_plane_range` never returns a wider span than `0..3`, so a caller
+/// never needs a growable list.
+pub const MAX_NB_PRED_GEOM: usize = 3;
+
+/// [`build_prediction_by_above_pred_geom`] into a CALLER-OWNED array,
+/// returning how many entries were filled.
+///
+/// C builds no list at all here — it predicts each plane inside the loop. The
+/// array form is what matches that: the OBMC predictor runs per neighbour per
+/// block, and a `Vec` per neighbour is allocation C does not do.
+pub fn build_prediction_by_above_pred_geom_into(
+    bsize: BlockSize,
+    mi_row: i32,
+    mi_col: i32,
+    rel_mi_col: usize,
+    above_mi_width: usize,
+    ss_x: usize,
+    ss_y: usize,
+    component_mask: u32,
+    out: &mut [NbPredGeom; MAX_NB_PRED_GEOM],
+) -> usize {
+    let mut n = 0usize;
+    let above_mi_col = mi_col + rel_mi_col as i32;
+    let (start_plane, end_plane) = build_plane_range(component_mask);
+    for plane in start_plane..end_plane {
+        let sx = if plane > 0 { ss_x } else { 0 };
+        let sy = if plane > 0 { ss_y } else { 0 };
+        let bw = (above_mi_width * MI_SIZE) >> sx;
+        let bh = (block_size_high(bsize) >> (sy + 1)).clamp(4, 64 >> (sy + 1));
+        if skip_u4x4_pred_in_obmc(bsize, 0, sx, sy) != 0 {
+            continue;
+        }
+        out[n] = NbPredGeom {
+            plane,
+            bw,
+            bh,
+            dst_origin_x: rel_mi_col << MI_SIZE_LOG2,
+            dst_origin_y: 0,
+            mi_x: above_mi_col << MI_SIZE_LOG2,
+            mi_y: mi_row << MI_SIZE_LOG2,
+        };
+        n += 1;
+    }
+    n
+}
+
+/// [`build_prediction_by_left_pred_geom`] into a caller-owned array.
+#[allow(clippy::too_many_arguments)]
+pub fn build_prediction_by_left_pred_geom_into(
+    bsize: BlockSize,
+    mi_row: i32,
+    mi_col: i32,
+    rel_mi_row: usize,
+    left_mi_height: usize,
+    ss_x: usize,
+    ss_y: usize,
+    component_mask: u32,
+    out: &mut [NbPredGeom; MAX_NB_PRED_GEOM],
+) -> usize {
+    let mut n = 0usize;
+    let left_mi_row = mi_row + rel_mi_row as i32;
+    let (start_plane, end_plane) = build_plane_range(component_mask);
+    for plane in start_plane..end_plane {
+        let sx = if plane > 0 { ss_x } else { 0 };
+        let sy = if plane > 0 { ss_y } else { 0 };
+        let bw = (block_size_wide(bsize) >> (sx + 1)).clamp(4, 64 >> (sx + 1));
+        let bh = (left_mi_height * MI_SIZE) >> sy;
+        if skip_u4x4_pred_in_obmc(bsize, 1, sx, sy) != 0 {
+            continue;
+        }
+        out[n] = NbPredGeom {
+            plane,
+            bw,
+            bh,
+            dst_origin_x: 0,
+            dst_origin_y: rel_mi_row << MI_SIZE_LOG2,
+            mi_x: mi_col << MI_SIZE_LOG2,
+            mi_y: left_mi_row << MI_SIZE_LOG2,
+        };
+        n += 1;
+    }
+    n
+}
+
 /// `build_prediction_by_above_pred` (enc_inter_prediction.c:1120), geometry
 /// half: what each plane's prediction covers and where it lands.
 ///
@@ -349,5 +434,56 @@ mod tests {
         assert_eq!(obmc_conv_buf_stride(64, 0, 1), 64);
         assert_eq!(obmc_conv_buf_stride(64, 1, 1), 32);
         assert_eq!(obmc_conv_buf_stride(128, 0, 1), 128);
+    }
+}
+
+#[cfg(test)]
+mod geom_into_tests {
+    use super::*;
+    use svtav1_types::block::BlockSize;
+
+    /// The `_into` geometry builders are the SAME builders as the `Vec` ones.
+    /// The encoder uses the array forms so the OBMC predictor allocates
+    /// nothing per neighbour; this is what keeps the two from drifting.
+    #[test]
+    fn geom_into_matches_the_vec_form() {
+        let mut zero = [NbPredGeom {
+            plane: 0,
+            bw: 0,
+            bh: 0,
+            dst_origin_x: 0,
+            dst_origin_y: 0,
+            mi_x: 0,
+            mi_y: 0,
+        }; MAX_NB_PRED_GEOM];
+        let mut checked = 0usize;
+        let mut nonempty = 0usize;
+        for bsize in BlockSize::ALL {
+            for &mask in &[1u32, 6, 7] {
+                for &rel in &[0usize, 1, 2] {
+                    for &extent in &[1usize, 2, 4] {
+                        let want = build_prediction_by_above_pred_geom(
+                            bsize, 3, 5, rel, extent, 1, 1, mask,
+                        );
+                        let n = build_prediction_by_above_pred_geom_into(
+                            bsize, 3, 5, rel, extent, 1, 1, mask, &mut zero,
+                        );
+                        assert_eq!(&zero[..n], &want[..], "above {bsize:?} mask={mask}");
+
+                        let want = build_prediction_by_left_pred_geom(
+                            bsize, 3, 5, rel, extent, 1, 1, mask,
+                        );
+                        let n = build_prediction_by_left_pred_geom_into(
+                            bsize, 3, 5, rel, extent, 1, 1, mask, &mut zero,
+                        );
+                        assert_eq!(&zero[..n], &want[..], "left {bsize:?} mask={mask}");
+                        nonempty += usize::from(n > 0);
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 100, "only {checked} comparisons");
+        assert!(nonempty > 0, "every case produced an EMPTY geometry");
     }
 }

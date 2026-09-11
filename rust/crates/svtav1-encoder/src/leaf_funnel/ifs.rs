@@ -314,6 +314,13 @@ pub(super) fn ifs_at_mds3(
                 w,
             ),
         }
+        // C re-applies the OBMC blend on EVERY prediction — it is the tail of
+        // `svt_aom_inter_prediction` (:3511), not a one-off at injection — so
+        // a rebuilt prediction that skipped it would carry unblended edges
+        // into the winner's recon. `av1_is_interp_needed_md` (rd_cost.h:71)
+        // excludes WARPED_CAUSAL and non-translational global motion but NOT
+        // OBMC, so this arm is reachable.
+        let obmc = ic.motion_mode == crate::port_entropy_inter::modes::MotionMode::ObmcCausal;
         if g.has_uv && sub8 {
             crate::inter_md_arm::predict_inter_chroma_sub8(
                 &im.padded_by_ref,
@@ -329,6 +336,38 @@ pub(super) fn ifs_at_mds3(
                 im.sb_size,
                 im.frame_w,
                 im.frame_h,
+                &mut ic.u_pred,
+                &mut ic.v_pred,
+                cw,
+            );
+        }
+        if obmc {
+            let spans = crate::inter_md_arm::obmc_nb_spans(
+                grid, im.mi_cols, im.mi_rows, im.mi_cols, abs_x, abs_y, w, h,
+            );
+            crate::obmc_pred_arm::predict_obmc_in_place(
+                &crate::obmc_pred_arm::ObmcCtx {
+                    padded_by_ref: &im.padded_by_ref,
+                    above_row: &spans.above[..spans.n_above],
+                    left_col: &spans.left[..spans.n_left],
+                    up_available: abs_y > 0,
+                    left_available: abs_x > 0,
+                    mi_cols: im.mi_cols.max(0) as usize,
+                    mi_rows: im.mi_rows.max(0) as usize,
+                    sb_size: im.sb_size,
+                    frame_w: im.frame_w,
+                    frame_h: im.frame_h,
+                    edges: crate::inter_pred_arm::block_mb_edges(
+                        abs_x, abs_y, w, h, im.frame_w, im.frame_h,
+                    ),
+                },
+                bsize,
+                abs_x,
+                abs_y,
+                w,
+                h,
+                pred,
+                w,
                 &mut ic.u_pred,
                 &mut ic.v_pred,
                 cw,
