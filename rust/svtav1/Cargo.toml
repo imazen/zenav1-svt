@@ -33,6 +33,18 @@ zengif = { version = "0.7.3", default-features = false, features = ["std"] }
 # parse the file this crate just wrote with an INDEPENDENT parser rather than
 # inspecting the encoder's own state. Dev-only.
 zenavif-parse = { version = "0.6.2", features = ["eager"] }
+# MP4 demux for the `mp4_to_avif` example. `re_mp4` carries exactly ONE
+# `unsafe` in the whole crate (`CStr::from_bytes_with_nul_unchecked` in
+# `emsg.rs`, a box this path never parses); no MP4 parser on crates.io is
+# unsafe-free except a v0.0.x plugin shape. Dev-only, so the product library
+# path stays unsafe-free.
+re_mp4 = "0.5.1"
+# Pure-Rust H.264 decode for the same example: `forbid(unsafe_code)` codec
+# core, decoder validated bit-exact against Cisco `h264dec` over openh264's
+# conformance corpus, BSD-2. `default-features = false` selects the scalar
+# tree with NO unsafe anywhere; enable the default features for its portable
+# SIMD if throughput matters more than that.
+rusty_h264 = { version = "0.16.0", default-features = false, features = ["std", "global-alloc"] }
 # `testable_dispatch` exposes for_each_token_permutation, which tests/
 # tier_invariance.rs uses to walk EVERY SIMD tier and assert the encoder emits
 # identical bytes on each. Cargo unifies the feature across the graph, so this
@@ -124,4 +136,8 @@ path = "tests/thread_determinism.rs"
 # default-feature workspace build must skip the example rather than fail on it.
 [[example]]
 name = "gif_to_avif"
+required-features = ["avif-container"]
+
+[[example]]
+name = "mp4_to_avif"
 required-features = ["avif-container"]
