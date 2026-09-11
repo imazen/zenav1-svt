@@ -109,7 +109,7 @@ while read -r content w h qp preset; do
     d="$OUT/${content}_${w}x${h}_q${qp}_p${preset}"
     mkdir -p "$d"
     rm -f "$d/subpel.txt"
-    SVTAV1_FRAME_SHIFT="${IMJ_SHIFT:-3}" \
+    SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="${IMJ_SHIFT:-3}" \
         SVTAV1_NSQDBG=1 SVTAV1_CANDDBG=1 SVT_SUBPEL_OUT="$d/subpel.txt" \
         "$HERE/identity_diff_inter.sh" "$w" "$h" "$qp" "$preset" 2 "$content" "$d" \
         >"$d/diff.txt" 2>&1

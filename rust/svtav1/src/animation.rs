@@ -1,5 +1,15 @@
-//! Animated AVIF encoding. Each submitted image currently becomes a sync
-//! sample; inter-picture compression is tracked separately from this path.
+//! Animated AVIF encoding.
+//!
+//! The colour track is inter-coded by default: [`AnimationOptions::keyframes`]
+//! sets how often a key frame (a sync sample) appears, and every other picture
+//! is coded against the one before it. Inter coding is what makes an animation
+//! smaller than the same frames as separate stills -- MEASURED on an 8-frame
+//! 256x256 clip, see that field's docs.
+//!
+//! An ALPHA track, when present, stays all-intra. The monochrome entry point
+//! refuses inter frames (no gate in this repo covers mono inter), and an
+//! all-sync alpha track is strictly more seekable than the colour track it
+//! accompanies, so nothing a player can do is lost.
 use super::{AvifEncoder, EncodeError};
 use zenavif_serialize::{
     Av1CBox,
@@ -10,6 +20,46 @@ pub use zenavif_serialize::{
     AmveBox, CclvBox, ClliBox, MdcvBox, PaspBox,
     animated::{CropRect, RepetitionCount},
 };
+
+/// How often an animation's colour track carries a key frame.
+///
+/// A key frame is a sync sample: a player can start or seek there without
+/// having decoded anything earlier. Every other picture is coded against its
+/// predecessor, which is where the compression comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keyframes {
+    /// Every picture is a key frame. The largest files, and the only
+    /// behaviour this path had before 2026-09-11.
+    EveryFrame,
+    /// One key frame every `n` pictures. `n` is clamped to at least 1, and
+    /// `Every(1)` is [`Self::EveryFrame`].
+    Every(u32),
+}
+
+impl Keyframes {
+    /// C's `GopStructure::intra_period`.
+    fn intra_period(self) -> u32 {
+        match self {
+            Self::EveryFrame => 1,
+            Self::Every(n) => n.max(1),
+        }
+    }
+    /// Whether the picture at `index` is coded as a key frame, matching
+    /// `GopStructure::is_key_frame`.
+    fn is_key(self, index: usize) -> bool {
+        let n = self.intra_period() as usize;
+        index % n == 0
+    }
+}
+
+impl Default for Keyframes {
+    /// `Every(120)` — at a typical 24-30 fps that is a key frame every four to
+    /// five seconds, the usual trade for seekable playback, and it makes any
+    /// animation of 120 pictures or fewer a single closed GOP.
+    fn default() -> Self {
+        Self::Every(120)
+    }
+}
 
 /// Container metadata and playback policy. Metadata applies to the color
 /// track and its poster item. ICC bytes take display-color precedence over
@@ -36,6 +86,19 @@ pub struct AnimationOptions {
     pub mirror: Option<u8>,
     /// The input color planes have already been premultiplied by alpha.
     pub premultiplied_alpha: bool,
+    /// How often the COLOUR track carries a key frame. Defaults to
+    /// [`Keyframes::Every`]`(120)`; [`Keyframes::EveryFrame`] restores the
+    /// all-intra behaviour this path had before 2026-09-11.
+    ///
+    /// MEASURED 2026-09-11, eight 256x256 frames of the public-domain derf
+    /// clip `fourpeople` at quality 70: 58,823 B all-intra against 21,104 B
+    /// as one closed GOP — 2.8x smaller for the same pixels in.
+    ///
+    /// Inter coding here is verified against a DECODER, not against C's
+    /// bytes: `tools/video_selfcheck_gate.sh` requires the encoder's own
+    /// reconstruction to equal `aomdec`'s on every frame. The alpha track is
+    /// unaffected and stays all-intra.
+    pub keyframes: Keyframes,
 }
 
 impl Default for AnimationOptions {
@@ -54,6 +117,7 @@ impl Default for AnimationOptions {
             rotation: None,
             mirror: None,
             premultiplied_alpha: false,
+            keyframes: Keyframes::default(),
         }
     }
 }
@@ -89,6 +153,38 @@ pub struct AnimationTiming {
 }
 
 impl AvifEncoder {
+    /// The key-frame interval this encoder will actually use for a colour
+    /// track, which is not always the one the caller asked for.
+    ///
+    /// A MONOCHROME track is always all-intra: `encode_frame_impl` refuses an
+    /// inter frame on that arm, because every inter gate in this repo is
+    /// 4:2:0.
+    ///
+    /// BELOW PRESET 6, and at any depth above 8, a colour track is all-intra
+    /// too. `encode_frame_impl` refuses inter frames in both cases, and for
+    /// the same kind of reason: the port's reconstruction disagrees with a
+    /// decoder's on some content there. Coding key frames instead is the
+    /// honest fallback -- a larger file, never a wrong one, and the same shape
+    /// `bd10_tree_supported` uses for 10-bit OBMC. The refusal's own text
+    /// carries both measurements.
+    ///
+    /// LOSSLESS is all-intra for a different and permanent reason: QP 0 is
+    /// `CodedLossless`, and `lossless_config_error` refuses it on an inter
+    /// frame exactly as C's own configuration does. A lossless animation is
+    /// a sequence of lossless stills, which is what a caller asking for
+    /// lossless wants anyway.
+    fn animation_keyframes(&self, chroma_420: bool, options: &AnimationOptions) -> Keyframes {
+        if chroma_420
+            && !self.lossless
+            && self.bit_depth <= 8
+            && self.resolved_native_preset().value() >= 6
+        {
+            options.keyframes
+        } else {
+            Keyframes::EveryFrame
+        }
+    }
+
     /// Encode an animated AVIF container from planar images. Dimensions and
     /// alpha presence must agree across frames. This initial path accepts
     /// 8-bit input and writes all-intra sequences with full AV1 headers.
@@ -368,8 +464,21 @@ impl AvifEncoder {
                 });
             }
         }
+        // MONOCHROME animations stay all-intra whatever the caller asked
+        // for: `encode_frame_impl` refuses an inter frame on the mono arm,
+        // because every inter gate in this repo is 4:2:0. Silently coding
+        // them as key frames is the right answer here rather than an error --
+        // the default `keyframes` is not something the caller chose.
+        let keyframes = self.animation_keyframes(chroma_420, options);
+        // BELOW PRESET 6 the colour track is all-intra too, for the same
+        // reason: `encode_frame_impl` refuses an inter frame there, because
+        // the port's temporal motion-vector derivation still disagrees with a
+        // decoder on some content (see `dbgenv::inter_experimental` for the
+        // 163-cell measurement). Coding key frames instead is the honest
+        // fallback -- a larger file, never a wrong one -- and it is the same
+        // shape `bd10_tree_supported` uses for 10-bit OBMC.
         let mut color = self
-            .build_pipeline(width, height)
+            .build_pipeline_gop(width, height, keyframes.intra_period())
             .with_chroma_420(chroma_420)
             .with_image_sequence();
         // Alpha values are full-range coverage, without color grain.
@@ -473,13 +582,17 @@ impl AvifEncoder {
             .iter()
             .enumerate()
             .map(|(i, f)| {
+                // A sync sample is one a player can START at. That is
+                // exactly the key frames now, not every picture: an inter
+                // frame's reconstruction depends on the one before it, and
+                // marking it `stss` would invite a seek that decodes garbage.
                 let sample = AnimFrame::new(
                     colors[i]
                         .strip_prefix(delimiter.as_slice())
                         .unwrap_or(&colors[i]),
                     f.duration,
                 )
-                .with_sync(true);
+                .with_sync(keyframes.is_key(i));
                 if has_alpha {
                     sample.with_alpha(
                         alphas[i]
@@ -796,7 +909,9 @@ mod tests {
                     h as u32,
                     AnimationTiming { timescale: 1000 },
                 )
-                .unwrap();
+                .unwrap_or_else(|e| {
+                    panic!("{w}x{h} speed {speed} lossless {lossless} screen {screen}: {e}")
+                });
             fs::write(out.join("sequence.avif"), avif).unwrap();
             let result = Command::new("avifdec")
                 .args(["-j", "1", "--index", "all"])
@@ -858,11 +973,23 @@ mod tests {
                 "{}",
                 String::from_utf8_lossy(&result.stderr)
             );
+            // ONE pipeline for all three frames, with the SAME GOP the
+            // animation used. A fresh `build_pipeline` per frame would code
+            // each as a standalone still, and a still is not what an
+            // inter-coded sequence contains -- not even at frame 0, because
+            // `intra_period > 1` selects C's video signal derivation rather
+            // than its all-intra one.
+            let mut pipe = enc
+                .build_pipeline_gop(
+                    w as u32,
+                    h as u32,
+                    enc.animation_keyframes(true, &AnimationOptions::default())
+                        .intra_period(),
+                )
+                .with_chroma_420(true)
+                .with_image_sequence()
+                .with_recon_output(true);
             for (i, source) in colors.iter().enumerate() {
-                let mut pipe = enc
-                    .build_pipeline(w as u32, h as u32)
-                    .with_chroma_420(true)
-                    .with_recon_output(true);
                 let raw = pipe.try_encode_frame_420(source, &uv, &uv, w).unwrap();
                 fs::write(out.join("color.obu"), raw).unwrap();
                 let mut pre = Vec::new();
@@ -877,7 +1004,7 @@ mod tests {
                     }
                 }
                 fs::write(out.join("color-prefilter.yuv"), pre).unwrap();
-                let (y, u, v) = pipe.last_recon.unwrap();
+                let (y, u, v) = pipe.last_recon.take().unwrap();
                 let mut expected = Vec::new();
                 for (plane, stride, width, height) in [
                     (&y, pipe.width as usize, w, h),
@@ -977,17 +1104,31 @@ mod tests {
                             String::from_utf8_lossy(&result.stderr)
                         );
                     }
+                    // One pipeline for both frames on the animation's own GOP:
+                    // frame 1 is coded against frame 0, so re-encoding it as a
+                    // standalone still is not the same picture. The
+                    // recon-is-byte-inert check keeps its own pipeline and has
+                    // to walk the same frames to stay in step.
+                    let gop = enc
+                        .animation_keyframes(true, &AnimationOptions::default())
+                        .intra_period();
+                    let mut pipe = enc
+                        .build_pipeline_gop(w as u32, w as u32, gop)
+                        .with_chroma_420(true)
+                        .with_image_sequence()
+                        .with_recon_output(true);
+                    let mut pipe_no_recon = enc
+                        .build_pipeline_gop(w as u32, w as u32, gop)
+                        .with_chroma_420(true)
+                        .with_image_sequence();
+                    let fps = 1000.0 / f64::from([17u32, 29][0].min([17u32, 29][1]));
+                    pipe.rc_config.framerate = fps;
+                    pipe_no_recon.rc_config.framerate = fps;
                     for i in 0..2 {
-                        let mut pipe = enc
-                            .build_pipeline(w as u32, w as u32)
-                            .with_chroma_420(true)
-                            .with_recon_output(true);
                         let raw = pipe
                             .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
                             .unwrap();
-                        let without_recon = enc
-                            .build_pipeline(w as u32, w as u32)
-                            .with_chroma_420(true)
+                        let without_recon = pipe_no_recon
                             .try_encode_frame_420_hbd(&colors[i], &u, &v, stride)
                             .unwrap();
                         assert_eq!(
@@ -1015,7 +1156,7 @@ mod tests {
                             }
                         }
                         fs::write(directory.join("color-prefilter.yuv"), pre).unwrap();
-                        let (y, u, v) = pipe.last_recon10_final.unwrap();
+                        let (y, u, v) = pipe.last_recon10_final.take().unwrap();
                         let mut expected = Vec::new();
                         for (plane, stride, side) in [
                             (&y, pipe.width as usize, w),

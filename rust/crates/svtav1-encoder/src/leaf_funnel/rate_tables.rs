@@ -533,6 +533,25 @@ pub struct FunnelCfg {
     /// `intra_ctrls.prune_using_best_mode` (M6: 0; M7/M8 intra_level 7: 1) —
     /// the MDS0 order-dependent H/SMOOTH skip (product_coding_loop.c:1688).
     pub prune_best_mode: bool,
+    /// `intra_ctrls.skip_angular_delta{1,2,3}_th` (`set_intra_ctrls`,
+    /// enc_mode_config.c:6691-6710), indexed by `|angle_delta| - 1`. `-1` is
+    /// C's disabled sentinel; the live rows are `dist_based_ang_intra_level`
+    /// 1 -> `[25, 25, 25]` and 2 -> `[20, 10, 5]`.
+    ///
+    /// ALL `-1` on every still, because `pcs->cand_reduction_level` and
+    /// `dist_based_ang_intra_level` are both keyed on `is_islice` and an
+    /// all-intra picture is always an I-slice (enc_mode_config.c:9040, 9623).
+    /// They go live on an INTER frame, where they split MDS0 into two
+    /// iterations — see `inject_candidates`.
+    pub skip_ang_delta_th: [i8; 3],
+    /// `cand_reduction_ctrls.reduce_filter_intra` (`set_cand_reduction_ctrls`,
+    /// enc_mode_config.c:4102): 0 at level 0, 1 at every other level. The
+    /// SECOND thing that splits MDS0 into two iterations
+    /// (product_coding_loop.c:1667).
+    ///
+    /// Also always false on a still, and for the same reason: C sets
+    /// `cand_reduction_level = 0` unconditionally on an I-slice.
+    pub reduce_filter_intra: bool,
     /// `MD_STAGE_NICS_SCAL_NUM[nic_scaling_level]` stage-1/2/3 numerators
     /// (M6 lvl6: 6/6/6; M7 lvl8: 4/4/4; M8 lvl15: 0/0/0). Base counts are
     /// the I-slice class-0 {64,32,16} scaled by these / 16 then qp-scaled.
@@ -827,6 +846,12 @@ impl FunnelCfg {
             bypass_encdec: true, // overridden from `preset` below
             filter_intra: true,
             prune_best_mode: false,
+            // Both of these are the STILL values and every arm below spreads
+            // them; the video arm stamps them in `intra_arm::apply` and at the
+            // `encode_tile_rows` funnel build, where the picture's slice type
+            // is known.
+            skip_ang_delta_th: [-1, -1, -1],
+            reduce_filter_intra: false,
             nic_num: (6, 6, 6),
             mds1_cand_base_th: 1200,
             // nic_level 6 (case 6, enc_mode_config.c:4700-4716) — the CLASS

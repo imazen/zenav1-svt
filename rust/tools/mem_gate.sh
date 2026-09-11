@@ -116,7 +116,7 @@ peak_kib_median() {
 port_env=(SVTAV1_BD=8 "SVTAV1_FRAMES=$FRAMES")
 c_env=(SVT_TRACE_OUT=/dev/null "SVT_FRAMES=$FRAMES")
 if [[ $FRAMES -gt 1 || $VIDEO == 1 ]]; then
-    port_env+=("SVTAV1_FRAME_SHIFT=$SHIFT"
+    port_env+=(SVTAV1_INTER_EXPERIMENTAL=1 "SVTAV1_FRAME_SHIFT=$SHIFT"
                SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0)
     c_env+=(SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1)
     [[ $VIDEO == 1 ]] && { port_env+=(SVTAV1_VIDEO=1); c_env+=(SVT_AVIF=0); }

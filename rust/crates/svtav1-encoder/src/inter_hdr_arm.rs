@@ -105,6 +105,7 @@ pub struct SeqInterTools {
 /// # Errors
 ///
 /// [`InterHdrError`] for a field this port refuses to guess.
+#[allow(clippy::too_many_arguments)]
 pub fn inter_signal(
     pic: &PicParams,
     sigs: &MdConfigSignals,

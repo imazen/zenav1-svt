@@ -893,22 +893,44 @@ fn main() {
                         let (tw2, th2) =
                             (pipeline.true_width as usize, pipeline.true_height as usize);
                         let (acw, tcw2, tch2) = (aw.div_ceil(2), tw2.div_ceil(2), th2.div_ceil(2));
-                        let crop = |p: &[u8], stride: usize, cw: usize, chh: usize| -> Vec<u8> {
+                        fn crop<T: Copy>(p: &[T], stride: usize, cw: usize, chh: usize) -> Vec<T> {
                             let mut o = Vec::with_capacity(cw * chh);
                             for r in 0..chh {
                                 o.extend_from_slice(&p[r * stride..r * stride + cw]);
                             }
                             o
-                        };
-                        let (ry, ru, rv) = pipeline
-                            .last_recon
-                            .as_ref()
-                            .expect("with_recon_output(true) is set above");
-                        let mut b = crop(ry, aw, tw2, th2);
-                        if !ru.is_empty() {
-                            b.extend_from_slice(&crop(ru, acw, tcw2, tch2));
-                            b.extend_from_slice(&crop(rv, acw, tcw2, tch2));
                         }
+                        // AT bd10 THE 10-BIT CANVAS IS THE ONE A DECODER
+                        // OUTPUTS. This writer used to dump `last_recon` --
+                        // the u8 chain's recon -- whatever the depth, so every
+                        // multi-frame bd10 comparison against `aomdec` was
+                        // comparing 8-bit bytes with 10-bit samples and read
+                        // as a total mismatch from frame 0. The single-frame
+                        // path above has always refused that substitution;
+                        // this one now refuses it too.
+                        let b: Vec<u8> = if bd == 10 {
+                            let (ry, ru, rv) = pipeline.last_recon10_final.as_ref().expect(
+                                "SVTAV1_FINAL_RECON at bd10: last_recon10_final is None — \
+                                 this frame produced no complete 10-bit recon (out of the \
+                                 bd10 envelope), so there is no 10-bit final recon to dump; \
+                                 refusing to write the u8 chain's recon in its place",
+                            );
+                            let mut s = crop(ry, aw, tw2, th2);
+                            s.extend_from_slice(&crop(ru, acw, tcw2, tch2));
+                            s.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+                            s.iter().flat_map(|v| v.to_le_bytes()).collect()
+                        } else {
+                            let (ry, ru, rv) = pipeline
+                                .last_recon
+                                .as_ref()
+                                .expect("with_recon_output(true) is set above");
+                            let mut b = crop(ry, aw, tw2, th2);
+                            if !ru.is_empty() {
+                                b.extend_from_slice(&crop(ru, acw, tcw2, tch2));
+                                b.extend_from_slice(&crop(rv, acw, tcw2, tch2));
+                            }
+                            b
+                        };
                         std::fs::write(format!("{path}.f{f}"), &b)
                             .expect("write SVTAV1_FINAL_RECON");
                     }

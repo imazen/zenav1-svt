@@ -68,6 +68,7 @@ rm -f "$WORK/c.fctx" "$WORK/rs.fctx"
 
 # 1. Port side. It writes the .yuv both sides consume, so it runs first.
 SVTAV1_FCTX_OUT="$WORK/rs.fctx" \
+    SVTAV1_INTER_EXPERIMENTAL=1 \
     SVTAV1_FRAMES="$FRAMES" \
     SVTAV1_INTRA_PERIOD="${SVTAV1_INTRA_PERIOD:-64}" \
     SVTAV1_HIER_LEVELS="${SVTAV1_HIER_LEVELS:-0}" \

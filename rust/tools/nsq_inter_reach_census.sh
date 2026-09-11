@@ -34,7 +34,7 @@ D=$(mktemp -d "${TMPDIR:-$HOME/tmp}/nrc.XXXXXX")
 printf 'content\tsize\tqp\tpreset\tframes\tshift\tverdict\tSPENTRY\tSKIP1\tSKIP2\tSKIP3\tSKIP4\tRDENTRY\tRECONDIST\tMODEDIFF\n' > "$OUT"
 for c in $CONTENT; do for s in $SIZES; do for q in $QPS; do for p in $PRESETS; do
     d="$D/${c}_${s}_${q}_${p}"
-    SVTAV1_NSQDBG=1 SVTAV1_FRAME_SHIFT="${NRC_SHIFT:-3}" \
+    SVTAV1_NSQDBG=1 SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="${NRC_SHIFT:-3}" \
         "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$c" "$d" > "$d.report" 2>&1
     rc=$?
     case $rc in 0) v=BOTH;; 1) v=DIFF;; 3) v=REFUSED;; *) v=CRASH$rc;; esac

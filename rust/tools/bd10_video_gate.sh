@@ -96,7 +96,7 @@ for spec in "${CELLS[@]}"; do
     out="$work/${clip}_${size}_p${preset}"
     mkdir -p "$out"
     env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-        IDI_BD=10 \
+        SVTAV1_INTER_EXPERIMENTAL=1 IDI_BD=10 \
         "$HERE/identity_diff_inter.sh" "$w" "$h" "$QP" "$preset" 2 \
         "rawseq:$asset" "$out" >"$out/diff.txt" 2>&1
     st=$?

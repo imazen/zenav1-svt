@@ -472,6 +472,26 @@ impl AvifEncoder {
     /// Every live builder knob is applied here, once, so the mono and 4:2:0
     /// entry points cannot drift apart in what they honour.
     fn build_pipeline(&self, width: u32, height: u32) -> svtav1_encoder::pipeline::EncodePipeline {
+        // A still is its own key frame: intra_period 1 makes every submitted
+        // picture a KEY frame, which is what a single image and an all-intra
+        // sequence both want.
+        self.build_pipeline_gop(width, height, 1)
+    }
+
+    /// [`Self::build_pipeline`] with an explicit key-frame interval, for the
+    /// animation path's inter-coded colour track. `intra_period` is C's
+    /// `GopStructure::intra_period`: 1 codes every picture as a key frame,
+    /// `n > 1` codes one key frame followed by `n - 1` inter frames.
+    ///
+    /// Hierarchical levels stay 0 — a flat low-delay-P GOP is the only
+    /// structure this port's reference-buffer table fills, and
+    /// `gop_config_error` refuses anything else rather than guessing.
+    fn build_pipeline_gop(
+        &self,
+        width: u32,
+        height: u32,
+        intra_period: u32,
+    ) -> svtav1_encoder::pipeline::EncodePipeline {
         let rc_config = svtav1_encoder::rate_control::RcConfig {
             mode: svtav1_encoder::rate_control::RcMode::Cqp,
             // `with_lossless(true)` IS QP 0 in AV1 (spec 5.9.12
@@ -490,7 +510,7 @@ impl AvifEncoder {
             self.resolved_native_preset(),
             rc_config,
             0,
-            1,
+            intra_period,
         )
         // Feature 4: route the `threads` knob into the bounded tile-parallel
         // encode (`None`/`Some(0)` = auto). Byte-neutral at any value.

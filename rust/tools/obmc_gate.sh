@@ -84,7 +84,8 @@ for spec in "${CELLS[@]}"; do
     fi
     out="$work/${clip}_${size}_p${preset}"
     mkdir -p "$out"
-    if ! env SVTAV1_INTERDBG=1 \
+    # Below the shipped preset-6 inter floor; see `dbgenv::inter_experimental`.
+    if ! env SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_INTERDBG=1 \
         SVTAV1_FRAMES="$FRAMES" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
         SVTAV1_FINAL_RECON="$out/rec" \
         "$HERE/identity_run" "rawseq:$asset" "$w" "$h" "$QP" "$preset" "$out/p" \

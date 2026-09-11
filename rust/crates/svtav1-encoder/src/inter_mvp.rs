@@ -579,6 +579,40 @@ pub struct InterMvpEnv<'a> {
     pub symmetric_refs: bool,
 }
 
+impl InterMvpEnv<'_> {
+    /// Stamp [`Self::sb64_sq_no4xn_geom`] for one BLOCK.
+    ///
+    /// C sets `ctx->sb64_sq_no4xn_geom` per block, in the MD block setup
+    /// (`product_coding_loop.c:10256`):
+    ///
+    /// ```text
+    /// ctx->sb64_sq_no4xn_geom = 0;
+    /// if (scs->super_block_size == 64 && blk_geom->bwidth == blk_geom->bheight &&
+    ///     blk_geom->bsize > BLOCK_8X4)
+    ///     ctx->sb64_sq_no4xn_geom = 1;
+    /// ```
+    ///
+    /// `bsize > BLOCK_8X4` on a SQUARE block excludes exactly `BLOCK_4X4`
+    /// (the enum runs 4x4, 4x8, 8x4, 8x8, ...), so the test is "square and at
+    /// least 8x8".
+    ///
+    /// THIS USED TO BE A PICTURE-LEVEL APPROXIMATION and it was wrong wherever
+    /// a picture mixes block shapes. The port derived it once per frame from
+    /// the preset ladders — "this preset emits no non-square and no 4xN
+    /// blocks, so every block passes" — which holds at preset 6 and fails at
+    /// preset 2, where non-square blocks exist and turned the flag off for the
+    /// SQUARE blocks too. The simplified walk and the full walk visit
+    /// different temporal positions, so encoder and decoder then derived
+    /// different NEARESTMV/NEARMV values. MEASURED before this fix, 8 frames
+    /// of `vidyo4 256x256 qp20 preset 2`: `aomdec` fails at frame 5 with
+    /// "Failed to decode tile data", and `SVTAV1_MFMV_OFF=1` decodes 8 of 8.
+    #[must_use]
+    pub fn for_block(mut self, sb_size: usize, bw: usize, bh: usize) -> Self {
+        self.sb64_sq_no4xn_geom = sb_size == 64 && bw == bh && bw >= 8;
+        self
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Neighbour scans (adaptive_mv_pred.c:49-264)
 // ---------------------------------------------------------------------------

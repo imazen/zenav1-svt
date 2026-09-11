@@ -122,7 +122,29 @@ pub struct EncodePipeline {
     /// search needs the previous SOURCE and the DPB's padded recon is a
     /// different buffer for a different job (motion compensation). `None`
     /// until the first frame has been encoded.
-    pa_ref: Option<alloc::boxed::Box<crate::inter_me_arm::PaPicture>>,
+    pa_ref: Option<alloc::sync::Arc<crate::inter_me_arm::PaPicture>>,
+    /// The PA pyramids the GLOBAL-MOTION search can reach, keyed by DPB slot
+    /// exactly as `self.dpb` is.
+    ///
+    /// C's `pcs->pa_ref_pic_ptr_array[list][ref]` resolves EVERY reference in
+    /// `ref_list<N>_count_try`, not just the nearest one, and
+    /// `svt_aom_global_motion_estimation` fits a model per reference
+    /// (`global_me.c:190`). The port used to hold a single previous-frame
+    /// pyramid, so the second reference had no plane and the search refused —
+    /// MEASURED: `gradient 72x72 q40 p2` encodes 2 frames and REFUSES frame 2,
+    /// because that is the first frame whose `ref_list0_count_try` is 2.
+    ///
+    /// Populated only when the preset's `gm_level` is non-zero (presets 0..4;
+    /// `derive_gm_level`). Above that nothing reads a PA plane other than the
+    /// previous frame's, and retaining up to eight pyramids would be memory
+    /// spent on a buffer with no reader — the same reasoning that keeps the
+    /// pyramid out of a still encode entirely.
+    ///
+    /// `Arc`, not `Box`: a refresh mask names several slots for one picture
+    /// and low-delay GOPs alias heavily, so the slots share one pyramid rather
+    /// than copying it. Eviction reclaims the allocation into `pa_scratch`
+    /// when the evicted pyramid was the last reference.
+    pa_slots: [Option<alloc::sync::Arc<crate::inter_me_arm::PaPicture>>; 8],
     /// The PA pyramid two frames back, kept as a RECYCLABLE allocation rather
     /// than freed.
     ///
@@ -477,6 +499,7 @@ impl EncodePipeline {
             superres_stats_luma: None,
             hbd_source: None,
             pa_ref: None,
+            pa_slots: [const { None }; 8],
             pa_scratch: None,
             me_scratch: None,
             // C-matched default: CICP "unspecified" (cp/tc/mc = 2/2/2,
@@ -2125,6 +2148,32 @@ impl EncodePipeline {
         // Keyed on the FRAME TYPE rather than `intra_period` so that
         // constructing a pipeline with a GOP structure and encoding only its
         // key frame keeps working: that stream is a valid still.
+        // THE LOW-PRESET FLOOR. Presets 6..13 are the measured envelope; below
+        // it the port emits streams a decoder can reject, which is the one
+        // outcome this port never ships. See
+        // `crate::dbgenv::inter_experimental` for the measurement and for the
+        // two separate defects behind it.
+        if !is_key
+            && (self.speed_config.preset < 6 || self.bit_depth > 8)
+            && !crate::dbgenv::inter_experimental()
+        {
+            return Err(whereat::at!(EncodeError::UnsupportedConfig(
+                "inter frames are shipped for 8-BIT 4:2:0 at presets 6..13, and this frame is \
+                 outside that. Both halves are measured against a DECODER, because that is what \
+                 a wrong stream actually violates. PRESETS, MEASURED 2026-09-11 (encoder \
+                 reconstruction vs aomdec, six public-domain derf clips x qp {20,40,55} x 8 \
+                 frames at 256x256): presets 6..13 are 144 of 144 cells decoding every frame \
+                 (tools/video_selfcheck_gate.sh), while preset 0 loses two cells, presets 1 and \
+                 2 lose two and one, and preset 5 loses one; SVTAV1_MFMV_OFF returns every \
+                 failing cell to 8 of 8, but signalling use_ref_frame_mvs = 0 is not a fix \
+                 either -- 151 of 163 against 156 -- because the spatial-only stack has a \
+                 defect of its own. BIT DEPTH, measured the same day on three of those clips x \
+                 qp {20,40} x presets {6,8,10} x 4 frames at bit depth 10: only 8 of 18 cells \
+                 reconstruct as aomdec does, the rest drifting from frame 1, 2 or 3. Encode \
+                 video as 8-bit 4:2:0 at preset >= 6, or a single key frame at any depth and \
+                 preset [C: accepts]",
+            )));
+        }
         if !is_key && chroma.is_none() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
                 "inter frames need the 4:2:0 path: the MONOCHROME arm has no inter coverage.                  Every inter gate in this repo is 4:2:0 (inter_byte_gate.sh,                  video_selfcheck_gate.sh, bd10_video_gate.sh, warped_motion_gate.sh,                  global_motion_gate.sh, obmc_gate.sh), and a mono inter frame previously                  produced a stream aomdec and dav1d both rejected. Encode monochrome as                  still/key frames, or use the 4:2:0 entry points for video [C: accepts]",
@@ -2966,6 +3015,29 @@ impl EncodePipeline {
                             width: self.true_width,
                             height: self.true_height,
                         };
+                        // C `pcs->pa_ref_pic_ptr_array[list][ref]`. The
+                        // (list, ref) pair names a REFERENCE FRAME, and the
+                        // DPB slot it resolves to is the one the header's
+                        // `ref_frame_idx[]` carries: list 0 is
+                        // LAST..GOLDEN (entries 0..3) and list 1 is
+                        // BWDREF..ALTREF (entries 4..6), which is C's
+                        // `get_list_idx` / `get_ref_frame_idx` read backwards.
+                        //
+                        // Resolved into planes HERE rather than inside the
+                        // closure because the closure also borrows `self`
+                        // through `true_width`/`true_height`.
+                        let slot_planes: [Option<crate::port_global_me::GmPlane<'_>>; 7] =
+                            core::array::from_fn(|i| {
+                                let slot =
+                                    pic_decision.as_ref()?.rps.ref_dpb_index[i] as usize;
+                                let pa = self.pa_slots.get(slot)?.as_ref()?;
+                                Some(crate::port_global_me::GmPlane {
+                                    buf: &pa.full.buf[pa.full.org..],
+                                    stride: pa.full.stride,
+                                    width: self.true_width,
+                                    height: self.true_height,
+                                })
+                            });
                         let mut sink = |a: core::fmt::Arguments<'_>| {
                             if crate::dbgenv::gmdbg() {
                                 eprintln!("GMSEARCH poc={display_order} {a}");
@@ -2978,11 +3050,17 @@ impl EncodePipeline {
                             &geom,
                             src_plane,
                             &|l, r| {
-                                if l < 2 && r == 0 {
-                                    Some(ref_plane)
-                                } else {
-                                    None
+                                // The nearest reference is `pa_ref` itself,
+                                // which is always present and is what the
+                                // single-reference path has always used; the
+                                // rest come from the DPB-keyed slots, which
+                                // are populated only at the presets where
+                                // `gm_level` is non-zero.
+                                if l == 0 && r == 0 {
+                                    return Some(ref_plane);
                                 }
+                                let idx = if l == 0 { r } else { 4 + r };
+                                slot_planes.get(idx).copied().flatten()
                             },
                             // C's `allow_high_precision_mv` argument is
                             // `pcs->frm_hdr.allow_high_precision_mv`
@@ -3920,6 +3998,38 @@ impl EncodePipeline {
                             &refs,
                         );
                         #[cfg(feature = "std")]
+                        if std::env::var_os("SVT_MFMV_DBG").is_some() {
+                            let mut valid = 0usize;
+                            let mut hash: u64 = 1469598103934665603;
+                            for t in &tpl {
+                                if t.ref_frame_offset != 0 || t.mfmv0.as_int() != crate::intrabc_mvp::INVALID_MV {
+                                    valid += 1;
+                                    hash = (hash ^ (t.mfmv0.as_int() as u32 as u64))
+                                        .wrapping_mul(1099511628211);
+                                    hash = (hash ^ u64::from(t.ref_frame_offset))
+                                        .wrapping_mul(1099511628211);
+                                }
+                            }
+                            std::eprintln!(
+                                "RS_MFMV poc={display_order} cur={} use={} mi={mi_rows}x{mi_cols} \
+                                 stride={} roh={},{},{},{},{},{},{} side={},{},{},{},{},{},{}",
+                                st.cur_order_hint,
+                                u8::from(st.use_ref_frame_mvs),
+                                tpl_stride * 2,
+                                st.ref_order_hint[0], st.ref_order_hint[1], st.ref_order_hint[2],
+                                st.ref_order_hint[3], st.ref_order_hint[4], st.ref_order_hint[5],
+                                st.ref_order_hint[6],
+                                inter_ref_frame_side[1], inter_ref_frame_side[2],
+                                inter_ref_frame_side[3], inter_ref_frame_side[4],
+                                inter_ref_frame_side[5], inter_ref_frame_side[6],
+                                inter_ref_frame_side[7],
+                            );
+                            std::eprintln!(
+                                "RS_MFMVSUM poc={display_order} size={} valid={valid} hash={hash:x}",
+                                tpl.len(),
+                            );
+                        }
+                        #[cfg(feature = "std")]
                         if std::env::var_os("ZZ_TPL").is_some() {
                             let valid = tpl
                                 .iter()
@@ -3954,9 +4064,7 @@ impl EncodePipeline {
                     // MEASURED: with this corrected, vidyo1/vidyo3/vidyo4 all go
                     // from drifting (or failing to decode) to 8 of 8 frames
                     // byte-identical to aomdec.
-                    sb64_sq_no4xn_geom: sb_size == 64
-                        && !crate::part_arm::nsq_geom_enabled(sc_arm, sc_preset)
-                        && crate::part_arm::disallow_4x4(sc_arm, sc_preset),
+                    sb_size_64: sb_size == 64,
                 }
             });
 
@@ -7451,6 +7559,29 @@ impl EncodePipeline {
                 a
             },
         };
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVT_MFMV_DBG").is_some() {
+            let mut named = 0usize;
+            let mut hash: u64 = 1469598103934665603;
+            for m in &ref_frame.mvs {
+                if m.ref_frame > 0 {
+                    named += 1;
+                }
+                hash = (hash ^ (m.mv.as_int() as u32 as u64)).wrapping_mul(1099511628211);
+                hash = (hash ^ u64::from(m.ref_frame as u8)).wrapping_mul(1099511628211);
+            }
+            std::eprintln!(
+                "RS_MVSAVE poc={display_order} ftype={} oh={} roh={},{},{},{},{},{},{} \
+                 cells={} named={named} hash={hash:x}",
+                u8::from(!is_key),
+                ref_frame.order_hint,
+                ref_frame.ref_order_hint[0], ref_frame.ref_order_hint[1],
+                ref_frame.ref_order_hint[2], ref_frame.ref_order_hint[3],
+                ref_frame.ref_order_hint[4], ref_frame.ref_order_hint[5],
+                ref_frame.ref_order_hint[6],
+                ref_frame.mvs.len(),
+            );
+        }
         for slot in 0..8 {
             if pcs.refresh_frame_flags & (1 << slot) != 0 {
                 self.grain_references[slot] = film_grain.clone();
@@ -7461,12 +7592,33 @@ impl EncodePipeline {
         // The PA (picture-analysis) reference the NEXT frame's open-loop
         // motion search reads — this frame's padded SOURCE pyramid, not its
         // recon. `None` in still mode, where no later frame exists.
-        if pa_cur.is_some() {
-            // The pyramid this displaces is two frames back: the search only
-            // ever reads `pa_ref` (the PREVIOUS frame) against `pa_cur`, so
-            // nothing can still be looking at it. Keep the allocation.
-            self.pa_scratch = self.pa_ref.take();
-            self.pa_ref = pa_cur;
+        if let Some(cur) = pa_cur {
+            let cur = alloc::sync::Arc::from(cur);
+            // The pyramid `pa_ref` displaces is two frames back: the search
+            // only ever reads `pa_ref` (the PREVIOUS frame) against `pa_cur`,
+            // so nothing can still be looking at it UNLESS a GM slot below
+            // still names it. `Arc::into_inner` answers exactly that question,
+            // and gives the allocation back when the answer is no.
+            if let Some(old) = self.pa_ref.take() {
+                self.pa_scratch = alloc::sync::Arc::into_inner(old).map(alloc::boxed::Box::new);
+            }
+            // Mirror the DPB refresh into the PA slots, so a later frame's
+            // global-motion search can reach the plane for ANY reference its
+            // `ref_dpb_index` names — not only the nearest one.
+            if self.gm_level_for_frame(false) != 0 {
+                for slot in 0..8 {
+                    if pcs.refresh_frame_flags & (1 << slot) != 0 {
+                        let evicted = self.pa_slots[slot].replace(alloc::sync::Arc::clone(&cur));
+                        if self.pa_scratch.is_none()
+                            && let Some(e) = evicted
+                        {
+                            self.pa_scratch =
+                                alloc::sync::Arc::into_inner(e).map(alloc::boxed::Box::new);
+                        }
+                    }
+                }
+            }
+            self.pa_ref = Some(cur);
         }
         // This frame's ME results have been consumed by mode decision and the
         // pack; keep the allocation for the next frame's search.
@@ -8315,7 +8467,11 @@ impl EntropyCtx {
         // at a 33/32 zoom, preset 2: block mi(0,0) coded `pmv=(0,0)` where the
         // decoder rebuilds (30,30), and 1557 of 4096 mi units diverged.
         let ref_frame_type = crate::inter_mvp::av1_ref_frame_type(d.ref_frame);
-        let mvp_env = env.mvp_env();
+        let mvp_env = env
+            .mvp_env()
+            // C `scs->super_block_size`, which the MVP environment carries as
+            // `sb_mi_size` in mi units (16 for a 64x64 superblock).
+            .for_block(env.sb_mi_size as usize * 4, w, h);
         let gm_mv =
             crate::inter_mvp::gm_mv_candidates_for(&mvp_env, ref_frame_type, bsize, mi_col, mi_row);
         let stack =
@@ -11594,10 +11750,18 @@ fn encode_tile_rows(
         // `intra_arm::allintra_flattening_matches_the_ladder` pins the six
         // stamped fields against `for_preset`'s baked values at every preset.
         //
-        // `is_base` is true unconditionally: every video picture this port
-        // encodes is a KEY frame at `temporal_layer_index == 0`, which is also
-        // what makes `dist_based_ang_intra_level` 0 on both arms (the ladder's
-        // non-zero rows are all `is_islice ? 0 :` / `is_base ? 0 :`).
+        // `is_base` is true unconditionally, and that is still right now that
+        // inter frames ship: `hierarchical_levels` is 0 on every GOP this port
+        // accepts (`gop_config_error` refuses the rest), so `mini_gop_size` is
+        // 1 and `get_temporal_layer` answers 0 for every picture.
+        //
+        // `is_islice` is NOT constant any more, and that is what makes
+        // `dist_based_ang_intra_level` non-zero: the ladder's rows read
+        // `is_islice ? 0 : 2` from M3 up, so every INTER frame from preset 3
+        // on carries level 2 and the `skip_angular_delta*_th` triple
+        // `intra_arm::apply` now stamps. It used to `debug_assert` that the
+        // level was 0, which was true only because no inter frame could reach
+        // this code.
         crate::intra_arm::apply(
             &mut funnel_cfg,
             sc_arm,
@@ -11606,6 +11770,16 @@ fn encode_tile_rows(
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
             true,
         );
+        // `cand_reduction_ctrls.reduce_filter_intra`, the OTHER thing that
+        // splits MDS0 into two iterations. Read from the picture's own
+        // `cand_reduction` rather than re-derived, so this cannot become a
+        // second transcription of `set_cand_reduction_ctrls`. `None` (a still,
+        // or a key frame with no inter env) keeps C's I-slice value: C assigns
+        // `cand_reduction_level = 0` unconditionally on an I_SLICE
+        // (enc_mode_config.c:9040 video, :9623 allintra), and level 0 is the
+        // only one with `reduce_filter_intra == 0`.
+        funnel_cfg.reduce_filter_intra =
+            inter_md.is_some_and(|m| m.cand_reduction.reduce_filter_intra != 0);
         // Same explicit override as the sequence bit. All funnel prediction
         // stages and the native10 final pass must see the decoder's policy.
         funnel_cfg.edge_filter |= zen_intra_edge_filter;
@@ -15554,7 +15728,7 @@ mod inter_decision_probe {
                 (((mi_rows + 32) >> 1) * tpl_stride) as usize
             ],
             tpl_stride,
-            sb64_sq_no4xn_geom: true,
+            sb_size_64: true,
         });
 
         // C's measured decision, minus everything the pack now derives.

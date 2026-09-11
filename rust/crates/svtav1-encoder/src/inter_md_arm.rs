@@ -739,16 +739,19 @@ pub fn build_inter_candidates(
     // one desyncs the DRL against the decoder's own scan.
     let mut stacks = alloc::vec![crate::inter_mvp::InterMvpStack::default(); 8];
     let mut ref_mv_count = [0u8; 8];
+    // C's `ctx->sb64_sq_no4xn_geom` is set in the MD block setup, so it is a
+    // property of THIS block, not of the picture.
+    let mvp_env = f.mvp_env.for_block(f.sb_size, b.bw as usize, b.bh as usize);
     for &rt in f.ref_frame_type_arr {
         let i = rt.max(0) as usize;
         let gm_mv = crate::inter_mvp::gm_mv_candidates_for(
-            &f.mvp_env,
+            &mvp_env,
             rt,
             b.bsize as usize,
             (b.org_x / 4) as i32,
             (b.org_y / 4) as i32,
         );
-        stacks[i] = setup_ref_mv_list(&grid, &ctx, &f.mvp_env, rt, gm_mv);
+        stacks[i] = setup_ref_mv_list(&grid, &ctx, &mvp_env, rt, gm_mv);
         ref_mv_count[i] = stacks[i].count;
     }
 

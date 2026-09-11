@@ -175,7 +175,7 @@ refuses() {
 refuses_inter3() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   SVTAV1_FRAMES=3 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
-    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
+    SVTAV1_INTER_EXPERIMENTAL=1 $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
     >/dev/null 2>"$W/err"
   local rc=$?
   if [ "$rc" -eq 3 ]; then
@@ -216,7 +216,7 @@ refuses_inter3() {
 mfmvField() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
-    SVTAV1_REFSTATS=1 \
+    SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_REFSTATS=1 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
     >/dev/null 2>"$W/err"
   local rc=$?
@@ -399,7 +399,7 @@ encodesInter() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   rm -f "$W"/rs.obu.f*
   local rc=0
-  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
     SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>"$W/err" || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -431,7 +431,7 @@ fhInterFrame() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   rm -f "$W"/c.obu.pts* "$W"/rs.obu.f* "$W"/rs.obu "$W"/c.obu
   local rc=0
-  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
     SVTAV1_HIER_LEVELS=0 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || rc=$?
   # rc 3 is the REFUSAL, which is exactly the regression this cell guards: the

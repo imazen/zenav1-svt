@@ -69,7 +69,7 @@ for preset in $PRESETS; do
     for s in $SIZES; do
         n_cells=$((n_cells + 1))
         rm -rf "${W:?}/c"; mkdir -p "$W/c"
-        SVTAV1_BD=8 SVTAV1_FRAMES=2 \
+        SVTAV1_BD=8 SVTAV1_FRAMES=2 SVTAV1_INTER_EXPERIMENTAL=1 \
         SVTAV1_FRAME_SHIFT="$SHIFT" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
             "$RS_BIN" "$CONTENT" "$s" "$s" "$QP" "$preset" "$W/c/rs" \
             >/dev/null 2>"$W/c/err"

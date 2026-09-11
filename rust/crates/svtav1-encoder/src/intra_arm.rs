@@ -228,6 +228,25 @@ pub(crate) fn spatial_sse_full_loop_level(arm: ScArm, enc_mode: i8) -> u8 {
     }
 }
 
+/// C `set_intra_ctrls`' second switch (enc_mode_config.c:6691-6710): the
+/// `skip_angular_delta{1,2,3}_th` triple for a `dist_based_ang_intra_level`.
+///
+/// `-1` is C's disabled sentinel, and it is what an all-intra picture always
+/// gets — `get_intra_mode_levels_*` returns `dist_based_ang_intra_level == 0`
+/// on every I-slice, and the allintra arm has nothing else.
+///
+/// # Panics
+/// On a level outside C's switch (it `assert(0)`s there).
+#[must_use]
+pub(crate) fn skip_angular_delta_ths(dist_based_ang_intra_level: u8) -> [i8; 3] {
+    match dist_based_ang_intra_level {
+        0 => [-1, -1, -1],
+        1 => [25, 25, 25],
+        2 => [20, 10, 5],
+        other => panic!("dist_based_ang_intra_level {other} outside C's switch"),
+    }
+}
+
 /// Stamp both ladders' results onto a [`FunnelCfg`], replacing the values
 /// `FunnelCfg::for_preset` baked from the allintra arm.
 ///
@@ -239,10 +258,7 @@ pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_islice: bo
     cfg.fi_max = fi_max;
 
     let (intra_level, dist_ang) = intra_mode_levels(arm, enc_mode, is_islice, is_base, false);
-    debug_assert_eq!(
-        dist_ang, 0,
-        "dist_based_ang_intra_level != 0 needs set_intra_ctrls' skip_angular_delta*_th ported"
-    );
+    cfg.skip_ang_delta_th = skip_angular_delta_ths(dist_ang);
     let (mode_end, angular, prune_best, prune_edge) = intra_ctrls(intra_level);
     cfg.mode_end = mode_end;
     cfg.angular_level = angular;

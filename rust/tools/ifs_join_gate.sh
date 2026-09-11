@@ -74,7 +74,7 @@ printf 'cell\tc_bytes_match\tc_n\tp_n\tjoined\tmismatch\tc_only\tp_only\tverdict
 fail=0; cells=0
 for c in $CONTENT; do for s in $SIZES; do for q in $QPS; do for p in $PRESETS; do
     n="${c}_${s}x${s}_q${q}_p${p}"; d="$OUT/$n"; cells=$((cells+1))
-    SVTAV1_IFSDBG=1 SVTAV1_FRAME_SHIFT="${IJG_SHIFT:-3}" "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$c" "$d" > "$d.report" 2>&1
+    SVTAV1_IFSDBG=1 SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="${IJG_SHIFT:-3}" "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$c" "$d" > "$d.report" 2>&1
     cp "$d/rs.yuv" "$W/$n.yuv"
     SVT_FRAMES=$FRAMES SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 SVT_IFS_OUT="$W/$n.ifs" \
         "$C_DRIVER" "$s" "$s" "$q" "$p" "$W/$n.yuv" "$W/$n.obu" 8 > "$W/$n.log" 2>&1

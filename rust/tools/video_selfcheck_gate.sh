@@ -39,7 +39,7 @@ RUN="$HERE/identity_run"
 ASSETS="${ZENAV1_VIDEO_ASSETS:-${ZENAV1_CORPUS_ROOT:-$HOME/work/zen}/video/pd-derf-720p}"
 SIZE="${VSG_SIZE:-256x256}"
 FRAMES="${VSG_FRAMES:-8}"
-PRESET="${VSG_PRESET:-6}"
+PRESETS="${VSG_PRESETS:-6 7 8 9 10 11 12 13}"
 W=${SIZE%x*}; H=${SIZE#*x}
 
 AOMDEC="${AOMDEC:-aomdec}"
@@ -56,22 +56,25 @@ fi
 
 CLIPS=(fourpeople kristenandsara johnny vidyo1 vidyo3 vidyo4)
 QPS=(20 40 55)
-EXPECT=$(( ${#CLIPS[@]} * ${#QPS[@]} ))
+# shellcheck disable=SC2206
+PRESET_LIST=($PRESETS)
+EXPECT=$(( ${#CLIPS[@]} * ${#QPS[@]} * ${#PRESET_LIST[@]} ))
 
 work="${TMPDIR:-$HOME/tmp}/video-selfcheck.$$"
 mkdir -p "$work"
 trap 'rm -rf "$work"' EXIT
 
 fail=0; ran=0; inter_seen=0
-echo "== video selfcheck gate (port recon vs aomdec, ${SIZE} p${PRESET}, ${FRAMES} frames) =="
-printf '  %-16s %-4s %-8s %s\n' clip qp frames note
+echo "== video selfcheck gate (port recon vs aomdec, ${SIZE}, presets ${PRESETS}, ${FRAMES} frames) =="
+printf '  %-16s %-4s %-3s %-8s %s\n' clip qp p frames note
 for clip in "${CLIPS[@]}"; do
     asset="$ASSETS/${clip}_${SIZE}_8f.i420"
     if [ ! -f "$asset" ]; then
         echo "  MISSING ASSET $asset" >&2; fail=$((fail + 1)); continue
     fi
     for qp in "${QPS[@]}"; do
-        out="$work/${clip}_q${qp}"; mkdir -p "$out"
+      for PRESET in "${PRESET_LIST[@]}"; do
+        out="$work/${clip}_q${qp}_p${PRESET}"; mkdir -p "$out"
         # SVTAV1_FRAME_SHIFT/_ZOOM_* are the SYNTHETIC motion model; cleared so
         # a stale environment cannot layer a warp on top of real motion.
         if ! env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
@@ -79,7 +82,7 @@ for clip in "${CLIPS[@]}"; do
             SVTAV1_FINAL_RECON="$out/rec" \
             "$RUN" "rawseq:$asset" "$W" "$H" "$qp" "$PRESET" "$out/p" \
             >"$out/stdout.txt" 2>"$out/trace.txt"; then
-            printf '  %-16s %-4s %-8s %s\n' "$clip" "$qp" - "ENCODE REFUSED/FAILED"
+            printf '  %-16s %-4s %-3s %-8s %s\n' "$clip" "$qp" "$PRESET" - "ENCODE REFUSED/FAILED"
             fail=$((fail + 1)); continue
         fi
         ran=$((ran + 1))
@@ -92,7 +95,7 @@ for clip in "${CLIPS[@]}"; do
             inter_seen=$((inter_seen + 1))
         fi
         if ! "$AOMDEC" --rawvideo -o "$out/dec.yuv" "$out/p.obu" >/dev/null 2>&1; then
-            printf '  %-16s %-4s %-8s %s\n' "$clip" "$qp" - "UNDECODABLE"
+            printf '  %-16s %-4s %-3s %-8s %s\n' "$clip" "$qp" "$PRESET" - "UNDECODABLE"
             fail=$((fail + 1)); continue
         fi
         got=$(RECON_DIR="$out" W="$W" H="$H" N="$FRAMES" python3 - <<'PY'
@@ -114,7 +117,8 @@ PY
 )
         note=ok
         if [ "$got" != "$FRAMES/$FRAMES" ]; then note="RECON MISMATCH"; fail=$((fail + 1)); fi
-        printf '  %-16s %-4s %-8s %s\n' "$clip" "$qp" "$got" "$note"
+        printf '  %-16s %-4s %-3s %-8s %s\n' "$clip" "$qp" "$PRESET" "$got" "$note"
+      done
     done
 done
 

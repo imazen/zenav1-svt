@@ -187,8 +187,13 @@ pub struct InterMdEnv {
     /// indexes it unconditionally.
     pub tpl_mvs: alloc::vec::Vec<crate::inter_mvp::TplMvRef>,
     pub tpl_stride: i32,
-    /// C `ctx->sb64_sq_no4xn_geom`.
-    pub sb64_sq_no4xn_geom: bool,
+    /// The PICTURE-level half of C `ctx->sb64_sq_no4xn_geom`
+    /// (`product_coding_loop.c:10256`): `scs->super_block_size == 64`. The
+    /// block-shape half is stamped per block by
+    /// [`crate::inter_mvp::InterMvpEnv::for_block`], because C's is a per-block
+    /// field and a picture-level approximation of it is wrong on any picture
+    /// that mixes block shapes.
+    pub sb_size_64: bool,
 }
 
 impl InterMdEnv {
@@ -209,7 +214,10 @@ impl InterMdEnv {
             ref_order_hint: self.ref_order_hint,
             tpl_mvs: &self.tpl_mvs,
             tpl_stride: self.tpl_stride,
-            sb64_sq_no4xn_geom: self.sb64_sq_no4xn_geom,
+            // Deliberately FALSE here: every consumer must stamp it for the
+            // block it is about, with `InterMvpEnv::for_block`. Carrying the
+            // picture-level bool through would look like an answer.
+            sb64_sq_no4xn_geom: false,
             // C's `symteric_refs` shortcut needs a random-access pred
             // structure at `temporal_layer_index > 0` with exactly
             // {LAST, BWDREF, LAST_BWD}; the low-delay P cells this path

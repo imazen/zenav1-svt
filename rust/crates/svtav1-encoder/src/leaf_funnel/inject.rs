@@ -54,6 +54,85 @@ fn intra_mode_rate(frame: &FunnelFrame, rates: &MdRates, g: &LeafGeom, mode: u8)
     }
 }
 
+/// C `MAX_CU_COST` (`definitions.h`) — `(uint64_t)~0 >> 1`, the seed for the
+/// per-mode regular-intra costs and for `best_reg_intra_cost`. Every real fast
+/// cost, including the `MAX_MODE_COST` sentinel a pruned MDS0 candidate
+/// carries, is below it.
+const MAX_CU_COST: u64 = u64::MAX >> 1;
+
+/// C `process_cand_itr` (product_coding_loop.c:1559-1639): whether a class-0
+/// candidate belongs to the current MDS0 iteration.
+///
+/// Iteration 0 takes the REGULAR modes; iteration 1 takes the angular and
+/// filter-intra ones, pruned against iteration 0's results:
+///
+/// * an angular candidate is dropped when its own mode's regular cost is more
+///   than `skip_angular_delta<|delta|>_th` percent worse than the best regular
+///   cost — and the whole comparison is skipped when this mode IS the best
+///   regular one, which is C's "eval the child-angular if the parent-angular
+///   is the best" rule;
+/// * a filter-intra candidate other than FILTER_DC is dropped unless the
+///   non-filter mode it maps to won iteration 0. FILTER_DC is always tested.
+///
+/// Only reached when `tot_itr > 1`. The arithmetic is `i128` where C's is
+/// `uint64_t`: a mode never scored at iteration 0 keeps the `MAX_CU_COST`
+/// seed, and `(MAX_CU_COST - best) * 100` overflows 64 bits in C. Both forms
+/// answer "skip", which is the only thing the comparison is asked.
+#[allow(clippy::too_many_arguments)]
+fn process_cand_itr(
+    cfg: &FunnelCfg,
+    mode: u8,
+    delta: i8,
+    fi: u8,
+    itr: u8,
+    best_reg_mode: i32,
+    best_reg_cost: u64,
+    regular_intra_cost: &[u64; 13],
+) -> bool {
+    let ang_skip_armed = cfg.skip_ang_delta_th.iter().any(|&t| t != -1);
+    if itr == 0 {
+        // Which of the three shapes iteration 0 takes depends on what armed
+        // the split, exactly as C's three-way branch does.
+        return if cfg.reduce_filter_intra && ang_skip_armed {
+            delta == 0 && fi == FI_NONE
+        } else if ang_skip_armed {
+            delta == 0
+        } else {
+            fi == FI_NONE
+        };
+    }
+    // Iteration 1 is the complement of whatever iteration 0 took.
+    let take = if cfg.reduce_filter_intra && ang_skip_armed {
+        !(delta == 0 && fi == FI_NONE)
+    } else if ang_skip_armed {
+        delta != 0
+    } else {
+        fi != FI_NONE
+    };
+    if !take {
+        return false;
+    }
+    if fi != FI_NONE {
+        // FILTER_DC (mode 0) is always tested; the rest need their mapped
+        // non-filter mode to have won iteration 0.
+        return fi == 0 || i32::from(FIMODE_TO_INTRAMODE[fi as usize]) == best_reg_mode;
+    }
+    // Angular pruning, and only when this mode is not itself the winner.
+    if best_reg_mode == i32::from(mode) {
+        return true;
+    }
+    let idx = (delta.unsigned_abs() as usize).wrapping_sub(1);
+    let Some(&th) = cfg.skip_ang_delta_th.get(idx) else {
+        return true;
+    };
+    if th == -1 {
+        return true;
+    }
+    let mine = i128::from(regular_intra_cost[usize::from(mode)]);
+    let best = i128::from(best_reg_cost);
+    (mine - best.max(1)) * 100 <= i128::from(th) * best
+}
+
 pub(super) fn inject_candidates(
     fx: &mut FunnelCtx<'_>,
     g: &LeafGeom,
@@ -509,16 +588,43 @@ pub(super) fn inject_candidates(
     // still best. Skipped candidates never get a fast cost (never enter the
     // pool). At M6 (prune off) every candidate is evaluated, identical to
     // the original funnel.
-    let mut best_reg_cost = u64::MAX;
+    let mut best_reg_cost = MAX_CU_COST;
     let mut best_reg_mode: i32 = -1;
+    // C `md_stage_0`'s CLASS-0 ITERATION SPLIT (product_coding_loop.c:1667).
+    //
+    //   itr 0: the REGULAR modes (angle_delta == 0, no filter-intra).
+    //   itr 1: the ANGULAR modes and the filter-intra ones, each prunable
+    //          against what itr 0 learned.
+    //
+    // `tot_itr` is 2 exactly when `reduce_filter_intra` is set or any
+    // `skip_angular_delta*_th` is live. Both are 0 / -1 on every still — C
+    // keys them on `is_islice` and an all-intra picture is always an I-slice
+    // — so this whole structure collapses to the single pass the still path
+    // has always run, and `identity_full_8bit.sh` (1100/1100) is what says so.
+    //
+    // On an INTER frame from preset 3 up, both are live.
+    let tot_itr: u8 =
+        if cfg.reduce_filter_intra || cfg.skip_ang_delta_th.iter().any(|&t| t != -1) {
+            2
+        } else {
+            1
+        };
+    // C `regular_intra_cost[PAETH_PRED + 1]` (:1676), seeded `MAX_CU_COST`
+    // and filled at itr 0 with each regular mode's fast cost. PAETH_PRED is
+    // 12, so the array is 13 long.
+    let mut regular_intra_cost = [MAX_CU_COST; 13];
     // C `ctx->mds0_best_cost` (product_coding_loop.c:8385 resets it to
     // `(uint64_t)~0` per block; `:1717` keeps it as the running MINIMUM of
     // every candidate's `*fast_cost`). It exists here only to feed the MDS0
     // prune below, which is why it is `None` until the first candidate is
     // scored — C's sentinel is checked explicitly at `:1326`.
     let mut mds0_best_cost: Option<u64> = None;
+    for itr in 0..tot_itr {
     for &(mode, delta, fi) in &cand_modes {
-        if cfg.prune_best_mode && fi == FI_NONE {
+        // C gates this skip on `itr == 0` (:1687). At itr 1 the regular modes
+        // are already scored, so re-applying it there would drop angular
+        // candidates of H / SMOOTH that C keeps.
+        if cfg.prune_best_mode && fi == FI_NONE && itr == 0 {
             // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
             if mode == 2 && best_reg_mode == 1 {
                 continue; // V better than DC -> skip H
@@ -526,6 +632,20 @@ pub(super) fn inject_candidates(
             if mode == 9 && best_reg_mode == 0 {
                 continue; // DC still best -> skip SMOOTH
             }
+        }
+        if tot_itr > 1
+            && !process_cand_itr(
+                &cfg,
+                mode,
+                delta,
+                fi,
+                itr,
+                best_reg_mode,
+                best_reg_cost,
+                &regular_intra_cost,
+            )
+        {
+            continue;
         }
         // C injection (inject_intra_candidates / inject_filter_intra_candidates,
         // mode_decision.c:3286-3292): uv = ind_uv_avail ? best_uv_mode[map]
@@ -743,11 +863,27 @@ pub(super) fn inject_candidates(
                 fast_cost,
             );
         }
-        // C updates best_reg_intra_mode after fast_loop_core for regular
-        // class-0 candidates when prune is armed (line 1727).
-        if cfg.prune_best_mode && fi == FI_NONE && fast_cost < best_reg_cost {
-            best_reg_cost = fast_cost;
-            best_reg_mode = mode as i32;
+        // C `:1727`: at itr 0, a class-0 candidate with NO filter-intra mode
+        // records its fast cost per luma mode, and the running best of those
+        // becomes `best_reg_intra_mode`. The guard is C's own — `prune_best_mode
+        // && intra_mode_end >= H_PRED`, or a split iteration. `intra_mode_end`
+        // is SMOOTH (9) on every level that sets `prune_best_mode`, so the
+        // second clause is always true where the first is, and the still path
+        // keeps the exact behaviour it had.
+        //
+        // Note this records ANGULAR candidates too when the split came from
+        // `reduce_filter_intra` alone (itr 0 evaluates them), and a later
+        // delta of the same mode overwrites an earlier one. That is what C
+        // does, index and all.
+        if fi == FI_NONE
+            && itr == 0
+            && ((cfg.prune_best_mode && cfg.mode_end >= 2) || tot_itr > 1)
+        {
+            regular_intra_cost[usize::from(mode)] = fast_cost;
+            if fast_cost < best_reg_cost {
+                best_reg_cost = fast_cost;
+                best_reg_mode = mode as i32;
+            }
         }
         cands.push(Cand {
             mode,
@@ -793,6 +929,7 @@ pub(super) fn inject_candidates(
             total_rate: 0,
             full_dist: 0,
         });
+    }
     }
     // ---- inject_palette_candidates (mode_decision.c:3356-3406) ----
     // C order: regular+fi intra first, palette after (IBC would follow).

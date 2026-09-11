@@ -105,14 +105,32 @@ presence_flags! {
     bd10_postpass => "SVTAV1_BD10_POSTPASS",
     /// `SVTAV1_LAMBDA_DBG`: per-superblock lambda derivation dump.
     lambda_dbg_set => "SVTAV1_LAMBDA_DBG",
-    // `SVTAV1_INTER_EXPERIMENTAL` and `SVTAV1_INTER_CHAIN_EXPERIMENTAL` were
-    // DELETED on 2026-09-11, as their own documentation said they should be:
-    // "Remove the variable — do not promote it — once the inter tile is
-    // byte-identical and the refusal can simply be deleted." Both refusals
-    // they lifted are gone from `pipeline.rs`; inter frames are a shipped
-    // configuration on the 4:2:0 path, guarded by
-    // `tools/video_selfcheck_gate.sh`. Nothing replaces them: a variable that
-    // no longer gates anything is a trap for the next reader.
+    /// `SVTAV1_INTER_EXPERIMENTAL`: lift the LOW-PRESET floor on inter frames
+    /// (`pipeline.rs`), so the harness can drive a tool that only exists below
+    /// preset 6 — global motion, the OBMC census, the low-preset arms of the
+    /// warped-motion gate.
+    ///
+    /// ITS MEANING CHANGED ON 2026-09-11 and the old meaning is gone. It used
+    /// to lift a blanket refusal of EVERY inter frame; inter frames now ship,
+    /// and what is left behind this variable is a measured correctness floor.
+    /// `SVTAV1_INTER_CHAIN_EXPERIMENTAL` was deleted outright in the same
+    /// change, because the refusal it lifted no longer exists.
+    ///
+    /// MEASURED 2026-09-11, encoder recon vs `aomdec`, six public-domain derf
+    /// clips x qp {20,40,55} x 8 frames at 256x256: presets 6 through 13 are
+    /// 144 of 144 cells decoding all 8 frames, while preset 0 loses two cells,
+    /// presets 1 and 2 lose two and one, and preset 5 loses one. The defect is
+    /// the TEMPORAL motion-vector field -- `SVTAV1_MFMV_OFF=1` returns every
+    /// failing cell to 8 of 8 -- but turning the field off is not the fix: it
+    /// is 151 of 163 across presets 0..10 against 156 with the field on,
+    /// because the spatial-only stack has a defect of its own on other
+    /// content. Two defects, and neither arm is shippable below preset 6.
+    ///
+    /// **Not a feature flag.** A stream produced with it lifted below preset 6
+    /// may be one a decoder rejects. Delete it once
+    /// `tools/video_selfcheck_gate.sh` passes with `VSG_PRESET` swept over the
+    /// whole ladder.
+    inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
     /// `SVTAV1_MFMV_OFF`: build the ref-MV stack from SPATIAL candidates only,
     /// and signal `use_ref_frame_mvs = 0` to match, so encoder and decoder
     /// agree.

@@ -55,6 +55,7 @@ case "$ARM" in
   inter)    ev=(SVTAV1_VIDEO=1 SVTAV1_FRAMES=2 "SVTAV1_FRAME_SHIFT=$SHIFT" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0) ;;
   *) echo "FATAL: unknown arm $ARM" >&2; exit 2 ;;
 esac
+ev+=(SVTAV1_INTER_EXPERIMENTAL=1)
 [[ -n "${MB_THREADS:-}" ]] && ev+=("SVTAV1_THREADS=$MB_THREADS")
 
 BSD_TIME=false; /usr/bin/time -l true >/dev/null 2>&1 && BSD_TIME=true
