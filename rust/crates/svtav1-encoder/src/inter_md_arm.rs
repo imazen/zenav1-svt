@@ -476,6 +476,15 @@ impl Default for WarpSamples {
 /// frame-scoped half (`nmv`, `fac.drl_mode`, `allow_high_precision_mv`) stays
 /// on [`InterMdFrame`] and is read through `fx.inter`.
 pub struct WarpRefineBlock {
+    /// The per-reference MV stacks `svt_aom_generate_av1_mvp_table` built for
+    /// this block.
+    ///
+    /// The OBMC MV refinement re-picks the DRL index against them
+    /// (`svt_aom_choose_best_av1_mv_pred`, mode_decision.c:2272), so it needs
+    /// the SAME stack the injector priced the candidate against — rebuilding
+    /// it in the funnel would be a second derivation that could disagree.
+    pub mvp_stacks: alloc::vec::Vec<crate::inter_mvp::InterMvpStack>,
+
     /// False when this block can produce no warped candidate at all, which
     /// makes the refinement a no-op without the caller having to know why.
     pub enabled: bool,
@@ -503,6 +512,7 @@ pub struct WarpRefineBlock {
 impl Default for WarpRefineBlock {
     fn default() -> Self {
         WarpRefineBlock {
+            mvp_stacks: alloc::vec::Vec::new(),
             enabled: false,
             refinement_iterations: 0,
             refine_diag: false,
@@ -1016,6 +1026,7 @@ pub fn build_inter_candidates(
     // already exist. `enabled` false makes the refinement a no-op without the
     // funnel having to know why.
     *warp_out = WarpRefineBlock {
+        mvp_stacks: core::mem::take(&mut warp_out.mvp_stacks),
         enabled: wm_injection_wired,
         refinement_iterations: wmc.refinement_iterations,
         refine_diag: wmc.refine_diag != 0,
@@ -1033,6 +1044,10 @@ pub fn build_inter_candidates(
         bwidth: b.bw,
         bheight: b.bh,
     };
+    // Hand the block's MV stacks to the funnel: the OBMC refinement's DRL
+    // re-pick must use the SAME stack the injector priced against.
+    warp_out.mvp_stacks.clear();
+    warp_out.mvp_stacks.extend_from_slice(&stacks);
     let mut hooks = WarpHooks { blk: warp_out };
     inject_inter_candidates(&inj, &mut cands, &mut log, &mut hooks);
 

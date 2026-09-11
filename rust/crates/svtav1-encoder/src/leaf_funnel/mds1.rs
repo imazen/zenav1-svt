@@ -73,6 +73,20 @@ pub(super) fn run_mds1(
             y_src_off,
             cand,
         );
+        // C's OBMC arm of the same `opt_non_translation_motion_mode` call
+        // (product_coding_loop.c:6798). `obmc_refine_stage` sends levels 1 and
+        // 2 here; levels 3 and 4 go to MDS3.
+        super::obmc_refine::refine_at_stage(
+            fx,
+            g,
+            crate::port_md::motion_mode::MdStage::Stage1,
+            lambda,
+            y_src,
+            y_src_stride,
+            y_src_off,
+            &warp_blk.mvp_stacks,
+            cand,
+        );
         let (txb_skip_ctx, dc_sign_ctx) = if cfg.real_coeff_ctx {
             let (above, left) = fx.ectx.coeff_neighbors(abs_x, abs_y, w, h);
             cc::get_txb_ctx(0, above, left, true, false)

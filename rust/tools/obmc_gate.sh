@@ -26,11 +26,11 @@
 #      what the preset-2 cells are for: `svt_aom_get_obmc_level` gives level 5
 #      there and C picks OBMC on zero blocks.
 #
-# It does NOT assert byte-identity with C. The OBMC MV refinement
-# (`opt_non_translation_motion_mode_obmc` at `obmc_ctrls.refine_level`, and the
-# injection-time refinement at level 1) is not wired, so the port's OBMC
-# candidates carry the UNREFINED MV — the same state warped motion shipped in.
-# See `benchmarks/obmc_wiring_2026-09-11.meta`.
+# It does NOT assert byte-identity with C. The MDS-stage MV refinement IS wired
+# (`opt_non_translation_motion_mode_obmc` -> `obmc_motion_refinement` ->
+# `single_motion_search`), which is what these counts include; the
+# INJECTION-time refinement (`obmc_ctrls.refine_level == 0`, obmc_level 1,
+# preset MR only) is not. See `benchmarks/obmc_wiring_2026-09-11.meta`.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RS_ROOT=$(cd "$HERE/.." && pwd)
@@ -47,11 +47,19 @@ fi
 # clip size preset min_obmc_blocks
 # MEASURED 2026-09-11 at cli_qp 40, 2 frames. A 0 means C's ladder closes OBMC
 # at that preset (level 5), so the port must code none either.
+#
+# THESE COUNTS MOVED when the MV refinement landed (186/76/12/54 -> 168/92/14/56).
+# That is the refinement doing its job — it changes which MV each OBMC
+# candidate carries, so it changes which blocks win RD — and it is NOT a
+# weakening of the gate: the load-bearing assertion is the RECON column, which
+# went from "byte-identical to dav1d with the unrefined MV" to the same thing
+# with C's real search in the loop. A count that moves with no named cause is a
+# regression; this one has one.
 CELLS=(
-    "vidyo3 256x256 0 186"
-    "vidyo1 256x256 0 76"
-    "johnny 256x256 0 12"
-    "vidyo3 128x128 0 54"
+    "vidyo3 256x256 0 168"
+    "vidyo1 256x256 0 92"
+    "johnny 256x256 0 14"
+    "vidyo3 128x128 0 56"
     "vidyo3 256x256 2 0"
     "vidyo1 256x256 2 0"
 )

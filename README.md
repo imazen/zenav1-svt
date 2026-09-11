@@ -83,7 +83,7 @@ refusal, because it is most of the encoder.
 | 10-bit inter video | **Validated** | `bd10_video_gate.sh` 24/24 encode + decode |
 | **Global motion** | **Validated** | `global_motion_gate.sh` — recon byte-identical to dav1d on every frame; anti-vacuity: fails if no cell fits a non-identity model |
 | **Warped motion** | **Validated** | `warped_motion_gate.sh` 8/8 — selects it where C does, recon matches dav1d. MDS1 MV refinement wired |
-| **OBMC** | **Validated** | `obmc_gate.sh` 6/6 — selects it where C does (22 % of blocks at preset 0), recon matches dav1d |
+| **OBMC** | **Validated** | `obmc_gate.sh` 6/6 — selects it where C does (22 % of blocks at preset 0), recon matches dav1d. MD-stage MV refinement wired; the injection-time one (preset MR only) is not |
 | Interpolation-filter search | **Validated** | `ifs_join_gate.sh` |
 | Motion estimation / MVP | **Validated** | `inter_me_join_gate.sh`, `fctx_gate.sh` |
 | Sub-8 inter chroma (`inter_chroma_4xn_pred`) | **Supported** | Ported 2026-09-10; covered by the inter recon gates, no isolating gate |

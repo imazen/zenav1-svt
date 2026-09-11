@@ -78,15 +78,37 @@
 # clothes. A regression to per-block buffers would still pass every byte gate,
 # which is why the sizing and the reuse are pinned by unit tests.
 #
+# ## THE MV REFINEMENT (added the same day)
+#
+# `opt_non_translation_motion_mode_obmc` -> `obmc_motion_refinement` ->
+# `single_motion_search` is now wired at the MD stage `obmc_refine_stage`
+# selects (stage 1 at refine_level 1/2, stage 3 at 3/4). The search scores
+# candidate vectors against `wsrc`/`mask` -- the source with the neighbours'
+# predictions blended out (`calc_target_weighted_pred`) -- built once per block
+# behind C's `obmc_weighted_pred_ready`, in the same thread-local scratch.
+#
+# IT CHANGED THE SELECTION, which is the point: 186/76/12/54 OBMC blocks became
+# 168/92/14/56 on the four preset-0 cells. Re-pinned with the reason recorded;
+# the recon column stayed 2/2 throughout and is the assertion that matters.
+#
+# AND IT CAUGHT A SECOND BUG THE SAME WAY THE FIRST ONE WAS CAUGHT. The first
+# refinement wiring left 653 luma samples diverging from dav1d on vidyo3
+# 256x256 p0. Cause: C clears `cand_bf->valid_luma_pred` when the refinement
+# CHANGES the MV (product_coding_loop.c:6817), which makes `full_loop_core`
+# re-run the prediction; the port has no lazy flag and kept MDS0's. The MV that
+# gets CODED is the refined one, so a prediction built from the old MV is one
+# no decoder reproduces -- wrong pixels, not a quality difference. The adapter
+# now rebuilds luma, chroma AND the blend on a `Refined` outcome, exactly as
+# the warp adapter does.
+#
 # ## WHAT IS STILL NOT WIRED
 #
-# The OBMC MV refinement. `obmc_ctrls.refine_level` is 1 at levels 2/3 (MD
-# stage 1) and 4 at levels 5/6 (stage 3), and level 1 (preset MR) refines at
-# INJECTION. `port_md::motion_mode::opt_non_translation_motion_mode_obmc` and
-# `inter_me::obmc_search` are both ported and c-parity tested; neither has a
-# caller, so the port's OBMC candidates carry the UNREFINED MV. That is the
-# same state warped motion shipped in, and it is why this gate asserts recon
-# against dav1d rather than byte-identity with C.
+# The INJECTION-time refinement: `obmc_ctrls.refine_level == 0`, which
+# `set_obmc_controls` gives only at obmc_level 1, i.e. preset MR. There
+# `inj_non_simple_modes` calls `InjectHooks::obmc_motion_refinement` directly
+# rather than through an MD stage, and that hook still returns "valid,
+# unrefined". Presets 0 and 1 -- where the census measured 22.5 % and 27.0 % of
+# blocks -- are at obmc_level 3, refine_level 1, and ARE refined.
 #
 # `obmc_trans_face_off` is also unwired and inert at the presets that matter:
 # `set_obmc_controls` gives `trans_face_off = 0` at levels 1 and 3, i.e. at

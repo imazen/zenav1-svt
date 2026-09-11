@@ -96,6 +96,15 @@ pub(crate) struct ObmcBuffers {
     buf1: Vec<u8>,
     /// C `ctx->obmc_conv_buf`.
     conv: Vec<u16>,
+    /// C `ctx->wsrc_buf` — the OBMC-weighted source the MV refinement scores
+    /// candidate vectors against.
+    wsrc: Vec<i32>,
+    /// C `ctx->mask_buf`.
+    mask: Vec<i32>,
+    /// The block `wsrc`/`mask` describe. C's `obmc_weighted_pred_ready`, which
+    /// is a SEPARATE flag from the neighbour-prediction pair because the
+    /// weighted source is built from them and is needed only by the search.
+    weighted: Option<NeighbourKey>,
     /// The block the contents of `buf0`/`buf1` belong to, or `None` when they
     /// hold another block's. C's `obmc_neighbor_{luma,chroma}_pred_ready`.
     ready: Option<NeighbourKey>,
@@ -109,6 +118,9 @@ impl Default for ObmcBuffers {
             buf0: Vec::new(),
             buf1: Vec::new(),
             conv: Vec::new(),
+            wsrc: Vec::new(),
+            mask: Vec::new(),
+            weighted: None,
             ready: None,
             sb_size: 0,
         }
@@ -129,9 +141,12 @@ impl ObmcBuffers {
         self.buf0.resize(n * MAX_PLANES, 0);
         self.buf1.resize(n * MAX_PLANES, 0);
         self.conv.resize(n, 0);
+        self.wsrc.resize(n, 0);
+        self.mask.resize(n, 0);
         self.sb_size = sb_size;
         // The contents are now meaningless for whatever block they described.
         self.ready = None;
+        self.weighted = None;
     }
 
     /// True when `buf0`/`buf1` already hold THIS block's neighbour
@@ -344,6 +359,167 @@ pub(crate) fn predict_obmc_in_place(
     });
 }
 
+/// Build C's OBMC-weighted source for this block and hand it to `f`.
+///
+/// C `svt_aom_obmc_motion_refinement`'s precompute half (mode_decision.c:2191-
+/// 2228): the MV refinement does not score candidate vectors against the
+/// source, it scores them against `wsrc`/`mask` — the source with the
+/// neighbours' predictions blended out of it. Those come from
+/// `calc_target_weighted_pred` over the SAME neighbour predictions the blend
+/// uses, so this shares the thread-local scratch with
+/// [`predict_obmc_in_place`] and reuses whatever it already built.
+///
+/// C guards it with `ctx->obmc_weighted_pred_ready`, a flag SEPARATE from the
+/// neighbour-prediction pair; `ObmcBuffers::weighted` is that flag. Both
+/// caches are keyed on the block, so a second OBMC candidate of the same block
+/// pays for neither.
+///
+/// `f` is not called when the block has no overlapping neighbour — C reaches
+/// `calc_target_weighted_pred` only from a block that has one.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn with_obmc_weighted_pred<R>(
+    ctx: &ObmcCtx<'_>,
+    bsize: BlockSize,
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    src: &[u8],
+    src_stride: usize,
+    f: impl FnOnce(&[i32], &[i32]) -> R,
+) -> Option<R> {
+    use svtav1_dsp::port_obmc_data::{Neighbour as WNb, calc_target_weighted_pred};
+
+    let mi_row = (org_y / 4) as i32;
+    let mi_col = (org_x / 4) as i32;
+    let (n4_w, n4_h) = (bw / 4, bh / 4);
+
+    let mut above_nbs = [VisitedNb {
+        rel_mi: 0,
+        nb_mi_size: 0,
+        mi_index: 0,
+    }; MAX_VISITED_NB];
+    let mut left_nbs = above_nbs;
+    let mut above_cells = [NB_MI_INTRA; MAX_NB_SPAN];
+    let mut left_cells = [NB_MI_INTRA; MAX_NB_SPAN];
+    let n_above_cells = ctx.above_row.len().min(MAX_NB_SPAN);
+    let n_left_cells = ctx.left_col.len().min(MAX_NB_SPAN);
+    for (dst, c) in above_cells
+        .iter_mut()
+        .zip(ctx.above_row.iter().take(n_above_cells))
+    {
+        *dst = NbMi {
+            bsize: c.bsize,
+            overlappable: c.overlappable,
+        };
+    }
+    for (dst, c) in left_cells
+        .iter_mut()
+        .zip(ctx.left_col.iter().take(n_left_cells))
+    {
+        *dst = NbMi {
+            bsize: c.bsize,
+            overlappable: c.overlappable,
+        };
+    }
+    let n_above = foreach_overlappable_nb_above_into(
+        ctx.up_available,
+        &above_cells[..n_above_cells],
+        mi_col as usize,
+        n4_w,
+        ctx.mi_cols,
+        nb_max_above(bsize),
+        &mut above_nbs,
+    );
+    let n_left = foreach_overlappable_nb_left_into(
+        ctx.left_available,
+        &left_cells[..n_left_cells],
+        mi_row as usize,
+        n4_h,
+        ctx.mi_rows,
+        nb_max_left(bsize),
+        &mut left_nbs,
+    );
+    if n_above == 0 && n_left == 0 {
+        return None;
+    }
+
+    let key = NeighbourKey {
+        org_x,
+        org_y,
+        bw,
+        bh,
+        // The refinement needs LUMA only; C passes
+        // `PICTURE_BUFFER_DESC_LUMA_MASK` to the precompute it triggers.
+        component_mask: COMPONENT_LUMA,
+    };
+    OBMC_BUFFERS.with(|cell| {
+        let mut bufs = cell.borrow_mut();
+        bufs.ensure(ctx.sb_size);
+        if !bufs.neighbours_ready_for(key) {
+            build_neighbour_predictions(
+                ctx,
+                &mut bufs,
+                bsize,
+                mi_row,
+                mi_col,
+                bw,
+                bh,
+                &above_nbs[..n_above],
+                &left_nbs[..n_left],
+                COMPONENT_LUMA,
+            );
+            bufs.ready = Some(key);
+            // The neighbour predictions moved, so anything derived from them
+            // is stale.
+            bufs.weighted = None;
+        }
+        if bufs.weighted != Some(key) {
+            let mut above: [WNb; MAX_VISITED_NB] = [WNb {
+                rel_mi: 0,
+                nb_mi: 0,
+            }; MAX_VISITED_NB];
+            let mut left = above;
+            for (d, nb) in above.iter_mut().zip(&above_nbs[..n_above]) {
+                *d = WNb {
+                    rel_mi: nb.rel_mi,
+                    nb_mi: nb.nb_mi_size,
+                };
+            }
+            for (d, nb) in left.iter_mut().zip(&left_nbs[..n_left]) {
+                *d = WNb {
+                    rel_mi: nb.rel_mi,
+                    nb_mi: nb.nb_mi_size,
+                };
+            }
+            let ObmcBuffers {
+                buf0,
+                buf1,
+                wsrc,
+                mask,
+                ..
+            } = &mut *bufs;
+            calc_target_weighted_pred(
+                bsize,
+                bw,
+                bh,
+                wsrc,
+                mask,
+                &above[..n_above],
+                &buf0[..bw * bh],
+                bw,
+                &left[..n_left],
+                &buf1[..bw * bh],
+                bw,
+                src,
+                src_stride,
+            );
+            bufs.weighted = Some(key);
+        }
+        Some(f(&bufs.wsrc[..bw * bh], &bufs.mask[..bw * bh]))
+    })
+}
+
 /// C `build_prediction_by_above_preds` (:1335) + `_left_preds` (:1380): every
 /// overlapping neighbour's motion, predicted into the two scratch buffers.
 #[allow(clippy::too_many_arguments)]
@@ -502,6 +678,8 @@ mod scratch_tests {
         assert_eq!(b.buf0.len(), 64 * 64 * MAX_PLANES);
         assert_eq!(b.buf1.len(), 64 * 64 * MAX_PLANES);
         assert_eq!(b.conv.len(), 64 * 64);
+        assert_eq!(b.wsrc.len(), 64 * 64, "C: sb_size * sb_size int32");
+        assert_eq!(b.mask.len(), 64 * 64, "C: sb_size * sb_size int32");
         let (p0, p1) = (b.buf0.as_ptr(), b.buf1.as_ptr());
 
         // A second block at the same superblock size REUSES the buffers —
@@ -522,7 +700,13 @@ mod scratch_tests {
         });
         b.ensure(128);
         assert_eq!(b.buf0.len(), 128 * 128 * MAX_PLANES);
+        assert_eq!(b.wsrc.len(), 128 * 128);
+        assert_eq!(b.mask.len(), 128 * 128);
         assert!(b.ready.is_none(), "a regrow must drop the stale cache");
+        assert!(
+            b.weighted.is_none(),
+            "a regrow must drop the weighted cache"
+        );
     }
 
     /// The per-block cache is keyed on the block AND the component mask, the

@@ -102,6 +102,7 @@ mod inject;
 mod mds1;
 mod mds3;
 mod nic;
+mod obmc_refine;
 mod overlay;
 mod predict;
 mod rate_tables;
