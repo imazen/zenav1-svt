@@ -36,11 +36,10 @@ OUT="$HERE/../target/inter-fh-gate/${CONTENT}_${W}x${H}_q${QP}_p${PRESET}"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 st=0
-SVTAV1_INTER_EXPERIMENTAL=1 \
     "$HERE/identity_diff_inter.sh" "$W" "$H" "$QP" "$PRESET" 2 "$CONTENT" "$OUT" \
     >"$OUT/diff.txt" 2>&1 || st=$?
 if [[ $st -eq 3 ]]; then
-    echo "inter fh gate: the encoder REFUSED frame 1 — SVTAV1_INTER_EXPERIMENTAL did not reach it" >&2
+    echo "inter fh gate: the encoder REFUSED frame 1 — this cell must ENCODE one" >&2
     cat "$OUT/diff.txt" >&2
     exit 3
 fi

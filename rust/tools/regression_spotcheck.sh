@@ -175,7 +175,7 @@ refuses() {
 refuses_inter3() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   SVTAV1_FRAMES=3 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
-    SVTAV1_INTER_EXPERIMENTAL=1 $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
     >/dev/null 2>"$W/err"
   local rc=$?
   if [ "$rc" -eq 3 ]; then
@@ -216,7 +216,7 @@ refuses_inter3() {
 mfmvField() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
-    SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_REFSTATS=1 \
+    SVTAV1_REFSTATS=1 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
     >/dev/null 2>"$W/err"
   local rc=$?
@@ -388,7 +388,7 @@ fhVideoKey() {
 # refuses an inter frame outright (docs/WORKING-ON-THIS.md §6/§7b), so it can
 # never reach the inter mode-decision path where these crashes live — the same
 # "a gate that cannot reach a feature cannot guard it" trap §5 records for the
-# screen-content detector. This one sets SVTAV1_INTER_EXPERIMENTAL.
+# screen-content detector. This one codes a real inter frame.
 #
 # A REFUSAL (exit 3) FAILS here, unlike in byteVideoKey. Every cell below is a
 # configuration the port ALREADY encodes both frames of, so a refusal appearing
@@ -399,7 +399,7 @@ encodesInter() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   rm -f "$W"/rs.obu.f*
   local rc=0
-  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
     SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>"$W/err" || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -420,7 +420,7 @@ encodesInter() {
 # The INTER-frame sibling of fhVideoKey: asserts every FRAME-HEADER field of
 # the port's frame 1 equals C's frame 1.
 #
-# It needs SVTAV1_INTER_EXPERIMENTAL, because the public API still refuses
+# It codes a genuine inter frame, which the public API now accepts (it refused
 # inter frames (docs/WORKING-ON-THIS.md §6/§7b) — the tile is not ported, so
 # the STREAM is measurable rather than correct, and only the header is being
 # asserted here.
@@ -431,7 +431,7 @@ fhInterFrame() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   rm -f "$W"/c.obu.pts* "$W"/rs.obu.f* "$W"/rs.obu "$W"/c.obu
   local rc=0
-  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
     SVTAV1_HIER_LEVELS=0 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || rc=$?
   # rc 3 is the REFUSAL, which is exactly the regression this cell guards: the
@@ -1574,7 +1574,7 @@ fhInterFrame "inter-dlf-video-arm-byq-screen-16x16-p8"   screen 16 16 40 8
 # `depth_removal_ctrls` raises `min_sq` above 8, which an I-slice never does —
 # walked past `min_sq` into a node with no cost:
 #
-# OBSERVED BEFORE (2-frame low-delay P, SVTAV1_INTER_EXPERIMENTAL=1), frame 1:
+# OBSERVED BEFORE (2-frame low-delay P), frame 1:
 #   gradient 168x168 q32 p8    PANIC "leaf must be tested (min_sq <= size <=
 #                              max_sq)" at sq_size=8 min_sq=16 abs=(160,160)
 #   gradient 104x104 q32 p10   same, abs=(96,96)

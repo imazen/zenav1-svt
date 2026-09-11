@@ -82,7 +82,7 @@ for content in $CONTENTS; do
         d="$OUT/$name"
         mkdir -p "$d"
         echo "$name" >>"$OUT/swept.txt"
-        SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="${IBM_SHIFT:-3}" \
+        SVTAV1_FRAME_SHIFT="${IBM_SHIFT:-3}" \
           "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "${IBM_FRAMES:-2}" "$content" "$d" \
           >"$d/diff.txt" 2>&1
         st=$?

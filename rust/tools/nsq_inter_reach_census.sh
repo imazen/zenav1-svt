@@ -20,7 +20,7 @@
 # Usage: tools/nsq_inter_reach_census.sh [out.tsv]
 # Env:   NRC_CONTENT / NRC_SIZES / NRC_QPS / NRC_PRESETS / NRC_FRAMES (default
 #        the 96-cell grid's axes at frames=2), NRC_SHIFT (SVTAV1_FRAME_SHIFT,
-#        default 3 = the grid's). Sets SVTAV1_INTER_EXPERIMENTAL=1 like every
+#        default 3 = the grid's). Drives the same low-delay P cells as every
 #        inter matrix script — without it the port REFUSES frame 1.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -34,7 +34,7 @@ D=$(mktemp -d "${TMPDIR:-$HOME/tmp}/nrc.XXXXXX")
 printf 'content\tsize\tqp\tpreset\tframes\tshift\tverdict\tSPENTRY\tSKIP1\tSKIP2\tSKIP3\tSKIP4\tRDENTRY\tRECONDIST\tMODEDIFF\n' > "$OUT"
 for c in $CONTENT; do for s in $SIZES; do for q in $QPS; do for p in $PRESETS; do
     d="$D/${c}_${s}_${q}_${p}"
-    SVTAV1_NSQDBG=1 SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="${NRC_SHIFT:-3}" \
+    SVTAV1_NSQDBG=1 SVTAV1_FRAME_SHIFT="${NRC_SHIFT:-3}" \
         "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$c" "$d" > "$d.report" 2>&1
     rc=$?
     case $rc in 0) v=BOTH;; 1) v=DIFF;; 3) v=REFUSED;; *) v=CRASH$rc;; esac

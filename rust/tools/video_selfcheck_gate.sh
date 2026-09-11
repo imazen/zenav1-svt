@@ -75,7 +75,6 @@ for clip in "${CLIPS[@]}"; do
         # SVTAV1_FRAME_SHIFT/_ZOOM_* are the SYNTHETIC motion model; cleared so
         # a stale environment cannot layer a warp on top of real motion.
         if ! env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-            SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_INTER_CHAIN_EXPERIMENTAL=1 \
             SVTAV1_FRAMES="$FRAMES" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
             SVTAV1_FINAL_RECON="$out/rec" \
             "$RUN" "rawseq:$asset" "$W" "$H" "$qp" "$PRESET" "$out/p" \

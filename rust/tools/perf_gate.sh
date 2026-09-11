@@ -92,13 +92,12 @@ SHIFT="${PERF_SHIFT:-3}"
 VIDEO="${PERF_VIDEO:-0}"
 
 # Multi-frame (or the single-frame video control): the matched GOP + the port's
-# experimental-inter unlock. Exported ONLY then, so the still gate's
-# environment is unchanged.
+# video GOP shape. Exported ONLY then, so the still gate's environment is
+# unchanged.
 if [[ "$FRAMES" -gt 1 || "$VIDEO" == "1" ]]; then
     export SVTAV1_FRAMES="$FRAMES" SVTAV1_FRAME_SHIFT="$SHIFT" \
            SVTAV1_INTRA_PERIOD="${SVTAV1_INTRA_PERIOD:-64}" \
-           SVTAV1_HIER_LEVELS="${SVTAV1_HIER_LEVELS:-0}" \
-           SVTAV1_INTER_EXPERIMENTAL=1
+           SVTAV1_HIER_LEVELS="${SVTAV1_HIER_LEVELS:-0}"
     [[ "$VIDEO" == "1" ]] && export SVTAV1_VIDEO=1 SVT_AVIF=0
     export SVT_FRAMES="$FRAMES" \
            SVT_INTRA_PERIOD="${SVT_INTRA_PERIOD:--1}" \

@@ -71,11 +71,10 @@ for spec in "${CELLS[@]}"; do
     fi
     out="$work/${clip}_${size}_p${preset}"
     mkdir -p "$out"
-    # SVTAV1_INTER_CHAIN_EXPERIMENTAL is what lets frame 2+ reference an INTER
+    # Frames 2+ reference an INTER
     # picture; without it this would be a two-frame cell and warp would barely
     # appear. Both flags are diagnostics — see `crate::dbgenv`.
     if ! env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-        SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_INTER_CHAIN_EXPERIMENTAL=1 \
         SVTAV1_FRAMES="$FRAMES" SVTAV1_INTERDBG=1 SVTAV1_FINAL_RECON="$out/rec" \
         "$HERE/identity_run" "rawseq:$asset" "$w" "$h" "$QP" "$preset" "$out/p" \
         >"$out/stdout.txt" 2>"$out/idbg.txt"; then

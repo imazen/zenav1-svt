@@ -109,11 +109,10 @@ for s in $SIZES; do
       # 1-frame encode "costing" more than a 2-frame one is the tell.
       still)    pev=()
                 cev=() ;;
-      videokey) pev=(SVTAV1_VIDEO=1 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0
-                     SVTAV1_INTER_EXPERIMENTAL=1)
+      videokey) pev=(SVTAV1_VIDEO=1 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0)
                 cev=(SVT_AVIF=0 SVT_FRAMES=1 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1) ;;
       inter)    pev=(SVTAV1_VIDEO=1 SVTAV1_FRAMES=2 "SVTAV1_FRAME_SHIFT=$SHIFT"
-                     SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_INTER_EXPERIMENTAL=1)
+                     SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0)
                 cev=(SVT_AVIF=0 SVT_FRAMES=2 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1) ;;
       *) echo "mem_peak: unknown arm $arm" >&2; exit 1 ;;
     esac
@@ -121,7 +120,7 @@ for s in $SIZES; do
     for side in $SIDES; do
       if [[ $side == port ]]; then
         rm -f "$pfx".obu*
-        cell_env=("${pev[@]}" SVTAV1_INTER_EXPERIMENTAL=1)
+        cell_env=("${pev[@]}")
         bin=("$PE" "$CONTENT" "$s" "$s" "$QP" "$PRESET" "$pfx" 1)
         obuf="$pfx.obu"
       else

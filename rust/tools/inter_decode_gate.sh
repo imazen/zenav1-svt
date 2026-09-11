@@ -99,7 +99,7 @@ run_cell() {
     set -- $spec
     local c=$1 w=$2 h=$3 q=$4 p=$5 f=$6 sh=$7
     local out="$work/${c}_${w}x${h}_q${q}_p${p}_s${sh}"
-    if ! SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES="$f" SVTAV1_FRAME_SHIFT="$sh" \
+    if ! SVTAV1_FRAMES="$f" SVTAV1_FRAME_SHIFT="$sh" \
         SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
         "$HERE/identity_run" "$c" "$w" "$h" "$q" "$p" "$out" >/dev/null 2>"$work/enc"; then
         echo "  HARNESS: $spec — the port failed to encode (check for a concurrent cargo)"

@@ -2,9 +2,9 @@
 
 # Configs this encoder refuses
 
-**12 CAPABILITY refusals** (unimplemented — this is DEBT) and **49
+**11 CAPABILITY refusals** (unimplemented — this is DEBT) and **48
 CONTRACT refusals** (caller misuse — permanent and correct). Of the CAPABILITY
-refusals, **11** name a configuration C v4.2.0 actually encodes — the
+refusals, **10** name a configuration C v4.2.0 actually encodes — the
 only ones a byte-parity gate could ever close — and **1** carry no
 `[C: ...]` marker at all.
 
@@ -48,7 +48,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | bitrate-targeted rate control (VBR/CBR) is not implemented: target_bitrate is read nowhere on the encode path and assign_picture_qp's VBR/CBR arm starts from RcState::default().qp = 30 instead of the caller's qp, so the frame's base_q_idx would come from qp 30 while every qp-keyed level derivation still reads rc_config.qp — a mixed-qp stream. The C ports exist but are unwired: port_rc_vbr_cbr, port_rc_vbr_cbr_qpick, port_rc_vbr_cbr_state, port_rc_vbr_cbr_update, port_rc_rtc_cbr, port_pass2_gop. Use RcMode::Cqp or RcMode::Crf |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented for this frame: C's svt_aom_global_motion_estimation would search (global_me.c:190), and this port could not run the search — the picture-analysis reference for a (list, ref) slot the search needs is missing, or the derived downsample level is not GM_FULL (crate::port_global_me::GmSearchError) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | global motion is not implemented: the inter frame header writer reached global_motion_params() with a model it could not code. This refusal is RETIRED — `port_entropy_inter::gm:: write_global_motion` codes the frame's real models — and reaching it means a caller constructed the variant by hand |
-| `crates/svtav1-encoder/src/pipeline.rs` | accepts | inter frames are not implemented for the public API — not because the machinery is missing, but because its ENVELOPE is 89 of 96 cells. CDF continuation, the inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, frames=2 low-delay P) 89 cells are byte-identical to C on BOTH frames, 6 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be right on the closed cells and silently wrong elsewhere, which is exactly the outcome docs/WORKING-ON-THIS.md section 6 refuses. See docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: encode a single key frame |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | superres is 8-bit only so far (the u16 source downscale is unported) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this 10-bit configuration has no bd10 stage to produce the coded levels; the encode would be 8-bit-quantized under a 10-bit sequence header (defensive catch-all — unreachable in the shipped envelope, see the unreachability test) |
 | `crates/svtav1-encoder/src/pipeline.rs` | accepts | this GOP shape's reference structure is not implemented (port_picstruct::generate_rps_info translates 4 of C's 8 branches) |
@@ -66,7 +65,6 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | cand_reduction_level is outside C's set_cand_reduction_ctrls switch (crate::inter_hdr_arm::enc_dec_cand_reduction) |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef recon level outside set_cdef_recon_controls' 0..=4 |
 | `crates/svtav1-encoder/src/pipeline.rs` | cdef search level outside set_cdef_search_controls' 0..=10 |
-| `crates/svtav1-encoder/src/pipeline.rs` | chroma_420 pipeline supports still/key frames only (intra_period <= 1) |
 | `crates/svtav1-encoder/src/pipeline.rs` | chroma_sample_position must be 0 (unknown), 1 (vertical) or 2 (colocated); 3 is reserved (C verify_settings, enc_settings.c:762) |
 | `crates/svtav1-encoder/src/pipeline.rs` | dlf level outside svt_aom_set_dlf_controls' 0..=7 |
 | `crates/svtav1-encoder/src/pipeline.rs` | encode_frame_420 requires the pipeline to be built with with_chroma_420(true) |
@@ -91,8 +89,8 @@ itself and verified by `tools/c_envelope_probe.sh`:
 | `crates/svtav1-encoder/src/pipeline.rs` | try_encode_frame_hbd requires with_bit_depth(10) |
 | `crates/svtav1-encoder/src/pipeline.rs` | u/v planes must each be at least (true_w/2 x true_h/2) |
 | `crates/svtav1-encoder/src/pipeline.rs` | a hierarchical (random-access) GOP is not wired: hierarchical_levels > 0 makes picture decision name BWDREF/ALTREF references that only the flat low-delay-P path fills, so inter candidate injection would reach a reference with no DPB picture. The RA picture structure is ported (port_picstruct_ra) but not connected to the reference-buffer table. Use hierarchical_levels = 0 |
-| `crates/svtav1-encoder/src/pipeline.rs` | an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's RECON to agree, and it does not yet. The temporal motion field is WIRED now (setup_motion_field over the DPB, copy_frame_mvs in the walk) and carries C's own candidate: at poc 2 of diag 64x64 q40 p8 frames=3 the port's NEARESTMV is C's (0,-24) off a stack of 1 where it used to be (0,0) off an empty one, and SIX of eight frames=3 cells now match C's frame-2 byte COUNT. NONE is byte-identical: the first diverging frame-header field on that cell is cdef_damping_minus_3 (C 1, port 2), a CDEF SEARCH output and therefore downstream of the recon, and on two other cells no header field differs at all and the whole divergence is in the tile payload. Measured with the refusal lifted, diag 64x64 q40 p8 frames=3: C codes frame 2 as NEARESTMV mv=(0,-24) off a stack with ZERO spatial matches, the port reports refmvcnt=0 and NEARESTMV (0,0). Faithful at two frames, where C's own projection returns 0 for a KEY-frame reference. Encode at most two frames |
 | `crates/svtav1-encoder/src/pipeline.rs` | an inter frame's mode-decision configuration is outside this port's envelope: sig_deriv_mode_decision_config_default declined a level (crate::inter_hdr_arm::md_config_inputs) |
+| `crates/svtav1-encoder/src/pipeline.rs` | inter frames need the 4:2:0 path: the MONOCHROME arm has no inter coverage. Every inter gate in this repo is 4:2:0 (inter_byte_gate.sh, video_selfcheck_gate.sh, bd10_video_gate.sh, warped_motion_gate.sh, global_motion_gate.sh, obmc_gate.sh), and a mono inter frame previously produced a stream aomdec and dav1d both rejected. Encode monochrome as still/key frames, or use the 4:2:0 entry points for video |
 | `crates/svtav1-encoder/src/pipeline.rs` | bit depth must be 8 or 10 — C v4.2.0 rejects every other depth at encoder init (svt_av1_verify_settings, Globals/enc_settings.c:460), so no oracle exists at any other depth: this is C's envelope, not this port's backlog |
 | `svtav1/src/avif.rs` | C film grain requires 8/10-bit 4:2:0 |
 | `svtav1/src/avif.rs` | SvtParity forbids Zen enhancements |

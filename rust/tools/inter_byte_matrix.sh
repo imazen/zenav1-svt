@@ -51,7 +51,7 @@ for content in $CONTENTS; do
       for p in $PRESETS; do
         d="$OUT/${content}_${s}x${s}_q${q}_p${p}"
         mkdir -p "$d"
-        SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="$SHIFT" \
+        SVTAV1_FRAME_SHIFT="$SHIFT" \
           "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$content" "$d" \
           >"$d/diff.txt" 2>&1
         st=$?

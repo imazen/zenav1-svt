@@ -14,7 +14,7 @@
 # WHAT THIS NUMBER DOES **NOT** INCLUDE, which matters more than the number:
 # it is the `cargo nextest` surface ONLY. The 32 CI gate scripts are not in it.
 # That is why the inter/video path reads as uncovered here (inter_md_arm.rs 0%,
-# leaf_funnel/ifs.rs 0%, port_global_me.rs 49%): `SVTAV1_INTER_EXPERIMENTAL` is
+# leaf_funnel/ifs.rs 0%, port_global_me.rs 49%): an inter-coding cell is
 # set by ten gate scripts and by ZERO tests, because the public pipeline refuses
 # multi-frame. Those lines are verified differentially against C in CI, not here.
 # Do not "fix" that by flipping the env var in a test: dbgenv.rs resolves it once

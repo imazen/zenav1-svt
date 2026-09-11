@@ -106,7 +106,7 @@ while read -r content w h qp preset shift zn zd; do
     #    (exit 3) on a cell where C fits a model — that is the shipped
     #    behaviour and is not a gate failure; the GMPORT line is printed
     #    before the refusal, which is why it is still joinable.
-    SVTAV1_GMDBG=1 SVTAV1_INTER_EXPERIMENTAL=1 \
+    SVTAV1_GMDBG=1 \
     SVTAV1_FRAME_SHIFT="$shift" SVTAV1_FRAME_ZOOM_NUM="$zn" SVTAV1_FRAME_ZOOM_DEN="$zd" \
     SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
         "$HERE/identity_run" "$content" "$w" "$h" "$qp" "$preset" "$d/rs" \

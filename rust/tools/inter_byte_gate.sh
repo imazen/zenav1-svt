@@ -314,7 +314,7 @@ run_cell() {
     local content=$1 w=$2 h=$3 qp=$4 preset=$5 frames=$6 shift_px=$7
     local out="$work/${content}_${w}x${h}_q${qp}_p${preset}"
     mkdir -p "$out"
-    SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="$shift_px" \
+    SVTAV1_FRAME_SHIFT="$shift_px" \
         "$HERE/identity_diff_inter.sh" "$w" "$h" "$qp" "$preset" "$frames" "$content" "$out" \
         >"$out/diff.txt" 2>&1
     local st=$?

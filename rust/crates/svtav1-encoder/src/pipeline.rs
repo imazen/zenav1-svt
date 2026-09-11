@@ -1206,17 +1206,18 @@ impl EncodePipeline {
                 "encode_frame_420 requires the pipeline to be built with with_chroma_420(true)",
             )));
         }
-        // The 4:2:0 path is still/key-only (mirrors the `encode_frame_impl`
-        // `chroma.is_none() || is_key` assert).
+        // INTER FRAMES ARE SHIPPED HERE as of 2026-09-11. This used to be a
+        // blanket "still/key frames only" refusal, lifted only by
+        // `SVTAV1_INTER_EXPERIMENTAL`; both that refusal and that variable are
+        // gone. What replaced them is `tools/video_selfcheck_gate.sh`: the
+        // port's own final reconstruction is byte-identical to `aomdec`'s for
+        // every frame of an 8-frame encode, on all six public-domain derf
+        // clips at qp {20,40,55} — 18 of 18 cells. The configuration envelope
+        // is still enforced, by `gop_config_error` (flat low-delay P only) and
+        // the other `*_config_error` guards, so an unwired GOP shape is
+        // refused exactly as before.
         //
-        // `SVTAV1_INTER_EXPERIMENTAL` lifts it for the differential harness
-        // only — see `crate::dbgenv::inter_experimental`. The refusal is the
-        // shipped behaviour and stays until the inter tile is byte-identical.
-        if !self.gop.is_key_frame(self.frame_count) && !crate::dbgenv::inter_experimental() {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "chroma_420 pipeline supports still/key frames only (intra_period <= 1)",
-            )));
-        }
+        // See `encode_frame_impl` for the parity claim this does NOT make.
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
         let cn_true = tcw * tch;
@@ -1776,17 +1777,11 @@ impl EncodePipeline {
                  docs/hbd-input-port-map.md chunk 2",
             )));
         }
-        // Same refusal, and the same experimental lift, as the 8-bit
-        // `try_encode_frame_420` above: `SVTAV1_INTER_EXPERIMENTAL` opens the
-        // inter path for the differential harness ONLY, and the refusal stays
-        // the shipped behaviour until the inter tile is byte-identical. Without
-        // the lift here there was no way to drive a 10-bit inter frame at all,
-        // so the bd10 video surface was unmeasurable rather than merely unshipped.
-        if !self.gop.is_key_frame(self.frame_count) && !crate::dbgenv::inter_experimental() {
-            return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "chroma_420 pipeline supports still/key frames only (intra_period <= 1)",
-            )));
-        }
+        // Inter frames ship on the 10-bit entry point too, on the same
+        // evidence as the 8-bit one above plus `tools/bd10_video_gate.sh`
+        // (24/24 encode AND decode). The blanket refusal and
+        // `SVTAV1_INTER_EXPERIMENTAL` are both gone; the configuration
+        // envelope is still enforced by the `*_config_error` guards.
         let (tw, th) = (self.true_width as usize, self.true_height as usize);
         let (tcw, tch) = (tw.div_ceil(2), th.div_ceil(2));
         if y.len() < (th - 1) * y_stride + tw || u.len() < tcw * tch || v.len() < tcw * tch {
@@ -2094,49 +2089,45 @@ impl EncodePipeline {
 
         // Step 1: Determine frame type from GOP structure
         let is_key = self.gop.is_key_frame(display_order);
-        // INTER FRAMES ARE NOT ENCODABLE ON EITHER PATH — refuse, don't emit.
+        // INTER FRAMES SHIP ON THE 4:2:0 PATH AND ARE REFUSED ON THE
+        // MONOCHROME ONE, and that asymmetry is the whole of what this guard
+        // now says.
         //
-        // The 4:2:0 arm has always asserted this (it would additionally need
-        // chroma in the DPB and a chroma-aware inter frame header). The
-        // MONOCHROME arm did not, and it is the one that shipped a corrupt
-        // stream: see the measured aomdec/dav1d failures documented at the
-        // `bit_depth_config_error` call site above. Both arms now take the same
-        // typed `Err` — a caller mistake must never become a decoder's problem.
+        // The blanket "inter frames are not implemented for the public API"
+        // refusal, and the `SVTAV1_INTER_EXPERIMENTAL` variable that lifted
+        // it, are both gone as of 2026-09-11. What replaced them is a
+        // measurement the refusal itself asked for: `video_selfcheck_gate.sh`
+        // decodes the port's own 8-frame stream with `aomdec` and requires the
+        // port's final reconstruction to be byte-identical to the decoder's on
+        // EVERY frame — 18 of 18 cells over six public-domain derf clips at
+        // qp {20,40,55}. The stream the refusal called "silently wrong" is
+        // measurably not.
+        //
+        // WHAT THIS DOES NOT CLAIM. Byte-identity to C on the 4:2:0 inter path
+        // is NOT universal, and the README's video rows say so. MEASURED
+        // 2026-09-11 on the campaign's 96-cell frontier grid
+        // ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x
+        // {p6,p8}) at frames=4 low-delay P: 95 cells identical on frame 0, 95
+        // on frame 1, 60 on frame 2 and 58 on frame 3. The chain frames'
+        // divergence is concentrated in two known frontiers — 72x72 is a
+        // PARTIAL superblock (17 of its 24 cells differ at frame 2) and
+        // `gradient` content (19 of 24) — and `uniform` is 24 of 24 identical
+        // on every frame. Re-measure those numbers in the SAME change whenever
+        // `tools/inter_byte_matrix.sh` moves.
+        //
+        // THE MONOCHROME ARM STILL REFUSES. It is the one that shipped a
+        // corrupt stream (see the measured aomdec/dav1d failures at the
+        // `bit_depth_config_error` call site above), it has no DPB chroma to
+        // be wrong about but also no gate of its own, and every inter gate in
+        // this repo is 4:2:0. A caller mistake must never become a decoder's
+        // problem, so it takes the same typed `Err` it always did.
         //
         // Keyed on the FRAME TYPE rather than `intra_period` so that
         // constructing a pipeline with a GOP structure and encoding only its
         // key frame keeps working: that stream is a valid still.
-        //
-        // `SVTAV1_INTER_EXPERIMENTAL` lifts the refusal for the differential
-        // harness ONLY (`crate::dbgenv::inter_experimental`). It must never
-        // leave the inter harness (`tools/identity_diff_inter.sh`,
-        // `inter_fh_gate.sh`, `inter_byte_gate.sh`, `inter_byte_matrix.sh`,
-        // `inter_decode_gate.sh`) and is to be DELETED once the tile is
-        // byte-identical broadly — never promoted to a feature flag.
-        //
-        // THE REFUSAL TEXT IS THE LEDGER ENTRY. `docs/REFUSED-CONFIGS.md` is
-        // generated from these strings and its own preamble warns that a
-        // refusal makes a gap look handled; a refusal that describes a gap
-        // which has since been closed is worse than that, because it also
-        // tells the next reader not to look. This one said "no CDF
-        // continuation … and no inter syntax in the tile walk — so the stream
-        // does not decode", and all three clauses were refuted by landed,
-        // gated work (§1s, §1u, §1x). Re-measure the number below whenever
-        // `tools/inter_byte_matrix.sh` moves, in the SAME change.
-        if !is_key && !crate::dbgenv::inter_experimental() {
+        if !is_key && chroma.is_none() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "inter frames are not implemented for the public API — not because the machinery \
-                 is missing, but because its ENVELOPE is 89 of 96 cells. CDF continuation, the \
-                 inter mode-info syntax in the real pack walk and a dav1d-decodable two-frame \
-                 stream are all landed and gated (tools/fctx_gate.sh, inter_byte_gate.sh, \
-                 inter_decode_gate.sh, inter_me_join_gate.sh, inter_decode_census.sh); on the campaign's frontier grid \
-                 ({uniform,gradient,diag,screen} x {16,64,72,128} x {q20,q40,q55} x {p6,p8}, \
-                 frames=2 low-delay P) 89 cells are byte-identical to C on BOTH frames, 6 \
-                 differ on frame 1 and 1 on frame 0 — so a stream this API emitted would be \
-                 right on the closed cells and silently wrong elsewhere, which is exactly the \
-                 outcome docs/WORKING-ON-THIS.md section 6 refuses. See \
-                 docs/INTER-ENCODE-PLAN.md section 1z^22. This encoder is still-image only: \
-                 encode a single key frame [C: accepts]",
+                "inter frames need the 4:2:0 path: the MONOCHROME arm has no inter coverage.                  Every inter gate in this repo is 4:2:0 (inter_byte_gate.sh,                  video_selfcheck_gate.sh, bd10_video_gate.sh, warped_motion_gate.sh,                  global_motion_gate.sh, obmc_gate.sh), and a mono inter frame previously                  produced a stream aomdec and dav1d both rejected. Encode monochrome as                  still/key frames, or use the 4:2:0 entry points for video [C: accepts]",
             )));
         }
         let temporal_layer = if is_key {
@@ -6829,34 +6820,27 @@ impl EncodePipeline {
                     pic.rps.refresh_frame_mask,
                 );
             }
-            // `SVTAV1_INTER_CHAIN_EXPERIMENTAL` lifts this for MEASUREMENT
-            // only (`crate::dbgenv::inter_chain_experimental`). Default-off, so
-            // every caller still gets the refusal; see that flag's doc.
-            if pic.ref_list0_count_try > 0
-                && !crate::dbgenv::inter_chain_experimental()
-                && self
-                    .dpb
-                    .get(pic.rps.ref_dpb_index[0] as usize)
-                    .is_some_and(|rf| !rf.is_islice)
-            {
-                return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                    "an inter frame whose LIST-0 REFERENCE is itself an inter frame needs C's \
-                     RECON to agree, and it does not yet. The temporal motion field is \
-                     WIRED now (setup_motion_field over the DPB, copy_frame_mvs in the \
-                     walk) and carries C's own candidate: at poc 2 of diag 64x64 q40 p8 \
-                     frames=3 the port's NEARESTMV is C's (0,-24) off a stack of 1 where \
-                     it used to be (0,0) off an empty one, and SIX of eight frames=3 cells \
-                     now match C's frame-2 byte COUNT. NONE is byte-identical: the first \
-                     diverging frame-header field on that cell is cdef_damping_minus_3 \
-                     (C 1, port 2), a CDEF SEARCH output and therefore downstream of the \
-                     recon, and on two other cells no header field differs at all and the \
-                     whole divergence is in the tile payload. Measured with the refusal lifted, diag 64x64 q40 p8 \
-                     frames=3: C codes frame 2 as NEARESTMV mv=(0,-24) off a stack with ZERO \
-                     spatial matches, the port reports refmvcnt=0 and NEARESTMV (0,0). \
-                     Faithful at two frames, where C's own projection returns 0 for a \
-                     KEY-frame reference. Encode at most two frames [C: accepts]",
-                )));
-            }
+            // THE CHAIN REFUSAL IS GONE (2026-09-11). It used to reject any
+            // inter frame whose LIST-0 reference is itself an inter frame —
+            // i.e. everything past frame 1 — and it was lifted only by
+            // `SVTAV1_INTER_CHAIN_EXPERIMENTAL`, now deleted along with it.
+            //
+            // Its text said "NONE is byte-identical" and named the temporal
+            // motion field as the suspect. Both halves have since been
+            // settled by measurement. The field's defect was
+            // `sb64_sq_no4xn_geom` being derived from `sb_size == 64` alone,
+            // so C's SIMPLIFIED MFMV block walk ran on rectangular blocks and
+            // used `n4_w` for both extents; with that corrected,
+            // `tools/video_selfcheck_gate.sh` reports 18 of 18 real-clip cells
+            // reconstructing byte-identically to `aomdec` across all 8 frames.
+            // And "NONE is byte-identical" is simply no longer true: on the
+            // 96-cell frontier grid at frames=4, 60 cells match C exactly on
+            // frame 2 and 58 on frame 3 (MEASURED 2026-09-11).
+            //
+            // What is left is a parity frontier, not a correctness one, and it
+            // is recorded in the README's video rows rather than as a refusal
+            // — a refusal that describes a closed gap tells the next reader
+            // not to look.
             let sigs = md_config_signals.ok_or_else(|| {
                 whereat::at!(EncodeError::UnsupportedConfig(
                     "an inter frame's mode-decision configuration is outside this port's \

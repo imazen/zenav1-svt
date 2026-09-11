@@ -5,7 +5,7 @@
 #
 # INTER cells: set the same env `perf_gate.sh` exports at PERF_FRAMES > 1
 # (SVTAV1_FRAMES/SVTAV1_FRAME_SHIFT/SVTAV1_INTRA_PERIOD/SVTAV1_HIER_LEVELS/
-# SVTAV1_INTER_EXPERIMENTAL on the port, SVT_FRAMES/SVT_INTRA_PERIOD/
+# a low-delay P GOP on the port, SVT_FRAMES/SVT_INTRA_PERIOD/
 # SVT_HIER_LEVELS/SVT_PRED_STRUCT on C) — both harnesses read it straight out
 # of the inherited environment, so nothing here needs an inter-specific flag.
 # NOTE the sample then covers the KEY frame as well; use enough frames that the

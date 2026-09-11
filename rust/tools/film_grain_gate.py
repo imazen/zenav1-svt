@@ -15,7 +15,7 @@ def run(args,env,log):
 def case(name,w,h,depth,knobs,frames=1,c_invalid=False):
     d=OUT/name;d.mkdir(exist_ok=True)
     env=dict(os.environ,SVTAV1_BD=str(depth),SVTAV1_FINAL_RECON=str(d/'recon'),**knobs)
-    if frames>1:env.update(SVTAV1_FRAMES=str(frames),SVT_FRAMES=str(frames),SVTAV1_INTER_EXPERIMENTAL='1',SVTAV1_INTRA_PERIOD='64',SVTAV1_HIER_LEVELS='0',SVT_INTRA_PERIOD='-1',SVT_HIER_LEVELS='0',SVT_PRED_STRUCT='1')
+    if frames>1:env.update(SVTAV1_FRAMES=str(frames),SVT_FRAMES=str(frames),SVTAV1_INTRA_PERIOD='64',SVTAV1_HIER_LEVELS='0',SVT_INTRA_PERIOD='-1',SVT_HIER_LEVELS='0',SVT_PRED_STRUCT='1')
     preset=8 if frames>1 else 10
     content='gradient' if frames>1 else 'grain'
     run([HERE/'identity_run',content,w,h,40,preset,d/'rs'],env,d/'rs.log')

@@ -105,38 +105,14 @@ presence_flags! {
     bd10_postpass => "SVTAV1_BD10_POSTPASS",
     /// `SVTAV1_LAMBDA_DBG`: per-superblock lambda derivation dump.
     lambda_dbg_set => "SVTAV1_LAMBDA_DBG",
-    /// `SVTAV1_INTER_EXPERIMENTAL`: lift the INTER-frame refusal
-    /// (`pipeline.rs`) so the campaign harness can measure a frame the port
-    /// cannot yet encode correctly.
-    ///
-    /// **This is not a feature flag and it is not for callers.** The public
-    /// API still refuses inter frames (`docs/WORKING-ON-THIS.md` §6 — refuse,
-    /// never emit a plausible-but-wrong stream); the stream this produces is
-    /// known to diverge from C past the frame header, so it must never reach a
-    /// decoder outside the differential harness. It exists because a frame
-    /// that EMITS is a measurable state and a frame that refuses is not: the
-    /// header can be byte-compared against C's while the tile is still wrong.
-    /// Remove the variable — do not promote it — once the inter tile is
-    /// byte-identical and the refusal can simply be deleted.
-    inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
-    /// `SVTAV1_INTER_CHAIN_EXPERIMENTAL`: lift the *second* inter refusal —
-    /// the one on an inter frame whose LIST-0 reference is itself an inter
-    /// frame (`pipeline.rs`), i.e. everything past frame 1.
-    ///
-    /// `inter_experimental` alone gets you a two-frame encode and no further,
-    /// because frame 2 is the first frame that predicts from a non-key
-    /// reference. That refusal is a BYTE-PARITY guard, not a correctness one:
-    /// its own text records what the port emits with it lifted (six of eight
-    /// `frames=3` cells matching C's frame-2 byte count). So "does a longer
-    /// encode produce a DECODABLE stream?" was a question nothing could even
-    /// ask, because the frame never emitted.
-    ///
-    /// Same contract as the two flags above, and the same warning: **not a
-    /// feature flag, not for callers.** The refusal still fires for every
-    /// caller by default; this only makes the emitted state measurable. What
-    /// it produces is known to diverge from C, so it must not be presented as
-    /// a parity result.
-    inter_chain_experimental => "SVTAV1_INTER_CHAIN_EXPERIMENTAL",
+    // `SVTAV1_INTER_EXPERIMENTAL` and `SVTAV1_INTER_CHAIN_EXPERIMENTAL` were
+    // DELETED on 2026-09-11, as their own documentation said they should be:
+    // "Remove the variable — do not promote it — once the inter tile is
+    // byte-identical and the refusal can simply be deleted." Both refusals
+    // they lifted are gone from `pipeline.rs`; inter frames are a shipped
+    // configuration on the 4:2:0 path, guarded by
+    // `tools/video_selfcheck_gate.sh`. Nothing replaces them: a variable that
+    // no longer gates anything is a trap for the next reader.
     /// `SVTAV1_MFMV_OFF`: build the ref-MV stack from SPATIAL candidates only,
     /// and signal `use_ref_frame_mvs = 0` to match, so encoder and decoder
     /// agree.

@@ -5,7 +5,7 @@
 # non-identical, it was UNREACHABLE, in three stacked ways:
 #
 #   1. `try_encode_frame_420_hbd` refused every non-key frame outright, with no
-#      `SVTAV1_INTER_EXPERIMENTAL` lift — so the 8-bit differential harness had
+#      the (now deleted) inter refusal — so the 8-bit differential harness had
 #      no 10-bit counterpart and the surface could not be measured at all.
 #   2. Past that, `tx_unit_hbd` indexed a zero-length slice: an inter
 #      candidate's `Cand::pred10` had NO producer. The bd10 full-RD funnel
@@ -96,7 +96,7 @@ for spec in "${CELLS[@]}"; do
     out="$work/${clip}_${size}_p${preset}"
     mkdir -p "$out"
     env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-        SVTAV1_INTER_EXPERIMENTAL=1 IDI_BD=10 \
+        IDI_BD=10 \
         "$HERE/identity_diff_inter.sh" "$w" "$h" "$QP" "$preset" 2 \
         "rawseq:$asset" "$out" >"$out/diff.txt" 2>&1
     st=$?

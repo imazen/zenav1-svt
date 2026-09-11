@@ -96,12 +96,31 @@ video while asserting only that two encoders agree a repeated frame is a skip.
 `tools/mk_video_assets.py` now decimates duplicates and scores motion as the
 **minimum** over consecutive pairs, never the mean.
 
-## Multi-frame video: works to 6 frames, then self-desyncs (2026-09-10)
+## Multi-frame video: SHIPPED, and gated against a decoder (2026-09-11)
+
+The heading below is the 2026-09-10 state and is kept because the trail is
+useful; read this paragraph first. Both inter refusals are GONE, and so are the
+`SVTAV1_INTER_EXPERIMENTAL` / `SVTAV1_INTER_CHAIN_EXPERIMENTAL` variables that
+lifted them — `EncodePipeline`'s 4:2:0 entry points encode inter frames for
+every caller. The standing guard is `tools/video_selfcheck_gate.sh`: the port's
+own final reconstruction is byte-identical to `aomdec`'s on EVERY frame of an
+8-frame encode, for all six public-domain derf clips at qp {20,40,55} — 18 of
+18 cells. The monochrome arm still refuses inter, because no gate in this repo
+covers it.
+
+Byte-identity to C on the inter path is a separate, narrower claim and it is
+NOT universal. MEASURED 2026-09-11 on the 96-cell frontier grid at frames=4:
+95 cells identical on frame 0, 95 on frame 1, 60 on frame 2, 58 on frame 3.
+The chain frames' gap concentrates in 72x72 (a PARTIAL superblock: 17 of its
+24 cells differ at frame 2) and `gradient` content (19 of 24); `uniform` is
+24 of 24 identical on every frame.
+
+### The 2026-09-10 record
 
 The port refused every frame past frame 1, so "does a longer encode decode?" was
 unanswerable. `SVTAV1_INTER_CHAIN_EXPERIMENTAL` (default-off, measurement only)
-lifts the second refusal — the byte-parity guard on an inter frame whose LIST-0
-reference is itself inter — and makes the answer measurable
+lifted the second refusal — the byte-parity guard on an inter frame whose LIST-0
+reference is itself inter — and made the answer measurable
 ([record](../benchmarks/video_multiframe_2026-09-10.meta)).
 
 **It works.** On `vidyo3 256×256 q40 p6`, low-delay P: 2, 3, 4, 5 and 6 frames

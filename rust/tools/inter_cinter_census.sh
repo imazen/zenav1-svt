@@ -72,7 +72,7 @@ for content in $CONTENTS; do
         d="$OUT/${content}_${s}x${s}_q${q}_p${p}"
         mkdir -p "$d"
         rm -f "$d/cinter.txt"
-        SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAME_SHIFT="$SHIFT" \
+        SVTAV1_FRAME_SHIFT="$SHIFT" \
           SVT_CINTER_OUT="$d/cinter.txt" \
           "$HERE/identity_diff_inter.sh" "$s" "$s" "$q" "$p" "$FRAMES" "$content" "$d" \
           >"$d/diff.txt" 2>&1

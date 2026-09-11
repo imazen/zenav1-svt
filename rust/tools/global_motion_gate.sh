@@ -66,7 +66,7 @@ for spec in "${CELLS[@]}"; do
     content=$1; w=$2; h=$3; qp=$4; preset=$5; shift_px=$6; zn=$7; zd=$8; want_ni=$9; ming=${10}
     out="$work/${w}x${h}_p${preset}_z${zn}-${zd}"
     mkdir -p "$out"
-    if ! env SVTAV1_GMDBG=1 SVTAV1_INTERDBG=1 SVTAV1_INTER_EXPERIMENTAL=1 \
+    if ! env SVTAV1_GMDBG=1 SVTAV1_INTERDBG=1 \
         SVTAV1_FRAME_SHIFT="$shift_px" SVTAV1_FRAME_ZOOM_NUM="$zn" SVTAV1_FRAME_ZOOM_DEN="$zd" \
         SVTAV1_FRAMES="$FRAMES" SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 \
         SVTAV1_FINAL_RECON="$out/rec" \

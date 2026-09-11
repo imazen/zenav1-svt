@@ -2,11 +2,22 @@
 //!
 //! # Overview
 //!
-//! `svtav1` is a still-picture (AVIF / all-intra) AV1 encoder — an
-//! algorithm-for-algorithm port of SVT-AV1 v4.2.0, verified BYTE-IDENTICAL to
-//! the C encoder across its tested envelope. It is not a video transcoder:
-//! there is no inter-frame path, no GPU acceleration, and no H.264/H.265
-//! input.
+//! `svtav1` is an AV1 encoder — an algorithm-for-algorithm port of SVT-AV1
+//! v4.2.0. Still pictures (AVIF / all-intra) are verified BYTE-IDENTICAL to
+//! the C encoder across a broad tested envelope.
+//!
+//! INTER (video) frames also encode, on the 4:2:0 entry points, in a flat
+//! low-delay-P GOP. That path carries a different guarantee and the difference
+//! matters: it is verified against a DECODER rather than against C's bytes —
+//! `tools/video_selfcheck_gate.sh` requires the encoder's own reconstruction
+//! to be byte-identical to `aomdec`'s on every frame of an 8-frame encode
+//! (18 of 18 clip x qp cells). Byte-identity to C holds on most of the
+//! synthetic frontier grid but not all of it; the README's video table has the
+//! measured numbers. Monochrome inter, hierarchical (random-access) GOPs,
+//! compound prediction and VBR/CBR rate control are refused, not approximated.
+//!
+//! There is no GPU acceleration and no built-in H.264/H.265 input; see
+//! `examples/mp4_to_avif.rs` for a pure-Rust decode front end.
 //!
 //! # Architecture
 //!

@@ -98,13 +98,21 @@ CAPABILITY (debt) and CONTRACT (permanent caller misuse).
 
 ### Inter / video — experimental, and gated behind `SvtParity`
 
-General streaming video is **not** a shipping product path: the public API
-refuses inter frames. What follows is the state of the machinery behind that
-refusal, because it is most of the encoder.
+Inter frames ship as of 2026-09-11: `EncodePipeline`'s 4:2:0 entry points
+encode video for every caller, and the `SVTAV1_INTER_EXPERIMENTAL` /
+`SVTAV1_INTER_CHAIN_EXPERIMENTAL` variables that used to gate them are deleted.
+
+**The guarantee is different from the still one, and the difference is the
+point.** Still images are byte-identical to C. Video is verified against a
+DECODER — the encoder's own reconstruction must equal `aomdec`'s, frame for
+frame — because that is the property a wrong stream actually violates, and
+because the port's inter search does not track C's byte-for-byte on all
+content. Both claims are measured below; neither is inferred from the other.
 
 | Feature | Status | Evidence / limit |
 |---|---|---|
-| Inter frame coding, low-delay P | **Partial** | `inter_byte_gate.sh` 108/108 byte-identical to C; the public API still refuses — the envelope is not the whole grid |
+| Inter frame coding, low-delay P | **Validated** | `video_selfcheck_gate.sh` — 18/18 cells (six derf clips x qp {20,40,55}), all 8 frames of each byte-identical to `aomdec`'s reconstruction |
+| Byte-identity to C on inter frames | **Partial** | `inter_byte_gate.sh` 108/108 on its curated grid. On the 96-cell frontier grid at frames=4 (MEASURED 2026-09-11): f0 95, f1 95, f2 60, f3 58 identical. The chain gap concentrates in 72x72 (a partial superblock — 17 of 24 differ at f2) and `gradient` content (19 of 24); `uniform` is 24/24 on every frame |
 | Real-video inter (derf clips) | **Validated** | `real_video_inter_gate.sh` 24/24 against a pinned per-cell table |
 | Decoder conformance of inter streams | **Validated** | `inter_decode_gate.sh`, and every inter gate below checks recon against dav1d |
 | 10-bit inter video | **Validated** | `bd10_video_gate.sh` 24/24 encode + decode |
@@ -122,6 +130,7 @@ refusal, because it is most of the encoder.
 | `aq_mode != 0`, TPL r0 | **Not supported** | TPL is structurally off; `use_ref_frame_mvs` at `mfmv_level >= 2` refuses |
 | QP 0 (coded-lossless) on inter | **Not supported** | Refused; still-image lossless IS supported |
 | 10-bit OBMC | **Not supported** | `bd10_tree_supported` drops such a frame back to the 8-bit output rather than miscoding it |
+| Monochrome inter | **Not supported** | Refused. Every inter gate here is 4:2:0, and a mono inter frame previously produced a stream both `aomdec` and `dav1d` rejected |
 
 ### Outside the envelope by design
 

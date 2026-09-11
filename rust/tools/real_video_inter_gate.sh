@@ -100,7 +100,6 @@ for spec in "${CELLS[@]}"; do
     # refuses them alongside `rawseq:` rather than silently layering a warp on
     # top of real motion, so they are cleared here.
     env -u SVTAV1_FRAME_SHIFT -u SVTAV1_FRAME_ZOOM_NUM -u SVTAV1_FRAME_ZOOM_DEN \
-        SVTAV1_INTER_EXPERIMENTAL=1 \
         "$HERE/identity_diff_inter.sh" "$w" "$h" "$QP" "$preset" 2 \
         "rawseq:$asset" "$out" >"$out/diff.txt" 2>&1
     st=$?
