@@ -1657,11 +1657,13 @@ EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionC
             if (!f)
                 f = fopen(path, "w");
             if (f) {
-                fprintf(f, "PD0COST org=(%u,%u) %ux%u dist=%llu ybits=%llu cost=%llu lambda=%llu\n",
+                fprintf(f, "PD0COST org=(%u,%u) %ux%u dist=%llu ybits=%llu cost=%llu lambda=%llu mv=%d,%d ref=%d\n",
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (unsigned long long)y_distortion[0],
                         (unsigned long long)*y_coeff_bits, (unsigned long long)*(cand_bf->full_cost),
-                        (unsigned long long)lambda);
+                        (unsigned long long)lambda,
+                        (int)cand_bf->cand->block_mi.mv[0].y, (int)cand_bf->cand->block_mi.mv[0].x,
+                        (int)cand_bf->cand->block_mi.ref_frame[0]);
                 fflush(f);
             }
         }

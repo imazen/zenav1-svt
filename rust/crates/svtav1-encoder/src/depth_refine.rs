@@ -116,6 +116,12 @@ pub struct DrCtrls {
     pub split_rate_th: u64,
     /// `limit_max_min_to_pd0` (1 at both).
     pub limit_to_pd0: usize,
+    /// `use_ref_info` (`enc_mode_config.c` levels 7/8/9 = 1, all lower = 0).
+    /// When set, `update_pred_th_offset`'s tail (enc_dec_process.c:1606-1631)
+    /// forces s = e = 0 on a SUPERBLOCK-sized node whose co-located reference
+    /// SB coded a uniform square (`ref sb_min_sq_size == sb_max_sq_size ==
+    /// sq`). Dead on I-slices; live only on inter frames at level >= 7.
+    pub use_ref_info: bool,
     /// `pd0_unavail_mode_depth` (M4: 2, M5: 0).
     pub unavail_mode: u8,
     /// `ctx->disallow_4x4` (svt_aom_get_disallow_4x4_allintra,
@@ -190,13 +196,12 @@ impl DrCtrls {
     /// (`enc_mode_config.c:9350-9396`), plus the `depths_qp_based_th_scaling`
     /// pre-scale C applies to the CHILD thresholds.
     ///
-    /// `coeff_lvl` is not a parameter: C leaves `pcs->coeff_lvl` at
-    /// `INVALID_LVL` on a video-mode I-slice (`md_config_process.c:898-902`
-    /// runs neither derivation there), and every branch of this ladder tests
-    /// it by EQUALITY against `VLOW/LOW` or `HIGH`, so `INVALID` behaves as
-    /// `NORMAL` — the same reasoning `part_arm::VIDEO_ISLICE_COEFF_LVL`
-    /// records for the NSQ ladders. Every video picture this port encodes is
-    /// an I-slice.
+    /// `coeff_lvl` is `pcs->coeff_lvl` (`derive_inter_coeff_level`,
+    /// md_config_process.c:650), which the ladder's `<= M3` / `<= M6` / `== M7`
+    /// branches split on. On a video-mode I-slice C leaves it `INVALID_LVL`
+    /// (:898), which compares as NORMAL in every equality test — pass
+    /// `CoeffLvl::Normal` there, the same value
+    /// `part_arm::VIDEO_ISLICE_COEFF_LVL` records for the NSQ ladders.
     ///
     /// The r0 modulation at `:9397-9405` is skipped for the same reason
     /// `part_arm::nsq_search_level` skips it: `ppcs->r0_gen` follows
@@ -224,10 +229,25 @@ impl DrCtrls {
     /// the oracle. Only `e1_th` / `e2_th` are pre-scaled, and the `i64::MIN`
     /// sentinel is preserved through the scale exactly as C's
     /// `(uint8_t)~0 -> MIN_SIGNED_VALUE` mapping does.
-    pub fn for_arm(arm: crate::sc_detect::ScArm, preset: i8, sc_class5: bool, cli_qp: u32) -> Self {
+    pub fn for_arm(
+        arm: crate::sc_detect::ScArm,
+        preset: i8,
+        sc_class5: bool,
+        cli_qp: u32,
+        coeff_lvl: crate::quant::CoeffLvl,
+    ) -> Self {
         match arm {
             crate::sc_detect::ScArm::Allintra => Self::for_preset_sc(preset, sc_class5),
             crate::sc_detect::ScArm::Video { is_islice } => {
+                // C `derive_inter_coeff_level` runs only on non-I-slices
+                // (md_config_process.c:898-903): a video I-slice keeps
+                // `INVALID_LVL`, which the ladder's equality tests treat as
+                // NORMAL — not the caller's (intra-derived) level.
+                let coeff_lvl = if is_islice {
+                    crate::quant::CoeffLvl::Normal
+                } else {
+                    coeff_lvl
+                };
                 let level: u8 = if sc_class5 {
                     match preset {
                         -1..=2 => 0,
@@ -246,11 +266,37 @@ impl DrCtrls {
                         _ => 9,
                     }
                 } else {
+                    // enc_mode_config.c:9368-9390 — the !sc_class5 row splits
+                    // on `pcs->coeff_lvl` at every rung from M1 through M7.
+                    use crate::quant::CoeffLvl;
+                    let low = matches!(coeff_lvl, CoeffLvl::VLow | CoeffLvl::Low);
                     match preset {
                         -1 | 0 => 0,
-                        1..=3 => 3,
-                        4..=6 => 6,
-                        7 => 8,
+                        1..=3 => {
+                            if low {
+                                2
+                            } else {
+                                3
+                            }
+                        }
+                        4..=6 => {
+                            if low {
+                                5
+                            } else if coeff_lvl == CoeffLvl::High {
+                                7
+                            } else {
+                                6
+                            }
+                        }
+                        7 => {
+                            if low {
+                                6
+                            } else if coeff_lvl == CoeffLvl::High {
+                                10
+                            } else {
+                                8
+                            }
+                        }
                         _ => 10,
                     }
                 };
@@ -294,6 +340,7 @@ impl DrCtrls {
                 e1_th: 200,
                 s2_th: 0,
                 e2_th: 0,
+                use_ref_info: false,
                 parent_max_cost_mult: 10,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -314,6 +361,7 @@ impl DrCtrls {
                 e1_th: 30,
                 s2_th: S2E2_ALWAYS,
                 e2_th: S2E2_ALWAYS,
+                use_ref_info: false,
                 parent_max_cost_mult: 10,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -334,6 +382,7 @@ impl DrCtrls {
                 e1_th: 15,
                 s2_th: S2E2_ALWAYS,
                 e2_th: S2E2_ALWAYS,
+                use_ref_info: false,
                 parent_max_cost_mult: 10,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -354,6 +403,7 @@ impl DrCtrls {
                 e1_th: 10,
                 s2_th: S2E2_ALWAYS,
                 e2_th: S2E2_ALWAYS,
+                use_ref_info: true,
                 parent_max_cost_mult: 0,
                 band_mod: true,
                 max_cost_multiplier: 400,
@@ -377,6 +427,7 @@ impl DrCtrls {
                 e1_th: 0,
                 s2_th: S2E2_ALWAYS,
                 e2_th: S2E2_ALWAYS,
+                use_ref_info: false,
                 parent_max_cost_mult: 0,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -406,6 +457,7 @@ impl DrCtrls {
                 },
                 s2_th: 0,
                 e2_th: 0,
+                use_ref_info: false,
                 parent_max_cost_mult: 10,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -427,6 +479,7 @@ impl DrCtrls {
                 e1_th: if level == 7 { 15 } else { 10 },
                 s2_th: S2E2_ALWAYS,
                 e2_th: S2E2_ALWAYS,
+                use_ref_info: true,
                 parent_max_cost_mult: 0,
                 band_mod: true,
                 max_cost_multiplier: 400,
@@ -447,6 +500,7 @@ impl DrCtrls {
                 e1_th: 0,
                 s2_th: S2E2_ALWAYS,
                 e2_th: S2E2_ALWAYS,
+                use_ref_info: false,
                 parent_max_cost_mult: 0,
                 band_mod: false,
                 max_cost_multiplier: 0,
@@ -534,6 +588,16 @@ struct RefineEnv<'a> {
     /// got `s = -1` where C gives 0, and a 16x16 node `s = -2` where C gives
     /// -1.
     max_sq: usize,
+    /// `pcs->scs->super_block_size` — the `sq_size == 64 && sb == 64` (or
+    /// 128) gate in `update_pred_th_offset`'s `use_ref_info` arm
+    /// (enc_dec_process.c:1623-1624). Only the SB root can satisfy it.
+    sb_sq: usize,
+    /// C `ref_obj_l0->sb_min_sq_size[sb_index]` / `sb_max_sq_size[sb_index]`
+    /// for the use_ref_info arm — `Some` exactly when C's
+    /// `slice_type != I_SLICE && svt_aom_is_ref_same_size(L0)` holds
+    /// (:1608-1611). The B-slice `ref_list1` fold (:1617-1621) is inert on
+    /// this port's low-delay envelope (`ref_list1_count_try == 0`).
+    ref_min_max_sq: Option<(u8, u8)>,
 }
 
 /// C `update_pred_th_offset` (enc_dec_process.c:1545) + the deviation
@@ -654,7 +718,18 @@ fn set_start_end_depth(
                 e = 0;
             }
         }
-        // use_ref_info: dead on I-slices (:1623).
+        // use_ref_info (:1606-1631): on an inter frame with a same-size L0
+        // reference, an SB-sized node whose co-located reference SB coded a
+        // uniform square takes s = e = 0 — no sub-depths, no parent depth.
+        if ctrls.use_ref_info
+            && sq == env.sb_sq
+            && let Some((mn, mx)) = env.ref_min_max_sq
+            && usize::from(mn) == sq
+            && usize::from(mx) == sq
+        {
+            s = 0;
+            e = 0;
+        }
 
         // is_parent_to_current_deviation_small (:1650): only called for
         // tested blocks below the SB size (:1876-1883).
@@ -847,7 +922,7 @@ pub(crate) fn build_refined_scan(
     // the root spans a whole superblock — i.e. every SB64 case and the tests
     // below. The SB128 pipeline passes the whole-128-SB fold instead (see
     // `build_refined_scan_at`).
-    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0, None, 64)
+    build_refined_scan_at(root, ctrls, lambda, tables, 0, 0, None, 64, 64, None)
 }
 
 /// [`build_refined_scan`] with the SB's pixel origin, so the NSQDBG REFINE
@@ -876,6 +951,13 @@ pub(crate) fn build_refined_scan_at(
     // The lossless cap folds in init_md_scan's final geometry filter;
     // its NO_RESTRICTION mode does not read the deviation heuristics.
     max_tx_size: u8,
+    // `pcs->scs->super_block_size` for the use_ref_info arm's
+    // `sq_size == sb_size` gate (enc_dec_process.c:1623).
+    sb_sq: usize,
+    // `(ref_obj_l0->sb_min_sq_size[sb], sb_max_sq_size[sb])` for THIS
+    // superblock — `None` on a key frame / no same-size L0 reference, which
+    // is C's `slice_type == I_SLICE || !is_ref_l0_avail` arm.
+    ref_min_max_sq: Option<(u8, u8)>,
 ) -> RefScan {
     let mut max_pd0 = 0usize;
     let mut min_pd0 = 255usize;
@@ -900,6 +982,8 @@ pub(crate) fn build_refined_scan_at(
         // Includes C's lossless geometry cap (enc_dec_process.c:1492)
         // as well as its max_tx_size cap (:1814).
         max_sq: usize::from(max_tx_size.min(64)),
+        sb_sq,
+        ref_min_max_sq,
     };
     refine_depth(&env, root, None, sb_x, sb_y).0
 }
@@ -3246,8 +3330,8 @@ mod tests {
         let ctrls = DrCtrls::for_preset(4);
         let tables = crate::pd0::build_m6_pd0_tables(160);
 
-        let scan64 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 64);
-        let scan32 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 32);
+        let scan64 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 64, 64, None);
+        let scan32 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 32, 64, None);
 
         // At max_tx_size 32 the 32x32 nodes ARE the max square, so C forces
         // s_depth = 0 -- they must not request their 64x64 parent.

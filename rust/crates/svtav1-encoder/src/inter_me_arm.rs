@@ -460,6 +460,57 @@ impl FrameMe {
             .copied()
             .map(|m| (c.direction(), m))
     }
+
+    /// The TWO `me_mv_array` slots a BI_PRED candidate names —
+    /// `inject_new_candidates_pd0`'s compound arm (mode_decision.c:2342-2349):
+    ///
+    /// ```text
+    /// ref0 = me_mv_array[off*max_refs + (ref0_list>0 ? max_l0 : 0) + ref_idx_l0]
+    /// ref1 = me_mv_array[off*max_refs + (ref1_list>0 ? max_l0 : 0) + ref_idx_l1]
+    /// ```
+    ///
+    /// Returns `((ref0_mv, ref0_ref_frame), (ref1_mv, ref1_ref_frame))` in FULL
+    /// PEL, or `None` when the candidate is out of range or not BI_PRED.
+    #[must_use]
+    pub fn cand_bipred_mvs(
+        &self,
+        org_x: usize,
+        org_y: usize,
+        bsize: u8,
+        cand: usize,
+    ) -> Option<((svtav1_types::motion::Mv, i8), (svtav1_types::motion::Mv, i8))> {
+        let (b64_x, b64_y) = (org_x / 64, org_y / 64);
+        if b64_x >= self.b64_cols || b64_y >= self.b64_rows {
+            return None;
+        }
+        let out = &self.per_b64[b64_y * self.b64_cols + b64_x];
+        let off = crate::port_md::predicates::get_me_block_offset(
+            (org_x % 64) as u32,
+            (org_y % 64) as u32,
+            bsize,
+            self.enable_me_8x8,
+            self.enable_me_16x16,
+        ) as usize;
+        if cand >= usize::from(*out.total_me_candidate_index.get(off)?) {
+            return None;
+        }
+        let c = out.me_candidate_array.get(off * self.max_cand + cand)?;
+        if c.direction() != crate::inter_me::context::BI_PRED {
+            return None;
+        }
+        let s0 = off * self.max_refs
+            + if c.ref0_list() > 0 { self.max_l0 } else { 0 }
+            + usize::from(c.ref_idx_l0());
+        let s1 = off * self.max_refs
+            + if c.ref1_list() > 0 { self.max_l0 } else { 0 }
+            + usize::from(c.ref_idx_l1());
+        let rf0 = crate::port_picstruct::get_ref_frame_type(c.ref0_list(), c.ref_idx_l0());
+        let rf1 = crate::port_picstruct::get_ref_frame_type(c.ref1_list(), c.ref_idx_l1());
+        Some((
+            (*out.me_mv_array.get(s0)?, rf0),
+            (*out.me_mv_array.get(s1)?, rf1),
+        ))
+    }
 }
 
 /// Everything the frame-level search needs that is not a picture.

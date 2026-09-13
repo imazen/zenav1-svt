@@ -729,6 +729,34 @@ impl PartitionTree {
         }
     }
 
+    /// C `pcs->sb_max_sq_size[sb]` — the MAXIMUM `blk_geom->sq_size` over the
+    /// coded blocks (`coding_loop.c:1641`, the `MAX` twin of
+    /// [`Self::min_sq_size`]'s `MIN`; initialised to 0 at
+    /// `enc_dec_process.c:3102`). Read by the next frame's `use_ref_info`
+    /// arm in `update_pred_th_offset` (enc_dec_process.c:1614-1630).
+    #[must_use]
+    pub fn max_sq_size(&self, node_sq: usize) -> usize {
+        match self {
+            PartitionTree::Leaf(_) => node_sq,
+            PartitionTree::Split {
+                partition_type,
+                children,
+                ..
+            } => {
+                let child_sq = if *partition_type == PartitionType::Split {
+                    node_sq / 2
+                } else {
+                    node_sq
+                };
+                children
+                    .iter()
+                    .map(|c| c.max_sq_size(child_sq))
+                    .max()
+                    .unwrap_or(node_sq)
+            }
+        }
+    }
+
     /// Collect all leaf decisions in tree order (depth-first).
     pub fn collect_decisions(&self) -> alloc::vec::Vec<BlockDecision> {
         match self {

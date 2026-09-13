@@ -277,6 +277,15 @@ pub struct ReferenceFrame {
     /// `(uint8_t)~0` "no usable reference" sentinel — the arm that makes NO
     /// adjustment, so an empty vector is inert rather than wrong.
     pub sb_min_sq_size: alloc::vec::Vec<u8>,
+    /// C `EbReferenceObject::sb_max_sq_size[sb]` — the maximum
+    /// `blk_geom->sq_size` this picture coded in each superblock
+    /// (`coding_loop.c:1641`; init 0 at `enc_dec_process.c:3102`), in raster
+    /// SB order. Read by the NEXT frame's `use_ref_info` arm in
+    /// `update_pred_th_offset` (enc_dec_process.c:1614-1630), which forces
+    /// `s = e = 0` on an SB-sized refinement node when
+    /// `sb_min_sq_size == sb_max_sq_size == sq_size`. EMPTY = "no usable
+    /// reference", inert like [`Self::sb_min_sq_size`].
+    pub sb_max_sq_size: alloc::vec::Vec<u8>,
     /// C `EbReferenceObject::intra_coded_area` / `skip_coded_area` /
     /// `hp_coded_area` (`reference_object.h`), as PERCENTAGES.
     ///
@@ -546,6 +555,7 @@ mod tests {
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
             sb_min_sq_size: alloc::vec![],
+            sb_max_sq_size: alloc::vec![],
             intra_coded_area: 0,
             skip_coded_area: 0,
             hp_coded_area: 0,
@@ -580,6 +590,7 @@ mod tests {
             cdef_uv_strengths: alloc::vec![],
             frame_cdfs: None,
             sb_min_sq_size: alloc::vec![],
+            sb_max_sq_size: alloc::vec![],
             intra_coded_area: 0,
             skip_coded_area: 0,
             hp_coded_area: 0,

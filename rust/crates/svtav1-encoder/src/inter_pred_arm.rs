@@ -1269,7 +1269,7 @@ pub fn predict_inter_leaf_hbd(
 /// `((mi_cols - bw_mi - mi_col) * MI_SIZE) * 8`. They bound the MV clamp, so
 /// getting the sign or the unit wrong moves the prediction rather than
 /// failing.
-fn mb_edges(
+pub(crate) fn mb_edges(
     org_x: usize,
     org_y: usize,
     bw: usize,

@@ -2158,6 +2158,21 @@ pub struct Pd0InterRef<'a> {
     /// [`crate::inter_pred_arm::predict_inter_luma_pd0`]), so a legal MV
     /// reads the replicated margin.
     pub padded_y: &'a crate::picture::PaddedPlane,
+    /// The padded DPB picture per `MvReferenceFrame` (index 1..=7) — the same
+    /// table [`crate::inter_md_arm::InterMdFrame::padded_by_ref`] carries.
+    ///
+    /// Needed because PD0 injects EVERY surviving ME candidate
+    /// (`inject_new_candidates_pd0`, mode_decision.c:2306), and a candidate's
+    /// reference is its own `(direction, ref_idx)` pair — not always
+    /// `LAST_FRAME`. On this port's low-delay-P envelope every populated slot
+    /// aliases the same picture, so this agrees with [`Self::padded_y`]
+    /// wherever it is filled.
+    pub padded_by_ref: [Option<&'a crate::picture::PaddedRef>; 8],
+    /// C `inject_inter_candidates_pd0`'s `allow_bipred` half that is not
+    /// block-shaped: `frm_hdr->reference_mode != SINGLE_REFERENCE`
+    /// (mode_decision.c:2828). The block half — `bwidth > 4 && bheight > 4` —
+    /// is applied at the call.
+    pub ref_mode_not_single: bool,
     /// This frame's open-loop motion search — C `pcs->ppcs->pa_me_data`.
     pub me: &'a crate::inter_me_arm::FrameMe,
     /// C `scs->super_block_size`, which sizes the driver's CONV_BUF.
@@ -2633,9 +2648,7 @@ impl<'a> Pd0Ctx<'a> {
         // extraction below is not merely unused there — C never runs it,
         // because `pd0_use_src_samples` is false and `skip_intra` is 1.
         if let Some(ir) = self.inter {
-            let mut pred = vec![0u8; bw * bh];
-            self.inter_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred);
-            return self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, pred, None);
+            return self.lvl1_block_cost_inter(ir, bw, bh, abs_x, abs_y);
         }
         let nb = match self.recon_canvas.as_ref() {
             None => crate::partition::extract_neighbors_tiled(
@@ -2847,15 +2860,119 @@ impl<'a> Pd0Ctx<'a> {
         cost
     }
 
-    /// C `svt_aom_inter_pu_prediction_av1_pd0` for this block's ONE injected
-    /// `NEWMV` candidate.
+    /// The inter arm of `md_encode_block_pd0` for the LVL_1 family —
+    /// `inject_new_candidates_pd0` (mode_decision.c:2293) injects EVERY
+    /// surviving ME candidate for the block's ME PU, `md_stage_0_pd0`
+    /// (product_coding_loop.c:1507) picks the argmin-VARIANCE one
+    /// (`fast_cost` = `svt_aom_mefn_ptr[bsize].vf`, the two-buffer
+    /// difference variance), and `md_stage_3_pd0` runs the real
+    /// residual/TX/coeff cost on that winner alone. Evaluating candidate 0
+    /// only — this arm's earlier form — mispriced any PU whose second or
+    /// third candidate won (MEASURED on `diag 72x72 q20 p6` frame 3: C's
+    /// `(64,16)` 8x16 winner is `ref_idx_l0 = 1` at dist 20 where candidate
+    /// 0 reads dist 2301).
     ///
-    /// The MV is `inject_new_candidates_pd0`'s (mode_decision.c:2320-2325):
-    /// the open-loop search's FULL-PEL result for this block's ME PU, times 8.
-    /// When the search left no candidate for the PU,
-    /// `generate_md_stage_0_cand_pd0` falls back to
-    /// `inject_zz_backup_candidate` (mode_decision.c:3511) — the ZERO MV on
-    /// `LAST_FRAME` — which is the `unwrap_or` here and NOT a silent default.
+    /// The `cand_total_cnt > 2` break in C caps the INJECTED count at three —
+    /// bipred candidates skipped by `allow_bipred` do not count.
+    fn lvl1_block_cost_inter(
+        &mut self,
+        ir: &Pd0InterRef<'_>,
+        bw: usize,
+        bh: usize,
+        abs_x: usize,
+        abs_y: usize,
+    ) -> u64 {
+        let bsize = pd0_bsize(bw, bh);
+        let cands = ir.me.cands_for(abs_x, abs_y, bsize);
+        // C `inject_inter_candidates_pd0` (mode_decision.c:2828): compound is
+        // out when the frame is single-reference or either dim is 4.
+        let allow_bipred = ir.ref_mode_not_single && bw > 4 && bh > 4;
+        let src = &self.src[abs_y * self.stride + abs_x..];
+        let mut best_var = u64::MAX;
+        let mut best_pred: Option<Vec<u8>> = None;
+        let mut injected = 0u32;
+        for (i, c) in cands.iter().enumerate() {
+            let dir = c.direction();
+            let mut pred = vec![0u8; bw * bh];
+            if dir < crate::inter_me::context::BI_PRED {
+                let Some((_d, mv_fp)) = ir.me.cand_mv_for(abs_x, abs_y, bsize, i) else {
+                    continue;
+                };
+                let ref_idx = if dir == 1 { c.ref_idx_l1() } else { c.ref_idx_l0() };
+                let rf = crate::port_picstruct::get_ref_frame_type(dir, ref_idx);
+                self.inter_pred_into(ir, bw, bh, abs_x, abs_y, mv_fp, rf, &mut pred);
+            } else if allow_bipred {
+                let Some(((mv0, rf0), (mv1, rf1))) =
+                    ir.me.cand_bipred_mvs(abs_x, abs_y, bsize, i)
+                else {
+                    continue;
+                };
+                self.inter_pred_into_bipred(
+                    ir, bw, bh, abs_x, abs_y, mv0, rf0, mv1, rf1, &mut pred,
+                );
+            } else {
+                continue;
+            }
+            let var = u64::from(svtav1_dsp::variance::variance_diff(
+                &pred,
+                bw,
+                src,
+                self.stride,
+                bw,
+                bh,
+            ));
+            #[cfg(feature = "std")]
+            if crate::dbgenv::pd0dbg() {
+                eprintln!(
+                    "PD0CAND org=({abs_x},{abs_y}) {bw}x{bh} cand={i} dir={dir} var={var}"
+                );
+            }
+            if var < best_var {
+                best_var = var;
+                best_pred = Some(pred);
+            }
+            injected += 1;
+            if injected > 2 {
+                break;
+            }
+        }
+        // `inject_zz_backup_candidate` (mode_decision.c:3314): zero-MV NEWMV
+        // on LAST when the PU's candidate list is empty.
+        let pred = best_pred.unwrap_or_else(|| {
+            let mut p = vec![0u8; bw * bh];
+            self.inter_pred_into(
+                ir,
+                bw,
+                bh,
+                abs_x,
+                abs_y,
+                svtav1_types::motion::Mv::ZERO,
+                1, // LAST_FRAME
+                &mut p,
+            );
+            p
+        });
+        self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, pred, None)
+    }
+
+    /// The `padded_by_ref` lookup C does as
+    /// `svt_aom_get_ref_pic_buffer(pcs, ref_frame)` — falling back to
+    /// [`Pd0InterRef::padded_y`] (LAST) when the slot is unfilled, which on
+    /// this port's single-picture low-delay envelope is the same picture.
+    fn inter_ref_plane<'r>(
+        ir: &Pd0InterRef<'r>,
+        ref_frame: i8,
+    ) -> &'r crate::picture::PaddedPlane {
+        ir.padded_by_ref
+            .get(ref_frame.max(0) as usize)
+            .copied()
+            .flatten()
+            .map_or(ir.padded_y, |r| &r.y)
+    }
+
+    /// `svt_aom_inter_pu_prediction_av1_pd0` for ONE unipred candidate: the
+    /// full-pel ME MV times 8 against the candidate's own reference picture.
+    #[allow(clippy::too_many_arguments)]
     fn inter_pred_into(
         &self,
         ir: &Pd0InterRef<'_>,
@@ -2863,6 +2980,8 @@ impl<'a> Pd0Ctx<'a> {
         bh: usize,
         abs_x: usize,
         abs_y: usize,
+        mv_fp: svtav1_types::motion::Mv,
+        ref_frame: i8,
         out: &mut [u8],
     ) {
         assert!(
@@ -2876,21 +2995,12 @@ impl<'a> Pd0Ctx<'a> {
              (docs/INTER-ENCODE-PLAN.md 1z^6), so this is unreachable today.",
             self.mode
         );
-        // C `inject_new_candidates` (mode_decision.c:2320) reads the
-        // `me_mv_array` slot named by the ME CANDIDATE's own `direction`, not
-        // list 0's — and on this envelope the single candidate is usually
-        // LIST 1's (see `inter_me_arm::FrameMe::cand_mv_for`). Reading list 0
-        // unconditionally picked up a slot C never writes.
-        let mv_fp = ir
-            .me
-            .cand_mv_for(abs_x, abs_y, pd0_bsize(bw, bh), 0)
-            .map_or(svtav1_types::motion::Mv::ZERO, |(_dir, mv)| mv);
         let mv = svtav1_types::motion::Mv {
             x: mv_fp.x.saturating_mul(8),
             y: mv_fp.y.saturating_mul(8),
         };
         crate::inter_pred_arm::predict_inter_luma_pd0(
-            ir.padded_y,
+            Self::inter_ref_plane(ir, ref_frame),
             abs_x,
             abs_y,
             bw,
@@ -2899,6 +3009,76 @@ impl<'a> Pd0Ctx<'a> {
             ir.sb_size,
             ir.frame_w,
             ir.frame_h,
+            out,
+            bw,
+        );
+    }
+
+    /// The compound (NEW_NEWMV, MD_COMP_AVG) twin of [`Self::inter_pred_into`]
+    /// — `av1_inter_prediction_pd0` with two MVs and two ref planes, whose
+    /// convolve already averages when `mvs.len() > 1`.
+    #[allow(clippy::too_many_arguments)]
+    fn inter_pred_into_bipred(
+        &self,
+        ir: &Pd0InterRef<'_>,
+        bw: usize,
+        bh: usize,
+        abs_x: usize,
+        abs_y: usize,
+        mv0_fp: svtav1_types::motion::Mv,
+        rf0: i8,
+        mv1_fp: svtav1_types::motion::Mv,
+        rf1: i8,
+        out: &mut [u8],
+    ) {
+        let mv0 = svtav1_types::motion::Mv {
+            x: mv0_fp.x.saturating_mul(8),
+            y: mv0_fp.y.saturating_mul(8),
+        };
+        let mv1 = svtav1_types::motion::Mv {
+            x: mv1_fp.x.saturating_mul(8),
+            y: mv1_fp.y.saturating_mul(8),
+        };
+        let p0 = Self::inter_ref_plane(ir, rf0);
+        let p1 = Self::inter_ref_plane(ir, rf1);
+        let rp0 = svtav1_dsp::port_pd_pred::RefPlane {
+            buf: &p0.buf,
+            origin: p0.origin,
+            stride: p0.stride,
+            width: p0.width as i32,
+            height: p0.height as i32,
+        };
+        let rp1 = svtav1_dsp::port_pd_pred::RefPlane {
+            buf: &p1.buf,
+            origin: p1.origin,
+            stride: p1.stride,
+            width: p1.width as i32,
+            height: p1.height as i32,
+        };
+        let sf = svtav1_dsp::port_scale_factors::ScaleFactors::setup_for_frame(
+            ir.frame_w as i32,
+            ir.frame_h as i32,
+            ir.frame_w as i32,
+            ir.frame_h as i32,
+        );
+        let edges = crate::inter_pred_arm::mb_edges(abs_x, abs_y, bw, bh, ir.frame_w, ir.frame_h);
+        svtav1_dsp::port_pd_pred::av1_inter_prediction_pd0(
+            &svtav1_dsp::port_pd_pred::BlkGeom {
+                org_x: abs_x as i32,
+                org_y: abs_y as i32,
+                bwidth: bw,
+                bheight: bh,
+                bwidth_uv: bw / 2,
+                bheight_uv: bh / 2,
+                super_block_size: ir.sb_size as i32,
+            },
+            &[
+                svtav1_dsp::port_subpel_params::Mv { x: mv0.x, y: mv0.y },
+                svtav1_dsp::port_subpel_params::Mv { x: mv1.x, y: mv1.y },
+            ],
+            &[rp0, rp1],
+            &[sf, sf],
+            &edges,
             out,
             bw,
         );

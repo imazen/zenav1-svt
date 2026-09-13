@@ -191,7 +191,16 @@ pub(crate) fn nsq_search_level_with_coeff(
         ScArm::Allintra => leaf::get_nsq_search_level_allintra(m, cli_qp, coeff, SEQ_QP_MOD),
         ScArm::Video { is_islice } => leaf::get_nsq_search_level_default(
             m,
-            VIDEO_ISLICE_COEFF_LVL,
+            // C `derive_inter_coeff_level` runs only on non-I-slices
+            // (md_config_process.c:898-903): a video I-slice keeps
+            // `INVALID_LVL`, which every consumer's equality tests treat as
+            // NORMAL (`VIDEO_ISLICE_COEFF_LVL`). Inter frames pass the real
+            // `pcs->coeff_lvl` — the level offsets at :8296-8300 are live.
+            if is_islice {
+                VIDEO_ISLICE_COEFF_LVL
+            } else {
+                coeff
+            },
             cli_qp,
             /*ppcs_temporal_layer_index=*/ 0,
             /*r0_gen=*/ false,

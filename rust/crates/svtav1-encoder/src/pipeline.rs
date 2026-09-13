@@ -3289,6 +3289,12 @@ impl EncodePipeline {
                     w,
                     h,
                 );
+                if std::env::var("SVTAV1_COEFFDBG").is_ok() {
+                    eprintln!(
+                        "COEFFDBG nmd={} qp={} w={} h={} -> {:?}",
+                        norm_me_dist, tpl_adjusted_qp, w, h, coeff_lvl
+                    );
+                }
                 let eff_mode = crate::rate_arm::eff_enc_mode(sc_arm, self.speed_config.preset);
                 // The VIDEO arm's RDOQ ladder (`rdoq_level_default`,
                 // enc_mode_config.c:8933) is a flat 1 through M10 and ignores
@@ -3319,6 +3325,10 @@ impl EncodePipeline {
                 );
                 let mut cq =
                     crate::quant::CodingQuantCfg::new(rdoq_level, lambda, base_qindex);
+                // `pcs->coeff_lvl` — the depth-refinement ladder
+                // (enc_mode_config.c:9370-9390) and the NSQ-search ladder read
+                // it on inter frames.
+                cq.input_coeff_level = coeff_lvl;
                 // C `svt_av1_optimize_b`'s `allintra || rtc` (full_loop.c:1046):
                 // an inter frame is never `allintra`, so chroma rate weighs 20.
                 cq.allintra_rd_mult = false;
@@ -4638,6 +4648,12 @@ impl EncodePipeline {
             inter_syntax_state.as_ref(),
             inter_mvp_env.as_ref(),
             pd0_min_sq.as_deref(),
+            // `ref_obj_l0->{sb_min_sq_size,sb_max_sq_size}` for the
+            // use_ref_info refinement arm — LAST ref (see `last_ref_slot`),
+            // `None` on a key frame.
+            last_ref
+                .as_ref()
+                .map(|rf| (rf.sb_min_sq_size.as_slice(), rf.sb_max_sq_size.as_slice())),
             sb_inter_lambda.as_deref(),
             primary_ref_cdfs.as_deref(),
             &mv_map,
@@ -4832,6 +4848,14 @@ impl EncodePipeline {
         let sb_min_sq_sizes: Vec<u8> = all_trees
             .iter()
             .map(|t| u8::try_from(t.min_sq_size(sb_size)).unwrap_or(u8::MAX))
+            .collect();
+        // C `pcs->sb_max_sq_size[sb]` (`coding_loop.c:1641`) — the `MAX`
+        // twin of the fold above, stored on the reference object for the
+        // NEXT frame's `use_ref_info` arm in `update_pred_th_offset`
+        // (enc_dec_process.c:1614-1630).
+        let sb_max_sq_sizes: Vec<u8> = all_trees
+            .iter()
+            .map(|t| u8::try_from(t.max_sq_size(sb_size)).unwrap_or(u8::MAX))
             .collect();
 
         crate::stop_check(&stop)?;
@@ -7576,6 +7600,7 @@ impl EncodePipeline {
             // CDEF candidate set is rewritten from these
             // (`update_cdef_filters_on_ref_info`).
             sb_min_sq_size: sb_min_sq_sizes,
+            sb_max_sq_size: sb_max_sq_sizes,
             // C `copy_statistics_to_ref_obj_ect` (rest_process.c:190-220):
             // the NORMALISED percentages (`:347-349`) and the per-superblock
             // flags this picture's walk accumulated. All zero / empty on
@@ -11707,6 +11732,11 @@ fn encode_tile_rows(
     // by RASTER superblock (`sb_row * sb_cols + sb_col`), like `all_trees`.
     // `None` on a key frame, where the controls are `enabled = 0`.
     pd0_min_sq: Option<&[u8]>,
+    // C `update_pred_th_offset`'s `use_ref_info` read (enc_dec_process.c:
+    // 1614-1629): LAST reference's `sb_min_sq_size` / `sb_max_sq_size`
+    // arrays, indexed by raster `sb_index`. `None` on a key frame — C's
+    // `slice_type == I_SLICE || !is_ref_l0_avail` arm.
+    ref_min_max_sq: Option<(&[u8], &[u8])>,
     // C `av1_lambda_assign_md` per SUPERBLOCK on an inter frame
     // (`svt_aom_mode_decision_configure_sb`, md_process.c:796). `None` on a
     // key frame and on every allintra cell, which is what keeps the still
@@ -12048,6 +12078,11 @@ fn encode_tile_rows(
                     speed_config.preset,
                     tile_sc.classes.sc_class5,
                     u32::from(cli_qp),
+                    c_quant
+                        .as_ref()
+                        .map_or(crate::quant::CoeffLvl::Normal, |q| {
+                            q.input_coeff_level
+                        }),
                 )
                 .pred_depth_only,
                 video_pic,
@@ -12070,6 +12105,8 @@ fn encode_tile_rows(
         // allintra cell get `None` and are byte-neutral by construction.
         let pd0_inter_base = inter_md.map(|f| crate::pd0::Pd0InterRef {
             padded_y: &f.padded.y,
+            padded_by_ref: f.padded_by_ref,
+            ref_mode_not_single: f.reference_mode_is_select,
             me: f.me,
             sb_size: f.sb_size,
             frame_w: f.frame_w,
@@ -13318,6 +13355,11 @@ fn encode_tile_rows(
                                     speed_config.preset,
                                     tile_sc.classes.sc_class5,
                                     cli_qp as u32,
+                                    c_quant
+                                        .as_ref()
+                                        .map_or(crate::quant::CoeffLvl::Normal, |q| {
+                                            q.input_coeff_level
+                                        }),
                                 )
                             };
                             // C `md_ctx->fixed_partition = md_ctx->pred_depth_only &&
@@ -13601,6 +13643,12 @@ fn encode_tile_rows(
                                     // just above, and the reason `max_sq_size` is
                                     // not always 64 (enc_dec_process.c:1814-1817).
                                     search_max_sq,
+                                    sb_size,
+                                    // `use_ref_info` (:1606-1631): LAST ref's
+                                    // sb_min/max_sq_size at THIS superblock.
+                                    ref_min_max_sq.and_then(|(mn, mx)| {
+                                        mn.get(sb_index).copied().zip(mx.get(sb_index).copied())
+                                    }),
                                 );
                                 // Partition rates at the real contexts, from
                                 // the same (possibly chained) frame context as
