@@ -176,6 +176,12 @@ pub struct InterCand {
     /// `motion_mode == WarpedCausal`, and carried because the MDS1 refinement
     /// re-derives it and the rebuilt prediction needs it.
     pub wm_params: svtav1_types::motion::WarpedMotionParams,
+    /// C `cand->cand_class` — the CAND_CLASS the candidate was assigned at
+    /// injection (mode_decision.c:3646-3672): 2 for `NEWMV`/`NEW_NEWMV` and
+    /// for EVERY inter candidate when `merge_inter_cands` fired on the
+    /// block, 1 for the remaining "MVP Prediction" modes. Stamped by
+    /// `inter_md_arm::build_inter_candidates`; `nic::lane_of` reads it.
+    pub cand_class: u8,
 }
 
 /// The chosen leaf coding, consumed by the fixed-tree walk + the entropy

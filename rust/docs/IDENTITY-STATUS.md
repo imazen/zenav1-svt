@@ -102,7 +102,8 @@ Two findings moved since the 2026-09-10 measurement
 - **The control makes the gap explicit.** At the identical cell shape
   (128×128 q40 p6 frames=2) synthetic `gradient` is byte-identical on *both*
   frames, with frame 1 coding to 24 bytes — a skip. Real video at that shape
-  diverges (`johnny` 33 B in C against the port's 36; `vidyo3` 113 against 101).
+  closed for `johnny` after the 2026-09-13 inter-MD fix set (below);
+  `vidyo3` still diverges (C 113 B against the port's 108).
 
 The pinned table in the gate is a measurement: a cell that regresses fails, and
 a cell that improves fails too, as `PROMOTED`, so the table cannot silently go
@@ -146,11 +147,30 @@ own final reconstruction is byte-identical to `aomdec`'s on EVERY frame of an
 covers it.
 
 Byte-identity to C on the inter path is a separate, narrower claim and it is
-NOT universal. MEASURED 2026-09-11 on the 96-cell frontier grid at frames=4:
-95 cells identical on frame 0, 95 on frame 1, 60 on frame 2, 58 on frame 3.
+NOT universal. MEASURED 2026-09-13 on the 96-cell frontier grid at frames=4
+(2026-09-11 was 95/95/60/58):
+95 cells identical on frame 0, 95 on frame 1, 61 on frame 2, 59 on frame 3.
 The chain frames' gap concentrates in 72x72 (a PARTIAL superblock: 17 of its
 24 cells differ at frame 2) and `gradient` content (19 of 24); `uniform` is
 24 of 24 identical on every frame.
+
+The 2026-09-13 frame-1 gains came from four pieces of C behaviour the port was
+missing, all in `generate_md_stage_0_cand_light_pd1` / `fast_loop_core`:
+
+1. `merge_inter_cands` (mode_decision.c:3638-3643): when
+   `min(md_me_dist, md_pme_dist) / (bw*bh) < (4*(63-qp))>>1`, EVERY inter
+   candidate is CAND_CLASS_2 — one merged MDS0 pool, not per-mode lanes. The
+   port now computes `md_me_dist`/`md_pme_dist` and stamps `cand_class`.
+2. `ctx->global_mv_injection = ppcs->gm_ctrls.enabled` (enc_mode_config.c
+   :7847/:7964): GLOBALMV injection is off wherever `gm_level` is 0 (p6+ on
+   video); the port had hardcoded it on.
+3. `mds0_use_hadamard_sb = false` on the video arm (:7916/:8032): MDS0's
+   inter distortion is the VARIANCE arm (`fn_ptr->vf`), not hadamard SATD.
+4. `dist_to_cost_th = 0` at mds0 level 2 (product_coding_loop.c:1309-1334):
+   a candidate whose rateless distortion cost exceeds the running
+   block-wide `mds0_best_cost` is dropped BEFORE its rate is priced. The
+   port's intra lane had the gate; the inter lane now applies it too, with
+   the best cost shared across classes exactly as C's per-block variable is.
 
 ### The 2026-09-10 record
 

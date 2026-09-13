@@ -240,6 +240,12 @@ pub struct InterMdFrame<'a> {
     pub global_motion: [svtav1_types::motion::WarpedMotionParams; 8],
     /// C `pcs->ppcs->gm_ctrls.skip_identity` (`set_gm_controls`, level 4 only).
     pub gm_skip_identity: bool,
+    /// C `pcs->ppcs->gm_ctrls.enabled` — the value
+    /// `svt_aom_sig_deriv_enc_dec_*` assigns to `ctx->global_mv_injection`
+    /// (enc_mode_config.c:7847/:7964). 0 on every level-0 preset (enc_mode
+    /// > M4), where `svt_aom_inject_inter_candidates` skips
+    /// `inject_global_candidates` entirely.
+    pub gm_enabled: bool,
     /// C `pcs->ppcs->pic_obmc_level` (`svt_aom_get_obmc_level`,
     /// enc_mode_config.c:8815) — the ladder `set_obmc_controls` expands.
     ///
@@ -375,6 +381,12 @@ pub struct InterCandOut {
     /// port never selects warped motion: the symbol is written by every inter
     /// block, whatever the search does.
     pub num_proj_ref: u8,
+    /// C `cand->cand_class` for the inter classes — 2 for `NEWMV`/
+    /// `NEW_NEWMV` and for EVERY inter candidate when `merge_inter_cands`
+    /// fired on the block, 1 for the other "MVP Prediction" modes
+    /// (mode_decision.c:3662-3669). Stamped by `build_inter_candidates`
+    /// after `predict_and_price`; the NIC lane reads it unchanged.
+    pub cand_class: u8,
 }
 
 /// The per-block inputs the caller has and this module does not.
@@ -707,6 +719,10 @@ pub fn build_inter_candidates(
     b: &mut InterBlockCtx<'_>,
     lambda: u64,
     fast_lambda: u32,
+    // C `nic_pruning_ctrls->merge_inter_cands_mult` — the
+    // `generate_md_stage_0_cand_light_pd1` class-merge control
+    // (mode_decision.c:3638-3643).
+    merge_inter_cands_mult: u8,
     warp_out: &mut WarpRefineBlock,
 ) -> Vec<InterCandOut> {
     use crate::port_md::inject::{CandArray, InjectCtx, WmCtrls, inject_inter_candidates};
@@ -811,6 +827,19 @@ pub fn build_inter_candidates(
     {
         q.record_square(b.org_x, b.org_y, b.bw, search.sb_me_mv);
     }
+
+    // C `merge_inter_cands` (mode_decision.c:3638-3643), computed once per
+    // block in `generate_md_stage_0_cand_light_pd1`: when the best
+    // post-subpel ME/PME variance per pixel is under the nic-level
+    // threshold, EVERY inter candidate is CAND_CLASS_2 — the MVP and MV
+    // lanes share one MDS0 pool instead of competing for separate caps.
+    let merge_inter_cands = merge_inter_cands_mult != u8::MAX && {
+        // C `uint16_t th = (mult * (63 - scs->static_config.qp)) >> 1`
+        // and `(MIN(md_me_dist, md_pme_dist) / (bw * bh)) < th` — C's
+        // integer division, with `th` widened for the compare.
+        let th = (u32::from(merge_inter_cands_mult) * 63u32.saturating_sub(f.search.cli_qp)) >> 1;
+        search.md_me_dist().min(search.md_pme_dist()) / ((b.bw * b.bh) as u32) < th
+    };
 
     // --- C's ME candidate array for this block, verbatim: the injectors
     //     read each candidate's own `direction` and resolve it to a
@@ -927,6 +956,11 @@ pub fn build_inter_candidates(
         // This was hardcoded `true`, which suppressed the GLOBALMV candidate C
         // injects at every other level.
         gm_skip_identity: f.gm_skip_identity,
+        // C `ctx->global_mv_injection = ppcs->gm_ctrls.enabled`
+        // (enc_mode_config.c:7847/:7964). It was hardcoded `true`, which
+        // injected GLOBALMV candidates at presets (>= M5) where C's gm
+        // level is 0 and the whole section is skipped.
+        global_mv_injection: f.gm_enabled,
         wm_sample_num: &wm_sample_num,
         ref_mv_stack: &stacks,
         ref_mv_count: &ref_mv_count,
@@ -994,7 +1028,6 @@ pub fn build_inter_candidates(
         new_nearest_injection: true,
         new_nearest_near_comb_injection: 0,
         inject_new_me: true,
-        global_mv_injection: true,
         inject_new_pme: true,
         updated_enable_pme: f.search.updated_enable_pme,
         // C `ctx->cand_reduction_ctrls.reduce_unipred_candidates` — 0 at
@@ -1079,7 +1112,18 @@ pub fn build_inter_candidates(
         // C `blk_ptr->inter_mode_ctx[ref_frame_type]` — the mode context of
         // the candidate's OWN reference, not LAST's.
         let imc = stacks[c.ref_frame[0].max(0) as usize].mode_context;
-        out.push(predict_and_price(f, b, c, imc, &stacks, lambda));
+        let mut o = predict_and_price(f, b, c, imc, &stacks, lambda);
+        // C `cand->cand_class` (mode_decision.c:3662-3669): `NEWMV` /
+        // `NEW_NEWMV` — or ANY inter candidate when `merge_inter_cands`
+        // fired — is class 2; the remaining inter modes are class 1.
+        o.cand_class = if merge_inter_cands
+            || matches!(o.mode, PredictionMode::NewMv | PredictionMode::NewNewMv)
+        {
+            2
+        } else {
+            1
+        };
+        out.push(o);
     }
     out
 }
@@ -1658,6 +1702,9 @@ fn predict_and_price(
         wm_params_l0: c.wm_params_l0,
         fast_luma_rate: cost.rate.luma,
         num_proj_ref: c.num_proj_ref,
+        // Stamped by `build_inter_candidates` once the block's
+        // `merge_inter_cands` decision is known.
+        cand_class: 0,
     }
 }
 

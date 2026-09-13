@@ -71,6 +71,12 @@ fi
 
 # clip size preset  expected_f0/expected_f1
 # MEASURED 2026-09-10 at cli_qp 40, frames=2, bit depth 10, on x86-64.
+# kristenandsara 128x128 p6 frame 1 was 0/1 and dropped to 0/0 on
+# 2026-09-13 when the inter MDS0 lane switched to C's video variance arm
+# (`mds0_use_hadamard_sb = 0` has no bit-depth branch). The prior match was
+# coincidence: frame 0 on this cell already diverges at header byte 17
+# while reconstructing identically, which is how frame 1 could match at
+# all. The C-faithful arm now exposes the underlying bd10 MD divergence.
 CELLS=(
     "fourpeople     128x128 6 0/0"
     "fourpeople     128x128 8 0/0"
@@ -80,7 +86,7 @@ CELLS=(
     "johnny         128x128 8 0/0"
     "johnny         256x256 6 0/0"
     "johnny         256x256 8 0/0"
-    "kristenandsara 128x128 6 0/1"
+    "kristenandsara 128x128 6 0/0"
     "kristenandsara 128x128 8 0/0"
     "kristenandsara 256x256 6 0/0"
     "kristenandsara 256x256 8 0/0"

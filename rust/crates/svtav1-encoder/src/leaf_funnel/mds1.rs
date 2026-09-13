@@ -300,7 +300,7 @@ pub(super) fn run_mds1(
         #[cfg(feature = "std")]
         if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
             eprintln!(
-                "NSQDBG PMDS1 mi=({},{}) {}x{} mode={} fi={} delta={} uv={} coeff_rate={} dist={} full={}",
+                "NSQDBG PMDS1 mi=({},{}) {}x{} mode={} fi={} delta={} uv={} coeff_rate={} dist={} full={} imode={:?} rf={:?} mv={:?} pmv={:?} drl={:?} mm={:?}",
                 abs_y / 4,
                 abs_x / 4,
                 w,
@@ -312,6 +312,14 @@ pub(super) fn run_mds1(
                 coeff_rate,
                 dec_dist,
                 cand.full_cost,
+                cand.inter.as_ref().map(|i| i.mode as u8),
+                cand.inter.as_ref().map(|i| i.ref_frame),
+                cand.inter.as_ref().map(|i| (i.mv[0].y, i.mv[0].x)),
+                cand.inter
+                    .as_ref()
+                    .map(|i| (i.pred_mv[0].y, i.pred_mv[0].x)),
+                cand.inter.as_ref().map(|i| i.drl_index),
+                cand.inter.as_ref().map(|i| i.motion_mode as u8),
             );
         }
     }

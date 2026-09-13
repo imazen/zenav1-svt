@@ -383,27 +383,16 @@ pub(super) const LANES: usize = 5;
 /// | 3 | palette | palette |
 /// | 4 | IntraBC | IntraBC |
 ///
-/// **`merge_inter_cands` is NOT ported** (`mode_decision.c:3637-3643`): when
+/// **`merge_inter_cands` IS ported** (`mode_decision.c:3638-3643`): when
 /// `nic_ctrls.pruning_ctrls.merge_inter_cands_mult != ~0` and
 /// `min(md_me_dist, md_pme_dist) / (bw * bh)` is under its threshold, C puts
-/// EVERY inter candidate in class 2. Both distortions are written by
-/// `read_refine_me_mvs`, which this port does not have. It can only MERGE
-/// classes, so its absence is a class-IDENTITY difference in the
-/// rank-staging `+3` arm and in the cross-class tie order — never a missing
-/// candidate.
+/// EVERY inter candidate in class 2. The port stamps the decision on
+/// `InterCand::cand_class` at injection (`inter_md_arm::build_inter_
+/// candidates`), so this read is unconditional — the merge itself lives
+/// where C's `md_me_dist`/`md_pme_dist` are known.
 pub(super) fn lane_of(c: &Cand) -> usize {
     match c.inter.as_deref() {
-        Some(i) => {
-            if matches!(
-                i.mode,
-                svtav1_types::prediction::PredictionMode::NewMv
-                    | svtav1_types::prediction::PredictionMode::NewNewMv
-            ) {
-                2
-            } else {
-                1
-            }
-        }
+        Some(i) => i.cand_class as usize,
         None if c.palette.is_some() => 3,
         None if c.ibc.is_some() => 4,
         None => 0,
@@ -773,6 +762,7 @@ mod nic_class_prune_tests {
                     u_pred10: alloc::vec::Vec::new(),
                     v_pred10: alloc::vec::Vec::new(),
                     wm_params: Default::default(),
+                    cand_class: lane as u8,
                 }));
             }
             _ => {}

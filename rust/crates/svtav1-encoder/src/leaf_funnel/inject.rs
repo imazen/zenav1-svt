@@ -1647,13 +1647,22 @@ pub(super) fn inject_candidates(
             },
             lambda,
             frame.inter_fast_lambda,
+            cfg.merge_inter_cands_mult,
             warp_blk,
         );
         for c in built {
-            // MDS0's distortion is the same SATD every intra candidate is
-            // scored with; `build_inter_candidates` prices the RATE and the
-            // cost is re-formed here so the two lanes are comparable. (C
-            // computes both inside `fast_loop_core`.)
+            // MDS0's distortion is the SAME arm the intra candidates take:
+            // `fast_loop_core` picks SSD / hadamard SATD / two-buffer
+            // VARIANCE by `mds0_dist_type` and `mds0_use_hadamard_blk`
+            // (product_coding_loop.c:1272-1306) regardless of the candidate
+            // being intra or inter. The video arm's
+            // `mds0_use_hadamard_sb = false` (enc_mode_config.c:7916/:8032)
+            // sends inter blocks down the VARIANCE arm — `fn_ptr->vf`,
+            // `svt_aom_mefn_ptr[bsize]` — which is DC-invariant where SATD
+            // is not; scoring them with SATD here re-ordered C's
+            // MDS0 -> MDS1 survivor ranking. `build_inter_candidates`
+            // prices the RATE and the cost is re-formed here so the two
+            // lanes are comparable.
             let satd = if frame.mds0_ssd {
                 let mut sse: u64 = 0;
                 for r in 0..h {
@@ -1664,11 +1673,45 @@ pub(super) fn inject_candidates(
                     }
                 }
                 sse
-            } else {
+            } else if mds0_use_hadamard {
                 hadamard_satd(y_src, y_src_stride, y_src_off, &c.y_pred, w, h)
+            } else {
+                // `fn_ptr->vf(pred, pred_stride, src, src_stride, &sse)`,
+                // product_coding_loop.c:1296-1299 — same call as the intra
+                // variance arm above.
+                u64::from(svtav1_dsp::variance::variance_diff(
+                    &c.y_pred,
+                    w,
+                    &y_src[y_src_off..],
+                    y_src_stride,
+                    w,
+                    h,
+                ))
             };
             let flr = u64::from(c.fast_luma_rate);
-            let fast_cost = rdcost(lambda, flr, if frame.mds0_ssd { satd } else { satd << 4 });
+            let d = if frame.mds0_ssd { satd } else { satd << 4 };
+            // The SAME MDS0 dist-to-cost prune the intra lane applies
+            // (product_coding_loop.c:1309-1334): the gate is inside
+            // `fast_loop_core`, before the fast-cost call, and compares this
+            // candidate's RATELESS distortion cost against the running
+            // block-wide `mds0_best_cost` — which C shares across candidate
+            // classes (set once per block at :9481, updated in every class's
+            // `md_stage_0`), so the intra class-0 pass above has already
+            // seeded it. At mds0_level 2 (`dist_to_cost_th = 0`) any
+            // inter candidate whose distortion alone exceeds the best fast
+            // cost is dropped before its rate is even priced — which is why
+            // C's `SVT_IFCOST` dump showed the NEWMV candidates injected but
+            // never fast-costed. A pruned candidate carries MAX_MODE_COST
+            // into the pool exactly like the intra lane's.
+            let mut fast_cost = rdcost(lambda, flr, d);
+            if let (Some(th), Some(best)) = (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
+                if 100i128 * (i128::from(rdcost(lambda, 0, d)) - i128::from(best))
+                    > i128::from(best) * i128::from(th)
+                {
+                    fast_cost = crate::port_md::lpd1_loop::MAX_MODE_COST;
+                }
+            }
+            mds0_best_cost = Some(mds0_best_cost.map_or(fast_cost, |b| b.min(fast_cost)));
             // The intra lanes above each print an `NSQDBG PFAST` line; without
             // this one the inter candidate is INVISIBLE in the candidate dump,
             // and "the injector ran and the candidate lost" is indistinguishable
@@ -1781,6 +1824,7 @@ pub(super) fn inject_candidates(
                         alloc::vec::Vec::new()
                     },
                     wm_params: c.wm_params_l0,
+                    cand_class: c.cand_class,
                 })),
                 mds3_cost: u64::MAX,
                 block_has_coeff: false,

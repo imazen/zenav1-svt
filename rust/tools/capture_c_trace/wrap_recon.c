@@ -812,6 +812,56 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
     }
 }
 
+/* ---- SVT_WMREF_OUT — C's MDS1 warped-motion MV refinement ---------------
+ * `svt_aom_wm_motion_refinement` is EXPORTED (mode_decision.h:131). It is the
+ * refine that runs inside `opt_non_translation_motion_mode`'s WARP arm
+ * (product_coding_loop.c:6757-6796) at MD_STAGE_1 when
+ * `wm_ctrls.refine_level == 1`, mutating cand->block_mi.mv[0] / pred_mv[0] /
+ * drl_index in place. The dump records in-mv -> out-mv so a port-vs-C refine
+ * divergence is visible without reading a whole predictor trace.
+ *
+ * Env: SVT_WMREF_OUT (file), SVT_WMREF_XY ("x,y" block origin pin). */
+uint8_t __real_svt_aom_wm_motion_refinement(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                          ModeDecisionCandidate* cand, const bool shut_approx);
+
+uint8_t __wrap_svt_aom_wm_motion_refinement(PictureControlSet* pcs, ModeDecisionContext* ctx,
+                                          ModeDecisionCandidate* cand, const bool shut_approx) {
+    const int in_mvy = cand->block_mi.mv[0].y, in_mvx = cand->block_mi.mv[0].x;
+    const int in_pmy = cand->pred_mv[0].y, in_pmx = cand->pred_mv[0].x;
+    const int in_drl = (int)cand->drl_index;
+    const uint8_t rc = __real_svt_aom_wm_motion_refinement(pcs, ctx, cand, shut_approx);
+    const char* path = getenv("SVT_WMREF_OUT");
+    const char* xy   = getenv("SVT_WMREF_XY");
+    if (path && *path) {
+        int px = -1, py = -1;
+        if (xy)
+            sscanf(xy, "%d,%d", &px, &py);
+        if ((!xy || ((int)ctx->blk_org_x == px && (int)ctx->blk_org_y == py))) {
+            static FILE* f = NULL;
+            if (!f)
+                f = fopen(path, "w");
+            if (f) {
+                fprintf(f,
+                        "WMREF poc=%u org=(%u,%u) %ux%u st=%d mode=%d mm=%d rf=%d,%d "
+                        "in=%d,%d/%d,%d drl=%d -> out=%d,%d/%d,%d drl=%d valid=%u iters=%d diag=%d lvl=%d\n",
+                        (unsigned)pcs->picture_number, (unsigned)ctx->blk_org_x,
+                        (unsigned)ctx->blk_org_y, (unsigned)ctx->blk_geom->bwidth,
+                        (unsigned)ctx->blk_geom->bheight, (int)ctx->md_stage,
+                        (int)cand->block_mi.mode, (int)cand->block_mi.motion_mode,
+                        (int)cand->block_mi.ref_frame[0], (int)cand->block_mi.ref_frame[1],
+                        in_mvy, in_mvx, in_pmy, in_pmx, in_drl,
+                        (int)cand->block_mi.mv[0].y, (int)cand->block_mi.mv[0].x,
+                        (int)cand->pred_mv[0].y, (int)cand->pred_mv[0].x,
+                        (int)cand->drl_index, (unsigned)rc,
+                        (int)ctx->wm_ctrls.refinement_iterations, (int)ctx->wm_ctrls.refine_diag,
+                        (int)ctx->wm_ctrls.refine_level);
+                fflush(f);
+            }
+        }
+    }
+    return rc;
+}
+
 /* ---- SVT_IFCOST_OUT — C's INTER fast cost, per candidate ---------------
  * `svt_aom_inter_fast_cost` is EXPORTED (rd_cost.h:47) and is the exact
  * counterpart of the port's `port_rd_cost::inter_cost::inter_fast_cost`.
@@ -1170,12 +1220,12 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
         f = fopen(path, "w");
     if (f)
         fprintf(f,
-            "CTREE mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d "
+            "CTREE poc=%u mi=(%d,%d) bsize=%d part=%d mode=%d uv=%d fi=%d ady=%d aduv=%d txd=%d pal=%d skip=%d cflidx=%d "
             "cflsgn=%d ibc=%d aibc=%d\n",
-            mi_row, mi_col, (int)bsize, (int)part, (int)m->mode, (int)m->uv_mode, (int)m->filter_intra_mode,
-            (int)m->angle_delta[0], (int)m->angle_delta[1], (int)m->tx_depth, (int)b->palette_size[0], (int)m->skip,
-            (int)m->cfl_alpha_idx, (int)m->cfl_alpha_signs, (int)m->use_intrabc,
-            (int)pcs->ppcs->frm_hdr.allow_intrabc);
+            (unsigned)pcs->picture_number, mi_row, mi_col, (int)bsize, (int)part, (int)m->mode, (int)m->uv_mode,
+            (int)m->filter_intra_mode, (int)m->angle_delta[0], (int)m->angle_delta[1], (int)m->tx_depth,
+            (int)b->palette_size[0], (int)m->skip, (int)m->cfl_alpha_idx, (int)m->cfl_alpha_signs,
+            (int)m->use_intrabc, (int)pcs->ppcs->frm_hdr.allow_intrabc);
     if (f)
         fflush(f);
 
@@ -1309,6 +1359,34 @@ void __wrap_svt_aom_update_mi_map(PictureControlSet* pcs, ModeDecisionContext* c
             }
             fprintf(jf, "\n");
             fflush(jf);
+        }
+    }
+
+    /* SVT_INJCANDS_OUT — the block's injected fast_cand_array as it stood at
+     * commit, one line per candidate, so the injected set can be compared
+     * against the port's ICAND lines field-for-field. */
+    {
+        const char*  cpath = getenv("SVT_INJCANDS_OUT");
+        static FILE* cf    = NULL;
+        if (cpath && *cpath && !cf)
+            cf = fopen(cpath, "w");
+        if (cf) {
+            uint32_t inj_n = ctx->md_stage_0_count[CAND_CLASS_0] + ctx->md_stage_0_count[CAND_CLASS_1] +
+                ctx->md_stage_0_count[CAND_CLASS_2] + ctx->md_stage_0_count[CAND_CLASS_3] +
+                ctx->md_stage_0_count[CAND_CLASS_4];
+            for (uint32_t i = 0; i < inj_n; i++) {
+                const ModeDecisionCandidate* c = &ctx->fast_cand_array[i];
+                fprintf(cf,
+                        "INJC poc=%u mi=(%d,%d) bsize=%d cls=%d mode=%d rf=%d,%d mv0=%d,%d mv1=%d,%d "
+                        "pmv0=%d,%d drl=%d mm=%d iiu=%d\n",
+                        (unsigned)pcs->picture_number, mi_row, mi_col, (int)bsize,
+                        (int)c->cand_class, (int)c->block_mi.mode, (int)c->block_mi.ref_frame[0],
+                        (int)c->block_mi.ref_frame[1], (int)c->block_mi.mv[0].y,
+                        (int)c->block_mi.mv[0].x, (int)c->block_mi.mv[1].y, (int)c->block_mi.mv[1].x,
+                        (int)c->pred_mv[0].y, (int)c->pred_mv[0].x, (int)c->drl_index,
+                        (int)c->block_mi.motion_mode, (int)c->block_mi.is_interintra_used);
+            }
+            fflush(cf);
         }
     }
 

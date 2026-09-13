@@ -3732,14 +3732,17 @@ impl EncodePipeline {
                 ),
                 _ => [svtav1_types::motion::WarpedMotionParams::default(); 8],
             };
-        // C `pcs->ppcs->gm_ctrls.skip_identity` — `svt_aom_set_gm_controls`
-        // sets it ONLY at gm_level 4. The injector reads it to decide whether
-        // an IDENTITY reference still gets a GLOBALMV candidate.
-        let gm_skip_identity = crate::port_enc_mode_config::ctrls::set_gm_controls(
+        // C `pcs->ppcs->gm_ctrls` — `svt_aom_set_gm_controls` at this frame's
+        // `gm_level`. `skip_identity` (level 4 only) makes the injector skip
+        // IDENTITY references; `enabled` is what C assigns to
+        // `ctx->global_mv_injection`, gating `inject_global_candidates`
+        // outright at every preset where the level is 0.
+        let gm_ctrls = crate::port_enc_mode_config::ctrls::set_gm_controls(
             self.gm_level_for_frame(is_key),
             crate::port_enc_mode_config::ResolutionRange::from_luma_area(self.width * self.height),
-        )
-        .is_some_and(|c| c.skip_identity != 0);
+        );
+        let gm_skip_identity = gm_ctrls.is_some_and(|c| c.skip_identity != 0);
+        let gm_enabled = gm_ctrls.is_some_and(|c| c.enabled != 0);
         // C `pcs->child_pcs->ref_global_motion[]` (pic_manager_process.c:831):
         // the PRIMARY-REF picture's own saved models, which every parameter is
         // delta-coded against. An I_SLICE reference contributes IDENTITY, and
@@ -4257,6 +4260,7 @@ impl EncodePipeline {
                     gm_wmtype: st.gm_wmtype,
                     global_motion: gm_field,
                     gm_skip_identity,
+                    gm_enabled,
                     // C `ppcs->pic_obmc_level`, straight off the mode-decision
                     // signal derivation that already computes it.
                     pic_obmc_level: md_config_signals

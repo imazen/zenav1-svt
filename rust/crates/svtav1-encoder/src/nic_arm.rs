@@ -61,8 +61,9 @@
 //! n3 =  0,1,0,0,0   MDS3 evaluates ONE candidate
 //! ```
 //!
-//! `merge_inter_cands_mult` is inter-only and stays uncarried
-//! (`leaf_funnel::nic::lane_of` records what its absence costs).
+//! `merge_inter_cands_mult` is inter-only — it rewrites the candidate CLASS
+//! (`leaf_funnel::nic::lane_of` reads the stamped `cand_class`), so it is a
+//! no-op on an all-intra frame but live on every P/B one.
 //!
 //! # Evidence
 //!
@@ -123,6 +124,10 @@ pub(crate) struct NicRow {
     /// `nic_pruning_ctrls->enable_skipping_mds1`: 1 at levels 8..=11
     /// (enc_mode_config.c:4774/:4805/:4836/:4867), 0 below.
     pub(crate) enable_skipping_mds1: bool,
+    /// `nic_pruning_ctrls->merge_inter_cands_mult`: 4 at levels 6..=11
+    /// (enc_mode_config.c:4725/:4755/:4785/:4816/:4847/:4878), `(uint8_t)~0`
+    /// below (:4545/:4575/:4605/:4635/:4665/:4695).
+    pub(crate) merge_inter_cands_mult: u8,
 }
 
 /// `pcs->nic_level` for this arm. `enc_mode` must already be
@@ -213,6 +218,10 @@ pub(crate) fn nic_ctrls(level: u8) -> NicRow {
         // `enable_skipping_mds1 = 1` on cases 8..=11 (enc_mode_config.c:4774,
         // :4805, :4836, :4867), `0` on every case below (:4534..:4744).
         enable_skipping_mds1: level >= 8,
+        // `merge_inter_cands_mult = 4` on cases 6..=11
+        // (enc_mode_config.c:4725..:4878), `(uint8_t)~0` on 0..=5
+        // (:4545..:4695).
+        merge_inter_cands_mult: if level >= 6 { 4 } else { u8::MAX },
     }
 }
 
@@ -236,6 +245,7 @@ pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_base: bool
     cfg.mds3_band_cnt = r.mds3_band_cnt;
     cfg.i_mds3_class_th_mult = r.i_mds3_class_th_mult;
     cfg.enable_skipping_mds1 = r.enable_skipping_mds1;
+    cfg.merge_inter_cands_mult = r.merge_inter_cands_mult;
 }
 
 #[cfg(test)]
@@ -286,6 +296,10 @@ mod tests {
                     ("mds3_band_cnt", u64::from(c.mds3_band_cnt)),
                     ("i_mds3_class_th_mult", c.i_mds3_class_th_mult),
                     ("enable_skipping_mds1", u64::from(c.enable_skipping_mds1)),
+                    (
+                        "merge_inter_cands_mult",
+                        u64::from(c.merge_inter_cands_mult),
+                    ),
                 ]
             };
             assert_eq!(
@@ -333,6 +347,10 @@ mod tests {
                 ("mds3_band_cnt", u64::from(c.mds3_band_cnt)),
                 ("i_mds3_class_th_mult", u64::from(c.i_mds3_class_th_mult)),
                 ("enable_skipping_mds1", u64::from(c.enable_skipping_mds1)),
+                (
+                    "merge_inter_cands_mult",
+                    u64::from(c.merge_inter_cands_mult),
+                ),
             ];
             let got: alloc::vec::Vec<(&str, u64)> = alloc::vec![
                 ("nic_num.0", r.nic_num.0),
@@ -353,6 +371,10 @@ mod tests {
                 ("mds3_band_cnt", u64::from(r.mds3_band_cnt)),
                 ("i_mds3_class_th_mult", r.i_mds3_class_th_mult),
                 ("enable_skipping_mds1", u64::from(r.enable_skipping_mds1)),
+                (
+                    "merge_inter_cands_mult",
+                    u64::from(r.merge_inter_cands_mult),
+                ),
             ];
             assert_eq!(
                 got, want,

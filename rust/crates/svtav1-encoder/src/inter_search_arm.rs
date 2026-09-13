@@ -139,6 +139,10 @@ pub struct SearchFrameCfg {
     /// MVP-vs-ME check's resolution term.
     pub pic_width: u32,
     pub pic_height: u32,
+    /// C `scs->static_config.qp` — the CLI qp, carried through so the
+    /// block-level `merge_inter_cands` threshold (mode_decision.c:3640)
+    /// can read it where `frame_cfg` already consumed it.
+    pub cli_qp: u32,
 }
 
 /// The per-block inputs, all of which the caller already has.
@@ -258,6 +262,10 @@ pub struct BlockSearchOut {
     pub valid_pme_mv: [[bool; REF_LIST_MAX_DEPTH]; 2],
     /// C `ctx->best_pme_mv[list][ref]`.
     pub best_pme_mv: [[Mv; REF_LIST_MAX_DEPTH]; 2],
+    /// C `ctx->pme_res[list][ref].dist`. `u32::MAX` where `pme_search`
+    /// never wrote the pair — the `~0` reset C leaves in place for every
+    /// `continue`d entry (product_coding_loop.c:9434-9438).
+    pub pme_dist: [[u32; REF_LIST_MAX_DEPTH]; 2],
     /// Which of C's four exits produced each entry, `None` where
     /// `pme_search` never looked at that pair.
     ///
@@ -283,9 +291,35 @@ impl Default for BlockSearchOut {
             post_subpel_me_mv_cost: [[u32::MAX; REF_LIST_MAX_DEPTH]; 2],
             valid_pme_mv: [[false; REF_LIST_MAX_DEPTH]; 2],
             best_pme_mv: [[Mv::ZERO; REF_LIST_MAX_DEPTH]; 2],
+            pme_dist: [[u32::MAX; REF_LIST_MAX_DEPTH]; 2],
             pme_exit: [[None; REF_LIST_MAX_DEPTH]; 2],
             is_square_shape: false,
         }
+    }
+}
+
+impl BlockSearchOut {
+    /// C `ctx->md_me_dist` — the min over every reference's
+    /// `post_subpel_me_mv_cost` (product_coding_loop.c:2796-2798 /
+    /// :2898-2900); `u32::MAX` when no subpel ME ran.
+    pub fn md_me_dist(&self) -> u32 {
+        self.post_subpel_me_mv_cost
+            .iter()
+            .flatten()
+            .copied()
+            .min()
+            .unwrap_or(u32::MAX)
+    }
+    /// C `ctx->md_pme_dist` — the min over `pme_res[..].dist`
+    /// (product_coding_loop.c:3365-3371); `u32::MAX` when PME ran no
+    /// reference.
+    pub fn md_pme_dist(&self) -> u32 {
+        self.pme_dist
+            .iter()
+            .flatten()
+            .copied()
+            .min()
+            .unwrap_or(u32::MAX)
     }
 }
 
@@ -677,6 +711,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         );
         out.valid_pme_mv[li][ri] = res.valid;
         out.best_pme_mv[li][ri] = res.best_pme_mv;
+        out.pme_dist[li][ri] = res.dist;
         out.pme_exit[li][ri] = Some(res.exit);
 
         #[cfg(feature = "std")]
@@ -966,6 +1001,7 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         // and the value is the control's own. C agrees on the campaign's
         // cells (`SVT_INJCFG_OUT`: `ibord=0 uepme=1`).
         updated_enable_pme: pme.enabled != 0,
+        cli_qp: i.cli_qp,
         base_q_idx: i.base_q_idx,
         sad_per_bit: crate::port_md::pme::get_sad_per_bit(usize::from(i.base_q_idx), false),
         allow_high_precision_mv: i.allow_high_precision_mv,

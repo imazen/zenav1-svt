@@ -628,6 +628,14 @@ pub struct FunnelCfg {
     /// way. Baked here for the still ladder (level 11 at M8+); the video arm
     /// gets it from `nic_arm::apply`.
     pub enable_skipping_mds1: bool,
+    /// `nic_ctrls.pruning_ctrls.merge_inter_cands_mult` (4 at nic levels
+    /// 6..=11, `(uint8_t)~0` below — `u8::MAX` here). When set, a block whose
+    /// `min(md_me_dist, md_pme_dist) / (bw * bh)` is under
+    /// `(mult * (63 - qp)) >> 1` puts EVERY inter candidate in CAND_CLASS_2 —
+    /// the MVP and MV lanes merge into one MDS0 pool (mode_decision.c:
+    /// 3638-3669). Dead on an all-intra frame (no inter candidates), live on
+    /// every inter one at the shipped presets (video p6 -> nic level 8).
+    pub merge_inter_cands_mult: u8,
     /// `rate_est_ctrls.update_skip_ctx_dc_sign_ctx`/`update_skip_coeff_ctx`
     /// (M6 rate_est 1: real neighbour contexts; M7/M8 rate_est 4: 0/0).
     pub real_coeff_ctx: bool,
@@ -897,6 +905,9 @@ impl FunnelCfg {
             // 0 at nic level 6 (enc_mode_config.c:4714); the level-11 arms
             // below set it.
             enable_skipping_mds1: false,
+            // nic levels 0..=5 (enc_mode_config.c:4545..:4695); the
+            // `preset >= 6` tail below stamps C's 4.
+            merge_inter_cands_mult: u8::MAX,
             real_coeff_ctx: true,
             // All-intra pins SSSE_MDS3 at every preset; `intra_arm::apply`
             // overrides this for the video arm.
@@ -1301,6 +1312,15 @@ impl FunnelCfg {
             },
         };
         cfg.bypass_encdec = preset >= 4;
+        // `merge_inter_cands_mult = 4` at nic levels 6..=11 — the allintra
+        // ladder reaches level 6 at M5 (`enc_mode <= M6 -> 6`,
+        // `get_nic_level_allintra`), 7 at M7 and 11 at M8+, and every
+        // preset below sits at level <= 5 (`(uint8_t)~0`). Inert on the
+        // still path either way — there are no inter candidates to merge —
+        // but the bake must match the ladder the walk derives.
+        if preset >= 5 {
+            cfg.merge_inter_cands_mult = 4;
+        }
         // `svt_aom_sig_deriv_enc_dec_allintra`'s skip_sub_depth_lvl
         // (enc_mode_config.c:8156): `enc_mode <= ENC_M7 -> 1 else 2`, on
         // the still arm's M9-clamped enc_mode. The video arm's M1
