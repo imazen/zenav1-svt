@@ -1,7 +1,8 @@
 //! SIMD fill for the coefficient level map (`svt_av1_txb_init_levels_c`).
 //!
 //! [`fill_levels`] is the per-txb inner map used by [`crate::entropy::coeff_c::txb_init_levels`]:
-//! `levels[origin + r*(width+4) + c] = min(|coeff[r*width + c]|, 127)`. It is a
+//! `levels[r*(width+4) + c] = min(|coeff[r*width + c]|, 127)` on the
+//! body-anchored sub-slice, plus each row's `TX_PAD_HOR` pad zeros. It is a
 //! pure, independent per-element map (integer `abs` → clamp to `INT8_MAX` →
 //! narrow to `u8`) with no cross-element reduction, so the columns of a row map
 //! directly onto SIMD lanes and the result is **bit-identical** to the scalar
@@ -18,14 +19,16 @@
 use archmage::prelude::*;
 
 use crate::entropy::coeff_c::{
-    TX_CLASS_2D, TX_CLASS_HORIZ, TX_PAD_HOR, TX_SIZES_ALL, levels_origin, nz_map_ctx_offset_1d,
+    TX_CLASS_2D, TX_CLASS_HORIZ, TX_PAD_HOR, TX_SIZES_ALL, nz_map_ctx_offset_1d,
     nz_map_ctx_offset_2d, txb_bwl, txb_high, txb_wide,
 };
 
-/// Fill the coefficient level map. `levels_buf` is assumed pre-zeroed by the
-/// caller ([`crate::entropy::coeff_c::txb_init_levels`]); this writes only the `width`
-/// value columns of each of the `height` rows at the padded origin, leaving the
-/// horizontal/vertical pad bytes at 0.
+/// Fill the coefficient level map. `levels_buf` is the body-anchored
+/// sub-slice [`crate::entropy::coeff_c::txb_init_levels`] carves from the
+/// scratch; this writes every byte of the body — `height` rows of `width`
+/// values plus the row's `TX_PAD_HOR` trailing zeros (C's
+/// `*(int32_t*)(ls + width) = 0` per row). The vertical pad below the body is
+/// the scratch's permanently-zero tail, never written.
 pub(crate) fn fill_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &mut [u8]) {
     incant!(
         fill_levels_impl(coeff, width, height, levels_buf),
@@ -33,19 +36,46 @@ pub(crate) fn fill_levels(coeff: &[i32], width: usize, height: usize, levels_buf
     )
 }
 
-/// Scalar reference — byte-for-byte the original `txb_init_levels` inner loop
-/// (`svt_av1_txb_init_levels_c`, rd_cost.c:93). The AVX2 path is proven
+/// Scalar reference — byte-for-byte the `txb_init_levels` inner loop
+/// (`svt_av1_txb_init_levels_c`, rd_cost.c:93): `width` values then the
+/// 4-byte pad store per row. The AVX2 path is proven
 /// identical to this against real C in `tests/c_parity.rs`.
 #[inline]
 fn fill_levels_core(coeff: &[i32], width: usize, height: usize, levels_buf: &mut [u8]) {
-    let stride = width + TX_PAD_HOR;
-    let origin = levels_origin(width);
-    for r in 0..height {
-        let cb = r * width;
-        let db = origin + r * stride;
-        for c in 0..width {
-            levels_buf[db + c] = coeff[cb + c].unsigned_abs().min(127) as u8;
+    match width {
+        4 => fill_rows_core::<4>(coeff, height, levels_buf),
+        8 => fill_rows_core::<8>(coeff, height, levels_buf),
+        16 => fill_rows_core::<16>(coeff, height, levels_buf),
+        32 => fill_rows_core::<32>(coeff, height, levels_buf),
+        _ => {
+            let stride = width + TX_PAD_HOR;
+            for r in 0..height {
+                let cb = r * width;
+                let db = r * stride;
+                for c in 0..width {
+                    levels_buf[db + c] = coeff[cb + c].unsigned_abs().min(127) as u8;
+                }
+                // C's `*(int32_t*)(ls + width) = 0`.
+                levels_buf[db + width..db + stride].fill(0);
+            }
         }
+    }
+}
+
+/// The scalar row fill with `W` const-generic: inside `c < W` the `row[c]`
+/// bound is provably in-range, and `row[W..s]` lowers to one fixed store —
+/// C's `*(int32_t*)(ls + width) = 0`.
+#[inline]
+fn fill_rows_core<const W: usize>(coeff: &[i32], height: usize, levels_buf: &mut [u8]) {
+    let s: usize = W + TX_PAD_HOR;
+    for (src_row, row) in coeff[..height * W]
+        .chunks_exact(W)
+        .zip(levels_buf[..height * s].chunks_exact_mut(s))
+    {
+        for c in 0..W {
+            row[c] = src_row[c].unsigned_abs().min(127) as u8;
+        }
+        row[W..s].fill(0);
     }
 }
 
@@ -71,25 +101,39 @@ fn fill_levels_impl_neon(
     height: usize,
     levels_buf: &mut [u8],
 ) {
-    if width < 8 {
+    match width {
+        8 => fill_rows_neon::<8>(token, coeff, height, levels_buf),
+        16 => fill_rows_neon::<16>(token, coeff, height, levels_buf),
+        32 => fill_rows_neon::<32>(token, coeff, height, levels_buf),
         // Only BLOCK width 4 (a row is a single 4-lane group with a 4-byte pad
         // gap to the next row's destination); not worth a masked path.
-        fill_levels_core(coeff, width, height, levels_buf);
-        return;
+        _ => fill_levels_core(coeff, width, height, levels_buf),
     }
-    let stride = width + TX_PAD_HOR;
-    let origin = levels_origin(width);
-    for r in 0..height {
-        let cb = r * width;
-        let db = origin + r * stride;
+}
+
+/// The NEON twin of [`fill_rows_v3`]: `W` const-generic so the per-chunk and
+/// pad bounds are compile-time.
+#[cfg(target_arch = "aarch64")]
+#[rite]
+fn fill_rows_neon<const W: usize>(
+    token: NeonToken,
+    coeff: &[i32],
+    height: usize,
+    levels_buf: &mut [u8],
+) {
+    let s: usize = W + TX_PAD_HOR;
+    for (src_row, row) in coeff[..height * W]
+        .chunks_exact(W)
+        .zip(levels_buf[..height * s].chunks_exact_mut(s))
+    {
         let mut c = 0usize;
-        // width is 8/16/32 here, so this consumes the row exactly (no remainder).
-        while c + 8 <= width {
-            let src: &[i32; 8] = coeff[cb + c..cb + c + 8].try_into().unwrap();
-            let dst: &mut [u8; 8] = (&mut levels_buf[db + c..db + c + 8]).try_into().unwrap();
+        while c + 8 <= W {
+            let src: &[i32; 8] = src_row[c..c + 8].try_into().unwrap();
+            let dst: &mut [u8; 8] = (&mut row[c..c + 8]).try_into().unwrap();
             pack8_neon(token, src, dst);
             c += 8;
         }
+        row[W..s].fill(0);
     }
 }
 
@@ -131,25 +175,44 @@ fn fill_levels_impl_v3(
     height: usize,
     levels_buf: &mut [u8],
 ) {
-    if width < 8 {
+    match width {
+        8 => fill_rows_v3::<8>(token, coeff, height, levels_buf),
+        16 => fill_rows_v3::<16>(token, coeff, height, levels_buf),
+        32 => fill_rows_v3::<32>(token, coeff, height, levels_buf),
         // Only BLOCK width 4 (a row is a single 4-lane group with a 4-byte pad
         // gap to the next row's destination); not worth a masked path.
-        fill_levels_core(coeff, width, height, levels_buf);
-        return;
+        _ => fill_levels_core(coeff, width, height, levels_buf),
     }
-    let stride = width + TX_PAD_HOR;
-    let origin = levels_origin(width);
-    for r in 0..height {
-        let cb = r * width;
-        let db = origin + r * stride;
+}
+
+/// The AVX2 row fill with `W` const-generic: `W`/`W + TX_PAD_HOR` are
+/// compile-time, so inside `c + 8 <= W` every `row[c..c + 8]` bound is
+/// provably in-range and the 4-byte pad store lowers to one fixed store — the
+/// shape of C's `svt_av1_txb_init_levels_avx2` inner loop, not a checked-slice
+/// one.
+#[cfg(target_arch = "x86_64")]
+#[rite]
+fn fill_rows_v3<const W: usize>(
+    token: Desktop64,
+    coeff: &[i32],
+    height: usize,
+    levels_buf: &mut [u8],
+) {
+    let s: usize = W + TX_PAD_HOR;
+    for (src_row, row) in coeff[..height * W]
+        .chunks_exact(W)
+        .zip(levels_buf[..height * s].chunks_exact_mut(s))
+    {
         let mut c = 0usize;
-        // width is 8/16/32 here, so this consumes the row exactly (no remainder).
-        while c + 8 <= width {
-            let src: &[i32; 8] = coeff[cb + c..cb + c + 8].try_into().unwrap();
-            let dst: &mut [u8; 8] = (&mut levels_buf[db + c..db + c + 8]).try_into().unwrap();
+        while c + 8 <= W {
+            let src: &[i32; 8] = src_row[c..c + 8].try_into().unwrap();
+            let dst: &mut [u8; 8] = (&mut row[c..c + 8]).try_into().unwrap();
             pack8_v3(token, src, dst);
             c += 8;
         }
+        // C's `*(int32_t*)(ls + width) = 0` — `s - W == TX_PAD_HOR` is a
+        // compile-time constant, so this lowers to one fixed-size store.
+        row[W..s].fill(0);
     }
 }
 
@@ -314,12 +377,12 @@ fn nz_map_ctxs_impl_scalar(
 /// from [`NZ_OFFSET`] instead of C's per-row shifting vector constants.
 ///
 /// Worst-case tap read (TX_CLASS_VERT, last row, last chunk) ends at byte
-/// `(TX_PAD_TOP + h + 3) * stride + w` — exactly the `used` extent
-/// [`crate::entropy::coeff_c::txb_init_levels`] zeroes (the same bound the scan-order
-/// reader reaches from the last coefficient), so the raster fill never reads a
-/// stale byte; `tests/c_parity.rs::
+/// `(h + 3) * stride + w` of the body-anchored sub-slice — inside the body the
+/// fill wrote or in the permanently-zero scratch tail (the same bound the
+/// scan-order reader reaches from the last coefficient), so the raster fill
+/// never reads a stale byte; `tests/c_parity.rs::
 /// coeff_c_txb_init_levels_partial_zero_no_stale_reads` polices this with 0xFF
-/// poison past `used`.
+/// poison above the anchored base.
 #[cfg(target_arch = "x86_64")]
 #[arcane]
 fn nz_map_ctxs_impl_v3(
@@ -334,7 +397,6 @@ fn nz_map_ctxs_impl_v3(
     let w = txb_wide(tx_size);
     let h = txb_high(tx_size);
     let stride = w + TX_PAD_HOR;
-    let origin = levels_origin(w);
     // Third/fourth/fifth stencil taps past the right (+1) and below (+stride)
     // ones — C's `offsets[3]` per tx_class (encodetxb_sse2.c:470-496).
     let (off0, off1, off2) = match tx_class {
@@ -349,7 +411,7 @@ fn nz_map_ctxs_impl_v3(
             // 4 rows × 4 columns per iteration (h % 4 == 0).
             let mut row = 0usize;
             while row < h {
-                let base = origin + row * stride;
+                let base = row * stride;
                 let idx = row * 4;
                 let l0 = gather4(levels, base + 1, stride);
                 let l1 = gather4(levels, base + stride, stride);
@@ -373,7 +435,7 @@ fn nz_map_ctxs_impl_v3(
             // 2 rows × 8 columns per iteration (h % 2 == 0).
             let mut row = 0usize;
             while row < h {
-                let base = origin + row * stride;
+                let base = row * stride;
                 let idx = row * 8;
                 let l0 = gather8(levels, base + 1, stride);
                 let l1 = gather8(levels, base + stride, stride);
@@ -400,7 +462,7 @@ fn nz_map_ctxs_impl_v3(
             while row < h {
                 let mut cg = 0usize;
                 while cg < w {
-                    let base = origin + row * stride + cg;
+                    let base = row * stride + cg;
                     let idx = row * w + cg;
                     nz_kernel16_v3(
                         token,
@@ -462,7 +524,6 @@ fn nz_map_ctxs_impl_neon(
     let w = txb_wide(tx_size);
     let h = txb_high(tx_size);
     let stride = w + TX_PAD_HOR;
-    let origin = levels_origin(w);
     // Third/fourth/fifth stencil taps past the right (+1) and below (+stride)
     // ones — C's `offsets[3]` per tx_class (encodetxb_sse2.c:470-496).
     let (off0, off1, off2) = match tx_class {
@@ -477,7 +538,7 @@ fn nz_map_ctxs_impl_neon(
             // 4 rows × 4 columns per iteration (h % 4 == 0).
             let mut row = 0usize;
             while row < h {
-                let base = origin + row * stride;
+                let base = row * stride;
                 let idx = row * 4;
                 let l0 = gather4(levels, base + 1, stride);
                 let l1 = gather4(levels, base + stride, stride);
@@ -501,7 +562,7 @@ fn nz_map_ctxs_impl_neon(
             // 2 rows × 8 columns per iteration (h % 2 == 0).
             let mut row = 0usize;
             while row < h {
-                let base = origin + row * stride;
+                let base = row * stride;
                 let idx = row * 8;
                 let l0 = gather8(levels, base + 1, stride);
                 let l1 = gather8(levels, base + stride, stride);
@@ -528,7 +589,7 @@ fn nz_map_ctxs_impl_neon(
             while row < h {
                 let mut cg = 0usize;
                 while cg < w {
-                    let base = origin + row * stride + cg;
+                    let base = row * stride + cg;
                     let idx = row * w + cg;
                     nz_kernel16_neon(
                         token,
@@ -696,7 +757,6 @@ mod tests {
             let height = txb_high(ts);
             let n = width * height;
             let stride = width + TX_PAD_HOR;
-            let origin = levels_origin(width);
             let region = height * stride;
             for phase in 0..extremes.len() {
                 let coeffs: Vec<i32> = (0..n)
@@ -708,8 +768,8 @@ mod tests {
                     let mut got = vec![0u8; TX_PAD_2D];
                     fill_levels(&coeffs, width, height, &mut got);
                     assert_eq!(
-                        &got[origin..origin + region],
-                        &want[origin..origin + region],
+                        &got[..region],
+                        &want[..region],
                         "fill_levels tier != core: ts={ts} phase={phase} w={width} h={height}"
                     );
                 });

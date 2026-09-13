@@ -1694,25 +1694,26 @@ fn cost_coeffs_txb_pd0_inner(
         levels: levels_buf,
         ctx: ctx_buf,
     } = sc;
-    if eob > 1 {
-        cc::txb_init_levels(qcoeff, width, height, levels_buf);
+    // Body-anchored sub-slice — `eob > 1` fills it; at `eob <= 1`
+    // `loop_cost_eob_pd0` reads only `lps_cost[0]`/position-derived contexts
+    // and `get_nz_map_contexts` writes `ctx[scan[0]]` without touching the
+    // map, but `levels_skip_init` keeps the sub-slice uniformly shaped.
+    let levels: &[u8] = if eob > 1 {
+        cc::txb_init_levels(qcoeff, width, height, levels_buf)
     } else {
-        // See the twin in `leaf_funnel::coeff_rate::cost_coeffs_txb_inner`:
-        // eob == 1 reads the map without filling it, so the `used` prefix must
-        // be zeroed to reproduce the old per-call stack array.
-        let used = cc::levels_used_len(width, height, levels_buf.len());
-        levels_buf[..used].fill(0);
-    }
+        cc::levels_skip_init(levels_buf, width, height)
+    };
     cost += tx_rates.rate_for(c_tx_size);
     cost += crate::quant::eob_cost(eob as i32, eob_bits, coeff_costs, cc::TX_CLASS_2D);
 
     // Same per-thread scratch as `leaf_funnel::coeff_rate::cost_coeffs_txb`'s
-    // — see `cc::TxbScratch`. Only the `n_ctx` prefix is cleared.
+    // — see `cc::TxbScratch`. `get_nz_map_contexts` writes every position a
+    // caller can read (`scan[0..eob]` on the scan-order arm, the whole raster
+    // on SIMD), so no per-call clear.
     let n_ctx = width * height;
     debug_assert!(n_ctx <= cc::MAX_TXB_COEFF_AREA);
-    ctx_buf[..n_ctx].fill(0);
     cc::get_nz_map_contexts(
-        &levels_buf[..],
+        levels,
         scan,
         eob as usize,
         c_tx_size,
@@ -1727,7 +1728,7 @@ fn cost_coeffs_txb_pd0_inner(
             scan,
             coeff_contexts,
             coeff_costs,
-            &levels_buf[..],
+            levels,
             bwl,
             subres_step,
         );

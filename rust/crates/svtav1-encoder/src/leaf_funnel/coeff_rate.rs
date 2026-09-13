@@ -117,18 +117,14 @@ fn cost_coeffs_txb_inner(
         levels: levels_buf,
         ctx: ctx_buf,
     } = sc;
-    if eob > 1 {
-        // Zeroes the `used` prefix and refills the body — the scratch may
-        // arrive dirty.
-        cc::txb_init_levels(qcoeff, width, height, levels_buf);
+    // The body-anchored sub-slice every reader indexes by `padded_idx` —
+    // `eob > 1` fills it; at `eob <= 1` only `br_ctx(pos = 0)` reads it (the
+    // DC-position tap reach, which `levels_skip_init` clears).
+    let levels: &[u8] = if eob > 1 {
+        cc::txb_init_levels(qcoeff, width, height, levels_buf)
     } else {
-        // eob == 1 READS the map (`br_ctx` at the DC position) without filling
-        // it, so it must see the zeros the old per-call stack array gave it.
-        // `levels_used_len` is the bound every reader of a (width, height) txb
-        // stays inside.
-        let used = cc::levels_used_len(width, height, levels_buf.len());
-        levels_buf[..used].fill(0);
-    }
+        cc::levels_skip_init(levels_buf, width, height)
+    };
     if plane_type == 0 {
         // SHIPPED-C QUIRK (svt_av1_cost_coeffs_txb, rd_cost.c:394): the
         // coeff-cost's tx-type rate keys `is_inter` on
@@ -158,9 +154,8 @@ fn cost_coeffs_txb_inner(
     // `MAX_TXB_COEFF_AREA` is still the bound `adjusted_tx_size` guarantees.
     let n_ctx = width * height;
     debug_assert!(n_ctx <= cc::MAX_TXB_COEFF_AREA);
-    ctx_buf[..n_ctx].fill(0);
     cc::get_nz_map_contexts(
-        &levels_buf[..],
+        levels,
         scan,
         eob as usize,
         c_tx_size,
@@ -204,7 +199,7 @@ fn cost_coeffs_txb_inner(
         };
 
     if eob_us == 1 {
-        level_cost(&mut cost, 0, qcoeff[0], true, true, &levels_buf[..]);
+        level_cost(&mut cost, 0, qcoeff[0], true, true, levels);
         #[cfg(feature = "std")]
         ccost_log(
             plane_type,
@@ -225,9 +220,9 @@ fn cost_coeffs_txb_inner(
     // position is priced.
     {
         let pos = scan[eob_us - 1] as usize;
-        level_cost(&mut cost, pos, qcoeff[pos], true, false, &levels_buf[..]);
+        level_cost(&mut cost, pos, qcoeff[pos], true, false, levels);
     }
-    level_cost(&mut cost, 0, qcoeff[0], false, true, &levels_buf[..]);
+    level_cost(&mut cost, 0, qcoeff[0], false, true, levels);
     for c in (1..=eob_us - 2).rev() {
         let pos = scan[c] as usize;
         let v = qcoeff[pos];
@@ -236,7 +231,7 @@ fn cost_coeffs_txb_inner(
             cost += lit;
         }
         if level > cc::NUM_BASE_LEVELS {
-            let ctx = cc::br_ctx(&levels_buf[..], pos, bwl, tx_class);
+            let ctx = cc::br_ctx(levels, pos, bwl, tx_class);
             let base_range = level - 1 - cc::NUM_BASE_LEVELS;
             cost += costs.base_cost[coeff_contexts[pos] as usize][3];
             if base_range < cc::COEFF_BASE_RANGE {

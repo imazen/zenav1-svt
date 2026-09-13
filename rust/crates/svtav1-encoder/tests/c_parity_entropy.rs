@@ -539,18 +539,19 @@ fn coeff_c_levels_and_contexts_match_c() {
                     coeffs[p] = if rng.below(2) == 0 { mag } else { -mag };
                 }
 
-                // Level map parity.
-                let mut rust_buf = [0u8; coeff_c::TX_PAD_2D];
-                coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
-                let origin = coeff_c::levels_origin(width);
+                // Level map parity. `txb_init_levels` returns the
+                // bottom-anchored body slice (index 0 = the (0,0) level) —
+                // the same `levels` pointer C's `set_levels` hands its
+                // readers, so the C side just gets a zeroed buffer slice.
+                let mut rust_buf = vec![0u8; coeff_c::LEVELS_SCRATCH_LEN];
+                let levels = coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
                 let stride = width + coeff_c::TX_PAD_HOR;
-                let written =
-                    stride * height + coeff_c::TX_PAD_BOTTOM * stride + coeff_c::TX_PAD_END;
-                let mut c_buf = [0u8; coeff_c::TX_PAD_2D];
-                cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
+                let written = stride * height;
+                let mut c_buf = vec![0u8; coeff_c::TX_PAD_2D];
+                cref::txb_init_levels(&coeffs, width, height, &mut c_buf[..]);
                 assert_eq!(
-                    &rust_buf[origin..origin + written],
-                    &c_buf[origin..origin + written],
+                    &levels[..written],
+                    &c_buf[..written],
                     "levels ts={ts}"
                 );
 
@@ -571,17 +572,10 @@ fn coeff_c_levels_and_contexts_match_c() {
 
                 // nz-map contexts parity.
                 let mut rust_ctx = [0i8; 32 * 32];
-                coeff_c::get_nz_map_contexts(&rust_buf, scan, eob, ts, tx_class, &mut rust_ctx);
+                coeff_c::get_nz_map_contexts(levels, scan, eob, ts, tx_class, &mut rust_ctx);
                 let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
                 let mut c_ctx = [0i8; 32 * 32];
-                cref::get_nz_map_contexts(
-                    &c_buf[origin..],
-                    &c_scan,
-                    eob as u16,
-                    ts,
-                    tx_class,
-                    &mut c_ctx,
-                );
+                cref::get_nz_map_contexts(&c_buf[..], &c_scan, eob as u16, ts, tx_class, &mut c_ctx);
                 // Compared at the scan positions — the bytes `_c` defines and
                 // the only ones any caller reads. Non-scan positions are
                 // tier-dependent (raster values on the x86 arm, untouched on
@@ -599,8 +593,8 @@ fn coeff_c_levels_and_contexts_match_c() {
                 // br context parity at every nonzero position.
                 let bwl = coeff_c::txb_bwl(ts);
                 for &pos in scan[..eob].iter() {
-                    let r = coeff_c::br_ctx(&rust_buf, pos as usize, bwl, tx_class);
-                    let c = cref::get_br_ctx(&c_buf[origin..], pos as usize, bwl, tx_class);
+                    let r = coeff_c::br_ctx(levels, pos as usize, bwl, tx_class);
+                    let c = cref::get_br_ctx(&c_buf[..], pos as usize, bwl, tx_class);
                     assert_eq!(r as i32, c, "br_ctx ts={ts} pos={pos}");
                 }
             }
@@ -608,17 +602,20 @@ fn coeff_c_levels_and_contexts_match_c() {
     }
 }
 
-/// Locks the reduced-extent zeroing of [`coeff_c::txb_init_levels`]: it zeros
-/// only the padded prefix a `(width, height)` txb uses (`used`), not the whole
-/// `TX_PAD_2D`. Byte-identity of every downstream coeff cost/context depends on
-/// NO reader ever touching the un-zeroed tail `[used, len)`. This pre-fills the
-/// whole scratch with `0xFF` garbage before `txb_init_levels`, then checks that
-/// `get_nz_map_contexts` and `br_ctx` are still bit-identical to the real-C
-/// reference (built from a correctly-zeroed buffer). A read past `used` would
-/// surface `0xFF` (which clamps to context 3, not 0) and diverge from C — so
-/// passing proves the reduced zeroing leaves no observable stale byte. Since the
-/// deepest read here (TX_CLASS_VERT, 32x32) is exactly what `LEVELS_SCRATCH_LEN`
-/// is sized for, this transitively validates the shrunk per-call scratch too.
+/// Locks the bottom-anchored layout of [`coeff_c::txb_init_levels`]: the fused
+/// fill writes exactly the `height * (width + 4)` body — every reader's
+/// downward/rightward taps then land either in bytes this call wrote or in the
+/// permanently-zero `[LEVELS_TAIL, len)` tail, so NO per-call memset is needed.
+/// Two hazards this pins:
+///   1. The fill must not write past the body — a stray store into the tail
+///      would corrupt the permanent zero pad later calls rely on (asserted by
+///      poisoning the tail before `txb_init_levels` and checking it survives).
+///   2. No reader may touch bytes above the anchored base or stale bytes a
+///      previous call left inside the body — checked by running a MIXED
+///      sequence of shapes through ONE scratch buffer (each trial inherits the
+///      leftovers of every previous shape) and comparing
+///      `get_nz_map_contexts`/`br_ctx` against the real-C reference built on a
+///      correctly-zeroed buffer.
 /// x86_64 ONLY: compares against `cref::get_nz_map_contexts_sse2`, an SSE2
 /// kernel with no counterpart on other architectures. Gated at COMPILE time
 /// (not skipped at runtime) so the rest of this suite links and runs on arm64 —
@@ -650,10 +647,15 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
     // output must hold `archmage::testing::lock_token_testing()`.
     let _tier_lock = archmage::testing::lock_token_testing();
     let mut rng = Rng(0x5EED_1EAF_9911_ABCD);
+    // ONE scratch for the whole sweep: every call inherits the previous
+    // shapes' leftovers, which is exactly the contamination the bottom anchor
+    // must be immune to. The tail is zeroed once — the production invariant.
+    let mut rust_buf = vec![0u8; coeff_c::LEVELS_SCRATCH_LEN];
     for ts in 0..19usize {
         let width = coeff_c::txb_wide(ts);
         let height = coeff_c::txb_high(ts);
         let n = width * height;
+        let stride = width + coeff_c::TX_PAD_HOR;
         for &tx_type in &[0usize, 10, 11] {
             let tx_class = coeff_c::TX_TYPE_TO_CLASS[tx_type];
             for _trial in 0..8 {
@@ -665,13 +667,26 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
                     coeffs[p] = if rng.below(2) == 0 { mag } else { -mag };
                 }
 
-                // PRE-FILL WITH GARBAGE: any read past `used` sees 0xFF, not 0.
-                let mut rust_buf = [0xFFu8; coeff_c::TX_PAD_2D];
-                coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
-                let origin = coeff_c::levels_origin(width);
+                // Sentinel-poison the body arena AND the tail: the fill must
+                // overwrite every body byte readers can reach and NEVER touch
+                // the tail (a stray store there — even a zero — is a bug).
+                rust_buf[..coeff_c::LEVELS_TAIL].fill(0xFF);
+                rust_buf[coeff_c::LEVELS_TAIL..].fill(0x77);
+                {
+                    let levels =
+                        coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
+                    assert!(
+                        levels[height * stride..].iter().all(|&b| b == 0x77),
+                        "fill wrote into the permanent tail: ts={ts} w={width} h={height}"
+                    );
+                }
+                // Production invariant: the tail is the scratch's permanent
+                // zero pad — restore it before the readers run.
+                rust_buf[coeff_c::LEVELS_TAIL..].fill(0);
+                let levels = &rust_buf[coeff_c::levels_base(width, height)..];
                 // Real-C reference from a correctly-zeroed buffer.
-                let mut c_buf = [0u8; coeff_c::TX_PAD_2D];
-                cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
+                let mut c_buf = vec![0u8; coeff_c::TX_PAD_2D];
+                cref::txb_init_levels(&coeffs, width, height, &mut c_buf[..]);
 
                 let scan = svtav1_encoder::entropy::scan_tables::scan(
                     ts,
@@ -688,17 +703,10 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
                 }
 
                 let mut rust_ctx = [0i8; 32 * 32];
-                coeff_c::get_nz_map_contexts(&rust_buf, scan, eob, ts, tx_class, &mut rust_ctx);
+                coeff_c::get_nz_map_contexts(levels, scan, eob, ts, tx_class, &mut rust_ctx);
                 let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
                 let mut c_ctx = [0i8; 32 * 32];
-                cref::get_nz_map_contexts(
-                    &c_buf[origin..],
-                    &c_scan,
-                    eob as u16,
-                    ts,
-                    tx_class,
-                    &mut c_ctx,
-                );
+                cref::get_nz_map_contexts(&c_buf[..], &c_scan, eob as u16, ts, tx_class, &mut c_ctx);
                 // Scan positions: identical to `_c` regardless of dispatch
                 // tier (the bytes every caller reads).
                 for &pos in scan[..eob].iter() {
@@ -719,7 +727,7 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
                 if std::arch::is_x86_feature_detected!("avx2") && eob >= 2 {
                     let mut sse2_ctx = [0i8; 32 * 32];
                     cref::get_nz_map_contexts_sse2(
-                        &c_buf[origin..],
+                        &c_buf[..],
                         &c_scan,
                         eob as u16,
                         ts,
@@ -735,8 +743,8 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
 
                 let bwl = coeff_c::txb_bwl(ts);
                 for &pos in scan[..eob].iter() {
-                    let r = coeff_c::br_ctx(&rust_buf, pos as usize, bwl, tx_class);
-                    let c = cref::get_br_ctx(&c_buf[origin..], pos as usize, bwl, tx_class);
+                    let r = coeff_c::br_ctx(levels, pos as usize, bwl, tx_class);
+                    let c = cref::get_br_ctx(&c_buf[..], pos as usize, bwl, tx_class);
                     assert_eq!(r as i32, c, "br_ctx (dirty scratch) ts={ts} pos={pos}");
                 }
             }
@@ -795,20 +803,19 @@ fn txb_init_levels_simd_matches_c() {
         let height = coeff_c::txb_high(ts);
         let n = width * height;
         let stride = width + coeff_c::TX_PAD_HOR;
-        let origin = coeff_c::levels_origin(width);
-        // Bytes the C kernel writes at `c_buf[origin..]`: `height` rows of
+        // Bytes the fill writes in the body-anchored slice: `height` rows of
         // `width` values + `TX_PAD_HOR` trailing zeros each.
         let region = height * stride;
         for pat in 0..50usize {
             let coeffs = txb_gen_coeffs(pat, n, &mut rng);
             let mut c_buf = vec![0u8; coeff_c::TX_PAD_2D];
-            cref::txb_init_levels(&coeffs, width, height, &mut c_buf[origin..]);
+            cref::txb_init_levels(&coeffs, width, height, &mut c_buf[..]);
             let _ = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
-                let mut rust_buf = vec![0u8; coeff_c::TX_PAD_2D];
-                coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
+                let mut rust_buf = vec![0u8; coeff_c::LEVELS_SCRATCH_LEN];
+                let levels = coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
                 assert_eq!(
-                    &rust_buf[origin..origin + region],
-                    &c_buf[origin..origin + region],
+                    &levels[..region],
+                    &c_buf[..region],
                     "txb_init_levels tier != C: ts={ts} pat={pat} w={width} h={height}"
                 );
             });
@@ -886,12 +893,12 @@ fn nz_map_contexts_simd_matches_c() {
                     }
                 }
 
-                // Level maps: port (whole buffer) and C (at the set_levels origin).
-                let mut levels = vec![0u8; coeff_c::TX_PAD_2D];
-                coeff_c::txb_init_levels(&coeffs, width, height, &mut levels);
-                let origin = coeff_c::levels_origin(width);
+                // Level maps: port (body-anchored sub-slice) and C.
+                let mut rust_buf = vec![0u8; coeff_c::LEVELS_SCRATCH_LEN];
+                let levels: &[u8] =
+                    coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
                 let mut c_levels = vec![0u8; coeff_c::TX_PAD_2D];
-                cref::txb_init_levels(&coeffs, width, height, &mut c_levels[origin..]);
+                cref::txb_init_levels(&coeffs, width, height, &mut c_levels[..]);
 
                 let mut eob = 0usize;
                 for (i, &pos) in scan.iter().enumerate() {
@@ -905,7 +912,7 @@ fn nz_map_contexts_simd_matches_c() {
 
                 let mut c_ctx = vec![0i8; n];
                 cref::get_nz_map_contexts(
-                    &c_levels[origin..],
+                    &c_levels[..],
                     &c_scan,
                     eob as u16,
                     ts,
@@ -914,7 +921,7 @@ fn nz_map_contexts_simd_matches_c() {
                 );
                 let mut sse2_ctx = vec![0i8; n];
                 cref::get_nz_map_contexts_sse2(
-                    &c_levels[origin..],
+                    &c_levels[..],
                     &c_scan,
                     eob as u16,
                     ts,
@@ -924,7 +931,7 @@ fn nz_map_contexts_simd_matches_c() {
 
                 let report = for_each_token_permutation(CompileTimePolicy::WarnStderr, |_perm| {
                     let mut port = vec![0i8; n];
-                    coeff_c::get_nz_map_contexts(&levels, scan, eob, ts, tx_class, &mut port);
+                    coeff_c::get_nz_map_contexts(levels, scan, eob, ts, tx_class, &mut port);
                     // Identical to BOTH real-C kernels at every scan position
                     // (dense trials, eob == n, make that every raster position).
                     for &p in &scan[..eob] {

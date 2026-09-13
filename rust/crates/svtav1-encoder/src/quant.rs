@@ -882,9 +882,12 @@ fn qc_dqc_low(abs_qc: i32, sign: i32, dqv: i32, shift: i32) -> (i32, i32) {
     (qc_low, dqc_low)
 }
 
+/// Padded-map position of raster index `ci` inside the body-anchored
+/// sub-slice [`coeff_c::txb_init_levels`] returns (C `get_padded_idx` on
+/// `levels`, the `set_levels` pointer).
 #[inline]
 fn levels_idx(ci: usize, bwl: usize) -> usize {
-    coeff_c::levels_origin(1 << bwl) + coeff_c::padded_idx(ci, bwl)
+    coeff_c::padded_idx(ci, bwl)
 }
 
 /// Everything `svt_av1_optimize_b` needs beyond the coefficient buffers.
@@ -1416,15 +1419,16 @@ fn optimize_b_tc<const TC: usize>(
     let skip_cost = o.txb_costs.txb_skip_cost[o.txb_skip_ctx][1];
     let eob_cost_init = eob_cost_tc::<TC>(*eob as i32, o.eob_costs, o.txb_costs);
 
-    if *eob > 1 {
-        coeff_c::txb_init_levels(qcoeff, width, height, levels_buf);
+    // The body-anchored sub-slice every trellis reader/writer indexes by
+    // `padded_idx`. `eob > 1` fills it; at `eob <= 1` the trellis never reads
+    // the map (the `is_eob`/`br_ctx_eob` arms are position-only), but
+    // `levels_skip_init` still clears the small tap reach so the sub-slice is
+    // uniformly "the map for this shape".
+    let levels: &mut [u8] = if *eob > 1 {
+        coeff_c::txb_init_levels(qcoeff, width, height, levels_buf)
     } else {
-        // See the twin in `leaf_funnel::coeff_rate::cost_coeffs_txb_inner`:
-        // the trellis reads the map at eob == 1 without filling it, so the
-        // `used` prefix must be zeroed to reproduce the old stack array.
-        let used = coeff_c::levels_used_len(width, height, levels_buf.len());
-        levels_buf[..used].fill(0);
-    }
+        coeff_c::levels_skip_init(levels_buf, width, height)
+    };
 
     let mut accu_rate = eob_cost_init;
     let mut accu_dist = 0i64;
@@ -1452,13 +1456,13 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf[..],
+            levels,
         );
         si -= 1;
     } else {
         debug_assert_eq!(abs_qc, 1);
         let coeff_ctx = coeff_c::lower_levels_ctx_general_tc::<TC>(
-            &levels_buf[..],
+            levels,
             ci,
             bwl,
             height,
@@ -1494,7 +1498,7 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf[..],
+            levels,
         );
         si -= 1;
     }
@@ -1535,7 +1539,7 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf[..],
+            levels,
         );
         si -= 1;
     }
@@ -1558,7 +1562,7 @@ fn optimize_b_tc<const TC: usize>(
             tcoeffs,
             qcoeff,
             dqcoeff,
-            &mut levels_buf[..],
+            levels,
         );
     }
 }

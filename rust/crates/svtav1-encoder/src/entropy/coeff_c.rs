@@ -278,17 +278,28 @@ pub const TX_PAD_2D: usize =
 /// Per-call level-map scratch length, sized to the **coeff-coding txb cap of
 /// 32x32** rather than the MAX_TX_SIZE(64)-shaped [`TX_PAD_2D`]. Coefficient
 /// coding always operates on the adjusted (≤32) txb dims (`adjusted_tx_size`
-/// folds every 64-dim transform to its 32-dim map), so no reader of the level
-/// map ever indexes past what a 32x32 txb reaches: the deepest access is the
-/// `TX_CLASS_VERT` branch of `get_nz_mag`, `base + 4*stride`, i.e. up to
-/// `TX_PAD_TOP + 32 + 4` padded rows of a `32 + TX_PAD_HOR`-wide stride plus
-/// `TX_PAD_END`. This equals the [`txb_init_levels`] `used` bound at
-/// width=height=32, so a scratch of this length (~1456 bytes vs 4640) holds
-/// every txb the encoder can code with a ~3x smaller one-time zero, and
-/// `used.min(len)` never truncates below a real read. Callers that previously
-/// stack-allocated (or heap-allocated) a full `TX_PAD_2D` per txb use this.
+/// folds every 64-dim transform to its 32-dim map). The buffer is
+/// **bottom-anchored** like C's (`common_utils.h` `LEVELS_TAIL_OFFSET` /
+/// `set_levels`): every `(width, height)` body ends exactly at
+/// [`LEVELS_TAIL`], and the bytes from `LEVELS_TAIL` to the end are the
+/// permanently-zero pad region — written once when the scratch is created and
+/// never touched again, exactly as C zeroes `md_levels_buf`'s pad once
+/// (md_process.c:235). The deepest access any reader makes is the
+/// `TX_CLASS_VERT` branch of `get_nz_mag`, `base + 4*stride` — from the last
+/// coefficient of a 32x32 body that is `LEVELS_TAIL + 3*36 + 31`, and the SIMD
+/// kernels' 16-byte loads top out ~16 bytes past that, all comfortably inside
+/// the tail. Callers that previously stack-allocated (or heap-allocated) a
+/// full `TX_PAD_2D` per txb use this.
 pub const LEVELS_SCRATCH_LEN: usize =
     (TX_PAD_TOP + 32 + TX_PAD_BOTTOM + 4) * (32 + TX_PAD_HOR) + TX_PAD_END;
+
+/// C `LEVELS_TAIL_OFFSET` (`common_utils.h`), shrunk to the port's 32-capped
+/// map: `(32 + TX_PAD_HOR) * 32`. The padded body of EVERY transform shape
+/// ends at this byte index — C's `set_levels` returns
+/// `levels_buf + LEVELS_TAIL_OFFSET - height * stride`, and the port mirrors
+/// it so the `[LEVELS_TAIL, LEVELS_SCRATCH_LEN)` tail serves as permanent
+/// bottom/right padding that is zeroed once and never rewritten.
+pub const LEVELS_TAIL: usize = (32 + TX_PAD_HOR) * 32;
 
 /// Largest coefficient-coding area a transform block can have, in samples.
 ///
@@ -299,56 +310,64 @@ pub const LEVELS_SCRATCH_LEN: usize =
 /// a fixed stack array instead of a per-call `Vec`.
 pub const MAX_TXB_COEFF_AREA: usize = 32 * 32;
 
-/// Offset of the (0,0) level inside the padded buffer (C `set_levels`).
+/// Byte index of a `(width, height)` body's (0,0) level inside the scratch —
+/// C `set_levels` (`common_utils.h`): `LEVELS_TAIL_OFFSET - height * stride`.
+/// Every shape's body ends at [`LEVELS_TAIL`], so the downward/rightward
+/// neighbour taps of `nz_mag`/`br_ctx`/`nz_map_ctxs` land either in bytes this
+/// call's fill wrote or in the permanently-zero tail.
 #[inline]
-pub const fn levels_origin(width: usize) -> usize {
-    TX_PAD_TOP * (width + TX_PAD_HOR)
+pub const fn levels_base(width: usize, height: usize) -> usize {
+    LEVELS_TAIL - height * (width + TX_PAD_HOR)
 }
 
-/// C `svt_av1_txb_init_levels_c`: zero the padded map and fill
-/// `levels[row * (width+4) + col] = min(|coeff|, 127)` at the origin offset.
+/// C `svt_av1_txb_init_levels_c`: fill the padded map
+/// `levels[row*(width+4) + col] = min(|coeff|, 127)` — **including each row's
+/// four horizontal pad zeros** (C's `*(int32_t*)(ls + width) = 0` per row) —
+/// at the bottom-anchored [`levels_base`], and return the sub-slice whose
+/// index 0 is the (0,0) level. That sub-slice is what every reader takes:
+/// `nz_mag`/`br_ctx`/`nz_map_ctxs`/`update_coeff_*` all index it by
+/// `padded_idx` directly.
+///
+/// No per-call zeroing. Every context read is `pos + non-negative` from a
+/// coefficient's padded position — at most 4 rows below the last body row —
+/// and the fill writes every byte of the body (`height` rows of `width`
+/// values + 4 pad zeros each). Reads below the body land in the
+/// [`LEVELS_TAIL`]..end region, zeroed once at scratch creation and never
+/// rewritten (all writes are `< LEVELS_TAIL`). Byte-identical to C, which
+/// relies on the same invariant.
 ///
 /// The value fill is SIMD-dispatched (see [`crate::entropy::coeff_simd::fill_levels`]) —
 /// byte-identical to the scalar map, proven against the exported real-C kernel
 /// under every dispatch tier in `tests/c_parity.rs`.
-pub fn txb_init_levels(coeff: &[i32], width: usize, height: usize, levels_buf: &mut [u8]) {
-    // Zero only the padded extent this (width, height) txb actually uses, not the
-    // whole MAX_TX_SIZE-shaped buffer (TX_PAD_2D = 4640 bytes). C keeps a
-    // persistent `md_levels_buf` whose pad is zeroed once (md_process.c:235) and
-    // re-fills only the body per txb; the port re-zeros per call, so at least
-    // bound the re-zero to the used prefix. The context derivation
-    // (`get_nz_map_contexts` -> `nz_map_ctx`/`get_nz_mag`/`br_ctx`) reads the map
-    // at each coefficient's padded position plus neighbour offsets reaching at
-    // most 4 rows below the bottom-right coefficient (the TX_CLASS_VERT branch of
-    // `nz_mag` reads `base + 4*stride`); with the top-aligned origin (TX_PAD_TOP
-    // rows) the furthest byte any reader touches is strictly below
-    // `(TX_PAD_TOP + height + 3) * stride + width`, and `fill_levels` writes only
-    // the body columns inside that. `used` clears that bound with >= 2*width rows
-    // of margin plus TX_PAD_END, capped at the buffer length. Byte-identical:
-    // every byte read and every byte written lies in `[0, used)`; bytes in
-    // `[used, len)` are never accessed for a txb of this size (for a 4x4 that is
-    // ~112 bytes zeroed instead of 4640).
-    let used = levels_used_len(width, height, levels_buf.len());
-    for b in levels_buf[..used].iter_mut() {
-        *b = 0;
-    }
-    crate::entropy::coeff_simd::fill_levels(coeff, width, height, levels_buf);
+pub fn txb_init_levels<'a>(
+    coeff: &[i32],
+    width: usize,
+    height: usize,
+    levels_buf: &'a mut [u8],
+) -> &'a mut [u8] {
+    let base = levels_base(width, height);
+    let levels = &mut levels_buf[base..];
+    crate::entropy::coeff_simd::fill_levels(coeff, width, height, levels);
+    levels
 }
 
-/// The prefix [`txb_init_levels`] zeroes for a `(width, height)` txb — every
-/// byte any reader of the map touches for that shape lies inside it (see that
-/// function's comment for the derivation).
-///
-/// Exposed because the call sites that SKIP `txb_init_levels` (`eob <= 1`,
-/// where there is no body to fill) still READ the map, and with the shared
-/// per-thread [`TxbScratch`] they must reproduce the all-zero buffer a
-/// per-call stack array used to hand them. Zeroing this prefix is the exact
-/// reproduction; zeroing the whole `LEVELS_SCRATCH_LEN` was what made the old
-/// stack array cost `LEVELS_SCRATCH_LEN` (1,456) bytes of `memset` per call.
+/// The slice a call site hands readers when it SKIPS [`txb_init_levels`]
+/// (`eob <= 1`, no body to fill). Same anchoring — the `eob == 1`
+/// `br_ctx(pos = 0)` taps (`pos + {1, 2, stride, stride+1, 2*stride}`) must
+/// read zeros, and under the bottom anchor a previous call may have left
+/// values there, so the caller must still zero that reach; [`update_coeff_*`]
+/// positions are never read at `eob <= 1` (the `is_eob`/`br_ctx_eob` arms are
+/// position-only).
 #[inline]
-pub fn levels_used_len(width: usize, height: usize, buf_len: usize) -> usize {
+pub fn levels_skip_init(levels_buf: &mut [u8], width: usize, height: usize) -> &mut [u8] {
+    let base = levels_base(width, height);
+    let levels = &mut levels_buf[base..];
+    // `br_ctx(0)`'s deepest tap is `pos + 2*stride` (TX_CLASS_VERT); zero the
+    // first three padded rows — every tap offset is < `3 * stride`.
     let stride = width + TX_PAD_HOR;
-    ((TX_PAD_TOP + height + TX_PAD_BOTTOM + 4) * stride + TX_PAD_END).min(buf_len)
+    let tap_reach = (3 * stride).min(levels.len());
+    levels[..tap_reach].fill(0);
+    levels
 }
 
 /// Per-thread scratch for the padded coefficient-LEVEL map and the nz-map
@@ -358,17 +377,17 @@ pub fn levels_used_len(width: usize, height: usize, buf_len: usize) -> usize {
 /// LEVELS_SCRATCH_LEN]` — `cost_coeffs_txb`, `cost_coeffs_txb_pd0`,
 /// `optimize_b_tc` and `write_coeffs_txb_1d` — and two of them a
 /// `[0i8; MAX_TXB_COEFF_AREA]` beside it. That is 1,456 + 1,024 bytes of stack
-/// zeroed on EVERY call, and `txb_init_levels` immediately re-zeroes the only
-/// part that matters: the `used` prefix, as little as ~112 bytes for a 4x4.
+/// zeroed on EVERY call.
 ///
 /// C does not pay this. It keeps ONE persistent `md_levels_buf` whose pad is
-/// zeroed once at `md_process.c:235` and refills only the body per txb; the
-/// comment on `txb_init_levels` has said so since it was written. This is that
-/// shape.
-///
-/// Nothing re-zeroes the buffer on entry, so a site that skips
-/// `txb_init_levels` MUST call [`levels_used_len`] and zero that prefix
-/// itself.
+/// zeroed once at `md_process.c:235` and refills only the body per txb. This
+/// is that shape, taken all the way: the map is **bottom-anchored** at
+/// [`LEVELS_TAIL`] like C's `set_levels`, the fill writes each row's
+/// horizontal pad zeros itself, and the `[LEVELS_TAIL, LEVELS_SCRATCH_LEN)`
+/// tail is zeroed once at creation and never rewritten — so the per-call work
+/// is a single fused fill, no memset at all. A site that skips
+/// `txb_init_levels` uses [`levels_skip_init`], which zeroes only the tap
+/// reach `br_ctx(0)` can still read at `eob <= 1`.
 pub struct TxbScratch {
     /// The padded level map — `txb_init_levels`' buffer.
     pub levels: [u8; LEVELS_SCRATCH_LEN],
@@ -398,16 +417,20 @@ std::thread_local! {
 /// nests these calls today; this makes a future one correct instead of a
 /// hazard.
 ///
-/// POSITIVE CONTROL. Each site re-zeroes only the `used` prefix, so a read
-/// outside that prefix would silently see the PREVIOUS txb's map where a fresh
-/// stack array gave it a zero. The buffer is therefore POISONED (0xAA / -86)
-/// before every hand-out, so such a read changes coded bits instead of hiding.
+/// POSITIVE CONTROL. Reads must stay inside the region each call's fill wrote
+/// plus the permanently-zero tail — a reader reaching ABOVE the bottom-anchored
+/// base would silently see a previous txb's map where a fresh stack array gave
+/// it a zero. The body region `[0, LEVELS_TAIL)` is therefore POISONED (0xAA /
+/// -86) before every hand-out, so such a read changes coded bits instead of
+/// hiding. The tail is deliberately NOT poisoned: it must read as zeros (a
+/// reader landing there is correct by construction — the poison would turn a
+/// legal tail read into a spurious divergence).
 ///
-/// **`cargo nextest` does not witness that read** — measured, not assumed: with
-/// the `eob <= 1` prefix-zeroing deliberately removed AND the poison on, the
-/// whole 2,509-test suite still passes, because the debug suite never reaches
-/// an `eob == 1` txb whose DC level exceeds `NUM_BASE_LEVELS`. The evidence for
-/// the `used` bound is a RELEASE build with the poison made unconditional:
+/// **`cargo nextest` does not witness every read** — measured, not assumed:
+/// with the `eob <= 1` tap-region zeroing deliberately removed AND the poison
+/// on, the debug suite still passes, because it never reaches an `eob == 1`
+/// txb whose DC level exceeds `NUM_BASE_LEVELS`. The evidence for the
+/// eob<=1-read bound is a RELEASE build with the poison made unconditional:
 /// teeth `regression_spotcheck` 96/100 (four cells with real size differences)
 /// without the zeroing, and 100/100 + `identity_full_8bit` **1100/1100** with
 /// it. See `benchmarks/levelscratch_ab_2026-09-03.meta`. The `debug_assertions`
@@ -422,7 +445,7 @@ pub fn with_txb_scratch<R>(f: impl FnOnce(&mut TxbScratch) -> R) -> R {
             .unwrap_or_else(|| alloc::boxed::Box::new(TxbScratch::new()));
         #[cfg(debug_assertions)]
         {
-            b.levels.fill(0xAA);
+            b.levels[..LEVELS_TAIL].fill(0xAA);
             b.ctx.fill(-86);
         }
         let r = f(&mut b);
@@ -558,10 +581,11 @@ fn nz_map_ctx_from_stats_tc<const TC: usize>(
 
 /// C `get_nz_map_ctx` (encode_txb_ref_c.c:17), with the transform class as a
 /// CONST — the shape C gets for free from its per-class macro expansion.
+/// `levels` is the body-anchored sub-slice [`txb_init_levels`] returns, so a
+/// coefficient's padded position is `padded_idx(coeff_idx, bwl)` directly.
 #[inline(always)]
 pub(crate) fn nz_map_ctx_tc<const TC: usize>(
     levels: &[u8],
-    origin: usize,
     coeff_idx: usize,
     bwl: usize,
     height: usize,
@@ -581,7 +605,7 @@ pub(crate) fn nz_map_ctx_tc<const TC: usize>(
         }
         return 3;
     }
-    let stats = nz_mag_tc::<TC>(levels, origin + padded_idx(coeff_idx, bwl), bwl);
+    let stats = nz_mag_tc::<TC>(levels, padded_idx(coeff_idx, bwl), bwl);
     nz_map_ctx_from_stats_tc::<TC>(stats, coeff_idx, bwl, tx_size)
 }
 
@@ -598,7 +622,6 @@ const TX_CLASS_UNREACHABLE: usize = 3;
 #[inline(always)]
 pub(crate) fn nz_map_ctx(
     levels: &[u8],
-    origin: usize,
     coeff_idx: usize,
     bwl: usize,
     height: usize,
@@ -608,17 +631,17 @@ pub(crate) fn nz_map_ctx(
     tx_class: usize,
 ) -> usize {
     match tx_class {
-        TX_CLASS_2D => nz_map_ctx_tc::<TX_CLASS_2D>(
-            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
-        ),
-        TX_CLASS_HORIZ => nz_map_ctx_tc::<TX_CLASS_HORIZ>(
-            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
-        ),
-        TX_CLASS_VERT => nz_map_ctx_tc::<TX_CLASS_VERT>(
-            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
-        ),
+        TX_CLASS_2D => {
+            nz_map_ctx_tc::<TX_CLASS_2D>(levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size)
+        }
+        TX_CLASS_HORIZ => {
+            nz_map_ctx_tc::<TX_CLASS_HORIZ>(levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size)
+        }
+        TX_CLASS_VERT => {
+            nz_map_ctx_tc::<TX_CLASS_VERT>(levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size)
+        }
         _ => nz_map_ctx_tc::<TX_CLASS_UNREACHABLE>(
-            levels, origin, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
+            levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
         ),
     }
 }
@@ -626,8 +649,9 @@ pub(crate) fn nz_map_ctx(
 /// C `get_lower_levels_ctx_general` (coefficients.h:195 + the
 /// `get_lower_levels_ctx_eob` is_last branch, coefficients.h:55): the
 /// per-coefficient base-level context the RDOQ trellis
-/// (`svt_av1_optimize_b`) prices with. `levels_buf` is the full padded
-/// buffer from [`txb_init_levels`]; `ci` is the packed raster position.
+/// (`svt_av1_optimize_b`) prices with. `levels_buf` is the body-anchored
+/// sub-slice from [`txb_init_levels`]/[`levels_skip_init`]; `ci` is the packed
+/// raster position.
 #[inline(always)]
 pub fn lower_levels_ctx_general(
     levels_buf: &[u8],
@@ -640,15 +664,7 @@ pub fn lower_levels_ctx_general(
     tx_class: usize,
 ) -> usize {
     nz_map_ctx(
-        levels_buf,
-        levels_origin(1 << bwl),
-        ci,
-        bwl,
-        height,
-        scan_idx,
-        is_last,
-        tx_size,
-        tx_class,
+        levels_buf, ci, bwl, height, scan_idx, is_last, tx_size, tx_class,
     )
 }
 
@@ -663,16 +679,7 @@ pub fn lower_levels_ctx_general_tc<const TC: usize>(
     is_last: bool,
     tx_size: usize,
 ) -> usize {
-    nz_map_ctx_tc::<TC>(
-        levels_buf,
-        levels_origin(1 << bwl),
-        ci,
-        bwl,
-        height,
-        scan_idx,
-        is_last,
-        tx_size,
-    )
+    nz_map_ctx_tc::<TC>(levels_buf, ci, bwl, height, scan_idx, is_last, tx_size)
 }
 
 /// C `get_br_ctx_eob` (coefficients.h:68) — the coeff_br context for the
@@ -767,12 +774,10 @@ pub(crate) fn nz_map_contexts_scan_order(
 ) {
     let bwl = txb_bwl(tx_size);
     let height = txb_high(tx_size);
-    let origin = levels_origin(txb_wide(tx_size));
     for i in 0..eob {
         let pos = scan[i] as usize;
         coeff_contexts[pos] = nz_map_ctx(
             levels_buf,
-            origin,
             pos,
             bwl,
             height,
@@ -804,8 +809,8 @@ pub fn br_ctx_tc<const TC: usize>(levels_buf: &[u8], c: usize, bwl: usize) -> us
     let row = c >> bwl;
     let col = c - (row << bwl);
     let stride = (1 << bwl) + TX_PAD_HOR;
-    // C indexes `levels` from the set_levels origin.
-    let pos = levels_origin(1 << bwl) + row * stride + col;
+    // `levels_buf` is the body-anchored sub-slice (C's `levels` pointer).
+    let pos = row * stride + col;
     let mut mag = levels_buf[pos + 1] as u32;
     mag += levels_buf[pos + stride] as u32;
     match TC {
@@ -1275,7 +1280,7 @@ pub fn write_coeffs_txb_1d(
             base_q_idx,
             reduced_tx_set,
             is_inter,
-            &mut sc.levels,
+            sc,
         )
     })
 }
@@ -1296,7 +1301,7 @@ fn write_coeffs_txb_1d_inner(
     base_q_idx: u8,
     reduced_tx_set: bool,
     is_inter: bool,
-    levels_buf: &mut [u8; LEVELS_SCRATCH_LEN],
+    sc: &mut TxbScratch,
 ) -> i32 {
     let txs_ctx = txsize_entropy_ctx(tx_size);
     let scan = scan_tables::scan(
@@ -1315,9 +1320,8 @@ fn write_coeffs_txb_1d_inner(
         return 0;
     }
 
-    // `txb_init_levels` zeroes the whole `used` prefix itself, so the scratch
-    // arrives dirty and leaves correct — this site needs no extra clear.
-    txb_init_levels(coeffs, width, height, levels_buf);
+    let TxbScratch { levels, ctx } = sc;
+    let levels = txb_init_levels(coeffs, width, height, levels);
 
     if plane_type == 0 {
         if is_inter {
@@ -1392,15 +1396,12 @@ fn write_coeffs_txb_1d_inner(
         }
     }
 
-    let mut coeff_contexts = [0i8; 32 * 32];
-    get_nz_map_contexts(
-        &levels_buf[..],
-        scan,
-        eob as usize,
-        tx_size,
-        tx_class,
-        &mut coeff_contexts,
-    );
+    // `get_nz_map_contexts` writes every position a caller can read (the whole
+    // raster on the SIMD arm, `scan[0..eob]` on the scan-order arm) — the
+    // scratch needs no per-call zero.
+    let n_ctx = width * height;
+    let coeff_contexts = &mut ctx[..n_ctx];
+    get_nz_map_contexts(levels, scan, eob as usize, tx_size, tx_class, coeff_contexts);
 
     // The base-range escape, shared by the peeled `c == eob - 1` iteration and
     // the loop below (C writes it out twice; one macro keeps it in one place
@@ -1410,7 +1411,7 @@ fn write_coeffs_txb_1d_inner(
         ($level:expr, $pos:expr) => {
             if $level > NUM_BASE_LEVELS {
                 let base_range = $level - 1 - NUM_BASE_LEVELS;
-                let ctx = br_ctx(&levels_buf[..], $pos, bwl, tx_class);
+                let ctx = br_ctx(levels, $pos, bwl, tx_class);
                 let mut idx = 0i32;
                 while idx < COEFF_BASE_RANGE {
                     let k = (base_range - idx).min(BR_CDF_SIZE as i32 - 1);
@@ -1657,28 +1658,28 @@ mod tx_class_tests {
         for &tx_size in &[0usize, 1, 2, 3, 4, 5, 6, 7, 8] {
             let bwl = txb_bwl(tx_size);
             let height = txb_high(tx_size);
-            let origin = levels_origin(txb_wide(tx_size));
+            let base = levels_base(txb_wide(tx_size), height);
+            let levels = &levels[base..];
             let n = txb_wide(tx_size) * height;
             for ci in 0..n {
                 for scan_idx in [0usize, 1, n / 3, n.saturating_sub(1)] {
                     for is_eob in [false, true] {
                         for tx_class in 0..=TX_CLASS_UNREACHABLE {
                             let want = nz_map_ctx(
-                                &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
-                                tx_class,
+                                levels, ci, bwl, height, scan_idx, is_eob, tx_size, tx_class,
                             );
                             let got = match tx_class {
                                 TX_CLASS_2D => nz_map_ctx_tc::<TX_CLASS_2D>(
-                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                    levels, ci, bwl, height, scan_idx, is_eob, tx_size,
                                 ),
                                 TX_CLASS_HORIZ => nz_map_ctx_tc::<TX_CLASS_HORIZ>(
-                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                    levels, ci, bwl, height, scan_idx, is_eob, tx_size,
                                 ),
                                 TX_CLASS_VERT => nz_map_ctx_tc::<TX_CLASS_VERT>(
-                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                    levels, ci, bwl, height, scan_idx, is_eob, tx_size,
                                 ),
                                 _ => nz_map_ctx_tc::<TX_CLASS_UNREACHABLE>(
-                                    &levels, origin, ci, bwl, height, scan_idx, is_eob, tx_size,
+                                    levels, ci, bwl, height, scan_idx, is_eob, tx_size,
                                 ),
                             };
                             assert_eq!(
@@ -1690,12 +1691,12 @@ mod tx_class_tests {
                     }
                 }
                 for tx_class in 0..=TX_CLASS_UNREACHABLE {
-                    let want_br = br_ctx(&levels, ci, bwl, tx_class);
+                    let want_br = br_ctx(levels, ci, bwl, tx_class);
                     let got_br = match tx_class {
-                        TX_CLASS_2D => br_ctx_tc::<TX_CLASS_2D>(&levels, ci, bwl),
-                        TX_CLASS_HORIZ => br_ctx_tc::<TX_CLASS_HORIZ>(&levels, ci, bwl),
-                        TX_CLASS_VERT => br_ctx_tc::<TX_CLASS_VERT>(&levels, ci, bwl),
-                        _ => br_ctx_tc::<TX_CLASS_UNREACHABLE>(&levels, ci, bwl),
+                        TX_CLASS_2D => br_ctx_tc::<TX_CLASS_2D>(levels, ci, bwl),
+                        TX_CLASS_HORIZ => br_ctx_tc::<TX_CLASS_HORIZ>(levels, ci, bwl),
+                        TX_CLASS_VERT => br_ctx_tc::<TX_CLASS_VERT>(levels, ci, bwl),
+                        _ => br_ctx_tc::<TX_CLASS_UNREACHABLE>(levels, ci, bwl),
                     };
                     assert_eq!(want_br, got_br, "br_ctx ci={ci} class={tx_class}");
 
