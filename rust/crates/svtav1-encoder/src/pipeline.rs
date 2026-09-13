@@ -2857,35 +2857,70 @@ impl EncodePipeline {
                 display_order,
             )),
         });
-        let frame_me = match (is_key, pa_cur.as_deref(), self.pa_ref.as_deref()) {
-            (false, Some(cur), Some(prev)) => {
-                // Recycle the previous frame's result set. `run_frame_me_into`
-                // resets every per-b64 entry to exactly what
-                // `MeB64Output::new` builds and reassigns every scalar, so
-                // this is byte-identical to a fresh `run_frame_me`.
-                let mut out = self
-                    .me_scratch
-                    .take()
-                    .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
-                crate::inter_me_arm::run_frame_me_into(
-                    &mut out,
-                    cur,
-                    prev,
-                    crate::inter_me_arm::FrameMeParams {
-                        enc_mode: self.speed_config.preset,
-                        qp: self.rc_config.qp,
-                        width: w,
-                        height: h,
-                        picture_number: display_order,
-                        // C `frame_is_boosted(pcs)` (enc_mode_config.h:108):
-                        // true only for the base layer of a hierarchy, which
-                        // a flat low-delay P GOP never has.
-                        frame_is_boosted: temporal_layer == 0 && self.gop.hierarchical_levels > 0,
-                        hierarchical_levels: self.gop.hierarchical_levels,
-                        sc_class5: u8::from(sc_derivation.classes.sc_class5),
-                    },
-                );
-                Some(out)
+        let frame_me = match (is_key, pa_cur.as_deref(), pic_decision.as_ref()) {
+            (false, Some(cur), Some(pic)) => {
+                // C `pcs->ref_pa_pic_ptr_array[list][ref]` — EVERY reference
+                // the picture decision offered, resolved to its DPB slot's PA
+                // pyramid (`assign_and_release_pa_refs`, pd_process.c:4990).
+                // This used to feed only `pa_ref` — the PREVIOUS frame — to
+                // both lists, which is the [1,1] shape frame 1 happens to
+                // produce but leaves a frame with `ref_list0_count_try > 1`
+                // (frame 2 onward on a flat GOP) searching LAST2's MV slot
+                // against LAST's picture.
+                let mut refs = crate::inter_me::context::MeRefs::default();
+                for rt in 1i8..=7 {
+                    let (li, ri) = (
+                        crate::inter_mvp::get_list_idx(rt),
+                        crate::inter_mvp::get_ref_frame_idx(rt),
+                    );
+                    let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
+                    if let Some(pa) = self.pa_slots.get(slot).and_then(|s| s.as_deref()) {
+                        refs.arr[li][ri] = Some(pa.ds_ref());
+                    }
+                }
+                // `me_process.c:212-213` — the counts the picture decision
+                // offered. `MeRefs::get` panics on a hole a search reaches,
+                // so a missing pyramid means no ME rather than a wrong one —
+                // the same shape the `pa_ref == None` arm produced before.
+                let num_to_search =
+                    [pic.ref_list0_count_try, pic.ref_list1_count_try];
+                let complete = (0..2).all(|li| {
+                    (0..usize::from(num_to_search[li]))
+                        .all(|ri| refs.arr[li][ri].is_some())
+                });
+                if !complete {
+                    None
+                } else {
+                    // Recycle the previous frame's result set.
+                    // `run_frame_me_into` resets every per-b64 entry to
+                    // exactly what `MeB64Output::new` builds and reassigns
+                    // every scalar, so this is byte-identical to a fresh
+                    // `run_frame_me`.
+                    let mut out = self
+                        .me_scratch
+                        .take()
+                        .unwrap_or_else(crate::inter_me_arm::FrameMe::empty);
+                    crate::inter_me_arm::run_frame_me_into(
+                        &mut out,
+                        cur,
+                        &refs,
+                        num_to_search,
+                        crate::inter_me_arm::FrameMeParams {
+                            enc_mode: self.speed_config.preset,
+                            qp: self.rc_config.qp,
+                            width: w,
+                            height: h,
+                            picture_number: display_order,
+                            // C `frame_is_boosted(pcs)` (enc_mode_config.h:108):
+                            // true only for the base layer of a hierarchy, which
+                            // a flat low-delay P GOP never has.
+                            frame_is_boosted: temporal_layer == 0 && self.gop.hierarchical_levels > 0,
+                            hierarchical_levels: self.gop.hierarchical_levels,
+                            sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                        },
+                    );
+                    Some(out)
+                }
             }
             _ => None,
         };
@@ -4093,31 +4128,32 @@ impl EncodePipeline {
             _ => alloc::vec::Vec::new(),
         };
         // The padded DPB picture per `MvReferenceFrame`. C's
-        // `svt_aom_get_ref_pic_buffer(pcs, rf)` resolves LAST through
-        // `ref_dpb_index[0]` and BWDREF through `ref_dpb_index[4]` — two
-        // DIFFERENT slots that hold the same picture on a flat low-delay-P
-        // GOP. The port's inter path predicts from `ref_padded_luma`, which
-        // is slot 0's, so any OTHER reference must be PROVED to be the same
-        // picture before it is offered; a reference whose slot holds a
-        // different frame is simply not put in the table, and
-        // `inter_ref_types` is filtered to match. Without this the day a
-        // real GOP fills slot 3 with frame N-2, MD would silently predict
-        // BWDREF from frame N-1 and no test would fail.
-        let mut inter_padded_by_ref: [Option<&crate::picture::PaddedRef>; 8] = [None; 8];
-        if let (Some(pic), Some(p0)) = (pic_decision.as_ref(), ref_padded_luma)
+        // `svt_aom_get_ref_pic_buffer(pcs, rf)` resolves EACH reference through
+        // its own `ref_dpb_index` entry — LAST through `[0]`, LAST2 through
+        // `[1]`, BWDREF through `[4]`. On a flat low-delay-P GOP those slots
+        // hold DIFFERENT pictures from frame 2 on (LAST is frame N-1, LAST2
+        // frame N-2), and binding every reference to LAST's recon — which is
+        // what this did — both starved LAST2 out of `inter_ref_types` and
+        // would have predicted it from the wrong pixels had it survived.
+        //
+        // The `Arc` clones exist for borrow shape only: the `&PaddedRef`
+        // table cannot borrow `self.dpb` directly because the encode below
+        // mutates other `self` fields while the references are live. Eight
+        // refcount bumps per inter frame is the whole cost; the buffers are
+        // shared.
+        let mut inter_ref_frames: [Option<alloc::sync::Arc<crate::picture::ReferenceFrame>>; 8] =
+            Default::default();
+        if let Some(pic) = pic_decision.as_ref()
             && !is_key
         {
-            let slot0 = pic.rps.ref_dpb_index[crate::port_picstruct::LAST] as usize;
-            let order0 = self.dpb.get(slot0).map(|r| r.display_order);
             for rt in 1i8..=7 {
-                let idx = usize::from(rt as u8 - 1);
-                let slot = pic.rps.ref_dpb_index[idx] as usize;
-                let same = slot == slot0
-                    || (order0.is_some() && self.dpb.get(slot).map(|r| r.display_order) == order0);
-                if same {
-                    inter_padded_by_ref[rt as usize] = Some(p0);
-                }
+                let slot = pic.rps.ref_dpb_index[usize::from(rt as u8 - 1)] as usize;
+                inter_ref_frames[rt as usize] = self.dpb.get_shared(slot);
             }
+        }
+        let mut inter_padded_by_ref: [Option<&crate::picture::PaddedRef>; 8] = [None; 8];
+        for (rt, rf) in inter_ref_frames.iter().enumerate() {
+            inter_padded_by_ref[rt] = rf.as_deref().and_then(|r| r.padded.as_deref());
         }
         let inter_ref_types: alloc::vec::Vec<i8> = inter_ref_types
             .into_iter()
@@ -7638,16 +7674,21 @@ impl EncodePipeline {
             // Mirror the DPB refresh into the PA slots, so a later frame's
             // global-motion search can reach the plane for ANY reference its
             // `ref_dpb_index` names — not only the nearest one.
-            if self.gm_level_for_frame(false) != 0 {
-                for slot in 0..8 {
-                    if pcs.refresh_frame_flags & (1 << slot) != 0 {
-                        let evicted = self.pa_slots[slot].replace(alloc::sync::Arc::clone(&cur));
-                        if self.pa_scratch.is_none()
-                            && let Some(e) = evicted
-                        {
-                            self.pa_scratch =
-                                alloc::sync::Arc::into_inner(e).map(alloc::boxed::Box::new);
-                        }
+            //
+            // This used to be gated on `gm_level_for_frame(false) != 0`,
+            // because GM was the slots' only reader and the pyramids are not
+            // free to retain. From 2026-09-13 the open-loop ME itself is a
+            // reader: C searches `ref_list0_count_try` references
+            // (`me_process.c:212`), so a frame 2 with `l0cnt = 2` needs BOTH
+            // frame 1's and frame 0's pyramids — not only `pa_ref`'s.
+            for slot in 0..8 {
+                if pcs.refresh_frame_flags & (1 << slot) != 0 {
+                    let evicted = self.pa_slots[slot].replace(alloc::sync::Arc::clone(&cur));
+                    if self.pa_scratch.is_none()
+                        && let Some(e) = evicted
+                    {
+                        self.pa_scratch =
+                            alloc::sync::Arc::into_inner(e).map(alloc::boxed::Box::new);
                     }
                 }
             }

@@ -228,6 +228,19 @@ impl PaPicture {
         sixteenth.refill_decimate(quarter, 2, PA_BORDER_SIXTEENTH);
         *pn = picture_number;
     }
+
+    /// This picture as one entry of C's `me_ds_ref_array` — what
+    /// `me_process.c:236-250` fills per `(list, ref_idx)` out of
+    /// `pcs->ref_pa_pic_ptr_array`.
+    #[must_use]
+    pub fn ds_ref(&self) -> MeDsRef<'_> {
+        MeDsRef {
+            picture: self.full.view(),
+            quarter: self.quarter.view(),
+            sixteenth: self.sixteenth.view(),
+            picture_number: self.picture_number,
+        }
+    }
 }
 
 /// The per-b64 open-loop ME results for one frame, in raster b64 order.
@@ -515,21 +528,31 @@ pub fn me_deriv_inputs(p: FrameMeParams, input_resolution: ResolutionRange) -> M
     }
 }
 
-/// Run C's open-loop motion estimation over the whole frame.
-///
-/// `cur` is THIS frame's PA picture and `reference` the previous frame's; both
-/// are built by [`PaPicture::from_source`]. One reference in list 0 (the
-/// low-delay-P shape the inter campaign encodes), which is why
-/// `num_of_ref_pic_to_search` is `[1, 0]`.
+/// Run C's open-loop motion estimation over the whole frame against a SINGLE
+/// reference — the previous frame's PA picture offered once per list, the
+/// `[1, 1]` shape a two-frame low-delay-P cell produces.
 #[must_use]
 pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) -> FrameMe {
+    let ds_ref = reference.ds_ref();
+    let refs = MeRefs {
+        arr: [
+            [Some(ds_ref), None, None, None],
+            [Some(ds_ref), None, None, None],
+        ],
+    };
     let mut out = FrameMe::empty();
-    run_frame_me_into(&mut out, cur, reference, p);
+    run_frame_me_into(&mut out, cur, &refs, [1, 1], p);
     out
 }
 
 /// [`run_frame_me`] into an EXISTING [`FrameMe`], reusing its per-b64
 /// allocations.
+///
+/// `refs` is C's `me_ctx->me_ds_ref_array` (`me_process.c:236-250`) — the
+/// per-(list, ref_idx) PA pyramids `pcs->ref_pa_pic_ptr_array` resolved — and
+/// `num_of_ref_pic_to_search` is C's same-named `me_ctx` field, the picture
+/// decision's `ref_list{0,1}_count_try` (`me_process.c:212-213`). Every slot a
+/// search can reach (`arr[list][0..num[list]]`) must be `Some`.
 ///
 /// C's `MeResults` live in a pool built once by
 /// `svt_aom_pa_reference_object_ctor` (`reference_object.c`); the port
@@ -540,7 +563,8 @@ pub fn run_frame_me(cur: &PaPicture, reference: &PaPicture, p: FrameMeParams) ->
 pub fn run_frame_me_into(
     out: &mut FrameMe,
     cur: &PaPicture,
-    reference: &PaPicture,
+    refs: &MeRefs<'_>,
+    num_of_ref_pic_to_search: [u8; 2],
     p: FrameMeParams,
 ) {
     // C `pcs->pa_me_data->max_*` (pcs.c) for a single-reference low-delay
@@ -613,19 +637,6 @@ pub fn run_frame_me_into(
         input_height: p.height as u16,
     };
 
-    let ds_ref = MeDsRef {
-        picture: reference.full.view(),
-        quarter: reference.quarter.view(),
-        sixteenth: reference.sixteenth.view(),
-        picture_number: reference.picture_number,
-    };
-    let refs = MeRefs {
-        arr: [
-            [Some(ds_ref), None, None, None],
-            [Some(ds_ref), None, None, None],
-        ],
-    };
-
     let b64_cols = p.width.div_ceil(64);
     let b64_rows = p.height.div_ceil(64);
     // Reuse the recycled entries in place; grow only when the b64 count does
@@ -652,8 +663,10 @@ pub fn run_frame_me_into(
             };
             let mut me = MeContext::default();
             apply_me_signals(&mut me, &signals);
+            // C `me_process.c:210-213` — `MAX_NUM_OF_REF_PIC_LIST` lists, the
+            // per-list ref counts the picture decision offered.
             me.num_of_list_to_search = 2;
-            me.num_of_ref_pic_to_search = [1, 1];
+            me.num_of_ref_pic_to_search = num_of_ref_pic_to_search;
             // C `me_process.c:213` — every picture of a low-delay P GOP is a
             // reference. INERT at every preset this arm runs today, because
             // `me_early_exit_th != 0` takes the other arm of
@@ -689,7 +702,7 @@ pub fn run_frame_me_into(
             b64_pic.b64_geom_width = (p.width - ox).min(64) as u32;
             b64_pic.b64_geom_height = (p.height - oy).min(64) as u32;
             motion_estimation_b64(
-                &b64_pic, ox as u32, oy as u32, &mut me, &src, &refs, out_b64,
+                &b64_pic, ox as u32, oy as u32, &mut me, &src, refs, out_b64,
             );
         }
     }
@@ -1331,7 +1344,14 @@ mod recycle_tests {
         // The recycle's actual shape: a set already filled by an EARLIER
         // frame pair, handed back for the next one.
         let mut recycled = run_frame_me(&f1, &f0, p);
-        run_frame_me_into(&mut recycled, &f2, &f1, p);
+        let ds_ref = f1.ds_ref();
+        let refs = MeRefs {
+            arr: [
+                [Some(ds_ref), None, None, None],
+                [Some(ds_ref), None, None, None],
+            ],
+        };
+        run_frame_me_into(&mut recycled, &f2, &refs, [1, 1], p);
 
         assert_eq!(recycled.per_b64.len(), fresh.per_b64.len());
         assert!(!fresh.per_b64.is_empty(), "the grid must not be empty");
