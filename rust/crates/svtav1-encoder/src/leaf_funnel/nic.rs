@@ -763,6 +763,12 @@ mod nic_class_prune_tests {
                     v_pred10: alloc::vec::Vec::new(),
                     wm_params: Default::default(),
                     cand_class: lane as u8,
+                    comp_group_idx: 0,
+                    compound_idx: 0,
+                    interinter_comp_type: 0,
+                    skip_mode_allowed: false,
+                    skip_mode_ctx: 0,
+                    skip_mode: false,
                 }));
             }
             _ => {}

@@ -2,6 +2,116 @@
 
 use super::{Bd10CoeffNeighbors, Bd10ModeNeighbors};
 
+/// The INTER arm's 10-bit prediction for one committed leaf — the single-
+/// reference [`crate::inter_pred_arm::predict_inter_leaf_hbd`] or, for a
+/// compound decision (`ref_frame[1] > 0`), the two-reference
+/// [`crate::inter_pred_arm::predict_inter_yuv_hbd_compound`]. Compound
+/// candidates are always `SimpleTranslation` and never warped on this port,
+/// so the compound arm needs neither `motion_mode` nor `is_wm`.
+#[allow(clippy::too_many_arguments)]
+fn predict_inter_leaf_hbd_any(
+    inter_refs: &[Option<&crate::picture::PaddedRef>; 8],
+    ic: &crate::partition::InterDecision,
+    x: usize,
+    y: usize,
+    bw: usize,
+    bh: usize,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bd: u8,
+    want_chroma: bool,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    let hbd0 = inter_refs[ic.ref_frame[0].max(0) as usize]
+        .and_then(|p| p.hbd.as_ref())
+        .expect(
+            "an inter leaf reached the bd10 re-encode with no 10-bit reference \
+             in the DPB; `bd10_tree_supported` is supposed to have refused the \
+             frame before this point",
+        );
+    if ic.ref_frame[1] > 0 {
+        let hbd1 = inter_refs[ic.ref_frame[1].max(0) as usize]
+            .and_then(|p| p.hbd.as_ref())
+            .expect(
+                "a compound inter leaf reached the bd10 re-encode with no \
+                 10-bit second reference in the DPB",
+            );
+        crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
+            [
+                (
+                    &hbd0.y,
+                    if want_chroma {
+                        hbd0.uv.as_ref().map(|(u, v)| (u, v))
+                    } else {
+                        None
+                    },
+                ),
+                (
+                    &hbd1.y,
+                    if want_chroma {
+                        hbd1.uv.as_ref().map(|(u, v)| (u, v))
+                    } else {
+                        None
+                    },
+                ),
+            ],
+            x,
+            y,
+            bw,
+            bh,
+            ic.mv,
+            ic.interp_filters,
+            sb_size,
+            frame_w,
+            frame_h,
+            bd,
+            y_out,
+            y_stride,
+            u_out,
+            v_out,
+            uv_stride,
+        );
+        return;
+    }
+    crate::inter_pred_arm::predict_inter_leaf_hbd(
+        &hbd0.y,
+        if want_chroma {
+            hbd0.uv.as_ref().map(|(u, v)| (u, v))
+        } else {
+            None
+        },
+        ic.motion_mode,
+        crate::inter_pred_arm::inter_pred_uses_warp(
+            ic.motion_mode,
+            ic.mode as u8,
+            bw,
+            bh,
+            &ic.wm_params,
+        ),
+        ic.wm_params,
+        x,
+        y,
+        bw,
+        bh,
+        ic.mv[0],
+        ic.interp_filters,
+        sb_size,
+        frame_w,
+        frame_h,
+        bd,
+        y_out,
+        y_stride,
+        u_out,
+        v_out,
+        uv_stride,
+    );
+}
+
 /// Returns the frame's 10-bit luma recon as an **SB-extent-sized, ALIGNED-
 /// strided** canvas — the same shape the funnel's `tile_frame_recon10` has, and
 /// for the same reason: a boundary leaf may STRADDLE the aligned extent, and
@@ -329,36 +439,20 @@ fn bd10_reencode_node(
             // happen.
             match d.inter.as_deref() {
                 Some(ic) => {
-                    let hbd = inter_refs
-                        .and_then(|r| r[ic.ref_frame[0].max(0) as usize])
-                        .and_then(|p| p.hbd.as_ref())
-                        .expect(
-                            "an inter leaf reached the bd10 re-encode with no 10-bit reference \
-                             in the DPB; `bd10_tree_supported` is supposed to have refused the \
-                             frame before this point",
-                        );
-                    crate::inter_pred_arm::predict_inter_leaf_hbd(
-                        &hbd.y,
-                        None,
-                        ic.motion_mode,
-                        crate::inter_pred_arm::inter_pred_uses_warp(
-                            ic.motion_mode,
-                            ic.mode as u8,
-                            bw,
-                            bh,
-                            &ic.wm_params,
+                    predict_inter_leaf_hbd_any(
+                        inter_refs.expect(
+                            "an inter leaf reached the bd10 re-encode on a frame with no DPB",
                         ),
-                        ic.wm_params,
+                        ic,
                         x,
                         y,
                         bw,
                         bh,
-                        ic.mv[0],
-                        ic.interp_filters,
                         sb_mi_size * 4,
                         frame_w,
                         frame_h,
                         bd,
+                        false,
                         &mut pred,
                         bw,
                         &mut [],
@@ -947,14 +1041,6 @@ fn bd10_reencode_chroma_node(
             // would be different arithmetic (see `predict_inter_yuv_hbd`).
             let (inter_u, inter_v) = match d.inter.as_deref() {
                 Some(ic) => {
-                    let r = inter_refs
-                        .and_then(|r| r[ic.ref_frame[0].max(0) as usize])
-                        .expect(
-                            "an inter leaf reached the bd10 chroma re-encode with no DPB picture",
-                        );
-                    let hbd = r.hbd.as_ref().expect(
-                        "an inter leaf reached the bd10 chroma re-encode with no 10-bit reference",
-                    );
                     let (bw, bh) = (d.width as usize, d.height as usize);
                     // A scratch luma destination: the driver predicts luma and
                     // chroma together, and only the chroma halves are read here
@@ -962,28 +1048,20 @@ fn bd10_reencode_chroma_node(
                     let mut y_scratch = alloc::vec![0u16; bw * bh];
                     let mut u = alloc::vec![0u16; cw * ch];
                     let mut v = alloc::vec![0u16; cw * ch];
-                    crate::inter_pred_arm::predict_inter_leaf_hbd(
-                        &hbd.y,
-                        hbd.uv.as_ref().map(|(u, v)| (u, v)),
-                        ic.motion_mode,
-                        crate::inter_pred_arm::inter_pred_uses_warp(
-                            ic.motion_mode,
-                            ic.mode as u8,
-                            bw,
-                            bh,
-                            &ic.wm_params,
+                    predict_inter_leaf_hbd_any(
+                        inter_refs.expect(
+                            "an inter leaf reached the bd10 chroma re-encode on a frame with no DPB",
                         ),
-                        ic.wm_params,
+                        ic,
                         x,
                         y,
                         bw,
                         bh,
-                        ic.mv[0],
-                        ic.interp_filters,
                         sb_mi_size * 4,
                         cframe_w * 2,
                         cframe_h * 2,
                         bd,
+                        true,
                         &mut y_scratch,
                         bw,
                         &mut u,
@@ -1216,33 +1294,21 @@ fn bd10_reencode_leaf_txs(
     let filt_type = mode_neighbors.filt_type_y(x, y);
     // The INTER whole-block prediction, built once (C does the same).
     let inter_pred: Option<alloc::vec::Vec<u16>> = d.inter.as_deref().map(|ic| {
-        let hbd = inter_refs
-            .and_then(|r| r[ic.ref_frame[0].max(0) as usize])
-            .and_then(|p| p.hbd.as_ref())
-            .expect("an inter leaf reached the bd10 TXS re-encode with no 10-bit reference");
         let mut p = alloc::vec![0u16; bw * bh];
-        crate::inter_pred_arm::predict_inter_leaf_hbd(
-            &hbd.y,
-            None,
-            ic.motion_mode,
-            crate::inter_pred_arm::inter_pred_uses_warp(
-                ic.motion_mode,
-                ic.mode as u8,
-                bw,
-                bh,
-                &ic.wm_params,
+        predict_inter_leaf_hbd_any(
+            inter_refs.expect(
+                "an inter leaf reached the bd10 TXS re-encode on a frame with no DPB",
             ),
-            ic.wm_params,
+            ic,
             x,
             y,
             bw,
             bh,
-            ic.mv[0],
-            ic.interp_filters,
             sb_mi_size * 4,
             frame_w,
             frame_h,
             bd,
+            false,
             &mut p,
             bw,
             &mut [],

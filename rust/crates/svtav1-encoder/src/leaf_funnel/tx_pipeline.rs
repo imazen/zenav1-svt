@@ -51,6 +51,8 @@ pub(super) struct TxUnitOut {
     /// Frequency-domain RESIDUAL distortion (MDS1 path) or spatial SSE
     /// << 4 (MDS3 path), already shifted like C.
     pub(super) dist: u64,
+    /// C `y_distortion[DIST_SSD][DIST_CALC_PREDICTION]` — see [`TxUnitMeta::dist_pred`].
+    pub(super) dist_pred: u64,
     /// Coefficient bits (or skip-txb bits when eob == 0).
     pub(super) bits: i32,
     /// `(dc_sign << 6) | min(cul_level, 63)` neighbor byte.
@@ -69,6 +71,7 @@ impl TxUnitOut {
             qcoeff: PoolVec::new(),
             recon: PoolVec::new(),
             dist: 0,
+            dist_pred: 0,
             bits: 0,
             cul: 0,
         }
@@ -136,6 +139,12 @@ pub(super) struct TxUnitMeta {
     pub(super) q_len: usize,
     pub(super) recon_len: usize,
     pub(super) dist: u64,
+    /// C `y_distortion[DIST_SSD][DIST_CALC_PREDICTION]` — the distortion with
+    /// NO residual coded (coeff energy in the freq arm, `sse(src,pred)<<4` in
+    /// the spatial arm), the `dist` argument of `svt_aom_full_cost`'s
+    /// `blk_skip_decision` skip arm (rd_cost.c:1380-1383). Equals `dist` when
+    /// `eob == 0` on the freq arm.
+    pub(super) dist_pred: u64,
     pub(super) bits: i32,
     pub(super) cul: u8,
 }
@@ -604,6 +613,7 @@ pub(super) fn tx_unit_screened(
         qcoeff,
         recon,
         dist: m.dist,
+        dist_pred: m.dist_pred,
         bits: m.bits,
         cul: m.cul,
     })
@@ -1133,6 +1143,27 @@ pub(super) fn tx_unit_inner(
         let shift = (1 - log_scale) * 2;
         if shift < 0 { d << (-shift) } else { d >> shift }
     };
+    // C `y_distortion[DIST_SSD][DIST_CALC_PREDICTION]` — the skip arm's
+    // distortion input in `svt_aom_full_cost`'s `blk_skip_decision`
+    // (rd_cost.c:1380-1383). Freq arm: the unquantized coefficient energy,
+    // the `eob == 0` expression evaluated unconditionally. Spatial arm: the
+    // raw `sse(src, pred) << 4` (the facade's plain-SSE form — MDS3's skip_y
+    // is the same expression, leaf_funnel/mds3.rs).
+    let dist_pred = if spatial_dist {
+        (svtav1_dsp::variance::sse(
+            &src[src_off..],
+            src_stride,
+            &pred[pred_off..],
+            pred_stride,
+            crop_w,
+            crop_h,
+        ) << 4) as u64
+    } else {
+        let mut d: u64 = svtav1_dsp::residual::sq_sum_i32(&packed[..pw * ph]);
+        d += three_quad_energy;
+        let shift = (1 - log_scale) * 2;
+        if shift < 0 { d << (-shift) } else { d >> shift }
+    };
 
     // ---- coefficient rate: C's `if / else if / else` tier, in C's order ----
     //
@@ -1192,6 +1223,7 @@ pub(super) fn tx_unit_inner(
         q_len: pw * ph,
         recon_len: recon.len(),
         dist,
+        dist_pred,
         bits,
         cul,
     })
@@ -1374,6 +1406,11 @@ pub(crate) struct TxUnitOutHbd {
     /// ZERO unless the caller passed [`TxRdArgs`] (the level-only re-encode
     /// post-pass does not, so it stays byte-inert).
     pub dist: u64,
+    /// C `y_distortion[DIST_SSD][DIST_CALC_PREDICTION]` — the skip arm's
+    /// distortion input in `svt_aom_full_cost`'s `blk_skip_decision`
+    /// (rd_cost.c:1380-1383); mirrors [`TxUnitMeta::dist_pred`]. ZERO unless
+    /// [`TxRdArgs`] was passed.
+    pub dist_pred: u64,
     /// Coefficient bits (or skip-txb bits when `eob == 0`), matching
     /// [`TxUnitOut::bits`]. ZERO unless [`TxRdArgs`] was passed.
     pub bits: i32,
@@ -1783,14 +1820,14 @@ pub(super) fn tx_unit_hbd_screened(
     //            expression is reused verbatim on the bd10 coefficients.
     // The coefficient RATE tables are qindex-driven with no bit-depth term, so
     // `rates` is shared with the u8 path unchanged.
-    let (dist, bits) = match rd {
-        None => (0u64, 0i32),
+    let (dist, dist_pred, bits) = match rd {
+        None => (0u64, 0u64, 0i32),
         Some(a) => {
-            let dist = if a.spatial_dist {
+            let (crop_w, crop_h) = a.crop;
+            let (dist, dist_pred) = if a.spatial_dist {
                 // Cropped area, FULL recon stride — the bd10 twin of the u8
                 // site (C passes `cropped_tx_width`/`_height` into the same
                 // facade at both depths).
-                let (crop_w, crop_h) = a.crop;
                 debug_assert!(crop_w <= w && crop_h <= h, "crop must clip, never extend");
                 let mut sse = svtav1_dsp::hbd::full_distortion_kernel16_bits(
                     src, src_off, src_stride, &recon, 0, w, crop_w, crop_h,
@@ -1815,22 +1852,31 @@ pub(super) fn tx_unit_hbd_screened(
                         a.tx_bias,
                     ) as u64;
                 }
-                sse << 4
+                let dist_pred = (svtav1_dsp::hbd::full_distortion_kernel16_bits(
+                    src, src_off, src_stride, pred, pred_off, pred_stride, crop_w, crop_h,
+                )) << 4;
+                (sse << 4, dist_pred)
             } else {
                 let mut d: u64 = 0;
+                let mut dp: u64 = 0;
                 if eob > 0 {
                     for i in 0..pw * ph {
                         let e = (packed[i] - dqcoeff[i]) as i64;
                         d += (e * e) as u64;
+                        dp += (packed[i] as i64 * packed[i] as i64) as u64;
                     }
                 } else {
                     for i in 0..pw * ph {
                         d += (packed[i] as i64 * packed[i] as i64) as u64;
                     }
+                    dp = d;
                 }
                 d += three_quad_energy;
+                dp += three_quad_energy;
                 let shift = (1 - log_scale) * 2;
-                if shift < 0 { d << (-shift) } else { d >> shift }
+                let dist = if shift < 0 { d << (-shift) } else { d >> shift };
+                let dist_pred = if shift < 0 { dp << (-shift) } else { dp >> shift };
+                (dist, dist_pred)
             };
             let real_bits = if eob > 0 {
                 cost_coeffs_txb(
@@ -1859,7 +1905,7 @@ pub(super) fn tx_unit_hbd_screened(
             } else {
                 real_bits
             };
-            (dist, bits)
+            (dist, dist_pred, bits)
         }
     };
 
@@ -1870,6 +1916,7 @@ pub(super) fn tx_unit_hbd_screened(
         recon,
         cul,
         dist,
+        dist_pred,
         bits,
     })
 }

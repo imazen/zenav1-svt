@@ -54,6 +54,9 @@
 
 use crate::inter_mvp::{InterMvpStack, av1_set_ref_frame, get_list_idx, get_ref_frame_idx};
 use crate::picture::PaddedRef;
+use crate::port_md::predicates::{
+    InterCandGroup, MAX_NUM_OF_REF_PIC_LIST, TOT_INTER_GROUP, is_valid_unipred_ref,
+};
 use crate::port_md::md_search::{
     DistortionType, FullPelCtx, MdPmeCtrls, PlaneDistortion, RefPicGeom, RefineMeIn,
     SubpelBlockGeom, best_mvp_by_distortion, build_single_ref_mvp_list, md_subpel_search,
@@ -122,8 +125,10 @@ pub struct SearchFrameCfg {
     pub md_nsq_full_pel_w: u8,
     pub md_nsq_full_pel_h: u8,
     pub md_nsq_enable_psad: bool,
-    /// C `ctx->ref_pruning_ctrls.enabled`.
-    pub ref_pruning_enabled: bool,
+    /// C `ctx->ref_pruning_ctrls` — the whole row, not just `enabled`:
+    /// `perform_md_reference_pruning` reads `max_dev_to_best`,
+    /// `check_closest_multiplier` and `closest_refs` too.
+    pub ref_pruning: crate::port_enc_mode_config::ctrls::RefPruningControls,
     /// C `ctx->updated_enable_pme` (product_coding_loop.c:9418-9422).
     pub updated_enable_pme: bool,
     /// C `frm_hdr->quantization_params.base_q_idx`.
@@ -143,6 +148,10 @@ pub struct SearchFrameCfg {
     /// block-level `merge_inter_cands` threshold (mode_decision.c:3640)
     /// can read it where `frame_cfg` already consumed it.
     pub cli_qp: u32,
+    /// C `ppcs->picture_qp` — read by `perform_md_reference_pruning`'s
+    /// `check_closest` threshold (product_coding_loop.c:3053); inert at
+    /// pruning levels where `check_closest_multiplier` is 0.
+    pub picture_qp: u8,
 }
 
 /// The per-block inputs, all of which the caller already has.
@@ -172,8 +181,9 @@ pub struct BlockSearchIn<'a> {
     pub padded_by_ref: &'a [Option<&'a PaddedRef>; 8],
     /// C `ctx->ref_mv_stack[frame_type]`, one per `MvReferenceFrame`.
     pub stacks: &'a [InterMvpStack],
-    /// C `blk_ptr->av1xd->ref_mv_count[frame_type]`.
-    pub ref_mv_count: &'a [u8; 8],
+    /// C `blk_ptr->av1xd->ref_mv_count[frame_type]`
+    /// (`MODE_CTX_REF_FRAMES` entries — compound types index past 7).
+    pub ref_mv_count: &'a [u8],
     /// C `md_rate_est_ctx->nmv_vec_cost` + `nmvcoststack`.
     pub nmv: &'a MvCostTable,
     /// C `md_rate_est_ctx->drl_mode_fac_bits`.
@@ -281,6 +291,13 @@ pub struct BlockSearchOut {
     /// caller stores [`Self::sb_me_mv`] into its [`SqMeState`] when set —
     /// the write is the caller's because the STATE is the caller's.
     pub is_square_shape: bool,
+    /// C `ctx->ref_pruning_ctrls` + `ctx->ref_filtering_res` folded into the
+    /// consumer's shape: what `perform_md_reference_pruning`
+    /// (product_coding_loop.c:3004-3084) wrote for this block. `enabled:
+    /// false` when the controls are off, which makes every
+    /// `is_valid_{uni,bi}pred_ref` consult permissive — C's own behaviour
+    /// (mode_decision.c:762-774, :793-813).
+    pub ref_pruning: crate::port_md::predicates::RefPruningState,
 }
 
 impl Default for BlockSearchOut {
@@ -294,6 +311,7 @@ impl Default for BlockSearchOut {
             pme_dist: [[u32::MAX; REF_LIST_MAX_DEPTH]; 2],
             pme_exit: [[None; REF_LIST_MAX_DEPTH]; 2],
             is_square_shape: false,
+            ref_pruning: crate::port_md::predicates::RefPruningState::default(),
         }
     }
 }
@@ -346,6 +364,106 @@ fn ref_geom(p: &PaddedRef) -> RefPicGeom {
     }
 }
 
+/// C `perform_md_reference_pruning` (product_coding_loop.c:3004-3084,
+/// `static`).
+///
+/// Ranks each single reference by `min(fp_me_dist, best_fp_mvp_dist)` —
+/// the cheapest full-pel evidence the block has for that ref — and writes
+/// `ref_filtering_res[group][list][ref].do_ref` per candidate group. A ref
+/// whose distortion deviates from the best by more than
+/// `max_dev_to_best[group]` percent loses its `do_ref`, which is how C
+/// keeps LAST2 out of `inject_pme_candidates`/`inject_new_candidates` on a
+/// block where its early evidence is far worse than LAST's.
+///
+/// The TPL arm — `use_tpl_info_offset` feeding `offset_tab` off
+/// `get_sb_tpl_inter_stats` — reads `ppcs->tpl_ctrls.enable`, which is 0 on
+/// every frame this driver reaches (flat low-delay runs no TPL lookahead),
+/// so `offset_tab` here is all-zero. The offset is nonzero only at pruning
+/// levels 4..=8, and a port that gains those levels must port
+/// `get_sb_tpl_inter_stats` in the same change — `use_tpl_info` set from a
+/// stubbed table would be a silent wrong answer.
+fn perform_md_reference_pruning(
+    cfg: &SearchFrameCfg,
+    b: &BlockSearchIn<'_>,
+    st: &[[RefState; REF_LIST_MAX_DEPTH]; 2],
+    out: &mut BlockSearchOut,
+) {
+    const N: usize = MAX_NUM_OF_REF_PIC_LIST * REF_LIST_MAX_DEPTH;
+    // C `svt_memset(early_inter_distortion_array, 0xFE, ...)` — a large
+    // not-`~0` sentinel every unsearched slot keeps, which then flows
+    // through `dev_to_the_best` like any other entry.
+    let mut early = [0xFEFEFEFEu32; N];
+    let mut min_dist = u32::MAX;
+    for &pair in b.ref_frame_type_arr {
+        let rf = av1_set_ref_frame(pair);
+        if rf[1] != crate::inter_mvp::NONE_FRAME {
+            continue;
+        }
+        let (li, ri) = (get_list_idx(rf[0]), get_ref_frame_idx(rf[0]));
+        if ri >= REF_LIST_MAX_DEPTH {
+            continue;
+        }
+        // `pa_me_distortion` is `fp_me_dist` when this block had ME data for
+        // the ref and `(uint32_t)~0` — "any non zero value" — otherwise.
+        let pa_me = if st[li][ri].me_data_present {
+            st[li][ri].fp_me_dist
+        } else {
+            u32::MAX
+        };
+        early[li * REF_LIST_MAX_DEPTH + ri] = pa_me.min(st[li][ri].best_fp_mvp_dist);
+        min_dist = min_dist.min(early[li * REF_LIST_MAX_DEPTH + ri]);
+    }
+    let th = (u32::from(cfg.ref_pruning.check_closest_multiplier)
+        .saturating_mul((b.bw * b.bh) as u32)
+        .saturating_mul(u32::from(cfg.picture_qp)))
+        / 24;
+    if cfg.ref_pruning.check_closest_multiplier != 0
+        && early[0] < th
+        && early[REF_LIST_MAX_DEPTH] < th
+    {
+        for g in 0..TOT_INTER_GROUP {
+            for l in 0..MAX_NUM_OF_REF_PIC_LIST {
+                for r in 0..REF_LIST_MAX_DEPTH {
+                    if r == 0 || cfg.ref_pruning.max_dev_to_best[g] == u32::MAX {
+                        out.ref_pruning.do_ref[g][l][r] = true;
+                    }
+                }
+            }
+        }
+    } else {
+        // C sorts nothing — `dev_to_the_best` is just the per-slot
+        // percent-deviation from the best, and the `n - 1` bound leaves the
+        // last slot (list1 ref3) at its 0 initialiser. Kept verbatim.
+        let mut dev_to_the_best = [0u32; N];
+        let denom = i64::from(min_dist.max(1));
+        for (i, e) in early.iter().enumerate().take(N - 1) {
+            dev_to_the_best[i] =
+                (((i64::from((*e).max(1)) - i64::from(min_dist.max(1))) * 100) / denom) as u32;
+        }
+        for g in 0..TOT_INTER_GROUP {
+            for l in 0..MAX_NUM_OF_REF_PIC_LIST {
+                for r in 0..REF_LIST_MAX_DEPTH {
+                    // `offset` is `offset_tab[li][ri]` — all-zero without
+                    // the TPL arm, so the `offset == ~0` arm is unreachable
+                    // and the threshold is `max_dev_to_best` itself.
+                    let pruning_th = if cfg.ref_pruning.max_dev_to_best[g] == 0 {
+                        0
+                    } else if cfg.ref_pruning.max_dev_to_best[g] == u32::MAX {
+                        u32::MAX
+                    } else {
+                        cfg.ref_pruning.max_dev_to_best[g]
+                    };
+                    if dev_to_the_best[l * REF_LIST_MAX_DEPTH + r] < pruning_th {
+                        out.ref_pruning.do_ref[g][l][r] = true;
+                    }
+                }
+            }
+        }
+    }
+    out.ref_pruning.enabled = true;
+    out.ref_pruning.closest_refs = cfg.ref_pruning.closest_refs.map(|c| c != 0);
+}
+
 /// C's `product_coding_loop.c:9425-9447` block, single-reference arm.
 ///
 /// The compound entries of `ref_frame_type_arr` are skipped exactly as C
@@ -378,7 +496,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
             == crate::port_enc_mode_config::encdec::subpel_search_method::SUBPEL_TREE_PRUNED
         && cfg.md_subpel_me.mvp_th != 0)
         || cfg.updated_enable_pme
-        || cfg.ref_pruning_enabled;
+        || cfg.ref_pruning.enabled != 0;
 
     for &pair in b.ref_frame_type_arr {
         let rf = av1_set_ref_frame(pair);
@@ -563,7 +681,7 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 md_nsq_me_enabled: cfg.md_nsq_me_enabled,
                 do_subpel,
                 subpel_fixed_stage: false,
-                needs_fp_me_dist: cfg.updated_enable_pme || cfg.ref_pruning_enabled,
+                needs_fp_me_dist: cfg.updated_enable_pme || cfg.ref_pruning.enabled != 0,
                 shape_is_part_n: !b_w_ne_h,
             },
             &fp_ctx,
@@ -601,6 +719,15 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         out.post_subpel_me_mv_cost[li][ri] = res.post_subpel_me_mv_cost;
     }
 
+    // ---- perform_md_reference_pruning (product_coding_loop.c:3004-3084) ----
+    // Runs AFTER `read_refine_me_mvs` and BEFORE `pme_search`
+    // (product_coding_loop.c:9441/9445): the PME loop below consults its
+    // `do_ref` per (list, ref), and every uni/bipred injector consults it
+    // through `InjectCtx::ref_pruning`.
+    if cfg.ref_pruning.enabled != 0 {
+        perform_md_reference_pruning(cfg, b, &st, &mut out);
+    }
+
     if !cfg.updated_enable_pme {
         return out;
     }
@@ -618,6 +745,14 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
         let Some(p) = b.padded_by_ref[rf[0].max(0) as usize] else {
             continue;
         };
+        // C `!svt_aom_is_valid_unipred_ref(ctx, PRED_ME_GROUP, list_idx,
+        // ref_idx) -> continue` (product_coding_loop.c:3238-3241): a ref the
+        // distance-based pruner dropped keeps `valid_pme_mv` at 0, which is
+        // also what keeps `inject_pme_candidates`' compound arm from pairing
+        // it into a NEW_NEWMV.
+        if !is_valid_unipred_ref(&out.ref_pruning, InterCandGroup::PredMe, li, ri) {
+            continue;
+        }
         let r = ref_geom(p);
         let s = st[li][ri].clone();
         if s.mvps.is_empty() {
@@ -919,6 +1054,11 @@ pub struct SearchFrameInputs {
     /// `scs->static_config.qp` — the CLI qp the PME search-area scaling
     /// reads (NOT `base_q_idx`).
     pub cli_qp: u32,
+    /// `ppcs->picture_qp` — read by `perform_md_reference_pruning`'s
+    /// `check_closest` threshold (product_coding_loop.c:3053). Only live at
+    /// pruning levels 4..=8 (`check_closest_multiplier == 1`); at level 2
+    /// the multiplier is 0 and the value is never read.
+    pub picture_qp: u8,
     /// `scs->qp_based_th_scaling_ctrls.pme_qp_based_th_scaling`
     /// (`enc_handle.c:3812`: 1 on the `_default` arm above `ENC_MR`).
     pub pme_qp_based_th_scaling: bool,
@@ -993,7 +1133,7 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         md_nsq_full_pel_w: nsq.full_pel_search_width,
         md_nsq_full_pel_h: nsq.full_pel_search_height,
         md_nsq_enable_psad: nsq.enable_psad != 0,
-        ref_pruning_enabled: pruning.enabled != 0,
+        ref_pruning: pruning,
         // C `product_coding_loop.c:9418-9422`. The second assignment zeroes
         // it when `is_intra_bordered && use_neighbouring_mode_ctrls.enabled`;
         // this port hands the injector `use_neighbouring_mode_ctrls_enabled
@@ -1002,6 +1142,7 @@ pub fn frame_cfg(i: &SearchFrameInputs) -> Option<SearchFrameCfg> {
         // cells (`SVT_INJCFG_OUT`: `ibord=0 uepme=1`).
         updated_enable_pme: pme.enabled != 0,
         cli_qp: i.cli_qp,
+        picture_qp: i.picture_qp,
         base_q_idx: i.base_q_idx,
         sad_per_bit: crate::port_md::pme::get_sad_per_bit(usize::from(i.base_q_idx), false),
         allow_high_precision_mv: i.allow_high_precision_mv,
@@ -1139,6 +1280,7 @@ mod tests {
             interpolation_search_level: 4,
             dist_based_ref_pruning: 0,
             cli_qp: 40,
+            picture_qp: 160,
             pme_qp_based_th_scaling: true,
             base_q_idx: 160,
             allow_high_precision_mv: false,

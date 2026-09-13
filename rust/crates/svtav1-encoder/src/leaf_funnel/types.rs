@@ -182,6 +182,27 @@ pub struct InterCand {
     /// block, 1 for the remaining "MVP Prediction" modes. Stamped by
     /// `inter_md_arm::build_inter_candidates`; `nic::lane_of` reads it.
     pub cand_class: u8,
+    /// C `cand->block_mi.comp_group_idx` / `compound_idx` /
+    /// `interinter_comp.type` — the CODED compound symbols
+    /// `determine_compound_mode` stamped at injection. They have to reach
+    /// `InterDecision` and the pack unchanged: a compound winner coded as
+    /// group A average regardless of what MD picked is a stream the decoder
+    /// reads differently.
+    pub comp_group_idx: u8,
+    pub compound_idx: u8,
+    pub interinter_comp_type: u8,
+    /// C `cand->skip_mode_allowed` — the injector's NEAREST_NEARESTMV arm
+    /// sets it when the candidate's ref pair IS the frame's skip-mode pair.
+    /// `svt_aom_full_cost` arbitrates the skip-mode symbol against the full
+    /// mode cost at every stage (rd_cost.c:1423-1452).
+    pub skip_mode_allowed: bool,
+    /// C `ctx->skip_mode_ctx` — `av1_get_skip_mode_context(xd)`, per-BLOCK,
+    /// carried from the inject-time neighbour pair.
+    pub skip_mode_ctx: u8,
+    /// C `block_mi.skip_mode` — the DECISION the full-cost skip-mode arm
+    /// makes (reset-then-set inside `skip_mode_allowed`, matching
+    /// rd_cost.c:1438-1445). Read by the writer and the mi-map stamp.
+    pub skip_mode: bool,
 }
 
 /// The chosen leaf coding, consumed by the fixed-tree walk + the entropy
@@ -531,6 +552,25 @@ impl LeafEval {
         }
     }
 
+    /// NSQDBG only: the inter winner's `mode rf mv0 mv1` joined against C's
+    /// CINTER/INJC fields; "-" on a non-inter winner.
+    #[cfg(feature = "std")]
+    pub(crate) fn dbg_inter(&self) -> String {
+        match self.win.inter.as_ref() {
+            Some(ic) => alloc::format!(
+                "imode={} irf={},{} imv0={},{} imv1={},{}",
+                ic.mode as u8,
+                ic.ref_frame[0],
+                ic.ref_frame[1],
+                ic.mv[0].y,
+                ic.mv[0].x,
+                ic.mv[1].y,
+                ic.mv[1].x
+            ),
+            None => "-".to_string(),
+        }
+    }
+
     /// Winner tx_depth (diagnostic; only read by the std-gated NSQDBG dumps).
     #[cfg(feature = "std")]
     pub(crate) fn tx_depth(&self) -> u8 {
@@ -645,6 +685,19 @@ impl LeafEval {
     /// round trips per coded block.
     pub(crate) fn into_choice(self) -> LeafChoice {
         let cand = self.win;
+        // C `svt_aom_product_full_mode_decision{,_light_pd1}` commit OR —
+        // `blk_ptr->block_mi.skip_mode |= !blk_ptr->block_has_coeff` whenever
+        // the winner's `cand->skip_mode_allowed` (mode_decision.c:3737-3745 /
+        // :3957-3965). The committed skip_mode flag is therefore the
+        // full-cost arm's decision OR "eligible winner produced no
+        // coefficients"; C sets it even on candidates whose stage evals
+        // never won the skip-mode cost comparison.
+        let mut inter = cand.inter;
+        if let Some(i) = inter.as_deref_mut() {
+            if i.skip_mode_allowed {
+                i.skip_mode |= !cand.block_has_coeff;
+            }
+        }
         LeafChoice {
             mode: cand.mode,
             angle_delta: cand.delta,
@@ -669,7 +722,7 @@ impl LeafEval {
             cfl_alpha_signs: cand.cfl_alpha_signs,
             palette: cand.palette,
             ibc: cand.ibc,
-            inter: cand.inter,
+            inter,
         }
     }
 }

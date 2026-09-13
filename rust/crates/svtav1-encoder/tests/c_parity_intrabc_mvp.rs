@@ -97,6 +97,9 @@ fn random_grid(rng: &mut Rng, rows: usize, cols: usize, ibc_pct: u64) -> Vec<mvp
                 mv: [if is_ibc { dv } else { Mv::default() }, Mv::default()],
                 partition: rng.below(10) as u8,
                 interp_filters: 0,
+                skip_mode: false,
+                comp_group_idx: 0,
+                compound_idx: 0,
             };
             for dr in 0..h as usize {
                 for dc in 0..w as usize {
@@ -338,6 +341,9 @@ fn compose_dv_ref_matches_c_semantics() {
             mv: [dv, Mv::default()],
             partition: 0,
             interp_filters: 0,
+            skip_mode: false,
+            comp_group_idx: 0,
+            compound_idx: 0,
         };
     }
     let ctx = mvp::derive_block_ctx(16, 16, 3, 48, 48, tile, 16);
@@ -391,6 +397,9 @@ fn c_parity_has_top_right_vert_a_uses_mutated_bs() {
             mv: [dv, Mv::default()],
             partition: part,
             interp_filters: 0,
+            skip_mode: false,
+            comp_group_idx: 0,
+            compound_idx: 0,
         };
         let grid = vec![entry; rows * cols];
         let c_cells = to_c_cells(&grid);

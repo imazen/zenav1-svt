@@ -3850,6 +3850,16 @@ impl EncodePipeline {
                 skip_mode_flag: pic_decision
                     .as_ref()
                     .is_some_and(|p| p.skip_mode.skip_mode_allowed != 0),
+                // C `frm_hdr->skip_mode_params.ref_frame_idx_{0,1}` —
+                // `setup_skip_mode_allowed` leaves them `INVALID_IDX` (-1)
+                // when the frame's reference structure has no skip-mode
+                // pair (single reference, or order-hint signalling off).
+                skip_mode_ref_frame_idx_0: pic_decision
+                    .as_ref()
+                    .map_or(-1, |p| p.skip_mode.ref_frame_idx_0 as i8),
+                skip_mode_ref_frame_idx_1: pic_decision
+                    .as_ref()
+                    .map_or(-1, |p| p.skip_mode.ref_frame_idx_1 as i8),
                 // C `frm_hdr->reference_mode`. The port has no compound
                 // candidate yet, but the SYMBOL layout depends on this bit
                 // and the header writes it, so it must be the header's value
@@ -4107,23 +4117,16 @@ impl EncodePipeline {
             });
 
         // C `ctx->ref_frame_type_arr` (`set_all_ref_frame_type`,
-        // pd_process.c:1044) restricted to the SINGLE-reference entries, and
-        // the DPB picture each one names.
-        //
-        // `inter_md_arm` drops the compound entry on purpose (that module's
-        // header says why); building the array here rather than there keeps
-        // the picture-decision state in the pipeline, which is the only place
-        // that has `rps.ref_dpb_index`.
+        // pd_process.c:1044) — single-reference entries AND the compound
+        // pairs (bi-dir L0xL1 plus the unidir LAST_LAST2 set a B slice
+        // earns), each naming the DPB pictures it predicts from. The
+        // constituent-aware availability filter runs below, once
+        // `inter_padded_by_ref` exists; a compound entry survives exactly
+        // when BOTH its single references do.
         let inter_ref_types: alloc::vec::Vec<i8> = match pic_decision.as_ref() {
             Some(pic) if !is_key => {
                 let (arr, tot) = crate::port_picstruct::set_all_ref_frame_type(pic);
-                arr[..usize::from(tot)]
-                    .iter()
-                    .copied()
-                    .filter(|&rt| {
-                        crate::inter_mvp::av1_set_ref_frame(rt)[1] == crate::inter_mvp::NONE_FRAME
-                    })
-                    .collect()
+                arr[..usize::from(tot)].to_vec()
             }
             _ => alloc::vec::Vec::new(),
         };
@@ -4155,9 +4158,19 @@ impl EncodePipeline {
         for (rt, rf) in inter_ref_frames.iter().enumerate() {
             inter_padded_by_ref[rt] = rf.as_deref().and_then(|r| r.padded.as_deref());
         }
+        // A single entry survives when ITS reference has a padded
+        // reconstruction; a compound pair survives when BOTH constituents
+        // do. `padded_by_ref` is indexed by `MvReferenceFrame` (1..=7) — a
+        // pair type (8..) has no slot of its own and must never be indexed
+        // into it.
         let inter_ref_types: alloc::vec::Vec<i8> = inter_ref_types
             .into_iter()
-            .filter(|&rt| inter_padded_by_ref[rt.max(0) as usize].is_some())
+            .filter(|&rt| {
+                let rf = crate::inter_mvp::av1_set_ref_frame(rt);
+                inter_padded_by_ref[rf[0].max(0) as usize].is_some()
+                    && (rf[1] == crate::inter_mvp::NONE_FRAME
+                        || inter_padded_by_ref[rf[1].max(0) as usize].is_some())
+            })
             .collect();
 
         let inter_md_frame = match (
@@ -4194,6 +4207,10 @@ impl EncodePipeline {
                         interpolation_search_level: sigs.interpolation_search_level,
                         dist_based_ref_pruning: sigs.dist_based_ref_pruning,
                         cli_qp: u32::from(self.rc_config.qp),
+                        // `ppcs->picture_qp` — `perform_md_reference_pruning`'s
+                        // check-closest threshold; inert while
+                        // `check_closest_multiplier` is 0 (level <= 3).
+                        picture_qp,
                         // `set_qp_based_th_scaling_ctrls_default`
                         // (enc_handle.c:3812) — 1 at every preset above
                         // `ENC_MR`, which is every preset this port reaches
@@ -4226,6 +4243,8 @@ impl EncodePipeline {
                 }
                 Some(crate::inter_md_arm::InterMdFrame {
                     skip_mode_flag: st.skip_mode_flag,
+                    skip_mode_ref_frame_idx_0: st.skip_mode_ref_frame_idx_0,
+                    skip_mode_ref_frame_idx_1: st.skip_mode_ref_frame_idx_1,
                     cand_reduction: *cand_red,
                     wm_level: sigs.wm_level,
                     bit_depth: self.bit_depth,
@@ -4297,6 +4316,11 @@ impl EncodePipeline {
                     global_motion: gm_field,
                     gm_skip_identity,
                     gm_enabled,
+                    // C `pcs->inter_compound_mode` — same signal derivation
+                    // as `pic_obmc_level` below.
+                    inter_compound_mode: md_config_signals
+                        .as_ref()
+                        .map_or(0, |sigs| sigs.inter_compound_mode),
                     // C `ppcs->pic_obmc_level`, straight off the mode-decision
                     // signal derivation that already computes it.
                     pic_obmc_level: md_config_signals
@@ -8251,6 +8275,12 @@ pub(crate) struct InterSyntaxState {
     /// (`pd_process.c:4958` = `skip_mode_allowed`). Gates BOTH the header bit
     /// and the per-block `skip_mode` symbol (`entropy_coding.c:5119`).
     pub skip_mode_flag: bool,
+    /// C `frm_hdr->skip_mode_params.ref_frame_idx_{0,1}` — the pair a
+    /// NEAREST_NEARESTMV candidate must carry for `skip_mode_allowed` to
+    /// fire (mode_decision.c:1590-1594). `INVALID_IDX` (-1) when the frame
+    /// does not allow skip mode.
+    pub skip_mode_ref_frame_idx_0: i8,
+    pub skip_mode_ref_frame_idx_1: i8,
     pub reference_mode: crate::port_entropy_inter::refframe::ReferenceMode,
     pub interpolation_filter: u8,
     pub enable_dual_filter: bool,
@@ -8707,6 +8737,16 @@ impl EntropyCtx {
         4 - bsl
     }
 
+    /// Raw neighbour bytes for NSQDBG dumps — `partition_sub`'s inputs
+    /// without the bit extraction.
+    #[cfg(feature = "std")]
+    pub(crate) fn part_ctx_bytes(&self, x: usize, y: usize) -> (u8, u8) {
+        (
+            self.above_partition[x / 8],
+            self.left_partition[y / 8],
+        )
+    }
+
     /// Compute partition context (sub, 0-3) from tracked above/left values.
     /// Uses the same bit-extraction logic as rav1d's `get_partition_ctx`.
     fn partition_sub(&self, x: usize, y: usize, bsl: usize) -> usize {
@@ -8896,6 +8936,9 @@ impl EntropyCtx {
                 mv,
                 partition: partition_type,
                 interp_filters: mi.interp_filters,
+                skip_mode: mi.skip_mode,
+                comp_group_idx: mi.comp_group_idx,
+                compound_idx: mi.compound_idx,
             };
             let stride = env.mi_stride as usize;
             for r in y4..(y4 + h / 4).min(env.mi_rows as usize) {
@@ -9622,6 +9665,14 @@ fn encode_block_syntax(
     if let Some(acc) = ectx.coded_area.as_mut() {
         acc.add_block(decision, block_x, block_y, skip);
     }
+    // C `block_mi.skip_mode` — the winner's flag, set by `svt_aom_full_cost`'s
+    // skip-mode arbitration. A skip-mode block codes ONE symbol here and the
+    // whole mode-info group is suppressed below (`if (!skip_mode)`,
+    // entropy_coding.c:5155).
+    let skip_mode = decision
+        .inter
+        .as_deref()
+        .is_some_and(|b| b.skip_mode);
     // C `entropy_coding.c:5119`, in the non-intra-FRAME arm of
     // `write_modes_b`, immediately before `encode_skip_coeff_av1`:
     //
@@ -9632,10 +9683,8 @@ fn encode_block_syntax(
     // ```
     //
     // It is a FRAME-level arm, not a block-level one: an INTRA block of an
-    // inter frame gets the symbol too. This port never produces a SKIP-MODE
-    // block — its injector has no compound candidate — so the value is always
-    // 0 and `write_skip` below stays unconditional; but C codes the SYMBOL
-    // either way, and omitting it shifts every following bit of the block.
+    // inter frame gets the symbol too. C codes the SYMBOL either way, and
+    // omitting it shifts every following bit of the block.
     if !is_key
         && let Some(st) = ectx.inter_syntax.as_ref()
         && st.skip_mode_flag
@@ -9651,11 +9700,16 @@ fn encode_block_syntax(
             writer,
             &mut frame_ctx.inter,
             &nb,
-            false,
+            skip_mode,
         );
     }
-    let skip_ctx = ectx.skip_ctx(block_x, block_y);
-    crate::entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
+    // C `if (!skip_mode) encode_skip_coeff_av1(...)` (entropy_coding.c:5124)
+    // — a skip-mode block does NOT carry the normal skip-coefficient symbol;
+    // skip mode IS its skipped-residual path.
+    if !skip_mode {
+        let skip_ctx = ectx.skip_ctx(block_x, block_y);
+        crate::entropy::context::write_skip(writer, frame_ctx, skip_ctx, skip);
+    }
 
     // cdef_idx (C write_cdef, entropy_coding.c:3986-4017; spec read_cdef):
     // at the FIRST NON-SKIP coded block of each 64x64 FILTER BLOCK,
@@ -9670,7 +9724,10 @@ fn encode_block_syntax(
     // literals the encoder never wrote: a CORRUPT tile, not merely a
     // mismatched one. At SB64 `index` is always 0 and this is bit-for-bit
     // the previous behaviour.
-    if !skip && let Some(st) = ectx.cdef_sb.as_mut() {
+    // C `write_cdef(..., skip_mode ? 1 : skip_coeff, ...)` — a skip-mode
+    // block counts as skipped for the cdef latch even though the
+    // skip-coeff symbol was suppressed.
+    if !(skip || skip_mode) && let Some(st) = ectx.cdef_sb.as_mut() {
         let index = if st.sb128 {
             ((block_x >> 6) & 1) + 2 * ((block_y >> 6) & 1)
         } else {
@@ -9726,8 +9783,11 @@ fn encode_block_syntax(
     }
 
     // Mode syntax is ALWAYS coded — the skip flag only gates residuals
-    // (AV1 intra_frame_mode_info reads y_mode regardless of skip).
-    if !is_key {
+    // (AV1 intra_frame_mode_info reads y_mode regardless of skip) — EXCEPT
+    // for a skip-mode block, where C wraps the whole mode-info group in
+    // `if (!skip_mode)` (entropy_coding.c:5155): no `write_is_inter`, no
+    // reference frames, no mode, no MVs, no compound or interp symbols.
+    if !skip_mode && !is_key {
         // C `write_is_inter` (entropy_coding.c:1147) takes
         // `svt_av1_get_intra_inter_context(xd)` — a FOUR-valued context off
         // the above/left neighbours' `is_inter_block`, not a constant.
@@ -9748,7 +9808,12 @@ fn encode_block_syntax(
         crate::entropy::context::write_intra_inter(writer, frame_ctx, ctx, decision.is_inter);
     }
 
-    if use_intrabc {
+    if skip_mode {
+        // C `if (!skip_mode)` (entropy_coding.c:5155) wraps the ENTIRE
+        // mode-info group: `write_is_inter` (handled above), the intra/inter
+        // mode dispatch, chroma mode-info, palette and the residual call.
+        // A skip-mode block emits none of them.
+    } else if use_intrabc {
         // C write_modes_b :5024-5089: y_mode + angle + uv mode-info +
         // palette + filter_intra are ALL suppressed for an IntraBC block
         // (each writer is nested under `use_intrabc == 0`).
@@ -9828,14 +9893,35 @@ fn encode_block_syntax(
             pred_mv,
             inter_mode_ctx,
             drl,
-            // Inter-intra, compound and the two warped-motion inputs have no
-            // candidate to come from yet; a candidate that sets them must
-            // extend `InterDecision` rather than have them defaulted here.
+            // Inter-intra and the two warped-motion inputs have no candidate
+            // to come from yet; a candidate that sets them must extend
+            // `InterDecision` rather than have them defaulted here.
             interintra: None,
             motion_mode: blk.motion_mode,
             num_proj_ref: blk.num_proj_ref,
             overlappable_neighbors: blk.overlappable_neighbors,
-            compound: None,
+            // `write_inter_mode_info` step 9 is gated on `has_second_ref`;
+            // a single-reference block takes `None` and skips the whole
+            // compound group, exactly as C's gate does.
+            compound: (blk.ref_frame[1] > 0).then(|| {
+                if blk.comp_group_idx == 0 {
+                    crate::port_entropy_inter::compound::CompGroup::A {
+                        compound_idx: blk.compound_idx != 0,
+                    }
+                } else {
+                    crate::port_entropy_inter::compound::CompGroup::B(
+                        crate::port_entropy_inter::compound::InterInterComp {
+                            comp_type: match blk.interinter_comp_type {
+                                3 => crate::port_entropy_inter::compound::CompoundType::Diffwtd,
+                                _ => crate::port_entropy_inter::compound::CompoundType::Wedge,
+                            },
+                            wedge_index: 0,
+                            wedge_sign: false,
+                            mask_type: 0,
+                        },
+                    )
+                }
+            }),
             interp_filters: blk.interp_filters,
             skip_mode: blk.skip_mode,
         };
@@ -9858,19 +9944,23 @@ fn encode_block_syntax(
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_INTERDBG").is_some() {
             std::eprintln!(
-                "IDBG mi=({},{}) bs={:?} mode={:?} mm={:?} npr={} mv=({},{}) pmv=({},{}) imc={} drl={:?} nb_up={} nb_left={} nbA={:?} nbL={:?}",
+                "IDBG mi=({},{}) bs={:?} mode={:?} rf={:?} mm={:?} npr={} mv=({},{}) mv1=({},{}) pmv=({},{}) imc={} drl={:?} skm={} nb_up={} nb_left={} nbA={:?} nbL={:?}",
                 block_y / 4,
                 block_x / 4,
                 info.bsize,
                 info.mode,
+                info.ref_frame,
                 info.motion_mode,
                 info.num_proj_ref,
                 info.mv[0].y,
                 info.mv[0].x,
+                info.mv[1].y,
+                info.mv[1].x,
                 info.pred_mv[0].y,
                 info.pred_mv[0].x,
                 info.inter_mode_ctx,
                 info.drl,
+                info.skip_mode,
                 nb.up_available,
                 nb.left_available,
                 nb.above.map(|a| (a.mode, a.ref_frame, a.interp_filters)),
@@ -10518,15 +10608,13 @@ fn encode_block_syntax(
             interp_filters: decision.inter.as_deref().map_or(0, |b| b.interp_filters),
             use_intrabc: decision.use_intrabc,
             skip_mode: decision.inter.as_deref().is_some_and(|b| b.skip_mode),
-            // Both are 0 until a COMPOUND candidate exists: C codes them
-            // only under `has_second_ref`, and every candidate this port
-            // injects is single-reference. They are stamped rather than
-            // omitted because the neighbour contexts
-            // (`comp_group_idx_context` / `comp_index_context`) read them
-            // off the NEIGHBOUR, so leaving a stale value here would move a
-            // future compound block's symbol.
-            comp_group_idx: 0,
-            compound_idx: 0,
+            // C `block_mi.comp_group_idx` / `compound_idx`, stamped so the
+            // NEXT compound block's `comp_group_idx_context` /
+            // `comp_index_context` read the same neighbour fields the
+            // decoder derives. A skip-mode block's cand is always
+            // MD_COMP_AVG (0, 1) — the decoder's own inferred values.
+            comp_group_idx: decision.inter.as_deref().map_or(0, |b| b.comp_group_idx),
+            compound_idx: decision.inter.as_deref().map_or(0, |b| b.compound_idx),
             bsize: crate::entropy::context::block_size_index(
                 decision.width as usize,
                 decision.height as usize,
@@ -13516,13 +13604,44 @@ fn encode_tile_rows(
                                 );
                                 // Partition rates at the real contexts, from
                                 // the same (possibly chained) frame context as
-                                // the funnel's syntax rates.
+                                // the funnel's syntax rates. When the per-SB
+                                // chain is OFF (`cdf_ctrl.enabled == 0` —
+                                // inter frames at every reachable preset:
+                                // `get_update_cdf_level_default` returns 0 for
+                                // `!is_islice` above M3), C's
+                                // `init_frame_rate_tables` builds the table
+                                // ONCE from `pcs->md_frame_context` — the
+                                // primary ref's saved end-of-frame CDFs —
+                                // which is `md_frame_cdfs`, NOT a fresh
+                                // default. The `new_default` fallback here
+                                // under-priced PARTITION_NONE on adapted rows
+                                // and suppressed a split the C reference took
+                                // (johnny frame 2, 32x32 at mi (56,56)).
+                                let part_rates_default_fc;
                                 let part_rates = match &chain_base {
                                     Some((fc, _)) => crate::depth_refine::PartRates::from_fc(fc),
-                                    None => crate::depth_refine::PartRates::from_fc(
-                                        &crate::entropy::context::FrameContext::new_default(),
-                                    ),
+                                    None => {
+                                        let fc = match md_frame_cdfs {
+                                            Some(c) => &c.fc,
+                                            None => {
+                                                part_rates_default_fc =
+                                                    crate::entropy::context::FrameContext::new_default();
+                                                &part_rates_default_fc
+                                            }
+                                        };
+                                        crate::depth_refine::PartRates::from_fc(fc)
+                                    }
                                 };
+                                #[cfg(feature = "std")]
+                                if crate::dbgenv::nsqdbg() {
+                                    eprintln!(
+                                        "NSQDBG PARTRATE sb=({},{}) chained={} mdfc={}",
+                                        sb_y0 / 64,
+                                        sb_x0 / 64,
+                                        chain_base.is_some(),
+                                        md_frame_cdfs.is_some(),
+                                    );
+                                }
                                 let (u_src, v_src) = chroma_src.unwrap();
                                 let mut inter_sq_me = crate::inter_search_arm::SqMeState::default();
                                 let mut fx = crate::leaf_funnel::FunnelCtx {
@@ -15766,6 +15885,8 @@ mod inter_decision_probe {
             // This unit test drives the inter pack arm directly; C's frame-2
             // skip-mode bit is off on the GOP it models.
             skip_mode_flag: false,
+            skip_mode_ref_frame_idx_0: -1,
+            skip_mode_ref_frame_idx_1: -1,
             reference_mode: ReferenceMode::Select,
             interpolation_filter: crate::port_enc_mode_config::md_config::SWITCHABLE,
             enable_dual_filter: false,
@@ -15834,6 +15955,9 @@ mod inter_decision_probe {
                 num_proj_ref: 0,
                 overlappable_neighbors: 0,
                 skip_mode: false,
+                comp_group_idx: 0,
+                compound_idx: 0,
+                interinter_comp_type: 0,
                 wm_params: Default::default(),
             })),
             ..Default::default()

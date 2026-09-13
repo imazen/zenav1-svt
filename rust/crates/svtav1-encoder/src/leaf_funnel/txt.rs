@@ -497,6 +497,7 @@ pub(super) fn txt_search(
             qcoeff,
             recon,
             dist: m.dist,
+            dist_pred: m.dist_pred,
             bits: m.bits,
             cul: m.cul,
         };

@@ -291,6 +291,140 @@ pub fn predict_inter_yuv(
     );
 }
 
+/// The COMPOUND (two-reference) form of [`predict_inter_luma`].
+///
+/// `av1_inter_prediction_light_pd1` averages the two per-reference
+/// predictors when `mvs` has two entries — C's `COMPOUND_AVERAGE` arm.
+/// `references[0]`/`mvs[0]` pair with `ref_frame[0]` (list-0 side) and
+/// `references[1]`/`mvs[1]` with `ref_frame[1]`.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_luma_compound(
+    references: [&PaddedPlane; 2],
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mvs: [Mv; 2],
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    out: &mut [u8],
+    out_stride: usize,
+) {
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let rps: [RefPlane<'_>; 2] = references.map(|p| RefPlane {
+        buf: &p.buf,
+        origin: p.origin,
+        stride: p.stride,
+        width: p.width as i32,
+        height: p.height as i32,
+    });
+    let mut u_scratch = [0u8; 1];
+    let mut v_scratch = [0u8; 1];
+    let mut pred = PredPlanes {
+        y: out,
+        y_stride: out_stride,
+        u: &mut u_scratch,
+        u_stride: 1,
+        v: &mut v_scratch,
+        v_stride: 1,
+    };
+    av1_inter_prediction_light_pd1(
+        &BlkGeom {
+            org_x: org_x as i32,
+            org_y: org_y as i32,
+            bwidth: bw,
+            bheight: bh,
+            bwidth_uv: bw / 2,
+            bheight_uv: bh / 2,
+            super_block_size: sb_size as i32,
+        },
+        &mvs.map(|mv| DspMv { x: mv.x, y: mv.y }),
+        &rps,
+        &[],
+        &[],
+        &[sf, sf],
+        &edges,
+        interp_filters,
+        &mut pred,
+        LUMA_MASK,
+    );
+}
+
+/// The COMPOUND (two-reference) form of [`predict_inter_yuv`]: each entry of
+/// `refs` is one reference picture's `(y, u, v)` planes, paired with `mvs`
+/// in `ref_frame` order.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_compound(
+    refs: [(&PaddedPlane, &PaddedPlane, &PaddedPlane); 2],
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mvs: [Mv; 2],
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    y_out: &mut [u8],
+    y_stride: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) {
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    fn plane(p: &PaddedPlane) -> RefPlane<'_> {
+        RefPlane {
+            buf: &p.buf,
+            origin: p.origin,
+            stride: p.stride,
+            width: p.width as i32,
+            height: p.height as i32,
+        }
+    }
+    let mut pred = PredPlanes {
+        y: y_out,
+        y_stride,
+        u: u_out,
+        u_stride: uv_stride,
+        v: v_out,
+        v_stride: uv_stride,
+    };
+    av1_inter_prediction_light_pd1(
+        &BlkGeom {
+            org_x: org_x as i32,
+            org_y: org_y as i32,
+            bwidth: bw,
+            bheight: bh,
+            bwidth_uv: bw / 2,
+            bheight_uv: bh / 2,
+            super_block_size: sb_size as i32,
+        },
+        &mvs.map(|mv| DspMv { x: mv.x, y: mv.y }),
+        &[plane(refs[0].0), plane(refs[1].0)],
+        &[plane(refs[0].1), plane(refs[1].1)],
+        &[plane(refs[0].2), plane(refs[1].2)],
+        &[sf, sf],
+        &edges,
+        interp_filters,
+        &mut pred,
+        LUMA_MASK | CHROMA_MASK,
+    );
+}
+
 /// [`predict_inter_yuv`] against a TRUE 10-BIT reference.
 ///
 /// The bd10 full-RD funnel residuals every candidate against a 10-bit
@@ -402,6 +536,109 @@ pub fn predict_inter_yuv_hbd(
         interp_filters,
         &mut pred,
         mask,
+        i32::from(bit_depth),
+    );
+}
+
+/// The COMPOUND (two-reference) form of [`predict_inter_yuv_hbd`]: each entry
+/// of `refs` is one reference picture's luma plane plus its optional chroma
+/// pair, paired with `mvs` in `ref_frame` order. `av1_inter_prediction_
+/// light_pd1_hbd` averages the two predictors when `mvs` has two entries.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_hbd_compound(
+    refs: [(
+        &crate::picture::PaddedPlaneHbd,
+        Option<(
+            &crate::picture::PaddedPlaneHbd,
+            &crate::picture::PaddedPlaneHbd,
+        )>,
+    ); 2],
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mvs: [Mv; 2],
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    fn plane(p: &crate::picture::PaddedPlaneHbd) -> RefPlane16<'_> {
+        RefPlane16 {
+            buf: &p.buf,
+            origin: p.origin,
+            stride: p.stride,
+            width: p.width as i32,
+            height: p.height as i32,
+        }
+    }
+    let has_chroma = refs.iter().all(|(_, c)| c.is_some());
+    let mut u_scratch = [0u16; 1];
+    let mut v_scratch = [0u16; 1];
+    let (u_dst, u_dst_stride): (&mut [u16], usize) = if has_chroma {
+        (u_out, uv_stride)
+    } else {
+        (&mut u_scratch, 1)
+    };
+    let (v_dst, v_dst_stride): (&mut [u16], usize) = if has_chroma {
+        (v_out, uv_stride)
+    } else {
+        (&mut v_scratch, 1)
+    };
+    let mut pred = PredPlanes16 {
+        y: y_out,
+        y_stride,
+        u: u_dst,
+        u_stride: u_dst_stride,
+        v: v_dst,
+        v_stride: v_dst_stride,
+    };
+    // A compound block is never sub-8 (`allow_bipred` rejects width or
+    // height 4), so both references either carry chroma or neither does;
+    // the luma plane stands in for the unreachable case the way
+    // `predict_inter_yuv_hbd` does it.
+    let uv = |i: usize| match refs[i].1 {
+        Some((u, v)) => (plane(u), plane(v)),
+        None => (plane(refs[i].0), plane(refs[i].0)),
+    };
+    let (u0, v0) = uv(0);
+    let (u1, v1) = uv(1);
+    av1_inter_prediction_light_pd1_hbd(
+        &BlkGeom {
+            org_x: org_x as i32,
+            org_y: org_y as i32,
+            bwidth: bw,
+            bheight: bh,
+            bwidth_uv: bw / 2,
+            bheight_uv: bh / 2,
+            super_block_size: sb_size as i32,
+        },
+        &mvs.map(|mv| DspMv { x: mv.x, y: mv.y }),
+        &[plane(refs[0].0), plane(refs[1].0)],
+        &[u0, u1],
+        &[v0, v1],
+        &[sf, sf],
+        &edges,
+        interp_filters,
+        &mut pred,
+        if has_chroma {
+            LUMA_MASK | CHROMA_MASK
+        } else {
+            LUMA_MASK
+        },
         i32::from(bit_depth),
     );
 }

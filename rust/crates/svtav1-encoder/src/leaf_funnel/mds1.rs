@@ -55,6 +55,7 @@ pub(super) fn run_mds1(
         y_geom,
         filt_type_y,
         aligned_dims,
+        has_uv,
         ..
     } = *g;
 
@@ -244,16 +245,18 @@ pub(super) fn run_mds1(
                 }),
             )
         });
-        let (dec_eob, dec_bits, dec_dist, dec_lambda) = match &out10 {
+        let (dec_eob, dec_bits, dec_dist, dec_dist_pred, dec_lambda) = match &out10 {
             Some(o) => (
                 o.eob,
                 o.bits as u64,
                 o.dist,
+                o.dist_pred,
                 bd10_rd.as_ref().unwrap().lambda,
             ),
-            None => (out.eob, out.bits as u64, out.dist, lambda),
+            None => (out.eob, out.bits as u64, out.dist, out.dist_pred, lambda),
         };
-        let has = dec_eob > 0;
+        let mut has = dec_eob > 0;
+        let mut dec_dist = dec_dist;
         let tsz_cat = tx_size_cat(w, h);
         let tsz_ctx = fx.ectx.tx_size_ctx(abs_x, abs_y, w, h);
         // C: 4x4 codes no tx_size symbol (block_signals_txsize == bsize > 4x4).
@@ -261,7 +264,7 @@ pub(super) fn run_mds1(
         // block has coeffs, and ZERO bits when skip (svt_aom_tx_size_bits'
         // `!(is_inter_tx && skip)` gate) — svt_aom_full_cost prices exactly
         // that pair at MDS1 too.
-        let coeff_rate = if cand.is_inter() {
+        let mut coeff_rate = if cand.is_inter() {
             let vartx_bits = if has && block_signals_txsize(w, h) && !frame.coded_lossless {
                 crate::vartx::tx_size_bits_vartx(
                     &rates.txfm_partition_fac_bits,
@@ -295,8 +298,64 @@ pub(super) fn run_mds1(
                 rates.skip[skip_ctx][1] as u64 + tx_size_bits
             }
         };
+        // ---- C `blk_skip_decision` (rd_cost.c:1371-1406), MDS1 arm ----
+        // An inter candidate WITH coefficients is also priced as SKIP — no
+        // residual coded, distortion taken from the prediction-domain slot
+        // (`y_distortion[DIST_SSD][DIST_CALC_PREDICTION]`, `dist_pred`), rate
+        // reduced to `skip_fac_bits[ctx][1]` (the `assert` at :1369 makes the
+        // skip arm's tx_size bits zero for every inter mode). The cheaper arm
+        // wins and flips `block_has_coeff`. Gate: `ctx->blk_skip_decision` is
+        // `uv_ctrls.uv_mode <= CHROMA_MODE_1` (enc_mode_config.c:7859) —
+        // `has_uv` is this path's proxy for it, same as MDS3's (mds3.rs).
+        if cand.inter.is_some() && has && has_uv && !frame.coded_lossless {
+            let skip_cost = rdcost(
+                dec_lambda,
+                cand.flr + cand.fcr + rates.skip[skip_ctx][1] as u64,
+                dec_dist_pred,
+            );
+            let non_skip_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
+            #[cfg(feature = "std")]
+            if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+                eprintln!(
+                    "NSQDBG SKIPDEC mi=({},{}) {}x{} skip={} nonskip={} dpred={} dres={} hasuv={} skipr={}",
+                    abs_y / 4, abs_x / 4, w, h, skip_cost, non_skip_cost, dec_dist_pred, dec_dist,
+                    has_uv, rates.skip[skip_ctx][1]
+                );
+            }
+            if skip_cost < non_skip_cost {
+                has = false;
+                coeff_rate = rates.skip[skip_ctx][1] as u64;
+                dec_dist = dec_dist_pred;
+            }
+        }
         cand.mds1_has_coeff = has;
         cand.full_cost = rdcost(dec_lambda, cand.flr + cand.fcr + coeff_rate, dec_dist);
+        // ---- C `svt_aom_full_cost`'s skip-MODE arm (rd_cost.c:1423-1452)
+        // ----
+        // When the candidate's ref pair is the frame's skip-mode pair, C
+        // prices coding the WHOLE block as `skip_mode = 1`: every mode-info
+        // symbol collapses into `skip_mode_fac_bits[skip_mode_ctx][1]`, so
+        // the fast luma/chroma rates are REPLACED, not added to. The
+        // distortion is the prediction-domain slot (`dist[1]`, luma-only at
+        // MDS1). `<=` — C takes skip mode on a tie, and resets
+        // `block_mi.skip_mode` inside the `skip_mode_allowed` gate at every
+        // stage so a later stage CAN flip it back.
+        if let Some(ic) = cand.inter.as_deref_mut() {
+            if ic.skip_mode_allowed {
+                ic.skip_mode = false;
+                let sm_rate = fx
+                    .inter
+                    .expect("an inter candidate implies inter frame state")
+                    .fac
+                    .skip_mode[ic.skip_mode_ctx as usize][1] as u64;
+                let sm_cost = rdcost(dec_lambda, sm_rate, dec_dist_pred);
+                if sm_cost <= cand.full_cost {
+                    cand.full_cost = sm_cost;
+                    cand.mds1_has_coeff = false;
+                    ic.skip_mode = true;
+                }
+            }
+        }
         #[cfg(feature = "std")]
         if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
             eprintln!(
@@ -365,6 +424,7 @@ fn lossless_mds1_txbs(
     let mut eob_total: u32 = 0;
     let mut bits_total: i64 = 0;
     let mut dist_total: u64 = 0;
+    let mut dist_pred_total: u64 = 0;
     for txb in 0..txbs {
         let (tx_x, tx_y) = ((txb % cols) * txw, (txb / cols) * txh);
         let mut txb_pred = vec![0u8; txw * txh];
@@ -428,6 +488,7 @@ fn lossless_mds1_txbs(
         eob_total += u32::from(out.eob);
         bits_total += i64::from(out.bits);
         dist_total += out.dist;
+        dist_pred_total += out.dist_pred;
         let a0 = (tx_x / 4).min(loc_above.len());
         let a1 = (a0 + txw / 4).min(loc_above.len());
         for v in loc_above[a0..a1].iter_mut() {
@@ -448,6 +509,7 @@ fn lossless_mds1_txbs(
         qcoeff: crate::vecpool::PoolVec::new(),
         recon: crate::vecpool::PoolVec::new(),
         dist: dist_total,
+        dist_pred: dist_pred_total,
         bits: bits_total as i32,
         cul: 0,
     }
@@ -483,6 +545,7 @@ fn lossless_mds1_txbs_hbd(
     let mut eob_total: u32 = 0;
     let mut bits_total: i64 = 0;
     let mut dist_total: u64 = 0;
+    let mut dist_pred_total: u64 = 0;
     for txb in 0..txbs {
         let (tx_x, tx_y) = ((txb % cols) * txw, (txb / cols) * txh);
         let mut txb_pred = vec![0u16; txw * txh];
@@ -557,6 +620,7 @@ fn lossless_mds1_txbs_hbd(
         eob_total += u32::from(out.eob);
         bits_total += i64::from(out.bits);
         dist_total += out.dist;
+        dist_pred_total += out.dist_pred;
         let a0 = (tx_x / 4).min(loc_above.len());
         let a1 = (a0 + txw / 4).min(loc_above.len());
         for v in loc_above[a0..a1].iter_mut() {
@@ -577,6 +641,7 @@ fn lossless_mds1_txbs_hbd(
         qcoeff: Vec::new(),
         recon: Vec::new(),
         dist: dist_total,
+        dist_pred: dist_pred_total,
         bits: bits_total as i32,
         cul: 0,
     }

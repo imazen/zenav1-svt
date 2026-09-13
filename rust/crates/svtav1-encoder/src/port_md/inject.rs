@@ -324,6 +324,27 @@ pub struct InterCompCtrls {
     pub max_mv_length: u16,
 }
 
+impl From<crate::port_enc_mode_config::ctrls::InterCompCtrls> for InterCompCtrls {
+    /// The injectors read a subset of `ctx->inter_comp_ctrls`; the
+    /// `use_rate`/`pred0_to_pred1_mult` fields belong to the unported
+    /// `inj_comp_modes` rate arms and are dropped here on purpose.
+    fn from(c: crate::port_enc_mode_config::ctrls::InterCompCtrls) -> Self {
+        Self {
+            tot_comp_types: c.tot_comp_types,
+            do_me: c.do_me,
+            do_pme: c.do_pme,
+            do_nearest_nearest: c.do_nearest_nearest,
+            do_near_near: c.do_near_near,
+            do_nearest_near_new: c.do_nearest_near_new,
+            do_3x3_bi: c.do_3x3_bi,
+            do_global: c.do_global,
+            skip_on_ref_info: c.skip_on_ref_info,
+            no_sym_dist: c.no_sym_dist,
+            max_mv_length: c.max_mv_length,
+        }
+    }
+}
+
 /// C `InterIntraCompCtrls`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InterIntraCompCtrls {
@@ -907,6 +928,10 @@ pub fn inject_mvp_candidates_ii(
             let to_inj_mv0 = stack.stack[0].this_mv;
             let to_inj_mv1 = stack.stack[0].comp_mv;
             if !already_injected(ctx, log, to_inj_mv0, to_inj_mv1, ref_pair) {
+                // C mode_decision.c:1587-1589 — the candidate carrying the
+                // frame's skip-mode ref pair is the ONLY skip-mode-eligible
+                // one (`skip_mode_allowed`); every other injection site
+                // writes the literal `false` exactly like this file does.
                 let is_skip_mode = !ctx.is_lossless_segment
                     && ctx.skip_mode_flag
                     && rf[0] == ctx.skip_mode_ref_frame_idx_0

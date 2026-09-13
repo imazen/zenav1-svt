@@ -2810,7 +2810,21 @@ fn eval_candidate(
     // (enc_mode_config.c:7858) — i.e. it is on exactly when MD evaluated
     // chroma, which on this path is `has_uv`.
     let mut skip_dist: Option<(u64, u64)> = None;
-    if cand.inter.is_some() && block_has_coeff && has_uv && !frame.coded_lossless {
+    // The prediction-domain distortion pair feeds TWO arbitrations: the
+    // coefficient-skip one below (`blk_skip_decision`) and the skip-MODE one
+    // after `full` is computed (`svt_aom_full_cost`, rd_cost.c:1423-1452),
+    // which is NOT gated on `block_has_coeff` or `blk_skip_decision` — it
+    // runs whenever `cand->skip_mode_allowed`, so the pred dists must exist
+    // for it too.
+    let sm_allowed = cand
+        .inter
+        .as_deref()
+        .is_some_and(|ic| ic.skip_mode_allowed);
+    let mut pred_dists: Option<(u64, u64)> = None;
+    if cand.inter.is_some()
+        && !frame.coded_lossless
+        && ((block_has_coeff && has_uv) || sm_allowed)
+    {
         // `y_distortion[DIST_SSD][1]` — the distortion with NO residual
         // coded, i.e. the prediction against the source, in the same
         // `sse << 4` domain the spatial arm of `tx_unit` produces.
@@ -2826,21 +2840,28 @@ fn eval_candidate(
         ) << 4) as u64;
         let ic = cand.inter.as_deref().expect("checked above");
         let (ucw, uch) = uv_crop;
-        let skip_uv = ((svtav1_dsp::variance::sse(
-            &fx.u_src[ccy * fx.c_stride + ccx..],
-            fx.c_stride,
-            &ic.u_pred,
-            cw,
-            ucw,
-            uch,
-        ) + svtav1_dsp::variance::sse(
-            &fx.v_src[ccy * fx.c_stride + ccx..],
-            fx.c_stride,
-            &ic.v_pred,
-            cw,
-            ucw,
-            uch,
-        )) << 4) as u64;
+        let skip_uv = if has_uv {
+            ((svtav1_dsp::variance::sse(
+                &fx.u_src[ccy * fx.c_stride + ccx..],
+                fx.c_stride,
+                &ic.u_pred,
+                cw,
+                ucw,
+                uch,
+            ) + svtav1_dsp::variance::sse(
+                &fx.v_src[ccy * fx.c_stride + ccx..],
+                fx.c_stride,
+                &ic.v_pred,
+                cw,
+                ucw,
+                uch,
+            )) << 4) as u64
+        } else {
+            0
+        };
+        pred_dists = Some((skip_y, skip_uv));
+    }
+    if let (Some((skip_y, skip_uv)), true) = (pred_dists, block_has_coeff && has_uv) {
         // C prices the NON-skip arm with the var-tx `tx_size` bits and the
         // skip arm with zero of them — the assert at rd_cost.c:1369 states
         // that `skip_tx_size_bits == 0` for every inter mode.
@@ -2959,10 +2980,43 @@ fn eval_candidate(
     } else {
         rates.skip[skip_ctx][1] as u64 + tx_size_bits_final
     };
-    let dist = skip_dist.map_or(best_dist + uv_dist10, |(y, uv)| y + uv);
+    let mut dist = skip_dist.map_or(best_dist + uv_dist10, |(y, uv)| y + uv);
     // fcr_final == cand.fcr unless CfL was selected above (then the
     // UV_CFL_PRED mode + alpha rate replaces the non-CFL uv fast rate).
-    let full = rdcost(lambda3, cand.flr + fcr_final + coeff_rate, dist);
+    let mut total_rate = cand.flr + fcr_final + coeff_rate;
+    let mut full = rdcost(lambda3, total_rate, dist);
+    // ---- C `svt_aom_full_cost`'s skip-MODE arm (rd_cost.c:1423-1452) ----
+    //
+    // When the candidate's ref pair is the frame's skip-mode pair, C prices
+    // coding the WHOLE block as `skip_mode = 1`: every mode-info symbol
+    // collapses into `skip_mode_fac_bits[skip_mode_ctx][1]`, so
+    // `mode_rate`/`mode_distortion` are REPLACED by the symbol rate and the
+    // prediction-domain distortion — not added to. `<=`: C takes skip mode
+    // on a tie. The arm is NOT gated on `blk_skip_decision`; it runs
+    // whenever `cand->skip_mode_allowed`.
+    let mut skip_mode_win = false;
+    if let Some(ic) = cand.inter.as_deref() {
+        if ic.skip_mode_allowed {
+            let (sy, suv) =
+                pred_dists.expect("a skip-mode candidate computed its prediction dists");
+            let sm_rate = fx
+                .inter
+                .expect("an inter candidate implies inter frame state")
+                .fac
+                .skip_mode[ic.skip_mode_ctx as usize][1] as u64;
+            let sm_cost = rdcost(lambda3, sm_rate, sy + suv);
+            if sm_cost <= full {
+                full = sm_cost;
+                total_rate = sm_rate;
+                dist = sy + suv;
+                // Reuse the coefficient-skip writeback below: skip mode
+                // zeroes exactly the same candidate artefacts (C sets
+                // `block_has_coeff = 0`, tx_depth 0, DCT_DCT, recon=pred).
+                skip_dist = Some((sy, suv));
+                skip_mode_win = true;
+            }
+        }
+    }
     #[cfg(feature = "std")]
     if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
         eprintln!(
@@ -2988,6 +3042,14 @@ fn eval_candidate(
     }
 
     let cand = &mut cands[ci];
+    // C resets `block_mi.skip_mode` inside the `skip_mode_allowed` gate at
+    // EVERY stage (rd_cost.c:1438), so a flag an earlier stage set clears
+    // here when the arm re-evaluates and loses — and only inside the gate.
+    if let Some(ic) = cand.inter.as_deref_mut() {
+        if ic.skip_mode_allowed {
+            ic.skip_mode = skip_mode_win;
+        }
+    }
     // C's skip arm zeroes every coded artefact of the candidate
     // (rd_cost.c:1387-1405): no coefficients, no eobs, tx_depth 0 and
     // DCT_DCT on every txb — "signalling skip means no TX depth is used and
@@ -3014,7 +3076,7 @@ fn eval_candidate(
         let (u_pred, v_pred) = (ic.u_pred.clone(), ic.v_pred.clone());
         let pred = cand.pred.clone();
         cand.mds3_cost = full;
-        cand.total_rate = cand.flr + fcr_final + coeff_rate;
+        cand.total_rate = total_rate;
         cand.full_dist = dist;
         cand.uv = uv_mode_final;
         cand.uv_delta = uv_delta_final;
@@ -3042,7 +3104,7 @@ fn eval_candidate(
         return;
     }
     cand.mds3_cost = full;
-    cand.total_rate = cand.flr + fcr_final + coeff_rate;
+    cand.total_rate = total_rate;
     cand.full_dist = dist;
     cand.uv = uv_mode_final;
     cand.uv_delta = uv_delta_final;

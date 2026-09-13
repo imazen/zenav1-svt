@@ -117,7 +117,7 @@
 
 use crate::inter_me_arm::FrameMe;
 use crate::inter_mvp::NONE_FRAME;
-use crate::inter_mvp::{InterMvpEnv, setup_ref_mv_list};
+use crate::inter_mvp::InterMvpEnv;
 use crate::intrabc::TileMiBounds;
 use crate::intrabc_mvp::{MvpGrid, MvpMiEntry, derive_block_ctx};
 use crate::picture::PaddedRef;
@@ -246,6 +246,12 @@ pub struct InterMdFrame<'a> {
     /// > M4), where `svt_aom_inject_inter_candidates` skips
     /// `inject_global_candidates` entirely.
     pub gm_enabled: bool,
+    /// C `pcs->inter_compound_mode` (`get_inter_compound_level`,
+    /// enc_mode_config.c:8757) — the level `set_inter_comp_controls`
+    /// expands into the injector's `inter_comp_ctrls`. 0 ("AVG only") at
+    /// M3+, which still permits the NEAREST_NEAREST/NEAR_NEAR/NEW_NEW
+    /// compound candidates `inject_*` builds under `allow_bipred`.
+    pub inter_compound_mode: u8,
     /// C `pcs->ppcs->pic_obmc_level` (`svt_aom_get_obmc_level`,
     /// enc_mode_config.c:8815) — the ladder `set_obmc_controls` expands.
     ///
@@ -272,6 +278,12 @@ pub struct InterMdFrame<'a> {
     /// (`pd_process.c:4958` = `skip_mode_allowed`), the frame bit the MDS0
     /// rate reads.
     pub skip_mode_flag: bool,
+    /// C `frm_hdr->skip_mode_params.ref_frame_idx_{0,1}` — the pair the
+    /// injector's NEAREST_NEARESTMV arm compares a candidate's refs against
+    /// (mode_decision.c:1590-1594). `INVALID_IDX` (-1) when the frame does
+    /// not allow skip mode.
+    pub skip_mode_ref_frame_idx_0: i8,
+    pub skip_mode_ref_frame_idx_1: i8,
     /// C `ctx->cand_reduction_ctrls`, as
     /// `svt_aom_sig_deriv_enc_dec_default` sets it from
     /// `pcs->cand_reduction_level` (`enc_mode_config.c:7826`).
@@ -387,6 +399,22 @@ pub struct InterCandOut {
     /// (mode_decision.c:3662-3669). Stamped by `build_inter_candidates`
     /// after `predict_and_price`; the NIC lane reads it unchanged.
     pub cand_class: u8,
+    /// C `cand->block_mi.comp_group_idx` / `compound_idx` /
+    /// `interinter_comp.type` — CODED symbols `determine_compound_mode` set
+    /// at injection. All zero (`COMPOUND_AVERAGE` group A) on a
+    /// single-reference candidate, which never reaches the coder.
+    pub comp_group_idx: u8,
+    pub compound_idx: u8,
+    pub interinter_comp_type: u8,
+    /// C `cand->skip_mode_allowed` — the injector's NEAREST_NEARESTMV arm
+    /// sets it when the candidate's ref pair IS the frame's skip-mode pair
+    /// (mode_decision.c:1590-1595); `svt_aom_full_cost` arbitrates the
+    /// skip-mode symbol cost against the normal mode cost at every stage.
+    pub skip_mode_allowed: bool,
+    /// C `ctx->skip_mode_ctx` — `av1_get_skip_mode_context(xd)`, a per-BLOCK
+    /// value carried on each candidate so the funnel stages can price the
+    /// skip-mode symbol without re-deriving the neighbour pair.
+    pub skip_mode_ctx: u8,
 }
 
 /// The per-block inputs the caller has and this module does not.
@@ -513,7 +541,7 @@ pub struct WarpRefineBlock {
     /// C `ctx->ref_mv_stack[ref]` and `xd->ref_mv_count[ref]`, for the DRL
     /// re-pick the refinement ends with.
     pub stacks: alloc::vec::Vec<crate::inter_mvp::InterMvpStack>,
-    pub ref_mv_count: [u8; 8],
+    pub ref_mv_count: [u8; crate::inter_mvp::MODE_CTX_REF_FRAMES],
     pub mi_row: i32,
     pub mi_col: i32,
     pub bsize: svtav1_types::block::BlockSize,
@@ -534,7 +562,7 @@ impl Default for WarpRefineBlock {
             refine_level: 0,
             samples: Default::default(),
             stacks: alloc::vec::Vec::new(),
-            ref_mv_count: [0; 8],
+            ref_mv_count: [0; crate::inter_mvp::MODE_CTX_REF_FRAMES],
             mi_row: 0,
             mi_col: 0,
             bsize: svtav1_types::block::BlockSize::Block8x8,
@@ -726,7 +754,7 @@ pub fn build_inter_candidates(
     warp_out: &mut WarpRefineBlock,
 ) -> Vec<InterCandOut> {
     use crate::port_md::inject::{CandArray, InjectCtx, WmCtrls, inject_inter_candidates};
-    use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef, RefPruningState};
+    use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef};
 
     // --- The reference-MV stack, PER REFERENCE TYPE. C calls
     //     `svt_aom_generate_av1_mvp_table(ctx, ..., ctx->ref_frame_type_arr,
@@ -753,22 +781,36 @@ pub fn build_inter_candidates(
     // models threaded through `InterMdFrame::global_motion` it is the value
     // `setup_ref_mv_list` substitutes for a GLOBALMV neighbour, so a wrong
     // one desyncs the DRL against the decoder's own scan.
-    let mut stacks = alloc::vec![crate::inter_mvp::InterMvpStack::default(); 8];
-    let mut ref_mv_count = [0u8; 8];
+    // C's `ctx->ref_mv_stack[MODE_CTX_REF_FRAMES]` — indexed by REFERENCE
+    // TYPE, so a compound pair (LAST_LAST2 = 20, LAST_BWD = 8) has its own
+    // entry, and `inject_mvp_candidates_ii`'s `ref_mv_stack[ref_pair]` reads
+    // the stack that pair's constituents built together.
+    let mut stacks = alloc::vec![
+        crate::inter_mvp::InterMvpStack::default();
+        crate::inter_mvp::MODE_CTX_REF_FRAMES
+    ];
+    let mut ref_mv_count = [0u8; crate::inter_mvp::MODE_CTX_REF_FRAMES];
     // C's `ctx->sb64_sq_no4xn_geom` is set in the MD block setup, so it is a
     // property of THIS block, not of the picture.
     let mvp_env = f.mvp_env.for_block(f.sb_size, b.bw as usize, b.bh as usize);
-    for &rt in f.ref_frame_type_arr {
-        let i = rt.max(0) as usize;
-        let gm_mv = crate::inter_mvp::gm_mv_candidates_for(
+    // C `svt_aom_generate_av1_mvp_table` (product_coding_loop.c:9393 ->
+    // adaptive_mv_pred.c:1329): ONE driver over `ref_frame_type_arr`,
+    // single AND compound entries, with the `mv_ref0` scratch shared across
+    // the loop the way C shares its local — the `symteric_refs` shortcut
+    // reads what the LAST pass left in it.
+    for (&rt, st) in f
+        .ref_frame_type_arr
+        .iter()
+        .zip(crate::inter_mvp::generate_av1_mvp_table(
+            &grid,
+            &ctx,
             &mvp_env,
-            rt,
             b.bsize as usize,
-            (b.org_x / 4) as i32,
-            (b.org_y / 4) as i32,
-        );
-        stacks[i] = setup_ref_mv_list(&grid, &ctx, &mvp_env, rt, gm_mv);
-        ref_mv_count[i] = stacks[i].count;
+            f.ref_frame_type_arr,
+        ))
+    {
+        ref_mv_count[rt.max(0) as usize] = st.count;
+        stacks[rt.max(0) as usize] = st;
     }
 
     // --- C's per-block MD motion searches, in C's own order:
@@ -858,7 +900,13 @@ pub fn build_inter_candidates(
     let me_totals = [me_cands.len() as u8];
     let sb_me_mv = search.sb_me_mv;
 
-    let ref_pruning = RefPruningState::default();
+    // C `ctx->ref_pruning_ctrls` + `ctx->ref_filtering_res`, computed per
+    // block by `inter_search_arm::run_block_searches`
+    // (`perform_md_reference_pruning`, product_coding_loop.c:9441). A
+    // `default()` here silently made every ref valid — which let a pruned
+    // LAST2's PME MV in and let it edge a real C candidate out of MDS1's
+    // survivor set.
+    let ref_pruning = search.ref_pruning.clone();
     // C `svt_aom_init_wm_samples` (adaptive_mv_pred.c:1752) -> the injector's
     // `num_proj_ref`. This was `[0u8; 8]`, and a zero here is not a
     // conservative default: `motion_mode_allowed` promotes a block to
@@ -924,29 +972,23 @@ pub fn build_inter_candidates(
         blk_org_x: b.org_x as u32,
         blk_org_y: b.org_y as u32,
         shape_is_part_n: true,
-        // NOT C's value (`reference_select` is 1 on these frames, so C's
-        // `reference_mode_is_single` is 0). This is the bipred suppression
-        // the module header names: `inter_pred_arm` has no two-reference
-        // path, and `allow_bipred` is the single switch that keeps every
-        // compound injector — MVP-ii, ME's BI_PRED entry and PME's — from
-        // producing a candidate this port could not predict.
-        reference_mode_is_single: true,
+        // C `frm_hdr->reference_mode == SINGLE_REFERENCE` — the value
+        // `allow_bipred` reads. `REFERENCE_SELECT` frames (every inter
+        // frame of a complete mini-GOP) get bipred, which is what the
+        // compound entries of `ref_frame_type_arr` are for.
+        reference_mode_is_single: !f.reference_mode_is_select,
         allow_high_precision_mv: f.allow_high_precision_mv,
         is_motion_mode_switchable: f.is_motion_mode_switchable,
         force_integer_mv: u8::from(f.force_integer_mv),
         // C `frm_hdr->skip_mode_params.skip_mode_flag`. The injector reads it
-        // only in its NEAREST_NEAREST arm, to mark a COMPOUND candidate
-        // `skip_mode_allowed` — unreachable here, because `allow_bipred` is
-        // false. Fed C's real value rather than a constant so the two cannot
-        // silently disagree the day bipred is unsuppressed.
+        // in its NEAREST_NEAREST arm to mark a COMPOUND candidate
+        // `skip_mode_allowed`.
         skip_mode_flag: f.skip_mode_flag,
-        // C `frm_hdr->skip_mode_params.ref_frame_idx_{0,1}`, which the same
-        // arm compares against. Left at -1: `setup_skip_mode_allowed` derives
-        // them, but the only consumer is that unreachable arm and a wrong
-        // pair there would be invisible, so they stay a NAMED constant rather
-        // than a plausible one.
-        skip_mode_ref_frame_idx_0: -1,
-        skip_mode_ref_frame_idx_1: -1,
+        // C `frm_hdr->skip_mode_params.ref_frame_idx_{0,1}` — the pair the
+        // NEAREST_NEARESTMV arm compares a candidate's refs against, derived
+        // by `setup_skip_mode_allowed` at picture decision.
+        skip_mode_ref_frame_idx_0: f.skip_mode_ref_frame_idx_0,
+        skip_mode_ref_frame_idx_1: f.skip_mode_ref_frame_idx_1,
         is_lossless_segment: false,
         ref_frame_type_arr: f.ref_frame_type_arr,
         global_motion: &f.global_motion,
@@ -988,12 +1030,15 @@ pub fn build_inter_candidates(
             score_th: f.cand_reduction.redundant_cand_ctrls.score_th,
             mag_th: f.cand_reduction.redundant_cand_ctrls.mag_th,
         },
-        // Every one of these OFF controls is an unported search, named in
-        // this module's header. They are not a smaller candidate set chosen
-        // here — they are the inputs that make C's own injector produce the
-        // smaller set, and the assertion below refuses anything they should
-        // have suppressed.
-        inter_comp_ctrls: Default::default(),
+        // C `set_inter_comp_controls(ctx, pcs->inter_compound_mode)`
+        // (enc_mode_config.c:7856/:7973) — `get_inter_compound_level`'s
+        // ladder: 0 = "AVG only" (MD_COMP_DIST, every `do_*` off) at
+        // M3+, 3 at M0, 4 at M1..M2.
+        inter_comp_ctrls: crate::port_enc_mode_config::ctrls::set_inter_comp_controls(
+            f.inter_compound_mode,
+        )
+        .map(crate::port_md::inject::InterCompCtrls::from)
+        .unwrap_or_default(),
         inter_intra_comp_ctrls: Default::default(),
         wm_ctrls: WmCtrls {
             enabled: wm_injection_wired,
@@ -1090,17 +1135,16 @@ pub fn build_inter_candidates(
     let mut out = Vec::new();
     for c in cands.as_slice() {
         // WARPED_CAUSAL is now predictable (`predict_inter_yuv_warped`); OBMC
-        // and inter-intra are not, and compound is suppressed at the source.
-        // The assertion stays because a silently dropped candidate is a mode
-        // decision nobody made.
+        // and inter-intra are not. Compound IS predictable (the two-MV arm of
+        // `av1_inter_prediction_light_pd1`). The assertion stays because a
+        // silently dropped candidate is a mode decision nobody made.
         assert!(
             matches!(
                 c.motion_mode,
                 crate::port_md::predicates::MotionMode::SimpleTranslation
                     | crate::port_md::predicates::MotionMode::WarpedCausal
                     | crate::port_md::predicates::MotionMode::ObmcCausal
-            ) && !c.is_interintra_used
-                && c.ref_frame[1] == NONE_FRAME,
+            ) && !c.is_interintra_used,
             "the inter candidate set produced a candidate this port cannot PREDICT \
              (motion_mode {:?}, interintra {}, ref_frame {:?}). Its control was supposed \
              to be off — see `inter_md_arm`'s header. Refusing rather than dropping it, \
@@ -1110,8 +1154,11 @@ pub fn build_inter_candidates(
             c.ref_frame,
         );
         // C `blk_ptr->inter_mode_ctx[ref_frame_type]` — the mode context of
-        // the candidate's OWN reference, not LAST's.
-        let imc = stacks[c.ref_frame[0].max(0) as usize].mode_context;
+        // the candidate's OWN reference TYPE, which for a compound pair is
+        // the compound index (>= 8), not `ref_frame[0]`.
+        let imc = stacks
+            [crate::inter_mvp::av1_ref_frame_type(c.ref_frame).max(0) as usize]
+            .mode_context;
         let mut o = predict_and_price(f, b, c, imc, &stacks, lambda);
         // C `cand->cand_class` (mode_decision.c:3662-3669): `NEWMV` /
         // `NEW_NEWMV` — or ANY inter candidate when `merge_inter_cands`
@@ -1368,6 +1415,18 @@ fn predict_and_price(
             c.ref_frame[0]
         )
     });
+    // C `has_second_ref(&mbmi->block_mi)` — a COMPOUND candidate's second
+    // reference binds the same way the first does.
+    let is_compound = c.ref_frame[1] > NONE_FRAME;
+    let padded1 = is_compound.then(|| {
+        f.padded_by_ref[c.ref_frame[1].max(0) as usize].unwrap_or_else(|| {
+            panic!(
+                "an inter candidate names reference {} with no DPB picture — \
+                 `ref_frame_type_arr` and `padded_by_ref` disagree",
+                c.ref_frame[1]
+            )
+        })
+    });
     // The WARP driver takes a DIFFERENT C path — `av1_inter_prediction`'s
     // `is_wm` arm, not `av1_inter_prediction_light_pd1` — so it is dispatched
     // here rather than flagged inside the translation adapter. See
@@ -1401,6 +1460,47 @@ fn predict_and_price(
             &mut v_pred,
             cw,
         );
+    } else if let Some(p1) = padded1 {
+        // COMPOUND: `allow_bipred` rejects a 4-wide or 4-tall block, so no
+        // compound candidate is ever sub-8 and there is no compound form of
+        // `inter_chroma_4xn_pred` to port here. `av1_inter_prediction_
+        // light_pd1` averages the two per-reference predictors into
+        // `y_pred`/`u_pred`/`v_pred` in place.
+        match (b.has_uv, padded.uv.as_ref(), p1.uv.as_ref()) {
+            (true, Some((u0, v0)), Some((u1, v1))) => {
+                crate::inter_pred_arm::predict_inter_yuv_compound(
+                    [(&padded.y, u0, v0), (&p1.y, u1, v1)],
+                    b.org_x,
+                    b.org_y,
+                    b.bw,
+                    b.bh,
+                    c.mv,
+                    interp_filters,
+                    f.sb_size,
+                    f.frame_w,
+                    f.frame_h,
+                    &mut y_pred,
+                    b.bw,
+                    &mut u_pred,
+                    &mut v_pred,
+                    cw,
+                );
+            }
+            _ => crate::inter_pred_arm::predict_inter_luma_compound(
+                [&padded.y, &p1.y],
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                c.mv,
+                interp_filters,
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                &mut y_pred,
+                b.bw,
+            ),
+        }
     } else {
         let sub8 = b.bw < 8 || b.bh < 8;
         match (b.has_uv && !sub8, padded.uv.as_ref()) {
@@ -1518,37 +1618,77 @@ fn predict_and_price(
     let (mut y_pred10, mut u_pred10, mut v_pred10) = (Vec::new(), Vec::new(), Vec::new());
     if let Some(hbd) = padded.hbd.as_ref() {
         y_pred10 = alloc::vec![0u16; b.bw * b.bh];
-        let want_uv = b.has_uv && hbd.uv.is_some();
+        let hbd1 = padded1.and_then(|p| p.hbd.as_ref());
+        let want_uv =
+            b.has_uv && hbd.uv.is_some() && hbd1.map_or(true, |h| h.uv.is_some());
         if want_uv {
             u_pred10 = alloc::vec![0u16; cw * chh];
             v_pred10 = alloc::vec![0u16; cw * chh];
         }
-        crate::inter_pred_arm::predict_inter_leaf_hbd(
-            &hbd.y,
-            if want_uv {
-                hbd.uv.as_ref().map(|(u, v)| (u, v))
-            } else {
-                None
-            },
-            mm,
-            is_wm,
-            c.wm_params_l0,
-            b.org_x,
-            b.org_y,
-            b.bw,
-            b.bh,
-            c.mv[0],
-            interp_filters,
-            f.sb_size,
-            f.frame_w,
-            f.frame_h,
-            f.bit_depth,
-            &mut y_pred10,
-            b.bw,
-            &mut u_pred10,
-            &mut v_pred10,
-            cw,
-        );
+        if let Some(h1) = hbd1 {
+            crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
+                [
+                    (
+                        &hbd.y,
+                        if want_uv {
+                            hbd.uv.as_ref().map(|(u, v)| (u, v))
+                        } else {
+                            None
+                        },
+                    ),
+                    (
+                        &h1.y,
+                        if want_uv {
+                            h1.uv.as_ref().map(|(u, v)| (u, v))
+                        } else {
+                            None
+                        },
+                    ),
+                ],
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                c.mv,
+                interp_filters,
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                f.bit_depth,
+                &mut y_pred10,
+                b.bw,
+                &mut u_pred10,
+                &mut v_pred10,
+                cw,
+            );
+        } else {
+            crate::inter_pred_arm::predict_inter_leaf_hbd(
+                &hbd.y,
+                if want_uv {
+                    hbd.uv.as_ref().map(|(u, v)| (u, v))
+                } else {
+                    None
+                },
+                mm,
+                is_wm,
+                c.wm_params_l0,
+                b.org_x,
+                b.org_y,
+                b.bw,
+                b.bh,
+                c.mv[0],
+                interp_filters,
+                f.sb_size,
+                f.frame_w,
+                f.frame_h,
+                f.bit_depth,
+                &mut y_pred10,
+                b.bw,
+                &mut u_pred10,
+                &mut v_pred10,
+                cw,
+            );
+        }
     }
 
     // --- C's real MDS0 rate, `svt_aom_inter_fast_cost` (rd_cost.c:1005).
@@ -1567,8 +1707,13 @@ fn predict_and_price(
         rr(b.neighbors.left_avail().copied()),
     );
     let counts = NeighborRefCounts::collect(rr_above, rr_left);
+    // C indexes `ref_mv_stack` and `ref_frames_num_bits` by the candidate's
+    // `MvReferenceFrame` TYPE — `LAST_FRAME` for a single reference, the
+    // compound index (8..) for a pair. `av1_ref_frame_type` collapses the
+    // candidate's `{rf0, rf1}` pair back to that index.
+    let ref_type = crate::inter_mvp::av1_ref_frame_type(c.ref_frame);
     let ref_bits = crate::port_md::ref_frame_rate::estimate_ref_frames_num_bits(
-        &[c.ref_frame[0]],
+        &[ref_type],
         &counts,
         rr_above,
         rr_left,
@@ -1576,21 +1721,23 @@ fn predict_and_price(
         b.bw as u16,
         b.bh as u16,
         &f.ref_fac,
-        |rf| [rf, NONE_FRAME],
+        crate::inter_mvp::av1_set_ref_frame,
     );
     let ref_frames_num_bits = ref_bits.first().map_or(0, |&(_, bits)| bits);
 
     let bsize = svtav1_types::block::BlockSize::from_u8(b.bsize)
         .expect("an injected inter block must have a real BlockSize");
-    let stack = &stacks[c.ref_frame[0].max(0) as usize];
+    let stack = &stacks[ref_type.max(0) as usize];
+    // C `ctx->skip_mode_ctx` = `av1_get_skip_mode_context(xd)`
+    // (`entropy_coding.c:1097`), the same neighbour pair the writer uses.
+    // Per-block: priced at MDS0 and re-read by the funnel stages' skip-mode
+    // arbitration off the candidate.
+    let skip_mode_ctx = crate::port_entropy_inter::modes::skip_mode_context(&b.neighbors);
     let cost = inter_fast_cost(
         &f.cost_frame(),
         &InterBlock {
             bsize,
-            // C `ctx->skip_mode_ctx` = `av1_get_skip_mode_context(xd)`
-            // (`entropy_coding.c:1097`), the same neighbour pair the writer
-            // uses. Read only when the frame signals the bit.
-            skip_mode_ctx: crate::port_entropy_inter::modes::skip_mode_context(&b.neighbors),
+            skip_mode_ctx,
             is_inter_ctx: b.is_inter_ctx,
             inter_mode_ctx,
             ref_mv_count: stack.count,
@@ -1627,15 +1774,20 @@ fn predict_and_price(
             interp_filters,
             motion_mode: mm,
             num_proj_ref: u16::from(c.num_proj_ref),
-            is_interintra_used: false,
-            interintra_mode: 0,
-            use_wedge_interintra: false,
-            interintra_wedge_index: 0,
-            comp_group_idx: 0,
-            compound_idx: 1,
-            interinter_comp_type: svtav1_types::prediction::CompoundType::Average,
+            is_interintra_used: c.is_interintra_used,
+            interintra_mode: c.interintra_mode,
+            use_wedge_interintra: c.use_wedge_interintra,
+            interintra_wedge_index: c.interintra_wedge_index.max(0) as u8,
+            comp_group_idx: c.comp_group_idx,
+            compound_idx: c.compound_idx,
+            interinter_comp_type: match c.interinter_comp_type {
+                1 => svtav1_types::prediction::CompoundType::DistWtd,
+                2 => svtav1_types::prediction::CompoundType::Wedge,
+                3 => svtav1_types::prediction::CompoundType::DiffWtd,
+                _ => svtav1_types::prediction::CompoundType::Average,
+            },
             interinter_wedge_index: 0,
-            skip_mode_allowed: false,
+            skip_mode_allowed: c.skip_mode_allowed,
         },
         lambda,
         0,
@@ -1705,6 +1857,11 @@ fn predict_and_price(
         // Stamped by `build_inter_candidates` once the block's
         // `merge_inter_cands` decision is known.
         cand_class: 0,
+        comp_group_idx: c.comp_group_idx,
+        compound_idx: c.compound_idx,
+        interinter_comp_type: c.interinter_comp_type,
+        skip_mode_allowed: c.skip_mode_allowed,
+        skip_mode_ctx: skip_mode_ctx as u8,
     }
 }
 
@@ -1728,9 +1885,9 @@ pub fn neighbors_from_grid(
             ref_frame: e.ref_frame,
             interp_filters: e.interp_filters,
             use_intrabc: e.use_intrabc,
-            skip_mode: false,
-            comp_group_idx: 0,
-            compound_idx: 0,
+            skip_mode: e.skip_mode,
+            comp_group_idx: e.comp_group_idx,
+            compound_idx: e.compound_idx,
             bsize: e.bsize,
         }
     };

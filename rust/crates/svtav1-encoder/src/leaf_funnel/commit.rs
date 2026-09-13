@@ -35,6 +35,18 @@ pub(crate) fn commit_leaf(
 ) {
     let (abs_x, abs_y) = (ev.abs_x, ev.abs_y);
     let (w, h) = (ev.w, ev.h);
+    // C `svt_aom_product_full_mode_decision{,_light_pd1}`'s commit-time
+    // `blk_ptr->block_mi.skip_mode |= !blk_ptr->block_has_coeff` when the
+    // winner's `skip_mode_allowed` (mode_decision.c:3737-3745/:3957-3965) —
+    // the committed flag is the full-cost arm's decision OR "eligible
+    // winner produced no coefficients". Stamping THAT value (not the
+    // stage-eval flag) into the mi map is what lets the NEXT block's
+    // `skip_mode_context` see this block's skip-mode commits.
+    let committed_skm = ev
+        .win
+        .inter
+        .as_deref()
+        .is_some_and(|i| i.skip_mode || (i.skip_mode_allowed && !ev.win.block_has_coeff));
     // IBC chunk 8: stamp the MD mi map (C svt_aom_update_mi_map) — the
     // INTRA_FRAME MVP scans read these entries. Stamped at every mid-walk
     // commit and NEVER restored by node snapshots, mirroring C (losing
@@ -65,6 +77,17 @@ pub(crate) fn commit_leaf(
                 },
                 partition,
                 interp_filters: ic.map_or(0, |i| i.interp_filters),
+                // C stamps `block_mi.skip_mode` / `comp_group_idx` /
+                // `compound_idx` into the mi map with the rest of the
+                // winner's mode info (`svt_aom_update_mi_map`,
+                // product_coding_loop.c:670) — `skip_mode_context`,
+                // `comp_group_idx_context` and `comp_index_context` read
+                // them off the NEIGHBOUR for the next block. `skip_mode`
+                // here is the post-commit OR (`committed_skm` above), not
+                // the stage-eval flag.
+                skip_mode: committed_skm,
+                comp_group_idx: ic.map_or(0, |i| i.comp_group_idx),
+                compound_idx: ic.map_or(0, |i| i.compound_idx),
             };
             let (mi_x, mi_y) = (abs_x / 4, abs_y / 4);
             for my in mi_y..(mi_y + h / 4).min(mvp.len() / stride) {
@@ -179,7 +202,10 @@ pub(crate) fn commit_leaf(
             );
         }
     }
-    let skip = !cand.block_has_coeff;
+    // C `blk_ptr->block_mi.skip = !blk_ptr->block_has_coeff` runs AFTER the
+    // skip-mode branch zeroes `block_has_coeff` — a committed skip_mode
+    // winner is always `skip` for the coefficient-context neighbours.
+    let skip = committed_skm || !cand.block_has_coeff;
     fx.ectx
         .record_block(abs_x, abs_y, w, h, cand.mode, cand.uv, skip);
     // IBC chunk 9 (Root 6 twin, MD side): stamp the inter-neighbour dims

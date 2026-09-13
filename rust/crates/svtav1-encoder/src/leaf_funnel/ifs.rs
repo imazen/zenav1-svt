@@ -170,6 +170,16 @@ pub(super) fn ifs_at_mds3(
             ic.ref_frame[0]
         )
     });
+    // C `has_second_ref` — a compound candidate's second reference, bound the
+    // same way `inter_md_arm::predict_and_price` binds it at injection.
+    let padded1 = (ic.ref_frame[1] > 0).then(|| {
+        im.padded_by_ref[ic.ref_frame[1].max(0) as usize].unwrap_or_else(|| {
+            panic!(
+                "an inter candidate names reference {} with no DPB picture",
+                ic.ref_frame[1]
+            )
+        })
+    });
     // C predicts each non-full-pel trial into `ctx->scratch_prediction_ptr`
     // (:2130-2152) and models it from there; the candidate's own prediction
     // is left alone until the winner is known.
@@ -193,20 +203,37 @@ pub(super) fn ifs_at_mds3(
             };
         }
         // :2130 `svt_aom_inter_prediction` (luma only, PICTURE_BUFFER_DESC_LUMA_MASK).
-        crate::inter_pred_arm::predict_inter_luma(
-            &padded.y,
-            abs_x,
-            abs_y,
-            w,
-            h,
-            ic.mv[0],
-            filters,
-            im.sb_size,
-            im.frame_w,
-            im.frame_h,
-            &mut scratch,
-            w,
-        );
+        if let Some(p1) = padded1 {
+            crate::inter_pred_arm::predict_inter_luma_compound(
+                [&padded.y, &p1.y],
+                abs_x,
+                abs_y,
+                w,
+                h,
+                ic.mv,
+                filters,
+                im.sb_size,
+                im.frame_w,
+                im.frame_h,
+                &mut scratch,
+                w,
+            );
+        } else {
+            crate::inter_pred_arm::predict_inter_luma(
+                &padded.y,
+                abs_x,
+                abs_y,
+                w,
+                h,
+                ic.mv[0],
+                filters,
+                im.sb_size,
+                im.frame_w,
+                im.frame_h,
+                &mut scratch,
+                w,
+            );
+        }
         // :1977-2040 `model_rd_for_sb`, PLANE_Y..PLANE_Y: spatial SSE (+ the
         // psy term when the effective ac bias is on) through
         // `model_rd_from_sse` at the frame's AC dequant.
@@ -281,38 +308,78 @@ pub(super) fn ifs_at_mds3(
         // places inside a buffer the funnel reads at stride `max(w, 8) / 2`.
         let sub8 = w < 8 || h < 8;
         let cw = w.max(8) / 2;
-        match (g.has_uv && !sub8, padded.uv.as_ref()) {
-            (true, Some((refu, refv))) => crate::inter_pred_arm::predict_inter_yuv(
-                (&padded.y, refu, refv),
-                abs_x,
-                abs_y,
-                w,
-                h,
-                ic.mv[0],
-                ic.interp_filters,
-                im.sb_size,
-                im.frame_w,
-                im.frame_h,
-                pred,
-                w,
-                &mut ic.u_pred,
-                &mut ic.v_pred,
-                cw,
-            ),
-            _ => crate::inter_pred_arm::predict_inter_luma(
-                &padded.y,
-                abs_x,
-                abs_y,
-                w,
-                h,
-                ic.mv[0],
-                ic.interp_filters,
-                im.sb_size,
-                im.frame_w,
-                im.frame_h,
-                pred,
-                w,
-            ),
+        if let Some(p1) = padded1 {
+            // COMPOUND: never sub-8 (`allow_bipred` rejects width/height 4),
+            // so the plain two-reference rebuild is the only arm.
+            match (g.has_uv, padded.uv.as_ref(), p1.uv.as_ref()) {
+                (true, Some((u0, v0)), Some((u1, v1))) => {
+                    crate::inter_pred_arm::predict_inter_yuv_compound(
+                        [(&padded.y, u0, v0), (&p1.y, u1, v1)],
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        ic.mv,
+                        ic.interp_filters,
+                        im.sb_size,
+                        im.frame_w,
+                        im.frame_h,
+                        pred,
+                        w,
+                        &mut ic.u_pred,
+                        &mut ic.v_pred,
+                        cw,
+                    );
+                }
+                _ => crate::inter_pred_arm::predict_inter_luma_compound(
+                    [&padded.y, &p1.y],
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    ic.mv,
+                    ic.interp_filters,
+                    im.sb_size,
+                    im.frame_w,
+                    im.frame_h,
+                    pred,
+                    w,
+                ),
+            }
+        } else {
+            match (g.has_uv && !sub8, padded.uv.as_ref()) {
+                (true, Some((refu, refv))) => crate::inter_pred_arm::predict_inter_yuv(
+                    (&padded.y, refu, refv),
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    ic.mv[0],
+                    ic.interp_filters,
+                    im.sb_size,
+                    im.frame_w,
+                    im.frame_h,
+                    pred,
+                    w,
+                    &mut ic.u_pred,
+                    &mut ic.v_pred,
+                    cw,
+                ),
+                _ => crate::inter_pred_arm::predict_inter_luma(
+                    &padded.y,
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    ic.mv[0],
+                    ic.interp_filters,
+                    im.sb_size,
+                    im.frame_w,
+                    im.frame_h,
+                    pred,
+                    w,
+                ),
+            }
         }
         // C re-applies the OBMC blend on EVERY prediction — it is the tail of
         // `svt_aom_inter_prediction` (:3511), not a one-off at injection — so
@@ -374,10 +441,22 @@ pub(super) fn ifs_at_mds3(
             );
         }
     }
-    // :2205-2208 withdraws `skip_mode_allowed` when the pair is non-zero.
-    // The port injects no skip-mode candidate (`skip_mode_flag` needs two
-    // references; this is the single-reference low-delay shape), so there is
-    // nothing to withdraw.
+    // :2205-2208 withdraws `skip_mode_allowed` when the IFS result is a
+    // non-zero (non-EIGHTTAP_REGULAR packed) filter pair — C opts to use IFS
+    // over skip mode, so a searched non-default filter forfeits the
+    // skip-mode arbitration at the full-cost stages. `skip_mode` clears
+    // with it: in C this withdrawal runs during candidate prep, before ANY
+    // `svt_aom_full_cost`, so a candidate reaching the stages always has
+    // `skip_mode == false` here. The port's IFS runs inside MDS3 — AFTER
+    // MDS1's skip-mode arm — so the flag can already be set; leaving it
+    // would commit `skip_mode = 1` on a coefficient-bearing block (the
+    // decoder reads no residual for it), which is a tile desync, not a
+    // byte divergence. C's assert at mode_decision.c:3741 requires the
+    // same pairing (a skm winner's `interp_filters == 0`).
+    if ic.skip_mode_allowed && ic.interp_filters != 0 {
+        ic.skip_mode_allowed = false;
+        ic.skip_mode = false;
+    }
     // :2211 `fast_luma_rate += switchable_rate`.
     *flr +=
         u64::try_from(res.switchable_rate).expect("a switchable rate is a non-negative bit count");

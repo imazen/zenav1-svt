@@ -961,6 +961,12 @@ impl PartRates {
         self.rows[ctx_row][p as usize] as u64
     }
 
+    /// The full derived rate row — NSQDBG only.
+    #[cfg(feature = "std")]
+    pub(crate) fn row(&self, ctx_row: usize) -> [i32; 10] {
+        self.rows[ctx_row]
+    }
+
     /// The FULL `svt_aom_partition_rate_cost` (rd_cost.c:1834-1867), including
     /// the two frame-boundary arms the port previously never reached:
     ///
@@ -2235,6 +2241,20 @@ impl DepthWalk<'_, '_> {
         if scan.test_this && !shapes.is_empty() {
             // update_part_neighs: partition contexts read once per node.
             let (ctx_row, _) = self.fx.ectx.partition_ctx(abs_x, abs_y, size);
+            #[cfg(feature = "std")]
+            if nsqdbg_here(abs_x, abs_y) {
+                let (ab, lb) = self.fx.ectx.part_ctx_bytes(abs_x, abs_y);
+                eprintln!(
+                    "NSQDBG PCTX mi=({},{}) bsize={} cr={} ab={} lb={} row={:?}",
+                    abs_y / 4,
+                    abs_x / 4,
+                    c_bsize_sq(size),
+                    ctx_row,
+                    ab,
+                    lb,
+                    self.part_rates.row(ctx_row),
+                );
+            }
 
             for &shape in shapes {
                 // Restore the pre-shape state (C: copy [1] -> [0] at
@@ -2390,7 +2410,7 @@ impl DepthWalk<'_, '_> {
                     #[cfg(feature = "std")]
                     if nsqdbg_here(abs_x, abs_y) {
                         eprintln!(
-                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={} txt=[{}] ye=[{}] ue={} ve={} fi={} ady={} aduv={} qdc=[{}]",
+                            "NSQDBG BLK mi=({},{}) bsize={} shape={} nsi={} cost={} rate={} dist={} mode={} coeff={} nz={} txd={} uv={} txt=[{}] ye=[{}] ue={} ve={} fi={} ady={} aduv={} qdc=[{}] {}",
                             abs_y / 4,
                             abs_x / 4,
                             c_bsize_sq(size),
@@ -2412,6 +2432,7 @@ impl DepthWalk<'_, '_> {
                             ev.dbg_deltas().0,
                             ev.dbg_deltas().1,
                             ev.dbg_qdcs(),
+                            ev.dbg_inter(),
                         );
                     }
                     part_cost += ev.block_cost();
@@ -2520,7 +2541,7 @@ impl DepthWalk<'_, '_> {
                         .map(|(p, rd, _)| (*p as u32, *rd))
                         .unwrap_or((255, 0));
                     eprint!(
-                        "NSQDBG SHAPE mi=({},{}) bsize={} shape={} valid={} part_cost={} part_rate={} best={}/{}",
+                        "NSQDBG SHAPE mi=({},{}) bsize={} shape={} valid={} part_cost={} part_rate={} cr={} best={}/{}",
                         abs_y / 4,
                         abs_x / 4,
                         c_bsize_sq(size),
@@ -2528,6 +2549,7 @@ impl DepthWalk<'_, '_> {
                         u8::from(valid),
                         part_cost,
                         part_rate,
+                        ctx_row,
                         bp,
                         brd,
                     );

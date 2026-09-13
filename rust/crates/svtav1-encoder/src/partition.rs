@@ -2068,9 +2068,13 @@ pub(crate) fn funnel_block_decision(
                 motion_mode: i.motion_mode,
                 num_proj_ref: u16::from(i.num_proj_ref),
                 overlappable_neighbors: u32::from(i.overlappable_neighbors),
-                // The port writes `skip_mode_present = 0` on every frame, so
-                // no candidate can be a skip-mode one.
-                skip_mode: false,
+                // C `block_mi.skip_mode` — the full-cost skip-mode
+                // arbitration's decision (rd_cost.c:1443), real now that
+                // the frame's skip-mode pair reaches the injector.
+                skip_mode: i.skip_mode,
+                comp_group_idx: i.comp_group_idx,
+                compound_idx: i.compound_idx,
+                interinter_comp_type: i.interinter_comp_type,
                 wm_params: i.wm_params,
             })
         }),
@@ -3050,6 +3054,9 @@ fn encode_single_block(
                 num_proj_ref: 0,
                 overlappable_neighbors: 0,
                 skip_mode: false,
+                comp_group_idx: 0,
+                compound_idx: 0,
+                interinter_comp_type: 0,
                 wm_params: Default::default(),
             })
         }),
@@ -3502,6 +3509,15 @@ pub struct InterDecision {
     pub overlappable_neighbors: u32,
     /// C `block_mi.skip_mode`.
     pub skip_mode: bool,
+    /// C `block_mi.comp_group_idx` / `compound_idx` /
+    /// `interinter_comp.type` — the CODED compound symbols, carried from the
+    /// winning candidate. `comp_group_idx == 0, compound_idx == 1,
+    /// COMPOUND_AVERAGE` (the `MD_COMP_AVG` row of `determine_compound_mode`)
+    /// is what every reachable compound candidate carries at the ported
+    /// `inter_compound_mode` levels.
+    pub comp_group_idx: u8,
+    pub compound_idx: u8,
+    pub interinter_comp_type: u8,
     /// C `cand->wm_params_l0` — the local-warp affine model. Identity unless
     /// `motion_mode == WarpedCausal`, and carried on the DECISION because the
     /// bd10 level re-encode has to rebuild this leaf's prediction from it: the

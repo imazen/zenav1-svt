@@ -87,6 +87,16 @@ pub struct MvpMiEntry {
     /// projection in `crate::inter_md_arm::neighbors_from_grid`, which is
     /// why an inter block must stamp its real value.
     pub interp_filters: u32,
+    /// C `block_mi.skip_mode` — read off the NEIGHBOUR by
+    /// `av1_get_skip_mode_context` (`skip_mode_context`), so a skip-mode
+    /// winner must stamp it or the next block prices and codes the symbol
+    /// from the wrong CDF row.
+    pub skip_mode: bool,
+    /// C `block_mi.comp_group_idx` / `compound_idx` — read off the
+    /// NEIGHBOUR by `comp_group_idx_context` / `comp_index_context` during
+    /// compound rate estimation.
+    pub comp_group_idx: u8,
+    pub compound_idx: u8,
 }
 
 impl Default for MvpMiEntry {
@@ -100,6 +110,9 @@ impl Default for MvpMiEntry {
             mv: [Mv::default(); 2],
             partition: 0,
             interp_filters: 0,
+            skip_mode: false,
+            comp_group_idx: 0,
+            compound_idx: 0,
         }
     }
 }
@@ -936,6 +949,9 @@ mod tests {
                     mv: [dv, Mv::default()],
                     partition: 0,
                     interp_filters: 0,
+                    skip_mode: false,
+                    comp_group_idx: 0,
+                    compound_idx: 0,
                 };
             }
         }

@@ -450,9 +450,26 @@ int64_t __wrap_svt_aom_partition_rate_cost(PictureParentControlSet* pcs, const B
         const char* win = getenv("SVT_PART_MI");
         if (win && *win)
             sscanf(win, "%d,%d,%d,%d", &rmin, &rmax, &cmin, &cmax);
-        if (pf && mi_row >= rmin && mi_row <= rmax && mi_col >= cmin && mi_col <= cmax)
-            fprintf(pf, "PART bsize=%d mi=(%d,%d) part=%d rate=%lld lctx=%d actx=%d\n", (int)bsize, mi_row, mi_col,
-                    (int)p, (long long)ret, (int)left_ctx, (int)above_ctx);
+        if (pf && mi_row >= rmin && mi_row <= rmax && mi_col >= cmin && mi_col <= cmax) {
+            /* Full derived row for direct comparison with the port's
+             * NSQDBG PCTX `row=[...]`. The context index mirrors
+             * rd_cost.c:1841-1842. */
+            const int hbs      = mi_size_wide[bsize] >> 1;
+            const int has_rows = (mi_row + hbs) < pcs->av1_cm->mi_rows;
+            const int has_cols = (mi_col + hbs) < pcs->av1_cm->mi_cols;
+            const int bsl      = mi_size_wide_log2[bsize] - mi_size_wide_log2[BLOCK_8X8];
+            const int above = (above_ctx >> bsl) & 1, left = (left_ctx >> bsl) & 1;
+            const int ci = (left * 2 + above) + bsl * PARTITION_PLOFFSET;
+            fprintf(pf, "PART bsize=%d mi=(%d,%d) part=%d rate=%lld lctx=%d actx=%d ci=%d",
+                    (int)bsize, mi_row, mi_col, (int)p, (long long)ret, (int)left_ctx, (int)above_ctx, ci);
+            if (has_rows && has_cols) {
+                fprintf(pf, " row=[");
+                for (int s = 0; s < 10; s++)
+                    fprintf(pf, "%s%d", s ? "," : "", md_rate_est_ctx->partition_fac_bits[ci][s]);
+                fprintf(pf, "]");
+            }
+            fprintf(pf, "\n");
+        }
     }
     return ret;
 }
@@ -772,8 +789,9 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                     nic_hdr_slice = (int)pcs->slice_type;
                 }
                 fprintf(f,
-                        "CFULL sl=%d org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ibc=%d ycb=%llu ydist=%llu "
+                        "CFULL poc=%u sl=%d org=(%u,%u) %ux%u st=%d mode=%d fi=%d ang=%d uv=%d ibc=%d ycb=%llu ydist=%llu "
                         "cost=%llu cls=%d n0=%u,%u,%u,%u,%u n1=%u,%u,%u,%u,%u n2=%u,%u,%u,%u,%u n3=%u,%u,%u,%u,%u m1bc=%d pm1=%d sq=%u mds=%u\n",
+                        (unsigned)pcs->picture_number,
                         (int)pcs->slice_type,
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (int)ctx->md_stage, (int)cand_bf->cand->block_mi.mode,
@@ -806,6 +824,18 @@ void __wrap_svt_aom_full_cost(PictureControlSet* pcs, ModeDecisionContext* ctx, 
                          * parent (sq=16, distinct mds) -- the join keys on
                          * these, not on origin+dims alone. */
                         (unsigned)ctx->blk_geom->sq_size, (unsigned)ctx->blk_ptr->mds_idx);
+                fprintf(f,
+                        "CSKM poc=%u org=(%u,%u) st=%d mode=%d skma=%d skmctx=%d smf0=%u,%u smf1=%u,%u smf2=%u,%u skm=%d\n",
+                        (unsigned)pcs->picture_number, (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y,
+                        (int)ctx->md_stage, (int)cand_bf->cand->block_mi.mode,
+                        (int)cand_bf->cand->skip_mode_allowed, (int)ctx->skip_mode_ctx,
+                        (unsigned)ctx->md_rate_est_ctx->skip_mode_fac_bits[0][0],
+                        (unsigned)ctx->md_rate_est_ctx->skip_mode_fac_bits[0][1],
+                        (unsigned)ctx->md_rate_est_ctx->skip_mode_fac_bits[1][0],
+                        (unsigned)ctx->md_rate_est_ctx->skip_mode_fac_bits[1][1],
+                        (unsigned)ctx->md_rate_est_ctx->skip_mode_fac_bits[2][0],
+                        (unsigned)ctx->md_rate_est_ctx->skip_mode_fac_bits[2][1],
+                        (int)cand_bf->cand->block_mi.skip_mode);
                 fflush(f);
             }
         }
