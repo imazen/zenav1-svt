@@ -44,7 +44,13 @@ fi
 
 # clip size preset  expected_f0/expected_f1
 # MEASURED 2026-09-11 at cli_qp 40, frames=2, on x86-64; johnny p6 and
-# vidyo4-128 p8 frame-1 promoted 2026-09-13 after the inter-MD fix set:
+# vidyo4-128 p8 frame-1 promoted 2026-09-13 after the inter-MD fix set,
+# and five more frame-1 cells promoted 2026-09-14 when the reference-
+# picture border moved from the input-picture `scs->border` (68) to C's
+# actual `super_block_size + 32` (enc_handle.c:1212-1217) with the
+# contiguous [u][v] buffer_alloc layout: a maximally UMV-clamped chroma
+# MV reads past the padded margin, and the 68-pixel border turned C's
+# legal read into either a panic or wrong prediction pixels.
 # `merge_inter_cands` class-2 merging (`md_me_dist`/`md_pme_dist`),
 # `gm_ctrls.enabled` gating GLOBALMV injection, the video MDS0 variance
 # arm (`mds0_use_hadamard_sb = 0` outside all-intra), and the level-2
@@ -67,7 +73,7 @@ CELLS=(
     "fourpeople     256x256 6 1/1"
     "fourpeople     256x256 8 1/1"
     "johnny         128x128 6 1/1"
-    "johnny         128x128 8 1/0"
+    "johnny         128x128 8 1/1"
     "johnny         256x256 6 1/1"
     "johnny         256x256 8 1/0"
     "kristenandsara 128x128 6 1/1"
@@ -78,14 +84,14 @@ CELLS=(
     "vidyo1         128x128 8 1/1"
     "vidyo1         256x256 6 1/0"
     "vidyo1         256x256 8 1/0"
-    "vidyo3         128x128 6 1/0"
+    "vidyo3         128x128 6 1/1"
     "vidyo3         128x128 8 1/0"
-    "vidyo3         256x256 6 1/0"
+    "vidyo3         256x256 6 1/1"
     "vidyo3         256x256 8 1/0"
     "vidyo4         128x128 6 1/1"
     "vidyo4         128x128 8 1/1"
-    "vidyo4         256x256 6 1/0"
-    "vidyo4         256x256 8 1/0"
+    "vidyo4         256x256 6 1/1"
+    "vidyo4         256x256 8 1/1"
 )
 
 QP="${RVIG_QP:-40}"

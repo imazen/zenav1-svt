@@ -487,6 +487,118 @@ pub(super) fn inject_candidates(
             t
         );
     }
+    // C's block-setup ordering (`md_product_coding_loop`,
+    // product_coding_loop.c:9393-9447): the MVP stacks and the ME/PME
+    // searches run BEFORE `generate_md_stage_0_cand`, so `md_me_dist` /
+    // `md_pme_dist` exist when the intra candidate list is decided —
+    // `eliminate_candidate_based_on_pme_me_results`
+    // (mode_decision.c:3408-3417) reads them. The search output travels to
+    // `build_inter_candidates` below, so the searches still run once.
+    let mut inter_pre = None;
+    if let Some(im) = fx.inter {
+        let mi_row = (abs_y / 4) as i32;
+        let mi_col = (abs_x / 4) as i32;
+        let stride = im.mi_cols;
+        let base = mi_row * stride + mi_col;
+        // The MVP scan runs against the LIVE mi state, in which the CURRENT
+        // cell already carries this block's own partition (the
+        // `has_top_right` VERT_A read) — exactly as the IBC arm below does.
+        let grid_mut = fx
+            .ibc_mvp
+            .as_deref_mut()
+            .expect("the MD mi grid is allocated whenever the inter arm is armed");
+        grid_mut[base as usize].partition = fx.ibc_gate.partition;
+        let grid = fx
+            .ibc_mvp
+            .as_deref()
+            .expect("the MD mi grid is allocated whenever the inter arm is armed");
+        let neighbors =
+            crate::inter_md_arm::neighbors_from_grid(grid, stride, mi_row, mi_col, im.tile);
+        let bctx = crate::intrabc_mvp::derive_block_ctx(
+            mi_row,
+            mi_col,
+            bsize_idx,
+            im.mi_rows,
+            im.mi_cols,
+            im.tile,
+            im.sb_mi_size,
+        );
+        let overlappable = crate::inter_mvp::count_overlappable_neighbors(
+            &crate::intrabc_mvp::MvpGrid {
+                entries: grid,
+                stride,
+                base,
+            },
+            &bctx,
+            bsize_idx,
+        );
+        // C `ctx->is_inter_ctx` — `svt_av1_get_intra_inter_context`
+        // over the same neighbour pair (entropy_coding.c:1127).
+        //
+        // Through `port_entropy_inter`'s transcription, NOT
+        // `entropy::context::get_intra_inter_context`: this call
+        // used to collapse "not available" into "intra" and then
+        // read an INVERTED table, so a block with two INTER
+        // neighbours priced at context 3 (both intra) instead of 0.
+        // MEASURED 2026-09-02 against C's own
+        // `svt_aom_inter_fast_cost`: 1207 rate units on EVERY inter
+        // candidate of the block. The writer already used this
+        // function (`write_intra_inter`'s call site); MD did not,
+        // and the two disagreed for as long as both existed.
+        let is_inter_ctx = crate::port_entropy_inter::intra_inter_context(&neighbors);
+        let prelude = crate::inter_md_arm::block_prelude(
+            im,
+            &mut crate::inter_md_arm::InterBlockCtx {
+                org_x: abs_x,
+                org_y: abs_y,
+                bw: w,
+                bh: h,
+                bsize: bsize_idx as u8,
+                grid,
+                grid_stride: stride,
+                neighbors,
+                overlappable_neighbors: overlappable,
+                is_inter_ctx,
+                has_uv,
+                // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`:
+                // one slot, written by a square block's own search and read
+                // by the NSQ shapes that follow it at the same node. The
+                // funnel walks a node's shapes with PART_N first, which is
+                // what makes a single slot the faithful structure.
+                sq_me: fx.inter_sq_me.as_deref_mut(),
+            },
+            lambda,
+            frame.inter_fast_lambda,
+        );
+        inter_pre = Some((prelude, neighbors, overlappable, is_inter_ctx));
+    }
+    // C `dc_cand_only_flag` (`generate_md_stage_0_cand`,
+    // mode_decision.c:3576-3579). The caller's `dc_only` carries the
+    // `intra_mode_end == DC_PRED || is_dc_only_safe` arm; this adds
+    // `eliminate_candidate_based_on_pme_me_results` — when
+    // `cand_elimination_ctrls` is enabled and the block's best post-subpel
+    // ME/PME residual is under `dc_only_th * bheight * bwidth`, the intra
+    // set collapses to {DC_PRED}. Dead on stills (`fx.inter` is None) and
+    // at cand_reduction levels 0/1 (enabled == 0).
+    let mut dc_only = dc_only;
+    if let Some((prelude, ..)) = &inter_pre {
+        let elim = &fx
+            .inter
+            .expect("inter_pre is built exactly when the inter arm is armed")
+            .cand_reduction
+            .cand_elimination_ctrls;
+        if elim.enabled != 0 {
+            let (me, pme) = (prelude.search.md_me_dist(), prelude.search.md_pme_dist());
+            if me != u32::MAX || pme != u32::MAX {
+                let th = u32::from(elim.dc_only_th)
+                    .wrapping_mul(h as u32)
+                    .wrapping_mul(w as u32);
+                if me.min(pme) < th {
+                    dc_only = true;
+                }
+            }
+        }
+    }
     let fi_elig = cfg.filter_intra && fi_allowed_bsize;
     let mut cand_modes: Vec<(u8, i8, u8)> = Vec::new();
     if dc_only {
@@ -603,12 +715,11 @@ pub(super) fn inject_candidates(
     // has always run, and `identity_full_8bit.sh` (1100/1100) is what says so.
     //
     // On an INTER frame from preset 3 up, both are live.
-    let tot_itr: u8 =
-        if cfg.reduce_filter_intra || cfg.skip_ang_delta_th.iter().any(|&t| t != -1) {
-            2
-        } else {
-            1
-        };
+    let tot_itr: u8 = if cfg.reduce_filter_intra || cfg.skip_ang_delta_th.iter().any(|&t| t != -1) {
+        2
+    } else {
+        1
+    };
     // C `regular_intra_cost[PAETH_PRED + 1]` (:1676), seeded `MAX_CU_COST`
     // and filled at itr 0 with each regular mode's fast cost. PAETH_PRED is
     // 12, so the array is 13 long.
@@ -620,316 +731,316 @@ pub(super) fn inject_candidates(
     // scored — C's sentinel is checked explicitly at `:1326`.
     let mut mds0_best_cost: Option<u64> = None;
     for itr in 0..tot_itr {
-    for &(mode, delta, fi) in &cand_modes {
-        // C gates this skip on `itr == 0` (:1687). At itr 1 the regular modes
-        // are already scored, so re-applying it there would drop angular
-        // candidates of H / SMOOTH that C keeps.
-        if cfg.prune_best_mode && fi == FI_NONE && itr == 0 {
-            // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
-            if mode == 2 && best_reg_mode == 1 {
-                continue; // V better than DC -> skip H
-            }
-            if mode == 9 && best_reg_mode == 0 {
-                continue; // DC still best -> skip SMOOTH
-            }
-        }
-        if tot_itr > 1
-            && !process_cand_itr(
-                &cfg,
-                mode,
-                delta,
-                fi,
-                itr,
-                best_reg_mode,
-                best_reg_cost,
-                &regular_intra_cost,
-            )
-        {
-            continue;
-        }
-        // C injection (inject_intra_candidates / inject_filter_intra_candidates,
-        // mode_decision.c:3286-3292): uv = ind_uv_avail ? best_uv_mode[map]
-        // : intra_luma_to_chroma[map], angle_uv = ind_uv_avail ?
-        // best_uv_angle[map] : angle_y — with map = fimode_to_intramode[fi]
-        // for FILTER candidates (their coded luma mode is DC, but the chroma
-        // follows the fi-mapped DIRECTION). ind_uv_avail at injection is 1
-        // exactly for the ind_uv_last_mds==0 (independent) presets, whose
-        // table was built above; the ind_uv_mds3 presets stay on the
-        // luma_to_chroma mapping here and rewrite at MDS3 (C :7063).
-        let map_mode = if fi != FI_NONE {
-            FIMODE_TO_INTRAMODE[fi as usize]
-        } else {
-            mode
-        };
-        // At ind_uv_last_mds==1 (M1) the C search hasn't run yet at
-        // injection time (`ind_uv_avail` = 0, site :9477 is pre-MDS3), so
-        // candidates inject uv-follows-luma and only the MDS3 rewrite
-        // applies the table.
-        let (uv, uv_delta) = match &ind_uv {
-            Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[map_mode as usize],
-            _ => (uv_from_y(map_mode), if fi != FI_NONE { 0 } else { delta }),
-        };
-        // Pooled: one per injected candidate, 643,485 allocating calls on the
-        // canonical alloc cell after the tx-pipeline buffers were pooled.
-        let mut pred = dirty_pool::<u8>(w * h);
-        predict_unit(
-            y_recon,
-            y_stride,
-            abs_x,
-            abs_y,
-            w,
-            h,
-            mode,
-            delta,
-            fi,
-            &y_geom,
-            cfg.edge_filter,
-            filt_type_y,
-            &mut pred,
-        );
-        // [SVT_HDR_MODE] complex-hvs: plain whole-block spatial SSD, no
-        // shift (C fast_loop_core SSD arm). SATD path shifts << 4 below.
-        // PORT-NOTE(unverified): fork mds0 SSD fast cost vs C — verify by
-        // a C-side fast_loop_core dump once the C hybrid carries the
-        // fork's set_mds0_controls case 3 (the hybrid currently assert(0)s
-        // on mds0_level 3; see docs/HDR-ON-4.2.md complex-hvs row).
-        let satd = if frame.mds0_ssd {
-            let mut sse: u64 = 0;
-            for r in 0..h {
-                let srow = y_src_off + r * y_src_stride;
-                for c in 0..w {
-                    let d = i64::from(y_src[srow + c]) - i64::from(pred[r * w + c]);
-                    sse += (d * d) as u64;
+        for &(mode, delta, fi) in &cand_modes {
+            // C gates this skip on `itr == 0` (:1687). At itr 1 the regular modes
+            // are already scored, so re-applying it there would drop angular
+            // candidates of H / SMOOTH that C keeps.
+            if cfg.prune_best_mode && fi == FI_NONE && itr == 0 {
+                // intra_mode_end SMOOTH >= H_PRED, so the gate is armed.
+                if mode == 2 && best_reg_mode == 1 {
+                    continue; // V better than DC -> skip H
+                }
+                if mode == 9 && best_reg_mode == 0 {
+                    continue; // DC still best -> skip SMOOTH
                 }
             }
-            sse
-        } else if mds0_use_hadamard {
-            hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
-        } else {
-            // C fast_loop_core's variance arm (product_coding_loop.c:1296-1302):
-            // `fn_ptr->vf(pred, pred_stride, src, src_stride, &sse)` with
-            // `fn_ptr = &svt_aom_mefn_ptr[bsize]`, i.e. svt_aom_variance{W}x{H}.
-            // Argument order is (pred, src); the metric is symmetric in the two
-            // buffers (sse is, and only sum^2 is used), so this matches.
-            u64::from(svtav1_dsp::variance::variance_diff(
-                &pred,
-                w,
-                &y_src[y_src_off..],
-                y_src_stride,
-                w,
-                h,
-            ))
-        };
-
-        // C `svt_aom_intra_fast_cost` prices the luma MODE from ONE of two
-        // exclusive tables (rd_cost.c:558-570): on an I-slice the key-frame
-        // `y_mode_fac_bits[top][left]`, on any other slice
-        // `mb_mode_fac_bits[size_group]` — and the other contributes ZERO,
-        // it is not an addend. On a non-I-slice the candidate also pays the
-        // `is_inter = 0` flag (`:624-626`), which an I-slice never codes.
-        let mut flr = intra_mode_rate(frame, rates, g, mode);
-        if use_angle && matches!(mode, 1..=8) {
-            flr += rates.angle[mode as usize - 1][(3 + delta) as usize] as u64;
-        }
-        if fi_elig && mode == 0 {
-            flr += rates.fi_flag[bsize_idx][usize::from(fi != FI_NONE)] as u64;
-            if fi != FI_NONE {
-                flr += rates.fi_mode[fi as usize] as u64;
-            }
-        }
-        // No-palette y flag (rd_cost.c:579-585): every DC-coded candidate
-        // (fi included) prices palette_ymode_fac_bits[bctx][mode_ctx][0]
-        // (via pal_y_no, computed above with the neighbour mode ctx) when
-        // allow_palette. pal_y_no is 0 when palette is disallowed.
-        if mode == 0 {
-            flr += pal_y_no;
-        }
-        // No-intrabc flag (rd_cost.c:629-631, IBC chunk 3): on an IBC frame
-        // EVERY non-IBC candidate's luma rate carries intrabc_fac_bits[0]
-        // (the use_intrabc=0 flag the writer codes per block). 0-cost
-        // structurally when !allow_intrabc (the C fill is gated the same).
-        if cfg.allow_intrabc {
-            flr += rates.intrabc_fac_bits[0] as u64;
-        }
-        let mut fcr = if has_uv {
-            rates.uv[cfl_allowed][mode as usize][uv as usize] as u64
-        } else {
-            // C fast cost: chroma_rate only when ctx->has_uv
-            // (av1_intra_fast_cost, rd_cost.c:619).
-            0
-        };
-        if has_uv && use_angle && matches!(uv, 1..=8) {
-            fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
-        }
-        if has_uv && uv == 0 {
-            fcr += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
-        }
-        // bd10 mode funnel (task #94): when the bd10 recon canvas is present,
-        // score this candidate's MDS0 fast cost at TRUE 10-bit — predict from
-        // the 10-bit canvas, SATD the 10-bit residual (`y_src<<2 - pred10`),
-        // with the bd10 fast lambda. This re-orders the survivor (C's bd10
-        // winner). The rate (flr+fcr) is bit-depth-independent. The u8 `pred`
-        // and `satd` above are still computed (MDS1/MDS3 reuse `cand.pred`);
-        // only the fast COST switches. `None` (bd8) is the exact u8 path.
-        // Diagnostic-only (read by the std-gated NSQDBG PFAST dump below).
-        #[cfg(feature = "std")]
-        let mut dbg_satd10: u64 = 0;
-        #[cfg(feature = "std")]
-        let mut dbg_pred0: u16 = 0;
-        // The 10-bit prediction is RETAINED (`cand.pred10`) — MDS1/MDS3 need it
-        // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
-        // It used to be dropped here because only MDS0 ran at bd10.
-        let mut pred10 = crate::vecpool::PoolVec::<u16>::new();
-        let (fast_cost, distortion_cost) = match fx.y_recon10.as_deref() {
-            Some(canvas10) => {
-                pred10 = zeroed_pool::<u16>(w * h);
-                predict_unit_hbd(
-                    canvas10,
-                    y_stride,
-                    abs_x,
-                    abs_y,
-                    w,
-                    h,
+            if tot_itr > 1
+                && !process_cand_itr(
+                    &cfg,
                     mode,
                     delta,
                     fi,
-                    &y_geom,
-                    cfg.edge_filter,
-                    filt_type_y,
-                    &mut pred10,
-                    frame.bit_depth,
-                );
-                let satd10 = hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h);
-                #[cfg(feature = "std")]
-                {
-                    dbg_satd10 = satd10;
-                    dbg_pred0 = pred10[0];
-                }
-                (
-                    rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4),
-                    rdcost(lambda_bd10_fast, 0, satd10 << 4),
+                    itr,
+                    best_reg_mode,
+                    best_reg_cost,
+                    &regular_intra_cost,
                 )
-            }
-            None => {
-                let d = if frame.mds0_ssd { satd } else { satd << 4 };
-                (rdcost(lambda, flr + fcr, d), rdcost(lambda, 0, d))
-            }
-        };
-        // C `fast_loop_core`'s MDS0 prune (product_coding_loop.c:1309-1334),
-        // PD1 only. `ctx->mds0_ctrls.pruning_method_th` selects the arm; level 2
-        // (the video arm above M10) sets it to `(uint8_t)~0`, which takes the
-        // GLOBAL arm at `:1325`:
-        //
-        //     distortion_cost = RDCOST(full_lambda, 0, luma_fast_dist);
-        //     if (100 * (distortion_cost - mds0_best_cost)) >
-        //         (mds0_best_cost * dist_to_cost_th)   ->  MAX_MODE_COST
-        //
-        // `luma_fast_dist` there is the SHIFTED local (`:1307`), i.e. the same
-        // `satd << 4` this funnel feeds `rdcost`, so `distortion_cost` is this
-        // candidate's fast cost with the rate term dropped. C then RETURNS
-        // before assembling the fast cost, so the candidate carries the
-        // sentinel into the pool, cannot lower `mds0_best_cost`, and cannot
-        // become `best_reg_intra_mode` (`:1727` stores the sentinel it now
-        // holds). `None` (allintra, and video through M10 on a key frame) is
-        // byte-identical to the pre-arm path by construction.
-        let fast_cost = match (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
-            (Some(th), Some(best))
-                if 100i128 * (i128::from(distortion_cost) - i128::from(best))
-                    > i128::from(best) * i128::from(th) =>
             {
-                crate::port_md::lpd1_loop::MAX_MODE_COST
+                continue;
             }
-            _ => fast_cost,
-        };
-        mds0_best_cost = Some(mds0_best_cost.map_or(fast_cost, |b| b.min(fast_cost)));
-        #[cfg(feature = "std")]
-        if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
-            eprintln!(
-                "NSQDBG PFAST mi=({},{}) {}x{} mode={} fi={} delta={} uv={} uvd={} flr={} fcr={} satd={} satd10={} pred10_0={} fast={}",
-                abs_y / 4,
-                abs_x / 4,
+            // C injection (inject_intra_candidates / inject_filter_intra_candidates,
+            // mode_decision.c:3286-3292): uv = ind_uv_avail ? best_uv_mode[map]
+            // : intra_luma_to_chroma[map], angle_uv = ind_uv_avail ?
+            // best_uv_angle[map] : angle_y — with map = fimode_to_intramode[fi]
+            // for FILTER candidates (their coded luma mode is DC, but the chroma
+            // follows the fi-mapped DIRECTION). ind_uv_avail at injection is 1
+            // exactly for the ind_uv_last_mds==0 (independent) presets, whose
+            // table was built above; the ind_uv_mds3 presets stay on the
+            // luma_to_chroma mapping here and rewrite at MDS3 (C :7063).
+            let map_mode = if fi != FI_NONE {
+                FIMODE_TO_INTRAMODE[fi as usize]
+            } else {
+                mode
+            };
+            // At ind_uv_last_mds==1 (M1) the C search hasn't run yet at
+            // injection time (`ind_uv_avail` = 0, site :9477 is pre-MDS3), so
+            // candidates inject uv-follows-luma and only the MDS3 rewrite
+            // applies the table.
+            let (uv, uv_delta) = match &ind_uv {
+                Some(tbl) if !cfg.ind_uv_last_mds1 => tbl[map_mode as usize],
+                _ => (uv_from_y(map_mode), if fi != FI_NONE { 0 } else { delta }),
+            };
+            // Pooled: one per injected candidate, 643,485 allocating calls on the
+            // canonical alloc cell after the tx-pipeline buffers were pooled.
+            let mut pred = dirty_pool::<u8>(w * h);
+            predict_unit(
+                y_recon,
+                y_stride,
+                abs_x,
+                abs_y,
                 w,
                 h,
                 mode,
-                fi,
                 delta,
+                fi,
+                &y_geom,
+                cfg.edge_filter,
+                filt_type_y,
+                &mut pred,
+            );
+            // [SVT_HDR_MODE] complex-hvs: plain whole-block spatial SSD, no
+            // shift (C fast_loop_core SSD arm). SATD path shifts << 4 below.
+            // PORT-NOTE(unverified): fork mds0 SSD fast cost vs C — verify by
+            // a C-side fast_loop_core dump once the C hybrid carries the
+            // fork's set_mds0_controls case 3 (the hybrid currently assert(0)s
+            // on mds0_level 3; see docs/HDR-ON-4.2.md complex-hvs row).
+            let satd = if frame.mds0_ssd {
+                let mut sse: u64 = 0;
+                for r in 0..h {
+                    let srow = y_src_off + r * y_src_stride;
+                    for c in 0..w {
+                        let d = i64::from(y_src[srow + c]) - i64::from(pred[r * w + c]);
+                        sse += (d * d) as u64;
+                    }
+                }
+                sse
+            } else if mds0_use_hadamard {
+                hadamard_satd(y_src, y_src_stride, y_src_off, &pred, w, h)
+            } else {
+                // C fast_loop_core's variance arm (product_coding_loop.c:1296-1302):
+                // `fn_ptr->vf(pred, pred_stride, src, src_stride, &sse)` with
+                // `fn_ptr = &svt_aom_mefn_ptr[bsize]`, i.e. svt_aom_variance{W}x{H}.
+                // Argument order is (pred, src); the metric is symmetric in the two
+                // buffers (sse is, and only sum^2 is used), so this matches.
+                u64::from(svtav1_dsp::variance::variance_diff(
+                    &pred,
+                    w,
+                    &y_src[y_src_off..],
+                    y_src_stride,
+                    w,
+                    h,
+                ))
+            };
+
+            // C `svt_aom_intra_fast_cost` prices the luma MODE from ONE of two
+            // exclusive tables (rd_cost.c:558-570): on an I-slice the key-frame
+            // `y_mode_fac_bits[top][left]`, on any other slice
+            // `mb_mode_fac_bits[size_group]` — and the other contributes ZERO,
+            // it is not an addend. On a non-I-slice the candidate also pays the
+            // `is_inter = 0` flag (`:624-626`), which an I-slice never codes.
+            let mut flr = intra_mode_rate(frame, rates, g, mode);
+            if use_angle && matches!(mode, 1..=8) {
+                flr += rates.angle[mode as usize - 1][(3 + delta) as usize] as u64;
+            }
+            if fi_elig && mode == 0 {
+                flr += rates.fi_flag[bsize_idx][usize::from(fi != FI_NONE)] as u64;
+                if fi != FI_NONE {
+                    flr += rates.fi_mode[fi as usize] as u64;
+                }
+            }
+            // No-palette y flag (rd_cost.c:579-585): every DC-coded candidate
+            // (fi included) prices palette_ymode_fac_bits[bctx][mode_ctx][0]
+            // (via pal_y_no, computed above with the neighbour mode ctx) when
+            // allow_palette. pal_y_no is 0 when palette is disallowed.
+            if mode == 0 {
+                flr += pal_y_no;
+            }
+            // No-intrabc flag (rd_cost.c:629-631, IBC chunk 3): on an IBC frame
+            // EVERY non-IBC candidate's luma rate carries intrabc_fac_bits[0]
+            // (the use_intrabc=0 flag the writer codes per block). 0-cost
+            // structurally when !allow_intrabc (the C fill is gated the same).
+            if cfg.allow_intrabc {
+                flr += rates.intrabc_fac_bits[0] as u64;
+            }
+            let mut fcr = if has_uv {
+                rates.uv[cfl_allowed][mode as usize][uv as usize] as u64
+            } else {
+                // C fast cost: chroma_rate only when ctx->has_uv
+                // (av1_intra_fast_cost, rd_cost.c:619).
+                0
+            };
+            if has_uv && use_angle && matches!(uv, 1..=8) {
+                fcr += rates.angle[uv as usize - 1][(3 + uv_delta) as usize] as u64;
+            }
+            if has_uv && uv == 0 {
+                fcr += pal_uv_no; // rd_cost.c:514 (inside uv fast rate)
+            }
+            // bd10 mode funnel (task #94): when the bd10 recon canvas is present,
+            // score this candidate's MDS0 fast cost at TRUE 10-bit — predict from
+            // the 10-bit canvas, SATD the 10-bit residual (`y_src<<2 - pred10`),
+            // with the bd10 fast lambda. This re-orders the survivor (C's bd10
+            // winner). The rate (flr+fcr) is bit-depth-independent. The u8 `pred`
+            // and `satd` above are still computed (MDS1/MDS3 reuse `cand.pred`);
+            // only the fast COST switches. `None` (bd8) is the exact u8 path.
+            // Diagnostic-only (read by the std-gated NSQDBG PFAST dump below).
+            #[cfg(feature = "std")]
+            let mut dbg_satd10: u64 = 0;
+            #[cfg(feature = "std")]
+            let mut dbg_pred0: u16 = 0;
+            // The 10-bit prediction is RETAINED (`cand.pred10`) — MDS1/MDS3 need it
+            // as their depth-0 predictor, exactly as they reuse the u8 `cand.pred`.
+            // It used to be dropped here because only MDS0 ran at bd10.
+            let mut pred10 = crate::vecpool::PoolVec::<u16>::new();
+            let (fast_cost, distortion_cost) = match fx.y_recon10.as_deref() {
+                Some(canvas10) => {
+                    pred10 = zeroed_pool::<u16>(w * h);
+                    predict_unit_hbd(
+                        canvas10,
+                        y_stride,
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        mode,
+                        delta,
+                        fi,
+                        &y_geom,
+                        cfg.edge_filter,
+                        filt_type_y,
+                        &mut pred10,
+                        frame.bit_depth,
+                    );
+                    let satd10 = hadamard_satd_hbd(blk_y_src10, w, 0, &pred10, w, h);
+                    #[cfg(feature = "std")]
+                    {
+                        dbg_satd10 = satd10;
+                        dbg_pred0 = pred10[0];
+                    }
+                    (
+                        rdcost(lambda_bd10_fast, flr + fcr, satd10 << 4),
+                        rdcost(lambda_bd10_fast, 0, satd10 << 4),
+                    )
+                }
+                None => {
+                    let d = if frame.mds0_ssd { satd } else { satd << 4 };
+                    (rdcost(lambda, flr + fcr, d), rdcost(lambda, 0, d))
+                }
+            };
+            // C `fast_loop_core`'s MDS0 prune (product_coding_loop.c:1309-1334),
+            // PD1 only. `ctx->mds0_ctrls.pruning_method_th` selects the arm; level 2
+            // (the video arm above M10) sets it to `(uint8_t)~0`, which takes the
+            // GLOBAL arm at `:1325`:
+            //
+            //     distortion_cost = RDCOST(full_lambda, 0, luma_fast_dist);
+            //     if (100 * (distortion_cost - mds0_best_cost)) >
+            //         (mds0_best_cost * dist_to_cost_th)   ->  MAX_MODE_COST
+            //
+            // `luma_fast_dist` there is the SHIFTED local (`:1307`), i.e. the same
+            // `satd << 4` this funnel feeds `rdcost`, so `distortion_cost` is this
+            // candidate's fast cost with the rate term dropped. C then RETURNS
+            // before assembling the fast cost, so the candidate carries the
+            // sentinel into the pool, cannot lower `mds0_best_cost`, and cannot
+            // become `best_reg_intra_mode` (`:1727` stores the sentinel it now
+            // holds). `None` (allintra, and video through M10 on a key frame) is
+            // byte-identical to the pre-arm path by construction.
+            let fast_cost = match (cfg.mds0_dist_to_cost_th, mds0_best_cost) {
+                (Some(th), Some(best))
+                    if 100i128 * (i128::from(distortion_cost) - i128::from(best))
+                        > i128::from(best) * i128::from(th) =>
+                {
+                    crate::port_md::lpd1_loop::MAX_MODE_COST
+                }
+                _ => fast_cost,
+            };
+            mds0_best_cost = Some(mds0_best_cost.map_or(fast_cost, |b| b.min(fast_cost)));
+            #[cfg(feature = "std")]
+            if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
+                eprintln!(
+                    "NSQDBG PFAST mi=({},{}) {}x{} mode={} fi={} delta={} uv={} uvd={} flr={} fcr={} satd={} satd10={} pred10_0={} fast={}",
+                    abs_y / 4,
+                    abs_x / 4,
+                    w,
+                    h,
+                    mode,
+                    fi,
+                    delta,
+                    uv,
+                    uv_delta,
+                    flr,
+                    fcr,
+                    satd,
+                    dbg_satd10,
+                    dbg_pred0,
+                    fast_cost,
+                );
+            }
+            // C `:1727`: at itr 0, a class-0 candidate with NO filter-intra mode
+            // records its fast cost per luma mode, and the running best of those
+            // becomes `best_reg_intra_mode`. The guard is C's own — `prune_best_mode
+            // && intra_mode_end >= H_PRED`, or a split iteration. `intra_mode_end`
+            // is SMOOTH (9) on every level that sets `prune_best_mode`, so the
+            // second clause is always true where the first is, and the still path
+            // keeps the exact behaviour it had.
+            //
+            // Note this records ANGULAR candidates too when the split came from
+            // `reduce_filter_intra` alone (itr 0 evaluates them), and a later
+            // delta of the same mode overwrites an earlier one. That is what C
+            // does, index and all.
+            if fi == FI_NONE
+                && itr == 0
+                && ((cfg.prune_best_mode && cfg.mode_end >= 2) || tot_itr > 1)
+            {
+                regular_intra_cost[usize::from(mode)] = fast_cost;
+                if fast_cost < best_reg_cost {
+                    best_reg_cost = fast_cost;
+                    best_reg_mode = mode as i32;
+                }
+            }
+            cands.push(Cand {
+                mode,
+                delta,
+                fi,
                 uv,
                 uv_delta,
+                pred,
+                pred10,
                 flr,
                 fcr,
-                satd,
-                dbg_satd10,
-                dbg_pred0,
                 fast_cost,
-            );
+                full_cost: u64::MAX,
+                mds3_cost_ssim: u64::MAX,
+                mds1_has_coeff: false,
+                tx_depth: 0,
+                txb_q: Vec::new(),
+                txb_eob: smallvec::SmallVec::new(),
+                txb_cul: smallvec::SmallVec::new(),
+                txb_type: smallvec::SmallVec::new(),
+                y_recon: crate::vecpool::PoolVec::new(),
+                y_recon10: Vec::new(),
+                u_recon10: Vec::new(),
+                v_recon10: Vec::new(),
+                y_recon_d0: crate::vecpool::PoolVec::new(),
+                y_bits: 0,
+                y_dist: 0,
+                u_q: crate::vecpool::PoolVec::new(),
+                v_q: crate::vecpool::PoolVec::new(),
+                u_eob: 0,
+                v_eob: 0,
+                u_cul: 0,
+                v_cul: 0,
+                u_recon: crate::vecpool::PoolVec::new(),
+                v_recon: crate::vecpool::PoolVec::new(),
+                cfl_alpha_idx: 0,
+                cfl_alpha_signs: 0,
+                palette: None,
+                ibc: None,
+                inter: None,
+                mds3_cost: u64::MAX,
+                block_has_coeff: false,
+                total_rate: 0,
+                full_dist: 0,
+            });
         }
-        // C `:1727`: at itr 0, a class-0 candidate with NO filter-intra mode
-        // records its fast cost per luma mode, and the running best of those
-        // becomes `best_reg_intra_mode`. The guard is C's own — `prune_best_mode
-        // && intra_mode_end >= H_PRED`, or a split iteration. `intra_mode_end`
-        // is SMOOTH (9) on every level that sets `prune_best_mode`, so the
-        // second clause is always true where the first is, and the still path
-        // keeps the exact behaviour it had.
-        //
-        // Note this records ANGULAR candidates too when the split came from
-        // `reduce_filter_intra` alone (itr 0 evaluates them), and a later
-        // delta of the same mode overwrites an earlier one. That is what C
-        // does, index and all.
-        if fi == FI_NONE
-            && itr == 0
-            && ((cfg.prune_best_mode && cfg.mode_end >= 2) || tot_itr > 1)
-        {
-            regular_intra_cost[usize::from(mode)] = fast_cost;
-            if fast_cost < best_reg_cost {
-                best_reg_cost = fast_cost;
-                best_reg_mode = mode as i32;
-            }
-        }
-        cands.push(Cand {
-            mode,
-            delta,
-            fi,
-            uv,
-            uv_delta,
-            pred,
-            pred10,
-            flr,
-            fcr,
-            fast_cost,
-            full_cost: u64::MAX,
-            mds3_cost_ssim: u64::MAX,
-            mds1_has_coeff: false,
-            tx_depth: 0,
-            txb_q: Vec::new(),
-            txb_eob: smallvec::SmallVec::new(),
-            txb_cul: smallvec::SmallVec::new(),
-            txb_type: smallvec::SmallVec::new(),
-            y_recon: crate::vecpool::PoolVec::new(),
-            y_recon10: Vec::new(),
-            u_recon10: Vec::new(),
-            v_recon10: Vec::new(),
-            y_recon_d0: crate::vecpool::PoolVec::new(),
-            y_bits: 0,
-            y_dist: 0,
-            u_q: crate::vecpool::PoolVec::new(),
-            v_q: crate::vecpool::PoolVec::new(),
-            u_eob: 0,
-            v_eob: 0,
-            u_cul: 0,
-            v_cul: 0,
-            u_recon: crate::vecpool::PoolVec::new(),
-            v_recon: crate::vecpool::PoolVec::new(),
-            cfl_alpha_idx: 0,
-            cfl_alpha_signs: 0,
-            palette: None,
-            ibc: None,
-            inter: None,
-            mds3_cost: u64::MAX,
-            block_has_coeff: false,
-            total_rate: 0,
-            full_dist: 0,
-        });
-    }
     }
     // ---- inject_palette_candidates (mode_decision.c:3356-3406) ----
     // C order: regular+fi intra first, palette after (IBC would follow).
@@ -1579,38 +1690,8 @@ pub(super) fn inject_candidates(
     // the motion-compensated prediction and C's `svt_aom_inter_fast_cost` —
     // see that module's header for the fraction of C's candidate set this is.
     if let Some(im) = fx.inter {
-        let mi_row = (abs_y / 4) as i32;
-        let mi_col = (abs_x / 4) as i32;
-        let stride = im.mi_cols;
-        let base = mi_row * stride + mi_col;
-        // The MVP scan runs against the LIVE mi state, in which the CURRENT
-        // cell already carries this block's own partition (the
-        // `has_top_right` VERT_A read) — exactly as the IBC arm above does.
-        let grid = fx
-            .ibc_mvp
-            .as_deref_mut()
-            .expect("the MD mi grid is allocated whenever the inter arm is armed");
-        grid[base as usize].partition = fx.ibc_gate.partition;
-        let neighbors =
-            crate::inter_md_arm::neighbors_from_grid(grid, stride, mi_row, mi_col, im.tile);
-        let bctx = crate::intrabc_mvp::derive_block_ctx(
-            mi_row,
-            mi_col,
-            bsize_idx,
-            im.mi_rows,
-            im.mi_cols,
-            im.tile,
-            im.sb_mi_size,
-        );
-        let overlappable = crate::inter_mvp::count_overlappable_neighbors(
-            &crate::intrabc_mvp::MvpGrid {
-                entries: grid,
-                stride,
-                base,
-            },
-            &bctx,
-            bsize_idx,
-        );
+        let (prelude, neighbors, overlappable, is_inter_ctx) = inter_pre
+            .expect("the block prelude is built at the top whenever the inter arm is armed");
         let built = crate::inter_md_arm::build_inter_candidates(
             im,
             &mut crate::inter_md_arm::InterBlockCtx {
@@ -1619,24 +1700,14 @@ pub(super) fn inject_candidates(
                 bw: w,
                 bh: h,
                 bsize: bsize_idx as u8,
-                grid,
-                grid_stride: stride,
+                grid: fx
+                    .ibc_mvp
+                    .as_deref()
+                    .expect("the MD mi grid is allocated whenever the inter arm is armed"),
+                grid_stride: im.mi_cols,
                 neighbors,
                 overlappable_neighbors: overlappable,
-                // C `ctx->is_inter_ctx` — `svt_av1_get_intra_inter_context`
-                // over the same neighbour pair (entropy_coding.c:1127).
-                //
-                // Through `port_entropy_inter`'s transcription, NOT
-                // `entropy::context::get_intra_inter_context`: this call
-                // used to collapse "not available" into "intra" and then
-                // read an INVERTED table, so a block with two INTER
-                // neighbours priced at context 3 (both intra) instead of 0.
-                // MEASURED 2026-09-02 against C's own
-                // `svt_aom_inter_fast_cost`: 1207 rate units on EVERY inter
-                // candidate of the block. The writer already used this
-                // function (`write_intra_inter`'s call site); MD did not,
-                // and the two disagreed for as long as both existed.
-                is_inter_ctx: crate::port_entropy_inter::intra_inter_context(&neighbors),
+                is_inter_ctx,
                 has_uv,
                 // C `ctx->sq_sb_me_mv` + `pc_tree->tested_blk[PART_N][0]`:
                 // one slot, written by a square block's own search and read
@@ -1646,8 +1717,8 @@ pub(super) fn inject_candidates(
                 sq_me: fx.inter_sq_me.as_deref_mut(),
             },
             lambda,
-            frame.inter_fast_lambda,
             cfg.merge_inter_cands_mult,
+            prelude,
             warp_blk,
         );
         for c in built {

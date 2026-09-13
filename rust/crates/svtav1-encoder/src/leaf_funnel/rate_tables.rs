@@ -138,12 +138,30 @@ pub(super) const AV1_EXT_TX_USED: [[u8; 16]; 6] = [
     [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], // ALL16
 ];
 
-/// Sentinel `intra_dir` marking an INTER-classified (IntraBC) txb through
-/// the shared `tx_unit`/`cost_coeffs_txb`/`txt_search` plumbing: real
-/// intra dirs are 0..=12, so 13 is unambiguous. `MdRates::txt_rate` maps
-/// it to the inter tx-type rate rows; `txt_search` maps it to the inter
-/// ext-tx set.
+/// Sentinel `intra_dir` marking a real INTER txb (`pred_mode >= NEARESTMV`)
+/// through the shared `tx_unit`/`cost_coeffs_txb`/`txt_search` plumbing:
+/// real intra dirs are 0..=12, so 13 is unambiguous. `MdRates::txt_rate`
+/// maps it to the inter tx-type rate rows; `txt_search` maps it to the
+/// inter ext-tx set.
 pub(crate) const INTER_TXT_DIR: usize = 13;
+
+/// Sentinel `intra_dir` marking an IntraBC txb. C has TWO inter predicates
+/// and they disagree exactly here:
+///   * `is_inter_mode(mode) || use_intrabc` — ext-tx set, tx-type rate rows,
+///     `tx_org` shape — counts IBC;
+///   * `pred_mode >= NEARESTMV` — `optimize_b`'s `is_inter` (the
+///     `plane_rd_mult[..][is_inter]` axis) and the `cost_coeffs_txb`
+///     tx-type rate (`rd_cost.c:393`) — does NOT (IBC mode is DC_PRED).
+/// `IBC_TXT_DIR` carries the second distinction; [`inter_txt_dir`] is the
+/// first.
+pub(crate) const IBC_TXT_DIR: usize = 14;
+
+/// C `is_inter_mode(mode) || use_intrabc` on the `intra_dir` encoding: true
+/// for both real inter and IntraBC txbs.
+#[inline]
+pub(crate) fn inter_txt_dir(intra_dir: usize) -> bool {
+    intra_dir == INTER_TXT_DIR || intra_dir == IBC_TXT_DIR
+}
 
 pub(super) fn costs_from_cdf<const N: usize>(cdf: &[u16]) -> [i32; N] {
     let mut out = [0i32; N];
@@ -310,7 +328,7 @@ impl MdRates {
     /// ext-tx set + `inter_tx_type_fac_bits`, no intra-dir dimension).
     #[inline]
     pub(super) fn txt_rate(&self, c_tx_size: usize, intra_dir: usize, tx_type: usize) -> i32 {
-        let is_inter = intra_dir == INTER_TXT_DIR;
+        let is_inter = inter_txt_dir(intra_dir);
         if cc::ext_tx_types(c_tx_size, is_inter, false) <= 1 {
             return 0;
         }
@@ -673,11 +691,23 @@ pub struct FunnelCfg {
     pub angular_level: u8,
     /// `txt_ctrls.txt_group_of_tx_types_for_types_of_size_lt_16 / ge_16`
     /// (set_txt_controls): M6 5/4, M5 (txt_level 3) 6/6 — the M5DBG dump
-    /// fields `txt_lt16=6 txt_ge16=6`.
+    /// fields `txt_lt16=6 txt_ge16=6`. C picks this pair on
+    /// `is_intra_mode(mode)` (get_tx_type_group), so it also serves an
+    /// IntraBC candidate (whose `block_mi.mode` is DC_PRED).
     pub txt_group_lt16: i32,
     pub txt_group_ge16: i32,
+    /// `txt_ctrls.txt_group_inter_lt_16x16 / gt_eq_16x16` — the REAL-inter
+    /// twin (`is_intra_mode` is false only for `mode >= NEARESTMV`). The two
+    /// pairs split at txt_level 6+ (e.g. level 9: intra 4/3, inter 3/2).
+    pub txt_group_inter_lt16: i32,
+    pub txt_group_inter_ge16: i32,
     /// `txt_ctrls.satd_early_exit_th_intra` (M6: 10; M5: 15), qp-scaled.
     pub txt_satd_th: u64,
+    /// `txt_ctrls.satd_early_exit_th_inter` — C's `is_inter` here is
+    /// `is_inter_mode(mode) || use_intrabc`, so IntraBC reads this field
+    /// too. 5 at every level >= 5 (intra stays 10): a real-inter or IBC
+    /// trial is dropped when `(satd - best) * 100 > best * th`.
+    pub txt_satd_th_inter: u64,
     /// `txt_ctrls.txt_rate_cost_th` (M6: 100; M5: 250).
     pub txt_rate_th: u64,
     /// `txs_ctrls.intra_class_max_depth_sq` (txs_level 3 at M4..M6: 1;
@@ -919,7 +949,12 @@ impl FunnelCfg {
             angular_level: 4,
             txt_group_lt16: 5,
             txt_group_ge16: 4,
+            // allintra txt_level 8's inter row (set_txt_controls case 8):
+            // 4/3, satd 5.
+            txt_group_inter_lt16: 4,
+            txt_group_inter_ge16: 3,
             txt_satd_th: 10,
+            txt_satd_th_inter: 5,
             txt_rate_th: 100,
             txs_max_sq: 1,
             txs_max_nsq: 0,
@@ -1012,7 +1047,11 @@ impl FunnelCfg {
                 mds2_band_cnt: 4,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
+                // allintra txt_level 2's inter row (case 2): 6/6, satd 20.
+                txt_group_inter_lt16: 6,
+                txt_group_inter_ge16: 6,
                 txt_satd_th: 20,
+                txt_satd_th_inter: 20,
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
@@ -1041,7 +1080,11 @@ impl FunnelCfg {
                 mds3_cand_base_th: 25,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
+                // allintra txt_level 2's inter row (case 2): 6/6, satd 20.
+                txt_group_inter_lt16: 6,
+                txt_group_inter_ge16: 6,
                 txt_satd_th: 20,
+                txt_satd_th_inter: 20,
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
@@ -1099,7 +1142,11 @@ impl FunnelCfg {
                 mds2_band_cnt: 4,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
+                // allintra txt_level 2's inter row (case 2): 6/6, satd 20.
+                txt_group_inter_lt16: 6,
+                txt_group_inter_ge16: 6,
                 txt_satd_th: 20,
+                txt_satd_th_inter: 20,
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
@@ -1128,7 +1175,11 @@ impl FunnelCfg {
                 mds2_rel_dev_th: 0,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
+                // allintra txt_level 2's inter row (case 2): 6/6, satd 20.
+                txt_group_inter_lt16: 6,
+                txt_group_inter_ge16: 6,
                 txt_satd_th: 20,
+                txt_satd_th_inter: 20,
                 txt_rate_th: 250,
                 txs_max_sq: 2,
                 txs_max_nsq: 2,
@@ -1175,7 +1226,11 @@ impl FunnelCfg {
                 mds2_band_cnt: 10,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
+                // allintra txt_level 3's inter row (case 3): 6/6, satd 15.
+                txt_group_inter_lt16: 6,
+                txt_group_inter_ge16: 6,
                 txt_satd_th: 15,
+                txt_satd_th_inter: 15,
                 txt_rate_th: 250,
                 ind_uv_mds3: true,
                 mds1_rank_factor: 0,
@@ -1197,7 +1252,11 @@ impl FunnelCfg {
                 angular_level: 2,
                 txt_group_lt16: 6,
                 txt_group_ge16: 6,
+                // allintra txt_level 3's inter row (case 3): 6/6, satd 15.
+                txt_group_inter_lt16: 6,
+                txt_group_inter_ge16: 6,
                 txt_satd_th: 15,
+                txt_satd_th_inter: 15,
                 txt_rate_th: 250,
                 ind_uv_mds3: true,
                 edge_filter: true,
@@ -1227,6 +1286,10 @@ impl FunnelCfg {
                 coeff_rate_est_lvl: 2,
                 txt_group_lt16: 3,
                 txt_group_ge16: 2,
+                // allintra txt_level 10's inter row (case 10): 2/1, satd 5.
+                txt_group_inter_lt16: 2,
+                txt_group_inter_ge16: 1,
+                txt_satd_th_inter: 5,
                 txt_rate_th: 50,
                 cfl_enabled: false,
                 ..m6_tail
@@ -1261,6 +1324,10 @@ impl FunnelCfg {
                 coeff_rate_est_lvl: 2,
                 txt_group_lt16: 3,
                 txt_group_ge16: 2,
+                // allintra txt_level 10's inter row (case 10): 2/1, satd 5.
+                txt_group_inter_lt16: 2,
+                txt_group_inter_ge16: 1,
+                txt_satd_th_inter: 5,
                 txt_rate_th: 50,
                 cfl_enabled: false,
                 ..m6_tail
@@ -1307,6 +1374,12 @@ impl FunnelCfg {
                 coeff_rate_est_lvl: 0,
                 dc_only_gate: true,
                 txt_on: false,
+                // allintra txt_level 0's inter row (case 0): the search is
+                // off, so these are dead — baked to C's written values so the
+                // flattening pin can compare them anyway.
+                txt_group_inter_lt16: 1,
+                txt_group_inter_ge16: 1,
+                txt_satd_th_inter: 0,
                 cfl_enabled: false,
                 ..m6_tail
             },
@@ -1325,10 +1398,13 @@ impl FunnelCfg {
         // (enc_mode_config.c:8156): `enc_mode <= ENC_M7 -> 1 else 2`, on
         // the still arm's M9-clamped enc_mode. The video arm's M1
         // boundary is stamped by `encdec_arm::apply`.
-        cfg.skip_sub_depth = crate::port_enc_mode_config::encdec::set_skip_sub_depth_ctrls(
-            if preset.min(9) <= 7 { 1 } else { 2 },
-        )
-        .expect("levels 1/2 are in-domain");
+        cfg.skip_sub_depth =
+            crate::port_enc_mode_config::encdec::set_skip_sub_depth_ctrls(if preset.min(9) <= 7 {
+                1
+            } else {
+                2
+            })
+            .expect("levels 1/2 are in-domain");
         cfg
     }
 

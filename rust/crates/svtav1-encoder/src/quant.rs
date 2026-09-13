@@ -937,12 +937,11 @@ pub const PLANE_RD_MULT: [[[i64; 2]; 2]; 2] = [
 
 /// Look up [`PLANE_RD_MULT`]. `allintra_rd_mult` is C's `allintra || rtc`.
 ///
-/// `is_inter` is a real axis of C's table and is threaded rather than folded
-/// away, but every call site in this port passes `false` today: the pipeline
-/// refuses inter frames at its entry guard (`pipeline.rs`), so no inter block
-/// is ever coded and the `is_inter = true` rows are unreachable. They are
-/// ported so the inter campaign inherits the right numbers instead of
-/// rediscovering them.
+/// `is_inter` is a real axis of C's table — `pred_mode >= NEARESTMV`
+/// (full_loop.c `svt_av1_optimize_b`), so IntraBC (mode DC_PRED) counts as
+/// INTRA here even though it is inter-classified for the ext-tx set and the
+/// tx-type rate rows. Real inter blocks reached the funnel's `tx_unit`
+/// RDOQ in the inter campaign; the still/pack paths keep `false`.
 pub fn plane_rd_mult(allintra_rd_mult: bool, is_inter: bool, plane_type: usize) -> i64 {
     PLANE_RD_MULT[usize::from(allintra_rd_mult)][usize::from(is_inter)][plane_type & 1]
 }
@@ -967,10 +966,13 @@ pub fn rdoq_rdmult(lambda: u32, plane_type: usize) -> i64 {
 /// Same allintra baking as [`rdoq_rdmult`] — read its note before using this
 /// on a video frame.
 pub fn rdoq_rdmult_sharp(lambda: u32, plane_type: usize, sharpness: i8, light_rdoq: bool) -> i64 {
-    rdoq_rdmult_full(lambda, plane_type, sharpness, light_rdoq, false, true)
+    rdoq_rdmult_full(
+        lambda, plane_type, sharpness, light_rdoq, false, true, false,
+    )
 }
 
 /// Full form incl. the sharp-tx `rweight = 0` path (C full_loop.c:1075).
+#[allow(clippy::too_many_arguments)]
 pub fn rdoq_rdmult_full(
     lambda: u32,
     plane_type: usize,
@@ -980,6 +982,10 @@ pub fn rdoq_rdmult_full(
     // C `scs->allintra || scs->static_config.rtc` — selects the first index
     // of `PLANE_RD_MULT`. FALSE on a video-mode frame.
     allintra_rd_mult: bool,
+    // C `pred_mode >= NEARESTMV` — selects the second index of
+    // `PLANE_RD_MULT`. Real inter blocks only: IntraBC (mode DC_PRED) is
+    // intra on THIS axis (see `plane_rd_mult`'s doc).
+    is_inter: bool,
 ) -> i64 {
     let sharpness_val = i64::from(sharpness).clamp(0, 7);
     let rshift = sharpness_val.max(2) as u32;
@@ -990,9 +996,7 @@ pub fn rdoq_rdmult_full(
     } else {
         100
     };
-    // `is_inter` is false at every reachable call site (the port codes no
-    // inter blocks — see `plane_rd_mult`'s doc).
-    let prm = plane_rd_mult(allintra_rd_mult, false, plane_type);
+    let prm = plane_rd_mult(allintra_rd_mult, is_inter, plane_type);
     ((lambda as i64 * prm * rweight) / 100 + 2) >> rshift
 }
 
@@ -1883,6 +1887,9 @@ pub fn quantize_inv_quantize_still(
                 light_rdoq,
                 cfg.sharp_tx_active && plane_type == 0,
                 cfg.allintra_rd_mult,
+                // Still/pack-path quantizer — inter blocks are coded by
+                // the funnel's `tx_unit`, which passes the real axis.
+                false,
             ),
             sharpness_flag: cfg.sharp_tx_active && plane_type == 0,
             iwt: qm.map(|(_, iwt)| iwt),
@@ -2021,13 +2028,34 @@ mod tests {
         assert_eq!(plane_rd_mult(true, true, 1), 10);
         // The rdmult formula reads the arm: same lambda, chroma, both arms.
         // (248207 * 13 + 2) >> 2 = 806673; (248207 * 20 + 2) >> 2 = 1241035.
-        assert_eq!(rdoq_rdmult_full(248207, 1, 0, false, false, true), 806673);
-        assert_eq!(rdoq_rdmult_full(248207, 1, 0, false, false, false), 1241035);
+        assert_eq!(
+            rdoq_rdmult_full(248207, 1, 0, false, false, true, false),
+            806673
+        );
+        assert_eq!(
+            rdoq_rdmult_full(248207, 1, 0, false, false, false, false),
+            1241035
+        );
+        // The is_inter axis: video intra luma 17 vs inter luma 16
+        // (C `pred_mode >= NEARESTMV`). (248207 * 16 + 2) >> 2 = 992828.
+        assert_eq!(
+            rdoq_rdmult_full(248207, 0, 0, false, false, false, true),
+            992828
+        );
+        assert_eq!(
+            rdoq_rdmult_full(248207, 0, 0, false, false, false, false),
+            1054880
+        );
+        // Chroma is inter-axis-invariant (20 on both video rows).
+        assert_eq!(
+            rdoq_rdmult_full(248207, 1, 0, false, false, false, true),
+            rdoq_rdmult_full(248207, 1, 0, false, false, false, false)
+        );
         // Luma is arm-invariant — the reason the video-arm defect showed up
         // as a chroma-only divergence.
         assert_eq!(
-            rdoq_rdmult_full(248207, 0, 0, false, false, true),
-            rdoq_rdmult_full(248207, 0, 0, false, false, false)
+            rdoq_rdmult_full(248207, 0, 0, false, false, true, false),
+            rdoq_rdmult_full(248207, 0, 0, false, false, false, false)
         );
     }
 

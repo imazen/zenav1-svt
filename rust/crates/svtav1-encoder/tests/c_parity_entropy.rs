@@ -549,11 +549,7 @@ fn coeff_c_levels_and_contexts_match_c() {
                 let written = stride * height;
                 let mut c_buf = vec![0u8; coeff_c::TX_PAD_2D];
                 cref::txb_init_levels(&coeffs, width, height, &mut c_buf[..]);
-                assert_eq!(
-                    &levels[..written],
-                    &c_buf[..written],
-                    "levels ts={ts}"
-                );
+                assert_eq!(&levels[..written], &c_buf[..written], "levels ts={ts}");
 
                 // Scan + eob from the level map.
                 let scan = svtav1_encoder::entropy::scan_tables::scan(
@@ -575,7 +571,14 @@ fn coeff_c_levels_and_contexts_match_c() {
                 coeff_c::get_nz_map_contexts(levels, scan, eob, ts, tx_class, &mut rust_ctx);
                 let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
                 let mut c_ctx = [0i8; 32 * 32];
-                cref::get_nz_map_contexts(&c_buf[..], &c_scan, eob as u16, ts, tx_class, &mut c_ctx);
+                cref::get_nz_map_contexts(
+                    &c_buf[..],
+                    &c_scan,
+                    eob as u16,
+                    ts,
+                    tx_class,
+                    &mut c_ctx,
+                );
                 // Compared at the scan positions — the bytes `_c` defines and
                 // the only ones any caller reads. Non-scan positions are
                 // tier-dependent (raster values on the x86 arm, untouched on
@@ -673,8 +676,7 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
                 rust_buf[..coeff_c::LEVELS_TAIL].fill(0xFF);
                 rust_buf[coeff_c::LEVELS_TAIL..].fill(0x77);
                 {
-                    let levels =
-                        coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
+                    let levels = coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
                     assert!(
                         levels[height * stride..].iter().all(|&b| b == 0x77),
                         "fill wrote into the permanent tail: ts={ts} w={width} h={height}"
@@ -706,7 +708,14 @@ fn coeff_c_txb_init_levels_partial_zero_no_stale_reads() {
                 coeff_c::get_nz_map_contexts(levels, scan, eob, ts, tx_class, &mut rust_ctx);
                 let c_scan: Vec<i16> = scan.iter().map(|&v| v as i16).collect();
                 let mut c_ctx = [0i8; 32 * 32];
-                cref::get_nz_map_contexts(&c_buf[..], &c_scan, eob as u16, ts, tx_class, &mut c_ctx);
+                cref::get_nz_map_contexts(
+                    &c_buf[..],
+                    &c_scan,
+                    eob as u16,
+                    ts,
+                    tx_class,
+                    &mut c_ctx,
+                );
                 // Scan positions: identical to `_c` regardless of dispatch
                 // tier (the bytes every caller reads).
                 for &pos in scan[..eob].iter() {
@@ -895,8 +904,7 @@ fn nz_map_contexts_simd_matches_c() {
 
                 // Level maps: port (body-anchored sub-slice) and C.
                 let mut rust_buf = vec![0u8; coeff_c::LEVELS_SCRATCH_LEN];
-                let levels: &[u8] =
-                    coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
+                let levels: &[u8] = coeff_c::txb_init_levels(&coeffs, width, height, &mut rust_buf);
                 let mut c_levels = vec![0u8; coeff_c::TX_PAD_2D];
                 cref::txb_init_levels(&coeffs, width, height, &mut c_levels[..]);
 

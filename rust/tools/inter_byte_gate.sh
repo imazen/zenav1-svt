@@ -238,6 +238,10 @@ PASS_CELLS=(
     "diag 72 72 55 6 2 3"
     "diag 72 72 55 8 2 3"
     "diag 128 128 20 6 2 3"
+    # Promoted by the PD0_LVL_5 inter-arm wiring (real inter candidate eval +
+    # the per-SB sig_deriv_enc_dec_pd0 ladder: chained md_rate_est_ctx rates,
+    # accurate_part_ctx, subres step). Frame 1 went 26 B -> C's 25 B.
+    "diag 128 128 20 8 2 3"
     "diag 128 128 40 6 2 3"
     "diag 128 128 40 8 2 3"
     "diag 128 128 55 6 2 3"
@@ -266,6 +270,31 @@ PASS_CELLS=(
     "screen 128 128 40 8 2 3"
     "screen 128 128 55 6 2 3"
     "screen 128 128 55 8 2 3"
+    # ------------------------------------------------------------------
+    # PRESET 10 — the first cell this gate has above p8, added 2026-09-05.
+    # It witnesses THREE separate inter-arm ports, each of which was a live
+    # divergence until measured against C's own dumps on this exact cell:
+    #
+    #   * the INTER twins of `set_txt_controls` — `txt_group_inter_*` and
+    #     `satd_early_exit_th_inter`. C iterates only 2 transform groups on a
+    #     >=16x16 inter leaf at txt_level 9 and gates IDTX on a 32x32 at
+    #     level 7; the port applied the INTRA rows and committed transform
+    #     types C never evaluates.
+    #   * `eliminate_candidate_based_on_pme_me_results` —
+    #     `min(md_me_dist, md_pme_dist) < dc_only_th * area` collapses the
+    #     inter-frame intra candidate set to DC_PRED. The port's `dc_only`
+    #     covered only `is_dc_only_safe` (dead at intra_level 6), so a SMOOTH
+    #     candidate C never injects won a leaf at (0,96).
+    #   * `frame_is_leaf` vs `is_highest_layer` — `set_cand_reduction_ctrls`'s
+    #     regular arm reads `is_not_last_layer = !frame_is_leaf` =
+    #     `update_type != LF_UPDATE` (enc_mode_config.c:4100), NOT the
+    #     `!is_highest_layer` `:8912` uses. On a flat GOP the two disagree, so
+    #     `dc_only_th` must be 200 where the wrong predicate produced 10.
+    #
+    # Plus the rdmult inter axis (`plane_rd_mult[0][1][0] = 16`, not the
+    # intra 17 the port passed to `optimize_b` — a 17/16 rate over-price that
+    # dropped sparse tail coefficients C keeps).
+    "gradient 104 104 32 10 2 3"
 )
 # Read below as `${OPEN_CELLS[@]+"${OPEN_CELLS[@]}"}` — see the same note in
 # `inter_decode_gate.sh`: on bash < 4.4 (`/bin/bash` on macOS is 3.2.57)
@@ -282,16 +311,10 @@ PASS_CELLS=(
 # "open ... known" through the whole defect. One per panicking content class
 # (gradient's six 72x72 cells never panicked).
 OPEN_CELLS=(
-    # ONE cell. The three this list carried on 2026-09-03 were the two 72x72
-    # q55 partial-superblock cells and this one; the NIC CLASS prunes
-    # (§1z33) promoted both 72x72 cells and left this one at exactly its old
-    # count, which is the honest reading of a fix that closed one mechanism
-    # and not this cell's.
-    #
-    # This one is a FULL superblock (128x128) at the LOWEST qp of the sweep,
-    # so it shares neither the partial-SB edge nor the q55 threshold scaling
-    # the promoted pair turned on.
-    "diag 128 128 20 8 2 3"   # frame 1 26 B vs C's 25
+    # EMPTY as of the PD0_LVL_5 inter-arm wiring — the last cell
+    # (`diag 128 128 20 8`) promoted into PASS_CELLS. Kept as an empty array
+    # (see the bash-3.2 `${arr[@]+...}` note above) so the next frontier cell
+    # lands here rather than being hand-edited into the pass list.
 )
 
 if [[ ${#PASS_CELLS[@]} -eq 0 ]]; then

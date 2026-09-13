@@ -231,11 +231,19 @@ pub struct MrpCtrls {
     pub flat_max_refs: u8,
     /// HME L0 MRP detector threshold (percent). 0 disables the prune.
     pub early_hme_l0_prune_th: u16,
+    /// C `mrp_ctrls.only_l_bwd` — restrict bipred pairs to (L0,BWD).
+    pub only_l_bwd: u8,
+    /// C `mrp_ctrls.pme_ref0_only` — PME searches ref 0 only.
+    pub pme_ref0_only: u8,
+    /// C `mrp_ctrls.use_best_references` — the best-reference selection level
+    /// `get_enable_use_best_me` reads.
+    pub use_best_references: u8,
 }
 
 impl Default for MrpCtrls {
-    /// Not a C default — C fills this per preset in `enc_mode_config.c`. This
-    /// is the neutral "no caps" shape the unit tests start from.
+    /// Not a C default — C fills this per preset in `set_mrp_ctrl`
+    /// (`enc_handle.c:3574`). This is the neutral "no caps" shape the unit
+    /// tests start from.
     fn default() -> Self {
         Self {
             referencing_scheme: 1,
@@ -249,8 +257,275 @@ impl Default for MrpCtrls {
             ld_reduce_ref_buffs: 0,
             flat_max_refs: 4,
             early_hme_l0_prune_th: 0,
+            only_l_bwd: 0,
+            pme_ref0_only: 0,
+            use_best_references: 0,
         }
     }
+}
+
+/// C `set_mrp_ctrl_with_level` (`enc_handle.c:3362-3569`) — the twelve-row MRP
+/// table, the LOW_DELAY+CBR list-1 disable, and the LOW_DELAY
+/// `flat_max_refs`/`ld_reduce_ref_buffs` derivations.
+///
+/// The row contents are transcribed literally. The counts are what
+/// [`set_ref_list_counts`]/`update_count_try` cap against: at level 0 both
+/// list-1 caps are **0**, which is what makes an M10 low-delay frame search
+/// list 0 only in `me_process` — not a dedup outcome.
+fn mrp_ctrls_with_level(level: u8) -> MrpCtrls {
+    let m = match level {
+        0 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 1,
+            base_ref_list1_count: 0,
+            non_base_ref_list0_count: 1,
+            non_base_ref_list1_count: 0,
+            more_5l_refs: 0,
+            safe_limit_nref: 0,
+            safe_limit_zz_th: 0,
+            only_l_bwd: 0,
+            pme_ref0_only: 0,
+            use_best_references: 0,
+            early_hme_l0_prune_th: 0,
+            ..Default::default()
+        },
+        1 => MrpCtrls {
+            referencing_scheme: 1,
+            base_ref_list0_count: 4,
+            base_ref_list1_count: 3,
+            non_base_ref_list0_count: 4,
+            non_base_ref_list1_count: 3,
+            more_5l_refs: 1,
+            ..Default::default()
+        },
+        2 => MrpCtrls {
+            referencing_scheme: 1,
+            base_ref_list0_count: 4,
+            base_ref_list1_count: 3,
+            non_base_ref_list0_count: 4,
+            non_base_ref_list1_count: 3,
+            more_5l_refs: 1,
+            only_l_bwd: 1,
+            ..Default::default()
+        },
+        3 => MrpCtrls {
+            referencing_scheme: 1,
+            base_ref_list0_count: 4,
+            base_ref_list1_count: 3,
+            non_base_ref_list0_count: 4,
+            non_base_ref_list1_count: 3,
+            more_5l_refs: 1,
+            only_l_bwd: 1,
+            use_best_references: 2,
+            ..Default::default()
+        },
+        4 => MrpCtrls {
+            referencing_scheme: 1,
+            base_ref_list0_count: 4,
+            base_ref_list1_count: 3,
+            non_base_ref_list0_count: 4,
+            non_base_ref_list1_count: 3,
+            more_5l_refs: 1,
+            safe_limit_nref: 1,
+            safe_limit_zz_th: 60000,
+            only_l_bwd: 1,
+            pme_ref0_only: 1,
+            use_best_references: 3,
+            ..Default::default()
+        },
+        5 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 4,
+            base_ref_list1_count: 3,
+            non_base_ref_list0_count: 4,
+            non_base_ref_list1_count: 3,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60000,
+            only_l_bwd: 1,
+            pme_ref0_only: 1,
+            use_best_references: 3,
+            ..Default::default()
+        },
+        6 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 3,
+            base_ref_list1_count: 2,
+            non_base_ref_list0_count: 3,
+            non_base_ref_list1_count: 2,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60000,
+            only_l_bwd: 1,
+            pme_ref0_only: 1,
+            use_best_references: 3,
+            early_hme_l0_prune_th: 170,
+            ..Default::default()
+        },
+        7 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 3,
+            base_ref_list1_count: 2,
+            non_base_ref_list0_count: 3,
+            non_base_ref_list1_count: 2,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60000,
+            only_l_bwd: 1,
+            pme_ref0_only: 1,
+            use_best_references: 3,
+            early_hme_l0_prune_th: 150,
+            ..Default::default()
+        },
+        8 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 3,
+            base_ref_list1_count: 2,
+            non_base_ref_list0_count: 2,
+            non_base_ref_list1_count: 2,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60000,
+            only_l_bwd: 1,
+            pme_ref0_only: 1,
+            use_best_references: 3,
+            ..Default::default()
+        },
+        9 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 3,
+            base_ref_list1_count: 2,
+            non_base_ref_list0_count: 1,
+            non_base_ref_list1_count: 1,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60000,
+            only_l_bwd: 1,
+            pme_ref0_only: 1,
+            use_best_references: 3,
+            early_hme_l0_prune_th: 150,
+            ..Default::default()
+        },
+        10 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 2,
+            base_ref_list1_count: 2,
+            non_base_ref_list0_count: 1,
+            non_base_ref_list1_count: 1,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60000,
+            only_l_bwd: 1,
+            pme_ref0_only: 1,
+            use_best_references: 3,
+            ..Default::default()
+        },
+        11 => MrpCtrls {
+            referencing_scheme: 0,
+            base_ref_list0_count: 1,
+            base_ref_list1_count: 1,
+            non_base_ref_list0_count: 1,
+            non_base_ref_list1_count: 1,
+            ..Default::default()
+        },
+        other => panic!("set_mrp_ctrl_with_level: level {other} outside 0..=11 (C asserts)"),
+    };
+    m
+}
+
+/// C `set_mrp_ctrl` (`enc_handle.c:3574-3613`) — the `enc_mode`/`rtc`/
+/// `hierarchical_levels`/`pred_structure`/`encoder_bit_depth` cascade to an
+/// `mrp_level`, then [`mrp_ctrls_with_level`], then the two LOW_DELAY
+/// post-passes (`enc_handle.c:3538-3568` — hoisted into this function in C).
+///
+/// `enc_mode` is C's `scs->static_config.enc_mode` — the CONFIGURED preset,
+/// not the per-frame arm clamp. The caps matter even when the DPB holds a
+/// single distinct POC: `set_ref_list_counts` counts list 1 as 1 whenever the
+/// `j + 1 > ref_list0_count` guard skips the BWD duplicate check, and the
+/// level-0 row's zero list-1 cap is the only thing that then removes it.
+#[must_use]
+pub fn set_mrp_ctrl(
+    enc_mode: i8,
+    rtc: bool,
+    hierarchical_levels: u8,
+    pred_structure: PredStructure,
+    eight_bit: bool,
+    rate_control_mode: RcMode,
+) -> MrpCtrls {
+    use crate::port_enc_mode_config::enc_mode::{M8, M9, M10, MR};
+    let level = if rtc {
+        if hierarchical_levels == 0 {
+            if enc_mode <= M8 { 6 } else { 0 }
+        } else if enc_mode <= M9 {
+            6
+        } else if enc_mode <= M10 {
+            9
+        } else {
+            0
+        }
+    } else if enc_mode <= MR {
+        1
+    } else if enc_mode <= 2 {
+        2
+    } else if enc_mode <= 4 {
+        4
+    } else if enc_mode <= M8 {
+        6
+    } else if enc_mode <= M9 {
+        if pred_structure == PredStructure::RandomAccess {
+            7
+        } else {
+            9
+        }
+    } else if eight_bit {
+        if pred_structure == PredStructure::RandomAccess {
+            11
+        } else {
+            0
+        }
+    } else {
+        if pred_structure == PredStructure::RandomAccess {
+            7
+        } else {
+            0
+        }
+    };
+    let mut m = mrp_ctrls_with_level(level);
+    // For low delay CBR mode, list1 references are not used
+    // (enc_handle.c:3538-3550).
+    if pred_structure == PredStructure::LowDelay && rate_control_mode == RcMode::Cbr {
+        m.base_ref_list1_count = 0;
+        m.non_base_ref_list1_count = 0;
+        if rtc && hierarchical_levels == 0 {
+            m.referencing_scheme = 0;
+            m.more_5l_refs = 0;
+            m.safe_limit_nref = 0;
+            m.only_l_bwd = 0;
+            m.pme_ref0_only = 0;
+            m.use_best_references = 0;
+        }
+    }
+    if pred_structure == PredStructure::LowDelay {
+        if rtc && hierarchical_levels == 0 {
+            m.flat_max_refs = m
+                .base_ref_list0_count
+                .max(m.base_ref_list1_count)
+                .max(m.non_base_ref_list0_count)
+                .max(m.non_base_ref_list1_count);
+        }
+        m.ld_reduce_ref_buffs = if m.base_ref_list0_count <= 1
+            && m.base_ref_list1_count <= 1
+            && m.non_base_ref_list0_count <= 1
+            && m.non_base_ref_list1_count <= 1
+        {
+            2
+        } else if m.base_ref_list0_count <= 2
+            && m.base_ref_list1_count <= 2
+            && m.non_base_ref_list0_count <= 2
+            && m.non_base_ref_list1_count <= 2
+        {
+            1
+        } else {
+            0
+        };
+    } else {
+        m.ld_reduce_ref_buffs = 0;
+    }
+    m
 }
 
 /// The sequence-level inputs the picture-decision arms read.
@@ -399,6 +674,19 @@ pub struct PicParams {
     /// C `pcs->dpb_order_hint[REF_FRAMES]` — the per-slot order hints an
     /// error-resilient frame writes in its header.
     pub dpb_order_hint: [u32; REF_FRAMES],
+    /// The shadow DPB exactly as `update_ref_poc_array` saw it — snapshotted
+    /// inside [`picture_decision_per_picture`] between [`generate_rps_info`]
+    /// and [`update_dpb`].
+    ///
+    /// The bind-time reference queue MUST be built from this snapshot, not
+    /// from `ctx.dpb` at bind time: `update_dpb` has already applied THIS
+    /// picture's `refresh_frame_mask`, and masks like
+    /// `ld_reduce_ref_buffs == 2`'s `0xfd` overwrite the slots the picture's
+    /// own references live in — so the post-refresh DPB no longer names them.
+    /// C's `ref_pic_list` is the picture manager's own list and outlives the
+    /// shadow-DPB refresh; this snapshot is that list's contents for every
+    /// POC `ref_poc_array` can name.
+    pub ref_queue_dpb: [DpbEntry; REF_FRAMES],
 }
 
 impl Default for PicParams {
@@ -447,6 +735,7 @@ impl Default for PicParams {
             sframe_qp_offset: 0,
             sframe_ref_pruned: false,
             dpb_order_hint: [0; REF_FRAMES],
+            ref_queue_dpb: [DpbEntry::default(); REF_FRAMES],
         }
     }
 }
@@ -653,6 +942,17 @@ pub fn is_highest_layer(temporal_layer_index: u8, hierarchical_levels: u8) -> bo
 pub fn is_incomp_mg_frame(pic: &PicParams, seq: &SeqPicParams) -> bool {
     pic.pred_struct_type == PredStructure::LowDelay
         && seq.pred_structure == PredStructure::RandomAccess
+}
+
+/// C `frame_is_leaf` (`enc_mode_config.h:111-116`): `update_type ==
+/// LF_UPDATE`. NOT a paraphrase of `is_highest_layer` — on a flat GOP C
+/// forces `is_highest_layer` false for every picture (`pd_process.c:5560`)
+/// while every non-key frame is still `LF_UPDATE`, so `!frame_is_leaf` and
+/// `!is_highest_layer` DISAGREE there. `set_cand_reduction_ctrls`'s regular
+/// arm reads this one (`enc_mode_config.c:4100`); `:8912` reads the other.
+#[must_use]
+pub fn frame_is_leaf(update_type: FrameUpdateType) -> bool {
+    update_type == FrameUpdateType::Lf
 }
 
 /// C `frame_is_kf_gf_arf` / `frame_is_boosted` (`enc_mode_config.h:100-110`).
@@ -1796,6 +2096,20 @@ pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicD
 
     update_count_try(pic, seq);
 
+    #[cfg(feature = "std")]
+    if std::env::var_os("SVTAV1_RPSDBG").is_some() {
+        eprintln!(
+            "RPSDBG poc={} l0c={} l1c={} l0t={} l1t={} dpb={:?} pocs={:?}",
+            pic.picture_number,
+            pic.ref_list0_count,
+            pic.ref_list1_count,
+            pic.ref_list0_count_try,
+            pic.ref_list1_count_try,
+            pic.rps.ref_dpb_index,
+            pic.rps.ref_poc_array,
+        );
+    }
+
     if ctx.transition_detected == 1 && pic.temporal_layer_index == 0 {
         pic.transition_present = 1;
         ctx.transition_detected = 0;
@@ -1814,6 +2128,16 @@ pub fn init_pic_settings(pic: &mut PicParams, seq: &SeqPicParams, ctx: &mut PicD
     let (arr, tot) = set_all_ref_frame_type(pic);
     pic.ref_frame_type_arr = arr;
     pic.tot_ref_frame_types = tot;
+
+    // C `send_picture_out` (`pd_process.c:5132`) runs the reference-count
+    // prunes at the END of pd_process, after `set_all_ref_frame_type`.
+    // `hme_dist` is `None`: the RTC early-HME prune needs
+    // `mrp_detector_hme_level0` on downsampled refs, and `seq.rtc` is never
+    // set here anyway. `similar_brightness_refs` is `false`: the
+    // `avg_luma` fields it compares are not carried on the port's PA
+    // pictures, and its only gate (`safe_limit_nref == 2 && hier > 0 &&
+    // leaf`) cannot fire on the flat GOP this drives.
+    send_picture_out_ref_counts(pic, seq, None, false);
 }
 
 /// C `MI_SIZE_LOG2`.
@@ -1851,6 +2175,9 @@ pub fn picture_decision_per_picture(
 ) -> Result<(), RpsError> {
     set_gf_group_param(pic);
     generate_rps_info(pic, seq, ctx, pic_idx, mg_idx)?;
+    // Snapshot BEFORE `update_dpb` applies this picture's own refresh mask —
+    // see [`PicParams::ref_queue_dpb`].
+    pic.ref_queue_dpb = ctx.dpb;
     update_dpb(pic, ctx);
     init_pic_settings(pic, seq, ctx);
     Ok(())

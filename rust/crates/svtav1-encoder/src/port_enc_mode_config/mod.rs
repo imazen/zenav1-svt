@@ -112,6 +112,11 @@ pub enum InputCoeffLvl {
     Normal = 2,
     /// `HIGH_LVL`
     High = 3,
+    /// `INVALID_LVL = ~0` — what `pcs->coeff_lvl` holds on a video I-slice
+    /// (`md_config_process.c:898`). Never equal to a named level, so every
+    /// `if coeff_lvl == X` ladder takes its `else` arm — which is NOT the
+    /// `NORMAL_LVL` arm in `set_pic_pd0_lvl_default`.
+    Invalid = u8::MAX,
 }
 
 /// C `EncMode` values used as `<=` bounds. `ENC_MR` is `-1`.

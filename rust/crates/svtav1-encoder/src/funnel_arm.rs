@@ -67,15 +67,14 @@ pub(crate) fn txt_level(arm: ScArm, enc_mode: i8, is_base: bool) -> u8 {
     }
 }
 
-/// `svt_aom_set_txt_controls` (`enc_mode_config.c:3894`), restricted to the
-/// four values `FunnelCfg` carries:
-/// `(enabled, txt_group_intra_lt_16x16, txt_group_intra_gt_eq_16x16,
-/// satd_early_exit_th_intra, txt_rate_cost_th)`.
+/// `svt_aom_set_txt_controls` (`enc_mode_config.c:3894`) as
+/// `(enabled, txt_group_intra_lt, txt_group_intra_ge, txt_group_inter_lt,
+/// txt_group_inter_ge, satd_early_exit_th_intra, satd_early_exit_th_inter,
+/// txt_rate_cost_th)`.
 ///
-/// The INTER twins (`txt_group_inter_*`, `satd_early_exit_th_inter`) are not
-/// returned: `FunnelCfg` has no field for them, and the port's video envelope
-/// is key-frames-only so no candidate is ever priced through them. When inter
-/// candidates arrive they have to be added here, not re-derived elsewhere.
+/// The two group pairs split at level 6+ and the SATD thresholds at level 5+;
+/// which one a candidate reads is C's `is_intra_mode(mode)` (group counts) and
+/// `is_inter_mode || use_intrabc` (SATD th) — see `leaf_funnel::txt`.
 /// `early_exit_dist_th` / `early_exit_coeff_th` are 0 in every case and
 /// `satd_th_q_weight` is 1 in every case that enables the search, so neither
 /// varies with the level.
@@ -83,19 +82,28 @@ pub(crate) fn txt_level(arm: ScArm, enc_mode: i8, is_base: bool) -> u8 {
 /// # Panics
 /// On a level outside 0..=10 — C `assert(0)`s there.
 #[must_use]
-pub(crate) fn txt_ctrls(level: u8) -> (bool, i32, i32, u64, u64) {
+#[allow(clippy::type_complexity)]
+pub(crate) fn txt_ctrls(level: u8) -> (bool, i32, i32, i32, i32, u64, u64, u64) {
     // MAX_TX_TYPE_GROUP (definitions.h:1076).
     const MAX_GROUP: i32 = 6;
     match level {
-        0 => (false, 1, 1, 0, 0),
-        1 => (true, MAX_GROUP, MAX_GROUP, 0, 0),
-        2 => (true, MAX_GROUP, MAX_GROUP, 20, 250),
-        3 => (true, MAX_GROUP, MAX_GROUP, 15, 250),
-        4 => (true, MAX_GROUP, MAX_GROUP, 10, 250),
-        5 | 6 | 7 => (true, MAX_GROUP, MAX_GROUP, 10, 100),
-        8 => (true, 5, 4, 10, 100),
-        9 => (true, 4, 3, 10, 65),
-        10 => (true, 3, 2, 10, 50),
+        0 => (false, 1, 1, 1, 1, 0, 0, 0),
+        1 => (true, MAX_GROUP, MAX_GROUP, MAX_GROUP, MAX_GROUP, 0, 0, 0),
+        2 => (
+            true, MAX_GROUP, MAX_GROUP, MAX_GROUP, MAX_GROUP, 20, 20, 250,
+        ),
+        3 => (
+            true, MAX_GROUP, MAX_GROUP, MAX_GROUP, MAX_GROUP, 15, 15, 250,
+        ),
+        4 => (
+            true, MAX_GROUP, MAX_GROUP, MAX_GROUP, MAX_GROUP, 10, 10, 250,
+        ),
+        5 => (true, MAX_GROUP, MAX_GROUP, MAX_GROUP, MAX_GROUP, 10, 5, 100),
+        6 => (true, MAX_GROUP, MAX_GROUP, MAX_GROUP, 5, 10, 5, 100),
+        7 => (true, MAX_GROUP, MAX_GROUP, 5, 5, 10, 5, 100),
+        8 => (true, 5, 4, 4, 3, 10, 5, 100),
+        9 => (true, 4, 3, 3, 2, 10, 5, 65),
+        10 => (true, 3, 2, 2, 1, 10, 5, 50),
         _ => panic!("txt level {level} outside C's switch"),
     }
 }
@@ -145,11 +153,15 @@ pub(crate) fn cfl_ctrls(level: u8) -> (bool, Option<(u8, u32)>) {
 /// Stamp both ladders' results onto a [`FunnelCfg`], replacing the values
 /// `FunnelCfg::for_preset` baked from the allintra arm.
 pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8, is_islice: bool, is_base: bool) {
-    let (txt_on, lt16, ge16, satd_th, rate_th) = txt_ctrls(txt_level(arm, enc_mode, is_base));
+    let (txt_on, lt16, ge16, ilt16, ige16, satd_th, satd_th_inter, rate_th) =
+        txt_ctrls(txt_level(arm, enc_mode, is_base));
     cfg.txt_on = txt_on;
     cfg.txt_group_lt16 = lt16;
     cfg.txt_group_ge16 = ge16;
+    cfg.txt_group_inter_lt16 = ilt16;
+    cfg.txt_group_inter_ge16 = ige16;
     cfg.txt_satd_th = satd_th;
+    cfg.txt_satd_th_inter = satd_th_inter;
     cfg.txt_rate_th = rate_th;
 
     let (cfl_on, ths) = cfl_ctrls(cfl_level(arm, enc_mode, is_base, is_islice));
@@ -199,13 +211,19 @@ mod tests {
                     (
                         baked.txt_group_lt16,
                         baked.txt_group_ge16,
+                        baked.txt_group_inter_lt16,
+                        baked.txt_group_inter_ge16,
                         baked.txt_satd_th,
+                        baked.txt_satd_th_inter,
                         baked.txt_rate_th
                     ),
                     (
                         walked.txt_group_lt16,
                         walked.txt_group_ge16,
+                        walked.txt_group_inter_lt16,
+                        walked.txt_group_inter_ge16,
                         walked.txt_satd_th,
+                        walked.txt_satd_th_inter,
                         walked.txt_rate_th
                     ),
                     "allintra txt ladder vs FunnelCfg::for_preset at M{preset}"
@@ -230,7 +248,7 @@ mod tests {
     fn video_m6_key_frame_widens_txt_and_unconditionalizes_cfl() {
         let arm = ScArm::Video { is_islice: true };
         assert_eq!(txt_level(arm, 6, true), 7);
-        assert_eq!(txt_ctrls(7), (true, 6, 6, 10, 100));
+        assert_eq!(txt_ctrls(7), (true, 6, 6, 5, 5, 10, 5, 100));
         assert_eq!(cfl_level(arm, 6, true, true), 2);
         assert_eq!(cfl_ctrls(2), (true, Some((1, 0))));
         // The still path at M6 cuts both tx-type groups and gates CfL on the

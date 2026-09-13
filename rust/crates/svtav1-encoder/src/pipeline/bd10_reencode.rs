@@ -1296,9 +1296,8 @@ fn bd10_reencode_leaf_txs(
     let inter_pred: Option<alloc::vec::Vec<u16>> = d.inter.as_deref().map(|ic| {
         let mut p = alloc::vec![0u16; bw * bh];
         predict_inter_leaf_hbd_any(
-            inter_refs.expect(
-                "an inter leaf reached the bd10 TXS re-encode on a frame with no DPB",
-            ),
+            inter_refs
+                .expect("an inter leaf reached the bd10 TXS re-encode on a frame with no DPB"),
             ic,
             x,
             y,

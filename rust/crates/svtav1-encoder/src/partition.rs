@@ -770,6 +770,36 @@ impl PartitionTree {
             }
         }
     }
+
+    /// C `pcs->sb_intra[sb]` / `pcs->sb_skip[sb]` for the superblock this
+    /// tree codes, as `update_b` accumulates them (coding_loop.c:1606/1643):
+    /// `sb_intra` is 1 when ANY leaf is intra (`!is_inter` — IntraBC codes
+    /// DC_PRED and counts as intra, matching `add_block`), and `sb_skip`
+    /// stays 1 only while EVERY leaf codes no coefficient.
+    ///
+    /// `sb_skip` under-approximates C's `block_has_coeff`: a leaf whose
+    /// `chroma_dec` is `None` gets its UV_DC residuals only in the entropy
+    /// walk, so a luma-zero leaf is counted skip here even where that later
+    /// chroma has a coefficient. `pd0_detector` reads these flags for the
+    /// LEFT and TOP superblocks only — already-coded SBs — so the result is
+    /// exact whenever every leaf's chroma is decided (funnel paths) and a
+    /// strict subset of C's non-skip set otherwise.
+    pub(crate) fn sb_intra_skip(&self) -> (bool, bool) {
+        match self {
+            PartitionTree::Leaf(d) => {
+                let intra = !d.is_inter;
+                let skip = d.eob == 0
+                    && d.chroma_dec
+                        .as_ref()
+                        .is_none_or(|(_, _, u_eob, v_eob, _, _)| *u_eob == 0 && *v_eob == 0);
+                (intra, skip)
+            }
+            PartitionTree::Split { children, .. } => children
+                .iter()
+                .map(PartitionTree::sb_intra_skip)
+                .fold((false, true), |(ai, ask), (i, s)| (ai || i, ask && s)),
+        }
+    }
 }
 
 /// Per-block encoding decision record for bitstream encoding.

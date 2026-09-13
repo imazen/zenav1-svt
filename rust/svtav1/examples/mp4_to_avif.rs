@@ -68,7 +68,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for s in &track.samples {
         let start = usize::try_from(s.offset)?;
         let end = start + usize::try_from(s.size)?;
-        let sample = bytes.get(start..end).ok_or("sample range outside the file")?;
+        let sample = bytes
+            .get(start..end)
+            .ok_or("sample range outside the file")?;
         let mut p = 0usize;
         while p + nal_len_size <= sample.len() {
             let mut len = 0usize;
@@ -76,7 +78,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 len = (len << 8) | usize::from(sample[p]);
                 p += 1;
             }
-            let nal = sample.get(p..p + len).ok_or("NAL length runs past the sample")?;
+            let nal = sample
+                .get(p..p + len)
+                .ok_or("NAL length runs past the sample")?;
             annexb.extend_from_slice(&[0, 0, 0, 1]);
             annexb.extend_from_slice(nal);
             p += len;
@@ -88,7 +92,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // that is not the sample-table order. The last frame has no successor to
     // subtract from, so it reuses the previous gap — what a player does when
     // the track simply ends.
-    let mut pts: Vec<i64> = track.samples.iter().map(|s| s.composition_timestamp).collect();
+    let mut pts: Vec<i64> = track
+        .samples
+        .iter()
+        .map(|s| s.composition_timestamp)
+        .collect();
     pts.sort_unstable();
     let durations: Vec<i64> = (0..pts.len())
         .map(|i| {
@@ -175,12 +183,16 @@ fn parse_avcc(avcc: &[u8]) -> Result<(usize, Vec<u8>), Box<dyn std::error::Error
     let mut out = Vec::new();
     let mut p = 5usize;
     for round in 0..2 {
-        let byte = *avcc.get(p).ok_or("avcC ended before a parameter-set count")?;
+        let byte = *avcc
+            .get(p)
+            .ok_or("avcC ended before a parameter-set count")?;
         let count = usize::from(if round == 0 { byte & 0x1f } else { byte });
         p += 1;
         for _ in 0..count {
             let hi = *avcc.get(p).ok_or("avcC ended mid parameter-set length")?;
-            let lo = *avcc.get(p + 1).ok_or("avcC ended mid parameter-set length")?;
+            let lo = *avcc
+                .get(p + 1)
+                .ok_or("avcC ended mid parameter-set length")?;
             let len = usize::from(u16::from_be_bytes([hi, lo]));
             p += 2;
             let nal = avcc

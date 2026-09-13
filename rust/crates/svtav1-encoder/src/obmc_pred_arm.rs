@@ -88,6 +88,7 @@ struct NeighbourKey {
 /// Grown once, on the first OBMC block a thread sees, to the SUPERBLOCK size —
 /// exactly C's sizing — and reused for the life of the thread. See the module
 /// header for why this shape and not a per-block allocation.
+#[derive(Default)]
 pub(crate) struct ObmcBuffers {
     /// C `ctx->obmc_buff_0` — the ABOVE neighbours' predictions, three planes
     /// back to back at the block's own stride.
@@ -110,21 +111,6 @@ pub(crate) struct ObmcBuffers {
     ready: Option<NeighbourKey>,
     /// The superblock edge this was sized for; a larger one regrows.
     sb_size: usize,
-}
-
-impl Default for ObmcBuffers {
-    fn default() -> Self {
-        Self {
-            buf0: Vec::new(),
-            buf1: Vec::new(),
-            conv: Vec::new(),
-            wsrc: Vec::new(),
-            mask: Vec::new(),
-            weighted: None,
-            ready: None,
-            sb_size: 0,
-        }
-    }
 }
 
 impl ObmcBuffers {

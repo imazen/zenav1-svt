@@ -173,18 +173,24 @@ pub(crate) fn nsq_search_level(arm: ScArm, preset: i8, cli_qp: u32) -> u8 {
     nsq_search_level_with_coeff(arm, preset, cli_qp, crate::quant::CoeffLvl::Normal)
 }
 
+/// The `quant::CoeffLvl` -> `InputCoeffLvl` bridge — the `InputCoeffLvl`
+/// enum carries C's `INVALID_LVL` too, which a derived level never is.
+pub(crate) fn input_coeff_lvl(level: crate::quant::CoeffLvl) -> InputCoeffLvl {
+    match level {
+        crate::quant::CoeffLvl::VLow => InputCoeffLvl::VLow,
+        crate::quant::CoeffLvl::Low => InputCoeffLvl::Low,
+        crate::quant::CoeffLvl::Normal => InputCoeffLvl::Normal,
+        crate::quant::CoeffLvl::High => InputCoeffLvl::High,
+    }
+}
+
 pub(crate) fn nsq_search_level_with_coeff(
     arm: ScArm,
     preset: i8,
     cli_qp: u32,
     coeff_level: crate::quant::CoeffLvl,
 ) -> u8 {
-    let coeff = match coeff_level {
-        crate::quant::CoeffLvl::VLow => InputCoeffLvl::VLow,
-        crate::quant::CoeffLvl::Low => InputCoeffLvl::Low,
-        crate::quant::CoeffLvl::Normal => InputCoeffLvl::Normal,
-        crate::quant::CoeffLvl::High => InputCoeffLvl::High,
-    };
+    let coeff = input_coeff_lvl(coeff_level);
     let m = i8::try_from(preset).unwrap_or(i8::MAX);
     match arm {
         // Research mode reads the actual picture coefficient class here.
@@ -401,7 +407,7 @@ mod tests {
 
 /// The VIDEO arm's PD0 configuration, as
 /// `crate::pd0::pd0_pick_sb_partition_video` takes it:
-/// `(pd0_level, coeff_rate_est_lvl, use_accurate_part_ctx)`.
+/// `(pd0_level, coeff_rate_est_lvl, use_accurate_part_ctx, subres_step)`.
 ///
 /// The FIRST element is a resolved C `Pd0Level` (0..=6), not `pcs->pic_pd0_lvl`
 /// (0..=8) — this function runs the whole chain
@@ -422,6 +428,13 @@ mod tests {
 ///   PD0_LVL_3`, 4 at PD0_LVL_4 and 0 above, raised to `MAX(that,
 ///   pcs->rate_est_level)` when non-zero — and `pcs->rate_est_level` is a flat
 ///   1 on the video arm. `set_rate_est_ctrls` then maps 0 -> 0, 2 -> 1, 4 -> 2.
+///   Sourced from the ported `sig_deriv_enc_dec_pd0` output rather than a
+///   second transcription of the same ladder.
+/// * `subres_step` — `ctx->subres_ctrls.step` from the same call's
+///   `subres_level` ladder (`:7322-7357`): 0 below `PD0_LVL_3` / on partial
+///   SBs / with 4x4 allowed, the `cost_64x64 < compute_subres_th` check at
+///   LVL_3-4, the `disallow_8x8 || depth-removal` test at LVL_5+ on non-leaf
+///   pictures, and a flat 2 at LVL_5+ on a leaf picture.
 /// * `use_accurate_part_ctx` — `enc_mode <= M8` (`:8955` / `:9937`).
 ///
 /// `enc_mode` must already be [`crate::rate_arm::eff_enc_mode`]-clamped.
@@ -432,27 +445,75 @@ mod tests {
 /// `slice_type != I_SLICE`, so on a key frame the picture level IS the
 /// superblock level, and on an inter frame the ladder can step down several
 /// levels before any search runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum VideoPic {
-    /// C `slice_type == I_SLICE`. The detector is a no-op below `PD0_LVL_6`.
-    IntraSlice,
-    /// A non-I slice whose list-0 reference is an I_SLICE — which is every
-    /// inter frame the port's low-delay-P envelope can produce, because the
-    /// only reference is the key frame.
-    ///
-    /// `ref_obj_l0->sb_intra[sb]` is then 1 for EVERY superblock (a key frame
-    /// codes only intra blocks), so `use_ref_info` decides the whole ladder
-    /// and no per-SB ME datum is read — see
-    /// `port_pd0_detector::tests::an_all_intra_l0_reference_walks_every_level_down_to_lvl3`.
-    ///
-    /// NOT COVERED, and it is a real gap rather than an impossibility: an
-    /// inter frame whose reference is itself an inter frame. C reads that
-    /// reference's per-SB `sb_intra` (`coding_loop.c:1606`, set when any block
-    /// in the SB is intra), which this port does not carry on its DPB entry.
-    /// `InterOnInterRef` is deliberately ABSENT from this enum so that adding
-    /// it is a compile error at every call site rather than a silent wrong
-    /// level.
-    InterOnIntraRef,
+///
+/// The frame-level inputs to `pd0_detector` that are not per-superblock data,
+/// bundled so `encode_tile_rows` takes one argument.
+///
+/// `l{0,1}_sb_intra` is `ref_pic_ptr_array[REF_LIST_{0,1}][0]`'s
+/// `EbReferenceObject::sb_intra` — `Some` only while C's three guards admit
+/// the reference (enc_dec_process.c:2144-2168): a nonzero
+/// `ref_list{0,1}_count_try`, a same-size reference
+/// (`svt_aom_is_ref_same_size`, enc_mode_config.c:2857), and
+/// `tmp_layer_idx <= temporal_layer_index`. The CALLER folds all three into
+/// the `Option`, so `None` here is exactly C's `l{0,1}_refs == 0`.
+#[derive(Clone, Copy)]
+pub(crate) struct Pd0DetFrame<'a> {
+    /// C `ppcs->transition_present == 1`.
+    pub transition_present: bool,
+    /// C `!frame_is_leaf(ppcs)` — `ppcs->update_type != LF_UPDATE`
+    /// (enc_mode_config.h:113). TRUE on a KEY frame (`KF_UPDATE` is not a
+    /// leaf), false on a flat low-delay GOP's inter frames — which is why a
+    /// key frame's `PD0_LVL_5` takes the `is_not_last_layer` arm of the
+    /// subres ladder while an inter leaf goes straight to level 2.
+    pub is_not_last_layer: bool,
+    /// C `pcs->ref_intra_percentage` (`get_ref_intra_percentage`,
+    /// rc_process.c:66).
+    pub ref_intra_percentage: u8,
+    /// See the struct comment.
+    pub l0_sb_intra: Option<&'a [u8]>,
+    /// See the struct comment.
+    pub l1_sb_intra: Option<&'a [u8]>,
+}
+
+/// The `svt_aom_sig_deriv_enc_dec_pd0` (enc_mode_config.c:7207) inputs that
+/// [`Pd0SbInput`] does not already carry — everything the per-superblock
+/// `subres_level` ladder and `rate_est_level` derivation read beyond the
+/// detector's own fields.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Pd0SigDerivInput {
+    /// `!frame_is_leaf(ppcs)` — [`Pd0DetFrame::is_not_last_layer`].
+    pub is_not_last_layer: bool,
+    /// `ctx->pic_pred_depth_only` — level-10 depth refinement
+    /// (`PD0_DEPTH_PRED_PART_ONLY`).
+    pub pic_pred_depth_only: bool,
+    /// `ctx->disallow_4x4` as `set_depth_removal_level_controls` left it for
+    /// THIS superblock — it can only set the pic-level flag, never clear it.
+    /// The pic value (`pic_disallow_4x4`) on a key frame, where the
+    /// depth-removal call does not run.
+    pub disallow_4x4: bool,
+    /// `ctx->disallow_8x8` — `svt_aom_get_disallow_8x8_default` on the video
+    /// arm (enc_mode_config.c:7122).
+    pub disallow_8x8: bool,
+    /// `ppcs->b64_geom[ctx->sb_index].is_complete_b64` — measured against the
+    /// ALIGNED frame dims (`b64_geom_init` takes `pcs->aligned_width`,
+    /// pcs.c:1490), NOT the SB-extent-padded canvas.
+    pub b64_is_complete: bool,
+    /// `ctx->depth_removal_ctrls` for this superblock; all-zero on a key
+    /// frame (`set_depth_removal_level_controls` returns `enabled = 0` on an
+    /// I_SLICE, so nothing was accumulated).
+    pub depth_removal: crate::port_enc_mode_config::common::DepthRemovalCtrls,
+    /// `ctx->fast_lambda_md[EB_8_BIT_MD]` — this superblock's
+    /// `av1_lambda_assign_md` output. Consulted only by the
+    /// `pd0_level <= PD0_LVL_4` non-islice arm's `cost_64x64 <
+    /// compute_subres_th` check; a key frame's islice arm never reaches it.
+    pub fast_lambda_8bit: u32,
+    /// `ppcs->me_8x8_distortion[ctx->sb_index]` — read only by the
+    /// `PD0_LVL_6` `parent_cost_bias` arm.
+    pub me_8x8_distortion: u32,
+    /// `ppcs->frm_hdr.quantization_params.base_q_idx` — same.
+    pub base_q_idx: u32,
+    /// `scs->super_block_size`.
+    pub super_block_size: u32,
 }
 
 #[must_use]
@@ -460,17 +521,31 @@ pub(crate) fn video_pd0_params(
     enc_mode: i8,
     cli_qp: u32,
     luma_pixels: usize,
-    pic: VideoPic,
-) -> (u8, u8, bool) {
+    // The frame's `pcs->coeff_lvl` as `crate::quant::derive_inter_coeff_level`
+    // derived it — real only on an INTER frame. On a video I-slice C leaves it
+    // at `INVALID_LVL`, which lands on `set_pic_pd0_lvl_default`'s `else` arms
+    // — NOT the `NORMAL_LVL` arms, so the `VIDEO_ISLICE_COEFF_LVL` stand-in
+    // that is sound in the NSQ ladders is wrong here.
+    coeff_lvl: InputCoeffLvl,
+    sb: &crate::port_pd0_detector::Pd0SbInput,
+    sig: &Pd0SigDerivInput,
+    // `(pd0_level, coeff_rate_est_lvl, use_accurate_part_ctx, subres_step,
+    // parent_cost_bias)` — the last is `ctx->parent_cost_bias`, off 1000
+    // only for the inter PD0_LVL_6 arm that consumes it.
+) -> (u8, u8, bool, u32, u32) {
     let m = enc_mode;
-    let is_islice = pic == VideoPic::IntraSlice;
+    let is_islice = sb.slice_type_is_intra;
     let pic_pd0_lvl = leaf::set_pic_pd0_lvl_default(
         m,
         // Every video picture this port encodes is at temporal_layer_index 0.
         true,
         is_islice,
         false,
-        VIDEO_ISLICE_COEFF_LVL,
+        if is_islice {
+            InputCoeffLvl::Invalid
+        } else {
+            coeff_lvl
+        },
         crate::port_enc_mode_config::ResolutionRange::from_luma_area(
             u32::try_from(luma_pixels).unwrap_or(u32::MAX),
         ),
@@ -496,9 +571,12 @@ pub(crate) fn video_pd0_params(
     // `assert(IMPLIES(I_SLICE, pd0_level < PD0_LVL_6))` (`:2517`) holds
     // BECAUSE of that demote, not because the ladder never assigns the level.
     //
-    // On an inter frame with an all-intra L0 reference the `use_ref_info`
-    // arms walk down before any ME threshold is consulted, which is why no
-    // per-SB input is needed on either arm.
+    // The detector is PER-SUPERBLOCK: `sb` carries this SB's own
+    // `ref_obj->{sb_intra}` view (an all-intra L0 reference — a key frame —
+    // walks `use_ref_info` down before any ME threshold is consulted; an
+    // inter reference demotes only the superblocks that reference
+    // intra-coded ones), its `ppcs->me_*` statistics, and the already-coded
+    // left/top neighbours' `sb_intra`/`sb_skip`.
     //
     // THE RESULT IS A `Pd0Level`, NOT AN `lpd0_lvl`. The two numberings
     // differ above 4 (`lpd0_lvl` 5 AND 6 both mean `PD0_LVL_5`; 7 AND 8 both
@@ -506,43 +584,72 @@ pub(crate) fn video_pd0_params(
     // reads it as the LEVEL.
     let pic_pd0_lvl = {
         let ctrls = crate::port_pd0_detector::pd0_ctrls_for_level(pic_pd0_lvl);
-        crate::port_pd0_detector::pd0_detector(
-            &ctrls,
-            &crate::port_pd0_detector::Pd0SbInput {
-                slice_type_is_intra: is_islice,
-                // C reads `ref_obj_l0->sb_intra[sb]`, which an I_SLICE has no
-                // reference for; `RefSbInfo::default()` is C's `l0_refs == 0`.
-                ref_l0: if is_islice {
-                    crate::port_pd0_detector::RefSbInfo::default()
-                } else {
-                    crate::port_pd0_detector::RefSbInfo { was_intra: Some(1) }
-                },
-                ..crate::port_pd0_detector::Pd0SbInput::default()
-            },
-        ) as u8
+        crate::port_pd0_detector::pd0_detector(&ctrls, sb) as u8
     };
-    let pd0_rate_est_level = if pic_pd0_lvl <= 3 {
-        2
-    } else if pic_pd0_lvl == 4 {
-        4
-    } else {
-        0
-    };
-    // `pcs->rate_est_level` is 1 at every preset on the video arm
-    // (`crate::rate_arm::rate_est_level`), so the MAX only ever raises a 0,
-    // which the `if (rate_est_level)` guard already excludes.
-    let pd0_rate_est_level = if pd0_rate_est_level == 0 {
-        0
-    } else {
-        pd0_rate_est_level.max(1)
-    };
-    let coeff_rate_est_lvl = match pd0_rate_est_level {
-        0 => 0,
-        2 => 1,
-        4 => 2,
-        other => unreachable!("PD0 rate_est_level {other} outside set_rate_est_ctrls' PD0 rows"),
-    };
-    (pic_pd0_lvl, coeff_rate_est_lvl, enc_mode <= 8)
+    // `svt_aom_sig_deriv_enc_dec_pd0` (enc_mode_config.c:7207) — the per-SB
+    // signal ladder C runs right after the detector. Consumed here:
+    // `rate_est.coeff_rate_est_lvl` (PD0's own coeff-rate level, below) and
+    // `subres.step` (the residual sub-sampling step `Pd0Ctx` prices with).
+    // The rest of `Pd0Signals` C stores on the context for PD1 consumers
+    // that are not ported on this path yet.
+    //
+    // `pcs->rate_est_level` is a flat 1 on the video arm
+    // (`crate::rate_arm::rate_est_level`), `pd0_cost_bias_weight` is 0 through
+    // M12 (enc_mode_config.c:9654: `enc_mode <= ENC_M12 ? 0 : 600` — read
+    // only by the LVL_6 `parent_cost_bias` arm this port does not consume),
+    // `rtc_tune`/`allintra` are false on the video arm by definition, and
+    // `hbd_md` never reaches here — a bd10 frame's PD0 is forced to LVL_0 by
+    // `set_pd0_ctrls` before this signal set matters, and the port routes
+    // that arm to `pd0_pick_sb_partition_lvl0` instead.
+    let signals = crate::port_enc_mode_config::pd0::sig_deriv_enc_dec_pd0(
+        crate::port_enc_mode_config::pd0::Pd0Inputs {
+            pd0_level: pic_pd0_lvl,
+            is_islice,
+            allintra: false,
+            rtc_tune: false,
+            is_not_last_layer: sig.is_not_last_layer,
+            enc_mode,
+            transition_present: sb.transition_present,
+            pic_pred_depth_only: sig.pic_pred_depth_only,
+            ctx_hbd_md: false,
+            pcs_hbd_md: false,
+            fast_lambda_8bit: sig.fast_lambda_8bit,
+            fast_lambda_10bit: 0,
+            me_64x64_distortion: sb.me_64x64_distortion,
+            me_8x8_cost_variance: sb.me_8x8_cost_variance,
+            me_8x8_distortion: sig.me_8x8_distortion,
+            base_q_idx: sig.base_q_idx,
+            pd0_cost_bias_weight: if enc_mode > 12 { 600 } else { 0 },
+            rate_est_level: 1,
+            disallow_4x4: sig.disallow_4x4,
+            disallow_8x8: sig.disallow_8x8,
+            depth_removal_enabled: sig.depth_removal.enabled != 0,
+            disallow_below_16x16: sig.depth_removal.disallow_below_16x16 != 0,
+            disallow_below_32x32: sig.depth_removal.disallow_below_32x32 != 0,
+            disallow_below_64x64: sig.depth_removal.disallow_below_64x64 != 0,
+            b64_is_complete: sig.b64_is_complete,
+            super_block_size: sig.super_block_size,
+        },
+    );
+    // `None` is C's `assert(0)` arm — an out-of-domain derived level, which
+    // the in-range `pd0_level` here can never produce (every level 0..=6 maps
+    // inside each table's domain). Fall back to the zero step/level C's
+    // zeroed context would hold rather than panic on a proven-unreachable arm.
+    let (coeff_rate_est_lvl, subres_step, parent_cost_bias) =
+        signals.map_or((0, 0, 1000), |s| {
+            (
+                s.rate_est.coeff_rate_est_lvl,
+                u32::from(s.subres.step),
+                u32::from(s.parent_cost_bias),
+            )
+        });
+    (
+        pic_pd0_lvl,
+        coeff_rate_est_lvl,
+        enc_mode <= 8,
+        subres_step,
+        parent_cost_bias,
+    )
 }
 
 /// The PD0 block-encode model, depth-early-exit threshold and PD0's OWN
@@ -588,16 +695,16 @@ pub(crate) fn video_pd0_params(
 #[must_use]
 pub(crate) fn refined_pd0_model(
     arm: ScArm,
-    enc_mode: i8,
-    cli_qp: u32,
-    luma_pixels: usize,
+    // The RESOLVED per-superblock `Pd0Level` — `set_pic_pd0_lvl_default` ->
+    // `set_pd0_ctrls` -> `pd0_detector`, all run by [`video_pd0_params`]
+    // per superblock because the detector demotes per superblock
+    // (`md_ctx->pd0_ctrls.pd0_level` is per-SB in C, not per picture).
+    pic_pd0_lvl: u8,
     pred_depth_only: bool,
-    pic: VideoPic,
 ) -> (crate::pd0::Pd0Mode, u128, Option<u8>) {
     match arm {
         ScArm::Allintra => (crate::pd0::Pd0Mode::Lvl1, 1000, None),
         ScArm::Video { .. } => {
-            let (pic_pd0_lvl, _, _) = video_pd0_params(enc_mode, cli_qp, luma_pixels, pic);
             // `set_depth_early_exit_ctrls` (enc_mode_config.c:7229-7233).
             let th: u128 = if pic_pd0_lvl <= 1 || pred_depth_only {
                 1000
@@ -624,19 +731,25 @@ pub(crate) fn refined_pd0_model(
 
 #[cfg(test)]
 mod video_pd0_level_tests {
-    use super::{SEQ_QP_MOD, VIDEO_ISLICE_COEFF_LVL, VideoPic, video_pd0_params};
+    use super::{Pd0SigDerivInput, SEQ_QP_MOD, video_pd0_params};
     use crate::port_enc_mode_config::{ResolutionRange, leaf};
+    use crate::port_pd0_detector::Pd0SbInput;
 
     /// The raw ladder value these tests are ABOUT, so a change in
     /// `set_pic_pd0_lvl_default` cannot make them pass vacuously (§5's
     /// positive-control rule: prove the input is what you think it is).
+    ///
+    /// `coeff_lvl` is `Invalid` — the value `pcs->coeff_lvl` really holds on
+    /// a video I-slice (`md_config_process.c:898`), NOT `VIDEO_ISLICE_COEFF_LVL`:
+    /// in this ladder `INVALID_LVL` takes the `else` arms, which are not the
+    /// `NORMAL_LVL` arms.
     fn raw_ladder(enc_mode: i8, cli_qp: u32, luma_pixels: u32) -> u8 {
         leaf::set_pic_pd0_lvl_default(
             enc_mode,
             true,
             true,
             false,
-            VIDEO_ISLICE_COEFF_LVL,
+            crate::port_enc_mode_config::InputCoeffLvl::Invalid,
             ResolutionRange::from_luma_area(luma_pixels),
             cli_qp,
             SEQ_QP_MOD,
@@ -659,18 +772,28 @@ mod video_pd0_level_tests {
     /// byte-identical to C at 45 385 B.
     #[test]
     fn a_key_frame_above_360p_is_demoted_out_of_very_light_pd0() {
-        // Positive control: the ladder really does hand out `lpd0_lvl` 7 here.
-        // M10, R480p (568^2 = 322 624 >= 314 880), NORMAL coeff, CLI qp 32 ->
-        // qp_band 1 -> `ldp0_lvl_offset[1]` = 2 with `seq_qp_mod` 2, so
-        // `MIN(MAX_PD0_LVL, 5 + 2)` = 7. `set_pd0_ctrls` case 7 is
-        // `PD0_LVL_6`.
+        // Positive control for the OTHER side of the resolution class: a
+        // 560^2 key frame at M10/INVALID reaches `lpd0_lvl` 7 (`MIN(7, 5+2)`
+        // on the <=360p `else` arm), which IS `PD0_LVL_6` — the level that
+        // must not survive an I_SLICE.
         assert_eq!(
-            raw_ladder(10, 32, 568 * 568),
+            raw_ladder(10, 32, 560 * 560),
             7,
             "the ladder no longer reaches lpd0_lvl 7 here — this test's premise is gone, not satisfied"
         );
-        let (level, coeff_rate_est_lvl, _) =
-            video_pd0_params(10, 32, 568 * 568, VideoPic::IntraSlice);
+        let (level, coeff_rate_est_lvl, ..) = video_pd0_params(
+            10,
+            32,
+            560 * 560,
+            // `pcs->coeff_lvl` on a video I-slice is INVALID_LVL; the
+            // function resolves that itself, so this argument is inert here.
+            crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+            &Pd0SbInput {
+                slice_type_is_intra: true,
+                ..Pd0SbInput::default()
+            },
+            &Pd0SigDerivInput::default(),
+        );
         // C `pd0_detector` (enc_dec_process.c:2413): VERY_LIGHT_PD0 supports
         // INTER compensation only, so an I_SLICE steps down to `PD0_LVL_5`.
         // That is also what makes C's own closing assert at :2517 hold.
@@ -679,14 +802,23 @@ mod video_pd0_level_tests {
         assert_eq!(coeff_rate_est_lvl, 0);
     }
 
-    /// The other side of the resolution class boundary, so the cell above
-    /// cannot pass by demoting everything: 560^2 = 313 600 < 314 880 is
-    /// R360p, where the M10 ladder gives `lpd0_lvl` 6 — a DIFFERENT number
-    /// that resolves to the same `PD0_LVL_5`, and did so before this fix too.
+    /// The >480p side of the same cell: `INVALID_LVL` takes the M10 ladder's
+    /// `else` arm, `MIN(7, 3+2)` = 5 — a DIFFERENT `lpd0_lvl` that resolves
+    /// to the same `PD0_LVL_5` without needing the demote at all.
     #[test]
-    fn the_360p_side_of_the_boundary_reaches_lvl5_by_a_different_route() {
-        assert_eq!(raw_ladder(10, 32, 560 * 560), 6);
-        let (level, _, _) = video_pd0_params(10, 32, 560 * 560, VideoPic::IntraSlice);
+    fn the_480p_side_of_the_boundary_starts_at_lvl5_directly() {
+        assert_eq!(raw_ladder(10, 32, 568 * 568), 5);
+        let (level, ..) = video_pd0_params(
+            10,
+            32,
+            568 * 568,
+            crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+            &Pd0SbInput {
+                slice_type_is_intra: true,
+                ..Pd0SbInput::default()
+            },
+            &Pd0SigDerivInput::default(),
+        );
         assert_eq!(level, 5);
     }
 
@@ -698,9 +830,37 @@ mod video_pd0_level_tests {
     fn a_key_frame_below_very_light_pd0_keeps_its_picture_level() {
         // M6 at 240p: the flat `3` row of `set_pic_pd0_lvl_default`.
         assert_eq!(raw_ladder(6, 40, 64 * 64), 3);
-        assert_eq!(video_pd0_params(6, 40, 64 * 64, VideoPic::IntraSlice).0, 3);
+        assert_eq!(
+            video_pd0_params(
+                6,
+                40,
+                64 * 64,
+                crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+                &Pd0SbInput {
+                    slice_type_is_intra: true,
+                    ..Pd0SbInput::default()
+                },
+                &Pd0SigDerivInput::default()
+            )
+            .0,
+            3
+        );
         // M8 at 240p, CLI qp 40 -> qp_band 2 -> offset 1: `MIN(8, 3 + 1)` = 4.
         assert_eq!(raw_ladder(8, 40, 64 * 64), 4);
-        assert_eq!(video_pd0_params(8, 40, 64 * 64, VideoPic::IntraSlice).0, 4);
+        assert_eq!(
+            video_pd0_params(
+                8,
+                40,
+                64 * 64,
+                crate::port_enc_mode_config::InputCoeffLvl::Invalid,
+                &Pd0SbInput {
+                    slice_type_is_intra: true,
+                    ..Pd0SbInput::default()
+                },
+                &Pd0SigDerivInput::default()
+            )
+            .0,
+            4
+        );
     }
 }

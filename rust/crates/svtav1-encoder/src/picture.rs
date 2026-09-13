@@ -100,8 +100,23 @@ pub struct DecodedPictureBuffer {
     slots: [Option<alloc::sync::Arc<ReferenceFrame>>; REF_FRAMES],
 }
 
-/// C `scs->border` (`Globals/enc_handle.c:4256`): `BLOCK_SIZE_64 + 4`, the
-/// margin every REFERENCE picture buffer carries.
+/// The border on C's REFERENCE picture buffer — what
+/// `create_ref_buf_descs` passes as `EbPictureBufferDescInitData::border`
+/// (`Globals/enc_handle.c:1212-1217`): `scs->super_block_size + 32`, plus
+/// another `super_block_size` when superres or resize is on. That extra pad
+/// is what the scaled arm of `compute_subpel_params` assumes
+/// (`border_in_pixels = super_block_size * 2 + 32`,
+/// enc_inter_prediction.c:2418).
+///
+/// This is NOT `scs->border` (`BLOCK_SIZE_64 + 4 = 68`,
+/// enc_handle.c:4256). That constant borders INPUT and PA pictures
+/// (enc_handle.c:1102, pcs.c:1248); the picture MC actually indexes —
+/// `EbReferenceObject::reference_picture`, returned by
+/// `svt_aom_get_ref_pic_buffer` — carries the larger `sb_size + 32` pad.
+/// A legal MV reaches `frame + blk + AOM_INTERP_EXTEND + 2` into the
+/// margin (the `clamp_mv_to_umv_border_sb` bound plus `SUBPEL_TAPS/2 - 1`
+/// taps), i.e. 70 px for a 64-tall block — past a 68-pixel border but
+/// inside C's 96.
 ///
 /// It is not decoration. AV1 clamps a motion vector so the predicted block
 /// plus its filter taps stays inside the frame PLUS this margin, and the MC
@@ -114,14 +129,18 @@ pub struct DecodedPictureBuffer {
 /// 128-filled margin the residual is non-zero and C's `skip = 1` is not
 /// reachable, which makes this a MODE-DECISION requirement and not only a
 /// decoder-conformance one.
-pub const REF_BORDER: usize = 64 + 4;
+pub const fn ref_pic_border(sb_size: usize, superres_or_resize: bool) -> usize {
+    sb_size + 32 + if superres_or_resize { sb_size } else { 0 }
+}
 
 /// One reference plane with C's replicated margin applied
 /// (`svt_aom_generate_padding`, driven from `pad_ref_and_set_flags`,
 /// enc_dec_process.c:1088-1112).
 #[derive(Debug, Clone)]
 pub struct PaddedPlaneT<T> {
-    /// The whole allocation, `stride * (height + 2 * border)` samples.
+    /// The allocation — `stride * (height + 2 * border)` samples of plane
+    /// region, plus any tail appended by [`Self::extend_tail`]
+    /// (C's `buffer_alloc` places the NEXT plane's region there).
     pub buf: alloc::vec::Vec<T>,
     /// Index of pixel (0, 0) — C's `y_buffer - buffer_y`.
     pub origin: usize,
@@ -144,9 +163,9 @@ impl<T: Copy + Default> PaddedPlaneT<T> {
     /// Copy a bare `width x height` plane into a bordered allocation and
     /// replicate its edges, exactly as C pads a reference picture.
     ///
-    /// `border` is [`REF_BORDER`] for luma and `(REF_BORDER + 1) >> 1` for
-    /// 4:2:0 chroma — C's `(ref_pic_ptr->border + ss_x) >> ss_x`
-    /// (enc_dec_process.c:1098-1112).
+    /// `border` is [`ref_pic_border`]`(sb_size, ..)` for luma and
+    /// `(border + 1) >> 1` for 4:2:0 chroma — C's
+    /// `(ref_pic_ptr->border + ss_x) >> ss_x` (enc_dec_process.c:1098-1112).
     #[must_use]
     pub fn from_plane(src: &[T], width: usize, height: usize, border: usize) -> Self {
         let stride = width + 2 * border;
@@ -167,6 +186,32 @@ impl<T: Copy + Default> PaddedPlaneT<T> {
             height,
             border,
         }
+    }
+
+    /// Append `tail` samples after this plane's region, reproducing the
+    /// contiguous-neighbour reads C gets for free from `buffer_alloc`'s
+    /// `[y][u][v]` layout (`svt_recon_picture_buffer_desc_ctor`,
+    /// pic_buffer_desc.c:483-501).
+    ///
+    /// `clamp_mv_to_umv_border_sb` lets a chroma MV carry the block
+    /// `bheight_luma + AOM_INTERP_EXTEND`-ish past the plane edge — deeper
+    /// than the `(border + ss) >> ss` margin `pad_ref_and_set_flags`
+    /// writes. In C such a read off `u_buffer` lands inside `v_buffer`'s
+    /// region and answers with v's (padded) bytes; a per-plane `Vec`
+    /// would panic instead. Appending the next plane's region makes the
+    /// overread return the same samples C reads.
+    pub fn extend_tail(&mut self, tail: &[T]) {
+        self.buf.extend_from_slice(tail);
+    }
+
+    /// The zeroed form of [`Self::extend_tail`] for the LAST region in
+    /// C's `buffer_alloc`: a read past `v_buffer`'s region runs off the
+    /// calloc entirely, so what C reads there is heap — undetermined.
+    /// Zero-fill (the value `EB_CALLOC_ALIGNED_ARRAY` itself leaves)
+    /// keeps the port deterministic rather than reproducing a particular
+    /// heap neighbour; no MV selection should depend on those bytes.
+    pub fn extend_tail_zeros(&mut self, n: usize) {
+        self.buf.resize(self.buf.len() + n, T::default());
     }
 
     /// The sample at `(x, y)` in PLANE coordinates, where negative values and
@@ -329,7 +374,7 @@ pub struct ReferenceFrame {
     pub is_islice: bool,
     /// The same recon with C's replicated reference margin
     /// ([`PaddedRef`]), which is the form INTER PREDICTION indexes — see
-    /// [`REF_BORDER`] for why the margin is load-bearing for the DECISION
+    /// [`ref_pic_border`] for why the margin is load-bearing for the DECISION
     /// and not only for conformance.
     ///
     /// `None` only on a frame whose recon was not stored (there is none
@@ -387,6 +432,15 @@ pub struct ReferenceFrame {
     /// `ref - LAST_FRAME` — this picture's own references' order hints, which
     /// `motion_field_projection` reads to scale a saved MV.
     pub ref_order_hint: [i32; 7],
+    /// C `EbReferenceObject::tmp_layer_idx` — this picture's
+    /// `temporal_layer_index` at the time it was coded.
+    ///
+    /// `pd0_detector`'s `use_ref_info` arms only count a reference whose
+    /// `tmp_layer_idx <= pcs->temporal_layer_index`
+    /// (enc_dec_process.c:2149/2165): on a hierarchical GOP a HIGHER-layer
+    /// reference is not allowed to demote a lower-layer picture. 0 on every
+    /// flat low-delay picture, where the comparison is `0 <= 0`.
+    pub temporal_layer: u8,
 }
 
 impl DecodedPictureBuffer {
@@ -548,6 +602,7 @@ mod tests {
             padded: None,
             mvs: alloc::vec![],
             ref_order_hint: [0; 7],
+            temporal_layer: 0,
             y_plane: alloc::vec![128u8; 64 * 64],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],
@@ -583,6 +638,7 @@ mod tests {
             padded: None,
             mvs: alloc::vec![],
             ref_order_hint: [0; 7],
+            temporal_layer: 0,
             y_plane: alloc::vec![128u8; 16],
             u_plane: alloc::vec![],
             v_plane: alloc::vec![],

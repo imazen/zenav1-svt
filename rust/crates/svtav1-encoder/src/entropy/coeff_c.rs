@@ -634,12 +634,12 @@ pub(crate) fn nz_map_ctx(
         TX_CLASS_2D => {
             nz_map_ctx_tc::<TX_CLASS_2D>(levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size)
         }
-        TX_CLASS_HORIZ => {
-            nz_map_ctx_tc::<TX_CLASS_HORIZ>(levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size)
-        }
-        TX_CLASS_VERT => {
-            nz_map_ctx_tc::<TX_CLASS_VERT>(levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size)
-        }
+        TX_CLASS_HORIZ => nz_map_ctx_tc::<TX_CLASS_HORIZ>(
+            levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
+        ),
+        TX_CLASS_VERT => nz_map_ctx_tc::<TX_CLASS_VERT>(
+            levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
+        ),
         _ => nz_map_ctx_tc::<TX_CLASS_UNREACHABLE>(
             levels, coeff_idx, bwl, height, scan_idx, is_eob, tx_size,
         ),
@@ -1401,7 +1401,14 @@ fn write_coeffs_txb_1d_inner(
     // scratch needs no per-call zero.
     let n_ctx = width * height;
     let coeff_contexts = &mut ctx[..n_ctx];
-    get_nz_map_contexts(levels, scan, eob as usize, tx_size, tx_class, coeff_contexts);
+    get_nz_map_contexts(
+        levels,
+        scan,
+        eob as usize,
+        tx_size,
+        tx_class,
+        coeff_contexts,
+    );
 
     // The base-range escape, shared by the peeled `c == eob - 1` iteration and
     // the loop below (C writes it out twice; one macro keeps it in one place

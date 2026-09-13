@@ -322,6 +322,12 @@ pub struct EncodePipeline {
     /// reads or writes it, so every existing cell is byte-inert by
     /// construction.
     pd_ctx: crate::port_picstruct::PicDecisionCtx,
+    /// C `scs->mrp_ctrls` — the preset-derived multi-reference caps
+    /// (`set_mrp_ctrl`, `enc_handle.c:3574`). Recomputed per frame in
+    /// `run_picture_decision` from the live config, where it also feeds
+    /// `SeqPicParams`; the frame-ME site reads it for `only_l_bwd` and the
+    /// `safe_limit_*` pair.
+    mrp_ctrls: crate::port_picstruct::MrpCtrls,
 }
 
 /// Tighten a strided plane to `w * h` contiguous bytes.
@@ -480,6 +486,7 @@ impl EncodePipeline {
             grain_references: core::array::from_fn(|_| None),
             grain_sequence_present: None,
             pd_ctx: crate::port_picstruct::PicDecisionCtx::new(),
+            mrp_ctrls: crate::port_picstruct::MrpCtrls::default(),
             speed_config: SpeedConfig::from_native_preset(
                 crate::speed_config::NativePreset::new(preset).unwrap(),
             ),
@@ -591,6 +598,26 @@ impl EncodePipeline {
         use crate::port_picstruct as pp;
 
         let hier = self.gop.hierarchical_levels;
+        // C `set_mrp_ctrl` (`enc_handle.c:3574`) — the preset-derived MRP
+        // caps. NOT inert even on a two-frame cell: `set_ref_list_counts`
+        // counts list 1 as 1 whenever its BWD-duplicate guard skips the
+        // comparisons, and at M10/low-delay/8-bit the level-0 row's zero
+        // list-1 caps are the only thing that makes `ref_list1_count_try`
+        // 0 — which is what puts ME on C's single-reference candidate path
+        // and keeps `me_distortion` L0-only. MEASURED 2026-09-14 on the
+        // `gradient 104x104 q32 p10` cell: the neutral defaults let list 1
+        // search, found a perfect (-3,0) match in two of four b64s, and the
+        // resulting `norm_me_dist` halved C's, shifting the picture PD0
+        // level 7->6 and demoting one SB to level 4 (29B vs C's 417B).
+        let mrp_ctrls = pp::set_mrp_ctrl(
+            self.speed_config.preset,
+            false,
+            hier,
+            pp::PredStructure::LowDelay,
+            self.bit_depth == 8,
+            pp::RcMode::CqpOrCrf,
+        );
+        self.mrp_ctrls = mrp_ctrls;
         let seq = pp::SeqPicParams {
             // The campaign's GOP: low-delay P, CQP/CRF. C's driver is given
             // `SVT_PRED_STRUCT=1` (LOW_DELAY) for the same cells.
@@ -598,15 +625,7 @@ impl EncodePipeline {
             rate_control_mode: pp::RcMode::CqpOrCrf,
             rtc: false,
             allintra: false,
-            // NOT the per-preset `set_mrp_ctrl` table (`enc_handle.c:3573`),
-            // which is not ported. Its caps only bind once a frame has more
-            // than one DISTINCT reference POC in a list, and
-            // `set_ref_list_counts` collapses both lists to 1 while every DPB
-            // slot still holds the key frame — so on the 2-frame cell the caps
-            // are provably inert. A longer GOP needs the real table; that is
-            // why `generate_rps_info` is called through a function that can
-            // refuse rather than inlined.
-            mrp_ctrls: pp::MrpCtrls::default(),
+            mrp_ctrls,
             order_hint_info: crate::inter_mvp::OrderHintInfo {
                 enable_order_hint: true,
                 order_hint_bits: crate::entropy::obu::ORDER_HINT_BITS,
@@ -2794,7 +2813,8 @@ impl EncodePipeline {
         let (primary_ref_frame_for_cdf, primary_ref_cdfs) = if is_key {
             (crate::port_picstruct::PRIMARY_REF_NONE, None)
         } else if let Some(pic) = pic_decision.as_ref() {
-            let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
+            let ref_queue =
+                crate::inter_hdr_arm::ref_queue_from_dpb(&pic.ref_queue_dpb, base_qindex);
             let b = crate::port_picstruct::bind_refs_and_primary_ref_frame(
                 pic, &ref_queue, /*frame_end_cdf_update_mode=*/ true,
                 /*is_s_frame=*/ false,
@@ -2882,11 +2902,9 @@ impl EncodePipeline {
                 // offered. `MeRefs::get` panics on a hole a search reaches,
                 // so a missing pyramid means no ME rather than a wrong one —
                 // the same shape the `pa_ref == None` arm produced before.
-                let num_to_search =
-                    [pic.ref_list0_count_try, pic.ref_list1_count_try];
+                let num_to_search = [pic.ref_list0_count_try, pic.ref_list1_count_try];
                 let complete = (0..2).all(|li| {
-                    (0..usize::from(num_to_search[li]))
-                        .all(|ri| refs.arr[li][ri].is_some())
+                    (0..usize::from(num_to_search[li])).all(|ri| refs.arr[li][ri].is_some())
                 });
                 if !complete {
                     None
@@ -2914,9 +2932,15 @@ impl EncodePipeline {
                             // C `frame_is_boosted(pcs)` (enc_mode_config.h:108):
                             // true only for the base layer of a hierarchy, which
                             // a flat low-delay P GOP never has.
-                            frame_is_boosted: temporal_layer == 0 && self.gop.hierarchical_levels > 0,
+                            frame_is_boosted: temporal_layer == 0
+                                && self.gop.hierarchical_levels > 0,
                             hierarchical_levels: self.gop.hierarchical_levels,
                             sc_class5: u8::from(sc_derivation.classes.sc_class5),
+                            // C `scs->mrp_ctrls` — set this frame by
+                            // `run_picture_decision` above.
+                            only_l_bwd: self.mrp_ctrls.only_l_bwd != 0,
+                            safe_limit_nref: self.mrp_ctrls.safe_limit_nref,
+                            safe_limit_zz_th: self.mrp_ctrls.safe_limit_zz_th,
                         },
                     );
                     Some(out)
@@ -3063,8 +3087,7 @@ impl EncodePipeline {
                         // through `true_width`/`true_height`.
                         let slot_planes: [Option<crate::port_global_me::GmPlane<'_>>; 7] =
                             core::array::from_fn(|i| {
-                                let slot =
-                                    pic_decision.as_ref()?.rps.ref_dpb_index[i] as usize;
+                                let slot = pic_decision.as_ref()?.rps.ref_dpb_index[i] as usize;
                                 let pa = self.pa_slots.get(slot)?.as_ref()?;
                                 Some(crate::port_global_me::GmPlane {
                                     buf: &pa.full.buf[pa.full.org..],
@@ -3711,6 +3734,10 @@ impl EncodePipeline {
                 picture_qp: u32::from(pcs.qp),
                 temporal_layer_index: temporal_layer,
                 hierarchical_levels: self.gop.hierarchical_levels,
+                // C `ppcs->update_type` — the picture decision's
+                // `set_frame_update_type` output, which `enc_dec_cand_reduction`
+                // reads as `frame_is_leaf` (`enc_mode_config.c:4100`).
+                update_type: pd.map(|p| p.update_type),
                 is_ref: pd.is_some_and(|p| p.is_ref),
                 is_islice: false,
                 sc_class5: u8::from(sc_derivation.classes.sc_class5),
@@ -4201,13 +4228,21 @@ impl EncodePipeline {
                     None => (&default_fc, &default_ic),
                 };
                 let (fac, ref_fac) = crate::inter_md_arm::build_inter_rates(fc, ic);
-                let nmv = crate::inter_md_arm::nmv_cost_table(
-                    &fc.nmvc,
-                    crate::inter_mv_code::mv_precision(
-                        st.allow_high_precision_mv,
-                        st.force_integer_mv,
-                    ),
-                );
+                // C `svt_aom_estimate_mv_rate` (md_rate_estimation.c:458-465):
+                // under `pcs->approx_inter_rate` the nmv cost tables are
+                // memset to zero and `nmvcoststack` repointed at them, so
+                // every MV prices at 0 in the motion searches.
+                let nmv = if sigs.approx_inter_rate != 0 {
+                    crate::intrabc::MvCostTables::zeroed()
+                } else {
+                    crate::inter_md_arm::nmv_cost_table(
+                        &fc.nmvc,
+                        crate::inter_mv_code::mv_precision(
+                            st.allow_high_precision_mv,
+                            st.force_integer_mv,
+                        ),
+                    )
+                };
                 let search = crate::inter_search_arm::frame_cfg(
                     &crate::inter_search_arm::SearchFrameInputs {
                         md_pme_level: sigs.md_pme_level,
@@ -4283,13 +4318,19 @@ impl EncodePipeline {
                     src_stride: in_stride,
                     ref_frame_type_arr: &inter_ref_types,
                     search,
-                    search_tables: crate::intrabc::build_nmv_cost_table(
-                        &fc.nmvc,
-                        crate::inter_mv_code::mv_precision(
-                            st.allow_high_precision_mv,
-                            st.force_integer_mv,
-                        ),
-                    ),
+                    // The `md_subpel`-shape view of the same nmv storage —
+                    // `nmv`'s `approx_inter_rate` zero arm applies here too.
+                    search_tables: if sigs.approx_inter_rate != 0 {
+                        crate::intrabc::MvCostTables::zeroed()
+                    } else {
+                        crate::intrabc::build_nmv_cost_table(
+                            &fc.nmvc,
+                            crate::inter_mv_code::mv_precision(
+                                st.allow_high_precision_mv,
+                                st.force_integer_mv,
+                            ),
+                        )
+                    },
                     me,
                     fac,
                     ref_fac,
@@ -4478,6 +4519,12 @@ impl EncodePipeline {
         // frame 0 `dr=0/0/0/0` and frame 1 `dr=1/0/1/1` — enabled, and
         // `disallow_below_32x32` set, so C's PD0 may not test below 32x32
         // there while `Pd0Ctx::min_sq` was a flat 8.
+        // The per-SB `DepthRemovalResult` alongside it — `sig_deriv_enc_dec_pd0`'s
+        // `subres_level` ladder (enc_mode_config.c:7344-7352) reads the
+        // `depth_removal_ctrls` flags and the post-call `disallow_4x4`, which
+        // the min_sq fold alone would discard.
+        let mut pd0_dr_res: Option<Vec<crate::port_enc_mode_config::common::DepthRemovalResult>> =
+            None;
         let pd0_min_sq: Option<Vec<u8>> = match (
             md_config_signals.as_ref(),
             frame_me.as_ref(),
@@ -4495,6 +4542,7 @@ impl EncodePipeline {
                     .and_then(|slot| self.dpb.get(slot))
                     .map(|rf| rf.sb_min_sq_size.clone());
                 let mut out = Vec::with_capacity(sb_cols * sb_rows);
+                let mut dr_out = Vec::with_capacity(sb_cols * sb_rows);
                 for sb_row in 0..sb_rows {
                     for sb_col in 0..sb_cols {
                         crate::stop_check(&stop)?;
@@ -4582,11 +4630,70 @@ impl EncodePipeline {
                             u8::try_from(min_sq.min(usize::from(self.hdr.max_tx_size)))
                                 .unwrap_or(8),
                         );
+                        // The whole result — `sig_deriv_enc_dec_pd0`'s
+                        // subres ladder reads `depth_removal_ctrls` and the
+                        // post-call `disallow_4x4` per superblock, not just
+                        // the folded `min_sq`.
+                        dr_out.push(res.unwrap_or(pcommon::DepthRemovalResult {
+                            ctrls: pcommon::DepthRemovalCtrls::default(),
+                            disallow_4x4: true,
+                        }));
                     }
                 }
+                pd0_dr_res = Some(dr_out);
                 Some(out)
             }
             _ => None,
+        };
+
+        // C `pd0_detector`'s reference-side inputs (enc_dec_process.c:
+        // 2142-2168): `ref_pic_ptr_array[list][0]`'s `sb_intra`, admitted
+        // only while all three of C's guards hold — the MRP-capped
+        // `ref_list{0,1}_count_try`, `svt_aom_is_ref_same_size`
+        // (enc_mode_config.c:2857; `is_not_scaled` short-circuits true, else
+        // B-slice + non-null + matching dims), and the reference's
+        // `tmp_layer_idx <= temporal_layer_index`. `None` per list is
+        // exactly C's `l{0,1}_refs == 0` arm. List 0's slot-0 reference is
+        // LAST (`ref_dpb_index[0]`); list 1's is BWD (`ref_dpb_index[4]`) —
+        // the same binding `pipeline_md_inputs.ref_l{0,1}` makes.
+        let pd0_ref_sb_intra = |list1: bool| -> Option<&[u8]> {
+            let pic = pic_decision.as_ref()?;
+            let (count_try, rps_idx) = if list1 {
+                (pic.ref_list1_count_try, crate::port_picstruct::BWD as usize)
+            } else {
+                (
+                    pic.ref_list0_count_try,
+                    crate::port_picstruct::LAST as usize,
+                )
+            };
+            if count_try == 0 {
+                return None;
+            }
+            let rf = self.dpb.get(pic.rps.ref_dpb_index[rps_idx] as usize)?;
+            let same_size = self.superres_denom.is_none()
+                || (rf.width == self.width as u32 && rf.height == self.height as u32);
+            (same_size && rf.temporal_layer <= temporal_layer).then_some(rf.sb_intra.as_slice())
+        };
+        let pd0_det_frame = crate::part_arm::Pd0DetFrame {
+            transition_present: pic_decision
+                .as_ref()
+                .is_some_and(|p| p.transition_present != 0),
+            // `!frame_is_leaf(ppcs)` (enc_mode_config.h:113) — a KEY frame's
+            // `KF_UPDATE` is not `LF_UPDATE`, so this is true on frame 0 and
+            // false on a flat-GOP inter frame.
+            is_not_last_layer: pic_decision
+                .as_ref()
+                .is_none_or(|p| p.update_type != crate::port_picstruct::FrameUpdateType::Lf),
+            ref_intra_percentage: pipeline_md_inputs.as_ref().map_or(0, |p| {
+                crate::port_rc_process::get_ref_intra_percentage(
+                    crate::port_rc_process::SliceType::B,
+                    u8::try_from(p.ref_list1_count_try).unwrap_or(u8::MAX),
+                    p.ref_l0.as_ref(),
+                    p.ref_l1.as_ref(),
+                )
+            }),
+            l0_sb_intra: pd0_ref_sb_intra(false),
+            l1_sb_intra: pd0_ref_sb_intra(true),
         };
 
         let tile_recons = encode_tile_rows(
@@ -4648,6 +4755,7 @@ impl EncodePipeline {
             inter_syntax_state.as_ref(),
             inter_mvp_env.as_ref(),
             pd0_min_sq.as_deref(),
+            pd0_dr_res.as_deref(),
             // `ref_obj_l0->{sb_min_sq_size,sb_max_sq_size}` for the
             // use_ref_info refinement arm — LAST ref (see `last_ref_slot`),
             // `None` on a key frame.
@@ -4684,6 +4792,7 @@ impl EncodePipeline {
             self.reference,
             zen_intra_edge_filter,
             self.thread_count,
+            pd0_det_frame,
             &stop,
         )?;
         hbd_used |= hbd_used_flag.load(core::sync::atomic::Ordering::Relaxed);
@@ -6011,6 +6120,16 @@ impl EncodePipeline {
                 &stop,
             )?;
         }
+        #[cfg(feature = "std")]
+        if std::env::var_os("SVTAV1_LFDBG").is_some() {
+            std::eprintln!(
+                "LFDBG key={} lf_levels={:?} sharp={} postfilter_consumed={}",
+                u8::from(is_key),
+                lf_levels.levels,
+                lf_sharp_eff,
+                postfilter_consumed,
+            );
+        }
         if lf_levels.any() && postfilter_consumed {
             crate::deblock::apply_deblock_frame_with_stop(
                 &mut recon,
@@ -6528,8 +6647,7 @@ impl EncodePipeline {
         // ever wrongly disabled the stage on inter frames — the exact
         // `lr_type[0]` C=2 vs 0 divergence on `johnny_256x256` q40 p6
         // frame 1.
-        if seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless
-        {
+        if seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless {
             // LOOP-RESTORATION LEVEL LADDERS — the `scs->allintra` fork
             // (`pd_process.c:4935-4938`), the same selector `sc_detect`, the
             // deblock ladder and the rate ladders already take.
@@ -6958,7 +7076,8 @@ impl EncodePipeline {
                      only when a GOP is configured (intra_period > 1) [C: accepts]",
                 ))
             })?;
-            let ref_queue = crate::inter_hdr_arm::ref_queue_from_dpb(&self.pd_ctx, base_qindex);
+            let ref_queue =
+                crate::inter_hdr_arm::ref_queue_from_dpb(&pic.ref_queue_dpb, base_qindex);
             let binding = crate::port_picstruct::bind_refs_and_primary_ref_frame(
                 pic, &ref_queue,
                 // C `frame_end_cdf_update_mode` — the picture manager assigns
@@ -7427,14 +7546,21 @@ impl EncodePipeline {
         // `last_recon10_final`, and it also applies FILM GRAIN, which is an
         // output-only transform that must never reach the DPB.
         let padded_ref_hbd = recon10.as_ref().map(|(y10, u10, v10)| {
-            let y =
-                crate::picture::PaddedPlaneHbd::from_plane(y10, w, h, crate::picture::REF_BORDER);
+            let rb =
+                crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
+            let y = crate::picture::PaddedPlaneHbd::from_plane(y10, w, h, rb);
             let uv = if chroma.is_some() {
-                let cb = (crate::picture::REF_BORDER + 1) >> 1;
-                Some((
-                    crate::picture::PaddedPlaneHbd::from_plane(u10, w / 2, h / 2, cb),
-                    crate::picture::PaddedPlaneHbd::from_plane(v10, w / 2, h / 2, cb),
-                ))
+                let cb = (rb + 1) >> 1;
+                let mut cv =
+                    crate::picture::PaddedPlaneHbd::from_plane(v10, w / 2, h / 2, cb);
+                let mut cu =
+                    crate::picture::PaddedPlaneHbd::from_plane(u10, w / 2, h / 2, cb);
+                // Same contiguous `[u][v]` layout as the 8-bit reference —
+                // see the `padded_ref` block below.
+                cu.extend_tail(&cv.buf);
+                let tail = cv.buf.len();
+                cv.extend_tail_zeros(tail);
+                Some((cu, cv))
             } else {
                 None
             };
@@ -7498,15 +7624,28 @@ impl EncodePipeline {
         // (0,0). Built here, once, from the same buffers stored below.
         let padded_ref = {
             let (rw, rh) = (w, h);
-            let y =
-                crate::picture::PaddedPlane::from_plane(&recon, rw, rh, crate::picture::REF_BORDER);
+            // C's reference-picture border is `super_block_size + 32`
+            // (enc_handle.c:1212-1217), NOT `scs->border` — see
+            // [`crate::picture::ref_pic_border`].
+            let rb =
+                crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
+            let y = crate::picture::PaddedPlane::from_plane(&recon, rw, rh, rb);
             let uv = if chroma.is_some() {
                 // C `(border + ss_x) >> ss_x` at 4:2:0 (:1102-1112).
-                let cb = (crate::picture::REF_BORDER + 1) >> 1;
-                Some((
-                    crate::picture::PaddedPlane::from_plane(&u_recon, rw / 2, rh / 2, cb),
-                    crate::picture::PaddedPlane::from_plane(&v_recon, rw / 2, rh / 2, cb),
-                ))
+                let cb = (rb + 1) >> 1;
+                let mut cv =
+                    crate::picture::PaddedPlane::from_plane(&v_recon, rw / 2, rh / 2, cb);
+                let mut cu =
+                    crate::picture::PaddedPlane::from_plane(&u_recon, rw / 2, rh / 2, cb);
+                // C's recon `buffer_alloc` is `[y][u][v]` contiguous: a
+                // maximally UMV-clamped chroma read past `u`'s region
+                // answers with `v`'s margin bytes. `v` is the last
+                // region, so its overread runs off the calloc — the
+                // zero tail keeps the port deterministic there.
+                cu.extend_tail(&cv.buf);
+                let tail = cv.buf.len();
+                cv.extend_tail_zeros(tail);
+                Some((cu, cv))
             } else {
                 None
             };
@@ -7567,6 +7706,15 @@ impl EncodePipeline {
                     .map(|v| alloc::format!("{v}"))
                     .collect::<alloc::vec::Vec<_>>()
                     .join(",")),
+            );
+        }
+        #[cfg(feature = "std")]
+        if crate::dbgenv::pd0dbg() {
+            let acc = frame_coded_area.borrow();
+            eprintln!(
+                "REFSTORE poc={display_order} intra={:?} skip={:?}",
+                acc.as_ref().map(|a| a.sb_intra.as_slice()),
+                acc.as_ref().map(|a| a.sb_skip.as_slice()),
             );
         }
         let ref_frame = ReferenceFrame {
@@ -7676,6 +7824,11 @@ impl EncodePipeline {
                 }
                 a
             },
+            // C `EbReferenceObject::tmp_layer_idx` — this picture's own
+            // `temporal_layer_index` (enc_dec_process.c:2149's reader
+            // compares a LATER frame's layer against it). 0 on every flat
+            // low-delay frame.
+            temporal_layer,
         };
         #[cfg(feature = "std")]
         if std::env::var_os("SVT_MFMV_DBG").is_some() {
@@ -7693,9 +7846,12 @@ impl EncodePipeline {
                  cells={} named={named} hash={hash:x}",
                 u8::from(!is_key),
                 ref_frame.order_hint,
-                ref_frame.ref_order_hint[0], ref_frame.ref_order_hint[1],
-                ref_frame.ref_order_hint[2], ref_frame.ref_order_hint[3],
-                ref_frame.ref_order_hint[4], ref_frame.ref_order_hint[5],
+                ref_frame.ref_order_hint[0],
+                ref_frame.ref_order_hint[1],
+                ref_frame.ref_order_hint[2],
+                ref_frame.ref_order_hint[3],
+                ref_frame.ref_order_hint[4],
+                ref_frame.ref_order_hint[5],
                 ref_frame.ref_order_hint[6],
                 ref_frame.mvs.len(),
             );
@@ -8766,10 +8922,7 @@ impl EntropyCtx {
     /// without the bit extraction.
     #[cfg(feature = "std")]
     pub(crate) fn part_ctx_bytes(&self, x: usize, y: usize) -> (u8, u8) {
-        (
-            self.above_partition[x / 8],
-            self.left_partition[y / 8],
-        )
+        (self.above_partition[x / 8], self.left_partition[y / 8])
     }
 
     /// Compute partition context (sub, 0-3) from tracked above/left values.
@@ -9537,7 +9690,7 @@ fn encode_block_syntax(
             let (unz, vnz) = decision
                 .chroma_dec
                 .as_ref()
-                .map(|c| (fmt_nz(&c.0, 48), fmt_nz(&c.1, 48)))
+                .map(|c| (fmt_nz(&c.0, 1024), fmt_nz(&c.1, 1024)))
                 .unwrap_or_default();
             let line = alloc::format!(
                 "PCOEF mi=({},{}) yeob={} txt={} ynz=[{}] unz=[{}] vnz=[{}]",
@@ -9545,7 +9698,7 @@ fn encode_block_syntax(
                 block_x / 4,
                 decision.eob,
                 decision.tx_type,
-                fmt_nz(&decision.qcoeffs, 48),
+                fmt_nz(&decision.qcoeffs, 1024),
                 unz,
                 vnz
             );
@@ -9694,10 +9847,7 @@ fn encode_block_syntax(
     // skip-mode arbitration. A skip-mode block codes ONE symbol here and the
     // whole mode-info group is suppressed below (`if (!skip_mode)`,
     // entropy_coding.c:5155).
-    let skip_mode = decision
-        .inter
-        .as_deref()
-        .is_some_and(|b| b.skip_mode);
+    let skip_mode = decision.inter.as_deref().is_some_and(|b| b.skip_mode);
     // C `entropy_coding.c:5119`, in the non-intra-FRAME arm of
     // `write_modes_b`, immediately before `encode_skip_coeff_av1`:
     //
@@ -9752,7 +9902,9 @@ fn encode_block_syntax(
     // C `write_cdef(..., skip_mode ? 1 : skip_coeff, ...)` — a skip-mode
     // block counts as skipped for the cdef latch even though the
     // skip-coeff symbol was suppressed.
-    if !(skip || skip_mode) && let Some(st) = ectx.cdef_sb.as_mut() {
+    if !(skip || skip_mode)
+        && let Some(st) = ectx.cdef_sb.as_mut()
+    {
         let index = if st.sb128 {
             ((block_x >> 6) & 1) + 2 * ((block_y >> 6) & 1)
         } else {
@@ -9928,7 +10080,7 @@ fn encode_block_syntax(
             // `write_inter_mode_info` step 9 is gated on `has_second_ref`;
             // a single-reference block takes `None` and skips the whole
             // compound group, exactly as C's gate does.
-            compound: (blk.ref_frame[1] > 0).then(|| {
+            compound: (blk.ref_frame[1] > 0).then_some({
                 if blk.comp_group_idx == 0 {
                     crate::port_entropy_inter::compound::CompGroup::A {
                         compound_idx: blk.compound_idx != 0,
@@ -9969,7 +10121,7 @@ fn encode_block_syntax(
         #[cfg(feature = "std")]
         if std::env::var_os("SVTAV1_INTERDBG").is_some() {
             std::eprintln!(
-                "IDBG mi=({},{}) bs={:?} mode={:?} rf={:?} mm={:?} npr={} mv=({},{}) mv1=({},{}) pmv=({},{}) imc={} drl={:?} skm={} nb_up={} nb_left={} nbA={:?} nbL={:?}",
+                "IDBG mi=({},{}) bs={:?} mode={:?} rf={:?} mm={:?} npr={} mv=({},{}) mv1=({},{}) pmv=({},{}) imc={} interp={:#x} drl={:?} skm={} nb_up={} nb_left={} nbA={:?} nbL={:?}",
                 block_y / 4,
                 block_x / 4,
                 info.bsize,
@@ -9984,6 +10136,7 @@ fn encode_block_syntax(
                 info.pred_mv[0].y,
                 info.pred_mv[0].x,
                 info.inter_mode_ctx,
+                info.interp_filters,
                 info.drl,
                 info.skip_mode,
                 nb.up_available,
@@ -11180,6 +11333,9 @@ fn encode_partition_tree(
 /// Directional prediction here requires the signaled edge filter to be off;
 /// palette and IntraBC need the full-RD funnel. An unsupported native-input
 /// tree is rejected by the caller's source-consumption check.
+// `coded_lossless` is only forwarded into the recursion today — the allow is
+// on the function because the param-level form does not reach this lint.
+#[allow(clippy::only_used_in_recursion)]
 fn bd10_tree_supported(
     tree: &crate::partition::PartitionTree,
     edge_filter: bool,
@@ -11732,6 +11888,11 @@ fn encode_tile_rows(
     // by RASTER superblock (`sb_row * sb_cols + sb_col`), like `all_trees`.
     // `None` on a key frame, where the controls are `enabled = 0`.
     pd0_min_sq: Option<&[u8]>,
+    // The full per-SB `DepthRemovalResult` the `pd0_min_sq` fold was computed
+    // from — `sig_deriv_enc_dec_pd0`'s `subres_level` ladder
+    // (enc_mode_config.c:7344) reads `depth_removal_ctrls` and the post-call
+    // `disallow_4x4`, both per superblock. `None` on a key frame.
+    pd0_dr_res: Option<&[crate::port_enc_mode_config::common::DepthRemovalResult]>,
     // C `update_pred_th_offset`'s `use_ref_info` read (enc_dec_process.c:
     // 1614-1629): LAST reference's `sb_min_sq_size` / `sb_max_sq_size`
     // arrays, indexed by raster `sb_index`. `None` on a key frame — C's
@@ -11794,6 +11955,12 @@ fn encode_tile_rows(
     // tile-index order — so the returned per-tile results (and the emitted
     // bytes) are identical for any value.
     thread_count: usize,
+    // C `pd0_detector`'s frame-level + reference-side inputs
+    // (enc_dec_process.c:2406-2470) — `transition_present`,
+    // `ref_intra_percentage`, and the two lists' slot-0 references'
+    // `sb_intra` arrays. The per-SB fields (`me_*`, this frame's coded
+    // left/top neighbours) are gathered in the SB loop itself.
+    pd0_det_frame: crate::part_arm::Pd0DetFrame<'_>,
     // Feature 1: cooperative cancellation, checked at the head of every SB
     // row of the MD search (the heaviest per-frame loop). Passed as
     // `&dyn Stop` so the threaded per-tile closure stays `Send` (the trait
@@ -12045,51 +12212,27 @@ fn encode_tile_rows(
             matches!(sc_arm, crate::sc_detect::ScArm::Allintra)
                 || matches!(sc_arm, crate::sc_detect::ScArm::Video { is_islice: true }),
         );
-        // Which VIDEO picture this is, for the PD0 level. C's `pd0_detector`
-        // gates every one of its tests on `slice_type != I_SLICE`, so a key
-        // frame keeps the picture level and an inter frame walks down — see
-        // `part_arm::VideoPic`. `inter_md.is_some()` IS "this frame has a
-        // reference and the inter arm is armed", and the only reference the
-        // port's low-delay-P envelope holds is the key frame.
-        let video_pic = if inter_md.is_some() {
-            crate::part_arm::VideoPic::InterOnIntraRef
-        } else {
-            crate::part_arm::VideoPic::IntraSlice
-        };
-        // C `pcs->pic_pd0_lvl` -> `set_pd0_ctrls`, for THIS arm, as the
-        // REFINEMENT path's PD0 model. The allintra arm is PD0_LVL_1 at every
-        // preset this path serves; the video arm is PD0_LVL_3 at M3..M7 and
-        // PD0_LVL_4 at M8 (both LVL_1's block cost plus subres step 1; LVL_4
-        // additionally prices coefficients with `coeff_rate_est_lvl` 2). The
-        // depth-early-exit threshold is 900 at those levels EXCEPT under
-        // `pic_pred_depth_only`, which is why the flag is passed.
-        // `refined_pd0_model` documents the levels it does not carry (0..=2)
-        // and returns the pre-existing allintra model for them.
-        let (pd0_refined_mode, pd0_refined_eexit_th, pd0_refined_rate_lvl) =
-            crate::part_arm::refined_pd0_model(
-                sc_arm,
-                crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
-                u32::from(cli_qp),
-                w * h,
-                // C `ctx->pic_pred_depth_only` = `depth_refinement_ctrls.mode
-                // == PD0_DEPTH_PRED_PART_ONLY`, which only level 10 sets.
-                crate::depth_refine::DrCtrls::for_arm(
-                    sc_arm,
-                    speed_config.preset,
-                    tile_sc.classes.sc_class5,
-                    u32::from(cli_qp),
-                    c_quant
-                        .as_ref()
-                        .map_or(crate::quant::CoeffLvl::Normal, |q| {
-                            q.input_coeff_level
-                        }),
-                )
-                .pred_depth_only,
-                video_pic,
-            );
-        // PD0's own coefficient-rate level. `None` on the allintra arm keeps
-        // the frame-level `FunnelCfg` value the call sites already pass.
-        let pd0_refined_rate_lvl = pd0_refined_rate_lvl.unwrap_or(funnel_cfg.coeff_rate_est_lvl);
+        // C `ctx->pic_pred_depth_only` = `depth_refinement_ctrls.mode ==
+        // PD0_DEPTH_PRED_PART_ONLY`, which only level 10 sets — frame-level,
+        // read by the per-SB `refined_pd0_model` below (it feeds
+        // `set_depth_early_exit_ctrls`, enc_mode_config.c:7229-7233).
+        let pd0_pred_depth_only = crate::depth_refine::DrCtrls::for_arm(
+            sc_arm,
+            speed_config.preset,
+            tile_sc.classes.sc_class5,
+            u32::from(cli_qp),
+            c_quant
+                .as_ref()
+                .map_or(crate::quant::CoeffLvl::Normal, |q| q.input_coeff_level),
+        )
+        .pred_depth_only;
+        // C `pcs->pic_pd0_lvl` -> `set_pd0_ctrls` -> `pd0_detector` is resolved
+        // PER SUPERBLOCK — `pd0_detector` walks `md_ctx->pd0_ctrls.pd0_level`
+        // down per SB from the reference's `sb_intra` and this frame's own
+        // ME statistics (enc_dec_process.c:2406), so the level the refinement
+        // path's PD0 model sees is a per-SB value, not a picture one. Both are
+        // computed at the top of the SB loop below (`sb_pd0_det` /
+        // `sb_refined_pd0`), because the inputs need `sb_index`.
         // C `ctx->pd0_use_src_samples = allintra || pcs->hbd_md`
         // (enc_mode_config.c:7309). FALSE on every video frame, so the video
         // arm's PD0 predicts from the recon it generates per block instead of
@@ -12101,7 +12244,7 @@ fn encode_tile_rows(
         // C `product_prediction_fun_table_pd0[1]` — PD0's INTER arm, live on
         // exactly the frames that have a reference. `inter_md.is_some()` IS
         // "this frame is a non-I slice with a DPB reference" (the same
-        // predicate `video_pic` above keys on), so a key frame and every
+        // predicate `inter_md.is_some()` keys on), so a key frame and every
         // allintra cell get `None` and are byte-neutral by construction.
         let pd0_inter_base = inter_md.map(|f| crate::pd0::Pd0InterRef {
             padded_y: &f.padded.y,
@@ -12448,6 +12591,17 @@ fn encode_tile_rows(
         // a large value, so each doubling memcpy's the whole array.
         let mut tile_trees: Vec<crate::partition::PartitionTree> =
             svtav1_types::try_with_capacity!((tile_sb_row_end - tile_sb_row_start) * tile_sb_cols)?;
+        // C `pcs->sb_intra` / `pcs->sb_skip` MID-WALK (`update_b`,
+        // coding_loop.c:1606/1643): `pd0_detector` reads the LEFT and TOP
+        // superblocks' values (enc_dec_process.c:2513-2525), which are final
+        // by then because the SB walk is raster-ordered. Written at each
+        // `tile_trees` push below. FRAME-GRID indexed (`sb_index`), per-tile
+        // in scope: a neighbour belonging to a different tile reads C's init
+        // value (0 / 1), the "not yet coded" state — C's own cross-tile read
+        // is a thread race, and the single-tile case this is verified on is
+        // exact.
+        let mut sb_intra_acc = svtav1_types::try_vec![0u8; sb_cols * sb_rows]?;
+        let mut sb_skip_acc = svtav1_types::try_vec![1u8; sb_cols * sb_rows]?;
         let mut tile_frame_recon = svtav1_types::try_vec![128u8; ext_w * ext_h]?;
         // bd10 LUMA mode funnel (task #94): a parallel TRUE 10-bit recon canvas
         // so the per-block mode decision (evaluate_leaf MDS0) is made on the
@@ -12799,9 +12953,164 @@ fn encode_tile_rows(
                 // back to 128).
                 // Chain: select this SB's context base per the C rule and
                 // rebuild the funnel rate tables from it.
-                // Only read by the std-gated CHAINDUMP / SEED debug dumps below.
-                #[cfg(feature = "std")]
+                // Frame-grid raster index — also read by the std-gated
+                // CHAINDUMP / SEED debug dumps below.
                 let sb_index = sb_row * sb_cols + sb_col;
+                // C `pd0_detector`'s per-superblock input
+                // (enc_dec_process.c:2406-2525). C runs the detector per SB
+                // inside `svt_aom_mode_decision_kernel` — BEFORE this SB's
+                // blocks are coded but AFTER the left/top SBs were — so the
+                // level it lands on is per-SB, and so is everything derived
+                // from it. `me_*` are `ppcs->me_*[sb_index]`; the neighbour
+                // entries are `sb_index - 1` / `sb_index - pic_width_in_sb`,
+                // read only in the non-edge branch (`sb_col`/`sb_row` > 0,
+                // guaranteed by `is_edge_sb`'s complement) — the
+                // `checked_sub` guards are for the edge case the read never
+                // reaches. The left/top `sb_intra`/`sb_skip` come from THIS
+                // frame's accumulating flags — see `sb_intra_acc` above.
+                let pd0_me = |idx: usize| inter_md.and_then(|f| f.me.per_b64.get(idx));
+                let pd0_sb_in = crate::port_pd0_detector::Pd0SbInput {
+                    slice_type_is_intra: inter_md.is_none(),
+                    transition_present: pd0_det_frame.transition_present,
+                    picture_qp: u32::from(picture_qp),
+                    ref_intra_percentage: u32::from(pd0_det_frame.ref_intra_percentage),
+                    me_8x8_cost_variance: pd0_me(sb_index).map_or(0, |o| o.me_8x8_cost_variance),
+                    me_64x64_distortion: pd0_me(sb_index).map_or(0, |o| o.me_64x64_distortion),
+                    is_edge_sb: sb_col == 0 || sb_row == 0,
+                    left_me_8x8_cost_variance: sb_index
+                        .checked_sub(1)
+                        .and_then(&pd0_me)
+                        .map_or(0, |o| o.me_8x8_cost_variance),
+                    top_me_8x8_cost_variance: sb_index
+                        .checked_sub(sb_cols)
+                        .and_then(&pd0_me)
+                        .map_or(0, |o| o.me_8x8_cost_variance),
+                    left_me_64x64_distortion: sb_index
+                        .checked_sub(1)
+                        .and_then(&pd0_me)
+                        .map_or(0, |o| o.me_64x64_distortion),
+                    top_me_64x64_distortion: sb_index
+                        .checked_sub(sb_cols)
+                        .and_then(&pd0_me)
+                        .map_or(0, |o| o.me_64x64_distortion),
+                    left_sb_intra: sb_index
+                        .checked_sub(1)
+                        .and_then(|i| sb_intra_acc.get(i))
+                        .is_some_and(|&v| v != 0),
+                    top_sb_intra: sb_index
+                        .checked_sub(sb_cols)
+                        .and_then(|i| sb_intra_acc.get(i))
+                        .is_some_and(|&v| v != 0),
+                    left_sb_skip: sb_index
+                        .checked_sub(1)
+                        .and_then(|i| sb_skip_acc.get(i))
+                        .is_none_or(|&v| v != 0),
+                    top_sb_skip: sb_index
+                        .checked_sub(sb_cols)
+                        .and_then(|i| sb_skip_acc.get(i))
+                        .is_none_or(|&v| v != 0),
+                    ref_l0: crate::port_pd0_detector::RefSbInfo {
+                        was_intra: pd0_det_frame
+                            .l0_sb_intra
+                            .and_then(|v| v.get(sb_index).copied()),
+                    },
+                    ref_l1: crate::port_pd0_detector::RefSbInfo {
+                        was_intra: pd0_det_frame
+                            .l1_sb_intra
+                            .and_then(|v| v.get(sb_index).copied()),
+                    },
+                };
+                // The RESOLVED post-detector `Pd0Level` for THIS superblock,
+                // plus the things `video_pd0_params` derives alongside it —
+                // `coeff_rate_est_lvl`, `use_accurate_part_ctx` and the
+                // `subres_ctrls.step` `sig_deriv_enc_dec_pd0` resolves per
+                // superblock (enc_mode_config.c:7322-7357). `None` off the
+                // video arm (a still picture's PD0 level comes from the
+                // allintra detector instead), which is every callsite's
+                // "leave the pre-existing model alone" arm.
+                let sb_pd0_det =
+                    matches!(sc_arm, crate::sc_detect::ScArm::Video { .. }).then(|| {
+                        // This superblock's `DepthRemovalResult` — computed
+                        // once for the frame in `encode_frame_impl`'s
+                        // `pd0_min_sq` fold. `None` on a key frame, where
+                        // `set_depth_removal_level_controls` returns
+                        // `enabled = 0` and `disallow_4x4` stays at the pic
+                        // value (`get_disallow_4x4_default`).
+                        let sb_dr = pd0_dr_res.and_then(|v| v.get(sb_index).copied());
+                        crate::part_arm::video_pd0_params(
+                            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+                            u32::from(cli_qp),
+                            w * h,
+                            // C `pcs->coeff_lvl` — `derive_inter_coeff_level`'s
+                            // output for an inter frame (carried on the coding
+                            // quantizer); `video_pd0_params` maps an I-slice
+                            // to `INVALID_LVL` itself.
+                            c_quant
+                                .as_ref()
+                                .map_or(crate::port_enc_mode_config::InputCoeffLvl::Normal, |q| {
+                                    crate::part_arm::input_coeff_lvl(q.input_coeff_level)
+                                }),
+                            &pd0_sb_in,
+                            &crate::part_arm::Pd0SigDerivInput {
+                                is_not_last_layer: pd0_det_frame.is_not_last_layer,
+                                pic_pred_depth_only: pd0_pred_depth_only,
+                                disallow_4x4: sb_dr.map_or_else(
+                                    || crate::part_arm::disallow_4x4(sc_arm, speed_config.preset),
+                                    |r| r.disallow_4x4,
+                                ),
+                                disallow_8x8:
+                                    crate::port_enc_mode_config::leaf::get_disallow_8x8_default(),
+                                // `b64_geom->is_complete_b64` — against the
+                                // ALIGNED dims (`b64_geom_init` gets
+                                // `pcs->aligned_width`), per b64 on the
+                                // 64-grid this SB-loop index is on (sb_size
+                                // is 64 on every video path today).
+                                b64_is_complete: sb_col * sb_size + 64 <= w
+                                    && sb_row * sb_size + 64 <= h,
+                                depth_removal: sb_dr.map_or_else(Default::default, |r| r.ctrls),
+                                fast_lambda_8bit: sb_inter_lambda
+                                    .and_then(|v| v.get(sb_index))
+                                    .map_or(0, |l| l.fast_8bit),
+                                me_8x8_distortion: pd0_me(sb_index)
+                                    .map_or(0, |o| o.me_8x8_distortion),
+                                base_q_idx: u32::from(base_qindex),
+                                super_block_size: u32::try_from(sb_size).unwrap_or(u32::MAX),
+                            },
+                        )
+                    });
+                // The refinement path's PD0 model at the same per-SB level —
+                // C derives everything downstream of `pd0_detector` from the
+                // ONE `md_ctx->pd0_ctrls.pd0_level` it resolved.
+                let (pd0_refined_mode, pd0_refined_eexit_th, pd0_refined_rate_lvl) =
+                    crate::part_arm::refined_pd0_model(
+                        sc_arm,
+                        sb_pd0_det.map_or(0, |t| t.0),
+                        pd0_pred_depth_only,
+                    );
+                let pd0_refined_rate_lvl =
+                    pd0_refined_rate_lvl.unwrap_or(funnel_cfg.coeff_rate_est_lvl);
+                // `SVTAV1_PD0DBG`: the port-side twin of C's `SVT_PD0CFG_OUT`
+                // `lvl=`/`rate_lvl=` fields — the POST-detector values, so the
+                // two dumps join per superblock per frame.
+                #[cfg(feature = "std")]
+                if crate::dbgenv::pd0dbg()
+                    && let Some((lvl, rate_lvl, _, subres, _)) = sb_pd0_det
+                {
+                    eprintln!(
+                        "PD0CFG sb={sb_index} lvl={lvl} rate_lvl={rate_lvl} subres={subres} \
+                         ref0in={:?} ref1in={:?} lin={} tin={} lsk={} tsk={} \
+                         med={} mev={} edge={}",
+                        pd0_sb_in.ref_l0.was_intra,
+                        pd0_sb_in.ref_l1.was_intra,
+                        pd0_sb_in.left_sb_intra as u8,
+                        pd0_sb_in.top_sb_intra as u8,
+                        pd0_sb_in.left_sb_skip as u8,
+                        pd0_sb_in.top_sb_skip as u8,
+                        pd0_sb_in.me_64x64_distortion,
+                        pd0_sb_in.me_8x8_cost_variance,
+                        pd0_sb_in.is_edge_sb as u8,
+                    );
+                }
                 // Superres chunk B.4: this SB's entry in C's STALE variance
                 // array — the CODED grid's linear index into an array laid out
                 // on the FULL-RES grid (exactly the indexing C does after
@@ -13144,13 +13453,19 @@ fn encode_tile_rows(
                                 // `pd0::pd0_pick_sb_partition_video`. The
                                 // allintra arm below is untouched, so the still
                                 // envelope is byte-neutral by construction.
-                                let (pic_pd0_lvl, pd0_coeff_rate_est_lvl, accurate_part_ctx) =
-                                    crate::part_arm::video_pd0_params(
-                                        crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
-                                        u32::from(cli_qp),
-                                        w * h,
-                                        video_pic,
-                                    );
+                                // `sb_pd0_det` resolved the level + rate level
+                                // + subres step per superblock at the top of
+                                // the loop — `unreachable!` is off the arm
+                                // that guards this branch (`ScArm::Video`).
+                                let (
+                                    pic_pd0_lvl,
+                                    pd0_coeff_rate_est_lvl,
+                                    accurate_part_ctx,
+                                    sb_subres_step,
+                                    sb_parent_cost_bias,
+                                ) = sb_pd0_det.unwrap_or_else(|| {
+                                    unreachable!("ScArm::Video always builds sb_pd0_det")
+                                });
                                 let tables = m6_pd0_tables
                                     .get_or_insert_with(|| pd0_frame_tables(sb_qindex));
                                 crate::pd0::pd0_pick_sb_partition_video(
@@ -13191,6 +13506,12 @@ fn encode_tile_rows(
                                     // — the same value the refinement path gets.
                                     pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                     pd0_inter.as_ref(),
+                                    // `ctx->subres_ctrls.step`, resolved per
+                                    // superblock by `sb_pd0_det`.
+                                    Some(sb_subres_step),
+                                    // `ctx->parent_cost_bias`, same source —
+                                    // read only by the inter PD0_LVL_6 arm.
+                                    sb_parent_cost_bias,
                                 )
                             } else {
                                 crate::pd0::pd0_pick_sb_partition(
@@ -13433,108 +13754,183 @@ fn encode_tile_rows(
                                 // The Lvl0 helper's QP+8/closed-rate model is wrong here.
                                 // C caps lossless candidate squares at 8x8.
                                 let search_max_sq = if coded_lossless { 8 } else { max_tx_size };
-                                let eval = crate::pd0::pd0_pick_sb_partition_m6_eval(
-                                    // SB-EXTENT padded plane, not the raw frame:
-                                    // `compute_b64_variance` reads a full 64x64
-                                    // unclamped, so a partial SB must read C's
-                                    // replicated border rather than running off the
-                                    // end (or stride-wrapping into the next row).
-                                    // Identical to `encode_input`/`w` on a
-                                    // 64-aligned frame -- `sb_input_owned` is None
-                                    // there -- so this is byte-neutral.
-                                    sb_input,
-                                    in_stride,
-                                    x0,
-                                    y0,
-                                    cli_qp as u32,
-                                    sb_qindex,
-                                    // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
-                                    // ladder on `picture_qp` + the extended-CRF bump.
-                                    crate::pd0::frame_lambda_weight_for_preset(
-                                        speed_config.preset,
-                                        u32::from(picture_qp),
-                                        tune_iq,
-                                        lw_bump,
-                                    ),
-                                    tables,
-                                    if dr.disallow_4x4 { 8 } else { 4 },
-                                    // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
-                                    // (real PD0 coeff rate). M7/M8's level-2 PD0
-                                    // approximation only fires when this is >= 2.
-                                    if coded_lossless {
-                                        1
+                                let eval =
+                                    if matches!(sc_arm, crate::sc_detect::ScArm::Video { .. })
+                                        && sb_pd0_det.is_some_and(|t| (3..=6).contains(&t.0))
+                                    {
+                                        // The VIDEO arm's own PD0 entry point —
+                                        // the same one the non-refined arm takes
+                                        // below. `refined_pd0_model` carries only
+                                        // `Pd0Level`s 3 and 4 and falls back to
+                                        // LVL_1's block cost otherwise, so the
+                                        // M9+ `PD0_LVL_5` a video key frame
+                                        // resolves to (INVALID `coeff_lvl` arm of
+                                        // `set_pic_pd0_lvl_default`) was priced
+                                        // with the wrong model here — observed on
+                                        // `gradient 64x64 q55 p9` frame 0 as a
+                                        // 4x32x32-square tree where C's PD0+NSQ
+                                        // walk commits a 5-leaf H/V tree (C 289 B,
+                                        // port 406 B). `video_eval` has the real
+                                        // LVL_5 cost, the `use_accurate_part_ctx
+                                        // = 0` doubled SPLIT rate above M8, and
+                                        // the per-SB `subres_step`.
+                                        let (
+                                            pic_pd0_lvl,
+                                            pd0_coeff_rate_est_lvl,
+                                            accurate_part_ctx,
+                                            sb_subres_step,
+                                            sb_parent_cost_bias,
+                                        ) = sb_pd0_det.unwrap_or_else(|| {
+                                            unreachable!("ScArm::Video always builds sb_pd0_det")
+                                        });
+                                        crate::pd0::pd0_pick_sb_partition_video_eval(
+                                            sb_input,
+                                            in_stride,
+                                            x0,
+                                            y0,
+                                            cli_qp as u32,
+                                            sb_qindex,
+                                            crate::pd0::frame_lambda_weight_for_preset(
+                                                speed_config.preset,
+                                                u32::from(picture_qp),
+                                                tune_iq,
+                                                lw_bump,
+                                            ),
+                                            tables,
+                                            pic_pd0_lvl,
+                                            pd0_coeff_rate_est_lvl,
+                                            accurate_part_ctx,
+                                            nsq_geom_enabled,
+                                            // C `depth_early_exit_lvl` is 1 when
+                                            // `pd0_level <= PD0_LVL_1 ||
+                                            // ctx->pic_pred_depth_only`
+                                            // (enc_mode_config.c:7231-7233) —
+                                            // `refined_pd0_model`'s own `th`
+                                            // computation, minus its `_` arm's
+                                            // forced 1000.
+                                            pic_pd0_lvl <= 1 || pd0_pred_depth_only,
+                                            crate::pd0::input_resolution_factor(w * h),
+                                            w,
+                                            h,
+                                            tile_sb_row_start * sb_size,
+                                            tile_sb_col_start * sb_size,
+                                            sb_stale_vars,
+                                            search_max_sq,
+                                            pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                            crate::dbgenv::pd0_nosplit() && inter_md.is_some(),
+                                            pd0_inter.as_ref(),
+                                            Some(sb_subres_step),
+                                            sb_parent_cost_bias,
+                                        )
                                     } else {
-                                        pd0_refined_rate_lvl
-                                    },
-                                    if coded_lossless {
-                                        crate::pd0::Pd0Mode::Lvl1
-                                    } else {
-                                        pd0_refined_mode
-                                    },
-                                    if coded_lossless {
-                                        1000
-                                    } else {
-                                        pd0_refined_eexit_th
-                                    },
-                                    // max-block variance cap. Allintra: M8+
-                                    // only (`get_max_block_size_allintra`'s
-                                    // `base_var_th_cap` is `(uint16_t)~0`
-                                    // through M7). Video: never
-                                    // (`get_max_block_size_default` returns
-                                    // `super_block_size` outright). Either way
-                                    // false on this `refined` p<=5 branch —
-                                    // routed through the arm helper so the two
-                                    // PD0 call sites cannot drift apart.
-                                    crate::part_arm::max_block_cap_active(
-                                        sc_arm,
-                                        speed_config.preset,
-                                        true,
-                                    ),
-                                    // NSQ geometry: a one-false node keeps its
-                                    // edge shape when NSQ shapes exist, and
-                                    // force-splits when they do not (p4/p5, where
-                                    // `NsqCfg::for_preset_qp` is `off()`).
-                                    nsq_geom_enabled,
-                                    // ALIGNED dims — this `refined` path is
-                                    // full-SB-gated (see `refined` above), so the
-                                    // edge/off branches never fire; passing the
-                                    // frame dims keeps the predicate well-defined.
-                                    w,
-                                    h,
-                                    // Tile pixel origin (full-SB refined path is
-                                    // single-tile-only in the tested envelope; 0
-                                    // when untiled → byte-inert).
-                                    tile_sb_row_start * sb_size,
-                                    tile_sb_col_start * sb_size,
-                                    // Superres chunk B.4: this SB's STALE full-res variance entry.
-                                    sb_stale_vars,
-                                    // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
-                                    search_max_sq,
-                                    // C `pd0_use_src_samples` (video arm: recon).
-                                    pd0_video_recon.then_some((&tile_frame_recon[..], w)),
-                                    // PD0's INTER arm on the REFINEMENT path.
-                                    //
-                                    // MEASURED 2026-09-02 on `gradient 64x64
-                                    // q20 p6` frame 1, against C's own
-                                    // `SVT_PD0COST_OUT` + `SVT_PICKPART_OUT`:
-                                    // without it this call ran the ALLINTRA
-                                    // PD0 on an inter frame — a DC prediction
-                                    // (64x64 dist 2_045_904 against C's
-                                    // 50_800), the KEY-frame lambda (25650
-                                    // against C's 24898), and `min_sq` 8, so
-                                    // it evaluated EIGHTY nodes (1x64, 4x32,
-                                    // 15x16, 60x8) where C evaluates FIVE.
-                                    // C's own `dr=1/0/1/1` and the port's
-                                    // `PD0DR ... minsq=32` already AGREED on
-                                    // that superblock; the value simply never
-                                    // reached this entry point.
-                                    //
-                                    // `None` on a key frame and on every
-                                    // allintra cell (see `pd0_inter_base`),
-                                    // so the still envelope is untouched by
-                                    // construction.
-                                    pd0_inter.as_ref(),
-                                );
+                                        crate::pd0::pd0_pick_sb_partition_m6_eval(
+                                            // SB-EXTENT padded plane, not the raw frame:
+                                            // `compute_b64_variance` reads a full 64x64
+                                            // unclamped, so a partial SB must read C's
+                                            // replicated border rather than running off the
+                                            // end (or stride-wrapping into the next row).
+                                            // Identical to `encode_input`/`w` on a
+                                            // 64-aligned frame -- `sb_input_owned` is None
+                                            // there -- so this is byte-neutral.
+                                            sb_input,
+                                            in_stride,
+                                            x0,
+                                            y0,
+                                            cli_qp as u32,
+                                            sb_qindex,
+                                            // C `pcs->lambda_weight` (pd0::frame_lambda_weight): the PSNR
+                                            // ladder on `picture_qp` + the extended-CRF bump.
+                                            crate::pd0::frame_lambda_weight_for_preset(
+                                                speed_config.preset,
+                                                u32::from(picture_qp),
+                                                tune_iq,
+                                                lw_bump,
+                                            ),
+                                            tables,
+                                            if dr.disallow_4x4 { 8 } else { 4 },
+                                            // M4/M5: rate_est_level 1 -> coeff_rate_est_lvl 1
+                                            // (real PD0 coeff rate). M7/M8's level-2 PD0
+                                            // approximation only fires when this is >= 2.
+                                            if coded_lossless {
+                                                1
+                                            } else {
+                                                pd0_refined_rate_lvl
+                                            },
+                                            if coded_lossless {
+                                                crate::pd0::Pd0Mode::Lvl1
+                                            } else {
+                                                pd0_refined_mode
+                                            },
+                                            if coded_lossless {
+                                                1000
+                                            } else {
+                                                pd0_refined_eexit_th
+                                            },
+                                            // max-block variance cap. Allintra: M8+
+                                            // only (`get_max_block_size_allintra`'s
+                                            // `base_var_th_cap` is `(uint16_t)~0`
+                                            // through M7). Video: never
+                                            // (`get_max_block_size_default` returns
+                                            // `super_block_size` outright). Either way
+                                            // false on this `refined` p<=5 branch —
+                                            // routed through the arm helper so the two
+                                            // PD0 call sites cannot drift apart.
+                                            crate::part_arm::max_block_cap_active(
+                                                sc_arm,
+                                                speed_config.preset,
+                                                true,
+                                            ),
+                                            // NSQ geometry: a one-false node keeps its
+                                            // edge shape when NSQ shapes exist, and
+                                            // force-splits when they do not (p4/p5, where
+                                            // `NsqCfg::for_preset_qp` is `off()`).
+                                            nsq_geom_enabled,
+                                            // ALIGNED dims — this `refined` path is
+                                            // full-SB-gated (see `refined` above), so the
+                                            // edge/off branches never fire; passing the
+                                            // frame dims keeps the predicate well-defined.
+                                            w,
+                                            h,
+                                            // Tile pixel origin (full-SB refined path is
+                                            // single-tile-only in the tested envelope; 0
+                                            // when untiled → byte-inert).
+                                            tile_sb_row_start * sb_size,
+                                            tile_sb_col_start * sb_size,
+                                            // Superres chunk B.4: this SB's STALE full-res variance entry.
+                                            sb_stale_vars,
+                                            // C `static_config.max_tx_size` (tune IQ sets 32 at qp<=45).
+                                            search_max_sq,
+                                            // C `pd0_use_src_samples` (video arm: recon).
+                                            pd0_video_recon.then_some((&tile_frame_recon[..], w)),
+                                            // PD0's INTER arm on the REFINEMENT path.
+                                            //
+                                            // MEASURED 2026-09-02 on `gradient 64x64
+                                            // q20 p6` frame 1, against C's own
+                                            // `SVT_PD0COST_OUT` + `SVT_PICKPART_OUT`:
+                                            // without it this call ran the ALLINTRA
+                                            // PD0 on an inter frame — a DC prediction
+                                            // (64x64 dist 2_045_904 against C's
+                                            // 50_800), the KEY-frame lambda (25650
+                                            // against C's 24898), and `min_sq` 8, so
+                                            // it evaluated EIGHTY nodes (1x64, 4x32,
+                                            // 15x16, 60x8) where C evaluates FIVE.
+                                            // C's own `dr=1/0/1/1` and the port's
+                                            // `PD0DR ... minsq=32` already AGREED on
+                                            // that superblock; the value simply never
+                                            // reached this entry point.
+                                            //
+                                            // `None` on a key frame and on every
+                                            // allintra cell (see `pd0_inter_base`),
+                                            // so the still envelope is untouched by
+                                            // construction.
+                                            pd0_inter.as_ref(),
+                                            // `ctx->subres_ctrls.step` — the per-SB
+                                            // value `sig_deriv_enc_dec_pd0` resolved
+                                            // (video arm only; `None` on allintra
+                                            // keeps the level default).
+                                            sb_pd0_det.map(|t| t.3),
+                                        )
+                                    };
                                 // 8-BIT lambda even at bd10 — deliberate, not an
                                 // oversight. C's `perform_pred_depth_refinement`
                                 // (enc_dec_process.c:3017) runs INSIDE the window
@@ -13621,6 +14017,7 @@ fn encode_tile_rows(
                                                 // than the scan it caps would
                                                 // be worse than no fold.
                                                 pd0_inter.as_ref(),
+                                                sb_pd0_det.map(|t| t.3),
                                             )
                                             .max_min_picked(&mut mx, &mut mn);
                                         }
@@ -13854,19 +14251,18 @@ fn encode_tile_rows(
                                         // video arm — the two entry points build the
                                         // same `Pd0Ctx`, and `ires_factor` is read
                                         // only by LVL_5's closed form.
+                                        // `sb_pd0_det` resolved the level +
+                                        // rate level per superblock at the top
+                                        // of the loop (`ScArm::Video` guard).
                                         let (
                                             pic_pd0_lvl,
                                             pd0_coeff_rate_est_lvl,
                                             accurate_part_ctx,
-                                        ) = crate::part_arm::video_pd0_params(
-                                            crate::rate_arm::eff_enc_mode(
-                                                sc_arm,
-                                                speed_config.preset,
-                                            ),
-                                            u32::from(cli_qp),
-                                            w * h,
-                                            video_pic,
-                                        );
+                                            sb_subres_step,
+                                            sb_parent_cost_bias,
+                                        ) = sb_pd0_det.unwrap_or_else(|| {
+                                            unreachable!("ScArm::Video always builds sb_pd0_det")
+                                        });
                                         crate::pd0::pd0_pick_sb_partition_video_eval(
                                             sb_input,
                                             in_stride,
@@ -13902,6 +14298,8 @@ fn encode_tile_rows(
                                             pd0_video_recon.then_some((&tile_frame_recon[..], w)),
                                             crate::dbgenv::pd0_nosplit() && inter_md.is_some(),
                                             pd0_inter.as_ref(),
+                                            Some(sb_subres_step),
+                                            sb_parent_cost_bias,
                                         )
                                     } else {
                                         crate::pd0::pd0_pick_sb_partition_m6_eval(
@@ -13982,6 +14380,10 @@ fn encode_tile_rows(
                                             // a second `None` that hides an
                                             // arm decision.
                                             pd0_inter.as_ref(),
+                                            // Allintra keeps the level
+                                            // default — `sb_pd0_det` is None
+                                            // on this arm by construction.
+                                            None,
                                         )
                                     };
                                 #[cfg(feature = "std")]
@@ -14239,6 +14641,13 @@ fn encode_tile_rows(
                     tile_recon.extend_from_slice(&tile_frame_recon[src_off..src_off + sb_cur_w]);
                 }
                 if let Some(tree) = sb_result.tree {
+                    // C `update_b`'s `pcs->sb_intra[sb] |= is_intra` /
+                    // `pcs->sb_skip[sb] &= !block_has_coeff` fold — the
+                    // values the NEXT superblocks' `pd0_detector` neighbour
+                    // arms read.
+                    let (intra, skip) = tree.sb_intra_skip();
+                    sb_intra_acc[sb_index] = u8::from(intra);
+                    sb_skip_acc[sb_index] = u8::from(skip);
                     tile_trees.push(tree);
                 }
             }
@@ -16151,7 +16560,7 @@ mod inter_decision_probe {
     /// padded plane that were built but never consulted fails here.
     #[test]
     fn the_dpb_reference_carries_cs_replicated_margin() {
-        use crate::picture::REF_BORDER;
+        use crate::picture::ref_pic_border;
         use crate::rate_control::RcMode;
 
         let (w, h) = (64usize, 64usize);
@@ -16183,13 +16592,16 @@ mod inter_decision_probe {
             .padded
             .as_ref()
             .expect("a stored reference must carry its padded twin");
-        assert_eq!(padded.y.border, REF_BORDER);
+        // The reference-picture border is `sb_size + 32`
+        // (enc_handle.c:1212-1217), not the input-picture `scs->border`.
+        let ref_border = ref_pic_border(pipeline.sb_size, false);
+        assert_eq!(padded.y.border, ref_border);
         assert_eq!(padded.y.width, w);
         assert_eq!(padded.y.height, h);
         let (cu, cv) = padded.uv.as_ref().expect("4:2:0 chroma is reconstructed");
         // C `(border + ss_x) >> ss_x` at 4:2:0 (enc_dec_process.c:1102).
-        assert_eq!(cu.border, (REF_BORDER + 1) >> 1);
-        assert_eq!(cv.border, (REF_BORDER + 1) >> 1);
+        assert_eq!(cu.border, (ref_border + 1) >> 1);
+        assert_eq!(cv.border, (ref_border + 1) >> 1);
         assert_eq!((cu.width, cu.height), (w / 2, h / 2));
 
         // The recon this margin replicates. Reading it back off the bare
@@ -16198,7 +16610,7 @@ mod inter_decision_probe {
         let recon = &slot.y_plane;
         for r in 0..h {
             assert_eq!(padded.y.at(0, r as isize), recon[r * w]);
-            for d in 1..=REF_BORDER as isize {
+            for d in 1..=ref_border as isize {
                 assert_eq!(
                     padded.y.at(-d, r as isize),
                     recon[r * w],
@@ -16212,7 +16624,7 @@ mod inter_decision_probe {
             }
         }
         for c in 0..w {
-            for d in 1..=REF_BORDER as isize {
+            for d in 1..=ref_border as isize {
                 assert_eq!(
                     padded.y.at(c as isize, -d),
                     recon[c],

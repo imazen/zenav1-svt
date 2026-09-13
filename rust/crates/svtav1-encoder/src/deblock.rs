@@ -497,7 +497,10 @@ pub fn recondbg_dump(
     static CALL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
     let call = CALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     for (p, src, recon, w, h) in planes {
-        eprintln!("RECON_SSE call={call} plane={p} sse={}", plane_sse(src, recon, w, h));
+        eprintln!(
+            "RECON_SSE call={call} plane={p} sse={}",
+            plane_sse(src, recon, w, h)
+        );
         // Raw plane, tightly packed — same layout the C interposer writes
         // (its rows are buffer[p] + r*stride[p], stride removed), so the
         // two dump files diff byte-for-byte and the first differing offset

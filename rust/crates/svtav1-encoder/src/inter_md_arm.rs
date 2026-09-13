@@ -116,8 +116,8 @@
 //! `mv_is_already_injected` dedup.
 
 use crate::inter_me_arm::FrameMe;
-use crate::inter_mvp::NONE_FRAME;
 use crate::inter_mvp::InterMvpEnv;
+use crate::inter_mvp::NONE_FRAME;
 use crate::intrabc::TileMiBounds;
 use crate::intrabc_mvp::{MvpGrid, MvpMiEntry, derive_block_ctx};
 use crate::picture::PaddedRef;
@@ -735,27 +735,32 @@ impl crate::port_md::inject::InjectHooks for WarpHooks<'_> {
     fn search_compound_diff_wedge(&mut self, _cand: &mut crate::port_md::inject::InterCandidate) {}
 }
 
-/// `port_md::inject::inject_inter_candidates` (C `mode_decision.c:2836`)
-/// decides WHICH candidates exist; this fills its `InjectCtx` and turns each
-/// one into a motion-compensated prediction plus C's real
-/// `svt_aom_inter_fast_cost`. The returned order is the injector's, which is
-/// load-bearing — each stage sees the injected-MV log the previous ones
-/// filled, so `NEARESTMV` at the same MV suppresses the `NEWMV` duplicate.
-#[must_use]
-pub fn build_inter_candidates(
+/// The block-setup half of C's `md_product_coding_loop`: the per-reference
+/// MVP stacks and the ME/PME searches (`svt_aom_generate_av1_mvp_table` ->
+/// `read_refine_me_mvs` -> `pme_search`, product_coding_loop.c:9393-9447).
+///
+/// C runs this BEFORE `generate_md_stage_0_cand`, so `ctx->md_me_dist` /
+/// `md_pme_dist` already exist when `inject_intra_candidates` resolves
+/// `dc_cand_only_flag` via `eliminate_candidate_based_on_pme_me_results`
+/// (mode_decision.c:3576-3579). The funnel needs the same ordering: this
+/// runs before the intra candidate set is fixed, and
+/// [`build_inter_candidates`] consumes the result rather than re-searching.
+pub struct BlockPrelude {
+    /// C `ctx->ref_mv_stack[MODE_CTX_REF_FRAMES]`.
+    pub stacks: Vec<crate::inter_mvp::InterMvpStack>,
+    /// C `ctx->ref_mv_count[MODE_CTX_REF_FRAMES]`.
+    pub ref_mv_count: [u8; crate::inter_mvp::MODE_CTX_REF_FRAMES],
+    /// The search output — `md_me_dist()`/`md_pme_dist()` included.
+    pub search: crate::inter_search_arm::BlockSearchOut,
+}
+
+/// Build [`BlockPrelude`] for one block (see its doc for C's ordering).
+pub fn block_prelude(
     f: &InterMdFrame<'_>,
     b: &mut InterBlockCtx<'_>,
     lambda: u64,
     fast_lambda: u32,
-    // C `nic_pruning_ctrls->merge_inter_cands_mult` — the
-    // `generate_md_stage_0_cand_light_pd1` class-merge control
-    // (mode_decision.c:3638-3643).
-    merge_inter_cands_mult: u8,
-    warp_out: &mut WarpRefineBlock,
-) -> Vec<InterCandOut> {
-    use crate::port_md::inject::{CandArray, InjectCtx, WmCtrls, inject_inter_candidates};
-    use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef};
-
+) -> BlockPrelude {
     // --- The reference-MV stack, PER REFERENCE TYPE. C calls
     //     `svt_aom_generate_av1_mvp_table(ctx, ..., ctx->ref_frame_type_arr,
     //     ctx->tot_ref_frame_types, pcs)` (product_coding_loop.c:9393), i.e.
@@ -869,6 +874,58 @@ pub fn build_inter_candidates(
     {
         q.record_square(b.org_x, b.org_y, b.bw, search.sb_me_mv);
     }
+    BlockPrelude {
+        stacks,
+        ref_mv_count,
+        search,
+    }
+}
+
+/// `port_md::inject::inject_inter_candidates` (C `mode_decision.c:2836`)
+/// decides WHICH candidates exist; this fills its `InjectCtx` and turns each
+/// one into a motion-compensated prediction plus C's real
+/// `svt_aom_inter_fast_cost`. The returned order is the injector's, which is
+/// load-bearing — each stage sees the injected-MV log the previous ones
+/// filled, so `NEARESTMV` at the same MV suppresses the `NEWMV` duplicate.
+///
+/// `prelude` is this block's [`block_prelude`] output — C runs the MVP/ME
+/// searches at block setup, BEFORE the intra candidate set is decided
+/// (`eliminate_candidate_based_on_pme_me_results` reads `md_me_dist`), so the
+/// caller owns when they run.
+#[must_use]
+pub fn build_inter_candidates(
+    f: &InterMdFrame<'_>,
+    b: &mut InterBlockCtx<'_>,
+    lambda: u64,
+    // C `nic_pruning_ctrls->merge_inter_cands_mult` — the
+    // `generate_md_stage_0_cand_light_pd1` class-merge control
+    // (mode_decision.c:3638-3643).
+    merge_inter_cands_mult: u8,
+    prelude: BlockPrelude,
+    warp_out: &mut WarpRefineBlock,
+) -> Vec<InterCandOut> {
+    use crate::port_md::inject::{CandArray, InjectCtx, WmCtrls, inject_inter_candidates};
+    use crate::port_md::predicates::{InjectedMvLog, MeCandidateRef};
+
+    let BlockPrelude {
+        stacks,
+        ref_mv_count,
+        search,
+    } = prelude;
+    let ctx = derive_block_ctx(
+        (b.org_y / 4) as i32,
+        (b.org_x / 4) as i32,
+        b.bsize as usize,
+        f.mi_rows,
+        f.mi_cols,
+        f.tile,
+        f.sb_mi_size,
+    );
+    let grid = MvpGrid {
+        entries: b.grid,
+        stride: b.grid_stride,
+        base: (b.org_y / 4) as i32 * b.grid_stride + (b.org_x / 4) as i32,
+    };
 
     // C `merge_inter_cands` (mode_decision.c:3638-3643), computed once per
     // block in `generate_md_stage_0_cand_light_pd1`: when the best
@@ -1009,7 +1066,11 @@ pub fn build_inter_candidates(
         nmv_cost: &f.nmv,
         drl_mode_fac_bits: &f.fac.drl_mode,
         shut_fast_rate: false,
-        approx_inter_rate: 0,
+        // C `ctx->approx_inter_rate` — the PD_PASS_1 arms write it from
+        // `pcs->approx_inter_rate` (`sig_deriv_enc_dec_default`,
+        // enc_mode_config.c:7906; the light-PD1 arm's `MAX(1, ·)` differs
+        // only where `pcs` is 0, which this lane does not resolve).
+        approx_inter_rate: f.search.approx_inter_rate,
         total_me_cnt: me_cands.len(),
         me_cands: &me_cands,
         me_totals: &me_totals,
@@ -1156,9 +1217,8 @@ pub fn build_inter_candidates(
         // C `blk_ptr->inter_mode_ctx[ref_frame_type]` — the mode context of
         // the candidate's OWN reference TYPE, which for a compound pair is
         // the compound index (>= 8), not `ref_frame[0]`.
-        let imc = stacks
-            [crate::inter_mvp::av1_ref_frame_type(c.ref_frame).max(0) as usize]
-            .mode_context;
+        let imc =
+            stacks[crate::inter_mvp::av1_ref_frame_type(c.ref_frame).max(0) as usize].mode_context;
         let mut o = predict_and_price(f, b, c, imc, &stacks, lambda);
         // C `cand->cand_class` (mode_decision.c:3662-3669): `NEWMV` /
         // `NEW_NEWMV` — or ANY inter candidate when `merge_inter_cands`
@@ -1619,8 +1679,7 @@ fn predict_and_price(
     if let Some(hbd) = padded.hbd.as_ref() {
         y_pred10 = alloc::vec![0u16; b.bw * b.bh];
         let hbd1 = padded1.and_then(|p| p.hbd.as_ref());
-        let want_uv =
-            b.has_uv && hbd.uv.is_some() && hbd1.map_or(true, |h| h.uv.is_some());
+        let want_uv = b.has_uv && hbd.uv.is_some() && hbd1.is_none_or(|h| h.uv.is_some());
         if want_uv {
             u_pred10 = alloc::vec![0u16; cw * chh];
             v_pred10 = alloc::vec![0u16; cw * chh];
@@ -1745,7 +1804,10 @@ fn predict_and_price(
             ref_frames_num_bits,
             neighbors: &b.neighbors,
             overlappable_neighbors: b.overlappable_neighbors,
-            approx_inter_rate: 0,
+            // C `ctx->approx_inter_rate` — `sig_deriv_enc_dec_default`
+            // copies `pcs->approx_inter_rate` (enc_mode_config.c:7906);
+            // see the InjectCtx note above.
+            approx_inter_rate: f.search.approx_inter_rate,
             // C prices the interpolation filter at MDS0 only when
             // `ctx->ifs_ctrls.level == IFS_MDS0` (rd_cost.c:1179).
             //

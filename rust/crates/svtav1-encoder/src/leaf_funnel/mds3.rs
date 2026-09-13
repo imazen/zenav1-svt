@@ -873,11 +873,15 @@ fn eval_candidate(
             } else {
                 (0, 0)
             };
-            // TXT search over this txb. IntraBC txbs carry the
-            // INTER_TXT_DIR sentinel: the inter ext-tx set + the
-            // inter tx-type rate rows (tx_type_search is_inter).
-            let intra_dir = if cand.is_inter() {
+            // TXT search over this txb. Inter-classified txbs carry a
+            // sentinel: INTER_TXT_DIR for real inter (`pred_mode >=
+            // NEARESTMV`), IBC_TXT_DIR for IntraBC (the inter ext-tx set
+            // + inter tx-type rate rows, but the intra RDOQ rdmult and
+            // the intra-DC coeff-cost tx-type row — see coeff_rate.rs).
+            let intra_dir = if cand.inter.is_some() {
                 INTER_TXT_DIR
+            } else if cand.ibc.is_some() {
+                IBC_TXT_DIR
             } else if cand.fi != FI_NONE {
                 FIMODE_TO_INTRADIR[cand.fi as usize] as usize
             } else {
@@ -952,13 +956,17 @@ fn eval_candidate(
             );
             // SVTAV1_QLEV_XY="x,y": per-txb winner (tx_type, eob, levels)
             // at one pinned block, to join against the C `--wrap
-            // svt_aom_quantize_inv_quantize` QLEV dump.
+            // svt_aom_quantize_inv_quantize` QLEV dump. bd8 takes `out`;
+            // bd10's full-RD result is `out10`.
             #[cfg(feature = "std")]
-            if let Some(o) = &out10 {
+            {
                 static XY: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
                 if dbg_xy(&XY, "SVTAV1_QLEV_XY") == Some((abs_x, abs_y)) {
-                    let nz: alloc::vec::Vec<_> = o
-                        .qcoeff
+                    let (eob_d, qcoeff): (usize, &[i32]) = match &out10 {
+                        Some(o) => (usize::from(o.eob), &o.qcoeff),
+                        None => (usize::from(out.eob), &out.qcoeff),
+                    };
+                    let nz: alloc::vec::Vec<_> = qcoeff
                         .iter()
                         .enumerate()
                         .filter(|&(_, &v)| v != 0)
@@ -966,7 +974,7 @@ fn eval_candidate(
                         .collect();
                     eprintln!(
                         "PQLEV org=({abs_x},{abs_y}) d={depth} tx=({tx_x},{tx_y}) {txw}x{txh} txt={txt} eob={} nz=[{}]",
-                        o.eob,
+                        eob_d,
                         nz.join(",")
                     );
                 }
@@ -2816,14 +2824,9 @@ fn eval_candidate(
     // which is NOT gated on `block_has_coeff` or `blk_skip_decision` — it
     // runs whenever `cand->skip_mode_allowed`, so the pred dists must exist
     // for it too.
-    let sm_allowed = cand
-        .inter
-        .as_deref()
-        .is_some_and(|ic| ic.skip_mode_allowed);
+    let sm_allowed = cand.inter.as_deref().is_some_and(|ic| ic.skip_mode_allowed);
     let mut pred_dists: Option<(u64, u64)> = None;
-    if cand.inter.is_some()
-        && !frame.coded_lossless
-        && ((block_has_coeff && has_uv) || sm_allowed)
+    if cand.inter.is_some() && !frame.coded_lossless && ((block_has_coeff && has_uv) || sm_allowed)
     {
         // `y_distortion[DIST_SSD][1]` — the distortion with NO residual
         // coded, i.e. the prediction against the source, in the same

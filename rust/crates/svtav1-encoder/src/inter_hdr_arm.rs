@@ -29,7 +29,7 @@
 
 use crate::entropy::obu::InterSignal;
 use crate::port_enc_mode_config::md_config::MdConfigSignals;
-use crate::port_picstruct::{PicDecisionCtx, PicParams, REF_FRAMES, RefQueueEntry, SliceType};
+use crate::port_picstruct::{PicParams, REF_FRAMES, RefQueueEntry, SliceType};
 
 /// A field of the inter frame header this port cannot derive yet.
 ///
@@ -247,22 +247,26 @@ pub fn inter_signal(
     })
 }
 
-/// Build C's reference QUEUE out of the picture-decision shadow DPB.
+/// Build C's reference QUEUE out of a picture's DPB snapshot.
 ///
 /// `bind_refs_and_primary_ref_frame` resolves each reference POC through
-/// `search_ref_in_ref_queue`, so it needs one entry per picture currently in a
-/// DPB slot. C's queue is a separate list maintained by the picture manager;
-/// the shadow DPB carries the same POCs and temporal layers, which are the only
-/// two fields the `primary_ref_frame` rule reads.
+/// `search_ref_in_ref_queue`, so it needs one entry per picture that was in a
+/// DPB slot when `update_ref_poc_array` filled `ref_poc_array` — the
+/// [`crate::port_picstruct::PicParams::ref_queue_dpb`] snapshot, NOT the live
+/// shadow DPB, which `update_dpb` has already advanced past the references
+/// this picture's own refresh mask overwrote.
 ///
 /// `base_q_idx` / `slice_type` / `r0` are the reference-binding OUTPUTS
 /// (`ref_base_q_idx[][]` etc.), not inputs to `primary_ref_frame`; they are
 /// filled with the encode's own values so nothing downstream reads a sentinel.
 #[must_use]
-pub fn ref_queue_from_dpb(ctx: &PicDecisionCtx, base_q_idx: u8) -> alloc::vec::Vec<RefQueueEntry> {
+pub fn ref_queue_from_dpb(
+    dpb: &[crate::port_picstruct::DpbEntry; REF_FRAMES],
+    base_q_idx: u8,
+) -> alloc::vec::Vec<RefQueueEntry> {
     let mut out: alloc::vec::Vec<RefQueueEntry> = alloc::vec::Vec::with_capacity(REF_FRAMES);
     for slot in 0..REF_FRAMES {
-        let e = ctx.dpb[slot];
+        let e = dpb[slot];
         if out.iter().any(|q| q.picture_number == e.picture_number) {
             continue;
         }
@@ -301,6 +305,13 @@ pub struct PipelineMdInputs {
     pub temporal_layer_index: u8,
     /// `ppcs->hierarchical_levels`.
     pub hierarchical_levels: u8,
+    /// `ppcs->update_type` (`port_picstruct::set_frame_update_type`,
+    /// `pd_process.c:4591`). `None` when no picture decision ran — the
+    /// `intra_period <= 1` non-key shape this pipeline does not produce.
+    /// `set_cand_reduction_ctrls` reads it as `frame_is_leaf`
+    /// (`enc_mode_config.c:4100`), which is NOT `is_highest_layer`: the two
+    /// disagree on a flat GOP, where every non-key frame is `LF_UPDATE`.
+    pub update_type: Option<crate::port_picstruct::FrameUpdateType>,
     /// `ppcs->is_ref`.
     pub is_ref: bool,
     /// `pcs->slice_type == I_SLICE`.
@@ -422,10 +433,12 @@ pub fn md_config_inputs(
         // hierarchical_levels`: that paraphrase is FALSE on a flat GOP where
         // C's `is_highest_layer` (`pd_process.c:5560`, ANDs in
         // `hierarchical_levels != 0`) makes it TRUE. This site carried the
-        // paraphrase until 2026-09-04; its readers on the flat grid are
-        // `pic_lpd1_lvl` (no live consumer) and `set_cand_reduction_ctrls`'s
-        // `dc_only_th` / `skip_dc_th` (level 2 at p8: 10 vs the 200 the
-        // paraphrase produced), whose port consumer is not wired.
+        // paraphrase until 2026-09-04; its only flat-grid reader is
+        // `pic_lpd1_lvl` (no live consumer). `set_cand_reduction_ctrls`'s
+        // `dc_only_th` / `skip_dc_th` do NOT read this field — the encdec arm
+        // computes its own `is_not_last_layer` as `!frame_is_leaf`
+        // (`:4100`), which `enc_dec_cand_reduction` now reproduces from
+        // `update_type`.
         is_not_last_layer: !crate::port_picstruct::is_highest_layer(
             p.temporal_layer_index,
             p.hierarchical_levels,
@@ -490,12 +503,21 @@ pub fn enc_dec_cand_reduction(
         crate::port_enc_mode_config::encdec::CandReductionInputs {
             level: cand_reduction_level,
             is_lpd1: false,
-            // See `md_config_inputs`: C's `!ppcs->is_highest_layer`, TRUE on
-            // a flat GOP.
-            is_not_last_layer: !crate::port_picstruct::is_highest_layer(
-                p.temporal_layer_index,
-                p.hierarchical_levels,
-            ),
+            // C `is_not_last_layer = !frame_is_leaf(pcs->ppcs)` =
+            // `ppcs->update_type != LF_UPDATE` (`enc_mode_config.c:4100`),
+            // NOT the `!ppcs->is_highest_layer` `md_config_inputs` passes at
+            // `:8912`. The two disagree on a flat GOP: C forces
+            // `is_highest_layer` false there (`pd_process.c:5560`) while the
+            // non-key frame IS a leaf, so this arm must answer false —
+            // `dc_only_th` 200, not the 10 the `is_highest_layer` spelling
+            // produced here until 2026-09-05.
+            //
+            // A `None` `update_type` (no picture decision — unreachable on
+            // this pipeline's inter frames) keeps the value the old spelling
+            // computed rather than inventing a leaf answer.
+            is_not_last_layer: p
+                .update_type
+                .is_none_or(|ut| !crate::port_picstruct::frame_is_leaf(ut)),
             use_flat_ipp: false,
             picture_qp: p.picture_qp,
             me_8x8_cost_variance: u32::MAX,
@@ -525,6 +547,8 @@ mod cand_reduction_tests {
             picture_qp: 40,
             temporal_layer_index: 0,
             hierarchical_levels: 0,
+            // A flat low-delay non-key frame is `LF_UPDATE` — a LEAF.
+            update_type: Some(crate::port_picstruct::FrameUpdateType::Lf),
             is_ref: true,
             is_islice: false,
             sc_class5: 0,
@@ -612,6 +636,44 @@ mod cand_reduction_tests {
                 cr.near_count_ctrls.near_count
             );
         }
+    }
+
+    /// `set_cand_reduction_ctrls`'s regular arm reads `is_not_last_layer` as
+    /// `!frame_is_leaf` = `update_type != LF_UPDATE` (`enc_mode_config.c:4100`)
+    /// — NOT `!is_highest_layer` (`:8912`). The two disagree on a flat GOP:
+    /// `is_highest_layer` is forced false (`pd_process.c:5560`) while the
+    /// frame IS a leaf. Level 2 (the M9/M10 video arm) prices the difference
+    /// in `dc_only_th`: 200 on a leaf, 10 otherwise. Measured on
+    /// `inter-pd0-below-minsq-104-p10`: the `!is_highest_layer` spelling gave
+    /// `dc_only_th * area = 10*128 = 1280`, which let a SMOOTH candidate
+    /// C eliminates (`me_dist` ~1900 < `200*128 = 25600`) win a transform
+    /// type C never reaches.
+    #[test]
+    fn cand_reduction_dc_only_th_reads_frame_is_leaf_not_is_highest_layer() {
+        use crate::port_picstruct::FrameUpdateType;
+        let mut leaf = inputs(10);
+        leaf.update_type = Some(FrameUpdateType::Lf);
+        let mut non_leaf = leaf.clone();
+        non_leaf.update_type = Some(FrameUpdateType::Gf);
+        let mut absent = leaf.clone();
+        absent.update_type = None;
+
+        let th = |mi: &PipelineMdInputs| {
+            enc_dec_cand_reduction(mi, 2)
+                .expect("level 2 is inside C's switch")
+                .cand_elimination_ctrls
+                .dc_only_th
+        };
+        // Leaf (LF_UPDATE): `is_not_last_layer` false -> 200.
+        assert_eq!(th(&leaf), 200);
+        // Non-leaf (GF_UPDATE): `is_not_last_layer` true -> 10.
+        assert_eq!(th(&non_leaf), 10);
+        // No picture decision: the value the old `!is_highest_layer`
+        // spelling computed on a flat GOP — preserved, not invented.
+        assert_eq!(th(&absent), 10);
+        // Positive control: level 2 really does enable elimination here.
+        let cr = enc_dec_cand_reduction(&leaf, 2).expect("level 2");
+        assert_eq!(cr.cand_elimination_ctrls.enabled, 1);
     }
 }
 

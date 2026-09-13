@@ -401,6 +401,9 @@ fn mrp_for_preset(preset: u8) -> pp::MrpCtrls {
         ld_reduce_ref_buffs: 0,
         flat_max_refs: 0,
         early_hme_l0_prune_th: 0,
+        only_l_bwd: 0,
+        pme_ref0_only: 0,
+        use_best_references: 0,
     };
     match preset {
         // mrp level 6 (`:3450`) — preset 8 (`enc_mode <= ENC_M8`).

@@ -926,6 +926,10 @@ pub struct SubpelMdContext {
     /// OUT: C `ctx->fp_me_dist[list_idx][ref_idx]`, written when
     /// `search_stage == SPEL_ME`.
     pub fp_me_dist: u32,
+    /// OUT: C's `int* distortion` out-param of `find_best_sub_pixel_tree*` —
+    /// the winner's raw prediction error (no MV rate folded in). Written by
+    /// `md_subpel_search` after the tree returns.
+    pub final_distortion: i32,
 }
 
 /// C `svt_av1_find_best_sub_pixel_tree_pruned` (mcomp.c:599-679, EXPORTED).

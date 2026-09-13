@@ -225,15 +225,15 @@ static void dump_pd0_tree(FILE* f, const PC_TREE* t, unsigned poc, int islice) {
     }
 }
 
-static void dump_pd0_costs(FILE* f, const PC_TREE* t) {
+static void dump_pd0_costs(FILE* f, const PC_TREE* t, unsigned poc) {
     if (!t)
         return;
     if (t->tested_blk[PART_N][0] && t->block_data[PART_N][0])
-        fprintf(f, "PD0SQ mi=(%d,%d) bsize=%d cost=%llu\n", t->mi_row, t->mi_col,
+        fprintf(f, "PD0SQ poc=%u mi=(%d,%d) bsize=%d cost=%llu\n", poc, t->mi_row, t->mi_col,
                 (int)t->bsize, (unsigned long long)t->block_data[PART_N][0]->cost);
     if (block_size_wide[t->bsize] > 4)
         for (int i = 0; i < 4; ++i)
-            dump_pd0_costs(f, t->split[i]);
+            dump_pd0_costs(f, t->split[i], poc);
 }
 
 bool __wrap_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSet* pcs, ModeDecisionContext* ctx,
@@ -243,7 +243,7 @@ bool __wrap_svt_aom_pick_partition_pd0(SequenceControlSet* scs, PictureControlSe
     if (all_path && *all_path) {
         FILE* all_file = fopen(all_path, "a");
         if (all_file) {
-            dump_pd0_costs(all_file, pc_tree);
+            dump_pd0_costs(all_file, pc_tree, (unsigned)pcs->picture_number);
             fclose(all_file);
         }
     }
@@ -528,7 +528,7 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
                 (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, component_type, (int)txsize, (int)tx_type,
                 (unsigned)*eob, (int)is_encode_pass, (unsigned)bit_depth, (unsigned)qindex);
         int emitted = 0;
-        for (int i = 0; i < n && emitted < 48; ++i)
+        for (int i = 0; i < n && emitted < 1024; ++i)
             if (quant_coeff[i])
                 fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, quant_coeff[i]);
         /* task #94 bd10 recon-drift: also dump recon_coeff (the DEQUANTIZED
@@ -536,7 +536,7 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
          * dqcoeff can be compared directly — isolates dequant from inv-tx. */
         fprintf(f, "] dq=[");
         emitted = 0;
-        for (int i = 0; i < n && emitted < 48; ++i)
+        for (int i = 0; i < n && emitted < 1024; ++i)
             if (recon_coeff[i])
                 fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, recon_coeff[i]);
         /* The PRE-quant transform coefficients. Without these a levels-only
@@ -545,7 +545,7 @@ uint8_t __wrap_svt_aom_quantize_inv_quantize(PictureControlSet* pcs, ModeDecisio
          * divergence on the video-mode reference cell turns on. */
         fprintf(f, "] co=[");
         emitted = 0;
-        for (int i = 0; i < n && emitted < 48; ++i)
+        for (int i = 0; i < n && emitted < 1024; ++i)
             if (coeff[i])
                 fprintf(f, "%s%d:%d", emitted++ ? "," : "", i, coeff[i]);
         fprintf(f, "]\n");
@@ -1657,13 +1657,44 @@ EbErrorType __wrap_svt_aom_full_cost_pd0(ModeDecisionContext* ctx, ModeDecisionC
             if (!f)
                 f = fopen(path, "w");
             if (f) {
-                fprintf(f, "PD0COST org=(%u,%u) %ux%u dist=%llu ybits=%llu cost=%llu lambda=%llu mv=%d,%d ref=%d\n",
+                fprintf(f, "PD0COST poc=%u org=(%u,%u) %ux%u dist=%llu ybits=%llu cost=%llu lambda=%llu mv=%d,%d ref=%d\n",
+                        (unsigned)ctx->sb_ptr->pcs->picture_number,
                         (unsigned)ctx->blk_org_x, (unsigned)ctx->blk_org_y, block_size_wide[ctx->blk_geom->bsize],
                         block_size_high[ctx->blk_geom->bsize], (unsigned long long)y_distortion[0],
                         (unsigned long long)*y_coeff_bits, (unsigned long long)*(cand_bf->full_cost),
                         (unsigned long long)lambda,
                         (int)cand_bf->cand->block_mi.mv[0].y, (int)cand_bf->cand->block_mi.mv[0].x,
                         (int)cand_bf->cand->block_mi.ref_frame[0]);
+                if (getenv("SVT_PD0PRED")) {
+                    /* Winner's prediction block, row by row — joined against
+                     * the port's PD0PRED on org+shape. */
+                    const int bw_ = block_size_wide[ctx->blk_geom->bsize];
+                    const int bh_ = block_size_high[ctx->blk_geom->bsize];
+                    fprintf(f, "PD0PRED org=(%u,%u) %ux%u", (unsigned)ctx->blk_org_x,
+                            (unsigned)ctx->blk_org_y, bw_, bh_);
+                    for (int r = 0; r < bh_ && r < 4; ++r) {
+                        fprintf(f, " r%d=", r);
+                        for (int c = 0; c < bw_ && c < 16; ++c)
+                            fprintf(f, "%d,", (int)cand_bf->pred->y_buffer[r * cand_bf->pred->y_stride + c]);
+                    }
+                    /* The reference block itself at (org + mv>>3) — integer-pel
+                     * reads, which is what an integer MV's pred IS. */
+                    const MvReferenceFrame rf_ = cand_bf->cand->block_mi.ref_frame[0];
+                    EbPictureBufferDesc*  refp =
+                        svt_aom_get_ref_pic_buffer(ctx->sb_ptr->pcs, rf_);
+                    if (refp && refp->y_buffer) {
+                        const int rx = (int)ctx->blk_org_x + (cand_bf->cand->block_mi.mv[0].x >> 3);
+                        const int ry = (int)ctx->blk_org_y + (cand_bf->cand->block_mi.mv[0].y >> 3);
+                        fprintf(f, " REF@%d,%d", rx, ry);
+                        for (int r = 0; r < bh_ && r < 4; ++r) {
+                            fprintf(f, " r%d=", r);
+                            for (int c = 0; c < bw_ && c < 16; ++c)
+                                fprintf(f, "%d,",
+                                        (int)refp->y_buffer[(ry + r) * refp->y_stride + rx + c]);
+                        }
+                    }
+                    fprintf(f, "\n");
+                }
                 fflush(f);
             }
         }
@@ -2183,6 +2214,12 @@ EbErrorType __wrap_svt_aom_motion_estimation_b64(PictureParentControlSet* pcs, u
             (unsigned)me_ctx->performed_phme[0][0][0],
             (unsigned)me_ctx->performed_phme[0][0][1],
             (unsigned)me_ctx->zz_sad[0][0]);
+    if (pcs->pa_me_data == NULL || pcs->pa_me_data->me_results[b64_index] == NULL) {
+        /* Temporal-filtering ME runs the same entry point with no per-SB
+         * results array — nothing below is populated. */
+        fflush(f);
+        return rc;
+    }
     {
         const uint32_t mv64 = me_ctx->p_sb_best_mv[0][0][0];
         fprintf(f,
@@ -2289,7 +2326,7 @@ int __wrap_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, 
         const uint8_t              ri  = (uint8_t)ms_params->ref_idx;
         fprintf(f,
                 "SUBPEL stage=%d org=(%u,%u) bsize=%d bw=%u bh=%u sq=%u li=%u ri=%u"
-                " start=(%d,%d) best=(%d,%d) err=%d refmv=(%d,%d)"
+                " start=(%d,%d) best=(%d,%d) err=%d dist=%d mvc0=%d refmv=(%d,%d)"
                 " epb=%d spb=%d mct=%d flam=%u fastlam=%u"
                 " fpme=(%d,%d) subme=(%d,%d) fpdist=%u pscost=%u"
                 " mvpn=%d bestidx=%d bestdist=%u mvp=",
@@ -2297,6 +2334,13 @@ int __wrap_svt_av1_find_best_sub_pixel_tree_pruned(void* ictx, MacroBlockD* xd, 
                 (int)bsize, (unsigned)ctx->blk_geom->bwidth, (unsigned)ctx->blk_geom->bheight,
                 (unsigned)ctx->blk_geom->sq_size, (unsigned)li, (unsigned)ri,
                 (int)start_mv.y, (int)start_mv.x, (int)bestmv->y, (int)bestmv->x, rc,
+                distortion ? *distortion : -1,
+                (ms_params->mv_cost_params.mvcost && ms_params->mv_cost_params.mvcost[0])
+                    ? svt_aom_mv_err_cost(&start_mv, ms_params->mv_cost_params.ref_mv,
+                                          ms_params->mv_cost_params.mvjcost,
+                                          (const int* const*)ms_params->mv_cost_params.mvcost,
+                                          ms_params->mv_cost_params.error_per_bit)
+                    : -1,
                 (int)ms_params->mv_cost_params.ref_mv->y, (int)ms_params->mv_cost_params.ref_mv->x,
                 (int)ms_params->mv_cost_params.error_per_bit,
                 (int)ms_params->mv_cost_params.sad_per_bit,

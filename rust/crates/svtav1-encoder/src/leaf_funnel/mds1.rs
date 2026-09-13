@@ -100,10 +100,15 @@ pub(super) fn run_mds1(
         // didn't, under-pricing fi=V/H/D157 coeff rates by the row delta
         // (g128 q20 p0 16x4@(2,0): C ycb higher by exactly 630/684/736 for
         // fi=1/2/3 with bit-equal dists; fi=0/4 map to DC and matched).
-        let intra_dir = if cand.is_inter() {
-            // IBC chunk 7: inter-classified — the coeff cost's tx-type
-            // rate reads the INTER rows (av1_txt_rate_est is_inter arm).
+        let intra_dir = if cand.inter.is_some() {
+            // Real inter — ext-tx set, tx-type rows and the RDOQ rdmult
+            // all read the inter axis (`pred_mode >= NEARESTMV`).
             INTER_TXT_DIR
+        } else if cand.ibc.is_some() {
+            // IBC chunk 7: inter-classified for the ext-tx set and the
+            // txt-search rate rows, but the intra RDOQ rdmult and the
+            // intra-DC coeff-cost tx-type row (coeff_rate.rs quirk).
+            IBC_TXT_DIR
         } else if cand.fi != FI_NONE {
             FIMODE_TO_INTRADIR[cand.fi as usize] as usize
         } else {
@@ -318,8 +323,16 @@ pub(super) fn run_mds1(
             if crate::dbgenv::canddbg() && crate::depth_refine::nsqdbg_here(abs_x, abs_y) {
                 eprintln!(
                     "NSQDBG SKIPDEC mi=({},{}) {}x{} skip={} nonskip={} dpred={} dres={} hasuv={} skipr={}",
-                    abs_y / 4, abs_x / 4, w, h, skip_cost, non_skip_cost, dec_dist_pred, dec_dist,
-                    has_uv, rates.skip[skip_ctx][1]
+                    abs_y / 4,
+                    abs_x / 4,
+                    w,
+                    h,
+                    skip_cost,
+                    non_skip_cost,
+                    dec_dist_pred,
+                    dec_dist,
+                    has_uv,
+                    rates.skip[skip_ctx][1]
                 );
             }
             if skip_cost < non_skip_cost {

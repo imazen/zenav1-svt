@@ -109,10 +109,11 @@ pub(super) fn txt_search(
         };
     }
     let c_tx = cc::tx_size_from_dims(w, h);
-    // IBC chunk 7: the INTER_TXT_DIR sentinel marks an IntraBC txb — the
-    // whole search then runs over the INTER ext-tx machinery
-    // (tx_type_search's `is_inter`, product_coding_loop.c:4597-4601).
-    let is_inter = intra_dir == INTER_TXT_DIR;
+    // IBC chunk 7: inter-classified txbs (real inter + IntraBC) carry the
+    // sentinels — the whole search then runs over the INTER ext-tx
+    // machinery (tx_type_search's `is_inter`, product_coding_loop.c
+    // :4597-4601, `is_inter_mode(mode) || use_intrabc`).
+    let is_inter = inter_txt_dir(intra_dir);
     // search_dct_dct_only (product_coding_loop.c:4601): txt disabled
     // (eff-M9 txt_level 0 -> !mds_do_txt), dims > 32, a single-type ext
     // set, or ext set index 0.
@@ -121,20 +122,26 @@ pub(super) fn txt_search(
         || h > 32
         || cc::ext_tx_types(c_tx, is_inter, false) == 1
         || cc::ext_tx_set(c_tx, is_inter, false) == 0;
-    // get_tx_type_group (product_coding_loop.c:4358): per-preset intra
-    // group counts (M6 txt_level 8: ge16 4 / lt16 5; M5 txt_level 3:
-    // 6 / 6 — the dump's txt_ge16/txt_lt16); depth-1 offset 3 (min 1).
-    // INTER groups: at every IBC preset (M0-M4, txt_level 2/3) the C
-    // inter group counts EQUAL the intra ones (both MAX=6/6,
-    // set_txt_controls cases 2-3, enc_mode_config.c:3927-3955), so the
-    // intra config fields are reused; presets >= M5 have allow_intrabc=0
-    // so the inter arm is unreachable there.
+    // get_tx_type_group (product_coding_loop.c:4358): the group-count pair is
+    // chosen on `is_intra_mode(cand->block_mi.mode)` — REAL inter blocks
+    // (mode >= NEARESTMV, the INTER_TXT_DIR sentinel) take
+    // `txt_group_inter_*`, while intra AND IntraBC (block_mi.mode = DC_PRED)
+    // take the intra pair. The pairs split at txt_level 6+: at level 9 the
+    // inter row is 3/2 where the intra row is 4/3, so a real-inter block
+    // never iterates group 4's IDTX or group 5's flip/ADST-1D types.
+    let intra_mode_groups = intra_dir != INTER_TXT_DIR;
     let mut groups: i32 = if only_dct {
         1
     } else if w >= 16 && h >= 16 {
-        frame.cfg.txt_group_ge16
-    } else {
+        if intra_mode_groups {
+            frame.cfg.txt_group_ge16
+        } else {
+            frame.cfg.txt_group_inter_ge16
+        }
+    } else if intra_mode_groups {
         frame.cfg.txt_group_lt16
+    } else {
+        frame.cfg.txt_group_inter_lt16
     };
     if depth == 1 && !only_dct {
         groups = (groups - frame.cfg.txt_d1_off).max(1);
@@ -152,16 +159,23 @@ pub(super) fn txt_search(
     ];
 
     let set_type = cc::ext_tx_set_type(c_tx, is_inter, false);
-    // qp-scaled SATD early-exit th (satd_th_q_weight = 1; intra th 10 at
-    // M6, 15 at M5 — txt_satd_intra in the dumps). INTER th: equal to the
-    // intra th at every IBC preset (M0-M3: 20/20, M4: 15/15 —
-    // set_txt_controls cases 2-3), so the intra field is reused (same
-    // reasoning as the group counts above).
+    // qp-scaled SATD early-exit th (satd_th_q_weight = 1). The threshold is
+    // chosen on C's `is_inter` = `is_inter_mode(mode) || use_intrabc`
+    // (product_coding_loop.c:4633) — real inter AND IntraBC take the inter
+    // th, which is HALF the intra one at every level >= 5 (5 vs 10). Using
+    // the intra th for inter trials admits tx types C's screen rejects —
+    // measured on the 104x104 p10 inter cell, where an IDTX trial at
+    // satd-best delta 3.1% survives th=6 but not C's th=3.
     let (qw, qwd) = qp_scale_factors(frame.cli_qp);
     let satd_th = if only_dct {
         0
     } else {
-        div_round(frame.cfg.txt_satd_th * qw, qwd)
+        let th = if is_inter {
+            frame.cfg.txt_satd_th_inter
+        } else {
+            frame.cfg.txt_satd_th
+        };
+        div_round(th * qw, qwd)
     } as i64;
 
     // C's level-0 closed form replaces `out.bits`, which also feeds the

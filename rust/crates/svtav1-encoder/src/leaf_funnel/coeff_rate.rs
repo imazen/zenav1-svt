@@ -130,14 +130,16 @@ fn cost_coeffs_txb_inner(
         // coeff-cost's tx-type rate keys `is_inter` on
         // `is_inter_mode(mode)` WITHOUT `|| use_intrabc` — an IntraBC
         // candidate (mode DC_PRED, fi off) therefore prices its tx type
-        // on the INTRA rows at intra_dir = DC (the WRITE path and the
-        // txt-search set/gates stay inter-classified). Witnessed:
+        // on the INTRA rows at intra_dir = DC, while a real inter block
+        // keeps the INTER rows (INTER_TXT_DIR passes straight through).
+        // The WRITE path and the txt-search set/gates stay inter-classified
+        // for both. Witnessed:
         // gui_p4_q48 mi(62,32) IBC 8x8/d1 — C's V_DCT txb costs read the
         // intra-DC row (~1.9k) where the inter row is 2504 (default),
         // flipping both the per-txb TXT winners ({0,10,0,10} vs the
         // port's {0,0,0,10}) and the candidate's total coeff rate (C ycb
         // 29518 vs port 32124) -> the IBC-vs-intra arbitration.
-        let cost_dir = if intra_dir == INTER_TXT_DIR {
+        let cost_dir = if intra_dir == IBC_TXT_DIR {
             0
         } else {
             intra_dir

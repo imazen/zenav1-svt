@@ -3146,6 +3146,7 @@ mod tests {
                 None,
                 // These are KEY-frame scans (no reference exists in a unit test).
                 None,
+                None,
             );
             assert!(eval.split, "q{qp}: PD0 splits the 64");
             let scan = build_refined_scan(&eval, &ctrls, lambda, &tables);
@@ -3183,6 +3184,7 @@ mod tests {
             64,
             None,
             // These are KEY-frame scans (no reference exists in a unit test).
+            None,
             None,
         );
         assert!(!eval.split);
@@ -3223,6 +3225,7 @@ mod tests {
             64,
             None,
             // These are KEY-frame scans (no reference exists in a unit test).
+            None,
             None,
         );
         assert!(eval.split);
@@ -3330,8 +3333,10 @@ mod tests {
         let ctrls = DrCtrls::for_preset(4);
         let tables = crate::pd0::build_m6_pd0_tables(160);
 
-        let scan64 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 64, 64, None);
-        let scan32 = build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 32, 64, None);
+        let scan64 =
+            build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 64, 64, None);
+        let scan32 =
+            build_refined_scan_at(&eval, &ctrls, 248207, &tables, 0, 0, None, 32, 64, None);
 
         // At max_tx_size 32 the 32x32 nodes ARE the max square, so C forces
         // s_depth = 0 -- they must not request their 64x64 parent.

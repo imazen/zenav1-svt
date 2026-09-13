@@ -949,6 +949,9 @@ pub(super) fn tx_unit_inner(
                     false,
                     frame.sharp_tx_active && plane_type == 0,
                     frame.rdoq_allintra_rd_mult,
+                    // C `pred_mode >= NEARESTMV` — real inter only, so
+                    // the IBC sentinel stays on the intra axis.
+                    intra_dir == INTER_TXT_DIR,
                 ),
                 sharpness_flag: frame.sharp_tx_active && plane_type == 0,
                 iwt: qm.map(|(_, iwt)| iwt),
@@ -1721,6 +1724,10 @@ pub(super) fn tx_unit_hbd_screened(
                     false,
                     false,
                     allintra_rd_mult,
+                    // C `pred_mode >= NEARESTMV` — same axis as the u8
+                    // twin; `rd == None` is the level-only re-encode
+                    // post-pass (stills, always intra).
+                    rd.is_some_and(|a| a.intra_dir == INTER_TXT_DIR),
                 ),
                 sharpness_flag: false,
                 // The trellis dequant must use the SAME matrix as the quantize
@@ -1853,7 +1860,14 @@ pub(super) fn tx_unit_hbd_screened(
                     ) as u64;
                 }
                 let dist_pred = (svtav1_dsp::hbd::full_distortion_kernel16_bits(
-                    src, src_off, src_stride, pred, pred_off, pred_stride, crop_w, crop_h,
+                    src,
+                    src_off,
+                    src_stride,
+                    pred,
+                    pred_off,
+                    pred_stride,
+                    crop_w,
+                    crop_h,
                 )) << 4;
                 (sse << 4, dist_pred)
             } else {
@@ -1875,7 +1889,11 @@ pub(super) fn tx_unit_hbd_screened(
                 dp += three_quad_energy;
                 let shift = (1 - log_scale) * 2;
                 let dist = if shift < 0 { d << (-shift) } else { d >> shift };
-                let dist_pred = if shift < 0 { dp << (-shift) } else { dp >> shift };
+                let dist_pred = if shift < 0 {
+                    dp << (-shift)
+                } else {
+                    dp >> shift
+                };
                 (dist, dist_pred)
             };
             let real_bits = if eob > 0 {

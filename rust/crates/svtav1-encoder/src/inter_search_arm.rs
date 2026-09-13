@@ -54,15 +54,15 @@
 
 use crate::inter_mvp::{InterMvpStack, av1_set_ref_frame, get_list_idx, get_ref_frame_idx};
 use crate::picture::PaddedRef;
-use crate::port_md::predicates::{
-    InterCandGroup, MAX_NUM_OF_REF_PIC_LIST, TOT_INTER_GROUP, is_valid_unipred_ref,
-};
 use crate::port_md::md_search::{
     DistortionType, FullPelCtx, MdPmeCtrls, PlaneDistortion, RefPicGeom, RefineMeIn,
     SubpelBlockGeom, best_mvp_by_distortion, build_single_ref_mvp_list, md_subpel_search,
     pme_search_for_ref, refine_me_mv_for_ref,
 };
 use crate::port_md::pme::{MvCostParams, MvCostTable};
+use crate::port_md::predicates::{
+    InterCandGroup, MAX_NUM_OF_REF_PIC_LIST, TOT_INTER_GROUP, is_valid_unipred_ref,
+};
 use alloc::vec::Vec;
 use svtav1_types::motion::Mv;
 
@@ -611,9 +611,15 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 .copied()
                 .unwrap_or(Mv::ZERO),
             fp_me_dist: 0,
+            final_distortion: 0,
         };
         let mut subpel = |mv: &mut Mv| -> u32 {
-            md_subpel_search(
+            let fpme_mv = *mv;
+            let start_mv = Mv {
+                x: (mv.x >> 3).wrapping_mul(8),
+                y: (mv.y >> 3).wrapping_mul(8),
+            };
+            let err = md_subpel_search(
                 crate::md_subpel::SPEL_ME,
                 &cfg.md_subpel_me,
                 geom,
@@ -634,7 +640,63 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 p.y.stride,
                 Some(&mut sub_ctx),
                 mv,
-            )
+            );
+            // `SVTAV1_SUBPEL`: the port-side twin of the C interposer's
+            // `SVT_SUBPEL_OUT` (wrap_recon.c's `__wrap_svt_av1_find_best_
+            // sub_pixel_tree_pruned`), same field order so the two dumps join
+            // line for line. `fpme` is the just-computed fp result (== `start`
+            // pre-truncation); `subme`/`pscost` are the PREVIOUS block's stale
+            // `ctx` values, matching C's read-before-write timing.
+            #[cfg(feature = "std")]
+            if crate::dbgenv::subpeldbg() {
+                let s = &st[li][ri];
+                std::eprint!(
+                    "SUBPEL stage=0 org=({},{}) bsize={} bw={} bh={} sq={} li={} ri={}\
+                     start=({},{}) best=({},{}) err={} dist={} refmv=({},{})\
+                     epb={} spb={} mct={} flam={} fastlam={}\
+                     fpme=({},{}) subme=({},{}) fpdist={} pscost={}\
+                     mvpn={} bestidx={} bestdist={} mvp=",
+                    b.org_x,
+                    b.org_y,
+                    b.bsize,
+                    b.bw,
+                    b.bh,
+                    geom.sq_size,
+                    li,
+                    ri,
+                    start_mv.y,
+                    start_mv.x,
+                    mv.y,
+                    mv.x,
+                    err,
+                    sub_ctx.final_distortion,
+                    ref_mv.y,
+                    ref_mv.x,
+                    ((b.full_lambda_8bit >> crate::intrabc::RD_EPB_SHIFT).max(1)),
+                    cfg.sad_per_bit,
+                    if cfg.md_subpel_me.skip_diag_refinement >= 3 {
+                        4
+                    } else {
+                        0
+                    },
+                    b.full_lambda_8bit,
+                    b.fast_lambda_8bit,
+                    fpme_mv.y,
+                    fpme_mv.x,
+                    s.sub_me_mv.y,
+                    s.sub_me_mv.x,
+                    sub_ctx.fp_me_dist,
+                    s.post_subpel_me_mv_cost,
+                    s.mvps.len(),
+                    s.best_fp_mvp_idx,
+                    s.best_fp_mvp_dist,
+                );
+                for (k, m) in s.mvps.iter().enumerate() {
+                    std::eprint!("{}({},{})", if k > 0 { "," } else { "" }, m.y, m.x);
+                }
+                std::eprintln!();
+            }
+            err
         };
         // C's no-subpel arm: the full-pel ME cost, computed only when
         // somebody downstream needs it.
@@ -791,9 +853,15 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
             best_fp_mvp_dist: s.best_fp_mvp_dist,
             best_fp_mvp: best_mvp,
             fp_me_dist: 0,
+            final_distortion: 0,
         };
         let mut subpel = |mv: &mut Mv| -> u32 {
-            md_subpel_search(
+            let fpme_mv = *mv;
+            let start_mv = Mv {
+                x: (mv.x >> 3).wrapping_mul(8),
+                y: (mv.y >> 3).wrapping_mul(8),
+            };
+            let err = md_subpel_search(
                 crate::md_subpel::SPEL_PME,
                 &cfg.md_subpel_pme,
                 geom,
@@ -816,7 +884,56 @@ pub fn run_block_searches(cfg: &SearchFrameCfg, b: &BlockSearchIn<'_>) -> BlockS
                 p.y.stride,
                 Some(&mut sub_ctx),
                 mv,
-            )
+            );
+            #[cfg(feature = "std")]
+            if crate::dbgenv::subpeldbg() {
+                std::eprint!(
+                    "SUBPEL stage=1 org=({},{}) bsize={} bw={} bh={} sq={} li={} ri={}\
+                     start=({},{}) best=({},{}) err={} dist={} refmv=({},{})\
+                     epb={} spb={} mct={} flam={} fastlam={}\
+                     fpme=({},{}) subme=({},{}) fpdist={} pscost={}\
+                     mvpn={} bestidx={} bestdist={} mvp=",
+                    b.org_x,
+                    b.org_y,
+                    b.bsize,
+                    b.bw,
+                    b.bh,
+                    geom.sq_size,
+                    li,
+                    ri,
+                    start_mv.y,
+                    start_mv.x,
+                    mv.y,
+                    mv.x,
+                    err,
+                    sub_ctx.final_distortion,
+                    ref_mv.y,
+                    ref_mv.x,
+                    ((b.full_lambda_8bit >> crate::intrabc::RD_EPB_SHIFT).max(1)),
+                    cfg.sad_per_bit,
+                    if cfg.md_subpel_me.skip_diag_refinement >= 3 {
+                        4
+                    } else {
+                        0
+                    },
+                    b.full_lambda_8bit,
+                    b.fast_lambda_8bit,
+                    fpme_mv.y,
+                    fpme_mv.x,
+                    s.sub_me_mv.y,
+                    s.sub_me_mv.x,
+                    sub_ctx.fp_me_dist,
+                    s.post_subpel_me_mv_cost,
+                    s.mvps.len(),
+                    s.best_fp_mvp_idx,
+                    s.best_fp_mvp_dist,
+                );
+                for (k, m) in s.mvps.iter().enumerate() {
+                    std::eprint!("{}({},{})", if k > 0 { "," } else { "" }, m.y, m.x);
+                }
+                std::eprintln!();
+            }
+            err
         };
 
         let res = pme_search_for_ref(

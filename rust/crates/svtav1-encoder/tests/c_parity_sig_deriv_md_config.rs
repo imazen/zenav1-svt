@@ -700,6 +700,9 @@ fn allintra_rdoq_ladder_matches_c() {
                         InputCoeffLvl::Low => svtav1_encoder::quant::CoeffLvl::Low,
                         InputCoeffLvl::Normal => svtav1_encoder::quant::CoeffLvl::Normal,
                         InputCoeffLvl::High => svtav1_encoder::quant::CoeffLvl::High,
+                        // The grid iterates the four real levels only; the
+                        // sentinel is C's "not yet analyzed" placeholder.
+                        InputCoeffLvl::Invalid => unreachable!(),
                     },
                 );
                 assert_eq!(

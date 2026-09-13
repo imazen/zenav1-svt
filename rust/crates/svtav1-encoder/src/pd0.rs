@@ -1313,6 +1313,13 @@ fn pd0_tx_size(bw: usize, tx_h: usize) -> (svtav1_types::transform::TxSize, usiz
         (32, 64) => (TxSize::Tx32x64, 11),
         (16, 32) => (TxSize::Tx16x32, 9),
         (8, 16) => (TxSize::Tx8x16, 7),
+        // `mds_subres_step == 2` remaps (product_coding_loop.c:4324-4338):
+        // TX_64X64 -> TX_64X16, TX_32X32 -> TX_32X8, TX_16X16 -> TX_16X4.
+        // (8x8 at step 2 would be TX_8X2, which does not exist — C asserts;
+        // a PD0 level that sets step 2 always disallows blocks below 16.)
+        (64, 16) => (TxSize::Tx64x16, 18),
+        (32, 8) => (TxSize::Tx32x8, 16),
+        (16, 4) => (TxSize::Tx16x4, 14),
         _ => unreachable!("PD0 tx {bw}x{tx_h}"),
     }
 }
@@ -1363,7 +1370,10 @@ fn tx_quant_core(
             three_quad_energy =
                 energy(&coeffs[32..], 64, 32, 32) + energy(&coeffs[32 * 64..], 64, 64, 32);
         } else {
-            three_quad_energy = energy(&coeffs[32..], 64, 32, 32);
+            // svt_handle_transform64x32 (transforms.c:3184) / 64x16 (:3223):
+            // the top-right 32-wide quadrant over the transform's own height
+            // — 32 rows at subres step 1, 16 at step 2.
+            three_quad_energy = energy(&coeffs[32..], 64, 32, tx_h);
         }
         let pack_h = tx_h.min(32);
         for row in 1..pack_h {
@@ -1997,6 +2007,19 @@ pub(crate) enum Pd0Mode {
     Lvl4,
 }
 
+impl Pd0Mode {
+    /// `subres_ctrls.step` for this level when no per-SB
+    /// `svt_aom_sig_deriv_enc_dec_pd0` resolution is threaded in — the value
+    /// every pre-resolution caller priced with (1 for LVL_3/4/5, 0
+    /// otherwise). `sig_deriv_enc_dec_pd0`'s own ladder (`enc_mode_config.c:
+    /// 7327-7352`) can lower this to 0 (`cost_64x64 >= use_subres_th` at
+    /// LVL_3/4) or raise it to 2 (leaf-layer LVL_5); the video-arm entry
+    /// points take the resolved value instead.
+    fn default_subres_step(self) -> u32 {
+        u32::from(matches!(self, Self::Lvl3 | Self::Lvl4 | Self::Lvl5))
+    }
+}
+
 /// The rate tables PD0_LVL_1 prices with. For single-SB frames these are
 /// the default tables at the frame qindex bucket (C: `md_frame_context`
 /// feeds SB 0); multi-SB refresh from the evolving frame context
@@ -2292,6 +2315,14 @@ struct Pd0Ctx<'a> {
     /// 64x64 block determines it); the effective per-block step is 0
     /// unless this is exactly 1.
     is_subres_safe: u8,
+    /// C `ctx->subres_ctrls.step`, as `svt_aom_sig_deriv_enc_dec_pd0`
+    /// resolves it PER SUPERBLOCK (`enc_mode_config.c:7327-7352`): 0 at
+    /// `pd0_level <= PD0_LVL_2` or on an incomplete b64, 1 for `<=
+    /// PD0_LVL_4` when the 64x64 ME cost clears `use_subres_th`, and 2 on
+    /// a leaf-layer frame at PD0_LVL_5 (`:7346-7351`). The video-arm
+    /// callers thread the per-SB value in; every other entry point
+    /// applies [`Pd0Mode::default_subres_step`].
+    subres_step: u32,
     /// C `input_resolution_factor[pcs->ppcs->input_resolution]`
     /// (perform_tx_pd0): the per-picture `factor * 1600` addend on the
     /// PD0_LVL_5 closed-form coeff rate. 0 for <= 240p pictures.
@@ -2333,6 +2364,16 @@ struct Pd0Ctx<'a> {
     /// walk — so it is a caller fact, not a level fact, and lives here
     /// rather than being derived from [`Pd0Mode`].
     depth_early_exit_th: u128,
+    /// C `ctx->parent_cost_bias` (enc_mode_config.c:7280-7306): 1000
+    /// everywhere EXCEPT `PD0_LVL_6` on a non-I slice, where
+    /// `svt_aom_sig_deriv_enc_dec_pd0` derives it from `base_q_idx` and the
+    /// SB's `me_8x8_cost_variance`, clipped to 900..=1200. It multiplies the
+    /// parent cost in `test_split_partition_pd0`'s early exits AND its final
+    /// split-vs-parent compare (product_coding_loop.c:10469, md_process.c's
+    /// `!(islice && lvl6) ? parent_cost_bias : 1000` selection). On the
+    /// allintra arm C substitutes 1000 at the compare, so the default here
+    /// is 1000 — only the video arm's LVL_6 sets it off.
+    parent_cost_bias: u32,
     /// Tile-row / tile-column pixel origin of this SB's tile (0 = single tile,
     /// i.e. byte-identical to the pre-fix frame-edge predicate). AV1 intra
     /// prediction never crosses a tile boundary, so a block at a tile's own
@@ -2405,11 +2446,49 @@ fn skip0_bits() -> u64 {
 }
 
 impl<'a> Pd0Ctx<'a> {
+    /// `skip_fac_bits[0][0] + partition_fac_bits[0][PARTITION_NONE]` for the
+    /// closed-form PD0 block cost (`svt_aom_full_cost_pd0`, rd_cost.c:1339).
+    /// C reads the LIVE `md_rate_est_ctx`, which the rate-estimation update
+    /// rewrites between frames — so where the caller chained the frame's
+    /// `M6Pd0Tables` in (`lvl1 == Some`, the video arm) this uses them. The
+    /// allintra LVL_5/LVL_0/LVL_6 arms carry no tables and keep the
+    /// default-CDF constants, which is also what `md_rate_est_ctx` holds on
+    /// frame 0 and at update_cdf_level 0.
+    fn skip0_none0_bits(&self) -> (u64, u64) {
+        match self.lvl1 {
+            Some(t) => (t.skip0_bits, t.none_bits_ctx0),
+            None => (skip0_bits(), partition_none_bits_ctx0()),
+        }
+    }
+
+    /// `partition_fac_bits[ctx0(sq)][PARTITION_SPLIT]` — same chaining rule
+    /// as [`Self::skip0_none0_bits`]: `svt_aom_partition_rate_cost` reads
+    /// `md_rate_est_ctx`, not the static table.
+    fn split_sym_bits(&self, sq_size: usize) -> u64 {
+        match self.lvl1 {
+            Some(t) => t.split_bits(sq_size),
+            None => partition_split_bits(sq_size),
+        }
+    }
+
+    /// Binary SPLIT-vs-{H,V} alike rate at a one-false boundary node — the
+    /// `partition_{vert,horz}_alike_fac_bits` gather of
+    /// `svt_aom_partition_rate_cost` (rd_cost.c:1846-1863), chained like
+    /// [`Self::split_sym_bits`].
+    fn alike_split_sym_bits(&self, sq_size: usize, bottom_edge: bool) -> u64 {
+        match self.lvl1 {
+            Some(t) => t.boundary_split_bits(sq_size, bottom_edge),
+            None => partition_alike_split_bits(sq_size, bottom_edge),
+        }
+    }
+
     /// LVL_5 block cost (md_encode_block_pd0 full path). Also runs the
     /// per-SB subres-safety check when this is a 64x64 block and the
-    /// safety is still undetermined (full_loop_core_pd0).
+    /// safety is still undetermined (full_loop_core_pd0). The step is
+    /// the RESOLVED `subres_ctrls.step` — 1 on the allintra/key-frame
+    /// inputs those paths see, 2 on a leaf-layer inter SB.
     fn lvl5_block_cost(&mut self, sq_size: usize, org_x: usize, org_y: usize) -> u64 {
-        self.lvl5_like_block_cost(sq_size, org_x, org_y, 1)
+        self.lvl5_like_block_cost(sq_size, org_x, org_y, self.subres_step)
     }
 
     /// LVL_0 block cost (bd10-forced full-RD PD0). Same closed-form encode as
@@ -2461,45 +2540,58 @@ impl<'a> Pd0Ctx<'a> {
     ) -> u64 {
         let abs_x = self.sb_x + org_x;
         let abs_y = self.sb_y + org_y;
-        // `pd0_use_src_samples` (enc_mode_config.c:7309) is `allintra ||
-        // hbd_md`. TRUE — no canvas — means C copies the SOURCE row/column into
-        // the recon-neighbour arrays (product_coding_loop.c:8370), so
-        // predicting straight off the source plane IS that arm, and this keeps
-        // the untiled extractor it has always used (byte-neutral). FALSE — a
-        // canvas — means the arrays hold PD0's own recon, and the canvas is
-        // that state; the availability, `n_top_px`/`n_left_px` clamp and edge
-        // replication are the same function either way.
-        let nb = match self.recon_canvas.as_ref() {
-            None => crate::partition::extract_neighbors(
-                self.src,
-                self.stride,
-                abs_x,
-                abs_y,
-                bw,
-                bh,
-                self.aligned_w,
-                self.aligned_h,
-            ),
-            Some(cv) => {
-                // Row axis shifted into the canvas window, exactly as
-                // `lvl1_block_cost_rect` does it.
-                crate::partition::extract_neighbors_tiled(
-                    &cv.buf,
-                    cv.stride,
+        // C `product_prediction_fun_table_pd0[is_inter_mode(mode)]`
+        // (product_coding_loop.c:970): on a non-I slice PD0's ONLY candidate
+        // is an inter NEWMV — `intra_ctrls.enable_intra` is 0 there — so C
+        // never runs the intra neighbour extraction. The candidate loop is
+        // the same `md_stage_0_pd0` argmin-variance pick the LVL_1 family
+        // runs; only the cost model past `pred` differs.
+        let pred = if let Some(ir) = self.inter {
+            self.inter_best_pred(ir, bw, bh, abs_x, abs_y)
+        } else {
+            // `pd0_use_src_samples` (enc_mode_config.c:7309) is `allintra ||
+            // hbd_md`. TRUE — no canvas — means C copies the SOURCE row/column into
+            // the recon-neighbour arrays (product_coding_loop.c:8370), so
+            // predicting straight off the source plane IS that arm, and this keeps
+            // the untiled extractor it has always used (byte-neutral). FALSE — a
+            // canvas — means the arrays hold PD0's own recon, and the canvas is
+            // that state; the availability, `n_top_px`/`n_left_px` clamp and edge
+            // replication are the same function either way.
+            let nb = match self.recon_canvas.as_ref() {
+                None => crate::partition::extract_neighbors(
+                    self.src,
+                    self.stride,
                     abs_x,
-                    abs_y - cv.y0,
+                    abs_y,
                     bw,
                     bh,
-                    self.tile_top.saturating_sub(cv.y0),
-                    self.tile_left,
                     self.aligned_w,
-                    self.aligned_h - cv.y0,
-                )
-            }
+                    self.aligned_h,
+                ),
+                Some(cv) => {
+                    // Row axis shifted into the canvas window, exactly as
+                    // `lvl1_block_cost_rect` does it.
+                    crate::partition::extract_neighbors_tiled(
+                        &cv.buf,
+                        cv.stride,
+                        abs_x,
+                        abs_y - cv.y0,
+                        bw,
+                        bh,
+                        self.tile_top.saturating_sub(cv.y0),
+                        self.tile_left,
+                        self.aligned_w,
+                        self.aligned_h - cv.y0,
+                    )
+                }
+            };
+            let (above, left, _tl, has_above, has_left) = nb.parts();
+            let mut p = vec![0u8; bw * bh];
+            svtav1_dsp::intra_pred::predict_dc(
+                &mut p, bw, above, left, bw, bh, has_above, has_left,
+            );
+            p
         };
-        let (above, left, _tl, has_above, has_left) = nb.parts();
-        let mut pred = vec![0u8; bw * bh];
-        svtav1_dsp::intra_pred::predict_dc(&mut pred, bw, above, left, bw, bh, has_above, has_left);
 
         // Subres safety: determined once per SB by the first (and only)
         // tested 64x64 block; blocks tested while it is undetermined use
@@ -2551,8 +2643,10 @@ impl<'a> Pd0Ctx<'a> {
         // <= 240p, e.g. all 64/128 synthetic cells; 1 at 360p incl. 512x512).
         let bits = 5000 + self.ires_factor * 1600 + 100 * eob as u64;
         // svt_aom_full_cost_pd0: rate = coeff bits + skip(0) bits +
-        // PARTITION_NONE bits at context 0.
-        let rate = bits + skip0_bits() + partition_none_bits_ctx0();
+        // PARTITION_NONE bits at context 0 — read from the LIVE
+        // `md_rate_est_ctx` (chained tables when the video arm passed them).
+        let (skip0, none0) = self.skip0_none0_bits();
+        let rate = bits + skip0 + none0;
         let cost = rdcost(self.lambda, rate, dist);
         // C `md_encode_block_pd0` (product_coding_loop.c:8429): with
         // `pd0_use_src_samples` FALSE, PD0 generates the block's RECON so the
@@ -2860,12 +2954,11 @@ impl<'a> Pd0Ctx<'a> {
         cost
     }
 
-    /// The inter arm of `md_encode_block_pd0` for the LVL_1 family —
-    /// `inject_new_candidates_pd0` (mode_decision.c:2293) injects EVERY
-    /// surviving ME candidate for the block's ME PU, `md_stage_0_pd0`
-    /// (product_coding_loop.c:1507) picks the argmin-VARIANCE one
-    /// (`fast_cost` = `svt_aom_mefn_ptr[bsize].vf`, the two-buffer
-    /// difference variance), and `md_stage_3_pd0` runs the real
+    /// `md_stage_0_pd0`'s candidate selection — `inject_new_candidates_pd0`
+    /// (mode_decision.c:2293) injects EVERY surviving ME candidate for the
+    /// block's ME PU, `md_stage_0_pd0` (product_coding_loop.c:1507) picks the
+    /// argmin-VARIANCE one (`fast_cost` = `svt_aom_mefn_ptr[bsize].vf`, the
+    /// two-buffer difference variance), and `md_stage_3_pd0` runs the real
     /// residual/TX/coeff cost on that winner alone. Evaluating candidate 0
     /// only — this arm's earlier form — mispriced any PU whose second or
     /// third candidate won (MEASURED on `diag 72x72 q20 p6` frame 3: C's
@@ -2874,14 +2967,18 @@ impl<'a> Pd0Ctx<'a> {
     ///
     /// The `cand_total_cnt > 2` break in C caps the INJECTED count at three —
     /// bipred candidates skipped by `allow_bipred` do not count.
-    fn lvl1_block_cost_inter(
-        &mut self,
+    ///
+    /// Shared by every inter PD0 level that runs `md_encode_block_pd0` (the
+    /// LVL_1 family AND LVL_5): the candidate set and the pick are level-
+    /// independent; the level decides only the cost model downstream.
+    fn inter_best_pred(
+        &self,
         ir: &Pd0InterRef<'_>,
         bw: usize,
         bh: usize,
         abs_x: usize,
         abs_y: usize,
-    ) -> u64 {
+    ) -> Vec<u8> {
         let bsize = pd0_bsize(bw, bh);
         let cands = ir.me.cands_for(abs_x, abs_y, bsize);
         // C `inject_inter_candidates_pd0` (mode_decision.c:2828): compound is
@@ -2894,19 +2991,25 @@ impl<'a> Pd0Ctx<'a> {
         for (i, c) in cands.iter().enumerate() {
             let dir = c.direction();
             let mut pred = vec![0u8; bw * bh];
+            let mv_dbg;
             if dir < crate::inter_me::context::BI_PRED {
                 let Some((_d, mv_fp)) = ir.me.cand_mv_for(abs_x, abs_y, bsize, i) else {
                     continue;
                 };
-                let ref_idx = if dir == 1 { c.ref_idx_l1() } else { c.ref_idx_l0() };
+                let ref_idx = if dir == 1 {
+                    c.ref_idx_l1()
+                } else {
+                    c.ref_idx_l0()
+                };
                 let rf = crate::port_picstruct::get_ref_frame_type(dir, ref_idx);
+                mv_dbg = (mv_fp.y * 8, mv_fp.x * 8, rf);
                 self.inter_pred_into(ir, bw, bh, abs_x, abs_y, mv_fp, rf, &mut pred);
             } else if allow_bipred {
-                let Some(((mv0, rf0), (mv1, rf1))) =
-                    ir.me.cand_bipred_mvs(abs_x, abs_y, bsize, i)
+                let Some(((mv0, rf0), (mv1, rf1))) = ir.me.cand_bipred_mvs(abs_x, abs_y, bsize, i)
                 else {
                     continue;
                 };
+                mv_dbg = (mv0.y * 8, mv0.x * 8, rf0);
                 self.inter_pred_into_bipred(
                     ir, bw, bh, abs_x, abs_y, mv0, rf0, mv1, rf1, &mut pred,
                 );
@@ -2924,7 +3027,8 @@ impl<'a> Pd0Ctx<'a> {
             #[cfg(feature = "std")]
             if crate::dbgenv::pd0dbg() {
                 eprintln!(
-                    "PD0CAND org=({abs_x},{abs_y}) {bw}x{bh} cand={i} dir={dir} var={var}"
+                    "PD0CAND org=({abs_x},{abs_y}) {bw}x{bh} cand={i} dir={dir} var={var} mv={},{} ref={}",
+                    mv_dbg.0, mv_dbg.1, mv_dbg.2
                 );
             }
             if var < best_var {
@@ -2936,9 +3040,22 @@ impl<'a> Pd0Ctx<'a> {
                 break;
             }
         }
+        #[cfg(feature = "std")]
+        if crate::dbgenv::pd0dbg() && std::env::var_os("SVTAV1_PD0PRED").is_some() {
+            if let Some(p) = best_pred.as_ref() {
+                eprint!("PD0PRED org=({abs_x},{abs_y}) {bw}x{bh}");
+                for r in 0..bh.min(4) {
+                    eprint!(" r{r}=");
+                    for c in 0..bw.min(16) {
+                        eprint!("{},", p[r * bw + c]);
+                    }
+                }
+                eprintln!();
+            }
+        }
         // `inject_zz_backup_candidate` (mode_decision.c:3314): zero-MV NEWMV
         // on LAST when the PU's candidate list is empty.
-        let pred = best_pred.unwrap_or_else(|| {
+        best_pred.unwrap_or_else(|| {
             let mut p = vec![0u8; bw * bh];
             self.inter_pred_into(
                 ir,
@@ -2951,7 +3068,146 @@ impl<'a> Pd0Ctx<'a> {
                 &mut p,
             );
             p
+        })
+    }
+
+    /// C `compute_lpd0_cost_inter` (product_coding_loop.c:8267) — the
+    /// PD0_LVL_6 block cost on a NON-KEY frame. For each of the block's
+    /// surviving PA-ME candidates (BI_PRED skipped, the first THREE
+    /// evaluated — `if (++cand_count > 2) break`), clip the full-pel ME MV
+    /// against the candidate's own reference and take the prediction
+    /// VARIANCE (`svt_aom_mefn_ptr[bsize].vf`); the cheapest goes through
+    /// `compute_lpd0_cost_from_variance` (:8247):
+    ///
+    /// ```text
+    /// dist = MIN(variance / area, lambda >> 10) * area
+    /// cost = RDCOST(full_sb_lambda_md[8bit],
+    ///               partition_fac_bits[0][PARTITION_NONE], dist)
+    /// ```
+    ///
+    /// Unlike the LVL_1/LVL_5 inter arm there is no recon to carry —
+    /// `md_encode_block_pd0` returns after writing only `blk_ptr->cost`, so
+    /// `pending_recon` stays empty and the neighbour-array write is a
+    /// dead canvas copy either way.
+    fn lvl6_block_cost_inter(&self, bw: usize, bh: usize, org_x: usize, org_y: usize) -> u64 {
+        let ir = self
+            .inter
+            .expect("lvl6_block_cost_inter is the `inter.is_some()` arm");
+        let abs_x = self.sb_x + org_x;
+        let abs_y = self.sb_y + org_y;
+        let bsize = pd0_bsize(bw, bh);
+        let src = &self.src[abs_y * self.stride + abs_x..];
+        let mut best: Option<u32> = None;
+        let mut evaluated = 0u32;
+        for (i, c) in ir.me.cands_for(abs_x, abs_y, bsize).iter().enumerate() {
+            let dir = c.direction();
+            // `if (direction == BI_PRED) continue;` — compound candidates are
+            // never costed here regardless of `ref_mode_not_single`.
+            if dir >= crate::inter_me::context::BI_PRED {
+                continue;
+            }
+            let Some((_d, mv_fp)) = ir.me.cand_mv_for(abs_x, abs_y, bsize, i) else {
+                continue;
+            };
+            let ref_idx = if dir == 1 {
+                c.ref_idx_l1()
+            } else {
+                c.ref_idx_l0()
+            };
+            let plane = Self::inter_ref_plane(
+                ir,
+                crate::port_picstruct::get_ref_frame_type(dir, ref_idx),
+            );
+            let mut mv = svtav1_types::motion::Mv {
+                x: mv_fp.x.saturating_mul(8),
+                y: mv_fp.y.saturating_mul(8),
+            };
+            crate::port_md::coding_loop::clip_mv_on_pic_boundary(
+                abs_x as i32,
+                abs_y as i32,
+                bw as i32,
+                bh as i32,
+                plane.width as i32,
+                plane.height as i32,
+                plane.border as i32,
+                &mut mv.x,
+                &mut mv.y,
+            );
+            let var =
+                Self::lvl6_ref_variance(plane, abs_x, abs_y, bw, bh, mv, src, self.stride);
+            best = Some(best.map_or(var, |b: u32| b.min(var)));
+            evaluated += 1;
+            if evaluated > 2 {
+                break;
+            }
+        }
+        // `best_cost == (uint64_t)~0` — no unipred candidate survived: the
+        // `inject_zz_backup_candidate` twin, a zero-MV read on LAST.
+        let var = best.unwrap_or_else(|| {
+            Self::lvl6_ref_variance(
+                ir.padded_y,
+                abs_x,
+                abs_y,
+                bw,
+                bh,
+                svtav1_types::motion::Mv::ZERO,
+                src,
+                self.stride,
+            )
         });
+        // `compute_lpd0_cost_from_variance`. `partition_fac_bits[0]
+        // [PARTITION_NONE]` is the LIVE `md_rate_est_ctx` value — the chained
+        // tables the video arm always carries (`lvl1` is `Some` here).
+        let (_, none0) = self.skip0_none0_bits();
+        let area = (bw * bh) as u32;
+        let noise = u32::try_from(self.lambda >> 10).unwrap_or(u32::MAX);
+        let var_pp = var / area;
+        let dist = u64::from(var_pp.min(noise)) * u64::from(area);
+        rdcost(self.lambda, none0, dist)
+    }
+
+    /// The `fn_ptr->vf` half of `compute_lpd0_cost_inter` — the `bwidth x
+    /// bheight` window of the reference at the clipped eighth-pel MV (always
+    /// pixel-aligned), vs the source block. C reads
+    /// `ref_pic->y_buffer + ref_origin_index`, whose negative or past-extent
+    /// offsets land on the replicated margin — the [`crate::picture::PaddedPlane`]
+    /// border is what `clip_mv_on_pic_boundary` clips the MV into, so the
+    /// slice stays in bounds.
+    #[allow(clippy::too_many_arguments)]
+    fn lvl6_ref_variance(
+        plane: &crate::picture::PaddedPlane,
+        abs_x: usize,
+        abs_y: usize,
+        bw: usize,
+        bh: usize,
+        mv: svtav1_types::motion::Mv,
+        src: &[u8],
+        src_stride: usize,
+    ) -> u32 {
+        let rx = abs_x as isize + isize::from(mv.x >> 3);
+        let ry = abs_y as isize + isize::from(mv.y >> 3);
+        let off = (plane.origin as isize + ry * plane.stride as isize + rx) as usize;
+        svtav1_dsp::variance::variance_diff(
+            &plane.buf[off..],
+            plane.stride,
+            src,
+            src_stride,
+            bw,
+            bh,
+        )
+    }
+
+    /// The inter arm of `md_encode_block_pd0` for the LVL_1 family — the
+    /// [`Pd0Ctx::inter_best_pred`] winner fed through the LVL_1 cost model.
+    fn lvl1_block_cost_inter(
+        &mut self,
+        ir: &Pd0InterRef<'_>,
+        bw: usize,
+        bh: usize,
+        abs_x: usize,
+        abs_y: usize,
+    ) -> u64 {
+        let pred = self.inter_best_pred(ir, bw, bh, abs_x, abs_y);
         self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, pred, None)
     }
 
@@ -2959,10 +3215,7 @@ impl<'a> Pd0Ctx<'a> {
     /// `svt_aom_get_ref_pic_buffer(pcs, ref_frame)` — falling back to
     /// [`Pd0InterRef::padded_y`] (LAST) when the slot is unfilled, which on
     /// this port's single-picture low-delay envelope is the same picture.
-    fn inter_ref_plane<'r>(
-        ir: &Pd0InterRef<'r>,
-        ref_frame: i8,
-    ) -> &'r crate::picture::PaddedPlane {
+    fn inter_ref_plane<'r>(ir: &Pd0InterRef<'r>, ref_frame: i8) -> &'r crate::picture::PaddedPlane {
         ir.padded_by_ref
             .get(ref_frame.max(0) as usize)
             .copied()
@@ -2985,14 +3238,12 @@ impl<'a> Pd0Ctx<'a> {
         out: &mut [u8],
     ) {
         assert!(
-            self.is_lvl1_family(),
-            "PD0 inter compensation is wired for the LVL_1 family only, and the \
-             caller resolved {:?}. C's PD0_LVL_5 / PD0_LVL_6 inter arms are \
-             `compute_lpd0_cost_inter`'s variance closed form, not this block \
-             encode; refusing rather than costing an inter block with the wrong \
-             model. On this port's low-delay-P envelope `pd0_detector` walks \
-             every picture level down to PD0_LVL_3 before a search runs \
-             (docs/INTER-ENCODE-PLAN.md 1z^6), so this is unreachable today.",
+            self.is_lvl1_family() || matches!(self.mode, Pd0Mode::Lvl5),
+            "PD0 inter compensation is wired for `md_encode_block_pd0`'s \
+             levels (the LVL_1 family AND LVL_5), and the caller resolved \
+             {:?}. C's PD0_LVL_6 inter arm is `compute_lpd0_cost_inter`'s \
+             variance closed form, not this block encode; refusing rather \
+             than costing an inter block with the wrong model.",
             self.mode
         );
         let mv = svtav1_types::motion::Mv {
@@ -3114,25 +3365,32 @@ impl<'a> Pd0Ctx<'a> {
     ///   arm never turns NSQ geometry off, so it reaches this and was pricing
     ///   the square. MEASURED against C's own `svt_aom_full_cost_pd0` dump —
     ///   see `lvl5_like_block_cost_rect`.
-    /// * LVL_6 is EXCLUDED because it runs no transform at all
-    ///   (`compute_lpd0_cost_allintra` / `compute_lpd0_cost_inter`), so there
-    ///   is no block cost to make rectangular.
+    /// * LVL_6 on the ALLINTRA arm is EXCLUDED — `nsq_geom_level` is 0 above
+    ///   M6 there, so a boundary node force-splits before any shape is costed.
+    ///   On the VIDEO arm (NSQ on, `md_disallow_nsq_search` notwithstanding)
+    ///   C DOES cost the injected PART_H/PART_V at LVL_6 —
+    ///   `md_encode_block_pd0` calls `compute_lpd0_cost_inter` on the rect's
+    ///   own bsize — so `inter.is_some()` is the discriminator.
     /// * LVL_0 is EXCLUDED and that is a KNOWN GAP, not a claim about C: it is
     ///   the bd10-forced path (`set_pd0_ctrls`, enc_mode_config.c:5416), whose
     ///   partial-SB cells are byte-identical today, and nothing here has
     ///   dumped C's bd10 boundary cost. Widening it blind would trade a green
     ///   gate for a guess.
     fn prices_edge_shape(&self) -> bool {
-        self.is_lvl1_family() || matches!(self.mode, Pd0Mode::Lvl5)
+        self.is_lvl1_family()
+            || matches!(self.mode, Pd0Mode::Lvl5)
+            || (matches!(self.mode, Pd0Mode::Lvl6) && self.inter.is_some())
     }
 
-    /// C `ctx->subres_ctrls.step` for this level on an I-slice
-    /// (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7337-7345).
-    /// LVL_5's own step is passed explicitly by its caller instead.
+    /// C `ctx->subres_ctrls.step` for the LVL_1 family
+    /// (`svt_aom_sig_deriv_enc_dec_pd0`, enc_mode_config.c:7337-7345): the
+    /// RESOLVED per-SB value on the video arm, the level default elsewhere.
+    /// LVL_5's own path passes [`Pd0Ctx::subres_step`] explicitly; LVL_1/0/6
+    /// are step 0.
     #[inline]
     fn subres_step_cfg(&self) -> u32 {
         match self.mode {
-            Pd0Mode::Lvl3 | Pd0Mode::Lvl4 => 1,
+            Pd0Mode::Lvl3 | Pd0Mode::Lvl4 => self.subres_step,
             _ => 0,
         }
     }
@@ -3144,6 +3402,13 @@ impl<'a> Pd0Ctx<'a> {
             }
             Pd0Mode::Lvl5 => self.lvl5_block_cost(sq_size, org_x, org_y),
             Pd0Mode::Lvl0 => self.lvl0_block_cost(sq_size, org_x, org_y),
+            // `md_encode_block_pd0` (product_coding_loop.c:8349-8358): the
+            // LVL_6 cost is `compute_lpd0_cost_allintra` only when
+            // `scs->allintra` — on a non-key VIDEO frame it is
+            // `compute_lpd0_cost_inter`, the ME-candidate variance form.
+            Pd0Mode::Lvl6 if self.inter.is_some() => {
+                self.lvl6_block_cost_inter(sq_size, sq_size, org_x, org_y)
+            }
             Pd0Mode::Lvl6 => lvl6_cost_allintra(&self.vars, sq_size, org_x, org_y, self.qp),
         }
     }
@@ -3304,11 +3569,31 @@ impl<'a> Pd0Ctx<'a> {
             // node's split cost uses below).
             if !both_false {
                 total += match self.mode {
-                    // LVL_0 and LVL_5 both have `use_accurate_part_ctx = 0`
-                    // (allintra above M8) -> the boundary SPLIT rate is doubled.
-                    Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => rdcost(
+                    // The SPLIT rate is doubled when `use_accurate_part_ctx =
+                    // 0` — allintra above M8, where LVL_5/LVL_6 live, so their
+                    // constructors set the flag false. On the VIDEO arm the
+                    // flag is `enc_mode <= M8` (enc_mode_config.c:8955), so a
+                    // preset-8 inter SB does NOT double — C charged the raw
+                    // alike rate there, and doubling it priced the split out
+                    // of `test_split_partition_pd0`'s early-exit window.
+                    Pd0Mode::Lvl5 => rdcost(
                         self.lambda,
-                        2 * partition_alike_split_bits(sq_size, !has_rows),
+                        (if self.accurate_part_ctx { 1 } else { 2 })
+                            * self.alike_split_sym_bits(sq_size, !has_rows),
+                        0,
+                    ),
+                    Pd0Mode::Lvl0 => rdcost(
+                        self.lambda,
+                        2 * self.alike_split_sym_bits(sq_size, !has_rows),
+                        0,
+                    ),
+                    // `test_split_partition_pd0` (:10434): the rate is 0 only
+                    // for `allintra && pd0_level == PD0_LVL_6`. Inter LVL_6
+                    // prices the binary boundary SPLIT exactly like LVL_5.
+                    Pd0Mode::Lvl6 if self.inter.is_some() => rdcost(
+                        self.lambda,
+                        (if self.accurate_part_ctx { 1 } else { 2 })
+                            * self.alike_split_sym_bits(sq_size, !has_rows),
                         0,
                     ),
                     Pd0Mode::Lvl6 => 0,
@@ -3355,9 +3640,13 @@ impl<'a> Pd0Ctx<'a> {
                 };
                 if self.is_lvl1_family() {
                     Some(self.lvl1_block_cost_rect(bw, bh, org_x, org_y))
+                } else if matches!(self.mode, Pd0Mode::Lvl6) {
+                    // `compute_lpd0_cost_inter` on the RECT's own bsize —
+                    // `blk_geom->bsize` is the injected PART_H/PART_V.
+                    Some(self.lvl6_block_cost_inter(bw, bh, org_x, org_y))
                 } else {
-                    // LVL_5's own closed form, with its subres step.
-                    Some(self.lvl5_like_block_cost_rect(bw, bh, org_x, org_y, 1))
+                    // LVL_5's own closed form, with its resolved subres step.
+                    Some(self.lvl5_like_block_cost_rect(bw, bh, org_x, org_y, self.subres_step))
                 }
             } else {
                 Some(self.block_cost(sq_size, org_x, org_y))
@@ -3419,7 +3708,23 @@ impl<'a> Pd0Ctx<'a> {
         // RAW at LVL_1 because use_accurate_part_ctx = 1 at M2..M8 —
         // observed 1195/1465/2020 in the instrumented PD0SPLITRATE dumps).
         let mut split_cost = match self.mode {
-            Pd0Mode::Lvl6 => 0,
+            // `test_split_partition_pd0` (:10434): 0 for `allintra &&
+            // PD0_LVL_6` only; the inter LVL_6 arm prices the SPLIT symbol
+            // through `svt_aom_partition_rate_cost` — the full-alphabet rate
+            // interior, the binary alike rate at a one-false boundary node —
+            // doubled when `use_accurate_part_ctx` is 0, same as LVL_5.
+            Pd0Mode::Lvl6 if self.inter.is_none() => 0,
+            Pd0Mode::Lvl6 if one_false => rdcost(
+                self.lambda,
+                (if self.accurate_part_ctx { 1 } else { 2 })
+                    * self.alike_split_sym_bits(sq_size, !has_rows),
+                0,
+            ),
+            Pd0Mode::Lvl6 => rdcost(
+                self.lambda,
+                (if self.accurate_part_ctx { 1 } else { 2 }) * self.split_sym_bits(sq_size),
+                0,
+            ),
             // LVL_0/LVL_5: `use_accurate_part_ctx = 0` -> SPLIT rate doubled,
             // priced from the DEFAULT partition CDF (ctx row 0).
             //
@@ -3432,12 +3737,16 @@ impl<'a> Pd0Ctx<'a> {
             // the full-alphabet rate along with the square cost.
             Pd0Mode::Lvl5 if one_false && self.prices_edge_shape() => rdcost(
                 self.lambda,
-                2 * partition_alike_split_bits(sq_size, !has_rows),
+                (if self.accurate_part_ctx { 1 } else { 2 })
+                    * self.alike_split_sym_bits(sq_size, !has_rows),
                 0,
             ),
-            Pd0Mode::Lvl5 | Pd0Mode::Lvl0 => {
-                rdcost(self.lambda, 2 * partition_split_bits(sq_size), 0)
-            }
+            Pd0Mode::Lvl5 => rdcost(
+                self.lambda,
+                (if self.accurate_part_ctx { 1 } else { 2 }) * self.split_sym_bits(sq_size),
+                0,
+            ),
+            Pd0Mode::Lvl0 => rdcost(self.lambda, 2 * self.split_sym_bits(sq_size), 0),
             Pd0Mode::Lvl1 | Pd0Mode::Lvl3 | Pd0Mode::Lvl4 => {
                 let tables = self.lvl1.expect("LVL_1 family requires tables");
                 // C `svt_aom_partition_rate_cost` (rd_cost.c:1846-1863): at a
@@ -3488,15 +3797,35 @@ impl<'a> Pd0Ctx<'a> {
                 children.push(Pd0Eval::off(half));
                 continue;
             }
-            // Early exits (disabled entirely for allintra LVL_6): th =
-            // split_cost_th(50) for i == 0, else early_exit_th(0 -> 1000);
-            // parent_cost_bias = 1000. Identical ths at LVL_5 and LVL_1
+            // Early exits — disabled entirely for the ALLINTRA LVL_6 arm
+            // (`!(pcs->slice_type == I_SLICE && ctx->pd0_ctrls.pd0_level ==
+            // PD0_LVL_6)`, md_process.c:22865 — where `slice_type` is the
+            // discriminator because `allintra` implies I-slice); the INTER
+            // LVL_6 arm runs them with its derived `parent_cost_bias`.
+            // th = split_cost_th(50) for i == 0, else early_exit_th
+            // (0 -> 1000). Identical ths at LVL_5 and LVL_1
             // (depth_early_exit level 1 for both, enc_mode_config.c:9282).
-            if self.mode != Pd0Mode::Lvl6
+            if (self.mode != Pd0Mode::Lvl6 || self.inter.is_some())
                 && let Some(pc) = parent_cost
             {
                 let th: u128 = if i == 0 { 50 } else { self.depth_early_exit_th };
-                if (pc as u128) * th * 1000 <= (split_cost as u128) * 1_000_000 {
+                let bias = u128::from(self.parent_cost_bias);
+                #[cfg(feature = "std")]
+                if crate::dbgenv::pd0dbg() {
+                    eprintln!(
+                        "PD0SPLIT org=({},{}) sq={} i={} pc={} th={} split_cost={} lhs={} rhs={}",
+                        abs_x,
+                        abs_y,
+                        sq_size,
+                        i,
+                        pc,
+                        th,
+                        split_cost,
+                        (pc as u128) * th * bias,
+                        (split_cost as u128) * 1_000_000,
+                    );
+                }
+                if (pc as u128) * th * bias <= (split_cost as u128) * 1_000_000 {
                     split_valid = false;
                     break;
                 }
@@ -3547,9 +3876,18 @@ impl<'a> Pd0Ctx<'a> {
             return Some((cost, eval, None));
         }
 
-        // parent_cost_bias = 1000 (allintra): parent wins on <=.
+        // `parent_cost_bias * pc <= split_cost * 1000`
+        // (test_split_partition_pd0:10490) — the bias is 1000 everywhere but
+        // the inter LVL_6 arm, where the per-SB derived value applies.
+        #[cfg(feature = "std")]
+        if crate::dbgenv::pd0dbg() {
+            eprintln!(
+                "PD0FIN org=({abs_x},{abs_y}) sq={sq_size} pc={parent_cost:?} split_cost={split_cost} bias={}",
+                self.parent_cost_bias
+            );
+        }
         if let Some(pc) = parent_cost
-            && pc * 1000 <= split_cost * 1000
+            && pc * u64::from(self.parent_cost_bias) <= split_cost * 1000
         {
             // C `test_split_partition_pd0` (:10490): the parent keeps its
             // partition, so IT is the array-update part.
@@ -3684,13 +4022,19 @@ pub fn pd0_pick_sb_partition(
         } else {
             0
         },
+        // Allintra LVL_5's `subres_ctrls.step` — the level default (1); the
+        // per-SB `sig_deriv_enc_dec_pd0` ladder is threaded on the VIDEO arm.
+        subres_step: mode.default_subres_step(),
         ires_factor,
         // LVL_5/6 use their own closed-form coeff rates; unused here.
         coeff_rate_est_lvl: 0,
         // eff-M9 (preset >= 9) => enc_mode > M6 => nsq_geom_level 0 =>
         // NSQ disabled: every one-false boundary node force-splits.
-        accurate_part_ctx: true,
+        // `use_accurate_part_ctx` = `enc_mode <= M8` is FALSE here
+        // (enc_mode_config.c:9939) — LVL_5/6 double the SPLIT rate.
+        accurate_part_ctx: false,
         depth_early_exit_th: 1000,
+        parent_cost_bias: 1000,
         nsq_enabled: false,
         tile_top: 0,
         tile_left: 0,
@@ -3787,6 +4131,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         // "determined, not safe" sentinel (0) makes lvl5_like_block_cost keep
         // step 0 for every block AND skip the 64x64 odd/even-deviation check.
         is_subres_safe: 0,
+        subres_step: 0,
         ires_factor,
         // coeff_rate_est_lvl 0 (PD0 rate_est_level 0 above M8): closed-form
         // coeff rate. Unused by the LVL_0/LVL_5 closed forms directly (they
@@ -3796,6 +4141,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         // boundary nodes force-split (inert on 64-aligned frames).
         accurate_part_ctx: true,
         depth_early_exit_th: 1000,
+        parent_cost_bias: 1000,
         nsq_enabled: false,
         tile_top: 0,
         tile_left: 0,
@@ -3882,10 +4228,13 @@ pub fn pd0_pick_sb_partition_m6(
         max_sq: 64usize.min(max_tx_size as usize),
         min_sq: 8,
         is_subres_safe: 255,
+        // LVL_1 configures `subres_level = 0` (pd0_level <= PD0_LVL_2).
+        subres_step: 0,
         ires_factor: 0,
         coeff_rate_est_lvl,
         accurate_part_ctx: true,
         depth_early_exit_th: 1000,
+        parent_cost_bias: 1000,
         nsq_enabled,
         tile_top: 0,
         tile_left: 0,
@@ -4019,6 +4368,12 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
     // rather than by measurement — the caller's value is `inter_md.map(..)`,
     // and `inter_md` IS "this frame is a non-I slice with a DPB reference".
     inter: Option<&Pd0InterRef<'_>>,
+    // C `ctx->subres_ctrls.step` as `svt_aom_sig_deriv_enc_dec_pd0` resolves
+    // it per superblock (enc_mode_config.c:7327-7352) — the video-arm caller
+    // threads it in. `None` applies the level default
+    // (`Pd0Mode::default_subres_step`), which is what every allintra caller
+    // and every pre-resolution video caller priced with.
+    subres_step: Option<u32>,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -4069,12 +4424,17 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
         } else {
             0
         },
+        subres_step: subres_step.unwrap_or_else(|| mode.default_subres_step()),
         ires_factor: 0,
         coeff_rate_est_lvl,
         // Every preset this entry point serves is <= M8 on both arms, where
         // `use_accurate_part_ctx` is true (enc_mode_config.c:8955 / :9937).
         accurate_part_ctx: true,
         depth_early_exit_th,
+        // `ctx->parent_cost_bias` is off 1000 only for inter PD0_LVL_6, which
+        // the refinement arm never reaches — `video_pd0_params` routes those
+        // SBs to `pd0_pick_sb_partition_video_eval`.
+        parent_cost_bias: 1000,
         nsq_enabled,
         tile_top,
         tile_left,
@@ -4109,22 +4469,30 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
 ///
 /// # Panics
 /// On `PD0_LVL_0..PD0_LVL_2`, whose block cost this port carries only in the
-/// bd10 [`pd0_pick_sb_partition_lvl0`] entry point, and on `PD0_LVL_6`
-/// (VERY_LIGHT_PD0), which is unported. Neither is reachable from
-/// [`crate::part_arm::video_pd0_params`] today: `PD0_LVL_6` survives the
-/// detector only on a non-I slice whose references were not all intra, and
-/// the port's low-delay-P envelope has exactly one reference and it is the
-/// key frame.
+/// bd10 [`pd0_pick_sb_partition_lvl0`] entry point. `PD0_LVL_6`
+/// (VERY_LIGHT_PD0) is ported — `Pd0Ctx::lvl6_block_cost_inter`, the
+/// `compute_lpd0_cost_inter` variance closed form — and IS reachable from
+/// [`crate::part_arm::video_pd0_params`]: the detector keeps 6 on a non-I
+/// slice wherever the referenced superblock was not all-intra, which on a
+/// multi-frame encode means an inter-coded reference (`vidyo1`/`vidyo3`
+/// q20 p9..13, `video_selfcheck_gate.sh`).
 #[must_use]
 fn video_pd0_mode(pd0_level: u8) -> Pd0Mode {
     match pd0_level {
         3 => Pd0Mode::Lvl3,
         4 => Pd0Mode::Lvl4,
         5 => Pd0Mode::Lvl5,
+        // VERY_LIGHT_PD0's INTER arm — `compute_lpd0_cost_inter`'s
+        // ME-candidate variance closed form
+        // (product_coding_loop.c:8267), ported as
+        // `Pd0Ctx::lvl6_block_cost_inter`. `pd0_detector` demotes 6 on an
+        // I-slice, so this is reachable only where the reference block was
+        // all-inter.
+        6 => Pd0Mode::Lvl6,
         other => panic!(
             "PD0_LVL_{other} has no block cost in this port's video arm \
-             (0..=2 live only in the bd10 entry point; 6 is VERY_LIGHT_PD0, \
-             which is unported and which pd0_detector demotes on an I-slice)"
+             (0..=2 live only in the bd10 entry point and the video arm's \
+             low presets, which do not reach this dispatch)"
         ),
     }
 }
@@ -4200,6 +4568,12 @@ pub fn pd0_pick_sb_partition_video(
     video_recon: Option<(&[u8], usize)>,
     // C `product_prediction_fun_table_pd0[1]` — `Some` on a NON-KEY frame.
     inter: Option<&Pd0InterRef<'_>>,
+    // C `ctx->subres_ctrls.step`, resolved per superblock by
+    // `svt_aom_sig_deriv_enc_dec_pd0` — `None` applies the level default.
+    subres_step: Option<u32>,
+    // C `ctx->parent_cost_bias` from the same signal derivation — read only
+    // by the inter PD0_LVL_6 arm; every other level holds 1000.
+    parent_cost_bias: u32,
 ) -> Pd0Tree {
     pd0_pick_sb_partition_video_eval(
         src,
@@ -4225,6 +4599,8 @@ pub fn pd0_pick_sb_partition_video(
         video_recon,
         false,
         inter,
+        subres_step,
+        parent_cost_bias,
     )
     .tree()
 }
@@ -4280,6 +4656,12 @@ pub fn pd0_pick_sb_partition_video_eval(
     // only. See [`Pd0InterRef`] for why an inter frame's PD0 has exactly one
     // candidate and it is never intra.
     inter: Option<&Pd0InterRef<'_>>,
+    // C `ctx->subres_ctrls.step`, resolved per superblock by
+    // `svt_aom_sig_deriv_enc_dec_pd0` — `None` applies the level default.
+    subres_step: Option<u32>,
+    // C `ctx->parent_cost_bias` from the same signal derivation — read only
+    // by the inter PD0_LVL_6 arm; every other level holds 1000.
+    parent_cost_bias: u32,
 ) -> Pd0Eval {
     let vars = match stale_vars {
         Some(v) => *v,
@@ -4325,10 +4707,14 @@ pub fn pd0_pick_sb_partition_video_eval(
         } else {
             0
         },
+        subres_step: subres_step.unwrap_or_else(|| mode.default_subres_step()),
         ires_factor,
         coeff_rate_est_lvl,
         accurate_part_ctx,
         depth_early_exit_th: if depth_early_exit_lvl1 { 1000 } else { 900 },
+        // `sig_deriv_enc_dec_pd0`'s resolved value — off 1000 only at
+        // `PD0_LVL_6` on a non-I slice, the arm that reads it.
+        parent_cost_bias,
         nsq_enabled,
         tile_top,
         tile_left,
@@ -4562,9 +4948,11 @@ mod tests {
             max_sq: 32,
             min_sq: 8,
             is_subres_safe: 0, // subres off
+            subres_step: 0,
             ires_factor: 0,
             accurate_part_ctx: true,
             depth_early_exit_th: 1000,
+            parent_cost_bias: 1000,
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
@@ -4684,9 +5072,11 @@ mod tests {
             max_sq: 32,
             min_sq: 8,
             is_subres_safe: 255,
+            subres_step: 1,
             ires_factor: 0,
             accurate_part_ctx: true,
             depth_early_exit_th: 1000,
+            parent_cost_bias: 1000,
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
@@ -4734,9 +5124,11 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            subres_step: 1,
             ires_factor: 0,
             accurate_part_ctx: true,
             depth_early_exit_th: 1000,
+            parent_cost_bias: 1000,
             nsq_enabled: false,
             tile_top: 0,
             tile_left: 0,
@@ -4897,9 +5289,11 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            subres_step: 0,
             ires_factor: 0,
             accurate_part_ctx: true,
             depth_early_exit_th: 1000,
+            parent_cost_bias: 1000,
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,
@@ -4943,9 +5337,11 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            subres_step: 0,
             ires_factor: 0,
             accurate_part_ctx: true,
             depth_early_exit_th: 1000,
+            parent_cost_bias: 1000,
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,
@@ -4985,9 +5381,11 @@ mod tests {
             max_sq: 64,
             min_sq: 8,
             is_subres_safe: 255,
+            subres_step: 0,
             ires_factor: 0,
             accurate_part_ctx: true,
             depth_early_exit_th: 1000,
+            parent_cost_bias: 1000,
             nsq_enabled: true,
             tile_top: 0,
             tile_left: 0,

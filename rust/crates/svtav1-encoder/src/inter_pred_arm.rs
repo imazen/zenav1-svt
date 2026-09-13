@@ -56,8 +56,8 @@ use svtav1_types::motion::Mv;
 /// `compute_subpel_params` clamps the MV against.
 ///
 /// The reference must carry C's replicated margin
-/// ([`crate::picture::REF_BORDER`]); a legal MV reads outside the frame and
-/// the samples there are the replicated edge, not a constant.
+/// ([`crate::picture::ref_pic_border`]); a legal MV reads outside the frame
+/// and the samples there are the replicated edge, not a constant.
 #[allow(clippy::too_many_arguments)]
 pub fn predict_inter_luma(
     reference: &PaddedPlane,

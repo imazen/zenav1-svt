@@ -84,6 +84,11 @@ presence_flags! {
     dump_lr => "SVTAV1_DUMP_LR",
     /// `SVTAV1_PD0DBG`: PD0 decision dump (per block).
     pd0dbg => "SVTAV1_PD0DBG",
+    /// `SVTAV1_SUBPEL`: per-(block, list, ref, stage) MD sub-pel search dump —
+    /// the port-side twin of the C interposer's `SVT_SUBPEL_OUT` (one line per
+    /// `svt_av1_find_best_sub_pixel_tree_pruned` call), printed with the same
+    /// field names so the two join directly.
+    subpeldbg => "SVTAV1_SUBPEL",
     /// `SVTAV1_REFSTATS`: the coded-area statistics this frame put on its DPB
     /// entry, in the field order of the C interposer's `REFSTATS` line
     /// (`tools/capture_c_trace/wrap_recon.c`) so the two can be joined

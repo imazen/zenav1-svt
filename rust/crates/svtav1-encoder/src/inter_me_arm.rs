@@ -478,7 +478,10 @@ impl FrameMe {
         org_y: usize,
         bsize: u8,
         cand: usize,
-    ) -> Option<((svtav1_types::motion::Mv, i8), (svtav1_types::motion::Mv, i8))> {
+    ) -> Option<(
+        (svtav1_types::motion::Mv, i8),
+        (svtav1_types::motion::Mv, i8),
+    )> {
         let (b64_x, b64_y) = (org_x / 64, org_y / 64);
         if b64_x >= self.b64_cols || b64_y >= self.b64_rows {
             return None;
@@ -532,6 +535,15 @@ pub struct FrameMeParams {
     pub hierarchical_levels: u8,
     /// C `pcs->sc_class5` — the screen-content class that gates HME level 2.
     pub sc_class5: u8,
+    /// C `scs->mrp_ctrls.only_l_bwd` — restrict bipred pairs to (L0,BWD).
+    /// Set from `set_mrp_ctrl` (`enc_handle.c:3574`); 1 at presets 3..=9.
+    pub only_l_bwd: bool,
+    /// C `scs->mrp_ctrls.safe_limit_nref` — feeds `sig_deriv_me`'s
+    /// `me_safe_limit_zz_th` (only `nref == 1` produces a nonzero
+    /// threshold; the `nref == 2` prune lives in picture decision).
+    pub safe_limit_nref: u8,
+    /// C `scs->mrp_ctrls.safe_limit_zz_th`.
+    pub safe_limit_zz_th: u32,
 }
 
 /// The `svt_aom_sig_deriv_me` INPUT set for one frame, split out of
@@ -574,8 +586,10 @@ pub fn me_deriv_inputs(p: FrameMeParams, input_resolution: ResolutionRange) -> M
         me_qp_based_th_scaling: qp_th_scaling,
         hme_qp_based_th_scaling: qp_th_scaling,
         qp: u32::from(p.qp),
-        safe_limit_nref: 0,
-        safe_limit_zz_th: 0,
+        // C `scs->mrp_ctrls.safe_limit_*` (`enc_mode_config.c:838`) — the
+        // MRP table's values, not a hardcoded off.
+        safe_limit_nref: p.safe_limit_nref,
+        safe_limit_zz_th: p.safe_limit_zz_th,
     }
 }
 
@@ -674,7 +688,7 @@ pub fn run_frame_me_into(
             input_resolution,
         )
         .is_some_and(|c| c.enabled != 0),
-        only_l_bwd: false,
+        only_l_bwd: p.only_l_bwd,
         max_cand: MAX_CAND,
         max_refs: MAX_REFS,
         max_l0: MAX_L0,
@@ -752,9 +766,42 @@ pub fn run_frame_me_into(
             let mut b64_pic = pic;
             b64_pic.b64_geom_width = (p.width - ox).min(64) as u32;
             b64_pic.b64_geom_height = (p.height - oy).min(64) as u32;
-            motion_estimation_b64(
-                &b64_pic, ox as u32, oy as u32, &mut me, &src, refs, out_b64,
-            );
+            motion_estimation_b64(&b64_pic, ox as u32, oy as u32, &mut me, &src, refs, out_b64);
+            #[cfg(feature = "std")]
+            if std::env::var_os("SVTAV1_MEDBG").is_some() {
+                let bi = b64_index - 1;
+                let p = |v: u32| (v & 0xFFFF) as i16 as i32;
+                let q = |v: u32| (v >> 16) as i16 as i32;
+                let l0 = me.p_sb_best_mv[0][0][0];
+                let l1 = me.p_sb_best_mv[1][0][0];
+                let n = out_b64.total_me_candidate_index[0];
+                let mut cs = alloc::string::String::new();
+                for i in 0..usize::from(n).min(out_b64.me_candidate_array.len()) {
+                    let c = &out_b64.me_candidate_array[i];
+                    cs += &alloc::format!(
+                        "{}:dir={} l0={} l1={} rl0={} rl1={} ",
+                        i,
+                        c.direction(),
+                        c.ref_idx_l0(),
+                        c.ref_idx_l1(),
+                        c.ref0_list(),
+                        c.ref1_list()
+                    );
+                }
+                eprintln!(
+                    "MEDBG b64={bi} org=({ox},{oy}) l0sad={} l0mv=({},{}) l1sad={} l1mv=({},{}) n={n} c=[{cs}] mvarr0=({},{}) mvarrl1=({},{})",
+                    me.p_sb_best_sad[0][0][0],
+                    p(l0),
+                    q(l0),
+                    me.p_sb_best_sad[1][0][0],
+                    p(l1),
+                    q(l1),
+                    out_b64.me_mv_array[0].x as i32,
+                    out_b64.me_mv_array[0].y as i32,
+                    out_b64.me_mv_array[MAX_L0 as usize].x as i32,
+                    out_b64.me_mv_array[MAX_L0 as usize].y as i32,
+                );
+            }
         }
     }
 
@@ -829,6 +876,11 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                // C `scs->mrp_ctrls` at this test's preset (level 6 for
+                // enc_mode <= M8).
+                only_l_bwd: true,
+                safe_limit_nref: 2,
+                safe_limit_zz_th: 60_000,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (1, 1));
@@ -866,6 +918,11 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                // C `scs->mrp_ctrls` at this test's preset (level 6 for
+                // enc_mode <= M8).
+                only_l_bwd: true,
+                safe_limit_nref: 2,
+                safe_limit_zz_th: 60_000,
             },
         );
         assert_eq!(
@@ -937,6 +994,11 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                // C `scs->mrp_ctrls` at this test's preset (level 6 for
+                // enc_mode <= M8).
+                only_l_bwd: true,
+                safe_limit_nref: 2,
+                safe_limit_zz_th: 60_000,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (3, 3));
@@ -1025,6 +1087,11 @@ mod tests {
                 frame_is_boosted: false,
                 hierarchical_levels: 0,
                 sc_class5: 0,
+                // C `scs->mrp_ctrls` at this test's preset (level 6 for
+                // enc_mode <= M8).
+                only_l_bwd: true,
+                safe_limit_nref: 2,
+                safe_limit_zz_th: 60_000,
             },
         );
         assert_eq!((me.b64_cols, me.b64_rows), (2, 2));
@@ -1084,6 +1151,11 @@ mod tests {
             frame_is_boosted: false,
             hierarchical_levels: 0,
             sc_class5: 0,
+            // C `scs->mrp_ctrls` at this test's preset (level 6 for
+            // enc_mode <= M8).
+            only_l_bwd: true,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60_000,
         };
         for (qp, sa_min, sa_max, l0sa) in [
             (
@@ -1386,6 +1458,11 @@ mod recycle_tests {
             frame_is_boosted: false,
             hierarchical_levels: 0,
             sc_class5: 0,
+            // C `scs->mrp_ctrls` at this test's preset (level 6 for
+            // enc_mode <= M8).
+            only_l_bwd: true,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60_000,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);
@@ -1484,6 +1561,11 @@ mod recycle_tests {
             frame_is_boosted: false,
             hierarchical_levels: 0,
             sc_class5: 0,
+            // C `scs->mrp_ctrls` at this test's preset (level 6 for
+            // enc_mode <= M8).
+            only_l_bwd: true,
+            safe_limit_nref: 2,
+            safe_limit_zz_th: 60_000,
         };
         let f0 = PaPicture::from_source(&ramp(w, h, 1), w, w, h, 0);
         let f1 = PaPicture::from_source(&ramp(w, h, 5), w, w, h, 1);

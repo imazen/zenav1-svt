@@ -276,6 +276,7 @@ fn run_cell(c: &Cell, p: &Planes, t: &Tables, w: usize, h: usize, label: &str) {
         best_fp_mvp_dist: c.best_fp_mvp_dist,
         best_fp_mvp: c.best_fp_mvp,
         fp_me_dist: 0,
+        final_distortion: 0,
     };
     let ctx_arg = if c.with_ctx { Some(&mut ctx) } else { None };
     let (besterr, st): (u32, SubpelState) = if c.pruned {

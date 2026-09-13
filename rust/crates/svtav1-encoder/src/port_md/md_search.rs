@@ -1057,7 +1057,7 @@ pub fn md_subpel_search(
     ref_alloc: &[u8],
     ref_base: i64,
     ref_stride: usize,
-    md_ctx: Option<&mut crate::md_subpel::SubpelMdContext>,
+    mut md_ctx: Option<&mut crate::md_subpel::SubpelMdContext>,
     me_mv: &mut Mv,
 ) -> u32 {
     use crate::md_subpel::{
@@ -1148,11 +1148,30 @@ pub fn md_subpel_search(
     let (besterr, st) = if ctrls.subpel_search_method
         == crate::port_enc_mode_config::encdec::subpel_search_method::SUBPEL_TREE
     {
-        find_best_sub_pixel_tree(md_ctx, &ms, &var_params, &mv_cost_params, start_mv, bsize)
+        find_best_sub_pixel_tree(
+            md_ctx.as_deref_mut(),
+            &ms,
+            &var_params,
+            &mv_cost_params,
+            start_mv,
+            bsize,
+        )
     } else {
-        find_best_sub_pixel_tree_pruned(md_ctx, &ms, &var_params, &mv_cost_params, start_mv, bsize)
+        find_best_sub_pixel_tree_pruned(
+            md_ctx.as_deref_mut(),
+            &ms,
+            &var_params,
+            &mv_cost_params,
+            start_mv,
+            bsize,
+        )
     };
     *me_mv = st.best_mv;
+    // C hands the caller `*distortion` (the winner's raw prediction error)
+    // alongside `bestmv`; the port's callers read it through `md_ctx`.
+    if let Some(c) = md_ctx {
+        c.final_distortion = st.distortion;
+    }
     besterr
 }
 

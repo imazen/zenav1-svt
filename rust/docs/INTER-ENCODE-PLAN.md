@@ -8553,3 +8553,85 @@ sizes (gradient 64x64 q40 p6 = 290 B, q20 p3 = 839 B, q55 p0 = 63 B,
 128x128 q55 p8 = 171 B, 64x64 q30 p13 = 580 B, screenrep 64x64 q35 p4 = 693 B);
 `tools/regression_spotcheck.sh` 35/35; `cargo nextest run --workspace`
 2085/2085.
+
+### 1z⁴³. The reference border is `sb_size + 32`, not `scs->border` — and C's chroma overread is a buffer-layout property (2026-09-14)
+
+Four inter defects closed in one arc, all found by `video_selfcheck_gate`
+cells that panicked rather than diverged.
+
+**Ref-queue snapshot.** At preset ≥10 the low-delay reference queue panicked
+at picture 2 (`port_picstruct.rs`): `ref_queue_from_dpb` ran AFTER
+`update_dpb` applied the current picture's own refresh mask, so `ld`'s
+slot-reuse overwrote the entry the RPS still named. C's picture-manager
+queue retains the entry until release-policy expiry. The fix snapshots the
+shadow DPB between `generate_rps_info` and `update_dpb` — exactly what
+`update_ref_poc_array` saw — into `PicParams` and builds the bind-time
+queue from that snapshot.
+
+**`dc_only_th` leaf test.** `enc_dec_cand_reduction` passed the
+picture-level `!is_highest_layer` where `set_cand_reduction_ctrls`'s
+`is_not_last_layer` means `!frame_is_leaf` (`update_type != LF_UPDATE`,
+enc_mode_config.c:4100). On a flat GOP the two disagree: leaf →
+`dc_only_th = 200`, not 10. `PipelineMdInputs` now carries `update_type`,
+`port_picstruct::frame_is_leaf` computes the C predicate, and the
+`eliminate_candidate_based_on_pme_me_results` arm (`md_me_dist <
+dc_only_th * area`) gates intra-mode injection before `cand_modes` — which
+required hoisting the block search into a `block_prelude`, matching C's
+ordering (`read_refine_me_mvs`/`pme_search` run at block setup, before
+`generate_md_stage_0_cand`). The `inter-pd0-below-minsq-104-p10` cell is
+byte-identical and promoted into `inter_byte_gate.sh` PASS_CELLS.
+
+**Video-arm PD0 LVL_5/6.** Two fixes. The refined-arm eval dispatched
+`refined_pd0_model` whose level-5 row fell to the `_` arm (`Lvl1` model,
+no rate table) where C runs the LVL_5 video model — routing resolved
+levels 3..=5 through `video_eval` (with `pred_depth_only`/`disallow_4x4`
+preserved) restored `video-key-fixed-partition-p9-q55-gradient` to 289 B
+byte-identical. And `PD0_LVL_6` is real on inter frames: C's
+`compute_lpd0_cost_inter` (product_coding_loop.c:8267) is reachable once
+the detector reads the reference's actual `sb_intra` (the earlier port had
+hardcoded `was_intra = 1`, which demoted 6 → 5 unconditionally and hid the
+gap). `Pd0Ctx::lvl6_block_cost_inter` ports it: iterate surviving ME
+candidates, skip BI_PRED, clip by `clip_mv_on_pic_boundary` against the
+candidate's own reference dims and border, take the best of at most three
+unipred variances, zero-MV LAST fallback, and the
+`compute_lpd0_cost_from_variance` cost (`min(var/area, lambda>>10) * area`
+plus the live `PARTITION_NONE` rate). Boundary rectangles cost as their
+own `PART_H`/`PART_V` geometry, inter LVL_6 charges split rates and applies
+`parent_cost_bias` — the all-intra zero-split-rate/early-exit rules do not
+leak across.
+
+**The border.** `port_convolve` read `len 38416 index 38562` on
+`vidyo4 q55 p6`: a chroma `convolve_2d_sr` tap row past the allocation.
+The port's `REF_BORDER` was `BLOCK_SIZE_64 + 4 = 68` — C's `scs->border`,
+which pads INPUT and PA pictures (enc_handle.c:4256, :1102). The picture
+MC indexes — `EbReferenceObject::reference_picture` — carries
+`super_block_size + 32` (enc_handle.c:1212-1217), i.e. 96 at sb64, plus
+another `sb_size` under superres/resize. A maximally UMV-clamped MV reads
+`frame + blk + AOM_INTERP_EXTEND + 2` into the margin — 70 px for a
+64-tall block — past 68 but inside 96; luma could have faulted the same
+way. And for chroma the legal reach (`H/2 + bh_luma + 6`, up to +70 for
+bh=64) exceeds even C's 48-px chroma margin: C's recon `buffer_alloc` is
+`[y][u][v]` contiguous (pic_buffer_desc.c:483-501), so the overread lands
+in `v_buffer`'s region and answers with v's padded bytes. The port now
+derives the border per encode (`picture::ref_pic_border`), pads chroma at
+`(border+1)>>1`, and gives `u` a tail holding `v`'s region so the same
+read returns the same samples; `v` gets a zero tail, since past
+`buffer_alloc` C reads heap — undetermined by definition. No `SrcView`
+clamping: a read outside this geometry is still a defect worth panicking
+on.
+
+**Measured.** `video_selfcheck_gate` 144/144 (was 133: the eleven panic
+cells — vidyo1/vidyo3 q20 p9–13 LVL_6, vidyo4 q55 p6 convolve — all run
+8/8). `real_video_inter_gate` promoted five frame-1 cells to
+byte-identical (johnny-128 p8, vidyo3-128/256 p6, vidyo4-256 p6/p8) — the
+68-px `clip_mv_on_pic_boundary` bound was clipping legal MVs tighter than
+C's 96, so the fix moved bytes, not just crashes. `inter_byte_gate`
+110/110, `regression_spotcheck` 141/141, nextest 3888/3888, fctx 96/96,
+inter_fh PASS, inter_decode 5/5, decode census 96/96, completion scan all
+OK, warped/obmc/bd10_video OK.
+
+**Known-open, not from this chunk.** `global_motion_gate`'s
+`512x512 p2 zoom 9/8` cell reports recon 1/2 — verified identical (same
+mismatch, different stream) at `main` 77f418ec, so it predates this work;
+the encoder's GM/warped prediction disagrees with dav1d's decode on a
+non-identity-model frame. Worth its own chunk.
