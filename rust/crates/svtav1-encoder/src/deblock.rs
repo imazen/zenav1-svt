@@ -492,14 +492,18 @@ pub fn recondbg_dump(
         planes.push((1, u_src, u_recon, cw, ch));
         planes.push((2, v_src, v_recon, cw, ch));
     }
+    // One file set per frame, like C's `call=<n>` gate: without the counter a
+    // multi-frame run overwrites frame 0's planes with the last frame's.
+    static CALL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    let call = CALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     for (p, src, recon, w, h) in planes {
-        eprintln!("RECON_SSE plane={p} sse={}", plane_sse(src, recon, w, h));
+        eprintln!("RECON_SSE call={call} plane={p} sse={}", plane_sse(src, recon, w, h));
         // Raw plane, tightly packed — same layout the C interposer writes
         // (its rows are buffer[p] + r*stride[p], stride removed), so the
         // two dump files diff byte-for-byte and the first differing offset
         // localizes the first divergent superblock.
         if let Some(b) = &bin {
-            let _ = std::fs::write(format!("{b}.p{p}"), &recon[..w * h]);
+            let _ = std::fs::write(format!("{b}.f{call}.p{p}"), &recon[..w * h]);
         }
     }
 }

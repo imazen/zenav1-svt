@@ -152,41 +152,48 @@ refuses() {
   fi
 }
 
-# refuses_inter3 <label> <content> <w> <h> <qp> <preset>
-# Asserts the port REFUSES the THIRD frame of a low-delay-P sequence — the
-# first inter frame whose LIST-0 REFERENCE is itself an inter frame.
+# byteInter3 <label> <content> <w> <h> <qp> <preset>
+# Asserts EVERY frame of a 3-frame low-delay-P encode is byte-identical to
+# C's — frame 0 (key), frame 1 (inter off a key reference) and frame 2 (the
+# first inter frame whose LIST-0 reference is itself inter, which exercises
+# the temporal motion field the old frame-2 refusal guarded).
 #
-# Why a cell for a refusal. The frame-2 refusal has now named THREE different
-# mechanisms, and the first two were superseded by measurement rather than by
-# being fixed — which is precisely why the refusal must be pinned from the
-# other side rather than trusted to be current:
-#
-#   1z25  the reference's three coded-area percentages   -> CLOSED
-#   1z27  a hard-coded DPB slot where C resolves LAST    -> CLOSED (466 B -> 22)
-#   1z28  the temporal motion field, now WIRED           -> byte counts match
-#         on six of eight frames=3 cells, none identical
-#
-# Deleting the refusal fails here with "ENCODED where a refusal was required",
-# instead of silently shipping a frame that is a byte or two off C's.
-# See docs/INTER-ENCODE-PLAN.md 1z25 / 1z27 / 1z28.
-#
-# It drives the SAME harness configuration `identity_diff_inter.sh` does, so a
-# refusal here is the one the inter campaign would hit.
-refuses_inter3() {
+# This is the PROMOTED form of the cells below. They used to pin a refusal
+# whose three named mechanisms were each closed in turn (INTER-ENCODE-PLAN.md
+# 1z25/1z27/1z28) until `a33b987` shipped inter frames and deleted the
+# refusal outright — leaving cells asserting a contract that no longer
+# exists. With the video-arm `skip_sub_depth` level wired and loop
+# restoration ungated from `is_key`, both cells are byte-identical to C on
+# all three frames, so the pin is now the strongest one available.
+byteInter3() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
+  rm -f "$W"/c.obu.pts* "$W"/rs.obu.f*
+  local rc=0
   SVTAV1_FRAMES=3 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
-    SVTAV1_INTER_EXPERIMENTAL=1 $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
-    >/dev/null 2>"$W/err"
-  local rc=$?
-  if [ "$rc" -eq 3 ]; then
-    pass=$((pass+1))
-  elif grep -q "panicked at" "$W/err"; then
-    fail=$((fail+1)); failed+=("$label PANICKED where a refusal was required: $(grep -m1 'panicked at' "$W/err" | sed 's/.*panicked at //')")
-  elif [ "$rc" -eq 0 ]; then
-    fail=$((fail+1)); failed+=("$label ENCODED where a refusal was required (the frame-2 refusal was lifted without byte-parity evidence)")
-  else
-    fail=$((fail+1)); failed+=("$label [rc=$rc, expected 3]")
+    $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>"$W/err" || rc=$?
+  if grep -q "panicked at" "$W/err"; then
+    fail=$((fail+1)); failed+=("$label PANICKED: $(grep -m1 'panicked at' "$W/err" | sed 's/.*panicked at //')"); return
   fi
+  if [ "$rc" -ne 0 ]; then
+    fail=$((fail+1)); failed+=("$label [port failed to encode all 3 frames, rc=$rc]"); return
+  fi
+  if ! SVT_FRAMES=3 SVT_INTRA_PERIOD=-1 SVT_HIER_LEVELS=0 SVT_PRED_STRUCT=1 \
+       SVT_TRACE_OUT=/dev/null $LOWPRI "$CT" "$w" "$h" "$qp" "$p" \
+       "$W/rs.yuv" "$W/c.obu" 8 >/dev/null 2>&1; then
+    fail=$((fail+1)); failed+=("$label [C oracle failed]"); return
+  fi
+  local i
+  for i in 0 1 2; do
+    if [ ! -e "$W/c.obu.pts$i" ] || [ ! -e "$W/rs.obu.f$i" ]; then
+      fail=$((fail+1)); failed+=("$label [frame $i missing on one side]"); return
+    fi
+    if ! cmp -s "$W/c.obu.pts$i" "$W/rs.obu.f$i"; then
+      fail=$((fail+1))
+      failed+=("$label [frame $i: C=$(wc -c <"$W/c.obu.pts$i"|tr -d ' ')B port=$(wc -c <"$W/rs.obu.f$i"|tr -d ' ')B]")
+      return
+    fi
+  done
+  pass=$((pass+1))
 }
 
 # mfmvField <label> <content> <w> <h> <qp> <preset>
@@ -216,7 +223,7 @@ refuses_inter3() {
 mfmvField() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
-    SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_REFSTATS=1 \
+    SVTAV1_REFSTATS=1 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" \
     >/dev/null 2>"$W/err"
   local rc=$?
@@ -399,7 +406,7 @@ encodesInter() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   rm -f "$W"/rs.obu.f*
   local rc=0
-  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
     SVTAV1_HIER_LEVELS=0 SVTAV1_FRAME_SHIFT=3 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>"$W/err" || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -431,7 +438,7 @@ fhInterFrame() {
   local label=$1 content=$2 w=$3 h=$4 qp=$5 p=$6
   rm -f "$W"/c.obu.pts* "$W"/rs.obu.f* "$W"/rs.obu "$W"/c.obu
   local rc=0
-  SVTAV1_INTER_EXPERIMENTAL=1 SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
+  SVTAV1_FRAMES=2 SVTAV1_INTRA_PERIOD=64 \
     SVTAV1_HIER_LEVELS=0 \
     $LOWPRI "$RUN" "$content" "$w" "$h" "$qp" "$p" "$W/rs" >/dev/null 2>&1 || rc=$?
   # rc 3 is the REFUSAL, which is exactly the regression this cell guards: the
@@ -975,15 +982,12 @@ byte "qp0-depth-override" diag 64 64 0 3
 byte "qp0-md-cdf-chain" gradient 128 128 0 0
 
 # INTER frame 2 — the first frame whose list-0 reference is itself an inter
-# frame. The refusal MOVED on 2026-09-03 (docs/INTER-ENCODE-PLAN.md 1z25): the
-# coded-area statistics it used to name are carried and joined to C now, and
-# the gap that is left is the per-superblock `pd0_detector` input.
-#
-# OBSERVED with the refusal removed: `gradient 64x64 q32 p8` frames=3 encodes
-# frame 2 at 466 B where C writes 21, coding every block intra. Two cells, so a
-# lift has to be argued at more than one geometry.
-refuses_inter3 "inter-frame2-refused-g64-p8"  gradient  64  64 32 8
-refuses_inter3 "inter-frame2-refused-d128-p6" diag     128 128 40 6
+# frame. These used to pin the frame-2 REFUSAL (`refuses_inter3`), which
+# named three mechanisms in turn (INTER-ENCODE-PLAN.md 1z25/1z27/1z28) before
+# `a33b987` shipped inter frames and deleted it. Both cells now byte-match C
+# on all three frames, so the pin is the strongest one available.
+byteInter3 "inter-frame2-byte-g64-p8"  gradient  64  64 32 8
+byteInter3 "inter-frame2-byte-d128-p6" diag     128 128 40 6
 
 # The MFMV writeback the frame-2 work wired (docs/INTER-ENCODE-PLAN.md 1z28).
 # Two cells because the field's SHAPE differs: 64x64 is one superblock and a

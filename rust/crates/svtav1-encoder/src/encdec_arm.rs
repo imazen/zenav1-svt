@@ -49,6 +49,32 @@
 //! (`48577658` on both sides), which is what says the divergence is the
 //! MDS0 METRIC and not the machinery around it.
 //!
+//! # `ctx->skip_sub_depth_ctrls`
+//!
+//! | arm | `skip_sub_depth_lvl` ladder | C |
+//! |---|---|---|
+//! | allintra | `enc_mode <= ENC_M7 -> 1 else 2` | `enc_mode_config.c:8156` |
+//! | video (`_default`) | `enc_mode <= ENC_M1 -> 1 else 2` | `:7923` |
+//! | rtc | `2` | `:8039` |
+//!
+//! Levels 1 and 2 differ ONLY in `coeff_perc` — 15 vs 25
+//! (`set_skip_sub_depth_ctrls`, :6787); `enabled`, `max_size` 16 and
+//! `quad_deviation_th` 250 are identical. The gate is
+//! `eval_sub_depth_skip_cond1` (product_coding_loop.c:10871), run from
+//! `svt_aom_pick_partition` after the current-depth test: on a <=16x16
+//! block whose winner has flat quadrant recon SSEs (< 250 std-dev) and a
+//! nonzero-coefficient share below `coeff_perc`, C clears
+//! `mds->split_flag` and never tests the split.
+//!
+//! That is a real partition fork, not a tie: measured on
+//! `johnny_256x256_8f` q40 p6 video frame 0, the 16x16 node at (16,32)
+//! has 39/256 = 15 % nonzero coefficients and quadrant SSEs
+//! {157,610,63,83} (std ~223). C's video-arm level-2 gate fires
+//! (15 < 25), the split is never evaluated and the 16x16 stands at
+//! rd 3441974; under the still path's level-1 ctrls `15 < 15` fails, the
+//! split test runs and wins at 3040770 — four 8x8s where C codes one
+//! 16x16.
+//!
 //! # Evidence
 //!
 //! Tier 1 on the value: `svt_aom_sig_deriv_enc_dec_{default,allintra}` are
@@ -63,6 +89,8 @@
 //! the `true` that `FunnelCfg::for_preset` already defaults to.
 
 use crate::leaf_funnel::FunnelCfg;
+use crate::port_enc_mode_config::enc_mode::{M1, M7};
+use crate::port_enc_mode_config::encdec::{self, SkipSubDepthCtrls};
 use crate::sc_detect::ScArm;
 
 /// C `ctx->mds0_use_hadamard_sb` for this arm.
@@ -77,9 +105,29 @@ pub(crate) fn mds0_use_hadamard_sb(arm: ScArm) -> bool {
     }
 }
 
+/// C `ctx->skip_sub_depth_ctrls` for this arm + `enc_mode` (already
+/// [`crate::rate_arm::eff_enc_mode`]-clamped), via
+/// `set_skip_sub_depth_ctrls`.
+///
+/// The arms disagree at M2..M7: a video key frame at M6 derives level 2
+/// (`coeff_perc` 25) where the same preset on a still derives level 1
+/// (`coeff_perc` 15) — and allintra at M8/M9 derives level 2 as well, so
+/// the still bake in `FunnelCfg::for_preset` must not be hardcoded
+/// level 1 either.
+#[must_use]
+pub(crate) fn skip_sub_depth(arm: ScArm, enc_mode: i8) -> SkipSubDepthCtrls {
+    let lvl = match arm {
+        ScArm::Allintra => u8::from(enc_mode > M7) + 1,
+        ScArm::Video { .. } => u8::from(enc_mode > M1) + 1,
+    };
+    encdec::set_skip_sub_depth_ctrls(lvl).expect("levels 1/2 are in-domain")
+}
+
 /// Stamp this arm's `sig_deriv_enc_dec_*` signals onto a [`FunnelCfg`].
-pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm) {
+/// `enc_mode` must already be [`crate::rate_arm::eff_enc_mode`]-clamped.
+pub(crate) fn apply(cfg: &mut FunnelCfg, arm: ScArm, enc_mode: i8) {
     cfg.mds0_use_hadamard_sb = mds0_use_hadamard_sb(arm);
+    cfg.skip_sub_depth = skip_sub_depth(arm, enc_mode);
 }
 
 #[cfg(test)]
@@ -94,7 +142,11 @@ mod tests {
         for preset in 0i8..=13 {
             let baked = FunnelCfg::for_preset(preset);
             let mut walked = baked;
-            apply(&mut walked, ScArm::Allintra);
+            apply(
+                &mut walked,
+                ScArm::Allintra,
+                crate::rate_arm::eff_enc_mode(ScArm::Allintra, preset),
+            );
             assert_eq!(
                 baked.mds0_use_hadamard_sb, walked.mds0_use_hadamard_sb,
                 "allintra mds0_use_hadamard_sb at M{preset}"
@@ -102,6 +154,10 @@ mod tests {
             assert!(
                 baked.mds0_use_hadamard_sb,
                 "the baked still value IS C's allintra literal (enc_mode_config.c:8148)"
+            );
+            assert_eq!(
+                baked.skip_sub_depth, walked.skip_sub_depth,
+                "allintra skip_sub_depth at M{preset}"
             );
         }
     }
@@ -130,5 +186,34 @@ mod tests {
             sig.mds0_use_hadamard_sb,
             mds0_use_hadamard_sb(ScArm::Video { is_islice: true })
         );
+        assert_eq!(
+            sig.skip_sub_depth,
+            skip_sub_depth(ScArm::Video { is_islice: true }, 6)
+        );
+    }
+
+    /// The level fork IS the divergence this module fixes: levels 1 and 2
+    /// differ only in `coeff_perc` (15 vs 25), so the arms must disagree
+    /// exactly on the M2..M7 video band (and allintra must climb to
+    /// level 2 at M8/M9 rather than staying at the old baked level 1).
+    #[test]
+    fn skip_sub_depth_forks_on_the_arm() {
+        let video = |is_islice: bool| ScArm::Video { is_islice };
+        // coeff_perc is the only level-1-vs-2 delta (enc_mode_config.c:6787).
+        assert_eq!(skip_sub_depth(ScArm::Allintra, 6).coeff_perc, 15);
+        assert_eq!(skip_sub_depth(video(true), 6).coeff_perc, 25);
+        assert_eq!(skip_sub_depth(video(false), 6).coeff_perc, 25);
+        // Video's M0/M1 stay at level 1; allintra's M8/M9 climb to 2.
+        assert_eq!(skip_sub_depth(video(true), 1).coeff_perc, 15);
+        assert_eq!(skip_sub_depth(ScArm::Allintra, 8).coeff_perc, 25);
+        // Every reachable level keeps the gate armed on <=16x16 blocks.
+        for arm in [ScArm::Allintra, video(true), video(false)] {
+            for enc_mode in 0..=13 {
+                let ss = skip_sub_depth(arm, enc_mode);
+                assert_eq!(ss.enabled, 1);
+                assert_eq!(ss.max_size, 16);
+                assert_eq!(ss.quad_deviation_th, 250);
+            }
+        }
     }
 }

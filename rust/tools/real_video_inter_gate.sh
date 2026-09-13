@@ -43,37 +43,43 @@ if [ ! -f "$ASSETS/vidyo3_128x128_8f.i420" ]; then
 fi
 
 # clip size preset  expected_f0/expected_f1
-# MEASURED 2026-09-10 at cli_qp 40, frames=2, on x86-64.
+# MEASURED 2026-09-11 at cli_qp 40, frames=2, on x86-64.
 #
-# The frame-0 column is the interesting one: it is a KEY frame, so the six
-# zeros are a STILL divergence on real content reached through the video
-# configuration, and every one of them is preset 6 -- preset 8 key frames are
-# 12/12. That is not the same surface `real_image_matrix.sh` covers (180/180 on
+# The frame-0 column is the interesting one: it is a KEY frame, so the two
+# remaining zeros (vidyo3/vidyo4 256x256 p8) are a STILL divergence on real
+# content reached through the video configuration. All SIX preset-6 key
+# frames closed when the video arm's `skip_sub_depth_lvl` ladder was wired
+# (`encdec_arm::apply` stamps `enc_mode <= M1 -> 1 else 2`; the still bake
+# had pinned level 1's `coeff_perc` 15 where video M2+ derives 25), and three
+# more frame-1 cells closed when loop restoration stopped being gated on
+# `is_key` — `ppcs->enable_restoration` is picture-level in C, and a flat
+# GOP is `is_not_last_layer` on every frame.
+# That is not the same surface `real_image_matrix.sh` covers (180/180 on
 # CID22-512 at presets {2,6,10}), which runs the all-intra path at 512x512.
 CELLS=(
     "fourpeople     128x128 6 1/1"
     "fourpeople     128x128 8 1/1"
-    "fourpeople     256x256 6 0/0"
+    "fourpeople     256x256 6 1/1"
     "fourpeople     256x256 8 1/1"
     "johnny         128x128 6 1/0"
     "johnny         128x128 8 1/0"
-    "johnny         256x256 6 0/0"
+    "johnny         256x256 6 1/0"
     "johnny         256x256 8 1/0"
-    "kristenandsara 128x128 6 0/0"
+    "kristenandsara 128x128 6 1/1"
     "kristenandsara 128x128 8 1/1"
-    "kristenandsara 256x256 6 0/0"
+    "kristenandsara 256x256 6 1/1"
     "kristenandsara 256x256 8 1/1"
     "vidyo1         128x128 6 1/1"
-    "vidyo1         128x128 8 1/0"
+    "vidyo1         128x128 8 1/1"
     "vidyo1         256x256 6 1/0"
     "vidyo1         256x256 8 1/0"
     "vidyo3         128x128 6 1/0"
     "vidyo3         128x128 8 1/0"
-    "vidyo3         256x256 6 0/0"
+    "vidyo3         256x256 6 1/0"
     "vidyo3         256x256 8 1/0"
     "vidyo4         128x128 6 1/1"
     "vidyo4         128x128 8 1/0"
-    "vidyo4         256x256 6 0/0"
+    "vidyo4         256x256 6 1/0"
     "vidyo4         256x256 8 1/0"
 )
 

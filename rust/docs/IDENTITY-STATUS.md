@@ -70,29 +70,35 @@ to work for.
 `tools/real_video_inter_gate.sh` runs the two-frame differential on twelve I420
 sequences cut from the six Xiph derf clips whose index entry reads *public
 domain*, published at the R2 prefix `video/pd-derf-720p/` and fetched
-anonymously. MEASURED 2026-09-10, 6 clips × {128×128, 256×256} × presets {6,8}
-× cli_qp 40, 24 cells
-([record](../benchmarks/real_video_inter_2026-09-10.meta)):
+anonymously. MEASURED 2026-09-11, 6 clips × {128×128, 256×256} × presets {6,8}
+× cli_qp 40, 24 cells:
 
 | frame | byte-identical |
 |---|---|
-| 0 (key) | **18 / 24** |
-| 1 (inter) | **7 / 24** |
+| 0 (key) | **22 / 24** |
+| 1 (inter) | **10 / 24** |
 
-Two things this says that the synthetic grid could not:
+Two findings moved since the 2026-09-10 measurement
+([record](../benchmarks/real_video_inter_2026-09-10.meta), 18/24 and 7/24):
 
-- **Frame 0's six failures are all preset 6**; preset 8 key frames are 12/12.
-  Drilled 2026-09-10 into a specific open bug
-  ([record](../benchmarks/multiframe_keyframe_p2p7_2026-09-10.meta)): a key
-  frame that is byte-identical to C **alone** stops being identical **when a
-  second frame follows it**, at presets **2–7** only (p0, p8 and p10 are clean).
-  The control is what makes it a finding — the same pixels at `frames=1` are
-  byte-identical on all six cells, so it is not the content, the crop size or
-  the still path. The harness is ruled out too: it hands the encoders different
-  intra periods (C `-1`, port `64`), and matching them in either direction, or
-  setting both to 255, leaves the bytes unchanged at 5053/5048. Minimal
-  reproducer: `identity_diff_inter.sh 256 256 40 6 2
-  rawseq:johnny_256x256_8f.i420`.
+- **All six preset-6 frame-0 failures closed.** The "key frame diverges when
+  a second frame follows it" bug
+  ([record](../benchmarks/multiframe_keyframe_p2p7_2026-09-10.meta)) was the
+  video arm's `skip_sub_depth_lvl` ladder: C's
+  `svt_aom_sig_deriv_enc_dec_default` derives level 2 (`coeff_perc` 25) for
+  enc_mode > M1 where the allintra ladder stays at level 1 (`coeff_perc` 15)
+  through M7. The port had baked level 1 for every picture, so
+  `eval_sub_depth_skip_cond1` never fired and flat ≤16×16 blocks were split
+  that C keeps — measured at `johnny_256x256_8f` q40 p6, the 16×16 node at
+  (16,32) has 39/256 = 15 % nonzero coefficients. `encdec_arm::apply` now
+  stamps the per-arm level into `FunnelCfg::skip_sub_depth`, and the allintra
+  bake is `<= M7 -> 1 else 2` rather than always 1.
+- **Loop restoration is no longer gated on `is_key`.** C's
+  `ppcs->enable_restoration` is picture-level (`wn > 0 || sg > 0`), and a
+  flat GOP makes every frame `is_not_last_layer`, so C runs luma-only Wiener
+  (`lr_type[0]=2`) on frame 1 where the port wrote `lr_type[0]=0`. The
+  remaining frame-0 zeros are `vidyo3`/`vidyo4` 256×256 at **preset 8** — a
+  different mechanism than the closed preset-6 one.
 - **The control makes the gap explicit.** At the identical cell shape
   (128×128 q40 p6 frames=2) synthetic `gradient` is byte-identical on *both*
   frames, with frame 1 coding to 24 bytes — a skip. Real video at that shape

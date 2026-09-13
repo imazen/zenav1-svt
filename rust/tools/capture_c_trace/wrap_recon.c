@@ -963,8 +963,8 @@ void __wrap_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, Picture
 
     static int lf_call_idx = 0;
     const int  n           = lf_call_idx++;
-    if (n != 0)
-        return;
+    /* Per-call dumps: the port's SVTAV1_RECON_BIN writes .f<call>.p<plane>;
+     * dump every frame so a frame-1 recon diff is possible. */
 
     const bool           is_16bit = pcs->ppcs->scs->is_16bit_pipeline;
     EbPictureBufferDesc* recon    = NULL;
@@ -992,7 +992,13 @@ void __wrap_svt_av1_loop_filter_frame(EbPictureBufferDesc* frame_buffer, Picture
         if (!binpath || !*binpath)
             continue;
         char path[4096];
-        snprintf(path, sizeof(path), "%s.p%d", binpath, p);
+        /* Per-call name keeps a frame-1 diff possible; the legacy .p%d name
+         * stays for call 0 so single-frame consumers (bd10 parity gate,
+         * drill scripts) keep working. */
+        if (n != 0)
+            snprintf(path, sizeof(path), "%s.f%d.p%d", binpath, n, p);
+        else
+            snprintf(path, sizeof(path), "%s.p%d", binpath, p);
         FILE* bf = fopen(path, "wb");
         if (!bf)
             continue;
@@ -1069,10 +1075,11 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
             fprintf(f, "RECON_SSE call=%d plane=%d sse=%llu\n", n, p, (unsigned long long)sse);
         }
 
-        /* Raw planes for the first (dlf_process) call only — the state whose
-         * SSE the search's level-0 trial measures. */
+        /* Raw planes per call — the port's SVTAV1_RECON_BIN writes
+         * .f<call>.p<plane>, so name these the same way to keep a frame-1
+         * diff possible. */
         const char* binpath = getenv("SVT_RECON_BIN");
-        if (n == 0 && binpath && *binpath) {
+        if (binpath && *binpath) {
             const uint32_t ss_x = pcs->ppcs->scs->subsampling_x;
             const uint32_t ss_y = pcs->ppcs->scs->subsampling_y;
             /* task #94 bd10: at the 16-bit pipeline the recon buffer is PLAIN
@@ -1086,7 +1093,12 @@ void __wrap_svt_av1_loop_filter_init(PictureControlSet* pcs) {
                 const uint32_t pw = p ? (pcs->ppcs->aligned_width >> ss_x) : pcs->ppcs->aligned_width;
                 const uint32_t ph = p ? (pcs->ppcs->aligned_height >> ss_y) : pcs->ppcs->aligned_height;
                 char           path[4096];
-                snprintf(path, sizeof(path), "%s.p%d", binpath, p);
+                /* Same dual naming as the LFRECON dump: .f<n>.p<p> for
+                 * every call, .p<p> kept for call 0 (bd10 parity gate). */
+                if (n != 0)
+                    snprintf(path, sizeof(path), "%s.f%d.p%d", binpath, n, p);
+                else
+                    snprintf(path, sizeof(path), "%s.p%d", binpath, p);
                 FILE* bf = fopen(path, "wb");
                 if (!bf)
                     continue;

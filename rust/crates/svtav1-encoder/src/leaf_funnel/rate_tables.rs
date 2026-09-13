@@ -832,6 +832,28 @@ pub struct FunnelCfg {
     /// `use_intrabc = 0` flag (rd_cost.c:629-631; the writer codes the flag
     /// for every block, entropy_coding.c:5021-5023).
     pub allow_intrabc: bool,
+    /// C `ctx->skip_sub_depth_ctrls` (`set_skip_sub_depth_ctrls`,
+    /// enc_mode_config.c:6787): the post-depth gate that clears
+    /// `mds->split_flag` on a <= `max_size` block whose winner has flat
+    /// quadrant recon distortions and few nonzero coefficients
+    /// (`eval_sub_depth_skip_cond1`, product_coding_loop.c:10871).
+    ///
+    /// The LEVEL ladder forks on the arm: allintra is `enc_mode <= ENC_M7
+    /// -> 1 else 2` (`svt_aom_sig_deriv_enc_dec_allintra`, :8156) and video
+    /// is `enc_mode <= ENC_M1 -> 1 else 2`
+    /// (`svt_aom_sig_deriv_enc_dec_default`, :7923). Levels 1 and 2 differ
+    /// ONLY in `coeff_perc` — 15 vs 25 — so the fork binds exactly on a
+    /// flat <=16x16 block whose nonzero share lands in [15, 25): measured
+    /// on `johnny_256x256` q40 p6 video frame 0, the 16x16 node at
+    /// (16,32) has 39/256 = 15% nonzero and quadrant SSEs
+    /// {157,610,63,83} (std ~223 < 250), so C's level-2 gate fires
+    /// (15 < 25), the split is never tested, and the 16x16 survives;
+    /// under the baked level-1 ctrls `15 < 15` fails and the port's split
+    /// test runs and wins at 3040770 < 3441974.
+    ///
+    /// `for_preset` bakes the allintra value; [`crate::encdec_arm::apply`]
+    /// stamps the video arm's.
+    pub skip_sub_depth: crate::port_enc_mode_config::encdec::SkipSubDepthCtrls,
 }
 
 impl FunnelCfg {
@@ -916,6 +938,8 @@ impl FunnelCfg {
             palette_level: 0,
             allow_sct: false,
             allow_intrabc: false,
+            // Stamped below, where the preset is in scope.
+            skip_sub_depth: crate::port_enc_mode_config::encdec::SkipSubDepthCtrls::default(),
         };
         let mut cfg = match preset {
             // M1 (still/420): the svt_aom_get_*_allintra rows for enc_mode=1
@@ -1277,6 +1301,14 @@ impl FunnelCfg {
             },
         };
         cfg.bypass_encdec = preset >= 4;
+        // `svt_aom_sig_deriv_enc_dec_allintra`'s skip_sub_depth_lvl
+        // (enc_mode_config.c:8156): `enc_mode <= ENC_M7 -> 1 else 2`, on
+        // the still arm's M9-clamped enc_mode. The video arm's M1
+        // boundary is stamped by `encdec_arm::apply`.
+        cfg.skip_sub_depth = crate::port_enc_mode_config::encdec::set_skip_sub_depth_ctrls(
+            if preset.min(9) <= 7 { 1 } else { 2 },
+        )
+        .expect("levels 1/2 are in-domain");
         cfg
     }
 

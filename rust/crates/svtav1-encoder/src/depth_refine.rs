@@ -49,6 +49,7 @@ use alloc::vec::Vec;
 use crate::leaf_funnel::{FunnelCtx, LeafEval, commit_leaf, evaluate_leaf};
 use crate::partition::{PartitionTree, PartitionType};
 use crate::pd0::{M6Pd0Tables, Pd0Eval};
+use crate::port_enc_mode_config::encdec::SkipSubDepthCtrls;
 
 /// C `RDCOST` (rd_cost.h:36).
 #[inline]
@@ -1251,16 +1252,14 @@ fn shape_children(size: usize, p: PartitionType) -> Vec<(usize, usize, usize, us
 // The PD1 depth walk
 // ---------------------------------------------------------------------------
 
-/// `skip_sub_depth_ctrls` level 1 (allintra <= M7, enc_mode_config.c —
-/// the ALLINTRA sig-deriv tail): cond1 cancels sub-depth testing for
-/// blocks <= 16x16 whose winner has flat quadrant distortions and few
-/// coefficients.
-struct SkipSubCtrls {
-    max_size: usize,
-    quad_deviation_th: f32,
-    coeff_perc: u32,
-}
-
+// `ctx->skip_sub_depth_ctrls` (enc_mode_config.c:6787): cond1 cancels
+// sub-depth testing for blocks <= `max_size` whose winner has flat
+// quadrant distortions and few coefficients. The LEVEL forks on the
+// `svt_aom_sig_deriv_enc_dec_*` arm — allintra `enc_mode <= ENC_M7 -> 1
+// else 2` (:8156), video `enc_mode <= ENC_M1 -> 1 else 2` (:7923) — and
+// the levels differ only in `coeff_perc` (15 vs 25), which is why the
+// walk reads the arm-stamped `FunnelCfg::skip_sub_depth` rather than
+// baking level 1.
 pub(crate) struct DepthWalk<'a, 'b> {
     /// One reusable [`NodeSnap`] per node SIZE — 8, 16, 32, 64, 128 — indexed
     /// by `size.trailing_zeros()`.
@@ -1488,12 +1487,11 @@ impl DepthWalk<'_, '_> {
     /// 255/258) — sq_weight adjustments in update_skip_nsq_shapes.
     const CONSERVATIVE_OFFSET_0: u64 = 5;
 
-    fn skip_sub() -> SkipSubCtrls {
-        SkipSubCtrls {
-            max_size: 16,
-            quad_deviation_th: 250.0,
-            coeff_perc: 15,
-        }
+    /// `ctx->skip_sub_depth_ctrls` for THIS arm — the funnel cfg field
+    /// `encdec_arm::apply` stamps per picture (allintra ladder baked by
+    /// `FunnelCfg::for_preset`).
+    fn skip_sub(&self) -> SkipSubDepthCtrls {
+        self.fx.frame.cfg.skip_sub_depth
     }
 
     /// C `calc_scr_to_recon_dist_per_quadrant` (product_coding_loop.c:
@@ -1639,7 +1637,7 @@ impl DepthWalk<'_, '_> {
     /// std-deviation of the winner's per-quadrant recon SSE and the
     /// nonzero-coefficient percentage.
     fn sub_depth_skip_cond1(&self, ev: &LeafEval, quad: &[u64; 4]) -> bool {
-        let ss = Self::skip_sub();
+        let ss = self.skip_sub();
         // C float arithmetic (sum/average/pow/sqrtf).
         let n = 4f32;
         let sum: f32 = quad.iter().map(|&d| d as f32).sum();
@@ -1655,7 +1653,7 @@ impl DepthWalk<'_, '_> {
         let std_deviation = variance.sqrt();
         let total_samples = (ev.w * ev.h) as u32;
         let coeff_perc = ev.cnt_nz_coeff() * 100 / total_samples;
-        std_deviation < ss.quad_deviation_th && coeff_perc < ss.coeff_perc
+        std_deviation < ss.quad_deviation_th as f32 && coeff_perc < u32::from(ss.coeff_perc)
     }
 
     /// Save/restore span of a node rect on the ALIGNED-strided recon planes.
@@ -2473,8 +2471,9 @@ impl DepthWalk<'_, '_> {
                         && self.nsq.max_part0_to_part1_dev != 0
                         && size >= 8
                         && size > self.nsq.min_nsq;
-                    let ss = Self::skip_sub();
-                    let skip_sub_arm = size <= ss.max_size
+                    let ss = self.skip_sub();
+                    let skip_sub_arm = ss.enabled != 0
+                        && size <= usize::from(ss.max_size)
                         && scan.split_flag
                         && (size >= 16 || (!self.disallow_4x4 && size == 8));
                     let quad = if nsq_arm || skip_sub_arm {
@@ -2547,9 +2546,11 @@ impl DepthWalk<'_, '_> {
 
             // skip_sub_depth cond1 (svt_aom_pick_partition:11563-11568) —
             // on the SQ winner's quadrant dists.
+            let ss = self.skip_sub();
             if let Some(sq) = &sq_info
                 && split_flag
-                && size <= Self::skip_sub().max_size
+                && ss.enabled != 0
+                && size <= usize::from(ss.max_size)
                 && let Some(quad) = &sq.quad
                 && self.sub_depth_skip_cond1(&sq.ev, quad)
             {

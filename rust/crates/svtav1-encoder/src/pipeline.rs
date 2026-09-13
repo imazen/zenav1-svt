@@ -6428,7 +6428,19 @@ impl EncodePipeline {
         // forces all planes RESTORE_NONE). enable_restoration itself (and
         // the SH bit) stays UNCHANGED — do NOT fold this into the
         // derivation (docs/ibc-port-map.md §A.7).
-        if is_key && seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless
+        //
+        // The gate is NOT `is_key`: `ppcs->enable_restoration` is the
+        // PICTURE-level `(wn > 0 || sg > 0)` (enc_mode_config.c:2142), and
+        // the video ladder keeps Wiener live on an inter frame —
+        // `wn_filter_level_default` gives level 5 (luma-only) at M4..M8
+        // whenever `is_not_last_layer`, which a flat GOP's `hierarchical_
+        // levels != 0` clause makes true for EVERY picture
+        // (pd_process.c:5560). The `ctrls.enabled || sg_ctrls.enabled`
+        // check inside IS that per-picture term, so `is_key` here only
+        // ever wrongly disabled the stage on inter frames — the exact
+        // `lr_type[0]` C=2 vs 0 divergence on `johnny_256x256` q40 p6
+        // frame 1.
+        if seq_tools.enable_restoration && !sc_derivation.allow_intrabc && !coded_lossless
         {
             // LOOP-RESTORATION LEVEL LADDERS — the `scs->allintra` fork
             // (`pd_process.c:4935-4938`), the same selector `sc_detect`, the
@@ -6562,6 +6574,23 @@ impl EncodePipeline {
                 // tight (`w` / `w/2` stride), and the 10-bit source is
                 // `u8 << (bd - 8)` by construction (the harness writes exactly
                 // that .yuv for both encoders).
+                // LR search-input dump (SVTAV1_LRREC_BIN) — the tight
+                // post-CDEF planes the Wiener/SGR search reads, one set per
+                // frame. Pairs with the C `SVT_LFRECON_BIN` interposer
+                // dump (post-deblock == post-CDEF whenever every coded CDEF
+                // strength is 0).
+                #[cfg(feature = "std")]
+                if let Ok(prefix) = std::env::var("SVTAV1_LRREC_BIN") {
+                    static CALL: core::sync::atomic::AtomicUsize =
+                        core::sync::atomic::AtomicUsize::new(0);
+                    let call = CALL.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    for (plane, buf) in [&lr_rec_y, &lr_rec_u, &lr_rec_v].into_iter().enumerate() {
+                        if !buf.is_empty() {
+                            std::fs::write(format!("{prefix}.f{call}.p{plane}"), buf)
+                                .expect("write LR search-input recon");
+                        }
+                    }
+                }
                 let rest_info = match recon10.as_ref() {
                     Some((y10, u10, v10)) => {
                         let sh = (self.bit_depth - 8) as u32;
@@ -11822,14 +11851,23 @@ fn encode_tile_rows(
         // `for_preset` bakes the still's 32; a video key frame at M0/M1 was
         // running half of C's independent-uv full loop until 2026-09-04.
         funnel_cfg.ind_uv_nfl_base = crate::intra_arm::ind_uv_nfl_base(sc_arm, is_highest_layer);
-        // `ctx->mds0_use_hadamard_sb`, for THIS arm (`crate::encdec_arm`).
-        // Unlike every arm above it this one does NOT come from
-        // `sig_deriv_mode_decision_config` — it is a literal in each
-        // `svt_aom_sig_deriv_enc_dec_*` body, which is why §1c's field-for-field
-        // divergence table cannot see it. The video arm's `false` sends MDS0's
-        // luma distortion down C's two-buffer VARIANCE arm instead of the
-        // Hadamard SATD, and variance is DC-invariant where SATD is not.
-        crate::encdec_arm::apply(&mut funnel_cfg, sc_arm);
+        // `ctx->mds0_use_hadamard_sb` and `ctx->skip_sub_depth_ctrls`, for
+        // THIS arm (`crate::encdec_arm`). Neither comes from
+        // `sig_deriv_mode_decision_config` — the first is a literal in each
+        // `svt_aom_sig_deriv_enc_dec_*` body and the second a per-arm
+        // `skip_sub_depth_lvl` ladder there — which is why §1c's
+        // field-for-field divergence table cannot see them. The video
+        // arm's `false` sends MDS0's luma distortion down C's two-buffer
+        // VARIANCE arm instead of the Hadamard SATD, and variance is
+        // DC-invariant where SATD is not; the video arm's `enc_mode <= M1`
+        // skip_sub ladder puts every video key frame at M2+ on level 2
+        // (`coeff_perc` 25 vs the still's 15), the gate that decides
+        // whether a flat <=16x16 node's split is even tested.
+        crate::encdec_arm::apply(
+            &mut funnel_cfg,
+            sc_arm,
+            crate::rate_arm::eff_enc_mode(sc_arm, speed_config.preset),
+        );
         // `pcs->mds0_level` -> `set_mds0_controls`, for THIS arm
         // (`crate::mds0_arm`). The arms agree on a key frame through M10 and
         // diverge above it: the video arm takes level 2 (`fast_loop_core`'s
