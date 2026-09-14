@@ -635,14 +635,13 @@ pub(crate) fn video_pd0_params(
     // the in-range `pd0_level` here can never produce (every level 0..=6 maps
     // inside each table's domain). Fall back to the zero step/level C's
     // zeroed context would hold rather than panic on a proven-unreachable arm.
-    let (coeff_rate_est_lvl, subres_step, parent_cost_bias) =
-        signals.map_or((0, 0, 1000), |s| {
-            (
-                s.rate_est.coeff_rate_est_lvl,
-                u32::from(s.subres.step),
-                u32::from(s.parent_cost_bias),
-            )
-        });
+    let (coeff_rate_est_lvl, subres_step, parent_cost_bias) = signals.map_or((0, 0, 1000), |s| {
+        (
+            s.rate_est.coeff_rate_est_lvl,
+            u32::from(s.subres.step),
+            u32::from(s.parent_cost_bias),
+        )
+    });
     (
         pic_pd0_lvl,
         coeff_rate_est_lvl,

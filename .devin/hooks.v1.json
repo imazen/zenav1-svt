@@ -1,0 +1,14 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": "^exec$",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 \"$DEVIN_PROJECT_DIR/.devin/hooks/exec_timeout.py\"",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}

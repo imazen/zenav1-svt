@@ -1024,6 +1024,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 name = "zenav1-svt"
 version = "0.1.0"
 dependencies = [
+ "almost-enough",
  "archmage",
  "enough",
  "png",

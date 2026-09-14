@@ -39,6 +39,13 @@
 //! diverging. `tools/tile_gate.sh` drives the pair as SVTAV1_TILE_ROWS_LOG2
 //! and SVTAV1_TILE_COLS_LOG2.
 //!
+//! Env: SVTAV1_TIMEOUT_MS (default unset) — cooperative wall-clock deadline
+//! over the WHOLE run (every frame of a multi-frame encode), installed via
+//! `EncodePipeline::with_timeout`. A fired deadline exits 4 — distinct from
+//! refusal (3): a gate can tell "the encoder correctly declined" from "the
+//! encode ran past its budget", which is the difference between an
+//! unsupported config and a wedged encode (infinite loop / DoS bound).
+//!
 //! Env: SVTAV1_SB (task #91) — pin the superblock size to 64 or 128.
 //! UNSET (the default) derives it with C's own rule
 //! (`sb128_geom::derive_super_block_size`, Globals/enc_handle.c:4071-4111).
@@ -283,6 +290,12 @@ fn main() {
     )
     .expect("native preset must be -1..=13");
     let prefix = &args[6];
+    // Cooperative encode deadline; see the env block in the file doc.
+    // Applied at BOTH pipeline construction sites below.
+    let timeout = std::env::var("SVTAV1_TIMEOUT_MS")
+        .ok()
+        .map(|v| v.parse::<u64>().expect("SVTAV1_TIMEOUT_MS must be ms"))
+        .map(core::time::Duration::from_millis);
     // I420 chroma dims: AV1 4:2:0 uses CEILING rounding for odd luma dims
     // ((w+1)/2), matching the port's `encode_frame_420` (which takes ceiling
     // chroma) and the pic-buffer/app convention. Task #95 goal 1: ODD true
@@ -828,6 +841,9 @@ fn main() {
         let mut pipeline =
             EncodePipeline::new_with_preset(w as u32, h as u32, preset, rc, hier, intra_period)
                 .with_bit_depth(bd);
+        if let Some(d) = timeout {
+            pipeline = pipeline.with_timeout(d);
+        }
         if !mono {
             pipeline = pipeline.with_chroma_420(true);
         }
@@ -973,10 +989,15 @@ fn main() {
                     all.extend_from_slice(&bytes);
                 }
                 Err(e) => {
-                    // Write what DID encode, then exit 3 — the established
-                    // "correctly refused, did not crash" code. A gate reading
+                    // Write what DID encode, then exit — 3 is the established
+                    // "correctly refused, did not crash" code; 4 names a
+                    // fired stop token (see unwrap_or_refuse). A gate reading
                     // this can name the frame that stopped the sequence.
                     std::fs::write(format!("{prefix}.obu"), &all).expect("write .obu");
+                    if matches!(e.error(), svtav1_encoder::EncodeError::Cancelled(_)) {
+                        eprintln!("identity_run: STOPPED by the stop token at frame {f}: {e}");
+                        std::process::exit(4);
+                    }
                     eprintln!("identity_run: REFUSED by the encoder at frame {f}: {e}");
                     std::process::exit(3);
                 }
@@ -1063,6 +1084,9 @@ fn main() {
         // last_recon*, which is opt-in since the post-filter passes that
         // produce it are byte-inert at preset >= 7.
         .with_recon_output(true);
+    if let Some(d) = timeout {
+        pipeline = pipeline.with_timeout(d);
+    }
     // NOTE: the warning goes to STDOUT, never stderr — identity_diff.sh
     // captures this process's stderr verbatim into `rs.trace` (the symtrace
     // op stream the differ parses), so any stray stderr line corrupts every
@@ -1340,10 +1364,17 @@ fn main() {
 /// via their `.expect()`, which is indistinguishable from a real crash to a
 /// harness — `tools/arbitrary_size_robustness.sh` reported 48 refusals as
 /// PANIC. Exit code 3 lets a gate tell "correctly refused" from "crashed".
+/// Exit 4 is the stop-token arm: the SVTAV1_TIMEOUT_MS deadline (or any
+/// installed `Stop`) fired — a wedged encode surfacing as a named exit
+/// rather than a silent kill or an endless spin.
 fn unwrap_or_refuse(r: svtav1_encoder::EncodeResult<Vec<u8>>) -> Vec<u8> {
     match r {
         Ok(v) => v,
         Err(e) => {
+            if matches!(e.error(), svtav1_encoder::EncodeError::Cancelled(_)) {
+                eprintln!("identity_run: STOPPED by the stop token: {e}");
+                std::process::exit(4);
+            }
             eprintln!("identity_run: REFUSED by the encoder: {e}");
             std::process::exit(3);
         }

@@ -3114,10 +3114,8 @@ impl<'a> Pd0Ctx<'a> {
             } else {
                 c.ref_idx_l0()
             };
-            let plane = Self::inter_ref_plane(
-                ir,
-                crate::port_picstruct::get_ref_frame_type(dir, ref_idx),
-            );
+            let plane =
+                Self::inter_ref_plane(ir, crate::port_picstruct::get_ref_frame_type(dir, ref_idx));
             let mut mv = svtav1_types::motion::Mv {
                 x: mv_fp.x.saturating_mul(8),
                 y: mv_fp.y.saturating_mul(8),
@@ -3133,8 +3131,7 @@ impl<'a> Pd0Ctx<'a> {
                 &mut mv.x,
                 &mut mv.y,
             );
-            let var =
-                Self::lvl6_ref_variance(plane, abs_x, abs_y, bw, bh, mv, src, self.stride);
+            let var = Self::lvl6_ref_variance(plane, abs_x, abs_y, bw, bh, mv, src, self.stride);
             best = Some(best.map_or(var, |b: u32| b.min(var)));
             evaluated += 1;
             if evaluated > 2 {

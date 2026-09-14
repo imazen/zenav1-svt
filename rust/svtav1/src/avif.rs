@@ -85,12 +85,19 @@ pub enum EncodeError {
     /// where ignoring it would silently emit output the caller did not ask for
     /// (see `AvifEncoder::validate_inert_knobs`).
     UnsupportedConfig(&'static str),
+    /// The cooperative stop token installed via [`AvifEncoder::with_stop`] /
+    /// [`AvifEncoder::with_timeout`] fired mid-encode. The payload keeps
+    /// `TimedOut` distinguishable from an explicit `Cancelled` — the
+    /// difference between "the caller's budget expired" and "the caller
+    /// aborted", which a watchdog needs to name a wedged encode.
+    Cancelled(enough::StopReason),
 }
 
 impl core::fmt::Display for EncodeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::UnsupportedConfig(what) => write!(f, "Unsupported configuration: {what}"),
+            Self::Cancelled(reason) => write!(f, "Encode stopped: {reason}"),
             Self::InvalidDimensions {
                 width,
                 height,
@@ -148,6 +155,9 @@ pub struct AvifEncoder {
     matrix_coefficients: u8,
     /// Full range (true) or limited/studio range (false).
     full_range: bool,
+    /// Cooperative cancellation token forwarded to every `EncodePipeline`
+    /// this encoder builds; see [`Self::with_stop`].
+    stop: Option<almost_enough::StopToken>,
 }
 
 impl Default for AvifEncoder {
@@ -187,7 +197,30 @@ impl AvifEncoder {
             transfer_characteristics: 13, // sRGB
             matrix_coefficients: 1,       // BT.709
             full_range: false,
+            stop: None,
         }
+    }
+
+    /// Install a cooperative cancellation token, forwarded to every
+    /// [`EncodePipeline`](svtav1_encoder::pipeline::EncodePipeline) this
+    /// encoder builds — stills and every animation frame. It is checked at
+    /// each frame's entry and at the post-filter checkpoints; when it fires
+    /// the encode returns [`EncodeError::Cancelled`] carrying the
+    /// [`enough::StopReason`].
+    ///
+    /// This is the caller's DoS bound: an encode over untrusted input that
+    /// runs past its budget returns an error instead of spinning. See
+    /// [`Self::with_timeout`] for the common deadline case.
+    pub fn with_stop(mut self, stop: impl enough::Stop + 'static) -> Self {
+        self.stop = Some(almost_enough::StopToken::new(stop));
+        self
+    }
+
+    /// Bound every encode with a wall-clock deadline measured from this call —
+    /// [`Self::with_stop`] pre-loaded with an `almost_enough::WithTimeout`.
+    /// Expiry reports [`enough::StopReason::TimedOut`].
+    pub fn with_timeout(self, budget: core::time::Duration) -> Self {
+        self.with_stop(almost_enough::WithTimeout::new(enough::Unstoppable, budget))
     }
 
     /// Set CICP color space for wide gamut / HDR encoding.
@@ -515,6 +548,9 @@ impl AvifEncoder {
         // Feature 4: route the `threads` knob into the bounded tile-parallel
         // encode (`None`/`Some(0)` = auto). Byte-neutral at any value.
         .with_thread_count(self.threads.unwrap_or(0));
+        if let Some(stop) = &self.stop {
+            pipeline = pipeline.with_stop(stop.clone());
+        }
         pipeline.bit_depth = self.bit_depth;
         pipeline.reference = self.reference;
         pipeline.enhancements = self.enhancements;
@@ -738,8 +774,9 @@ impl AvifEncoder {
                 height: *height,
                 reason,
             },
-            // Cancellation and allocation failure carry runtime detail worth
-            // surfacing verbatim; `#[non_exhaustive]` keeps this wildcard.
+            svtav1_encoder::EncodeError::Cancelled(reason) => EncodeError::Cancelled(*reason),
+            // Allocation failure carries runtime detail worth surfacing
+            // verbatim; `#[non_exhaustive]` keeps this wildcard.
             _ => EncodeError::EncodeFailed(rendered()),
         }
     }
@@ -904,6 +941,30 @@ mod tests {
         assert!(enc.enable_variance_boost);
         assert_eq!(enc.variance_boost_strength, 3);
         assert!(enc.lossless);
+    }
+
+    /// The stop token installed by `with_timeout` reaches the pipeline: an
+    /// already-expired deadline aborts the encode with `Cancelled(TimedOut)`
+    /// instead of running to completion (or hanging), and a live deadline
+    /// leaves a small encode alone — no token at all is the same code path,
+    /// so the default surface is byte-neutral.
+    #[test]
+    fn stop_token_reaches_the_pipeline() {
+        let (w, h) = (64usize, 64usize);
+        let y = vec![128u8; w * h];
+        let u = vec![128u8; w * h / 4];
+        let v = vec![128u8; w * h / 4];
+
+        let expired = AvifEncoder::new().with_timeout(core::time::Duration::ZERO);
+        match expired.encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32) {
+            Err(EncodeError::Cancelled(enough::StopReason::TimedOut)) => {}
+            other => panic!("expired deadline must surface Cancelled(TimedOut), got {other:?}"),
+        }
+
+        AvifEncoder::new()
+            .with_timeout(core::time::Duration::from_secs(60))
+            .encode_yuv420(&y, &u, &v, w as u32, h as u32, w as u32)
+            .expect("a 60s budget must not fire on a 64x64 encode");
     }
 
     /// C's strength scale is 1-4 (`Docs/Parameters.md:124`), so 0 and 9 are

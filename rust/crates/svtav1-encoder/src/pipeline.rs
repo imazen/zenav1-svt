@@ -850,6 +850,24 @@ impl EncodePipeline {
         self
     }
 
+    /// Feature 1 convenience: bound every frame this pipeline encodes with a
+    /// wall-clock deadline measured from this call. Composes with any token
+    /// already installed via [`Self::with_stop`] (`OrStop` — whichever fires
+    /// first wins), so an explicit cancel source is never displaced.
+    ///
+    /// Expiry surfaces from the fallible `try_encode_frame*` entries as
+    /// `Err(Cancelled(StopReason::TimedOut))` — distinguishable from a
+    /// caller's explicit `Cancelled`, which is what makes an encode wedged
+    /// on adversarial input (or an encoder-side infinite loop) *detectable*
+    /// rather than merely killed by an outer `timeout(1)`.
+    pub fn with_timeout(self, budget: core::time::Duration) -> Self {
+        let existing = self.stop.clone();
+        self.with_stop(almost_enough::OrStop::new(
+            existing,
+            almost_enough::WithTimeout::new(enough::Unstoppable, budget),
+        ))
+    }
+
     /// Encode a single frame through the full pipeline (monochrome).
     ///
     /// Returns the encoded bitstream data and updates internal state.
@@ -7546,15 +7564,12 @@ impl EncodePipeline {
         // `last_recon10_final`, and it also applies FILM GRAIN, which is an
         // output-only transform that must never reach the DPB.
         let padded_ref_hbd = recon10.as_ref().map(|(y10, u10, v10)| {
-            let rb =
-                crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
+            let rb = crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
             let y = crate::picture::PaddedPlaneHbd::from_plane(y10, w, h, rb);
             let uv = if chroma.is_some() {
                 let cb = (rb + 1) >> 1;
-                let mut cv =
-                    crate::picture::PaddedPlaneHbd::from_plane(v10, w / 2, h / 2, cb);
-                let mut cu =
-                    crate::picture::PaddedPlaneHbd::from_plane(u10, w / 2, h / 2, cb);
+                let mut cv = crate::picture::PaddedPlaneHbd::from_plane(v10, w / 2, h / 2, cb);
+                let mut cu = crate::picture::PaddedPlaneHbd::from_plane(u10, w / 2, h / 2, cb);
                 // Same contiguous `[u][v]` layout as the 8-bit reference —
                 // see the `padded_ref` block below.
                 cu.extend_tail(&cv.buf);
@@ -7627,16 +7642,13 @@ impl EncodePipeline {
             // C's reference-picture border is `super_block_size + 32`
             // (enc_handle.c:1212-1217), NOT `scs->border` — see
             // [`crate::picture::ref_pic_border`].
-            let rb =
-                crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
+            let rb = crate::picture::ref_pic_border(self.sb_size, self.superres_denom.is_some());
             let y = crate::picture::PaddedPlane::from_plane(&recon, rw, rh, rb);
             let uv = if chroma.is_some() {
                 // C `(border + ss_x) >> ss_x` at 4:2:0 (:1102-1112).
                 let cb = (rb + 1) >> 1;
-                let mut cv =
-                    crate::picture::PaddedPlane::from_plane(&v_recon, rw / 2, rh / 2, cb);
-                let mut cu =
-                    crate::picture::PaddedPlane::from_plane(&u_recon, rw / 2, rh / 2, cb);
+                let mut cv = crate::picture::PaddedPlane::from_plane(&v_recon, rw / 2, rh / 2, cb);
+                let mut cu = crate::picture::PaddedPlane::from_plane(&u_recon, rw / 2, rh / 2, cb);
                 // C's recon `buffer_alloc` is `[y][u][v]` contiguous: a
                 // maximally UMV-clamped chroma read past `u`'s region
                 // answers with `v`'s margin bytes. `v` is the last

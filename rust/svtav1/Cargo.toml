@@ -15,13 +15,18 @@ name = "svtav1"
 zenav1-svt-types = { workspace = true, features = ["std"] }
 zenav1-svt-dsp = { workspace = true, features = ["std"] }
 zenav1-svt-encoder = { workspace = true }
+# Cooperative cancellation surface: `AvifEncoder::with_stop`/`with_timeout`
+# forward an `enough::Stop` into `EncodePipeline`; `StopToken` storage needs
+# `almost-enough` (std). Both are workspace-pinned and already in the graph
+# via svtav1-encoder, so this adds no new transitive deps.
+enough = { workspace = true }
+almost-enough = { workspace = true }
 
 # Container support requires Rust 1.93 through the serializer; the default
 # raw-AV1 build retains the workspace's Rust 1.98 minimum.
 zenavif-serialize = { version = "0.2.0", git = "https://github.com/imazen/zenavif", rev = "98c8a5011e1ac573770a8889a8b5a4a68587de90", optional = true }
 
 [dev-dependencies]
-enough = { workspace = true }
 # PNG decode for the real-image identity harness (examples/identity_run.rs
 # `file:<path.png>` content). Example-only — not linked into the library.
 png = "0.18.1"
