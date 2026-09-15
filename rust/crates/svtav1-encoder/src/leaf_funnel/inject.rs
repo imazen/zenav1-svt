@@ -1895,6 +1895,7 @@ pub(super) fn inject_candidates(
                         alloc::vec::Vec::new()
                     },
                     wm_params: c.wm_params_l0,
+                    wm_params_l1: c.wm_params_l1,
                     cand_class: c.cand_class,
                     comp_group_idx: c.comp_group_idx,
                     compound_idx: c.compound_idx,

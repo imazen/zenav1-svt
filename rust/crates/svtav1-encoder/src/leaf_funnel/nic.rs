@@ -762,6 +762,7 @@ mod nic_class_prune_tests {
                     u_pred10: alloc::vec::Vec::new(),
                     v_pred10: alloc::vec::Vec::new(),
                     wm_params: Default::default(),
+                    wm_params_l1: Default::default(),
                     cand_class: lane as u8,
                     comp_group_idx: 0,
                     compound_idx: 0,

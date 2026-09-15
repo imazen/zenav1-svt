@@ -203,21 +203,65 @@ pub(super) fn ifs_at_mds3(
             };
         }
         // :2130 `svt_aom_inter_prediction` (luma only, PICTURE_BUFFER_DESC_LUMA_MASK).
+        // C's call warps each reference by ITS OWN model (`av1_inter_prediction`,
+        // enc_inter_prediction.c:3276) — a GLOBAL_GLOBALMV candidate whose IFS
+        // gate passed because ONE ref is translational still warps the other.
         if let Some(p1) = padded1 {
-            crate::inter_pred_arm::predict_inter_luma_compound(
-                [&padded.y, &p1.y],
-                abs_x,
-                abs_y,
-                w,
-                h,
-                ic.mv,
-                filters,
-                im.sb_size,
-                im.frame_w,
-                im.frame_h,
-                &mut scratch,
-                w,
-            );
+            let iw = [
+                crate::inter_pred_arm::inter_pred_uses_warp(
+                    ic.motion_mode,
+                    ic.mode as u8,
+                    w,
+                    h,
+                    &ic.wm_params,
+                ),
+                crate::inter_pred_arm::inter_pred_uses_warp(
+                    ic.motion_mode,
+                    ic.mode as u8,
+                    w,
+                    h,
+                    &ic.wm_params_l1,
+                ),
+            ];
+            if iw[0] || iw[1] {
+                let mut wm0 = ic.wm_params;
+                let mut wm1 = ic.wm_params_l1;
+                crate::inter_pred_arm::predict_inter_yuv_warped_compound(
+                    [(&padded.y, None), (&p1.y, None)],
+                    &mut wm0,
+                    &mut wm1,
+                    iw,
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    ic.mv,
+                    filters,
+                    im.sb_size,
+                    im.frame_w,
+                    im.frame_h,
+                    &mut scratch,
+                    w,
+                    &mut [],
+                    &mut [],
+                    0,
+                );
+            } else {
+                crate::inter_pred_arm::predict_inter_luma_compound(
+                    [&padded.y, &p1.y],
+                    abs_x,
+                    abs_y,
+                    w,
+                    h,
+                    ic.mv,
+                    filters,
+                    im.sb_size,
+                    im.frame_w,
+                    im.frame_h,
+                    &mut scratch,
+                    w,
+                );
+            }
         } else {
             crate::inter_pred_arm::predict_inter_luma(
                 &padded.y,
@@ -310,29 +354,43 @@ pub(super) fn ifs_at_mds3(
         let cw = w.max(8) / 2;
         if let Some(p1) = padded1 {
             // COMPOUND: never sub-8 (`allow_bipred` rejects width/height 4),
-            // so the plain two-reference rebuild is the only arm.
-            match (g.has_uv, padded.uv.as_ref(), p1.uv.as_ref()) {
-                (true, Some((u0, v0)), Some((u1, v1))) => {
-                    crate::inter_pred_arm::predict_inter_yuv_compound(
-                        [(&padded.y, u0, v0), (&p1.y, u1, v1)],
-                        abs_x,
-                        abs_y,
-                        w,
-                        h,
-                        ic.mv,
-                        ic.interp_filters,
-                        im.sb_size,
-                        im.frame_w,
-                        im.frame_h,
-                        pred,
-                        w,
-                        &mut ic.u_pred,
-                        &mut ic.v_pred,
-                        cw,
-                    );
-                }
-                _ => crate::inter_pred_arm::predict_inter_luma_compound(
-                    [&padded.y, &p1.y],
+            // so the plain two-reference rebuild is the only arm — except
+            // that each reference may WARP by its own model (C's per-ref
+            // `is_wm`, enc_inter_prediction.c:3276), which the mixed
+            // GLOBAL_GLOBALMV candidate reaching this rebuild needs.
+            let iw = [
+                crate::inter_pred_arm::inter_pred_uses_warp(
+                    ic.motion_mode,
+                    ic.mode as u8,
+                    w,
+                    h,
+                    &ic.wm_params,
+                ),
+                crate::inter_pred_arm::inter_pred_uses_warp(
+                    ic.motion_mode,
+                    ic.mode as u8,
+                    w,
+                    h,
+                    &ic.wm_params_l1,
+                ),
+            ];
+            if iw[0] || iw[1] {
+                let mut wm0 = ic.wm_params;
+                let mut wm1 = ic.wm_params_l1;
+                crate::inter_pred_arm::predict_inter_yuv_warped_compound(
+                    [
+                        (
+                            &padded.y,
+                            padded.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| g.has_uv),
+                        ),
+                        (
+                            &p1.y,
+                            p1.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| g.has_uv),
+                        ),
+                    ],
+                    &mut wm0,
+                    &mut wm1,
+                    iw,
                     abs_x,
                     abs_y,
                     w,
@@ -344,7 +402,46 @@ pub(super) fn ifs_at_mds3(
                     im.frame_h,
                     pred,
                     w,
-                ),
+                    &mut ic.u_pred,
+                    &mut ic.v_pred,
+                    cw,
+                );
+            } else {
+                match (g.has_uv, padded.uv.as_ref(), p1.uv.as_ref()) {
+                    (true, Some((u0, v0)), Some((u1, v1))) => {
+                        crate::inter_pred_arm::predict_inter_yuv_compound(
+                            [(&padded.y, u0, v0), (&p1.y, u1, v1)],
+                            abs_x,
+                            abs_y,
+                            w,
+                            h,
+                            ic.mv,
+                            ic.interp_filters,
+                            im.sb_size,
+                            im.frame_w,
+                            im.frame_h,
+                            pred,
+                            w,
+                            &mut ic.u_pred,
+                            &mut ic.v_pred,
+                            cw,
+                        );
+                    }
+                    _ => crate::inter_pred_arm::predict_inter_luma_compound(
+                        [&padded.y, &p1.y],
+                        abs_x,
+                        abs_y,
+                        w,
+                        h,
+                        ic.mv,
+                        ic.interp_filters,
+                        im.sb_size,
+                        im.frame_w,
+                        im.frame_h,
+                        pred,
+                        w,
+                    ),
+                }
             }
         } else {
             match (g.has_uv && !sub8, padded.uv.as_ref()) {

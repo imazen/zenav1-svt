@@ -2134,6 +2134,7 @@ pub(crate) fn funnel_block_decision(
                 compound_idx: i.compound_idx,
                 interinter_comp_type: i.interinter_comp_type,
                 wm_params: i.wm_params,
+                wm_params_l1: i.wm_params_l1,
             })
         }),
         ..Default::default()
@@ -3116,6 +3117,7 @@ fn encode_single_block(
                 compound_idx: 0,
                 interinter_comp_type: 0,
                 wm_params: Default::default(),
+                wm_params_l1: Default::default(),
             })
         }),
         qcoeffs: enc.qcoeffs.to_vec(),
@@ -3576,10 +3578,15 @@ pub struct InterDecision {
     pub comp_group_idx: u8,
     pub compound_idx: u8,
     pub interinter_comp_type: u8,
-    /// C `cand->wm_params_l0` — the local-warp affine model. Identity unless
-    /// `motion_mode == WarpedCausal`, and carried on the DECISION because the
-    /// bd10 level re-encode has to rebuild this leaf's prediction from it: the
-    /// warp parameters are not in the bitstream, and re-deriving them there
-    /// would be a second transcription of the neighbour scan.
+    /// C `cand->wm_params_l0` — the local-warp affine model. For a GLOBALMV /
+    /// GLOBAL_GLOBALMV leaf it is reference 0's GLOBAL model. Carried on the
+    /// DECISION because the bd10 level re-encode has to rebuild this leaf's
+    /// prediction from it: the warp parameters are not in the bitstream, and
+    /// re-deriving them there would be a second transcription of the
+    /// neighbour scan.
     pub wm_params: svtav1_types::motion::WarpedMotionParams,
+    /// C `cand->wm_params_l1` — reference 1's model for a compound leaf. The
+    /// bd10 re-encode's compound arm warps each reference by its own model,
+    /// exactly like the 8-bit path.
+    pub wm_params_l1: svtav1_types::motion::WarpedMotionParams,
 }

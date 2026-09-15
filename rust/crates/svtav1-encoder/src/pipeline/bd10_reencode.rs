@@ -6,8 +6,12 @@ use super::{Bd10CoeffNeighbors, Bd10ModeNeighbors};
 /// reference [`crate::inter_pred_arm::predict_inter_leaf_hbd`] or, for a
 /// compound decision (`ref_frame[1] > 0`), the two-reference
 /// [`crate::inter_pred_arm::predict_inter_yuv_hbd_compound`]. Compound
-/// candidates are always `SimpleTranslation` and never warped on this port,
-/// so the compound arm needs neither `motion_mode` nor `is_wm`.
+/// candidates are always `SimpleTranslation`, but a GLOBAL_GLOBALMV leaf
+/// still warps — `is_wm` is per reference against that ref's own model
+/// (C `av1_inter_prediction`, enc_inter_prediction.c:3276) — so the
+/// compound arm routes through
+/// [`crate::inter_pred_arm::predict_inter_yuv_warped_compound_hbd`] when
+/// either model is above TRANSLATION.
 #[allow(clippy::too_many_arguments)]
 fn predict_inter_leaf_hbd_any(
     inter_refs: &[Option<&crate::picture::PaddedRef>; 8],
@@ -41,6 +45,63 @@ fn predict_inter_leaf_hbd_any(
                 "a compound inter leaf reached the bd10 re-encode with no \
                  10-bit second reference in the DPB",
             );
+        let is_wm = [
+            crate::inter_pred_arm::inter_pred_uses_warp(
+                ic.motion_mode,
+                ic.mode as u8,
+                bw,
+                bh,
+                &ic.wm_params,
+            ),
+            crate::inter_pred_arm::inter_pred_uses_warp(
+                ic.motion_mode,
+                ic.mode as u8,
+                bw,
+                bh,
+                &ic.wm_params_l1,
+            ),
+        ];
+        if is_wm[0] || is_wm[1] {
+            let mut wm0 = ic.wm_params;
+            let mut wm1 = ic.wm_params_l1;
+            crate::inter_pred_arm::predict_inter_yuv_warped_compound_hbd(
+                [
+                    (
+                        &hbd0.y,
+                        hbd0.uv
+                            .as_ref()
+                            .map(|(u, v)| (u, v))
+                            .filter(|_| want_chroma),
+                    ),
+                    (
+                        &hbd1.y,
+                        hbd1.uv
+                            .as_ref()
+                            .map(|(u, v)| (u, v))
+                            .filter(|_| want_chroma),
+                    ),
+                ],
+                &mut wm0,
+                &mut wm1,
+                is_wm,
+                x,
+                y,
+                bw,
+                bh,
+                ic.mv,
+                ic.interp_filters,
+                sb_size,
+                frame_w,
+                frame_h,
+                bd,
+                y_out,
+                y_stride,
+                u_out,
+                v_out,
+                uv_stride,
+            );
+            return;
+        }
         crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
             [
                 (

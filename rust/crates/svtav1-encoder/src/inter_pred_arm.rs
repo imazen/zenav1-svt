@@ -31,12 +31,13 @@
 //! # Compound, warped and OBMC
 //!
 //! `av1_inter_prediction_light_pd1` takes an `mvs` SLICE and averages when it
-//! has two — but no candidate this port injects is compound, so this adapter
-//! takes ONE mv and says so rather than accepting a slice it cannot fill.
-//! Warped motion and OBMC are different C entry points
-//! (`enc_make_inter_predictor`'s `warp` arm, `svtav1_dsp::obmc`), both ported
-//! and both unwired; a candidate that sets `motion_mode` must route to them
-//! instead of here.
+//! has two — [`predict_inter_yuv_compound`] is the two-reference entry.
+//! Warped motion routes through `enc_make_inter_predictor`'s `warp` arm:
+//! [`predict_inter_yuv_warped`] for the single-reference case and
+//! [`predict_inter_yuv_warped_compound`] for `GLOBAL_GLOBALMV`, where C's
+//! `av1_inter_prediction` warps EACH reference by its own model and blends
+//! the two through one shared CONV_BUF. OBMC stays unwired — a candidate
+//! that sets an OBMC `motion_mode` still has no producer here.
 
 use crate::picture::PaddedPlane;
 use svtav1_dsp::port_pd_pred::{
@@ -699,9 +700,9 @@ pub fn predict_inter_yuv_warped(
         frame_height: frame_h as i32,
     };
     // C `get_conv_params_no_round(0, tmp_dst_y, 128, is_compound, bit_depth)`
-    // for luma and stride 64 for chroma. Not compound here — this port injects
-    // no compound candidate — so the conv buffer is never read; it is sized
-    // rather than elided so that wiring compound later is a call-site change.
+    // for luma and stride 64 for chroma. This is the UNI-predicted arm —
+    // `is_compound` is false, so the conv buffer is sized but never read;
+    // the compound form is [`predict_inter_yuv_warped_compound`].
     let mut conv_buf = alloc::vec![0u16; 128 * 128];
     let cp_y = ConvolveParams::no_round(false, 128, false, 8);
     let cp_uv = ConvolveParams::no_round(false, 64, false, 8);
@@ -740,9 +741,13 @@ pub fn predict_inter_yuv_warped(
     let (cw, chh) = (bw / 2, bh / 2);
     // Spec 7.11.3.1 / C :3382-3385.
     let uv_is_wm = cw >= 8 && chh >= 8;
-    // C `ROUND_UV(x) / 2` — the chroma origin of the block, which for a 4:2:0
-    // plane is the luma origin rounded DOWN to even and halved.
-    let (cx, cy) = ((org_x & !1) / 2, (org_y & !1) / 2);
+    // C `ROUND_UV(x) / 2` — the chroma origin of the block: the luma origin
+    // rounded down to a multiple of 8 (definitions.h:348), then halved. Every
+    // warp-eligible block (both dims >= 8) already sits on an 8-aligned
+    // origin, so the mask is a no-op today; it is kept literal because the
+    // macro is NOT a plain halve and a future caller at a 4-aligned origin
+    // must floor exactly as C does.
+    let (cx, cy) = ((org_x & !7) / 2, (org_y & !7) / 2);
     for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
         enc_make_inter_predictor(
             SrcPlanes::Lbd(&r.buf),
@@ -771,6 +776,158 @@ pub fn predict_inter_yuv_warped(
             uv_is_wm,
         )
         .expect("the chroma leaf takes an 8-bit plane into an 8-bit destination");
+    }
+}
+
+/// The COMPOUND arm of C's `av1_inter_prediction` (enc_inter_prediction.c
+/// :3266-3480): a `GLOBAL_GLOBALMV` block warps EACH reference with that
+/// reference's own model and averages the two.
+///
+/// Two things C does that a single-ref shortcut cannot:
+///
+/// * **`is_wm` is evaluated PER REFERENCE** (:3276, :3382) — against
+///   `wm_params_0` for ref 0 and `wm_params_1` for ref 1. A ref whose model
+///   is TRANSLATION or IDENTITY does NOT warp; it takes the ordinary
+///   convolve leaf inside the same compound sequencing.
+/// * **The two refs share one CONV_BUF** — ref 0 runs with `do_average = 0`
+///   and leaves its prediction in the u16 buffer, ref 1 runs with
+///   `do_average = 1` and blends into the pixel destination. For
+///   `GLOBAL_GLOBALMV` `interinter_comp.type` is `COMPOUND_AVERAGE` and
+///   `compound_idx` is 1, so `use_dist_wtd_comp_avg` is 0 and the blend is
+///   the plain `(a + b) >> 1` (`use_jnt_comp_avg` follows it).
+///
+/// Chroma falls back to TRANSLATION below 8x8 on the SUBSAMPLED block,
+/// exactly like [`predict_inter_yuv_warped`] — but again per reference.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_warped_compound(
+    refs: [(&PaddedPlane, Option<(&PaddedPlane, &PaddedPlane)>); 2],
+    wm0: &mut svtav1_types::motion::WarpedMotionParams,
+    wm1: &mut svtav1_types::motion::WarpedMotionParams,
+    is_wm: [bool; 2],
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mvs: [Mv; 2],
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    y_out: &mut [u8],
+    y_stride: usize,
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+    uv_stride: usize,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    // C `get_conv_params_no_round(0, tmp_dst_y, 128, 1, bit_depth)` — luma
+    // conv buffer at the 128 stride; chroma at 64. `is_compound` selects
+    // COMPOUND_ROUND1_BITS, which is what keeps ref 0's full precision in
+    // the u16 buffer for ref 1's blend.
+    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    let wms: [&mut svtav1_types::motion::WarpedMotionParams; 2] = [wm0, wm1];
+    for (i, &iw) in is_wm.iter().enumerate() {
+        let mut cp = ConvolveParams::no_round(false, 128, true, 8);
+        cp.do_average = i == 1;
+        enc_make_inter_predictor(
+            SrcPlanes::Lbd(&refs[i].0.buf),
+            refs[i].0.origin,
+            refs[i].0.stride,
+            DstPlane::Lbd(&mut *y_out),
+            y_stride,
+            &mut conv_buf,
+            org_y as i32,
+            org_x as i32,
+            DspMv {
+                x: mvs[i].x,
+                y: mvs[i].y,
+            },
+            &sf,
+            &cp,
+            interp_filters,
+            None,
+            Some(&mut *wms[i]),
+            geom,
+            bw,
+            bh,
+            &edges,
+            0,
+            0,
+            0,
+            8,
+            false,
+            iw,
+        )
+        .expect("the luma warp/compound leaf takes an 8-bit plane into an 8-bit destination");
+    }
+
+    // A compound block is never sub-8 (`allow_bipred` rejects width or
+    // height 4), so both references either carry chroma or neither does;
+    // leaving ref 0's CONV_BUF unwritten while ref 1 averages into it is
+    // the unreachable half-state the check excludes.
+    if !refs.iter().all(|(_, c)| c.is_some()) {
+        return;
+    }
+    let (cw, chh) = (bw / 2, bh / 2);
+    // Spec 7.11.3.1 / C :3382-3385 — the floor is on the SUBSAMPLED extent.
+    let uv_floor = cw >= 8 && chh >= 8;
+    // C `ROUND_UV(x) / 2` — the chroma origin of the block: the luma origin
+    // rounded down to a multiple of 8 (definitions.h:348), then halved. A
+    // compound block is never sub-8 and its origin is block-aligned, so the
+    // mask is a no-op on the reachable domain; it is kept literal so the
+    // function stays faithful if that domain ever widens.
+    let (cx, cy) = ((org_x & !7) / 2, (org_y & !7) / 2);
+    for (plane, dst) in [(1usize, &mut *u_out), (2, &mut *v_out)] {
+        for (i, &iw) in is_wm.iter().enumerate() {
+            let (uref, vref) = refs[i].1.expect("the all-chroma check above");
+            let r = if plane == 1 { uref } else { vref };
+            let mut cp = ConvolveParams::no_round(false, 64, true, 8);
+            cp.do_average = i == 1;
+            enc_make_inter_predictor(
+                SrcPlanes::Lbd(&r.buf),
+                r.origin,
+                r.stride,
+                DstPlane::Lbd(&mut *dst),
+                uv_stride,
+                &mut conv_buf,
+                cy as i32,
+                cx as i32,
+                DspMv {
+                    x: mvs[i].x,
+                    y: mvs[i].y,
+                },
+                &sf,
+                &cp,
+                interp_filters,
+                None,
+                Some(&mut *wms[i]),
+                geom,
+                cw,
+                chh,
+                &edges,
+                plane,
+                1,
+                1,
+                8,
+                false,
+                iw && uv_floor,
+            )
+            .expect("the chroma warp/compound leaf takes an 8-bit plane into an 8-bit destination");
+        }
     }
 }
 
@@ -857,7 +1014,9 @@ pub fn predict_inter_yuv_warped_hbd(
     };
     let (cw, chh) = (bw / 2, bh / 2);
     let uv_is_wm = cw >= 8 && chh >= 8;
-    let (cx, cy) = ((org_x & !1) / 2, (org_y & !1) / 2);
+    // C `ROUND_UV(x) / 2` — floor to a multiple of 8, then halve; see the
+    // 8-bit twin for why the floor is not a no-op under T-partitions.
+    let (cx, cy) = ((org_x & !7) / 2, (org_y & !7) / 2);
     for (plane, r, dst) in [(1usize, uref, &mut *u_out), (2, vref, &mut *v_out)] {
         enc_make_inter_predictor(
             SrcPlanes::Hbd(&r.buf),
@@ -886,6 +1045,139 @@ pub fn predict_inter_yuv_warped_hbd(
             uv_is_wm,
         )
         .expect("the hbd chroma leaf takes a u16 plane into a u16 destination");
+    }
+}
+
+/// [`predict_inter_yuv_warped_compound`] at TRUE 10 BITS — the bd10 twin for
+/// the level re-encode. Same per-reference `is_wm` split, same shared
+/// CONV_BUF sequencing (ref 0 fills, ref 1 averages), same spec-7.11.3.1
+/// chroma fallback; only the sample type and `ConvolveParams` depth differ.
+#[allow(clippy::too_many_arguments)]
+pub fn predict_inter_yuv_warped_compound_hbd(
+    refs: [(
+        &crate::picture::PaddedPlaneHbd,
+        Option<(
+            &crate::picture::PaddedPlaneHbd,
+            &crate::picture::PaddedPlaneHbd,
+        )>,
+    ); 2],
+    wm0: &mut svtav1_types::motion::WarpedMotionParams,
+    wm1: &mut svtav1_types::motion::WarpedMotionParams,
+    is_wm: [bool; 2],
+    org_x: usize,
+    org_y: usize,
+    bw: usize,
+    bh: usize,
+    mvs: [Mv; 2],
+    interp_filters: u32,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bit_depth: u8,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    use svtav1_dsp::port_convolve::ConvolveParams;
+    use svtav1_dsp::port_enc_make_pred::{DstPlane, SrcPlanes, enc_make_inter_predictor};
+
+    let sf = ScaleFactors::setup_for_frame(
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let edges = mb_edges(org_x, org_y, bw, bh, frame_w, frame_h);
+    let geom = RefGeometry {
+        super_block_size: sb_size as i32,
+        frame_width: frame_w as i32,
+        frame_height: frame_h as i32,
+    };
+    let bd = i32::from(bit_depth);
+    let mut conv_buf = alloc::vec![0u16; 128 * 128];
+    let wms: [&mut svtav1_types::motion::WarpedMotionParams; 2] = [wm0, wm1];
+    for (i, &iw) in is_wm.iter().enumerate() {
+        let mut cp = ConvolveParams::no_round(false, 128, true, bd);
+        cp.do_average = i == 1;
+        enc_make_inter_predictor(
+            SrcPlanes::Hbd(&refs[i].0.buf),
+            refs[i].0.origin,
+            refs[i].0.stride,
+            DstPlane::Hbd(&mut *y_out),
+            y_stride,
+            &mut conv_buf,
+            org_y as i32,
+            org_x as i32,
+            DspMv {
+                x: mvs[i].x,
+                y: mvs[i].y,
+            },
+            &sf,
+            &cp,
+            interp_filters,
+            None,
+            Some(&mut *wms[i]),
+            geom,
+            bw,
+            bh,
+            &edges,
+            0,
+            0,
+            0,
+            bd,
+            false,
+            iw,
+        )
+        .expect("the hbd luma warp/compound leaf takes a u16 plane into a u16 destination");
+    }
+
+    // A compound block is never sub-8 (`allow_bipred` rejects width or
+    // height 4), so both references either carry chroma or neither does.
+    if !refs.iter().all(|(_, c)| c.is_some()) {
+        return;
+    }
+    let (cw, chh) = (bw / 2, bh / 2);
+    let uv_floor = cw >= 8 && chh >= 8;
+    let (cx, cy) = ((org_x & !7) / 2, (org_y & !7) / 2);
+    for (plane, dst) in [(1usize, &mut *u_out), (2, &mut *v_out)] {
+        for (i, &iw) in is_wm.iter().enumerate() {
+            let (uref, vref) = refs[i].1.expect("the all-chroma check above");
+            let r = if plane == 1 { uref } else { vref };
+            let mut cp = ConvolveParams::no_round(false, 64, true, bd);
+            cp.do_average = i == 1;
+            enc_make_inter_predictor(
+                SrcPlanes::Hbd(&r.buf),
+                r.origin,
+                r.stride,
+                DstPlane::Hbd(&mut *dst),
+                uv_stride,
+                &mut conv_buf,
+                cy as i32,
+                cx as i32,
+                DspMv {
+                    x: mvs[i].x,
+                    y: mvs[i].y,
+                },
+                &sf,
+                &cp,
+                interp_filters,
+                None,
+                Some(&mut *wms[i]),
+                geom,
+                cw,
+                chh,
+                &edges,
+                plane,
+                1,
+                1,
+                bd,
+                false,
+                iw && uv_floor,
+            )
+            .expect("the hbd chroma warp/compound leaf takes a u16 plane into a u16 destination");
+        }
     }
 }
 
@@ -1285,5 +1577,234 @@ pub(crate) fn mb_edges(
         to_right: (mi_cols - bw_mi - mi_col) * 4 * 8,
         to_top: -((mi_row * 4) * 8),
         to_bottom: (mi_rows - bh_mi - mi_row) * 4 * 8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::picture::PaddedPlaneT;
+    use svtav1_dsp::port_inter_predictor::broadcast_interp_filter;
+    use svtav1_dsp::port_warp::get_shear_params;
+    use svtav1_types::motion::{TransformationType, WarpedMotionParams};
+
+    fn xs(s: &mut u32) -> u32 {
+        *s ^= *s << 13;
+        *s ^= *s >> 17;
+        *s ^= *s << 5;
+        *s
+    }
+
+    /// A non-identity ROTZOOM model (a small zoom about the block) with the
+    /// derived shear terms `av1_warp_plane` reads — `get_shear_params` fills
+    /// them exactly as the search does.
+    fn rotzoom_model() -> WarpedMotionParams {
+        let mut wm = WarpedMotionParams {
+            wm_type: TransformationType::RotZoom,
+            wmmat: [0, 0, (1 << 16) + 512, 0, 0, 1 << 16],
+            ..Default::default()
+        };
+        assert!(
+            get_shear_params(&mut wm),
+            "the test model must be warp-legal"
+        );
+        wm
+    }
+
+    struct CompoundCase {
+        refs: [PaddedPlane; 2],
+        refs_uv: [[PaddedPlane; 2]; 2],
+        w: usize,
+        h: usize,
+    }
+
+    impl CompoundCase {
+        fn new(w: usize, h: usize) -> Self {
+            let mut s = 0x9e37_79b9u32;
+            let border = 64;
+            let plane = |pw: usize, ph: usize, s: &mut u32| {
+                let px: alloc::vec::Vec<u8> = (0..pw * ph).map(|_| (xs(s) >> 13) as u8).collect();
+                PaddedPlaneT::from_plane(&px, pw, ph, border)
+            };
+            Self {
+                refs: [plane(w, h, &mut s), plane(w, h, &mut s)],
+                refs_uv: [
+                    [plane(w / 2, h / 2, &mut s), plane(w / 2, h / 2, &mut s)],
+                    [plane(w / 2, h / 2, &mut s), plane(w / 2, h / 2, &mut s)],
+                ],
+                w,
+                h,
+            }
+        }
+    }
+
+    /// With `is_wm = [false, false]` the warp compound driver is C's
+    /// `av1_inter_prediction` compound loop restricted to the convolve leaf:
+    /// ref 0 fills the shared CONV_BUF (`do_average = 0`), ref 1 blends into
+    /// the destination (`do_average = 1`) — the same sequencing
+    /// `predict_inter_yuv_compound` (the `light_pd1` driver) runs. The
+    /// outputs must be bit-equal on every plane; a dropped shared buffer or
+    /// swapped `do_average` shows up here.
+    #[test]
+    fn warped_compound_convolve_fallback_matches_light_pd1() {
+        let case = CompoundCase::new(64, 64);
+        let (bw, bh) = (16usize, 16usize);
+        let (cw, chh) = (bw / 2, bh / 2);
+        let mvs = [Mv { x: 10, y: -6 }, Mv { x: -12, y: 4 }];
+        let filters =
+            broadcast_interp_filter(svtav1_dsp::port_convolve::InterpFilterKind::EightTapRegular);
+
+        let (mut y_a, mut u_a, mut v_a) =
+            (vec![0u8; bw * bh], vec![0u8; cw * chh], vec![0u8; cw * chh]);
+        predict_inter_yuv_compound(
+            [
+                (&case.refs[0], &case.refs_uv[0][0], &case.refs_uv[0][1]),
+                (&case.refs[1], &case.refs_uv[1][0], &case.refs_uv[1][1]),
+            ],
+            16,
+            16,
+            bw,
+            bh,
+            mvs,
+            filters,
+            128,
+            case.w,
+            case.h,
+            &mut y_a,
+            bw,
+            &mut u_a,
+            &mut v_a,
+            cw,
+        );
+
+        let (mut y_b, mut u_b, mut v_b) =
+            (vec![0u8; bw * bh], vec![0u8; cw * chh], vec![0u8; cw * chh]);
+        let (mut wm0, mut wm1) = (WarpedMotionParams::default(), WarpedMotionParams::default());
+        predict_inter_yuv_warped_compound(
+            [
+                (
+                    &case.refs[0],
+                    Some((&case.refs_uv[0][0], &case.refs_uv[0][1])),
+                ),
+                (
+                    &case.refs[1],
+                    Some((&case.refs_uv[1][0], &case.refs_uv[1][1])),
+                ),
+            ],
+            &mut wm0,
+            &mut wm1,
+            [false, false],
+            16,
+            16,
+            bw,
+            bh,
+            mvs,
+            filters,
+            128,
+            case.w,
+            case.h,
+            &mut y_b,
+            bw,
+            &mut u_b,
+            &mut v_b,
+            cw,
+        );
+
+        assert_eq!(y_a, y_b, "luma convolve compound must match light_pd1");
+        assert_eq!(u_a, u_b, "chroma convolve compound must match light_pd1");
+        assert_eq!(v_a, v_b, "chroma convolve compound must match light_pd1");
+    }
+
+    /// The same candidate with ref 0's model above TRANSLATION must actually
+    /// warp — the whole point of the driver is that the decoder warps each
+    /// reference by its own model. If the `is_wm` flag were dropped the
+    /// prediction would equal the pure-convolve output, and the stream would
+    /// decode differently from the encoder's recon.
+    #[test]
+    fn warped_compound_engages_the_warp_leaf() {
+        let case = CompoundCase::new(64, 64);
+        let (bw, bh) = (16usize, 16usize);
+        let mvs = [Mv { x: 10, y: -6 }, Mv { x: -12, y: 4 }];
+        let filters =
+            broadcast_interp_filter(svtav1_dsp::port_convolve::InterpFilterKind::EightTapRegular);
+
+        let run = |is_wm: [bool; 2]| -> alloc::vec::Vec<u8> {
+            let mut y = vec![0u8; bw * bh];
+            let (mut u, mut v) = (vec![0u8; 8 * 8], vec![0u8; 8 * 8]);
+            let mut wm0 = rotzoom_model();
+            let mut wm1 = WarpedMotionParams::default();
+            predict_inter_yuv_warped_compound(
+                [
+                    (
+                        &case.refs[0],
+                        Some((&case.refs_uv[0][0], &case.refs_uv[0][1])),
+                    ),
+                    (
+                        &case.refs[1],
+                        Some((&case.refs_uv[1][0], &case.refs_uv[1][1])),
+                    ),
+                ],
+                &mut wm0,
+                &mut wm1,
+                is_wm,
+                16,
+                16,
+                bw,
+                bh,
+                mvs,
+                filters,
+                128,
+                case.w,
+                case.h,
+                &mut y,
+                bw,
+                &mut u,
+                &mut v,
+                8,
+            );
+            y
+        };
+
+        let convolve_only = run([false, false]);
+        let warped_ref0 = run([true, false]);
+        assert_ne!(
+            convolve_only, warped_ref0,
+            "a ROTZOOM model on ref 0 must change the compound prediction"
+        );
+    }
+
+    /// Chroma is all-or-nothing: when neither reference carries it the luma
+    /// half must still land and the function must not touch the (empty)
+    /// chroma outputs.
+    #[test]
+    fn warped_compound_without_chroma_predicts_luma() {
+        let case = CompoundCase::new(64, 64);
+        let (bw, bh) = (16usize, 16usize);
+        let mvs = [Mv { x: 8, y: 8 }, Mv { x: -8, y: -8 }];
+        let filters =
+            broadcast_interp_filter(svtav1_dsp::port_convolve::InterpFilterKind::EightTapRegular);
+        let mut y = vec![0u8; bw * bh];
+        let (mut wm0, mut wm1) = (rotzoom_model(), rotzoom_model());
+        predict_inter_yuv_warped_compound(
+            [(&case.refs[0], None), (&case.refs[1], None)],
+            &mut wm0,
+            &mut wm1,
+            [true, true],
+            16,
+            16,
+            bw,
+            bh,
+            mvs,
+            filters,
+            128,
+            case.w,
+            case.h,
+            &mut y,
+            bw,
+            &mut [],
+            &mut [],
+            0,
+        );
+        assert!(y.iter().any(|&p| p != 0), "luma prediction must be written");
     }
 }

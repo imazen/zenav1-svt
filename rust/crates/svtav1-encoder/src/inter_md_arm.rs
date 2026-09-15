@@ -380,11 +380,16 @@ pub struct InterCandOut {
     pub y_pred10: Vec<u16>,
     pub u_pred10: Vec<u16>,
     pub v_pred10: Vec<u16>,
-    /// C `cand->wm_params_l0` — the local-warp affine model. Meaningful only
-    /// when `motion_mode == WarpedCausal`; the reconstruction and the writer
-    /// both need it, and the model IS the motion there (the MV is unused by
-    /// the warp kernel).
+    /// C `cand->wm_params_l0` — the local-warp affine model when
+    /// `motion_mode == WarpedCausal`, reference 0's GLOBAL model for a
+    /// GLOBALMV / GLOBAL_GLOBALMV candidate; the reconstruction and the
+    /// writer both need it, and the model IS the motion on the warp path
+    /// (the MV is unused by the warp kernel).
     pub wm_params_l0: svtav1_types::motion::WarpedMotionParams,
+    /// C `cand->wm_params_l1` — reference 1's model for a compound
+    /// candidate. `av1_inter_prediction` warps EACH reference by its own
+    /// model, so a GLOBAL_GLOBALMV rebuild needs both.
+    pub wm_params_l1: svtav1_types::motion::WarpedMotionParams,
     /// C `cand_bf->fast_luma_rate`.
     pub fast_luma_rate: u32,
     /// C `cand->block_mi.num_proj_ref` — the warped-motion SAMPLE COUNT, which
@@ -1495,9 +1500,62 @@ fn predict_and_price(
     // `is_wm` is C's OWN two-term condition, not just the motion mode: a
     // GLOBALMV candidate is injected as SIMPLE_TRANSLATION, and with a model
     // above TRANSLATION the decoder still warps it.
+    // `is_wm` is PER REFERENCE in C (`av1_inter_prediction`,
+    // enc_inter_prediction.c:3276): ref `i` warps when ITS model is above
+    // TRANSLATION. A GLOBAL_GLOBALMV candidate keeps `wm_params_l0`/`l1`
+    // and both refs are evaluated against their own model — the
+    // single-model check used to route the whole block through the warp
+    // leaf with only ref 0's plane, which silently dropped the second
+    // reference's prediction (a decoder averages BOTH, so every committed
+    // GLOBAL_GLOBALMV block's recon disagreed with the stream).
     let is_wm =
         crate::inter_pred_arm::inter_pred_uses_warp(mm, c.mode as u8, b.bw, b.bh, &c.wm_params_l0);
-    if is_wm {
+    let is_wm1 = padded1.is_some()
+        && crate::inter_pred_arm::inter_pred_uses_warp(
+            mm,
+            c.mode as u8,
+            b.bw,
+            b.bh,
+            &c.wm_params_l1,
+        );
+    if let Some(p1) = padded1.filter(|_| is_wm || is_wm1) {
+        // Compound with at least one warped reference: C's per-ref loop
+        // where each ref picks warp or convolve by its OWN model, sharing
+        // one CONV_BUF (ref 0 fills it, ref 1 blends). `interinter_comp`
+        // is COMPOUND_AVERAGE for GLOBAL_GLOBALMV, so the blend is the
+        // plain mean — no dist-wtd weighting applies (compound_idx = 1).
+        let mut wm0 = c.wm_params_l0;
+        let mut wm1 = c.wm_params_l1;
+        crate::inter_pred_arm::predict_inter_yuv_warped_compound(
+            [
+                (
+                    &padded.y,
+                    padded.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| b.has_uv),
+                ),
+                (
+                    &p1.y,
+                    p1.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| b.has_uv),
+                ),
+            ],
+            &mut wm0,
+            &mut wm1,
+            [is_wm, is_wm1],
+            b.org_x,
+            b.org_y,
+            b.bw,
+            b.bh,
+            c.mv,
+            interp_filters,
+            f.sb_size,
+            f.frame_w,
+            f.frame_h,
+            &mut y_pred,
+            b.bw,
+            &mut u_pred,
+            &mut v_pred,
+            cw,
+        );
+    } else if is_wm {
         let mut wm = c.wm_params_l0;
         crate::inter_pred_arm::predict_inter_yuv_warped(
             (
@@ -1685,41 +1743,79 @@ fn predict_and_price(
             v_pred10 = alloc::vec![0u16; cw * chh];
         }
         if let Some(h1) = hbd1 {
-            crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
-                [
-                    (
-                        &hbd.y,
-                        if want_uv {
-                            hbd.uv.as_ref().map(|(u, v)| (u, v))
-                        } else {
-                            None
-                        },
-                    ),
-                    (
-                        &h1.y,
-                        if want_uv {
-                            h1.uv.as_ref().map(|(u, v)| (u, v))
-                        } else {
-                            None
-                        },
-                    ),
-                ],
-                b.org_x,
-                b.org_y,
-                b.bw,
-                b.bh,
-                c.mv,
-                interp_filters,
-                f.sb_size,
-                f.frame_w,
-                f.frame_h,
-                f.bit_depth,
-                &mut y_pred10,
-                b.bw,
-                &mut u_pred10,
-                &mut v_pred10,
-                cw,
-            );
+            if is_wm || is_wm1 {
+                // The same per-reference warp split as the 8-bit arm —
+                // each ref picks warp or convolve by its OWN model and the
+                // two share one CONV_BUF.
+                let mut wm0 = c.wm_params_l0;
+                let mut wm1 = c.wm_params_l1;
+                crate::inter_pred_arm::predict_inter_yuv_warped_compound_hbd(
+                    [
+                        (
+                            &hbd.y,
+                            hbd.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| want_uv),
+                        ),
+                        (
+                            &h1.y,
+                            h1.uv.as_ref().map(|(u, v)| (u, v)).filter(|_| want_uv),
+                        ),
+                    ],
+                    &mut wm0,
+                    &mut wm1,
+                    [is_wm, is_wm1],
+                    b.org_x,
+                    b.org_y,
+                    b.bw,
+                    b.bh,
+                    c.mv,
+                    interp_filters,
+                    f.sb_size,
+                    f.frame_w,
+                    f.frame_h,
+                    f.bit_depth,
+                    &mut y_pred10,
+                    b.bw,
+                    &mut u_pred10,
+                    &mut v_pred10,
+                    cw,
+                );
+            } else {
+                crate::inter_pred_arm::predict_inter_yuv_hbd_compound(
+                    [
+                        (
+                            &hbd.y,
+                            if want_uv {
+                                hbd.uv.as_ref().map(|(u, v)| (u, v))
+                            } else {
+                                None
+                            },
+                        ),
+                        (
+                            &h1.y,
+                            if want_uv {
+                                h1.uv.as_ref().map(|(u, v)| (u, v))
+                            } else {
+                                None
+                            },
+                        ),
+                    ],
+                    b.org_x,
+                    b.org_y,
+                    b.bw,
+                    b.bh,
+                    c.mv,
+                    interp_filters,
+                    f.sb_size,
+                    f.frame_w,
+                    f.frame_h,
+                    f.bit_depth,
+                    &mut y_pred10,
+                    b.bw,
+                    &mut u_pred10,
+                    &mut v_pred10,
+                    cw,
+                );
+            }
         } else {
             crate::inter_pred_arm::predict_inter_leaf_hbd(
                 &hbd.y,
@@ -1914,6 +2010,7 @@ fn predict_and_price(
         u_pred10,
         v_pred10,
         wm_params_l0: c.wm_params_l0,
+        wm_params_l1: c.wm_params_l1,
         fast_luma_rate: cost.rate.luma,
         num_proj_ref: c.num_proj_ref,
         // Stamped by `build_inter_candidates` once the block's

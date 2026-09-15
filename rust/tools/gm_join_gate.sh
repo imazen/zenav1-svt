@@ -157,10 +157,15 @@ while read -r content w h qp preset shift zn zd; do
     # This is the assertion the whole search port rests on: the derivation
     # deciding "C would search" is only half the fact, and the other half is
     # what the search RETURNS.
-    c_models=$(sed -n 's/^GMREF .*list=\([0-9]*\) ref=\([0-9]*\) wmtype=\([0-9-]*\) is_global=[0-9]* wmmat=\([^ ]*\).*/\1,\2,\3,\4/p' "$d/c.gm" | sort)
+    # `sort -u` on BOTH sides: C's GMREF loop prints one row per ref LIST slot
+    # it reports, so a model shared by three same-list slots appears three
+    # times where the port prints each (list, ref) it holds once. The join
+    # asserts the SET is equal — a model either side found that the other did
+    # not — not the log's row multiplicity.
+    c_models=$(sed -n 's/^GMREF .*list=\([0-9]*\) ref=\([0-9]*\) wmtype=\([0-9-]*\) is_global=[0-9]* wmmat=\([^ ]*\).*/\1,\2,\3,\4/p' "$d/c.gm" | sort -u)
     p_models=$(grep '^GMPORTREF ' "$d/rs.trace" 2>/dev/null |
         sed -n 's/.*list=\([0-9]*\) ref=\([0-9]*\) wmtype=\([0-9-]*\) *wmmat=\[\([^]]*\)\].*/\1,\2,\3,\4/p' |
-        tr -d ' ' | sort)
+        tr -d ' ' | sort -u)
     if [[ "$c_models" != "$p_models" ]]; then
         printf '%s\t%s\t%s\t%s\n' "$tag" "models" "${c_models//$'\n'/;}" "${p_models//$'\n'/;}" >> "$OUT/mismatch.tsv"
         bad=$((bad + 1))

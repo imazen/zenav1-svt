@@ -82,7 +82,11 @@ for spec in "${CELLS[@]}"; do
     got_ni=0
     if grep -q '^GMPORT .*all_identity=0' "$out/trace.txt"; then got_ni=1; fi
     [[ "$got_ni" == 1 ]] && nonident=$((nonident + 1))
-    globalmv=$(grep -c 'mode=GlobalMv' "$out/trace.txt" || true)
+    # `mode=GlobalMv` alone misses `mode=GlobalGlobalMv` — the COMPOUND
+    # global mode, which commits only when the per-reference warp predicts
+    # well enough to win RD. Both are global-motion selections; the pin
+    # counts them together.
+    globalmv=$(grep -cE 'mode=Global(Global)?Mv' "$out/trace.txt" || true)
     note=ok
     if [[ "$got_ni" != "$want_ni" ]]; then
         note="all_identity disagrees with the pin"; fail=$((fail + 1))

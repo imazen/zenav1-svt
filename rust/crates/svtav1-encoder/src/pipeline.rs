@@ -16428,6 +16428,7 @@ mod inter_decision_probe {
                 compound_idx: 0,
                 interinter_comp_type: 0,
                 wm_params: Default::default(),
+                wm_params_l1: Default::default(),
             })),
             ..Default::default()
         };

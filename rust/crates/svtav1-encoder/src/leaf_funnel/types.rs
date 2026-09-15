@@ -172,10 +172,17 @@ pub struct InterCand {
     /// `Cand::pred10`. EMPTY unless the DPB carried a 10-bit reference.
     pub u_pred10: alloc::vec::Vec<u16>,
     pub v_pred10: alloc::vec::Vec<u16>,
-    /// C `cand->wm_params_l0` — the local-warp affine model. Identity unless
-    /// `motion_mode == WarpedCausal`, and carried because the MDS1 refinement
-    /// re-derives it and the rebuilt prediction needs it.
+    /// C `cand->wm_params_l0` — the local-warp affine model. For a GLOBALMV /
+    /// GLOBAL_GLOBALMV candidate it is reference 0's GLOBAL model (the
+    /// injector stamps `global_motion[ref_frame[0]]` there), and it is
+    /// carried because the MDS1 refinement and the IFS rebuild re-predict
+    /// with it.
     pub wm_params: svtav1_types::motion::WarpedMotionParams,
+    /// C `cand->wm_params_l1` — reference 1's model for a compound
+    /// candidate. `av1_inter_prediction` warps EACH reference by its own
+    /// model, so the IFS rebuild cannot reconstruct a GLOBAL_GLOBALMV block
+    /// from `wm_params` alone.
+    pub wm_params_l1: svtav1_types::motion::WarpedMotionParams,
     /// C `cand->cand_class` — the CAND_CLASS the candidate was assigned at
     /// injection (mode_decision.c:3646-3672): 2 for `NEWMV`/`NEW_NEWMV` and
     /// for EVERY inter candidate when `merge_inter_cands` fired on the
