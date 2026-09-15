@@ -751,24 +751,39 @@ const TX_SCALE_TAB: [i32; 19] = [0, 0, 0, 1, 2, 0, 0, 0, 0, 1, 1, 2, 2, 0, 0, 0,
 /// (`q_matrix == NULL`): returns (eob, packed qcoeff, packed dqcoeff).
 /// `coeffs` is the packed coefficient buffer (row stride = packed width),
 /// `scan` the DCT_DCT scan for the tx size, `log_scale` = tx scale.
+#[cfg(test)]
 fn quantize_b(
     coeffs: &[i32],
     scan: &[u16],
     e: &QuantEntry,
     log_scale: i32,
 ) -> (u16, Vec<i32>, Vec<i32>) {
-    let zbins = e.zbin.map(|v| (v + ((1 << log_scale) >> 1)) >> log_scale);
-    let round = e.round.map(|v| (v + ((1 << log_scale) >> 1)) >> log_scale);
     let mut qcoeff = vec![0i32; coeffs.len()];
     let mut dqcoeff = vec![0i32; coeffs.len()];
+    let eob = quantize_b_into(coeffs, scan, e, log_scale, &mut qcoeff, &mut dqcoeff);
+    (eob, qcoeff, dqcoeff)
+}
+
+/// [`quantize_b`]'s body writing caller-owned output slices — the hot
+/// block-cost paths reuse [`Pd0Scratch`] instead of allocating per block.
+fn quantize_b_into(
+    coeffs: &[i32],
+    scan: &[u16],
+    e: &QuantEntry,
+    log_scale: i32,
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
+    let zbins = e.zbin.map(|v| (v + ((1 << log_scale) >> 1)) >> log_scale);
+    let round = e.round.map(|v| (v + ((1 << log_scale) >> 1)) >> log_scale);
     // PD0 quantizes 8-bit residuals even for a high-bit-depth input frame.
     // Reuse the coding path's bd8 raster kernel: the prescan only excluded
     // coefficients inside the same dead zone, and EOB is recovered in scan
     // order after the independent per-coefficient arithmetic.
     svtav1_dsp::quant_coding::quantize_b_raster(
         coeffs,
-        &mut qcoeff,
-        &mut dqcoeff,
+        qcoeff,
+        dqcoeff,
         &zbins,
         &round,
         &e.quant,
@@ -776,8 +791,7 @@ fn quantize_b(
         &e.dequant,
         log_scale,
     );
-    let eob = crate::quant::eob_from_qcoeff(scan, &qcoeff);
-    (eob, qcoeff, dqcoeff)
+    crate::quant::eob_from_qcoeff(scan, qcoeff)
 }
 
 /// The former PD0 scan-order body, retained as an independent regression
@@ -1139,22 +1153,25 @@ mod pd0_quant_parity_tests {
 /// `QuantTable`'s). Keeps the bd8-domain INT16 clamp (C's 8-bit kernel clamps
 /// `INT16_MIN..INT16_MAX`, av1_quantize.c) — PD0 quantizes 8-bit residuals
 /// even at bd10.
-fn quantize_b_qm(
+/// [`quantize_b_into`]'s QM twin (C `svt_av1_quantize_b_qm`). Writes only
+/// the positions that pass the weighted dead zone — `qcoeff`/`dqcoeff` must
+/// be zeroed by the caller first.
+fn quantize_b_qm_into(
     coeffs: &[i32],
     scan: &[u16],
     e: &QuantEntry,
     log_scale: i32,
     wt: &[u8],
     iwt: &[u8],
-) -> (u16, Vec<i32>, Vec<i32>) {
+    qcoeff: &mut [i32],
+    dqcoeff: &mut [i32],
+) -> u16 {
     const AOM_QM_BITS: i32 = 5;
     let n_coeffs = scan.len();
     let zbins = [
         (e.zbin[0] + ((1 << log_scale) >> 1)) >> log_scale,
         (e.zbin[1] + ((1 << log_scale) >> 1)) >> log_scale,
     ];
-    let mut qcoeff = vec![0i32; coeffs.len()];
-    let mut dqcoeff = vec![0i32; coeffs.len()];
 
     // Pre-scan pass (weighted zbin dead zone).
     let mut non_zero_count = n_coeffs;
@@ -1194,7 +1211,7 @@ fn quantize_b_qm(
             }
         }
     }
-    ((eob + 1) as u16, qcoeff, dqcoeff)
+    (eob + 1) as u16
 }
 
 /// C `energy_computation` (transforms.c:3095): sum of squared
@@ -1330,22 +1347,28 @@ fn pd0_tx_size(bw: usize, tx_h: usize) -> (svtav1_types::transform::TxSize, usiz
 /// them: with `pd0_use_src_samples = false` the block's RECON feeds the next
 /// block's intra prediction, and recon is `pred + inverse_transform(dqcoeff)`.
 /// The allintra paths ignore the extra value.
+/// The residual is `s.residual[..sq_size * tx_h]`; the packed
+/// `qcoeff`/`dqcoeff` outputs land in `s.qcoeff[..used]` /
+/// `s.dqcoeff[..used]` where `used = min(sq_size,32) * min(tx_h,32)`.
+/// Returns `(eob, dist, c_tx_size)`.
 fn tx_quant_core(
-    residual: &[i32],
+    s: &mut Pd0Scratch,
     sq_size: usize,
     tx_h: usize,
     qindex_off: u8,
     qm_level: u8,
     subres_step: u32,
-) -> (u16, u64, Vec<i32>, usize, Vec<i32>) {
+) -> (u16, u64, usize) {
     use svtav1_types::transform::TxType;
     let (tx_size, c_tx_size) = pd0_tx_size(sq_size, tx_h);
 
-    let mut coeffs = vec![0i32; sq_size * tx_h];
+    let n = sq_size * tx_h;
+    let residual_len = n;
+    let coeffs = scratch_i32(&mut s.coeffs, n);
     if qindex_off == 0 && sq_size == 4 && tx_h == 4 {
         // C svt_av1_estimate_transform's lossless TX_4X4 branch, including
         // its transposed store. Larger PD0 transforms still use DCT.
-        let res: [i16; 16] = core::array::from_fn(|i| residual[i] as i16);
+        let res: [i16; 16] = core::array::from_fn(|i| s.residual[i] as i16);
         let mut wht = [0i32; 16];
         svtav1_dsp::fwd_txfm::fwht4x4(&res, &mut wht, 4);
         for r in 0..4 {
@@ -1355,8 +1378,8 @@ fn tx_quant_core(
         }
     } else {
         svtav1_dsp::txfm_dispatch::fwd_txfm2d_dispatch(
-            residual,
-            &mut coeffs,
+            &s.residual[..residual_len],
+            coeffs,
             sq_size,
             tx_size,
             TxType::DctDct,
@@ -1368,26 +1391,24 @@ fn tx_quant_core(
     if sq_size == 64 {
         if tx_h == 64 {
             three_quad_energy =
-                energy(&coeffs[32..], 64, 32, 32) + energy(&coeffs[32 * 64..], 64, 64, 32);
+                energy(&s.coeffs[32..], 64, 32, 32) + energy(&s.coeffs[32 * 64..], 64, 64, 32);
         } else {
             // svt_handle_transform64x32 (transforms.c:3184) / 64x16 (:3223):
             // the top-right 32-wide quadrant over the transform's own height
             // — 32 rows at subres step 1, 16 at step 2.
-            three_quad_energy = energy(&coeffs[32..], 64, 32, tx_h);
+            three_quad_energy = energy(&s.coeffs[32..], 64, 32, tx_h);
         }
         let pack_h = tx_h.min(32);
         for row in 1..pack_h {
             for c in 0..32 {
-                coeffs[row * 32 + c] = coeffs[row * 64 + c];
+                s.coeffs[row * 32 + c] = s.coeffs[row * 64 + c];
             }
         }
-        coeffs.truncate(32 * pack_h);
     } else if tx_h == 64 {
         // Tall 32x64 (svt_handle_transform32x64): the block is 32 wide (no
         // width fold), so the top 32 rows are already contiguous — keep them
         // and route the bottom 32 rows' energy to three_quad_energy.
-        three_quad_energy = energy(&coeffs[sq_size * 32..], sq_size, sq_size, 32);
-        coeffs.truncate(sq_size * 32);
+        three_quad_energy = energy(&s.coeffs[sq_size * 32..], sq_size, sq_size, 32);
     }
 
     let packed_w = sq_size.min(32);
@@ -1411,20 +1432,33 @@ fn tx_quant_core(
     // 8-bit-domain and carries no highbd term. Without it PD0 dequantized
     // WITHOUT matrices, so a QM-tipped partition near-tie (top-left 32x32 of
     // a smooth SB) coded SPLIT where C keeps NONE (fork x bd10 Class A).
-    let (eob, qcoeff, dqcoeff) = match (qm_level < 15)
+    let used = packed_w * packed_h;
+    let eob = match (qm_level < 15)
         .then(|| crate::qm::qm_slices(usize::from(qm_level), false, c_tx_size))
         .flatten()
     {
-        Some((wt, iwt)) => quantize_b_qm(&coeffs, scan, &entry, log_scale, wt, iwt),
-        None => quantize_b(&coeffs, scan, &entry, log_scale),
+        Some((wt, iwt)) => {
+            // `quantize_b_qm` writes only the positions that pass the
+            // weighted dead zone — the reused buffers must start at zero.
+            let q = scratch_i32(&mut s.qcoeff, used);
+            let dq = scratch_i32(&mut s.dqcoeff, used);
+            q.fill(0);
+            dq.fill(0);
+            quantize_b_qm_into(&s.coeffs[..used], scan, &entry, log_scale, wt, iwt, q, dq)
+        }
+        None => {
+            let q = scratch_i32(&mut s.qcoeff, used);
+            let dq = scratch_i32(&mut s.dqcoeff, used);
+            quantize_b_into(&s.coeffs[..used], scan, &entry, log_scale, q, dq)
+        }
     };
 
     // svt_aom_picture_full_distortion32_bits_single: freq-domain SSE
     // (or plain coeff energy when eob == 0) over the packed region.
     let mut dist = if eob > 0 {
-        svtav1_dsp::residual::sse_i32(&coeffs, &dqcoeff)
+        svtav1_dsp::residual::sse_i32(&s.coeffs[..used], &s.dqcoeff[..used])
     } else {
-        energy(&coeffs, packed_w, packed_w, packed_h)
+        energy(&s.coeffs, packed_w, packed_w, packed_h)
     };
     dist += three_quad_energy;
     // RIGHT_SIGNED_SHIFT(dist, (MAX_TX_SCALE=1 - tx_scale) * 2) << subres
@@ -1436,7 +1470,7 @@ fn tx_quant_core(
     };
     dist <<= subres_step;
 
-    (eob, dist, qcoeff, c_tx_size, dqcoeff)
+    (eob, dist, c_tx_size)
 }
 
 // ---------------------------------------------------------------------------
@@ -2407,6 +2441,52 @@ struct Pd0Ctx<'a> {
     /// DECIDED (C only writes the arrays at the decision points, never for a
     /// block whose node ends up SPLIT).
     pending_recon: Option<alloc::vec::Vec<u8>>,
+    /// Per-block-cost scratch, grown once per context and reused instead of
+    /// the fresh `vec!`s the C port allocates per tested block. Every buffer
+    /// is write-before-read within a call except `full`, whose tail beyond
+    /// the packed transform region must read as zero and is `fill(0)`ed by
+    /// its consumer.
+    scratch: Pd0Scratch,
+}
+
+/// Reused block-cost buffers for [`Pd0Ctx::scratch`]. All start empty and
+/// grow to the largest `(bw, bh)` actually costed — max 64x64.
+#[derive(Default)]
+struct Pd0Scratch {
+    /// Intra/inter prediction buffer, `bw * bh` bytes.
+    pred: alloc::vec::Vec<u8>,
+    /// Second candidate buffer for `inter_best_pred`'s argmin-swap.
+    cand: alloc::vec::Vec<u8>,
+    /// `bw * tx_h` residuals.
+    residual: alloc::vec::Vec<i32>,
+    /// `bw * tx_h` forward-transform output (pre-64-fold).
+    coeffs: alloc::vec::Vec<i32>,
+    /// Packed `min(bw,32) * min(tx_h,32)` quantized coefficients.
+    qcoeff: alloc::vec::Vec<i32>,
+    /// Packed dequantized coefficients.
+    dqcoeff: alloc::vec::Vec<i32>,
+    /// `bw * tx_h` unpacked dequant input to the recon inverse transform.
+    full: alloc::vec::Vec<i32>,
+    /// `bw * tx_h` inverse-transform output.
+    inv: alloc::vec::Vec<i32>,
+}
+
+/// `v[..n]` as a mutable slice, growing the buffer once when it is too
+/// small. Contents are NOT guaranteed zero — callers must write every
+/// element they read (or `fill(0)` where a tail must read as zero).
+fn scratch_i32(v: &mut alloc::vec::Vec<i32>, n: usize) -> &mut [i32] {
+    if v.len() < n {
+        v.resize(n, 0);
+    }
+    &mut v[..n]
+}
+
+/// [`scratch_i32`] for `u8` buffers.
+fn scratch_u8(v: &mut alloc::vec::Vec<u8>, n: usize) -> &mut [u8] {
+    if v.len() < n {
+        v.resize(n, 0);
+    }
+    &mut v[..n]
 }
 
 /// C `svt_aom_partition_rate_cost` at PD0: neighbor partition contexts are
@@ -2545,9 +2625,14 @@ impl<'a> Pd0Ctx<'a> {
         // is an inter NEWMV — `intra_ctrls.enable_intra` is 0 there — so C
         // never runs the intra neighbour extraction. The candidate loop is
         // the same `md_stage_0_pd0` argmin-variance pick the LVL_1 family
-        // runs; only the cost model past `pred` differs.
-        let pred = if let Some(ir) = self.inter {
-            self.inter_best_pred(ir, bw, bh, abs_x, abs_y)
+        // runs; only the cost model past `pred` differs. `pred_buf` is taken
+        // out of the scratch so this function can hold it across the
+        // `&mut self.scratch` calls below; it is put back before returning.
+        let mut pred_buf = core::mem::take(&mut self.scratch.pred);
+        if let Some(ir) = self.inter {
+            let mut cand = core::mem::take(&mut self.scratch.cand);
+            self.inter_best_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred_buf, &mut cand);
+            self.scratch.cand = cand;
         } else {
             // `pd0_use_src_samples` (enc_mode_config.c:7309) is `allintra ||
             // hbd_md`. TRUE — no canvas — means C copies the SOURCE row/column into
@@ -2586,12 +2671,10 @@ impl<'a> Pd0Ctx<'a> {
                 }
             };
             let (above, left, _tl, has_above, has_left) = nb.parts();
-            let mut p = vec![0u8; bw * bh];
-            svtav1_dsp::intra_pred::predict_dc(
-                &mut p, bw, above, left, bw, bh, has_above, has_left,
-            );
-            p
-        };
+            let p = scratch_u8(&mut pred_buf, bw * bh);
+            svtav1_dsp::intra_pred::predict_dc(p, bw, above, left, bw, bh, has_above, has_left);
+        }
+        let pred: &[u8] = &pred_buf;
 
         // Subres safety: determined once per SB by the first (and only)
         // tested 64x64 block; blocks tested while it is undetermined use
@@ -2624,19 +2707,20 @@ impl<'a> Pd0Ctx<'a> {
         // DOUBLED stride on both sides — `(r << step) * stride` is
         // `r * (stride << step)` — which is exactly what this loop did with its
         // shifted row index.
-        let mut residual = vec![0i32; bw * tx_h];
+        let stride = self.stride;
+        let src = self.src;
         svtav1_dsp::residual::residual_i32(
-            &self.src[abs_y * self.stride + abs_x..],
-            self.stride << step,
-            &pred,
+            &src[abs_y * stride + abs_x..],
+            stride << step,
+            pred,
             bw << step,
             bw,
             tx_h,
-            &mut residual,
+            scratch_i32(&mut self.scratch.residual, bw * tx_h),
         );
         let qindex_off = (self.qindex as u32 + 8).min(255) as u8; // lpd0_qp_offset = 8
-        let (eob, dist, _qcoeff, _c_tx, dqcoeff) =
-            tx_quant_core(&residual, bw, tx_h, qindex_off, self.qm_level, step);
+        let (eob, dist, _c_tx) =
+            tx_quant_core(&mut self.scratch, bw, tx_h, qindex_off, self.qm_level, step);
         // coeff_rate_est_lvl == 0 closed form (perform_tx_pd0,
         // product_coding_loop.c:4579): 5000 + input_resolution_factor*1600 +
         // 100*eob. The resolution factor is a per-picture constant (0 for
@@ -2662,19 +2746,25 @@ impl<'a> Pd0Ctx<'a> {
         if self.recon_canvas.is_some() && self.inter.is_none() {
             let mut recon = alloc::vec![0u8; bw * bh];
             if eob > 0 {
+                let n = bw * tx_h;
                 let packed_w = bw.min(32);
                 let packed_h = tx_h.min(32);
-                let mut full = alloc::vec![0i32; bw * tx_h];
+                // The inverse transform reads the whole `bw * tx_h` input;
+                // the scatter only fills the packed region, so the tail of
+                // `full` must be zeroed on every call.
+                let full = scratch_i32(&mut self.scratch.full, n);
+                full.fill(0);
+                let dqcoeff = &self.scratch.dqcoeff[..packed_w * packed_h];
                 for r in 0..packed_h {
                     for c in 0..packed_w {
                         full[r * bw + c] = dqcoeff[r * packed_w + c];
                     }
                 }
-                let mut inv = alloc::vec![0i32; bw * tx_h];
                 let (tx_size, _) = pd0_tx_size(bw, tx_h);
+                let inv = scratch_i32(&mut self.scratch.inv, n);
                 svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &full,
-                    &mut inv,
+                    full,
+                    inv,
                     bw,
                     tx_size,
                     svtav1_types::transform::TxType::DctDct,
@@ -2708,6 +2798,7 @@ impl<'a> Pd0Ctx<'a> {
                 self.lambda,
             );
         }
+        self.scratch.pred = pred_buf;
         cost
     }
 
@@ -2777,16 +2868,29 @@ impl<'a> Pd0Ctx<'a> {
             }
         };
         let (above, left, _tl, has_above, has_left) = nb.parts();
-        let mut pred = vec![0u8; bw * bh];
-        svtav1_dsp::intra_pred::predict_dc(&mut pred, bw, above, left, bw, bh, has_above, has_left);
-        self.lvl1_cost_from_pred(
+        // `pred` is taken out of the scratch so it can be borrowed across the
+        // `&mut self` call; it is put back afterwards.
+        let mut pred = core::mem::take(&mut self.scratch.pred);
+        svtav1_dsp::intra_pred::predict_dc(
+            scratch_u8(&mut pred, bw * bh),
+            bw,
+            above,
+            left,
+            bw,
+            bh,
+            has_above,
+            has_left,
+        );
+        let cost = self.lvl1_cost_from_pred(
             bw,
             bh,
             abs_x,
             abs_y,
-            pred,
+            &pred,
             Some((&above, &left, has_above, has_left)),
-        )
+        );
+        self.scratch.pred = pred;
+        cost
     }
 
     /// [`Pd0Ctx::lvl1_block_cost_rect`] from the point the PREDICTION exists —
@@ -2805,7 +2909,7 @@ impl<'a> Pd0Ctx<'a> {
         bh: usize,
         abs_x: usize,
         abs_y: usize,
-        pred: Vec<u8>,
+        pred: &[u8],
         nb: Option<(&[u8], &[u8], bool, bool)>,
     ) -> u64 {
         // `subres_ctrls.step`, and the per-SB safety check that gates it —
@@ -2821,7 +2925,7 @@ impl<'a> Pd0Ctx<'a> {
                 self.stride,
                 abs_x,
                 abs_y,
-                &pred,
+                pred,
             ));
         }
         let mut step = if bh >= 16 {
@@ -2839,18 +2943,25 @@ impl<'a> Pd0Ctx<'a> {
         // DOUBLED stride on both sides — `(r << step) * stride` is
         // `r * (stride << step)` — which is exactly what this loop did with its
         // shifted row index.
-        let mut residual = vec![0i32; bw * tx_h];
+        let stride = self.stride;
+        let src = self.src;
         svtav1_dsp::residual::residual_i32(
-            &self.src[abs_y * self.stride + abs_x..],
-            self.stride << step,
-            &pred,
+            &src[abs_y * stride + abs_x..],
+            stride << step,
+            pred,
             bw << step,
             bw,
             tx_h,
-            &mut residual,
+            scratch_i32(&mut self.scratch.residual, bw * tx_h),
         );
-        let (eob, dist, qcoeff, c_tx, dqcoeff) =
-            tx_quant_core(&residual, bw, tx_h, self.qindex, self.qm_level, step);
+        let (eob, dist, c_tx) = tx_quant_core(
+            &mut self.scratch,
+            bw,
+            tx_h,
+            self.qindex,
+            self.qm_level,
+            step,
+        );
         let tables = self.lvl1.expect("LVL_1 requires tables");
         // C `perform_tx_pd0` luma coeff rate (single-txb, product_coding_
         // loop.c:4501-4508): `th = (bwidth*bheight)>>5` where `bwidth =
@@ -2881,7 +2992,14 @@ impl<'a> Pd0Ctx<'a> {
         } else if eob == 0 {
             cost_skip_txb_pd0(c_tx, &tables.coeff) as u64
         } else {
-            cost_coeffs_txb_pd0(&qcoeff, eob, c_tx, &tables.coeff, &tables.tx_rates, step) as u64
+            cost_coeffs_txb_pd0(
+                &self.scratch.qcoeff[..cw * ch],
+                eob,
+                c_tx,
+                &tables.coeff,
+                &tables.tx_rates,
+                step,
+            ) as u64
         };
         let rate = bits + tables.skip0_bits + tables.none_bits_ctx0;
         let cost = rdcost(self.lambda, rate, dist);
@@ -2895,19 +3013,25 @@ impl<'a> Pd0Ctx<'a> {
         if self.recon_canvas.is_some() {
             let mut recon = alloc::vec![0u8; bw * bh];
             if eob > 0 {
+                let n = bw * tx_h;
                 let packed_w = bw.min(32);
                 let packed_h = tx_h.min(32);
-                let mut full = alloc::vec![0i32; bw * tx_h];
+                // The inverse transform reads the whole `bw * tx_h` input;
+                // the scatter only fills the packed region, so the tail of
+                // `full` must be zeroed on every call.
+                let full = scratch_i32(&mut self.scratch.full, n);
+                full.fill(0);
+                let dqcoeff = &self.scratch.dqcoeff[..packed_w * packed_h];
                 for r in 0..packed_h {
                     for c in 0..packed_w {
                         full[r * bw + c] = dqcoeff[r * packed_w + c];
                     }
                 }
-                let mut inv = alloc::vec![0i32; bw * tx_h];
                 let (tx_size, _) = pd0_tx_size(bw, tx_h);
+                let inv = scratch_i32(&mut self.scratch.inv, n);
                 svtav1_dsp::txfm_dispatch::inv_txfm2d_dispatch(
-                    &full,
-                    &mut inv,
+                    full,
+                    inv,
                     bw,
                     tx_size,
                     svtav1_types::transform::TxType::DctDct,
@@ -2971,26 +3095,32 @@ impl<'a> Pd0Ctx<'a> {
     /// Shared by every inter PD0 level that runs `md_encode_block_pd0` (the
     /// LVL_1 family AND LVL_5): the candidate set and the pick are level-
     /// independent; the level decides only the cost model downstream.
-    fn inter_best_pred(
+    /// [`Pd0Ctx::inter_best_pred`] with caller-owned buffers: `best` receives
+    /// the winning `bw * bh` prediction (or the zero-MV fallback) and `cand`
+    /// is the per-candidate working buffer. A win SWAPS the two — the loser's
+    /// contents are overwritten before they are ever read.
+    fn inter_best_pred_into(
         &self,
         ir: &Pd0InterRef<'_>,
         bw: usize,
         bh: usize,
         abs_x: usize,
         abs_y: usize,
-    ) -> Vec<u8> {
+        best: &mut Vec<u8>,
+        cand: &mut Vec<u8>,
+    ) {
         let bsize = pd0_bsize(bw, bh);
         let cands = ir.me.cands_for(abs_x, abs_y, bsize);
         // C `inject_inter_candidates_pd0` (mode_decision.c:2828): compound is
         // out when the frame is single-reference or either dim is 4.
         let allow_bipred = ir.ref_mode_not_single && bw > 4 && bh > 4;
         let src = &self.src[abs_y * self.stride + abs_x..];
+        let n = bw * bh;
         let mut best_var = u64::MAX;
-        let mut best_pred: Option<Vec<u8>> = None;
+        let mut have_best = false;
         let mut injected = 0u32;
         for (i, c) in cands.iter().enumerate() {
             let dir = c.direction();
-            let mut pred = vec![0u8; bw * bh];
             let mv_dbg;
             if dir < crate::inter_me::context::BI_PRED {
                 let Some((_d, mv_fp)) = ir.me.cand_mv_for(abs_x, abs_y, bsize, i) else {
@@ -3003,7 +3133,7 @@ impl<'a> Pd0Ctx<'a> {
                 };
                 let rf = crate::port_picstruct::get_ref_frame_type(dir, ref_idx);
                 mv_dbg = (mv_fp.y * 8, mv_fp.x * 8, rf);
-                self.inter_pred_into(ir, bw, bh, abs_x, abs_y, mv_fp, rf, &mut pred);
+                self.inter_pred_into(ir, bw, bh, abs_x, abs_y, mv_fp, rf, scratch_u8(cand, n));
             } else if allow_bipred {
                 let Some(((mv0, rf0), (mv1, rf1))) = ir.me.cand_bipred_mvs(abs_x, abs_y, bsize, i)
                 else {
@@ -3011,13 +3141,22 @@ impl<'a> Pd0Ctx<'a> {
                 };
                 mv_dbg = (mv0.y * 8, mv0.x * 8, rf0);
                 self.inter_pred_into_bipred(
-                    ir, bw, bh, abs_x, abs_y, mv0, rf0, mv1, rf1, &mut pred,
+                    ir,
+                    bw,
+                    bh,
+                    abs_x,
+                    abs_y,
+                    mv0,
+                    rf0,
+                    mv1,
+                    rf1,
+                    scratch_u8(cand, n),
                 );
             } else {
                 continue;
             }
             let var = u64::from(svtav1_dsp::variance::variance_diff(
-                &pred,
+                cand,
                 bw,
                 src,
                 self.stride,
@@ -3033,7 +3172,8 @@ impl<'a> Pd0Ctx<'a> {
             }
             if var < best_var {
                 best_var = var;
-                best_pred = Some(pred);
+                core::mem::swap(best, cand);
+                have_best = true;
             }
             injected += 1;
             if injected > 2 {
@@ -3042,12 +3182,12 @@ impl<'a> Pd0Ctx<'a> {
         }
         #[cfg(feature = "std")]
         if crate::dbgenv::pd0dbg() && std::env::var_os("SVTAV1_PD0PRED").is_some() {
-            if let Some(p) = best_pred.as_ref() {
+            if have_best {
                 eprint!("PD0PRED org=({abs_x},{abs_y}) {bw}x{bh}");
                 for r in 0..bh.min(4) {
                     eprint!(" r{r}=");
                     for c in 0..bw.min(16) {
-                        eprint!("{},", p[r * bw + c]);
+                        eprint!("{},", best[r * bw + c]);
                     }
                 }
                 eprintln!();
@@ -3055,8 +3195,7 @@ impl<'a> Pd0Ctx<'a> {
         }
         // `inject_zz_backup_candidate` (mode_decision.c:3314): zero-MV NEWMV
         // on LAST when the PU's candidate list is empty.
-        best_pred.unwrap_or_else(|| {
-            let mut p = vec![0u8; bw * bh];
+        if !have_best {
             self.inter_pred_into(
                 ir,
                 bw,
@@ -3065,10 +3204,9 @@ impl<'a> Pd0Ctx<'a> {
                 abs_y,
                 svtav1_types::motion::Mv::ZERO,
                 1, // LAST_FRAME
-                &mut p,
+                scratch_u8(best, n),
             );
-            p
-        })
+        }
     }
 
     /// C `compute_lpd0_cost_inter` (product_coding_loop.c:8267) — the
@@ -3204,8 +3342,13 @@ impl<'a> Pd0Ctx<'a> {
         abs_x: usize,
         abs_y: usize,
     ) -> u64 {
-        let pred = self.inter_best_pred(ir, bw, bh, abs_x, abs_y);
-        self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, pred, None)
+        let mut pred = core::mem::take(&mut self.scratch.pred);
+        let mut cand = core::mem::take(&mut self.scratch.cand);
+        self.inter_best_pred_into(ir, bw, bh, abs_x, abs_y, &mut pred, &mut cand);
+        self.scratch.cand = cand;
+        let cost = self.lvl1_cost_from_pred(bw, bh, abs_x, abs_y, &pred, None);
+        self.scratch.pred = pred;
+        cost
     }
 
     /// The `padded_by_ref` lookup C does as
@@ -4038,6 +4181,7 @@ pub fn pd0_pick_sb_partition(
         recon_canvas: None,
         inter: None,
         pending_recon: None,
+        scratch: Pd0Scratch::default(),
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -4145,6 +4289,7 @@ pub fn pd0_pick_sb_partition_lvl0(
         recon_canvas: None,
         inter: None,
         pending_recon: None,
+        scratch: Pd0Scratch::default(),
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -4238,6 +4383,7 @@ pub fn pd0_pick_sb_partition_m6(
         recon_canvas: None,
         inter: None,
         pending_recon: None,
+        scratch: Pd0Scratch::default(),
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval.tree()
@@ -4438,6 +4584,7 @@ pub(crate) fn pd0_pick_sb_partition_m6_eval(
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
         inter,
         pending_recon: None,
+        scratch: Pd0Scratch::default(),
     };
     let (_cost, eval) = ctx.pick(64, 0, 0);
     eval
@@ -4718,6 +4865,7 @@ pub fn pd0_pick_sb_partition_video_eval(
         recon_canvas: video_recon.map(|(r, st)| Pd0ReconCanvas::new(r, st, sb_y)),
         inter,
         pending_recon: None,
+        scratch: Pd0Scratch::default(),
     };
     ctx.pick(64, 0, 0).1
 }
@@ -4956,6 +5104,7 @@ mod tests {
             recon_canvas: None,
             inter: None,
             pending_recon: None,
+            scratch: Pd0Scratch::default(),
         };
         assert_eq!(ctx.lambda, 25650);
         // (sq, org_x, org_y, C full_cost)
@@ -5080,6 +5229,7 @@ mod tests {
             recon_canvas: None,
             inter: None,
             pending_recon: None,
+            scratch: Pd0Scratch::default(),
         };
         for (sq, ox, oy, cost) in [
             (32usize, 0usize, 0usize, 187677438u64),
@@ -5132,6 +5282,7 @@ mod tests {
             recon_canvas: None,
             inter: None,
             pending_recon: None,
+            scratch: Pd0Scratch::default(),
         };
         assert_eq!(ctx.lvl5_block_cost(64, 0, 0), 1708208432);
         assert_eq!(
@@ -5297,6 +5448,7 @@ mod tests {
             recon_canvas: None,
             inter: None,
             pending_recon: None,
+            scratch: Pd0Scratch::default(),
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1791569177u64),
@@ -5345,6 +5497,7 @@ mod tests {
             recon_canvas: None,
             inter: None,
             pending_recon: None,
+            scratch: Pd0Scratch::default(),
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 1176293547u64),
@@ -5389,6 +5542,7 @@ mod tests {
             recon_canvas: None,
             inter: None,
             pending_recon: None,
+            scratch: Pd0Scratch::default(),
         };
         for (sq, ox, oy, cost) in [
             (64usize, 0usize, 0usize, 903280295u64),
