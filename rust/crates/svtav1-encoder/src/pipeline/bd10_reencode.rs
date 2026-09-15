@@ -556,6 +556,29 @@ fn bd10_reencode_node(
                 if d.inter.is_some() { 0 } else { d.intra_mode },
                 if d.inter.is_some() { 0 } else { d.uv_mode },
             );
+            // A `skip_mode` leaf is COMMITTED SYNTAX for a zero residual: the
+            // decoder reads `skip_mode` = `skip_txfm`, no txbs, and
+            // reconstructs the block as its prediction. The 8-bit mode
+            // decision guarantees all-zero levels at the u8 quantizer, but the
+            // 10-bit re-quantize below can resurrect a small residual the u8
+            // table dropped — and then the writer emits coefficient sections
+            // the decoder never reads: a tile desync, MEASURED as aomdec
+            // "Failed to decode tile data" on johnny 256x256 q40 p6 f3
+            // (2026-09-16), where the first diverging block was mi=(48,16), a
+            // skip_mode compound leaf with a nonzero 10-bit luma eob. Keep the
+            // committed zero residual: code nothing, reconstruct as the
+            // prediction.
+            if d.inter.as_deref().is_some_and(|ic| ic.skip_mode) {
+                d.qcoeffs = alloc::vec![0i32; bw * bh];
+                d.eob = 0;
+                coeff_neighbors.record(x, y, bw, bh, 0);
+                let wr = bw.min(stride.saturating_sub(x));
+                for r in 0..bh {
+                    let drow = (y + r) * stride + x;
+                    recon10[drow..drow + wr].copy_from_slice(&pred[r * bw..r * bw + wr]);
+                }
+                return;
+            }
             let src_off = y * src_stride + x;
             // C disables context updates at the faster presets. Otherwise
             // derive contexts from the native levels committed in decode order.
@@ -997,6 +1020,36 @@ fn bd10_reencode_chroma_plane(
     (out.qcoeff, out.eob, rec_u8)
 }
 
+/// The chroma half of the `skip_mode` contract — see the luma twin in
+/// `bd10_reencode_node`. The decoder reads no residual for the leaf, so the
+/// plane's reconstruction is its motion-compensated prediction and the coded
+/// state is all-zero; re-quantizing here would emit coefficients the decoder
+/// never reads.
+fn bd10_chroma_skip_plane(
+    recon10: &mut [u16],
+    cstride: usize,
+    cx: usize,
+    cy: usize,
+    cw: usize,
+    ch: usize,
+    inter_pred: &[u16],
+    bd: u8,
+) -> (alloc::vec::Vec<i32>, u16, alloc::vec::Vec<u8>) {
+    let cwr = cw.min(cstride.saturating_sub(cx));
+    for r in 0..ch {
+        let drow = (cy + r) * cstride + cx;
+        if drow + cwr <= recon10.len() {
+            recon10[drow..drow + cwr].copy_from_slice(&inter_pred[r * cw..r * cw + cwr]);
+        }
+    }
+    let shift = (bd - 8) as u32;
+    let rec_u8 = inter_pred[..cw * ch]
+        .iter()
+        .map(|&s| (s >> shift).min(255) as u8)
+        .collect();
+    (alloc::vec![0i32; cw * ch], 0, rec_u8)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn bd10_reencode_chroma_node(
     // C `seq_header.sb_mi_size` (16 SB64 / 32 SB128), task #91.
@@ -1133,54 +1186,81 @@ fn bd10_reencode_chroma_node(
                 }
                 None => (None, None),
             };
-            let (u_q, u_eob, u_rec) = bd10_reencode_chroma_plane(
-                recon10_u,
-                u_src10,
-                cstride,
-                cx,
-                cy,
-                cw,
-                ch,
-                d.uv_mode,
-                d.uv_angle_delta,
-                uv_tt,
-                &geom,
-                edge_filter,
-                mode_neighbors.filt_type_uv(x, y),
-                qt_u,
-                rdoq_level,
-                lambda,
-                allintra_rd_mult,
-                rates,
-                bd,
-                qm_uv[0],
-                cfl_u,
-                inter_u.as_deref(),
-            );
-            let (v_q, v_eob, v_rec) = bd10_reencode_chroma_plane(
-                recon10_v,
-                v_src10,
-                cstride,
-                cx,
-                cy,
-                cw,
-                ch,
-                d.uv_mode,
-                d.uv_angle_delta,
-                uv_tt,
-                &geom,
-                edge_filter,
-                mode_neighbors.filt_type_uv(x, y),
-                qt_v,
-                rdoq_level,
-                lambda,
-                allintra_rd_mult,
-                rates,
-                bd,
-                qm_uv[1],
-                cfl_v,
-                inter_v.as_deref(),
-            );
+            let forced_zero = d.inter.as_deref().is_some_and(|ic| ic.skip_mode);
+            let (u_q, u_eob, u_rec) = if forced_zero {
+                bd10_chroma_skip_plane(
+                    recon10_u,
+                    cstride,
+                    cx,
+                    cy,
+                    cw,
+                    ch,
+                    inter_u.as_deref().expect("a skip_mode leaf is inter"),
+                    bd,
+                )
+            } else {
+                bd10_reencode_chroma_plane(
+                    recon10_u,
+                    u_src10,
+                    cstride,
+                    cx,
+                    cy,
+                    cw,
+                    ch,
+                    d.uv_mode,
+                    d.uv_angle_delta,
+                    uv_tt,
+                    &geom,
+                    edge_filter,
+                    mode_neighbors.filt_type_uv(x, y),
+                    qt_u,
+                    rdoq_level,
+                    lambda,
+                    allintra_rd_mult,
+                    rates,
+                    bd,
+                    qm_uv[0],
+                    cfl_u,
+                    inter_u.as_deref(),
+                )
+            };
+            let (v_q, v_eob, v_rec) = if forced_zero {
+                bd10_chroma_skip_plane(
+                    recon10_v,
+                    cstride,
+                    cx,
+                    cy,
+                    cw,
+                    ch,
+                    inter_v.as_deref().expect("a skip_mode leaf is inter"),
+                    bd,
+                )
+            } else {
+                bd10_reencode_chroma_plane(
+                    recon10_v,
+                    v_src10,
+                    cstride,
+                    cx,
+                    cy,
+                    cw,
+                    ch,
+                    d.uv_mode,
+                    d.uv_angle_delta,
+                    uv_tt,
+                    &geom,
+                    edge_filter,
+                    mode_neighbors.filt_type_uv(x, y),
+                    qt_v,
+                    rdoq_level,
+                    lambda,
+                    allintra_rd_mult,
+                    rates,
+                    bd,
+                    qm_uv[1],
+                    cfl_v,
+                    inter_v.as_deref(),
+                )
+            };
             d.chroma_dec = Some((u_q, v_q, u_eob, v_eob, u_rec, v_rec));
             mode_neighbors.record(
                 x,
@@ -1384,76 +1464,88 @@ fn bd10_reencode_leaf_txs(
     d.txb_eobs.clear();
     let committed_types = core::mem::take(&mut d.txb_tx_types);
     d.txb_tx_types = committed_types.clone();
-    for txb in 0..txbs {
-        let (tx_x, tx_y) = ((txb % cols) * txw, (txb / cols) * txh);
-        let mut pred = alloc::vec![0u16; txw * txh];
-        match inter_pred.as_ref() {
-            Some(p) => {
-                for r in 0..txh {
-                    let src0 = (tx_y + r) * bw + tx_x;
-                    pred[r * txw..(r + 1) * txw].copy_from_slice(&p[src0..src0 + txw]);
+    // The `skip_mode` contract of the depth-0 arm, one level down: the decoder
+    // reads no txbs for the leaf, so no per-txb levels may be re-quantized
+    // into existence. Reconstruct the block as its (inter) prediction and
+    // leave the per-txb vectors empty — the writer reads them only for a
+    // non-skip block.
+    let forced_zero = d.inter.as_deref().is_some_and(|ic| ic.skip_mode);
+    if forced_zero {
+        dep_recon
+            .copy_from_slice(&inter_pred.as_deref().expect("a skip_mode leaf is inter")[..bw * bh]);
+        coeff_neighbors.record(x, y, bw, bh, 0);
+    } else {
+        for txb in 0..txbs {
+            let (tx_x, tx_y) = ((txb % cols) * txw, (txb / cols) * txh);
+            let mut pred = alloc::vec![0u16; txw * txh];
+            match inter_pred.as_ref() {
+                Some(p) => {
+                    for r in 0..txh {
+                        let src0 = (tx_y + r) * bw + tx_x;
+                        pred[r * txw..(r + 1) * txw].copy_from_slice(&p[src0..src0 + txw]);
+                    }
                 }
+                None => crate::leaf_funnel::predict_unit_overlay_hbd(
+                    recon10,
+                    stride,
+                    x,
+                    y,
+                    &dep_recon,
+                    bw,
+                    bh,
+                    tx_x,
+                    tx_y,
+                    txw,
+                    txh,
+                    d.intra_mode,
+                    d.angle_delta,
+                    d.filter_intra_mode,
+                    &geom,
+                    edge_filter,
+                    filt_type,
+                    &mut pred,
+                    bd,
+                ),
             }
-            None => crate::leaf_funnel::predict_unit_overlay_hbd(
-                recon10,
-                stride,
-                x,
-                y,
-                &dep_recon,
-                bw,
-                bh,
-                tx_x,
-                tx_y,
+            let (tsc, dsc) = if real_coeff_ctx {
+                coeff_neighbors.contexts(x + tx_x, y + tx_y, txw, txh)
+            } else {
+                (0, 0)
+            };
+            let tt = committed_types.get(txb).copied().unwrap_or(0) as usize;
+            let out = crate::leaf_funnel::tx_unit_hbd(
+                false,
+                src10,
+                src_stride,
+                (y + tx_y) * src_stride + x + tx_x,
+                &pred,
+                txw,
+                0,
                 txw,
                 txh,
-                d.intra_mode,
-                d.angle_delta,
-                d.filter_intra_mode,
-                &geom,
-                edge_filter,
-                filt_type,
-                &mut pred,
+                tt,
+                0,
+                tsc,
+                dsc,
+                qt,
+                rdoq_level,
+                lambda,
+                0,
+                allintra_rd_mult,
+                rates,
+                rdoq_level != 0,
                 bd,
-            ),
-        }
-        let (tsc, dsc) = if real_coeff_ctx {
-            coeff_neighbors.contexts(x + tx_x, y + tx_y, txw, txh)
-        } else {
-            (0, 0)
-        };
-        let tt = committed_types.get(txb).copied().unwrap_or(0) as usize;
-        let out = crate::leaf_funnel::tx_unit_hbd(
-            false,
-            src10,
-            src_stride,
-            (y + tx_y) * src_stride + x + tx_x,
-            &pred,
-            txw,
-            0,
-            txw,
-            txh,
-            tt,
-            0,
-            tsc,
-            dsc,
-            qt,
-            rdoq_level,
-            lambda,
-            0,
-            allintra_rd_mult,
-            rates,
-            rdoq_level != 0,
-            bd,
-            qm_level,
-            None,
-        );
-        coeff_neighbors.record(x + tx_x, y + tx_y, txw, txh, out.cul);
-        d.eob += out.eob;
-        d.txb_eobs.push(out.eob);
-        d.txb_qcoeffs.push(out.qcoeff);
-        for r in 0..txh {
-            let dst = (tx_y + r) * bw + tx_x;
-            dep_recon[dst..dst + txw].copy_from_slice(&out.recon[r * txw..r * txw + txw]);
+                qm_level,
+                None,
+            );
+            coeff_neighbors.record(x + tx_x, y + tx_y, txw, txh, out.cul);
+            d.eob += out.eob;
+            d.txb_eobs.push(out.eob);
+            d.txb_qcoeffs.push(out.qcoeff);
+            for r in 0..txh {
+                let dst = (tx_y + r) * bw + tx_x;
+                dep_recon[dst..dst + txw].copy_from_slice(&out.recon[r * txw..r * txw + txw]);
+            }
         }
     }
     // Straddle clip, exactly as the depth-0 arm does.
@@ -1463,5 +1555,140 @@ fn bd10_reencode_leaf_txs(
         if drow + bwr <= recon10.len() {
             recon10[drow..drow + bwr].copy_from_slice(&dep_recon[r * bw..r * bw + bwr]);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::partition::{BlockDecision, InterDecision, PartitionTree};
+    use crate::picture::{PaddedPlane, PaddedPlaneHbd, PaddedRef, PaddedRefHbd};
+    use svtav1_types::motion::{Mv, WarpedMotionParams};
+    use svtav1_types::prediction::PredictionMode;
+
+    /// A 32x32 leaf on a 32x32 frame, driven through the depth-0 arm. The
+    /// reference is flat so the prediction is flat; the source carries a hard
+    /// gradient so that any residual the re-quantize computes is nonzero.
+    /// `skip_mode` flips the committed-syntax contract between the two arms
+    /// exercised below.
+    fn run_leaf(skip_mode: bool) -> (BlockDecision, alloc::vec::Vec<u16>) {
+        const W: usize = 32;
+        const H: usize = 32;
+        let bd = 10u8;
+        let ref_y = alloc::vec![512u16; W * H];
+        let ref_c = alloc::vec![512u16; W * H / 4];
+        let pref = PaddedRef {
+            y: PaddedPlane::from_plane(&alloc::vec![128u8; W * H], W, H, 32),
+            uv: Some((
+                PaddedPlane::from_plane(&alloc::vec![128u8; W * H / 4], W / 2, H / 2, 16),
+                PaddedPlane::from_plane(&alloc::vec![128u8; W * H / 4], W / 2, H / 2, 16),
+            )),
+            hbd: Some(PaddedRefHbd {
+                y: PaddedPlaneHbd::from_plane(&ref_y, W, H, 32),
+                uv: Some((
+                    PaddedPlaneHbd::from_plane(&ref_c, W / 2, H / 2, 16),
+                    PaddedPlaneHbd::from_plane(&ref_c, W / 2, H / 2, 16),
+                )),
+            }),
+        };
+        let refs: [Option<&PaddedRef>; 8] = [Some(&pref); 8];
+        // Strong slope: src - pred reaches ~+500 at the far edge, which no
+        // quantizer can drop to zero.
+        let src10: alloc::vec::Vec<u16> = (0..W * H)
+            .map(|i| (512 + (i % W) * 24).min(1023) as u16)
+            .collect();
+        let inter = InterDecision {
+            mode: PredictionMode::NearestNearestMv,
+            ref_frame: [1, 7],
+            mv: [Mv { x: 0, y: 0 }, Mv { x: 0, y: 0 }],
+            drl_index: 0,
+            interp_filters: 0,
+            motion_mode: crate::port_entropy_inter::modes::MotionMode::SimpleTranslation,
+            num_proj_ref: 0,
+            overlappable_neighbors: 0,
+            skip_mode,
+            comp_group_idx: 0,
+            compound_idx: 1,
+            interinter_comp_type: 0,
+            wm_params: WarpedMotionParams::default(),
+            wm_params_l1: WarpedMotionParams::default(),
+        };
+        let mut tree = PartitionTree::Leaf(BlockDecision {
+            is_inter: true,
+            inter: Some(alloc::boxed::Box::new(inter)),
+            width: W as u16,
+            height: H as u16,
+            qcoeffs: alloc::vec![0i32; W * H],
+            ..Default::default()
+        });
+        let fc = crate::entropy::context::FrameContext::new_default();
+        let cfc = crate::entropy::coeff_c::CoeffFc::default_for_qindex(40);
+        let rates = crate::leaf_funnel::build_md_rates(&fc, &cfc);
+        let qt = crate::quant::build_quant_table_bd_sharp(40, bd, 0);
+        let mut recon10 = alloc::vec![128u16 << 2; W * H];
+        let mut cn = Bd10CoeffNeighbors::new(W, H).unwrap();
+        let mut mn = Bd10ModeNeighbors::new(W, H).unwrap();
+        bd10_reencode_node(
+            false,
+            16,
+            &mut tree,
+            0,
+            0,
+            &mut recon10,
+            W,
+            &src10,
+            W,
+            &qt,
+            0,
+            1 << 10,
+            false,
+            &rates,
+            true,
+            &mut cn,
+            false,
+            W,
+            H,
+            bd,
+            0,
+            crate::intra_edge::TileMi::whole_frame(W, H),
+            svtav1_types::partition::PartitionType::None,
+            Some(&refs),
+            &mut mn,
+        );
+        let PartitionTree::Leaf(d) = tree else {
+            panic!("a leaf in, a leaf out")
+        };
+        (d, recon10)
+    }
+
+    /// The witness for the measured tile desync: a `skip_mode` leaf's syntax
+    /// is committed to a zero residual, so the 10-bit re-encode must NOT
+    /// resurrect levels the decoder will never read. Before the forced-zero
+    /// arm this leaf re-quantized the slope into nonzero `eob` while the
+    /// writer still suppressed the coefficient sections — aomdec reported
+    /// "Failed to decode tile data" (johnny 256x256 q40 p6 f3, 2026-09-16).
+    #[test]
+    fn skip_mode_leaf_keeps_its_committed_zero_residual() {
+        // The control arm first: WITHOUT skip_mode the same leaf must
+        // re-quantize the slope into real levels, or the witness below could
+        // never observe a regression.
+        let (d, _) = run_leaf(false);
+        assert!(
+            d.eob > 0,
+            "control leaf must produce a residual — a witness that cannot \
+             fail is not a witness"
+        );
+        let (d, recon10) = run_leaf(true);
+        assert_eq!(d.eob, 0, "skip_mode leaf must stay residual-free");
+        assert!(
+            d.qcoeffs.iter().all(|&c| c == 0),
+            "skip_mode leaf must commit all-zero levels"
+        );
+        // And the reconstruction is the prediction itself — flat 512 from the
+        // flat reference — exactly what a decoder reconstructs for the block.
+        assert!(
+            recon10.iter().all(|&s| s == 512),
+            "skip_mode leaf reconstructs as its prediction"
+        );
     }
 }
