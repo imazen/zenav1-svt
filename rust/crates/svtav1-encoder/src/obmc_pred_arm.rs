@@ -411,11 +411,14 @@ pub(crate) fn predict_obmc_in_place_hbd(
         ObmcAdjacentHbd, ObmcPlanesHbd, build_obmc_inter_prediction_hbd,
     };
 
-    let has_uv = !u.is_empty();
-    let component_mask = if has_uv {
-        COMPONENT_LUMA | COMPONENT_CHROMA
-    } else {
-        COMPONENT_LUMA
+    let component_mask = match (y.is_empty(), u.is_empty()) {
+        // The bd10 post-pass runs chroma in a second walk that has no luma
+        // prediction buffer: an empty `y` selects the CHROMA arm of C's
+        // component mask (build_for_inter only, planes 1..3).
+        (true, false) => COMPONENT_CHROMA,
+        (false, false) => COMPONENT_LUMA | COMPONENT_CHROMA,
+        (false, true) => COMPONENT_LUMA,
+        (true, true) => return,
     };
     let mi_row = (org_y / 4) as i32;
     let mi_col = (org_x / 4) as i32;

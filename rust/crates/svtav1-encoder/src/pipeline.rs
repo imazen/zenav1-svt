@@ -11440,23 +11440,14 @@ fn bd10_tree_supported(
                     );
                 }
             }
-            let intra_ok = match d.inter.as_deref() {
-                Some(ic) => {
-                    // A SUB-8 inter leaf's chroma covers the parent 8x8 and C
-                    // stitches it from the covered cells' own MVs
-                    // (`inter_chroma_4xn_pred`); the post-pass rebuilds the mi
-                    // grid from the committed trees (`stamp_inter_mi_grid`)
-                    // and calls `predict_inter_chroma_sub8_hbd`, so sub-8 is
-                    // in-envelope here. OBMC is not — the blend reads the live
-                    // MD neighbour spans, which this pass does not carry.
-                    !matches!(
-                        ic.motion_mode,
-                        crate::port_entropy_inter::modes::MotionMode::ObmcCausal
-                    )
-                }
-                None => true,
-            };
-            intra_ok && !paletted
+            // Every committed inter leaf is in-envelope here: a SUB-8 leaf's
+            // chroma covers the parent 8x8 and C stitches it from the covered
+            // cells' own MVs (`inter_chroma_4xn_pred`), which the post-pass
+            // rebuilds via `stamp_inter_mi_grid` +
+            // `predict_inter_chroma_sub8_hbd`; OBMC reads the same grid
+            // through `obmc_nb_spans` and the blend is applied in place over
+            // the leaf's own base translation (`apply_obmc_hbd_postpass`).
+            !paletted
         }
         crate::partition::PartitionTree::Split { children, .. } => children
             .iter()

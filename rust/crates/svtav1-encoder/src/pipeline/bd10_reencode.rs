@@ -139,6 +139,15 @@ fn predict_inter_leaf_hbd_any(
         );
         return;
     }
+    // OBMC's BASE prediction is the block's own simple translation; the
+    // neighbour blend is applied by the caller in place (`ObmcCausal` itself
+    // reaches `predict_inter_leaf_hbd` nowhere — it asserts on it).
+    let mm_base = match ic.motion_mode {
+        crate::port_entropy_inter::modes::MotionMode::ObmcCausal => {
+            crate::port_entropy_inter::modes::MotionMode::SimpleTranslation
+        }
+        other => other,
+    };
     crate::inter_pred_arm::predict_inter_leaf_hbd(
         &hbd0.y,
         if want_chroma {
@@ -146,7 +155,7 @@ fn predict_inter_leaf_hbd_any(
         } else {
             None
         },
-        ic.motion_mode,
+        mm_base,
         crate::inter_pred_arm::inter_pred_uses_warp(
             ic.motion_mode,
             ic.mode as u8,
@@ -246,6 +255,29 @@ pub(super) fn bd10_reencode_luma(
     // header's intra edge filter off, which is why the frame gate rejected
     // every directional leaf when it is on. See [`Bd10ModeNeighbors`].
     let mut mode_neighbors = Bd10ModeNeighbors::new(w, h)?;
+    // The committed mode-info grid `obmc_nb_spans` reads for an OBMC leaf's
+    // neighbour motion — the same `MvpMiEntry` layout `commit_leaf` stamps
+    // during MD, rebuilt here from the committed trees. Built only when the
+    // frame can carry inter leaves at all.
+    let mi_stride = w / 4;
+    let mut mi_grid =
+        svtav1_types::try_vec![crate::intrabc_mvp::MvpMiEntry::default(); mi_stride * (h / 4)]?;
+    if inter_refs.is_some() {
+        for (sb_idx, tree) in all_trees.iter().enumerate() {
+            let sb_col = sb_idx % sb_cols;
+            let sb_row = sb_idx / sb_cols;
+            stamp_inter_mi_grid(
+                tree,
+                sb_col * sb_size,
+                sb_row * sb_size,
+                svtav1_types::partition::PartitionType::None as u8,
+                &mut mi_grid,
+                mi_stride,
+                w,
+                h,
+            );
+        }
+    }
     for (sb_idx, tree) in all_trees.iter_mut().enumerate() {
         let sb_col = sb_idx % sb_cols;
         let sb_row = sb_idx / sb_cols;
@@ -277,6 +309,8 @@ pub(super) fn bd10_reencode_luma(
             tile_mi,
             svtav1_types::partition::PartitionType::None,
             inter_refs,
+            &mi_grid,
+            mi_stride,
             &mut mode_neighbors,
         );
     }
@@ -317,6 +351,10 @@ fn bd10_reencode_node(
     // The DPB's 10-bit reference pictures, for the INTER arm. `None` on a key
     // frame, where no leaf can be inter.
     inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    // The committed mode-info grid the OBMC blend's neighbour walk reads
+    // (`stamp_inter_mi_grid`); `mi_stride` is `frame_w / 4`.
+    mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
+    mi_stride: usize,
     // The neighbour MODE grid `get_filt_type` reads. See [`Bd10ModeNeighbors`].
     mode_neighbors: &mut Bd10ModeNeighbors,
 ) {
@@ -441,6 +479,8 @@ fn bd10_reencode_node(
                     parent_partition,
                     sb_mi_size,
                     inter_refs,
+                    mi_grid,
+                    mi_stride,
                     mode_neighbors,
                 );
                 mode_neighbors.record(
@@ -514,6 +554,32 @@ fn bd10_reencode_node(
                         frame_h,
                         bd,
                         false,
+                        &mut pred,
+                        bw,
+                        &mut [],
+                        &mut [],
+                        0,
+                    );
+                    // An OBMC leaf's committed prediction is the base
+                    // translation with the neighbours' predictions blended
+                    // into the edges — the funnel applies
+                    // `predict_obmc_in_place_hbd` after the base call, and
+                    // this pass does the same from the reconstructed mi grid.
+                    apply_obmc_hbd_postpass(
+                        inter_refs.expect(
+                            "an inter leaf reached the bd10 re-encode on a frame with no DPB",
+                        ),
+                        mi_grid,
+                        mi_stride,
+                        ic,
+                        x,
+                        y,
+                        bw,
+                        bh,
+                        sb_mi_size * 4,
+                        frame_w,
+                        frame_h,
+                        bd,
                         &mut pred,
                         bw,
                         &mut [],
@@ -707,6 +773,8 @@ fn bd10_reencode_node(
                         _ => svtav1_types::partition::PartitionType::None,
                     },
                     inter_refs,
+                    mi_grid,
+                    mi_stride,
                     mode_neighbors,
                 );
             };
@@ -872,6 +940,76 @@ fn stamp_inter_mi_grid(
             }
         }
     }
+}
+
+/// The post-pass twin of the funnel's in-place OBMC blend. The committed
+/// `mi_grid` (`stamp_inter_mi_grid`) supplies the neighbour spans
+/// `obmc_nb_spans` reads, and the neighbours' 10-bit predictions are rebuilt
+/// from the same DPB `hbd` twins the block's own base prediction used — so
+/// the blend is the funnel's `predict_obmc_in_place_hbd` verbatim, driven by
+/// reconstructed (not live-MD) neighbour state. An empty `u` blends luma
+/// only (the luma walk); an empty `y` blends chroma only (the chroma walk,
+/// which has no luma prediction buffer to write into).
+#[allow(clippy::too_many_arguments)]
+fn apply_obmc_hbd_postpass(
+    inter_refs: &[Option<&crate::picture::PaddedRef>; 8],
+    mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
+    mi_stride: usize,
+    ic: &crate::partition::InterDecision,
+    x: usize,
+    y: usize,
+    bw: usize,
+    bh: usize,
+    sb_size: usize,
+    frame_w: usize,
+    frame_h: usize,
+    bd: u8,
+    y_out: &mut [u16],
+    y_stride: usize,
+    u_out: &mut [u16],
+    v_out: &mut [u16],
+    uv_stride: usize,
+) {
+    if ic.motion_mode != crate::port_entropy_inter::modes::MotionMode::ObmcCausal {
+        return;
+    }
+    let spans = crate::inter_md_arm::obmc_nb_spans(
+        mi_grid,
+        mi_stride as i32,
+        (frame_h / 4) as i32,
+        (frame_w / 4) as i32,
+        x,
+        y,
+        bw,
+        bh,
+    );
+    crate::obmc_pred_arm::predict_obmc_in_place_hbd(
+        &crate::obmc_pred_arm::ObmcCtx {
+            padded_by_ref: inter_refs,
+            above_row: &spans.above[..spans.n_above],
+            left_col: &spans.left[..spans.n_left],
+            up_available: y > 0,
+            left_available: x > 0,
+            mi_cols: frame_w / 4,
+            mi_rows: frame_h / 4,
+            sb_size,
+            frame_w,
+            frame_h,
+            edges: crate::inter_pred_arm::block_mb_edges(x, y, bw, bh, frame_w, frame_h),
+        },
+        svtav1_types::block::BlockSize::from_u8(crate::leaf_funnel::c_bsize_index(bw, bh) as u8)
+            .expect("a committed inter leaf must have a real BlockSize"),
+        x,
+        y,
+        bw,
+        bh,
+        bd,
+        y_out,
+        y_stride,
+        u_out,
+        v_out,
+        uv_stride,
+    );
 }
 
 /// bd10 CHROMA re-encode (task #94). The luma re-encode (`bd10_reencode_luma`)
@@ -1412,6 +1550,32 @@ fn bd10_reencode_chroma_node(
                             &mut v,
                             cw,
                         );
+                    } else {
+                        // OBMC's chroma blend, matching the luma walk's.
+                        // `motion_mode` is only signaled for >=8x8 blocks, so
+                        // the sub-8 arm above can never be an OBMC leaf.
+                        apply_obmc_hbd_postpass(
+                            inter_refs.expect(
+                                "an inter leaf reached the bd10 chroma re-encode on a frame \
+                                 with no DPB",
+                            ),
+                            mi_grid,
+                            mi_stride,
+                            ic,
+                            x,
+                            y,
+                            bw,
+                            bh,
+                            sb_mi_size * 4,
+                            cframe_w * 2,
+                            cframe_h * 2,
+                            bd,
+                            &mut [],
+                            0,
+                            &mut u,
+                            &mut v,
+                            cw,
+                        );
                     }
                     (Some(u), Some(v))
                 }
@@ -1652,6 +1816,10 @@ fn bd10_reencode_leaf_txs(
     parent_partition: svtav1_types::partition::PartitionType,
     sb_mi_size: usize,
     inter_refs: Option<&[Option<&crate::picture::PaddedRef>; 8]>,
+    // The committed mode-info grid the OBMC blend's neighbour walk reads;
+    // `mi_stride` is `frame_w / 4`.
+    mi_grid: &[crate::intrabc_mvp::MvpMiEntry],
+    mi_stride: usize,
     mode_neighbors: &Bd10ModeNeighbors,
 ) {
     let bw = d.width as usize;
@@ -1675,9 +1843,10 @@ fn bd10_reencode_leaf_txs(
     // The INTER whole-block prediction, built once (C does the same).
     let inter_pred: Option<alloc::vec::Vec<u16>> = d.inter.as_deref().map(|ic| {
         let mut p = alloc::vec![0u16; bw * bh];
+        let refs = inter_refs
+            .expect("an inter leaf reached the bd10 TXS re-encode on a frame with no DPB");
         predict_inter_leaf_hbd_any(
-            inter_refs
-                .expect("an inter leaf reached the bd10 TXS re-encode on a frame with no DPB"),
+            refs,
             ic,
             x,
             y,
@@ -1688,6 +1857,27 @@ fn bd10_reencode_leaf_txs(
             frame_h,
             bd,
             false,
+            &mut p,
+            bw,
+            &mut [],
+            &mut [],
+            0,
+        );
+        // OBMC blend on the whole-block prediction, in place — the same
+        // neighbour state the depth-0 arm reads (the reconstructed mi grid).
+        apply_obmc_hbd_postpass(
+            refs,
+            mi_grid,
+            mi_stride,
+            ic,
+            x,
+            y,
+            bw,
+            bh,
+            sb_mi_size * 4,
+            frame_w,
+            frame_h,
+            bd,
             &mut p,
             bw,
             &mut [],
@@ -1867,6 +2057,9 @@ mod tests {
         let mut recon10 = alloc::vec![128u16 << 2; W * H];
         let mut cn = Bd10CoeffNeighbors::new(W, H).unwrap();
         let mut mn = Bd10ModeNeighbors::new(W, H).unwrap();
+        // The leaf is not OBMC, so the grid's contents are never read; it
+        // only has to be shaped.
+        let mi_grid = alloc::vec![crate::intrabc_mvp::MvpMiEntry::default(); (W / 4) * (H / 4)];
         bd10_reencode_node(
             false,
             16,
@@ -1892,6 +2085,8 @@ mod tests {
             crate::intra_edge::TileMi::whole_frame(W, H),
             svtav1_types::partition::PartitionType::None,
             Some(&refs),
+            &mi_grid,
+            W / 4,
             &mut mn,
         );
         let PartitionTree::Leaf(d) = tree else {
@@ -2001,5 +2196,178 @@ mod tests {
         assert_eq!(e.ref_frame[0], 2);
         assert_eq!((e.mv[0].x, e.mv[0].y), (-8, 0));
         assert_eq!(e.interp_filters, 0x20002);
+    }
+
+    /// The post-pass OBMC arm (`apply_obmc_hbd_postpass`): an `ObmcCausal`
+    /// leaf's neighbour spans come out of the committed-tree mi grid, the
+    /// neighbours' 10-bit predictions are rebuilt from the DPB `hbd` twins,
+    /// and the blend rewrites the block's edge band in place — exactly the
+    /// funnel's `predict_obmc_in_place_hbd` driven by reconstructed state.
+    /// The witness is a `skip_mode` leaf (committed zero residual ⇒ recon IS
+    /// the prediction): with an overlappable inter neighbour above carrying
+    /// different motion on a non-flat reference, the blended top band must
+    /// differ from the pure base translation while the interior is untouched.
+    #[test]
+    fn obmc_leaf_blends_edges_from_the_committed_grid() {
+        const W: usize = 16;
+        const H: usize = 16;
+        let bd = 10u8;
+        // A ramp so the neighbour's displaced prediction differs from the
+        // block's own — the blend is only observable when the two differ.
+        let ref_y: alloc::vec::Vec<u16> = (0..W * H)
+            .map(|i| (((i % W) * 29 + (i / W) * 53) & 1023) as u16)
+            .collect();
+        let ref_c = alloc::vec![512u16; W * H / 4];
+        let pref = PaddedRef {
+            y: PaddedPlane::from_plane(&alloc::vec![128u8; W * H], W, H, 32),
+            uv: Some((
+                PaddedPlane::from_plane(&alloc::vec![128u8; W * H / 4], W / 2, H / 2, 16),
+                PaddedPlane::from_plane(&alloc::vec![128u8; W * H / 4], W / 2, H / 2, 16),
+            )),
+            hbd: Some(PaddedRefHbd {
+                y: PaddedPlaneHbd::from_plane(&ref_y, W, H, 32),
+                uv: Some((
+                    PaddedPlaneHbd::from_plane(&ref_c, W / 2, H / 2, 16),
+                    PaddedPlaneHbd::from_plane(&ref_c, W / 2, H / 2, 16),
+                )),
+            }),
+        };
+        let refs: [Option<&PaddedRef>; 8] = [Some(&pref); 8];
+        // The committed tree: a 16x8 inter leaf on top carrying DIFFERENT
+        // motion (mv.y = 16/8 = 2 px), the 16x8 OBMC leaf below it.
+        let leaf = |motion_mode, mv: Mv| {
+            PartitionTree::Leaf(BlockDecision {
+                is_inter: true,
+                inter: Some(alloc::boxed::Box::new(InterDecision {
+                    mode: PredictionMode::NearestMv,
+                    ref_frame: [1, -1],
+                    mv: [mv, Mv::default()],
+                    drl_index: 0,
+                    interp_filters: 0,
+                    motion_mode,
+                    num_proj_ref: 0,
+                    overlappable_neighbors: 0,
+                    skip_mode: true,
+                    comp_group_idx: 0,
+                    compound_idx: 1,
+                    interinter_comp_type: 0,
+                    wm_params: WarpedMotionParams::default(),
+                    wm_params_l1: WarpedMotionParams::default(),
+                })),
+                width: 16,
+                height: 8,
+                ..Default::default()
+            })
+        };
+        let tree = PartitionTree::Split {
+            partition_type: crate::partition::PartitionType::Horz,
+            width: W as u16,
+            height: H as u16,
+            children: alloc::vec![
+                leaf(
+                    crate::port_entropy_inter::modes::MotionMode::SimpleTranslation,
+                    Mv { x: 0, y: 16 },
+                ),
+                leaf(
+                    crate::port_entropy_inter::modes::MotionMode::ObmcCausal,
+                    Mv { x: 0, y: 0 },
+                ),
+            ],
+        };
+        let mi_stride = W / 4;
+        let mut mi_grid =
+            alloc::vec![crate::intrabc_mvp::MvpMiEntry::default(); mi_stride * (H / 4)];
+        stamp_inter_mi_grid(
+            &tree,
+            0,
+            0,
+            svtav1_types::partition::PartitionType::Horz as u8,
+            &mut mi_grid,
+            mi_stride,
+            W,
+            H,
+        );
+        // The skip_mode contract makes the walk's recon equal to the OBMC
+        // prediction: the OBMC leaf's base translation first, then the blend.
+        let ic = match &tree {
+            PartitionTree::Split { children, .. } => match &children[1] {
+                PartitionTree::Leaf(d) => d.inter.as_deref().unwrap(),
+                _ => panic!("a leaf in"),
+            },
+            _ => panic!("a split in"),
+        };
+        let mut base = alloc::vec![0u16; 16 * 8];
+        predict_inter_leaf_hbd_any(
+            &refs,
+            ic,
+            0,
+            8,
+            16,
+            8,
+            64,
+            W,
+            H,
+            bd,
+            false,
+            &mut base,
+            16,
+            &mut [],
+            &mut [],
+            0,
+        );
+        let mut blended = base.clone();
+        apply_obmc_hbd_postpass(
+            &refs,
+            &mi_grid,
+            mi_stride,
+            ic,
+            0,
+            8,
+            16,
+            8,
+            64,
+            W,
+            H,
+            bd,
+            &mut blended,
+            16,
+            &mut [],
+            &mut [],
+            0,
+        );
+        // The above-blend band is `min(bh,64)/2 = 4` rows deep.
+        assert_ne!(
+            blended[..4 * 16],
+            base[..4 * 16],
+            "the top 4 rows must carry the neighbour's blended motion"
+        );
+        assert_eq!(
+            blended[4 * 16..],
+            base[4 * 16..],
+            "rows below the overlap band keep the block's own prediction"
+        );
+        // And the chroma-only arm (the chroma walk's call shape — no luma
+        // buffer) must not panic and must not touch luma.
+        let mut u = alloc::vec![512u16; 8 * 4];
+        let mut v = alloc::vec![512u16; 8 * 4];
+        apply_obmc_hbd_postpass(
+            &refs,
+            &mi_grid,
+            mi_stride,
+            ic,
+            0,
+            8,
+            16,
+            8,
+            64,
+            W,
+            H,
+            bd,
+            &mut [],
+            0,
+            &mut u,
+            &mut v,
+            8,
+        );
     }
 }
