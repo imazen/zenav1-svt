@@ -117,22 +117,30 @@ video while asserting only that two encoders agree a repeated frame is a skip.
 `tools/mk_video_assets.py` now decimates duplicates and scores motion as the
 **minimum** over consecutive pairs, never the mean.
 
-## Multi-frame video: SHIPPED in a measured envelope, gated against a decoder (2026-09-11)
+## Multi-frame video: SHIPPED in a measured envelope, gated against a decoder (re-measured 2026-09-15)
 
-**The envelope is 8-bit 4:2:0, presets 6..13.** Inside it,
-`tools/video_selfcheck_gate.sh` is 144 of 144 cells (six public-domain derf
-clips x qp {20,40,55} x presets 6..13) whose every frame of an 8-frame encode
-reconstructs byte-identically to `aomdec`. Outside it an inter frame is
-refused, not approximated, and each refusal carries its measurement:
+**The envelope is 8-bit 4:2:0, presets -1..13.** Inside it,
+`tools/video_selfcheck_gate.sh` is 270 of 270 cells (six public-domain derf
+clips x qp {20,40,55} x presets -1..13) whose every frame of an 8-frame encode
+reconstructs byte-identically to `aomdec`; presets -1..5 are also clean at
+128x128 (126/126). The 2026-09-11 preset floor came off when the residual
+low-preset drift was traced to the OBMC neighbour-prediction cache serving
+one frame's predictions to the next (`NeighbourKey` carried no frame
+identity) — `obmc_pred_arm::begin_leaf` now resets it per `evaluate_leaf`,
+matching C's per-`md_encode_block` flag reset. The "spatial-only stack
+defect" the 2026-09-11 measurement attributed to `SVTAV1_MFMV_OFF` was that
+same cache; a 2026-09-15 MFMV_OFF re-sweep of presets -1..5 is 126/126 clean.
+
+Outside the envelope an inter frame is refused, not approximated, and each
+refusal carries its measurement:
 
 | Refused | What was measured, 2026-09-11 |
 |---|---|
-| preset < 6 | preset 0 loses two of 18 cells, presets 1 and 2 lose two and one, preset 5 loses one. `SVTAV1_MFMV_OFF` returns every failing cell to 8/8, naming the temporal MV field — but signalling `use_ref_frame_mvs = 0` scores 151 of 163 against 156 with the field on, so the spatial-only stack has a second defect. Neither arm is shippable there |
 | bit depth > 8 | three clips x qp {20,40} x presets {6,8,10} x 4 frames: 8 of 18 cells reconstruct as `aomdec` does, the rest drifting from frame 1, 2 or 3. `bd10_video_gate.sh` does NOT cover this — its decode leg asserts only that the stream parses |
 | monochrome | no inter gate in this repo is monochrome, and a mono inter frame previously produced a stream both `aomdec` and `dav1d` rejected |
 
-`SVTAV1_INTER_EXPERIMENTAL` lifts the preset and bit-depth floors for the
-harnesses that must reach a low-preset tool. It is not a feature flag.
+`SVTAV1_INTER_EXPERIMENTAL` lifts the bit-depth floor for the harnesses that
+must measure a 10-bit inter frame. It is not a feature flag.
 
 ## How the envelope came to be (2026-09-11)
 

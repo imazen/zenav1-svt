@@ -20,13 +20,22 @@
 # is exactly where every earlier multi-frame defect appeared. Eight frames is
 # the shortest encode that gives the field six live frames.
 #
-# MEASURED 2026-09-11: 18 of 18 cells, ALL 8 frames byte-identical, with the
-# temporal field ON. That supersedes benchmarks/video_mfmv_isolation_2026-09-10.meta,
-# which recorded four clips drifting and two failing to decode; the defect it
-# isolated was `sb64_sq_no4xn_geom` being set from `sb_size == 64` alone, so the
-# SIMPLIFIED MFMV block walk ran on rectangular blocks too and used `n4_w` for
-# both extents -- half the rows of a 16x32 never contributed a temporal
-# candidate. `SVTAV1_MFMV_OFF` remains available to re-isolate the field.
+# MEASURED 2026-09-11: 18 of 18 cells at presets 6..13, ALL 8 frames
+# byte-identical, with the temporal field ON. That superseded
+# benchmarks/video_mfmv_isolation_2026-09-10.meta, which recorded four clips
+# drifting and two failing to decode; the defect it isolated was
+# `sb64_sq_no4xn_geom` being set from `sb_size == 64` alone, so the SIMPLIFIED
+# MFMV block walk ran on rectangular blocks too and used `n4_w` for both
+# extents -- half the rows of a 16x32 never contributed a temporal candidate.
+# `SVTAV1_MFMV_OFF` remains available to re-isolate the field.
+#
+# RE-SWEPT 2026-09-15 down the WHOLE ladder: presets -1..13 all pass at
+# 256x256, and presets -1..5 pass at 128x128 as well. The residual low-preset
+# drift the 2026-09-11 run recorded (and attributed half-wrongly to the
+# spatial MV stack) was the OBMC neighbour-prediction cache serving one
+# frame's predictions to the next; `obmc_pred_arm::begin_leaf` now resets it
+# per leaf eval, the way `md_encode_block` resets C's ready flags. The preset
+# floor in `pipeline.rs` came off in the same change.
 #
 # ASSETS are the same public-domain Derf clips `real_video_inter_gate.sh` uses
 # and are fetched the same way; there is no silent skip.
@@ -39,7 +48,7 @@ RUN="$HERE/identity_run"
 ASSETS="${ZENAV1_VIDEO_ASSETS:-${ZENAV1_CORPUS_ROOT:-$HOME/work/zen}/video/pd-derf-720p}"
 SIZE="${VSG_SIZE:-256x256}"
 FRAMES="${VSG_FRAMES:-8}"
-PRESETS="${VSG_PRESETS:-6 7 8 9 10 11 12 13}"
+PRESETS="${VSG_PRESETS:--1 0 1 2 3 4 5 6 7 8 9 10 11 12 13}"
 W=${SIZE%x*}; H=${SIZE#*x}
 
 AOMDEC="${AOMDEC:-aomdec}"

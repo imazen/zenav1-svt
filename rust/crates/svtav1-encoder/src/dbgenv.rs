@@ -110,43 +110,45 @@ presence_flags! {
     bd10_postpass => "SVTAV1_BD10_POSTPASS",
     /// `SVTAV1_LAMBDA_DBG`: per-superblock lambda derivation dump.
     lambda_dbg_set => "SVTAV1_LAMBDA_DBG",
-    /// `SVTAV1_INTER_EXPERIMENTAL`: lift the LOW-PRESET floor on inter frames
-    /// (`pipeline.rs`), so the harness can drive a tool that only exists below
-    /// preset 6 — global motion, the OBMC census, the low-preset arms of the
-    /// warped-motion gate.
+    /// `SVTAV1_INTER_EXPERIMENTAL`: lift the BIT-DEPTH floor on inter frames
+    /// (`pipeline.rs`), so the harness can measure a 10-bit inter frame that
+    /// the shipped path refuses.
     ///
-    /// ITS MEANING CHANGED ON 2026-09-11 and the old meaning is gone. It used
-    /// to lift a blanket refusal of EVERY inter frame; inter frames now ship,
-    /// and what is left behind this variable is a measured correctness floor.
-    /// `SVTAV1_INTER_CHAIN_EXPERIMENTAL` was deleted outright in the same
-    /// change, because the refusal it lifted no longer exists.
+    /// ITS MEANING CHANGED TWICE. It used to lift a blanket refusal of EVERY
+    /// inter frame; on 2026-09-11 that became a preset floor while presets
+    /// below 6 still drifted, and on 2026-09-15 the preset arm came off —
+    /// the OBMC neighbour-prediction cache was serving one frame's
+    /// predictions to the next (no frame identity in `NeighbourKey`), and
+    /// once `obmc_pred_arm::begin_leaf` reset it per `evaluate_leaf`, the
+    /// whole ladder decoded clean. What remains behind this variable is the
+    /// 10-bit inter measurement.
     ///
-    /// MEASURED 2026-09-11, encoder recon vs `aomdec`, six public-domain derf
-    /// clips x qp {20,40,55} x 8 frames at 256x256: presets 6 through 13 are
-    /// 144 of 144 cells decoding all 8 frames, while preset 0 loses two cells,
-    /// presets 1 and 2 lose two and one, and preset 5 loses one. The defect is
-    /// the TEMPORAL motion-vector field -- `SVTAV1_MFMV_OFF=1` returns every
-    /// failing cell to 8 of 8 -- but turning the field off is not the fix: it
-    /// is 151 of 163 across presets 0..10 against 156 with the field on,
-    /// because the spatial-only stack has a defect of its own on other
-    /// content. Two defects, and neither arm is shippable below preset 6.
+    /// MEASURED 2026-09-15, encoder recon vs `aomdec`, six public-domain derf
+    /// clips x qp {20,40,55} x 8 frames: presets -1..6 and 13 are 162 of 162
+    /// cells at 256x256 and presets -1..5 are 126 of 126 cells at 128x128
+    /// with the temporal field ON, every frame byte-identical (presets 7..12
+    /// were not re-swept — OBMC is off there and the standing
+    /// video_selfcheck_gate claim covers them). The earlier 2026-09-11 text
+    /// attributing the residual to the temporal MV field and a second
+    /// spatial-stack defect was wrong about the second arm: the
+    /// `SVTAV1_MFMV_OFF` failures were the same stale OBMC cache.
     ///
-    /// **Not a feature flag.** A stream produced with it lifted below preset 6
-    /// may be one a decoder rejects. Delete it once
-    /// `tools/video_selfcheck_gate.sh` passes with `VSG_PRESET` swept over the
-    /// whole ladder.
+    /// **Not a feature flag.** A 10-bit stream produced with it lifted may be
+    /// one a decoder reconstructs differently — the bd10 measurement in the
+    /// refusal text stands.
     inter_experimental => "SVTAV1_INTER_EXPERIMENTAL",
     /// `SVTAV1_MFMV_OFF`: build the ref-MV stack from SPATIAL candidates only,
     /// and signal `use_ref_frame_mvs = 0` to match, so encoder and decoder
     /// agree.
     ///
-    /// This is the ISOLATION SWITCH for the temporal motion-vector field, and
-    /// it is what identified that field as the whole of the remaining
-    /// multi-frame defect. MEASURED 2026-09-10 over the six public-domain
-    /// clips at 256x256 p6, 8 frames: with MFMV on, four clips drift from the
-    /// encoder's own reconstruction and two stop decoding; with it off,
-    /// **15 of 16 clip x qp cells reconstruct byte-identically to aomdec for
-    /// every frame** (benchmarks/video_mfmv_isolation_2026-09-10.meta).
+    /// This is the ISOLATION SWITCH for the temporal motion-vector field. It
+    /// did its job on 2026-09-10/11 by separating "the temporal MV field is
+    /// wrong" from "something else is wrong"; both halves have since been
+    /// fixed — the field itself (`sb64_sq_no4xn_geom` driving the simplified
+    /// walk on rectangular blocks) and, on 2026-09-15, the residual low-preset
+    /// drift, which turned out to be the OBMC neighbour-prediction cache
+    /// holding one frame's predictions into the next, NOT the spatial stack
+    /// the 2026-09-11 text blamed.
     ///
     /// Both halves must move together or the experiment is worthless: gating
     /// only the header desynchronises from frame 0, because the port builds
@@ -155,8 +157,7 @@ presence_flags! {
     ///
     /// **Not a feature flag.** C signals `use_ref_frame_mvs = 1` here, so a
     /// run with this set is NOT byte-comparable with C and must never be
-    /// presented as a parity result. It exists to separate "the temporal MV
-    /// field is wrong" from "something else is wrong".
+    /// presented as a parity result.
     mfmv_off => "SVTAV1_MFMV_OFF",
     /// `SVTAV1_GM_EXPERIMENTAL`: lift the GLOBAL-MOTION refusal at presets
     /// 0..4 so the harness can MEASURE what an inter frame there emits.

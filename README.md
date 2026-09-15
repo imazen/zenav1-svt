@@ -96,15 +96,15 @@ CAPABILITY (debt) and CONTRACT (permanent caller misuse).
 | Tiles, SB128, lossless | **Validated** | `tile_gate.sh`, `sb128_gate.sh`, `lossless_gate.sh` |
 | Superres | **Partial** | 8-bit only — the u16 source downscale is unported; `superres_gate.sh` |
 | Film grain | **Supported** | 8/10-bit 4:2:0 only (C's own limit) |
-| Animated AVIF, inter-coded | **Validated** | `AnimationOptions::keyframes` defaults to one key frame every 120 pictures; only key frames are marked `stss`. MEASURED on eight 256x256 frames of `fourpeople` at quality 70: 58,823 B all-intra against 21,104 B as one closed GOP. Monochrome, lossless, 10-bit and sub-preset-6 animations fall back to all-intra rather than failing |
+| Animated AVIF, inter-coded | **Validated** | `AnimationOptions::keyframes` defaults to one key frame every 120 pictures; only key frames are marked `stss`. MEASURED on eight 256x256 frames of `fourpeople` at quality 70: 58,823 B all-intra against 21,104 B as one closed GOP. Monochrome, lossless and 10-bit animations fall back to all-intra rather than failing |
 | All-intra animated AVIF | **Validated** | CI `animation` job with a PINNED decoder (libavif 1.3.0): 9 in-module tests plus `tests/animation_e2e.rs`, which re-parses the written file with an independent container parser and checks frame count, per-frame durations, the alpha-track decision and that frames differ |
 | Monochrome / alpha | **Supported** | Rust extension beyond C's envelope |
 
 ### Inter / video — experimental, and gated behind `SvtParity`
 
-**Inter frames ship, in a measured envelope: 8-bit 4:2:0, presets 6..13.**
+**Inter frames ship, in a measured envelope: 8-bit 4:2:0, presets -1..13.**
 `EncodePipeline`'s 4:2:0 entry points encode video for every caller inside it.
-Outside it — preset below 6, bit depth above 8, monochrome — an inter frame is
+Outside it — bit depth above 8 or monochrome — an inter frame is
 REFUSED, and each refusal carries the measurement that drew the line.
 
 **The guarantee is different from the still one, and the difference is the
@@ -116,8 +116,7 @@ content. Both claims are measured below; neither is inferred from the other.
 
 | Feature | Status | Evidence / limit |
 |---|---|---|
-| Inter frame coding, low-delay P, 8-bit, presets 6..13 | **Validated** | `video_selfcheck_gate.sh` — 144/144 cells (six derf clips x qp {20,40,55} x presets 6..13), all 8 frames of each byte-identical to `aomdec`'s reconstruction |
-| Inter frames below preset 6 | **Not supported** | Refused. MEASURED 2026-09-11: preset 0 loses two of 18 cells, presets 1 and 2 lose two and one, preset 5 loses one. `SVTAV1_MFMV_OFF` returns every failing cell to 8/8 — but turning the temporal field off is not the fix either (151 of 163 against 156), so there are two defects, not one |
+| Inter frame coding, low-delay P, 8-bit, presets -1..13 | **Validated** | `video_selfcheck_gate.sh` — 270/270 cells (six derf clips x qp {20,40,55} x presets -1..13), all 8 frames of each byte-identical to `aomdec`'s reconstruction; presets -1..5 also clean at 128x128. The preset-6 floor came off on 2026-09-15 when the OBMC neighbour-prediction stale-cache fix swept the ladder — the drift the 2026-09-11 measurement recorded below preset 6 was that cache serving one frame's neighbour predictions to the next |
 | 10-bit inter video | **Not supported** | Refused. MEASURED 2026-09-11: 8 of 18 cells reconstruct as `aomdec` does; the rest drift from frame 1, 2 or 3. `bd10_video_gate.sh` 24/24 asserts only that the stream PARSES — see its header |
 | Byte-identity to C on inter frames | **Partial** | `inter_byte_gate.sh` 108/108 on its curated grid. On the 96-cell frontier grid at frames=4 (MEASURED 2026-09-11): f0 95, f1 95, f2 60, f3 58 identical. The chain gap concentrates in 72x72 (a partial superblock — 17 of 24 differ at f2) and `gradient` content (19 of 24); `uniform` is 24/24 on every frame |
 | Real-video inter (derf clips) | **Validated** | `real_video_inter_gate.sh` 24/24 against a pinned per-cell table |
@@ -128,7 +127,8 @@ content. Both claims are measured below; neither is inferred from the other.
 | Interpolation-filter search | **Validated** | `ifs_join_gate.sh` |
 | Motion estimation / MVP | **Validated** | `inter_me_join_gate.sh`, `fctx_gate.sh` |
 | Sub-8 inter chroma (`inter_chroma_4xn_pred`) | **Supported** | Ported 2026-09-10; covered by the inter recon gates, no isolating gate |
-| Compound / bipred / inter-intra | **Not supported** | `allow_bipred` suppressed — `inter_pred_arm` has no two-reference path. Masked-compound and inter-intra DSP are ported and unwired |
+| Compound / bipred | **Validated** | two-reference prediction wired end to end (`predict_inter_yuv_compound`, `allow_bipred`, skip-mode signalling); compound blocks code where C enables them and the video gates' decoder comparison covers them |
+| Masked compound (diffwtd/wedge) / inter-intra | **Not supported** | DSP kernels ported; the search hooks are no-ops, so those candidates are strictly dominated in RD and never coded |
 | Hierarchical (random-access) GOP | **Not supported** | `generate_rps_info` translates 4 of C's 8 branches; `port_picstruct_ra` ported, not connected to the reference-buffer table |
 | Temporal filtering | **Not supported** | `port_temporal_filtering.rs` ported (78 of 80 items), becomes live only with an RA GOP |
 | Scene change / adaptive GOP | **Not supported** | `port_picstruct.rs`, ~85 of 119 items unwired |

@@ -41,11 +41,11 @@ detail, and they are regenerated or gated rather than narrated.
 - **Stills are the byte-identical surface** — 8-bit `identity_full_8bit.sh`
   1100/1100, 10-bit `bd10_photo_gate.sh` 191/191 and `bd10_nonflat_gate.sh`
   309/309.
-- **Video ships in a measured envelope: 8-bit 4:2:0, presets 6..13**, verified
+- **Video ships in a measured envelope: 8-bit 4:2:0, presets -1..13**, verified
   against a DECODER rather than against C's bytes
-  (`tools/video_selfcheck_gate.sh`, 144/144 cells). Below preset 6, above 8
-  bits, and monochrome are REFUSED, each with its measurement in the refusal
-  text. Do not report video as either "working" or "missing".
+  (`tools/video_selfcheck_gate.sh`, 270/270 cells). Above 8 bits and monochrome
+  are REFUSED, each with its measurement in the refusal text. Do not report
+  video as either "working" or "missing".
 - **`hbd_md` is the open question behind 10-bit video.** Two independent
   measurements point at it: 10-bit STILLS on the same content are 16/16
   identical, and the bd10 chroma-recon bisect found C's chroma recon matching
@@ -56,10 +56,10 @@ detail, and they are regenerated or gated rather than narrated.
   C and must not be "fixed".
 - Public streaming `Encoder::send_frame` / `receive_packet` are an unimplemented
   scaffold and say so; use `EncodePipeline` or `AvifEncoder`.
-- Open work: hierarchical (random-access) GOPs, compound/bipred and inter-intra,
-  temporal filtering, VBR/CBR rate control, and the two inter defects below
-  preset 6. The MSRV floor is 1.98, matching what the aarch64 dotprod intrinsics
-  (`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require.
+- Open work: hierarchical (random-access) GOPs, masked compound and
+  inter-intra search, temporal filtering, VBR/CBR rate control, and 10-bit
+  inter video. The MSRV floor is 1.98, matching what the aarch64 dotprod
+  intrinsics (`vdotq_u32`/`vdot_u32`, me_sad.rs:163/:169) actually require.
 
 ## Correctness and porting
 

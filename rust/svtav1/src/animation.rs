@@ -160,13 +160,15 @@ impl AvifEncoder {
     /// inter frame on that arm, because every inter gate in this repo is
     /// 4:2:0.
     ///
-    /// BELOW PRESET 6, and at any depth above 8, a colour track is all-intra
-    /// too. `encode_frame_impl` refuses inter frames in both cases, and for
-    /// the same kind of reason: the port's reconstruction disagrees with a
-    /// decoder's on some content there. Coding key frames instead is the
-    /// honest fallback -- a larger file, never a wrong one, and the same shape
-    /// `bd10_tree_supported` uses for 10-bit OBMC. The refusal's own text
-    /// carries both measurements.
+    /// AT ANY DEPTH ABOVE 8, a colour track is all-intra too:
+    /// `encode_frame_impl` refuses an inter frame there, because the port's
+    /// reconstruction disagrees with a decoder's on some 10-bit content.
+    /// Coding key frames instead is the honest fallback -- a larger file,
+    /// never a wrong one, and the same shape `bd10_tree_supported` uses for
+    /// 10-bit OBMC. The refusal's own text carries the measurement. (The
+    /// preset-6 floor this check used to mirror came off on 2026-09-15, when
+    /// the OBMC neighbour-prediction stale-cache fix swept the whole preset
+    /// ladder clean against aomdec.)
     ///
     /// LOSSLESS is all-intra for a different and permanent reason: QP 0 is
     /// `CodedLossless`, and `lossless_config_error` refuses it on an inter
@@ -174,11 +176,7 @@ impl AvifEncoder {
     /// a sequence of lossless stills, which is what a caller asking for
     /// lossless wants anyway.
     fn animation_keyframes(&self, chroma_420: bool, options: &AnimationOptions) -> Keyframes {
-        if chroma_420
-            && !self.lossless
-            && self.bit_depth <= 8
-            && self.resolved_native_preset().value() >= 6
-        {
+        if chroma_420 && !self.lossless && self.bit_depth <= 8 {
             options.keyframes
         } else {
             Keyframes::EveryFrame
@@ -470,11 +468,11 @@ impl AvifEncoder {
         // them as key frames is the right answer here rather than an error --
         // the default `keyframes` is not something the caller chose.
         let keyframes = self.animation_keyframes(chroma_420, options);
-        // BELOW PRESET 6 the colour track is all-intra too, for the same
+        // ABOVE 8 BITS the colour track is all-intra too, for the same
         // reason: `encode_frame_impl` refuses an inter frame there, because
-        // the port's temporal motion-vector derivation still disagrees with a
-        // decoder on some content (see `dbgenv::inter_experimental` for the
-        // 163-cell measurement). Coding key frames instead is the honest
+        // the port's reconstruction still disagrees with a decoder on some
+        // 10-bit content (see `dbgenv::inter_experimental` for the
+        // measurement). Coding key frames instead is the honest
         // fallback -- a larger file, never a wrong one -- and it is the same
         // shape `bd10_tree_supported` uses for 10-bit OBMC.
         let mut color = self

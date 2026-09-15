@@ -2185,29 +2185,18 @@ impl EncodePipeline {
         // Keyed on the FRAME TYPE rather than `intra_period` so that
         // constructing a pipeline with a GOP structure and encoding only its
         // key frame keeps working: that stream is a valid still.
-        // THE LOW-PRESET FLOOR. Presets 6..13 are the measured envelope; below
-        // it the port emits streams a decoder can reject, which is the one
-        // outcome this port never ships. See
-        // `crate::dbgenv::inter_experimental` for the measurement and for the
-        // two separate defects behind it.
-        if !is_key
-            && (self.speed_config.preset < 6 || self.bit_depth > 8)
-            && !crate::dbgenv::inter_experimental()
-        {
+        // THE BIT-DEPTH FLOOR. Every checked 8-bit preset (-1..13) is inside
+        // the measured envelope — see `crate::dbgenv::inter_experimental` for
+        // the sweep; above 8 bits the port still emits streams a decoder
+        // disagrees with, which is the one outcome this port never ships.
+        if !is_key && self.bit_depth > 8 && !crate::dbgenv::inter_experimental() {
             return Err(whereat::at!(EncodeError::UnsupportedConfig(
-                "inter frames are shipped for 8-BIT 4:2:0 at presets 6..13, and this frame is \
-                 outside that. Both halves are measured against a DECODER, because that is what \
-                 a wrong stream actually violates. PRESETS, MEASURED 2026-09-11 (encoder \
-                 reconstruction vs aomdec, six public-domain derf clips x qp {20,40,55} x 8 \
-                 frames at 256x256): presets 6..13 are 144 of 144 cells decoding every frame \
-                 (tools/video_selfcheck_gate.sh), while preset 0 loses two cells, presets 1 and \
-                 2 lose two and one, and preset 5 loses one; SVTAV1_MFMV_OFF returns every \
-                 failing cell to 8 of 8, but signalling use_ref_frame_mvs = 0 is not a fix \
-                 either -- 151 of 163 against 156 -- because the spatial-only stack has a \
-                 defect of its own. BIT DEPTH, measured the same day on three of those clips x \
-                 qp {20,40} x presets {6,8,10} x 4 frames at bit depth 10: only 8 of 18 cells \
-                 reconstruct as aomdec does, the rest drifting from frame 1, 2 or 3. Encode \
-                 video as 8-bit 4:2:0 at preset >= 6, or a single key frame at any depth and \
+                "inter frames are shipped for 8-BIT 4:2:0, and this frame is above that. \
+                 Measured against a DECODER, because that is what a wrong stream actually \
+                 violates, 2026-09-11 on three public-domain derf clips x qp {20,40} x \
+                 presets {6,8,10} x 4 frames at bit depth 10: only 8 of 18 cells \
+                 reconstruct as aomdec does, the rest drifting from frame 1, 2 or 3. \
+                 Encode video as 8-bit 4:2:0, or a single key frame at any depth and \
                  preset [C: accepts]",
             )));
         }
